@@ -106,32 +106,66 @@ func TestPruneReasons(t *testing.T) {
 		}
 	})
 
-	t.Run("⑥ path", func(t *testing.T) {
+	t.Run("⑥ max_hops", func(t *testing.T) {
 		f := newFakeStore()
 		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
 		fix := f.addCap(testNS, "fix", 1, []string{"review"}, `{}`)
-		// fix --review--> review（成环）
+		// fix --review--> review（成环：现在**合法**，契约 §2）
 		f.addEdge(testNS, fix.ID, "review", review.ID)
 		f.addNode("nd_review", review.ID, 1)
 		d := New(f)
+		d.MaxHops = 2
 
 		out, err := d.Dispatch(ctx, DispatchInput{
 			NamespaceID: testNS, TraceID: "t", FromCap: fix.ID, Out: "review",
-			// review 已经在路径里（P2.2：path 存**能力名**）
+			// depth = len(path) = 2 >= max_hops 2 → 剪 max_hops
 			Path: []string{review.Name, fix.Name},
 		})
 		if err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
-		assertPrune(t, out.Pruned, ReasonPath, review.ID, "review")
-		if !contains(out.Pruned[0].Detail, "cycle") {
-			t.Fatalf("path detail should explain the cycle, got %q", out.Pruned[0].Detail)
+		assertPrune(t, out.Pruned, ReasonMaxHops, "", "review")
+		// 证据里要有**完整 path**：否则「它是怎么走到这么深的」答不出来。
+		if !contains(out.Pruned[0].Detail, review.Name+" → "+fix.Name) {
+			t.Fatalf("max_hops detail 里没有完整 path: %q", out.Pruned[0].Detail)
+		}
+	})
+
+	t.Run("⑥' budget", func(t *testing.T) {
+		f := newFakeStore()
+		review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+		target := f.addCap(testNS, "fix", 1, nil, `{}`)
+		f.addEdge(testNS, review.ID, "fix", target.ID)
+		f.addNode("nd_fix", target.ID, 4)
+		d := New(f)
+		d.TraceTaskBudget = 1
+		// 同 trace 已经有 1 个任务（= 预算）→ 下一次派发被剪 budget
+		if err := f.CreateTasks(ctx, []*store.Task{{
+			ID: "tsk_seed", NamespaceID: testNS, TraceID: "t_budget", Status: store.TaskPending,
+		}}); err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+
+		out, err := d.Dispatch(ctx, DispatchInput{
+			NamespaceID: testNS, TraceID: "t_budget", FromCap: review.ID, Out: "fix",
+		})
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		assertPrune(t, out.Pruned, ReasonBudget, "", "fix")
+		if !contains(out.Pruned[0].Detail, "budget 1") {
+			t.Fatalf("budget detail 里没有预算值: %q", out.Pruned[0].Detail)
 		}
 	})
 }
 
-// TestPrunePathCycle review→fix→review 跑两圈 → 第二圈 pruned/path（#66 验收）。
-func TestPrunePathCycle(t *testing.T) {
+// TestPruneMaxHopsCycle review→fix→review 这条环**前 N 圈放行、第 N+1 圈剪 max_hops**。
+//
+// 这是契约 §2 的核心语义：环是合法编排（用户拍板的 `review → fix → review`），
+// 兜底靠 hop 预算而不是「名字判重」。所以这里的断言分两半：
+//   - depth < maxHops 的每一圈都**必须建出任务**（环本身不剪）；
+//   - depth >= maxHops 那一圈剪 max_hops，且 Detail 带完整 path。
+func TestPruneMaxHopsCycle(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeStore()
 	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
@@ -143,40 +177,51 @@ func TestPrunePathCycle(t *testing.T) {
 	f.addNode("nd_fix", fix.ID, 8)
 
 	d := New(f)
+	const maxHops = 3
+	d.MaxHops = maxHops
 
-	// 第一圈：从 review 出发。
-	// 注意：调用方把 path 传成「从根到本任务的能力序列」——起点能力也应在里面。
-	// 这里模拟「根事件由 review 的 origin 出口触发」，所以 path 从空开始。
-	out1, err := d.Dispatch(ctx, DispatchInput{
-		NamespaceID: testNS, TraceID: "trace_cycle", FromCap: review.ID, Out: "fix",
-		// P2.2：path 存**能力名**（环的判据是「同一条链上重复出现同一个名字」）
-		Path: []string{review.Name},
-	})
-	if err != nil {
-		t.Fatalf("first round: %v", err)
+	// 第 1 圈：从 review 出发（path 从只有自己开始）。
+	// 调用方传 path = 「从根到本任务的能力序列」，所以每绕一圈长 1。
+	path := []string{review.Name}
+	from := review
+	port := "fix"
+	for round := 1; ; round++ {
+		out, err := d.Dispatch(ctx, DispatchInput{
+			NamespaceID: testNS, TraceID: "trace_cycle", FromCap: from.ID, Out: port,
+			Path: path,
+		})
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if len(path) >= maxHops {
+			// 第 N+1 圈（depth 达到上限）：剪 max_hops，不再建任务。
+			if len(out.Tasks) != 0 {
+				t.Fatalf("round %d (depth %d): 超过 hop 预算仍建了 %d 个任务", round, len(path), len(out.Tasks))
+			}
+			assertPrune(t, out.Pruned, ReasonMaxHops, "", port)
+			if !contains(out.Pruned[0].Detail, "max_hops 3") {
+				t.Fatalf("detail 里没有预算值: %q", out.Pruned[0].Detail)
+			}
+			break
+		}
+		if len(out.Tasks) != 1 {
+			t.Fatalf("round %d (depth %d): 还没到预算却建了 %d 个任务（环不该被剪）: %v",
+				round, len(path), len(out.Tasks), out.Pruned)
+		}
+		if len(out.Pruned) != 0 {
+			t.Fatalf("round %d: 不该有剪枝，got %v", round, out.Pruned)
+		}
+		// 下一圈：目标是刚才那一个任务，path = 它的 path（父 path + 本能力名）
+		path = out.Tasks[0].Path
+		if out.Tasks[0].CapabilityID == review.ID {
+			from, port = review, "fix"
+		} else {
+			from, port = fix, "review"
+		}
+		if round > maxHops+2 {
+			t.Fatalf("环没有被预算兜住（跑了 %d 圈）", round)
+		}
 	}
-	if len(out1.Tasks) != 1 {
-		t.Fatalf("first round: want 1 task (fix), got %d", len(out1.Tasks))
-	}
-	if len(out1.Pruned) != 0 {
-		t.Fatalf("first round should not prune, got %v", out1.Pruned)
-	}
-	pathAfterFix := out1.Tasks[0].Path // [review, fix]
-
-	// 第二圈：fix 回报 review，目标是 review —— 已在路径里 → pruned/path
-	out2, err := d.Dispatch(ctx, DispatchInput{
-		NamespaceID: testNS, TraceID: "trace_cycle",
-		ParentTaskID: out1.Tasks[0].ID,
-		FromCap:      fix.ID, Out: "review",
-		Path: pathAfterFix,
-	})
-	if err != nil {
-		t.Fatalf("second round: %v", err)
-	}
-	if len(out2.Tasks) != 0 {
-		t.Fatalf("second round should create no task (cycle), got %d", len(out2.Tasks))
-	}
-	assertPrune(t, out2.Pruned, ReasonPath, review.ID, "review")
 }
 
 // TestForeignUser 用户维度能力：成员放行、非成员剪枝（#66 验收）。
@@ -271,7 +316,8 @@ func TestPruneReasonValues(t *testing.T) {
 		ReasonParamType:    "param_type",
 		ReasonNoNode:       "no_node",
 		ReasonForeignUser:  "foreign_user",
-		ReasonPath:         "path",
+		ReasonMaxHops:      "max_hops",
+		ReasonBudget:       "budget",
 		ReasonEventSchema:  "event_schema",
 	}
 	for r, s := range want {
@@ -279,11 +325,12 @@ func TestPruneReasonValues(t *testing.T) {
 			t.Errorf("reason %v != %q (contract §7 spelling)", r, s)
 		}
 	}
-	// 一共八种（①「上游没回报」不是剪枝，不该有对应常量；
+	// 一共九种（①「上游没回报」不是剪枝，不该有对应常量；
 	// param_missing / param_type 是 #114 新增的取值/类型剪枝；
-	// event_schema 是 P0.2 新增的入口剪枝，产生点在 source.Trigger 里）
-	if len(want) != 8 {
-		t.Fatalf("want exactly 8 prune reasons, got %d", len(want))
+	// event_schema 是 P0.2 新增的入口剪枝，产生点在 source.Trigger 里；
+	// max_hops / budget 取代 path（契约 §2：环靠 hop 预算兜底，另加 trace 任务预算））
+	if len(want) != 9 {
+		t.Fatalf("want exactly 9 prune reasons, got %d", len(want))
 	}
 }
 

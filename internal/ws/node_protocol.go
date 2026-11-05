@@ -307,9 +307,14 @@ type PortExpect struct {
 
 // ExpectTarget 描述一个下游：谁、哪些版本、它需要哪些字段（去掉被 literals 覆盖的）。
 type ExpectTarget struct {
-	Capability string          `json:"capability"`
-	Version    int             `json:"version,omitempty"`
-	Needs      json.RawMessage `json:"needs,omitempty"`
+	Capability string `json:"capability"`
+	Version    int    `json:"version,omitempty"`
+	// Priority 是这条边上的候选优先级（小的优先；0 = 默认，省略）。
+	//
+	// 由中枢从 edges.priority 读出来填好（route.BuildExpects），节点侧只**透传/展示**，
+	// 不自己算：优先级是配置，不是执行时的判断。
+	Priority int             `json:"priority,omitempty"`
+	Needs    json.RawMessage `json:"needs,omitempty"`
 }
 
 // CancelFrame 要求节点停止某任务。

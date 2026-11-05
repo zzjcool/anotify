@@ -413,8 +413,9 @@ func TestEmitNoLinksIsNotAnError(t *testing.T) {
 
 // ---------- ⑥ 扇出部分成功 ----------
 
-// TestEmitFanoutPartialPrune 3 条 link 里 1 条没节点 → 其余照常派发，pruned=1。
-func TestEmitFanoutPartialPrune(t *testing.T) {
+// TestEmitCandidatePartialPrune 3 条 link 里 1 条没节点 → 剪掉那一条，其余是候选
+// （契约 §3：候选集合里选一个），pruned=1 / routed=1。
+func TestEmitCandidatePartialPrune(t *testing.T) {
 	f := newEmitFixture(t)
 	root := f.addCap(t, "review", 1, []string{"fix"}, `{"type":"object"}`)
 	fix1 := f.addCap(t, "fix1", 1, nil, `{"type":"object"}`)
@@ -427,23 +428,21 @@ func TestEmitFanoutPartialPrune(t *testing.T) {
 	task := f.newTask(t, root)
 
 	out := f.mustEmit(t, task.ID, 1, "fix", `{}`)
-	if out.Routed != 2 || out.Pruned != 1 {
-		t.Fatalf("routed/pruned = %d/%d, want 2/1", out.Routed, out.Pruned)
+	if out.Routed != 1 || out.Pruned != 1 {
+		t.Fatalf("routed/pruned = %d/%d, want 1/1（不可达的剪掉、其余按 1:1 选一个）",
+			out.Routed, out.Pruned)
 	}
 	if len(out.Reasons) != 1 || out.Reasons[0].Reason != ReasonNoNode {
 		t.Fatalf("剪枝原因 = %+v, want 单条 no_node", out.Reasons)
 	}
 
 	kids := f.childTasks(t, task.ID)
-	if len(kids) != 2 {
-		t.Fatalf("子任务 %d 条, want 2（部分成功）", len(kids))
+	if len(kids) != 1 {
+		t.Fatalf("子任务 %d 条, want 1（1:1 选一个）", len(kids))
 	}
-	names := map[string]bool{}
-	for _, k := range kids {
-		names[k.Capability] = true
-	}
-	if !names["fix1"] || !names["fix2"] || names["orphan"] {
-		t.Fatalf("派发的子任务 = %v, want fix1+fix2（orphan 被剪）", names)
+	// 选中的必须是**可达**的那两个之一：orphan 被剪了，不可能被选中。
+	if name := kids[0].Capability; name != "fix1" && name != "fix2" {
+		t.Fatalf("派发的子任务是 %q，want fix1 或 fix2（orphan 被剪）", name)
 	}
 }
 

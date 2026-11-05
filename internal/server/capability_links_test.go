@@ -147,8 +147,10 @@ func TestPostCapabilityWithLinks400PointsAtBadIndex(t *testing.T) {
 			wantIdx: "links[1]",
 		},
 		{
-			name:    "自连（出口接自己）",
-			links:   []map[string]any{{"fromPort": "done", "toRef": "chain.bad"}},
+			// 自连/成环现在**合法**（契约 §2：环是合法编排），所以这一条换成
+			// 另一种客户端可修的硬拒：端口不在 outputs 里。
+			name:    "端口不在 outputs 里",
+			links:   []map[string]any{{"fromPort": "not-a-port", "toRef": "notify.send"}},
 			wantIdx: "links[0]",
 		},
 	}

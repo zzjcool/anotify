@@ -73,6 +73,9 @@ func TestPlanPinsLatestArtifactDigest(t *testing.T) {
 // 与上一条的区别：这条经过 Dispatch → plan → CreateTasks，验证 digest 在**建行路径**上
 // 没被丢掉（fakeStore 记录的正是交给 CreateTasks 的指针）。
 // 真正“写进列里再读回来”的验证在 store 包（TestTaskDigestRoundTrip）。
+//
+// 候选选择（契约 §3）之后每次派发只建 1 个任务，所以这里连续派发直到三个候选
+// 都出现（同级轮盘），逐条验证「每条任务的 digest 是它自己那个能力的产物」。
 func TestDispatchKeepsDigestThroughCreate(t *testing.T) {
 	f, d, review, target := setupFanout(t)
 	// 每个目标能力各钉一份不同的 digest：值要能区分，否则「串台」看不出来。
@@ -83,18 +86,20 @@ func TestDispatchKeepsDigestThroughCreate(t *testing.T) {
 		want[c.ID] = digest
 	}
 
-	out, err := d.Dispatch(context.Background(), DispatchInput{
-		NamespaceID: testNS, TraceID: "trace_digest_fanout", FromCap: review.ID, Out: "fix",
-		Params: map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(out.Tasks) != len(target) {
-		t.Fatalf("dispatch created %d tasks, want %d", len(out.Tasks), len(target))
-	}
-	// 每条任务的 digest 必须是**它自己那个能力**的产物（不能串台）
-	for _, task := range out.Tasks {
+	checked := 0
+	for round := 0; round < 3*len(target); round++ {
+		out, err := d.Dispatch(context.Background(), DispatchInput{
+			NamespaceID: testNS, TraceID: "trace_digest_fanout", FromCap: review.ID, Out: "fix",
+			Params: map[string]any{},
+		})
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if len(out.Tasks) != 1 {
+			t.Fatalf("round %d created %d tasks, want 1（1:1 选一个）", round+1, len(out.Tasks))
+		}
+		task := out.Tasks[0]
+		// 每条任务的 digest 必须是**它自己那个能力**的产物（不能串台）
 		if got := task.Digest; got != want[task.CapabilityID] {
 			t.Errorf("task %s digest = %q, want %q（必须是本能力的产物）",
 				task.Capability, got, want[task.CapabilityID])
@@ -102,6 +107,10 @@ func TestDispatchKeepsDigestThroughCreate(t *testing.T) {
 		if task.Digest == "" {
 			t.Errorf("task %s digest 为空：这条用例里每个能力都登记了产物", task.Capability)
 		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("一次都没派发成功")
 	}
 }
 

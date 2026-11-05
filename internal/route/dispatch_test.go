@@ -52,6 +52,8 @@ type fakeStore struct {
 	errInsertPrune error
 	// errGetUser 让用户查询失败（验证「鉴权查库失败必须 fail closed」）
 	errGetUser error
+	// errCountTasks 让 trace 任务计数失败（验证「预算查不出时派发失败，而不是当 0」）
+	errCountTasks error
 
 	// artifacts 是 LatestArtifact 的返回值（key = capKey(ns, capabilityID)）。
 	// 没登记的能力 → store.ErrArtifactNotFound，与真 store 同口径（P0-a）。
@@ -120,6 +122,19 @@ func (f *fakeStore) addEdgeLiterals(nsID, from, port, to, literals string) {
 	f.edges[key] = append(f.edges[key], store.LinkTarget{
 		ToRef:    f.refOf(to),
 		Literals: json.RawMessage(literals),
+	})
+}
+
+// addEdgePriority 加一条带**候选优先级**的能力边（契约 §3：小的优先）。
+//
+// 与 addEdgeLiterals 一样按真 store 的口径归一两端（左端名字、右端钉死引用），
+// priority 原样落到 LinkTarget 上——候选选择只认它。
+func (f *fakeStore) addEdgePriority(nsID, from, port, to string, priority int) {
+	key := nsID + "|" + f.nameKey(from) + "|" + port
+	f.edges[key] = append(f.edges[key], store.LinkTarget{
+		ToRef:    f.refOf(to),
+		Literals: json.RawMessage(""),
+		Priority: priority,
 	})
 }
 
@@ -387,6 +402,24 @@ func (f *fakeStore) CreateTasks(ctx context.Context, ts []*store.Task) error {
 	return nil
 }
 
+// CountTasksByTrace 与真 store 同口径（契约 §2 的 trace 任务预算）：
+// 只数 tasks 表里**已经建出**的行（fake 的 createdTasks 就是那张表），
+// 不含本次即将建的行——所以 budget 本身就是上限，不是 budget-1。
+func (f *fakeStore) CountTasksByTrace(ctx context.Context, namespaceID, traceID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errCountTasks != nil {
+		return 0, f.errCountTasks
+	}
+	n := 0
+	for _, t := range f.createdTasks {
+		if t.NamespaceID == namespaceID && t.TraceID == traceID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // addArtifact 给某能力登记一份「最新产物」（P0-a 的 digest 就取它）。
 func (f *fakeStore) addArtifact(nsID, capabilityID, digest string) *store.Artifact {
 	a := &store.Artifact{ID: "art_fake", NamespaceID: nsID, CapabilityID: capabilityID, Digest: digest}
@@ -500,7 +533,9 @@ func setupFanout(t *testing.T) (*fakeStore, *Dispatcher, *store.CapabilityVersio
 		name := fmt.Sprintf("fix%d", i)
 		c := f.addCap(testNS, name, 1, nil, `{"type":"object"}`)
 		f.addEdge(testNS, review.ID, "fix", c.ID)
-		f.addNode(fmt.Sprintf("nd_%s", name), c.ID, 2)
+		// 6 个槽位：候选选择是 1:1 的，但同级轮盘会连续派发多次，
+		// 槽位不够会让「派到机器上」这一步变成 pending（那是另一件事，这里不测它）。
+		f.addNode(fmt.Sprintf("nd_%s", name), c.ID, 6)
 		targets = append(targets, c)
 	}
 	return f, New(f), review, targets
@@ -508,27 +543,33 @@ func setupFanout(t *testing.T) (*fakeStore, *Dispatcher, *store.CapabilityVersio
 
 // ---------- #65：派发四步 ----------
 
-// TestDispatchFanout 一个 (cap, port) 有 3 行边 → 3 个任务（#65 验收）。
-func TestDispatchFanout(t *testing.T) {
+// TestDispatchSelectsOneCandidate 一个 (cap, port) 有 3 行**同级**边 →
+// 每次派发只建 **1** 个任务（契约 §3：端口的下游是候选集合，默认 1:1 选一个）。
+//
+// #65 的旧语义是「3 行边 = 3 个任务」（扇出）。契约 §3 之后默认只选一个：
+// 同级候选在**组内轮盘**，所以连续 6 次派发必须覆盖全部 3 个，且分布均匀
+// （断言「都出现过且各 >= 2」：固定 3/3 / 4/2 / 2/4 这类，不钉死具体顺序）。
+func TestDispatchSelectsOneCandidate(t *testing.T) {
 	f, d, review, targets := setupFanout(t)
 
-	out, err := d.Dispatch(context.Background(), DispatchInput{
-		NamespaceID: testNS, TraceID: "trace_1", FromCap: review.ID, Out: "fix",
-		Params: map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(out.Tasks) != 3 {
-		t.Fatalf("fanout created %d tasks, want 3", len(out.Tasks))
-	}
-	if len(out.Pruned) != 0 {
-		t.Fatalf("unexpected prunes: %v", out.Pruned)
-	}
-	// 每个目标能力各一个任务
-	got := map[string]bool{}
-	for _, task := range out.Tasks {
-		got[task.CapabilityID] = true
+	seen := map[string]int{}
+	const rounds = 6
+	for i := 0; i < rounds; i++ {
+		out, err := d.Dispatch(context.Background(), DispatchInput{
+			NamespaceID: testNS, TraceID: "trace_1", FromCap: review.ID, Out: "fix",
+			Params: map[string]any{},
+		})
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if len(out.Pruned) != 0 {
+			t.Fatalf("unexpected prunes: %v", out.Pruned)
+		}
+		if len(out.Tasks) != 1 {
+			t.Fatalf("round %d created %d tasks, want 1（1:1 选一个）", i+1, len(out.Tasks))
+		}
+		task := out.Tasks[0]
+		seen[task.CapabilityID]++
 		if task.Status != store.TaskAssigned {
 			t.Errorf("task %s status = %q, want assigned", task.Capability, task.Status)
 		}
@@ -545,14 +586,21 @@ func TestDispatchFanout(t *testing.T) {
 		if task.CapHash == "" {
 			t.Error("task missing cap_hash (version pinning, I8)")
 		}
-	}
-	for _, c := range targets {
-		if !got[c.ID] {
-			t.Errorf("no task for target %s", c.Name)
+		// path 仍然只有一跳（选一个 ≠ 绕一圈）：入参 path 为空 → [选中的那个]
+		if len(task.Path) != 1 || task.Path[0] != task.Capability {
+			t.Errorf("task path = %v, want [%s]", task.Path, task.Capability)
 		}
 	}
-	if len(f.assignments) != 3 {
-		t.Fatalf("assignments = %d, want 3", len(f.assignments))
+	for _, c := range targets {
+		if seen[c.ID] == 0 {
+			t.Errorf("轮盘 6 次都没选中 %s（分布：%v）", c.Name, seen)
+		} else if seen[c.ID] < 2 {
+			t.Errorf("%s 只被选中 %d 次（6 次同级轮盘应当各 >= 2）: %v", c.Name, seen[c.ID], seen)
+		}
+	}
+	// 每次都真的派到机器上（占槽位 + 推帧），不是只建行
+	if len(f.assignments) != rounds {
+		t.Fatalf("assignments = %d, want %d", len(f.assignments), rounds)
 	}
 }
 

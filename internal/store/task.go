@@ -1442,6 +1442,33 @@ func (d *DB) CountTasksByStatus(ctx context.Context, namespaceID, traceID string
 	return out, rows.Err()
 }
 
+// CountTasksByTrace 返回同一个 trace **已经建出**的任务数（契约 §2 trace 任务预算）。
+//
+// 口径（与派发侧一致，改动前先读 route/dispatch.go 的 trace 预算注释）：
+//   - 只数 tasks 表里的行 —— 那是「已经建出来的任务」的唯一事实源；
+//   - 不含本次派发即将建的行（本方法在读的时候它们还不存在），所以
+//     `Count >= budget` 就是「再建就超预算」，budget 本身就是上限；
+//   - 每次派发都重新查库（不进程内缓存、不累加计数器）：并发派发各自读到的是
+//     提交后的真实行数，缓存会把「别人刚建的任务」漏掉，预算于是形同虚设。
+//
+// 失败返回 error（不返回 0）：预算判不出来时必须让这次派发失败，
+// 而不是「当它是 0 然后无限建」。
+func (d *DB) CountTasksByTrace(ctx context.Context, namespaceID, traceID string) (int, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return 0, ErrNamespaceRequired
+	}
+	if traceID == "" {
+		return 0, fmt.Errorf("count tasks by trace: empty trace id")
+	}
+	var n int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE namespace_id = ? AND trace_id = ?`,
+		namespaceID, traceID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count tasks by trace %s: %w", traceID, err)
+	}
+	return n, nil
+}
+
 // RetryBackoff 返回第 attempts 次失败后的退避时长（秒）。
 //
 // 契约 §3.3：10s / 60s / 300s。超出序列则一直用最后一个值，

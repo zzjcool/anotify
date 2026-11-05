@@ -23,12 +23,19 @@ const schemaVersionTable = `CREATE TABLE IF NOT EXISTS schema_version (
     applied_at INTEGER NOT NULL
 )`
 
-// baselineVersion 是 squash 之后唯一的迁移版本。
+// baselineVersion 是 squash 出来的那块终态 DDL 的版本号。
 //
-// schema.sql 现在只有一块 `-- +migration 1 baseline`（终态 DDL）。squash 之前的
-// 28 块增量迁移已经合并进它，所以**任何比 1 更高的已记账版本，都只能来自一个
-// squash 之前建的库**——那种库不支持增量升级，见 legacyVersionError。
+// schema.sql 从 `-- +migration 1 baseline`（squash 后的终态 DDL）开始，
+// 往后的新变更按 `-- +migration 2 …` 追加块（见本文件头的说明）。
+// baseline 本身**不再改动**：改它等于让「已发布的库」与「新建的库」分叉。
 const baselineVersion = 1
+
+// headVersion 是本版本代码认识的**最高**迁移版本（= schema.sql 的最后一块）。
+//
+// 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
+// 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
+// （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
+const headVersion = 2
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)
@@ -152,7 +159,7 @@ func legacyVersionError(done map[int]bool) error {
 			maxDone = v
 		}
 	}
-	if maxDone <= baselineVersion {
+	if maxDone <= headVersion {
 		return nil
 	}
 	return fmt.Errorf(

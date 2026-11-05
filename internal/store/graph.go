@@ -74,6 +74,17 @@ type Edge struct {
 	Mapping   json.RawMessage `json:"mapping"`
 	CreatedAt int64           `json:"createdAt"`
 
+	// Priority 是这条边的**候选优先级**（契约 §3：小的优先）。
+	//
+	// 它不改变「这条边通不通」，只决定「同一个 (能力, 端口) 有一堆下游时先选谁」：
+	// 派发取最小 priority 的那一组，组内轮盘。0 是默认值——加这一列之前建的边
+	// 全部同级，行为与「一个端口只有一个下游」时完全一样。
+	//
+	// 为什么不进 edges 的主键：优先级是**同一条线的属性**，不是新的一条线。
+	// 两行同 (from_ref, from_port, to_ref) 不同 priority 的边没有意义（谁是它在跑？），
+	// 改优先级应当是原地改这条边（见 UpdateEdgePriority），而不是并排放两行。
+	Priority int `json:"priority"`
+
 	// Deprecated: P2.2 之前的字段名，**只用于输入兼容**，永不落库、永不出现在 JSON 里。
 	//
 	// 老客户端（控制台旧版本、e2e、节点侧的老调用）传的是 capability_versions.id；
@@ -96,6 +107,11 @@ type Edge struct {
 // 「指向哪一版」由引用本身回答，派发时再解析（设计 §3.2 / §7 P2.2）。
 type LinkTarget struct {
 	ToRef string `json:"toRef"`
+	// Priority 原样来自 edges.priority（契约 §3 的候选优先级，小的优先）。
+	//
+	// 它必须跟着 EdgesFrom 一起出来：候选排序要用它，而「先拿目标、再回头查
+	// priority」等于同一行查两遍，且两次之间那条边可能被改了。
+	Priority int `json:"priority"`
 	// Literals 原样来自 edges.literals（"{}" = 无覆盖）。派发前由 route 叠加到目标参数上。
 	Literals json.RawMessage `json:"literals"`
 	// Mapping 原样来自 edges.mapping（"{}" = 无模板）。只有入口边会非空；
@@ -135,7 +151,9 @@ type GraphVersion struct {
 //   - Mapping 只允许出现在**入口边**，且必须是 JSON 对象、键 ∈ 目标
 //     params_schema.properties、值是「常量或 {{点号路径}} 模板」（常量才查类型）。
 //     能力边带非空 mapping → 硬拒（§8 已否决能力边的引用映射）
-//   - 静态可达环（按**名字**判：同一条链上重复出现同一个名字才是环，P2.3/P2.2）
+//
+// 这里**不查环**（契约 §2）：`review → fix → review` 是合法编排，环由运行期 hop 预算
+// （max_hops）兜底；静态环检测会把「大图里一个合法的共同汇点」也拒掉。
 //
 // 违反返回 ErrEdgeRejected / *CrossNamespaceError。重复边幂等（PK 冲突视为已存在）。
 func (d *DB) CreateEdge(ctx context.Context, e *Edge) error {
@@ -233,21 +251,10 @@ func createEdgeTx(ctx context.Context, ex queryExec, e *Edge) error {
 			return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
 				ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
 		}
-
-		// 静态环检测（设计 §7 P2.3）——按**名字**判（P2.2）。
-		//
-		// 为什么要在保存时拒，而不是只靠运行期 path 剪枝：
-		//   - 环是**配置错误**，不是运行时状况。等它跑起来才发现，代价是一个真实的
-		//     无限扇出（每跳都新建任务，直到深度/环剪枝兜住）——可见，但很难查。
-		//   - 运行期 path 剪枝必须保留（它是防线的最后一层：图可能被改，旧任务还在跑），
-		//     但那不该是唯一一层。
-		//
-		// 判据（与运行期 path 剪枝同一口径）：从 to **的名字**出发沿已有边能否走回
-		// from 的名字。走得到 → 加了这条就成环。
-		// 只读当前命名空间的边（I11：图不跨命名空间）。
-		if err := checkEdgeWouldCycleOn(ctx, ex, e.NamespaceID, from.Name, to.Name); err != nil {
-			return err
-		}
+		// 这里**没有**环检测（契约 §2）：环是合法编排（`review → fix → review`）。
+		// 兜底交给运行期 hop 预算（route/dispatch.go 的 max_hops）：它按**实际走过的**
+		// 深度剪枝，而不是按「静态上能不能走回自己」——后者会把一条从未真的走回来的
+		// 配置（大图里一个共同的汇点）也拒掉。
 	}
 
 	if e.CreatedAt == 0 {
@@ -255,13 +262,62 @@ func createEdgeTx(ctx context.Context, ex queryExec, e *Edge) error {
 	}
 	// 幂等键是 (namespace, 左端, 端口, 右端)**引用**：
 	// `fixer` 与 `fixer@1` 是两条不同的 link（一个跟随、一个钉死），可以并存。
+	//
+	// priority 走 ON CONFLICT DO NOTHING 的**保留原值**语义：重复提交同一条边不该把
+	// 它的优先级悄悄重置成传入值（那是一次不可见的改线）。要改优先级用 UpdateEdgePriority。
 	if _, err := ex.execContext(ctx,
-		`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
-		 VALUES (?,?,?,?,?,?,?,?)
+		`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, priority, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref) DO NOTHING`,
 		e.NamespaceID, boolToInt(e.FromIsSource), e.FromRef, e.FromPort, e.ToRef,
-		string(e.Literals), string(e.Mapping), e.CreatedAt); err != nil {
+		string(e.Literals), string(e.Mapping), e.Priority, e.CreatedAt); err != nil {
 		return fmt.Errorf("insert edge: %w", err)
+	}
+	return nil
+}
+
+// UpdateEdgePriority 改一条边**现有**的候选优先级（契约 §3：小的优先）。
+//
+// 为什么是原地改一列而不是「删了重建」：priority 是同一条线的属性，不是新的一条线。
+// 删了重建会换掉 created_at，也会在「重建失败」时把这条线弄丢（配置期没有事务兜底）。
+//
+// 定位口径与 DeleteEdge 一致（引用 / 老客户端的能力 id 都能匹配）。
+func (d *DB) UpdateEdgePriority(ctx context.Context, namespaceID string, fromIsSource bool, fromKey, fromPort, toKey string, priority int) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+	fromKeys := []string{strings.TrimSpace(fromKey)}
+	if !fromIsSource {
+		fromKeys = d.refLookupKeys(ctx, namespaceID, fromKey)
+	}
+	toKeys := d.refLookupKeys(ctx, namespaceID, toKey)
+	if len(fromKeys) == 0 || len(toKeys) == 0 {
+		return ErrNotFound
+	}
+
+	args := make([]any, 0, 4+len(fromKeys)+len(toKeys))
+	args = append(args, priority, namespaceID, boolToInt(fromIsSource), fromPort)
+	for _, k := range fromKeys {
+		args = append(args, k)
+	}
+	for _, k := range toKeys {
+		args = append(args, k)
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE edges SET priority = ?
+		 WHERE namespace_id = ? AND from_is_source = ? AND from_port = ?
+		   AND from_ref IN (`+sqlPlaceholders(len(fromKeys))+`)
+		   AND to_ref IN (`+sqlPlaceholders(len(toKeys))+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("update edge priority: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update edge priority rows: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -515,7 +571,7 @@ func (d *DB) ListEdges(ctx context.Context, namespaceID, fromKey string) ([]*Edg
 	return listEdgesOn(ctx, d, namespaceID, fromKey)
 }
 
-// listEdgesOn 是 ListEdges 的 ex 版（事务内的环检测必须看到本事务刚写的边）。
+// listEdgesOn 是 ListEdges 的 ex 版（事务内的读必须看到本事务刚写的行）。
 func listEdgesOn(ctx context.Context, ex queryExec, namespaceID, fromKey string) ([]*Edge, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -529,7 +585,7 @@ func listEdgesOn(ctx context.Context, ex queryExec, namespaceID, fromKey string)
 	if fromKey != "" {
 		wantName = refNameKeyOn(ctx, ex, namespaceID, fromKey)
 	}
-	q := `SELECT namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at
+	q := `SELECT namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, priority, created_at
 	        FROM edges WHERE namespace_id = ?
 	        ORDER BY from_is_source, from_ref, from_port, to_ref`
 	rows, err := ex.queryContext(ctx, q, namespaceID)
@@ -543,7 +599,7 @@ func listEdgesOn(ctx context.Context, ex queryExec, namespaceID, fromKey string)
 		var isSrc int
 		var literals, mapping string
 		if err := rows.Scan(&e.NamespaceID, &isSrc, &e.FromRef, &e.FromPort, &e.ToRef,
-			&literals, &mapping, &e.CreatedAt); err != nil {
+			&literals, &mapping, &e.Priority, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan edge: %w", err)
 		}
 		e.FromIsSource = isSrc == 1
@@ -614,10 +670,10 @@ func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource boo
 		// 所以按名字匹配：`from_ref = name` 或者 `from_ref` 以 `name@` 开头
 		// （用 substr 而不是 LIKE：名字里可能有 `%`/`_`，那种情况下 LIKE 会误匹配）。
 		rows, err := d.QueryContext(ctx,
-			`SELECT to_ref, literals, mapping FROM edges
+			`SELECT to_ref, literals, mapping, priority FROM edges
 			 WHERE namespace_id = ? AND from_is_source = 0 AND from_port = ?
 			   AND (from_ref = ? OR substr(from_ref, 1, length(?) + 1) = ? || '@')
-			 ORDER BY to_ref`, namespaceID, fromPort, fromKey, fromKey, fromKey)
+			 ORDER BY to_ref, priority`, namespaceID, fromPort, fromKey, fromKey, fromKey)
 		if err != nil {
 			return nil, fmt.Errorf("lookup edges: %w", err)
 		}
@@ -643,10 +699,10 @@ func (d *DB) EdgesFrom(ctx context.Context, namespaceID string, fromIsSource boo
 	// 入口边：精确端口排前面（(from_port = '*') 升序 = 精确匹配先出），再按目标排序；
 	// 第一个见到的目标引用就是这条边生效的那一行。
 	rows, err := d.QueryContext(ctx,
-		`SELECT to_ref, literals, mapping FROM edges
+		`SELECT to_ref, literals, mapping, priority FROM edges
 		 WHERE namespace_id = ? AND from_is_source = 1 AND from_ref = ?
 		   AND (from_port = ? OR from_port = '*')
-		 ORDER BY to_ref, (from_port = '*')`, namespaceID, fromKey, fromPort)
+		 ORDER BY to_ref, (from_port = '*'), priority`, namespaceID, fromKey, fromPort)
 	if err != nil {
 		return nil, fmt.Errorf("lookup entry edges: %w", err)
 	}
@@ -673,7 +729,7 @@ func scanLinkTargets(rows *sql.Rows) ([]LinkTarget, error) {
 	for rows.Next() {
 		var t LinkTarget
 		var literals, mapping string
-		if err := rows.Scan(&t.ToRef, &literals, &mapping); err != nil {
+		if err := rows.Scan(&t.ToRef, &literals, &mapping, &t.Priority); err != nil {
 			return nil, fmt.Errorf("scan edge target: %w", err)
 		}
 		t.Literals = normalizeEdgeLiterals([]byte(literals))
@@ -692,6 +748,12 @@ type graphEdge struct {
 	From string `json:"from"`
 	Port string `json:"port"`
 	To   string `json:"to"`
+	// Priority 是这条边的候选优先级（契约 §3：小的优先；0 = 默认，省略）。
+	//
+	// 为什么它必须进快照：改优先级就改了「同一个端口会落到谁头上」，而
+	// graph_versions 是事后追责的底图 —— 只改 priority 不落版，就答不出
+	// 「当时那个下游为什么是它」。0 省略，保证加这一列之前算出的 hash 不变。
+	Priority int `json:"priority,omitempty"`
 	// Literals 是这条边的常量覆盖（已归一成紧凑 JSON；空覆盖省略）。
 	//
 	// 为什么它必须进快照：graph_versions 是事后追责的底图。只改某条边的常量
@@ -727,7 +789,7 @@ func buildGraphSnapshot(edges []*Edge) (graphSnapshot, error) {
 		}
 		snap.Edges = append(snap.Edges, graphEdge{
 			From: e.FromRef, Port: e.FromPort, To: e.ToRef,
-			Literals: lit, Mapping: mapping,
+			Literals: lit, Mapping: mapping, Priority: e.Priority,
 		})
 	}
 	sort.Slice(snap.Edges, func(i, j int) bool {
@@ -876,65 +938,4 @@ func (g *GraphVersion) GraphHasEdge(from, port, to string) bool {
 		}
 	}
 	return false
-}
-
-// checkEdgeWouldCycle 判定「再加一条 from → to 的边」会不会让图出现环。
-//
-// **按名字判**（P2.2）：运行期的 path 剪枝也是按名字判的（`tasks.path` 存的是能力名，
-// 同一条链上重复出现同一个名字才是环）。两处口径必须一致：配置期按 id 判、
-// 运行期按名字判，就会出现「保存时说没环、跑起来被 path 剪掉」这种分歧。
-//
-// from/to 是**能力名**（调用方已经从引用里取出来了）。
-//
-// 算法：从 to 出发做一次 DFS（只看能力 → 能力的边，入口边没有左端、不可能成环），
-// 看能否到达 from。能到达 = 新增这条边会闭环。
-//
-// 为什么不用 Tarjan / 拓扑排序：这里是**单次增量检查**，图是配置期的小对象
-// （一条链路十几个节点），一次 DFS 足够且不需要维护额外状态；全量拓扑排序更适合
-// 「整图校验」而不是「每加一条边校验一次」。
-//
-// 自环（from == to）单独判：DFS 从 to 出发本来就会立刻命中自己，但报错文案应当
-// 直接说「自己连自己」，而不是绕一圈说「能走回自己」。
-func (d *DB) checkEdgeWouldCycle(ctx context.Context, namespaceID, from, to string) error {
-	return checkEdgeWouldCycleOn(ctx, d, namespaceID, from, to)
-}
-
-// checkEdgeWouldCycleOn 是 checkEdgeWouldCycle 的 ex 版。
-//
-// 事务内必须走 ex：同一次提交里的第二条边必须能看到第一条边，
-// 否则「一条提交里写下 A→B、B→A」这种环会溜过去（两条边互相“看不见”对方）。
-func checkEdgeWouldCycleOn(ctx context.Context, ex queryExec, namespaceID, from, to string) error {
-	if from == to {
-		return fmt.Errorf("%w: self loop %s --%s--> itself", ErrEdgeRejected, from, to)
-	}
-	edges, err := listEdgesOn(ctx, ex, namespaceID, "")
-	if err != nil {
-		return fmt.Errorf("cycle check: load edges: %w", err)
-	}
-	adj := make(map[string][]string, len(edges))
-	for _, e := range edges {
-		if e.FromIsSource {
-			continue // 入口边没有上游能力，接不进环
-		}
-		fromName, toName := RefName(e.FromRef), RefName(e.ToRef)
-		adj[fromName] = append(adj[fromName], toName)
-	}
-
-	// DFS：从 to 出发，看能否走到 from。
-	seen := make(map[string]bool, len(adj))
-	stack := []string{to}
-	for len(stack) > 0 {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if cur == from {
-			return fmt.Errorf("%w: adding %s → %s would close a cycle (path %s → … → %s)",
-				ErrEdgeRejected, from, to, to, from)
-		}
-		if seen[cur] {
-			continue
-		}
-		seen[cur] = true
-		stack = append(stack, adj[cur]...)
-	}
-	return nil
 }

@@ -37,9 +37,15 @@ type PortExpect struct {
 
 // ExpectTarget 描述一个下游：谁、哪一版、它还需要哪些字段（已减去被字面量覆盖的）。
 type ExpectTarget struct {
-	Capability string          `json:"capability"`
-	Version    int             `json:"version,omitempty"`
-	Needs      json.RawMessage `json:"needs,omitempty"`
+	Capability string `json:"capability"`
+	Version    int    `json:"version,omitempty"`
+	// Priority 是这条边上的候选优先级（edges.priority，小的优先；契约 §3）。
+	//
+	// 它必须下发：节点看到的是「这个端口能去哪」的**候选清单**，而实际只会有一个
+	// 被选中。实现据此知道「谁是主选、谁是兜底」，而不是以为要挨个调一遍。
+	// 0 是默认值，omitempty 省掉它（绝大多数边就是 0）。
+	Priority int             `json:"priority,omitempty"`
+	Needs    json.RawMessage `json:"needs,omitempty"`
 }
 
 // BuildExpects 推导「这个能力的这些出口各自要被怎样消费」。
@@ -106,6 +112,7 @@ func (d *Dispatcher) BuildExpects(ctx context.Context, namespaceID, capabilityID
 			exp.Targets = append(exp.Targets, ExpectTarget{
 				Capability: to.Name,
 				Version:    to.Version,
+				Priority:   tgt.Priority,
 				Needs:      needs.raw,
 			})
 			required = append(required, needs.required...)
@@ -122,6 +129,14 @@ func (d *Dispatcher) BuildExpects(ctx context.Context, namespaceID, capabilityID
 		if err != nil {
 			return nil, fmt.Errorf("route: build expects: union for port %q: %w", port, err)
 		}
+		// 候选清单按 (priority, capability) 升序（契约 §5）：与派发侧的组顺序一致，
+		// 实现读到的第一行就是「优先级最高的那个下游」。
+		sort.SliceStable(exp.Targets, func(i, j int) bool {
+			if exp.Targets[i].Priority != exp.Targets[j].Priority {
+				return exp.Targets[i].Priority < exp.Targets[j].Priority
+			}
+			return exp.Targets[i].Capability < exp.Targets[j].Capability
+		})
 		out[port] = exp
 	}
 	return out, nil

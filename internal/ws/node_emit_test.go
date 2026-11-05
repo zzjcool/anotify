@@ -266,7 +266,10 @@ func TestExpectsFrameShapeMatches(t *testing.T) {
 			Targets: []route.ExpectTarget{{
 				Capability: "fixer",
 				Version:    3,
-				Needs:      json.RawMessage(`{"type":"object","properties":{"issue":{"type":"string"}},"required":["issue"]}`),
+				// 非 0 的 priority：0 会被 omitempty 省掉，那样「帧里漏了 priority」
+				// 和「priority 就是 0」会看不出区别（契约 §5 要求透传）。
+				Priority: 10,
+				Needs:    json.RawMessage(`{"type":"object","properties":{"issue":{"type":"string"}},"required":["issue"]}`),
 			}},
 		},
 	}

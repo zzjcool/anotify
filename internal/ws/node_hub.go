@@ -340,6 +340,7 @@ func expectsForFrame(in map[string]route.PortExpect) map[string]PortExpect {
 			targets = append(targets, ExpectTarget{
 				Capability: tg.Capability,
 				Version:    tg.Version,
+				Priority:   tg.Priority,
 				Needs:      tg.Needs,
 			})
 		}
