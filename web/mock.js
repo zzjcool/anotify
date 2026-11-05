@@ -4,7 +4,7 @@
  * 为什么需要它：
  *   看前端效果不该先把 server、tunnel、devseed 示例数据、WS worker 全跑起来。
  *   那条链路对"我只想看看页面长什么样"来说太重了，而且任何一步失败
- *   （端口被占、tunnel 不通、worker 掉线）看到的都是"页面空着"。
+ *   （服务起不来、tunnel 不通、worker 掉线）看到的都是"页面空着"。
  *
  * 做法：在 <head> 里最早加载本脚本，包住 window.fetch。
  *   路径以 /v1/ 开头的请求**不发出网络请求**，直接返回这里构造的数据；
@@ -86,6 +86,37 @@
 	// 刻意做得像真的：有扇出、有分叉的 out、有失败与剪枝，
 	// 这样看页面时能看出各种状态长什么样，而不是一排"成功"。
 
+	// 单出口：一个能力只有一个出口，内部名固定 "out"。
+	//
+	// 它是**路由键**，不是用户要表达的概念 —— 界面上只说「下游能力（候选）」。
+	// 从来没配下游的能力就是终端能力：outputs 为 []。
+	const SINGLE_OUT = "out";
+
+	// normalizeOutputs 归一一次提交里的 outputs（只归一形状，不改语义）：
+	//
+	//   ["out"] / []     —— 表单提交的两种形状，原样收下（[] = 终端能力，不覆盖）
+	//   逗号分隔的字符串  —— 手敲 curl 时最常见的写法
+	//   **没给**但带了下游 —— 视为单出口（否则 links 一定过不了「出口必须在
+	//                       outputs 里」这道校验，而用户其实已经表达了「有下游」）
+	//
+	// 多出口（历史数据 / 真需要第二种产出的能力）**原样保留**，不替用户合并成一个 ——
+	// 那是破坏性改写。去重保序，空串丢掉。
+	function normalizeOutputs(raw, hasLinks) {
+		const given = raw !== undefined && raw !== null;
+		const list = Array.isArray(raw)
+			? raw.map((x) => String(x == null ? "" : x).trim())
+			: typeof raw === "string"
+				? raw.split(",").map((x) => x.trim())
+				: [];
+		const out = [];
+		for (const name of list) {
+			if (!name || out.includes(name)) continue;
+			out.push(name);
+		}
+		if (!given && hasLinks) out.push(SINGLE_OUT);
+		return out;
+	}
+
 	function cap(name, version, outputs, paramsSchema, source, displayName, balance) {
 		// sticky 是「同一条能力尽量落到同一台机器」的提示，值是 params 里的**键名**
 		// （internal/route/dispatch.go:stickySelectorValue）。演示数据里给两个能力开上，
@@ -101,8 +132,9 @@
 			displayName: displayName || "",
 			version: version,
 			outputs: outputs,
-			// balance 是**能力版本上**的字段（契约 §3.3）：{端口: {mode}}，缺省 {}。
-			// 缺省等价于每个端口都是 {mode:"priority"}；本期只实现 priority，
+			// balance 是**能力版本上**的字段（契约 §3.3）：{出口: {mode}}，缺省 {}。
+			// 出口名对用户不可见（单出口的内部名恒为 "out"），界面上只谈「下游」。
+			// 缺省等价于每个出口都是 {mode:"priority"}；本期只实现 priority，
 			// 其它模式在写入路径上就被 400 拦下（见 checkBalance），不静默降级。
 			balance:
 				balance && typeof balance === "object" && !Array.isArray(balance)
@@ -132,13 +164,26 @@
 			// （fromIsSource: true），所以这里不该再有它们。
 			//
 			// 真实来源（GitHub webhook / 定时触发…）在「源」页面配置。
-			// 中枢执行的终端能力
+			// 中枢执行的终端能力：没有下游（outputs 空 = 终端能力，跑完就结束）。
 			cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"),
-			// 用户能力：有参数、有分叉
+			// 示例能力（新建表单的占位符里写的就是它）：一个出口 + 一段脚本。
+			// 刻意**不接下游**：它同时是「跑完就结束」这条空态演示的样本。
+			cap(
+				"script.echo",
+				1,
+				["out"],
+				{
+					type: "object",
+					properties: { message: { type: "string" } },
+				},
+				"custom",
+				"回声（示例）",
+			),
+			// 用户能力：有参数、有下游（候选）
 			cap(
 				"analyze-pr",
 				1,
-				["needs-fix", "approved"],
+				["out"],
 				{
 				type: "object",
 				required: ["changedLines"],
@@ -150,7 +195,7 @@
 			cap(
 				"apply-fix",
 				1,
-				["fixed"],
+				["out"],
 				{
 					type: "object",
 					properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
@@ -158,14 +203,11 @@
 				"custom",
 				"应用修复",
 			),
-			// outputs 里刻意留一个没接边的端口（preview.ready）：
-			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏
-			// outputs 里刻意留一个没接边的端口（manual.approval）：
-			// 流向图要能显示"这条出口走不通"，那是最容易被忽略的配置遗漏。
+			// 一个出口、三条候选（运行期按 priority 选一条走）。
 			cap(
 				"deploy-preview",
 				1,
-				["failed", "preview.ready", "manual.approval"],
+				["out"],
 				{
 				type: "object",
 				required: ["env"],
@@ -174,7 +216,7 @@
 			cap(
 				"report.send",
 				1,
-				["escalate"],
+				["out"],
 				{
 				type: "object",
 				required: ["channel", "title"],
@@ -190,7 +232,7 @@
 			cap(
 				"run-tests",
 				1,
-				["passed", "failed"],
+				["out"],
 				{
 				type: "object",
 				properties: {
@@ -201,11 +243,12 @@
 			cap(
 				"lint-fix",
 				1,
-				["clean", "remaining"],
+				["out"],
 				{
 				type: "object",
 				properties: { scope: { type: "string" } },
 			}, "custom", "清理构建缓存"),
+			// 终端能力：没有下游（outputs 空），演示「跑完就结束」那一种形态。
 			cap(
 				"gen-changelog",
 				1,
@@ -217,15 +260,17 @@
 			cap(
 				"rollback",
 				1,
-				["done"],
+				["out"],
 				{
 				type: "object",
 				properties: { reason: { type: "string" } },
 			}, "custom", "回滚"),
+			// 出口声明了、但一条出边都没有 → 流向图上是个「没有下游」的灰点。
+			// 这是最容易被忽略的配置遗漏，演示数据里必须留一个。
 			cap(
 				"alert.oncall",
 				1,
-				[],
+				["out"],
 				{
 				type: "object",
 				required: ["level"],
@@ -242,7 +287,7 @@
 			cap(
 				"archive-logs",
 				1,
-				["archived"],
+				["out"],
 				{
 					type: "object",
 					properties: { days: { type: "integer", minimum: 1 } },
@@ -260,7 +305,7 @@
 		// 按 (task_id, seq) 唯一。mock 里就是一个平表，由 seedEmissions() 播种。
 		//
 		// 一定要有种子数据：否则 trace 页的「产出（emits）」区永远只能看到
-		// 空态，而空态看不出这个区该长什么样（端口徽章 / routed-pruned /
+		// 空态，而空态看不出这个区该长什么样（产出徽章 / routed-pruned /
 		// 可折叠的 data 一个都验不了）。
 		emissions: [],
 		keys: [],
@@ -596,8 +641,8 @@
 	// 关键：`origin` 只给那 4 个内置起点（OriginCapability 的调用只有
 	// github / cron / http / manual），**不是**"所有 builtin 都算起点"。
 	// 之前这里写成 `c.source === "builtin" → origin`，导致 report.send
-	// 这种用户能力因为 source 标记而被误标成 origin —— 它有 escalate
-	// 出口、也有节点声明，按规则该是 pipe。
+	// 这种用户能力因为 source 标记而被误标成 origin —— 它有一条出边
+	// （→ alert.oncall）、也有节点声明，按规则该是 pipe。
 
 	// 内置起点的名字（后端 store.BuiltinCapabilities 里 OriginCapability 的四个）
 	const ORIGIN_NAMES = ["github", "cron", "http", "manual"];
@@ -632,23 +677,27 @@
 		const FOLLOW = (name) => name;
 		// 工厂收的是**引用**（已经算好的字符串），不是能力名：
 		// 这样调用点能自己决定这一端钉死还是跟随。
-		const fromSource = (source, port, toRef, literals) => ({
+		const fromSource = (source, eventType, toRef, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			fromIsSource: true,
 			fromRef: source,
-			fromPort: port,
+			// 入口边的 fromPort 是**事件类型**（外部系统决定，后端允许 '*'），
+			// 与能力的出口无关 —— 所以它不参与「单出口」归一。
+			fromPort: eventType,
 			toRef,
 			literals: literals || {},
+			priority: 0,
 			createdAt: now() - 3600,
 		});
-		const from = (fromRef, port, toRef, literals) => ({
+		const from = (fromRef, output, toRef, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			fromRef,
-			fromPort: port,
+			fromPort: output,
 			toRef,
 			literals: literals || {},
+			priority: 0,
 			createdAt: now() - 3600,
 		});
 		state.edges = [
@@ -661,46 +710,44 @@
 			fromSource("cron", "nightly", PIN("analyze-pr")),
 			fromSource("http", "webhook.incoming", PIN("deploy-preview")),
 			fromSource("manual", "manual.run", PIN("deploy-preview")),
-			from(PIN("analyze-pr"), "needs-fix", PIN("lint-fix")),
-			from(PIN("analyze-pr"), "approved", PIN("run-tests")),
+			from(PIN("analyze-pr"), "out", PIN("lint-fix")),
+			from(PIN("analyze-pr"), "out", PIN("run-tests")),
 
 			// 两个分支各自往下走一步，然后在 deploy-preview 汇聚 ——
 			// 汇聚是布局最容易画歪的形状（菱形），值得在演示数据里出现。
-			from(PIN("lint-fix"), "clean", PIN("run-tests")),
-			from(PIN("lint-fix"), "remaining", PIN("report.send")),
-			from(PIN("run-tests"), "passed", PIN("deploy-preview")),
+			from(PIN("lint-fix"), "out", PIN("run-tests")),
+			from(PIN("lint-fix"), "out", PIN("report.send")),
+			from(PIN("run-tests"), "out", PIN("deploy-preview")),
 
-			// ===== 扇出（一个出口多条边）=====
+			// ===== 同一个出口、多条下游 = 候选 =====
 			//
-			// 这是模型的核心形状之一（wiki 02「一个出口可以有多条边」）：
-			// 拿 (review@1, needs-fix) 查表返回 2 行 → 建 2 个任务，
-			// 它们的 parent_task_id 是同一个。**不是择一，是全部下发。**
-			//
-			// 之前的 mock 完全没有扇出，等于把产品最重要的形状藏起来了。
-			from(PIN("analyze-pr"), "needs-fix", PIN("run-tests")),
-			from(PIN("apply-fix"), "fixed", PIN("deploy-preview")),
+			// 单出口模型（内部名 "out"，对用户不可见）：拿 (能力, "out") 查表返回 N 行，
+			// 运行期按 priority 升序取最小的一组、组内轮盘选**一条**（契约 §1）。
+			// 界面上只说「下游能力（候选）」，候选集合正是这个形状。
+			from(PIN("analyze-pr"), "out", PIN("run-tests")),
+			from(PIN("apply-fix"), "out", PIN("deploy-preview")),
 
 			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
 			// 环（run-tests → apply-fix → run-tests）。流向图必须画出环路，
 			// 而"全是 DAG"的演示数据会让人以为这功能只能处理简单情况。
-			from(PIN("run-tests"), "failed", PIN("apply-fix")),
+			from(PIN("run-tests"), "out", PIN("apply-fix")),
 
-			// 部署之后：成功就发通知 + 生成变更日志（一对多分叉）
+			// 部署之后：生成变更日志 / 回滚（同一出口的两条候选）
 			//
 			// 到 gen-changelog 这条路故意写成**跟随 latest**（FOLLOW）：
 			// 能力发新版后它会自动走新版。出口页上会多一句「当前 → gen-changelog@1」，
 			// 而钉死引用那一堆没有 —— 两种引用形态的区别必须在界面上看得见。
-			from(PIN("deploy-preview"), "preview.ready", FOLLOW("gen-changelog")),
-			from(PIN("deploy-preview"), "failed", PIN("rollback")),
+			from(PIN("deploy-preview"), "out", FOLLOW("gen-changelog")),
+			from(PIN("deploy-preview"), "out", PIN("rollback")),
 
 			// 一条真实存在的环：改了再测，测完再改。
 			// 留着它是刻意的：流向图必须能画出环路，而"全是 DAG"的演示数据
 			// 会让人以为这功能只能处理简单情况。
-			from(PIN("apply-fix"), "fixed", PIN("run-tests")),
+			from(PIN("apply-fix"), "out", PIN("run-tests")),
 
 			// 兜底告警：report.send 和 rollback 都能触发值班
-			from(PIN("rollback"), "done", PIN("alert.oncall")),
-			from(PIN("report.send"), "escalate", PIN("alert.oncall")),
+			from(PIN("rollback"), "out", PIN("alert.oncall")),
+			from(PIN("report.send"), "out", PIN("alert.oncall")),
 		];
 	})();
 
@@ -758,6 +805,7 @@
 					"analyze-pr",
 					"lint-fix",
 					"apply-fix",
+					"script.echo",
 					"report.send",
 					"alert.oncall",
 					// 部署预发也放这台：源「GitHub PR」用它演示变量，
@@ -861,9 +909,10 @@
 	// 「还没有产物」，那个功能在预览里等于不存在。
 	//
 	// 只给两条：
-	//   analyze-pr    有脚本 + 有出口（完整形态：能看出它会 emit 什么）
-	//   gen-changelog 有脚本 + **没有出口**（emit 不出去的那个形态，
-	//                 正好演示详情里的「加一个出口」引导）
+	//   analyze-pr    有脚本 + 有下游（完整形态：能看出它会 emit 什么）
+	//   gen-changelog 有脚本 + **没有下游**（terminal 的那个形态，
+	//                 正好演示详情里的「跑完就结束」空态）
+	//   script.echo   有脚本 + 一个 message 参数（新建表单占位符里的那个例子）
 	(function initArtifactScripts() {
 		const scripts = {
 			"analyze-pr": {
@@ -882,17 +931,17 @@
 							'lines="${ANOTIFY_PARAM_CHANGEDLINES:-0}"',
 							'echo "changed lines: $lines"',
 							"if [ \"$lines\" -gt 200 ]; then",
-								"anotify-agent emit --port needs-fix --data '{\"scope\":\"all\"}'",
+								"anotify-agent emit --data '{\"scope\":\"all\"}'",
 							"else",
-								'anotify-agent emit --port approved --data "{}"',
+								'anotify-agent emit --data "{}"',
 							"fi",
 							"",
 						].join("\n"),
 						"lib/emit.sh": [
 							"#!/bin/bash",
-							"# emit 的薄封装：端口必须已声明在 outputs 里（不变量 I2）",
+							"# emit 的薄封装：一个能力只有一个出口，--port 不用写（agent 自己填 out）",
 							"set -euo pipefail",
-							'exec "$ANOTIFY_AGENT_BIN" emit --port "$1" --data "${2:-{}}"',
+							'exec "$ANOTIFY_AGENT_BIN" emit --data "${1:-{}}"',
 						].join("\n"),
 					},
 				},
@@ -910,9 +959,29 @@
 							"set -euo pipefail",
 							'cd "$ANOTIFY_WORKDIR"',
 							"",
-							"# 没有声明出口 = 不发 emit（终端能力，合法）",
+							"# 没有下游 = 不发 emit（终端能力，合法）",
 							'git log --oneline -20 > CHANGELOG.txt',
 							'echo "已写入 CHANGELOG.txt"',
+						].join("\n"),
+					},
+				},
+			},
+			// 示例能力的产物：读 message 参数、打印一份，不发 emit（没有下游）。
+			"script.echo": {
+				requires: [],
+				run: {
+					entrypoint: "run.sh",
+					timeoutSec: 60,
+					workDir: "",
+					env: {},
+					files: {
+						"run.sh": [
+							"#!/bin/bash",
+							"set -euo pipefail",
+							'cd "$ANOTIFY_WORKDIR"',
+							"",
+							'msg="${ANOTIFY_PARAM_MESSAGE:-hello}"',
+							'echo "$msg" | tee echo.txt',
 						].join("\n"),
 					},
 				},
@@ -1133,26 +1202,26 @@
 			const deploy = capByName("deploy-preview");
 			const report = capByName("report.send");
 
-			// 逐跳串起来：每一跳的 out 决定下一跳是谁
+			// 逐跳串起来：每一跳走的都是同一个出口，下一跳由候选决定
 			let prev = mkTask({
 				traceId, cap: analyze, createdAt: t,
 				startedAt: t + 1, finishedAt: t + 5,
-				out: "needs-fix", summary: "发现 3 处 lint 问题",
+				out: "out", summary: "发现 3 处 lint 问题",
 			});
 			state.tasks.push(prev);
 
 			const steps = [
 				{
-					cap: lintFix, out: "clean", summary: "自动修复 2 处，1 处需人工",
+					cap: lintFix, out: "out", summary: "自动修复 2 处，1 处需人工",
 					start: t + 5, end: t + 6.4, node: state.nodes[0].id,
 				},
 				{
-					cap: tests, out: "passed", summary: "12 个用例全部通过",
+					cap: tests, out: "out", summary: "12 个用例全部通过",
 					// 测试常跑在 CI 机器上，顺便让"按节点筛选"在演示数据里看得出差异
 					start: t + 6.4, end: t + 18.6, node: state.nodes[1].id,
 				},
 				{
-					cap: deploy, out: "preview.ready", summary: "预览环境已部署",
+					cap: deploy, out: "out", summary: "预览环境已部署",
 					start: t + 18.6, end: t + 21.2, node: state.nodes[1].id,
 					params: { env: "staging" },
 				},
@@ -1188,14 +1257,14 @@
 		//
 		//   根事件 pull_request.opened
 		//     ├─ analyze-pr ─┬─ lint-fix ── run-tests(failed) ── apply-fix ── run-tests
-		//     │              └─ run-tests(passed) ──────────────┐（analyze 的 needs-fix 扇出 2 条）
+		//     │              └─ run-tests(passed) ──────────────┐（analyze 的同一出口有 2 条候选，这次都走了）
 		//     │                            └→ deploy-preview ─┬─ gen-changelog
 		//     │                                                └─ alert.oncall
 		//     └─ report.send（源扇出：同一个事件同时派发通知链）
 		//
 		// 同时含三种真实形状，一张图能验证完：
 		//   ① 源扇出     —— 一个事件派两条互不等待的链
-		//   ② 出口扇出   —— analyze-pr 的 needs-fix 有 2 条边 → 2 个子任务
+		//   ② 候选       —— analyze-pr 的出口有 2 条候选 → 这次建出 2 个子任务
 		//   ③ 环         —— run-tests(failed) → apply-fix → run-tests(passed)
 		//
 		// 这是演示数据的核心：只有 3 个节点的链根本暴露不出布局问题、
@@ -1234,36 +1303,36 @@
 				return task;
 			};
 
-			// ---- 根：analyze-pr（报告 needs-fix，出口上有 2 条边）----
+			// ---- 根：analyze-pr（出口上有 2 条候选）----
 			const a = add("analyze-pr", null, 0, 3.8, {
-				out: "needs-fix", summary: "27 个文件，发现 6 处问题",
+				out: "out", summary: "27 个文件，发现 6 处问题",
 			});
 
-			// ---- 扇出第 1 支：lint-fix → run-tests(失败) ----
+			// ---- 候选第 1 支：lint-fix → run-tests(失败) ----
 			const lintFix = add("lint-fix", a, 3.9, 2.1, {
-				out: "remaining", summary: "自动修复 4 处，2 处需人工",
+				out: "out", summary: "自动修复 4 处，2 处需人工",
 			});
 			const testFail = add("run-tests", lintFix, 6.1, 34.2, {
-				out: "failed", status: "failed", node: 1,
+				out: "out", status: "failed", node: 1,
 				error: "e2e: 3 specs timed out (30s)",
 			});
 			// 失败后走环：改 → 再测（第二次带重试标记）
 			const fix = add("apply-fix", testFail, 40.4, 12.6, {
-				out: "fixed", node: 1, summary: "人工修复完成",
+				out: "out", node: 1, summary: "人工修复完成",
 			});
 			const testPass = add("run-tests", fix, 53.1, 41.3, {
-				out: "passed", node: 1, attempts: 2, summary: "全部 218 个用例通过",
+				out: "out", node: 1, attempts: 2, summary: "全部 218 个用例通过",
 			});
 
-			// ---- 扇出第 2 支：analyze-pr 的 needs-fix 还直接连了 run-tests ----
-			// （和上面那支同时开始 —— 这是"同一个出口两条边各派一个任务"的直接后果）
+			// ---- 候选第 2 支：analyze-pr 的出口还直接连了 run-tests ----
+			// （和上面那支同时开始 —— 演示数据里两条候选都走了，好把候选的形状画出来）
 			const testDirect = add("run-tests", a, 3.9, 96.0, {
-				out: "passed", node: 1, summary: "全量回归通过",
+				out: "out", node: 1, summary: "全量回归通过",
 			});
 
 			// ---- 汇聚（不是 join，只是两条分支都指向同一个下游能力）----
 			const deploy = add("deploy-preview", testPass, 94.5, 18.4, {
-				out: "preview.ready", node: 1, params: { env: "staging" },
+				out: "out", node: 1, params: { env: "staging" },
 				summary: "staging 已就绪",
 			});
 			add("gen-changelog", deploy, 113, 1.2, { summary: "生成 14 条变更" });
@@ -1271,7 +1340,7 @@
 
 			// ---- 源扇出的另一支：通知链，与上面完全并行 ----
 			add("report.send", null, 0.2, 0.9, {
-				out: "escalate", params: { level: "warn", page: true },
+				out: "out", params: { level: "warn", page: true },
 				summary: "已通知 #ci-alerts",
 			});
 
@@ -1287,13 +1356,13 @@
 		{
 			const branch = [
 				{ src: "GitHub PR", type: "pull_request.opened", plan: [
-					["analyze-pr", "approved", "succeeded", 5.1, 0, "无问题"],
-					["run-tests", "passed", "succeeded", 22.7, 1, "218 用例通过"],
-					["deploy-preview", "preview.ready", "succeeded", 15.2, 1, "staging 就绪"],
+					["analyze-pr", "out", "succeeded", 5.1, 0, "无问题"],
+					["run-tests", "out", "succeeded", 22.7, 1, "218 用例通过"],
+					["deploy-preview", "out", "succeeded", 15.2, 1, "staging 就绪"],
 				]},
 				{ src: "每晚体检", type: "nightly", plan: [
-					["analyze-pr", "approved", "succeeded", 2.2, 0, "基线正常"],
-					["run-tests", "passed", "succeeded", 9.4, 0, "冒烟通过"],
+					["analyze-pr", "out", "succeeded", 2.2, 0, "基线正常"],
+					["run-tests", "out", "succeeded", 9.4, 0, "冒烟通过"],
 				]},
 			];
 			// 两条 **必须从完全相同的 createdAt 开始**，否则"并行"看不出来。
@@ -1402,18 +1471,18 @@
 		// 前面每一条都只演示**一种**状态（纯成功链、并行对比、进行中、待派发、
 		// 零耗时、重试过）。真实一次事故里这些是同时出现的：
 		//
-		//   analyze-pr ─needs-fix→ lint-fix ─remaining→ report.send ─escalate→ alert.oncall
-		//        │                      └─clean→ （剪枝：run-tests 不被派发）
-		//        └─approved→ run-tests ─failed→ apply-fix ─fixed→ run-tests（×2 重试）
-		//                                              └────passed→ deploy-preview ─failed→ rollback ─done→ alert.oncall
-		//                                                          （preview.ready→gen-changelog 分支被剪枝）
+		//   analyze-pr ─→ lint-fix ─→ report.send ─→ alert.oncall
+		//        │              └─→ （剪枝：run-tests 不被派发）
+		//        └─→ run-tests ─→ apply-fix ─→ run-tests（×2 重试）
+		//                          └────→ deploy-preview ─→ rollback ─→ alert.oncall
+		//                                            （→gen-changelog 那条候选被剪枝）
 		//
 		// 这一条特意做了几件别的 trace 没做的事：
 		//   · 同一个能力在一个 trace 里出现**多次**（run-tests 跑了 3 次、
 		//     apply-fix 跑了 2 次）——瀑布图要能分清这是多次执行，不是重复渲染
 		//   · 失败任务的 error 字段非空（UI 要展示错误文本）
 		//   · 有 attempts=2 的重试标记
-		//   · 有剪枝（clean 分支的 run-tests 没被派发，所以它不在任务里）
+		//   · 有剪枝（另一条候选的 run-tests 没被派发，所以它不在任务里）
 		//   · 时间跨度是前几条的两倍多（4 分半），瀑布图的刻度会换单位
 		//
 		// 注意仍然遵守 I5：每个任务只回报一个 out，所以是**一条链**在
@@ -1474,29 +1543,29 @@
 			// 结果算出 analyze→lint-fix→report→alert→**run-tests** 这种
 			// 底图里根本不存在的父子对：alert 是终点，它没有出口能派发到
 			// run-tests。连锁反应是"走过几次"全错位，
-			// 真正走过的 analyze --needs-fix--> run-tests 反而统计成 0 次，
+			// 真正走过的 analyze → run-tests 反而统计成 0 次，
 			// 图上那条线就永远不动（issue #157）。
 			const plan = [
 				// [能力, 起点, 终点, 出口, 状态, 备注, nodeIdx, attempts, 父下标]
-				[analyze, 0.0, 4.8, "needs-fix", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1, null],
-				// needs-fix 是**扇出**：同时派给 lint-fix 和 run-tests，
-				// 两者是兄弟，不是一条链上的前后。
-				[lintFix, 4.8, 96.2, "remaining", "succeeded", "自动修了 26 处，1 处需人工", 0, 1, 0],
-				[report, 96.2, 97.4, "escalate", "succeeded", "已通知值班人", 2, 1, 1],
+				[analyze, 0.0, 4.8, "out", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1, null],
+				// 候选是 lint-fix 和 run-tests：演示数据里两条都走了，
+				// 它们是兄弟，不是一条链上的前后。
+				[lintFix, 4.8, 96.2, "out", "succeeded", "自动修了 26 处，1 处需人工", 0, 1, 0],
+				[report, 96.2, 97.4, "out", "succeeded", "已通知值班人", 2, 1, 1],
 				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1, 2],
-				[tests, 4.8, 48.3, "failed", "failed", "3 个用例失败（parse_test.go）", 1, 1, 0],
-				[fix, 48.3, 88.0, "fixed", "succeeded", "自动补了边界判断", 1, 2, 4],
+				[tests, 4.8, 48.3, "out", "failed", "3 个用例失败（parse_test.go）", 1, 1, 0],
+				[fix, 48.3, 88.0, "out", "succeeded", "自动补了边界判断", 1, 2, 4],
 				// 第二轮：修完还是不绿，再修一次才过
-				[tests, 88.0, 125.0, "failed", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1, 5],
-				[fix, 125.0, 165.0, "fixed", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2, 6],
-				[tests, 165.0, 190.0, "passed", "succeeded", "278 用例全部通过", 1, 1, 7],
-				[deploy, 190.0, 231.5, "failed", "failed", "健康检查 5 分钟未通过", 1, 1, 8],
-				[rollback, 231.5, 250.8, "done", "succeeded", "已回滚到上一版", 1, 1, 9],
+				[tests, 88.0, 125.0, "out", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1, 5],
+				[fix, 125.0, 165.0, "out", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2, 6],
+				[tests, 165.0, 190.0, "out", "succeeded", "278 用例全部通过", 1, 1, 7],
+				[deploy, 190.0, 231.5, "out", "failed", "健康检查 5 分钟未通过", 1, 1, 8],
+				[rollback, 231.5, 250.8, "out", "succeeded", "已回滚到上一版", 1, 1, 9],
 				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1, 10],
 				// 注意这里**没有** gen-changelog：
 				//
-				// 配置里它是 `deploy-preview --preview.ready--> gen-changelog`，
-				// 而这次部署走的是 `failed` 那条边。所以它根本没被派发，
+				// 配置里有 `deploy-preview → gen-changelog` 这条候选，
+				// 而这次部署走的是另一条（→ rollback）。所以它根本没被派发，
 				// 图视图上会以"剪枝"形式留在原地 —— 这正是底图的意义：
 				// 让"配置里有这条路、但这次没走"变得可见。
 				//
@@ -1547,13 +1616,13 @@
 	// trace 页的「产出（emits）」区就是读它。这里给**主线 trace 的根任务**种三条，
 	// 形状刻意覆盖三种结果：
 	//
-	//   #1 needs-fix routed=2  —— 一个出口扇出两个下游（这条 trace 里它确实有 2 条边）
-	//   #2 needs-fix routed=1 pruned=1 —— 同一端口再来一次：这次有一条边被剪了
-	//   #3 approved  routed=0 pruned=1 —— 另一端口没有派出去（routed=0 是合法结果）
+	//   #1 routed=1 pruned=1 —— 候选里派出去一条、另一条被剪
+	//   #2 routed=0 pruned=1 —— 全被剪（routed=0 是合法结果）
+	//   #3 routed=1 pruned=0 —— 正常派出
 	//
-	// 端口名刻意用**这个能力真的声明过的出口**（analyze-pr 的 ports 就是
-	// needs-fix / approved）：emit 的 port 必须在 ports[] 里（I2），mock 造一个
-	// 不存在的端口就是在演示一个真后端会拒收的形状。
+	// 出口名一律是 "out"（单出口的内部名，对用户不可见）：emit 的出口必须在
+	// 这个能力的 outputs 里（I2），mock 造一个不存在的出口就是在演示一个真后端
+	// 会拒收的形状。同一个任务可以 emit 多次（seq 区分），出口不变。
 	//
 	// 为什么选主线 trace（trace_mock_t2）的 analyze-pr：它是事件流里点「查看链路」
 	// 最常落到的那条（复杂、有扇出、有失败），打开就能看到产出区长什么样。
@@ -1579,9 +1648,9 @@
 			createdAt: Math.round(base + offset),
 		});
 		state.emissions.push(
-			row(1, "needs-fix", { issue: "#913", files: 27, findings: 6, patch: "a1b2c3d" }, 2, 0, 0.4),
-			row(2, "needs-fix", { issue: "#913", files: 3, findings: 2, patch: "a1b2c3d" }, 1, 1, 1.7),
-			row(3, "approved", { issue: "#913", files: 27, approved: false }, 0, 1, 3.1),
+			row(1, "out", { issue: "#913", files: 27, findings: 6, patch: "a1b2c3d" }, 1, 1, 0.4),
+			row(2, "out", { issue: "#913", files: 3, findings: 2, patch: "a1b2c3d" }, 0, 1, 1.7),
+			row(3, "out", { issue: "#913", files: 27, approved: false }, 1, 0, 3.1),
 		);
 	})();
 
@@ -1668,9 +1737,9 @@
 				namespaceId: STAGING,
 			});
 		};
-		const analyze = stgCap("analyze-pr", 1, ["needs-fix", "approved"], "分析 PR（预发）");
-		const tests = stgCap("run-tests", 1, ["passed", "failed"], "跑测试（预发）");
-		const deploy = stgCap("deploy-preview", 1, ["preview.ready"], "部署预发（预发）");
+		const analyze = stgCap("analyze-pr", 1, ["out"], "分析 PR（预发）");
+		const tests = stgCap("run-tests", 1, ["out"], "跑测试（预发）");
+		const deploy = stgCap("deploy-preview", 1, ["out"], "部署预发（预发）");
 		state.capabilities.push(analyze, tests, deploy);
 
 		// staging 的机器：一台，只声明 staging 的三个能力
@@ -1732,18 +1801,19 @@
 		});
 
 		const stgByName = { "analyze-pr": analyze, "run-tests": tests, "deploy-preview": deploy };
-		const edge = (from, port, to, literals) => ({
+		const edge = (from, to, literals) => ({
 			id: uid("edg"),
 			orgId: ORG,
 			namespaceId: STAGING,
 			fromRef: capRef(stgByName[from]),
-			fromPort: port,
+			fromPort: "out",
 			toRef: capRef(stgByName[to]),
 			literals: literals || {},
+			priority: 0,
 			createdAt: t0 - 86400 * 10,
 		});
-		state.edges.push(edge("analyze-pr", "approved", "run-tests"));
-		state.edges.push(edge("run-tests", "passed", "deploy-preview"));
+		state.edges.push(edge("analyze-pr", "run-tests"));
+		state.edges.push(edge("run-tests", "deploy-preview"));
 
 		state.events.push({
 			id: uid("evt"),
@@ -1785,13 +1855,13 @@
 			finishedAt: o.at + (o.secs || 20),
 			notBefore: null,
 		});
-		const a = mkNsTask({ cap: analyze, at: t0 + 0.4, out: "approved", secs: 18 });
+		const a = mkNsTask({ cap: analyze, at: t0 + 0.4, out: "out", secs: 18 });
 		const t = mkNsTask({
 			cap: tests,
 			parent: a.id,
 			path: [analyze.id, tests.id],
 			at: t0 + 19,
-			out: "passed",
+			out: "out",
 			secs: 63,
 		});
 		const d = mkNsTask({
@@ -1821,9 +1891,9 @@
 				namespaceId: ACME_NS,
 			});
 		};
-		const build = acmeCap("build-image", 1, ["built", "failed"], "构建镜像");
-		const scan = acmeCap("scan-deps", 1, ["clean", "vulnerable"], "依赖扫描");
-		const release = acmeCap("release", 1, ["released"], "发布");
+		const build = acmeCap("build-image", 1, ["out"], "构建镜像");
+		const scan = acmeCap("scan-deps", 1, ["out"], "依赖扫描");
+		const release = acmeCap("release", 1, ["out"], "发布");
 		state.capabilities.push(build, scan, release);
 
 		state.nodes.push({
@@ -1861,19 +1931,20 @@
 			targets: [{ capabilityId: build.id, params: { repo: "acme/web", branch: "main" } }],
 		});
 
-		const acmeEdge = (from, port, to, caps) => ({
+		const acmeEdge = (from, to, caps) => ({
 			id: uid("edg"),
 			orgId: ACME,
 			namespaceId: ACME_NS,
 			fromRef: capRef(caps[from]),
-			fromPort: port,
+			fromPort: "out",
 			toRef: capRef(caps[to]),
+			priority: 0,
 			createdAt: now() - 86400 * 11,
 		});
 		const acmeCaps = { "build-image": build, "scan-deps": scan, release: release };
 		state.edges.push(
-			acmeEdge("build-image", "built", "scan-deps", acmeCaps),
-			acmeEdge("scan-deps", "clean", "release", acmeCaps),
+			acmeEdge("build-image", "scan-deps", acmeCaps),
+			acmeEdge("scan-deps", "release", acmeCaps),
 		);
 
 		state.events.push({
@@ -1916,13 +1987,13 @@
 			finishedAt: o.at + (o.secs || 20),
 			notBefore: null,
 		});
-		const ab = acmeTask({ cap: build, at: at + 0.3, out: "built", secs: 42 });
+		const ab = acmeTask({ cap: build, at: at + 0.3, out: "out", secs: 42 });
 		const as = acmeTask({
 			cap: scan,
 			parent: ab.id,
 			path: [build.id, scan.id],
 			at: at + 43,
-			out: "clean",
+			out: "out",
 			secs: 21,
 		});
 		const ar = acmeTask({
@@ -1973,6 +2044,7 @@
 					// 这里留空不影响演示（两边的"参数"仍然指的是同一份 targets）。
 					literals: {},
 					mapping: {},
+					priority: 0,
 					createdAt: now() - 3600,
 				});
 			}
@@ -2016,26 +2088,26 @@
 					{
 						name: "analyze-pr",
 						version: 1,
-						outputs: ["needs-fix", "approved"],
+						outputs: ["out"],
 						runner: RUN("analyze-pr", { timeoutSec: 900, concurrency: 2 }),
 					},
 					{
 						name: "lint-fix",
 						version: 1,
-						outputs: ["clean", "remaining"],
+						outputs: ["out"],
 						runner: RUN("lint-fix"),
 					},
 					{
 						name: "run-tests",
 						version: 1,
-						outputs: ["passed", "failed"],
+						outputs: ["out"],
 						runner: RUN("run-tests", { timeoutSec: 1800 }),
 					},
 				],
 				edges: [
-					{ from: "analyze-pr", fromPort: "needs-fix", to: "lint-fix" },
-					{ from: "analyze-pr", fromPort: "approved", to: "run-tests" },
-					{ from: "lint-fix", fromPort: "clean", to: "run-tests" },
+					{ from: "analyze-pr", fromPort: "out", to: "lint-fix" },
+					{ from: "analyze-pr", fromPort: "out", to: "run-tests" },
+					{ from: "lint-fix", fromPort: "out", to: "run-tests" },
 				],
 				triggers: [
 					{
@@ -2058,17 +2130,17 @@
 					{
 						name: "archive-logs",
 						version: 1,
-						outputs: ["archived"],
+						outputs: ["out"],
 						runner: RUN("archive-logs", { timeoutSec: 3600 }),
 					},
 					{
 						name: "report.send",
 						version: 1,
-						outputs: ["escalate"],
+						outputs: ["out"],
 						runner: RUN("report.send"),
 					},
 				],
-				edges: [{ from: "archive-logs", fromPort: "archived", to: "report.send" }],
+				edges: [{ from: "archive-logs", fromPort: "out", to: "report.send" }],
 				// cron 的 types 就是 5 段表达式本身：安装源时要原样写进 config.expr
 				triggers: [{ kind: "cron", types: ["0 3 * * *"] }],
 			},
@@ -2086,13 +2158,13 @@
 					{
 						name: "deploy-preview",
 						version: 1,
-						outputs: ["failed", "preview.ready", "manual.approval"],
+						outputs: ["out"],
 						runner: RUN("deploy-preview"),
 					},
 					{
 						name: "rollback",
 						version: 1,
-						outputs: ["done"],
+						outputs: ["out"],
 						runner: RUN("rollback"),
 					},
 					{
@@ -2104,8 +2176,8 @@
 					},
 				],
 				edges: [
-					{ from: "deploy-preview", fromPort: "failed", to: "rollback" },
-					{ from: "deploy-preview", fromPort: "preview.ready", to: "notify.sms" },
+					{ from: "deploy-preview", fromPort: "out", to: "rollback" },
+					{ from: "deploy-preview", fromPort: "out", to: "notify.sms" },
 				],
 				triggers: [{ kind: "webhook", types: ["release.published"] }],
 			},
@@ -2123,7 +2195,7 @@
 					{
 						name: "lint-fix",
 						version: 1,
-						outputs: ["clean", "remaining"],
+						outputs: ["out"],
 						runner: RUN("lint-fix"),
 					},
 				],
@@ -2818,7 +2890,7 @@
 				breaking: true,
 				changes: removed.map((p) => ({
 					kind: "removed_port",
-					detail: 'port "' + p + '" 在新版里被删掉了',
+					detail: '出口 "' + p + '" 在新版里被删掉了',
 				})),
 				links: links,
 			},
@@ -2840,14 +2912,22 @@
 		const nextVer = existing.length
 			? Math.max(...existing.map((c) => c.version)) + 1
 			: 1;
-		const c = cap(b.name, b.version || nextVer, b.outputs || [], b.paramsSchema);
+		// links 先算出来：outputs 的归一要看「这次有没有下游」
+		// （没给 outputs 但带了 links = 单出口形态）。
+		const links = Array.isArray(b.links) ? b.links : [];
+		const c = cap(
+			b.name,
+			b.version || nextVer,
+			normalizeOutputs(b.outputs, links.length > 0),
+			b.paramsSchema,
+		);
 		if (b.displayName) c.displayName = String(b.displayName).trim();
 		// sticky / lifecycle 是能力定义的一部分（参与 contentHash）。
 		// 控制台发新版本时会把当前值原样带过来，预览里也得真的接住 ——
 		// 否则「发一版就把粘性路由弄丢了」在预览里永远复现不了。
 		if (typeof b.sticky === "string") c.sticky = b.sticky;
 		if (b.lifecycle && typeof b.lifecycle === "object") c.lifecycle = b.lifecycle;
-		// balance（契约 §3.3）：{端口: {mode}}，缺省 {} = 每个端口都是 priority。
+		// balance（契约 §3.3）：{出口: {mode}}，缺省 {} = 每个出口都是 priority。
 		// 其它 mode 保存时就 400「尚未实现」——不静默降级（降级会让人以为
 		// “选了 all 真的全派了”，而那正是此功能最容易造成的错觉）。
 		const balRes = checkBalance(b.balance);
@@ -2871,22 +2951,27 @@
 		// mock 只能靠这个顺序模拟同一个不变量。
 		//
 		// 错误文案与 Go 侧同形（`links[i]: edge_rejected: …`）：控制台靠下标把错误
-		// 映射回「第几条出口 → 哪个目标」，两份实现不能跑偏。
-		const links = Array.isArray(b.links) ? b.links : [];
+		// 映射回「第几条下游 → 哪个目标」，两份实现不能跑偏。
 		const preparedLinks = [];
 		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
 		// （控制台按 code 区分「边不合法」与其它 400，比如 invalid_name）
 		const errCode = { code: "edge_rejected" };
 		for (let i = 0; i < links.length; i++) {
 			const spec = links[i] || {};
-			if (!spec.fromPort || !spec.toRef) {
-				return err(400, `links[${i}]: edge_rejected: fromPort and toRef are both required`, errCode);
+			if (!spec.toRef) {
+				return err(400, `links[${i}]: edge_rejected: toRef is required`, errCode);
 			}
-			// 左端恒为**新能力的裸名字**（跟随 latest）；出口必须在这个能力的 outputs 里
-			if (!(c.outputs || []).includes(spec.fromPort)) {
+			// 出口：界面上不出现，客户端可以不写（默认就是这个能力唯一的出口 "out"）。
+			// 写了就照原样校验 —— 左端恒为**新能力的裸名字**（跟随 latest），
+			// 出口必须在这个能力的 outputs 里（不变量 I2）。
+			const fromOutput =
+				spec.fromPort == null || spec.fromPort === ""
+					? SINGLE_OUT
+					: String(spec.fromPort).trim();
+			if (!(c.outputs || []).includes(fromOutput)) {
 				return err(
 					400,
-					`links[${i}]: edge_rejected: port "${spec.fromPort}" not in ${c.name}@${c.version} outputs ${JSON.stringify(c.outputs || [])}`,
+					`links[${i}]: edge_rejected: 出口 "${fromOutput}" 不在 ${c.name}@${c.version} 的 outputs ${JSON.stringify(c.outputs || [])} 里`,
 					errCode,
 				);
 			}
@@ -2895,7 +2980,7 @@
 			if (splitRef(String(spec.toRef)).name === c.name) {
 				return err(
 					400,
-					`links[${i}]: edge_rejected: self loop ${c.name} --${spec.fromPort}--> itself`,
+					`links[${i}]: edge_rejected: self loop ${c.name} --${fromOutput}--> itself`,
 					errCode,
 				);
 			}
@@ -2919,11 +3004,11 @@
 				fromIsSource: false,
 				// 裸名字 = 跟随 latest（设计 §3.2 默认形态）
 				fromRef: c.name,
-				fromPort: spec.fromPort,
+				fromPort: fromOutput,
 				// 右端原样透传：裸名字跟随 latest / name@v 钉死
 				toRef: String(spec.toRef).trim(),
 				literals: litRes.literals || {},
-				// priority：同一 (能力, 端口) 的候选按它**升序**选（小的先选，契约 §3）
+				// priority：同一 (能力, 出口) 的候选按它**升序**选（小的先选，契约 §3）
 				priority: prioRes.priority,
 				createdAt: now(),
 			});
@@ -3030,7 +3115,12 @@
 			const c = cap(
 				name,
 				spec.version || nextVer,
-				Array.isArray(spec.outputs) ? spec.outputs.slice() : [],
+				// 「这次提交里有没有从它出发的 link」按能力名判断（不能整批一概而论：
+				// 同一批里另一个能力可能就是终端能力，它的 outputs [] 是用户明说的）。
+				normalizeOutputs(
+					spec.outputs,
+					links.some((l) => splitRef(String((l || {}).fromRef || "")).name === name),
+				),
 				spec.paramsSchema,
 				undefined,
 				undefined,
@@ -3088,7 +3178,7 @@
 		}
 
 		// ④ links：与单建 links 同一套判据，只多了「可以引用本批名字」。
-		//    错误文案带 links[i] 下标（控制台靠它把错映射回卡片/端口/目标）。
+		//    错误文案带 links[i] 下标（控制台靠它把错映射回卡片/下游/目标）。
 		const preparedLinks = [];
 		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
 		const errCode = { code: "edge_rejected" };
@@ -3104,13 +3194,19 @@
 		};
 		for (let i = 0; i < links.length; i++) {
 			const spec = links[i] || {};
-			if (!spec.fromRef || !spec.fromPort || !spec.toRef) {
+			if (!spec.fromRef || !spec.toRef) {
 				return err(
 					400,
-					`links[${i}]: edge_rejected: fromRef, fromPort and toRef are all required`,
+					`links[${i}]: edge_rejected: fromRef and toRef are both required`,
 					errCode,
 				);
 			}
+			// 出口默认就是单出口 "out"（界面上不出现，客户端通常不写）；
+			// 写了就照原样校验，必须在上游的 outputs 里（不变量 I2）。
+			const fromOutput =
+				spec.fromPort == null || spec.fromPort === ""
+					? SINGLE_OUT
+					: String(spec.fromPort).trim();
 			const fromCap = resolveBatchRef(spec.fromRef) || resolveCapRef(spec.fromRef, nsId);
 			if (!fromCap) {
 				return err(
@@ -3119,10 +3215,10 @@
 					errCode,
 				);
 			}
-			if (!(fromCap.outputs || []).includes(spec.fromPort)) {
+			if (!(fromCap.outputs || []).includes(fromOutput)) {
 				return err(
 					400,
-					`links[${i}]: edge_rejected: port "${spec.fromPort}" not in ${fromCap.name}@${fromCap.version} outputs ${JSON.stringify(fromCap.outputs || [])}`,
+					`links[${i}]: edge_rejected: 出口 "${fromOutput}" 不在 ${fromCap.name}@${fromCap.version} 的 outputs ${JSON.stringify(fromCap.outputs || [])} 里`,
 					errCode,
 				);
 			}
@@ -3138,7 +3234,7 @@
 			if (to.name === fromCap.name) {
 				return err(
 					400,
-					`links[${i}]: edge_rejected: self loop ${fromCap.name} --${spec.fromPort}--> itself`,
+					`links[${i}]: edge_rejected: self loop ${fromCap.name} --${fromOutput}--> itself`,
 					errCode,
 				);
 			}
@@ -3156,7 +3252,7 @@
 				fromIsSource: false,
 				// 左端原样保存（裸名字 = 跟随 latest，name@v = 钉死）：意图由调用方决定
 				fromRef: String(spec.fromRef).trim(),
-				fromPort: spec.fromPort,
+				fromPort: fromOutput,
 				toRef: String(spec.toRef).trim(),
 				literals: litRes.literals || {},
 				priority: prioRes.priority,
@@ -3366,7 +3462,7 @@
 		if (litRes.error) return err(400, "edge_rejected: " + litRes.error);
 		const literals = litRes.literals;
 
-		// priority（契约 §1）：同一 (能力, 端口) 的候选按它**升序**选；缺省 0。
+		// priority（契约 §1）：同一 (能力, 出口) 的候选按它**升序**选；缺省 0。
 		const prioRes = edgePriority(b.priority);
 		if (prioRes.error) return err(400, "priority: " + prioRes.error);
 
@@ -3849,7 +3945,7 @@
 
 	// checkBalance 校验并归一化能力版本上的 balance（契约 §3.3）。
 	//
-	// 形状：{端口: {"mode": "priority"}}；缺省（或空对象）= 每个端口都是 priority。
+	// 形状：{出口: {"mode": "priority"}}；缺省（或空对象）= 每个出口都是 priority。
 	// **本期只实现 priority**：all / random / least_loaded / hash 一律 400「尚未实现」，
 	// 带上 code: "balance_unimplemented" 让前端能只拦住那一种错。
 	// 不允许静默降级成 priority —— 用户选了 all 却只派了一个，比报错更伤人。
@@ -3859,17 +3955,17 @@
 			return { error: "balance must be a JSON object, got " + jsonTypeName(raw) };
 		}
 		const out = {};
-		for (const port of Object.keys(raw).sort()) {
-			const spec = raw[port];
-			// 端口写了但没写 mode（或给的不是对象）——当作缺省 priority。
+		for (const output of Object.keys(raw).sort()) {
+			const spec = raw[output];
+			// 出口写了但没写 mode（或给的不是对象）——当作缺省 priority。
 			const mode = spec && typeof spec === "object" && !Array.isArray(spec) ? String(spec.mode || "priority") : "priority";
 			if (mode !== "priority") {
 				return {
-					error: "balance[" + port + "]: mode " + mode + " 尚未实现",
+					error: "balance[" + output + "]: mode " + mode + " 尚未实现",
 					code: "balance_unimplemented",
 				};
 			}
-			out[port] = { mode: "priority" };
+			out[output] = { mode: "priority" };
 		}
 		return { balance: out };
 	}

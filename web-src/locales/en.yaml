@@ -1122,13 +1122,12 @@ caps:
   step_pick: Pick a template
   step_fill: Fill in & create
   sidebar: 'Declared here, run on nodes'
-  subtitle: A capability is "what to do" (not "how"). Edges — where events go next — have their own page.
+  subtitle: A capability is "what to do" (not "how"). Downstream edges have their own page.
   new: Define capability
   loading: Loading capabilities…
   load_failed: 'Failed to load capabilities, please refresh'
   empty: No capabilities yet. Define one so nodes can declare it.
   count: '{n} capabilities'
-  no_outputs: No outputs (terminal capability)
   source_builtin: 'Built-in'
   declared_by: Declared by
   no_node: No node declares it
@@ -1205,45 +1204,28 @@ caps:
     display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
     name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
-    outputs: Output ports
-    outputs_hint: Output ports are the emit whitelist — only names declared here can be dispatched downstream.
-    outputs_optional: optional
-    outputs_ph: Type an output port name, then press Enter
-    outputs_empty: No output ports = this capability cannot emit anything (terminal capability).
-    outputs_max: At most 32 outputs
-    err_output: Output names may only use letters, digits, dots, underscores and dashes (1–32 chars)
-    chip_remove: Remove this output
-    downstream: Candidates (picked by priority)
+    downstream: Downstream capabilities (candidates)
     downstream_optional: optional
-    downstream_hint: One output port can have several candidates; at runtime exactly one is picked by priority (ties rotate, lower number wins). Names are written bare = follow latest; the capability and these candidates are created in one submit — all succeed or nothing is created.
-    downstream_target_ph: Pick a candidate capability (searchable)
-    downstream_none: No output ports yet — declare one above before connecting candidates.
+    downstream_ph: script.echo, notify.phone
+    downstream_hint: Who runs after this one. Several = candidates, one is picked at run time by priority; leave empty = terminal capability (it ends when it finishes).
+    downstream_missing: 'No such capability: {names}'
     cards_title: Capabilities in this batch
-    cards_hint: Define several capabilities at once — each card has its own output ports, params and script; they are written in one transaction (all succeed or nothing is created).
+    cards_hint: Define several capabilities at once — each card has its own downstream, params and script; they are written in one transaction (all succeed or nothing is created).
     card_add: + Add another capability
     card_remove: Remove this capability
     card_n: 'Capability {n}'
     card_unnamed: Untitled
     card_editor: 'Editing: capability {n} of {total}'
-    card_ports_summary: 'Output ports: {ports}'
+    card_down: 'Downstream: {names}'
     card_name_dupe: 'Duplicate capability name in this batch: {name}'
     card_err_field: 'Capability {n} / {field}: {reason}'
     card_err_generic: 'Capability {n}: {reason}'
     cand_hint: At runtime exactly one candidate is picked by priority; ties rotate (lower number wins).
-    cand_prio: Priority
-    cand_prio_hint: Lower number wins
-    cand_prio_badge: 'Priority {n}'
-    cand_count: '{n} candidates'
     cand_batch_tag: (this batch)
-    cand_empty: This output port has no candidates yet — nothing will be dispatched from it.
-    balance_label: Mode
-    balance_priority: priority (default)
-    balance_unimpl: not implemented
-    balance_unimpl_err: 'Output port {port} uses balance mode {mode}, which is not implemented — only priority can be saved for now'
     batch_created: 'Created {caps} capabilities and {edges} edges'
     batch_failed: 'Batch create failed (nothing was saved): '
     created_with_edges: 'linked {n} edge(s)'
-    link_rejected: 'Output #{n} {port} → {to} is invalid; nothing was created: {reason}'
+    link_rejected: 'Downstream #{n} → {to} is invalid; nothing was created: {reason}'
     schema: Param validation (JSON Schema)
     schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
     cancel: Cancel
@@ -1274,11 +1256,9 @@ caps:
     btn: Details
     params: Parameter contract
     no_params: No parameters
-    outputs: Output ports & candidates
-    no_outputs: No output ports declared — this capability cannot emit anything
-    balance_mode: Mode
-    cand_prio_badge: 'Priority {n}'
-    cand_count: '{n} candidates'
+    downstream: Downstream (candidates)
+    no_downstream: It ends when it finishes — nothing downstream is triggered.
+    cand_prio_hint: 'Priority {n} · edit to change'
     edges_failed: Edge list unavailable, downstream state unknown
     inbound: Who feeds me
     no_inbound: No inbound edges — events never enter here
@@ -1288,7 +1268,6 @@ caps:
     pinned: Pinned version
     unresolved: 'Unresolved: {ref}'
     literals: 'Literals {json}'
-    dead: This output has no downstream — emitting it stops right here
     runtime: Runtime
     timeout: Timeout
     workdir: Working directory
@@ -1307,7 +1286,6 @@ caps:
     script_empty: This capability has no artifact yet (no script given at definition time, or not deployed)
     script_failed: Failed to load the script
     retry: Retry
-    add_output_cta: Add an output (otherwise it cannot emit anything)
   edit:
     btn: Edit
     title: 'New version: {name}'
@@ -1318,6 +1296,7 @@ caps:
     no_artifact: This capability has no artifact yet — start the script from blank
     name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
     downstream_keep: '{n} downstream edge(s) will follow the new version — edges bind to the name, not the version.'
+    multi_output_note: 'This capability fans out along more than one downstream path (legacy data): the structure is preserved as-is and is not edited here.'
     submit: Publish new version
     publishing: Publishing…
     failed: 'Publish failed: '
@@ -1329,7 +1308,7 @@ caps:
     force: Publish anyway
   add:
     btn: downstream
-    title: 'Add a downstream to “{port}”'
+    title: 'Add downstream'
     target_ph: Pick a target capability (searchable)
     literals_ph: 'Literal overrides (optional), e.g. {"urgent":true}'
     save: Save
@@ -1611,12 +1590,12 @@ sources:
     terminal: terminal
     noedge: no downstream
     no_target: This source has no target capabilities.
-    unconnected: (not connected)
+    unconnected: (no downstream)
     truncated: Graph too large ({n} nodes); showing the first {m}.
     nolib: Graph library failed to load; cannot render the flow.
     source: Source
     terminal_short: terminal
-    no_edge: nothing connected
+    no_edge: no downstream
   view_events: View events
 edges:
   title: Edges

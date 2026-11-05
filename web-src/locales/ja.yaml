@@ -1122,13 +1122,12 @@ caps:
   step_pick: テンプレートを選ぶ
   step_fill: 入力して作成
   sidebar: 'ここで定義し、ノードが実行'
-  subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。出口（イベントの行き先）は独立したページになりました。
+  subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。下流のエッジは独立したページになりました。
   new: ケイパビリティを定義
   loading: ケイパビリティを読み込み中…
   load_failed: 'capabilities 一覧の読み込みに失敗しました。再読み込みしてください'
   empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
   count: '{n} 個のケイパビリティ'
-  no_outputs: 出口なし（終端ケイパビリティ）
   source_builtin: '組み込み'
   declared_by: 宣言ノード
   no_node: 宣言ノードなし
@@ -1205,45 +1204,28 @@ caps:
     display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
     name: ケイパビリティ名
     name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
-    outputs: 産出ポート（ports）
-    outputs_hint: 産出ポートは emit のホワイトリストです。ここで宣言した名前だけが下流に流れます。
-    outputs_optional: 空でも可
-    outputs_ph: 産出ポート名を入力して Enter
-    outputs_empty: 産出ポートなし = この能力は何も emit できません（終端能力）。
-    outputs_max: 出口は最大 32 個です
-    err_output: 出口名は英数字・ドット・アンダースコア・ハイフンのみ、1〜32 文字
-    chip_remove: この出口を削除
-    downstream: 候補（優先度で選択）
+    downstream: 下流ケイパビリティ（候補）
     downstream_optional: 空でも可
-    downstream_hint: 1 つの産出ポートに複数の候補を接続できます。実行時は優先度で 1 つだけ選ばれます（同順位はラウンドロビン、数値が小さいほど優先）。ここでは裸の名前 = 最新に追従で保存し、能力と候補は同じ送信で作成します——全部成功するか、何も作成されません。
-    downstream_target_ph: 候補の能力を選択（検索可）
-    downstream_none: 産出ポートがまだありません — 先に上でポートを宣言してください。
+    downstream_ph: script.echo, notify.phone
+    downstream_hint: 実行後に誰へ渡すか。複数 = 候補で、実行時に優先度で 1 つ選ばれます。空 = 終端ケイパビリティ（実行したら終わり）。
+    downstream_missing: '次のケイパビリティが見つかりません：{names}'
     cards_title: このバッチのケイパビリティ
-    cards_hint: 複数のケイパビリティを一度に定義できます。各カードは独自の産出ポート・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。
+    cards_hint: 複数のケイパビリティを一度に定義できます。各カードは独自の下流・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。
     card_add: ＋ ケイパビリティを追加
     card_remove: このケイパビリティを削除
     card_n: 'ケイパビリティ {n}'
     card_unnamed: 無名
     card_editor: '編集中: ケイパビリティ {n} / {total}'
-    card_ports_summary: '産出ポート: {ports}'
+    card_down: '下流：{names}'
     card_name_dupe: 'バッチ内でケイパビリティ名が重複しています: {name}'
     card_err_field: 'ケイパビリティ {n} / {field}: {reason}'
     card_err_generic: 'ケイパビリティ {n}: {reason}'
     cand_hint: 実行時は優先度で 1 つだけ選ばれます。同順位はラウンドロビン（数値が小さいほど優先）。
-    cand_prio: 優先度
-    cand_prio_hint: 数値が小さいほど優先
-    cand_prio_badge: '優先度 {n}'
-    cand_count: '候補 {n} 件'
     cand_batch_tag: （このバッチ）
-    cand_empty: この産出ポートには候補がありません — 実行時にどこにも派発されません。
-    balance_label: モード
-    balance_priority: priority（既定）
-    balance_unimpl: 未実装
-    balance_unimpl_err: '産出ポート {port} の balance モード {mode} は未実装です。今回は priority のみ保存できます'
     batch_created: '{caps} 件のケイパビリティを作成 · {edges} 本のエッジ'
     batch_failed: '一括作成に失敗しました（何も保存されていません）: '
     created_with_edges: '{n} 本のエッジを接続しました'
-    link_rejected: '{n} 番目の出口 {port} → {to} が不正なため、何も作成されませんでした：{reason}'
+    link_rejected: '{n} 番目の下流 → {to} が不正なため、何も作成されませんでした：{reason}'
     schema: パラメータ検証（JSON Schema）
     schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
     cancel: キャンセル
@@ -1274,11 +1256,9 @@ caps:
     btn: 詳細
     params: パラメータ契約
     no_params: パラメータなし
-    outputs: 産出ポートと候補
-    no_outputs: 産出ポートが宣言されていません — この能力は何も emit できません
-    balance_mode: モード
-    cand_prio_badge: '優先度 {n}'
-    cand_count: '候補 {n} 件'
+    downstream: 下流（候補）
+    no_downstream: 実行したら終わり。下流は呼び出されません。
+    cand_prio_hint: '優先度 {n} · 編集で変更'
     edges_failed: エッジ一覧を取得できず、下流の状態は不明です
     inbound: どこから呼ばれるか
     no_inbound: 入ってくるエッジはありません — ここにイベントは来ません
@@ -1288,7 +1268,6 @@ caps:
     pinned: バージョン固定
     unresolved: '解決できません：{ref}'
     literals: '定数 {json}'
-    dead: この出口には下流がありません。emit してもここで終わります
     runtime: 実行パラメータ
     timeout: タイムアウト
     workdir: 作業ディレクトリ
@@ -1307,7 +1286,6 @@ caps:
     script_empty: この能力にはまだ成果物がありません（定義時にスクリプト未記入、または未デプロイ）
     script_failed: スクリプトを読み込めませんでした
     retry: 再試行
-    add_output_cta: 出口を追加（これがないと何も emit できません）
   edit:
     btn: 編集
     title: '新バージョン：{name}'
@@ -1318,6 +1296,7 @@ caps:
     no_artifact: この能力にはまだ成果物がないため、スクリプトは空から書き始めます
     name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
     downstream_keep: '既存の下流 {n} 件は新バージョンに追従します — エッジはバージョンではなく名前を指します。'
+    multi_output_note: 'このケイパビリティは複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
     submit: 新バージョンを公開
     publishing: 公開中…
     failed: '公開に失敗：'
@@ -1329,7 +1308,7 @@ caps:
     force: それでも公開
   add:
     btn: 下流
-    title: '「{port}」に下流を追加'
+    title: '下流を追加'
     target_ph: 対象の能力を選択（検索可）
     literals_ph: '定数の上書き（任意）例: {"urgent":true}'
     save: 保存
@@ -1611,12 +1590,12 @@ sources:
     terminal: 終点
     noedge: 下流なし
     no_target: このソースには出口ケイパビリティがありません。
-    unconnected: （下流未接続）
+    unconnected: （下流なし）
     truncated: グラフが大きすぎます（{n} ノード）。最初の {m} 個のみ表示します。
     nolib: グラフライブラリを読み込めなかったため、フローを描画できません。
     source: ソース
     terminal_short: 終点
-    no_edge: 下流未接続
+    no_edge: 下流なし
   view_events: イベントを見る
 edges:
   title: 出口

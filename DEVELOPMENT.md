@@ -23,10 +23,11 @@ assign 帧 = {capability, version, params, digest, trace_id, 租约}   ← 仍�
   agent 直接启动失败（`cmd/agent/config.go`）。
 - **能力归属只有一个写者**：控制台的部署。节点在 hello 里只能陈述「我缓存了什么」
   （`applied[]`），不能给自己发能力。
-- **产出只有一个通道：emit**：能力脚本调 `anotify-agent emit --port <port> --data <json>`
+- **产出只有一个通道：emit**：能力脚本调 `anotify-agent emit --data <json>`
   （`ANOTIFY_EMIT_SOCK` / `ANOTIFY_TASK_ID` / `ANOTIFY_TASK_TOKEN` 由 agent 注入，
-  `ANOTIFY_AGENT_BIN` 是 agent 自己的路径）。`port` 必须 ∈ `spec.outputs`（封闭集合，
-  I2，emit 时当场拒）；`--data` 就是下游的 params。0 次 emit = 到此为止（合法）。
+  `ANOTIFY_AGENT_BIN` 是 agent 自己的路径）。**`--port` 可选**：能力只有一个出口时
+  agent 自动采用它；0 个出口（终端能力）报错；≥2 个出口（历史多出口数据）才必须显式给
+  `--port`，省略会报错并列出可用名字。`--data` 就是下游的 params。0 次 emit = 到此为止（合法）。
   **`.anotify-out` / `$ANOTIFY_OUT_FILE` / `result.out` 已退役**（P1.5，无兼容层）：
   写了也没人读，`tasks.out` 新写入恒为 NULL，出口的位置是 `emissions.port`。
   见 `CONTRACT.md` §2.5 / §6.1 与 `docs/design/emit-protocol.md`。
