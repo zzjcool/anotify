@@ -29,7 +29,7 @@ import (
 //
 // JSON 形状（逐字）：
 //
-//	[{"port":"fix","schema":{"type":"object",…},"targets":[{"capability":"b","version":2}]}]
+//	[{"port":"fix","schema":{"type":"object",…},"targets":[{"capability":"b","version":2,"priority":0}]}]
 //
 // 顶层按 port 名升序、targets 按 (capability, version) 升序；schema 为 nil 时是显式
 // 的 null（不是缺键），targets 为空时是 []（不是 null）。
@@ -96,9 +96,10 @@ func TestBuildEnvEmitPorts(t *testing.T) {
 		t.Fatalf("环境里没有 %s（契约 §5 要求它始终存在）", envEmitPorts)
 	}
 	want := `[{"port":"fix","schema":{"type":"object","required":["issue"]},"targets":` +
-		`[{"capability":"b","version":1},{"capability":"b","version":2},{"capability":"c","version":1}]},` +
+		`[{"capability":"b","version":1,"priority":0},{"capability":"b","version":2,"priority":0},` +
+		`{"capability":"c","version":1,"priority":0}]},` +
 		`{"port":"review","schema":{"type":"object"},"targets":` +
-		`[{"capability":"a","version":1},{"capability":"d","version":3}]}]`
+		`[{"capability":"a","version":1,"priority":0},{"capability":"d","version":3,"priority":0}]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
 	}
@@ -192,7 +193,7 @@ func TestBuildEnvEmitPortsSchemaNull(t *testing.T) {
 		t.Fatalf("buildEnv: %v", err)
 	}
 	got, _ := envLookup(env, envEmitPorts)
-	want := `[{"port":"nil-schema","schema":null,"targets":[{"capability":"b","version":2}]},` +
+	want := `[{"port":"nil-schema","schema":null,"targets":[{"capability":"b","version":2,"priority":0}]},` +
 		`{"port":"no-entry","schema":null,"targets":[]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
@@ -205,7 +206,7 @@ func TestBuildEnvEmitPortsSchemaNull(t *testing.T) {
 	if len(decoded) != 2 {
 		t.Fatalf("端口数 = %d, want 2: %s", len(decoded), got)
 	}
-	wantTargets := []string{`[{"capability":"b","version":2}]`, `[]`}
+	wantTargets := []string{`[{"capability":"b","version":2,"priority":0}]`, `[]`}
 	for i, item := range decoded {
 		schema, ok := item["schema"]
 		if !ok {
@@ -299,7 +300,7 @@ func TestBuildEnvEmitPortsSameSourceAsExpects(t *testing.T) {
 	}
 	got, _ := envLookup(env, envEmitPorts)
 	// 期望值直接由 j.Expects + j.Ports 手写（不经过被测量的那个函数）。
-	want := `[{"port":"fix","schema":{"type":"object"},"targets":[{"capability":"b","version":2}]}]`
+	want := `[{"port":"fix","schema":{"type":"object"},"targets":[{"capability":"b","version":2,"priority":0}]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
 	}

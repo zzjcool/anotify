@@ -656,12 +656,12 @@ type emitPortContract struct {
 // emitTargetContract 是一个候选下游。Version **总是输出**（不加 omitempty）：
 // 结构稳定比省几个字节重要，消费方可以无条件读它。
 //
-// SEAM(A): targets[].priority 由 A 组的 edges.priority 竖切落地（store.Edge.Priority →
-// route.ExpectTarget.Priority → ws.ExpectTarget.Priority）。合并后在这里补 priority 字段，
-// 并把 targets 的排序改成 (priority, capability) 升序。
+// Priority 同样总是输出（0 也输出）：脚本/LLM 要据此理解「选谁」，缺键会被读成
+// 「没有优先级概念」。同级候选的先后由中枢在派发时轮盘决定，这里的顺序只是**确定性**。
 type emitTargetContract struct {
 	Capability string `json:"capability"`
 	Version    int    `json:"version"`
+	Priority   int    `json:"priority"`
 }
 
 // emitContractJSON 把本次任务的出口契约序列化成**唯一**那份 JSON（契约 §5）。
@@ -672,7 +672,7 @@ type emitTargetContract struct {
 //
 //   - 顶层按 port 名升序（顺序确定，日志/测试可以直接逐字节比）；
 //   - j.Expects 里不在 j.Ports 的端口**不输出**（端口是封闭集合，I2）；
-//   - targets 按 (capability, version) 升序（同 SEAM(A) 的排序口径，确定性优先）。
+//   - targets 按 (priority, capability, version) 升序（确定性优先；选中谁由中枢轮盘定）。
 func emitContractJSON(j job) ([]byte, error) {
 	ports := normalizeEmitPorts(j.Ports)
 	contracts := make([]emitPortContract, 0, len(ports))
@@ -681,9 +681,18 @@ func emitContractJSON(j job) ([]byte, error) {
 		// 非 nil 的空切片：json.Marshal 才会输出 []（nil 切片会变成 null）。
 		targets := make([]emitTargetContract, 0, len(expect.Targets))
 		for _, tgt := range expect.Targets {
-			targets = append(targets, emitTargetContract{Capability: tgt.Capability, Version: tgt.Version})
+			targets = append(targets, emitTargetContract{
+				Capability: tgt.Capability,
+				Version:    tgt.Version,
+				Priority:   tgt.Priority,
+			})
 		}
+		// 排序口径 = (priority, capability, version)：优先级是「谁先被选中」的语义，
+		// 名称只是同级里的确定性次序（选中谁由中枢轮盘决定，不是这个顺序）。
 		sort.SliceStable(targets, func(i, k int) bool {
+			if targets[i].Priority != targets[k].Priority {
+				return targets[i].Priority < targets[k].Priority
+			}
 			if targets[i].Capability != targets[k].Capability {
 				return targets[i].Capability < targets[k].Capability
 			}

@@ -35,6 +35,9 @@ type LinkSpec struct {
 	FromPort string          `json:"fromPort"`
 	ToRef    string          `json:"toRef"` // name 或 name@version；空 = 解析失败
 	Literals json.RawMessage `json:"literals,omitempty"`
+	// Priority 是这条候选的优先级（契约 §1：小的优先，同级轮盘）。
+	// 单建时随 links[] 一起提交，批量走 BatchLinkSpec.Priority，两条路径落到同一列。
+	Priority int `json:"priority,omitempty"`
 }
 
 // ArtifactBuilder 在事务内、能力行**归一化之后**被调用，返回要落库的产物行。
@@ -184,6 +187,7 @@ func (d *DB) CreateCapabilityWithLinksAndArtifact(ctx context.Context, c *Capabi
 			// 右端原样透传：`notify` 跟随 latest / `notify@2` 钉死（归一在 createEdgeTx 里）。
 			ToRef:    spec.ToRef,
 			Literals: spec.Literals,
+			Priority: spec.Priority,
 		}
 		if err := createEdgeTx(ctx, ex, e); err != nil {
 			return nil, fmt.Errorf("links[%d]: %w", i, err)
@@ -232,11 +236,7 @@ type BatchLinkSpec struct {
 	// Literals 是这条边的常量覆盖（与 LinkSpec.Literals 同口径：原样落库）。
 	Literals json.RawMessage `json:"literals,omitempty"`
 
-	// Priority 是这条候选的优先级（契约 §1：小的优先）。
-	//
-	// SEAM(A): 落库依赖 A 组的 `edges.priority` 竖切（schema 迁移 + `store.Edge.Priority`
-	// + `createEdgeTx` 的 INSERT 列）。在它合入之前这个字段只**接收**、不入库——
-	// 前端可以按冻结契约先发，接线是在下面构造 Edge 的地方补一行 `Priority: spec.Priority`。
+	// Priority 是这条候选的优先级（契约 §1：小的优先，同级轮盘）。
 	Priority int `json:"priority,omitempty"`
 }
 
@@ -382,8 +382,8 @@ func (d *DB) CreateCapabilitiesBatch(ctx context.Context, caps []*CapabilityVers
 			FromPort:     spec.FromPort,
 			ToRef:        strings.TrimSpace(spec.ToRef),
 			Literals:     spec.Literals,
+			Priority:     spec.Priority,
 		}
-		// SEAM(A): edges.priority 是 A 组的竖切；接线是在这一行补 `Priority: spec.Priority`。
 		if eerr := createEdgeTx(ctx, ex, e); eerr != nil {
 			return nil, fmt.Errorf("links[%d]: %w", i, eerr)
 		}

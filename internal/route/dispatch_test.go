@@ -1770,3 +1770,51 @@ func TestDispatchUserScopedLookupErrorFailsClosed(t *testing.T) {
 		t.Fatalf("查库失败不该建出任务, got %d", len(out.Tasks))
 	}
 }
+
+// TestDispatchEntryEdgesFanOut 钉住「源扇出 ≠ 端口候选」。
+//
+// 回归：候选选择（契约 §3）一开始实现成对所有边生效，于是「一个源配了 2 个目标」
+// 只喂了 1 个。这个 bug 在日志里完全看不出来（配置对、任务只建一条），
+// 只有 e2e routing A6 与这条单测能抓到。
+//
+// 语义：入口边是**每一路独立的触发**（一盆水倒给 n 个能力），不是「同类产出选一个」。
+func TestDispatchEntryEdgesFanOut(t *testing.T) {
+	f := newEmitFixture(t)
+	a := f.addCap(t, "entry.a", 1, nil, `{"type":"object"}`)
+	b := f.addCap(t, "entry.b", 1, nil, `{"type":"object"}`)
+	// 入口边：左端是来源名（from_is_source=1）。
+	for _, to := range []*store.CapabilityVersion{a, b} {
+		if err := f.db.CreateEdge(context.Background(), &store.Edge{
+			NamespaceID:  f.ns,
+			FromIsSource: true,
+			FromRef:      "src.fan",
+			FromPort:     "*",
+			ToRef:        to.Name,
+			Literals:     []byte(`{}`),
+			Mapping:      []byte(`{}`),
+		}); err != nil {
+			t.Fatalf("create entry edge: %v", err)
+		}
+	}
+	f.addNode(t, 4, a, b)
+
+	out, err := f.d.Dispatch(context.Background(), DispatchInput{
+		NamespaceID:   f.ns,
+		TraceID:       "trace_entry_fan",
+		FromIsSource:  true,
+		EntryFromKey:  "src.fan",
+		EntryFromPort: "anything",
+		Out:           "anything",
+		Params:        map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(out.Tasks) != 2 {
+		names := make([]string, 0, len(out.Tasks))
+		for _, tk := range out.Tasks {
+			names = append(names, tk.Capability)
+		}
+		t.Fatalf("入口边必须扇出到全部目标（2 个），实际 %d 个：%v", len(out.Tasks), names)
+	}
+}

@@ -9,9 +9,9 @@
  *   A3  能力必须先定义（未定义能力不能被声明/派发）
  *   A5  出口封闭（from_port ∈ outputs）
  *   A5b 能力 + 下游边**一次提交**（POST /capabilities 带 links）：请求/响应形状 + 原子性
- *       （坏边/自连 → 400 且能力根本没建出来）
+ *       （坏边 → 400 且能力根本没建出来；自连自契约 §2 起合法）
  *   A6  扇出（一个出口多条边 → 多个任务）
- *   A7  成环剪枝（path 命中 → pruned/path）
+ *   A7  成环（环合法：第二圈真的能跑；兜底是 hop 预算 → pruned/max_hops）
  *   A8  out 退役（P1.5 + 迁移 28）：result 帧里的 out 不再路由；产出只走 emit；
  *       **API 响应里没有 out 字段**（列已删）
  *   A9  租约接管（节点掉线后任务被回收重派）
@@ -44,11 +44,12 @@ async function defineCapability(name, outputs = [], extra = {}) {
 	return r;
 }
 
-async function addEdge(from, port, to) {
-	return H.req(server.base, "/v1/edges", {
-		session,
-		body: { fromCapability: from.id, fromPort: port, toCapability: to.id },
-	});
+async function addEdge(from, port, to, priority) {
+	// priority 可选：契约 §1 起一个 (能力,端口) 是**候选集合**，运行期按 priority
+	// 选一条（同级轮盘）。不传就是 0（最高优先）。
+	const body = { fromCapability: from.id, fromPort: port, toCapability: to.id };
+	if (priority !== undefined) body.priority = priority;
+	return H.req(server.base, "/v1/edges", { session, body });
 }
 
 // addEntryEdge 建入口边：左端是**来源名**（#110），不是能力 id。
@@ -286,7 +287,10 @@ async function main() {
 		JSON.stringify((afterBadEdges.json?.edges || []).filter((e) => e.fromRef === badName)),
 	);
 
-	// 自连（出口接自己）→ 400，且什么都没建
+	// 自连（出口接自己）：契约 §2 起**合法**（环靠 hop 预算兜底，不做静态环检测）。
+	// 这里反过来钉住两件事：① 真的存下来了（以前是 400 self loop）；
+	// ② 建边的失败仍然整批回滚 —— 用一个真的非法 links（端口不在 outputs）来证明，
+	//    否则「回滚」这条会被自连这个现在合法的形状带成假绿。
 	const selfName = "c.atomic.self";
 	const selfCap = await H.req(server.base, "/v1/capabilities", {
 		session,
@@ -299,26 +303,49 @@ async function main() {
 	});
 	A(
 		5,
-		"自连 → 400 self loop（links[0]），能力没建出来",
-		selfCap.status === 400 &&
-			/links\[0\]/.test(String(selfCap.text || "")) &&
-			String(selfCap.text || "").includes("self loop"),
+		"自连现在**允许**（环合法）：能力与那条边一起落库",
+		selfCap.status === 200,
 		`${selfCap.status} ${String(selfCap.text || "").slice(0, 200)}`,
 	);
-	const afterSelf = await H.req(server.base, "/v1/capabilities", { session });
+	const afterSelf = await H.req(server.base, "/v1/edges", { session });
 	A(
 		5,
-		"自连整体回滚：能力不在列表里",
-		!((afterSelf.json?.capabilities || []).some((c) => c.name === selfName)),
-		JSON.stringify((afterSelf.json?.capabilities || []).map((c) => c.name).filter((n) => n === selfName)),
+		"自连的边真的存在（fromRef = toRef = 自身）",
+		(afterSelf.json?.edges || []).some(
+			(e) => e.fromRef === selfName && e.toRef === selfName && e.fromPort === "done",
+		),
+		JSON.stringify((afterSelf.json?.edges || []).filter((e) => e.fromRef === selfName)),
+	);
+
+	// 回滚仍然成立：端口不在 outputs 里的 links → 400 且能力没建出来
+	const badPortName = "c.atomic.badport";
+	const badPort = await H.req(server.base, "/v1/capabilities", {
+		session,
+		body: {
+			name: badPortName,
+			outputs: ["done"],
+			paramsSchema: { type: "object" },
+			links: [{ fromPort: "not-a-port", toRef: selfName }],
+		},
+	});
+	const afterBadPort = await H.req(server.base, "/v1/capabilities", { session });
+	A(
+		5,
+		"坏端口整体回滚：400（links[0]）且能力不在列表里",
+		badPort.status === 400 &&
+			/links\[0\]/.test(String(badPort.text || "")) &&
+			!((afterBadPort.json?.capabilities || []).some((c) => c.name === badPortName)),
+		`${badPort.status} ${String(badPort.text || "").slice(0, 200)}`,
 	);
 
 	// ================= A6 扇出 =================
 	// 一个 (cap, port) 多条边 → 多个任务
 	const fanA = (await defineCapability("c.fan.a", [])).json.capability;
 	const fanB = (await defineCapability("c.fan.b", [])).json.capability;
-	await addEdge(work, "done", fanA);
-	await addEdge(work, "done", fanB);
+	// 候选集合 + 优先级（契约 §3）：fin 是 p=0 的唯一候选，所以下面「选中 fin」
+	// 是确定结论，而不是「碰巧轮到谁」。
+	await addEdge(work, "done", fanA, 10);
+	await addEdge(work, "done", fanB, 20);
 	A(6, "同一出口两条边都建成功", true); // 上面两个 addEdge 若失败会抛
 
 	// ================= A11 版本并存 =================
@@ -533,8 +560,8 @@ async function main() {
 		const ackFan = await emitPort(node, tWork, 1, "done", {});
 		A(
 			6,
-			"work 在 done 出口 emit 成功，routed=3（一个出口三条边）",
-			!!ackFan && !ackFan.error && ackFan.routed === 3,
+			"work 在 done 出口 emit 成功，routed=1（候选集合按优先级选一个，不再全派）",
+			!!ackFan && !ackFan.error && ackFan.routed === 1,
 			JSON.stringify(ackFan),
 		);
 		// 结果帧只落终态，不带（也不再支持）出口。
@@ -551,14 +578,14 @@ async function main() {
 			if (fanTasks.length >= 2) break;
 			await new Promise((r) => setTimeout(r, 60));
 		}
-		// work 的 done 出口一共有 3 条边：fin（上面 A5 之后建的）+ fanA + fanB。
-		// 扇出的定义是「一个出口多条边 → 每条边一个任务」，所以期望是 3。
-		const fanCaps = fanTasks.map((t) => t.capability).sort();
+		// work 的 done 出口有 3 个**候选**：fin(p=0) / fanA(p=10) / fanB(p=20)。
+		// 契约 §3 起派发是「过滤不可达 → 取最小 priority 组 → 组内轮盘」，
+		// 所以这里必须恰好 1 个任务，而且是 p=0 的 fin —— 全派是以后的 balance:all。
+		const fanCaps = fanTasks.map((t) => t.capability);
 		A(
 			6,
-			"第二跳按边数扇出 3 个任务（fin + fanA + fanB）",
-			fanTasks.length === 3 &&
-				JSON.stringify(fanCaps) === JSON.stringify(["c.fan.a", "c.fan.b", "c.fin"]),
+			"第二跳只选 1 个候选（p=0 的 c.fin），不是按边数全派",
+			fanTasks.length === 1 && fanCaps[0] === "c.fin",
 			JSON.stringify(fanCaps),
 		);
 	}
@@ -685,8 +712,8 @@ async function main() {
 		const ackFail = await emitPort(node, tFail.id, 1, "done", {});
 		A(
 			8,
-			"A8b 失败路径：emit(done) 成功 routed=3",
-			!!ackFail && !ackFail.error && ackFail.routed === 3,
+			"A8b 失败路径：emit(done) 成功 routed=1（与成功路径同一条候选）",
+			!!ackFail && !ackFail.error && ackFail.routed === 1,
 			JSON.stringify(ackFail),
 		);
 		node.conn.send({
@@ -703,31 +730,27 @@ async function main() {
 			A(8, "A8b 失败 → 响应里同样没有 out 字段（出口只在 emission 里）", r.ok, r.detail);
 		}
 		A(8, "A8b 失败必须带原因", !!failParent?.summary, JSON.stringify(failParent));
-		// work --done--> 一共 3 条边（fin + fanA + fanB），所以「建了什么」要和
-		// 成功扇出**完全一样**——失败不该少派、也不该安静地只走一条。
-		const failCaps = childrenOf(tFail.id)
-			.map((c) => c.capability)
-			.sort();
+		// work --done--> 有 3 个候选，选中规则与成功时**完全一样**（p=0 的 c.fin）：
+		// 失败不该改变「派给谁」，只该改变父任务的终态。
+		const failCaps = childrenOf(tFail.id).map((c) => c.capability);
 		A(
 			8,
-			"A8b 失败前 emit 的扇出与成功时一致（fin + fanA + fanB）",
-			JSON.stringify(failCaps) === JSON.stringify(["c.fan.a", "c.fan.b", "c.fin"]),
+			"A8b 失败前 emit 的选中结果与成功时一致（恰好 c.fin）",
+			failCaps.length === 1 && failCaps[0] === "c.fin",
 			JSON.stringify(failCaps),
 		);
 	}
 
-	// A7 成环剪枝：**保存时就拒**（P2.3 静态环检测），运行期的 path 兜底仍在
+	// A7 成环：**契约 §2 起环是合法的**（review → fix → review 是正常编排），
+	// 兜底从「静态环检测 + 运行期 path 判重」换成 **hop 预算**（ANOTIFY_MAX_HOPS，
+	// 默认 16 → 剪枝 max_hops）。这条用例因此反转：
 	//
-	// 这条用例在 P1.5 之前是「用 result.out 走两圈，第二圈被剪掉」——但它其实一直
-	// 是**空过的**：P2.3 的静态环检测让 `b --back--> a` 在建边那一刻就被拒（400），
-	// 于是第二跳压根没有边可走，「0 个子任务」当然成立。改写（不是放宽）：
-	//
-	//   ① 建环边 → 400 + 明确说「会成环」（保存期硬拒，这是第一道闸门）；
-	//   ② 两跳的**正向**路径照旧用 emit 走通（a --go--> b，routed=1）——
-	//      证明拒环没有把合法的接力也一起拦掉；
-	//   ③ 运行期 path 剪枝（第二道闸门）是「存量数据/自连」的兜底，
-	//      由 internal/route 的单测覆盖（prune_test.go / prune_events_test.go），
-	//      在 e2e 里造不出来——因为这张图根本存不进去。
+	//   ① 建环边 `b --back--> a` → **200**（以前是 400）；
+	//   ② 第一跳 a → b 正常派发；
+	//   ③ b 在 back 出口 emit → **又建出一个 a 任务**（环真的跑起来了，
+	//      这在 path 判重时代是不可能的：第二次进 a 会被剪成 pruned/path）；
+	//   ④ hop 预算本身由 internal/route 的单测覆盖（prune_test 的 max_hops 用例），
+	//      这里不再跑满 16 圈——e2e 跑 16 次往返只会更慢、更容易 flaky。
 	{
 		const a = (await defineCapability("c.cycle.a", ["go"])).json.capability;
 		const b = (await defineCapability("c.cycle.b", ["back"])).json.capability;
@@ -739,18 +762,11 @@ async function main() {
 		const ba = await addEdge(b, "back", a);
 		A(
 			7,
-			"环：b --back--> a 在**保存时**就被拒（400）",
-			ba.status === 400,
+			"环：b --back--> a 现在**允许保存**（环是合法编排，靠 hop 预算兜底）",
+			ba.status === 200,
 			`${ba.status} ${String(ba.text).slice(0, 160)}`,
 		);
-		A(
-			7,
-			"环：拒绝理由说得清是成环（不是含糊的参数错）",
-			/cycl|环/i.test(String(ba.text || "")),
-			String(ba.text).slice(0, 200),
-		);
 
-		// 正向：合法的第一跳必须还能跑（拒环不能把接力一起拦掉）
 		const cycNode = await bringUpNode(server.base, server.dbPath, nsId, "contract-cycle", [a, b], 2);
 		const ev = await postEvent({ source: "c.cycle.src", type: "start", payload: {} });
 		const tA = ev.json?.tasks?.[0]?.id;
@@ -765,7 +781,7 @@ async function main() {
 		const ackA = await emitPort(cycNode, tA, 1, "go", {});
 		A(
 			7,
-			"环：a 在 go 出口 emit 成功并建出 b（routed=1，合法接力照走）",
+			"环：a 在 go 出口 emit 成功并建出 b（routed=1）",
 			!!ackA && !ackA.error && ackA.routed === 1,
 			JSON.stringify(ackA),
 		);
@@ -776,6 +792,33 @@ async function main() {
 			tA,
 		)[0]?.id;
 		A(7, "环：第二跳任务真的建出来了（b）", !!tB, String(tB));
+
+		// ③ 回到 a：环真的能绕第二圈。
+		await new Promise((r) => setTimeout(r, 400));
+		cycNode.conn.send({ type: "ack", task_id: tB });
+		await new Promise((r) => setTimeout(r, 200));
+		cycNode.conn.send({ type: "progress", task_id: tB });
+		await new Promise((r) => setTimeout(r, 200));
+		const ackB = await emitPort(cycNode, tB, 1, "back", {});
+		A(
+			7,
+			"环：b 在 back 出口 emit → 又建出一个 a 任务（环跑起来了，不再被 path 判重剪掉）",
+			!!ackB && !ackB.error && ackB.routed === 1,
+			JSON.stringify(ackB),
+		);
+		cycNode.conn.send({ type: "result", task_id: tB, status: "succeeded", summary: "b 完成" });
+		await new Promise((r) => setTimeout(r, 300));
+		const tA2 = sqlQuery(
+			`SELECT id, path FROM tasks WHERE parent_task_id = ? AND capability = 'c.cycle.a'`,
+			tB,
+		)[0];
+		A(7, "环：第二圈的 a 任务带完整 path（a,b,a）", !!tA2, String(tA2?.id));
+		A(
+			7,
+			"环：path 里能看到重复能力名（说明 hop 预算才是唯一闸门）",
+			!!tA2 && String(tA2.path).includes("c.cycle.a") && String(tA2.path).split("c.cycle.a").length > 2,
+			String(tA2?.path),
+		);
 		cycNode.conn.close();
 	}
 

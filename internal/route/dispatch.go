@@ -748,15 +748,26 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	// 一个 (能力, 端口) 默认只派**一个**下游（1:1）：取最小 priority 组，组内轮盘选一个。
 	// 想「全派」（扇出到全部候选）需要 balance.mode=all，本期不实现（保存时已 400）。
 	//
-	// 端口平衡策略先看一眼：库被手改出 all / random 之类时按 priority 处理
-	// （**不扇出**：没实现的语义不能靠猜），同时留一条 WARN。
-	if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
-		warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
+	// **入口边不参与候选选择**：一个源喂多个能力是「源扇出」（设计 §1 的静态 1:N），
+	// 不是「端口候选」。两者的区别是语义的，不是实现细节：
+	//
+	//   · 源扇出：一盆水同时倒给 n 个能力 —— 每个能力都是**独立的一路**触发；
+	//   · 端口候选：同一类产出可能去哪儿 —— 运行期只走**一个**（1:1），
+	//     走哪个由 priority + 同级轮盘定。
+	//
+	// 把入口边也按候选选，症状是「一个源配了 2 个目标，实际只喂了 1 个」——
+	// e2e routing A6 抓到过这个（配置对、任务只建一条，极难从日志看出来）。
+	if !in.FromIsSource {
+		// 端口平衡策略先看一眼：库被手改出 all / random 之类时按 priority 处理
+		// （**不扇出**：没实现的语义不能靠猜），同时留一条 WARN。
+		if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
+			warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
+		}
+		chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
+		// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
+		// 所以这里不产生 pruned 记录，返回值的 Tasks 也只有一条。
+		cands = []candidate{chosen}
 	}
-	chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
-	// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
-	// 所以这里不产生 pruned 记录，返回值的 Tasks 也只有一条。
-	cands = []candidate{chosen}
 
 	// DryRun 在这里返回：判定已经做完（目标存在、参数过、节点在线），
 	// 但**不占槽位、不建任务、不推送**。这正好是"试运行"要的信息。
