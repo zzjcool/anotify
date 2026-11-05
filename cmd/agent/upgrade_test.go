@@ -153,8 +153,10 @@ func TestUpgradeReplacesBinary(t *testing.T) {
 	}
 	assertTarget(t, target, newBinaryBody, 0o755, stdout, stderr)
 
-	// 输出要说清「换了什么 → 什么」以及「重启后生效」（契约 §4.8）。
-	for _, want := range []string{target, testRemoteVersion, "重启后生效"} {
+	// 输出要说清「换了什么 → 什么」，并交代重启结论（契约 §4.8）。
+	// 测试环境里没有运行中的 agent，所以结论必须是"没有检测到"——这比笼统的
+	// "重启后生效"更诚实：它同时告诉用户"这次不需要你做任何事"。
+	for _, want := range []string{target, testRemoteVersion, "没有检测到运行中的 agent"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout 里没有 %q：%q", want, stdout)
 		}
@@ -612,5 +614,26 @@ func TestBinaryEndpoint(t *testing.T) {
 				t.Errorf("binaryEndpoint(%q) = %q, want %q", tc.server, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRestartCandidates 是"升级完能不能自动重启"的判据。
+//
+// 每一条排除都对应一个真实误伤：
+//   - 前台跑的 agent 没有 supervisor，杀它就是停用户的服务；
+//   - 别的路径上的副本不是我们升级的那份，重启它毫无意义；
+//   - 自己是祖先（任务脚本里调 upgrade）时杀掉 = 把当前任务腰斩。
+func TestRestartCandidates(t *testing.T) {
+	target := "/home/u/.anotify/bin/anotify-agent"
+	procs := []procInfo{
+		{pid: 100, exe: target, supervised: true},                         // 要的
+		{pid: 101, exe: target, supervised: false},                        // 前台跑，不能杀
+		{pid: 102, exe: "/usr/local/bin/anotify-agent", supervised: true}, // 别的副本
+		{pid: 200, exe: target, supervised: true},                         // 自己的祖先
+		{pid: 300, exe: target, supervised: true},                         // 自己
+	}
+	got := restartCandidates(procs, target, 300, map[int]bool{200: true, 250: true})
+	if len(got) != 1 || got[0] != 100 {
+		t.Fatalf("restartCandidates = %v, want [100]", got)
 	}
 }

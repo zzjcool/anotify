@@ -64,7 +64,13 @@ anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--
    - 同目录是为了 rename 不跨设备（`/tmp` 与 `/usr/local/bin` 常常不是同一挂载）。
 7. 不可写（EACCES/EPERM）：不静默降级，报清楚「需要 root」，并打印可直接粘的
    `sudo install -m 0755 <临时或下载路径> <目标>`。退出码 3。
-8. 替换成功后：打印「重启后生效」；`--restart` 时执行 `systemctl restart anotify-agent`（失败只告警，退出码仍是 0——二进制已经换好了）。
+8. 替换成功后要**让它立刻生效**（换文件 ≠ 换进程），三种情形：
+   - 默认：扫描 `/proc/*/exe` 找到「exe 指向目标路径 + 由 systemd 服务单元管 + 不是自己或祖先」
+     的 agent，给它发 **SIGTERM**（它自己会优雅收尾），systemd `Restart=always` 拉起新版本。
+     **不需要 root** —— 让升级这件日常事每次都要 sudo 是把设计问题转嫁给用户。
+   - `--restart`：`systemctl restart anotify-agent`（system 级单元需要 root；失败只告警）
+   - `--no-restart`：只换文件，下次启动生效
+   - 三种情形的失败都**不改退出码**（二进制已经换好了）。
 
 退出码：`0` 成功/已最新 · `1` 已最新（仅 `--check`）· `2` 服务端未启用 · `3` 权限不足 · `4` 校验失败 · `5` 网络/其他错误。
 

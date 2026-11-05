@@ -46,7 +46,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zzjcool/anotify/internal/version"
@@ -94,7 +97,8 @@ type upgradeOptions struct {
 	force      bool   // --force：已是最新也强制覆盖
 	server     string // --server：覆盖 node.yaml 里的中枢地址
 	installTo  string // --install-to：替换哪个文件
-	restart    bool   // --restart：替换后 systemctl restart
+	restart    bool   // --restart：替换后强制 systemctl restart（需要 root）
+	noRestart  bool   // --no-restart：替换后什么都不做（下次启动生效）
 }
 
 // parseUpgradeFlags 解析 `upgrade` 子命令的参数。
@@ -115,7 +119,9 @@ func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) 
 	installTo := fs.String("install-to", "",
 		"替换哪个文件（缺省 = 当前运行的可执行，解 symlink；判不出来时用 ~/.anotify/bin/anotify-agent）")
 	restart := fs.Bool("restart", false,
-		"替换成功后执行 systemctl restart "+agentServiceName+"（失败只告警，退出码仍是 0）")
+		"替换后用 systemctl restart "+agentServiceName+" 强制重启（system 级单元需要 root）")
+	noRestart := fs.Bool("no-restart", false,
+		"只换二进制，不碰运行中的 agent（下次启动生效）")
 
 	if err := fs.Parse(args); err != nil {
 		return upgradeOptions{}, err
@@ -130,6 +136,7 @@ func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) 
 		server:     *server,
 		installTo:  *installTo,
 		restart:    *restart,
+		noRestart:  *noRestart,
 	}, nil
 }
 
@@ -279,9 +286,18 @@ func runUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 	// 别人建出同名的东西）。
 	keepTmp = true
 
-	fmt.Fprintf(stdout, "已更新 %s：%s → %s（sha256 %s），重启后生效\n",
+	fmt.Fprintf(stdout, "已更新 %s：%s → %s（sha256 %s）\n",
 		target, version.String(), remoteVersion, shortSHA(remoteSHA))
 
+	// 换文件 ≠ 换进程：正在跑的 agent 还抓着旧 inode，必须让它退出、由 supervisor
+	// 拉起新的那份。默认就走**免权限**那条路（给运行中的 agent 发 SIGTERM，
+	// systemd 的 Restart=always 会把它拉起来），因为 system 级单元 `systemctl
+	// restart` 需要 root —— 让「升级」这件日常事每次都要 sudo，是把设计问题
+	// 转嫁给用户。
+	if opts.noRestart {
+		fmt.Fprintln(stdout, "已跳过重启（--no-restart）：新版本在下次启动时生效")
+		return exitOK, nil
+	}
 	if opts.restart {
 		if err := restartAgentService(); err != nil {
 			// 契约 §4.8：二进制已经换好了，重启失败**不能**改退出码——
@@ -292,8 +308,54 @@ func runUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 		} else {
 			fmt.Fprintf(stdout, "已重启 %s\n", agentServiceName)
 		}
+		return exitOK, nil
+	}
+
+	// 默认：找到"正在跑这个二进制"的 agent 进程，发 SIGTERM 让它优雅退出。
+	// 退出是 agent 自己支持的路径（先等任务收尾，见 grace），所以这不是"杀进程"。
+	restarted, err := terminateRunningAgents(target, stdout)
+	if err != nil {
+		// 与 --restart 同样的口径：二进制已经换好了，重启失败不改退出码。
+		fmt.Fprintf(stderr, "注意：没能让运行中的 agent 重启（二进制已经换好了）：%s\n", err)
+		return exitOK, nil
+	}
+	if !restarted {
+		fmt.Fprintln(stdout, "没有检测到运行中的 agent（systemd 会在下次启动时用新版本）")
 	}
 	return exitOK, nil
+}
+
+// procInfo 是扫描 /proc 得到的候选进程（只留判断需要的字段）。
+type procInfo struct {
+	pid  int
+	exe  string
+	self bool
+	// supervised=true 表示它由 systemd 管（退出后会被拉起来）。
+	supervised bool
+	// ancestor=true 表示它是本进程的祖先（`emit`/任务脚本里调 upgrade 的情况）。
+	ancestor bool
+}
+
+// restartCandidates 从进程列表里挑出"应该被 SIGTERM 的 agent"。
+//
+// 三个条件缺一不可，每一条都对应一个真实误伤场景：
+//   - exe 与目标**同一路径**：别的路径上的副本不是我们升级的那份，重启它没意义；
+//   - supervised：没有 supervisor 的前台 agent，退出就真的没了（不能替用户决定
+//     把服务停掉）；systemd 的 Restart=always 才是"退出=重启"的前提；
+//   - 不是自己和祖先：在任务脚本里跑 upgrade 时，杀掉自己的 agent 等于把任务腰斩。
+func restartCandidates(procs []procInfo, target string, selfPID int, ancestors map[int]bool) []int {
+	out := make([]int, 0, 1)
+	for _, p := range procs {
+		if p.pid == selfPID || ancestors[p.pid] || p.self || p.ancestor {
+			continue
+		}
+		if !p.supervised || p.exe != target {
+			continue
+		}
+		out = append(out, p.pid)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // upgradeConfig 读 node.yaml（与主命令同一套优先级与校验），可选覆盖 server。
@@ -529,4 +591,122 @@ func restartAgentService() error {
 		return err
 	}
 	return nil
+}
+
+// terminateRunningAgents 让"正在跑 target 的那份二进制"的 agent 优雅退出。
+//
+// 返回 (是否找到并发过信号, error)。**找不到不算错误**：很多人是先在没装服务的
+// 机器上升级，然后才去装；那属于正常路径。
+func terminateRunningAgents(target string, stdout io.Writer) (bool, error) {
+	procs, err := scanProcesses(target)
+	if err != nil {
+		return false, err
+	}
+	pids := restartCandidates(procs, target, os.Getpid(), ancestorPIDs(os.Getpid()))
+	if len(pids) == 0 {
+		return false, nil
+	}
+	for _, pid := range pids {
+		// SIGTERM 而不是 SIGKILL：agent 收到它会走既定的收尾（等在跑的任务、最多
+		// 一个 grace），这正是"升级不该腰斩任务"的那条约束。
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				continue // 刚好自己退了：目的已经达到
+			}
+			return true, fmt.Errorf("给 pid %d 发 SIGTERM: %w", pid, err)
+		}
+	}
+	fmt.Fprintf(stdout, "已通知运行中的 agent 退出（pid %v），systemd 会用新版本把它拉起来\n", pids)
+	return true, nil
+}
+
+// scanProcesses 扫 /proc，收集"exe 指向 target（或其副本）"的进程信息。
+//
+// 只看 /proc/<pid>/exe 的**解析后路径**：正在运行旧 inode 的进程，其 exe 仍然
+// 指向同一个路径字符串（我们刚 rename 覆盖过它）—— 这正是我们想找的那批。
+func scanProcesses(target string) ([]procInfo, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("读 /proc: %w", err)
+	}
+	out := make([]procInfo, 0, 8)
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue // 不是进程目录
+		}
+		exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+		if err != nil {
+			continue // 别人的进程 / 已退出 / 内核线程
+		}
+		// 已经被替换掉的可执行文件会带 " (deleted)" 后缀：那正是"还跑着旧版本"的
+		// 最强证据，去掉后缀再比。
+		exe = strings.TrimSuffix(exe, " (deleted)")
+		if exe != target {
+			continue
+		}
+		out = append(out, procInfo{
+			pid:        pid,
+			exe:        exe,
+			supervised: isSystemdSupervised(pid),
+		})
+	}
+	return out, nil
+}
+
+// isSystemdSupervised 判断这个进程是不是由 systemd 管着（退出会被拉起来）。
+//
+// 判据是 cgroup：只认 system.slice / user@*.service 这类 **服务** 单元。
+// 直接看 "有没有 systemd" 不够：一个在终端里前台跑的 agent 也挂在 systemd 会话下，
+// 但它退出不会有人重启——把它当服务杀掉就是把用户的服务停了。
+func isSystemdSupervised(pid int) bool {
+	body, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return false
+	}
+	cg := string(body)
+	if !strings.Contains(cg, ".service") {
+		return false
+	}
+	// 会话/作用域（session-N.scope、user@N.service 的 shell）不算服务监督。
+	return !strings.Contains(cg, ".scope")
+}
+
+// ancestorPIDs 返回本进程的祖先链（父 → 祖父 → …）。
+//
+// 用来避免"在任务脚本里调 upgrade 把自己腰斩"：那种情况下被杀的 agent 是我们的
+// 祖先，杀了它 = 当前任务直接失败。
+func ancestorPIDs(self int) map[int]bool {
+	out := make(map[int]bool, 8)
+	pid := self
+	for i := 0; i < 64; i++ { // 上限防御：/proc 读坏了也不会死循环
+		ppid, err := parentPID(pid)
+		if err != nil || ppid <= 1 || out[ppid] {
+			return out
+		}
+		out[ppid] = true
+		pid = ppid
+	}
+	return out
+}
+
+// parentPID 从 /proc/<pid>/stat 里取父进程号。
+//
+// 注意 comm 字段可能含空格与括号（进程名可以是 "a (b"），所以要从**最后一个** ')'
+// 之后开始切——按空格直接 split 会在这种进程名上错位。
+func parentPID(pid int) (int, error) {
+	body, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	s := string(body)
+	i := strings.LastIndex(s, ")")
+	if i < 0 || i+2 >= len(s) {
+		return 0, fmt.Errorf("解析 /proc/%d/stat: 形状不对", pid)
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("解析 /proc/%d/stat: 字段不足", pid)
+	}
+	return strconv.Atoi(fields[1])
 }
