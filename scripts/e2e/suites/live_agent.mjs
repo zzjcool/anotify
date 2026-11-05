@@ -380,18 +380,23 @@ async function main() {
 		// 真正的调用：--wait-routed = 等中枢 ack 再返回（默认只等本地 outbox 落盘，
 		// 那证明不了「已经派发出去」——而这正是本节要断言的那一半）。
 		`rc=0`,
-		`${JSON.stringify(AGENT_BIN)} emit --port emit.fix --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
+		`${JSON.stringify(AGENT_BIN)} emit --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
 		'printf \'exit=%s\\n\' "$rc" >> "$PROBE"',
 		// 第二次独立产出（契约 §3）：一次 emit 只派**一个**候选，所以要看全两个目标
 		// 就得 emit 两次 —— 同级轮盘各落一个。这也是「两次 emit = 两个独立任务」的
 		// 真进程证据。
 		//
-		// 这一次**不写 --port**（CONTRACT-hide-ports.md §2）：本能力只有一个出口，
-		// agent 从 ANOTIFY_EMIT_PORTS 自动取。它跑通了才说明「脚本作者不需要知道
-		// 端口叫什么」这件事在真进程里成立，而不只是单测里成立。
+		// 两次都**不写端口**（CONTRACT-hide-ports.md §2）：本能力只有一个出口，
+		// agent 从 ANOTIFY_EMIT_PORTS 自动取。跑通了才说明「脚本作者不需要知道
+		// 端口叫什么」在真进程里成立，而不只是单测里成立。
 		`rc2=0`,
 		`${JSON.stringify(AGENT_BIN)} emit --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
 		'printf \'exit2=%s\\n\' "$rc2" >> "$PROBE"',
+		// 第三次：脚本**点名**下游（--to）。这是"脚本知道该给谁"的用法：
+		// 中枢按它钉住那个候选，而不是按轮盘挑（钉不住要报错，不能悄悄改投）。
+		`rc3=0`,
+		`${JSON.stringify(AGENT_BIN)} emit --to ${t1.name} --data '{"issue":"#44","title":"钉住"}' --wait-routed --note '第 3 项' >> "$PROBE" 2>&1 || rc3=$?`,
+		'printf \'exit3=%s\\n\' "$rc3" >> "$PROBE"',
 		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
 		"exit 0",
 		"",
@@ -433,7 +438,7 @@ async function main() {
 	);
 
 	// 一个出口两条边（fan-out）：routed 应当 = 2
-	const mkEdge = (fromPort, to) =>
+	const mkEdge = (fromPort, to, priority = 0) =>
 		H.req(server.base, "/v1/edges", {
 			session,
 			body: {
@@ -441,10 +446,15 @@ async function main() {
 				fromCapability: emitter.id,
 				fromPort,
 				toCapability: to.id,
+				priority,
 			},
 		});
-	H.eq("建边 emit.fix → target1", (await mkEdge("emit.fix", t1)).status, 200);
+	// target1 的 priority 故意更大（= 更低的优先级）：于是"自动选"**确定**落在 target2。
+	// 后面那条 `--to target1` 的 emit 因此是「钉住真的生效」的证据 —— 否则它可能只是
+	// 轮盘碰巧转到 target1，测不出任何东西。
+	H.eq("建边 emit.fix → target1", (await mkEdge("emit.fix", t1, 10)).status, 200);
 	H.eq("建边 emit.fix → target2", (await mkEdge("emit.fix", t2)).status, 200);
+
 
 	const emitSrc = await H.req(server.base, "/v1/sources", {
 		session,
@@ -505,6 +515,7 @@ async function main() {
 		/emit ok: port=emit\.fix/.test(probeText),
 		probeText,
 	);
+	H.eq("--to 钉住下游的那次 emit 也退 0", probeField("exit3"), "0");
 	H.check(
 		"CLI 报 acked=routed（中枢确认已派发，不是只落了本地 outbox）",
 		/acked=routed/.test(probeText),
@@ -516,18 +527,19 @@ async function main() {
 	// 契约 §3：emit.fix 有 2 个候选，**每次 emit 只派一个**；脚本 emit 了两次，
 	// 同级轮盘把两次落到不同的候选上 —— 所以这里恰好 2 条，且覆盖两个目标。
 	// （以前是「一次 emit 全派 2 条」，那是 fanout，现在是 1:1。）
-	H.eq("两次 emit（各派一个候选）→ 共 2 条下游任务", emitKids.length, 2);
-	H.eq(
-		"两条下游任务分别落在那两个候选上（同级轮盘）",
-		emitKids.map((t) => t.capability).sort(),
-		[t1.name, t2.name].sort(),
-	);
+	H.eq("三次 emit（各派一个候选）→ 共 3 条下游任务", emitKids.length, 3);
+	// 两次自动 emit：target1 的 priority 更大 → 确定落在 target2（不是轮盘碰运气）。
+	// 一次 `--to target1`：即使 priority 更低，也**必须**落在 target1 —— 这就是
+	// "钉住生效"的证据；如果 --to 被忽略，这一条会落到 target2，两个计数都会变。
+	const byCap = emitKids.reduce((m, t) => ((m[t.capability] = (m[t.capability] || 0) + 1), m), {});
+	H.eq("两次自动 emit 都落在高优先级的 target2", byCap[t2.name], 2);
+	H.eq("--to 点名的那一次落在低优先级的 target1（钉住压过 priority）", byCap[t1.name], 1);
 	// P0：本次执行钉在一个确定的产物上（assign.digest / tasks.digest）
 	H.eq("父任务钉住的 digest 就是中枢编译出来的那份", parentDone?.digest, emitter.digest);
 	H.eq(
-		"下游任务的 digest 也各自钉住了自己的产物",
+		"下游任务的 digest 也各自钉住了自己的产物（三条 = 两份 t2 + 一份 t1）",
 		emitKids.map((t) => t.digest).sort(),
-		[t1.digest, t2.digest].sort(),
+		[t2.digest, t2.digest, t1.digest].sort(),
 	);
 
 	// ---------- socket 与任务同生命周期（§1 / §8）----------

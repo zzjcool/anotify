@@ -170,7 +170,7 @@ if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
   # 免得在零依赖 bash 里手拼 JSON（那才是转义 bug 的温床）。
   # 注意别写成 ${ANOTIFY_PARAMS:-{}}：bash 会在第一个未配对的 } 处截断展开，
   # 结果是多出一个字面量 } → 非法 JSON → emit 退出码 2。
-  "$agent_bin" emit --port echoed --data "$ANOTIFY_PARAMS"
+  "$agent_bin" emit --data "$ANOTIFY_PARAMS"
 fi
 `,
 				},

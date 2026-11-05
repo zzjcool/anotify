@@ -939,6 +939,9 @@ func TestRunJobExampleCapability(t *testing.T) {
 		Artifact:   store.ExampleCapability.Artifact,
 		WorkRoot:   t.TempDir(),
 		Emit:       srv,
+		// 真实派发的 assign 帧一定带 ports（那是"本任务能往哪些出口 emit"的白名单），
+		// 单出口能力的脚本靠它自动定位出口（脚本不再写 --port）。
+		Ports: append([]string(nil), store.ExampleCapability.Outputs...),
 	})
 	if res.Status != statusSucceeded {
 		t.Fatalf("status = %q（err=%q）—— 示例能力必须开箱即能跑通", res.Status, res.Err)

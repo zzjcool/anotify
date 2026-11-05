@@ -130,12 +130,14 @@ const (
 // 自己发 seq 会立刻分裂成两个写者（两个 emit 进程各发一个 seq 3 → 中枢报
 // "seq reused with different payload"，那是节点 bug）。响应里回填真正用掉的那个。
 type emitRequest struct {
-	Op    string          `json:"op"`
-	Token string          `json:"token"`
-	Seq   int64           `json:"seq,omitempty"`
-	Port  string          `json:"port"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Note  string          `json:"note,omitempty"`
+	Op    string `json:"op"`
+	Token string `json:"token"`
+	Seq   int64  `json:"seq,omitempty"`
+	Port  string `json:"port"`
+	// To 是脚本点名的下游能力（`emit --to`）。空 = 由中枢按候选选。
+	To   string          `json:"to,omitempty"`
+	Data json.RawMessage `json:"data,omitempty"`
+	Note string          `json:"note,omitempty"`
 	// Wait == "routed" 时等中枢 emit_ack 再回（对应 --wait-routed）。
 	Wait string `json:"wait,omitempty"`
 }
@@ -654,8 +656,11 @@ func (s *emitServer) emit(req emitRequest, waitRouted bool) emitResponse {
 		TaskID: s.taskID,
 		Seq:    seq,
 		Port:   port,
-		Data:   dataJSON,
-		Note:   note,
+		// To 是脚本点名的那一个下游（`--to`）。不带下去的话，"钉住某个候选"
+		// 就变成了静默的"还是按轮盘随便挑一个"——最坏的那种失败。
+		To:   strings.TrimSpace(req.To),
+		Data: dataJSON,
+		Note: note,
 	}
 	// **先落盘再 ack**（两级 ack 的第一级）：fsync 成功之后这条 emit 就丢不了了，
 	// 崩溃重启会从 outbox 里补发。

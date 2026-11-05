@@ -85,7 +85,7 @@ const (
 	// runCommand 是 standalone 子命令名：anotify-agent run <path>
 	runCommand = "run"
 
-	// emitCommand 是中途产出子命令名：anotify-agent emit --port fix --data '…'
+	// emitCommand 是中途产出子命令名：anotify-agent emit --data '…'（要钉住具体下游才写 --to）
 	//
 	// 它是**能力进程**调的（不是运维调的）：由 agent 注入的 ANOTIFY_EMIT_SOCK /
 	// ANOTIFY_TASK_TOKEN 决定它去哪里、以谁的身份上报（见 emit_cmd.go）。
@@ -386,6 +386,10 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 		Params:          map[string]any(opts.params),
 		TimeoutOverride: opts.timeoutSec,
 		WorkRoot:        workRoot,
+		// 本地模式也给出口契约：能力自己声明了 outputs，脚本就可能真的调用
+		// `emit`（然后拿到"本地模式无中枢"那条明确报错，而不是"读不到契约"）。
+		// 真实派发时这份契约来自 assign 帧，这里来自能力定义本身——同一形状。
+		Ports: append([]string(nil), outputPorts(art)...),
 	}
 
 	code, err := runLocal(ctx, j, stdout, stderr)
@@ -493,4 +497,15 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+// outputPorts 取能力定义里声明的产出端口（本地模式给出口契约用）。
+//
+// 为什么从 artifact 里读而不是另开参数：本地模式的唯一事实源就是那份 yaml，
+// 再传一个 --ports 只会让「定义」与「实际」有两处可写。
+func outputPorts(art *artifact.Artifact) []string {
+	if art == nil {
+		return nil
+	}
+	return art.Spec.Outputs
 }

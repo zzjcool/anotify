@@ -39,9 +39,14 @@ type EmitInput struct {
 	TaskID string
 	// Seq 是任务内单调递增序号，从 1 开始（§4）。0 / 负数是非法值。
 	Seq int64
-	// Port 是出口名。它是**唯一**的路由输入：中枢按 (capability, port) 查 link，
-	// emit 自己不能指定「调用哪个能力」（§9）。
+	// Port 是出口名（路由键，**内部概念**：agent 默认取本任务唯一的那个）。
 	Port string
+	// To 是脚本点名的下游能力（`name` / `name@version`），空 = 让中枢按候选选。
+	//
+	// 它能"点名"但不改变"候选是白名单"这件事：不在候选里就拒（见
+	// ErrEmitToNotCandidate）。这是"脚本知道该给谁"与"中枢说了算"之间的分界：
+	// 可以**选择**，不能**越界**。
+	To string
 	// Data 是这次产出的 JSON 对象，直接就是下游的 params（不做字段搬运）。
 	// 缺省 = {}。
 	Data json.RawMessage
@@ -86,6 +91,10 @@ var (
 	// 「已终态」必须拒：允许晚到的 emit 改动已终结的任务，等于允许它凭空产生下游
 	// （emit-protocol §8）。节点侧看到它应当停止执行（exit 5）。
 	ErrEmitTaskClosed = errors.New("emit: task is not running")
+	// ErrEmitToNotCandidate 脚本点名的下游不在本出口的候选里（emit --to）。
+	//
+	// 拒收而不是改投：改投的症状是「看起来发出去了，实际给了别人」。
+	ErrEmitToNotCandidate = errors.New("emit: to is not a candidate of this port")
 	// ErrEmitSeqGap seq 缺口：1..seq-1 没有全部落库（§4 缺口策略）。
 	//
 	// 缺口是**丢消息的证据**，所以明确报错让节点重发缺失项，而不是猜/跳过/等超时。
@@ -210,6 +219,7 @@ func (d *Dispatcher) Emit(ctx context.Context, in EmitInput) (*EmitOutput, error
 		// task.Capability 就是 tasks.capability 那一列（派发时冗余存的 name）。
 		FromCap: task.Capability,
 		Out:     in.Port,
+		To:      in.To,
 		Params:  params,
 		Path:    task.Path,
 	}

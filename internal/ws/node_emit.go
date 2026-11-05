@@ -58,8 +58,11 @@ func (s *nodeSession) handleEmit(ctx context.Context, f *EmitFrame) error {
 		TaskID:      f.TaskID,
 		Seq:         f.Seq,
 		Port:        f.Port,
-		Data:        f.Data,
-		Note:        f.Note,
+		// To 是脚本点名的下游（`emit --to`）。空 = 让中枢按候选选；
+		// 点名了但不在候选里 → route 拒收，节点看到 emit_ack.error。
+		To:   f.To,
+		Data: f.Data,
+		Note: f.Note,
 		// 归属校验的另一半：库里记着「这条任务派给了谁」，这里把「谁在报」带下去。
 		// 只靠内存栅栏不够——两个节点先后连过、前者已断开时，内存里没有 owner 了。
 		NodeID: s.node.ID,

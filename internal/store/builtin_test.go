@@ -595,11 +595,15 @@ func TestExampleBuiltinScriptEmitsDeclaredPort(t *testing.T) {
 			if len(argv) == 0 || argv[0] != "emit" {
 				t.Fatalf("记录到的 argv = %q，期望 [emit ...]", argv)
 			}
-			// 端口必须来自声明（出口是封闭集合，不变量 I2）。
-			port := flagValue(argv, "--port")
-			if !slices.Contains(ExampleCapability.Outputs, port) {
-				t.Fatalf("emit --port %q 不在声明的 outputs %v 里，任务会被节点当场拒（退出码 3）",
-					port, ExampleCapability.Outputs)
+			// 示例脚本**不该提到端口**：端口是内部路由键，单出口能力由 agent 从
+			// 「出口契约」自动取（CONTRACT-hide-ports.md §2）。这条断言防的是
+			// "顺手把端口写回来"——那样每个照抄示例的人都会被逼着去抄一个内部名字。
+			if port := flagValue(argv, "--port"); port != "" {
+				t.Fatalf("示例脚本不该写 --port（端口是内部路由键），实际 %q", port)
+			}
+			if to := flagValue(argv, "--to"); to != "" && !slices.ContainsFunc(
+				[]string{"script.echo", "notify.phone"}, func(n string) bool { return to == n }) {
+				t.Fatalf("示例脚本的 --to %q 不是候选能力名", to)
 			}
 			// data 必须是合法 JSON 对象（emit 的结构门槛）。
 			data := flagValue(argv, "--data")

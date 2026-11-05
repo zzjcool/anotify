@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,6 +63,7 @@ const (
 
 // emitOptions 是 `emit` 子命令解析出来的参数。
 type emitOptions struct {
+	to         string
 	port       string
 	data       string // 原始 --data（可能是 "@-"）
 	note       string
@@ -76,8 +78,9 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 	fs := flag.NewFlagSet("agent emit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	port := fs.String("port", "",
-		"出口名；本能力只有一个出口时**可以省略**（自动取它）")
+	// --to 是脚本**该写的东西**：交给哪个下游能力（`name` / `name@version`）。
+	// 端口是内部路由键，脚本不需要知道它叫什么（CONTRACT-hide-ports.md §2）。
+	to := fs.String("to", "", "下游能力名（`name` 或 `name@version`）；不给 = 让中枢在候选里挑")
 	data := fs.String("data", "", `产出的 JSON 对象；@- 表示从 stdin 读（缺省 = {}）`)
 	note := fs.String("note", "", "人类可读备注（不参与路由）")
 	waitRouted := fs.Bool("wait-routed", false,
@@ -90,7 +93,7 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 		return emitOptions{}, fmt.Errorf("多余的参数: %s", strings.Join(extra, " "))
 	}
 	return emitOptions{
-		port:       *port,
+		to:         *to,
 		data:       *data,
 		note:       *note,
 		waitRouted: *waitRouted,
@@ -113,7 +116,7 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		return exitEmitBadRequest, err
 	}
 
-	port, err := resolveEmitPort(strings.TrimSpace(opts.port), getenv)
+	port, err := resolveEmitPort(strings.TrimSpace(opts.to), getenv)
 	if err != nil {
 		return exitEmitBadRequest, err
 	}
@@ -155,6 +158,7 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		Op:    emitOpName,
 		Token: token,
 		Port:  port,
+		To:    strings.TrimSpace(opts.to),
 		Data:  dataJSON,
 		Note:  strings.TrimSpace(opts.note),
 	}
@@ -259,69 +263,131 @@ func emitExitCode(resp emitResponse) int {
 
 // resolveEmitPort 决定这次 emit 走哪个出口。
 //
-// 为什么允许省略 --port（CONTRACT-hide-ports.md §2）：端口是**路由键**，不是用户
-// 要表达的概念——创建能力时用户只在界面上填「下游能力（候选）」，系统内部把唯一
-// 出口固定叫 out。逼脚本作者去抄这个名字，等于把实现细节漏给最终用户。
+// 脚本写的是 **--to 下游能力名**，不是端口名（CONTRACT-hide-ports.md §2）：
+// 端口是内部路由键，用户在建能力时只填「下游能力（候选）」，系统把唯一出口
+// 固定叫 out。逼脚本作者去抄这个名字，等于把实现细节漏给最终用户。
 //
-// 规则刻意是"只有唯一出口才自动"：
+// 规则（**绝不猜**）：
 //
-//	1 个出口   → 用它（99% 的能力）
-//	0 个出口   → 报错：这是终端能力，emit 出去也没有下游（I5：0 次 emit = 到此为止）
-//	≥2 个出口  → 报错并**列出可用端口**，绝不猜（猜错 = 产出走错边，而且没有任何报错）
-func resolveEmitPort(explicit string, getenv func(string) string) (string, error) {
-	ports, err := emitPortNames(getenv)
+//	--to 给了        → 找到"候选里含这个能力"的那个出口；找不到就拒（列出可用候选）
+//	--to 没给        → 只有一个出口时用它；0 个 = 终端能力；多个 = 必须 --to
+//
+// 注意 --to 同时也被带进帧里（EmitFrame.To）：中枢据此**钉住**那一个候选，
+// 而不是只按端口轮盘挑——否则脚本写 --to notify.phone，中枢却可能挑到
+// script.echo，那就是"看起来发了，实际发给了别人"。
+func resolveEmitPort(to string, getenv func(string) string) (string, error) {
+	ports, err := emitContracts(getenv)
 	if err != nil {
-		// 契约读不出来时，显式给了 --port 就放行：路由的对错最终由中枢裁决
-		// （port 不在 ports[] → 中枢拒收 + 退出码 3），没有理由在本地先拦住。
-		if explicit != "" {
-			return explicit, nil
-		}
+		// 一点线索都拿不到时无法判定任何事：直接说清楚，别猜一个端口发出去。
 		return "", err
 	}
-	if explicit != "" {
-		return explicit, nil
+	if to == "" {
+		switch len(ports) {
+		case 1:
+			return ports[0].Port, nil
+		case 0:
+			return "", errors.New(
+				"本能力没有下游（终端能力）：emit 出去不会触发任何能力。" +
+					"要在跑完之后交给人/下一个能力，先去能力定义里填「下游能力」")
+		default:
+			return "", fmt.Errorf("本能力有多个出口，必须用 --to 指定下游能力（可用：%s）",
+				candidateList(ports))
+		}
 	}
-	switch len(ports) {
+	name, ver := splitToRef(to)
+	matched := make([]string, 0, 1)
+	for _, pc := range ports {
+		for _, tgt := range pc.Targets {
+			if tgt.Capability != name {
+				continue
+			}
+			if ver != 0 && tgt.Version != ver {
+				continue
+			}
+			matched = append(matched, pc.Port)
+			break
+		}
+	}
+	switch len(matched) {
 	case 1:
-		return ports[0], nil
+		return matched[0], nil
 	case 0:
-		return "", errors.New(
-			"本能力没有出口（终端能力）：emit 出去也不会触发任何下游。" +
-				"要在跑完之后交给人/下一个能力，先去能力定义里填「下游能力」")
+		return "", fmt.Errorf("--to %s 不是本能力的下游候选（可用：%s）", to, candidateList(ports))
 	default:
-		return "", fmt.Errorf("本能力有 %d 个出口，必须用 --port 指定：%s",
-			len(ports), strings.Join(ports, ", "))
+		return "", fmt.Errorf("--to %s 同时出现在多个出口里（%s），这个能力确实有多个产出，请把它拆成两个能力",
+			to, strings.Join(matched, ", "))
 	}
 }
 
-// emitPortNames 从出口契约里取出端口名（升序）。
+// emitCLIContract 是契约里的一项（只取 CLI 侧需要的字段；runner.go 的
+// emitPortContract 是**下发**方向的全量形状，两者读的是同一份 JSON）。
+type emitCLIContract struct {
+	Port    string `json:"port"`
+	Targets []struct {
+		Capability string `json:"capability"`
+		Version    int    `json:"version"`
+	} `json:"targets"`
+}
+
+// emitContracts 读出本次任务的出口契约（唯一来源：ANOTIFY_EMIT_PORTS，
+// 缺省读 $ANOTIFY_TASKDIR/emit.json）。
 //
-// 来源与 agent 侧完全一致（envEmitPorts 环境变量，缺省读 $ANOTIFY_TASKDIR/emit.json）：
-// 两处各读一套会让「脚本看到的出口」与「agent 接受的出口」悄悄分叉。
-func emitPortNames(getenv func(string) string) ([]string, error) {
+// 与 agent 侧同一份字节：两处各读一套会让「脚本看到的候选」与「agent 接受的
+// 候选」悄悄分叉，症状是脚本明明写了 --to，agent 却说没这个候选。
+func emitContracts(getenv func(string) string) ([]emitCLIContract, error) {
 	raw := strings.TrimSpace(getenv(envEmitPorts))
 	if raw == "" {
-		if dir := strings.TrimSpace(getenv(envTaskDir)); dir == "" {
+		dir := strings.TrimSpace(getenv(envTaskDir))
+		if dir == "" {
 			return nil, fmt.Errorf("读不到出口契约（%s 与 %s 都没设置）", envEmitPorts, envTaskDir)
 		}
-		body, err := os.ReadFile(filepath.Join(getenv(envTaskDir), emitContractFile))
+		body, err := os.ReadFile(filepath.Join(dir, emitContractFile))
 		if err != nil {
-			return nil, fmt.Errorf("读出口契约 %s/%s: %w", getenv(envTaskDir), emitContractFile, err)
+			return nil, fmt.Errorf("读出口契约 %s/%s: %w", dir, emitContractFile, err)
 		}
 		raw = string(body)
 	}
-	var items []struct {
-		Port string `json:"port"`
-	}
+	var items []emitCLIContract
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil, fmt.Errorf("出口契约不是合法 JSON: %w", err)
 	}
-	ports := make([]string, 0, len(items))
+	out := make([]emitCLIContract, 0, len(items))
 	for _, it := range items {
-		if p := strings.TrimSpace(it.Port); p != "" {
-			ports = append(ports, p)
+		if strings.TrimSpace(it.Port) != "" {
+			out = append(out, it)
 		}
 	}
-	sort.Strings(ports)
-	return ports, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out, nil
+}
+
+// candidateList 把候选渲染成 `name@ver` 列表（错误信息里最有用的就是"可选的其实有这些"）。
+func candidateList(ports []emitCLIContract) string {
+	seen := make(map[string]bool, 4)
+	names := make([]string, 0, 4)
+	for _, pc := range ports {
+		for _, t := range pc.Targets {
+			key := fmt.Sprintf("%s@%d", t.Capability, t.Version)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			names = append(names, key)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "（没有候选）"
+	}
+	return strings.Join(names, ", ")
+}
+
+// splitToRef 把 `name@version` 拆开（没有 @ 时 ver=0 表示"任意版本"）。
+func splitToRef(to string) (string, int) {
+	if at := strings.LastIndex(to, "@"); at > 0 {
+		if n, err := strconv.Atoi(to[at+1:]); err == nil {
+			return to[:at], n
+		}
+	}
+	return to, 0
 }

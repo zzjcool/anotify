@@ -866,7 +866,9 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					// 顺序反了的话 summary 会变成 CLI 的回执——断言「A 真的跑过」就失效了。
 					"echo A-ran\n" +
 					'if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then\n' +
-					'  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port go ' +
+					// 端口是内部路由键，脚本不写它（单出口自动取）；--to 只有在
+					// 想钉住某个候选时才需要。这里交给中枢按候选选。
+					'  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit ' +
 					'--data "{\\"from\\":\\"${ANOTIFY_PARAM_FROM:-}\\"}" --wait-routed\n' +
 					"fi\n",
 			);
@@ -1190,8 +1192,8 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					.filter((line) => !/^\s*#/.test(line))
 					.join("\n");
 				H.check(
-					"A 的产物脚本用 emit 报产出（不再写 ANOTIFY_OUT_FILE）",
-					/emit --port go/.test(codeLines) && !/ANOTIFY_OUT_FILE/.test(codeLines),
+					"A 的产物脚本用 emit 报产出（不写端口名，也不写 ANOTIFY_OUT_FILE）",
+					/emit\s/.test(codeLines) && !/--port/.test(codeLines) && !/ANOTIFY_OUT_FILE/.test(codeLines),
 					scriptA.slice(0, 300),
 				);
 			}

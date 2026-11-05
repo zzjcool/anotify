@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -70,6 +71,12 @@ type DispatchInput struct {
 	// Out 是上游**能力**回报的出口名。"" 表示上游没回报——此时不派发、也不记剪枝。
 	// 入口边不看它（事件类型在 EntryFromPort 里）。
 	Out string
+	// To 是 emit 里脚本显式点名的**下游能力**（`name` / `name@version`）。
+	//
+	// 只有 emit 会给它（正常派发没有"指定下游"这件事，入口边更是扇出语义）。
+	// 非空时候选集先被它过滤：点名的那个不在候选里 → 整个 emit 被拒
+	// （ErrEmitToNotCandidate），**不改投**——改投等于"看起来成功了却发给了别人"。
+	To string
 
 	// EntryFromKey / EntryFromPort 是**入口边**的左端与端口（来源名 + 事件类型）。
 	// FromIsSource=true 时必须给，否则 plan 拿不到要查的边。
@@ -763,6 +770,15 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
 			warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
 		}
+		// 脚本点名了具体下游（emit --to）→ 先把候选集收敛到它。
+		if in.To != "" {
+			narrowed := narrowCandidatesTo(cands, in.To)
+			if len(narrowed) == 0 {
+				return nil, nil, fmt.Errorf("%w: %s（本出口的候选：%s）",
+					ErrEmitToNotCandidate, in.To, candidateNames(cands))
+			}
+			cands = narrowed
+		}
 		chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
 		// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
 		// 所以这里不产生 pruned 记录，返回值的 Tasks 也只有一条。
@@ -898,6 +914,49 @@ type cursorKey struct {
 // 为什么组内顺序必须是确定顺序：游标只是一个下标，「+1」在两个进程里若指向
 // 不同的候选，就不叫轮盘、叫随机——而随机是另一种模式（预留的 random），
 // 不是 priority 的实现方式。
+// narrowCandidatesTo 把候选集收敛到脚本点名的那一个（emit --to）。
+//
+// 匹配规则：`name` 匹配该能力名（不论版本，取候选里实际存在的那条边）；
+// `name@ver` 精确匹配那条边指向的版本。**不用 id 匹配**：id 会随升级变化，
+// 而脚本里写的是名字（和 link 的引用语义一致）。
+func narrowCandidatesTo(cands []candidate, to string) []candidate {
+	name, ver := to, 0
+	if at := strings.LastIndex(to, "@"); at > 0 {
+		name = to[:at]
+		if n, err := strconv.Atoi(to[at+1:]); err == nil {
+			ver = n
+		}
+	}
+	out := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		if c.cap == nil {
+			continue
+		}
+		if c.cap.Name != name {
+			continue
+		}
+		if ver != 0 && c.cap.Version != ver {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// candidateNames 把候选渲染成 `name@ver` 列表（拼错误信息用：被拒时最有用的
+// 事实是"你以为的那个名字不在候选里，可选的其实有这些"）。
+func candidateNames(cands []candidate) string {
+	names := make([]string, 0, len(cands))
+	for _, c := range cands {
+		if c.cap == nil {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s@%d", c.cap.Name, c.cap.Version))
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func (d *Dispatcher) pickCandidate(namespaceID, capability, port string, cands []candidate) candidate {
 	sorted := make([]candidate, len(cands))
 	copy(sorted, cands)

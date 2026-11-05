@@ -231,12 +231,22 @@ type ResultFrame struct {
 //     （link 只有连接 + 可选字面量）。
 //   - Note 只给人看，不参与路由。
 type EmitFrame struct {
-	Type   string          `json:"type"`
-	TaskID string          `json:"task_id"`
-	Seq    int64           `json:"seq"`
-	Port   string          `json:"port"`
-	Data   json.RawMessage `json:"data,omitempty"`
-	Note   string          `json:"note,omitempty"`
+	Type   string `json:"type"`
+	TaskID string `json:"task_id"`
+	Seq    int64  `json:"seq"`
+	// Port 是路由键（**内部概念**，脚本不写它：默认取本任务唯一的出口）。
+	Port string `json:"port"`
+	// To 是脚本指定的**下游能力名**（`name` 或 `name@version`）。
+	//
+	// 为什么要有它：候选集是「同一类产出可能去哪儿」，默认由中枢按 priority +
+	// 同级轮盘挑一个；但脚本有时明确知道这一份该给谁（"这次只发通知"），
+	// 那就得能钉住。空 = 让中枢挑。
+	//
+	// 钉不住（不在候选里）时中枢**拒收**而不是悄悄改投：改投的产物是「看起来
+	// 发了，却发给了别人」，比失败难查得多。
+	To   string          `json:"to,omitempty"`
+	Data json.RawMessage `json:"data,omitempty"`
+	Note string          `json:"note,omitempty"`
 }
 
 // EmitAckFrame 是中枢 → 节点对 emit 的确认（emit-protocol.md §3.2）。

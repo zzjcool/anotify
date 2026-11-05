@@ -40,7 +40,7 @@ import (
 // 这里曾经有一条「退出时读文件回报出口」的腿：节点把 `$ANOTIFY_OUT_FILE`
 // （= <workdir>/.anotify-out）交给脚本，脚本跑完写一行出口名，节点读它、校验 ∈
 // `spec.outputs`，再合成 `result.out`。P1.5 把它**整条删掉**（没有兼容层）：
-// 产出只有一个通道 —— 运行中 `anotify-agent emit --port … --data …`（见
+// 产出只有一个通道 —— 运行中 `anotify-agent emit --data …`（端口是内部路由键，见
 // docs/design/typed-pipeline.md §2 与 docs/design/emit-protocol.md）。
 //
 // 为什么必须一刀切掉两条：
