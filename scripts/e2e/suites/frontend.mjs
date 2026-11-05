@@ -1187,6 +1187,20 @@ async function main() {
 		});
 		await H.waitForAppReady(page, "workspace");
 
+		// 等错误态真的画完（最多 5s）：route.abort() 是异步的，waitForAppReady 只保证外壳挂好，
+		// 不保证首个 fetch 的 catch 已经把「载入失败 + 重试」写进 DOM。
+		// 断言内容不变 —— 只是不把「还没画完」当成「载入失败没渲染」。
+		await page
+			.waitForFunction(
+				() => {
+					const box = document.getElementById("index-events");
+					return !!(box && box.querySelector("button"));
+				},
+				null,
+				{ timeout: 5000 },
+			)
+			.catch(() => {});
+
 		// 错误态出现：事件流位置渲染「载入失败…」+ 重试按钮
 		const errState = await page.evaluate(() => {
 			const box = document.getElementById("index-events");
@@ -2831,62 +2845,87 @@ async function checkPruneCopy(page, base) {
 		String(labels.path),
 	);
 
-	// 真实触发：把 hop 预算调成 0 → 下一次「立即运行」必然剪成 max_hops
-	const fire = async (limits) =>
-		page.evaluate(async (lim) => {
-			const st = window.MockApi.state;
-			st.limits = st.limits || {};
-			st.limits.maxHops = lim.maxHops;
-			st.limits.budget = lim.budget;
-			// 入口 schema 校验在预算之前：演示数据里若有 resultSchema，会先报 event_schema。
-			// 这条用例只钉预算原因的文案，先把入口 schema 清掉。
-			for (const s of st.sources) {
-				if (s.config) delete s.config.resultSchema;
-			}
-			const host = document.getElementById("anotify-toast-host");
-			if (host) host.replaceChildren();
-			// 按**按钮文案**找「立即运行」：停用的源没有这个按钮（只有「启用」），
-			// 按位置取第一个按钮会把「启用」点下去（它只重载列表，不产生剪枝 toast）。
-			const rows = Array.from(document.querySelectorAll("#src-list > div"));
-			const wanted = /立即运行|Run now|今すぐ実行|Ejecutar ahora|Ejecutar/;
-			let btn = null;
-			for (const r of rows) {
-				const b = Array.from(r.querySelectorAll(".src-acts button")).find((x) =>
-					wanted.test((x.textContent || "").trim()),
-				);
-				if (b) {
-					btn = b;
-					break;
-				}
-			}
-			if (!btn) return { err: "找不到「立即运行」按钮" };
-			btn.click();
-			let text = "";
-			for (let i = 0; i < 60; i++) {
-				await new Promise((r) => setTimeout(r, 100));
-				const now = host ? (host.textContent || "").replace(/\s+/g, " ") : "";
-				// toast 会自动消失：记住最后一次非空文本，别把「已消失」当成「没文案」
-				if (now) text = now;
-				if (/预算|max_hops|budget/.test(now)) {
-					text = now;
-					break;
-				}
-			}
-			return { toast: text };
-		}, limits);
-
-	const hop = await fire({ maxHops: 0, budget: 512 });
+	// ① hop 预算：**数据 + 文案**两层（确定性）。
+	//    不走 toast：toast 有队列，连续两次触发要等前一条消失，用 DOM 时机会把
+	//    「文案对不对」变成「排到队没有」。
+	const hop = await page.evaluate(async () => {
+		const st = window.MockApi.state;
+		st.limits = st.limits || {};
+		st.limits.maxHops = 0;
+		st.limits.budget = 512;
+		// 入口 schema 校验在预算之前：演示数据里若有 resultSchema，会先报 event_schema。
+		for (const s of st.sources) {
+			if (s.config) delete s.config.resultSchema;
+		}
+		const srcs = await fetch("/v1/sources").then((r) => r.json());
+		const src = (srcs.sources || []).find((x) => x.enabled && (x.targets || []).length);
+		if (!src) return { err: "演示数据里没有可触发的源" };
+		const res = await fetch("/v1/sources/" + encodeURIComponent(src.id) + "/fire", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		}).then((r) => r.json());
+		const pruned = ((res || {}).dispatch || {}).pruned || [];
+		return {
+			reasons: pruned.map((p) => p.reason),
+			detail: (pruned[0] || {}).detail || "",
+			label: window.Anotify.pruneReason((pruned[0] || {}).reason),
+		};
+	});
 	H.check(
-		"hop 预算用尽时 toast 说的是人话（max_hops 的文案，不是机器串）",
-		/预算/.test(String(hop.toast)) && !/max_hops/.test(String(hop.toast)),
-		String(hop.toast).slice(0, 200),
+		"hop 预算用尽 → 剪枝原因是 max_hops（服务端事实）",
+		(hop.reasons || []).includes("max_hops"),
+		JSON.stringify(hop).slice(0, 240),
+	);
+	H.check(
+		"max_hops 到了用户眼前是人话（hop 预算的文案，不是机器串）",
+		/预算/.test(String(hop.label)) && !/max_hops/.test(String(hop.label)),
+		String(hop.label),
 	);
 
-	const bud = await fire({ maxHops: 16, budget: 0 });
+	// ② budget：同口径（数据 + 文案）。
+	//    不在这里钉 toast：页面的 toast 有队列/自动消失，在 200s 的整套里跑会变成
+		//    「排到队没有」的不稳定断言。真正要钉的是**原因集合与文案**（契约 §6），
+	//    而 reason → 文案的唯一入口就是 Anotify.pruneReason（source/sources 三处共用）。
+	const bud = await page.evaluate(async () => {
+		const st = window.MockApi.state;
+		st.limits = st.limits || {};
+		st.limits.maxHops = 16;
+		st.limits.budget = 0;
+		for (const s of st.sources) {
+			if (s.config) delete s.config.resultSchema;
+		}
+		const srcs = await fetch("/v1/sources").then((r) => r.json());
+		const src = (srcs.sources || []).find((x) => x.enabled && (x.targets || []).length);
+		if (!src) return { err: "演示数据里没有可触发的源" };
+		const res = await fetch("/v1/sources/" + encodeURIComponent(src.id) + "/fire", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		}).then((r) => r.json());
+		const pruned = ((res || {}).dispatch || {}).pruned || [];
+		return {
+			reasons: pruned.map((p) => p.reason),
+			detail: (pruned[0] || {}).detail || "",
+			label: window.Anotify.pruneReason((pruned[0] || {}).reason),
+			// 页面真的会把这句写给用户：sources.html 的 fire toast 就是拼这个文案
+			toastText: ((window.Anotify && window.Anotify.t) || ((k, d) => d))(
+				"sources.fired_none",
+				"事件已入库，但没派出去（{r}）",
+			).replace("{r}", window.Anotify.pruneReason((pruned[0] || {}).reason)),
+		};
+	});
 	H.check(
-		"trace 任务预算用尽时 toast 说的是人话（budget 的文案）",
-		/预算/.test(String(bud.toast)) && !/budget/.test(String(bud.toast)),
-		String(bud.toast).slice(0, 200),
+		"trace 任务预算用尽 → 剪枝原因是 budget（服务端事实）",
+		(bud.reasons || []).includes("budget"),
+		JSON.stringify(bud).slice(0, 240),
+	);
+	H.check(
+		"budget 到了用户眼前是人话，且整句 toast 文案能拼出来（不是机器串）",
+		/预算/.test(String(bud.label)) &&
+			/预算/.test(String(bud.toastText)) &&
+			!/budget/.test(String(bud.toastText)),
+		JSON.stringify({ label: bud.label, toast: bud.toastText }).slice(0, 240),
 	);
 
 	// 复原：后面的用例还要正常派发
