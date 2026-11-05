@@ -649,8 +649,12 @@
             const row = el("div", "emit-row");
             row.dataset.seq = String(em.seq == null ? "" : em.seq);
             row.appendChild(el("span", "emit-seq", "#" + (em.seq == null ? "?" : em.seq)));
-            // 端口是路由的唯一输入：它应该比时间先被看到，所以紧跟 seq。
-            row.appendChild(el("span", "badge badge-accent", em.port || "—"));
+            // 端口（隐式那个叫 out）**不展示**（CONTRACT-hide-ports.md §1/§4）：
+            // 它是 emit 的路由键，不是用户要认的东西。多出口能力才把它标出来 ——
+            // 那种情况端口是作者真写下的名字，能帮人认出"这一路是哪个"。
+            if (em.port && em.port !== "out") {
+              row.appendChild(el("span", "badge badge-accent", em.port));
+            }
             row.appendChild(el("span", "emit-time", fmtTime(em.createdAt)));
             // routed/pruned 是首次处理的结果（emit-protocol §3.2）：
             // routed=0 是合法值（这个出口没接下游），不是错误；

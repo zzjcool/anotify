@@ -188,10 +188,12 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 		}
 	}
 	sort.Strings(removed)
-	for _, p := range removed {
+	for range removed {
 		changes = append(changes, UpgradeChange{
-			Kind:   ChangeRemovedPort,
-			Detail: fmt.Sprintf("port %q 在新版里被删掉了（旧版有 %v）", p, prev.Outputs),
+			Kind: ChangeRemovedPort,
+			// 不提"端口"这个词（CONTRACT-hide-ports.md §6）：用户脑子里只有
+			// "这个能力跑完交给谁"。旧版有多个出口时把它们列出来，让人认得出断的是哪一路。
+			Detail: fmt.Sprintf("删掉了一个出口（旧版有 %v），接在它下游的连线会断", prev.Outputs),
 		})
 	}
 

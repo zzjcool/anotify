@@ -14,6 +14,13 @@ import (
 	"github.com/zzjcool/anotify/internal/schema"
 )
 
+// ImplicitPort 是**单出口能力的隐式端口名**（CONTRACT-hide-ports.md §1）。
+//
+// 端口在协议里仍然存在（它是 emit 的路由键、是 edges.from_port 的取值），但用户
+// 不再看见它：创建能力时只填「下游能力（候选）」，系统把唯一出口固定叫 out。
+// 于是凡是"给人看"的地方都要把它当作**不存在**——内部分支判断仍然按端口走。
+const ImplicitPort = "out"
+
 // Edge 是 edges 表的一行：出口表是路由的唯一依据（契约 §2.4）。
 //
 // isOriginCapability 判断某个能力定义是不是内置起点。

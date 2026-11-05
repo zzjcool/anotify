@@ -606,7 +606,14 @@ func (d *DB) PlaybookChecks(ctx context.Context, pb *Playbook) (*PlaybookChecks,
 
 	// ③ 出口：两端定义都在才谈得上"这条边在不在"
 	for _, e := range m.Edges {
-		label := fmt.Sprintf("%s --%s--> %s", e.From, e.FromPort, e.To)
+		// 隐式端口不写进人话（CONTRACT-hide-ports.md §1）：单出口能力的端口内部
+		// 固定叫 out，把它打成"review --out--> fixer"等于把实现细节漏给运维。
+		// 多出口能力（playbook 里显式写端口的老形态）仍然保留端口名——那里的端口
+		// 是作者真写下的东西，不是我们编的。
+		label := fmt.Sprintf("%s → %s", e.From, e.To)
+		if e.FromPort != "" && e.FromPort != ImplicitPort {
+			label = fmt.Sprintf("%s --%s--> %s", e.From, e.FromPort, e.To)
+		}
 		from, _, ferr := resolveManifestCap(pb.NamespaceID, capAt(declared, e.From), e.From, true, resolver)
 		if ferr != nil {
 			return nil, fmt.Errorf("playbook checks: %w", ferr)
@@ -1240,7 +1247,14 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 	// ② 边：两端都要有定义；from 的出口必须含 fromPort（I2）。
 	// 单条边不成立只 skip 它自己，其余照装（不整体回滚）。
 	for _, e := range m.Edges {
-		label := fmt.Sprintf("%s --%s--> %s", e.From, e.FromPort, e.To)
+		// 隐式端口不写进人话（CONTRACT-hide-ports.md §1）：单出口能力的端口内部
+		// 固定叫 out，把它打成"review --out--> fixer"等于把实现细节漏给运维。
+		// 多出口能力（playbook 里显式写端口的老形态）仍然保留端口名——那里的端口
+		// 是作者真写下的东西，不是我们编的。
+		label := fmt.Sprintf("%s → %s", e.From, e.To)
+		if e.FromPort != "" && e.FromPort != ImplicitPort {
+			label = fmt.Sprintf("%s --%s--> %s", e.From, e.FromPort, e.To)
+		}
 		from, fromWhy, err := resolveCap(e.From)
 		if err != nil {
 			return nil, nil, fmt.Errorf("install playbook: %w", err)
