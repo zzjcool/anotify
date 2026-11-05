@@ -390,6 +390,9 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 		// `emit`（然后拿到"本地模式无中枢"那条明确报错，而不是"读不到契约"）。
 		// 真实派发时这份契约来自 assign 帧，这里来自能力定义本身——同一形状。
 		Ports: append([]string(nil), outputPorts(art)...),
+		// 本地模式也记「声明的工作目录 → 展开后的真实路径」：用户在终端前跑，
+		// 更需要知道 ~/x 到底落在哪。
+		Log: log,
 	}
 
 	code, err := runLocal(ctx, j, stdout, stderr)

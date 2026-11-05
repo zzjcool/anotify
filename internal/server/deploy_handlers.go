@@ -423,7 +423,7 @@ type capabilityRunInput struct {
 	Files      map[string]string `json:"files,omitempty"`
 	TimeoutSec int               `json:"timeoutSec,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
-	// WorkDir 是这个能力在哪跑（绝对路径，#289 起是**唯一**来源）。
+	// WorkDir 是这个能力在哪跑（绝对路径或 `~/…`，`~` 由节点展开；#289 起是**唯一**来源）。
 	//
 	// 这个字段曾经漏在这里：handler 用一个独立的结构体接 run，字段没跟上
 	// artifact.Run，于是 `?workDir` 被 json 解码**静默丢掉**——返回 200，

@@ -240,6 +240,19 @@ func TestValidateRules(t *testing.T) {
 			a.Spec.Run.WorkDir = "/" + strings.Repeat("a", MaxWorkDirLen)
 		}, "invalid_work_dir"},
 		{"workDir 含 NUL", func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/app\x00/etc" }, "invalid_work_dir"},
+		// `~` 只在**节点**上展开（能力定义里存字面量）。所以字面量这边只能接受
+		// `~` / `~/…` 两种写法，其余一律拒——尤其是 `~user/x`（取决于机器上有没有
+		// 这个用户）与 `$HOME/x`（取决于进程环境，且本项目**不做** $VAR 展开）。
+		{"workDir 是 ~user/x（不支持）", func(a *Artifact) { a.Spec.Run.WorkDir = "~user/x" }, "work_dir_not_absolute"},
+		{"workDir 是 ~user（不支持）", func(a *Artifact) { a.Spec.Run.WorkDir = "~root" }, "work_dir_not_absolute"},
+		{"workDir 是 $HOME/x（不展开）", func(a *Artifact) { a.Spec.Run.WorkDir = "$HOME/x" }, "work_dir_not_absolute"},
+		// `..` 必须在展开**之前**查字面量：`~/../etc` 展开后就是家目录的父目录。
+		{"workDir 是 ~/../etc", func(a *Artifact) { a.Spec.Run.WorkDir = "~/../etc" }, "invalid_work_dir"},
+		{"workDir 是 ~/..", func(a *Artifact) { a.Spec.Run.WorkDir = "~/.." }, "invalid_work_dir"},
+		{"workDir 是 ~/x 但超长", func(a *Artifact) {
+			a.Spec.Run.WorkDir = "~/" + strings.Repeat("a", MaxWorkDirLen)
+		}, "invalid_work_dir"},
+		{"workDir 是 ~/x 但含 NUL", func(a *Artifact) { a.Spec.Run.WorkDir = "~/a\x00b" }, "invalid_work_dir"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -398,6 +411,13 @@ func TestWorkDirAcceptable(t *testing.T) {
 		{"根目录", "/"},
 		{"含空格与中文", "/srv/my app/项目"},
 		{"恰好到上限", "/" + strings.Repeat("a", MaxWorkDirLen-1)},
+		// `~` / `~/…`：节点执行时展开成 agent 用户的家目录（见 ExpandWorkDir）。
+		// 这里只校验字面量形态，不展开（展开会随机器变，不能进 digest）。
+		{"家目录 ~", "~"},
+		{"家目录 ~/（等价于 ~）", "~/"},
+		{"家目录下的项目", "~/proj"},
+		{"家目录下的中文路径", "~/my app/项目"},
+		{"~ 恰好到上限", "~/" + strings.Repeat("a", MaxWorkDirLen-2)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -407,6 +427,122 @@ func TestWorkDirAcceptable(t *testing.T) {
 				t.Fatalf("workDir %q 应该合法，却报错：%v", tc.dir, err)
 			}
 		})
+	}
+}
+
+// TestExpandWorkDir：`~` / `~/…` 在**节点**展开；其他写法原样返回。
+//
+// `$VAR` 一律不展开是**产品决策**（`os.ExpandEnv` 会把 $ANOTIFY_TASKDIR / $PATH
+// 都求值，等于把声明式常量变成求值表达式）：把 `$HOME/x` 原样返回是故意用例。
+func TestExpandWorkDir(t *testing.T) {
+	const home = "/home/…"
+	cases := []struct {
+		name string
+		dir  string
+		home string
+		want string
+	}{
+		{"~", "~", home, home},
+		{"~/ 等于家目录", "~/", home, home},
+		{"~/proj", "~/proj", home, home + "/proj"},
+		{"~/多层", "~/a/b/c", home, home + "/a/b/c"},
+		{"绝对路径不动", "/srv/app", home, "/srv/app"},
+		{"相对路径不动", "proj", home, "proj"},
+		// 只认 `~/` 前缀：`~user` 不展开（它不是家目录），原样返回后会被后续
+		// 的 IsAbs 检查拒掉。
+		{"~user 不展开", "~user/x", home, "~user/x"},
+		{"$HOME 不展开", "$HOME/x", home, "$HOME/x"},
+		{"${HOME} 不展开", "${HOME}/x", home, "${HOME}/x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExpandWorkDir(tc.dir, tc.home); got != tc.want {
+				t.Fatalf("ExpandWorkDir(%q) = %q, want %q", tc.dir, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsHomeRelative：`~` 前缀的判定口径（`~user` / `$HOME` 都**不是**）。
+func TestIsHomeRelative(t *testing.T) {
+	cases := []struct {
+		dir  string
+		want bool
+	}{
+		{"~", true},
+		{"~/", true},
+		{"~/proj", true},
+		{"", false},
+		{"/srv/app", false},
+		{"srv/app", false},
+		{"~user/x", false},
+		{"~user", false},
+		{"$HOME/x", false},
+	}
+	for _, tc := range cases {
+		if got := IsHomeRelative(tc.dir); got != tc.want {
+			t.Fatalf("IsHomeRelative(%q) = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// TestWorkDirDigestIsMachineIndependent：`~/proj` 的 digest 只取决于**字面量**，
+// 与机器无关（节点会把同一份产物在不同家目录下执行，但 digest 必须一样）。
+//
+// 一旦有人把 `~` 展开进 digest（解析期展开 / 先展开再 canonicalize），
+// 第一条（字面量原样进 canonical JSON）与第三条（两台机器同一字面量同摘要）都会红。
+func TestWorkDirDigestIsMachineIndependent(t *testing.T) {
+	a := validArtifact(t)
+	a.Spec.Run.WorkDir = "~/proj"
+	canon, err := CanonicalJSON(a)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	if !strings.Contains(string(canon), `"workDir":"~/proj"`) {
+		t.Fatalf("canonical JSON 里必须是字面量 ~/proj（展开进 digest 会让摘要随机器变）：%s", canon)
+	}
+	d, err := Digest(a)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	for _, home := range []string{"/home/…", "/root", "/Users/someone"} {
+		b := validArtifact(t)
+		b.Spec.Run.WorkDir = ExpandWorkDir("~/proj", home) // 展开后的路径**不**应影响摘要
+		db, err := Digest(b)
+		if err != nil {
+			t.Fatalf("Digest: %v", err)
+		}
+		if db == d {
+			t.Fatalf("把 ~ 换成 %q 后 digest 没变（展开后的路径不应与字面量同摘要）", home)
+		}
+		d2, err := Digest(a)
+		if err != nil {
+			t.Fatalf("Digest: %v", err)
+		}
+		if d2 != d {
+			t.Fatalf("同一字面量两次摘要不一致：%s != %s", d2, d)
+		}
+	}
+
+	// 往返（落盘 → Parse）后仍是字面量、digest 不变：否则节点 apply 回来会被判成
+	// "本地变体"（与 TestWorkDirDigestAndRoundTrip 同一条纪律，这里特别钉 ~）。
+	out, err := MarshalYAML(a)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("Parse(MarshalYAML 产物): %v\n%s", err, out)
+	}
+	if back.Spec.Run.WorkDir != "~/proj" {
+		t.Fatalf("往返后 workDir = %q, want 字面量 ~/proj", back.Spec.Run.WorkDir)
+	}
+	d3, err := Digest(back)
+	if err != nil {
+		t.Fatalf("Digest(back): %v", err)
+	}
+	if d3 != d {
+		t.Fatalf("往返后 digest 变了：%s != %s（节点会把自家产物判成本地变体）", d3, d)
 	}
 }
 

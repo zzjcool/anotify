@@ -1251,7 +1251,7 @@ caps:
     err_invalid_name: 'El nombre debe tener 1–63 caracteres en minúsculas, dígitos, punto, guion bajo o guion, empezando por letra o dígito'
     err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
     workdir: Directorio de trabajo
-    workdir_hint: 'Ruta absoluta que empieza por /; si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
+    workdir_hint: 'Ruta absoluta que empieza por /, o una ruta que empieza por ~/ (la ~ se expande en el nodo al directorio home del usuario del agent); si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
   detail:
     btn: Detalles
     params: Contrato de parámetros
