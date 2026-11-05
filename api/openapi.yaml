@@ -549,6 +549,52 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: 任务不存在 }
 
+  /tasks/{taskId}/logs:
+    get:
+      tags: [tasks]
+      summary: 任务日志（节点的 stdout / stderr 原文）
+      description: |
+        节点上跑这条任务的子进程留下了什么（CONTRACT-task-logs §4）。
+
+        **「任务存在但没有日志」 → `200` 空对象，绝不是 `404`**：
+        `{"stdout":"","stderr":"","truncated":false,"bytes":0}`。
+        「没日志」是合法状态（日志功能上线前跑的老任务、上传失败的运行）；
+        做成 `404` 会让前端在**正常路径**上处理错误。
+
+        响应**恰好四个字段**，且 `stdout` / `stderr` 是节点侧采集的**原文**：
+        包括节点追加的截断标记（`…（日志已截断：共 N 字节，只保留最后 32768 字节）`），
+        不 trim、不转义、不再裁剪——中枢不再二次裁剪（两层各裁一次，「共 N 字节」
+        到底指哪一层的 N 就说不清了）。
+
+        - `truncated` 是采集侧的事实（每流只留了最后 32 KiB），**不能**由长度反推
+          （恰好 32 KiB 时反推不出来），而「看得不是全部」这句话必须说得准；
+        - `bytes` 是截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）。
+
+        `namespaceId` **必填**（契约 §6.2），且**不接受 `*`**（单对象端点）。
+        跨命名空间的 `taskId` 与「不存在」同形：都是 `404 task not found`
+        （与 `/tasks/{id}` 同口径，不留 id 探测面）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - { name: taskId, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/NamespaceId"
+      responses:
+        "200":
+          description: |
+            日志快照。**没有日志时也返回 200**：四个字段全为空值（`bytes: 0`），
+            而不是 404。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskLogs" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: 任务（在该命名空间下）不存在——跨命名空间与此同形
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /namespaces/{ns}/tasks/{taskId}/emissions:
     get:
       tags: [tasks]
@@ -2385,6 +2431,75 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "501":
           description: '服务端没带 agent 二进制（`{"error":"agent_binary_unavailable"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /node/tasks/{taskId}/logs:
+    post:
+      tags: [node-stream]
+      summary: 节点上传任务日志（节点令牌鉴权）
+      description: |
+        节点上的 agent 在发 `result` 帧**之前**把子进程的 stdout / stderr 传上来
+        （CONTRACT-task-logs §2）。为什么走 HTTP 而不是帧：帧的软上限是 1 MiB，
+        而同一条连接上还跑着心跳与 assign；几十 MB 的构建日志塞进帧里，被堵死的是心跳
+        （症状看起来像「节点掉线」）。
+
+        鉴权是**自己的 node token**（`Authorization: Bearer ant_node_...`），不是会话 Cookie：
+        调用方是节点上的 agent，它手里没有浏览器会话。命名空间由**令牌**钉死，
+        不由请求体声明。
+
+        归属：任务必须属于这个令牌的命名空间，且**确实是这台节点跑的**；
+        不满足时与「任务不存在」同形，都是 `404 {"error":"task_not_found"}`。
+
+        请求体上限 **256 KiB**（agent 侧已将每流截断到 32 KiB，合计 64 KiB）——
+        超限就是采集侧的截断逻辑坏了，回 `413` 比默默存一份巨大的日志有用；
+        它不会影响任务成败（agent 侧只记 WARN）。
+
+        **幂等**：同一任务重复上传直接覆盖（重派 / agent 重启补传 / 客户端重试都安全），
+        不会变成两行。上传本身是**排障材料**，丢了可惜，但绝不能因为日志没传上去
+        把跑成功的任务判成失败。
+      security:
+        - nodeToken: []
+      parameters:
+        - { name: taskId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stdout, stderr, truncated, bytes]
+              properties:
+                stdout:
+                  type: string
+                  description: 子进程 stdout（已 UTF-8 安全 + 尾部截断，含截断标记）
+                stderr:
+                  type: string
+                  description: 子进程 stderr（同上，**报错通常在这里**）
+                truncated:
+                  type: boolean
+                  description: 节点侧是否截断过（采集侧的事实，不能由长度反推）
+                bytes:
+                  type: integer
+                  format: int64
+                  description: 截断**前**两个流的真实字节数之和
+      responses:
+        "204": { description: 已落库（无响应体） }
+        "400":
+          description: '请求体不是合法 JSON（`{"error":"invalid_json"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: '任务不存在 / 不属于这台节点（`{"error":"task_not_found"}`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: '请求体超过 256 KiB（`{"error":"payload_too_large"}`）'
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -4261,6 +4376,35 @@ components:
         createdAt: { type: integer, format: int64 }
         startedAt: { type: integer, format: int64, nullable: true }
         finishedAt: { type: integer, format: int64, nullable: true }
+
+    TaskLogs:
+      type: object
+      description: |
+        一条任务的日志快照（CONTRACT-task-logs §4）。节点侧采集 → HTTP 上传 → 落
+        `task_logs` 表 → 控制台读。响应**恰好四个字段**：不额外给 taskId /
+        namespaceId / createdAt（调用方已经知道在问哪个任务，多一份事实源只会有两种口径）。
+
+        `stdout` / `stderr` 是**原文**（含节点追加的截断标记），中枢不再裁剪；
+        两个流分开存：合并之后 stderr 的「谁先写谁先上」顺序就没了，而报错时恰恰
+        要看清是哪个流。
+      required: [stdout, stderr, truncated, bytes]
+      properties:
+        stdout:
+          type: string
+          description: 子进程 stdout 原文（空串 = 没输出；不 trim、不转义）
+        stderr:
+          type: string
+          description: 子进程 stderr 原文（空串 = 没输出；失败原因通常在这里）
+        truncated:
+          type: boolean
+          description: |
+            节点侧是否截断过（每流只留了最后 32 KiB）。采集侧的事实，
+            **不能**由字符串长度反推：恰好 32 KiB 时反推不出来，
+            而「看得不是全部」这句话必须说得准。
+        bytes:
+          type: integer
+          format: int64
+          description: 截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）；没有日志时是 0
 
     Emission:
       type: object

@@ -79,6 +79,10 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(h.tasks))))
 	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(h.task))))
+	// 任务日志读取（CONTRACT-task-logs §4）：与生产 mux 的接线一致，
+	// 否则测试测的是一套不存在的路由/错误码映射。
+	mux.Handle("GET /v1/tasks/{taskId}/logs",
+		noStore(sessMW(http.HandlerFunc(h.taskLogs))))
 	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(h.trace))))
 	// P1.6：任务的 emit 列表（命名空间在路径里，与生产 mux 的接线一致）
 	mux.Handle("GET /v1/namespaces/{ns}/tasks/{taskId}/emissions",

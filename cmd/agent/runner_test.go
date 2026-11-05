@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,11 +84,11 @@ func TestRunJobParamEnv(t *testing.T) {
 
 	res := runJob(context.Background(), j)
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, want %q (err=%q output=%q)", res.Status, statusSucceeded, res.Err, res.Output)
+		t.Fatalf("status = %q, want %q (err=%q stdout=%q stderr=%q)", res.Status, statusSucceeded, res.Err, res.Stdout, res.Stderr)
 	}
 	// "set" 来自 ${VAR+set}：证明 null 参数**存在**且为空串，而不是没设。
 	want := `hello world|dash-value|{"a":1,"b":["x"]}|3|true|set`
-	if got := strings.TrimSpace(res.Output); got != want {
+	if got := strings.TrimSpace(res.Stdout); got != want {
 		t.Fatalf("params env:\n got %q\nwant %q", got, want)
 	}
 }
@@ -102,7 +103,7 @@ func TestRunJobEnvIdentity(t *testing.T) {
 
 	res := runJob(context.Background(), j)
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, want %q (err=%q output=%q)", res.Status, statusSucceeded, res.Err, res.Output)
+		t.Fatalf("status = %q, want %q (err=%q stdout=%q stderr=%q)", res.Status, statusSucceeded, res.Err, res.Stdout, res.Stderr)
 	}
 	want := strings.Join([]string{
 		"tsk_test",
@@ -112,7 +113,7 @@ func TestRunJobEnvIdentity(t *testing.T) {
 		j.Digest,
 		workDirOf(j),
 	}, "|")
-	if got := strings.TrimSpace(res.Output); got != want {
+	if got := strings.TrimSpace(res.Stdout); got != want {
 		t.Fatalf("identity env:\n got %q\nwant %q", got, want)
 	}
 }
@@ -128,8 +129,8 @@ func TestRunJobEnvEmptyTraceID(t *testing.T) {
 	if res.Status != statusSucceeded {
 		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
 	}
-	if got := strings.TrimSpace(res.Output); got != "[set][]" {
-		t.Fatalf("output = %q, want [set][]（变量存在且为空串）", got)
+	if got := strings.TrimSpace(res.Stdout); got != "[set][]" {
+		t.Fatalf("stdout = %q, want [set][]（变量存在且为空串）", got)
 	}
 }
 
@@ -176,16 +177,16 @@ func TestRunJobWorkDirIsolation(t *testing.T) {
 
 	for i, res := range results {
 		if res.Status != statusSucceeded {
-			t.Fatalf("job#%d status = %q, want succeeded（err=%q output=%q）", i, res.Status, res.Err, res.Output)
+			t.Fatalf("job#%d status = %q, want succeeded（err=%q stdout=%q stderr=%q）", i, res.Status, res.Err, res.Stdout, res.Stderr)
 		}
-		if strings.Contains(res.Output, "LEAK-") {
-			t.Fatalf("job#%d 看到了另一个任务的文件：%s（工作目录没隔离）", i, res.Output)
+		if strings.Contains(res.Stdout, "LEAK-") {
+			t.Fatalf("job#%d 看到了另一个任务的文件：%s（工作目录没隔离）", i, res.Stdout)
 		}
 	}
 
 	// cwd 必须是各自的工作目录，而且两者不同。
-	cwdA := strings.TrimPrefix(strings.TrimSpace(results[0].Output), "cwd=")
-	cwdB := strings.TrimPrefix(strings.TrimSpace(results[1].Output), "cwd=")
+	cwdA := strings.TrimPrefix(strings.TrimSpace(results[0].Stdout), "cwd=")
+	cwdB := strings.TrimPrefix(strings.TrimSpace(results[1].Stdout), "cwd=")
 	if cwdA != workDirOf(ja) {
 		t.Errorf("job A cwd = %q, want %q", cwdA, workDirOf(ja))
 	}
@@ -268,10 +269,10 @@ tools=(alpha beta)
 `)
 		res := runJob(context.Background(), j)
 		if res.Status != statusSucceeded {
-			t.Fatalf("status = %q, want succeeded（err=%q output=%q）", res.Status, res.Err, res.Output)
+			t.Fatalf("status = %q, want succeeded（err=%q stdout=%q stderr=%q）", res.Status, res.Err, res.Stdout, res.Stderr)
 		}
-		if !strings.Contains(res.Output, "bash:alpha:ok") {
-			t.Fatalf("output = %q, want 含 bash:alpha:ok", res.Output)
+		if !strings.Contains(res.Stdout, "bash:alpha:ok") {
+			t.Fatalf("stdout = %q, want 含 bash:alpha:ok", res.Stdout)
 		}
 	})
 
@@ -292,8 +293,12 @@ tools=(alpha beta)
 	})
 }
 
-// TestRunJobExitCodePropagated：非 0 退出 → failed，Err 含 "exit status <code>"
-// 与 stderr 首行（v1 行为保留，只是命令换成了入口文件）。
+// TestRunJobExitCodePropagated：非 0 退出 → failed，Err 含 "exit status <code>"，
+// 而 stderr 那句解释落在 res.Stderr 里。
+//
+// 注：summary 的语义是「stdout 的第一行」，所以一个只往 stderr 写东西的失败
+// **不会**再让 Err 后半段带上那句话——那句话现在在 Stderr 里（原先它在合并捕获
+// 的输出里，而合并捕获正是本期要拆掉的东西）。
 func TestRunJobExitCodePropagated(t *testing.T) {
 	j := newRunnerJob(t, "echo boom >&2; exit 7")
 	res := runJob(context.Background(), j)
@@ -304,8 +309,11 @@ func TestRunJobExitCodePropagated(t *testing.T) {
 	if !strings.Contains(res.Err, "exit status 7") {
 		t.Fatalf("Err = %q, want 含 %q", res.Err, "exit status 7")
 	}
-	if !strings.Contains(res.Err, "boom") {
-		t.Fatalf("Err = %q, want 含 stderr 首行 %q", res.Err, "boom")
+	if !strings.Contains(res.Stderr, "boom") {
+		t.Fatalf("Stderr = %q, want 含 %q（不合并捕获的意义就在这里）", res.Stderr, "boom")
+	}
+	if res.Stdout != "" {
+		t.Fatalf("Stdout = %q, want 空：脚本没往 stdout 写东西，两个流不得串味", res.Stdout)
 	}
 	if res.Artifacts == nil || len(res.Artifacts) != 0 {
 		t.Fatalf("Artifacts = %v, want 非 nil 空列表", res.Artifacts)
@@ -331,8 +339,8 @@ func TestRunJobSuccess(t *testing.T) {
 	if res.Summary != "first line" {
 		t.Fatalf("Summary = %q, want %q", res.Summary, "first line")
 	}
-	if !strings.Contains(res.Output, "second line") {
-		t.Fatalf("Output = %q, want 含完整输出", res.Output)
+	if !strings.Contains(res.Stdout, "second line") {
+		t.Fatalf("Stdout = %q, want 含完整输出", res.Stdout)
 	}
 }
 
@@ -502,10 +510,10 @@ func TestRunJobWaitDelayKeepsTailOutput(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if res.Status != statusSucceeded {
-		t.Fatalf("status = %q, want %q (err=%q output=%q)", res.Status, statusSucceeded, res.Err, res.Output)
+		t.Fatalf("status = %q, want %q (err=%q stdout=%q stderr=%q)", res.Status, statusSucceeded, res.Err, res.Stdout, res.Stderr)
 	}
-	if !strings.Contains(res.Output, "head-ok") || !strings.Contains(res.Output, "tail-ok") {
-		t.Fatalf("Output = %q, want 含 head-ok 与 0.3s 后才写的 tail-ok（WaitDelay 不该吞掉正常输出）", res.Output)
+	if !strings.Contains(res.Stdout, "head-ok") || !strings.Contains(res.Stdout, "tail-ok") {
+		t.Fatalf("Stdout = %q, want 含 head-ok 与 0.3s 后才写的 tail-ok（WaitDelay 不该吞掉正常输出）", res.Stdout)
 	}
 	if elapsed >= 2*time.Second {
 		t.Fatalf("runJob 用了 %s，正常命令不该被 WaitDelay 拖慢", elapsed)
@@ -534,24 +542,155 @@ func TestRunJobNoArtifact(t *testing.T) {
 	}
 }
 
-// TestRunJobOutputTruncated：合并捕获有上限，超出部分丢弃并留下提示。
-func TestRunJobOutputTruncated(t *testing.T) {
-	// 纯 bash 造 100000 字节（> maxCapturedOutput），不依赖 yes/head。
-	body := `s=; i=0; while [ $i -lt 1000 ]; do s="${s}x"; i=$((i+1)); done; ` +
-		`i=0; while [ $i -lt 100 ]; do printf '%s' "$s"; i=$((i+1)); done`
+// ---------- stdout / stderr 分别捕获（契约 §1）----------
 
-	res := runJob(context.Background(), newRunnerJob(t, body))
+// TestRunJobSeparatesStdoutStderr 是本期拆掉「合并捕获」的直接证据：
+// 两个流各一条管道，stdout 的东西不得到 stderr 里、反之亦然。
+//
+// 合并捕获的现场代价：`exit status 2` 的真正原因（旧二进制的
+// "flag provided but not defined: -to"）在 stderr 里，混进 stdout 后就分不清
+// 「脚本说的」和「工具报的」了。
+func TestRunJobSeparatesStdoutStderr(t *testing.T) {
+	res := runJob(context.Background(), newRunnerJob(t, "printf 'out\\n'; printf 'err\\n' >&2"))
 	if res.Status != statusSucceeded {
 		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
 	}
-	if !strings.Contains(res.Output, "output truncated") {
-		t.Fatalf("Output 没有截断提示（len=%d）", len(res.Output))
+	if res.Stdout != "out\n" {
+		t.Fatalf("Stdout = %q, want %q（不得混入 stderr）", res.Stdout, "out\n")
 	}
-	if len(res.Output) > maxCapturedOutput+200 {
-		t.Fatalf("Output len = %d，超过上限 %d 太多", len(res.Output), maxCapturedOutput)
+	if res.Stderr != "err\n" {
+		t.Fatalf("Stderr = %q, want %q（不得混入 stdout）", res.Stderr, "err\n")
+	}
+	if res.Truncated {
+		t.Fatalf("Truncated = true, want false（这么短的输出不该被截断）")
+	}
+	if want := int64(len("out\n") + len("err\n")); res.Bytes != want {
+		t.Fatalf("Bytes = %d, want %d（两个流的真实字节数之和）", res.Bytes, want)
+	}
+}
+
+// TestRunJobLogsTruncatedPerStream：每个流各自 32 KiB 上限、**保留尾部**、
+// 截断时在末尾追加一行中文标记，另一条没超的流完整保留。
+func TestRunJobLogsTruncatedPerStream(t *testing.T) {
+	// 纯 bash 造正好 100000 字节的 stdout（不依赖 yes/head）：
+	// 1000 × 99 = 99000，再 989 个，最后是 11 字节的尾部标记 → 100000。
+	body := `s=; i=0; while [ $i -lt 1000 ]; do s="${s}x"; i=$((i+1)); done; ` +
+		`i=0; while [ $i -lt 99 ]; do printf '%s' "$s"; i=$((i+1)); done; ` +
+		`i=0; while [ $i -lt 989 ]; do printf 'x'; i=$((i+1)); done; ` +
+		`printf 'TAIL-MARKER'; printf 'err-small' >&2`
+
+	res := runJob(context.Background(), newRunnerJob(t, body))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q stderr=%q)", res.Status, statusSucceeded, res.Err, res.Stderr)
+	}
+
+	marker := fmt.Sprintf("\n…（日志已截断：共 %d 字节，只保留最后 %d 字节）", 100000, maxLogStreamBytes)
+	if !strings.HasSuffix(res.Stdout, marker) {
+		t.Fatalf("Stdout 末尾没有截断标记，want 逐字以 %q 结尾（len=%d）", marker, len(res.Stdout))
+	}
+	for _, want := range []string{"共 100000 字节", "只保留最后 32768 字节"} {
+		if !strings.Contains(marker, want) {
+			t.Fatalf("截断标记里缺 %q：%q", want, marker)
+		}
+	}
+	tail := strings.TrimSuffix(res.Stdout, marker)
+	if len(tail) != maxLogStreamBytes {
+		t.Fatalf("保留的尾部 = %d 字节，want %d（上限就是每个流的窗口大小）", len(tail), maxLogStreamBytes)
+	}
+	if !strings.HasSuffix(tail, "TAIL-MARKER") {
+		// 保留头部而不是尾部的实现会在这里红：标记串早被扔了。
+		t.Fatalf("尾部内容丢了：保留的最后 %d 字节 = %q，want 以 TAIL-MARKER 结尾",
+			len("TAIL-MARKER"), tail[max(0, len(tail)-len("TAIL-MARKER")):])
+	}
+
+	// 另一条流没超：完整保留、不加标记。
+	if res.Stderr != "err-small" {
+		t.Fatalf("Stderr = %q, want %q（没超上限的流不得被截断/加标记）", res.Stderr, "err-small")
+	}
+	if !res.Truncated {
+		t.Fatal("Truncated = false, want true（stdout 被截断了，这个事实必须传出去）")
+	}
+	if want := int64(100000 + len("err-small")); res.Bytes != want {
+		t.Fatalf("Bytes = %d, want %d（两流真实字节数之和，不是留下的长度）", res.Bytes, want)
 	}
 	if len(res.Summary) != summaryMaxBytes {
 		t.Fatalf("Summary len = %d, want %d（按字节截断）", len(res.Summary), summaryMaxBytes)
+	}
+}
+
+// TestRunJobInvalidUTF8Replaced：子进程吐的字节不一定是 UTF-8，而日志要能过 JSON。
+//
+// 不处理的后果很贵：json.Marshal 会报 "invalid character"，整条上传在最后一步失败，
+// 于是「任务为什么炸」还是没留下来（只不过换了一个地方丢）。
+//
+// 替换用的是 strings.ToValidUTF8，它的口径是「**一段连续**非法字节 → 一个 ?」
+// （不是每个字节一个），这条用例把这个口径钉下来。
+func TestRunJobInvalidUTF8Replaced(t *testing.T) {
+	// stdout：合法 + 连续两个非法字节（一段）+ 合法 + 一个非法；stderr：单个非法字节。
+	res := runJob(context.Background(), newRunnerJob(t, `printf 'ok\xff\xfe!\x80'; printf '\xc3' >&2`))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
+	}
+	if res.Stdout != "ok?!?" {
+		t.Fatalf("Stdout = %q, want %q（一段连续非法字节 → 一个 ?）", res.Stdout, "ok?!?")
+	}
+	if res.Stderr != "?" {
+		t.Fatalf("Stderr = %q, want %q", res.Stderr, "?")
+	}
+	for name, s := range map[string]string{"stdout": res.Stdout, "stderr": res.Stderr} {
+		if !utf8.ValidString(s) {
+			t.Fatalf("%s 不是合法 UTF-8：%q", name, s)
+		}
+		if _, err := json.Marshal(s); err != nil {
+			t.Fatalf("json.Marshal(%s) 报错（上传会在最后一步失败）: %v", name, err)
+		}
+	}
+}
+
+// TestRunJobSummaryIsFirstStdoutLine：summary 的口径**不变**（stdout 第一行），
+// 不因为 stderr 先写就换源，也不 fallback 到 stderr。
+func TestRunJobSummaryIsFirstStdoutLine(t *testing.T) {
+	res := runJob(context.Background(), newRunnerJob(t, "printf 'err-first\\n' >&2; printf 'out-first\\n'"))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q)", res.Status, statusSucceeded, res.Err)
+	}
+	if res.Summary != "out-first" {
+		t.Fatalf("Summary = %q, want %q（summary 只认 stdout 第一行）", res.Summary, "out-first")
+	}
+	if res.Stderr != "err-first\n" {
+		t.Fatalf("Stderr = %q, want %q", res.Stderr, "err-first\n")
+	}
+}
+
+// TestStreamLogWindow 钉住滑动窗口本身的边界（不经过进程，直接打 Write）。
+func TestStreamLogWindow(t *testing.T) {
+	marker := func(total int64, limit int) string {
+		return fmt.Sprintf("\n…（日志已截断：共 %d 字节，只保留最后 %d 字节）", total, limit)
+	}
+
+	l := newStreamLog(8)
+	// 单笔超过窗口：只留它的尾部。
+	if n, err := l.Write([]byte("0123456789AB")); n != 12 || err != nil {
+		t.Fatalf("Write = (%d, %v), want (12, nil)（短写会让 exec 把子进程判成写错误）", n, err)
+	}
+	if got, want := l.String(), "456789AB"+marker(12, 8); got != want {
+		t.Fatalf("String = %q, want %q", got, want)
+	}
+	if l.Total() != 12 {
+		t.Fatalf("Total = %d, want 12（真实写入量，不是 len(buf)）", l.Total())
+	}
+	// 多笔追加同样只留尾部（窗口边界是跨 Write 的，不是每笔一个窗口）。
+	l = newStreamLog(8)
+	l.Write([]byte("abcdef"))
+	l.Write([]byte("ghij"))
+	if got, want := l.String(), "cdefghij"+marker(10, 8); got != want {
+		t.Fatalf("String = %q, want %q", got, want)
+	}
+	// 没超窗口：不加任何标记。
+	small := newStreamLog(8)
+	small.Write([]byte("abc"))
+	if got := small.String(); got != "abc" {
+		t.Fatalf("String = %q, want %q（没截断就不该有标记）", got, "abc")
 	}
 }
 
@@ -608,7 +747,8 @@ func TestBuildEnv(t *testing.T) {
 		"HOME=/home/worker",
 		"LOG_LEVEL=info",
 		"MODE=strict",
-		"PATH=/usr/local/bin:/usr/bin:/bin",
+		// PATH 打头：agent 自己所在目录排最前（见 TestBuildEnvPathPrefix*）。
+		"PATH=/opt/anotify/bin:/usr/local/bin:/usr/bin:/bin",
 		"ZZZ=last",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -638,8 +778,99 @@ func TestBuildEnv(t *testing.T) {
 	j2 := newRunnerJob(t, `printf '%s' "${ANOTIFY_PARAM_STALE-unset}"`)
 	j2.Artifact.Spec.Run.Env = map[string]string{"ANOTIFY_PARAM_STALE": "1"}
 	res := runJob(context.Background(), j2)
-	if got := strings.TrimSpace(res.Output); got != "unset" {
+	if got := strings.TrimSpace(res.Stdout); got != "unset" {
 		t.Fatalf("子进程看到 ANOTIFY_PARAM_STALE=%q, want 完全没设（unset）", got)
+	}
+}
+
+// TestBuildEnvPathPrefix 是**现场故障的根本修复**：脚本里的 `anotify-agent`
+// 必须是「跑这个任务的那个 agent」，而不是 PATH 上碰巧先出现的那份。
+//
+// 现场：节点上 /usr/local/bin/anotify-agent 是旧副本（不认 emit 的 --to），
+// 脚本里 `anotify-agent emit --to …` 被它拒绝（exit 2，
+// "flag provided but not defined: -to"），而模块的 PATH 里本来就把它排在了真二进制前面。
+func TestBuildEnvPathPrefix(t *testing.T) {
+	const agentBin = "/opt/anotify/agent/anotify-agent"
+	wantDir := filepath.Dir(agentBin)
+
+	cases := []struct {
+		name     string
+		base     []string
+		runEnv   map[string]string
+		agentBin string
+		wantPath string
+	}{
+		{
+			name:     "父环境已有 PATH：自己目录排最前",
+			base:     []string{"PATH=/usr/local/bin:/usr/bin:/bin"},
+			agentBin: agentBin,
+			wantPath: wantDir + ":/usr/local/bin:/usr/bin:/bin",
+		},
+		{
+			name:     "父环境没有 PATH：就是自己目录",
+			base:     []string{"HOME=/root"},
+			agentBin: agentBin,
+			wantPath: wantDir,
+		},
+		{
+			// 产物 run.env 里写 PATH 也压不过它（顺序：父环境 → run.env → 打头）。
+			name:     "产物 run.env 设了 PATH 也不影响打头",
+			base:     []string{"PATH=/usr/bin"},
+			runEnv:   map[string]string{"PATH": "/custom/bin"},
+			agentBin: agentBin,
+			wantPath: wantDir + ":/custom/bin",
+		},
+		{
+			// 取不到自己的路径（os.Executable 失败）→ PATH 原样不动：
+			// 宁可缺这一条，也不要塞进 "." 或空段（空段等义于当前目录）。
+			name:     "agentBin 为空：PATH 不动",
+			base:     []string{"PATH=/usr/local/bin:/usr/bin:/bin"},
+			agentBin: "",
+			wantPath: "/usr/local/bin:/usr/bin:/bin",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			art := testScriptArtifact("demo.prep", 1, bashScript("true"))
+			art.Spec.Run.Env = tc.runEnv
+			j := job{TaskID: "tsk_path", Capability: "demo.prep", Version: 1, Artifact: art}
+
+			workDir := t.TempDir()
+			env, err := buildEnv(tc.base, j, workDir, workDir, tc.agentBin)
+			if err != nil {
+				t.Fatalf("buildEnv: %v", err)
+			}
+			got, _ := envLookup(env, "PATH")
+			if got != tc.wantPath {
+				t.Fatalf("PATH = %q, want %q", got, tc.wantPath)
+			}
+			if tc.agentBin != "" {
+				first := strings.Split(got, string(os.PathListSeparator))[0]
+				if first != filepath.Dir(tc.agentBin) {
+					t.Fatalf("PATH 第一段 = %q, want %q（agent 自己所在目录）", first, filepath.Dir(tc.agentBin))
+				}
+			}
+		})
+	}
+}
+
+// TestBuildEnvPathPrefixEndToEnd：真起一个子进程，它看到的 `anotify-agent`
+// 必须解析到**本 agent 的目录**（而不是 PATH 上那个旧的）。
+func TestBuildEnvPathPrefixEndToEnd(t *testing.T) {
+	// 真二进制（整个包共用一次编译），放在它自己的目录里。
+	bin := buildAgentBinary(t)
+	old := executablePath
+	executablePath = func() (string, error) { return bin, nil }
+	t.Cleanup(func() { executablePath = old })
+
+	// 脚本打印 `command -v anotify-agent` 的结果：修复前它会指向 PATH 上那个；
+	// 修复后必须是 bin 自己。
+	res := runJob(context.Background(), newRunnerJob(t, `command -v anotify-agent`))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want succeeded（err=%q stderr=%q）", res.Status, res.Err, res.Stderr)
+	}
+	if got := strings.TrimSpace(res.Stdout); got != bin {
+		t.Fatalf("command -v anotify-agent = %q, want %q（PATH 打头没生效）", got, bin)
 	}
 }
 
@@ -834,8 +1065,8 @@ printf 'env=%s\n' "${ANOTIFY_OUT_FILE-unset}"`
 		t.Fatalf("status = %q, want succeeded（err=%q）", res.Status, res.Err)
 	}
 	// ② 老脚本看不到那个变量（没被注入）。
-	if !strings.Contains(res.Output, "env=unset") {
-		t.Fatalf("output = %q，期望含 env=unset（ANOTIFY_OUT_FILE 不得再被注入）", res.Output)
+	if !strings.Contains(res.Stdout, "env=unset") {
+		t.Fatalf("stdout = %q，期望含 env=unset（ANOTIFY_OUT_FILE 不得再被注入）", res.Stdout)
 	}
 }
 
@@ -960,5 +1191,34 @@ func TestRunJobExampleCapability(t *testing.T) {
 	}
 	if got := string(frames[0].Data); got != `{"message":"hello"}` {
 		t.Fatalf("emit.data = %s，期望入参原样透传 {\"message\":\"hello\"}", got)
+	}
+}
+
+// TestRunJobSummarySurvivesTailTruncation：summary 的语义是 stdout 的**第一行**，
+// 而日志窗口只保留最后 32 KiB——第一行会被挤出去。
+//
+// 这就是头部旁路窗口（streamLog.head）存在的理由：日志留尾部（错误通常在最后），
+// 但 summary（进 result 帧、进 tasks.summary、失败时还进 error）必须仍是第一行。
+// 只拿 String() 去 oneLine 的实现会在这里红：它取到的是尾部窗口的第一行。
+func TestRunJobSummarySurvivesTailTruncation(t *testing.T) {
+	// 第一行很短，后面再灌 100000 字节（> 32 KiB 窗口）。
+	body := `printf 'first-line\n'; ` +
+		`s=; i=0; while [ $i -lt 1000 ]; do s="${s}x"; i=$((i+1)); done; ` +
+		`i=0; while [ $i -lt 100 ]; do printf '%s' "$s"; i=$((i+1)); done`
+
+	res := runJob(context.Background(), newRunnerJob(t, body))
+	if res.Status != statusSucceeded {
+		t.Fatalf("status = %q, want %q (err=%q stderr=%q)", res.Status, statusSucceeded, res.Err, res.Stderr)
+	}
+	if res.Summary != "first-line" {
+		t.Fatalf("Summary = %q, want %q（summary 必须是 stdout 第一行，不是尾部窗口的第一行）",
+			res.Summary, "first-line")
+	}
+	// 反向证据：尾部窗口里确实没有第一行（否则这条用例什么都没证明）。
+	if strings.Contains(res.Stdout, "first-line") {
+		t.Fatalf("尾部窗口里还有第一行，夹具失效（窗口 = 最后 %d 字节）", maxLogStreamBytes)
+	}
+	if !res.Truncated {
+		t.Fatal("Truncated = false, want true（100000 字节的 stdout 必然被截断）")
 	}
 }

@@ -322,6 +322,10 @@ type nodeAgent struct {
 	emitMu sync.Mutex
 	emits  map[string]*emitServer
 
+	// logs 是任务日志上传器（契约 §2）；nil = 不上传（standalone / 配置缺 server）。
+	// 单测可以直接把它换成 fake 或 nil。
+	logs taskLogSender
+
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
 	//
 	// wgMu 只在两件事上持有：reserveTask 做 Add、drain 置 draining。两件事
@@ -345,7 +349,7 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		dataDir = filepath.Join(os.TempDir(), "anotify")
 	}
 	base, cancel := context.WithCancel(context.WithoutCancel(parent))
-	return &nodeAgent{
+	a := &nodeAgent{
 		cfg:     cfg,
 		conn:    conn,
 		log:     log,
@@ -358,6 +362,10 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		tasks:   make(map[string]*taskCancel),
 		emits:   make(map[string]*emitServer),
 	}
+	// 日志上传器由配置推导（非法配置/缺 server → nil，只 WARN 一次）：
+	// 放在构造里而不是每个任务里，是为了「配置错」只报一次。
+	a.logs = newHTTPLogSender(cfg, log)
+	return a
 }
 
 // exit 结束进程。（升级成功后要退出让 supervisor 拉起新版本；测试用 exitHook 拦下。）
@@ -722,6 +730,10 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			a.stopEmitServer(f.TaskID, es)
 			es.Close()
 		}
+		// 日志先传，再发 result：result 一到中枢，这个任务就可能有下游/重试/通知
+		// 在读了；日志晚到的窗口越小越好。上传失败只记 WARN（不参与任务成败）。
+		// 顺序在「task finished」日志**之后**：那条日志带 elapsed/status，是排障时间线，
+		// 不该被一次可能耗到 10s 的 HTTP 拖在后面（result 帧的时序才是硬要求）。
 		a.log.Info("task finished",
 			"event", "agent.task.finished",
 			"task_id", f.TaskID,
@@ -735,9 +747,38 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			"error", out.Err,
 		)
 		a.log.Debug("task output",
-			"event", "agent.task.output", "task_id", f.TaskID, "output", out.Output)
+			"event", "agent.task.output", "task_id", f.TaskID,
+			"stdout", out.Stdout, "stderr", out.Stderr)
+		a.uploadLogs(f.TaskID, out)
 		a.sendResult(f.TaskID, canceledOutcome(jctx, out))
 	}()
+}
+
+// uploadLogs 把这次执行的 stdout/stderr 上传给中枢（契约 §2）。
+//
+// 三条纪律，缺一条都会把一个好任务弄成坏任务：
+//
+//  1. 用 a.base（连接 ctx）而不是任务 ctx：任务被 cancel 也要能把日志传上去——
+//     「为什么被取消/怎么炸的」恰恰是那时最想看的东西。
+//  2. logUploadTimeout 兜住卡死：result 帧在它后面等，不能让一次 HTTP 把结果拖到
+//     租约到期。
+//  3. 失败只 WARN：日志丢了是可惜，但绝不能因为日志上传失败把跑成功的任务判成失败
+//     （out.Status / sendResult 一概不看这里的返回值）。
+func (a *nodeAgent) uploadLogs(taskID string, out outcome) {
+	if a.logs == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(a.base, logUploadTimeout)
+	defer cancel()
+	if err := a.logs.upload(ctx, taskID, logSnapshot{
+		Stdout:    out.Stdout,
+		Stderr:    out.Stderr,
+		Truncated: out.Truncated,
+		Bytes:     out.Bytes,
+	}); err != nil {
+		a.log.Warn("task log upload failed",
+			"event", "agent.logs.upload_failed", "task_id", taskID, "error", err.Error())
+	}
 }
 
 // canceledOutcome 保证「被取消」这个事实一定能从中枢/用户看得到。

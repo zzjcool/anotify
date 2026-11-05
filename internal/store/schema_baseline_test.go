@@ -45,6 +45,8 @@ var baselineTables = []string{
 	"artifacts", "deployments",
 	// emit 落库
 	"emissions",
+	// 任务日志（迁移 4：stdout/stderr 原文，随任务级联删除）
+	"task_logs",
 	// 预案与源
 	"playbooks", "sources",
 	// 迁移机制自身
@@ -120,7 +122,7 @@ func TestBaselineNoHistoricalBaggage(t *testing.T) {
 
 // TestBaselineForeignKeys 外键全量形状：谁指向谁、级联语义是什么。
 //
-// 这里逐条列出**全部**外键（27 条），而不是只挑几条：
+// 这里逐条列出**全部**外键（28 条），而不是只挑几条：
 // 外键是「删命名空间 / 删节点 / 清任务」这些级联行为的唯一依据，
 // 少一条就是静默留下孤儿行，多一条就是静默删掉不该删的数据。
 func TestBaselineForeignKeys(t *testing.T) {
@@ -155,9 +157,11 @@ func TestBaselineForeignKeys(t *testing.T) {
 		"node_capabilities.node_id -> nodes(id) ON DELETE CASCADE",
 		"node_instances.node_id -> nodes(id) ON DELETE CASCADE",
 		"node_pins.node_id -> nodes(id) ON DELETE CASCADE",
-		// 关键级联：任务被 retention 清掉时，它的 emission 一起走
-		//（脱任务的 emission 既不能派发也不能解释）
+		// 关键级联：任务被 retention 清掉时，它的 emission 与日志一起走
+		//（脱任务的 emission 既不能派发也不能解释；脱任务的日志是一张只涨不降的
+		// 孤儿大表，而日志恰好是全库最大的 TEXT）
 		"emissions.task_id -> tasks(id) ON DELETE CASCADE",
+		"task_logs.task_id -> tasks(id) ON DELETE CASCADE",
 		// 刻意**不带级联**：删一个能力不该顺手清空它的任务历史（审计靠它）
 		"tasks.capability_id -> capability_versions(id) ON DELETE NO ACTION",
 	}

@@ -108,17 +108,31 @@ type job struct {
 type outcome struct {
 	Status string // statusSucceeded | statusFailed
 	// 这里**没有** Out（出口名）：P1.5 起 out 退役，路由只看 emit 的 port。
-	Summary   string   // 一行
+	Summary   string   // 一行（= Stdout 的第一行，见 runJob）
 	Artifacts []string // 恒非 nil（空返回 []）
 	Err       string   // failed 时非空
-	Output    string   // 合并后的子进程输出（只进日志，不进 result 帧）
-	WorkDir   string   // 本次任务的独立工作目录（失败时保留，日志里指路）
+	// Stdout / Stderr 是**分别**捕获的两个流（不再合并）：现场那个
+	// `exit status 2` 的真正原因只出现在 stderr，合并捕获之后就没人分得清
+	// 「脚本说的」和「工具报的」。两者都是 UTF-8 安全、尾部截断、带截断标记的。
+	Stdout string
+	Stderr string
+	// Truncated 表示任一流被截断过（契约 §1：截断要明说，别让人误以为看全了）。
+	Truncated bool
+	// Bytes 是两个流的**真实**字节数之和（截断前）——报给中枢的就是它。
+	Bytes int64
+	// WorkDir 是本次任务的独立工作目录（失败时保留，日志里指路）。
+	WorkDir string
 }
 
 const (
-	// maxCapturedOutput 是 stdout+stderr 合并捕获的上限：任务输出只用于日志与
-	// summary，不能让一个话痨命令把 agent 的内存吃光。
-	maxCapturedOutput = 64 << 10
+	// maxLogStreamBytes 是**每个流各自**的捕获上限（合计 64 KiB）：任务输出只用于
+	// 日志与 summary，不能让一个话痨命令把 agent 的内存吃光。保留的是**尾部**——
+	// 错误几乎总在最后（契约 §1）。
+	maxLogStreamBytes = 32 << 10
+	// summaryHeadBytes 是头部旁路窗口的大小：主窗口只留尾部，而 summary 的语义是
+	// **stdout 的第一行**（result 帧里那句，还进 tasks.summary / error）。
+	// 4 KiB 足够容下「前面一串空行 + 第一行」，而 oneLine 只取前 200 字节。
+	summaryHeadBytes = 4 << 10
 	// summaryMaxBytes 是 summary 的字节上限（一行、UTF-8 安全截断）。
 	summaryMaxBytes = 200
 	// maxTaskIDLen 是任务 ID 的长度上限：它要当目录名用。
@@ -184,23 +198,31 @@ func runJob(ctx context.Context, j job) outcome {
 		defer cancel()
 	}
 
-	out := &cappedBuffer{limit: maxCapturedOutput}
+	stdoutSink := newStreamLog(maxLogStreamBytes)
+	stderrSink := newStreamLog(maxLogStreamBytes)
 	cmd := newArtifactCmd(ctx, plan)
 	// Stdin 不接（nil → /dev/null）：命令不可能因为等 stdin 而挂死。
-	cmd.Stdout = out
-	cmd.Stderr = out // 同一个 writer：exec 只用一条管道，stdout/stderr 按写序合并
+	cmd.Stdout = stdoutSink
+	// 两个流**各一条管道**（不再共用一个 writer）：合并之后 stderr 就再也找不回来了，
+	// 而「为什么炸了」通常只在 stderr 里（契约 §0 的现场）。
+	cmd.Stderr = stderrSink
 
 	if err := startCmd(cmd); err != nil {
 		// 明确区分「起不来」（入口文件不可执行、缺解释器…）与「跑完失败」。
 		res.Err = "start entrypoint: " + err.Error()
-		res.Output = out.String()
-		res.Summary = oneLine(res.Output, summaryMaxBytes)
+		captureLogs(&res, stdoutSink, stderrSink)
+		res.Summary = stdoutSink.FirstLine(summaryMaxBytes)
 		return res
 	}
 
 	err = cmd.Wait()
-	res.Output = out.String()
-	res.Summary = oneLine(res.Output, summaryMaxBytes)
+	captureLogs(&res, stdoutSink, stderrSink)
+	// summary 的口径**不变**：仍然是 stdout 的第一行。刻意不 fallback 到 stderr——
+	// 换源会让「同一个失败」在改版前后给出两种摘要，而摘要还进 error 字段。
+	//
+	// 用的是 stdoutSink.FirstLine（头部旁路窗口）而不是 oneLine(res.Stdout)：
+	// res.Stdout 只留了**最后** 32 KiB，第一行早已被挤出去。
+	res.Summary = stdoutSink.FirstLine(summaryMaxBytes)
 
 	switch {
 	case err == nil && ctx.Err() == nil:
@@ -532,6 +554,26 @@ func buildEnv(base []string, j job, workDir, cwd, agentBin string) ([]string, er
 		}
 	}
 
+	// 2.5) PATH 打头：**本 agent 二进制所在目录**必须排在最前面。
+	//
+	// 现场故障：节点上 /usr/local/bin 里躺着一份旧的 anotify-agent，它抢在 PATH
+	// 前面，于是脚本里的 `anotify-agent emit --to …` 被旧二进制当成未知参数
+	// （exit 2，stderr 只有 "flag provided but not defined: -to"）。
+	//
+	// 顺序是硬要求：必须在第 2 步**之后**。产物 run.env 里也可能写 PATH，但那压不过
+	// 这一条——「我这一版 agent」永远比「PATH 上碰巧先出现的那份」更可信；反过来
+	// 就等于把「跑起来的是谁」交给产物的环境变量去决定。
+	//
+	// agentBin 为空（os.Executable 失败）时**不动** PATH：宁可缺这条，也不要塞进一个
+	// "." 或空段（空段在 PATH 里等义于「当前目录」，是更严重的注入面）。
+	if dir := filepath.Dir(agentBin); agentBin != "" && dir != "" && dir != "." {
+		if cur := env["PATH"]; cur != "" {
+			env["PATH"] = dir + string(os.PathListSeparator) + cur
+		} else {
+			env["PATH"] = dir
+		}
+	}
+
 	// 3) 契约变量（契约 §6 的表格，全部保留 + 新增三个）。
 	paramsJSON := []byte("{}")
 	if len(j.Params) > 0 {
@@ -806,41 +848,99 @@ func oneLine(s string, maxBytes int) string {
 	return line[:cut]
 }
 
-// cappedBuffer 是带上限的输出缓冲：写满之后只记住「被截断了」，不再增长，
-// 但 Write 永远报告「全部写入」——短写会让 exec 把子进程判成写错误。
-type cappedBuffer struct {
-	mu        sync.Mutex
-	buf       []byte
-	limit     int
-	truncated bool
+// streamLog 是「只保留最后 limit 字节」的输出捕捉器（滑动窗口）。
+//
+// 为什么是**尾部**而不是前 limit 字节：错误几乎总是写在最后（编译错误的尾段、
+// 栈顶之前的最后一句 stderr），砍掉尾部等于把最有用的部分扔掉。
+//
+// Write 永远报告「全部写入」——短写会让 exec 把子进程判成写错误（写失败会把一次
+// 正常的任务变成 I/O 故障）。真实写入总量记在 total 里：截断提示与上报的 bytes
+// 都要用它，不能拿 len(buf) 冒充（那是「留下了多少」，不是「产生了多少」）。
+type streamLog struct {
+	mu    sync.Mutex
+	buf   []byte // 尾部窗口：真正上报的日志（最后 limit 字节）
+	head  []byte // 头部窗口：只服务 FirstLine（summary）
+	limit int
+	total int64
 }
 
-// Write 实现 io.Writer（stdout/stderr 共用一个实例）。
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if room := b.limit - len(b.buf); room > 0 {
+func newStreamLog(limit int) *streamLog { return &streamLog{limit: limit} }
+
+// Write 实现 io.Writer（每个流一个实例）。
+func (s *streamLog) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.total += int64(len(p))
+	// 头部窗口（只为了 summary 不被尾部滑动挤掉）：环形之外的那几 KB 代价可忽略。
+	if room := summaryHeadBytes - len(s.head); room > 0 {
 		if len(p) <= room {
-			b.buf = append(b.buf, p...)
+			s.head = append(s.head, p...)
 		} else {
-			b.buf = append(b.buf, p[:room]...)
-			b.truncated = true
+			s.head = append(s.head, p[:room]...)
 		}
-	} else if len(p) > 0 {
-		b.truncated = true
 	}
+	if len(p) >= s.limit {
+		// 这一笔自己就超了窗口：窗口里只可能是它的尾部（前面的字节已被挤出去）。
+		s.buf = append(s.buf[:0], p[len(p)-s.limit:]...)
+		return len(p), nil
+	}
+	if over := len(s.buf) + len(p) - s.limit; over > 0 {
+		s.buf = s.buf[over:] // 丢掉窗口最前面的 over 字节
+	}
+	s.buf = append(s.buf, p...)
 	return len(p), nil
 }
 
-// String 返回捕获到的输出；被截断时在末尾追加一句提示（说明「后面还有」）。
-func (b *cappedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	s := string(b.buf)
-	if b.truncated {
-		s += fmt.Sprintf("\n[agent: output truncated at %d bytes]\n", b.limit)
+// Total 是这个流**真实**写进来的字节数（截断前）。
+func (s *streamLog) Total() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
+}
+
+// Truncated 表示窗口外还有内容被丢掉了。
+func (s *streamLog) Truncated() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total > int64(len(s.buf))
+}
+
+// FirstLine 是本流**第一行**（= summary 的唯一来源，契约 §1）。
+//
+// 不能拿 String() 的结果去算：那是最后 32 KiB，脚本的第一行可能已经被挤出去了。
+// 头部窗口最多 4 KiB，再长的一行也只需要前 maxBytes 字节，所以结果与
+// 「对完整输出做 oneLine」一致（除非前 4 KiB 全是空白行——那种输出本来就没有摘要）。
+func (s *streamLog) FirstLine(maxBytes int) string {
+	s.mu.Lock()
+	head := s.head
+	s.mu.Unlock()
+	return oneLine(strings.ToValidUTF8(string(head), "?"), maxBytes)
+}
+
+// String 返回捕获到的输出：先按 UTF-8 校验（非法字节 → '?'，否则 JSON 编不出来，
+// 整条日志上传会在最后一步失败），被截断时在**末尾**追加一行说明。
+func (s *streamLog) String() string {
+	s.mu.Lock()
+	buf, total := s.buf, s.total
+	s.mu.Unlock()
+
+	out := strings.ToValidUTF8(string(buf), "?")
+	if total > int64(len(buf)) {
+		// 逐字形状见契约 §1：省略号说明前面还有内容，N 是真实字节数。
+		out += fmt.Sprintf("\n…（日志已截断：共 %d 字节，只保留最后 %d 字节）", total, s.limit)
 	}
-	return s
+	return out
+}
+
+// captureLogs 把两条流的采集结果填进 outcome（字符串、截断标记、真实字节数）。
+//
+// 起不来（start 失败）与跑完（Wait 之后）两条路径都必须调它：前者往往正是最需要
+// stderr 的场景（缺解释器、权限不对），漏了就等于什么都没记。
+func captureLogs(res *outcome, stdout, stderr *streamLog) {
+	res.Stdout = stdout.String()
+	res.Stderr = stderr.String()
+	res.Truncated = stdout.Truncated() || stderr.Truncated()
+	res.Bytes = stdout.Total() + stderr.Total()
 }
 
 // killProcessGroup 给**整个进程组**发 SIGKILL（负 pid = 进程组）。

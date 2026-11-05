@@ -43,7 +43,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -321,25 +320,15 @@ func upgradeConfig(configPath, serverOverride string, getenv func(string) string
 // 规则与 streamURL 一致（必须带 scheme；http/ws、https/wss 各成一组），区别只在
 // **换协议**而不是换路径：node.yaml 的 server 是给 WebSocket 用的，自升级走的是
 // 普通 HTTP 下载。所以 ws:// 要变成 http://，否则这里会拿一个 WS 客户端去见文件。
+//
+// 「server → http(s) 基地址」这一段与任务日志上传（logs.go 的 taskLogsEndpoint）
+// 共用 nodeConfig.httpServerURL（见 config.go）：两份实现一旦分叉，症状是
+// 「升级能下、日志传不上」这种只在某个部署形状下才出现的问题。
 func binaryEndpoint(server string) (string, error) {
-	raw := strings.TrimSpace(server)
-	if raw == "" {
-		return "", errors.New("server is required")
-	}
-	u, err := url.Parse(raw)
+	cfg := &nodeConfig{Server: server}
+	u, err := cfg.httpServerURL()
 	if err != nil {
-		return "", fmt.Errorf("server %q is not a valid URL: %w", raw, err)
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "ws":
-		u.Scheme = "http"
-	case "https", "wss":
-		u.Scheme = "https"
-	default:
-		return "", fmt.Errorf("server %q is not a valid URL (scheme must be http, https, ws or wss)", raw)
-	}
-	if u.Host == "" {
-		return "", fmt.Errorf("server %q is not a valid URL (missing host)", raw)
+		return "", err
 	}
 	path := strings.TrimSuffix(u.Path, "/")
 	if !strings.HasSuffix(path, binaryEndpointPath) {
