@@ -3859,3 +3859,829 @@ html.theme-switching *::after {
 		navigation: none;
 	}
 }
+
+/* ============================================================================
+   Silk 皮肤：trace 页图视图（.flograph--silk）
+   ----------------------------------------------------------------------------
+   基准（唯一视觉源）：design/flowline-lab.html 的 01 SILK
+     · 外壳 / bar / body / scroll / HUD / 共享卡片   → lab 260-499
+     · SILK 丝带 / 卡片 / 明暗两套                  → lab 501-582
+     · 响应式                                       → lab 949-1004
+     · reduced-motion                               → lab 1012-1021
+   契约：.pi-legion/contract.md §1（实测数值表）、§6（卡片 DOM）、§9（舞台/HUD DOM）。
+
+   纪律（改之前先读）：
+   ① 整段只在 `.flograph--silk` 作用域内生效。既有的 `.flograph` / `.wf-node` /
+      `.wf-node:hover` / `.wf-node.is-*` / `.flograph-legend` / `.flograph-ctrl` /
+      `.flograph-edge-label` / `.flograph-svg path` 一律靠"作用域加深一层
+      specificity + 排在文件末尾"覆盖，不回改既有规则一个字 —— source 页的
+      FlowGraph（capabilityFlow）因此一个像素都不变。
+   ② 丝带四层**不写 stroke**：颜色由 JS 内联 `style.stroke = url(#slg-<uid>-<i>)`。
+      这里只写 stroke-width / opacity / fill / 动画；但必须显式压过既有的
+      `.flograph-svg path { stroke-width: 1.4; fill: none }`（ui.css:1239）与
+      `.flograph-svg path.is-muted { stroke-dasharray: 3 3 }`（ui.css:1260）。
+   ③ 卡片宽高由 JS 内联（238×78，触发器 198×78，narrow 164×68）：这里不写死
+      width/height，只保证 `box-sizing: border-box` 下内联宽高就是最终尺寸。
+   ④ 只引用 tokens.css 里存在的变量。lab 里的 `--panel` / `--border` 生产**没有
+      定义**（已实测），换成 `--bg` + `--line-strong`；lab 的 `#000` 阴影换成
+      `var(--scrim)`（两套主题都是黑底 alpha）。`#000` 只出现在 mask-image 里
+      —— mask 只取 alpha，不是可主题化的色值。
+   ⑤ 数值照抄 lab，不凭感觉调（§1 表格 vs 需求书的 34/13/9 以 lab 实测为准）。
+   ============================================================================ */
+
+/* ---------- 1. 外壳（= lab .stage） ---------- */
+.flograph--silk {
+	/* --silk-h：JS 按内容高度写内联（contract §9「stage 高度收敛」） */
+	--art: var(--accent); /* HUD 轨道色：HUD 是外壳的子节点，不继承 body 的 */
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	height: var(--silk-h, clamp(480px, 64vh, 880px));
+	min-height: 0;
+	/* 横向滚动只许发生在 .flograph-scroll 里（390px 视口无页面横向滚动） */
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: 15px;
+	background: var(--surface-1);
+	box-shadow:
+		0 1px 0 color-mix(in srgb, var(--text) 5%, transparent) inset,
+		0 26px 60px -34px var(--scrim);
+	isolation: isolate;
+	cursor: default;
+}
+/* 全屏：观感沿用既有 .flograph.is-fullscreen（fixed + 铺满视口），但抹掉那条
+ * 的点阵底纹 —— silk 的舞台底由 .flograph-body 自己画。 */
+.flograph--silk.is-fullscreen {
+	position: fixed;
+	inset: 0;
+	z-index: var(--z-modal);
+	width: 100vw;
+	width: 100dvw;
+	height: 100vh;
+	height: 100dvh;
+	border: 0;
+	border-radius: 0;
+	background: var(--surface-1);
+}
+/* 全屏占位符：宽高由 JS 内联（撑住原位置），这里只把圆角对齐 silk 外壳 */
+.flograph--silk .flograph-placeholder {
+	border-radius: 15px;
+}
+/* 全屏提示：既有规则钉在 left/bottom 16px，会直接压在 35px 的 silk HUD 上 ——
+ * 只在本作用域里把它抬到 HUD 之上，既有提示条的观感一个字不动。 */
+.flograph--silk .flograph-fullscreen-hint {
+	bottom: 49px;
+}
+
+/* ---------- 2. bar（39px，= lab .stage-bar） ---------- */
+.flograph--silk .flograph-bar {
+	position: relative;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	flex: 0 0 39px;
+	height: 39px;
+	min-width: 0;
+	padding: 0 10px 0 13px;
+	border-bottom: 1px solid var(--line);
+	background: color-mix(in srgb, var(--bg) 72%, var(--surface-1) 28%);
+	font-family: var(--font-mono);
+	font-size: 8.5px;
+	color: var(--faint);
+}
+.flograph--silk .flograph-bar-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background: var(--success);
+	box-shadow: 0 0 0 3px var(--success-soft);
+}
+.flograph--silk .flograph-bar-dot.is-fail {
+	background: var(--error);
+	box-shadow: 0 0 0 3px var(--error-soft);
+}
+.flograph--silk .flograph-bar-id {
+	flex: 0 1 auto;
+	min-width: 0;
+	color: var(--muted);
+	letter-spacing: 0.02em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.flograph--silk .flograph-bar-meta {
+	flex: 0 1 auto;
+	min-width: 0;
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.flograph--silk .flograph-bar-spacer {
+	flex: 1 1 auto;
+}
+
+/* ---------- 3. body / scroll / canvas / svg（= lab .stage-body 与 .flow-*） ---------- */
+/* Silk 舞台底：背景画在 body 上而不是外壳上 —— bar/HUD 的 color-mix(bg …)
+ * 半透明底色会吃到那层渐变，和演示页产生可见色差（contract §9 明确要求）。 */
+.flograph--silk .flograph-body {
+	--art: var(--accent);
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+	background:
+		radial-gradient(52% 74% at 7% 18%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 72%),
+		radial-gradient(46% 66% at 94% 82%, color-mix(in srgb, var(--st-acked) 9%, transparent), transparent 76%),
+		linear-gradient(
+			156deg,
+			color-mix(in srgb, var(--surface-1) 92%, var(--accent) 2%),
+			var(--surface-1) 56%,
+			color-mix(in srgb, var(--surface-1) 94%, var(--st-acked) 2%)
+		);
+}
+/* 112° 斜纹，只在两端 24% / 76% 之外可见（mask 渐隐） */
+.flograph--silk .flograph-body::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	pointer-events: none;
+	opacity: 0.5;
+	background: repeating-linear-gradient(
+		112deg,
+		transparent 0 26px,
+		color-mix(in srgb, var(--text) 2.2%, transparent) 26px 27px
+	);
+	mask-image: linear-gradient(90deg, #000, transparent 24%, transparent 76%, #000);
+	-webkit-mask-image: linear-gradient(90deg, #000, transparent 24%, transparent 76%, #000);
+}
+.flograph--silk .flograph-scroll {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	display: flex;
+	align-items: center;
+	cursor: grab;
+	overscroll-behavior-x: contain;
+	scrollbar-width: thin;
+	scrollbar-color: var(--line-strong) transparent;
+	/* 两端 13px 渐隐：卡片滑出视野时不是被"切断"，而是化进背景 */
+	mask-image: linear-gradient(90deg, transparent 0, #000 13px, #000 calc(100% - 13px), transparent 100%);
+	-webkit-mask-image: linear-gradient(90deg, transparent 0, #000 13px, #000 calc(100% - 13px), transparent 100%);
+}
+.flograph--silk .flograph-scroll.is-dragging {
+	cursor: grabbing;
+}
+.flograph--silk .flograph-scroll:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -3px;
+}
+.flograph--silk .flograph-scroll::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+.flograph--silk .flograph-scroll::-webkit-scrollbar-track {
+	background: transparent;
+}
+.flograph--silk .flograph-scroll::-webkit-scrollbar-thumb {
+	background: var(--line-strong);
+	border-radius: 8px;
+}
+.flograph--silk .flograph-canvas {
+	position: relative;
+	flex: 0 0 auto;
+	margin: auto;
+	z-index: 1;
+	transform-origin: 0 0; /* zoom 时 JS 只改变换矩阵，原点固定在左上 */
+}
+.flograph--silk .flograph-svg {
+	position: absolute;
+	inset: 0;
+	overflow: visible;
+	pointer-events: none;
+	z-index: 1;
+}
+
+/* ---------- 4. 丝带（4 层 + bead，= lab .sl-*） ----------
+ * 顺序即层序：under（雾）→ mid（带）→ core（1.5px 主线，JS 用它做"逐段描出"）
+ * → shim（流动虚线）。主线**不写** dasharray/dashoffset：描出由 JS 用实测长度
+ * 的 WAAPI 负责（contract §8 第 9 条，与 lab 的有意差异），这里写死会盖住终态。
+ */
+.flograph--silk .flograph-svg .sl-edge {
+	opacity: 0;
+	transition: opacity 0.5s var(--ease-out);
+}
+.flograph--silk .flograph-svg .sl-edge.is-on {
+	opacity: 1;
+}
+.flograph--silk .flograph-svg .sl-under {
+	fill: none;
+	stroke-linecap: round;
+	stroke-width: 30;
+	opacity: 0.28;
+	/* lab 用 filter: url(#sl-soft)；生产的 defs id 带每次 mount 的唯一 uid，
+	 * CSS 里无法引用，直接内联同参数（stdDeviation 5）的高斯模糊 */
+	filter: blur(5px);
+}
+.flograph--silk .flograph-svg .sl-mid {
+	fill: none;
+	stroke-linecap: round;
+	stroke-width: 11;
+	opacity: 0.52;
+}
+.flograph--silk .flograph-svg .sl-core {
+	fill: none;
+	stroke-linecap: round;
+	stroke-width: 1.5;
+	opacity: 0.86;
+}
+.flograph--silk .flograph-svg .sl-shim {
+	fill: none;
+	stroke-linecap: round;
+	stroke-width: 4.2;
+	opacity: 0;
+	stroke-dasharray: 24 144;
+	animation: sl-flow 3.1s linear infinite;
+}
+.flograph--silk .flograph-svg .sl-edge.is-on .sl-shim {
+	opacity: 0.95;
+}
+.flograph--silk .flograph-svg .sl-bead {
+	fill: color-mix(in srgb, var(--text) 74%, var(--accent));
+	opacity: 0.95;
+	filter: drop-shadow(0 0 6px var(--accent));
+}
+/* 没走过的边（contract §5.4）：不靠 is-on，opacity 恒 1，主线虚线当"底图" */
+.flograph--silk .flograph-svg .sl-edge.is-muted {
+	opacity: 1;
+}
+.flograph--silk .flograph-svg .sl-edge.is-muted .sl-core,
+.flograph--silk .flograph-svg path.is-muted {
+	stroke-dasharray: 4 5;
+	opacity: 0.32;
+}
+/* "这次还没走到"：既有 .flograph-svg path.is-pre 的同一语义，在作用域内重述
+ * 一遍（必须排在上面的层规则之后，否则会被 .sl-core 的 .86 盖掉） */
+.flograph--silk .flograph-svg .is-pre {
+	opacity: 0.16;
+	filter: grayscale(1);
+}
+@keyframes sl-flow {
+	from {
+		stroke-dashoffset: 180;
+	}
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+/* ---------- 5. 卡片（= lab .flow-node/.sl-node + .n-*，contract §6 DOM） ----------
+ * DOM 里同时挂着既有的 `.wf-node` 与 `.wf-node-icon/-title/-sub/-dot`
+ * （E2E 锁定这几个类），所以下面每条都要压过 ui.css:1302-1560 的旧观感：
+ * flex → grid、min-width 168 / max-width 240 → 由内联宽高决定、padding 10 12 →
+ * 8 10、radius var(--r-md) → 11px、渐变实底 → 74% 半透明 + backdrop blur。
+ */
+.flograph--silk .wf-node.sl-node {
+	--state: var(--success); /* JS 有内联 --state 时以内联为准，这里是兜底 */
+	position: absolute;
+	z-index: 3;
+	display: grid;
+	grid-template-columns: 29px minmax(0, 1fr) auto;
+	gap: 9px;
+	align-items: center;
+	box-sizing: border-box;
+	min-width: 0;
+	max-width: none;
+	padding: 8px 10px;
+	border-radius: 11px;
+	text-align: left;
+	background: color-mix(in srgb, var(--surface-1) 74%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	box-shadow:
+		0 1px 0 color-mix(in srgb, var(--text) 7%, transparent) inset,
+		0 14px 30px -20px var(--scrim);
+	transition:
+		opacity 0.55s var(--ease-out),
+		transform 0.6s var(--ease-out),
+		border-color 0.35s var(--ease),
+		box-shadow 0.35s var(--ease),
+		filter 0.35s var(--ease);
+	cursor: default;
+}
+/* 既有 .wf-node:hover 的主色描边 + lift 是 FlowGraph 的观感，silk 不要 */
+.flograph--silk .wf-node.sl-node:hover {
+	border-color: color-mix(in srgb, var(--text) 9%, transparent);
+	box-shadow:
+		0 1px 0 color-mix(in srgb, var(--text) 7%, transparent) inset,
+		0 14px 30px -20px var(--scrim);
+}
+/* 状态竖条（左缘 2px）与 118° 高光。两者都要压在卡片内容之下，所以
+ * ::after 的 z-index: 0 必须配 `.sl-node > *` 的 z-index: 2（lab 同款）。 */
+.flograph--silk .sl-node::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 12px;
+	bottom: 12px;
+	width: 2px;
+	border-radius: 2px;
+	background: var(--state);
+	opacity: 0.85;
+	z-index: 3;
+}
+.flograph--silk .sl-node::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	background: linear-gradient(118deg, color-mix(in srgb, var(--text) 4.5%, transparent), transparent 38%);
+	z-index: 0;
+}
+.flograph--silk .sl-node > * {
+	position: relative;
+	z-index: 2;
+}
+/* 图标块：29×29 / radius 8 / 底色 = 状态色 10% / 字形 = 状态色 78% 混文字色 */
+.flograph--silk .sl-node .n-icon {
+	grid-row: 1 / 3;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 29px;
+	height: 29px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--state) 10%, transparent);
+	color: color-mix(in srgb, var(--state) 78%, var(--text));
+	font-size: 14px;
+	line-height: 1;
+}
+.flograph--silk .sl-node .n-main {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.flograph--silk .sl-node .n-title {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	line-height: 1.2;
+	font-weight: 590;
+	letter-spacing: -0.01em;
+	color: var(--text);
+}
+.flograph--silk .sl-node .n-sub {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: 7.5px;
+	line-height: 1.3;
+	letter-spacing: -0.01em;
+	color: var(--faint);
+}
+.flograph--silk .sl-node .n-side {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 3px;
+	min-width: 26px;
+}
+.flograph--silk .sl-node .n-step {
+	font-family: var(--font-mono);
+	font-size: 6.5px;
+	line-height: 1;
+	letter-spacing: 0.06em;
+	color: var(--faint);
+}
+.flograph--silk .sl-node .n-dur {
+	font-family: var(--font-mono);
+	font-size: 8px;
+	line-height: 1;
+	color: var(--muted);
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+.flograph--silk .sl-node .n-dot {
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	background: var(--state);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--state) 12%, transparent);
+}
+/* 触发器（源）：主色渐变底 + 主色描边 + 主色光晕，是"光从这里进来" */
+.flograph--silk .sl-node.is-trigger {
+	background: linear-gradient(
+		132deg,
+		color-mix(in srgb, var(--accent) 13%, var(--surface-1)),
+		color-mix(in srgb, var(--surface-1) 76%, transparent)
+	);
+	border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+	box-shadow:
+		0 1px 0 color-mix(in srgb, var(--text) 8%, transparent) inset,
+		0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent),
+		0 18px 42px -26px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.flograph--silk .sl-node.is-trigger .n-icon {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	color: var(--accent-strong);
+}
+.flograph--silk .sl-node.is-trigger .n-step {
+	color: var(--accent);
+}
+/* 点亮瞬间（950ms）：状态色描边 + 状态色光晕 */
+.flograph--silk .sl-node.is-hot {
+	border-color: color-mix(in srgb, var(--state) 36%, var(--line));
+	box-shadow:
+		0 0 0 1px color-mix(in srgb, var(--state) 24%, transparent),
+		0 0 34px -8px color-mix(in srgb, var(--state) 20%, transparent),
+		0 14px 30px -20px var(--scrim);
+}
+/* 入场：is-pre（压暗、去色、微缩）→ is-in（复位）。两者语义与既有
+ * .wf-node.is-pre 一致，这里重述是为了让 transition 落在 silk 卡片上。 */
+.flograph--silk .sl-node.is-pre {
+	opacity: 0.2;
+	filter: grayscale(1);
+	transform: scale(0.97);
+}
+.flograph--silk .sl-node.is-in {
+	opacity: 1;
+	filter: none;
+	transform: none;
+}
+/* 重试脉冲：复用既有的 fg-node-pulse 关键帧（12px 主色扩散环）。silk 卡片是
+ * 半透明 + blur 底，这个环仍然清楚；显式重述一遍保证它不被上面的 transition
+ * 或任何后续规则吃掉。 */
+.flograph--silk .sl-node.is-pulse {
+	animation: fg-node-pulse 0.48s ease-out;
+}
+/* 状态兜底色（JS 一般给内联 --state，这里保证 CSS 单独也成立） */
+.flograph--silk .sl-node.is-failed {
+	--state: var(--error);
+}
+.flograph--silk .sl-node.is-running {
+	--state: var(--st-running);
+}
+.flograph--silk .sl-node.is-pending {
+	--state: var(--st-pending);
+}
+/* 失败：副标题用错误色（lab .n-sub.is-error 的等价物），状态点带红晕 */
+.flograph--silk .sl-node.is-failed .n-sub {
+	color: var(--error-300);
+}
+.flograph--silk .sl-node.is-failed .n-dot {
+	box-shadow:
+		0 0 0 3px var(--error-soft),
+		0 0 12px color-mix(in srgb, var(--error) 45%, transparent);
+}
+/* 剪枝 / deadport：虚线 + 透明底 + 灰字，竖条也降到 --faint。
+ * 表达"配置里有这条路（所以还在图上、还可读），这次没走"。 */
+.flograph--silk .sl-node.is-pruned,
+.flograph--silk .sl-node.is-deadport {
+	--state: var(--faint);
+	border-style: dashed;
+	border-color: color-mix(in srgb, var(--faint) 45%, transparent);
+	background: transparent;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	box-shadow: none;
+}
+.flograph--silk .sl-node.is-pruned .n-title,
+.flograph--silk .sl-node.is-deadport .n-title {
+	color: var(--muted);
+}
+.flograph--silk .sl-node.is-pruned .n-sub,
+.flograph--silk .sl-node.is-deadport .n-sub,
+.flograph--silk .sl-node.is-pruned .n-step,
+.flograph--silk .sl-node.is-deadport .n-step {
+	color: var(--faint);
+}
+
+/* ---------- 6. HUD（35px，= lab .flow-hud）+ 图例（放尾巴上，不是浮层） ---------- */
+.flograph--silk .flograph-hud {
+	position: relative;
+	z-index: 5;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 0 0 35px;
+	height: 35px;
+	min-width: 0;
+	padding: 0 13px;
+	border-top: 1px solid var(--line);
+	background: color-mix(in srgb, var(--bg) 56%, transparent);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	font-family: var(--font-mono);
+	font-size: 8px;
+	color: var(--faint);
+}
+.flograph--silk .hud-clock {
+	flex: 0 0 auto;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.01em;
+}
+.flograph--silk .hud-track {
+	flex: 1 1 auto;
+	min-width: 36px;
+	height: 2px;
+	border-radius: 2px;
+	overflow: hidden;
+	background: var(--line);
+}
+.flograph--silk .hud-track i {
+	display: block;
+	width: 0;
+	height: 100%;
+	border-radius: 2px;
+	background: var(--art, var(--accent));
+	box-shadow: 0 0 8px var(--art, var(--accent));
+	transition: width 0.12s linear;
+}
+.flograph--silk .hud-active {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 42%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--muted);
+}
+/* 图例：既有 .flograph-legend 是左上角绝对浮层（会压住丝带）；silk 把它拽进
+ * HUD 尾部做成一排 chip。7 行文本都不许改（E2E 读 textContent），所以靠
+ * min-width:0 + ellipsis 让它溢出时"收窄"而不是撑开 HUD。 */
+.flograph--silk .flograph-legend {
+	position: static;
+	left: auto;
+	top: auto;
+	z-index: auto;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 5px;
+	flex: 0 1 auto;
+	min-width: 0;
+	margin-left: auto;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: none;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	overflow: hidden;
+	pointer-events: none;
+}
+.flograph--silk .flograph-legend-row {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 1 auto;
+	min-width: 0;
+	padding: 2px 6px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--surface-1) 55%, transparent);
+	/* HUD 的 8px 再收半档：一行要塞 7 个 chip */
+	font-size: 7.5px;
+	line-height: 1.4;
+	letter-spacing: -0.01em;
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+}
+/* 颜色留给既有的 .lg-ok / .lg-bad / .lg-pruned / .lg-cycle（这里不写 color） */
+.flograph--silk .flograph-legend-icon {
+	width: 8px;
+	text-align: center;
+	font-size: 7.5px;
+	flex: none;
+}
+.flograph--silk .flograph-legend-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ---------- 7. 控件（= lab .stage-btn，从右下浮层改成 bar 内的 flex） ---------- */
+.flograph--silk .flograph-ctrl {
+	position: static;
+	right: auto;
+	bottom: auto;
+	z-index: auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+}
+.flograph--silk .flograph-ctrl button {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	width: auto;
+	height: auto;
+	min-width: 0;
+	appearance: none;
+	border: 1px solid transparent;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--faint);
+	padding: 4px 5px;
+	font-family: var(--font-mono);
+	font-size: 8px;
+	line-height: 1;
+	cursor: pointer;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
+}
+.flograph--silk .flograph-ctrl button svg {
+	width: 11px;
+	height: 11px;
+}
+.flograph--silk .flograph-ctrl button:hover {
+	color: var(--text);
+	background: var(--surface-2);
+	border-color: var(--line);
+}
+/* 速度是文字按钮（1× / 0.5× / 2×）：不要既有的 24×24 方框与 min-width:30 */
+.flograph--silk .flograph-ctrl button.fg-speed {
+	width: auto;
+	min-width: 0;
+	padding: 4px 6px;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0.02em;
+}
+/* 开着的状态（全屏等）用主色标一下 */
+.flograph--silk .flograph-ctrl button.is-on {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+	background: var(--accent-soft);
+}
+
+/* ---------- 8. loop badge / 边标签（×N） ---------- */
+/* lab 用的 --panel / --border 生产没有定义，换成 --bg + --line-strong：
+ * 画在丝带上（半透明底）必须自带一点实底，否则字读不出来。 */
+.flograph--silk .loop-badge {
+	position: absolute;
+	z-index: 4;
+	transform: translate(-50%, -50%);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 9px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--bg) 82%, transparent);
+	border: 1px solid var(--line-strong);
+	color: var(--text);
+	font-family: var(--font-mono);
+	font-size: 8px;
+	letter-spacing: 0.08em;
+	white-space: nowrap;
+	opacity: 0;
+	transition: opacity 0.6s var(--ease-out);
+	pointer-events: none;
+	box-shadow: var(--shadow-2);
+}
+.flograph--silk .loop-badge::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	border: 1.5px solid var(--accent);
+	border-top-color: transparent;
+	animation: loop-spin 2.4s linear infinite;
+}
+.flograph--silk .loop-badge.is-loop {
+	opacity: 1;
+}
+@keyframes loop-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+/* ×N 边标签：既有 9px 圆角块 → 8px mono chip（silk 上标签要更轻，别抢丝带） */
+.flograph--silk .flograph-edge-label {
+	z-index: 4;
+	padding: 1px 4px;
+	border-radius: 5px;
+	background: color-mix(in srgb, var(--bg) 72%, transparent);
+	font-family: var(--font-mono);
+	font-size: 8px;
+	line-height: 1.4;
+	letter-spacing: 0.02em;
+	/* 视觉压暗交给下面的 is-pre 规则；这里不放 opacity，否则会被同层的
+	 * 既有 .flograph-edge-label.is-pre 反压 */
+}
+.flograph--silk .flograph-edge-label.is-pre {
+	opacity: 0.16;
+	filter: grayscale(1);
+}
+
+/* ---------- 9. 亮色：lab 578-582（丝带提亮、卡片底更实） ---------- */
+:root[data-theme="light"] .flograph--silk .flograph-svg .sl-under {
+	opacity: 0.5;
+}
+:root[data-theme="light"] .flograph--silk .flograph-svg .sl-mid {
+	opacity: 0.8;
+}
+:root[data-theme="light"] .flograph--silk .flograph-svg .sl-core {
+	opacity: 0.95;
+}
+:root[data-theme="light"] .flograph--silk .flograph-svg .sl-shim {
+	opacity: 1;
+}
+/* 剪枝 / deadport 不参与：它们本来就该是透明底（见上面的 .is-pruned 规则）。
+ * 用 background-color 而不是 background 简写：lab 581 那一行是简写，会连带
+ * 把 .sl-node.is-trigger 的 132° 渐变（background-image）一起清掉 —— 触发器
+ * 在亮色下会退化成一张普通卡。这里只提底色，渐变留着。 */
+:root[data-theme="light"] .flograph--silk .wf-node.sl-node:not(.is-pruned):not(.is-deadport) {
+	background-color: color-mix(in srgb, var(--surface-1) 86%, transparent);
+	border-color: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+/* ---------- 10. 响应式（lab 949-1004） ---------- */
+@media (max-width: 760px) {
+	/* 高度不在这里定：JS 按内容重算 --silk-h */
+	.flograph--silk .flograph-bar {
+		height: 35px;
+		flex-basis: 35px;
+		gap: 7px;
+		padding-left: 10px;
+	}
+	.flograph--silk .flograph-bar-id {
+		max-width: 38%;
+	}
+	.flograph--silk .flograph-bar-meta {
+		display: none;
+	}
+	.flograph--silk .flograph-ctrl {
+		gap: 2px;
+	}
+	.flograph--silk .flograph-ctrl button {
+		min-width: 30px;
+		min-height: 28px;
+		justify-content: center;
+		padding: 6px;
+	}
+	/* 只对带文字的按钮有意义（速度按钮），图标按钮没 span 就自然不命中 */
+	.flograph--silk .flograph-ctrl button span {
+		display: none;
+	}
+	.flograph--silk .flograph-hud {
+		flex-basis: 31px;
+		height: 31px;
+		gap: 7px;
+		padding: 0 9px;
+		font-size: 7px;
+	}
+	.flograph--silk .hud-active,
+	.flograph--silk .flograph-legend {
+		display: none;
+	}
+}
+
+/* ---------- 11. reduced-motion（lab 1012-1021） ----------
+ * 只留终态：流动层与珠子不画，过渡关掉；但「走过 = 不透明」「主线 = 实线」
+ * 这两个终态必须照样成立（主线从没写过 dasharray，所以天然是实线）。
+ */
+@media (prefers-reduced-motion: reduce) {
+	.flograph--silk .sl-shim,
+	.flograph--silk .sl-bead {
+		display: none;
+	}
+	.flograph--silk .sl-edge,
+	.flograph--silk .sl-node,
+	.flograph--silk .flograph-edge-label,
+	.flograph--silk .loop-badge,
+	.flograph--silk .hud-track i {
+		transition: none;
+	}
+	.flograph--silk .flograph-svg .sl-edge.is-on,
+	.flograph--silk .flograph-svg .sl-edge.is-muted {
+		opacity: 1;
+	}
+	.flograph--silk .flograph-svg .sl-core {
+		opacity: 0.86;
+	}
+	.flograph--silk .sl-node.is-in {
+		opacity: 1;
+		filter: none;
+		transform: none;
+	}
+}
