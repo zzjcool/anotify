@@ -1182,6 +1182,7 @@ caps:
     schema_err_range: "{a} 不能大于 {b}"
     schema_err_pattern: "正则写错了：{msg}"
     schema_err_enum: "选了「枚举」就至少填一个值"
+    schema_err_many: "参数契约有 {n} 处没填好（见标红的行）"
     schema_err_switch: "这份契约有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），请继续用 JSON 编辑"
     schema_hint: "可视化里填的是最常用的约束；更复杂的形状切「手写 JSON」。没动过契约时它跟着模板字段走（手写里留空也是这个意思）。支持 JSON Schema 的受控子集（type/properties/required/enum/minLength/pattern…，不支持 $ref / if-then-else）。"
     script_shebang_err: '脚本第一行必须以 #! 开头'

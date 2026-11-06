@@ -1182,6 +1182,7 @@ caps:
     schema_err_range: "{a} must not be greater than {b}"
     schema_err_pattern: "Invalid regex: {msg}"
     schema_err_enum: "Pick \"Enum\" and you must give at least one value"
+    schema_err_many: "{n} fields in the parameter contract are incomplete (see the rows marked in red)"
     schema_err_switch: "This contract contains shapes the visual editor cannot express (array type / nested items / numeric enum); keep editing it as JSON"
     schema_hint: "The visual rows cover the most common constraints; switch to \"Edit JSON\" for anything more complex. Until you touch it, the contract follows the template fields (leaving the JSON empty means the same). A controlled subset of JSON Schema is supported (type/properties/required/enum/minLength/pattern…, no $ref / if-then-else)."
     script_shebang_err: 'The script must start with #!'

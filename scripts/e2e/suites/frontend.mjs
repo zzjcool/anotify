@@ -2280,6 +2280,61 @@ async function checkCapabilityTemplates(page) {
 		locked.jsonVisible === true && locked.onlyNote.length > 0,
 		JSON.stringify(locked),
 	);
+
+	// ⑥ 参数没填好时，提示必须**看得见**（#schema-editor-feedback）。
+	//
+	// 线上真实症状：在弹层底部点「创建」，界面只多了一条被遮罩挡住一半的 toast，
+	// 用户以为「点了没反应」。两处都要钉住：
+	//   · 错误贴着出错的那一行（行内红字），不是只在区块末尾糊一句
+	//   · 失败 toast 在弹层之上（--z-toast 100 > --z-modal 90），且是错误色
+	// 上一个断言把契约锁在 JSON 视图里，这里重开一个干净的弹层。
+	await page.evaluate(() => closeCapModal());
+	await page.waitForTimeout(250);
+	await page.evaluate(() => document.querySelector("button[onclick='openCapModal()']").click());
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.http"]');
+	await page.waitForTimeout(400);
+	await page.evaluate((n) => {
+		document.getElementById("cap-name").value = n;
+	}, "e2e.badparam." + Date.now());
+	await page.click("#schema-add-row");
+	await page.waitForTimeout(200);
+	await page.click("#cap-submit");
+	await page.waitForTimeout(600);
+	const feedback = await page.evaluate(() => {
+		const toast = document.querySelector("#anotify-toast-host .anotify-toast");
+		const rowErr = document.querySelector(".schema-row-err");
+		let onTop = null;
+		if (toast) {
+			const r = toast.getBoundingClientRect();
+			const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+			onTop = !!hit && !!hit.closest(".anotify-toast");
+		}
+		return {
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			rowErr: (rowErr && rowErr.textContent) || "",
+			rowMarked: !!document.querySelector("#schema-rows .schema-row.is-err"),
+			badge: (document.getElementById("schema-error") || {}).textContent || "",
+			toastError: !!toast && toast.classList.contains("is-error"),
+			toastOnTop: onTop,
+			toastText: toast ? toast.textContent.trim() : "",
+		};
+	});
+	H.check(
+		"参数没填好时弹层不关（用户填的东西不丢）",
+		feedback.modalOpen === true,
+		JSON.stringify(feedback).slice(0, 200),
+	);
+	H.check(
+		"错误贴着出错的那一行（行内红字 + 标红），不是只在区块末尾说一句",
+		feedback.rowMarked === true && feedback.rowErr.length > 0 && /参数名/.test(feedback.rowErr),
+		JSON.stringify({ marked: feedback.rowMarked, err: feedback.rowErr }),
+	);
+	H.check(
+		"失败 toast 是错误色且盖在弹层之上（不被遮罩挡住）",
+		feedback.toastError === true && feedback.toastOnTop === true,
+		JSON.stringify({ error: feedback.toastError, onTop: feedback.toastOnTop, text: feedback.toastText }),
+	);
 }
 
 // checkCapabilityDetail 覆盖用户报的两个问题（原话）：

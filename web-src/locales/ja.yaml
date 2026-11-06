@@ -1182,6 +1182,7 @@ caps:
     schema_err_range: "{a} は {b} より大きくできません"
     schema_err_pattern: "正規表現が不正です：{msg}"
     schema_err_enum: "「列挙」を選んだら値を 1 つ以上入力してください"
+    schema_err_many: "パラメータ契約に {n} 件の未入力があります（赤い行を確認してください）"
     schema_err_switch: "この契約にはビジュアルエディタで表現できない形（type 配列 / items のネスト / 数値の列挙など）が含まれます。JSON のまま編集してください"
     schema_hint: "ビジュアルの行はよく使う制約だけを扱います。それ以上は「JSON を編集」に切り替えてください。触っていない間は契約はテンプレート項目に従います（JSON を空にするのも同じ意味）。JSON Schema のサブセットに対応（type/properties/required/enum/minLength/pattern…、$ref / if-then-else は非対応）。"
     script_shebang_err: 'スクリプトの 1 行目は #! で始めてください'
