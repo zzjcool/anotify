@@ -1748,14 +1748,28 @@
 		const bar = div("flograph-bar");
 		const barDot = document.createElement("i");
 		barDot.className = "flograph-bar-dot";
-		if (failedCount) barDot.classList.add("is-fail");
 		const barId = document.createElement("span");
 		barId.className = "flograph-bar-id";
 		barId.textContent = trigger ? String(trigger.label || "") : "";
+		// 结论文案（全部成功 / N 失败）是**回放跑完才得出的结论**，不能在第一帧
+		// 就摆出来：丝带还在一条条描出时条上已经写着「全部成功」，用户会以为
+		// 动画已经播完 —— 于是把描到一半的图当成「图缺线、少了东西」。
+		// 播放期间只说规模与时长（3 步 · 回放 1.5s），结束时才定性（settleBar）。
 		const barMeta = document.createElement("span");
 		barMeta.className = "flograph-bar-meta";
-		barMeta.textContent =
-			beats.length + " 步 · 回放 " + silkFmtClock(totalSec) + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
+		const barMetaPrefix = beats.length + " 步 · 回放 " + silkFmtClock(totalSec);
+		const barMetaFinal =
+			barMetaPrefix + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
+		barMeta.textContent = barMetaPrefix;
+		let barSettled = false;
+		const settleBar = () => {
+			if (barSettled) return;
+			barSettled = true;
+			barMeta.textContent = barMetaFinal;
+			// 状态灯同理：绿点 = 全部成功的结论，播放期间先保持中性（默认色），
+			// 灯与文案一起落定，否则又是"结论先于事实"。
+			if (failedCount) barDot.classList.add("is-fail");
+		};
 		const barSpacer = document.createElement("span");
 		barSpacer.className = "flograph-bar-spacer";
 		const ctrl = div("flograph-ctrl");
@@ -2890,6 +2904,7 @@
 			}
 			setProgress(totalSec);
 			hudActive.textContent = doneLabel();
+			settleBar();
 		}
 
 		function playEnter(force) {
@@ -2920,6 +2935,12 @@
 			}
 			container.classList.add("is-playing");
 			animated = true;
+			if (barSettled) {
+				// 重播：上一次的结论作废，回到"只说规模"的进行时文案
+				barSettled = false;
+				barMeta.textContent = barMetaPrefix;
+				barDot.classList.remove("is-fail");
+			}
 
 			// 绝对时刻表 + 40ms ticker：重播时一个 clearInterval 就收干净，
 			// 不会留孤儿子回调（层层 setTimeout 的经典漏法）。
@@ -2969,6 +2990,7 @@
 					container.classList.remove("is-playing");
 					setProgress(totalSec);
 					hudActive.textContent = doneLabel();
+					settleBar();
 				}
 			}, 40);
 		}
