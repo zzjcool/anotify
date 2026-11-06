@@ -863,7 +863,7 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 用 tx 读（DSN MaxOpenConns(1)，走连接池会和本事务抢同一根连接 → 自锁）
+	// 用 tx 读：本函数已在事务里，读必须走同一个事务句柄——走连接池既看不到本事务未提交的写，又平白多占一条连接。
 	var (
 		cur          string
 		rowNode      sql.NullString
@@ -1080,8 +1080,8 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID
 	// 结果说明只有一份源：成功=做了什么 / 失败=为什么失败（见 normalizeResultMessage）。
 	summary, errMsg = normalizeResultMessage(status, summary, errMsg)
 
-	// status 与 node_id 必须用 **tx** 读：DSN 是 MaxOpenConns(1)，走连接池
-	// （d.GetTask）会和本事务抢同一根连接，直接自锁。
+	// status 与 node_id 必须用 **tx** 读：本函数已在调用方事务里，走连接池
+	// （d.GetTask）既读不到本事务未提交的写，又平白多占一条连接。
 	var (
 		cur    string
 		nodeID sql.NullString
@@ -1184,8 +1184,8 @@ func (d *DB) StartTask(ctx context.Context, namespaceID, taskID string) error {
 
 // startTaskTx 在调用方事务内完成 progress 的前两步：推进到 running + 补 started_at。
 //
-// 当前状态必须用 **tx** 查（MaxOpenConns(1)：用 d.GetTask 会和本事务抢同一根
-// 连接而自锁）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
+// 当前状态必须用 **tx** 查（本函数在调用方事务里：用 d.GetTask 会读到别的事务的快照，
+// 且多占一条连接）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
 // 非 running 时走 transitionGuarded——终态 / lease_expired → running 仍然被拒。
 func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID string) error {
 	var cur string
@@ -1626,7 +1626,7 @@ func (d *DB) CountOpenTasks(ctx context.Context, namespaceID string) (int, error
 // 三个刻意的「不做」，每一条都有代价，改动前先读契约 §5：
 //   - 不加 namespace_id 过滤：背压是**部署级**决策（一个命名空间的洪峰不许拖垮别的）。
 //   - 不加 not_before 过滤：SetNotBefore 是「重派退避」，退避中的任务**仍然是积压**
-//     （mux.go 的 Redispatch 在 ErrNoCapacity 时正是写 not_before），
+//     （mux.go 的 Redispatch 只对「无节点声明/节点故障」写 not_before；容量不足不写——#306），
 //     加了它等于把 #228 的实测场景（积压 8 行/秒）整个漏掉。
 //   - 空集不返回 sql.ErrNoRows：MIN() 在空集上返回**一行 NULL**，不是零行。
 //

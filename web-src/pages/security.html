@@ -1471,14 +1471,6 @@
     );
     if (!name || !name.trim() || name.trim() === p.name) return;
     const newName = name.trim();
-    if (loadFailed.passkeys) {
-      p.name = newName;
-      renderPasskeys();
-      toast(
-        t("security.toast.renamed_demo", "已重命名（演示模式，仅本地生效）"),
-      );
-      return;
-    }
     try {
       const res = await fetch(
         API + "/auth/passkeys/" + encodeURIComponent(p.id),
@@ -1524,12 +1516,6 @@
       )
     )
       return;
-    if (loadFailed.passkeys) {
-      PASSKEYS = PASSKEYS.filter((x) => x.id !== p.id);
-      renderPasskeys();
-      toast(t("security.toast.deleted_demo", "已删除（演示模式，仅本地生效）"));
-      return;
-    }
     try {
       const res = await fetch(
         API + "/auth/passkeys/" + encodeURIComponent(p.id),
@@ -1579,7 +1565,7 @@
       );
       return;
     }
-    // 情况 2：后端未连接（fetchApi 拿到 null 进了 demo 模式）——
+    // 情况 2：后端未连接（加载失败，loadFailed.passkeys 为真）——
     // 这才是「演示模式」的真正含义：不是 HTTPS/生物识别的问题，是后端没起来。
     if (loadFailed.passkeys) {
       alert(
@@ -1763,12 +1749,6 @@
       )
     )
       return;
-    if (loadFailed.sessions) {
-      SESSIONS = SESSIONS.filter((x) => x.id !== s.id);
-      renderSessions();
-      toast(t("security.toast.revoked_demo", "已吊销（演示模式，仅本地生效）"));
-      return;
-    }
     try {
       const res = await fetch(
         API + "/auth/sessions/" + encodeURIComponent(s.id),
@@ -2044,7 +2024,7 @@
   }
 
   async function openEnrollModal() {
-    // demo 模式拦截
+    // 后端不可达拦截（不可伪造数据）
     if (loadFailed.passkeys) {
       showEnrollState("failed");
       const box = document.getElementById("enroll-failed-icon-box");

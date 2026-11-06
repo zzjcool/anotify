@@ -470,7 +470,7 @@
       // 容错读取：接口失败返回 null（次要区块不该拖垮整页），主请求走 try/catch
       async function apiGet(path) {
         try {
-          return await Anotify.api(path, { demo: null });
+          return await Anotify.api(path);
         } catch (e) {
           return null;
         }

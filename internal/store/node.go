@@ -1235,16 +1235,17 @@ func (d *DB) ReclaimStaleSlots(ctx context.Context, namespaceID, nodeID string, 
 
 // LeaseInstance 把任务占到一个空闲实例上（CAS：busy_task IS NULL → taskID）。
 //
-// 「实际并发 = min(实例 concurrency, 实现级 concurrency, nodes.max_concurrency)」
-// 由调用方（路由层）算，这里只做最后一道 CAS 抢占：并发 UPDATE 下只有一个能成功。
+// 实际并发由 instances（槽位数）决定，每槽一个任务；node_instances.concurrency
+// 与 nodes.max_concurrency 目前只是记录，不参与调度（#220/#252）。
+// 这里只做最后一道 CAS 抢占：并发 UPDATE 下只有一个能成功。
 // 返回 instance_id；没有空闲槽位返回 ErrNoCapacity。
 func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error) {
 	if taskID == "" {
 		return "", fmt.Errorf("lease instance: empty task_id")
 	}
 	// 先找最早的存活空闲槽位（ORDER BY slot 保证确定性），再由 CAS 更新抢占。
-	// SQLite 单写 + 单连接使这两步不会与另一个写者交错；
-	// 跨连接场景下 CAS 失败会重试下一轮，不会出现两个任务占同一槽。
+	// 这两步之间没有事务包裹（走连接池），所以必须靠 CAS 兜：并发下可能被别人抢
+	// （RowsAffected==0），重试下一轮换下一个空闲槽，结果是不会有两个任务占同一槽位。
 	for attempt := 0; attempt < 3; attempt++ {
 		var instanceID string
 		err := d.QueryRowContext(ctx,
@@ -1316,8 +1317,8 @@ func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID str
 	}
 
 	// ② CAS 占位：并发 UPDATE 下只有一个能成功。
-	// 本进程内 MaxOpenConns(1) + 事务内单写者让它不可达，但条件必须留着——
-	// 它是放开连接数/跨进程场景下的最后一道闸。
+	// 本进程内经 BEGIN IMMEDIATE 串行化后它仍不可达，但条件必须留着——
+	// 连接数已放开到 8，它是并发/跨进程场景下的最后一道闸。
 	res, err := tx.ExecContext(ctx,
 		`UPDATE node_instances SET busy_task = ?, updated_at = ?
 		 WHERE id = ? AND busy_task IS NULL`, taskID, Now(), instanceID)

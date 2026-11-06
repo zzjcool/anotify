@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/ws"
 )
 
 // demoCapability 是一条示例能力定义。
@@ -231,18 +232,34 @@ func dialWorker(ctx context.Context, base, token, nodeID, nsID string) (*demoWor
 		{Name: "apply-fix", Version: 1},
 		{Name: "deploy-preview", Version: 1},
 	}
+	// hello 是**协议 v2 形状**（console-declares，契约 D4 / internal/ws.HelloFrame）：
+	//
+	//   - protocol 取 ws.ProtocolVersion（=2）。写死 1 会被中枢 protocol_mismatch 拒掉，
+	//     节点永远 online 不了（N3 修的就是这一条）。
+	//   - **没有 capabilities 键**：v2 里节点不再自报「我会跑什么」，只陈述
+	//     「我缓存了哪些产物」（applied）。中枢据 applied 全量重建 node_capabilities；
+	//     发老键不会报错，但会被忽略 —— 于是中枢这边一行声明都没有，任务是派不下来的。
+	//   - instances[].concurrency 恒 1：v2 一个槽位只放一个任务，并发上限只由
+	//     instances（槽位数）决定（cmd/agent/config.go 的 slotConcurrency()）。
+	//
+	// applied 里的能力必须已在中枢定义（seedDemo 已经建了），否则中枢只把它当成
+	// 「陈旧缓存」回进 welcome.prune，不会给归属。
+	//
+	// TODO(N3)：本 worker 的 result 帧仍带已退役的 `out`（v2 路由只认 emit 帧），
+	// 所以示例链的**下游扇出**现在是断的：任务会 succeeded，但不会自动长出下一跳。
+	// 改成 emit 需要在 devseed 里接一个本地 emit socket，超出「修过时字段」的范围。
 	hello := map[string]any{
 		"type":     "hello",
 		"node_id":  nodeID,
-		"protocol": 1,
-		"capabilities": func() []map[string]any {
+		"protocol": ws.ProtocolVersion,
+		"applied": func() []map[string]any {
 			out := make([]map[string]any, 0, len(caps))
 			for _, c := range caps {
 				out = append(out, map[string]any{"capability": c.Name, "version": c.Version})
 			}
 			return out
 		}(),
-		"instances": []map[string]any{{"slot": 0, "concurrency": 4}},
+		"instances": []map[string]any{{"slot": 0, "concurrency": 1}},
 	}
 	b, _ := json.Marshal(hello)
 	if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
@@ -307,6 +324,8 @@ func (w *demoWorker) handle(ctx context.Context, taskID, capability string, para
 
 	out, summary := demoResult(capability, params)
 	// out 三态：nil → 明确到头（JSON null）；否则给出口名
+	// `out` 在 v2 已退役（路由只看 emit 帧）。留着它不报错（服务端忽略未知字段），
+	// 但也不再有任何效果 —— 见 dialWorker 里的 TODO(N3)。
 	send(map[string]any{
 		"type": "result", "task_id": taskID,
 		"status": "succeeded", "out": out, "summary": summary,

@@ -40,6 +40,17 @@ type consoleHandler struct {
 	// 没档案/超时/意外错误全部五条分支（不用起真 WS、也不用等 5 秒超时）。
 	// nil = 未装配（仅测试/嵌入用法）→ 端点回 200 + available:false。
 	taskLogs taskLogsSource
+	// nudge 是「槽位已释放，巡检立刻再接一轮」的通知（#219）。
+	//
+	// 为什么取消也要它：docs/contracts/CONTRACT.md §3.3 要求
+	// 「任务终态落库（槽位释放）→ 立即重派」。store.CancelTask 在终态落库后
+	// 会 ReleaseInstanceByTask，但它的两步（Transition → ReleaseInstance）
+	// 都不是事务、也不该知道"谁来重派"——所以由 handler 在成功后把「空出一个槽」
+	// 这一个事实告诉巡检（生产接线 = lease.Sweeper.Nudge）。
+	// 不接的话，被取消腾出的槽位最坏要等下一轮巡检（5s）才有人去用。
+	//
+	// nil = 未装配（测试/嵌入用法）→ 跳过，已有的调用路径行为不变。
+	nudge func()
 }
 
 // sessionUser 从会话中间件注入的 context 里取用户 ID。
@@ -697,6 +708,13 @@ func (h *consoleHandler) cancelTask(w http.ResponseWriter, r *http.Request) {
 		slog.Error("cancel task failed", "event", "console.tasks.cancel_failed", "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
+	}
+
+	// 取消成功 = 这条任务腾出了一个槽位（pending 的任务本来就没占槽，叫醒巡检
+	// 只是多一次空转，由 ListRedispatchable 自然返回空——宁可多叫一次也不能漏）。
+	// 位置在 CancelTask 返回 nil 之后：失败分支（409/500）已经在上面返回了。
+	if h.nudge != nil {
+		h.nudge()
 	}
 
 	// 读回最新状态返回

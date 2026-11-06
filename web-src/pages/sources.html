@@ -819,7 +819,7 @@
 
       async function apiGet(path) {
         try {
-          return await Anotify.api(path, { demo: null });
+          return await Anotify.api(path);
         } catch (e) {
           return null;
         }
@@ -880,8 +880,8 @@
         let capData = null;
         try {
           [srcData, capData] = await Promise.all([
-            Anotify.api(API + "/sources", { demo: null }),
-            Anotify.api(API + "/capabilities", { demo: null }),
+            Anotify.api(API + "/sources"),
+            Anotify.api(API + "/capabilities"),
           ]);
         } catch (e) {
           renderLoadError(e);
@@ -2593,8 +2593,7 @@
         try {
           // 用最近一条真实事件当样本；没有就空 payload（会如实报取不到）
           const payload = SAMPLE_PAYLOAD || {};
-          // 不传第三个参数（demo）：传 null 会让 api() 在**任何失败**时
-          // 返回 null，于是错误被静默吞掉、渲染时炸在 r.dispatch 上。
+          // api() 失败即抛：错误必须在本页显式处理，不能静默吞掉（页面渲染时炸在 r.dispatch 上就是历史事故）。
           const r = await Anotify.api(API + "/sources/dry-run", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

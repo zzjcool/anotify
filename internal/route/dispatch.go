@@ -1622,7 +1622,14 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	instanceID, err := d.Store.LeaseAndAssign(ctx, task.NamespaceID, task.ID, nodeID, lease)
 	if errors.Is(err, store.ErrNoCapacity) {
 		// 有节点但满了：不是永久失败，下轮再试。
-		return false, nil
+		//
+		// 精确返回 sentinel（不 wrap）：容量不足**不是节点故障**，调用方据此
+		// 不设退避（#219）。以前这里返回 (false, nil) 与「没有节点声明」同形，
+		// 于是巡检把「槽位一时占满」也当成「坏节点」按 RetryBackoff 写 not_before，
+		// 而 ListRedispatchable 会按 not_before 过滤 → 槽位一空那次的即时重派
+		// 根本看不见这条任务，白等 10s 起（重试过的任务必然踩到，attempts≥1）。
+		// 返回 sentinel 后由调用方区分：容量不足 → 不写 not_before。
+		return false, store.ErrNoCapacity
 	}
 	if err != nil {
 		return false, fmt.Errorf("route: redispatch lease+assign: %w", err)

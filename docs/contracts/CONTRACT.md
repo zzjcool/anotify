@@ -251,7 +251,9 @@ CREATE TABLE IF NOT EXISTS node_instances (
     UNIQUE (node_id, slot)
 );
 
--- 实际并发 = min(实例 concurrency, 实现级 capabilities[].concurrency, nodes.max_concurrency)
+-- 实际并发由 instances（槽位数）决定，每槽一个任务；node_instances.concurrency 与
+-- nodes.max_concurrency 目前只是记录，不参与调度（#220/#252）。节点侧 v2 恒申报
+-- concurrency: 1（cmd/agent/config.go 的 slotConcurrency()）。
 
 -- 粘性路由
 CREATE TABLE IF NOT EXISTS node_pins (
@@ -334,8 +336,7 @@ CREATE TABLE IF NOT EXISTS "edges" (
     PRIMARY KEY (namespace_id, from_is_source, from_ref, from_port, to_ref)
 );
 
-CREATE INDEX IF NOT EXISTS idx_edges_lookup
-    ON edges(namespace_id, from_is_source, from_ref, from_port);
+-- 不额外建索引：这四列是 edges 主键的严格左前缀，sqlite_autoindex_edges_1 已覆盖（#252）。
 ```
 
 **边里只存引用，不存能力 id**（P2.2，设计 typed-pipeline §3.2）：`from_ref` / `to_ref` 是
@@ -649,14 +650,22 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 | 租约 TTL | 30s | `lease_until = now + 30` |
 | 心跳间隔 | 10s | 节点发 `heartbeat`，中枢把 `lease_until` 推到 `now + 30` |
 | `ack` 等待 | 20s | 派发后 20s 未 `ack` → `lease_expired` |
-| 退避 | 10s / 60s / 300s | 重派延迟 |
+| 退避 | 10s / 60s / 300s | 重派延迟（只用于下文列的两类「非槽位原因」） |
+| 巡检周期 | 5s | 扫 `status IN (assigned,acked,running) AND lease_until < now` |
 
 > **巡检不是 `pending` 的唯一排空路径（#219）**：任务终态落库（槽位释放）或节点握手成功时，
 > 中枢会**立即**触发一次重派（只跑重派阶段，不扫租约；可合并、最小间隔 20ms）。
 > 在此之前 `pending` 只能等 5s 巡检，单槽节点突发后有效吞吐仅 1.2 task/s；
 > 加上即时重派后同场景实测 32 并发 p99 从 89.3s 降到 0.33s。
 > 5s 巡检仍在，它是**兜底**（进程重启、信号丢失、DB 抖动时的自愈路径），不是主路径。
-| 巡检周期 | 5s | 扫 `status IN (assigned,acked,running) AND lease_until < now` |
+
+> 取消（`POST /v1/tasks/{id}/cancel`）同样属于「任务终态落库（槽位释放）→ 立即重派」：
+> `CancelTask` 落库并 `ReleaseInstanceByTask` 之后，中枢立即触发一次重派（与节点 `result`/握手同一入口），
+> 不再等 5s 巡检。任务本来没占槽（pending）时被取消也会触发一次——多一次空转无害，漏一次就要多等 5s。
+
+> 退避只用于**非槽位原因**的「派不出去」：集群里没有任何节点声明该能力（或节点全下线）、
+> 节点故障被租约巡检回收。**容量不足（`ErrNoCapacity`：有节点但槽位占满）不退避、不写 `not_before`**
+> ——槽位一空就会有即时重派来领它；写退避等于把它从 `ListRedispatchable` 的候选里藏起来（`attempts≥1` 时 10s 起）。
 
 ---
 

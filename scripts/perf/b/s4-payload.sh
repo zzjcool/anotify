@@ -10,7 +10,8 @@
 #
 # 分两段：
 #   4a 逐个尺寸打一次（走 hook，4MiB 上限），记录 HTTP、任务终态、agent 是否掉线、RSS 峰值
-#   4b hello 帧超过 32KiB：node.yaml 的 command 写 40KB → 握手会不会被库默认读上限打断
+#   4b **已退役**：原来靠 node.yaml 里写 40KB 命令把 hello 帧撞大；v2 的 hello 不再带命令
+#      （只上挈 applied[]，见 internal/ws.HelloFrame），那个测量面不存在了（N3）。
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -23,12 +24,12 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap "$PB_CAP_NAME"
-pb_source perf-big "$CAP"
-
 MARK=$OUT/marks.txt
 : >"$MARK"
 CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
+# v2：命令进能力产物（节点不再自报执行方式，见 N3）。
+pb_cap "$PB_CAP_NAME" "$CMD" 60
+pb_source perf-big "$CAP"
 
 REPORT=$OUT/s4.txt
 : >"$REPORT"
@@ -81,22 +82,15 @@ PY
 	fi
 done
 
-echo '--- 4b：hello 帧 > 32KiB（command 写 40KB）---' | tee -a "$REPORT"
-BIGCMD=$(python3 -c 'print("echo " + "x"*40000)')
-pb_say "4b 握手帧尺寸测试"
-pb_node bigcmd 1 1 "$BIGCMD" 60
-bigcmd_id=$NODE_ID
-sleep 3
-bigcmd_status=$(pb_api GET "/v1/nodes?namespaceId=$NS" \
-	| jq -r --arg id "$bigcmd_id" '[.nodes[]|select(.id==$id)|.status]|first // "missing"')
-{
-	printf 'hello 帧约 %s 字节；该节点握手后 status=%s（期望 offline/never-hello = 被库默认 32KiB 读上限打断）\n' \
-		"$((40000 + 200))" "$bigcmd_status"
-	echo '--- agent 侧日志 ---'
-	tail -6 "$OUT/bigcmd.log"
-	echo '--- server 侧日志（该节点相关）---'
-	grep -E 'node.ws.(hello|closed|auth)|heartbeat timeout' "$OUT/server.log" | tail -6 | jq -r '(.time|.[11:23])+" "+.event+" "+(.error // "")' 2>/dev/null
-} | tee -a "$REPORT"
+# ---------- 4b：已退役（v2）----------
+#
+# 原来的 4b 量的是「hello 帧 > 32KiB 会不会被库默认读上限打断」：它靠 node.yaml 里
+# 写一条 40KB 的 `command` 把 hello 撞大。
+# v2 里 hello 已经**不再带命令**（只上挈 applied[]，见 internal/ws.HelloFrame），
+# 所以这个测量面不存在了：命令现在走 deploy 帧（产物 spec），它的体积上限是
+# internal/artifact 的 MaxFileBytes/MaxTotalBytes，属于另一个问题。
+# 真要继续测帧上限，应该在“部署一份大产物”上做，而不是在 hello 上（N3）。
+echo '--- 4b 已退役：v2 的 hello 不再带命令，帧尺寸测量面不存在（见 N3）---' | tee -a "$REPORT"
 
 {
 	printf '结束：goroutine=%s RSS=%sKB\n' "$(pb_gsnap end)" "$(pb_rss end)"
