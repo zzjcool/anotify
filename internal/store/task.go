@@ -863,7 +863,7 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 用 tx 读（DSN MaxOpenConns(1)，走连接池会和本事务抢同一根连接 → 自锁）
+	// 用 tx 读：本函数已在事务里，读必须走同一个事务句柄——走连接池既看不到本事务未提交的写，又平白多占一条连接。
 	var (
 		cur          string
 		rowNode      sql.NullString
@@ -1080,8 +1080,8 @@ func (d *DB) reportResultTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID
 	// 结果说明只有一份源：成功=做了什么 / 失败=为什么失败（见 normalizeResultMessage）。
 	summary, errMsg = normalizeResultMessage(status, summary, errMsg)
 
-	// status 与 node_id 必须用 **tx** 读：DSN 是 MaxOpenConns(1)，走连接池
-	// （d.GetTask）会和本事务抢同一根连接，直接自锁。
+	// status 与 node_id 必须用 **tx** 读：本函数已在调用方事务里，走连接池
+	// （d.GetTask）既读不到本事务未提交的写，又平白多占一条连接。
 	var (
 		cur    string
 		nodeID sql.NullString
@@ -1184,8 +1184,8 @@ func (d *DB) StartTask(ctx context.Context, namespaceID, taskID string) error {
 
 // startTaskTx 在调用方事务内完成 progress 的前两步：推进到 running + 补 started_at。
 //
-// 当前状态必须用 **tx** 查（MaxOpenConns(1)：用 d.GetTask 会和本事务抢同一根
-// 连接而自锁）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
+// 当前状态必须用 **tx** 查（本函数在调用方事务里：用 d.GetTask 会读到别的事务的快照，
+// 且多占一条连接）。running 幂等：重复 progress 帧不报错，也不覆盖已有 started_at。
 // 非 running 时走 transitionGuarded——终态 / lease_expired → running 仍然被拒。
 func (d *DB) startTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID string) error {
 	var cur string

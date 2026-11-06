@@ -51,8 +51,8 @@ func TestAuthorizeNamespace(t *testing.T) {
 
 	// 事务版必须与 DB 版行为一致（写路径用它收口）。
 	//
-	// 注意：DSN 是 MaxOpenConns(1)，事务会独占唯一连接 —— 所以这里的断言必须
-	// 在同一个 block 里做完并立刻回滚，之后再走任何 db.* 调用。
+	// 注意：这里开着写事务（BEGIN IMMEDIATE 持写锁），断言必须在同一个 block
+	// 里做完并立刻回滚，之后再走任何 db.* 调用（池只有 8 条，长事务会把读也拖住）。
 	if err := func() error {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
