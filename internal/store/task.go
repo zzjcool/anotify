@@ -1626,7 +1626,7 @@ func (d *DB) CountOpenTasks(ctx context.Context, namespaceID string) (int, error
 // 三个刻意的「不做」，每一条都有代价，改动前先读契约 §5：
 //   - 不加 namespace_id 过滤：背压是**部署级**决策（一个命名空间的洪峰不许拖垮别的）。
 //   - 不加 not_before 过滤：SetNotBefore 是「重派退避」，退避中的任务**仍然是积压**
-//     （mux.go 的 Redispatch 在 ErrNoCapacity 时正是写 not_before），
+//     （mux.go 的 Redispatch 只对「无节点声明/节点故障」写 not_before；容量不足不写——#306），
 //     加了它等于把 #228 的实测场景（积压 8 行/秒）整个漏掉。
 //   - 空集不返回 sql.ErrNoRows：MIN() 在空集上返回**一行 NULL**，不是零行。
 //

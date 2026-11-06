@@ -10,7 +10,7 @@
 在 4 核（`taskset -c 0-3`）口径下，**无 DB 的 `/health` 能到 24k–28.8k RPS，而任何一个带会话的读端点只有它的 0.3%–11%，
 机器入口更低到 0.11%（`GET /v1/events` 走 Bearer），写入口（`POST /v1/events` 走 Bearer）0.13%–0.14%**。三层原因按影响从大到小：
 
-1. **`store.Open` 把 SQLite 连接池钉成 1 条**（`internal/store/store.go:46 SetMaxOpenConns(1)`）：
+1. **`store.Open` 测量时把 SQLite 连接池上限设为 1**（当时 `internal/store/store.go:46 SetMaxOpenConns(1)`；**#240 已修复**：现默认 8，`store.go:38 defaultMaxOpenConns`，可用 `ANOTIFY_DB_MAX_CONNS` 覆盖）：
    所有读请求在同一连接上排队，并发 1→64 吞吐只放大 1.24–1.55 倍（`/health` 是 4.23 倍）；
    混合读写时**写被读饿死（-93%）**，且这类实现里根本没有 `SQLITE_BUSY`，只有队列。
 2. **API Key 鉴权每请求重算一次 argon2id（m=64MB, t=1, p=4）**（`internal/auth/apikey.go:132`）：
@@ -18,7 +18,7 @@
 3. **列表端点的 N+1 查询**：`/v1/nodes` 每节点 2 次额外查询（`console_handlers.go:1016 viewFor`）→
    100 节点 79–85 RPS（`/health` 的 0.30%），p50 91–385ms。
 
-另外两个固定开销：每个带会话请求**固定 4 次鉴权 DB 往返**（含一次**同步 UPDATE**），以及**同一条 SQL 每请求重新 parse**（26% 读路径 CPU）。
+另外两个固定开销：每个带会话请求**固定 4 次鉴权 DB 往返**（含一次**同步 UPDATE**），以及**同一条 SQL 每请求重新 parse**（26% 读路径 CPU；**#242 已加语句缓存**，见 `internal/store/stmt.go`）。
 
 ## 0.1 本轮开的 issue（每个瓶颈一条）
 
@@ -93,6 +93,9 @@
 
 ### 3.2 串行瓶颈的取证（`SetMaxOpenConns(1)` 成立）
 
+> **本节取证前提已消失（#240 已修复）**：默认连接池现为 8（`store.go:38`，`ANOTIFY_DB_MAX_CONNS` 可覆盖），
+> 写不再靠「全库一条连接」避锁，而是 `BEGIN IMMEDIATE` + `busy_timeout`。下表数字保留作为「池=1」时代的历史基线。
+
 | 证据 | 数值 |
 |---|---|
 | c=32 压测中阻塞在 `database/sql.(*DB).conn` 的 goroutine | **30–32 个**（`/health` 对照 1 个） |
@@ -108,7 +111,7 @@
 `store/authz.go:27 AuthorizeNamespace`（EXISTS）→ 目标查询。
 auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 
-### 3.4 第二条 CPU 热点：同一条 SQL 每请求重新 parse
+### 3.4 第二条 CPU 热点：同一条 SQL 每请求重新 parse（#242 已修复）
 
 `modernc.org/sqlite.(*conn).prepareV2` → `_sqlite3Parser` → `_yy_reduce`：占 CPU **26.1%–26.4%**（capabilities / tasks），
 折算 **≈39–43µs / 条 SQL**；同一批 SQL 文本（`SELECT ... FROM sessions WHERE id = ?` 等）在 20 秒里被解析约 18 万次。
@@ -168,21 +171,23 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
   固定窗口从首个请求起 60.08s 重置；5 请求/秒的突发 **11.96s 就吃光配额**（不是令牌桶）。限流键是 **IP**（反代/NAT 后所有调用方共享）。
 - **429 会写两条 WARN 日志**（`ratelimit.hit` + accessLog `request` 429）⇒ c=16 时 10s 写 **75.1MB** 日志；
   把级别调到 `error` 后同样 429 负载的吞吐 22,540 → 25,878 RPS（**+14.8%**）。见 issue 07。
-- 派发本身（会话鉴权）其实**很快**：1.25ms CPU/请求、1,036 RPS @c=1。c=1→16 吞吐只涨 6.9% 而 p50 涨 15.8× ⇒ 又是那条单连接。
+- 派发本身（会话鉴权）其实**很快**：1.25ms CPU/请求、1,036 RPS @c=1。c=1→16 吞吐只涨 6.9% 而 p50 涨 15.8× ⇒ 又是那条单连接（#240 已修复）。
 - 每次写落 **2 行**：真事件 + `source='route'` 的剪枝留痕（10 万次 fire 后 `events_total=203,149`，其中 `route` 行 **50.0%**）。
 
 ### 5.1 混合读写（S4）：**写被读饿死，读几乎不受影响**
+
+> 本节全部数字都是「连接池=1」时测的；**单连接串行瓶颈本身 #240 已修复**（现默认 8 条连接）。
 
 | 场景（同一 DB 状态，20s 窗口） | 读 `events?limit=100` (c=16) | 写 `fire` (c=4) |
 |---|---|---|
 | 孤立跑 | **828.6 RPS** / p50 17.97ms | **1,139.1 RPS** / p50 3.40ms |
 | 同时跑 | **809.4 RPS（-2.3%）** / 18.43ms | **79.5 RPS（-93.0%，÷14.3）** / **48.57ms（×14.3）** |
 
-- 小库对照（行数 ÷46）跌幅相同（写 1,168 → 62–85 RPS）⇒ **跌幅与数据量无关**，就是单连接被读占满。
+- 小库对照（行数 ÷46）跌幅相同（写 1,168 → 62–85 RPS）⇒ **跌幅与数据量无关**，就是单连接被读占满（#240 已修复）。
 - goroutine 栈（47 个）：**20 个阻塞在 `database/sql.(*DB).conn`**，其中 17 个能归到具体调用（GetSession 6 / GetUserByID 4 / AuthorizeNamespace 4 / TouchSession 1 / GetSource 1 / EnsureGraphVersion 1），
 另 3 个停在进出 conn 的间隔里（栈上没有 store 调用帧）；同一瞬间只有 **1** 个在跑 SQLite。
 - **`database is locked` = 0，`SQLITE_BUSY` = 0**（3.08M 行服务端日志）；271 条 5xx 全部落在压测收尾窗（`context canceled`），**稳态窗口 0 条**。
-  ⇒ `SetMaxOpenConns(1)` 把「锁冲突」换成了「应用层排队」：**这类实现里不要去找锁，要找队列**。
+  ⇒ `SetMaxOpenConns(1)` 把「锁冲突」换成了「应用层排队」：**这类实现里不要去找锁，要找队列**（#240 已修复，默认池现为 8）。
 
 ### 5.2 访问日志成本（S6 A/B）：对 `/health` 是 0%，对会落盘的路径约 8%
 
@@ -204,7 +209,7 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 
 - **同一端点、同一数据量，读 RPS 在 218–271 ↔ 828–913 之间摆动 3.3–4.2×（p50 68ms ↔ 16ms）**，与采集顺序相关；
   慢态里 `ListEvents` 占 CPU 77%、`_sqlite3BtreeTableMoveto`（按 rowid 回表）23.3%（快态 61% / 7.0%）。
-  怀疑 SQLite page cache 默认 2MB < 工作集（1.28M 行时更明显），**无 pager 级证据** ⇒ 未确认，未开 issue。
+  怀疑 SQLite page cache 默认 2MB < 工作集（1.28M 行时更明显），**无 pager 级证据** ⇒ 未确认，未单独立 issue。
 - `namespaceId=*` 在多命名空间下的 fan-out 斜率（本轮库里只有 1 个命名空间，测不出斜率）。
 - `/v1/tasks` 的**有量**表现（无 edge / 无节点声明时 `POST /v1/events` 只落 `pruned.no_edge`/`no_node`，tasks 表恒 0 行
   ⇒ 现有数字是「空表下限」，**task 插入成本本轮没量到**）。
@@ -212,8 +217,8 @@ auth 链占读端点 CPU：**12.7%（events）～34.0%（tasks）**。
 - 连接池放开后 `database/sql` 对 `*sql.Stmt` 的绑定行为与净收益（需改代码才能测，属后续调优）。
 - mutex/block profile 不可得：Go 1.25 里 `blockprofilerate`/mutex fraction 默认 0，`/debug/pprof/{block,mutex}` 不读 `?rate=`，
   开它需要进程内插桩（违反「不改产品代码」），已用 goroutine 栈 + c=1 对比 + CPU cum 替代。
-- 顺手发现的**观测性 bug（非性能，未开 issue）**：`internal/server/middleware.go:67` 取的是 `…Microseconds()`、`:76` 却把它写进名为 `latency_ms` 的字段，
-  日志里 0.256ms 的请求记成 `latency_ms: 256`。建议另开一条 bug。
+- 顺手发现的**观测性 bug（已在 #249 修复）**：`internal/server/middleware.go:67` 当时取的是 `…Microseconds()`、`:76` 却把它写进名为 `latency_ms` 的字段，
+  日志里 0.256ms 的请求记成 `latency_ms: 256`。现 `middleware.go:99` 按毫秒换算（`µs/1000`，保留小数），护栏见 `middleware_latency_test.go`。
 
 ## 7. 复现附录
 
