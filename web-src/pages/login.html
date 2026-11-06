@@ -1048,7 +1048,7 @@
           );
         }
 
-        /* ---------- 后端可用性：失败时如实报错（不进入演示模式）---------- */
+        /* ---------- 后端可用性：失败时如实报错（不伪造数据）---------- */
         async function postJSON(url, body) {
           const res = await fetch(url, {
             method: "POST",
@@ -1127,7 +1127,7 @@
         // 客户端 4xx（**是后端明确拒绝**，必须如实报给用户）。
         //
         // 为什么必须分：早先注册流程只看 `String(e).includes("HTTP")`，
-        // 于是"用户名已存在"（400）也会被当成"后端未连接，已进入演示模式"——
+        // 于是"用户名已存在"（400）也会被当成"后端未连接"——
         // 用户看到的是假故障，真错误被吞掉（#273）。登录/恢复码同理。
         function classifyFailure(e) {
           const msg = String((e && e.message) || e || "");
@@ -1139,7 +1139,7 @@
           return "other";
         }
 
-        // 后端不可用（网络错误 / 5xx）：如实提示，**不进演示模式**。
+        // 后端不可用（网络错误 / 5xx）：如实提示，**不伪造数据**。
         // 演示数据只有 make mock 那条路（cmd/fe-preview 注入 /mock.js），
         // 真实部署下伪造数据只会让人把「服务挂了」看成「功能如此」。
         function backendUnavailable(e) {
@@ -1336,7 +1336,7 @@
             if (kind === "offline" || kind === "server") {
               backendUnavailable(e); // 真·后端不可用
             } else if (kind === "rejected") {
-              // 后端明确拒绝（用户名已存在 / 校验失败 / RP 不匹配…）：如实显示，不进退演示模式
+              // 后端明确拒绝（用户名已存在 / 校验失败 / RP 不匹配…）：如实显示，不伪造数据
               showStatus(
                 t("login.status.signup_failed", "注册失败：").replace(
                   "{msg}",
