@@ -4241,15 +4241,15 @@
           const node = box.querySelector(`[data-row="${list[0].i}"]`);
           if (node && node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
         }
+        // 只有**多处**错误才在顶部汇总：一处错时行内红字 + toast 已经说清楚了，
+        // 同一句话在屏幕上出现三次（toast / 汇总 / 行内）只会显得吵。
         setSchemaError(
-          !list.length
-            ? ""
-            : list.length === 1
-              ? list[0].msg
-              : t("caps.tpl.schema_err_many", "参数契约有 {n} 处没填好（见标红的行）").replace(
-                  "{n}",
-                  String(list.length),
-                ),
+          list.length > 1
+            ? t("caps.tpl.schema_err_many", "参数契约有 {n} 处没填好（见标红的行）").replace(
+                "{n}",
+                String(list.length),
+              )
+            : "",
         );
       }
 

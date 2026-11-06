@@ -3286,12 +3286,32 @@ html.theme-switching *::after {
 }
 
 /* ---------- 共享 toast（partials.js 的 #anotify-toast-host）----------
- * 入场 translateY(8px)+opacity；3600ms 后先播 160ms 退场再 remove。
+ * 位置：**顶部居中**（原来是右下角）。右下角和页面上的主操作按钮/侧栏挤在
+ * 同一个角落，弹层打开时还会被遮罩边缘切掉一半 —— 顶部居中离视线落点
+ * （标题、表单头部）最近，而且不会被任何浮层挡住（z-index 见下）。
+ *
+ * 入场从**上方**落下（translateY(-8px)）：位置在顶部，从下往上弹会显得
+ * 是「从表单里冒出来」。3600ms 后先播 160ms 退场再 remove。
  * 错误 kind 的点与边框都用 --error（旧实现只有点、边框仍是中性）。 */
+.anotify-toast-host {
+	position: fixed;
+	top: 16px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: var(--z-toast); /* 100 > --z-modal(90)：弹层里的失败提示必须看得见 */
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	max-width: calc(100vw - 32px);
+	/* 顶部居中会压在头栏中间（搜索/主题/头像那一排）之上：toast 没有交互，
+	 * 所以让它**不接收点击**——否则它停留的 3.6s 里，那一片按钮全都点不动。 */
+	pointer-events: none;
+}
 @keyframes toast-in {
 	from {
 		opacity: 0;
-		transform: translateY(8px);
+		transform: translateY(-8px);
 	}
 	to {
 		opacity: 1;
@@ -3301,7 +3321,7 @@ html.theme-switching *::after {
 @keyframes toast-out {
 	to {
 		opacity: 0;
-		transform: translateY(8px);
+		transform: translateY(-8px);
 	}
 }
 .anotify-toast.is-in {
@@ -3313,13 +3333,7 @@ html.theme-switching *::after {
 .anotify-toast.is-error {
 	border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
-/* host 的定位与布局由 partials.js 的 Tailwind 类负责（fixed bottom-5 right-5），
- * 这里只把层级抬到 --z-toast —— partials.js 里写的是 z-[80]，低于 --z-modal(90)，
- * 于是弹层打开时的失败 toast 会落进遮罩下面（用户看到的是"点了没反应"）。
- * 用 ID 选择器覆盖：特异性高于 Tailwind 的 .z-[80]，且不必重新生成 tailwind.css。 */
-#anotify-toast-host {
-	z-index: var(--z-toast);
-}
+
 
 /* ---------- 弹层 ----------
  * 遮罩 120ms 淡入，面板 160ms opacity+translateY(4px)+scale(.98)。

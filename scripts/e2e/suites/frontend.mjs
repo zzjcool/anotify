@@ -2241,16 +2241,18 @@ async function checkCapabilityTemplates(page) {
 		input.value = "url x";
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 		document.getElementById("schema-toggle").click();
+		const row = document.querySelector('#schema-rows [data-row="0"]');
 		return {
 			jsonHidden: document.getElementById("schema-wrap").classList.contains("hidden"),
-			err: (document.getElementById("schema-error") || {}).textContent || "",
-			marked: !!document.querySelector('#schema-rows [data-row="0"].is-err'),
+			// 单处错误时不刷顶部汇总（行内红字已经说清楚了，见 showSchemaRowErrors）
+			rowErr: ((row && row.querySelector(".schema-row-err")) || {}).textContent || "",
+			marked: !!row && row.classList.contains("is-err"),
 		};
 	});
 	H.check(
 		"行没填好时不许切到手写 JSON（并标红那一行）",
 		blockedSwitch.jsonHidden === true &&
-			blockedSwitch.err.length > 0 &&
+			blockedSwitch.rowErr.length > 0 &&
 			blockedSwitch.marked === true,
 		JSON.stringify(blockedSwitch),
 	);
@@ -2302,21 +2304,30 @@ async function checkCapabilityTemplates(page) {
 	await page.click("#cap-submit");
 	await page.waitForTimeout(600);
 	const feedback = await page.evaluate(() => {
+		const host = document.getElementById("anotify-toast-host");
 		const toast = document.querySelector("#anotify-toast-host .anotify-toast");
 		const rowErr = document.querySelector(".schema-row-err");
-		let onTop = null;
-		if (toast) {
-			const r = toast.getBoundingClientRect();
-			const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-			onTop = !!hit && !!hit.closest(".anotify-toast");
-		}
+		const modal = document.getElementById("cap-modal");
+		// 用 z-index 比较判断「toast 在弹层之上」：host 是 pointer-events:none
+		// （顶部居中不能拦住头栏点击），所以 elementFromPoint 命中不到它。
+		const z = (n) => Number(getComputedStyle(n).zIndex) || 0;
+		const tr = toast ? toast.getBoundingClientRect() : null;
 		return {
-			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			modalOpen: !modal.classList.contains("hidden"),
 			rowErr: (rowErr && rowErr.textContent) || "",
 			rowMarked: !!document.querySelector("#schema-rows .schema-row.is-err"),
 			badge: (document.getElementById("schema-error") || {}).textContent || "",
 			toastError: !!toast && toast.classList.contains("is-error"),
-			toastOnTop: onTop,
+			toastZ: host ? z(host) : 0,
+			modalZ: modal ? z(modal) : 0,
+			toastInView: !!tr && tr.top >= 0 && tr.bottom <= window.innerHeight,
+			// 顶部居中：host 的水平中点要落在视口中线上
+			centered:
+				!!host &&
+				Math.abs(
+					(host.getBoundingClientRect().left + host.getBoundingClientRect().right) / 2 -
+						window.innerWidth / 2,
+				) < 2,
 			toastText: toast ? toast.textContent.trim() : "",
 		};
 	});
@@ -2331,9 +2342,21 @@ async function checkCapabilityTemplates(page) {
 		JSON.stringify({ marked: feedback.rowMarked, err: feedback.rowErr }),
 	);
 	H.check(
-		"失败 toast 是错误色且盖在弹层之上（不被遮罩挡住）",
-		feedback.toastError === true && feedback.toastOnTop === true,
-		JSON.stringify({ error: feedback.toastError, onTop: feedback.toastOnTop, text: feedback.toastText }),
+		"失败 toast 是错误色、在视口内，且 z-index 高于弹层（不被遮罩挡住）",
+		feedback.toastError === true &&
+			feedback.toastInView === true &&
+			feedback.toastZ > feedback.modalZ,
+		JSON.stringify({
+			error: feedback.toastError,
+			inView: feedback.toastInView,
+			z: feedback.toastZ + ">" + feedback.modalZ,
+			text: feedback.toastText,
+		}),
+	);
+	H.check(
+		"toast 在正上方居中（不是右下角：那里会和弹层底栏 / 主按钮挤在一起）",
+		feedback.centered === true,
+		JSON.stringify({ centered: feedback.centered }),
 	);
 }
 

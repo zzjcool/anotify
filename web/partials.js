@@ -1772,6 +1772,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
 	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
+	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
+	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
 	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
 	 * ui.css 双份硬编码（reviewer minor）。 */
 	function toastExitMs() {
@@ -1786,7 +1788,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		if (!host) {
 			host = el("div", {
 				id: "anotify-toast-host",
-				class: "fixed bottom-5 right-5 z-[80] space-y-2",
+				class: "anotify-toast-host",
 			});
 			document.body.append(host);
 		}
