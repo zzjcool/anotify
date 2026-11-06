@@ -448,8 +448,8 @@ func TestRunPersistClientArchivesBeforeResult(t *testing.T) {
 // TestRunPersistBrokenRunsDirKeepsTaskSucceeded：把 <data-dir>/runs 建成一个**同名普通
 // 文件**（建目录必然失败）→ 落盘报错，但任务仍然 succeeded、进程不 panic。
 //
-// 这是「本地档案永远不参与任务成败」的证据（与 uploadLogs 同一条纪律）：磁盘满、
-// 权限不对、runs 被占着，都不该让一个跑成功的任务变成 failed。
+// 这是「本地档案永远不参与任务成败」的证据：磁盘满、权限不对、runs 被占着，
+// 都不该让一个跑成功的任务变成 failed（索引写失败同理，只 WARN）。
 func TestRunPersistBrokenRunsDirKeepsTaskSucceeded(t *testing.T) {
 	dataDir := t.TempDir()
 	runsPath := filepath.Join(dataDir, runsSubdirName)

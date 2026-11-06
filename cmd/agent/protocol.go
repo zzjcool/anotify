@@ -79,6 +79,12 @@ const (
 	// frameTypeEmitAck 必须在这里**显式**认出来：漏了它，中枢的每次确认都会落到
 	// unknownFrame 分支——emit 永远等不到 ack，--wait-routed 必然超时（§5）。
 	frameTypeEmitAck = ws.NodeFrameEmitAck
+
+	// frameTypeLogsRequest / frameTypeLogsResponse：中枢按需取日志的一对帧
+	// （CONTRACT-logs-on-node §1）。漏了 logs_request 的后果是控制台永远只看到
+	// 「节点离线 / 超时」——而登录机器 `cat runs/...` 明明有内容。
+	frameTypeLogsRequest  = ws.NodeFrameLogsRequest
+	frameTypeLogsResponse = ws.NodeFrameLogsResponse
 )
 
 // 升级路径里的常量别名（不是类型，所以单独一个 const 块）。
@@ -162,7 +168,7 @@ type decodeEnvelope struct {
 // decodeDownstream 把中枢发来的 JSON 解码成对应的下行帧。
 //
 // 返回 *welcomeFrame / *assignFrame / *deployFrame / *cancelFrame / *errorFrame /
-// *emitAckFrame *别名* 指针（即 *ws.WelcomeFrame 等）；类型未知返回
+// *emitAckFrame / *logsRequestFrame *别名* 指针（即 *ws.WelcomeFrame 等）；类型未知返回
 // (&unknownFrame{Type: t}, nil)；JSON 本身坏了返回 error（对应 code=bad_frame 的接收侧处理）。
 func decodeDownstream(data []byte) (any, error) {
 	var env decodeEnvelope
@@ -210,6 +216,12 @@ func decodeDownstream(data []byte) (any, error) {
 		var f emitAckFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, fmt.Errorf("decode emit_ack: %w", err)
+		}
+		return &f, nil
+	case frameTypeLogsRequest:
+		var f logsRequestFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode logs_request: %w", err)
 		}
 		return &f, nil
 	default:

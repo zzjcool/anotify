@@ -209,16 +209,16 @@ func (c *nodeConfig) streamURL() (string, error) {
 
 // httpServerURL 把 node.yaml 里的 server 映射成一个可用的 http(s) 基地址。
 //
-// 谁在用：两条**非 WebSocket** 的普通 HTTP 端点——自升级下载（GET /v1/node/binary，
-// upgrade.go 的 binaryEndpoint）与任务日志上传（POST /v1/node/tasks/{id}/logs，
-// logs.go 的 taskLogsEndpoint）。两者对 server 的解释必须逐字一致：
+// 谁在用：自升级下载（GET /v1/node/binary，upgrade.go 的 binaryEndpoint）。它是
+// 现在唯一走普通 HTTP 的端点——任务日志已经改走 WS 的 logs_request（日志只留节点，
+// 见 logs_serve.go）。规则仍然是：
 //
-//   - http/ws → http，https/wss → https（node.yaml 写的是 WS 地址，这两条走普通 HTTP）；
+//   - http/ws → http，https/wss → https（node.yaml 写的是 WS 地址，这条走普通 HTTP）；
 //   - 必须带 scheme（无 scheme 不猜）且必须能解析出 host；
 //   - server 自带的 path 前缀**原样保留**（反代到子路径的部署靠它）。
 //
-// 单独抽成一个函数（而不是每个端点各写一遍）：两份实现一旦分叉，症状会是
-// 「升级能下、日志传不上」（或反之）这种只在某个部署形状下才出现的问题。
+// 单独抽成一个函数（而不是每处各写一遍）：两份实现一旦分叉，症状会是
+// 「升级能下、别的 HTTP 调用打不通」（或反之）这种只在某个部署形状下才出现的问题。
 func (c *nodeConfig) httpServerURL() (*url.URL, error) {
 	raw := strings.TrimSpace(c.Server)
 	if raw == "" {

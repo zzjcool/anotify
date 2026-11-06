@@ -11,10 +11,10 @@ import (
 // 改为上报「本机缓存了哪些产物」；新增 deploy（下行）/ apply（上行）两帧。
 const ProtocolVersion = 2
 
-// 十三帧的帧类型名。字符串本身是协议的一部分，不能随意改。
+// 帧类型名。字符串本身是协议的一部分，不能随意改。
 //
-// 节点 → 中枢：hello / heartbeat / ack / progress / result / apply / upgrade_ack
-// 中枢 → 节点：welcome / assign / deploy / cancel / error / upgrade
+// 节点 → 中枢：hello / heartbeat / ack / progress / result / apply / upgrade_ack / logs_response
+// 中枢 → 节点：welcome / assign / deploy / cancel / error / upgrade / logs_request
 const (
 	// 节点 → 中枢
 	NodeFrameHello     = "hello"
@@ -44,7 +44,29 @@ const (
 	NodeFrameUpgrade = "upgrade"
 	// NodeFrameUpgradeAck 是节点对一次 upgrade 的回报（成功 / 失败 + 可判别短码）。
 	NodeFrameUpgradeAck = "upgrade_ack"
+	// NodeFrameLogsRequest 让节点把**本机**某次执行的日志尾巴回给中枢
+	// （CONTRACT-logs-on-node §1）。
+	//
+	// 为什么日志走帧而不是 HTTP：日志只存在节点上（<data-dir>/runs/），节点没有入站
+	// 监听、也不该为了一次排障开一个；帧是唯一已经存在的双向通道。回包被限制在
+	// 1 MiB（LogsResponseMaxBytes），所以帧里只有**尾部窗口**，不是整份档案。
+	NodeFrameLogsRequest = "logs_request"
+	// NodeFrameLogsResponse 是节点对 logs_request 的回答（按 request_id 配对）。
+	NodeFrameLogsResponse = "logs_response"
 )
+
+// LogsErrNoLocalArchive 是 logs_response.error 的唯一取值：这台节点上没有那次执行的
+// 档案（被 GC 了 / 老任务 / 不是这台机器跑的）。
+//
+// 字符串是协议的一部分（中枢按它翻成 200 + reason=no_local_archive），不能改。
+const LogsErrNoLocalArchive = "no_local_archive"
+
+// LogsResponseMaxBytes 是**一帧 logs_response 编码后**的上限（1 MiB）。
+//
+// 它与 NodeFrameSoftLimit 同值，不是巧合：服务端对超限上行帧的处置是先回
+// frame_too_large 再 1009 关连接——一条「日志太大」把连接打断，比取不到日志严重得多。
+// 所以节点侧必须在编码**之后**量字节数并截断（见 cmd/agent 的 buildLogsResponse）。
+const LogsResponseMaxBytes = NodeFrameSoftLimit
 
 // 错误码（契约 §6.1 表格）。
 const (
@@ -322,6 +344,48 @@ type UpgradeAckFrame struct {
 // 与 UpgradeFrame.URLPath 共用同一个常量：改路径只有一处，帧和 HTTP 路由不会漂移。
 const NodeBinaryPath = "/v1/node/binary"
 
+// LogsRequestFrame 让节点回报某条任务的日志尾巴（CONTRACT-logs-on-node §1）。
+//
+// # 为什么没有 params / 没有别的字段
+//
+// 帧里只有「问的是哪条任务的哪一次请求」。任务入参（params）属于 input.json，
+// 控制台暂不展示，也不该为了让一次排障取日志而把可能敏感的入参搬过网络。
+//
+// # request_id 由中枢生成
+//
+// 同一条连接上可能同时有多条 logs_request 在飞（控制台一次刷新可能展开好几条任务）。
+// 回包必须能配对，否则「A 的日志被安到 B 头上」这种错会静默发生（两个任务都是 200）。
+// 格式是 `lreq_<base62>`，节点原样回带，中枢只做字符串相等比较。
+type LogsRequestFrame struct {
+	Type      string `json:"type"`
+	TaskID    string `json:"task_id"`
+	RequestID string `json:"request_id"`
+}
+
+// LogsResponseFrame 是节点对一次 logs_request 的回答（CONTRACT-logs-on-node §1）。
+//
+// 三条纪律：
+//   - **配对靠 request_id**：中枢看不到的 request_id 一律丢弃（晚到的回包、过期请求、
+//     对端实现错误）；task_id 对不上的回包也丢弃——宁可超时，也不能把一条任务的日志
+//     显示到另一条任务下面。
+//   - **error 非空 = 没取到**：目前唯一的取值是 LogsErrNoLocalArchive（"no_local_archive"）。
+//     空 error + 两个空串是「这次执行什么都没打印」，两者语义不同，不能合并。
+//   - **编码后 ≤ LogsResponseMaxBytes**：stdout/stderr 各自最多 512 KiB 的**尾部**，
+//     truncated=true 表示档案里还有更多（档案本身是完整的，被截的是这次回包）。
+//
+// Stdout/Stderr 是原文（UTF-8 安全、已折掉控制字节），中枢不 trim、不再裁剪——
+// 「你看的不是全部」这句话只能由 truncated 说，不能由某个长度阈值反推。
+type LogsResponseFrame struct {
+	Type      string `json:"type"`
+	TaskID    string `json:"task_id"`
+	RequestID string `json:"request_id"`
+	Stdout    string `json:"stdout"`
+	Stderr    string `json:"stderr"`
+	Truncated bool   `json:"truncated"`
+	Bytes     int64  `json:"bytes"`
+	Error     string `json:"error,omitempty"`
+}
+
 // helloVersion 是 hello 帧里中枢要落库、但**不在 HelloFrame 上**的字段（契约 §3）。
 //
 // 为什么不直接读 HelloFrame.AgentVersion：那个字段由 A 组加（契约 §7 明确
@@ -535,6 +599,15 @@ func DecodeUpstream(data []byte) (any, error) {
 			return nil, fmt.Errorf("decode upgrade_ack: %w", err)
 		}
 		return &f, nil
+	case NodeFrameLogsResponse:
+		// 漏了这个 case 的后果和 apply 帧那次一样（P0）：日志回包落到 unknown_type，
+		// 中枢把它当成协议错误回一帧，取日志的请求只能等到 5s 超时——
+		// 而登录机器 `cat runs/...` 明明看得到内容。
+		var f LogsResponseFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("decode logs_response: %w", err)
+		}
+		return &f, nil
 	default:
 		return &UnknownFrame{Type: env.Type}, nil
 	}
@@ -553,7 +626,7 @@ func Encode(f any) ([]byte, error) {
 func IsDownstream(frameType string) bool {
 	switch frameType {
 	case NodeFrameWelcome, NodeFrameAssign, NodeFrameDeploy, NodeFrameCancel, NodeFrameError,
-		NodeFrameEmitAck, NodeFrameUpgrade:
+		NodeFrameEmitAck, NodeFrameUpgrade, NodeFrameLogsRequest:
 		return true
 	}
 	return false
@@ -563,7 +636,7 @@ func IsDownstream(frameType string) bool {
 func IsUpstream(frameType string) bool {
 	switch frameType {
 	case NodeFrameHello, NodeFrameHeartbeat, NodeFrameAck, NodeFrameProgress, NodeFrameResult,
-		NodeFrameApply, NodeFrameEmit, NodeFrameUpgradeAck:
+		NodeFrameApply, NodeFrameEmit, NodeFrameUpgradeAck, NodeFrameLogsResponse:
 		return true
 	}
 	return false

@@ -383,9 +383,9 @@ func upgradeConfig(configPath, serverOverride string, getenv func(string) string
 // **换协议**而不是换路径：node.yaml 的 server 是给 WebSocket 用的，自升级走的是
 // 普通 HTTP 下载。所以 ws:// 要变成 http://，否则这里会拿一个 WS 客户端去见文件。
 //
-// 「server → http(s) 基地址」这一段与任务日志上传（logs.go 的 taskLogsEndpoint）
-// 共用 nodeConfig.httpServerURL（见 config.go）：两份实现一旦分叉，症状是
-// 「升级能下、日志传不上」这种只在某个部署形状下才出现的问题。
+// 「server → http(s) 基地址」这一段走 nodeConfig.httpServerURL（见 config.go）：
+// 两份实现一旦分叉，症状是「升级能下、别的 HTTP 调用打不通」这种只在某些部署
+// 形状下才出现的问题。
 func binaryEndpoint(server string) (string, error) {
 	cfg := &nodeConfig{Server: server}
 	u, err := cfg.httpServerURL()

@@ -552,23 +552,33 @@ paths:
   /tasks/{taskId}/logs:
     get:
       tags: [tasks]
-      summary: 任务日志（节点的 stdout / stderr 原文）
+      summary: 任务日志（中枢向节点按需取）
       description: |
-        节点上跑这条任务的子进程留下了什么（CONTRACT-task-logs §4）。
+        节点上跑这条任务的子进程留下了什么（CONTRACT-logs-on-node §2）。
 
-        **「任务存在但没有日志」 → `200` 空对象，绝不是 `404`**：
-        `{"stdout":"","stderr":"","truncated":false,"bytes":0}`。
-        「没日志」是合法状态（日志功能上线前跑的老任务、上传失败的运行）；
-        做成 `404` 会让前端在**正常路径**上处理错误。
+        **日志的真相在节点上**：中枢**每次请求都向节点现取一次**（一帧
+        `logs_request` / `logs_response`，5 秒超时），**不落库、不缓存**。
+        节点上的档案是完整的（8 MiB/流、保留 7 天）；中枢手里的任何副本都只会更旧，
+        而排障时看的恰好是「最完整的那一份」。
 
-        响应**恰好四个字段**，且 `stdout` / `stderr` 是节点侧采集的**原文**：
+        **取不到日志 → `200` + `available:false` + `reason`，绝不是 4xx/5xx**：
+        `{"stdout":"","stderr":"","truncated":false,"bytes":0,"available":false,"reason":"node_offline"}`。
+        取不到是合法状态（节点离线 / 档案被回收 / 节点没回），前端据此选降级文案；
+        做成错误响应会让前端在**正常路径**上处理错误，也会把「点开了一台离线节点的日志」
+        记成服务故障。`reason` 是**封闭集合**：`node_offline`（节点没有活跃连接，
+        稍后连上可再看）、`no_local_archive`（节点上没有那次执行的档案：可能已过保留期，
+        或者任务还没派给任何节点）、`timeout`（帧发出去了没等到回包，以及其它一切失败）。
+
+        `stdout` / `stderr` 是节点侧档案的**原文**：
         包括节点追加的截断标记（`…（日志已截断：共 N 字节，只保留最后 32768 字节）`），
         不 trim、不转义、不再裁剪——中枢不再二次裁剪（两层各裁一次，「共 N 字节」
         到底指哪一层的 N 就说不清了）。
 
-        - `truncated` 是采集侧的事实（每流只留了最后 32 KiB），**不能**由长度反推
+        - `truncated` 是采集侧的事实（回包被截过，档案本身仍完整），**不能**由长度反推
           （恰好 32 KiB 时反推不出来），而「看得不是全部」这句话必须说得准；
-        - `bytes` 是截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）。
+        - `bytes` 是截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）；
+          `bytes: 0` **不能**当作「没取到」——一次什么都没输出的执行同样是 0 字节，
+          这两件事由 `available` 区分。
 
         `namespaceId` **必填**（契约 §6.2），且**不接受 `*`**（单对象端点）。
         跨命名空间的 `taskId` 与「不存在」同形：都是 `404 task not found`
@@ -581,8 +591,8 @@ paths:
       responses:
         "200":
           description: |
-            日志快照。**没有日志时也返回 200**：四个字段全为空值（`bytes: 0`），
-            而不是 404。
+            日志快照。**取不到日志时也是 200**：四个数据字段全为空值（`bytes: 0`）
+            且 `available: false` + `reason`，而不是 404/5xx。
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TaskLogs" }
@@ -2435,75 +2445,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  /node/tasks/{taskId}/logs:
-    post:
-      tags: [node-stream]
-      summary: 节点上传任务日志（节点令牌鉴权）
-      description: |
-        节点上的 agent 在发 `result` 帧**之前**把子进程的 stdout / stderr 传上来
-        （CONTRACT-task-logs §2）。为什么走 HTTP 而不是帧：帧的软上限是 1 MiB，
-        而同一条连接上还跑着心跳与 assign；几十 MB 的构建日志塞进帧里，被堵死的是心跳
-        （症状看起来像「节点掉线」）。
-
-        鉴权是**自己的 node token**（`Authorization: Bearer ant_node_...`），不是会话 Cookie：
-        调用方是节点上的 agent，它手里没有浏览器会话。命名空间由**令牌**钉死，
-        不由请求体声明。
-
-        归属：任务必须属于这个令牌的命名空间，且**确实是这台节点跑的**；
-        不满足时与「任务不存在」同形，都是 `404 {"error":"task_not_found"}`。
-
-        请求体上限 **256 KiB**（agent 侧已将每流截断到 32 KiB，合计 64 KiB）——
-        超限就是采集侧的截断逻辑坏了，回 `413` 比默默存一份巨大的日志有用；
-        它不会影响任务成败（agent 侧只记 WARN）。
-
-        **幂等**：同一任务重复上传直接覆盖（重派 / agent 重启补传 / 客户端重试都安全），
-        不会变成两行。上传本身是**排障材料**，丢了可惜，但绝不能因为日志没传上去
-        把跑成功的任务判成失败。
-      security:
-        - nodeToken: []
-      parameters:
-        - { name: taskId, in: path, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [stdout, stderr, truncated, bytes]
-              properties:
-                stdout:
-                  type: string
-                  description: 子进程 stdout（已 UTF-8 安全 + 尾部截断，含截断标记）
-                stderr:
-                  type: string
-                  description: 子进程 stderr（同上，**报错通常在这里**）
-                truncated:
-                  type: boolean
-                  description: 节点侧是否截断过（采集侧的事实，不能由长度反推）
-                bytes:
-                  type: integer
-                  format: int64
-                  description: 截断**前**两个流的真实字节数之和
-      responses:
-        "204": { description: 已落库（无响应体） }
-        "400":
-          description: '请求体不是合法 JSON（`{"error":"invalid_json"}`）'
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404":
-          description: '任务不存在 / 不属于这台节点（`{"error":"task_not_found"}`）'
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "413":
-          description: '请求体超过 256 KiB（`{"error":"payload_too_large"}`）'
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
   /node/stream:
     get:
       tags: [node-stream]
@@ -2524,6 +2465,7 @@ paths:
         | `progress` | 开始执行：`acked → running` |
         | `result` | 结果：`running → succeeded/failed` |
         | `upgrade_ack` | agent 升级回报：`{ok, version, commit, error}`（见 `/nodes/{id}/upgrade`） |
+        | `logs_response` | 日志回包：`{task_id, request_id, stdout, stderr, truncated, bytes, error}`；`request_id` 原样回带，`error=no_local_archive` = 本机没有那次执行的档案（CONTRACT-logs-on-node §1） |
 
         ### 下行（中枢 → 节点）
         | type | 说明 |
@@ -2533,6 +2475,7 @@ paths:
         | `cancel` | 停止任务 |
         | `error` | 协议错误（不关连接，除 hello 失败） |
         | `upgrade` | 去升级：`{target_version, sha256, url_path}`，二进制走 HTTP 下载（见 `/node/binary`） |
+        | `logs_request` | 来一份日志：`{task_id, request_id}`（中枢发起，5 秒超时；日志**只存在节点上**，中枢按需取——见 `/tasks/{taskId}/logs`） |
 
         `hello` 还带一个可选的 `agent_version`（string）：节点上跑的 agent 版本，
         中枢落库并回显为 `GET /nodes` 的 `agentVersion`。老 agent 不带 = 空串（未知），
@@ -4387,31 +4330,54 @@ components:
     TaskLogs:
       type: object
       description: |
-        一条任务的日志快照（CONTRACT-task-logs §4）。节点侧采集 → HTTP 上传 → 落
-        `task_logs` 表 → 控制台读。响应**恰好四个字段**：不额外给 taskId /
+        一条任务的日志快照（CONTRACT-logs-on-node §2）。**中枢每次请求都向节点现取**
+        （一帧 `logs_request` / `logs_response`），**不落库、不缓存**：日志只存在节点上，
+        中枢手里的任何副本都只会更旧。
+
+        响应**恰好四个数据字段 + `available` / `reason`**：不额外给 taskId /
         namespaceId / createdAt（调用方已经知道在问哪个任务，多一份事实源只会有两种口径）。
 
         `stdout` / `stderr` 是**原文**（含节点追加的截断标记），中枢不再裁剪；
-        两个流分开存：合并之后 stderr 的「谁先写谁先上」顺序就没了，而报错时恰恰
+        两个流分开给：合并之后 stderr 的「谁先写谁先上」顺序就没了，而报错时恰恰
         要看清是哪个流。
-      required: [stdout, stderr, truncated, bytes]
+
+        `available: false` 时四个数据字段一定是空值 / 0，`reason` 说明为什么没取到；
+        `available: true` 时 `reason` 不存在（`omitempty`）。
+      required: [stdout, stderr, truncated, bytes, available]
       properties:
         stdout:
           type: string
-          description: 子进程 stdout 原文（空串 = 没输出；不 trim、不转义）
+          description: 子进程 stdout 原文（空串 = 没输出或没取到；不 trim、不转义）
         stderr:
           type: string
-          description: 子进程 stderr 原文（空串 = 没输出；失败原因通常在这里）
+          description: 子进程 stderr 原文（空串 = 没输出或没取到；失败原因通常在这里）
         truncated:
           type: boolean
           description: |
-            节点侧是否截断过（每流只留了最后 32 KiB）。采集侧的事实，
-            **不能**由字符串长度反推：恰好 32 KiB 时反推不出来，
+            节点侧这次**回包**被截断过（每流都留尾部，两流合计不超 1 MiB；档案本身仍完整）。
+            采集侧的事实，**不能**由字符串长度反推：恰好卡在上限时反推不出来，
             而「看得不是全部」这句话必须说得准。
         bytes:
           type: integer
           format: int64
-          description: 截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）；没有日志时是 0
+          description: |
+            截断**前**两个流的真实字节数之和（前端据此显示「原始多大」）。
+            `0` 不能当「没取到」用（一次什么都没输出的执行也是 0），这两件事由 `available` 区分。
+        available:
+          type: boolean
+          description: |
+            四个数据字段是否**真的从节点上取回来了**。恒出现：缺字段会让「没取到」
+            看起来像「取到了但为空」。`false` → 看 `reason`。
+        reason:
+          type: string
+          description: |
+            没取到的原因（仅 `available: false` 时出现）。**封闭集合**：前端按它选降级文案，
+            新增取值等于给用户看空白。
+            - `node_offline` —— 节点没有活跃连接（稍后连上可再看）；
+            - `no_local_archive` —— 节点上没有那次执行的档案（可能已过保留期），
+              或者任务还没派给任何节点；
+            - `timeout` —— 帧发出去了没等到回包，以及其它一切没取到的情况。
+          enum: [node_offline, no_local_archive, timeout]
 
     Emission:
       type: object

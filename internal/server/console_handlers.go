@@ -32,6 +32,14 @@ type consoleHandler struct {
 	// GET /v1/nodes 顶层下发它，控制台据此显示「该升到哪一版」与「已是最新」。
 	// 空串 = 服务端没带二进制（UI 不显示升级按钮）。由 mux 从 agentBinary 注入。
 	targetAgentVersion string
+	// taskLogs 是「按需向节点取日志」的数据来源（CONTRACT-logs-on-node §2）：
+	// 生产接线是同一个 NodeHub（mux 里 consoleH.taskLogs = nodeHub），端点每次请求
+	// 都经它现取一次——日志只存在节点上，中枢不落库、不缓存。
+	//
+	// 声明成窄接口而不是直接依赖 *ws.NodeHub：测试里塞 fake 就能覆盖命中/离线/
+	// 没档案/超时/意外错误全部五条分支（不用起真 WS、也不用等 5 秒超时）。
+	// nil = 未装配（仅测试/嵌入用法）→ 端点回 200 + available:false。
+	taskLogs taskLogsSource
 }
 
 // sessionUser 从会话中间件注入的 context 里取用户 ID。

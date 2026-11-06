@@ -1029,6 +1029,17 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
                                   // **没有 out**（P1.5 退役）：产出只走上面的 emit 帧。
                                   // 老帧里多出来的 "out" 是未知字段，服务端忽略、不报错。
 
+{ "type": "logs_response", "task_id": "tsk_x", "request_id": "lreq_2Z2P3B0A0R2Q0p2C",
+  "stdout": "…最后 512 KiB…", "stderr": "…最后 512 KiB…",
+  "truncated": true,               // 这次**回包**被截过（节点上的档案本身是完整的）
+  "bytes": 2097152,                // 档案里两个流的真实字节数之和（截断前）
+  "error": "" }                    // 非空 = 没取到：目前只有 no_local_archive
+// 日志只存在节点上（<data-dir>/runs/），中枢要看时**按需来取**（CONTRACT-logs-on-node）：
+// 中枢发 logs_request{task_id, request_id}，节点原样回带 request_id；中枢按它配对，5 秒超时。
+// 单帧编码后 ≤ 1 MiB（NodeFrameSoftLimit），所以优先给 **stderr 尾部 + stdout 尾部**各 512 KiB。
+// 找不到档案（被 GC / 老任务 / 不是这台机器跑的）→ error:"no_local_archive"（不是空串）。
+// 帧里**不带 params**：入参属于 input.json，控制台暂不展示。
+
 { "type": "upgrade_ack", "ok": true, "version": "1.5.0+3fd5a59", "error": "" }
 // 自升级的回执（响应中枢的 upgrade 帧）。失败时 ok:false + error，取值可判别：
 //   bad_sha（校验失败）| need_root（无权限写目标）| download_failed |
@@ -1061,6 +1072,9 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
   "seq_in_trace": 3 }              // 同一 trace、同一能力里的第几次执行（1 起）；缺省=0=未知
 
 { "type": "emit_ack",  "task_id": "tsk_x", "seq": 3, "routed": 2, "pruned": 0, "error": "" }
+
+{ "type": "logs_request", "task_id": "tsk_x", "request_id": "lreq_2Z2P3B0A0R2Q0p2C" }
+// 向节点要一条任务的日志尾巴。request_id 由中枢生成（lreq_<base62>），节点原样回带。
 
 { "type": "cancel",    "task_id": "tsk_x", "reason": "superseded" }
 

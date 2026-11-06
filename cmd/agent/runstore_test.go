@@ -476,8 +476,18 @@ func TestRunStoreGCByAgeAndCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 runs: %v", err)
 	}
-	if len(left) != 1 {
-		t.Errorf("runs/ 下剩 %d 项, want 1（唯一的 trace 目录）", len(left))
+	// .tasks 是任务索引目录（契约 §4），**不是**一条 trace：这里按名字把它排掉再数。
+	// 它不是 GC 的对象，会一直陪着剩下的档案（带着指向 keep 那一条的索引）。
+	traces := 0
+	for _, entry := range left {
+		if entry.Name() == runIndexDirName {
+			continue
+		}
+		traces++
+	}
+	if traces != 1 {
+		t.Errorf("runs/ 下的 trace 目录 = %d 个, want 1（runs/ 里共 %d 项，含索引目录 .tasks）",
+			traces, len(left))
 	}
 }
 

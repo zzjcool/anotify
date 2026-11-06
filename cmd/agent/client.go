@@ -328,13 +328,10 @@ type nodeAgent struct {
 	emitMu sync.Mutex
 	emits  map[string]*emitServer
 
-	// logs 是任务日志上传器（契约 §2）；nil = 不上传（standalone / 配置缺 server）。
-	// 单测可以直接把它换成 fake 或 nil。
-	logs taskLogSender
-
 	// runs 是本机的**执行档案库**（<data-dir>/runs/，见 runstore.go）：每次执行的
-	// 输入 + 完整输出落在跑它的这台机器上，事后用 `anotify-agent runs` 回看。
-	// 写盘失败只 Warn，绝不参与任务成败（与 logs 同一条纪律）。
+	// 输入 + 完整输出落在跑它的这台机器上，事后用 `anotify-agent runs` 回看，
+	// 也是中枢取日志（logs_request）的唯一数据来源。
+	// 写盘失败只 Warn，绝不参与任务成败。
 	runs *runStore
 
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
@@ -376,9 +373,6 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		// GC 由 serveNode 在握手前拉起（见 startRunGC）。
 		runs: newRunStore(dataDir, log),
 	}
-	// 日志上传器由配置推导（非法配置/缺 server → nil，只 WARN 一次）：
-	// 放在构造里而不是每个任务里，是为了「配置错」只报一次。
-	a.logs = newHTTPLogSender(cfg, log)
 	return a
 }
 
@@ -552,6 +546,12 @@ func (a *nodeAgent) readLoop(ctx context.Context) error {
 			// 中途产出的确认（emit-protocol.md §3.2）：唤醒 --wait-routed 的等待者、
 			// 把成功的 seq 记进 outbox、把被拒的 seq 标成「不再重发」。
 			a.handleEmitAck(f)
+		case *logsRequestFrame:
+			// 中枢按需取日志（CONTRACT-logs-on-node §1）。**必须**扔 goroutine：读循环
+			// 停住的时间不止「读 1 MiB 盘」——同一条连接上的 heartbeat / assign / result
+			// 全排在它后面，而中枢判活看的就是心跳间隔。一次慢日志读取能把自己显示成
+			// 掉线，顺带让租约到期、任务被重派。日志是旁路，不配让主路等它。
+			go a.handleLogsRequest(f)
 		case *errorFrame:
 			// 契约 §3.4.5：error 帧只记 warn，不断连接（握手阶段除外）。
 			a.log.Warn("control plane error",
@@ -756,10 +756,9 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		// 落盘**在 result 之前**（契约 §3.2）：result 一到中枢，这条 trace 就有人在看了，
 		// 那时「输入与完整输出已经在盘上」必须是确定的事。失败只 Warn（见 saveRunArchive）。
 		a.saveRunArchive(f, out, emits, startAt, finishedAt)
-		// 日志先传，再发 result：result 一到中枢，这个任务就可能有下游/重试/通知
-		// 在读了；日志晚到的窗口越小越好。上传失败只记 WARN（不参与任务成败）。
-		// 顺序在「task finished」日志**之后**：那条日志带 elapsed/status，是排障时间线，
-		// 不该被一次可能耗到 10s 的 HTTP 拖在后面（result 帧的时序才是硬要求）。
+		// 日志不再上传（CONTRACT-logs-on-node §3）：日志只留在本机档案里，中枢要看时
+		// 发一帧 logs_request 来取（见 logs_serve.go）。所以 result 之前的收尾只剩
+		// 「档案落盘」这一件事——那条「先传日志再发 result」的顺序要求已经不存在了。
 		a.log.Info("task finished",
 			"event", "agent.task.finished",
 			"task_id", f.TaskID,
@@ -778,7 +777,6 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 		a.log.Debug("task output",
 			"event", "agent.task.output", "task_id", f.TaskID,
 			"stdout", out.Stdout, "stderr", out.Stderr)
-		a.uploadLogs(f.TaskID, out)
 		a.sendResult(f.TaskID, canceledOutcome(jctx, out))
 	}()
 }
@@ -834,11 +832,11 @@ func runRecordFor(f *assignFrame, out outcome, emits int, started, finished time
 	}
 }
 
-// saveRunArchive 把这次执行（输入 + 完整输出 + meta）落盘到 <data-dir>/runs/。
+// saveRunArchive 把这次执行（输入 + 完整输出 + meta + 任务索引）落盘到 <data-dir>/runs/。
 //
-// 一条纪律（与 uploadLogs 同源）：**失败只 Warn，绝不改 out.Status**。磁盘满、runs 目录
-// 被一个同名文件占着、params 里混进了编不出 JSON 的值——这些都不该把一个跑成的任务
-// 判成失败：本地档案是「可惜丢了一份证据」，不是「任务没跑成」。
+// 一条纪律：**失败只 Warn，绝不改 out.Status**。磁盘满、runs 目录被一个同名文件占着、
+// params 里混进了编不出 JSON 的值——这些都不该把一个跑成的任务判成失败：本地档案是
+// 「可惜丢了一份证据」，不是「任务没跑成」。
 func (a *nodeAgent) saveRunArchive(f *assignFrame, out outcome, emits int, started, finished time.Time) {
 	if a.runs == nil {
 		return
@@ -852,33 +850,6 @@ func (a *nodeAgent) saveRunArchive(f *assignFrame, out outcome, emits int, start
 			"seq_in_trace", f.SeqInTrace,
 			"attempt", f.Attempts,
 			"error", err.Error())
-	}
-}
-
-// uploadLogs 把这次执行的 stdout/stderr 上传给中枢（契约 §2）。
-//
-// 三条纪律，缺一条都会把一个好任务弄成坏任务：
-//
-//  1. 用 a.base（连接 ctx）而不是任务 ctx：任务被 cancel 也要能把日志传上去——
-//     「为什么被取消/怎么炸的」恰恰是那时最想看的东西。
-//  2. logUploadTimeout 兜住卡死：result 帧在它后面等，不能让一次 HTTP 把结果拖到
-//     租约到期。
-//  3. 失败只 WARN：日志丢了是可惜，但绝不能因为日志上传失败把跑成功的任务判成失败
-//     （out.Status / sendResult 一概不看这里的返回值）。
-func (a *nodeAgent) uploadLogs(taskID string, out outcome) {
-	if a.logs == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(a.base, logUploadTimeout)
-	defer cancel()
-	if err := a.logs.upload(ctx, taskID, logSnapshot{
-		Stdout:    out.Stdout,
-		Stderr:    out.Stderr,
-		Truncated: out.Truncated,
-		Bytes:     out.Bytes,
-	}); err != nil {
-		a.log.Warn("task log upload failed",
-			"event", "agent.logs.upload_failed", "task_id", taskID, "error", err.Error())
 	}
 }
 

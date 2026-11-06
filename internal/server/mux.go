@@ -384,12 +384,17 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 控制台端点：登录会话 + 组织维度校验
 	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
 	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(consoleH.task))))
-	// 任务日志（CONTRACT-task-logs §4）：namespaceId 走 **query** 而不是路径段，
+	// 任务日志（CONTRACT-logs-on-node §2）：namespaceId 走 **query** 而不是路径段，
 	// 与 /v1/tasks/{id} 同口径——这是一次「按 id 取单对象」，命名空间是收口参数，
 	// 不是资源标识的一部分（路径段形状留给「按命名空间列子资源」，如 emissions）。
-	// 任务存在但没有日志时回 200 + 空对象，**不是 404**（见 handler 注释）。
+	//
+	// 日志只存在**节点**上：这里注入与派发**同一条连接**的 hub（nodeHub），handler
+	// 每次请求都现取一次，不落库、不缓存。取不到时回 200 + available:false
+	// （node_offline / no_local_archive / timeout），**不是** 5xx——那是前端已处理的
+	// 降级分支（见 serveTaskLogs / fetchTaskLogs 的注释）。
+	consoleH.taskLogs = nodeHub
 	mux.Handle("GET /v1/tasks/{taskId}/logs",
-		noStore(sessMW(http.HandlerFunc(consoleH.taskLogs))))
+		noStore(sessMW(http.HandlerFunc(consoleH.serveTaskLogs))))
 	// trace 视图（#142）：一条 trace 的全景（events + tasks + pruned）。
 	// 剪枝从 #142 起落进了 events（source='route'），这个端点是「为什么没跑」的查询出口。
 	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(consoleH.trace))))
@@ -477,14 +482,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("POST /v1/nodes/{id}/upgrade",
 		noStore(sessMW(http.HandlerFunc(upgradeH.upgrade))))
 
-	// --- 任务日志上传（CONTRACT-task-logs §2）---
-	//
-	// 走 **node token** 而不是会话：调用方是节点上的 agent，它手里只有自己的
-	// node token（命名空间由令牌钉死，不由请求体声明）。日志不塞进 result 帧：
-	// 几十 MB 的输出会把同一条连接上的心跳与 assign 堵在后面，症状是「节点掉线」，
-	// 根因却是「任务话多」。读端点是上面 /v1/tasks 那一段里的 GET /v1/tasks/{taskId}/logs。
-	mux.Handle("POST /v1/node/tasks/{taskId}/logs",
-		noStore(&taskLogUploadHandler{db: db, auth: db}))
+	// 任务日志**没有上传端点**了（CONTRACT-logs-on-node §3）：上一版这里是「节点把
+	// 子进程输出 POST 上来、中枢落 task_logs 表」的那条路由。日志的真相已经改回
+	// **节点本地档案**，控制台点开时中枢按需去取（GET /v1/tasks/{taskId}/logs，
+	// 见上面 /v1/tasks 那一段）：上传是一份必然更旧的截断副本，节点上那份才完整。
 
 	// --- 部署模型（console-declares epic，契约 CONTRACT-protocol §11）---
 	//
