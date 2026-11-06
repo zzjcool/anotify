@@ -1682,10 +1682,13 @@ paths:
       tags: [capabilities]
       summary: 能力定义列表（带推导出的 kind）
       description: |
-        `kind` 是**推导量，不落库**（不变量 I3）：
-        - 没有任何节点声明 → `origin`
-        - 有节点声明且 `outputs` 全空 → `end`
-        - 有节点声明且 `outputs` 有非空项 → `pipe`
+        `kind` 是**推导量，不落库**（不变量 I3），**以边为准**（#383）：
+        - 没有出边 → `end`
+        - 有出边、没有入边 → `origin`
+        - 有出边、也有入边 → `pipe`
+
+        `outputs` 是产物里的端口声明，不再是拓扑真相：一个建时声明 `outputs: []`
+        的能力接上下游之后，`kind` 不再是 `end`，`assign.ports` 也会带上那个出口。
 
         `namespaceId` **必填**；`*` 允许（跨命名空间汇总，每条能力自带自己的 `namespaceId`）。
       security:
@@ -3919,8 +3922,9 @@ components:
       type: string
       enum: [origin, end, pipe]
       description: |
-        能力在链上的角色，**推导量，不落库**（不变量 I3）。
-        origin = 没有节点声明；end = 有声明且 outputs 全空；pipe = 有声明且有出口。
+        能力在链上的角色，**推导量，不落库**（不变量 I3）。**以边为准**（#383）：
+        end = 没有出边；origin = 有出边、没有入边；pipe = 有出边、也有入边。
+        入边包括能力边（别人 → 它）与入口边（来源 → 它）。
 
     Capability:
       type: object

@@ -531,9 +531,9 @@ func TestCapabilityCreate(t *testing.T) {
 		t.Fatalf("capability.namespaceId = %v, want %v（资源响应必须带归属）",
 			capObj["namespaceId"], env.nsID)
 	}
-	// kind：没有节点声明 → origin
-	if m["kind"] != "origin" {
-		t.Fatalf("kind = %v, want origin (no node declares it)", m["kind"])
+	// kind：新建的能力还没有任何边 → end（#383 起 kind 看边：没有出边就是链的终点）
+	if m["kind"] != "end" {
+		t.Fatalf("kind = %v, want end (no out edges yet)", m["kind"])
 	}
 
 	// 同名换内容 → 自动开版本 2
@@ -561,26 +561,36 @@ func (e *consoleEnv) mustGetCapability(t *testing.T, name string, version int) *
 }
 
 // TestCapabilityListIncludesKind 列表带 kind（推导量，不落库）。
+//
+// #383 起 kind **看边**（与 assign.ports 同一条口径：以边为准）：
+//
+//	没有出边        → end
+//	有出边、无入边   → origin
+//	有出边、有入边   → pipe
+//
+// 所以这里直接按**用户路径**接线（PUT downstreams 整体替换下游），而不是靠 outputs
+// 与「有没有节点声明」，后者曾经是这套推导的输入。
 func TestCapabilityListIncludesKind(t *testing.T) {
 	env := newConsoleEnv(t)
-	review := env.seedCapability(t, "review", 1, []string{"fix"}) // 有出口
-	// notify.phone 现在是**内置能力**（#83），由建命名空间时同事务播种
-	// （store.SeedBuiltinCapabilitiesTx，入口是 RegisterUser / CreateNamespace；
-	//  组织层删除后已没有 EnsureOrgForUser）。
+	// start 建时声明 outputs: []（终端）—— 加了下游之后它必须是 origin，绝不能再是 end。
+	env.seedCapability(t, "start", 1, []string{})
+	// review 声明了出口（历史上这让它显示成 pipe），但 kind 现在只看边。
+	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "finish", 1, []string{})
+	// notify.phone 是**内置能力**（#83），由建命名空间时同事务播种
+	// （store.SeedBuiltinCapabilitiesTx，入口是 RegisterUser / CreateNamespace）。
 	// 不要再自己 seed 一份——那会因为内容不同而撞 append-only 约束
 	// （capability_versions 的 UNIQUE(namespace_id, name, version) + I8）。
 	end := env.mustGetCapability(t, "notify.phone", 1)
-	env.seedCapability(t, "trigger", 1, []string{"go"}) // 无节点声明
+	// 声明了出口但一条边都没有：outputs 不再是拓扑的守门人 → end。
+	env.seedCapability(t, "unwired", 1, []string{"go"})
 
-	// 声明 review 与 notify.phone 给一台节点
-	node := &store.Node{NamespaceID: env.nsID, Name: "mbp"}
-	if _, err := env.db.CreateNode(context.Background(), node); err != nil {
-		t.Fatalf("create node: %v", err)
-	}
-	if _, err := env.db.ConfirmCapabilities(context.Background(), env.nsID, node.ID,
-		[]store.CapabilityRef{{Name: "review", Version: 1}, {Name: "notify.phone", Version: 1}},
-	); err != nil {
-		t.Fatalf("confirm: %v", err)
+	// start --out--> review --out--> finish（“在能力里改下游”这条真实路径）。
+	for _, c := range []struct{ name, to string }{{"start", "review"}, {"review", "finish"}} {
+		rr := env.replaceDownstreams(t, c.name, []map[string]any{{"toRef": c.to}})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s downstreams status = %d, body=%s", c.name, rr.Code, rr.Body.String())
+		}
 	}
 
 	rr := env.do(t, http.MethodGet, env.withNS("/v1/capabilities"), nil)
@@ -596,17 +606,69 @@ func TestCapabilityListIncludesKind(t *testing.T) {
 		kind, _ := obj["kind"].(string)
 		got[name] = kind
 	}
+	if got["start"] != "origin" {
+		t.Errorf("start kind = %q, want origin（有出边、没有入边）", got["start"])
+	}
 	if got["review"] != "pipe" {
-		t.Errorf("review kind = %q, want pipe (declared + has outputs)", got["review"])
+		t.Errorf("review kind = %q, want pipe（有出边、有入边）", got["review"])
+	}
+	if got["finish"] != "end" {
+		t.Errorf("finish kind = %q, want end（没有出边）", got["finish"])
+	}
+	if got["unwired"] != "end" {
+		t.Errorf("unwired kind = %q, want end（声明了出口但没有边，outputs 不再是拓扑守门人）", got["unwired"])
 	}
 	if got["notify.phone"] != "end" {
-		t.Errorf("notify.phone kind = %q, want end (declared + no outputs)", got["notify.phone"])
+		t.Errorf("notify.phone kind = %q, want end（内置中枢执行特例）", got["notify.phone"])
 	}
-	if got["trigger"] != "origin" {
-		t.Errorf("trigger kind = %q, want origin (no node declares it)", got["trigger"])
-	}
-	_ = review
 	_ = end
+}
+
+// TestCapabilityKindFollowsEdgesNotOutputs #383 的验收场景（HTTP 层）：
+//
+//	outputs: [] + 有出边 → 不再是 end
+//
+// 并且这条变化只由**边**引起：create 响应里它是 end（还没有边），PUT downstreams 之后
+// 列表里就不再是 end。
+func TestCapabilityKindFollowsEdgesNotOutputs(t *testing.T) {
+	env := newConsoleEnv(t)
+
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
+		NamespaceID: env.nsID, Name: "sink", Outputs: []string{},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if got := decode(t, rr)["kind"]; got != "end" {
+		t.Fatalf("create kind = %v, want end（还没有任何边）", got)
+	}
+	env.seedCapability(t, "down", 1, nil)
+
+	// 用户路径：在能力编辑里给这个建时声明 outputs: [] 的能力加一条下游。
+	if rr := env.replaceDownstreams(t, "sink", []map[string]any{{"toRef": "down"}}); rr.Code != http.StatusOK {
+		t.Fatalf("downstreams status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = env.do(t, http.MethodGet, env.withNS("/v1/capabilities"), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rr.Code)
+	}
+	caps, _ := decode(t, rr)["capabilities"].([]any)
+	kind := ""
+	for _, c := range caps {
+		obj, _ := c.(map[string]any)
+		if obj["name"] == "sink" {
+			kind, _ = obj["kind"].(string)
+		}
+	}
+	if kind == "end" || kind == "" {
+		t.Fatalf("sink kind = %q, want origin（有出边、没有入边；绝不能还是 end）", kind)
+	}
+	// 能力声明本身没被这条边改写（outputs 仍属产物、digest 不变）。
+	c := env.mustGetCapability(t, "sink", 1)
+	if len(c.Outputs) != 0 {
+		t.Fatalf("sink.outputs = %v, want []（边不是声明）", c.Outputs)
+	}
 }
 
 // TestCapabilitySameVersionDifferentContentRejected 同 name@version 换内容 → 409。

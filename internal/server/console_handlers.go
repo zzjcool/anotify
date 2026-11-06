@@ -1101,6 +1101,27 @@ func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// capabilityKind 推导一个能力的 kind（推导量，不落库：不变量 I3）。
+//
+// #383 起 kind **看边**（有出边 = 不是终点；有出边且有入边 = 中间段），不再看
+// outputs —— outputs 是产物里的端口声明，把一个 outputs: [] 的能力接上下游之后，
+// 它就不再是「链到这里结束」。
+//
+// 读接线失败时降级成「没有任何边」并记一条日志：kind 只是展示量，不该因为这个
+// 查询失败让整个能力列表 500（与 assign 的 enrichment 同一个取舍）。
+func (h *consoleHandler) capabilityKind(ctx context.Context, c *store.CapabilityVersion) route.Kind {
+	if c == nil {
+		return route.KindOrigin
+	}
+	shape, err := h.db.CapabilityEdgeShape(ctx, c.NamespaceID, c.Name)
+	if err != nil {
+		slog.Warn("capability kind: read edge shape failed, falling back to no edges",
+			"event", "console.caps.kind_shape_failed",
+			"namespace_id", c.NamespaceID, "capability", c.Name, "error", err.Error())
+	}
+	return route.KindForCapability(c, shape)
+}
+
 func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 	// 读端点：`*` 允许（跨命名空间汇总）。
 	ns, ok := h.resolveNamespace(w, r, "", true)
@@ -1199,7 +1220,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		}
 		views = append(views, capView{
 			CapabilityVersion: c,
-			Kind:              route.KindForCapability(c, len(list) > 0),
+			Kind:              h.capabilityKind(r.Context(), c),
 			DeclaredBy:        list,
 			ExecutedBy:        executedBy,
 			Run:               h.capabilityRun(r.Context(), c),
@@ -1359,8 +1380,9 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	}
 	resp := map[string]any{
 		"capability": c,
-		// 新建时还不可能有节点声明（declared=false），但内置能力要走特例
-		"kind": route.KindForCapability(c, false),
+		// 新建时还不可能有节点声明，但 kind 看的是**边**（同名旧版本的出边也归这个名字管），
+		// 所以这里按真库读一次，而不是写死一个常量。
+		"kind": h.capabilityKind(r.Context(), c),
 		// 影响面**总是**回（空影响面也是 [] 而不是 null）：
 		// 前端不必为「这一次到底查过没有」判空，也不必自己再算一遍。
 		"upgradeImpact": impact,
@@ -1545,7 +1567,7 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 
 	resp := map[string]any{
 		"capability": c,
-		"kind":       route.KindForCapability(c, false),
+		"kind":       h.capabilityKind(r.Context(), c),
 		// 影响面以**事务内**算出的为准（与写入同一个快照）；空影响面也是 [] 而不是 null。
 		"upgradeImpact": res.Impact,
 		// links 是建成的边（现有 edge 视图：带两端引用此刻解析到的能力 id）。

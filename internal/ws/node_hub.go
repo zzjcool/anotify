@@ -290,15 +290,23 @@ const assignFrameOverheadBytes = 4 << 10
 
 // enrichAssign 补全 assign 帧里那三项**推导出来的**字段（P1.1 / P1.4，设计 §3.4）。
 //
-//	ports   = 该能力定义的 outputs（I2 封闭集合的快照：节点据此当场拒掉写错的出口名）
-//	expects = 按 port 推导的「下游要什么」（route.BuildExpects，不落库）
+//	ports   = 有效出口集合：产物声明的 outputs ∪ 该能力在 edges 里出现过的 from_port
+//	          （route.MergePorts，#383：以边为准。节点据此当场拒掉写错的出口名）
+//	expects = 按**同一份** ports 推导的「下游要什么」（route.BuildExpects，不落库）
 //	token   = 该任务的一次性令牌（本地 emit socket 鉴权）
+//
+// 为什么 expects 必须用合并后的 ports：它按「(能力, 端口) 查出口表」推导，端口只要
+// 不在名单里，那个端口的下游就不在候选里 —— 脚本 `emit --to` 会说「不是候选」，
+// 与「这个出口可用」自相矛盾。两边用同一个变量，就不会漂。
 //
 // 全部是 **best-effort**（失败只记日志、**不阻断派发**）：
 //   - 它们是降级信息：没有 ports 时节点仍能跑（只是 emit 时才报出口错），
 //     没有 expects 时实现只能靠被拒后猜，没有 token 时只能等下次重发；
 //   - 而派发失败会让这条任务退回 pending 重跑一次——代价大得多（可能是一次昂贵执行）。
 //     这条取舍与 pinDigest（审计字段不拦派发）同一个口径。
+//
+// 读接线事实失败时**降级到只用声明的 outputs**（而不是清空 ports）：一次库抖动不该
+// 把本来可用的出口从节点手上拿走；最坏情况是退回 #383 之前的口径，下一轮重派会恢复。
 //
 // 幂等：token 走 store.EnsureTaskToken（CAS 只在为空时写）——断线重连重发 assign
 // 时拿到的必须是同一个令牌，否则节点侧 outbox 的重发会被判成 token 无效。
@@ -312,9 +320,22 @@ func (s *nodeSession) enrichAssign(ctx context.Context, task *store.Task, f *Ass
 			"capability_id", task.CapabilityID,
 			"error", err.Error())
 	} else {
-		f.Ports = capDef.Outputs
-		if s.h.Expects != nil && len(capDef.Outputs) > 0 {
-			expects, err := s.h.Expects.BuildExpects(ctx, task.NamespaceID, task.CapabilityID, capDef.Outputs)
+		// ports 以边为准（#383）：声明是产物的一部分，拓扑真相在 edges。
+		ports := route.MergePorts(capDef.Outputs, nil)
+		shape, serr := s.h.Store.CapabilityEdgeShape(ctx, task.NamespaceID, capDef.Name)
+		if serr != nil {
+			slog.Warn("assign enrichment: capability edge shape failed, falling back to declared outputs",
+				"event", "node.ws.assign.enrich",
+				"node_id", s.node.ID,
+				"task_id", task.ID,
+				"capability", capDef.Name,
+				"error", serr.Error())
+		} else {
+			ports = route.MergePorts(capDef.Outputs, shape.OutPorts)
+		}
+		f.Ports = ports
+		if s.h.Expects != nil && len(ports) > 0 {
+			expects, err := s.h.Expects.BuildExpects(ctx, task.NamespaceID, task.CapabilityID, ports)
 			if err != nil {
 				slog.Warn("assign enrichment: build expects failed",
 					"event", "node.ws.assign.enrich",

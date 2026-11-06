@@ -620,6 +620,95 @@ func listEdgesOn(ctx context.Context, ex queryExec, namespaceID, fromKey string)
 	return out, rows.Err()
 }
 
+// EdgeShape 是一个能力在 edges 里的**接线事实**（推导量，不落库）。
+//
+// 为什么需要它（#383）：`outputs` 是**产物**里声明的端口集合，过去同时被当成拓扑的
+// 真相 —— 于是「建时声明 outputs: []（终端）之后又加了下游」的能力，派发时节点拿到
+// 的端口契约里没有那个出口，emit 当场报「终端能力」，新边永远不触发。裁定是
+// **以边为准**：assign.ports = 声明的 outputs ∪ OutPorts，kind 也改看 HasOut/HasIn
+// （route.DeriveKind）。两条推导的输入都是这个结构，读法因此只有一份。
+type EdgeShape struct {
+	// OutPorts 是这个能力作为左端出现过的 from_port（去重、升序）。
+	//
+	// 左端 `name` 与钉死的 `name@version` 都算这个能力的出边（与 EdgesFrom 同口径）：
+	// 派发只知道「上游是哪个能力（名字）」，不该去猜用户配的是哪一版。
+	OutPorts []string
+	// HasIn 报告是否有边指向它。**能力边**（别人 --x--> 它）与**入口边**
+	// （来源 --事件--> 它）都算：两者都是「有上游喂它」这件事。
+	// 右端 `name` 与 `name@version` 同样都算。
+	HasIn bool
+}
+
+// HasOut 报告是否有出边（= 至少一个出口在边上被用过）。
+//
+// nil 安全：调用方在「读不到形状」的降级路径上会传 nil（当作没有边）。
+func (s *EdgeShape) HasOut() bool { return s != nil && len(s.OutPorts) > 0 }
+
+// CapabilityEdgeShape 读一个能力按**名字**的接线事实（出边端口 + 有没有入边）。
+//
+// 按名字而不是 id：edges 两端存的是引用（P2.2），同一条边在升级前后必须能被同一跳
+// 查到；`name@version` 型的边是同一个能力的出边（与 EdgesFrom 同一套 substr 匹配）。
+//
+// 能力不存在不报错：这个方法只回答「边怎么接的」，与能力行是否存在无关。
+func (d *DB) CapabilityEdgeShape(ctx context.Context, namespaceID, name string) (*EdgeShape, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("%w: empty capability name", ErrRefUnresolved)
+	}
+	out := &EdgeShape{OutPorts: []string{}}
+
+	// 出边端口：能力边（from_is_source=0）的左端按名字匹配，两种引用形态都算。
+	// 用 substr 而不是 LIKE：名字里可能有 `%`/`_`，那种情况下 LIKE 会误匹配。
+	//
+	// 这里把 rows 读完并**显式关闭**后再发第二个查询：`:memory:` 库的连接池上限是 1，
+	// 行没关就再查会自己把自己锁死（见 ListEdges 的同类注释）。
+	rows, err := d.QueryContext(ctx,
+		`SELECT DISTINCT from_port FROM edges
+		 WHERE namespace_id = ? AND from_is_source = 0
+		   AND (from_ref = ? OR substr(from_ref, 1, length(?) + 1) = ? || '@')
+		 ORDER BY from_port`, namespaceID, name, name, name)
+	if err != nil {
+		return nil, fmt.Errorf("read capability out ports: %w", err)
+	}
+	readPorts := func() error {
+		defer rows.Close()
+		for rows.Next() {
+			var port string
+			if err := rows.Scan(&port); err != nil {
+				return fmt.Errorf("scan capability out port: %w", err)
+			}
+			out.OutPorts = append(out.OutPorts, port)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read capability out ports: %w", err)
+		}
+		return nil
+	}
+	if err := readPorts(); err != nil {
+		return nil, err
+	}
+
+	// 入边：**不过滤** from_is_source —— 入口边（来源 --事件--> 能力）也是入边。
+	var one int
+	err = d.QueryRowContext(ctx,
+		`SELECT 1 FROM edges
+		 WHERE namespace_id = ?
+		   AND (to_ref = ? OR substr(to_ref, 1, length(?) + 1) = ? || '@')
+		 LIMIT 1`, namespaceID, name, name, name).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		out.HasIn = false
+	case err != nil:
+		return nil, fmt.Errorf("read capability in edges: %w", err)
+	default:
+		out.HasIn = true
+	}
+	return out, nil
+}
+
 // refNameKey 返回「按名字匹配这一端」用的名字：
 //
 //	`fixer` / `fixer@1` → fixer

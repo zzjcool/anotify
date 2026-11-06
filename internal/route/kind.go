@@ -6,66 +6,74 @@ import "github.com/zzjcool/anotify/internal/store"
 type Kind string
 
 const (
-	// KindOrigin 没有任何节点声明这个能力：只能当链的起点（触发器产出）。
+	// KindOrigin 有出边、没有入边：链的起点（只产出，没人喂它）。
 	KindOrigin Kind = "origin"
-	// KindEnd 有节点声明，且能力 outputs 全空：链到这里结束。
+	// KindEnd 没有出边：链到这里结束。
 	KindEnd Kind = "end"
-	// KindPipe 有节点声明，且 outputs 有非空项：链的中间段。
+	// KindPipe 有出边、也有入边：链的中间段。
 	KindPipe Kind = "pipe"
 )
 
-// DeriveKind 由声明推导能力的 kind（纯函数，不查库、不缓存）。
+// DeriveKind 由**边的接线事实**推导能力在链上的角色（纯函数，不查库、不缓存）。
 //
-//	没有任何节点声明                 → origin
-//	有节点声明，outputs 全空          → end
-//	有节点声明，outputs 有任一非空项   → pipe
+//	没有出边              → end      链到这里结束
+//	有出边、没有入边       → origin   链的起点
+//	有出边、有入边         → pipe     链的中间段
 //
-// 注意：中枢执行的内置能力（notify.phone）没有节点声明、outputs 也为空，
-// 这个函数会把它算成 origin。那是不对的——它不接收事件，它是链的**终点**
-// （中枢自己执行完就结束）。调用方应先用 CentralKind 覆盖，
-// 见 KindForCapability。
+// 为什么看边而不是看 outputs（#383）：`outputs` 是**产物**里的端口声明，它曾经
+// 同时被当成拓扑真相 —— 于是「建时声明 outputs: [] 之后又加了下游」的能力在页面上
+// 一直显示「链到这里结束」，而那条边其实已经生效。拓扑的真相是边（与 assign.ports
+// 的 MergePorts 同一条口径）。
 //
-// 多能力混挂：节点声明多个能力时，只要**有任一**能力的 outputs 非空 → 该节点是 pipe。
-// 这个判定由调用方对节点的全部能力做「有任一非空」合并后再传入 declaredByAnyNode 与
-// outputs 的并集即可（见 NodeKind）。
-func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
-	if !declaredByAnyNode {
+// 注意：中枢执行的内置能力（notify.phone）走不到这里 —— 它由 Central 特例覆盖，
+// 见 KindForCapability。调用方**不要**直接调这个函数，用 KindForCapability。
+func DeriveKind(hasOutEdges, hasInEdges bool) Kind {
+	if !hasOutEdges {
+		return KindEnd
+	}
+	if !hasInEdges {
 		return KindOrigin
 	}
-	for _, o := range outputs {
-		if o != "" {
-			return KindPipe
-		}
-	}
-	return KindEnd
+	return KindPipe
 }
 
 // NodeKind 推导一个节点整体的 kind（多能力混挂的消歧规则）。
 //
-// 节点声明了多个能力时，只要**有任一**能力的 outputs 非空 → 整个节点 pipe；
-// 都没声明任何能力 → origin；都声明了但 outputs 全空 → end。
-func NodeKind(caps []*store.CapabilityVersion, declaredByAnyNode bool) Kind {
-	if !declaredByAnyNode || len(caps) == 0 {
-		return KindOrigin
+// 节点声明了多个能力时，只要**任一**能力有出边 → 节点有出口；任一能力有入边 →
+// 节点有入口，合并后再走同一条规则（DeriveKind）。空形状（没有能力可推导）算 end。
+//
+// 输入是逐能力的 store.EdgeShape（由调用方按名字各读一份）：这样节点视图与能力视图
+// 不会各自演化出第二条推导规则。
+func NodeKind(shapes []*store.EdgeShape) Kind {
+	hasOut, hasIn := false, false
+	for _, s := range shapes {
+		if s == nil {
+			continue
+		}
+		if s.HasOut() {
+			hasOut = true
+		}
+		if s.HasIn {
+			hasIn = true
+		}
 	}
-	var merged []string
-	for _, c := range caps {
-		merged = append(merged, c.Outputs...)
-	}
-	return DeriveKind(merged, true)
+	return DeriveKind(hasOut, hasIn)
 }
 
 // KindForCapability 是整个仓库推导 kind 的**唯一入口**。
 //
 // 它在 DeriveKind 之上补两条内置能力的特例：
 //
-//	内置中山执行（notify.phone）→ end   中枢是它的"执行者"，不是"来源"
-//	内置起点（github/cron/...） → origin 它没有节点，也不产生任务
+//	内置中枢执行（notify.phone）→ end   中枢是它的"执行者"，执行完就结束，
+//	                                    不产生下游任务（executor 不 emit）
+//	内置起点（github/cron/...） → origin 它不接收事件、也不产生任务
 //
-// 为什么必须集中在这里：console 列表、能力详情、前端建边表单都各自
-// 调过一次 DeriveKind，特例散落三处必然漂移（notify.phone 曾在能力页
-// 显示成 origin，误导用户把它当事件来源）。
-func KindForCapability(c *store.CapabilityVersion, declaredByAnyNode bool) Kind {
+// 为什么必须集中在这里：console 列表、能力详情、建能力的响应都各自推导过一次
+// kind，特例散落三处必然漂移（notify.phone 曾在能力页显示成 origin，误导用户把它
+// 当事件来源）。
+//
+// shape 传 nil 是允许的（读边失败的降级路径）：当作「没有任何边」。
+func KindForCapability(c *store.CapabilityVersion, shape *store.EdgeShape) Kind {
 	if c == nil {
 		return KindOrigin
 	}
@@ -77,5 +85,5 @@ func KindForCapability(c *store.CapabilityVersion, declaredByAnyNode bool) Kind 
 			return KindOrigin
 		}
 	}
-	return DeriveKind(c.Outputs, declaredByAnyNode)
+	return DeriveKind(shape.HasOut(), shape != nil && shape.HasIn)
 }
