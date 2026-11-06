@@ -1056,8 +1056,9 @@ func normalizeResultMessage(status, summary, errMsg string) (msg, derivedErr str
 		// 成功：message 是「做了什么」，失败语义位必须为空（否则数据自相矛盾）。
 		return summary, ""
 	}
-	// 失败：优先用 error——它通常比 summary 更具体（"exit status 7: <首行>"），
-	// 两者都空时兜一句 "failed"，保证「失败一定有原因」这条不变量成立。
+	// 失败：优先用 error——它比 summary 更具体（"exit status 7: <stderr 首行>"；
+	// summary 是 stdout 首行，往往只是脚本的开场白），两者都空时兜一句 "failed"，
+	// 保证「失败一定有原因」这条不变量成立。
 	msg = errMsg
 	if msg == "" {
 		msg = summary

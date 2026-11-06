@@ -294,11 +294,12 @@ tools=(alpha beta)
 }
 
 // TestRunJobExitCodePropagated：非 0 退出 → failed，Err 含 "exit status <code>"，
-// 而 stderr 那句解释落在 res.Stderr 里。
+// 而后半段是 **stderr 的首行**（只有它说得出「为什么挂了」）。
 //
-// 注：summary 的语义是「stdout 的第一行」，所以一个只往 stderr 写东西的失败
-// **不会**再让 Err 后半段带上那句话——那句话现在在 Stderr 里（原先它在合并捕获
-// 的输出里，而合并捕获正是本期要拆掉的东西）。
+// 历史：两个流合并捕获的时期，summary（stdout 首行）会被拼进 Err；拆流之后
+// Err 一度只看 stdout，于是一个只往 stderr 写东西的失败只剩下 "exit status 7"——
+// 开发环境 trace_1793986152223364273 就是这么把唯一有用的诊断丢掉的
+// （trace 页只有 "exit status 4: capability: haha@1"，真正的原因在 stderr 里）。
 func TestRunJobExitCodePropagated(t *testing.T) {
 	j := newRunnerJob(t, "echo boom >&2; exit 7")
 	res := runJob(context.Background(), j)
@@ -309,6 +310,12 @@ func TestRunJobExitCodePropagated(t *testing.T) {
 	if !strings.Contains(res.Err, "exit status 7") {
 		t.Fatalf("Err = %q, want 含 %q", res.Err, "exit status 7")
 	}
+	if !strings.Contains(res.Err, "boom") {
+		t.Fatalf("Err = %q, want 含 stderr 首行 %q（失败原因不在 stdout 里）", res.Err, "boom")
+	}
+	if res.Summary != "" {
+		t.Fatalf("Summary = %q, want 空（summary 的口径仍是 stdout 首行，不因 stderr 而变）", res.Summary)
+	}
 	if !strings.Contains(res.Stderr, "boom") {
 		t.Fatalf("Stderr = %q, want 含 %q（不合并捕获的意义就在这里）", res.Stderr, "boom")
 	}
@@ -317,6 +324,39 @@ func TestRunJobExitCodePropagated(t *testing.T) {
 	}
 	if res.Artifacts == nil || len(res.Artifacts) != 0 {
 		t.Fatalf("Artifacts = %v, want 非 nil 空列表", res.Artifacts)
+	}
+}
+
+// TestRunJobFailureErrorUsesStderrFirstLine：两个流都有内容时，Err 的后半段是
+// **stderr 首行**，Summary 仍是 **stdout 首行** —— 两个字段各答各的问题：
+//
+//	summary = 这个能力说了什么（stdout）
+//	error   = 为什么挂了（stderr）
+//
+// 两者混用的代价是真实的：开发环境那条 trace 的 error 是 "exit status 4:
+// capability: haha@1"（脚本第一行 echo），真正的原因在 stderr。
+func TestRunJobFailureErrorUsesStderrFirstLine(t *testing.T) {
+	j := newRunnerJob(t, `echo "capability: demo@1"
+	echo "data 不满足 expects[out]：missing required field waoo" >&2
+	echo second >&2
+	exit 4`)
+	res := runJob(context.Background(), j)
+
+	if res.Status != statusFailed || res.ExitCode != 4 {
+		t.Fatalf("status=%q exit=%d, want failed/4", res.Status, res.ExitCode)
+	}
+	if want := "exit status 4: data 不满足 expects[out]：missing required field waoo"; res.Err != want {
+		t.Fatalf("Err = %q, want %q（只带 stderr 首行，不续接后面的行）", res.Err, want)
+	}
+	if want := "capability: demo@1"; res.Summary != want {
+		t.Fatalf("Summary = %q, want %q（summary 仍走 stdout，不受 error 换源影响）", res.Summary, want)
+	}
+	// 两个流本身一个字都不能少（诊断靠它们，error 只是摘要）。
+	if !strings.Contains(res.Stdout, "capability: demo@1") {
+		t.Fatalf("Stdout = %q, want 含脚本写的首行", res.Stdout)
+	}
+	if !strings.Contains(res.Stderr, "second") {
+		t.Fatalf("Stderr = %q, want 含第二行（截断只发生在窗口边界）", res.Stderr)
 	}
 }
 

@@ -277,12 +277,20 @@ func runJob(ctx context.Context, j job) outcome {
 	// 完整捕获在 Wait **之后**才取（String 是快照）：此时子进程已退出、复制 goroutine
 	// 已收尾，读到的就是全部输出。
 	captureArchive(&res, stdoutFull, stderrFull)
-	// summary 的口径**不变**：仍然是 stdout 的第一行。刻意不 fallback 到 stderr——
-	// 换源会让「同一个失败」在改版前后给出两种摘要，而摘要还进 error 字段。
+	// summary 的口径**不变**：仍然是 stdout 的第一行（它是「这个能力说了什么」，
+	// 不是「为什么挂了」）。
 	//
 	// 用的是 stdoutSink.FirstLine（头部旁路窗口）而不是 oneLine(res.Stdout)：
 	// res.Stdout 只留了**最后** 32 KiB，第一行早已被挤出去。
 	res.Summary = stdoutSink.FirstLine(summaryMaxBytes)
+	// fails 原因**优先用 stderr 的首行**：退出码本身不说明任何事，真正的理由几乎
+	// 总在 stderr（解释器/工具把错写到那里），而 stdout 首行常常只是一句开场白。
+	// 开发环境那次真实事故：trace 页显示 "exit status 4: capability: haha@1"，
+	// stderr 里却写着 "data 不满足 expects[out]：missing required field \"waoo\"" ——
+	// 唯一有用的诊断信息就那样丢在节点本地，只能登机器翻 runs/ 才看得到。
+	//
+	// summary 不跟着换（它有自己的契约）：只决定 error 字段带谁。
+	stderrFirst := stderrSink.FirstLine(summaryMaxBytes)
 
 	switch {
 	case err == nil && ctx.Err() == nil:
@@ -310,8 +318,14 @@ func runJob(ctx context.Context, j job) outcome {
 		} else {
 			res.Err = "run entrypoint: " + err.Error()
 		}
-		if res.Summary != "" {
-			// 只带首行：错误要能一眼看出是哪儿炸的，但别把整段日志塞进 error 字段。
+		// 只带首行：错误要能一眼看出是哪儿炸的，但别把整段日志塞进 error 字段。
+		//
+		// 优先级：stderr 首行 > stdout 首行（见上面 stderrFirst 的理由）。两个都空
+		// 就只留 "exit status N"：没东西可说时不能编一句。
+		switch {
+		case stderrFirst != "":
+			res.Err += ": " + stderrFirst
+		case res.Summary != "":
 			res.Err += ": " + res.Summary
 		}
 	}
