@@ -130,7 +130,6 @@ index:
     evening: Good evening
     with_name: '{greeting}, {name}'
   loading: Loading event stats…
-  demo_badge: Demo data (backend not connected)
   kpi:
     total: Total events
     all_time: All time
@@ -142,7 +141,6 @@ index:
     devices_sub: '{n} devices · end-to-end encrypted'
     devices_sub2: Push subscriptions + WebSocket
     rate_na: No receivers yet — delivery rate unavailable
-    trend_demo: Demo
     trend_live: Live
     running: In progress
     running_sub: Last 50 tasks
@@ -187,23 +185,6 @@ index:
       '
   summary: '{total} events total · {today} today.'
   summary_load_failed: Data is temporarily unavailable — please retry.
-  demo:
-    n1_title: Deploy complete
-    n1_body: Build succeeded, deployed to production. 47 files changed.
-    n2_title: Build failed
-    n2_body: 3 test cases failed. Full log attached — click to see troubleshooting tips.
-    n3_title: Task interrupted
-    n3_body: Task was manually stopped. Progress at 62%, state preserved, can resume.
-    n4_title: Docs update complete
-    n4_body: 'Generated 3 pages: README, API reference, deployment guide.'
-    n5_title: Code review complete
-    n5_body: Reviewed 12 files, found 2 potential null pointers, generated fix suggestions.
-    n6_title: Database migration failed
-    n6_body: Migration script 0042 timed out. Auto-rolled back, no data affected.
-    n7_title: Dependency upgrade complete
-    n7_body: Upgraded 8 dependencies to latest stable, no breaking changes.
-    n8_title: Backup complete
-    n8_body: Database snapshot generated and uploaded to object storage, 1.2 GB.
   events:
     title: Event stream
     subtitle: Latest events · click to open the trace
@@ -322,7 +303,6 @@ login:
   status:
     offline: 'Cannot reach the server. Check that it is running, then retry.'
     server_error: 'Server error (HTTP 5xx). Retry later or check the server log.'
-    demo: Backend not connected — entered demo mode (sample data).
     login_success: Signed in — entering workspace…
     signup_success: Account created — entering workspace…
     unsupported: This browser doesn't support Passkey (WebAuthn). Please use the latest Safari / Chrome.
@@ -338,14 +318,12 @@ login:
     need_username: Please pick a username first.
     login_failed: 'Sign-in failed: {msg}'
     signup_failed: 'Sign-up failed: {msg}'
-    demo_enter: Backend not connected — entered demo mode (sample data).
     login_success_short: Signed in — entering workspace…
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
   unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
-  demo_badge: Demo data
   channel:
     push: Push subscriptions
     ws: WebSocket connections
@@ -431,7 +409,6 @@ receivers:
     unbound: Unbound
     unbind_failed: 'Unbind failed: {msg}'
     local_off: Local notifications turned off
-    added_demo: Registered (demo)
     added: Device added
   checklist:
     ios_1: Must open from the Home Screen icon (standalone mode) — regular Safari tabs don't support notifications
@@ -448,12 +425,6 @@ receivers:
     android_2: WeChat's built-in browser and some Chinese browsers don't support Web Push — use Chrome
     other_1: Confirm browser notification permission is "Allow" (address bar lock icon)
     other_2: Confirm the browser process is running
-  demo:
-    device1: Primary phone
-    device2: Office Mac
-    device3: Old desktop
-    tag_phone: phone
-    tag_work: work
   subtitle: Control notifications per device
   refresh: 'Refresh'
   unavailableTitle: 'Push is not available yet'
@@ -519,7 +490,6 @@ keys:
   unnamed: Unnamed
   unnamed_key: Unnamed Key
   summary: '{total} Keys · {active} active'
-  summary_demo: ' · demo data'
   empty: No Keys yet. Click "+ New Key" in the top right to create one and let Agents start reporting.
   created_at: Created {date}
   status:
@@ -530,7 +500,6 @@ keys:
   confirm:
     revoke: Revoke "{name}"? Agents using it will no longer be able to report.
   toast:
-    revoked_demo: Revoked (demo mode, local only)
     revoked: Revoked "{name}"
     revoke_failed: 'Revoke failed: {msg}'
     copied: Copied ✓
@@ -540,11 +509,6 @@ keys:
     no_scope: Please select at least one scope
     no_plaintext: Server did not return the Key plaintext
     create_failed: 'Create failed: {msg} (try demo mode if backend isn''t ready)'
-  demo:
-    name1: Local dev
-    name2: CI pipeline
-    name3: Desktop widget (receive)
-    name4: Old test Key
   emptyTitle: 'No API keys yet'
 security:
   title: Security & Login
@@ -624,35 +588,14 @@ security:
 
       Currently in demo mode. Once the backend is ready, this will trigger system biometrics.'
   toast:
-    renamed_demo: Renamed (demo mode, local only)
     renamed: Renamed
     rename_failed: 'Rename failed: {msg}'
-    deleted_demo: Deleted (demo mode, local only)
     deleted: Deleted "{name}"
     delete_failed: 'Delete failed: {msg}'
     add_success: Passkey added successfully
     add_failed: 'Add failed: {msg}'
-    revoked_demo: Revoked (demo mode, local only)
     revoked: Revoked session for "{name}"
     revoke_failed: 'Revoke failed: {msg}'
-  demo:
-    pk1_name: iCloud Keychain
-    pk1_type: Platform sync
-    pk1_devices: iPhone · iPad · Mac (auto-synced with same Apple ID)
-    pk2_name: Meeting room PC · Windows Hello
-    pk2_type: Local credential
-    pk2_devices: This Windows PC only
-    pk3_name: YubiKey hardware key
-    pk3_type: Hardware key
-    pk3_devices: USB / NFC, works across any device
-    s4_passkey: Local Passkey
-    s1_passkey: iCloud Keychain (synced)
-    location_shanghai: Shanghai
-    location_office: Office
-    current: Current
-    dev_ipad: iPad Air
-    dev_meeting_pc: Meeting room PC
-    last_active_ipad: Yesterday 21:40
 docs:
   title: Integration Docs
   subtitle: Agent reporting · Web Push · WebSocket
@@ -1077,8 +1020,6 @@ events:
   recent: Recent events
   loading: Loading events…
   empty: No events yet. Submit one with POST /v1/events.
-  demo_badge: Demo mode — backend not connected
-  demo_hint: Backend not connected, no real events yet.
   view_chain: View chain
   filter:
     trace: Trace ID
@@ -1182,6 +1123,7 @@ caps:
     schema_err_range: "{a} must not be greater than {b}"
     schema_err_pattern: "Invalid regex: {msg}"
     schema_err_enum: "Pick \"Enum\" and you must give at least one value"
+    schema_err_many: "{n} fields in the parameter contract are incomplete (see the rows marked in red)"
     schema_err_switch: "This contract contains shapes the visual editor cannot express (array type / nested items / numeric enum); keep editing it as JSON"
     schema_hint: "The visual rows cover the most common constraints; switch to \"Edit JSON\" for anything more complex. Until you touch it, the contract follows the template fields (leaving the JSON empty means the same). A controlled subset of JSON Schema is supported (type/properties/required/enum/minLength/pattern…, no $ref / if-then-else)."
     script_shebang_err: 'The script must start with #!'

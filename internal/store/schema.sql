@@ -5,8 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- baseline 之后是五块：`-- +migration 1 baseline`、`2 priority_balance`、
--- `3 agent_version`、`4 task_logs`、`5 task_seq_in_trace`（新变更继续往后追加）。
+-- baseline 之后是六块：`-- +migration 1 baseline`、`2 priority_balance`、
+-- `3 agent_version`、`4 task_logs`、`5 task_seq_in_trace`、`6 drop_edges_lookup`（新变更继续往后追加）。
 --
 -- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
 -- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
@@ -656,3 +656,11 @@ CREATE TABLE IF NOT EXISTS task_logs (
 --
 -- 默认 0 = 从未派发过（也包含加这一列之前建的老行）；节点侧对 <=0 退回到 attempt。
 ALTER TABLE tasks ADD COLUMN seq_in_trace INTEGER NOT NULL DEFAULT 0;
+
+-- +migration 6 drop_edges_lookup
+
+-- idx_edges_lookup 的四列是 edges 主键的**严格左前缀**（PRIMARY KEY 前四列逐列相同），
+-- 给不了 sqlite_autoindex_edges_1 给不了的东西：派发 4 列等值实测一直选 autoindex，
+-- 3 列前缀查询删掉它也仍由 autoindex 以同一 search shape 承担（无全表扫）。
+-- 删掉只少一份等价的 B-tree 维护成本。IF EXISTS 保证重放旧块时不报错。
+DROP INDEX IF EXISTS idx_edges_lookup;

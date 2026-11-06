@@ -626,8 +626,10 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 #228：pending 行数随命名空间数/能力数/流量口径漂移，跨部署不可比 → 用
 `now - MIN(created_at) WHERE status='pending'`。**但别顺手加 `not_before` 过滤**：
-`SetNotBefore` 是「重派退避」，而写它的正是 `ErrNoCapacity`（派不出去）那条路径
-（`internal/server/mux.go` 的 `Redispatch`）—— 加了等于把要治的场景整个漏掉。
+`SetNotBefore` 是「重派退避」，写它的是**非槽位原因**的「派不出去」——集群里没有节点
+声明该能力 / 节点故障（`internal/server/mux.go` 的 `Redispatch`）。注意 `ErrNoCapacity`
+（有节点但槽位满）**不写退避**（#306）：槽位一空就有即时重派来领它，写退避等于把它
+从候选里藏起来。不过在队列里的 pending 通常正是无节点那一档，所以不加过滤这个结论不变。
 另：这条查询每采样周期都跑，必须配部分索引
 `idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`（在 baseline 里），
 否则积压越多它越贵 —— 正好在最需要它的时候最贵。
@@ -638,7 +640,8 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 #228 复审才发现的一条：信号是 `MIN(created_at) WHERE status='pending'`，而库里一旦有
 **永远派不出去**的 pending（能力升级后无人声明该版本 / 节点下线后无人声明 / 任务建出来后
-再没有能跑它的节点），`RedispatchTask` 只会一直返回 false 且**全仓没有 abandon 路径** ——
+再没有能跑它的节点），`RedispatchTask` 只会一直返回 false 且**不会自动放弃**（当时全仓
+没有 abandon 路径；#270 之后有了显式 `POST /v1/tasks/{id}/abandon`，但没人处置时仍一直在）——
 于是一条孤儿任务就能把整个部署的新事件入口钉死在 503 上，永不恢复。
 修法：连续超阈超过安全阀窗口（默认 30 分钟）就 **fail-open**（停止拒绝 + `ERROR
 server.backpressure.stuck`），信号回落自动复位且**重新具备**拒绝能力。

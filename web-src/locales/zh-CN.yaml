@@ -130,7 +130,6 @@ index:
     evening: 晚上好
     with_name: '{greeting}，{name}'
   loading: 正在加载事件统计…
-  demo_badge: 演示数据（后端未连接）
   kpi:
     total: 事件总数
     all_time: 累计
@@ -142,7 +141,6 @@ index:
     devices_sub: '{n} 台设备 · 端到端加密'
     devices_sub2: 推送订阅 + 长连接
     rate_na: 暂无接收设备，送达率不可用
-    trend_demo: 示例
     trend_live: 实时
     running: 进行中
     running_sub: 近 50 条任务
@@ -187,23 +185,6 @@ index:
       '
   summary: '累计 {total} 条事件，今天 {today} 条。'
   summary_load_failed: 暂时取不到数据，请重试。
-  demo:
-    n1_title: 部署完成
-    n1_body: 构建成功，已发布到生产环境。共 47 个文件变更。
-    n2_title: 构建失败
-    n2_body: 3 个测试用例未通过。已附上完整日志，点击查看排查建议。
-    n3_title: 任务被中断
-    n3_body: 任务被手动停止。当前进度 62%，已保留现场，可继续。
-    n4_title: 文档更新完成
-    n4_body: 生成 3 个页面：README、API 参考、部署指南。
-    n5_title: 代码审查完成
-    n5_body: 审查了 12 个文件，发现 2 个潜在空指针，已生成修复建议。
-    n6_title: 数据库迁移失败
-    n6_body: 迁移脚本 0042 执行超时。已自动回滚，数据未受影响。
-    n7_title: 依赖升级完成
-    n7_body: 升级 8 个依赖至最新稳定版，无破坏性变更。
-    n8_title: 备份任务完成
-    n8_body: 数据库快照已生成并上传至对象存储，大小 1.2 GB。
   events:
     title: 事件流
     subtitle: 最新事件 · 点击查看链路
@@ -322,7 +303,6 @@ login:
   status:
     offline: '连不上服务端：请检查服务是否在运行，然后重试。'
     server_error: '服务端错误（HTTP 5xx）：请稍后重试或查看服务日志。'
-    demo: 后端未连接，已进入演示模式（数据为示例）。
     login_success: 登录成功，正在进入工作台…
     signup_success: 注册成功！正在进入工作台…
     unsupported: 当前浏览器不支持 Passkey（WebAuthn），请换用 Safari / Chrome 最新版。
@@ -338,14 +318,12 @@ login:
     need_username: 先给自己起个用户名。
     login_failed: 登录失败：{msg}
     signup_failed: 注册失败：{msg}
-    demo_enter: 后端未连接，已进入演示模式（数据为示例）。
     login_success_short: 登录成功，正在进入工作台…
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
 receivers:
   unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
   title: 通知接收
-  demo_badge: 演示数据
   channel:
     push: 推送订阅
     ws: WebSocket 长连接
@@ -431,7 +409,6 @@ receivers:
     unbound: 已解绑
     unbind_failed: 解绑失败：{msg}
     local_off: 本机通知已关闭
-    added_demo: 已登记（演示）
     added: 已添加设备
   checklist:
     ios_1: 必须从「主屏幕图标」打开（standalone），普通 Safari 标签页不支持通知
@@ -448,12 +425,6 @@ receivers:
     android_2: 微信内置浏览器/部分国产浏览器不支持 Web Push，请用 Chrome
     other_1: 确认浏览器通知权限为「允许」（地址栏锁图标）
     other_2: 确认浏览器进程在运行
-  demo:
-    device1: 主力手机
-    device2: 办公室 Mac
-    device3: 旧台式机
-    tag_phone: 手机
-    tag_work: 工作
   subtitle: 按设备控制通知接收
   refresh: '刷新'
   unavailableTitle: '推送暂未开放'
@@ -519,7 +490,6 @@ keys:
   unnamed: 未命名
   unnamed_key: 未命名 Key
   summary: '{total} 个 Key · {active} 启用'
-  summary_demo: ' · 演示数据'
   empty: 还没有 Key。点右上角「+ 新建 Key」创建一个，让 Agent 开始上报。
   created_at: 创建于 {date}
   status:
@@ -530,7 +500,6 @@ keys:
   confirm:
     revoke: 确定停用「{name}」吗？使用它的 Agent 将无法上报。
   toast:
-    revoked_demo: 已停用（演示模式，仅本地生效）
     revoked: 已停用「{name}」
     revoke_failed: 停用失败：{msg}
     copied: 已复制 ✓
@@ -540,11 +509,6 @@ keys:
     no_scope: 请至少选择一个权限范围
     no_plaintext: 服务端未返回 Key 明文
     create_failed: 创建失败：{msg}（后端未就绪时可先体验演示模式）
-  demo:
-    name1: 本地开发
-    name2: CI 流水线
-    name3: 桌面插件（接收）
-    name4: 旧测试 Key
   emptyTitle: '还没有 API Key'
 security:
   title: 安全与登录
@@ -624,35 +588,14 @@ security:
 
       当前为演示模式，后端就绪后此处将调起系统生物识别。'
   toast:
-    renamed_demo: 已重命名（演示模式，仅本地生效）
     renamed: 已重命名
     rename_failed: 重命名失败：{msg}
-    deleted_demo: 已删除（演示模式，仅本地生效）
     deleted: 已删除「{name}」
     delete_failed: 删除失败：{msg}
     add_success: Passkey 添加成功
     add_failed: 添加失败：{msg}
-    revoked_demo: 已吊销（演示模式，仅本地生效）
     revoked: 已吊销「{name}」的会话
     revoke_failed: 吊销失败：{msg}
-  demo:
-    pk1_name: iCloud 钥匙串
-    pk1_type: 平台同步
-    pk1_devices: iPhone · iPad · Mac（同一 Apple ID 自动同步）
-    pk2_name: 会议室 PC · Windows Hello
-    pk2_type: 本机凭证
-    pk2_devices: 仅这台 Windows PC
-    pk3_name: YubiKey 硬件密钥
-    pk3_type: 硬件密钥
-    pk3_devices: USB / NFC，跨任意设备使用
-    s4_passkey: 本机 Passkey
-    s1_passkey: iCloud 钥匙串（已同步）
-    location_shanghai: 上海
-    location_office: 公司
-    current: 当前
-    dev_ipad: iPad Air
-    dev_meeting_pc: 会议室 PC
-    last_active_ipad: 昨日 21:40
 docs:
   title: 接入文档
   subtitle: Agent 上报 · Web Push · WebSocket
@@ -1077,8 +1020,6 @@ events:
   recent: 最近事件
   loading: 正在加载事件…
   empty: 还没有事件。用 POST /v1/events 提交第一个。
-  demo_badge: 演示模式：后端未连接
-  demo_hint: 后端未连接，暂无真实事件。
   view_chain: 查看链路
   filter:
     trace: Trace ID
@@ -1182,6 +1123,7 @@ caps:
     schema_err_range: "{a} 不能大于 {b}"
     schema_err_pattern: "正则写错了：{msg}"
     schema_err_enum: "选了「枚举」就至少填一个值"
+    schema_err_many: "参数契约有 {n} 处没填好（见标红的行）"
     schema_err_switch: "这份契约有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），请继续用 JSON 编辑"
     schema_hint: "可视化里填的是最常用的约束；更复杂的形状切「手写 JSON」。没动过契约时它跟着模板字段走（手写里留空也是这个意思）。支持 JSON Schema 的受控子集（type/properties/required/enum/minLength/pattern…，不支持 $ref / if-then-else）。"
     script_shebang_err: '脚本第一行必须以 #! 开头'

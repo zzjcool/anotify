@@ -412,7 +412,7 @@ func TestMigration5SeqInTraceWorksOnExistingDB(t *testing.T) {
 
 	// 把它退回 v4 的形状：列没了、版本记账也删掉。
 	mustExec(t, db, `ALTER TABLE tasks DROP COLUMN seq_in_trace`)
-	mustExec(t, db, `DELETE FROM schema_version WHERE version = ?`, headVersion)
+	mustExec(t, db, `DELETE FROM schema_version WHERE version = ?`, 5) // 迁移 5 = seq_in_trace；别用 headVersion（它随新增块漂移）
 	if err := db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}

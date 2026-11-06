@@ -271,7 +271,7 @@ func TestSweeperNudgeCoalesces(t *testing.T) {
 }
 
 // TestSweeperNudgeRateLimited 验证两次即时重派之间有最小间隔：
-// 没有限频的话，高吞吐下每次任务完成都会触发一次查询，把单连接 SQLite 打满。
+// 没有限频的话，高吞吐下每次任务完成都会触发一次查询，把 SQLite 的写队列打满。
 func TestSweeperNudgeRateLimited(t *testing.T) {
 	fs := &fakeStore{pending: []*store.Task{{ID: "tsk_a", Status: store.TaskPending}}}
 	rd := &countingRedispatch{ch: make(chan struct{}, 1)}

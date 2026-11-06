@@ -82,9 +82,36 @@
 			"M14 12h7v9h-7z",
 			"M3 16h7v5H3z",
 		],
-		receivers: [
-			"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
-			"M13.73 21a2 2 0 0 1-3.46 0",
+		/* 节点 = 跑 agent 的机器。原先借的是「接收器」的铃铛（和顶栏通知铃撞脸，
+		 * 语义也不对），换成机架图标：两台叠放的主机 + 各自左上的状态灯。 */
+		nodes: [
+			"M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z",
+			"M4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z",
+			"M6 6h.01",
+			"M6 18h.01",
+		],
+		/* 侧栏图标去重：事件流、能力、预案原先分别复用「总览的四方块」「API Keys
+		 * 的钥匙」「源的闪电」——三对图标各自代表完全不同的页面，导航里看起来像
+		 * 复制粘贴。这里补三个同风格（Feather/Lucide，24×24、stroke 2、round）的
+		 * 线条图标：事件流 = 列表、能力 = 徽章（节点声明的「能做这件事」）、
+		 * 预案 = 分支流程（能力 + 下游 + 触发器串起来就是它）。 */
+		events: [
+			"M8 6h13",
+			"M8 12h13",
+			"M8 18h13",
+			"M3 6h.01",
+			"M3 12h.01",
+			"M3 18h.01",
+		],
+		capabilities: [
+			"M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76z",
+			"M9 12l2 2 4-4",
+		],
+		playbooks: [
+			"M6 3v12",
+			"M18 6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+			"M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+			"M18 9a9 9 0 0 1-9 9",
 		],
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
@@ -145,7 +172,7 @@
 					labelKey: "common.nav.events",
 					fallback: "事件流",
 					href: "events.html",
-					icon: "overview",
+					icon: "events",
 				},
 				{
 					id: "sources",
@@ -159,7 +186,7 @@
 					labelKey: "common.nav.capabilities",
 					fallback: "能力",
 					href: "capabilities.html",
-					icon: "keys",
+					icon: "capabilities",
 				},
 				{
 					// 预案 = 把「能力 + 下游 + 触发器」打在一起的零件，
@@ -171,14 +198,14 @@
 					labelKey: "common.nav.playbooks",
 					fallback: "预案",
 					href: "playbooks.html",
-					icon: "sources",
+					icon: "playbooks",
 				},
 				{
 					id: "nodes",
 					labelKey: "common.nav.nodes",
 					fallback: "节点",
 					href: "nodes.html",
-					icon: "receivers",
+					icon: "nodes",
 				},
 			],
 		},
@@ -1051,8 +1078,10 @@
 			id: "admin-nav-section",
 			/* 初始 hidden（member 用户保持隐藏，e2e 断言 classList 含 hidden）；
 			   超管由 loadMe 去 hidden 并注入 .side-label + a.side-link[admin.html]。
-			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。 */
-			class: "hidden side-group px-3 pt-4",
+			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。
+			   **不加 px-\***：这一组和 nav 里的 .side-group 必须同基线，多一层 12px
+			   内边距会让「管理」标题和「管理后台」文字整体右移（用户反馈的对齐问题）。 */
+			class: "hidden side-group pt-4",
 		});
 		const nav = el("nav", { class: "app-nav" });
 		for (const group of NAV) {
@@ -1566,7 +1595,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		mountLangHint();
 	}
 
-	/* ---------- API 封装：失败时回退到 demo ---------- */
+	/* ---------- API 封装 ---------- */
 	// 需登录的页面（工作台各页）；login.html 等公开页不设此标记
 	const isAuthedPage = !/login\.html$/.test(location.pathname);
 
@@ -1661,7 +1690,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return base + "?" + params.toString();
 	}
 
-	async function api(path, opts, demo) {
+	async function api(path, opts) {
 		const o = opts || {};
 		// 先确保 scope 有命名空间（全新会话首次加载时为空，见 ensureScope）。
 		// 解析不到时它自己降级成"不带参数"，不在这里抛错。
@@ -1728,8 +1757,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			}
 			return await res.json();
 		} catch (e) {
-			if (demo && typeof demo.then === "function") return demo;
-			if (demo !== undefined) return demo;
 			throw e;
 		}
 	}
@@ -1772,6 +1799,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 	/* 共享 toast（#anotify-toast-host）。时序：入场 180ms → 停留 3600ms →
 	 * 退场 160ms 后 remove。CSS 动画在 ui.css 的 .anotify-toast.is-in/.is-out；
+	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
+	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
 	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
 	 * ui.css 双份硬编码（reviewer minor）。 */
 	function toastExitMs() {
@@ -1786,7 +1815,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		if (!host) {
 			host = el("div", {
 				id: "anotify-toast-host",
-				class: "fixed bottom-5 right-5 z-[80] space-y-2",
+				class: "anotify-toast-host",
 			});
 			document.body.append(host);
 		}

@@ -130,7 +130,6 @@ index:
     evening: こんばんは
     with_name: '{greeting}、{name}'
   loading: イベント統計を読み込み中…
-  demo_badge: デモデータ（バックエンド未接続）
   kpi:
     total: イベント総数
     all_time: 累計
@@ -142,7 +141,6 @@ index:
     devices_sub: '{n} 台 · エンドツーエンド暗号化'
     devices_sub2: プッシュ購読 + WebSocket
     rate_na: 受信デバイスがまだないため、配信率は表示できません
-    trend_demo: デモ
     trend_live: ライブ
     running: 実行中
     running_sub: 直近50件のタスク
@@ -187,23 +185,6 @@ index:
       '
   summary: '累計 {total} 件のイベント、今日 {today} 件。'
   summary_load_failed: データを取得できません。再試行してください。
-  demo:
-    n1_title: デプロイ完了
-    n1_body: ビルド成功、本番環境にデプロイ済み。47 ファイル変更。
-    n2_title: ビルド失敗
-    n2_body: 3 件のテストが失敗。完全なログ添付 — トラブルシューティングはこちら。
-    n3_title: タスク中断
-    n3_body: タスクが手動で停止されました。進捗 62%、状態は保存済み、再開可能。
-    n4_title: ドキュメント更新完了
-    n4_body: 3 ページ生成：README、API リファレンス、デプロイガイド。
-    n5_title: コードレビュー完了
-    n5_body: 12 ファイルをレビュー、2 件の潜在的ヌルポインタを発見、修正案を生成。
-    n6_title: DB マイグレーション失敗
-    n6_body: マイグレーションスクリプト 0042 がタイムアウト。自動ロールバック済み、データ影響なし。
-    n7_title: 依存関係アップグレード完了
-    n7_body: 8 件の依存関係を最新安定版にアップグレード、破壊的変更なし。
-    n8_title: バックアップ完了
-    n8_body: DB スナップショットを生成しオブジェクトストレージにアップロード、1.2 GB。
   events:
     title: イベントストリーム
     subtitle: 最新のイベント · クリックでチェーンを表示
@@ -322,7 +303,6 @@ login:
   status:
     offline: 'サーバーに接続できません。起動しているか確認して再試行してください。'
     server_error: 'サーバーエラー（HTTP 5xx）。しばらくしてから再試行してください。'
-    demo: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
     login_success: ログイン成功 — ワークスペースに入ります…
     signup_success: 登録完了 — ワークスペースに入ります…
     unsupported: このブラウザは Passkey（WebAuthn）に対応していません。 最新の Safari / Chrome をお使いください。
@@ -338,14 +318,12 @@ login:
     need_username: まずユーザー名を決めてください。
     login_failed: ログイン失敗：{msg}
     signup_failed: 登録失敗：{msg}
-    demo_enter: バックエンド未接続 — デモモードに入りました（サンプルデータ）。
     login_success_short: ログイン成功、ワークスペースに移動中…
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
 receivers:
   unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
   title: 通知先
-  demo_badge: デモデータ
   channel:
     push: プッシュ購読
     ws: WebSocket 接続
@@ -431,7 +409,6 @@ receivers:
     unbound: 解除しました
     unbind_failed: 解除に失敗：{msg}
     local_off: この端末の通知をオフにしました
-    added_demo: 登録しました（デモ）
     added: デバイスを追加しました
   checklist:
     ios_1: ホーム画面のアイコンから開く必要があります（standalone）。通常の Safari タブは通知に対応していません
@@ -448,12 +425,6 @@ receivers:
     android_2: WeChat の内蔵ブラウザや一部の中国製ブラウザは Web Push に対応していません。Chrome をご使用ください
     other_1: ブラウザの通知権限が「許可」か確認（アドレスバーの鍵アイコン）
     other_2: ブラウザプロセスが実行中か確認
-  demo:
-    device1: メインスマホ
-    device2: オフィスの Mac
-    device3: 旧デスクトップ
-    tag_phone: スマホ
-    tag_work: 仕事
   subtitle: デバイスごとに通知受信を制御
   refresh: '更新'
   unavailableTitle: 'プッシュ通知は未公開です'
@@ -519,7 +490,6 @@ keys:
   unnamed: 名前なし
   unnamed_key: 名前なし Key
   summary: '{total} 個の Key · {active} 有効'
-  summary_demo: ' · デモデータ'
   empty: まだ Key がありません。右上の「+ 新規 Key」をクリックして作成し、Agent の報告を始めましょう。
   created_at: 作成日 {date}
   status:
@@ -530,7 +500,6 @@ keys:
   confirm:
     revoke: 「{name}」を無効化しますか？この Key を使う Agent は報告できなくなります。
   toast:
-    revoked_demo: 無効化しました（デモモード、ローカルのみ）
     revoked: 「{name}」を無効化しました
     revoke_failed: 無効化に失敗：{msg}
     copied: コピーしました ✓
@@ -540,11 +509,6 @@ keys:
     no_scope: 少なくとも1つのスコープを選択してください
     no_plaintext: サーバーが Key の平文を返しませんでした
     create_failed: 作成に失敗：{msg}（バックエンド未準備時はデモモードで体験できます）
-  demo:
-    name1: ローカル開発
-    name2: CI パイプライン
-    name3: デスクトップウィジェット（受信）
-    name4: 旧テスト Key
   emptyTitle: 'API キーがまだありません'
 security:
   title: セキュリティとログイン
@@ -624,35 +588,14 @@ security:
 
       現在はデモモードです。バックエンド準備後に生体認証が起動します。'
   toast:
-    renamed_demo: 名前を変更しました（デモモード、ローカルのみ）
     renamed: 名前を変更しました
     rename_failed: 名前変更に失敗：{msg}
-    deleted_demo: 削除しました（デモモード、ローカルのみ）
     deleted: 「{name}」を削除しました
     delete_failed: 削除に失敗：{msg}
     add_success: Passkey を追加しました
     add_failed: 追加に失敗：{msg}
-    revoked_demo: 取り消しました（デモモード、ローカルのみ）
     revoked: 「{name}」のセッションを取り消しました
     revoke_failed: 取り消しに失敗：{msg}
-  demo:
-    pk1_name: iCloud キーチェーン
-    pk1_type: プラットフォーム同期
-    pk1_devices: iPhone · iPad · Mac（同一 Apple ID で自動同期）
-    pk2_name: 会議室 PC · Windows Hello
-    pk2_type: ローカル資格情報
-    pk2_devices: この Windows PC のみ
-    pk3_name: YubiKey ハードウェアキー
-    pk3_type: ハードウェアキー
-    pk3_devices: USB / NFC、任意のデバイスで使用可能
-    s4_passkey: ローカル Passkey
-    s1_passkey: iCloud キーチェーン（同期済み）
-    location_shanghai: 上海
-    location_office: 会社
-    current: 現在
-    dev_ipad: iPad Air
-    dev_meeting_pc: 会議室 PC
-    last_active_ipad: 昨日 21:40
 docs:
   title: 連携ドキュメント
   subtitle: Agent 上報 · Web Push · WebSocket
@@ -1077,8 +1020,6 @@ events:
   recent: 最近のイベント
   loading: イベントを読み込み中…
   empty: イベントはまだありません。POST /v1/events で送信してください。
-  demo_badge: デモモード — バックエンド未接続
-  demo_hint: バックエンド未接続のため、実際のイベントはまだありません。
   view_chain: チェーンを表示
   filter:
     trace: Trace ID
@@ -1182,6 +1123,7 @@ caps:
     schema_err_range: "{a} は {b} より大きくできません"
     schema_err_pattern: "正規表現が不正です：{msg}"
     schema_err_enum: "「列挙」を選んだら値を 1 つ以上入力してください"
+    schema_err_many: "パラメータ契約に {n} 件の未入力があります（赤い行を確認してください）"
     schema_err_switch: "この契約にはビジュアルエディタで表現できない形（type 配列 / items のネスト / 数値の列挙など）が含まれます。JSON のまま編集してください"
     schema_hint: "ビジュアルの行はよく使う制約だけを扱います。それ以上は「JSON を編集」に切り替えてください。触っていない間は契約はテンプレート項目に従います（JSON を空にするのも同じ意味）。JSON Schema のサブセットに対応（type/properties/required/enum/minLength/pattern…、$ref / if-then-else は非対応）。"
     script_shebang_err: 'スクリプトの 1 行目は #! で始めてください'

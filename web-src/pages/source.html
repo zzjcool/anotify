@@ -379,9 +379,9 @@
         }
         try {
           const [srcData, capData, edgeData] = await Promise.all([
-            Anotify.api(API + "/sources/" + encodeURIComponent(srcId), { demo: null }),
-            Anotify.api(API + "/capabilities", { demo: null }).catch(() => ({ capabilities: [] })),
-            Anotify.api(API + "/edges", { demo: null }).catch(() => ({ edges: [] })),
+            Anotify.api(API + "/sources/" + encodeURIComponent(srcId)),
+            Anotify.api(API + "/capabilities").catch(() => ({ capabilities: [] })),
+            Anotify.api(API + "/edges").catch(() => ({ edges: [] })),
           ]);
           SRC = (srcData && srcData.source) || null;
           // CAPS 保留**全量**：已有目标可能引用暂未开放的能力（要拿它的 paramsSchema
@@ -758,7 +758,6 @@
         try {
           await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id), {
             method: "DELETE",
-            demo: null,
           });
           toast(t("sources.deleted", "已删除"));
           location.href = "sources.html";

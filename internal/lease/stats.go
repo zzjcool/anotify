@@ -3,13 +3,14 @@ package lease
 // 运行期统计维护（#265）的**调度**：把 `store.MaintainStats` 挂到现有的 5s 巡检 ticker 上，
 // 按低频门（默认 6 小时）决定要不要真正执行。
 //
-// 为什么需要它：`PRAGMA optimize=0x2` 只在 `Open` 时跑一次，够不到**运行期漂移**。
-// 某个命名空间从 100 行涨到 100 万行时，`sqlite_stat1` 里可能仍记着 100，
-// 规划器据此选错计划——表现是"索引明明建好了但慢查询神秘地出现"。
+// 为什么需要它：`PRAGMA optimize=0x2` 只在 `Open` 时跑一次，而且它**只补「缺失」不治「过期」**
+// （表上有索引但没有 stat1 条目）。某个命名空间的 tasks 从 100 行涨到 100 万行时，
+// `sqlite_stat1` 里可能仍记着 100，规划器据此选错计划——表现是"索引明明建好了但慢查询
+// 神秘地出现"。实测（`store.TestMaintainStatsRefreshesDriftedStat1`）：100 → 2500 行（25×）
+// 之后调 `PRAGMA optimize=0x2` 返回空建议集、stat1 仍是 100，所以**光调 optimize 是不够的**。
 //
-// 为什么不是"每次写完就 ANALYZE"：ANALYZE 在大表上是真实成本，而且单连接 SQLite
-// 会挡住写。这里复用 `store.MaintainStats` 的**按需**语义：先问 SQLite 需不需要刷新，
-// 它说需要才执行（它返回的就是 `ANALYZE "tasks"` 这类建议）。
+// 真正干活的是 `store.MaintainStats` 里的确定性漂移判定（stat1 行数估计 vs 真实行数，
+// 差 ≥10 倍就 `ANALYZE "tasks"`）；这一层只负责**频率**：默认 6h 一次，不要变成每 5s 一次。
 //
 // 与保留清理的关系：两者都挂在同一条 ticker 上、都用低频门，但**互不阻塞**
 // （各自异步、各自的重叠守卫），慢清理不会拖慢统计维护，反之亦然。
@@ -22,7 +23,7 @@ import (
 
 // StatsStore 是统计维护需要的数据层能力（*store.DB 满足）。
 type StatsStore interface {
-	// MaintainStats 按 SQLite 的建议刷新统计，返回实际执行的语句。
+	// MaintainStats 按需刷新统计（含 tasks 的行数漂移检查），返回实际执行的语句。
 	MaintainStats(ctx context.Context) ([]string, error)
 }
 
@@ -70,9 +71,10 @@ func (s *Sweeper) maybeMaintainStats(ctx context.Context) {
 			return
 		}
 		if len(ran) > 0 {
-			// 只有**真的执行了 ANALYZE** 才打日志：常态是空（SQLite 说不需要），
-			// 每 6 小时一条 info 是噪音。
-			slog.Info("refreshed sqlite statistics",
+			// 真刷了才吭一声（常态是空）。**这里是 Debug**：`store.MaintainStats` 对
+			// 「漂移触发」那一路已经用同一个事件名（`lease.stats.refreshed`）打过一条
+			// **Info**，带 prev_rows/cur_rows——同一件事不该在日志里出现两条 Info。
+			slog.Debug("stats maintenance finished",
 				"event", "lease.stats.refreshed",
 				"statements", ran,
 			)

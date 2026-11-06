@@ -96,7 +96,10 @@ body {
  */
 .scope-block {
 	position: relative;
-	padding: 10px;
+	/* 左右不留内边距：触发器与 a.side-link 共用同一条左基线（侧栏 10px 内边距），
+	 * 「默认 · default」的文字起点才和下方导航项的文字对齐（都是 x=49）。
+	 * 上下仍留 10px：命名空间槽位 53px 的高度契约不变（ui_shift e2e）。 */
+	padding: 10px 0;
 	border-bottom: 1px solid var(--line);
 }
 /* ---- 命名空间槽位（开页不抖的那一格） ----
@@ -123,7 +126,9 @@ body {
 	gap: 8px;
 	height: 53px;
 	box-sizing: border-box;
-	padding: 10px;
+	/* 9px = 真实触发器的 1px 边框 + 8px 内边距：骨架里的圆点必须落在 `#` 的位置，
+	 * 否则数据到达、skel 换 block 的那一帧，圆点会横跳 1px。 */
+	padding: 10px 9px;
 	border-bottom: 1px solid var(--line);
 }
 .scope-skel-dot {
@@ -223,8 +228,10 @@ body {
 /* 菜单：位置/宽度覆盖 .lang-menu 的默认值 */
 .scope-menu {
 	position: absolute;
-	left: 10px;
-	right: 10px;
+	/* 菜单与触发器同宽：触发器已经贴住 .scope-block 的两边（块内边距为 0），
+	 * 这里再缩 10px 就会比触发器窄一圈，下拉本体和触发器对不齐。 */
+	left: 0;
+	right: 0;
 	top: calc(100% - 4px);
 	z-index: var(--z-menu);
 	padding: 6px;
@@ -2343,8 +2350,19 @@ html.flograph-fullscreen-open body {
 	background: var(--accent);
 }
 
-/* ---------- 折叠态（纯 CSS）---------- */
-#app-shell[data-collapsed="true"] .side-label,
+/* ---------- 折叠态（纯 CSS）----------
+ * 目标：折叠 = 把文字收起来，**其余几何一律不动** —— 每一项的行高、每一项的 y、
+ * footer 的高度都和展开态一致，切换时整条侧栏只有宽度在变，没有任何元素跳位。 */
+/* 分组标题：文字藏起来，但**保留占位**（visibility，不是 display:none）。
+ * 标题盒占 16.31px + margin-bottom 8 + gap 2：抹掉它，折叠后每个分组都会整段上移
+ * 26px，切换瞬间下面所有项一跳；保留占位后两项完全等高同位。 */
+#app-shell[data-collapsed="true"] .side-label {
+	visibility: hidden;
+	/* 标题盒必须保持 16.31px 一行：76px 轨里「工作台」只剩 29px 可用宽，
+	 * 不锁 nowrap 会折成两行，高度就变了 —— 那又回到「折叠/展开不同高」。 */
+	white-space: nowrap;
+	overflow: hidden;
+}
 #app-shell[data-collapsed="true"] .app-brand-text,
 #app-shell[data-collapsed="true"] .side-user-main,
 #app-shell[data-collapsed="true"] .side-user-meta,
@@ -2352,18 +2370,30 @@ html.flograph-fullscreen-open body {
 	display: none;
 }
 #app-shell[data-collapsed="true"] .app-brand {
+	position: relative;
 	justify-content: center;
 	padding-left: 0;
 	padding-right: 0;
-	/* 76px 轨里 logo(36px) + 折叠按钮(24px) 横排要 74px，超过 76-12 的内容宽，
-	 * 会把 logo 挤出可视区（只剩贴在右上角的红点）。改成上下两行。 */
-	flex-direction: column;
-	gap: 6px;
+	/* 保持单行：头部高度 = 4 + logo 36 + 14 = 54px，与展开态完全一致。 */
+	gap: 0;
 }
+/* 折叠态的折叠按钮：76px 轨里 logo（36）居中后，右侧到边框只剩 19.5px
+ *（76 - 1 边框 - 20 内边距 - 36），横排塞不下 28px 按钮，所以绝对定位到
+ * logo 右边那块空隙里——不再把 logo 和按钮拆成上下两行（那会让头部高 +30px，
+ * 整条侧栏跟着往下跳，用户反馈的「缩小后高度和打开时不一致」就是它）。
+ * top/bottom 取头部自己的上下内边距，margin:auto 让按钮与 logo 垂直居中。 */
 #app-shell[data-collapsed="true"] .app-brand-btn {
-	margin-left: 0;
-	width: 24px;
-	height: 24px;
+	position: absolute;
+	top: 4px;
+	bottom: 14px;
+	right: -10px;
+	margin: auto 0;
+	width: 20px;
+	height: 20px;
+}
+#app-shell[data-collapsed="true"] .app-brand-btn svg {
+	width: 14px;
+	height: 14px;
 }
 /* 文字用 font-size:0 隐起来，文本节点仍在（e2e 依赖） */
 #app-shell[data-collapsed="true"] a.side-link {
@@ -2377,8 +2407,38 @@ html.flograph-fullscreen-open body {
 	width: 18px;
 	height: 18px;
 }
+/* 命名空间行：只剩 `#`，居中对齐到导航图标那条竖线。
+ * chevron 在 55px 里会把 `#` 挤偏（22 + 8 + 14 > 内容宽），折叠时不显示；
+ * aria-haspopup / aria-expanded 仍在，a11y 不受影响。 */
+#app-shell[data-collapsed="true"] .scope-trigger {
+	justify-content: center;
+	gap: 0;
+	padding: 6px 0;
+}
+#app-shell[data-collapsed="true"] .scope-chevron {
+	display: none;
+}
+/* 折叠态的菜单：76px 轨里塞不下（55px 宽会把「命名空间」竖排、条目名挤没），
+ * 改成从触发器右边缘向右铺开，和 tooltip 一样盖在主内容之上。 */
+#app-shell[data-collapsed="true"] .scope-menu {
+	right: auto;
+	width: 220px;
+}
+/* 骨架同步收窄：圆点落在真实 `#` 的位置，skel 换 block 不横跳 */
+#app-shell[data-collapsed="true"] .scope-skel {
+	justify-content: center;
+	gap: 0;
+	padding: 10px 0;
+}
+#app-shell[data-collapsed="true"] .scope-skel-bar {
+	display: none;
+}
 #app-shell[data-collapsed="true"] .side-user {
 	justify-content: center;
+	gap: 0;
+	/* 展开态两行文字 37px 比头像 36px 高 1px；折叠只剩头像，补上这 1px，
+	 * footer 才和展开态同高（102px）。 */
+	min-height: 49px;
 	padding-left: 0;
 	padding-right: 0;
 }
@@ -2389,8 +2449,10 @@ html.flograph-fullscreen-open body {
  * 语言按钮的当前语言名 + chevron 在 76px 里会竖排/被裁，改成纯图标（globe）
  * 并要求 JS 侧给 title 兜底（partials.js paintCollapsedHints）。 */
 #app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger {
-	width: 36px;
-	height: 36px;
+	/* 38 而不是 36：展开态 = py-2(8+8) + text-sm 行高 20 + border 2 = 38，
+	 * 这里缩成 36 会让 footer 比展开态矮 2px。 */
+	width: 38px;
+	height: 38px;
 	padding: 0;
 	justify-content: center;
 	gap: 0;
@@ -2402,9 +2464,6 @@ html.flograph-fullscreen-open body {
 /* 用户块折叠态：只留头像（头像本身是进账户的链接），退出按钮挪进顶栏头像菜单 */
 #app-shell[data-collapsed="true"] .side-user .side-icon-btn {
 	display: none;
-}
-#app-shell[data-collapsed="true"] .side-user {
-	gap: 0;
 }
 /* tooltip：data-label 是 Worker B 写在 a.side-link 上的属性；不占布局 */
 #app-shell[data-collapsed="true"] a.side-link[data-tip]::after {
@@ -3286,12 +3345,32 @@ html.theme-switching *::after {
 }
 
 /* ---------- 共享 toast（partials.js 的 #anotify-toast-host）----------
- * 入场 translateY(8px)+opacity；3600ms 后先播 160ms 退场再 remove。
+ * 位置：**顶部居中**（原来是右下角）。右下角和页面上的主操作按钮/侧栏挤在
+ * 同一个角落，弹层打开时还会被遮罩边缘切掉一半 —— 顶部居中离视线落点
+ * （标题、表单头部）最近，而且不会被任何浮层挡住（z-index 见下）。
+ *
+ * 入场从**上方**落下（translateY(-8px)）：位置在顶部，从下往上弹会显得
+ * 是「从表单里冒出来」。3600ms 后先播 160ms 退场再 remove。
  * 错误 kind 的点与边框都用 --error（旧实现只有点、边框仍是中性）。 */
+.anotify-toast-host {
+	position: fixed;
+	top: 16px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: var(--z-toast); /* 100 > --z-modal(90)：弹层里的失败提示必须看得见 */
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	max-width: calc(100vw - 32px);
+	/* 顶部居中会压在头栏中间（搜索/主题/头像那一排）之上：toast 没有交互，
+	 * 所以让它**不接收点击**——否则它停留的 3.6s 里，那一片按钮全都点不动。 */
+	pointer-events: none;
+}
 @keyframes toast-in {
 	from {
 		opacity: 0;
-		transform: translateY(8px);
+		transform: translateY(-8px);
 	}
 	to {
 		opacity: 1;
@@ -3301,7 +3380,7 @@ html.theme-switching *::after {
 @keyframes toast-out {
 	to {
 		opacity: 0;
-		transform: translateY(8px);
+		transform: translateY(-8px);
 	}
 }
 .anotify-toast.is-in {
@@ -3313,6 +3392,7 @@ html.theme-switching *::after {
 .anotify-toast.is-error {
 	border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
+
 
 /* ---------- 弹层 ----------
  * 遮罩 120ms 淡入，面板 160ms opacity+translateY(4px)+scale(.98)。
@@ -3452,8 +3532,15 @@ html.theme-switching *::after {
 	.app-brand-btn {
 		display: none;
 	}
-	/* 抽屉态一律完整展示（即便 localStorage 里是 collapsed） */
-	#app-shell[data-collapsed="true"] .side-label,
+	/* 抽屉态一律完整展示（即便 localStorage 里是 collapsed）：
+	 * 折叠态在上面收窄的每一条都要在这里还原，否则「桌面折叠过 → 手机开抽屉」
+	 * 会看到半截侧栏（只剩 #、只剩 globe、头像贴边……）。 */
+	#app-shell[data-collapsed="true"] .side-label {
+		display: block;
+		visibility: visible;
+		white-space: normal;
+		overflow: visible;
+	}
 	#app-shell[data-collapsed="true"] .app-brand-text {
 		display: block;
 	}
@@ -3463,15 +3550,57 @@ html.theme-switching *::after {
 	#app-shell[data-collapsed="true"] .side-user-meta {
 		display: block;
 	}
+	/* 命名空间名在抽屉里要看得见（折叠态把它 display:none 了） */
+	#app-shell[data-collapsed="true"] .scope-text {
+		display: flex;
+	}
+	#app-shell[data-collapsed="true"] .scope-trigger {
+		justify-content: flex-start;
+		gap: 8px;
+		padding: 6px 8px;
+	}
+	#app-shell[data-collapsed="true"] .scope-chevron,
+	#app-shell[data-collapsed="true"] .scope-skel-bar {
+		display: block;
+	}
+	#app-shell[data-collapsed="true"] .scope-menu {
+		right: 0;
+		width: auto;
+	}
+	#app-shell[data-collapsed="true"] .scope-skel {
+		justify-content: flex-start;
+		gap: 8px;
+		padding: 10px 9px;
+	}
 	#app-shell[data-collapsed="true"] .app-brand {
 		justify-content: flex-start;
+		gap: 10px;
 		padding-left: 6px;
 		padding-right: 6px;
 	}
 	#app-shell[data-collapsed="true"] .side-user {
 		justify-content: flex-start;
+		gap: 10px;
+		min-height: 0;
 		padding-left: 8px;
 		padding-right: 8px;
+	}
+	#app-shell[data-collapsed="true"] .side-user .side-icon-btn {
+		display: inline-flex;
+	}
+	#app-shell[data-collapsed="true"] .app-sidebar-foot {
+		align-items: stretch;
+	}
+	#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger {
+		width: 100%;
+		height: auto;
+		padding: 8px 12px;
+		justify-content: flex-start;
+		gap: 10px;
+	}
+	#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger span,
+	#app-shell[data-collapsed="true"] .app-sidebar-foot .lang-trigger .lang-chevron {
+		display: inline;
 	}
 	#app-shell[data-collapsed="true"] a.side-link {
 		justify-content: flex-start;

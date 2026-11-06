@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# S2 · assign → result 往返：单槽串行 vs 声明的并发槽（run.concurrency:8）vs 真多槽（instances:8）。
+# S2 · assign → result 往返：1 槽 vs 8 槽（v2 下只有这两臂还有意义）。
 #
-#   for c in a b c; do CONFIG=$c bash scripts/perf/b/s2-roundtrip.sh; done
+#   for c in a c; do CONFIG=$c bash scripts/perf/b/s2-roundtrip.sh; done
 #
 # CONFIG:
-#   a = instances:1 concurrency:1  → 1 个执行槽（串行基准）
-#   b = instances:1 concurrency:8  → **中枢只看见 1 个槽**（见结论），concurrency 只是 hello 里的声明
-#   c = instances:8 concurrency:1 → 8 个槽
-#   d = instances:8 concurrency:8 → 8 个槽 + 声明 8（对照 c，看声明有没有用）
+#   a = instances:1  → 1 个执行槽（串行基准）
+#   c = instances:8  → 8 个执行槽
+#
+# **b（instances:1 × run.concurrency:8）与 d（8 × 8）已删除**（N3 / #220）：
+# v2 把 `capabilities[]`（含 `run.concurrency`）从 node.yaml 删了，agent 侧
+# slotConcurrency() 恒 1（cmd/agent/config.go），而且老配置是**未知字段** → 启动即拒。
+# 所以「1 个槽位但并发 8」这个配置在 v2 里既造不出来也没有语义，两臂与 a/c 不可区分。
+# 真跑 b/d 会直接 pb_die（见下面 case）。
 #
 # 两个阶段：
 #   串行  P=1，10 个任务  → 单任务端到端（不含排队）
@@ -21,10 +25,9 @@ PORT=${PORT:-7929}
 PPROF=${PPROF:-0}
 case "$CONFIG" in
 	a) INST=1;  CONC=1 ;;
-	b) INST=1;  CONC=8 ;;
 	c) INST=8;  CONC=1 ;;
-	d) INST=8;  CONC=8 ;;
-	*) pb_die "CONFIG 只能是 a/b/c/d（收到 $CONFIG）" ;;
+	b|d) pb_die "CONFIG=$CONFIG 在 v2 下语义已不可实现（run.concurrency 已随 node.yaml 的 capabilities 段下线，agent 侧 slotConcurrency() 恒 1，见 N3: .pi-orchestrator/issue-n3-body.md / #220）。只保留 a（1 槽）与 c（8 槽）" ;;
+	*) pb_die "CONFIG 只能是 a/c（收到 $CONFIG）" ;;
 esac
 SERIAL_N=${SERIAL_N:-10}
 PAR_N=${PAR_N:-32}
@@ -37,16 +40,16 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap "$PB_CAP_NAME"
-pb_source perf-rt "$CAP"
-
 MARK=$OUT/marks.txt
 : >"$MARK"
 CLIENT_FILE=$OUT/client.txt
 : >"$CLIENT_FILE"
 CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
+# v2：命令属于能力产物（节点不再自报执行方式）；CONC 不再是能调的东西（#220）。
+pb_cap "$PB_CAP_NAME" "$CMD" 60
+pb_source perf-rt "$CAP"
 
-pb_say "CONFIG=$CONFIG：instances=$INST concurrency=$CONC"
+pb_say "CONFIG=$CONFIG：instances=$INST（v2：每槽恒 1 个任务，concurrency 形参仅占位）"
 pb_node node-rt "$INST" "$CONC" "$CMD" 60
 pb_wait_online 1
 g0=$(pb_gsnap before); rss0=$(pb_rss before)
@@ -81,7 +84,7 @@ LAT_PAR=$(pb_latency "$CLIENT_FILE" "$MARK" "S2-$CONFIG 并发 P=$PAR")
 g1=$(pb_gsnap after); rss1=$(pb_rss after)
 
 {
-	echo "== S2 CONFIG=$CONFIG（instances=$INST concurrency=$CONC）=="
+	echo "== S2 CONFIG=$CONFIG（instances=$INST；v2 每槽恒 1 个任务，concurrency 已无意义 #220）=="
 	printf '串行 %s 任务 墙钟 %ss → %.2f task/s（%.1fms/task）\n' "$SERIAL_N" "$t_serial" \
 		"$(awk -v t="$t_serial" -v n="$SERIAL_N" 'BEGIN{printf "%.2f", n/t}')" \
 		"$(awk -v t="$t_serial" -v n="$SERIAL_N" 'BEGIN{printf "%.1f", t*1000/n}')"

@@ -1818,3 +1818,84 @@ func TestDispatchEntryEdgesFanOut(t *testing.T) {
 		t.Fatalf("入口边必须扇出到全部目标（2 个），实际 %d 个：%v", len(out.Tasks), names)
 	}
 }
+
+// ---------- RedispatchTask：容量不足必须能被调用方区分（#219） ----------
+
+// TestRedispatchTaskNoCapacityReturnsSentinel 有节点但槽位占满 → 原样返回
+// store.ErrNoCapacity，**不能**与「没有节点」同形地返回 (false, nil)。
+//
+// 为什么这个返回值是产品行为而不是内部细节：调用方（mux.go 的 redispatchHook）
+// 靠 errors.Is 决定要不要写 not_before。两者同形时，「槽位一时占满」被当成
+// 「坏节点/无节点」记 10s 退避，而 ListRedispatchable 按 not_before 过滤 ⇒
+// 槽位一空那次的即时重派（#219 的 Nudge）看不见这条任务，退化回 5s/10s 空转。
+// attempts 在派发时就 +1，所以任何被重派过一次的任务（Attempts≥1）都会踩到。
+func TestRedispatchTaskNoCapacityReturnsSentinel(t *testing.T) {
+	f := newFakeStore()
+	target := f.addCap(testNS, "work", 1, nil, `{}`)
+	f.addNode("nd_full", target.ID, 1) // 只有一个槽位
+	// 那个唯一的槽位已被别的任务占着 → LeaseAndAssign 必然返回 ErrNoCapacity。
+	busy := "tsk_running"
+	f.instances["nd_full"][0].BusyTask = &busy
+
+	d := New(f)
+	task := &store.Task{
+		ID:           "tsk_wait",
+		NamespaceID:  testNS,
+		TraceID:      "t",
+		CapabilityID: target.ID,
+		Capability:   target.Name,
+		Version:      1,
+		Status:       store.TaskPending,
+		Attempts:     1, // 已被重派过一次：退避落在 10s 那一档
+	}
+
+	ok, err := d.RedispatchTask(context.Background(), task)
+	if ok {
+		t.Fatal("槽位占满却报「派出去了」")
+	}
+	if !errors.Is(err, store.ErrNoCapacity) {
+		t.Fatalf("err = %v, want store.ErrNoCapacity（容量不足必须与「没有节点」可区分）", err)
+	}
+	// 失败不能留下任何副作用：没写归属、没占槽位、任务也没被改写。
+	if len(f.assignments) != 0 {
+		t.Fatalf("失败的重派写了归属：%+v", f.assignments)
+	}
+	if len(f.leasedSlots) != 0 {
+		t.Fatalf("失败的重派占了槽位：%v", f.leasedSlots)
+	}
+	if task.Status != store.TaskPending || task.NodeID != nil {
+		t.Fatalf("失败的重派改了任务：status=%q node=%v", task.Status, task.NodeID)
+	}
+}
+
+// TestRedispatchTaskNoNodeStillReturnsNoError 对照用例：**没有节点声明**时仍是
+// (false, nil)——那不是错误，也是「该退避」的那一档（契约 §3.3 的 10s/60s/300s）。
+//
+// 两个分支的返回值必须在测试里同时钉住，否则把它们合成一个（都是 false,nil 或
+// 都带 ErrNoCapacity）时只有一条会红。
+func TestRedispatchTaskNoNodeStillReturnsNoError(t *testing.T) {
+	f := newFakeStore()
+	target := f.addCap(testNS, "work", 1, nil, `{}`)
+	// 刻意不 addNode：没有任何节点声明这个能力。
+	d := New(f)
+	task := &store.Task{
+		ID:           "tsk_orphan",
+		NamespaceID:  testNS,
+		TraceID:      "t",
+		CapabilityID: target.ID,
+		Capability:   target.Name,
+		Version:      1,
+		Status:       store.TaskPending,
+		Attempts:     1,
+	}
+	ok, err := d.RedispatchTask(context.Background(), task)
+	if ok {
+		t.Fatal("没有节点却报「派出去了」")
+	}
+	if err != nil {
+		t.Fatalf("没有节点不该报错，got %v", err)
+	}
+	if errors.Is(err, store.ErrNoCapacity) {
+		t.Fatal("没有节点被误判为容量不足")
+	}
+}

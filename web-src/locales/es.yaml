@@ -130,7 +130,6 @@ index:
     evening: Buenas noches
     with_name: '{greeting}, {name}'
   loading: Cargando estadísticas de eventos…
-  demo_badge: Datos demo (backend no conectado)
   kpi:
     total: Eventos totales
     all_time: Histórico
@@ -142,7 +141,6 @@ index:
     devices_sub: '{n} dispositivos · cifrado de extremo a extremo'
     devices_sub2: Suscripciones push + WebSocket
     rate_na: Sin receptores — tasa de entrega no disponible
-    trend_demo: Demo
     trend_live: En vivo
     running: En curso
     running_sub: Últimas 50 tareas
@@ -187,23 +185,6 @@ index:
       '
   summary: '{total} eventos en total · {today} hoy.'
   summary_load_failed: Los datos no están disponibles ahora — vuelve a intentarlo.
-  demo:
-    n1_title: Despliegue completado
-    n1_body: Build exitoso, desplegado a producción. 47 archivos modificados.
-    n2_title: Build fallido
-    n2_body: 3 casos de prueba fallaron. Log completo adjunto — clic para ver soluciones.
-    n3_title: Tarea interrumpida
-    n3_body: La tarea fue detenida manualmente. Progreso al 62%, estado preservado, puede reanudar.
-    n4_title: Documentación actualizada
-    n4_body: 'Generadas 3 páginas: README, referencia API, guía de despliegue.'
-    n5_title: Revisión de código completada
-    n5_body: Revisados 12 archivos, encontrados 2 punteros nulos potenciales, sugerencias generadas.
-    n6_title: Migración de BD fallida
-    n6_body: Script de migración 0042 agotó el tiempo. Rollback automático, sin afectación de datos.
-    n7_title: Actualización de dependencias completada
-    n7_body: 8 dependencias actualizadas a la última versión estable, sin cambios disruptivos.
-    n8_title: Backup completado
-    n8_body: Snapshot de BD generado y subido a almacenamiento de objetos, 1.2 GB.
   events:
     title: Flujo de eventos
     subtitle: Últimos eventos · clic para ver la cadena
@@ -322,7 +303,6 @@ login:
   status:
     offline: 'No se puede conectar al servidor. Verifica que esté en ejecución y reintenta.'
     server_error: 'Error del servidor (HTTP 5xx). Reintenta más tarde o revisa el log.'
-    demo: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success: Sesión iniciada — entrando al espacio…
     signup_success: Cuenta creada — entrando al espacio…
     unsupported: Este navegador no soporta Passkey (WebAuthn). Usa la versión más reciente de Safari / Chrome.
@@ -338,14 +318,12 @@ login:
     need_username: Primero elige un nombre de usuario.
     login_failed: 'Error al iniciar sesión: {msg}'
     signup_failed: 'Error al registrarse: {msg}'
-    demo_enter: Backend no conectado — modo demo activado (datos de ejemplo).
     login_success_short: Sesión iniciada — entrando al workspace…
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
 receivers:
   unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
   title: Destinatarios
-  demo_badge: Datos demo
   channel:
     push: Suscripciones push
     ws: Conexiones WebSocket
@@ -431,7 +409,6 @@ receivers:
     unbound: Desvinculado
     unbind_failed: 'Error al desvincular: {msg}'
     local_off: Notificaciones locales desactivadas
-    added_demo: Registrado (demo)
     added: Dispositivo añadido
   checklist:
     ios_1: Debe abrirse desde el icono de la pantalla de inicio (standalone) — las pestañas normales de Safari no soportan notificaciones
@@ -448,12 +425,6 @@ receivers:
     android_2: El navegador integrado de WeChat y algunos navegadores chinos no soportan Web Push — usa Chrome
     other_1: Confirma que el permiso de notificaciones del navegador sea «Permitir» (icono de candado en la barra)
     other_2: Confirma que el proceso del navegador está activo
-  demo:
-    device1: Teléfono principal
-    device2: Mac de la oficina
-    device3: PC antiguo
-    tag_phone: móvil
-    tag_work: trabajo
   subtitle: Controla notificaciones por dispositivo
   refresh: 'Actualizar'
   unavailableTitle: 'Las notificaciones push aún no están disponibles'
@@ -519,7 +490,6 @@ keys:
   unnamed: Sin nombre
   unnamed_key: Key sin nombre
   summary: '{total} Keys · {active} activos'
-  summary_demo: ' · datos demo'
   empty: Aún no hay Keys. Haz clic en "+ Nuevo Key" arriba a la derecha para crear uno y que los Agents empiecen a reportar.
   created_at: Creado {date}
   status:
@@ -530,7 +500,6 @@ keys:
   confirm:
     revoke: ¿Revocar "{name}"? Los Agents que lo usen ya no podrán reportar.
   toast:
-    revoked_demo: Revocado (modo demo, solo local)
     revoked: Revocado "{name}"
     revoke_failed: 'Error al revocar: {msg}'
     copied: Copiado ✓
@@ -540,11 +509,6 @@ keys:
     no_scope: Selecciona al menos un ámbito
     no_plaintext: El servidor no devolvió el texto plano del Key
     create_failed: 'Error al crear: {msg} (prueba el modo demo si el backend no está listo)'
-  demo:
-    name1: Desarrollo local
-    name2: Pipeline CI
-    name3: Widget de escritorio (recepción)
-    name4: Key de prueba antiguo
   emptyTitle: 'Aún no hay claves de API'
 security:
   title: Seguridad y acceso
@@ -624,35 +588,14 @@ security:
 
       Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema.'
   toast:
-    renamed_demo: Renombrado (modo demo, solo local)
     renamed: Renombrado
     rename_failed: 'Error al renombrar: {msg}'
-    deleted_demo: Eliminado (modo demo, solo local)
     deleted: Eliminado "{name}"
     delete_failed: 'Error al eliminar: {msg}'
     add_success: Passkey añadido correctamente
     add_failed: 'Error al añadir: {msg}'
-    revoked_demo: Revocado (modo demo, solo local)
     revoked: Sesión revocada para "{name}"
     revoke_failed: 'Error al revocar: {msg}'
-  demo:
-    pk1_name: iCloud Llavero
-    pk1_type: Sincronización de plataforma
-    pk1_devices: iPhone · iPad · Mac (sincronización automática con el mismo Apple ID)
-    pk2_name: PC de sala de reuniones · Windows Hello
-    pk2_type: Credencial local
-    pk2_devices: Solo este PC con Windows
-    pk3_name: Llave hardware YubiKey
-    pk3_type: Llave hardware
-    pk3_devices: USB / NFC, funciona en cualquier dispositivo
-    s4_passkey: Passkey local
-    s1_passkey: iCloud Llavero (sincronizado)
-    location_shanghai: Shanghái
-    location_office: Oficina
-    current: Actual
-    dev_ipad: iPad Air
-    dev_meeting_pc: PC de sala de reuniones
-    last_active_ipad: Ayer 21:40
 docs:
   title: Documentación de integración
   subtitle: Reportes de Agent · Web Push · WebSocket
@@ -1077,8 +1020,6 @@ events:
   recent: Eventos recientes
   loading: Cargando eventos…
   empty: Aún no hay eventos. Envía uno con POST /v1/events.
-  demo_badge: Modo demo — backend no conectado
-  demo_hint: Backend no conectado, aún no hay eventos reales.
   view_chain: Ver cadena
   filter:
     trace: Trace ID
@@ -1182,6 +1123,7 @@ caps:
     schema_err_range: "{a} no puede ser mayor que {b}"
     schema_err_pattern: "Regex inválida: {msg}"
     schema_err_enum: "Si eliges \"Enum\" debes dar al menos un valor"
+    schema_err_many: "Hay {n} campos incompletos en el contrato de parámetros (ver las filas marcadas en rojo)"
     schema_err_switch: "Este contrato tiene formas que el editor visual no puede expresar (tipo array / items anidados / enum numérico); sigue editándolo como JSON"
     schema_hint: "Las filas visuales cubren las restricciones más comunes; cambia a \"Editar JSON\" para lo demás. Mientras no lo toques, el contrato sigue los campos de la plantilla (dejar el JSON vacío significa lo mismo). Se admite un subconjunto controlado de JSON Schema (type/properties/required/enum/minLength/pattern…, sin $ref / if-then-else)."
     script_shebang_err: 'El script debe empezar por #!'

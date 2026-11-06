@@ -617,6 +617,13 @@
       .schema-fld .select {
         font-size: 12px;
       }
+      /* 行内错误：具体原因贴着出错的那一行（汇总在区块顶部，见 #schema-error）。
+         错误离输入越近，用户越不用猜是哪一行。 */
+      .schema-row-err {
+        margin: 0;
+        font-size: 11px;
+        color: var(--error);
+      }
       /* 模板字段的说明（label / help / 默认值）降级成行内小字：
          它解释「这个参数怎么填」，不参与契约，所以不给输入框 —— 给输入框
          就会让人以为自己填的值会生效（那些值确实从不参与提交）。 */
@@ -1259,6 +1266,10 @@
               </button>
             </div>
           </div>
+          <!-- 错误汇总放标题下面（**区块顶部**）：放在区块末尾时，用户滚到出错的行
+               就看不到原因了 —— 而「点了创建没反应」几乎都是这么来的。
+               每一行自己还有一行红字（.schema-row-err），说到具体原因。 -->
+          <p id="schema-error" class="field-error mb-2 hidden"></p>
           <!-- 行视图：每行一个参数；「更多」里是编辑器认的约束 -->
           <div id="schema-rows-wrap">
             <div id="schema-rows" class="schema-rows"></div>
@@ -1276,7 +1287,6 @@
           </div>
           <p id="schema-json-only" class="tpl-hint mt-2 hidden"></p>
           <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
-          <p id="schema-error" class="field-error mt-1 hidden"></p>
         </div>
 
         <div class="mt-4">
@@ -1541,7 +1551,7 @@
       // 的话页面只能写一句「载入失败」，用户不知道是网络问题还是服务端挂了。
       async function apiGet(path) {
         try {
-          return { ok: true, data: await Anotify.api(path, { demo: null }), err: null };
+          return { ok: true, data: await Anotify.api(path), err: null };
         } catch (e) {
           return { ok: false, data: null, err: e };
         }
@@ -2028,7 +2038,7 @@
           const v = input.value.trim();
           save.disabled = true;
           try {
-            // Anotify.api(path, opts, demo) —— body 要自己 JSON.stringify，
+            // Anotify.api(path, opts) —— body 要自己 JSON.stringify，
             // 并显式声明 Content-Type（与 sources.html 的调用一致）。
             const res = await Anotify.api(API + "/capabilities", {
               method: "PATCH",
@@ -3359,7 +3369,11 @@
         // 先写好 textarea/pre 再切模式：scriptModeSet("view") 会以 textarea 为准回写正文
         scriptModeSet(c.scriptMode === "edit" ? "edit" : "view");
         // 参数契约：先把卡里的行装回镜像，再按视图渲染（顺序不能反）
-        SCHEMA_ROWS = (c.schemaRows || []).map((r) => Object.assign({}, r));
+        SCHEMA_ROWS = (c.schemaRows || []).map((r) => {
+          const copy = Object.assign({}, r);
+          delete copy.err; // 红字不跟着卡片走（它属于上一次提交，不属于这份定义）
+          return copy;
+        });
         SCHEMA_EXTRA = Object.assign({}, c.schemaExtra || {});
         SCHEMA_VIEW = c.schemaView === "json" ? "json" : "rows";
         SCHEMA_DIRTY = !!c.schemaDirty;
@@ -4199,19 +4213,44 @@
         }
       }
 
-      // showSchemaRowErrors 把校验结果落到界面上：第一处错进错误区，出错的行标红。
-      function showSchemaRowErrors(errs) {
+      // clearSchemaRowErrors 清掉上一次提交留下的红字（汇总 + 行内）。
+      // 错误是「上一次提交的结论」，用户一动手它就不再是当前输入的状态。
+      function clearSchemaRowErrors() {
+        for (const r of SCHEMA_ROWS) delete r.err;
         const box = document.getElementById("schema-rows");
         if (box) {
-          for (const r of box.querySelectorAll("[data-row]")) r.classList.remove("is-err");
-          for (const e of errs || []) {
-            const node = box.querySelector(`[data-row="${e.i}"]`);
-            if (node) node.classList.add("is-err");
-          }
-          const first = errs && errs.length ? box.querySelector(`[data-row="${errs[0].i}"]`) : null;
-          if (first && first.scrollIntoView) first.scrollIntoView({ block: "nearest" });
+          for (const n of box.querySelectorAll(".schema-row.is-err")) n.classList.remove("is-err");
+          for (const n of box.querySelectorAll(".schema-row-err")) n.remove();
         }
-        setSchemaError(errs && errs.length ? errs[0].msg : "");
+        setSchemaError("");
+      }
+
+      // showSchemaRowErrors 把校验结果落到界面上：
+      //   · 每一行自己的红字（.schema-row-err）—— 说清是哪一行的什么原因
+      //   · 区块顶部的汇总（#schema-error）—— 一处错就说原因，多处只说「有 N 处」
+      //   · 滚到第一处出错的行 —— 否则用户在弹层底部点提交，看不到上面的红
+      function showSchemaRowErrors(errs) {
+        const list = errs || [];
+        for (const r of SCHEMA_ROWS) delete r.err;
+        for (const e of list) {
+          if (SCHEMA_ROWS[e.i]) SCHEMA_ROWS[e.i].err = e.msg;
+        }
+        renderSchemaRows();
+        const box = document.getElementById("schema-rows");
+        if (box && list.length) {
+          const node = box.querySelector(`[data-row="${list[0].i}"]`);
+          if (node && node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+        }
+        // 只有**多处**错误才在顶部汇总：一处错时行内红字 + toast 已经说清楚了，
+        // 同一句话在屏幕上出现三次（toast / 汇总 / 行内）只会显得吵。
+        setSchemaError(
+          list.length > 1
+            ? t("caps.tpl.schema_err_many", "参数契约有 {n} 处没填好（见标红的行）").replace(
+                "{n}",
+                String(list.length),
+              )
+            : "",
+        );
       }
 
       // schemaFieldEl 是「更多」里的一项约束输入。
@@ -4274,6 +4313,9 @@
           wrap.setAttribute("data-field", row.key);
           if (tplField.required) wrap.setAttribute("data-required", "1");
         }
+        // 上一次提交留下的具体原因（用户一动手就清掉，见 bindSchemaEditor）
+        const rowErr = row.err ? String(row.err) : "";
+        if (rowErr) wrap.classList.add("is-err");
         const main = el("div", "schema-row-main");
 
         const key = document.createElement("input");
@@ -4321,6 +4363,7 @@
         main.appendChild(del);
 
         wrap.appendChild(main);
+        if (rowErr) wrap.appendChild(el("p", "schema-row-err", rowErr));
         const hint = schemaRowHint(tplField);
         if (hint) wrap.appendChild(hint);
         const fields = schemaRowConstraintFields(row.type);
@@ -4456,7 +4499,7 @@
           renderSchemaRows();
         }
         SCHEMA_VIEW = next;
-        setSchemaError("");
+        clearSchemaRowErrors();
         renderSchemaViews();
         return true;
       }
@@ -4479,7 +4522,7 @@
           showSchemaRowErrors(errs);
           return { error: errs[0].msg };
         }
-        setSchemaError("");
+        clearSchemaRowErrors();
         return { schema: rowsToSchema(SCHEMA_ROWS, SCHEMA_EXTRA) };
       }
 
@@ -4546,6 +4589,7 @@
       // 而不是先猜一个占位名字要不要删。
       function schemaAddRow() {
         schemaSyncFromDom();
+        clearSchemaRowErrors();
         SCHEMA_ROWS.push({
           key: "",
           type: "string",
@@ -4607,13 +4651,13 @@
         const tpl = TPL_SEL;
         if (!tpl) {
           // 步骤 1 里的提交按钮已经隐藏，走到这里说明状态被打乱了
-          toast(t("caps.tpl.empty", "没有可用模板。"));
+          toast(t("caps.tpl.empty", "没有可用模板。"), "error");
           return;
         }
 
         const name = document.getElementById("cap-name").value.trim();
         if (!CAP_NAME_RE.test(name)) {
-          toast(t("caps.form.err_invalid_name", "能力名格式不对"));
+          toast(t("caps.form.err_invalid_name", "能力名格式不对"), "error");
           return;
         }
 
@@ -4621,7 +4665,7 @@
         const rawTimeout = String(document.getElementById("cap-timeout").value || "").trim();
         const timeoutSec = rawTimeout === "" ? Number(tpl.timeoutSec || 0) : Number(rawTimeout);
         if (!Number.isInteger(timeoutSec) || timeoutSec < 0 || timeoutSec > 86400) {
-          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"));
+          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"), "error");
           return;
         }
 
@@ -4631,7 +4675,7 @@
         // （`_foo` 这种放过去后端照样拒）。
         for (const f of tpl.fields || []) {
           if (!/^[a-z0-9][a-z0-9_]*$/.test(f.key || "")) {
-            toast(t("caps.form.create_failed", "创建失败：") + "invalid_field: " + f.key);
+            toast(t("caps.form.create_failed", "创建失败：") + "invalid_field: " + f.key, "error");
             return;
           }
         }
@@ -4645,7 +4689,7 @@
         // “前端放行、后端拒收”——那种错只在提交后才看到。
         // 九个内置模板的正文都以 #! 开头，无条件校验不会误伤。
         if (!/^#!/.test(script)) {
-          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"));
+          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"), "error");
           return;
         }
 
@@ -4677,7 +4721,7 @@
         if (!jsonEmpty && (SCHEMA_DIRTY || SCHEMA_VIEW === "json")) {
           const got = currentSchema();
           if (got.error) {
-            toast(t("caps.form.create_failed", "创建失败：") + got.error);
+            toast(t("caps.form.create_failed", "创建失败：") + got.error, "error");
             return;
           }
           paramsSchema = got.schema;
@@ -4697,6 +4741,7 @@
               "{names}",
               missing.join(", "),
             ),
+            "error",
           );
           return;
         }
@@ -4762,7 +4807,7 @@
         } catch (err) {
           // 原子提交的意义就在这里：失败是**整体**的，能力也没建成，所以弹层
           // 不能关（用户填的一切都还在），错在哪里要说清楚。
-          toast(t("caps.form.create_failed", "创建失败：") + linkRejectText(err, wanted));
+          toast(t("caps.form.create_failed", "创建失败：") + linkRejectText(err, wanted), "error");
         }
       }
 
@@ -4853,12 +4898,14 @@
               .replace("{n}", String(i + 1))
               .replace("{field}", field)
               .replace("{reason}", reason),
+            "error",
           );
         } else {
           toast(
             t("caps.form.card_err_generic", "能力 {n}：{reason}")
               .replace("{n}", String(i + 1))
               .replace("{reason}", reason),
+            "error",
           );
         }
       }
@@ -5041,7 +5088,7 @@
         } catch (e) {
           btn.disabled = false;
           btn.textContent = prevLabel;
-          toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + errText(e));
+          toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + errText(e), "error");
           return;
         }
         btn.disabled = false;
@@ -5103,7 +5150,7 @@
           }
         }
         // 兜底：说清「整批没落库」+ 后端原文（不提下标，因为不知道是哪一条）
-        toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + fallback);
+        toast(t("caps.form.batch_failed", "批量创建失败（整批未落库）：") + fallback, "error");
       }
 
       // ==================== 编辑能力 ⇒ 发一个新版本 ====================
@@ -5417,7 +5464,7 @@
         const rawTimeout = String(document.getElementById("cap-timeout").value || "").trim();
         const timeoutSec = rawTimeout === "" ? 0 : Number(rawTimeout);
         if (!Number.isInteger(timeoutSec) || timeoutSec < 0 || timeoutSec > 86400) {
-          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"));
+          toast(t("caps.form.err_timeout", "超时必须是 0~86400 之间的整数"), "error");
           return;
         }
 
@@ -5425,14 +5472,14 @@
         // 脚本校验与新建同一口径（不 trim：后端看 HasPrefix("#!")）
         const script = SCRIPT_TEXT;
         if (!/^#!/.test(script)) {
-          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"));
+          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"), "error");
           return;
         }
 
         // 参数契约：当前视图就是真相（预填的是当前版本，见 editSchemaInit）
         const gotSchema = currentSchema();
         if (gotSchema.error) {
-          toast(t("caps.form.create_failed", "创建失败：") + gotSchema.error);
+          toast(t("caps.form.create_failed", "创建失败：") + gotSchema.error, "error");
           return;
         }
         const paramsSchema = gotSchema.schema || { type: "object" };
@@ -5878,7 +5925,7 @@
           if (!f) return;
           schemaSyncFromDom();
           SCHEMA_DIRTY = true;
-          setSchemaError("");
+          clearSchemaRowErrors();
           // 类型变了，可填的约束也变了（string 有 pattern，number 有 minimum）
           if (f === "type") renderSchemaRows();
         };
@@ -5895,8 +5942,8 @@
           if (act === "del") {
             SCHEMA_ROWS.splice(i, 1);
             SCHEMA_DIRTY = true;
+            clearSchemaRowErrors(); // 被删那行的 err 随行消失，别的行也不再是"上次结论"
             renderSchemaRows();
-            setSchemaError("");
           } else if (act === "more") {
             SCHEMA_ROWS[i].more = !SCHEMA_ROWS[i].more;
             renderSchemaRows();

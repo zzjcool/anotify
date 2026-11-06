@@ -178,12 +178,14 @@ pending_age = now - MIN(created_at) FROM tasks WHERE status = 'pending'
 **不用 pending 行数**：行数随命名空间数 / 能力数 / 流量口径漂移，跨部署不可比；
 「最老的 pending 等了多久」与部署规模无关。
 
-**不加 `not_before` 过滤**：`SetNotBefore` 是「重派退避」，而写它的正是
-「派不出去（`ErrNoCapacity`）」那条路径（`internal/server/mux.go` 的 `Redispatch`）。
+**不加 `not_before` 过滤**：`SetNotBefore` 是「重派退避」，写它的是「派不出去」那条路径
+（`internal/server/mux.go` 的 `Redispatch`）——**只对「无节点声明/节点故障」写，容量不足
+（`ErrNoCapacity`）不写**（#306）；退避中的任务仍然是积压。
 按 `not_before` 过滤等于把 #228 的实测场景整个漏掉。
 
-**成本**：迁移 17 建了部分索引
-`idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`，
+**成本**：`internal/store/schema.sql`（:415 附近）建了部分索引
+`idx_tasks_pending_created_at ON tasks(created_at) WHERE status='pending'`（迁移链已 squash 成单 baseline，
+没有独立的「迁移 17」），
 把这条查询退化成一次「索引最左端 seek」，成本与积压行数无关（实测 10,000 行 0.13ms /
 100,000 行 0.13ms）。**一个边界**：SQLite 的 min/max 优化要看到该索引自己的 `sqlite_stat1`
 条目才会选它；「全新库灌满数据、尚未重开进程」的那个窗口里规划器仍会走 `idx_tasks_lease`
@@ -254,7 +256,10 @@ huge,requests=23097, rps=923.8, cpu_us_per_request=1776.85, read_syscalls_per_re
 - 节点下线后没人再声明该能力（`RedispatchTask` 见 `len(nodes)==0` 就返回 false，保持 pending）；
 - 任务建出来后集群里再没有能跑它的节点。
 
-全仓**没有任何 abandon 路径**，所以这些行永远停在 pending。于是一条孤儿任务就能把
+没有**自动** abandon（刻意，见 `internal/store/orphan.go:26-27`），但已有显式处置
+`POST /v1/tasks/{id}/abandon`（`AbandonPendingTask`，CAS 只动 pending）与巡检侧自动 abandon
+（attempts 用尽/能力非幂等，`store/task.go:1371,1382`）；无人处置时它仍会一直占着背压信号——安全阀仍需。
+于是一条孤儿任务就能把
 **整个部署**的新事件入口钉在 503 上，而且永不恢复 —— 这比「队列继续涨」糟得多。
 
 **做法**：连续超阈超过 `StuckAfter`（默认 **30 分钟**，下限 1s）就**停止拒绝**（fail-open），
@@ -378,7 +383,7 @@ WHERE nc.capability_id = '<上一步的 capability_id>';
   - 之后信号自然回落，`released` 会带 `was_stuck=true`。
 
 **为什么会有孤儿**：`RedispatchTask` 见「没有节点声明该能力」只返回 false（保持 pending），
-全仓**没有 abandon 路径**，所以这些行永远停在 pending 且年龄单调增长。
+节点侧不会自动放弃它，所以这些行会一直停在 pending 且年龄单调增长；清掉要人动手（`POST /v1/tasks/{id}/abandon`）。
 安全阀（§5.4）保证它不会把整站永久钉死，但**不会替你清掉那条任务** —— 每次重启后仍会再撞一次。
 - `lease.sweeper.retention` 的 `truncated=true` 连续出现 > 1 小时 → 清理追不上写入
   （调大预算或核对保留期配置）。

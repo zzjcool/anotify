@@ -7,7 +7,7 @@
  * This locks the translation coverage so future regressions are caught.
  *
  * Coverage:
- *   A. en/es × 7 pages (demo mode ?demo=1) — no CJK in rendered innerText
+ *   A. en/es × 7 pages — no CJK in rendered innerText
  *      (language-switcher native names "中文"/"日本語", and the sidebar
  *       namespace switcher's current namespace name — user data — are
  *       exempted by stripping them before scanning)
@@ -95,7 +95,7 @@ async function openPage(ctx, url, pageType) {
  * 见 getScannedText 里的注释（#203 之后切换器真的会渲染了）。 */
 async function getScannedText(page) {
 	/* Navigation races: `goto(waitUntil:"load")` resolves before client-side
-	 * redirects / demo-mode boot finish, so the execution context can be torn
+	 * redirects / boot finish, so the execution context can be torn
 	 * down mid-evaluate. Retrying after the page settles avoids a crash that
 	 * reported "0 assertions" instead of a real failure — which silently
 	 * turned this suite into a no-op red light.
@@ -212,15 +212,15 @@ async function main() {
 	}
 
 	/* =========================================================
-	 * A. en/es × 7 pages (demo mode) — no CJK residue
+	 * A. en/es × 7 pages — no CJK residue
 	 * ========================================================= */
-	console.log("--- A: en/es demo-mode pages — no CJK residue ---");
+	console.log("--- A: en/es pages — no CJK residue ---");
 	for (const lang of ["en", "es"]) {
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
 		for (const pageName of PAGES) {
 			const pageType = pageName === "login.html" ? "login" : "none";
-			const path = `/${lang}/${pageName}?demo=1`;
+			const path = `/${lang}/${pageName}`;
 			const { page, errors } = await openPage(
 				ctx,
 				server.base + path,
@@ -229,12 +229,12 @@ async function main() {
 			const text = await getScannedText(page);
 			const cjkLines = findCjk(text);
 			H.check(
-				`A ${lang}/${pageName} (demo) no CJK residue`,
+				`A ${lang}/${pageName} no CJK residue`,
 				cjkLines.length === 0,
 				cjkLines.slice(0, 3).join(" | ").slice(0, 120),
 			);
 			H.check(
-				`A ${lang}/${pageName} (demo) no JS pageerror`,
+				`A ${lang}/${pageName} no JS pageerror`,
 				errors.length === 0,
 				errors[0]?.slice(0, 100),
 			);
@@ -243,8 +243,8 @@ async function main() {
 		await ctx.close();
 	}
 
-	/* message.html with real ID (demo mode) */
-	console.log("--- A2: en/es message.html (demo, real ID) ---");
+	/* message.html with real ID */
+	console.log("--- A2: en/es message.html (real ID) ---");
 	for (const lang of ["en", "es"]) {
 		if (!realMsgId) {
 			H.bad(`A2 ${lang}/message.html — no real msg id to test`);
@@ -254,18 +254,18 @@ async function main() {
 		await H.mockExternalCdn(ctx);
 		const { page, errors } = await openPage(
 			ctx,
-			server.base + `/${lang}/message.html?id=${realMsgId}&demo=1`,
+			server.base + `/${lang}/message.html?id=${realMsgId}`,
 			"none",
 		);
 		const text = await getScannedText(page);
 		const cjkLines = findCjk(text);
 		H.check(
-			`A2 ${lang}/message.html (demo) no CJK residue`,
+			`A2 ${lang}/message.html no CJK residue`,
 			cjkLines.length === 0,
 			cjkLines.slice(0, 3).join(" | ").slice(0, 120),
 		);
 		H.check(
-			`A2 ${lang}/message.html (demo) no JS pageerror`,
+			`A2 ${lang}/message.html no JS pageerror`,
 			errors.length === 0,
 			errors[0]?.slice(0, 100),
 		);
@@ -404,11 +404,11 @@ async function main() {
 				`confirm text: "${confirmMsg.slice(0, 80)}"`,
 			);
 		} else {
-			/* Demo mode may not have keys with disable buttons — try demo */
+			/* 空 keys 可能没有可禁用的 Key —— 报告跳过，不当作失败 */
 			H.check(
 				"D1 en/keys disable button found (or report skip)",
 				true,
-				"no disable button in real-data keys (may be empty); demo path covered by scan",
+				"no disable button in real-data keys (may be empty); covered by page scan",
 			);
 		}
 		await ctx.close();
@@ -421,7 +421,7 @@ async function main() {
 		await H.mockExternalCdn(ctx);
 		await injectSession(ctx, seedData.session, server.base);
 		const page = await ctx.newPage();
-		await page.goto(server.base + "/ja/receivers.html?demo=1", {
+		await page.goto(server.base + "/ja/receivers.html", {
 			waitUntil: "load",
 			timeout: 15000,
 		});

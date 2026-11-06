@@ -436,3 +436,20 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **p2_guards e2e**：30 断言 —— 0 外部字体请求 / `document.fonts.check`（Inter/Fraunces/JetBrains Mono）/ 抽屉 dialog+Esc+焦点回退 / reduce token 0ms / VT 内联 opt-in + `pagereveal`；全量 **1866/0**。
 - **shim 审计**：仍有 `text-zinc-500/600/300` 等 5 类活引用，**不整块删除**（会破亮色）；`lang-hint-inner` 补 `min-width:0` 真实定义后从 KNOWN_DEAD 移除。
 - **发布**：`CHANGELOG.md` + annotated tag **v0.2.0**（UI v2 / 动效加载 / 字体自托管 / 时区 / P1 a11y）。
+
+---
+
+## P0 · 存量 issue 清偿（2026-11-06，11 个 open → 4）
+
+- **裁决**：6 条「已修未关」关闭（#270 #249 #254 #268 #219 #220，均由 PR #277/`5ba1c81` 修完）；#220 按 v2 已删 `run.concurrency` 判「消解」；#265 证伪后二次修复；#252/#274 收尾；#273 决策 1 判定不做、只剩决策 2；#264 维持搁置（先出干净数字）。
+- **代码**（7 bundle / 文件所有权互斥并行，合并 `83219b4`）：
+  - `e28beed` #252：`-- +migration 6 drop_edges_lookup`（4 列 = edges 主键严格左前缀）+ `headVersion 5→6` + 9 处过时「单连接」注释；拆掉 `seq_in_trace_test.go` 把 `headVersion` 当迁移 5 的地雷。
+  - `ab37f77` **#305 安全**：首用户判定移进 `RegisterUser` 同一事务（`RoleAuto`），原来 `UserCount`+`RegisterUser` 两次池操作在池=8 后可并发双 admin；文件库 + 起跑门 + 20 轮回归（修复前 3/3 必红）。
+  - `1bb2921` #306：cancel 释放槽位补 nudge（`consoleHandler.nudge` 窄依赖注入）；`ErrNoCapacity` 不再写 `not_before`（原来对 `attempts≥1` 写 10s，把即时重派退化成定时）。
+  - `a6b380e`+`e1ea039` #307：脚本切 v2（能力走「产物+部署」，node.yaml 只剩 bootstrap 四件）；`make demo-chain` 三跳实跑、perf s0–s6 全部 exit=0；devseed hello 改 `applied[]`+`concurrency 1`。
+  - `f16c646` #252/#308：契约删索引 DDL、改掉从未实现的 `min(instances concurrency, …)`、§3.3 补 cancel/退避两句；`docs/perf` 的 abandon/连接池/latency 结论对齐现状。
+  - `8af2fcc` #265：**证伪** `optimize=0x2`（100→2500 行仍 stat1=100，第一版是安慰剂）→ 改确定性漂移判定（估计 vs `COUNT(*)` 差 ≥10× 才 `ANALYZE "tasks"`），同一用例转绿。
+  - `949ca07` #274：删 `api()` 第 3 参 demo 回退（传 null 吞掉所有失败）+ 10 处 `{demo:null}` + 3 段不可达分支 + 四语 59 行死 key + e2e 空操作 `?demo=1`。
+- **验证**：`make e2e` 全量 **2273/0**（28 套件）；`make ci` 唯一失败为 `cmd/agent TestHandleUpgradeNeedRootDoesNotExit`（本机 root，`cmd/agent` 零改动），GitHub CI `test` 绿；`make contract` 绿。
+- **新开**：#305（已修）/ #306（已修）/ #307（已修）/ #308（已修）/ **#310**（i18n_coverage A 组缺 `injectSession`，受保护页空转）/ **#311**（活文案仍说「演示模式」+ mock.js 伪造 `/v1/test-notify`）。
+- **仍 open**：#273（触发 payload，产品已定「做」）、#264（写放大，待干净复测）、#310、#311。

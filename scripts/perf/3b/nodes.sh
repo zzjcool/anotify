@@ -7,6 +7,8 @@
 # 节点用**真实 agent 握手**写入 node_capabilities / node_instances 行（这才是线上
 # 那两张表的样子：每节点 1 个能力、2 个槽位），握手完成后立刻 kill 掉 agent ——
 # 测量只针对读路径，避免 100 个进程的心跳噪声盖住要量的东西。
+# v2（console-declares）：node_capabilities 只从**部署**派生，所以每个节点先部署一次
+# 产物（POST /v1/deployments），agent hello 之后中枢补推 → apply → 节点重发 hello。
 # 前/后两个二进制都跑同一个脚本、同一组参数，交替执行，数字才有可比性。
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -44,38 +46,38 @@ p3b_log "server pid=$SRVPID loadavg=$(awk '{print $1" "$2" "$3}' /proc/loadavg)"
 
 p3b_seed "$DB"
 
-p3b_say "建 1 个能力（供 agent 声明）"
+p3b_say "建 1 个能力（带 run → 编译成产物，供部署）"
+# v2（console-declares）：节点不再在 node.yaml 里声明能力，能力归属**只**由部署派生。
+# 而“部署”需要一份产物（`POST /v1/deployments` 没产物就是 404），所以这里必须带 run。
 CAP=$(json -X POST "$BASE/v1/capabilities?namespaceId=$NS" \
-	-d '{"name":"perf.noop","outputs":["ok"],"paramsSchema":{"type":"object"}}' | jq -r '.capability.id // empty')
+	-d '{"name":"perf.noop","outputs":["ok"],"paramsSchema":{"type":"object"},"run":{"entrypoint":"run.sh","files":{"run.sh":"#!/bin/bash\necho ok\n"},"timeoutSec":60}}' \
+	| jq -r '.capability.id // empty')
 [ -n "$CAP" ] || p3b_die "建能力失败"
 p3b_log "cap=$CAP"
 
-p3b_say "建 $N 个节点（HTTP，instances=2）"
+p3b_say "建 $N 个节点（HTTP，instances=2）+ 逐个部署产物"
 mkdir -p "$WORK/yaml"
 for i in $(seq 1 "$N"); do
 	r=$(json -X POST "$BASE/v1/nodes?namespaceId=$NS" -d "{\"name\":\"n$i\",\"instances\":2}")
 	id=$(printf '%s' "$r" | jq -r '.node.id // empty')
 	tok=$(printf '%s' "$r" | jq -r '.token // empty')
 	[ -n "$id" ] && [ -n "$tok" ] || p3b_die "建节点 n$i 失败：$r"
+	# v2 的 node.yaml 只有 bootstrap 四件（name/server/token/instances）：
+	# 带 capabilities: 会被 agent 的 KnownFields(true) 当未知字段拒启动（N3）。
+	# 配方：scripts/e2e/lib/nodes.mjs:180-260。
 	cat >"$WORK/yaml/n$i.yaml" <<EOF
 name: n$i
 server: $BASE
 token: $tok
 instances: 2
-capabilities:
-  - capability: perf.noop
-    version: 1
-    run:
-      runner: bash
-      command: |
-        echo ok
-      out: ok
-      timeoutSec: 60
-      concurrency: 1
 EOF
+	# 能力靠部署落到本机（此刻节点 offline → 行是 pending，hello 之后中枢补推）。
+	dep=$(json -X POST "$BASE/v1/deployments?namespaceId=$NS" \
+		-d "{\"namespaceId\":\"$NS\",\"capabilityId\":\"$CAP\",\"nodeIds\":[\"$id\"]}")
+	[ "$(printf '%s' "$dep" | jq -r '.deployments | length')" = "1" ] || p3b_die "部署能力到 n$i 失败：$dep"
 done
 
-p3b_say "分批拉起 agent 写真实 node_capabilities / node_instances 行"
+p3b_say "分批拉起 agent（hello → 部署补推 → apply → 重发 hello）写真实 node_capabilities / node_instances"
 AGENT_PIDS=""
 BATCH=20
 for start in $(seq 1 $BATCH "$N"); do
