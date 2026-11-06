@@ -478,6 +478,56 @@
         min-width: 8rem;
       }
 
+      /* ---------- 编辑弹层里的下游行编辑器 ----------
+         每行 = 能力名（可搜索）+ 优先级数字 + 删除。行列表是编辑模式的**唯一真相**
+         （新建模式里一行也没有：优先级属于已存在的边）。
+         颜色只用 token：删除键默认 --faint，悬停才变 --error（警示但不吓人）。 */
+      .cap-down-list {
+        display: grid;
+        gap: 0.45rem;
+        margin-bottom: 0.55rem;
+      }
+      .cap-down-list:empty {
+        display: none;
+      }
+      .cap-down-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 6.5rem auto;
+        gap: 0.45rem;
+        align-items: center;
+      }
+      .cap-down-item-prio {
+        text-align: right;
+      }
+      /* 名字列在 grid 里要能被压缩（min-width:0）：否则长引用（name@12）会把行撑出弹层 */
+      .cap-down-item-name {
+        min-width: 0;
+      }
+      .cap-down-item-del {
+        color: var(--faint);
+      }
+      .cap-down-item-del:hover,
+      .cap-down-item-del:focus-visible {
+        color: var(--error);
+      }
+      .cap-down-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.55rem;
+        margin-top: 0.55rem;
+      }
+      /* 编辑模式里一条下游都没有时的空态（= 终端能力，合法状态，说人话） */
+      .cap-down-none {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      @media (max-width: 560px) {
+        .cap-down-item {
+          grid-template-columns: minmax(0, 1fr) 5rem auto;
+        }
+      }
+
       /* ---------- 下游候选胶囊（点一下加入）----------
          为什么要有它：datalist 只在输入框里打字时才浮出来，用户看不见“有哪些可选”；
          而且显示名允许重名（同名不同版也真实存在），只给显示名就分不出是哪一个。
@@ -915,22 +965,9 @@
       </div>
     </section>
 
-    <!-- 出口（边）搬到独立页面了：能力是"能干什么"（节点代码声明，
-         低频），边是"干完之后往哪走"（用户控制台配，高频试错）。
-         规模也差一个量级 —— 一个能力可以有多个下游候选，边的数量长得快得多。
-         这里刻意用 <div class="card"> + 行内链接按钮，而不是 <a class="card">：
-         卡片本身不可点，可点的永远是里面的按钮，全站卡片行为才一致。 -->
-    <div class="card card-pad">
-      <div class="card-head">
-        <div>
-          <h3 class="card-title">{{t "caps.edges.moved_title"}}</h3>
-          <p class="card-sub mt-1">{{t "caps.edges.moved_desc"}}</p>
-        </div>
-        <a href="edges.html" class="btn btn-ghost btn-sm">
-          {{t "caps.edges.moved_link" }} →
-        </a>
-      </div>
-    </div>
+    <!-- 「下游」的全部编辑入口都在**能力自己**身上：新建时随能力一次提交（links[]），
+         已存在的能力在下面「编辑（新版本）」弹层的行编辑器里改（PUT …/downstreams，
+         与发版解耦）。独立出口页已删除 —— 两个入口配同一条边，迟早互相覆盖。 -->
 
     <!-- 目标能力的候选项（原生 datalist = 自带搜索的下拉）。
          挂在页面级而不是弹层里：详情区的「+ 下游」和新建表单的下游行
@@ -1043,14 +1080,21 @@
 
         <!-- 下游能力（候选）：这是「把两个能力串起来」的地方。
              用户脑子里只有一件事：这个能力跑完交给谁。出口是**内部路由键**
-             （一个能力只有一个，内部名固定 out），界面上不表达它——
-             所以这里就是一个逗号分隔的输入框：多个名字 = 候选，运行期按优先级选一个；
-             留空 = 终端能力（跑完就结束）。 -->
+             （一个能力只有一个，内部名固定 out），界面上不表达它。
+
+             两种模式共用这一块，但**真相不同**（这是最容易搞错的一处）：
+               · 新建能力：下面那个逗号分隔的输入框原文就是真相，随能力一起提交（links[]）；
+               · 编辑（发新版本）：行列表 #cap-down-list 是真相，输入框只是「加一条」的入口，
+                 保存走 PUT /v1/capabilities/{name}/downstreams（replace，不产生新版本）。
+             行列表只在编辑模式里有行 —— 新建表单里出现优先级数字会让人以为
+             「建能力时就能设优先级」，而那些边还没存在。 -->
         <div id="cap-down-wrap" class="mt-4">
           <div class="card-head mb-2">
             <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
             <span class="tpl-hint">{{t "caps.form.downstream_optional"}}</span>
           </div>
+          <!-- 行编辑器（编辑模式才有行）：每行 = 能力名 + 优先级 + 删除 -->
+          <div id="cap-down-list" class="cap-down-list"></div>
           <!-- list 指向页面级那份 datalist（与详情区「+ 下游」共用）：原生下拉
                自带搜索，零 JS。它只在输入框里打字时才浮出来，所以下面还有一排
                **常驻**的候选胶囊 —— 让人一眼看到“有哪些可选”，也分得出显示名重名的两个能力。 -->
@@ -1064,14 +1108,21 @@
             placeholder="{{t "caps.form.downstream_ph"}}"
           />
           <!-- 候选胶囊（JS 渲染）：与 datalist 同一份候选（既有能力 + 本批卡）。
-               点击 = 把裸名字追加进输入框，再派发 input 事件 —— 输入框的 .value
-               始终是唯一真相，点选与手打走的是同一条入口。 -->
+               点击 = 新建模式把裸名字追加进输入框（.value 是唯一真相）；
+               编辑模式 = 直接追加一行（行列表是唯一真相）。 -->
           <div id="cap-down-cands" class="cap-cand-list"></div>
           <p id="cap-downstream-hint" class="field-hint">{{t "caps.form.downstream_hint"}}</p>
+          <!-- 保存下游（只在编辑模式出现）：与发版解耦 —— 改「接到谁 / 优先级」
+               不产生新版本，因为拓扑不属于产物。 -->
+          <div id="cap-down-actions" class="cap-down-actions hidden">
+            <button id="cap-down-save" type="button" class="btn btn-primary btn-sm" data-act="save-downstreams">
+              {{t "caps.down.save"}}
+            </button>
+            <span id="cap-down-edit-hint" class="field-hint">{{t "caps.down.hint_edit"}}</span>
+          </div>
         </div>
-        <!-- 新版本模式下如果**已有**跟随最新的下游，选择器整栏隐藏：
-             那些边接的是名字，新版本自动就是它们指向的版本 —— 在这里再选一次
-             只会让人以为「需要重接」，而重接会真的多出几条边。 -->
+        <!-- 多出口是**历史数据**（当前界面不产生这种能力）：出口结构原样保留，
+             这里只留一句只读说明 —— 行编辑器只管隐式的 out，替用户合并出口等于改配置。 -->
         <div id="cap-down-existing" class="mt-4 hidden">
           <div class="card-head mb-2">
             <h4 class="card-title">{{t "caps.form.downstream"}}</h4>
@@ -1245,6 +1296,16 @@
       // 存**原文**而不是解析后的数组：切回一张卡时应该一字不差地看到自己填的那串，
       // 而不是被前端重排/去重过的版本；解析只在提交那一步做（parseDownstream）。
       let DOWN_TEXT = "";
+
+      // DOWN_ROWS 是**编辑（发新版本）弹层**里下游行编辑器的唯一真相（新建模式不用它）：
+      //   [{ toRef: "script.echo", priority: 0, literals: {} }]
+      // 为什么不复用 DOWN_TEXT 的逗号分隔原文：一行动辄三样东西（名字 / 优先级 / 要保留的
+      // 常量），串进一个字符串就得自己发明一套语法，解析一次错一次。
+      // toRef 是**引用**（裸名字=跟随最新 / name@v=钉死），与边的写法一致。
+      let DOWN_ROWS = [];
+      // DOWN_BASE 是「最后一次从服务端读回 / 成功保存」时的行快照：与它不一致 = 有未保存
+      // 改动（发布前会先落库，见 submitVersion）。
+      let DOWN_BASE = "[]";
 
       // ==================== 本批能力卡片（批量创建）====================
       // 一个表单建多个能力（契约 §4：POST /v1/capabilities/batch，单事务）。
@@ -1899,20 +1960,9 @@
         return Number.isInteger(v) && v > 0;
       }
 
-      // sourceRefFor 决定「从这一行建边」时左端写什么引用。
-      //
-      // 裸名字 = 跟随最新（默认形态，也是「我改了这个能力、线自动跟过去」的意思）。
-      // 只有当这一行**不是**该名字的最高版本时才钉死 —— 否则给旧版本建的边
-      // 会静默落到新版上（而那一版可能已经没有这个出口了）。
-      function sourceRefFor(c) {
-        let latest = null;
-        for (const x of CAPS) {
-          if (x.name !== c.name) continue;
-          if (!latest || x.version > latest.version) latest = x;
-        }
-        if (!latest || latest.version === c.version) return c.name;
-        return c.name + "@" + c.version;
-      }
+      // 注：以前这里有一个 sourceRefFor（给「从这一行建边」选裸名字 / name@v 的引用），
+      // 它只服务于 POST /v1/edges：那个端点已经封掉能力边（405 edge_write_removed），
+      // 下游只走 PUT …/downstreams，写入的是**能力名**（所有版本共用一组出边）。
 
       // ==================== 目标能力候选（datalist）====================
       //
@@ -2019,7 +2069,10 @@
         const box = document.getElementById("cap-down-cands");
         if (!box) return;
         const input = document.getElementById("cap-downstream");
-        const picked = new Set(parseDownstream(input ? input.value : ""));
+        // 编辑模式的「已选」看行列表（那是唯一真相）；新建模式看输入框原文。
+        const picked = VERSION_MODE
+          ? new Set(DOWN_ROWS.map((r) => refName(r.toRef)))
+          : new Set(parseDownstream(input ? input.value : ""));
         const cands = [];
         const seen = new Set();
         for (const c of targetList()) {
@@ -2067,14 +2120,18 @@
         }
       }
 
-      // pickDownstream 把一个候选名字追加进输入框（已选过的跳过，不重复）。
+      // pickDownstream 把一个候选名字加进下游（已选过的跳过，不重复）。
       //
-      // 关键：**只**改 input.value 再派发 input 事件 —— 与用户手打完全同一条路径。
-      // 候选状态不搬到 JS 数组里（搬了以后 .value 就不再是真相，提交/切卡/回显
-      // 各自维护一份，迟早对不上）。
+      // 新建模式：**只**改 input.value 再派发 input 事件 —— 与用户手打完全同一条路径。
+      // （候选状态不搬到 JS 数组里，否则 .value 就不再是真相，提交/切卡/回显各自维护一份。）
+      // 编辑模式：行列表才是真相，点胶囊 = 追加一行（往输入框塞文本还要再回车一次，多余）。
       function pickDownstream(name) {
         const input = document.getElementById("cap-downstream");
         if (!input || !name) return;
+        if (VERSION_MODE) {
+          if (addDownRowRef(name)) renderDownstreamCands();
+          return;
+        }
         const names = parseDownstream(input.value);
         if (names.indexOf(name) < 0) {
           names.push(name);
@@ -2089,28 +2146,391 @@
         return String((e && (e.detail || e.message)) || e || "");
       }
 
-      // postEdge 给**已存在**的能力加一条边（「+ 下游」按钮走它，POST /v1/edges）。
+      // ==================== 下游的写入口（唯一）====================
       //
+      // 一个能力的出边是一**组**，不是一条条增删的：PUT …/downstreams 的语义是
+      // replace（传什么就是全部，空数组 = 清空 = 终端能力）。所以写入永远发生在
+      // 「整组」这个粒度上 —— 前端不需要为「加一条 / 删一条」找两个端点。
+      //
+      // 旧入口 POST /v1/edges 的能力边已被后端封掉（405 edge_write_removed）：
+      // 两个写入口配同一张表，迟早互相覆盖（CONTRACT-downstream-edit §3）。
       // 新建能力时填的下游**不**走这里：那些边跟能力一起提交（body.links），
       // 由后端放进同一个事务——否则失败就留下「能力在、边缺」的半成品。
+
+      // downstreamErrText 把「改下游」的失败翻成一句人话。
       //
-      // 形参收引用（裸名字=跟随最新 / name@v=钉死），两端都不传能力 id：
+      // 为什么必须翻译：405 是**产品行为**（旧入口已关），把后端 JSON 原样丢给用户
+      // 等于让他去读一段机器码；而 400 的机器码（unknown_target / self_link / …）
+      // 正好一一对应一句可操作的建议。认不出来就原样露出后端原文（吞掉更糟）。
+      function downstreamErrText(e) {
+        const detail = errText(e);
+        const status = (e && e.status) || 0;
+        if (status === 405 || /edge_write_removed/i.test(detail)) {
+          return t("caps.down.err_removed", "旧接口已关闭：能力的下游请在「编辑能力 → 下游」里改");
+        }
+        if (status === 404) return t("caps.down.err_notfound", "能力不存在（可能已被删除）");
+        if (/unknown[_ ]target/i.test(detail)) {
+          return t("caps.down.err_unknown", "找不到目标能力：{ref}").replace(
+            "{ref}",
+            downErrRef(detail) || "—",
+          );
+        }
+        if (/self[_ ]link|cannot link to itself/i.test(detail)) {
+          return t("caps.down.err_self", "不能让能力连到自己");
+        }
+        if (/duplicate[_ ]target|already in the list/i.test(detail)) {
+          return t("caps.down.err_duplicate", "这条下游已经在列表里");
+        }
+        // 后端的写法是 `priority 2000 out of range [0, 1000]`；mock 写的是
+        // `must be within 0..1000` —— 两种都认（认不得就露出原文，用户得自己读数字）。
+        if (/priority_out_of_range|out of range|within 0\.\.1000/i.test(detail)) {
+          return t("caps.down.err_priority", "优先级必须是 0~1000 的整数");
+        }
+        if (/too_many_links|at most \d+ allowed/i.test(detail)) {
+          return t("caps.down.err_too_many", "下游最多 100 条");
+        }
+        return detail;
+      }
+
+      // downErrRef 从 400 的文案里尽力抽出「是哪个引用错了」。
+      // 后端两种写法都见过（`unknown_target: report.send` / `links[0].toRef: unknown_target`），
+      // 抽不到就返回空串让调用方用中性占位，不猜。
+      function downErrRef(detail) {
+        const s = String(detail || "");
+        let m = /unknown[_ ]target\s*[:：]\s*"?([A-Za-z0-9._@-]+)"?/i.exec(s);
+        if (m && !/^unknown[_ ]target$/i.test(m[1])) return m[1];
+        m = /"?([A-Za-z0-9._@-]+)"?\s*(?:is\s+)?unknown[_ ]target/i.exec(s);
+        if (m && !/^links?(\[|$)/i.test(m[1])) return m[1];
+        return "";
+      }
+
+      // putDownstreams 把一整组下游写成这个能力的全部出边（replace 语义）。
+      //
+      // 左端是**能力名**（所有版本共用一组出边），出口恒为隐式 out —— 两者都不出现在
+      // 请求里。逐条收引用（裸名字=跟随最新 / name@v=钉死），不收能力 id：
       // 边里存 id 的话能力一升级这条边就永远指向旧版本（P2.2）。
-      async function postEdge(body) {
-        const payload = Object.assign({ fromIsSource: false }, body);
-        const ns = scopeNS();
-        if (ns) payload.namespaceId = ns;
-        return Anotify.api(API + "/edges", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+      async function putDownstreams(cap, rows) {
+        const name = String((cap && cap.name) || "").trim();
+        const ns = (cap && cap.namespaceId) || scopeNS();
+        const links = (rows || []).map((r) => {
+          const item = {
+            toRef: String((r && r.toRef) || "").trim(),
+            priority: downPrio(r && r.priority),
+          };
+          // literals 只在**真有**常量时才带：空对象传过去是噪音（后端也会落成 {}）
+          const lit = r && r.literals;
+          if (lit && typeof lit === "object" && !Array.isArray(lit) && Object.keys(lit).length) {
+            item.literals = lit;
+          }
+          return item;
         });
+        const body = { links: links };
+        if (ns) body.namespaceId = ns;
+        return Anotify.api(API + "/capabilities/" + encodeURIComponent(name) + "/downstreams", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      // downPrio 把一行的优先级归一成 0..1000 的整数：空/NaN → 0，越过上界钳住。
+      // 与后端校验区间（0..1000）同一口径 —— 前端放行、后端拒收是最难查的一类错。
+      function downPrio(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        return Math.min(1000, Math.max(0, Math.trunc(n)));
+      }
+
+      // downRowsSignature 是「这组下游长什么样」的指纹：判断有没有未保存改动用它。
+      // 只算参与请求的字段，顺序也算（界面上人看到的正是这个顺序）。
+      function downRowsSignature(rows) {
+        const norm = (rows || []).map((r) => ({
+          toRef: String((r && r.toRef) || "").trim(),
+          priority: downPrio(r && r.priority),
+          literals: (r && r.literals) || {},
+        }));
+        try {
+          return JSON.stringify(norm);
+        } catch (e) {
+          return "";
+        }
+      }
+
+      function downRowsDirty() {
+        return downRowsSignature(DOWN_ROWS) !== DOWN_BASE;
+      }
+
+      // outEdgesFor 取一个能力**在隐式出口 out 上**的出边（= 它的下游候选）。
+      //
+      // 按名字匹配 fromRef（fromRef 可能是 name 或 name@v）：一组出边属于能力名，
+      // 不属于某一版 —— 与 PUT 端点「左端是能力名」同一口径。
+      // 多出口历史数据的其它出口这里**不列**：行编辑器只表达隐式 out。
+      function outEdgesFor(name) {
+        const want = String(name || "").trim();
+        if (!want) return [];
+        return EDGES.filter(
+          (e) => !e.fromIsSource && (e.fromPort || OUT_PORT) === OUT_PORT && refName(e.fromRef) === want,
+        );
+      }
+
+      // rowsFromEdges 把边列表变成行编辑器的行：**保留 literals**。
+      // 丢掉它们等于下次保存时把常量清空（replace 会把没提交的整条替换掉）。
+      //
+      // 按引用去重：同一个 toRef 只可能有一条（后端 (from, port, to) 唯一），但演示数据里
+      // 确实出现过两条相同的边（analyze-pr → run-tests ×2）。照抄进编辑器会让「保存」
+      // **永远**失败于 duplicate_target —— 而用户看到的是一行看不出问题的下游。
+      // 排序后保留第一条（优先级最低的那条），语义上与那两条中的任一条等价。
+      function rowsFromEdges(list) {
+        const out = [];
+        const seen = new Set();
+        for (const e of sortEdgesByCand(list)) {
+          const toRef = String(e.toRef || "");
+          if (seen.has(toRef)) continue;
+          seen.add(toRef);
+          out.push({
+            toRef: toRef,
+            priority: downPrio(e.priority),
+            literals: e.literals && typeof e.literals === "object" ? e.literals : {},
+          });
+        }
+        return out;
+      }
+
+      // ---------- 行编辑器（只在编辑模式有行）----------
+      //
+      // renderDownRows 重画 #cap-down-list。**新建模式一行也不画**：
+      // 新建表单里出现「优先级」会让人以为建能力时就能设，而那些边还没存在。
+      function renderDownRows() {
+        const box = document.getElementById("cap-down-list");
+        if (!box) return;
+        box.replaceChildren();
+        box.removeAttribute("title"); // 上一次的提示不跟着留下（行没了，说明也该没）
+        if (!VERSION_MODE) return;
+        if (!DOWN_ROWS.length) {
+          box.appendChild(
+            el(
+              "div",
+              "cap-down-none",
+              t("caps.down.empty", "还没有下游：这个能力跑完就结束（终端能力）。"),
+            ),
+          );
+          return;
+        }
+        DOWN_ROWS.forEach((row, i) => box.appendChild(downRowNode(row, i)));
+        // 「这些下游所有版本共用」是这组边最容易误解的一点：优先级不按版本走，
+        // 发新版本也不会动它们（边接的是名字）。
+        box.title = t("caps.down.current_version_note", "这些下游所有版本共用：发新版本不会改动它们。");
+      }
+
+      // downRowNode 画一行：能力名（datalist 可搜索）+ 优先级 + 删除。
+      //
+      // 名字用 change（失焦/回车）而不是 input：每敲一个字就重画整行会把光标挤走，
+      // 而重画的代价（整表重建）只在确定之后付一次。
+      function downRowNode(row, i) {
+        const item = el("div", "cap-down-item");
+        item.setAttribute("data-to-ref", String(row.toRef || ""));
+
+        const nameInp = el("input", "input cap-down-item-name");
+        nameInp.type = "text";
+        nameInp.value = String(row.toRef || "");
+        nameInp.setAttribute("list", "cap-down-targets");
+        nameInp.setAttribute("autocomplete", "off");
+        nameInp.setAttribute("spellcheck", "false");
+        nameInp.placeholder = t("caps.down.name_ph", "能力名");
+        nameInp.addEventListener("change", () => onDownRowName(i, nameInp));
+
+        const prio = el("input", "input mono cap-down-item-prio");
+        prio.type = "number";
+        prio.min = "0";
+        prio.max = "1000";
+        prio.step = "1";
+        prio.value = String(downPrio(row.priority));
+        prio.setAttribute("aria-label", t("caps.down.prio", "优先级"));
+        prio.title = t("caps.down.prio_hint", "数字越小越先派发；留空 = 0");
+        const onPrio = () => {
+          const v = downPrio(prio.value);
+          row.priority = v;
+          // 只在**明显越界**时改写输入框（1200 → 1000）：空着就是 0，不该被填成 "0"
+          const raw = String(prio.value).trim();
+          if (raw !== "" && raw !== String(v)) prio.value = String(v);
+          markDownDirty();
+        };
+        prio.addEventListener("input", onPrio);
+        prio.addEventListener("change", onPrio);
+
+        const del = el("button", "btn btn-ghost btn-icon cap-down-item-del", "×");
+        del.type = "button";
+        del.setAttribute("data-act", "del-downstream");
+        del.setAttribute("aria-label", t("caps.down.del", "删除这条下游"));
+        del.title = t("caps.down.del", "删除这条下游");
+        del.addEventListener("click", () => {
+          DOWN_ROWS.splice(i, 1);
+          renderDownRows();
+          markDownDirty();
+          // 候选胶囊的「已选」标记跟着行列表走：删掉的行不能还显示成已选
+          renderDownstreamCands();
+        });
+
+        item.appendChild(nameInp);
+        item.appendChild(prio);
+        item.appendChild(del);
+        return item;
+      }
+
+      // onDownRowName 处理一行的名字改动：trim；空 → 还原；与别的行重复 → 说清并还原。
+      // 不在这里校验「名字存在吗」：保存前统一校验（一处报错比两处各报一次好）。
+      function onDownRowName(i, inp) {
+        const row = DOWN_ROWS[i];
+        if (!row) return;
+        const v = String((inp && inp.value) || "").trim();
+        if (!v) {
+          if (inp) inp.value = String(row.toRef || "");
+          return;
+        }
+        if (DOWN_ROWS.some((r, k) => k !== i && refName(r.toRef) === refName(v))) {
+          toast(t("caps.down.err_duplicate", "这条下游已经在列表里"));
+          if (inp) inp.value = String(row.toRef || "");
+          return;
+        }
+        if (v === row.toRef) return;
+        row.toRef = v;
+        renderDownRows();
+        markDownDirty();
+        renderDownstreamCands();
+      }
+
+      // resolveDownTarget 把一个引用解成能力：按**名字**查（name@2 的版本号由后端解析）。
+      // 用未过滤的全表：notify.phone 这类暂不显示的能力仍然是合法目标。
+      function resolveDownTarget(ref) {
+        const name = refName(ref);
+        return name ? targetByName(name) : null;
+      }
+
+      // addDownRowRef 追加一行下游：连自己 / 已经在列表 / 名字解析不到 都当场说清。
+      function addDownRowRef(ref) {
+        const raw = String(ref == null ? "" : ref).trim();
+        if (!raw) return false;
+        const vm = VERSION_MODE;
+        if (vm && refName(raw) === vm.cap.name) {
+          toast(t("caps.down.err_self", "不能让能力连到自己"));
+          return false;
+        }
+        if (DOWN_ROWS.some((r) => refName(r.toRef) === refName(raw))) {
+          toast(t("caps.down.err_duplicate", "这条下游已经在列表里"));
+          return false;
+        }
+        if (!resolveDownTarget(raw)) {
+          toast(t("caps.down.err_unknown", "找不到目标能力：{ref}").replace("{ref}", raw));
+          return false;
+        }
+        DOWN_ROWS.push({ toRef: raw, priority: 0, literals: {} });
+        renderDownRows();
+        markDownDirty();
+        return true;
+      }
+
+      // commitDownInput 把「加一条下游」输入框里的内容变成一行（回车/失焦触发）。
+      // 支持一次贴一串逗号分隔的名字：手快的人会那么干，而静默只加第一个更费解。
+      function commitDownInput() {
+        const input = document.getElementById("cap-downstream");
+        if (!input) return;
+        const raw = String(input.value || "").trim();
+        if (!raw) return;
+        let added = 0;
+        for (const name of parseDownstream(raw)) {
+          if (addDownRowRef(name)) added += 1;
+        }
+        // 加成功就清空（这个框是草稿，不是状态）；全被拒时留着原文让人改
+        if (added) input.value = "";
+        renderDownstreamCands();
+      }
+
+      // markDownDirty 把「有没有未保存改动」回显到保存键旁边。
+      function markDownDirty() {
+        const hint = document.getElementById("cap-down-edit-hint");
+        if (!hint) return;
+        const base = t(
+          "caps.down.hint_edit",
+          "改下游不产生新版本：这里只改「接到谁、优先级多少」。",
+        );
+        const dirty = downRowsDirty();
+        hint.textContent = dirty ? t("caps.down.dirty", "有未保存的下游改动") + " · " + base : base;
+        hint.classList.toggle("cap-warn", dirty);
+      }
+
+      // updateDownActions 决定「保存下游」这一块出不出现：只有编辑模式有它
+      // （新建时下游随能力一次提交，没有第二个提交入口）。
+      function updateDownActions() {
+        const box = document.getElementById("cap-down-actions");
+        if (box) box.classList.toggle("hidden", !VERSION_MODE);
+        markDownDirty();
+      }
+
+      // validateDownRows 保存前的本地校验：引用解析不到 / 连自己 → 报出来，不发请求。
+      // 后端也会拒（400），但那条错误串对用户是噪音；这里能指出是哪一行。
+      function validateDownRows(capName) {
+        for (const row of DOWN_ROWS) {
+          const ref = String(row.toRef || "").trim();
+          if (!ref) {
+            toast(t("caps.down.need_target", "请先填一个目标能力"));
+            return false;
+          }
+          if (refName(ref) === capName) {
+            toast(t("caps.down.err_self", "不能让能力连到自己"));
+            return false;
+          }
+          if (!resolveDownTarget(ref)) {
+            toast(t("caps.down.err_unknown", "找不到目标能力：{ref}").replace("{ref}", ref));
+            return false;
+          }
+        }
+        return true;
+      }
+
+      // saveDownstreams 保存编辑模式里那组下游（PUT …/downstreams，replace 语义）。
+      // 返回是否成功 —— 发布前会先调它，失败必须能中止发布。
+      async function saveDownstreams() {
+        const vm = VERSION_MODE;
+        if (!vm) return false;
+        const c = vm.cap;
+        if (!validateDownRows(c.name)) return false;
+        const btn = document.getElementById("cap-down-save");
+        const label = btn ? btn.textContent : "";
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = t("caps.down.saving", "保存中…");
+        }
+        try {
+          await putDownstreams(c, DOWN_ROWS);
+        } catch (e) {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = label;
+          }
+          toast(t("caps.down.save_failed", "保存下游失败：") + downstreamErrText(e));
+          return false;
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = label;
+        }
+        toast(t("caps.down.saved", "下游已保存（不产生新版本）"));
+        // 回读：服务端才是落库后的样子（解析到的 id / 归一后的优先级都以它为准）
+        await loadAll();
+        if (VERSION_MODE === vm) {
+          DOWN_ROWS = rowsFromEdges(outEdgesFor(c.name));
+          DOWN_BASE = downRowsSignature(DOWN_ROWS);
+          renderDownRows();
+          updateDownActions();
+          renderDownstreamCands();
+        }
+        return true;
       }
 
       // edgesFrom 取一个能力的全部出边（= 它的下游候选）。
       //
       // 用后端算好的**解析后 id** 匹配，不在这里重算 name→latest：
-      // 那是第二份解析语义，迟早跟派发漂开（出口页同样是这个口径）。
+      // 那是第二份解析语义，迟早跟派发漂开（详情区与行编辑器同一口径）。
       // 不按出口分组：出口是内部约定（固定 out），界面不表达它。
       function edgesFrom(capId) {
         return EDGES.filter((e) => !e.fromIsSource && e.fromCapabilityId === capId);
@@ -2206,7 +2626,7 @@
           );
           return box;
         }
-        // 「+ 下游」的落脚点：链路是长出来的，不该逼人去出口页重填一遍
+        // 「+ 下游」的落脚点：链路是长出来的，不该逼人去另一个页面重填一遍
         const actions = el("div", "cap-detail-actions");
         const addBtn = el("button", "btn btn-ghost btn-sm", "+ " + t("caps.add.btn", "下游"));
         addBtn.type = "button";
@@ -2310,7 +2730,7 @@
         return line;
       }
 
-      // inboundNode：谁接到我。没有它，用户只能靠出口页反推「这个能力是怎么被叫起来的」。
+      // inboundNode：谁接到我。没有它，用户只能靠别处反推「这个能力是怎么被叫起来的」。
       function inboundNode(c) {
         const box = el("div", "cap-detail-secs");
         if (!EDGES_OK) {
@@ -2630,6 +3050,8 @@
       // openAddPanel 在下游列表里就地展开一个小面板（不弹层：用户要一边看
       // 「现在接了谁」一边加，弹层会把上下文盖住）。
       // 出口不作为参数：单出口是内部约定，这里只问「交给谁」。
+      // 写入走**同一个** PUT（整组 replace）：先把现有下游读出来，再把新的追加在后面 ——
+      // 只发新增那一条会把别的全删掉。
       function openAddPanel(c, host) {
         const old = host.querySelector(".cap-add-panel");
         if (old) {
@@ -2692,19 +3114,25 @@
           }
           save.disabled = true;
           try {
-            await postEdge({
-              fromRef: sourceRefFor(c),
-              fromPort: OUT_PORT,
-              toRef: picked.name,
-              literals: literals,
-            });
+            // 现有的下游必须**整组**带上：PUT 是 replace，只发新增那一条会把别的全删掉。
+            // 这也是“改下游只能在能力里改”的直接后果 —— 没有第二个页面替你保底。
+            const existing = rowsFromEdges(outEdgesFor(c.name));
+            if (existing.some((r) => refName(r.toRef) === picked.name)) {
+              save.disabled = false;
+              toast(t("caps.down.err_duplicate", "这条下游已经在列表里"));
+              return;
+            }
+            await putDownstreams(
+              c,
+              existing.concat([{ toRef: picked.name, priority: 0, literals: literals }]),
+            );
             toast(t("caps.add.created", "边已创建"));
             // 就地刷新：loadAll 会重建列表，OPEN_DETAIL 会把这一行的展开态还原，
             // 用户立刻能在同一块下游列表里看到新加的那条。
             await loadAll();
           } catch (e) {
             save.disabled = false;
-            toast(t("caps.add.failed", "创建边失败：") + errText(e));
+            toast(t("caps.add.failed", "创建边失败：") + downstreamErrText(e));
           }
         });
       }
@@ -2966,6 +3394,16 @@
       function renderDownstreamHint() {
         const hint = document.getElementById("cap-downstream-hint");
         if (!hint) return;
+        // 编辑模式：输入框是「加一条下游」的入口，不再是一串逗号分隔的原文 ——
+        // 提示改成引用写法（name / name@2），否则用户会以为要在这里重填整组。
+        if (VERSION_MODE) {
+          hint.textContent = t(
+            "caps.down.hint_keep_ref",
+            "引用写成 name（跟随最新）或 name@2（钉死版本）。",
+          );
+          hint.classList.remove("cap-warn");
+          return;
+        }
         const names = parseDownstream(DOWN_TEXT);
         if (!names.length) {
           hint.textContent = t(
@@ -3061,7 +3499,16 @@
         // 下游也要清：上一次建的链路不能静默带到下一次新建里
         // （那会凭空造出几条用户没点过的边）。
         DOWN_TEXT = "";
-        document.getElementById("cap-downstream").value = "";
+        const downEl = document.getElementById("cap-downstream");
+        downEl.value = "";
+        // 占位也随模式走：编辑模式是「加一条」，新建模式是「逗号分隔的一串」
+        downEl.placeholder = t("caps.form.downstream_ph", "script.echo, notify.phone");
+        // 行编辑器回到空：上一次编辑的那组下游绝不能带到下一次（保存是**整组**替换，
+        // 带着旧行进去就等于把别人的下游写了一遍）。
+        DOWN_ROWS = [];
+        DOWN_BASE = downRowsSignature(DOWN_ROWS);
+        renderDownRows();
+        updateDownActions();
         // 本批能力也在这一处回到「一张空卡」：两条入口（新建 / 发新版本）
         // 共用 resetCapForm，漏清一项就会“上一次的卡片带到这一次”。
         CARDS = [newCard()];
@@ -3522,8 +3969,9 @@
           requires: tpl.requires || [],
         };
         // 下游边跟能力**同一次提交**（links）：后端在一个事务里写能力 + 产物 + 边，
-        // 要么全成，要么全不成。不带 links（空）就还是原来的两步流程 ——
-        // 一个字节都不变（老客户端/「+ 下游」按钮仍走 POST /v1/edges）。
+        // 要么全成，要么全不成。这是**只在新建时**存在的路径（一条链一次建完）——
+        // 已存在的能力改下游走 PUT …/downstreams（CONTRACT-downstream-edit §2），
+        // 不再塞进这条提交里：一份拓扑两个写口，一个成功一个失败就是半成品。
         // 两端都写**裸名字** = 跟随最新（设计 §3.2 默认形态）。
         if (wanted.length) {
           body.links = wanted.map((to) => ({ fromPort: OUT_PORT, toRef: to }));
@@ -3901,16 +4349,9 @@
       // 用户的原话是「为什么脚本这个还不能编辑啊」——后端一直能发新版本，
       // 缺的是入口。这里复用新建能力那个弹层（同一份表单、同一份校验）。
 
-      // countFollowEdges 数「会跟着新版本走」的下游边。
-      //
-      // 判据与后端 upgradeAffectedLinks 同一口径：看**名字**与是否钉死，不看能力 id。
-      // 裸名字（`touchnow`）= 跟随 latest → 新版本自动就是它们指向的版本；
-      // 钉死的（`touchnow@1`）不跟着走。
-      function countFollowEdges(c) {
-        return EDGES.filter(
-          (e) => !e.fromIsSource && !isPinnedRef(e.fromRef) && refName(e.fromRef) === c.name,
-        ).length;
-      }
+      // 注：这里原本有一个 countFollowEdges（数「会跟着新版本走」的下游边），
+      // 它只用于「已有跟随最新的下游 → 整栏隐藏」那条分支。那条分支已经删了：
+      // 下游现在预填进行编辑器、随时可改，不再需要「有几条会跟着走」的计数。
 
       // schemaText 把能力的 paramsSchema 渲染成可编辑的 JSON 文本（空 = 空串）。
       function schemaText(raw) {
@@ -3991,28 +4432,33 @@
         document.getElementById("cap-cards-wrap").classList.add("hidden");
         document.getElementById("cap-card-editor").classList.add("hidden");
 
-        // 已有跟随最新的下游 → 整栏隐藏，只说事实（边接的是名字，自动跟着走）
-        // 多出口（历史数据）也隐藏：出口是内部路由键，界面没法让它选走哪个。
-        const downWrap = document.getElementById("cap-down-wrap");
+        // 下游栏**永远可见**：改下游不再需要另一个页面（PUT …/downstreams，与发版解耦）。
+        // 「已有下游就整栏隐藏」那条老逻辑已经删了：它的本意是「边接的是名字，新版本
+        // 自动跟着走」，代价却是用户永远改不了优先级（详情区还写着“点编辑可调”，
+        // 而那是个不存在的功能）。现在改成预填 + 可改。
+        // 多出口（历史数据）只补一句只读说明：出口是内部路由键，行编辑器只表达隐式 out。
+        document.getElementById("cap-down-wrap").classList.remove("hidden");
         const existing = document.getElementById("cap-down-existing");
         if (Array.isArray(c.outputs) && c.outputs.length > 1) {
-          downWrap.classList.add("hidden");
           existing.classList.remove("hidden");
           document.getElementById("cap-down-existing-text").textContent = t(
             "caps.edit.multi_output_note",
             "这是多出口能力（历史数据）：出口结构原样保留，不在这里改。",
           );
-        } else if (vm.followEdges > 0) {
-          downWrap.classList.add("hidden");
-          existing.classList.remove("hidden");
-          document.getElementById("cap-down-existing-text").textContent = t(
-            "caps.edit.downstream_keep",
-            "已有 {n} 条下游会跟着新版本走 —— 边接的是名字，不是版本号。",
-          ).replace("{n}", vm.followEdges);
         } else {
-          downWrap.classList.remove("hidden");
           existing.classList.add("hidden");
         }
+        // 预填当前下游（名字 + 优先级 + 保留的常量）：EDGES 是页面已有的全局边表，
+        // fromRef 可能是 name 或 name@v —— 按**名字**取（一组出边属于能力名，不属于版本）。
+        document.getElementById("cap-downstream").placeholder = t(
+          "caps.down.add_ph",
+          "输入能力名后回车添加（可搜索）",
+        );
+        DOWN_ROWS = rowsFromEdges(outEdgesFor(c.name));
+        DOWN_BASE = downRowsSignature(DOWN_ROWS);
+        renderDownRows();
+        updateDownActions();
+        renderDownstreamCands();
 
         // 参数契约：编辑模式直接给可改的 JSON（没有模板字段可以推导了）
         document.getElementById("cap-schema").value = schemaText(c.paramsSchema);
@@ -4048,13 +4494,13 @@
           // 没有产物时的默认值：与新建表单同一口径（run.sh + shebang）
           entrypoint: "run.sh",
           requires: [],
-          followEdges: countFollowEdges(c),
           artifactMissing: false,
         };
         VERSION_MODE = vm;
 
         resetCapForm();
-        // 下游只有「还没有跟随最新的边」时才允许在本屏新增（有边时整栏被 applyVersionMode 隐藏）。
+        // 下游整组由 applyVersionMode 预填；#cap-downstream 在编辑模式里只是
+        // 「加一条」的草稿框，清空它不影响行列表。
         // 出口不在这里改：单出口是内部约定，一次只能有一个值。多出口是历史数据，
         // 按原样保留（见 applyVersionMode 的说明 + submitVersion 的 outputs 口径）。
         DOWN_TEXT = "";
@@ -4248,27 +4694,24 @@
         };
         if (workDir) run.workDir = workDir;
 
-        // 下游：只有「当时还没有跟随最新的边」那一栏才可能被填（有边时整栏已隐藏）。
-        const downNames = parseDownstream(document.getElementById("cap-downstream").value);
-        const missing = unknownTargets(downNames, name);
-        if (missing.length) {
-          toast(
-            t("caps.form.downstream_missing", "找不到这些能力：{names}").replace(
-              "{names}",
-              missing.join(", "),
-            ),
-          );
-          return;
+        // 下游：行列表（DOWN_ROWS）是编辑模式的**唯一真相**。改动先落库 ——
+        // PUT …/downstreams 是**另一个**端点（拓扑不属于产物，不产生新版本），
+        // 但必须成功了才能继续发布：否则用户看到「已发布」，实际改的拓扑丢了。
+        const btn = document.getElementById("cap-submit");
+        const prevLabel = btn.textContent;
+        if (downRowsDirty()) {
+          btn.disabled = true;
+          btn.textContent = t("caps.down.saving", "保存中…");
+          const saved = await saveDownstreams();
+          btn.disabled = false;
+          btn.textContent = prevLabel;
+          if (!saved) return; // saveDownstreams 已经把原因说清楚了
         }
-        const wanted = downNames.filter((n) => n !== name);
-        // 出口：多出口是历史数据 —— 原样保留它的出口结构（不能替用户合并成 out）；
-        // 其余情况：还有下游（本屏新加的，或本来就有的、只是这一栏被隐藏了）就声明 out，
-        // 真的没有下游才是终端能力（空）。
-        // 「本来就有的」必须算进去：已有跟随最新的下游时这一栏是隐藏的、输入框为空，
-        // 不能因此把旧版本声明的 out 删掉 —— 那会让已有边的 fromPort 不再合法。
+        // 出口：一个能力只有一个（隐式 out）。有下游就声明它，没有就是终端能力（空）。
+        // 行数就是真相 —— 不再看「输入框里填了几个名字」，也不再受「已有边就隐藏那一栏」影响。
+        // 多出口是历史数据 —— 原样保留它的出口结构（不能替用户合并成 out）。
         const multiOutput = Array.isArray(c.outputs) && c.outputs.length > 1;
-        const hasDownstream = wanted.length > 0 || vm.followEdges > 0;
-        const outputs = multiOutput ? c.outputs.slice() : hasDownstream ? [OUT_PORT] : [];
+        const outputs = multiOutput ? c.outputs.slice() : DOWN_ROWS.length ? [OUT_PORT] : [];
 
         const body = {
           name: name,
@@ -4284,17 +4727,12 @@
         // 「发一版」不能把它们弄丢 —— 原样带过去。
         if (c.sticky) body.sticky = c.sticky;
         if (c.lifecycle && typeof c.lifecycle === "object") body.lifecycle = c.lifecycle;
-        // 多出口能力不接受在这里新增下游：一条 link 必须指明走哪个出口，
-        // 而界面不表达出口 —— 硬选一个就是猜。那种能力去出口页改。
-        if (wanted.length && !multiOutput) {
-          body.links = wanted.map((to) => ({ fromPort: OUT_PORT, toRef: to }));
-        }
+        // 注：这里**不再**发 links —— 下游只走 PUT …/downstreams（已在上方落库）。
+        // 一份拓扑两个写口，一个成功一个失败就会造出「能力在、边缺」的半成品。
         if (force) body.force = true;
         const ns = c.namespaceId || scopeNS();
         if (ns) body.namespaceId = ns;
 
-        const btn = document.getElementById("cap-submit");
-        const prevLabel = btn.textContent;
         btn.disabled = true;
         btn.textContent = t("caps.edit.publishing", "发布中…");
         let res;
@@ -4640,6 +5078,20 @@
         renderDownstreamCands();
         renderCards();
       });
+      // 编辑（发版）模式：这个输入框变成「加一条下游」的入口（行列表才是真相）。
+      // change 覆盖失焦与回车（<input> 回车会触发 change）；keydown 再兜一次 ——
+      // 有的浏览器回车时要等到失焦才发 change。
+      downInput.addEventListener("change", () => {
+        if (VERSION_MODE) commitDownInput();
+      });
+      downInput.addEventListener("keydown", (ev) => {
+        if (!VERSION_MODE || ev.key !== "Enter") return;
+        ev.preventDefault();
+        commitDownInput();
+      });
+      // 保存下游：与发版解耦的第二个写入点（第一个是详情区的「+ 下游」）
+      const downSave = document.getElementById("cap-down-save");
+      if (downSave) downSave.addEventListener("click", () => saveDownstreams());
 
       // 高级出口（手写 paramsSchema）：
       // 打开时**用模板推导的那份预填**，让人从"现在是什么"开始改，

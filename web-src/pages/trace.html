@@ -929,6 +929,20 @@
         return box;
       }
 
+      // 降级文案：日志现在只在节点上（CONTRACT-logs-on-node §2），中枢按需向节点取。
+      // 取不到时后端仍回 200，但带 available:false + reason —— 这是「没取到」，
+      // **不是**「取到了但确实没输出」，两者必须有不同的话。
+      const LOGS_REASON_KEYS = {
+        node_offline: "trace.logs.reason.node_offline",
+        no_local_archive: "trace.logs.reason.no_local_archive",
+        timeout: "trace.logs.reason.timeout",
+      };
+      const LOGS_REASON_FALLBACK = {
+        node_offline: "节点离线：日志留在节点上，节点连上后可再看",
+        no_local_archive: "节点上没有这次执行的档案（可能已过保留期）",
+        timeout: "节点没在超时前回复，日志暂时取不到",
+      };
+
       function renderLogBody(body, task, res) {
         body.replaceChildren();
         if (!res || !res.ok) {
@@ -938,6 +952,23 @@
           return;
         }
         const d = res.data || {};
+        // 显式 available:false → 降级文案，并在 data-logs-unavailable 上留下原因。
+        // 缺字段（老后端）或 true 一律走下面的老行为：老后端只会给空内容，
+        // 那时的「没有输出」才是真话。
+        if (d.available === false) {
+          const reason = d.reason == null ? "" : String(d.reason);
+          const key = LOGS_REASON_KEYS[reason];
+          // 未知 reason 不乱编一句话：套 unknown 模板把原始值填进去，原文不丢。
+          const txt = (
+            key
+              ? t(key, LOGS_REASON_FALLBACK[reason])
+              : t("trace.logs.reason.unknown", "日志暂时取不到（{reason}）")
+          ).replace("{reason}", reason || "unknown");
+          const p = el("p", "task-log-state", txt);
+          p.dataset.logsUnavailable = reason || "unknown";
+          body.appendChild(p);
+          return;
+        }
         const stdout = stripAnsi(d.stdout);
         const stderr = stripAnsi(d.stderr);
         // 截断提示**先于内容**：不能让人读到末尾才发现自己没看全。

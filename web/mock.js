@@ -682,8 +682,8 @@
 		// 两种引用形态（设计 §3.2），演示数据里**两种都要有**：
 		//   PIN("x")    → `x@1` 钉死那一版（升级不动线）
 		//   FOLLOW("x") → `x`   跟随 latest（升级自动生效）
-		// 只有钉死引用的话，「当前 → name@version」这个提示在出口页永远不会出现，
-		// 也就没人能看出这两种写法在界面上长得不一样。
+		// 只有钉死引用的话，`name` / `name@version` 两种写法在界面上长得一样，
+		// 就看不出“跟随最新”和“钉死”的区别（能力页的下游行直接显示 toRef 原文）。
 		const PIN = (name) => capRef(capByName(name));
 		const FOLLOW = (name) => name;
 		// 工厂收的是**引用**（已经算好的字符串），不是能力名：
@@ -735,7 +735,10 @@
 			// 单出口模型（内部名 "out"，对用户不可见）：拿 (能力, "out") 查表返回 N 行，
 			// 运行期按 priority 升序取最小的一组、组内轮盘选**一条**（契约 §1）。
 			// 界面上只说「下游能力（候选）」，候选集合正是这个形状。
-			from(PIN("analyze-pr"), "out", PIN("run-tests")),
+			//
+			// analyze-pr 的两条候选（lint-fix / run-tests）在上面已经建了；这里不能再写一遍
+			// `analyze-pr → run-tests` —— 真库对 (from_ref,from_port,to_ref) 有唯一约束，
+			// 重复的边只会让「在能力编辑里保存下游」永远撞 400 duplicate_target。
 			from(PIN("apply-fix"), "out", PIN("deploy-preview")),
 
 			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
@@ -746,8 +749,8 @@
 			// 部署之后：生成变更日志 / 回滚（同一出口的两条候选）
 			//
 			// 到 gen-changelog 这条路故意写成**跟随 latest**（FOLLOW）：
-			// 能力发新版后它会自动走新版。出口页上会多一句「当前 → gen-changelog@1」，
-			// 而钉死引用那一堆没有 —— 两种引用形态的区别必须在界面上看得见。
+			// 能力发新版后它会自动走新版。能力页的下游行里它显示成裸名 `gen-changelog`，
+			// 而钉死的那些显示成 `name@version` —— 两种引用形态必须在界面上看得见。
 			from(PIN("deploy-preview"), "out", FOLLOW("gen-changelog")),
 			from(PIN("deploy-preview"), "out", PIN("rollback")),
 
@@ -1667,7 +1670,7 @@
 
 	// ---------- 任务日志种子数据（CONTRACT-task-logs §4/§5）----------
 	//
-	// trace 页的日志面板要演示四种形状，各自对应一条数据（全部挂在
+	// trace 页的日志面板要演示**六种**形状，各对应一条数据（前四条挂在
 	// trace_mock_t9 = 12 任务的复杂链路上，打开一次就能全看到）：
 	//
 	//   ① deploy-preview（failed，唯一能力）—— stderr + truncated + ANSI + 一段
@@ -1678,6 +1681,14 @@
 	//      → 成功默认折叠 + 展开才请求（懒加载）+ stdout 块
 	//   ④ rollback（succeeded，唯一能力）—— 两块都空
 	//      → 展开后显示「没有输出」
+	//   ⑤ lint-fix（succeeded）—— available:false / reason:"node_offline"
+	//      → 降级文案要说「日志在节点上」，**不能**说「没有输出」
+	//   ⑥ alert.oncall（succeeded，trace 里最后一条）—— available:false /
+	//      reason:"no_local_archive" → 降级文案要说「档案/保留期」
+	//
+	// ⑤⑥ 是 `available:false` 的靶子：只说“日志取不到”而不说是哪条任务、哪种原因，
+	// 页面就会把它当成“任务真的什么都没打印”渲染——那是错的（日志存在，只是中枢取不到）。
+	// 它们**必须**与非降级的那几条同时在种子里：一个只有正常态的演示看不出区别。
 	//
 	// 其余任务故意**没有日志行**：真后端对“任务存在但没上传日志”也回 200 + 空串
 	// （契约 §4 的合法状态），页面应当显示「没有输出」而不是报错。
@@ -1687,6 +1698,12 @@
 	(function seedTaskLogs() {
 		const inTrace = state.tasks.filter((t) => t.traceId === "trace_mock_t9");
 		const pick = (capName) => inTrace.find((t) => t.capability === capName) || null;
+		// 同一个能力在这条 trace 里可能跑了多次（比如 run-tests 失败→修→再跑）。
+		// 目标指向“最后那次”时用这个，别用 pick()。
+		const pickLast = (capName) => {
+			const hits = inTrace.filter((t) => t.capability === capName);
+			return hits.length ? hits[hits.length - 1] : null;
+		};
 		const push = (task, row) => {
 			if (!task) return;
 			state.taskLogs.push(
@@ -1698,6 +1715,9 @@
 						stderr: "",
 						truncated: false,
 						bytes: 0,
+						// 正常态：日志取到了（内容可能为空 = 真没输出）。
+						// 取不到的几条在下面显式覆盖成 false + reason。
+						available: true,
 						createdAt: (task.finishedAt || task.createdAt || 0) + 1,
 					},
 					row,
@@ -1748,6 +1768,26 @@
 
 		// ④ 成功但没任何输出：两块都空 → 「没有输出」。
 		push(pick("rollback"), { stdout: "", stderr: "", bytes: 0 });
+
+		// ⑤ 取不到：节点离线。日志留在节点本地，中枢拿不到——**不是**“没有输出”。
+		push(pick("lint-fix"), {
+			available: false,
+			reason: "node_offline",
+			stdout: "",
+			stderr: "",
+			bytes: 0,
+		});
+
+		// ⑥ 取不到：节点上没有这次执行的档案（已过保留期 / 节点重建过）。
+		// 用 pickLast：同一条 trace 里 alert.oncall 可能被多个上游触发过，
+		// 落量的应当是**最后**那条（与演示里“展开最后一条能看到降级”对得上）。
+		push(pickLast("alert.oncall"), {
+			available: false,
+			reason: "no_local_archive",
+			stdout: "",
+			stderr: "",
+			bytes: 0,
+		});
 	})();
 
 	// ---------- 组织与命名空间 ----------
@@ -2906,7 +2946,13 @@
 	//     （老任务 / agent 没上传），做成 404 会让前端在正常路径上处理错误。
 	//   · 任务不存在 / 不在这个命名空间 → 404，文案与 emissions 同一句
 	//     （不泄露存在性）。
-	//   · 字段就是这四个：stdout / stderr / truncated / bytes —— 页面按名字读。
+	//   · 字段：stdout / stderr / truncated / bytes + `available`（**恒出现**）；
+	//     `reason` 只在 available:false 时出现。
+	//
+	// `available:false`（CONTRACT-task-logs 的降级态）不是"没有输出"：日志在节点
+	// 上，中枢取不到（node_offline / no_local_archive / timeout）。页面对这两种情况
+	// 的文案必须不同 —— 混成一句会让人以为任务真的什么都没打印，去查错方向。
+	// 种子数据里刻意各造一条，否则降级分支在预览里永远没人走。
 	//
 	// 注意：mock 不实现 agent 侧的上传（POST /v1/node/tasks/{id}/logs），
 	// 那是节点凭 node token 才做的事，浏览器里永远不会出现。
@@ -2918,12 +2964,27 @@
 			return err(404, "任务不存在");
 		}
 		const row = state.taskLogs.find((l) => l.taskId === taskId);
-		if (!row) return json({ stdout: "", stderr: "", truncated: false, bytes: 0 });
+		// 没有日志行 = 取到了但没输出（available:true + 空内容），不是"取不到"。
+		if (!row) {
+			return json({ stdout: "", stderr: "", truncated: false, bytes: 0, available: true });
+		}
+		if (row.available === false) {
+			// 取不到：三个内容字段一律空，原因在 reason 里（页面按它选文案）。
+			return json({
+				stdout: "",
+				stderr: "",
+				truncated: false,
+				bytes: 0,
+				available: false,
+				reason: row.reason || "unknown",
+			});
+		}
 		return json({
 			stdout: row.stdout || "",
 			stderr: row.stderr || "",
 			truncated: !!row.truncated,
 			bytes: row.bytes || 0,
+			available: true,
 		});
 	});
 
@@ -3416,6 +3477,173 @@
 		return json({ capability: capView(c) });
 	});
 
+	// ===== 能力的下游：整体替换（CONTRACT-downstream-edit §2）=====
+	//
+	// `PUT /v1/capabilities/{name}/downstreams` 是能力边**唯一**的写入口：
+	// 请求里的 links 就是这组下游的全部（replace，不是增量）；空数组 = 清空
+	// （= 终端能力，合法状态）。语义与 Go 侧 store.ReplaceCapabilityDownstreams
+	// 逐条对齐，预览里才能当契约用：
+	//
+	//   · 左端是**能力名**（一个能力的全部版本共用同一组出边），出口恒为隐式 out；
+	//   · 全部校验先跑完再动数据（任一失败一个字节都不写）；
+	//   · 机器码与后端一致：unknown_target / self_link / too_many_links /
+	//     priority_out_of_range / duplicate_target / edge_rejected；
+	//   · 回执带 toCapabilityId / resolvedVersion（前端回显不自己算 name→latest）；
+	//   · 只动这个能力在 out 上的出边：入口边、别人的边、多出口的其它出口一条不碰。
+	//
+	// mock 的自觉简化：边行的 fromRef 允许是手写的 `name@v`（批量/高级客户端会
+	// 这么写），判归属时按**名字**比较；写回时统一落成裸能力名（与 Go 同口径）。
+	on("PUT", /^\/v1\/capabilities\/([^/]+)\/downstreams$/, (ctx) => {
+		const pathName = decodeURIComponent(ctx.m[1] || "").trim();
+		const b = ctx.body || {};
+		// 写端点：query 优先（与 Go 的 resolveNamespace 同口径：query 覆盖 body）
+		const nsId = nsScope(ctx.query) || b.namespaceId || NS;
+		// 左端能力必须存在：名字打错给 404，而不是「悄悄建了一组没人能走的边」。
+		const names = state.capabilities.filter((c) => c.name === pathName);
+		if (!names.length) {
+			return json({ error: "capability not found", code: "not_found" }, 404);
+		}
+		// links 缺字段 ≠ links: []：前者是请求写错了，混成一种会静默清掉拓扑。
+		if (!Object.prototype.hasOwnProperty.call(b, "links") || b.links === null) {
+			return json(
+				{ error: "links is required（空数组 = 清空下游）", code: "links_required" },
+				400,
+			);
+		}
+		if (!Array.isArray(b.links)) {
+			return json({ error: "links must be an array", code: "links_required" }, 400);
+		}
+		if (b.links.length > 100) {
+			return json(
+				{ error: "too_many_links: at most 100 downstreams", code: "too_many_links" },
+				400,
+			);
+		}
+		// ① 全量校验（一条都不写）
+		const seen = new Set();
+		const prepared = [];
+		for (let i = 0; i < b.links.length; i++) {
+			const spec = b.links[i] && typeof b.links[i] === "object" ? b.links[i] : {};
+			const raw = String(spec.toRef == null ? "" : spec.toRef).trim();
+			if (!raw) {
+				return json(
+					{ error: `links[${i}].toRef: unknown_target`, code: "unknown_target" },
+					400,
+				);
+			}
+			// 能力 id 也接受（老客户端），但落库永远是引用（P2.2）。
+			const toRef = edgeRefInput(raw, false, nsId);
+			const toCap = resolveCapRef(toRef, nsId);
+			if (!toCap) {
+				return json(
+					{ error: `unknown_target: ${raw}`, code: "unknown_target" },
+					400,
+				);
+			}
+			if (splitRef(toRef).name === pathName) {
+				return json(
+					{ error: `self_link: ${pathName} cannot link to itself`, code: "self_link" },
+					400,
+				);
+			}
+			if (seen.has(toRef)) {
+				return json(
+					{ error: `duplicate_target: ${toRef}`, code: "duplicate_target" },
+					400,
+				);
+			}
+			seen.add(toRef);
+			const prioRes = edgePriority(spec.priority);
+			if (prioRes.error) {
+				return json(
+					{
+						error: `links[${i}].priority: ${prioRes.error}`,
+						code: "priority_out_of_range",
+					},
+					400,
+				);
+			}
+			if (prioRes.priority > 1000) {
+				return json(
+					{
+						error: `links[${i}].priority: must be within 0..1000, got ${prioRes.priority}`,
+						code: "priority_out_of_range",
+					},
+					400,
+				);
+			}
+			const litRes = checkEdgeLiterals(toCap, spec.literals);
+			if (litRes.error) {
+				return json(
+					{ error: `links[${i}]: ${litRes.error}`, code: "edge_rejected" },
+					400,
+				);
+			}
+			prepared.push({
+				toRef: toRef,
+				priority: prioRes.priority,
+				literals: litRes.literals || {},
+				toCap: toCap,
+			});
+		}
+		// ② 落库：只删这个能力 out 上「这次没提交」的出边，其余 upsert。
+		//
+		// 同 toRef 的历史重复行在这里收敛成一条（seenKeep）：真库有
+		// (from_ref,from_port,to_ref) 唯一约束 + ON CONFLICT DO UPDATE，不可能有两行；
+		// mock 的种子数据里曾经有过重复（analyze-pr → run-tests ×2），照原样留着会让
+		// 「保存下游」在预览里显示出和后端不一样的形状。
+		const keep = new Set(prepared.map((p) => p.toRef));
+		const seenKeep = new Set();
+		state.edges = state.edges.filter((e) => {
+			if (e.fromIsSource) return true;
+			if (splitRef(e.fromRef).name !== pathName) return true;
+			if (e.fromPort !== SINGLE_OUT) return true;
+			const key = String(e.toRef);
+			if (!keep.has(key)) return false;
+			if (seenKeep.has(key)) return false;
+			seenKeep.add(key);
+			return true;
+		});
+		for (const p of prepared) {
+			const hit = state.edges.find(
+				(e) =>
+					!e.fromIsSource &&
+					splitRef(e.fromRef).name === pathName &&
+					e.fromPort === SINGLE_OUT &&
+					String(e.toRef) === p.toRef,
+			);
+			if (hit) {
+				hit.fromRef = pathName;
+				hit.priority = p.priority;
+				hit.literals = p.literals;
+				continue;
+			}
+			state.edges.push({
+				id: uid("edg"),
+				orgId: ORG,
+				namespaceId: nsId,
+				fromIsSource: false,
+				fromRef: pathName,
+				fromPort: SINGLE_OUT,
+				toRef: p.toRef,
+				literals: p.literals,
+				priority: p.priority,
+				createdAt: now(),
+			});
+		}
+		// ③ 回执：与请求同序，空时是 [] 而不是 null（I9）
+		return json({
+			name: pathName,
+			links: prepared.map((p) => ({
+				toRef: p.toRef,
+				priority: p.priority,
+				literals: p.literals,
+				toCapabilityId: p.toCap.id,
+				resolvedVersion: p.toCap.version,
+			})),
+		});
+	});
+
 	// ===== 部署（CONTRACT-protocol §7 / §11） =====
 	//
 	// depView 按 **store.Deployment 的真实 JSON tag** 输出
@@ -3573,6 +3801,21 @@
 	on("POST", /^\/v1\/edges$/, (ctx) => {
 		const b = ctx.body || {};
 		const nsId = b.namespaceId || NS;
+		// 能力边（fromIsSource=false）的写入口已经收掉（CONTRACT-downstream-edit §3）：
+		// 能力的下游只能在能力编辑里整体替换（PUT /v1/capabilities/{name}/downstreams）。
+		// 与 Go 侧 createEdge 同口径：405 放在**目标解析之前** —— 405 表示“这个
+		// 方法不再提供那个语义”，不该因为目标名写错就退化成 400；迁移指引放 error
+		// 里，老客户端能直接把这句话显示给用户。
+		// 入口边（fromIsSource=true）不受影响：源页面 / e2e 还要靠它接边。
+		if (!b.fromIsSource) {
+			return json(
+				{
+					code: "edge_write_removed",
+					error: "能力的下游请在能力里改（PUT /v1/capabilities/{name}/downstreams）",
+				},
+				405,
+			);
+		}
 		// 新字段名优先、旧字段名兜底（与 Go 侧 edgeRequest.linkRefs 同口径）
 		const fromRaw = b.fromRef || b.fromCapability;
 		const toRaw = b.toRef || b.toCapability;
@@ -3593,37 +3836,14 @@
 		if (prioRes.error) return err(400, "priority: " + prioRes.error);
 
 		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
-		if (b.fromIsSource) {
-			const fromRef = edgeRefInput(fromRaw, true, nsId);
-			if (!fromRef) return err(400, "来源名不能为空");
-			const e = {
-				id: uid("edg"),
-				orgId: ORG,
-				namespaceId: nsId,
-				fromIsSource: true,
-				fromRef,
-				fromPort: b.fromPort,
-				toRef,
-				literals,
-				priority: prioRes.priority,
-				createdAt: now(),
-			};
-			state.edges.push(e);
-			return json({ edge: edgeView(e) }, 201);
-		}
-
-		const fromRef = edgeRefInput(fromRaw, false, nsId);
-		const from = resolveCapRef(fromRef, nsId);
-		if (!from) return err(400, "上游能力不存在");
-		// 能力之间的边：fromPort 必须在该能力的 outputs 里（I2）
-		if (!(from.outputs || []).includes(b.fromPort)) {
-			return err(400, "fromPort 不在该能力的出口集合内");
-		}
+		// （走到这里的一定是入口边 —— 能力边在上面就 405 了，所以这里不再分叉。）
+		const fromRef = edgeRefInput(fromRaw, true, nsId);
+		if (!fromRef) return err(400, "来源名不能为空");
 		const e = {
 			id: uid("edg"),
 			orgId: ORG,
-			// 边一定属于某个命名空间（与后端同形状；漏了会让按命名空间的查询看不见它）
 			namespaceId: nsId,
+			fromIsSource: true,
 			fromRef,
 			fromPort: b.fromPort,
 			toRef,
@@ -3635,31 +3855,11 @@
 		return json({ edge: edgeView(e) }, 201);
 	});
 
-	// 撤销一条边。
-	//
-	// 真后端按 (from, port, to, fromIsSource) 定位（`?id=` 不在契约里）；
-	// 两种都认：有 from/port/to 就按它们匹配，否则退回按 id。
-	// （控制台发的是 fromRef/fromPort/toRef —— 只认 id 的话预览里点删除永远是 404。）
-	on("DELETE", /^\/v1\/edges$/, (ctx) => {
-		const q = ctx.query;
-		const id = q.get("id") || "";
-		const from = q.get("fromRef") || q.get("fromCapability") || "";
-		const to = q.get("toRef") || q.get("toCapability") || "";
-		const port = q.get("fromPort") || "";
-		const srcFlag = q.get("fromIsSource") || "";
-		const wantSource = srcFlag === "1" || srcFlag === "true";
-		const hit = state.edges.find((e) =>
-			id
-				? e.id === id
-				: !!e.fromIsSource === wantSource &&
-					e.fromRef === from &&
-					e.fromPort === port &&
-					e.toRef === to,
-		);
-		if (!hit) return err(404, "边不存在");
-		state.edges = state.edges.filter((e) => e !== hit);
-		return json({ deleted: hit.id });
-	});
+	// DELETE /v1/edges 在 mock 里**不实现**了（CONTRACT-downstream-edit §3）：
+	// 控制台已经没有删边的入口 —— 能力的下游在能力编辑里整体替换
+	// （PUT /v1/capabilities/{name}/downstreams），入口边在源页面里改。
+	// 真后端仍然保留 DELETE（运维纠正用），但那是脚本的事，不是页面。
+	// 留这个说明是为了下次看到“mock 少了 DELETE”时不至于以为是漏写。
 
 	// ===== 节点 =====
 	// nodeView 与真实 handler（internal/server/console_handlers.go 的
@@ -4116,7 +4316,7 @@
 	// **mock 的自觉简化**：Go 里 link 是 edges 行，源走自己的 targets（source_targets，
 	// 常量写在 target.params 里）、入口边是另一条派发路径（POST /v1/events）。
 	// mock 只有「源 → 目标」这一条派发路径，所以这里把**入口边**
-	// （fromIsSource + 来源名）上的常量也叠进来——否则「在出口表上给某条边加了常量」
+	// （fromIsSource + 来源名）上的常量也叠进来——否则「给入口边加了常量」
 	// 这件事在演示里完全看不见。多条匹配时按 edges 顺序合并（后者覆盖前者）。
 	function edgeSourceLiterals(ns, sourceName, toCapabilityId) {
 		const out = {};
