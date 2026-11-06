@@ -66,11 +66,18 @@ type NodeStore interface {
 	// 就把它推下去覆盖（见 nodeSession.resendDeployments）。
 	DeploymentsForNode(ctx context.Context, namespaceID, nodeID string) ([]*store.DeploymentDelivery, error)
 	GetTask(ctx context.Context, namespaceID, id string) (*store.Task, error)
-	// GetCapabilityByID 读能力定义（P1.4：assign.ports 取它的 outputs）。
+	// GetCapabilityByID 读能力定义（P1.4：assign.ports 的**声明部分**取自它的 outputs，
+	// 另一部分是边上出现过的 from_port，见 CapabilityEdgeShape）。
 	//
 	// 必须在发布 assign 时读，而不是建任务时快照：能力定义不可变（I8），
 	// 而任务行只钉 name@version，与中枢此刻的定义是同一份。
 	GetCapabilityByID(ctx context.Context, namespaceID, id string) (*store.CapabilityVersion, error)
+	// CapabilityEdgeShape 读能力的**接线事实**（出边端口 + 有没有入边，推导量）。
+	//
+	// assign.ports 必须取「声明的 outputs ∪ 边上的 from_port」（#383：以边为准），
+	// 否则「建时声明 outputs: [] 之后又加了下游」的能力拿不到那个出口，emit 当场报
+	// 「终端能力」，新边永远不触发。按名字查（edges 两端存引用），与 EdgesFrom 同口径。
+	CapabilityEdgeShape(ctx context.Context, namespaceID, name string) (*store.EdgeShape, error)
 	// EnsureTaskToken 写回/读取任务令牌（P1：本地 emit socket 鉴权）。
 	//
 	// 语义是「只在为空时生成一次」：断线重连重发 assign 时必须拿到同一个，

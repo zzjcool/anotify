@@ -178,7 +178,18 @@ CREATE INDEX IF NOT EXISTS idx_cap_name_ver
 是两个不同的定义、两个不同的 `id`。`edges.from_port` 的封闭集合、`kind` 推导，
 全部在命名空间内闭合。
 
-**`outputs` 是出口名的唯一来源。** 它同时是 `kind` 推导和 `edges.from_port` 的封闭集合。
+**`outputs` 是产物里的端口声明，不再是拓扑的真相（#383）。** 它仍然是 `CreateEdge`
+对 `edges.from_port` 的配置期封闭集合（I2）；但**派发时的出口集合**与 `kind` 都改成
+**以边为准**：
+
+- `assign.ports` = `outputs` ∪ 该能力在 `edges` 里出现过的 `from_port`
+  （`route.MergePorts`，去重、升序）；`expects` 按**同一份**端口集合推导
+- `kind` 看有没有出边 / 入边（见 §5）
+
+理由：给一个建时声明 `outputs: []`（终端）的能力加了下游之后，那个出口必须立刻可用，
+否则节点 emit 会报「终端能力」，新边永远不触发。`outputs` 仍属产物：加边不改它、
+不改 digest，append-only 的版本语义一点都不放松。
+
 **没有 `kind` 字段**——推导量不落库（I3）。
 
 ### 2.3 节点
@@ -693,30 +704,40 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 
 ## 5. `kind` 推导（不落库）
 
+**#383 起看边，不看 `outputs`**：`outputs` 是产物里的端口声明，它曾经同时被当成
+拓扑真相 —— 于是「建时声明 `outputs: []`（终端）之后又加了下游」的能力，在页面上
+一直显示「链到这里结束」，而那条边其实已经生效。
+
 ```go
-func DeriveKind(outputs []string, declaredByAnyNode bool) Kind {
-    if !declaredByAnyNode { return KindOrigin }
-    for _, o := range outputs { if o != "" { return KindPipe } }
-    return KindEnd
+func DeriveKind(hasOutEdges, hasInEdges bool) Kind {
+    if !hasOutEdges { return KindEnd }
+    if !hasInEdges  { return KindOrigin }
+    return KindPipe
 }
 ```
 
 | 情况 | `kind` |
 |---|---|
-| 没有任何节点声明这个能力 | `origin` |
-| 有节点声明，且能力 `outputs` 全为空 | `end` |
-| 有节点声明，且能力 `outputs` 有非空项 | `pipe` |
+| 没有出边 | `end` |
+| 有出边、没有入边 | `origin` |
+| 有出边、也有入边 | `pipe` |
 
-**多能力混挂**：节点声明了多个能力时，只要**有任一**能力的 `outputs` 非空 → 该节点 `pipe`。
+入边包括**能力边**（别人 --x--> 它）与**入口边**（来源 --事件--> 它）：两者都是
+「有上游喂它」这件事。左右两端都按**名字**匹配（`name` 与 `name@version` 都算），
+读法是 `store.CapabilityEdgeShape`（与 `EdgesFrom` 同一套引用口径）。
+
+**多能力混挂**：节点声明了多个能力时，把逐能力的接线事实做 OR（任一有出边 → 节点有
+出口；任一有入边 → 节点有入口），再走同一条规则（`route.NodeKind`）。
 
 ### 5.1 内置能力的 kind 特例
 
-`DeriveKind` 只看 `outputs` + 节点声明，会把两类内置能力判错：
+边本身大体能给出正确答案（`notify.phone` 没有出边 → `end`），但有两条**语义**必须由
+`KindForCapability` 钉住，不能交给边：
 
-| 内置能力 | `DeriveKind` 会算出 | 实际含义 | 覆盖为 |
+| 内置能力 | 边会算出 | 实际含义 | 覆盖为 |
 |---|---|---|---|
-| `notify.phone@1`（中枢执行） | `origin`（无节点、outputs 空） | 链的**终点**，中枢自己执行 | `end` |
-| `github`/`cron`/`http`/`manual` | `origin` | 链的起点 | `origin`（正确） |
+| `notify.phone@1`（中枢执行） | 被接了出边时 `origin`/`pipe` | 中枢是它的**执行者**，执行完就结束，不产生下游任务（executor 不 emit） | `end` |
+| 历史内置起点（`Origin`，#110 后清单里已无条目） | `end` | 链的起点：不接收事件、也不产生任务 | `origin` |
 
 所以全仓推导 kind 走 **`route.KindForCapability`**，不直接调 `DeriveKind`。
 特例散落多处必然漂移——`notify.phone` 曾在能力页显示成 `origin`，误导用户把它当事件来源。
@@ -783,7 +804,7 @@ edges.from_port      = 'pull_request.opened'  -- 事件类型，任意值
 | `manual` | 页面点「立即运行」 | `{}` |
 
 **`sources.kind` 与不变量 I3 的关系**：I3 规定「`kind` 不落库」，本意是
-**推导量**不落库（能力的 kind 由 `outputs` + 节点声明推导，存下来会与推导
+**推导量**不落库（能力的 kind 由边推导，见 §5，存下来会与推导
 结果矛盾）。源的 `kind` 是用户显式选择的**配置**，无从推导、不存就不知道该
 跑哪套逻辑，因此不受 I3 约束。守卫测试按表名限定而非按列名一刀切。
 
