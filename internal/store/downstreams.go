@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -45,11 +46,18 @@ const (
 //	Priority → Edge.Priority（小的优先；缺省 0）
 //	Literals → Edge.Literals（常量覆盖，键与类型受**解析到的目标版本** params_schema 约束）
 //
-// 没有 FromPort：出口恒为隐式 `out`；没有 Mapping：能力边不接受引用模板（设计 §8）。
+// 没有 Mapping：能力边不接受引用模板（设计 §8）。
 type DownstreamSpec struct {
 	ToRef    string          `json:"toRef"`
 	Priority int             `json:"priority"`
 	Literals json.RawMessage `json:"literals"`
+	// FromPort 是**出边挂在哪个出口上**，缺省 = 隐式出口 `out`。
+	//
+	// 为什么还要这个字段：界面早就只有一个出口了（CONTRACT-hide-ports），但模型里
+	// 端口仍然存在，而且**历史数据的多出口能力**（`outputs: ["a","b"]`）与 e2e 的
+	// 具名端口用例都要能表达「这条边挂在 go 上」。把它砍掉会让「一次下游保存」只能
+	// 作用于 out，具名端口的能力就再也没法用这个端点维护自己的拓扑。
+	FromPort string `json:"fromPort,omitempty"`
 }
 
 // DownstreamLink 是落库后的一条下游（回执）。
@@ -61,6 +69,8 @@ type DownstreamLink struct {
 	ToRef    string          `json:"toRef"`
 	Priority int             `json:"priority"`
 	Literals json.RawMessage `json:"literals"`
+	// FromPort 是这条边挂的出口（回执里带回来，缺省 out）。
+	FromPort string `json:"fromPort,omitempty"`
 	// ToCapabilityID 是 toRef 在**写入那一刻**解析到的能力定义 id。
 	ToCapabilityID string `json:"toCapabilityId"`
 	// ResolvedVersion 是同一个定义的能力版本号（`name` 型引用 = 此刻的 latest）。
@@ -143,7 +153,14 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 	ex := txExec{tx: tx}
 
 	// ① 左端必须存在（校验的第一条就是这个能力本身）。
-	if _, err := getCapabilityLatestOn(ctx, ex, namespaceID, name); err != nil {
+	capDef, err := getCapabilityLatestOn(ctx, ex, namespaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	// 允许的端口集合 = 产物声明的 ∪ 库里已有出边的。空集合也能写（第一次接下游时
+	// 取缺省 out：这就是"终端能力在编辑里加了一条下游"的那个真实场景）。
+	allowedPorts, err := capabilityPortsOn(ctx, ex, namespaceID, name, capDef)
+	if err != nil {
 		return nil, err
 	}
 
@@ -151,6 +168,7 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 	// 这一步**只读**，所以下面任何一条失败都还没有写过库。
 	out := make([]*DownstreamLink, 0, len(links))
 	seen := make(map[string]bool, len(links))
+	seenPort := make(map[string]bool, len(links))
 	for i, l := range links {
 		toRef, to, err := resolveLinkRefOn(ctx, ex, namespaceID, l.ToRef, fmt.Sprintf("downstreams[%d].toRef", i))
 		if err != nil {
@@ -177,6 +195,23 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 			return nil, downstreamRejected("self_link",
 				"downstreams[%d]: %q cannot link to itself", i, name)
 		}
+		// 端口：缺省 out；非空但不在「声明过的 ∪ 已有出边的」里 → 拒绝。
+		// 这一条保住不变量 I2（出口封闭）：允许的端口集合**只能**由产物声明或
+		// 已有边扩展，不能凭空造一个新端口名出来。
+		port := strings.TrimSpace(l.FromPort)
+		if port == "" {
+			port = ImplicitPort
+		}
+		if !allowedPorts[port] {
+			return nil, downstreamRejected("unknown_port",
+				"downstreams[%d]: port %q is not declared by this capability", i, port)
+		}
+		if seenPort[port+"/"+toRef] {
+			return nil, downstreamRejected("duplicate_target",
+				"downstreams[%d]: duplicate target %q on port %q", i, toRef, port)
+		}
+		seenPort[port+"/"+toRef] = true
+
 		if l.Priority < DownstreamPriorityMin || l.Priority > DownstreamPriorityMax {
 			return nil, downstreamRejected("priority_out_of_range",
 				"downstreams[%d]: priority %d out of range [%d, %d]",
@@ -199,38 +234,52 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 			ToRef:           toRef,
 			Priority:        l.Priority,
 			Literals:        literals,
+			FromPort:        port,
 			ToCapabilityID:  to.ID,
 			ResolvedVersion: to.Version,
 		})
 	}
 
-	// ③ 删掉本次没提交的出边。WHERE 里三件事一个都不能少：
-	//    from_is_source=0 不动入口边；from_ref=名字 不动别人的边；
-	//    from_port=out 不动**别的端口**的边。
+	// ③ 删掉本次没提交的出边，**按端口分组**。
 	//
-	//    为什么比契约 §2 的 DELETE 多一个 from_port：模型里一个能力只有一个出口
-	//    （隐式 `out`），所以在当前数据上多这一个条件不改变任何行为；但历史的
-	//    **多出口能力**（`outputs` 长度 > 1）在界面上是只读保留的
-	//    （CONTRACT-hide-ports §5：不替用户做破坏性改写），它们挂在 done/failed
-	//    上的边不归这条「下游整体替换」管 —— 不加这个条件，一次下游保存会把
-	//    一个只读能力的多端口拓扑删掉。两个分支（清空/收敛）必须同一口径。
+	// WHERE 里三件事一个都不能少：from_is_source=0 不动入口边；from_ref=名字 不动
+	// 别人的边；from_port=? 只动**本次提交过**的端口——历史的**多出口能力**
+	// （`outputs` 长度 > 1）在界面上是只读保留的（CONTRACT-hide-ports §5：不替用户
+	// 做破坏性改写），它们挂在别的端口上的边不归这条「下游整体替换」管。
+	byPort := make(map[string][]string, 2)
+	for _, l := range out {
+		byPort[l.FromPort] = append(byPort[l.FromPort], l.ToRef)
+	}
+	// 提交了空数组 = 清空：这时没有任何端口信息，按隐式出口处理（与下面 upsert
+	// 的缺省一致；具名端口的多出口能力要靠显式提交那一组才算维护它，见注释）。
 	if len(out) == 0 {
-		if _, err := ex.execContext(ctx,
-			`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 0 AND from_ref = ? AND from_port = ?`,
-			namespaceID, name, ImplicitPort); err != nil {
-			return nil, fmt.Errorf("clear downstreams: %w", err)
+		byPort[ImplicitPort] = nil
+	}
+	ports := make([]string, 0, len(byPort))
+	for port := range byPort {
+		ports = append(ports, port)
+	}
+	sort.Strings(ports)
+	for _, port := range ports {
+		refs := byPort[port]
+		if len(refs) == 0 {
+			if _, err := ex.execContext(ctx,
+				`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 0 AND from_ref = ? AND from_port = ?`,
+				namespaceID, name, port); err != nil {
+				return nil, fmt.Errorf("clear downstreams on %q: %w", port, err)
+			}
+			continue
 		}
-	} else {
-		args := make([]any, 0, 4+len(out))
-		args = append(args, namespaceID, name, ImplicitPort)
-		for _, l := range out {
-			args = append(args, l.ToRef)
+		args := make([]any, 0, 4+len(refs))
+		args = append(args, namespaceID, name, port)
+		for _, ref := range refs {
+			args = append(args, ref)
 		}
 		if _, err := ex.execContext(ctx,
 			`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 0 AND from_ref = ? AND from_port = ?
-			   AND to_ref NOT IN (`+sqlPlaceholders(len(out))+`)`,
+			   AND to_ref NOT IN (`+sqlPlaceholders(len(refs))+`)`,
 			args...); err != nil {
-			return nil, fmt.Errorf("prune downstreams: %w", err)
+			return nil, fmt.Errorf("prune downstreams on %q: %w", port, err)
 		}
 	}
 
@@ -243,7 +292,7 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 			 VALUES (?,0,?,?,?,?,'{}',?,?)
 			 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref)
 			 DO UPDATE SET priority = excluded.priority, literals = excluded.literals`,
-			namespaceID, name, ImplicitPort, l.ToRef, string(l.Literals), l.Priority, now); err != nil {
+			namespaceID, name, l.FromPort, l.ToRef, string(l.Literals), l.Priority, now); err != nil {
 			return nil, fmt.Errorf("upsert downstream %q: %w", l.ToRef, err)
 		}
 	}
@@ -252,4 +301,43 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 		return nil, fmt.Errorf("replace downstreams: commit: %w", err)
 	}
 	return out, nil
+}
+
+// capabilityPortsOn 返回「这个能力的出边允许挂哪些端口」= 产物声明的 ∪ 库里已有出边的。
+//
+// 空集合时补上隐式出口 `out`：这是"建时声明 outputs: []（终端），后来在编辑里加了
+// 一条下游"的真实场景——不补的话第一次接下游就会被 unknown_port 挡回去。
+//
+// 注意它只用于**校验**，不改产物：outputs 仍属于不可变的能力版本（I8），派发侧
+// 自己会按「声明 ∪ 有出边的端口」合并（见 ws/route 的 ports 推导）。
+func capabilityPortsOn(ctx context.Context, ex txExec, namespaceID, name string, capDef *CapabilityVersion) (map[string]bool, error) {
+	allowed := make(map[string]bool, len(capDef.Outputs)+2)
+	for _, p := range capDef.Outputs {
+		if p = strings.TrimSpace(p); p != "" {
+			allowed[p] = true
+		}
+	}
+	rows, err := ex.queryContext(ctx,
+		`SELECT DISTINCT from_port FROM edges
+		  WHERE namespace_id = ? AND from_is_source = 0 AND from_ref = ?`, namespaceID, name)
+	if err != nil {
+		return nil, fmt.Errorf("list existing ports: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scan existing port: %w", err)
+		}
+		if p != "" {
+			allowed[p] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list existing ports: %w", err)
+	}
+	if len(allowed) == 0 {
+		allowed[ImplicitPort] = true
+	}
+	return allowed, nil
 }

@@ -179,7 +179,15 @@ async function main() {
 		session,
 		body: { fromCapability: "cap_does_not_exist", fromPort: "x", toCapability: "cap_nope" },
 	});
-	A(3, "未定义能力不能建边", ghostEdge.status === 400, `${ghostEdge.status} ${ghostEdge.text?.slice(0, 100)}`);
+	// CONTRACT-downstream-edit §3 起，能力边只能走 PUT /v1/capabilities/{name}/downstreams，
+	// 而那个端点只改**已有**能力 → 左端不存在时是 404 not_found（以前 POST /v1/edges
+	// 报的是 400 unknown_capability）。不变量没变：未定义的能力**建不出边**。
+	A(
+		3,
+		"未定义能力不能建边",
+		ghostEdge.status === 404 && String(ghostEdge.text || "").includes("not_found"),
+		`${ghostEdge.status} ${ghostEdge.text?.slice(0, 100)}`,
+	);
 
 	// 正常建图
 	const origin = (await defineCapability("c.origin", ["go"])).json.capability;
@@ -194,10 +202,12 @@ async function main() {
 	// from_port 必须属于 from_capability.outputs
 	const closedPort = await addEdge(origin, "not-in-outputs", work);
 	A(5, "出口不在 outputs 里 → 400", closedPort.status === 400, String(closedPort.status));
+	// 机器码变了（edge_rejected → unknown_port），不变量没变：端口必须属于这个能力
+	// 声明过的集合（I2）。新码更具体 —— 它直接点名是哪个端口不在集合里。
 	A(
 		5,
-		"拒绝码是 edge_rejected",
-		String(closedPort.text || "").includes("edge_rejected"),
+		"拒绝码是 unknown_port",
+		String(closedPort.text || "").includes("unknown_port"),
 		String(closedPort.text).slice(0, 120),
 	);
 
@@ -1036,7 +1046,8 @@ async function main() {
 
 	// ================= A3 的运行时侧：未定义能力不能被声明 =================
 	// （由 ws_protocol 的 unknown_capability 断言覆盖；这里确认它仍在）
-	A(3, "未定义能力无法建边（运行时侧）", ghostEdge.status === 400);
+	// 仍是同一条不变量，只是状态码随入口变了：PUT downstreams 对不存在的左端是 404。
+	A(3, "未定义能力无法建边（运行时侧）", ghostEdge.status === 404);
 
 	server.stop();
 	const allPassed = H.summary("contract");

@@ -445,3 +445,65 @@ func codeErr(t *testing.T, err error, want string) {
 		t.Fatalf("code = %q, want %q（err: %v）", rejected.Code, want, err)
 	}
 }
+
+// TestReplaceCapabilityDownstreamsNamedPort：显式 fromPort 是给**具名端口**用的
+// （历史多出口能力、以及 e2e 里 outputs:["go"] 那类能力）。
+//
+// 三条行为必须同时成立，缺一条就会把用户的拓扑改坏：
+//   - 挂在 go 上的边真的落在 go（不是被压成 out）；
+//   - 只提交 go 时，另一个端口（out）上的边**一条都不动**（replace 的删除范围
+//     是按端口分组的，不是整个能力）；
+//   - 声明里没有的端口名 → unknown_port（I2：出口封闭，不能凭空造端口）。
+func TestReplaceCapabilityDownstreamsNamedPort(t *testing.T) {
+	f := newDownstreamFixture(t)
+	ctx := context.Background()
+
+	// 先在这个能力的 out 上留一条（默认端口），后面验证它不会被 go 的提交带走。
+	if _, err := f.db.ReplaceCapabilityDownstreams(ctx, f.nsID, "flow", []DownstreamSpec{{ToRef: "a"}}); err != nil {
+		t.Fatalf("seed out: %v", err)
+	}
+
+	// `fix` 不在 flow 的 outputs 里，但库里已有这个端口的边（历史数据）→ 允许写。
+	if _, err := f.db.ExecContext(ctx,
+		`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, priority, created_at)
+		 VALUES (?, 0, 'flow', 'fix', 'a', '{}', '{}', 0, ?)`,
+		f.nsID, Now()); err != nil {
+		t.Fatalf("seed legacy port: %v", err)
+	}
+
+	got, err := f.db.ReplaceCapabilityDownstreams(ctx, f.nsID, "flow", []DownstreamSpec{
+		{ToRef: "strict", FromPort: "fix", Priority: 7},
+	})
+	if err != nil {
+		t.Fatalf("replace on named port: %v", err)
+	}
+	if len(got) != 1 || got[0].FromPort != "fix" || got[0].ToRef != "strict" || got[0].Priority != 7 {
+		t.Fatalf("回执不对：%+v", got)
+	}
+
+	rows := snapshotEdges(t, f.db, f.nsID)
+	var flowOut, fixPort int
+	for _, r := range rows {
+		switch {
+		case strings.HasPrefix(r, "0|flow|out|"):
+			flowOut++
+		case strings.HasPrefix(r, "0|flow|fix|"):
+			fixPort++
+		}
+	}
+	if flowOut != 1 {
+		t.Fatalf("只提交 fix 端口时 out 上的边不该被动，实际 %d 条\n%v", flowOut, rows)
+	}
+	if fixPort != 1 {
+		t.Fatalf("fix 端口上应当恰好 1 条（旧的 a 被替换成 strict），实际 %d\n%v", fixPort, rows)
+	}
+
+	// 声明里没有、库里也没有的端口 → 拒绝。
+	_, err = f.db.ReplaceCapabilityDownstreams(ctx, f.nsID, "flow", []DownstreamSpec{
+		{ToRef: "a", FromPort: "ghost"},
+	})
+	var rejected *DownstreamError
+	if !errors.As(err, &rejected) || rejected.Code != "unknown_port" {
+		t.Fatalf("err = %v, want unknown_port", err)
+	}
+}

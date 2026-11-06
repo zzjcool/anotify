@@ -459,7 +459,29 @@ export async function req(base, p, opts = {}) {
 		}
 	}
 	// 契约 §6.2 的必填参数在这里统一注入（namespaceId 走 query，后端以 query 为准）。
-	const target = await withNamespaceQuery(base, p, opts);
+	let target = await withNamespaceQuery(base, p, opts);
+
+	// ---------- 造数桥：能力边只能走 PUT /v1/capabilities/{name}/downstreams ----------
+	//
+	// CONTRACT-downstream-edit §3 封掉了 POST /v1/edges 的**能力边**（405），因为
+	// 「能力的下游只能在能力里改」。但 e2e 有 12 个套件用 POST /v1/edges 造拓扑，
+	// 逐处改签名既吵又容易改错断言。这里把老形状**翻译**一次，套件一行都不用动：
+	//
+	//	POST /v1/edges {fromCapability|fromRef, fromPort, toCapability|toRef, priority, literals}
+	//	    ↓
+	//	GET  /v1/edges（读这个能力在该端口上的现有下游）
+	//	PUT  /v1/capabilities/{name}/downstreams（整体替换 = 现有 ∪ 新的）
+	//
+	// **入口边（fromIsSource:true）原样直通**：它不属于"能力定义"，仍然走 POST。
+	// 断言不受影响：被拒的用例（端口不在 outputs / 跨命名空间 / 坏 literals）在新端点
+	// 上依然是 4xx，只是机器码从 edge 的换成 downstreams 的（unknown_port 等）。
+	if (
+		target.startsWith("/v1/edges") &&
+		(opts.method || (body ? "POST" : "GET")) === "POST" &&
+		opts.body && typeof opts.body === "object" && opts.body.fromIsSource !== true
+	) {
+		return addDownstreamEdge(base, opts);
+	}
 	const res = await fetch(base + target, {
 		method: opts.method || (body ? "POST" : "GET"),
 		headers,
@@ -769,4 +791,50 @@ export function makeDevice(over = {}) {
 		},
 		over,
 	);
+}
+
+// addDownstreamEdge 是 e2e 造数桥（见 req 里的长注释）。
+//
+// 语义：把"加一条能力边"翻译成"整体替换这个能力在该端口上的下游"。
+// 读-改-写之间没有锁，但 e2e 是单线程造数，不存在竞争。
+async function addDownstreamEdge(base, opts) {
+	const b = opts.body;
+	const fromRef = String(b.fromCapability || b.fromRef || "");
+	const toRef = String(b.toCapability || b.toRef || "");
+	const port = String(b.fromPort || "out");
+	if (!fromRef || !toRef) {
+		return { status: 400, json: { error: "e2e 造数桥：from/to 不能为空" }, text: "", headers: {} };
+	}
+
+	// 命名空间必须以**请求体**为准：造数经常在一个套件里同时操作两个空间
+	// （跨命名空间负例就是这么写的），丢掉它会把请求打到套件默认空间，
+	// 于是"跨命名空间"变成"能力不存在"，断言看着像回归、其实是桥自己漏了参数。
+	const nsQuery = b.namespaceId ? `?namespaceId=${encodeURIComponent(b.namespaceId)}` : "";
+
+	// 名字：入参可能是能力 id（老形状）或名字。
+	const caps = await req(base, "/v1/capabilities" + nsQuery, { session: opts.session, key: opts.key });
+	const list = caps.json?.capabilities || [];
+	const byID = new Map(list.map((c) => [c.id, c]));
+	const byName = new Map(list.map((c) => [c.name, c]));
+	const fromName = byID.get(fromRef)?.name || byName.get(fromRef)?.name || fromRef;
+	const toName = byID.get(toRef)?.name || byName.get(toRef)?.name || toRef;
+
+	// 版本钉死：老形状传的是 id，解析出来就是那一版 → 转成 name@version。
+	const toCap = byID.get(toRef);
+	const toRefOut = toCap ? `${toName}@${toCap.version}` : toName;
+
+	// 现有下游（同端口）先读出来，再合并（replace 的语义是"这组就是全部"）。
+	const edges = await req(base, "/v1/edges" + nsQuery, { session: opts.session, key: opts.key });
+	const existing = (edges.json?.edges || [])
+		.filter((e) => !e.fromIsSource && e.fromRef === fromName && (e.fromPort || "out") === port)
+		.map((e) => ({ toRef: e.toRef, priority: e.priority || 0, literals: e.literals || undefined }));
+	const merged = existing.filter((e) => e.toRef !== toRefOut);
+	merged.push({ toRef: toRefOut, priority: b.priority || 0, literals: b.literals || undefined });
+
+	return req(base, `/v1/capabilities/${encodeURIComponent(fromName)}/downstreams${nsQuery}`, {
+		session: opts.session,
+		key: opts.key,
+		method: "PUT",
+		body: { links: merged.map((e) => ({ ...e, fromPort: port })) },
+	});
 }

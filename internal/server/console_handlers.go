@@ -1862,6 +1862,12 @@ func (h *consoleHandler) capabilityDownstreams(w http.ResponseWriter, r *http.Re
 			})
 			return
 		}
+		// 跨命名空间引用（I11）**必须排在 ErrNotFound 前面**：CrossNamespaceError
+		// 内部也 Is(ErrNotFound)（目标在本命名空间确实"不存在"），先判 404 会把一个
+		// 明确的"你引用了别的命名空间"报成"能力不存在"——用户照着改一辈子名字也修不好。
+		if handleNamespaceError(w, err) {
+			return
+		}
 		// 能力本身不存在：这个端点只改**已有能力**的出边。
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
@@ -1873,10 +1879,6 @@ func (h *consoleHandler) capabilityDownstreams(w http.ResponseWriter, r *http.Re
 				"error": err.Error(),
 				"code":  "edge_rejected",
 			})
-			return
-		}
-		// 跨命名空间引用（I11）→ 400，文案由命名空间层统一给。
-		if handleNamespaceError(w, err) {
 			return
 		}
 		slog.Error("replace capability downstreams failed",
