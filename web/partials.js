@@ -82,9 +82,13 @@
 			"M14 12h7v9h-7z",
 			"M3 16h7v5H3z",
 		],
-		receivers: [
-			"M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9",
-			"M13.73 21a2 2 0 0 1-3.46 0",
+		/* 节点 = 跑 agent 的机器。原先借的是「接收器」的铃铛（和顶栏通知铃撞脸，
+		 * 语义也不对），换成机架图标：两台叠放的主机 + 各自左上的状态灯。 */
+		nodes: [
+			"M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z",
+			"M4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z",
+			"M6 6h.01",
+			"M6 18h.01",
 		],
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
@@ -178,7 +182,7 @@
 					labelKey: "common.nav.nodes",
 					fallback: "节点",
 					href: "nodes.html",
-					icon: "receivers",
+					icon: "nodes",
 				},
 			],
 		},
@@ -1051,8 +1055,10 @@
 			id: "admin-nav-section",
 			/* 初始 hidden（member 用户保持隐藏，e2e 断言 classList 含 hidden）；
 			   超管由 loadMe 去 hidden 并注入 .side-label + a.side-link[admin.html]。
-			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。 */
-			class: "hidden side-group px-3 pt-4",
+			   它在 <nav> 之外：e2e 的 `#sidebar nav .side-label` 只该看到两个分组标签。
+			   **不加 px-\***：这一组和 nav 里的 .side-group 必须同基线，多一层 12px
+			   内边距会让「管理」标题和「管理后台」文字整体右移（用户反馈的对齐问题）。 */
+			class: "hidden side-group pt-4",
 		});
 		const nav = el("nav", { class: "app-nav" });
 		for (const group of NAV) {
