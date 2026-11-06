@@ -581,6 +581,24 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	// 但**不会**跨派发复用——缓存跨派发就等于把 latest 钉在第一次解析的那一刻，
 	// 升级又永远不生效了。
 	cache := newRefCache()
+
+	// 脚本点名了具体下游（emit --to）→ **先**把边收敛到它，再进逐条校验。
+	//
+	// 顺序很关键：`--to` 的语义是「这次只发给它」。把别的边也校验一遍，会在 trace 里
+	// 留下 `pruned: param_schema(别人)` —— 用户从没打算发给它，那是纯噪音；更糟的是
+	// 「别人的必填字段配不上」看起来像这次调用失败了。同一出口的多个下游是**候选**
+	// （运行期只走一个），不是扇出，所以没被点名的那几条本来就不该参与判定。
+	//
+	// 收敛判据用**解析后的**能力名（`name` / `name@version`），与节点侧 CLI 的
+	// resolveEmitPort 同一口径；解析结果进 cache，主循环不会付第二次开销。
+	if in.To != "" && !in.FromIsSource {
+		narrowed, err := d.narrowTargetsTo(ctx, in.NamespaceID, targets, in.To, cache)
+		if err != nil {
+			return nil, nil, err
+		}
+		targets = narrowed
+	}
+
 	for _, tgt := range targets {
 		capDef, err := d.resolveRef(ctx, in.NamespaceID, tgt.ToRef, cache)
 		if err != nil {
@@ -770,15 +788,7 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 		if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
 			warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
 		}
-		// 脚本点名了具体下游（emit --to）→ 先把候选集收敛到它。
-		if in.To != "" {
-			narrowed := narrowCandidatesTo(cands, in.To)
-			if len(narrowed) == 0 {
-				return nil, nil, fmt.Errorf("%w: %s（本出口的候选：%s）",
-					ErrEmitToNotCandidate, in.To, candidateNames(cands))
-			}
-			cands = narrowed
-		}
+		// `--to` 的收敛已在 ③ 之前做完（连参数校验都不该看见没被点名的边）。
 		chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
 		// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
 		// 所以这里不产生 pruned 记录，返回值的 Tasks 也只有一条。
@@ -889,6 +899,54 @@ func (d *Dispatcher) resolveRef(ctx context.Context, namespaceID, ref string, ca
 	return c, nil
 }
 
+// narrowTargetsTo 把**边**（不是已经过完校验的候选）收敛到脚本点名的那一个（emit --to）。
+//
+// 为什么在参数/节点校验之前做：`--to` 说的是「这次只发给它」，其余候选不参与本次
+// 判定。放在校验之后，没被点名的边会各自留下一条 `pruned: param_schema` —— 那是
+// 用户从没打算发的边，trace 里凭空多出一条“失败”，最容易被当成“这条链挂了”。
+//
+// 匹配规则：`name` 匹配该能力名（不论版本，取这条边实际指向的版本）；`name@ver`
+// 精确匹配那个版本。**不用 id 匹配**：id 会随升级变化，而脚本里写的是名字（与 link
+// 的引用语义一致），这也正是节点侧 CLI resolveEmitPort 的口径 —— 两边判据不同会
+// 得到「节点放行、中枢说不是候选」这种两边都看不出自己错在哪的失败。
+//
+// 一条都没匹配上时返回 ErrEmitToNotCandidate，并列出**本出口的候选**：脚本写错名字
+// 要当场说清「可选的其实有这些」，不能默默发 0 条（那会变成静默丢产出）。
+//
+// 解析不到的边这一步**不剪枝**：剪枝与留痕统一由主循环做（理由只有一处），这里只
+// 负责回答「谁是我点名的那个」。
+func (d *Dispatcher) narrowTargetsTo(ctx context.Context, namespaceID string, targets []store.LinkTarget, to string, cache refCache) ([]store.LinkTarget, error) {
+	name, ver := to, 0
+	if at := strings.LastIndex(to, "@"); at > 0 {
+		name = to[:at]
+		if n, err := strconv.Atoi(to[at+1:]); err == nil {
+			ver = n
+		}
+	}
+	kept := make([]store.LinkTarget, 0, 1)
+	names := make([]string, 0, len(targets))
+	for _, tgt := range targets {
+		c, err := d.resolveRef(ctx, namespaceID, tgt.ToRef, cache)
+		if err != nil {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s@%d", c.Name, c.Version))
+		if c.Name != name {
+			continue
+		}
+		if ver != 0 && c.Version != ver {
+			continue
+		}
+		kept = append(kept, tgt)
+	}
+	if len(kept) == 0 {
+		sort.Strings(names)
+		return nil, fmt.Errorf("%w: %s（本出口的候选：%s）",
+			ErrEmitToNotCandidate, to, strings.Join(names, ", "))
+	}
+	return kept, nil
+}
+
 // ---------- 候选选择（契约 §3） ----------
 
 // cursorKey 是同级轮盘游标的键：一个 (命名空间, 上游能力, 端口, priority) 一个游标。
@@ -914,48 +972,6 @@ type cursorKey struct {
 // 为什么组内顺序必须是确定顺序：游标只是一个下标，「+1」在两个进程里若指向
 // 不同的候选，就不叫轮盘、叫随机——而随机是另一种模式（预留的 random），
 // 不是 priority 的实现方式。
-// narrowCandidatesTo 把候选集收敛到脚本点名的那一个（emit --to）。
-//
-// 匹配规则：`name` 匹配该能力名（不论版本，取候选里实际存在的那条边）；
-// `name@ver` 精确匹配那条边指向的版本。**不用 id 匹配**：id 会随升级变化，
-// 而脚本里写的是名字（和 link 的引用语义一致）。
-func narrowCandidatesTo(cands []candidate, to string) []candidate {
-	name, ver := to, 0
-	if at := strings.LastIndex(to, "@"); at > 0 {
-		name = to[:at]
-		if n, err := strconv.Atoi(to[at+1:]); err == nil {
-			ver = n
-		}
-	}
-	out := make([]candidate, 0, len(cands))
-	for _, c := range cands {
-		if c.cap == nil {
-			continue
-		}
-		if c.cap.Name != name {
-			continue
-		}
-		if ver != 0 && c.cap.Version != ver {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// candidateNames 把候选渲染成 `name@ver` 列表（拼错误信息用：被拒时最有用的
-// 事实是"你以为的那个名字不在候选里，可选的其实有这些"）。
-func candidateNames(cands []candidate) string {
-	names := make([]string, 0, len(cands))
-	for _, c := range cands {
-		if c.cap == nil {
-			continue
-		}
-		names = append(names, fmt.Sprintf("%s@%d", c.cap.Name, c.cap.Version))
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
-}
 
 func (d *Dispatcher) pickCandidate(namespaceID, capability, port string, cands []candidate) candidate {
 	sorted := make([]candidate, len(cands))
