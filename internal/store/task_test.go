@@ -1044,3 +1044,136 @@ func TestTaskDigestRoundTrip(t *testing.T) {
 		t.Fatalf("ListTasks digest(unpinned) = %q (found=%v), want \"\"", d, ok)
 	}
 }
+
+// ---------- #264：任务令牌在派发事务里落库 ----------
+
+// TestLeaseAndAssignWritesTaskToken 令牌由 LeaseAndAssign 在派发事务里写入（不是发布时才写）。
+//
+// **这条用例在改动前是红的**：那时建行/派发都不碰 token 列，它一直是空串，
+// 令牌要等 ws.PublishAssign → EnsureTaskToken 才写出去（每帧一次独立写事务）。
+// 验收口径就是「派发事务结束之后库里已经有 tok_ 令牌」——不需要 publish 参与。
+func TestLeaseAndAssignWritesTaskToken(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeID := mkTxMergeNode(t, db, nsID, cap, "n-token")
+	task := mkTxMergeTask(t, db, nsID, "trc_token", cap)
+
+	// 建行时不该有令牌：那时还不知道哪台机器执行，令牌是「派给谁」的一部分。
+	if task.Token != "" {
+		t.Fatalf("CreateTasks 就填了令牌 %q（此时还没有节点）", task.Token)
+	}
+	before, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if before.Token != "" {
+		t.Fatalf("pending 任务的 token = %q, want 空串", before.Token)
+	}
+
+	instID, err := db.LeaseAndAssign(ctx, nsID, task.ID, nodeID, Now()+LeaseTTLSec)
+	if err != nil {
+		t.Fatalf("lease and assign: %v", err)
+	}
+
+	got, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task after assign: %v", err)
+	}
+	if !strings.HasPrefix(got.Token, "tok_") {
+		t.Fatalf("派发后 token = %q, want tok_ 前缀（令牌必须在派发事务里落库）", got.Token)
+	}
+	if len(got.Token) <= len("tok_")+10 {
+		t.Fatalf("token = %q 太短（不像 24 字节随机）", got.Token)
+	}
+
+	// 两条读路径共用 taskColumns/scanTask：ListTasks 也必须看得到同一个值。
+	list, err := db.ListTasks(ctx, nsID, "trc_token", "", "", 10)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(list) != 1 || list[0].Token != got.Token {
+		t.Fatalf("ListTasks 读到的 token 与 GetTask 不一致：%v", list)
+	}
+
+	// 与「权威值」同源：EnsureTaskToken 只会读回同一个令牌（不会另造一个）。
+	authoritative, err := db.EnsureTaskToken(ctx, nsID, task.ID, NewTaskToken())
+	if err != nil {
+		t.Fatalf("ensure task token: %v", err)
+	}
+	if authoritative != got.Token {
+		t.Fatalf("EnsureTaskToken = %q, GetTask = %q（同一任务不能有两个有效令牌）",
+			authoritative, got.Token)
+	}
+
+	// —— 重派：同一任务再 assigned 一次，令牌必须**不变** ——
+	//
+	// 模拟巡检把过期租约捞回 pending（真路径是 ExtendLease+SweepExpiredLeases，
+	// 但它对能力 lifecycle 有额外分叉；这里只关心 token 列，直接改回 pending 更聚焦）。
+	if err := db.ReleaseInstance(ctx, nodeID, instID); err != nil {
+		t.Fatalf("release instance: %v", err)
+	}
+	mustExec(t, db, `UPDATE tasks SET status = 'pending', node_id = NULL, instance_id = NULL,
+		lease_until = NULL WHERE id = ?`, task.ID)
+	if _, err := db.LeaseAndAssign(ctx, nsID, task.ID, nodeID, Now()+LeaseTTLSec); err != nil {
+		t.Fatalf("re-lease and assign: %v", err)
+	}
+	again, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task after re-assign: %v", err)
+	}
+	if again.Token != got.Token {
+		t.Fatalf("重派后 token 变了：%q → %q（节点侧 outbox 重发会被判 token 无效）",
+			got.Token, again.Token)
+	}
+	if again.Attempts != 2 {
+		t.Fatalf("重派后 attempts = %d, want 2", again.Attempts)
+	}
+}
+
+// TestAssignTaskAlsoWritesToken 两步式 AssignTask 同样落令牌（两条派发入口一个口径）。
+//
+// 为什么必须一致：AssignTask 仍被 store 内部的既有用例与运维路径使用，若只有
+// LeaseAndAssign 写令牌，走这条路的任务到了发布时又会退化成「每帧一次自愈写」。
+func TestAssignTaskAlsoWritesToken(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeID := mkTxMergeNode(t, db, nsID, cap, "n-token2")
+	task := mkTxMergeTask(t, db, nsID, "trc_token2", cap)
+
+	instID, err := db.LeaseInstance(ctx, nodeID, task.ID)
+	if err != nil {
+		t.Fatalf("lease instance: %v", err)
+	}
+	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, instID, Now()+LeaseTTLSec); err != nil {
+		t.Fatalf("assign task: %v", err)
+	}
+	got, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if !strings.HasPrefix(got.Token, "tok_") {
+		t.Fatalf("AssignTask 之后 token = %q, want tok_ 前缀", got.Token)
+	}
+}
+
+// TestTaskTokenNeverSerializedToJSON 令牌绝不能出现在 JSON 里。
+//
+// Task 会被直接塞进 HTTP 响应（/v1/tasks 等）。令牌是**能力凭据**：漏出去的后果
+// 是拿到任务列表的人就能伪造该任务的 emit 帧。json:"-" 是这一条的唯一保障，
+// 所以用序列化结果钉死它（不靠"字段名叫 token 大概没人注意"）。
+func TestTaskTokenNeverSerializedToJSON(t *testing.T) {
+	task := &Task{ID: "tsk_1", NamespaceID: "ns_1", Token: "tok_" + strings.Repeat("x", 30)}
+	b, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	if strings.Contains(string(b), "tok_") || strings.Contains(string(b), `"token"`) {
+		t.Fatalf("Task 的 JSON 里出现了令牌字段：%s", b)
+	}
+}

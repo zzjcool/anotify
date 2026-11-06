@@ -1276,7 +1276,7 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 	return "", ErrNoCapacity
 }
 
-// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts（#141）。
+// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts + 落令牌（#141 / #264）。
 //
 // 合并前派发要 3 次提交（LeaseInstance 的占槽 UPDATE 一次、AssignTask 里的
 // Transition 一次、写归属/attempts 一次），中间失败会出现两种
@@ -1287,9 +1287,18 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 //  1. 找最早的存活空闲槽位（口径与 LeaseInstance 完全一致）
 //  2. CAS 占位（busy_task IS NULL → taskID）；RowsAffected==0 → ErrNoCapacity
 //  3. transitionGuarded(pending → assigned)（状态写唯一入口）
-//  4. 写 node/instance/lease_until 并 attempts+1
+//  4. 写 node/instance/lease_until 并 attempts+1，同时落任务令牌（token 为空时才生成，
+//     已有则保留——见 assignTaskTx 的 token 段）
 //
 // 任一步失败都整体回滚——槽位不泄漏，attempts 也不会被提前 +1。
+//
+// 令牌为什么在这里（#264）：它原来在发布路径上（ws.PublishAssign → EnsureTaskToken），
+// 那是**每帧一次独立写事务**，跟这里抢同一把写锁（池=8、`_txlock=immediate`）。
+// 折进本事务后派发少一次提交，且令牌与 assigned 同生共死。
+//
+// 粘性 pin 为什么也在这里（#264）：同理（原来是 PublishAssign 成功之后再单独写一行），
+// 现作为可选入参 pin 一起落库；推帧失败的回滚由 requeue 路径负责（条件删除，
+// 只删本次新建的那条），见 route.launch 与 releasePinAfterPublishFailure 的注释。
 func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (instanceID string, err error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return "", ErrNamespaceRequired
