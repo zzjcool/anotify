@@ -13,17 +13,20 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap perf.noop
-pb_source perf-hook "$CAP"
-pb_source_edge perf-hook "$CAP"
-SRC_NAME=perf-hook
-
 MARK=$OUT/marks.txt
 : >"$MARK"
 CLIENT_FILE=$OUT/client.txt
 : >"$CLIENT_FILE"
+CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
 
-pb_node node-smoke 1 1 'printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
+# v2（console-declares）：命令是**能力产物**的一部分，建能力时就声明它
+# （节点不再在 node.yaml 里自报执行方式，见 N3）。
+pb_cap perf.noop "$CMD" 60
+pb_source perf-hook "$CAP"
+pb_source_edge perf-hook "$CAP"
+SRC_NAME=perf-hook
+
+pb_node node-smoke 1 1 "$CMD" 60
 pb_wait_online 1
 pb_log "节点 online"
 

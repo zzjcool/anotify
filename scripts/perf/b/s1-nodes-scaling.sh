@@ -25,17 +25,18 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap "$PB_CAP_NAME"
-pb_source perf-bulk "$CAP"
-
-pb_say "N=$N：建 $N 个节点（instances=1 concurrency=1）"
-REPORT=$OUT/s1-N$N.txt
-: >"$REPORT"
+# v2：命令属于**能力产物**（节点不再自报执行方式）。所有节点跑的都是这一份。
 MARK=$OUT/marks.txt
 : >"$MARK"
 CLIENT_FILE=$OUT/client.txt
 : >"$CLIENT_FILE"
 CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
+pb_cap "$PB_CAP_NAME" "$CMD" 60
+pb_source perf-bulk "$CAP"
+
+pb_say "N=$N：建 $N 个节点（instances=1，每槽恒 1 个任务）"
+REPORT=$OUT/s1-N$N.txt
+: >"$REPORT"
 
 t0=$(pb_secs)
 for i in $(seq 1 "$N"); do pb_node_create "n$i" 1 1 "$CMD" 60; done
@@ -44,7 +45,7 @@ t_node_create=$(pb_sub "$(pb_secs)" "$t0")
 g0=$(pb_gsnap before-nodes)
 rss0=$(pb_rss before-nodes)
 
-pb_say "一次性拉起 $N 个 agent，量握手"
+pb_say "一次性拉起 $N 个 agent，量握手 + 部署生效（v2：online 不等于能接单，见 pb_wait_online）"
 t0=$(pb_secs)
 for i in $(seq 1 "$N"); do pb_node_start "n$i" >/dev/null; done
 pb_wait_online "$N" 180
@@ -81,7 +82,7 @@ pb_cpu_over 30 "N=$N idle-heartbeat"
 {
 	echo "== S1 N=$N =="
 	printf '建节点(HTTP×N)     %ss\n' "$t_node_create"
-	printf '握手到全 online    %ss（%.1fms/节点）\n' "$t_handshake" \
+	printf '握手+部署全 ready  %ss（%.1fms/节点）\n' "$t_handshake" \
 		"$(awk -v t="$t_handshake" -v n="$N" 'BEGIN{printf "%.1f", t*1000/n}')"
 	printf 'GET /v1/nodes 响应 %s bytes\n' "$BYTES"
 	printf '波 A %s 任务       墙钟 %ss → %.1f task/s（%.1fms/task）\n' "$N" "$t_burst" \

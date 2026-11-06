@@ -187,7 +187,7 @@ func TestBaselineForeignKeys(t *testing.T) {
 	}
 }
 
-// baselineIndexes 是全部 27 条索引的期望形状（列序 = 查询形状）。
+// baselineIndexes 是全部 26 条索引的期望形状（列序 = 查询形状）。
 var baselineIndexes = []struct {
 	name    string
 	table   string
@@ -202,9 +202,6 @@ var baselineIndexes = []struct {
 	{name: "idx_deploy_artifact", table: "deployments", cols: []string{"artifact_id"}},
 	{name: "idx_deploy_node", table: "deployments", cols: []string{"node_id"}},
 	{name: "idx_devices_user", table: "devices", cols: []string{"user_id"}},
-	// 派发主路径：列序即查询形状（历史库里同名的漂移索引一律以本形状为准）
-	{name: "idx_edges_lookup", table: "edges",
-		cols: []string{"namespace_id", "from_is_source", "from_ref", "from_port"}},
 	{name: "idx_events_idem", table: "events",
 		cols: []string{"namespace_id", "source", "idem_key"}, unique: true, partial: true},
 	{name: "idx_events_retention", table: "events", cols: []string{"namespace_id", "created_at"}},

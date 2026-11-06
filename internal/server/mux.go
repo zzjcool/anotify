@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
@@ -331,30 +332,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 注意 0 在这里的含义是「永久保留」而**不是**「保留 0 秒」——lease 侧不再替调用方补默认值，
 	// 补了就会让「不显式配置 = 删 30 天前的事件」变成不可逆的默认行为。
 	sweeper.RetentionEventSec = cfg.EventRetentionSec()
-	sweeper.Redispatch = func(sctx context.Context, task *store.Task) (bool, error) {
-		ok, err := dispatcher.RedispatchTask(sctx, task)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			// 这次没派成（没节点/容量不足）：设退避，避免每 5s 空转打日志。
-			// 不动 status——任务本来就是 pending。
-			backoff := store.RetryBackoff(task.Attempts)
-			if backoff > 0 {
-				// 作用域是任务自己的命名空间（#162）：SetNotBefore 的 WHERE 是
-				// `namespace_id = ? AND id = ?`，传错 id 会一行也更新不到 → 退避永远
-				// 设不上（返回 ErrNotFound）→ 没节点的任务每 5s 被重扫一次、日志刷屏。
-				if serr := db.SetNotBefore(sctx, task.NamespaceID, task.ID, store.Now()+backoff); serr != nil {
-					slog.Warn("set retry backoff failed",
-						"event", "lease.sweeper.backoff_failed",
-						"task_id", task.ID,
-						"error", serr.Error(),
-					)
-				}
-			}
-		}
-		return ok, nil
-	}
+	sweeper.Redispatch = redispatchHook(db, dispatcher)
 	go sweeper.Run(ctx)
 
 	// 槽位释放 → 即时重派（#219）。
@@ -362,6 +340,11 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 接线放在这里而不是 ws 包内部：ws 不该知道"谁来重派"，
 	// 它只负责"我这边空出一个槽了"这一个事实。
 	nodeH.OnCapacityFreed = sweeper.Nudge
+	// 控制台的「取消任务」也是**槽位释放**的一条路径：CancelTask 在终态落库后
+	// 会 ReleaseInstanceByTask，若这里不接上，被取消腾出的槽位要等下一轮巡检
+	// （最坏 5s）才会有人去用——契约 §3.3 要求「槽位释放 → 立即重派」。
+	// consoleH 在 :209 构造（那时 sweeper 还不存在），所以只能在这里补这一行。
+	consoleH.nudge = sweeper.Nudge
 
 	// 中枢能力执行器（#83）：执行 notify.phone 这类没有节点执行者的内置能力。
 	//
@@ -611,4 +594,48 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
 	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
 	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc}
+}
+
+// redispatchHook 组装「租约巡检」的重派回调（契约 §3.3，注入点为 lease.Sweeper.Redispatch）。
+//
+// 抽成一个函数而不是内联闭包，是为了让「失败后要不要退避」这条判断能被测试直接覆盖
+// （真库 + 真 dispatcher，见 console_handlers_test.go 的 TestRedispatchHook*）。
+//
+// 两条「没派成」的语义必须分开，这是 #219 的核心：
+//   - **没有节点声明该能力**（或节点全下线）：这是「集群暂时没有产能」，设退避
+//     （RetryBackoff：10s/60s/300s），避免每 5s 空转打日志、也避免坏节点被反复打；
+//   - **有节点但槽位占满**（store.ErrNoCapacity）：这是「马上就有人空出槽」，
+//     **绝不能设退避**——退避会写 not_before，而 ListRedispatchable 按它过滤，
+//     等槽位空出来的那一次 Nudge 就再也看不见这条任务了（= 白等 10s 起）。
+func redispatchHook(db *store.DB, dispatcher *route.Dispatcher) func(context.Context, *store.Task) (bool, error) {
+	return func(sctx context.Context, task *store.Task) (bool, error) {
+		ok, err := dispatcher.RedispatchTask(sctx, task)
+		// 必须在下面 `if err != nil` 之前判定：容量不足对调用方**不是错误**，
+		// 只是「这次没派成，且不需要退避」。吞成 (false, nil) 让 sweeper 当普通
+		// 「没派成」计数，同时下面那段写 not_before 的代码不会被执行到。
+		if errors.Is(err, store.ErrNoCapacity) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			// 这次没派成（**没有节点**）：设退避，避免每 5s 空转打日志。
+			// 不动 status——任务本来就是 pending。
+			backoff := store.RetryBackoff(task.Attempts)
+			if backoff > 0 {
+				// 作用域是任务自己的命名空间（#162）：SetNotBefore 的 WHERE 是
+				// `namespace_id = ? AND id = ?`，传错 id 会一行也更新不到 → 退避永远
+				// 设不上（返回 ErrNotFound）→ 没节点的任务每 5s 被重扫一次、日志刷屏。
+				if serr := db.SetNotBefore(sctx, task.NamespaceID, task.ID, store.Now()+backoff); serr != nil {
+					slog.Warn("set retry backoff failed",
+						"event", "lease.sweeper.backoff_failed",
+						"task_id", task.ID,
+						"error", serr.Error(),
+					)
+				}
+			}
+		}
+		return ok, nil
+	}
 }

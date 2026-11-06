@@ -1595,7 +1595,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		mountLangHint();
 	}
 
-	/* ---------- API 封装：失败时回退到 demo ---------- */
+	/* ---------- API 封装 ---------- */
 	// 需登录的页面（工作台各页）；login.html 等公开页不设此标记
 	const isAuthedPage = !/login\.html$/.test(location.pathname);
 
@@ -1690,7 +1690,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return base + "?" + params.toString();
 	}
 
-	async function api(path, opts, demo) {
+	async function api(path, opts) {
 		const o = opts || {};
 		// 先确保 scope 有命名空间（全新会话首次加载时为空，见 ensureScope）。
 		// 解析不到时它自己降级成"不带参数"，不在这里抛错。
@@ -1757,8 +1757,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			}
 			return await res.json();
 		} catch (e) {
-			if (demo && typeof demo.then === "function") return demo;
-			if (demo !== undefined) return demo;
 			throw e;
 		}
 	}

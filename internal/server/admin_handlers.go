@@ -291,7 +291,8 @@ func (h *adminHandler) applyDisabledChange(r *http.Request, id string, disabled 
 		return &adminErr{404, "用户不存在"}
 	}
 	// API Key 缓存也要失效（#254）：ValidateKey 的缓存命中路径不查库，
-	// 不 bump 的话"禁用后 key 还能用"会一直持续到条目自然过期（默认 10s）。
+	// 不 bump 的话"禁用后 key 还能用"会一直持续到条目自然过期（**默认 60s**，
+	// auth.defaultKeyCacheTTL；会话那条是 10s）。
 	// 与会话缓存同样要求：**DB 写成功之后**才失效。
 	h.svc.Keys().BumpGeneration()
 	// 会话缓存失效（#241）：必须在 DB 写成功之后。

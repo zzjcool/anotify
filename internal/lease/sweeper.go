@@ -55,7 +55,7 @@ type Sweeper struct {
 	// 一次 drain 最多派 BatchLimit 条，不需要 N 次唤醒。
 	spur chan struct{}
 	// spurMinGap 是两次「即时重派」之间的最小间隔（默认 20ms）。
-	// 没有它的话，高吞吐下每个任务完成都会触发一次查询，把单连接 SQLite 打满。
+	// 没有它的话，高吞吐下每个任务完成都会触发一次查询，把 SQLite 的写队列打满。
 	spurMinGap time.Duration
 	// lastDrain 是上一次即时重派的时刻（只在 Run 的 goroutine 里读写）。
 	lastDrain time.Time

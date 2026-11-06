@@ -134,14 +134,72 @@ pb_ns() {
 	pb_log "ns=$NS"
 }
 
-# pb_cap <name> [outputs-json] → CAP_ID（paramsSchema 留空 = {"type":"object"}，接受任意参数）
+# ---------- 能力 + 产物 + 部署（v2 console-declares）----------
+#
+# v2 把「怎么跑」从节点配置挪到了**能力定义**里（契约 D4）：能力由控制台唯一定义、
+# 编译成产物（internal/artifact），再经**部署**（deploy 帧）落到具体机器的缓存里。
+# 节点在 node.yaml 里自报 capabilities/run 的写法已经不存在（agent 会以「未知字段」拒启动）。
+#
+# 所以一条能力要能真的跑起来必须走三步：
+#   ① pb_cap <name> <cmd> [timeoutSec]   → POST /v1/capabilities（带 run）= 定义 + 产物
+#   ② pb_deploy <nodeId>                 → POST /v1/deployments = 把产物推给某台机器
+#   ③ 节点 apply 完会**重发 hello**，中枢据 applied 全量重建 node_capabilities
+#      （这才是派发看得见的东西 → pb_wait_cap_ready）
+#
+# 配方来源：scripts/e2e/suites/live_agent.mjs（真 agent + 真部署的 v2 走法）、
+# scripts/e2e/lib/nodes.mjs:180-260（hello 形状：applied[] + 每槽 concurrency 1）。
+
+# pb_cap <name> <cmd> [timeoutSec] [outputs-json] → CAP / CAP_DIGEST
+#
+# $cmd 原样写进产物的入口文件 run.sh（自动补 shebang：产物入口必须 `#!` 开头，
+# 执行方式是直接 exec、不经 shell）。$cmd 里的 $ANOTIFY_TASK_ID / $EPOCHREALTIME
+# 由**节点执行时**展开（调用方用单引号断开外层展开，见各场景脚本）。
+#
+# 注意 $cmd 是**同一个能力@版本共享的唯一一份**：v2 里「每台机器跑不同命令」不可表达，
+# 需要两个命令就声明两个能力（pb_node 的第 4 个实参只是核对用，见 pb_assert_cap_cmd）。
 pb_cap() {
-	local name=$1 outputs=${2:-'["ok"]'} json
-	json=$(pb_api POST "/v1/capabilities?namespaceId=$NS" \
-		"$(jq -nc --arg n "$name" --argjson o "$outputs" '{name:$n,outputs:$o,paramsSchema:{type:"object"}}')")
+	local name=$1 cmd=${2:-} tmo=${3:-60} outputs=${4:-'["ok"]'} json script body
+	[ -n "$cmd" ] || pb_die "pb_cap $name 缺少命令：v2 里执行方式属于能力产物（节点不再自报），必须在这里声明（见 N3: .pi-orchestrator/issue-n3-body.md）"
+	script=$'#!/bin/bash\n'"$cmd"$'\n'
+	body=$(jq -nc --arg n "$name" --argjson o "$outputs" --arg s "$script" --argjson tmo "$tmo" \
+		'{name:$n,outputs:$o,paramsSchema:{type:"object"},
+		  run:{entrypoint:"run.sh",files:{"run.sh":$s},timeoutSec:$tmo}}')
+	json=$(pb_api POST "/v1/capabilities?namespaceId=$NS" "$body")
 	CAP=$(printf '%s' "$json" | jq -r '.capability.id // empty')
+	CAP_DIGEST=$(printf '%s' "$json" | jq -r '.digest // empty')
 	[ -n "$CAP" ] || pb_die "建能力 $name 失败：$json（HTTP $(pb_code)）"
-	pb_log "capability $name = $CAP"
+	PB_CAP_NAME=$name
+	PB_CAP_CMD=$cmd
+	PB_CAP_TMO=$tmo
+	pb_log "capability $name = $CAP digest=${CAP_DIGEST:-?} timeout=${tmo}s"
+}
+
+# pb_deploy <nodeId> [capId]：把能力产物部署给某台节点。
+#
+# pushed=false **不是失败**：节点还没上线 → 中枢先把行建好（pending），它 hello 之后由
+# resendDeployments 补推（internal/ws/node_handler.go）。真正确认「能跑」的点在
+# pb_wait_cap_ready —— 部署行 applied 只说明产物落盘，node_capabilities 要等节点
+# 重发 hello 才对得上。
+pb_deploy() {
+	local node=$1 cap=${2:-${CAP:-}} json
+	[ -n "$node" ] || pb_die "pb_deploy 缺少 node id"
+	[ -n "$cap" ] || pb_die "pb_deploy 缺少能力 id（先 pb_cap）"
+	json=$(pb_api POST "/v1/deployments?namespaceId=$NS" \
+		"$(jq -nc --arg ns "$NS" --arg c "$cap" --arg n "$node" \
+			'{namespaceId:$ns,capabilityId:$c,nodeIds:[$n]}')")
+	[ "$(pb_code)" = "200" ] || pb_die "部署 $cap → $node 失败：HTTP $(pb_code) $json"
+	pb_log "deploy $cap → $node：$(printf '%s' "$json" | jq -c '[.deployments[]? | {nodeId,pushed,error}]')"
+}
+
+# pb_cap_ready <want>：至少 want 台**在线**节点声明了当前能力（$CAP）。
+#
+# v2 里「这台机器能跑某个能力」= node_capabilities 有行，而那张表**只**由部署派生。
+# online 不等于能接单：少等这一步，第一批任务会被 route 剪成 pruned/no_node。
+pb_cap_ready() {
+	local want=$1 n
+	n=$(pb_api GET "/v1/capabilities?namespaceId=$NS" \
+		| jq -r --arg c "${CAP:-}" '[.capabilities[]? | select(.id==$c) | .declaredBy[]? | select(.status=="online")] | length' 2>/dev/null)
+	[ "${n:-0}" -ge "$want" ]
 }
 
 # pb_source <name> <capId> → SRC_ID / HOOK（无 rate limit 用 fire，大 payload 用 HOOK）
@@ -164,67 +222,101 @@ pb_source_edge() {
 }
 
 # ---------- node + agent ----------
+#
+# **v2 形状**（N3）：node.yaml 只剩 bootstrap 四件（name/server/token/instances）。
+# 配方：scripts/e2e/lib/nodes.mjs 的 bringUpNode + e2e/suites/live_agent.mjs 的 yaml。
+#
+#   name: n1
+#   server: http://127.0.0.1:7920
+#   token: nt_xxx
+#   instances: 8          # 槽位数 = 并发上限（每槽恒 1 个任务）
+#
+# **没有 capabilities / run / concurrency**：那在 v2 是未知字段，agent 的
+# KnownFields(true) 会让它启动即退（cmd/agent/config.go）。执行方式是能力产物，
+# 靠 pb_deploy 部署到本机缓存（见上面「能力 + 产物 + 部署」一节）。
 
-# pb_node <name> <instances> <concurrency> <command> [timeoutSec]
-#   → NODE_ID / NODE_TOKEN，写 $OUT/<name>.yaml 并起 agent（日志 $OUT/<name>.log）
-pb_node() {
-	local name=$1 instances=$2 conc=$3 cmd=$4 tmo=${5:-60} json token yaml
-	json=$(pb_api POST "/v1/nodes?namespaceId=$NS" \
-		"$(jq -nc --arg n "$name" --argjson i "$instances" '{name:$n,instances:$i}')")
-	NODE_ID=$(printf '%s' "$json" | jq -r '.node.id // empty')
-	NODE_TOKEN=$(printf '%s' "$json" | jq -r '.token // empty')
-	[ -n "$NODE_ID" ] && [ -n "$NODE_TOKEN" ] || pb_die "建节点 $name 失败：$json"
+# pb_assert_cap_cmd <cmd> <timeoutSec>：把 pb_node 的第 4/5 个实参与**能力产物**对齐。
+#
+# v1 时代这两个值写进每台机器的 node.yaml（同能力可以各跑各的）；v2 里一个能力@版本
+# 只有一份产物，所以它们降级成**核对用**：对不上就当场报错，而不是静默跑出
+# 「节点在跑另一份命令」——那个在 v2 里根本无法表达。
+pb_assert_cap_cmd() {
+	local cmd=$1 tmo=$2
+	[ -n "${CAP:-}" ] || pb_die "pb_assert_cap_cmd：还没有能力（先 pb_cap <name> <cmd> [timeoutSec]）"
+	[ "$cmd" = "${PB_CAP_CMD:-}" ] || pb_die "命令与能力 $PB_CAP_NAME 的产物不一致：
+  能力产物（pb_cap）: ${PB_CAP_CMD:-<空>}
+  节点声明（pb_node）: $cmd
+v2 的能力执行方式只在中枢定义一次（节点不再自报），要换命令就换能力（见 N3: .pi-orchestrator/issue-n3-body.md）"
+	[ "$tmo" = "${PB_CAP_TMO:-}" ] || pb_die "timeoutSec 与能力 $PB_CAP_NAME 的产物不一致：能力 ${PB_CAP_TMO:-?}s，节点 ${tmo}s（timeoutSec 也属于产物，同上）"
+}
 
-	yaml=$OUT/$name.yaml
+# pb_write_node_yaml <name> <instances>：写 v2 的 node.yaml 到 $OUT/<name>.yaml。
+pb_write_node_yaml() {
+	local name=$1 instances=$2 yaml=$OUT/$1.yaml
 	{
 		printf 'name: %s\n' "$name"
 		printf 'server: %s\n' "$BASE"
 		printf 'token: %s\n' "$NODE_TOKEN"
 		printf 'instances: %s\n' "$instances"
-		printf 'capabilities:\n'
-		printf '  - capability: %s\n' "$PB_CAP_NAME"
-		printf '    version: 1\n'
-		printf '    run:\n'
-		printf '      runner: bash\n'
-		printf '      command: |\n'
-		printf '%s\n' "$cmd" | sed 's/^/        /'
-		printf '      out: ok\n'
-		printf '      timeoutSec: %s\n' "$tmo"
-		printf '      concurrency: %s\n' "$conc"
 	} >"$yaml"
 	printf '%s' "$yaml" >"$OUT/.lastyaml"
-
-	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$yaml" -grace 1 >"$OUT/$name.log" 2>&1 &
-	local apid=$!
-	PIDS+=("$apid")
-	eval "AGENT_PID_${name//-/_}=$apid"
-	pb_log "node $name（$NODE_ID）instances=$instances concurrency=$conc timeout=${tmo}s agent=$apid"
 }
 
-# pb_node_create <name> <instances> <conc> <cmd> [timeoutSec]：只建节点 + 写 yaml，不起 agent
-pb_node_create() {
+# pb_node <name> <instances> <concurrency> <command> [timeoutSec]
+#   → NODE_ID / NODE_TOKEN，写 $OUT/<name>.yaml 并起 agent（日志 $OUT/<name>.log）
+#
+# #220：第 3 个形参（concurrency）**保留但已无意义** —— v2 每个槽位恒放 1 个任务
+# （cmd/agent/config.go 的 slotConcurrency() 恒 1），并发上限只看 instances。
+# 保留形参是为了不改 6 个调用点；它现在只是日志里的一句话。
+#
+# 第 4/5 个形参（command / timeoutSec）也不再进 yaml：它们必须与 pb_cap 声明的
+# 产物一致（见 pb_assert_cap_cmd）。
+pb_node() {
 	local name=$1 instances=$2 conc=$3 cmd=$4 tmo=${5:-60} json
+	pb_assert_cap_cmd "$cmd" "$tmo"
 	json=$(pb_api POST "/v1/nodes?namespaceId=$NS" \
 		"$(jq -nc --arg n "$name" --argjson i "$instances" '{name:$n,instances:$i}')")
 	NODE_ID=$(printf '%s' "$json" | jq -r '.node.id // empty')
 	NODE_TOKEN=$(printf '%s' "$json" | jq -r '.token // empty')
 	[ -n "$NODE_ID" ] && [ -n "$NODE_TOKEN" ] || pb_die "建节点 $name 失败：$json"
-	local yaml=$OUT/$name.yaml
-	{
-		printf 'name: %s\nserver: %s\ntoken: %s\ninstances: %s\n' "$name" "$BASE" "$NODE_TOKEN" "$instances"
-		printf 'capabilities:\n  - capability: %s\n    version: 1\n    run:\n' "$PB_CAP_NAME"
-		printf '      runner: bash\n      command: |\n'
-		printf '%s\n' "$cmd" | sed 's/^/        /'
-		printf '      out: ok\n      timeoutSec: %s\n      concurrency: %s\n' "$tmo" "$conc"
-	} >"$yaml"
-	printf '%s' "$yaml" >"$OUT/.lastyaml"
-	pb_log "node $name（$NODE_ID）instances=$instances concurrency=$conc timeout=${tmo}s yaml=$yaml"
+
+	pb_write_node_yaml "$name" "$instances"
+	# 先部署再起 agent：此刻节点还 offline → 部署行是 pending，agent hello 之后
+	# 中枢立刻补推（internal/ws/node_handler.go: resendDeployments）。
+	pb_deploy "$NODE_ID"
+
+	# -data-dir 每台独立（e2e 配方同款）：默认 ~/.anotify 会让上一轮跑剩的产物
+	# 留在缓存里，hello.applied 先报旧 digest，新产物晚一步才落盘 → 首批任务可能
+	# 拿到上一轮那份脚本。
+	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$OUT/$name.yaml" \
+		-data-dir "$WORK/agent-data/$name" -grace 1 >"$OUT/$name.log" 2>&1 &
+	local apid=$!
+	PIDS+=("$apid")
+	eval "AGENT_PID_${name//-/_}=$apid"
+	pb_log "node $name（$NODE_ID）instances=$instances agent=$apid（concurrency=$conc 已忽略：#220 每槽恒 1 个任务）"
+}
+
+# pb_node_create <name> <instances> <conc> <cmd> [timeoutSec]：只建节点 + 部署 + 写 yaml，不起 agent
+pb_node_create() {
+	local name=$1 instances=$2 conc=$3 cmd=$4 tmo=${5:-60} json
+	pb_assert_cap_cmd "$cmd" "$tmo"
+	json=$(pb_api POST "/v1/nodes?namespaceId=$NS" \
+		"$(jq -nc --arg n "$name" --argjson i "$instances" '{name:$n,instances:$i}')")
+	NODE_ID=$(printf '%s' "$json" | jq -r '.node.id // empty')
+	NODE_TOKEN=$(printf '%s' "$json" | jq -r '.token // empty')
+	[ -n "$NODE_ID" ] && [ -n "$NODE_TOKEN" ] || pb_die "建节点 $name 失败：$json"
+	pb_write_node_yaml "$name" "$instances"
+	# 离线建行（pending）：pb_node_start 拉起 agent 后中枢补推，apply 完节点重发 hello
+	# → node_capabilities 出现该能力（pb_wait_cap_ready 等的就是这一步）。
+	pb_deploy "$NODE_ID"
+	pb_log "node $name（$NODE_ID）instances=$instances yaml=$OUT/$name.yaml（concurrency=$conc 已忽略：#220）"
 }
 
 # pb_node_start <name>：按已写好的 yaml 起 agent（用于「一次性拉起 N 个」的握手测试）
 pb_node_start() {
 	local name=$1
-	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$OUT/$name.yaml" -grace 1 >"$OUT/$name.log" 2>&1 &
+	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$OUT/$name.yaml" \
+		-data-dir "$WORK/agent-data/$name" -grace 1 >"$OUT/$name.log" 2>&1 &
 	local apid=$!
 	PIDS+=("$apid")
 	eval "AGENT_PID_${name//-/_}=$apid"
@@ -294,9 +386,17 @@ pb_online() {
 	echo "${n:-0}"
 }
 
+# pb_wait_online <want> [secs]：等 want 台节点 online **且已声明当前能力**（v2）。
+#
+# 为什么要把「部署生效」并进来：v2 的 online 只说明 WS 握手成功，节点能接单靠的是
+# node_capabilities（只由部署派生，节点 apply 完重发 hello 才写进去）。
+# 少等这一步，首批任务会被路由剪成 pruned/no_node，看起来像「派发丢了」。
 pb_wait_online() {
 	local want=$1 secs=${2:-40}
 	pb_wait_until "$want 个节点 online" "$secs" pb_online_at_least "$want"
+	if [ -n "${CAP:-}" ]; then
+		pb_wait_until "$want 台节点声明能力 ${PB_CAP_NAME:-}（部署生效）" "$secs" pb_cap_ready "$want"
+	fi
 }
 
 pb_online_at_least() {

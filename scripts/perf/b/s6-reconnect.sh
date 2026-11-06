@@ -36,13 +36,13 @@ MARK=$OUT/marks.txt
 : >"$MARK"
 
 PB_CAP_NAME=perf.reconnect
-pb_cap "$PB_CAP_NAME"
-pb_source perf-reconnect "$CAP"
-
 # 短命令：执行 ~0.3s 就结束（marker 只用来查「同一 task 被执行了几次」）。
-# $MARK 由外层 shell 展开；$ANOTIFY_TASK_ID / $EPOCHREALTIME 留到 agent 的 sh -c 里展开。
+# $MARK 由外层 shell 展开；$ANOTIFY_TASK_ID / $EPOCHREALTIME 留到 agent 侧执行时展开。
+# v2：命令属于能力产物，所以 CMD 要先于 pb_cap 定义（节点不再自报执行方式）。
 # shellcheck disable=SC2016
 CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"'; sleep 0.3'
+pb_cap "$PB_CAP_NAME" "$CMD" 30
+pb_source perf-reconnect "$CAP"
 
 # ---------- 本地小工具（只读 lib 的行为，不改 lib） ----------
 
@@ -97,7 +97,7 @@ s6_offline() { [ "$(pb_online)" = "0" ]; }
 # ============================================================
 # 基线 + 节点
 # ============================================================
-pb_say "建节点 $NAME（instances=2 concurrency=1，命令 sleep 0.3）"
+pb_say "建节点 $NAME（instances=2，v2 每槽恒 1 个任务，命令 sleep 0.3）"
 pb_node "$NAME" 2 1 "$CMD" 30
 s6_poll "节点 online" 40 s6_node_online "$NAME" || pb_die "节点没连上（agent 日志见 $OUT/$NAME.log）"
 
