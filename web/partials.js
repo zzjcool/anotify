@@ -90,6 +90,29 @@
 			"M6 6h.01",
 			"M6 18h.01",
 		],
+		/* 侧栏图标去重：事件流、能力、预案原先分别复用「总览的四方块」「API Keys
+		 * 的钥匙」「源的闪电」——三对图标各自代表完全不同的页面，导航里看起来像
+		 * 复制粘贴。这里补三个同风格（Feather/Lucide，24×24、stroke 2、round）的
+		 * 线条图标：事件流 = 列表、能力 = 徽章（节点声明的「能做这件事」）、
+		 * 预案 = 分支流程（能力 + 下游 + 触发器串起来就是它）。 */
+		events: [
+			"M8 6h13",
+			"M8 12h13",
+			"M8 18h13",
+			"M3 6h.01",
+			"M3 12h.01",
+			"M3 18h.01",
+		],
+		capabilities: [
+			"M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76z",
+			"M9 12l2 2 4-4",
+		],
+		playbooks: [
+			"M6 3v12",
+			"M18 6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+			"M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+			"M18 9a9 9 0 0 1-9 9",
+		],
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
 		],
@@ -149,7 +172,7 @@
 					labelKey: "common.nav.events",
 					fallback: "事件流",
 					href: "events.html",
-					icon: "overview",
+					icon: "events",
 				},
 				{
 					id: "sources",
@@ -163,7 +186,7 @@
 					labelKey: "common.nav.capabilities",
 					fallback: "能力",
 					href: "capabilities.html",
-					icon: "keys",
+					icon: "capabilities",
 				},
 				{
 					// 预案 = 把「能力 + 下游 + 触发器」打在一起的零件，
@@ -175,7 +198,7 @@
 					labelKey: "common.nav.playbooks",
 					fallback: "预案",
 					href: "playbooks.html",
-					icon: "sources",
+					icon: "playbooks",
 				},
 				{
 					id: "nodes",
