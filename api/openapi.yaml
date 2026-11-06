@@ -1984,6 +1984,92 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  # ========== 能力的下游（整体替换）==========
+  /capabilities/{name}/downstreams:
+    put:
+      tags: [capabilities]
+      summary: 整体替换某个能力的下游（能力边唯一的写入口）
+      description: |
+        语义是 **replace（整体替换）**，不是 append：提交的这组就是该能力的**全部**下游。
+        空数组（`{"links":[]}`）是合法的——清空 = 这个能力没有下游（终端能力）。
+
+        为什么是 `PUT` 而不是 `PATCH`：语义是「这组就是全部」，不是增量。PATCH 会让
+        「删掉一个」只能靠哨兵值表达，而哨兵值会被任何一个漏传字段的客户端无意触发。
+
+        一条下游 = 一条能力边 `(from_ref=能力名, from_port='out', to_ref, priority, literals)`：
+
+        - `from_ref` 是**能力名**（不是版本）：一个能力的所有版本共用同一组出边；
+        - `from_port` 固定隐式出口 `out`（`store.ImplicitPort`）—— API 与界面都不出现它；
+        - `to_ref` 是引用（`name` 跟随 latest / `name@version` 钉死；能力 id 也接受并归一）。
+
+        **校验全部先做**（任一失败 → 400，一个字节都不写）：
+
+        1. `toRef` 必须在本命名空间解析得到，否则 `unknown_target`（`error` 里带名字）；
+           跨命名空间引用 → 400（不变量 I11，`error` 里说明两端的命名空间）
+        2. `toRef` 不能指向 `{name}` 自己 → `self_link`
+        3. 条目数 ≤ 100 → 否则 `too_many_links`
+        4. `priority` ∈ [0, 1000]（缺省 0）→ 否则 `priority_out_of_range`
+        5. `literals` 必须满足目标 `paramsSchema`（与 `POST /edges` 同一份校验）→ 否则
+           `edge_rejected`（`error` 里带具体原因：哪个键不存在 / 期望什么类型）
+        6. 同一 `toRef` 出现两次（按归一后的引用判）→ `duplicate_target`
+
+        落库在一个事务里：先删掉**这个能力在隐式出口 `out` 上**本次没提交的边（不动别人的边、
+        不动入口边、也不动历史多出口能力别的端口上的边——那些能力在界面上是只读保留的），
+        其余 `INSERT … ON CONFLICT DO UPDATE`（改 `priority` / `literals` 时**不刷新**
+        `createdAt`）。一次成功的 replace 之后，这个能力在 `out` 上的下游**按 `toRef`** 恰好
+        是提交的那组（没提交的 `toRef` 被删掉，提交的被 upsert）。
+
+        本端点**只写边**，不改能力定义的 `outputs`（那属于能力版本契约，append-only）：
+        端口固定为隐式 `out`，界面上的「有没有下游」与 `outputs` 的对应由能力保存路径负责
+        （见 CONTRACT-hide-ports）。
+
+        这条路径**取代**了 `POST /edges` 的能力边分支（那里现在回 405 `edge_write_removed`）。
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+          description: 能力**名字**（不是版本：全部版本共用同一组出边）
+        - $ref: "#/components/parameters/NamespaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DownstreamsInput" }
+            example:
+              links:
+                - { toRef: script.echo, priority: 0 }
+                - { toRef: notify.phone@1, priority: 10, literals: { to: "+8613800000000" } }
+      responses:
+        "200":
+          description: '落库后的完整集合（与请求同序；空时 `links: []`）'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownstreamsResult" }
+        "400":
+          description: |
+            校验失败（一个字节都没写）。看 `code` 区分：
+
+            - `unknown_target`：`toRef` 解析不到（带名字）
+            - `self_link`：`toRef` 指向能力自己
+            - `duplicate_target`：同一个 `toRef` 出现两次
+            - `too_many_links`：超过 100 条
+            - `priority_out_of_range`：`priority` 不在 [0, 1000]
+            - `edge_rejected`：`literals` 不满足目标 `paramsSchema`（原因透传）
+            - `links_required`：请求里没有 `links` 字段（`[]` 才是清空，漏传是 bug）
+            - 无 `code`：跨命名空间引用（I11）/ 缺 `namespaceId` / `namespaceId=*`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: '能力不存在（`code: not_found`）/ 命名空间不存在'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # ========== 事件中心：出口表 ==========
   /edges:
     get:
@@ -2018,24 +2104,30 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [edges]
-      summary: 新增一条边
+      summary: 新增一条**入口边**（能力边的写入口已迁移）
       description: |
-        两端是**引用**（P2.2，设计 §3.2）：`fromRef` / `toRef` 写 `name`（跟随 latest，
-        升级自动生效）或 `name@version`（钉死那一版）。**边里只存引用，不存 id**。
+        **只接受入口边**（`fromIsSource=true`：`fromRef` 是来源名，如 `github`）。
 
-        配置期五条硬校验（违反即 400 `edge_rejected`）：
-        1. `fromPort` 必须属于**解析到的上游版本**的 `outputs`（**出口是封闭集合**，不变量 I2）
-        2. 两端引用必须能在本**命名空间**里解析（跨命名空间引用 → 400，不变量 I11）
-        3. `namespaceId` **必填**（query 或 body，query 优先）：一条边属于且只属于一个命名空间
-        4. `literals` 是**常量覆盖**（设计 §3.3：下游 params = data ⊎ literals，字面量优先）：
+        能力的下游不再从这条路径写：建/删/改优先级/重排统一走
+        `PUT /capabilities/{name}/downstreams`（整体替换）。请求建能力边
+        （`fromIsSource=false`，含**缺省**该字段）→ **405** `edge_write_removed`。
+        为什么收掉：原来「建下游在能力页、删下游在出口页、改优先级两处都没有」，
+        用户在能力页配了 3 个下游想删 1 个就得换一页（CONTRACT-downstream-edit §0）。
+
+        `DELETE /edges` 与 `GET /edges` 仍然保留（运维纠正 / 图 / 详情 / trace）。
+
+        入口边的两端仍是**引用**（P2.2，设计 §3.2）：右端 `toRef` 写 `name`（跟随
+        latest，升级自动生效）或 `name@version`（钉死那一版）。**边里只存引用，不存 id**。
+
+        配置期校验（违反即 400 `edge_rejected`）：
+        1. 右端引用必须能在本**命名空间**里解析（跨命名空间引用 → 400，不变量 I11）
+        2. `namespaceId` **必填**（query 或 body，query 优先）：一条边属于且只属于一个命名空间
+        3. `literals` 是**常量覆盖**（设计 §3.3：下游 params = data ⊎ literals，字面量优先）：
            必须是 JSON 对象（`null` = 没有覆盖）；每个键必须出现在**解析到的目标版本**的
            `paramsSchema.properties` 里（拼错当场拒）；值类型必须与声明**精确相等**
-           （`integer` 不收 string，反之亦然，不做任何转换）。常量不依赖运行时，
-           所以能在这里判类型，不必等派发时才剪枝。
-        5. 静态可达环（按**能力名**判）：会闭合成环的边一律拒
-
-        `fromIsSource=true` 时 `fromRef` 被解释为**来源名**（如 `github`，建入口边），
-        此时只校验右端能力在本命名空间；来源名不跨命名空间解析。
+           （`integer` 不收 string，反之亦然，不做任何转换）。
+        4. `mapping`（引用模板）只有入口边允许（能力边带非空 mapping 会被 store 硬拒）。
+        5. `fromPort` 是**事件类型**，不校验封闭集合（外部系统决定，`*` = 任意事件）。
 
         **输入兼容一个版本**：旧的 `fromCapability` / `toCapability` 字段仍然接受，
         值可以是能力 id（P2.2 之前的形状）；store 会把它解析成 `name@version` 再落库
@@ -2060,13 +2152,24 @@ paths:
                   edge: { $ref: "#/components/schemas/Edge" }
         "400":
           description: |
-            引用解析不到 / 出口不在解析到的版本的 outputs 里 / 跨命名空间引用 /
-            `literals` 不合法 / 会成环（`edge_rejected`；`error` 里带具体原因，
-            如「哪个引用不存在」「哪个键不存在」「期望什么类型」）
+            引用解析不到 / 跨命名空间引用 / `literals` 不合法 / 缺 `fromRef`·`fromPort`·`toRef`
+            （`edge_rejected`；`error` 里带具体原因，如「哪个引用不存在」「哪个键不存在」
+            「期望什么类型」）
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: |
+            请求建的是**能力边**（`fromIsSource=false`，含缺省该字段）→ `edge_write_removed`。
+            能力的下游请在能力里改：`PUT /capabilities/{name}/downstreams`（整体替换）。
+            `fromIsSource=true` 的入口边不受影响。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                code: edge_write_removed
+                error: 能力的下游请在能力里改（PUT /v1/capabilities/{name}/downstreams）
     delete:
       tags: [edges]
       summary: 删除一条边
@@ -4250,6 +4353,83 @@ components:
           example: { title: "{{pull_request.title}}", n: "{{pull_request.number}}" }
           additionalProperties: true
         createdAt: { type: integer, format: int64 }
+
+    DownstreamsInput:
+      type: object
+      required: [links]
+      properties:
+        namespaceId:
+          type: string
+          description: |
+            **必填**（本字段或 query 二者给一个；query 优先）。这组下游属于该命名空间；
+            目标能力必须与它同命名空间（I11）。
+        links:
+          type: array
+          description: |
+            这组下游的**全部**（replace 语义）。空数组 = 清空（终端能力）。
+            **字段必须存在**：缺字段 → 400 `links_required`（漏传与清空是两件事）。
+          maxItems: 100
+          items: { $ref: "#/components/schemas/DownstreamInput" }
+
+    DownstreamInput:
+      type: object
+      required: [toRef]
+      properties:
+        toRef:
+          type: string
+          description: |
+            目标能力引用：`name`（跟随 latest）/ `name@version`（钉死）。
+            能力 id 也接受并归一成 `name@version` 落库（输入兼容一个版本）。
+          example: script.echo
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 0
+          description: |
+            候选优先级（小的优先，同级轮盘）。缺省 0。
+            它只影响「同一个能力有多个下游时先选谁」，不改变这条边通不通。
+        literals:
+          type: object
+          nullable: true
+          description: |
+            常量覆盖（下游 params = data ⊎ literals，字面量优先）。默认 `{}` / `null` = 没有覆盖。
+            每个键必须出现在目标 `paramsSchema.properties` 里，值类型必须与声明**精确相等**。
+          example: { to: user_123 }
+          additionalProperties: true
+
+    DownstreamLink:
+      type: object
+      required: [toRef, priority, literals, toCapabilityId, resolvedVersion]
+      properties:
+        toRef:
+          type: string
+          description: '落库的引用（原样保存用户给的 `name` / `name@version`）'
+        priority: { type: integer }
+        literals:
+          type: object
+          description: '落库的字面量（`{}` = 没有覆盖）'
+          additionalProperties: true
+        toCapabilityId:
+          type: string
+          description: |
+            `toRef` 在**写入那一刻**解析到的能力定义 id（解析不到为空串——存量坏边不会让
+            整个列表 500）。前端拿它做详情链接，不必自己实现 name→latest。
+        resolvedVersion:
+          type: integer
+          description: '同一个定义的版本号（`name` 型引用 = 此刻的 latest）'
+
+    DownstreamsResult:
+      type: object
+      required: [name, links]
+      properties:
+        name:
+          type: string
+          description: '能力名（一个能力的所有版本共用同一组出边）'
+        links:
+          type: array
+          description: '落库后的完整集合，与请求同序；空时 `[]`（不是 null）'
+          items: { $ref: "#/components/schemas/DownstreamLink" }
 
     EdgeInput:
       type: object

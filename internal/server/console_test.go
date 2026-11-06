@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,9 @@ func newConsoleEnv(t *testing.T) *consoleEnv {
 	mux.Handle("POST /v1/capabilities/batch", noStore(sessMW(http.HandlerFunc(h.createCapabilitiesBatch))))
 	// 最新产物的解析后内容（详情页脚本）—— 与生产 mux 的接线一致。
 	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(h.capabilityArtifact))))
+	// 能力的下游（整体替换）—— 与生产 mux 的接线一致。
+	mux.Handle("PUT /v1/capabilities/{name}/downstreams",
+		noStore(sessMW(http.HandlerFunc(h.capabilityDownstreams))))
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(h.edges))))
@@ -207,6 +211,19 @@ func (e *consoleEnv) do(t *testing.T, method, path string, body any) *httptest.R
 	return rr
 }
 
+// replaceDownstreams 调 `PUT /v1/capabilities/{name}/downstreams`（能力边唯一的写入口）。
+//
+// 造数统一走这里而不是 `POST /v1/edges`：后者对能力边已经回 405
+// （CONTRACT-downstream-edit §3），而那些断言本身（引用、字面量、优先级）没有变。
+func (e *consoleEnv) replaceDownstreams(t *testing.T, name string, links []map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	if links == nil {
+		links = []map[string]any{} // 显式空数组 = 清空（不能是 null，服务端会拒缺字段）
+	}
+	return e.do(t, http.MethodPut, e.withNS("/v1/capabilities/"+name+"/downstreams"),
+		map[string]any{"links": links})
+}
+
 // doNoCookie 发一个不带会话的请求（验证 401）。
 func (e *consoleEnv) doNoCookie(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -294,43 +311,62 @@ func TestEmptyListIsArray(t *testing.T) {
 
 // ---------- #59 验收：edges 校验 ----------
 
-// TestEdgePortNotInOutputs from_port 不在 outputs 里 → 400（#59 验收 / I2）。
+// TestEdgePortNotInOutputs 出口是封闭集合（不变量 I2）：`from_port` 必须 ∈ 上游 outputs。
+//
+// **改写说明**：原用例走 `POST /v1/edges` 建能力边并断言 400 `edge_rejected`。
+// 能力边的 HTTP 写入口已经迁到 `PUT /v1/capabilities/{name}/downstreams`（出口恒为
+// 隐式 `out`，界面上不存在可填的端口），那条 400 在 HTTP 层已无可达路径。所以这里
+// 分两段断言同一件事，覆盖面反而更全：
+//
+//	① 封闭集合校验本身仍然在 store（createEdgeTx）——playbook 安装与存量调用共用它；
+//	② 能绕过它的旧 HTTP 入口（POST /v1/edges 的能力边分支）已经封掉（405）。
 func TestEdgePortNotInOutputs(t *testing.T) {
 	env := newConsoleEnv(t)
 	from := env.seedCapability(t, "review", 1, []string{"fix"})
 	to := env.seedCapability(t, "fix", 1, nil)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID:    env.nsID,
-		FromCapability: from.ID,
-		FromPort:       "clean", // 不在 outputs 里（只有 fix）
-		ToCapability:   to.ID,
+	// ① store 层：`clean` 不在 review 的 outputs（只有 fix）→ 硬拒（客户端可修）。
+	err := env.db.CreateEdge(context.Background(), &store.Edge{
+		NamespaceID: env.nsID, FromRef: from.Name, FromPort: "clean", ToRef: to.Name,
 	})
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (port not in outputs); body=%s", rr.Code, rr.Body.String())
+	if !errors.Is(err, store.ErrEdgeRejected) {
+		t.Fatalf("CreateEdge(port=clean) err = %v, want ErrEdgeRejected", err)
 	}
-	m := decode(t, rr)
-	if m["code"] != "edge_rejected" {
-		t.Fatalf("code = %v, want edge_rejected", m["code"])
+
+	// ② HTTP 层：旧入口现在只接入口边；能力边 405。
+	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
+		NamespaceID: env.nsID, FromRef: from.Name, FromPort: "clean", ToRef: to.Name,
+	})
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405（能力边的 POST 已封）; body=%s", rr.Code, rr.Body.String())
+	}
+	if m := decode(t, rr); m["code"] != "edge_write_removed" {
+		t.Fatalf("code = %v, want edge_write_removed", m["code"])
+	}
+	// 被拒的边不能落库
+	var n int
+	if err := env.db.QueryRow(`SELECT count(*) FROM edges WHERE namespace_id = ?`, env.nsID).Scan(&n); err != nil {
+		t.Fatalf("count edges: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("被拒的边还是落库了: %d", n)
 	}
 }
 
-// TestEdgeCreateAndDelete 合法的边能建能删。
+// TestEdgeCreateAndDelete 合法的下游能建能删。
+//
+// **改写说明**：建边从 `POST /v1/edges` 换成 `PUT /v1/capabilities/{name}/downstreams`
+// （能力边的唯一写入口）；删除仍走 `DELETE /v1/edges`（保留给运维纠正）。
+// 断言不变：响应带 namespaceId、列表能查到、删完为空。
 func TestEdgeCreateAndDelete(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
+	from := env.seedCapability(t, "review", 1, []string{"out"})
 	to := env.seedCapability(t, "fix", 1, nil)
 
-	// 建
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID:    env.nsID,
-		FromCapability: from.ID, FromPort: "fix", ToCapability: to.ID,
-	})
+	// 建（整体替换：这一组就是 review 的全部下游）
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": to.Name}})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
-	}
-	if edgeObj, _ := decode(t, rr)["edge"].(map[string]any); edgeObj["namespaceId"] != env.nsID {
-		t.Fatalf("创建响应里 edge.namespaceId = %v, want %v", edgeObj["namespaceId"], env.nsID)
 	}
 
 	// 列
@@ -348,8 +384,8 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 		t.Fatalf("edge.namespaceId = %v, want %v", obj["namespaceId"], env.nsID)
 	}
 
-	// 删
-	path := env.withNS("/v1/edges?fromCapability=" + from.ID + "&fromPort=fix&toCapability=" + to.ID)
+	// 删（旧字段名 + 能力 id 仍然认：DELETE 是运维纠正口，保留输入兼容）
+	path := env.withNS("/v1/edges?fromCapability=" + from.ID + "&fromPort=out&toCapability=" + to.ID)
 	rr = env.do(t, http.MethodDelete, path, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body=%s", rr.Code, rr.Body.String())
@@ -363,26 +399,35 @@ func TestEdgeCreateAndDelete(t *testing.T) {
 	}
 }
 
-// TestEdgeCrossNamespaceRejected 跨命名空间的边 → 400（契约 §1.2 / I11）。
+// TestEdgeCrossNamespaceRejected 跨命名空间的下游 → 400（契约 §1.2 / I11）。
 //
 // 改写自 TestEdgeCrossOrgRejected：原用例是「A 组织的能力 → B 组织的同一命名空间」，
 // 组织层删除后没有「另一片命名空间」这种东西了，但**这条不变量本身没变**——
-// 所以这里直接改成真正的跨命名空间：同一部署两个命名空间，A 空间的边指向 B 空间的 cap。
+// 所以这里直接改成真正的跨命名空间：同一部署两个命名空间，A 空间的能力指向 B 空间的 cap。
 // 断言完全不变（400），覆盖的关系反而更直接。
+//
+// **改写说明（能力边入口迁移）**：建边从 `POST /v1/edges` 换成
+// `PUT /v1/capabilities/{name}/downstreams`（能力边的唯一写入口），断言不变。
 func TestEdgeCrossNamespaceRejected(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 
 	// 同一部署里的另一个命名空间，里有同名能力 fix@1
 	ns2 := env.seedNamespace(t, "staging", "Staging")
-	foreign := env.seedCapabilityIn(t, ns2.ID, "fix", 1, nil)
+	env.seedCapabilityIn(t, ns2.ID, "fix", 1, nil)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID:    env.nsID,
-		FromCapability: from.ID, FromPort: "fix", ToCapability: foreign.ID,
-	})
+	// 本命名空间里没有 fix → 它只存在于 staging → 跨命名空间引用（I11）
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": "fix"}})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (cross-namespace edge); body=%s", rr.Code, rr.Body.String())
+	}
+	// 被拒的下游不能落库
+	var n int
+	if err := env.db.QueryRow(`SELECT count(*) FROM edges WHERE namespace_id = ?`, env.nsID).Scan(&n); err != nil {
+		t.Fatalf("count edges: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("跨命名空间的下游被拒却落库了: %d", n)
 	}
 }
 

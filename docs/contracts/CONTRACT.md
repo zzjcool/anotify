@@ -310,34 +310,61 @@ spec:
 ### 2.4 出口表（路由唯一依据）
 
 ```sql
-CREATE TABLE IF NOT EXISTS edges (
+CREATE TABLE IF NOT EXISTS "edges" (
     namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     from_is_source  INTEGER NOT NULL DEFAULT 0,   -- 0=能力边，1=入口边
-    from_key        TEXT NOT NULL,                -- 能力 id 或 来源名（看上面）
-    from_port       TEXT NOT NULL,                -- 出口名，能力边时必须 ∈ from 的 outputs
-    to_capability   TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    from_ref        TEXT NOT NULL,                -- 能力**引用** 或 来源名（看下面）
+    from_port       TEXT NOT NULL,                -- 出口名；能力边恒为隐式 `out`
+    to_ref          TEXT NOT NULL,                -- 下游能力的**引用**
+    literals        TEXT NOT NULL DEFAULT '{}',   -- 常量覆盖（能力边、入口边都可）
+    mapping         TEXT NOT NULL DEFAULT '{}',   -- 引用模板（只有入口边可非空）
+    priority        INTEGER NOT NULL DEFAULT 0,   -- 候选优先级（小的优先）
     created_at      INTEGER NOT NULL,
-    PRIMARY KEY (namespace_id, from_is_source, from_key, from_port, to_capability)
+    PRIMARY KEY (namespace_id, from_is_source, from_ref, from_port, to_ref)
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_lookup
-    ON edges(namespace_id, from_is_source, from_key, from_port);
+    ON edges(namespace_id, from_is_source, from_ref, from_port);
 ```
 
-**边属于命名空间（I11）**：主键前缀从 `org_id` 换成 `namespace_id`。
-同一对能力可以在**不同命名空间**各有一条边，互不影响。
+**边里只存引用，不存能力 id**（P2.2，设计 typed-pipeline §3.2）：`from_ref` / `to_ref` 是
+`name`（跟随 latest，升级自动生效）或 `name@version`（钉死那一版）。存 id 的话能力一升级，
+原来那条边还指着旧 id，升级永远不生效。
 
-**一行 = 一条边。同一个 `(from_key, from_port)` 可以有多行 → 扇出。**
+**边属于命名空间（I11）**：同一对能力可以在**不同命名空间**各有一条边，互不影响。
+
+**一行 = 一条边。同一个 `(from_ref, from_port)` 可以有多行 → 扇出（候选集合）。**
 **右端一定是能力定义，不引用任何机器（I7）。**
 
 左端有两种（`from_is_source` 区分，见 #110）：
-`0` = 能力之间的边（`from_key` 是能力 id，`from_port` 必须 ∈ 该能力的 `outputs`）；
-`1` = **入口边**（`from_key` 是来源名，如 `github`；`from_port` 是事件类型，任意值 —— 外部系统决定）。
+
+- `0` = **能力边**：`from_ref` 是上游能力的**名字**（不是版本——一个能力的全部版本共用
+  同一组出边，升级不改拓扑），`from_port` 恒为隐式出口 `out`（`store.ImplicitPort`；
+  端口从界面/API 上消失，见 `CONTRACT-hide-ports.md`）。多个下游 = 同一出口的**候选**，
+  派发按 `priority`（小的优先）+ 同级轮盘选一个。
+- `1` = **入口边**：`from_ref` 是**来源名**（如 `github`；不是能力，不解析），`from_port`
+  是事件类型，任意值 —— 外部系统决定；参数模板落在 `mapping` 上。
+
+**写入口（2026-11 起，`CONTRACT-downstream-edit.md`）**：
+
+| 操作 | 端点 |
+|---|---|
+| 建/删/改优先级/重排能力的下游 | `PUT /v1/capabilities/{name}/downstreams`（**整体替换**，空数组 = 清空） |
+| 建入口边 | `POST /v1/edges`（`fromIsSource=true`；能力边 → `405 edge_write_removed`） |
+| 运维纠正（删一条） | `DELETE /v1/edges`（保留；控制台不再有入口） |
+| 读（图 / 详情 / trace） | `GET /v1/edges`（保留） |
+
+能力的下游**只在能力里改**：一次 `PUT` 提交的那组就是全部（replace），校验全部先做、
+任一失败一个字节都不写，写入（删掉 `out` 上多余的 + upsert 其余）在同一个事务里。
+`POST /v1/edges` 的能力边分支只剩 405（旧路径不再接受 append 语义）。
+
+两个边界：① 这条路径只写**隐式出口 `out`** 的边，不动历史**多出口能力**别的端口上的边
+（那些能力在界面上是只读保留的）；② 它**只写边**，不改能力定义的 `outputs`
+（那属于能力版本契约，append-only）。
 
 **I11 第 ① 条**：`from_is_source=0` 时两端能力的 `namespace_id` 都必须等于边的
-`namespace_id`；把别处的能力 id 填进来在 SQL 层是合法的（外键只保证行存在），
-所以 store 层**必须显式校验**，违反一律 `400`。
+`namespace_id`；把别处的能力引用填进来在解析层就已经是错的，store 层**必须显式校验**，
+违反一律 `400`（跨命名空间引用有独立的错误类型，不静默当成「不存在」）。
 
 ### 2.5 事件与任务
 
@@ -1104,7 +1131,10 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `POST` | `/v1/tasks/{id}/cancel` | 取消任务 |
 | `GET` | `/v1/capabilities` | 能力定义列表 |
 | `POST` | `/v1/capabilities` | 定义新能力（自动算 hash、开版本） |
-| `GET/POST/DELETE` | `/v1/edges` | 出口表 CRUD |
+| `GET` | `/v1/edges` | 出口表列表（图 / 详情 / trace 都靠它） |
+| `POST` | `/v1/edges` | 新增**入口边**（`fromIsSource=true`）；能力边 → `405 edge_write_removed` |
+| `DELETE` | `/v1/edges` | 删除一条边（运维纠正用；控制台不再有入口） |
+| `PUT` | `/v1/capabilities/{name}/downstreams` | **整体替换**能力的下游（能力边唯一的写入口；空数组 = 清空） |
 | `GET` | `/v1/nodes` | 节点列表与在线状态（响应带顶层 `targetAgentVersion` + 每节点 `agentVersion`/`agentCommit`/`agentUpgrade`，见下） |
 | `POST` | `/v1/nodes` | 注册节点（`namespaceId` 必填；返回**只出现一次**的明文令牌，库里只存 sha256） |
 | `POST` | `/v1/nodes/{id}/drain` | 排空节点 |
