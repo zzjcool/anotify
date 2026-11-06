@@ -29,7 +29,6 @@ common:
     admin_section: Admin
     admin: Admin Console
     sources: Sources
-    edges: Edges
   lang:
     label: Language
     switcher_label: Switch language
@@ -1299,7 +1298,6 @@ caps:
     lifecycle_carried: 'Lifecycle {v}'
     no_artifact: This capability has no artifact yet — start the script from blank
     name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
-    downstream_keep: '{n} downstream edge(s) will follow the new version — edges bind to the name, not the version.'
     multi_output_note: 'This capability fans out along more than one downstream path (legacy data): the structure is preserved as-is and is not edited here.'
     submit: Publish new version
     publishing: Publishing…
@@ -1322,27 +1320,31 @@ caps:
     err_target: Pick a target capability
     err_self: A capability cannot link to itself
     err_literals: Literals must be a JSON object
-  edges:
-    title: Edges
-    new: New edge
-    desc: Each edge means "this output of this capability points at another capability". One output may have several edges (fan-out).
-    empty: 'Edge table is empty: events arriving here have nowhere to go.'
-    from: From capability
-    port: Output
-    port_hint: Only outputs declared by the capability are listed (outputs are closed, invariant I2).
-    port_hint_origin: For an origin, the port is the event type itself (decided by the external system, e.g. GitHub's pull_request.opened)
-    port_placeholder: pull_request.opened
-    to: To capability
-    remove: Delete
-    removed: Deleted
-    remove_failed: 'Delete failed: '
-    created: Edge created
-    create_failed: 'Create failed: '
-    err_incomplete: Pick a source, an output and a target
-    no_ports: (this capability has no outputs)
-    moved_title: Edges moved to their own page
-    moved_desc: A capability answers what it can do; an edge answers where it goes next. Edges grow fast with fan-out and need search and grouping, so they have their own page.
-    moved_link: Open edges
+  down:
+    # Downstream row editor in the edit modal: each row = target + priority + delete.
+    # The copy only ever talks about "downstream" — ports are an internal routing key.
+    add_ph: Type a capability name and press Enter (searchable)
+    name_ph: Capability name
+    prio: Priority
+    prio_hint: Lower fires first; empty = 0
+    del: Remove this downstream
+    empty: 'No downstream yet: this capability ends after it runs (terminal).'
+    save: Save downstreams
+    saving: Saving…
+    saved: Downstreams saved (no new version)
+    save_failed: 'Failed to save downstreams: '
+    dirty: Unsaved downstream changes
+    hint_edit: Editing downstreams does not create a new version — only the target and the priority change here.
+    hint_keep_ref: Write a reference as name (follow latest) or name@2 (pinned version).
+    err_unknown: 'Target capability not found: {ref}'
+    err_self: A capability cannot link to itself
+    err_duplicate: That downstream is already in the list
+    err_too_many: At most 100 downstreams
+    err_priority: Priority must be an integer within 0..1000
+    err_notfound: Capability not found (it may have been deleted)
+    err_removed: 'The old endpoint is closed: edit downstreams under Edit capability → downstream'
+    need_target: Pick a target capability first
+    current_version_note: These downstreams are shared by every version — publishing a new version leaves them alone.
 prune:
   no_edge: no candidate connected
   no_capability: target capability does not exist
@@ -1601,52 +1603,6 @@ sources:
     terminal_short: terminal
     no_edge: no downstream
   view_events: View events
-edges:
-  title: Edges
-  subtitle: Which output leads where
-  src_prefix: Source
-  from_source: Source
-  intro: A capability answers "what can it do"; an edge answers "where does it go next". One edge = one output wired to one downstream capability. The same output can have several edges (fan-out); the event is dispatched to all of them.
-  refresh: Refresh
-  new: New edge
-  search: Search
-  search_hint: Capability or port name
-  filter_cap: By capability
-  all_caps: All capabilities
-  count: '{n} edges'
-  port_count: '{n} ports'
-  from: From capability
-  port: Output port
-  port_hint: Port must be one of the capability's declared outputs
-  port_hint_origin: Origin capabilities accept any event type — type one directly, e.g. pull_request.opened
-  port_hint_end: This capability declares no outputs (terminal). An edge can be created but will never dispatch.
-  to: To capability
-  cancel: Cancel
-  save: Save
-  remove: Delete
-  terminal: Ends here (no downstream)
-  empty: 'Edge list is empty: incoming events have nowhere to go.'
-  nomatch: No matching edges.
-  created: Edge created
-  fanout: 'Fan-out ×{n}'
-  removed: Edge deleted
-  err_port: Port name is required
-  err_self: A capability cannot connect to itself
-  err_create: Create failed
-  err_remove: Delete failed
-  # Literal overrides (P0-c): constants this edge adds on the way downstream; literals win.
-  literals: Literal overrides (optional JSON)
-  literals_hint: Downstream params = data ⊎ these constants (same key wins here). Keys and types must match the target's parameter contract — typos are rejected outright.
-  follow_latest: Follow latest version
-  follow_latest_hint: Link re-points when a new capability version ships; uncheck to pin the selected one
-  literals_placeholder: '{"to":"u_123"}'
-  literals_badge: literals ×{n}
-  err_literals_json: Literal overrides are not valid JSON
-  err_literals_object: 'Literal overrides must be a JSON object like {"to":"u_123"}'
-  # References (P2.2): an edge stores a reference, not a capability id
-  current_ref: 'now → {ref}'
-  ref_unresolved: 'Cannot resolve: the capability this reference points to no longer exists'
-  unresolved_short: unresolved
 trace:
   legend_hot: "Deeper line · this path was walked many times (retry / loop)"
   legend_origin: "Source · trigger (events enter here)"
@@ -1691,6 +1647,11 @@ trace:
     loading: "Loading logs…"
     truncated: "Log truncated ({n} bytes total, only the last 32 KiB kept)"
     truncated_unknown: "Log truncated (only the last 32 KiB kept)"
+    reason:
+      node_offline: 'Node offline: logs live on the node — reconnect it to read them'
+      no_local_archive: This run's archive is not on the node (it may be past its retention window)
+      timeout: The node did not answer in time — logs are unavailable for now
+      unknown: 'Logs unavailable for now ({reason})'
   stat:
     spans: Tasks
     duration: Duration

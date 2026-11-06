@@ -29,7 +29,6 @@ common:
     admin_section: 管理
     admin: 管理后台
     sources: 源
-    edges: 出口
   lang:
     label: 语言
     switcher_label: 切换语言
@@ -1299,7 +1298,6 @@ caps:
     lifecycle_carried: '生命周期 {v}'
     no_artifact: 这个能力还没有产物，脚本从空白开始写
     name_locked: '名字锁定：这一版就叫这个名字，改名字请另建一个能力。'
-    downstream_keep: '已有 {n} 条下游会跟着新版本走 —— 边接的是名字，不是版本号。'
     multi_output_note: '这个能力有多条下游路径（历史数据）：结构原样保留，不在这里改。'
     submit: 发布新版本
     publishing: 发布中…
@@ -1322,27 +1320,31 @@ caps:
     err_target: 请选择一个目标能力
     err_self: 不能让能力连到自己
     err_literals: 常量覆盖必须是一个 JSON 对象
-  edges:
-    title: 出口表
-    new: 新增边
-    desc: 每条边表示"某个能力的某个出口，指向另一个能力"。一个出口可以有多条边（扇出）。
-    empty: 出口表为空：事件进来后没有任何出口可走。
-    from: 来源能力
-    port: 出口
-    port_hint: 只列出该能力声明过的出口（出口封闭，不变量 I2）。
-    port_hint_origin: 起点能力的出口就是事件类型（由外部系统决定，例如 GitHub 的 pull_request.opened）
-    port_placeholder: pull_request.opened
-    to: 目标能力
-    remove: 删除
-    removed: 已删除
-    remove_failed: 删除失败：
-    created: 边已创建
-    create_failed: 创建失败：
-    err_incomplete: 请选择来源、出口和目标
-    no_ports: （该能力没有出口）
-    moved_title: 出口表已独立成页
-    moved_desc: 能力是「能干什么」，出口是「干完之后往哪走」。出口的规模会随扇出快速增长，需要搜索和按能力分组，所以单独一页。
-    moved_link: 去出口表
+  down:
+    # 编辑弹层里的「下游」行编辑器：每行 = 目标能力 + 优先级 + 删除。
+    # 这些文案只谈「下游」，不谈端口（端口是内部路由键，界面不表达它）。
+    add_ph: 输入能力名后回车添加（可搜索）
+    name_ph: 能力名
+    prio: 优先级
+    prio_hint: 数字越小越先派发；留空 = 0
+    del: 删除这条下游
+    empty: '还没有下游：这个能力跑完就结束（终端能力）。'
+    save: 保存下游
+    saving: 保存中…
+    saved: 下游已保存（不产生新版本）
+    save_failed: '保存下游失败：'
+    dirty: 有未保存的下游改动
+    hint_edit: 改下游不产生新版本：这里只改「接到谁、优先级多少」。
+    hint_keep_ref: 引用写成 name（跟随最新）或 name@2（钉死版本）。
+    err_unknown: '找不到目标能力：{ref}'
+    err_self: 不能让能力连到自己
+    err_duplicate: 这条下游已经在列表里
+    err_too_many: 下游最多 100 条
+    err_priority: 优先级必须是 0~1000 的整数
+    err_notfound: 能力不存在（可能已被删除）
+    err_removed: 旧接口已关闭：能力的下游请在「编辑能力 → 下游」里改
+    need_target: 请先填一个目标能力
+    current_version_note: 这些下游所有版本共用：发新版本不会改动它们。
 prune:
   no_edge: 没有接候选
   no_capability: 目标能力不存在
@@ -1603,52 +1605,6 @@ sources:
     terminal_short: 终点
     no_edge: 没有下游
   view_events: 查看事件
-edges:
-  title: 出口
-  subtitle: 什么出口接到哪里
-  src_prefix: 来源
-  from_source: 来源
-  intro: 能力回答「能干什么」，出口回答「干完之后往哪走」。一条边 = 一个出口接到一个下游能力。同一个出口可以接多条边（扇出），事件会同时派给它们。
-  refresh: 刷新
-  new: 新建出口
-  search: 搜索
-  search_hint: 能力名或出口名
-  filter_cap: 按能力
-  all_caps: 全部能力
-  count: '{n} 条边'
-  port_count: '{n} 个出口'
-  from: 从哪个能力
-  port: 哪个出口
-  port_hint: 出口必须是该能力声明的 outputs 之一
-  port_hint_origin: 起点能力的出口是任意事件类型，直接填事件类型名，如 pull_request.opened
-  port_hint_end: 这个能力没有声明出口（终端能力）。填一个事件类型也能建边，但派发时不会被走到。
-  to: 接到哪个能力
-  cancel: 取消
-  save: 保存
-  remove: 删除
-  terminal: 到此为止（未接下游）
-  empty: 出口表为空：事件进来后没有任何出口可走。
-  nomatch: 没有匹配的边。
-  created: 边已创建
-  fanout: '扇出 ×{n}'
-  removed: 边已删除
-  err_port: 请填写出口名
-  err_self: 不能让能力连到自己
-  err_create: 创建失败
-  err_remove: 删除失败
-  # 常量覆盖（P0-c）：这条边进入下游时额外带的常量，字面量优先
-  literals: 常量覆盖（可选 JSON）
-  literals_hint: 进入下游的参数 = 数据 ⊎ 这里的常量（同名键以这里为准）。键与类型必须符合目标的参数契约，拼错会直接拒绝。
-  follow_latest: 跟随最新版本
-  follow_latest_hint: 能力发新版后这条边自动接到新版；取消则钉死到选中的那一版
-  literals_placeholder: '{"to":"u_123"}'
-  literals_badge: 常量 ×{n}
-  err_literals_json: 常量覆盖不是合法 JSON
-  err_literals_object: '常量覆盖必须是一个 JSON 对象，形如 {"to":"u_123"}'
-  # 引用（P2.2）：边里存的是引用，不是能力 id
-  current_ref: '当前 → {ref}'
-  ref_unresolved: 解析不到：这个引用指向的能力已不存在
-  unresolved_short: 解析不到
 trace:
   legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"
   legend_origin: "源 · 触发器（事件从这里进来）"
@@ -1693,6 +1649,11 @@ trace:
     loading: "正在加载日志…"
     truncated: "日志已截断（共 {n} 字节，只保留最后 32 KiB）"
     truncated_unknown: "日志已截断（只保留最后 32 KiB）"
+    reason:
+      node_offline: '节点离线：日志留在节点上，节点连上后可再看'
+      no_local_archive: 节点上没有这次执行的档案（可能已过保留期）
+      timeout: 节点没在超时前回复，日志暂时取不到
+      unknown: '日志暂时取不到（{reason}）'
   stat:
     spans: 任务
     duration: 总耗时

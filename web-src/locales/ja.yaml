@@ -29,7 +29,6 @@ common:
     admin_section: 管理
     admin: 管理コンソール
     sources: ソース
-    edges: 出口
   lang:
     label: 言語
     switcher_label: 言語を切り替え
@@ -1299,7 +1298,6 @@ caps:
     lifecycle_carried: 'ライフサイクル {v}'
     no_artifact: この能力にはまだ成果物がないため、スクリプトは空から書き始めます
     name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
-    downstream_keep: '既存の下流 {n} 件は新バージョンに追従します — エッジはバージョンではなく名前を指します。'
     multi_output_note: 'このケイパビリティは複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
     submit: 新バージョンを公開
     publishing: 公開中…
@@ -1322,27 +1320,29 @@ caps:
     err_target: 対象の能力を選択してください
     err_self: 自分自身にはリンクできません
     err_literals: 定数の上書きは JSON オブジェクトである必要があります
-  edges:
-    title: エッジ
-    new: エッジを追加
-    desc: 各エッジは「このケイパビリティのこの出口が別のケイパビリティを指す」ことを表します。1 つの出口に複数のエッジを張れます（ファンアウト）。
-    empty: 'エッジ表が空です: ここに届いたイベントの行き先がありません。'
-    from: 起点ケイパビリティ
-    port: 出口
-    port_hint: そのケイパビリティが宣言した出口のみ表示されます（出口は閉集合、不変条件 I2）。
-    port_hint_origin: 起点ケイパビリティの出口はイベント種別そのものです（外部システムが決めます。例：GitHub の pull_request.opened）
-    port_placeholder: pull_request.opened
-    to: 終点ケイパビリティ
-    remove: 削除
-    removed: 削除しました
-    remove_failed: '削除に失敗: '
-    created: エッジを作成しました
-    create_failed: '作成に失敗: '
-    err_incomplete: 起点・出口・終点を選択してください
-    no_ports: （このケイパビリティには出口がありません）
-    moved_title: 出口表は独立したページに移動しました
-    moved_desc: ケイパビリティは「何ができるか」、出口は「終わった後どこへ行くか」。ファンアウトで出口は急増し、検索やグループ化が必要になるため別ページにしました。
-    moved_link: 出口表を開く
+  down:
+    add_ph: ケイパビリティ名を入力して Enter（検索可）
+    name_ph: ケイパビリティ名
+    prio: 優先度
+    prio_hint: 数値が小さいほど先にディスパッチされます。空 = 0
+    del: この下流を削除
+    empty: '下流はまだありません。このケイパビリティは実行後に終了します（終端）。'
+    save: 下流を保存
+    saving: 保存中…
+    saved: 下流を保存しました（新しいバージョンは作りません）
+    save_failed: '下流の保存に失敗しました: '
+    dirty: 未保存の下流変更があります
+    hint_edit: 下流の編集は新しいバージョンを作りません（接続先と優先度だけが変わります）。
+    hint_keep_ref: 参照は name（最新に追従）または name@2（バージョン固定）で書きます。
+    err_unknown: '対象のケイパビリティが見つかりません: {ref}'
+    err_self: 自分自身には接続できません
+    err_duplicate: その下流はすでに一覧にあります
+    err_too_many: 下流は最大 100 件です
+    err_priority: 優先度は 0〜1000 の整数で指定してください
+    err_notfound: ケイパビリティが見つかりません（削除された可能性）
+    err_removed: '旧エンドポイントは閉じました。下流は「ケイパビリティを編集 → 下流」で保存してください'
+    need_target: 先に対象のケイパビリティを選んでください
+    current_version_note: これらの下流は全バージョンで共有されます。新しいバージョンを出しても変わりません。
 prune:
   no_edge: 候補が接続されていません
   no_capability: 対象のケイパビリティが存在しません
@@ -1601,52 +1601,6 @@ sources:
     terminal_short: 終点
     no_edge: 下流なし
   view_events: イベントを見る
-edges:
-  title: 出口
-  subtitle: どの出口がどこへ繋がるか
-  src_prefix: ソース
-  from_source: ソース
-  intro: ケイパビリティは「何ができるか」、出口は「終わった後どこへ行くか」を表します。1本の辺 = 1つの出口を1つの下流ケイパビリティへ接続。同じ出口に複数の辺が張れ（ファンアウト）、イベントはそれら全てへ同時に届きます。
-  refresh: 更新
-  new: 出口を作成
-  search: 検索
-  search_hint: ケイパビリティ名または出口名
-  filter_cap: ケイパビリティで絞る
-  all_caps: すべてのケイパビリティ
-  count: '{n} 本の辺'
-  port_count: '{n} 個の出口'
-  from: 接続元
-  port: 出口
-  port_hint: 出口はそのケイパビリティが宣言した outputs のいずれか
-  port_hint_origin: '起点ケイパビリティの出口は任意のイベント型です。型名を直接入力してください（例: pull_request.opened）'
-  port_hint_end: このケイパビリティは出口を宣言していません（終端）。辺は作れますが派遣されません。
-  to: 接続先
-  cancel: キャンセル
-  save: 保存
-  remove: 削除
-  terminal: ここで終了（下流なし）
-  empty: 出口表が空です：イベントが来ても行き先がありません。
-  nomatch: 一致する辺がありません。
-  created: 辺を作成しました
-  fanout: 'ファンアウト ×{n}'
-  removed: 辺を削除しました
-  err_port: 出口名を入力してください
-  err_self: 自分自身には接続できません
-  err_create: 作成に失敗しました
-  err_remove: 削除に失敗しました
-  # リテラル上書き（P0-c）: このエッジが下流に渡す定数。同名キーはこちらが優先。
-  literals: リテラル上書き（任意の JSON）
-  literals_hint: 下流のパラメータ = データ ⊎ ここに書いた定数（同名キーはこちらが優先）。キーと型は下流のパラメータ契約に一致必須で、打ち間違いは拒否されます。
-  follow_latest: 最新バージョンに追従
-  follow_latest_hint: 新しいバージョンが出るとこのリンクは自動で切り替わります（解除で固定）
-  literals_placeholder: '{"to":"u_123"}'
-  literals_badge: 定数 ×{n}
-  err_literals_json: リテラル上書きが正しい JSON ではありません
-  err_literals_object: 'リテラル上書きは {"to":"u_123"} のような JSON オブジェクトである必要があります'
-  # 参照（P2.2）：辺が持つのは能力 id ではなく参照
-  current_ref: '現在 → {ref}'
-  ref_unresolved: 解決できません：この参照が指す能力は既に存在しません
-  unresolved_short: 解決不可
 trace:
   legend_hot: "線が濃いほど · この経路は何度も通った（再試行／ループ）"
   legend_origin: "ソース · トリガー（ここからイベントが入る）"
@@ -1691,6 +1645,11 @@ trace:
     loading: "ログを読み込み中…"
     truncated: "ログは切り詰められています（合計 {n} バイト、末尾 32 KiB のみ保持）"
     truncated_unknown: "ログは切り詰められています（末尾 32 KiB のみ保持）"
+    reason:
+      node_offline: 'ノードがオフラインです。ログはノード側にあり、接続すれば読めます'
+      no_local_archive: この実行のアーカイブがノードにありません（保持期間を過ぎた可能性）
+      timeout: ノードが時間内に応答しませんでした。ログは今は取得できません
+      unknown: 'ログは今は取得できません（{reason}）'
   stat:
     spans: タスク
     duration: 所要時間

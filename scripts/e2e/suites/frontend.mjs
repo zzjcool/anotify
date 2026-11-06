@@ -47,7 +47,6 @@ const PAGES = [
 	"events.html",
 	"sources.html",
 	"capabilities.html",
-	"edges.html",
 	"nodes.html",
 	// 独立 trace 页（从事件流"查看链路"跳进来）
 	"trace.html",
@@ -62,7 +61,6 @@ const GUARDED = [
 	"events.html",
 	"sources.html",
 	"capabilities.html",
-	"edges.html",
 	"nodes.html",
 ];
 const VIEWPORTS = [
@@ -1451,7 +1449,7 @@ async function main() {
 		const ctx = await newCtx();
 		await injectSession(ctx, authSeed.session, server.base);
 		const page = await ctx.newPage();
-		for (const p of ["capabilities.html", "nodes.html", "edges.html"]) {
+		for (const p of ["capabilities.html", "nodes.html"]) {
 			await page.goto(server.base + "/" + p, { waitUntil: "load", timeout: 15000 });
 			await page.waitForTimeout(600);
 			const info = await page.evaluate(() => ({
@@ -1464,6 +1462,46 @@ async function main() {
 				JSON.stringify(info),
 			);
 		}
+		await page.close();
+		await ctx.close();
+	}
+
+	// D3：导航里**不再有出口页**（CONTRACT-downstream-edit §5）。
+	//
+	// 为什么要有这条反向守卫：出口页被删掉之后，最危险的回归不是「页面崩了」
+	// （那会直接 404 / pageerror 被抓到），而是**导航又把它加回来**、或者留着一条
+	// 指向已删页面的死链。死链在真实浏览器里只是点下去 404，在没人点的 e2e 里
+	// 会静默通过 —— 所以这里直接钉住「侧栏里没有这个入口」。
+	{
+		const ctx = await newCtx();
+		await injectSession(ctx, authSeed.session, server.base);
+		const page = await ctx.newPage();
+		await page.goto(server.base + "/capabilities.html", {
+			waitUntil: "load",
+			timeout: 20000,
+		});
+		await page.waitForTimeout(800);
+		const nav = await page.evaluate(() => ({
+			hrefs: Array.from(document.querySelectorAll("#sidebar a")).map(
+				(a) => a.getAttribute("href") || "",
+			),
+			// a.side-link 里含 SVG 图标，textContent 会把图标里的文本也算进来。
+			// 取最后一个文本子节点才是标签文字（与旧版出口页用例同一口径）。
+			labels: Array.from(document.querySelectorAll("#sidebar a.side-link")).map((a) => {
+				const last = a.lastChild;
+				return last && last.nodeType === 3 ? last.textContent.trim() : a.textContent.trim();
+			}),
+		}));
+		H.check(
+			"侧栏里没有指向已删出口页的链接（edges.html 彻底下线）",
+			!nav.hrefs.includes("edges.html"),
+			JSON.stringify(nav.hrefs),
+		);
+		H.check(
+			"侧栏标签里没有「出口 / Edges」（下游只能在能力里改）",
+			nav.labels.length > 0 && !nav.labels.some((x) => /出口|Edges/i.test(x)),
+			JSON.stringify(nav.labels),
+		);
 		await page.close();
 		await ctx.close();
 	}
@@ -1758,6 +1796,15 @@ async function checkCapabilityTemplates(page) {
 			placeholder: (input || {}).placeholder || "",
 			hint: (hint || {}).textContent || "",
 			title: ((wrap && wrap.querySelector(".card-title")) || {}).textContent || "",
+			// 编辑模式的构件（§2.2）在**新建表单里必须全空/隐藏**：
+			// 建能力时下游随 links[] 一次提交，没有「保存下游」那道闸；
+			// 行列表里出现优先级数字会让人以为建能力时就能调。
+			list: !!document.getElementById("cap-down-list"),
+			items: document.querySelectorAll("#cap-down-list .cap-down-item").length,
+			actionsHidden: (() => {
+				const a = document.getElementById("cap-down-actions");
+				return !!a && a.classList.contains("hidden");
+			})(),
 			legacy: {
 				ports: document.querySelectorAll("#cap-ports, #cap-port-input, #cap-ports-hint").length,
 				chips: document.querySelectorAll(".cap-chip, .cap-chips").length,
@@ -1795,6 +1842,14 @@ async function checkCapabilityTemplates(page) {
 		"端口 UI 全部消失（端口输入框 / 出口 chips / 按出口分行 / balance 模式 / 优先级数字）",
 		Object.values(downForm.legacy).every((n) => n === 0),
 		JSON.stringify(downForm.legacy),
+	);
+	// 新建模式的下游行编辑器空态（CONTRACT-downstream-edit §2.1/§2.2）：
+	// 行列表容器在（编辑模式要用它），但**一行也不许有**，且「保存下游」那块不可见 ——
+	// 否则用户会以为新建时能先调优先级，而那时边还不存在。
+	H.check(
+		"新建表单里下游行编辑器是空的（0 行）且「保存下游」不可见",
+		downForm.list === true && downForm.items === 0 && downForm.actionsHidden === true,
+		JSON.stringify({ list: downForm.list, items: downForm.items, actions: downForm.actionsHidden }),
 	);
 	H.check(
 		"表单用户可见文案里没有「端口」（术语红线，四语言同一口径）",
@@ -2250,10 +2305,14 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(downEmpty),
 	);
 
-	// 造一条 mock 边：script.echo（没下游）→ report.send，页面自己 loadAll 后应立刻可见
+	// 造一条 mock 下游：script.echo（没下游）→ report.send，页面自己 loadAll 后应立刻可见
 	//
 	// 先把 script.echo 的详情展开（用户就是在这个位置看到「跑完就结束」的），
 	// 造完边再看：同一条候选出现了、「跑完就结束」消失、展开态没被刷新弄丢。
+	//
+	// 造数走 **PUT /v1/capabilities/{name}/downstreams**（CONTRACT-downstream-edit §2）：
+	// 旧的 POST /v1/edges 能力边已被封成 405 edge_write_removed（§3），
+	// 还在用老接口建能力边的用例会变成“永远红”。
 	const afterEdge = await page.evaluate(async () => {
 		const findRow = () => document.querySelector('.cap-row[data-cap-name="script.echo"]');
 		let row = findRow();
@@ -2270,17 +2329,12 @@ async function checkCapabilityDetail(page, base) {
 			open: row.querySelector(".cap-detail").classList.contains("open"),
 			empty: !!row.querySelector(".cap-down-empty"),
 		};
-		const res = await fetch("/v1/edges", {
-			method: "POST",
+		// replace 语义：传什么就是全部（这里传一条）。左端是能力名，出口是隐式 out，
+		// 两者都不出现在请求里 —— 请求体只有 links[{toRef, priority}]。
+		const res = await fetch("/v1/capabilities/script.echo/downstreams", {
+			method: "PUT",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				fromIsSource: false,
-				fromRef: "script.echo",
-				// 内部唯一出口：界面不表达它，但协议需要它（契约 §1）
-				fromPort: "out",
-				toRef: "report.send",
-				literals: {},
-			}),
+			body: JSON.stringify({ links: [{ toRef: "report.send", priority: 0 }] }),
 		});
 		const status = res.status;
 		await loadAll();
@@ -2306,8 +2360,8 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(afterEdge.before),
 	);
 	H.check(
-		"造一条边后，详情区立刻出现那个目标能力（report.send）",
-		afterEdge.status === 201 &&
+		"造一条下游后，详情区立刻出现那个目标能力（report.send）",
+		afterEdge.status === 200 &&
 			(afterEdge.cands || []).some((n) => String(n).split("@")[0] === "report.send"),
 		JSON.stringify(afterEdge),
 	);
@@ -2341,17 +2395,20 @@ async function checkCapabilityDetail(page, base) {
 		const inputs = Array.from(p.querySelectorAll('input[list="cap-down-targets"]'));
 		if (inputs.length !== 1) return { has: true, targets: inputs.length };
 		inputs[0].value = "archive-logs";
-		// 抓包：POST 体的形状必须与契约一致（引用而不是能力 id）
-		window.__edgeBodies = [];
+		// 抓包：PUT …/downstreams 的 body 是 {links:[{toRef,priority}…]}（replace）；
+		// 同时记下 POST /v1/edges 的次数 —— 旧接口已封（405），全程一次都不许发。
+		window.__downPuts = [];
+		window.__edgePosts = 0;
 		const orig = window.fetch;
 		window.fetch = function (input, init) {
 			const url = String((input && input.url) || input);
 			const method = String((init && init.method) || "GET").toUpperCase();
-			if (method === "POST" && url.includes("/v1/edges") && init && init.body) {
+			if (method === "POST" && url.includes("/v1/edges")) window.__edgePosts += 1;
+			if (method === "PUT" && url.includes("/downstreams") && init && init.body) {
 				try {
-					window.__edgeBodies.push(JSON.parse(String(init.body)));
+					window.__downPuts.push(JSON.parse(String(init.body)));
 				} catch (e) {
-					window.__edgeBodies.push(null);
+					window.__downPuts.push(null);
 				}
 			}
 			return orig.apply(this, arguments);
@@ -2371,26 +2428,44 @@ async function checkCapabilityDetail(page, base) {
 	);
 	await page.waitForTimeout(1500);
 	const addResult = await page.evaluate(() => {
-		const bodies = window.__edgeBodies || [];
+		const bodies = window.__downPuts || [];
+		const edgePosts = window.__edgePosts || 0;
 		window.__edgeRestoreFetch && window.__edgeRestoreFetch();
 		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
 		return {
 			body: bodies[bodies.length - 1] || null,
 			n: bodies.length,
+			edgePosts: edgePosts,
 			cands: Array.from(row.querySelectorAll(".cap-link[data-cand-name]")).map((l) =>
 				l.getAttribute("data-cand-name"),
 			),
 		};
 	});
+	// 旧口径（已废）：POST /v1/edges 单建一条 `{fromIsSource:false, fromRef, fromPort:"out", toRef}`。
+	// 新口径（CONTRACT-downstream-edit §2/§4）：「+ 下游」必须走**同一个** PUT …/downstreams，
+	// 而且必须把**已有下游整组带上** —— PUT 是 replace，只发新增那一条会把 alert.oncall 静默删掉。
 	H.check(
-		"加下游发的是引用（裸名字=跟随最新）、fromIsSource=false，出口固定内部名 out",
+		"「+ 下游」发的是 PUT …/downstreams，且把已有下游整组带上（replace 不丢边）",
 		!!addResult.body &&
-			addResult.body.fromIsSource === false &&
-			addResult.body.fromRef === "report.send" &&
-			// 内部唯一出口（契约 §1）：只出现在请求体里，界面不表达它
-			addResult.body.fromPort === "out" &&
-			addResult.body.toRef === "archive-logs",
+			Array.isArray(addResult.body.links) &&
+			addResult.body.links.length === 2 &&
+			// 已有的那条（report.send → alert.oncall）必须在请求体里。
+			// 注：种子里它是**钉死引用**（alert.oncall@1），所以按名字比较。
+			addResult.body.links.some(
+				(l) => String(l.toRef || "").split("@")[0] === "alert.oncall",
+			) &&
+			// 新加的那条是**裸名字**（= 跟随最新），不是能力 id
+			addResult.body.links.some((l) => l.toRef === "archive-logs") &&
+			// 优先级是数字（不是字符串），否则后端会当缺省值处理
+			addResult.body.links.every((l) => typeof l.priority === "number") &&
+			// 端口不上请求体：左端是能力名、出口恒为隐式 out
+			addResult.body.links.every((l) => !("fromPort" in l) && !("fromRef" in l)),
 		JSON.stringify(addResult.body),
+	);
+	H.check(
+		"加下游全程没有发过 POST /v1/edges（能力边入口已封）",
+		addResult.n >= 1 && addResult.edgePosts === 0,
+		JSON.stringify({ puts: addResult.n, posts: addResult.edgePosts }),
 	);
 	H.check(
 		"加下游成功后同一处立刻看到新目标（候选 ≥2）",
@@ -2738,6 +2813,458 @@ async function checkCapabilityDetail(page, base) {
 			selfLink.edges.length === 0,
 		JSON.stringify(selfLink),
 	);
+
+	// ⑧ 旧接口已关闭时给人看的话：405 edge_write_removed → 可读提示
+	//
+	// 为什么要这一条：`POST /v1/edges` 的能力边已封成 405（CONTRACT-downstream-edit §3），
+	// 而用户真正会遇到的失败形态就是「保存下游」失败。若把后端 JSON 原样丢出去
+	// （{"code":"edge_write_removed",...}），用户得自己读机器码才知道去哪儿改 ——
+	// 所以这里在网络层把 PUT 拦成 405，钉住 toast 里是人话、不夹 JSON/机器码。
+	const forbidden = await page.evaluate(async () => {
+		// 先把上一个用例留下的新建表单关掉（⑥ 失败时故意不关弹层）
+		closeCapModal();
+		const row = document.querySelector('.cap-row[data-cap-name="report.send"]');
+		if (!row) return { err: "找不到 report.send 行" };
+		row.querySelector('[data-act="edit"]').click();
+		for (let i = 0; i < 40; i++) {
+			if (document.querySelectorAll("#cap-down-list .cap-down-item").length > 0) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const rows = Array.from(document.querySelectorAll("#cap-down-list .cap-down-item"));
+		const host = document.getElementById("anotify-toast-host");
+		if (host) host.replaceChildren(); // 只看这一条 toast
+		const orig = window.fetch;
+		let intercepted = 0;
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "PUT" && url.includes("/downstreams")) {
+				intercepted += 1;
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							code: "edge_write_removed",
+							error:
+								"能力的下游请在能力里改（PUT /v1/capabilities/{name}/downstreams）",
+						}),
+						{ status: 405, headers: { "Content-Type": "application/json" } },
+					),
+				);
+			}
+			return orig.apply(this, arguments);
+		};
+		document.getElementById("cap-down-save").click();
+		for (let i = 0; i < 40; i++) {
+			const t = host && host.lastElementChild ? host.lastElementChild.textContent : "";
+			if (t && t.trim()) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const out = {
+			intercepted: intercepted,
+			rows: rows.length,
+			toast:
+				host && host.lastElementChild
+					? (host.lastElementChild.textContent || "").replace(/\s+/g, " ").trim()
+					: "",
+			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
+			saveLabel: (document.getElementById("cap-down-save") || {}).textContent || "",
+		};
+		window.fetch = orig; // 做完立即恢复，后面的用例还要正常发请求
+		closeCapModal();
+		return out;
+	});
+	H.check(
+		"旧接口 405 → toast 是人话（说清去「编辑 → 下游」改），不是机器码/JSON",
+		forbidden.intercepted === 1 &&
+			/下游/.test(forbidden.toast || "") &&
+			/编辑/.test(forbidden.toast || "") &&
+			!/edge_write_removed/.test(forbidden.toast || "") &&
+			!/\/v1\/(edges|capabilities)/.test(forbidden.toast || "") &&
+			!/[{}]/.test(forbidden.toast || ""),
+		JSON.stringify(forbidden).slice(0, 300),
+	);
+	H.check(
+		"保存下游失败后弹层不关（改动还在，可重试）",
+		forbidden.modalOpen === true && /保存下游/.test(forbidden.saveLabel || ""),
+		JSON.stringify({ open: forbidden.modalOpen, label: forbidden.saveLabel }),
+	);
+}
+
+// checkDownstreamEdit 覆盖「能力的下游只能在能力里改」（CONTRACT-downstream-edit §4）。
+//
+// 出口页删掉之后，用户在能力编辑里能做的四件事就是这四件，每一件都会**静默**坏掉：
+//   ① 预填：进编辑弹层就看到当前下游（名字 + 优先级），不是一块空白
+//      —— 空白会让人以为「没有下游」，而实际上一保存就把边全删了（PUT 是 replace）
+//   ② 改优先级 → 保存 → 重开仍是新值，且**不产生新版本**（拓扑不属于产物）
+//   ③ 删一行 → 保存 → 那条边真的没了（未提交的就是被替换掉的）
+//   ④ 清空 → 终端能力（links: [] 合法）→ 详情区说「跑完就结束」
+// 外加一条反向守卫：这一整轮**一条** POST /v1/edges 都不许发（能力边入口已封 405）。
+//
+// 为什么在 mock 里跑：这里钉的是**界面接对了接口形状**（PUT …/downstreams + links[]、
+// replace 语义、回读），真后端那一半在 checkCapabilityEditReal 末尾（落库 + 版本不变）。
+async function checkDownstreamEdit(page, base) {
+	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1600);
+
+	// 种子数据里 deploy-preview 有两条**干净**的出边：
+	//   gen-changelog（裸名字 = 跟随最新）、rollback@1（钉死版本）
+	// 为什么不用 analyze-pr：它历史上出现过两条相同的边（mock 注释里写了），
+	// 而 PUT 对重复 toRef 会 400 duplicate_target —— 那会变成在验 mock 的脏数据。
+	const capName = "deploy-preview";
+
+	// 抓包装在 window.fetch 上：mock 就是在这里截住请求的，
+	// page.on("request") 抓不到（这也是下面那条「没发 POST /v1/edges」能成立的原因）。
+	await page.evaluate(() => {
+		window.__downPuts = [];
+		window.__edgePosts = 0;
+		const orig = window.fetch;
+		window.__restoreDownFetch = () => {
+			window.fetch = orig;
+		};
+		window.fetch = function (input, init) {
+			const url = String((input && input.url) || input);
+			const method = String((init && init.method) || "GET").toUpperCase();
+			if (method === "POST" && url.includes("/v1/edges")) window.__edgePosts += 1;
+			if (method === "PUT" && url.includes("/downstreams") && init && init.body) {
+				try {
+					window.__downPuts.push(JSON.parse(String(init.body)));
+				} catch (e) {
+					window.__downPuts.push(null);
+				}
+			}
+			return orig.apply(this, arguments);
+		};
+	});
+
+	// ---------- ① 预填 ----------
+	const prefill = await page.evaluate(async (name) => {
+		const readRows = () =>
+			Array.from(document.querySelectorAll("#cap-down-list .cap-down-item")).map((it) => ({
+				toRef: it.getAttribute("data-to-ref") || "",
+				name: (it.querySelector(".cap-down-item-name") || {}).value || "",
+				prio: (it.querySelector(".cap-down-item-prio") || {}).value || "",
+			}));
+		const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		if (!row) return { err: "找不到 " + name + " 行" };
+		row.querySelector('[data-act="edit"]').click();
+		for (let i = 0; i < 40; i++) {
+			if (readRows().length > 0) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const [eRes, cRes] = await Promise.all([
+			fetch("/v1/edges").then((r) => r.json()),
+			fetch("/v1/capabilities").then((r) => r.json()),
+		]);
+		const mine = (eRes.edges || []).filter(
+			(e) =>
+				!e.fromIsSource &&
+				(e.fromPort || "out") === "out" &&
+				String(e.fromRef || "").split("@")[0] === name,
+		);
+		return {
+			open: !document.getElementById("cap-modal").classList.contains("hidden"),
+			rows: readRows(),
+			edges: mine.map((e) => ({ toRef: e.toRef, priority: Number(e.priority || 0) })),
+			versions: (cRes.capabilities || [])
+				.filter((c) => c.name === name)
+				.map((c) => c.version),
+			draft: document.getElementById("cap-downstream").value,
+			actionsHidden: document
+				.getElementById("cap-down-actions")
+				.classList.contains("hidden"),
+			hint: document.getElementById("cap-downstream-hint").textContent.trim(),
+			items: document.querySelectorAll("#cap-down-list .cap-down-item").length,
+			none: !!document.querySelector("#cap-down-list .cap-down-none"),
+		};
+	}, capName);
+	H.check(
+		"① 编辑弹层里下游栏可见，且行数 = 当前下游数（不是空白，也不会一保存就删光）",
+		prefill.open === true &&
+			prefill.actionsHidden === false &&
+			prefill.none === false &&
+			prefill.rows.length >= 2 &&
+			prefill.rows.length === prefill.edges.length,
+		JSON.stringify({
+			open: prefill.open,
+			rows: prefill.rows,
+			edges: prefill.edges,
+			none: prefill.none,
+		}).slice(0, 300),
+	);
+	H.check(
+		"① 预填的行名与优先级逐条对得上 /v1/edges（名字/优先级都不是猜的）",
+		prefill.rows.length > 0 &&
+			prefill.rows.every((r) => {
+				const e = prefill.edges.find((x) => x.toRef === r.toRef);
+				return !!e && String(e.priority) === String(Number(r.prio));
+			}) &&
+			prefill.rows.every((r) => r.name === r.toRef),
+		JSON.stringify({ rows: prefill.rows, edges: prefill.edges }).slice(0, 300),
+	);
+	H.check(
+		"① 编辑模式的下游输入框是「加一条」的空草稿，行列表才是真相",
+		prefill.draft === "" && /name@2/.test(prefill.hint || ""),
+		JSON.stringify({ draft: prefill.draft, hint: prefill.hint }).slice(0, 200),
+	);
+
+	// ---------- ② 改优先级 → 保存 → 重开仍是新值（且不产生新版本）----------
+	const bumped = await page.evaluate(async (name) => {
+		const rows = Array.from(document.querySelectorAll("#cap-down-list .cap-down-item"));
+		if (!rows.length) return { err: "没有行可改" };
+		const toRef = rows[0].getAttribute("data-to-ref") || "";
+		const prio = rows[0].querySelector(".cap-down-item-prio");
+		prio.value = "7";
+		prio.dispatchEvent(new Event("input", { bubbles: true }));
+		prio.dispatchEvent(new Event("change", { bubbles: true }));
+		const hintEl = document.getElementById("cap-down-edit-hint");
+		const dirty = {
+			text: (hintEl.textContent || "").trim(),
+			warn: hintEl.classList.contains("cap-warn"),
+		};
+		window.__downPuts = [];
+		document.getElementById("cap-down-save").click();
+		// 服务端才是真相：轮询 /v1/edges 直到优先级真的变成 7（而不是只看 toast）
+		let seen = null;
+		for (let i = 0; i < 60; i++) {
+			const d = await fetch("/v1/edges").then((r) => r.json());
+			const e = (d.edges || []).find(
+				(x) =>
+					!x.fromIsSource &&
+					String(x.fromRef || "").split("@")[0] === name &&
+					x.toRef === toRef,
+			);
+			if (e && Number(e.priority) === 7) {
+				seen = Number(e.priority);
+				break;
+			}
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		// 再等 saveDownstreams **整个**走完：成功后它会 await loadAll() 回读、重置 DOWN_ROWS、
+		// 把 dirty 标记清掉。只等 /v1/edges 变化是不够的 —— mock 每个请求有 120~300ms 人为延迟，
+		// 那时光标所在的 DOM 可能还是保存前的（重开弹层就会读到旧值 → 假红）。
+		for (let i = 0; i < 80; i++) {
+			const h = document.getElementById("cap-down-edit-hint");
+			if (h && !h.classList.contains("cap-warn")) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const caps = await fetch("/v1/capabilities").then((r) => r.json());
+		const puts = window.__downPuts || [];
+		return {
+			toRef,
+			dirty,
+			seen,
+			put: puts[puts.length - 1] || null,
+			versions: (caps.capabilities || [])
+				.filter((c) => c.name === name)
+				.map((c) => c.version),
+			toast: ((document.getElementById("anotify-toast-host") || {}).textContent || "")
+				.replace(/\s+/g, " ")
+				.trim(),
+		};
+	}, capName);
+	H.check(
+		"② 改优先级后明确示「有未保存的下游改动」（warn 态）",
+		/有未保存/.test(bumped.dirty?.text || "") && bumped.dirty?.warn === true,
+		JSON.stringify(bumped.dirty),
+	);
+	H.check(
+		"② 保存走 PUT …/downstreams：请求体是整组 links（该行 priority=7，另一条仍在）",
+		!!bumped.put &&
+			Array.isArray(bumped.put.links) &&
+			bumped.put.links.length === prefill.rows.length &&
+			bumped.put.links.some(
+				(l) => l.toRef === bumped.toRef && Number(l.priority) === 7,
+			) &&
+			bumped.put.links.filter((l) => l.toRef !== bumped.toRef).length ===
+				prefill.rows.length - 1,
+		JSON.stringify(bumped.put).slice(0, 300),
+	);
+	H.check(
+		"② 落库了：GET /v1/edges 里这条的 priority 就是 7",
+		bumped.seen === 7,
+		`seen=${bumped.seen} toRef=${bumped.toRef}`,
+	);
+	H.check(
+		"② 改下游**不产生新版本**（拓扑不属于产物，版本集合与保存前一致）",
+		JSON.stringify(bumped.versions) === JSON.stringify(prefill.versions) &&
+			bumped.versions.length > 0,
+		JSON.stringify({ before: prefill.versions, after: bumped.versions }),
+	);
+	H.check(
+		"② 成功提示说清「不产生新版本」，不是一句「成功」",
+		/不产生新版本/.test(bumped.toast || ""),
+		String(bumped.toast).slice(0, 160),
+	);
+
+	// 关弹层重开：值来自服务端回读，不是内存里的那一次输入
+	const reopened = await page.evaluate(async (name) => {
+		closeCapModal();
+		await new Promise((r) => setTimeout(r, 250));
+		const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		if (!row) return { err: "重开后找不到行" };
+		row.querySelector('[data-act="edit"]').click();
+		for (let i = 0; i < 40; i++) {
+			if (document.querySelectorAll("#cap-down-list .cap-down-item").length > 0) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		return {
+			rows: Array.from(document.querySelectorAll("#cap-down-list .cap-down-item")).map(
+				(it) => ({
+					toRef: it.getAttribute("data-to-ref") || "",
+					prio: (it.querySelector(".cap-down-item-prio") || {}).value || "",
+				}),
+			),
+		};
+	}, capName);
+	H.check(
+		"② 关掉弹层重开 → 该行优先级仍是 7（值来自服务端回读，不是内存残留）",
+		(reopened.rows || []).some(
+			(r) => r.toRef === bumped.toRef && r.prio === "7",
+		),
+		JSON.stringify(reopened.rows).slice(0, 240),
+	);
+
+	// ---------- ③ 删一行 → 保存 → 那条边消失 ----------
+	const removed = await page.evaluate(async (name) => {
+		const rows = Array.from(document.querySelectorAll("#cap-down-list .cap-down-item"));
+		if (!rows.length) return { err: "没有行可删" };
+		const victim = rows[rows.length - 1];
+		const toRef = victim.getAttribute("data-to-ref") || "";
+		const before = rows.map((it) => it.getAttribute("data-to-ref"));
+		victim.querySelector(".cap-down-item-del").click();
+		const afterDel = Array.from(
+			document.querySelectorAll("#cap-down-list .cap-down-item"),
+		).map((it) => it.getAttribute("data-to-ref"));
+		window.__downPuts = [];
+		document.getElementById("cap-down-save").click();
+		let still = true;
+		for (let i = 0; i < 60; i++) {
+			const d = await fetch("/v1/edges").then((r) => r.json());
+			still = (d.edges || []).some(
+				(x) =>
+					!x.fromIsSource &&
+					String(x.fromRef || "").split("@")[0] === name &&
+					x.toRef === toRef,
+			);
+			if (!still) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		for (let i = 0; i < 80; i++) {
+			const h = document.getElementById("cap-down-edit-hint");
+			if (h && !h.classList.contains("cap-warn")) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const puts = window.__downPuts || [];
+		return {
+			toRef,
+			before,
+			afterDel,
+			gone: !still,
+			put: puts[puts.length - 1] || null,
+		};
+	}, capName);
+	H.check(
+		"③ 点删除按钮后那一行立刻从列表消失（不是等保存才消失）",
+		(removed.afterDel || []).length === (removed.before || []).length - 1 &&
+			!(removed.afterDel || []).includes(removed.toRef),
+		JSON.stringify({ before: removed.before, after: removed.afterDel }),
+	);
+	H.check(
+		"③ 保存的请求体里**不含**被删的那条（replace：没提交的就是被删的）",
+		!!removed.put &&
+			Array.isArray(removed.put.links) &&
+			removed.put.links.length === (removed.before || []).length - 1 &&
+			!removed.put.links.some((l) => l.toRef === removed.toRef),
+		JSON.stringify(removed.put).slice(0, 300),
+	);
+	H.check(
+		"③ 落库了：GET /v1/edges 里这条边真的没了",
+		removed.gone === true,
+		`toRef=${removed.toRef} gone=${removed.gone}`,
+	);
+
+	// ---------- ④ 清空 → 终端能力 ----------
+	const cleared = await page.evaluate(async (name) => {
+		// 删到 0 行：0 行时行列表里应该出现「跑完就结束」的空态说明
+		for (let guard = 0; guard < 10; guard++) {
+			const rows = Array.from(document.querySelectorAll("#cap-down-list .cap-down-item"));
+			if (!rows.length) break;
+			rows[0].querySelector(".cap-down-item-del").click();
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		const noneText = (
+			(document.querySelector("#cap-down-list .cap-down-none") || {}).textContent || ""
+		).trim();
+		window.__downPuts = [];
+		document.getElementById("cap-down-save").click();
+		let left = null;
+		for (let i = 0; i < 60; i++) {
+			const d = await fetch("/v1/edges").then((r) => r.json());
+			left = (d.edges || []).filter(
+				(x) => !x.fromIsSource && String(x.fromRef || "").split("@")[0] === name,
+			).length;
+			if (left === 0) break;
+			await new Promise((r) => setTimeout(r, 150));
+		}
+		for (let i = 0; i < 80; i++) {
+			const h = document.getElementById("cap-down-edit-hint");
+			if (h && !h.classList.contains("cap-warn")) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const puts = window.__downPuts || [];
+		const put = puts[puts.length - 1] || null;
+		// 关弹层 → 展开详情：终端能力要说「跑完就结束」，不能留一块空白。
+		//
+		// 注意每轮都要**重新取行**：saveDownstreams 里的 loadAll() → renderCaps()
+		// 会把 .cap-row 节点整批换掉（旧引用会永远找不到新渲染的空态）。
+		closeCapModal();
+		let emptyText = "";
+		for (let i = 0; i < 80; i++) {
+			const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+			if (row) {
+				const box = row.querySelector(".cap-detail");
+				if (box && !box.classList.contains("open")) {
+					row.querySelector('[data-act="detail"]').click();
+				}
+				const e = row.querySelector(".cap-down-empty");
+				if (e && (e.textContent || "").trim()) {
+					emptyText = e.textContent.trim();
+					break;
+				}
+			}
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		return { noneText, left, put, emptyText, edgePosts: window.__edgePosts || 0 };
+	}, capName);
+	H.check(
+		"④ 删到 0 行时行列表显示空态（跑完就结束 = 终端能力，合法状态）",
+		/跑完就结束/.test(cleared.noneText || ""),
+		String(cleared.noneText).slice(0, 160),
+	);
+	H.check(
+		"④ 清空保存的请求体就是 links: []（空数组合法，不是漏字段）",
+		!!cleared.put && Array.isArray(cleared.put.links) && cleared.put.links.length === 0,
+		JSON.stringify(cleared.put).slice(0, 200),
+	);
+	H.check(
+		"④ 落库了：该能力在 /v1/edges 里没有任何出边",
+		cleared.left === 0,
+		`left=${cleared.left}`,
+	);
+	H.check(
+		"④ 详情区改口说「跑完就结束」（不再是候选列表，也不是空白）",
+		/跑完就结束/.test(cleared.emptyText || ""),
+		String(cleared.emptyText).slice(0, 160),
+	);
+
+	// ---------- ⑤ 反向守卫：全程没有一条 POST /v1/edges ----------
+	H.check(
+		"⑤ 改下游全程没有发过 POST /v1/edges（能力边入口已封，只剩 PUT …/downstreams）",
+		cleared.edgePosts === 0,
+		`posts=${cleared.edgePosts}`,
+	);
+
+	await page.evaluate(() => window.__restoreDownFetch && window.__restoreDownFetch());
 }
 
 // checkBatchCreate 验证「一个表单建多个能力」（契约 §4）。
@@ -3232,88 +3759,6 @@ async function checkPruneCopy(page, base) {
 	});
 }
 
-// checkEdgesPage 验证出口表已经独立成页（#93）。
-//
-// 核心断言：能力页不再有出口表、出口页有、两侧导航一致、
-// 并且"未接下游的出口"这种配置遗漏能显示出来。
-async function checkEdgesPage(page) {
-	// 1) 出口页能渲染分组和边
-	await page.goto(page.url().replace(/capabilities\.html.*$/, "edges.html"), {
-		waitUntil: "load",
-		timeout: 20000,
-	});
-	await page.waitForTimeout(1600);
-
-	const edges = await page.evaluate(() => ({
-		title: document.querySelector("h2")?.textContent?.trim() || "",
-		groups: Array.from(document.querySelectorAll(".edge-group-head")).length,
-		rows: Array.from(document.querySelectorAll(".edge-flow")).map((f) =>
-			f.textContent.replace(/\s+/g, " ").trim(),
-		),
-		ports: Array.from(document.querySelectorAll(".edge-port")).map((x) =>
-			x.textContent.trim(),
-		),
-		missing: Array.from(document.querySelectorAll(".edge-missing")).length,
-		summary: document.getElementById("edges-summary")?.textContent || "",
-		// 高亮 class 就是 "active"（见 partials.js: class: `side-link ${... ? "active" : ""}`）
-		navActive: Array.from(document.querySelectorAll("a.side-link")).some((a) => {
-			const last = a.lastChild;
-			const label =
-				last && last.nodeType === 3 ? last.textContent.trim() : a.textContent.trim();
-			return label === "出口" && a.classList.contains("active");
-		}),
-	}));
-
-	H.check("出口页标题正确", /出口|Edges/.test(edges.title), edges.title);
-	H.check("出口页按能力分组", edges.groups >= 2, `groups=${edges.groups}`);
-	H.check("出口页列出了边", edges.rows.length >= 3, `rows=${edges.rows.length}`);
-	H.check(
-		"每条边都标出了出口名",
-		edges.ports.length >= edges.rows.length,
-		`ports=${edges.ports.length} rows=${edges.rows.length}`,
-	);
-	H.check(
-		"边显示成 from —port→ to 形式",
-		edges.rows.some((r) => /—.*→/.test(r)),
-		edges.rows[0] || "",
-	);
-	H.check("有汇总计数", /\d+/.test(edges.summary), edges.summary);
-	H.check("侧栏「出口」高亮", edges.navActive === true);
-
-	// 2) 能力页不再有出口表（搬走了，只留引导链接）
-	await page.goto(page.url().replace(/edges\.html.*$/, "capabilities.html"), {
-		waitUntil: "load",
-		timeout: 20000,
-	});
-	await page.waitForTimeout(1600);
-	const caps = await page.evaluate(() => ({
-		hasEdgeList: !!document.getElementById("edges-list"),
-		hasMovedLink: Array.from(document.querySelectorAll("a")).some((a) =>
-			a.getAttribute("href") === "edges.html",
-		),
-		// a.side-link 里含 SVG 图标，textContent 会把图标里的文本也算进来。
-		// 取最后一个文本子节点才是标签文字。
-		navItems: Array.from(document.querySelectorAll("a.side-link"))
-			.map((a) => {
-				const last = a.lastChild;
-				return last && last.nodeType === 3 ? last.textContent.trim() : a.textContent.trim();
-			})
-			.filter((x) => ["能力", "出口", "能力与出口", "通知接收"].some((k) => x === k)),
-	}));
-	H.check("能力页不再有出口表", caps.hasEdgeList === false);
-	H.check("能力页有指向出口页的链接", caps.hasMovedLink === true);
-	H.check(
-		"导航里「能力与出口」已拆成「能力」+「出口」",
-		caps.navItems.includes("能力") && caps.navItems.includes("出口"),
-		caps.navItems.join(","),
-	);
-	H.check(
-		"导航里不再有「通知接收」",
-		!caps.navItems.includes("通知接收"),
-		caps.navItems.join(","),
-	);
-}
-
 // checkEventsFilter 验证事件流的排序 / 筛选 / 分组 / URL 参数。
 //
 // 默认视图是**按时间倒序平铺**（事件流的第一个问题永远是"刚刚发生了什么"），
@@ -3323,7 +3768,8 @@ async function checkEdgesPage(page) {
 //
 //   ① 详情能看到脚本正文（脚本存在产物 artifacts.spec.run.files 里）
 //   ② 能力行/详情区都有「编辑」入口，进去是「发新版本」模式且名字锁定；
-//      编辑弹层里**没有**端口 UI，已有跟随最新的下游时下游栏整栏隐藏
+//      编辑弹层里**没有**端口 UI，下游栏**可见并预填**当前下游（名字 + 优先级）
+//      （CONTRACT-downstream-edit §4：改下游不再需要另一个页面）
 //   ③ 定义变更（脚本 + 参数契约）→ 保存后出现 v2、脚本是新的、**旧边仍指向名字**（跟随最新）
 //   ④ 破坏性定义变更 → 409 upgrade_breaking 闸门弹影响面 → force 后成功
 //   ⑤ 出口被删掉（协议层；界面已表达不了）→ 409 removed_port 带 link 清单 → force 落库
@@ -3333,9 +3779,9 @@ async function checkEdgesPage(page) {
 // 本套件 DB 是套件私有的，造的能力/边残留无副作用。
 //
 // ③ 为什么改**参数契约**而不是「加一个出口」：端口从界面消失后（契约 hide-ports §3），
-// 编辑弹层里能改的定义只剩参数契约（下游栏在已有边时隐藏 —— 那些边接的是名字，
-// 新版本自动就是它们指向的版本）。脚本本身不参与能力定义的 content hash，
-// 只改脚本会走幂等路径折回同一版本，不会产生 v2 —— 所以「脚本 + 契约」一起改。
+// 编辑弹层里能改的定义只剩参数契约（下游栏已经可见可改，但那属于另外的
+// PUT …/downstreams 链路，不参与能力定义的 content hash）。脚本本身不参与能力定义的
+// content hash，只改脚本会走幂等路径折回同一版本，不会产生 v2 —— 所以「脚本 + 契约」一起改。
 //
 // 返回：无（断言全部走 H.check）
 async function checkCapabilityEditReal(server, newCtx) {
@@ -3471,6 +3917,19 @@ async function checkCapabilityEditReal(server, newCtx) {
 			timeout: document.getElementById("cap-timeout").value,
 			downHidden: document.getElementById("cap-down-wrap").classList.contains("hidden"),
 			downHint: document.getElementById("cap-down-existing-text").textContent.trim(),
+			// 编辑模式的下游行编辑器（CONTRACT-downstream-edit §2.2）：
+			// 行列表应该被**预填**成当前下游（名字 + 优先级），输入框只是「加一条」的草稿。
+			downRows: Array.from(
+				document.querySelectorAll("#cap-down-list .cap-down-item"),
+			).map((it) => ({
+				toRef: it.getAttribute("data-to-ref") || "",
+				name: (it.querySelector(".cap-down-item-name") || {}).value || "",
+				prio: (it.querySelector(".cap-down-item-prio") || {}).value || "",
+			})),
+			downActionsHidden: (() => {
+				const a = document.getElementById("cap-down-actions");
+				return a ? a.classList.contains("hidden") : true;
+			})(),
 			downValue: down ? down.value : null,
 			displayName: document.getElementById("cap-display-name").value,
 			// 端口 UI 的钩子（一个都不许在）：端口输入框 / 出口 chips / 按出口分行 /
@@ -3491,7 +3950,7 @@ async function checkCapabilityEditReal(server, newCtx) {
 		JSON.stringify({ name: editMode.name, locked: editMode.locked }),
 	);
 	H.check(
-		"② 预填当前版本：脚本 / 超时 / 显示名（下游栏不预填，它整栏隐藏了）",
+		"② 预填当前版本：脚本 / 超时 / 显示名（下游输入框是空草稿，行列表才是真相）",
 		/touchnow v1/.test(editMode.script) &&
 			editMode.timeout === "120" &&
 			editMode.displayName === "定时嗃唤" &&
@@ -3507,10 +3966,23 @@ async function checkCapabilityEditReal(server, newCtx) {
 		editMode.legacyPortUI === 0,
 		`legacyPortUI=${editMode.legacyPortUI}`,
 	);
+	// 旧口径（已废）：「已有 edges → 下游栏整栏隐藏」，理由是“边接的是名字，
+	// 新版本自动跟着走”。代价是用户**永远调不了优先级**（详情区还写着“点编辑可调”，
+	// 而那是个不存在的功能）。新口径（CONTRACT-downstream-edit §4）：下游栏永远可见，
+	// 进入编辑就预填当前下游（名字 + 优先级），保存走 PUT …/downstreams。
 	H.check(
-		"② 已有 edges：下游栏隐藏并说明「边接的是名字」",
-		editMode.downHidden === true && /\d/.test(editMode.downHint || ""),
-		JSON.stringify({ hidden: editMode.downHidden, hint: editMode.downHint }).slice(0, 200),
+		"② 已有下游：下游栏可见且预填当前下游（行名/优先级与 /v1/edges 一致）",
+		editMode.downHidden === false &&
+			editMode.downActionsHidden === false &&
+			editMode.downRows.length === 1 &&
+			String(editMode.downRows[0].toRef).split("@")[0] === echoName &&
+			editMode.downRows[0].name === editMode.downRows[0].toRef &&
+			editMode.downRows[0].prio === "0",
+		JSON.stringify({
+			hidden: editMode.downHidden,
+			rows: editMode.downRows,
+			actionsHidden: editMode.downActionsHidden,
+		}).slice(0, 240),
 	);
 
 	// ---------- ③ 改脚本 + 加一个可选入参 → 保存出 v2（旧边跟随名字）----------
@@ -3729,7 +4201,8 @@ async function checkCapabilityEditReal(server, newCtx) {
 
 	// ---------- ⑤ 出口被删掉 → 409 removed_port → force 落库（协议层）----------
 	//
-	// 界面已经表达不了「删掉出口」（下游栏在已有边时隐藏，留空会自动保留 out），
+	// 界面已经表达不了「删掉出口」（下游行编辑器只表达隐式 out，outputs 由行数决定：
+	// 有行 → ["out"]，0 行 → []，所以「删出口」在界面上表现为「清空下游」），
 	// 但这道闸门仍然是协议的一部分：直接打接口，钉住 409 的影响面结构与 force 语义。
 	const dropName = "e2e.dropport." + Date.now();
 	const dropBody = (outputs, force) => {
@@ -3785,6 +4258,225 @@ async function checkCapabilityEditReal(server, newCtx) {
 		`${dropForced.status} ${String(dropForced.text).slice(0, 200)}`,
 	);
 
+	// ---------- ⑥ 在能力里改下游 → 真后端落库（PUT …/downstreams）----------
+	//
+	// touchName 此刻正好有 1 条下游（e2e.echo —— ④ 之后那条边一条没丢）。四步全走界面，
+	// 每一步都去 /v1/edges 回读（服务端才是真相，toast 只是提示）：
+	//   改优先级 9 → 保存 → priority=9 且**版本数不变**（拓扑不属于产物）
+	//   删掉这行 → 保存 → 边没了
+	//   「+ 下游」面板加回一条 → 保存 → 又出现了
+	//   清空 → 保存 → 没有出边（终端能力，合法）
+	// 并全程收请求：能力边入口已封，一条 POST /v1/edges 都不许有。
+	const edgeWrites = [];
+	p.on("request", (r) => {
+		const u = r.url();
+		if (u.includes("/v1/edges") && r.method() !== "GET") {
+			edgeWrites.push(r.method() + " " + u.replace(/^https?:\/\/[^/]+/, ""));
+		}
+	});
+
+	// snapDown 回读「版本集合 + 出边」，两件事都要在同一份快照里看
+	const snapDown = () =>
+		p.evaluate(async (name) => {
+			const caps = await window.Anotify.api("/v1/capabilities");
+			const edges = await window.Anotify.api("/v1/edges");
+			return {
+				versions: (caps.capabilities || [])
+					.filter((c) => c.name === name)
+					.map((c) => c.version)
+					.sort((a, b) => a - b),
+				out: (edges.edges || [])
+					.filter(
+						(e) =>
+							!e.fromIsSource &&
+							String(e.fromRef || "").split("@")[0] === name,
+					)
+					.map((e) => ({ toRef: e.toRef, priority: Number(e.priority || 0) })),
+			};
+		}, touchName);
+
+	// waitOut 轮询 /v1/edges 直到出边满足谓词（避免用固定 sleep 猜异步时序）
+	const waitOut = async (pred, why) => {
+		for (let i = 0; i < 80; i++) {
+			const s = await snapDown();
+			if (pred(s.out)) return s;
+			await p.waitForTimeout(150);
+		}
+		return await snapDown().then((s) => Object.assign(s, { timedOut: why }));
+	};
+
+	const beforeDown = await snapDown();
+
+	const openEdit = () =>
+		p.evaluate(async (name) => {
+			const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+			if (!row) return { err: "没有这一行" };
+			row.querySelector('[data-act="edit"]').click();
+			for (let i = 0; i < 80; i++) {
+				if (document.querySelectorAll("#cap-down-list .cap-down-item").length > 0) break;
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			return {
+				open: !document.getElementById("cap-modal").classList.contains("hidden"),
+				rows: Array.from(document.querySelectorAll("#cap-down-list .cap-down-item")).map(
+					(it) => ({
+						toRef: it.getAttribute("data-to-ref") || "",
+						name: (it.querySelector(".cap-down-item-name") || {}).value || "",
+						prio: (it.querySelector(".cap-down-item-prio") || {}).value || "",
+					}),
+				),
+				actionsHidden: document
+					.getElementById("cap-down-actions")
+					.classList.contains("hidden"),
+				draft: document.getElementById("cap-downstream").value,
+			};
+		}, touchName);
+
+	// saveDown 点「保存下游」并等结果 toast（成功/失败两种文案都认，免得等到超时）
+	const saveDown = () =>
+		p.evaluate(async () => {
+			const host = document.getElementById("anotify-toast-host");
+			if (host) host.replaceChildren();
+			document.getElementById("cap-down-save").click();
+			let toast = "";
+			for (let i = 0; i < 100; i++) {
+				toast =
+					host && host.lastElementChild
+						? (host.lastElementChild.textContent || "").replace(/\s+/g, " ").trim()
+						: "";
+				if (/下游已保存|保存下游失败/.test(toast)) break;
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			return { toast };
+		});
+
+	const state1 = await openEdit();
+	H.check(
+		"⑥ 真后端：编辑弹层预填当前下游（1 行，名字/优先级来自 /v1/edges）",
+		state1.open === true &&
+			state1.actionsHidden === false &&
+			state1.draft === "" &&
+			state1.rows.length === 1 &&
+			state1.rows[0].name === state1.rows[0].toRef &&
+			String(state1.rows[0].toRef).split("@")[0] === echoName &&
+			state1.rows[0].prio === String(beforeDown.out[0] ? beforeDown.out[0].priority : 0),
+		JSON.stringify({ rows: state1.rows, before: beforeDown }).slice(0, 300),
+	);
+
+	// 改优先级 → 保存 → priority=9，且版本数不变
+	await p.evaluate(async () => {
+		const it = document.querySelector("#cap-down-list .cap-down-item");
+		const prio = it.querySelector(".cap-down-item-prio");
+		prio.value = "9";
+		prio.dispatchEvent(new Event("input", { bubbles: true }));
+		prio.dispatchEvent(new Event("change", { bubbles: true }));
+	});
+	const savedPrio = await saveDown();
+	const afterPrio = await waitOut(
+		(out) => out.length === 1 && out[0].priority === 9,
+		"priority=9 没落库",
+	);
+	H.check(
+		"⑥ 真后端：改优先级保存后 /v1/edges 里是 9（真落库，不是只改了内存）",
+		afterPrio.out.length === 1 && afterPrio.out[0].priority === 9,
+		JSON.stringify({ out: afterPrio.out, toast: savedPrio.toast }).slice(0, 240),
+	);
+	H.check(
+		"⑥ 真后端：改下游不产生新版本（版本集合与保存前一致）",
+		JSON.stringify(afterPrio.versions) === JSON.stringify(beforeDown.versions),
+		JSON.stringify({ before: beforeDown.versions, after: afterPrio.versions }),
+	);
+	H.check(
+		"⑥ 真后端：成功提示说清「不产生新版本」",
+		/不产生新版本/.test(savedPrio.toast || ""),
+		String(savedPrio.toast).slice(0, 160),
+	);
+
+	// 删掉这行 → 保存 → 边没了
+	await p.evaluate(async () => {
+		document.querySelector("#cap-down-list .cap-down-item-del").click();
+	});
+	const savedDel = await saveDown();
+	const afterDel = await waitOut((out) => out.length === 0, "删掉的边还在");
+	H.check(
+		"⑥ 真后端：删掉那行后保存 → /v1/edges 里没有出边了",
+		afterDel.out.length === 0,
+		JSON.stringify({ out: afterDel.out, toast: savedDel.toast }).slice(0, 240),
+	);
+
+	// 「+ 下游」面板加回一条 → 保存 → 又出现（面板读现有出边再整体 replace）
+	const added = await p.evaluate(async ({ name, target }) => {
+		closeCapModal();
+		await new Promise((r) => setTimeout(r, 250));
+		const row = document.querySelector(`.cap-row[data-cap-name="${name}"]`);
+		if (!row) return { err: "没有这一行" };
+		if (!row.querySelector(".cap-detail").classList.contains("open")) {
+			row.querySelector('[data-act="detail"]').click();
+		}
+		let btn = null;
+		for (let i = 0; i < 60; i++) {
+			btn = row.querySelector('[data-act="add-downstream"]');
+			if (btn) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		if (!btn) return { err: "详情区没有「+ 下游」按钮" };
+		btn.click();
+		const panel = row.querySelector(".cap-add-panel");
+		if (!panel) return { err: "面板没展开" };
+		const inputs = Array.from(panel.querySelectorAll('input[list="cap-down-targets"]'));
+		if (inputs.length !== 1) return { targets: inputs.length };
+		inputs[0].value = target;
+		const host = document.getElementById("anotify-toast-host");
+		if (host) host.replaceChildren();
+		Array.from(panel.querySelectorAll("button"))
+			.find((b) => b.className.includes("btn-primary"))
+			.click();
+		let toast = "";
+		for (let i = 0; i < 100; i++) {
+			toast =
+				host && host.lastElementChild
+					? (host.lastElementChild.textContent || "").replace(/\s+/g, " ").trim()
+					: "";
+			if (/边已创建|创建边失败/.test(toast)) break;
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		return { targets: inputs.length, toast };
+	}, { name: touchName, target: echoName });
+	const afterAdd = await waitOut((out) => out.length === 1, "「+ 下游」没落库");
+	H.check(
+		"⑥ 真后端：「+ 下游」面板加回一条 → /v1/edges 里又有了（走同一个 PUT）",
+		added.targets === 1 &&
+			afterAdd.out.length === 1 &&
+			String(afterAdd.out[0].toRef).split("@")[0] === echoName,
+		JSON.stringify({ added, out: afterAdd.out }).slice(0, 300),
+	);
+
+	// 清空 → 保存 → 没有出边（终端能力）
+	const state2 = await openEdit();
+	H.check(
+		"⑥ 真后端：加回来后重开编辑仍是 1 行（回读自服务端）",
+		state2.open === true && (state2.rows || []).length === 1,
+		JSON.stringify(state2.rows).slice(0, 200),
+	);
+	await p.evaluate(async () => {
+		document.querySelector("#cap-down-list .cap-down-item-del").click();
+	});
+	const savedClear = await saveDown();
+	const afterClear = await waitOut((out) => out.length === 0, "清空没落库");
+	H.check(
+		"⑥ 真后端：清空后保存 → 该能力没有任何出边（终端能力是合法状态）",
+		afterClear.out.length === 0,
+		JSON.stringify({ out: afterClear.out, toast: savedClear.toast }).slice(0, 240),
+	);
+	H.check(
+		"⑥ 真后端：改下游全程没有一条 POST/PUT/DELETE /v1/edges（入口已封，只剩 PUT …/downstreams）",
+		edgeWrites.length === 0,
+		edgeWrites.slice(0, 3).join(" | "),
+	);
+	await p.evaluate(async () => {
+		closeCapModal();
+	});
+
 	H.check("真后端能力编辑：页面无 JS pageerror", pageErrors.length === 0, pageErrors[0]?.slice(0, 120));
 
 	await p.close();
@@ -3808,29 +4500,31 @@ async function checkDisplayName(page, base) {
 	});
 	H.check("能力页每行都有改名入口", before.hasRenameBtn === true, `rows=${before.rows}`);
 
-	// 改哪个能力很重要：必须挑**有入边**的，否则改了名字也不会出现在出口页，
+	// 改哪个能力很重要：必须挑**有入边**的，否则改了名字也不会出现在任何边上，
 	// 后面那条断言就变成在要求一个模型里不存在的形状。
 	//
-	// 做法：先去出口页取一个真实的 toCapability 名字，再回来改它。
-	await page.goto(base + "/edges.html", { waitUntil: "load", timeout: 20000 });
-	await page.waitForTimeout(1800);
+	// 做法：**在能力页的页面上下文里**取一个真实的 toCapability 名字（改的就是它）。
+	// 为什么不再去出口页取：出口页已经删了（CONTRACT-downstream-edit §5：能力的下游
+	// 只能在能力编辑里改，没有第二个页面），而后续断言本来就是在同一个页面上下文里
+	// 打的 API——多一次 goto 只会多一次 mock state 重建。
 	const target = await page.evaluate(() => {
 		// edges 数据在 mock 里；从 DOM 拿不到 id，所以直接问接口
 		return fetch("/v1/edges")
 			.then((r) => r.json())
 			.then((d) => {
-				const e = (d.edges || [])[0];
+				// 取第一条**下游能解析到能力**的边：边里存的是引用（P2.2），
+				// 能力 id 是服务端派生的 toCapabilityId —— 要改名的就是这条边的下游。
+				const e = (d.edges || []).find((x) => x.toCapabilityId);
 				// P2.2：边里存的是**引用**，能力 id 是服务端派生的 toCapabilityId
 				return e ? { id: e.toCapabilityId } : null;
 			});
 	});
 	if (!target) {
-		H.check("出口页有边（显示名断言前置）", false, "edges 为空");
+		// 前置条件不再依赖已删的出口页：mock 种子数据里一条能解析到能力的边都没有，
+		// 后面的断言无法成立。这不是「出口页有边」的旧断言，而是造数前置的失败上报。
+		H.check("mock 里有能解析到能力的边（改名断言前置）", false, "edges 为空");
 		return;
 	}
-
-	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
-	await page.waitForTimeout(2000);
 
 	const renamed = await page.evaluate(async (targetId) => {
 		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -7884,7 +8578,10 @@ async function runMockCoverage() {
 			await checkCapabilityDetail(page, base);
 			// 批量创建（契约 §4）：多张能力卡片 + 候选优先级 + 一个 batch 请求
 			await checkBatchCreate(page, base);
-			await checkEdgesPage(page);
+			// 编辑弹层里的下游行编辑器（CONTRACT-downstream-edit §4）：
+			// 预填 / 改优先级 / 删一行 / 清空成终端能力 —— 全部走 PUT …/downstreams。
+			// 代替旧的 checkEdgesPage（出口页已删：下游只能在能力里改）。
+			await checkDownstreamEdit(page, base);
 			// 显示名要走真实 PATCH（mock 也实现），改完再回列表看效果
 			await checkDeclaredBy(page);
 			await checkDisplayName(page, base);
@@ -7976,6 +8673,28 @@ async function checkTaskLogs(ctx, base) {
 	// 所以要等「截断提示」真的出现，而不是只看折叠条在不在。
 	await page
 		.waitForSelector("#trace-logs .task-log-trunc", { timeout: 15000 })
+		.catch(() => {});
+	// 只等 deploy-preview 的截断提示是**不够**的：失败任务各自并发取日志（mock 每条
+	// 有 120~300ms 人为延迟），那条先回来时 run-tests 的 body 可能还没落进 DOM ——
+	// 接着拍的快照会读到 stderr=false，让「没有截断的任务不显示截断提示」偶发假红
+	// （时序问题，不是产品问题）。所以先等**所有失败任务**的 body 都渲染出内容，
+	// 再拍快照；断言本身一条没动。
+	await page
+		.waitForFunction(
+			() => {
+				const rows = Array.from(document.querySelectorAll("#trace-logs .task-log"));
+				const failedRows = rows.filter((r) => r.dataset.failed === "1");
+				return (
+					failedRows.length > 0 &&
+					failedRows.every((r) => {
+						const b = r.querySelector(".task-log-body");
+						return !!b && b.childElementCount > 0;
+					})
+				);
+			},
+			null,
+			{ timeout: 15000 },
+		)
 		.catch(() => {});
 
 	const snap = () =>
@@ -8200,6 +8919,140 @@ async function checkTaskLogs(ctx, base) {
 			: "缺少 rollback 任务",
 	);
 
+	// ⑨ 降级态：日志**存在但取不到**（CONTRACT-logs-on-node）
+	//
+	// 这两种状态在界面上必须说两句不同的话：
+	//   available:false + reason → 「日志在节点上，取不到」（本条）
+	//   available:true 但两块都空 → 「没有输出」（上一条 ⑧）
+	// 混成一句的后果：用户以为任务真的什么都没打印，去查自己的脚本，
+	// 而真相是节点离线 / 档案过了保留期。种子（web/mock.js seedTaskLogs）:
+	//   lint-fix        → node_offline（succeeded，默认折叠）
+	//   alert.oncall 最后一条 → no_local_archive（succeeded，默认折叠）
+	const readLogRow = (cap, last) =>
+		page.evaluate(
+			({ c, isLast }) => {
+				const rows = Array.from(document.querySelectorAll("#trace-logs .task-log")).filter(
+					(r) => r.dataset.capability === c,
+				);
+				const row = isLast ? rows[rows.length - 1] : rows[0];
+				if (!row) return null;
+				const body = row.querySelector(".task-log-body");
+				const state = body ? body.querySelector(".task-log-state") : null;
+				return {
+					open: row.dataset.open === "1",
+					text: body ? (body.textContent || "").replace(/\s+/g, " ").trim() : "",
+					unavailable: state ? state.getAttribute("data-logs-unavailable") : null,
+					pre: row.querySelectorAll(".task-log-pre").length,
+				};
+			},
+			{ c: cap, isLast: !!last },
+		);
+
+	const clickLastRow = (cap) =>
+		page.evaluate((c) => {
+			const rows = Array.from(document.querySelectorAll("#trace-logs .task-log")).filter(
+				(r) => r.dataset.capability === c,
+			);
+			const row = rows[rows.length - 1];
+			const btn = row && row.querySelector(".task-log-toggle");
+			if (btn) btn.click();
+			return !!btn;
+		}, cap);
+
+	await clickRow("lint-fix");
+	await page
+		.waitForSelector('#trace-logs [data-logs-unavailable="node_offline"]', { timeout: 8000 })
+		.catch(() => {});
+	const lintFix = await readLogRow("lint-fix", false);
+	H.check(
+		"日志取不到时点名「节点离线」，且**不**说「没有输出」（两种状态不许混）",
+		!!lintFix &&
+			lintFix.open === true &&
+			lintFix.unavailable === "node_offline" &&
+			/节点离线/.test(lintFix.text || "") &&
+			!/没有输出/.test(lintFix.text || "") &&
+			lintFix.pre === 0,
+		JSON.stringify(lintFix).slice(0, 220),
+	);
+
+	await clickLastRow("alert.oncall");
+	await page
+		.waitForSelector('#trace-logs [data-logs-unavailable="no_local_archive"]', {
+			timeout: 8000,
+		})
+		.catch(() => {});
+	const archive = await readLogRow("alert.oncall", true);
+	H.check(
+		"日志档案过保留期时点明「档案 / 保留期」，也不说「没有输出」",
+		!!archive &&
+			archive.open === true &&
+			archive.unavailable === "no_local_archive" &&
+			/档案/.test(archive.text || "") &&
+			/保留期/.test(archive.text || "") &&
+			!/没有输出/.test(archive.text || ""),
+		JSON.stringify(archive).slice(0, 220),
+	);
+
+	// 回归：非降级的那条（两块都空）仍然是「没有输出」——
+	// 上面两条不能把这条的语义也改掉（available:true 才是真没输出）。
+	const rollbackAgain = await readLogRow("rollback", false);
+	H.check(
+		"非降级的空日志仍然说「没有输出」（available:true 才是真没输出）",
+		!!rollbackAgain &&
+			rollbackAgain.unavailable === null &&
+			/没有输出/.test(rollbackAgain.text || "") &&
+			!/节点离线|保留期/.test(rollbackAgain.text || ""),
+		JSON.stringify(rollbackAgain).slice(0, 220),
+	);
+
+	// ⑩ 英文页同一份降级文案（四语言 key 已就位，这里验 en 不串中文）
+	const enPage = await ctx.newPage();
+	const enErrors = [];
+	enPage.on("pageerror", (e) => enErrors.push(String((e && e.message) || e)));
+	await enPage.goto(base + "/en/trace.html?traceId=trace_mock_t9&view=graph", {
+		waitUntil: "load",
+		timeout: 20000,
+	});
+	// lint-fix 是成功任务（默认折叠）：展开才请求日志，所以这里也要点一下
+	await enPage
+		.waitForSelector("#trace-logs .task-log", { timeout: 15000 })
+		.catch(() => {});
+	await enPage
+		.evaluate(() => {
+			const row = Array.from(document.querySelectorAll("#trace-logs .task-log")).find(
+				(r) => r.dataset.capability === "lint-fix",
+			);
+			const btn = row && row.querySelector(".task-log-toggle");
+			if (btn) btn.click();
+			return !!btn;
+		})
+		.catch(() => {});
+	await enPage
+		.waitForSelector('#trace-logs [data-logs-unavailable="node_offline"]', { timeout: 8000 })
+		.catch(() => {});
+	const enState = await enPage
+		.evaluate(() => {
+			const node = document.querySelector('#trace-logs [data-logs-unavailable="node_offline"]');
+			return {
+				found: !!node,
+				text: node ? (node.textContent || "").replace(/\s+/g, " ").trim() : "",
+			};
+		})
+		.catch(() => ({ found: false, text: "" }));
+	H.check(
+		"英文页的降级文案是英文（含 Node offline，且无中文残留）",
+		enState.found === true &&
+			/Node offline/.test(enState.text || "") &&
+			!/[\u4e00-\u9fff\u3400-\u4dbf]/.test(enState.text || ""),
+		String(enState.text).slice(0, 200),
+	);
+	H.check(
+		"英文 trace 页无 JS pageerror",
+		enErrors.length === 0,
+		enErrors.slice(0, 2).join("; "),
+	);
+	await enPage.close();
+
 	H.check("任务日志面板没有 JS 报错", pageErrors.length === 0, pageErrors.slice(0, 2).join("; "));
 
 	await page.close();
@@ -8293,6 +9146,11 @@ async function checkSharedTopology(server, newCtx) {
 	const s = H.seed(server.dbPath, "topo");
 	const base = server.base;
 
+	// 默认命名空间 id：造数（直插库的 edges.namespace_id）与真节点注册都要用它。
+	// 它必须在**任何** mkEdge 之前拿到 —— 所以提到最前面，断言仍在（只此一处）。
+	const nsId = await H.defaultNamespaceId(base, s.session);
+	H.check("拓扑造数：拿到默认命名空间 id", !!nsId, String(nsId));
+
 	const mkCap = async (name, outputs) => {
 		const r = await H.req(base, "/v1/capabilities", {
 			session: s.session,
@@ -8302,10 +9160,38 @@ async function checkSharedTopology(server, newCtx) {
 		H.check(`拓扑造数：建能力 ${name} → 200`, r.status === 200, r.text?.slice(0, 200));
 		return r.json?.capability || {};
 	};
-	const mkEdge = async (body, label) => {
-		const r = await H.req(base, "/v1/edges", { session: s.session, method: "POST", body });
-		H.check(`拓扑造数：${label} → 200`, r.status === 200, r.text?.slice(0, 200));
-		return r;
+	// mkEdge 直插库造一条**能力边**（拓扑 fixture 专用）。
+	//
+	// **为什么改口径**（CONTRACT-downstream-edit §2/§3）：
+	//   ① 能力边的唯一写入口已经是 PUT /v1/capabilities/{name}/downstreams，
+	//      `POST /v1/edges` 的能力边现在恒 405 edge_write_removed ——
+	//      旧的「→ 200」断言会永远红，而且它验的接口已经不存在了。
+	//   ② 又不能用新接口：这一组 fixture 故意用**多出口历史数据**
+	//      （topo.a outputs:["next"]、topo.multi outputs:["left","right"]），
+	//      新接口只表达隐式出口 out。这种能力界面上已经产生不了，
+	//      但「历史数据仍要画得出出口名」正是 ⑤ 要验的东西。
+	// 所以这里绕开 API 只造数据，断言对象仍然是**图**（与下面原来的环边兜底同一口径）。
+	const mkEdge = async (fromRef, fromPort, toRef, label) => {
+		let err = null;
+		try {
+			const db = new DatabaseSync(server.dbPath);
+			try {
+				db.prepare(
+					`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
+					 VALUES (?, 0, ?, ?, ?, '{}', '{}', ?)`,
+				).run(nsId, fromRef, fromPort, toRef, Math.floor(Date.now() / 1000));
+			} finally {
+				db.close();
+			}
+		} catch (e) {
+			err = String((e && e.message) || e);
+		}
+		H.check(
+			`拓扑造数：${label} → 直插库落库`,
+			err === null,
+			err ? err.slice(0, 200) : undefined,
+		);
+		return err === null;
 	};
 	const mkSource = async (name, targetIds) => {
 		const r = await H.req(base, "/v1/sources", {
@@ -8340,15 +9226,7 @@ async function checkSharedTopology(server, newCtx) {
 		!!capA.id && !!capB.id,
 		JSON.stringify({ capA, capB }),
 	);
-	await mkEdge(
-		{
-			fromIsSource: false,
-			fromRef: "topo.a",
-			fromPort: "next",
-			toRef: "topo.b",
-		},
-		"能力边 topo.a --next--> topo.b（菱形的那条捷径）",
-	);
+	await mkEdge("topo.a", "next", "topo.b", "能力边 topo.a --next--> topo.b（菱形的那条捷径）");
 	// 源建好就有两条入口边（from_ref=源名、from_port='*'）—— 这就是 1:N。
 	const srcFan = await mkSource("topo.fan", [capA.id, capB.id]);
 
@@ -8364,8 +9242,6 @@ async function checkSharedTopology(server, newCtx) {
 	);
 
 	// 上线节点，让事件真的派出任务（trace 页要有任务才画图）
-	const nsId = await H.defaultNamespaceId(base, s.session);
-	H.check("拓扑造数：拿到默认命名空间 id", !!nsId, String(nsId));
 	const topoNode = await N.bringUpNode(base, server.dbPath, nsId, "topo-node", [
 		{ id: capA.id, name: "topo.a", version: capA.version },
 		{ id: capB.id, name: "topo.b", version: capB.version },
@@ -8495,43 +9371,38 @@ async function checkSharedTopology(server, newCtx) {
 	{
 		const capC = await mkCap("topo.c", ["next"]);
 		const capD = await mkCap("topo.d", ["back"]);
-		await mkEdge(
-			{ fromIsSource: false, fromRef: "topo.c", fromPort: "next", toRef: "topo.d" },
-			"能力边 topo.c --next--> topo.d",
-		);
-		// 反方向那条：配置期已不再拒环（契约 §2），先走 API 建。
-		// A 组（删 store.checkEdgeWouldCycle）还没合并进来 → 被拒就退回直插库，
-		// 并留一行日志说明「合并后启用真断言」，不让它默默跳过。
-		const cycEdge = await H.req(base, "/v1/edges", {
+		await mkEdge("topo.c", "next", "topo.d", "能力边 topo.c --next--> topo.d");
+		// 反向那条边：配置期已不再拒环（契约 §2）。
+		//
+		// **为什么改口径**：「成环可建」原来靠 `POST /v1/edges {fromIsSource:false}`
+		// 回来 200 来证明，而那条路已经封了（405 edge_write_removed，见契约 §3）。
+		// 改成两部分，两边都保留断言：
+		//   · 语义（配置期放行环）用**新接口**验：两个单出口能力 a→b、b→a 各 PUT 一次；
+		//   · 图渲染（cycle / loopback 标记）仍用下面这条多出口历史边，直插库造。
+		// 旧代码里「合并后启用」的兜底分支随之删除 —— 合并已经发生，它不会再走了。
+		const cycA = await mkCap("topo.cyc.a", ["out"]);
+		const cycB = await mkCap("topo.cyc.b", ["out"]);
+		const cycPut1 = await H.req(base, "/v1/capabilities/topo.cyc.a/downstreams", {
 			session: s.session,
-			method: "POST",
-			body: {
-				fromIsSource: false,
-				fromRef: "topo.d",
-				fromPort: "back",
-				toRef: "topo.c",
-			},
+			method: "PUT",
+			body: { links: [{ toRef: "topo.cyc.b", priority: 0 }] },
 		});
-		const cycViaApi = cycEdge.status === 200;
-		if (cycViaApi) {
-			H.check("③ 成环可建：topo.d --back--> topo.c 直接被后端接受", true, "200");
-		} else {
-			// 合并后启用：真后端应放行环边（A 组删 checkEdgeWouldCycle 后）
-			console.log(
-				`  · ③ 环边 API 建边：合并后启用（当前后端 ${cycEdge.status}，${String(
-					cycEdge.text || "",
-				).slice(0, 80)}）→ 本次直插库造同一条边`,
-			);
-			const db = new DatabaseSync(server.dbPath);
-			try {
-				db.prepare(
-					`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
-					 VALUES (?, 0, ?, ?, ?, '{}', '{}', ?)`,
-				).run(nsId, "topo.d", "back", "topo.c", Math.floor(Date.now() / 1000));
-			} finally {
-				db.close();
-			}
-		}
+		const cycPut2 = await H.req(base, "/v1/capabilities/topo.cyc.b/downstreams", {
+			session: s.session,
+			method: "PUT",
+			body: { links: [{ toRef: "topo.cyc.a", priority: 0 }] },
+		});
+		H.check(
+			"③ 成环可建：a→b 与 b→a 两次 PUT …/downstreams 都被接受（配置期不拒环）",
+			!!cycA.id &&
+				!!cycB.id &&
+				cycPut1.status === 200 &&
+				cycPut2.status === 200,
+			`${cycPut1.status} ${String(cycPut1.text || "").slice(0, 120)} / ${cycPut2.status} ${String(
+				cycPut2.text || "",
+			).slice(0, 120)}`,
+		);
+		await mkEdge("topo.d", "back", "topo.c", "能力边 topo.d --back--> topo.c（环的回边）");
 		const srcCyc = await mkSource("topo.cyc", [capC.id]);
 
 		const { page, errs } = await openPage(
@@ -8581,14 +9452,8 @@ async function checkSharedTopology(server, newCtx) {
 		const capMulti = await mkCap("topo.multi", ["left", "right"]);
 		await mkCap("topo.multi.a", []);
 		await mkCap("topo.multi.b", []);
-		await mkEdge(
-			{ fromIsSource: false, fromRef: "topo.multi", fromPort: "left", toRef: "topo.multi.a" },
-			"能力边 topo.multi --left--> topo.multi.a",
-		);
-		await mkEdge(
-			{ fromIsSource: false, fromRef: "topo.multi", fromPort: "right", toRef: "topo.multi.b" },
-			"能力边 topo.multi --right--> topo.multi.b",
-		);
+		await mkEdge("topo.multi", "left", "topo.multi.a", "能力边 topo.multi --left--> topo.multi.a");
+		await mkEdge("topo.multi", "right", "topo.multi.b", "能力边 topo.multi --right--> topo.multi.b");
 		const srcMulti = await mkSource("topo.multi.src", [capMulti.id]);
 		const { page, errs } = await openPage(
 			ctx,

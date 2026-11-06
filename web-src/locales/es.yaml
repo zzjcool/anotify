@@ -29,7 +29,6 @@ common:
     admin_section: Admin
     admin: Consola Admin
     sources: Fuentes
-    edges: Salidas
   lang:
     label: Idioma
     switcher_label: Cambiar idioma
@@ -1299,7 +1298,6 @@ caps:
     lifecycle_carried: 'Ciclo de vida {v}'
     no_artifact: Esta capacidad aún no tiene artefacto — el script empieza en blanco
     name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
-    downstream_keep: '{n} arista(s) de destino seguirán la nueva versión — las aristas apuntan al nombre, no a la versión.'
     multi_output_note: 'Esta capacidad se ramifica por más de un camino posterior (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
     submit: Publicar nueva versión
     publishing: Publicando…
@@ -1322,27 +1320,29 @@ caps:
     err_target: Elige una capacidad destino
     err_self: Una capacidad no puede enlazarse consigo misma
     err_literals: Las constantes deben ser un objeto JSON
-  edges:
-    title: Aristas
-    new: Nueva arista
-    desc: Cada arista significa "esta salida de esta capacidad apunta a otra capacidad". Una salida puede tener varias aristas (fan-out).
-    empty: 'La tabla de aristas está vacía: los eventos que llegan aquí no tienen a dónde ir.'
-    from: Capacidad origen
-    port: Salida
-    port_hint: Solo se listan las salidas declaradas por la capacidad (conjunto cerrado, invariante I2).
-    port_hint_origin: Para un origen, el puerto es el propio tipo de evento (lo decide el sistema externo, p. ej. pull_request.opened de GitHub)
-    port_placeholder: pull_request.opened
-    to: Capacidad destino
-    remove: Eliminar
-    removed: Eliminada
-    remove_failed: 'Error al eliminar: '
-    created: Arista creada
-    create_failed: 'Error al crear: '
-    err_incomplete: Elige origen, salida y destino
-    no_ports: (esta capacidad no tiene salidas)
-    moved_title: Las aristas tienen su propia página
-    moved_desc: Una capacidad responde qué puede hacer; una arista responde a dónde va después. Las aristas crecen rápido con el abanico y necesitan búsqueda y agrupación, por eso tienen su propia página.
-    moved_link: Abrir aristas
+  down:
+    add_ph: Escribe el nombre de una capacidad y pulsa Enter (con búsqueda)
+    name_ph: Nombre de la capacidad
+    prio: Prioridad
+    prio_hint: Menor se despacha antes; vacío = 0
+    del: Quitar este destino
+    empty: 'Aún no hay destinos: esta capacidad termina al ejecutarse (terminal).'
+    save: Guardar destinos
+    saving: Guardando…
+    saved: Destinos guardados (sin nueva versión)
+    save_failed: 'No se pudieron guardar los destinos: '
+    dirty: Hay cambios de destinos sin guardar
+    hint_edit: Editar los destinos no crea una versión nueva — solo cambia el destino y la prioridad.
+    hint_keep_ref: Escribe la referencia como name (sigue la última) o name@2 (versión fijada).
+    err_unknown: 'No se encontró la capacidad destino: {ref}'
+    err_self: Una capacidad no puede enlazarse a sí misma
+    err_duplicate: Ese destino ya está en la lista
+    err_too_many: Como máximo 100 destinos
+    err_priority: La prioridad debe ser un entero entre 0 y 1000
+    err_notfound: No se encontró la capacidad (puede haberse eliminado)
+    err_removed: 'El endpoint antiguo está cerrado: edita los destinos en Editar capacidad → destinos'
+    need_target: Elige primero una capacidad destino
+    current_version_note: Todas las versiones comparten estos destinos — publicar una nueva versión no los toca.
 prune:
   no_edge: sin candidato conectado
   no_capability: la capacidad destino no existe
@@ -1601,52 +1601,6 @@ sources:
     terminal_short: terminal
     no_edge: sin posterior
   view_events: Ver eventos
-edges:
-  title: Salidas
-  subtitle: Qué salida lleva a dónde
-  src_prefix: Origen
-  from_source: Origen
-  intro: Una capacidad responde «qué puede hacer»; una arista responde «a dónde va después». Una arista = una salida conectada a una capacidad posterior. La misma salida puede tener varias aristas (abanico) y el evento se despacha a todas.
-  refresh: Actualizar
-  new: Nueva arista
-  search: Buscar
-  search_hint: Nombre de capacidad o salida
-  filter_cap: Por capacidad
-  all_caps: Todas las capacidades
-  count: '{n} aristas'
-  port_count: '{n} salidas'
-  from: Desde capacidad
-  port: Salida
-  port_hint: La salida debe ser una de las declaradas en outputs
-  port_hint_origin: Las capacidades de origen aceptan cualquier tipo de evento — escríbelo directamente, p. ej. pull_request.opened
-  port_hint_end: Esta capacidad no declara salidas (terminal). Se puede crear la arista pero nunca se despachará.
-  to: Hacia capacidad
-  cancel: Cancelar
-  save: Guardar
-  remove: Eliminar
-  terminal: Termina aquí (sin destino)
-  empty: 'La lista de aristas está vacía: los eventos no tienen a dónde ir.'
-  nomatch: Ninguna arista coincide.
-  created: Arista creada
-  fanout: 'Abanico ×{n}'
-  removed: Arista eliminada
-  err_port: La salida es obligatoria
-  err_self: Una capacidad no puede conectarse a sí misma
-  err_create: Error al crear
-  err_remove: Error al eliminar
-  # Sobrescrituras literales (P0-c): constantes que esta arista añade al bajar; las literales ganan.
-  literals: Sobrescrituras literales (JSON opcional)
-  literals_hint: Parámetros destino = datos ⊎ estas constantes (la misma clave gana aquí). Las claves y los tipos deben cumplir el contrato del destino; las erratas se rechazan.
-  follow_latest: Seguir la última versión
-  follow_latest_hint: El enlace apunta a la nueva versión al publicarse; desmarca para fijar la elegida
-  literals_placeholder: '{"to":"u_123"}'
-  literals_badge: literales ×{n}
-  err_literals_json: Las sobrescrituras literales no son JSON válido
-  err_literals_object: 'Las sobrescrituras literales deben ser un objeto JSON como {"to":"u_123"}'
-  # Referencias (P2.2): una arista guarda una referencia, no un id de capacidad
-  current_ref: 'ahora → {ref}'
-  ref_unresolved: 'No se puede resolver: la capacidad a la que apunta esta referencia ya no existe'
-  unresolved_short: sin resolver
 trace:
   legend_hot: "Línea más intensa · este camino se recorrió muchas veces (reintento / bucle)"
   legend_origin: "Origen · disparador (los eventos entran aquí)"
@@ -1691,6 +1645,11 @@ trace:
     loading: "Cargando registros…"
     truncated: "Registro truncado ({n} bytes en total, solo se conservan los últimos 32 KiB)"
     truncated_unknown: "Registro truncado (solo se conservan los últimos 32 KiB)"
+    reason:
+      node_offline: 'Nodo desconectado: los registros están en el nodo — reconéctalo para leerlos'
+      no_local_archive: El archivo de esta ejecución no está en el nodo (puede haber caducado)
+      timeout: El nodo no respondió a tiempo — los registros no están disponibles ahora
+      unknown: 'Registros no disponibles por ahora ({reason})'
   stat:
     spans: Tareas
     duration: Duración
