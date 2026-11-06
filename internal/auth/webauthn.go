@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -211,54 +212,8 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 		return "", nil, fmt.Errorf("finish registration: %w", err)
 	}
 	// 建用户（若并发下已被创建则复用）。
-	user, err := s.db.GetUserByID(tmp.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		user = tmp
-		user.CreatedAt = store.Now()
-		// 首个注册的用户自动成为超级管理员：**建用户之前**查 count，为 0 则 role=admin。
-		// 注意：SQLite 单写（SetMaxOpenConns(1)）使该查询与随后的 INSERT 串行化，
-		// 不会出现两个并发注册都看到 count=0 的情况。
-		//
-		// 角色必须在这里显式定好再交给 RegisterUser：它只在 Role 为空时兜底成 RoleMember，
-		// 不会替我们判断「首个用户」——「建用户之前查 count」这个时机是它看不到的。
-		count, cerr := s.db.UserCount(r.Context())
-		if cerr != nil {
-			return "", nil, fmt.Errorf("auth: 首用户判定失败: %w", cerr)
-		}
-		if count == 0 {
-			user.Role = store.RoleAdmin
-		} else {
-			user.Role = store.RoleMember
-		}
-		// 建用户 + `default` 命名空间 + 播种内置能力，**在同一个事务里**完成（#204 A1 / #207）。
-		//
-		// 与旧实现的语义差别（是加强，不是放宽）：旧路径是「CreateUser 先建好用户，
-		// 再 EnsureOrgForUser 补救」，补救失败时用户已经落库，只能记日志、留一个没有
-		// 命名空间的半成品（此后所有资源端点无处安放，而没人会发现）。RegisterUser 是
-		// 原子的：建命名空间或播种失败会整体回滚，不会留下半成品用户 —— 所以这里把失败
-		// 当成**致命错**返回给调用方让它重试注册，而不是继续往下签发一个空壳账号。
-		ns, nerr := s.db.RegisterUser(r.Context(), user)
-		if nerr != nil {
-			slog.Error("register: register user with namespace failed",
-				"event", "auth.register.namespace_failed",
-				"user_id", user.ID,
-				"error", nerr.Error(),
-			)
-			return "", nil, fmt.Errorf("auth: 注册失败（已回滚，未建用户）: %w", nerr)
-		}
-		slog.Info("register: namespace ready",
-			"event", "auth.register.namespace_ready",
-			"user_id", user.ID,
-			"namespace_id", ns.ID,
-		)
-		if user.Role == store.RoleAdmin {
-			slog.Info("first user promoted to admin",
-				"event", "auth.register.first_admin",
-				"user_id", user.ID,
-				"username", user.Username,
-			)
-		}
-	} else if err != nil {
+	user, err := s.ensureRegisteredUser(r.Context(), tmp)
+	if err != nil {
 		return "", nil, err
 	}
 	// 存凭证。
@@ -276,6 +231,61 @@ func (s *Service) FinishRegister(username string, r *http.Request) (sessionID st
 		return "", nil, fmt.Errorf("auth: 签发恢复码失败: %w", err)
 	}
 	return sess.ID, codes, nil
+}
+
+// ensureRegisteredUser 把「刚校验完 attestation 的用户」落库：
+// 已存在（同 ID 重复提交 / 并发注册同一条）则复用已有的行，否则建用户。
+//
+// 抽成独立方法是为了让「首用户 → admin」这条判定能在单测里被直接驱动：
+// 真正的 FinishRegister 需要构造一份可验证的 attestation，成本高到没人会写并发用例。
+func (s *Service) ensureRegisteredUser(ctx context.Context, u *store.User) (*store.User, error) {
+	existing, err := s.db.GetUserByID(u.ID)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	u.CreatedAt = store.Now()
+	// 首个注册的用户自动成为超级管理员：这条判定交给 RegisterUser，在它建用户的
+	// **同一个事务**里完成（store.RoleAuto → 事务内 `SELECT COUNT(*)`，0 ⇒ admin）。
+	//
+	// 为什么不能让这里先查后写（旧实现就是那样）：UserCount() 与 RegisterUser() 是
+	// 两次独立的**连接池操作**，中间没有事务。池只有 1 条连接时它们碰巧被串行化，
+	// 于是写得像“对”的；#240 把池放开到 8（store.go defaultMaxOpenConns）之后这个
+	// 不变量就不存在了 —— 两个并发首注册都读到 count=0，于是**双双拿到 admin**。
+	// 造出两个互不知情的超管，是安全缺陷而不是排序问题。
+	// （回归护栏：first_admin_test.go 的 TestConcurrentFirstRegister_ExactlyOneAdmin）
+	u.Role = store.RoleAuto
+	// 建用户 + `default` 命名空间 + 播种内置能力，**在同一个事务里**完成（#204 A1 / #207）。
+	//
+	// 与旧实现的语义差别（是加强，不是放宽）：旧路径是「CreateUser 先建好用户，
+	// 再 EnsureOrgForUser 补救」，补救失败时用户已经落库，只能记日志、留一个没有
+	// 命名空间的半成品（此后所有资源端点无处安放，而没人会发现）。RegisterUser 是
+	// 原子的：建命名空间或播种失败会整体回滚，不会留下半成品用户 —— 所以这里把失败
+	// 当成**致命错**返回给调用方让它重试注册，而不是继续往下签发一个空壳账号。
+	ns, nerr := s.db.RegisterUser(ctx, u)
+	if nerr != nil {
+		slog.Error("register: register user with namespace failed",
+			"event", "auth.register.namespace_failed",
+			"user_id", u.ID,
+			"error", nerr.Error(),
+		)
+		return nil, fmt.Errorf("auth: 注册失败（已回滚，未建用户）: %w", nerr)
+	}
+	slog.Info("register: namespace ready",
+		"event", "auth.register.namespace_ready",
+		"user_id", u.ID,
+		"namespace_id", ns.ID,
+	)
+	if u.Role == store.RoleAdmin {
+		slog.Info("first user promoted to admin",
+			"event", "auth.register.first_admin",
+			"user_id", u.ID,
+			"username", u.Username,
+		)
+	}
+	return u, nil
 }
 
 // ---------- 已登录用户补建凭证 ----------
