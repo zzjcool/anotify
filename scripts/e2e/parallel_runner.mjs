@@ -71,6 +71,8 @@ const CHROME_SUITES = [
 	// 开页抖动回归：语言条 / 命名空间槽位 / 折叠态 / 预排版
 	// （实测几何去重，专抓「功能全对但首帧后元素逐帧滑动」这类回归）
 	"ui_shift",
+	// P2 工程守卫：字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions
+	"p2_guards",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 

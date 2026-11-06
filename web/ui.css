@@ -1000,6 +1000,11 @@ body {
 	max-height: 4rem;
 	opacity: 1;
 }
+/* 横幅内层是 e2e 的 lang 钩子（.lang-hint-inner），同时是 flex 子项：
+ * 给一个真实的 min-width:0，长语言名才能在窄屏收缩而不是把行撑破。 */
+.lang-hint-inner {
+	min-width: 0;
+}
 /* 首帧即终态：横幅插入的同一任务内就加 --open，过渡帧等于「把整页往下推一半」，
  * 用户看到的是外壳在滑（CLS 0.03+）。--instant 关掉过渡，开/收都只有一个状态。 */
 .lang-hint.lang-hint--instant {

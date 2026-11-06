@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 /* Anotify · 前端死类（Dead Class）守卫
  *
- * 作用：扫描 web-src/pages|layouts 里的 class="..."，逐个校验是否落在
+ * 作用：扫描 web-src/pages|layouts 里的 class="..."，以及 JS 里的
+ *       class 字符串（class: "..." / '...' / `...`），逐个校验是否落在
  *       本项目设计系统 / Tailwind 工具类的有效集合内。防的是「新增前端区块时
  *       发明了一个没在任何 CSS 里定义、又不是合法 Tailwind 工具类的 class」
  *       （例：曾出现的 input-field、dot-info），这种类在 Tailwind CDN 下
  *       会静默不生效，造成风格格格不入。
  *
  * 校验规则（任一命中即视为有效）：
- *   ① 在 ui.css / tokens.css 顶层定义的组件类
+ *   ① 在 ui.css / tokens.css 里定义的组件类（含 `.chip .x` 这类嵌套选择器）
  *   ② 在页面内联 <style> 块里定义的类
  *   ③ 在 JS 里作为 querySelector(All)(".x") 选择器 hook 出现的类
  *   ④ 合法的 Tailwind 工具类（含响应式/暗色/变体前缀 + 任意值语法）
  *
  * 用法：
- *   node scripts/check-classes.mjs [--fix] [--src web-src]
- *   --fix   发现死类时列出，不修改（本项目死类需人工裁决，不自动删）
+ *   node scripts/check-classes.mjs [--src=web-src] [--self-test]
+ *   --self-test  跑脚本自身的红/绿自测（纯内存 fixture，不改仓库文件）
  *   默认直接列出死类并以非零退出码失败（供 CI / make fe 拦下）
  *
- * 说明：动态拼接的类（如 JS 里 class: `x ${meta.y}`）无法静态全量校验，
- *       但其中的静态部分会被 ③ 覆盖；本守卫主要拦 class="..." 里的静态值。
+ * 说明（JS 扫描边界，均为「宁可漏报不误报」）：
+ *   · 动态拼接的类（`x ${meta.y}`）只校验 ${...} 之外的静态片段，表达式内部跳过；
+ *   · `className = "..."` / `setAttribute("class", ...)` / `classList.add("...")`
+ *     暂不在 JS 扫描范围内（只覆盖 class: 字面量）；
+ *   · 字符串拼接 `"a " + x + " b"` 只取第一段字面量。
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -29,18 +33,112 @@ const SRC = path.resolve(
 	process.argv.find((a) => a.startsWith("--src="))?.split("=")[1] ?? "web-src",
 );
 
-// ---------- ① ui.css / tokens.css 顶层组件类 ----------
+// ---------- ① ui.css / tokens.css 里定义的组件类 ----------
+/** 从 CSS 文本里取出所有「选择器位置」的类名。
+ *  逐段扫 `{ ... }`，把每个 `{` 之前的 prelude 当选择器（@ 开头的 at-rule
+ *  prelude 除外），因此能覆盖 `.chip .x {`、`.a,\n.b {` 与 @media 内嵌规则，
+ *  又不会把声明块里的 0.5rem 或注释文字当成类名。 */
+function selectorClasses(css) {
+	const out = new Set();
+	let buf = "";
+	for (const ch of css.replace(/\/\*[\s\S]*?\*\//g, "")) {
+		if (ch === "{") {
+			const prelude = buf.trim();
+			buf = "";
+			if (!prelude.startsWith("@")) {
+				for (const m of prelude.matchAll(/(?:^|[\s,>+~])\.([a-zA-Z0-9_][\w-]*)/g))
+					out.add(m[1]);
+			}
+		} else if (ch === "}" || ch === ";") {
+			buf = "";
+		} else {
+			buf += ch;
+		}
+	}
+	return out;
+}
+
 async function cssTopClasses() {
 	const out = new Set();
 	for (const file of ["web/ui.css", "web/tokens.css"]) {
 		try {
 			const css = await fs.readFile(file, "utf8");
-			for (const m of css.matchAll(/^\s*\.([a-zA-Z0-9_][\w-]*)/gm))
-				out.add(m[1]);
+			for (const cls of selectorClasses(css)) out.add(cls);
 		} catch {
 			/* 文件缺失忽略 */
 		}
 	}
+	return out;
+}
+
+// ---------- ①bis JS 里的 class 字符串（class: "..." / '...' / `...`） ----------
+/** 跳过 `${ ... }` 表达式（含嵌套花括号与其内部字符串字面量），返回 `}` 之后的下标。 */
+function skipTemplateExpression(src, i) {
+	let depth = 1;
+	while (i < src.length && depth > 0) {
+		const ch = src[i];
+		if (ch === '"' || ch === "'" || ch === "`") {
+			i++;
+			while (i < src.length && src[i] !== ch) {
+				if (src[i] === "\\") i++;
+				i++;
+			}
+			i++;
+			continue;
+		}
+		if (ch === "{") depth++;
+		else if (ch === "}") depth--;
+		i++;
+	}
+	return i;
+}
+
+/** 提取 JS 源码里 class 字符串的静态片段（每个片段为未拆空白的原始字符串）。
+ *  模板字符串按 `${...}` 切段：动态表达式整体跳过，只保留前后静态片段。 */
+export function jsClassLiterals(src) {
+	const out = [];
+	const re = /\bclass\s*:\s*(["'`])/g;
+	let m;
+	while ((m = re.exec(src))) {
+		const quote = m[1];
+		const start = re.lastIndex;
+		if (quote !== "`") {
+			const end = src.indexOf(quote, start);
+			if (end === -1) continue;
+			out.push(src.slice(start, end));
+			re.lastIndex = end + 1;
+			continue;
+		}
+		let i = start;
+		let chunk = "";
+		while (i < src.length) {
+			const ch = src[i];
+			if (ch === "\\") {
+				chunk += src[i + 1] ?? "";
+				i += 2;
+				continue;
+			}
+			if (ch === "`") break;
+			if (ch === "$" && src[i + 1] === "{") {
+				out.push(chunk);
+				chunk = "";
+				i = skipTemplateExpression(src, i + 2);
+				continue;
+			}
+			chunk += ch;
+			i++;
+		}
+		out.push(chunk);
+		re.lastIndex = i + 1;
+	}
+	return out;
+}
+
+/** 取出 HTML 里所有内联 <script> 块的内容（外链脚本天然跳过）。 */
+export function scriptBlocks(html) {
+	const out = [];
+	for (const m of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
+		out.push(m[1]);
 	return out;
 }
 
@@ -107,6 +205,8 @@ const TAILWIND_COMPLETE = new Set([
 	"flex-row-reverse",
 	"shrink",
 	"shrink-0",
+	"flex-shrink",
+	"flex-shrink-0", // Tailwind v3 旧名；web/tailwind.css 产物里仍存在，web/partials.js 在用
 	"grow",
 	"grow-0",
 	"order-first",
@@ -549,6 +649,88 @@ export function isTailwind(cls) {
 	);
 }
 
+// ---------- 已知死类（JS class 串新暴露、产品侧待裁决） ----------
+// 这些是扫描新增覆盖面后才可见、目前确实没有 CSS 定义的类。它们不阻塞构建
+// （否则 make fe / 全量 e2e 会直接停摆），但会以 ⚠️ 打出；产品侧补完定义或删掉
+// 用法后应从本表删除，不要把它当永久豁免用。
+// 目前为空：lang-hint-inner 已在 ui.css 补上 min-width:0 的真实定义。
+const KNOWN_DEAD_JS_CLASSES = new Map();
+
+// ---------- 自测：证明「错拼判死、正确判活」（纯内存，不改仓库文件） ----------
+async function selfTest() {
+	const cases = [];
+	const t = (name, actual, expected) =>
+		cases.push({ name, actual, expected });
+
+	t(
+		"双引号 class: 提取",
+		jsClassLiterals('el("div", { class: "side-link active" })'),
+		["side-link active"],
+	);
+	t(
+		"单引号 class: 提取",
+		jsClassLiterals("el('div', { class: 'btn btn-primary' })"),
+		["btn btn-primary"],
+	);
+	t(
+		"多行 class: 提取",
+		jsClassLiterals('el("div", {\n\t\tclass:\n\t\t\t"side-link",\n\t})'),
+		["side-link"],
+	);
+	t(
+		"模板串：${...} 跳过、保留前后静态片段",
+		jsClassLiterals(
+			'el("div", { class: `brand-tile ${wrap ? "active" : ""} rounded-lg` })',
+		),
+		["brand-tile ", " rounded-lg"],
+	);
+	t(
+		"模板串：表达式里的字符串/花括号不破坏切分",
+		jsClassLiterals('x = { class: `${a.b === "}" ? "active" : ""} side-link` }'),
+		["", " side-link"],
+	);
+	t(
+		"不误抄 className / classList / 无冒号字符串",
+		jsClassLiterals(
+			'node.className = "x"; el.classList.add("y"); if (k === "class") {}',
+		),
+		[],
+	);
+	t(
+		"scriptBlocks 只取内联脚本块",
+		scriptBlocks(
+			'<p class="x"></p><script>const a=1</script><script src="/x.js"></script>',
+		),
+		["const a=1", ""],
+	);
+
+	const cssClasses = await cssTopClasses();
+	const valid = (cls) =>
+		cssClasses.has(cls) || isTailwind(cls);
+	t("正确类 side-link → 判活", valid("side-link"), true);
+	t("错拼类 side-lnik → 判死", valid("side-lnik"), false);
+	t("Tailwind flex-shrink-0 → 判活", valid("flex-shrink-0"), true);
+	t("嵌套选择器 .tag-chip .tag-x → 识别 tag-x", cssClasses.has("tag-x"), true);
+
+	let failed = 0;
+	for (const c of cases) {
+		const same = JSON.stringify(c.actual) === JSON.stringify(c.expected);
+		if (same) console.log(`  ✅ ${c.name}`);
+		else {
+			failed++;
+			console.error(
+				`  ❌ ${c.name}\n     actual  = ${JSON.stringify(c.actual)}\n     expected= ${JSON.stringify(c.expected)}`,
+			);
+		}
+	}
+	console.log(
+		failed === 0
+			? `✅ self-test ${cases.length}/${cases.length} 通过`
+			: `✗ self-test ${cases.length - failed}/${cases.length} 通过`,
+	);
+	return failed === 0;
+}
+
 // ---------- 主流程 ----------
 async function main() {
 	const pageDir = path.join(SRC, "pages");
@@ -568,8 +750,10 @@ async function main() {
 	// 收集所有 class="..." 的静态值
 	const used = new Set();
 	const usageByClass = new Map();
+	const htmlByFile = new Map();
 	for (const f of allFiles) {
 		const html = await fs.readFile(f, "utf8");
+		htmlByFile.set(f, html);
 		for (const m of html.matchAll(/class="([^"]*)"/g)) {
 			if (m[1].includes("{{")) continue; // 模板驱动类（含 {{ }}）无法静态校验，整条跳过
 			for (const cls of m[1].split(/\s+/).filter(Boolean)) {
@@ -580,20 +764,61 @@ async function main() {
 		}
 	}
 
+	const htmlCount = used.size;
+
+	// 收集 JS 里 class 字符串的静态片段（web/partials.js + 页面内联 <script>）。
+	// 它们不进 HTML class 属性计数，但同样要过同一套 allowlist 判定。
+	const jsSources = [];
+	for (const file of ["web/partials.js"]) {
+		try {
+			jsSources.push([file, await fs.readFile(file, "utf8")]);
+		} catch {
+			/* 文件缺失忽略（例如只跑某个 --src 子集时） */
+		}
+	}
+	for (const [f, html] of htmlByFile) {
+		for (const block of scriptBlocks(html))
+			jsSources.push([`${path.basename(f)}#script`, block]);
+	}
+	for (const [label, src] of jsSources) {
+		for (const literal of jsClassLiterals(src)) {
+			for (const cls of literal.split(/\s+/).filter(Boolean)) {
+				used.add(cls);
+				if (!usageByClass.has(cls)) usageByClass.set(cls, []);
+				usageByClass.get(cls).push(`${label}(class:)`);
+			}
+		}
+	}
+
 	// 判定死类
 	const dead = [];
+	const knownDead = [];
 	for (const cls of used) {
 		if (cssClasses.has(cls)) continue;
 		if (inlineClasses.has(cls)) continue;
 		if (hookClasses.has(cls)) continue;
 		if (isTailwind(cls)) continue;
-		dead.push(cls);
+		(KNOWN_DEAD_JS_CLASSES.has(cls) ? knownDead : dead).push(cls);
 	}
 	dead.sort();
+	knownDead.sort();
+
+	if (knownDead.length > 0) {
+		console.warn(
+			`⚠️  已知死类（JS class 串暴露、无 CSS 定义，待产品裁决，不阻塞构建）：${knownDead.join(", ")}`,
+		);
+		for (const cls of knownDead) {
+			const why = KNOWN_DEAD_JS_CLASSES.get(cls);
+			console.warn(
+				`   - "${cls}"  用在: ${[...new Set(usageByClass.get(cls))].join(", ")}${why ? `\n     原因: ${why}` : ""}`,
+			);
+		}
+	}
 
 	if (dead.length === 0) {
+		const jsOnly = used.size - htmlCount;
 		console.log(
-			`✅ class 校验通过：${used.size} 个类全部落在设计系统 / Tailwind 工具类内`,
+			`✅ class 校验通过：${used.size} 个类（HTML class 属性 ${htmlCount} + JS class 串新增 ${jsOnly}）全部落在设计系统 / Tailwind 工具类内`,
 		);
 		return;
 	}
@@ -621,8 +846,17 @@ const isDirectRun =
 	process.argv[1] &&
 	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isDirectRun) {
-	main().catch((e) => {
-		console.error(e);
-		process.exit(1);
-	});
+	if (process.argv.includes("--self-test")) {
+		selfTest()
+			.then((passed) => process.exit(passed ? 0 : 1))
+			.catch((e) => {
+				console.error(e);
+				process.exit(1);
+			});
+	} else {
+		main().catch((e) => {
+			console.error(e);
+			process.exit(1);
+		});
+	}
 }
