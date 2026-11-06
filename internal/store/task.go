@@ -430,7 +430,7 @@ func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error)
 // 此时必须用别人那份（否则同一任务会出现两个有效令牌）。
 // 任务行不存在返回 ErrNotFound（调用方按「任务已没了」处理）。
 //
-// **#264 之后它不再是派发路径上的写**：令牌已由 assignTaskTx 在订槽/改状态那个事务里
+// **#264 之后它不再是派发路径上的写**：令牌已由 assignTaskTx 在占槽/改状态那个事务里
 // 一并落库，PublishAssign 只读 Task.Token。本函数剩两个用途：
 //   - 发布路径的**兜底自愈**：行上的 token 还是空串（升级前就已 assigned 的老行、
 //     或绕过 assignTaskTx 直接造的指派）—— 那是每行一次性的写，不是每帧一次；
@@ -696,7 +696,7 @@ func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, 
 		// 命名（<seq>-a<attempt>）需要的不变量。
 		//
 		// token（#264）：`CASE WHEN token = ''` 让「只在为空时生成」与 attempts/seq 的写
-		// 变成**同一条语句**——批次令牌的 CAS 语义因此不靠事务外的那次 UPDATE 维护。
+		// 变成**同一条语句**——令牌的 CAS 语义因此不靠事务外的那次 UPDATE 维护。
 		// SET 里的表达式全部按更新**前**的行值求值（SQL 语义），所以重派（token 已非空）
 		// 一定保留旧令牌，令牌对同一任务永远不变。
 		// 代价是每次 assign 都白生成一个令牌串（token 已非空时它被 CASE 丢掉）：

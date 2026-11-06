@@ -1298,7 +1298,7 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 //
 // 粘性 pin 为什么也在这里（#264）：同理（原来是 PublishAssign 成功之后再单独写一行），
 // 现作为可选入参 pin 一起落库；推帧失败的回滚由 requeue 路径负责（条件删除，
-// 只删本次新建的那条），见 route.launch 与 releasePinAfterPublishFailure 的注释。
+// 只删本次新建的那条），见 route.launch 与 rollbackPinAfterPublishFailure 的注释。
 func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error) {
 	return d.LeaseAndAssignWithPin(ctx, namespaceID, taskID, nodeID, leaseUntil, nil)
 }
