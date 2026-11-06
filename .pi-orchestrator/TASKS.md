@@ -453,3 +453,15 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **验证**：`make e2e` 全量 **2273/0**（28 套件）；`make ci` 唯一失败为 `cmd/agent TestHandleUpgradeNeedRootDoesNotExit`（本机 root，`cmd/agent` 零改动），GitHub CI `test` 绿；`make contract` 绿。
 - **新开**：#305（已修）/ #306（已修）/ #307（已修）/ #308（已修）/ **#310**（i18n_coverage A 组缺 `injectSession`，受保护页空转）/ **#311**（活文案仍说「演示模式」+ mock.js 伪造 `/v1/test-notify`）。
 - **仍 open**：#273（触发 payload，产品已定「做」）、#264（写放大，待干净复测）、#310、#311。
+
+---
+
+## P0 · 存量 issue 清扫（2026-11-06，第二批：4 → 0）
+
+- **#310**：`i18n_coverage` A 组补 `injectSession` + 8 条防退化断言（URL 不含 `login.html` / 无 `#login-panel`）。先红后绿证明空转形态：摘掉会话时守卫全红而「no CJK」照样绿。真扫目标页后 en/es 五页 0 CJK / 0 pageerror。
+- **#311**：清「演示模式」活文案（四语 5 条 key + 2 处 `t()` 中文兜底 + 6 行注释）；删 `mock.js` 的 `/v1/test-notify` 假桩。两条计划与实际不符已按现状纠正（`security.alert.backend_down` 原本无 key、`security.recovery.no_https` 全仓不存在）。
+- **#273**：决策 1 按裁定不做；决策 2 落地 —— Sources「立即运行」先开 JSON 弹层，预填真实样本 / 无样本 `{}`，非法 JSON 不发请求，合法 payload 进任务参数。后端零改动。e2e 11 条。
+- **#264**：**−45.6% 造不出来**。新增单行口径基准（1 tx × 1 行 = webhook 形状）+ 文件库开关，A/B 交错 3 组 × 9 样本：中位差 −7.8%/−4.7%/+7.6%/+19.4%，**符号随库翻**；pprof 先验上限 ≈6%（`_sqlite3BtreeInsert` 35.7% ÷ 6 棵 b-tree）。索引列序不动。顺带修正前提：WAL+`NORMAL` 下 **COMMIT 不 fsync**，串行化的是写锁次数。
+- **#264 合并派发事务**：写提交 `3+2K+S+P` → `2+K+P`（令牌 + pin 并入 `LeaseAndAssign`；pin 推帧失败按三元组条件回滚；`EnsureGraphVersion` 先读后写）。红→绿用外部 `BEGIN IMMEDIATE` 当探针，不测耗时。
+- **验证**：`make e2e` 全量 28 套件全绿；`go test ./...` 15 包 ok（仅 `cmd/agent` root 环境既有失败）；`make fe` 0 WARN；contract/gofmt/vet/build 干净。
+- **合并**：`ce8fd97`（PR #313）。**open issue：0**（11 条全部收口，其中 4 条新开即修）。
