@@ -357,7 +357,7 @@ receivers:
     perm_denied: Notification permission not granted ({perm}). Please allow in browser settings and retry.
     registering_sw: Registering Service Worker…
     getting_vapid: Getting VAPID public key…
-    no_backend: Backend not connected — can't get VAPID key (demo mode registers the device without subscribing).
+    no_backend: Backend not connected — can't get the VAPID key. Make sure the server is running (run make dev locally), then retry.
     empty_vapid: VAPID public key is empty
     subscribing: Subscribing to push…
     reporting: Reporting subscription…
@@ -508,7 +508,7 @@ keys:
   error:
     no_scope: Please select at least one scope
     no_plaintext: Server did not return the Key plaintext
-    create_failed: 'Create failed: {msg} (try demo mode if backend isn''t ready)'
+    create_failed: 'Create failed: {msg}. Make sure the server is running, then retry (run make dev locally to start one).'
   emptyTitle: 'No API keys yet'
 security:
   title: Security & Login
@@ -586,7 +586,8 @@ security:
       2. Browser supporting WebAuthn
 
 
-      Currently in demo mode. Once the backend is ready, this will trigger system biometrics.'
+      Once the backend is ready, this will trigger system biometrics.'
+    backend_down: Cannot reach the backend. Make sure the server is running and served over HTTPS (run make dev locally), then try adding the passkey again.
   toast:
     renamed: Renamed
     rename_failed: 'Rename failed: {msg}'
@@ -872,7 +873,7 @@ passkeyenroll:
     success_desc: A passkey for "{name}" was created. It can sign in directly next time.
     done: Done
     restart: Start over
-    error_backend_desc: Cannot reach the backend (demo mode). Make sure the server is running and served over HTTPS.
+    error_backend_desc: Cannot reach the backend. Make sure the server is running and served over HTTPS (run make dev locally), then retry.
     denied_title: Enrollment denied
     denied_desc: No credential was created. If this wasn't you, check whether someone is trying to sign in to your account.
     expired_title: Session expired
@@ -1468,6 +1469,11 @@ sources:
   fired_pruned: ', {n} pruned'
   fired_none: Event stored but not dispatched ({r})
   fired_empty: Event stored, no tasks to dispatch
+  fire_payload_title: Fire event
+  fire_payload_label: Event payload (JSON object)
+  fire_payload_hint: Placeholders in the source params are resolved from this payload. Leave it empty to send {}, exactly as without a payload.
+  fire_submit: Fire
+  fire_bad_json: 'Payload is not valid JSON: {e}'
   delete_confirm: Delete source “{n}”? Existing events and tasks are kept.
   in: in {n}
   ago: '{n} ago'

@@ -1276,7 +1276,7 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 	return "", ErrNoCapacity
 }
 
-// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts（#141）。
+// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts + 落令牌（#141 / #264）。
 //
 // 合并前派发要 3 次提交（LeaseInstance 的占槽 UPDATE 一次、AssignTask 里的
 // Transition 一次、写归属/attempts 一次），中间失败会出现两种
@@ -1287,10 +1287,39 @@ func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, 
 //  1. 找最早的存活空闲槽位（口径与 LeaseInstance 完全一致）
 //  2. CAS 占位（busy_task IS NULL → taskID）；RowsAffected==0 → ErrNoCapacity
 //  3. transitionGuarded(pending → assigned)（状态写唯一入口）
-//  4. 写 node/instance/lease_until 并 attempts+1
+//  4. 写 node/instance/lease_until 并 attempts+1，同时落任务令牌（token 为空时才生成，
+//     已有则保留——见 assignTaskTx 的 token 段）
 //
 // 任一步失败都整体回滚——槽位不泄漏，attempts 也不会被提前 +1。
-func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (instanceID string, err error) {
+//
+// 令牌为什么在这里（#264）：它原来在发布路径上（ws.PublishAssign → EnsureTaskToken），
+// 那是**每帧一次独立写事务**，跟这里抢同一把写锁（池=8、`_txlock=immediate`）。
+// 折进本事务后派发少一次提交，且令牌与 assigned 同生共死。
+//
+// 粘性 pin 为什么也在这里（#264）：同理（原来是 PublishAssign 成功之后再单独写一行），
+// 现作为可选入参 pin 一起落库；推帧失败的回滚由 requeue 路径负责（条件删除，
+// 只删本次新建的那条），见 route.launch 与 rollbackPinAfterPublishFailure 的注释。
+func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error) {
+	return d.LeaseAndAssignWithPin(ctx, namespaceID, taskID, nodeID, leaseUntil, nil)
+}
+
+// LeaseAndAssignWithPin 是 LeaseAndAssign + 「同一个事务里落一条粘性 pin」（#264）。
+//
+// 为什么要合并：pin 原来在 route 的 launch/redispatch 里**等推帧成功之后**再单写一行
+// （每次派发一次独立写事务，跟派发抢同一把写锁）。折进来之后：派发少一次提交，
+// 且「任务 assigned」与「钉在哪台机器上」原子成立——不会出现「库里已 assigned、
+// 但 pin 还没写」的窗口被并发的下一跳看到（那会让同一 trace 的下一跳按负载换机器，
+// sticky 静默失效）。
+//
+// pin 为 nil 时行为与 LeaseAndAssign 完全一致（非 sticky 能力走的就是这条路）。
+//
+// 推帧失败怎么办（语义必须不变：推不出去的任务**不能**留下 pin）：
+// 回滚发生在 route 的 requeue 路径上，用 RollbackPin 做**条件删除**（只删本次事务
+// 新建的那条）。为什么不在"推成功之后才提交 pin"：
+//   - 那等于把这次写留在发布路径上，本次合并的收益直接归零；
+//   - 失败路径本来就写 3 次（释放槽位 / 过期租约 / 巡检回收），多一次条件 DELETE
+//     是罕见路径上可以接受的代价，而成功路径省下的是每一次。
+func (d *DB) LeaseAndAssignWithPin(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64, pin *NodePin) (instanceID string, err error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return "", ErrNamespaceRequired
 	}
@@ -1339,6 +1368,14 @@ func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID str
 	// assignTaskTx 内的 WHERE 还会再过一次 namespace_id。
 	if err := d.assignTaskTx(ctx, tx, namespaceID, taskID, nodeID, instanceID, leaseUntil); err != nil {
 		return "", err
+	}
+
+	// ⑤ 粘性 pin（可选）：与上面三件事同一个事务。写失败 → 整笔回滚（任务留在
+	// pending、槽位不泄漏），比"派发出去了但没钉住"更好查：后者是静默的语义降级。
+	if pin != nil {
+		if err := putPinExec(ctx, tx, pin); err != nil {
+			return "", err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1402,6 +1439,21 @@ func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 // p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」）；
 // p.NodeID 必须是该命名空间内的节点。
 func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
+	return putPinExec(ctx, d, p)
+}
+
+// execContexter 是 `*sql.DB` 与 `*sql.Tx` 的公共执行面：
+// 让同一条写语句既能独立执行（PutPin），也能落在调用方的事务里（LeaseAndAssignWithPin）。
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// putPinExec 是 PutPin 的唯一实现（独立执行与事务内执行共用同一段 SQL/校验）。
+//
+// p.CreatedAt / p.LastUsedAt 为 0 时就地补成 Now()——**会把值写回调用方的 struct**：
+// route 的回滚路径要靠这个 CreatedAt 做"只删本次新建那条"的条件删除（见 RollbackPin）。
+// 已存在的 pin 走 ON CONFLICT 分支，其 created_at 是老的，所以那个条件不会命中旧行。
+func putPinExec(ctx context.Context, ex execContexter, p *NodePin) error {
 	if p == nil || p.StickyKey == "" || p.NodeID == "" {
 		return fmt.Errorf("put pin: sticky_key/node_id required")
 	}
@@ -1415,7 +1467,7 @@ func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 	if p.LastUsedAt == 0 {
 		p.LastUsedAt = now
 	}
-	if _, err := d.ExecContext(ctx,
+	if _, err := ex.ExecContext(ctx,
 		`INSERT INTO node_pins (sticky_key, namespace_id, node_id, selector, created_at, last_used_at)
 		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(sticky_key) DO UPDATE SET last_used_at = excluded.last_used_at`,
@@ -1423,6 +1475,33 @@ func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
 		return fmt.Errorf("put pin: %w", err)
 	}
 	return nil
+}
+
+// RollbackPin 撤掉一条**本次派发新建的**粘性 pin（推帧失败的回滚，#264）。
+//
+// 条件是三元组 (sticky_key, node_id, created_at) 全等，而不是只按 sticky_key 删：
+// pin 可能是**更早**的派发留下的（同一 trace 的上一跳），或者并发派发刚建的；
+// 只按 key 删会把别人的钉住一起清掉，那是「一次推送失败让整条 trace 的粘性失效」。
+//   - 已存在的行：created_at 是旧的（putPinExec 的 ON CONFLICT 只刷新 last_used_at）
+//     → 条件不命中 → 不动；
+//   - 本次新建的行：created_at 就是 putPinExec 写进 p.CreatedAt 的那个值 → 删掉。
+//
+// 返回是否真的删了一行（deleted=false 表示"这条 pin 本来就不属于本次派发"）。
+func (d *DB) RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (deleted bool, err error) {
+	if stickyKey == "" || nodeID == "" || createdAt == 0 {
+		return false, fmt.Errorf("rollback pin: sticky_key/node_id/created_at required")
+	}
+	res, err := d.ExecContext(ctx,
+		`DELETE FROM node_pins WHERE sticky_key = ? AND node_id = ? AND created_at = ?`,
+		stickyKey, nodeID, createdAt)
+	if err != nil {
+		return false, fmt.Errorf("rollback pin: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rollback pin rows: %w", err)
+	}
+	return n > 0, nil
 }
 
 // DeletePin 删除粘性钉住（节点下线 / 换机器时用）。

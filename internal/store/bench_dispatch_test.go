@@ -66,13 +66,17 @@ func BenchmarkDispatchChain(b *testing.B) {
 		// Out 必须非空：空 Out 的语义是「上游没回报出口」，Dispatch 会在查表前
 		// 就正常返回（out.Tasks 为空）——基准会静默变成测空气。
 		// 这三条断言就是防止这种静默失效：没真派出去就直接失败。
+		// 入口边必须给 EntryFromKey/EntryFromPort（来源名 + 事件类型）：
+		// FromCap/Out 是**能力边**的左端，checkInput 对入口边要求的是另一对字段。
+		// 少了这两个字段 Dispatch 会直接报「from_is_source requires entry_from_key」——
+		// 基准一条都派不出去，测的就是空气。
 		out, err := disp.Dispatch(ctx, route.DispatchInput{
-			NamespaceID:  env.nsID,
-			TraceID:      fmt.Sprintf("trc_dsp_%d", i),
-			FromIsSource: true,
-			FromCap:      "github",
-			Out:          "pull_request.opened",
-			Params:       params,
+			NamespaceID:   env.nsID,
+			TraceID:       fmt.Sprintf("trc_dsp_%d", i),
+			FromIsSource:  true,
+			EntryFromKey:  "github",
+			EntryFromPort: "pull_request.opened",
+			Params:        params,
 		})
 		if err != nil {
 			b.Fatalf("dispatch: %v", err)
@@ -181,12 +185,12 @@ func TestBenchmarksTargetRealPaths(t *testing.T) {
 	nodeID := env.addEntryGraphWithNode(t)
 	disp := route.New(env.db)
 	out, err := disp.Dispatch(ctx, route.DispatchInput{
-		NamespaceID:  env.nsID,
-		TraceID:      "trc_guard_dispatch",
-		FromIsSource: true,
-		FromCap:      "github",
-		Out:          "pull_request.opened",
-		Params:       map[string]any{"number": 42},
+		NamespaceID:   env.nsID,
+		TraceID:       "trc_guard_dispatch",
+		FromIsSource:  true,
+		EntryFromKey:  "github",
+		EntryFromPort: "pull_request.opened",
+		Params:        map[string]any{"number": 42},
 	})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)

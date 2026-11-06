@@ -357,7 +357,7 @@ receivers:
     perm_denied: 通知权限未授予（{perm}）。请在浏览器设置里允许后重试。
     registering_sw: 正在注册 Service Worker…
     getting_vapid: 正在获取 VAPID 公钥…
-    no_backend: 后端未连接，无法获取 VAPID 公钥（演示模式仅登记设备，不真正订阅）。
+    no_backend: 后端未连接，无法获取 VAPID 公钥。请确认服务端已启动（本地可运行 make dev）后重试。
     empty_vapid: VAPID 公钥为空
     subscribing: 正在订阅推送…
     reporting: 正在上报订阅…
@@ -508,7 +508,7 @@ keys:
   error:
     no_scope: 请至少选择一个权限范围
     no_plaintext: 服务端未返回 Key 明文
-    create_failed: 创建失败：{msg}（后端未就绪时可先体验演示模式）
+    create_failed: 创建失败：{msg}。确认服务端已启动后重试（本地可运行 make dev 起服务）。
   emptyTitle: '还没有 API Key'
 security:
   title: 安全与登录
@@ -586,7 +586,8 @@ security:
       2. 浏览器支持 WebAuthn
 
 
-      当前为演示模式，后端就绪后此处将调起系统生物识别。'
+      后端就绪后此处将调起系统生物识别。'
+    backend_down: 无法连接后端。请确认服务端已启动并通过 HTTPS 访问（本地可运行 make dev 起服务），再尝试添加 Passkey。
   toast:
     renamed: 已重命名
     rename_failed: 重命名失败：{msg}
@@ -872,7 +873,7 @@ passkeyenroll:
     success_desc: 「{name}」的 Passkey 已创建，下次可用它直接登录。
     done: 完成
     restart: 重新发起
-    error_backend_desc: 无法连接后端（当前为演示模式）。请确认后端已启动且通过 HTTPS 访问。
+    error_backend_desc: 无法连接后端。请确认服务端已启动并通过 HTTPS 访问（本地可运行 make dev 起服务），然后重试。
     denied_title: 已拒绝本次添加
     denied_desc: 凭证未创建。如果这不是你的操作，请检查是否有人正尝试登录你的账号。
     expired_title: 会话已过期
@@ -1470,6 +1471,11 @@ sources:
   fired_pruned: ，剪枝 {n}
   fired_none: 事件已入库，但没派出去（{r}）
   fired_empty: 事件已入库，但没有可派发的任务
+  fire_payload_title: 触发事件
+  fire_payload_label: 事件 payload（JSON 对象）
+  fire_payload_hint: 源参数里的占位符从这里取值；留空则按 {} 发出，与不带 payload 时完全一致。
+  fire_submit: 触发
+  fire_bad_json: payload 不是合法 JSON：{e}
   delete_confirm: 删除源「{n}」？已产生的事件与任务会保留。
   in: '{n} 后'
   ago: '{n} 前'

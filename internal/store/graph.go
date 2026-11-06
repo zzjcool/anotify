@@ -938,22 +938,48 @@ func canonicalJSONObject(raw json.RawMessage) (string, error) {
 // 排序是关键：边的插入顺序不改变图的语义，同一份图必须得同一个 hash，
 // 否则只会在 graph_versions 里堆垃圾（契约 §10.2 的「按需落版」就失效了）。
 func graphContentHash(edges []*Edge) (string, error) {
+	hash, _, err := graphSnapshotPayload(edges)
+	return hash, err
+}
+
+// graphSnapshotPayload 一次算出图快照的 (content_hash, snapshot JSON)。
+//
+// 为什么合成一次：hash 的定义就是 sha256(快照 JSON)，落库的 snapshot 列又是同一份字节。
+// 分开算会让派发路径把整张图归一 + Marshal **两遍**（#264：EnsureGraphVersion 原来
+// 先 graphContentHash(edges) 再 buildGraphSnapshot(edges)，同一份图算两次）。
+// 合成后口径不变（hash 仍等于 sha256(snapshot)），只是不重复劳动。
+func graphSnapshotPayload(edges []*Edge) (hash, payload string, err error) {
 	snap, err := buildGraphSnapshot(edges)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	payload, err := json.Marshal(snap)
+	data, err := json.Marshal(snap)
 	if err != nil {
-		return "", fmt.Errorf("marshal graph snapshot: %w", err)
+		return "", "", fmt.Errorf("marshal graph snapshot: %w", err)
 	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), string(data), nil
 }
 
 // EnsureGraphVersion 按需落版（契约 §10.2）：当前图 hash 不存在才写，返回图版本。
 //
 // 只在「被派发用到过」时留版——从没被任何一次派发用过的图，事后没人会去查它。
-// 用 INSERT ... ON CONFLICT DO NOTHING 后回查，保证同一份图只有一行。
+//
+// #264：**先读后写**。原来是无条件 INSERT ... ON CONFLICT DO NOTHING 再回查，
+// 于是**图根本没变**（稳态里每一次派发都是这种情况）也要拿一次写锁 + 写一行
+// （哪怕 ON CONFLICT 最后没改任何字节）——池=8、`_txlock=immediate`，
+// 这是一次实打实的写事务串行化，不是“空操作”。现在：
+//
+//  1. 算 hash → 先按 (namespace_id, content_hash) 读一次；
+//     命中就直接返回那行（零写、零回查）；
+//  2. 未命中才走原来的 INSERT ... ON CONFLICT DO NOTHING + 回查。
+//
+// 并发安全不变（这是选“先查后写”而不是“自己造 id 直接返回”的理由）：
+// 两个并发请求同时 miss 时，两者都去 INSERT，ON CONFLICT(namespace_id, content_hash)
+// 只让一个落行，另一个落空；**两者随后都按 hash 回查**，拿到的必然是同一行、
+// 同一个 graph_id。绝不会出现“两个请求为了同一份图各自造一个 id”。
+// 反过来，若不加 INSERT 自己造 id，两个并发请求就会在 tasks.graph_id 里留下两个
+// 不同的 id 指向同一张图——那正是这个函数要避免的。
 func (d *DB) EnsureGraphVersion(ctx context.Context, namespaceID string) (*GraphVersion, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -962,28 +988,33 @@ func (d *DB) EnsureGraphVersion(ctx context.Context, namespaceID string) (*Graph
 	if err != nil {
 		return nil, err
 	}
-	hash, err := graphContentHash(edges)
+	// 快照只归一一次：hash 与 snapshot 列取的是同一份字节（见 graphSnapshotPayload）。
+	hash, snapJSON, err := graphSnapshotPayload(edges)
 	if err != nil {
 		return nil, err
-	}
-	snap, err := buildGraphSnapshot(edges)
-	if err != nil {
-		return nil, err
-	}
-	snapJSON, err := json.Marshal(snap)
-	if err != nil {
-		return nil, fmt.Errorf("marshal graph snapshot: %w", err)
 	}
 
+	// ① 图没变（稳态）：直接返回已有版本，不 INSERT、不回查。
+	// 读不带写锁——这正是把「每次派发一次写事务」从热路径上拿掉的那一步。
+	gv, err := d.getGraphVersionByHash(ctx, namespaceID, hash)
+	if err == nil {
+		return gv, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		// 读失败不能“当作没有然后去写”：那会在一时抖动后多写一行（幂等但白付一次写锁）。
+		return nil, fmt.Errorf("read graph version by hash: %w", err)
+	}
+
+	// ② 新图：落版。ON CONFLICT 挡住并发下的第二个写者。
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO graph_versions (id, namespace_id, content_hash, snapshot, created_at)
 		 VALUES (?,?,?,?,?)
 		 ON CONFLICT(namespace_id, content_hash) DO NOTHING`,
-		NewGraphVersionID(hash), namespaceID, hash, string(snapJSON), Now()); err != nil {
+		NewGraphVersionID(hash), namespaceID, hash, snapJSON, Now()); err != nil {
 		return nil, fmt.Errorf("insert graph version: %w", err)
 	}
 	// 回查：可能是刚插的，也可能是并发下别人先插的（此时用已有的 id）
-	gv, err := d.getGraphVersionByHash(ctx, namespaceID, hash)
+	gv, err = d.getGraphVersionByHash(ctx, namespaceID, hash)
 	if err != nil {
 		return nil, fmt.Errorf("read graph version after upsert: %w", err)
 	}

@@ -1566,12 +1566,12 @@
       return;
     }
     // 情况 2：后端未连接（加载失败，loadFailed.passkeys 为真）——
-    // 这才是「演示模式」的真正含义：不是 HTTPS/生物识别的问题，是后端没起来。
+    // 这是真的「后端没起来」：不是 HTTPS/生物识别的问题。如实报错，不伪造数据。
     if (loadFailed.passkeys) {
       alert(
         t(
           "security.alert.backend_down",
-          "无法连接后端（当前为演示模式）。\n请确认后端服务已启动且通过 HTTPS 访问，再尝试添加 Passkey。",
+          "无法连接后端。\n请确认后端服务已启动且通过 HTTPS 访问，再重试。",
         ),
       );
       return;
@@ -2041,7 +2041,7 @@
       );
       document.getElementById("enroll-failed-desc").textContent = t(
         "passkeyenroll.panel.error_backend_desc",
-        "无法连接后端（当前为演示模式）。",
+        "无法连接后端。请确认后端服务已启动且通过 HTTPS 访问，再重试。",
       );
       document.getElementById("enroll-failed-action").textContent = t(
         "passkeyenroll.panel.done",

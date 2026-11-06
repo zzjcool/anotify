@@ -196,13 +196,25 @@ type Task struct {
 	// NotBefore 是退避时间：早于此刻的 pending 任务不该被重派（契约 §3.3）。
 	// nil 表示立刻可派。
 	NotBefore *int64 `json:"notBefore"`
+	// Token 是这条任务的一次性令牌（节点本地 emit socket 的鉴权凭据）。
+	//
+	// 为什么在 Task 上而不是一个单独的 getter：#264 起令牌在**派发事务里**就落库
+	// （assignTaskTx），而 PublishAssign 本来就要 GetTask 回读权威行——带上它，
+	// 发布路径就不用再为了一个令牌多跑一次读写（那正是被合并掉的那次写）。
+	//
+	// json:"-" 是硬要求：这是**能力凭据**，绝不能跟着 /v1/tasks 这类响应漏给客户端。
+	// 对外要暴露的话只能走显式的、按任务鉴权的接口。
+	Token string `json:"-"`
 }
 
 // taskColumns 是统一的列顺序，scanTask 依赖它。
+//
+// token 追加在**末尾**：taskColumns 是 `SELECT` 的列序、scanTask 按同一顺序 Scan，
+// 追加在尾部不会让已有列错位（也方便将来只增不挪）。
 const taskColumns = `id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
 	seq_in_trace, reported, summary, artifacts, error, cap_hash, digest, graph_id,
-	created_at, started_at, finished_at, not_before`
+	created_at, started_at, finished_at, not_before, token`
 
 // scanTask 从 rows 解析一行。
 func scanTask(rows *sql.Rows) (*Task, error) {
@@ -213,7 +225,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &path, &t.CapabilityID, &t.Capability,
 		&t.Version, &params, &t.Status, &t.NodeID, &t.InstanceID, &t.LeaseUntil, &t.Attempts,
 		&t.SeqInTrace, &reported, &t.Summary, &artifacts, &t.Error, &t.CapHash, &t.Digest, &t.GraphID,
-		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore,
+		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &t.NotBefore, &t.Token,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
@@ -417,6 +429,12 @@ func (d *DB) GetTask(ctx context.Context, namespaceID, id string) (*Task, error)
 // 为什么返回值是「权威值」而不是 candidate：CAS 失败就说明别人先写了，
 // 此时必须用别人那份（否则同一任务会出现两个有效令牌）。
 // 任务行不存在返回 ErrNotFound（调用方按「任务已没了」处理）。
+//
+// **#264 之后它不再是派发路径上的写**：令牌已由 assignTaskTx 在占槽/改状态那个事务里
+// 一并落库，PublishAssign 只读 Task.Token。本函数剩两个用途：
+//   - 发布路径的**兜底自愈**：行上的 token 还是空串（升级前就已 assigned 的老行、
+//     或绕过 assignTaskTx 直接造的指派）—— 那是每行一次性的写，不是每帧一次；
+//   - 测试/运维显式取令牌（只是一个读）。
 func (d *DB) EnsureTaskToken(ctx context.Context, namespaceID, taskID, candidate string) (string, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return "", ErrNamespaceRequired
@@ -676,14 +694,27 @@ func (d *DB) assignTaskTx(ctx context.Context, tx *sql.Tx, namespaceID, taskID, 
 		// 子查询只数 rowid 更小的行（含还没派发的 pending 行），所以它算的是「行在组内的
 		// 位置」而不是「第几个被派发」——重派同一条任务时 seq 不变，这正是节点本地目录
 		// 命名（<seq>-a<attempt>）需要的不变量。
+		//
+		// token（#264）：`CASE WHEN token = ''` 让「只在为空时生成」与 attempts/seq 的写
+		// 变成**同一条语句**——令牌的 CAS 语义因此不靠事务外的那次 UPDATE 维护。
+		// SET 里的表达式全部按更新**前**的行值求值（SQL 语义），所以重派（token 已非空）
+		// 一定保留旧令牌，令牌对同一任务永远不变。
+		// 代价是每次 assign 都白生成一个令牌串（token 已非空时它被 CASE 丢掉）：
+		// crypto/rand 24 字节的量级，相比它替掉的一次写事务可以忽略。
+		//
+		// 为什么要把令牌生成提前到 assign，而不是留在发布路径（旧位置）：发布路径每个
+		// 任务一次 `UPDATE tasks SET token=? WHERE token=''`——那是自成一个事务的写，
+		// 跟这里抢同一把写锁。移到同一事务后派发少一次提交，且令牌与
+		// assigned/归属/attempts 同生共死（没有「已 assigned 但没令牌」的中间态）。
 		`UPDATE tasks SET node_id = ?, instance_id = ?, lease_until = ?, attempts = attempts + 1,
+		       token = CASE WHEN token = '' THEN ? ELSE token END,
 		       seq_in_trace = (SELECT COUNT(*) FROM tasks AS prev
 		                       WHERE prev.namespace_id = tasks.namespace_id
 		                         AND prev.trace_id     = tasks.trace_id
 		                         AND prev.capability   = tasks.capability
 		                         AND prev.rowid        < tasks.rowid) + 1
 		 WHERE namespace_id = ? AND id = ?`,
-		nodeID, nullIfEmpty(instanceID), leaseUntil, namespaceID, taskID); err != nil {
+		nodeID, nullIfEmpty(instanceID), leaseUntil, NewTaskToken(), namespaceID, taskID); err != nil {
 		return fmt.Errorf("assign task: %w", err)
 	}
 	return nil

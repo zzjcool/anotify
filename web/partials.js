@@ -1704,7 +1704,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				withScope(path),
 				Object.assign({ credentials: "include" }, o),
 			);
-			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”，不进入演示模式）
+			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”：如实跳转，不伪造数据）
 			if (res.status === 401) {
 				if (isAuthedPage) {
 					// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。

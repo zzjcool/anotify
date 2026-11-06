@@ -254,7 +254,7 @@ func (h *NodeHub) PublishAssign(ctx context.Context, namespaceID, nodeID string,
 	// attempts / seq_in_trace **只取库里那份**：帧是要发出去的机器事实，不是展示缓存。
 	frame.Attempts = fresh.Attempts
 	frame.SeqInTrace = fresh.SeqInTrace
-	s.enrichAssign(ctx, task, frame)
+	s.enrichAssign(ctx, task, frame, fresh.Token)
 	data, err := Encode(frame)
 	if err != nil {
 		return err
@@ -308,9 +308,13 @@ const assignFrameOverheadBytes = 4 << 10
 // 读接线事实失败时**降级到只用声明的 outputs**（而不是清空 ports）：一次库抖动不该
 // 把本来可用的出口从节点手上拿走；最坏情况是退回 #383 之前的口径，下一轮重派会恢复。
 //
-// 幂等：token 走 store.EnsureTaskToken（CAS 只在为空时写）——断线重连重发 assign
-// 时拿到的必须是同一个令牌，否则节点侧 outbox 的重发会被判成 token 无效。
-func (s *nodeSession) enrichAssign(ctx context.Context, task *store.Task, f *AssignFrame) {
+// token 来自**调用方刚回读的那行**（PublishAssign 的第 ③ 步，assignToken）：
+// #264 起它由 LeaseAndAssign 在派发事务里落库，所以这里绝大多数时候**一个写都不做**。
+// 只有令牌还是空串时才走 EnsureTaskToken 自愈写入（升级前就已 assigned 的老行、
+// 或绕过 assignTaskTx 的指派）——那是每行一次性，而不是每帧一次。
+// 两种情形拿到的都是库里那份，所以断线重连重发 assign 时令牌不变
+// （节点侧 outbox 的重发才不会被判成 token 无效）。
+func (s *nodeSession) enrichAssign(ctx context.Context, task *store.Task, f *AssignFrame, assignToken string) {
 	capDef, err := s.h.Store.GetCapabilityByID(ctx, task.NamespaceID, task.CapabilityID)
 	if err != nil {
 		slog.Warn("assign enrichment: capability lookup failed",
@@ -349,6 +353,11 @@ func (s *nodeSession) enrichAssign(ctx context.Context, task *store.Task, f *Ass
 		}
 	}
 
+	if assignToken != "" {
+		f.Token = assignToken
+		return
+	}
+	// 兜底（理论上不该发生）：行上还没有令牌 → 自愈写一次并回读权威值。
 	token, err := s.h.Store.EnsureTaskToken(ctx, task.NamespaceID, task.ID, store.NewTaskToken())
 	if err != nil {
 		slog.Warn("assign enrichment: task token failed",
