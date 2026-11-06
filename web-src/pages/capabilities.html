@@ -1408,7 +1408,7 @@
       // 的话页面只能写一句「载入失败」，用户不知道是网络问题还是服务端挂了。
       async function apiGet(path) {
         try {
-          return { ok: true, data: await Anotify.api(path, { demo: null }), err: null };
+          return { ok: true, data: await Anotify.api(path), err: null };
         } catch (e) {
           return { ok: false, data: null, err: e };
         }
@@ -1895,7 +1895,7 @@
           const v = input.value.trim();
           save.disabled = true;
           try {
-            // Anotify.api(path, opts, demo) —— body 要自己 JSON.stringify，
+            // Anotify.api(path, opts) —— body 要自己 JSON.stringify，
             // 并显式声明 Content-Type（与 sources.html 的调用一致）。
             const res = await Anotify.api(API + "/capabilities", {
               method: "PATCH",
