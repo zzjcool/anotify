@@ -1672,10 +1672,12 @@ main().catch(async (e) => {
 // 这替代了旧的 checkSchemaEditor：以前是一屏手写 paramsSchema + 出口名，
 // 用户得先懂 JSON Schema；现在是「选模板 → 填表单 → 看生成的脚本」。
 //
-// 但**表达力不能因此下降**，所以钉三条：
+// 但**表达力不能因此下降**，所以钉四条：
 //   ① 九个模板都在，字段由模板驱动（不是写死在前端的第二份副本）
 //   ② 只读脚本 → 可编辑脚本（脚本模式的出口）
 //   ③ 高级参数契约可以手写 JSON，且**非法 JSON 必须当场拦住**（不能等到后端 400）
+//   ⑤ 参数契约默认是**可视化行视图**（#schema-visual-editor），行与手写 JSON 是
+//      同一份契约的两种渲染：往返一圈 pattern / additionalProperties 都不能丢。
 async function checkCapabilityTemplates(page) {
 	const base = page.url().replace(/\/edge[s]?\.html.*$|\/capabilities\.html.*$/, "");
 	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
@@ -2076,6 +2078,185 @@ async function checkCapabilityTemplates(page) {
 		"工作目录留空 → 请求体里没有 workDir（每次任务一个独立目录）",
 		!!noWd && !!noWd.run && !("workDir" in noWd.run),
 		JSON.stringify({ run: noWd && noWd.run }),
+	);
+
+	// ⑤ 参数契约的**可视化**填写（#schema-visual-editor）。
+	//
+	// 这一段钉的是「可视化」最容易做假的地方：看起来能编，切一次视图就把
+	// pattern / additionalProperties 吞了。所以每条断言都落在**往返之后**的状态上，
+	// 而不是「有个输入框」这种表面事实。
+	await page.evaluate(() => {
+		document.querySelector("button[onclick='openCapModal()']").click();
+	});
+	await page.waitForTimeout(600);
+	await page.click('[data-tpl="script.http"]');
+	await page.waitForTimeout(500);
+
+	const visual = await page.evaluate(() => ({
+		rowsVisible: !document.getElementById("schema-rows-wrap").classList.contains("hidden"),
+		jsonHidden: document.getElementById("schema-wrap").classList.contains("hidden"),
+		rows: Array.from(document.querySelectorAll("#schema-rows [data-row]")).map((r) => ({
+			key: (r.querySelector('input[data-f="key"]') || {}).value || "",
+			type: (r.querySelector('select[data-f="type"]') || {}).value || "",
+			required: !!(r.querySelector('input[data-f="required"]') || {}).checked,
+		})),
+	}));
+	H.check(
+		"参数契约默认是可视化行视图（手写 JSON 藏在后面）",
+		visual.rowsVisible === true && visual.jsonHidden === true,
+		JSON.stringify({ rows: visual.rowsVisible, json: visual.jsonHidden }),
+	);
+	H.check(
+		"行来自模板字段（url / method / body，不是前端写死的第二份副本）",
+		JSON.stringify(visual.rows.map((r) => r.key)) === JSON.stringify(["url", "method", "body"]) &&
+			visual.rows[0].required === true &&
+			visual.rows[1].type === "enum",
+		JSON.stringify(visual.rows),
+	);
+
+	// 加一行 + 改成 number + 勾必填：验证行是**可编**的，而且约束字段随类型变
+	await page.click("#schema-add-row");
+	await page.waitForTimeout(150);
+	const typed = await page.evaluate(() => {
+		const rows = document.querySelectorAll("#schema-rows [data-row]");
+		const last = rows[rows.length - 1];
+		const key = last.querySelector('input[data-f="key"]');
+		key.value = "retries";
+		key.dispatchEvent(new Event("input", { bubbles: true }));
+		const type = last.querySelector('select[data-f="type"]');
+		type.value = "number";
+		type.dispatchEvent(new Event("change", { bubbles: true }));
+		const after = document.querySelectorAll("#schema-rows [data-row]");
+		const row = after[after.length - 1];
+		const req = row.querySelector('input[data-f="required"]');
+		req.checked = true;
+		req.dispatchEvent(new Event("change", { bubbles: true }));
+		const min = row.querySelector('input[data-f="minimum"]');
+		if (min) {
+			min.value = "0";
+			min.dispatchEvent(new Event("input", { bubbles: true }));
+		}
+		return {
+			count: after.length,
+			hasMin: !!min,
+			hasPattern: !!row.querySelector('input[data-f="pattern"]'),
+		};
+	});
+	H.check("能加一个参数（行数 3 → 4）", typed.count === 4, String(typed.count));
+	H.check(
+		"约束字段随类型变（number 有 minimum，没有 pattern）",
+		typed.hasMin === true && typed.hasPattern === false,
+		JSON.stringify(typed),
+	);
+
+	// 切到手写 JSON：上面几行必须被**转换**过去（不是留在两套真相里）
+	await page.click("#schema-toggle");
+	await page.waitForTimeout(200);
+	const jsonView = await page.evaluate(() => {
+		let parsed = null;
+		try {
+			parsed = JSON.parse(document.getElementById("cap-schema").value);
+		} catch {
+			parsed = null;
+		}
+		return {
+			visible: !document.getElementById("schema-wrap").classList.contains("hidden"),
+			parsed,
+		};
+	});
+	H.check(
+		"切到手写 JSON：行内容被转换过去（retries = number + minimum 0 + 必填）",
+		jsonView.visible === true &&
+			jsonView.parsed?.properties?.retries?.type === "number" &&
+			jsonView.parsed?.properties?.retries?.minimum === 0 &&
+			(jsonView.parsed?.required || []).includes("retries"),
+		JSON.stringify(jsonView.parsed && jsonView.parsed.properties && jsonView.parsed.properties.retries),
+	);
+
+	// 行视图表达不了的顶层声明（additionalProperties）必须原样回来：
+	// 静默丢掉它 = 把「禁止未声明字段」悄悄改成「允许任意字段」。
+	await page.evaluate(() => {
+		const ta = document.getElementById("cap-schema");
+		const cur = JSON.parse(ta.value);
+		cur.additionalProperties = false;
+		ta.value = JSON.stringify(cur, null, 2);
+	});
+	await page.click("#schema-mode-rows");
+	await page.waitForTimeout(200);
+	const back = await page.evaluate(() => ({
+		rowsVisible: !document.getElementById("schema-rows-wrap").classList.contains("hidden"),
+		extra: (document.getElementById("schema-extra-note") || {}).textContent || "",
+		noteHidden: document.getElementById("schema-extra-note").classList.contains("hidden"),
+	}));
+	H.check(
+		"切回行视图：表达不了的声明被保留并明说（additionalProperties）",
+		back.rowsVisible === true &&
+			back.noteHidden === false &&
+			/additionalProperties/.test(back.extra),
+		JSON.stringify(back),
+	);
+	await page.click("#schema-toggle");
+	await page.waitForTimeout(200);
+	const kept = await page.evaluate(() => {
+		try {
+			return JSON.parse(document.getElementById("cap-schema").value);
+		} catch {
+			return null;
+		}
+	});
+	H.check(
+		"往返一圈 additionalProperties 还在（没被静默吞掉）",
+		!!kept && kept.additionalProperties === false,
+		JSON.stringify(kept && kept.additionalProperties),
+	);
+
+	// 行没填好时不许切到手写 JSON：坏行（空名/重名/坏正则）在重建时会被跳过，
+	// 允许切过去就等于把它们静默删掉。
+	await page.click("#schema-mode-rows");
+	await page.waitForTimeout(200);
+	const blockedSwitch = await page.evaluate(() => {
+		const input = document.querySelector('#schema-rows [data-row="0"] input[data-f="key"]');
+		input.value = "url x";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		document.getElementById("schema-toggle").click();
+		return {
+			jsonHidden: document.getElementById("schema-wrap").classList.contains("hidden"),
+			err: (document.getElementById("schema-error") || {}).textContent || "",
+			marked: !!document.querySelector('#schema-rows [data-row="0"].is-err'),
+		};
+	});
+	H.check(
+		"行没填好时不许切到手写 JSON（并标红那一行）",
+		blockedSwitch.jsonHidden === true &&
+			blockedSwitch.err.length > 0 &&
+			blockedSwitch.marked === true,
+		JSON.stringify(blockedSwitch),
+	);
+
+	// 表达不了的形状（array + items）→ 锁在 JSON 并说明原因，不装作能编
+	await page.evaluate(() => {
+		const input = document.querySelector('#schema-rows [data-row="0"] input[data-f="key"]');
+		input.value = "url";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		document.getElementById("schema-toggle").click();
+	});
+	await page.waitForTimeout(200);
+	await page.evaluate(() => {
+		document.getElementById("cap-schema").value = JSON.stringify({
+			type: "object",
+			properties: { files: { type: "array", items: { type: "string" } } },
+		});
+	});
+	await page.click("#schema-mode-rows");
+	await page.waitForTimeout(200);
+	const locked = await page.evaluate(() => ({
+		jsonVisible: !document.getElementById("schema-wrap").classList.contains("hidden"),
+		onlyNote: (document.getElementById("schema-json-only") || {}).textContent || "",
+	}));
+	H.check(
+		"表达不了的形状（array + items）→ 留在 JSON 并说明原因",
+		locked.jsonVisible === true && locked.onlyNote.length > 0,
+		JSON.stringify(locked),
 	);
 }
 

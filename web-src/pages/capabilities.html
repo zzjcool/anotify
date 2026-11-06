@@ -528,6 +528,103 @@
         }
       }
 
+      /* ---------- 参数契约行编辑器 ----------
+         每行 = 参数名 + 类型 + 必填 + 更多约束 + 删除。「更多」展开后是
+         pattern / 枚举 / minLength 这些受控子集里真正生效的约束。
+         名字列必须能压缩（minmax(0,1fr)）：长参数名不该把行撑出弹层 ——
+         与 .cap-down-item 同一个理由。
+         颜色只用 token：删除键默认 --faint，悬停才变 --error（警示但不吓人）。 */
+      .schema-rows {
+        display: grid;
+        gap: 0.45rem;
+      }
+      .schema-rows:empty {
+        display: none;
+      }
+      .schema-row {
+        display: grid;
+        gap: 0.4rem;
+        padding: 0.45rem 0.5rem;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      /* 出错的行看起来就不对劲：否则「有个参数没填好」和「都填好了」长得一样 */
+      .schema-row.is-err {
+        border-color: var(--error);
+      }
+      /* flex 换行而不是固定列：宽屏时名字/类型按比例分宽，390px 时
+         「必填 / 更多 / ×」自动落到第二行 —— 用 grid 固定列的话，
+         窄屏上这五个控件只能一起挤成一行（或者把标签文字藏掉，那就认不出来了）。 */
+      .schema-row-main {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        align-items: center;
+      }
+      .schema-row-key {
+        flex: 1 1 9rem;
+        min-width: 0;
+        font-family: var(--font-mono);
+      }
+      .schema-row-main .select {
+        flex: 1 1 7rem;
+        min-width: 0;
+      }
+      .schema-row-main > .btn {
+        flex: 0 0 auto;
+      }
+      /* 必填是个「标记」而不是一句话：勾上就够了，不占一整列宽度 */
+      .schema-row-req {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .schema-row-del {
+        color: var(--faint);
+      }
+      .schema-row-del:hover,
+      .schema-row-del:focus-visible {
+        color: var(--error);
+      }
+      .schema-row-more {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+        gap: 0.4rem;
+      }
+      /* 显式写死收起态：.schema-row-more 的 display:grid 会覆盖通用 .hidden
+         （同位特异性 + 内联样式在 tokens.css 之后），不能只靠那个类。 */
+      .schema-row-more.hidden {
+        display: none;
+      }
+      /* 约束字段的标签是「键名」而不是句子：它要能对上后端文档里的那个词 */
+      .schema-fld {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        min-width: 0;
+      }
+      .schema-fld > span {
+        font-size: 10px;
+        color: var(--faint);
+        font-family: var(--font-mono);
+      }
+      .schema-fld .input,
+      .schema-fld .select {
+        font-size: 12px;
+      }
+      .schema-rows-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.55rem;
+        margin-top: 0.55rem;
+      }
+
       /* ---------- 下游候选胶囊（点一下加入）----------
          为什么要有它：datalist 只在输入框里打字时才浮出来，用户看不见“有哪些可选”；
          而且显示名允许重名（同名不同版也真实存在），只给显示名就分不出是哪一个。
@@ -1159,23 +1256,48 @@
           </p>
         </div>
 
-        <!-- 高级出口：手写 paramsSchema。
-             模板字段能表达 string/number/select，但表达不了 pattern、
-             minLength、additionalProperties:false 这些。以前整页都能手写，
-             收成模板后必须留一个出口，否则「自定义脚本 + 自定义参数」这类
-             真实用法会写不出来。留空 = 用模板推导的那份。 -->
+        <!-- 参数契约：**可视化填**（一行一个参数）+ 手写 JSON 两个视图。
+
+             为什么要可视化：模板字段只能表达 string/number/select，而「自定义
+             脚本 + 自定义参数」的真实用法需要 pattern / minLength / 枚举之外
+             的约束；手写 JSON 要求用户先懂 JSON Schema，等于没有入口。
+
+             两个视图是**同一份契约**的两种渲染，不是两份真相：
+               · 行视图管 properties / required（名字、类型、必填、常见约束）
+               · 行视图不认识的键（items / additionalProperties / title …）
+                 一律原样保留在 extra 里，切来切去不会静默丢约束
+               · 真表达不了的形状（type 是数组、properties 值不是对象）→
+                 锁在 JSON 视图并说明原因，不装作能编（见 schemaToRows） -->
         <div class="mt-4">
           <div class="card-head mb-2">
             <h4 class="card-title">{{t "caps.tpl.schema_advanced"}}</h4>
-            <button type="button" id="schema-toggle" class="btn btn-ghost btn-sm">
-              {{t "caps.tpl.schema_toggle"}}
-            </button>
+            <div class="seg-switch">
+              <button type="button" id="schema-mode-rows" class="seg-item seg-item-active">
+                {{t "caps.tpl.schema_visual"}}
+              </button>
+              <button type="button" id="schema-toggle" class="seg-item">
+                {{t "caps.tpl.schema_toggle"}}
+              </button>
+            </div>
           </div>
+          <!-- 行视图：每行一个参数；「更多」里是编辑器认的约束 -->
+          <div id="schema-rows-wrap">
+            <div id="schema-rows" class="schema-rows"></div>
+            <p id="schema-rows-empty" class="tpl-hint">{{t "caps.tpl.schema_rows_empty"}}</p>
+            <div class="schema-rows-actions">
+              <button type="button" id="schema-add-row" class="btn btn-ghost btn-sm">
+                {{t "caps.tpl.schema_add_row"}}
+              </button>
+              <span id="schema-extra-note" class="tpl-hint hidden"></span>
+            </div>
+          </div>
+          <!-- JSON 视图：受控子集的完整出口（行编辑器表达不了的都写在这） -->
           <div id="schema-wrap" class="hidden">
             <textarea id="cap-schema" class="textarea mono" rows="10"></textarea>
-            <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
-            <p id="schema-error" class="field-error mt-1 hidden"></p>
           </div>
+          <p id="schema-json-only" class="tpl-hint mt-2 hidden"></p>
+          <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
+          <p id="schema-error" class="field-error mt-1 hidden"></p>
         </div>
       </div>
     </div>
@@ -1338,6 +1460,13 @@
       // 提交时直接用它 —— 模板脚本是字面量（后端不做插值），任何改写都必须是用户显式做的。
       let SCRIPT_TEXT = "";
       let SCRIPT_MODE = "view"; // view | edit
+
+      // 参数契约的行视图：SCHEMA_ROWS 是真相（活动卡的镜像），SCHEMA_EXTRA 装
+      // 行编辑器表达不了的顶层键，SCHEMA_VIEW 决定哪个视图在显示。
+      let SCHEMA_ROWS = [];
+      let SCHEMA_EXTRA = {};
+      let SCHEMA_VIEW = "rows"; // rows | json
+      let SCHEMA_DIRTY = false; // 用户动过契约吗（没动过就跟着模板字段推导走）
       // TIMEOUT_DIRTY：用户是否手改过 #cap-timeout。没改过就跟着模板默认值走，
       // 改过才在换模板时保留用户填的数字。
       let TIMEOUT_DIRTY = false;
@@ -3167,8 +3296,11 @@
           script: "",
           scriptMode: "view",
           fieldValues: {}, // #tpl-fields 里各输入的当前值
-          schemaText: "",
-          schemaOpen: false,
+          schemaRows: [], // 参数契约的可视化行（活动卡的镜像，见 schemaSyncFromDom）
+          schemaExtra: {}, // 行编辑器表达不了的顶层键（additionalProperties…），原样保留
+          schemaView: "rows", // rows | json
+          schemaText: "", // JSON 视图的原文（json 视图的真相）
+          schemaDirty: false, // 用户动过契约吗（没动过就跟着模板字段推导走）
           timeoutDirty: false,
         };
       }
@@ -3219,8 +3351,13 @@
         c.scriptMode = SCRIPT_MODE;
         c.fieldValues = formFieldValues();
         c.schemaText = val("cap-schema");
-        const wrap = document.getElementById("schema-wrap");
-        c.schemaOpen = !!wrap && !wrap.classList.contains("hidden");
+        // 参数契约：行是镜像（真相），JSON 文本是 json 视图的原文。
+        // 两个都存：切卡时无论停在哪个视图，回来都还是那一份。
+        schemaSyncFromDom();
+        c.schemaRows = SCHEMA_ROWS.map((r) => Object.assign({}, r));
+        c.schemaExtra = Object.assign({}, SCHEMA_EXTRA);
+        c.schemaView = SCHEMA_VIEW;
+        c.schemaDirty = SCHEMA_DIRTY;
         c.timeoutDirty = TIMEOUT_DIRTY;
       }
 
@@ -3247,8 +3384,13 @@
         // 先写好 textarea/pre 再切模式：scriptModeSet("view") 会以 textarea 为准回写正文
         scriptModeSet(c.scriptMode === "edit" ? "edit" : "view");
         applyFieldValues(c.fieldValues);
-        const wrap = document.getElementById("schema-wrap");
-        if (wrap) wrap.classList.toggle("hidden", !c.schemaOpen);
+        // 参数契约：先把卡里的行装回镜像，再按视图渲染（顺序不能反）
+        SCHEMA_ROWS = (c.schemaRows || []).map((r) => Object.assign({}, r));
+        SCHEMA_EXTRA = Object.assign({}, c.schemaExtra || {});
+        SCHEMA_VIEW = c.schemaView === "json" ? "json" : "rows";
+        SCHEMA_DIRTY = !!c.schemaDirty;
+        renderSchemaRows();
+        renderSchemaViews();
         setSchemaError("");
         document.getElementById("tpl-requires").textContent = requiresText(c.requires || []);
         renderDownstreamHint();
@@ -3275,6 +3417,13 @@
           c.requires = (TPL_SEL.requires || []).slice();
           c.script = TPL_SEL.script || "";
           c.timeout = String(TPL_SEL.timeoutSec || 0);
+          // 参数契约从模板推导：与 pickTemplate 同一口径（否则第二张卡的
+          // 参数契约会是一份空契约，而用户以为自己只是「再加一个一样的能力」）
+          const conv = schemaToRows(paramsSchemaFor(TPL_SEL.fields || []));
+          if (conv) {
+            c.schemaRows = conv.rows;
+            c.schemaExtra = conv.extra;
+          }
         }
         CARDS.push(c);
         CARD_ERR.clear(); // 下标变了，旧的出错标记不再有意义
@@ -3526,10 +3675,17 @@
         scriptModeSet("view");
         document.getElementById("tpl-fields").replaceChildren();
         document.getElementById("tpl-requires").textContent = "";
-        // 参数契约（手写 JSON）：新建默认收起且为空，编辑会重新展开并预填
-        const schemaEl = document.getElementById("cap-schema");
-        if (schemaEl) schemaEl.value = "";
-        document.getElementById("schema-wrap").classList.add("hidden");
+        // 参数契约：回到「可视化 + 空行」。新建时如果模板有字段，
+        // pickTemplate 会用它推导出行（schemaDirty=false 时持续跟着模板走）；
+        // 这里归零是为了不把上一次的契约带到下一次。
+        SCHEMA_ROWS = [];
+        SCHEMA_EXTRA = {};
+        SCHEMA_VIEW = "rows";
+        SCHEMA_DIRTY = false;
+        document.getElementById("cap-schema").value = "";
+        renderSchemaRows();
+        renderSchemaViews();
+        setSchemaJSONOnly("");
         setSchemaError("");
         // 新版本模式的外壳：标题 / 预告 / 影响面 / 被隐藏的栏位全部复位
         document.getElementById("cap-version-banner").classList.add("hidden");
@@ -3707,6 +3863,9 @@
 
         renderTplFields(tpl);
         renderTplRequires(tpl);
+        // 参数契约跟着模板字段走 —— 但只在用户**没动过**契约时。
+        // 改过就保留：换个模板不该把刚配好的参数擦了。
+        resetSchemaForTemplate(tpl);
         // 下游不跟模板走：模板的 outputs 只是「建议的出口名」，而界面只问
         // 「跑完交给谁」—— 那是个链路事实，模板无从知道。换模板时把下游原样留着，
         // 已经填过的链路不该因为换了个脚本就消失。
@@ -3821,6 +3980,647 @@
         el.classList.toggle("hidden", !msg);
       }
 
+      // ==================== 参数契约：行视图 ⇄ JSON 视图 ====================
+      //
+      // 两个视图是**同一份契约**的两种渲染，不两份真相：
+      //   · 行视图管 properties / required（名字、类型、必填、常见约束）
+      //   · 行视图不认识的键（items / additionalProperties / title / description…）
+      //     一律原样保留在 SCHEMA_EXTRA / row.extra 里，切来切去不丢约束
+      //   · 真表达不了的形状（property.type 是数组、properties 值不是对象、
+      //     数字枚举）→ schemaToRows 返回 null，界面锁在 JSON 视图并说明原因
+      //
+      // 为什么不把 object/array 也做成可视化：它们需要**嵌套**的编辑器，
+      // 硬塞一个 type 选项就是「看着能编、实际写不了 items」的假可视化。
+      const SCHEMA_TYPES = ["any", "string", "number", "integer", "boolean", "enum"];
+      // ROW_PROP_KEYS 是行里有的 property 键，其余全进 row.extra（原样往返）。
+      const ROW_PROP_KEYS = [
+        "type",
+        "enum",
+        "pattern",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+      ];
+      const SCHEMA_NUM_FIELDS = ["minLength", "maxLength", "minimum", "maximum"];
+
+      // schemaTypeLabel 只翻译「任意 / 枚举」两个非技术词；
+      // string/number/integer/boolean 是受控子集里的关键字，翻译了反而对不上 JSON。
+      function schemaTypeLabel(opt) {
+        if (opt === "any") return t("caps.tpl.schema_type_any", "任意类型");
+        if (opt === "enum") return t("caps.tpl.schema_type_enum", "枚举（string）");
+        return opt;
+      }
+
+      // schemaRowConstraintFields 按类型决定「更多」里显示哪些约束。
+      // 只显示对该类型**真正生效**的键：string 填了 minimum 也不会被校验
+      // （受控子集里 minimum 只对数字生效），显示它只会让人以为设了约束。
+      function schemaRowConstraintFields(type) {
+        const tv = String(type || "any");
+        if (tv === "enum") return ["enum", "pattern", "minLength", "maxLength"];
+        if (tv === "string" || tv === "any") return ["pattern", "minLength", "maxLength"];
+        if (tv === "number" || tv === "integer") return ["minimum", "maximum"];
+        return []; // boolean：没有可填的约束
+      }
+
+      /**
+       * schemaToRows 把一份 paramsSchema 解成 {rows, extra}。
+       *
+       * 返回 null = 这份契约有行编辑器表达不了的形状。调用方**必须**锁到
+       * JSON 视图并说明原因 —— 静默把它简化成几条能编的行，就等于丢约束。
+       */
+      function schemaToRows(schema) {
+        const s = schema == null ? {} : schema;
+        if (typeof s !== "object" || Array.isArray(s)) return null;
+        // 顶层 type：缺省或 "object" 都行；别的形状不是「能力参数对象」，
+        // 猜成 object 会悄悄改掉语义。
+        if (s.type != null && s.type !== "object") return null;
+        const props = s.properties == null ? {} : s.properties;
+        if (typeof props !== "object" || Array.isArray(props)) return null;
+        const reqList = s.required == null ? [] : s.required;
+        if (!Array.isArray(reqList) || reqList.some((r) => typeof r !== "string")) return null;
+        const required = new Set(reqList);
+
+        const rows = [];
+        for (const key of Object.keys(props)) {
+          const p = props[key];
+          if (p == null || typeof p !== "object" || Array.isArray(p)) return null;
+          // type 是数组（["string","null"]）= 「可空」，行里只有一个类型槽，表达不了
+          if (p.type != null && typeof p.type !== "string") return null;
+          let rowType = p.type == null ? "any" : p.type;
+          if (!["string", "number", "integer", "boolean"].includes(rowType) && rowType !== "any") {
+            return null;
+          }
+          // 行里的 enum 是**文本**输入 → 数字/布尔枚举表达不了（重建会变成字符串）
+          const enumVals = p.enum == null ? [] : p.enum;
+          if (p.enum != null && (!Array.isArray(enumVals) || enumVals.some((v) => typeof v !== "string"))) {
+            return null;
+          }
+          if (enumVals.length) {
+            if (rowType !== "any" && rowType !== "string") return null;
+            rowType = "enum";
+          }
+          if (p.pattern != null && typeof p.pattern !== "string") return null;
+          for (const nf of SCHEMA_NUM_FIELDS) {
+            if (p[nf] != null && typeof p[nf] !== "number") return null;
+          }
+
+          const row = {
+            key: key,
+            type: rowType,
+            required: required.has(key),
+            enum: enumVals.slice(),
+            pattern: p.pattern == null ? "" : String(p.pattern),
+            minLength: p.minLength == null ? "" : String(p.minLength),
+            maxLength: p.maxLength == null ? "" : String(p.maxLength),
+            minimum: p.minimum == null ? "" : String(p.minimum),
+            maximum: p.maximum == null ? "" : String(p.maximum),
+            extra: {},
+            more: false,
+          };
+          for (const k of Object.keys(p)) {
+            if (!ROW_PROP_KEYS.includes(k)) row.extra[k] = p[k];
+          }
+          rows.push(row);
+        }
+
+        const extra = {};
+        for (const k of Object.keys(s)) {
+          if (k === "type" || k === "properties" || k === "required") continue;
+          extra[k] = s[k];
+        }
+        return { rows, extra };
+      }
+
+      /**
+       * rowsToSchema 把行 + extra 重建回 paramsSchema。
+       *
+       * 空行（名字还没填）**跳过**：不制造 properties[""]。提交校验会拦下它
+       * （validateSchemaRows），所以「跳过」不会让用户的东西静默消失。
+       */
+      function rowsToSchema(rows, extra) {
+        const properties = {};
+        const required = [];
+        for (const r of rows || []) {
+          const key = String((r && r.key) || "").trim();
+          if (!key) continue;
+          const p = Object.assign({}, (r && r.extra) || {});
+          const type = String((r && r.type) || "any");
+          if (type === "enum") {
+            p.type = "string";
+            p.enum = (r.enum || []).map((v) => String(v)).filter((v) => v !== "");
+          } else if (type !== "any") {
+            p.type = type;
+          }
+          // 空 = 没设约束。写成 minLength:0 会凭空多一条「长度至少 0」的声明
+          // （语义没变但 digest 变了 —— 发版时会白出一个新版本）。
+          const pattern = String((r && r.pattern) == null ? "" : r.pattern).trim();
+          if (pattern !== "") p.pattern = pattern;
+          for (const nf of SCHEMA_NUM_FIELDS) {
+            const sv = String((r && r[nf]) == null ? "" : r[nf]).trim();
+            if (sv === "") continue;
+            p[nf] = Number(sv);
+          }
+          properties[key] = p;
+          if (r && r.required) required.push(key);
+        }
+        const out = Object.assign({}, extra || {});
+        out.type = "object";
+        out.properties = properties;
+        if (required.length) {
+          required.sort(); // 与 paramsSchemaFor 同一口径（字典序）
+          out.required = required;
+        } else {
+          delete out.required;
+        }
+        return out;
+      }
+
+      // schemaEnvName 与 cmd/agent/runner.go:paramEnvName 同一口径：
+      // 大写 + 非 [A-Z0-9_] 一律变 _。它只是用来**检测撞名**的，
+      // 不参与提交（键名原样落库，归一发生在节点执行时）。
+      function schemaEnvName(key) {
+        return String(key == null ? "" : key)
+          .toUpperCase()
+          .replace(/[^A-Z0-9_]/g, "_");
+      }
+
+      // validateSchemaRows 逐行校验，返回 [{i, msg}]（空数组 = 通过）。
+      // 顺序 = 行顺序：报第一处错给人看，不一口气糊十行红字。
+      function validateSchemaRows(rows) {
+        const errs = [];
+        const seen = new Set();
+        const envSeen = new Map(); // 归一后的环境变量名 → 原始键名
+        (rows || []).forEach((r, i) => {
+          const key = String((r && r.key) || "").trim();
+          if (key === "") {
+            errs.push({ i, msg: t("caps.tpl.schema_err_key_empty", "参数名不能为空") });
+            return;
+          }
+          // 键名本身后端不挑（契约里 properties 的键可以是任意字符串，
+          // 只有**模板字段**才要求 snake_case）。这里只拦两种真会出错的情况：
+          //   ① 含空白 —— 归一成环境变量后空白变 _，几乎肯定不是本意，而用户看不见
+          //   ② 归一后撞名 —— a.b 与 a_b 都会变成 ANOTIFY_PARAM_A_B，
+          //      两个参数静默覆盖同一个变量，是数据错乱而不是风格问题
+          if (/\s/.test(key)) {
+            errs.push({
+              i,
+              msg: t("caps.tpl.schema_err_key_blank", "参数名不能包含空白字符：{name}").replace(
+                "{name}",
+                key,
+              ),
+            });
+            return;
+          }
+          if (seen.has(key)) {
+            errs.push({
+              i,
+              msg: t("caps.tpl.schema_err_key_dupe", "参数名重复：{name}").replace("{name}", key),
+            });
+            return;
+          }
+          const envName = schemaEnvName(key);
+          if (envSeen.has(envName)) {
+            errs.push({
+              i,
+              msg: t(
+                "caps.tpl.schema_err_key_env",
+                "参数名 {a} 与 {b} 会归一成同一个环境变量 {env}",
+              )
+                .replace("{a}", envSeen.get(envName))
+                .replace("{b}", key)
+                .replace("{env}", "ANOTIFY_PARAM_" + envName),
+            });
+            return;
+          }
+          seen.add(key);
+          envSeen.set(envName, key);
+
+          const nums = {};
+          for (const nf of SCHEMA_NUM_FIELDS) {
+            const sv = String((r && r[nf]) == null ? "" : r[nf]).trim();
+            if (sv === "") continue;
+            // 比 Number() 严：Number(" ")=0、Number("1e3")=1000 在后端都是合法
+            // JSON 数字，但输入框里它们看起来像手滑。
+            if (!/^-?\d+(\.\d+)?$/.test(sv)) {
+              errs.push({
+                i,
+                msg: t("caps.tpl.schema_err_num", "{field} 必须是数字").replace("{field}", nf),
+              });
+              return;
+            }
+            nums[nf] = Number(sv);
+          }
+          if (
+            nums.minLength != null &&
+            nums.maxLength != null &&
+            nums.minLength > nums.maxLength
+          ) {
+            errs.push({
+              i,
+              msg: t("caps.tpl.schema_err_range", "{a} 不能大于 {b}")
+                .replace("{a}", "minLength")
+                .replace("{b}", "maxLength"),
+            });
+            return;
+          }
+          if (nums.minimum != null && nums.maximum != null && nums.minimum > nums.maximum) {
+            errs.push({
+              i,
+              msg: t("caps.tpl.schema_err_range", "{a} 不能大于 {b}")
+                .replace("{a}", "minimum")
+                .replace("{b}", "maximum"),
+            });
+            return;
+          }
+          const pattern = String((r && r.pattern) || "").trim();
+          if (pattern !== "") {
+            try {
+              new RegExp(pattern);
+            } catch (e) {
+              errs.push({
+                i,
+                msg: t("caps.tpl.schema_err_pattern", "正则写错了：{msg}").replace(
+                  "{msg}",
+                  String((e && e.message) || e),
+                ),
+              });
+              return;
+            }
+          }
+          if (String((r && r.type) || "") === "enum") {
+            const vals = (r.enum || []).map((v) => String(v).trim()).filter((v) => v !== "");
+            if (!vals.length) {
+              errs.push({ i, msg: t("caps.tpl.schema_err_enum", "选了「枚举」就至少填一个值") });
+            }
+          }
+        });
+        return errs;
+      }
+
+      // schemaSyncFromDom 把 #schema-rows 里各控件读回 SCHEMA_ROWS（行是镜像）。
+      //
+      // 为什么需要它：行是动态重画的（增删 / 改类型），而输入框的即时编辑
+      // 不重画（重画会丢焦点，用户敲一个字符就被踢出去）。所以真相在
+      // SCHEMA_ROWS，控件只是它的渲染 —— 每次读值前先同步回来。
+      function schemaSyncFromDom() {
+        const box = document.getElementById("schema-rows");
+        if (!box) return;
+        for (const rowEl of box.querySelectorAll("[data-row]")) {
+          const i = Number(rowEl.getAttribute("data-row"));
+          const row = SCHEMA_ROWS[i];
+          if (!row) continue;
+          for (const ctl of rowEl.querySelectorAll("[data-f]")) {
+            const f = ctl.getAttribute("data-f");
+            if (f === "required") row.required = !!ctl.checked;
+            else if (f === "enum") {
+              row.enum = String(ctl.value || "")
+                .split(",")
+                .map((v) => v.trim())
+                .filter((v) => v !== "");
+            } else row[f] = ctl.value;
+          }
+        }
+      }
+
+      // showSchemaRowErrors 把校验结果落到界面上：第一处错进错误区，出错的行标红。
+      function showSchemaRowErrors(errs) {
+        const box = document.getElementById("schema-rows");
+        if (box) {
+          for (const r of box.querySelectorAll("[data-row]")) r.classList.remove("is-err");
+          for (const e of errs || []) {
+            const node = box.querySelector(`[data-row="${e.i}"]`);
+            if (node) node.classList.add("is-err");
+          }
+          const first = errs && errs.length ? box.querySelector(`[data-row="${errs[0].i}"]`) : null;
+          if (first && first.scrollIntoView) first.scrollIntoView({ block: "nearest" });
+        }
+        setSchemaError(errs && errs.length ? errs[0].msg : "");
+      }
+
+      // schemaFieldEl 是「更多」里的一项约束输入。
+      // 标签用键名本身（minLength / pattern）：它要能对上后端文档里的那个词，
+      // 翻译成「最短长度」反而对不上日志与错误串。
+      function schemaFieldEl(row, f) {
+        const fld = el("label", "schema-fld");
+        fld.appendChild(el("span", "", f === "enum" ? t("caps.tpl.schema_enum", "枚举值（逗号分隔）") : f));
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.className = "input mono";
+        inp.setAttribute("data-f", f);
+        inp.setAttribute("autocomplete", "off");
+        inp.setAttribute("spellcheck", "false");
+        if (f === "enum") {
+          // 只有枚举留示例：「逗号分隔」这件事需要示范，而其余约束的格式
+          // 由键名本身说明。数字/正则给占位符反而像**已经填了值**。
+          inp.setAttribute("placeholder", "a, b");
+          inp.value = (row.enum || []).join(", ");
+        } else if (f === "pattern") {
+          inp.value = row.pattern == null ? "" : String(row.pattern);
+        } else {
+          inp.value = row[f] == null ? "" : String(row[f]);
+        }
+        fld.appendChild(inp);
+        return fld;
+      }
+
+      // schemaRowEl 渲染一行：参数名 + 类型 + 必填 + 更多 + 删除。
+      function schemaRowEl(row, i) {
+        const wrap = el("div", "schema-row");
+        wrap.setAttribute("data-row", String(i));
+        const main = el("div", "schema-row-main");
+
+        const key = document.createElement("input");
+        key.type = "text";
+        key.className = "input schema-row-key";
+        key.setAttribute("data-f", "key");
+        key.setAttribute("autocomplete", "off");
+        key.setAttribute("spellcheck", "false");
+        key.setAttribute("placeholder", "repo");
+        key.setAttribute("aria-label", t("caps.tpl.schema_key", "参数名"));
+        key.value = row.key == null ? "" : String(row.key);
+        main.appendChild(key);
+
+        const type = document.createElement("select");
+        type.className = "select";
+        type.setAttribute("data-f", "type");
+        type.setAttribute("aria-label", t("caps.tpl.schema_type", "类型"));
+        for (const opt of SCHEMA_TYPES) type.appendChild(new Option(schemaTypeLabel(opt), opt));
+        type.value = SCHEMA_TYPES.includes(row.type) ? row.type : "any";
+        main.appendChild(type);
+
+        const req = el("label", "schema-row-req");
+        req.title = t("caps.tpl.schema_required", "必填");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.setAttribute("data-f", "required");
+        cb.checked = !!row.required;
+        req.appendChild(cb);
+        req.appendChild(el("span", "", t("caps.tpl.schema_required", "必填")));
+        main.appendChild(req);
+
+        const moreBtn = el(
+          "button",
+          "btn btn-ghost btn-sm",
+          row.more ? t("caps.tpl.schema_less", "收起") : t("caps.tpl.schema_more", "更多"),
+        );
+        moreBtn.type = "button";
+        moreBtn.setAttribute("data-act", "more");
+        main.appendChild(moreBtn);
+
+        const del = el("button", "btn btn-ghost btn-sm schema-row-del", "×");
+        del.type = "button";
+        del.setAttribute("data-act", "del");
+        del.setAttribute("aria-label", t("caps.tpl.schema_del", "删除这个参数"));
+        main.appendChild(del);
+
+        wrap.appendChild(main);
+        const fields = schemaRowConstraintFields(row.type);
+        if (fields.length) {
+          const more = el("div", "schema-row-more");
+          if (!row.more) more.classList.add("hidden");
+          for (const f of fields) more.appendChild(schemaFieldEl(row, f));
+          wrap.appendChild(more);
+        }
+        return wrap;
+      }
+
+      // renderSchemaRows 重画行视图（增删 / 改类型的整体重画，不是每次敲键）。
+      function renderSchemaRows() {
+        const box = document.getElementById("schema-rows");
+        if (!box) return;
+        box.replaceChildren();
+        (SCHEMA_ROWS || []).forEach((row, i) => box.appendChild(schemaRowEl(row, i)));
+        const empty = document.getElementById("schema-rows-empty");
+        if (empty) empty.classList.toggle("hidden", (SCHEMA_ROWS || []).length > 0);
+        renderSchemaExtraNote();
+      }
+
+      // renderSchemaViews 只切「谁可见」（数据两边都已经就位，不重算）。
+      function renderSchemaViews() {
+        const isJSON = SCHEMA_VIEW === "json";
+        const rowsWrap = document.getElementById("schema-rows-wrap");
+        const jsonWrap = document.getElementById("schema-wrap");
+        if (rowsWrap) rowsWrap.classList.toggle("hidden", isJSON);
+        if (jsonWrap) jsonWrap.classList.toggle("hidden", !isJSON);
+        const rowsBtn = document.getElementById("schema-mode-rows");
+        const jsonBtn = document.getElementById("schema-toggle");
+        if (rowsBtn) rowsBtn.classList.toggle("seg-item-active", !isJSON);
+        if (jsonBtn) jsonBtn.classList.toggle("seg-item-active", isJSON);
+      }
+
+      // renderSchemaExtraNote 在行视图里坦白「有些声明不在这几行里」。
+      // 不说的话，用户看到 3 行属性却有一份带 additionalProperties:false 的契约，
+      // 会以为它们被吞了（其实原样保留，就在 JSON 视图里）。
+      function renderSchemaExtraNote() {
+        const note = document.getElementById("schema-extra-note");
+        if (!note) return;
+        const keys = Object.keys(SCHEMA_EXTRA || {});
+        note.classList.toggle("hidden", !keys.length);
+        note.textContent = keys.length
+          ? t(
+              "caps.tpl.schema_extra_note",
+              "另有 {keys} 是这几行表达不了的声明，原样保留（JSON 视图里可见）",
+            ).replace("{keys}", keys.join(", "))
+          : "";
+      }
+
+      // setSchemaJSONOnly 显示「这份契约只能手写」的原因（空串 = 隐藏）。
+      function setSchemaJSONOnly(msg) {
+        const node = document.getElementById("schema-json-only");
+        if (!node) return;
+        node.textContent = msg || "";
+        node.classList.toggle("hidden", !msg);
+      }
+
+      // schemaJSONFromRows 把行渲染成 JSON 视图的文本（唯一一处转换）。
+      function schemaJSONFromRows() {
+        return JSON.stringify(rowsToSchema(SCHEMA_ROWS, SCHEMA_EXTRA), null, 2);
+      }
+
+      // parseSchemaJSON 读 JSON 视图。空 = 空契约（不是「用模板推导」——
+      // 那个语义只在新建且没动过契约时存在，见 cardSchema）。
+      function parseSchemaJSON() {
+        const ta = document.getElementById("cap-schema");
+        const raw = String((ta && ta.value) || "").trim();
+        if (raw === "") return { schema: { type: "object" } };
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          return { error: String((e && e.message) || e) };
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return { error: t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象") };
+        }
+        return { schema: parsed };
+      }
+
+      /**
+       * schemaViewSet 切「可视化 / 手写 JSON」。
+       *
+       * 切换必须带一次转换，否则切过去看到的是上次留下的旧文本，与屏幕上
+       * 刚编的内容对不上（两种真相）。两条转换各有各的失败分支：
+       *   rows → json：行没填好就**不切**（否则坏行会在重建时被跳过，等于静默丢参数）
+       *   json → rows：解析不了就**不切**（非法 JSON / 表达不了的形状），
+       *                原因写在错误区 —— 绝不把 JSON 换成一组空行
+       */
+      function schemaViewSet(view) {
+        const next = view === "json" ? "json" : "rows";
+        if (next === SCHEMA_VIEW) {
+          renderSchemaViews();
+          return true;
+        }
+        if (next === "json") {
+          schemaSyncFromDom();
+          const errs = validateSchemaRows(SCHEMA_ROWS);
+          if (errs.length) {
+            showSchemaRowErrors(errs);
+            return false;
+          }
+          document.getElementById("cap-schema").value = schemaJSONFromRows();
+          setSchemaJSONOnly("");
+        } else {
+          const got = parseSchemaJSON();
+          if (got.error) {
+            setSchemaError(got.error);
+            return false;
+          }
+          const conv = schemaToRows(got.schema);
+          if (!conv) {
+            setSchemaError(
+              t(
+                "caps.tpl.schema_err_switch",
+                "这份契约有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），请继续用 JSON 编辑",
+              ),
+            );
+            setSchemaJSONOnly(
+              t(
+                "caps.tpl.schema_json_only",
+                "这份契约里有可视化编辑器表达不了的形状，只能用 JSON 编辑",
+              ),
+            );
+            return false;
+          }
+          setSchemaJSONOnly("");
+          SCHEMA_ROWS = conv.rows;
+          SCHEMA_EXTRA = conv.extra;
+          renderSchemaRows();
+        }
+        SCHEMA_VIEW = next;
+        setSchemaError("");
+        renderSchemaViews();
+        return true;
+      }
+
+      /**
+       * currentSchema 给出本次提交的契约：**当前视图就是真相**。
+       * 返回 {schema} 或 {error}（调用方拦住提交并把 error 说给用户）。
+       */
+      function currentSchema() {
+        if (SCHEMA_VIEW === "json") {
+          // 错误必须落到界面上：调用方会 toast 一句，但弹层不关时用户还得
+          // 知道是哪一行坏了（toast 会自己消失，错误区不会）。
+          const got = parseSchemaJSON();
+          setSchemaError(got.error || "");
+          return got;
+        }
+        schemaSyncFromDom();
+        const errs = validateSchemaRows(SCHEMA_ROWS);
+        if (errs.length) {
+          showSchemaRowErrors(errs);
+          return { error: errs[0].msg };
+        }
+        setSchemaError("");
+        return { schema: rowsToSchema(SCHEMA_ROWS, SCHEMA_EXTRA) };
+      }
+
+      // resetSchemaForTemplate 在换模板时同步行视图。
+      //
+      // 只在用户**没动过**契约时覆盖：动过就保留（换个模板不该把刚配好的参数擦了）。
+      // 推导值与 paramsSchemaFor 逐项一致 —— 未改动时提交的契约与改动前完全一样，
+      // 所以「模板字段与参数契约不会漂移」这条不变式继续成立。
+      function resetSchemaForTemplate(tpl) {
+        if (SCHEMA_DIRTY) return;
+        const conv = schemaToRows(paramsSchemaFor((tpl && tpl.fields) || []));
+        // paramsSchemaFor 只产出 string/number/select 三种，一定能解成行；
+        // 万一解不了（未来加了新类型），保留现有行比清空安全。
+        if (!conv) return;
+        SCHEMA_ROWS = conv.rows;
+        SCHEMA_EXTRA = conv.extra;
+        SCHEMA_VIEW = "rows";
+        document.getElementById("cap-schema").value = "";
+        setSchemaJSONOnly("");
+        renderSchemaRows();
+        renderSchemaViews();
+        setSchemaError("");
+      }
+
+      // editSchemaInit 在「发新版本」时预填契约：行视图优先，表达不了才锁 JSON。
+      //
+      // 编辑模式没有模板字段可推导（模板只在新建时选），所以 SCHEMA_DIRTY
+      // 一开始就是 true —— 防止以后有代码路径把模板推导又叠上来。
+      function editSchemaInit(raw) {
+        SCHEMA_DIRTY = true;
+        SCHEMA_ROWS = [];
+        SCHEMA_EXTRA = {};
+        SCHEMA_VIEW = "rows";
+        const text = schemaText(raw);
+        document.getElementById("cap-schema").value = text;
+        let schema = null;
+        if (text.trim() !== "") {
+          try {
+            schema = JSON.parse(text);
+          } catch (e) {
+            schema = null;
+          }
+        }
+        const conv = schema == null ? { rows: [], extra: {} } : schemaToRows(schema);
+        if (!conv) {
+          SCHEMA_VIEW = "json";
+          setSchemaJSONOnly(
+            t(
+              "caps.tpl.schema_json_only",
+              "这份契约里有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），只能用 JSON 编辑",
+            ),
+          );
+        } else {
+          SCHEMA_ROWS = conv.rows;
+          SCHEMA_EXTRA = conv.extra;
+          setSchemaJSONOnly("");
+        }
+        renderSchemaRows();
+        renderSchemaViews();
+        setSchemaError("");
+      }
+
+      // schemaAddRow 加一个空行。名字留空让人从「填名字」开始，
+      // 而不是先猜一个占位名字要不要删。
+      function schemaAddRow() {
+        schemaSyncFromDom();
+        SCHEMA_ROWS.push({
+          key: "",
+          type: "string",
+          required: false,
+          enum: [],
+          pattern: "",
+          minLength: "",
+          maxLength: "",
+          minimum: "",
+          maximum: "",
+          extra: {},
+          more: false,
+        });
+        SCHEMA_DIRTY = true;
+        renderSchemaRows();
+        setSchemaError("");
+        // 焦点直接落到新行的名字输入框：加一行就是为了填它
+        const box = document.getElementById("schema-rows");
+        const last = box && box.lastElementChild;
+        const input = last && last.querySelector('input[data-f="key"]');
+        if (input) input.focus();
+      }
+
       // paramsSchemaFor 从模板字段推导参数契约。
       //
       // 必须与 internal/artifact/templates.go:paramsSchemaFor **一字不差**：
@@ -3914,26 +4714,25 @@
         const displayName =
           document.getElementById("cap-display-name").value.trim() || tpl.displayName || "";
 
-        // 高级出口优先：填了就用它，留空用模板推导的。
-        // 解析失败必须**当场拦住**：发给后端的非法 JSON 只会换来一个 400，
+        // 参数契约：当前视图就是真相（行视图 / 手写 JSON）。
+        //
+        // 校验失败必须**当场拦住**：发给后端的非法 JSON 只会换来一个 400，
         // 而用户还得自己猜是哪一行多了个逗号。
+        //
+        // 「没动过契约」= 用模板推导的那份（行视图本来就从模板字段来，逐项一致；
+        // 这里显式回退到 paramsSchemaFor 是为了让提交体与改动前**逐字节**相同）。
+        // JSON 视图里清空也回退到推导 —— 保留改动前「留空 = 用推导」的语义。
         let paramsSchema = paramsSchemaFor(tpl.fields);
         const schemaEl = document.getElementById("cap-schema");
-        const schemaWrap = document.getElementById("schema-wrap");
-        const schemaShown = schemaWrap && !schemaWrap.classList.contains("hidden");
-        if (schemaShown && schemaEl && schemaEl.value.trim() !== "") {
-          try {
-            const parsed = JSON.parse(schemaEl.value);
-            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-              throw new Error("paramsSchema 必须是 JSON 对象");
-            }
-            paramsSchema = parsed;
-            setSchemaError("");
-          } catch (e) {
-            setSchemaError(String((e && e.message) || e));
-            toast(t("caps.form.create_failed", "创建失败：") + String((e && e.message) || e));
+        const jsonEmpty =
+          SCHEMA_VIEW === "json" && String((schemaEl && schemaEl.value) || "").trim() === "";
+        if (!jsonEmpty && (SCHEMA_DIRTY || SCHEMA_VIEW === "json")) {
+          const got = currentSchema();
+          if (got.error) {
+            toast(t("caps.form.create_failed", "创建失败：") + got.error);
             return;
           }
+          paramsSchema = got.schema;
         } else {
           setSchemaError("");
         }
@@ -4061,19 +4860,26 @@
         return Number(raw);
       }
 
-      // cardSchema 取一张卡的 paramsSchema：手写的高级出口优先，留空用模板推导的
-      // （与 createCapability 同一口径）。校验阶段已经确认它能解成对象。
+      // cardSchema 取一张卡的 paramsSchema：**当前视图就是真相**，
+      // 没动过就用模板推导的（与 createCapability 同一口径）。
+      // 校验阶段已经确认它能解成对象。
       function cardSchema(c) {
-        const raw = String((c && c.schemaText) || "").trim();
-        if (c && c.schemaOpen && raw !== "") {
+        const derived = paramsSchemaFor((TPL_SEL && TPL_SEL.fields) || []);
+        if (!c) return derived;
+        if (c.schemaView === "json") {
+          // JSON 视图里清空 = 回退到模板推导（保留「留空 = 用推导」的旧语义）
+          const raw = String(c.schemaText || "").trim();
+          if (raw === "") return derived;
           try {
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
           } catch (e) {
             /* 校验已经拦过，这里不重复报错 */
           }
+          return derived;
         }
-        return paramsSchemaFor((TPL_SEL && TPL_SEL.fields) || []);
+        if (c.schemaDirty) return rowsToSchema(c.schemaRows || [], c.schemaExtra || {});
+        return derived;
       }
 
       // batchFieldOf 把后端的字段名原样带出来（`capabilities[2].name` → name）。
@@ -4166,15 +4972,24 @@
             );
             return false;
           }
-          const rawSchema = String(c.schemaText || "").trim();
-          if (c.schemaOpen && rawSchema !== "") {
-            try {
-              const parsed = JSON.parse(rawSchema);
-              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-                throw new Error(t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象"));
+          // 参数契约：视图即真相（与 cardSchema 同一口径）
+          if (c.schemaView === "json") {
+            const rawSchema = String(c.schemaText || "").trim();
+            if (rawSchema !== "") {
+              try {
+                const parsed = JSON.parse(rawSchema);
+                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                  throw new Error(t("caps.form.err_schema_obj", "paramsSchema 必须是一个 JSON 对象"));
+                }
+              } catch (e) {
+                cardFailAt(i, "paramsSchema", String((e && e.message) || e));
+                return false;
               }
-            } catch (e) {
-              cardFailAt(i, "paramsSchema", String((e && e.message) || e));
+            }
+          } else if (c.schemaDirty) {
+            const errs = validateSchemaRows(c.schemaRows || []);
+            if (errs.length) {
+              cardFailAt(i, "paramsSchema", errs[0].msg);
               return false;
             }
           }
@@ -4460,9 +5275,9 @@
         updateDownActions();
         renderDownstreamCands();
 
-        // 参数契约：编辑模式直接给可改的 JSON（没有模板字段可以推导了）
-        document.getElementById("cap-schema").value = schemaText(c.paramsSchema);
-        document.getElementById("schema-wrap").classList.remove("hidden");
+        // 参数契约：编辑模式预填当前版本（行视图优先，表达不了才锁 JSON ——
+        // 锁的原因写在 schema-json-only 里，不静默简化）
+        editSchemaInit(c.paramsSchema);
 
         document.getElementById("cap-submit").textContent = t(
           "caps.edit.submit",
@@ -4667,23 +5482,13 @@
           return;
         }
 
-        // 参数契约：以手写 JSON 为准（编辑模式始终展开着、且已预填当前版本）
-        let paramsSchema = { type: "object" };
-        const schemaEl = document.getElementById("cap-schema");
-        if (schemaEl && schemaEl.value.trim() !== "") {
-          try {
-            const parsed = JSON.parse(schemaEl.value);
-            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-              throw new Error("paramsSchema 必须是 JSON 对象");
-            }
-            paramsSchema = parsed;
-            setSchemaError("");
-          } catch (e) {
-            setSchemaError(String((e && e.message) || e));
-            toast(t("caps.form.create_failed", "创建失败：") + String((e && e.message) || e));
-            return;
-          }
+        // 参数契约：当前视图就是真相（预填的是当前版本，见 editSchemaInit）
+        const gotSchema = currentSchema();
+        if (gotSchema.error) {
+          toast(t("caps.form.create_failed", "创建失败：") + gotSchema.error);
+          return;
         }
+        const paramsSchema = gotSchema.schema || { type: "object" };
 
         const entrypoint = vm.entrypoint || "run.sh";
         const run = {
@@ -5093,24 +5898,64 @@
       const downSave = document.getElementById("cap-down-save");
       if (downSave) downSave.addEventListener("click", () => saveDownstreams());
 
-      // 高级出口（手写 paramsSchema）：
-      // 打开时**用模板推导的那份预填**，让人从"现在是什么"开始改，
-      // 而不是从空白开始猜格式。留空 = 回到推导值（提交时判断）。
-      document.getElementById("schema-toggle").addEventListener("click", () => {
-        const wrap = document.getElementById("schema-wrap");
-        const el = document.getElementById("cap-schema");
-        const opening = wrap.classList.contains("hidden");
-        if (opening && el.value.trim() === "") {
-          try {
-            el.value = JSON.stringify(paramsSchemaFor((TPL_SEL && TPL_SEL.fields) || []), null, 2);
-          } catch {
-            el.value = "{\n  \"type\": \"object\"\n}";
-          }
+      // 参数契约：两个视图按钮 + 加一行 + JSON 文本即时可编。
+      //
+      // 行编辑器的即时输入走 #schema-rows 上的事件委托（行是动态重画的）：
+      //   input/change → 控件值回写 SCHEMA_ROWS（真相）
+      //   click        → 删除 / 展开更多
+      // 只有「改类型」需要重画（约束字段随类型变），其它都不重画 ——
+      // 重画会丢焦点，用户敲一个字符就被踢出输入框。
+      (function bindSchemaEditor() {
+        const rowsBtn = document.getElementById("schema-mode-rows");
+        const jsonBtn = document.getElementById("schema-toggle");
+        if (rowsBtn) rowsBtn.addEventListener("click", () => schemaViewSet("rows"));
+        if (jsonBtn) jsonBtn.addEventListener("click", () => schemaViewSet("json"));
+
+        const addBtn = document.getElementById("schema-add-row");
+        if (addBtn) addBtn.addEventListener("click", () => schemaAddRow());
+
+        const ta = document.getElementById("cap-schema");
+        if (ta) {
+          ta.addEventListener("input", () => {
+            SCHEMA_DIRTY = true;
+            setSchemaError("");
+          });
         }
-        wrap.classList.toggle("hidden", !opening);
-        setSchemaError("");
-        if (opening) el.focus();
-      });
+
+        const box = document.getElementById("schema-rows");
+        if (!box) return;
+        const onEdit = (ev) => {
+          const tgt = ev.target;
+          if (!tgt || !tgt.getAttribute) return;
+          const f = tgt.getAttribute("data-f");
+          if (!f) return;
+          schemaSyncFromDom();
+          SCHEMA_DIRTY = true;
+          setSchemaError("");
+          // 类型变了，可填的约束也变了（string 有 pattern，number 有 minimum）
+          if (f === "type") renderSchemaRows();
+        };
+        box.addEventListener("input", onEdit);
+        box.addEventListener("change", onEdit);
+        box.addEventListener("click", (ev) => {
+          const btn = ev.target && ev.target.closest ? ev.target.closest("[data-act]") : null;
+          if (!btn) return;
+          const rowEl = btn.closest("[data-row]");
+          const i = rowEl ? Number(rowEl.getAttribute("data-row")) : -1;
+          if (!Number.isInteger(i) || !SCHEMA_ROWS[i]) return;
+          const act = btn.getAttribute("data-act");
+          schemaSyncFromDom();
+          if (act === "del") {
+            SCHEMA_ROWS.splice(i, 1);
+            SCHEMA_DIRTY = true;
+            renderSchemaRows();
+            setSchemaError("");
+          } else if (act === "more") {
+            SCHEMA_ROWS[i].more = !SCHEMA_ROWS[i].more;
+            renderSchemaRows();
+          }
+        });
+      })();
 
       document.addEventListener("DOMContentLoaded", loadAll);
 
