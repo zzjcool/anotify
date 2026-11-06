@@ -336,8 +336,9 @@ func capabilityPortsOn(ctx context.Context, ex txExec, namespaceID, name string,
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list existing ports: %w", err)
 	}
-	if len(allowed) == 0 {
-		allowed[ImplicitPort] = true
-	}
+	// 隐式出口**永远**允许：界面模型里一个能力只有一个出口，它叫 out
+	// （CONTRACT-hide-ports §1）。历史的具名端口（outputs: ["fix"]）是产物声明，
+	// 两种都在集合里——这里补 out 而不是放宽校验，具名端口写错照样 unknown_port。
+	allowed[ImplicitPort] = true
 	return allowed, nil
 }
