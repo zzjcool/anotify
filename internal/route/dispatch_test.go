@@ -356,10 +356,40 @@ func (f *fakeStore) GetPin(ctx context.Context, stickyKey string) (*store.NodePi
 	return p, nil
 }
 
+// PutPin 与真 store 同口径：**已存在时只刷新 last_used_at，钉住不换机器**
+// （store.putPinExec 的 ON CONFLICT 分支）。fake 若在这里覆盖 node_id，
+// 就会出现「真库里钉在 A、测试里钉在 B」的假绿。
 func (f *fakeStore) PutPin(ctx context.Context, p *store.NodePin) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := store.Now()
+	if p.CreatedAt == 0 {
+		p.CreatedAt = now
+	}
+	if p.LastUsedAt == 0 {
+		p.LastUsedAt = now
+	}
+	if old, ok := f.pins[p.StickyKey]; ok {
+		cp := *old
+		cp.LastUsedAt = p.LastUsedAt
+		f.pins[p.StickyKey] = &cp
+		return nil
+	}
 	cp := *p
 	f.pins[p.StickyKey] = &cp
 	return nil
+}
+
+// RollbackPin 与真 store 同口径：(sticky_key, node_id, created_at) 全等才删。
+func (f *fakeStore) RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.pins[stickyKey]
+	if !ok || p.NodeID != nodeID || p.CreatedAt != createdAt {
+		return false, nil
+	}
+	delete(f.pins, stickyKey)
+	return true, nil
 }
 
 func (f *fakeStore) ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error {
@@ -458,6 +488,14 @@ func (f *fakeStore) AssignTask(ctx context.Context, orgID, taskID, nodeID, insta
 // 任一步失败后占住的槽位必须看不见（真实实现靠 Rollback 做到）。
 // errAssignTask 的注入位置不变——仍然只在 AssignTask 那一步生效。
 func (f *fakeStore) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error) {
+	return f.LeaseAndAssignWithPin(ctx, namespaceID, taskID, nodeID, leaseUntil, nil)
+}
+
+// LeaseAndAssignWithPin 是同一个事务 + 可选的粘性 pin（#264）。
+//
+// fake 仍然"没有事务"：失败时把刚写的 pin 一起撤掉，模拟真实实现的 Rollback——
+// 否则「assign 失败却留下 pin」会在 fake 上假绿，而真实实现里那是回滚掉的。
+func (f *fakeStore) LeaseAndAssignWithPin(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64, pin *store.NodePin) (string, error) {
 	instanceID, err := f.LeaseInstance(ctx, nodeID, taskID)
 	if err != nil {
 		return "", err
@@ -468,6 +506,11 @@ func (f *fakeStore) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nod
 			return "", rbErr
 		}
 		return "", err
+	}
+	if pin != nil {
+		if err := f.PutPin(ctx, pin); err != nil {
+			return "", err
+		}
 	}
 	return instanceID, nil
 }
@@ -1897,5 +1940,86 @@ func TestRedispatchTaskNoNodeStillReturnsNoError(t *testing.T) {
 	}
 	if errors.Is(err, store.ErrNoCapacity) {
 		t.Fatal("没有节点被误判为容量不足")
+	}
+}
+
+// ---------- #264：粘性 pin 回滚（推帧失败绝不能留下 pin） ----------
+
+// failingPublisher 让 PublishAssign 必然失败——推帧失败路径的注入点。
+//
+// route 的其它用例全部用 Publisher=nil（只落库不推送），所以这条路径原本没有任何
+// 覆盖：pin 回滚一旦写错，"推不出去的机器"会被钉死成整条 trace 的粘性目标。
+type failingPublisher struct{}
+
+func (failingPublisher) PublishAssign(ctx context.Context, namespaceID, nodeID string, task *store.Task) error {
+	return errors.New("pusher down")
+}
+
+// TestDispatchStickyPublishFailureRollsBackPin 推帧失败 → 本次新建的 pin 必须撤掉。
+//
+// pin 现在与 assigned 同一个事务提交（#264），所以"推不出去"不再天然等于"没写过 pin"，
+// 回滚由 requeueAfterPublishFailure 承担。留下的后果很具体：pickNode 下一次直接信 pin，
+// 重派会被一直钉在一台刚刚推不出去的机器上。
+func TestDispatchStickyPublishFailureRollsBackPin(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testNS, "implement", 1, nil, `{}`)
+	target.Sticky = "worktree"
+	f.addEdge(testNS, review.ID, "fix", target.ID)
+	f.addNode("nd_a", target.ID, 2)
+
+	d := New(f)
+	d.Publisher = failingPublisher{}
+	out, err := d.Dispatch(context.Background(), DispatchInput{
+		NamespaceID: testNS, TraceID: "trace_sticky_fail", FromCap: review.ID, Out: "fix",
+		Params: map[string]any{"worktree": "wt-1"},
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	// 没派出去：不返回（它已退回 pending 等重派）。
+	if len(out.Tasks) != 0 {
+		t.Fatalf("推帧失败却返回了 %d 条「已派发」任务", len(out.Tasks))
+	}
+	// pin 必须被回滚：否则下一次 pickNode 会直接钉到那台推不出去的机器。
+	if len(f.pins) != 0 {
+		t.Fatalf("推帧失败却留下了 %d 条 pin（%v）", len(f.pins), keysOf(f.pins))
+	}
+}
+
+// TestDispatchStickyPublishFailureKeepsForeignPin 推帧失败**只能**撤掉本次新建的 pin。
+//
+// 场景：库里已有一条钉住（但钉的机器已经不在候选里 → pickNode 回落到负载挑，
+// 仍然返回 selector）。本次派发写 pin 时 ON CONFLICT 只刷新 last_used_at（不换机器），
+// 所以这条 pin 不属于本次派发 —— 回滚必须按 (key, node, created_at) 判定后放它一马。
+// 无脑 DeletePin 会让「一次推帧失败」顺手清掉同一 trace 上一跳的钉住。
+func TestDispatchStickyPublishFailureKeepsForeignPin(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testNS, "implement", 1, nil, `{}`)
+	target.Sticky = "worktree"
+	f.addEdge(testNS, review.ID, "fix", target.ID)
+	f.addNode("nd_alive", target.ID, 2)
+
+	key := store.StickyKey("trace_sticky_keep", target.ID, "wt-2")
+	f.pins[key] = &store.NodePin{
+		StickyKey: key, NamespaceID: testNS, NodeID: "nd_dead", Selector: "wt-2",
+		CreatedAt: store.Now() - 1000,
+	}
+
+	d := New(f)
+	d.Publisher = failingPublisher{}
+	if _, err := d.Dispatch(context.Background(), DispatchInput{
+		NamespaceID: testNS, TraceID: "trace_sticky_keep", FromCap: review.ID, Out: "fix",
+		Params: map[string]any{"worktree": "wt-2"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	got, ok := f.pins[key]
+	if !ok {
+		t.Fatal("推帧失败把早先留下的 pin 一起删了（整条 trace 的粘性会静默失效）")
+	}
+	if got.NodeID != "nd_dead" {
+		t.Fatalf("早先的 pin 被改写成了 %s（钉住不换机器）", got.NodeID)
 	}
 }

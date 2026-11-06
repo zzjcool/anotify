@@ -909,3 +909,147 @@ func TestValidateNodeName(t *testing.T) {
 		}
 	}
 }
+
+// ---------- #264：粘性 pin 并进派发事务 ----------
+
+// TestLeaseAndAssignWithPinWritesPinAtomically pin 与 assigned 同一个事务落库。
+//
+// 验收口径：**派发事务返回时 pin 已经在库里**（原实现要等推帧成功后再写一行），
+// 并且 pin.CreatedAt 被就地填好——回滚路径正是靠它区分"本次新建"与"早先就有"。
+func TestLeaseAndAssignWithPinWritesPinAtomically(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeID := mkTxMergeNode(t, db, nsID, cap, "n-pin")
+	task := mkTxMergeTask(t, db, nsID, "trc_pin", cap)
+
+	pin := &NodePin{
+		StickyKey:   StickyKey("trc_pin", cap.ID, "wt-a"),
+		NamespaceID: nsID,
+		NodeID:      nodeID,
+		Selector:    "wt-a",
+	}
+	if _, err := db.LeaseAndAssignWithPin(ctx, nsID, task.ID, nodeID, Now()+LeaseTTLSec, pin); err != nil {
+		t.Fatalf("lease and assign with pin: %v", err)
+	}
+	if pin.CreatedAt == 0 {
+		t.Fatal("pin.CreatedAt 没有被就地填上（回滚路径要靠它做条件删除）")
+	}
+	got, err := db.GetPin(ctx, pin.StickyKey)
+	if err != nil {
+		t.Fatalf("pin 没落库（派发事务返回时它就该在库里）: %v", err)
+	}
+	if got.NodeID != nodeID || got.Selector != "wt-a" || got.NamespaceID != nsID {
+		t.Fatalf("pin 内容不对：%+v", got)
+	}
+	if got.CreatedAt != pin.CreatedAt {
+		t.Fatalf("库里的 created_at = %d，调用方拿到 %d（回滚条件会不命中）", got.CreatedAt, pin.CreatedAt)
+	}
+	// 任务本身也照常派发出去了（合并不能吃掉原语义）。
+	back, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if back.Status != TaskAssigned || back.NodeID == nil || *back.NodeID != nodeID {
+		t.Fatalf("任务状态/归属不对：status=%s node=%v", back.Status, back.NodeID)
+	}
+}
+
+// TestLeaseAndAssignWithPinRollsBackPinOnFailure 派发失败时 pin 必须一起回滚（同一事务）。
+//
+// 这是「折进事务」的全部价值所在：不能出现「库里多了一条 pin，任务却没派出去」。
+// 顺带钉住槽位也不泄漏（整笔回滚，不是单步补偿）。
+func TestLeaseAndAssignWithPinRollsBackPinOnFailure(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeID := mkTxMergeNode(t, db, nsID, cap, "n-pin2")
+
+	// 非 pending 的任务：assignTaskTx 的守卫会拒绝（pending→assigned 是唯一合法的派发边），
+	// 而它排在 pin 写入**之前**——所以这一笔必须整体回滚。
+	bad := mkTxMergeTask(t, db, nsID, "trc_pin_bad", cap)
+	mustExec(t, db, `UPDATE tasks SET status = 'running' WHERE id = ?`, bad.ID)
+
+	pin := &NodePin{
+		StickyKey:   StickyKey("trc_pin_bad", cap.ID, "wt-b"),
+		NamespaceID: nsID,
+		NodeID:      nodeID,
+		Selector:    "wt-b",
+	}
+	if _, err := db.LeaseAndAssignWithPin(ctx, nsID, bad.ID, nodeID, Now()+LeaseTTLSec, pin); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("非 pending 任务 LeaseAndAssignWithPin err = %v, want ErrInvalidTransition", err)
+	}
+	if _, err := db.GetPin(ctx, pin.StickyKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("派发失败却留下了 pin（事务没回滚干净）：err=%v", err)
+	}
+	// 槽位也没被占住：一个全新的 pending 任务还能占到那唯一的槽。
+	ok := mkTxMergeTask(t, db, nsID, "trc_pin_ok", cap)
+	if _, err := db.LeaseAndAssign(ctx, nsID, ok.ID, nodeID, Now()+LeaseTTLSec); err != nil {
+		t.Fatalf("失败那笔泄漏了槽位：%v", err)
+	}
+}
+
+// TestRollbackPinOnlyDeletesOwnPin 回滚只删**本次新建**的那条 pin。
+//
+// 无脑 DeletePin 的后果是「一次推帧失败顺手清掉同一 trace 上一跳留下的钉住」，
+// 于是整条 trace 的粘性静默失效。三个分支分别钉住：自己的删掉、别人的留着、
+// 同 key 但不同机器的留着。
+func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeA := mkTxMergeNode(t, db, nsID, cap, "n-a")
+	nodeB := mkTxMergeNode(t, db, nsID, cap, "n-b")
+	key := StickyKey("trc_rb", cap.ID, "wt-rb")
+
+	// ① 本次新建的 pin → 删掉。
+	mine := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-rb"}
+	if err := db.PutPin(ctx, mine); err != nil {
+		t.Fatalf("put pin: %v", err)
+	}
+	deleted, err := db.RollbackPin(ctx, key, nodeA, mine.CreatedAt)
+	if err != nil {
+		t.Fatalf("rollback pin: %v", err)
+	}
+	if !deleted {
+		t.Fatal("本次新建的 pin 没被删掉")
+	}
+	if _, err := db.GetPin(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("回滚后 pin 仍在：%v", err)
+	}
+
+	// ② 早先留下的 pin（created_at 是旧的）→ 一行都不动。
+	old := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-rb",
+		CreatedAt: Now() - 1000}
+	if err := db.PutPin(ctx, old); err != nil {
+		t.Fatalf("put old pin: %v", err)
+	}
+	deleted, err = db.RollbackPin(ctx, key, nodeA, Now())
+	if err != nil {
+		t.Fatalf("rollback old pin: %v", err)
+	}
+	if deleted {
+		t.Fatal("回滚删掉了早先留下的 pin（整条 trace 的粘性会被误清）")
+	}
+	if got, err := db.GetPin(ctx, key); err != nil || got.NodeID != nodeA {
+		t.Fatalf("早先的 pin 被动过：%+v err=%v", got, err)
+	}
+
+	// ③ 同 key 但机器不同（钉住不换机器：库里还是 nodeA）→ 也不动。
+	deleted, err = db.RollbackPin(ctx, key, nodeB, old.CreatedAt)
+	if err != nil {
+		t.Fatalf("rollback other node: %v", err)
+	}
+	if deleted {
+		t.Fatal("回滚删掉了另一台机器的 pin")
+	}
+	if _, err := db.GetPin(ctx, key); err != nil {
+		t.Fatalf("pin 被误删：%v", err)
+	}
+}

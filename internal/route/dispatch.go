@@ -186,10 +186,18 @@ type Store interface {
 	// 没有空闲槽位返回 store.ErrNoCapacity 且**什么都没写**（事务回滚）；
 	// 其他错误同样带事务回滚，调用方不需要再补一次 ReleaseInstance。
 	LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error)
+	// LeaseAndAssignWithPin 是同一个事务 + 可选的一条粘性 pin（#264，pin 为 nil 时与上面等价）。
+	//
+	// pin 为什么必须进这个事务：它原来是"推帧成功之后再单写一行"，既是每次派发多一次
+	// 写事务，也留下了「已 assigned、pin 还没写」的窗口。折进来后推帧失败要用
+	// RollbackPin 条件删除（语义不变：推不出去的任务不能留下 pin）。
+	LeaseAndAssignWithPin(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64, pin *store.NodePin) (string, error)
 	ReleaseInstance(ctx context.Context, nodeID, instanceID string) error
 	ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error
 	GetPin(ctx context.Context, stickyKey string) (*store.NodePin, error)
 	PutPin(ctx context.Context, p *store.NodePin) error
+	// RollbackPin 撤掉一条本次派发新建的 pin（推帧失败回滚用，见 store.RollbackPin）。
+	RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (bool, error)
 	CreateTasks(ctx context.Context, ts []*store.Task) error
 	// ExtendLease 把租约推到指定时刻（派发失败回滚时用来"提前过期"）。
 	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
@@ -1101,10 +1109,27 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		if ackLease := d.Now() + store.AckWaitSec; ackLease < lease {
 			lease = ackLease
 		}
-		// 占槽位 + pending→assigned + 写归属/attempts = **一次事务**（#141）。
-		// 任何一步失败都回滚，槽位不会泄漏——所以这里**没有**（也不需要）
+		// 粘性 pin：能力开了 sticky 且是**第一次**落到这台机器时写
+		// （pin 钉的是「哪个命名空间里的哪台机器」，所以带 NamespaceID）。
+		//
+		// #264 起它与「占槽位 + pending→assigned + 写归属/attempts + 落令牌」是
+		// **同一个事务**（LeaseAndAssignWithPin），不再是推帧成功之后的单独一次写。
+		// 语义靠回滚维持：推帧失败的 requeue 路径调 RollbackPin 条件删除，所以
+		// 「推不出去的任务不会留下 pin」这条不变。pin.CreatedAt 由 store 在事务里
+		// 就地填好——回滚正是靠它区分「本次新建」与「早先就有」（见 store.RollbackPin）。
+		//
+		// 任何一步失败都整笔回滚，槽位不会泄漏——所以这里**没有**（也不需要）
 		// 失败后补一次 ReleaseInstance 的语句。
-		instanceID, err := d.Store.LeaseAndAssign(ctx, in.NamespaceID, task.ID, nodeID, lease)
+		var pin *store.NodePin
+		if stickySelector != nil {
+			pin = &store.NodePin{
+				StickyKey:   store.StickyKey(in.TraceID, c.cap.ID, *stickySelector),
+				NamespaceID: in.NamespaceID,
+				NodeID:      nodeID,
+				Selector:    *stickySelector,
+			}
+		}
+		instanceID, err := d.Store.LeaseAndAssignWithPin(ctx, in.NamespaceID, task.ID, nodeID, lease, pin)
 		if errors.Is(err, store.ErrNoCapacity) {
 			// 有节点声明但暂时没空：不是永久剪枝，任务留 pending 等调度。
 			// （剪枝语义是「这条链在这里断了」，容量不够不是断链。）
@@ -1130,25 +1155,11 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		// 退回 pending 让它能被下一次派发立刻捡起。
 		if d.Publisher != nil {
 			if err := d.Publisher.PublishAssign(ctx, in.NamespaceID, nodeID, task); err != nil {
-				d.requeueAfterPublishFailure(ctx, in.NamespaceID, task, nodeID, instanceID)
+				d.requeueAfterPublishFailure(ctx, in.NamespaceID, task, nodeID, instanceID, pin)
 				// 从返回值里剔除：它已退回 pending，不算"派发出去了"。
 				// （仍留在库里，会被后续调度捡起。）
 				published[i] = false
 				continue
-			}
-		}
-
-		// 粘性钉住：能力开了 sticky 且是第一次落到这台机器时写 pin
-		// （pin 钉的是「哪个命名空间里的哪台机器」，所以带 NamespaceID）。
-		if stickySelector != nil {
-			key := store.StickyKey(in.TraceID, c.cap.ID, *stickySelector)
-			if err := d.Store.PutPin(ctx, &store.NodePin{
-				StickyKey:   key,
-				NamespaceID: in.NamespaceID,
-				NodeID:      nodeID,
-				Selector:    *stickySelector,
-			}); err != nil {
-				return fmt.Errorf("route: put pin: %w", err)
 			}
 		}
 	}
@@ -1305,7 +1316,13 @@ func (d *Dispatcher) prune(ctx context.Context, in DispatchInput, out *DispatchO
 //
 // 这样"清理任务归属"的逻辑只存在一处（sweepOne），不会出现第二份实现。
 // 失败只记日志：最坏情况是等 30s 后巡检自然兜底，结果一样。
-func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, namespaceID string, task *store.Task, nodeID, instanceID string) {
+func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, namespaceID string, task *store.Task, nodeID, instanceID string, pin *store.NodePin) {
+	// 粘性 pin 回滚（#264）**必须无条件发生**：pin 现在跟 assigned 同一个事务提交，
+	// 帧没推出去就得撤掉。用 defer 而不是放在函数尾部——下面每一步都可能提前 return，
+	// 而"提前 return 时 pin 留了下来"正是要防的那个坑。
+	if pin != nil {
+		defer d.rollbackPinAfterPublishFailure(ctx, task, pin)
+	}
 	if err := d.Store.ReleaseInstance(ctx, nodeID, instanceID); err != nil {
 		slog.Warn("release instance after publish failure failed",
 			"event", "route.publish.requeue",
@@ -1336,6 +1353,35 @@ func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, namespaceID
 	task.NodeID = nil
 	task.InstanceID = nil
 	task.LeaseUntil = nil
+}
+
+// rollbackPinAfterPublishFailure 撤掉「本次派发新建的」粘性 pin（推帧失败的回滚，#264）。
+//
+// 为什么必须撤：pickNode 下一次会**直接信**这条 pin（同 trace 同能力同 selector），
+// 于是重派会一直被钉在一台刚刚推不出去的机器上——正是 launch 里
+// 「推不出去的绝不能写 pin」要防的死循环（旧实现靠"成功后才写"保证这一点）。
+//
+// 为什么是条件删除：pin 可能是同一 trace 的上一跳留下的，也可能是并发派发刚建的。
+// 无脑 DeletePin 会让「一次推送失败」顺带清掉别人的钉住（整条 trace 的粘性失效）。
+// RollbackPin 按 (sticky_key, node_id, created_at) 三元组删，只有本次事务真的新建了
+// 那条才会命中（已存在的行 created_at 是旧的）。
+//
+// 失败只记日志：任务已经退回 pending，这里再报错也无法反悔；
+// 残留一条 pin 的后果是"这一跳仍钉在同一台机器"，比丢掉任务轻。
+func (d *Dispatcher) rollbackPinAfterPublishFailure(ctx context.Context, task *store.Task, pin *store.NodePin) {
+	deleted, err := d.Store.RollbackPin(ctx, pin.StickyKey, pin.NodeID, pin.CreatedAt)
+	if err != nil {
+		slog.Warn("rollback sticky pin after publish failure failed",
+			"event", "route.publish.requeue.rollback_pin",
+			"task_id", task.ID, "node_id", pin.NodeID, "error", err.Error())
+		return
+	}
+	if !deleted {
+		// 不是本次新建的（上一跳留下的 / 并发派发先建的）→ 一行都不该删。
+		slog.Warn("sticky pin was not created by this dispatch; left untouched",
+			"event", "route.publish.requeue.rollback_pin_skipped",
+			"task_id", task.ID, "node_id", pin.NodeID)
+	}
 }
 
 // now 返回当前 unixepoch 秒。
@@ -1617,9 +1663,19 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 	if ackLease := d.now() + store.AckWaitSec; ackLease < lease {
 		lease = ackLease
 	}
-	// 占槽位 + pending→assigned + 写归属/attempts = 一次事务（#141）。
-	// 失败即回滚，槽位不会泄漏，所以不需要再调 ReleaseInstance。
-	instanceID, err := d.Store.LeaseAndAssign(ctx, task.NamespaceID, task.ID, nodeID, lease)
+	// 粘性 pin 与「占槽位 + pending→assigned + 写归属/attempts」同一个事务（#264）：
+	// 重派是 pin 的第二条写点（以前在推帧成功之后单独写一次），合并口径与 launch 一致。
+	var pin *store.NodePin
+	if stickySelector != nil {
+		pin = &store.NodePin{
+			StickyKey:   store.StickyKey(task.TraceID, capDef.ID, *stickySelector),
+			NamespaceID: task.NamespaceID,
+			NodeID:      nodeID,
+			Selector:    *stickySelector,
+		}
+	}
+	// 失败即整笔回滚，槽位不会泄漏，所以不需要再调 ReleaseInstance。
+	instanceID, err := d.Store.LeaseAndAssignWithPin(ctx, task.NamespaceID, task.ID, nodeID, lease, pin)
 	if errors.Is(err, store.ErrNoCapacity) {
 		// 有节点但满了：不是永久失败，下轮再试。
 		//
@@ -1645,47 +1701,15 @@ func (d *Dispatcher) RedispatchTask(ctx context.Context, task *store.Task) (bool
 
 	if d.Publisher != nil {
 		if err := d.Publisher.PublishAssign(ctx, task.NamespaceID, nodeID, task); err != nil {
-			d.requeueAfterPublishFailure(ctx, task.NamespaceID, task, nodeID, instanceID)
+			d.requeueAfterPublishFailure(ctx, task.NamespaceID, task, nodeID, instanceID, pin)
 			return false, nil // 推不出去 = 这次没派成，下轮重试
 		}
 	}
 
-	// 粘性钉住：这是 launch 第 ④⑤ 步里 PutPin 那一段的**同构副本**。
-	//
-	// 为什么必须在这里再写一遍：重派（巡检捞回 / emit 的后台派发）走的是
-	// RedispatchTask 而不是 launch，若不在这里接住 pickNode 返回的 selector，
-	// 重派链上就永远不会有 pin——
-	// 而 pickNode 只在「库里还没有 pin」时才返回 selector（已钉住返回 nil），
-	// 于是 hop≥2 的 sticky 静默失效：第二次派发/巡检重派会按负载换机器，
-	// 同一 trace 的同一 worktree 落到另一台节点上（对 sticky="worktree" 这类
-	// 能力是结果可能不正确，不只是慢）。
-	//
-	// 位置与 launch 一致，两条都是硬要求：
-	//   - 必须在 PublishAssign **成功之后**：上面那个 return false 的分支
-	//     （推帧失败退回 pending）绝不能写 pin，否则重派会被钉死在一台
-	//     刚刚推不出去的机器上；
-	//   - Publisher == nil（只落库不推送）时也要写，与 launch 同口径。
-	//
-	// 写失败只记日志、不影响返回值：帧已经发出去了，这里报错也无法反悔；
-	// 后果仅是这条 trace 的粘性退化为「按负载挑」（下一跳可能换机器），
-	// 不影响任务本身已经派发成功的事实。
-	if stickySelector != nil {
-		key := store.StickyKey(task.TraceID, capDef.ID, *stickySelector)
-		if err := d.Store.PutPin(ctx, &store.NodePin{
-			StickyKey:   key,
-			NamespaceID: task.NamespaceID,
-			NodeID:      nodeID,
-			Selector:    *stickySelector,
-		}); err != nil {
-			slog.Warn("put sticky pin after redispatch failed",
-				"event", "route.redispatch.put_pin_failed",
-				"namespace_id", task.NamespaceID,
-				"task_id", task.ID,
-				"trace_id", task.TraceID,
-				"capability_id", task.CapabilityID,
-				"node_id", nodeID,
-				"error", err.Error())
-		}
-	}
+	// 粘性钉住已在上面那个事务里落库（#264）。这里不再有「推帧成功后再写 pin」的一步：
+	//   - 重派链因此也有 pin 了（pickNode 只在「库里还没有 pin」时才返回 selector，
+	//     不接住它的话 hop≥2 的 sticky 会静默退化成按负载挑机器）；
+	//   - 推帧失败的分支走 requeueAfterPublishFailure → 条件删除那条 pin
+	//     （推不出去的任务绝不能留下 pin，否则重派会被钉死在刚推不出去的机器上）。
 	return true, nil
 }
