@@ -160,7 +160,7 @@
 	 * 布局会算成一团、节点全叠在一起。这里显式检查，把"看不见的布局错误"
 	 * 变成一眼能看出的异常。
 	 */
-	function render(host, spec) {
+	function render(host, spec, renderOpts) {
 		if (!host || !host.isConnected) {
 			throw new Error(
 				"AnotifyGraphs: 宿主元素必须先插入文档再调 mount()" +
@@ -168,7 +168,16 @@
 			);
 		}
 		refreshStatusColors();
-		const graph = window.FlowGraph.mount(host, spec);
+		// silk 是**纯渲染开关**，不是图的一部分。
+		//
+		// 为什么不写进 spec：trace 页与源详情页的 spec 必须逐字段相等
+		// （e2e 的 checkSharedTopology 直接比对两页的 _graphSpec）。把
+		// "这一页用哪种皮肤"塞进 spec，等价于把一个纯视觉选择伪装成
+		// 拓扑事实 —— 两页 spec 立刻不等，而它们描述的数据其实一模一样。
+		// 所以开关只走 mount 的 options，_graphSpec 永远是原始 spec。
+		const opts = renderOpts || {};
+		const mountSpec = opts.silk ? Object.assign({}, spec, { silk: true }) : spec;
+		const graph = window.FlowGraph.mount(host, mountSpec);
 		host._graph = graph;
 		host._graphSpec = spec;
 		graphHosts.add(host);
@@ -526,7 +535,7 @@
 	// 2.4s，对比视图时会一直看到一片灰，反而是干扰。
 	let enterAnimated = false;
 
-	function renderFlow(host, spec) {
+	function renderFlow(host, spec, silk) {
 		const t = spec.t;
 		const nodeCount = (spec.nodes || []).length;
 		const longChain = nodeCount > 7;
@@ -548,7 +557,7 @@
 			nodeSep: spec.nodeSep != null ? spec.nodeSep : longChain ? 22 : 26,
 			t: t,
 			onNodeClick: spec.onNodeClick,
-		});
+		}, { silk: !!silk });
 	}
 
 	/**
@@ -1020,7 +1029,13 @@
 				const hit = byCapability.get(n.id);
 				if (hit && hit.length) opts.onNodeClick(hit[0]);
 			},
-		});
+			// ✅ 唯一一处 silk：**只有 trace 页的链路图**换成 Silk 皮肤。
+			//
+			// 为什么钉在这里：web/traceview.js 冻结了（不传任何皮肤参数），
+			// 而 source 页的 capabilityFlow 走同一个 renderFlow —— 默认必须是
+			// 原 FlowGraph，否则源详情页会跟着变样（那张图有它自己的 fit/
+			// 坐标断言）。第三个参数就是"这一张图用哪种皮肤"的唯一切换点。
+		}, true);
 
 		// 真的播过了才置位：图还没数据（切页早于数据到）时不该把机会用掉。
 		if (graph && graph._debug && graph._debug.animated && graph._debug.animated()) {

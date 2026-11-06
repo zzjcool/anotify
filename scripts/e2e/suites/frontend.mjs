@@ -5958,15 +5958,24 @@ async function checkWaterfall(page) {
 		`t1(5 任务)=${steps.trace_mock_t1}ms t9(12 任务)=${steps.trace_mock_t9}ms`,
 	);
 
-	// ---- 首屏自适应缩放（fit）----
+	// ---- 首屏舞台：横向 1:1 原生滚动，相机停在起点 ----
 	//
-	// 容器是"宽而矮"、图内容是"窄而高"，所以能锁的硬不变量只有三条：
-	//   ① 图完整落在容器内（四边都有余量）→ 防"没 fit，内容被裁掉"
-	//   ② 至少在一个方向上占到容器的 55%  → 防"缩过头，字小到读不了"
-	//   ③ 左右余量基本相等               → 防"按旧尺寸算的 tx"，整体偏移
+	// silk 皮肤下 trace 图不再"把整张图 transform 缩放到容器内"：内容画布是
+	// **绝对像素 1:1**（卡片固定 238×78，字不会被缩成读不了的 7px），横向靠
+	// 原生 overflow:auto 滚动 + 相机跟随，纵向则收敛到完整可见。
 	//
-	// 不断言具体缩放比：那是布局函数的输出，改 rankSep/节点数都会变，
-	// 断言它等于某个数只会变成维护负担。
+	// 所以旧的"四边都有余量"断言对这张舞台必然为红 —— 横向 gapR 恒 < 0，
+	// 内容本来就应该比容器宽。换成四条同等强度的硬不变量（不许放宽成"随便溢出"）：
+	//   ① 1:1：卡片宽 238、画布没有被整体 transform 缩放（放大只走 zoom 控件，默认 1）；
+	//   ② 左缘初始可见：相机停在起点（scrollLeft 0），最左节点不越界；
+	//   ③ 纵向完整：上下都有余量，且不出纵向滚动条（图高必须收敛进舞台）；
+	//   ④ 横向真能滚到右缘：内容宽于视口，滚到最右后最右节点整卡可见，
+	//      且画布宽度 = 滚动宽度（防"宽图只量了一半 / 右半永远滚不到"）。
+	//
+	// 关键前置：先开 reducedMotion。入场动画在 reduce 下不自动播（直接落 showFinal
+	// 终态），相机也不会被 followTo 推到中途 —— 否则量到的是"动画第 N 帧"的滚动
+	// 位置，断言会随机红绿。量完必须恢复，后面的断言还要看动画。
+	await page.emulateMedia({ reducedMotion: "reduce" });
 	await page.goto(new URL("trace.html?traceId=trace_mock_t9&view=graph", page.url()).href, {
 		waitUntil: "load",
 		timeout: 20000,
@@ -5976,42 +5985,133 @@ async function checkWaterfall(page) {
 			timeout: 15000,
 		})
 		.catch(() => {});
-	// 等字体就绪后那次补 fit 落地（首帧用的是回退字体度量）
+	// 等字体就绪后那次补排/补量落地（首帧用的是回退字体度量）
 	await page.waitForTimeout(700);
-	const fitInfo = await page.evaluate(() => {
+	const stage = await page.evaluate(() => {
 		const box = document.querySelector(".flograph");
-		const c = box.getBoundingClientRect();
-		let minX = 1e9;
-		let maxX = -1e9;
-		let minY = 1e9;
-		let maxY = -1e9;
+		if (!box) return { missing: "页面上没有 .flograph" };
+		const scroll = box.querySelector(".flograph-scroll");
+		if (!scroll) return { missing: "没有 .flograph-scroll（布局还是旧的非滚动版？）" };
+		const canvas = box.querySelector(".flograph-canvas");
+		if (!canvas) return { missing: "没有 .flograph-canvas（布局还是旧的非滚动版？）" };
+
+		const b = box.getBoundingClientRect();
+		const sr = scroll.getBoundingClientRect();
+		const cr = canvas.getBoundingClientRect();
+		// 滚动内容坐标系的原点（= 滚动元素的 padding box 左缘，clientLeft 是左边框宽）
+		const contentLeft = sr.left + scroll.clientLeft;
+		const scrollLeft0 = scroll.scrollLeft;
+
+		let minX = Infinity;
+		let maxXBox = -Infinity;
+		let minY = Infinity;
+		let maxY = -Infinity;
+		let maxRightInCanvas = -Infinity;
+		let maxRightInContent = -Infinity;
+		let cardW = NaN;
+		let cardCount = 0;
+		let plainCount = 0;
 		for (const n of box.querySelectorAll(".wf-node")) {
 			const r = n.getBoundingClientRect();
-			minX = Math.min(minX, r.left - c.left);
-			maxX = Math.max(maxX, r.right - c.left);
-			minY = Math.min(minY, r.top - c.top);
-			maxY = Math.max(maxY, r.bottom - c.top);
+			if (!r.width || !r.height) continue; // 没布局（display:none）的不参与
+			cardCount++;
+			minX = Math.min(minX, r.left - b.left);
+			maxXBox = Math.max(maxXBox, r.right - b.left);
+			minY = Math.min(minY, r.top - b.top);
+			maxY = Math.max(maxY, r.bottom - b.top);
+			maxRightInCanvas = Math.max(maxRightInCanvas, r.right - cr.left);
+			maxRightInContent = Math.max(maxRightInContent, r.right - contentLeft + scrollLeft0);
+			if (!n.classList.contains("is-trigger")) {
+				plainCount++;
+				if (Number.isNaN(cardW)) cardW = r.width; // 触发器是 198 宽，只量普通卡片
+			}
 		}
+
+		// 滚到最右再读回真实值（赋值超出最大值时浏览器会夹到 max）。
+		// 内联关掉 scroll-behavior：CSS 若写了 smooth，这次赋值会变成动画，
+		// 同步读回的就不是最右值，量出来的余量会随机。
+		const prevBehavior = scroll.style.scrollBehavior;
+		scroll.style.scrollBehavior = "auto";
+		scroll.scrollLeft = scroll.scrollWidth;
+		const scrollLeftMax = scroll.scrollLeft;
+		scroll.scrollLeft = scrollLeft0; // 复位，别把页面留在最右影响后面的断言
+		scroll.style.scrollBehavior = prevBehavior;
+
+		const r2 = (x) => Math.round(x * 100) / 100;
 		return {
-			w: Math.round(c.width),
-			h: Math.round(c.height),
-			gapL: Math.round(minX),
-			gapR: Math.round(c.width - maxX),
-			gapT: Math.round(minY),
-			gapB: Math.round(c.height - maxY),
-			ratio: Math.max((maxX - minX) / c.width, (maxY - minY) / c.height),
+			missing: null,
+			// 外壳 / 滚动视口 / 画布
+			boxW: r2(b.width),
+			boxH: r2(b.height),
+			scrollW: r2(sr.width),
+			scrollH: r2(sr.height),
+			canvasW: r2(cr.width),
+			canvasH: r2(cr.height),
+			// 滚动几何
+			scrollLeft0: r2(scrollLeft0),
+			scrollLeftMax: r2(scrollLeftMax),
+			scrollWidth: scroll.scrollWidth,
+			clientWidth: scroll.clientWidth,
+			scrollHeight: scroll.scrollHeight,
+			clientHeight: scroll.clientHeight,
+			// 节点几何（相对 .flograph 外壳）
+			minX: r2(minX),
+			gapL: r2(minX),
+			gapR: r2(b.width - maxXBox),
+			gapT: r2(minY),
+			gapB: r2(b.height - maxY),
+			// 节点几何（相对画布 / 相对滚动内容）
+			// 画布原点应为 0（画布就是整块内容）；它非 0 说明画布被居中或被裁，
+			// 那时 "maxRightInCanvas - scrollLeft" 会低估右缘，所以右缘一律按
+			// 滚动内容坐标系算 —— 画布原点为 0 时两者完全相等。
+			maxRightInCanvas: r2(maxRightInCanvas),
+			canvasOriginX: r2(cr.left - contentLeft + scrollLeft0),
+			maxRightInViewport: r2(maxRightInContent - scrollLeftMax),
+			// 1:1 证据
+			cardW: r2(cardW),
+			cardCount,
+			plainCount,
+			canvasTransform: getComputedStyle(canvas).transform,
 		};
 	});
+	const stageDetail = stage.missing
+		? stage.missing
+		: `容器=${stage.boxW}x${stage.boxH} 视口=${stage.scrollW}x${stage.scrollH} 画布=${stage.canvasW}x${stage.canvasH} ` +
+			`滚动=${stage.scrollWidth}x${stage.scrollHeight} 可视=${stage.clientWidth}x${stage.clientHeight} ` +
+			`scrollLeft=${stage.scrollLeft0}（最右 ${stage.scrollLeftMax}） ` +
+			`卡宽=${stage.cardW}（普通卡 ${stage.plainCount}/${stage.cardCount}） ` +
+			`四边余量 L${stage.gapL}/R${stage.gapR}/T${stage.gapT}/B${stage.gapB} ` +
+			`最右节点右缘 画布系=${stage.maxRightInCanvas} 视口系=${stage.maxRightInViewport} 画布原点=${stage.canvasOriginX} ` +
+			`canvas.transform=${stage.canvasTransform}`;
+	const canvasUnscaled =
+		stage.canvasTransform === "none" || stage.canvasTransform === "matrix(1, 0, 0, 1, 0, 0)";
 	H.check(
-		"图自动缩放到容器内（不裁切 / 不过度缩小 / 左右居中）",
-		fitInfo.gapL > 0 &&
-			fitInfo.gapR > 0 &&
-			fitInfo.gapT > 0 &&
-			fitInfo.gapB > 0 &&
-			fitInfo.ratio >= 0.55 &&
-			Math.abs(fitInfo.gapL - fitInfo.gapR) <= 60,
-		`容器=${fitInfo.w}x${fitInfo.h} 余量 L${fitInfo.gapL}/R${fitInfo.gapR}/T${fitInfo.gapT}/B${fitInfo.gapB} 占位比=${fitInfo.ratio.toFixed(2)}`,
+		"trace 图 1:1 像素渲染：卡片宽 238±2、画布没有被整体缩放",
+		!stage.missing && Math.abs(stage.cardW - 238) <= 2 && canvasUnscaled,
+		stageDetail,
 	);
+	H.check(
+		"图从最左开始：相机停在起点（scrollLeft=0）、左缘节点完整可见",
+		!stage.missing && stage.scrollLeft0 === 0 && stage.minX >= -1,
+		stageDetail,
+	);
+	H.check(
+		"图纵向完整收进舞台：上下都有余量、没有纵向滚动条",
+		!stage.missing &&
+			stage.gapT > 0 &&
+			stage.gapB > 0 &&
+			stage.scrollHeight <= stage.clientHeight + 1,
+		stageDetail,
+	);
+	H.check(
+		"横向舞台能滚到右缘：内容宽于视口、滚到最右后最右节点整卡可见、画布=滚动宽度",
+		!stage.missing &&
+			stage.scrollWidth > stage.clientWidth &&
+			stage.maxRightInViewport <= stage.clientWidth + 1 &&
+			Math.abs(stage.canvasW - stage.scrollWidth) <= 1,
+		stageDetail,
+	);
+	await page.emulateMedia({ reducedMotion: "no-preference" });
 }
 
 // checkFlowChart 在 mock 预览里验证流向图。
