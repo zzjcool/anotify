@@ -1,61 +1,123 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// 本文件覆盖任务日志的两个 HTTP 端点（CONTRACT-task-logs §2 / §4）：
+// 本文件覆盖任务日志的**按需取**端点（CONTRACT-logs-on-node §2）：
 //
-//	POST /v1/node/tasks/{taskId}/logs        节点上传（node token）
-//	GET  /v1/tasks/{taskId}/logs?namespaceId=…  控制台读（会话 + 命名空间隔离）
+//	GET /v1/tasks/{taskId}/logs?namespaceId=…（会话 + 命名空间隔离，调用方是控制台）
 //
-// 四类判据，每类都钉在「回归会静默」的那一点上：
-//  1. **两套鉴权不串**：会话 Cookie 不能当 node token 用（上传端点必须拒绝它），
-//     否则浏览器会话就成了「给任意节点写日志」的凭据；
-//  2. **原文逐字落库、逐字返回**：中文 / 空行 / 截断标记一个字节都不许变——
-//     日志的价值全在字节级还原，任何 trim / 转义都会让「为什么炸了」失真；
-//  3. **归属**：跨命名空间、别台节点的任务都必须是 404（与「不存在」同形，不留探测面）；
-//  4. **没日志 = 200 空对象**，不是 404：这是契约 §4 里最容易写成 404 的一条。
+// 判据按「回归会静默」的程度排：
+//  1. **原文逐字透传**：中文 / 空行 / 截断标记一个字节都不许变——日志的价值全在
+//     字节级还原，任何 trim / 转义都会让「为什么炸了」失真；
+//  2. **取不到 = 200 + available:false**：节点离线 / 没档案 / 超时 / 意外错误四种
+//     全部**不得**回 5xx（前端已有的降级分支只认 200），且 reason 落在封闭集合里；
+//  3. **每次请求都真的问节点一次**：不缓存是契约硬要求（日志只存在节点上，
+//     中枢的任何副本都只会更旧）；
+//  4. **归属**：任务不存在 / 跨命名空间都是 404，且**不去问节点**（不为看不见的
+//     任务消耗一次帧往返）；
+//  5. `task.NodeID == nil` → no_local_archive（不是 node_offline：那次执行没有节点，
+//     报「节点掉线」会把用户引向网络排查）；
+//  6. 上传端点已经删掉：mux 的源码里不许再出现 `node/tasks/{taskId}/logs`。
 
 // ---------- 夹具 ----------
 
-// logsFixture 是任务日志端点的测试夹具：一套真库 + 一台节点 + 它的明文令牌。
-type logsFixture struct {
-	env *consoleEnv
-	// node 是上传方（node token 属于它）。
-	node *store.Node
-	// token 是 node 的明文令牌（库里只存 sha256）。
-	token string
-	// task 是 node 跑的那条任务（已有 node_id）。
-	task *store.Task
+// fakeLogsSource 是 taskLogsSource 的替身。
+//
+// 用它而不是起真 WS 连接：五条取数分支（命中 / 离线 / 没档案 / 超时 / 其它）
+// 里有三条要等 5 秒超时或者要真的断一条连接，用真 hub 跑会又慢又不稳；
+// 而端点的职责只是「把 hub 的结果翻译成 HTTP 形状」，翻译逻辑才是这里的被测对象。
+type fakeLogsSource struct {
+	// frame / err 是默认答案（reply 为 nil 时使用）。
+	frame *ws.LogsResponseFrame
+	err   error
+	// reply 非 nil 时按调用次序逐个产出答案（用于验「每次都真去取、不缓存」）。
+	reply func(call int, namespaceID, nodeID, taskID string) (*ws.LogsResponseFrame, error)
+	// calls 是取数次数：判「每次请求都调一次」的计数器。
+	calls int
+	// gotNS / gotNode / gotTask 是**最近一次**调用的入参（判隔离维度传对了没有）。
+	gotNS   string
+	gotNode string
+	gotTask string
 }
 
-// newLogsFixture 建库/会话/命名空间（newConsoleEnv）+ 一台节点 + 一条归属它的任务。
-func newLogsFixture(t *testing.T) *logsFixture {
+func (f *fakeLogsSource) FetchLogs(
+	ctx context.Context, namespaceID, nodeID, taskID string,
+) (*ws.LogsResponseFrame, error) {
+	f.calls++
+	f.gotNS, f.gotNode, f.gotTask = namespaceID, nodeID, taskID
+	if f.reply != nil {
+		return f.reply(f.calls, namespaceID, nodeID, taskID)
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.frame, nil
+}
+
+// logsEnv 是端点的测试环境：newConsoleEnv 的真库 / 真会话 / 真命名空间
+// + 一个可以是任意 fake（或 nil）的取数源。
+type logsEnv struct {
+	*consoleEnv
+	h   *consoleHandler
+	mux http.Handler
+}
+
+// newLogsEnv 建环境并把 src 装进 consoleHandler。
+//
+// 这里自己搭一个 mux 而不是复用 consoleEnv.mux：那个 mux 里的 consoleHandler 是
+// 别人建的（taskLogs 恒为 nil），塞不进 fake。路由 pattern 与生产 mux **逐字相同**
+// （`GET /v1/tasks/{taskId}/logs`）——PathValue("taskId") 只有经过 mux 才有值，
+// 单测走别的形状等于测一条不存在的路由。
+func newLogsEnv(t *testing.T, src taskLogsSource) *logsEnv {
 	t.Helper()
 	env := newConsoleEnv(t)
-	ctx := context.Background()
+	h := &consoleHandler{db: env.db, auth: env.svc, taskLogs: src}
+	mux := http.NewServeMux()
+	mux.Handle("GET /v1/tasks/{taskId}/logs",
+		noStore(env.svc.Sessions().Middleware(http.HandlerFunc(h.serveTaskLogs))))
+	return &logsEnv{consoleEnv: env, h: h, mux: mux}
+}
 
-	node := &store.Node{NamespaceID: env.nsID, Name: "node-a"}
-	token, err := env.db.CreateNode(ctx, node)
-	if err != nil {
-		t.Fatalf("create node: %v", err)
+// get 发一次读请求（带会话 Cookie），走上面那个与生产同形的 mux。
+func (e *logsEnv) get(t *testing.T, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(e.cookie)
+	rr := httptest.NewRecorder()
+	e.mux.ServeHTTP(rr, req)
+	return rr
+}
+
+// logsPath 是这条任务的读日志路径（带默认命名空间）。
+func (e *logsEnv) logsPath(taskID string) string {
+	return e.withNS("/v1/tasks/" + taskID + "/logs")
+}
+
+// seedNode 在本环境的默认命名空间里建一台节点，返回它的 id。
+func (e *logsEnv) seedNode(t *testing.T, name string) string {
+	t.Helper()
+	n := &store.Node{NamespaceID: e.nsID, Name: name}
+	if _, err := e.db.CreateNode(context.Background(), n); err != nil {
+		t.Fatalf("create node %s: %v", name, err)
 	}
-
-	return &logsFixture{env: env, node: node, token: token, task: env.seedTask(t, env.nsID, "trace_logs", "runner", node.ID)}
+	return n.ID
 }
 
 // seedTask 在指定命名空间建一条任务；nodeID 非空时把任务的 node_id 钉成它
-// （任务日志的归属校验就是拿这一列比的）。
+// （端点就是用这一列决定「去问哪台节点」的）。
 func (e *consoleEnv) seedTask(t *testing.T, nsID, traceID, capName, nodeID string) *store.Task {
 	t.Helper()
 	capDef := e.seedCapabilityIn(t, nsID, capName, 1, []string{"fix"})
@@ -74,457 +136,375 @@ func (e *consoleEnv) seedTask(t *testing.T, nsID, traceID, capName, nodeID strin
 	return task
 }
 
-// uploadMux 是上传端点的**真路由**（与生产 mux 同一条 pattern）。
+// logsPayload 是响应的结构化视图。
 //
-// 为什么单独的 mux 而不是整个生产 mux：这条路由的鉴权是 node token，与会话中间件
-// 无关；把整张路由表拉进来只会多出无关变量。PathValue("taskId") 需要 mux 的
-// 模式匹配才会有值，所以这里仍然经过 mux。
-func (f *logsFixture) uploadMux() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("POST /v1/node/tasks/{taskId}/logs",
-		noStore(&taskLogUploadHandler{db: f.env.db, auth: f.env.db}))
-	return mux
+// available / reason 用指针：要判的是「字段在不在」，不是零值——`available:false`
+// 与「没有 available 字段」对前端是两件事（后者会让「没取到」看起来像「取到了但为空」）。
+type logsPayload struct {
+	Stdout    string         `json:"stdout"`
+	Stderr    string         `json:"stderr"`
+	Truncated bool           `json:"truncated"`
+	Bytes     int64          `json:"bytes"`
+	Available *bool          `json:"available"`
+	Reason    *string        `json:"reason"`
+	raw       map[string]any `json:"-"`
 }
 
-// upload 发一次上传请求（authorization="" 表示不带令牌），body 原样发出。
-func (f *logsFixture) upload(t *testing.T, authorization, taskID string, body []byte) *httptest.ResponseRecorder {
+// decodeLogs 解出响应，并把原始 map 留在 raw 里（判字段集合用）。
+func decodeLogs(t *testing.T, rr *httptest.ResponseRecorder) logsPayload {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/v1/node/tasks/"+taskID+"/logs", bytes.NewReader(body))
-	if authorization != "" {
-		req.Header.Set("Authorization", authorization)
+	var p logsPayload
+	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+		t.Fatalf("decode 响应 %q: %v", rr.Body.String(), err)
 	}
-	rr := httptest.NewRecorder()
-	f.uploadMux().ServeHTTP(rr, req)
-	return rr
-}
-
-// uploadJSON 编一个上传体并发出（带正确 node token）。
-func (f *logsFixture) uploadJSON(t *testing.T, taskID, stdout, stderr string, truncated bool, bytes int64) *httptest.ResponseRecorder {
-	t.Helper()
-	body, err := json.Marshal(taskLogsBody{Stdout: stdout, Stderr: stderr, Truncated: truncated, Bytes: bytes})
-	if err != nil {
-		t.Fatalf("marshal upload body: %v", err)
+	if err := json.Unmarshal(rr.Body.Bytes(), &p.raw); err != nil {
+		t.Fatalf("decode 响应（map）%q: %v", rr.Body.String(), err)
 	}
-	return f.upload(t, "Bearer "+f.token, taskID, body)
-}
-
-// readLogs 发一次读取请求（带会话 Cookie），返回状态码 + 原始 body。
-func (f *logsFixture) readLogs(t *testing.T, path string) (int, string) {
-	t.Helper()
-	rr := f.env.do(t, http.MethodGet, path, nil)
-	return rr.Code, rr.Body.String()
-}
-
-// mustStored 读库里的日志行（不经 HTTP），用于判「落库内容逐字相等」。
-func (f *logsFixture) mustStored(t *testing.T, nsID, taskID string) *store.TaskLogs {
-	t.Helper()
-	logs, err := f.env.db.GetTaskLogs(context.Background(), nsID, taskID)
-	if err != nil {
-		t.Fatalf("get task logs %s: %v", taskID, err)
+	if p.Available == nil {
+		t.Fatalf("响应缺 available 字段（前端按它分支）：%s", rr.Body.String())
 	}
-	return logs
+	return p
 }
 
-// 一段"真实形状"的日志：中文 + 空行 + 截断标记 + 尾部换行。
-// stdout/stderr 都是原样存取的，任何 trim/转义都会让下面几条断言红。
+// 一段「真实形状」的日志：中文 + 空行 + 截断标记 + 尾部换行。
+// 任何一个 trim / 转义 / 换行归一都会让下面的逐字断言红。
 const (
-	logsStdout = "第一步\n\n第二步：跑测试 ✅\n\n…（日志已截断：共 1048576 字节，只保留最后 32768 字节）\n"
+	logsStdout = "第一步\n\n第二步：跑测试 ✅\n\n…（日志已截断：共 1048576 字节，只保留最后 524288 字节）\n"
 	logsStderr = "flag provided but not defined: -to\n用法：anotify-agent emit --to <能力>\n\n"
 )
 
-// ---------- 上传：鉴权 ----------
-
-// TestTaskLogUploadAuthNodeTokenOnly 钉住「这个端点认 node token，不认会话」。
-//
-// 两种凭据在同一张表里（nodes.token_hash vs sessions），串了就是安全问题：
-// 会话 Cookie 能写任意节点日志的话，浏览器就成了伪造排障材料的入口。
-func TestTaskLogUploadAuthNodeTokenOnly(t *testing.T) {
-	f := newLogsFixture(t)
-	body, _ := json.Marshal(taskLogsBody{Stdout: "x"})
-
-	t.Run("只有会话 Cookie、没有 Bearer → 401", func(t *testing.T) {
-		// 会话中间件不在这条路由上，但请求仍然带着 Cookie：handler 必须只看 Bearer。
-		req := httptest.NewRequest(http.MethodPost, "/v1/node/tasks/"+f.task.ID+"/logs", bytes.NewReader(body))
-		req.AddCookie(f.env.cookie)
-		rr := httptest.NewRecorder()
-		f.uploadMux().ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401（body=%s）", rr.Code, rr.Body.String())
-		}
-		if got := decode(t, rr)["error"]; got != "missing_node_token" {
-			t.Fatalf("error = %v, want missing_node_token", got)
-		}
-	})
-
-	t.Run("会话 id 当 Bearer → 403", func(t *testing.T) {
-		// 这正是「会话令牌不能当 node token」的护栏。
-		rr := f.upload(t, "Bearer "+f.env.cookie.Value, f.task.ID, body)
-		if rr.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want 403（会话令牌不能当 node token）", rr.Code)
-		}
-		if got := decode(t, rr)["error"]; got != "invalid_node_token" {
-			t.Fatalf("error = %v, want invalid_node_token", got)
-		}
-	})
-
-	t.Run("正确 node token → 204", func(t *testing.T) {
-		rr := f.upload(t, "Bearer "+f.token, f.task.ID, body)
-		if rr.Code != http.StatusNoContent {
-			t.Fatalf("status = %d, want 204（body=%s）", rr.Code, rr.Body.String())
-		}
-	})
+// wire 造一帧「节点回了日志」的响应（字段名与 ws.LogsResponseFrame 一致）。
+func wire(stdout, stderr string, truncated bool, bytes int64) *ws.LogsResponseFrame {
+	return &ws.LogsResponseFrame{
+		Type:      ws.NodeFrameLogsResponse,
+		TaskID:    "tsk_x",
+		RequestID: "lreq_x",
+		Stdout:    stdout,
+		Stderr:    stderr,
+		Truncated: truncated,
+		Bytes:     bytes,
+	}
 }
 
-// ---------- 上传：成功 + 原文落库 ----------
+// ---------- 命中 ----------
 
-// TestTaskLogUploadStoresVerbatim 204 且**没有响应体**，库里内容逐字相等。
-func TestTaskLogUploadStoresVerbatim(t *testing.T) {
-	f := newLogsFixture(t)
-	rr := f.uploadJSON(t, f.task.ID, logsStdout, logsStderr, true, 1048576)
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
-	}
-	if rr.Body.Len() != 0 {
-		t.Fatalf("204 不能带 body，got %q", rr.Body.String())
-	}
+// TestTaskLogsFetchesFromNode 命中：四个字段逐字透传 + available:true + 没有 reason。
+func TestTaskLogsFetchesFromNode(t *testing.T) {
+	src := &fakeLogsSource{frame: wire(logsStdout, logsStderr, true, 1048576)}
+	e := newLogsEnv(t, src)
+	nodeID := e.seedNode(t, "node-a")
+	task := e.seedTask(t, e.nsID, "trace_logs", "runner", nodeID)
 
-	got := f.mustStored(t, f.env.nsID, f.task.ID)
+	rr := e.get(t, e.logsPath(task.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	got := decodeLogs(t, rr)
+
 	if got.Stdout != logsStdout {
-		t.Errorf("stdout 落了不同内容（不能 trim / 转义 / 丢空行）:\n got=%q\nwant=%q", got.Stdout, logsStdout)
+		t.Errorf("stdout 不逐字相等（不能 trim / 转义 / 丢空行）:\n got=%q\nwant=%q", got.Stdout, logsStdout)
 	}
 	if got.Stderr != logsStderr {
-		t.Errorf("stderr 落了不同内容:\n got=%q\nwant=%q", got.Stderr, logsStderr)
+		t.Errorf("stderr 不逐字相等:\n got=%q\nwant=%q", got.Stderr, logsStderr)
 	}
 	if !got.Truncated {
-		t.Error("truncated 丢了（必须原样透传采集侧的事实）")
+		t.Error("truncated 丢了（节点侧的事实必须原样透传）")
 	}
 	if got.Bytes != 1048576 {
-		t.Errorf("bytes = %d, want 1048576", got.Bytes)
+		t.Errorf("bytes = %d, want 1048576（截断前的真实字节数）", got.Bytes)
 	}
-	if got.NamespaceID != f.env.nsID {
-		t.Errorf("namespaceId = %q, want %q（命名空间来自令牌）", got.NamespaceID, f.env.nsID)
+	if !*got.Available {
+		t.Errorf("available = false, want true（真的取到了）: %s", rr.Body.String())
 	}
-	if got.CreatedAt == 0 {
-		t.Error("createdAt 没写（幂等覆盖时也要重写）")
+	// reason 只在 available:false 时出现（omitempty）：成功时它必须**不在**，
+	// 否则前端会同时看到「取到了」和「为什么没取到」。
+	if _, ok := got.raw["reason"]; ok {
+		t.Errorf("成功响应不许带 reason: %s", rr.Body.String())
+	}
+	if len(got.raw) != 5 {
+		t.Errorf("响应字段数 = %d, want 5（stdout/stderr/truncated/bytes/available）: %s",
+			len(got.raw), rr.Body.String())
+	}
+
+	// 取数维度必须对：命名空间取请求作用域、节点取任务那一列、任务就是路径里那个。
+	// 传错任何一个都会在真机上变成「日志串台」或者「永远没档案」。
+	if src.calls != 1 {
+		t.Fatalf("fetch 调用次数 = %d, want 1", src.calls)
+	}
+	if src.gotNS != e.nsID || src.gotNode != nodeID || src.gotTask != task.ID {
+		t.Fatalf("取数入参 = (%q, %q, %q), want (%q, %q, %q)",
+			src.gotNS, src.gotNode, src.gotTask, e.nsID, nodeID, task.ID)
 	}
 }
 
-// TestTaskLogUploadIdempotentOverwrite 连传两次 → 只有一行，且是第二次的内容。
+// TestTaskLogsZeroBytesIsStillAvailable 0 字节的档案照样是 available:true。
 //
-// 幂等是硬要求（契约 §2）：重派、agent 重启补传、客户端重试都会重复上传同一条任务。
-// 如果第二次变成插第二行，主键会报错或读端点随机返回旧日志——两种都难查。
-func TestTaskLogUploadIdempotentOverwrite(t *testing.T) {
-	f := newLogsFixture(t)
-	if rr := f.uploadJSON(t, f.task.ID, "first", "first-err", false, 5); rr.Code != http.StatusNoContent {
-		t.Fatalf("first upload status = %d, want 204", rr.Code)
-	}
-	if rr := f.uploadJSON(t, f.task.ID, logsStdout, logsStderr, true, 42); rr.Code != http.StatusNoContent {
-		t.Fatalf("second upload status = %d, want 204", rr.Code)
-	}
+// 「没取到」与「取到了但什么都没输出」都是 bytes=0：必须靠 available 区分，
+// 不许拿 bytes 当判据（否则一次静默成功的执行会显示成「节点离线」）。
+func TestTaskLogsZeroBytesIsStillAvailable(t *testing.T) {
+	src := &fakeLogsSource{frame: wire("", "", false, 0)}
+	e := newLogsEnv(t, src)
+	task := e.seedTask(t, e.nsID, "trace_empty", "runner", e.seedNode(t, "node-a"))
 
-	var rows int
-	if err := f.env.db.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM task_logs WHERE task_id = ?`, f.task.ID).Scan(&rows); err != nil {
-		t.Fatalf("count task_logs: %v", err)
+	rr := e.get(t, e.logsPath(task.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
 	}
-	if rows != 1 {
-		t.Fatalf("task_logs 行数 = %d, want 1（重复上传是覆盖，不是插入）", rows)
+	got := decodeLogs(t, rr)
+	if !*got.Available {
+		t.Errorf("available = false, want true（0 字节也是取到了）: %s", rr.Body.String())
 	}
-	got := f.mustStored(t, f.env.nsID, f.task.ID)
-	if got.Stdout != logsStdout || got.Stderr != logsStderr || !got.Truncated || got.Bytes != 42 {
-		t.Fatalf("留下的是第一次的内容，不是第二次：%+v", got)
+	if _, ok := got.raw["reason"]; ok {
+		t.Errorf("取到了就不许有 reason: %s", rr.Body.String())
+	}
+	if got.Bytes != 0 || got.Stdout != "" || got.Stderr != "" || got.Truncated {
+		t.Errorf("0 字节档案的四个字段必须是零值: %s", rr.Body.String())
 	}
 }
 
-// ---------- 上传：404 三种形状 ----------
+// ---------- 没取到：四种错误 + 未装配 ----------
 
-// TestTaskLogUploadNotFound 任务不存在 / 任务在别的命名空间 / 任务属于别台节点 → 全 404。
-func TestTaskLogUploadNotFound(t *testing.T) {
-	f := newLogsFixture(t)
-	ctx := context.Background()
-
-	otherNS := f.env.seedNamespace(t, "other", "另一个命名空间")
-	foreignNS := f.env.seedTask(t, otherNS.ID, "trace_other_ns", "runner", "")
-	otherNode := &store.Node{NamespaceID: f.env.nsID, Name: "node-b"}
-	if _, err := f.env.db.CreateNode(ctx, otherNode); err != nil {
-		t.Fatalf("create second node: %v", err)
+// TestTaskLogsDegradedNever5xx 四种取数失败全部 → **200 + available:false + reason**。
+//
+// 「绝不 5xx」是契约 §2 的硬要求：前端只认 200 + available:false 的降级分支，
+// 5xx 会让它在正常路径上处理错误，也会把「用户点开了一台离线节点的日志」记成服务故障。
+// 所以每条用例都**显式**断言状态码是 200（顺带断言「不是 5xx」）。
+func TestTaskLogsDegradedNever5xx(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"节点离线", ws.ErrNodeOffline, "node_offline"},
+		{"节点上没有档案", ws.ErrNoLocalArchive, "no_local_archive"},
+		{"5 秒没等到回包", ws.ErrLogsTimeout, "timeout"},
+		// 写帧失败（连接已断）/ 对端回了别的 error 串 / ctx 取消：都折成 timeout，
+		// reason 是封闭集合，不新增取值（多一个值就多一份没人翻译的前端文案）。
+		{"意外错误", errors.New("boom"), "timeout"},
+		{"包装过的写帧失败", fmt.Errorf("send logs_request: %w", errors.New("broken pipe")), "timeout"},
+		// 哨兵被 %w 包一层也必须认得出来（实现方将来加包装不能改变语义）。
+		{"包装过的离线", fmt.Errorf("fetch logs: %w", ws.ErrNodeOffline), "node_offline"},
 	}
-	foreignNode := f.env.seedTask(t, f.env.nsID, "trace_other_node", "runner2", otherNode.ID)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := &fakeLogsSource{err: c.err}
+			e := newLogsEnv(t, src)
+			task := e.seedTask(t, e.nsID, "trace_degraded", "runner", e.seedNode(t, "node-a"))
+
+			rr := e.get(t, e.logsPath(task.ID))
+			if rr.Code >= 500 {
+				t.Fatalf("status = %d，取不到日志绝不回 5xx（body=%s）", rr.Code, rr.Body.String())
+			}
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 + available:false（body=%s）", rr.Code, rr.Body.String())
+			}
+			got := decodeLogs(t, rr)
+			if *got.Available {
+				t.Fatalf("available = true，取不到时必须是 false: %s", rr.Body.String())
+			}
+			if got.Reason == nil {
+				t.Fatalf("available:false 必须带 reason: %s", rr.Body.String())
+			}
+			if *got.Reason != c.reason {
+				t.Fatalf("reason = %q, want %q（封闭集合）", *got.Reason, c.reason)
+			}
+			// 没取到时四个数据字段必须是零值：前端会把它们直接渲染，
+			// 带一半内容的「失败」比空更难解释。
+			if got.Stdout != "" || got.Stderr != "" || got.Truncated || got.Bytes != 0 {
+				t.Fatalf("没取到时数据字段必须全空: %s", rr.Body.String())
+			}
+			if src.calls != 1 {
+				t.Fatalf("fetch 调用次数 = %d, want 1", src.calls)
+			}
+		})
+	}
+}
+
+// TestTaskLogsSourceNotWired 未装配（taskLogs == nil）→ 200 + node_offline，绝不 panic / 5xx。
+//
+// 生产 mux 一定会注入 nodeHub；这条分支只为「测试/嵌入用法漏装」兜底——
+// 它必须是 200（前端仍能正常降级），而不是 nil 解引用。
+func TestTaskLogsSourceNotWired(t *testing.T) {
+	e := newLogsEnv(t, nil)
+	task := e.seedTask(t, e.nsID, "trace_unwired", "runner", e.seedNode(t, "node-a"))
+
+	rr := e.get(t, e.logsPath(task.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（未装配也要能降级，body=%s）", rr.Code, rr.Body.String())
+	}
+	got := decodeLogs(t, rr)
+	if *got.Available {
+		t.Fatalf("available = true，未装配时不可能取到: %s", rr.Body.String())
+	}
+	if got.Reason == nil || *got.Reason != "node_offline" {
+		t.Fatalf("reason = %v, want node_offline（「现在拿不到、稍后再试」最接近事实）", got.Reason)
+	}
+}
+
+// TestTaskLogsNilNodeIDIsNoLocalArchive 还没派给任何节点的任务 → no_local_archive。
+//
+// 这类任务的那次执行**根本不存在**，节点上也不可能有档案。报 node_offline 是错的：
+// 那句话的含义是「节点掉了、连上再看」，而这条任务的节点永远不会「连上」——
+// 用户会去查网络，真正的原因却是任务没跑起来。
+func TestTaskLogsNilNodeIDIsNoLocalArchive(t *testing.T) {
+	src := &fakeLogsSource{frame: wire("不该被取到", "", false, 9)}
+	e := newLogsEnv(t, src)
+	task := e.seedTask(t, e.nsID, "trace_nil_node", "runner", "") // node_id 留空
+	if task.NodeID != nil {
+		t.Fatalf("夹具错了：node_id 应当为 nil，实际 %q", *task.NodeID)
+	}
+
+	rr := e.get(t, e.logsPath(task.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
+	}
+	got := decodeLogs(t, rr)
+	if *got.Available {
+		t.Fatalf("available = true，没有节点的任务不可能取到日志: %s", rr.Body.String())
+	}
+	if got.Reason == nil || *got.Reason != "no_local_archive" {
+		t.Fatalf("reason = %v, want no_local_archive", got.Reason)
+	}
+	// 没有节点可问：一次请求都不该发（白跑一次帧往返）。
+	if src.calls != 0 {
+		t.Fatalf("fetch 调用次数 = %d, want 0（node_id 为空时无可问之处）", src.calls)
+	}
+}
+
+// ---------- 归属：404 且不问节点 ----------
+
+// TestTaskLogsNotFound 任务不存在 / 跨命名空间 → 404（与 /v1/tasks/{id} 同形）。
+//
+// 附带一条更关键的断言：**没有向节点取数**。若先取数再判归属，等于给了外部一个
+// 「用任意 taskId 让中枢发帧」的放大器，也会把别人的日志读进本进程内存。
+func TestTaskLogsNotFound(t *testing.T) {
+	src := &fakeLogsSource{frame: wire("别人的日志", "", false, 5)}
+	e := newLogsEnv(t, src)
+	otherNS := e.seedNamespace(t, "other", "另一个命名空间")
+	otherNode := e.seedNode(t, "node-a")
+	foreignTask := e.seedTask(t, otherNS.ID, "trace_other_ns", "runner", otherNode)
 
 	cases := []struct {
 		name   string
 		taskID string
 	}{
 		{"任务不存在", "tsk_doesnotexist"},
-		{"任务在另一个命名空间", foreignNS.ID},
-		{"任务属于另一台节点", foreignNode.ID},
+		{"任务在另一个命名空间", foreignTask.ID},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			rr := f.uploadJSON(t, c.taskID, "x", "y", false, 1)
+			before := src.calls
+			rr := e.get(t, e.logsPath(c.taskID))
 			if rr.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404（body=%s）", rr.Code, rr.Body.String())
 			}
-			if got := decode(t, rr)["error"]; got != "task_not_found" {
-				t.Fatalf("error = %v, want task_not_found", got)
+			// 与 /v1/tasks/{id} 同文案：调用方无法据此探测别的命名空间里有没有这个 id。
+			if !strings.Contains(rr.Body.String(), "task not found") {
+				t.Fatalf("body = %q, want task not found", rr.Body.String())
 			}
-			// 反向证据：这些任务（除了第一条）在库里**确实存在**，
-			// 所以 404 来自归属校验，不是「找不到行」凑巧。
-			if c.taskID == foreignNS.ID || c.taskID == foreignNode.ID {
-				if _, err := f.env.db.GetTaskLogs(ctx, f.env.nsID, c.taskID); !errors.Is(err, store.ErrNotFound) {
-					t.Fatalf("不该落库，GetTaskLogs err = %v", err)
-				}
+			if src.calls != before {
+				t.Fatalf("404 也去问节点了（calls %d → %d）", before, src.calls)
 			}
 		})
 	}
 }
 
-// ---------- 上传：413 / 边界 ----------
+// TestTaskLogsRequestGuards 请求形状本身的守卫（缺参 / 通配 / 无会话 / 错方法）。
+func TestTaskLogsRequestGuards(t *testing.T) {
+	e := newLogsEnv(t, &fakeLogsSource{frame: wire("x", "", false, 1)})
+	task := e.seedTask(t, e.nsID, "trace_guard", "runner", e.seedNode(t, "node-a"))
 
-// TestTaskLogUploadBodyLimit 超过 256 KiB → 413；**恰好** 256 KiB → 204。
-//
-// 边界不许写反：MaxBytesReader 允许读满 limit 字节，第 limit+1 个字节才报错。
-// 「正好卡在上限」的请求必须成功，否则 32 KiB×2 + 转义余量的正常日志会被误拒。
-func TestTaskLogUploadBodyLimit(t *testing.T) {
-	f := newLogsFixture(t)
-
-	t.Run("超过 256 KiB → 413", func(t *testing.T) {
-		// 300 KiB 的 stdout：解析器在看到收尾的 `}` 之前就必须读超过上限。
-		huge := strings.Repeat("x", 300<<10)
-		rr := f.uploadJSON(t, f.task.ID, huge, "", false, int64(len(huge)))
-		if rr.Code != http.StatusRequestEntityTooLarge {
-			t.Fatalf("status = %d, want 413（body=%s）", rr.Code, rr.Body.String())
-		}
-		if got := decode(t, rr)["error"]; got != "payload_too_large" {
-			t.Fatalf("error = %v, want payload_too_large", got)
-		}
-		if _, err := f.env.db.GetTaskLogs(context.Background(), f.env.nsID, f.task.ID); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("413 的请求不该落库，GetTaskLogs err = %v", err)
-		}
-	})
-
-	t.Run("合法 JSON + 超大尾巴 → 413（不能只拦第一个 JSON 值）", func(t *testing.T) {
-		// json.Decoder 停在第一个完整的值之后，尾巴它不读；不把剩余字节读掉的话，
-		// 「小请求体 + 1 MB 垃圾」就会绕过上限——契约要求的是**请求体** ≤ 256 KiB。
-		tail := append([]byte(`{"stdout":"x"}`), bytes.Repeat([]byte("y"), 300<<10)...)
-		if len(tail) <= maxTaskLogsBody {
-			t.Fatalf("夹具算错了：请求体 = %d 字节，want > %d", len(tail), maxTaskLogsBody)
-		}
-		rr := f.upload(t, "Bearer "+f.token, f.task.ID, tail)
-		if rr.Code != http.StatusRequestEntityTooLarge {
-			t.Fatalf("status = %d, want 413（body=%s）", rr.Code, rr.Body.String())
-		}
-		if got := decode(t, rr)["error"]; got != "payload_too_large" {
-			t.Fatalf("error = %v, want payload_too_large", got)
-		}
-		if _, err := f.env.db.GetTaskLogs(context.Background(), f.env.nsID, f.task.ID); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("413 的请求不该落库，GetTaskLogs err = %v", err)
-		}
-	})
-
-	t.Run("恰好 256 KiB → 204", func(t *testing.T) {
-		// 先量空 stdout 时的固定开销，再把它补到正好 maxTaskLogsBody 字节。
-		// 内容全是 ASCII 'x'：JSON 编码不会变长，长度可精确预期。
-		base, err := json.Marshal(taskLogsBody{Stdout: "", Stderr: "", Truncated: true, Bytes: 12345})
-		if err != nil {
-			t.Fatalf("marshal base body: %v", err)
-		}
-		stdout := strings.Repeat("x", maxTaskLogsBody-len(base))
-		body, err := json.Marshal(taskLogsBody{Stdout: stdout, Stderr: "", Truncated: true, Bytes: 12345})
-		if err != nil {
-			t.Fatalf("marshal boundary body: %v", err)
-		}
-		if len(body) != maxTaskLogsBody {
-			t.Fatalf("夹具算错了：body = %d 字节，want %d", len(body), maxTaskLogsBody)
-		}
-		rr := f.upload(t, "Bearer "+f.token, f.task.ID, body)
-		if rr.Code != http.StatusNoContent {
-			t.Fatalf("status = %d, want 204（正好等于上限不该被拒）; body=%s", rr.Code, rr.Body.String())
-		}
-		if got := f.mustStored(t, f.env.nsID, f.task.ID); got.Stdout != stdout {
-			t.Fatalf("边界请求落库内容不一致：len(stdout) = %d, want %d", len(got.Stdout), len(stdout))
-		}
-	})
-
-	t.Run("坏 JSON → 400", func(t *testing.T) {
-		rr := f.upload(t, "Bearer "+f.token, f.task.ID, []byte(`{"stdout":`))
+	t.Run("缺 namespaceId → 400（绝不回退默认命名空间）", func(t *testing.T) {
+		rr := e.get(t, "/v1/tasks/"+task.ID+"/logs")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400（body=%s）", rr.Code, rr.Body.String())
 		}
-		if got := decode(t, rr)["error"]; got != "invalid_json" {
-			t.Fatalf("error = %v, want invalid_json", got)
-		}
-	})
-}
-
-// TestTaskLogUploadMethodNotAllowed GET 到上传端点 → 405。
-func TestTaskLogUploadMethodNotAllowed(t *testing.T) {
-	f := newLogsFixture(t)
-
-	// ① 经过 mux：Go 的 ServeMux 在方法不匹配时自己回 405（生产路径上的真实行为）。
-	req := httptest.NewRequest(http.MethodGet, "/v1/node/tasks/"+f.task.ID+"/logs", nil)
-	rr := httptest.NewRecorder()
-	f.uploadMux().ServeHTTP(rr, req)
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("mux status = %d, want 405", rr.Code)
-	}
-
-	// ② 直接打 handler：这条分支才是 handler 自己的判据（不从 mux 走时也要拦）。
-	hreq := httptest.NewRequest(http.MethodGet, "/v1/node/tasks/"+f.task.ID+"/logs", nil)
-	hrr := httptest.NewRecorder()
-	(&taskLogUploadHandler{db: f.env.db, auth: f.env.db}).ServeHTTP(hrr, hreq)
-	if hrr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("handler status = %d, want 405", hrr.Code)
-	}
-	if got := hrr.Header().Get("Allow"); got != http.MethodPost {
-		t.Fatalf("Allow = %q, want POST", got)
-	}
-}
-
-// ---------- 读取 ----------
-
-// TestTaskLogsReadEmpty 任务存在但没有日志 → **200 + 空对象**（契约 §4）。
-func TestTaskLogsReadEmpty(t *testing.T) {
-	f := newLogsFixture(t)
-	code, body := f.readLogs(t, f.env.withNS("/v1/tasks/"+f.task.ID+"/logs"))
-	if code != http.StatusOK {
-		t.Fatalf("status = %d, want 200（没日志是合法状态，绝不是 404）; body=%s", code, body)
-	}
-	var view map[string]any
-	if err := json.Unmarshal([]byte(body), &view); err != nil {
-		t.Fatalf("decode %q: %v", body, err)
-	}
-	if len(view) != 4 {
-		t.Fatalf("响应字段数 = %d, want 4（只能有 stdout/stderr/truncated/bytes）: %s", len(view), body)
-	}
-	if view["stdout"] != "" || view["stderr"] != "" {
-		t.Fatalf("stdout/stderr 必须是空串: %s", body)
-	}
-	if view["truncated"] != false {
-		t.Fatalf("truncated = %v, want false", view["truncated"])
-	}
-	if got, ok := view["bytes"].(float64); !ok || got != 0 {
-		t.Fatalf("bytes = %v, want 0", view["bytes"])
-	}
-}
-
-// TestTaskLogsReadVerbatim 上传什么就读什么：截断标记、空行、中文、bytes 全原样。
-func TestTaskLogsReadVerbatim(t *testing.T) {
-	f := newLogsFixture(t)
-	if rr := f.uploadJSON(t, f.task.ID, logsStdout, logsStderr, true, 1048576); rr.Code != http.StatusNoContent {
-		t.Fatalf("upload status = %d, want 204", rr.Code)
-	}
-
-	code, body := f.readLogs(t, f.env.withNS("/v1/tasks/"+f.task.ID+"/logs"))
-	if code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", code, body)
-	}
-	var view map[string]any
-	if err := json.Unmarshal([]byte(body), &view); err != nil {
-		t.Fatalf("decode %q: %v", body, err)
-	}
-	if len(view) != 4 {
-		t.Fatalf("响应字段数 = %d, want 4（不许多塞 taskId/namespaceId/createdAt）: %s", len(view), body)
-	}
-	if view["stdout"] != logsStdout {
-		t.Errorf("stdout 不逐字相等:\n got=%q\nwant=%q", view["stdout"], logsStdout)
-	}
-	if view["stderr"] != logsStderr {
-		t.Errorf("stderr 不逐字相等:\n got=%q\nwant=%q", view["stderr"], logsStderr)
-	}
-	if view["truncated"] != true {
-		t.Errorf("truncated = %v, want true", view["truncated"])
-	}
-	if got, _ := view["bytes"].(float64); got != 1048576 {
-		t.Errorf("bytes = %v, want 1048576", view["bytes"])
-	}
-}
-
-// TestTaskLogsReadIsolationAnd404 跨命名空间 / 不存在 → 404；缺参 / `*` → 400。
-func TestTaskLogsReadIsolationAnd404(t *testing.T) {
-	f := newLogsFixture(t)
-	otherNS := f.env.seedNamespace(t, "other", "另一个命名空间")
-	otherTask := f.env.seedTask(t, otherNS.ID, "trace_read_other", "runner", "")
-
-	t.Run("跨命名空间 → 404（与不存在同形）", func(t *testing.T) {
-		code, body := f.readLogs(t, f.env.withNS("/v1/tasks/"+otherTask.ID+"/logs"))
-		if code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404; body=%s", code, body)
-		}
-		if !strings.Contains(body, "task not found") {
-			t.Fatalf("body = %q, want task not found（与 /v1/tasks/{id} 同文案）", body)
-		}
 	})
 
-	t.Run("任务不存在 → 404", func(t *testing.T) {
-		code, _ := f.readLogs(t, f.env.withNS("/v1/tasks/tsk_nope/logs"))
-		if code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404", code)
-		}
-	})
-
-	t.Run("缺 namespaceId → 400", func(t *testing.T) {
-		code, body := f.readLogs(t, "/v1/tasks/"+f.task.ID+"/logs")
-		if code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400（绝不回退默认命名空间）; body=%s", code, body)
-		}
-	})
-
-	t.Run("namespaceId=* → 400", func(t *testing.T) {
-		code, body := f.readLogs(t, "/v1/tasks/"+f.task.ID+"/logs?namespaceId=*")
-		if code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400（单对象端点不接受 *）; body=%s", code, body)
+	t.Run("namespaceId=* → 400（单对象端点不接受通配）", func(t *testing.T) {
+		rr := e.get(t, "/v1/tasks/"+task.ID+"/logs?namespaceId=*")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400（body=%s）", rr.Code, rr.Body.String())
 		}
 	})
 
 	t.Run("没有会话 → 401", func(t *testing.T) {
-		rr := f.env.doNoCookie(t, http.MethodGet, f.env.withNS("/v1/tasks/"+f.task.ID+"/logs"))
+		req := httptest.NewRequest(http.MethodGet, e.logsPath(task.ID), nil)
+		rr := httptest.NewRecorder()
+		e.mux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401", rr.Code)
+			t.Fatalf("status = %d, want 401（body=%s）", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("POST → 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, e.logsPath(task.ID), nil)
+		req.AddCookie(e.cookie)
+		rr := httptest.NewRecorder()
+		e.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405（body=%s）", rr.Code, rr.Body.String())
 		}
 	})
 }
 
-// TestTaskLogsReadMethodNotAllowed POST 到读端点 → 405。
-func TestTaskLogsReadMethodNotAllowed(t *testing.T) {
-	f := newLogsFixture(t)
-	rr := f.env.do(t, http.MethodPost, f.env.withNS("/v1/tasks/"+f.task.ID+"/logs"), nil)
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405; body=%s", rr.Code, rr.Body.String())
+// ---------- 不缓存：每次请求都真的问节点 ----------
+
+// TestTaskLogsEveryRequestHitsNode 连点两次 → 两次都真的去取，且第二次拿到新内容。
+//
+// 不缓存是契约 §2 的硬要求：节点上的档案会被重跑覆盖、会被 GC 掉，中枢没有任何
+// 可靠的失效信号——缓存一份错的日志比没有日志更危险（排障时会据此下结论）。
+func TestTaskLogsEveryRequestHitsNode(t *testing.T) {
+	src := &fakeLogsSource{
+		reply: func(call int, _, _, _ string) (*ws.LogsResponseFrame, error) {
+			return wire(fmt.Sprintf("第 %d 次执行\n", call), "", false, int64(call)), nil
+		},
+	}
+	e := newLogsEnv(t, src)
+	task := e.seedTask(t, e.nsID, "trace_nocache", "runner", e.seedNode(t, "node-a"))
+
+	first := e.get(t, e.logsPath(task.ID))
+	if first.Code != http.StatusOK {
+		t.Fatalf("第一次 status = %d, want 200", first.Code)
+	}
+	if got := decodeLogs(t, first); got.Stdout != "第 1 次执行\n" {
+		t.Fatalf("第一次 stdout = %q", got.Stdout)
+	}
+
+	second := e.get(t, e.logsPath(task.ID))
+	if second.Code != http.StatusOK {
+		t.Fatalf("第二次 status = %d, want 200", second.Code)
+	}
+	got := decodeLogs(t, second)
+	if got.Stdout != "第 2 次执行\n" {
+		t.Fatalf("第二次 stdout = %q，want 第 2 次执行（缓存了？）", got.Stdout)
+	}
+	if got.Bytes != 2 {
+		t.Fatalf("第二次 bytes = %d, want 2（跟着新回包走）", got.Bytes)
+	}
+	if src.calls != 2 {
+		t.Fatalf("fetch 调用次数 = %d, want 2（每次请求一次，不缓存）", src.calls)
 	}
 }
 
-// TestTaskLogsRoundTripThroughBothEndpoints 端到端一遍：上传 → 读回 → 再上传覆盖 → 再读。
+// ---------- 路由守卫：上传端点已删 ----------
+
+// TestMuxHasNoLogsUploadRoute mux.go 的源码里不许再出现上传路径。
 //
-// 这条用例同时当「生产 mux 接线」的护栏：读端点走的是 newConsoleEnv 里注册的真路由，
-// 写端点走上传 mux，两边都不经过额外的适配层。
-func TestTaskLogsRoundTripThroughBothEndpoints(t *testing.T) {
-	f := newLogsFixture(t)
-	path := f.env.withNS("/v1/tasks/" + f.task.ID + "/logs")
-
-	if rr := f.uploadJSON(t, f.task.ID, "第一版\n", "", false, 4); rr.Code != http.StatusNoContent {
-		t.Fatalf("upload #1 status = %d, want 204", rr.Code)
+// 为什么读源码而不是发请求：`http.ServeMux` 对**未注册**的路径回的是 404/405，
+// 与「注册了但 handler 判方法」在响应上无法区分；契约 §3 要的是**这条路由不存在**，
+// 那是个静态事实，只能静态判（本仓库已有读源码做静态断言的先例）。
+func TestMuxHasNoLogsUploadRoute(t *testing.T) {
+	src, err := os.ReadFile("mux.go")
+	if err != nil {
+		t.Fatalf("读 mux.go: %v", err)
 	}
-	code, body := f.readLogs(t, path)
-	if code != http.StatusOK || !strings.Contains(body, "第一版") {
-		t.Fatalf("read #1 = %d %s, want 200 含「第一版」", code, body)
+	if strings.Contains(string(src), "node/tasks/{taskId}/logs") {
+		t.Fatal("mux.go 里仍然注册着上传端点 POST /v1/node/tasks/{taskId}/logs" +
+			"（CONTRACT-logs-on-node §3：日志只存在节点上，中枢不再接收上传）")
 	}
-
-	if rr := f.uploadJSON(t, f.task.ID, "第二版\n", "错了\n", true, 999); rr.Code != http.StatusNoContent {
-		t.Fatalf("upload #2 status = %d, want 204", rr.Code)
-	}
-	code, body = f.readLogs(t, path)
-	if code != http.StatusOK {
-		t.Fatalf("read #2 status = %d, body=%s", code, body)
-	}
-	var view map[string]any
-	if err := json.Unmarshal([]byte(body), &view); err != nil {
-		t.Fatalf("decode %q: %v", body, err)
-	}
-	if view["stdout"] != "第二版\n" || view["stderr"] != "错了\n" {
-		t.Fatalf("覆盖没生效: %s", body)
-	}
-	if view["bytes"] != float64(999) || view["truncated"] != true {
-		t.Fatalf("bytes/truncated 没跟着覆盖: %s", body)
+	// 正对照：读端点必须还在（否则上面那条会因为「整个文件没日志」而假绿）。
+	if !strings.Contains(string(src), "GET /v1/tasks/{taskId}/logs") {
+		t.Fatal("mux.go 里找不到读端点 GET /v1/tasks/{taskId}/logs")
 	}
 }

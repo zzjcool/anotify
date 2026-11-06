@@ -159,15 +159,16 @@ type outcome struct {
 
 const (
 	// maxLogStreamBytes 是**每个流各自**的捕获上限（合计 64 KiB）：任务输出只用于
-	// 日志与 summary，不能让一个话痨命令把 agent 的内存吃光。保留的是**尾部**——
-	// 错误几乎总在最后（契约 §1）。
+	// agent 自己的调试日志与 summary（日志不再上传，中枢要看时会发 logs_request 来取
+	// 档案里的完整输出），不能让一个话痨命令把 agent 的内存吃光。保留的是**尾部**——
+	// 错误几乎总在最后。
 	maxLogStreamBytes = 32 << 10
 	// archiveStreamMaxBytes 是**落盘**（runs/）时的单流上限：8 MiB。
 	//
-	// 与 maxLogStreamBytes（32 KiB 上传窗口）是两个量级、两个用途：那个是「网络上只传
-	// 这么多」，这个是「盘上留全」。数值的唯一来源是 runstore.go 的 runStreamMaxBytes
-	// （档案的规格由档案库定义，执行层只是它的使用者）——在这里再写一个 8 MiB，
-	// 两处迟早会分叉成「盘上留 8 MiB、执行层却只采 32 KiB」这种看不见的错。
+	// 与 maxLogStreamBytes（32 KiB 窗口）是两个量级、两个用途：那个是「内存里看一眼」，
+	// 这个是「盘上留全，中枢取日志时就从这里读」。数值的唯一来源是 runstore.go 的
+	// runStreamMaxBytes（档案的规格由档案库定义，执行层只是它的使用者）——在这里
+	// 再写一个 8 MiB，两处迟早会分叉成「盘上留 8 MiB、执行层却只采 32 KiB」这种看不见的错。
 	archiveStreamMaxBytes = runStreamMaxBytes
 	// summaryHeadBytes 是头部旁路窗口的大小：主窗口只留尾部，而 summary 的语义是
 	// **stdout 的第一行**（result 帧里那句，还进 tasks.summary / error）。
@@ -996,8 +997,8 @@ func (s *streamLog) FirstLine(maxBytes int) string {
 	return oneLine(strings.ToValidUTF8(string(head), "?"), maxBytes)
 }
 
-// String 返回捕获到的输出：先按 UTF-8 校验（非法字节 → '?'，否则 JSON 编不出来，
-// 整条日志上传会在最后一步失败），被截断时在**末尾**追加一行说明。
+// String 返回捕获到的输出：先按 UTF-8 校验（非法字节 → '?'，否则下游要把它塞进
+// JSON 时编不出来），被截断时在**末尾**追加一行说明。
 func (s *streamLog) String() string {
 	s.mu.Lock()
 	buf, total := s.buf, s.total

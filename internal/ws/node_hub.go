@@ -34,6 +34,13 @@ type NodeHub struct {
 	// 写入时机是 assign 帧**写成功之后**（写失败的一帧没到对端，登记它反而会挡住
 	// 真正该拿到它的连接）；清除时机是 result 落库之后 / 连接 cleanup 的 releaseAll。
 	inflight map[string]*nodeSession
+
+	// LogsTimeout 覆盖一次 logs_request 的等待上限（0 → LogsRequestTimeout，5s）。
+	//
+	// 它存在的唯一目的是**可测**：契约要求「不要写死 sleep」，而超时路径
+	// （等不到回包 → 200 + available:false + reason=timeout）是这条链最关键的降级分支。
+	// 生产装配不设它（用默认 5s），测试把它调到几十毫秒。
+	LogsTimeout time.Duration
 }
 
 // NewNodeHub 构造一个空 hub。

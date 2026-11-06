@@ -24,12 +24,21 @@ package main
 //	    stderr.log   完整 stderr（同上）
 //	    meta.json    什么时候跑的、退出码、状态、summary、emit 次数
 //
+// 另有一条**旁路索引**：
+//
+//	<data-dir>/runs/.tasks/<task_id>    一行文本：相对 runs/ 的三段路径 + '\n'
+//
+// 档案路径按 trace/能力/序号组织，而中枢只知道 task_id——「按 task_id 取日志」
+// （logs_request，CONTRACT-logs-on-node §1）没有这层索引就只能每次扫全树。
+// 索引是**加速器不是事实源**：两者不一致时一律以档案为准（见 taskRef）。
+//
 // 目录 0700 / 文件 0600（与 emit/、outbox/ 同一条纪律：这是用户自己的输入与输出）。
 //
 // # 纪律
 //
-//   - **写盘失败不得影响任务成败**：Save 只返回 error，调用方 Warn 一下就算完（与日志上传
-//     同一条纪律，见 client.uploadLogs）。跑成功就是成功，磁盘满不该改结论。
+//   - **写盘失败不得影响任务成败**：Save 只返回 error，调用方 Warn 一下就算完。
+//     跑成功就是成功，磁盘满不该改结论。索引写失败更是连 error 都不返回（只 WARN）——
+//     档案比索引重要（契约 §4：两者不一致时以档案为准）。
 //   - **不做脱敏**：能力跑在用户自己的机器上，params 本来就是用户自己给的；脱敏只会让
 //     「当时到底传了什么」变成猜谜。
 //   - **不碰 work/**：任务工作目录的保留策略是另一件事（成功即删），这里只写自己的目录。
@@ -61,6 +70,12 @@ const (
 	// runsSubdirName 是数据目录下存放执行档案的子目录。
 	runsSubdirName = "runs"
 
+	// runIndexDirName 是 runs/ 下的**旁路索引**目录（task_id → 相对路径）。
+	//
+	// 它不是一个 trace 目录：List / GC / prune 都必须跳过它，否则列表里会冒出一条
+	// 名叫 .tasks 的假记录，GC 还会把它当档案删掉（契约 §4）。
+	runIndexDirName = ".tasks"
+
 	// 一次执行落盘的四个文件名（见文件头）。
 	runInputFile  = "input.json"
 	runStdoutFile = "stdout.log"
@@ -74,10 +89,11 @@ const (
 
 	// runStreamMaxBytes 是**单流**落盘上限（8 MiB）。
 	//
-	// 与 maxLogStreamBytes（32 KiB，上传窗口）是两个量级、两个用途：那个是「网络上只传这么多」，
-	// 这个是「盘上留全」。超限时保留**头部**（"截尾"）——档案的用途是复核「这次到底跑了什么」，
-	// 开头那一段（版本信息、参数回显、日志前半）比尾部更有信息量；反过来 32 KiB 窗口保留尾部
-	// 是因为那里写着错误（见 streamLog 的注释）。两个方向都有理由，不要互相统一。
+	// 与 maxLogStreamBytes（32 KiB 窗口）是两个量级、两个用途：那个是「内存里看一眼」，
+	// 这个是「盘上留全」——中枢按需取日志（logs_request）读的就是这里。
+	// 超限时保留**头部**（"截尾"）——档案的用途是复核「这次到底跑了什么」，
+	// 开头那一段（版本信息、参数回显、日志前半）比尾部更有信息量；反过来 32 KiB 窗口
+	// 保留尾部是因为那里写着错误（见 streamLog 的注释）。两个方向都有理由，不要互相统一。
 	runStreamMaxBytes = 8 << 20
 
 	// 保留策略的默认值与覆盖变量。
@@ -292,7 +308,269 @@ func (s *runStore) Save(rec runRecord) (string, error) {
 	if err := writeRunFile(filepath.Join(dir, runMetaFile), metaJSON); err != nil {
 		return "", err
 	}
+	// 索引**最后**写（在四份档案文件之后）：它是「这次执行已完整落盘」的旁路指针。
+	// 先写索引就会出现「索引指着一个还没写完的目录」——中枢按它取日志时拿到的是一份
+	// 半成品，而兜底扫描本来能找到完整的。档案是事实源，索引只是加速器。
+	if err := s.writeTaskIndex(meta.TaskID, rel); err != nil {
+		// 索引写失败**不是** Save 失败（契约 §4）：缺了索引只会让下一次取日志走一遍
+		// 兜底扫描，而档案本身一个字节都没少。只 WARN。
+		s.warn("run index write failed",
+			"event", "agent.runs.index_failed",
+			"task_id", meta.TaskID, "ref", rel, "error", err.Error())
+	}
 	return dir, nil
+}
+
+// warn 是「不影响任务成败」那条路上的日志出口（logger 可能没配，兜底不 panic）。
+func (s *runStore) warn(msg string, args ...any) {
+	if s == nil || s.log == nil {
+		return
+	}
+	s.log.Warn(msg, args...)
+}
+
+// ---------- 任务索引（task_id → 档案目录，契约 §4）----------
+
+// taskIndexPath 给出 <root>/.tasks/<task_id>，并回答「这个 task_id 能不能当文件名用」。
+//
+// task_id 来自中枢，却被直接当**文件名**用，所以它必须过一道安全校验（见
+// validTaskIDFile）：带 `/` 或 `\` 会写到 .tasks 之外，`..` 会跑出 runs/，
+// 控制字符在有的文件系统上干脆建不出来——过不了校验就跳过索引写入（只 WARN），
+// 档案照存，靠兜底扫描仍然找得到（契约 §4）。
+func (s *runStore) taskIndexPath(taskID string) (string, bool) {
+	if !validTaskIDFile(taskID) {
+		return "", false
+	}
+	return filepath.Join(s.root, runIndexDirName, taskID), true
+}
+
+// validTaskIDFile 判断一个 task_id 能不能直接当单段文件名用。
+func validTaskIDFile(taskID string) bool {
+	if taskID == "" || taskID == "." || taskID == ".." {
+		return false
+	}
+	if len(taskID) > maxTaskIDLen {
+		return false
+	}
+	for _, r := range taskID {
+		if r == '/' || r == '\\' || r == 0 || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// writeTaskIndex 原子地写下 <root>/.tasks/<task_id>：一行相对路径 + '\n'。
+//
+// 为什么是「临时文件 + rename」而不是 O_TRUNC 直写：写方（Save）与读方
+// （logs_request 处理）可能真的并发——中枢一次刷新会同时问好几条任务，而另一条任务
+// 正好在收尾。O_TRUNC 有一段「已清空、还没写进内容」的窗口，那时读到的空索引会被
+// 当成「这台节点没有索引」，从而掉进整树扫描；rename 之后索引只会是「旧的」或
+// 「新的」，没有空态。
+func (s *runStore) writeTaskIndex(taskID, rel string) error {
+	path, ok := s.taskIndexPath(taskID)
+	if !ok {
+		return fmt.Errorf("task_id %q 不能当文件名用（空/过长/含路径分隔符或控制字符）", taskID)
+	}
+	dir := filepath.Dir(path) // <root>/.tasks
+	if err := os.MkdirAll(dir, runDirMode); err != nil {
+		return fmt.Errorf("runs: 建索引目录 %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".idx-")
+	if err != nil {
+		return fmt.Errorf("runs: 建临时索引 %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	// rename 成功后 tmpName 已不存在；失败路径靠它收尸（幂等）。
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.WriteString(rel + "\n"); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("runs: 写索引 %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("runs: 关闭索引 %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("runs: 落索引 %s: %w", path, err)
+	}
+	return nil
+}
+
+// readTaskIndex 读一条索引（不做校验：校验与「档案为准」的裁决在 taskRef 里）。
+func (s *runStore) readTaskIndex(taskID string) (string, bool) {
+	path, ok := s.taskIndexPath(taskID)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	rel := strings.TrimSpace(string(data))
+	if rel == "" {
+		return "", false
+	}
+	return rel, true
+}
+
+// taskRef 把 task_id 翻成「档案在 runs/ 下的三段相对路径」（契约 §4）。
+//
+// 顺序是刻意的：**索引优先，但以档案为准**。
+//  1. 读索引 → 逐段校验（safeJoin 防穿越）+ 目录真的存在 → 命中；
+//  2. 否则（没索引 / 索引是空、脏、指向一个不存在的目录）扫一遍 runs/ 三层，
+//     拿每条 meta.json 的 taskId 比对；
+//  3. 兜底命中之后顺手把索引修好（修失败只 WARN：下一次再扫一遍，档案才是事实源）。
+//
+// 两个方向都不能省：只信索引的话，GC 删目录、手工动盘、Save 中途崩都会让索引变旧
+// （而中枢看到的是「节点上没有档案」这种最误导的结论）；只扫全树的话，一次点击就是
+// 2000 个目录的 stat——而索引命中是一次 open。
+func (s *runStore) taskRef(taskID string) (string, bool) {
+	if s == nil || strings.TrimSpace(s.root) == "" || taskID == "" {
+		return "", false
+	}
+	if rel, ok := s.readTaskIndex(taskID); ok {
+		if _, err := s.runDirRef(rel); err == nil {
+			return rel, true
+		}
+		// 索引指向一个不存在的目录（GC 删了目录却没删索引、或盘上被人动过）：
+		// 绝不把它当答案——落到兜底扫描。
+	}
+	rel, ok := s.scanTaskRef(taskID)
+	if !ok {
+		return "", false
+	}
+	if err := s.writeTaskIndex(taskID, rel); err != nil {
+		s.warn("run index repair failed",
+			"event", "agent.runs.index_repair_failed",
+			"task_id", taskID, "ref", rel, "error", err.Error())
+	}
+	return rel, true
+}
+
+// runDirRef 把一个三段相对路径校验成绝对目录（形状 + 不逃出 runs/ + 真的存在）。
+//
+// 索引内容也要过这道门：它是**盘上的文本**，不是可信输入（手工编辑、上一次写了一半、
+// 或者别的版本写的）。与 Load 同一条纪律：safeJoin 之前逐段 checkRelPath。
+func (s *runStore) runDirRef(rel string) (string, error) {
+	clean := strings.Trim(strings.TrimSpace(rel), "/")
+	parts := strings.Split(clean, "/")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("ref %q 的形状不是 <trace>/<capability>@<version>/<seq>-a<n>", rel)
+	}
+	for _, p := range parts {
+		if err := checkRelPath(p); err != nil {
+			return "", fmt.Errorf("ref %q: %w", rel, err)
+		}
+	}
+	dir, err := safeJoin(s.root, clean)
+	if err != nil {
+		return "", fmt.Errorf("ref %q: %w", rel, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("ref %q 不是目录", rel)
+	}
+	return dir, nil
+}
+
+// scanTaskRef 是索引缺失/失真时的兜底：扫 runs/ 三层，读每条 meta.json 比对 taskId。
+//
+// 同一 task 被重派时 seq/attempt 会递增，取**最新**的那一次执行：用户点开一条任务想看
+// 的是「最后一次到底跑成什么样」，把老 attempt 的日志回过去只会误导。
+func (s *runStore) scanTaskRef(taskID string) (string, bool) {
+	traces, err := os.ReadDir(s.root)
+	if err != nil {
+		return "", false
+	}
+	best := ""
+	bestSeq, bestAttempt := 0, 0
+	for _, traceDir := range traces {
+		if !traceDir.IsDir() || traceDir.Name() == runIndexDirName {
+			continue
+		}
+		caps, err := os.ReadDir(filepath.Join(s.root, traceDir.Name()))
+		if err != nil {
+			continue
+		}
+		for _, capDir := range caps {
+			if !capDir.IsDir() {
+				continue
+			}
+			if _, _, ok := parseCapVersion(capDir.Name()); !ok {
+				continue
+			}
+			runs, err := os.ReadDir(filepath.Join(s.root, traceDir.Name(), capDir.Name()))
+			if err != nil {
+				continue
+			}
+			for _, runDir := range runs {
+				if !runDir.IsDir() {
+					continue
+				}
+				seq, attempt, ok := parseRunDirName(runDir.Name())
+				if !ok {
+					continue
+				}
+				dir := filepath.Join(s.root, traceDir.Name(), capDir.Name(), runDir.Name())
+				meta, err := readRunMeta(dir)
+				if err != nil || meta.TaskID != taskID {
+					continue
+				}
+				// 只留最新的一次（seq 大优，其次 attempt 大优）：平手时按字典序取后者，
+				// 让结果确定——同一台机器上重复调用不该一会儿给这个一会儿给那个。
+				if best == "" || seq > bestSeq || (seq == bestSeq && attempt >= bestAttempt) {
+					best = traceDir.Name() + "/" + capDir.Name() + "/" + runDir.Name()
+					bestSeq, bestAttempt = seq, attempt
+				}
+			}
+		}
+	}
+	return best, best != ""
+}
+
+// indexRefOf 在**删目录之前**取出「这条档案属于哪条任务、它是哪个 ref」。
+//
+// 必须在 RemoveAll 之前读：taskId 只存在那个目录的 meta.json 里，目录没了就再也
+// 不知道要清哪条索引（索引文件里只有路径，反查不到 task_id）。
+func (s *runStore) indexRefOf(runDir string) (taskID, ref string) {
+	rel, err := filepath.Rel(s.root, runDir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", ""
+	}
+	meta, err := readRunMeta(runDir)
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(meta.TaskID), filepath.ToSlash(rel)
+}
+
+// dropTaskIndex 在目录真的删掉之后清掉指向它的索引（契约 §4）。
+//
+// 索引内容必须**正指向**这个目录才删：同一个 task 可能被重派过，索引已经被更新那次
+// 覆盖成新目录的路径——照着 taskId 盲删就会把一条活的索引删掉，于是「取最新那次日志」
+// 变成一次全树扫描。
+func (s *runStore) dropTaskIndex(taskID, ref string) {
+	if taskID == "" || ref == "" {
+		// 没 meta.json（半份档案）→ 不知道属于哪条任务。留在盘上的索引只会指向一个
+		// 不存在的目录，taskRef 会把它当「脏索引」落到兜底扫描（契约 §4 允许）。
+		return
+	}
+	path, ok := s.taskIndexPath(taskID)
+	if !ok {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(data)) != ref {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		s.warn("run index delete failed",
+			"event", "agent.runs.index_delete_failed",
+			"task_id", taskID, "ref", ref, "error", err.Error())
+	}
 }
 
 // writeRunFile 写一个档案文件（0600、整份写、不做 rename）。
@@ -464,7 +742,9 @@ func (s *runStore) List(f runFilter) ([]runEntry, error) {
 
 	entries := make([]runEntry, 0, 32)
 	for _, traceDir := range traces {
-		if !traceDir.IsDir() {
+		if !traceDir.IsDir() || traceDir.Name() == runIndexDirName {
+			// .tasks 是档案的**旁路索引**（契约 §4），不是一条 trace：漏了这一句，
+			// `anotify-agent runs` 里就会冒出一条名叫 .tasks 的假记录。
 			continue
 		}
 		traceName := traceDir.Name()
@@ -672,11 +952,24 @@ func (s *runStore) GC(now time.Time) (int, error) {
 		}
 	}
 
+	// removeOne 删一个 run 目录，并把指向它的索引一并清掉（契约 §4）。
+	//
+	// 顺序：先读出 taskId / ref（meta.json 会随目录一起消失），删成功后再清索引。
+	// 删除失败时索引仍然是对的（目录还在），所以不能提前清。
+	removeOne := func(path string) error {
+		taskID, ref := s.indexRefOf(path)
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		s.dropTaskIndex(taskID, ref)
+		return nil
+	}
+
 	for _, d := range dirs {
 		// retention <= 0 视为「不按时间删」（只按条数），不可能是「立刻全删」：
 		// 后者一个人为的环境变量就能把档案库清空，代价太大。
 		if s.retention > 0 && d.mod.Before(cutoff) {
-			if err := os.RemoveAll(d.path); err != nil {
+			if err := removeOne(d.path); err != nil {
 				noteErr(fmt.Errorf("runs: 删除过期档案 %s: %w", d.path, err))
 				continue
 			}
@@ -695,7 +988,7 @@ func (s *runStore) GC(now time.Time) (int, error) {
 			if _, gone := deleted[d.path]; gone {
 				continue
 			}
-			if err := os.RemoveAll(d.path); err != nil {
+			if err := removeOne(d.path); err != nil {
 				noteErr(fmt.Errorf("runs: 删除超量档案 %s: %w", d.path, err))
 				continue
 			}
@@ -729,7 +1022,8 @@ func (s *runStore) scanRunDirs() ([]runDirInfo, error) {
 	}
 	dirs := make([]runDirInfo, 0, 64)
 	for _, traceDir := range traces {
-		if !traceDir.IsDir() {
+		if !traceDir.IsDir() || traceDir.Name() == runIndexDirName {
+			// 索引目录不是档案：把它当 trace 目录扫下去，GC 会去「清理」它。
 			continue
 		}
 		caps, err := os.ReadDir(filepath.Join(s.root, traceDir.Name()))
@@ -772,7 +1066,8 @@ func pruneEmptyRunParents(root string) {
 		return
 	}
 	for _, traceDir := range traces {
-		if !traceDir.IsDir() {
+		if !traceDir.IsDir() || traceDir.Name() == runIndexDirName {
+			// .tasks 是索引目录（契约 §4）：不往下 prun，也不把它当空 trace 删掉。
 			continue
 		}
 		tracePath := filepath.Join(root, traceDir.Name())

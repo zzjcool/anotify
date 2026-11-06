@@ -605,6 +605,16 @@ ALTER TABLE nodes ADD COLUMN agent_upgrade TEXT NOT NULL DEFAULT '{}';
 
 -- +migration 4 task_logs
 
+-- **已停用**（CONTRACT-logs-on-node §3）：日志的真相只在**节点**上
+-- （`<data-dir>/runs/<trace>/<capability>@<version>/<seq>-a<attempt>/` 下的
+-- stdout.log / stderr.log，完整、8 MiB/流上限），控制台要看时中枢按需向节点取
+-- （GET /v1/tasks/{taskId}/logs → 一帧 logs_request / logs_response）。
+-- 本表**不再写入也不再读取**：中枢侧的读写函数已随上传端点一起删除，保留这张表只是
+-- 为了不动已经发布的迁移（删表要另起一个迁移块，而这一轮明确不动 schema）。
+-- 因此表里可能有**历史行**（上一版上传路径留下的），它们不再被任何代码读到，
+-- 也不代表节点上现在有什么——排障请看节点上的档案。
+-- 下面的说明保留下来当设计依据：它解释的是「当初为什么这么建」，不是「现在还在用」。
+
 -- 任务的 stdout / stderr 原文（CONTRACT-task-logs §3）：节点在发 result 帧之前，
 -- 用 node token 把**子进程自己的输出**POST 上来，控制台在 trace 页看得到「为什么炸了」。
 --

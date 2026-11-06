@@ -274,6 +274,10 @@ type nodeSession struct {
 	lastUpstream time.Time
 	helloDone    bool
 
+	// logsPending 是本连接上在飞的 logs_request（request_id → 等待者）。
+	// 连接断开时由 cleanup 统一唤醒（否则取日志的调用方要白等到 5s 超时）。
+	logsPending logsPending
+
 	// leaseMu 保护「本连接名下的任务」与「连接为什么结束」（#218 / #222）。
 	// 与上面那把 mu 分开：那把是「活着吗」的热路径，这把是策略状态的写少读少路径。
 	// 具体语义见 node_session_lease.go。
@@ -450,10 +454,14 @@ func (s *nodeSession) handle(ctx context.Context, frame any, raw []byte) error {
 			s.sendError(ctx, ErrCodeBadFrame, "send hello before other frames")
 			return nil
 		}
-		// apply / upgrade_ack 是配置帧，其余是任务帧：分开走，别让「任务帧」的语义含糊。
-		switch frame.(type) {
+		// apply / upgrade_ack 是配置帧，logs_response 是旁路帧，其余是任务帧：
+		// 分开走，别让「任务帧」的语义含糊。
+		switch f := frame.(type) {
 		case *ApplyFrame, *UpgradeAckFrame:
 			return s.handleConfigFrame(ctx, frame)
+		case *LogsResponseFrame:
+			// 日志是旁路：回包晚到/对不上只丢弃，不影响连接与任务。
+			return s.handleLogsResponse(ctx, f)
 		}
 		return s.handleTaskFrame(ctx, frame)
 	}
@@ -676,6 +684,17 @@ func (s *nodeSession) cleanup(ctx context.Context) {
 	// 返回值**故意不用**（见 ②）：它回答的是「摘的那一刻是不是当前连接」，
 	// 而我们真正要回答的是「现在是不是」。
 	hub.Unregister(s.node.ID, s)
+
+	// ①.5 唤醒本连接上还在等日志的调用方：连接没了，回包永远不会来。
+	// 放在 ① 之后（摘了连接就没人再往这条连接发请求），放在 ④ 之前（越早越好：
+	// 它们等的是一次 HTTP 响应，与任务释放无关）。
+	if n := s.logsPending.failAll(); n > 0 {
+		slog.Debug("logs requests dropped with closed connection",
+			"event", "node.ws.logs.dropped",
+			"node_id", s.node.ID,
+			"requests", n,
+		)
+	}
 
 	// ② node 级状态（alive / online）只在「没有**更新的连接**接替了我」时写。
 	//
