@@ -17,10 +17,12 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap "$PB_CAP_NAME"
-pb_source perf-prof "$CAP"
 MARK=$OUT/marks.txt; : >"$MARK"
-pb_node node-prof 8 1 'echo "$ANOTIFY_TASK_ID" >> '"$MARK" 60
+CMD='echo "$ANOTIFY_TASK_ID" >> '"$MARK"
+# v2：命令进能力产物（节点不再自报执行方式，见 N3）。
+pb_cap "$PB_CAP_NAME" "$CMD" 60
+pb_source perf-prof "$CAP"
+pb_node node-prof 8 1 "$CMD" 60
 pb_wait_online 1
 
 echo "=== 基线（空转 5s）==="

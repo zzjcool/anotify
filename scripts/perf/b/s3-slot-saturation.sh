@@ -20,14 +20,14 @@ pb_seed
 pb_ns
 
 PB_CAP_NAME=perf.noop
-pb_cap "$PB_CAP_NAME"
-pb_source perf-sat "$CAP"
-
 MARK=$OUT/marks.txt
 : >"$MARK"
 CMD='printf "%s %s\n" "$ANOTIFY_TASK_ID" "$EPOCHREALTIME" >> '"$MARK"
+# v2：命令进能力产物（节点不再自报执行方式，见 N3）。
+pb_cap "$PB_CAP_NAME" "$CMD" 60
+pb_source perf-sat "$CAP"
 
-pb_say "建 1 个节点：instances=1 concurrency=1（1 个执行槽）"
+pb_say "建 1 个节点：instances=1（v2：每槽恒 1 个任务 = 1 个执行槽）"
 pb_node node-sat 1 1 "$CMD" 60
 pb_wait_online 1
 g0=$(pb_gsnap before); rss0=$(pb_rss before)
@@ -36,7 +36,7 @@ cpu0=$(pb_cputime)
 REPORT=$OUT/s3.txt
 : >"$REPORT"
 {
-	echo '== S3 槽位饱和（instances=1 concurrency=1）=='
+	echo '== S3 槽位饱和（instances=1）=='
 	printf '基线：goroutine=%s RSS=%sKB cpu=%ss db=%sB\n' "$g0" "$rss0" "$cpu0" "$(stat -c%s "$DB")"
 } | tee -a "$REPORT"
 

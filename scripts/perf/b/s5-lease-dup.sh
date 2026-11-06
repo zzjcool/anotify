@@ -156,7 +156,9 @@ s5_backoff_done() {
 pb_say "5a：超时保护下的慢命令（sleep 60 + timeoutSec=5 < 租约 30s，预期不重复执行）"
 
 PB_CAP_NAME=perf.slow.timeout
-pb_cap "$PB_CAP_NAME"
+# v2：命令 + timeoutSec 都是**能力产物**的一部分（节点不再自报执行方式）。
+# timeoutSec=5 是本实验的核心变量（租约 30s 根本来不及过期）。
+pb_cap "$PB_CAP_NAME" 'sleep 60' 5
 pb_source perf-slow-timeout "$CAP"
 
 NAME5A=s5a-slow
@@ -219,14 +221,16 @@ rss_a1=$(pb_rss s5a-after)
 pb_say "5b：心跳饥饿 + 租约重派（sleep 60 + timeoutSec=200 > 租约 30s，预期重复执行）"
 
 PB_CAP_NAME=perf.slow.lease
-pb_cap "$PB_CAP_NAME"
+# 5b 的 CMD5B 要先定义：v2 里它要进能力产物（pb_cap），不能再只写进节点 yaml。
+# 注意 $MARK 由**外层** shell 展开成绝对路径（单引号断开），$ANOTIFY_TASK_ID /
+# $EPOCHREALTIME 留到 agent 侧执行时展开（与 s1 同写法）。
+# shellcheck disable=SC2016
+CMD5B='printf "%s %s\n" "$ANOTIFY_TASK_ID" "start $EPOCHREALTIME" >> '"$MARK"'; sleep 60'
+# timeoutSec=200 >> 租约 30s：这才使得「心跳饥饿 → 租约过期 → 重派 → 重复执行」发生。
+pb_cap "$PB_CAP_NAME" "$CMD5B" 200
 pb_source perf-lease-5b "$CAP"
 
 NAME5B=s5b-lease
-# 注意 $MARK 由**外层** shell 展开成绝对路径（单引号断开），$ANOTIFY_TASK_ID /
-# $EPOCHREALTIME 留到 agent 的 sh -c 里才展开（与 s1 同写法）。
-# shellcheck disable=SC2016
-CMD5B='printf "%s %s\n" "$ANOTIFY_TASK_ID" "start $EPOCHREALTIME" >> '"$MARK"'; sleep 60'
 
 g_b0=$(pb_gsnap s5b-before)
 rss_b0=$(pb_rss s5b-before)
