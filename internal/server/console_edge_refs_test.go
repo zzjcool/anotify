@@ -12,29 +12,36 @@ import (
 
 // ---------- P2.2：边按引用 + 升级闸门（HTTP 层） ----------
 
-// TestEdgeCreateWithRefs 新建边用 `fromRef`/`toRef`：
+// TestEdgeCreateWithRefs 下游的 `toRef` 有两种引用形态：
 // 裸名字**原样**落库（跟随 latest），钉死引用也原样落库。
+//
+// **改写说明**：造数从 `POST /v1/edges` 换成
+// `PUT /v1/capabilities/{name}/downstreams`（能力边的唯一写入口，replace 语义）。
+// 两条边用一次 PUT 提交（`notify` + `notify@1`），断言不变。
 func TestEdgeCreateWithRefs(t *testing.T) {
 	env := newConsoleEnv(t)
-	env.seedCapability(t, "review", 1, []string{"fix", "clean"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 	env.seedCapability(t, "notify", 1, nil)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "notify",
+	rr := env.replaceDownstreams(t, "review", []map[string]any{
+		{"toRef": "notify"},   // 跟随 latest
+		{"toRef": "notify@1"}, // 钉死那一版
 	})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("replace status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	edgeObj, _ := decode(t, rr)["edge"].(map[string]any)
-	if edgeObj["fromRef"] != "review" || edgeObj["toRef"] != "notify" {
-		t.Fatalf("响应里的引用 = %v / %v, want review / notify", edgeObj["fromRef"], edgeObj["toRef"])
+	if got, _ := decode(t, rr)["name"].(string); got != "review" {
+		t.Fatalf("响应里的 name = %q, want review", got)
 	}
-	// 钉死引用：`notify@1`
-	rr = env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review@1", FromPort: "clean", ToRef: "notify@1",
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("create pinned status = %d, body=%s", rr.Code, rr.Body.String())
+	links, _ := decode(t, rr)["links"].([]any)
+	if len(links) != 2 {
+		t.Fatalf("links = %v, want 2", links)
+	}
+	if ref, _ := links[0].(map[string]any)["toRef"].(string); ref != "notify" {
+		t.Fatalf("links[0].toRef = %q, want notify", ref)
+	}
+	if ref, _ := links[1].(map[string]any)["toRef"].(string); ref != "notify@1" {
+		t.Fatalf("links[1].toRef = %q, want notify@1", ref)
 	}
 	// 列表回的是引用（不是 id）
 	rr = env.do(t, http.MethodGet, env.withNS("/v1/edges"), nil)
@@ -53,47 +60,58 @@ func TestEdgeCreateWithRefs(t *testing.T) {
 		if ref, _ := e["toRef"].(string); ref != "notify" && ref != "notify@1" {
 			t.Fatalf("toRef = %q, want notify 或 notify@1", ref)
 		}
+		// 左端恒为能力**名字**（一个能力的所有版本共用同一组出边，契约 §1）
+		if ref, _ := e["fromRef"].(string); ref != "review" {
+			t.Fatalf("fromRef = %q, want review（裸名字，不是 name@version）", ref)
+		}
+		if port, _ := e["fromPort"].(string); port != store.ImplicitPort {
+			t.Fatalf("fromPort = %q, want %q（隐式出口）", port, store.ImplicitPort)
+		}
 	}
 }
 
-// TestEdgeCreateLegacyIDInputCompat 旧客户端传能力 id：仍然能建，但**落库的是引用**。
-func TestEdgeCreateLegacyIDInputCompat(t *testing.T) {
+// TestDownstreamsLegacyIDInputCompat 传能力 id：仍然能存，但**落库的是引用**。
+//
+// **改写说明**：原用例走 `POST /v1/edges` 的两端 id 兼容；能力边的写入口迁到
+// `PUT /v1/capabilities/{name}/downstreams` 之后，左端是路径里的**名字**
+// （不再有「用 id 指左端」这回事），右端仍然接受 id（输入兼容一个版本）。
+// 断言因此变成更强的口径：库里两边都是引用，一个 id 都没有。
+func TestDownstreamsLegacyIDInputCompat(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 	to := env.seedCapability(t, "notify", 1, nil)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromCapability: from.ID, FromPort: "fix", ToCapability: to.ID,
-	})
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": to.ID}})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("replace status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	// 库里没有 id：两端都是 name@version（钉死 = 老客户端「就是这个 id」的意图）
+	// 库里没有 id：左端是名字（跟随 latest），右端是 name@version（钉死 = 「就是这个 id」的意图）
 	var fromRef, toRef string
 	if err := env.db.QueryRow(`SELECT from_ref, to_ref FROM edges WHERE namespace_id = ?`, env.nsID).
 		Scan(&fromRef, &toRef); err != nil {
 		t.Fatalf("read edge: %v", err)
 	}
-	if fromRef != store.FormatRef("review", 1) || toRef != store.FormatRef("notify", 1) {
+	if fromRef != "review" || toRef != store.FormatRef("notify", to.Version) {
 		t.Fatalf("库里的引用 = (%q → %q), want (%q → %q)",
-			fromRef, toRef, store.FormatRef("review", 1), store.FormatRef("notify", 1))
+			fromRef, toRef, "review", store.FormatRef("notify", to.Version))
 	}
 }
 
-// TestEdgeCreateRejectsUnknownRef 解析不到的引用 → 400 edge_rejected（客户端可修）。
+// TestEdgeCreateRejectsUnknownRef 解析不到的下游 → 400 unknown_target（客户端可修）。
+//
+// **改写说明**：入口换成 PUT downstreams；机器码按契约 §2 从通用的
+// `edge_rejected` 细化为 `unknown_target`（带名字），断言因此更具体而不是更宽。
 func TestEdgeCreateRejectsUnknownRef(t *testing.T) {
 	env := newConsoleEnv(t)
-	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "ghost@9",
-	})
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": "ghost@9"}})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400（body=%s）", rr.Code, rr.Body.String())
 	}
 	body := decode(t, rr)
-	if body["code"] != "edge_rejected" {
-		t.Fatalf("code = %v, want edge_rejected", body["code"])
+	if body["code"] != "unknown_target" {
+		t.Fatalf("code = %v, want unknown_target", body["code"])
 	}
 	if msg, _ := body["error"].(string); !strings.Contains(msg, "ghost@9") {
 		t.Fatalf("错误里没点名坏引用: %v", body["error"])
@@ -101,17 +119,17 @@ func TestEdgeCreateRejectsUnknownRef(t *testing.T) {
 }
 
 // TestDeleteEdgeByRef DELETE 按引用定位（新字段名与旧字段名都认）。
+//
+// **改写说明**：造数换成 PUT downstreams（能力边的唯一写入口），DELETE 断言不变。
 func TestDeleteEdgeByRef(t *testing.T) {
 	env := newConsoleEnv(t)
-	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 	env.seedCapability(t, "notify", 1, nil)
 
-	if rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "notify",
-	}); rr.Code != http.StatusOK {
+	if rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": "notify"}}); rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	path := env.withNS("/v1/edges?fromRef=review&fromPort=fix&toRef=notify")
+	path := env.withNS("/v1/edges?fromRef=review&fromPort=" + store.ImplicitPort + "&toRef=notify")
 	if rr := env.do(t, http.MethodDelete, path, nil); rr.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -266,13 +284,11 @@ func listEdgeByToRef(t *testing.T, env *consoleEnv, toRef string) map[string]any
 // 入口边的 fromCapabilityId 恒为空串：左端是来源名，没有「哪一版」。
 func TestListEdgesReturnsResolvedIDs(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
+	from := env.seedCapability(t, "review", 1, []string{"out"})
 	to := env.seedCapability(t, "notify", 1, nil)
 
-	// 能力边：两端都是**裸名字**（跟随 latest）
-	if rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "notify",
-	}); rr.Code != http.StatusOK {
+	// 能力边：右端是**裸名字**（跟随 latest）；左端恒为能力名（PUT downstreams）
+	if rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": "notify"}}); rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
 	// 入口边：左端是来源名，右端钉死 `notify@1`
@@ -318,19 +334,15 @@ func TestListEdgesReturnsResolvedIDs(t *testing.T) {
 // 升级永远不生效。所以这条断言是语义级的，不只是字段名。
 func TestListEdgesResolvedIDFollowsLatest(t *testing.T) {
 	env := newConsoleEnv(t)
-	env.seedCapability(t, "review", 1, []string{"fix"})
+	env.seedCapability(t, "review", 1, []string{"out"})
 	v1 := env.seedCapability(t, "notify", 1, nil)
 
-	// 同一个出口扇出到两个引用：一个是裸名字（跟随），一个是钉死 v1
-	if rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "notify",
+	// 同一个能力扇出到两个引用：一个是裸名字（跟随），一个是钉死 v1
+	if rr := env.replaceDownstreams(t, "review", []map[string]any{
+		{"toRef": "notify"},
+		{"toRef": "notify@1"},
 	}); rr.Code != http.StatusOK {
-		t.Fatalf("create follow-latest status = %d, body=%s", rr.Code, rr.Body.String())
-	}
-	if rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID: env.nsID, FromRef: "review", FromPort: "fix", ToRef: "notify@1",
-	}); rr.Code != http.StatusOK {
-		t.Fatalf("create pinned status = %d, body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("create downstreams status = %d, body=%s", rr.Code, rr.Body.String())
 	}
 
 	if got := listEdgeByToRef(t, env, "notify")["toCapabilityId"]; got != v1.ID {

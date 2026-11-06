@@ -421,6 +421,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 最新产物的**解析后**内容（详情页展示脚本用）。单列一条而不是塞进上面的列表：
 	// files 是全部文件正文，塞进列表会把响应撑爆（见 capabilityArtifact 的注释）。
 	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(consoleH.capabilityArtifact))))
+	// 能力的下游：**整体替换**（CONTRACT-downstream-edit §2）。
+	// 这是能力边唯一的写入口（POST /v1/edges 的能力边分支返回 405 edge_write_removed）：
+	// 建、删、改优先级、重排都在这一次 PUT 里表达——界面上的「这组就是全部」
+	// 与线上的 replace 语义一一对应，不存在「删掉一个」要靠哨兵值的中间态。
+	mux.Handle("PUT /v1/capabilities/{name}/downstreams",
+		noStore(sessMW(http.HandlerFunc(consoleH.capabilityDownstreams))))
 	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
 	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))

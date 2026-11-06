@@ -32,26 +32,31 @@ func seedTargetWithSchema(t *testing.T, env *consoleEnv, name, schema string) *s
 const edgeLiteralTargetSchema = `{"type":"object","required":["to"],
 	"properties":{"to":{"type":"string"},"tries":{"type":"integer"}}}`
 
-// TestEdgeCreateWithLiterals 带字面量的边：创建成功，响应与列表**原样**回显。
+// TestEdgeCreateWithLiterals 带字面量的下游：创建成功，响应与列表**原样**回显。
+//
+// **改写说明**：造数从 `POST /v1/edges` 换成
+// `PUT /v1/capabilities/{name}/downstreams`（能力边的唯一写入口）。
+// 断言不变：字面量在写回执与列表里都原样可见。
 func TestEdgeCreateWithLiterals(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
-	to := seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
+	env.seedCapability(t, "review", 1, []string{"out"})
+	seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID:    env.nsID,
-		FromCapability: from.ID,
-		FromPort:       "fix",
-		ToCapability:   to.ID,
-		Literals:       json.RawMessage(`{"to":"u_123"}`),
-	})
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{
+		"toRef":    "notify",
+		"priority": 0,
+		"literals": json.RawMessage(`{"to":"u_123"}`),
+	}})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	edgeObj, _ := decode(t, rr)["edge"].(map[string]any)
-	lit, _ := edgeObj["literals"].(map[string]any)
+	links, _ := decode(t, rr)["links"].([]any)
+	if len(links) != 1 {
+		t.Fatalf("links = %v, want 1", links)
+	}
+	lit, _ := links[0].(map[string]any)["literals"].(map[string]any)
 	if lit["to"] != "u_123" {
-		t.Fatalf("创建响应里 edge.literals = %v, want {to:u_123}", edgeObj["literals"])
+		t.Fatalf("创建响应里 links[0].literals = %v, want {to:u_123}", links[0])
 	}
 
 	// 列表也原样带回（控制台要显示这个徽章）
@@ -72,26 +77,28 @@ func TestEdgeCreateWithLiterals(t *testing.T) {
 // TestEdgeCreateWithoutLiterals 不传 literals：默认 {}（老客户端行为不变）。
 func TestEdgeCreateWithoutLiterals(t *testing.T) {
 	env := newConsoleEnv(t)
-	from := env.seedCapability(t, "review", 1, []string{"fix"})
-	to := seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
+	env.seedCapability(t, "review", 1, []string{"out"})
+	seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
 
-	rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-		NamespaceID:    env.nsID,
-		FromCapability: from.ID,
-		FromPort:       "fix",
-		ToCapability:   to.ID,
-	})
+	rr := env.replaceDownstreams(t, "review", []map[string]any{{"toRef": "notify"}})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	edgeObj, _ := decode(t, rr)["edge"].(map[string]any)
-	lit, ok := edgeObj["literals"].(map[string]any)
+	links, _ := decode(t, rr)["links"].([]any)
+	if len(links) != 1 {
+		t.Fatalf("links = %v, want 1", links)
+	}
+	lit, ok := links[0].(map[string]any)["literals"].(map[string]any)
 	if !ok || len(lit) != 0 {
-		t.Fatalf("缺省 literals = %v, want {}", edgeObj["literals"])
+		t.Fatalf("缺省 literals = %v, want {}", links[0])
 	}
 }
 
-// TestEdgeLiteralsRejected 三类非法字面量 → 400 + edge_rejected（原因透传，客户端可修）。
+// TestEdgeLiteralsRejected 非法字面量 → 400 + edge_rejected（原因透传，客户端可修）。
+//
+// **改写说明**：造数换成 PUT downstreams；机器码仍是 `edge_rejected`（与 POST /v1/edges
+// 的入口边同源，同一份 checkEdgeLiterals），错误文案里的具体原因（哪个键不存在 /
+// 期望什么类型）原样透传——断言不变。
 func TestEdgeLiteralsRejected(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -106,16 +113,13 @@ func TestEdgeLiteralsRejected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newConsoleEnv(t)
-			from := env.seedCapability(t, "review", 1, []string{"fix"})
-			to := seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
+			env.seedCapability(t, "review", 1, []string{"out"})
+			seedTargetWithSchema(t, env, "notify", edgeLiteralTargetSchema)
 
-			rr := env.do(t, http.MethodPost, "/v1/edges", edgeRequest{
-				NamespaceID:    env.nsID,
-				FromCapability: from.ID,
-				FromPort:       "fix",
-				ToCapability:   to.ID,
-				Literals:       json.RawMessage(tc.literals),
-			})
+			rr := env.replaceDownstreams(t, "review", []map[string]any{{
+				"toRef":    "notify",
+				"literals": json.RawMessage(tc.literals),
+			}})
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("literals=%s status = %d, want 400; body=%s", tc.literals, rr.Code, rr.Body.String())
 			}

@@ -911,7 +911,7 @@ type capabilityListRequest struct {
 	//
 	// 有它就走**原子路径**：能力行、产物行、边行写在同一个事务里（见
 	// store.CreateCapabilityWithLinksAndArtifact）。没有它 = 今天的行为，一个字节都不变：
-	// 建能力 → （可选）存产物，边由调用方自己 POST /v1/edges 逐条建。
+	// 建能力 → （可选）存产物；下游边由调用方自己 PUT /v1/capabilities/{name}/downstreams 整体替换。
 	//
 	// 为什么不能逐条建：中间失败就留下「能力在、边缺」的半成品，而能力表是
 	// append-only 的——那个半成品永远撤不回来，客户端只能自己记一份待重试清单。
@@ -1797,6 +1797,101 @@ func (h *consoleHandler) writeBatchError(w http.ResponseWriter, ns nsScope, caps
 	})
 }
 
+// ---------- PUT /v1/capabilities/{name}/downstreams ----------
+
+// downstreamsRequest 是 PUT /v1/capabilities/{name}/downstreams 的请求体。
+//
+// Links 用**指针**：`{"links":[]}` 是合法的（清空 = 终端能力），而**缺字段**
+// 是请求写错了——把两者混成一种，任何一个漏传字段的客户端都会静默清掉拓扑。
+type downstreamsRequest struct {
+	// NamespaceID 是命名空间（query 里也可以给，query 优先）。
+	NamespaceID string `json:"namespaceId"`
+	// Links 是这组下游的全部（replace 语义，不是增量）。
+	Links *[]store.DownstreamSpec `json:"links"`
+}
+
+// capabilityDownstreams 在**能力里**整体替换它的下游（CONTRACT-downstream-edit §2）。
+//
+// 这是能力边**唯一**的写入口：`POST /v1/edges` 的能力边分支已经封掉（405
+// edge_write_removed），`DELETE /v1/edges` 只留作运维纠正。理由见契约 §0：
+// 原来「建下游在能力页、删下游在出口页、改优先级两个地方都没有」，用户配了 3 个
+// 下游想删 1 个就得换一页；而能力页还写着「点『编辑』可调优先级」——承诺了不存在的功能。
+//
+// 语义是 **replace**：提交的这组就是全部。空数组 = 清空。
+//
+// 响应带 `toCapabilityId` / `resolvedVersion`（引用此刻解析到的定义与版本），
+// 让前端不必自己实现 name→latest —— 那是第二份解析语义，两边一漂就是
+// 「页面说 v2、派发走了 v3」。
+func (h *consoleHandler) capabilityDownstreams(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, "PUT")
+		return
+	}
+	var req downstreamsRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	// 写端点：`*` → 400（一组下游属于且只属于一个命名空间）。
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
+	if !ok {
+		return
+	}
+	if req.Links == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "links is required（空数组 = 清空下游）",
+			"code":  "links_required",
+		})
+		return
+	}
+	// 路径里是能力名（不是版本）：一个能力的全部版本共用同一组出边。
+	name := store.RefName(strings.TrimSpace(r.PathValue("name")))
+	if name == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
+		return
+	}
+
+	links, err := h.db.ReplaceCapabilityDownstreams(r.Context(), ns.ID, name, *req.Links)
+	if err != nil {
+		// 客户端可修的校验失败（带机器码，前端据此高亮是哪一行）。
+		var rejected *store.DownstreamError
+		if errors.As(err, &rejected) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": rejected.Error(),
+				"code":  rejected.Code,
+			})
+			return
+		}
+		// 能力本身不存在：这个端点只改**已有能力**的出边。
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "capability not found", "code": "not_found"})
+			return
+		}
+		// literals 不合法：与 POST /v1/edges 同一个哨兵、同一个机器码。
+		if errors.Is(err, store.ErrEdgeRejected) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "edge_rejected",
+			})
+			return
+		}
+		// 跨命名空间引用（I11）→ 400，文案由命名空间层统一给。
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("replace capability downstreams failed",
+			"event", "console.caps.downstreams_failed",
+			"namespace_id", ns.ID, "name", name, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":  name,
+		"links": links, // 与请求同序；空时是 [] 而不是 null（I9）
+	})
+}
+
 // ---------- GET/POST/DELETE /v1/edges ----------
 
 // edgeRequest 是 POST/DELETE /v1/edges 的请求体。
@@ -1805,11 +1900,18 @@ func (h *consoleHandler) writeBatchError(w http.ResponseWriter, ns nsScope, caps
 // 旧字段名（fromCapability / toCapability）**输入兼容一个版本**：值可以是
 // 能力 id（老客户端）或引用（新客户端），store 统一把它解析成引用落库——
 // **绝不把 id 存进边**（那是 P2.2 要消灭的形状）。
+//
+// POST 现在只接受**入口边**（fromIsSource=true）；能力边走
+// PUT /v1/capabilities/{name}/downstreams（整体替换）。DELETE 仍两种都认。
 type edgeRequest struct {
 	// NamespaceID 是这条边所属的命名空间（query 里也可以给，query 优先）。
 	NamespaceID string `json:"namespaceId"`
 	// FromIsSource 为 true 时 FromRef 被解释为**来源名**（"github"），
-	// 用于建「入口边」；否则是上游能力的引用（`review` / `review@1`）。
+	// 用于建「入口边」。
+	//
+	// POST 只接受 true：能力边（false）的写入口已迁到
+	// PUT /v1/capabilities/{name}/downstreams（整体替换），旧路径返回 405
+	// `edge_write_removed`。DELETE 仍然两种都认（运维纠正用）。
 	FromIsSource bool   `json:"fromIsSource"`
 	FromRef      string `json:"fromRef"`
 	FromPort     string `json:"fromPort"`
@@ -1864,7 +1966,10 @@ func edgeListFilter(r *http.Request) string {
 	return firstNonEmpty(q.Get("fromRef"), q.Get("fromCapability"))
 }
 
-// edges 处理出口表 CRUD。
+// edges 处理出口表：GET（列表）/ POST（只建**入口边**）/ DELETE（两种边都认）。
+//
+// 能力边的写在 PUT /v1/capabilities/{name}/downstreams（整体替换）：
+// 能力的下游只在能力里改（CONTRACT-downstream-edit §0/§3）。
 func (h *consoleHandler) edges(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1978,11 +2083,17 @@ func (h *consoleHandler) resolveRefID(ctx context.Context, cache map[string]stri
 	return id
 }
 
-// createEdge 写入一条边。
+// createEdge 写入一条**入口边**（fromIsSource=true）。
 //
-// 校验分两层：
+// 能力边（fromIsSource=false）的写入口已经收掉：能力的下游只能在能力里改
+// （PUT /v1/capabilities/{name}/downstreams，整体替换）——见 CONTRACT-downstream-edit §3。
+// 那条分支返回 405 `edge_write_removed`，而不是在每个客户端里再写一遍
+// 「先删后建」的拼装逻辑（拼错了就是一条谁也发现不了的半条线）。
+// DELETE /v1/edges 保留（运维纠正用），GET 保留（图 / 详情 / trace 都靠它）。
+//
+// 入口边的校验与以前一致：
 //  1. store 层：两端引用要能解析（`name` / `name@version`；也接受能力 id 做输入兼容）、
-//     from_port ∈ 解析到的上游版本的 outputs、两端同命名空间（契约 I2 / I11）；
+//     两端同命名空间（契约 I2 / I11）；
 //     literals 必须是对象、键 ∈ 目标 params_schema、类型精确相等（设计 §5 定义期（存 link））
 //  2. 这里把 store 的拒绝翻译成 400（而不是 500）
 //
@@ -1994,6 +2105,26 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 		return
 	}
+	// 写端点：`*` → 400（一条边属于且只属于一个命名空间）
+	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
+	if !ok {
+		return
+	}
+	// 能力边：405。**故意**回 405 而不是 400/410：这个方法在当前资源上不再提供
+	// 那个语义，而入口边仍然走同一个 POST —— 客户端可以按 fromIsSource 区分。
+	// 放在命名空间校验之后：`namespaceId=*` / 缺参这种明显写错的请求先得到 400，
+	// 不让人误以为「换掉 fromIsSource 就能过」。
+	//
+	// 不设 `Allow` 头：POST 在这个资源上**是**允许的（入口边），只是不再提供
+	// 「建能力边」这个语义 —— 写一个 `Allow: GET, POST, DELETE` 只会让客户端以为
+	// 「改个 body 就能过」。迁移指引放在 `error` 里。
+	if !req.FromIsSource {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"code":  "edge_write_removed",
+			"error": "能力的下游请在能力里改（PUT /v1/capabilities/{name}/downstreams）",
+		})
+		return
+	}
 	fromRef, toRef := req.linkRefs()
 	if fromRef == "" || req.FromPort == "" || toRef == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -2001,12 +2132,6 @@ func (h *consoleHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// 写端点：`*` → 400（一条边属于且只属于一个命名空间）
-	ns, ok := h.resolveNamespace(w, r, req.NamespaceID, false)
-	if !ok {
-		return
-	}
-
 	e := &store.Edge{
 		NamespaceID:  ns.ID,
 		FromIsSource: req.FromIsSource,

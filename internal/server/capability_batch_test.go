@@ -367,7 +367,7 @@ func TestPostCapabilityBatchCycleMatchesSinglePath(t *testing.T) {
 		},
 	})
 
-	// ② 单建：同样的内容，逐条建（第二条边走 POST /v1/edges 闭合环）
+	// ② 单建：同样的内容，逐条建（第二条边走 PUT downstreams 闭合环）
 	singleEnv := newConsoleEnv(t)
 	singleEnv.seedCapability(t, "cyc.y", 1, []string{"out"})
 	rr := singleEnv.do(t, http.MethodPost, "/v1/capabilities", map[string]any{
@@ -379,12 +379,7 @@ func TestPostCapabilityBatchCycleMatchesSinglePath(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("单建前置（cyc.x → cyc.y）失败: %d %s", rr.Code, rr.Body.String())
 	}
-	closeRR := singleEnv.do(t, http.MethodPost, "/v1/edges", map[string]any{
-		"namespaceId": singleEnv.nsID,
-		"fromRef":     "cyc.y",
-		"fromPort":    "out",
-		"toRef":       "cyc.x",
-	})
+	closeRR := singleEnv.replaceDownstreams(t, "cyc.y", []map[string]any{{"toRef": "cyc.x"}})
 	singleRes := &decodeResult{code: closeRR.Code, body: closeRR.Body.String()}
 
 	// ③ 等价性：状态码必须一致（这就是「批量没有自己的环检测」的证据）

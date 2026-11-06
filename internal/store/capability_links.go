@@ -12,7 +12,8 @@ import (
 // 本文件是「能力 + 下游边（+ 产物）一次提交」的原子写入入口。
 //
 // 为什么需要它：控制台新建能力时填的「出口 + 下游」以前是 1 + N 个请求
-// （先 POST /v1/capabilities，再逐条 POST /v1/edges）。中间任何一条失败，
+// （先 POST /v1/capabilities，再逐条 POST /v1/edges——能力边那条路径现在已封，
+// 存量能力的下游走 PUT /v1/capabilities/{name}/downstreams 整体替换）。中间任何一条失败，
 // 库里就留下「能力在、边缺」的半成品——append-only 的能力表撤不回来，
 // 客户端只能在内存里记一份「待重试清单」（刷新就丢）。
 //
@@ -30,7 +31,7 @@ import (
 // 左端恒为**裸名字**（= 这个刚建的能力名，跟随 latest）：它一定是最新版本，
 // 用户在这里表达的语义就是「我这次建的这个能力，从这些出口接到那些下游」。
 // 想钉死版本是 Edge 的语义，不是「定义能力时顺手建边」的语义——真要钉死，
-// 建完之后用 POST /v1/edges 单独建一条即可。
+// 建完之后用 PUT /v1/capabilities/{name}/downstreams 把那条引用换成 `name@version`。
 type LinkSpec struct {
 	FromPort string          `json:"fromPort"`
 	ToRef    string          `json:"toRef"` // name 或 name@version；空 = 解析失败
