@@ -7,7 +7,13 @@
  * This locks the translation coverage so future regressions are caught.
  *
  * Coverage:
- *   A. en/es × 7 pages — no CJK in rendered innerText
+ *   A. en/es × 6 pages (PAGES) — no CJK in rendered innerText
+ *      Every page is opened **with an injected session**: without it the
+ *      protected pages (index/keys/receivers/security) answered 401 in
+ *      partials.js and redirected to login.html, so this group used to scan
+ *      the login page three times over and pass with zero real coverage
+ *      (#310). Protected pages additionally assert they did NOT land on the
+ *      login page — that assertion is the anti-degeneration guard for #310.
  *      (language-switcher native names "中文"/"日本語", and the sidebar
  *       namespace switcher's current namespace name — user data — are
  *       exempted by stripping them before scanning)
@@ -35,6 +41,17 @@ const PAGES = [
 	"docs.html",
 	"login.html",
 ];
+
+/* Pages that need a session (partials.js 的 isAuthedPage：除 login.html 外都会
+ * 用 api() 取数据，401 就跳 login.html?next=…）。A/A2 组必须带会话扫它们，
+ * 否则断言扫到的是登录页 —— 见 #310。 */
+const GUARDED_PAGES = new Set([
+	"index.html",
+	"keys.html",
+	"receivers.html",
+	"security.html",
+	"message.html",
+]);
 
 /* CJK Unicode ranges: CJK Unified Ideographs + Extension A */
 const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
@@ -68,8 +85,25 @@ async function injectSession(ctx, sessionValue, base) {
 			domain: u.hostname,
 			path: "/",
 			httpOnly: true,
+			secure: u.protocol === "https:",
 		},
 	]);
+}
+
+/* #310 防退化断言：受保护页必须真的渲染自己，而不是被 401 弹回登录页。
+ * 两路判定 —— URL 里出现 login.html，或页面里出现了登录卡片（#login-panel，
+ * 只有 login.html 有）。任意一条命中都算空转。 */
+async function assertNotLoginPage(page, name) {
+	const landedUrl = page.url();
+	const loginPanel = await page
+		.locator("#login-panel")
+		.count()
+		.catch(() => 0);
+	H.check(
+		name,
+		!/login\.html/.test(landedUrl) && loginPanel === 0,
+		`landed on: ${landedUrl} | #login-panel: ${loginPanel}`,
+	);
 }
 
 /* Open a page, wait for render, return the page handle + collected errors.
@@ -212,20 +246,37 @@ async function main() {
 	}
 
 	/* =========================================================
-	 * A. en/es × 7 pages — no CJK residue
+	 * A. en/es × 6 pages (PAGES) — no CJK residue
 	 * ========================================================= */
 	console.log("--- A: en/es pages — no CJK residue ---");
 	for (const lang of ["en", "es"]) {
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
+		/* #310：夹具顺序照 i18n.mjs 的 GUARDED 页面 —— newContext →
+		 * mockExternalCdn → injectSession。少了这一步，受保护页会 401 跳
+		 * login.html，整组断言扫的是登录页（空转绿灯）。 */
+		await injectSession(ctx, seedData.session, server.base);
 		for (const pageName of PAGES) {
-			const pageType = pageName === "login.html" ? "login" : "none";
+			const guarded = GUARDED_PAGES.has(pageName);
+			const pageType = guarded
+				? "workspace"
+				: pageName === "login.html"
+					? "login"
+					: "none";
 			const path = `/${lang}/${pageName}`;
 			const { page, errors } = await openPage(
 				ctx,
 				server.base + path,
 				pageType,
 			);
+			const landedUrl = page.url();
+			console.log(`  A ${lang}/${pageName} → ${landedUrl}`);
+			if (guarded) {
+				await assertNotLoginPage(
+					page,
+					`A ${lang}/${pageName} scanned itself (not login.html)`,
+				);
+			}
 			const text = await getScannedText(page);
 			const cjkLines = findCjk(text);
 			H.check(
@@ -252,10 +303,18 @@ async function main() {
 		}
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
+		/* message.html 同样是受保护页（partials.js 的 isAuthedPage），
+		 * 不带会话会被 401 弹回登录页 —— #310。 */
+		await injectSession(ctx, seedData.session, server.base);
 		const { page, errors } = await openPage(
 			ctx,
 			server.base + `/${lang}/message.html?id=${realMsgId}`,
-			"none",
+			"workspace",
+		);
+		console.log(`  A2 ${lang}/message.html → ${page.url()}`);
+		await assertNotLoginPage(
+			page,
+			`A2 ${lang}/message.html scanned itself (not login.html)`,
 		);
 		const text = await getScannedText(page);
 		const cjkLines = findCjk(text);
