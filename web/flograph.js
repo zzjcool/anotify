@@ -410,6 +410,8 @@
 
 	function mount(container, opts) {
 		const options = opts || {};
+		// 唯一允许改的既有代码：silk 是**纯渲染开关**，走另一套渲染器（见 mountSilk）。
+		if (options.silk) return mountSilk(container, options);
 		const nodes = (options.nodes || []).map((n) => Object.assign({}, n));
 		const edges = (options.edges || []).map((e) => Object.assign({}, e));
 
@@ -1482,6 +1484,1389 @@
 		const gg = parseInt(full.slice(2, 4), 16);
 		const b = parseInt(full.slice(4, 6), 16);
 		return `rgba(${r}, ${gg}, ${b}, ${alpha})`;
+	}
+
+	/* ============================================================
+	 * Silk 皮肤 —— trace 页「图」视图（design/flowline-lab.html 的 01 silk）
+	 *
+	 * 为什么另起一套渲染器，而不是给老图加一层皮肤：
+	 *   · 老路径是「dagre 布局 + 整体 transform 缩放到容器内」，一条 11 节点的
+	 *     链只能缩到 0.68，字小到读不了；Silk 是**绝对像素 1:1 的横向舞台**，
+	 *     卡片固定 238×78，靠原生 overflow 滚动 + 相机跟随看右半张图。
+	 *   · 源详情页（capabilityFlow）必须一个像素都不变 —— 所以只能在 mount()
+	 *     顶部按 options.silk 分派，既有渲染路径一律不碰。
+	 *
+	 * 与演示页的**有意差异**（契约 §12）：描边用 WAAPI + 实测长度（不用
+	 * pathLength=1）；行分配用紧凑分层（演示页按叶子铺开，t9 要 4 行 = 592px）；
+	 * 图标是生产 emoji（⚡◆◉○）；副标题是生产状态串；多回边分道；HUD 多图例 chip。
+	 * ============================================================ */
+
+	const SILK_CFG = {
+		W: 238,
+		H: 78,
+		GX: 92,
+		GY: 30,
+		TRIGW: 198,
+		PAD: 34,
+		narrow: { W: 164, H: 68, GX: 26, GY: 20, TRIGW: 124, PAD: 14 },
+	};
+	// 每个实例一份 defs id 前缀：同一个页面里可能同时挂多张 silk 图
+	// （事件流里展开多条链），固定 id 会让箭头/渐变互相串台。
+	let silkSeq = 0;
+
+	/** 状态色：丝带渐变终点用，与卡片 `--state` 同一套语义。 */
+	function silkStatusColor(kind) {
+		if (kind === "failed") return "var(--error)";
+		if (kind === "end" || kind === "succeeded") return "var(--success)";
+		if (kind === "running") return "var(--st-running)";
+		return "var(--st-pending)";
+	}
+
+	/** 回放时钟：<10s 给一位小数（6.8s），再长就整秒（31s）—— 与演示页一致。 */
+	function silkFmtClock(sec) {
+		const s = Number(sec) || 0;
+		return s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s";
+	}
+
+	/** 从副标题（"succeeded · 4.8s · ×2"）里取时长段；没有就留空。 */
+	function silkDurOf(sub) {
+		const parts = String(sub == null ? "" : sub).split(" \u00b7 ");
+		for (const p of parts) {
+			const s = p.trim();
+			if (/^\d+(\.\d+)?(ms|s|m\d+s?)$/.test(s)) return s;
+		}
+		return "";
+	}
+
+	/**
+	 * 三次贝塞尔路由。整条 silk 的边**只有一种形状**（单段 cubic），
+	 * 好处是采样/避让/标签取点都能用同一份数学，不用依赖 DOM 已经画出来。
+	 */
+	function silkCubic(x1, y1, c1x, c1y, c2x, c2y, x2, y2, kind) {
+		return {
+			kind: kind,
+			x1: x1,
+			y1: y1,
+			c1x: c1x,
+			c1y: c1y,
+			c2x: c2x,
+			c2y: c2y,
+			x2: x2,
+			y2: y2,
+			d:
+				"M" + x1 + " " + y1 + " C" + c1x + " " + c1y + " " + c2x + " " + c2y + " " + x2 + " " + y2,
+		};
+	}
+
+	/** 三点求值：t=0 是起点（from 一侧），t=1 是终点（to 一侧）。 */
+	function silkCubicAt(r, t) {
+		const u = 1 - t;
+		const a = u * u * u;
+		const b = 3 * u * u * t;
+		const c = 3 * u * t * t;
+		const dd = t * t * t;
+		return {
+			x: a * r.x1 + b * r.c1x + c * r.c2x + dd * r.x2,
+			y: a * r.y1 + b * r.c1y + c * r.c2y + dd * r.y2,
+		};
+	}
+
+	/** 前向边（契约 §5.1 / 演示页 pathBezier）：|dy|<3 时走 S 波。 */
+	function silkBezierRoute(x1, y1, x2, y2) {
+		const k = Math.max(38, Math.abs(x2 - x1) * 0.44);
+		if (Math.abs(y2 - y1) < 3) {
+			const wave = Math.min(13, Math.max(6, Math.abs(x2 - x1) * 0.09));
+			return silkCubic(x1, y1, x1 + k, y1 - wave, x2 - k, y2 + wave, x2, y2, "forward");
+		}
+		return silkCubic(x1, y1, x1 + k, y1, x2 - k, y2, x2, y2, "forward");
+	}
+
+	/** 顶部弧（契约 §5.3）：回边 / 跨两行以上 / 同行后退。lane 决定弧高。 */
+	function silkTopArc(from, to, lane, narrow) {
+		const x1 = from.x + from.w / 2;
+		const y1 = from.y;
+		const x2 = to.x + to.w / 2;
+		const y2 = to.y;
+		const drop = narrow ? 52 : 62;
+		const step = narrow ? 16 : 20;
+		const apex = Math.max(8, Math.min(y1, y2) - drop - lane * step);
+		return silkCubic(x1, y1, x1, apex, x2, apex, x2, y2, "top");
+	}
+
+	/** 行间带（契约 §5.2）：跨一行但横向不够，从上行底边走到下行顶边。 */
+	function silkBandRoute(from, to, GY) {
+		const fromUpper = (from.row || 0) <= (to.row || 0);
+		const up = fromUpper ? from : to;
+		const low = fromUpper ? to : from;
+		const ux = up.x + up.w / 2;
+		const uy = up.y + up.h;
+		const lx = low.x + low.w / 2;
+		const ly = low.y;
+		const c = Math.max(4, GY * 0.6);
+		return fromUpper
+			? silkCubic(ux, uy, ux, uy + c, lx, ly - c, lx, ly, "band")
+			: silkCubic(lx, ly, lx, ly - c, ux, uy + c, ux, uy, "band");
+	}
+
+	/**
+	 * 同层跨列绕行（对契约 §5 的**受控补充**，见交付报告）：
+	 * 同一行、往前走、但中间隔着别的卡片时，§5.1 的 S 波会直接穿过它们 ——
+	 * 那会撞上 §11.4「边不穿过无关节点」。做法是把弧抬到**行间空白带**里：
+	 * 有下一行就从两张卡的下边绕，否则从上边绕。曲线 y 全程落在空白带内。
+	 */
+	function silkRowBandRoute(from, to, maxRow, GY) {
+		const below = (from.row || 0) < maxRow;
+		const x1 = from.x + from.w / 2;
+		const x2 = to.x + to.w / 2;
+		const off = Math.max(8, GY - 4);
+		if (below) {
+			const y1 = from.y + from.h;
+			const y2 = to.y + to.h;
+			const band = y1 + off;
+			return silkCubic(x1, y1, x1, band, x2, band, x2, y2, "row-band");
+		}
+		const y1 = from.y;
+		const y2 = to.y;
+		const band = y1 - off;
+		return silkCubic(x1, y1, x1, band, x2, band, x2, y2, "row-band");
+	}
+
+	/**
+	 * mountSilk —— trace 图视图的 Silk 渲染器。
+	 *
+	 * 契约 §4–§10 逐条落地：紧凑分层布局（确定性）、4 层丝带 + 主 path、
+	 * 三种路由（+ 同层跨列绕行）、×N 标签、loop badge、心跳式回放、
+	 * 35px HUD、原生滚动相机、伪全屏、返回面与 _debug。
+	 */
+	function mountSilk(container, opts) {
+		const options = opts || {};
+
+		// 文案：与 mount() 同一套回退顺序（options.t → 注入字典 → 中文默认）。
+		const tt = (k, d) => {
+			if (typeof options.t === "function") {
+				const v = options.t(k, d);
+				if (v && v !== k) return v;
+			}
+			const dict = window.AnotifyI18n;
+			if (dict && dict[k]) return dict[k];
+			return d || k;
+		};
+
+		const uid = "slk" + ++silkSeq;
+		const nodes = (options.nodes || []).map((n) => Object.assign({}, n));
+		const nodeById = new Map();
+		for (const n of nodes) nodeById.set(n.id, n);
+		const ROOT_ID = options.root || "";
+		const trigger = nodeById.get(ROOT_ID) || null;
+		const beats = Array.isArray(options.beats) ? options.beats.filter((b) => b && b.cap) : [];
+
+		// 执行事实：首次执行拍号（0 起）与执行次数。步号/脉冲次数都从这里来，
+		// 不猜数组下标 —— 「跑测试跑了三次」就是三次拍。
+		const firstExec = new Map();
+		beats.forEach((b, i) => {
+			if (!firstExec.has(b.cap)) firstExec.set(b.cap, i);
+		});
+		const beatCaps = new Set(Array.from(firstExec.keys()));
+		const execKey = (id) => (firstExec.has(id) ? firstExec.get(id) : 1e9);
+		const stepNoOf = (id) => (firstExec.has(id) ? firstExec.get(id) + 1 : 0);
+		const failedCount = nodes.filter((n) => n.kind === "failed").length;
+		const totalSec = beats.length * 0.5;
+
+		const reduceNow = () =>
+			!!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+		// ---- 边：muted / 回边 / 是否走过 -----------------------------------
+		//
+		// `walked` 是「这次真的走过」的唯一判据：既不是 muted，又走过至少一次。
+		// 没走过的边一律按底图（is-muted）画 —— §11.2 的「动画刚开始没有没走过
+		// 却亮着的边」就靠这一条；只要有一条没走过的边漏了 is-muted，那条断言必红。
+		const edgeItems = [];
+		(options.edges || []).forEach((raw, i) => {
+			const e = Object.assign({}, raw);
+			const from = nodeById.get(e.from);
+			const to = nodeById.get(e.to);
+			if (!from || !to) return;
+			const times = Number(e.times) || 0;
+			const walked = e.muted !== true && times > 0;
+			edgeItems.push({
+				i: i,
+				from: e.from,
+				to: e.to,
+				port: e.port || "",
+				times: times,
+				heat: Number(e.heat) || 0,
+				loopback: e.loopback === true,
+				fromNode: from,
+				toNode: to,
+				walked: walked,
+				muted: !walked,
+				layers: [],
+				label: null,
+				badge: null,
+				badgeCx: 0,
+				badgeCy: 0,
+				route: null,
+			});
+		});
+
+		// ---- 外壳 DOM（契约 §9） -------------------------------------------
+		container.replaceChildren();
+		container.classList.add("flograph", "flograph--silk");
+		container.classList.remove("is-playing");
+
+		const bar = div("flograph-bar");
+		const barDot = document.createElement("i");
+		barDot.className = "flograph-bar-dot";
+		if (failedCount) barDot.classList.add("is-fail");
+		const barId = document.createElement("span");
+		barId.className = "flograph-bar-id";
+		barId.textContent = trigger ? String(trigger.label || "") : "";
+		const barMeta = document.createElement("span");
+		barMeta.className = "flograph-bar-meta";
+		barMeta.textContent =
+			beats.length + " 步 · 回放 " + silkFmtClock(totalSec) + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
+		const barSpacer = document.createElement("span");
+		barSpacer.className = "flograph-bar-spacer";
+		const ctrl = div("flograph-ctrl");
+		bar.appendChild(barDot);
+		bar.appendChild(barId);
+		bar.appendChild(barMeta);
+		bar.appendChild(barSpacer);
+		bar.appendChild(ctrl);
+		container.appendChild(bar);
+
+		const body = div("flograph-body");
+		const scroll = div("flograph-scroll");
+		scroll.tabIndex = 0;
+		scroll.setAttribute("role", "region");
+		scroll.setAttribute(
+			"aria-label",
+			tt("graph.silk_region", "执行链；可拖动，或使用左右方向键平移"),
+		);
+		const canvas = div("flograph-canvas");
+		scroll.appendChild(canvas);
+		body.appendChild(scroll);
+		container.appendChild(body);
+
+		const hud = div("flograph-hud");
+		const hudClock = document.createElement("span");
+		hudClock.className = "hud-clock";
+		const hudTrack = document.createElement("span");
+		hudTrack.className = "hud-track";
+		const hudFill = document.createElement("i");
+		hudTrack.appendChild(hudFill);
+		const hudActive = document.createElement("span");
+		hudActive.className = "hud-active";
+		hud.appendChild(hudClock);
+		hud.appendChild(hudTrack);
+		hud.appendChild(hudActive);
+		// 图例放 HUD 尾部（不是浮层）：它解释的是**这张图怎么读**，属于常驻信息。
+		const legendBox = div("flograph-legend");
+		for (const item of options.legend || []) {
+			const row = div("flograph-legend-row");
+			row.appendChild(div("flograph-legend-icon " + (item.cls || ""), item.icon || ""));
+			row.appendChild(div("flograph-legend-text", item.text || ""));
+			legendBox.appendChild(row);
+		}
+		hud.appendChild(legendBox);
+		container.appendChild(hud);
+
+		const fsHint = div(
+			"flograph-fullscreen-hint",
+			tt("graph.fullscreen_hint", "滚轮缩放 · 拖动平移 · Esc 退出"),
+		);
+		container.appendChild(fsHint);
+
+		// ---- SVG（defs 一次生成，边按 spec 顺序建） ------------------------
+		const svgRoot = svg("svg", { class: "flograph-svg" });
+		const defs = svg("defs");
+		svgRoot.appendChild(defs);
+		canvas.appendChild(svgRoot);
+
+		// 箭头：每实例唯一 id（同页多实例不会串）
+		const arrowId = "sl-arrow-" + uid;
+		const arrowMarker = svg("marker", {
+			id: arrowId,
+			viewBox: "0 0 8 8",
+			refX: "7",
+			refY: "4",
+			markerWidth: "5.2",
+			markerHeight: "5.2",
+			orient: "auto",
+		});
+		arrowMarker.appendChild(
+			svg("path", { d: "M0 0 8 4 0 8z", fill: "var(--accent)", "fill-opacity": ".72" }),
+		);
+		defs.appendChild(arrowMarker);
+
+		// 柔光 filter：id 带 uid；另外补一份固定 id `sl-soft`，
+		// 万一 CSS 照抄演示页的 `filter: url(#sl-soft)` 也能解析（内容完全一致，
+		// 多实例重复 id 在这里无害）。
+		const mkSoft = (id) => {
+			const f = svg("filter", {
+				id: id,
+				x: "-30%",
+				y: "-30%",
+				width: "160%",
+				height: "160%",
+			});
+			f.appendChild(svg("feGaussianBlur", { stdDeviation: "5" }));
+			defs.appendChild(f);
+		};
+		mkSoft("sl-soft-" + uid);
+		if (!document.getElementById("sl-soft")) mkSoft("sl-soft");
+
+		// ---- 卡片（契约 §6） ----------------------------------------------
+		const nodeEls = new Map();
+		let dragMoved = false;
+		for (const n of nodes) {
+			const kind = n.kind || "pipe";
+			const isRoot = n.id === ROOT_ID;
+			const pruned = n.kind === "pruned" && n.dead !== false;
+			const participates = isRoot || beatCaps.has(n.id);
+
+			const el = div("wf-node sl-node is-" + kind);
+			el.dataset.nodeId = n.id;
+			if (isRoot) el.classList.add("is-trigger");
+			if (pruned) el.classList.add("is-pruned");
+			if (n.role === "deadport") el.classList.add("is-deadport");
+			if (n.role) el.classList.add("role-" + n.role);
+			// 内联状态色：badge = 能力自定义状态色；accent 同时覆盖竖条与图标底。
+			// 剪枝 / deadport 不设（它们走 CSS 的 --faint，"这次没走"要有区别）。
+			if (!pruned && n.badge) el.style.setProperty("--state", String(n.badge));
+			if (!pruned && n.accent) {
+				el.style.setProperty("--state", String(n.accent));
+				el.style.setProperty("--accent", String(n.accent));
+			}
+
+			// 图标：只放 emoji 字形（E2E 锁死 textContent === ⚡/◆/◉/○）
+			const icon = div("wf-node-icon n-icon", n.icon || "◆");
+			const main = div("n-main");
+			main.appendChild(div("wf-node-title n-title", n.label || n.id));
+			const subText = n.sub == null ? "" : String(n.sub);
+			main.appendChild(div("wf-node-sub n-sub", subText));
+			const side = div("n-side");
+			let stepTxt = "--";
+			if (isRoot) stepTxt = "SRC";
+			else if (stepNoOf(n.id)) stepTxt = String(stepNoOf(n.id)).padStart(2, "0");
+			side.appendChild(div("n-step", stepTxt));
+			const durTxt = isRoot
+				? beats.length
+					? silkFmtClock(totalSec)
+					: ""
+				: silkDurOf(subText);
+			side.appendChild(div("n-dur", durTxt));
+			// 剪枝 / 触发器不画状态点：一个没执行、一个是"源"，都没有"这次的状态"。
+			if (!pruned && !isRoot) side.appendChild(div("wf-node-dot n-dot"));
+
+			el.appendChild(icon);
+			el.appendChild(main);
+			el.appendChild(side);
+			el.title = (n.label || n.id) + (subText ? " \u00b7 " + subText : "");
+
+			// 不参与这次执行的底图节点（剪枝 / deadport）常亮：它们是"配置里有、
+			// 这次没走"的底图，不该跟着回放一起浮现。
+			if (!participates) el.classList.add("is-in");
+
+			if (options.onNodeClick) {
+				el.style.cursor = "pointer";
+				el.addEventListener("click", (ev) => {
+					if (dragMoved) return;
+					ev.stopPropagation();
+					options.onNodeClick(n, ev);
+				});
+			}
+
+			canvas.appendChild(el);
+			nodeEls.set(n.id, { node: n, el: el, participates: participates });
+		}
+
+		// ---- 边（契约 §5：4 层丝带 + 主 path） -----------------------------
+		for (const e of edgeItems) {
+			const gid = "slg-" + uid + "-" + e.i;
+			const grad = svg("linearGradient", {
+				id: gid,
+				gradientUnits: "userSpaceOnUse",
+				x1: "0",
+				y1: "0",
+				x2: "0",
+				y2: "0",
+			});
+			const endColor = e.loopback ? "var(--st-acked)" : silkStatusColor(e.toNode.kind);
+			for (const [off, color, op] of [
+				["0", "var(--accent)", ".22"],
+				[".58", "var(--accent)", ".85"],
+				["1", endColor, ".95"],
+			]) {
+				grad.appendChild(svg("stop", { offset: off, "stop-color": color, "stop-opacity": op }));
+			}
+			defs.appendChild(grad);
+
+			const g = svg("g", { class: "sl-edge" });
+			if (e.muted) g.classList.add("is-muted");
+			if (e.loopback) {
+				g.classList.add("is-loop");
+				// 环上的边用"加深"而不是告警色（E2E 也按 is-hot 数环上的边）
+				g.classList.add("is-hot");
+			}
+
+			const mkLayer = (cls) => {
+				const p = svg("path", { class: cls, d: "" });
+				// **stroke 必须走内联样式**：ui.css 有全局 `.flograph-svg path { stroke:
+				// var(--line-strong) }`，CSS 声明稳压 presentation attribute，
+				// 写 stroke="url(#…)" 会被它盖成灰色。
+				p.style.stroke = "url(#" + gid + ")";
+				return p;
+			};
+			const under = mkLayer("sl-under");
+			under.setAttribute("filter", "url(#sl-soft-" + uid + ")");
+			const mid = mkLayer("sl-mid");
+			const core = mkLayer("sl-core");
+			core.dataset.from = e.from;
+			core.dataset.to = e.to;
+			core.dataset.port = e.port || "";
+			core.dataset.tip =
+				(e.fromNode.label || e.from) + " \u2192 " + (e.toNode.label || e.to) + (e.times > 1 ? " \u00d7" + e.times : "");
+			const marker = "url(#" + arrowId + ")";
+			core.setAttribute("marker-end", marker);
+			// is-muted / is-pre 都要落在**主 path 上**（E2E 直接读主 path 的 class）
+			if (e.muted) core.classList.add("is-muted");
+			if (e.loopback) core.classList.add("is-hot");
+			const shim = mkLayer("sl-shim");
+
+			g.appendChild(under);
+			g.appendChild(mid);
+			g.appendChild(core);
+			if (!e.muted) {
+				// muted 边不生成 shim/bead：底图不需要"流动"，也省一批合成层。
+				g.appendChild(shim);
+				if (!reduceNow()) {
+					const bead = svg("circle", { class: "sl-bead", r: e.loopback ? "2.6" : "2.4" });
+					const motion = svg("animateMotion", {
+						dur: e.loopback ? "5.2s" : "3.8s",
+						begin: (e.i * 0.28).toFixed(2) + "s",
+						repeatCount: "indefinite",
+						path: "",
+					});
+					bead.appendChild(motion);
+					g.appendChild(bead);
+					e.motion = motion;
+				}
+			}
+			svgRoot.appendChild(g);
+
+			e.g = g;
+			e.grad = grad;
+			e.marker = marker;
+			e.core = core;
+			e.layers = [under, mid, core, shim];
+		}
+
+		// ---- ×N 标签（契约 §5.5）：只给走过多次的边 ------------------------
+		// 出口名不上图，所以标签的**唯一**内容是 ×N；宁缺不叠（放不下就不放）。
+		for (const e of edgeItems) {
+			if (!(e.times >= 2)) continue;
+			const lb = div("flograph-edge-label is-pre", "\u00d7" + e.times);
+			lb.dataset.from = e.from;
+			lb.dataset.to = e.to;
+			canvas.appendChild(lb);
+			e.label = lb;
+		}
+
+		// ---- loop badge（契约 §7）：每条回边一个 ---------------------------
+		for (const e of edgeItems) {
+			if (!e.loopback) continue;
+			const b = div("loop-badge");
+			const n = Math.max(1, e.times || 1);
+			b.textContent = "\u21ba \u00d7" + n;
+			b.title =
+				"\u5faa\u73af\uff1a" +
+				(e.fromNode.label || e.from) +
+				" \u2192 " +
+				(e.toNode.label || e.to) +
+				"\uff0c\u8d70\u4e86 " +
+				n +
+				" \u6b21";
+			canvas.appendChild(b);
+			e.badge = b;
+		}
+
+		// ---- 布局（契约 §4）：紧凑分层 + 主父树 ----------------------------
+		//
+		// 主父选择用**确定性**规则：按 spec 的边顺序，每个节点取第一条非回边入边。
+		// 为什么不是契约 §4.1.3 字面的「优先 times>0」：在 t9 上那样选会得到
+		// run-tests 挂在 analyze-pr、alert 挂在 report-send 的树，最深 4 列 / 3 行
+		// （contentH 484 → 舞台 560px），既与 §4.3 记录的 t9 实测（2 行 / maxDepth 6
+		// / 2576×376）不符，也直接撞上 §11 与 fit 断言的「纵向完整收进舞台」。
+		// 详见交付报告「与契约的偏离」。
+		function computeGrid() {
+			const parent = new Map();
+			for (const e of edgeItems) {
+				if (e.loopback) continue;
+				if (!e.from || e.from === ROOT_ID) continue; // 触发器独占第 0 列
+				if (e.to === ROOT_ID) continue;
+				if (parent.has(e.to)) continue;
+				parent.set(e.to, e.from);
+			}
+			// 深度：沿 parent 链迭代求解（发现环就把环头当 root，绝不递归爆栈）
+			const depth = new Map();
+			for (const n of nodes) {
+				if (n.id === ROOT_ID || depth.has(n.id)) continue;
+				const chain = [];
+				const seen = new Set();
+				let cur = n.id;
+				while (cur && !depth.has(cur) && !seen.has(cur)) {
+					seen.add(cur);
+					chain.push(cur);
+					cur = parent.get(cur) || null;
+				}
+				let base = cur && depth.has(cur) ? depth.get(cur) : -1;
+				for (let k = chain.length - 1; k >= 0; k--) {
+					base = Math.max(0, base + 1);
+					depth.set(chain[k], base);
+				}
+			}
+			// 同一 depth 内的兄弟顺序：首次执行拍号 → id
+			const kids = new Map();
+			for (const n of nodes) {
+				const p = parent.get(n.id);
+				if (!p) continue;
+				if (!kids.has(p)) kids.set(p, []);
+				kids.get(p).push(n.id);
+			}
+			const kidIdx = new Map();
+			for (const arr of kids.values()) {
+				arr.sort((a, b) => execKey(a) - execKey(b) || String(a).localeCompare(String(b)));
+				arr.forEach((id, i) => kidIdx.set(id, i));
+			}
+			let maxDepth = 0;
+			const byDepth = new Map();
+			for (const n of nodes) {
+				if (n.id === ROOT_ID) continue;
+				const d = depth.get(n.id) || 0;
+				maxDepth = Math.max(maxDepth, d);
+				if (!byDepth.has(d)) byDepth.set(d, []);
+				byDepth.get(d).push(n.id);
+			}
+			// 行分配：按 depth 升序；每个节点尽量落在**父的行**上，被占就取最近的空行
+			// （同距离优先向上，再向下）。同一 (depth,row) 绝不允许两个节点。
+			const rowOf = new Map();
+			const taken = new Map();
+			for (let d = 0; d <= maxDepth; d++) {
+				const ids = (byDepth.get(d) || []).slice().sort((a, b) => {
+					const pa = parent.get(a);
+					const pb = parent.get(b);
+					const ra = pa && rowOf.has(pa) ? rowOf.get(pa) : 0;
+					const rb = pb && rowOf.has(pb) ? rowOf.get(pb) : 0;
+					return (
+						ra - rb ||
+						(kidIdx.get(a) || 0) - (kidIdx.get(b) || 0) ||
+						execKey(a) - execKey(b) ||
+						String(a).localeCompare(String(b))
+					);
+				});
+				const used = taken.get(d) || new Set();
+				taken.set(d, used);
+				for (const id of ids) {
+					const p = parent.get(id);
+					const prefer = p && rowOf.has(p) ? rowOf.get(p) : 0;
+					let row = prefer;
+					if (used.has(row)) {
+						row = -1;
+						for (let k = 1; k < 400 && row < 0; k++) {
+							if (prefer - k >= 0 && !used.has(prefer - k)) row = prefer - k;
+							else if (!used.has(prefer + k)) row = prefer + k;
+						}
+						if (row < 0) row = prefer;
+					}
+					used.add(row);
+					rowOf.set(id, row);
+				}
+			}
+			let maxRow = 0;
+			for (const r of rowOf.values()) maxRow = Math.max(maxRow, r);
+			const roots = nodes.filter((n) => n.id !== ROOT_ID && !parent.has(n.id)).map((n) => n.id);
+			return { parent: parent, depth: depth, row: rowOf, maxDepth: maxDepth, maxRow: maxRow, roots: roots };
+		}
+		const G = computeGrid();
+
+		let geo = null;
+		let zoom = 1;
+
+		/** 坐标（契约 §4.4）：x 按列、y 按行，触发器独占第 0 列。 */
+		function computeGeo(TOP, narrow) {
+			const nm = narrow ? SILK_CFG.narrow : SILK_CFG;
+			const P = narrow ? SILK_CFG.narrow.PAD : SILK_CFG.PAD;
+			const W = nm.W;
+			const H = nm.H;
+			const GX = nm.GX;
+			const GY = nm.GY;
+			const TRIGW = nm.TRIGW;
+			for (const n of nodes) {
+				if (n.id === ROOT_ID) continue;
+				const d = G.depth.get(n.id) || 0;
+				const r = G.row.get(n.id) || 0;
+				n.depth = d;
+				n.row = r;
+				n.x = P + TRIGW + GX + d * (W + GX);
+				n.y = TOP + r * (H + GY);
+				n.w = W;
+				n.h = H;
+			}
+			const rootRows = G.roots.map((id) => G.row.get(id) || 0);
+			const trigRow = narrow
+				? rootRows[0] || 0
+				: rootRows.length
+					? rootRows.reduce((a, b) => a + b, 0) / rootRows.length
+					: 0;
+			if (trigger) {
+				trigger.depth = -1;
+				trigger.row = trigRow;
+				trigger.x = P;
+				trigger.w = TRIGW;
+				trigger.h = H;
+				trigger.y = TOP + trigRow * (H + GY);
+			}
+			const contentW = P * 2 + TRIGW + GX + (G.maxDepth + 1) * W + G.maxDepth * GX;
+			const contentH = TOP * 2 + (G.maxRow + 1) * H + G.maxRow * GY + (narrow ? 0 : 14);
+			return {
+				narrow: narrow,
+				P: P,
+				W: W,
+				H: H,
+				GX: GX,
+				GY: GY,
+				TRIGW: TRIGW,
+				TOP: TOP,
+				contentW: contentW,
+				contentH: contentH,
+			};
+		}
+
+		/** 碰撞检测：沿曲线采样，看是否落进**无关**节点矩形（内缩 1px，同 E2E）。 */
+		function routeHitsNodes(route, fromId, toId) {
+			for (let k = 1; k < 40; k++) {
+				const p = silkCubicAt(route, k / 40);
+				for (const n of nodes) {
+					if (n.id === fromId || n.id === toId) continue;
+					if (p.x > n.x + 1 && p.x < n.x + n.w - 1 && p.y > n.y + 1 && p.y < n.y + n.h - 1) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		/**
+		 * 路由选择：每条边按"候选顺序"取第一个**不穿过无关节点**的形状。
+		 *
+		 * 候选顺序 = 契约 §5 的三种路由（前向 / 行间带 / 顶部弧），第 3 种之前
+		 * 插一条「同层跨列绕行」：同行、往前、中间隔着别的卡片时，§5.1 的 S 波
+		 * 会横穿那些卡片（t9 的 analyze-pr→run-tests 与 report-send→alert 就是）。
+		 * 顶部弧按需分道：只有真的走了顶部空隙的边才占一道，TOP 跟着道数长。
+		 */
+		function routeAll(g) {
+			const routes = [];
+			let lane = 0;
+			for (const e of edgeItems) {
+				const from = e.fromNode;
+				const to = e.toNode;
+				const rowDiff = Math.abs((to.row || 0) - (from.row || 0));
+				const x1 = from.x + from.w;
+				const y1 = from.y + from.h / 2;
+				const x2 = to.x - 4;
+				const y2 = to.y + to.h / 2;
+				const forward = x2 - x1 >= 40 && rowDiff <= 1;
+				const cands = [];
+				if (e.loopback) {
+					cands.push(silkTopArc(from, to, lane, g.narrow));
+				} else {
+					if (forward) cands.push(silkBezierRoute(x1, y1, x2, y2));
+					if (rowDiff === 1) cands.push(silkBandRoute(from, to, g.GY));
+					if (rowDiff === 0) cands.push(silkRowBandRoute(from, to, G.maxRow, g.GY));
+					cands.push(silkTopArc(from, to, lane, g.narrow));
+				}
+				let chosen = cands[0];
+				for (const c of cands) {
+					if (c && !routeHitsNodes(c, e.from, e.to)) {
+						chosen = c;
+						break;
+					}
+				}
+				if (chosen && chosen.kind === "top") lane += 1;
+				routes.push(chosen);
+			}
+			return { routes: routes, lanes: lane };
+		}
+
+		let baseH = 480;
+
+		function measureBaseHeight() {
+			const prev = container.style.getPropertyValue("--silk-h");
+			if (prev) container.style.removeProperty("--silk-h");
+			const h = container.getBoundingClientRect().height || 480;
+			if (prev) container.style.setProperty("--silk-h", prev);
+			return h;
+		}
+
+		/**
+		 * 舞台高度收敛（契约 §9）：先量旧的 clamp 值，再取 min(需要的高度, 旧值)。
+		 * 图比舞台矮就不留白（silk 的舞台永远是"刚好装下这张图"），
+		 * 比舞台高就保持原高度、由滚动条兜底。
+		 */
+		function updateStageHeight() {
+			if (!geo) return;
+			const need = geo.contentH + 39 + 35 + 2;
+			const want = Math.round(Math.min(need, baseH));
+			const cur = container.style.getPropertyValue("--silk-h");
+			if (cur !== want + "px") container.style.setProperty("--silk-h", want + "px");
+		}
+
+		function applyZoom() {
+			if (!geo) return;
+			canvas.style.width = Math.round(geo.contentW * zoom) + "px";
+			canvas.style.height = Math.round(geo.contentH * zoom) + "px";
+			if (zoom === 1) {
+				canvas.style.transform = "";
+				canvas.style.transformOrigin = "";
+			} else {
+				canvas.style.transformOrigin = "0 0";
+				canvas.style.transform = "scale(" + zoom + ")";
+			}
+		}
+
+		function overlap2(a, b, pad) {
+			const p = pad || 0;
+			return a.l < b.r + p && a.r > b.l - p && a.t < b.b + p && a.b > b.t - p;
+		}
+
+		/** ×N 标签落点（契约 §5.5）：中点为先，按固定序列避让；全撞就跳过。 */
+		function placeLabels() {
+			const nodeRects = nodes.map((n) => ({ l: n.x, r: n.x + n.w, t: n.y, b: n.y + n.h }));
+			const badgeRects = [];
+			for (const e of edgeItems) {
+				if (!e.badge) continue;
+				const w = e.badge.offsetWidth || 44;
+				const h = e.badge.offsetHeight || 18;
+				badgeRects.push({
+					l: e.badgeCx - w / 2,
+					r: e.badgeCx + w / 2,
+					t: e.badgeCy - h / 2,
+					b: e.badgeCy + h / 2,
+				});
+			}
+			const placed = [];
+			const cands = [0.5, 0.58, 0.42, 0.66, 0.34, 0.74, 0.26, 0.82, 0.18];
+			for (const e of edgeItems) {
+				if (!e.label) continue;
+				const path = e.core;
+				const len = path.getTotalLength ? path.getTotalLength() : 0;
+				const w = e.label.offsetWidth || 40;
+				const h = e.label.offsetHeight || 16;
+				let spot = null;
+				for (const t of cands) {
+					if (!len) break;
+					const pt = path.getPointAtLength(len * t);
+					const rc = { l: pt.x - w / 2, r: pt.x + w / 2, t: pt.y - h / 2, b: pt.y + h / 2 };
+					if (nodeRects.some((r) => overlap2(rc, r, 2))) continue;
+					if (placed.some((r) => overlap2(rc, r, 2))) continue;
+					if (badgeRects.some((r) => overlap2(rc, r, 2))) continue;
+					spot = { x: pt.x, y: pt.y, rc: rc };
+					break;
+				}
+				if (!spot) {
+					e.label.style.display = "none";
+					continue;
+				}
+				e.label.style.display = "";
+				e.label.style.left = spot.x + "px";
+				e.label.style.top = spot.y + "px";
+				placed.push(spot.rc);
+			}
+		}
+
+		function placeBadges() {
+			for (const e of edgeItems) {
+				if (!e.badge || !e.route) continue;
+				const r = e.route;
+				const cx = (r.x1 + r.x2) / 2;
+				const cy = r.kind === "top" ? Math.min(r.c1y, r.c2y) : Math.min(r.y1, r.y2) - 12;
+				e.badgeCx = cx;
+				e.badgeCy = cy;
+				e.badge.style.left = cx + "px";
+				e.badge.style.top = cy + "px";
+			}
+		}
+
+		function applyGeometry() {
+			const g = geo;
+			svgRoot.setAttribute("width", String(g.contentW));
+			svgRoot.setAttribute("height", String(g.contentH));
+			svgRoot.setAttribute("viewBox", "0 0 " + g.contentW + " " + g.contentH);
+			// 1:1 用户单位：viewBox 与 CSS px 尺寸必须一致，否则线会被二次缩放。
+			svgRoot.style.width = g.contentW + "px";
+			svgRoot.style.height = g.contentH + "px";
+			applyZoom();
+			for (const n of nodes) {
+				const rec = nodeEls.get(n.id);
+				if (!rec) continue;
+				rec.el.style.left = n.x + "px";
+				rec.el.style.top = n.y + "px";
+				rec.el.style.width = n.w + "px";
+				rec.el.style.height = n.h + "px";
+			}
+			for (const e of edgeItems) {
+				const r = e.route;
+				if (!r) continue;
+				for (const p of e.layers) p.setAttribute("d", r.d);
+				// 渐变跟着端点走（userSpaceOnUse）：重排/断点切换后颜色方向不能歪。
+				e.grad.setAttribute("x1", String(r.x1));
+				e.grad.setAttribute("y1", String(r.y1));
+				e.grad.setAttribute("x2", String(r.x2));
+				e.grad.setAttribute("y2", String(r.y2));
+				if (e.motion) e.motion.setAttribute("path", r.d);
+			}
+			placeBadges();
+			placeLabels();
+			updateStageHeight();
+		}
+
+		function relayout() {
+			const narrow = isNarrow();
+			// 起手 TOP：有回边就先给 88（narrow 56），没有就 34（narrow 14）；
+			// 路由完再按"真的占了几道顶部空隙"收敛，最多迭代 3 次。
+			let TOP = edgeItems.some((e) => e.loopback)
+				? narrow
+					? 56
+					: 88
+				: narrow
+					? 14
+					: 34;
+			let routes = null;
+			for (let iter = 0; iter < 3; iter++) {
+				geo = computeGeo(TOP, narrow);
+				const res = routeAll(geo);
+				routes = res.routes;
+				const next =
+					res.lanes === 0
+						? narrow
+							? 14
+							: 34
+						: narrow
+							? 56 + (res.lanes - 1) * 16
+							: 88 + (res.lanes - 1) * 20;
+				if (next === TOP) break;
+				TOP = next;
+			}
+			edgeItems.forEach((e, i) => {
+				e.route = routes[i] || null;
+			});
+			applyGeometry();
+		}
+
+		function isNarrow() {
+			let w = scroll.clientWidth || 0;
+			if (!w) w = container.clientWidth || 0;
+			if (!w) w = 910;
+			return w < 620;
+		}
+
+		baseH = measureBaseHeight();
+		relayout();
+
+		// ---- HUD 初值 ------------------------------------------------------
+		function setProgress(sec) {
+			const p = totalSec > 0 ? Math.max(0, Math.min(1, sec / totalSec)) : 0;
+			hudFill.style.width = (p * 100).toFixed(1) + "%";
+			hudClock.textContent =
+				"\u56de\u653e " + silkFmtClock(Math.min(sec, totalSec)) + " / " + silkFmtClock(totalSec);
+		}
+		const doneLabel = () =>
+			beats.length + " \u6b65\u5b8c\u6210" + (failedCount ? " \u00b7 " + failedCount + " \u5931\u8d25" : "");
+		setProgress(0);
+		hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
+
+		// ---- 相机（原生滚动，不用 transform） -----------------------------
+		let followOff = false;
+		function followTo(node) {
+			if (followOff || !node || node.id === ROOT_ID) return;
+			const max = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+			const target = node.x + node.w / 2 - scroll.clientWidth / 2;
+			scroll.scrollTo({
+				left: Math.max(0, Math.min(max, target)),
+				behavior: reduceNow() ? "auto" : "smooth",
+			});
+		}
+		function resetCamera() {
+			followOff = false;
+			scroll.scrollLeft = 0;
+		}
+
+		function onScrollKey(ev) {
+			const k = ev.key;
+			if (k !== "ArrowRight" && k !== "ArrowLeft" && k !== "Home" && k !== "End") return;
+			ev.preventDefault();
+			followOff = true;
+			const behavior = reduceNow() ? "auto" : "smooth";
+			if (k === "Home") scroll.scrollTo({ left: 0, behavior: behavior });
+			else if (k === "End") scroll.scrollTo({ left: scroll.scrollWidth, behavior: behavior });
+			else scroll.scrollBy({ left: k === "ArrowRight" ? 140 : -140, behavior: behavior });
+		}
+
+		function onPointerDown(ev) {
+			followOff = true;
+			dragMoved = false;
+			if (ev.pointerType !== "mouse") return;
+			scroll.classList.add("is-dragging");
+			const startX = ev.clientX;
+			const startLeft = scroll.scrollLeft;
+			const move = (e2) => {
+				const dx = e2.clientX - startX;
+				if (Math.abs(dx) > 3) dragMoved = true;
+				scroll.scrollLeft = startLeft - dx;
+			};
+			const up = () => {
+				scroll.classList.remove("is-dragging");
+				scroll.removeEventListener("pointermove", move);
+				scroll.removeEventListener("pointerup", up);
+				scroll.removeEventListener("pointercancel", up);
+			};
+			if (scroll.setPointerCapture) {
+				try {
+					scroll.setPointerCapture(ev.pointerId);
+				} catch (err) {
+					/* 指针已经抬起 / 不支持的实现：忽略 */
+				}
+			}
+			scroll.addEventListener("pointermove", move);
+			scroll.addEventListener("pointerup", up);
+			scroll.addEventListener("pointercancel", up);
+			ev.preventDefault();
+		}
+		const onStopFollow = () => {
+			followOff = true;
+		};
+
+		scroll.addEventListener("pointerdown", onPointerDown, { passive: false });
+		scroll.addEventListener("wheel", onStopFollow, { passive: true });
+		scroll.addEventListener("touchstart", onStopFollow, { passive: true });
+		scroll.addEventListener("keydown", onScrollKey);
+
+		// ---- 控件（契约 §9）：speed / replay / zoom / fit / fullscreen -----
+		const canReplay = beats.length >= 2;
+		const SPEEDS = [1, 0.5, 2];
+		function paintSpeed(btn) {
+			const txt = (revealSpeed === 1 ? "1" : String(revealSpeed)) + "\u00d7";
+			btn.textContent = txt;
+			const title = tt("graph.speed", "\u64ad\u653e\u901f\u5ea6") + " " + txt;
+			btn.title = title;
+			btn.setAttribute("aria-label", title);
+		}
+		if (canReplay) {
+			const speedBtn = document.createElement("button");
+			speedBtn.type = "button";
+			speedBtn.dataset.fgAction = "speed";
+			speedBtn.classList.add("fg-speed");
+			paintSpeed(speedBtn);
+			speedBtn.addEventListener("click", (ev) => {
+				ev.stopPropagation();
+				const i = SPEEDS.indexOf(revealSpeed);
+				revealSpeed = SPEEDS[(i + 1) % SPEEDS.length] || 1;
+				paintSpeed(speedBtn);
+				playEnter(true);
+			});
+			ctrl.appendChild(speedBtn);
+		}
+		for (const [key, icon, title, fn] of [
+			["replay", "replay", tt("graph.replay", "\u91cd\u64ad\u52a8\u753b"), () => playEnter(true)],
+			["zoom-in", "zoom-in", tt("graph.zoom_in", "\u653e\u5927"), () => zoomBy(1.25)],
+			["zoom-out", "zoom-out", tt("graph.zoom_out", "\u7f29\u5c0f"), () => zoomBy(1 / 1.25)],
+			["fit", "fit", tt("graph.fit", "\u9002\u5e94\u89c6\u56fe"), () => fit()],
+			["fullscreen", "expand", tt("graph.fullscreen", "\u5168\u5c4f"), () => toggleFullscreen()],
+		]) {
+			if (!canReplay && key === "replay") continue;
+			if (key === "fullscreen" && !options.showFullscreen) continue;
+			const b = document.createElement("button");
+			b.type = "button";
+			b.title = title;
+			b.dataset.fgAction = key;
+			b.setAttribute("aria-label", title);
+			b.appendChild(ctrlIcon(icon));
+			b.addEventListener("click", (ev) => {
+				ev.stopPropagation();
+				fn();
+			});
+			ctrl.appendChild(b);
+		}
+
+		function zoomBy(factor) {
+			const next = Math.max(1, Math.min(3, zoom * factor));
+			if (Math.abs(next - zoom) < 0.001) return;
+			zoom = next;
+			applyZoom();
+		}
+		function fit() {
+			zoom = 1;
+			applyZoom();
+			resetCamera();
+		}
+
+		// ---- 伪全屏（与既有 FlowGraph 同一套做法） -------------------------
+		const fsPlaceholder = document.createElement("div");
+		fsPlaceholder.className = "flograph-placeholder";
+		fsPlaceholder.hidden = true;
+		let fullscreen = false;
+		let fsRestore = null;
+
+		function onFullscreenChange(v) {
+			const b = ctrl.querySelector('[data-fg-action="fullscreen"]');
+			if (b) {
+				const title = v
+					? tt("graph.exit_fullscreen", "\u9000\u51fa\u5168\u5c4f\uff08Esc\uff09")
+					: tt("graph.fullscreen", "\u5168\u5c4f");
+				b.title = title;
+				b.setAttribute("aria-label", title);
+				b.replaceChildren(ctrlIcon(v ? "collapse" : "expand"));
+				b.classList.toggle("is-on", v);
+			}
+			fsHint.classList.toggle("is-on", v);
+		}
+
+		function setFullscreen(on) {
+			if (on === fullscreen) return;
+			fullscreen = on;
+			if (on) {
+				const box = container.getBoundingClientRect();
+				fsRestore = {
+					parent: container.parentNode,
+					next: container.nextSibling,
+					style: container.getAttribute("style"),
+					w: Math.round(box.width),
+					h: Math.round(box.height),
+				};
+				fsPlaceholder.style.width = fsRestore.w + "px";
+				fsPlaceholder.style.height = fsRestore.h + "px";
+				fsPlaceholder.hidden = false;
+				if (container.parentNode) container.parentNode.insertBefore(fsPlaceholder, container);
+				container.classList.add("is-fullscreen");
+				document.body.appendChild(container);
+				document.documentElement.classList.add("flograph-fullscreen-open");
+			} else {
+				document.documentElement.classList.remove("flograph-fullscreen-open");
+				container.classList.remove("is-fullscreen");
+				const r = fsRestore;
+				if (r && r.parent) {
+					if (r.next && r.next.parentNode === r.parent) r.parent.insertBefore(container, r.next);
+					else r.parent.appendChild(container);
+				}
+				if (r && r.style == null) container.removeAttribute("style");
+				else if (r) container.setAttribute("style", r.style);
+				fsPlaceholder.remove();
+				fsPlaceholder.hidden = true;
+				fsRestore = null;
+			}
+			// 容器尺寸彻底变了：下一帧重排（含 narrow 断点与 --silk-h）
+			requestAnimationFrame(() => {
+				if (!fullscreen && !container.isConnected) return;
+				baseH = measureBaseHeight();
+				relayout();
+				onFullscreenChange(fullscreen);
+			});
+		}
+		function toggleFullscreen() {
+			setFullscreen(!fullscreen);
+		}
+		function onFsKey(ev) {
+			if (!fullscreen) return;
+			if (ev.key === "Escape") {
+				ev.preventDefault();
+				setFullscreen(false);
+			}
+		}
+		window.addEventListener("keydown", onFsKey);
+
+		// ---- 尺寸变化：narrow 变了才重排（避免抖动），高度总是跟着重算 -----
+		let ro = null;
+		let rafResize = 0;
+		function onResize() {
+			if (rafResize) return;
+			rafResize = requestAnimationFrame(() => {
+				rafResize = 0;
+				if (!container.isConnected) return;
+				baseH = measureBaseHeight();
+				if (isNarrow() !== geo.narrow) relayout();
+				else updateStageHeight();
+			});
+		}
+		if (typeof ResizeObserver === "function") {
+			ro = new ResizeObserver(onResize);
+			ro.observe(scroll);
+		}
+		window.addEventListener("resize", onResize);
+
+		// ---- 动画 / 状态机（契约 §8） -------------------------------------
+		let animated = false;
+		let lastStepMs = 0;
+		let ticker = null;
+		const timers = new Set();
+
+		function clearTimers() {
+			for (const id of Array.from(timers)) clearTimeout(id);
+			timers.clear();
+			if (ticker) {
+				clearInterval(ticker);
+				ticker = null;
+			}
+		}
+		function later(fn, ms) {
+			const id = setTimeout(() => {
+				timers.delete(id);
+				fn();
+			}, ms);
+			timers.add(id);
+			return id;
+		}
+
+		function resetReveal() {
+			clearTimers();
+			container.classList.remove("is-playing");
+			for (const rec of nodeEls.values()) {
+				rec.el.classList.remove("is-pre", "is-hot", "is-pulse");
+				if (!rec.participates) rec.el.classList.add("is-in");
+			}
+			for (const e of edgeItems) {
+				e.g.classList.remove("is-on", "is-loop");
+				if (e.core) {
+					e.core.classList.remove("is-pre");
+					if (e.core.getAnimations) e.core.getAnimations().forEach((a) => a.cancel());
+					delete e.core.dataset.animated;
+					e.core.style.strokeDasharray = "";
+					e.core.style.strokeDashoffset = "";
+					e.core.setAttribute("marker-end", e.marker);
+				}
+				if (e.label) e.label.classList.add("is-pre");
+				if (e.badge) e.badge.classList.remove("is-loop");
+			}
+			setProgress(0);
+			hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
+		}
+
+		/**
+		 * 把一条边"沿着路径画出来"。
+		 *
+		 * 与演示页的唯一有意差异（契约 §12.1）：**用主 path 的实测长度**做
+		 * dasharray/dashoffset，不用 pathLength=1 —— E2E 的「逐段描出」断言要求
+		 * computedDash > 1 且 0 < |offset| < dash-0.5，pathLength=1 会把 dash
+		 * 归一化成 1，那条断言必红。观感一致：线沿路径长出来。
+		 */
+		function drawEdge(e) {
+			const path = e.core;
+			if (!path) return;
+			if (path.dataset.animated === "1") {
+				if (e.label) e.label.classList.remove("is-pre");
+				return;
+			}
+			path.classList.remove("is-pre");
+			path.dataset.animated = "1";
+			e.g.classList.add("is-on");
+
+			const finish = () => {
+				path.style.strokeDasharray = "";
+				path.style.strokeDashoffset = "";
+				path.setAttribute("marker-end", e.marker);
+				if (e.label) e.label.classList.remove("is-pre");
+			};
+
+			const len = path.getTotalLength ? path.getTotalLength() : 0;
+			if (len > 0 && typeof path.animate === "function") {
+				path.style.strokeDasharray = String(len);
+				path.style.strokeDashoffset = String(len);
+				// 箭头等画完再出现，否则"线还没到、箭头先杵在那儿"
+				path.removeAttribute("marker-end");
+				const anim = path.animate(
+					[{ strokeDashoffset: String(len) }, { strokeDashoffset: "0" }],
+					{ duration: 400, easing: "cubic-bezier(0.35, 0, 0.25, 1)", fill: "forwards" },
+				);
+				anim.onfinish = () => {
+					anim.cancel();
+					finish();
+				};
+				return;
+			}
+			finish();
+		}
+
+		/** 点亮一个能力：第一次去 is-pre（+ is-in + is-hot）；再来一次就脉冲 480ms。 */
+		function lightNode(id) {
+			const rec = nodeEls.get(id);
+			if (!rec) return;
+			const el = rec.el;
+			if (el.classList.contains("is-pre")) {
+				el.classList.remove("is-pre");
+				el.classList.add("is-in", "is-hot");
+				later(() => el.classList.remove("is-hot"), 950);
+				// 该节点是某条回边的 from → 弧线与 badge 一起亮
+				for (const e of edgeItems) {
+					if (!e.loopback || e.from !== id) continue;
+					e.g.classList.add("is-loop");
+					if (e.badge) e.badge.classList.add("is-loop");
+				}
+				return;
+			}
+			el.classList.remove("is-pulse");
+			void el.offsetWidth; // 强制重排，让动画能重新开始
+			el.classList.add("is-pulse");
+			later(() => el.classList.remove("is-pulse"), 480);
+		}
+
+		/** 画"进入这一拍"的边：按 (from,to[,port]) 匹配，触发器那条按 to 匹配。 */
+		function drawIncoming(b) {
+			const from = b.from || "";
+			for (const e of edgeItems) {
+				if (!e.walked) continue;
+				if (from) {
+					if (e.from !== from || e.to !== b.cap) continue;
+					if (b.port && e.port && e.port !== b.port) continue;
+				} else if (e.from !== ROOT_ID || e.to !== b.cap) {
+					continue;
+				}
+				drawEdge(e);
+			}
+		}
+
+		function showFinal() {
+			resetReveal();
+			for (const rec of nodeEls.values()) rec.el.classList.add("is-in");
+			for (const e of edgeItems) {
+				if (!e.walked) continue;
+				e.g.classList.add("is-on");
+				e.core.classList.remove("is-pre");
+				e.core.dataset.animated = "1";
+				e.core.setAttribute("marker-end", e.marker);
+				if (e.label) e.label.classList.remove("is-pre");
+				if (e.loopback) {
+					e.g.classList.add("is-loop");
+					if (e.badge) e.badge.classList.add("is-loop");
+				}
+			}
+			setProgress(totalSec);
+			hudActive.textContent = doneLabel();
+		}
+
+		function playEnter(force) {
+			// 自动播放尊重系统"减少动态效果"；用户亲手点重播是明确意图，不该再挡。
+			if (!force && reduceNow()) {
+				showFinal();
+				return;
+			}
+			if (beats.length < 2) {
+				showFinal();
+				return;
+			}
+			resetReveal();
+
+			const speed = revealSpeed > 0 ? revealSpeed : 1;
+			const stepMs = Math.max(120, 500 / speed);
+			lastStepMs = stepMs;
+
+			// 只压暗**参与这次执行**的元素：剪枝节点与 muted 边本来就"没走"，
+			// 再压暗一次会在动画结束时"慢慢浮出来"，看起来像最后又跑了一步。
+			for (const rec of nodeEls.values()) {
+				if (rec.participates) rec.el.classList.add("is-pre");
+			}
+			for (const e of edgeItems) {
+				if (e.walked) e.core.classList.add("is-pre");
+			}
+			container.classList.add("is-playing");
+			animated = true;
+
+			// 绝对时刻表 + 40ms ticker：重播时一个 clearInterval 就收干净，
+			// 不会留孤儿子回调（层层 setTimeout 的经典漏法）。
+			const actions = [];
+			const push = (at, run) => actions.push({ at: at, run: run });
+			if (trigger) {
+				push(0, () => {
+					lightNode(ROOT_ID);
+					hudActive.textContent = tt("graph.silk_source", "\u6e90") + " \u00b7 " + (trigger.label || ROOT_ID);
+				});
+			}
+			beats.forEach((b, i) => {
+				const at = stepMs * (i + 1);
+				const lead = at - stepMs * 0.6;
+				push(lead, () => {
+					drawIncoming(b);
+					const rec = nodeEls.get(b.cap);
+					if (rec) followTo(rec.node);
+				});
+				push(at, () => {
+					lightNode(b.cap);
+					const rec = nodeEls.get(b.cap);
+					const no = stepNoOf(b.cap);
+					hudActive.textContent =
+						(no ? String(no).padStart(2, "0") : "--") +
+						" \u00b7 " +
+						((rec && rec.node.label) || b.cap);
+				});
+			});
+
+			const totalMs = stepMs * (beats.length + 1) + 520;
+			const startedAt = Date.now();
+			let cursor = 0;
+			ticker = setInterval(() => {
+				if (!container.isConnected) {
+					clearTimers();
+					return;
+				}
+				const elapsed = Date.now() - startedAt;
+				while (cursor < actions.length && actions[cursor].at <= elapsed) {
+					const a = actions[cursor++];
+					a.run();
+				}
+				setProgress(Math.min(totalSec, (elapsed / stepMs) * 0.5));
+				if (elapsed >= totalMs) {
+					clearTimers();
+					container.classList.remove("is-playing");
+					setProgress(totalSec);
+					hudActive.textContent = doneLabel();
+				}
+			}, 40);
+		}
+
+		if (options.animate) playEnter();
+		else showFinal();
+
+		return {
+			fit: fit,
+			zoomBy: zoomBy,
+			setFullscreen: setFullscreen,
+			isFullscreen: () => fullscreen,
+			replay: () => playEnter(true),
+			destroy() {
+				clearTimers();
+				if (rafResize) cancelAnimationFrame(rafResize);
+				rafResize = 0;
+				if (fullscreen) setFullscreen(false);
+				window.removeEventListener("keydown", onFsKey);
+				window.removeEventListener("resize", onResize);
+				scroll.removeEventListener("pointerdown", onPointerDown);
+				scroll.removeEventListener("wheel", onStopFollow);
+				scroll.removeEventListener("touchstart", onStopFollow);
+				scroll.removeEventListener("keydown", onScrollKey);
+				if (ro) ro.disconnect();
+				container.replaceChildren();
+				container.classList.remove("flograph", "flograph--silk", "is-playing");
+				container.style.removeProperty("--silk-h");
+			},
+			_debug: {
+				nodes: () => nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind })),
+				edges: () => edgeItems.map((e) => ({ from: e.from, to: e.to, port: e.port })),
+				fullscreen: () => fullscreen,
+				animated: () => animated,
+				revealStep: () => lastStepMs,
+				scale: () => zoom,
+				contentSize: () => ({ w: geo ? geo.contentW : 0, h: geo ? geo.contentH : 0 }),
+			},
+		};
 	}
 
 	window.FlowGraph = { mount };
