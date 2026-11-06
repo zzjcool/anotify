@@ -1446,6 +1446,11 @@ sources:
   fired_pruned: ，剪枝 {n}
   fired_none: 事件已入库，但没派出去（{r}）
   fired_empty: 事件已入库，但没有可派发的任务
+  fire_payload_title: 触发事件
+  fire_payload_label: 事件 payload（JSON 对象）
+  fire_payload_hint: 源参数里的占位符从这里取值；留空则按 {} 发出，与不带 payload 时完全一致。
+  fire_submit: 触发
+  fire_bad_json: payload 不是合法 JSON：{e}
   delete_confirm: 删除源「{n}」？已产生的事件与任务会保留。
   in: '{n} 后'
   ago: '{n} 前'

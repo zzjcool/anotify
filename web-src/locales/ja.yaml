@@ -1442,6 +1442,11 @@ sources:
   fired_pruned: 、{n} 件を剪定
   fired_none: イベントは保存されましたが配信されませんでした（{r}）
   fired_empty: イベントは保存されましたが配信できるタスクがありません
+  fire_payload_title: イベントを発火
+  fire_payload_label: イベントの payload（JSON オブジェクト）
+  fire_payload_hint: ソースのパラメータ内のプレースホルダーはこの payload から値を取ります。空のままなら {} として送信され、payload なしのときと同じ挙動になります。
+  fire_submit: 発火
+  fire_bad_json: payload が正しい JSON ではありません：{e}
   delete_confirm: ソース「{n}」を削除しますか？既存のイベントとタスクは保持されます。
   in: '{n} 後'
   ago: '{n} 前'

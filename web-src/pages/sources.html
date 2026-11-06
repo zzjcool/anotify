@@ -751,6 +751,50 @@
     </div>
   </div>
 </div>
+
+<!-- 触发弹层（#273 决策 2：可选 payload）。
+     以前点「立即运行」直接 POST {}，payload 只能靠外部系统投递才有内容；
+     手动触发一条带字段的事件因此做不到。现在先开这一层，预填一份示例
+     payload（来源与「试运行」同一个 loadSample），用户看一眼或改一改。
+     兼容底线：空文本仍按 {} 发、不带 type（服务端用源名当事件类型）。
+     与 #src-modal 一样挂在 document.body 上，开关状态是本元素上的 `hidden` 类。 -->
+<div
+  id="fire-modal"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="fire-title"
+>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="fire-title">{{t "sources.fire_payload_title"}}</h3>
+      <div class="card-actions">
+        <button
+          type="button"
+          id="fire-close"
+          class="btn btn-ghost btn-icon"
+          aria-label="{{t "common.action.close"}}"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div class="modal-body">
+      <div class="field">
+        <label class="field-label" for="fire-payload">{{t "sources.fire_payload_label"}}</label>
+        <textarea id="fire-payload" class="textarea mono" rows="10" spellcheck="false"></textarea>
+        <p class="field-hint">{{t "sources.fire_payload_hint"}}</p>
+        <p id="fire-error" class="src-err mt-2 hidden"></p>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button id="fire-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
+      <button id="fire-submit" class="btn btn-primary">{{t "sources.fire_submit"}}</button>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "script"}}
@@ -1065,14 +1109,98 @@
         return row;
       }
 
-      // ---------- 操作 ----------
+      // ---------- 触发（#273 决策 2：可选 payload）----------
+      //
+      // 点「立即运行」不再直接 POST：先开弹层让用户看一眼、改一份 payload
+      // （带字段的手动事件只有这样才造得出来）。两条兼容底线不能破：
+      //   ① 空文本仍按 `{}` 发 —— 与弹层之前发出的请求体一模一样；
+      //   ② 不带 type —— 服务端用源名当事件类型（internal/server 的默认口径）。
+      let FIRING = null; // {src, btn}：当前为哪个源触发
+
       async function fireSource(s, btn) {
+        FIRING = { src: s, btn: btn };
+        const box = document.getElementById("fire-payload");
+        const err = document.getElementById("fire-error");
+        err.textContent = "";
+        err.classList.add("hidden");
+        // 预填的样本与「试运行」同源（loadSample）：
+        //   github → 内置官方结构；webhook → 这个源最近一条真实事件；cron/manual → 没有。
+        // 先填 `{}`：样本是异步的（webhook 要拉事件），拉不到就停在这里，
+        // 用户仍可自己写——不能因为预填失败就不让触发。
+        box.value = "{}";
+        Anotify.openModal(document.getElementById("fire-modal"));
+        box.focus({ preventScroll: true });
+        try {
+          await loadSample({
+            kind: s.kind,
+            name: s.name,
+            event: (s.config && s.config.event) || "pull_request",
+          });
+          if (
+            SAMPLE_PAYLOAD &&
+            typeof SAMPLE_PAYLOAD === "object" &&
+            !Array.isArray(SAMPLE_PAYLOAD) &&
+            Object.keys(SAMPLE_PAYLOAD).length
+          ) {
+            // 格式化后填进去：压成一行的 JSON 既不好读也不好改
+            box.value = JSON.stringify(SAMPLE_PAYLOAD, null, 2);
+          }
+        } catch (e) {
+          /* 样本只是预填，拉不到就维持 {} */
+        }
+      }
+
+      function closeFireModal() {
+        Anotify.closeModal(document.getElementById("fire-modal"));
+        FIRING = null;
+      }
+
+      /** showFireError 把校验错误写回弹层（当场说清楚，不静默吞掉）。 */
+      function showFireError(msg) {
+        const err = document.getElementById("fire-error");
+        err.textContent = msg;
+        err.classList.remove("hidden");
+        const box = document.getElementById("fire-payload");
+        if (box) box.focus({ preventScroll: true });
+      }
+
+      /** readFirePayload 读弹层里的 payload：空文本 = {}，非法/非对象 = 报错返回 null。 */
+      function readFirePayload() {
+        const raw = String(document.getElementById("fire-payload").value || "").trim();
+        if (!raw) return {};
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          showFireError(
+            t("sources.fire_bad_json", "payload 不是合法 JSON：{e}").replace(
+              "{e}",
+              (e && e.message) || String(e),
+            ),
+          );
+          return null;
+        }
+        // 只收 JSON 对象：null / 数组 / 裸标量下去会被当成「没带 payload」，
+        // 用户改的字段静默消失——不如当场拦住。
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          showFireError(t("sources.form.bad_payload", "事件字段必须是 JSON 对象"));
+          return null;
+        }
+        return parsed;
+      }
+
+      async function submitFire() {
+        const cur = FIRING;
+        if (!cur) return;
+        const payload = readFirePayload();
+        if (payload === null) return; // 校验没过：一个请求也不发
+        const btn = document.getElementById("fire-submit");
         btn.disabled = true;
         try {
-          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(s.id) + "/fire", {
+          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(cur.src.id) + "/fire", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ payload: payload }),
           });
           const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
           const pruned =
@@ -1098,6 +1226,7 @@
           } else {
             toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"));
           }
+          closeFireModal();
           setTimeout(loadAll, 800);
         } catch (e) {
           toast(t("sources.fire_failed", "触发失败：{e}").replace("{e}", e.message));
@@ -2817,6 +2946,25 @@
       // 弹层挂到 document.body 上：页面内容外层带 .reveal 的 transform，
       // position:fixed 的后代会被裁在那层容器里（真的会裁，不是理论问题）。
       if (MODAL_EL.parentNode !== document.body) document.body.appendChild(MODAL_EL);
+
+      // ---------- 触发弹层（#273 决策 2）----------
+      const FIRE_MODAL_EL = document.getElementById("fire-modal");
+      document.getElementById("fire-close").addEventListener("click", closeFireModal);
+      document.getElementById("fire-cancel").addEventListener("click", closeFireModal);
+      document.getElementById("fire-submit").addEventListener("click", submitFire);
+      // 点遮罩关闭（只有点在遮罩本身而不是面板里才算）
+      FIRE_MODAL_EL.addEventListener("click", (ev) => {
+        if (ev.target.id === "fire-modal") closeFireModal();
+      });
+      // Esc 关闭。单独一条而不是并进编辑弹层那条：两个弹层互斥，
+      // 并在一起会把「哪个开着」的判断写成嵌套。
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Escape") return;
+        if (FIRE_MODAL_EL.classList.contains("hidden")) return;
+        ev.preventDefault();
+        closeFireModal();
+      });
+      if (FIRE_MODAL_EL.parentNode !== document.body) document.body.appendChild(FIRE_MODAL_EL);
 
       // 启动：先拉数据；若 URL 带了 ?edit=<id>（从详情页的「编辑」过来），
       // 数据到手后直接把那个源打开 —— 否则用户点了编辑只是回到列表。

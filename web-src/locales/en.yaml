@@ -1444,6 +1444,11 @@ sources:
   fired_pruned: ', {n} pruned'
   fired_none: Event stored but not dispatched ({r})
   fired_empty: Event stored, no tasks to dispatch
+  fire_payload_title: Fire event
+  fire_payload_label: Event payload (JSON object)
+  fire_payload_hint: Placeholders in the source params are resolved from this payload. Leave it empty to send {}, exactly as without a payload.
+  fire_submit: Fire
+  fire_bad_json: 'Payload is not valid JSON: {e}'
   delete_confirm: Delete source “{n}”? Existing events and tasks are kept.
   in: in {n}
   ago: '{n} ago'

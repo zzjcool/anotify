@@ -1442,6 +1442,11 @@ sources:
   fired_pruned: ', {n} podada(s)'
   fired_none: Evento guardado pero no despachado ({r})
   fired_empty: Evento guardado, sin tareas que despachar
+  fire_payload_title: Disparar evento
+  fire_payload_label: Payload del evento (objeto JSON)
+  fire_payload_hint: Los marcadores de los parámetros del origen se resuelven con este payload. Si lo dejas vacío se envía {}, igual que sin payload.
+  fire_submit: Disparar
+  fire_bad_json: 'El payload no es JSON válido: {e}'
   delete_confirm: ¿Eliminar la fuente «{n}»? Los eventos y tareas existentes se conservan.
   in: en {n}
   ago: hace {n}

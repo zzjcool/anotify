@@ -267,6 +267,48 @@
     </div>
   </div>
 </div>
+
+<!-- 触发弹层（#273 决策 2：可选 payload）。
+     和列表页同一个弹层、同一套校验；差别只在预填：详情页没有
+     sources.html 那份内置 GitHub 结构样例（不在本页脚本里），拿不到样本
+     就预填 {}，用户自己写 JSON。开关状态是本元素上的 `hidden` 类。 -->
+<div
+  id="fire-modal"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="fire-title"
+>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="fire-title">{{t "sources.fire_payload_title"}}</h3>
+      <div class="card-actions">
+        <button
+          type="button"
+          id="fire-close"
+          class="btn btn-ghost btn-icon"
+          aria-label="{{t "common.action.close"}}"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div class="modal-body">
+      <div class="field">
+        <label class="field-label" for="fire-payload">{{t "sources.fire_payload_label"}}</label>
+        <textarea id="fire-payload" class="textarea mono" rows="10" spellcheck="false"></textarea>
+        <p class="field-hint">{{t "sources.fire_payload_hint"}}</p>
+        <p id="fire-error" class="src-err mt-2 hidden"></p>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button id="fire-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
+      <button id="fire-submit" class="btn btn-primary">{{t "sources.fire_submit"}}</button>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "graph-libs"}}
@@ -462,7 +504,7 @@
 
         if (SRC.enabled) {
           const fireBtn = el("button", "btn btn-ghost btn-sm", t("sources.fire", "立即运行"));
-          fireBtn.addEventListener("click", () => fireSource(fireBtn));
+          fireBtn.addEventListener("click", () => fireSource());
           acts.appendChild(fireBtn);
         }
         const toggleBtn = el(
@@ -691,13 +733,68 @@
       }
 
       // ---------- 操作 ----------
-      async function fireSource(btn) {
+      //
+      // 触发（#273 决策 2）：点「立即运行」先开弹层让用户带一份 payload。
+      // 兼容底线：空文本仍按 `{}` 发、不带 type（服务端用源名当事件类型）。
+      function fireSource() {
+        const box = document.getElementById("fire-payload");
+        const err = document.getElementById("fire-error");
+        err.textContent = "";
+        err.classList.add("hidden");
+        // 详情页没有列表页那份内置样本（GITHUB_EVENTS 不在本页脚本里），
+        // 拿不到就预填 `{}` —— 与加弹层之前的请求体一致，用户可自己改成带字段的。
+        box.value = "{}";
+        Anotify.openModal(document.getElementById("fire-modal"));
+        box.focus({ preventScroll: true });
+      }
+
+      function closeFireModal() {
+        Anotify.closeModal(document.getElementById("fire-modal"));
+      }
+
+      /** showFireError 把校验错误写回弹层（当场说清楚，不静默吞掉）。 */
+      function showFireError(msg) {
+        const err = document.getElementById("fire-error");
+        err.textContent = msg;
+        err.classList.remove("hidden");
+        const box = document.getElementById("fire-payload");
+        if (box) box.focus({ preventScroll: true });
+      }
+
+      /** readFirePayload 读弹层里的 payload：空文本 = {}，非法/非对象 = 报错返回 null。 */
+      function readFirePayload() {
+        const raw = String(document.getElementById("fire-payload").value || "").trim();
+        if (!raw) return {};
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          showFireError(
+            t("sources.fire_bad_json", "payload 不是合法 JSON：{e}").replace(
+              "{e}",
+              (e && e.message) || String(e),
+            ),
+          );
+          return null;
+        }
+        // 只收 JSON 对象：null / 数组 / 裸标量下去会被当成「没带 payload」
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          showFireError(t("sources.form.bad_payload", "事件字段必须是 JSON 对象"));
+          return null;
+        }
+        return parsed;
+      }
+
+      async function submitFire() {
+        const payload = readFirePayload();
+        if (payload === null) return; // 校验没过：一个请求也不发
+        const btn = document.getElementById("fire-submit");
         btn.disabled = true;
         try {
           const res = await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id) + "/fire", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ payload: payload }),
           });
           const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
           const pruned = (res && res.dispatch && res.dispatch.pruned) || [];
@@ -725,6 +822,7 @@
           } else {
             toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"), "warn");
           }
+          closeFireModal();
           await load();
         } catch (e) {
           toast(t("sources.fire_failed", "触发失败") + ": " + (e.detail || e.message || e), "error");
@@ -766,6 +864,23 @@
           btn.disabled = false;
         }
       }
+
+      // ---------- 触发弹层绑定（#273 决策 2）----------
+      const FIRE_MODAL_EL = document.getElementById("fire-modal");
+      document.getElementById("fire-close").addEventListener("click", closeFireModal);
+      document.getElementById("fire-cancel").addEventListener("click", closeFireModal);
+      document.getElementById("fire-submit").addEventListener("click", submitFire);
+      FIRE_MODAL_EL.addEventListener("click", (ev) => {
+        if (ev.target.id === "fire-modal") closeFireModal();
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Escape") return;
+        if (FIRE_MODAL_EL.classList.contains("hidden")) return;
+        ev.preventDefault();
+        closeFireModal();
+      });
+      // 与列表页同理：弹层要挂在 body 上（.reveal 的 transform 会裁 position:fixed）
+      if (FIRE_MODAL_EL.parentNode !== document.body) document.body.appendChild(FIRE_MODAL_EL);
 
       document.addEventListener("DOMContentLoaded", load);
     </script>

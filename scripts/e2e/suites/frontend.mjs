@@ -27,6 +27,9 @@
  *     所以每一条都配了「不再存在」的守卫，而不是把旧断言一删了事。
  *  M. 任务日志面板（CONTRACT-task-logs.md §5）：失败任务默认展开、成功任务折叠且展开才请求、
  *     空日志说「没有输出」、截断有提示行；日志按纯文本渲染（HTML / ANSI 不会变成 DOM）（mock）。
+ *  N. 触发带 payload（#273 决策 2）：点「立即运行」先开弹层，预填样本可读；
+ *     非法 JSON / 数组当场报错且不发请求；合法 payload 进请求体、进事件、
+ *     并真的进了任务参数（没传 type 时事件类型仍是源名）（mock）。
  */
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
@@ -3757,6 +3760,246 @@ async function checkPruneCopy(page, base) {
 		const st = window.MockApi.state;
 		st.limits = { maxHops: 16, budget: 512 };
 	});
+}
+
+// checkSourceFirePayload 验证「触发」能带一份可选 payload（#273 决策 2）。
+//
+// 为什么要在页内钩 fetch：mock 在 window.fetch 层就拦下了 /v1/*（web/mock.js），
+// page.on("request") 在 mock 页面里一条都抓不到 —— 「请求体里到底带了什么」
+// 只能从页内记录拿；而「服务端真的收到了」用 mock 侧的事实钉两层：
+// 事件的 payload、以及由它求值出来的任务参数（planDispatch 拿 payload 求值）。
+//
+// 四条底线（少一条都可能是回归）：
+//   ① 点「立即运行」先开弹层，预填样本可读（有样本的源）/ 预填 {}（没样本的源）
+//   ② 非法 JSON / 非对象 → 当场报错且**一个请求都不发**
+//   ③ 合法 payload → 请求体带 payload、不带 type（服务端用源名当事件类型）
+//   ④ payload 的字段真的进了任务参数（不是只到事件就完了）
+async function checkSourceFirePayload(page, base) {
+	// getter/setter：mock.js 是 `window.fetch = …` **赋值**，普通覆盖会被它盖掉。
+	await page.addInitScript(() => {
+		window.__fireBodies = [];
+		const native = window.fetch.bind(window);
+		let inner = null;
+		const pathOf = (input) => {
+			const url = typeof input === "string" ? input : (input && input.url) || "";
+			try {
+				return new URL(String(url), location.href).pathname;
+			} catch {
+				return String(url).split("?")[0];
+			}
+		};
+		const dispatch = (input, init) => {
+			if (/\/sources\/[^/]+\/fire$/.test(pathOf(input))) {
+				const body = init && init.body;
+				if (typeof body === "string") {
+					try {
+						window.__fireBodies.push(JSON.parse(body));
+					} catch {
+						window.__fireBodies.push("<not json> " + body);
+					}
+				}
+			}
+			return inner ? inner(input, init) : native(input, init);
+		};
+		Object.defineProperty(window, "fetch", {
+			configurable: true,
+			get: () => dispatch,
+			set: (fn) => {
+				inner = fn; // mock.js 装上自己的 wrapper 时接住它
+			},
+		});
+	});
+
+	await page.goto(`${base}/sources.html`, { waitUntil: "load", timeout: 20000 });
+	await page.waitForTimeout(1600);
+
+	// 按源名点那一行的「立即运行」（按钮文案从页面自己的 i18n 表取，不写死中文）。
+	const openFire = (name) =>
+		page.evaluate((nm) => {
+			const label = (window.AnotifyI18n && window.AnotifyI18n["sources.fire"]) || "立即运行";
+			const link = [...document.querySelectorAll("#src-list .src-name-link")].find(
+				(a) => a.textContent.trim() === nm,
+			);
+			if (!link) return { err: "找不到源行：" + nm };
+			const row = link.closest(".list-row");
+			const btn = [...row.querySelectorAll("button")].find(
+				(b) => b.textContent.trim() === label,
+			);
+			if (!btn) return { err: "该行没有触发按钮：" + nm };
+			btn.click();
+			return { ok: true };
+		}, name);
+
+	const readFire = () =>
+		page.evaluate(() => {
+			const modal = document.getElementById("fire-modal");
+			const box = document.getElementById("fire-payload");
+			const err = document.getElementById("fire-error");
+			return {
+				open: !!modal && !modal.classList.contains("hidden"),
+				value: box ? box.value : null,
+				errShown: !!err && !err.classList.contains("hidden"),
+				errText: err ? err.textContent : "",
+			};
+		});
+
+	const counts = () =>
+		page.evaluate(() => ({
+			reqs: (window.__fireBodies || []).length,
+			tasks: window.MockApi.state.tasks.length,
+			events: window.MockApi.state.events.length,
+		}));
+
+	// ① 没有样本的源（cron）：弹层出现，预填 {} —— 与加弹层之前完全一致。
+	const cronOpen = await openFire("每晚体检");
+	await page.waitForTimeout(600);
+	const cronState = await readFire();
+	H.check(
+		"点「立即运行」先开 payload 弹层（不再直接 POST）",
+		cronOpen.ok === true && cronState.open === true,
+		JSON.stringify({ cronOpen, open: cronState.open }),
+	);
+	H.check(
+		"没有样本的源（cron）预填 {}（与旧行为一致）",
+		String(cronState.value).trim() === "{}",
+		JSON.stringify(cronState.value),
+	);
+	await page.evaluate(() => document.getElementById("fire-cancel").click());
+	await page.waitForTimeout(400);
+
+	// ② 有真实事件的源（webhook）：预填这个源最近一条事件的 payload，且可解析。
+	const hookOpen = await openFire("GitHub PR");
+	const filled = await page
+		.waitForFunction(
+			() => document.getElementById("fire-payload").value.trim().length > 2,
+			{ timeout: 8000 },
+		)
+		.then(() => true)
+		.catch(() => false);
+	const hookState = await readFire();
+	let parsed = null;
+	try {
+		parsed = JSON.parse(hookState.value);
+	} catch {
+		parsed = null;
+	}
+	H.check(
+		"webhook 源的弹层预填了可读的示例 payload（合法 JSON 对象、非空）",
+		hookOpen.ok === true &&
+			filled === true &&
+			!!parsed &&
+			typeof parsed === "object" &&
+			!Array.isArray(parsed) &&
+			Object.keys(parsed).length > 0,
+		JSON.stringify({ open: hookState.open, head: String(hookState.value).slice(0, 120) }),
+	);
+	const latest = await page.evaluate(async () => {
+		const r = await fetch(
+			"/v1/console/events?limit=1&source=" + encodeURIComponent("GitHub PR"),
+		).then((x) => x.json());
+		return ((r.events || [])[0] || {}).payload || null;
+	});
+	H.check(
+		"预填内容是这个源最近一条真实事件（键集合 + 嵌套字段都对得上，不是编的）",
+		!!parsed &&
+			!!latest &&
+			JSON.stringify(Object.keys(parsed).sort()) ===
+				JSON.stringify(Object.keys(latest).sort()) &&
+			!!parsed.pull_request &&
+			parsed.pull_request.number === latest.pull_request.number &&
+			(parsed.repository || {}).name === (latest.repository || {}).name,
+		JSON.stringify({ parsed, latest }).slice(0, 300),
+	);
+
+	// ③ 非法 JSON：当场报错，且一个 /fire 请求都不发（任务数/事件数不变）。
+	const before = await counts();
+	await page.evaluate(() => {
+		document.getElementById("fire-payload").value = '{"pull_request":';
+	});
+	await page.evaluate(() => document.getElementById("fire-submit").click());
+	await page.waitForTimeout(500);
+	const badState = await readFire();
+	const afterBad = await counts();
+	H.check(
+		"非法 JSON → 弹层当场报错（不是静默吞掉）",
+		badState.errShown === true && /JSON/.test(String(badState.errText)),
+		JSON.stringify(badState).slice(0, 240),
+	);
+	H.check(
+		"非法 JSON → 一个触发请求都不发（任务数/事件数都不变，弹层保持打开）",
+		afterBad.reqs === before.reqs &&
+			afterBad.tasks === before.tasks &&
+			afterBad.events === before.events &&
+			badState.open === true,
+		JSON.stringify({ before, afterBad, open: badState.open }),
+	);
+
+	// ④ 非对象（数组）：同样拦住 —— 服务端会把 null/数组当「没带 payload」。
+	await page.evaluate(() => {
+		document.getElementById("fire-payload").value = "[1,2,3]";
+	});
+	await page.evaluate(() => document.getElementById("fire-submit").click());
+	await page.waitForTimeout(400);
+	const arrState = await readFire();
+	const afterArr = await counts();
+	H.check(
+		"数组 payload 也被拦住（只收 JSON 对象），仍然不发请求",
+		arrState.errShown === true &&
+			afterArr.reqs === before.reqs &&
+			afterArr.tasks === before.tasks,
+		JSON.stringify({ err: arrState.errText, before, afterArr }),
+	);
+
+	// ⑤ 合法 payload：请求体带 payload、不带 type；mock 侧事件与任务参数都对上。
+	const payload = {
+		pull_request: { additions: 77, title: "e2e 手动触发" },
+		repository: { name: "e2e/repo" },
+	};
+	await page.evaluate((p) => {
+		document.getElementById("fire-payload").value = JSON.stringify(p);
+	}, payload);
+	await page.evaluate(() => document.getElementById("fire-submit").click());
+	await page.waitForTimeout(900);
+	const sent = await page.evaluate(
+		() => (window.__fireBodies || [])[window.__fireBodies.length - 1] || null,
+	);
+	H.check(
+		"合法 payload → 请求体里带这份 payload，且不带 type（服务端用源名当事件类型）",
+		!!sent &&
+			JSON.stringify(sent.payload) === JSON.stringify(payload) &&
+			!("type" in sent),
+		JSON.stringify(sent).slice(0, 240),
+	);
+	const landed = await page.evaluate(() => {
+		const st = window.MockApi.state;
+		const ev =
+			[...st.events]
+				.filter((e) => e.source === "GitHub PR")
+				.sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+		return {
+			ev: ev ? { type: ev.type, payload: ev.payload } : null,
+			tasks: st.tasks.slice(-6).map((t) => ({ capability: t.capability, params: t.params })),
+		};
+	});
+	H.check(
+		"服务端（mock）真的收到了这份 payload：事件 payload 与提交的一致",
+		!!landed.ev && JSON.stringify(landed.ev.payload) === JSON.stringify(payload),
+		JSON.stringify(landed.ev).slice(0, 240),
+	);
+	H.check(
+		"没传 type 时事件类型就是源名（服务端默认口径没变）",
+		!!landed.ev && landed.ev.type === "GitHub PR",
+		JSON.stringify(landed.ev && landed.ev.type),
+	);
+	H.check(
+		"payload 里的字段真的进了任务参数（changedLines=77 / repo=e2e/repo）",
+		(landed.tasks || []).some(
+			(t) => t.params && t.params.changedLines === 77 && t.params.repo === "e2e/repo",
+		),
+		JSON.stringify(landed.tasks).slice(0, 300),
+	);
+	const closed = await readFire();
+	H.check("触发成功后弹层收起", closed.open === false, JSON.stringify(closed.open));
 }
 
 // checkEventsFilter 验证事件流的排序 / 筛选 / 分组 / URL 参数。
@@ -8690,6 +8933,8 @@ async function runMockCoverage() {
 			await checkFlowChart(page, base);
 			// 剪枝原因的文案（契约 §6）：max_hops / budget 新增，path 删除
 			await checkPruneCopy(page, base);
+			// 触发能带 payload（#273 决策 2）：弹层 / 校验 / 请求体 / 任务参数
+			await checkSourceFirePayload(page, base);
 		}
 		if (p === "nodes.html") {
 			await checkNodeCaps(page, base);
