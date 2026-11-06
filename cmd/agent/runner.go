@@ -776,28 +776,54 @@ func hasAnotifyPrefix(name string) bool {
 	return strings.HasPrefix(name, "ANOTIFY_")
 }
 
-// emitPortContract 是 ANOTIFY_EMIT_PORTS / emit.json 里的一项（契约 §5 的逐字形状）：
+// emitPortContract 是 ANOTIFY_EMIT_PORTS / emit.json 里的一项（作者手册，emit-protocol.md §2.1）：
 //
-//	[{"port":"fix","schema":{…},"targets":[{"capability":"b","version":2}]}]
+//	[{"port":"fix","pick":"one","schema":{…},"targets":[{"capability":"b","version":2,"priority":0,"needs":{…}}]}]
 //
 // Schema 用 json.RawMessage 且**不加 omitempty**：没有下游时它必须是显式 null——
 // 「这个端口没有约束」与「忘了下发」是两件事，缺键会把前者说成后者。
 // Targets 同理：没有候选时是 []，不是 null。
+//
+// 一份 JSON 里有两个层次的「要什么」，分得很清楚：
+//
+//	Schema  = 不点名（--to）时的门槛：所有候选的并集（谁被选中都得能吃下这份 data）
+//	targets[].needs = 点名这个候选时要的门槛（逐条，作者照着拼参数）
+//
+// 它们不是重复：并集对「发给其中一个」是错的（会把别人的必填字段也算成本次必填），
+// 所以点名之后必须看 needs。
+//
+// Pick 是「一次 emit 会建几个下游任务」，目前恒为 one（同一出口的多个下游是**候选**，
+// 不是扇出）。不写出来时，targets 这个数组看起来像「挨个都发一遍」——那是另一种语义，
+// 也是脚本作者最容易踩的坑。
+//
+// 为什么不省掉 Pick 这种恒定字段：结构稳定比省几个字节重要，消费方（脚本 / LLM）
+// 可以无条件读它，不必先判断「这一版有没有这个概念」。
 type emitPortContract struct {
 	Port    string               `json:"port"`
+	Pick    string               `json:"pick"`
 	Schema  json.RawMessage      `json:"schema"`
 	Targets []emitTargetContract `json:"targets"`
 }
+
+// emitPickOne 是目前唯一的取值（候选里选一个）。留一个具名常量而不是内联字面量：
+// 以后真做 `all`（扇出到全部候选）时，这里就是分叉点。
+const emitPickOne = "one"
 
 // emitTargetContract 是一个候选下游。Version **总是输出**（不加 omitempty）：
 // 结构稳定比省几个字节重要，消费方可以无条件读它。
 //
 // Priority 同样总是输出（0 也输出）：脚本/LLM 要据此理解「选谁」，缺键会被读成
 // 「没有优先级概念」。同级候选的先后由中枢在派发时轮盘决定，这里的顺序只是**确定性**。
+//
+// Needs 是**这个候选自己**要的字段（已经减掉 link 的字面量），也是总是输出：
+// null = 投给它不需要任何字段。没有它，作者只能看到端口并集（含别人的必填字段），
+// 于是要么多填无关字段、要么被 exit 4 拒一次才猜到——开发环境那条 trace
+// （trace_1793986152223364273）就是死在「作者不知道 waoo 要什么、校验却按并集算」上。
 type emitTargetContract struct {
-	Capability string `json:"capability"`
-	Version    int    `json:"version"`
-	Priority   int    `json:"priority"`
+	Capability string          `json:"capability"`
+	Version    int             `json:"version"`
+	Priority   int             `json:"priority"`
+	Needs      json.RawMessage `json:"needs"`
 }
 
 // emitContractJSON 把本次任务的出口契约序列化成**唯一**那份 JSON（契约 §5）。
@@ -821,6 +847,9 @@ func emitContractJSON(j job) ([]byte, error) {
 				Capability: tgt.Capability,
 				Version:    tgt.Version,
 				Priority:   tgt.Priority,
+				// 原样透传中枢算好的 needs（**不**在这里推导/合并）：节点再算一遍
+				// 就会与中枢的判据悄悄分叉，而两边都看不出自己错在哪。
+				Needs: tgt.Needs,
 			})
 		}
 		// 排序口径 = (priority, capability, version)：优先级是「谁先被选中」的语义，
@@ -834,7 +863,12 @@ func emitContractJSON(j job) ([]byte, error) {
 			}
 			return targets[i].Version < targets[k].Version
 		})
-		contracts = append(contracts, emitPortContract{Port: port, Schema: expect.Schema, Targets: targets})
+		contracts = append(contracts, emitPortContract{
+			Port:    port,
+			Pick:    emitPickOne,
+			Schema:  expect.Schema,
+			Targets: targets,
+		})
 	}
 	b, err := json.Marshal(contracts)
 	if err != nil {

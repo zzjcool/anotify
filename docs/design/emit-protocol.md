@@ -76,13 +76,61 @@ anotify-agent emit --port fix --data '…' --note '第 2 项'   # 人类可读�
 | 0 | 成功 | 继续 |
 | 2 | 参数/请求形状错（不是 JSON 对象、--port 为空、超体积） | 修，别重试 |
 | 3 | 被拒：`port` 不在 `ports[]` | 修（换端口），别重试 |
-| 4 | 被拒：数据不满足 `expects[port].schema` | 补齐字段后重发（同一次运行可以重发） |
+| 4 | 被拒：数据不满足**本次要去那个下游**的要求（下文 §2.1） | 补齐字段后重发（同一次运行可以重发） |
 | 5 | 任务已非运行态（cancel / 租约过期 / 已终结） | 停止执行 |
 | 6 | 与 agent 通信失败 / token 无效 / socket 不存在 | 可重试一次，仍失败则停止 |
 | 7 | ack 超时（`--wait-routed` 或默认路径的本地落盘失败） | 可重试（中枢按 `(task_id, seq)` 幂等） |
 
 > `--async` 不存在。fire-and-forget 会让「emit 成功但中枢没收到」变成静默丢事件；
 > 需要异步语义时的正确做法是**本地 outbox（agent 内建）**，而不是让调用方放弃等待。
+
+---
+
+## 2.1 出口契约文件（作者手册）
+
+agent 起能力进程前，把「这个任务的出口长什么样」写成两份**同一份字节**的东西：
+
+| 位置 | 谁读 |
+|---|---|
+| 环境变量 `ANOTIFY_EMIT_PORTS` | 脚本（`$ANOTIFY_EMIT_PORTS` 直接 parse） |
+| `$ANOTIFY_TASKDIR/emit.json`（0600） | 脚本 / LLM（不方便读环境变量时） |
+
+```jsonc
+[{
+  "port":   "out",
+  "pick":   "one",                      // 一次 emit 建几个下游任务（目前恒为 one）
+  "schema": { "type":"object",          // 不点名（--to）时的门槛：所有候选的并集
+              "properties": {"message": {"type":"string"}, "waoo": {"type":"string"}},
+              "required": ["waoo"] },
+  "targets": [
+    { "capability": "script.echo", "version": 1, "priority": 0,
+      "needs": { "type":"object", "properties": {"message": {"type":"string"}} } },   // 它只要可选的 message
+    { "capability": "waoo", "version": 1, "priority": 0,
+      "needs": { "type":"object", "properties": {"waoo": {"type":"string"}},
+                 "required": ["waoo"] } }                                             // 它必须要 waoo
+  ]
+}]
+```
+
+三个字段各答各的问题，**不是重复**：
+
+- `pick` —— 「我 emit 一次，下游会跑几个」。`one` = 同出口的多个下游是**候选**，
+  只走一个（谁走由 `priority` + 同级轮盘定，或 `--to` 点名）。**不是扇出**：
+  想把同一份产出交给几方，就分别 emit 几次（各自 `--to`）。
+- `schema` —— 「我**不**点名时，data 至少要满足什么」。并集：无论轮到谁都得能吃下。
+- `targets[].needs` —— 「我**点名**这一个时，它还要什么」。逐条，作者照着拼参数。
+
+> 为什么两个门槛都必须存在：并集对「发给其中一个」是**错的**（会把别人的必填字段
+> 也算成本次必填），点名之后必须看 `needs`。反过来，只留 `needs` 又答不了「不点名
+> 时该准备什么」。事故现场（`trace_1793986152223364273_3611c934350f8618`）就是
+> `--to script.echo --data '{"message":"hello"}'` 被并集里的 `waoo` 拒成 exit 4。
+>
+> **校验口径（节点侧）**：给了 `--to` → 用那个候选的 `needs`；没给 → 用端口 `schema`；
+> `--to` 的名字不在 `targets` 里（旧中枢 / 绕过 CLI 直连 socket）→ 退回端口 `schema`。
+
+顺序是确定的：顶层按 port 名升序，`targets` 按 `(priority, capability, version)` 升序，
+`needs` 为 `null` 表示「投给它不需要任何字段」。字段**总是输出**（不省按键），
+消费方可以无条件读，不必先判断「这一版有没有这个概念」。
 
 ---
 

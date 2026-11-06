@@ -79,11 +79,17 @@
 能力进程新增两个契约变量（`cmd/agent` 的 `buildEnv`）：
 
 ```bash
-ANOTIFY_EMIT_PORTS='[{"port":"fix","schema":{"type":"object","required":["issue"]},"targets":[{"capability":"b","version":2,"priority":10}]}]'
+ANOTIFY_EMIT_PORTS='[{"port":"fix","pick":"one","schema":{"type":"object","required":["issue"]},"targets":[{"capability":"b","version":2,"priority":10,"needs":{"type":"object","required":["issue"]}}]}]'
 ```
 
 - `schema` 为 `null` 表示该端口没有下游（无约束）。
 - `targets` 是候选清单（含 `priority`），按 `priority,capability` 升序。
+- **追加（2026-11-06，见 `docs/design/emit-protocol.md` §2.1）**：
+  - `pick` —— 一次 emit 建几个下游任务，目前恒为 `"one"`（同出口的多个下游是**候选**，不是扇出）。
+  - `targets[].needs` —— 这个候选**自己**要的字段（中枢下发的 `expects[].targets[].needs` 原样透传），
+    为 `null` 表示投给它不需要任何字段。没有它，作者只能看到端口并集（含**别人**的必填字段），
+    点名发往其中一个时必然被误拒（事故：`trace_1793986152223364273_3611c934350f8618`）。
+  - 两个字段都**总是输出**（不省按键）；这是向后兼容的**增量**（旧读者忽略未知键）。
 - 同时把同一份 JSON 写进 `$ANOTIFY_TASKDIR/emit.json`（权限 0600；任务目录已清空重建）。
 - 两个变量/文件**始终存在**（没端口时给 `[]`）；写入失败要让任务失败并报清楚，不要静默跳过。
 - `ws.PortExpect` 已经有 `Schema`/`Targets`，`Targets[].Capability/Version` 已有，**加 `Priority`**（camelCase，与其它字段一致）。

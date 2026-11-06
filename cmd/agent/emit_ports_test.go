@@ -29,10 +29,17 @@ import (
 //
 // JSON 形状（逐字）：
 //
-//	[{"port":"fix","schema":{"type":"object",…},"targets":[{"capability":"b","version":2,"priority":0}]}]
+//	[{"port":"fix","pick":"one","schema":{"type":"object",…},"targets":[{"capability":"b","version":2,"priority":0,"needs":null}]}]
 //
-// 顶层按 port 名升序、targets 按 (capability, version) 升序；schema 为 nil 时是显式
-// 的 null（不是缺键），targets 为空时是 []（不是 null）。
+// 顶层按 port 名升序、targets 按 (priority, capability, version) 升序；schema 为 nil 时
+// 是显式的 null（不是缺键），targets 为空时是 []（不是 null），每个 target 的 needs 为 nil
+// 时同样是显式 null（= 投给它不需要任何字段）。
+//
+// pick / needs 是**给作者用的**（脚本 / LLM 照着拼参数）：
+//
+//	pick            一次 emit 建几个下游任务（目前恒为 one：同出口的多个下游是候选，不是扇出）
+//	schema          不点名（--to）时的门槛：所有候选的并集
+//	targets[].needs 点名这个候选时的门槛：它自己还差哪些字段
 //
 // 注意 SEAM(A)：targets[].priority 由 A 组的 edges.priority 竖切落地，本文件**不**
 // 涉及那个字段（落地后排序口径会变成 (priority, capability)，见 runner.go 的注释）。
@@ -72,8 +79,11 @@ func TestBuildEnvEmitPorts(t *testing.T) {
 			"fix": {
 				Schema: json.RawMessage(`{"type":"object","required":["issue"]}`),
 				// 倒序 + 同 capability 不同 Version：证明 targets 按 (capability, version) 升序。
+				// Needs 只给 c@1，其余留 nil → 同一份 JSON 里 "needs":{…} 与 "needs":null 都要出现
+				// （null 是「投给它不需要字段」，不是「没下发」）。
 				Targets: []ws.ExpectTarget{
-					{Capability: "c", Version: 1},
+					{Capability: "c", Version: 1,
+						Needs: json.RawMessage(`{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"]}`)},
 					{Capability: "b", Version: 2},
 					{Capability: "b", Version: 1},
 				},
@@ -95,11 +105,14 @@ func TestBuildEnvEmitPorts(t *testing.T) {
 	if !ok {
 		t.Fatalf("环境里没有 %s（契约 §5 要求它始终存在）", envEmitPorts)
 	}
-	want := `[{"port":"fix","schema":{"type":"object","required":["issue"]},"targets":` +
-		`[{"capability":"b","version":1,"priority":0},{"capability":"b","version":2,"priority":0},` +
-		`{"capability":"c","version":1,"priority":0}]},` +
-		`{"port":"review","schema":{"type":"object"},"targets":` +
-		`[{"capability":"a","version":1,"priority":0},{"capability":"d","version":3,"priority":0}]}]`
+	want := `[{"port":"fix","pick":"one","schema":{"type":"object","required":["issue"]},"targets":` +
+		`[{"capability":"b","version":1,"priority":0,"needs":null},` +
+		`{"capability":"b","version":2,"priority":0,"needs":null},` +
+		`{"capability":"c","version":1,"priority":0,"needs":` +
+		`{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"]}}]},` +
+		`{"port":"review","pick":"one","schema":{"type":"object"},"targets":` +
+		`[{"capability":"a","version":1,"priority":0,"needs":null},` +
+		`{"capability":"d","version":3,"priority":0,"needs":null}]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
 	}
@@ -193,8 +206,9 @@ func TestBuildEnvEmitPortsSchemaNull(t *testing.T) {
 		t.Fatalf("buildEnv: %v", err)
 	}
 	got, _ := envLookup(env, envEmitPorts)
-	want := `[{"port":"nil-schema","schema":null,"targets":[{"capability":"b","version":2,"priority":0}]},` +
-		`{"port":"no-entry","schema":null,"targets":[]}]`
+	want := `[{"port":"nil-schema","pick":"one","schema":null,` +
+		`"targets":[{"capability":"b","version":2,"priority":0,"needs":null}]},` +
+		`{"port":"no-entry","pick":"one","schema":null,"targets":[]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
 	}
@@ -206,7 +220,7 @@ func TestBuildEnvEmitPortsSchemaNull(t *testing.T) {
 	if len(decoded) != 2 {
 		t.Fatalf("端口数 = %d, want 2: %s", len(decoded), got)
 	}
-	wantTargets := []string{`[{"capability":"b","version":2,"priority":0}]`, `[]`}
+	wantTargets := []string{`[{"capability":"b","version":2,"priority":0,"needs":null}]`, `[]`}
 	for i, item := range decoded {
 		schema, ok := item["schema"]
 		if !ok {
@@ -300,7 +314,8 @@ func TestBuildEnvEmitPortsSameSourceAsExpects(t *testing.T) {
 	}
 	got, _ := envLookup(env, envEmitPorts)
 	// 期望值直接由 j.Expects + j.Ports 手写（不经过被测量的那个函数）。
-	want := `[{"port":"fix","schema":{"type":"object"},"targets":[{"capability":"b","version":2,"priority":0}]}]`
+	want := `[{"port":"fix","pick":"one","schema":{"type":"object"},` +
+		`"targets":[{"capability":"b","version":2,"priority":0,"needs":null}]}]`
 	if got != want {
 		t.Fatalf("ANOTIFY_EMIT_PORTS:\n got %s\nwant %s", got, want)
 	}
@@ -415,5 +430,87 @@ func TestEmitPortsOfFallsBackToArtifactOutputs(t *testing.T) {
 	// 既没有 ports 也没有产物 → 空（不 panic；buildEnv 会输出 []）。
 	if got := emitPortsOf(&assignFrame{Type: frameTypeAssign, TaskID: "t"}, nil); got != nil {
 		t.Fatalf("emitPortsOf(无 ports, 无产物) = %v, want nil", got)
+	}
+}
+
+// ---------- ⑧ 作者视角：每个候选各自的 needs ----------
+
+// TestBuildEnvEmitPortsCandidatesCarryOwnNeeds 复现开发环境那条事故的拓扑
+// （trace_1793986152223364273_3611c934350f8618），断言**作者手里的说明书**足以
+// 做出正确决定：
+//
+//	haha/out → script.echo（要 message，可选）
+//	haha/out → waoo       （要 waoo，必填）
+//
+// 事故当时：脚本只看得到端口并集（required:["waoo"]），于是
+// `--to script.echo --data '{"message":"hello"}'` 被判成「缺 waoo」→ exit 4 →
+// 整条链 failed。现在每个候选都必须带自己的 needs，作者照着拼就不会撞墙。
+func TestBuildEnvEmitPortsCandidatesCarryOwnNeeds(t *testing.T) {
+	echoNeeds := `{"type":"object","properties":{"message":{"type":"string"}}}`
+	waooNeeds := `{"type":"object","properties":{"waoo":{"type":"string"}},"required":["waoo"]}`
+	j := job{
+		TaskID: "tsk_author", Capability: "haha", Version: 1,
+		Ports: []string{"out"},
+		Expects: map[string]ws.PortExpect{
+			"out": {
+				// 中枢下发的并集：两个候选 required 的合并（不点名时的门槛）。
+				Schema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"},"waoo":{"type":"string"}},"required":["waoo"]}`),
+				Targets: []ws.ExpectTarget{
+					{Capability: "script.echo", Version: 1, Needs: json.RawMessage(echoNeeds)},
+					{Capability: "waoo", Version: 1, Needs: json.RawMessage(waooNeeds)},
+				},
+			},
+		},
+	}
+	env, err := buildEnv(nil, j, t.TempDir(), t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	raw, _ := envLookup(env, envEmitPorts)
+
+	// 一个脚本 / LLM 能做的两件事：① 知道「不点名只走一个」，② 按名字查到自己要什么。
+	var contracts []emitPortContract
+	if err := json.Unmarshal([]byte(raw), &contracts); err != nil {
+		t.Fatalf("契约不是合法 JSON: %v (%s)", err, raw)
+	}
+	if len(contracts) != 1 || contracts[0].Port != "out" {
+		t.Fatalf("contracts = %+v, want 单个 out", contracts)
+	}
+	if contracts[0].Pick != emitPickOne {
+		t.Fatalf("pick = %q, want %q（同出口的多个下游是候选，不是扇出）", contracts[0].Pick, emitPickOne)
+	}
+	byName := map[string]emitTargetContract{}
+	for _, tgt := range contracts[0].Targets {
+		byName[tgt.Capability] = tgt
+	}
+	for name, want := range map[string]string{"script.echo": echoNeeds, "waoo": waooNeeds} {
+		tgt, ok := byName[name]
+		if !ok {
+			t.Fatalf("targets 里没有 %s：%+v", name, contracts[0].Targets)
+		}
+		if string(tgt.Needs) != want {
+			t.Fatalf("%s.needs = %s, want %s", name, tgt.Needs, want)
+		}
+	}
+
+	// 反面对照：端口并集仍然要求 waoo —— 这正是当初骗到作者的那一条。两个字段并存
+	// 不是重复，而是各答各的问题（不点名 vs 点名）。删掉 needs 就等于把作者又扔回并集。
+	var union struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(contracts[0].Schema, &union); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if len(union.Required) != 1 || union.Required[0] != "waoo" {
+		t.Fatalf("union.required = %v, want [waoo]（不点名时的门槛）", union.Required)
+	}
+	var echo struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(byName["script.echo"].Needs, &echo); err != nil {
+		t.Fatalf("script.echo.needs: %v", err)
+	}
+	if len(echo.Required) != 0 {
+		t.Fatalf("script.echo.needs.required = %v, want 空（它只要可选的 message）", echo.Required)
 	}
 }
