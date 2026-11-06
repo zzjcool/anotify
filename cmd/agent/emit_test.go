@@ -364,6 +364,80 @@ func TestEmitRejectSchemaMissingField(t *testing.T) {
 	}
 }
 
+// TestEmitToPinnedCandidateUsesItsNeeds：--to 点名候选时按**那一个**候选的 needs 校验，
+// 不用端口并集。
+//
+// 这是开发环境 trace_1793986152223364273_3611c934350f8618 的回归用例：haha 的 out
+// 同时接了 script.echo{message} 和 waoo{waoo}，脚本 `--to script.echo --data
+// '{"message":"hello"}'` 被并集里的 waoo 必填字段拒掉（exit 4），整条链路 failed。
+//
+// 守住三件事：
+//   - --to 指定的候选：只看它自己的 needs（别人的必填字段不该拦我）
+//   - --to 指定的候选：**照样**拦它自己缺的字段（不是无脑放行）
+//   - 没给 --to（谁去由中枢轮盘定）：仍用并集（那时确实得让每个候选都吃下这份 data）
+func TestEmitToPinnedCandidateUsesItsNeeds(t *testing.T) {
+	const (
+		echoNeeds = `{"type":"object","properties":{"message":{"type":"string"}}}`
+		waooNeeds = `{"type":"object","properties":{"waoo":{"type":"string"}},"required":["waoo"]}`
+		// 并集 = 两个候选 required + properties 的合并（与 route.BuildExpects 一致）。
+		union = `{"type":"object","properties":{"message":{"type":"string"},"waoo":{"type":"string"}},"required":["waoo"]}`
+	)
+	opt := defaultEmitOptions(t, t.TempDir())
+	opt.Ports = []string{"out"}
+	opt.Expects = map[string]ws.PortExpect{
+		"out": {
+			Schema: json.RawMessage(union),
+			Targets: []ws.ExpectTarget{
+				{Capability: "script.echo", Version: 1, Needs: json.RawMessage(echoNeeds)},
+				{Capability: "waoo", Version: 1, Needs: json.RawMessage(waooNeeds)},
+			},
+		},
+	}
+	srv, _ := startEmitServer(t, opt)
+
+	emit := func(to, data string) emitResponse {
+		t.Helper()
+		return mustEmit(t, srv.Path(), emitRequest{
+			Op:    emitOpName,
+			Token: emitTestToken,
+			Port:  "out",
+			To:    to,
+			Data:  json.RawMessage(data),
+		})
+	}
+
+	// ① 点名声明的那个候选 → 只按它自己的 needs 校验：{"message":…} 通过。
+	if resp := emit("script.echo", `{"message":"hello"}`); !resp.OK {
+		t.Fatalf("--to script.echo 带了它要的 message，不该被别的候选的必填字段拦住：%+v", resp)
+	}
+	// name@version 同一个口径。
+	if resp := emit("waoo@1", `{"waoo":"ww"}`); !resp.OK {
+		t.Fatalf("--to waoo@1 带了它要的 waoo，不该被拒：%+v", resp)
+	}
+
+	// ② 点名了但这个候选自己缺必填字段 → 照拦，且说清是谁的要求。
+	resp := emit("waoo", `{"message":"hello"}`)
+	if resp.OK || resp.Rejected != emitRejectSchema {
+		t.Fatalf("--to waoo 缺 waoo 应当被拒（rejected=schema），实际 %+v", resp)
+	}
+	if !strings.Contains(resp.Error, `missing required field "waoo"`) || !strings.Contains(resp.Error, "waoo") {
+		t.Fatalf("拒绝原因必须指出是哪个候选的哪个字段，实际 %q", resp.Error)
+	}
+
+	// ③ 没点名（候选由中枢轮盘定）→ 并集当门槛不变：这份 data 真发给 waoo 就会被剪。
+	resp = emit("", `{"message":"hello"}`)
+	if resp.OK || resp.Rejected != emitRejectSchema {
+		t.Fatalf("没 --to 且缺 waoo 应当被并集拒（rejected=schema），实际 %+v", resp)
+	}
+
+	// ④ targets 里没有这个名字（老中枢不带 targets，或绕过 CLI 直连 socket）→
+	//    退回并集，行为与改之前一致（不能因为「找不到」就放行）。
+	resp = emit("nope", `{"message":"hello"}`)
+	if resp.OK || resp.Rejected != emitRejectSchema {
+		t.Fatalf("未知 --to 应当退回并集判定（仍拒），实际 %+v", resp)
+	}
+}
+
 // TestEmitRejectDataNotObject：data 不是 JSON 对象（§6 第 4 条，rejected=schema / exit 2）。
 func TestEmitRejectDataNotObject(t *testing.T) {
 	srv, _ := startEmitServer(t, defaultEmitOptions(t, t.TempDir()))

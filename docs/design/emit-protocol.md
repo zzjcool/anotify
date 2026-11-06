@@ -35,8 +35,14 @@ anotify-agent emit  ← 能力进程（脚本 / LLM agent）调用
 请求：
 
 ```json
-{"op":"emit","token":"…","seq":3,"port":"fix","data":{"issue":"#42"},"note":"optional"}
+{"op":"emit","token":"…","seq":3,"port":"fix","to":"notify.phone","data":{"issue":"#42"},"note":"optional"}
 ```
+
+`to` 是脚本点名的下游能力（CLI 的 `--to`，取值 `name` 或 `name@version`）：中枢据此把候选
+**收敛到那一个**，而不是同一出口的候选里按 priority + 轮盘挑一个。省略 = 由中枢挑。
+
+> 为什么要有它（CONTRACT-hide-ports §2）：同一出口的多个下游是**候选**，运行期只走一个。
+> 没有 `to` 时脚本写 `emit` 给 `script.echo`，中枢却可能轮到 `waoo`——「看起来发了，实际发给了别人」。
 
 响应：
 
@@ -54,9 +60,14 @@ anotify-agent emit  ← 能力进程（脚本 / LLM agent）调用
 ```bash
 anotify-agent emit --port fix --data '{"issue":"#42","title":"空指针"}'
 anotify-agent emit --port fix --data @- < payload.json     # 从 stdin 读
+anotify-agent emit --port fix --data '…' --to notify.phone # 点名交给哪个下游（候选里选一个）
 anotify-agent emit --port fix --data '…' --wait-routed     # 等中枢派发完
 anotify-agent emit --port fix --data '…' --note '第 2 项'   # 人类可读备注
 ```
+
+`--to` 的取值是本能力这个出口的**候选**（能力名，可写 `name@version` 钉死版本）：
+拿不到候选（不是下游/拼错）时 CLI 直接拒并列出可用候选，不会猜一个发出去。
+单出口且候选唯一时可以省略（自动填）。
 
 退出码（**实现应当据此决定重试还是停止**）：
 
@@ -138,9 +149,17 @@ anotify-agent emit --port fix --data '…' --note '第 2 项'   # 人类可读�
 2. 任务仍在运行态（未 cancel / 租约未过期）→ 否则 `task`（exit 5）
 3. `port` ∈ 本次 `assign.ports` → 否则 `port`（exit 3）
 4. `data` 是 JSON 对象 → 否则 `schema`（exit 2）
-5. `data` 满足 `assign.expects[port].schema`（若该 port 有 expects）→ 否则 `schema`（exit 4）
-   - `expects[port].schema` = 该 port 所有下游 `params_schema` **减去各自 literals** 的并集
+5. `data` 满足本次要去的那个下游的要求 → 否则 `schema`（exit 4）
+   - 给了 `--to` → 用**那个候选**的 `expects[port].targets[].needs`（`name` / `name@version` 匹配）
+   - 没给 `--to`（谁去由中枢轮盘定）→ 用 `expects[port].schema`
+     = 该 port 所有下游 `params_schema` **减去各自 literals** 的并集
    - 没有下游（0 条 link）= 没有 expects → 只做结构校验
+
+> 为什么点名之后必须换判据：同一出口的候选各有各的必填字段（`script.echo{message}` /
+> `waoo{waoo}`），拿并集当硬门槛会把「别人要的字段」也算成本次必填 —— 于是
+> `--to script.echo --data '{"message":"hello"}'` 被 `missing required field "waoo"` 拒掉，
+> 同一个出口的候选**谁都发不出去**（开发环境 `trace_1793986152223364273` 就这么挂的）。
+> 并集只在没点名时有意义：那时确实得让每个候选都能吃下这份 data。
 6. 体积 ≤ 64 KiB → 否则 `size`（exit 2）
 7. 本任务累计 emit 次数 < 1000 → 否则 `rate`（exit 2）
 

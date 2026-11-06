@@ -487,11 +487,15 @@ type AssignFrame struct {
 
 // PortExpect 是一个端口的产出要求（emit 时校验）。
 //
-// Schema 是**机器门槛**：
-// 该端口所有下游要求的并集（各自 params_schema 减去 literals）。
-// 为空 = 没有下游（到此为止），此时只做结构校验。
+// Schema 是端口级的机器门槛：该端口所有下游要求的并集（各自 params_schema 减去
+// literals）。空 = 没有下游（到此为止），此时只做结构校验。
 //
-// Targets 是**给人/LLM 看的**：这个口能去哪、各自要什么。
+// 节点 emit 时的判据：给了 `--to`（点名候选）→ 用那一个候选的 `Targets[].Needs`；
+// 没给 → 才用 `Schema`。并集只在「谁去由中枢轮盘定」时成立：那时确实得让每个
+// 候选都能吃下这份 data。拿并集去卡点名的 emit，会把「别人要的字段」也算成必填，
+// 同一端口的候选谁都发不出去。
+//
+// Targets 同时是**给人/LLM 看的**：这个口能去哪、各自要什么（`Needs`）。
 // 实现据此主动拼对参数，而不是被拒了再猜。
 type PortExpect struct {
 	Schema  json.RawMessage `json:"schema,omitempty"`

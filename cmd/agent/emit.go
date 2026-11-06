@@ -54,6 +54,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -567,6 +568,34 @@ func (s *emitServer) reply(conn net.Conn, resp emitResponse) {
 	_, _ = conn.Write(append(data, '\n'))
 }
 
+// targetNeeds 取出 --to 点名的那一个候选的 needs（没有 needs 返回空切片）。
+//
+// 匹配口径与中枢的 narrowCandidatesTo 逐字一致：`name` 或 `name@version`，
+// 名字相同时再比版本（ver == 0 表示任意版本）。两边判据不同会得到「agent 放行、
+// 中枢说不是候选」这种两边都看不出自己错在哪的失败。
+//
+// 第二个返回值是**匹配到了没有**：没匹配到（老中枢不带 targets、或脚本直连
+// socket 绕过 CLI 校验）时调用方退回端口并集，行为与改之前一致。
+func targetNeeds(targets []ws.ExpectTarget, to string) (json.RawMessage, bool) {
+	name, ver := to, 0
+	if at := strings.LastIndex(to, "@"); at > 0 {
+		name = to[:at]
+		if n, err := strconv.Atoi(to[at+1:]); err == nil {
+			ver = n
+		}
+	}
+	for _, tgt := range targets {
+		if tgt.Capability != name {
+			continue
+		}
+		if ver != 0 && tgt.Version != ver {
+			continue
+		}
+		return tgt.Needs, true
+	}
+	return nil, false
+}
+
 // readLimitedLine 读一行（以 \n 结尾），超过 limit 就报错而不是继续吃内存。
 func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 	var buf []byte
@@ -626,17 +655,38 @@ func (s *emitServer) emit(req emitRequest, waitRouted bool) emitResponse {
 	if err != nil {
 		return rejectEmit(req.Seq, emitRejectSchema, err.Error())
 	}
-	// 5) data ⊨ expects[port].schema（没有下游就没有 expects → 只做结构校验）。
-	if exp, ok := s.expects[port]; ok && len(exp.Schema) > 0 {
-		sch, serr := schema.FromRaw(exp.Schema)
-		if serr != nil {
-			// 坏 schema 不能放行（「拿坏契约放行」是最坏的降级方式）：拒绝并说清是谁的锅。
-			return rejectEmit(req.Seq, emitRejectSchema, fmt.Sprintf(
-				"中枢下发的 expects[%s].schema 不可用：%v", port, serr))
+	// 5) data ⊨ 这次**要去的那一个**下游的要求（没有下游 → 只做结构校验）。
+	//
+	// --to 点名了候选 → 用那一个候选的 needs；没点名 → 用端口的并集。
+	//
+	// 为什么不能一律用并集：同一端口的候选各有各的必填字段（haha 的 out 接
+	// script.echo{message} 和 waoo{waoo}），并集会把「别人要的字段」也算成
+	// 本次必填 —— 于是 `--to script.echo` 带 {"message":…} 被拒 exit 4，
+	// 同一个端口的候选**谁都发不出去**（开发环境 trace_1793986152223364273
+	// 就是这么挂的）。并集只在「谁去由中枢轮盘定」时有意义：那时确实得让每个
+	// 候选都能吃下这份 data。
+	if exp, ok := s.expects[port]; ok {
+		// who 是给人看的（拒绝原因里说「谁的要求」），where 是 schema 的路径（坏 schema 时指出哪一份）。
+		raw := exp.Schema
+		who, where := fmt.Sprintf("expects[%s]", port), fmt.Sprintf("expects[%s]", port)
+		if to := strings.TrimSpace(req.To); to != "" {
+			if needs, ok := targetNeeds(exp.Targets, to); ok {
+				raw = needs
+				who = fmt.Sprintf("expects[%s] 的候选 %s", port, to)
+				where = fmt.Sprintf("expects[%s].targets[%s]", port, to)
+			}
 		}
-		if msg := schema.Value(sch, data, "data"); msg != "" {
-			return rejectEmit(req.Seq, emitRejectSchema, fmt.Sprintf(
-				"data 不满足 expects[%s]：%s", port, msg))
+		if len(raw) > 0 {
+			sch, serr := schema.FromRaw(raw)
+			if serr != nil {
+				// 坏 schema 不能放行（「拿坏契约放行」是最坏的降级方式）：拒绝并说清是谁的锅。
+				return rejectEmit(req.Seq, emitRejectSchema, fmt.Sprintf(
+					"中枢下发的 %s.schema 不可用：%v", where, serr))
+			}
+			if msg := schema.Value(sch, data, "data"); msg != "" {
+				return rejectEmit(req.Seq, emitRejectSchema, fmt.Sprintf(
+					"data 不满足 %s：%s", who, msg))
+			}
 		}
 	}
 	// 6) 体积 ≤ 64 KiB。
