@@ -73,5 +73,7 @@ DONE <任务ID>
 
 - **改 Go 代码**：相关包 `go test` 必须通过
 - **改前端**：`web_verify` 逐页无 JS 错误/溢出；改完 `make build` 重新指纹
-- **改完任何东西**：最终 `make e2e` 全绿才算完成（固化门禁）
+- **纯视觉/样式微调（不改 DOM 契约、Go、API）**：`make fe` + 目标页 dark/light 截图即可迭代；需要时单跑 `./scripts/e2e/run_all.sh --serial frontend`，**不必每轮全量**
+- **push / 合并前**：`make e2e` 全绿（固化门禁）；全量 e2e 只在这里跑
+- **改 Go / API / DOM 契约 / 新功能**：仍跑相关包测试 + 全量
 - **新功能**：必须加对应 E2E 套件或单测覆盖

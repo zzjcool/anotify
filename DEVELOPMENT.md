@@ -513,6 +513,18 @@ Playwright CDP 虚拟认证器（`WebAuthn.addVirtualAuthenticator`）让 WebAut
 
 iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全自动。
 
+### 视觉微调快速回路（2026-11 起）
+
+纯 CSS/图形/配色改动不再每轮跑全量 e2e。日常回路：
+
+1. `make fe`：check-classes → check-tailwind-css → sitegen → hash（约 10s）
+2. `make mock-local MOCK_PORT=7799`，Playwright 同视口截 dark/light；或直接看 dev
+3. 若改到 DOM/交互契约，单跑 `./scripts/e2e/run_all.sh --serial frontend`（约 4min）；纯 CSS 可跳过
+4. 预览部署：`make dev-reset`（不要 `WIPE=1`，保留 `anotify-dev-data`）
+5. **push / merge 前**再跑一次全量 `make e2e`（27 套件 / 2270+ 断言）
+
+红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` / `real_backend` 偶发（单跑确认后再全量）。
+
 ## 6. 目录结构
 
 ```

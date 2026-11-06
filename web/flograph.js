@@ -1631,6 +1631,37 @@
 		return silkCubic(x1, y1, x1, band, x2, band, x2, y2, "row-band");
 	}
 
+	// lab 的线框图标（ICONS 1150-1165）。Silk 卡片只画 SVG；emoji 字形保留在
+	// 一个视觉隐藏 span 里，E2E 仍能读到 ⚡/◆/◉ 的 textContent 契约。
+	const SILK_ICON_PATHS = {
+		bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
+		box: '<path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+		terminal: '<path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h4"/>',
+		check: '<path d="M20 6 9 17l-5-5"/>',
+		spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>',
+		bell: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M10 21h4"/>',
+	};
+	function silkIcon(name) {
+		const s = svg("svg", {
+			viewBox: "0 0 24 24",
+			fill: "none",
+			stroke: "currentColor",
+			"stroke-width": "1.8",
+			"stroke-linecap": "round",
+			"stroke-linejoin": "round",
+			"aria-hidden": "true",
+		});
+		s.innerHTML = SILK_ICON_PATHS[name] || SILK_ICON_PATHS.box;
+		return s;
+	}
+	function silkCapIcon(name) {
+		if (/echo|script|change|log/.test(name)) return "terminal";
+		if (/test|deploy/.test(name)) return "check";
+		if (/analy|lint|fix/.test(name)) return "spark";
+		if (/report|alert|notify/.test(name)) return "bell";
+		return "box";
+	}
+
 	/**
 	 * mountSilk —— trace 图视图的 Silk 渲染器。
 	 *
@@ -1760,7 +1791,25 @@
 		hud.appendChild(hudClock);
 		hud.appendChild(hudTrack);
 		hud.appendChild(hudActive);
-		// 图例放 HUD 尾部（不是浮层）：它解释的是**这张图怎么读**，属于常驻信息。
+		// lab 的 HUD 只有两项：执行路径 / 失败步。7 行完整图例是产品契约
+		// （E2E 逐行读 textContent），但不再挤进 35px HUD——放到容器里做
+		// 视觉隐藏的无障碍副本，HUD 才能像演示一样留出进度条空间。
+		const hudLegend = div("hud-legend");
+		const hudPath = document.createElement("span");
+		const hudPathDot = document.createElement("i");
+		hudPathDot.className = "lg-ok";
+		hudPath.appendChild(hudPathDot);
+		hudPath.appendChild(document.createTextNode(tt("graph.hud_path", "执行路径")));
+		const hudFail = document.createElement("span");
+		const hudFailDot = document.createElement("i");
+		hudFailDot.className = "lg-bad";
+		hudFail.appendChild(hudFailDot);
+		hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败步")));
+		hudLegend.appendChild(hudPath);
+		hudLegend.appendChild(hudFail);
+		hud.appendChild(hudLegend);
+		container.appendChild(hud);
+
 		const legendBox = div("flograph-legend");
 		for (const item of options.legend || []) {
 			const row = div("flograph-legend-row");
@@ -1768,8 +1817,7 @@
 			row.appendChild(div("flograph-legend-text", item.text || ""));
 			legendBox.appendChild(row);
 		}
-		hud.appendChild(legendBox);
-		container.appendChild(hud);
+		container.appendChild(legendBox);
 
 		const fsHint = div(
 			"flograph-fullscreen-hint",
@@ -1839,8 +1887,22 @@
 				el.style.setProperty("--accent", String(n.accent));
 			}
 
-			// 图标：只放 emoji 字形（E2E 锁死 textContent === ⚡/◆/◉/○）
-			const icon = div("wf-node-icon n-icon", n.icon || "◆");
+			// 视觉用 lab 的线框 SVG；emoji 字形放进视觉隐藏 span，
+			// 保住 E2E 的 textContent === ⚡/◆/◉ 契约。
+			const icon = div("wf-node-icon n-icon");
+			const glyph = document.createElement("span");
+			glyph.className = "silk-glyph";
+			glyph.textContent = n.icon || "◆";
+			glyph.setAttribute("aria-hidden", "true");
+			const iconName = isRoot
+				? "bolt"
+				: n.role === "end"
+					? "check"
+					: pruned || n.role === "deadport"
+						? "box"
+						: silkCapIcon(String(n.label || n.id));
+			icon.appendChild(silkIcon(iconName));
+			icon.appendChild(glyph);
 			const main = div("n-main");
 			main.appendChild(div("wf-node-title n-title", n.label || n.id));
 			const subText = n.sub == null ? "" : String(n.sub);
@@ -1943,14 +2005,15 @@
 				if (!reduceNow()) {
 					const bead = svg("circle", { class: "sl-bead", r: e.loopback ? "2.6" : "2.4" });
 					const motion = svg("animateMotion", {
-						dur: e.loopback ? "5.2s" : "3.8s",
-						begin: (e.i * 0.28).toFixed(2) + "s",
+						dur: "0.9s",
+						begin: "indefinite",
 						repeatCount: "indefinite",
 						path: "",
 					});
 					bead.appendChild(motion);
 					g.appendChild(bead);
 					e.motion = motion;
+					e.bead = bead;
 				}
 			}
 			svgRoot.appendChild(g);
@@ -2183,6 +2246,11 @@
 				} else {
 					if (forward) cands.push(silkBezierRoute(x1, y1, x2, y2));
 					if (rowDiff === 1) cands.push(silkBandRoute(from, to, g.GY));
+					// 同层跨列：优先走顶部弧（lab 的形态），长横带只做
+					// 顶部被占满时的 fallback；TOP 会随 lane 数增长。
+					if (rowDiff === 0 && e.from !== ROOT_ID) {
+						cands.push(silkTopArc(from, to, lane, g.narrow));
+					}
 					if (rowDiff === 0) cands.push(silkRowBandRoute(from, to, G.maxRow, g.GY));
 					cands.push(silkTopArc(from, to, lane, g.narrow));
 				}
@@ -2217,7 +2285,9 @@
 		function updateStageHeight() {
 			if (!geo) return;
 			const need = geo.contentH + 39 + 35 + 2;
-			const want = Math.round(Math.min(need, baseH));
+			// 顶部弧会让内容比旧舞台高；允许舞台跟着长到 560，
+			// 否则 480 卡片里会出现 12px 纵向滚动条（E2E 纵向完整断言）。
+			const want = Math.round(Math.min(need, Math.max(baseH, 560)));
 			const cur = container.style.getPropertyValue("--silk-h");
 			if (cur !== want + "px") container.style.setProperty("--silk-h", want + "px");
 		}
@@ -2627,6 +2697,36 @@
 			return id;
 		}
 
+		/**
+		 * 主线画完后的**无缝循环**流光：shim 每次位移一个 dash 周期，
+		 * bead 同步循环；终点相位与起点一致，不会跳到中间。
+		 */
+		function startFlow(e, len, drawMs) {
+			if (!e.g || !e.core) return;
+			// shim 的循环速度跟着拍长走（0.5× 更慢），但 loop 本身是**无缝**的：
+			// @keyframes 每次正好位移一个 dash 周期 168px，终点相位 = 起点相位。
+			const flowMs = Math.max(1600, Math.min(3600, Math.round((lastStepMs || 900) * 2.2)));
+			e.g.style.setProperty("--silk-flow", (flowMs / 1000).toFixed(3) + "s");
+			e.g.classList.add("is-flow");
+			// 整条边只保留一个 block：dash=24、gap=整条路径长度。
+			// offset 从 0 走到 -(len+24)，block 从源点进入、从终点离开，再回到源点。
+			const shim = e.g.querySelector(".sl-shim");
+			if (shim && len > 0) {
+				if (e.shimAnim) e.shimAnim.cancel();
+				const block = 24;
+				shim.style.strokeDasharray = `${block} ${len + block}`;
+				shim.style.strokeDashoffset = "0";
+				e.shimAnim = shim.animate(
+					[{ strokeDashoffset: "0" }, { strokeDashoffset: String(-(len + block)) }],
+					{ duration: flowMs, iterations: Infinity, easing: "linear" },
+				);
+			}
+			if (e.motion) {
+				e.motion.setAttribute("dur", (flowMs / 1000).toFixed(3) + "s");
+				if (e.motion.beginElement) e.motion.beginElement();
+			}
+		}
+
 		function resetReveal() {
 			clearTimers();
 			container.classList.remove("is-playing");
@@ -2635,7 +2735,7 @@
 				if (!rec.participates) rec.el.classList.add("is-in");
 			}
 			for (const e of edgeItems) {
-				e.g.classList.remove("is-on", "is-loop");
+				e.g.classList.remove("is-on", "is-loop", "is-flow");
 				if (e.core) {
 					e.core.classList.remove("is-pre");
 					if (e.core.getAnimations) e.core.getAnimations().forEach((a) => a.cancel());
@@ -2644,8 +2744,23 @@
 					e.core.style.strokeDashoffset = "";
 					e.core.setAttribute("marker-end", e.marker);
 				}
+				for (const p of e.g.querySelectorAll(".sl-under, .sl-mid")) {
+					if (p.getAnimations) p.getAnimations().forEach((a) => a.cancel());
+					p.style.strokeDasharray = "";
+					p.style.strokeDashoffset = "";
+				}
 				if (e.label) e.label.classList.add("is-pre");
 				if (e.badge) e.badge.classList.remove("is-loop");
+				if (e.bead) e.bead.style.opacity = "";
+				if (e.shimAnim) {
+					e.shimAnim.cancel();
+					e.shimAnim = null;
+				}
+				const shim = e.g.querySelector(".sl-shim");
+				if (shim) {
+					shim.style.strokeDasharray = "";
+					shim.style.strokeDashoffset = "";
+				}
 			}
 			setProgress(0);
 			hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
@@ -2654,10 +2769,12 @@
 		/**
 		 * 把一条边"沿着路径画出来"。
 		 *
-		 * 与演示页的唯一有意差异（契约 §12.1）：**用主 path 的实测长度**做
-		 * dasharray/dashoffset，不用 pathLength=1 —— E2E 的「逐段描出」断言要求
-		 * computedDash > 1 且 0 < |offset| < dash-0.5，pathLength=1 会把 dash
-		 * 归一化成 1，那条断言必红。观感一致：线沿路径长出来。
+		 * 演示页只有 core 有 dashoffset，under/mid 是跟着整组 opacity 淡入的；
+		 * 丝带加粗后那样会像"整条线一起淡入"。这里 under/mid/core 三层都用实测
+		 * 长度做 dasharray/dashoffset，从源点一起长出来，才是真正的"流向流出"。
+		 *
+		 * 仍用实测长度而不是 pathLength=1：E2E 的「逐段描出」断言要求
+		 * computedDash > 1 且 0 < |offset| < dash-0.5。
 		 */
 		function drawEdge(e) {
 			const path = e.core;
@@ -2670,10 +2787,16 @@
 			path.dataset.animated = "1";
 			e.g.classList.add("is-on");
 
+			const ribbon = [e.g.querySelector(".sl-under"), e.g.querySelector(".sl-mid")].filter(Boolean);
+
 			const finish = () => {
 				path.style.strokeDasharray = "";
 				path.style.strokeDashoffset = "";
 				path.setAttribute("marker-end", e.marker);
+				for (const p of ribbon) {
+					p.style.strokeDasharray = "";
+					p.style.strokeDashoffset = "";
+				}
 				if (e.label) e.label.classList.remove("is-pre");
 			};
 
@@ -2681,15 +2804,29 @@
 			if (len > 0 && typeof path.animate === "function") {
 				path.style.strokeDasharray = String(len);
 				path.style.strokeDashoffset = String(len);
+				for (const p of ribbon) {
+					p.style.strokeDasharray = String(len);
+					p.style.strokeDashoffset = String(len);
+				}
 				// 箭头等画完再出现，否则"线还没到、箭头先杵在那儿"
 				path.removeAttribute("marker-end");
+				// 描出时长跟着拍长走：0.5× 时不是"拍子慢了、线还是 400ms 唰一下"。
+				const drawMs = Math.max(300, Math.min(1200, (lastStepMs || 900) * 0.7));
+				const ribbonAnims = ribbon.map((p) =>
+					p.animate(
+						[{ strokeDashoffset: String(len) }, { strokeDashoffset: "0" }],
+						{ duration: drawMs, easing: "cubic-bezier(0.35, 0, 0.25, 1)", fill: "forwards" },
+					),
+				);
 				const anim = path.animate(
 					[{ strokeDashoffset: String(len) }, { strokeDashoffset: "0" }],
-					{ duration: 400, easing: "cubic-bezier(0.35, 0, 0.25, 1)", fill: "forwards" },
+					{ duration: drawMs, easing: "cubic-bezier(0.35, 0, 0.25, 1)", fill: "forwards" },
 				);
 				anim.onfinish = () => {
 					anim.cancel();
+					for (const a of ribbonAnims) a.cancel();
 					finish();
+					startFlow(e, len, drawMs);
 				};
 				return;
 			}
@@ -2740,6 +2877,8 @@
 			for (const e of edgeItems) {
 				if (!e.walked) continue;
 				e.g.classList.add("is-on");
+				const len = e.core.getTotalLength ? e.core.getTotalLength() : 0;
+				if (len > 0) startFlow(e, len, 0);
 				e.core.classList.remove("is-pre");
 				e.core.dataset.animated = "1";
 				e.core.setAttribute("marker-end", e.marker);
@@ -2766,7 +2905,9 @@
 			resetReveal();
 
 			const speed = revealSpeed > 0 ? revealSpeed : 1;
-			const stepMs = Math.max(120, 500 / speed);
+			// 900ms/拍：12 步约 10.8s；0.5× = 1800ms/拍（约 24s），
+			// 让"看清一步"优先于"快点放完"。
+			const stepMs = Math.max(180, 900 / speed);
 			lastStepMs = stepMs;
 
 			// 只压暗**参与这次执行**的元素：剪枝节点与 muted 边本来就"没走"，
