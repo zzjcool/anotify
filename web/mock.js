@@ -5180,21 +5180,7 @@
 	// ===== 设备（推送订阅）=====
 	on("GET", /^\/v1\/devices$/, () => json({ devices: clone(state.devices) }));
 
-	// ===== 测试通知 =====
-	on("POST", /^\/v1\/test-notify$/, (ctx) => {
-		const b = ctx.body || {};
-		const ev = {
-			id: uid("evt"),
-			orgId: ORG,
-			traceId: nextTraceId(),
-			source: "manual",
-			type: "test.notify",
-			payload: { title: b.title, body: b.body },
-			createdAt: now(),
-		};
-		state.events.push(ev);
-		return json({ ok: true, event: clone(ev) });
-	});
+	// 说明：/v1/test-notify 端点已删除（服务端有负断言要求 404），mock 不再桩它。
 
 	// ===== 安全 / passkey / 会话 =====
 	on("GET", /^\/v1\/auth\/passkeys$/, () => json({ passkeys: [] }));

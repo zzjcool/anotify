@@ -357,7 +357,7 @@ receivers:
     perm_denied: Permiso de notificaciones no concedido ({perm}). Permite en la configuración del navegador y reintenta.
     registering_sw: Registrando Service Worker…
     getting_vapid: Obteniendo clave pública VAPID…
-    no_backend: Backend no conectado — no se puede obtener la clave VAPID (el modo demo registra el dispositivo sin suscribirse).
+    no_backend: Backend no conectado — no se puede obtener la clave VAPID. Comprueba que el servidor esté activo (en local, make dev) y vuelve a intentarlo.
     empty_vapid: La clave pública VAPID está vacía
     subscribing: Suscribiendo a push…
     reporting: Reportando suscripción…
@@ -508,7 +508,7 @@ keys:
   error:
     no_scope: Selecciona al menos un ámbito
     no_plaintext: El servidor no devolvió el texto plano del Key
-    create_failed: 'Error al crear: {msg} (prueba el modo demo si el backend no está listo)'
+    create_failed: 'Error al crear: {msg}. Comprueba que el servidor esté activo (en local, ejecuta make dev) y vuelve a intentarlo.'
   emptyTitle: 'Aún no hay claves de API'
 security:
   title: Seguridad y acceso
@@ -586,7 +586,8 @@ security:
       2. Navegador con soporte WebAuthn
 
 
-      Actualmente en modo demo. Cuando el backend esté listo, se activará la biometría del sistema.'
+      Cuando el backend esté listo, se activará la biometría del sistema.'
+    backend_down: No se puede conectar con el backend. Comprueba que el servidor esté activo y servido por HTTPS (en local, make dev) e inténtalo de nuevo.
   toast:
     renamed: Renombrado
     rename_failed: 'Error al renombrar: {msg}'
@@ -872,7 +873,7 @@ passkeyenroll:
     success_desc: Se creó la passkey para «{name}». La próxima vez podrá iniciar sesión directamente.
     done: Listo
     restart: Empezar de nuevo
-    error_backend_desc: No se puede conectar con el backend (modo demo). Comprueba que el servidor esté activo y servido por HTTPS.
+    error_backend_desc: No se puede conectar con el backend. Comprueba que el servidor esté activo y servido por HTTPS (en local, make dev) y vuelve a intentarlo.
     denied_title: Registro rechazado
     denied_desc: No se creó ninguna credencial. Si no has sido tú, comprueba si alguien intenta acceder a tu cuenta.
     expired_title: La sesión ha caducado

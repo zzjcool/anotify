@@ -357,7 +357,7 @@ receivers:
     perm_denied: 通知権限が付与されませんでした（{perm}）。ブラウザ設定で許可して再試行してください。
     registering_sw: Service Worker を登録中…
     getting_vapid: VAPID 公開鍵を取得中…
-    no_backend: バックエンド未接続 — VAPID 鍵を取得できません（デモモードではデバイスを登録のみ行い、実際の購読はしません）。
+    no_backend: バックエンド未接続 — VAPID 鍵を取得できません。サーバーが起動しているか確認して再試行してください（ローカルなら make dev で起動できます）。
     empty_vapid: VAPID 公開鍵が空です
     subscribing: プッシュを購読中…
     reporting: 購読を報告中…
@@ -508,7 +508,7 @@ keys:
   error:
     no_scope: 少なくとも1つのスコープを選択してください
     no_plaintext: サーバーが Key の平文を返しませんでした
-    create_failed: 作成に失敗：{msg}（バックエンド未準備時はデモモードで体験できます）
+    create_failed: 作成に失敗：{msg}。サーバーが起動しているか確認して再試行してください（ローカルなら make dev で起動できます）。
   emptyTitle: 'API キーがまだありません'
 security:
   title: セキュリティとログイン
@@ -586,7 +586,8 @@ security:
       2. ブラウザが WebAuthn に対応
 
 
-      現在はデモモードです。バックエンド準備後に生体認証が起動します。'
+      バックエンド準備後に生体認証が起動します。'
+    backend_down: バックエンドに接続できません。サーバーが起動し HTTPS で配信されているかを確認してから、もう一度パスキーを追加してください（ローカルなら make dev で起動できます）。
   toast:
     renamed: 名前を変更しました
     rename_failed: 名前変更に失敗：{msg}
@@ -872,7 +873,7 @@ passkeyenroll:
     success_desc: 「{name}」のパスキーが作成されました。次回からそのままログインできます。
     done: 完了
     restart: やり直す
-    error_backend_desc: バックエンドに接続できません（デモモード）。サーバーが HTTPS で起動しているか確認してください。
+    error_backend_desc: バックエンドに接続できません。サーバーが起動しているか、HTTPS で配信されているかを確認して再試行してください（ローカルなら make dev で起動できます）。
     denied_title: 追加を拒否しました
     denied_desc: 認証情報は作成されていません。心当たりがない場合は、第三者がログインを試みていないか確認してください。
     expired_title: セッションの有効期限が切れました
