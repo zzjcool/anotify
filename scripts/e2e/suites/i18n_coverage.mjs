@@ -11,7 +11,8 @@
  *      Every page is opened **with an injected session**: without it the
  *      protected pages (index/keys/receivers/security) answered 401 in
  *      partials.js and redirected to login.html, so this group used to scan
- *      the login page three times over and pass with zero real coverage
+ *      the login page (4 pages × 2 langs) and still passed, with zero real
+ *      coverage
  *      (#310). Protected pages additionally assert they did NOT land on the
  *      login page — that assertion is the anti-degeneration guard for #310.
  *      (language-switcher native names "中文"/"日本語", and the sidebar
