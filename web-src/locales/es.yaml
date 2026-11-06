@@ -1157,7 +1157,7 @@ caps:
     script_view: 'Solo lectura'
     script_edit: 'Editar script'
     script_hint: 'El script se ejecuta directamente (sin shell), así que la primera línea debe ser un shebang #!.'
-    schema_advanced: "Contrato de parámetros (avanzado)"
+    schema_advanced: "Contrato de parámetros"
     schema_toggle: "Editar JSON"
     schema_visual: "Visual"
     schema_add_row: "+ Añadir un parámetro"
@@ -1165,6 +1165,7 @@ caps:
     schema_more: "Más"
     schema_less: "Menos"
     schema_required: "Obligatorio"
+    field_default: "por defecto {v}"
     schema_key: "Nombre del parámetro"
     schema_type: "Tipo"
     schema_type_any: "Cualquier tipo"

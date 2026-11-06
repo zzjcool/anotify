@@ -1157,7 +1157,7 @@ caps:
     script_view: '只读'
     script_edit: '改脚本'
     script_hint: '脚本会被直接 exec（不经 shell），第一行必须是 #! shebang。'
-    schema_advanced: "参数契约（高级）"
+    schema_advanced: "参数契约"
     schema_toggle: "手写 JSON"
     schema_visual: "可视化"
     schema_add_row: "+ 加一个参数"
@@ -1165,6 +1165,7 @@ caps:
     schema_more: "更多"
     schema_less: "收起"
     schema_required: "必填"
+    field_default: "默认 {v}"
     schema_key: "参数名"
     schema_type: "类型"
     schema_type_any: "任意类型"

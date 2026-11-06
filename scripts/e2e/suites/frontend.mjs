@@ -1723,12 +1723,19 @@ async function checkCapabilityTemplates(page) {
 	const form = await page.evaluate(() => ({
 		formVisible: !document.getElementById("tpl-form-step").classList.contains("hidden"),
 		stepHidden: document.getElementById("tpl-step").classList.contains("hidden"),
-		fieldKeys: Array.from(document.querySelectorAll("#tpl-fields [data-field]")).map((e) =>
+		// 参数定义只有一处：模板字段驱动的是「参数契约」的行（#tpl-fields 已合并）。
+		fieldKeys: Array.from(document.querySelectorAll("#schema-rows [data-field]")).map((e) =>
 			e.getAttribute("data-field"),
 		),
-		required: Array.from(document.querySelectorAll("#tpl-fields [data-required='1']")).map((e) =>
-			e.getAttribute("data-field"),
+		required: Array.from(document.querySelectorAll("#schema-rows [data-required='1']")).map(
+			(e) => e.getAttribute("data-field"),
 		),
+		// 模板的 label/help/默认值降级成行内提示（信息没丢，但不再是可填表单）
+		hints: Array.from(document.querySelectorAll("#schema-rows .schema-row-hint")).map((x) =>
+			(x.textContent || "").trim(),
+		),
+		legacyFieldsForm: !!document.getElementById("tpl-fields"),
+		legacyFieldsWrap: !!document.getElementById("cap-fields-wrap"),
 		script: (document.getElementById("script-pre") || {}).textContent || "",
 		requires: (document.getElementById("tpl-requires") || {}).textContent || "",
 		scriptInputHidden: document.getElementById("script-input").classList.contains("hidden"),
@@ -1755,6 +1762,21 @@ async function checkCapabilityTemplates(page) {
 		form.requires,
 	);
 	H.check("默认是只读脚本（不是一进去就给空编辑器）", form.scriptInputHidden === true);
+	// 合并守卫：参数不许有两套控件。旧的模板填值区（#tpl-fields）输入框的值
+	// **从不参与提交**，却和下面的参数契约显示同一批名字 —— 留着只会让人
+	// 以为自己填的值会生效。现在它的信息降级成行内提示（.schema-row-hint）。
+	H.check(
+		"参数只有一套控件：旧的模板填值区不在 DOM 里",
+		form.legacyFieldsForm === false && form.legacyFieldsWrap === false,
+		JSON.stringify({ tplFields: form.legacyFieldsForm, wrap: form.legacyFieldsWrap }),
+	);
+	H.check(
+		"模板字段的说明没丢：label / help 降级成行内提示",
+		form.hints.length === 3 &&
+			form.hints.some((x) => /提示词/.test(x)) &&
+			form.hints.some((x) => /留空用默认/.test(x)),
+		JSON.stringify(form.hints).slice(0, 240),
+	);
 
 	// ② 脚本模式：切到可编辑，改一个字，再切回来
 	await page.click("#script-mode-edit");

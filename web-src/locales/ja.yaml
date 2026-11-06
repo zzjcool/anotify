@@ -1157,7 +1157,7 @@ caps:
     script_view: '読み取り専用'
     script_edit: 'スクリプトを編集'
     script_hint: 'スクリプトは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
-    schema_advanced: "パラメータ契約（上級）"
+    schema_advanced: "パラメータ契約"
     schema_toggle: "JSON を編集"
     schema_visual: "ビジュアル"
     schema_add_row: "+ パラメータを追加"
@@ -1165,6 +1165,7 @@ caps:
     schema_more: "詳細"
     schema_less: "閉じる"
     schema_required: "必須"
+    field_default: "既定 {v}"
     schema_key: "パラメータ名"
     schema_type: "型"
     schema_type_any: "任意の型"

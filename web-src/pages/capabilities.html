@@ -617,6 +617,14 @@
       .schema-fld .select {
         font-size: 12px;
       }
+      /* 模板字段的说明（label / help / 默认值）降级成行内小字：
+         它解释「这个参数怎么填」，不参与契约，所以不给输入框 —— 给输入框
+         就会让人以为自己填的值会生效（那些值确实从不参与提交）。 */
+      .schema-row-hint {
+        margin: 0;
+        font-size: 11px;
+        color: var(--muted);
+      }
       .schema-rows-actions {
         display: flex;
         flex-wrap: wrap;
@@ -1227,35 +1235,6 @@
           <p id="cap-down-existing-text" class="field-hint"></p>
         </div>
 
-        <div id="cap-fields-wrap" class="mt-4">
-          <h4 class="card-title mb-2">{{t "caps.tpl.params"}}</h4>
-          <div id="tpl-fields" class="space-y-3"></div>
-        </div>
-
-        <div class="mt-4">
-          <div class="card-head mb-2">
-            <h4 class="card-title">{{t "caps.tpl.script"}}</h4>
-            <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
-                 想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
-            <div class="seg-switch">
-              <button type="button" id="script-mode-view" class="seg-item seg-item-active">
-                {{t "caps.tpl.script_view"}}
-              </button>
-              <button type="button" id="script-mode-edit" class="seg-item">
-                {{t "caps.tpl.script_edit"}}
-              </button>
-            </div>
-          </div>
-          <pre id="script-pre" class="yaml-box mono"></pre>
-          <textarea id="script-input" class="textarea mono hidden" rows="12"></textarea>
-          <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
-          <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
-               （= 每次任务一个独立目录），填了就显示绝对路径。 -->
-          <p class="tpl-hint mt-1">
-            {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
-          </p>
-        </div>
-
         <!-- 参数契约：**可视化填**（一行一个参数）+ 手写 JSON 两个视图。
 
              为什么要可视化：模板字段只能表达 string/number/select，而「自定义
@@ -1299,6 +1278,31 @@
           <p class="tpl-hint mt-1">{{t "caps.tpl.schema_hint"}}</p>
           <p id="schema-error" class="field-error mt-1 hidden"></p>
         </div>
+
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.tpl.script"}}</h4>
+            <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
+                 想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
+            <div class="seg-switch">
+              <button type="button" id="script-mode-view" class="seg-item seg-item-active">
+                {{t "caps.tpl.script_view"}}
+              </button>
+              <button type="button" id="script-mode-edit" class="seg-item">
+                {{t "caps.tpl.script_edit"}}
+              </button>
+            </div>
+          </div>
+          <pre id="script-pre" class="yaml-box mono"></pre>
+          <textarea id="script-input" class="textarea mono hidden" rows="12"></textarea>
+          <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
+          <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
+               （= 每次任务一个独立目录），填了就显示绝对路径。 -->
+          <p class="tpl-hint mt-1">
+            {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
+          </p>
+        </div>
+
       </div>
     </div>
 
@@ -3295,7 +3299,6 @@
           downstream: "", // #cap-downstream 的原文（逗号分隔，提交时才解析）
           script: "",
           scriptMode: "view",
-          fieldValues: {}, // #tpl-fields 里各输入的当前值
           schemaRows: [], // 参数契约的可视化行（活动卡的镜像，见 schemaSyncFromDom）
           schemaExtra: {}, // 行编辑器表达不了的顶层键（additionalProperties…），原样保留
           schemaView: "rows", // rows | json
@@ -3303,33 +3306,6 @@
           schemaDirty: false, // 用户动过契约吗（没动过就跟着模板字段推导走）
           timeoutDirty: false,
         };
-      }
-
-      // formFieldValues / applyFieldValues 读写 #tpl-fields 里各输入框的值。
-      // 靠 data-field（模板字段名）对应，不靠位置 —— 换模板时位置会变。
-      function formFieldValues() {
-        const out = {};
-        const box = document.getElementById("tpl-fields");
-        if (!box) return out;
-        for (const wrap of box.querySelectorAll("[data-field]")) {
-          const key = wrap.getAttribute("data-field") || "";
-          const ctl = wrap.querySelector("input, select, textarea");
-          if (!key || !ctl) continue;
-          out[key] = ctl.value;
-        }
-        return out;
-      }
-
-      function applyFieldValues(vals) {
-        const box = document.getElementById("tpl-fields");
-        if (!box) return;
-        const v = vals || {};
-        for (const wrap of box.querySelectorAll("[data-field]")) {
-          const key = wrap.getAttribute("data-field") || "";
-          const ctl = wrap.querySelector("input, select, textarea");
-          if (!key || !ctl || !(key in v)) continue;
-          ctl.value = String(v[key] == null ? "" : v[key]);
-        }
       }
 
       // saveActive 把镜像与表单字段写回活动卡。
@@ -3349,7 +3325,6 @@
         c.downstream = val("cap-downstream");
         c.script = SCRIPT_TEXT;
         c.scriptMode = SCRIPT_MODE;
-        c.fieldValues = formFieldValues();
         c.schemaText = val("cap-schema");
         // 参数契约：行是镜像（真相），JSON 文本是 json 视图的原文。
         // 两个都存：切卡时无论停在哪个视图，回来都还是那一份。
@@ -3383,7 +3358,6 @@
         document.getElementById("script-input").value = SCRIPT_TEXT;
         // 先写好 textarea/pre 再切模式：scriptModeSet("view") 会以 textarea 为准回写正文
         scriptModeSet(c.scriptMode === "edit" ? "edit" : "view");
-        applyFieldValues(c.fieldValues);
         // 参数契约：先把卡里的行装回镜像，再按视图渲染（顺序不能反）
         SCHEMA_ROWS = (c.schemaRows || []).map((r) => Object.assign({}, r));
         SCHEMA_EXTRA = Object.assign({}, c.schemaExtra || {});
@@ -3673,7 +3647,6 @@
         document.getElementById("script-pre").textContent = "";
         document.getElementById("script-input").value = "";
         scriptModeSet("view");
-        document.getElementById("tpl-fields").replaceChildren();
         document.getElementById("tpl-requires").textContent = "";
         // 参数契约：回到「可视化 + 空行」。新建时如果模板有字段，
         // pickTemplate 会用它推导出行（schemaDirty=false 时持续跟着模板走）；
@@ -3693,7 +3666,6 @@
         document.getElementById("cap-version-meta").textContent = "";
         clearImpact();
         document.getElementById("cap-steps").classList.remove("hidden");
-        document.getElementById("cap-fields-wrap").classList.remove("hidden");
         document.getElementById("cap-down-wrap").classList.remove("hidden");
         document.getElementById("cap-down-existing").classList.add("hidden");
         document.getElementById("cap-modal-title").textContent = t("caps.tpl.title", "新建能力");
@@ -3861,7 +3833,9 @@
         document.getElementById("script-input").value = SCRIPT_TEXT;
         scriptModeSet("view");
 
-        renderTplFields(tpl);
+        // 参数定义只有一处：下面的「参数契约」行视图。模板字段不再渲染成
+        // 第二套同名输入框（那些值从不参与提交），它们的 label/help/默认值
+        // 降级成行内提示（见 schemaRowHint）。
         renderTplRequires(tpl);
         // 参数契约跟着模板字段走 —— 但只在用户**没动过**契约时。
         // 改过就保留：换个模板不该把刚配好的参数擦了。
@@ -3886,64 +3860,6 @@
 
       function renderTplRequires(tpl) {
         document.getElementById("tpl-requires").textContent = requiresText(tpl.requires || []);
-      }
-
-      // renderTplFields 按模板字段渲染表单。
-      //
-      // 字段值**不参与** paramsSchema（schema 由字段定义推导，见 paramsSchemaFor）：
-      // 它只是让用户看清这个能力要填什么。模板设计成「字段 → ANOTIFY_PARAM_* 环境变量」，
-      // 所以脚本正文对所有能力都是同一份，不需要插值。
-      function renderTplFields(tpl) {
-        const box = document.getElementById("tpl-fields");
-        box.replaceChildren();
-        const fields = tpl.fields || [];
-        if (!fields.length) {
-          box.appendChild(el("div", "tpl-hint", t("caps.tpl.no_params", "这个模板没有参数")));
-          return;
-        }
-        for (const f of fields) box.appendChild(tplField(f));
-      }
-
-      function tplField(f) {
-        const wrap = el("div", "field");
-        // data-field / data-required 是契约性标记：字段名必须与模板的 key 一致
-        // （它会变成 ANOTIFY_PARAM_<UPPER>），e2e 靠它验证「字段由模板驱动」
-        // 而不是前端写死的第二份副本。
-        wrap.setAttribute("data-field", f.key || "");
-        if (f.required) wrap.setAttribute("data-required", "1");
-        const label = el("label", "field-label", f.label || f.key);
-        label.htmlFor = "tpl-f-" + f.key;
-        if (f.required) {
-          const star = el("span", "tpl-req", "*");
-          star.title = t("caps.tpl.required", "必填");
-          label.appendChild(star);
-        }
-        wrap.appendChild(label);
-
-        let ctl;
-        if (f.type === "select") {
-          ctl = document.createElement("select");
-          ctl.className = "select";
-          for (const o of f.options || []) ctl.appendChild(new Option(o, o));
-        } else if (f.type === "text") {
-          ctl = document.createElement("textarea");
-          ctl.className = "textarea mono";
-          ctl.rows = 3;
-        } else if (f.type === "number") {
-          ctl = document.createElement("input");
-          ctl.type = "number";
-          ctl.className = "input";
-        } else {
-          ctl = document.createElement("input");
-          ctl.type = "text";
-          ctl.className = "input";
-        }
-        ctl.id = "tpl-f-" + f.key;
-        if (f.default != null && f.default !== "") ctl.value = String(f.default);
-        wrap.appendChild(ctl);
-
-        if (f.help) wrap.appendChild(el("p", "tpl-hint", f.help));
-        return wrap;
       }
 
       // scriptModeSet 切「只读 / 改脚本」。
@@ -4324,10 +4240,40 @@
         return fld;
       }
 
+      // templateFieldFor 找当前模板里同名的那条字段定义（没有 = 用户自己加的参数）。
+      function templateFieldFor(key) {
+        const fields = (TPL_SEL && TPL_SEL.fields) || [];
+        for (const f of fields) if (f.key === key) return f;
+        return null;
+      }
+
+      // schemaRowHint 把模板字段的 label / help / default 拼成一行只读提示。
+      //
+      // 为什么不再给它们输入框（#tpl-fields 已经删掉）：那些值**从不参与提交**，
+      // 真正生效的是这里的契约。留一批同名输入框只会让人以为自己填的值会生效，
+      // 而下面还有一份同名的定义 —— 两批同名控件，谁都说服不了谁。
+      function schemaRowHint(f) {
+        if (!f) return null;
+        const bits = [];
+        if (f.label && f.label !== f.key) bits.push(String(f.label));
+        if (f.help) bits.push(String(f.help));
+        if (f.default != null && f.default !== "") {
+          bits.push(t("caps.tpl.field_default", "默认 {v}").replace("{v}", String(f.default)));
+        }
+        return bits.length ? el("p", "schema-row-hint", bits.join(" · ")) : null;
+      }
+
       // schemaRowEl 渲染一行：参数名 + 类型 + 必填 + 更多 + 删除。
       function schemaRowEl(row, i) {
         const wrap = el("div", "schema-row");
         wrap.setAttribute("data-row", String(i));
+        // 模板字段的标记留在行上：参数定义现在只有这一处，但「字段由模板驱动」
+        // 这条守卫仍然要能在 DOM 上验证（data-field / data-required）。
+        const tplField = templateFieldFor(row.key);
+        if (tplField) {
+          wrap.setAttribute("data-field", row.key);
+          if (tplField.required) wrap.setAttribute("data-required", "1");
+        }
         const main = el("div", "schema-row-main");
 
         const key = document.createElement("input");
@@ -4375,6 +4321,8 @@
         main.appendChild(del);
 
         wrap.appendChild(main);
+        const hint = schemaRowHint(tplField);
+        if (hint) wrap.appendChild(hint);
         const fields = schemaRowConstraintFields(row.type);
         if (fields.length) {
           const more = el("div", "schema-row-more");
@@ -5242,7 +5190,6 @@
         // 没有模板可挑：步骤条与「换模板」在编辑模式下没有意义
         document.getElementById("cap-steps").classList.add("hidden");
         document.getElementById("tpl-back").classList.add("hidden");
-        document.getElementById("cap-fields-wrap").classList.add("hidden");
         // 一张卡一次只发一个版本：卡片目录与「正在编辑」那一行在这里没有意义
         document.getElementById("cap-cards-wrap").classList.add("hidden");
         document.getElementById("cap-card-editor").classList.add("hidden");
