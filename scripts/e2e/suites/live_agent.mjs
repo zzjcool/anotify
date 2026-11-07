@@ -609,15 +609,16 @@ async function main() {
 	);
 	H.eq("脚本里 `anotify-agent emit` 的退出码 = 0", probeField("exit"), "0");
 	H.eq("省略 --port 的第二次 emit 也退 0（出口名由 agent 自动取）", probeField("exit2"), "0");
+	// 脚本的 stdout 不是终端 → emit 默认输出 JSON（#318）。所以这里读 JSON 里的 port。
 	H.check(
-		"省略 --port 时自动选中的就是唯一那个出口（命令行回显 port=emit.fix）",
-		/emit ok: port=emit\.fix/.test(probeText),
+		"省略 --port 时自动选中的就是唯一那个出口（JSON 回显 port=emit.fix）",
+		/"port":\s*"emit\.fix"/.test(probeText),
 		probeText,
 	);
 	H.eq("--to 钉住下游的那次 emit 也退 0", probeField("exit3"), "0");
 	H.check(
-		"CLI 报 acked=routed（中枢确认已派发，不是只落了本地 outbox）",
-		/acked=routed/.test(probeText),
+		"CLI 报 routed=true（中枢确认已派发，不是只落了本地 outbox）",
+		/"routed":\s*true/.test(probeText),
 		probeText,
 	);
 
