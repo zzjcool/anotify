@@ -1281,20 +1281,10 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// 省略版本（0）= 「内容寻址的创建」：同一份正文已存在就复用那一行，否则开下一个
+	// 版本。分配在 store 的事务内做（契约 §10-B）—— 这里不再预猜一个号：预猜与真正
+	// 插入之间有一个窗口，并发写者会撞同一个 next。
 	version := req.Version
-	if version <= 0 {
-		// 不指定版本时自动开下一个版本（append-only，不变量 I8）
-		next, err := h.db.NextCapabilityVersion(r.Context(), ns.ID, req.Name)
-		if err != nil {
-			if handleNamespaceError(w, err) {
-				return
-			}
-			slog.Error("next capability version failed", "event", "console.caps.next_failed", "error", err.Error())
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-			return
-		}
-		version = next
-	}
 
 	schema := req.ParamsSchema
 	if len(schema) == 0 {
@@ -1330,7 +1320,13 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
 		// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
 		// 永远跑不起来的定义）。这里只做校验、不落库 —— 落库用的是 c 归一后的正文。
-		built, err := buildArtifact(c, req.Run, req.Requires)
+		// 预校验用占位版本 1：真正的版本号由 store 在事务内分配（契约 §10-B），
+		// 而 version 只进 digest、不进正文 —— 校验结论与版本无关。
+		probe := *c
+		if probe.Version <= 0 {
+			probe.Version = 1
+		}
+		built, err := buildArtifact(&probe, req.Run, req.Requires)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
@@ -1714,22 +1710,8 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 		}
 		force = force || item.Force
 
+		// 省略版本（0）= 内容寻址（父注释）；分配在 store 事务内做。
 		version := item.Version
-		if version <= 0 {
-			// 不指定版本时自动开下一个版本（append-only，不变量 I8）——与单建同一口径。
-			next, err := h.db.NextCapabilityVersion(r.Context(), ns.ID, item.Name)
-			if err != nil {
-				if handleNamespaceError(w, err) {
-					return
-				}
-				slog.Error("next capability version failed",
-					"event", "console.caps.batch_next_failed",
-					"namespace_id", ns.ID, "name", item.Name, "error", err.Error())
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-				return
-			}
-			version = next
-		}
 
 		schema := item.ParamsSchema
 		if len(schema) == 0 {
@@ -1759,7 +1741,12 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 		// 产物必须在**建能力之前**先校验一遍（与单建同一个理由）：一份 run 写错的
 		// 请求不该留下一个永远跑不起来的定义。这里只校验、不落库。
 		if item.Run != nil {
-			built, err := buildArtifact(c, item.Run, item.Requires)
+			// 预校验用占位版本 1（同单建：版本号由 store 事务内分配）。
+			probe := *c
+			if probe.Version <= 0 {
+				probe.Version = 1
+			}
+			built, err := buildArtifact(&probe, item.Run, item.Requires)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"error": fmt.Sprintf("capabilities[%d]: %v", i, err),

@@ -89,7 +89,7 @@ digest = "sha256:" + hex(sha256(canonical{metadata.name, metadata.version, spec}
 - **`version` 进 digest**（试行过「只由内容决定」，已回退）：若同内容的不同版本折叠成一行，边里写的 `to_ref = x@2` 会悬空。显式版本必须能落地。
 - **`name` 进 digest**：跨名字共享实现本轮刻意不做（§9）。
 - **本条会改变所有既有 digest** → 升级后所有部署变 stale，需重推一次（P1-b2 负责，一次性）。
-- 已知代价：「同内容重放」（不带 version 重复 POST）会各自长出一个版本，而能力**没有 DELETE 端点**。是否用「同 name+spec 存在则复用」修掉，见 §10 待决。
+- 已知代价：不带 version 重复 POST 原本会各自长出一个版本（能力**没有 DELETE 端点**）——**已按 §10-B 修掉**：省略版本时按 `(ns, name, spec)` 内容寻址复用已有行，显式版本永不折叠。
 
 ## 4. 存储：一张表
 
@@ -191,17 +191,18 @@ make e2e-one S=real_backend                # 真后端全链
 - 中枢执行用户任意代码 —— 永不。
 - `impl.kind` 作为独立枚举字段 —— 用「files/handler 二选一」表达，新增 0 个概念。
 
-## 10. 待决：同内容重放
+## 10. 已决：同内容重放（§10-B）
 
-现状：`digest` 含 `version`，所以**不带 version 的重复 POST 会各自长出一个新版本**（内容一模一样）。
-而能力**没有 DELETE 端点**，重复的行永久占用。
+**采纳 B**。`version` 省略（`<= 0`）= 「内容寻址的创建」：
 
-三个选项：
+1. 用占位版本 1 归一正文（version 只进 digest、不进正文）；
+2. 按 `(ns, name, spec)` 字节相等查已有行 → 命中就**复用那一行**（只额外更新 `display_name`）；
+3. 未命中 → 在**事务内**算 `MAX(version)+1`（不再由服务端预猜：预猜与插入之间有个窗口，并发写者会撞同一个 next）。
 
-| 选项 | 行为 | 代价 |
-|---|---|---|
-| **A 保持现状** | 省略 version = 永远开新版本 | 重试/双击会留下重复行；但语义最直白 |
-| **B 同 name+spec 存在则复用**（推荐） | `version` 省略时：先按 `(ns, name, spec)` 查，命中就返回该行；未命中才开新版本 | 要改 `createCapabilityTx` 的版本分配（现由 server 调 `NextCapabilityVersion` 先填），改动约 20 行 + 用例 |
-| **C digest 去掉 version** | 同内容永远折叠 | **已排掉**：显式 `x@2` 会被折成 `x@1`，边的 `to_ref` 悬空 |
+**显式给了 version 就永不折叠**：`x@1` 与 `x@2` 各占一行，哪怕内容相同。这条不能让步——边里写的是 `name@version`，折叠会让 `to_ref` 悬空。
 
-B 的关键性质：**只影响「省略 version」这一种请求**；显式给 version 时永不折叠（`x@1` 与 `x@2` 各占一行，哪怕内容相同）。
+落地位置：`internal/store/capability.go` 的 `createCapabilityTx`（② 版本分配）、`getCapabilityBySpecOn`、`nextCapabilityVersionOn`、`foldIntoExistingOn`；测试 `TestCapabilityCreateContentAddressed`。
+
+被排掉的选项：
+- **A 保持现状**（省略版本 = 永远开新版本）：重试/双击会留下重复行，而能力不可删。
+- **C digest 去掉 version**：显式 `x@2` 会被折成 `x@1`，边的 `to_ref` 悬空。已试过并回退，playbook 四个用例当场变红。

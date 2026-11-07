@@ -416,9 +416,6 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 	if c.Name == "" {
 		return fmt.Errorf("create capability: empty name")
 	}
-	if c.Version <= 0 {
-		return fmt.Errorf("create capability: version must be > 0, got %d", c.Version)
-	}
 	// 内置起点的名字是**保留**的，用户不能开新版本接管它。
 	//
 	// 为什么必须拦：findOrigin 取该 name 的**最高版本**。用户建了 github@2
@@ -435,11 +432,43 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 	}
 	// ① 先校验**正文**：缺实现 / 实现二义 / handler 不在白名单 / params 不是对象……
 	//    形状规则只有一份（artifact.Validate）。失败 = 客户端可修 → 400 语义的错。
+	//
+	//    还没分配版本号时先用占位版本 1 过一遍：version 只进 digest、不进正文，
+	//    所以归一结果与最终版本无关（定了版本后要重算一遍规范字节，因为 digest 吃版本）。
+	assignVersion := c.Version <= 0
+	if assignVersion {
+		c.Version = 1
+	}
 	fullArtifact, specJSON, err := prepareCapabilitySpec(c)
 	if err != nil {
 		return err
 	}
-	// ② 派生列：单向、覆盖式。调用方设过的派生字段在这里一律被覆盖（契约 §4 的
+	// ② 版本分配：**省略 version（<=0）= 内容寻址的创建**（契约 §10-B）。
+	//
+	//    同一 (name, spec) 已经在库里 → 直接复用那一行：重复 POST / 客户端重试
+	//    不该长出第二份一模一样的版本（能力没有 DELETE 端点，重复行是永久的）。
+	//
+	//    **显式给了 version 就永不折叠**：x@1 与 x@2 各占一行，哪怕内容相同。
+	//    这是必须的——边里写的是 name@version，把 x@2 折成 x@1 会让 to_ref 悬空。
+	if assignVersion {
+		existing, lerr := getCapabilityBySpecOn(ctx, ex, c.NamespaceID, c.Name, specJSON)
+		switch {
+		case lerr == nil && existing != nil:
+			return foldIntoExistingOn(ctx, ex, c, existing)
+		case lerr != nil && !errors.Is(lerr, ErrNotFound):
+			return fmt.Errorf("lookup capability by spec: %w", lerr)
+		}
+		next, nerr := nextCapabilityVersionOn(ctx, ex, c.NamespaceID, c.Name)
+		if nerr != nil {
+			return nerr
+		}
+		c.Version = next
+		// 版本进了 digest → 规范字节必须用定下来的版本重算一遍。
+		if fullArtifact, specJSON, err = prepareCapabilitySpec(c); err != nil {
+			return err
+		}
+	}
+	// ③ 派生列：单向、覆盖式。调用方设过的派生字段在这里一律被覆盖（契约 §4 的
 	//    「一个写者」）——反过来从派生字段拼正文会让「内容」变成列的函数，
 	//    于是「只改脚本不产生新版本」那个 bug 换个马甲又回来了。
 	if err := deriveFromSpec(c); err != nil {
@@ -554,14 +583,7 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 		//
 		// 这里只 UPDATE 装饰字段，不违反 append-only（I8）：
 		// 能力定义本身（name/schema/outputs/lifecycle/sticky）一个字节都没动。
-		if want := strings.TrimSpace(c.DisplayName); want != "" && want != existing.DisplayName {
-			if uerr := setCapabilityDisplayNameOn(ctx, ex, c.NamespaceID, existing.ID, want); uerr != nil {
-				return fmt.Errorf("update display name on idempotent create: %w", uerr)
-			}
-			existing.DisplayName = want
-		}
-		*c = *existing
-		return nil
+		return foldIntoExistingOn(ctx, ex, c, existing)
 	}
 	if gerr != nil && !errors.Is(gerr, ErrNotFound) {
 		return fmt.Errorf("lookup existing capability after conflict: %w", gerr)
@@ -597,6 +619,59 @@ func prepareCapabilitySpec(c *CapabilityVersion) (full, specJSON []byte, err err
 		return nil, nil, fmt.Errorf("marshal capability spec: %w", merr)
 	}
 	return fullDoc, raw, nil
+}
+
+// foldIntoExistingOn 把这次请求折叠成库里已有的那一行（幂等创建）。
+//
+// **display_name 要单独处理**：它不参与 hash/digest，所以「内容相同」不代表
+// 「显示名相同」。如果这次请求带了 displayName 而旧行没有（或不同），就把它落库
+// —— 否则用户填的名字会被静默吞掉，界面上看起来「我明明改了却没生效」。
+//
+// 这里只 UPDATE 装饰字段，不违反 append-only（I8）：能力定义本身
+// （name/schema/outputs/lifecycle/sticky）一个字节都没动。
+func foldIntoExistingOn(ctx context.Context, ex queryExec, c, existing *CapabilityVersion) error {
+	if existing == nil {
+		return nil
+	}
+	if want := strings.TrimSpace(c.DisplayName); want != "" && want != existing.DisplayName {
+		if uerr := setCapabilityDisplayNameOn(ctx, ex, c.NamespaceID, existing.ID, want); uerr != nil {
+			return fmt.Errorf("update display name on idempotent create: %w", uerr)
+		}
+		existing.DisplayName = want
+	}
+	*c = *existing
+	return nil
+}
+
+// getCapabilityBySpecOn 按「同一份正文」找已有版本（事务内外共用一份 SQL）。
+//
+// spec 列存的是 canonical JSON（键序固定），所以这里可以做**字节相等**比较 ——
+// 这就是契约 §10-B 的「省略 version 时按内容寻址」。
+//
+// 注意它只服务于**省略版本号**的创建：显式版本永不折叠（否则边里的
+// name@version 会指向一行并不存在的名字，to_ref 悬空）。
+func getCapabilityBySpecOn(ctx context.Context, ex queryExec, namespaceID, name string, spec []byte) (*CapabilityVersion, error) {
+	return scanCapabilityOn(ctx, ex,
+		`SELECT `+capabilityColumns+` FROM capability_versions
+		 WHERE namespace_id = ? AND name = ? AND spec = ?`,
+		namespaceID, name, string(spec))
+}
+
+// nextCapabilityVersionOn 返回某 name 的下一个版本号（无定义时返回 1）。
+//
+// 与 NextCapabilityVersion 的区别只是「读走哪个连接」：写入路径必须在事务内算，
+// 否则两次并发创建会拿到同一个 next，后一个直接撞 UNIQUE。
+func nextCapabilityVersionOn(ctx context.Context, ex queryExec, namespaceID, name string) (int, error) {
+	var maxV sql.NullInt64
+	if err := ex.queryRowContext(ctx,
+		`SELECT MAX(version) FROM capability_versions WHERE namespace_id = ? AND name = ?`,
+		namespaceID, name).Scan(&maxV); err != nil {
+		return 0, fmt.Errorf("next capability version: %w", err)
+	}
+	if !maxV.Valid {
+		return 1, nil
+	}
+	return int(maxV.Int64) + 1, nil
 }
 
 // getCapabilityByHash 按 (namespace_id, content_hash) 取已有版本（事务外；读走语句缓存）。
@@ -789,20 +864,15 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 }
 
 // NextCapabilityVersion 返回某 name 的下一个版本号（无定义时返回 1）。
+//
+// 写入路径**不要**用它来定版本：带版本的创建分两步，中间有窗口（另一个写者
+// 可能已经占了这个号）。store 内部的写入路径走 nextCapabilityVersionOn（事务内）。
+// 它保留给「只想看看下一个号是多少」的调用方与测试。
 func (d *DB) NextCapabilityVersion(ctx context.Context, namespaceID, name string) (int, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return 0, ErrNamespaceRequired
 	}
-	var maxV sql.NullInt64
-	if err := d.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM capability_versions WHERE namespace_id = ? AND name = ?`,
-		namespaceID, name).Scan(&maxV); err != nil {
-		return 0, fmt.Errorf("next capability version: %w", err)
-	}
-	if !maxV.Valid {
-		return 1, nil
-	}
-	return int(maxV.Int64) + 1, nil
+	return nextCapabilityVersionOn(ctx, d, namespaceID, name)
 }
 
 // CapabilityNamespace 返回能力定义所属的命名空间 id（I11 四处校验共用）。

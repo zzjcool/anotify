@@ -515,3 +515,56 @@ func TestSpecBackfillHelperShapes(t *testing.T) {
 
 // 让 sql 包在本文件里被用到（*sql.Tx 的显式类型在测试里出现过）。
 var _ = sql.Tx{}
+
+// TestCapabilityCreateContentAddressed 钉住契约 §10-B：
+//
+//	version 省略（0）= 内容寻址的创建 —— 同一 (name, spec) 已存在就复用那一行
+//	（重复 POST / 客户端重试不该长出第二份一模一样的版本：能力没有 DELETE 端点，
+//	重复行是永久的）；
+//
+//	显式给了 version 就**永不折叠** —— 边里写的是 name@version，把 x@2 折成 x@1
+//	会让 to_ref 悬空（playbook 装出来的 x@2 就是这么碎的）。
+func TestCapabilityCreateContentAddressed(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	first := mkCap(nsID, "idem.cap", 0, []string{"done"})
+	if err := db.CreateCapability(ctx, withSpec(first)); err != nil {
+		t.Fatalf("create (version omitted): %v", err)
+	}
+	if first.Version != 1 {
+		t.Fatalf("省略版本的首次创建应分到 @1，got @%d", first.Version)
+	}
+
+	// 同一份正文再来一次（模拟客户端重试）：必须复用同一行。
+	again := mkCap(nsID, "idem.cap", 0, []string{"done"})
+	if err := db.CreateCapability(ctx, withSpec(again)); err != nil {
+		t.Fatalf("create (replay): %v", err)
+	}
+	if again.ID != first.ID || again.Version != first.Version {
+		t.Fatalf("同内容重放没有复用已有行: first=%s@%d again=%s@%d",
+			first.ID, first.Version, again.ID, again.Version)
+	}
+	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ?", nsID, "idem.cap"); n != 1 {
+		t.Fatalf("库里应只有 1 行，got %d", n)
+	}
+
+	// 显式版本永不折叠：x@2 哪怕内容一模一样也必须自己占一行。
+	explicit := mkCap(nsID, "idem.cap", 2, []string{"done"})
+	if err := db.CreateCapability(ctx, withSpec(explicit)); err != nil {
+		t.Fatalf("create explicit @2: %v", err)
+	}
+	if explicit.Version != 2 || explicit.ID == first.ID {
+		t.Fatalf("显式 @2 被折叠成了 @%d（%s）—— 边的 to_ref 会悬空", explicit.Version, explicit.ID)
+	}
+
+	// 内容变了但省略版本 → 开新版本，不复用。
+	changed := mkCap(nsID, "idem.cap", 0, []string{"done", "failed"})
+	if err := db.CreateCapability(ctx, withSpec(changed)); err != nil {
+		t.Fatalf("create (content changed): %v", err)
+	}
+	if changed.Version != 3 {
+		t.Fatalf("内容变了省略版本应开 @3（@2 已占），got @%d", changed.Version)
+	}
+}
