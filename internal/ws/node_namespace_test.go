@@ -60,7 +60,7 @@ func TestCrossNamespaceTaskNotVisible(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 	}
-	if err := f.db.CreateCapability(ctx, capOther); err != nil {
+	if err := f.db.CreateCapability(ctx, withSpec(capOther)); err != nil {
 		t.Fatalf("create capability in %s: %v", nsOther.ID, err)
 	}
 	if capOther.ID == "" || capOther.NamespaceID != nsOther.ID {

@@ -35,7 +35,7 @@ func (f *nodeFixture) defineCapWithOutputs(
 		ParamsSchema: json.RawMessage(schema),
 		Outputs:      outputs, Source: store.CapSourceBuiltin,
 	}
-	if err := f.db.CreateCapability(context.Background(), c); err != nil {
+	if err := f.db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 	return c

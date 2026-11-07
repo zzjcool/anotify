@@ -64,7 +64,7 @@ func (f *emitFixture) addCap(t *testing.T, name string, version int, outputs []s
 		Outputs:      outputs,
 		Source:       store.CapSourceCustom,
 	}
-	if err := f.db.CreateCapability(context.Background(), c); err != nil {
+	if err := f.db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 	return c

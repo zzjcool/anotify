@@ -67,7 +67,7 @@ func TestFireAndEventsShareEntryEdgePath(t *testing.T) {
 		Outputs: []string{"done"},
 		Source:  store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	node := &store.Node{NamespaceID: ns.ID, Name: "mbp"}

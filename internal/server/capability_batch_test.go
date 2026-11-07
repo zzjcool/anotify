@@ -167,8 +167,10 @@ func TestPostCapabilityBatchIdempotentReplay(t *testing.T) {
 		return map[string]any{
 			"namespaceId": env.nsID,
 			"capabilities": []map[string]any{
-				{"name": "replay.b", "outputs": []string{"done"}, "run": batchRun()},
-				{"name": "replay.a", "outputs": []string{"fix"}, "run": batchRun()},
+				// 显式版本号：v3 的 digest 吃 metadata.version（契约 §3.2），
+				// 不带版本的重放会被自动开成 @2，那不是「幂等」而是一次真的新版本。
+				{"name": "replay.b", "version": 1, "outputs": []string{"done"}, "run": batchRun()},
+				{"name": "replay.a", "version": 1, "outputs": []string{"fix"}, "run": batchRun()},
 			},
 			"links": []map[string]any{{"fromRef": "replay.a", "fromPort": "fix", "toRef": "replay.b"}},
 		}
@@ -425,7 +427,7 @@ func TestPostCapabilityBatchUpgradeGate409AndForce(t *testing.T) {
 			Outputs:      []string{"done", "failed"},
 			Source:       store.CapSourceCustom,
 		}
-		if err := env.db.CreateCapability(ctx, v1); err != nil {
+		if err := env.db.CreateCapability(ctx, withSpec(v1)); err != nil {
 			t.Fatalf("create fixer@1: %v", err)
 		}
 		env.seedCapability(t, "review", 1, []string{"fix"})

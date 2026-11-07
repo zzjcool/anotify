@@ -56,7 +56,7 @@ func TestDispatchResolvesLinkRef(t *testing.T) {
 		Source:       store.CapSourceCustom,
 	}
 	for _, c := range []*store.CapabilityVersion{review, fixer1} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestDispatchResolvesLinkRef(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"issue":{"type":"string"},"note":{"type":"string"}}}`),
 		Source:       store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, fixer2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(fixer2)); err != nil {
 		t.Fatalf("create fixer@2: %v", err)
 	}
 	if _, err := db.ConfirmCapabilities(ctx, nsID, node.ID, []store.CapabilityRef{
@@ -184,7 +184,7 @@ func TestDispatchPrunesUnresolvableLinkRef(t *testing.T) {
 		Source:       store.CapSourceCustom,
 	}
 	for _, c := range []*store.CapabilityVersion{review, good} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 	}

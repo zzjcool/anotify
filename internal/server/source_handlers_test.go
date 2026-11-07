@@ -376,7 +376,7 @@ func TestValidateTargetParamsConfigTimeRules(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
 		Source:       store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -500,7 +500,7 @@ func TestValidateTargetParamsRequiredWithPlaceholder(t *testing.T) {
 			"properties":{"to":{"type":"string"},"title":{"type":"string"}}}`),
 		Source: store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -734,7 +734,7 @@ func newSourceHTTPEnvWithSchema(t *testing.T, paramsSchema string) *sourceHTTPEn
 		ParamsSchema: json.RawMessage(paramsSchema),
 		Source:       store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 

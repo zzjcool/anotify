@@ -36,7 +36,7 @@ func emitFixtureWithLink(t *testing.T) (*nodeFixture, *store.CapabilityVersion) 
 		Outputs:      []string{"done"},
 		Source:       store.CapSourceCustom,
 	}
-	if err := f.db.CreateCapability(ctx, fixer); err != nil {
+	if err := f.db.CreateCapability(ctx, withSpec(fixer)); err != nil {
 		t.Fatalf("create fixer: %v", err)
 	}
 	if err := f.db.CreateEdge(ctx, &store.Edge{

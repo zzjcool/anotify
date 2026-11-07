@@ -155,7 +155,7 @@ func TestCreateCapabilityUpgradeGate(t *testing.T) {
 		Outputs:      []string{"done", "failed"},
 		Source:       store.CapSourceCustom,
 	}
-	if err := env.db.CreateCapability(ctx, v1); err != nil {
+	if err := env.db.CreateCapability(ctx, withSpec(v1)); err != nil {
 		t.Fatalf("create fixer@1: %v", err)
 	}
 	from := env.seedCapability(t, "review", 1, []string{"fix"})
@@ -233,7 +233,7 @@ func TestCreateCapabilityAdditiveNoGate(t *testing.T) {
 		Outputs:      []string{"done"},
 		Source:       store.CapSourceCustom,
 	}
-	if err := env.db.CreateCapability(ctx, v1); err != nil {
+	if err := env.db.CreateCapability(ctx, withSpec(v1)); err != nil {
 		t.Fatalf("create fixer@1: %v", err)
 	}
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", map[string]any{

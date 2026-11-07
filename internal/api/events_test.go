@@ -98,7 +98,7 @@ func newEventFixture(t *testing.T) *eventFixture {
 		Outputs:      []string{"fix"},
 		Source:       store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, review); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(review)); err != nil {
 		t.Fatalf("create review capability: %v", err)
 	}
 	// 入口边：来源 "github" 的 pull_request.opened → review

@@ -88,7 +88,7 @@ func newNodeFixture(t *testing.T, opts ...func(*NodeHandler)) *nodeFixture {
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 	}
-	if err := db.CreateCapability(ctx, cap1); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap1)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -1410,7 +1410,7 @@ func (f *nodeFixture) defineCapability(t *testing.T, name string, version int) {
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 	}
-	if err := f.db.CreateCapability(context.Background(), capVer); err != nil {
+	if err := f.db.CreateCapability(context.Background(), withSpec(capVer)); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 }

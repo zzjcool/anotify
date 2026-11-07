@@ -127,7 +127,7 @@ func newFixture(t *testing.T, originCaps ...string) *fixture {
 		Outputs:      []string{},
 		Source:       store.CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, sink); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(sink)); err != nil {
 		t.Fatalf("create sink: %v", err)
 	}
 	directInputs := len(originCaps) == 0

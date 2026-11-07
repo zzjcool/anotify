@@ -45,7 +45,9 @@ func TestPostCapabilityBalanceUnimplemented400(t *testing.T) {
 	}
 }
 
-// TestPostCapabilityBalanceStored 实现的模式（priority，或缺省）照常落库并回显。
+// TestPostCapabilityBalanceStored balance 从 P1-b 起是**死字段**（契约 §4）：
+// 合法值仍然被接受（不 400），但落库恒为 '{}'，响应里也回空对象（不是 null，I9）。
+// 端口级平衡的语义没有消失——缺省就是 priority（BalanceModeOf 的口径不变）。
 func TestPostCapabilityBalanceStored(t *testing.T) {
 	env := newConsoleEnv(t)
 	res := postCapabilityLinks(t, env, map[string]any{
@@ -60,9 +62,11 @@ func TestPostCapabilityBalanceStored(t *testing.T) {
 	m := res.json(t)
 	capObj, _ := m["capability"].(map[string]any)
 	balance, _ := capObj["balance"].(map[string]any)
-	fix, _ := balance["fix"].(map[string]any)
-	if fix == nil || fix["mode"] != "priority" {
-		t.Fatalf("响应里的 balance = %v, want {fix:{mode:priority}}", capObj["balance"])
+	if balance == nil {
+		t.Fatalf("响应里的 balance = %v, want {}（不是 null）", capObj["balance"])
+	}
+	if len(balance) != 0 {
+		t.Fatalf("响应里的 balance = %v，want {}（P1-b 起不落库，P3 删列）", capObj["balance"])
 	}
 	// 缺省（不传 balance）也要回 `{}` 而不是 null（不变量 I9）。
 	env.seedCapability(t, "review.plain", 1, nil)

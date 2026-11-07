@@ -207,7 +207,7 @@ func newRedispatchFixture(t *testing.T) (db *store.DB, nsID, nodeID string, task
 		Outputs:      []string{},
 		Source:       store.CapSourceBuiltin,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 

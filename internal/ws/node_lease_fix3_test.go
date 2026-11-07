@@ -424,7 +424,7 @@ func (f *nodeFixture) defineCapabilityWithLifecycle(t *testing.T, name string, v
 		Outputs:      []string{"fix"}, Source: store.CapSourceBuiltin,
 		Lifecycle: lc,
 	}
-	if err := f.db.CreateCapability(context.Background(), capVer); err != nil {
+	if err := f.db.CreateCapability(context.Background(), withSpec(capVer)); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 }

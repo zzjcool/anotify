@@ -22,7 +22,7 @@ func seedTargetWithSchema(t *testing.T, env *consoleEnv, name, schema string) *s
 		ParamsSchema: json.RawMessage(schema),
 		Source:       store.CapSourceBuiltin,
 	}
-	if err := env.db.CreateCapability(context.Background(), c); err != nil {
+	if err := env.db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("seed capability %s: %v", name, err)
 	}
 	return c

@@ -18,9 +18,9 @@ func TestEmitPortsAreIndependentAndShaped(t *testing.T) {
 	// 上游声明两个出口。
 	up := f.addCap(t, "up", 1, []string{"p1", "p2"}, `{"type":"object"}`)
 	// 两个下游要**完全不同**的字段：p1 要 a,b —— p2 要 c,d。
-	a := f.addCap(t, "downA", 1, nil,
+	a := f.addCap(t, "down-a", 1, nil,
 		`{"type":"object","required":["a","b"],"properties":{"a":{"type":"string"},"b":{"type":"string"}}}`)
-	b := f.addCap(t, "downB", 1, nil,
+	b := f.addCap(t, "down-b", 1, nil,
 		`{"type":"object","required":["c","d"],"properties":{"c":{"type":"string"},"d":{"type":"string"}}}`)
 	f.addEdge(t, up, "p1", a, "")
 	f.addEdge(t, up, "p2", b, "")
@@ -85,7 +85,7 @@ func TestEmitPortsAreIndependentAndShaped(t *testing.T) {
 func TestEmitPortShapeRejectsWrongPayload(t *testing.T) {
 	f := newEmitFixture(t)
 	up := f.addCap(t, "up2", 1, []string{"p1"}, `{"type":"object"}`)
-	a := f.addCap(t, "downA2", 1, nil,
+	a := f.addCap(t, "down-a2", 1, nil,
 		`{"type":"object","required":["a","b"],"properties":{"a":{"type":"string"},"b":{"type":"string"}}}`)
 	f.addEdge(t, up, "p1", a, "")
 	f.addNode(t, 2, up, a)

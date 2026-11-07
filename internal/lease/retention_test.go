@@ -677,7 +677,7 @@ func mkNsCapability(t *testing.T, db *store.DB, namespaceID, name string, ttlSec
 		Source:       store.CapSourceCustom,
 		Lifecycle:    store.Lifecycle{ResultTTLSec: ttlSec},
 	}
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s in %s: %v", name, namespaceID, err)
 	}
 	return c

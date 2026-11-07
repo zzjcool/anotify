@@ -261,7 +261,7 @@ func (e *consoleEnv) seedCapabilityIn(
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      outputs, Source: store.CapSourceBuiltin,
 	}
-	if err := e.db.CreateCapability(context.Background(), c); err != nil {
+	if err := e.db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("seed capability %s@%d: %v", name, version, err)
 	}
 	return c
