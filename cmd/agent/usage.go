@@ -116,8 +116,9 @@ const usagePreamble = `anotify-agent —— Anotify 节点执行器（跑在你�
 
 节点模式（不带子命令 = 常驻进程，不是查询）
   前台一直跑：读 node.yaml → 连中枢 → 接单 → 执行 → 回报，直到 SIGINT / SIGTERM。
-  误跑一次就会占掉一个节点连接（被 systemd 那份顶掉后退出码 1）。只想看本机跑过
-  什么，用 runs / show；本机能跑什么用 capabilities；它现在还好吗用 status。
+  误跑一次就会占掉一个节点连接，把已经连着的那份顶下线（两边都会不停重连，
+  日志里能看到 superseded）；它**不会**自己退——要手动杀掉多余的那个。只想看本机
+  跑过什么，用 runs / show；本机能跑什么用 capabilities；它现在还好吗用 status。
   anotify-agent -f ~/.anotify/node.yaml -grace 20 --data-dir ~/.anotify
 
 子命令:
@@ -136,7 +137,11 @@ const usageFlagsTail = `
 
 退出码（节点模式；子命令各有自己的表，看 anotify-agent <子命令> -h）:
   0                                    正常退出（收到 SIGINT / SIGTERM 并收尾完毕，或 -h 看帮助）
-  1                                    参数/配置错误、握手被拒、连接断开（重启交给进程管理器）
+  1                                    参数/配置错误、令牌被拒（401/403）、协议版本不兼容、
+                                       实例数超顶、data-dir 不可用（**这几种不重试**）
+
+  中枢/网络瞬态故障（拨号失败、5xx/530、超时、连接断开）**不退出**：进程内指数退避
+  重连（1s→2s→4s… 封顶 30s，带抖动），成功握手后重置。加 -no-retry 退回「只试一次」。
 
 Agent? 运行: anotify-agent --skill
 `

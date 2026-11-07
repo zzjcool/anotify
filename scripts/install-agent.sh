@@ -11,7 +11,7 @@
 #   3. 写 ~/.anotify/node.yaml（600）。重跑时沿用里面的令牌/中枢/名字
 #   4. **预检**：先以前台方式连一次中枢，握手成功才继续。令牌错/中枢不通在这里就停，
 #      不会留下一个开机就崩溃重启的服务（--no-preflight 关掉）
-#   5. 装成 **系统级** systemd 服务、以你的身份跑：开机自启、没登录也活着、挂了 3 秒重启
+#   5. 装成 **系统级** systemd 服务、以你的身份跑：开机自启、没登录也活着、挂了会退避重启（3s 起，最多 30s）
 #      —— 就是 tailscaled 那种存在方式。没有 sudo 的机器退化成用户服务（会尝试 linger）
 #   6. 起来后核对 is-active，并打印节点/中枢/日志/升级/卸载
 #   7. 顺带清理上一版装法留下的东西（用户服务单元、~/.local/bin 里的旧副本），
@@ -407,7 +407,9 @@ preflight_once() {
 	probe_cfg=$(mktemp)
 	write_config_file "$probe_cfg"
 
-	"$tmp" -f "$probe_cfg" >"$probe_log" 2>&1 &
+	# 预检要的是「现在能不能连上」这个立刻的答案，所以用 -no-retry 只试一次：
+	# 常驻服务里 agent 自己会进程内退避重连，而这里必须马上失败好让安装中止。
+	"$tmp" -no-retry -f "$probe_cfg" >"$probe_log" 2>&1 &
 	probe_pid=$!
 	i=0
 	limit=$((PREFLIGHT_SEC * 4))
@@ -587,6 +589,10 @@ write_unit_file() {
 		printf 'ExecStart=%s -f %s -data-dir %s\n' "$BIN_DIR/anotify-agent" "$CFG" "$DATA_DIR"
 		printf 'Restart=always\n'
 		printf 'RestartSec=3\n'
+		printf '# systemd 254+ 的重启收敛：连续失败时把间隔从 RestartSec 按 RestartSteps 拉到 RestartMaxDelaySec。\n'
+		printf '# 旧版本 systemd 只把它当未知键（warn），不影响启动；进程内退避重连才是主路径。\n'
+		printf 'RestartSteps=5\n'
+		printf 'RestartMaxDelaySec=30\n'
 		printf '# 关机/登出时给在飞任务留出回报时间（agent 自己的 -grace 默认 20s，比这里小）\n'
 		printf 'KillSignal=SIGTERM\n'
 		printf 'TimeoutStopSec=30\n'
@@ -607,7 +613,7 @@ install_service_system() {
 	# 升级时单元文件变了而进程还在跑旧二进制，只有 restart 会换掉它。
 	as_root "$SYSTEMCTL" enable "$UNIT_NAME"
 	as_root "$SYSTEMCTL" restart "$UNIT_NAME"
-	SERVICE_DESC="systemd 系统服务（开机自启；没登录也活着；挂了 3 秒后重启）"
+	SERVICE_DESC="systemd 系统服务（开机自启；没登录也活着；重启带退避：3s 起，最多 30s）"
 	LOG_HINT="journalctl -u ${UNIT_NAME} -f"
 }
 
