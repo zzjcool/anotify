@@ -679,3 +679,11 @@ DROP INDEX IF EXISTS idx_edges_lookup;
 -- 默认 '' 只覆盖加这一列之前建的老行：它们不是任何一次「本次派发」新建的 pin，
 -- 因此永远不会匹配 RollbackPin 的条件（正是想要的语义）。
 ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
+
+-- +migration 8 user_password
+
+-- 密码登录（第二套登录模型，与 Passkey 并存）。空串 = 未设置密码（纯 Passkey 账号）。
+-- 只存 argon2id PHC 哈希（复用 auth.hashKey/verifyKey，与 api_keys / recovery_codes 同一实现），
+-- 明文永不落库、不落日志。password_updated_at = 最近一次设置/修改的 unix 秒；0 = 从未设置。
+ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN password_updated_at INTEGER NOT NULL DEFAULT 0;

@@ -19,6 +19,11 @@ const (
 	// recovery-code 登录：高价值密钥，双维度限速（对齐 CLI create / enroll 量级）。
 	rlRecoveryLoginIPPerMin   = 10 // 10/min/IP
 	rlRecoveryLoginUserPerMin = 10 // 10/min/username（小写）
+
+	// 密码登录（第二套登录模型）：与恢复码登录同一口径——它就是一条新的
+	// "拿一串秘密换会话" 的匿名入口，撞库成本必须和恢复码持平。
+	rlPasswordLoginIPPerMin   = 10 // 10/min/IP
+	rlPasswordLoginUserPerMin = 10 // 10/min/username（小写）
 )
 
 var (
@@ -28,6 +33,11 @@ var (
 
 	rlRecoveryLoginIP   = newFixedWindow(rlRecoveryLoginIPPerMin, time.Minute)
 	rlRecoveryLoginUser = newFixedWindow(rlRecoveryLoginUserPerMin, time.Minute)
+
+	// 密码登录的两个维度：IP 维管单机狂刷，username 维管分布式撞库
+	// （换 IP 不换用户名时，只有第二维能拦住）。两维都过才放行。
+	rlPasswordLoginIP   = newFixedWindow(rlPasswordLoginIPPerMin, time.Minute)
+	rlPasswordLoginUser = newFixedWindow(rlPasswordLoginUserPerMin, time.Minute)
 
 	// hooks 入口是**双维度**限流（见 rateLimitedHook 的注释）。
 	// nil 表示该维度被显式关闭（配置为负数，见 configureHookRateLimit）。

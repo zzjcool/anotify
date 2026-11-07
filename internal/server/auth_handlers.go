@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -40,6 +41,12 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.me(w, r)
 	case "recovery/login":
 		h.recoveryLogin(w, r)
+	case "password/login":
+		// 显式路由在 mux.go（契约 §2）；这里再留一条兜底：哪怕只挂了 /v1/auth/，
+		// 也不会退化成 404——匿名登录端点必须总是可达。
+		h.passwordLogin(w, r)
+	case "password":
+		h.password(w, r)
 	default:
 		writeErr(w, 404, "unknown auth endpoint: "+sub)
 	}
@@ -417,7 +424,7 @@ func (h *authHandler) renamePasskey(w http.ResponseWriter, r *http.Request, id s
 }
 
 // deletePasskey DELETE /v1/auth/passkeys/{id} —— 删除。
-// 越权（删别人的凭证）转 404。至少保留一个 Passkey，删最后一个返回 409。
+// 越权（删别人的凭证）转 404。删最后一个时的判定见下面的不变量（有密码才允许）。
 func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodDelete {
 		writeErr(w, 405, "method not allowed")
@@ -433,21 +440,42 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		writeErr(w, 404, "凭证不存在")
 		return
 	}
-	// 至少保留一个 Passkey：删掉最后一个会导致用户无法再用 Passkey 登录
-	// （只能靠恢复码/其它凭证兜底），产品上应禁止。
+	// 删的如果是最后一个凭证，就必须确认还有另一种登录方式（已设置密码），
+	// 否则删完只能靠恢复码兜底。
 	list, err := h.svc.ListPasskeys(uid)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	if len(list) <= 1 {
-		slog.Warn("passkey delete blocked: last credential",
-			"event", "auth.passkey.delete_last_blocked",
-			"user_id", uid,
-			"passkey_id", id,
-		)
-		writeErr(w, 409, "至少保留一个 Passkey，删除后你将无法登录。请先添加新的 Passkey 再删除此凭证。")
-		return
+		// 不变量：每个账号至少保留一种登录方式（≥1 Passkey **或**已设置密码）。
+		//
+		// 老实现无条件拒绝删最后一个 Passkey，那在只有 Passkey 的年代是对的；
+		// 现在密码也是合法登录方式——“有密码”时删掉最后一个 Passkey 不能把人锁在外面。
+		// 失败方向选 fail-closed：读不到密码状态就当作没有（宁可拒删，不可锁号）。
+		allowed := false
+		st, perr := h.svc.PasswordStatus(uid)
+		switch {
+		case perr != nil:
+			slog.Warn("passkey delete blocked: last credential and password status unreadable",
+				"event", "auth.passkey.delete_last_blocked",
+				"user_id", uid,
+				"passkey_id", id,
+				"error", perr.Error(),
+			)
+		case st == nil || !st.HasPassword:
+			slog.Warn("passkey delete blocked: last credential and no password",
+				"event", "auth.passkey.delete_last_blocked",
+				"user_id", uid,
+				"passkey_id", id,
+			)
+		default:
+			allowed = true
+		}
+		if !allowed {
+			writeErr(w, 409, "至少保留一种登录方式：请先设置密码，再删除最后一个 Passkey。")
+			return
+		}
 	}
 	if err := h.svc.DeletePasskey(id); err != nil {
 		writeErr(w, 500, err.Error())
@@ -459,6 +487,135 @@ func (h *authHandler) deletePasskey(w http.ResponseWriter, r *http.Request, id s
 		"passkey_id", id,
 	)
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// ---------- 密码登录（第二套登录模型，契约 §2/§3） ----------
+
+// passwordLogin POST /v1/auth/password/login —— username + password → 会话 Cookie。
+//
+// 匿名端点，双维度限速（10/min/IP + 10/min/username）：与恢复码登录同一口径。
+// 两个维度都放行才继续——IP 维管单机狂刷，username 维管分布式撞库。
+// 日志不得包含明文或哈希（这里只记 ip 与错误文案）。
+func (h *authHandler) passwordLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	// IP 限速先于读 body：挡住空请求洪泛（不解析 JSON、不打 argon2）。
+	if rateLimited(w, rlPasswordLoginIP, clientIP(r)) {
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" || req.Password == "" {
+		writeErr(w, 400, "缺少 username 或 password")
+		return
+	}
+	// per-username 限流：key 小写，大小写变体不能换额度。
+	if rateLimited(w, rlPasswordLoginUser, strings.ToLower(req.Username)) {
+		return
+	}
+	sessID, err := h.svc.LoginWithPassword(req.Username, req.Password, auth.DeviceNameFromUA(r.UserAgent()))
+	if err != nil {
+		// 文案不区分「用户不存在 / 密码错 / 未设置密码」以外的细节；也不记 username/明文。
+		slog.Warn("password login failed",
+			"event", "auth.password.login_fail",
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
+		writeErr(w, 401, err.Error())
+		return
+	}
+	h.svc.Sessions().SetCookie(w, sessID)
+	slog.Info("password login success",
+		"event", "auth.password.login_success",
+		"ip", clientIP(r),
+	)
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// password GET / POST / DELETE /v1/auth/password —— 密码管理（需登录会话）。
+//
+// 路由在 mux.go 里包了 sessMW，所以未登录在这里已经 401（不会走到这个方法）。
+// 方法分发留在本方法内：三条语义共享“同一个资源”，拆成三个 handler 只会多两处拷贝。
+func (h *authHandler) password(w http.ResponseWriter, r *http.Request) {
+	uid := auth.UserIDFromContext(r.Context())
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		h.passwordStatus(w, uid)
+	case http.MethodPost:
+		h.passwordSet(w, r, uid)
+	case http.MethodDelete:
+		h.passwordRemove(w, r, uid)
+	default:
+		writeErr(w, 405, "method not allowed")
+	}
+}
+
+// passwordStatus GET /v1/auth/password —— {hasPassword, updatedAt}。
+// 不返回哈希（也不返回前缀）：密码的存在性对前端已足够。
+func (h *authHandler) passwordStatus(w http.ResponseWriter, uid string) {
+	st, err := h.svc.PasswordStatus(uid)
+	if err != nil {
+		// 会话中间件已经验过用户存在，走到这里基本是库故障 → 500（不伪造“未设置”）。
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"hasPassword": st.HasPassword,
+		"updatedAt":   st.UpdatedAt,
+	})
+}
+
+// passwordSet POST /v1/auth/password —— 设置/修改密码。
+// body: {currentPassword, newPassword}；已设置密码时必须带对的 currentPassword。
+func (h *authHandler) passwordSet(w http.ResponseWriter, r *http.Request, uid string) {
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if err := readJSON(r, &req); err != nil || req.NewPassword == "" {
+		writeErr(w, 400, "缺少 newPassword")
+		return
+	}
+	st, err := h.svc.SetPassword(uid, req.CurrentPassword, req.NewPassword)
+	if err != nil {
+		// 契约枚举的失败面只有这个：新密码不合规 / 当前密码错（都是 400）。
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok":          true,
+		"hasPassword": st.HasPassword,
+		"updatedAt":   st.UpdatedAt,
+	})
+}
+
+// passwordRemove DELETE /v1/auth/password —— 移除密码。
+// body: {currentPassword}；未设置密码时幂等成功（hasPassword=false）。
+// 没有 Passkey 时不得移除（否则账号再没有任何登录方式）→ 409。
+func (h *authHandler) passwordRemove(w http.ResponseWriter, r *http.Request, uid string) {
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+	}
+	// body 可缺：未设置密码时移除是幂等的，前端可能根本不带 body。
+	_ = readJSON(r, &req)
+	if err := h.svc.RemovePassword(uid, req.CurrentPassword); err != nil {
+		if errors.Is(err, auth.ErrLastAuthMethod) {
+			writeErr(w, 409, err.Error())
+			return
+		}
+		// 当前密码错 / 用户不存在 / 数据异常：统一 400（契约对 DELETE 只定义了 400/409）。
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "hasPassword": false})
 }
 
 // ---------- 恢复码 ----------

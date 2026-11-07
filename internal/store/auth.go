@@ -119,6 +119,65 @@ func (d *DB) GetUserByID(id string) (*User, error) {
 	return &u, nil
 }
 
+// ---------- User Password ----------
+
+// UserPassword 是 users 表的密码列（迁移 8：第二套登录模型，与 Passkey 并存）。
+//
+// 为什么单独一个类型、而不是给 User 加字段：/v1/auth/me 与 admin 用户列表都会直接
+// 序列化 User，密码哈希一旦挂上去就是一次真实泄露。哈希只走这条专用通道，
+// 只在认证服务内部读一次、用完即弃。
+//
+// 空串 Hash = 未设置密码（纯 Passkey 账号）；UpdatedAt = 最近一次设置/修改的 unix 秒，
+// 0 表示从未设置。
+type UserPassword struct {
+	Hash      string
+	UpdatedAt int64
+}
+
+// GetUserPassword 读密码列。用户不存在 → ErrNotFound。
+func (d *DB) GetUserPassword(userID string) (*UserPassword, error) {
+	var p UserPassword
+	err := d.QueryRow(
+		`SELECT password_hash, password_updated_at FROM users WHERE id = ?`, userID,
+	).Scan(&p.Hash, &p.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user password: %w", err)
+	}
+	return &p, nil
+}
+
+// SetUserPassword 写 hash + updatedAt（设置与修改同一个入口）。
+// 0 行受影响（用户不存在）→ ErrNotFound；上层据此回「用户不存在」。
+func (d *DB) SetUserPassword(userID, hash string, updatedAt int64) error {
+	res, err := d.Exec(
+		`UPDATE users SET password_hash = ?, password_updated_at = ? WHERE id = ?`,
+		hash, updatedAt, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("set user password: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearUserPassword 清空密码（hash 置空、updated_at 归零）。对不存在的用户无副作用
+// （幂等：重复移除不报错，符合「移除密码」的产品语义）。
+func (d *DB) ClearUserPassword(userID string) error {
+	_, err := d.Exec(
+		`UPDATE users SET password_hash = '', password_updated_at = 0 WHERE id = ?`, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("clear user password: %w", err)
+	}
+	return nil
+}
+
 // ---------- Passkey ----------
 
 // CreatePasskey 插入一个 Passkey 凭证。
