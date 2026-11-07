@@ -373,10 +373,14 @@ var (
 )
 
 // buildAgentBinary 编译出**真的** anotify-agent（整个测试包共用一次）。
+//
+// 目录必须走 mkTestTempDir 登记（#326）：它不属于任何单个用例，没有 t.Cleanup
+// 能挂，只有 TestMain 能收。直接 MkdirTemp 的版本每跑一次 `go test ./cmd/agent`
+// 就在 /tmp 里留一份 15MB 的二进制副本（本机 /tmp 是 tmpfs，吃的是内存）。
 func buildAgentBinary(t *testing.T) string {
 	t.Helper()
 	agentBinaryOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "anotify-agent-bin")
+		dir, err := mkTestTempDir("anotify-agent-bin")
 		if err != nil {
 			agentBinaryErr = err
 			return
@@ -507,6 +511,10 @@ func TestEmitCLIRealProcess(t *testing.T) {
 // TestEmitCLIRealProcessLocalMode：整条 `anotify-agent run`（本地模式）里调 emit，
 // 必须拿到「本地模式无中枢，emit 不可用」而不是静默丢事件。
 func TestEmitCLIRealProcessLocalMode(t *testing.T) {
+	// 这个用例跑的是真二进制的 `run`，且**不传 --data-dir** → 工作目录兜底到
+	// 系统临时目录（#326）。把 os.TempDir() 指到 t.TempDir()，子进程通过
+	// os.Environ() 继承 TMPDIR，于是兜底行为仍被覆盖，但不在真实 /tmp 留目录。
+	isolateSystemTemp(t)
 	bin := buildAgentBinary(t)
 
 	// 一个会调 emit 的能力产物：脚本用同一份二进制调自己（真实用法）。
