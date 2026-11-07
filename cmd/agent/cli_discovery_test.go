@@ -81,7 +81,7 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 func TestAgentCommandsMatchDispatch(t *testing.T) {
 	t.Parallel()
 
-	if len(agentCommands) != 7 {
+	if len(agentCommands) != 9 {
 		t.Fatalf("命令表有 %d 条，want 9（run / check / schema / emit / upgrade / runs / show / capabilities / status）",
 			len(agentCommands))
 	}
