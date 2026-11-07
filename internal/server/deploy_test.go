@@ -2,13 +2,14 @@ package server
 
 // 部署模型的控制台端点（console-declares epic，契约 CONTRACT-protocol §11）。
 //
-// 覆盖六件事，全部是「控制台点一下 → 中枢库里发生什么」的可观测契约：
+// 覆盖七件事，全部是「控制台点一下 → 中枢库里发生什么」的可观测契约：
 //  1. GET  /v1/capability-templates  恰好 10 个内置模板（CONTRACT-artifact §8）
 //  2. POST /v1/capabilities 带 run   → 编译产物、算 digest、落 artifacts，可被 /v1/artifacts 查到
-//  3. POST /v1/capabilities 不带 run → 没有产物，部署 404 artifact_not_found
+//  3. POST /v1/capabilities 不带 run → **不可能**（400 impl_missing，契约 §5）
 //  4. POST /v1/deployments           → 离线节点**照样建行**，逐台回 pushed=false
-//  5. GET  /v1/deployments           → nodeId / capabilityId 过滤生效
-//  6. DELETE /v1/deployments         → 行直接消失（不留 removed 态）
+//  5. POST /v1/deployments 部署 handler 形式的能力 → 400 builtin_not_deployable（契约 §5）
+//  6. GET  /v1/deployments           → nodeId / capabilityId 过滤生效
+//  7. DELETE /v1/deployments         → 行直接消失（不留 removed 态）
 //
 // 这些用例共用 newConsoleEnv 的 mux（已按生产 mux 接线挂上 deployHandler，
 // hub 不注入 = 所有节点都「离线」，正是第 4 条要的形状）。
@@ -219,21 +220,92 @@ func TestCreateCapabilityWithInvalidRunRejected(t *testing.T) {
 	}
 }
 
-// TestDeployWithoutRunIs404ArtifactNotFound 没 run 的能力 → 部署 404 artifact_not_found。
+// TestDeployHandlerCapability400BuiltinNotDeployable handler 形式的能力**不可部署**（Capability Spec v3 §5）。
 //
-// 「建了能力但没填 run」是最常见的用户路径（占位节点、内置能力都是纯定义）。
-// 这时不该 500，也不该建一条永远不会成功的部署行——必须给一个能指导操作的说法。
-func TestDeployWithoutRunIs404ArtifactNotFound(t *testing.T) {
+// P1-b2 之前这类能力没有 artifacts 行，所以它会顺着产物解析走到 404
+// `artifact_not_found`、而那句正文写的是「新建能力时需要填 run」——对
+// `handler: notify-phone` / `noop` 这种能力是**指错方向**的：它不需要 run（实现
+// 已经编译进中枢了），也不应该被推到节点上（推过去只会得到一份没有 files 的产物）。
+//
+// 三条硬要求：状态码 400、机器可读 code、**一行部署都不建**。
+func TestDeployHandlerCapability400BuiltinNotDeployable(t *testing.T) {
 	env := newConsoleEnv(t)
 	ctx := context.Background()
-	capDef := env.seedCapability(t, "no-run", 1, nil)
-	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-norun"}
+
+	// 两种 handler 形式各试一次：
+	//   notify.phone  平台播种的 notify-phone（真实存在的中枢执行器）
+	//   no.script 夹具播的 noop（回填 / 预案安装那张牌）
+	noop := env.seedCapability(t, "no.script", 1, nil)
+	var phone *store.CapabilityVersion
+	all, err := env.db.ListCapabilities(ctx, env.nsID)
+	if err != nil {
+		t.Fatalf("list capabilities: %v", err)
+	}
+	for _, c := range all {
+		if c.Spec.Handler == artifact.HandlerNotifyPhone {
+			phone = c
+		}
+	}
+	if phone == nil {
+		t.Fatal("命名空间里没有 notify-phone 形式的内置能力（内置播种坏了？）")
+	}
+
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-handler"}
+	if _, err := env.db.CreateNode(ctx, node); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{"notify-phone", phone.ID},
+		{"noop", noop.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := env.do(t, http.MethodPost, env.withNS("/v1/deployments"), map[string]any{
+				"capabilityId": tc.id,
+				"nodeIds":      []string{node.ID},
+			})
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
+			}
+			m := decode(t, rr)
+			if m["code"] != "builtin_not_deployable" {
+				t.Fatalf("code = %v, want builtin_not_deployable（body=%s）", m["code"], rr.Body.String())
+			}
+			msg, _ := m["error"].(string)
+			if !strings.Contains(msg, "内置执行器") {
+				t.Fatalf("400 的 error 没说清是内置执行器: %q", msg)
+			}
+			// 一行都不该建（也不该去解析产物、更不该推帧）
+			if list, err := env.db.ListDeployments(ctx, env.nsID, store.DeploymentFilter{}); err != nil {
+				t.Fatalf("list deployments: %v", err)
+			} else if len(list) != 0 {
+				t.Fatalf("拒绝的部署留下了 %d 行", len(list))
+			}
+		})
+	}
+}
+
+// TestDeployUnknownDigest404ArtifactNotFound 显式 digest 不存在 → 404 artifact_not_found。
+//
+// 这是 `artifact_not_found` 在 P1-b2 之后**剩下的**那条路径：
+// 「建了能力但没填 run」已经不可能了（HTTP 创建缺 run → 400 impl_missing），
+// handler 形式又有它自己的 400（上一条用例），所以 404 只该从「你指定的那份产物
+// 不存在」发出——不能 500，也不能建一条永远不会成功的部署行。
+func TestDeployUnknownDigest404ArtifactNotFound(t *testing.T) {
+	env := newConsoleEnv(t)
+	ctx := context.Background()
+	capID, _ := seedRunCapability(t, env, "review.ghost-digest")
+	node := &store.Node{NamespaceID: env.nsID, Name: "mbp-ghost"}
 	if _, err := env.db.CreateNode(ctx, node); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 
 	rr := env.do(t, http.MethodPost, env.withNS("/v1/deployments"), map[string]any{
-		"capabilityId": capDef.ID,
+		"capabilityId": capID,
+		"digest":       "sha256:" + strings.Repeat("0", 64),
 		"nodeIds":      []string{node.ID},
 	})
 	if rr.Code != http.StatusNotFound {

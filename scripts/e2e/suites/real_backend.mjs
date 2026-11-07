@@ -49,6 +49,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
+
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。P1-b2 起建能力**必须**带实现
+// （缺 run → 400 impl_missing，Capability Spec v3 §5）。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
 import * as N from "../lib/nodes.mjs";
 
 const SUITE = "real_backend";
@@ -1302,7 +1306,8 @@ async function runNamespaceSwitchChecks(ctxData, nsId) {
 	const capMain = await H.req(server.base, "/v1/capabilities", {
 		session: ctxData.session,
 		method: "POST",
-		body: { namespaceId: nsId, name: CAP_MAIN, outputs: ["ok"] },
+		// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+		body: { namespaceId: nsId, name: CAP_MAIN, outputs: ["ok"], run: MIN_RUN },
 	});
 	H.check(
 		`默认命名空间建出能力 ${CAP_MAIN}（200/201）`,
@@ -1329,7 +1334,7 @@ async function runNamespaceSwitchChecks(ctxData, nsId) {
 	const capAlt = await H.req(server.base, "/v1/capabilities", {
 		session: ctxData.session,
 		method: "POST",
-		body: { namespaceId: ns2, name: CAP_ALT, outputs: ["ok"] },
+		body: { namespaceId: ns2, name: CAP_ALT, outputs: ["ok"], run: MIN_RUN },
 	});
 	H.check(
 		`第二个命名空间建出能力 ${CAP_ALT}（200/201）`,

@@ -57,7 +57,14 @@ async function nsID(server, session) {
 async function mkCustomCap(server, session, ns, name) {
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { namespaceId: ns, name, paramsSchema: { type: "object" } },
+		// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。这里给一份空脚本——
+		// 它不会被跑（这条用例要的是「派不出去」，不是「跑起来」）。
+		body: {
+			namespaceId: ns,
+			name,
+			paramsSchema: { type: "object" },
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+		},
 	});
 	const id = r.json?.capability?.id;
 	if (!id) throw new Error(`建能力 ${name} 失败: ${r.status} ${r.text}`);

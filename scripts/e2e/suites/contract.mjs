@@ -36,10 +36,17 @@ function A(id, name, cond, detail) {
 	H.check(`A${id} ${name}`, cond, detail);
 }
 
+// MIN_RUN 是「最小的合法实现」：一个什么都不做、退出码 0 的空脚本。
+//
+// P1-b2 起 POST /v1/capabilities **必须**带实现（缺 run → 400 impl_missing，
+// Capability Spec v3 §5），所以凡是「建个能力」都得给一份。全文件共用一份，
+// 免得每个用例各写一遍；需要自定义实现的用例照旧自己传 run。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
+
 async function defineCapability(name, outputs = [], extra = {}) {
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
+		body: { run: MIN_RUN, name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
 	});
 	return r;
 }
@@ -219,6 +226,7 @@ async function main() {
 	const atomicRes = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
+			run: MIN_RUN,
 			name: atomicName,
 			outputs: ["done", "failed"],
 			paramsSchema: { type: "object" },
@@ -268,6 +276,7 @@ async function main() {
 	const badCap = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
+			run: MIN_RUN,
 			name: badName,
 			outputs: ["done"],
 			paramsSchema: { type: "object" },
@@ -305,6 +314,7 @@ async function main() {
 	const selfCap = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
+			run: MIN_RUN,
 			name: selfName,
 			outputs: ["done"],
 			paramsSchema: { type: "object" },
@@ -332,6 +342,7 @@ async function main() {
 	const badPort = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
+			run: MIN_RUN,
 			name: badPortName,
 			outputs: ["done"],
 			paramsSchema: { type: "object" },
@@ -372,7 +383,8 @@ async function main() {
 	// 同 name@version 换内容应被拒
 	const conflict = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { name: "c.versioned", version: 1, outputs: ["totally-different"] },
+		// 同一份最小实现配不同 outputs：内容不同 → 同版本换内容必须 409。
+		body: { run: MIN_RUN, name: "c.versioned", version: 1, outputs: ["totally-different"] },
 	});
 	A(11, "同版本换内容 → 409", conflict.status === 409, String(conflict.status));
 
@@ -434,13 +446,13 @@ async function main() {
 		const sameA = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsA), {
 				session,
-				body: { name: "same.name", paramsSchema: { type: "object" } },
+				body: { run: MIN_RUN, name: "same.name", paramsSchema: { type: "object" } },
 			})
 		).json?.capability;
 		const sameB = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
 				session,
-				body: { name: "same.name", paramsSchema: { type: "object" } },
+				body: { run: MIN_RUN, name: "same.name", paramsSchema: { type: "object" } },
 			})
 		).json?.capability;
 		A(
@@ -989,7 +1001,7 @@ async function main() {
 		const sinkResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
-			body: { name: "a10.sink", outputs: [], paramsSchema: { type: "object" } },
+			body: { run: MIN_RUN, name: "a10.sink", outputs: [], paramsSchema: { type: "object" } },
 		});
 		const sinkId = sinkResp.json?.capability?.id;
 		const wildEdge = await H.req(server.base, "/v1/edges", {
@@ -1008,7 +1020,7 @@ async function main() {
 		const customResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
-			body: { name: "a10.custom", outputs: ["only_port"], paramsSchema: { type: "object" } },
+			body: { run: MIN_RUN, name: "a10.custom", outputs: ["only_port"], paramsSchema: { type: "object" } },
 		});
 		const badEdge = await H.req(server.base, "/v1/edges", {
 			session,

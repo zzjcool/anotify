@@ -1020,6 +1020,10 @@ func (h *consoleHandler) updateCapabilityDisplayName(w http.ResponseWriter, r *h
 //
 // Requires 是产物声明的外部命令（节点探活/部署前检查用），详情页拿它显示
 // 「这台机器上要预装什么」——它属于能力定义，和脚本正文一样只在这里暴露。
+//
+// Spec 是**完整正文**（Capability Spec v3 §5：详情给全文，列表才剔 files）。
+// 上面那几个字段是它的**扁平展开**（历史形状，前端已经在用，不删）：两份数据来自同
+// 一次解码，不会出现「files 里有一套、spec.files 里又是另一套」。
 type capabilityArtifactView struct {
 	Digest     string            `json:"digest"`
 	Entrypoint string            `json:"entrypoint"`
@@ -1027,6 +1031,13 @@ type capabilityArtifactView struct {
 	TimeoutSec int               `json:"timeoutSec"`
 	WorkDir    string            `json:"workDir"`
 	Requires   []string          `json:"requires"`
+	// Env 是产物自带的环境变量（键不得以 ANOTIFY_ 开头）。
+	//
+	// 为什么在这里给：它与 files / timeoutSec 同类 —— 「这个能力跑起来时环境里有什么」
+	// 是能力的**一部分**，而详情页是唯一能看到它的地方（列表只给摘要）。
+	Env map[string]string `json:"env"`
+	// Spec 是完整正文（含 files 正文）。
+	Spec artifact.Spec `json:"spec"`
 }
 
 // capabilityArtifact 返回某能力**最新产物**的解析后内容（详情页展示脚本用）。
@@ -1109,6 +1120,10 @@ func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Reque
 	if requires == nil {
 		requires = []string{}
 	}
+	env := art.Spec.Run.Env
+	if env == nil {
+		env = map[string]string{}
+	}
 	writeJSON(w, http.StatusOK, capabilityArtifactView{
 		Digest:     row.Digest,
 		Entrypoint: art.Spec.Run.Entrypoint,
@@ -1116,7 +1131,28 @@ func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Reque
 		TimeoutSec: art.Spec.Run.TimeoutSec,
 		WorkDir:    art.Spec.Run.WorkDir,
 		Requires:   requires,
+		Env:        env,
+		// 正文给**完整**的一份（含 files 正文），但仍守不变量 I9：空 outputs → []。
+		Spec: fullSpec(art.Spec),
 	})
+}
+
+// fullSpec 归一一份正文的**空集合**（I9）：`outputs` 空给 `[]`，`files` 空给 `{}`。
+//
+// 只归一空集合，不动任何有值的字段：详情端点的语义是「这就是正文」，任何重写都会
+// 让「接口看到的」与「digest 吃到的」变成两份东西。
+func fullSpec(s artifact.Spec) artifact.Spec {
+	out := s.Outputs
+	if out == nil {
+		out = []string{}
+	}
+	files := s.Run.Files
+	if files == nil {
+		files = map[string]string{}
+	}
+	s.Outputs = out
+	s.Run.Files = files
+	return s
 }
 
 // capabilityKind 推导一个能力的 kind（推导量，不落库：不变量 I3）。
@@ -1195,12 +1231,23 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		ExecutedBy string `json:"executedBy"`
 		// Run 是「这个能力怎么跑」的只读投影（超时 / 工作目录 / 依赖）。
 		//
-		// 真相在产物里（artifacts.spec.run），随 digest 走、中枢只存不解释（I1）。
+		// 真相在正文里（`spec.run`），随 digest 走、中枢只存不解释（I1）。
 		// 之所以在列表里再投影一份：详情页要回答「它跑多久超时、在哪个目录跑」，
 		// 而这属于**能力定义**的一部分（#289），不该要求用户去翻产物。
-		// 取不到产物时留 null：前端据此显示「—」，而不是把两行藏起来
+		// 取不到 run 时留 null：前端据此显示「—」，而不是把两行藏起来
 		// ——藏起来会让人以为这个能力没有超时。
+		//
+		// **与 Spec 同源**：两者都从同一份 `c.Spec` 算出来（P1-b2 之前这里是读
+		// artifacts 表解一份产物，那是第二份真相）。P4 删掉这个旧投影。
 		Run *capabilityRunView `json:"run,omitempty"`
+		// Spec 是能力正文（Capability Spec v3 §3）在**列表**里的投影。
+		//
+		// files 的正文件**不进列表**：单文件 256 KiB、合计 1 MiB，一次几十条的能力页
+		// 会被白涨几百 KB，而列表页一行脚本也不展示（详情走懒加载的
+		// GET /v1/capabilities/{id}/artifact）。所以 files 换成 `{count, bytes}` 摘要。
+		//
+		// 与旧的 `run` 投影**同源**：两者都从 `c.Spec` 算，不从 artifacts 表反推。
+		Spec capabilitySpecView `json:"spec"`
 	}
 	// 每种能力由哪些节点声明。
 	//
@@ -1241,7 +1288,8 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 			Kind:              h.capabilityKind(r.Context(), c),
 			DeclaredBy:        list,
 			ExecutedBy:        executedBy,
-			Run:               h.capabilityRun(r.Context(), c),
+			Run:               h.capabilityRun(c),
+			Spec:              specSummary(c.Spec),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1250,20 +1298,13 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// specLifecycle 把扁平请求里的 lifecycle 搬进正文（nil = 不声明）。
+// implMissingMessage 是「能力缺实现」的统一文案（单建 / 批量 / openapi 共用一份）。
 //
-// 不声明时给 nil 而不是 `{}`：`{}` 与「没有这个键」在规范字节里是两种不同的
-// 内容，同一份配置不该因为客户端有没有把 lifecycle 传成空对象而算出两个 digest。
-func specLifecycle(lc *store.Lifecycle) json.RawMessage {
-	if lc == nil {
-		return nil
-	}
-	b, err := json.Marshal(lc)
-	if err != nil {
-		return nil // Lifecycle 全是标量/指针，实际不可能失败
-	}
-	return b
-}
+// 为什么把补救办法写在文案里：400 最容易被误读成「请求写坏了」，而这里的真实意思是
+// 「**能力必须有实现**」——用户下一步要做的不是修 JSON，是补一份脚本。占位就用一个
+// 什么都不做、退出码 0 的空脚本，而不是让服务端替他造一个假实现（那会让「未实现」
+// 在列表页和派发链上看不出来）。
+const implMissingMessage = "能力必须有实现：给 run（脚本）或 handler（内置执行器）；占位请写 `exit 0` 的空脚本"
 
 func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request) {
 	var req capabilityListRequest
@@ -1312,10 +1353,14 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	// 正文（spec）在这里组装：P1-b1 的请求体仍是旧的**扁平形状**（契约 §5 把形状切换
 	// 推到 P4），服务端负责把它拼成 spec —— store 只认 spec，派生列由它自己算。
 	//
-	// 没有 run 不算错：这个版本里它等价于 `handler: noop` 占位（合法、可部署、
-	// 无副作用），与回填老能力是同一条口径。**「缺实现 → 400 impl_missing」的行为
-	// 收紧属于 P1-b2**（契约 §5 的行为列 + §7 的分期）：现在做会让所有既有客户端
-	// 与 e2e 夹具一起变红，那不是 P1-b1 的职责。
+	// **缺实现 → 400 `impl_missing`**（契约 §5 / §7 的 P1-b2 行）。这是 P1-b 唯一一处
+	// 行为收紧：P1-b1 时「没有 run」被降级成 `handler: noop` 占位，于是 HTTP 建出来的
+	// 能力从来不含实现 —— 而契约 R2 说的是「一个能力**永远有实现**」，占位只允许由平台
+	// 认领（回填 / 预案安装），不允许由创建端点凭空造一个。所以这里不再兜底：
+	// 要么给 run（脚本），要么这条请求不成立。
+	//
+	// 注意 `noop` 本身没被删：它在 store 里仍然合法（回填与预案安装要用），只是 HTTP
+	// 创建路径不再产生它。
 	if req.Run != nil {
 		// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
 		// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
@@ -1336,7 +1381,11 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		}
 		c.Spec = built.Spec
 	} else {
-		c.Spec = store.HandlerSpec(artifact.HandlerNoop, schema, req.Outputs, specLifecycle(req.Lifecycle))
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": implMissingMessage,
+			"code":  "impl_missing",
+		})
+		return
 	}
 
 	// 带 links → 原子路径（能力 + 产物 + 边，同一事务，要么全成要么全不成）。
@@ -1736,7 +1785,7 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 		}
 
 		// 正文（spec）在这里组装，口径与单建逐字一致（见 createCapability）：
-		// 有 run → 产物正文；没有 run → handler: noop 占位。
+		// 有 run → 产物正文；没有 run → **400 impl_missing**（与单建逐字一致）。
 		//
 		// 产物必须在**建能力之前**先校验一遍（与单建同一个理由）：一份 run 写错的
 		// 请求不该留下一个永远跑不起来的定义。这里只校验、不落库。
@@ -1766,7 +1815,13 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 				return row, nil
 			}
 		} else {
-			c.Spec = store.HandlerSpec(artifact.HandlerNoop, schema, item.Outputs, specLifecycle(item.Lifecycle))
+			// 与单建同一条收紧：缺实现是客户端可修的内容错误 → 400。
+			// 批量不整批回滚到“已写部分”：这里还没进事务，一行都还没建。
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("capabilities[%d]: %s", i, implMissingMessage),
+				"code":  "impl_missing",
+			})
+			return
 		}
 		caps = append(caps, c)
 	}
@@ -2611,13 +2666,16 @@ func intParam(raw string, def, min, max int) int {
 	return n
 }
 
-// capabilityRun 返回一个能力「怎么跑」的只读投影（产物 spec 里的 run 块）。
+// capabilityRun 返回一个能力「怎么跑」的旧投影（P4 删）。
 //
-// 读不到（还没产物 / spec 坏了）返回 nil：这是**正常状态**（刚定义、还没部署），
-// 不该让整个能力列表 500——列表页的价值在于"一眼看到全部定义"，一条坏行不能把它带崩。
+// **与 spec 同源**：P1-b2 之前这里要读一次 artifacts 表、解一份完整产物才能拿到
+// run；现在正文就在能力行上（`c.Spec.Run`），还绕到 artifacts 表反推就是第二份真相
+// （artifacts 只是 P1 的写穿镜像，P2 整张表删除）。顺带的好处：列表不再每个能力
+// 一次额外查询。
 //
-// 每个能力一次查询：列表本来就有同样量级的 N 次查询（谁声明了它），
-// 这里不额外引入批量接口；等能力数上千再优化。
+// 没有 run（handler 形式的内置执行器）返回 nil：这是**正常状态**，前端据此显示「—」，
+// 不该让整个能力列表 500。
+//
 // capabilityRunView 是列表里「怎么跑」的**瘦投影**：不含 files。
 //
 // 为什么必须剥掉 files：artifact.Run 的 files 没有 omitempty，直接把 Run 塞进
@@ -2630,24 +2688,94 @@ type capabilityRunView struct {
 	WorkDir    string `json:"workDir"`
 }
 
-func (h *consoleHandler) capabilityRun(ctx context.Context, c *store.CapabilityVersion) *capabilityRunView {
-	a, err := h.db.LatestArtifact(ctx, c.NamespaceID, c.ID)
-	if err != nil || a == nil {
+func (h *consoleHandler) capabilityRun(c *store.CapabilityVersion) *capabilityRunView {
+	if c == nil || runIsZero(c.Spec.Run) {
 		return nil
 	}
-	// artifacts.spec 里存的是**整份产物**的 canonical JSON
-	// （artifact.CanonicalJSON(a)：{apiVersion, kind, metadata, spec:{…}}），
-	// run 在 artifact.Spec.Run 下面，不在顶层。解错一层不会报错——只会得到
-	// 一堆零值，于是详情页悄无声息地显示「—」。这里解 artifact.Artifact。
-	var art artifact.Artifact
-	if err := json.Unmarshal(a.Spec, &art); err != nil {
-		return nil
-	}
-	// 产物里没有 run 块（内置中枢能力一类）：详情页显示「—」。
-	// 不能直接比结构体（Run 里有 map，不可比较），看几个能代表「有没有」的字段。
-	r := art.Spec.Run
-	if r.Entrypoint == "" && r.TimeoutSec == 0 && r.WorkDir == "" && len(r.Files) == 0 {
-		return nil
-	}
+	r := c.Spec.Run
 	return &capabilityRunView{Entrypoint: r.Entrypoint, TimeoutSec: r.TimeoutSec, WorkDir: r.WorkDir}
+}
+
+// capabilityFilesSummary 是列表里 files 的**摘要**（剔除正文，Capability Spec v3 §5）。
+//
+// Count / Bytes 回答的是「这份能力带几个文件、一共多大」——列表要的就是这两件事，
+// 正文本身放不进去（单文件 256 KiB、合计 1 MiB）。
+type capabilityFilesSummary struct {
+	Count int `json:"count"`
+	Bytes int `json:"bytes"`
+}
+
+// capabilityRunSpecView 是 `spec.run` 在列表里的投影：**除了 files 正文**，其余字段
+// （entrypoint / timeoutSec / env / workDir）全部保留——它们决定「怎么跑」，也都很小。
+type capabilityRunSpecView struct {
+	Entrypoint string                 `json:"entrypoint"`
+	Files      capabilityFilesSummary `json:"files"`
+	TimeoutSec int                    `json:"timeoutSec,omitempty"`
+	Env        map[string]string      `json:"env,omitempty"`
+	WorkDir    string                 `json:"workDir,omitempty"`
+}
+
+// capabilitySpecView 是能力正文（Capability Spec v3 §3）在列表里的投影。
+//
+// 字段集合与 `artifact.Spec` **逐字对齐**（params / outputs / requires / lifecycle /
+// sticky / run / handler）——差一个字段的后果是「页面上看不到某个已经生效的声明」，
+// 而那种缺失不会报错。只把 run.files 的正文换成摘要（见 capabilityFilesSummary）。
+type capabilitySpecView struct {
+	Params    json.RawMessage        `json:"params,omitempty"`
+	Outputs   []string               `json:"outputs"`
+	Requires  []string               `json:"requires,omitempty"`
+	Lifecycle json.RawMessage        `json:"lifecycle,omitempty"`
+	Sticky    string                 `json:"sticky,omitempty"`
+	Run       *capabilityRunSpecView `json:"run,omitempty"`
+	Handler   string                 `json:"handler,omitempty"`
+}
+
+// specSummary 把一份正文压成列表投影（files → {count, bytes}）。
+//
+// 空 outputs 给 `[]`（不变量 I9）；requires 为空也不给 null。handler 形式没有 run，
+// 所以 `run` 整个省略而不是留一个零对象——「没有 run」与「run 写了但全空」对前端
+// 是同一种判断（这个能力不由节点执行）。
+func specSummary(s artifact.Spec) capabilitySpecView {
+	out := s.Outputs
+	if out == nil {
+		out = []string{}
+	}
+	v := capabilitySpecView{
+		Params:    s.Params,
+		Outputs:   out,
+		Requires:  s.Requires,
+		Lifecycle: s.Lifecycle,
+		Sticky:    s.Sticky,
+		Handler:   s.Handler,
+	}
+	if !runIsZero(s.Run) {
+		v.Run = &capabilityRunSpecView{
+			Entrypoint: s.Run.Entrypoint,
+			Files:      summarizeFiles(s.Run.Files),
+			TimeoutSec: s.Run.TimeoutSec,
+			Env:        s.Run.Env,
+			WorkDir:    s.Run.WorkDir,
+		}
+	}
+	return v
+}
+
+// summarizeFiles 算 files 的条数与总字节数（文件正文按 UTF-8 字节计，与 artifact
+// 包的上限口径一致：那里也是 len(content)）。
+func summarizeFiles(files map[string]string) capabilityFilesSummary {
+	sum := capabilityFilesSummary{Count: len(files)}
+	for _, body := range files {
+		sum.Bytes += len(body)
+	}
+	return sum
+}
+
+// runIsZero 报告 run 是否**完全没有内容**。
+//
+// artifact.Run.isZero 是包内私有的（那是对的：它只服务于 Validate），而这里要区分的是
+// 另一种事——「列表要不要输出 run 这个键」。逐字段判而不是比结构体：Run 里有 map，
+// 不可比较。
+func runIsZero(r artifact.Run) bool {
+	return r.Entrypoint == "" && len(r.Files) == 0 && r.TimeoutSec == 0 &&
+		len(r.Env) == 0 && r.WorkDir == ""
 }

@@ -20,6 +20,13 @@
  */
 import * as H from "../lib/harness.mjs";
 
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。
+//
+// P1-b2 起 POST /v1/capabilities **必须**带实现（缺 run → 400 impl_missing，
+// Capability Spec v3 §5）。造数需要「一个能建出来的能力」时一律用它，
+// 需要自定义实现的用例（下面 contract.artifact 那条）自己传 run。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
+
 async function main() {
 	console.log("=== SUITE: api_contract（API 契约矩阵）===");
 	const server = await H.startServer({
@@ -319,14 +326,14 @@ async function main() {
 				session,
 				method: "POST",
 				namespaceId: otherNs,
-				body: { name: "iso.only_other", outputs: ["x"], paramsSchema: { type: "object" } },
+				body: { run: MIN_RUN, name: "iso.only_other", outputs: ["x"], paramsSchema: { type: "object" } },
 			});
 			H.eq("在新命名空间里建能力 → 200", capOther.status, 200);
 			const capDefault = await H.req(B, "/v1/capabilities", {
 				session,
 				method: "POST",
 				namespaceId: defNs,
-				body: { name: "iso.only_default", outputs: ["x"], paramsSchema: { type: "object" } },
+				body: { run: MIN_RUN, name: "iso.only_default", outputs: ["x"], paramsSchema: { type: "object" } },
 			});
 			H.eq("在默认命名空间里建能力 → 200", capDefault.status, 200);
 
@@ -417,20 +424,53 @@ async function main() {
 					art.json.requires[0] === "curl",
 				JSON.stringify(art.json).slice(0, 260),
 			);
+			// P1-b2：详情给**完整正文**（含 files 正文），列表只给摘要。
+			H.check(
+				"① 详情带完整 spec（spec.run.files 是普通文本正文）",
+				art.json?.spec?.run?.files?.["run.sh"] === scriptBody,
+				JSON.stringify(art.json?.spec).slice(0, 240),
+			);
 
-			// ② 没有产物 → 404（能力存在，但它还没被定义过脚本）
+			const listAfter = await H.req(B, "/v1/capabilities", { session });
+			const listed = (listAfter.json?.capabilities || []).find((c) => c.id === capId);
+			H.check(
+				"② 列表里的 spec 有内容（outputs / requires）",
+				listed?.spec?.outputs?.[0] === "done" && listed?.spec?.requires?.[0] === "curl",
+				JSON.stringify(listed?.spec).slice(0, 240),
+			);
+			H.check(
+				"② 列表里的 spec.run.files 是摘要 {count,bytes}（没有正文）",
+				listed?.spec?.run?.files?.count === 1 &&
+					listed?.spec?.run?.files?.bytes === scriptBody.length &&
+					!Object.keys(listed?.spec?.run?.files || {}).some((k) => k === "run.sh"),
+				JSON.stringify(listed?.spec?.run?.files),
+			);
+
+			// ② 「没有产物」在 P1-b2 之后**只剩一种来路**：handler 形式的能力
+			//    （内置执行器由中枢认领，刻意不建 artifacts 行，Capability Spec v3 §6.1）。
+			//
+			//    语义变了（旧断言是「建一个不带 run 的能力 → 200，再 404」）：HTTP 已经
+			//    建不出纯定义能力了 —— 缺 run 直接 400 impl_missing（契约 §5）。所以这里
+			//    拆成两条新断言：缺 run → 400，handler 形式 → 404（与「不存在」同一个回答）。
 			const plain = await H.req(B, "/v1/capabilities", {
 				session,
 				method: "POST",
 				body: { name: "contract.noartifact", outputs: [], paramsSchema: { type: "object" } },
 			});
-			H.eq("建无产物的能力 → 200", plain.status, 200);
-			const noArt = await H.req(
-				B,
-				`/v1/capabilities/${plain.json?.capability?.id}/artifact`,
-				{ session },
+			H.eq("② 缺 run 建能力 → 400", plain.status, 400);
+			H.eq("② → code=impl_missing（能力必须有实现）", plain.json?.code, "impl_missing");
+
+			const capsForHandler = await H.req(B, "/v1/capabilities", { session });
+			const phone = (capsForHandler.json?.capabilities || []).find(
+				(c) => c.spec?.handler === "notify-phone",
 			);
-			H.eq("② 没有产物 → 404", noArt.status, 404);
+			H.check(
+				"② 内置 handler 能力在列表里（spec.handler 可见）",
+				!!phone,
+				JSON.stringify((capsForHandler.json?.capabilities || []).map((c) => c.name)).slice(0, 200),
+			);
+			const noArt = await H.req(B, `/v1/capabilities/${phone?.id}/artifact`, { session });
+			H.eq("② handler 形式没有产物行 → 404", noArt.status, 404);
 
 			// ③ 跨命名空间 404 与「不存在」逐字节相同
 			const nsRes = await H.req(B, "/v1/namespaces", {

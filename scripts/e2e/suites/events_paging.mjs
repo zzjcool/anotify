@@ -270,6 +270,8 @@ async function main() {
 			name: "e2e.paging",
 			outputs: ["ok"],
 			paramsSchema: { type: "object" },
+			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
 		},
 	});
 	H.eq("建能力 e2e.paging → 200", cap.status, 200);

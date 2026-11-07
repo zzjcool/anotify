@@ -85,13 +85,24 @@ async function main() {
 		const origin = (
 			await H.req(server.base, "/v1/capabilities", {
 				session,
-				body: { name: "persist.demo", outputs: ["go"], paramsSchema: { type: "object" } },
+				body: {
+					name: "persist.demo",
+					outputs: ["go"],
+					paramsSchema: { type: "object" },
+					// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+					run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+				},
 			})
 		).json.capability;
 		const target = (
 			await H.req(server.base, "/v1/capabilities", {
 				session,
-				body: { name: "persist.work", outputs: [], paramsSchema: { type: "object" } },
+				body: {
+					name: "persist.work",
+					outputs: [],
+					paramsSchema: { type: "object" },
+					run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+				},
 			})
 		).json.capability;
 		H.eq(

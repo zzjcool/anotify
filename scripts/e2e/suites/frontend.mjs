@@ -34,6 +34,10 @@
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
+
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。P1-b2 起建能力**必须**带实现
+// （缺 run → 400 impl_missing，Capability Spec v3 §5）。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
 import * as N from "../lib/nodes.mjs";
 
 
@@ -549,12 +553,13 @@ async function main() {
 		const capA = await H.req(server.base, "/v1/capabilities", {
 			session: s.session,
 			method: "POST",
-			body: { name: "frontend.src", outputs: ["go"], paramsSchema: { type: "object" } },
+			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+			body: { name: "frontend.src", outputs: ["go"], paramsSchema: { type: "object" }, run: MIN_RUN }, 
 		});
 		const capB = await H.req(server.base, "/v1/capabilities", {
 			session: s.session,
 			method: "POST",
-			body: { name: "frontend.work", outputs: [], paramsSchema: { type: "object" } },
+			body: { name: "frontend.work", outputs: [], paramsSchema: { type: "object" }, run: MIN_RUN },
 		});
 		await H.req(server.base, "/v1/edges", {
 			session: s.session,
@@ -1049,6 +1054,8 @@ async function main() {
 						// 「既显示名字，也显示能力的唯一标志」）。
 						displayName: "E2E 报表",
 						outputs: [],
+						// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+						run: MIN_RUN,
 						paramsSchema: {
 							type: "object",
 							required: ["channel", "title"],
@@ -4318,7 +4325,9 @@ async function checkCapabilityEditReal(server, newCtx) {
 	const echo = await H.req(B, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
-		body: { name: echoName, outputs: ["out"], paramsSchema: { type: "object" } },
+		// P1-b2：建能力必须有实现 —— 「只是接住上游」也是实现（空脚本），
+		// 而 `handler: noop` 那种占位不再由 HTTP 创建产出。
+		body: { name: echoName, outputs: ["out"], paramsSchema: { type: "object" }, run: MIN_RUN },
 	});
 	H.eq("真后端：建下游能力 echo → 200", echo.status, 200);
 
@@ -9913,7 +9922,8 @@ async function checkSharedTopology(server, newCtx) {
 		const r = await H.req(base, "/v1/capabilities", {
 			session: s.session,
 			method: "POST",
-			body: { name, outputs, paramsSchema: { type: "object" } },
+			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+			body: { name, outputs, paramsSchema: { type: "object" }, run: MIN_RUN },
 		});
 		H.check(`拓扑造数：建能力 ${name} → 200`, r.status === 200, r.text?.slice(0, 200));
 		return r.json?.capability || {};

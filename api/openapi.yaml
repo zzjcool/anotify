@@ -1737,7 +1737,7 @@ paths:
         前端可以先展示再决定要不要 `force`。
 
         **`links`：能力 + 下游边一次提交**（可选）。带 `links` 时走**原子路径**：
-        能力行、产物行（若带 `run`）、边行写在**同一个事务**里 ——
+        能力行、产物行（由 `CapabilityInput.run` 编译）、边行写在**同一个事务**里 ——
         要么全成，要么全不成（任何一条边不合法 → 整体回滚，不会留下「能力在、边缺」的半成品）。
         不带 `links` = 原有的两步流程（建完能力再逐条 `POST /edges`），行为不变。
 
@@ -1760,8 +1760,10 @@ paths:
         "200":
           description: |
             已创建（或幂等返回已有）。带 `links` 时额外返回建成的边与产物：
-            `links` 是本次入库的边（形状与 `GET /edges` 的行一致），
-            `digest` / `artifact` 仅在请求带 `run` 时出现。
+            `links` 是本次入库的边（形状与 `GET /edges` 的行一致）。
+
+            `digest` / `artifact` **恒在**：请求体的 `run` 是必填的（见
+            `CapabilityInput.run`），每个能力创建成功都伴一份产物。
           content:
             application/json:
               schema:
@@ -1779,12 +1781,14 @@ paths:
                   digest:
                     type: string
                     description: |
-                      产物 digest（`sha256:<64 hex>`）。与 `artifact.digest` 同值；
-                      只有请求带 `run` 时才有。
+                      产物 digest（`sha256:<64 hex>`）。与 `artifact.digest` 同值，
+                      由请求体的 `run`（见 `CapabilityInput.run`）编译出的产物算出。
                   artifact: { $ref: "#/components/schemas/Artifact" }
         "400":
           description: |
-            两种 400，看 `code` 区分：
+            三种 400，看 `code` 区分：
+            - `impl_missing`：**没给实现**（请求体缺 `run`）。能力必须有实现
+              （契约 R2），占位请写一个 `exit 0` 的空脚本；缺了什么都不建
             - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
               `literals` 的键不存在 / 成环或自连 / 跨命名空间）。`error` 里带
               `links[i]`，且**能力一行都没建**（整个事务已回滚）
@@ -1926,10 +1930,12 @@ paths:
                         `fromRef` / `toRef`）
         "400":
           description: |
-            四类 400，看 `code` 区分（没有 `code` 表示请求本身不成立，文案里带下标）：
+            五类 400，看 `code` 区分（没有 `code` 表示请求本身不成立，文案里带下标）：
 
             - `duplicate_name`：批内 `capabilities[].name` 重复（`error` 里带
               `capabilities[i]` 下标，并指出第一次出现的位置）
+            - `impl_missing`：某个元素**没给实现**（缺 `run`，见 `CapabilityInput.run`）。
+              与单建同一口径：`error` 里带 `capabilities[i]` 下标，整批一条都没建
             - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
               `literals` 的键不存在 / 跨命名空间）。`error` 里带 `links[i]` 下标，
               且**整批已回滚**（能力 0 条、产物 0 条、边 0 条）
@@ -1964,7 +1970,11 @@ paths:
       summary: 能力最新产物的解析后内容（详情页展示脚本）
       description: |
         返回该能力**最新一份产物**里能直接给人看的东西：文件正文（`files`，普通文本，
-        **不是** base64）、入口文件名、超时、工作目录、预装依赖。
+        **不是** base64）、入口文件名、超时、工作目录、预装依赖、env。
+
+        另带一份 `spec`：该产物的**完整正文**（Capability Spec v3 §5 的「详情给全文」）。
+        与 `GET /capabilities` 列表里的 `spec` 同名字段对照着看：列表那份是摘要
+        （`files` → `{count, bytes}`），这份是全文（`files` 是相对路径 → 正文）。
 
         与 `GET /artifacts?capabilityId=` 的分工：那个返回 `spec` 原文（base64，给部署与
         排障用），这里返回解析后的文件正文（给「让人看一眼脚本」用）。
@@ -1975,7 +1985,8 @@ paths:
         **404 的两种情形 body 逐字节相同**（防越权探测）：
 
         - 能力不属于该命名空间（或不存在）
-        - 能力还没有产物（定义时没填脚本 / 还没部署）
+        - 能力还没有产物（内置 `handler` 形式的能力天生没有产物行，见
+          Capability Spec v3 §6.1；这类能力的正文看 `GET /capabilities` 的 `spec`）
 
         `namespaceId` **必填**（`*` → 400：单个能力的产物没有跨命名空间汇总形态）。
       security:
@@ -2908,6 +2919,10 @@ paths:
 
         **`pushed=false` 不代表失败**：行已经建好（`state=pending`），节点上线后由重连对账补推。
         UI 必须区分「已下发」与「已排队」，否则运维会以为离线机器上的东西已经生效。
+
+        **`handler` 形式的能力不可部署**（Capability Spec v3 §5）：它们由中枢的 builtin
+        节点认领，没有 `files`，推给节点只会得到一份跑不起来的产物 —— 所以先判
+        handler、再走产物解析，直接 `400 builtin_not_deployable`（一行都不建）。
       security:
         - cookieAuth: []
       requestBody:
@@ -2928,10 +2943,22 @@ paths:
                   deployments:
                     type: array
                     items: { $ref: "#/components/schemas/DeploymentResult" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: |
+            三种 400，看 `code` 区分：
+            - `missing_capability_id`：没给 `capabilityId`
+            - `builtin_not_deployable`：这个能力由**中枢内置执行器**认领
+              （`spec.handler != ""`），不需要也不能部署到节点
+            - `no_target_node`：选择器一台都没选中（`nodeIds` ∪ `tags`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
-          description: 这个能力还没有可部署的产物（`code=artifact_not_found`）
+          description: |
+            这份产物不存在（`code=artifact_not_found`）：显式 `digest` 查不到，或该能力
+            还没有产物行。注意「建能力时没填 run」已经不可能（`POST /capabilities` 会
+            400 `impl_missing`），`handler` 形式走 400 `builtin_not_deployable`。
     delete:
       tags: [deployments]
       summary: 撤销一次部署
@@ -3926,6 +3953,146 @@ components:
         end = 没有出边；origin = 有出边、没有入边；pipe = 有出边、也有入边。
         入边包括能力边（别人 → 它）与入口边（来源 → 它）。
 
+    # ---------- 能力正文（Capability Spec v3 §3）----------
+    #
+    # 三份 schema 说的是同一件东西的三种视角：
+    #   CapabilityRunInput    请求体里的实现（扁平形状，P1-b 的入参）
+    #   CapabilitySpec        正文**全文**（详情端点 / 产物里的 spec）
+    #   CapabilitySpecSummary 正文的**列表投影**（files 换成 {count,bytes}）
+    CapabilityRunInput:
+      type: object
+      required: [entrypoint, files]
+      description: |
+        能力的实现（**脚本形式**）：由任意 `agent` 节点执行。
+
+        Capability Spec v3 §3.1 说实现只有两种形式、**恰好给一组**：
+        本对象（files + entrypoint）或 `handler`（内置执行器，白名单，只有中枢的
+        builtin 节点能认领）。HTTP 创建设计的只有前者；`handler` 形式由平台侧播种。
+      properties:
+        entrypoint:
+          type: string
+          example: run.sh
+          description: |
+            入口文件名，必须是 `files` 的一个 key，且正文以 `#!` 开头（直接 exec，
+            不经 shell —— 没有 shell 就没有插值、拼接与引号问题）。
+            省略时服务端按 `run.sh` 处理。
+        files:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            相对路径 → 文件正文（普通文本）。单文件 ≤ 256 KiB、合计 ≤ 1 MiB；
+            路径必须是相对路径（不得以 `/` 开头、不得含 `..`）。
+        timeoutSec:
+          type: integer
+          default: 0
+          description: |
+            节点本地超时（秒）。0 = 不设本地超时，只受中枢租约约束。上限 86400。
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            产物自带的环境变量。键必须是合法 shell 变量名，且**不得**以 `ANOTIFY_`
+            开头（契约保留前缀）。
+        workDir:
+          type: string
+          description: |
+            执行目录：绝对路径，或 `~` / `~/…`（`~` 由**节点**展开为 agent 用户的
+            家目录，不展开 `$VAR`）。空 = 每次任务一个独立目录。
+
+    CapabilityFilesSummary:
+      type: object
+      required: [count, bytes]
+      description: 列表里 `files` 的摘要（正文不进列表，见 `CapabilitySpecSummary`）。
+      properties:
+        count: { type: integer, description: 文件个数 }
+        bytes:
+          type: integer
+          description: 全部文件正文的合计字节数（按 UTF-8 计，与产物上限同口径）
+
+    CapabilitySpecSummary:
+      type: object
+      required: [outputs]
+      description: |
+        能力正文的**列表投影**：字段集合与 `CapabilitySpec` 逐字对齐，只把
+        `run.files` 的正文换成 `{count, bytes}`。
+      properties:
+        params:
+          type: object
+          description: JSON Schema 的**受控子集**（不支持 $ref / if-then-else）。
+            省略表示「没有参数」。
+        outputs:
+          type: array
+          items: { type: string }
+          description: 出口名的封闭集合（不变量 I2）；空时 `[]`
+        requires:
+          type: array
+          items: { type: string }
+          description: 节点必须预装的外部命令；空时省略
+        lifecycle:
+          type: object
+          description: 重试 / 幂等 / 结果保留策略（不透明透传，原样进入 digest）
+        sticky: { type: string, description: 粘性路由键类型（空 = 不粘） }
+        run:
+          type: object
+          description: |
+            脚本形式的实现。`handler` 形式的能力没有这个键（两组恰好给一组）。
+          properties:
+            entrypoint: { type: string }
+            files: { $ref: "#/components/schemas/CapabilityFilesSummary" }
+            timeoutSec: { type: integer, description: 0 = 不设本地超时 }
+            env:
+              type: object
+              additionalProperties: { type: string }
+              description: 产物自带的环境变量（空时不出现这个键）
+            workDir: { type: string }
+        handler:
+          type: string
+          description: |
+            内置执行器的名字（白名单：`notify-phone` / `noop`）。中枢的 builtin 节点
+            认领，**不可部署到节点**（`POST /deployments` → 400 `builtin_not_deployable`）。
+
+    CapabilitySpec:
+      type: object
+      required: [outputs, run]
+      description: |
+        能力正文的**全文**（Capability Spec v3 §3）：契约 + 实现。
+
+        与 `CapabilitySpecSummary` 的差别只有 `run.files`：这里是相对路径 → 文件正文。
+      properties:
+        params:
+          type: object
+          description: JSON Schema 的**受控子集**（不支持 $ref / if-then-else）
+        outputs:
+          type: array
+          items: { type: string }
+          description: 出口名的封闭集合（不变量 I2）；空时 `[]`
+        requires:
+          type: array
+          items: { type: string }
+          description: 节点必须预装的外部命令
+        lifecycle:
+          type: object
+          description: 重试 / 幂等 / 结果保留策略
+        sticky: { type: string, description: 粘性路由键类型（空 = 不粘） }
+        run:
+          type: object
+          required: [entrypoint, files]
+          description: 脚本形式的实现；`handler` 形式下是零值（没有文件）
+          properties:
+            entrypoint: { type: string }
+            files:
+              type: object
+              additionalProperties: { type: string }
+              description: 相对路径 → 文件正文（普通文本，不是 base64）
+            timeoutSec: { type: integer }
+            env:
+              type: object
+              additionalProperties: { type: string }
+            workDir: { type: string }
+        handler:
+          type: string
+          description: 内置执行器的名字（与 `run` 恰好给一组）
+
     Capability:
       type: object
       properties:
@@ -3976,6 +4143,17 @@ components:
           type: string
           description: 规范化内容的 sha256；内容相同则幂等返回同一行
         createdAt: { type: integer, format: int64 }
+        spec:
+          $ref: "#/components/schemas/CapabilitySpecSummary"
+          description: |
+            能力正文（Capability Spec v3 §3）的**列表投影**：`files` 只剩 `{count, bytes}`，
+            其余字段（params / outputs / requires / lifecycle / sticky / run / handler）原样。
+
+            为什么列表不给正文：一份能力的脚本单文件上限 256 KiB、合计 1 MiB，列表一次
+            几十条会被白涨几百 MB 级。要看正文，走
+            `GET /capabilities/{id}/artifact`（那里的 `spec` 是**全文**）。
+
+            注意 `run`（旧投影）与本字段**同源**：都由同一份能力正文算出，P4 删旧投影。
 
     CapabilityWithKind:
       allOf:
@@ -4008,7 +4186,7 @@ components:
 
     CapabilityArtifact:
       type: object
-      required: [digest, entrypoint, files, timeoutSec, workDir, requires]
+      required: [digest, entrypoint, files, timeoutSec, workDir, requires, env, spec]
       properties:
         digest:
           type: string
@@ -4034,10 +4212,30 @@ components:
           type: array
           items: { type: string }
           description: 机器上必须预装的命令（空时 `[]`）
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            产物自带的环境变量（键不得以 `ANOTIFY_` 开头：那是契约保留前缀）。
+            没声明时返回 `{}` 而不是 null。
+        spec:
+          $ref: "#/components/schemas/CapabilitySpec"
+          description: |
+            **完整**正文（含 `files` 正文）。与上面那几个扁平字段是同一份数据：
+            扁平投影是历史形状（前端已经在用），`spec` 才是 Capability Spec v3 的正文形状。
 
     CapabilityInput:
       type: object
-      required: [name]
+      required: [name, run]
+      description: |
+        建能力的请求体（**扁平形状**：Capability Spec v3 §5 把请求形状切换推到 P4，
+        P1-b 里服务端负责把它组装成 `spec`）。
+
+        `run` 是**必填**的（P1-b2 起）：能力必须有实现（契约 R2），缺了就是
+        `400 impl_missing`。占位请给一个什么都不做、退出码 0 的脚本。
+
+        注意：`handler` 形式（内置执行器）**不接受**由本端点创建 —— 那是平台侧
+        （内置播种 / 预案安装）的事，HTTP 创建一律走 `run`。
       properties:
         namespaceId:
           type: string
@@ -4058,9 +4256,18 @@ components:
         outputs:
           type: array
           items: { type: string }
+          description: 出口名的**封闭集合**（不变量 I2）；边的 `fromPort` 必须属于它
+        requires:
+          type: array
+          items: { type: string }
+          description: |
+            节点必须预装的外部命令（部署时 `LookPath` 探测，缺了部署失败）。
+            上限 16 个；名字只允许 `[A-Za-z0-9._+-]`。
         sticky: { type: string }
         lifecycle: { type: object }
         source: { type: string, enum: [builtin, custom], default: custom }
+        run:
+          $ref: "#/components/schemas/CapabilityRunInput"
         force:
           type: boolean
           default: false
@@ -4072,7 +4279,8 @@ components:
           type: array
           description: |
             **能力 + 下游边一次提交**（可选）。带它就走**原子路径**：
-            能力行、产物行（若带 `run`）、边行写在同一个事务里 —— 要么全成，要么全不成。
+            能力行、产物行（由 `CapabilityInput.run` 编译）、边行写在同一个事务里 ——
+            要么全成，要么全不成。
 
             不带它 = 原有的两步流程（建完能力再用 `POST /edges` 逐条建边），行为不变。
 
@@ -5608,8 +5816,15 @@ components:
           description: '内容寻址标识 `sha256:<64 hex>`'
           example: "sha256:ab12"
         spec:
-          type: object
-          description: 产物的 canonical JSON（CONTRACT-artifact §2）
+          type: string
+          format: byte
+          description: |
+            产物的正文：**base64(canonical JSON)**（`store.Artifact.Spec` 是 `[]byte`，
+            JSON 编码默认就是 base64 字符串 —— 之前这里声明成 `object` 是错的）。
+
+            解出来是一份完整产物：`{apiVersion, kind, metadata, spec}`，
+            其中 `spec` 就是 `CapabilitySpec`。给人看的**解析后**形状请走
+            `GET /capabilities/{id}/artifact`（那里的 `files` 是普通文本）。
         createdAt: { type: integer }
 
     Deployment:

@@ -217,6 +217,38 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// 0. handler 形式的能力**不可部署**（Capability Spec v3 §5）。
+	//
+	// 这一步必须排在产物解析**之前**：handler 形式刻意没有 artifacts 行（契约 §6.1
+	// —— 给它造一行会让它出现在部署面板里，推给节点后节点只会拒），所以顺着产物解析
+	// 走下去必然撞上 404「这个能力还没有可部署的产物：新建能力时需要填 run」。
+	// 那句话对 handler 能力是**指错方向**的：它不需要 run（实现已经在中枢里），也不
+	// 应该被部署——部署它只会给节点推一份没有 files 的产物。
+	capRow, err := h.db.GetCapabilityByID(r.Context(), ns.ID, req.CapabilityID)
+	switch {
+	case err == nil && capRow.Spec.Handler != "":
+		slog.Info("deployment rejected: builtin handler capability",
+			"event", "console.deployments.builtin_not_deployable",
+			"namespace_id", ns.ID, "capability_id", req.CapabilityID,
+			"capability", capRow.Name, "handler", capRow.Spec.Handler)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "这个能力由中枢内置执行器认领，不需要也不能部署到节点",
+			"code":  "builtin_not_deployable",
+		})
+		return
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		// 能力不存在（ErrNotFound）不在这里终结：交给下面的产物解析，保持既有的
+		// 404 artifact_not_found 行为不变（外部调用方与 e2e 都钉着它）。
+		if handleNamespaceError(w, err) {
+			return
+		}
+		slog.Error("read capability for deployment failed",
+			"event", "console.deployments.capability_read_failed",
+			"namespace_id", ns.ID, "capability_id", req.CapabilityID, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+
 	// 1. 解析要部署的产物
 	art, err := h.resolveArtifact(r.Context(), ns.ID, req.CapabilityID, req.Digest)
 	if err != nil {
@@ -280,8 +312,12 @@ func (h *deployHandler) resolveArtifact(ctx context.Context, nsID, capabilityID,
 func (h *deployHandler) writeArtifactError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrArtifactNotFound):
-		// 「这个能力还没有产物」是最常见的用户路径（建了能力但没给 run 块）：
-		// 给一个能直接指导操作的说法，而不是 404 not found。
+		// 「这个能力还没有产物」在 P1-b2 之后只剩一种可能：行比 artifacts 写穿早
+		// （老库且回填没跑到），或者 digest 指向一份已被删除的产物。给一个能直接指导
+		// 操作的说法，而不是 404 not found。
+		//
+		// 注意 handler 形式（handler != ""）走不到这里：它们在 createDeployments 里
+		// 已被判成 400 builtin_not_deployable（契约 §5）。
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": "这个能力还没有可部署的产物：新建能力时需要填 run（入口文件 + 文件内容）",
 			"code":  "artifact_not_found",

@@ -30,6 +30,10 @@
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。P1-b2 起建能力**必须**带实现
+// （缺 run → 400 impl_missing，Capability Spec v3 §5）。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
+
 const RP = "localhost";
 
 /* Pages to scan. message.html needs ?id= — handled separately with a real
@@ -201,13 +205,15 @@ async function main() {
 			name: "i18n.cover",
 			outputs: ["go"],
 			paramsSchema: { type: "object" },
+			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+			run: MIN_RUN,
 		},
 	});
 	const coverCap = capResp.json?.capability;
 	const sinkResp = await H.req(server.base, "/v1/capabilities", {
 		session: seedData.session,
 		method: "POST",
-		body: { name: "i18n.sink", outputs: [], paramsSchema: { type: "object" } },
+		body: { run: MIN_RUN, name: "i18n.sink", outputs: [], paramsSchema: { type: "object" } },
 	});
 	const sinkCap = sinkResp.json?.capability;
 

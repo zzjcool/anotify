@@ -23,7 +23,10 @@ const runScriptLinks = "#!/bin/sh\nset -eu\necho done\n"
 // postCapabilityLinks 发一次带 links 的 POST /v1/capabilities。
 func postCapabilityLinks(t *testing.T, env *consoleEnv, body map[string]any) *decodeResult {
 	t.Helper()
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", body)
+	// withMinimalRun：P1-b2 起建能力**必须**带实现（缺 run → 400 impl_missing）。
+	// 这一层补的是「造一个合法请求」，用例自己的意图（links / balance / 闸门）
+	// 不受影响；显式写了 run 的 body 原样使用。
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRun(body))
 	return &decodeResult{code: rr.Code, body: rr.Body.String()}
 }
 
@@ -311,11 +314,11 @@ func TestPostCapabilityWithLinksUpgradeGateStill409(t *testing.T) {
 // 向后兼容是硬约束：老客户端（以及控制台的「+ 下游」按钮）还在用两步流程。
 func TestPostCapabilityWithoutLinksLegacyShape(t *testing.T) {
 	env := newConsoleEnv(t)
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", map[string]any{
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRun(map[string]any{
 		"namespaceId": env.nsID,
 		"name":        "legacy.shape",
 		"outputs":     []string{"done"},
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}

@@ -35,10 +35,14 @@ import {
 
 let server, session, sendKey, nsId;
 
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。P1-b2 起建能力**必须**带实现
+// （缺 run → 400 impl_missing，Capability Spec v3 §5）。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
+
 async function defineCapability(name, outputs = [], extra = {}) {
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
+		body: { run: MIN_RUN, name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
 	});
 	if (r.status !== 200) throw new Error(`define ${name}: ${r.status} ${r.text}`);
 	return r.json.capability;
@@ -578,8 +582,12 @@ async function main() {
 		// 「换掉了哪个」：删掉 digest、加个 foo 也是 7。所以改成**逐个点名**
 		// （更强，不是放宽）：新增字段必须在这里写下来，删掉/改名会直接红。
 		//
-		// ws.work 没有 outputs，所以 ports/expects 整帧不出现（omitempty）；
-		// 没有产物，digest 也不出现。
+		// ws.work 没有 outputs，所以 ports/expects 整帧不出现（omitempty）。
+		//
+		// `digest` **现在会出现**：P1-b2 起建能力必须有实现（缺 run → 400
+		// impl_missing，Capability Spec v3 §5），`defineCapability` 因此总带一份最小
+		// 脚本 → 能力有了产物 → assign 帧带 digest。「没有产物时帧里没有 digest」这条
+		// 仍由 Go 单测钉着（internal/ws/node_assign_digest_test.go 的缺省分支）。
 		//
 		// attempts / seq_in_trace 是「节点本地执行档案」那条腿的输入：节点拿它们
 		// 命名 runs/<trace>/<capability>@<ver>/<seq>-a<attempt>/ 并写进 input.json /
@@ -595,6 +603,7 @@ async function main() {
 			[
 				"attempts",
 				"capability",
+				"digest",
 				"lease_until",
 				"max_duration_sec",
 				"params",

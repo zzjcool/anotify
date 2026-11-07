@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -87,9 +88,32 @@ func TestCapabilityArtifactReturnsParsedFiles(t *testing.T) {
 	if digest, _ := m["digest"].(string); !strings.HasPrefix(digest, "sha256:") {
 		t.Fatalf("digest = %q, want sha256:…", digest)
 	}
-	// 响应里不该出现 base64 的 spec 原文（那会让「解析后」这个承诺变假）
-	if _, has := m["spec"]; has {
-		t.Fatalf("响应不该带 spec 原文: %v", m)
+	// `spec` 是 **P1-b2 新加的**：P1-b2 前这里是「不该带 spec 原文」的断言——那指的是
+	// `GET /artifacts` 的 base64 传输形状（把那个透出来会让「解析后」这个承诺变假）。
+	// Capability Spec v3 §5 要求详情**给完整正文**，所以现在这个键必须在，但它必须是
+	// **解开的对象**：形状错成字符串（base64）就是违约，这里当场判红。
+	specObj, isObj := m["spec"].(map[string]any)
+	if !isObj || specObj == nil {
+		t.Fatalf("响应应该带解析后的 spec 对象: %v", m["spec"])
+	}
+	if _, isStr := m["spec"].(string); isStr {
+		t.Fatalf("spec 不能是 base64 字符串（那正是「解析后」的反馈）: %v", m["spec"])
+	}
+	specRun, _ := specObj["run"].(map[string]any)
+	specFiles, _ := specRun["files"].(map[string]any)
+	if got, _ := specFiles["run.sh"].(string); got != artifactScript {
+		t.Fatalf("spec.run.files[run.sh] = %q, want %q（正文里的文件必须是普通文本）", got, artifactScript)
+	}
+	// 两份数据同源：扁平投影与正文里的值不能各说一套。
+	if got, _ := specRun["timeoutSec"].(float64); got != 42 {
+		t.Fatalf("spec.run.timeoutSec = %v, want 42（与扁平投影同源）", specRun["timeoutSec"])
+	}
+	if got, _ := specRun["workDir"].(string); got != "/srv/work" {
+		t.Fatalf("spec.run.workDir = %q, want /srv/work", got)
+	}
+	// base64 的**整份**产物（GET /artifacts 的 spec 原文字节）绝不该出现在这个响应里。
+	if strings.Contains(rr.Body.String(), base64.StdEncoding.EncodeToString([]byte("apiVersion"))) {
+		t.Fatalf("响应里出现了 base64 的产物原文: %s", rr.Body.String())
 	}
 }
 

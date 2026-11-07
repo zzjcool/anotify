@@ -24,10 +24,15 @@ let server, session, sendKey, nsId;
 
 // ---------- 配置辅助（真实 HTTP API） ----------
 
+// MIN_RUN 是最小合法实现（空脚本，退出码 0）。P1-b2 起建能力**必须**带实现
+// （缺 run → 400 impl_missing，Capability Spec v3 §5）。
+const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
+
 async function defineCapability(name, outputs = [], extra = {}) {
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
+			run: MIN_RUN,
 			name,
 			outputs,
 			paramsSchema: extra.paramsSchema || { type: "object" },
@@ -307,7 +312,7 @@ async function main() {
 		const sameB = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
 				session,
-				body: { name: "cycle.a", outputs: ["go"], paramsSchema: { type: "object" } },
+				body: { run: MIN_RUN, name: "cycle.a", outputs: ["go"], paramsSchema: { type: "object" } },
 			})
 		).json?.capability;
 		H.check("A10 在第二个命名空间建同名能力 cycle.a", !!sameB?.id, String(sameB?.id));

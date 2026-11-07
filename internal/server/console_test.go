@@ -513,9 +513,9 @@ func TestCapabilityCreate(t *testing.T) {
 	env := newConsoleEnv(t)
 
 	// 第一次：不给 version → 自动 1
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
 		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix"},
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -537,9 +537,9 @@ func TestCapabilityCreate(t *testing.T) {
 	}
 
 	// 同名换内容 → 自动开版本 2
-	rr = env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
+	rr = env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
 		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix", "clean"},
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("second create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -633,9 +633,9 @@ func TestCapabilityListIncludesKind(t *testing.T) {
 func TestCapabilityKindFollowsEdgesNotOutputs(t *testing.T) {
 	env := newConsoleEnv(t)
 
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
 		NamespaceID: env.nsID, Name: "sink", Outputs: []string{},
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -676,9 +676,9 @@ func TestCapabilitySameVersionDifferentContentRejected(t *testing.T) {
 	env := newConsoleEnv(t)
 	env.seedCapability(t, "review", 1, []string{"fix"})
 
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", capabilityListRequest{
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
 		NamespaceID: env.nsID, Name: "review", Version: 1, Outputs: []string{"totally-different"},
-	})
+	}))
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (version cannot change content); body=%s", rr.Code, rr.Body.String())
 	}

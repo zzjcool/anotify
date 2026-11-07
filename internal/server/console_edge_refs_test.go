@@ -166,7 +166,7 @@ func TestCreateCapabilityUpgradeGate(t *testing.T) {
 		t.Fatalf("create link: %v", err)
 	}
 
-	breaking := map[string]any{
+	breaking := withMinimalRun(map[string]any{
 		"namespaceId": env.nsID,
 		"name":        "fixer",
 		"paramsSchema": map[string]any{
@@ -178,7 +178,7 @@ func TestCreateCapabilityUpgradeGate(t *testing.T) {
 			},
 		},
 		"outputs": []string{"done"}, // 删 port
-	}
+	})
 
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", breaking)
 	if rr.Code != http.StatusConflict {
@@ -236,7 +236,7 @@ func TestCreateCapabilityAdditiveNoGate(t *testing.T) {
 	if err := env.db.CreateCapability(ctx, withSpec(v1)); err != nil {
 		t.Fatalf("create fixer@1: %v", err)
 	}
-	rr := env.do(t, http.MethodPost, "/v1/capabilities", map[string]any{
+	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRun(map[string]any{
 		"namespaceId": env.nsID,
 		"name":        "fixer",
 		"paramsSchema": map[string]any{
@@ -247,7 +247,7 @@ func TestCreateCapabilityAdditiveNoGate(t *testing.T) {
 			},
 		},
 		"outputs": []string{"done", "extra"}, // 加 port
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
 	}

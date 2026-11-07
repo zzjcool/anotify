@@ -16,7 +16,7 @@
  *   3. 同一份内容重复建 → digest 相同（内容寻址的幂等语义）
  *   4. 非法 run（入口无 shebang）→ 400 invalid_artifact，且**能力没有被建出来**
  *   5. 部署到离线节点 → 200 且 pushed:false，行仍然建出来（state=pending）
- *   6. 部署没有产物的能力 → 404 artifact_not_found
+ *   6. 缺实现的创建 → 400 impl_missing / 部署 handler 形式 → 400 builtin_not_deployable
  *   7. GET /v1/deployments?nodeId= 过滤生效
  *   8. DELETE /v1/deployments?id= → 行消失
  *   9. 中枢覆盖（§7 的新口径）：hello 报不同 digest → state=pending，并立即重推期望的那份
@@ -189,11 +189,37 @@ async function main() {
 		});
 		H.eq("同内容同版本重复建 → 200（幂等，不是 409）", again.status, 200);
 		H.eq("同内容同版本重复建 → digest 相同", again.json?.digest, cap.digest);
-		// 3b. 同内容、新版本：内容寻址意味着「同一份内容」永远对应同一个 digest。
-		// 中枢把请求归一到已有版本（append-only 不重复插行），响应里的 digest 必须
-		// 与首次一致 —— 否则同一个产物会有两个身份，节点上的缓存索引就对不上了。
-		const nextVer = cap.version + 1;
+		// 3b. **省略版本**重复建 = 内容寻址的创建（Capability Spec v3 §10-B）：
+		// 正文一模一样就复用已有那一行（同一 id、同一 digest），不新开版本 ——
+		// 否则重试/双击会在 append-only 表里留下一串重复行，而能力不可删。
+		//
+		// **语义变了**（P1-a/P1-b1 的 digest 规则 + §10-B）：旧断言是「同内容 + **显式**
+		// 新版本 → digest 相同」，那在 v3 下是错的 —— `version` 现在**进 digest**
+		// （§3.2，试行过「只由内容决定」已回退：同内容的不同版本折叠成一行会让边里写的
+		// `to_ref = x@2` 悬空）。所以这里拆成两条新断言：省略版本 → 折叠；显式版本 → 不折叠。
 		const reup = await H.req(server.base, "/v1/capabilities", {
+			session,
+			body: {
+				name: "dep.hello",
+				outputs: ["go"],
+				run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+			},
+		});
+		H.eq("同内容省略版本重复建 → 200", reup.status, 200);
+		H.eq("→ 复用同一行（id 相同，不新开版本）", reup.json?.capability?.id, cap.id);
+		H.eq("→ digest 相同（内容寻址）", reup.json?.digest, cap.digest);
+		const artRows2 = (
+			await H.req(server.base, `/v1/artifacts?capabilityId=${encodeURIComponent(cap.id)}`, {
+				session,
+			})
+		).json?.artifacts || [];
+		H.eq("重复建没有造出第二份产物（仍然只有 1 条 digest）", artRows2.length, 1);
+
+		// 3c. **显式**版本永不折叠（§10-B），而且 version 进 digest（§3.2）：
+		// 同一份正文给 v2 → 新的一行、**不同**的 digest。这条不能放宽：
+		// 边里写的是 `name@version`，折叠会让 `to_ref` 悬空。
+		const nextVer = cap.version + 1;
+		const reupV2 = await H.req(server.base, "/v1/capabilities", {
 			session,
 			body: {
 				name: "dep.hello",
@@ -202,18 +228,13 @@ async function main() {
 				run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
 			},
 		});
-		H.eq(`同内容换版本（v${nextVer}）重复建 → 200`, reup.status, 200);
-		H.eq(
-			`同内容换版本（v${nextVer}）→ digest 与首次相同（内容寻址）`,
-			reup.json?.digest,
-			cap.digest,
+		H.eq(`同内容显式 v${nextVer} → 200（显式版本永不折叠）`, reupV2.status, 200);
+		H.eq(`→ 能力行确实是 v${nextVer}`, reupV2.json?.capability?.version, nextVer);
+		H.check(
+			`→ version 进 digest：v${nextVer} 的 digest 与 v${cap.version} 不同（§3.2）`,
+			typeof reupV2.json?.digest === "string" && reupV2.json.digest !== cap.digest,
+			`${reupV2.json?.digest} vs ${cap.digest}`,
 		);
-		const artRows2 = (
-			await H.req(server.base, `/v1/artifacts?capabilityId=${encodeURIComponent(cap.id)}`, {
-				session,
-			})
-		).json?.artifacts || [];
-		H.eq("重复建没有造出第二份产物（仍然只有 1 条 digest）", artRows2.length, 1);
 	}
 
 	// ================= 4. 非法产物：400 且不留半个能力 =================
@@ -268,20 +289,40 @@ async function main() {
 	H.eq("离线节点的行 state=pending（等上线补推）", offRow?.state, "pending");
 	H.eq("离线节点的行 digest 正确", offRow?.digest, cap.digest);
 
-	// ================= 6. 没有产物的能力 → 404 =================
-	console.log("--- 6. 部署没有产物的能力 ---");
+	// ================= 6. 缺实现 / handler 形式（P1-b2 的两条新拒绝）=================
+	//
+	// **语义变了**（Capability Spec v3 §5）。旧断言是「建一个不带 run 的能力 → 200，
+	// 部署它 → 404 artifact_not_found」。P1-b2 之后这两步都不成立：
+	//   ① POST /capabilities 缺 run → 400 impl_missing（能力必须有实现，契约 R2）
+	//   ② handler 形式的能力（内置执行器）没有 artifacts 行，但它是**不可部署**，
+	//      不是「还没产物」—— 顺着产物解析走会给一句指错方向的文案，所以先判
+	//      handler → 400 builtin_not_deployable
+	// 两条都必须断言「一行部署都没建」。
+	console.log("--- 6. 缺实现 / handler 形式 ---");
 	{
 		const plain = await H.req(server.base, "/v1/capabilities", {
 			session,
 			body: { name: "dep.noartifact", outputs: [] },
 		});
-		H.eq("建一个纯定义能力（不带 run）→ 200", plain.status, 200);
+		H.eq("建能力不带 run → 400", plain.status, 400);
+		H.eq("→ code=impl_missing（能力必须有实现）", plain.json?.code, "impl_missing");
+
+		// 内置中枢执行器能力（notify.phone / notify-phone）：有定义、无产物、不可部署。
+		const capsResp = await H.req(server.base, "/v1/capabilities", { session });
+		const hubCap = (capsResp.json?.capabilities || []).find((c) => c.spec?.handler === "notify-phone");
+		H.check(
+			"内置 handler 能力在列表里且带 spec.handler",
+			!!hubCap,
+			JSON.stringify((capsResp.json?.capabilities || []).map((c) => c.name)).slice(0, 200),
+		);
+		const before = (await listDeployments()).length;
 		const dep = await H.req(server.base, "/v1/deployments", {
 			session,
-			body: { capabilityId: plain.json?.capability?.id, nodeIds: [offline.id] },
+			body: { capabilityId: hubCap?.id, nodeIds: [offline.id] },
 		});
-		H.eq("部署没有产物的能力 → 404", dep.status, 404);
-		H.eq("→ code=artifact_not_found", dep.json?.code, "artifact_not_found");
+		H.eq("部署 handler 形式的能力 → 400", dep.status, 400);
+		H.eq("→ code=builtin_not_deployable", dep.json?.code, "builtin_not_deployable");
+		H.eq("被拒的部署一行都没建", (await listDeployments()).length, before);
 	}
 
 	// ================= 7. 按 nodeId 过滤 =================

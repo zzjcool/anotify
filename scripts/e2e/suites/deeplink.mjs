@@ -54,6 +54,8 @@ async function main() {
 			name: "review",
 			outputs: ["fix", "clean"],
 			paramsSchema: { type: "object" },
+			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
 		},
 	});
 	H.eq("建 review@1 → 200", cap.status, 200);
@@ -67,6 +69,7 @@ async function main() {
 			name: "deeplink.src",
 			outputs: ["go"],
 			paramsSchema: { type: "object" },
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
 		},
 	});
 	const srcId = src.json?.capability?.id;

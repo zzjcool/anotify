@@ -37,8 +37,29 @@ func batchRun() map[string]any {
 // postCapabilityBatch 发一次 POST /v1/capabilities/batch。
 func postCapabilityBatch(t *testing.T, env *consoleEnv, body map[string]any) *decodeResult {
 	t.Helper()
-	rr := env.do(t, http.MethodPost, "/v1/capabilities/batch", body)
+	rr := env.do(t, http.MethodPost, "/v1/capabilities/batch", withMinimalRunBatch(body))
 	return &decodeResult{code: rr.Code, body: rr.Body.String()}
+}
+
+// withMinimalRunBatch 给批量请求里的**每个**能力补一份最小 run。
+//
+// 与单建同一个理由（P1-b2 契约 §5）：批量里的每一项也必须带实现，缺了就是
+// 400 impl_missing。这一层补的是「造一个合法请求」，用例自己的意图（幂等 /
+// 闸门 / 回滚）不受影响；显式写了 run 的元素原样使用。
+func withMinimalRunBatch(body map[string]any) map[string]any {
+	if body == nil {
+		return nil
+	}
+	items, ok := body["capabilities"].([]map[string]any)
+	if !ok {
+		return body
+	}
+	for _, item := range items {
+		if item != nil {
+			withMinimalRun(item)
+		}
+	}
+	return body
 }
 
 // asInt 把解密后的 JSON 数字读成 int（encoding/json 只有 float64）。
@@ -372,12 +393,12 @@ func TestPostCapabilityBatchCycleMatchesSinglePath(t *testing.T) {
 	// ② 单建：同样的内容，逐条建（第二条边走 PUT downstreams 闭合环）
 	singleEnv := newConsoleEnv(t)
 	singleEnv.seedCapability(t, "cyc.y", 1, []string{"out"})
-	rr := singleEnv.do(t, http.MethodPost, "/v1/capabilities", map[string]any{
+	rr := singleEnv.do(t, http.MethodPost, "/v1/capabilities", withMinimalRun(map[string]any{
 		"namespaceId": singleEnv.nsID,
 		"name":        "cyc.x",
 		"outputs":     []string{"out"},
 		"links":       []map[string]any{{"fromPort": "out", "toRef": "cyc.y"}},
-	})
+	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("单建前置（cyc.x → cyc.y）失败: %d %s", rr.Code, rr.Body.String())
 	}
