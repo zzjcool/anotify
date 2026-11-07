@@ -364,6 +364,41 @@ if [ -x "$broker_bin" ]; then
 	broker_stop
 fi
 
+# ---- 5d. 用户服务单元（--user）也要有同一组重启收敛参数 ----
+#
+# 为什么两个分支都要断言：单元文件是**唯一**决定「agent 自己也没救回来时会不会
+# 变成 3 秒一次崩溃循环」的地方，而 write_unit_file 被系统/用户两条路径共用，
+# 漏一条分支就等于漏一半用户。
+#
+# 用户分支这里用 --dry-run 跑：as_root_tee 在 dry-run 下把单元内容缩进回显到日志，
+# 所以断言用 grep -q（不能 -qx），也不会在这台机器上真的 enable linger / 动 systemd。
+user_home="$work/home-user"
+mkdir -p "$user_home"
+if HOME="$user_home" ANOTIFY_RELEASE_BASE="$ANOTIFY_RELEASE_BASE" \
+	sh "$root/scripts/install-agent.sh" --dry-run --user \
+	--token=nt_selftest --server=http://127.0.0.1:8080 \
+	>"$work/install-user-dry.log" 2>&1; then
+	ok "用户服务单元（--user，dry-run）退出码 0"
+else
+	no "用户服务单元（--user，dry-run）退出码 0" "$(tail -5 "$work/install-user-dry.log")"
+fi
+# 走的确实是用户单元分支（而不是又写了一份系统单元）。
+grep -q 'WantedBy=default.target' "$work/install-user-dry.log" &&
+	ok "用户服务单元走用户分支（WantedBy=default.target）" ||
+	no "用户服务单元走用户分支（WantedBy=default.target）" "$(tail -8 "$work/install-user-dry.log")"
+for key in 'RestartSec=3' 'RestartSteps=5' 'RestartMaxDelaySec=30'; do
+	grep -q "$key" "$work/install-user-dry.log" &&
+		ok "用户服务单元含 $key（dry-run 回显）" ||
+		no "用户服务单元含 $key（dry-run 回显）" "$(tail -8 "$work/install-user-dry.log")"
+done
+
+# 系统单元：直接用 grep -qx 钉整行（非 dry-run 落盘的那份，无缩进）。
+for key in 'RestartSec=3' 'RestartSteps=5' 'RestartMaxDelaySec=30'; do
+	grep -qx "$key" "$unit" &&
+		ok "系统服务单元含 $key" ||
+		no "系统服务单元含 $key" "$(grep -n '^Restart' "$unit" 2>/dev/null || echo 缺失)"
+done
+
 # ---- 6. 重跑同一条命令 = 升级（令牌/中枢从 node.yaml 读，不用再给） ----
 : >"$work/systemctl.log"
 if run_install --prefix="$prefix" --no-preflight >"$work/upgrade.log" 2>&1; then
