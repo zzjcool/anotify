@@ -23,7 +23,7 @@ func TestCreateEdgeAllowsSelfLoop(t *testing.T) {
 	ns, _ := newTestNS(t, db)
 
 	capA := mkCap(ns, "a", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -50,7 +50,7 @@ func TestCreateEdgeAllowsCycle(t *testing.T) {
 	b := mkCap(ns, "b", 1, []string{"ok"})
 	c := mkCap(ns, "c", 1, []string{"ok"})
 	for _, cap := range []*CapabilityVersion{a, b, c} {
-		if err := db.CreateCapability(ctx, cap); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 			t.Fatalf("create capability %s: %v", cap.Name, err)
 		}
 	}
@@ -107,7 +107,7 @@ func TestCreateEdgeAllowsDiamond(t *testing.T) {
 	c := mkCap(ns, "c", 1, []string{"ok"})
 	d := mkCap(ns, "d", 1, nil)
 	for _, cap := range []*CapabilityVersion{a, b, c, d} {
-		if err := db.CreateCapability(ctx, cap); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 			t.Fatalf("create capability %s: %v", cap.Name, err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestCreateEdgeEntryEdgeNeverCycles(t *testing.T) {
 	ns, _ := newTestNS(t, db)
 
 	a := mkCap(ns, "a", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, a); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(a)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{

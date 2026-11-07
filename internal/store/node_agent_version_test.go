@@ -42,7 +42,10 @@ func TestMigration3AgentColumnsFromV2(t *testing.T) {
 	}
 
 	// 老库里先落一台节点：升级后它必须还在，且三列取默认值。
-	nsID, _ := newTestNS(t, v2)
+	//
+	// 命名空间用裸 INSERT 造（newRawNamespace）：注册路径会播种内置能力，而播种
+	// 写的是 v3 才有的 spec 列，v2 库上根本没有——那是"用新代码写老库"，不是要测的东西。
+	nsID := newRawNamespace(t, v2)
 	oldNode := &Node{NamespaceID: nsID, Name: "old-node", Tags: []string{}}
 	if _, err := v2.CreateNode(ctx, oldNode); err != nil {
 		t.Fatalf("create node in v2 db: %v", err)

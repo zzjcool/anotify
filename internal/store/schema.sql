@@ -679,3 +679,16 @@ DROP INDEX IF EXISTS idx_edges_lookup;
 -- 默认 '' 只覆盖加这一列之前建的老行：它们不是任何一次「本次派发」新建的 pin，
 -- 因此永远不会匹配 RollbackPin 的条件（正是想要的语义）。
 ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
+
+-- +migration 8 capability_spec
+
+-- `spec` 是能力的**正文**（Capability Spec v3 §4）：params / outputs / requires /
+-- lifecycle / sticky + 实现（run 或 handler），canonical JSON 一串。
+--
+-- 与派生列的关系是「一个写者」：spec 是输入，params_schema / outputs / lifecycle /
+-- sticky 是**写入时**由它算出的只读缓存（热路径要的是列，不该每次解一份大 JSON）。
+-- 任何单独改派生列的路径都是 bug —— 两者由同一个事务写入，不允许不同步。
+--
+-- 默认 '' 只为覆盖「加这一列之前建的老行」：它们由本迁移的 Go 钩子回填
+-- （有产物的取产物正文，其余给内置 noop 占位），回填后库里不再有 ''。
+ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';

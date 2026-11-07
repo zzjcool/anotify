@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -80,6 +81,9 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 		ParamsSchema: json.RawMessage(`{}`),
 		Outputs:      []string{"fix"},
 		Source:       store.CapSourceCustom,
+		// 正文（spec）是能力的输入：基准里的能力用 handler: noop 占位（合法实现、
+		// 不写 artifacts 行），于是基准量到的仍然是写任务/派发，而不是产物构建。
+		Spec: store.HandlerSpec(artifact.HandlerNoop, json.RawMessage(`{}`), []string{"fix"}, nil),
 	}
 	if err := db.CreateCapability(ctx, capDef); err != nil {
 		tb.Fatalf("create capability: %v", err)

@@ -89,7 +89,7 @@ func newDownstreamFixture(t *testing.T) *downstreamFixture {
 			Outputs: []string{}, Source: CapSourceCustom},
 	}
 	for _, c := range defs {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 		f.caps[c.Name] = c
@@ -308,7 +308,7 @@ func TestReplaceCapabilityDownstreamsValidation(t *testing.T) {
 	ctx := context.Background()
 	nsB := newTestExtraNS(t, f.db, "staging")
 	foreign := mkCap(nsB, "foreign", 1, nil)
-	if err := f.db.CreateCapability(ctx, foreign); err != nil {
+	if err := f.db.CreateCapability(ctx, withSpec(foreign)); err != nil {
 		t.Fatalf("create foreign: %v", err)
 	}
 

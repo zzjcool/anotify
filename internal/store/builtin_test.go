@@ -281,14 +281,14 @@ func TestNoOriginShellCapabilities(t *testing.T) {
 		t.Fatalf("notify.phone@1 应仍存在: %v", err)
 	}
 	// 用户现在可以自由使用这些名字（不再保留给空壳）
-	if err := db.CreateCapability(ctx, &CapabilityVersion{
+	if err := db.CreateCapability(ctx, withSpec(&CapabilityVersion{
 		NamespaceID:  nsID,
 		Name:         "github",
 		Version:      1,
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"done"},
 		Source:       CapSourceCustom,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("用户现在可以定义叫 github 的能力: %v", err)
 	}
 }
@@ -307,7 +307,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{}, Source: CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, sink); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(sink)); err != nil {
 		t.Fatalf("create sink: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestEntryEdgeAcceptsAnyPort(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      []string{"only"}, Source: CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, custom); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(custom)); err != nil {
 		t.Fatalf("create custom: %v", err)
 	}
 	err = db.CreateEdge(ctx, &Edge{

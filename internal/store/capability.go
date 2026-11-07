@@ -2,14 +2,14 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 能力来源（契约 §2.2 source 列）。
@@ -148,6 +148,22 @@ func (l Lifecycle) MaxAttemptsOrDefault() int {
 	return DefaultMaxAttempts
 }
 
+// ErrCapabilityInvalid 表示能力的正文（spec）不合法（客户端可修 → HTTP 400）。
+//
+// 与 ErrBalanceRejected 同构：**内容**错误既不是冲突也不是 500。真正的形状判定在
+// artifact.Validate（规则只有一份，见 Capability Spec v3 §3.1），这里只负责把它
+// 归成一个 store 层的哨兵错误，供 handler 翻 400。
+var ErrCapabilityInvalid = errors.New("capability_invalid")
+
+// ErrVersionConflict 表示 (namespace, name, version) 已经存在，但内容**不同**。
+//
+// 版本行不可变（不变量 I8）：同一个 name@version 不许换内容覆盖，也不会被静默
+// 改写成别的版本号。v3 起 content_hash ≡ digest（吃 name + version + spec），
+// 所以「同内容不同版本」天然算不出同一个 hash —— 跨版本内容折叠（旧行为：同内容
+// 换版本号会被折叠成已有那一行）随之一并取消，撞 (name,version) 只可能是一次
+// 真的「改定义」，必须报冲突让人显式开新版本。
+var ErrVersionConflict = errors.New("store: capability version already exists with different content")
+
 // CapabilityVersion 是 capability_versions 表的一行：一个 name@version 的不可变定义（不变量 I8）。
 //
 // Outputs 是出口名的唯一来源，同时是 edges.from_port 的封闭集合（不变量 I2）。
@@ -173,94 +189,151 @@ type CapabilityVersion struct {
 	Source      string    `json:"source"`
 	ContentHash string    `json:"contentHash"`
 	CreatedAt   int64     `json:"createdAt"`
-}
-
-// capHashInput 是参与 content_hash 计算的规范化结构。
-//
-// 参与：name（能力身份）、params_schema（键排序后）、outputs（排序后）、lifecycle、sticky。
-// 不参与：version / id / created_at —— 「同内容不同版本」要能被识别成同内容，
-// 否则 UNIQUE(namespace_id, content_hash) 永远不冲突，幂等创建就失效了。
-//
-// 为什么 name 必须参与：`UNIQUE(namespace_id, content_hash)` 是**命名空间内**唯一的。
-// 若 name 不参与，`fix1` 与 `fix2`（schema/outputs 恰好相同但名字不同）
-// 会被当成「同一份内容」，第二个 CreateCapability 会把 fix2 的行改写成 fix1——
-// 两个不同能力被默默合并成一个，edges 两端指向同一个 capability_id。
-type capHashInput struct {
-	Name         string          `json:"name"`
-	ParamsSchema json.RawMessage `json:"params_schema"`
-	Outputs      []string        `json:"outputs"`
-	Lifecycle    Lifecycle       `json:"lifecycle"`
-	Sticky       string          `json:"sticky"`
-	// Balance 参与 hash（契约 §1）：它决定「同一个端口会落到谁头上」，
-	// 是能力定义的**行为**的一部分。不参与的话，「改 balance」的请求会算出与旧版
-	// 相同的 hash、被幂等折叠成旧行 —— 新 balance 被静默丢弃，而用户以为生效了。
+	// Spec 是能力的**正文**（Capability Spec v3 §4）：params / outputs / requires /
+	// lifecycle / sticky + 实现（run 或 handler）。
 	//
-	// **必须 omitempty**：没有 balance 的能力要算出与「balance 这个概念存在之前」
-	// 完全相同的 hash。否则老库里已有的行（hash 里没有这个键）在重提交同内容时
-	// 会被判成「内容变了」，从幂等折叠变成 ErrCapabilityVersionConflict ——
-	// 用户什么都没改却收到一个冲突错误。空映射与 nil 都会省略。
-	Balance Balance `json:"balance,omitempty"`
+	// 其余字段里的 ParamsSchema / Outputs / Lifecycle / Sticky 是**写入时由它算出的
+	// 只读派生列**（热路径要的是列，不该每次解一份 JSON）。方向永远单向：Spec →
+	// 派生列，调用方设的派生字段值一律被覆盖，不允许从派生字段反推正文。
+	//
+	// 不进 JSON 响应（`json:"-"`）：响应里给什么形状由端点决定（列表要剥掉文件正文、
+	// 换成 files:{count,bytes}；详情才给全文），能力行这个中间结构不该顺手把 1 MiB
+	// 的文件正文塞进每一条列表响应。请求/响应形状的切换是 P1-b2/P4 的事。
+	Spec artifact.Spec `json:"-"`
 }
 
-// NormalizeCapability 计算 content_hash：把 params_schema / outputs / lifecycle / sticky
-// 规范化（键排序、稳定序列化）后取 sha256。同内容必须得同 hash。
+// Artifact 把行拼成一份完整产物：metadata 来自列（name / version / displayName），
+// 正文来自 Spec 字段。
+//
+// 「行 → 产物」只有这一处拼装：校验、digest、写穿、回填都走它。多拼一份的后果是
+// 某天有人少填一个字段，digest 与产物正文悄悄不一致（症状是部署永远被判成 stale）。
+func (c *CapabilityVersion) Artifact() artifact.Artifact {
+	if c == nil {
+		return artifact.Artifact{}
+	}
+	return artifact.Artifact{
+		APIVersion: artifact.APIVersion,
+		Kind:       artifact.KindCapability,
+		Metadata: artifact.Metadata{
+			Name:        c.Name,
+			Version:     c.Version,
+			DisplayName: c.DisplayName,
+		},
+		Spec: c.Spec,
+	}
+}
+
+// Digest 返回 "sha256:<hex>" 形式的内容寻址标识。
+//
+// content_hash 列存的是**裸 hex**（不带前缀），两种写法是同一个值：库里留着裸 hex
+// 是因为它已经是既有列，digest 形式只是它加上标准前缀（契约 §4）。
+func (c *CapabilityVersion) Digest() string {
+	if c == nil || c.ContentHash == "" {
+		return ""
+	}
+	return artifact.DigestPrefix + c.ContentHash
+}
+
+// HandlerSpec 构造一份 handler 形式（内置执行器）的规格正文。
+//
+// 三处共用，避免各拼一份：内置能力播种（notify-phone）、预案安装（manifest 的
+// runner 契约不解释 → 一律 noop 占位）、migration 8 的回填。
+//
+// outputs 为空时给 []（不是 nil）：空列表纪律（不变量 I9）+ 它参与 digest，
+// nil 与 [] 必须是同一份规范字节。
+func HandlerSpec(handler string, params json.RawMessage, outputs []string, lifecycle json.RawMessage) artifact.Spec {
+	out := make([]string, 0, len(outputs))
+	out = append(out, outputs...)
+	return artifact.Spec{
+		Params:    params,
+		Outputs:   out,
+		Lifecycle: lifecycle,
+		Handler:   handler,
+	}
+}
+
+// canonicalizeSpec 把一份产物归一成落库/算 digest/回填**共用**的那份形状。
+//
+// 返回的 spec 与 full 来自同一次 canonical 序列化：full 是整份产物（apiVersion /
+// kind / metadata / spec，不含 displayName），spec 是它的 spec 子文档。两者必须
+// 出自同一次序列化——分两次拼的话，某天会得到「存的正文」与「算 digest 的正文」
+// 不是同一串字节，而症状（digest 与内容不一致）极难查。
+func canonicalizeSpec(a *artifact.Artifact) (artifact.Spec, []byte, error) {
+	full, err := artifact.CanonicalJSON(a)
+	if err != nil {
+		return artifact.Spec{}, nil, fmt.Errorf("canonical json: %w", err)
+	}
+	var doc struct {
+		Spec json.RawMessage `json:"spec"`
+	}
+	if err := json.Unmarshal(full, &doc); err != nil {
+		return artifact.Spec{}, nil, fmt.Errorf("decode canonical spec: %w", err)
+	}
+	var spec artifact.Spec
+	if err := json.Unmarshal(doc.Spec, &spec); err != nil {
+		return artifact.Spec{}, nil, fmt.Errorf("decode canonical spec: %w", err)
+	}
+	return spec, full, nil
+}
+
+// deriveFromSpec 是**唯一**一次「正文 → 派生列」的推导（契约 §4 的「一个写者」）。
+//
+// 三件必须成立：
+//   - 空 outputs 归一成 []（不变量 I9，也参与 digest：nil 与 [] 不能是两份字节）；
+//   - params 为空时落 '{}'（既有列语义：空 schema 就是一个空对象）；
+//   - lifecycle 是 RawMessage，解进结构体失败就是内容错误（400），不是 500。
+//
+// 调用方设过的 ParamsSchema / Outputs / Lifecycle / Sticky 会在这里被**覆盖**：
+// 反向（从派生字段反推正文）被明令禁止，那会让「正文」变成列的函数，
+// 于是「只改脚本不产生新版本」这个 bug 换个马甲又回来了。
+func deriveFromSpec(c *CapabilityVersion) error {
+	if c == nil {
+		return fmt.Errorf("derive capability: nil")
+	}
+	if c.Spec.Outputs == nil {
+		c.Spec.Outputs = []string{}
+	}
+	c.ParamsSchema = c.Spec.Params
+	if len(c.ParamsSchema) == 0 {
+		c.ParamsSchema = json.RawMessage("{}")
+	}
+	c.Outputs = c.Spec.Outputs
+	c.Sticky = c.Spec.Sticky
+	if len(c.Spec.Lifecycle) > 0 {
+		var lc Lifecycle
+		if err := json.Unmarshal(c.Spec.Lifecycle, &lc); err != nil {
+			return fmt.Errorf("%w: spec.lifecycle 不是合法的 lifecycle 对象: %v", ErrCapabilityInvalid, err)
+		}
+		c.Lifecycle = lc
+	} else {
+		c.Lifecycle = Lifecycle{}
+	}
+	return nil
+}
+
+// NormalizeCapability 返回能力的 content_hash（**裸 hex**，不带 sha256: 前缀）。
+//
+// v3 起口径就是 digest（契约 §3.2/§4）：
+//
+//	content_hash = hex(sha256(canonical{metadata.name, metadata.version, spec}))
+//
+// 计算**只**走 artifact.Digest：自己再写一份必然漂移，而漂移的症状是「同一份能力
+// 算出两个 hash」——部署永远被判成 stale，谁也看不出根因。
+//
+// 由此三件事自动成立，不需要额外规则：
+//   - 改 displayName 不变 hash（它不在 digest 里，PATCH 因此天然不漂）；
+//   - 改 spec 任一字段（含 lifecycle / sticky / handler / 文件正文）都变 hash；
+//   - 换 version 也变 hash，所以「同内容不同版本」不再折叠（见 ErrVersionConflict）。
 func NormalizeCapability(c *CapabilityVersion) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("normalize capability: nil")
 	}
-	// params_schema：JSON 目标的键顺序不稳定（map 遍历），必须先归一化。
-	// 空 / 非法 JSON 一律归一为空对象，避免「没写 schema」和「写了 {}」算出不同 hash。
-	schema := json.RawMessage("{}")
-	if len(c.ParamsSchema) > 0 && json.Valid(c.ParamsSchema) {
-		normalized, err := canonicalJSON(c.ParamsSchema)
-		if err != nil {
-			return "", fmt.Errorf("normalize params_schema: %w", err)
-		}
-		schema = normalized
-	}
-	// outputs：集合语义，排序后参与 hash（["a","b"] 与 ["b","a"] 是同一份定义）。
-	outputs := make([]string, 0, len(c.Outputs))
-	for _, o := range c.Outputs {
-		if o == "" {
-			continue // 空出口名无意义，不参与 hash（也进不了 edges）
-		}
-		outputs = append(outputs, o)
-	}
-	sort.Strings(outputs)
-
-	// balance：先校验再归一（未实现的 mode → ErrBalanceRejected → HTTP 400）。
-	// 校验放在这里是因为 createCapabilityTx 的唯一实现就是「先归一再算 hash」。
-	balance, err := normalizeBalance(c)
+	a := c.Artifact()
+	digest, err := artifact.Digest(&a)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("digest capability %s@%d: %w", c.Name, c.Version, err)
 	}
-
-	payload, err := json.Marshal(capHashInput{
-		Name:         c.Name,
-		ParamsSchema: schema,
-		Outputs:      outputs,
-		Lifecycle:    c.Lifecycle,
-		Sticky:       c.Sticky,
-		Balance:      balance,
-	})
-	if err != nil {
-		return "", fmt.Errorf("marshal capability for hash: %w", err)
-	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
-}
-
-// canonicalJSON 把 JSON 归一化为键排序的紧凑形式。
-func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, fmt.Errorf("unmarshal json: %w", err)
-	}
-	out, err := json.Marshal(sortJSON(v))
-	if err != nil {
-		return nil, fmt.Errorf("marshal canonical json: %w", err)
-	}
-	return out, nil
+	return strings.TrimPrefix(digest, artifact.DigestPrefix), nil
 }
 
 // sortJSON 递归地把 map 转成键排序的紧凑结构（json.Marshal 对 map 的键本身
@@ -360,18 +433,31 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 			return fmt.Errorf("%w: %q is a builtin origin and its name is reserved", ErrCapabilityReserved, c.Name)
 		}
 	}
-	// hash 里已经吃过 balance（NormalizeCapability 会校验并归一它），这里再取一次
-	// 归一后的形状写回 c：返回给调用方的行必须与落库的行逐字节一致
-	// （nil / `{}` / `{port:{mode:""}}` 是同一份定义，落库只有一种形状）。
-	normalizedBalance, berr := normalizeBalance(c)
-	if berr != nil {
+	// ① 先校验**正文**：缺实现 / 实现二义 / handler 不在白名单 / params 不是对象……
+	//    形状规则只有一份（artifact.Validate）。失败 = 客户端可修 → 400 语义的错。
+	fullArtifact, specJSON, err := prepareCapabilitySpec(c)
+	if err != nil {
+		return err
+	}
+	// ② 派生列：单向、覆盖式。调用方设过的派生字段在这里一律被覆盖（契约 §4 的
+	//    「一个写者」）——反过来从派生字段拼正文会让「内容」变成列的函数，
+	//    于是「只改脚本不产生新版本」那个 bug 换个马甲又回来了。
+	if err := deriveFromSpec(c); err != nil {
+		return err
+	}
+	// ③ balance：本期已是死字段（契约 §4：P1-b 起恒写 '{}'，P3 删列）。但调用方的
+	//    值仍要**校验**：否则「配了 all」会从 400 悄悄变成静默丢弃，而「我配了 all、
+	//    跑起来却是 1:1」是永远查不出来的分歧。
+	if _, berr := normalizeBalance(c); berr != nil {
 		return berr
 	}
-	c.Balance = normalizedBalance
+	c.Balance = Balance{}
+	// ④ content_hash ≡ digest（吃 name + version + 整份 spec）
 	hash, err := NormalizeCapability(c)
 	if err != nil {
 		return err
 	}
+	c.ContentHash = hash
 
 	// 升级闸门（P2.2，设计 §3.6）：只有当这个版本**成为 latest** 时才拦。
 	// 放在写入之前：不能先写进去再问（问了也没用，append-only 撤不回）。
@@ -427,19 +513,36 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 
 	_, err = ex.execContext(ctx,
 		`INSERT INTO capability_versions
-		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, balance, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, balance, sticky, source, content_hash, created_at, spec)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.ID, c.NamespaceID, c.Name, c.DisplayName, c.Version, schema, string(outputsJSON),
-		string(lifecycleJSON), string(balanceJSON), c.Sticky, c.Source, hash, c.CreatedAt)
+		string(lifecycleJSON), string(balanceJSON), c.Sticky, c.Source, hash, c.CreatedAt,
+		string(specJSON))
 	if err == nil {
-		c.ContentHash = hash
+		// ⑤ artifacts 写穿（同一事务）：`deployments.artifact_id` 的外键还指着这张表，
+		//    P1 期间它只是**镜像**（读了不用它当真相，P2 删）。
+		//
+		//    只对**脚本形式**写：handler 形式没有 files，把一份没有 files 的产物推给
+		//    节点只会被拒——那正是 notify.phone 不该出现在部署面板的原因（契约 §6.1）。
+		if c.Spec.Handler == "" {
+			if _, aerr := createArtifactOn(ctx, ex, &Artifact{
+				NamespaceID:  c.NamespaceID,
+				CapabilityID: c.ID,
+				Digest:       c.Digest(),
+				Spec:         fullArtifact,
+				CreatedAt:    c.CreatedAt,
+			}); aerr != nil {
+				return fmt.Errorf("create capability: write through artifact: %w", aerr)
+			}
+		}
 		return nil
 	}
 	if !isUniqueConstraintError(err) {
 		return fmt.Errorf("insert capability: %w", err)
 	}
 
-	// 冲突：要么是同内容（幂等，返回已有行），要么是同 name@version 换内容（真错）。
+	// 冲突只可能是两种：同内容已存在（并发重放 → 幂等返回已有行），
+	// 或者同 name@version 换内容（真错 → ErrVersionConflict）。
 	existing, gerr := getCapabilityByHashOn(ctx, ex, c.NamespaceID, hash)
 	if gerr == nil && existing != nil {
 		// 同内容已存在 → 幂等返回已有行。
@@ -460,16 +563,40 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 		*c = *existing
 		return nil
 	}
-	if errors.Is(gerr, ErrNotFound) || gerr == nil {
-		// 不是 content_hash 冲突，那就是 (namespace_id, name, version) 冲突
-		if _, e2 := getCapabilityOn(ctx, ex, c.NamespaceID, c.Name, c.Version); e2 == nil {
-			return fmt.Errorf("create capability %s@%d: version already exists with different content (append-only, 见不变量 I8)", c.Name, c.Version)
-		}
-	}
 	if gerr != nil && !errors.Is(gerr, ErrNotFound) {
 		return fmt.Errorf("lookup existing capability after conflict: %w", gerr)
 	}
+	// 同 name@version 已存在且内容不同：**报冲突**，不改写版本号、不覆盖旧行
+	// （版本行不可变，不变量 I8）。旧行为会把它「折叠」成已有那一行，
+	// 于是「换了脚本却还是旧版本」在界面上看起来像成功了——这是要消灭的形态。
+	if _, e2 := getCapabilityOn(ctx, ex, c.NamespaceID, c.Name, c.Version); e2 == nil {
+		return fmt.Errorf("%w: %s@%d（版本行不可变；改内容请开新版本）",
+			ErrVersionConflict, c.Name, c.Version)
+	}
 	return fmt.Errorf("insert capability: %w", err)
+}
+
+// prepareCapabilitySpec 校验正文、把它归一化成 canonical 形状并写回 c.Spec，
+// 返回「整份产物的 canonical 字节」（写穿 artifacts 用）与「spec 子文档的字节」
+// （capability_versions.spec 列用）。
+//
+// 两者都取自**同一次** canonical 序列化：存的正文与算 digest 的正文必须是同一串
+// 字节，否则 digest 与内容会悄悄对不上（部署永远判 stale，且看不出根因）。
+func prepareCapabilitySpec(c *CapabilityVersion) (full, specJSON []byte, err error) {
+	a := c.Artifact()
+	if verr := artifact.Validate(&a); verr != nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrCapabilityInvalid, verr.Error())
+	}
+	spec, fullDoc, cerr := canonicalizeSpec(&a)
+	if cerr != nil {
+		return nil, nil, cerr
+	}
+	c.Spec = spec
+	raw, merr := json.Marshal(c.Spec)
+	if merr != nil {
+		return nil, nil, fmt.Errorf("marshal capability spec: %w", merr)
+	}
+	return fullDoc, raw, nil
 }
 
 // getCapabilityByHash 按 (namespace_id, content_hash) 取已有版本（事务外；读走语句缓存）。
@@ -487,9 +614,12 @@ func getCapabilityByHashOn(ctx context.Context, ex queryExec, namespaceID, hash 
 		namespaceID, hash)
 }
 
-// capabilityColumns 是统一的列顺序，scanCapabilityOn 依赖它。
+// capabilityColumns 是统一的列顺序，scanCapabilityRow 依赖它。
+//
+// spec 排在最后：追加在末尾就不会让任何按位置拼列的读路径错位（这一份列清单
+// 同时被 GetCapability / GetCapabilityByID / getCapabilityByHash / ListCapabilities 用）。
 const capabilityColumns = `id, namespace_id, name, display_name, version, params_schema,
-	outputs, lifecycle, balance, sticky, source, content_hash, created_at`
+	outputs, lifecycle, balance, sticky, source, content_hash, created_at, spec`
 
 // scanCapability 执行查询并解析一行；未命中返回 ErrNotFound（事务外；读走语句缓存）。
 func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
@@ -500,36 +630,58 @@ func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*Ca
 // 事务内传 txExec 才能看到本事务刚写入的行（见 txexec.go）。
 func scanCapabilityOn(ctx context.Context, ex queryExec, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
-	var paramsSchema, outputs, lifecycle, balance string
 	// 语句缓存（#242）：scanCapabilityOn 被 GetCapability / GetCapabilityByID /
 	// getCapabilityByHash 共用，三者的 SQL 文本都是常量（拼的只是列名/条件名）。
 	// 事务内（ex=txExec）**不能**用缓存：那些语句绑的是池里另一条连接，看不到本事务的写。
-	err := ex.queryRowContext(ctx, query, args...).Scan(
-		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
-		&lifecycle, &balance, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
-	)
+	err := scanCapabilityRow(ex.queryRowContext(ctx, query, args...), &c)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("scan capability: %w", err)
+		return nil, err
+	}
+	return &c, nil
+}
+
+// scanCapabilityRow 把一行 capability_versions 解进 c（列顺序 = capabilityColumns）。
+//
+// 抽成一份是因为它之前被抄了两遍（单行读 + ListCapabilities），而加了 spec 列之后
+// 任何一份漏解都会变成「列表里没有正文、详情里有」这种只在某个页面复现的怪事。
+//
+// spec 是**读出来就用**的：不在这里从派生列重算正文（写的时候已经由 spec 算出，
+// 读时再算一遍只会掩盖不同步——那正是契约 §4 要消灭的两种真相）。
+func scanCapabilityRow(row scanner, c *CapabilityVersion) error {
+	var paramsSchema, outputs, lifecycle, balance, spec string
+	if err := row.Scan(
+		&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
+		&lifecycle, &balance, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt, &spec,
+	); err != nil {
+		return err
 	}
 	if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-		return nil, fmt.Errorf("decode capability params_schema: %w", err)
+		return fmt.Errorf("decode capability params_schema: %w", err)
 	}
 	if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-		return nil, fmt.Errorf("decode capability outputs: %w", err)
+		return fmt.Errorf("decode capability outputs: %w", err)
 	}
 	if c.Outputs == nil {
 		c.Outputs = []string{} // 不变量 I9：空列表是 [] 不是 null
 	}
 	if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-		return nil, fmt.Errorf("decode capability lifecycle: %w", err)
+		return fmt.Errorf("decode capability lifecycle: %w", err)
 	}
-	if err := decodeCapabilityBalance(&c, balance); err != nil {
-		return nil, err
+	if err := decodeCapabilityBalance(c, balance); err != nil {
+		return err
 	}
-	return &c, nil
+	// 空 spec 只可能出现在「migration 8 的回填没跑到」的库上（回填是幂等的，
+	// 跑过就填满）。这里按零值读出来而不是报错：报错会让整个能力列表打不开，
+	// 而真正该报的那个地方是写入/部署路径（那里 Validate 会拒）。
+	if strings.TrimSpace(spec) != "" {
+		if err := json.Unmarshal([]byte(spec), &c.Spec); err != nil {
+			return fmt.Errorf("decode capability spec: %w", err)
+		}
+	}
+	return nil
 }
 
 // decodeCapabilityBalance 把 balance 列解成结构体；空列 / `null` / `{}` 都是「没配」。
@@ -628,27 +780,8 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 	out := []*CapabilityVersion{}
 	for rows.Next() {
 		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle, balance string
-		if err := rows.Scan(
-			&c.ID, &c.NamespaceID, &c.Name, &c.DisplayName, &c.Version, &paramsSchema, &outputs,
-			&lifecycle, &balance, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt,
-		); err != nil {
+		if err := scanCapabilityRow(rows, &c); err != nil {
 			return nil, fmt.Errorf("scan capability row: %w", err)
-		}
-		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-			return nil, fmt.Errorf("decode params_schema: %w", err)
-		}
-		if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-			return nil, fmt.Errorf("decode outputs: %w", err)
-		}
-		if c.Outputs == nil {
-			c.Outputs = []string{}
-		}
-		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-			return nil, fmt.Errorf("decode lifecycle: %w", err)
-		}
-		if err := decodeCapabilityBalance(&c, balance); err != nil {
-			return nil, err
 		}
 		out = append(out, &c)
 	}

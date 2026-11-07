@@ -455,6 +455,18 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 		entrypoint = "run.sh"
 	}
 
+	// lifecycle 与 sticky 也是正文的一部分（Capability Spec v3 §3：改它 = 改内容 =
+	// 新版本）。**零值不写**：规范字节里就不出现这两个键，与 handler 形式占位的
+	// 口径一致（omitempty），否则「没声明 lifecycle」与「声明了 {}」会算出两个 digest。
+	var lifecycle json.RawMessage
+	if c.Lifecycle != (store.Lifecycle{}) {
+		b, err := json.Marshal(c.Lifecycle)
+		if err != nil {
+			return nil, fmt.Errorf("marshal lifecycle: %w", err)
+		}
+		lifecycle = b
+	}
+
 	a := &artifact.Artifact{
 		APIVersion: artifact.APIVersion,
 		Kind:       artifact.KindCapability,
@@ -462,9 +474,11 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 		// digest —— 重新上架时改个名字不会算出新 digest，也不会把已有部署判成 stale。
 		Metadata: artifact.Metadata{Name: c.Name, Version: c.Version, DisplayName: c.DisplayName},
 		Spec: artifact.Spec{
-			Params:   c.ParamsSchema,
-			Outputs:  append([]string{}, c.Outputs...),
-			Requires: append([]string{}, requires...),
+			Params:    c.ParamsSchema,
+			Outputs:   append([]string{}, c.Outputs...),
+			Requires:  append([]string{}, requires...),
+			Lifecycle: lifecycle,
+			Sticky:    c.Sticky,
 			Run: artifact.Run{
 				Entrypoint: entrypoint,
 				Files:      files,

@@ -3,10 +3,15 @@ package store
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 //go:embed schema.sql
@@ -35,7 +40,7 @@ const baselineVersion = 1
 // 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
 // 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
 // （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
-const headVersion = 7
+const headVersion = 8
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)
@@ -113,7 +118,165 @@ func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 	if modify != nil {
 		modify(&set)
 	}
-	return migrateWith(db, set, nil)
+	return migrateWith(db, set, migrationHooks)
+}
+
+// migrationHooks 是「SQL 表达不了」的变更（数据搬迁）的钩子表。
+//
+// 约定见 migrateWith：hook 返回 error 时整个迁移回滚；hook 必须**幂等**——
+// 同一版本在旧库升级/新建库两条路径上都可能跑到，而重跑必须得到同一结果。
+var migrationHooks = map[int]func(*sql.Tx) error{
+	8: backfillCapabilitySpec,
+}
+
+// backfillCapabilitySpec 是 migration 8 的钩子：给正文为空的老行补 spec（契约 §6）。
+//
+// 三类输入一份输出（都只写 spec 列 + 重算 content_hash，不动任何既有列）：
+//
+//	① 有产物行的能力 → 正文 = 该产物的 spec 字段（canonical）
+//	② notify.phone       → {handler: "notify-phone", params: <原 schema>, outputs: <原>}
+//	③ 其它零产物能力 → {handler: "noop",        params: <原 schema>, outputs: <原>}
+//
+// 三条硬要求（契约 §6.2）：
+//   - **幂等**：只碰正文为空（spec = ”）的行，已填的不动；同一输入重跑得到同一 hash；
+//   - 回填后必须能过 artifact.Validate（否则缺陷会拖到第一次部署/派发才暴露）；
+//   - 拿到 noop 占位的能力**打进日志**（人工补实现的清单）。
+//
+// 为什么不能给空壳编一份 `exit 0` 正文：那是伪造用户代码（契约 §6 明令禁止）。
+// 占位必须是平台认领的 noop —— 列表页能标「未实现」，部署面板也不会把它当能跑的能力。
+//
+// 为什么必须同时重算 content_hash：v3 起 content_hash ≡ digest（吃 name+version+spec）。
+// 不重算的话库里留的是旧口径的 hash，与 spec 对不上，往后任何「同内容重提交」都算不出
+// 同一个值，幂等折叠永远命不中——而症状是「什么都对，就是每次都新建一行」。
+func backfillCapabilitySpec(tx *sql.Tx) error {
+	type pending struct {
+		id, namespaceID, name      string
+		version                    int
+		params, outputs, lifecycle string
+	}
+	// 先全读出来再写：同一个事务里「边读游标边写表」在 SQLite 上会让游标看到自己的写，
+	// 而这里的判定条件是 spec = ''，读到一半被改写会让行为依结果集而变。
+	rows, err := tx.Query(`SELECT id, namespace_id, name, version, params_schema, outputs, lifecycle
+	                         FROM capability_versions WHERE spec = ''`)
+	if err != nil {
+		return fmt.Errorf("query capabilities without spec: %w", err)
+	}
+	var todo []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.namespaceID, &p.name, &p.version,
+			&p.params, &p.outputs, &p.lifecycle); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan capability without spec: %w", err)
+		}
+		todo = append(todo, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate capabilities without spec: %w", err)
+	}
+	rows.Close()
+	if len(todo) == 0 {
+		return nil
+	}
+
+	var noopRefs []string
+	for _, p := range todo {
+		spec, kind, aerr := specForBackfill(tx, p.namespaceID, p.id, p.name,
+			p.params, p.outputs, p.lifecycle)
+		if aerr != nil {
+			return fmt.Errorf("backfill spec for %s@%d: %w", p.name, p.version, aerr)
+		}
+		c := &CapabilityVersion{
+			NamespaceID: p.namespaceID,
+			Name:        p.name,
+			Version:     p.version,
+			Spec:        spec,
+		}
+		// 回填出来的正文必须自己站得住（Validate 一次），否则宁可让迁移失败并指名道姓，
+		// 也不能把一个坏正文写进库、等第一次部署/派发时才发现（契约 §6.2）。
+		// 回填**不**建 artifacts 行（契约 §6.1），所以只需要 spec 子文档的字节。
+		_, specJSON, cerr := prepareCapabilitySpec(c)
+		if cerr != nil {
+			return fmt.Errorf("backfilled spec for %s@%d is invalid (老库里的 schema/outputs "+
+				"可能不合当前规则，先人工修好再升级): %w", p.name, p.version, cerr)
+		}
+		hash, herr := NormalizeCapability(c)
+		if herr != nil {
+			return fmt.Errorf("hash backfilled cap %s@%d: %w", p.name, p.version, herr)
+		}
+		if _, uerr := tx.Exec(
+			`UPDATE capability_versions SET spec = ?, content_hash = ? WHERE id = ? AND spec = ''`,
+			string(specJSON), hash, p.id,
+		); uerr != nil {
+			return fmt.Errorf("write backfilled spec for %s@%d: %w", p.name, p.version, uerr)
+		}
+		if kind != "" {
+			noopRefs = append(noopRefs, fmt.Sprintf("%s@%d", p.name, p.version))
+		}
+	}
+	if len(noopRefs) > 0 {
+		slog.Warn("能力正文回填：这些能力尚无实现，已装为 noop 占位（请补实现）",
+			"event", "store.migration.spec_backfill_noop",
+			"count", len(noopRefs),
+			"capabilities", strings.Join(noopRefs, ", "))
+	}
+	return nil
+}
+
+// specForBackfill 算出某个老能力该拿到的正文，返回 (正文, 占位类型, error)。
+//
+// 占位类型非空时表示「这是编造的（noop/notify-phone）」，调用方据此打清单；
+// 从产物里读到正文时返回空串——那是用户内容，不是占位。
+func specForBackfill(tx *sql.Tx, namespaceID, capabilityID, name, params, outputs, lifecycle string) (artifact.Spec, string, error) {
+	// ① 有产物 → 正文就是产物里的 spec（契约 §6 第一行）。取最新那份：
+	// 老库可能给同一能力留过多行产物（旧版允许历史行），最新的才代表现状。
+	var raw string
+	err := tx.QueryRow(
+		`SELECT spec FROM artifacts WHERE namespace_id = ? AND capability_id = ?
+		  ORDER BY created_at DESC, id DESC LIMIT 1`, namespaceID, capabilityID).Scan(&raw)
+	switch {
+	case err == nil:
+		var doc struct {
+			Spec artifact.Spec `json:"spec"`
+		}
+		if jerr := json.Unmarshal([]byte(raw), &doc); jerr != nil {
+			return artifact.Spec{}, "", fmt.Errorf("decode artifact spec: %w", jerr)
+		}
+		return doc.Spec, "", nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return artifact.Spec{}, "", fmt.Errorf("probe artifact: %w", err)
+	}
+
+	// ②③ 零产物：notify.phone 是平台自带的手机推送动作（中枢执行器），其余一律 noop 占位。
+	lc := lifecycleRaw(lifecycle)
+	outs := decodeStringList(outputs)
+	if name == NotifyPhoneCapability.Name {
+		return HandlerSpec(artifact.HandlerNotifyPhone, json.RawMessage(params), outs, lc),
+			artifact.HandlerNotifyPhone, nil
+	}
+	return HandlerSpec(artifact.HandlerNoop, json.RawMessage(params), outs, lc),
+		artifact.HandlerNoop, nil
+}
+
+// lifecycleRaw 把 lifecycle 列原样搬进正文；空列 / `null` / `{}` 一律当作「没声明」
+// 返回 nil（omitempty 会把它整个省掉，于是规范字节里不出现这个键）。
+func lifecycleRaw(raw string) json.RawMessage {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
+		return nil
+	}
+	return json.RawMessage(trimmed)
+}
+
+// decodeStringList 解 outputs 列；坏值退回空列表（这是老数据，不能因此让迁移失败——
+// 它只影响 spec 里的出口声明，不影响库能不能打开）。
+func decodeStringList(raw string) []string {
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return []string{}
+	}
+	return out
 }
 
 // migrateWith 执行迁移：每个版本一个事务，成功才记账。

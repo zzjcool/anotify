@@ -59,7 +59,7 @@ func sltFixture(t *testing.T, lc Lifecycle) (db *DB, nsID string, capv *Capabili
 	nsID, _ = newTestNS(t, db)
 	capv = mkCap(nsID, "deploy", 1, nil)
 	capv.Lifecycle = lc
-	if err := db.CreateCapability(context.Background(), capv); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	return db, nsID, capv

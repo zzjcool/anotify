@@ -46,7 +46,7 @@ func mkRetentionCap(t *testing.T, db *DB, nsID, name string, ttlSec int) *Capabi
 	t.Helper()
 	c := mkCap(nsID, name, 1, nil)
 	c.Lifecycle = Lifecycle{ResultTTLSec: ttlSec}
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s (ttl=%d): %v", name, ttlSec, err)
 	}
 	return c

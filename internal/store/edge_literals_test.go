@@ -41,7 +41,7 @@ func literalsFixture(t *testing.T) (db *DB, nsID string, up, down *CapabilityVer
 	up = mkCap(nsID, "review", 1, []string{"fix"})
 	down = mkLiteralsTarget(nsID, "notify")
 	for _, c := range []*CapabilityVersion{up, down} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability %s: %v", c.Name, err)
 		}
 	}

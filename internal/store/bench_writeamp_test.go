@@ -149,7 +149,7 @@ func openWriteAmpB(b *testing.B) (*DB, string, *CapabilityVersion) {
 		NamespaceID: ns.ID, Name: "writeamp.probe", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		b.Fatalf("create capability: %v", err)
 	}
 	return db, ns.ID, capDef

@@ -136,7 +136,7 @@ func TestNodeCapabilityUnknownIsStale(t *testing.T) {
 
 	// 定义了之后就能声明
 	c := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	ids, err := db.ConfirmCapabilities(ctx, nsID, n.ID, []CapabilityRef{{Name: "review", Version: 1}})
@@ -168,7 +168,7 @@ func TestNodeCapabilitiesReplacedOnRehello(t *testing.T) {
 	review := mkCap(nsID, "review", 1, []string{"fix"})
 	testCap := mkCap(nsID, "test", 1, nil)
 	for _, c := range []*CapabilityVersion{review, testCap} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
@@ -418,7 +418,7 @@ func TestNodesForCapability(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 
 	review := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, review); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(review)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	n1, _ := mkNode(t, db, nsID, "n1")
@@ -459,7 +459,7 @@ func TestNodesForCapability(t *testing.T) {
 
 	// 没有节点的能力 → 空列表
 	other := mkCap(nsID, "nobody", 1, nil)
-	if err := db.CreateCapability(ctx, other); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(other)); err != nil {
 		t.Fatalf("create other: %v", err)
 	}
 	none, err := db.NodesForCapability(ctx, nsID, other.ID)
@@ -489,7 +489,7 @@ func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 	capA := mkCap(nsA, "review", 1, []string{"fix"})
 	capB := mkCap(nsB, "review", 1, []string{"fix"})
 	for _, c := range []*CapabilityVersion{capA, capB} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
@@ -518,7 +518,7 @@ func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 	// 核心回归——若实现按别的维度过滤（例如已经删掉的组织层），这里会返回 nsA 的那台机器。
 	sibling := newTestExtraNS(t, db, "staging")
 	sibCap := mkCap(sibling, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, sibCap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(sibCap)); err != nil {
 		t.Fatalf("create sibling cap: %v", err)
 	}
 	if got, err := db.NodesForCapability(ctx, sibling, sibCap.ID); err != nil {

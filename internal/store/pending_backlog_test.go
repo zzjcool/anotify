@@ -46,7 +46,7 @@ func TestOldestPendingCreatedAtIgnoresNonPending(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "backlog-probe", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -90,7 +90,7 @@ func TestOldestPendingCreatedAtIgnoresNotBefore(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "backlog-notbefore", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -264,7 +264,7 @@ func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "backlog-seed", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	// insertPending 直插一行 pending（只写计划需要的列）。

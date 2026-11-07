@@ -28,6 +28,7 @@ import (
 	"bytes"
 
 	"github.com/coder/websocket"
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
 )
@@ -37,13 +38,56 @@ type demoCapability struct {
 	Name    string
 	Outputs []string
 	Desc    string
+	// Script 是能力的**实现**（run.sh 的正文）。
+	//
+	// 它必须是真东西：v3 起能力的正文里同时有契约和实现，「缺实现」在 store 层
+	// 直接拒（artifact.Validate 的 impl_missing）。以前这三个能力是零实现的空壳，
+	// 全靠下面的假执行器编出一个结果——那种「能跑但什么都没跑」的示例最误导人。
+	//
+	// 脚本口径与内置的 script.echo 一致：零依赖（bash 内建 + echo），产物只从
+	// emit 走（ANOTIFY_EMIT_SOCK 没有 = 本地 standalone，跳过 emit）。
+	Script string
 }
 
 // demoCapabilities 是示例图里的用户能力（内置起点由 store 自动播种）。
 var demoCapabilities = []demoCapability{
-	{"analyze-pr", []string{"needs-fix", "approved"}, "分析 PR 改动，判断是否需要返工"},
-	{"apply-fix", []string{"ok"}, "按评审意见改代码"},
-	{"deploy-preview", nil, "部署预览环境"},
+	{"analyze-pr", []string{"needs-fix", "approved"}, "分析 PR 改动，判断是否需要返工", `#!/usr/bin/env bash
+# 示例能力：改动超过 200 行走 needs-fix，否则 approved。
+# 分支依据来自事件 payload（ANOTIFY_PARAMS 是 agent 注入的合法 JSON 对象）——
+# 这里用 bash 正则取数，不引 jq：示例能力必须零依赖才在任何节点上都跑得起来。
+set -euo pipefail
+params="${ANOTIFY_PARAMS:-}"
+[ -n "$params" ] || params='{}'
+lines=0
+# 正则先存变量再匹配：直接写 [[ "$x" =~ "lit"[[:space:]]* ]] 这种「半个模式加引号」
+# 的形式在 bash 里不命中（实测）。模式里的 "? 是为了容纳 JSON 的引号。
+re='changedLines"?[[:space:]]*:[[:space:]]*([0-9]+)'
+if [[ "$params" =~ $re ]]; then
+  lines="${BASH_REMATCH[1]}"
+fi
+if [ "$lines" -gt 200 ]; then port=needs-fix; else port=approved; fi
+echo "changedLines=$lines → $port"
+if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
+  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port "$port" --data "$params"
+fi
+`},
+	{"apply-fix", []string{"ok"}, "按评审意见改代码", `#!/usr/bin/env bash
+# 示例能力：走固定出口 ok（下游是 deploy-preview）。
+set -euo pipefail
+params="${ANOTIFY_PARAMS:-}"
+[ -n "$params" ] || params='{}'
+echo "按评审意见改代码（示例）：$params"
+if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
+  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port ok --data "$params"
+fi
+`},
+	{"deploy-preview", nil, "部署预览环境", `#!/usr/bin/env bash
+# 示例能力：终点，没有出口，所以不发 emit。
+set -euo pipefail
+params="${ANOTIFY_PARAMS:-}"
+[ -n "$params" ] || params='{}'
+echo "预览环境已部署（示例）：$params"
+`},
 }
 
 // demoSourceNames 是入口边左端允许的来源名（不是能力）。
@@ -118,13 +162,22 @@ func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (
 			ids[d.Name] = c.ID
 			continue
 		}
+		// 正文（spec）里既有契约也有实现：派生列（params_schema/outputs/…）由 store
+		// 写入时从它算出，这里不再手填——两份来源必然分叉。
 		c := &store.CapabilityVersion{
-			NamespaceID:  namespaceID, // 作用域参数就是命名空间（I10：唯一隔离维度）
-			Name:         d.Name,
-			Version:      1,
-			ParamsSchema: json.RawMessage(`{"type":"object"}`),
-			Outputs:      append([]string{}, d.Outputs...),
-			Source:       store.CapSourceCustom,
+			NamespaceID: namespaceID, // 作用域参数就是命名空间（I10：唯一隔离维度）
+			Name:        d.Name,
+			Version:     1,
+			Source:      store.CapSourceCustom,
+			Spec: artifact.Spec{
+				Params:  json.RawMessage(`{"type":"object"}`),
+				Outputs: append([]string{}, d.Outputs...),
+				Run: artifact.Run{
+					Entrypoint: "run.sh",
+					Files:      map[string]string{"run.sh": d.Script},
+					TimeoutSec: 30,
+				},
+			},
 		}
 		if err := db.CreateCapability(ctx, c); err != nil {
 			return "", "", fmt.Errorf("create capability %s: %w", d.Name, err)
@@ -314,6 +367,13 @@ func (w *demoWorker) run(ctx context.Context) {
 }
 
 // handle 执行一个任务：ack → 模拟耗时 → result。
+//
+// **这是一个假执行器，标注在此**：devseed 起的节点是「进程内的 WS 客户端」，
+// 它不部署产物、也不跑 d.Script 里的正文，出口与 summary 由 demoResult 编出来。
+// 留着的理由：它让 `devseed -demo` 不依赖真的 anotify-agent 就能造出「派发 →
+// 接单 → 回报 → 扇出」的可见链路；删掉它得先让 devseed 拉起真 agent（不在本轮
+// 范围内）。能力本身的实现已经换成真脚本（见 demoCapability.Script）——真节点
+// 上线、部署这些能力时跑的就是它们，而不是这张开关表。
 func (w *demoWorker) handle(ctx context.Context, taskID, capability string, params map[string]any) {
 	send := func(v any) {
 		b, _ := json.Marshal(v)

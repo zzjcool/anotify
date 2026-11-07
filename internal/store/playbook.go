@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 预案（playbook）：一份**可安装的流程零件**（#193，设计 docs/design/playbooks.md）。
@@ -279,22 +281,27 @@ func capAt(declared map[string]ManifestCapability, name string) *ManifestCapabil
 	return nil
 }
 
+// manifestCapSpec 返回 manifest 里一条能力声明安装时得到的**正文**。
+//
+// manifest 的 runner 是任意 JSON、契约不解释它（「每个能力 = 完整 spec 或 ref」
+// 是 P5 的事），所以这里一律装成 `handler: noop` 占位：合法、可部署、无副作用、
+// 不发 emit（契约 R2 / §6）。**不去猜 runner 的语义伪造一份实现**——给空壳编一段
+// 用户代码是契约明令禁止的形态，而且伪造出来的实现跑起来才更吓人。
+func manifestCapSpec(c ManifestCapability) artifact.Spec {
+	return HandlerSpec(artifact.HandlerNoop, c.ParamsSchema, c.Outputs, nil)
+}
+
 // manifestCapHash 算 manifest 里一条能力声明**安装时会得到**的 content_hash。
 //
-// 必须与安装插入时用同一份口径（NormalizeCapability：paramsSchema 空则 {}、
-// outputs 空则 []）：算出来的值要能命中 capability_versions.content_hash，否则
-// 「同内容复用」（I8：同内容就是同一份能力，只是版本号不同）永远命不中。
+// 必须与安装插入时用同一份正文（manifestCapSpec）与同一份口径（NormalizeCapability）：
+// 算出来的值要能命中 capability_versions.content_hash，否则体检/复用永远命不中。
 func manifestCapHash(namespaceID string, c ManifestCapability) (string, error) {
 	def := &CapabilityVersion{
-		NamespaceID:  namespaceID,
-		Name:         c.Name,
-		Version:      c.Version,
-		ParamsSchema: c.ParamsSchema,
-		Outputs:      c.Outputs,
-		Source:       CapSourceCustom,
-	}
-	if def.Outputs == nil {
-		def.Outputs = []string{}
+		NamespaceID: namespaceID,
+		Name:        c.Name,
+		Version:     c.Version,
+		Source:      CapSourceCustom,
+		Spec:        manifestCapSpec(c),
 	}
 	hash, err := NormalizeCapability(def)
 	if err != nil {
@@ -1160,6 +1167,8 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 	// 名字 → 定义：规则只有一份（resolveManifestCap，与体检共用），这里跑在事务里。
 	resolver := sqlCapResolver{ctx: ctx, q: tx, namespaceID: pb.NamespaceID}
 	declared := declaredCaps(m)
+	// noopNotes 收集「装成了 noop 占位」的说明，最后统一并入 res.Notes（见 ① 的注释）。
+	var noopNotes []string
 
 	// ① 能力定义：append-only（I8）。已存在 (name,version) 一律 skipped。
 	for _, c := range m.Capabilities {
@@ -1174,13 +1183,17 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		}
 
 		def := &CapabilityVersion{
-			NamespaceID:  pb.NamespaceID,
-			Name:         c.Name,
-			Version:      c.Version,
-			ParamsSchema: c.ParamsSchema,
-			Outputs:      c.Outputs,
-			Source:       CapSourceCustom,
-			CreatedAt:    now,
+			NamespaceID: pb.NamespaceID,
+			Name:        c.Name,
+			Version:     c.Version,
+			Source:      CapSourceCustom,
+			CreatedAt:   now,
+			Spec:        manifestCapSpec(c),
+		}
+		// 派生列由正文算出：装能力与建能力必须是同一条路（deriveFromSpec），
+		// 否则预案装出来的行会与 API 建出来的行长得不一样。
+		if derr := deriveFromSpec(def); derr != nil {
+			return nil, nil, fmt.Errorf("install playbook: %w", derr)
 		}
 		// hash 与「同内容复用」用同一份算法（manifestCapHash）：算出来的值必须能
 		// 命中 capability_versions.content_hash，否则复用永远命不中。
@@ -1205,15 +1218,25 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		if err != nil {
 			return nil, nil, fmt.Errorf("install playbook: marshal lifecycle: %w", err)
 		}
+		specJSON, merr := json.Marshal(def.Spec)
+		if merr != nil {
+			return nil, nil, fmt.Errorf("install playbook: marshal spec: %w", merr)
+		}
 		_, insErr := tx.ExecContext(ctx,
 			`INSERT INTO capability_versions
-			   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			   (id, namespace_id, name, display_name, version, params_schema, outputs, lifecycle, sticky, source, content_hash, created_at, spec)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			def.ID, def.NamespaceID, def.Name, def.DisplayName, def.Version,
 			schema, string(outputsJSON), string(lifecycleJSON), def.Sticky, def.Source,
-			def.ContentHash, def.CreatedAt)
+			def.ContentHash, def.CreatedAt, string(specJSON))
 		if insErr == nil {
 			res.Created.Capabilities = append(res.Created.Capabilities, ref)
+			// 装出来的能力一律是 noop 占位（manifest 的 runner 契约不解释），
+			// 必须说清楚：列表页能标「未实现」，人也不会以为它在跑真东西。
+			// 先收集、最后统一追加 —— notes 是一份给人读的清单，占位说明不该插在
+			// 「哪条边/哪个源被跳过」中间。
+			noopNotes = append(noopNotes, fmt.Sprintf(
+				"%s: 该能力尚无实现，已装为 noop 占位（manifest 的 runner 不解释成实现）", ref))
 			continue
 		}
 		if !isUniqueConstraintError(insErr) {
@@ -1420,6 +1443,8 @@ func (d *DB) InstallPlaybook(ctx context.Context, namespaceID, idOrSlug string) 
 		}
 		res.Created.Sources = append(res.Created.Sources, wantName)
 	}
+
+	res.Notes = append(res.Notes, noopNotes...)
 
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("install playbook: commit: %w", err)

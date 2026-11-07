@@ -290,7 +290,7 @@ func TestReportResultMatchesSplitWrites(t *testing.T) {
 			db := newTestDB(t)
 			nsID, _ := newTestNS(t, db)
 			capv := mkCap(nsID, "review", 1, []string{"fix"})
-			if err := db.CreateCapability(ctx, capv); err != nil {
+			if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 				t.Fatalf("create cap: %v", err)
 			}
 			// 两条等价任务各占一台机器：合并组与对照组的槽位互相独立，
@@ -421,7 +421,7 @@ func TestLeaseAndAssignMatchesSplitWrites(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	nodeMerged := mkTxMergeNode(t, db, nsID, capv, "mbp-merged")
@@ -518,7 +518,7 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	nodeMerged := mkTxMergeNode(t, db, nsID, capv, "mbp-merged")
@@ -582,7 +582,7 @@ func TestProgressTaskMatchesSplitWrites(t *testing.T) {
 		db2 := newTestDB(t)
 		ns2, _ := newTestNS(t, db2)
 		cap2 := mkCap(ns2, "review", 1, []string{"fix"})
-		if err := db2.CreateCapability(ctx, cap2); err != nil {
+		if err := db2.CreateCapability(ctx, withSpec(cap2)); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 		nodeID := mkTxMergeNode(t, db2, ns2, cap2, "mbp")
@@ -647,7 +647,7 @@ func TestLeaseAndAssignGuardFailureDoesNotLeakSlot(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	nodeID := mkTxMergeNode(t, db, nsID, capv, "mbp")

@@ -38,6 +38,14 @@ type BuiltinCapability struct {
 	// 大部分内置能力不需要它（central 的由中枢执行、origin 的不产生任务），
 	// 但「示例能力」必须带：它的全部价值就在于「注册完就能部署、能跑通一条链」。
 	Artifact *artifact.Artifact
+	// Handler 是「中枢内置执行器」形式的实现（Capability Spec v3 §3.1），
+	// 与 Artifact 恰好给一个。
+	//
+	// 为什么要这个字段：notify.phone 由中枢执行、**没有 files**。给它在 artifacts 表里
+	// 造一行会让它出现在部署面板里，被推给节点后节点只会拒（一份没有 files 的产物
+	// 跑不起来）——契约 §6.1 把这个坑点名列了出来。所以 handler 形式只写
+	// capability_versions.spec，artifacts 一行都不建。
+	Handler string
 	// Origin 表示它是**事件起点**：没有节点执行者，也不产生任务，
 	// 只提供「事件从这里进来」的命名锚点 + 任意事件类型作为出口。
 	//
@@ -68,6 +76,8 @@ var NotifyPhoneCapability = BuiltinCapability{
 	}`,
 	Outputs: []string{},
 	Central: true,
+	// 实现形式是**中枢内置执行器**：没有 files，也没有 artifacts 行（契约 §6.1）。
+	Handler: artifact.HandlerNotifyPhone,
 }
 
 // OriginCapability 构造一个内置起点能力。
@@ -278,47 +288,80 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc Bu
 		return fmt.Errorf("probe builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
 
-	outputs := bc.Outputs
-	if outputs == nil {
-		outputs = []string{} // 不变量 I9：空列表是 [] 不是 null
+	spec, err := builtinSpec(bc)
+	if err != nil {
+		return err
 	}
 	c := &CapabilityVersion{
-		NamespaceID:  namespaceID,
-		Name:         bc.Name,
-		DisplayName:  bc.DisplayName,
-		Version:      bc.Version,
-		ParamsSchema: json.RawMessage(bc.ParamsSchema),
-		Outputs:      outputs,
-		Lifecycle:    Lifecycle{},
-		Source:       CapSourceBuiltin,
+		NamespaceID: namespaceID,
+		Name:        bc.Name,
+		DisplayName: bc.DisplayName,
+		Version:     bc.Version,
+		Source:      CapSourceBuiltin,
+		Spec:        spec,
+	}
+	// 派生列由正文算出（与 createCapabilityTx 同一条路：deriveFromSpec 是唯一实现）。
+	if err := deriveFromSpec(c); err != nil {
+		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
 	hash, err := NormalizeCapability(c)
 	if err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
+	specJSON, err := json.Marshal(c.Spec)
+	if err != nil {
+		return fmt.Errorf("marshal builtin spec %s@%d: %w", bc.Name, bc.Version, err)
+	}
 	schema := string(c.ParamsSchema)
 	if schema == "" {
 		schema = "{}"
 	}
-	outputsJSON, err := json.Marshal(outputs)
+	outputsJSON, err := json.Marshal(c.Outputs)
 	if err != nil {
-		return fmt.Errorf("marshal builtin outputs: %w", err)
+		return fmt.Errorf("marshal builtin outputs %s@%d: %w", bc.Name, bc.Version, err)
 	}
 	lifecycleJSON, err := json.Marshal(c.Lifecycle)
 	if err != nil {
-		return fmt.Errorf("marshal builtin lifecycle: %w", err)
+		return fmt.Errorf("marshal builtin lifecycle %s@%d: %w", bc.Name, bc.Version, err)
 	}
 	capID := NewCapabilityID(hash)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO capability_versions
 		   (id, namespace_id, name, display_name, version, params_schema, outputs,
-		    lifecycle, sticky, source, content_hash, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		    lifecycle, sticky, source, content_hash, created_at, spec)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		capID, namespaceID, c.Name, c.DisplayName, c.Version, schema,
-		string(outputsJSON), string(lifecycleJSON), c.Sticky, CapSourceBuiltin, hash, Now()); err != nil {
+		string(outputsJSON), string(lifecycleJSON), c.Sticky, CapSourceBuiltin, hash, Now(),
+		string(specJSON)); err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
 	return seedBuiltinArtifactTx(ctx, tx, namespaceID, capID, bc)
+}
+
+// builtinSpec 返回内置能力播种时要写进 capability_versions.spec 的正文。
+//
+// 两种实现形式恰好给一个（Capability Spec v3 §3.1）：
+//   - Handler 形式：中枢内置执行器（notify.phone）。artifacts 一行都不建（§6.1）。
+//   - Artifact 形式：正文直接取产物里的 spec（要归一成 canonical —— 产物里的
+//     params 可能带缩进，而 spec 列与 digest 吃的是同一串字节）。
+//
+// 两者都没有的条目（历史遗留的 origin 类）给 `handler: noop`：契约 R2 说能力永远
+// 有实现，占位用平台认领的 noop 明确表达「还没实现」，而不是伪造一份用户代码。
+func builtinSpec(bc BuiltinCapability) (artifact.Spec, error) {
+	switch {
+	case bc.Handler != "" && bc.Artifact != nil:
+		return artifact.Spec{}, fmt.Errorf("builtin capability %s@%d: handler 与 artifact 只能给一个", bc.Name, bc.Version)
+	case bc.Handler != "":
+		return HandlerSpec(bc.Handler, json.RawMessage(bc.ParamsSchema), bc.Outputs, nil), nil
+	case bc.Artifact != nil:
+		spec, _, err := canonicalizeSpec(bc.Artifact)
+		if err != nil {
+			return artifact.Spec{}, fmt.Errorf("builtin capability %s@%d: %w", bc.Name, bc.Version, err)
+		}
+		return spec, nil
+	default:
+		return HandlerSpec(artifact.HandlerNoop, json.RawMessage(bc.ParamsSchema), bc.Outputs, nil), nil
+	}
 }
 
 // seedBuiltinArtifactTx 给带产物的内置能力播种它的 artifact 行（幂等）。

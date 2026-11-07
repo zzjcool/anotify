@@ -77,7 +77,7 @@ func TestTransition(t *testing.T) {
 				db := newTestDB(t)
 				nsID, _ := newTestNS(t, db)
 				cap := mkCap(nsID, "review", 1, nil)
-				if err := db.CreateCapability(ctx, cap); err != nil {
+				if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 					t.Fatalf("create cap: %v", err)
 				}
 				task := mkTask(nsID, "trace_"+from, cap)
@@ -106,7 +106,7 @@ func TestTransition(t *testing.T) {
 		db := newTestDB(t)
 		nsID, _ := newTestNS(t, db)
 		cap := mkCap(nsID, "review", 1, nil)
-		if err := db.CreateCapability(ctx, cap); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 		task := mkTask(nsID, "trace_illegal", cap)
@@ -172,7 +172,7 @@ func TestTerminalImmutable(t *testing.T) {
 			db := newTestDB(t)
 			nsID, _ := newTestNS(t, db)
 			cap := mkCap(nsID, "review", 1, nil)
-			if err := db.CreateCapability(ctx, cap); err != nil {
+			if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 				t.Fatalf("create cap: %v", err)
 			}
 			task := mkTask(nsID, "trace_term", cap)
@@ -396,7 +396,7 @@ func TestSweepLeasesAttemptsExhausted(t *testing.T) {
 	// maxAttempts=1
 	cap := mkCap(nsID, "review", 1, nil)
 	cap.Lifecycle = Lifecycle{MaxAttempts: 1}
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -441,7 +441,7 @@ func TestSweepLeasesNonIdempotentAbandons(t *testing.T) {
 	no := false
 	cap := mkCap(nsID, "deploy", 1, nil)
 	cap.Lifecycle = Lifecycle{Idempotent: &no, MaxAttempts: 99}
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -498,7 +498,7 @@ func TestSweepLeasesAssignedExpires(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -599,7 +599,7 @@ func TestReportResultFromAssignedImpliesRunning(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -694,7 +694,7 @@ func TestLifecycleMaxAttemptsFromJSON(t *testing.T) {
 	no := false
 	cap := mkCap(nsID, "deploy", 1, nil)
 	cap.Lifecycle = Lifecycle{MaxAttempts: 5, Idempotent: &no, ResultTTLSec: 120}
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	got, err := db.GetCapability(ctx, nsID, "deploy", 1)
@@ -861,7 +861,7 @@ func setupSweepTask(t *testing.T, idempotent, started bool) (db *DB, nsID, nodeI
 		no := false
 		capv.Lifecycle = Lifecycle{Idempotent: &no}
 	}
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -997,7 +997,7 @@ func TestTaskDigestRoundTrip(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 

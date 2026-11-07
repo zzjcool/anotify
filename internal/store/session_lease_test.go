@@ -40,7 +40,7 @@ func slFixture(t *testing.T) (db *DB, nsID string, capv *CapabilityVersion) {
 	db = newTestDB(t)
 	nsID, _ = newTestNS(t, db)
 	capv = mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(context.Background(), capv); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	return db, nsID, capv

@@ -121,7 +121,7 @@ func TestMaintainStatsRefreshesDriftedStat1(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "stats-drift", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestMaintainStatsKeepsQuietWhenStat1IsFresh(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "stats-fresh", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	mkSeqTaskBatch(t, db, nsID, "trace_stats_fresh", cap, 100)

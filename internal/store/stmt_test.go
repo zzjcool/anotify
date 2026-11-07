@@ -781,7 +781,7 @@ func newStmtBenchEnv(tb testing.TB, tasks int) *stmtBenchEnv {
 		NamespaceID: ns.ID, Name: "bench.taskcache", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
 	}
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		tb.Fatalf("create bench capability: %v", err)
 	}
 

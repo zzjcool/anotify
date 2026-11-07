@@ -69,7 +69,7 @@ func TestNamespaceCreateSeedsBuiltins(t *testing.T) {
 
 	// 播种后 sandbox 的能力列表里只有内置能力（不夹带默认命名空间的自定义能力）
 	defCap := mkCap(nsID, "review.only-in-default", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, defCap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(defCap)); err != nil {
 		t.Fatalf("create custom capability in default namespace: %v", err)
 	}
 	list, err := db.ListCapabilities(ctx, sandbox.ID)
@@ -203,7 +203,7 @@ func TestNamespaceCRUD(t *testing.T) {
 	stagingCap := mkCap(staging.ID, "review", 1, []string{"fix"})
 	sinkCap := mkCap(staging.ID, "fix", 1, nil)
 	for _, c := range []*CapabilityVersion{stagingCap, sinkCap} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability in staging: %v", err)
 		}
 	}
@@ -295,12 +295,12 @@ func TestNamespaceRequirementEnforced(t *testing.T) {
 	// 造一套真实数据：若实现里存在「空 → 默认命名空间」的回退，下面每条都会
 	// 变成「成功返回默认命名空间的数据」，而不是报错。
 	capDef := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	// 边的目标要另造一份：自连（a → a）被静态环检测拒掉（P2.3），那是配置错误。
 	capTo := mkCap(nsID, "fixer", 1, nil)
-	if err := db.CreateCapability(ctx, capTo); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capTo)); err != nil {
 		t.Fatalf("create target capability: %v", err)
 	}
 	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsID, Name: "mbp"}); err != nil {
@@ -383,7 +383,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	upB := mkCap(nsB, "review", 1, []string{"fix"})
 	sinkB := mkCap(nsB, "fix", 1, nil)
 	for _, c := range []*CapabilityVersion{upA, sinkA, upB, sinkB} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 	}
@@ -463,7 +463,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	nodeA, _ := mkNode(t, db, nsA, "node-a")
 	// staging 里放一个默认命名空间没有的能力名
 	onlyB := mkCap(nsB, "staging-only", 1, []string{"go"})
-	if err := db.CreateCapability(ctx, onlyB); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(onlyB)); err != nil {
 		t.Fatalf("create staging-only: %v", err)
 	}
 	_, staleCross, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
@@ -485,7 +485,7 @@ func TestCrossNamespaceReferencesRejected(t *testing.T) {
 		t.Fatalf("别处的能力被写进了 node_capabilities: %+v", caps)
 	}
 	// 反证：同名能力在**本**命名空间定义后就能对账（说明上一条不是别的错）
-	if err := db.CreateCapability(ctx, mkCap(nsA, "staging-only", 1, []string{"go"})); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(mkCap(nsA, "staging-only", 1, []string{"go"}))); err != nil {
 		t.Fatalf("create local staging-only: %v", err)
 	}
 	if _, _, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
@@ -543,13 +543,13 @@ func TestNamespaceRoundTrips(t *testing.T) {
 
 	// capability
 	capDef := mkCap(ns, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	// 第二份能力做边的目标：自连（a → a）现在被静态环检测拒掉（P2.3），
 	// 这是配置错误——真跑起来会无限扇出，只能靠运行期 path 剪枝兜住。
 	capTo := mkCap(ns, "fixer", 1, nil)
-	if err := db.CreateCapability(ctx, capTo); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capTo)); err != nil {
 		t.Fatalf("create target capability: %v", err)
 	}
 	gotCap, err := db.GetCapability(ctx, ns, "review", 1)

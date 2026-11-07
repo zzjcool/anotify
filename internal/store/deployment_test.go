@@ -25,7 +25,7 @@ func dpDigest(seed string) string {
 func dpCap(t *testing.T, db *DB, nsID, name string) *CapabilityVersion {
 	t.Helper()
 	c := mkCap(nsID, name, 1, []string{"fix"})
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s: %v", name, err)
 	}
 	return c

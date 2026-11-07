@@ -22,7 +22,7 @@ import (
 func seedShapeCap(t *testing.T, db *DB, nsID, name string, outputs []string) *CapabilityVersion {
 	t.Helper()
 	c := mkCap(nsID, name, 1, outputs)
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s@1: %v", name, err)
 	}
 	return c

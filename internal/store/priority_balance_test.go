@@ -135,88 +135,71 @@ func TestEdgePriorityInGraphSnapshot(t *testing.T) {
 	}
 }
 
-// TestCapabilityBalanceRoundTrip capability_versions.balance 存什么读什么（三条读路径）。
-func TestCapabilityBalanceRoundTrip(t *testing.T) {
+// TestCapabilityBalanceIsDeadColumn balance 从 P1-b 起是**死字段**（契约 §4）：
+// 保存路径仍然校验调用方给的值（非法 mode 仍然 400，见下一条用例），但落库恒为 '{}'，
+// 读回来恒是空 map（不是 nil，不变量 I9）。P3 会删掉这一列。
+//
+// 为什么要单独钉住「不再落库」：如果它看起来还生效、实际被丢弃，运维会以为
+// 「我配了 all、跑起来却是 1:1」是路由 bug，而真相是这个字段已经不属于能力了。
+func TestCapabilityBalanceIsDeadColumn(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	// ① 显式配一个端口（缺省 mode 归一成 priority）。
+	// ① 配了合法 balance：保存成功，但读回来是空（不再落库）。
 	c := mkCap(nsID, "review", 1, []string{"fix", "clean"})
 	c.Balance = Balance{
 		"fix":   {Mode: BalanceModePriority},
-		"clean": {}, // 空 mode = 缺省 = priority（归一在保存路径上）
+		"clean": {}, // 空 mode = 缺省 = priority
 	}
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	got, err := db.GetCapability(ctx, nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
-	if len(got.Balance) != 2 {
-		t.Fatalf("balance = %+v, want 2 个端口", got.Balance)
+	if len(got.Balance) != 0 {
+		t.Fatalf("balance 列应是空（死字段，P1-b 起恒写 '{}'），got %+v", got.Balance)
 	}
+	if got.Balance == nil {
+		t.Fatal("读回来是 nil：JSON 会变成 null（不变量 I9）")
+	}
+	if bytes, err := json.Marshal(got.Balance); err != nil || string(bytes) != `{}` {
+		t.Fatalf("balance JSON = %s (err=%v)，want {}", bytes, err)
+	}
+	// 端口仍然按缺省 priority 走（BalanceModeOf 的缺省语义不变）。
 	for _, port := range []string{"fix", "clean"} {
 		if mode := got.BalanceModeOf(port); mode != BalanceModePriority {
 			t.Errorf("balance[%s].mode = %q, want %q", port, mode, BalanceModePriority)
 		}
 	}
-	if bytes, err := json.Marshal(got.Balance); err != nil || string(bytes) != `{"clean":{"mode":"priority"},"fix":{"mode":"priority"}}` {
-		t.Fatalf("balance JSON = %s (err=%v)", bytes, err)
-	}
 
-	// ② 没配 balance 的能力：读出来是**空 map**（不是 nil），JSON 是 `{}` 不是 null。
-	plain := mkCap(nsID, "plain", 1, nil)
-	if err := db.CreateCapability(ctx, plain); err != nil {
-		t.Fatalf("create plain: %v", err)
-	}
-	gotPlain, err := db.GetCapability(ctx, nsID, "plain", 1)
-	if err != nil {
-		t.Fatalf("get plain: %v", err)
-	}
-	if gotPlain.Balance == nil {
-		t.Fatal("没配 balance 的能力读回来是 nil：JSON 会变成 null（不变量 I9）")
-	}
-	if bytes, err := json.Marshal(gotPlain); err == nil && strings.Contains(string(bytes), `"balance":null`) {
-		t.Fatalf("capability JSON 里 balance 是 null：%s", bytes)
-	}
-
-	// ③ 列表路径（ListCapabilities）与按 hash 幂等读回都要一致。
+	// ② 第二条读路径（ListCapabilities）与第一条一致：空 map，不是 nil、不是 null。
 	list, err := db.ListCapabilities(ctx, nsID)
 	if err != nil {
 		t.Fatalf("list capabilities: %v", err)
 	}
 	for _, item := range list {
-		if item.Name == "review" {
-			if item.BalanceModeOf("fix") != BalanceModePriority {
-				t.Fatalf("ListCapabilities 丢了 balance: %+v", item.Balance)
-			}
+		if item.Name != "review" {
+			continue
+		}
+		if item.Balance == nil {
+			t.Fatal("ListCapabilities 读出的 balance 是 nil（JSON 会变 null）")
+		}
+		if len(item.Balance) != 0 {
+			t.Fatalf("ListCapabilities 读出的 balance 应为空，got %+v", item.Balance)
 		}
 	}
 
-	// ④ balance 是能力定义的一部分：改了它必须是**另一个 hash**（否则会被幂等折叠成旧行）。
+	// ③ balance 不参与 hash（它是死字段）：同 name@version 重放仍需要幂等折叠，
+	// 换 version 则是另一份内容（digest 吃 version）。
 	same := mkCap(nsID, "review", 1, []string{"fix", "clean"})
-	same.Balance = Balance{"fix": {Mode: BalanceModePriority}, "clean": {Mode: BalanceModePriority}}
-	if err := db.CreateCapability(ctx, same); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(same)); err != nil {
 		t.Fatalf("idempotent create: %v", err)
 	}
-	if same.Version != 1 {
-		t.Fatalf("同内容同 shape 的 balance 应折叠回 @1，got @%d", same.Version)
-	}
-	// v2 与 v1 内容不同（多一个可选入参，不触发升级闸门），balance 只配一个端口。
-	different := mkCap(nsID, "review", 2, []string{"fix", "clean"})
-	different.ParamsSchema = json.RawMessage(`{"type":"object","properties":{"note":{"type":"string"}}}`)
-	different.Balance = Balance{"fix": {Mode: BalanceModePriority}}
-	if err := db.CreateCapability(ctx, different); err != nil {
-		t.Fatalf("create v2: %v", err)
-	}
-	v2, err := db.GetCapability(ctx, nsID, "review", 2)
-	if err != nil {
-		t.Fatalf("get v2: %v", err)
-	}
-	if len(v2.Balance) != 1 {
-		t.Fatalf("v2 balance = %+v, want 1 个端口", v2.Balance)
+	if same.Version != 1 || same.ID != got.ID {
+		t.Fatalf("同 name@version 的重放应折叠回已有行，got %s@%d", same.Name, same.Version)
 	}
 }
 
@@ -233,7 +216,7 @@ func TestCapabilityBalanceRejectsUnimplementedModes(t *testing.T) {
 
 			c := mkCap(nsID, "review", 1, []string{"fix"})
 			c.Balance = Balance{"fix": {Mode: mode}}
-			err := db.CreateCapability(ctx, c)
+			err := db.CreateCapability(ctx, withSpec(c))
 			if !errors.Is(err, ErrBalanceRejected) {
 				t.Fatalf("err = %v (%T), want ErrBalanceRejected", err, err)
 			}
@@ -253,7 +236,7 @@ func TestCapabilityBalanceRejectsUnimplementedModes(t *testing.T) {
 		nsID, _ := newTestNS(t, db)
 		c := mkCap(nsID, "review", 1, []string{"fix"})
 		c.Balance = Balance{"fix": {Mode: "prioroty"}}
-		if err := db.CreateCapability(ctx, c); !errors.Is(err, ErrBalanceRejected) {
+		if err := db.CreateCapability(ctx, withSpec(c)); !errors.Is(err, ErrBalanceRejected) {
 			t.Fatalf("err = %v, want ErrBalanceRejected", err)
 		}
 	})
@@ -270,7 +253,7 @@ func TestCapabilityBalanceRejectsUnknownPort(t *testing.T) {
 
 	c := mkCap(nsID, "review", 1, []string{"fix"})
 	c.Balance = Balance{"fxi": {Mode: BalanceModePriority}}
-	err := db.CreateCapability(ctx, c)
+	err := db.CreateCapability(ctx, withSpec(c))
 	if !errors.Is(err, ErrBalanceRejected) {
 		t.Fatalf("err = %v, want ErrBalanceRejected", err)
 	}

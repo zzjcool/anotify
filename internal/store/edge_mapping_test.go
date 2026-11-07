@@ -270,7 +270,7 @@ func entryEdgeFixture(t *testing.T) (db *DB, nsID string, capA, capB *Capability
 	capB = mkCap(nsID, "archive", 1, nil)
 	capB.ParamsSchema = json.RawMessage(`{"type":"object"}`)
 	for _, c := range []*CapabilityVersion{capA, capB} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability %s: %v", c.Name, err)
 		}
 	}

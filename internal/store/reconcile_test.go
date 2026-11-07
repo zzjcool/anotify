@@ -45,7 +45,7 @@ func rcSeedCaps(t *testing.T, db *DB, nsID string, names ...string) map[string]s
 	out := map[string]string{}
 	for _, name := range names {
 		c := mkCap(nsID, name, 1, []string{"fix"})
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability %s: %v", name, err)
 		}
 		out[name] = c.ID

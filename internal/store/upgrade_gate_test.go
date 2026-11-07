@@ -76,7 +76,7 @@ func TestUpgradeGateRemovedPort(t *testing.T) {
 	}
 
 	// 写入被拒，且是**结构化拒绝**
-	err = db.CreateCapability(ctx, next)
+	err = db.CreateCapability(ctx, withSpec(next))
 	if !errors.Is(err, ErrUpgradeBreaking) {
 		t.Fatalf("err = %v (%T), want ErrUpgradeBreaking", err, err)
 	}
@@ -94,7 +94,7 @@ func TestUpgradeGateRemovedPort(t *testing.T) {
 	_ = fixer
 
 	// force 能越过闸门（用户的显式决定）
-	if err := db.CreateCapabilityForce(ctx, next, true); err != nil {
+	if err := db.CreateCapabilityForce(ctx, withSpec(next), true); err != nil {
 		t.Fatalf("force create fixer@2: %v", err)
 	}
 	if _, err := db.GetCapability(ctx, nsID, "fixer", 2); err != nil {
@@ -147,7 +147,7 @@ func TestUpgradeGateListsAffectedLinks(t *testing.T) {
 		t.Fatalf("link 的 reason 没说清为什么受影响: %q", got.Reason)
 	}
 	// 错误文案里带着这条 link（纯文本客户端也看得见）
-	err = db.CreateCapability(ctx, next)
+	err = db.CreateCapability(ctx, withSpec(next))
 	var breaking *UpgradeBreakingError
 	if !errors.As(err, &breaking) {
 		t.Fatalf("err = %v, want *UpgradeBreakingError", err)
@@ -177,7 +177,7 @@ func TestUpgradeGateAllowsAdditiveChanges(t *testing.T) {
 	if impact.Breaking || len(impact.Changes) != 0 {
 		t.Fatalf("impact = %+v, want 空影响面（只增不减）", impact)
 	}
-	if err := db.CreateCapability(ctx, next); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(next)); err != nil {
 		t.Fatalf("加可选入参/加 port 应该直接通过: %v", err)
 	}
 }
@@ -194,7 +194,7 @@ func TestUpgradeGateParamTypeChanged(t *testing.T) {
 		Outputs: []string{"done", "failed"},
 		Source:  CapSourceCustom,
 	}
-	err := db.CreateCapability(ctx, next)
+	err := db.CreateCapability(ctx, withSpec(next))
 	if !errors.Is(err, ErrUpgradeBreaking) {
 		t.Fatalf("err = %v (%T), want ErrUpgradeBreaking", err, err)
 	}
@@ -213,8 +213,9 @@ func TestUpgradeGateParamTypeChanged(t *testing.T) {
 
 // TestUpgradeGateOnlyForLatest 不会成为 latest 的版本不过闸门（它不是「升级」）。
 //
-// 场景：先有 fixer@1、fixer@2；再创建 fixer@3（破坏性）会被拦；
-// 但把 @3 内容改成与 @2 相同 → 幂等折叠，不会成为新版本，也不该被拦。
+// 场景：先有 fixer@1、fixer@2；再创建 fixer@3（破坏性）会被拦。
+// 而「与 @2 同 schema 的 @3」在 v3 里是另一份内容（digest 吃 version），它会成为
+// latest —— 但它相对 @2 没有任何破坏性变更，所以闸门同样放行，且照常落成 @3。
 func TestUpgradeGateOnlyForLatest(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
@@ -226,10 +227,11 @@ func TestUpgradeGateOnlyForLatest(t *testing.T) {
 		Outputs: []string{"done", "failed"},
 		Source:  CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, v2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(v2)); err != nil {
 		t.Fatalf("create fixer@2（加可选入参）: %v", err)
 	}
-	// 再把 v2 的内容当 v3 提交：同内容 → 幂等折叠回 @2，不会成为 latest
+	// 再把 v2 的内容当 v3 提交：相对 @2 无破坏性变更 → 闸门放行，落成 @3。
+	// （v3 不再把「同 schema 换版本号」折叠回旧行：digest 吃 version。）
 	same := &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 3,
 		ParamsSchema: v2.ParamsSchema, Outputs: v2.Outputs, Source: CapSourceCustom,
@@ -241,11 +243,11 @@ func TestUpgradeGateOnlyForLatest(t *testing.T) {
 	if impact.Breaking {
 		t.Fatalf("同内容的不同版本号不该被闸门拦: %+v", impact)
 	}
-	if err := db.CreateCapability(ctx, same); err != nil {
-		t.Fatalf("同内容创建应该幂等通过: %v", err)
+	if err := db.CreateCapability(ctx, withSpec(same)); err != nil {
+		t.Fatalf("无破坏性变更的 @3 应该通过: %v", err)
 	}
-	if same.Version != 2 {
-		t.Fatalf("幂等折叠后版本 = %d, want 2（回到已有那一行）", same.Version)
+	if same.Version != 3 {
+		t.Fatalf("落库版本 = %d, want 3（同 schema 也是新版本，不再折叠回 @2）", same.Version)
 	}
 }
 

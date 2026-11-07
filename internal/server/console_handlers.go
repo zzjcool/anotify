@@ -1250,6 +1250,21 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// specLifecycle 把扁平请求里的 lifecycle 搬进正文（nil = 不声明）。
+//
+// 不声明时给 nil 而不是 `{}`：`{}` 与「没有这个键」在规范字节里是两种不同的
+// 内容，同一份配置不该因为客户端有没有把 lifecycle 传成空对象而算出两个 digest。
+func specLifecycle(lc *store.Lifecycle) json.RawMessage {
+	if lc == nil {
+		return nil
+	}
+	b, err := json.Marshal(lc)
+	if err != nil {
+		return nil // Lifecycle 全是标量/指针，实际不可能失败
+	}
+	return b
+}
+
 func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request) {
 	var req capabilityListRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
@@ -1304,17 +1319,28 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		c.Lifecycle = *req.Lifecycle
 	}
 
-	// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
-	// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
-	// 永远跑不起来的定义）。这里只做校验、不落库 —— 落库要用 c 归一后的版本重建。
+	// 正文（spec）在这里组装：P1-b1 的请求体仍是旧的**扁平形状**（契约 §5 把形状切换
+	// 推到 P4），服务端负责把它拼成 spec —— store 只认 spec，派生列由它自己算。
+	//
+	// 没有 run 不算错：这个版本里它等价于 `handler: noop` 占位（合法、可部署、
+	// 无副作用），与回填老能力是同一条口径。**「缺实现 → 400 impl_missing」的行为
+	// 收紧属于 P1-b2**（契约 §5 的行为列 + §7 的分期）：现在做会让所有既有客户端
+	// 与 e2e 夹具一起变红，那不是 P1-b1 的职责。
 	if req.Run != nil {
-		if _, err := buildArtifact(c, req.Run, req.Requires); err != nil {
+		// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
+		// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
+		// 永远跑不起来的定义）。这里只做校验、不落库 —— 落库用的是 c 归一后的正文。
+		built, err := buildArtifact(c, req.Run, req.Requires)
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "invalid_artifact",
 			})
 			return
 		}
+		c.Spec = built.Spec
+	} else {
+		c.Spec = store.HandlerSpec(artifact.HandlerNoop, schema, req.Outputs, specLifecycle(req.Lifecycle))
 	}
 
 	// 带 links → 原子路径（能力 + 产物 + 边，同一事务，要么全成要么全不成）。
@@ -1374,6 +1400,18 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
+		// 正文不合法（缺实现 / 实现二义 / handler 不在白名单）：客户端可修 → 400。
+		// 必须排在「统一 409」之前：内容错误不是版本冲突，用户改正文就能过。
+		if errors.Is(err, store.ErrCapabilityInvalid) {
+			slog.Warn("create capability rejected: invalid spec",
+				"event", "console.caps.invalid_spec",
+				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "invalid_artifact",
+			})
+			return
+		}
 		// balance 不合法（未实现的 mode / 端口不在 outputs）：客户端可修 → 400。
 		// 必须排在「统一 409」之前：否则「配了 all」会被当成版本冲突，用户改不对。
 		if errors.Is(err, store.ErrBalanceRejected) {
@@ -1406,23 +1444,11 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		"upgradeImpact": impact,
 	}
 	if req.Run != nil {
-		// **用 c 归一后的版本重建产物**：store.CreateCapability 在「同内容已有该能力」时
-		// 会把版本归一到原版本（append-only 幂等），此时请求里的版本号是过期的。
-		// 用过期版本建产物会写出一个元数据与能力定义不一致的产物 —— digest 也会错。
-		built, err := buildArtifact(c, req.Run, req.Requires)
-		if err != nil {
-			// 建能力前的预校验已经过了，这里再失败说明归一化改变了内容（不应该发生）：
-			// 如实报错，不写产物，也不假装成功。
-			slog.Error("rebuild artifact after normalization failed",
-				"event", "console.caps.artifact_rebuild_failed",
-				"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "capability created but artifact could not be rebuilt: " + err.Error(),
-				"code":  "artifact_store_failed",
-			})
-			return
-		}
-		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, c.ID, built)
+		// **用 c 归一后的正文**重建产物：store 可能把行改成另一份内容（幂等重放回到
+		// 已有那一行），此时请求里的版本号是过期的。行上的 Spec 才是权威的那份正文
+		// ——从它拼产物，与 capability_versions.spec 与 content_hash 天然同源。
+		built := c.Artifact()
+		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, c.ID, &built)
 		if err != nil {
 			// 能力已经建好了（append-only，无法回滚），产物落库失败只能如实报错：
 			// 用户看到的应该是「能力建了但产物没存，请重试」，而不是一个假的 200。
@@ -1489,13 +1515,11 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 	var digest string
 	var build store.ArtifactBuilder
 	if req.Run != nil {
-		run, requires := req.Run, req.Requires
 		build = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
-			built, berr := buildArtifact(authoritative, run, requires)
-			if berr != nil {
-				return nil, berr
-			}
-			row, dg, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, built)
+			// 正文以事务内归一后的那一行为准（见上面的 ArtifactBuilder 注释）：
+			// 从行拼产物，digest 与 content_hash 必然同源。
+			built := authoritative.Artifact()
+			row, dg, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &built)
 			if berr != nil {
 				return nil, berr
 			}
@@ -1549,6 +1573,17 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "edge_rejected",
+			})
+			return
+		}
+		// 正文不合法（缺实现 / 实现二义 / handler 不在白名单）：客户端可修 → 400。
+		if errors.Is(err, store.ErrCapabilityInvalid) {
+			slog.Warn("create capability rejected: invalid spec",
+				"event", "console.caps.invalid_spec",
+				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+				"code":  "invalid_artifact",
 			})
 			return
 		}
@@ -1718,30 +1753,33 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 			c.Lifecycle = *item.Lifecycle
 		}
 
+		// 正文（spec）在这里组装，口径与单建逐字一致（见 createCapability）：
+		// 有 run → 产物正文；没有 run → handler: noop 占位。
+		//
 		// 产物必须在**建能力之前**先校验一遍（与单建同一个理由）：一份 run 写错的
 		// 请求不该留下一个永远跑不起来的定义。这里只校验、不落库。
 		if item.Run != nil {
-			if _, err := buildArtifact(c, item.Run, item.Requires); err != nil {
+			built, err := buildArtifact(c, item.Run, item.Requires)
+			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"error": fmt.Sprintf("capabilities[%d]: %v", i, err),
 					"code":  "invalid_artifact",
 				})
 				return
 			}
-			// 落库用**归一后**的能力行重建：content-hash 幂等会把「同内容不同版本」
-			// 折叠到已有行，用请求里的版本建产物会写出一份元数据与能力定义不一致的产物。
-			run, requires := item.Run, item.Requires
+			c.Spec = built.Spec
+			// 落库的产物与能力行必须同源：用事务内**归一后**那一行的正文重建
+			// （幂等重放时版本号可能来自已有行）。
 			builders[i] = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
-				built, berr := buildArtifact(authoritative, run, requires)
-				if berr != nil {
-					return nil, berr
-				}
-				row, _, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, built)
+				art := authoritative.Artifact()
+				row, _, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &art)
 				if berr != nil {
 					return nil, berr
 				}
 				return row, nil
 			}
+		} else {
+			c.Spec = store.HandlerSpec(artifact.HandlerNoop, schema, item.Outputs, specLifecycle(item.Lifecycle))
 		}
 		caps = append(caps, c)
 	}

@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // mkCap 构造一个测试用能力定义（未落库）。
+//
+// 只填**派生字段**（params/outputs/…），正文由 withSpec 在落库前折叠出来
+// （见 store_testutil_test.go 的 withSpec 注释）。
 func mkCap(nsID, name string, version int, outputs []string) *CapabilityVersion {
 	return &CapabilityVersion{
 		NamespaceID:  nsID,
@@ -29,7 +35,7 @@ func TestCapabilityCreateAndGet(t *testing.T) {
 	c.ParamsSchema = json.RawMessage(`{"type":"object","properties":{"diff":{"type":"string"}}}`)
 	c.Lifecycle = Lifecycle{ExpiresInSec: 3600, Retryable: true, MaxAttempts: 2, ResultTTLSec: 600}
 	c.Sticky = "worktree"
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	if c.ID == "" || c.ContentHash == "" {
@@ -66,26 +72,35 @@ func TestCapabilityCreateAndGet(t *testing.T) {
 	}
 }
 
-// TestCapabilityIdempotentCreate 同内容两次创建 → 返回同一行，库里只有 1 条（#61 核心验收）。
+// TestCapabilityIdempotentCreate 同一个 name@version 的同内容重复提交 → 返回同一行；
+// 而**换版本号**是另一份内容（v3 起 digest 吃 metadata.version，跨版本折叠已取消）。
 func TestCapabilityIdempotentCreate(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
 	first := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, first); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(first)); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	// 同内容、**不同 name/version**：content_hash 仍应相同 → 幂等返回已有行
-	second := mkCap(nsID, "review", 2, []string{"fix"})
-	if err := db.CreateCapability(ctx, second); err != nil {
+
+	// 同 name@version、同内容 → 幂等返回已有行（#61 的核心验收）。
+	again := mkCap(nsID, "review", 1, []string{"fix"})
+	if err := db.CreateCapability(ctx, withSpec(again)); err != nil {
 		t.Fatalf("second create (same content): %v", err)
 	}
-	if second.ID != first.ID {
-		t.Fatalf("same content produced different rows: %s vs %s", first.ID, second.ID)
+	if again.ID != first.ID {
+		t.Fatalf("同内容重复提交没有折叠到已有行: %s vs %s", first.ID, again.ID)
 	}
-	if second.Name != first.Name || second.Version != first.Version {
-		t.Fatalf("second create should be filled with existing row, got %s@%d", second.Name, second.Version)
+
+	// 换版本号 = 换内容：digest 吃 metadata.version，所以 review@2 是另一行。
+	// （旧行为会把「同内容不同版本」折叠回 @1 —— 那正是 v3 取消的跨版本折叠。）
+	next := mkCap(nsID, "review", 2, []string{"fix"})
+	if err := db.CreateCapability(ctx, withSpec(next)); err != nil {
+		t.Fatalf("create review@2: %v", err)
+	}
+	if next.ID == first.ID || next.Version != 2 {
+		t.Fatalf("v3 已取消跨版本折叠：review@2 不该折叠成 review@1（got %s@%d）", next.Name, next.Version)
 	}
 
 	// 只数 review 的行：默认命名空间自带内置能力（notify.phone@1），
@@ -95,17 +110,8 @@ func TestCapabilityIdempotentCreate(t *testing.T) {
 		`SELECT count(*) FROM capability_versions WHERE namespace_id=? AND name='review'`, nsID).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("capability_versions has %d rows of review, want 1 (same content must not duplicate)", n)
-	}
-
-	// 完全相同的调用再来一次也应幂等
-	third := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, third); err != nil {
-		t.Fatalf("third create: %v", err)
-	}
-	if third.ID != first.ID {
-		t.Fatalf("third create returned different id")
+	if n != 2 {
+		t.Fatalf("review 有 %d 行，want 2（@1 幂等 + @2 新版本）", n)
 	}
 }
 
@@ -117,69 +123,84 @@ func TestCapabilitySameVersionDifferentContentRejected(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 
 	first := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, first); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(first)); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	changed := mkCap(nsID, "review", 1, []string{"fix", "clean"}) // 出口变了
-	err := db.CreateCapability(ctx, changed)
+	err := db.CreateCapability(ctx, withSpec(changed))
 	if err == nil {
 		t.Fatal("same name@version with different content was accepted (append-only violated)")
 	}
 }
 
-// TestCapabilityOutputsOrderInsensitive outputs 是集合：顺序不影响 hash。
-func TestCapabilityOutputsOrderInsensitive(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-
-	a := mkCap(nsID, "a", 1, []string{"fix", "clean"})
-	b := mkCap(nsID, "a", 2, []string{"clean", "fix"})
-	if err := db.CreateCapability(ctx, a); err != nil {
-		t.Fatalf("create a: %v", err)
+// TestCapabilityOutputsOrderChangesHash outputs 的**顺序**在 v3 起参与 digest。
+//
+// 为什么口径变了：content_hash ≡ digest，而 digest 是「规范字节」的摘要（契约 §3.2）。
+// 出口是封闭集合（语义上无序），但正文是节点会拿去跑的那份内容 —— 规范字节不同
+// 就是不同内容；排序是写入方（前端提交）的责任，不在摘要里偷偷做。
+func TestCapabilityOutputsOrderChangesHash(t *testing.T) {
+	a := withSpec(mkCap("ns_x", "same", 1, []string{"fix", "clean"}))
+	b := withSpec(mkCap("ns_x", "same", 1, []string{"clean", "fix"}))
+	ha, err := NormalizeCapability(a)
+	if err != nil {
+		t.Fatalf("normalize a: %v", err)
 	}
-	if err := db.CreateCapability(ctx, b); err != nil {
-		t.Fatalf("create b: %v", err)
+	hb, err := NormalizeCapability(b)
+	if err != nil {
+		t.Fatalf("normalize b: %v", err)
 	}
-	if a.ContentHash != b.ContentHash {
-		t.Fatalf("outputs order changed the hash: %s vs %s", a.ContentHash, b.ContentHash)
+	if ha == hb {
+		t.Fatal("outputs 顺序不同却算出同一个 hash：规范字节不同就是不同内容")
+	}
+	// 同一份顺序（不同对象）必须同 hash —— 否则幂等永远命不中。
+	c := withSpec(mkCap("ns_x", "same", 1, []string{"fix", "clean"}))
+	hc, err := NormalizeCapability(c)
+	if err != nil {
+		t.Fatalf("normalize c: %v", err)
+	}
+	if ha != hc {
+		t.Fatalf("同一份内容算出两个 hash: %s vs %s", ha, hc)
 	}
 }
 
-// TestCapabilitySchemaKeyOrderInsensitive params_schema 的键顺序不影响 hash。
+// TestCapabilitySchemaKeyOrderInsensitive params_schema 的**键顺序**不影响 hash。
+//
+// params 是 JSON Schema，键顺序没有语义：digest 之前会把它归一成 key 有序的紧凑
+// 形式（artifact 的 canonicalCopy），所以同样的 schema 换一种写法仍是同一份内容。
 func TestCapabilitySchemaKeyOrderInsensitive(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-
-	a := mkCap(nsID, "x", 1, nil)
+	a := mkCap("ns_x", "same", 1, nil)
 	a.ParamsSchema = json.RawMessage(`{"type":"object","required":["a"]}`)
-	b := mkCap(nsID, "x", 2, nil)
+	a = withSpec(a)
+	b := mkCap("ns_x", "same", 1, nil)
 	b.ParamsSchema = json.RawMessage(`{ "required": ["a"], "type": "object" }`)
-	if err := db.CreateCapability(ctx, a); err != nil {
-		t.Fatalf("create a: %v", err)
+	b = withSpec(b)
+
+	ha, err := NormalizeCapability(a)
+	if err != nil {
+		t.Fatalf("normalize a: %v", err)
 	}
-	if err := db.CreateCapability(ctx, b); err != nil {
-		t.Fatalf("create b: %v", err)
+	hb, err := NormalizeCapability(b)
+	if err != nil {
+		t.Fatalf("normalize b: %v", err)
 	}
-	if a.ContentHash != b.ContentHash {
-		t.Fatalf("schema key order changed the hash: %s vs %s", a.ContentHash, b.ContentHash)
+	if ha != hb {
+		t.Fatalf("schema 键顺序改变了 hash: %s vs %s", ha, hb)
 	}
 }
 
 // TestCapabilityDifferentContentDifferentHash 不同内容必须不同 hash。
 func TestCapabilityDifferentContentDifferentHash(t *testing.T) {
-	base := mkCap("ns_x", "review", 1, []string{"fix"})
+	base := withSpec(mkCap("ns_x", "review", 1, []string{"fix"}))
 	h1, err := NormalizeCapability(base)
 	if err != nil {
 		t.Fatalf("normalize base: %v", err)
 	}
 
 	variants := []*CapabilityVersion{
-		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"clean"}},
-		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Sticky: "worktree"},
-		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Lifecycle: Lifecycle{MaxAttempts: 5}},
-		{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"string"}`), Outputs: []string{"fix"}},
+		withSpec(&CapabilityVersion{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"clean"}}),
+		withSpec(&CapabilityVersion{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Sticky: "worktree"}),
+		withSpec(&CapabilityVersion{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"object"}`), Outputs: []string{"fix"}, Lifecycle: Lifecycle{MaxAttempts: 5}}),
+		withSpec(&CapabilityVersion{NamespaceID: "ns_x", Name: "review", Version: 1, ParamsSchema: json.RawMessage(`{"type":"string"}`), Outputs: []string{"fix"}}),
 	}
 	for i, v := range variants {
 		h, err := NormalizeCapability(v)
@@ -212,14 +233,16 @@ func TestCapabilityNormalizeIncludesName(t *testing.T) {
 		t.Fatal("different names got same content_hash; capabilities would be silently merged")
 	}
 
-	// 同 name 不同 version 仍然共享同一个 hash（幂等创建的基础）
-	v2 := mkCap("ns_x", "fix1", 2, []string{"done"})
+	// 同 name 不同 version **必须**不同 hash：digest 吃 metadata.version（契约 §3.2）。
+	// 旧口径（version 不进 hash）会让「同内容换个版本号」折叠回旧行 —— 那正是 v3
+	// 取消的形态；现在换版本号就是换内容，撞 (name,version) 才是 ErrVersionConflict。
+	v2 := withSpec(mkCap("ns_x", "fix1", 2, []string{"done"}))
 	hv2, err := NormalizeCapability(v2)
 	if err != nil {
 		t.Fatalf("normalize v2: %v", err)
 	}
-	if ha != hv2 {
-		t.Fatal("same name+content got different hash across versions; idempotent create would never hit")
+	if ha == hv2 {
+		t.Fatal("同 name 不同 version 得到同一个 hash：跨版本折叠会借尸还魂")
 	}
 }
 
@@ -231,10 +254,10 @@ func TestCapabilityVersionAppendOnly(t *testing.T) {
 
 	v1 := mkCap(nsID, "review", 1, []string{"fix"})
 	v2 := mkCap(nsID, "review", 2, []string{"fix", "clean"})
-	if err := db.CreateCapability(ctx, v1); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(v1)); err != nil {
 		t.Fatalf("v1: %v", err)
 	}
-	if err := db.CreateCapability(ctx, v2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(v2)); err != nil {
 		t.Fatalf("v2: %v", err)
 	}
 	if v1.ID == v2.ID {
@@ -283,7 +306,7 @@ func TestCapabilityNamespaceIsolation(t *testing.T) {
 	nsB, _ := newTestNS(t, db)
 
 	c := mkCap(nsA, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, err := db.GetCapabilityByID(ctx, nsB, c.ID); !errors.Is(err, ErrNotFound) {
@@ -296,7 +319,7 @@ func TestCapabilityNamespaceIsolation(t *testing.T) {
 	// 同一个库里另建的命名空间：同名能力各自一份，那边的那份不能被这边的看见（反之亦然）
 	sibling := newTestExtraNS(t, db, "staging")
 	sibCap := mkCap(sibling, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, sibCap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(sibCap)); err != nil {
 		t.Fatalf("create sibling capability: %v", err)
 	}
 	if sibCap.ID == c.ID {
@@ -360,7 +383,7 @@ func TestCapabilityEmptyOutputs(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	const name = "digest.daily"
 	c := mkCap(nsID, name, 1, nil)
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	got, err := db.GetCapability(ctx, nsID, name, 1)
@@ -381,7 +404,7 @@ func TestCapabilityValidation(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	if err := db.CreateCapability(ctx, nil); err == nil {
+	if err := db.CreateCapability(ctx, withSpec(nil)); err == nil {
 		t.Error("CreateCapability(nil) accepted")
 	}
 	// 没带 namespace：必须是 ErrNamespaceRequired（绝不回退默认命名空间）。
@@ -435,10 +458,10 @@ func TestGraphVersionOnDemand(t *testing.T) {
 
 	up := mkCap(nsID, "review", 1, []string{"fix"})
 	down := mkCap(nsID, "fix", 1, nil)
-	if err := db.CreateCapability(ctx, up); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(up)); err != nil {
 		t.Fatalf("create up: %v", err)
 	}
-	if err := db.CreateCapability(ctx, down); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(down)); err != nil {
 		t.Fatalf("create down: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{
@@ -481,7 +504,7 @@ func TestGraphVersionChangesWithEdges(t *testing.T) {
 	down1 := mkCap(nsID, "fix", 1, nil)
 	down2 := mkCap(nsID, "clean", 1, nil)
 	for _, c := range []*CapabilityVersion{up, down1, down2} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create cap: %v", err)
 		}
 	}
@@ -552,7 +575,7 @@ func TestEdgeRejectsPortNotInOutputs(t *testing.T) {
 	up := mkCap(nsID, "review", 1, []string{"fix"})
 	down := mkCap(nsID, "fix", 1, nil)
 	for _, c := range []*CapabilityVersion{up, down} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create: %v", err)
 		}
 	}
@@ -581,7 +604,7 @@ func TestEdgeRejectsCrossNamespace(t *testing.T) {
 	upB := mkCap(nsB, "review", 1, []string{"fix"})
 	foreign := mkCap(nsB, "fix", 1, nil)
 	for _, c := range []*CapabilityVersion{upA, sinkA, upB, foreign} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
 		}
 	}
@@ -649,7 +672,7 @@ func TestEdgesFromLookup(t *testing.T) {
 	d1 := mkCap(nsID, "fix1", 1, nil)
 	d2 := mkCap(nsID, "fix2", 1, nil)
 	for _, c := range []*CapabilityVersion{up, d1, d2} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create: %v", err)
 		}
 	}
@@ -733,7 +756,7 @@ func TestCapabilityDisplayName(t *testing.T) {
 	// ① 往返：存什么读什么
 	c := mkCap(nsID, "analyze-pr", 1, []string{"needs-fix"})
 	c.DisplayName = "分析 PR"
-	if err := db.CreateCapability(ctx, c); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	got, err := db.GetCapability(ctx, nsID, "analyze-pr", 1)
@@ -748,7 +771,7 @@ func TestCapabilityDisplayName(t *testing.T) {
 	hashBefore := got.ContentHash
 	c2 := mkCap(nsID, "analyze-pr", 1, []string{"needs-fix"})
 	c2.DisplayName = "完全不同的名字"
-	if err := db.CreateCapability(ctx, c2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(c2)); err != nil {
 		t.Fatalf("create same content with different display name: %v", err)
 	}
 	if c2.ContentHash != hashBefore {
@@ -799,49 +822,53 @@ func TestCapabilityDisplayName(t *testing.T) {
 	}
 }
 
-// TestContentHashUnchangedWithoutBalance 钉住「没有 balance 的能力，hash 与
-// balance 这个概念出现之前**完全相同**」。
+// TestContentHashEqualsDigest content_hash 就是 digest 的裸 hex（契约 §4）。
 //
-// 为什么值得一条单独的用例：balance 是后来加进 capHashInput 的字段。字段一进
-// hash 输入，老库里已有行的 content_hash 就对不上了 —— 重提交同内容会被判成
-// 「内容变了」，从幂等折叠变成 ErrCapabilityVersionConflict，用户什么都没改却
-// 收到冲突。修法是 `json:"balance,omitempty"`，这条用例把那个「老值」钉死：
-//
-//	want 取自 squash 之后、balance 加入之前的开发库真值（touchnow 那一行）。
-func TestContentHashUnchangedWithoutBalance(t *testing.T) {
-	c := &CapabilityVersion{
-		Name:         "touchnow",
-		ParamsSchema: []byte(`{"type":"object","properties":{}}`),
-		Outputs:      []string{},
+// 判据是「从落库的那一行拼出产物再算一次 digest」——两边必须逐字节一致，否则
+// 部署永远判 stale、幂等永远命不中。顺带钉住两条 v3 推论：
+//   - balance 是死字段（P1-b 起恒写 '{}'），**不参与** hash；
+//   - displayName 不在 digest 里，改它不算换内容。
+func TestContentHashEqualsDigest(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	c := mkCap(nsID, "digest.probe", 1, []string{"fix"})
+	c.DisplayName = "展示名不参与摘要"
+	if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	got, err := NormalizeCapability(c)
+	digest := c.Digest()
+	if !strings.HasPrefix(digest, artifact.DigestPrefix) {
+		t.Fatalf("Digest() = %q，缺少 %q 前缀", digest, artifact.DigestPrefix)
+	}
+	if strings.TrimPrefix(digest, artifact.DigestPrefix) != c.ContentHash {
+		t.Fatalf("Digest() 与 content_hash 不是同一个值: %q vs %q", digest, c.ContentHash)
+	}
+	// 从**落库的那一行**重算：必须得回同一个 hash（行 ↔ 产物只有一处拼装）。
+	stored, err := db.GetCapability(ctx, nsID, "digest.probe", 1)
 	if err != nil {
-		t.Fatalf("normalize: %v", err)
+		t.Fatalf("get: %v", err)
 	}
-	const want = "cc7332debfc7630fc2491b4268c2592dc88de69b033da4ccf91a2abd26aaf9e6"
-	if got != want {
-		t.Fatalf("没有 balance 的 hash 变了：\n got %s\nwant %s\n"+
-			"（改了 capHashInput 的字段/标签？老库的行会全部对不上，重提交同内容会变成冲突）", got, want)
+	a := stored.Artifact()
+	want, err := artifact.Digest(&a)
+	if err != nil {
+		t.Fatalf("digest row: %v", err)
+	}
+	if want != digest {
+		t.Fatalf("落库行重算的 digest = %q，want %q（content_hash 与正文不同源）", want, digest)
 	}
 
-	// 反向：真的配了 balance 时必须变 —— 否则「改 balance」会被幂等折叠丢掉。
-	// 注意端口必须真的在 outputs 里（normalizeBalance 会硬拒不在 outputs 的端口），
-	// 所以这里用一份带端口的同形定义，别在 c 上就地改。
-	withBalance := *c
-	withBalance.Outputs = []string{"fix"}
-	withBalance.Balance = Balance{"fix": {Mode: BalanceModePriority}}
-	hb, err := NormalizeCapability(&withBalance)
-	if err != nil {
-		t.Fatalf("normalize(balance): %v", err)
+	// displayName 只影响 metadata，不进 digest：改完 hash 不变。
+	before := stored.ContentHash
+	if err := db.SetCapabilityDisplayName(ctx, nsID, stored.ID, "改个名"); err != nil {
+		t.Fatalf("rename: %v", err)
 	}
-	// 与「同样 outputs 但没有 balance」比：这才是「balance 参与 hash」的判据。
-	noBalance := withBalance
-	noBalance.Balance = nil
-	hn, err := NormalizeCapability(&noBalance)
+	renamed, err := db.GetCapability(ctx, nsID, "digest.probe", 1)
 	if err != nil {
-		t.Fatalf("normalize(no balance): %v", err)
+		t.Fatalf("get renamed: %v", err)
 	}
-	if hb == hn {
-		t.Fatalf("配了 balance 的 hash 与没配的一样（%s）—— 改 balance 会被折叠成旧行", hb)
+	if renamed.ContentHash != before {
+		t.Fatalf("改 displayName 让 content_hash 变了: %s → %s", before, renamed.ContentHash)
 	}
 }

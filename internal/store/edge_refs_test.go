@@ -68,7 +68,7 @@ func TestLinkRefFollowsLatest(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"note":{"type":"string"}}}`),
 		Source:       CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, fixer2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(fixer2)); err != nil {
 		t.Fatalf("create fixer@2: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestLinkRefPinned(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"note":{"type":"string"}}}`),
 		Source:       CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, fixer2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(fixer2)); err != nil {
 		t.Fatalf("create fixer@2: %v", err)
 	}
 
@@ -347,7 +347,7 @@ func TestGraphHashStableAcrossUpgrade(t *testing.T) {
 		ParamsSchema: json.RawMessage(`{"type":"object","properties":{"note":{"type":"string"}}}`),
 		Source:       CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, fixer2); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(fixer2)); err != nil {
 		t.Fatalf("create fixer@2: %v", err)
 	}
 
@@ -376,7 +376,7 @@ func TestGraphHashStableAcrossUpgrade(t *testing.T) {
 func mustCreateCap(t *testing.T, db *DB, caps ...*CapabilityVersion) {
 	t.Helper()
 	for _, c := range caps {
-		if err := db.CreateCapability(context.Background(), c); err != nil {
+		if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 			t.Fatalf("create capability %s@%d: %v", c.Name, c.Version, err)
 		}
 	}

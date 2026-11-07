@@ -29,7 +29,7 @@ func emissionFixture(t *testing.T) (*DB, string, *Task) {
 		Outputs:      []string{"fix"},
 		Source:       CapSourceCustom,
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	task := &Task{

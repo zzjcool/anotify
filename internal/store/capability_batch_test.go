@@ -17,6 +17,17 @@ import (
 // 环不在这里验：契约 §2 把配置期静态环检测删掉（A 组的竖切），
 // 「批量与单建在成环上同进同退」由 HTTP 层的等价性用例覆盖。
 
+// capsWithSpec 给一批夹具补正文（见 withSpec）。
+//
+// 批量创建走的是**另一条入口**（CreateCapabilitiesBatch），per-call 的 withSpec 包裹
+// 覆盖不到它，所以这里显式折一次。
+func capsWithSpec(caps []*CapabilityVersion) []*CapabilityVersion {
+	for _, c := range caps {
+		withSpec(c)
+	}
+	return caps
+}
+
 // TestCreateCapabilitiesBatchRejectsEmptyAndDuplicate：两个哨兵错误。
 func TestCreateCapabilitiesBatchRejectsEmptyAndDuplicate(t *testing.T) {
 	db := newTestDB(t)
@@ -29,7 +40,7 @@ func TestCreateCapabilitiesBatchRejectsEmptyAndDuplicate(t *testing.T) {
 
 	// 批内重名：links 用名字引用，重名让「这条边指向哪一个」无法表达 → 400。
 	_, err := db.CreateCapabilitiesBatch(ctx,
-		[]*CapabilityVersion{mkCap(nsID, "dup", 1, nil), mkCap(nsID, "dup", 2, nil)},
+		capsWithSpec([]*CapabilityVersion{mkCap(nsID, "dup", 1, nil), mkCap(nsID, "dup", 2, nil)}),
 		nil, nil, false)
 	if !errors.Is(err, ErrBatchDuplicateName) {
 		t.Fatalf("重名: err = %v, want ErrBatchDuplicateName", err)
@@ -53,7 +64,7 @@ func TestCreateCapabilitiesBatchRejectsMisalignedBuilders(t *testing.T) {
 
 	caps := []*CapabilityVersion{mkCap(nsID, "a", 1, nil), mkCap(nsID, "b", 1, nil)}
 	one := []ArtifactBuilder{func(*CapabilityVersion) (*Artifact, error) { return nil, nil }}
-	if _, err := db.CreateCapabilitiesBatch(ctx, caps, nil, one, false); err == nil {
+	if _, err := db.CreateCapabilitiesBatch(ctx, capsWithSpec(caps), nil, one, false); err == nil {
 		t.Fatal("builders 长度不对必须报错（否则会把 A 的产物挂到 B 上）")
 	}
 	if n := countRows(t, db, "capability_versions",
@@ -73,7 +84,7 @@ func TestCreateCapabilitiesBatchLinksAcrossBatch(t *testing.T) {
 		mkCap(nsID, "b", 1, []string{"done"}),
 		mkCap(nsID, "a", 1, []string{"fix"}),
 	}
-	res, err := db.CreateCapabilitiesBatch(ctx, caps,
+	res, err := db.CreateCapabilitiesBatch(ctx, capsWithSpec(caps),
 		[]BatchLinkSpec{{FromRef: "a", FromPort: "fix", ToRef: "b"}}, nil, false)
 	if err != nil {
 		t.Fatalf("批量创建失败: %v", err)
@@ -118,7 +129,7 @@ func TestCreateCapabilitiesBatchRollsBackOnBadLink(t *testing.T) {
 		}, nil
 	}
 	// 第二条 link 指向不存在的名字：此时两个能力 + 两份产物已经在事务里了。
-	_, err := db.CreateCapabilitiesBatch(ctx, caps,
+	_, err := db.CreateCapabilitiesBatch(ctx, capsWithSpec(caps),
 		[]BatchLinkSpec{
 			{FromRef: "batch.ok", FromPort: "done", ToRef: "notify.send"},
 			{FromRef: "batch.ok2", FromPort: "done", ToRef: "ghost"},
@@ -157,7 +168,7 @@ func TestCreateCapabilitiesBatchArtifactBuildFailureRollsBack(t *testing.T) {
 	}
 	// 第二个能力的产物构建失败（第一个已经建成、产物已落库）
 	_, err := db.CreateCapabilitiesBatch(ctx,
-		[]*CapabilityVersion{mkCap(nsID, "batch.one", 1, nil), mkCap(nsID, "batch.two", 1, nil)},
+		capsWithSpec([]*CapabilityVersion{mkCap(nsID, "batch.one", 1, nil), mkCap(nsID, "batch.two", 1, nil)}),
 		nil,
 		[]ArtifactBuilder{okBuild, func(*CapabilityVersion) (*Artifact, error) { return nil, boom }}, false)
 	if err == nil {
@@ -191,11 +202,11 @@ func TestCreateCapabilitiesBatchMergesBreakingImpact(t *testing.T) {
 	// 「删出口」影响的正是这种边（左端跟随 latest、端口就是被删的那个）。
 	for _, name := range []string{"batch.x", "batch.y"} {
 		c := mkCap(nsID, name, 1, []string{"done", "failed"})
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("seed %s@1: %v", name, err)
 		}
 		down := mkCap(nsID, "down."+name, 1, nil)
-		if err := db.CreateCapability(ctx, down); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(down)); err != nil {
 			t.Fatalf("seed down.%s: %v", name, err)
 		}
 		if err := db.CreateEdge(ctx, &Edge{
@@ -211,7 +222,7 @@ func TestCreateCapabilitiesBatchMergesBreakingImpact(t *testing.T) {
 	v2y := mkCap(nsID, "batch.y", 2, []string{"done"})
 
 	_, err := db.CreateCapabilitiesBatch(ctx,
-		[]*CapabilityVersion{v2x, v2y}, nil, nil, false)
+		capsWithSpec([]*CapabilityVersion{v2x, v2y}), nil, nil, false)
 	if err == nil {
 		t.Fatal("破坏性批量必须被拒")
 	}
@@ -243,7 +254,7 @@ func TestCreateCapabilitiesBatchMergesBreakingImpact(t *testing.T) {
 
 	// force 越过 → 两个 v2 都写进去（同一个事务）
 	if _, err := db.CreateCapabilitiesBatch(ctx,
-		[]*CapabilityVersion{v2x, v2y}, nil, nil, true); err != nil {
+		capsWithSpec([]*CapabilityVersion{v2x, v2y}), nil, nil, true); err != nil {
 		t.Fatalf("force 越过失败: %v", err)
 	}
 	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND version = 2", nsID); n != 2 {

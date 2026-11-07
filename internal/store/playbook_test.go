@@ -39,7 +39,7 @@ func mustCap(t *testing.T, db *DB, namespaceID, name string, version int, output
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		Outputs:      outputs,
 	}
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create capability %s@%d: %v", name, version, err)
 	}
 	return c
@@ -488,6 +488,19 @@ func TestInstallPlaybookIdempotent(t *testing.T) {
 
 // ===== 5. 边端点缺定义 → 该边 skipped，其余照装（D10 / C4） =====
 
+// notesContain 报告 notes 里有没有一条包含 sub 的说明。
+//
+// notes 是一份**给人读的清单**，条目数会随「装了什么、跳过了什么」变化，所以断言
+// 只钉「该说的事情说了」，不钉「一共几条」——钉条数会让每次加一条说明都变成返工。
+func notesContain(notes []string, sub string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestInstallPlaybookSkipsEdgeWithMissingEndpoint(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
@@ -522,8 +535,12 @@ func TestInstallPlaybookSkipsEdgeWithMissingEndpoint(t *testing.T) {
 	if len(res.Created.Sources) != 1 {
 		t.Fatalf("源应照建（1 个），got %v", res.Created.Sources)
 	}
-	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "ghost") {
+	if !notesContain(res.Notes, "ghost") {
 		t.Fatalf("skipped 的边应有一条说明且指出缺的能力，got %v", res.Notes)
+	}
+	// P1-b1 起装出来的能力一律是 noop 占位，notes 里必须说清楚（供人工补实现）。
+	if !notesContain(res.Notes, "noop 占位") {
+		t.Fatalf("装成占位的能力应在 notes 里说明，got %v", res.Notes)
 	}
 	// 能力边只有装上来的那 1 条；**源的目标也是边**（P2.1：建源 = 建入口边），
 	// 所以这里按边类型分开数，而不是把入口边也算进「这条 manifest 装了几条 link」。
@@ -661,7 +678,7 @@ func TestInstallPlaybookCronSource(t *testing.T) {
 	if fmt.Sprint(res.Skipped.Sources) != fmt.Sprint([]string{"no-expr-cron-0"}) {
 		t.Fatalf("该触发应进 skipped.sources，got %v", res.Skipped.Sources)
 	}
-	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "cron") {
+	if !notesContain(res.Notes, "cron") {
 		t.Fatalf("note 应说清是 cron 缺表达式，got %v", res.Notes)
 	}
 }
@@ -924,25 +941,37 @@ func TestInstallPlaybookDoesNotOverwriteExistingDefinition(t *testing.T) {
 		t.Fatalf("库里应仍是旧定义（id=%s outputs=%v），got %+v", old.ID, old.Outputs, got)
 	}
 
-	// ② 同内容不同版本（x@2 与 x@1 内容完全相同）→ skipped + note，不产生第二行
-	same := mustCreatePlaybook(t, db, nsID, "same-content", `{
+	// ② 同 schema、**不同版本**（x@2 与 x@1 的 outputs/paramsSchema 一样）→ 在 v3 里
+	// 这是**另一份内容**：digest 吃 metadata.version（契约 §3.2），所以它照装，且
+	// 不覆盖 x@1。跨版本内容折叠（旧 D9）随 content_hash ≡ digest 一起取消——
+	// 「同内容」只可能是同 name@version 的重放，那种情况在 ① 就是 skipped。
+	same := mustCreatePlaybook(t, db, nsID, "same-schema", `{
 		"capabilities":[{"name":"x","version":2,"outputs":["old-port"],"paramsSchema":{"type":"object"}}]
 	}`)
 	_, res, err = db.InstallPlaybook(ctx, nsID, same.Slug)
 	if err != nil {
-		t.Fatalf("同内容冲突不该让安装失败: %v", err)
+		t.Fatalf("同 schema 的另一版本不该让安装失败: %v", err)
 	}
-	if len(res.Created.Capabilities) != 0 {
-		t.Fatalf("同内容不该产生第二行定义，got %v", res.Created.Capabilities)
+	if fmt.Sprint(res.Created.Capabilities) != fmt.Sprint([]string{"x@2"}) {
+		t.Fatalf("x@2 是另一份内容，应照装，got %v", res.Created.Capabilities)
 	}
-	if fmt.Sprint(res.Skipped.Capabilities) != fmt.Sprint([]string{"x@2"}) {
-		t.Fatalf("同内容的 x@2 应进 skipped，got %v", res.Skipped.Capabilities)
+	if len(res.Skipped.Capabilities) != 0 {
+		t.Fatalf("不该有 skipped，got %v", res.Skipped.Capabilities)
 	}
-	if len(res.Notes) != 1 || !strings.Contains(res.Notes[0], "x@1") {
-		t.Fatalf("同内容的 note 应指出已有的那个版本，got %v", res.Notes)
+	// 装出来的是 noop 占位（manifest 的 runner 不解释成实现），notes 必须说明。
+	if !notesContain(res.Notes, "x@2") || !notesContain(res.Notes, "noop 占位") {
+		t.Fatalf("x@2 的占位说明缺失，got %v", res.Notes)
 	}
-	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ?", nsID, "x"); n != 1 {
-		t.Fatalf("x 只该有一行定义，got %d", n)
+	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ?", nsID, "x"); n != 2 {
+		t.Fatalf("x 应有 @1 与 @2 两行，got %d", n)
+	}
+	// 旧行一个字节都不动（append-only，I8）。
+	still, err := db.GetCapability(ctx, nsID, "x", 1)
+	if err != nil {
+		t.Fatalf("get x@1: %v", err)
+	}
+	if still.ID != old.ID || fmt.Sprint(still.Outputs) != fmt.Sprint([]string{"old-port"}) {
+		t.Fatalf("x@1 被改动了: id=%s outputs=%v", still.ID, still.Outputs)
 	}
 }
 
@@ -1065,28 +1094,28 @@ func TestPlaybookChecksResolvesDeclaredVersion(t *testing.T) {
 	}
 }
 
-// ===== 12. 同内容复用：D9 + D7 的组合不能留下「永久 blocked」死状态（M3）=====
+// ===== 12. 同 schema 的**另一个版本**：v3 起它是一份新内容（D9 消解）=====
 
-// TestInstallPlaybookReusesSameContentDefinition 钉住「manifest 声明 x@2、库里只有同内容的
-// x@1」时的完整链条（issue #193 审查 M3）：
+// TestInstallPlaybookNewVersionSameSchema 钉住「manifest 声明 x@2、库里已有 x@1（schema
+// 一样）」这条链在 v3 下的形状。
 //
-//	① 能力：x@2 进 skipped（I8：同内容不产生第二行定义），y@1 照装
-//	② 边：y --go--> x **建得出来**，且连的是 x@1 的 id，不是「缺定义」
-//	③ notes：把「同内容」与「复用」说清
-//	④ 体检：x@2 不是 missing、边项 ok、总体不再是 blocked（死状态消除）
-//	⑤ 再装一次仍幂等，同内容没有第二行定义
+// 口径变化（Capability Spec v3 §3.2）：digest 吃 metadata.version，所以「同 schema 换个
+// 版本号」= 另一份内容，照装，不再折叠回旧行。旧 D9（同内容复用 + 死状态 M3）随之消解：
+// 既然 x@2 一定建得出来，就不会再有「体检说 missing、而 I8 又不许补」的死状态。
 //
-// 修之前：安装报「能力「x」在本命名空间里没有定义」、体检说 x@2 missing → 总体恒
-// blocked，而用户「补齐能力」也补不上（I8 不允许第二行同内容定义）。
-func TestInstallPlaybookReusesSameContentDefinition(t *testing.T) {
+// 仍然保留的语义（两条都要盯住）：
+//   - x@1 一个字节都不动（append-only，I8）；
+//   - 边是按**名字**引用的（D7），但 manifest 声明了版本 → 声明版本优先：装出来的
+//     边钉在 x@2 上（不是「版本号最小」的 x@1）。
+func TestInstallPlaybookNewVersionSameSchema(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	ctx := context.Background()
 
-	// 历史定义 x@1：与预案声明的 x@2 同内容（outputs / paramsSchema 都一样）
+	// 历史定义 x@1：与预案声明的 x@2 的 outputs / paramsSchema 一样。
 	x1 := mustCap(t, db, nsID, "x", 1, "old-port")
 
-	pb := mustCreatePlaybook(t, db, nsID, "reuse-same-content", `{
+	pb := mustCreatePlaybook(t, db, nsID, "new-version-same-schema", `{
 		"capabilities":[
 			{"name":"x","version":2,"outputs":["old-port"],"paramsSchema":{"type":"object"}},
 			{"name":"y","version":1,"outputs":["go"]}
@@ -1099,14 +1128,21 @@ func TestInstallPlaybookReusesSameContentDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	// ① 同内容的 x@2 不产生第二行定义，y@1 照装
-	if fmt.Sprint(res.Created.Capabilities) != fmt.Sprint([]string{"y@1"}) {
-		t.Fatalf("created.capabilities want [y@1]，got %v", res.Created.Capabilities)
+	// ① 两个能力都照装（x@2 是新内容，y@1 全新）
+	if fmt.Sprint(res.Created.Capabilities) != fmt.Sprint([]string{"x@2", "y@1"}) {
+		t.Fatalf("created.capabilities want [x@2 y@1]，got %v", res.Created.Capabilities)
 	}
-	if fmt.Sprint(res.Skipped.Capabilities) != fmt.Sprint([]string{"x@2"}) {
-		t.Fatalf("skipped.capabilities want [x@2]，got %v", res.Skipped.Capabilities)
+	if len(res.Skipped.Capabilities) != 0 {
+		t.Fatalf("不该有 skipped，got %v", res.Skipped.Capabilities)
 	}
-	// ② 边装得出来，两端是 y@1 → x@1
+	x2, err := db.GetCapability(ctx, nsID, "x", 2)
+	if err != nil {
+		t.Fatalf("get x@2: %v", err)
+	}
+	if x2.ID == x1.ID {
+		t.Fatal("x@2 折叠成了 x@1：v3 的 digest 吃 version，跨版本折叠已取消")
+	}
+	// ② 边装得出来，按 manifest 声明的版本钉到 x@2（D7：声明版本优先）
 	y1, err := db.GetCapability(ctx, nsID, "y", 1)
 	if err != nil {
 		t.Fatalf("get y@1: %v", err)
@@ -1119,44 +1155,40 @@ func TestInstallPlaybookReusesSameContentDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list edges: %v", err)
 	}
-	if len(edges) != 1 || edges[0].FromRef != capRef(y1) || edges[0].ToRef != capRef(x1) {
-		t.Fatalf("边应连在 y@1 → x@1（%s → %s）上，got %+v", capRef(y1), capRef(x1), edges)
+	if len(edges) != 1 || edges[0].FromRef != capRef(y1) || edges[0].ToRef != capRef(x2) {
+		t.Fatalf("边应在 y@1 → x@2（%s → %s）上，got %d 条：from=%q to=%q",
+			capRef(y1), capRef(x2), len(edges), edges[0].FromRef, edges[0].ToRef)
 	}
-	// ③ notes 说清「同内容」与「复用」
-	joined := strings.Join(res.Notes, "\n")
-	if !strings.Contains(joined, "同内容") || !strings.Contains(joined, "复用") {
-		t.Fatalf("notes 应说清同内容复用，got %v", res.Notes)
+	// ③ 装出来的能力是 noop 占位（manifest 的 runner 不解释成实现），notes 说清楚
+	if !notesContain(res.Notes, "noop 占位") {
+		t.Fatalf("装成占位的能力应在 notes 里说明，got %v", res.Notes)
 	}
 
-	// ④ 体检：x@2 按**复用的 x@1** 算（不是 missing），边项 ok，总体不再 blocked
+	// ④ 体检：x@2 存在 → 能力项 ok 且指向 x@2；边项仍指向 x@1；总体不是 blocked
 	checks := mustChecks(t, db, pb)
 	capX := itemOf(t, checks, PlaybookItemCapability, 0)
 	if capX.Ref != "x@2" {
-		t.Fatalf("能力项的 ref 仍应是 manifest 声明的 x@2，got %q", capX.Ref)
+		t.Fatalf("能力项的 ref 应是 manifest 声明的 x@2，got %q", capX.Ref)
 	}
 	if capX.Status == PlaybookCheckMissing {
-		t.Fatalf("x@2 同内容复用了 x@1，不该再是 missing：%+v", capX)
+		t.Fatalf("x@2 已经装上了，不该是 missing：%+v", capX)
 	}
-	if capX.CapID != x1.ID {
-		t.Fatalf("能力项 capId 应是复用的 x@1（%s），got %s", x1.ID, capX.CapID)
+	if capX.CapID != x2.ID {
+		t.Fatalf("能力项 capId 应是 x@2（%s），got %s", x2.ID, capX.CapID)
 	}
 	edgeItem := itemOf(t, checks, PlaybookItemEdge, 0)
 	if edgeItem.Status != PlaybookCheckOK {
-		t.Fatalf("边项应 ok（连的就是 x@1），got %+v", edgeItem)
+		t.Fatalf("边项应 ok（连的是 x@2），got %+v", edgeItem)
 	}
-	if edgeItem.ToID != x1.ID {
-		t.Fatalf("边项 toId 应是 x@1（%s），got %s", x1.ID, edgeItem.ToID)
+	if edgeItem.ToID != x2.ID {
+		t.Fatalf("边项 toId 应是声明版本 x@2（%s），got %s", x2.ID, edgeItem.ToID)
 	}
 	if checks.Status == PlaybookStatusBlocked {
-		t.Fatalf("x 有定义（同内容复用），总体不该是 blocked：%+v", checks.Items)
+		t.Fatalf("能力都在，总体不该是 blocked：%+v", checks.Items)
 	}
 
-	// ⑤ 再装一次：created 全空、行数不变（同内容没有第二行）
+	// ⑤ 再装一次：created 全空、行数不变（append-only 幂等）
 	capsBefore := countRows(t, db, "capability_versions", "namespace_id = ?", nsID)
-	// x 只该有一行定义（同内容不产生第二行，I8）
-	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ?", nsID, "x"); n != 1 {
-		t.Fatalf("x 同内容只能有一行定义（I8），got %d", n)
-	}
 	_, again, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
 	if err != nil {
 		t.Fatalf("reinstall: %v", err)
@@ -1165,7 +1197,7 @@ func TestInstallPlaybookReusesSameContentDefinition(t *testing.T) {
 		t.Fatalf("再装一次 created 应全空，got %+v", again.Created)
 	}
 	if n := countRows(t, db, "capability_versions", "namespace_id = ?", nsID); n != capsBefore {
-		t.Fatalf("同内容不该产生第二行定义：want %d got %d", capsBefore, n)
+		t.Fatalf("再装一次不该多出行：want %d got %d", capsBefore, n)
 	}
 }
 

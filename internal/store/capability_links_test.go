@@ -28,7 +28,7 @@ func linksTarget(t *testing.T, db *DB, nsID, name string, props string) *Capabil
 	if props != "" {
 		c.ParamsSchema = json.RawMessage(`{"type":"object","properties":` + props + `}`)
 	}
-	if err := db.CreateCapability(context.Background(), c); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(c)); err != nil {
 		t.Fatalf("create target capability %s: %v", name, err)
 	}
 	return c
@@ -62,7 +62,7 @@ func TestCreateCapabilityWithLinksCreatesAll(t *testing.T) {
 	archive := linksTarget(t, db, nsID, "archive.logs", "")
 
 	c := mkCap(nsID, "chain", 1, []string{"done", "failed"})
-	impact, err := db.CreateCapabilityWithLinks(ctx, c, []LinkSpec{
+	impact, err := db.CreateCapabilityWithLinks(ctx, withSpec(c), []LinkSpec{
 		{FromPort: "done", ToRef: notify.Name, Literals: json.RawMessage(`{"text":"ok"}`)},
 		{FromPort: "failed", ToRef: capRef(archive)}, // 显式带版本 = 钉死
 	}, false)
@@ -185,7 +185,7 @@ func TestCreateCapabilityWithLinksRollsBackOnBadLink(t *testing.T) {
 			}
 
 			c := mkCap(nsID, "chain", 1, []string{"done", "failed"})
-			_, err := db.CreateCapabilityWithLinksAndArtifact(ctx, c, tc.links(nsID, target), build, false)
+			_, err := db.CreateCapabilityWithLinksAndArtifact(ctx, withSpec(c), tc.links(nsID, target), build, false)
 			if !errors.Is(err, ErrEdgeRejected) {
 				t.Fatalf("err = %v, want ErrEdgeRejected", err)
 			}
@@ -213,7 +213,7 @@ func TestCreateCapabilityWithLinksArtifactBuildFailureRollsBack(t *testing.T) {
 	build := func(cv *CapabilityVersion) (*Artifact, error) { return nil, boom }
 
 	c := mkCap(nsID, "chain", 1, []string{"done"})
-	_, err := db.CreateCapabilityWithLinksAndArtifact(ctx, c,
+	_, err := db.CreateCapabilityWithLinksAndArtifact(ctx, withSpec(c),
 		[]LinkSpec{{FromPort: "done", ToRef: target.Name}}, build, false)
 	if err == nil {
 		t.Fatal("产物构建失败必须返回错误")
@@ -237,7 +237,7 @@ func TestCreateCapabilityWithLinksArtifactInTx(t *testing.T) {
 
 	digest := "sha256:" + strings.Repeat("cd", 32)
 	c := mkCap(nsID, "chain", 1, []string{"done"})
-	res, err := db.CreateCapabilityWithLinksAndArtifact(ctx, c,
+	res, err := db.CreateCapabilityWithLinksAndArtifact(ctx, withSpec(c),
 		[]LinkSpec{{FromPort: "done", ToRef: target.Name}},
 		func(cv *CapabilityVersion) (*Artifact, error) {
 			// 回调拿到的必须是**归一后**的权威行（id 已分配、version 已定）
@@ -282,14 +282,17 @@ func TestCreateCapabilityWithLinksIdempotent(t *testing.T) {
 	}
 
 	first := mkCap(nsID, "chain", 1, []string{"done", "failed"})
-	if _, err := db.CreateCapabilityWithLinks(ctx, first, links, false); err != nil {
+	if _, err := db.CreateCapabilityWithLinks(ctx, withSpec(first), links, false); err != nil {
 		t.Fatalf("第一次提交: %v", err)
 	}
 
-	// 同内容换个版本号再提交一次（自动开版本时客户端可能就是这么发的）：
-	// content_hash 相同 → 折叠到已有行，边幂等（ON CONFLICT DO NOTHING）。
-	second := mkCap(nsID, "chain", 2, []string{"done", "failed"})
-	impact, err := db.CreateCapabilityWithLinks(ctx, second, links, false)
+	// 同 name@version、同内容再提交一次（重试 / 双击）：content_hash 相同 →
+	// 幂等折叠到已有行，边幂等（ON CONFLICT DO NOTHING）。
+	//
+	// 注意不能再拿「同内容换个版本号」来验幂等：v3 的 digest 吃 version（契约 §3.2），
+	// 换版本号就是另一份内容，跨版本折叠已经取消。
+	second := mkCap(nsID, "chain", 1, []string{"done", "failed"})
+	impact, err := db.CreateCapabilityWithLinks(ctx, withSpec(second), links, false)
 	if err != nil {
 		t.Fatalf("第二次提交: %v", err)
 	}
@@ -337,7 +340,7 @@ func TestCreateCapabilityWithLinksConcurrent(t *testing.T) {
 			c := mkCap(nsID, "chain", 1, []string{"done", "failed"})
 			caps[i] = c
 			<-ready // 尽量让两个事务同时起飞
-			_, err := db.CreateCapabilityWithLinks(ctx, c, []LinkSpec{
+			_, err := db.CreateCapabilityWithLinks(ctx, withSpec(c), []LinkSpec{
 				{FromPort: "done", ToRef: target.Name},
 				{FromPort: "failed", ToRef: target.Name},
 			}, false)
@@ -373,7 +376,7 @@ func TestCreateCapabilityWithLinksUpgradeGateStillGate(t *testing.T) {
 
 	// v1：出口 fix；v2 删掉 fix → 破坏已有 name 型 link（v1 建的同一条）
 	v1 := mkCap(nsID, "chain", 1, []string{"fix", "done"})
-	if _, err := db.CreateCapabilityWithLinks(ctx, v1, nil, false); err != nil {
+	if _, err := db.CreateCapabilityWithLinks(ctx, withSpec(v1), nil, false); err != nil {
 		t.Fatalf("v1: %v", err)
 	}
 	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "chain", FromPort: "fix", ToRef: target.Name}); err != nil {
@@ -381,7 +384,7 @@ func TestCreateCapabilityWithLinksUpgradeGateStillGate(t *testing.T) {
 	}
 
 	v2 := mkCap(nsID, "chain", 2, []string{"done"})
-	_, err := db.CreateCapabilityWithLinks(ctx, v2, []LinkSpec{{FromPort: "done", ToRef: target.Name}}, false)
+	_, err := db.CreateCapabilityWithLinks(ctx, withSpec(v2), []LinkSpec{{FromPort: "done", ToRef: target.Name}}, false)
 	var breaking *UpgradeBreakingError
 	if !errors.As(err, &breaking) {
 		t.Fatalf("删除被引用的出口必须被闸门拦住, err = %v", err)
@@ -395,7 +398,7 @@ func TestCreateCapabilityWithLinksUpgradeGateStillGate(t *testing.T) {
 		t.Fatalf("被闸门拒绝却写入了边")
 	}
 	// force=true 才放行
-	if _, err := db.CreateCapabilityWithLinks(ctx, mkCap(nsID, "chain", 2, []string{"done"}),
+	if _, err := db.CreateCapabilityWithLinks(ctx, withSpec(mkCap(nsID, "chain", 2, []string{"done"})),
 		[]LinkSpec{{FromPort: "done", ToRef: target.Name}}, true); err != nil {
 		t.Fatalf("force=true 应放行: %v", err)
 	}

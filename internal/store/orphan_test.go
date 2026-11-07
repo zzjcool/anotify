@@ -33,7 +33,7 @@ func seedOrphanEnv(t *testing.T, db *DB, ageSec int64) (nsID, capID, taskID stri
 		ParamsSchema: json.RawMessage(`{"type":"object"}`),
 		CreatedAt:    Now(),
 	}
-	if err := db.CreateCapability(ctx, capRec); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capRec)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	taskID = NewTaskID()

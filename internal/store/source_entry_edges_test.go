@@ -25,7 +25,7 @@ func entrySourceFixture(t *testing.T) (db *DB, nsID string, capA, capB *Capabili
 	capB = mkCap(nsID, "archive", 1, nil)
 	capB.ParamsSchema = json.RawMessage(`{"type":"object","properties":{"env":{"type":"string"}}}`)
 	for _, c := range []*CapabilityVersion{capA, capB} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability %s: %v", c.Name, err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestCreateSourceRejectsBadMapping(t *testing.T) {
 
 	capDef := mkCap(nsID, "notify", 1, nil)
 	capDef.ParamsSchema = json.RawMessage(`{"type":"object","properties":{"to":{"type":"string"}}}`)
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 

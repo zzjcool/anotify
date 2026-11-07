@@ -79,7 +79,7 @@ func TestSeqInTraceConcurrentAssignIsUnique(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp-seq-concurrent")
@@ -131,7 +131,7 @@ func TestSeqInTraceConcurrentLeaseAndAssignIsUnique(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestSeqInTraceGroupsByTraceAndCapabilityName(t *testing.T) {
 	review2 := mkCap(nsID, "review", 2, []string{"fix"}) // 同名不同版本 = 同一个能力的两次执行
 	notify := mkCap(nsID, "notify", 1, []string{"fix"})
 	for _, c := range []*CapabilityVersion{review1, review2, notify} {
-		if err := db.CreateCapability(ctx, c); err != nil {
+		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
 			t.Fatalf("create capability %s@%d: %v", c.Name, c.Version, err)
 		}
 	}
@@ -253,7 +253,7 @@ func TestSeqInTraceStableAcrossRedispatch(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp-seq-redispatch")
@@ -314,7 +314,7 @@ func TestSeqInTraceRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp-seq-roundtrip")
@@ -375,7 +375,7 @@ func TestSeqInTraceZeroUntilDispatched(t *testing.T) {
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(context.Background(), capv); err != nil {
+	if err := db.CreateCapability(context.Background(), withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	batch := mkSeqTaskBatch(t, db, nsID, "trace_seq_zero", capv, 3)
@@ -398,7 +398,7 @@ func TestMigration5SeqInTraceWorksOnExistingDB(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capv := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, capv); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capv)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	// 迁移 5 之后建的任务行（模拟“老库里的历史数据”）。

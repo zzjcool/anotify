@@ -105,7 +105,7 @@ func TestSourceCRUD(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.target", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +163,7 @@ func TestSourceValidation(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.t2", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func TestSourceWebhookToken(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.t3", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,7 +252,7 @@ func TestSourceKindImmutable(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.t4", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,7 +275,7 @@ func TestDueCronSources(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.t5", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +308,7 @@ func TestCreateSourceRejectsReservedName(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.reserved", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -351,7 +351,7 @@ func TestUpdateSourceRejectsReservedName(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.rename", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -524,7 +524,7 @@ func TestSourceConfigKeepsVars(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.vars", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -686,7 +686,7 @@ func TestValidateSourceConfigPayloadOnlyForKeepingKinds(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.payload-kind", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 	src := &Source{
@@ -778,7 +778,7 @@ func TestValidateSourceConfigRejectsBadVars(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.badvars", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 	err := db.CreateSource(ctx, &Source{
@@ -807,7 +807,7 @@ func TestSourceResultSchemaRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.schema", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -907,7 +907,7 @@ func TestSourceResultSchemaValidation(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.badschema", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 	err := db.CreateSource(ctx, &Source{
@@ -934,7 +934,7 @@ func TestUpdateSourceKeepsResultSchema(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	capA := mkCap(nsID, "demo.updschema", 1, []string{"ok"})
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatal(err)
 	}
 	rawSchema := `{"type":"object","required":["title"]}`

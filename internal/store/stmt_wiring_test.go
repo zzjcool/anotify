@@ -150,7 +150,7 @@ func newWiringEnv(t *testing.T) *wiringEnv {
 		NamespaceID: ns.ID, Name: "wiring.probe", Version: 1,
 		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
 	}
-	if err := db.CreateCapability(ctx, capDef); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	if capDef.ContentHash == "" {

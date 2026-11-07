@@ -32,7 +32,7 @@ func setupTaskFixture(t *testing.T) (db *DB, nsID string, cap *CapabilityVersion
 	ctx := context.Background()
 	nsID, _ = newTestNS(t, db)
 	cap = mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
 	task = mkTask(nsID, "trace_1", cap)
@@ -99,7 +99,7 @@ func setupRunningTask(t *testing.T) (db *DB, nsID, nodeID string, cap *Capabilit
 	db = newTestDB(t)
 	nsID, _ = newTestNS(t, db)
 	cap = mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	node, _ := mkNode(t, db, nsID, "mbp")
@@ -434,7 +434,7 @@ func TestCreateTasksAtomic(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 
@@ -463,7 +463,7 @@ func TestCreateTasksFanout(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	var batch []*Task
@@ -501,7 +501,7 @@ func TestCreateTasksRejectsNonPending(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	task := mkTask(nsID, "trace_1", cap)
@@ -627,7 +627,7 @@ func TestListTasksFilters(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, cap); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	a := mkTask(nsID, "trace_a", cap)
@@ -665,7 +665,7 @@ func TestTaskNamespaceIsolation(t *testing.T) {
 	nsA, _ := newTestNS(t, db)
 	nsB, _ := newTestNS(t, db)
 	capA := mkCap(nsA, "review", 1, nil)
-	if err := db.CreateCapability(ctx, capA); err != nil {
+	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
 		t.Fatalf("create cap: %v", err)
 	}
 	task := mkTask(nsA, "trace_iso", capA)
