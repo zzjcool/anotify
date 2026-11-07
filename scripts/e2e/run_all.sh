@@ -64,5 +64,10 @@ echo "  ✅ 二进制就绪"
 # 3. 委托 Node 并行执行器
 #    注：go test ./... 已拆到 `make test`，不再阻塞 e2e
 echo ""
-node scripts/e2e/parallel_runner.mjs "$@"
+#
+#    外面套一层临时目录守卫（#326）：/tmp 是 tmpfs，泄漏吃的是内存。守卫给
+#    被包命令一个私有 TMPDIR，跑完断言其中没有 anotify-* 残留 —— 归因隔离而
+#    不是直接比对 /tmp，本机同时有别的 e2e / 测试在跑也不会误报（见 E2E_TESTING.md）。
+node scripts/check-tmp-leaks.mjs --lint || exit $?
+node scripts/check-tmp-leaks.mjs -- node scripts/e2e/parallel_runner.mjs "$@"
 exit $?
