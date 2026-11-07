@@ -19,9 +19,6 @@
  *  7. 参数校验：olderThan=0 / 乱写 → 400；未登录 → 401
  *  8. `namespaceId=*` 可用（诊断需要一次看全）
  */
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
 

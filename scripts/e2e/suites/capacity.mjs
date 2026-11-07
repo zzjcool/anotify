@@ -22,8 +22,7 @@
  *  9. `ANOTIFY_EVENT_RETENTION_DAYS=0` → 永久保留：同样 40 天前的事件**不**被删，
  *     且启动日志明确写了「磁盘会持续增长」
  */
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
@@ -433,7 +432,7 @@ async function runRetention(days) {
 			//     即使拷到一帧写到一半的尾部，SQLite 也会丢掉它而不是读出错数据。
 			//     拷完再 stop，然后对新库做一次 checkpoint 把 WAL 回写进主库。
 			const beforeRows = countEvents(dbPath);
-			const reuseDir = mkdtempSync(join(tmpdir(), "anotify-cap-reuse-"));
+			const reuseDir = H.mkdtempTmp("anotify-cap-reuse-");
 			const reuseDB = join(reuseDir, "test.db");
 			copyFileSync(dbPath, reuseDB);
 			if (existsSync(`${dbPath}-wal`)) copyFileSync(`${dbPath}-wal`, `${reuseDB}-wal`);
@@ -471,7 +470,7 @@ async function runRetention(days) {
 				);
 			} finally {
 				again.stop();
-				rmSync(reuseDir, { recursive: true, force: true });
+				H.removeTmpDir(reuseDir);
 			}
 		} else {
 			H.check("永久保留：40 天前的事件不被删", !swept, "被清理了（0 应该是永久保留）");

@@ -12,8 +12,6 @@
  * 与旧版的区别：旧版测 messages 表与 seq 连续性（已下线模型）；
  * 现在测 events/tasks 的存活与状态机恢复。
  */
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as H from "../lib/harness.mjs";
@@ -47,7 +45,9 @@ async function main() {
 	console.log("=== SUITE: persistence（事件中心状态存活）===");
 	H.startTimer();
 
-	const tmp = mkdtempSync(path.join(tmpdir(), "anotify-persist-"));
+	// 临时库目录必须走 H.mkdtempTmp 登记（#326）：/tmp 是 tmpfs，泄漏吃内存。
+	// 正常路径 finally 里 removeTmpDir；崩溃/提前退出时 harness 的 exit hook 兜底。
+	const tmp = H.mkdtempTmp("anotify-persist-");
 	const dbPath = path.join(tmp, "persist.db");
 	const extraEnv = { ANOTIFY_DB: dbPath };
 
@@ -203,7 +203,7 @@ async function main() {
 
 		server.stop();
 	} finally {
-		rmSync(tmp, { recursive: true, force: true });
+		H.removeTmpDir(tmp);
 	}
 
 	const allPassed = H.summary("persistence");

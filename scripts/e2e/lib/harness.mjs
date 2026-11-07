@@ -56,6 +56,54 @@ export function eq(name, actual, expected) {
 		typeof expected === "object" ? JSON.stringify(expected) : String(expected);
 	check(name, a === e, `期望 ${e} 实际 ${a}`);
 }
+
+// ---------- 临时目录（#326） ----------
+//
+// 本机 `/tmp` 是 tmpfs：泄漏的临时目录吃的是**内存**，不是磁盘。2026-11 一次
+// 清理就从 /tmp 回收了 4.5G（281 个 anotify-agent-bin + 1424 个 anotify-e2e-*）。
+//
+// 所以 e2e 里**不允许**裸写 `mkdtempSync(tmpdir(), ...)`，统一走 mkdtempTmp：
+//   - 创建即登记（liveTmpDirs）；
+//   - 正常路径调用 removeTmpDir(dir) 立刻删并注销（建议放 finally）；
+//   - 进程退出（断言崩溃 / process.exit / 未捕获异常）由 exit hook 兜底删。
+//     exit hook 里只能做同步操作，而 rmSync 恰好是同步的。
+//
+// 新增套件即使忘了 finally 也不会把 /tmp 撑爆；scripts/check-tmp-leaks.mjs
+// 会在 `make ci` / `run_all.sh` 里断言「本次运行没有新增 /tmp/anotify-*」。
+const liveTmpDirs = new Set();
+let tmpExitHookInstalled = false;
+
+// mkdtempTmp 建临时目录并登记。parentDir 只给「套件自己的根目录下再建子目录」
+// 用（例如 live_agent 的项目目录）；默认就是系统临时目录。
+export function mkdtempTmp(prefix, parentDir) {
+	const dir = mkdtempSync(path.join(parentDir || tmpdir(), prefix));
+	liveTmpDirs.add(dir);
+	if (!tmpExitHookInstalled) {
+		tmpExitHookInstalled = true;
+		process.on("exit", () => {
+			for (const d of liveTmpDirs) {
+				try {
+					rmSync(d, { recursive: true, force: true });
+				} catch {
+					/* 退出路径上已无计可施：守卫脚本会把它抓出来 */
+				}
+			}
+		});
+	}
+	return dir;
+}
+
+// removeTmpDir 删除并注销一个 mkdtempTmp 目录（幂等，空路径是 no-op）。
+export function removeTmpDir(dir) {
+	if (!dir) return;
+	liveTmpDirs.delete(dir);
+	try {
+		rmSync(dir, { recursive: true, force: true });
+	} catch {
+		/* 清理失败不影响断言结论：残留会被守卫列为本次新增 */
+	}
+}
+
 export function summary(suiteName) {
 	summaryCalled = true;
 	console.log(`\n[${suiteName}] ${passCount} 通过 / ${failCount} 失败`);
@@ -629,7 +677,11 @@ export async function startServer({
 	const expectBoot = `e2e-${randomUUID()}`;
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const p = basePort + attempt;
-		const tmp = mkdtempSync(path.join(tmpdir(), "anotify-e2e-"));
+		// 每次尝试一个新目录（库里不能带上次的残留），但**必须**在 continue /
+		// 重试前删掉：端口冲突失败的那几次正是泄漏大头（1424 个 anotify-e2e-*
+		// 主要来自并行套件抢端口）。用 mkdtempTmp 登记后，即使这里漏了删除，
+		// 进程退出时也会被兜底收走。
+		const tmp = mkdtempTmp("anotify-e2e-");
 		const dbPath = path.join(tmp, "test.db");
 		const origin =
 			rpId === "localhost" ? `http://localhost:${p}` : `https://${rpId}`;
@@ -701,6 +753,7 @@ export async function startServer({
 			// 把自己刚 spawn 的进程收掉（它多半已因 bind 失败退出）
 			try { proc.kill("SIGKILL"); } catch { /* 已退出 */ }
 			lastErr = `${foreign} —— 上一次 e2e 的 server 没退干净，或另一个 worktree 正在跑同一套件`;
+			removeTmpDir(tmp); // 失败尝试也必须零残留（#326）
 			continue;
 		}
 		if (up) {
@@ -746,14 +799,14 @@ export async function startServer({
 						const until = Date.now() + 10;
 						while (Date.now() < until) { /* 短忙等 10ms */ }
 					}
-					rmSync(tmp, { recursive: true, force: true });
+					removeTmpDir(tmp);
 				},
 			};
 		}
 		// 健康/启动失败：kill 进程，清理，记日志，换端口重试
 		lastErr = logBuf;
 		try { proc.kill(); } catch { /* ignore */ }
-		rmSync(tmp, { recursive: true, force: true });
+		removeTmpDir(tmp);
 	}
 	throw new Error(`服务启动失败（试 ${5} 个端口均不可用）:\n${lastErr}`);
 }
