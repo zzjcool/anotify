@@ -573,6 +573,8 @@ make ci
 
 `scripts/e2e/lib/harness.mjs`：服务生命周期（自动分配端口/临时 DB/等健康）、HTTP 客户端（key/session 注入）、断言收集、devseed 播种。每个套件独立起服务，互不干扰。`run_all.sh` 套件间加 1.5s 间隔避免端口释放时序问题。
 
+**e2e 的默认浏览器语言 = 站点默认语言（zh-CN）**：`harness.mjs` 给子进程设 `LANGUAGE=zh_CN.UTF-8`（Chrome 据此推导 `navigator.languages`），因为语言提示条（`.lang-hint`）全站按「浏览器首选语言 ≠ 当前页语言」出现，Playwright 默认的 en-US 会让每个中文页面凭空多出一条 45px 横幅，给布局类断言加噪声。需要别的语言时用 `browser.newContext({ locale })`（会覆盖默认值）；全局改：`E2E_BROWSER_LANG=en_US.UTF-8`。
+
 ### 关键技术：Passkey 自动化
 
 Playwright CDP 虚拟认证器（`WebAuthn.addVirtualAuthenticator`）让 WebAuthn 注册/登录无头完成，**无需真人生物识别**。这是把 auth 全流程自动化的关键。注意：虚拟认证器 BackupEligible 默认 false，覆盖不到真实同步型 Passkey（true）的路径——该不变量由 store 单测 `TestPasskey_BackupEligibleRoundtrip` 覆盖。

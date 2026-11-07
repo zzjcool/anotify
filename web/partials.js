@@ -493,6 +493,56 @@
 		}
 	}
 
+	/* ---------- 语言习惯的本机记忆（localStorage） ----------
+	 *
+	 * 语言提示条（.lang-hint）全站按「浏览器首选语言 ≠ 当前页语言」出现，所以需要
+	 * 一份“用户自己表态过”的记忆，否则会一直唠叨：
+	 *
+	 *   chosen    用户主动选过的语言（侧栏/登录页语言切换器，或点过横幅的「切换」）。
+	 *             有它就不再拿浏览器语言去劝，反而以它为准；它等于当前页语言时完全不弹。
+	 *   dismissed 用户 X 掉的目标语言列表（按语言码记，不是全局静音）：
+	 *             关掉英文提示后，若浏览器首选语言换成日文，新的日文提示仍然有效。
+	 *
+	 * 存储形状：{ "chosen": "en", "dismissed": ["en"] }，键名 anotify-lang-hint。
+	 * localStorage 不可用（隐私模式/配额）时全部退化成“每次重新判断”，不影响渲染。 */
+	const LANG_HINT_KEY = "anotify-lang-hint";
+	function readLangHintState() {
+		const empty = { chosen: "", dismissed: [] };
+		try {
+			const raw = JSON.parse(localStorage.getItem(LANG_HINT_KEY) || "null");
+			/* 早期版本只存了一个目标语言数组，兼容一下 */
+			if (Array.isArray(raw))
+				return { chosen: "", dismissed: raw.filter((c) => typeof c === "string") };
+			if (!raw || typeof raw !== "object") return empty;
+			return {
+				chosen: typeof raw.chosen === "string" ? raw.chosen : "",
+				dismissed: Array.isArray(raw.dismissed)
+					? raw.dismissed.filter((c) => typeof c === "string")
+					: [],
+			};
+		} catch (_) {
+			return empty;
+		}
+	}
+	function writeLangHintState(state) {
+		try {
+			localStorage.setItem(LANG_HINT_KEY, JSON.stringify(state));
+		} catch (_) {
+			/* 写不进去：本次照常，只是下次还会提示 */
+		}
+	}
+	function rememberDismissedLang(code) {
+		const state = readLangHintState();
+		if (!state.dismissed.some((c) => c.toLowerCase() === code.toLowerCase()))
+			state.dismissed.push(code);
+		writeLangHintState(state);
+	}
+	function rememberChosenLang(code) {
+		const state = readLangHintState();
+		state.chosen = code;
+		writeLangHintState(state);
+	}
+
 	/* ---------- Language switcher dropdown (shared builder) ----------
 	 * Creates a trigger button + popup menu from language data.
 	 * Used by both the sidebar switcher (JS-built) and the login page
@@ -583,6 +633,11 @@
 				el("span", { text: item.label }),
 			);
 			if (item.isCurrent) a.setAttribute("aria-current", "true");
+			/* 用户自己选了语言 = 语言习惯（见 LANG_HINT_KEY）：以后一切以这次选择为准，
+			 * 不再按浏览器语言劝他换 —— 否则“手动切到英文站”之后，英文页面上
+			 * 反而会弹“本网站提供简体中文版本”。只在点非当前语言时记。 */
+			if (!item.isCurrent)
+				a.addEventListener("click", () => rememberChosenLang(item.code));
 			menuItems.push(a);
 			menu.append(a);
 		}
@@ -2319,14 +2374,14 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	/* ---------- Language hint banner (progressive enhancement) ----------
 	 * Shows a dismissible top banner when the visitor's browser language
 	 * differs from the current page language AND the site has that language.
-	 * Pure client-side: no redirect, no storage, no build-time DOM.
+	 * Pure client-side: no redirect, no build-time DOM.
 	 * Must run AFTER mountLayout (which prepends the layout root) so the
-	 * banner lands as body's first child. */
+	 * banner lands as body's first child.
+	 *
+	 * 全站生效（含 login）：早期只白名单了 login/index，用户反馈“别的页面看不到提示”。
+	 * 现在由“浏览器首选语言 ≠ 当前页语言”决定，不再看页名；是否骚扰由本机记忆兜着
+	 * （主动选过的语言 + 关掉过的目标语言，见 LANG_HINT_KEY）。 */
 	function mountLangHint() {
-		/* Only on index/login pages */
-		const page = document.body.getAttribute("data-page") || "";
-		if (page !== "index.html" && page !== "login.html") return;
-
 		/* Idempotent: don't double-insert */
 		if (document.querySelector(".lang-hint")) return;
 
@@ -2364,8 +2419,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		   language (e.g. prefs ["zh-CN","en"] on a zh-CN page must NOT
 		   produce an English hint). */
 		let target = null;
-		for (const pref of prefs) {
-			let resolved = null;
+		for (const pref of prefs) {			let resolved = null;
 			/* exact match */
 			for (const lower of Object.keys(lowerToCanon)) {
 				if (lower === pref) {
@@ -2390,8 +2444,31 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				break; /* first resolvable preference decides, for better or worse */
 			}
 		}
+		/* 3b) 语言习惯优先：用户主动选过语言就以那次选择为准（侧栏/登录页切换器，
+		 * 或点过横幅的「切换」）。浏览器首选语言只是“没选过”时的默认值。
+		 * 这顺手解决一个反向骚扰：中文浏览器手动切到英文站后，不该在英文页上
+		 * 又劝他切回中文。注意必须放在下面的 return 之前 —— chosen 不等于当前页时
+		 * 即使浏览器首选语言就是当前页，也仍然值得提示。 */
+		const hintState = readLangHintState();
+		if (hintState.chosen) {
+			target =
+				hintState.chosen.toLowerCase() === currentLower ||
+				!alternates[hintState.chosen]
+					? null
+					: { code: hintState.chosen, href: alternates[hintState.chosen] };
+		}
 		if (!target)
-			return; /* preferred language is current page, or none supported */
+			return; /* 已经在用户要的语言里，或浏览器首选语言 = 当前页、站点不支持他的语言 */
+
+		/* 3c) 本机已关掉过同一个目标语言 → 不再弹。
+		 * 记的是目标语言码而不是一个 bool：换了浏览器首选语言、或页面本身换了语言，
+		 * 新的提示仍然是新信息（如已知英文的人到了日语页，提示中文是有效的）。 */
+		if (
+			hintState.dismissed.some(
+				(c) => c.toLowerCase() === target.code.toLowerCase(),
+			)
+		)
+			return;
 
 		/* 4) Validate i18n strings resolved (prevent bare-key banner, §6.4) */
 		const textKey = "common.lang.hint.text." + target.code;
@@ -2437,6 +2514,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			},
 			icon(["M18 6L6 18", "M6 6l12 12"], "h-4 w-4"),
 		);
+		/* 点「切换」= 用户表了态（选了目标语言）：记进语言习惯，之后以它为准。
+		 * 不只在 dismissed 里记：否则回到原语言页会又弹一次，等于没记住用户的选择。 */
+		actionEl.addEventListener("click", () => rememberChosenLang(target.code));
 
 		const inner = el(
 			"div",
@@ -2470,23 +2550,60 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 		/* 5b) F8：提示条在流内（不是 overlay），会把整页推下去。侧栏是
 		 * height:100dvh 的 sticky 元素，不修正就会比视口多出一条提示条的高度，
-		 * 底部用户块被裁。把真实高度写给 --shell-top-offset（见 ui.css .app-sidebar）。
+		 * 底部用户块被裁。把「横幅还占着多少视口高度」写给 --shell-top-offset
+		 * （见 ui.css .app-sidebar）。
+		 *
+		 * 但这个偏移量必须跟着滚动走，不能写死成横幅高度：横幅会随页面滚出视口，
+		 * 一旦滚出去它就不再占位，而侧栏还挂着 45px 的 top —— 顶栏是 sticky top:0，
+		 * 于是下滑之后侧栏顶部永远比顶栏低一条横幅（截图里的那条空白）。
+		 * 所以写的是「横幅还有多少没滚出视口」= clamp(横幅高 − scrollY, 0, 横幅高)：
+		 * top 与 height 用同一个量，侧栏底边在整段滚动里都贴着视口底（F8 不复发），
+		 * 滚过横幅后 top 归 0，与顶栏重新对齐。
 		 *
 		 * P0-2：首帧即终态。--instant 关掉 max-height/opacity 过渡，插入的同一任务内
 		 * 就加 --open 并立刻量高。旧实现用双 rAF 展开 + ResizeObserver 逐帧回写，
 		 * 结果 #app-shell 在首帧之后从 y=0 逐帧下滑 44–45px（banner 段 CLS 0.03+）。
 		 * 窄屏两行按实际高度量，不写死 45。 */
 		banner.classList.add("lang-hint--instant", "lang-hint--open");
-		const syncTopOffset = () => {
-			/* 关闭后（断开连接）不再写变量：否则滞后一次 resize/字体回调会把已归零的
-			 * 偏移写回一个高度，侧栏又莫名短一截。 */
+
+		let bannerH = 0;
+		let appliedOffset = -1; /* 已写进 CSS 变量的值，避免同一帧重复写 */
+		const applyTopOffset = () => {
+			/* 关闭后（断开连接）不再写变量：否则滞后一次 resize/字体/滚动回调会把
+			 * 已归零的偏移写回一个高度，侧栏又莫名短一截。 */
 			if (!banner.isConnected) return;
+			const raw = bannerH - window.scrollY;
+			/* 留 0.01 的容差：滚到头时把浮点残渣归成真 0，否则 top 永远差个亚像素，
+			 * 侧栏就不会干净地贴回视口顶。 */
+			const offset = raw <= 0.01 ? 0 : Math.round(raw * 100) / 100;
+			if (offset === appliedOffset) return;
+			appliedOffset = offset;
 			document.documentElement.style.setProperty(
 				"--shell-top-offset",
-				banner.getBoundingClientRect().height + "px",
+				offset + "px",
 			);
 		};
+
+		/* 滚动时逐帧只写一个 CSS 变量（已按 rAF 合并、值不变就不写）：
+		 * 不量布局、不碰别的元素，所以不会带回 CLS 那类抖动。 */
+		let scrollRaf = 0;
+		const onScroll = () => {
+			if (scrollRaf) return;
+			scrollRaf = requestAnimationFrame(() => {
+				scrollRaf = 0;
+				applyTopOffset();
+			});
+		};
+
+		const syncTopOffset = () => {
+			if (!banner.isConnected) return;
+			bannerH = banner.getBoundingClientRect().height;
+			appliedOffset = -1;
+			applyTopOffset();
+		};
 		syncTopOffset();
+		/* passive：滚动是热路径，别让监听器挡住合成器滚动 */
+		window.addEventListener("scroll", onScroll, { passive: true });
 
 		/* 只有两件事会改 banner 高度：字体加载完（换行点变）/ 旋转或缩放。
 		 * 不用 ResizeObserver 逐帧写 —— 那正是外壳逐帧下滑的来源。 */
@@ -2503,16 +2620,22 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		 * 保留焦点转移：关掉横幅后焦点不能丢在 body 上。 */
 		function closeHint() {
 			window.removeEventListener("resize", onResize);
+			window.removeEventListener("scroll", onScroll);
 			clearTimeout(resizeTimer);
+			if (scrollRaf) cancelAnimationFrame(scrollRaf);
+			/* 用户明确拒绝了这个目标语言 → 记在本机，以后不再弹同一个提示。
+			 * 必须在 banner.remove() 前写：target 是外层的语言对象，别和下面
+			 * 的 focusTarget 搞混。 */
+			rememberDismissedLang(target.code);
 			/* 提示条消失 = 顶部偏移归零，侧栏恢复满高 */
 			document.documentElement.style.setProperty("--shell-top-offset", "0px");
 			banner.remove();
 			/* Move focus to first focusable in header or main */
-			const target =
+			const focusTarget =
 				document.querySelector(
 					"header a, header button, main a, main button",
 				) || null;
-			if (target) target.focus();
+			if (focusTarget) focusTarget.focus();
 		}
 
 		closeBtn.addEventListener("click", closeHint);

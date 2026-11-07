@@ -19,7 +19,7 @@
  *  3) 折叠态同样不抖：localStorage anotify-sidebar=collapsed 后 index 加载，
  *     nav.y 唯一、#sidebar 宽 76。
  *  4) 慢 JS 预排版（base.html 的 html:not([data-shell-ready]) #page-main 规则）
- *     partials.js 延迟 500ms 再挂外壳：这 500ms 里 #page-main 必须已经在
+ *     partials.js 延迟 1200ms 再挂外壳：这段窗口里 #page-main 必须已经在
  *     264/76 的位置（而不是先 0 再跳过去），.page 的 x 全程唯一（展开 296 / 折叠 158）。
  *     旧实现挂外壳前页面是"裸的"：整页先按 x=0 排一遍，外壳一到整页右移 264px。
  *
@@ -423,7 +423,7 @@ async function main() {
 	}
 
 	// ---------- 4) 慢 JS 预排版：外壳挂载前 #page-main 就在正确位置 ----------
-	console.log("--- 4) 慢 JS 预排版（partials.js 延迟 500ms）---");
+	console.log("--- 4) 慢 JS 预排版（partials.js 延迟 1200ms）---");
 	for (const mode of ["expanded", "collapsed"]) {
 		const collapsed = mode === "collapsed";
 		// 期望值（1440 宽）：#page-main 首值 = 侧栏宽；.page 的 x 全程恒定。
@@ -432,14 +432,18 @@ async function main() {
 		const ctx = await newCtx({ collapsed });
 		await injectSession(ctx, s.session, server.base);
 		const page = await ctx.newPage();
-		// partials.js 就是挂外壳的那段 JS。延迟 500ms ≈ 30 帧：预排版规则
-		// （html:not([data-shell-ready]) #page-main）必须在这 500ms 里把页面摆好。
+		// partials.js 就是挂外壳的那段 JS。延迟 1200ms ≈ 70 帧：预排版规则
+		// （html:not([data-shell-ready]) #page-main）必须在这段窗口里把页面摆好。
 		//
 		// 路径不能写 `**/partials.js*` 这种死名字：产物是**指纹化**的
 		// （实测请求 /partials.0dc01f51.js），glob 会一个都不匹配 ——
 		// 那样 page.route 静默失效，用例就变成「延迟根本没发生」的假绿。
 		await page.route(/\/partials(\.[0-9a-f]+)?\.js/, async (route) => {
-			await new Promise((r) => setTimeout(r, 500));
+			/* 1200ms 而不是 500ms：探针的首帧可能被启动开销拖到 300ms+，
+			 * 只剩 200ms 的窗口在满负载机器上只有 4~7 帧，
+			 * 「外壳挂载前 ≥10 帧」这条就变成看机器脸色的 flake。
+			 * 窗口拉长不降低断言强度（仍然要求 ≥10 帧真实采样）。 */
+			await new Promise((r) => setTimeout(r, 1200));
 			await route.continue();
 		});
 		await page.goto(server.base + "/index.html", {

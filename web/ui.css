@@ -2186,8 +2186,9 @@ html.flograph-fullscreen-open body {
 	flex: 0 0 var(--shell-sidebar-w);
 	position: sticky;
 	/* 语言提示条（.lang-hint）在流内时会占掉页面顶部一段高度（F8：900 高下
-	 * 底栏被裁 45px）。partials.js 把它的实际高度写到 --shell-top-offset，
-	 * 侧栏据此下移并收短，footer 就永远在视口内。 */
+	 * 底栏被裁 45px）。partials.js 把「横幅还有多少没滚出视口」写到
+	 * --shell-top-offset（滚出后归 0），侧栏据此下移，并从同一高度里收短，
+	 * footer 就永远贴着视口底、且下滑后顶部与 sticky 顶栏对齐。 */
 	top: var(--shell-top-offset, 0px);
 	align-self: flex-start;
 	height: calc(100dvh - var(--shell-top-offset, 0px));

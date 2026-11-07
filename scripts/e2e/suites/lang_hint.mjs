@@ -4,7 +4,7 @@
  * Verifies the language hint banner per lang-hint-requirements.md §8 ACs.
  * The banner is pure client-side: it detects navigator.language mismatch
  * and shows a dismissible top bar linking to the same page in the detected
- * language. No redirect, no storage, no build-time DOM.
+ * language. No redirect, no build-time DOM.
  *
  * AC coverage:
  *   AC-1   matching language → no banner (zh-CN browser on zh-CN page, etc.)
@@ -12,10 +12,11 @@
  *   AC-3   unsupported language (fr, ko) → no banner
  *   AC-4   traditional Chinese prefix-match (zh-TW → zh-CN target per coordinator ruling)
  *   AC-5   click action navigates to same page in target lang, query+hash preserved
- *   AC-6   close button dismisses; refresh re-shows (no storage)
+ *   AC-6   关掉后记住（本机 localStorage）：刷新不再弹；清掉记忆后再弹
  *   AC-7   build-time HTML has zero banner markup (crawler/SEO safe)
  *   AC-9   mobile 390 viewport: no horizontal overflow
- *   scope  only login.html + index.html show banner; keys.html does not
+ *   scope  全站生效：keys/events 等工作台页也弹（不再只 login/index）
+ *   AC-11  横幅滚出视口后侧栏与顶栏重新对齐（F8 不复发）
  *
  * NOTE on copy: the design doc (lang-hint-design.md §6.2) is the source of
  * truth for banner text. The requirements doc §5.1 suggested shorter copy
@@ -514,9 +515,9 @@ async function main() {
 	}
 
 	/* =========================================================
-	 * AC-6: close dismisses; refresh re-shows (no storage)
+	 * AC-6: close 记住（本机 localStorage）；刷新不再弹；清掉记忆再弹
 	 * ========================================================= */
-	console.log("--- AC-6: close + refresh (no storage) ---");
+	console.log("--- AC-6: close + 本机记忆 ---");
 	{
 		/* AC-6.1: show banner, click close → banner gone */
 		const { pg, ctx } = await openWithLocale(
@@ -545,28 +546,190 @@ async function main() {
 		await ctx.close();
 	}
 	{
-		/* AC-6.2: after refresh, banner reappears (no storage) */
+		/* AC-6.2: 关掉后刷新 → 不再弹（这台机器记住了）
+		 * AC-6.3: 清掉 localStorage → 又弹（记忆可清） */
 		const { pg, ctx } = await openWithLocale(
 			browser,
 			server.base,
 			"/login.html",
 			"en-US",
 		);
-		/* Close it first */
 		const closeBtn = await pg.$(".lang-hint-close");
+		H.check("AC-6.2 前置：先关掉横幅", !!closeBtn, "no close button");
 		if (closeBtn) {
 			await closeBtn.click();
 			await pg.waitForSelector(".lang-hint", { state: "detached", timeout: 5000 }).catch(() => {});
 		}
-		/* Reload */
+		const stored = await pg.evaluate(() =>
+			localStorage.getItem("anotify-lang-hint"),
+		);
+		H.check(
+			"AC-6.2 关闭后把目标语言记进 localStorage",
+			!!stored && stored.includes("en"),
+			`storage=${stored}`,
+		);
 		await pg.reload({ waitUntil: "load" });
 		await H.waitForAppReady(pg, "login");
-		const banner = await getBanner(pg);
 		H.check(
-			"AC-6.2 banner reappears after refresh (no storage)",
-			!!banner,
-			"no banner after refresh",
+			"AC-6.2 刷新后不再弹（同一台电脑）",
+			!(await getBanner(pg)),
+			"banner reappeared after dismiss",
 		);
+		/* 清掉记忆 → 回到“从没看过”的状态 */
+		await pg.evaluate(() => localStorage.clear());
+		await pg.reload({ waitUntil: "load" });
+		await H.waitForAppReady(pg, "login");
+		H.check(
+			"AC-6.3 清掉记忆后重新弹",
+			!!(await getBanner(pg)),
+			"no banner after clearing storage",
+		);
+		await ctx.close();
+	}
+	{
+		/* AC-6.4: 记忆是按目标语言记的，不是一个全局静音开关：
+		 * 关掉英文提示之后，若浏览器首选语言换成了日文（目标 ja），新的提示仍然出。 */
+		const { pg, ctx } = await openWithLocale(
+			browser,
+			server.base,
+			"/login.html",
+			"en-US",
+		);
+		await pg.click(".lang-hint-close");
+		await pg.waitForSelector(".lang-hint", { state: "detached", timeout: 5000 }).catch(() => {});
+		await ctx.addInitScript(() => {
+			Object.defineProperty(navigator, "languages", {
+				get: () => ["ja-JP", "ja"],
+			});
+			Object.defineProperty(navigator, "language", { get: () => "ja-JP" });
+		});
+		await pg.goto(server.base + "/login.html", { waitUntil: "load" });
+		await H.waitForAppReady(pg, "login");
+		const other = await getBanner(pg);
+		H.check(
+			"AC-6.4 换了一个目标语言（ja）→ 新提示照弹",
+			!!other,
+			"no banner for a different target language",
+		);
+		if (other) {
+			const text = (await pg.textContent(".lang-hint-text")) || "";
+			H.check(
+				"AC-6.4 新提示文案是日文",
+				text.includes(BANNER_TEXT.ja),
+				`got "${text.trim()}"`,
+			);
+		}
+		await ctx.close();
+	}
+	{
+		/* AC-6.5: 点「切换」= 记下语言习惯（chosen=en）：
+		 *   · 目标语言页（/en/）上不弹（已经是他的语言）
+		 *   · 回到原语言页（zh）仍提供切回英文（指向 chosen，而不是反复换目标）*/
+		const ctx = await browser.newContext({ locale: "en-US" });
+		await H.mockExternalCdn(ctx);
+		const pg = await ctx.newPage();
+		await pg.goto(server.base + "/login.html", { waitUntil: "load" });
+		await H.waitForAppReady(pg, "login");
+		const action = await pg.$(".lang-hint-action");
+		H.check("AC-6.5 前置：有切换按钮", !!action, "no action link");
+		if (action) {
+			await action.click();
+			await pg.waitForURL("**/en/login.html", { timeout: 5000 }).catch(() => {});
+			await H.waitForAppReady(pg, "login");
+			const state = await pg.evaluate(() =>
+				JSON.parse(localStorage.getItem("anotify-lang-hint") || "null"),
+			);
+			H.check(
+				"AC-6.5 点切换后记下 chosen=en",
+				!!state && state.chosen === "en",
+				`storage=${JSON.stringify(state)}`,
+			);
+			H.check(
+				"AC-6.5 目标语言页（/en/）上不弹",
+				!(await getBanner(pg)),
+				"banner shown on the accepted language page",
+			);
+			await pg.goto(server.base + "/login.html", { waitUntil: "load" });
+			await H.waitForAppReady(pg, "login");
+			H.check(
+				"AC-6.5 回到原语言页仍提供切回英文（不是默默丢掉选择）",
+				!!(await getBanner(pg)),
+				"no banner on the original-language page after accepting the switch",
+			);
+		}
+		await ctx.close();
+	}
+	{
+		/* AC-6.6: 用侧栏语言切换器自己选语言 = 语言习惯。
+		 * 中文浏览器手动切到英文站后，英文页上**不该**弹“本网站提供简体中文版本”；
+		 * 再回到中文页时以他选的英文为准。 */
+		const ctx = await browser.newContext({ locale: "zh-CN" });
+		await H.mockExternalCdn(ctx);
+		const u = new URL(server.base);
+		await ctx.addCookies([
+			{
+				name: "anotify_session",
+				value: seedData.session,
+				domain: u.hostname,
+				path: "/",
+				httpOnly: true,
+			},
+		]);
+		const pg = await ctx.newPage();
+		await pg.goto(server.base + "/", { waitUntil: "load" });
+		await H.waitForAppReady(pg, "workspace");
+		H.check(
+			"AC-6.6 前置：中文浏览器在中文页 → 无横幅",
+			!(await getBanner(pg)),
+			"banner on matching-language page",
+		);
+		/* 打开侧栏语言下拉，点 English */
+		await pg.click(".app-sidebar .lang-trigger");
+		const enItem = await pg.$(
+			'.app-sidebar .lang-menu a[hreflang="en"]',
+		);
+		H.check("AC-6.6 前置：切换器里有 English", !!enItem, "no en item");
+		if (enItem) {
+			await enItem.click();
+			await pg.waitForURL(/\/en\//, { timeout: 8000 }).catch(() => {});
+			await H.waitForAppReady(pg, "workspace");
+			const state = await pg.evaluate(() =>
+				JSON.parse(localStorage.getItem("anotify-lang-hint") || "null"),
+			);
+			H.check(
+				"AC-6.6 切换器选过的语言被记住",
+				!!state && state.chosen === "en",
+				`storage=${JSON.stringify(state)}`,
+			);
+			H.check(
+				"AC-6.6 英文页上不弹中文提示（不反向骚扰）",
+				!(await getBanner(pg)),
+				"banner shown on the language the user picked",
+			);
+			/* 回中文页：提示以“他选的英文”为准 */
+			await pg.goto(server.base + "/", { waitUntil: "load" });
+			await H.waitForAppReady(pg, "workspace");
+			const back = await getBanner(pg);
+			H.check(
+				"AC-6.6 回中文页时提示回他选的英文",
+				!!back,
+				"no banner towards the chosen language",
+			);
+			if (back) {
+				const text = (await pg.textContent(".lang-hint-text")) || "";
+				H.check(
+					"AC-6.6 提示文案是英文（chosen 而不是浏览器语言）",
+					text.includes(BANNER_TEXT.en),
+					`got "${text.trim()}"`,
+				);
+				const innerLang = await pg.getAttribute(".lang-hint-inner", "lang");
+				H.check(
+					"AC-6.6 提示 lang=en",
+					innerLang === "en",
+					`got "${innerLang}"`,
+				);
+			}
+		}
 		await ctx.close();
 	}
 
@@ -654,10 +817,11 @@ async function main() {
 	}
 
 	/* =========================================================
-	 * Scope: only login.html + index.html show banner;
-	 *        keys.html and other workspace pages do not
+	 * Scope: 全站生效（登录页 + 所有工作台页）。
+	 * 早期只白名单 login/index，用户反馈“别的页面看不到提示”，
+	 * 于 2026-11 改为按语言不匹配判定、不再看页名；骚扰由本机记忆兜着。
 	 * ========================================================= */
-	console.log("--- scope: only login + index pages show banner ---");
+	console.log("--- scope: banner 全站生效 ---");
 	{
 		/* keys.html requires auth — inject session */
 		const ctx = await browser.newContext({ locale: "en-US" });
@@ -673,13 +837,31 @@ async function main() {
 			},
 		]);
 		const pg = await ctx.newPage();
-		await pg.goto(server.base + "/keys.html", { waitUntil: "load" });
+		for (const path of ["/keys.html", "/events.html"]) {
+			await pg.goto(server.base + path, { waitUntil: "load" });
+			await H.waitForAppReady(pg, "workspace");
+			const banner = await getBanner(pg);
+			H.check(
+				`scope ${path} (en-US browser) → banner shown`,
+				!!banner,
+				`no banner on ${path}`,
+			);
+			if (banner) {
+				const text = (await pg.textContent(".lang-hint-text")) || "";
+				H.check(
+					`scope ${path} banner text is English`,
+					text.includes(BANNER_TEXT.en),
+					`got "${text.trim()}"`,
+				);
+			}
+		}
+		/* 当前语言页不弹：/en/keys.html + en-US 浏览器 */
+		await pg.goto(server.base + "/en/keys.html", { waitUntil: "load" });
 		await H.waitForAppReady(pg, "workspace");
-		const banner = await getBanner(pg);
 		H.check(
-			"scope keys.html (en-US browser) → no banner",
-			!banner,
-			"banner found on keys.html",
+			"scope /en/keys.html (en-US browser) → no banner",
+			!(await getBanner(pg)),
+			"banner shown on matching-language page",
 		);
 		await ctx.close();
 	}
@@ -806,6 +988,143 @@ async function main() {
 			);
 		}
 		await ctx3.close();
+	}
+
+	/* =========================================================
+	 * AC-11 (regression, user-reported): 语言提示条滚出视口后，侧栏
+	 * 必须跟着回到视口顶部，与 sticky 顶栏对齐。
+	 * 旧实现把 --shell-top-offset 写死成横幅高度：下滑之后侧栏顶部
+	 * 永远比顶栏低一条横幅（那条 45px 空白），高度也短一条。
+	 * ========================================================= */
+	console.log("--- AC-11: sidebar realigns after banner scrolls away ---");
+	{
+		const ctx = await browser.newContext({
+			locale: "ja-JP",
+			viewport: { width: 1440, height: 900 },
+		});
+		await H.mockExternalCdn(ctx);
+		const u = new URL(server.base);
+		await ctx.addCookies([
+			{
+				name: "anotify_session",
+				value: seedData.session,
+				domain: u.hostname,
+				path: "/",
+				httpOnly: true,
+			},
+		]);
+		const pg = await ctx.newPage();
+		await pg.goto(server.base + "/", { waitUntil: "load" });
+		await H.waitForAppReady(pg, "workspace");
+
+		const geo = () =>
+			pg.evaluate(() => {
+				const rect = (sel) => {
+					const el = document.querySelector(sel);
+					if (!el) return null;
+					const r = el.getBoundingClientRect();
+					const round = (v) => Math.round(v * 10) / 10;
+					return { top: round(r.top), height: round(r.height), bottom: round(r.bottom) };
+				};
+				return {
+					vh: window.innerHeight,
+					scrollY: Math.round(window.scrollY),
+					maxScroll:
+						document.documentElement.scrollHeight - window.innerHeight,
+					offset: getComputedStyle(document.documentElement)
+						.getPropertyValue("--shell-top-offset")
+						.trim(),
+					banner: rect(".lang-hint"),
+					sidebar: rect(".app-sidebar"),
+					topbar: rect(".app-topbar"),
+				};
+			});
+
+		/* 滚到 y 后等 --shell-top-offset 收敛到「应得值」：变量是 rAF 里写的，
+		 * 直接量几何会抢在回调之前。返回实际 scrollY（可能被文档高度截断）。 */
+		const scrollAndSettle = async (y, bannerH) => {
+			await pg.evaluate((yy) => window.scrollTo(0, yy), y);
+			const actual = await pg.evaluate(
+				() =>
+					new Promise((res) =>
+						requestAnimationFrame(() =>
+							requestAnimationFrame(() => res(Math.round(window.scrollY))),
+						),
+					),
+			);
+			const raw = bannerH - actual;
+			const want = raw <= 0.01 ? 0 : Math.round(raw * 100) / 100;
+			await pg.waitForFunction(
+				(expect) =>
+					getComputedStyle(document.documentElement)
+						.getPropertyValue("--shell-top-offset")
+						.trim() === expect,
+				want + "px",
+				{ timeout: 4000 },
+			);
+			return actual;
+		};
+
+		const at0 = await geo();
+		H.check(
+			"AC-11 前置：横幅、侧栏、顶栏都在",
+			!!(at0.banner && at0.sidebar && at0.topbar),
+			JSON.stringify(at0),
+		);
+		if (at0.banner && at0.sidebar && at0.topbar) {
+			const bh = at0.banner.height;
+			H.check(
+				"AC-11 未滚动：侧栏顶在横幅之后（流内原位）",
+				Math.abs(at0.sidebar.top - bh) <= 1,
+				`sidebar.top=${at0.sidebar.top} bannerH=${bh}`,
+			);
+			H.check(
+				"AC-11 未滚动：侧栏底边贴住视口底（F8 不复发）",
+				Math.abs(at0.sidebar.bottom - at0.vh) <= 1,
+				`sidebar.bottom=${at0.sidebar.bottom} vh=${at0.vh}`,
+			);
+
+			/* 半程：顶部必须跟顶栏一起上移，不能“钉”在横幅高度上 */
+			const midY = await scrollAndSettle(Math.round(bh / 2), bh);
+			const mid = await geo();
+			H.check(
+				"AC-11 滚到横幅半高：侧栏顶部与顶栏对齐（不滞后）",
+				Math.abs(mid.sidebar.top - mid.topbar.top) <= 1,
+				`scrollY=${midY} sidebar.top=${mid.sidebar.top} topbar.top=${mid.topbar.top}`,
+			);
+			H.check(
+				"AC-11 滚到横幅半高：侧栏底边仍贴视口底",
+				Math.abs(mid.sidebar.bottom - mid.vh) <= 1,
+				`sidebar.bottom=${mid.sidebar.bottom} vh=${mid.vh}`,
+			);
+
+			/* 完全滚过横幅：偏移归零，侧栏回到 0 且满高 */
+			H.check(
+				"AC-11 前置：首页可滚动超过横幅高度",
+				at0.maxScroll >= bh,
+				`maxScroll=${at0.maxScroll} bannerH=${bh}`,
+			);
+			const farY = await scrollAndSettle(Math.round(bh) + 120, bh);
+			const far = await geo();
+			H.check(
+				"AC-11 滚过横幅：--shell-top-offset 归零",
+				far.offset === "0px",
+				`scrollY=${farY} offset=${far.offset}`,
+			);
+			H.check(
+				"AC-11 滚过横幅：侧栏顶部与顶栏同高（都是 0）",
+				Math.abs(far.sidebar.top) <= 1 &&
+					Math.abs(far.sidebar.top - far.topbar.top) <= 1,
+				`scrollY=${farY} sidebar.top=${far.sidebar.top} topbar.top=${far.topbar.top}`,
+			);
+			H.check(
+				"AC-11 滚过横幅：侧栏恢复满高（= 视口高）",
+				Math.abs(far.sidebar.height - far.vh) <= 1 &&
+					Math.abs(far.sidebar.bottom - far.vh) <= 1,
+				`sidebar.height=${far.sidebar.height} vh=${far.vh} bottom=${far.sidebar.bottom}`,
+			);
+		}
+		await ctx.close();
 	}
 
 	/* =========================================================
