@@ -8,6 +8,16 @@ package main
 //	ANOTIFY_EMIT_SOCK   agent 给的本地 socket 路径（任务运行期间存在）
 //	ANOTIFY_TASK_TOKEN  本次任务的一次性令牌（socket 侧鉴权用）
 //
+// # --task-file：环境变量到不了的地方
+//
+// hc / 容器 / 桌面会话里起的 TUI agent 拿不到节点注入的环境变量（hc 的 --env 只覆盖
+// `hc exec`，`hc run` 连它都没有），所以同一身份也可以从一个 **0600 的 JSON 文件**读：
+//
+//	{"sock":"…","token":"…","ports":[…],"taskId":"…","traceId":"…"}
+//
+// 提示词里只出现这个**路径**，token 不进 argv、不进屏幕。两套入口同时给是错误
+// （exit 2）：静默挑一个会让「为什么发到了那边」变成猜谜。
+
 // 为什么是「子命令 + 环境变量」而不是「库 + 中枢凭证」（§9）：
 // 能力进程跑在沙箱里，把中枢凭证下发进去等于把路由权交给不可信代码；而这个子命令
 // 只能说服**本机 agent** 代发一帧，路由权仍然只在中枢。
@@ -21,6 +31,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -61,6 +72,53 @@ const (
 	emitRoutedReplyTimeout = emitWaitRoutedTimeout + 15*time.Second
 )
 
+// emitTaskFile 是 `--task-file` 读的 0600 JSON（emit-protocol.md §2.2）。
+//
+// 字段名是 camelCase（对外 JSON 的纪律）；`ports` 与 ANOTIFY_EMIT_PORTS **逐字节相同**，
+// 这样两条入口读到的是同一份出口契约，不会出现「按 A 校验、按 B 发」的分叉。
+// taskId / traceId 是给人和 agent 看的（emit 自己不用），保留是为了让这个文件成为
+// 一次任务的完整身份，而不是三张字段的碎片。
+type emitTaskFile struct {
+	Sock    string          `json:"sock"`
+	Token   string          `json:"token"`
+	Ports   json.RawMessage `json:"ports"`
+	TaskID  string          `json:"taskId"`
+	TraceID string          `json:"traceId"`
+}
+
+// emitSource 是「去哪儿、以谁的身份、能发什么」的来源。
+//
+// 两种形态互斥（env / 任务文件），但下游代码只认这一个抽象：退出码语义、端口解析、
+// 请求形状都只有一份实现——两条入口各写一遍，早晚会有一条悄悄落后。
+type emitSource struct {
+	getenv func(string) string
+	file   *emitTaskFile // nil = 环境变量模式
+}
+
+// sock 返回本次任务的 emit socket 路径（空 = 本地模式，没有中枢）。
+func (s emitSource) sock() string {
+	if s.file != nil {
+		return strings.TrimSpace(s.file.Sock)
+	}
+	return strings.TrimSpace(s.getenv(envEmitSock))
+}
+
+// token 返回 socket 侧的鉴权令牌。
+func (s emitSource) token() string {
+	if s.file != nil {
+		return strings.TrimSpace(s.file.Token)
+	}
+	return strings.TrimSpace(s.getenv(envTaskToken))
+}
+
+// contracts 返回这次可用的出口契约（与 agent 侧同一个形状）。
+func (s emitSource) contracts() ([]emitCLIContract, error) {
+	if s.file != nil {
+		return parseEmitContracts(s.file.Ports, "任务文件的 ports")
+	}
+	return emitContracts(s.getenv)
+}
+
 // emitOptions 是 `emit` 子命令解析出来的参数。
 type emitOptions struct {
 	to         string
@@ -68,6 +126,8 @@ type emitOptions struct {
 	data       string // 原始 --data（可能是 "@-"）
 	note       string
 	waitRouted bool
+	// taskFile 非空时从这份 0600 JSON 读 sock/token/ports，而不是环境变量。
+	taskFile string
 }
 
 // parseEmitFlags 解析 `emit` 子命令的参数。
@@ -85,6 +145,10 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 	note := fs.String("note", "", "人类可读备注（不参与路由）")
 	waitRouted := fs.Bool("wait-routed", false,
 		"等中枢确认已派发再返回（默认只等本地落盘：毫秒级）")
+	// --task-file 是 hc 托管 agent 的入口：环境变量进不去 hc（见文件头的注释）。
+	// 只给**路径**，token 不出现在 argv 里。
+	taskFile := fs.String("task-file", "",
+		"从 0600 JSON 读 sock/token/ports（hc 托管的 agent 用；与 ANOTIFY_EMIT_SOCK 互斥）")
 
 	if err := fs.Parse(args); err != nil {
 		return emitOptions{}, err
@@ -97,6 +161,7 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 		data:       *data,
 		note:       *note,
 		waitRouted: *waitRouted,
+		taskFile:   *taskFile,
 	}, nil
 }
 
@@ -116,7 +181,13 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		return exitEmitBadRequest, err
 	}
 
-	port, err := resolveEmitPort(strings.TrimSpace(opts.to), getenv)
+	src, err := loadEmitSource(opts.taskFile, getenv)
+	if err != nil {
+		// 两套入口互斥、文件开不了/太宽/缺字段：全部是「别重试，去修」的参数错。
+		return exitEmitBadRequest, err
+	}
+
+	port, err := resolveEmitPortFrom(strings.TrimSpace(opts.to), src)
 	if err != nil {
 		return exitEmitBadRequest, err
 	}
@@ -127,14 +198,19 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		return exitEmitBadRequest, err
 	}
 
-	sock := strings.TrimSpace(getenv(envEmitSock))
+	sock := src.sock()
 	if sock == "" {
 		// §8：本地模式（anotify-agent run）没有中枢，所以没有 socket。
+		if src.file != nil {
+			return exitEmitComm, fmt.Errorf(
+				"任务文件里的 sock 是空的：这是 `anotify-agent run` 的本地模式（没有中枢），" +
+					"产出只能通过退出码/输出表达")
+		}
 		return exitEmitComm, fmt.Errorf(
 			"本地模式无中枢，emit 不可用（%s 未设置：这是 `anotify-agent run` 的本地模式，"+
 				"产出只能通过退出码/输出表达）", envEmitSock)
 	}
-	token := getenv(envTaskToken)
+	token := src.token()
 
 	dialer := net.Dialer{Timeout: emitDialTimeout}
 	conn, err := dialer.Dial("unix", sock)
@@ -281,6 +357,21 @@ func resolveEmitPort(to string, getenv func(string) string) (string, error) {
 		// 一点线索都拿不到时无法判定任何事：直接说清楚，别猜一个端口发出去。
 		return "", err
 	}
+	return resolvePort(to, ports)
+}
+
+// resolveEmitPortFrom 与 resolveEmitPort 同一套规则，只是契约来自 emitSource
+// （环境变量或 0600 任务文件）。按来源拆一次、规则只写一遍。
+func resolveEmitPortFrom(to string, src emitSource) (string, error) {
+	ports, err := src.contracts()
+	if err != nil {
+		return "", err
+	}
+	return resolvePort(to, ports)
+}
+
+// resolvePort 是 resolveEmitPort 的纯函数内核（可单测，不读环境）。
+func resolvePort(to string, ports []emitCLIContract) (string, error) {
 	if to == "" {
 		switch len(ports) {
 		case 1:
@@ -347,9 +438,15 @@ func emitContracts(getenv func(string) string) ([]emitCLIContract, error) {
 		}
 		raw = string(body)
 	}
+	return parseEmitContracts([]byte(raw), "出口契约")
+}
+
+// parseEmitContracts 把一个 JSON 数组解成出口契约（来源无关：环境变量、emit.json、
+// 任务文件的 ports 字段都是同一份字节）。what 只用于错误文案。
+func parseEmitContracts(raw []byte, what string) ([]emitCLIContract, error) {
 	var items []emitCLIContract
-	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return nil, fmt.Errorf("出口契约不是合法 JSON: %w", err)
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("%s 不是合法 JSON 数组: %w", what, err)
 	}
 	out := make([]emitCLIContract, 0, len(items))
 	for _, it := range items {
@@ -359,6 +456,61 @@ func emitContracts(getenv func(string) string) ([]emitCLIContract, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out, nil
+}
+
+// loadEmitSource 决定这次用哪套入口，并把任务文件读出来。
+//
+// 两条铁律（与 emit-protocol.md §2.2 一致）：
+//
+//  1. **不做隐式优先级**：两套入口同时给就是错（exit 2）。静默挑一个会让
+//     「为什么发到了那边」变成一场考古。
+//  2. **任务文件必须是 0600**：里面是一次性 token。组/其他人可读直接拒，
+//     并给出 `chmod 600` 的具体命令（没人愿意去翻 umask 到底是几）。
+func loadEmitSource(taskFile string, getenv func(string) string) (emitSource, error) {
+	path := strings.TrimSpace(taskFile)
+	if path == "" {
+		return emitSource{getenv: getenv}, nil
+	}
+	for _, name := range []string{envEmitSock, envTaskToken, envEmitPorts, envTaskDir} {
+		if strings.TrimSpace(getenv(name)) != "" {
+			return emitSource{}, fmt.Errorf(
+				"--task-file 与 %s 同时给了：两套入口不做隐式优先级，请只留一套"+
+					"（hc 托管的 agent 用 --task-file；节点直跑的能力进程用环境变量）", name)
+		}
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return emitSource{}, fmt.Errorf("读不到任务文件 %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return emitSource{}, fmt.Errorf("任务文件 %s 是目录，不是文件", path)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return emitSource{}, fmt.Errorf(
+			"任务文件 %s 的权限是 %04o，太宽：里面有一次性 token，必须是 0600（chmod 600 %s）",
+			path, perm, path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return emitSource{}, fmt.Errorf("读任务文件 %s: %w", path, err)
+	}
+	var f emitTaskFile
+	if err := json.Unmarshal(body, &f); err != nil {
+		return emitSource{}, fmt.Errorf("任务文件 %s 不是合法 JSON: %w", path, err)
+	}
+	if strings.TrimSpace(f.Token) == "" {
+		return emitSource{}, fmt.Errorf("任务文件 %s 缺 token 字段（socket 侧鉴权用）", path)
+	}
+	if len(bytes.TrimSpace(f.Ports)) == 0 {
+		return emitSource{}, fmt.Errorf("任务文件 %s 缺 ports 字段（空出口也要写 \"ports\":[]）", path)
+	}
+	// ports 在这里就解一次：坏契约必须是 exit 2（修参数），不能等到解析端口时
+	// 混成另一种错误。
+	if _, err := parseEmitContracts(f.Ports, "任务文件 "+path+" 的 ports"); err != nil {
+		return emitSource{}, err
+	}
+	return emitSource{getenv: getenv, file: &f}, nil
 }
 
 // candidateList 把候选渲染成 `name@ver` 列表（错误信息里最有用的就是"可选的其实有这些"）。

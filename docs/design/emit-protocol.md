@@ -84,6 +84,27 @@ anotify-agent emit --port fix --data '…' --note '第 2 项'   # 人类可读�
 > `--async` 不存在。fire-and-forget 会让「emit 成功但中枢没收到」变成静默丢事件；
 > 需要异步语义时的正确做法是**本地 outbox（agent 内建）**，而不是让调用方放弃等待。
 
+### 2.2 `--task-file`：环境变量到不了的地方
+
+hc / 容器 / 桌面会话里起的 TUI agent 拿不到节点注入的环境变量（`hc run` 没有 `--env`），
+所以同一身份也可以从一份 **0600 的 JSON** 读：
+
+```json
+{"sock":"<data-dir>/emit/<task_id>.sock","token":"…","ports":[ … 与 ANOTIFY_EMIT_PORTS 同一份字节 … ],
+ "taskId":"tsk_…","traceId":"…"}
+```
+
+```bash
+anotify-agent emit --task-file .anotify/task.json --data '{"summary":"…"}'
+```
+
+- 提示词里只出现这个**路径**：token 不进 argv、不进提示词正文，屏幕归档里因此没有明文。
+- **两套入口互斥**：`--task-file` 与 `ANOTIFY_EMIT_SOCK`/`ANOTIFY_TASK_TOKEN`/
+  `ANOTIFY_EMIT_PORTS`/`ANOTIFY_TASKDIR` 任一同时给 → 退 2（不做隐式优先级）。
+- 文件组/其他人可读（`perm & 0o077 != 0`）→ 退 2，并给出 `chmod 600`。
+- `sock` 为空 = 本地模式（与 env 入口同一语义）→ 退 6；坏 JSON / 缺 `token` /
+  缺 `ports` / `ports` 不是数组 → 退 2。其余退出码与上表逐条一致。
+
 ---
 
 ## 2.1 出口契约文件（作者手册）

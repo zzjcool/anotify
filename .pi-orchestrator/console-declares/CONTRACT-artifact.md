@@ -233,7 +233,7 @@ type Field struct {
 }
 ```
 
-v1 必须有这 9 个模板：
+v1 必须有这 10 个模板：
 
 | ID | Category | Requires | 说明 |
 |---|---|---|---|
@@ -242,12 +242,16 @@ v1 必须有这 9 个模板：
 | `script.git` | script | `git` | clone / 操作仓库 |
 | `script.test` | script | — | 跑测试命令 |
 | `script.notify` | script | `curl` | 回调一个 webhook |
+| `agent.tui` | agent | `hc`、`git` | hc 托管的 TUI agent（issue #321）：参数化 agent/worktree/space |
 | `agent.claude` | agent | `claude` | `claude --print "$ANOTIFY_PARAM_PROMPT"` |
 | `agent.codex` | agent | `codex` | `codex exec "$ANOTIFY_PARAM_PROMPT"` |
 | `agent.pi` | agent | `pi` | `pi --print -p "$ANOTIFY_PARAM_PROMPT"` |
 | `agent.custom` | agent | — | 用户填命令名 |
 
-Agent 模板的表单字段固定为：`prompt`(text, required)、`model`(string)、`tools`(string)。
+一次性 CLI 的 Agent 模板（claude/codex/pi/custom）表单字段固定为：`prompt`(text, required)、
+`model`(string)、`tools`(string)。`agent.tui` 是**例外**：它自己那张参数表（agent / agent_args /
+ports / space / worktree / branch / base / worktree_path / worktree_cleanup / prompt /
+timeout_sec）以 `internal/artifact/template_agent_tui.go` 为事实源（issue #321 §三）。
 模板渲染出的脚本**只读展示**在控制台，用户可切「脚本模式」自由改。
 
 **Agent 密钥不归中枢**：`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等留在**机器上**

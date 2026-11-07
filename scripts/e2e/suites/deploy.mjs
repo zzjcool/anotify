@@ -11,7 +11,7 @@
  *   进程**的三段，任何一段没接上都会表现为「控制台上看起来推过了，节点其实没跑」。
  *
  * 覆盖（每条都对应契约里的一句话）：
- *   1. GET /v1/capability-templates → 9 个模板，每个都有 fields/script/requires
+ *   1. GET /v1/capability-templates → 10 个模板，每个都有 fields/script/requires
  *   2. POST /v1/capabilities 带 run → 响应带 digest；GET /v1/artifacts 查得到
  *   3. 同一份内容重复建 → digest 相同（内容寻址的幂等语义）
  *   4. 非法 run（入口无 shebang）→ 400 invalid_artifact，且**能力没有被建出来**
@@ -28,7 +28,7 @@ import * as N from "../lib/nodes.mjs";
 
 const SUITE = "deploy";
 
-// 契约 CONTRACT-artifact §8 冻结的 9 个模板 id。写死是有意的：
+// 契约 CONTRACT-artifact §8 冻结的 10 个模板 id。写死是有意的：
 // 模板是**代码生成器的输入**，少一个/多一个都意味着控制台表单与后端脱节。
 const TEMPLATE_IDS = [
 	"script.blank",
@@ -36,6 +36,7 @@ const TEMPLATE_IDS = [
 	"script.git",
 	"script.test",
 	"script.notify",
+	"agent.tui",
 	"agent.claude",
 	"agent.codex",
 	"agent.pi",
@@ -114,7 +115,7 @@ async function main() {
 	const tpl = await H.req(server.base, "/v1/capability-templates", { session });
 	H.eq("GET /v1/capability-templates → 200", tpl.status, 200);
 	const templates = tpl.json?.templates || [];
-	H.eq("内置模板正好 9 个（契约 §8 冻结）", templates.length, 9);
+	H.eq("内置模板正好 10 个（契约 §8 冻结）", templates.length, 10);
 	H.eq("模板 id 集合与契约一致", templates.map((t) => t.id).sort(), [...TEMPLATE_IDS].sort());
 	{
 		// 每个模板必须自带「表单字段 / 脚本模板 / 预装依赖」三样：

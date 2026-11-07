@@ -3,7 +3,7 @@ package server
 // 部署模型的控制台端点（console-declares epic，契约 CONTRACT-protocol §11）。
 //
 // 覆盖六件事，全部是「控制台点一下 → 中枢库里发生什么」的可观测契约：
-//  1. GET  /v1/capability-templates  恰好 9 个内置模板（CONTRACT-artifact §8）
+//  1. GET  /v1/capability-templates  恰好 10 个内置模板（CONTRACT-artifact §8）
 //  2. POST /v1/capabilities 带 run   → 编译产物、算 digest、落 artifacts，可被 /v1/artifacts 查到
 //  3. POST /v1/capabilities 不带 run → 没有产物，部署 404 artifact_not_found
 //  4. POST /v1/deployments           → 离线节点**照样建行**，逐台回 pushed=false
@@ -27,7 +27,7 @@ import (
 // runScript 是一份合法的入口文件内容（直接 exec，必须有 shebang）。
 const runScript = "#!/bin/bash\nset -euo pipefail\necho '{\"out\":\"fix\"}'\n"
 
-// TestCapabilityTemplates 内置模板恰好 9 个，且 id 就是契约冻结的那 9 个。
+// TestCapabilityTemplates 内置模板恰好 10 个，且 id 就是契约冻结的那 10 个。
 //
 // 模板是「代码生成器的输入」：少一个 → 控制台建不出那类能力；多一个 → 前端渲染
 // 一个后端没测过的脚本模板。所以断言 id 集合（不只是数量）。
@@ -40,8 +40,8 @@ func TestCapabilityTemplates(t *testing.T) {
 	}
 	m := decode(t, rr)
 	raw, _ := m["templates"].([]any)
-	if len(raw) != 9 {
-		t.Fatalf("templates = %d 个, want 9（CONTRACT-artifact §8）", len(raw))
+	if len(raw) != 10 {
+		t.Fatalf("templates = %d 个, want 10（CONTRACT-artifact §8）", len(raw))
 	}
 	got := map[string]bool{}
 	for _, item := range raw {
@@ -68,7 +68,7 @@ func TestCapabilityTemplates(t *testing.T) {
 	}
 	for _, want := range []string{
 		"script.blank", "script.http", "script.git", "script.test", "script.notify",
-		"agent.claude", "agent.codex", "agent.pi", "agent.custom",
+		"agent.tui", "agent.claude", "agent.codex", "agent.pi", "agent.custom",
 	} {
 		if !got[want] {
 			t.Errorf("缺少内置模板 %q（现有 %v）", want, got)

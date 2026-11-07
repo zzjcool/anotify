@@ -8,12 +8,12 @@ import (
 
 func TestTemplatesCount(t *testing.T) {
 	ts := Templates()
-	if len(ts) != 9 {
-		t.Fatalf("期望 9 个内置模板，实际 %d 个", len(ts))
+	if len(ts) != 10 {
+		t.Fatalf("期望 10 个内置模板，实际 %d 个", len(ts))
 	}
 	wantIDs := []string{
 		"script.blank", "script.http", "script.git", "script.test", "script.notify",
-		"agent.claude", "agent.codex", "agent.pi", "agent.custom",
+		"agent.tui", "agent.claude", "agent.codex", "agent.pi", "agent.custom",
 	}
 	got := make(map[string]bool, len(ts))
 	for _, tpl := range ts {
@@ -188,7 +188,8 @@ func TestAllFieldKeysAreSnakeCase(t *testing.T) {
 
 // TestTemplateScriptsOnlyUseDeclaredParams 防止脚本引用一个表单里不存在的参数。
 func TestTemplateScriptsOnlyUseDeclaredParams(t *testing.T) {
-	// 允许的契约变量（非参数）
+	// 允许的契约变量（非参数）。来源：cmd/agent/runner.go 的 buildEnv（任务身份、
+	// 工作目录、emit 通道、出口契约、agent 自己的绝对路径）。
 	contract := map[string]bool{
 		"ANOTIFY_TASK_ID":    true,
 		"ANOTIFY_CAPABILITY": true,
@@ -196,6 +197,12 @@ func TestTemplateScriptsOnlyUseDeclaredParams(t *testing.T) {
 		"ANOTIFY_WORKDIR":    true,
 		"ANOTIFY_TRACE_ID":   true,
 		"ANOTIFY_DIGEST":     true,
+		// emit 通道（agent.tui 要把它们落进 0600 的 task.json，因为 env 进不去 hc）
+		"ANOTIFY_EMIT_SOCK":  true,
+		"ANOTIFY_TASK_TOKEN": true,
+		"ANOTIFY_EMIT_PORTS": true,
+		"ANOTIFY_TASKDIR":    true,
+		"ANOTIFY_AGENT_BIN":  true,
 	}
 	for _, tpl := range Templates() {
 		declared := make(map[string]bool, len(tpl.Fields))

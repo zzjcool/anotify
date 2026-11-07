@@ -166,6 +166,7 @@ curl -fsS -X POST -H 'content-type: application/json' --data "$payload" \
 		Requires:   []string{"curl", "jq"},
 		TimeoutSec: 120,
 	},
+	agentTUITemplate(),
 	{
 		ID:          "agent.claude",
 		DisplayName: "Claude Code",
