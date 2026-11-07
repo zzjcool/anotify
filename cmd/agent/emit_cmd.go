@@ -128,6 +128,30 @@ type emitOptions struct {
 	waitRouted bool
 	// taskFile 非空时从这份 0600 JSON 读 sock/token/ports，而不是环境变量。
 	taskFile string
+	json     bool // --json：机器可读（缺省由 stdout 是否终端决定）
+}
+
+// emitUsage 是 `emit` 的用法串（错误信息与 -h 都指向它）。
+const emitUsage = "anotify-agent emit [--to NAME[@VER]] [--data JSON|@-] [--note TEXT] " +
+	"[--wait-routed] [--json]"
+
+// emitExitRows 是 `emit -h` 里的退出码表（emit-protocol.md §2 + issue #318 §2 的 kind）。
+//
+// 这张表是**调用方的决策树**：2/3 修参数、4 可以重发、5 停、6 重试一次、7 重试。
+var emitExitRows = []exitRow{
+	{code: "0", desc: "成功（已本地落盘；--wait-routed 时已确认派发）"},
+	{code: "2", desc: "参数/请求形状错（不是 JSON 对象、超体积）→ 修，别重试",
+		kind: kindBadRequest},
+	{code: "3", desc: "被拒：--to 或端口不在本能力的出口里 → 修，别重试",
+		kind: kindPortNotAllowed},
+	{code: "4", desc: "被拒：data 不满足要去那个下游的要求 → 补齐字段后可以重发",
+		kind: kindSchemaMismatch},
+	{code: "5", desc: "任务已非运行态（cancel / 租约过期 / 已终结）→ 停止执行",
+		kind: kindTaskGone},
+	{code: "6", desc: "通信失败 / token 无效 / socket 不存在 → 可重试一次",
+		kind: kindCommFailed},
+	{code: "7", desc: "ack 超时 → 可重试（中枢按 task_id+seq 幂等）",
+		kind: kindAckTimeout},
 }
 
 // parseEmitFlags 解析 `emit` 子命令的参数。
@@ -137,6 +161,7 @@ type emitOptions struct {
 func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 	fs := flag.NewFlagSet("agent emit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeSubcommandHelp(fs, emitUsage, emitExitRows) }
 
 	// --to 是脚本**该写的东西**：交给哪个下游能力（`name` / `name@version`）。
 	// 端口是内部路由键，脚本不需要知道它叫什么（CONTRACT-hide-ports.md §2）。
@@ -149,6 +174,8 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 	// 只给**路径**，token 不出现在 argv 里。
 	taskFile := fs.String("task-file", "",
 		"从 0600 JSON 读 sock/token/ports（hc 托管的 agent 用；与 ANOTIFY_EMIT_SOCK 互斥）")
+	jsonOut := fs.Bool("json", false,
+		"机器可读输出：{\"ok\",\"port\",\"routed\",\"note\"}（缺省：stdout 不是终端时自动开）")
 
 	if err := fs.Parse(args); err != nil {
 		return emitOptions{}, err
@@ -162,6 +189,7 @@ func parseEmitFlags(args []string, stderr io.Writer) (emitOptions, error) {
 		note:       *note,
 		waitRouted: *waitRouted,
 		taskFile:   *taskFile,
+		json:       *jsonOut,
 	}, nil
 }
 
@@ -262,8 +290,30 @@ func runEmit(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 		return code, fmt.Errorf("emit %s 未成功（seq=%d acked=%q rejected=%q）: %s",
 			port, resp.Seq, resp.Acked, resp.Rejected, strings.TrimSpace(resp.Error))
 	}
+	if modeFor(stdout, opts.json) == outJSON {
+		// ok 恒为 true（这一行只在成功时写）：失败走 mainWith 的 {error:{kind,…}}。
+		// routed 才是「中枢确认已派发」的真实答案（acked="routed"）；默认路径只等到
+		// 本地落盘，所以是 false——不撒谎，agent 因此知道要不要 --wait-routed。
+		// 写 stdout 失败只可能是管道被关（`| head`）：emit 本身已经成功了，
+		// 退出码不能因此变（那会让调用方重发一条已经落盘的产出）。
+		_ = writeJSONLine(stdout, emitJSON{
+			OK:     true,
+			Port:   port,
+			Routed: resp.Acked == emitAckedRouted,
+			Note:   strings.TrimSpace(opts.note),
+		})
+		return exitOK, nil
+	}
 	fmt.Fprintf(stdout, "emit ok: port=%s seq=%d acked=%s\n", port, resp.Seq, resp.Acked)
 	return exitOK, nil
+}
+
+// emitJSON 是 `emit --json` 在成功时的形状（issue §1）。
+type emitJSON struct {
+	OK     bool   `json:"ok"`
+	Port   string `json:"port"`
+	Routed bool   `json:"routed"`
+	Note   string `json:"note"`
 }
 
 // prepareEmitData 把 --data 归一成「JSON 对象」的紧凑字节。

@@ -436,8 +436,18 @@ func TestEmitCLIRealProcess(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("exit = %d, want 0（stdout=%q stderr=%q）", code, stdout, stderr)
 		}
-		if !strings.Contains(stdout, "acked=durable") {
-			t.Fatalf("stdout 应当报告 acked=durable，实际 %q", stdout)
+		// 子进程的 stdout 是**管道**（不是终端）→ #318 之后默认就是 JSON：
+		// 这正是能力脚本 `| jq` 的场景，所以这里断言形状而不是文案。
+		var out emitJSON
+		if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+			t.Fatalf("stdout 应当是 JSON（管道默认）：%q（%v）", stdout, err)
+		}
+		if !out.OK || out.Port != "fix" {
+			t.Fatalf("stdout 形状不对：%+v（原始 %q）", out, stdout)
+		}
+		if out.Routed {
+			// 默认路径只等本地落盘（acked=durable）——routed=true 会是谎报。
+			t.Fatalf("没给 --wait-routed 时 routed 必须是 false：%+v", out)
 		}
 		recs := outboxRecords(t, srv.OutboxPath())
 		if len(recs) == 0 {

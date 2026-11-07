@@ -289,6 +289,19 @@ func run(args []string, stderr io.Writer) error {
 	return nil
 }
 
+// runUsage / runExitRows 是 `run` 子命令的用法与退出码表。
+//
+// `run` 的退出码大部分不归我们管（透传产物自己），这一行表就是为了说清这件事：
+// 拿到 2 不代表 agent 出了 2 类错，而是脚本自己 exit 2。
+const runUsage = "anotify-agent run <path-to-capability.yaml> [-p key=value]... " +
+	"[--data-dir DIR] [--timeout SEC]"
+
+var runExitRows = []exitRow{
+	{code: "0..N", desc: "产物自己的退出码，原样透传（脚本怎么退，agent 就怎么退）"},
+	{code: "1", desc: "agent 侧故障：产物不合法 / 起不来 / 参数错（kind 直接是 artifact 的短码）",
+		kind: "invalid_yaml / unknown_field / invalid_name / unsupported_api_version …"},
+}
+
 // parseRunFlags 解析 `run` 子命令的参数。
 //
 // 位置参数（产物路径）允许出现在 flag 前后：
@@ -301,19 +314,23 @@ func run(args []string, stderr io.Writer) error {
 func parseRunFlags(args []string, stderr io.Writer) (runOptions, error) {
 	fs := flag.NewFlagSet("agent run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeSubcommandHelp(fs, runUsage, runExitRows) }
 
 	params := paramFlags{}
 	fs.Var(params, "p", "能力参数 key=value（可重复；值一律当字符串）")
 	dataDir := fs.String("data-dir", "", "工作目录根（缺省用系统临时目录）")
 	timeoutSec := fs.Int("timeout", 0, "超时秒数（0 = 用产物自己的 timeoutSec）")
+	// 接受并忽略 --json：run 的 stdout 属于**产物自己**（issue #318 §1 的例外），
+	// 但全局 --json 可能就写在子命令前面（`anotify-agent --json run x.yaml`），
+	// 不认它就会变成「全局开关让子命令报错」这种莫名其妙的失败。
+	_ = fs.Bool("json", false, "对 run 无效果：stdout 属于产物自己（--json 只影响错误那一路）")
 
 	if err := fs.Parse(args); err != nil {
 		return runOptions{}, err
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return runOptions{}, errors.New(
-			"用法: anotify-agent run <path-to-capability.yaml> [-p key=value]... [--data-dir DIR] [--timeout SEC]")
+		return runOptions{}, fmt.Errorf("用法: %s", runUsage)
 	}
 	path := rest[0]
 	if len(rest) > 1 {
@@ -476,6 +493,10 @@ func registerGlobalFlagNames(fs *flag.FlagSet) {
 	fs.String("selector", "", "")
 	fs.Int("slots", 0, "")
 	fs.Bool("standalone", false, "")
+	// --json 是 #318 的全局开关：它必须能出现在子命令**之前**（`anotify-agent --json
+	// runs`），所以定位子命令时得先认得它。真正的语义在 cliout.go（mode 由 stdout
+	// 是否终端与这个 flag 共同决定）。
+	fs.Bool("json", false, "")
 	fs.Bool("h", false, "")
 }
 
@@ -535,22 +556,29 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	if sub, rest, ok := subcommandAt(args); ok {
 		args = append([]string{sub}, rest...)
 	}
+	// 输出形状先算好：解析参数失败时也要能立刻决定该说 JSON 还是中文
+	// （flag 包已经把 usage 写到 stderr，但错误本身由这里报告）。
+	mode := outputMode(stdout, args)
+
 	if len(args) > 0 && args[0] == emitCommand {
 		// emit 子命令：退出码**就是** emit-protocol.md §2 那张表（2..7），
 		// 调用方（能力进程）据此决定重试还是停止，所以不能在这里改写成 1。
 		code, err := runEmit(args[1:], os.Stdin, stdout, stderr, os.Getenv)
-		if err != nil {
-			// 只在这里打一次：runEmit 返回错误但不打印，避免同一句话出现两遍。
-			fmt.Fprintf(stderr, "anotify-agent emit: %s\n", err)
-		}
+		// 只在这里打一次：runEmit 返回错误但不打印，避免同一句话出现两遍。
+		reportFailure(stderr, mode, emitCommand, code, err)
 		return code
 	}
 	if len(args) > 0 && args[0] == runCommand {
 		code, err := runStandalone(args[1:], stdout, stderr)
 		if err != nil {
-			// 错误统一在这里落一条日志（runStandalone 只返回，不重复打）。
-			newLogger(stderr).Error("standalone 执行失败",
-				"event", "agent.run.failed", "error", err.Error())
+			if mode == outJSON {
+				// 管道里连错误也要是机器能读的（kind 复用 artifact 的短码词表）。
+				reportFailure(stderr, mode, runCommand, exitFailure, err)
+			} else {
+				// 错误统一在这里落一条日志（runStandalone 只返回，不重复打）。
+				newLogger(stderr).Error("standalone 执行失败",
+					"event", "agent.run.failed", "error", err.Error())
+			}
 			return exitFailure
 		}
 		return code
@@ -564,16 +592,12 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		// 回看子命令：退出码只有「找到 = 0 / 没找到 = 1」两档（见 runs_cmd.go 的文件头），
 		// 错误说明只在这里打一次（runRuns 只返回、不打印）。
 		code, err := runRuns(args[1:], stdout, stderr)
-		if err != nil {
-			fmt.Fprintf(stderr, "anotify-agent runs: %s\n", err)
-		}
+		reportFailure(stderr, mode, runsCommand, code, err)
 		return code
 	}
 	if len(args) > 0 && args[0] == showCommand {
 		code, err := runShow(args[1:], stdout, stderr)
-		if err != nil {
-			fmt.Fprintf(stderr, "anotify-agent show: %s\n", err)
-		}
+		reportFailure(stderr, mode, showCommand, code, err)
 		return code
 	}
 	// 节点模式的错误日志已经在 run 里记过（这里再记一条就成了重复）。

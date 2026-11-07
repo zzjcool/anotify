@@ -97,7 +97,7 @@ const usagePreamble = `anotify-agent —— Anotify 节点执行器（跑在你�
 子命令:
 `
 
-// usageFlagsTail 是 flag 表之后的两段：进程级开关 + 发现钩子。
+// usageFlagsTail 是 flag 表之后的三段：进程级开关、退出码、发现钩子。
 //
 // 发现钩子固定在最后一行（issue §1）：agent 看一眼 help 就知道还有一本手册，
 // 而不是拿到一个「只会连中枢」的二进制。
@@ -105,9 +105,48 @@ const usageFlagsTail = `
 进程级开关（任何环境都能跑：不读 node.yaml、不连网、不落盘）:
   --version                            打印一行「版本 (commit, 构建时间)」
   --skill                              打印内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码 / 不要做
+  --json                               机器可读输出（runs / show / upgrade / emit）；stdout 不是终端时自动开
+
+退出码（节点模式；子命令各有自己的表，看 anotify-agent <子命令> -h）:
+  0                                    正常退出（收到 SIGINT / SIGTERM 并收尾完毕，或 -h 看帮助）
+  1                                    参数/配置错误、握手被拒、连接断开（重启交给进程管理器）
 
 Agent? 运行: anotify-agent --skill
 `
+
+// exitRow 是子命令 `-h` 里「退出码表」的一行：码 + 一句人话 +（可选）机器可读 kind。
+//
+// 表里只写**契约**（emit 2..7 / upgrade 0..5 / runs 0、1），不写实现细节：这些码是
+// 调用方据以决定「重试 / 停 / 去要 root」的唯一依据。
+type exitRow struct {
+	code string // "0" / "2" / "产物自己的码" …
+	desc string // 一句人话：这一档发生了什么、该做什么
+	kind string // 空 = 这一档不是错误（没有 error.kind）
+}
+
+// subcommandHelpHook 是子命令 -h 的最后一行（与主 -h 的发现钩子同一句）。
+const subcommandHelpHook = "Agent? 运行: anotify-agent --skill"
+
+// writeSubcommandHelp 是各子命令 `-h` 的统一尾巴：用法 + flag 表 + 退出码表 + 手册钩子。
+//
+// 为什么退出码要进 -h：这些码是契约，此前只写在源码注释与 docs/design/emit-protocol.md
+// 里，而拿到一台陌生机器上二进制的 agent 只看得见 -h（issue #318 §4）。flag 说明仍然
+// 由 PrintDefaults 出自注册处（这里再抄一份必然漂移），所以只补那张表。
+func writeSubcommandHelp(fs *flag.FlagSet, usage string, rows []exitRow) {
+	w := fs.Output()
+	fmt.Fprintf(w, "用法: %s\n\nflag:\n", usage)
+	fs.PrintDefaults()
+	if len(rows) > 0 {
+		fmt.Fprint(w, "\n退出码（kind 是 stdout 不是终端、或显式 --json 时的机器可读词）:\n")
+		for _, r := range rows {
+			fmt.Fprintf(w, "  %-6s %s\n", r.code, r.desc)
+			if r.kind != "" {
+				fmt.Fprintf(w, "  %-6s kind: %s\n", "", r.kind)
+			}
+		}
+	}
+	fmt.Fprint(w, "\n"+subcommandHelpHook+"\n")
+}
 
 // writeUsage 打印 `-h` 的全文（命令表 + flag 表 + 发现钩子）。
 //

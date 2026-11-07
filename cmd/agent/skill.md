@@ -97,40 +97,75 @@ anotify-agent emit --to notify.phone --data '…' --wait-routed    # 等中枢�
 ```bash
 anotify-agent runs                        # 最近 20 条，时间倒序
 anotify-agent runs --trace trc_0af7651916cd43dd8448eb211c80319c   # 一条 trace 的全部执行
+anotify-agent runs --trace trc_0af76519                            # 唯一前缀也行（最少 8 位）
 anotify-agent runs --capability notify.phone@2                      # 这个能力的历次执行
 anotify-agent runs --limit 0                                       # 不限条数
 anotify-agent show trc_0af7651916cd43dd8448eb211c80319c/notify.phone@2/3-a1
-anotify-agent show trc_0af7651916cd43dd8448eb211c80319c/notify.phone@2/3-a1 --data-dir /tmp/dd
+anotify-agent show trc_0af76519/notify.phone@2/3-a1 --tail 50           # 只看最后 50 行
+anotify-agent show trc_0af76519/notify.phone@2/3-a1 --no-stdout         # 只看元信息与输入
 ```
+
+表格里 **TRACE 只打前 8 位**（完整 id 在 `--json` 里）：agent 的痛感来自 token，
+不来自屏幕。`anotify-agent runs --trace` 与 show 的 ref 第一段都接受**唯一前缀**
+（最少 8 字符）；撞车时**不猜**：退 1、`kind` 是 `ambiguous_ref`、stderr 列候选，
+且**不输出任何日志正文**。
 
 `show` 的 ref 直接从 `runs` 表里抄（TRACE / CAPABILITY / SEQ / ATT 四列）。找到 = 0，
 空结果或 ref 不存在 = 1 —— 「没找到」不是崩溃，但通常意味着目录或 id 写错了。
+单流上限 8 MiB，所以窗口粒度是必需品：`anotify-agent show --tail N --no-stdout --no-stderr`
+只给你要看的那一段，元信息不受影响。
+
+### 机器可读输出（给 agent 与脚本）
+
+stdout **不是终端**（管道 / 重定向）时自动输出 JSON，TTY 上保持上面的表格；
+`--json` 可以显式要。四种形状：
+
+| 命令 | `--json` 形状 |
+|---|---|
+| `runs` | `{"runs":[{ref + meta.json 全字段}]}`（空结果也是 `{"runs":[]}`，退出码仍 1） |
+| `show` | `{"ref","meta":{…},"input":{…},"stdout","stderr"}` |
+| `upgrade` | `{"current","latest","updated","restarted","reason"}` |
+| `emit` | `{"ok":true,"port","routed","note"}`（`routed` = 中枢已确认派发；默认只等到本地落盘） |
+
+```bash
+anotify-agent runs --json | jq '.runs | type == "array"'
+anotify-agent runs --json | jq '.runs[0].ref'
+anotify-agent show <ref> --json --tail 50
+anotify-agent upgrade --check --json | jq '.updated, .restarted'
+```
+
+失败时 stderr 是**单行** `{"error":{"kind","message","hint"}}`：`kind` 与退出码对应
+（见 §4 的 kind 列），`hint` 是下一步（可重试 / 别重试 / 去要 root）。TTY 上仍然是那句
+中文，不牺牲人的体验。**空结果与出错要分着看**：`runs` 空是 stdout 上 `{"runs":[]}` +
+退出码 1，真正出错时 stdout 什么都没有。
 执行失败或超时留下的人肉现场在 `<data-dir>/work/<task_id>/`（agent 会打一行
 「工作目录已保留」）。保留策略：`ANOTIFY_RUNS_RETENTION_DAYS`（默认 7 天）与
 `ANOTIFY_RUNS_MAX_COUNT`（默认 2000）。
 
 ## 4. 退出码表
 
-各子命令的退出码**不是同一张表**（同一个数字含义不同），别混着读：
+各子命令的退出码**不是同一张表**（同一个数字含义不同），别混着读。
+`kind` 是管道 / `--json` 下 `{"error":{"kind",…}}` 里那个短码 —— 脚本只该 switch 它，
+不要去正则中文。
 
-| 命令 | 码 | 含义 |
-|---|---|---|
-| 节点模式（不带子命令） | 0 / 1 | 正常退出 / 参数、配置、握手、连接失败（重启交给进程管理器） |
-| `run` | 产物自己的码 / 1 | 脚本怎么退就怎么退 / 只有 agent 侧故障（产物不合法、起不来）才用 1 |
-| `emit` | 0 | 成功（已本地落盘） |
-| `emit` | 2 | 参数/请求形状错（不是 JSON 对象、超体积）→ 修，别重试 |
-| `emit` | 3 | 被拒：`--to` 或端口不在本能力的出口里 → 修，别重试 |
-| `emit` | 4 | 被拒：data 不满足要去那个下游的要求 → 补齐字段后**可以**重发 |
-| `emit` | 5 | 任务已非运行态（cancel / 租约过期 / 已终结）→ **停止执行** |
-| `emit` | 6 | 通信失败 / token 无效 / socket 不存在 → 可重试一次，仍失败就停 |
-| `emit` | 7 | ack 超时 → 可重试（中枢按 (task_id, seq) 幂等） |
-| `upgrade` | 0 | 成功（`--check` 时表示有更新） |
-| `upgrade` | 1 | 已是最新（仅 `--check`） |
-| `upgrade` | 2 | 服务端没带 agent 二进制（501）→ 别重试，去重跑安装脚本 |
-| `upgrade` | 3 | 权限不足 → 用 root 再来 |
-| `upgrade` | 4 | sha256 不符 → 别原样重试（传输或服务端文件有问题） |
-| `upgrade` | 5 | 网络/其他错误 → 可以原样重跑 |
-| `runs` / `show` | 0 / 1 | 找到 / 没找到（含空结果、ref 不存在、参数非法） |
+| 命令 | 码 | 含义 | `kind` |
+|---|---|---|---|
+| 节点模式（不带子命令） | 0 / 1 | 正常退出 / 参数、配置、握手、连接失败（重启交给进程管理器） | — |
+| `run` | 产物自己的码 / 1 | 脚本怎么退就怎么退 / 只有 agent 侧故障（产物不合法、起不来）才用 1 | artifact 短码：`invalid_yaml` / `unknown_field` / `invalid_name` / `unsupported_api_version` … |
+| `emit` | 0 | 成功（已本地落盘；`--wait-routed` 时已确认派发） | — |
+| `emit` | 2 | 参数/请求形状错（不是 JSON 对象、超体积）→ 修，别重试 | `bad_request` |
+| `emit` | 3 | 被拒：`--to` 或端口不在本能力的出口里 → 修，别重试 | `port_not_allowed` |
+| `emit` | 4 | 被拒：data 不满足要去那个下游的要求 → 补齐字段后**可以**重发 | `schema_mismatch` |
+| `emit` | 5 | 任务已非运行态（cancel / 租约过期 / 已终结）→ **停止执行** | `task_gone` |
+| `emit` | 6 | 通信失败 / token 无效 / socket 不存在 → 可重试一次，仍失败就停 | `comm_failed` |
+| `emit` | 7 | ack 超时 → 可重试（中枢按 (task_id, seq) 幂等） | `ack_timeout` |
+| `upgrade` | 0 | 成功（`--check` 时表示有更新） | — |
+| `upgrade` | 1 | 已是最新（仅 `--check`；**不是错误**，stderr 是空的） | — |
+| `upgrade` | 2 | 服务端没带 agent 二进制（501）→ 别重试，去重跑安装脚本 | `unavailable` |
+| `upgrade` | 3 | 权限不足 → 用 root 再来（message 里有能直接粘的一行） | `need_root` |
+| `upgrade` | 4 | sha256 不符 → 别原样重试（传输或服务端文件有问题） | `bad_sha` |
+| `upgrade` | 5 | 网络/其他错误（含参数、配置）→ 可以原样重跑 | `failed` / `config_missing` / `config_invalid` |
+| `runs` / `show` | 0 / 1 | 找到 / 没找到或参数非法（**不新增第三档**：歧义也走 1） | `not_found` / `ambiguous_ref` / `usage` / `config_missing` / `config_invalid` |
 
 ## 5. 不要做
 
@@ -145,3 +180,5 @@ anotify-agent show trc_0af7651916cd43dd8448eb211c80319c/notify.phone@2/3-a1 --da
    代发一帧，路由权永远在中枢。同理，`ANOTIFY_TASK_TOKEN` 是单次任务的，别存下来复用。
 5. **别无脑重试 `emit` 的 2 / 3**：参数错、出口不在契约里，重试一万次也一样。
 6. **别在已经装成服务的机器上手工起第二个节点**：两个进程抢同一个令牌，表现是互相踢线。
+7. **别把表里的 8 位前缀当完整 id 存起来**：前缀只是给人省 token 的；要用就先看 `runs --json`
+   的完整 id，否则换台机器就可能撞上前缀（`ambiguous_ref`，退 1）。

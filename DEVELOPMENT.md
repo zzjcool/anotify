@@ -430,6 +430,24 @@ anotify-agent show trc_xxx/review@2/3-a1              # 那一次的 input + std
 
 退出码：找到 = 0，没找到 = 1（空结果也是 1，脚本据此判断「到底跑没跑过」）。
 
+- **机器可读面（#318）**：两种读者、两种形状——TTY 上打表格，stdout 不是终端时自动
+  `--json`（显式开也一样）。TRACE 列只打前 8 位，`show` / `--trace` 接受唯一前缀
+  （最少 8 字符；歧义退 1 + `kind=ambiguous_ref`，不输出任何日志正文），
+  `show --tail N` / `--no-stdout` / `--no-stderr` 控制读输出窗口。
+
+```bash
+anotify-agent runs --json | jq '.runs[0].ref'   # {ref + meta.json 全字段}；空结果 {"runs":[]} 且退 1
+anotify-agent show <8 位前缀>/review@2/3-a1 --json --tail 50
+anotify-agent upgrade --check --json            # {current,latest,updated,restarted,reason}
+anotify-agent emit --to notify.phone --data '{}'    # 管道上默认 {"ok":true,"port","routed","note"}
+```
+
+失败时 stderr 是**单行** `{"error":{"kind","message","hint"}}`，`kind` 与退出码对应：
+`emit` → `bad_request` / `port_not_allowed` / `schema_mismatch` / `task_gone` /
+`comm_failed` / `ack_timeout`；`upgrade` → `unavailable` / `need_root` / `bad_sha` /
+`failed`；`runs`/`show` 的 1 → `not_found` / `ambiguous_ref` / `usage`。TTY 上仍然是
+那句中文（不牺牲人的体验）。
+
 ### agent 的可发现面：`-h` 命令表 / `--skill` 手册 / `--version`
 
 `anotify-agent` 是**用户机器上**的二进制：拿到它的人可能没有仓库、没有文档、也没有网络，

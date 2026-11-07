@@ -172,16 +172,18 @@ func TestRunsCLIRecentList(t *testing.T) {
 
 	// 表头六列（契约 §4）。
 	runsCLIWant(t, "表头", stdout, "TIME", "TRACE", "CAPABILITY", "SEQ", "ATT", "STATUS")
-	// 三行都在，状态原样来自 meta.json。
-	runsCLIWant(t, "表格", stdout, "trc_alpha", "trc_beta", "digest@1", "notify@2", "succeeded", "failed")
+	// 三行都在，状态原样来自 meta.json。TRACE 列是**前 8 位**（#318 §3）：
+	// trace id 的真实长度是 36（`trc_` + 32 hex），表里那 28 个字符全是上下文预算。
+	runsCLIWant(t, "表格", stdout, shortTraceRef("trc_alpha"), "trc_beta", "digest@1", "notify@2", "succeeded", "failed")
 
 	// 倒序：最新的（trc_beta）排在 trc_alpha 之前。
-	if i, j := strings.Index(stdout, "trc_beta"), strings.Index(stdout, "trc_alpha"); i > j {
+	if i, j := strings.Index(stdout, "trc_beta"), strings.Index(stdout, shortTraceRef("trc_alpha")); i > j {
 		t.Fatalf("最近视图必须是时间倒序（trc_beta 应在 trc_alpha 之前），实际:\n%s", stdout)
 	}
 
 	// 行形状（对齐后 SEQ/ATT/STATUS 各占一列，attempt 2 那条也要在同一行里）。
-	row := regexp.MustCompile(`(?m)^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\s+trc_alpha\s+digest@1\s+2\s+2\s+failed$`)
+	row := regexp.MustCompile(`(?m)^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\s+` +
+		regexp.QuoteMeta(shortTraceRef("trc_alpha")) + `\s+digest@1\s+2\s+2\s+failed$`)
 	if !row.MatchString(stdout) {
 		t.Fatalf("表格行形状不对（期望 TIME/TRACE/CAPABILITY/SEQ/ATT/STATUS 对齐成一行），实际:\n%s", stdout)
 	}
@@ -199,7 +201,7 @@ func TestRunsCLIListLimit(t *testing.T) {
 			t.Fatalf("退出码 = %d, want %d（stderr=%q）", code, exitOK, stderr)
 		}
 		runsCLIWant(t, "表格", stdout, "trc_beta", "notify@2")
-		runsCLINotWant(t, "表格", stdout, "trc_alpha", "digest@1")
+		runsCLINotWant(t, "表格", stdout, shortTraceRef("trc_alpha"), "digest@1")
 	})
 
 	t.Run("--limit 0 不限条数", func(t *testing.T) {
@@ -207,7 +209,7 @@ func TestRunsCLIListLimit(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("退出码 = %d, want %d", code, exitOK)
 		}
-		runsCLIWant(t, "表格", stdout, "trc_alpha", "trc_beta")
+		runsCLIWant(t, "表格", stdout, shortTraceRef("trc_alpha"), "trc_beta")
 	})
 }
 
@@ -245,7 +247,7 @@ func TestRunsCLICapabilityMode(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("退出码 = %d, want %d（stderr=%q）", code, exitOK, stderr)
 		}
-		runsCLIWant(t, "表格", stdout, "digest@1", "trc_alpha")
+		runsCLIWant(t, "表格", stdout, "digest@1", shortTraceRef("trc_alpha"))
 		runsCLINotWant(t, "表格", stdout, "trc_beta", "notify@2")
 		// 倒序：后跑的 failed(seq 2) 在前。
 		if i, j := strings.Index(stdout, "failed"), strings.Index(stdout, "succeeded"); i < 0 || j < 0 || i > j {
@@ -492,7 +494,7 @@ func TestRunsCLISubcommandRegistration(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("`-data-dir DIR runs` 退出码 = %d, want %d（stderr=%q）", code, exitOK, stderr)
 	}
-	runsCLIWant(t, "表格", stdout, "TIME", "TRACE", "trc_alpha")
+	runsCLIWant(t, "表格", stdout, "TIME", "TRACE", shortTraceRef("trc_alpha"))
 
 	// show 同样要能从全局 flag 前缀里被认出来。
 	code, stdout, stderr = runsCLIInvoke(t, "-data-dir", f.dir, showCommand, f.refs["beta1"])

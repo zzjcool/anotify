@@ -822,6 +822,111 @@ func (s *runStore) List(f runFilter) ([]runEntry, error) {
 	return entries, nil
 }
 
+// traceRefWidth 是 `runs` 表里 TRACE 列显示的前缀长度（issue #318 §3）。
+//
+// 8 是「够短」与「够准」的折中：真实 trace id 是 `trc_` + 32 位 hex，去掉 28 位
+// 省下的是 agent 的上下文预算；而 8 位（4 字节随机 + 前缀）在同一台机器上几乎
+// 不会撞——真撞了也不猜：`show` / `--trace` 会报 ambiguous_ref 并列出候选。
+const traceRefWidth = 8
+
+// shortTraceRef 是表格里那个 8 位前缀（更短的 id 原样返回：截到 0 位没有意义）。
+//
+// 不带省略号：这 8 个字符要能被原样抄进 `show <前缀>/…`，多一个 `…` 就得手删。
+func shortTraceRef(id string) string {
+	if len(id) <= traceRefWidth {
+		return id
+	}
+	return id[:traceRefWidth]
+}
+
+// minTracePrefixLen 是 `--trace` / `show` 接受的最短前缀。
+//
+// 固定 8 起，不做 git 那套「最少 4 位、按库里有多少对象动态放宽」的启发式：
+// 规则越简单，agent 越不会猜错（issue §3 的原话）。短于 8 的**完整 id** 仍然
+// 可用（精确匹配永远优先）——那是抄来的 id，不是猜的前缀。
+const minTracePrefixLen = traceRefWidth
+
+// ambiguousTraceError 是「前缀撞上不止一条 trace」：带候选，便于一次选对。
+type ambiguousTraceError struct {
+	prefix     string
+	candidates []string
+}
+
+func (e *ambiguousTraceError) Error() string {
+	return fmt.Sprintf("trace 前缀 %q 不唯一（%d 条候选：%s）",
+		e.prefix, len(e.candidates), strings.Join(e.candidates, ", "))
+}
+
+// ResolveTrace 把「完整 trace id 或唯一前缀」解析成档案库里真实存在的完整 id。
+//
+// 三条规则（顺序即是优先级）：
+//  1. 完整 id 永远赢——哪怕另一条 trace 也以它为前缀（`trc_a` 与 `trc_ab`）；
+//  2. 前缀至少 minTracePrefixLen 个字符（太短就别猜，报 usage）；
+//  3. 前缀必须唯一，否则返回 *ambiguousTraceError（调用方据此报 ambiguous_ref）。
+//
+// 没匹配到返回 ErrRunNotFound 的包装：`runs --trace` 把它当「一次都没跑过」，
+// `show` 把它当「盘上没有这次执行」，两条命令各自说自己的话。
+func (s *runStore) ResolveTrace(prefix string) (string, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return "", fmt.Errorf("%w: trace 为空", ErrRunNotFound)
+	}
+	ids, err := s.traceIDs()
+	if err != nil {
+		return "", err
+	}
+	for _, id := range ids {
+		if id == prefix {
+			return id, nil
+		}
+	}
+	if len(prefix) < minTracePrefixLen {
+		return "", withKind(fmt.Errorf(
+			"trace 前缀 %q 太短（至少 %d 个字符；完整 id 可以直接给）",
+			prefix, minTracePrefixLen), kindUsage, hintUsage)
+	}
+	matched := make([]string, 0, 2)
+	for _, id := range ids {
+		if strings.HasPrefix(id, prefix) {
+			matched = append(matched, id)
+		}
+	}
+	switch len(matched) {
+	case 1:
+		return matched[0], nil
+	case 0:
+		return "", fmt.Errorf("%w: 没有 trace 以 %q 开头", ErrRunNotFound, prefix)
+	default:
+		return "", &ambiguousTraceError{prefix: prefix, candidates: matched}
+	}
+}
+
+// traceIDs 列出档案库里的 trace 目录名（有序：候选列表与解析结果都稳定）。
+//
+// 只看第一层目录：前缀解析不需要读任何 meta.json，2000 条档案也只是一次 ReadDir。
+// `.tasks` 是旁路索引（契约 §4），不是一条 trace。
+func (s *runStore) traceIDs() ([]string, error) {
+	if s == nil || strings.TrimSpace(s.root) == "" {
+		return nil, nil
+	}
+	dirs, err := os.ReadDir(s.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // 还没有任何执行 = 没有任何 trace，不是错误
+		}
+		return nil, fmt.Errorf("runs: 读 %s: %w", s.root, err)
+	}
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if !d.IsDir() || d.Name() == runIndexDirName {
+			continue
+		}
+		out = append(out, d.Name())
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // readRunMeta 读一个 run 目录里的 meta.json。
 func readRunMeta(dir string) (runMeta, error) {
 	var meta runMeta

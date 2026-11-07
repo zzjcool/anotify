@@ -99,6 +99,40 @@ type upgradeOptions struct {
 	installTo  string // --install-to：替换哪个文件
 	restart    bool   // --restart：替换后强制 systemctl restart（需要 root）
 	noRestart  bool   // --no-restart：替换后什么都不做（下次启动生效）
+	json       bool   // --json：机器可读（缺省由 stdout 是否终端决定）
+}
+
+// upgradeUsage 是 `upgrade -h` 的用法串。
+const upgradeUsage = "anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] " +
+	"[--restart|--no-restart] [-f node.yaml] [--json]"
+
+// upgradeExitRows 是 `upgrade -h` 里的退出码表（契约 §4 + issue #318 §2 的 kind）。
+//
+// 0 与 1 分开是为了让 `--check` 能当「有更新吗」用在 cron 里；1 不是错误，所以没有 kind。
+var upgradeExitRows = []exitRow{
+	{code: "0", desc: "成功（--check 时表示有更新）"},
+	{code: "1", desc: "已是最新（仅 --check；不是错误）"},
+	{code: "2", desc: "服务端没带 agent 二进制（501）→ 别重试，去重跑安装脚本",
+		kind: kindUnavailable},
+	{code: "3", desc: "权限不足 → 用 root 再来（message 里有能直接粘的一行）",
+		kind: kindNeedRoot},
+	{code: "4", desc: "sha256 不符 → 别原样重试（传输或服务端文件有问题）",
+		kind: kindBadSHA},
+	{code: "5", desc: "网络/其他错误（含参数、配置）→ 可以原样重跑",
+		kind: kindFailed},
+}
+
+// upgradeReport 是 `upgrade --json` 的形状（issue §1）。
+//
+// Restarted 回答的是「**这次真的**让它重启了吗」，不是「以后会生效吗」：
+// --no-restart / 没检测到运行中的 agent / 重启失败 都是 false——撒谎的
+// restarted=true 会让脚本以为服务已经在跑新版本，而实际还是旧进程。
+type upgradeReport struct {
+	Current   string `json:"current"`   // 本机当前版本
+	Latest    string `json:"latest"`    // 服务端声明的版本
+	Updated   bool   `json:"updated"`   // 这次真的换了文件
+	Restarted bool   `json:"restarted"` // 这次真的让运行中的 agent 重启了
+	Reason    string `json:"reason"`    // 结论短码（机器可读，见 done）
 }
 
 // parseUpgradeFlags 解析 `upgrade` 子命令的参数。
@@ -109,6 +143,7 @@ type upgradeOptions struct {
 func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) {
 	fs := flag.NewFlagSet("agent upgrade", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeSubcommandHelp(fs, upgradeUsage, upgradeExitRows) }
 
 	configPath := fs.String("f", "",
 		"node.yaml 路径（不给则先看 ANOTIFY_TOKEN 等环境变量，再退到 ./node.yaml；与主命令一致）")
@@ -122,6 +157,9 @@ func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) 
 		"替换后用 systemctl restart "+agentServiceName+" 强制重启（system 级单元需要 root）")
 	noRestart := fs.Bool("no-restart", false,
 		"只换二进制，不碰运行中的 agent（下次启动生效）")
+	jsonOut := fs.Bool("json", false,
+		"机器可读输出：{\"current\",\"latest\",\"updated\",\"restarted\",\"reason\"}"+
+			"（缺省：stdout 不是终端时自动开）")
 
 	if err := fs.Parse(args); err != nil {
 		return upgradeOptions{}, err
@@ -137,6 +175,7 @@ func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) 
 		installTo:  *installTo,
 		restart:    *restart,
 		noRestart:  *noRestart,
+		json:       *jsonOut,
 	}, nil
 }
 
@@ -147,10 +186,10 @@ func parseUpgradeFlags(args []string, stderr io.Writer) (upgradeOptions, error) 
 // 什么都没测。
 func upgradeMain(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	code, err := runUpgrade(args, stdout, stderr, getenv)
-	if err != nil {
-		// 只在这里打一次：runUpgrade 只返回、不打印错误（避免同一句话出现两遍）。
-		fmt.Fprintf(stderr, "anotify-agent upgrade: %s\n", err)
-	}
+	// 只在这里打一次：runUpgrade 只返回、不打印错误（避免同一句话出现两遍）。
+	// 形状判定在这里重算一遍（而不是从 mainWith 传下来）：这样直接调升级入口的
+	// 单测也能拿到与真实进程一致的行为（--json / stdout 不是终端）。
+	reportFailure(stderr, outputMode(stdout, args), upgradeCommand, code, err)
 	return code
 }
 
@@ -165,81 +204,114 @@ func runUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK, nil // -h：usage 已由 flag 包写到 stderr，退出码 0
 		}
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, withKind(err, kindUsage, hintUsage)
+	}
+	mode := modeFor(stdout, opts.json)
+
+	// noteW 是「过程说明」的去处：文本模式给人看的都在 stdout；JSON 模式挪到 stderr
+	// —— JSON 的 stdout 只能有那一行结论，否则 `| jq` 立刻失效。
+	noteW := stdout
+	if mode == outJSON {
+		noteW = stderr
+	}
+
+	rep := upgradeReport{Current: version.String()}
+	// done 是**成功路径**的唯一收口：文本模式不多打一个字（各分支自己说人话），
+	// JSON 模式打一行形状。真失败（2..5）走 {error:{kind,…}}，不打形状——
+	// stdout 上只有「成功 / 已最新」的结论，机器的判断因此只有一处。
+	done := func(code int, reason string, updated, restarted bool) (int, error) {
+		rep.Reason, rep.Updated, rep.Restarted = reason, updated, restarted
+		if rep.Latest == "" {
+			rep.Latest = rep.Current
+		}
+		if mode == outJSON {
+			// 写 stdout 失败只可能是管道被关（`| head`）：结论成立，不改退出码。
+			_ = writeJSONLine(stdout, rep)
+		}
+		return code, nil
 	}
 
 	cfg, err := upgradeConfig(opts.configPath, opts.server, getenv)
 	if err != nil {
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, configError(err)
 	}
 	endpoint, err := binaryEndpoint(cfg.Server)
 	if err != nil {
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, withKind(err, kindConfigInvalid, hintConfigInvalid)
 	}
 
 	resp, err := requestBinary(endpoint, cfg.Token)
 	if err != nil {
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, withKind(err, kindFailed, hintFailed)
 	}
 	defer resp.Body.Close()
 
 	// 501 = 服务端**没带** agent 二进制（契约 §2）。必须与网络错误分开说：
 	// 前者是「这台中枢的镜像里没有 /app/agent」，重试一百次也不会好。
 	if resp.StatusCode == http.StatusNotImplemented {
-		return exitUpgradeUnavailable, errors.New(
-			"服务端没有 agent 二进制（501 agent_binary_unavailable）：" +
-				"这台中枢没带 agent 升级源（镜像里缺 /app/agent，或 ANOTIFY_AGENT_BIN 指的文件不存在）。" +
-				"换一个带 agent 的镜像，或用 --install-to 自己装")
+		return exitUpgradeUnavailable, withKind(errors.New(
+			"服务端没有 agent 二进制（501 agent_binary_unavailable）："+
+				"这台中枢没带 agent 升级源（镜像里缺 /app/agent，或 ANOTIFY_AGENT_BIN 指的文件不存在）。"+
+				"换一个带 agent 的镜像，或用 --install-to 自己装"), kindUnavailable, hintUnavailable)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return exitUpgradeFailure, fmt.Errorf("GET %s 返回 %d（期望 200）", endpoint, resp.StatusCode)
+		return exitUpgradeFailure, withKind(
+			fmt.Errorf("GET %s 返回 %d（期望 200）", endpoint, resp.StatusCode), kindFailed, hintFailed)
 	}
 
 	remoteSHA := strings.ToLower(strings.TrimSpace(resp.Header.Get(headerAgentSHA256)))
 	if remoteSHA == "" {
 		// 没有校验和就不许替换：这条路径是「把远端字节写进你的 /usr/local/bin」，
 		// 除了 TLS 之外没有别的完整性保证（契约 §4.6 的全部意义）。
-		return exitUpgradeFailure, errors.New(
-			"服务端没回 " + headerAgentSHA256 + "，拒绝在没有校验和的情况下替换二进制")
+		return exitUpgradeFailure, withKind(errors.New(
+			"服务端没回 "+headerAgentSHA256+"，拒绝在没有校验和的情况下替换二进制"), kindBadSHA, hintBadSHA)
 	}
 	remoteVersion := strings.TrimSpace(resp.Header.Get(headerAgentVersion))
 	if remoteVersion == "" {
 		remoteVersion = "unknown"
 	}
+	rep.Latest = remoteVersion
 
-	target, err := resolveTarget(opts.installTo, os.Executable, stdout)
+	target, err := resolveTarget(opts.installTo, os.Executable, noteW)
 	if err != nil {
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, withKind(err, kindConfigInvalid, hintConfigInvalid)
 	}
 	currentSHA, err := fileSHA256(target)
 	if err != nil {
-		return exitUpgradeFailure, fmt.Errorf("读取目标 %s: %w", target, err)
+		return exitUpgradeFailure, withKind(
+			fmt.Errorf("读取目标 %s: %w", target, err), kindConfigInvalid, hintConfigInvalid)
 	}
 	upToDate := currentSHA != "" && currentSHA == remoteSHA
 
 	// --check：只回答「有没有更新」，一个字节都不下载（契约 §4.3）。
 	if opts.check {
 		if upToDate {
-			fmt.Fprintf(stdout, "已是最新：%s（sha256 %s，%s）\n",
-				version.String(), shortSHA(currentSHA), target)
-			return exitUpgradeUpToDate, nil
+			if mode == outText {
+				fmt.Fprintf(stdout, "已是最新：%s（sha256 %s，%s）\n",
+					version.String(), shortSHA(currentSHA), target)
+			}
+			return done(exitUpgradeUpToDate, "up_to_date", false, false)
 		}
-		fmt.Fprintf(stdout, "可升级：当前 %s（sha256 %s）→ 目标 %s（sha256 %s），目标路径 %s\n",
-			version.String(), shortSHA(currentSHA), remoteVersion, shortSHA(remoteSHA), target)
-		return exitOK, nil
+		if mode == outText {
+			fmt.Fprintf(stdout, "可升级：当前 %s（sha256 %s）→ 目标 %s（sha256 %s），目标路径 %s\n",
+				version.String(), shortSHA(currentSHA), remoteVersion, shortSHA(remoteSHA), target)
+		}
+		return done(exitOK, "available", false, false)
 	}
 	// 同 sha 已最新（契约 §4.4）：不动文件。--force 是给「二进制看着对但想重装」用的。
 	if upToDate && !opts.force {
-		fmt.Fprintf(stdout, "already up to date: %s（sha256 %s，%s）\n",
-			version.String(), shortSHA(remoteSHA), target)
-		return exitOK, nil
+		if mode == outText {
+			fmt.Fprintf(stdout, "already up to date: %s（sha256 %s，%s）\n",
+				version.String(), shortSHA(remoteSHA), target)
+		}
+		return done(exitOK, "already_current", false, false)
 	}
 
 	// ---- 下载 → 校验 → 原子替换 ----
 
 	tmp, placed, err := openDownloadFile(target)
 	if err != nil {
-		return exitUpgradeFailure, err
+		return exitUpgradeFailure, withKind(err, kindFailed, hintFailed)
 	}
 	// 临时文件的生命周期只有一个方向：要么 rename 成目标（此时它已经不是"临时"
 	// 了），要么被删掉。需要 root 的那一档是唯一例外——那个路径要交给用户去
@@ -251,43 +323,61 @@ func runUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 		}
 	}()
 
+	// needRoot 是契约 §4.7 的「需要 root」那一档：文本模式把能直接粘的
+	// sudo install 打到 stderr；JSON 模式没有第二行可放，就把它塞进 message
+	// （JSON 会把换行转义，仍然是单行）。
+	needRoot := func(tmpPath, msg string, cause error) error {
+		keepTmp = true
+		if mode == outJSON {
+			msg += "；" + strings.TrimSpace(needRootHint(tmpPath, target))
+		} else {
+			fmt.Fprint(stderr, needRootHint(tmpPath, target))
+		}
+		if cause != nil {
+			return withKind(fmt.Errorf("%s: %w", msg, cause), kindNeedRoot, hintNeedRoot)
+		}
+		return withKind(errors.New(msg), kindNeedRoot, hintNeedRoot)
+	}
+
 	gotSHA, err := downloadTo(tmp, resp.Body)
 	if err != nil {
-		return exitUpgradeFailure, fmt.Errorf("下载中断（%s 未改动）: %w", target, err)
+		return exitUpgradeFailure, withKind(
+			fmt.Errorf("下载中断（%s 未改动）: %w", target, err), kindFailed, hintFailed)
 	}
 	if gotSHA != remoteSHA {
 		// 契约 §4.6：不符即删临时文件并失败。**绝不**把它装上去再"看看好不好用"。
-		return exitUpgradeBadSHA, fmt.Errorf(
+		return exitUpgradeBadSHA, withKind(fmt.Errorf(
 			"校验失败：下载内容 sha256 = %s，服务端声明 %s；已丢弃下载内容，%s 未改动"+
 				"（服务端二进制可能被改动，或传输被截断）",
-			gotSHA, remoteSHA, target)
+			gotSHA, remoteSHA, target), kindBadSHA, hintBadSHA)
 	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
-		return exitUpgradeFailure, fmt.Errorf("设置权限 0755: %w", err)
+		return exitUpgradeFailure, withKind(
+			fmt.Errorf("设置权限 0755: %w", err), kindFailed, hintFailed)
 	}
 
 	if !placed {
 		// 目标目录一开始就不可写：**不静默降级**到 $HOME 之类的地方（契约 §4.7）。
 		// 静默换路径的症状是「升级报成功，跑的却还是旧那个」——比失败难查得多。
 		// 这里把已校验的二进制留在临时路径，给出能直接粘的一行，退 3。
-		keepTmp = true
-		fmt.Fprint(stderr, needRootHint(tmp.Name(), target))
-		return exitUpgradeNeedRoot, fmt.Errorf("目标目录不可写，需要 root：%s", filepath.Dir(target))
+		return exitUpgradeNeedRoot, needRoot(tmp.Name(),
+			fmt.Sprintf("目标目录不可写，需要 root：%s", filepath.Dir(target)), nil)
 	}
 	if err := os.Rename(tmp.Name(), target); err != nil {
 		if isPermissionError(err) {
-			keepTmp = true
-			fmt.Fprint(stderr, needRootHint(tmp.Name(), target))
-			return exitUpgradeNeedRoot, fmt.Errorf("替换 %s 需要 root: %w", target, err)
+			return exitUpgradeNeedRoot, needRoot(tmp.Name(),
+				fmt.Sprintf("替换 %s 需要 root", target), err)
 		}
-		return exitUpgradeFailure, fmt.Errorf("替换 %s: %w", target, err)
+		return exitUpgradeFailure, withKind(fmt.Errorf("替换 %s: %w", target, err), kindFailed, hintFailed)
 	}
 	// 已经把临时文件的 inode 挪成目标了：别再按老路径去删（那里可能很快被
 	// 别人建出同名的东西）。
 	keepTmp = true
 
-	fmt.Fprintf(stdout, "已更新 %s：%s → %s（sha256 %s）\n",
-		target, version.String(), remoteVersion, shortSHA(remoteSHA))
+	if mode == outText {
+		fmt.Fprintf(stdout, "已更新 %s：%s → %s（sha256 %s）\n",
+			target, version.String(), remoteVersion, shortSHA(remoteSHA))
+	}
 
 	// 换文件 ≠ 换进程：正在跑的 agent 还抓着旧 inode，必须让它退出、由 supervisor
 	// 拉起新的那份。默认就走**免权限**那条路（给运行中的 agent 发 SIGTERM，
@@ -295,34 +385,42 @@ func runUpgrade(args []string, stdout, stderr io.Writer, getenv func(string) str
 	// restart` 需要 root —— 让「升级」这件日常事每次都要 sudo，是把设计问题
 	// 转嫁给用户。
 	if opts.noRestart {
-		fmt.Fprintln(stdout, "已跳过重启（--no-restart）：新版本在下次启动时生效")
-		return exitOK, nil
+		if mode == outText {
+			fmt.Fprintln(stdout, "已跳过重启（--no-restart）：新版本在下次启动时生效")
+		}
+		return done(exitOK, "updated_no_restart", true, false)
 	}
 	if opts.restart {
 		if err := restartAgentService(); err != nil {
 			// 契约 §4.8：二进制已经换好了，重启失败**不能**改退出码——
 			// 否则脚本会以为"没升级"，于是再装一遍。
-			fmt.Fprintf(stderr,
-				"注意：重启服务失败（二进制已经换好了）：%s\n  手动执行：sudo systemctl restart %s\n",
-				err, agentServiceName)
-		} else {
+			if mode == outText {
+				fmt.Fprintf(stderr,
+					"注意：重启服务失败（二进制已经换好了）：%s\n  手动执行：sudo systemctl restart %s\n",
+					err, agentServiceName)
+			}
+			return done(exitOK, "updated_restart_failed", true, false)
+		}
+		if mode == outText {
 			fmt.Fprintf(stdout, "已重启 %s\n", agentServiceName)
 		}
-		return exitOK, nil
+		return done(exitOK, "updated", true, true)
 	}
 
 	// 默认：找到"正在跑这个二进制"的 agent 进程，发 SIGTERM 让它优雅退出。
 	// 退出是 agent 自己支持的路径（先等任务收尾，见 grace），所以这不是"杀进程"。
-	restarted, err := terminateRunningAgents(target, stdout)
+	restarted, err := terminateRunningAgents(target, noteW)
 	if err != nil {
 		// 与 --restart 同样的口径：二进制已经换好了，重启失败不改退出码。
-		fmt.Fprintf(stderr, "注意：没能让运行中的 agent 重启（二进制已经换好了）：%s\n", err)
-		return exitOK, nil
+		if mode == outText {
+			fmt.Fprintf(stderr, "注意：没能让运行中的 agent 重启（二进制已经换好了）：%s\n", err)
+		}
+		return done(exitOK, "updated_restart_failed", true, false)
 	}
-	if !restarted {
+	if !restarted && mode == outText {
 		fmt.Fprintln(stdout, "没有检测到运行中的 agent（systemd 会在下次启动时用新版本）")
 	}
-	return exitOK, nil
+	return done(exitOK, "updated", true, restarted)
 }
 
 // procInfo 是扫描 /proc 得到的候选进程（只留判断需要的字段）。
