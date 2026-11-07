@@ -126,9 +126,8 @@ ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
 |---|---|---|---|
 | POST | `/v1/capabilities` | 请求体**不变**（`paramsSchema`/`outputs`/`run`/`requires`/`sticky`/`lifecycle`）。服务端组装成 spec。**缺实现 → 400 `impl_missing`**（这是唯一的行为收紧） | 请求体改 `{namespaceId?, name, version?, displayName?, spec, force?, links?}`，删扁平字段 |
 | GET | `/v1/capabilities` | 列表项新增 `spec`（**剔除 `files` 正文**，换成 `files: {count, bytes}`）；`run` 旧投影保留 | 删旧投影 |
-| GET | `/v1/capabilities/{id}` | 返回完整 `spec` | 同 |
 | PATCH | `/v1/capabilities` | 仍只改 `displayName`（现在它不在 spec 里，天然不漂移） | 同 |
-| GET | `/v1/capabilities/{id}/artifact` | 保留；`/spec` 作为别名 | 同 |
+| GET | `/v1/capabilities/{id}/artifact` | **它同时是详情端点**：返回整份产物（metadata + 完整 `spec`，含 `files` 与 `env`）。仓库里从来没有 `GET /v1/capabilities/{id}`，**不新增**（`check_openapi.py` 机检 spec 与 mux 一致，凭空加 path 会红；也没必要——`/artifact` 已经是详情页展示脚本用的那个） | 可加 `/spec` 别名 |
 | POST | `/v1/deployments` | **handler 形式的能力不可部署** → 400 `builtin_not_deployable`（否则会给节点推一份没有 files 的产物） | 同 |
 | — | `/v1/artifacts` 系列 | 保留（写穿镜像还在） | P2 删除 |
 | — | openapi | **补齐声明**：`run`(5 字段) / `requires` / `spec` 进 `CapabilityInput` 与响应 schema（这是长期缺口的修复，纯增量） | 改形状时再动 |
