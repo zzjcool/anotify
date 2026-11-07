@@ -330,12 +330,13 @@ func Render(templateID string, in RenderInput) (*Artifact, error) {
 	a := &Artifact{
 		APIVersion: APIVersion,
 		Kind:       KindCapability,
-		Metadata:   Metadata{Name: name, Version: version},
+		// displayName 在 Metadata 里（v3 起）：它是展示标签，不参与 digest，
+		// 所以改一次名字不该产生一个新版本。
+		Metadata: Metadata{Name: name, Version: version, DisplayName: displayName},
 		Spec: Spec{
-			DisplayName: displayName,
-			Params:      params,
-			Outputs:     append([]string{}, tpl.Outputs...),
-			Requires:    append([]string{}, tpl.Requires...),
+			Params:   params,
+			Outputs:  append([]string{}, tpl.Outputs...),
+			Requires: append([]string{}, tpl.Requires...),
 			Run: Run{
 				Entrypoint: entrypoint,
 				Files:      files,

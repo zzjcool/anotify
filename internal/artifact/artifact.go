@@ -1,9 +1,10 @@
 // Package artifact 定义「能力产物」（Capability Artifact）的线上格式、校验与
 // 内容寻址标识。
 //
-// 一个产物是一份**自包含**的文件：参数契约 + 入口文件 + 全部文件内容 + 超时 +
-// 环境变量 + 依赖的外部命令。它是控制台表单的**编译产物**，不是人手写的源文件；
-// 用户可以改，但改过之后 digest 变了，中枢会把它识别为「本地变体」而永不覆盖。
+// 一份产物是一份**自包含**的规格：参数契约 + 出口 + 生命周期/粘性 + 实现
+// （脚本文件，或一个白名单内置执行器）+ 超时 + 环境变量 + 依赖的外部命令。
+// 它是控制台表单的**编译产物**，不是人手写的源文件；用户可以改，但改过之后 digest
+// 变了，中枢会把它识别为「本地变体」而永不覆盖。
 //
 // # 为什么自包含
 //
@@ -15,6 +16,16 @@
 // 产物只在**节点**上执行，中枢既不解释也不运行其中的内容（契约 I1）。
 // 入口文件必须带 shebang：执行方式是直接 exec，不经 shell —— 没有 shell 就没有
 // 插值、拼接与引号问题。
+//
+// # 两种实现形式（Capability Spec v3 §3.1）
+//
+// 规格里既有契约也有实现，实现只有两种形式，**恰好给一组**：
+//
+//	files + entrypoint   普通脚本，由任意 agent 节点执行（99% 的能力）
+//	handler              内置执行器（白名单，编译进中枢），只有 builtin 节点能认领
+//
+// 所以「能力有没有实现」是 Validate 的一条硬规则（impl_missing / impl_ambiguous），
+// 而不是一个可以事后补的状态：占位能力用 handler: noop。
 package artifact
 
 import (
@@ -64,6 +75,45 @@ const (
 	MaxWorkDirLen = 1024
 )
 
+// 内置执行器白名单（Capability Spec v3 §3.1）。
+//
+// handler 是「编译进中枢进程里的执行器」，不是节点上的一段脚本：它由中枢的
+// builtin 节点认领（契约 R1/R2）。白名单必须**只有**这里列出的几个——「猜一个
+// 名字试试」必须在校验期失败，而不是等到派发时才发现没有执行器（那时任务已经
+// 建好、已经扣了租约，失败现场比一个 YAML 错误难查得多）。
+const (
+	// HandlerNotifyPhone 是平台自带的手机推送动作（曾经的 notify.phone@1）。
+	HandlerNotifyPhone = "notify-phone"
+	// HandlerNoop 是合法、可部署、无副作用、不发 emit 的占位执行器。
+	//
+	// 它的存在是契约 R2 的落地方式：**能力永远有实现**，而占位不许伪造用户脚本
+	// （不许给空壳编造一份 `exit 0` 的正文）——用平台认领的 noop 明确表达「还没实现」。
+	HandlerNoop = "noop"
+)
+
+// knownHandlers 是白名单本体（顺序稳定：错误信息与播种输出要可 diff）。
+var knownHandlers = []string{HandlerNotifyPhone, HandlerNoop}
+
+// KnownHandlers 返回内置执行器白名单（拷贝，调用方可安全修改）。
+//
+// 导出的理由：白名单是**中枢侧**概念，播种（P1-b 把零产物的老能力补成
+// handler: noop）与端点校验都要用它，各写一份常量必然某天分叉。
+func KnownHandlers() []string {
+	out := make([]string, len(knownHandlers))
+	copy(out, knownHandlers)
+	return out
+}
+
+// isKnownHandler 报告 h 是否在白名单里。
+func isKnownHandler(h string) bool {
+	for _, known := range knownHandlers {
+		if h == known {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 	outputPattern  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,32}$`)
@@ -71,8 +121,12 @@ var (
 	envKeyPattern  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
-// Artifact 是一份能力产物。字段声明顺序即 canonical JSON 的字段顺序——
-// 顺序参与 digest 计算，改动字段顺序会让所有已有产物的 digest 失效。
+// Artifact 是一份能力产物。
+//
+// 字段声明顺序即 canonical JSON 的字段顺序，而顺序参与 digest —— 改动字段顺序会让
+// 所有已有产物的 digest 失效（v3 接受并只接受这一次性代价，见契约 §3.2）。
+// 注意「在这份文档里」与「在 digest 里」不是同一件事：apiVersion / kind 与
+// metadata.displayName 留在文档中（落盘、落库要用），但不进 digest（见 digestDocument）。
 type Artifact struct {
 	APIVersion string   `json:"apiVersion"`
 	Kind       string   `json:"kind"`
@@ -84,15 +138,37 @@ type Artifact struct {
 type Metadata struct {
 	Name    string `json:"name"    yaml:"name"`
 	Version int    `json:"version" yaml:"version"`
+	// DisplayName 是**纯展示**的名字（控制台列表、节点标题）。
+	//
+	// v3 把它从 Spec 搬到这里，理由只有一条：它不参与 digest（契约 §3.2）。
+	// 留在 Spec 里时，改一次显示名就会让 digest 变化 —— 而 PATCH /v1/capabilities
+	// 只改这一列、不重新编译产物，于是「列里的名字」与「产物里的名字」永久漂移，
+	// 部署还一层层判出 stale/local。搬出来以后它天然不漂：名字不参与内容寻址。
+	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
 }
 
 // Spec 是产物的全部内容。
+//
+// 字段声明顺序即 canonical JSON 的字段顺序（顺序参与 digest，见契约 §3）：
+// params / outputs / requires / lifecycle / sticky，然后是 run（脚本侧的
+// entrypoint/files/timeoutSec/env/workDir 仍收在 Run 下，不拍平），最后 handler。
 type Spec struct {
-	DisplayName string          `json:"displayName,omitempty" yaml:"displayName,omitempty"`
-	Params      json.RawMessage `json:"params,omitempty"      yaml:"params,omitempty"`
-	Outputs     []string        `json:"outputs"               yaml:"outputs"`
-	Requires    []string        `json:"requires,omitempty"    yaml:"requires,omitempty"`
-	Run         Run             `json:"run"                   yaml:"run"`
+	Params  json.RawMessage `json:"params,omitempty"    yaml:"params,omitempty"`
+	Outputs []string        `json:"outputs"             yaml:"outputs"`
+	// Requires 是节点必须预装的外部命令（部署时 LookPath 探测）。
+	Requires []string `json:"requires,omitempty"  yaml:"requires,omitempty"`
+	// Lifecycle 是重试/幂等/结果保留策略，v3 起进规格（改它 = 改内容 = 新版本）。
+	//
+	// 类型是 json.RawMessage（**不透明透传**）而不是严格结构体：internal/store 已经
+	// import 本包（builtin.go），本包反向 import store 会成环（契约 §4）。所以本包只负
+	// 责「带着它进 digest」，内容校验（retryable / maxAttempts / TTL 范围）留在 store 层。
+	Lifecycle json.RawMessage `json:"lifecycle,omitempty" yaml:"lifecycle,omitempty"`
+	// Sticky 是粘性路由键的类型（"" | worktree | …）。
+	Sticky string `json:"sticky,omitempty"    yaml:"sticky,omitempty"`
+	// Run 是脚本形式的「怎么跑」；handler 形式下它必须是零值（见 validateImpl）。
+	Run Run `json:"run"                 yaml:"run"`
+	// Handler 是内置执行器的名字（白名单见 KnownHandlers）；与 Run 恰好给一组。
+	Handler string `json:"handler,omitempty"   yaml:"handler,omitempty"`
 }
 
 // Run 是「怎么跑」。
@@ -116,6 +192,41 @@ type Run struct {
 	//
 	// 字段顺序参与 digest，所以只能加在最后（插中间会让所有已有产物的 digest 失效）。
 	WorkDir string `json:"workDir,omitempty" yaml:"workDir,omitempty"`
+}
+
+// isZero 报告 run 是否**完全没有内容**（= handler 形式下唯一合法的状态）。
+func (r Run) isZero() bool {
+	return r.Entrypoint == "" && len(r.Files) == 0 && r.TimeoutSec == 0 &&
+		len(r.Env) == 0 && r.WorkDir == ""
+}
+
+// MarshalJSON 在 **handler 形式**下省略空的 run 块。
+//
+// 为什么需要它：Run 是（非指针）struct，encoding/json 不会替它 omitempty，于是
+// handler 形式的规格会序列化出 `"run":{"entrypoint":"","files":null}`。那有两个毛病：
+//
+//   - `files: null` 违反空列表纪律（AGENTS.md：空列表给 []，别给 null）；
+//   - 它正好撞上「handler 形式不得带 files / entrypoint」这条规则（见 validateImpl）——
+//     Validate 只是放过了**零值**，序列化却把这两个键写了出来。于是任何拿本包的规范
+//     字节去过一遍 `anotify-agent schema capability` 的工具都会看到「一份合法产物被
+//     判非法」，而 artifact 与 schema 两份真理的守卫又抓不到（它们各自都和 Validate
+//     对齐，只是 canonical 输出这一侧没人验）。
+//
+// 只在「handler 非空且 Run 是零值」时省略：脚本形式的字节一个都不动（type plain
+// 只丢掉方法、保留字段顺序与 tag，所以除这一支以外输出与默认序列化逐字节相同）。
+func (s Spec) MarshalJSON() ([]byte, error) {
+	if s.Handler != "" && s.Run.isZero() {
+		return json.Marshal(struct {
+			Params    json.RawMessage `json:"params,omitempty"`
+			Outputs   []string        `json:"outputs"`
+			Requires  []string        `json:"requires,omitempty"`
+			Lifecycle json.RawMessage `json:"lifecycle,omitempty"`
+			Sticky    string          `json:"sticky,omitempty"`
+			Handler   string          `json:"handler,omitempty"`
+		}{s.Params, s.Outputs, s.Requires, s.Lifecycle, s.Sticky, s.Handler})
+	}
+	type plain Spec // 别名去掉方法，避免 MarshalJSON 递归调用自己
+	return json.Marshal(plain(s))
 }
 
 // Error 汇总一份产物上的全部问题。
@@ -207,6 +318,16 @@ func Parse(data []byte) (*Artifact, error) {
 		}
 		a.Spec.Params = canon
 	}
+	// lifecycle 同理（它也是 RawMessage 透传，不归一就会出现「两种书写顺序 = 两份产物」）。
+	// 这个错误码只有程序自己写坏一个 RawMessage 时才可能命中——从 Parse 进来的一定是
+	// 一次成功的 JSON 解码，必然是合法 JSON；口径与 invalid_params_schema 同构。
+	if len(a.Spec.Lifecycle) > 0 {
+		canon, cerr := canonicalizeJSON(a.Spec.Lifecycle)
+		if cerr != nil {
+			return nil, &Error{Problems: []string{"invalid_lifecycle: " + cerr.Error()}}
+		}
+		a.Spec.Lifecycle = canon
+	}
 
 	if err := Validate(&a); err != nil {
 		return nil, err
@@ -275,12 +396,65 @@ func Validate(a *Artifact) error {
 		p = append(p, fmt.Sprintf("invalid_version: 版本必须 >= 1，实际 %d", a.Metadata.Version))
 	}
 
-	p = append(p, validateRun(&a.Spec.Run)...)
+	p = append(p, validateImpl(&a.Spec)...)
 	p = append(p, validateOutputs(a.Spec.Outputs)...)
 	p = append(p, validateRequires(a.Spec.Requires)...)
 	p = append(p, validateParams(a.Spec.Params)...)
 
 	return errIf(p)
+}
+
+// validateImpl 校验「实现形式」：`files`+`entrypoint` 与 `handler` **恰好给一组**
+// （契约 §3.1 的三条规则），返回这两支该报的全部问题。
+//
+// 两支是互斥的，所以各自验各自的：脚本形式跑 validateRun（入口/文件/超时/env/workDir
+// 的原有规则一条不动，错误码也不动）；handler 形式反过来——那些字段**一个都不许出现**。
+// 两者都跑会制造噪音：一份 handler 规格里的 timeoutSec 并不是“超时值不合法”，而是
+// “这个字段在这支里没有意义”，两者得分开说。
+func validateImpl(spec *Spec) []string {
+	// 这里**不 TrimSpace**：白名单比较必须与运行时查执行器用的是同一个字符串。
+	// 容忍边空格的结果是「校验通过、派发时找不到执行器」（那时任务已经建好、租约
+	// 已经扣了），而 `handler: " noop "` 几乎只能是引号写法事故。
+	handler := spec.Handler
+	run := &spec.Run
+
+	if handler != "" {
+		var p []string
+		if !isKnownHandler(handler) {
+			p = append(p, fmt.Sprintf("unknown_handler: 内置执行器 %q 不在白名单里（可用：%s）",
+				handler, strings.Join(KnownHandlers(), "、")))
+		}
+		// handler 形式不得再带 run 侧字段：带了就是「两种实现混在一份规格里」，
+		// 中枢无法判定到底谁该跑（最坏的情形是内置节点抢了作者的脚本）。
+		if len(run.Files) > 0 {
+			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得再带 files（%d 个文件）："+
+				"files+entrypoint 与 handler 只能给一组", len(run.Files)))
+		}
+		if run.Entrypoint != "" {
+			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得再带 entrypoint（%q）："+
+				"files+entrypoint 与 handler 只能给一组", run.Entrypoint))
+		}
+		if run.TimeoutSec != 0 {
+			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 timeoutSec（%d）："+
+				"超时由内置执行器自己定", run.TimeoutSec))
+		}
+		if run.WorkDir != "" {
+			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 workDir（%q）："+
+				"工作目录由中枢进程自己定", run.WorkDir))
+		}
+		if len(run.Env) > 0 {
+			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 env（%d 个键）："+
+				"内置执行器不读能力自带的环境变量", len(run.Env)))
+		}
+		return p
+	}
+
+	// 没有 handler → 必须是脚本形式；两边都不给等于没有实现（契约 R2）。
+	if len(run.Files) == 0 && run.Entrypoint == "" {
+		return []string{"impl_missing: 缺实现：files+entrypoint（脚本，节点执行）" +
+			"或 handler（内置执行器，中枢 builtin 节点执行），两者恰好给一组"}
+	}
+	return validateRun(run)
 }
 
 func validateRun(run *Run) []string {
@@ -508,42 +682,119 @@ func validateParams(params json.RawMessage) []string {
 	return nil
 }
 
-// CanonicalJSON 返回参与 digest 计算的规范字节。
+// digestMetadata 是参与 digest 计算的**那两件**身份字段（契约 §3.2）。
 //
-// 确定性来自两处：struct 字段顺序固定、map key 由 encoding/json 排序。
-// 因此同一份产物无论用 YAML 还是 JSON 写、无论 key 顺序如何，digest 相同。
-func CanonicalJSON(a *Artifact) ([]byte, error) {
+// 刻意不能直接序列化 Metadata：它带着 displayName，而展示名不参与 digest ——
+// 这正是 v3 把 displayName 从 Spec 搬走的理由（PATCH 改表不改产物 → 名字与产物
+// 永久漂移）。把“参与 digest 的字段”写成一个**独立结构体**而不是靠 omitempty，
+// 是为了让下一个给 Metadata 加字段的人不需要记得这件事：不在这里声明的就不进 digest。
+type digestMetadata struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+}
+
+// digestDocument 是契约 §3.2 字面式的那份 canonical 文档：
+//
+//	digest = "sha256:" + hex(sha256(canonical{metadata.name, metadata.version, spec}))
+//
+// 刻意**不含** apiVersion / kind：两者都是 Validate 钉死的常量（anotify/v1、Capability），
+// 写进摘要只是把两个恒定值混进来，不增加任何判别力。更重要的是形状：因此**任何人**
+// （中枢、节点、第三方审计）都能从「name + version + 整份 spec」三件套重算出同一个
+// digest —— P1-b 的 content_hash ≡ digest 就是这么定义的，两边不能分歧。
+type digestDocument struct {
+	Metadata digestMetadata `json:"metadata"`
+	Spec     Spec           `json:"spec"`
+}
+
+// canonicalDoc 是 CanonicalJSON 的形状：整份产物，但 metadata 只取 name+version。
+//
+// 为什么还要 apiVersion/kind：CanonicalJSON 同时被当成「产物正文」用（store 的
+// artifacts.spec 列、控制台把那一列解回 artifact.Artifact —— 见 console_handlers），
+// 少了两者就不再是一份可 Parse 的产物。它们是常量，不参与 digest。
+type canonicalDoc struct {
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Metadata   digestMetadata `json:"metadata"`
+	Spec       Spec           `json:"spec"`
+}
+
+// canonicalCopy 归一化一份产物的副本（**不修改调用方的对象**）：
+//
+//   - outputs 为空时给 []（AGENTS.md 的空列表纪律）；
+//   - params / lifecycle 归一成「key 有序、无多余空白」。
+//
+// 后一条不同步的后果是**内容寻址整个失效**：中枢拿请求里的原始字节算 digest，
+// 存下来的是归一后的 spec；节点（或任何第三方）从存下来的 spec 重算，得到的是另一个
+// digest → 部署永远被判成 local（"节点上是本地变体"），而两边的产物内容其实一模一样。
+// 症状极隐蔽：digest 看起来都合法（都是 sha256:…），只有把两个值并排看才会发现不同。
+//
+// lifecycle 也是 RawMessage（不透明透传）：encoding/json 不会替它排 key，所以这里
+// 必须自己归一，否则 lifecycle: {retryable, maxAttempts} 两种书写顺序就是两份产物。
+func canonicalCopy(a *Artifact) (*Artifact, error) {
 	if a == nil {
 		return nil, errors.New("artifact: nil")
 	}
-	// 拷贝一份，保证 Outputs 为空时序列化成 [] 而不是 null（AGENTS.md 的空列表纪律），
-	// 同时不修改调用方的对象。
 	clone := *a
 	if clone.Spec.Outputs == nil {
 		clone.Spec.Outputs = []string{}
 	}
-	// params 也要归一（key 有序、无多余空白）——Parse 里已经这么做了，这里必须一致。
-	//
-	// 不同步的后果是**内容寻址整个失效**：中枢拿请求里的原始字节算 digest，
-	// 存下来的是归一后的 spec；节点（或任何第三方）从存下来的 spec 重算，
-	// 得到的是另一个 digest → 部署永远被判成 local（"节点上是本地变体"），
-	// 而两边的产物内容其实一模一样。
-	//
-	// 症状极隐蔽：digest 看起来都合法（都是 sha256:…），只有把两个值并排
-	// 看才会发现它们不同。所以这里同时补了 round-trip 单测。
-	if len(clone.Spec.Params) > 0 {
-		canon, err := canonicalizeJSON(clone.Spec.Params)
-		if err != nil {
-			return nil, fmt.Errorf("artifact: spec.params 不是合法 JSON：%w", err)
-		}
-		clone.Spec.Params = canon
+	var err error
+	if clone.Spec.Params, err = canonicalRawMessage("params", clone.Spec.Params); err != nil {
+		return nil, err
 	}
-	return json.Marshal(&clone)
+	if clone.Spec.Lifecycle, err = canonicalRawMessage("lifecycle", clone.Spec.Lifecycle); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
+// canonicalRawMessage 归一化 spec 里的一个不透明 JSON 字段（空值原样返回）。
+func canonicalRawMessage(field string, raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	canon, err := canonicalizeJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("artifact: spec.%s 不是合法 JSON：%w", field, err)
+	}
+	return canon, nil
+}
+
+// CanonicalJSON 返回产物的规范字节（**不含 displayName**）。
+//
+// 确定性来自三处：struct 字段顺序固定、map key 由 encoding/json 排序、params/lifecycle
+// 先归一。因此同一份产物无论用 YAML 还是 JSON 写、无论 key 顺序如何，结果相同。
+//
+// displayName 不在里面（契约 §3.2）：它是展示标签，不是内容。这也是把 Metadata 拆成
+// digestMetadata 的原因 —— 只取 name+version，不靠“记得给新字段加 omitempty”。
+func CanonicalJSON(a *Artifact) ([]byte, error) {
+	clone, err := canonicalCopy(a)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(&canonicalDoc{
+		APIVersion: clone.APIVersion,
+		Kind:       clone.Kind,
+		Metadata:   digestMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
+		Spec:       clone.Spec,
+	})
 }
 
 // Digest 返回形如 "sha256:<64 hex>" 的内容寻址标识。
+//
+// 吃的是 {metadata.name, metadata.version, spec}（契约 §3.2），所以：
+//
+//   - 只改 displayName → digest **不变**（改展示名不产生新版本、不漂移）；
+//   - 改任意 spec 字段（含 lifecycle / sticky / handler）或改 version → digest 变。
 func Digest(a *Artifact) (string, error) {
-	b, err := CanonicalJSON(a)
+	clone, err := canonicalCopy(a)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(&digestDocument{
+		Metadata: digestMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
+		Spec:     clone.Spec,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -553,9 +804,16 @@ func Digest(a *Artifact) (string, error) {
 
 // MarshalYAML 把产物序列化成落盘用的 YAML。
 //
-// 先转 canonical JSON 再转 YAML：保证「落盘 → 重新 Parse」得到完全相同的 digest。
+// 先转 JSON 再转 YAML：保证「落盘 → 重新 Parse」得到完全相同的 digest。
+// 与 CanonicalJSON 的唯一差别是**保留 displayName**：它不进 digest，但不是不存在 ——
+// 节点侧人读产物文件（cache 目录里的 artifact.yaml）时应该看得见作者取的那个名字，
+// 否则一次落盘就静默丢掉了一个用户字段。
 func MarshalYAML(a *Artifact) ([]byte, error) {
-	b, err := CanonicalJSON(a)
+	clone, err := canonicalCopy(a)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(clone)
 	if err != nil {
 		return nil, err
 	}

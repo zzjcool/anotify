@@ -74,23 +74,35 @@ const schemaDocNode = `{
   }
 }`
 
-// schemaDocCapability 是能力 yaml 的 JSON Schema。
+// schemaDocCapability 是能力 yaml 的 JSON Schema（Capability Spec v3）。
 //
-// 字段与 internal/artifact 一一对应（apiVersion/kind/metadata/spec，spec 下
-// displayName/params/outputs/requires/run），约束取自 Validate：
+// 字段与 internal/artifact 一一对应（apiVersion/kind/metadata/spec；metadata 下
+// name/version/displayName，spec 下 params/outputs/requires/lifecycle/sticky/run/handler），
+// 约束取自 Validate：
 //
-//	required   root 四件、metadata 的 name/version、spec.run、run 的 entrypoint/files
-//	enum/const apiVersion = anotify/v1、kind = Capability
+//	required   root 四件、metadata 的 name/version、run 的 entrypoint/files
+//	二选一     spec 里 files+entrypoint（run）与 handler **恰好给一组**（anyOf）
+//	enum/const apiVersion = anotify/v1、kind = Capability、handler ∈ 白名单
 //	pattern    metadata.name、outputs[]、requires[]、run.env 的键
 //	范围       version >= 1、timeoutSec 0..86400、outputs <= 32 个、requires <= 16 个
 //
 // 结构之外的约束（入口文件在 files 里、内容以 #! 开头、单文件 256 KiB、路径不含
-// ..、env 不得覆盖 ANOTIFY_*）写成 description：它们要么依赖别的字段（entrypoint
-// 必须是 files 的 key），要么是体积/路径语义，JSON Schema 表达不了而不失真。
+// ..、env 不得覆盖 ANOTIFY_*、handler 形式不得带 run 侧字段）写成 description：
+// 它们要么依赖别的字段（entrypoint 必须是 files 的 key），要么是体积/路径语义，
+// JSON Schema 表达不了而不失真。
+//
+// 两处刻意的「不约束」，都是有原因的：
+//
+//	lifecycle  只描述、不给 type：它的**内容**校验归中枢 store 层（契约 §4 说得很
+//	           清楚：artifact 只负责把它带进 digest，不解释它），schema 这里多写一个
+//	           type: object 就会变成「schema 拒、Validate 收」的假分叉。
+//	handler    enum 里没有空串：Go 里 "" 与「没给」是同一个值，所以 handler: "" 在
+//	           schema 会被拒（作者想写空串基本是拼错了键），Validate 则当它没给。
+//	           这一处 schema 更严，方向是安全的（早红，不是晚炸）。
 const schemaDocCapability = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "anotify capability yaml（能力产物）",
-  "description": "一份**自包含**的能力产物：参数契约 + 入口文件 + 全部文件内容 + 超时 + 环境变量 + 依赖的外部命令。控制台编译出来的就是它，手写的一样能跑（digest 变 = 本地变体）。",
+  "description": "一份**自包含**的能力规格：参数契约 + 出口 + 生命周期/粘性 + 实现（files+entrypoint 脚本，或 handler 内置执行器，**恰好给一组**）。控制台编译出来的就是它，手写的一样能跑（digest 变 = 本地变体）。",
   "type": "object",
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "additionalProperties": false,
@@ -117,18 +129,31 @@ const schemaDocCapability = `{
           "type": "integer",
           "minimum": 1,
           "description": "版本号，>= 1（name@version 是中枢侧的唯一身份）"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "给人看的名字（控制台列表、节点标题）；可省略。**不参与 digest**：改它不产生新版本，也不会让已有部署漂移（Capability Spec v3 §3.2）。"
         }
       }
     },
     "spec": {
       "type": "object",
-      "required": ["run"],
       "additionalProperties": false,
-      "properties": {
-        "displayName": {
-          "type": "string",
-          "description": "给人看的名字（控制台列表用）；可省略"
+      "anyOf": [
+        {
+          "required": ["run"],
+          "not": {"required": ["handler"]},
+          "description": "脚本形式：files+entrypoint（run）"
         },
+        {
+          "required": ["handler"],
+          "properties": {
+            "run": {"maxProperties": 0}
+          },
+          "description": "内置执行器形式：handler（不得再带任何 run 侧字段）"
+        }
+      ],
+      "properties": {
         "params": {
           "type": "object",
           "description": "参数契约：一份 JSON Schema 对象（properties/required 由控制台表单渲染）。它会归一成 key 有序，参与 digest。"
@@ -152,9 +177,17 @@ const schemaDocCapability = `{
           },
           "description": "依赖的外部命令（如 gh、git）：只是声明，agent 不负责安装。"
         },
+        "lifecycle": {
+          "description": "重试 / 幂等 / 结果保留策略，例如 {retryable: true, maxAttempts: 2, idempotent: true, resultTtlSec: 86400, expiresInSec: 900}。它**参与 digest**（改它 = 新版本）。这里不写 type：内容由中枢 store 层校验（artifact 只做不透明透传，见 Capability Spec v3 §4）。"
+        },
+        "sticky": {
+          "type": "string",
+          "description": "粘性路由键的类型（'' | worktree | …）：同键的任务落到同一个节点。可省略。"
+        },
         "run": {
           "type": "object",
           "required": ["entrypoint", "files"],
+          "description": "脚本形式的实现（与 handler 恰好给一组）：files+entrypoint 由任意 agent 节点执行。",
           "additionalProperties": false,
           "properties": {
             "entrypoint": {
@@ -201,6 +234,11 @@ const schemaDocCapability = `{
               "description": "执行目录：绝对路径，或 ~ / ~/…（由节点展开成 agent 用户的家目录）；空 = 每次任务一个独立目录。不含 .. 路径段。"
             }
           }
+        },
+        "handler": {
+          "type": "string",
+          "enum": ["notify-phone", "noop"],
+          "description": "内置执行器（白名单，编译进中枢）：只有中枢的 builtin 节点能认领，用于平台自带动作（notify-phone）与迁移占位（noop）。给了 handler 就不能再给 run（files/entrypoint/timeoutSec/env/workDir 一个都不许出现）；两者恰好给一组。"
         }
       }
     }

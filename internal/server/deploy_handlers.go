@@ -458,12 +458,13 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 	a := &artifact.Artifact{
 		APIVersion: artifact.APIVersion,
 		Kind:       artifact.KindCapability,
-		Metadata:   artifact.Metadata{Name: c.Name, Version: c.Version},
+		// displayName 在 Metadata 里（Capability Spec v3 §3.2）：它是展示标签，不参与
+		// digest —— 重新上架时改个名字不会算出新 digest，也不会把已有部署判成 stale。
+		Metadata: artifact.Metadata{Name: c.Name, Version: c.Version, DisplayName: c.DisplayName},
 		Spec: artifact.Spec{
-			DisplayName: c.DisplayName,
-			Params:      c.ParamsSchema,
-			Outputs:     append([]string{}, c.Outputs...),
-			Requires:    append([]string{}, requires...),
+			Params:   c.ParamsSchema,
+			Outputs:  append([]string{}, c.Outputs...),
+			Requires: append([]string{}, requires...),
 			Run: artifact.Run{
 				Entrypoint: entrypoint,
 				Files:      files,

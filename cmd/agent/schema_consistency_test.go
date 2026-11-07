@@ -377,15 +377,20 @@ func capabilityDoc() map[string]any {
 	return map[string]any{
 		"apiVersion": "anotify/v1",
 		"kind":       "Capability",
-		"metadata":   map[string]any{"name": "notify.phone", "version": 1},
-		"spec": map[string]any{
+		"metadata": map[string]any{
+			"name": "notify.phone", "version": 1,
+			// displayName 在 metadata 里（v3 §3.2：不参与 digest）。
 			"displayName": "写文档",
+		},
+		"spec": map[string]any{
 			"params": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"repo": map[string]any{"type": "string"}},
 			},
-			"outputs":  []any{"fix"},
-			"requires": []any{"git"},
+			"outputs":   []any{"fix"},
+			"requires":  []any{"git"},
+			"lifecycle": map[string]any{"retryable": true, "maxAttempts": 2},
+			"sticky":    "worktree",
 			"run": map[string]any{
 				"entrypoint": "main.sh",
 				"files":      map[string]any{"main.sh": "#!/bin/sh\necho hi\n"},
@@ -439,9 +444,11 @@ func TestCapabilitySchemaMatchesValidate(t *testing.T) {
 			mutate: func(t *testing.T, d map[string]any) {
 				delete(nested(t, d, "metadata"), "version")
 			}},
-		{name: "缺 spec", class: "required", wantCode: "invalid_file_path",
+		// 「没有实现」是一种**硬错误**（Capability Spec v3 §3.1 / R2）：既不写 run 也不写
+		// handler 就等于这份能力没有实现，而不是「还没配」。
+		{name: "缺 spec", class: "required", wantCode: "impl_missing",
 			mutate: func(t *testing.T, d map[string]any) { delete(d, "spec") }},
-		{name: "缺 spec.run", class: "required", wantCode: "invalid_file_path",
+		{name: "缺 spec.run", class: "required", wantCode: "impl_missing",
 			mutate: func(t *testing.T, d map[string]any) { delete(nested(t, d, "spec"), "run") }},
 		{name: "缺 run.entrypoint", class: "required", wantCode: "entrypoint_missing",
 			mutate: func(t *testing.T, d map[string]any) {
@@ -496,6 +503,47 @@ func TestCapabilitySchemaMatchesValidate(t *testing.T) {
 		{name: "env 键覆盖 ANOTIFY_", class: "pattern", wantCode: "reserved_env",
 			mutate: func(t *testing.T, d map[string]any) {
 				nested(t, d, "spec", "run")["env"] = map[string]any{"ANOTIFY_TASKDIR": "/tmp/x"}
+			}},
+
+		// ---- Capability Spec v3：实现形式二选一（anyOf）----
+		{name: "handler 形式（无 run）", wantOK: true,
+			mutate: func(t *testing.T, d map[string]any) {
+				spec := nested(t, d, "spec")
+				delete(spec, "run")
+				spec["handler"] = "noop"
+			}},
+		{name: "handler 与 run 都给", wantCode: "impl_ambiguous",
+			mutate: func(t *testing.T, d map[string]any) { nested(t, d, "spec")["handler"] = "noop" }},
+		{name: "run 与 handler 都不给", wantCode: "impl_missing",
+			mutate: func(t *testing.T, d map[string]any) { delete(nested(t, d, "spec"), "run") }},
+		{name: "handler 不在白名单", wantCode: "unknown_handler",
+			mutate: func(t *testing.T, d map[string]any) {
+				spec := nested(t, d, "spec")
+				delete(spec, "run")
+				spec["handler"] = "shell"
+			}},
+		// handler 形式里残留任何一个 run 侧字段都是「两种实现混在一份规格里」。
+		{name: "handler 形式带 timeoutSec", wantCode: "impl_ambiguous",
+			mutate: func(t *testing.T, d map[string]any) {
+				spec := nested(t, d, "spec")
+				run := nested(t, d, "spec", "run")
+				delete(run, "entrypoint")
+				delete(run, "files")
+				delete(run, "env")
+				spec["handler"] = "noop"
+			}},
+		// lifecycle 是**不透明透传**（内容归 store 校验）：非对象也必须两边都放行，
+		// 否则 schema 就替 store 做了决定，而 artifact 层看不出它为什么该拒。
+		{name: "lifecycle 不是对象（内容归 store）", wantOK: true,
+			mutate: func(t *testing.T, d map[string]any) {
+				nested(t, d, "spec")["lifecycle"] = []any{"x"}
+			}},
+		{name: "sticky 是 worktree", wantOK: true,
+			mutate: func(t *testing.T, d map[string]any) { nested(t, d, "spec")["sticky"] = "worktree" }},
+		// v3 把 displayName 搬到了 metadata：spec 里的那个已是未知字段。
+		{name: "spec.displayName（v3 起在 metadata 里）", wantCode: "unknown_field",
+			mutate: func(t *testing.T, d map[string]any) {
+				nested(t, d, "spec")["displayName"] = "写文档"
 			}},
 
 		// ---- 其他（同样要与 Validate 一致，只是不属于那三类）----
@@ -561,6 +609,54 @@ func TestCapabilitySchemaMatchesValidate(t *testing.T) {
 	}
 }
 
+// handlerFormDoc 返回一份 handler 形式（没有 run）的合法产物。
+func handlerFormDoc(t *testing.T) map[string]any {
+	t.Helper()
+	doc := capabilityDoc()
+	spec := nested(t, doc, "spec")
+	delete(spec, "run")
+	spec["handler"] = "notify-phone"
+	return doc
+}
+
+// TestCapabilityCanonicalJSONSatisfiesSchema 钉住「自产自销」这一侧：
+// artifact.CanonicalJSON 吐出来的**规范字节**（store 的 artifacts.spec 列、节点落盘的
+// artifact.yaml 都是它）必须被这份 schema 接受。
+//
+// 只让「schema 与 Validate 逐例同判」是不够的：canonical JSON 是 Validate 的**输出**，
+// 它要是被判非法，任何拿存下来的 spec 去过一遍 schema 的工具都会报假警——而 artifact
+// 与 schema 两份真理各自都和 Validate 对齐，谁都看不出问题出在输出侧。
+//
+// handler 形式就是这个坑的现场：Run 是非指针 struct，encoding/json 不会 omitempty，
+// 一不留神就会在 handler 形式里漏出一个 `"run":{"entrypoint":"","files":null}` 块，
+// 那既违反空列表纪律，又正好撞上「handler 不得带 files/entrypoint」这条规则。
+func TestCapabilityCanonicalJSONSatisfiesSchema(t *testing.T) {
+	root := schemaDocValue(t, schemaCapability)
+
+	cases := []struct {
+		name string
+		doc  map[string]any
+	}{
+		{"脚本形式", capabilityDoc()},
+		{"handler 形式", handlerFormDoc(t)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, err := artifact.Parse(mustJSON(t, c.doc))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			canon, err := artifact.CanonicalJSON(a)
+			if err != nil {
+				t.Fatalf("CanonicalJSON: %v", err)
+			}
+			if v := validateJSONSchema(root, decodeJSON(t, canon)); len(v) != 0 {
+				t.Fatalf("规范字节不满足它自己的 schema：\n  %v\n  %s", v, canon)
+			}
+		})
+	}
+}
+
 // TestCapabilitySchemaRequiredKeys 直接钉 root 的 required 清单：
 // 它是 issue 里点名的第一个验收点（缺 spec.run.entrypoint 要报出来），也是「哪些键
 // 可以省略」的唯一说明位。
@@ -573,13 +669,27 @@ func TestCapabilitySchemaRequiredKeys(t *testing.T) {
 	}
 
 	spec := nested(t, root, "properties", "spec")
-	if got := stringList(t, spec["required"]); len(got) != 1 || got[0] != "run" {
-		t.Fatalf("spec.required = %v, want [run]（其余字段都可省略）", got)
+	// spec 自己**没有** required：实现形式是 run 与 handler 二选一，
+	// 用 anyOf 表达（单靠 required 会把「合法的那一支」也一起要求）。
+	if got := spec["required"]; got != nil {
+		if list, ok := got.([]any); ok && len(list) > 0 {
+			t.Fatalf("spec.required = %v，want 空（实现形式二选一由 anyOf 表达）", list)
+		}
 	}
 	run := nested(t, spec, "properties", "run")
 	got = stringList(t, run["required"])
 	if strings.Join(got, ",") != "entrypoint,files" {
 		t.Fatalf("spec.run.required = %v, want [entrypoint files]", got)
+	}
+	// handler 的白名单是 wire 契约（P1-b 的播种/迁移照它写），这里逐字钉住。
+	handler := nested(t, spec, "properties", "handler")
+	if got := stringList(t, handler["enum"]); strings.Join(got, ",") != "notify-phone,noop" {
+		t.Fatalf("spec.handler.enum = %v, want [notify-phone noop]", got)
+	}
+	// anyOf 两支：脚本形式（run 且无 handler）/ handler 形式（handler 且无 run）。
+	anyOf, ok := spec["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("spec.anyOf = %v，want 两支（脚本 / handler）", spec["anyOf"])
 	}
 	// 三个 const：apiVersion / kind / pick 的取值是契约，不是"示例"。
 	if v := root["properties"].(map[string]any)["apiVersion"].(map[string]any)["const"]; v != "anotify/v1" {

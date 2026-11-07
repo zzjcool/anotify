@@ -131,9 +131,8 @@ var ExampleCapability = BuiltinCapability{
 	Artifact: &artifact.Artifact{
 		APIVersion: artifact.APIVersion,
 		Kind:       artifact.KindCapability,
-		Metadata:   artifact.Metadata{Name: "script.echo", Version: 1},
+		Metadata:   artifact.Metadata{Name: "script.echo", Version: 1, DisplayName: "回声（示例）"},
 		Spec: artifact.Spec{
-			DisplayName: "回声（示例）",
 			Params: json.RawMessage(`{
 				"type": "object",
 				"properties": {

@@ -1,6 +1,8 @@
 package artifact
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -13,8 +15,8 @@ kind: Capability
 metadata:
   name: review.pr-diff
   version: 3
-spec:
   displayName: PR 代码审查
+spec:
   params:
     type: object
     required: [repo, pr]
@@ -172,10 +174,21 @@ func TestDigestChangesWithContent(t *testing.T) {
 		"依赖":     func(a *Artifact) { a.Spec.Requires = append(a.Spec.Requires, "jq") },
 		"版本":     func(a *Artifact) { a.Metadata.Version = 4 },
 		"params": func(a *Artifact) { a.Spec.Params = json.RawMessage(`{"type":"object","required":["x"]}`) },
-		"显示名":    func(a *Artifact) { a.Spec.DisplayName = "别的名字" },
 		// 工作目录决定能力跑在哪儿（跟入口文件一样是"怎么跑"的一部分），
 		// 改了它就必须是另一份产物——否则中枢无法区分"同一版本换了目录"。
 		"工作目录": func(a *Artifact) { a.Spec.Run.WorkDir = "/srv/app" },
+		// v3 新进规格的字段：它们描述「这个能力是什么」，所以必须参与内容寻址。
+		// 少了任何一条，「同一版本换了重试策略 / 粘性键」都会被当成同一份产物。
+		"lifecycle": func(a *Artifact) {
+			a.Spec.Lifecycle = json.RawMessage(`{"retryable":true,"maxAttempts":2}`)
+		},
+		"sticky": func(a *Artifact) { a.Spec.Sticky = "worktree" },
+		// handler 形式是另一种实现：把 run 清空才合法（见 Validate），
+		// 于是它必然算出另一个 digest——「脚本换成内置执行器」当然是另一份产物。
+		"实现形式 handler": func(a *Artifact) {
+			a.Spec.Run = Run{}
+			a.Spec.Handler = HandlerNoop
+		},
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -189,6 +202,313 @@ func TestDigestChangesWithContent(t *testing.T) {
 				t.Fatalf("内容改了但 digest 没变（%s）", d)
 			}
 		})
+	}
+}
+
+// ---------- Capability Spec v3：displayName 出 digest / 两种实现形式 ----------
+
+// TestDigestIgnoresDisplayName 钉住契约 §3.2 的第一条，也是 v3 要根治的漂移 bug：
+// 改展示名**不产生新版本**、也不让任何部署变 stale。
+func TestDigestIgnoresDisplayName(t *testing.T) {
+	a := validArtifact(t)
+	d0, err := Digest(a)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+
+	for _, name := range []string{"", "别的名字", "  ", strings.Repeat("名", 200)} {
+		b := validArtifact(t)
+		b.Metadata.DisplayName = name
+		d, err := Digest(b)
+		if err != nil {
+			t.Fatalf("Digest(displayName=%q): %v", name, err)
+		}
+		if d != d0 {
+			t.Fatalf("只改了 displayName（%q）但 digest 变了：%s != %s\n"+
+				"（displayName 是展示标签，不进 digest —— 否则 PATCH 改名字会让部署漂移）", name, d, d0)
+		}
+	}
+
+	// displayName 连**规范字节**都不该进（不只是「不参与 hash」）。
+	canon, err := CanonicalJSON(a)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	if strings.Contains(string(canon), "displayName") {
+		t.Fatalf("canonical JSON 里出现了 displayName：%s", canon)
+	}
+
+	// 但落盘那一份要保留它：不进 digest ≠ 可以静默丢掉用户的字段。
+	out, err := MarshalYAML(a)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(out), "displayName: PR 代码审查") {
+		t.Fatalf("落盘 YAML 丢了 displayName：\n%s", out)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("Parse(落盘 YAML): %v\n%s", err, out)
+	}
+	if back.Metadata.DisplayName != "PR 代码审查" {
+		t.Fatalf("往返后 displayName = %q", back.Metadata.DisplayName)
+	}
+}
+
+// TestDigestIsNameVersionSpec 把契约 §3.2 的式子逐字钉住：
+//
+//	digest = "sha256:" + hex(sha256(canonical{metadata.name, metadata.version, spec}))
+//
+// 写成「另外算一遍」而不是「比一个魔法字符串」：魔术串只证明「digest 稳定」，
+// 证明不了「digest 吃的是这三件」——后者才是契约。
+func TestDigestIsNameVersionSpec(t *testing.T) {
+	a := validArtifact(t)
+	got, err := Digest(a)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+
+	clone, err := canonicalCopy(a)
+	if err != nil {
+		t.Fatalf("canonicalCopy: %v", err)
+	}
+	payload, err := json.Marshal(&struct {
+		Metadata digestMetadata `json:"metadata"`
+		Spec     Spec           `json:"spec"`
+	}{
+		Metadata: digestMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
+		Spec:     clone.Spec,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(式子): %v", err)
+	}
+	// 形状也钉住：顶层恰好 metadata + spec 两个键，metadata 里恰好 name + version。
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &top); err != nil {
+		t.Fatalf("json.Unmarshal(式子): %v", err)
+	}
+	if len(top) != 2 || top["metadata"] == nil || top["spec"] == nil {
+		t.Fatalf("digest 的输入必须是 {metadata, spec} 两个键，实际：%s", payload)
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(top["metadata"], &meta); err != nil {
+		t.Fatalf("json.Unmarshal(metadata): %v", err)
+	}
+	if len(meta) != 2 || meta["name"] == nil || meta["version"] == nil {
+		t.Fatalf("digest 里的 metadata 只能有 name/version，实际：%s", top["metadata"])
+	}
+
+	sum := sha256.Sum256(payload)
+	if want := DigestPrefix + hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("digest 与契约 §3.2 的式子不一致：\n  实际 %s\n  式子 %s\n  输入 %s",
+			got, want, payload)
+	}
+
+	// apiVersion / kind 不在式子里（它们是 Validate 钉死的常量，写进摘要不增加判别力）。
+	b := validArtifact(t)
+	b.Kind = "Whatever"
+	if d, _ := Digest(b); d != got {
+		t.Fatalf("kind 不参与 digest（§3.2 的式子只有 name/version/spec），但 digest 变了")
+	}
+	b = validArtifact(t)
+	b.APIVersion = "anotify/v0"
+	if d, _ := Digest(b); d != got {
+		t.Fatalf("apiVersion 不参与 digest（§3.2 的式子只有 name/version/spec），但 digest 变了")
+	}
+
+	// 而 name 在式子里（「跨名字共享实现」本轮刻意不做，见契约 §3.2）。
+	c := validArtifact(t)
+	c.Metadata.Name = "review.other"
+	if d, _ := Digest(c); d == got {
+		t.Fatal("换了 name 但 digest 没变：digest 必须含 name")
+	}
+}
+
+// TestLifecycleKeyOrderIndependent：lifecycle 是不透明透传的 RawMessage，
+// 但**书写顺序不能变成 digest 的一部分** —— encoding/json 不会替 RawMessage 排 key，
+// 所以归一必须在 canonicalCopy 里做（同 params 的道理）。
+func TestLifecycleKeyOrderIndependent(t *testing.T) {
+	one := validArtifact(t)
+	one.Spec.Lifecycle = json.RawMessage(`{"retryable":true,"maxAttempts":2,"idempotent":true}`)
+	two := validArtifact(t)
+	two.Spec.Lifecycle = json.RawMessage(`{"maxAttempts":2, "idempotent":true, "retryable":true}`)
+
+	d1, err := Digest(one)
+	if err != nil {
+		t.Fatalf("Digest(one): %v", err)
+	}
+	d2, err := Digest(two)
+	if err != nil {
+		t.Fatalf("Digest(two): %v", err)
+	}
+	if d1 != d2 {
+		t.Fatalf("同一份 lifecycle 只是 key 顺序不同，digest 却不同：%s != %s", d1, d2)
+	}
+
+	// 往返（落盘 → Parse）后 digest 不变：否则节点 apply 回来会被判成「本地变体」。
+	out, err := MarshalYAML(one)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("Parse(MarshalYAML): %v\n%s", err, out)
+	}
+	if d3, _ := Digest(back); d3 != d1 {
+		t.Fatalf("往返后 digest 变了：%s != %s", d3, d1)
+	}
+}
+
+// TestSpecJSONShapeByForm 钉住「两种形式各自序列化成什么」，两件事：
+//
+//  1. 脚本形式的字节**一个都没变**（Spec.MarshalJSON 不能把手写方向的产物改掉：
+//     那是所有既有 digest 的唯一来源，动了就是静默的全量漂移）；
+//  2. handler 形式不写空的 run 块（否则会漏出 `files: null` / `entrypoint: ""`,
+//     既违反空列表纪律，又撞上「handler 不得带这些字段」这条规则）。
+func TestSpecJSONShapeByForm(t *testing.T) {
+	// 镜像类型：与 Spec 的字段/tag 一一对应，但绕开 MarshalJSON（= 默认序列化）。
+	type specEcho struct {
+		Params    json.RawMessage `json:"params,omitempty"`
+		Outputs   []string        `json:"outputs"`
+		Requires  []string        `json:"requires,omitempty"`
+		Lifecycle json.RawMessage `json:"lifecycle,omitempty"`
+		Sticky    string          `json:"sticky,omitempty"`
+		Run       Run             `json:"run"`
+		Handler   string          `json:"handler,omitempty"`
+	}
+
+	t.Run("脚本形式与默认序列化逐字节相同", func(t *testing.T) {
+		a := validArtifact(t)
+		a.Spec.Sticky = "worktree"
+		got, err := json.Marshal(a.Spec)
+		if err != nil {
+			t.Fatalf("json.Marshal(Spec): %v", err)
+		}
+		want, err := json.Marshal(specEcho{
+			Params:    a.Spec.Params,
+			Outputs:   a.Spec.Outputs,
+			Requires:  a.Spec.Requires,
+			Lifecycle: a.Spec.Lifecycle,
+			Sticky:    a.Spec.Sticky,
+			Run:       a.Spec.Run,
+			Handler:   a.Spec.Handler,
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal(specEcho): %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("脚本形式的 Spec 序列化被动过了：\n  实际 %s\n  期望 %s", got, want)
+		}
+	})
+
+	t.Run("handler 形式省略空 run", func(t *testing.T) {
+		a := validArtifact(t)
+		a.Spec.Run = Run{}
+		a.Spec.Handler = HandlerNoop
+		b, err := json.Marshal(a.Spec)
+		if err != nil {
+			t.Fatalf("json.Marshal(Spec): %v", err)
+		}
+		for _, banned := range []string{`"run"`, `"files"`, `"entrypoint"`, `"timeoutSec"`} {
+			if strings.Contains(string(b), banned) {
+				t.Fatalf("handler 形式的 Spec 里不该出现 %s：%s", banned, b)
+			}
+		}
+		if !strings.Contains(string(b), `"handler":"noop"`) {
+			t.Fatalf("handler 形式必须写 handler：%s", b)
+		}
+	})
+}
+
+// KnownHandlers 的白名单值本身是 **wire 契约**：P1-b 的内置播种（notify.phone →
+// handler: notify-phone）与迁移回填（零产物能力 → handler: noop）都照它写。
+func TestKnownHandlers(t *testing.T) {
+	got := KnownHandlers()
+	want := []string{HandlerNotifyPhone, HandlerNoop}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("KnownHandlers() = %v, want %v（顺序稳定：错误信息与播种输出要可 diff）", got, want)
+	}
+	if HandlerNotifyPhone != "notify-phone" || HandlerNoop != "noop" {
+		t.Fatalf("白名单常量值变了：%q / %q", HandlerNotifyPhone, HandlerNoop)
+	}
+	// 返回的是拷贝：调用方改它不能污染下一次（播种代码会就地排序/修改）。
+	got[0] = "hacked"
+	if KnownHandlers()[0] != HandlerNotifyPhone {
+		t.Fatal("KnownHandlers() 返回了内部切片（调用方改动会污染白名单）")
+	}
+
+	// 白名单里的每个 handler 都必须能过 Validate（空 run 的 handler 形式）。
+	for _, h := range KnownHandlers() {
+		a := validArtifact(t)
+		a.Spec.Run = Run{}
+		a.Spec.Handler = h
+		if err := Validate(a); err != nil {
+			t.Fatalf("handler %q 在白名单里却过不了 Validate：%v", h, err)
+		}
+	}
+}
+
+// handlerFormYAML 是 v3 的第二种实现形式：没有 run，只有白名单执行器。
+const handlerFormYAML = `
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: notify.sms
+  version: 1
+  displayName: 短信通知
+spec:
+  outputs: []
+  lifecycle: {retryable: false, maxAttempts: 1, idempotent: true}
+  sticky: worktree
+  handler: notify-phone
+`
+
+// TestParseHandlerForm：handler 形式能被解析、能算 digest、能落盘往返，
+// 且空 outputs 仍然序列化成 []（AGENTS.md 的空列表纪律）。
+func TestParseHandlerForm(t *testing.T) {
+	a, digest, err := Decode([]byte(handlerFormYAML))
+	if err != nil {
+		t.Fatalf("Decode(handler 形式): %v", err)
+	}
+	if a.Spec.Handler != HandlerNotifyPhone {
+		t.Fatalf("handler = %q, want %q", a.Spec.Handler, HandlerNotifyPhone)
+	}
+	if len(a.Spec.Run.Files) != 0 || a.Spec.Run.Entrypoint != "" {
+		t.Fatalf("handler 形式不该有 run 内容：%+v", a.Spec.Run)
+	}
+	if a.Metadata.DisplayName != "短信通知" {
+		t.Fatalf("displayName = %q（v3 起在 metadata 里）", a.Metadata.DisplayName)
+	}
+	if a.Spec.Sticky != "worktree" {
+		t.Fatalf("sticky = %q", a.Spec.Sticky)
+	}
+	if !strings.HasPrefix(digest, DigestPrefix) {
+		t.Fatalf("digest = %q", digest)
+	}
+
+	canon, err := CanonicalJSON(a)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+	if !strings.Contains(string(canon), `"outputs":[]`) {
+		t.Fatalf("空 outputs 必须序列化成 []，实际：%s", canon)
+	}
+	// handler 形式**不写 run 块**（见 Spec.MarshalJSON）：空的 run 会漏出
+	// `"files":null` 与 `"entrypoint":""`，正好撞上「handler 不得带这些字段」的规则。
+	if strings.Contains(string(canon), `"run"`) {
+		t.Fatalf("handler 形式的规范字节里不该有 run 块：%s", canon)
+	}
+
+	out, err := MarshalYAML(a)
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	back, err := Parse(out)
+	if err != nil {
+		t.Fatalf("Parse(MarshalYAML): %v\n%s", err, out)
+	}
+	if d, _ := Digest(back); d != digest {
+		t.Fatalf("往返后 digest 变了：%s != %s", d, digest)
 	}
 }
 
@@ -253,6 +573,39 @@ func TestValidateRules(t *testing.T) {
 			a.Spec.Run.WorkDir = "~/" + strings.Repeat("a", MaxWorkDirLen)
 		}, "invalid_work_dir"},
 		{"workDir 是 ~/x 但含 NUL", func(a *Artifact) { a.Spec.Run.WorkDir = "~/a\x00b" }, "invalid_work_dir"},
+		// ---- Capability Spec v3 §3.1：实现形式恰好给一组 ----
+		// 「都有」不能猜要对哪个（猜错就是内置执行器抢了作者的脚本）；
+		// 「都没有」不是「还没配」，而是这份能力没有实现（契约 R2）。
+		{"handler 与 files 都给", func(a *Artifact) { a.Spec.Handler = HandlerNoop }, "impl_ambiguous"},
+		{"handler 与 entrypoint 都给", func(a *Artifact) {
+			a.Spec.Handler = HandlerNoop
+			a.Spec.Run.Files = nil
+		}, "impl_ambiguous"},
+		{"handler 形式带 timeoutSec", func(a *Artifact) {
+			a.Spec.Handler = HandlerNoop
+			a.Spec.Run = Run{TimeoutSec: 900}
+		}, "impl_ambiguous"},
+		{"handler 形式带 workDir", func(a *Artifact) {
+			a.Spec.Handler = HandlerNoop
+			a.Spec.Run = Run{WorkDir: "/srv/app"}
+		}, "impl_ambiguous"},
+		{"handler 形式带 env", func(a *Artifact) {
+			a.Spec.Handler = HandlerNoop
+			a.Spec.Run = Run{Env: map[string]string{"LOG_LEVEL": "info"}}
+		}, "impl_ambiguous"},
+		{"handler 不在白名单", func(a *Artifact) { a.Spec.Handler = "shell" }, "unknown_handler"},
+		// 不 TrimSpace：边空格能过校验的话，校验通过而运行时查不到执行器，
+		// 失败会推迟到派发那一刻（任务已建好、租约已扣）。
+		{"handler 带边空格", func(a *Artifact) {
+			a.Spec.Handler = " noop "
+			a.Spec.Run = Run{}
+		}, "unknown_handler"},
+		{"handler 为空串等于没给", func(a *Artifact) {
+			a.Spec.Handler = ""
+			a.Spec.Run = Run{}
+		}, "impl_missing"},
+		{"两组都不给", func(a *Artifact) { a.Spec.Run = Run{} }, "impl_missing"},
+		{"spec 整块为空", func(a *Artifact) { a.Spec = Spec{} }, "impl_missing"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

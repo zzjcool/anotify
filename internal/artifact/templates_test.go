@@ -75,8 +75,8 @@ func TestRenderDefaults(t *testing.T) {
 	if a.Metadata.Name != "my.cap" {
 		t.Fatalf("name = %q", a.Metadata.Name)
 	}
-	if a.Spec.DisplayName != "空白脚本" {
-		t.Fatalf("displayName 缺省应取模板名，实际 %q", a.Spec.DisplayName)
+	if a.Metadata.DisplayName != "空白脚本" {
+		t.Fatalf("displayName 缺省应取模板名，实际 %q", a.Metadata.DisplayName)
 	}
 	if a.Spec.Run.Entrypoint != "run.sh" {
 		t.Fatalf("entrypoint = %q", a.Spec.Run.Entrypoint)

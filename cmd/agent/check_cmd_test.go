@@ -64,8 +64,8 @@ kind: Capability
 metadata:
   name: notify.phone
   version: 2
-spec:
   displayName: 写文档
+spec:
   params:
     type: object
     properties:
