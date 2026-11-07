@@ -29,7 +29,8 @@ import (
 // 于是「节点回报的部署结果被静默丢掉」——这必须有测试钉住。
 func TestDecodeUpstreamApplyFrame(t *testing.T) {
 	raw := `{"type":"apply","deploy_id":"dp_1","capability":"review","version":3,` +
-		`"digest":"sha256:abc","state":"failed","reason":"missing_requirement:claude"}`
+		`"digest":"sha256:abc","state":"failed",` +
+		`"reason":"missing_requirement:claude (PATH=/usr/local/sbin:/usr/local/bin:/usr/bin)"}`
 	got, err := DecodeUpstream([]byte(raw))
 	if err != nil {
 		t.Fatalf("DecodeUpstream: %v", err)
@@ -40,7 +41,7 @@ func TestDecodeUpstreamApplyFrame(t *testing.T) {
 	}
 	if f.Type != NodeFrameApply || f.DeployID != "dp_1" || f.Capability != "review" || f.Version != 3 ||
 		f.Digest != "sha256:abc" || f.State != ApplyStateFailed ||
-		f.Reason != ApplyReasonMissingRequirement+":claude" {
+		f.Reason != ApplyReasonMissingRequirement+":claude (PATH=/usr/local/sbin:/usr/local/bin:/usr/bin)" {
 		t.Fatalf("apply 帧字段解析不对: %+v", f)
 	}
 }

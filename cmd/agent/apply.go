@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -89,7 +90,7 @@ func (a *nodeAgent) applyArtifact(f *deployFrame) error {
 	//    「这台没装 claude」。多缺几个用 ";" 连起来，一次说全。
 	if missing := missingRequirements(art.Spec.Requires); len(missing) > 0 {
 		reply.State = ws.ApplyStateFailed
-		reply.Reason = strings.Join(missing, ";")
+		reply.Reason = missingRequirementsReason(missing)
 		a.log.Warn("deploy rejected: missing requirement",
 			"event", "agent.deploy.missing_requirement",
 			"deploy_id", f.DeployID,
@@ -194,6 +195,43 @@ func missingRequirements(requires []string) []string {
 		}
 	}
 	return missing
+}
+
+// reasonPathDirs 是 reason 里最多回显多少个 PATH 目录段。
+//
+// 为什么要上限：reason 会落进 deployments.reason（TEXT）并原样展示在控制台。
+// 开发者机器上的 PATH 很容易长到几十段（nvm / asdf / mise / cargo 的 shims 各占
+// 一段），一条几百字符的 reason 会把「为什么失败」挤成噪音，日志也不好扫。
+// 12 段足以覆盖 systemd 默认值 + 常见的 ~/.local/bin 类目录；被截掉的部分只报
+// 数量——要看全文就去节点上 `systemctl show -p Environment` / `echo $PATH`。
+const reasonPathDirs = 12
+
+// missingRequirementsReason 拼出 apply.reason：缺失项逐条用 ";" 连接，
+// 末尾**统一追加一次** PATH 上下文。
+//
+// 前缀语义不变（#322）：仍是 ws.ApplyReasonMissingRequirement 打头、多项 ";" 分隔，
+// 只是把一个原本要靠运维反推的事实（「本进程的 PATH 到底是哪串」）写进去。
+// 少了它，missing_requirement:hc 读起来是「这台机器没装 hc」，而实际含义是
+// 「服务进程的 PATH 里没有 hc」——用户会去 shell 里 which 一遍自证清白，然后卡住。
+func missingRequirementsReason(missing []string) string {
+	return strings.Join(missing, ";") + pathReasonDetail(os.Getenv("PATH"))
+}
+
+// pathReasonDetail 把探过的 PATH 包成可读后缀；PATH 为空时不编造（返回空串）。
+//
+// 只截断，不改写：空段（"::"）原样保留——那本身就是一个值得被看见的异常
+// （空段 = 当前目录进了搜索路径）。
+func pathReasonDetail(path string) string {
+	if path == "" {
+		return ""
+	}
+	dirs := strings.Split(path, ":")
+	tail := ""
+	if len(dirs) > reasonPathDirs {
+		tail = fmt.Sprintf(" …省略 %d 段", len(dirs)-reasonPathDirs)
+		dirs = dirs[:reasonPathDirs]
+	}
+	return " (PATH=" + strings.Join(dirs, ":") + tail + ")"
 }
 
 // replyApply 发一帧 apply（部署结果的唯一回报通道）。

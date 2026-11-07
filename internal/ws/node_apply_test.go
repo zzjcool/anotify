@@ -101,12 +101,14 @@ func TestApplyFrameFailureIsVisible(t *testing.T) {
 
 	deployID, digest := createDeploymentFixture(t, f)
 
+	// reason 带上下文（#322）：中枢必须原样落库，不能在信封层把空格/括号吃掉。
+	wantReason := ApplyReasonMissingRequirement + ":claude (PATH=/usr/local/sbin:/usr/local/bin:/usr/bin)"
 	send(t, conn, &ApplyFrame{
 		Type:     NodeFrameApply,
 		DeployID: deployID,
 		Digest:   digest,
 		State:    ApplyStateFailed,
-		Reason:   ApplyReasonMissingRequirement + ":claude",
+		Reason:   wantReason,
 	})
 
 	state, reason := waitForDeploymentState(t, f, deployID, store.DeploymentFailed)
@@ -115,6 +117,9 @@ func TestApplyFrameFailureIsVisible(t *testing.T) {
 	}
 	if state != store.DeploymentFailed {
 		t.Fatalf("state = %q", state)
+	}
+	if reason != wantReason {
+		t.Errorf("落库的 reason = %q, want 原样保存 %q", reason, wantReason)
 	}
 }
 

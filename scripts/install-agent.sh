@@ -547,6 +547,22 @@ cleanup_user_unit() {
 	printf '已移除旧的 systemd 用户服务（改为系统服务，开机自启不再依赖登录）\n'
 }
 
+# unit_path_value 打印服务单元里 PATH 的值：$HOME/.local/bin 打头 + 安装时的 $PATH。
+#
+# 为什么单元里必须有这一行（#322）：systemd 只给**编译期默认值**
+# （systemctl show -p Environment → PATH=/usr/local/sbin:/usr/local/bin:/usr/bin），
+# 而 hc / claude / codex 这类工具普遍装在 ~/.local/bin。部署期的 exec.LookPath
+# 走的就是这个 PATH，于是「装了却探不到」→ 误判 missing_requirement:hc。
+# 系统单元与用户单元都要写：systemctl --user 也不继承登录 shell 的 PATH。
+#
+# 值的形状：$HOME/.local/bin **钉在最前**（保证它压过同名的旧副本），后面跟安装
+# 脚本执行时的 $PATH，去重。空段一律剔除——PATH 里的空串等价于「当前目录」，
+# 等于把 cwd 塞进命令搜索路径，是注入面（同 cmd/agent/runner.go 的 buildEnv 注释）。
+unit_path_value() {
+	printf '%s:%s' "$HOME/.local/bin" "${PATH:-}" |
+		awk -v RS=: 'length($0) && !seen[$0]++ { printf "%s%s", (n++ ? ":" : ""), $0 }'
+}
+
 # ---- 服务单元 ----
 #
 # write_unit_file <dest> <run-as-user 空=不写 User=> <WantedBy>
@@ -566,6 +582,7 @@ write_unit_file() {
 		printf 'Type=simple\n'
 		if [ -n "$run_as" ]; then printf 'User=%s\n' "$run_as"; fi
 		printf 'Environment=HOME=%s\n' "$HOME"
+		printf 'Environment=PATH=%s\n' "$(unit_path_value)"
 		printf 'WorkingDirectory=%s\n' "$HOME"
 		printf 'ExecStart=%s -f %s -data-dir %s\n' "$BIN_DIR/anotify-agent" "$CFG" "$DATA_DIR"
 		printf 'Restart=always\n'

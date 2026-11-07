@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -177,6 +178,8 @@ func TestHandleDeployApply(t *testing.T) {
 // TestHandleDeployMissingRequirement：产物声明的命令这台机器没有 → failed +
 // missing_requirement，且**不落盘**、不重发 hello。
 func TestHandleDeployMissingRequirement(t *testing.T) {
+	// PATH 钉死：reason 里现在会带上下文（#322），真实 PATH 是现场变量，不该进断言。
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin")
 	a, conn := newDeployAgent(t)
 	art := testScriptArtifact("agent.claude", 1, "#!/bin/bash\nclaude --print hi\n")
 	art.Spec.Requires = []string{"anotify-no-such-cmd-alpha", "anotify-no-such-cmd-beta"}
@@ -193,16 +196,50 @@ func TestHandleDeployMissingRequirement(t *testing.T) {
 	if !strings.Contains(reason, "missing_requirement") {
 		t.Fatalf("apply.reason = %q, want 含 missing_requirement", reason)
 	}
-	// 多个缺失用 ";" 连起来，一次说全。
-	if !strings.Contains(reason, "missing_requirement:anotify-no-such-cmd-alpha") ||
-		!strings.Contains(reason, "missing_requirement:anotify-no-such-cmd-beta") {
-		t.Errorf("apply.reason = %q, want 两个缺失命令都列出来（; 分隔）", reason)
+	// 前缀与分隔符不变，上下文**只追加一次**在末尾（#322）。
+	// 用整串相等而不是子串：多一项少一项、上下文重复或位置错了都该红。
+	wantReason := "missing_requirement:anotify-no-such-cmd-alpha;" +
+		"missing_requirement:anotify-no-such-cmd-beta" +
+		" (PATH=/usr/local/bin:/usr/bin)"
+	if reason != wantReason {
+		t.Errorf("apply.reason = %q, want %q", reason, wantReason)
 	}
 	if _, _, ok := a.cache.get("agent.claude", 1); ok {
 		t.Error("缺依赖的产物被落盘了：接下来派单会在运行时炸，而不是在部署时拦住")
 	}
 	if got := conn.count(frameTypeHello); got != 0 {
 		t.Errorf("失败时不该重发 hello（缓存没变），实际发了 %d 次", got)
+	}
+}
+
+// TestPathReasonDetail 钉住 reason 里 PATH 上下文的形状：
+// 短 PATH 原样、超长 PATH 截断并报省略段数、空 PATH 不编造。
+func TestPathReasonDetail(t *testing.T) {
+	dirs := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("/d%d", i+1)
+		}
+		return out
+	}
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"空 PATH 不追加", "", ""},
+		{"短 PATH 原样回报", "/usr/local/bin:/usr/bin", " (PATH=/usr/local/bin:/usr/bin)"},
+		// 空段（= 当前目录）是现场事实，报告时不能被静默洗掉。
+		{"空段原样保留", "/usr/bin::/bin", " (PATH=/usr/bin::/bin)"},
+		{"恰好上限不截断", strings.Join(dirs(reasonPathDirs), ":"),
+			" (PATH=" + strings.Join(dirs(reasonPathDirs), ":") + ")"},
+		{"超过上限截断并报省略段数", strings.Join(dirs(reasonPathDirs+3), ":"),
+			" (PATH=" + strings.Join(dirs(reasonPathDirs), ":") + " …省略 3 段)"},
+	}
+	for _, tt := range tests {
+		if got := pathReasonDetail(tt.path); got != tt.want {
+			t.Errorf("%s: pathReasonDetail(%q) = %q, want %q", tt.name, tt.path, got, tt.want)
+		}
 	}
 }
 
