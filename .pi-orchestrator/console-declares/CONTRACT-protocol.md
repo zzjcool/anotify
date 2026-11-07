@@ -89,6 +89,13 @@ type ApplyFrame struct {
 `reason` 短码（`;` 连接多个）：`invalid_artifact`、`missing_requirement:claude`、
 `write_failed`、`disk_full`、`no_such_capability`、`unsupported_action`。
 
+短码是**封闭集合**：中枢按前缀归类展示，上下文只能追加在短码之后、不得改写前缀。
+`missing_requirement` 的实现会在末尾追加一次探过的 PATH（#322），形如
+`missing_requirement:claude (PATH=/usr/local/sbin:/usr/local/bin:/usr/bin)`——
+「装了却探不到」的根因几乎都是服务进程的 PATH 与登录 shell 不同，把 PATH 写进
+reason 就能自助定位。PATH 过长时按目录段截断并标注 `…省略 N 段`，避免把失败
+原因挤成噪音。
+
 ## 6. assign（改）
 
 ```go
