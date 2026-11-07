@@ -227,6 +227,13 @@ func TestHandleUpgradeSuccess(t *testing.T) {
 //
 // 退出等于节点掉线，而用户此刻正需要看到「为什么没升上去」（要人去跑 sudo）。
 func TestHandleUpgradeNeedRootDoesNotExit(t *testing.T) {
+	// 目标目录 0555 拦不住 root（root 无视目录权限位），这条用例只能以普通用户跑。
+	// 与 TestUpgradeNeedRoot（upgrade_test.go:351）同一豁免理由：root 下它验的不是
+	// 「回 need_root」，而是「root 也能升级成功」。
+	if os.Geteuid() == 0 {
+		t.Skip("root 无视目录权限位，这条用例只能以普通用户跑")
+	}
+
 	body := []byte("#!/bin/sh\necho v2\n")
 	sum := sha256.Sum256(body)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
