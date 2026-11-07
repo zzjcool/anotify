@@ -138,6 +138,12 @@ async function getScannedText(page) {
 	for (let attempt = 0; attempt < 5; attempt++) {
 		try {
 			return await page.evaluate(() => {
+				/* 语言提示条（.lang-hint）是**故意的跨语言内容**：它按浏览器首选语言
+			 * 显示另一种语言的文案（en 页上显示中文「本网站提供简体中文版本」是正确行为，
+			 * 有 lang 属性、不是漏翻译）。所以扫描前先藏掉它（innerText 不包含
+			 * display:none 内容），免得把产品特性报成翻译缺失。 */
+				const hint = document.querySelector(".lang-hint");
+				if (hint) hint.style.display = "none";
 				let text = document.body.innerText || "";
 				/* 豁免**当前命名空间的名字**：它是接口返回的用户数据（devseed 把默认
 				 * 命名空间叫「默认」），en/es 页面上当然仍显示「默认」—— 把用户起的

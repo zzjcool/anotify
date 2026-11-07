@@ -25,6 +25,16 @@ export const DEVSEED_BIN =
 	process.env.DEVSEED_BIN || path.join(ROOT, ".e2e-bin/devseed");
 export const ROOT_DIR = ROOT;
 
+/* E2E 默认浏览器语言 = 站点默认语言（zh-CN）。
+ *
+ * 语言提示条（.lang-hint）按「浏览器首选语言 ≠ 当前页语言」全站生效。
+ * Playwright 默认的 en-US 会让**每个中文页**凭空多出一条 45px 横幅，
+ * 给那些和 i18n 无关的套件（布局/几何/截图断言）加噪声。
+ * Chrome 在没给 `locale` 时会从 LANGUAGE 推导 navigator.languages，所以这里钉住；
+ * 需要别的语言就用 `browser.newContext({ locale })` 显式指定（会覆盖这里的默认值）。
+ * 真的想换全局默认：E2E_BROWSER_LANG=en_US.UTF-8。 */
+process.env.LANGUAGE = process.env.E2E_BROWSER_LANG || "zh_CN.UTF-8";
+
 let passCount = 0;
 let failCount = 0;
 const failures = [];
