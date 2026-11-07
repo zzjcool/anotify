@@ -1489,12 +1489,17 @@
 	/* ============================================================
 	 * Silk 皮肤 —— trace 页「图」视图（design/flowline-lab.html 的 01 silk）
 	 *
+	 * **两个入口共用这张舞台**：trace 的链路图（taskChain，执行事实）与源详情页的
+	 * 下游流向（capabilityFlow，配置预览）。差别只在 options.preview：
+	 * 预览没有执行事实（所有边都描出、文案不说成败），但布局/丝带/回放
+	 * 是同一套代码 —— 同一份配置在两页必须长得一样。
+	 *
 	 * 为什么另起一套渲染器，而不是给老图加一层皮肤：
 	 *   · 老路径是「dagre 布局 + 整体 transform 缩放到容器内」，一条 11 节点的
 	 *     链只能缩到 0.68，字小到读不了；Silk 是**绝对像素 1:1 的横向舞台**，
 	 *     卡片固定 238×78，靠原生 overflow 滚动 + 相机跟随看右半张图。
-	 *   · 源详情页（capabilityFlow）必须一个像素都不变 —— 所以只能在 mount()
-	 *     顶部按 options.silk 分派，既有渲染路径一律不碰。
+	 *   · 分派点只在 mount() 顶部（options.silk），旧 dagre 渲染路径一个字不碰 ——
+	 *     其它页面（如果有）仍可拿到原 FlowGraph。
 	 *
 	 * 与演示页的**有意差异**（契约 §12）：描边用 WAAPI + 实测长度（不用
 	 * pathLength=1）；行分配用紧凑分层（演示页按叶子铺开，t9 要 4 行 = 592px）；
@@ -1520,6 +1525,20 @@
 		if (kind === "end" || kind === "succeeded") return "var(--success)";
 		if (kind === "running") return "var(--st-running)";
 		return "var(--st-pending)";
+	}
+
+	/**
+	 * 预览丝带的终点色：这里上色的是**结构身份**，不是执行状态。
+	 *
+	 * 源详情页没有任务，拿 status 色是编造事实；但丝带的终点色可以让读者
+	 * 一眼看出「这条边流向一个终点 / 一个死端口 / 一个会继续派发的管道」。
+	 * 与卡片上 `role-*` 的编码同源（graphs.js 把配置的 kind 直接传成 role）。
+	 */
+	function silkPreviewColor(kind) {
+		if (kind === "end" || kind === "succeeded") return "var(--success)";
+		if (kind === "unknown" || kind === "failed") return "var(--error)";
+		if (kind === "deadport" || kind === "pruned") return "var(--faint)";
+		return "var(--accent)"; // 管道：会继续往下派发
 	}
 
 	/** 回放时钟：<10s 给一位小数（6.8s），再长就整秒（31s）—— 与演示页一致。 */
@@ -1672,6 +1691,11 @@
 	function mountSilk(container, opts) {
 		const options = opts || {};
 
+		// preview = 配置预览（源详情页）。与 trace 的**唯一**区别在
+		// 「没有执行事实」：所有边都要描出来（预览就是看全部流向），
+		// 文案也不能说"全部成功"。播放/布局/丝带仍是同一套代码。
+		const preview = options.preview === true;
+
 		// 文案：与 mount() 同一套回退顺序（options.t → 注入字典 → 中文默认）。
 		const tt = (k, d) => {
 			if (typeof options.t === "function") {
@@ -1702,7 +1726,6 @@
 		const stepNoOf = (id) => (firstExec.has(id) ? firstExec.get(id) + 1 : 0);
 		const failedCount = nodes.filter((n) => n.kind === "failed").length;
 		const totalSec = beats.length * 0.5;
-
 		const reduceNow = () =>
 			!!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
@@ -1718,7 +1741,10 @@
 			const to = nodeById.get(e.to);
 			if (!from || !to) return;
 			const times = Number(e.times) || 0;
-			const walked = e.muted !== true && times > 0;
+			// 预览没有执行次数（每条边只走一遍）：所有边都参与描出。
+			// muted 在预览里只表示「配置上到不了任何地方」，它仍是一条
+			// 真实的边，应该看得到流向（灰点自己的样式会保留这一点）。
+			const walked = preview ? true : e.muted !== true && times > 0;
 			edgeItems.push({
 				i: i,
 				from: e.from,
@@ -1743,6 +1769,9 @@
 		// ---- 外壳 DOM（契约 §9） -------------------------------------------
 		container.replaceChildren();
 		container.classList.add("flograph", "flograph--silk");
+		// preview 只是一个渲染作用域开关（结构身份色 / HUD 文案），
+		// 不进 spec —— spec 描述的是拓扑事实，与“这是预览”无关。
+		container.classList.toggle("is-preview", preview);
 		container.classList.remove("is-playing");
 
 		const bar = div("flograph-bar");
@@ -1755,11 +1784,17 @@
 		// 就摆出来：丝带还在一条条描出时条上已经写着「全部成功」，用户会以为
 		// 动画已经播完 —— 于是把描到一半的图当成「图缺线、少了东西」。
 		// 播放期间只说规模与时长（3 步 · 回放 1.5s），结束时才定性（settleBar）。
+		//
+		// 预览（源详情页）**没有执行事实**：不能说「全部成功」，也不适合叫「步」
+		// （那是任务的节拍）。改成「N 节点 · M 连线」，结束时说「预览完成」。
 		const barMeta = document.createElement("span");
 		barMeta.className = "flograph-bar-meta";
-		const barMetaPrefix = beats.length + " 步 · 回放 " + silkFmtClock(totalSec);
-		const barMetaFinal =
-			barMetaPrefix + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
+		const barMetaPrefix = preview
+			? nodes.length + " 节点 · " + edgeItems.length + " 连线"
+			: beats.length + " 步 · 回放 " + silkFmtClock(totalSec);
+		const barMetaFinal = preview
+			? barMetaPrefix + " · " + tt("graph.silk_preview_done", "预览完成")
+			: barMetaPrefix + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
 		barMeta.textContent = barMetaPrefix;
 		let barSettled = false;
 		const settleBar = () => {
@@ -1768,7 +1803,8 @@
 			barMeta.textContent = barMetaFinal;
 			// 状态灯同理：绿点 = 全部成功的结论，播放期间先保持中性（默认色），
 			// 灯与文案一起落定，否则又是"结论先于事实"。
-			if (failedCount) barDot.classList.add("is-fail");
+			// 预览没有成败：灯保持中性，什么都不加。
+			if (!preview && failedCount) barDot.classList.add("is-fail");
 		};
 		const barSpacer = document.createElement("span");
 		barSpacer.className = "flograph-bar-spacer";
@@ -1811,14 +1847,20 @@
 		const hudLegend = div("hud-legend");
 		const hudPath = document.createElement("span");
 		const hudPathDot = document.createElement("i");
-		hudPathDot.className = "lg-ok";
+		hudPathDot.className = preview ? "lg-flow" : "lg-ok";
 		hudPath.appendChild(hudPathDot);
 		hudPath.appendChild(document.createTextNode(tt("graph.hud_path", "执行路径")));
 		const hudFail = document.createElement("span");
 		const hudFailDot = document.createElement("i");
-		hudFailDot.className = "lg-bad";
+		hudFailDot.className = preview ? "lg-pruned" : "lg-bad";
 		hudFail.appendChild(hudFailDot);
-		hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败步")));
+		// 预览没有「执行 / 失败」：两颗灯分别说「流向」与「没有下游」。
+		if (preview) {
+			hudPath.lastChild.textContent = tt("graph.hud_flow", "下游流向");
+			hudFail.appendChild(document.createTextNode(tt("sources.flow.no_edge", "没有下游")));
+		} else {
+			hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败步")));
+		}
 		hudLegend.appendChild(hudPath);
 		hudLegend.appendChild(hudFail);
 		hud.appendChild(hudLegend);
@@ -1927,9 +1969,11 @@
 			else if (stepNoOf(n.id)) stepTxt = String(stepNoOf(n.id)).padStart(2, "0");
 			side.appendChild(div("n-step", stepTxt));
 			const durTxt = isRoot
-				? beats.length
-					? silkFmtClock(totalSec)
-					: ""
+				? preview
+					? "" // 预览没有「本次耗时这回事」
+					: beats.length
+						? silkFmtClock(totalSec)
+						: ""
 				: silkDurOf(subText);
 			side.appendChild(div("n-dur", durTxt));
 			// 剪枝 / 触发器不画状态点：一个没执行、一个是"源"，都没有"这次的状态"。
@@ -1968,7 +2012,11 @@
 				x2: "0",
 				y2: "0",
 			});
-			const endColor = e.loopback ? "var(--st-acked)" : silkStatusColor(e.toNode.kind);
+			const endColor = preview
+				? silkPreviewColor(e.toNode.kind)
+				: e.loopback
+					? "var(--st-acked)"
+					: silkStatusColor(e.toNode.kind);
 			for (const [off, color, op] of [
 				["0", "var(--accent)", ".22"],
 				[".58", "var(--accent)", ".85"],
@@ -2002,7 +2050,11 @@
 			core.dataset.to = e.to;
 			core.dataset.port = e.port || "";
 			core.dataset.tip =
-				(e.fromNode.label || e.from) + " \u2192 " + (e.toNode.label || e.to) + (e.times > 1 ? " \u00d7" + e.times : "");
+				(e.fromNode.label || e.from) +
+				" \u2192 " +
+				(e.toNode.label || e.to) +
+				(e.port ? " \u00b7 " + e.port : "") +
+				(e.times > 1 ? " \u00d7" + e.times : "");
 			const marker = "url(#" + arrowId + ")";
 			core.setAttribute("marker-end", marker);
 			// is-muted / is-pre 都要落在**主 path 上**（E2E 直接读主 path 的 class）
@@ -2039,11 +2091,21 @@
 			e.layers = [under, mid, core, shim];
 		}
 
-		// ---- ×N 标签（契约 §5.5）：只给走过多次的边 ------------------------
-		// 出口名不上图，所以标签的**唯一**内容是 ×N；宁缺不叠（放不下就不放）。
+		// ---- 边标签（契约 §5.5）：出口名 / 复走次数 -----------------------
+		// 内容只有两种信息：
+		//   · port：**只在预览里**画 —— 源详情页的 port 是拓扑推导过的
+		//     "多出口历史数据"（graphs.js 的 showPort），是唯一能区分两条
+		//     同起终点的信息。trace 页的 port 还背着事件类型（sourcePort），
+		//     把它画到线上就和"走过几次"混成一种标签，且违反 hide-ports §4
+		//     （出口名不上图）—— 所以那边继续不画。
+		//   · ×N：这条边真的走了多次（重试/回环）。预览里 times=1，不会出现。
+		// 宁缺不叠：放不下就不放（placeLabels 会避让）。
 		for (const e of edgeItems) {
-			if (!(e.times >= 2)) continue;
-			const lb = div("flograph-edge-label is-pre", "\u00d7" + e.times);
+			const bits = [];
+			if (preview && e.port) bits.push(e.port);
+			if (e.times >= 2) bits.push("\u00d7" + e.times);
+			if (!bits.length) continue;
+			const lb = div("flograph-edge-label is-pre", bits.join(" "));
 			lb.dataset.from = e.from;
 			lb.dataset.to = e.to;
 			canvas.appendChild(lb);
@@ -2051,8 +2113,12 @@
 		}
 
 		// ---- loop badge（契约 §7）：每条回边一个 ---------------------------
+		// 预览不画：徽章写的是「走了几次」（↺ ×N），而预览里每条边只描出
+		// 一遍，「×1」只会在图上多出一堆没有信息量的标签。回边的弧形
+		// 本身已经表达了「这条路会绕回来」。
 		for (const e of edgeItems) {
 			if (!e.loopback) continue;
+			if (preview) continue;
 			const b = div("loop-badge");
 			const n = Math.max(1, e.times || 1);
 			b.textContent = "\u21ba \u00d7" + n;
@@ -2466,7 +2532,11 @@
 				"\u56de\u653e " + silkFmtClock(Math.min(sec, totalSec)) + " / " + silkFmtClock(totalSec);
 		}
 		const doneLabel = () =>
-			beats.length + " \u6b65\u5b8c\u6210" + (failedCount ? " \u00b7 " + failedCount + " \u5931\u8d25" : "");
+			preview
+				? tt("graph.silk_preview_done", "\u9884\u89c8\u5b8c\u6210")
+				: beats.length +
+					" \u6b65\u5b8c\u6210" +
+					(failedCount ? " \u00b7 " + failedCount + " \u5931\u8d25" : "");
 		setProgress(0);
 		hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
 
@@ -2475,6 +2545,26 @@
 		function followTo(node) {
 			if (followOff || !node || node.id === ROOT_ID) return;
 			const max = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+			// 预览不"把当前节点居中"：源详情页的卡片比 trace 窄，居中会把上一个
+			// 节点一张半剪在边缘（源 → 首层这种两列都装得下的地方也会硬滚）。
+			// 预览只要能看见当前节点就行：在屏内就不动，出屏才平平地跟过去。
+			// trace 的链路图仍然居中跟随（那是"现在跑到哪一步"的叙事）。
+			if (preview) {
+				const pad = 18;
+				const left = node.x - pad;
+				const right = node.x + node.w + pad;
+				const viewLeft = scroll.scrollLeft;
+				const viewRight = viewLeft + scroll.clientWidth;
+				let target = null;
+				if (left < viewLeft) target = left;
+				else if (right > viewRight) target = right - scroll.clientWidth;
+				if (target == null) return;
+				scroll.scrollTo({
+					left: Math.max(0, Math.min(max, target)),
+					behavior: reduceNow() ? "auto" : "smooth",
+				});
+				return;
+			}
 			const target = node.x + node.w / 2 - scroll.clientWidth / 2;
 			scroll.scrollTo({
 				left: Math.max(0, Math.min(max, target)),
@@ -2484,6 +2574,19 @@
 		function resetCamera() {
 			followOff = false;
 			scroll.scrollLeft = 0;
+		}
+		/**
+		 * 预览播完回到起点：
+		 *
+		 * 源详情页的卡片比 trace 窄，而配置图往往比视口宽 —— 跟着流量一路
+		 * 滑到最右后，留在屏幕上的是"尾巴"，读者反而看不到源在哪里。
+		 * 预览是一次**从头讲到尾**的阅读，讲完应该回到开头（回放/重看从
+		 * 起点开始），而不是把最后一张卡居中。用户自己拖过（followOff）
+		 * 就不抢他的滚动位置。
+		 */
+		function backToStart() {
+			if (followOff) return;
+			scroll.scrollTo({ left: 0, behavior: reduceNow() ? "auto" : "smooth" });
 		}
 
 		function onScrollKey(ev) {
@@ -2918,11 +3021,20 @@
 				return;
 			}
 			resetReveal();
+			// 预览重播从**起点**开始（相机也回去）：否则上一轮的尾巴还在屏上，
+			// 新的一轮却从左边开始点亮 —— 用户会以为这一轮在播别的东西。
+			if (preview) resetCamera();
 
 			const speed = revealSpeed > 0 ? revealSpeed : 1;
 			// 900ms/拍：12 步约 10.8s；0.5× = 1800ms/拍（约 24s），
 			// 让"看清一步"优先于"快点放完"。
-			const stepMs = Math.max(180, 900 / speed);
+			//
+			// 预览不同：它的节拍是**边的数量**（大图可能几十条），按 900ms/拍
+			// 会变成一分钟的等待。所以把总时长压在 ~7s 内（小图仍然从容）；
+			// 用户仍可以用工具栏的速度按钮重播更慢/更快。
+			const stepMs = preview
+				? Math.max(160, Math.min(900 / speed, 7000 / Math.max(1, beats.length + 1)))
+				: Math.max(180, 900 / speed);
 			lastStepMs = stepMs;
 
 			// 只压暗**参与这次执行**的元素：剪枝节点与 muted 边本来就"没走"，
@@ -2991,6 +3103,7 @@
 					setProgress(totalSec);
 					hudActive.textContent = doneLabel();
 					settleBar();
+					if (preview) backToStart();
 				}
 			}, 40);
 		}
@@ -3025,6 +3138,7 @@
 				edges: () => edgeItems.map((e) => ({ from: e.from, to: e.to, port: e.port })),
 				fullscreen: () => fullscreen,
 				animated: () => animated,
+				preview: () => preview,
 				revealStep: () => lastStepMs,
 				scale: () => zoom,
 				contentSize: () => ({ w: geo ? geo.contentW : 0, h: geo ? geo.contentH : 0 }),

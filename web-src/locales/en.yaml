@@ -213,6 +213,8 @@ graph:
   fullscreen: Fullscreen
   exit_fullscreen: Exit fullscreen (Esc)
   fullscreen_hint: Scroll to zoom · drag to pan · Esc to exit
+  silk_preview_done: Preview complete
+  hud_flow: Downstream flow
 
 message:
   title: Notification detail
@@ -1574,6 +1576,7 @@ sources:
     source: Source
     terminal_short: terminal
     no_edge: no downstream
+    cycle: Cycle · this edge loops back
   view_events: View events
 trace:
   legend_hot: "Deeper line · this path was walked many times (retry / loop)"

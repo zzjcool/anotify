@@ -213,6 +213,8 @@ graph:
   fullscreen: Pantalla completa
   exit_fullscreen: Salir de pantalla completa (Esc)
   fullscreen_hint: Rueda para zoom · arrastra para mover · Esc para salir
+  silk_preview_done: Vista previa completada
+  hud_flow: Flujo descendente
 
 message:
   title: Detalle de notificación
@@ -1572,6 +1574,7 @@ sources:
     source: Origen
     terminal_short: terminal
     no_edge: sin posterior
+    cycle: Ciclo · esta arista vuelve
   view_events: Ver eventos
 trace:
   legend_hot: "Línea más intensa · este camino se recorrió muchas veces (reintento / bucle)"

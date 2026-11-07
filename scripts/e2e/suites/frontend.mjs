@@ -8584,9 +8584,16 @@ async function checkFlowChart(page, base) {
 				(n) => n.classList.contains("is-root") || n.classList.contains("is-trigger"),
 			).length,
 			// "只读"在这里的含义变了：DOM 节点本来就能拖（那是浏览器行为），
-			// 但拖节点不会改变数据 —— 布局是 dagre 一次性算好的。
+			// 但拖节点不会改变数据 —— 布局是一次性算好的。
 			// 所以改为断言"节点有明确坐标、不是自由拖动"。
 			hasCoords: nodeEls.every((n) => n.style.left && n.style.top),
+			// 预览（与 trace 共用的 Silk 舞台）：这两个类就是"同一份渲染"的证据。
+			silk: host.classList.contains("flograph--silk"),
+			preview: host.classList.contains("is-preview"),
+			playing: host.classList.contains("is-playing"),
+			preNodes: nodeEls.filter((n) => n.classList.contains("is-pre")).length,
+			drawnEdges: host.querySelectorAll(".sl-edge.is-on").length,
+			allEdges: host.querySelectorAll(".sl-edge").length,
 			subTitles: nodeEls.map((n) => n.querySelector(".wf-node-sub")?.textContent || ""),
 			icons: nodeEls.map((n) => n.querySelector(".wf-node-icon")?.textContent || ""),
 		};
@@ -8596,6 +8603,23 @@ async function checkFlowChart(page, base) {
 		"流向图用 HTML 卡片节点渲染",
 		g.hasCanvas === true && g.hasGraph === true,
 		JSON.stringify({ host: g.hasCanvas, graph: g.hasGraph }),
+	);
+
+	// ---- 与 trace 页同一套渲染（Silk 舞台）+ 预览真的在播 ----
+	//
+	// 用户的原话：「这里的下游流向应该要和 trace 这里的对齐，用一份代码，
+	// 样式以 trace 那份为准」。所以断言不是"也有个图"，而是"同一张舞台"：
+	// trace 的 .flograph 同时带 flograph--silk；源页额外带 is-preview
+	// （只切文案/状态色，不切布局与回放）。
+	H.check(
+		"源流向图与 trace 链路图是同一个渲染器（Silk 舞台）",
+		g.silk === true && g.preview === true,
+		JSON.stringify({ silk: g.silk, preview: g.preview }),
+	);
+	H.check(
+		"打开源页时预览在播：还有没点亮的节点、没描完的边",
+		g.playing === true && g.preNodes > 0 && g.drawnEdges < g.allEdges,
+		`playing=${g.playing} 未亮=${g.preNodes}/${g.nodeCount} 已描=${g.drawnEdges}/${g.allEdges}`,
 	);
 
 	// ---- 全屏入口的位置：两页必须一样 ----
@@ -8781,7 +8805,7 @@ async function checkFlowChart(page, base) {
 	H.check("声明了出口却没接下游的能力在图上可见（灰点）", g.hasDeadPort === true);
 	// 图上只有"源"这一个触发器是根，能力节点都该有上游
 	H.check("只有源节点被标成根（触发器）", g.rootCount === 1, `roots=${g.rootCount}`);
-	H.check("所有节点都有 dagre 算出的固定坐标", g.hasCoords === true);
+	H.check("所有节点都有布局算出的固定坐标（内联 left/top，不是自由拖拽）", g.hasCoords === true);
 
 	// ---- 两个页面用同一个组件，必须长得一样 ----
 	//
@@ -8830,24 +8854,122 @@ async function checkFlowChart(page, base) {
 		JSON.stringify(fsBtn),
 	);
 
-	// 源流向图没有执行数据（每个节点都没有点亮顺序），所以**不该**有
-	// 重播按钮 —— 放一个点了不动的按钮比不放更糟。
+	// 源流向图的「重播」是**配置预览**的重播：节拍来自拓扑顺序（previewBeats），
+	// 不是执行时间。所以按钮必须在 —— 而且点了要真的从头再来一遍。
+	//
+	// 早先这里写的是「源图没有重播按钮（它没有可播放的执行顺序）」：那时
+	// 源页是静态 dagre 图；现在它与 trace 共用回放机器，预览本身就是动画。
 	const repBtn = await page.evaluate(
 		() => !!document.querySelector('.flograph-ctrl button[data-fg-action="replay"]'),
 	);
 	H.check(
-		"源流向图没有重播按钮（它没有可播放的执行顺序）",
-		repBtn === false,
+		"源流向图有重播按钮（预览按拓扑顺序回放，可反复看）",
+		repBtn === true,
 		`有重播按钮=${repBtn}`,
 	);
+	if (repBtn) {
+		await page.locator('.flograph-ctrl button[data-fg-action="replay"]').click();
+		const restarted = await page.evaluate(() => {
+			const h = document.querySelector(".flograph");
+			return {
+				playing: h.classList.contains("is-playing"),
+				meta: h.querySelector(".flograph-bar-meta")?.textContent || "",
+			};
+		});
+		H.check(
+			"点重播后预览真的从头再播（结论撤回、回到进行时）",
+			restarted.playing === true && !/预览完成/.test(restarted.meta),
+			JSON.stringify(restarted),
+		);
+	}
+
+	// ---- 播完：所有节点 / 所有边都走到了（"流向所有的节点和边"）----
+	await waitAnimDone(page);
+	const after = await page.evaluate(() => {
+		const h = document.querySelector(".flograph");
+		if (!h) return null;
+		const sp = h._graphSpec || { nodes: [], edges: [] };
+		const nodes = [...h.querySelectorAll(".wf-node")];
+		const edges = [...h.querySelectorAll(".sl-edge")];
+
+		// 顺序的权威：previewBeats（页面用的就是它）。首次到达的节点拿
+		// 01、02…，卡片右上角的 n-step 必须与它逐一对得上。
+		const beats = window.AnotifyGraphs.previewBeats(sp.nodes, sp.edges, "__source__");
+		const stepOf = new Map();
+		beats.forEach((b, i) => {
+			if (b.cap && !stepOf.has(b.cap)) stepOf.set(b.cap, String(i + 1).padStart(2, "0"));
+		});
+		const expect = { __source__: "SRC" };
+		for (const [id, s] of stepOf) expect[id] = s;
+		const actual = {};
+		for (const el of nodes) {
+			actual[el.dataset.nodeId] = (el.querySelector(".n-step") || {}).textContent || "";
+		}
+		return {
+			meta: h.querySelector(".flograph-bar-meta")?.textContent || "",
+			playing: h.classList.contains("is-playing"),
+			nodeCount: nodes.length,
+			edgeCount: edges.length,
+			preNodes: nodes.filter((n) => n.classList.contains("is-pre")).length,
+			onEdges: edges.filter((e) => e.classList.contains("is-on")).length,
+			flowEdges: edges.filter((e) => e.classList.contains("is-flow")).length,
+			beatCount: beats.length,
+			specEdgeCount: (sp.edges || []).length,
+			expect,
+			actual,
+		};
+	});
+	H.check(
+		"预览播完：每个节点都点亮（没有永久灰态）",
+		!!after && after.playing === false && after.preNodes === 0,
+		JSON.stringify({ playing: after?.playing, pre: after?.preNodes }),
+	);
+	H.check(
+		"预览播完：每一条边都被描出并在流动（所有边，不只是走过的分支）",
+		!!after &&
+			after.edgeCount > 0 &&
+			after.onEdges === after.edgeCount &&
+			after.flowEdges === after.edgeCount,
+		JSON.stringify({ on: after?.onEdges, flow: after?.flowEdges, total: after?.edgeCount }),
+	);
+	H.check(
+		"预览的结论是「预览完成」，不是「全部成功」（没有执行事实就不能下成败）",
+		!!after && /预览完成/.test(after.meta) && !/全部成功/.test(after.meta),
+		after?.meta,
+	);
+	H.check(
+		"预览节拍覆盖每一条边（每条边恰好一拍）",
+		!!after && after.beatCount === after.specEdgeCount && after.beatCount > 0,
+		JSON.stringify({ beats: after?.beatCount, edges: after?.specEdgeCount }),
+	);
+	// 顺序断言：把"按顺序"钉成可验证的事实，而不是看截图猜
+	{
+		const keys = Object.keys(after?.expect || {}).sort();
+		const got = Object.keys(after?.actual || {}).sort();
+		const same =
+			keys.length > 0 &&
+			JSON.stringify(keys) === JSON.stringify(got) &&
+			keys.every((k) => after.expect[k] === after.actual[k]);
+		H.check(
+			"预览按 BFS 阅读序给节点编号（源→首层→下一层，不是数组顺序/随机）",
+			same,
+			JSON.stringify({ expect: after?.expect, actual: after?.actual }),
+		);
+	}
 
 	if (fsBtn) {
 		const before = await page.evaluate(() => {
 			const h = document.querySelector(".flograph");
+			const scroll = h.querySelector(".flograph-scroll");
 			return {
 				w: Math.round(h.getBoundingClientRect().width),
 				h: Math.round(h.getBoundingClientRect().height),
 				scale: h._graph._debug.scale(),
+				// silk 不靠"把图整体缩放"适应全屏：它把**舞台**铺满，
+				// 靠滑动视口变宽。所以判据是 scroll 视口宽度，不是 scale。
+				scrollW: scroll ? scroll.clientWidth : 0,
+				// 全屏前后内联样式必须一模一样（silk 会写 --silk-h）
+				styleAttr: h.getAttribute("style"),
 			};
 		});
 		await page.locator('.flograph-ctrl button[data-fg-action="fullscreen"]').click();
@@ -8881,6 +9003,7 @@ async function checkFlowChart(page, base) {
 				vh: window.innerHeight,
 				scale: h._graph._debug.scale(),
 				isFs: h._graph._debug.fullscreen(),
+				scrollW: h.querySelector(".flograph-scroll")?.clientWidth || 0,
 				placeholderH: ph && !ph.hidden ? Math.round(ph.getBoundingClientRect().height) : 0,
 				// 全屏时不能还能拖动背后页面：html 上锁了 overflow
 				locked: document.documentElement.classList.contains("flograph-fullscreen-open"),
@@ -8898,9 +9021,16 @@ async function checkFlowChart(page, base) {
 			JSON.stringify({ fs: on.isFs, body: on.parentIsBody, box: [on.w, on.h], vp: [on.vw, on.vh] }),
 		);
 		H.check(
-			"全屏后重新布局（scale 变大）并锁住页面滚动",
-			on.scale > before.scale && on.locked === true && on.hintVisible === true,
-			JSON.stringify({ before: before.scale, after: on.scale, locked: on.locked }),
+			"全屏后重新布局（滑动视口变宽 + 舞台铺满，缩放不被偷改）并锁住页面滚动",
+			on.scrollW > before.scrollW &&
+				on.scale >= before.scale &&
+				on.locked === true &&
+				on.hintVisible === true,
+			JSON.stringify({
+				before: { scale: before.scale, scrollW: before.scrollW },
+				after: { scale: on.scale, scrollW: on.scrollW },
+				locked: on.locked,
+			}),
 		);
 		H.check(
 			"全屏时占位符撑住原高度（关掉不会跳）",
@@ -8934,15 +9064,17 @@ async function checkFlowChart(page, base) {
 			};
 		});
 		H.check(
-			"Esc 退出全屏并完全复原（回卡片 / 原尺寸 / 无残留样式）",
+			"Esc 退出全屏并完全复原（回卡片 / 原尺寸 / 原内联样式）",
 			off.isFs === false &&
 				off.backInCard === true &&
 				off.w === before.w &&
 				off.h === before.h &&
 				off.placeholderGone === true &&
 				off.locked === false &&
-				!off.styleAttr,
-			JSON.stringify({ ...off, before }),
+				// silk 会写内联 --silk-h（那是图的高度，不是全屏残留）：
+				// 判据是退出后与进全屏前**逐字符相同**。
+				off.styleAttr === before.styleAttr,
+			JSON.stringify({ ...off, before: before.styleAttr }),
 		);
 	}
 

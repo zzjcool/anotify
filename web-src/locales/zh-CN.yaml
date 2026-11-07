@@ -213,6 +213,8 @@ graph:
   fullscreen: 全屏
   exit_fullscreen: 退出全屏（Esc）
   fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
+  silk_preview_done: 预览完成
+  hud_flow: 下游流向
 
 message:
   title: 通知详情
@@ -1576,6 +1578,7 @@ sources:
     source: 源
     terminal_short: 终点
     no_edge: 没有下游
+    cycle: 环 · 这条边会绕回来
   view_events: 查看事件
 trace:
   legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"

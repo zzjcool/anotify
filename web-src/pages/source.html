@@ -9,6 +9,11 @@
          塞在列表卡片里会让列表变得没法扫。列表只该回答"有哪些源、活着吗"，
          细节是点进去才关心的事。
 
+         容器用 .page（1200px）而不是 .page-narrow（760px）：这页的主体是
+         下游流向图，与 trace.html 的链路图是同一个 Silk 舞台。760px 只能
+         露出两张卡片，源→首层都看不全（trace 页同一条理由，见 trace.html
+         的样式注释）。
+
          样式纪律（UI v2）：卡片 / 按钮 / 徽章 / 弹层 / 空态 / 骨架一律用
          ui.css 的组件类，这里只留本页独有的排版；颜色只走 tokens.css 的
          token（亮主题下也要读得清，硬编码色值一律不写）。 */
@@ -173,7 +178,9 @@
         vertical-align: middle;
       }
       /* 等高骨架：最小高度 = 内容态三张卡的实际高度
-         （触发配置 217 / 出口能力 166 / 下游流向 646 —— 图区占了大头）。 */
+         （触发配置 217 / 出口能力 166 / 下游流向 ~420 —— 图区占了大头）。
+         流向图现在与 trace 页用同一个 Silk 舞台（39px 回放条 + 图 + 35px HUD）：
+         5 个节点的源大约 400px 高，不再是旧 dagre 那张 640px 的固定大图。 */
       .sk-card {
         min-height: 217px;
       }
@@ -182,7 +189,7 @@
         min-height: 166px;
       }
       .is-flow.sk-card {
-        min-height: 646px;
+        min-height: 420px;
       }
       /* 图区骨架：图卡里用几块矩形把节点/连线的分布位置占住，别只摆一个空盒 */
       .sk-graph {
@@ -215,7 +222,7 @@
 
 {{define "content"}}
 <div id="page-main">
-  <div class="page page-narrow">
+  <div class="page">
     <!-- 页头：名字（JS 填）+ 状态徽章 + 操作。页面内容里不出现 h1（顶栏那个才是 h1）。 -->
     <div class="page-head">
       <div class="min-w-0">
@@ -683,13 +690,18 @@
         return c;
       }
 
-      // 下游流向图：复用 graphs.js 的共享实现（不重写一份时序/布局逻辑）
+      // 下游流向图：交给 graphs.js 的 **capabilityFlow**（与 trace 页同一套渲染）。
       //
-      // **拓扑推导只有一份，在 graphs.js 的 sourceTopology**。
-      // 本页只负责：取数据（SRC/CAPS/EDGES）→ 调那个函数 → 把结果交给渲染层。
-      // 曾经这里有一份 buildFlowTree（建树）+ graphs.js 的 capabilityFlow（树 → 图），
+      // **拓扑推导只有一份，在 graphs.js 的 sourceTopology**；
+      // **渲染也只有一份，在 flograph.js 的 Silk 舞台**（trace 链路图那张）。
+      // 本页只负责：取数据（SRC/CAPS/EDGES）→ 调渲染入口 → 点节点时跳能力页。
+      //
+      // 历史：曾经这里有一份 buildFlowTree（建树）+ graphs.js 的 capabilityFlow（树 → 图），
       // 而 trace 页又有一份 buildBaseGraph —— 同一份配置两份推导，结果是同一个源
-      // 在两个页面画出不同的图（源 1:N 的那条线就是这么丢的）。
+      // 在两个页面画出不同的图（源 1:N 的那条线就是这么丢的）。后来推导合并了，
+      // 但渲染还是两套（本页旧 FlowGraph / trace 页 Silk），同一份数据在两页长得
+      // 不一样。现在两页连渲染器都一样，差别只剩「节拍从哪来」：
+      // trace 用任务时间，这里用拓扑顺序（graphs.js 的 previewBeats）。
       function renderFlowCard() {
         const c = card("srcpage.flow", "下游流向");
         const topology = window.AnotifyGraphs

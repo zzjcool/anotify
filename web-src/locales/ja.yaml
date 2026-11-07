@@ -213,6 +213,8 @@ graph:
   fullscreen: 全画面
   exit_fullscreen: 全画面を終了（Esc）
   fullscreen_hint: ホイールで拡大縮小 · ドラッグで移動 · Esc で終了
+  silk_preview_done: プレビュー完了
+  hud_flow: 下流フロー
 
 message:
   title: 通知の詳細
@@ -1572,6 +1574,7 @@ sources:
     source: ソース
     terminal_short: 終点
     no_edge: 下流なし
+    cycle: ループ · このエッジは戻ってくる
   view_events: イベントを見る
 trace:
   legend_hot: "線が濃いほど · この経路は何度も通った（再試行／ループ）"

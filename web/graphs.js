@@ -16,10 +16,16 @@
  *
  * 两个图的语义差别（曾经混过一次，这里写死）：
  *
- *   流向图（capabilityFlow）  静态配置视图
+ *   流向图（capabilityFlow）  静态配置视图（**预览**）
  *     问"可能流向哪些能力"。数据来自 /v1/capabilities + /v1/edges，
  *     一次画出**所有**声明的出口和边，包括没走过的分支。
  *     所以它天然是 DAG（或有意保留的环），跟运行状态无关。
+ *
+ *     渲染器与 trace 页的链路图**是同一个**（flograph 的 Silk 舞台）：
+ *     两页的图必须长得一样，用户才不会以为是两个功能。配置视图没有
+ *     执行事实，但**预览也要看得出流向** —— 于是这里按拓扑顺序合成一
+ *     组节拍（previewBeats，每条边一拍），交给同一套播放机器。
+ *     见 capabilityFlow 里的 animate/beats/root/preview 四个参数。
  *
  *   任务链图（taskChain）     动态运行视图
  *     问"这次执行实际走了哪条路径"。数据来自 /v1/tasks，每个任务一行。
@@ -513,6 +519,15 @@
 				cls: "lg-pruned",
 				text: t("sources.flow.no_edge", "没有下游"),
 			});
+			// 配置预览里没有「走了几次」这个维度（每条边只描出一遍），
+			// 所以 ↺ 只解释环本身：图会绕回来。别把 trace 页的 "×N" 说法
+			// 搬过来 —— 预览中没有数字，图例说了也是空谈。
+			rows.push({
+				icon: "↺",
+				cls: "lg-hot",
+				text: t("sources.flow.cycle", "环 · 这条边会绕回来"),
+			});
+			return rows;
 		}
 		rows.push({
 			icon: "↺",
@@ -545,13 +560,17 @@
 			legend: flowLegend(spec.scope || "trace", t),
 			// 全屏入口每页只出现一次：有标题栏文字入口的页面不画工具栏图标
 			showFullscreen: !!spec.showFullscreen,
-			// 入场动画只对"有执行事实"的图有意义（源详情页没有执行数据，
-			// 没有节拍就没得播）。
+			// 入场动画只对"有执行事实"的图有意义 —— 源详情页没有执行数据，
+			// 但预览有自己的节拍（见 capabilityFlow），所以是否播放由调用方决定。
 			animate: !!spec.animate,
-			// 执行节拍（按真实时间排的能力列表）与触发器节点 id：
-			// flograph 靠它决定"第几拍点亮谁、什么时候画线"。
+			// 节拍（{cap, from, port}）与触发器节点 id：flograph 靠它决定
+			// "第几拍点亮谁、什么时候画线"。trace 页来自任务时间，源详情页
+			// 来自拓扑顺序（previewBeats）—— **同一套播放机器**。
 			beats: spec.beats || [],
 			root: spec.root || "",
+			// preview = 配置预览（源详情页）：没有执行事实，文案与状态色
+			// 不能借用 trace 的「成功/失败」。渲染机器仍是同一套。
+			preview: !!spec.preview,
 			rankdir: spec.rankdir || (longChain ? "TB" : "LR"),
 			rankSep: spec.rankSep != null ? spec.rankSep : longChain ? 40 : 96,
 			nodeSep: spec.nodeSep != null ? spec.nodeSep : longChain ? 22 : 26,
@@ -561,13 +580,81 @@
 	}
 
 	/**
+	 * previewBeats —— 配置拓扑的**预览节拍**：把整张图按「从源出发的广度
+	 * 顺序」走一遍，每条边一拍。
+	 *
+	 * 为什么不能复用 trace 的 beats：那是执行事实（任务的 startedAt），
+	 * 源详情页没有任务，也不能编一个「发生过」的顺序。这里要的是
+	 * **配置事实的阅读顺序**：源 → 首层 → 再下游，同层按边的插入序。
+	 *
+	 * 为什么每条边一拍而不是每个节点一拍：silk 的 drawIncoming 按
+	 * (from,to,port) 匹配边，一个节点有多个上游时，只有逐边的节拍才能
+	 * 保证**每条边都真的被描出来**（「流向所有的节点和边」）。节点在它
+	 * 的第一条入边到达时点亮，之后再到达就脉冲一下 —— 和环上重访同一
+	 * 语义。
+	 *
+	 * 广度（BFS）而不是深度（DFS）：图是「源往下游摊开」的形状，按层
+	 * 推进才读得出「先到这一层、再到下一层」；DFS 会一条分支扎到底，
+	 * 回来时读者已经忘了起点在哪。
+	 *
+	 * 兜底：不可达的子图（截断/坏数据）按 nodes 的插入序补一个起点，
+	 * 保证「所有节点」都会被点亮，而不是静默留在灰态。
+	 *
+	 * @param {Array} nodes  {id}
+	 * @param {Array} edges  {from,to,port}
+	 * @param {string} rootId
+	 * @returns {Array<{cap:string, from:string, port:string}>} 与 trace 的
+	 *          beats **同一形状**（渲染层因此不需要第二套播放机器）。
+	 */
+	function previewBeats(nodes, edges, rootId) {
+		const adj = new Map();
+		for (const e of edges) {
+			if (!adj.has(e.from)) adj.set(e.from, []);
+			adj.get(e.from).push(e);
+		}
+
+		const beats = [];
+		const seen = new Set();
+		const walked = new Set(); // 边对象只走一次（稠密图里防重复拍）
+		const queue = [];
+		const enqueue = (id) => {
+			if (!id || seen.has(id)) return;
+			seen.add(id);
+			queue.push(id);
+		};
+
+		enqueue(rootId);
+		let i = 0;
+		for (;;) {
+			// queue 会在遍历中增长：i < queue.length 每轮重新求值，就是 BFS。
+			while (i < queue.length) {
+				const cur = queue[i++];
+				for (const e of adj.get(cur) || []) {
+					if (walked.has(e)) continue;
+					walked.add(e);
+					beats.push({ cap: e.to, from: e.from, port: e.port || "" });
+					enqueue(e.to);
+				}
+			}
+			// 不可达子图：换一个未访问的节点当起点继续走（不留灰块）。
+			const next = nodes.find((n) => !seen.has(n.id));
+			if (!next) break;
+			enqueue(next.id);
+		}
+		return beats;
+	}
+
+	/**
 	 * capabilityFlow —— 把「源 → 能力 → 下游」拓扑画成流向图
 	 *
 	 * **这是一个纯渲染层**：拓扑推导不在这里，在 sourceTopology（本文件顶部）。
 	 * 它只做三件事：
 	 *   ① 把中立拓扑映射成 FlowGraph 的节点/边形状（图标、图例、配色、文案）；
 	 *   ② 补上源节点，并按 topology.nodes 的 entry 标记**逐个**连线；
-	 *   ③ 交给 renderFlow（与 trace 页共用的渲染参数）。
+	 *   ③ 交给 renderFlow（与 trace 页共用的渲染参数）与 **silk 渲染器**。
+	 *
+	 * 与 trace 的差别只有「节拍从哪来」：那边是任务时间，这里是拓扑顺序
+	 * （previewBeats）。播放/描线/相机/回放条都是同一套。
 	 *
 	 * @param {HTMLElement} host        容器（会被清空）
 	 * @param {Object} opts
@@ -654,18 +741,36 @@
 		// 截断只影响显示（数据异常时防卡死），不改变推导结果
 		const cut = truncate(nodes, edges, limit);
 
-		const graph = renderFlow(host, {
-			scope: "source",
-			t: t,
-			// 工具栏全屏图标：和 trace 页保持一致的位置与图标
-			showFullscreen: !!opts.showFullscreen,
-			nodes: cut.nodes,
-			edges: cut.edges,
-			onNodeClick: (n) => {
-				if (n.kind === "deadport" || n.kind === "unknown" || n.kind === "trigger") return;
-				if (opts.onNodeClick) opts.onNodeClick(n);
+		// 预览节拍：从源出发、按广度顺序把**每一条边**都走一遍。
+		// 这一步只回答「以什么顺序读这张图」，不是执行事实。
+		const beats = previewBeats(cut.nodes, cut.edges, SRC_ID);
+
+		const graph = renderFlow(
+			host,
+			{
+				scope: "source",
+				t: t,
+				// 工具栏全屏图标：和 trace 页保持一致的位置与图标
+				showFullscreen: !!opts.showFullscreen,
+				nodes: cut.nodes,
+				edges: cut.edges,
+				// 配置视图也要有「流向」：节拍来自拓扑顺序（previewBeats），
+				// 渲染层用与 trace 完全相同的播放机器放一遍。
+				animate: true,
+				beats: beats,
+				root: SRC_ID,
+				// preview 只影响**文案与状态色**（没有执行事实，不能说「全部成功」），
+				// 不改变拓扑事实。
+				preview: true,
+				onNodeClick: (n) => {
+					if (n.kind === "deadport" || n.kind === "unknown" || n.kind === "trigger") return;
+					if (opts.onNodeClick) opts.onNodeClick(n);
+				},
 			},
-		});
+			// **同一个渲染器**：silk 是 trace 页链路图的那一套（1:1 舞台 +
+			// 丝带 + 回放条）。两页长得一样，用户才不会以为是两个功能。
+			true,
+		);
 
 		if (host) host._graphRebuild = () => capabilityFlow(host, opts);
 		// 两种截断合并上报：节点数硬顶（limit）与推导深度上限（TOPO_MAX_DEPTH）。
@@ -1120,6 +1225,9 @@
 		// 导出它而不是只导渲染函数，是为了让两个页面真的调**同一个**函数
 		// （否则下一个人又会"顺手"在页面里再写一份推导）。
 		sourceTopology,
+		// 预览节拍（唯一一份）：源详情页的「按顺序流过所有节点和边」就是它。
+		// 导出给 E2E 直接验顺序（与页面上卡片步号对账），而不是靠截图猜。
+		previewBeats,
 		capabilityFlow,
 		taskChain,
 		fmtDur,

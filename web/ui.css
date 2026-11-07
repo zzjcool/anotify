@@ -4486,6 +4486,23 @@ html.theme-switching *::after {
 .flograph--silk .sl-node.is-pending {
 	--state: var(--st-pending);
 }
+/* 预览（源详情页）上色的是**结构身份**，不是执行状态。
+ * trace 页的 .is-pipe 是「还没跑完」，源页的 pipe 是「会继续往下派发」——
+ * 两件事，用容器上的 .is-preview 隔离，trace 的观感一个字不动。 */
+.flograph--silk.is-preview .sl-node.is-pipe {
+	--state: var(--accent);
+}
+.flograph--silk.is-preview .sl-node.is-end {
+	--state: var(--success);
+}
+.flograph--silk.is-preview .sl-node.is-unknown {
+	--state: var(--error);
+}
+/* 预览的 bar 灯：没有成败可报，用主色表示「这是一张流向图」 */
+.flograph--silk.is-preview .flograph-bar-dot {
+	background: var(--accent);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
 /* 失败：副标题用错误色（lab .n-sub.is-error 的等价物），状态点带红晕 */
 .flograph--silk .sl-node.is-failed .n-sub {
 	color: var(--error-300);
@@ -4608,6 +4625,13 @@ html.theme-switching *::after {
 }
 .flograph--silk .hud-legend i.lg-bad {
 	background: var(--error);
+}
+/* 预览用两颗中性灯：主色 = 下游流向，faint = 没有下游（没有成败） */
+.flograph--silk .hud-legend i.lg-flow {
+	background: var(--accent);
+}
+.flograph--silk .hud-legend i.lg-pruned {
+	background: var(--faint);
 }
 
 /* ---------- 7. 控件（= lab .stage-btn，从右下浮层改成 bar 内的 flex） ---------- */
