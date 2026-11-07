@@ -488,7 +488,10 @@ func (a *nodeAgent) closeConn() {
 	}
 	a.closed = true
 	if err := a.conn.close(); err != nil {
-		a.log.Warn("close connection", "event", "agent.close.failed", "error", err.Error())
+		// Debug 而不是 Warn：对端已经没了（中枢重启/隧道重建/我们已经读到 EOF）时，
+		// 关一条已死的连接必然报错——这是预期路径，不是故障。原来打 WARN 的后果是
+		// 每次掉线都多一条吓人的错，正好是 #323 要消灭的「噪声淹没真故障」。
+		a.log.Debug("close connection", "event", "agent.close.failed", "error", err.Error())
 	}
 }
 
