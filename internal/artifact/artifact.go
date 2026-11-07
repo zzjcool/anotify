@@ -146,13 +146,33 @@ func errIf(problems []string) error {
 func Code(err error) string {
 	var e *Error
 	if errors.As(err, &e) && len(e.Problems) > 0 {
-		p := e.Problems[0]
-		if i := strings.IndexByte(p, ':'); i > 0 {
-			return p[:i]
-		}
-		return p
+		return ProblemCode(e.Problems[0])
 	}
 	return "invalid_artifact"
+}
+
+// ProblemCode 取**单条**问题文本的机器可读短码（Code 的单条版本）。
+//
+// 一条问题写成 "<短码>: <人话>"（见 Error.add 的各调用点），短码是第一个 ':' 之前
+// 那一段。抽成导出函数是因为 `anotify-agent check --json` 要逐条给出 code（issue #319）：
+// 如果那边自己再切一次字符串，某天改了分隔符就会变成「CLI 的 code 与 Code() 的词表
+// 悄悄不是同一套」——而两处都看不出自己错在哪。
+func ProblemCode(problem string) string {
+	if i := strings.IndexByte(problem, ':'); i > 0 {
+		return problem[:i]
+	}
+	return problem
+}
+
+// ProblemMessage 取单条问题文本的**人话部分**（去掉短码前缀与它后面的空白）。
+//
+// 短码给机器 switch，人话给人（也进 check --json 的 message）：两段来自同一句话，
+// 不会出现「码说 A、话在说 B」。
+func ProblemMessage(problem string) string {
+	if i := strings.IndexByte(problem, ':'); i > 0 {
+		return strings.TrimSpace(problem[i+1:])
+	}
+	return problem
 }
 
 // Parse 从 YAML 或 JSON 解析一份产物并做完整校验。

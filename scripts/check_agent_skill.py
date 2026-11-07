@@ -33,9 +33,9 @@ SKILL = REPO_ROOT / "cmd" / "agent" / "skill.md"
 AGENT_PKG = "./cmd/agent"
 VERSION_PKG = "github.com/zzjcool/anotify/internal/version"
 
-# 手册必须覆盖的五个子命令。加子命令时这里也要加：漏了就等于「手册不提它」，
-# 而那正是 #317 要消灭的状态（有命令、但 agent 不知道）。
-EXPECTED_SUBS = ["run", "emit", "upgrade", "runs", "show"]
+# 手册必须覆盖的全部子命令（顺序 = `-h` 命令表的顺序）。加子命令时这里也要加：
+# 漏了就等于「手册不提它」，而那正是 #317 要消灭的状态（有命令、但 agent 不知道）。
+EXPECTED_SUBS = ["run", "check", "schema", "emit", "upgrade", "runs", "show"]
 
 # 注入用的假版本元数据：不是 "dev"，否则「替换没生效」也能蒙混过关。
 TEST_VERSION = "9.9.9-check"
@@ -197,7 +197,7 @@ def check_skill_static(skill_text: str, sub_flags: dict[str, set[str]], global_f
                     f"（-h 里能用的：{sorted(pool)}）"
                 )
 
-    # 自检：手册必须真的提到全部五条子命令，否则「没报错」只说明手册没写命令。
+    # 自检：手册必须真的提到全部子命令，否则「没报错」只说明手册没写命令。
     missing = [s for s in EXPECTED_SUBS if s not in referenced_subs]
     if missing:
         errors.append(f"skill.md 没有引用这些子命令：{missing}（手册要覆盖 {EXPECTED_SUBS}）")

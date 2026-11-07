@@ -20,7 +20,7 @@ import (
 	"github.com/zzjcool/anotify/internal/version"
 )
 
-// TestUsageListsEverySubcommand：`-h` 的全文必须列出 5 个子命令，每条带一句人话
+// TestUsageListsEverySubcommand：`-h` 的全文必须列出全部子命令，每条带一句人话
 // 和一个可抄示例，末尾有 `--skill` 发现钩子，并且**第一屏**就说清「不带子命令 =
 // 常驻进程」（否则 agent 会把它当查询命令跑，占掉一个节点连接）。
 func TestUsageListsEverySubcommand(t *testing.T) {
@@ -32,8 +32,8 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 	writeUsage(fs)
 	out := buf.String()
 
-	// 五条子命令：名字、人话、示例三样都在。
-	for _, name := range []string{"run", "emit", "upgrade", "runs", "show"} {
+	// 七条子命令：名字、人话、示例三样都在。
+	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show"} {
 		if !strings.Contains(out, "\n  "+name) {
 			t.Errorf("命令表里没有 %q：\n%s", name, out)
 		}
@@ -81,8 +81,9 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 func TestAgentCommandsMatchDispatch(t *testing.T) {
 	t.Parallel()
 
-	if len(agentCommands) != 5 {
-		t.Fatalf("命令表有 %d 条，want 5（run / emit / upgrade / runs / show）", len(agentCommands))
+	if len(agentCommands) != 7 {
+		t.Fatalf("命令表有 %d 条，want 7（run / check / schema / emit / upgrade / runs / show）",
+			len(agentCommands))
 	}
 	seen := map[string]bool{}
 	for _, c := range agentCommands {
@@ -95,7 +96,9 @@ func TestAgentCommandsMatchDispatch(t *testing.T) {
 		seen[c.name] = true
 	}
 	// 反方向：分派认的每个名字都得在表里。
-	for _, name := range []string{runCommand, emitCommand, upgradeCommand, runsCommand, showCommand} {
+	for _, name := range []string{
+		runCommand, checkCommand, schemaCommand, emitCommand, upgradeCommand, runsCommand, showCommand,
+	} {
 		if !seen[name] {
 			t.Errorf("isSubcommand 认 %q，但命令表里没有它", name)
 		}
@@ -111,7 +114,7 @@ func TestHelpExitsZeroAndShowsCommandTable(t *testing.T) {
 	if code := mainWith([]string{"-h"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("mainWith(-h) = %d, want %d", code, exitOK)
 	}
-	for _, name := range []string{"run", "emit", "upgrade", "runs", "show"} {
+	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show"} {
 		if !strings.Contains(stderr.String(), "\n  "+name) {
 			t.Errorf("-h 的输出里没有子命令 %q：\n%s", name, stderr.String())
 		}

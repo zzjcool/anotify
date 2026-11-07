@@ -632,6 +632,40 @@ func TestCode(t *testing.T) {
 	}
 }
 
+// TestProblemCodeAndMessage 钉住「短码 / 人话」的切分口径（`check --json` 逐条用它）。
+//
+// 第三条（带两个冒号）是关键：只按**第一个**冒号切，否则 `invalid_yaml: yaml: line 3`
+// 会变成 code="invalid_yaml: yaml"，与 Code() 的词表对不上。
+func TestProblemCodeAndMessage(t *testing.T) {
+	cases := []struct {
+		problem string
+		code    string
+		message string
+	}{
+		{"invalid_name: 名字不对", "invalid_name", "名字不对"},
+		{"invalid_yaml: yaml: line 3: did not find expected node", "invalid_yaml",
+			"yaml: line 3: did not find expected node"},
+		// 没有分隔符（理论上不该出现，但不能因此把整句话当成有人话没码）：
+		{"something_broke", "something_broke", "something_broke"},
+		// 以冒号开头：不作为分隔符（i > 0 的判断），否则 code 会是空串。
+		{": 只有人话", ": 只有人话", ": 只有人话"},
+	}
+	for _, c := range cases {
+		if got := ProblemCode(c.problem); got != c.code {
+			t.Errorf("ProblemCode(%q) = %q, want %q", c.problem, got, c.code)
+		}
+		if got := ProblemMessage(c.problem); got != c.message {
+			t.Errorf("ProblemMessage(%q) = %q, want %q", c.problem, got, c.message)
+		}
+	}
+
+	// 与 Code() 必须同源：多问题里 Code 取首条，ProblemCode 也要给出同一个词。
+	err := &Error{Problems: []string{"unsupported_api_version: 期望 anotify/v1", "invalid_name: x"}}
+	if Code(err) != ProblemCode(err.Problems[0]) {
+		t.Fatalf("Code 与 ProblemCode 分叉：%q vs %q", Code(err), ProblemCode(err.Problems[0]))
+	}
+}
+
 // TestDigestIsStableAcrossParse 是内容寻址的地基：
 //
 //	Digest(Parse(CanonicalJSON(a))) == Digest(a)

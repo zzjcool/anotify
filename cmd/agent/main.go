@@ -36,6 +36,8 @@
 //	anotify-agent upgrade [--check] [--force] [--server URL] [--install-to PATH] [--restart]
 //	anotify-agent runs [--trace ID | --capability NAME[@VER]] [--limit N]   # 看本机跑过的执行
 //	anotify-agent show <trace>/<capability>@<ver>/<seq>-a<n>                # 看那一次的输入与输出
+//	anotify-agent check ./capability.yaml                                 # 只校验一份能力 yaml（不执行）
+//	anotify-agent schema [node|capability|emit]                            # 打印这三份形状的 JSON Schema
 //
 //	-f          node.yaml 路径（默认 ./node.yaml）
 //	-grace      优雅退出等待秒数（默认 20；<=0 表示退出时不等在跑任务）
@@ -98,6 +100,15 @@ const (
 	// 不连中枢、不读 node.yaml、不落任何盘。
 	runsCommand = "runs"
 	showCommand = "show"
+
+	// checkCommand / schemaCommand 是**离线书写面**子命令名（见 check_cmd.go /
+	// schema_cmd.go，issue #319）：check 校验一份能力 yaml，schema 吐三份 JSON Schema。
+	//
+	// 它们与 runs / show 同属「不读 node.yaml、不连中枢、不落盘」的本地只读命令，
+	// 但服务的是另一类人：**写**能力 yaml 的人（现在越来越多是 coding agent）。
+	// check 与 run 的区别是硬红线：check 只 Parse + Validate，**绝不执行**入口文件。
+	checkCommand  = "check"
+	schemaCommand = "schema"
 )
 
 // options 是节点模式命令行解析出来的启动参数（parseFlags 的产物，便于单测比对）。
@@ -152,7 +163,7 @@ func (p paramFlags) Set(raw string) error {
 func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	// 自定义 usage：flag 包的默认输出只有下面三个 flag，5 个子命令一个都不出现
+	// 自定义 usage：flag 包的默认输出只有下面三个 flag，子命令一个都不出现
 	// （issue #317）。命令表在 usage.go，flag 说明仍由 PrintDefaults 出自这里。
 	fs.Usage = func() { writeUsage(fs) }
 
@@ -536,7 +547,8 @@ func preludeCommand(args []string) preludeMode {
 // isSubcommand 报告 token 是否是子命令名（不是的话就是节点模式的普通参数）。
 func isSubcommand(tok string) bool {
 	return tok == emitCommand || tok == upgradeCommand || tok == runCommand ||
-		tok == runsCommand || tok == showCommand
+		tok == runsCommand || tok == showCommand ||
+		tok == checkCommand || tok == schemaCommand
 }
 
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
@@ -598,6 +610,19 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == showCommand {
 		code, err := runShow(args[1:], stdout, stderr)
 		reportFailure(stderr, mode, showCommand, code, err)
+		return code
+	}
+	if len(args) > 0 && args[0] == checkCommand {
+		// 书写面子命令（#319）：退出码 0 全过 / 1 有问题或命令自身出错。
+		// 问题列表打在 stdout（那是这条命令的答案），所以这里**通常**没有 error；
+		// 只有文件读不到 / 参数形状不对时才有 stderr 那一行。
+		code, err := runCheck(args[1:], stdout, stderr)
+		reportFailure(stderr, mode, checkCommand, code, err)
+		return code
+	}
+	if len(args) > 0 && args[0] == schemaCommand {
+		code, err := runSchema(args[1:], stdout, stderr)
+		reportFailure(stderr, mode, schemaCommand, code, err)
 		return code
 	}
 	// 节点模式的错误日志已经在 run 里记过（这里再记一条就成了重复）。

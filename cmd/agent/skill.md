@@ -44,7 +44,22 @@ anotify-agent upgrade --restart         # 换二进制并重启服务（需要 r
 
 ## 2. 写能力与上报（能力作者）
 
-能力是**控制台编译出来的产物**（YAML，内容寻址）。写完不用等部署，本机就能验证：
+能力是**控制台编译出来的产物**（YAML，内容寻址）。写完先**校验**、再**本地跑**——
+顺序别反：`run` 会真的执行入口文件，`check` 不会。
+
+```bash
+anotify-agent check ./capability.yaml          # 只解析 + 校验：一次列出全部问题；0 全过 / 1 有问题
+anotify-agent check ./capability.yaml --json   # {"ok":false,"problems":[{"code","message"}]}
+anotify-agent schema capability                  # 能力 yaml 的 JSON Schema（check 校验的就是它）
+```
+
+`check` 的三条边界就是它与 `run` 的区别：**不执行、不连中枢、不落盘**。`--json` 的
+`code` 是 `invalid_name` / `entrypoint_missing` / `invalid_output` 这类短码（与 `run`
+报错时同一套词表），所以「哪里错了」可以只读 JSON、不必正则中文。`schema` 另有两份
+形状：`anotify-agent schema node`（node.yaml 的四个键）与 `anotify-agent schema emit`
+（出口契约 `$ANOTIFY_EMIT_PORTS` 的形状）。
+
+然后才是真正跑一遍（本机、临时工作目录、退出码透传产物自己）：
 
 ```bash
 anotify-agent run ./capability.yaml -p repo=acme/x -p pr=42 --timeout 600
@@ -118,7 +133,7 @@ anotify-agent show trc_0af76519/notify.phone@2/3-a1 --no-stdout         # 只看
 ### 机器可读输出（给 agent 与脚本）
 
 stdout **不是终端**（管道 / 重定向）时自动输出 JSON，TTY 上保持上面的表格；
-`--json` 可以显式要。四种形状：
+`--json` 可以显式要。五种形状：
 
 | 命令 | `--json` 形状 |
 |---|---|
@@ -126,6 +141,7 @@ stdout **不是终端**（管道 / 重定向）时自动输出 JSON，TTY 上保
 | `show` | `{"ref","meta":{…},"input":{…},"stdout","stderr"}` |
 | `upgrade` | `{"current","latest","updated","restarted","reason"}` |
 | `emit` | `{"ok":true,"port","routed","note"}`（`routed` = 中枢已确认派发；默认只等到本地落盘） |
+| `check` | `{"ok":bool,"problems":[{"code","message"}]}`（没问题时 `problems` 是 `[]`，退出码 0） |
 
 ```bash
 anotify-agent runs --json | jq '.runs | type == "array"'
@@ -166,19 +182,24 @@ anotify-agent upgrade --check --json | jq '.updated, .restarted'
 | `upgrade` | 4 | sha256 不符 → 别原样重试（传输或服务端文件有问题） | `bad_sha` |
 | `upgrade` | 5 | 网络/其他错误（含参数、配置）→ 可以原样重跑 | `failed` / `config_missing` / `config_invalid` |
 | `runs` / `show` | 0 / 1 | 找到 / 没找到或参数非法（**不新增第三档**：歧义也走 1） | `not_found` / `ambiguous_ref` / `usage` / `config_missing` / `config_invalid` |
+| `check` | 0 / 1 | 全过 / 产物有问题（stdout 一次列出全部问题，**不执行**）；命令自身出错也退 1 | 产物有问题这一档没有 kind；文件读不到是 `config_missing` / `config_invalid`，参数错是 `usage` |
+| `schema` | 0 / 1 | 已输出一份 JSON Schema / schema 名不认识或多余参数 | `usage` |
 
 ## 5. 不要做
 
-1. **别把「不带子命令」当查询**：那是常驻进程，会连中枢、占掉一个节点连接。
+1. **别把 `run` 当校验器**：它会**真的执行**入口文件。只想看 yaml 对不对，用 `check`
+   （只 Parse + Validate，不执行、不连中枢、不落盘）。写完先 `check`，再 `schema`
+   对字段，最后才 `run`。
+2. **别把「不带子命令」当查询**：那是常驻进程，会连中枢、占掉一个节点连接。
    查本机状态请用 `runs` / `show`。
-2. **别指望 `-grace` 关连接**：它只算在跑任务的收尾，不含关闭连接本身；总耗时可能比
+3. **别指望 `-grace` 关连接**：它只算在跑任务的收尾，不含关闭连接本身；总耗时可能比
    grace 略长。它应当小于进程管理器的 stop 超时（`docker stop` 默认只有 10s），
    否则来不及收尾就被 SIGKILL。
-3. **`emit` 退出码 5 时停止重试**：任务已非运行态，重发只会一直拿到 5。退出码 4 才是
+4. **`emit` 退出码 5 时停止重试**：任务已非运行态，重发只会一直拿到 5。退出码 4 才是
    「补齐字段后可以重发」。
-4. **别把中枢凭证交给能力脚本**：脚本只能通过 `ANOTIFY_EMIT_SOCK` 说服本机 agent
+5. **别把中枢凭证交给能力脚本**：脚本只能通过 `ANOTIFY_EMIT_SOCK` 说服本机 agent
    代发一帧，路由权永远在中枢。同理，`ANOTIFY_TASK_TOKEN` 是单次任务的，别存下来复用。
-5. **别无脑重试 `emit` 的 2 / 3**：参数错、出口不在契约里，重试一万次也一样。
-6. **别在已经装成服务的机器上手工起第二个节点**：两个进程抢同一个令牌，表现是互相踢线。
-7. **别把表里的 8 位前缀当完整 id 存起来**：前缀只是给人省 token 的；要用就先看 `runs --json`
+6. **别无脑重试 `emit` 的 2 / 3**：参数错、出口不在契约里，重试一万次也一样。
+7. **别在已经装成服务的机器上手工起第二个节点**：两个进程抢同一个令牌，表现是互相踢线。
+8. **别把表里的 8 位前缀当完整 id 存起来**：前缀只是给人省 token 的；要用就先看 `runs --json`
    的完整 id，否则换台机器就可能撞上前缀（`ambiguous_ref`，退 1）。

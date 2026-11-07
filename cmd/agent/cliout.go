@@ -64,7 +64,7 @@ func modeFor(stdout io.Writer, wantJSON bool) outMode {
 // wantsJSON 在参数里找 --json（`-json` 同义，flag 包只认一种写法）。
 //
 // 用 token 扫描而不是 flag 解析：这个判断必须在**一处**成立——mainWith 报错时
-// 也要立刻知道该说 JSON 还是中文，而 flag 集合散在 5 个子命令里。代价是
+// 也要立刻知道该说 JSON 还是中文，而 flag 集合散在各子命令里。代价是
 // `--note -json` 这种「值长得像 flag」会被读成 --json；后果只是多打一份 JSON，
 // 不会把成败判错。
 func wantsJSON(args []string) bool {

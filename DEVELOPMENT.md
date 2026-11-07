@@ -454,7 +454,7 @@ anotify-agent emit --to notify.phone --data '{}'    # 管道上默认 {"ok":true
 所以「它有什么命令」必须是二进制自己答得出来的：
 
 ```bash
-anotify-agent -h          # 命令表：节点模式（不带子命令 = 常驻进程）+ 5 个子命令（名字/人话/示例）
+anotify-agent -h          # 命令表：节点模式（不带子命令 = 常驻进程）+ 7 个子命令（名字/人话/示例）
 anotify-agent --skill     # 内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码表 / 不要做
 anotify-agent --version   # 一行：anotify-agent <version> (<commit>, <builtAt>)
 ```
@@ -469,6 +469,32 @@ anotify-agent --version   # 一行：anotify-agent <version> (<commit>, <builtAt
   手册里的每个 `anotify-agent <sub>` 与 `-flag`（写错一个 flag 就红）。
 
 单独跑这道门禁：`make check-agent-skill`。
+
+### agent 的书写面：`check` 校验 / `schema` 出 JSON Schema（#319）
+
+写能力 yaml 的人（现在越来越多是 coding agent）此前只有两条验错的路：`run ./x.yaml`
+（**会真的执行**入口文件）或者等中枢下发失败。两条命令把校验器搬到命令行：
+
+```bash
+anotify-agent check ./capability.yaml          # 只 Parse + Validate：一次列出全部问题
+anotify-agent check ./capability.yaml --json   # {"ok":false,"problems":[{"code","message"}]}
+anotify-agent schema capability                  # 能力 yaml 的 JSON Schema（缺省）
+anotify-agent schema node                      # node.yaml 的四个键
+anotify-agent schema emit                      # 出口契约（$ANOTIFY_EMIT_PORTS / emit.json）
+```
+
+- `check` 的三条边界：**不执行、不连中枢、不落盘**（`run` 三条全反）。问题打在 stdout
+  （那是这条命令的答案），退出码 0 全过 / 1 有问题；命令自己出错（文件读不到、参数错）
+  才走 stderr 的 `{"error":{kind,…}}`。`problems[].code` 与 `artifact.Code()` 同一套词表
+  （`invalid_name` / `entrypoint_missing` / `invalid_output` …），脚本不必正则中文。
+- `schema` 输出**恰好一份** JSON Schema（`jq` / `ajv` / `python3 -m json.tool` 直接吃），
+  两次输出逐字节相同。三份文档是手写的（`cmd/agent/schema_doc.go`），**不引 schema 生成库**。
+- 两份真理（schema ↔ `artifact.Validate` / `nodeConfig.validate` / `emitContractJSON`）
+  由 `cmd/agent/schema_consistency_test.go` 钉住：对 `required` / `enum` / `pattern` 三类
+  约束，schema 判合法而 Validate 拒绝（或反之）都会让 `make test` 红。改 schema 或改
+  Validate 必须同时跑它。
+- 不做：服务端 `/v1/schema`（版本漂移：节点该信自己这版二进制）、`check --fix`
+  （改 yaml 是写操作）。
 
 ## 5. 测试体系（固化门禁）
 
@@ -706,6 +732,8 @@ make keys            # 生成 VAPID 密钥
 make tunnel          # Cloudflare 临时隧道（公网暴露，iOS 验证用）
 
 go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
+go build -o anotify-agent ./cmd/agent && ./anotify-agent check ./capability.yaml  # 离线校验一份能力 yaml
+./anotify-agent schema capability | jq '.properties.spec'                            # 能力 yaml 的 JSON Schema
 ```
 
 ## 10. 环境变量

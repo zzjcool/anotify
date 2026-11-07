@@ -3,7 +3,7 @@ package main
 // 本文件是 `-h` 的**命令表**（issue #317 §1）。
 //
 // 之前用的是 flag 包的默认 usage：它只会列 `-f / -grace / -data-dir` 三个 flag，
-// 5 个子命令一个都不出现。于是一个 agent 拿到这台机器上的二进制，跑完 help 只能
+// 子命令一个都不出现。于是一个 agent 拿到这台机器上的二进制，跑完 help 只能
 // 得出「它只会连中枢」，剩下的只能靠猜。这个文件把「它有什么命令、我该先跑哪个」
 // 一次讲清。
 //
@@ -39,7 +39,8 @@ func (c agentCommand) signature() string {
 	return c.name + " " + c.arg
 }
 
-// agentCommands 是全部子命令。顺序是「最常用的在前」：run 与 emit 是日常，
+// agentCommands 是全部子命令。顺序是「最常用的在前」：run 是日常执行，check / schema
+// 是**写**能力 yaml 时的两条（校验与形状，issue #319），emit 是能力进程上报，
 // upgrade 是运维，runs / show 是排障。
 //
 // 加子命令时**必须**同时改这里和 isSubcommand：单测 TestUsageListsEverySubcommand
@@ -50,6 +51,18 @@ var agentCommands = []agentCommand{
 		arg:     "<capability.yaml>",
 		desc:    "本地单跑一份产物：不连中枢、不占节点连接；退出码透传产物自己",
 		example: "anotify-agent run ./capability.yaml -p repo=acme/x",
+	},
+	{
+		name:    checkCommand,
+		arg:     "<capability.yaml>",
+		desc:    "只校验一份能力 yaml：一次列出全部问题；不执行、不连中枢、不落盘",
+		example: "anotify-agent check ./capability.yaml",
+	},
+	{
+		name:    schemaCommand,
+		arg:     "[node|capability|emit]",
+		desc:    "打印 JSON Schema：能力 yaml / node.yaml / 出口契约怎么写（缺省 capability）",
+		example: "anotify-agent schema capability | jq '.properties.spec'",
 	},
 	{
 		name:    emitCommand,
@@ -105,7 +118,7 @@ const usageFlagsTail = `
 进程级开关（任何环境都能跑：不读 node.yaml、不连网、不落盘）:
   --version                            打印一行「版本 (commit, 构建时间)」
   --skill                              打印内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码 / 不要做
-  --json                               机器可读输出（runs / show / upgrade / emit）；stdout 不是终端时自动开
+  --json                               机器可读输出（runs / show / upgrade / emit / check）；stdout 不是终端时自动开
 
 退出码（节点模式；子命令各有自己的表，看 anotify-agent <子命令> -h）:
   0                                    正常退出（收到 SIGINT / SIGTERM 并收尾完毕，或 -h 看帮助）
@@ -156,9 +169,11 @@ func writeSubcommandHelp(fs *flag.FlagSet, usage string, rows []exitRow) {
 func writeUsage(fs *flag.FlagSet) {
 	w := fs.Output()
 	fmt.Fprint(w, usagePreamble)
+	// 列宽 28 = 最长那条签名（`schema [node|capability|emit]`）的宽度：签名超宽时
+	// 续行会贴到左边，读者会以为是另一条命令。
 	for _, c := range agentCommands {
-		fmt.Fprintf(w, "  %-24s %s\n", c.signature(), c.desc)
-		fmt.Fprintf(w, "  %-24s   %s\n", "", c.example)
+		fmt.Fprintf(w, "  %-28s %s\n", c.signature(), c.desc)
+		fmt.Fprintf(w, "  %-28s   %s\n", "", c.example)
 	}
 	fmt.Fprint(w, "\n全局 flag（节点模式）:\n")
 	fs.PrintDefaults()
