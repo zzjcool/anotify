@@ -208,7 +208,12 @@ cat >"$fakebin/systemctl" <<SH
 printf '%s\n' "\$*" >>"$work/systemctl.log"
 exit 0
 SH
-chmod +x "$fakebin/sudo" "$fakebin/systemctl"
+cat >"$fakebin/loginctl" <<'SH'
+#!/bin/sh
+# 测试替身：用户服务那一段会调 enable-linger —— 这里绝不真的改本机状态。
+exit 1
+SH
+chmod +x "$fakebin/sudo" "$fakebin/systemctl" "$fakebin/loginctl"
 : >"$work/systemctl.log"
 
 export ANOTIFY_SUDO="$fakebin/sudo"
@@ -272,6 +277,81 @@ grep -q 'active (running)' "$work/install-system.log" && ok "结尾回报服务�
 	no "结尾回报服务已 active" "$(tail -6 "$work/install-system.log")"
 grep -q 'WantedBy=multi-user.target' "$work/install-system.log" && no "非 dry-run 不该把单元内容打到日志里" "居然打出来了" ||
 	ok "非 dry-run 不刷屏（单元内容只在 --dry-run 里回显）"
+
+# ---- 5a. 单元里的 PATH（#322） ----
+#
+# systemd 只给编译期默认值（/usr/local/sbin:/usr/local/bin:/usr/bin），而 hc/claude/codex
+# 装在 ~/.local/bin → 部署期 exec.LookPath 探不到，误判 missing_requirement:hc。
+# 这里钉的不是「有 PATH 行」而是**值的形状**：首段是 $HOME/.local/bin、不含空段、
+# 不重复，同时保留安装时的 $PATH（否则 mise/nvm/asdf 里的工具照样探不到）。
+# 系统单元与用户单元两个分支都要写：systemctl --user 也不继承登录 shell 的 PATH。
+
+# check_unit_path <单元文件> <标签> <期望的 HOME>
+#
+# 只读单元文件、只记账：形状不对就说清哪一条，不碰本机 systemd。
+check_unit_path() {
+	cu_file="$1"
+	cu_label="$2"
+	cu_homebin="$3/.local/bin"
+	cu_value=$(sed -n 's/^Environment=PATH=//p' "$cu_file" | head -n1)
+	if [ -z "$cu_value" ]; then
+		no "$cu_label 单元含 Environment=PATH=" "没有这一行：systemd 只会给默认 PATH"
+		return 0
+	fi
+	ok "$cu_label 单元含 Environment=PATH="
+
+	cu_first=${cu_value%%:*}
+	[ "$cu_first" = "$cu_homebin" ] &&
+		ok "$cu_label PATH 首段是 \$HOME/.local/bin" ||
+		no "$cu_label PATH 首段是 \$HOME/.local/bin" "实际首段：$cu_first"
+
+	cu_times=$(printf '%s' "$cu_value" | awk -v RS=: -v want="$cu_homebin" '$0 == want { n++ } END { print n+0 }')
+	[ "$cu_times" = 1 ] &&
+		ok "$cu_label PATH 里 \$HOME/.local/bin 只出现一次" ||
+		no "$cu_label PATH 里 \$HOME/.local/bin 只出现一次" "出现 $cu_times 次：$cu_value"
+
+	cu_empty=$(printf '%s' "$cu_value" | awk -v RS=: '$0 == "" { n++ } END { print n+0 }')
+	[ "$cu_empty" = 0 ] &&
+		ok "$cu_label PATH 无空段（空段 = 当前目录，是注入面）" ||
+		no "$cu_label PATH 无空段（空段 = 当前目录，是注入面）" "有 $cu_empty 个空段：$cu_value"
+
+	printf '%s' "$cu_value" | awk -v RS=: 'NF { if (seen[$0]++) dup=1 } END { exit dup ? 1 : 0 }' &&
+		ok "$cu_label PATH 无重复段" ||
+		no "$cu_label PATH 无重复段" "实际：$cu_value"
+
+	case ":$cu_value:" in
+	*":$fakebin:"*) ok "$cu_label PATH 保留了安装时的 \$PATH（探得到 mise/nvm 里的工具）" ;;
+	*) no "$cu_label PATH 保留了安装时的 \$PATH（探得到 mise/nvm 里的工具）" "实际：$cu_value" ;;
+	esac
+}
+
+if [ -f "$unit" ]; then
+	check_unit_path "$unit" "系统单元" "$home"
+fi
+
+# 用户单元分支：故意把安装时的 PATH 弄脏（空段 + 重复的 $HOME/.local/bin）——
+# 单元里的值必须把它们洗掉，否则空段等于把「当前目录」放进命令搜索路径。
+user_home="$work/home-user"
+user_prefix="$work/prefix-user"
+mkdir -p "$user_home"
+if HOME="$user_home" ANOTIFY_RELEASE_BASE="$ANOTIFY_RELEASE_BASE" \
+	PATH="$fakebin::$user_home/.local/bin:$PATH" \
+	sh "$root/scripts/install-agent.sh" --token=nt_selftest \
+	--server=http://127.0.0.1:8080 --name=selftest-user \
+	--prefix="$user_prefix" --user --no-preflight >"$work/install-user.log" 2>&1; then
+	ok "用户服务安装退出码 0"
+else
+	no "用户服务安装退出码 0" "$(tail -5 "$work/install-user.log")"
+fi
+user_unit="$user_home/.config/systemd/user/anotify-agent.service"
+if [ -f "$user_unit" ]; then
+	ok "写了用户服务单元"
+	grep -qx 'WantedBy=default.target' "$user_unit" && ok "用户单元是 default.target" ||
+		no "用户单元是 default.target" "$(grep -n '^WantedBy=' "$user_unit" || echo 缺失)"
+	check_unit_path "$user_unit" "用户单元" "$user_home"
+else
+	no "写了用户服务单元" "缺失 $user_unit（--user 没生效？）"
+fi
 
 # ---- 5b. 预检成功必须放行（真握手，不是文本断言） ----
 #

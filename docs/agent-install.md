@@ -45,6 +45,16 @@ curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/instal
 7. 清理上一版装法的残留（`~/.config/systemd/user/` 里的用户服务单元、`~/.local/bin` 里的旧副本）
    —— 同名的两份 agent 会抢同一个令牌，表现成两台机器互相踢线
 
+单元文件里会同时写 `Environment=HOME=` 与 `Environment=PATH=`：值是 `$HOME/.local/bin`
+打头、接上**安装时你 shell 的 `$PATH`**，去重并剔除空段。这一行是必需的——systemd
+只给编译期默认值（`/usr/local/sbin:/usr/local/bin:/usr/bin`），而 `hc` / `claude` /
+`codex` 普遍装在 `~/.local/bin`；不写它，部署期的依赖探测会把「装了」误判成
+`missing_requirement:hc`（#322）。装完可以这样核对：
+
+```bash
+systemctl show -p Environment anotify-agent | tr ' ' '\n' | grep '^PATH='
+```
+
 跑完你只会看到一段结果，**没有"下一步"**：
 
 ```
