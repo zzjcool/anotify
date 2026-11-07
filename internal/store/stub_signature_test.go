@@ -45,7 +45,9 @@ func TestStubSignaturesFrozen(t *testing.T) {
 		_ func(context.Context, string, string) error                                         = db.ReleaseInstance
 		_ func(context.Context, string) (*NodePin, error)                                     = db.GetPin
 		_ func(context.Context, *NodePin) error                                               = db.PutPin
-		_ func(string, string, string) string                                                 = StickyKey
+		// 回滚按 pin_id（行身份）而不是秒级 created_at（#315）。
+		_ func(context.Context, string, string, string) (bool, error) = db.RollbackPin
+		_ func(string, string, string) string                         = StickyKey
 	)
 
 	// ── event.go ───────────────────────────────────

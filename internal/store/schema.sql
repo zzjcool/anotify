@@ -664,3 +664,18 @@ ALTER TABLE tasks ADD COLUMN seq_in_trace INTEGER NOT NULL DEFAULT 0;
 -- 3 列前缀查询删掉它也仍由 autoindex 以同一 search shape 承担（无全表扫）。
 -- 删掉只少一份等价的 B-tree 维护成本。IF EXISTS 保证重放旧块时不报错。
 DROP INDEX IF EXISTS idx_edges_lookup;
+
+-- +migration 7 pin_id
+
+-- node_pins 需要一个**唯一**的行身份，用来回答「这条 pin 是不是本次派发建的」
+-- （推帧失败回滚的条件删除，见 node.go 的 RollbackPin）。
+--
+-- 旧判据是 (sticky_key, node_id, created_at)，而 created_at 是**秒级**：同一秒里
+-- 同一 (key, node) 的两次派发拿到同一个值 ⇒ 回滚会删掉**别人那一行**（#315）。
+-- pin_id 由 PutPin 在**新建**时生成（store.NewPinID：毫秒时间戳 + 随机，时间有序），
+-- 已存在的行走 ON CONFLICT 时**不覆盖**它——「谁建的就一直归谁」，后到的 upsert
+-- 不会冒领身份。
+--
+-- 默认 '' 只覆盖加这一列之前建的老行：它们不是任何一次「本次派发」新建的 pin，
+-- 因此永远不会匹配 RollbackPin 的条件（正是想要的语义）。
+ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';

@@ -115,8 +115,15 @@ type NodePin struct {
 	NamespaceID string `json:"namespaceId"`
 	NodeID      string `json:"nodeId"`
 	Selector    string `json:"selector"`
-	CreatedAt   int64  `json:"createdAt"`
-	LastUsedAt  int64  `json:"lastUsedAt"`
+	// PinID 是这一**行**的身份（#315）：RollbackPin 的条件删除按它匹配，
+	// 而不是按秒级的 CreatedAt（同一秒同 key 同节点的两次派发会撞车）。
+	//
+	// 由 PutPin 在新建时就地生成并写回调用方的 struct；已存在的行不会被后到的
+	// upsert 冒领（ON CONFLICT 只刷 last_used_at）。加这一列之前建的老行是 ""，
+	// 它们不属于任何一次「本次派发」，所以永远不匹配回滚条件。
+	PinID      string `json:"pinId"`
+	CreatedAt  int64  `json:"createdAt"`
+	LastUsedAt int64  `json:"lastUsedAt"`
 }
 
 // 节点注册 / 派发相关的哨兵错误。
@@ -1422,9 +1429,9 @@ func StickyKey(traceID, capabilityID, selector string) string {
 func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 	var p NodePin
 	err := d.QueryRowContext(ctx,
-		`SELECT sticky_key, namespace_id, node_id, selector, created_at, last_used_at
+		`SELECT sticky_key, namespace_id, node_id, selector, pin_id, created_at, last_used_at
 		 FROM node_pins WHERE sticky_key = ?`, stickyKey).
-		Scan(&p.StickyKey, &p.NamespaceID, &p.NodeID, &p.Selector, &p.CreatedAt, &p.LastUsedAt)
+		Scan(&p.StickyKey, &p.NamespaceID, &p.NodeID, &p.Selector, &p.PinID, &p.CreatedAt, &p.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1435,6 +1442,9 @@ func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
 }
 
 // PutPin 写入（或刷新）粘性钉住。已存在时更新 last_used_at（钉住不换机器）。
+//
+// 新建时它会就地生成 p.PinID 并写回（行身份，回滚靠它认自己那一行）；
+// 已存在的行不会被这次调用改写身份（只有 last_used_at 变），见 putPinExec。
 //
 // p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」）；
 // p.NodeID 必须是该命名空间内的节点。
@@ -1450,9 +1460,10 @@ type execContexter interface {
 
 // putPinExec 是 PutPin 的唯一实现（独立执行与事务内执行共用同一段 SQL/校验）。
 //
-// p.CreatedAt / p.LastUsedAt 为 0 时就地补成 Now()——**会把值写回调用方的 struct**：
-// route 的回滚路径要靠这个 CreatedAt 做"只删本次新建那条"的条件删除（见 RollbackPin）。
-// 已存在的 pin 走 ON CONFLICT 分支，其 created_at 是老的，所以那个条件不会命中旧行。
+// p.CreatedAt / p.LastUsedAt / p.PinID 为空时就地补上——**会把值写回调用方的 struct**：
+// route 的回滚路径要靠 PinID 做"只删本次新建那条"的条件删除（见 RollbackPin）。
+// 已存在的 pin 走 ON CONFLICT 分支：只刷新 last_used_at，created_at 与 pin_id 都保持
+// 原样（钉住不换机器，行身份也不换主人）——所以那条条件不会命中旧行。
 func putPinExec(ctx context.Context, ex execContexter, p *NodePin) error {
 	if p == nil || p.StickyKey == "" || p.NodeID == "" {
 		return fmt.Errorf("put pin: sticky_key/node_id required")
@@ -1467,11 +1478,14 @@ func putPinExec(ctx context.Context, ex execContexter, p *NodePin) error {
 	if p.LastUsedAt == 0 {
 		p.LastUsedAt = now
 	}
+	if p.PinID == "" {
+		p.PinID = NewPinID()
+	}
 	if _, err := ex.ExecContext(ctx,
-		`INSERT INTO node_pins (sticky_key, namespace_id, node_id, selector, created_at, last_used_at)
-		 VALUES (?,?,?,?,?,?)
+		`INSERT INTO node_pins (sticky_key, namespace_id, node_id, selector, pin_id, created_at, last_used_at)
+		 VALUES (?,?,?,?,?,?,?)
 		 ON CONFLICT(sticky_key) DO UPDATE SET last_used_at = excluded.last_used_at`,
-		p.StickyKey, p.NamespaceID, p.NodeID, p.Selector, p.CreatedAt, p.LastUsedAt); err != nil {
+		p.StickyKey, p.NamespaceID, p.NodeID, p.Selector, p.PinID, p.CreatedAt, p.LastUsedAt); err != nil {
 		return fmt.Errorf("put pin: %w", err)
 	}
 	return nil
@@ -1479,21 +1493,26 @@ func putPinExec(ctx context.Context, ex execContexter, p *NodePin) error {
 
 // RollbackPin 撤掉一条**本次派发新建的**粘性 pin（推帧失败的回滚，#264）。
 //
-// 条件是三元组 (sticky_key, node_id, created_at) 全等，而不是只按 sticky_key 删：
+// 判据是 pin_id 全等（而非按 sticky_key 删，也不再比秒级的 created_at）：
 // pin 可能是**更早**的派发留下的（同一 trace 的上一跳），或者并发派发刚建的；
 // 只按 key 删会把别人的钉住一起清掉，那是「一次推送失败让整条 trace 的粘性失效」。
-//   - 已存在的行：created_at 是旧的（putPinExec 的 ON CONFLICT 只刷新 last_used_at）
-//     → 条件不命中 → 不动；
-//   - 本次新建的行：created_at 就是 putPinExec 写进 p.CreatedAt 的那个值 → 删掉。
+//   - 已存在的行：pin_id 是**建它那次**派发的（putPinExec 的 ON CONFLICT 只刷
+//     last_used_at，不覆盖 pin_id）→ 条件不命中 → 不动；
+//   - 本次新建的行：pin_id 就是 putPinExec 写进 p.PinID 的那个值 → 删掉。
+//
+// 为什么不能继续用 created_at 做第三列（#315）：它是**秒级**的。同一秒里同一
+// (key, node) 上先后两次派发会拿到相同的 created_at，于是一次回滚能删掉**别人
+// 刚建的那一行**。pin_id 是毫秒时间有序 + 随机的真唯一值，不受秒级粒度影响。
+// node_id 仍留在条件里：它让「同 key 但机器不同」的病态数据也不会被误删。
 //
 // 返回是否真的删了一行（deleted=false 表示"这条 pin 本来就不属于本次派发"）。
-func (d *DB) RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (deleted bool, err error) {
-	if stickyKey == "" || nodeID == "" || createdAt == 0 {
-		return false, fmt.Errorf("rollback pin: sticky_key/node_id/created_at required")
+func (d *DB) RollbackPin(ctx context.Context, stickyKey, nodeID, pinID string) (deleted bool, err error) {
+	if stickyKey == "" || nodeID == "" || pinID == "" {
+		return false, fmt.Errorf("rollback pin: sticky_key/node_id/pin_id required")
 	}
 	res, err := d.ExecContext(ctx,
-		`DELETE FROM node_pins WHERE sticky_key = ? AND node_id = ? AND created_at = ?`,
-		stickyKey, nodeID, createdAt)
+		`DELETE FROM node_pins WHERE sticky_key = ? AND node_id = ? AND pin_id = ?`,
+		stickyKey, nodeID, pinID)
 	if err != nil {
 		return false, fmt.Errorf("rollback pin: %w", err)
 	}

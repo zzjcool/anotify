@@ -31,6 +31,10 @@ type fakeStore struct {
 	instances map[string][]*store.NodeInstance
 
 	pins map[string]*store.NodePin
+	// pinPuts 记录 PutPin 的调用次数（#315：粘性命中不应该每跳写一次）。
+	// pinSeq 给 fake 发的 pin_id 编号，保证同一 key 上两次新建拿到不同身份。
+	pinPuts int
+	pinSeq  int
 
 	// 记录调用，供断言
 	createdTasks []*store.Task
@@ -356,18 +360,23 @@ func (f *fakeStore) GetPin(ctx context.Context, stickyKey string) (*store.NodePi
 	return p, nil
 }
 
-// PutPin 与真 store 同口径：**已存在时只刷新 last_used_at，钉住不换机器**
-// （store.putPinExec 的 ON CONFLICT 分支）。fake 若在这里覆盖 node_id，
-// 就会出现「真库里钉在 A、测试里钉在 B」的假绿。
+// PutPin 与真 store 同口径：**已存在时只刷新 last_used_at，钉住不换机器、
+// 行身份（pin_id）也不换主**（store.putPinExec 的 ON CONFLICT 分支）。fake 若在这里
+// 覆盖 node_id 或 PinID，就会出现「真库里钉在 A、测试里钉在 B」的假绿。
 func (f *fakeStore) PutPin(ctx context.Context, p *store.NodePin) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pinPuts++
 	now := store.Now()
 	if p.CreatedAt == 0 {
 		p.CreatedAt = now
 	}
 	if p.LastUsedAt == 0 {
 		p.LastUsedAt = now
+	}
+	if p.PinID == "" {
+		f.pinSeq++
+		p.PinID = fmt.Sprintf("pin_fake_%d", f.pinSeq)
 	}
 	if old, ok := f.pins[p.StickyKey]; ok {
 		cp := *old
@@ -380,12 +389,15 @@ func (f *fakeStore) PutPin(ctx context.Context, p *store.NodePin) error {
 	return nil
 }
 
-// RollbackPin 与真 store 同口径：(sticky_key, node_id, created_at) 全等才删。
-func (f *fakeStore) RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (bool, error) {
+// RollbackPin 与真 store 同口径：(sticky_key, node_id, pin_id) 全等才删。
+//
+// 判据刻意是 pin_id（行身份）而不是秒级的 created_at：后者在同一秒的两次派发上
+// 完全一样，会让回滚删到别人那一行（#315，见 store.RollbackPin）。
+func (f *fakeStore) RollbackPin(ctx context.Context, stickyKey, nodeID, pinID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.pins[stickyKey]
-	if !ok || p.NodeID != nodeID || p.CreatedAt != createdAt {
+	if !ok || p.NodeID != nodeID || p.PinID != pinID {
 		return false, nil
 	}
 	delete(f.pins, stickyKey)
@@ -1212,6 +1224,88 @@ func TestDispatchStickyPin(t *testing.T) {
 	_ = out3
 }
 
+// TestDispatchStickyHitDoesNotRewritePin 粘性命中不再每跳写一次 node_pins（#315）。
+//
+// 命中分支原来为了刷 last_used_at 而整行 upsert，是派发热路径上**每任务一次**的
+// 独立写。现在按 pinTouchIntervalSec 节流：同一秒里的连续命中一行都不写，
+// 只有距上次刷新超过这个间隔才刷一次。
+//
+// 同时钉住红线：**刷不刷新都不换机器**（同 trace + 同 selector 钉同一台），
+// 且刷新不能改写行身份（pin_id）——否则回滚会认错行。
+func TestDispatchStickyHitDoesNotRewritePin(t *testing.T) {
+	f := newFakeStore()
+	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
+	target := f.addCap(testNS, "implement", 1, nil, `{}`)
+	target.Sticky = "worktree"
+	f.addEdge(testNS, review.ID, "fix", target.ID)
+	f.addNode("nd_a", target.ID, 4)
+	f.addNode("nd_b", target.ID, 4)
+
+	d := New(f)
+	params := map[string]any{"worktree": "wt-hot"}
+	dispatch := func() *store.NodePin {
+		t.Helper()
+		out, err := d.Dispatch(context.Background(), DispatchInput{
+			NamespaceID: testNS, TraceID: "trace_hot", FromCap: review.ID, Out: "fix", Params: params,
+		})
+		if err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if len(out.Tasks) != 1 || out.Tasks[0].NodeID == nil {
+			t.Fatalf("want 1 dispatched task, got %+v", out.Tasks)
+		}
+		return f.pins[store.StickyKey("trace_hot", target.ID, "wt-hot")]
+	}
+
+	// 第一跳：库里没有 pin → 与派发同一个事务写一条（这一次写是必须的）。
+	pin := dispatch()
+	if pin == nil {
+		t.Fatal("首跳没写 pin")
+	}
+	if f.pinPuts != 1 {
+		t.Fatalf("首跳应只写一次 pin，got %d", f.pinPuts)
+	}
+	node1, pinID := pin.NodeID, pin.PinID
+
+	// 第二跳（同一秒）：命中了 → 零写入。
+	if got := dispatch(); got == nil || got.NodeID != node1 {
+		t.Fatalf("粘性命中换了机器：want %s got %+v", node1, got)
+	}
+	if f.pinPuts != 1 {
+		t.Fatalf("粘性命中又写了 %d 次 pin（每跳一次独立写回来了）", f.pinPuts-1)
+	}
+
+	// 距上次刷新还差一点点（未到间隔）：仍然不写。
+	f.pins[store.StickyKey("trace_hot", target.ID, "wt-hot")].LastUsedAt = store.Now() - pinTouchIntervalSec + 5
+	if got := dispatch(); got == nil || got.NodeID != node1 {
+		t.Fatalf("粘性命中换了机器：want %s got %+v", node1, got)
+	}
+	if f.pinPuts != 1 {
+		t.Fatalf("未到刷新间隔却写了 pin（got %d 次）", f.pinPuts)
+	}
+
+	// 超过间隔：刷一次 last_used_at，但不换机器、不改行身份。
+	key := store.StickyKey("trace_hot", target.ID, "wt-hot")
+	stale := store.Now() - pinTouchIntervalSec - 1
+	f.pins[key].LastUsedAt = stale
+	if got := dispatch(); got == nil || got.NodeID != node1 {
+		t.Fatalf("刷新时换了机器：want %s got %+v", node1, got)
+	}
+	if f.pinPuts != 2 {
+		t.Fatalf("超过刷新间隔应写一次 pin，got %d 次（总计）", f.pinPuts)
+	}
+	after := f.pins[key]
+	if after.NodeID != node1 {
+		t.Fatalf("刷新把钉住的机器改成了 %s", after.NodeID)
+	}
+	if after.PinID != pinID {
+		t.Fatalf("刷新改写了行身份：%q → %q（回滚会认错行）", pinID, after.PinID)
+	}
+	if after.LastUsedAt <= stale {
+		t.Fatalf("超过间隔却没刷新 last_used_at：%d（旧值 %d）", after.LastUsedAt, stale)
+	}
+}
+
 // TestDispatchStickyFallsBackWhenPinnedNodeGone 钉住的机器不再声明该能力 → 重新挑。
 func TestDispatchStickyFallsBackWhenPinnedNodeGone(t *testing.T) {
 	f := newFakeStore()
@@ -1990,9 +2084,13 @@ func TestDispatchStickyPublishFailureRollsBackPin(t *testing.T) {
 // TestDispatchStickyPublishFailureKeepsForeignPin 推帧失败**只能**撤掉本次新建的 pin。
 //
 // 场景：库里已有一条钉住（但钉的机器已经不在候选里 → pickNode 回落到负载挑，
-// 仍然返回 selector）。本次派发写 pin 时 ON CONFLICT 只刷新 last_used_at（不换机器），
-// 所以这条 pin 不属于本次派发 —— 回滚必须按 (key, node, created_at) 判定后放它一马。
+// 仍然返回 selector）。本次派发写 pin 时 ON CONFLICT 只刷新 last_used_at（不换机器、
+// 不换行身份），所以这条 pin 不属于本次派发 —— 回滚必须按 pin_id 判定后放它一马。
 // 无脑 DeletePin 会让「一次推帧失败」顺手清掉同一 trace 上一跳的钉住。
+//
+// 注意：这里故意把老 pin 的 created_at 也设成**当前秒**（与本次派发同一个值）。
+// 旧判据 (key, node, created_at) 在这种情况下会把它当自己的删掉（#315）；
+// 按行身份判定则不受秒级粒度影响。
 func TestDispatchStickyPublishFailureKeepsForeignPin(t *testing.T) {
 	f := newFakeStore()
 	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{}`)
@@ -2004,7 +2102,7 @@ func TestDispatchStickyPublishFailureKeepsForeignPin(t *testing.T) {
 	key := store.StickyKey("trace_sticky_keep", target.ID, "wt-2")
 	f.pins[key] = &store.NodePin{
 		StickyKey: key, NamespaceID: testNS, NodeID: "nd_dead", Selector: "wt-2",
-		CreatedAt: store.Now() - 1000,
+		PinID: "pin_previous_hop", CreatedAt: store.Now(), LastUsedAt: store.Now(),
 	}
 
 	d := New(f)

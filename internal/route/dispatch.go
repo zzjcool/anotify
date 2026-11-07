@@ -197,7 +197,10 @@ type Store interface {
 	GetPin(ctx context.Context, stickyKey string) (*store.NodePin, error)
 	PutPin(ctx context.Context, p *store.NodePin) error
 	// RollbackPin 撤掉一条本次派发新建的 pin（推帧失败回滚用，见 store.RollbackPin）。
-	RollbackPin(ctx context.Context, stickyKey, nodeID string, createdAt int64) (bool, error)
+	//
+	// 判据是 pin_id（行身份），不是 created_at：后者只有秒级精度，同一秒两次
+	// 派发会删到别人那一行（#315）。
+	RollbackPin(ctx context.Context, stickyKey, nodeID, pinID string) (bool, error)
 	CreateTasks(ctx context.Context, ts []*store.Task) error
 	// ExtendLease 把租约推到指定时刻（派发失败回滚时用来"提前过期"）。
 	ExtendLease(ctx context.Context, namespaceID, taskID string, leaseUntil int64) error
@@ -1131,8 +1134,9 @@ func (d *Dispatcher) launch(ctx context.Context, in DispatchInput, tasks []*stor
 		// #264 起它与「占槽位 + pending→assigned + 写归属/attempts + 落令牌」是
 		// **同一个事务**（LeaseAndAssignWithPin），不再是推帧成功之后的单独一次写。
 		// 语义靠回滚维持：推帧失败的 requeue 路径调 RollbackPin 条件删除，所以
-		// 「推不出去的任务不会留下 pin」这条不变。pin.CreatedAt 由 store 在事务里
-		// 就地填好——回滚正是靠它区分「本次新建」与「早先就有」（见 store.RollbackPin）。
+		// 「推不出去的任务不会留下 pin」这条不变。pin.PinID 由 store 在事务里
+		// 就地生成并写回——回滚正是靠这个行身份区分「本次新建」与「早先就有」
+		// （见 store.RollbackPin；#315 前用的是秒级的 created_at）。
 		//
 		// 任何一步失败都整笔回滚，槽位不会泄漏——所以这里**没有**（也不需要）
 		// 失败后补一次 ReleaseInstance 的语句。
@@ -1379,13 +1383,16 @@ func (d *Dispatcher) requeueAfterPublishFailure(ctx context.Context, namespaceID
 //
 // 为什么是条件删除：pin 可能是同一 trace 的上一跳留下的，也可能是并发派发刚建的。
 // 无脑 DeletePin 会让「一次推送失败」顺带清掉别人的钉住（整条 trace 的粘性失效）。
-// RollbackPin 按 (sticky_key, node_id, created_at) 三元组删，只有本次事务真的新建了
-// 那条才会命中（已存在的行 created_at 是旧的）。
+// RollbackPin 按 pin_id（行身份）删，只有本次事务真的新建了
+// 那条才会命中（已存在的行属于建它的那次派发）。
+//
+// 为什么不用秒级的 created_at 做判据（#315）：同一秒里同一 (key, node) 上先后两次
+// 派发拿到相同的 created_at，一次回滚就能删掉**别人刚建的那一行**。
 //
 // 失败只记日志：任务已经退回 pending，这里再报错也无法反悔；
 // 残留一条 pin 的后果是"这一跳仍钉在同一台机器"，比丢掉任务轻。
 func (d *Dispatcher) rollbackPinAfterPublishFailure(ctx context.Context, task *store.Task, pin *store.NodePin) {
-	deleted, err := d.Store.RollbackPin(ctx, pin.StickyKey, pin.NodeID, pin.CreatedAt)
+	deleted, err := d.Store.RollbackPin(ctx, pin.StickyKey, pin.NodeID, pin.PinID)
 	if err != nil {
 		slog.Warn("rollback sticky pin after publish failure failed",
 			"event", "route.publish.requeue.rollback_pin",
@@ -1448,6 +1455,14 @@ func (d *Dispatcher) checkUserScoped(ctx context.Context, capDef *store.Capabili
 	return false, PrunedRecord{}, nil
 }
 
+// pinTouchIntervalSec 是粘性命中路径刷新 last_used_at 的最小间隔（秒，#315）。
+//
+// 为什么节流：命中分支原来每跳都把整行 upsert 一遍 node_pins，只为刷一个**只有面板
+// 会看**的字段（派发热路径上每任务一次独立写，SQLite 单写者）。60s 粒度对“这台机器
+// 最近什么时候被钉中过”完全够用，口径跟 internal/auth/apikey_cache.go 的
+// keyTouchInterval 一致。粘性判定本身不看它，所以它不精确不影响任何调度决策。
+const pinTouchIntervalSec int64 = 60
+
 // pickNode 挑一台节点：粘性钉住优先，否则按负载（空闲槽位最多）挑。
 //
 // 返回 (nodeID, stickySelector, error)。stickySelector 非 nil 表示该能力开了 sticky，
@@ -1462,15 +1477,32 @@ func (d *Dispatcher) pickNode(ctx context.Context, in DispatchInput, capDef *sto
 		key := store.StickyKey(in.TraceID, capDef.ID, sel)
 		pin, err := d.Store.GetPin(ctx, key)
 		if err == nil && pin != nil && containsStr(candidates, pin.NodeID) {
-			if err := d.Store.PutPin(ctx, &store.NodePin{
-				StickyKey:   key,
-				NamespaceID: pin.NamespaceID, // 刷新沿用库里那条 pin 的命名空间
-				NodeID:      pin.NodeID,
-				Selector:    pin.Selector,
-				CreatedAt:   pin.CreatedAt,
-				LastUsedAt:  d.Now(),
-			}); err != nil {
-				return "", nil, fmt.Errorf("route: refresh pin: %w", err)
+			// 命中：**不换机器**，只在需要时把 last_used_at 往前推。
+			//
+			// #315：命中分支原来为了刷 last_used_at 而照抄整行 upsert（PutPin），
+			// 那是派发热路径上**每个任务一次**的独立写。而 node_pins 里没有任何
+			// 调度判定读 last_used_at（决策只用到 node_id/selector），它只是面板数据。
+			// 所以按 pinTouchInterval 节流，口径与 internal/auth/apikey_cache.go 的
+			// keyTouchInterval 一致（那里也是“观测字段不值得每请求一写”）。
+			//
+			// 面板会看到什么：命中的 pin 的 last_used_at **最多滞后 pinTouchInterval
+			// （60s）**——连续使用的 pin 显示的是最近一分钟内的某次使用，不再逐次精确。
+			// 新建 pin 的 last_used_at 仍由 putPinExec 当场写准；这里不额外写日志
+			// （它只是观测字段，为它每条派发打一行日志正是要省掉的那笔开销）。
+			//
+			// 粘性语义不变：无论刷不刷新，返回的永远是 pin.NodeID（“钉住不换机器”）。
+			if now := d.Now(); now-pin.LastUsedAt >= pinTouchIntervalSec {
+				if err := d.Store.PutPin(ctx, &store.NodePin{
+					StickyKey:   key,
+					NamespaceID: pin.NamespaceID, // 刷新沿用库里那条 pin 的命名空间
+					NodeID:      pin.NodeID,
+					Selector:    pin.Selector,
+					PinID:       pin.PinID, // 行身份不可被刷新改写（否则回滚会认错行）
+					CreatedAt:   pin.CreatedAt,
+					LastUsedAt:  now,
+				}); err != nil {
+					return "", nil, fmt.Errorf("route: refresh pin: %w", err)
+				}
 			}
 			return pin.NodeID, nil, nil // 已钉住，不再重复写
 		}

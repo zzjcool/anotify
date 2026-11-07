@@ -565,6 +565,11 @@ func TestNodePins(t *testing.T) {
 	if err := db.PutPin(ctx, pin); err != nil {
 		t.Fatalf("PutPin: %v", err)
 	}
+	// 行身份（pin_id，迁移 7）由 putPinExec 就地填好并写回调用方——
+	// 回滚靠它认自己那一行，不再是秒级的 created_at（#315）。
+	if pin.PinID == "" {
+		t.Fatal("PutPin 没把 PinID 写回调用方（回滚条件会不命中）")
+	}
 	got, err := db.GetPin(ctx, key)
 	if err != nil {
 		t.Fatalf("GetPin: %v", err)
@@ -573,8 +578,12 @@ func TestNodePins(t *testing.T) {
 	if got.NodeID != n.ID || got.Selector != "worktree:wt-a" || got.NamespaceID != nsID {
 		t.Fatalf("pin round-trip mismatch: %+v", got)
 	}
+	// 存什么读什么：pin_id 也得往返一致（它现在是回滚的判据，丢了就退化成 0 行命中）。
+	if got.PinID != pin.PinID {
+		t.Fatalf("pin_id round-trip = %q，调用方拿到 %q", got.PinID, pin.PinID)
+	}
 
-	// 重复 PutPin 不换机器，只刷新 last_used_at
+	// 重复 PutPin 不换机器，只刷新 last_used_at；行身份也不被后来的调用冒领
 	before := got.LastUsedAt
 	if err := db.PutPin(ctx, &NodePin{
 		StickyKey: key, NamespaceID: nsID, NodeID: n.ID, Selector: "worktree:wt-a", LastUsedAt: before + 100,
@@ -587,6 +596,9 @@ func TestNodePins(t *testing.T) {
 	}
 	if got.LastUsedAt != before+100 {
 		t.Fatalf("last_used_at not refreshed: %d", got.LastUsedAt)
+	}
+	if got.PinID != pin.PinID {
+		t.Fatalf("已存在的 pin 被后来的 PutPin 换了身份：%q → %q", pin.PinID, got.PinID)
 	}
 
 	// 删除
@@ -935,7 +947,10 @@ func TestLeaseAndAssignWithPinWritesPinAtomically(t *testing.T) {
 		t.Fatalf("lease and assign with pin: %v", err)
 	}
 	if pin.CreatedAt == 0 {
-		t.Fatal("pin.CreatedAt 没有被就地填上（回滚路径要靠它做条件删除）")
+		t.Fatal("pin.CreatedAt 没有被就地填上")
+	}
+	if pin.PinID == "" {
+		t.Fatal("pin.PinID 没有被就地填上（回滚路径要靠这个行身份做条件删除）")
 	}
 	got, err := db.GetPin(ctx, pin.StickyKey)
 	if err != nil {
@@ -945,7 +960,10 @@ func TestLeaseAndAssignWithPinWritesPinAtomically(t *testing.T) {
 		t.Fatalf("pin 内容不对：%+v", got)
 	}
 	if got.CreatedAt != pin.CreatedAt {
-		t.Fatalf("库里的 created_at = %d，调用方拿到 %d（回滚条件会不命中）", got.CreatedAt, pin.CreatedAt)
+		t.Fatalf("库里的 created_at = %d，调用方拿到 %d", got.CreatedAt, pin.CreatedAt)
+	}
+	if got.PinID != pin.PinID {
+		t.Fatalf("库里的 pin_id = %q，调用方拿到 %q（回滚条件会不命中）", got.PinID, pin.PinID)
 	}
 	// 任务本身也照常派发出去了（合并不能吃掉原语义）。
 	back, err := db.GetTask(ctx, nsID, task.ID)
@@ -997,7 +1015,7 @@ func TestLeaseAndAssignWithPinRollsBackPinOnFailure(t *testing.T) {
 //
 // 无脑 DeletePin 的后果是「一次推帧失败顺手清掉同一 trace 上一跳留下的钉住」，
 // 于是整条 trace 的粘性静默失效。三个分支分别钉住：自己的删掉、别人的留着、
-// 同 key 但不同机器的留着。
+// 同 key 但不同机器的留着。判据是 pin_id（行身份）——不是秒级的 created_at。
 func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -1013,7 +1031,7 @@ func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
 	if err := db.PutPin(ctx, mine); err != nil {
 		t.Fatalf("put pin: %v", err)
 	}
-	deleted, err := db.RollbackPin(ctx, key, nodeA, mine.CreatedAt)
+	deleted, err := db.RollbackPin(ctx, key, nodeA, mine.PinID)
 	if err != nil {
 		t.Fatalf("rollback pin: %v", err)
 	}
@@ -1024,13 +1042,13 @@ func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
 		t.Fatalf("回滚后 pin 仍在：%v", err)
 	}
 
-	// ② 早先留下的 pin（created_at 是旧的）→ 一行都不动。
+	// ② 早先留下的 pin（行身份是别人的）→ 一行都不动。
 	old := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-rb",
 		CreatedAt: Now() - 1000}
 	if err := db.PutPin(ctx, old); err != nil {
 		t.Fatalf("put old pin: %v", err)
 	}
-	deleted, err = db.RollbackPin(ctx, key, nodeA, Now())
+	deleted, err = db.RollbackPin(ctx, key, nodeA, NewPinID())
 	if err != nil {
 		t.Fatalf("rollback old pin: %v", err)
 	}
@@ -1042,7 +1060,7 @@ func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
 	}
 
 	// ③ 同 key 但机器不同（钉住不换机器：库里还是 nodeA）→ 也不动。
-	deleted, err = db.RollbackPin(ctx, key, nodeB, old.CreatedAt)
+	deleted, err = db.RollbackPin(ctx, key, nodeB, old.PinID)
 	if err != nil {
 		t.Fatalf("rollback other node: %v", err)
 	}
@@ -1051,5 +1069,178 @@ func TestRollbackPinOnlyDeletesOwnPin(t *testing.T) {
 	}
 	if _, err := db.GetPin(ctx, key); err != nil {
 		t.Fatalf("pin 被误删：%v", err)
+	}
+}
+
+// TestRollbackPinSameSecondSameNode 同秒同 key 同节点的两次派发，回滚只删**自己**那行。
+//
+// 这是 #315 的验收用例。旧判据 (sticky_key, node_id, created_at) 里的 created_at
+// 只有**秒级**精度，所以两次派发拿到同一个值：一旦第一次的行已经被它自己删掉、
+// 而第二次在同一秒里重建了一条，第一次的身份（created_at 仍是 T）迟到再回滚时
+// 就会把第二次那行删掉 —— 这个 trace 的粘性被静默清掉。
+//
+// 断言方式：两次派发都把 CreatedAt 钉成同一个值（真的同秒），并且断言回滚判据
+// 用的是行身份而不是那个时间戳。
+func TestRollbackPinSameSecondSameNode(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeA := mkTxMergeNode(t, db, nsID, cap, "n-same")
+	key := StickyKey("trc_same_sec", cap.ID, "wt-sec")
+	const sameSecond int64 = 1700000000
+
+	// ① 第一次派发建 pin（秒 T），随后它自己推帧失败 → 按自己的行身份删掉。
+	d1 := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-sec",
+		CreatedAt: sameSecond, LastUsedAt: sameSecond}
+	if err := db.PutPin(ctx, d1); err != nil {
+		t.Fatalf("put pin (d1): %v", err)
+	}
+	if deleted, err := db.RollbackPin(ctx, key, nodeA, d1.PinID); err != nil || !deleted {
+		t.Fatalf("d1 回滚自己的 pin 应命中：deleted=%v err=%v", deleted, err)
+	}
+
+	// ② 第二次派发在**同一秒 T**、同 key、同节点上重建了一条 pin。
+	d2 := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-sec",
+		CreatedAt: sameSecond, LastUsedAt: sameSecond}
+	if err := db.PutPin(ctx, d2); err != nil {
+		t.Fatalf("put pin (d2): %v", err)
+	}
+	if d2.PinID == d1.PinID {
+		t.Fatalf("两次新建拿到了同一个行身份 %q", d2.PinID)
+	}
+	stored, err := db.GetPin(ctx, key)
+	if err != nil {
+		t.Fatalf("get pin: %v", err)
+	}
+	if stored.CreatedAt != sameSecond {
+		t.Fatalf("库里 created_at = %d，期望 %d（这条用例的意义就是两行同秒）", stored.CreatedAt, sameSecond)
+	}
+
+	// ③ d1 的身份（created_at 与 d2 完全一样）迟到再回滚：绝不能删 d2 那一行。
+	deleted, err := db.RollbackPin(ctx, key, nodeA, d1.PinID)
+	if err != nil {
+		t.Fatalf("rollback (d1 late): %v", err)
+	}
+	if deleted {
+		t.Fatal("回滚按秒级 created_at 删掉了别人那一行（#315 的 bug 又回来了）")
+	}
+	stored, err = db.GetPin(ctx, key)
+	if err != nil {
+		t.Fatalf("d2 的 pin 被误删：%v", err)
+	}
+	if stored.PinID != d2.PinID || stored.NodeID != nodeA {
+		t.Fatalf("d2 的 pin 被改动：%+v", stored)
+	}
+	// 同一个三元组 (key, node, created_at) 现在确实能匹到一行—
+	// 而这行是 d2 的（d1 那行已经删了）。旧判据就是靠这个值删的，所以它会误删。
+	var colliding int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM node_pins WHERE sticky_key = ? AND node_id = ? AND created_at = ?`,
+		key, nodeA, sameSecond).Scan(&colliding); err != nil {
+		t.Fatalf("count by old predicate: %v", err)
+	}
+	if colliding != 1 {
+		t.Fatalf("旧判据 (key, node, created_at) 命中 %d 行，期望 1——这条用例没成功构造出同秒撞车", colliding)
+	}
+
+	// ④ 对照：d2 自己的回滚仍然删得掉（判据不是“永远不删”）。
+	deleted, err = db.RollbackPin(ctx, key, nodeA, d2.PinID)
+	if err != nil {
+		t.Fatalf("rollback (d2): %v", err)
+	}
+	if !deleted {
+		t.Fatal("d2 回滚自己的 pin 没命中")
+	}
+	if _, err := db.GetPin(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("回滚后 pin 仍在：%v", err)
+	}
+}
+
+// TestRollbackPinValidation 回滚必须带行身份（不能退化成“按 key 删”）。
+func TestRollbackPinValidation(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	if _, err := db.RollbackPin(ctx, "k", "nd_x", ""); err == nil {
+		t.Error("RollbackPin 接受了空 pin_id（会把“没有身份”变成无条件删除）")
+	}
+}
+
+// TestMigration7PinIDWorksOnExistingDB 迁移 7 的升级路径：v6 的库（node_pins 没有 pin_id）
+// 重开时必须把这一列补回来，且**老行拿到 ""**——它不是任何一次「本次派发」建的，
+// 所以回滚永远不会误删它（正是想要的语义）。
+//
+// 为什么值得单独测：迁移是按版本记账、只跑一次的，全新库覆盖不到「ALTER 打在有数据的
+// 老表上」这条路径（NOT NULL DEFAULT ” 在老行上到底填什么、会不会失败）。
+func TestMigration7PinIDWorksOnExistingDB(t *testing.T) {
+	db, path := newTestDBFile(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	cap := mkCap(nsID, "review", 1, []string{"fix"})
+	mustCreateCap(t, db, cap)
+	nodeA := mkTxMergeNode(t, db, nsID, cap, "n-m7")
+	key := StickyKey("trc_m7", cap.ID, "wt-m7")
+
+	// 迁移 7 之后建的 pin（模拟「老库里的历史数据」）。
+	old := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-m7"}
+	if err := db.PutPin(ctx, old); err != nil {
+		t.Fatalf("put pin: %v", err)
+	}
+
+	// 退回 v6 的形状：列没了、版本记账也删掉。
+	mustExec(t, db, `ALTER TABLE node_pins DROP COLUMN pin_id`)
+	mustExec(t, db, `DELETE FROM schema_version WHERE version = ?`, 7) // 迁移 7 = pin_id；别用 headVersion（它随新增块漂移）
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen a v6-shaped db: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	if v, err := db2.SchemaVersion(); err != nil || v != headVersion {
+		t.Fatalf("重开后 schema 版本 = %d (err=%v)，want %d", v, err, headVersion)
+	}
+
+	// 老行还在，pin_id 补成 ""（不是 NULL、也不是新生成的值）。
+	got, err := db2.GetPin(ctx, key)
+	if err != nil {
+		t.Fatalf("get pin after migration: %v", err)
+	}
+	if got.PinID != "" {
+		t.Fatalf("老行的 pin_id = %q，want 空（加列前建的行不属于任何一次派发）", got.PinID)
+	}
+	if got.NodeID != nodeA || got.Selector != "wt-m7" || got.NamespaceID != nsID {
+		t.Fatalf("迁移后老 pin 内容不对：%+v", got)
+	}
+
+	// 新的派发在同一个 key 上写 pin：ON CONFLICT 不冒领老行的身份，
+	// 所以它的回滚不会删掉老行（老行不是本次派发建的）。
+	fresh := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-m7"}
+	if err := db2.PutPin(ctx, fresh); err != nil {
+		t.Fatalf("put pin on migrated db: %v", err)
+	}
+	if fresh.PinID == "" {
+		t.Fatal("迁移后的库上新 pin 没拿到行身份")
+	}
+	if deleted, err := db2.RollbackPin(ctx, key, nodeA, fresh.PinID); err != nil || deleted {
+		t.Fatalf("回滚误删了升级前的老行：deleted=%v err=%v", deleted, err)
+	}
+	if got, err := db2.GetPin(ctx, key); err != nil || got.NodeID != nodeA {
+		t.Fatalf("升级前的老行被动过：%+v err=%v", got, err)
+	}
+
+	// 对照：老行清掉之后新建的 pin，回滚仍然能删掉自己。
+	if err := db2.DeletePin(ctx, key); err != nil {
+		t.Fatalf("delete pin: %v", err)
+	}
+	own := &NodePin{StickyKey: key, NamespaceID: nsID, NodeID: nodeA, Selector: "wt-m7"}
+	if err := db2.PutPin(ctx, own); err != nil {
+		t.Fatalf("put own pin: %v", err)
+	}
+	if deleted, err := db2.RollbackPin(ctx, key, nodeA, own.PinID); err != nil || !deleted {
+		t.Fatalf("迁移后的库上回滚自己的 pin 应命中：deleted=%v err=%v", deleted, err)
 	}
 }
