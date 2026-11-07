@@ -1676,7 +1676,7 @@ main().catch(async (e) => {
 // 用户得先懂 JSON Schema；现在是「选模板 → 填表单 → 看生成的脚本」。
 //
 // 但**表达力不能因此下降**，所以钉四条：
-//   ① 九个模板都在，字段由模板驱动（不是写死在前端的第二份副本）
+//   ① 十个模板都在，字段由模板驱动（不是写死在前端的第二份副本）
 //   ② 只读脚本 → 可编辑脚本（脚本模式的出口）
 //   ③ 高级参数契约可以手写 JSON，且**非法 JSON 必须当场拦住**（不能等到后端 400）
 //   ⑤ 参数契约默认是**可视化行视图**（#schema-visual-editor），行与手写 JSON 是
@@ -1696,7 +1696,7 @@ async function checkCapabilityTemplates(page) {
 	if (!opened) return;
 	await page.waitForTimeout(500);
 
-	// ① 步骤 1：九个模板，按 script / agent 分组
+	// ① 步骤 1：十个模板，按 script / agent 分组
 	const tplStep = await page.evaluate(() => ({
 		stepVisible: !document.getElementById("tpl-step").classList.contains("hidden"),
 		formHidden: document.getElementById("tpl-form-step").classList.contains("hidden"),
@@ -1708,12 +1708,12 @@ async function checkCapabilityTemplates(page) {
 	}));
 	H.check("弹窗先给模板选择（不是一屏 JSON）", tplStep.stepVisible && tplStep.formHidden,
 		JSON.stringify(tplStep));
-	H.check("九个内置模板都在", tplStep.tiles === 9, `tiles=${tplStep.tiles}`);
+	H.check("十个内置模板都在", tplStep.tiles === 10, `tiles=${tplStep.tiles}`);
 	H.check("模板按类别分组", tplStep.groups >= 2, `groups=${tplStep.groups}`);
 	H.check(
 		"模板 id 与契约一致（agent 靠模板而不是新执行器类型）",
 		["script.blank", "script.http", "script.git", "script.test", "script.notify",
-			"agent.claude", "agent.codex", "agent.pi", "agent.custom"].every((id) =>
+			"agent.tui", "agent.claude", "agent.codex", "agent.pi", "agent.custom"].every((id) =>
 			tplStep.ids.includes(id),
 		),
 		JSON.stringify(tplStep.ids),
