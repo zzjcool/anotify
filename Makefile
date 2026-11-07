@@ -26,7 +26,7 @@ VERSION_LDFLAGS += -X $(VERSION_PKG).BuiltAt=$(BUILT_AT)
 # agent 二进制的输出名（与 install-agent.sh / 发布资产同名）。
 AGENT_OUT ?= anotify-agent
 
-.PHONY: help build agent fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-agent-skill tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build agent fe demo-chain sitegen test bench bench-dispatch run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-agent-skill tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -90,7 +90,7 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 check-agent-skill: ## 校验 cmd/agent/skill.md 与 -h / --version 一致（防漂移，#317）
 	@python3 scripts/check_agent_skill.py
 
-ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
+ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
@@ -104,12 +104,24 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) check-agent-skill
 	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -tags embeddist -o anotify ./cmd/server
 	$(MAKE) test
+	@# 基准冒烟（#315 ③）：基准烂掉比测试烂掉更隐蔽——没人跑，坏了也没人知道，
+	@# 等真要用时拿到的是错数（#264 就撞过一次：夹具缺 EntryFromKey/EntryFromPort，
+	@# 基准静默一条都派不出去，还在打印正常的 ns/op）。
+	@# 这里固定 1x：只证明「编译得过 + 能跑出数字 + 夹具仍能真的派出任务」；
+	@# 真基准（拿数字对比）仍手动跑 `make bench-dispatch` / `make bench`。
+	$(MAKE) bench-dispatch
 	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。
 	@# 而这个缺陷的症状是「套件随机 0通过/0失败」，跟超时/代码 bug 分不开，所以必须有秒级用例钉住它。
 	ANOTIFY_BIN=$(CURDIR)/anotify node scripts/e2e/harness_selftest.mjs
 	@# 安装脚本自测：它是唯一把二进制放进用户机器的路径，失败模式全是静默的
 	@# （装错目录、白名单丢项、没验校验和）。用真二进制 + 假 release 跑一遍。
 	sh scripts/install_agent_selftest.sh
+
+# dispatchbench 是本仓唯一覆盖「真 store + 真 Dispatcher 全链」的基准，平时不在任何
+# 必跑路径上（`go test ./...` 不跑 Benchmark，`-bench` 还要手动带 build tag）。
+# 给它一条命令，否则它只会安静地腐烂（#315 ③）。
+bench-dispatch: ## 跑 dispatch 全链基准（1x：只保证编译+能跑出数字；要数字自己加大 -benchtime）
+	go test ./internal/store -tags dispatchbench -run '^$$' -bench BenchmarkDispatchChain -benchtime 1x -benchmem
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s
