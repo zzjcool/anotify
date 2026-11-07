@@ -50,11 +50,22 @@
 // 所以 -grace 应当小于进程管理器的 stop 超时（如 docker stop 默认 10s），否则
 // 来不及收尾就被 SIGKILL，等于白等。
 //
-// 退出码：0 = 正常（含 -h 看帮助）；1 = 参数/配置错误、握手被拒、连接断开。
+// 退出码：0 = 正常（含 -h 看帮助）；1 = 参数/配置错误、令牌被拒、协议不兼容、
+// 中枢在进程内退避重试之后仍被放弃（见下）。
 // `run` 子命令是例外：它把**产物自己**的退出码原样透传（脚本怎么退，agent 就怎么退），
 // 只有 agent 侧故障（产物解析失败、起不来）才用 1。
 // `upgrade` 子命令也是例外：它的 0..5 是契约 §4 的升级结论（见 upgrade.go）。
-// 节点模式不做断线退避重连：连接断了就退出，重启交给进程管理器。
+//
+// 节点模式的连接失败分两类（issue #323，判据表在 retry.go）：
+//
+//   - **瞬态**（拨号失败、5xx/530、网络/握手超时、连接断开）：**进程内**指数退避
+//     重连（1s→2s→4s…封顶 30s，带 jitter），进程不退出；成功 handshake 后重置。
+//     这一条是为了不让「中枢/隧道不可达」变成 systemd 的 3 秒一次崩溃循环。
+//   - **永久**（令牌 401/403、协议版本不兼容、实例数超顶、node.yaml 坏、data-dir 不可用）：
+//     立刻退出非 0，日志给一句人话 + `code=` 短码，交给 systemd/人处理。
+//
+// `-no-retry` 把节点模式退回「只试一次」：安装脚本的预检用它，因为预检要的是
+// 「现在能不能连上」这个立刻的答案，不是「等中枢恢复」。
 package main
 
 import (
@@ -134,6 +145,9 @@ type options struct {
 	configPath string        // -f：node.yaml 路径
 	grace      time.Duration // -grace：已经归一，<=0 表示不等在跑任务
 	dataDir    string        // -data-dir：缺省空串 = 用 defaultDataDir()
+	// noRetry 是 -no-retry：只试一次，不在进程内退避重连（#323）。
+	// 安装脚本的预检要的是「现在能不能连上」这个立刻的答案，所以它带这个 flag。
+	noRetry bool
 }
 
 // runOptions 是 standalone 模式（run 子命令）的参数。
@@ -196,6 +210,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 			"不含关连接本身，应小于进程管理器的 stop 超时（如 docker stop 默认 10s）")
 	dataDir := fs.String("data-dir", "",
 		"数据目录（默认 ~/.anotify）：产物缓存、索引、任务工作目录都在它下面")
+	noRetry := fs.Bool("no-retry", false,
+		"连不上中枢时只试一次就退出（不在进程内退避重连）；预检/一次性探测用")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -203,6 +219,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		configPath: *configPath,
 		grace:      graceDuration(*graceSec),
 		dataDir:    *dataDir,
+		noRetry:    *noRetry,
 	}, nil
 }
 
@@ -272,18 +289,24 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil {
 		// loadConfig 的错误已经带文件路径前缀（config.go），这里不再套一层路径，
 		// 免得同一条路径在报错里出现两次。
+		//
+		// 包成 permanentError：这是「不重试」的确定性事实（#323）——重试一千次
+		// 也不会把 node.yaml 变合法，而静默挂着比早死更难查。
+		fatal := &permanentError{code: failCodeConfigInvalid, reason: failReasonConfigInvalid, err: err}
 		log.Error("配置加载失败",
 			"event", "agent.config.failed",
+			"code", fatal.code,
 			"path", opts.configPath,
 			"error", err.Error(),
 		)
-		return err
+		return fatal
 	}
 
 	dataDir, err := resolveDataDir(opts.dataDir)
 	if err != nil {
-		log.Error("数据目录不可用", "event", "agent.datadir.failed", "error", err.Error())
-		return err
+		fatal := &permanentError{code: failCodeDataDirUnavailable, reason: failReasonDataDirUnavailable, err: err}
+		log.Error("数据目录不可用", "event", "agent.datadir.failed", "code", fatal.code, "error", err.Error())
+		return fatal
 	}
 
 	if opts.grace <= 0 {
@@ -292,6 +315,10 @@ func run(args []string, stderr io.Writer) error {
 			"grace", opts.grace.String(),
 		)
 	}
+
+	// 重连策略（#323）：瞬态退避重试、永久退出。`-no-retry` 退回「只试一次」。
+	policy := defaultBackoffPolicy()
+	policy.Disabled = opts.noRetry
 
 	log.Info("agent starting",
 		"event", "agent.start",
@@ -302,6 +329,11 @@ func run(args []string, stderr io.Writer) error {
 		"cached_artifacts", len(newCache(dataDir).applied()),
 		"grace", opts.grace.String(),
 	)
+	if policy.Disabled {
+		log.Info("进程内重连已关闭（-no-retry）：连不上就退出",
+			"event", "agent.retry.disabled",
+		)
+	}
 
 	// 信号：SIGINT（Ctrl-C）与 SIGTERM（systemd、docker stop、进程管理器）走同一条
 	// 优雅退出路径——runNode 内部先置 draining，再给在跑任务最多 grace 收尾，
@@ -310,8 +342,18 @@ func run(args []string, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := runNode(ctx, cfg, dataDir, log, opts.grace); err != nil {
-		log.Error("节点退出", "event", "agent.fatal", "error", err.Error())
+	if err := reconnectLoop(ctx, log, policy, func(ctx context.Context, hooks sessionHooks) error {
+		return runNode(ctx, cfg, dataDir, log, opts.grace, hooks)
+	}); err != nil {
+		// 走到这里的只有**不可重试**的失败（瞬态在 reconnectLoop 里退避重试，
+		// 信号退出返回 nil）。code 是分类短码：运维按它检索，比 grep 中文稳。
+		failure := classifyNodeFailure(err)
+		log.Error("节点退出",
+			"event", "agent.fatal",
+			"code", failure.code,
+			"reason", failure.reason,
+			"error", err.Error(),
+		)
 		return err
 	}
 	log.Info("节点已正常退出", "event", "agent.stop")
@@ -571,6 +613,10 @@ func registerGlobalFlagNames(fs *flag.FlagSet) {
 	// runs`），所以定位子命令时得先认得它。真正的语义在 cliout.go（mode 由 stdout
 	// 是否终端与这个 flag 共同决定）。
 	fs.Bool("json", false, "")
+	// -no-retry 是 #323 的节点模式开关。它必须注册在这里，否则
+	// `anotify-agent -no-retry upgrade` 会被当成「解析不了 → 不是子命令」而
+	// **静默跑起一个常驻 agent**，正是 subcommandAt 注释里那个坑。
+	fs.Bool("no-retry", false, "")
 	fs.Bool("h", false, "")
 }
 

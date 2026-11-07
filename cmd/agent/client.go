@@ -101,15 +101,25 @@ func (w *wsConn) close() error {
 // dialNode 连上 GET /v1/node/stream，用节点令牌做 Bearer 鉴权。
 //
 // 不用 query 参数传令牌：令牌进 URL 会落进反代日志。
+//
+// 失败时返回 *dialError：它带着握手响应的 **HTTP 状态码**（0 = 连响应都没拿到）。
+// 状态码是 #323 里「瞬态 vs 永久」的第一条硬判据（401/403 = 令牌错，5xx = 中枢侧
+// 不可用），所以必须在拨号这一层就抓住，不能等到上层去 parse 错误字符串。
 func dialNode(ctx context.Context, url, token string) (nodeConn, error) {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+token)
 
-	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
+	conn, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
 	if err != nil {
 		// 握手阶段的错误（含 401/403）由 coder/websocket 带回来；补上 URL 才看得出
 		// 是「连错了地址」还是「令牌不对」。
-		return nil, fmt.Errorf("dial %s: %w", url, err)
+		// resp 非 nil 说明中枢真的回了状态码（coder/websocket 只在拿不到 101 时把它
+		// 带回来），nil 说明连响应都没有（DNS/TLS/拒连/超时 → 状态码按 0 算）。
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		return nil, &dialError{status: status, url: url, err: fmt.Errorf("dial %s: %w", url, err)}
 	}
 	conn.SetReadLimit(nodeReadLimit)
 	return &wsConn{c: conn}, nil
@@ -120,9 +130,12 @@ func dialNode(ctx context.Context, url, token string) (nodeConn, error) {
 // runNode 是进程级入口：连上中枢并跑到连接结束或进程退出。
 //
 // dataDir 是节点数据目录（产物缓存 + 工作目录的根，见 cache.go）。
-// 返回 nil 表示「按信号正常退出」；连接断开返回 connection closed（v1 不做退避重连，
-// 交给进程管理器重启）。
-func runNode(ctx context.Context, cfg *nodeConfig, dataDir string, log *slog.Logger, grace time.Duration) error {
+// 返回 nil 表示「按信号正常退出」；其他错误表示这次连接失败（拨号/握手/断开），
+// 由 reconnectLoop 按失败分类决定「退避重试」还是「退出」（见 retry.go）。
+//
+// **它只尝试一次**：重连不在这里，在 reconnectLoop。这样「一次尝试」的形状对测试
+// 与对预检（`-no-retry`）都是确定的，也不会有两层重试互相叠加。
+func runNode(ctx context.Context, cfg *nodeConfig, dataDir string, log *slog.Logger, grace time.Duration, hooks ...sessionHooks) error {
 	if cfg == nil {
 		return errors.New("runNode: nil node config")
 	}
@@ -147,7 +160,19 @@ func runNode(ctx context.Context, cfg *nodeConfig, dataDir string, log *slog.Log
 		"data_dir", dataDir,
 		"cached", len(newCache(dataDir).applied()),
 	)
-	return serveNode(ctx, cfg, conn, dataDir, log, grace)
+	return serveNode(ctx, cfg, conn, dataDir, log, grace, hooks...)
+}
+
+// sessionHooks 是 serveNode 生命周期里的**观察点**（#323）。
+//
+// 为什么需要它：重试循环要区分「握手成功过又断了」与「从来没连上」——前者的退避要
+// 重置（中枢可达、令牌有效），后者才继续升级退避。这个事实只有 serveNode 知道，
+// 所以由它在**握手成功那一刻**回调一次，而不是让上层去猜错误文案。
+//
+// 零值安全：不传（单元测试里的 serveNode 调用）时什么都不做。
+type sessionHooks struct {
+	// onHandshake 在收到 welcome（握手成功）之后被调用一次；nil = 不关心。
+	onHandshake func()
 }
 
 // serveNode 是 runNode 的可测内核：给定一条已建立的连接，跑完整个生命周期。
@@ -160,7 +185,7 @@ func runNode(ctx context.Context, cfg *nodeConfig, dataDir string, log *slog.Log
 // 结构（契约 §11.1）：读循环在 goroutine 里，主 goroutine 只裁决「退出信号 vs
 // 连接断开」。读循环用 a.base 而不是父 ctx，所以父 ctx 取消**不会**把连接关掉，
 // drain 期间在跑任务仍能把 result 发出去。
-func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir string, log *slog.Logger, grace time.Duration) error {
+func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir string, log *slog.Logger, grace time.Duration, hookArgs ...sessionHooks) error {
 	if cfg == nil {
 		return errors.New("serveNode: nil node config")
 	}
@@ -169,6 +194,11 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 	}
 	if log == nil {
 		log = slog.Default()
+	}
+	// 观察点可选（变参而不是必填参数：单元测试与老调用方都不用改）。
+	var hooks sessionHooks
+	if len(hookArgs) > 0 {
+		hooks = hookArgs[0]
 	}
 
 	a := newNodeAgent(ctx, cfg, conn, dataDir, log)
@@ -200,6 +230,11 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 		return err
 	}
 	a.state.setConnected(true, welcome.HeartbeatSec)
+	// 握手成功 = 中枢可达、令牌有效：重试循环据此重置退避（#323）。
+	// 放在 setConnected 之后、日志之前：先落事实，再通知，最后才打日志。
+	if hooks.onHandshake != nil {
+		hooks.onHandshake()
+	}
 	a.log.Info("handshake ok",
 		"event", "agent.handshake.ok",
 		"node_id", welcome.NodeID,
@@ -285,7 +320,9 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 		// 连接断开是**节点级**错误：写进 state.json 的 lastError（status 里看得到），
 		// 同时把 connected 置 false——只靠日志回答不了「它现在还行吗」。
 		a.state.fail(kindCommFailed, readErr.Error())
-		return readErr
+		// 包一层 sessionDropError：走到这条分支说明**握手已经成功过**，
+		// 重试循环据此重置退避（#323）。文案由 cause 原样给出，不新增前缀。
+		return &sessionDropError{cause: readErr}
 	}
 }
 
@@ -485,7 +522,9 @@ func (a *nodeAgent) handshake(ctx context.Context) (*welcomeFrame, error) {
 				return nil, ctx.Err()
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
-				return nil, fmt.Errorf("wait welcome: timeout after %s", handshakeTimeout)
+				// 带上 context.DeadlineExceeded：分类器据 errors.Is 认出「握手超时」
+				// 是瞬态（中枢半死/被隧道吞了），而不是去 parse 这句文案。
+				return nil, fmt.Errorf("wait welcome: timeout after %s: %w", handshakeTimeout, context.DeadlineExceeded)
 			}
 			return nil, fmt.Errorf("wait welcome: %w", err)
 		}
@@ -498,7 +537,9 @@ func (a *nodeAgent) handshake(ctx context.Context) (*welcomeFrame, error) {
 		case *welcomeFrame:
 			return f, nil
 		case *errorFrame:
-			return nil, fmt.Errorf("handshake rejected: %s: %s", f.Code, f.Message)
+			// 用类型带出协议短码：分类器按 code 判「永久/瞬态」（#323），
+			// 文案保持原样（`handshake rejected: <code>: <message>`）。
+			return nil, &handshakeRejectError{code: f.Code, message: f.Message}
 		case *unknownFrame:
 			a.log.Warn("unknown frame before welcome",
 				"event", "agent.hello.unknown_frame", "type", f.Type)
