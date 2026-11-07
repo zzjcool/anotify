@@ -172,6 +172,11 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 	}
 
 	a := newNodeAgent(ctx, cfg, conn, dataDir, log)
+	// 本机事实面（issue #320 §2）：先把「进程起来了、还没连上」落成一拍，之后每次
+	// 心跳刷新 updatedAt。defer stop：连接断开、握手失败、信号退出都把 connected
+	// 置回 false；**不**动 lastError（上次的真实故障仍然值得看）。
+	a.state.start()
+	defer a.state.stop()
 	// 执行档案的后台 GC（启动时一次 + 每小时一次，见 runstore.go）：它挂在**连接自己的**
 	// ctx（a.base）上，所以 drain/退出时随 a.cancel() 一起结束；stop 再兜一层，
 	// 保证函数提前返回（握手失败…）时也不留下后台 goroutine（重复调用安全）。
@@ -191,8 +196,10 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 			a.log.Info("shutdown during handshake", "event", "agent.shutdown.handshake")
 			return nil
 		}
+		a.state.fail(kindFailed, err.Error())
 		return err
 	}
+	a.state.setConnected(true, welcome.HeartbeatSec)
 	a.log.Info("handshake ok",
 		"event", "agent.handshake.ok",
 		"node_id", welcome.NodeID,
@@ -275,6 +282,9 @@ func serveNode(ctx context.Context, cfg *nodeConfig, conn nodeConn, dataDir stri
 			"event", "agent.connection.closed",
 			"error", readErr.Error(),
 		)
+		// 连接断开是**节点级**错误：写进 state.json 的 lastError（status 里看得到），
+		// 同时把 connected 置 false——只靠日志回答不了「它现在还行吗」。
+		a.state.fail(kindCommFailed, readErr.Error())
 		return readErr
 	}
 }
@@ -334,6 +344,11 @@ type nodeAgent struct {
 	// 写盘失败只 Warn，绝不参与任务成败。
 	runs *runStore
 
+	// state 是本机事实面（<data-dir>/state.json，见 state.go）：每心跳刷新 updatedAt，
+	// 任务进出时增减 busy，连接成败时改 connected/lastError。
+	// `anotify-agent status` 只读这个文件（不连 socket），写失败也只 Warn。
+	state *stateWriter
+
 	// wg 追踪所有任务 goroutine：优雅退出要等它们（最多 grace）。
 	//
 	// wgMu 只在两件事上持有：reserveTask 做 Add、drain 置 draining。两件事
@@ -372,6 +387,8 @@ func newNodeAgent(parent context.Context, cfg *nodeConfig, conn nodeConn, dataDi
 		// 档案库在这里只**构造句柄**（不建目录、不跑 GC）：目录由第一次 Save 建，
 		// GC 由 serveNode 在握手前拉起（见 startRunGC）。
 		runs: newRunStore(dataDir, log),
+		// 状态快照句柄（#320 §2）：第一拍由 serveNode 的 start() 落，之后每次心跳 touch。
+		state: newStateWriter(dataDir, cfg, log),
 	}
 	return a
 }
@@ -733,6 +750,11 @@ func (a *nodeAgent) startTask(f *assignFrame, art *artifact.Artifact, digest str
 			return
 		}
 
+		// 槽位占用进本机快照（#320 §2）：status 的 slots.busy 是「正在执行」的数量，
+		// 不含还在排队等信号量的（那些还没开始跑）。
+		a.state.setBusy(1)
+		defer a.state.setBusy(-1)
+
 		startAt := time.Now()
 		// emit socket 必须在**起能力进程之前**就监听好（emit-protocol.md §1）：
 		// 进程里第一次 `anotify-agent emit` 不能撞上「socket 还没起来」。
@@ -1065,6 +1087,9 @@ func (a *nodeAgent) heartbeatLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case tick := <-ticker.C:
+			// 每一拍都刷新 state.json 的 updatedAt：这是 `anotify-agent status` 判定
+			// live/stale 的唯一证据（pid 在但心跳停了 = 卡死，也要能看出来）。
+			a.state.touch()
 			if err := a.send(&heartbeatFrame{Type: frameTypeHeartbeat, TS: tick.Unix()}); err != nil {
 				// 心跳发不出去说明连接已经在坏；读循环会先发现并返回错误，
 				// 这里退出即可（不在这里关连接，避免和读循环抢所有权）。

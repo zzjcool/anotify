@@ -97,10 +97,12 @@ type job struct {
 
 	// CaptureFull 让本次执行额外采集一份**完整**输出（→ outcome.ArchiveStdout/ArchiveStderr）。
 	//
-	// 只有中枢派单路径（client.startTask）为 true：那份输出落在**跑它的这台机器**上
-	// （<data-dir>/runs/，见 runstore.go），不回传中枢——网络那条路仍然只走 Stdout/Stderr
-	// 的 32 KiB 尾部窗口。standalone（runLocal）不采集：人就在终端前，输出已经直接流到
-	// 他屏幕上了，再存一份没有读者。
+	// 两条路径都可能为 true：
+	//   - 中枢派单（client.startTask）：档案落在跑它的这台机器上（<data-dir>/runs/），
+	//     不回传中枢——网络那条路仍然只走 Stdout/Stderr 的 32 KiB 尾部窗口；
+	//   - standalone（runStandalone 且给了 --data-dir）：把本地试跑也纳入 runs/
+	//     （issue #320 §3），于是超时/失败之后有 ref 可指。
+	// 没给 --data-dir 的 standalone 为 false：人就在终端前，输出已经流到他屏幕上了。
 	CaptureFull bool
 
 	// Ports 是本次任务的产出端口（封闭集合）。来源与 emit socket 白名单**同一处**：
@@ -147,6 +149,11 @@ type outcome struct {
 	ArchiveStderr string
 	// ExitCode 是子进程退出码（0 = 正常；-1 = 拿不到：起不来/被信号杀/超时）。
 	ExitCode int
+	// TimedOut 是「**agent 自己**判定超时」（ctx 到点、进程组被我们杀掉）。
+	//
+	// 它与「产物自己 exit 124」是两件事，不能混：前者要给 124 并告诉用户去
+	// runs/show 看（issue #320 §4），后者只是脚本的退出码，原样透传、不改写。
+	TimedOut bool
 
 	// 下面四个是落盘用的**账目**（meta.json 的 stdoutBytes/stderrBytes/truncated）。
 	// 不能从 ArchiveStdout/ArchiveStderr 反推：截断之后字符串里多了标记行，长度已经不是
@@ -353,42 +360,76 @@ func runJob(ctx context.Context, j job) outcome {
 // 准备（工作目录 / 展开文件 / 环境变量 / 超时）与执行（进程组 / WaitDelay）完全共用，
 // 否则「拷到别的机器直接能跑」和「中枢派下来能跑」会是两种行为。
 //
-// 它**不**采集执行档案（job.CaptureFull 在这条路上无意义）：输出已经直连调用方的
-// writer，而「这次执行的输入与完整输出」的读者是中枢侧的事后回看（见 runstore.go）。
+// 第三个返回值是这次执行的 outcome：standalone 只在**给了 --data-dir** 时用它落档
+// （issue #320 §3，见 runlocal_archive.go）。job.CaptureFull 为 false 时它的
+// Archive* 字段全为空——与引入档案之前的行为**逐字节相同**，不多采一份输出。
 //
-// 返回 (退出码, error)：error 只表示「没能跑起来」这类 agent 侧故障（退出码由
-// 调用方按失败处理）；子进程自己的非 0 退出码是**结果**，不是 error。
-func runLocal(ctx context.Context, j job, stdout, stderr io.Writer) (int, error) {
+// 返回 (退出码, outcome, error)：error 只表示「没能跑起来」这类 agent 侧故障
+// （退出码由调用方按失败处理）；子进程自己的非 0 退出码是**结果**，不是 error。
+// **agent 自己判定超时**退 exitTimeout（124）且 error 为 nil：超时也是一个结果
+// （调用方据此补一行「去 runs/show 看」），不是 agent 故障——若当成 error 返回，
+// mainWith 会把它压成 1，124 的语义就没了。
+func runLocal(ctx context.Context, j job, stdout, stderr io.Writer) (int, outcome, error) {
+	// ExitCode 的初值是 -1（「拿不到」）：准备失败、起不来、超时都走这条路。
+	res := outcome{Status: statusFailed, Artifacts: []string{}, ExitCode: -1}
+
 	plan, err := prepareExecution(j)
 	if err != nil {
-		return exitFailure, err
+		return exitFailure, res, err
 	}
+	res.WorkDir = plan.workDir
+	res.Cwd = plan.cwd
+
 	if plan.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, plan.timeout)
 		defer cancel()
 	}
 
+	// 落档时才采完整输出（与 runJob 同一个采集器、同一个单流上限）。
+	// 两个流仍是各自一条管道（cmd.Stdout/cmd.Stderr 不合并）：stderr 才能单独落盘。
+	var stdoutFull, stderrFull *runLog
+	if j.CaptureFull {
+		stdoutFull = newRunLog(archiveStreamMaxBytes)
+		stderrFull = newRunLog(archiveStreamMaxBytes)
+	}
+
 	cmd := newArtifactCmd(ctx, plan)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = multiSink(stdout, stdoutFull)
+	cmd.Stderr = multiSink(stderr, stderrFull)
 
 	if err := startCmd(cmd); err != nil {
-		return exitFailure, fmt.Errorf("start %s: %w", plan.entrypoint, err)
+		res.Err = "start entrypoint: " + err.Error()
+		captureArchive(&res, stdoutFull, stderrFull)
+		return exitFailure, res, fmt.Errorf("start %s: %w", plan.entrypoint, err)
 	}
 	err = cmd.Wait()
+	// 完整输出在 Wait **之后**取（String/Total 是快照）：此时子进程已退出、
+	// 复制 goroutine 已收尾，读到的是全部。
+	captureArchive(&res, stdoutFull, stderrFull)
+	if stdoutFull != nil {
+		// summary 与 runJob 同口径（stdout 第一行），只是这里没有尾部窗口，
+		// 直接用完整输出的首行。
+		res.Summary = oneLine(res.ArchiveStdout, summaryMaxBytes)
+	}
 
 	switch {
 	case err == nil && ctx.Err() == nil:
 		// standalone 是一次性执行：成功后不留工作目录。
+		res.Status = statusSucceeded
+		res.ExitCode = 0
 		_ = os.RemoveAll(plan.workDir)
-		return exitOK, nil
+		return exitOK, res, nil
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		// issue #320 §4：超时退 124（GNU timeout 惯例，与 hc 一致）。
+		res.Err = "timed out after " + plan.timeout.String()
+		res.TimedOut = true
 		keepWorkDir(stderr, plan.workDir)
-		return exitFailure, fmt.Errorf("timed out after %s", plan.timeout)
+		return exitTimeout, res, nil
 	case errors.Is(ctx.Err(), context.Canceled):
+		res.Err = "canceled"
 		keepWorkDir(stderr, plan.workDir)
-		return exitFailure, errors.New("canceled")
+		return exitFailure, res, errors.New("canceled")
 	}
 
 	var exitErr *exec.ExitError
@@ -399,10 +440,15 @@ func runLocal(ctx context.Context, j job, stdout, stderr io.Writer) (int, error)
 			// 被信号杀掉（-1 = 没有退出码）：按失败算，不假装成某个具体错误码。
 			code = exitFailure
 		}
-		return code, nil
+		// 产物自己的退出码原样透传（包括它自己 exit 124：agent 无法区分，
+		// 也就不改写——歧义写进了 run -h）。
+		res.Err = exitErr.Error()
+		res.ExitCode = code
+		return code, res, nil
 	}
 	keepWorkDir(stderr, plan.workDir)
-	return exitFailure, fmt.Errorf("run %s: %w", plan.entrypoint, err)
+	res.Err = "run " + plan.entrypoint + ": " + err.Error()
+	return exitFailure, res, fmt.Errorf("run %s: %w", plan.entrypoint, err)
 }
 
 // keepWorkDir 在失败时告诉用户工作目录还在哪儿（standalone 的唯一现场）。

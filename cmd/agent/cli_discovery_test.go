@@ -32,8 +32,8 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 	writeUsage(fs)
 	out := buf.String()
 
-	// 七条子命令：名字、人话、示例三样都在。
-	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show"} {
+	// 九条子命令：名字、人话、示例三样都在。
+	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show", "capabilities", "status"} {
 		if !strings.Contains(out, "\n  "+name) {
 			t.Errorf("命令表里没有 %q：\n%s", name, out)
 		}
@@ -82,7 +82,7 @@ func TestAgentCommandsMatchDispatch(t *testing.T) {
 	t.Parallel()
 
 	if len(agentCommands) != 7 {
-		t.Fatalf("命令表有 %d 条，want 7（run / check / schema / emit / upgrade / runs / show）",
+		t.Fatalf("命令表有 %d 条，want 9（run / check / schema / emit / upgrade / runs / show / capabilities / status）",
 			len(agentCommands))
 	}
 	seen := map[string]bool{}
@@ -98,6 +98,7 @@ func TestAgentCommandsMatchDispatch(t *testing.T) {
 	// 反方向：分派认的每个名字都得在表里。
 	for _, name := range []string{
 		runCommand, checkCommand, schemaCommand, emitCommand, upgradeCommand, runsCommand, showCommand,
+		capabilitiesCommand, statusCommand,
 	} {
 		if !seen[name] {
 			t.Errorf("isSubcommand 认 %q，但命令表里没有它", name)
@@ -114,7 +115,7 @@ func TestHelpExitsZeroAndShowsCommandTable(t *testing.T) {
 	if code := mainWith([]string{"-h"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("mainWith(-h) = %d, want %d", code, exitOK)
 	}
-	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show"} {
+	for _, name := range []string{"run", "check", "schema", "emit", "upgrade", "runs", "show", "capabilities", "status"} {
 		if !strings.Contains(stderr.String(), "\n  "+name) {
 			t.Errorf("-h 的输出里没有子命令 %q：\n%s", name, stderr.String())
 		}

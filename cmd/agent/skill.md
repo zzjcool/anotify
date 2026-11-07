@@ -69,6 +69,11 @@ anotify-agent run ./capability.yaml -p repo=acme/x -p pr=42 --timeout 600
 工作目录里、直接 exec 入口文件（**不经 shell**，参数只走环境变量）。
 `anotify-agent run` 的 `-p` 值一律当字符串（`-p code=007` 就是 `"007"`），退出码原样透传产物自己。
 
+给了 `--data-dir` 时，这次执行还会落进 `<data-dir>/runs/`（本地 trace 命名空间
+`local_<ts>`），事后用 `anotify-agent runs` / `show <ref>` 回看；没给则用系统临时目录
+且**不落档**，stderr 会明说一行。agent 自己判定超时（例如 `run` 的 `--timeout` 到点）
+退 **124**，并在 stderr 给出那两条回看命令；产物自己 exit 124 无法区分，照样透传、不改写。
+
 脚本里拿得到的东西：
 
 | 环境变量 | 含义 |
@@ -133,10 +138,12 @@ anotify-agent show trc_0af76519/notify.phone@2/3-a1 --no-stdout         # 只看
 ### 机器可读输出（给 agent 与脚本）
 
 stdout **不是终端**（管道 / 重定向）时自动输出 JSON，TTY 上保持上面的表格；
-`--json` 可以显式要。五种形状：
+`--json` 可以显式要。七种形状：
 
 | 命令 | `--json` 形状 |
 |---|---|
+| `capabilities` | `{"capabilities":[{name,version,outputs,digest,dir}]}`（空结果也是 `[]`，退出码 0） |
+| `status` | `state.json` 全字段 + `{"stale":bool}`（pid/startedAt/version/commit/server/connected/slots/lastError/updatedAt/sessions） |
 | `runs` | `{"runs":[{ref + meta.json 全字段}]}`（空结果也是 `{"runs":[]}`，退出码仍 1） |
 | `show` | `{"ref","meta":{…},"input":{…},"stdout","stderr"}` |
 | `upgrade` | `{"current","latest","updated","restarted","reason"}` |
@@ -158,6 +165,28 @@ anotify-agent upgrade --check --json | jq '.updated, .restarted'
 「工作目录已保留」）。保留策略：`ANOTIFY_RUNS_RETENTION_DAYS`（默认 7 天）与
 `ANOTIFY_RUNS_MAX_COUNT`（默认 2000）。
 
+### 本机事实面（capabilities / status）
+
+两个只读命令，回答「这台机器能跑什么」与「它现在还好吗」；都不连中枢、不读 node.yaml：
+
+```bash
+anotify-agent capabilities            # NAME@VER / OUTPUTS / DIGEST(12)
+anotify-agent capabilities --json     # {"capabilities":[{name,version,outputs,digest,dir}]}
+anotify-agent status                  # STATE / PID / VERSION / CONNECTED / SLOTS / LASTERROR
+anotify-agent status --json           # state.json 全字段 + {"stale":bool}
+```
+
+`capabilities` 只读 `<data-dir>/index` 与 `<data-dir>/artifacts`：不连中枢、不校验产物
+内容。**空结果是退出码 0**（“这台机器什么都能跑”是一条合法事实），与 `runs` 的空结果
+=1 刻意相反。OUTPUTS 就是 emit 可以上报的出口名（能力脚本要按它拼 data）；DIGEST 列
+只打内容哈希的前 12 位，完整值在 `--json` 里。
+
+`status` 读的是**本机** daemon 每心跳写的 `<data-dir>/state.json`（pid / startedAt /
+version / commit / server / connected / slots / lastError / updatedAt；`sessions` 为 #321
+预留，现在是 `[]`）。它是**本机视角**，不是中枢视角——中枢视角（在线节点、队列）在控制台。
+CLI 只读文件、不连 socket。`pid` 不在了，或 `updatedAt` 超过 3 个心跳周期 → `stale: true`
+且退出 1：那是最后一次已知状态，不是崩溃（daemon 被 kill -9 之后，文件会永远停在最后一拍）。
+
 ## 4. 退出码表
 
 各子命令的退出码**不是同一张表**（同一个数字含义不同），别混着读。
@@ -168,6 +197,7 @@ anotify-agent upgrade --check --json | jq '.updated, .restarted'
 |---|---|---|---|
 | 节点模式（不带子命令） | 0 / 1 | 正常退出 / 参数、配置、握手、连接失败（重启交给进程管理器） | — |
 | `run` | 产物自己的码 / 1 | 脚本怎么退就怎么退 / 只有 agent 侧故障（产物不合法、起不来）才用 1 | artifact 短码：`invalid_yaml` / `unknown_field` / `invalid_name` / `unsupported_api_version` … |
+| `run` | 124 | **agent 自己判定超时**（`--timeout` / 产物 timeout 到点）；产物自己 exit 124 无法区分，同样透传 | — |
 | `emit` | 0 | 成功（已本地落盘；`--wait-routed` 时已确认派发） | — |
 | `emit` | 2 | 参数/请求形状错（不是 JSON 对象、超体积）→ 修，别重试 | `bad_request` |
 | `emit` | 3 | 被拒：`--to` 或端口不在本能力的出口里 → 修，别重试 | `port_not_allowed` |
@@ -182,6 +212,8 @@ anotify-agent upgrade --check --json | jq '.updated, .restarted'
 | `upgrade` | 4 | sha256 不符 → 别原样重试（传输或服务端文件有问题） | `bad_sha` |
 | `upgrade` | 5 | 网络/其他错误（含参数、配置）→ 可以原样重跑 | `failed` / `config_missing` / `config_invalid` |
 | `runs` / `show` | 0 / 1 | 找到 / 没找到或参数非法（**不新增第三档**：歧义也走 1） | `not_found` / `ambiguous_ref` / `usage` / `config_missing` / `config_invalid` |
+| `capabilities` | 0 / 1 | 列出（**空结果也是 0**）/ 数据目录或索引读不出来 | `config_invalid` |
+| `status` | 0 / 1 | live / stale（pid 不在，或 updatedAt 超过 3 个心跳周期） | `stale` / `config_missing` / `config_invalid` |
 | `check` | 0 / 1 | 全过 / 产物有问题（stdout 一次列出全部问题，**不执行**）；命令自身出错也退 1 | 产物有问题这一档没有 kind；文件读不到是 `config_missing` / `config_invalid`，参数错是 `usage` |
 | `schema` | 0 / 1 | 已输出一份 JSON Schema / schema 名不认识或多余参数 | `usage` |
 
@@ -203,3 +235,6 @@ anotify-agent upgrade --check --json | jq '.updated, .restarted'
 7. **别在已经装成服务的机器上手工起第二个节点**：两个进程抢同一个令牌，表现是互相踢线。
 8. **别把表里的 8 位前缀当完整 id 存起来**：前缀只是给人省 token 的；要用就先看 `runs --json`
    的完整 id，否则换台机器就可能撞上前缀（`ambiguous_ref`，退 1）。
+8. **别把 `status` 当跨机器查询、也别指望本机有控制面**：它只说本机（读 `state.json`），
+   `kill` / `restart` / `attach` / `wait` 都不做——生命周期归 systemd / docker，
+   等任务归中枢。节点不是远程终端，也不是远程文件系统。

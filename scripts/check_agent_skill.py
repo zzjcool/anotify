@@ -35,7 +35,8 @@ VERSION_PKG = "github.com/zzjcool/anotify/internal/version"
 
 # 手册必须覆盖的全部子命令（顺序 = `-h` 命令表的顺序）。加子命令时这里也要加：
 # 漏了就等于「手册不提它」，而那正是 #317 要消灭的状态（有命令、但 agent 不知道）。
-EXPECTED_SUBS = ["run", "check", "schema", "emit", "upgrade", "runs", "show"]
+EXPECTED_SUBS = ["run", "check", "schema", "emit", "upgrade", "runs", "show",
+                 "capabilities", "status"]
 
 # 注入用的假版本元数据：不是 "dev"，否则「替换没生效」也能蒙混过关。
 TEST_VERSION = "9.9.9-check"
@@ -293,6 +294,20 @@ def check_binary(binary: Path, workdir: Path) -> tuple[list[str], dict[str, set[
         sub_flags[sub] = parse_flags(text)
         if not sub_flags[sub]:
             errors.append(f"`{sub} -h` 解析不到任何 flag —— 解析器坏了，后面的检查不可信")
+        # 有些语义只写在 -h 里（issue #320 要求），它们同样会被重构吃掉：
+        #   - capabilities：空结果 = 0，以及它与 runs（=1）的差别；
+        #   - status：本机视角 vs 中枢、stale 判定口径；
+        #   - run：超时 124（以及产物自己 124 不改写）。
+        if sub == "capabilities":
+            for needle in ("空结果", "0", "runs"):
+                if needle not in text:
+                    errors.append(f"`capabilities -h` 没写清「空结果 = 0」的语义（缺 {needle!r}）")
+        if sub == "status":
+            for needle in ("本机视角", "中枢", "stale", "3 个心跳周期"):
+                if needle not in text:
+                    errors.append(f"`status -h` 没写清本机视角/stale 判定（缺 {needle!r}）")
+        if sub == "run" and "124" not in text:
+            errors.append("`run -h` 没有写超时退出码 124（产物自己 exit 124 的歧义也要说）")
 
     return errors, sub_flags, parse_global_flags(help_text)
 

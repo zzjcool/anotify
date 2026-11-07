@@ -345,7 +345,8 @@ func TestRunStandaloneExitCodePassThrough(t *testing.T) {
 	}
 }
 
-// TestRunStandaloneTimeout：--timeout 压过产物自己的 timeoutSec，超时按失败退出。
+// TestRunStandaloneTimeout：--timeout 压过产物自己的 timeoutSec，超时退 124
+// （issue #320 §4：GNU timeout 惯例，与 hc 一致），并在 stderr 指向 runs/show。
 func TestRunStandaloneTimeout(t *testing.T) {
 	art := testScriptArtifact("demo.slow", 1, bashScript("sleep 5"))
 	art.Spec.Run.TimeoutSec = 600 // 产物自己写的是 10 分钟
@@ -362,14 +363,38 @@ func TestRunStandaloneTimeout(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("runStandalone 用了 %s，--timeout 没生效", elapsed)
 	}
-	if code != exitFailure {
-		t.Errorf("退出码 = %d, want %d", code, exitFailure)
+	// 超时是**结果**不是 agent 故障：runStandalone 必须返回 nil error，
+	// 否则 mainWith 会把它压回 1，124 的语义就丢了。
+	if err != nil {
+		t.Errorf("runStandalone 返回 error %v，want nil（超时是结果，不是 agent 故障）", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error = %v, want 含 timed out", err)
+	if code != exitTimeout {
+		t.Errorf("退出码 = %d, want %d（agent 自己判定超时）", code, exitTimeout)
 	}
 	if !strings.Contains(stderr.String(), "工作目录已保留") {
 		t.Errorf("超时后应当提示工作目录保留位置，实际 stderr = %q", stderr.String())
+	}
+	// 没有 --data-dir 时那行提示必须直说「本 次未落档」，而不是给一个不存在的 ref。
+	if !strings.Contains(stderr.String(), "未落档") || !strings.Contains(stderr.String(), "runs") {
+		t.Errorf("超时提示应当指向 runs/show（并说明本次未落档），实际 stderr = %q", stderr.String())
+	}
+}
+
+// TestRunStandaloneOwnExit124：产物自己 exit 124 时退出码照样透传，但**不能**
+// 被改写成「agent 超时」——那会凭空多出一行指向 runs 的提示，误导排查方向。
+func TestRunStandaloneOwnExit124(t *testing.T) {
+	path := writeCapabilityFile(t, "demo.own124", 1, "echo done; exit 124\n")
+
+	var stdout, stderr bytes.Buffer
+	code, err := runStandalone([]string{path}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runStandalone: %v", err)
+	}
+	if code != 124 {
+		t.Fatalf("退出码 = %d, want 124（产物自己的码，原样透传）", code)
+	}
+	if strings.Contains(stderr.String(), "agent 判定超时") {
+		t.Errorf("产物自己 exit 124 不该被当成 agent 超时（stderr=%q）", stderr.String())
 	}
 }
 

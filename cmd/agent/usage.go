@@ -20,6 +20,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"strings"
 )
 
 // agentCommand 是一条子命令在 `-h` 里的三件东西：名字带位置参数、一句人话、
@@ -39,8 +40,8 @@ func (c agentCommand) signature() string {
 	return c.name + " " + c.arg
 }
 
-// agentCommands 是全部子命令。顺序是「最常用的在前」：run 是日常执行，check / schema
-// 是**写**能力 yaml 时的两条（校验与形状，issue #319），emit 是能力进程上报，
+// agentCommands 是全部子命令。顺序是「最常用的在前」：run 与 emit 是日常，
+// check / schema 是**写**能力 yaml 时的两条（#319），capabilities / status 是本机事实面（#320），
 // upgrade 是运维，runs / show 是排障。
 //
 // 加子命令时**必须**同时改这里和 isSubcommand：单测 TestUsageListsEverySubcommand
@@ -88,6 +89,18 @@ var agentCommands = []agentCommand{
 		desc:    "看那一次执行的输入与完整输出（ref 从 runs 的表里直接抄）",
 		example: "anotify-agent show trc_0af7651916cd43dd8448eb211c80319c/notify.phone@2/3-a1",
 	},
+	{
+		name:    capabilitiesCommand,
+		arg:     "",
+		desc:    "本机能跑什么：列缓存的产物（名字/版本、出口、digest）；空结果退 0（与 runs 相反）",
+		example: "anotify-agent capabilities --json",
+	},
+	{
+		name:    statusCommand,
+		arg:     "",
+		desc:    "本机 daemon 现在怎么样：pid/版本/连接/槽位/上次错误（本机视角，不是中枢视角）",
+		example: "anotify-agent status --json",
+	},
 }
 
 // usagePreamble 是 `-h` 的开头：**先把「不带子命令 = 常驻进程」说清**。
@@ -104,7 +117,7 @@ const usagePreamble = `anotify-agent —— Anotify 节点执行器（跑在你�
 节点模式（不带子命令 = 常驻进程，不是查询）
   前台一直跑：读 node.yaml → 连中枢 → 接单 → 执行 → 回报，直到 SIGINT / SIGTERM。
   误跑一次就会占掉一个节点连接（被 systemd 那份顶掉后退出码 1）。只想看本机跑过
-  什么，用 runs / show。
+  什么，用 runs / show；本机能跑什么用 capabilities；它现在还好吗用 status。
   anotify-agent -f ~/.anotify/node.yaml -grace 20 --data-dir ~/.anotify
 
 子命令:
@@ -118,7 +131,8 @@ const usageFlagsTail = `
 进程级开关（任何环境都能跑：不读 node.yaml、不连网、不落盘）:
   --version                            打印一行「版本 (commit, 构建时间)」
   --skill                              打印内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码 / 不要做
-  --json                               机器可读输出（runs / show / upgrade / emit / check）；stdout 不是终端时自动开
+  --json                               机器可读输出（capabilities / status / runs / show / upgrade / emit / check）；
+                                       stdout 不是终端时自动开
 
 退出码（节点模式；子命令各有自己的表，看 anotify-agent <子命令> -h）:
   0                                    正常退出（收到 SIGINT / SIGTERM 并收尾完毕，或 -h 看帮助）
@@ -145,10 +159,19 @@ const subcommandHelpHook = "Agent? 运行: anotify-agent --skill"
 // 为什么退出码要进 -h：这些码是契约，此前只写在源码注释与 docs/design/emit-protocol.md
 // 里，而拿到一台陌生机器上二进制的 agent 只看得见 -h（issue #318 §4）。flag 说明仍然
 // 由 PrintDefaults 出自注册处（这里再抄一份必然漂移），所以只补那张表。
-func writeSubcommandHelp(fs *flag.FlagSet, usage string, rows []exitRow) {
+// notes 是子命令自己的补充说明（可选的几段人话）。它们放在 flag 表之后、退出码表
+// 之前：`capabilities` 的「空结果为什么是 0」与 `status` 的「哪个 status / stale
+// 怎么判」都必须出现在 -h 里（issue #320 §1/§2），而不是只写在源码注释里。
+func writeSubcommandHelp(fs *flag.FlagSet, usage string, rows []exitRow, notes ...string) {
 	w := fs.Output()
 	fmt.Fprintf(w, "用法: %s\n\nflag:\n", usage)
 	fs.PrintDefaults()
+	for _, note := range notes {
+		if strings.TrimSpace(note) == "" {
+			continue
+		}
+		fmt.Fprintf(w, "\n%s\n", note)
+	}
 	if len(rows) > 0 {
 		fmt.Fprint(w, "\n退出码（kind 是 stdout 不是终端、或显式 --json 时的机器可读词）:\n")
 		for _, r := range rows {

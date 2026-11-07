@@ -38,6 +38,8 @@
 //	anotify-agent show <trace>/<capability>@<ver>/<seq>-a<n>                # 看那一次的输入与输出
 //	anotify-agent check ./capability.yaml                                 # 只校验一份能力 yaml（不执行）
 //	anotify-agent schema [node|capability|emit]                            # 打印这三份形状的 JSON Schema
+//	anotify-agent capabilities                                           # 本机能跑什么（读 index/）
+//	anotify-agent status                                                 # 本机 daemon 现在怎么样（读 state.json）
 //
 //	-f          node.yaml 路径（默认 ./node.yaml）
 //	-grace      优雅退出等待秒数（默认 20；<=0 表示退出时不等在跑任务）
@@ -86,6 +88,13 @@ const (
 	exitOK      = 0
 	exitFailure = 1
 
+	// exitTimeout 是 **agent 自己判定超时**时的退出码（issue #320 §4）：
+	// GNU timeout 的惯例（124），与 hc 一致。
+	//
+	// 它只在「ctx 到点、我们杀了进程组」时使用；**不改写**产物自己的退出码——
+	// 脚本自己 `exit 124` 时无法区分，照样原样透传（这个歧义写进了 run -h）。
+	exitTimeout = 124
+
 	// runCommand 是 standalone 子命令名：anotify-agent run <path>
 	runCommand = "run"
 
@@ -109,6 +118,15 @@ const (
 	// check 与 run 的区别是硬红线：check 只 Parse + Validate，**绝不执行**入口文件。
 	checkCommand  = "check"
 	schemaCommand = "schema"
+
+	// capabilitiesCommand / statusCommand 是**本机事实面**子命令名（issue #320）：
+	//
+	//	capabilities —— 本机能跑什么（读 <data-dir>/index，见 capabilities_cmd.go）
+	//	status       —— 本机 daemon 现在怎么样（读 <data-dir>/state.json，见 status_cmd.go）
+	//
+	// 两条都只读本地文件：不连中枢、不开 socket、不落盘。
+	capabilitiesCommand = "capabilities"
+	statusCommand       = "status"
 )
 
 // options 是节点模式命令行解析出来的启动参数（parseFlags 的产物，便于单测比对）。
@@ -307,8 +325,14 @@ func run(args []string, stderr io.Writer) error {
 const runUsage = "anotify-agent run <path-to-capability.yaml> [-p key=value]... " +
 	"[--data-dir DIR] [--timeout SEC]"
 
+// runHelpNote 是 `run -h` 里关于「落档」与「124 歧义」的两段说明（issue #320 §3/§4）。
+const runHelpNote = `给了 --data-dir 时，这次执行会落进 <data-dir>/runs（本地 trace 命名空间 local_<ts>），
+事后可以用 anotify-agent runs / show <ref> 回看；没给则用系统临时目录且**不落档**（stderr 会明说一行）。
+超时 124 只在 **agent 自己判定超时** 时使用；产物自己 exit 124 时无法区分，照样原样透传、不改写。`
+
 var runExitRows = []exitRow{
 	{code: "0..N", desc: "产物自己的退出码，原样透传（脚本怎么退，agent 就怎么退）"},
+	{code: "124", desc: "agent 自己判定超时（--timeout / 产物的 timeoutSec 到点）；产物自己 exit 124 同样透传，无法区分"},
 	{code: "1", desc: "agent 侧故障：产物不合法 / 起不来 / 参数错（kind 直接是 artifact 的短码）",
 		kind: "invalid_yaml / unknown_field / invalid_name / unsupported_api_version …"},
 }
@@ -325,7 +349,7 @@ var runExitRows = []exitRow{
 func parseRunFlags(args []string, stderr io.Writer) (runOptions, error) {
 	fs := flag.NewFlagSet("agent run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() { writeSubcommandHelp(fs, runUsage, runExitRows) }
+	fs.Usage = func() { writeSubcommandHelp(fs, runUsage, runExitRows, runHelpNote) }
 
 	params := paramFlags{}
 	fs.Var(params, "p", "能力参数 key=value（可重复；值一律当字符串）")
@@ -366,6 +390,12 @@ func parseRunFlags(args []string, stderr io.Writer) (runOptions, error) {
 // 这条路径是「产物可移植」的落地（验收标准 4）：不读 node.yaml、不建索引、
 // 不碰缓存——产物只在一个**临时工作目录**里展开并执行，退出码原样透传。
 //
+// 给了 `--data-dir` 时多一件事（issue #320 §3）：把这次执行落进
+// `<data-dir>/runs/`（与中枢派单同一条 runs.Save），trace 用本地命名空间
+// `local_<ts>`。于是超时/失败之后可以说「去 anotify-agent show <ref> 看」，
+// 而不是只有一行 workdir。没给 `--data-dir` 时仍然不落档（临时目录会被清，
+// 落一份找不到的档案比不落更坏），但 stderr 会**明说一行**——不能静默丢。
+//
 // 这也是排查线上问题最快的方式：把中枢上那版产物另存成文件，`-p` 填同样的参数，
 // 在任意一台机器上复现，不用碰中枢也不用连网。
 func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
@@ -391,15 +421,25 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitFailure, fmt.Errorf("%s: %w", opts.path, err)
 	}
 
-	// 工作目录根：显式给了 --data-dir 就落在它下面（失败时保留现场便于复查），
-	// 否则用系统临时目录——standalone 不该在用户家目录里凭空建 ~/.anotify。
-	workRoot := ""
+	// 数据目录（可选）：显式给了才落档，也才把工作目录建在它下面。
+	var dataDir string
 	if dir := strings.TrimSpace(opts.dataDir); dir != "" {
 		abs, aerr := filepath.Abs(dir)
 		if aerr != nil {
 			return exitFailure, fmt.Errorf("数据目录 %q: %w", dir, aerr)
 		}
-		workRoot = filepath.Join(abs, workSubdirName)
+		dataDir = abs
+	}
+	// 工作目录根：显式给了 --data-dir 就落在它下面（失败时保留现场便于复查），
+	// 否则用系统临时目录——standalone 不该在用户家目录里凭空建 ~/.anotify。
+	workRoot := ""
+	if dataDir != "" {
+		workRoot = filepath.Join(dataDir, workSubdirName)
+	}
+	// 档案库句柄：nil = 不落档（见文件头）。
+	var store *runStore
+	if dataDir != "" {
+		store = newRunStore(dataDir, log)
 	}
 
 	log.Info("standalone run",
@@ -409,6 +449,7 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 		"version", art.Metadata.Version,
 		"digest", digest,
 		"params", len(opts.params),
+		"archive", store != nil,
 	)
 
 	// 信号：Ctrl-C 要杀的是**脚本**（进程组），而不是让 agent 自己闷死。
@@ -419,12 +460,14 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 	j := job{
 		// 本地执行没有中枢任务，但 ANOTIFY_TASK_ID 仍要给一个有意义的常量：
 		// 空串会让脚本里 `"$ANOTIFY_TASK_ID"` 变成空路径片段，比报错更难查。
-		TaskID:          "local",
+		TaskID:          localRunTaskID,
 		Artifact:        art,
 		Digest:          digest,
 		Params:          map[string]any(opts.params),
 		TimeoutOverride: opts.timeoutSec,
 		WorkRoot:        workRoot,
+		// 给了 --data-dir 才采完整输出（→ 档案）；否则一个字节也不多存（人就在终端前）。
+		CaptureFull: store != nil,
 		// 本地模式也给出口契约：能力自己声明了 outputs，脚本就可能真的调用
 		// `emit`（然后拿到"本地模式无中枢"那条明确报错，而不是"读不到契约"）。
 		// 真实派发时这份契约来自 assign 帧，这里来自能力定义本身——同一形状。
@@ -434,11 +477,31 @@ func runStandalone(args []string, stdout, stderr io.Writer) (int, error) {
 		Log: log,
 	}
 
-	code, err := runLocal(ctx, j, stdout, stderr)
-	if err != nil {
-		return code, err
+	started := time.Now()
+	code, out, runErr := runLocal(ctx, j, stdout, stderr)
+	finished := time.Now()
+
+	// 落档在日志/提示之前：提示里的 ref 必须是**已经落盘**的那一个（指向一份
+	// 不存在的档案比不给 ref 更坏）。写盘失败只 Warn，不改退出码（同 runs 的纪律）。
+	ref := ""
+	if store != nil {
+		rec := localRunRecord(art, opts.params, localTraceID(started), out, started, finished)
+		ref = archiveLocalRun(store, rec, log)
+	} else {
+		fmt.Fprintln(stderr, "anotify-agent: 未指定 --data-dir，本次执行不落档"+
+			"（runs / show 看不到它；加 --data-dir ~/.anotify 就能回看）")
 	}
-	log.Info("standalone finished", "event", "agent.run.stop", "exit_code", code)
+	// 超时提示（issue #320 §4）：只有当 **agent 自己**判定超时才打，产物自己
+	// exit 124 时 TimedOut 为 false——两件事不能混成一句话。
+	if out.TimedOut {
+		writeLocalTimeoutHint(stderr, dataDir, ref)
+	}
+
+	if runErr != nil {
+		return code, runErr
+	}
+	log.Info("standalone finished",
+		"event", "agent.run.stop", "exit_code", code, "ref", ref)
 	return code, nil
 }
 
@@ -548,7 +611,8 @@ func preludeCommand(args []string) preludeMode {
 func isSubcommand(tok string) bool {
 	return tok == emitCommand || tok == upgradeCommand || tok == runCommand ||
 		tok == runsCommand || tok == showCommand ||
-		tok == checkCommand || tok == schemaCommand
+		tok == checkCommand || tok == schemaCommand ||
+		tok == capabilitiesCommand || tok == statusCommand
 }
 
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
@@ -623,6 +687,18 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == schemaCommand {
 		code, err := runSchema(args[1:], stdout, stderr)
 		reportFailure(stderr, mode, schemaCommand, code, err)
+		return code
+	}
+	if len(args) > 0 && args[0] == capabilitiesCommand {
+		// 本机事实面（#320 §1）：只读 index/artifacts。**空结果是 0**，不是错误。
+		code, err := runCapabilities(args[1:], stdout, stderr)
+		reportFailure(stderr, mode, capabilitiesCommand, code, err)
+		return code
+	}
+	if len(args) > 0 && args[0] == statusCommand {
+		// 本机事实面（#320 §2）：只读 state.json。stale = 1（最后一份已知状态）。
+		code, err := runStatus(args[1:], stdout, stderr)
+		reportFailure(stderr, mode, statusCommand, code, err)
 		return code
 	}
 	// 节点模式的错误日志已经在 run 里记过（这里再记一条就成了重复）。
