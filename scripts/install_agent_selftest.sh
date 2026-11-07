@@ -17,6 +17,16 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# root 下 install-agent.sh 会（正确地）拒绝运行，整套断言都会退化成「退出码非 0」。
+# 这里跳过而不是绕过：`--allow-root` 是给**真人**显式承担后果用的，不该由测试偷偷加上，
+# 否则「拒绝 root」这条安全行为就没人守了。CI 以普通用户跑，这段在 CI 里不生效。
+if [ "$(id -u)" = 0 ]; then
+	printf 'install-agent 自测：跳过——当前以 root 运行，而 install-agent.sh 会拒绝 root。\n'
+	printf '  本机要跑完这套断言，改用普通用户：cd %s && sh scripts/install_agent_selftest.sh\n' "$root"
+	exit 0
+fi
+
 pass=0
 fail=0
 

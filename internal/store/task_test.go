@@ -801,8 +801,13 @@ func TestSweepLeasesGuardAgainstHeartbeatRace(t *testing.T) {
 	if err := db.ExtendLease(ctx, nsID, task.ID, Now()-10); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
-	// 心跳在巡检之前把租约推到未来
-	if err := db.ExtendLease(ctx, nsID, task.ID, Now()+3600); err != nil {
+	// 心跳在巡检之前把租约推到未来。
+	//
+	// 这里必须**把期限存成局部量**：`Now()` 是秒级时间，写成 `ExtendLease(Now()+3600)`
+	// 再拿新算的 `Now()+3600` 去断言，跨一次秒边界就差 1 秒 → 偶发「lease was disturbed」
+	// （本机 2026-11-07 真踩到）。判定条件不能依赖两次调用同秒。
+	deadline := Now() + 3600
+	if err := db.ExtendLease(ctx, nsID, task.ID, deadline); err != nil {
 		t.Fatalf("heartbeat extend: %v", err)
 	}
 	reclaimed, err := db.SweepExpiredLeases(ctx, Now())
@@ -816,8 +821,11 @@ func TestSweepLeasesGuardAgainstHeartbeatRace(t *testing.T) {
 	if got.Status != TaskRunning {
 		t.Fatalf("status = %q, want running (heartbeat won the race)", got.Status)
 	}
-	if got.LeaseUntil == nil || *got.LeaseUntil != Now()+3600 {
-		t.Fatalf("lease was disturbed: %v", got.LeaseUntil)
+	if got.LeaseUntil == nil {
+		t.Fatal("lease was cleared by the sweep (heartbeat lost the race)")
+	}
+	if *got.LeaseUntil != deadline {
+		t.Fatalf("lease was disturbed: got %d, want %d", *got.LeaseUntil, deadline)
 	}
 }
 
