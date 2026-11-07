@@ -152,6 +152,9 @@ func (p paramFlags) Set(raw string) error {
 func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	// 自定义 usage：flag 包的默认输出只有下面三个 flag，5 个子命令一个都不出现
+	// （issue #317）。命令表在 usage.go，flag 说明仍由 PrintDefaults 出自这里。
+	fs.Usage = func() { writeUsage(fs) }
 
 	// 缺省空串 = 没显式指文件。真正的回落顺序在 loadConfigFrom：
 	// 显式 -f > 环境变量（ANOTIFY_TOKEN 存在即生效）> ./node.yaml。
@@ -440,20 +443,9 @@ func subcommandAt(args []string) (string, []string, bool) {
 	if isSubcommand(args[0]) {
 		return args[0], args[1:], true
 	}
-	// 全局 flag 里带值的那几个：解析器只用来定位子命令，值本身不关心。
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.String("f", "", "")
-	fs.String("data-dir", "", "")
-	fs.Duration("grace", 0, "")
-	fs.String("name", "", "")
-	fs.String("server", "", "")
-	fs.String("token", "", "")
-	fs.String("selector", "", "")
-	fs.Int("slots", 0, "")
-	fs.Bool("standalone", false, "")
-	fs.Bool("version", false, "")
-	fs.Bool("h", false, "")
+	registerGlobalFlagNames(fs)
 	// 任何解析错误都按「不是子命令调用」处理：交给主路径去报真正的错。
 	if err := fs.Parse(args); err != nil {
 		return "", nil, false
@@ -466,6 +458,60 @@ func subcommandAt(args []string) (string, []string, bool) {
 	return rest[0], append(append([]string{}, prefix...), rest[1:]...), true
 }
 
+// registerGlobalFlagNames 把**全局 flag 的名字与取值形状**注册进 fs，只用来定位
+// 子命令（值本身不关心，所以全部给零值说明）。
+//
+// 形状必须与 parseFlags 一致，否则 `-grace 7 upgrade` 会被当成「解析不了 → 不是
+// 子命令」而静默走节点模式——正是 subcommandAt 注释里那个「起了第二个节点进程」的坑。
+// （-grace 是 int，注册成 Duration 会让 `-grace 7` 报 missing unit，于是不认子命令。）
+func registerGlobalFlagNames(fs *flag.FlagSet) {
+	fs.String("f", "", "")
+	fs.String("data-dir", "", "")
+	fs.Int("grace", 0, "")
+	// 下面这些是历史/容器环境的 flag 名：现在只用于「flag 带值」时的定位，
+	// 保证它们的**值**不会被误当成子命令（`-name upgrade` 是合法的节点名）。
+	fs.String("name", "", "")
+	fs.String("server", "", "")
+	fs.String("token", "", "")
+	fs.String("selector", "", "")
+	fs.Int("slots", 0, "")
+	fs.Bool("standalone", false, "")
+	fs.Bool("h", false, "")
+}
+
+// preludeMode 是「进程级开关」的取值：这些开关在任何子命令之前就被处理掉，
+// 因为它们必须**不读 node.yaml、不连网、不落盘**（issue #317 §2/§3）。
+type preludeMode int
+
+const (
+	preludeNone preludeMode = iota
+	preludeVersion
+	preludeSkill
+)
+
+// preludeCommand 报告 args 在**任何子命令之前**是否显式要了 --version / --skill。
+//
+// 用 FlagSet 定位而不是字符串扫描：flag 包在第一个非 flag 处停下，于是
+// `run --version` 里那个 --version 属于 run 的 FlagSet（不是本进程的开关），
+// 而 `-f x --version` 会被正确认出来。解析错误按「不是开关」处理，交给主路径报错。
+func preludeCommand(args []string) preludeMode {
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	wantVersion := fs.Bool("version", false, "")
+	wantSkill := fs.Bool("skill", false, "")
+	registerGlobalFlagNames(fs)
+	if err := fs.Parse(args); err != nil {
+		return preludeNone
+	}
+	switch {
+	case *wantVersion:
+		return preludeVersion
+	case *wantSkill:
+		return preludeSkill
+	}
+	return preludeNone
+}
+
 // isSubcommand 报告 token 是否是子命令名（不是的话就是节点模式的普通参数）。
 func isSubcommand(tok string) bool {
 	return tok == emitCommand || tok == upgradeCommand || tok == runCommand ||
@@ -474,6 +520,16 @@ func isSubcommand(tok string) bool {
 
 // mainWith 是 main 的可测版本（退出码是返回值，不是 os.Exit）。
 func mainWith(args []string, stdout, stderr io.Writer) int {
+	// --version / --skill 在**最前面**处理：它们不读 node.yaml、不连网、不落盘，
+	// 所以在空目录、没有 ANOTIFY_TOKEN、甚至断网的机器上都照样可用（issue #317）。
+	switch preludeCommand(args) {
+	case preludeVersion:
+		fmt.Fprintln(stdout, versionLine())
+		return exitOK
+	case preludeSkill:
+		runSkill(stdout)
+		return exitOK
+	}
 	// 子命令出现在任何位置都被规范化成 args[0]（见 subcommandAt 的注释：
 	// `-f x upgrade` 曾经被静默解释成「跑常驻 agent」）。分派因此只认一种形状。
 	if sub, rest, ok := subcommandAt(args); ok {

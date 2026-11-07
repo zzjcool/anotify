@@ -430,6 +430,28 @@ anotify-agent show trc_xxx/review@2/3-a1              # 那一次的 input + std
 
 退出码：找到 = 0，没找到 = 1（空结果也是 1，脚本据此判断「到底跑没跑过」）。
 
+### agent 的可发现面：`-h` 命令表 / `--skill` 手册 / `--version`
+
+`anotify-agent` 是**用户机器上**的二进制：拿到它的人可能没有仓库、没有文档、也没有网络，
+所以「它有什么命令」必须是二进制自己答得出来的：
+
+```bash
+anotify-agent -h          # 命令表：节点模式（不带子命令 = 常驻进程）+ 5 个子命令（名字/人话/示例）
+anotify-agent --skill     # 内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码表 / 不要做
+anotify-agent --version   # 一行：anotify-agent <version> (<commit>, <builtAt>)
+```
+
+两条纪律（#317）：
+
+- `--skill` 与 `--version` **不读 node.yaml、不连网、不落盘**：空目录、没有
+  `ANOTIFY_TOKEN`、断网都照样退 0。它们因此在「机器刚起来、配置还没修好」时也可用。
+- 手册正文在 `cmd/agent/skill.md`（`//go:embed` 编进二进制），命令表在
+  `cmd/agent/usage.go`。**改子命令或 flag 必须同步这两处**：`make ci` 会跑
+  `scripts/check_agent_skill.py`，它拿真二进制的 `-h` / `--version` / `--skill` 对账
+  手册里的每个 `anotify-agent <sub>` 与 `-flag`（写错一个 flag 就红）。
+
+单独跑这道门禁：`make check-agent-skill`。
+
 ## 5. 测试体系（固化门禁）
 
 > **规则：每次开发完成后，必须跑 `make e2e` 全绿才算完成。** 见 `E2E_TESTING.md`。
@@ -482,7 +504,9 @@ make ci
 2. `make fe`：sitegen + 指纹，供下一步 `-tags embeddist` 内嵌。默认 `go build` / `go test` / `go run` 不嵌入 dist（开发期设 `ANOTIFY_STATIC` 即可编译）
 3. `go vet ./...`
 4. `go build ./...`，以及 `go build -tags embeddist`（生产单二进制；dist 由第 2 步生成）
-5. `go test ./... -count=1`（与 `make test` 相同）
+5. `make check-agent-skill`：`cmd/agent/skill.md` 里的子命令 / flag 与真二进制
+   `-h` 对账，手册首行版本与 `--version` 对齐（#317 的防漂移门禁）
+6. `go test ./... -count=1`（与 `make test` 相同）
 
 不跑 `make e2e`、`make integration`、`scripts/e2e/`（要浏览器或已启动的服务）。`make e2e` 仍是合并前的固化门禁；这条 CI 只守构建、格式和包内单测。名为 `*_e2e_test.go` 的 Go 测试走 `httptest`，不连外部服务，留在 `go test` 里。
 

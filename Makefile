@@ -26,7 +26,7 @@ VERSION_LDFLAGS += -X $(VERSION_PKG).BuiltAt=$(BUILT_AT)
 # agent 二进制的输出名（与 install-agent.sh / 发布资产同名）。
 AGENT_OUT ?= anotify-agent
 
-.PHONY: help build agent fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build agent fe demo-chain sitegen test bench run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-agent-skill tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -82,6 +82,14 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 	@python3 scripts/check_openapi.py
 	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性）通过"
 
+# agent CLI 的可发现面（#317）：`-h` 的命令表与 `--skill` 手册跟着代码走，不跟着人记性走。
+#
+# 扫 cmd/agent/skill.md 里每个 `anotify-agent <sub>` 与 `-flag`，逐个对账**真二进制**的
+# -h 输出（而不是 grep 源码：flag 的注册形状会重构，-h 才是用户 / agent 看到的那份事实），
+# 再核对手册首行版本与 --version 是同一份。故意写错一个 flag → 这里红。
+check-agent-skill: ## 校验 cmd/agent/skill.md 与 -h / --version 一致（防漂移，#317）
+	@python3 scripts/check_agent_skill.py
+
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试（不含 e2e / integration）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
@@ -91,6 +99,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) fe
 	go vet ./...
 	go build ./...
+	@# agent 的可发现面（#317）：skill.md 里的子命令/flag 必须能在真二进制里找到，
+	@# 且手册首行版本与 --version 是同一份。写错一个 flag，这里就红。
+	$(MAKE) check-agent-skill
 	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -tags embeddist -o anotify ./cmd/server
 	$(MAKE) test
 	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。

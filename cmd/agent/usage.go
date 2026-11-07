@@ -1,0 +1,127 @@
+package main
+
+// 本文件是 `-h` 的**命令表**（issue #317 §1）。
+//
+// 之前用的是 flag 包的默认 usage：它只会列 `-f / -grace / -data-dir` 三个 flag，
+// 5 个子命令一个都不出现。于是一个 agent 拿到这台机器上的二进制，跑完 help 只能
+// 得出「它只会连中枢」，剩下的只能靠猜。这个文件把「它有什么命令、我该先跑哪个」
+// 一次讲清。
+//
+// 为什么不是在每个子命令上挂文档、或者引 cobra：单横线长 flag（`-data-dir` /
+// `-grace` / `-f`）已经固化在用户机器的 systemd unit 里（`scripts/install-agent.sh`
+// 生成的 ExecStart），而 pflag 只认 `--data-dir` —— 换框架等于已装节点升级后
+// 起不来，并且**失去再升级的通道**（只能人肉上机器改 unit）。cobra 也解决不了
+// JSON 输出、错误 kind、schema 和这本手册，手册照样得自己 embed。见 issue「不做」。
+//
+// 命令表是 usage 文本的**单一事实源**：`writeUsage` 由它生成，单测逐条核对
+// 「isSubcommand 认的每个名字都在表里」，`scripts/check_agent_skill.py` 再拿真实
+// `-h` 输出校验 `skill.md` 里的例子（防漂移，见 issue §4）。
+
+import (
+	"flag"
+	"fmt"
+)
+
+// agentCommand 是一条子命令在 `-h` 里的三件东西：名字带位置参数、一句人话、
+// 一个能直接抄的示例（格式照 herdr-core 的 `hc --help`）。
+type agentCommand struct {
+	name    string // 子命令名，必须与 main.go 的分派常量一致
+	arg     string // 位置参数形状（没有就空串）
+	desc    string // 一句人话：这个命令回答什么问题
+	example string // 一个可抄的完整命令行（含示例值）
+}
+
+// signature 是命令表第一列的文本（`run <capability.yaml>`）。
+func (c agentCommand) signature() string {
+	if c.arg == "" {
+		return c.name
+	}
+	return c.name + " " + c.arg
+}
+
+// agentCommands 是全部子命令。顺序是「最常用的在前」：run 与 emit 是日常，
+// upgrade 是运维，runs / show 是排障。
+//
+// 加子命令时**必须**同时改这里和 isSubcommand：单测 TestUsageListsEverySubcommand
+// 会两边对账，漏一个就红。
+var agentCommands = []agentCommand{
+	{
+		name:    runCommand,
+		arg:     "<capability.yaml>",
+		desc:    "本地单跑一份产物：不连中枢、不占节点连接；退出码透传产物自己",
+		example: "anotify-agent run ./capability.yaml -p repo=acme/x",
+	},
+	{
+		name:    emitCommand,
+		arg:     "",
+		desc:    "能力进程中途上报一个产出：只认 agent 注入的本地 socket；退出码 2..7 说明该不该重试",
+		example: "anotify-agent emit --to notify.phone --data '{\"issue\":\"#42\"}'",
+	},
+	{
+		name:    upgradeCommand,
+		arg:     "",
+		desc:    "用中枢当前带的那份二进制替换自己：校验 sha256 + 原子 rename；退出码 0..5 是升级结论",
+		example: "anotify-agent upgrade --check",
+	},
+	{
+		name:    runsCommand,
+		arg:     "",
+		desc:    "看本机跑过的执行：表格、时间倒序（不连中枢、不读 node.yaml、不落盘）",
+		example: "anotify-agent runs --limit 5",
+	},
+	{
+		name:    showCommand,
+		arg:     "<ref>",
+		desc:    "看那一次执行的输入与完整输出（ref 从 runs 的表里直接抄）",
+		example: "anotify-agent show trc_0af7651916cd43dd8448eb211c80319c/notify.phone@2/3-a1",
+	},
+}
+
+// usagePreamble 是 `-h` 的开头：**先把「不带子命令 = 常驻进程」说清**。
+//
+// 这一条是源码里 subcommandAt 注释讲的老坑（误跑一次会占掉节点连接、被 systemd
+// 那份顶掉、退出码 1，用户却以为「命令报错了」），必须在第一屏出现，而不是藏在
+// 某个子命令的说明里。
+const usagePreamble = `anotify-agent —— Anotify 节点执行器（跑在你自己的机器上；中枢不执行，节点纯执行）
+
+用法:
+  anotify-agent [flag...]              节点模式：常驻进程，连上中枢等派发
+  anotify-agent <子命令> [flag...]      一次性命令，跑完就走（见下表）
+
+节点模式（不带子命令 = 常驻进程，不是查询）
+  前台一直跑：读 node.yaml → 连中枢 → 接单 → 执行 → 回报，直到 SIGINT / SIGTERM。
+  误跑一次就会占掉一个节点连接（被 systemd 那份顶掉后退出码 1）。只想看本机跑过
+  什么，用 runs / show。
+  anotify-agent -f ~/.anotify/node.yaml -grace 20 --data-dir ~/.anotify
+
+子命令:
+`
+
+// usageFlagsTail 是 flag 表之后的两段：进程级开关 + 发现钩子。
+//
+// 发现钩子固定在最后一行（issue §1）：agent 看一眼 help 就知道还有一本手册，
+// 而不是拿到一个「只会连中枢」的二进制。
+const usageFlagsTail = `
+进程级开关（任何环境都能跑：不读 node.yaml、不连网、不落盘）:
+  --version                            打印一行「版本 (commit, 构建时间)」
+  --skill                              打印内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码 / 不要做
+
+Agent? 运行: anotify-agent --skill
+`
+
+// writeUsage 打印 `-h` 的全文（命令表 + flag 表 + 发现钩子）。
+//
+// flag 表用 fs.PrintDefaults()：flag 的说明写在注册处（main.go / 各子命令），
+// 这里再抄一份必然漂移。进程级开关不在 FlagSet 里（它们在分派最前面就被拦下了，
+// 见 preludeCommand），所以手写两行。
+func writeUsage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprint(w, usagePreamble)
+	for _, c := range agentCommands {
+		fmt.Fprintf(w, "  %-24s %s\n", c.signature(), c.desc)
+		fmt.Fprintf(w, "  %-24s   %s\n", "", c.example)
+	}
+	fmt.Fprint(w, "\n全局 flag（节点模式）:\n")
+	fs.PrintDefaults()
+	fmt.Fprint(w, usageFlagsTail)
+}
