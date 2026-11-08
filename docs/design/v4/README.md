@@ -4,7 +4,7 @@
 |---|---|---|
 | `capability.md` | 能力：`params` / `next` / `run` + 派生 `status` | 讨论中 |
 | `source.md` | 源（触发器）：四种 kind、config、targets | 讨论中（D1–D5 待定） |
-| `playbook.md` | 安装包：能力 + 触发器 | 待写 |
+| `playbook.md` | 安装包：内联能力 + 内联源；无 edges | 讨论中（D1–D6 待定） |
 
 ## 命名与二进制（v4 一并改）
 
