@@ -225,26 +225,26 @@ digest = sha256( canonical{
 
 ---
 
-## 8. 迁移（migration 12）
+## 8. 迁移：**不做迁移**（开发期决策，2026-11-08）
 
-目标终态：
+> 本仓库处于开发期，**没有历史包袱**。因此本期明确不写：反推、回填、"拒绝迁移"、
+> 多端口数据的人工改写清单。v3 的 §6/§8 那种谨慎程度是给有线上数据的项目用的，此处不适用。
 
-```sql
--- edges 降级为派生：由 capability_versions.spec.next 物化
--- from_port 恒为常量（协议仍需要该字段），priority 恒 0，mapping/literals 恒 '{}'
-```
+`migration 12` 只做 DDL，四件事：
 
-步骤与要求：
+1. `edges` 重建：去掉 `from_port` / `mapping` / `literals` / `priority`，
+   主键改成 `(namespace_id, from_is_source, from_ref, to_ref)`。
+2. `capability_versions.outputs` 列**删除**：它原本是 `spec.outputs` 的热路径镜像，
+   而 v4 不再有「端口」这个概念，边也不再按端口校验——没有读者了。
+3. `artifact.Spec` 的形状变化发生在 JSON 内部，**不动表结构**。
+4. `spec`（TEXT）里的旧内容不搬：v3 形状的 spec（有 `outputs`、无 `next`）在新代码下
+   校验不过，开发库**删掉重建**即可。
 
-1. **反向生成**：对每个能力行，读它的 edges（`from_is_source=0, from_ref=能力名`），把 distinct `to_ref` 写成 `spec.next` 数组；同步 `content_hash`。
-2. **多端口数据必须拒绝迁移**：v3 允许一个能力在不同端口上有不同下游，v4 无法表达。发现 `COUNT(DISTINCT from_port) > 1` → **迁移失败并列出能力名**，不静默丢边（与 migration 11 的 `refuses-to-drop-unmapped` 同一条纪律）。
-3. **mapping / literals 非空必须拒绝迁移**：v4 没有适配机制。列出受影响的行，要求人工改写上游脚本。
-4. 幂等：重跑得到同一结果。
-5. `headVersion` 12，hook 必须幂等。
+配套要求（这是编译级/校验级要求，不是迁移）：
 
-**协议**：`emit` 帧保留 `port` 字段（恒 `"out"`），新老 agent 互通；agent CLI 不再接受 `--port`，传了就报错（早报比静默忽略好）。
-
----
+- devseed、e2e 造数、单测夹具必须同步改成 v4 形状；
+- **协议直接去掉 `port` 字段**：开发期只有一种 agent，不需要考虑新老互通
+  （若将来要滚动升级，再按 agent 版本号协商——那时是有历史包袱，不假装现在没有）。
 
 ## 9. 分期
 
