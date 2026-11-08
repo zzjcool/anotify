@@ -182,6 +182,14 @@ next: [fixer, apply-fix@2]   # 多个；裸名跟随 latest，@ver 钉死版本
 | 约束 | 与 `run` **恰给一组**：都没给 → `impl_missing`；都给 → `impl_ambiguous`；不在白名单 → `unknown_handler` |
 | HTTP | **API 永不可创建**（传了就 400 `handler_not_allowed`）。只能由内置播种 / 迁移回填 / 预案产生 |
 
+`handler` 是**中枢进程内执行器**：这个能力没有代码文件，也不派发到任何节点，中枢自己跑。
+
+- 它与 `run` 是两种**互斥的实现形式**：`run` 交给节点上的 agent 执行，`handler` 由中枢执行（`internal/executor`）。
+- 为什么需要它：有些事只有中枢能干。`notify-phone` 要用中枢持有的设备订阅和 VAPID 私钥发推送，让节点干反而要把凭据分发出去。
+- `noop` 是占位：可以存在、可以出现在列表里，但**不可部署、不可派发**——路由到它就剪枝 `no_impl`。
+- 判据只有一条且只有一处：`artifact.IsExecutableHandler(spec.handler)`（`dispatch.go` 的 `central`）。
+- HTTP 永不可创建，是 I1 红线：否则「写一份 YAML 就能把一个任意名字挂进中枢进程执行」。
+
 ### 2.4 `status`（全部派生，apply 时一律忽略）
 
 | 字段 | 类型 | 值 | 说明 |
