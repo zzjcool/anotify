@@ -3,14 +3,14 @@ info:
   title: Anotify API
   version: "1.0.0"
   description: |
-    事件中心 API（契约见 docs/contracts/CONTRACT.md）。
+    事件 API（契约见 docs/contracts/CONTRACT.md）。
 
-    模型演化：从「通知终端」到「事件中心」。
+    模型演化：从「通知终端」到「事件」。
     外部事件（webhook / cron / watch）→ `events` → 派发成 `tasks` → 节点执行 → 回报出口 → 下一跳。
 
     鉴权三种：
       - **会话 Cookie**（`anotify_session`）：控制台浏览，Passkey 登录后获得
-      - **Bearer API Key**（`ant_...`）：机器调用（上报 / 事件入口），带 scope
+      - **Bearer API Key**（`ant_...`）：程序调用（上报 / 事件入口），带 scope
       - **Bearer 节点 token**（`ant_node_...`）：节点 WS 长连接，opaque，仅存 sha256
 
     约定：
@@ -25,7 +25,7 @@ info:
     原有 `/notify`、`/notifications`、`/devices`、`/stream` 属于**旧的「通知终端」模型**，
     现在仍在服务（存量前端页面依赖），但响应带 `Deprecation: true` 与
     `Link: </v1/events>; rel="successor-version"`。
-    它们将在前端切换到事件中心后下线，届时 `messages` 表一并删除。
+    它们将在前端切换到事件后下线，届时 `messages` 表一并删除。
 servers:
   - url: /v1
 tags:
@@ -42,7 +42,7 @@ tags:
   - name: capabilities
     description: 能力定义（append-only，每次改动开新版本）
   - name: edges
-    description: 出口表（路由的唯一依据）
+    description: 下游（路由的唯一依据）
   - name: playbooks
     description: 预案（可安装的流程零件：清单 + 就绪体检 + 幂等安装）
   - name: nodes
@@ -69,7 +69,7 @@ security:
   - bearerAuth: []
 
 paths:
-  # ========== 事件中心：事件 ==========
+  # ========== 事件：事件 ==========
   /admin:
     get:
       tags: [admin]
@@ -114,7 +114,7 @@ paths:
       description: |
         把外部世界的变化变成一条 `event` 并触发第一次派发。
 
-        - `traceId` 由**触发器**生成（不给时），中枢不代生成
+        - `traceId` 由**源**生成（不给时），中枢不代生成
         - `idemKey` 用于幂等：冲突时返回**已有**的 `eventId` + `traceId`，**不是 409**
           （对发送方而言「已收过」和「本次收下」都该是 200）
         - 不带 `idemKey` 允许重复——不是所有来源都有稳定投递 ID
@@ -122,7 +122,7 @@ paths:
         - `source` 匹配的是**能力名**。内置起点 `github`/`cron`/`http`/`manual`
           开箱可用，无需先定义；也可自定义能力（如 `jira@1`）后使用
 
-        鉴权是 Bearer 机器入口，所以 `namespaceId` **主要放 body**（body 优先、其次 query，
+        鉴权是 Bearer 程序入口，所以 `namespaceId` **主要放 body**（body 优先、其次 query，
         两者都缺 → `400`）；事件落进哪个命名空间是调用方必须明确的事实，
         不存在隐式默认，也不接受 `*`（写端点）。
       security:
@@ -162,7 +162,7 @@ paths:
                   description: 幂等键（如 X-GitHub-Delivery）。省略则允许重复
                 traceId:
                   type: string
-                  description: 可选；省略时由触发器生成
+                  description: 可选；省略时由源生成
                 payload:
                   type: object
                   description: 原始负载，只存不解释（不求值、不改写）
@@ -193,7 +193,7 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        # 机器入口的 limit **没有** minimum：实现是 `n > 0` 才采纳、否则回 100
+        # 程序入口的 limit **没有** minimum：实现是 `n > 0` 才采纳、否则回 100
         # （见 internal/api/events.go 的 list），`limit=0` / 负数 = 回退默认值，不是夹到 1。
         # 所以这里不能写 minimum: 1 —— 那会把一个服务端接受、且回显 100 的请求标成非法。
         - name: limit
@@ -348,7 +348,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
 
-  # ========== 事件中心：控制台读取 ==========
+  # ========== 事件：控制台读取 ==========
   /console/events:
     get:
       tags: [events]
@@ -357,14 +357,14 @@ paths:
         浏览器控制台读事件流用。
 
         与 `GET /events` 的区别是**鉴权模型**：
-        - `GET /events` 是机器入口，Bearer API Key + `notify:send` scope，给外部系统拉事件
+        - `GET /events` 是程序入口，Bearer API Key + `notify:send` scope，给外部系统拉事件
         - `GET /console/events` 是控制台入口，会话 Cookie + 组织成员身份
 
         两者语义不同（一个要 scope，一个要成员身份），所以不共用一个 handler。
 
         **`limit` 口径**（与 `GET /events` 不同；这是**既有**差异，不是本批引入）：
         缺省 / 非整数 → `100`；`≤0` → 夹到下限 `1`（不是回退到默认值）；`> 500` → 钳到 `500`。
-        机器入口 `GET /events` 是 `n > 0` 才采纳、否则回 `100`，所以两个端点的 `limit=0`
+        程序入口 `GET /events` 是 `n > 0` 才采纳、否则回 `100`，所以两个端点的 `limit=0`
         语义不同 —— 改一边的解析前先确认另一边没被顺手带坏。响应一律回显**生效值**。
 
         `namespaceId` **必填**（契约 §6.2）；`*` 允许（跨命名空间汇总的管理视图，
@@ -390,7 +390,7 @@ paths:
         - $ref: "#/components/parameters/NamespaceId"
         - { name: traceId, in: query, schema: { type: string } }
         - { name: source, in: query, schema: { type: string } }
-        # minimum: 1 是**真**的机器可读约束：实现是 intParam(..., 100, 1, 500)，
+        # minimum: 1 是**真**的程序可读约束：实现是 intParam(..., 100, 1, 500)，
         # `limit <= 0` 会被夹到 1 并回显 1（不是回退默认 100）。
         - name: limit
           in: query
@@ -426,7 +426,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
-  # ========== 事件中心：trace 视图 ==========
+  # ========== 事件：trace 视图 ==========
   #
   # 「一条链为什么这样」一次请求答完：events（含剪枝）+ tasks + pruned。
   # 剪枝记录从 #142 起落进 events（source='route'、type='pruned.<reason>'），
@@ -482,7 +482,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: 'trace 不存在（`{"error":"trace not found"}`）' }
 
-  # ========== 事件中心：任务 ==========
+  # ========== 事件：任务 ==========
   /tasks:
     get:
       tags: [tasks]
@@ -1124,10 +1124,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  # ========== 事件中心：预案（playbook）==========
+  # ========== 事件：预案（playbook）==========
   #
   # 预案是**清单，不是所有权**：一份 manifest 说清「跑通这条流程需要哪些能力定义 /
-  # 边 / 触发器」，安装时幂等补齐（能力 → 边 → 源，单事务），删预案**不回滚**已装的
+  # 边 / 源」，安装时幂等补齐（能力 → 边 → 源，单事务），删预案**不回滚**已装的
   # 东西（它们已经独立存在了）。设计见 docs/design/playbooks.md，表的定义见
   # CONTRACT.md §2.8。
   #
@@ -1295,7 +1295,7 @@ paths:
       description: |
         详情比列表多一个 `items`：按**依赖顺序**排的逐项检查（能力项 → 边项 → 触发项），
         每项自带 `status`（`ok` / `missing` / `no-node` / `offline`）。
-        `no-node` 与 `offline` **必须分开**：前者要去写节点配置装机器，后者只需要把机器连上。
+        `no-node` 与 `offline` **必须分开**：前者要去写节点配置装节点，后者只需要把节点连上。
 
         无项时 `items: []`（空是 `[]`，不是 `null`）。
       security:
@@ -1387,7 +1387,7 @@ paths:
 
         幂等：已存在的 `(name, version)` 能力定义 / 已存在的同一条边 / 已存在的源
         一律进 `skipped`，**绝不覆盖**（能力定义 append-only，不变量 I8）。
-        已经装了源时再装一次不会多出一个触发器 —— 判据是「同名源已存在」或
+        已经装了源时再装一次不会多出一个源 —— 判据是「同名源已存在」或
         「已有同 kind 且 targets 命中本预案入口能力的源」。
 
         能装什么装什么：单条边两端缺定义、`fromPort` 不在上游 `outputs` 里（I2）、
@@ -1631,10 +1631,10 @@ paths:
           响应带 `blocking`（形如 `["sources=2","edges=5"]`），让人看清在拆什么
         - **最后一个**命名空间 → **400**（带不带 `force` 都一样）：删了组织就没有
           「这套流程属于哪里」了，代码里不存在「没有命名空间」的分支
-        - `?force=true`（或 `force=1`）→ 级联删除（连机器、能力、事件、任务、
+        - `?force=true`（或 `force=1`）→ 级联删除（连节点、能力、事件、任务、
           图快照一起删），`200`
 
-        `force` 的含义是「我知道里面的机器会全部掉线」——所以默认档必须先把阻塞
+        `force` 的含义是「我知道里面的节点会全部掉线」——所以默认档必须先把阻塞
         对象列出来，不能当「清理配置」做。本端点**不需要** `namespaceId`。
       security:
         - cookieAuth: []
@@ -1674,7 +1674,7 @@ paths:
                     items: { type: string }
                     example: ["sources=2", "edges=5"]
 
-  # ========== 事件中心：能力 ==========
+  # ========== 事件：能力 ==========
   /capabilities:
     get:
       tags: [capabilities]
@@ -2100,11 +2100,11 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  # ========== 事件中心：出口表 ==========
+  # ========== 事件：下游 ==========
   /edges:
     get:
       tags: [edges]
-      summary: 出口表列表
+      summary: 下游列表
       description: |
         `namespaceId` **必填**；`*` 允许（跨命名空间汇总）。
 
@@ -2227,7 +2227,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  # ========== 事件中心：节点 ==========
+  # ========== 事件：节点 ==========
   /nodes:
     get:
       tags: [nodes]
@@ -2377,7 +2377,7 @@ paths:
       description: |
         比列表多给 `instances` 的**逐槽细节**：哪个槽在跑哪个任务。
         列表只给数量 —— 列表页不需要 N×M 行，详情页要能回答
-        "这台机器现在卡在哪个槽上"。
+        "这个节点现在卡在哪个槽上"。
 
         `namespaceId` **必填**，且**不接受 `*`**（单对象端点）。
       security:
@@ -2453,7 +2453,7 @@ paths:
   /nodes/{id}/upgrade:
     post:
       tags: [nodes]
-      summary: 让节点把自己的 agent 升级到中枢当前版本（控制台下发）
+      summary: 让节点把自己的 agent 升级到中枢当前版本（控制台推送）
       description: |
         向该节点的活跃连接推一帧 `upgrade`（`target_version` / `sha256` / `url_path`），
         节点用自己的 node token 去 `url_path` 下载、校验 sha256、原子替换二进制后重启。
@@ -2470,7 +2470,7 @@ paths:
         | 其它 | 推帧，`200 {"status":"sent","targetVersion":"…"}` |
 
         `force` 可用 `?force=1|true|yes` 或 JSON body `{"force":true}` 表达：
-        同版本也照样下发（用于二进制被手改、或节点自报版本不可信的场景）。
+        同版本也照样推送（用于二进制被手改、或节点自报版本不可信的场景）。
 
         ### ack 与控制台结果
         节点回报 `upgrade_ack` 后：成功 → 用 ack 的 `version` 更新 `agentVersion`；
@@ -2488,7 +2488,7 @@ paths:
           in: query
           required: false
           schema: { type: boolean }
-          description: 同版本也下发（也可用 body `{"force":true}`）
+          description: 同版本也推送（也可用 body `{"force":true}`）
       requestBody:
         required: false
         description: 可选；空 body 表示 `force=false`、`namespaceId` 只从 query 取。
@@ -2501,7 +2501,7 @@ paths:
                 force: { type: boolean }
       responses:
         "200":
-          description: 已下发，或已是最新
+          description: 已推送，或已是最新
           content:
             application/json:
               schema:
@@ -2526,7 +2526,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
-  # ========== 事件中心：节点协议 ==========
+  # ========== 事件：节点协议 ==========
   /node/binary:
     get:
       tags: [node-stream]
@@ -2862,7 +2862,7 @@ paths:
       description: |
         一份**产物**（artifact）是能力的不可变实现快照：参数契约 + 入口文件 + 全部文件内容
         + 超时 + 环境变量 + 依赖的外部命令。它自包含（脚本内联，不引用外部 blob），
-        所以可以拷到另一台机器脱离中枢单跑。
+        所以可以拷到另一台主机脱离中枢单跑。
 
         `digest` 是内容寻址标识 `sha256:<64 hex>`：同一份内容永远同一个 digest，
         因此「跑过什么」可以被永久审计。
@@ -2924,7 +2924,7 @@ paths:
         去重后按 nodeId 稳定排序。
 
         **`pushed=false` 不代表失败**：行已经建好（`state=pending`），节点上线后由重连对账补推。
-        UI 必须区分「已下发」与「已排队」，否则运维会以为离线机器上的东西已经生效。
+        UI 必须区分「已部署」与「已排队」，否则运维会以为离线节点上的东西已经生效。
 
         **`handler` 形式的能力不可部署**（Capability Spec v3 §5）：它们由中枢的 builtin
         节点认领，没有 `files`，推给节点只会得到一份跑不起来的产物 —— 所以先判
@@ -3890,7 +3890,7 @@ components:
         - **缺参 → `400`**（`namespaceId is required`）。
           绝不回退到默认命名空间：回退等于把调用方写错的地方藏起来
         - **`namespaceId=*` → `400`（一律）**：预案**不提供跨命名空间汇总**。
-          体检结论（能力定义 / 边 / 触发器的存在性）只能按**单个**命名空间算，
+          体检结论（能力定义 / 边 / 源的存在性）只能按**单个**命名空间算，
           「汇总的 ready 率」是个没有定义的量
         - **不存在 → `404`**：`{"error":"namespace not found"}`（不回显传入的 id）
         - **没有 `403`**：组织层已在迁移 14 删除（#204），不存在「属于别的组织」
@@ -3950,7 +3950,7 @@ components:
               day: { type: string, example: "2026-08-10" }
               count: { type: integer }
 
-    # ---------- 事件中心 ----------
+    # ---------- 事件 ----------
     Kind:
       type: string
       enum: [origin, end, pipe]
@@ -4176,7 +4176,7 @@ components:
               type: array
               description: |
                 声明了这个能力的节点（含 offline / draining —— 声明是配置事实，
-                排空中的机器仍然声明着它）。空数组表示**没有任何节点能跑它**，
+                排空中的节点仍然声明着它）。空数组表示**没有任何节点能跑它**，
                 这是一个永远跑不起来的配置。
               items:
                 type: object
@@ -4213,7 +4213,7 @@ components:
         requires:
           type: array
           items: { type: string }
-          description: 机器上必须预装的命令（空时 `[]`）
+          description: 节点上必须预装的命令（空时 `[]`）
         env:
           type: object
           additionalProperties: { type: string }
@@ -4841,7 +4841,7 @@ components:
           description: |
             - `cron`：定时器，按 config.expr 到点触发
             - `webhook`：外部 POST 到 hookUrl
-            - `github`：GitHub 触发器。投递路径与 webhook 完全相同，
+            - `github`：GitHub 源。投递路径与 webhook 完全相同，
               区别只在载荷形状已知——前端据此给字段清单和 GitHub 侧配置指引
             - `manual`：页面上点一下就跑
 
@@ -4977,7 +4977,7 @@ components:
           type: string
           enum: [cron, webhook, github, manual]
           description: |
-            cron 定时器 / webhook 通用 HTTP 回调 / github GitHub 触发器（形状已知，
+            cron 定时器 / webhook 通用 HTTP 回调 / github GitHub 源（形状已知，
             前端给字段清单与一键配置；投递路径与 webhook 相同）/ manual 手动。
         config:
           type: object
@@ -5217,7 +5217,7 @@ components:
         namespaceId:
           type: string
           description: |
-            机器所属命名空间（恒存在）。创建时确定，**创建后不可改**：
+            节点所属命名空间（恒存在）。创建时确定，**创建后不可改**：
             令牌也绑在这个命名空间上，要换就删了重建。
         name: { type: string, example: mbp-16 }
         tags:
@@ -5251,7 +5251,7 @@ components:
             status:
               type: string
               enum: ["", sent, ok, failed]
-              description: '`""` 从未尝试 / `sent` 已下发等 ack / `ok` ack 成功 / `failed` ack 失败'
+              description: '`""` 从未尝试 / `sent` 已发送等 ack / `ok` ack 成功 / `failed` ack 失败'
             targetVersion:
               type: string
               description: 这次尝试的目标版本（`sent` 时写入；`ok` 时等于新版本）
@@ -5323,7 +5323,7 @@ components:
         error: { type: string }
         code:
           type: string
-          description: 机器可读错误码（如 edge_rejected / invalid_transition / capability_conflict）
+          description: 程序可读错误码（如 edge_rejected / invalid_transition / capability_conflict）
 
     DeviceUpsert:
       type: object
@@ -5449,7 +5449,7 @@ components:
       type: object
       description: |
         预案行（`playbooks` 表）。一份可以直接存下来的**清单**：
-        它说清「跑通这条流程需要哪些能力定义 / 边 / 触发器」，但**不拥有**它们
+        它说清「跑通这条流程需要哪些能力定义 / 边 / 源」，但**不拥有**它们
         （删预案不会回滚已安装物）。
 
         `manifest` 是**用户提交的 JSON 原文**：中枢只校验、不重新编码、也不解释 ——
@@ -5493,7 +5493,7 @@ components:
            或 `handler: "noop"`。**禁止别的 handler** —— 否则一份配置文件就能把能力
            挂到中枢执行（I1 破掉）。要「链尾发推送」请 `{ "ref": "notify.phone" }`；
         3. 装出来的能力必须能通过 `artifact.Validate`；边端口的封闭集合与
-           触发器入口都必须能解析到。
+           源入口都必须能解析到。
       properties:
         capabilities:
           type: array
@@ -5505,7 +5505,7 @@ components:
           items: { $ref: "#/components/schemas/PlaybookManifestEdge" }
         triggers:
           type: array
-          description: 需要的触发器（无项为 `[]`）
+          description: 需要的源（无项为 `[]`）
           items: { $ref: "#/components/schemas/PlaybookManifestTrigger" }
 
     PlaybookManifestCapability:
@@ -5605,7 +5605,7 @@ components:
       additionalProperties: true
       required: [kind]
       description: |
-        manifest 里声明的一个触发器。安装时每个触发器建一个源，它的 target 就是
+        manifest 里声明的一个源。安装时每个源建一个源，它的 target 就是
         **入口边**（`from_is_source=1`）。`kind` 非法（不在 `webhook/github/cron/manual` 里）
         在**创建预案**时就 400。
       properties:
@@ -5615,7 +5615,7 @@ components:
           description: |
             安装出来的**源名**。省略时沿用旧口径 `<slug>-<kind>-<idx>`
             （slug 在命名空间内唯一 → 名字确定、可幂等比对）。
-            同一 manifest 里两个触发器不能重名（源名在命名空间内唯一）。
+            同一 manifest 里两个源不能重名（源名在命名空间内唯一）。
         kind:
           type: string
           enum: [webhook, github, cron, manual]
@@ -5673,7 +5673,7 @@ components:
 
                 - `blocked`：有能力定义 `missing`（连定义都没有，什么都跑不了）
                 - `needs-node`：定义齐了，但有 `no-node` / `offline`
-                - `partial`：节点齐了，但边或触发器还不是全 `ok`
+                - `partial`：节点齐了，但边或源还不是全 `ok`
                 - `ready`：全 `ok`
 
                 与 issue #193 草稿的 `ready|incomplete` 不同：验收基准是 mock `pbChecks`
@@ -5710,7 +5710,7 @@ components:
     PlaybookCounts:
       type: object
       description: |
-        三类检查项的**数量**（卡片上的「能力 3 · 出口 3 · 触发器 1」）。
+        三类检查项的**数量**（卡片上的「能力 3 · 出口 3 · 源 1」）。
 
         注意：这是**分类项数**，不是通过情况分布。每一项到底过没过，看该 item
         自己的 `status`。issue 草稿里的 `{ok, noNode, offline, missing}` 是过时写法。
@@ -5724,7 +5724,7 @@ components:
       type: object
       description: |
         声明了该能力的节点（**含 draining / offline**：声明是配置事实，
-        排空中的机器仍然声明着它）。
+        排空中的节点仍然声明着它）。
       required: [name, status]
       properties:
         name: { type: string }
@@ -5757,9 +5757,9 @@ components:
             - `ok`：满足
             - `missing`：没有（没定义 / 没这条边 / 没这个源）
             - `no-node`：定义有了，但**没有任何节点声明**自己能跑它
-              —— 要去写节点配置装机器
+              —— 要去写节点配置装节点
             - `offline`：有节点声明了，但**全部不在线**
-              —— 只需要把机器连上
+              —— 只需要把节点连上
 
             `no-node` 与 `offline` 必须分开：两者要做的事完全不同，
             合成一个「未就绪」会让人做错事。
@@ -5817,7 +5817,7 @@ components:
           description: |
             触发项：本预案的**入口能力**名 = manifest 能力里没有作为任何边 `to` 的那些。
             触发项的判定要求「kind 匹配 **且** 那个源的 targets 命中入口能力」
-            （只看 kind 会把「你有个 webhook 源」当成「这条流程有触发器了」）。
+            （只看 kind 会把「你有个 webhook 源」当成「这条流程有源了」）。
         declaredKind:
           type: string
           enum: [webhook, github, cron, manual]
@@ -5929,7 +5929,7 @@ components:
         requires:
           type: array
           items: { type: string }
-          description: 机器上必须预装的命令；部署时探测，缺了部署失败
+          description: 节点上必须预装的命令；部署时探测，缺了部署失败
         outputs:
           type: array
           items: { type: string }
