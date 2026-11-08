@@ -1,9 +1,9 @@
 # Capability Spec v4 · 冻结契约
 
 > 状态：**冻结**（2026-11-08）。实施中若要改本文，先改本文再改代码。
-> 取代关系：本文取代 `capability-spec-v3.md` 的 §3（outputs 是端口名）、§13.3（出口可见性）。
+> 取代关系：本文取代 `../capability-spec-v3.md` 的 §3（outputs 是端口名）、§13.3（出口可见性）。
 > 其余部分（§1 七名词、§3.1 实现两种形式、§4 存储、§6 回填）**继续有效**。
-> 用户用词沿用 `capability-spec-v3.md §13`：能力 / 源 / 下游 / 节点 / 部署 / 事件 / 任务。
+> 用户用词沿用 `../capability-spec-v3.md §13`：能力 / 源 / 下游 / 节点 / 部署 / 事件 / 任务。
 
 ---
 
@@ -54,7 +54,7 @@ spec:
 
   next: [fixer, apply-fix@2]       # 交给谁（封闭集合；省略 = [] = 终端能力）
 
-  run:                            # 怎么跑（与 handler 二选一，v3 §3.1 不变）
+  run:                            # 怎么跑
     entrypoint: run.sh
     files:
       run.sh: |
@@ -142,13 +142,13 @@ next: [fixer, apply-fix@2]   # 多个；裸名跟随 latest，@ver 钉死版本
 | 省略 | = `[]` = **终端能力**（跑完就结束），不是错误 |
 | 消费方 | 写入时校验目标存在（见 §6）；派生 `edges` 行；`emit <name>` 必须 ∈ 它 |
 
-#### `spec.run` — 怎么跑（脚本形式，与 `handler` 二选一）
+#### `spec.run` — 怎么跑（脚本形式，唯一形式）
 
 | 字段 | 类型 | 必填 | 取值 / 约束 | 说明 |
 |---|---|---|---|---|
 | `entrypoint` | string | ✅ | 必须是 `files` 里的一个 key；内容必须以 `#!` 开头 | 否则报 `entrypoint_no_shebang` |
 | `files` | map[路径]正文 | ✅ | ≥1 个；路径为**相对路径**，不含 `\`、不含 NUL，≤255 字符；单文件 ≤256 KiB；合计 ≤1 MiB | 全部展开进工作目录；多文件原样保留（不会被压扁） |
-| `env` | map[string]string | 可选 | 键匹配 `^[A-Za-z_][A-Za-z0-9_]*$`；**不得以 `ANOTIFY_` 开头**（保留给契约变量）；空值 = 由节点环境提供 | handler 形式下不允许出现 |
+| `env` | map[string]string | 可选 | 键匹配 `^[A-Za-z_][A-Za-z0-9_]*$`；**不得以 `ANOTIFY_` 开头**（保留给契约变量）；空值 = 由节点环境提供 | |
 | `workDir` | string | 可选 | 空 = 每次任务一个独立目录；否则**绝对路径**或 `~` / `~/…`（`~` 由节点展开成 agent 用户家目录）；≤1024 字节；不含 NUL、不含 `..` 段 | 参与 digest。字面量存库，所以与机器无关 |
 
 > `timeoutSec` **不在 run 里** —— 它是生命周期的一部分，见下。
@@ -172,23 +172,6 @@ next: [fixer, apply-fix@2]   # 多个；裸名跟随 latest，@ver 钉死版本
 | `timeoutSec` | int | **0** | 0..86400（24h） | 本地执行超时。`0` = 不设本地超时，交给中枢租约兜底 |
 | `retryable` | bool | — | — | ⚠️ **保留字段，当前无消费者**（v3 遗留，是否删除待定） |
 | `expiresInSec` | int | — | — | ⚠️ **保留字段，当前无消费者**（v3 遗留，是否删除待定） |
-
-#### `spec.handler` — 内置执行器（与 `run` 二选一）
-
-| 项 | 值 |
-|---|---|
-| 类型 | string |
-| 白名单 | `notify-phone`（可执行）；`noop`（占位：不可部署、不可派发） |
-| 约束 | 与 `run` **恰给一组**：都没给 → `impl_missing`；都给 → `impl_ambiguous`；不在白名单 → `unknown_handler` |
-| HTTP | **API 永不可创建**（传了就 400 `handler_not_allowed`）。只能由内置播种 / 迁移回填 / 预案产生 |
-
-`handler` 是**中枢进程内执行器**：这个能力没有代码文件，也不派发到任何节点，中枢自己跑。
-
-- 它与 `run` 是两种**互斥的实现形式**：`run` 交给节点上的 agent 执行，`handler` 由中枢执行（`internal/executor`）。
-- 为什么需要它：有些事只有中枢能干。`notify-phone` 要用中枢持有的设备订阅和 VAPID 私钥发推送，让节点干反而要把凭据分发出去。
-- `noop` 是占位：可以存在、可以出现在列表里，但**不可部署、不可派发**——路由到它就剪枝 `no_impl`。
-- 判据只有一条且只有一处：`artifact.IsExecutableHandler(spec.handler)`（`dispatch.go` 的 `central`）。
-- HTTP 永不可创建，是 I1 红线：否则「写一份 YAML 就能把一个任意名字挂进中枢进程执行」。
 
 ### 2.4 `status`（全部派生，apply 时一律忽略）
 
@@ -235,7 +218,6 @@ digest = sha256( canonical{
   spec.requires,
   spec.lifecycle,      (idempotent / resultTtlSec / timeoutSec / …)
   spec.run            (entrypoint / files / env / workDir)
-  spec.handler        (handler 形式时)
 } )
 ```
 
@@ -306,7 +288,7 @@ digest = sha256( canonical{
 
 | 码 | 时机 | 语义 |
 |---|---|---|
-| `impl_missing` / `impl_ambiguous` / `unknown_handler` | 写入 | v3 §3.1 不变 |
+| `impl_missing` | 写入 | 没有 `run`（v4 只有脚本一种实现形式） |
 | `unknown_target` | 写入（显式创建时） | `next` 里的名字解析不到 → 400 |
 | `downstream_missing` | 派发 | 名字当时解析不到 → 任务失败 + 事件 |
 | `param_missing` | 派发 | 同名直取取不到且无 default → 剪枝 |
@@ -376,6 +358,7 @@ digest = sha256( canonical{
 | **CRD / `spec.type`** | 内置只留 bash 一种形态。类型系统会引入第二个 breaking 轴，等 `next` 稳定后单开一期 |
 | **`mapping` / `literals` / 表达式** | 它们抹平「参数对不上」这个信号。改名或拆能力是更好的答案 |
 | **`priority` / 候选排序** | 没有候选可排 |
+| **handler（中枢内置执行器）** | 本期**删除**。只保留脚本形式（`run`）。需要时再单开一期，不提前造 |
 | **status 落库** | 派生值落库就是第二真相 |
 | **`lastTransitionTime`** | 同上 |
 
@@ -453,7 +436,7 @@ spec:
     properties:
       sha: { type: string }
     required: [sha]
-  next: [notify]                 # 内置能力，按名字引用
+  next: [notify]                 # 另一个能力：发通知
   run:
     entrypoint: run.sh
     files:
@@ -464,7 +447,7 @@ spec:
         anotify-agent emit notify --data '{"text":"deploy ok"}'
 ```
 
-`notify` 是内置的中枢执行能力（`handler: notify-phone`），按名字引用即可，不需要部署到任何节点。
+`notify` 是另一个普通能力（脚本形式，跑在节点上）。它必须存在——否则这个 `next` 解析不到，`status.DownstreamResolved` 会是 false。
 
 ### 11.4 两处约定
 
