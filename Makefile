@@ -26,7 +26,10 @@ VERSION_LDFLAGS += -X $(VERSION_PKG).BuiltAt=$(BUILT_AT)
 # agent 二进制的输出名（与 install-agent.sh / 发布资产同名）。
 AGENT_OUT ?= anotify-agent
 
-.PHONY: help build agent fe demo-chain sitegen test bench bench-dispatch run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-agent-skill tailwind ci mock mock-local fe-preview fe-preview-port
+# 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
+TMP_GUARD := node scripts/check-tmp-leaks.mjs
+
+.PHONY: help build agent fe demo-chain sitegen test bench bench-dispatch run dev docker docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-agent-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -90,6 +93,15 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 check-agent-skill: ## 校验 cmd/agent/skill.md 与 -h / --version 一致（防漂移，#317）
 	@python3 scripts/check_agent_skill.py
 
+# 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
+# 这里只跑「不执行被测代码」的部分（毫秒级）：
+#   · --self-test：守卫自己的红/绿/透传自测（守卫坏了要立刻红，而不是假绿）
+#   · --lint：静态拦截 e2e 里的裸 mkdtempSync（新套件不许绕过 H.mkdtempTmp）
+# 动态守卫（包住 $(MAKE) test）放在 ci 里，避免把单测再跑一遍。
+tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级）
+	$(TMP_GUARD) --self-test
+	$(TMP_GUARD) --lint
+
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
@@ -103,7 +115,12 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 且手册首行版本与 --version 是同一份。写错一个 flag，这里就红。
 	$(MAKE) check-agent-skill
 	go build -trimpath -ldflags="-s -w $(VERSION_LDFLAGS)" -tags embeddist -o anotify ./cmd/server
-	$(MAKE) test
+	@# 单测外面套一层临时目录守卫（#326）：给被包命令一个私有 TMPDIR，跑完
+	@# 断言这个私有目录里没有 anotify-* 残留。用归因隔离而不是直接比对 /tmp ——
+	@# 本机可能同时有别的 e2e / 测试在跑（并行子 agent、另一个 worktree 的
+	@# make ci），集合差会把别人漏的算到本次头上（实测发生过）。
+	$(MAKE) tmp-leak-guard
+	$(TMP_GUARD) -- $(MAKE) test
 	@# 基准冒烟（#315 ③）：基准烂掉比测试烂掉更隐蔽——没人跑，坏了也没人知道，
 	@# 等真要用时拿到的是错数（#264 就撞过一次：夹具缺 EntryFromKey/EntryFromPort，
 	@# 基准静默一条都派不出去，还在打印正常的 ns/op）。

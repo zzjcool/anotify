@@ -116,6 +116,7 @@ func TestRunStandaloneArchivesToRuns(t *testing.T) {
 // TestRunStandaloneNoDataDirDoesNotArchive：不给 --data-dir 时不落档，stderr 必须
 // 明说一行（不能静默丢——「最需要回看的那一次恰恰不在档案里」正是这个 issue 的起点）。
 func TestRunStandaloneNoDataDirDoesNotArchive(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir：工作目录兜底到系统临时目录（#326）
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 

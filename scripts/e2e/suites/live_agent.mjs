@@ -19,15 +19,12 @@
 import { spawn } from "node:child_process";
 import {
 	existsSync,
-	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import * as H from "../lib/harness.mjs";
@@ -132,9 +129,10 @@ async function main() {
 	H.check("拿到默认命名空间", !!nsId, String(nsId));
 	if (!nsId) return;
 
-	tmpDir = mkdtempSync(path.join(tmpdir(), "anotify-live-"));
+	tmpDir = H.mkdtempTmp("anotify-live-");
 	// 用例声明的执行目录（真实存在）—— 这就是「用户的项目目录」。
-	const projDir = realpathSync(mkdtempSync(path.join(tmpDir, "proj-")));
+	// 建在已登记的 tmpDir 下，随 tmpDir 一起收走（也登记一次，双保险）。
+	const projDir = realpathSync(H.mkdtempTmp("proj-", tmpDir));
 
 	// ================= 1. 真 agent 连上来 =================
 	console.log("--- 1. 真 cmd/agent 起进程并上线 ---");
@@ -657,7 +655,7 @@ async function cleanup() {
 	}
 	if (tmpDir) {
 		try {
-			rmSync(tmpDir, { recursive: true, force: true });
+			H.removeTmpDir(tmpDir);
 		} catch {
 			/* 清理失败不影响结论 */
 		}

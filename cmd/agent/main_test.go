@@ -255,6 +255,7 @@ func writeCapabilityFile(t *testing.T, name string, version int, body string) st
 // TestRunStandaloneEndToEnd 是验收标准 4 的单测版：把一份产物 YAML 拷到一个临时
 // 文件，用 `run` 跑起来，参数走 -p，stdout 与退出码都要对。
 func TestRunStandaloneEndToEnd(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir：工作目录兜底到系统临时目录（#326）
 	path := writeCapabilityFile(t, "demo.greet", 2, `
 set -u
 cd "$ANOTIFY_WORKDIR"
@@ -300,6 +301,7 @@ printf 'digest=%s\n' "$([ -n "$ANOTIFY_DIGEST" ] && echo yes || echo no)"
 
 // TestRunStandaloneFlagsAfterPath：位置参数写在前面时，后面的 -p 仍然生效。
 func TestRunStandaloneFlagsAfterPath(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir（#326）
 	path := writeCapabilityFile(t, "demo.echo", 1, "printf 'v=%s' \"$ANOTIFY_PARAM_V\"\n")
 
 	var stdout, stderr bytes.Buffer
@@ -324,6 +326,7 @@ func TestRunStandaloneFlagsAfterPath(t *testing.T) {
 
 // TestRunStandaloneExitCodePassThrough：退出码原样透传（脚本怎么退，agent 就怎么退）。
 func TestRunStandaloneExitCodePassThrough(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir（#326）
 	cases := []struct {
 		body string
 		want int
@@ -348,6 +351,7 @@ func TestRunStandaloneExitCodePassThrough(t *testing.T) {
 // TestRunStandaloneTimeout：--timeout 压过产物自己的 timeoutSec，超时退 124
 // （issue #320 §4：GNU timeout 惯例，与 hc 一致），并在 stderr 指向 runs/show。
 func TestRunStandaloneTimeout(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir；超时会保留工作目录（#326）
 	art := testScriptArtifact("demo.slow", 1, bashScript("sleep 5"))
 	art.Spec.Run.TimeoutSec = 600 // 产物自己写的是 10 分钟
 	path := filepath.Join(t.TempDir(), "capability.yaml")
@@ -383,6 +387,7 @@ func TestRunStandaloneTimeout(t *testing.T) {
 // TestRunStandaloneOwnExit124：产物自己 exit 124 时退出码照样透传，但**不能**
 // 被改写成「agent 超时」——那会凭空多出一行指向 runs 的提示，误导排查方向。
 func TestRunStandaloneOwnExit124(t *testing.T) {
+	isolateSystemTemp(t) // 没给 --data-dir（#326）
 	path := writeCapabilityFile(t, "demo.own124", 1, "echo done; exit 124\n")
 
 	var stdout, stderr bytes.Buffer
@@ -466,6 +471,7 @@ spec:
 // TestMainWithDispatch：`run` 子命令走 standalone，其余走节点模式；退出码由 mainWith 决定。
 func TestMainWithDispatch(t *testing.T) {
 	t.Run("run 子命令透传退出码", func(t *testing.T) {
+		isolateSystemTemp(t) // 没给 --data-dir（#326）
 		path := writeCapabilityFile(t, "demo.exit", 1, "exit 5\n")
 		var stdout, stderr bytes.Buffer
 		if code := mainWith([]string{"run", path}, &stdout, &stderr); code != 5 {

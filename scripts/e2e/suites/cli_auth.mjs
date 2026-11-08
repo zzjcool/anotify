@@ -13,8 +13,7 @@
  *   - poll 过快 429 用同一个会话连发两次（第二次必触发）
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import * as H from "../lib/harness.mjs";
 
@@ -554,106 +553,110 @@ async function webVerify(server, seedSession) {
 // 脚本端到端：后台启动 agent-login.sh，approve 对应短码，验证退出码/权限/stdout 无密
 async function scriptE2E(server, seedSession) {
 	console.log("\n  -- 脚本端到端（AC-21/23/26/27）--");
-	const home = mkdtempSync(path.join(tmpdir(), "anotify-script-"));
-	// 先建一个会话拿到 userCode（脚本会自己建会话，但我们需要在它打印短码后 approve；
-	// 这里改成：直接驱动脚本，脚本建会话后我们无法立即知道 sessionId。
-	// 方案：脚本建会话 → 我们从 stdout 里 grep 出 userCode → 用 seed session 查 by-code 拿 sid → approve）
-	const scriptPath = path.join(H.ROOT_DIR, "web/agent-login.sh");
-	const env = Object.assign({}, process.env, {
-		ANOTIFY_BASE_URL: server.base,
-		SSH_TTY: "/dev/pts/0", // 强制无浏览器路径
-		SSH_CONNECTION: "fake", // 双重保证
-		HOME: home,
-		XDG_CONFIG_HOME: "", // 确保 ~/.config 路径
-	});
-
-	const proc = spawn("sh", [scriptPath], {
-		env,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	let stdout = "";
-	let stderr = "";
-	proc.stdout.on("data", (d) => { stdout += d; });
-	proc.stderr.on("data", (d) => { stderr += d; });
-
-	// 等待脚本打印短码（格式：  验证码：XXXX-XXXX）
-	let userCode = null;
-	const codeDeadline = Date.now() + 15000;
-	while (Date.now() < codeDeadline && !userCode) {
-		const m = stdout.match(/验证码：\s*([A-Z2-9]{4}-[A-Z2-9]{4})/);
-		if (m) { userCode = m[1]; break; }
-		await new Promise((r) => setTimeout(r, 200));
-	}
-	H.check("AC-23 脚本打印短码", !!userCode, `stdout=${stdout.slice(0, 200)}`);
-
-	if (userCode) {
-		// 用 seed session 查 by-code 拿 sessionId，approve
-		const code = userCode.replace("-", "");
-		const lookup = await H.req(server.base, `/v1/cli-auth/sessions/by-code?code=${code}`, { session: seedSession });
-		if (lookup.status !== 200) {
-			H.bad(`AC 脚本端到端 by-code lookup 失败: ${lookup.status}`, lookup.json && lookup.json.error);
-		} else {
-			const sid = lookup.json.sessionId;
-			const ap = await approve(server, seedSession, sid, ["notify:send"]);
-			H.eq("AC 脚本端到端 approve → 200", ap.status, 200);
-		}
-	}
-
-	// 等脚本退出（领证后应退出 0）
-	// setTimeout 保留：等外部进程退出的超时保护，非页面等待
-	const exitCode = await new Promise((resolve) => {
-		const to = setTimeout(() => {
-			proc.kill("SIGKILL");
-			resolve(-1);
-		}, 30000);
-		proc.on("exit", (c) => { clearTimeout(to); resolve(c); });
-	});
-
-	H.eq("AC-21 脚本退出码 0", exitCode, 0);
-
-	// 凭据文件
-	const credPath = path.join(home, ".config/anotify/credentials.json");
-	H.check("AC-21 凭据文件存在", existsSync(credPath), `path=${credPath}`);
-	if (existsSync(credPath)) {
-		const st = statSync(credPath);
-		const mode = (st.mode & 0o777).toString(8);
-		H.eq("AC-21 凭据文件权限 0600", mode, "600");
-		const dirMode = (statSync(path.dirname(credPath)).mode & 0o777).toString(8);
-		H.eq("AC-21 目录权限 0700", dirMode, "700");
-		const cred = JSON.parse(readFileSync(credPath, "utf8"));
-		H.check("AC-21 含 apiKey", typeof cred.apiKey === "string" && cred.apiKey.startsWith("ant_"), `apiKey=${cred.apiKey}`);
-		H.check("AC-21 含 server", cred.server === server.base, `server=${cred.server}`);
-
-		// 该 Key 可用
-		const notify = await H.req(server.base, "/v1/events", {
-			key: cred.apiKey,
-			body: { source: "github", type: "pr_opened", payload: { title: "script e2e" } },
+	const home = H.mkdtempTmp("anotify-script-");
+	try {
+		// 先建一个会话拿到 userCode（脚本会自己建会话，但我们需要在它打印短码后 approve；
+		// 这里改成：直接驱动脚本，脚本建会话后我们无法立即知道 sessionId。
+		// 方案：脚本建会话 → 我们从 stdout 里 grep 出 userCode → 用 seed session 查 by-code 拿 sid → approve）
+		const scriptPath = path.join(H.ROOT_DIR, "web/agent-login.sh");
+		const env = Object.assign({}, process.env, {
+			ANOTIFY_BASE_URL: server.base,
+			SSH_TTY: "/dev/pts/0", // 强制无浏览器路径
+			SSH_CONNECTION: "fake", // 双重保证
+			HOME: home,
+			XDG_CONFIG_HOME: "", // 确保 ~/.config 路径
 		});
-		H.eq("AC-21 脚本领到的 Key 可用 → 200", notify.status, 200);
+
+		const proc = spawn("sh", [scriptPath], {
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		proc.stdout.on("data", (d) => { stdout += d; });
+		proc.stderr.on("data", (d) => { stderr += d; });
+
+		// 等待脚本打印短码（格式：  验证码：XXXX-XXXX）
+		let userCode = null;
+		const codeDeadline = Date.now() + 15000;
+		while (Date.now() < codeDeadline && !userCode) {
+			const m = stdout.match(/验证码：\s*([A-Z2-9]{4}-[A-Z2-9]{4})/);
+			if (m) { userCode = m[1]; break; }
+			await new Promise((r) => setTimeout(r, 200));
+		}
+		H.check("AC-23 脚本打印短码", !!userCode, `stdout=${stdout.slice(0, 200)}`);
+
+		if (userCode) {
+			// 用 seed session 查 by-code 拿 sessionId，approve
+			const code = userCode.replace("-", "");
+			const lookup = await H.req(server.base, `/v1/cli-auth/sessions/by-code?code=${code}`, { session: seedSession });
+			if (lookup.status !== 200) {
+				H.bad(`AC 脚本端到端 by-code lookup 失败: ${lookup.status}`, lookup.json && lookup.json.error);
+			} else {
+				const sid = lookup.json.sessionId;
+				const ap = await approve(server, seedSession, sid, ["notify:send"]);
+				H.eq("AC 脚本端到端 approve → 200", ap.status, 200);
+			}
+		}
+
+		// 等脚本退出（领证后应退出 0）
+		// setTimeout 保留：等外部进程退出的超时保护，非页面等待
+		const exitCode = await new Promise((resolve) => {
+			const to = setTimeout(() => {
+				proc.kill("SIGKILL");
+				resolve(-1);
+			}, 30000);
+			proc.on("exit", (c) => { clearTimeout(to); resolve(c); });
+		});
+
+		H.eq("AC-21 脚本退出码 0", exitCode, 0);
+
+		// 凭据文件
+		const credPath = path.join(home, ".config/anotify/credentials.json");
+		H.check("AC-21 凭据文件存在", existsSync(credPath), `path=${credPath}`);
+		if (existsSync(credPath)) {
+			const st = statSync(credPath);
+			const mode = (st.mode & 0o777).toString(8);
+			H.eq("AC-21 凭据文件权限 0600", mode, "600");
+			const dirMode = (statSync(path.dirname(credPath)).mode & 0o777).toString(8);
+			H.eq("AC-21 目录权限 0700", dirMode, "700");
+			const cred = JSON.parse(readFileSync(credPath, "utf8"));
+			H.check("AC-21 含 apiKey", typeof cred.apiKey === "string" && cred.apiKey.startsWith("ant_"), `apiKey=${cred.apiKey}`);
+			H.check("AC-21 含 server", cred.server === server.base, `server=${cred.server}`);
+
+			// 该 Key 可用
+			const notify = await H.req(server.base, "/v1/events", {
+				key: cred.apiKey,
+				body: { source: "github", type: "pr_opened", payload: { title: "script e2e" } },
+			});
+			H.eq("AC-21 脚本领到的 Key 可用 → 200", notify.status, 200);
+		}
+
+		// AC-23 stdout/stderr 无 Key 明文、无 secret
+		// 注意：脚本自己建的会话的 secret 不在 stdout（脚本不打印 secret）；
+		// 但 Key 明文绝不出现
+		const allOut = stdout + stderr;
+		H.check("AC-23 stdout 无 ant_ Key 明文", !/ant_(send|recv|full|key)_/.test(allOut), "stdout 含 Key 明文!");
+		// secret 也不应出现（脚本从不打印 secret）
+		H.check("AC-23 stdout 无 secret 字样泄露", !allOut.includes('"secret"'), "");
+
+		// AC-26 无浏览器环境：脚本应走二维码/短码路径（已通过打印短码验证）
+		H.check("AC-26 无浏览器路径（打印了二维码/短码）", /验证码/.test(stdout), "未打印验证码");
+
+		// AC-21 幂等：再跑一次，应「已登录」退出 0
+		const proc2 = spawn("sh", [scriptPath], { env, stdio: ["ignore", "pipe", "pipe"] });
+		let out2 = "";
+		proc2.stdout.on("data", (d) => { out2 += d; });
+		// setTimeout 保留：等外部进程退出的超时保护，非页面等待
+		const exit2 = await new Promise((resolve) => {
+			const to = setTimeout(() => { proc2.kill("SIGKILL"); resolve(-1); }, 10000);
+			proc2.on("exit", (c) => { clearTimeout(to); resolve(c); });
+		});
+		H.eq("AC-21 幂等再跑退出 0", exit2, 0);
+		H.check("AC-21 幂等提示已登录", /已登录/.test(out2), `out=${out2.slice(0,150)}`);
+	} finally {
+		H.removeTmpDir(home);
 	}
-
-	// AC-23 stdout/stderr 无 Key 明文、无 secret
-	// 注意：脚本自己建的会话的 secret 不在 stdout（脚本不打印 secret）；
-	// 但 Key 明文绝不出现
-	const allOut = stdout + stderr;
-	H.check("AC-23 stdout 无 ant_ Key 明文", !/ant_(send|recv|full|key)_/.test(allOut), "stdout 含 Key 明文!");
-	// secret 也不应出现（脚本从不打印 secret）
-	H.check("AC-23 stdout 无 secret 字样泄露", !allOut.includes('"secret"'), "");
-
-	// AC-26 无浏览器环境：脚本应走二维码/短码路径（已通过打印短码验证）
-	H.check("AC-26 无浏览器路径（打印了二维码/短码）", /验证码/.test(stdout), "未打印验证码");
-
-	// AC-21 幂等：再跑一次，应「已登录」退出 0
-	const proc2 = spawn("sh", [scriptPath], { env, stdio: ["ignore", "pipe", "pipe"] });
-	let out2 = "";
-	proc2.stdout.on("data", (d) => { out2 += d; });
-	// setTimeout 保留：等外部进程退出的超时保护，非页面等待
-	const exit2 = await new Promise((resolve) => {
-		const to = setTimeout(() => { proc2.kill("SIGKILL"); resolve(-1); }, 10000);
-		proc2.on("exit", (c) => { clearTimeout(to); resolve(c); });
-	});
-	H.eq("AC-21 幂等再跑退出 0", exit2, 0);
-	H.check("AC-21 幂等提示已登录", /已登录/.test(out2), `out=${out2.slice(0,150)}`);
 }
 
 function byId404msg(actual, expected) {
