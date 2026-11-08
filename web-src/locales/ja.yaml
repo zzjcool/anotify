@@ -164,16 +164,19 @@ index:
       count: '{n} 件のイベント'
       none: イベントなし
       date: '{m}月{d}日 {w}曜日'
+    foot: '直近 30 日 {n} 件 · アクティブ {d}/30 日'
+    foot_na: 統計を取得できません
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
     subtitle: Agent のタスク完了を自動で通知
     recommended: おすすめ
-    option_a: 一言で Agent にセットアップ
-    option_b: またはスクリプト / CI から送信
     copy: コピー
+    cmd_install: pi install npm:pi-anotify
+    steps_short: インストール → 承認 → 通知
+    copy_prompt: 完全な手順をコピー
+    docs: ドキュメント →
     curl_example_title: デプロイ完了
-    cmd_a_comment: '# コピーしてあなたの pi に送る'
     cmd_a: 'anotify 通知プラグインをインストールしてください：
 
       1. pi install npm:pi-anotify を実行
@@ -185,6 +188,15 @@ index:
       '
   summary: '累計 {total} 件のイベント、今日 {today} 件。'
   summary_load_failed: データを取得できません。再試行してください。
+  flow:
+    title: 最新イベントのチェーン
+    subtitle: このイベントが実際に通った能力
+    subtitle_of: '最新: {src} · {type}'
+    open: チェーン全体 →
+    empty: イベントはまだありません。トリガーが動くと、ここに最新のチェーンが描かれます。
+    pruned: このイベントはタスクを 1 つも派発しませんでした（最初の段階で剪枝）。理由はチェーン全体で確認できます。
+    nolib: グラフ描画スクリプトを読み込めませんでした。チェーン全体を開いてください。
+    failed: このチェーンを描画できませんでした。チェーン全体を開いてください。
   events:
     title: イベントストリーム
     subtitle: 最新のイベント · クリックでチェーンを表示
@@ -1637,6 +1649,7 @@ sources:
     source: ソース
     terminal_short: 終点
     no_edge: 下流なし
+    dead_port: 下流能力なし
     cycle: ループ · このエッジは戻ってくる
   view_events: イベントを見る
 trace:

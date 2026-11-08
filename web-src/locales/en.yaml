@@ -164,15 +164,18 @@ index:
       count: '{n} events'
       none: No events
       date: '{m}/{d} {w}'
+    foot: '{n} events in the last 30 days · active {d}/30 days'
+    foot_na: Stats unavailable
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
     subtitle: Get notified automatically when your agent finishes
     recommended: Recommended
-    option_a: One line to set up your Agent
-    option_b: Or report from a script / CI
     copy: Copy
-    cmd_a_comment: '# Copy this and send it to your pi'
+    cmd_install: pi install npm:pi-anotify
+    steps_short: Install → Approve → Get notified
+    copy_prompt: Copy full guide
+    docs: Docs →
     curl_example_title: Deploy done
     cmd_a: 'Install the anotify notification plugin for me:
 
@@ -185,6 +188,15 @@ index:
       '
   summary: '{total} events total · {today} today.'
   summary_load_failed: Data is temporarily unavailable — please retry.
+  flow:
+    title: Latest event chain
+    subtitle: The capabilities this event actually ran through
+    subtitle_of: 'Latest: {src} · {type}'
+    open: Full trace →
+    empty: No events yet. Once a trigger fires, its chain shows up here.
+    pruned: This event dispatched no tasks (pruned at the first step). Open the full trace for the reason.
+    nolib: The graph renderer did not load — open the full trace instead.
+    failed: This chain could not be drawn — open the full trace instead.
   events:
     title: Event stream
     subtitle: Latest events · click to open the trace
@@ -1639,6 +1651,7 @@ sources:
     source: Source
     terminal_short: terminal
     no_edge: no downstream
+    dead_port: no capability wired
     cycle: Cycle · this edge loops back
   view_events: View events
 trace:

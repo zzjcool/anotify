@@ -164,16 +164,19 @@ index:
       count: '{n} 条事件'
       none: 无事件
       date: '{m}月{d}日 周{w}'
+    foot: '近 30 天 {n} 条事件 · 活跃 {d}/30 天'
+    foot_na: 统计数据暂不可用
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
     subtitle: 让 Agent 在任务完成时自动通知你
     recommended: 推荐方式
-    option_a: 一句话让 Agent 自己装好
-    option_b: 或脚本 / CI 直接上报
     copy: 复制
+    cmd_install: pi install npm:pi-anotify
+    steps_short: 装插件 → 登录授权 → 收通知
+    copy_prompt: 复制完整指引
+    docs: 查看文档 →
     curl_example_title: 部署完成
-    cmd_a_comment: '# 复制这段话，发给你的 pi'
     cmd_a: '请为我安装 anotify 通知插件：
 
       1. 运行 pi install npm:pi-anotify
@@ -185,6 +188,15 @@ index:
       '
   summary: '累计 {total} 条事件，今天 {today} 条。'
   summary_load_failed: 暂时取不到数据，请重试。
+  flow:
+    title: 最新事件链路
+    subtitle: 这条事件实际走了哪些能力
+    subtitle_of: '最近一条：{src} · {type}'
+    open: 查看完整链路 →
+    empty: 还没有事件。接上触发器后，这里会画出最新一条事件的链路。
+    pruned: 这条事件没有派发任何任务（在第一步就被剪枝）。点右上角看完整链路的原因。
+    nolib: 链路渲染脚本没能加载，点右上角看完整链路。
+    failed: 这条链路画不出来，点右上角看完整链路。
   events:
     title: 事件流
     subtitle: 最新事件 · 点击查看链路
@@ -1641,6 +1653,7 @@ sources:
     source: 源
     terminal_short: 终点
     no_edge: 没有下游
+    dead_port: 未接下游能力
     cycle: 环 · 这条边会绕回来
   view_events: 查看事件
 trace:

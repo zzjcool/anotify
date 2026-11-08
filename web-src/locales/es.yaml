@@ -164,16 +164,19 @@ index:
       count: '{n} eventos'
       none: Sin eventos
       date: '{d}/{m} {w}'
+    foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
+    foot_na: Estadísticas no disponibles
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
     subtitle: Recibe avisos automáticos al terminar tu agente
     recommended: Recomendado
-    option_a: Configura tu Agent con una línea
-    option_b: O reporta desde un script / CI
     copy: Copiar
+    cmd_install: pi install npm:pi-anotify
+    steps_short: Instalar → Aprobar → Avisos
+    copy_prompt: Copiar guía completa
+    docs: Ver docs →
     curl_example_title: Despliegue listo
-    cmd_a_comment: '# Copia esto y envíaloelo a tu pi'
     cmd_a: 'Instálame el plugin de notificaciones de anotify:
 
       1. Ejecuta pi install npm:pi-anotify
@@ -185,6 +188,15 @@ index:
       '
   summary: '{total} eventos en total · {today} hoy.'
   summary_load_failed: Los datos no están disponibles ahora — vuelve a intentarlo.
+  flow:
+    title: Cadena del último evento
+    subtitle: Las capacidades por las que pasó este evento
+    subtitle_of: 'Último: {src} · {type}'
+    open: Traza completa →
+    empty: Aún no hay eventos. Cuando un disparador se active, su cadena aparecerá aquí.
+    pruned: Este evento no despachó ninguna tarea (purgado en el primer paso). Abre la traza completa para ver el motivo.
+    nolib: El motor de grafos no se cargó — abre la traza completa.
+    failed: No se pudo dibujar esta cadena — abre la traza completa.
   events:
     title: Flujo de eventos
     subtitle: Últimos eventos · clic para ver la cadena
@@ -1637,6 +1649,7 @@ sources:
     source: Origen
     terminal_short: terminal
     no_edge: sin posterior
+    dead_port: sin capacidad conectada
     cycle: Ciclo · esta arista vuelve
   view_events: Ver eventos
 trace:

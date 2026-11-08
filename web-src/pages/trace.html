@@ -558,29 +558,6 @@
     <script>
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
 
-      /**
-       * baseGraphFor —— 取这个源的静态拓扑底图。
-       *
-       * **拓扑推导只有一份，在 graphs.js 的 sourceTopology**：源详情页的流向图
-       * 用的是同一个函数，所以同一个源在两页看到的图必然一致。
-       * 本页曾经自己摊平过一份（buildBaseGraph），跟那边的树形推导各写一遍，
-       * 两边一旦分叉，同一份配置在两个页面就会画出不同的图 —— 那就是用户报的
-       * 「source.html 这里的图应该要和 trace.html 这里的图保持一致」和
-       * 「source 的图没有体现出 source 一对多的线」。
-       *
-       * 拿不到能力清单 / 图库未就绪时返回 null，调用方退回只画执行链。
-       */
-      function baseGraphFor(src, caps, edgesAll) {
-        if (!src || !window.AnotifyGraphs) return null;
-        if (!caps || !caps.length) return null;
-        const topo = window.AnotifyGraphs.sourceTopology({
-          src: src,
-          caps: caps,
-          edges: edgesAll || [],
-        });
-        return topo && topo.nodes && topo.nodes.length ? topo : null;
-      }
-
       // 各页面各自声明，无全局常量（与 events.html / sources.html 一致）
       const API = "/v1";
 
@@ -1167,27 +1144,16 @@
           //
           // 推导只有一份（graphs.js 的 sourceTopology）：这里不自己摊平底图。
           // 拿不到就退回"只画执行链"（源已删、trace 来自未知源）。
+          // 取数与推导都在 graphs.js 的 loadBaseGraph 里（首页共用同一份）：
+          // 两处各写一遍，同一份配置就会在两页长出不同的节点/图标/文案。
           let baseGraph = null;
-          if (event && event.source) {
+          if (event && event.source && window.AnotifyGraphs && window.AnotifyGraphs.loadBaseGraph) {
             try {
-              const [srcData, capData, edgeData] = await Promise.all([
-                fetchApi(API + "/sources"),
-                fetchApi(API + "/capabilities"),
-                fetchApi(API + "/edges"),
-              ]);
-              const srcList = (srcData && (srcData.sources || [])) || [];
-              const srcObj = srcList.find((x) => x.name === event.source);
-              if (srcObj) {
-                const detail = await fetchApi(
-                  API + "/sources/" + encodeURIComponent(srcObj.id),
-                );
-                const full = (detail && detail.source) || srcObj;
-                baseGraph = baseGraphFor(
-                  full,
-                  (capData && capData.capabilities) || [],
-                  (edgeData && edgeData.edges) || [],
-                );
-              }
+              baseGraph = await window.AnotifyGraphs.loadBaseGraph({
+                api: API,
+                source: event.source,
+                fetchJson: fetchApi,
+              });
             } catch (_e) {
               // 拿不到源配置不算错：图视图会退回只画执行链
             }
