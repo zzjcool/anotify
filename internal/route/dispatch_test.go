@@ -59,11 +59,11 @@ type fakeStore struct {
 	// errCountTasks 让 trace 任务计数失败（验证「预算查不出时派发失败，而不是当 0」）
 	errCountTasks error
 
-	// artifacts 是 LatestArtifact 的返回值（key = capKey(ns, capabilityID)）。
+	// artifacts 是 CurrentArtifact 的返回值（key = capKey(ns, capabilityID)）。
 	// 没登记的能力 → store.ErrArtifactNotFound，与真 store 同口径（P0-a）。
 	artifacts map[string]*store.Artifact
-	// errLatestArtifact 让产物查询失败（验证「取不到 digest 不拦派发」）。
-	errLatestArtifact error
+	// errCurrentArtifact 让产物查询失败（验证「取不到 digest 不拦派发」）。
+	errCurrentArtifact error
 }
 
 type assignment struct {
@@ -462,20 +462,20 @@ func (f *fakeStore) CountTasksByTrace(ctx context.Context, namespaceID, traceID 
 	return n, nil
 }
 
-// addArtifact 给某能力登记一份「最新产物」（P0-a 的 digest 就取它）。
+// addArtifact 给某能力登记一份「当前产物」（P0-a 的 digest 就取它）。
 func (f *fakeStore) addArtifact(nsID, capabilityID, digest string) *store.Artifact {
-	a := &store.Artifact{ID: "art_fake", NamespaceID: nsID, CapabilityID: capabilityID, Digest: digest}
+	a := &store.Artifact{NamespaceID: nsID, CapabilityID: capabilityID, Digest: digest}
 	f.artifacts[capKey(nsID, capabilityID)] = a
 	return a
 }
 
-// LatestArtifact 与真 store 同口径：没产物返回 store.ErrArtifactNotFound（不是 nil, nil）。
+// CurrentArtifact 与真 store 同口径：没产物返回 store.ErrArtifactNotFound（不是 nil, nil）。
 //
 // 这个区分很重要：route 靠这个错误降级为空串 digest，mock 若返回 nil, nil 就
 // 永远测不到「取不到也不拦派发」这条路径。
-func (f *fakeStore) LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error) {
-	if f.errLatestArtifact != nil {
-		return nil, f.errLatestArtifact
+func (f *fakeStore) CurrentArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error) {
+	if f.errCurrentArtifact != nil {
+		return nil, f.errCurrentArtifact
 	}
 	a, ok := f.artifacts[capKey(namespaceID, capabilityID)]
 	if !ok {

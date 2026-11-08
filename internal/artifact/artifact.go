@@ -114,6 +114,43 @@ func isKnownHandler(h string) bool {
 	return false
 }
 
+// executableHandlers 是白名单里**真的会被中枢执行**的那一部分（顺序稳定）。
+//
+// 白名单不等于可执行：`noop` 合法、可校验通过，但中枢**不执行**它——它只是契约 R2
+// 的占位（「能力永远有实现」），跑到它等于什么都不做。所以三件事必须分开：
+//
+//	KnownHandlers       校验用：handler 是不是一个我们认识的名字
+//	executableHandlers  认领用：中枢会不会为它建/领任务（即「谁是真中枢能力」）
+//	noop                占位：派发遇到它要**留痕剪枝**，不能静默成功
+//
+// 把 noop 混进「可执行」的后果是：一条指向占位能力的边会建出一个任务、悄悄什么都
+// 不做地"成功"，用户看到绿勾而链其实没跑（见 route 的 pruned.no_impl）。
+var executableHandlers = []string{HandlerNotifyPhone}
+
+// ExecutableHandlers 返回「中枢真的会执行」的 handler 列表（拷贝，调用方可安全修改）。
+//
+// 它是**运行时认领**的唯一数据来源（Capability Spec v3 §11.3）：数据库里
+// json_extract(spec,'$.handler') 落在这些值上的能力就是中枢能力，不再有第二张
+// 硬编码名字表。
+func ExecutableHandlers() []string {
+	out := make([]string, len(executableHandlers))
+	copy(out, executableHandlers)
+	return out
+}
+
+// IsExecutableHandler 报告 h 是不是中枢真的会执行的 handler。
+//
+// 只有 notify-phone 返回 true：`noop` 与未知值（含空串）都返回 false——
+// 空串表示「不是 handler 形式」（脚本由节点执行），同样不该被中枢认领。
+func IsExecutableHandler(h string) bool {
+	for _, eh := range executableHandlers {
+		if h == eh {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 	outputPattern  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,32}$`)

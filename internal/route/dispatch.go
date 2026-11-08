@@ -37,6 +37,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -230,15 +231,15 @@ type Store interface {
 	// 语义（幂等、idem_key 恒 NULL）由 store 实现，本包不关心细节。
 	InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error)
 
-	// LatestArtifact 返回该能力**最新登记的产物**（P0-a：派发时把它的 digest 钉在任务行上）。
+	// CurrentArtifact 返回该能力**当前产物**（P0-a：派发时把它的 digest 钉在任务行上）。
 	//
-	// 为什么是「最新一份」而不是「本次部署的那份」：任务行只钉 name@version（契约 I8），
+	// 为什么是「当前一份」而不是「本次部署的那份」：任务行只钉 name@version（契约 I8），
 	// 派发这一步看不到「哪台机器上的哪份部署」——那要等 ④ 挑完机器才知道（而任务行
-	// 在建任务时就要落库）。最新产物是此刻这个能力要被执行的权威内容，也是节点缓存
+	// 在建任务时就要落库）。当前产物是此刻这个能力要被执行的权威内容，也是节点缓存
 	// 里「name@version → digest」索引的指向；两者对齐，事后能对上账。
 	//
-	// 没有产物时返回 store.ErrArtifactNotFound——那不是错误（见 plan 里的 pinDigest）。
-	LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error)
+	// 没有产物时返回 store.ErrArtifactNotFound——那不是错误（见 pinDigest）。
+	CurrentArtifact(ctx context.Context, namespaceID, capabilityID string) (*store.Artifact, error)
 
 	// ---- emit（P1.1，docs/design/emit-protocol.md §4 / §7）----
 	//
@@ -391,6 +392,7 @@ type candidate struct {
 	// 候选排序的第二关键字，也是「最小 priority 组」的判据。
 	priority int
 	// central 表示这个能力由**中枢自己执行**，不找节点。
+	// 判据只有一条：它的 spec.handler 可执行（artifact.IsExecutableHandler）。
 	// 典型是 notify.phone：没人会写一个"发推送节点"。
 	central bool
 }
@@ -741,15 +743,35 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 			continue
 		}
 
-		// 内置中枢能力（如 notify.phone）：**跳过找节点**。
+		// 实现形式决定「谁来跑」——**唯一**的判据就在下面这一段（其他任何地方都不再
+		// 判「这是不是内置能力」）。
 		//
-		// 这类能力没有节点执行者——推送是中枢自己的能力。若照常走
-		// node_capabilities 查询必然是 0 行，于是 pruned/no_node，
-		// 推送永远发不出去。这是「内置能力」与「自定义能力」唯一的分岔点。
-		if bc, ok := store.IsBuiltinCapability(capDef.Name, capDef.Version); ok && bc.Central {
-			cands = append(cands, candidate{
-				cap: capDef, params: targetParams, central: true,
-				toRef: tgt.ToRef, priority: tgt.Priority,
+		// Capability Spec v3 §3.1 / R1：实现只有两种形式，路由就有两种归宿。
+		//
+		//	handler 可执行（notify-phone…）→ 中枢执行：**跳过找节点**。
+		//	  这类能力本来就没有节点执行者（没人会写一个"发推送节点"），若照常查
+		//	  node_capabilities 必然是 0 行，于是 pruned/no_node——推送永远发不出去。
+		//	  判据是**目标能力自己的** spec.handler（目标已经解析出来了），不是一张
+		//	  全局名字表：名字表会把用户自定义的 handler 能力永久排除在中枢之外，
+		//	  而它自己又不会出现在任何节点的声明里——两边都查不到，无声无息。
+		//
+		//	handler 占位（noop）→ pruned/no_impl。
+		//	  占位能力"能跑但什么都不做"，路由到它等于静默丢掉这条链；必须留痕。
+		//
+		//	其余（run 形式 / 尚未补实现的老行）→ 走 ③ 找节点（下面那段）。
+		if h := capDef.Spec.Handler; h != "" {
+			if artifact.IsExecutableHandler(h) {
+				cands = append(cands, candidate{
+					cap: capDef, params: targetParams, central: true,
+					toRef: tgt.ToRef, priority: tgt.Priority,
+				})
+				continue
+			}
+			d.prune(ctx, in, out, PrunedRecord{
+				Reason:       ReasonNoImpl,
+				CapabilityID: targetID,
+				Port:         fromPort,
+				Detail:       fmt.Sprintf("%s@%d 是占位实现（handler: %s），中枢不执行它：路由到这里只会什么都不做", capDef.Name, capDef.Version, h),
 			})
 			continue
 		}
@@ -1047,7 +1069,7 @@ func formatPath(path []string) string {
 // 钉不住最多是「事后查不到哪份字节」；而把整次派发停下来的代价是这条链直接丢。
 // 两者不在一个量级，所以宁可降级为不钉（行为与加这一列之前完全一致）。
 func (d *Dispatcher) pinDigest(ctx context.Context, namespaceID, capabilityID string) string {
-	a, err := d.Store.LatestArtifact(ctx, namespaceID, capabilityID)
+	a, err := d.Store.CurrentArtifact(ctx, namespaceID, capabilityID)
 	if err != nil || a == nil {
 		return ""
 	}

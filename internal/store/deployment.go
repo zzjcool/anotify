@@ -58,10 +58,9 @@ var ErrDeploymentExists = errors.New("store: deployment already exists")
 //   - CreatedAt 删掉：没有行了，就没有落库时间（它唯一的作用是「新的在前」排序，
 //     而按能力取只有一份）。
 type Artifact struct {
-	// ID 是**历史字段**：没有行身份之后它永远是空串，因此不进 JSON（omitempty）。
-	// 留在结构体里只为兼容在途调用方（internal/route 的 fake store 还在构造它，
-	// 那个文件的所有权不在 P2a）。新代码不要读它。
-	ID           string `json:"id,omitempty"`
+	// P2 起产物不再是一个行身份：它是能力行正文的**派生**（Capability Spec v3 §11）。
+	// 曾经留过一个空的 ID 字段做兼容，P2b 已删：没有行身份就没有 ID，
+	// 任何调用方读到它只会得到一个永远为空的假标识。
 	NamespaceID  string `json:"namespaceId"`
 	CapabilityID string `json:"capabilityId"`
 	Digest       string `json:"digest"`
@@ -96,17 +95,6 @@ type Deployment struct {
 // 先判，见 internal/server 的 createDeployments）。
 func (d *DB) CurrentArtifact(ctx context.Context, namespaceID, capabilityID string) (*Artifact, error) {
 	return currentArtifactOn(ctx, d, namespaceID, capabilityID)
-}
-
-// LatestArtifact 是 CurrentArtifact 的**旧名字**（P2 的读路径已经全部改读能力行）。
-//
-// 为什么名字还在：internal/route 的 Dispatcher 通过自己的 Store 接口声明了
-// `LatestArtifact(...)`，而那个包的所有权不在 P2a（Capability Spec v3 §7 把 route 切到
-// CurrentArtifact 排在 P2b）。语义与 CurrentArtifact 逐字相同，**不再**碰 artifacts 表。
-//
-// Deprecated: 新代码用 CurrentArtifact。
-func (d *DB) LatestArtifact(ctx context.Context, namespaceID, capabilityID string) (*Artifact, error) {
-	return d.CurrentArtifact(ctx, namespaceID, capabilityID)
 }
 
 // CurrentArtifact 的 ex 版（事务内读必须走它，否则看不到本事务刚写的行）。

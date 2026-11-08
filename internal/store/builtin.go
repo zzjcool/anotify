@@ -31,11 +31,9 @@ type BuiltinCapability struct {
 	Version      int
 	ParamsSchema string // JSON
 	Outputs      []string
-	// Central 表示由中枢执行（不找节点）。终端能力为 true。
-	Central bool
 	// Artifact 是随能力一起播种的产物（v2 之后节点只跑产物，没有产物 = 部署不了）。
 	//
-	// 大部分内置能力不需要它（central 的由中枢执行、origin 的不产生任务），
+	// 大部分内置能力不需要它（handler 形式的由中枢执行、origin 的不产生任务），
 	// 但「示例能力」必须带：它的全部价值就在于「注册完就能部署、能跑通一条链」。
 	Artifact *artifact.Artifact
 	// Handler 是「中枢内置执行器」形式的实现（Capability Spec v3 §3.1），
@@ -45,11 +43,16 @@ type BuiltinCapability struct {
 	// 造一行会让它出现在部署面板里，被推给节点后节点只会拒（一份没有 files 的产物
 	// 跑不起来）——契约 §6.1 把这个坑点名列了出来。所以 handler 形式只写
 	// capability_versions.spec，artifacts 一行都不建。
+	//
+	// **它是「谁执行这个能力」的唯一来源**（P2b / 契约 §11.3）：这里填了可执行的
+	// handler，这个能力就是中枢能力；中枢认领看的是库里的 spec.handler，不是这张表。
+	// （曾经的 Central 布尔已删：它只是把这张内存表喂给一条硬编码名字表，而那张
+	// 名字表会让「用户自定义的 handler 能力」永远不被认领。）
 	Handler string
 	// Origin 表示它是**事件起点**：没有节点执行者，也不产生任务，
 	// 只提供「事件从这里进来」的命名锚点 + 任意事件类型作为出口。
 	//
-	// 与 Central 的区别：Central 会派发成中枢执行的任务；Origin 不建任务行，
+	// 与 handler 形式的区别：handler 能力会派发成中枢执行的任务；Origin 不建任务行，
 	// 它是链的 0 号位（trigger 按 source 找到它，再用 type 当出口派发）。
 	Origin bool
 }
@@ -75,8 +78,8 @@ var NotifyPhoneCapability = BuiltinCapability{
 		}
 	}`,
 	Outputs: []string{},
-	Central: true,
 	// 实现形式是**中枢内置执行器**：没有 files，也没有 artifacts 行（契约 §6.1）。
+	// Handler 非空 = 由中枢执行（不再需要一个并行的 Central 布尔）。
 	Handler: artifact.HandlerNotifyPhone,
 }
 
@@ -105,8 +108,11 @@ func OriginCapability(name, displayName string) BuiltinCapability {
 // BuiltinCapabilities 是随项目发布的全部内置能力。
 //
 // 两类：
-//   - 中枢执行（Central）：notify.phone —— 没有节点会去"发推送"
+//   - 中枢执行（填了 Handler）：notify.phone —— 没有节点会去"发推送"
 //   - 事件起点（Origin）：github/cron/http/manual —— 没有节点会去"当来源"
+//
+// 「谁由中枢执行」不再由这张表回答：运行时认领看的是库里的 spec.handler（P2b /
+// 契约 §11.3）。表里只需要把 Handler 填对，播种后会自然成为中枢能力。
 //
 // 起点做成内置的收益：用户接入一个 GitHub webhook 时，**不需要先伪造一个
 // 叫 github、没有出口、没有节点的"能力"**，直接在能力页建边即可。
@@ -427,14 +433,11 @@ func syncBuiltinDeploymentsTx(ctx context.Context, tx *sql.Tx, namespaceID, capa
 	return nil
 }
 
-// IsBuiltinCapability 判断某个 name@version 是不是内置能力（中央执行或起点）。
+// IsBuiltinCapability 判断某个 name@version 是不是内置能力（中枢执行或起点）。
 //
-// 派发器用它决定「是否跳过找节点」：内置终端能力没有节点执行者，
-// 查 node_capabilities 必然是 0 行，若照常走第 ③ 步就会 pruned/no_node——
-// 推送能力永远发不出去。
-//
-// 注意调用方要**同时**判断 bc.Central：起点能力也是 builtin，但它不该
-// 被当成中枢任务来执行（它根本不产生任务行）。
+// 注意：「是不是内置能力」与「由谁执行」是两件事。内置能力也可能由节点执行
+// （script.echo），起点能力则根本不产生任务。执行者看 **spec.handler**
+// （artifact.IsExecutableHandler），不要问这张表。
 func IsBuiltinCapability(name string, version int) (BuiltinCapability, bool) {
 	for _, bc := range BuiltinCapabilities {
 		if bc.Name == name && bc.Version == version {
@@ -458,15 +461,59 @@ func IsBuiltinCapabilityName(name string) (BuiltinCapability, bool) {
 	return BuiltinCapability{}, false
 }
 
-// CentralCapabilityNames 返回中枢执行的能力名（派发器与执行器共用）。
-func (d *DB) CentralCapabilityNames() []string {
-	var out []string
-	for _, bc := range BuiltinCapabilities {
-		if bc.Central {
-			out = append(out, bc.Name)
-		}
+// CentralCapabilityNames 返回由中枢执行的能力名（ClaimCentralTasks 的唯一认领依据）。
+//
+// **数据驱动**（Capability Spec v3 §11.3）：从 `capability_versions.spec` 里读
+// handler，而不是遍历 BuiltinCapabilities 筛一个布尔。判据就一条—— spec.handler
+// 落在 artifact.ExecutableHandlers() 里（handler 白名单里可执行的那一部分）：
+//
+//	SELECT DISTINCT name FROM capability_versions
+//	 WHERE json_extract(spec, '$.handler') IN (…)
+//
+// 为什么必须这样：旧实现是一张内存硬编码名字表（`Central: true`），于是用户自定义的
+// `handler: notify-phone` 能力**永远不会被认领**（派发把它当节点能力，查 node_capabilities
+// 必然 0 行 → pruned/no_node），而这张表也就成了与库内容并行的第二真相。
+//
+// 跨命名空间（不过滤 namespace_id）：中枢任务没有节点，命名空间不参与「谁能执行」的
+// 判定；每条任务自己带 NamespaceID，后续写入仍按它生效（I10）。这也是旧实现的口径。
+//
+// **有意不做缓存**：缓存必须配写入失效，而写入点散在 createCapabilityTx / 播种 /
+// 迁移回填三处以上，漏一个就静默变成第二真相（且症状是“新能力不被认领”这种
+// 最难查的形态）。这条查询由执行器按 1s 轮询的频率付，表是每个命名空间个位数行，
+// 不值得为它引入一份失效风险。
+func (d *DB) CentralCapabilityNames(ctx context.Context) ([]string, error) {
+	handlers := artifact.ExecutableHandlers()
+	if len(handlers) == 0 {
+		return []string{}, nil
 	}
-	return out
+	placeholders := make([]string, len(handlers))
+	args := make([]any, len(handlers))
+	for i, h := range handlers {
+		placeholders[i] = "?"
+		args[i] = h
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT DISTINCT name FROM capability_versions
+		  WHERE json_extract(spec, '$.handler') IN (`+strings.Join(placeholders, ",")+`)
+		  ORDER BY name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query central capability names: %w", err)
+	}
+	defer rows.Close()
+
+	// 空结果给 []（不是 nil）：空列表纪律（不变量 I9）。
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan central capability name: %w", err)
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate central capability names: %w", err)
+	}
+	return out, nil
 }
 
 // ClaimCentralTasks 领取中枢执行的 pending 任务，并推进到 running。
@@ -481,7 +528,13 @@ func (d *DB) ClaimCentralTasks(ctx context.Context, limit int) ([]*Task, error) 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	names := d.CentralCapabilityNames()
+	// 认领名单来自**数据**（spec.handler），不是一个包级变量：查库失败必须向上抛，
+	// 而不是静默当成「一个中枢能力都没有」（那会让推送任务永远停在 pending，
+	// 而日志里只会看到“没活干”）。
+	names, err := d.CentralCapabilityNames(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(names) == 0 {
 		return []*Task{}, nil
 	}

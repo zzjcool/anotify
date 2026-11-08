@@ -43,7 +43,9 @@ func (f *fakeStore) FinishTask(ctx context.Context, namespaceID, taskID, status 
 	return nil
 }
 
-func (f *fakeStore) CentralCapabilityNames() []string { return []string{"notify.phone"} }
+func (f *fakeStore) CentralCapabilityNames(ctx context.Context) ([]string, error) {
+	return []string{"notify.phone"}, nil
+}
 
 // fakeNotifier 记录调用并返回预设结果。
 type fakeNotifier struct {

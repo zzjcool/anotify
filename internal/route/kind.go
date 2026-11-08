@@ -1,6 +1,9 @@
 package route
 
-import "github.com/zzjcool/anotify/internal/store"
+import (
+	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/store"
+)
 
 // Kind 是能力在链上的角色（契约 §5）。**推导量，不落库**（不变量 I3）。
 type Kind string
@@ -25,8 +28,9 @@ const (
 // 一直显示「链到这里结束」，而那条边其实已经生效。拓扑的真相是边（与 assign.ports
 // 的 MergePorts 同一条口径）。
 //
-// 注意：中枢执行的内置能力（notify.phone）走不到这里 —— 它由 Central 特例覆盖，
-// 见 KindForCapability。调用方**不要**直接调这个函数，用 KindForCapability。
+// 注意：中枢执行的能力（handler 可执行）走不到这里 —— 它由 KindForCapability 的
+// 中枢特例覆盖（判据是 spec.handler，不是名字）。调用方**不要**直接调这个函数，
+// 用 KindForCapability。
 func DeriveKind(hasOutEdges, hasInEdges bool) Kind {
 	if !hasOutEdges {
 		return KindEnd
@@ -62,11 +66,14 @@ func NodeKind(shapes []*store.EdgeShape) Kind {
 
 // KindForCapability 是整个仓库推导 kind 的**唯一入口**。
 //
-// 它在 DeriveKind 之上补两条内置能力的特例：
+// 它在 DeriveKind 之上补两条特例：
 //
-//	内置中枢执行（notify.phone）→ end   中枢是它的"执行者"，执行完就结束，
-//	                                    不产生下游任务（executor 不 emit）
-//	内置起点（github/cron/...） → origin 它不接收事件、也不产生任务
+//	handler 可执行（notify.phone）→ end   中枢是它的"执行者"，执行完就结束，
+//	                                   不产生下游任务（executor 不 emit）
+//	内置起点（github/cron/…） → origin 它不接收事件、也不产生任务
+//
+// 两者都是**实现形式/角色**的产物，不是名字表的查表结果：中枢特例的判据就是
+// artifact.IsExecutableHandler（与派发那一处同一判据，见 dispatch.go 的 plan）。
 //
 // 为什么必须集中在这里：console 列表、能力详情、建能力的响应都各自推导过一次
 // kind，特例散落三处必然漂移（notify.phone 曾在能力页显示成 origin，误导用户把它
@@ -77,13 +84,11 @@ func KindForCapability(c *store.CapabilityVersion, shape *store.EdgeShape) Kind 
 	if c == nil {
 		return KindOrigin
 	}
-	if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok {
-		if bc.Central {
-			return KindEnd
-		}
-		if bc.Origin {
-			return KindOrigin
-		}
+	if artifact.IsExecutableHandler(c.Spec.Handler) {
+		return KindEnd
+	}
+	if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok && bc.Origin {
+		return KindOrigin
 	}
 	return DeriveKind(shape.HasOut(), shape != nil && shape.HasIn)
 }

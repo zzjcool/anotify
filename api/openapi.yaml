@@ -5157,7 +5157,11 @@ components:
 
             - `param_missing`：参数引用的路径在 payload/别名表里取不到，且没有 `default`。
             - `param_type`：取值结果转不成目标 `params_schema` 要求的类型（不静默退回原值）。
-          enum: [no_edge, param_schema, no_node, foreign_user, path, param_missing, param_type]
+            - `no_impl`：目标能力是**占位实现**（`spec.handler: noop`）——合法但中枢不执行它。
+              与 `no_node` 的病因不同：后者是「有能力、但没节点声明」（装个节点就好），
+              前者是「这个能力根本没有实现」（换目标，或给它补一份真实现）。
+              它必须留痕而不是静默成功：noop 跑到「成功」时链上什么都没发生。
+          enum: [no_edge, param_schema, no_node, foreign_user, path, param_missing, param_type, no_impl]
         capabilityId: { type: string }
         port: { type: string }
         detail:
@@ -5178,7 +5182,10 @@ components:
       properties:
         reason:
           type: string
-          enum: [no_edge, param_schema, no_node, foreign_user, path, param_missing, param_type]
+          description: |
+            剪枝原因。`no_impl`（P2b 新增）表示目标是占位实现（`spec.handler: noop`），
+            中枢不执行它——详见 `PrunedRecord.reason`。
+          enum: [no_edge, param_schema, no_node, foreign_user, path, param_missing, param_type, no_impl]
         fromCapability:
           type: string
           description: 上游标识；入口边时是来源名（github / cron / …）

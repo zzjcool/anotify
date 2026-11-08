@@ -62,14 +62,17 @@ func TestSeedBuiltinCapabilitiesIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestBuiltinCapabilityIsCentral 验证 notify.phone 被标记为中枢执行。
+// TestBuiltinCapabilityIsCentral 验证 notify.phone 的唯一来源是它的 Handler。
+//
+// 「是不是中枢执行」不再是一个布尔字段（P2b 删了 `Central`）：唯一来源是播进
+// capability_versions.spec 的 handler。所以这里断言的就是种子数据里的那个字段。
 func TestBuiltinCapabilityIsCentral(t *testing.T) {
 	bc, ok := IsBuiltinCapability("notify.phone", 1)
 	if !ok {
 		t.Fatal("notify.phone@1 应被识别为内置能力")
 	}
-	if !bc.Central {
-		t.Error("notify.phone 应由中枢执行（没有节点执行者）")
+	if !artifact.IsExecutableHandler(bc.Handler) {
+		t.Errorf("notify.phone 的 handler = %q，应由中枢执行（没有节点执行者）", bc.Handler)
 	}
 
 	if _, ok := IsBuiltinCapability("review", 1); ok {
@@ -80,12 +83,122 @@ func TestBuiltinCapabilityIsCentral(t *testing.T) {
 	}
 }
 
-// TestCentralCapabilityNames 验证名单一致性。
-func TestCentralCapabilityNames(t *testing.T) {
+// TestNotifyPhoneStillCentral 播种后的真库上，notify.phone 仍在中枢集合里。
+//
+// 这是「不靠硬编码」的前半条证明：名字表删掉之后，notify.phone 依旧被认领——
+// 靠的是它自己的 spec.handler。
+func TestNotifyPhoneStillCentral(t *testing.T) {
 	db := newTestDB(t)
-	names := db.CentralCapabilityNames()
-	if len(names) != 1 || names[0] != "notify.phone" {
-		t.Fatalf("CentralCapabilityNames = %v, want [notify.phone]", names)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db) // 注册时已播种全部内置能力
+
+	names, err := db.CentralCapabilityNames(ctx)
+	if err != nil {
+		t.Fatalf("CentralCapabilityNames: %v", err)
+	}
+	if !slices.Contains(names, "notify.phone") {
+		t.Fatalf("CentralCapabilityNames = %v, want 包含 notify.phone", names)
+	}
+	// 落库的正文必须真的是 handler 形式（证明认领看的是那一列）。
+	phone, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
+	if err != nil {
+		t.Fatalf("get notify.phone: %v", err)
+	}
+	if phone.Spec.Handler != artifact.HandlerNotifyPhone {
+		t.Fatalf("notify.phone 的 spec.handler = %q, want %q", phone.Spec.Handler, artifact.HandlerNotifyPhone)
+	}
+}
+
+// TestCentralCapabilitiesAreSpecDriven 是「名字表真的死了」的证明。
+//
+// 造一个**不在 BuiltinCapabilities 里**的自定义能力，给它 handler: notify-phone：
+//
+//	旧实现（CentralCapabilityNames 筛内存表）→ 它永远不出现在认领集合里；
+//	新实现（查 spec.handler）              → 它出现在认领集合里。
+//
+// 然后把 handler 换成 noop（白名单里，但**不可执行**）：必须从集合里消失——
+// 这一半钉住 "noop 不可执行"，否则占位能力会被中枢领走并默默成功。
+func TestCentralCapabilitiesAreSpecDriven(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	const name = "phone.custom"
+	if _, ok := IsBuiltinCapabilityName(name); ok {
+		t.Fatalf("%s 不该出现在 BuiltinCapabilities 里（这条用例的前提）", name)
+	}
+
+	phone := &CapabilityVersion{
+		NamespaceID: nsID,
+		Name:        name,
+		DisplayName: "自定义推送",
+		Version:     1,
+		Source:      CapSourceCustom,
+		Spec: artifact.Spec{
+			Params:  json.RawMessage(`{"type":"object"}`),
+			Outputs: []string{},
+			Handler: artifact.HandlerNotifyPhone,
+		},
+	}
+	if err := db.CreateCapability(ctx, phone); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+
+	names, err := db.CentralCapabilityNames(ctx)
+	if err != nil {
+		t.Fatalf("CentralCapabilityNames: %v", err)
+	}
+	if !slices.Contains(names, name) {
+		t.Fatalf("CentralCapabilityNames = %v, want 包含自定义的 %s（handler 可执行就是中枢能力，不靠名字表）",
+			names, name)
+	}
+
+	// 同一个名字再来一版：handler = noop。
+	//
+	// 不能靠“再建一版”来测：版本是 append-only，@1 的 notify-phone 仍在库里，
+	// DISTINCT name 会把它带回来。所以这里直接用一条 UPDATE 把它那一行改成
+	// noop —— 等价于读写路径上真的把 handler 换掉（迁移回填就是这么干的），
+	// 同时也证明“没有缓存当第二真相”：改了库，下一次查询立刻反映。
+	if _, uerr := db.ExecContext(ctx,
+		`UPDATE capability_versions SET spec = json_set(spec, '$.handler', ?) WHERE id = ?`,
+		artifact.HandlerNoop, phone.ID); uerr != nil {
+		t.Fatalf("flip handler to noop: %v", uerr)
+	}
+	names, err = db.CentralCapabilityNames(ctx)
+	if err != nil {
+		t.Fatalf("CentralCapabilityNames after noop: %v", err)
+	}
+	if slices.Contains(names, name) {
+		t.Fatalf("CentralCapabilityNames = %v，不该包含 %s（handler 换成 noop 后不可执行）", names, name)
+	}
+
+	// 再用公开写入路径造一个“一出生就是占位”的能力：同样不入集合。
+	const noopName = "placeholder.only"
+	noopCap := &CapabilityVersion{
+		NamespaceID: nsID,
+		Name:        noopName,
+		Version:     1,
+		Source:      CapSourceCustom,
+		Spec: artifact.Spec{
+			Params:  json.RawMessage(`{"type":"object"}`),
+			Outputs: []string{},
+			Handler: artifact.HandlerNoop,
+		},
+	}
+	if err := db.CreateCapability(ctx, noopCap); err != nil {
+		t.Fatalf("create %s: %v", noopName, err)
+	}
+	names, err = db.CentralCapabilityNames(ctx)
+	if err != nil {
+		t.Fatalf("CentralCapabilityNames with noop capability: %v", err)
+	}
+	if slices.Contains(names, noopName) {
+		t.Fatalf("CentralCapabilityNames = %v，不该包含 %s（noop 不可执行，中枢不认领占位能力）",
+			names, noopName)
+	}
+	// 而 notify.phone 仍在：改别的行不会把真正的中枢能力抖掉。
+	if !slices.Contains(names, "notify.phone") {
+		t.Fatalf("CentralCapabilityNames = %v，丢失了 notify.phone", names)
 	}
 }
 

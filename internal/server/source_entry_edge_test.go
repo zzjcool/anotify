@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
@@ -66,6 +67,21 @@ func TestFireAndEventsShareEntryEdgePath(t *testing.T) {
 			`{"type":"object","required":["title","n"],"properties":{"title":{"type":"string"},"n":{"type":"integer"}}}`),
 		Outputs: []string{"done"},
 		Source:  store.CapSourceCustom,
+	}
+	// 实现必须是**脚本形式**（由下面的 mbn 节点执行）。
+	//
+	// P2b 起 handler: noop 是合法但**不可执行**的占位：派发遇到它会剪枝
+	// pruned/no_impl（契约 §3.1 / R1，见 route.ReasonNoImpl），一条任务都建不出来。
+	// 而这条用例要验的正好是「源发起的触发能把任务建出来」。
+	// 实现形式显式写进 Spec，withSpec 就会原样返回它（它只给缺实现的夹具补占位）。
+	capDef.Spec = artifact.Spec{
+		Params:  capDef.ParamsSchema,
+		Outputs: capDef.Outputs,
+		Run: artifact.Run{
+			Entrypoint: "run.sh",
+			Files:      map[string]string{"run.sh": "#!/bin/bash\nexit 0\n"},
+			TimeoutSec: 30,
+		},
 	}
 	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		t.Fatalf("create capability: %v", err)

@@ -236,14 +236,18 @@ func TestCapabilityVersionConflict(t *testing.T) {
 
 // TestBuiltinHandlersAreKnownHandlers 一致性测试（契约 §6.1 第 2 条）。
 //
-// 运行时认领仍然走 CentralCapabilityNames() 这张硬编码名字表（P1-b1 不动派发逻辑），
-// 所以这里只钉住「种子数据与正文别分叉」：每个 Central 条目都必须是 handler 形式，
-// 且 handler 在白名单里。P2 把运行时切到 spec.handler 之后，这条就是那个切换的前提。
+// 运行时认领已经改成数据驱动（读 spec.handler，P2b），所以这条现在钉的是
+// **那个切换的前提**：每个填了 Handler 的内置条目
+//
+//	① 播出来的正文确实是 handler 形式（不是 run）；
+//	② handler 在 artifact.KnownHandlers() 白名单里；
+//	③ 不再同时带 Artifact（否则会推一份没有 files 的产物给节点）；
+//	④ 正文立得住（artifact.Validate）。
 func TestBuiltinHandlersAreKnownHandlers(t *testing.T) {
 	known := artifact.KnownHandlers()
 	sawCentral := false
 	for _, bc := range BuiltinCapabilities {
-		if !bc.Central {
+		if bc.Handler == "" {
 			continue
 		}
 		sawCentral = true
@@ -252,7 +256,10 @@ func TestBuiltinHandlersAreKnownHandlers(t *testing.T) {
 			t.Fatalf("%s: 播不出正文: %v", bc.Name, err)
 		}
 		if spec.Handler == "" {
-			t.Fatalf("%s 是 Central 条目，正文必须是 handler 形式（spec.handler 为空）", bc.Name)
+			t.Fatalf("%s 填了 Handler，正文必须是 handler 形式（spec.handler 为空）", bc.Name)
+		}
+		if spec.Handler != bc.Handler {
+			t.Fatalf("%s 的正文 handler = %q, 种子字段 = %q（两者必须是同一个值）", bc.Name, spec.Handler, bc.Handler)
 		}
 		if !containsString(known, spec.Handler) {
 			t.Fatalf("%s 的 handler %q 不在白名单 %v 里", bc.Name, spec.Handler, known)

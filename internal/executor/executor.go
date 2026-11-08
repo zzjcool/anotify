@@ -1,4 +1,5 @@
-// Package executor 执行**中枢自己**的能力（内置能力的 Central 那部分）。
+// Package executor 执行**中枢自己**的能力——即实现形式是 handler、且该 handler 可执行
+// （artifact.IsExecutableHandler）的那些能力（Capability Spec v3 §3.1 / R1）。
 //
 // 为什么需要它：`notify.phone` 是图里的一条边，但它没有节点执行者——
 // 没人会写一个"发推送节点"，推送是中枢自己的能力。派发器把这这类候选
@@ -28,7 +29,7 @@ import (
 type Store interface {
 	// ClaimCentralTasks 领取「中枢执行的 pending 任务」。
 	//
-	// 判定条件：status=pending 且 capability 是内置 Central 能力。
+	// 判定条件：status=pending 且 capability 是中枢能力（名单由 spec.handler 决定）。
 	// 领到后推进到 running（跳过 assigned/acked：没有节点参与，那两个
 	// 状态是"等节点接单/开始"的意思，对中枢执行没有意义）。
 	//
@@ -41,7 +42,11 @@ type Store interface {
 	// 终态写入仍只在它自己的命名空间内生效（I10）。
 	FinishTask(ctx context.Context, namespaceID, taskID, status string, summary, errMsg string) error
 	// CentralCapabilityNames 返回中枢执行的能力名（用于挑选待办）。
-	CentralCapabilityNames() []string
+	//
+	// 数据驱动（Capability Spec v3 §11.3）：名单从 capability_versions.spec.handler
+	// 读出来，没有硬编码表。返回值会可能包含**用户自定义**的 handler 能力，
+	// 所以执行器对未知能力名必须显式失败（见 runOne），不能静默当作成功。
+	CentralCapabilityNames(ctx context.Context) ([]string, error)
 }
 
 // Notifier 是 `notify.phone` 的执行依赖。
@@ -143,7 +148,7 @@ func (e *Executor) runOne(ctx context.Context, task *store.Task) error {
 	case "notify.phone":
 		return e.runNotifyPhone(ctx, task)
 	default:
-		return fmt.Errorf("unknown central capability %q (registered as Central but has no executor)", task.Capability)
+		return fmt.Errorf("unknown central capability %q (its spec.handler is executable but this build has no executor for it)", task.Capability)
 	}
 }
 

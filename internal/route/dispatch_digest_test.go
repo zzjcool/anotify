@@ -6,7 +6,7 @@ package route
 // artifacts 里。任务行没有记录 digest，事后就无法证明「这次跑的是哪一份内容」。
 //
 // 本文件钉住两件事：
-//  1. 有产物 → task.Digest 等于该能力最新产物的 digest（存进去的就是要跑的那份）；
+//  1. 有产物 → task.Digest 等于该能力当前产物的 digest（存进去的就是要跑的那份）；
 //  2. 没产物 → 空串，且**派发照常成功**（中枢执行的内置能力、没登记产物的能力都是常态，
 //     不能因为「钉不住」就把整条链丢掉）。
 
@@ -36,14 +36,14 @@ func setupReviewFixChain(t *testing.T) (*fakeStore, *Dispatcher, *store.Capabili
 	return f, New(f), review, target
 }
 
-// TestPlanPinsLatestArtifactDigest 有产物：plan 建出的任务行带上该产物的 digest。
+// TestPlanPinsCurrentArtifactDigest 有产物：plan 建出的任务行带上该产物的 digest。
 //
 // 直接断言 plan 的返回值（而不是落库后的行）：digest 是**建行时**算出来的字段，
 // 在这一步就错了的话，落库只是把错值存进去。
 //
 // 走的是 Dispatch（emit 帧那条真路径）：它的 ①②③ 段就是 plan；接力派发那套用例
 // 删除之后，这是唯一能从外面触发 plan 的入口。
-func TestPlanPinsLatestArtifactDigest(t *testing.T) {
+func TestPlanPinsCurrentArtifactDigest(t *testing.T) {
 	f, d, review, target := setupReviewFixChain(t)
 	f.addArtifact(testNS, target.ID, testDigest)
 
@@ -59,7 +59,7 @@ func TestPlanPinsLatestArtifactDigest(t *testing.T) {
 	}
 	tasks := out.Tasks
 	if got := tasks[0].Digest; got != testDigest {
-		t.Fatalf("task digest = %q, want %q（必须等于 LatestArtifact 的 digest）", got, testDigest)
+		t.Fatalf("task digest = %q, want %q（必须等于 CurrentArtifact 的 digest）", got, testDigest)
 	}
 	// cap_hash 与 digest 是两个维度，都要在：前者钉定义，后者钉内容
 	if tasks[0].CapHash != target.ContentHash {
@@ -130,7 +130,7 @@ func TestDispatchNoArtifactKeepsDigestEmpty(t *testing.T) {
 		{
 			name: "产物查询失败",
 			setup: func(f *fakeStore) {
-				f.errLatestArtifact = errors.New("simulated store outage")
+				f.errCurrentArtifact = errors.New("simulated store outage")
 			},
 		},
 	}

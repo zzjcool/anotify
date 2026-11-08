@@ -3,6 +3,7 @@ package route
 import (
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -72,19 +73,37 @@ func TestKindForCapabilityFollowsEdges(t *testing.T) {
 	})
 }
 
-// TestKindForCapabilityBuiltinOverrideWins 内置特例仍然优先于边推导：
+// TestKindForCapabilityBuiltinOverrideWins 中枢特例仍然优先于边推导：
 //
-//	notify.phone（中枢执行）→ end   中枢执行完就结束，不产生下游任务（executor 不 emit）
+//	handler 可执行（notify.phone）→ end   中枢执行完就结束，不产生下游任务（executor 不 emit）
 //	内置起点（已随 #110 删除，这里守的是「Origin 特例」这条分支本身）
 //
 // 为什么要钉住：kind 存不落库（I3），特例散落三处必然漂移——notify.phone 曾在
 // 能力页显示成 origin，误导用户把它当事件来源。
+//
+// P2b 之后判据是 **spec.handler**（不再是名字表），所以下面两条用**同一个名字**
+// 配不同 handler 作为反证：名字一样，kind 必须不一样。
 func TestKindForCapabilityBuiltinOverrideWins(t *testing.T) {
-	phone := &store.CapabilityVersion{Name: "notify.phone", Version: 1, Outputs: []string{}}
+	phone := &store.CapabilityVersion{
+		Name: "notify.phone", Version: 1, Outputs: []string{},
+		Spec: artifact.Spec{Handler: artifact.HandlerNotifyPhone},
+	}
 	// 即使（在坏数据里）被接了出边，中枢执行的能力仍然不产生下游。
 	if got := KindForCapability(phone, &store.EdgeShape{OutPorts: []string{store.ImplicitPort}, HasIn: true}); got != KindEnd {
-		t.Fatalf("notify.phone kind = %q, want end（内置中枢特例优先）", got)
+		t.Fatalf("notify.phone kind = %q, want end（中枢特例优先）", got)
 	}
+
+	// 反证：名字一模一样，但实现是 noop（白名单里、**不可执行**）→ 没有中枢特例，
+	// 按边推导。旧名字表在这里会给出 end，新判据给出 pipe——这一对就是
+	// 「名字表真的死了」的证据。
+	placeholder := &store.CapabilityVersion{
+		Name: "notify.phone", Version: 1, Outputs: []string{},
+		Spec: artifact.Spec{Handler: artifact.HandlerNoop},
+	}
+	if got := KindForCapability(placeholder, &store.EdgeShape{OutPorts: []string{store.ImplicitPort}, HasIn: true}); got != KindPipe {
+		t.Fatalf("noop 占位能力的 kind = %q, want pipe（noop 不可执行，不该命中枢特例）", got)
+	}
+
 	// nil 能力定义不是 origin 就是 end 之外的东西都不该出现。
 	if got := KindForCapability(nil, nil); got != KindOrigin {
 		t.Fatalf("KindForCapability(nil) = %q, want origin", got)

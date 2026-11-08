@@ -35,6 +35,15 @@ const (
 	ReasonParamMissing PruneReason = "param_missing"
 	// ReasonParamType 参数取值结果转不成目标 params_schema 要求的类型。
 	ReasonParamType PruneReason = "param_type"
+	// ReasonNoImpl 目标能力是**占位实现**（spec.handler: noop）：没有真正可执行的实现。
+	//
+	// 与 no_node 的区别是「病因」：no_node 是「有能力、但没人声明」（装个节点就好），
+	// no_impl 是「这个能力就不存在实现」（要么换目标，要么给那个能力补一份真实现）。
+	//
+	// 为何必须剪枝而不是让它跑：noop 路由成功 = 任务绿了、下游一条都没有——
+	// 用户看到"链跑完了"，实际什么都没发生。静默成功比失败难查得多。
+	ReasonNoImpl PruneReason = "no_impl"
+
 	// ReasonEventSchema 事件 payload 不过源的 resultSchema（设计 §4.2 / §7 P0.2）。
 	//
 	// 与 ReasonParamSchema 的区别是**层级**不同：param_schema 是「这条边的参数

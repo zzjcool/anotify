@@ -1270,12 +1270,13 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 			list = []capNode{}
 		}
 		executedBy := "node"
-		if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok {
-			if bc.Central {
-				executedBy = "hub"
-			} else if bc.Origin {
-				executedBy = "none"
-			}
+		// 判据是正文（契约 §3.1 / R1）：spec.handler 可执行 = 中枢执行。
+		// 这里不再问 BuiltinCapabilities 的布尔字段（P2b 删掉了那个字段）：
+		// 谁执行由能力自己的实现形式决定，不由一张内存名字表决定。
+		if artifact.IsExecutableHandler(c.Spec.Handler) {
+			executedBy = "hub"
+		} else if bc, ok := store.IsBuiltinCapability(c.Name, c.Version); ok && bc.Origin {
+			executedBy = "none"
 		}
 		views = append(views, capView{
 			CapabilityVersion: c,
