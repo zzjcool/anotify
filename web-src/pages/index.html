@@ -24,9 +24,74 @@
   #index-events[aria-busy="true"] {
     min-height: 504px;
   }
+  /* 事件流加载骨架：照数据态的**盒子结构**画（左：源 chip + 类型 / traceId，
+     右：相对时间），而不是旧版「8 条整宽实心条」——那 8 条 62px 高的条首尾
+     相接，屏幕上就是一块 504px 的灰板，跟数据态的行列表毫无相似之处。
+     行高不写死：padding 8×2 + head 24 + gap 4 + trace 行盒 18 = 62px，与
+     数据态实测同高；窄屏下第一行会像真实的长类型名那样折行、行高一起变高
+     （与 .ev-feed-row 是同一套盒模型，所以不会各走各的）。 */
   .ev-skel-row {
-    height: 62px;
-    border-radius: var(--r-sm);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 8px;
+  }
+  .ev-skel-main {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .ev-skel-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* chip 条 24px = 数据态 .tag-chip 的实测高度，靠它锁死 head 那一行；
+     类型条只是「文字」而非 chip，所以细一档（16px + 上下 4px = 同一个 24px 行盒），
+     否则两个等高胶囊并排，看着像两颗 chip。 */
+  .ev-skel-chip,
+  .ev-skel-type {
+    flex: none;
+    border-radius: var(--r-full);
+  }
+  .ev-skel-chip {
+    width: 76px;
+    height: 24px;
+  }
+  /* 类型条三档宽度循环：8 行等宽会看着像一排进度条，参差才像内容 */
+  .ev-skel-type {
+    width: 152px;
+    height: 16px;
+    margin: 4px 0;
+  }
+  .ev-skel-row:nth-child(3n + 1) .ev-skel-type {
+    width: 224px;
+  }
+  .ev-skel-row:nth-child(3n + 2) .ev-skel-type {
+    width: 104px;
+  }
+  /* traceId / 时间条：数据态这两行 line-height 18px，条 12px + 上下 3px 补行盒，
+     于是骨架行高不必硬编码也恰好是 62px。 */
+  .ev-skel-trace,
+  .ev-skel-time {
+    height: 12px;
+    margin: 3px 0;
+  }
+  .ev-skel-trace {
+    width: 112px;
+  }
+  .ev-skel-row:nth-child(2n) .ev-skel-trace {
+    width: 88px;
+  }
+  .ev-skel-time {
+    width: 44px;
+  }
+  .ev-skel-row:nth-child(3n + 2) .ev-skel-time {
+    width: 60px;
   }
   /* 事件行：整行是 <a>（右键新开 / 键盘可达 / 读屏有名字）。
      两列：左 = 源 → 类型 + traceId，右 = 相对时间。 */
@@ -408,16 +473,89 @@
         </div>
       </div>
       <div id="index-events" class="anim-stagger px-3 py-1" aria-busy="true">
-        <!-- 8 行骨架 = 数据回来后的 8 条事件行高度（与 .ev-feed-row 同高）。
-             不预留的话，加载完成时会把下面内容整块推下去（首页 CLS）。 -->
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
+        <!-- 8 行骨架 = 数据回来后的 8 条事件行（与 .ev-feed-row 同一套盒模型，
+             桌面 62px/行，窄屏随折行变高）。四段条对应真实行的 chip / 类型 /
+             traceId / 相对时间；不再是一条整宽的灰块。 -->
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
       </div>
       <div class="card-head card-pad">
         <span id="ev-count" class="card-sub">—</span>

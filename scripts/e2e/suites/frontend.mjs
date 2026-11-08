@@ -1298,6 +1298,64 @@ async function main() {
 		await ctx.close();
 	}
 
+	// ---- L. index 加载期骨架：8 行事件行结构，不是一整块灰板 ----
+	//
+	// 回归防线。事件流骨架曾经是「8 条整宽 62px 实心条」，且首尾相接 ——
+	// 屏幕上看到的就是一块 504px 高的灰板，跟数据态的行列表毫无相似之处
+	// （用户报的「骨架图显示不对」）。现在骨架照数据态的盒子结构画
+	// （chip / 类型 / traceId / 相对时间 四段）。这里钉住三条：8 行、每行四段、
+	// 没有任何一段是整行宽（旧的实心条会 ≈ 1.0）。
+	console.log("--- index 加载期骨架结构 ---");
+	{
+		const s = H.seed(server.dbPath, "index_skel");
+		const ctx = await newCtx();
+		await injectSession(ctx, s.session, server.base);
+		// 挂住事件接口不响应 → 页面停在加载态（不 mock 数据，测的是真实骨架）
+		await ctx.route("**/v1/console/events*", () => {});
+		const page = await ctx.newPage();
+		await page.goto(server.base + "/index.html", {
+			waitUntil: "load",
+			timeout: 15000,
+		});
+		await page
+			.waitForSelector("#index-events .ev-skel-row", { timeout: 5000 })
+			.catch(() => {});
+		const skel = await page.evaluate(() => {
+			const box = document.getElementById("index-events");
+			const rows = Array.from(box?.querySelectorAll(".ev-skel-row") || []);
+			const bars = rows.flatMap((r) => Array.from(r.querySelectorAll(".skeleton")));
+			const boxW = box ? box.getBoundingClientRect().width : 0;
+			return {
+				busy: box?.getAttribute("aria-busy") === "true",
+				rows: rows.length,
+				barsPerRow: rows.map((r) => r.querySelectorAll(".skeleton").length),
+				widest: boxW
+					? Math.max(0, ...bars.map((b) => b.getBoundingClientRect().width)) / boxW
+					: 1,
+				labels: rows.map((r) => r.getAttribute("aria-hidden")),
+			};
+		});
+		H.check("加载期 #index-events 处于 aria-busy", skel.busy, JSON.stringify(skel));
+		H.check("加载期骨架是 8 行（与事件列表 limit 一致）", skel.rows === 8, `rows=${skel.rows}`);
+		H.check(
+			"每行骨架 4 段（chip / 类型 / traceId / 时间），不是一条实心条",
+			skel.barsPerRow.length === 8 && skel.barsPerRow.every((n) => n === 4),
+			JSON.stringify(skel.barsPerRow),
+		);
+		H.check(
+			"骨架最长一段仍不到半行宽（旧的整宽灰板会 ≈ 1.0）",
+			skel.widest < 0.5,
+			`widest=${skel.widest.toFixed(2)}`,
+		);
+		H.check(
+			"骨架行全部 aria-hidden（纯装饰，读屏不念灰块）",
+			skel.labels.every((v) => v === "true"),
+			JSON.stringify(skel.labels),
+		);
+		await page.close();
+		await ctx.close();
+	}
+
 	// ---- E. 集成三 tab 下线（接入 Agent / API 文档 / 技术方案 → 只留 API 文档）----
 	//
 	// 三个 tab 收敛成一个导航项后，最容易犯的错是「页删了，入口还在」：
