@@ -225,14 +225,20 @@
   /* 事件活动骨架：旧实现把 .skeleton 直接放进 .hm 网格，它只是**一个格子项**，
      于是被塞进第 1 列（12px 的星期标签列）—— 页面上只剩左边一根 12×87 的竖条
      （用户报的「事件活动骨架显示不对」）。
-     现在它占满全部 54 列 × 全部行，用 aspect-ratio 按数据态「53 周 × 7 天」的
-     方格比例自己撑高（1440 下实测数据态 #hm 1070×150.8 ≈ 1070/151），数据到达
-     时卡片高度不变；格纹用两层 repeating-linear-gradient 画 53×7 的方格、取色
-     --hm-empty（与数据态空格同色），而不是一块没有信息的灰板。 */
+     现在它只占**格子区**（第 2 列到末列 × 第 2 行到末行）：顶部月份行和左侧
+     星期列由 paintHeatmapAxis() 在首帧就画出来（那两个东西只跟今天有关，不等
+     数据），所以加载期看到的就是「有日期的日历在等数据」。
+     格子区高度用 aspect-ratio 按数据态的方格比例自己撑（1440 下实测 1056×137.7），
+     数据到达时卡片高度不变；格纹用两层 repeating-linear-gradient 画 53×7 的方格、
+     取色 --hm-empty（与数据态空格同色），而不是一块没有信息的灰板。 */
   .hm-skel {
-    grid-column: 1 / -1;
-    grid-row: 1 / -1;
-    aspect-ratio: 1070 / 151;
+    /* 列是显式网格（54 列），行是**隐式**的：所以行不能写 -1（会算到显式网格
+       最后一行，把月份行挤到骨架下面去），只写 span 7（7 个星期行）。 */
+    grid-column: 2 / -1;
+    grid-row: 2 / span 7;
+    /* 53 列 × 7 行的方格区：aspect-ratio 直接写 53/7（格子是 1:1），
+       1440 下得到 1056×139.5，加上 11px 月份行 = 150.5 ≈ 数据态 150.8。 */
+    aspect-ratio: 53 / 7;
     border-radius: var(--r-sm);
     /* 格子 = --hm-empty，缝 = 卡片底色：两层渐变各自把「缝」画成卡片色，
        并集正好是整片缝网，剩下的就是 53×7 个方格 —— 与数据态的空格子一模一样。
@@ -565,8 +571,9 @@
            frontend.mjs 只在 .overflow-x-auto / .code-body / pre 内豁免横向溢出，
            两个类必须同时存在。 */}}
       <div class="hm-scroll overflow-x-auto px-5 py-3">
-        <!-- 热力图首帧占位：53×7 的格纹 + 与数据态同高（高度由 .hm-skel 的
-             aspect-ratio 跟着卡片宽度走），避免 1.3s 的空白卡与数据到达时的下推 -->
+        <!-- 热力图首帧占位：53×7 的格纹只占格子区（月份行 / 星期列首帧就有），
+             高度由 .hm-skel 的 aspect-ratio 跟着卡片宽度走，避免 1.3s 的空白卡
+             与数据到达时的下推 -->
         <div class="hm" id="hm" aria-busy="true">
           <div class="skeleton hm-skel" aria-hidden="true"></div>
         </div>
@@ -1448,6 +1455,71 @@
       );
 
     /* ================= 热力图 ================= */
+    /* ================= 事件活动（热力图）=================
+     * 时间轴（顶部月份行 + 左侧星期列）只由「今天是哪天」决定，跟 /v1/stats
+     * 没有关系 —— 所以加载期就先画出来（paintHeatmapAxis），骨架只占格子区：
+     * 用户一进页面看到的就是「一张有日期的日历在等数据」，而不是一块没有刻度
+     * 的灰片。数据到手后 renderHeatmap() 清空重画，轴用的还是同一个函数，
+     * 两个状态逐像素对齐（月份位置、标签行高都一样，不会跳）。 */
+    const HM_WEEKS = 53;
+
+    /* 53 周窗口：最后一列是本周（周一起算），第一列是 52 周前的周一。 */
+    function hmCalendar() {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const startMonday = new Date(today);
+      startMonday.setDate(
+        today.getDate() - ((today.getDay() + 6) % 7) - (HM_WEEKS - 1) * 7,
+      );
+      return { today, startMonday };
+    }
+
+    function hmMondayOf(startMonday, w) {
+      const monday = new Date(startMonday);
+      monday.setDate(startMonday.getDate() + w * 7);
+      return monday;
+    }
+
+    /* 轴 = 左侧星期列（一 / 三 / 五）+ 顶部月份行（月份变化处一个标签）。 */
+    function hmAxisFragment(startMonday) {
+      const DAY_LABELS = {
+        0: t("index.heatmap.week.mon", "一"),
+        2: t("index.heatmap.week.wed", "三"),
+        4: t("index.heatmap.week.fri", "五"),
+      };
+      const frag = document.createDocumentFragment();
+      for (let d = 0; d < 7; d++) {
+        const s = document.createElement("span");
+        s.className = "hm-day";
+        s.style.gridRow = d + 2;
+        s.textContent = DAY_LABELS[d] || "";
+        frag.append(s);
+      }
+      let prevMonth = -1;
+      for (let w = 0; w < HM_WEEKS; w++) {
+        const m = hmMondayOf(startMonday, w).getMonth();
+        if (m === prevMonth) continue;
+        prevMonth = m;
+        const label = document.createElement("span");
+        label.className = "hm-month";
+        label.style.gridColumn = w + 2;
+        label.textContent = t("index.heatmap.month", "{n}月").replace(
+          "{n}",
+          m + 1,
+        );
+        frag.append(label);
+      }
+      return frag;
+    }
+
+    /* 首帧：只画轴（幂等，重复调用不会叠标签），骨架继续占格子区等 /v1/stats。 */
+    function paintHeatmapAxis() {
+      const hm = document.getElementById("hm");
+      if (!hm) return;
+      hm.querySelectorAll(".hm-day, .hm-month").forEach((n) => n.remove());
+      hm.append(hmAxisFragment(hmCalendar().startMonday));
+    }
+
     function renderHeatmap() {
       const hm = document.getElementById("hm");
       if (!hm) return;
@@ -1469,7 +1541,7 @@
         t("index.heatmap.week.fri", "五"),
         t("index.heatmap.week.sat", "六"),
       ];
-      const WEEKS = 53;
+      const WEEKS = HM_WEEKS;
       // 真实数据：STATS.daily = [{day:"YYYY-MM-DD",count}] → Map 便于查
       const countByDay = new Map();
       if (STATS && Array.isArray(STATS.daily)) {
@@ -1493,42 +1565,12 @@
       }
       const tip = el("div", { class: "hm-tip" });
       document.body.append(tip);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const dow = (today.getDay() + 6) % 7;
-      const endMonday = new Date(today);
-      endMonday.setDate(today.getDate() - dow);
-      const startMonday = new Date(endMonday);
-      startMonday.setDate(endMonday.getDate() - (WEEKS - 1) * 7);
-      const DAY_LABELS = {
-        0: t("index.heatmap.week.mon", "一"),
-        2: t("index.heatmap.week.wed", "三"),
-        4: t("index.heatmap.week.fri", "五"),
-      };
-      const frag = document.createDocumentFragment();
-      for (let d = 0; d < 7; d++) {
-        const s = document.createElement("span");
-        s.className = "hm-day";
-        s.style.gridRow = d + 2;
-        s.textContent = DAY_LABELS[d] || "";
-        frag.append(s);
-      }
-      let prevMonth = -1;
+      const { today, startMonday } = hmCalendar();
+      // 轴与数据无关：加载期已经画过，这里清空重画一遍，保证「有数据」和
+      // 「加载中」两个状态的轴是同一份代码产出的（逐像素对齐）。
+      const frag = hmAxisFragment(startMonday);
       for (let w = 0; w < WEEKS; w++) {
-        const monday = new Date(startMonday);
-        monday.setDate(startMonday.getDate() + w * 7);
-        const m = monday.getMonth();
-        if (m !== prevMonth) {
-          const label = document.createElement("span");
-          label.className = "hm-month";
-          label.style.gridColumn = w + 2;
-          label.textContent = t("index.heatmap.month", "{n}月").replace(
-            "{n}",
-            m + 1,
-          );
-          frag.append(label);
-          prevMonth = m;
-        }
+        const monday = hmMondayOf(startMonday, w);
         for (let d = 0; d < 7; d++) {
           const date = new Date(monday);
           date.setDate(monday.getDate() + d);
@@ -1608,6 +1650,8 @@
 
     /* ================= 启动 ================= */
     renderSparks();
+    // 热力图时间轴是固定的（只跟今天有关）：不等 /v1/stats，首帧就画出来
+    paintHeatmapAxis();
     load();
   })();
 </script>

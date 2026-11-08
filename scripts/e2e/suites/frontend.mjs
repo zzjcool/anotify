@@ -1345,6 +1345,17 @@ async function main() {
 				hmWidthRatio: hmB && skB && hmB.width ? skB.width / hmB.width : 0,
 				hmSkelH: skB ? Math.round(skB.height) : 0,
 				hmSkelHidden: hmSkel?.getAttribute("aria-hidden") === "true",
+				// 时间轴（月份行 / 星期列）只跟今天有关：加载期就该已经画好
+				hmMonths: document.querySelectorAll("#hm .hm-month").length,
+				hmDays: [...document.querySelectorAll("#hm .hm-day")]
+					.map((n) => n.textContent)
+					.filter(Boolean).length,
+				// 月份行必须在骨架**上面**（隐式行用 -1 度量时会被挤到下面）
+				hmAxisAboveSkel: (() => {
+					const m = document.querySelector("#hm .hm-month");
+					if (!m || !skB) return false;
+					return m.getBoundingClientRect().bottom <= skB.top + 1;
+				})(),
 			};
 		});
 		H.check("加载期 #index-events 处于 aria-busy", skel.busy, JSON.stringify(skel));
@@ -1378,6 +1389,23 @@ async function main() {
 		H.check(
 			"事件活动骨架 aria-hidden（格纹是纯装饰）",
 			skel.hmSkelHidden === true,
+			JSON.stringify(skel),
+		);
+		// 时间轴（月份行 + 星期列）与 /v1/stats 无关，加载期就该已经渲染：
+		// 用户看到的是一张「有日期的日历在等数据」，而不是没有刻度的灰片。
+		H.check(
+			"加载期就画好 13 个月份刻度（53 周窗口跨 13 个月）",
+			skel.hmMonths === 13,
+			`months=${skel.hmMonths}`,
+		);
+		H.check(
+			"加载期就画好星期列（一 / 三 / 五 三个文字标签）",
+			skel.hmDays === 3,
+			`days=${skel.hmDays}`,
+		);
+		H.check(
+			"月份行在骨架上方，骨架只占格子区",
+			skel.hmAxisAboveSkel === true,
 			JSON.stringify(skel),
 		);
 		await page.close();
