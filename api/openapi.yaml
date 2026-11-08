@@ -4029,22 +4029,51 @@ components:
         能力正文的**全文**（Capability Spec v3 §3）：契约 + 实现。
 
         与 `CapabilitySpecSummary` 的差别只有 `run.files`：这里是相对路径 → 文件正文。
+
+        **空正文的语义**（这一份是 digest 的输入，所以每种「没写」都只有一个含义）：
+
+        - `params` 省略 = 这个能力**不吃参数**（参数集为空 → 任何 `literals` 键都过不了校验）
+        - `outputs` **必在**，没有出口就是 `[]`（不变量 I2/I9：不让它变成 `null`）
+        - `requires` 省略 = 不依赖外部命令（与 `[]` 等价）
+        - `lifecycle` 省略 = 全用默认（`maxAttempts` 缺省 3、`idempotent` 缺省 `true`）
+        - `sticky` 省略 / 空串 = 不粘
+        - `run` 与 `handler` **恰好给一组**（§3.1）：两组都给 → `impl_ambiguous`，
+          都不给 → `impl_missing`
       properties:
         params:
           type: object
-          description: JSON Schema 的**受控子集**（不支持 $ref / if-then-else）
+          description: |
+            JSON Schema 的**受控子集**（不支持 `$ref` / `if-then-else`）。
+
+            省略 = **没有参数**：参数集为空，于是任何 `literals` 键都会因
+            「键不在 `params.properties` 里」被配置期硬拒。结构校验只走受控子集，
+            中枢不在运行期求值（I6）。
         outputs:
           type: array
           items: { type: string }
-          description: 出口名的封闭集合（不变量 I2）；空时 `[]`
+          description: |
+            出口名的封闭集合（不变量 I2）；空时 `[]`。
+
+            **必在**（不省略也不给 `null`）：空数组是一个有意义的声明——「这个能力没有出口」
+            （链尾）。拿它当「没声明过」会让 I2 的端口封闭失去基准。
         requires:
           type: array
           items: { type: string }
-          description: 节点必须预装的外部命令
+          description: |
+            节点必须预装的外部命令（部署时 LookPath 探测）。
+
+            省略 = 不依赖外部命令（与 `[]` 等价）。它不参与路由，只影响能不能跑得起来。
         lifecycle:
           type: object
-          description: 重试 / 幂等 / 结果保留策略
-        sticky: { type: string, description: 粘性路由键类型（空 = 不粘） }
+          description: |
+            重试 / 幂等 / 结果保留策略（不透明透传，原样进 digest）。
+
+            省略 = 全用默认：`maxAttempts` 缺省 3、`idempotent` 缺省 `true`（没声明就当
+            可重试，契约 §3.2）；`retryable` / `resultTtlSec` / `expiresInSec` 省略 =
+            不做额外声明。
+        sticky:
+          type: string
+          description: 粘性路由键类型（`worktree` / …）；省略或空串 = 不粘。
         run:
           type: object
           required: [entrypoint, files]
@@ -4096,6 +4125,14 @@ components:
             retryable: { type: boolean }
             maxAttempts: { type: integer }
             resultTtlSec: { type: integer }
+            idempotent:
+              type: boolean
+              description: |
+                重放是否安全：`false` 表示租约过期后直接 `abandoned`，不回 `pending`。
+                省略 = `true`（没声明就当可重试，契约 §3.2）。
+
+                与 `spec.lifecycle.idempotent` 是同一个值：这一列是写入时由正文算出的
+                **派生只读列**（契约 §4），改它只能改正文。
         source: { type: string, enum: [builtin, custom] }
         contentHash:
           type: string
@@ -4270,6 +4307,17 @@ components:
             常量覆盖（设计 §3.3）：键必须在**目标能力**的 `paramsSchema.properties` 里，
             值类型必须与声明精确相等。不传 / `{}` = 没有覆盖。
           additionalProperties: true
+        priority:
+          type: integer
+          default: 0
+          description: |
+            这条候选的优先级（小的优先，同级轮盘；缺省 0）。与 `BatchLinkInput.priority`
+            / `Edge.priority` 是同一个值，落进 `edges.priority`。
+
+            同一条边（同一 `(左端, 端口, 右端)` 引用）已存在时**保留原优先级**
+            （`ON CONFLICT DO NOTHING`）：重复提交不会把它悄悄改回传入值（那是一次不可见的
+            改线）。要改已存在边的优先级走 `PUT /capabilities/{name}/downstreams`（那条
+            路径的 upsert 会更新 `priority`）。
 
     CapabilityBatchInput:
       type: object
@@ -4359,11 +4407,9 @@ components:
             这条候选的优先级（契约 §1：**小的优先**）——同一 `(上游能力, 端口)` 的候选集合按
             `priority` 升序、取最小 priority 组，组内轮盘。
 
-            **本期只接收、不落库**：落库是 `edges.priority` 那一条竖切的事（schema 迁移 +
-            `store.Edge.Priority` + `createEdgeTx` 的 INSERT 列）。在那条竖切合入之前，
-            这个字段会被解码，但**不入库、不出现在响应 `edges[]` 里、不影响派发选择**。
-            先把字段写进契约而不是等接线完再加：前端/调用方可按冻结契约先发，
-            届时中枢侧接线不需要再改一次契约。
+            **落进 `edges.priority`**（与单建的 `CapabilityLinkInput.priority`、
+            `Edge.priority` 是同一个值）：批与单建两条路径都写这一列。同一条边已存在时
+            **保留原优先级**（`ON CONFLICT DO NOTHING`），重复提交不会把已在线上的重排。
 
     UpgradeImpact:
       type: object

@@ -12,6 +12,14 @@
   1. mux 里的每条 /v1 路由，spec 里都要有对应 path（允许前缀挂载展开）
   2. spec 里的每个 path，mux 里都要能匹配到（防止文档多写）
   3. 每个 operation 都必须有 security（哪怕是 `security: []` 表示匿名）
+
+它**不看 schema**：`Go 结构体里有的字段，schema 里声明了吗`（以及反过来
+「schema 声明的字段，Go 里真有吗」）由 **`internal/server/openapi_parity_test.go`**
+ 负责（双向 + 递归 + 指名道姓的失败信息）。那两个方向查的是同一类真实 bug：
+ `run` / `requires` / `env` 都曾经「Go 发了、schema 没声明」，按 schema 生成的客户端
+ 永远提交不了实现，而那时本脚本一直是绿的。改 schema 后记得跑：
+
+     go test ./internal/server/ -run TestOpenAPIParity
 """
 
 import re
@@ -148,6 +156,9 @@ def main() -> int:
         if m in ("get", "post", "put", "patch", "delete", "head")
     )
     print(f"  openapi 与 mux 一致（{len(real)} 条路由 / {len(specs)} 个 path / {n_ops} 个 operation）")
+    # 说清楚边界：本脚本只查 path 与 security。不写这一行的话，下一个人会以为
+    # 「make contract 绿了 = schema 也核过了」，而字段级漂移恰恰不会被这里看见。
+    print("  字段级核对（Go json tag ↔ schema properties，双向）由 internal/server/openapi_parity_test.go 负责")
     return 0
 
 

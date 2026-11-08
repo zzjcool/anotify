@@ -71,7 +71,9 @@ test: ## 运行全部单元测试（不含 make e2e / make integration）
 # A5（I1）：中枢侧任何包不得 import os/exec —— 执行只发生在节点
 # A6（I1）：artifacts / deployments 必须有 digest 列（内容寻址）
 # A7（I1）：cmd/agent 不得触碰 node_capabilities（归属只能由部署派生）
-contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ openapi 与 mux 一致性
+# openapi：path/security 由 check_openapi.py 查；**字段级**（Go json tag ↔ schema
+# properties，双向）由 internal/server/openapi_parity_test.go 查（见本 target 的注释）。
+contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ openapi 与 mux 一致性 + openapi 字段级核对
 	@set -e; \
 	if grep -riE 'argv|shell|script' internal/store/schema.sql >/dev/null; then \
 		echo "❌ A2 失败：schema.sql 里出现 argv/shell/script（不变量 I1）"; \
@@ -80,7 +82,12 @@ contract: ## CONTRACT.md §9 的静态不变量断言（A2/A4/A5/A6/A7）+ opena
 	fi
 	@python3 scripts/check_contract.py
 	@python3 scripts/check_openapi.py
-	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性）通过"
+	@# 字段级核对（Capability Spec v3 §7 P6）：check_openapi.py 只查 path 与 security，
+	@# schema 与 Go 结构体的双向核对在 Go 测试里（要拿 reflect 读 json tag）。
+	@# 放在 contract 而不是只靠 ci 的 test 阶段：PR 里最快的那道门就能当场回答
+	@# 「我加的这个字段声明了吗」——否则它要等到几分钟后的全量 test 才红。
+	@go test ./internal/server/ -run TestOpenAPIParity -count=1
+	@echo "✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对）通过"
 
 # agent CLI 的可发现面（#317）：`-h` 的命令表与 `--skill` 手册跟着代码走，不跟着人记性走。
 #
