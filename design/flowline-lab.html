@@ -1,0 +1,2466 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-data="simple">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Anotify · Flowline 五种流法</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b8bfd'/%3E%3Cpath d='M8 20c4-8 12-8 16 0M8 14c4-8 12-8 16 0' stroke='%230b0b12' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../web/tokens.css">
+<link rel="stylesheet" href="../web/fonts/fonts.css">
+<style>
+/* ============================================================
+   Flowline Lab · 同一条 trace，五种流法
+   All visuals are DOM + SVG. No new dependencies.
+   ============================================================ */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+body.is-locked { overflow: hidden; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+::selection { background: var(--accent-2); color: var(--text); }
+
+.lab-wrap {
+  width: min(1380px, 100%);
+  margin: 0 auto;
+  padding: 0 30px 90px;
+  position: relative;
+}
+.lab-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 560px;
+  background:
+    radial-gradient(46% 58% at 14% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 72%),
+    radial-gradient(36% 52% at 92% 12%, color-mix(in srgb, var(--st-acked) 6%, transparent), transparent 76%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ── hero ─────────────────────────────────────────────────── */
+.lab-head { padding: 66px 0 30px; position: relative; }
+.lab-kicker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.lab-kicker::before {
+  content: "";
+  width: 22px;
+  height: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-3);
+}
+.lab-kicker b { color: var(--accent); font-weight: 500; }
+.lab-title {
+  margin: 16px 0 0;
+  font-size: clamp(38px, 5.2vw, 68px);
+  line-height: .98;
+  letter-spacing: -.055em;
+  font-weight: 520;
+  color: var(--text);
+}
+.lab-title em {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
+  letter-spacing: -.04em;
+  padding-right: .06em;
+}
+.lab-lead {
+  margin: 20px 0 0;
+  max-width: 76ch;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.lab-lead b { color: var(--text); font-weight: 560; }
+.lab-facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.lab-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-1) 56%, transparent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: .04em;
+  color: var(--faint);
+}
+.lab-fact i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-3);
+}
+.lab-fact b { color: var(--muted); font-weight: 500; }
+
+/* ── sticky toolbar ───────────────────────────────────────── */
+.lab-bar {
+  position: sticky;
+  top: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 46px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+}
+.lab-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.lab-nav::-webkit-scrollbar { display: none; }
+.lab-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--faint);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  white-space: nowrap;
+}
+.lab-nav a span {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: .06em;
+  color: color-mix(in srgb, var(--faint) 70%, transparent);
+}
+.lab-nav a:hover { color: var(--text); background: var(--surface-2); }
+.lab-nav a.is-active { color: var(--text); background: var(--accent-soft); }
+.lab-nav a.is-active span { color: var(--accent); }
+.lab-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: 0 0 auto; }
+.seg {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-1) 52%, transparent);
+}
+.seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  border-radius: 5px;
+  padding: 4px 7px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent) inset; }
+.lab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-1) 52%, transparent);
+  color: var(--muted);
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.lab-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); }
+
+/* ── sample header ────────────────────────────────────────── */
+.samples { position: relative; }
+.sample { padding-top: 72px; scroll-margin-top: 72px; }
+.sample-head {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 15px;
+}
+.sample-no {
+  padding-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  color: var(--faint);
+}
+.sample-no b { color: var(--accent); font-weight: 500; }
+.sample-title {
+  margin: 0;
+  font-size: clamp(23px, 2.4vw, 31px);
+  line-height: 1.08;
+  letter-spacing: -.035em;
+  font-weight: 540;
+  color: var(--text);
+}
+.sample-title small {
+  margin-left: 9px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 400;
+  letter-spacing: .12em;
+  color: var(--faint);
+  vertical-align: 2px;
+}
+.sample-thesis {
+  max-width: 72ch;
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.sample-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 320px; }
+.sample-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: .03em;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.sample-tag.is-key { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--accent-soft); }
+
+/* ── stage shell ──────────────────────────────────────────── */
+.stage {
+  --stage-h: 560px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: var(--stage-h);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface-1);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--text) 5%, transparent) inset,
+    0 26px 60px -34px color-mix(in srgb, #000 50%, transparent);
+  isolation: isolate;
+}
+.stage-bar {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 39px;
+  flex: 0 0 39px;
+  padding: 0 10px 0 13px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 72%, var(--surface-1) 28%);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--faint);
+}
+.stage-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+  flex: 0 0 auto;
+}
+.stage-dot.is-fail { background: var(--error); box-shadow: 0 0 0 3px var(--error-soft); }
+.stage-id { color: var(--muted); letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-meta { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-meta b { color: var(--muted); font-weight: 500; }
+.stage-sep { width: 1px; height: 12px; background: var(--line); flex: 0 0 auto; }
+.stage-spacer { flex: 1 1 auto; }
+.stage-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  padding: 4px 5px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.stage-btn svg { width: 11px; height: 11px; }
+.stage-btn:hover { color: var(--text); background: var(--surface-2); border-color: var(--line); }
+.stage-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.stage-esc {
+  position: absolute;
+  z-index: 12;
+  top: 47px;
+  right: 12px;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(10px);
+  color: var(--muted);
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  cursor: pointer;
+}
+.stage.is-zoom {
+  position: fixed;
+  inset: 12px;
+  z-index: 200;
+  height: auto;
+  border-radius: 16px;
+  box-shadow: 0 40px 120px -20px #000;
+}
+.stage.is-zoom .stage-esc { display: inline-flex; }
+
+/* stage heights */
+.stage[data-size="silk-simple"] { --stage-h: 356px; }
+.stage[data-size="silk-complex"] { --stage-h: 600px; }
+.stage[data-size="current-simple"] { --stage-h: 346px; }
+.stage[data-size="current-complex"] { --stage-h: 590px; }
+.stage[data-size="transit-simple"] { --stage-h: 336px; }
+.stage[data-size="transit-complex"] { --stage-h: 580px; }
+.stage[data-size="river-simple"] { --stage-h: 370px; }
+.stage[data-size="river-complex"] { --stage-h: 620px; }
+.stage[data-size="airmail-simple"] { --stage-h: 346px; }
+.stage[data-size="airmail-complex"] { --stage-h: 600px; }
+.stage[data-size="silk-loop"] { --stage-h: 490px; }
+.stage[data-size="current-loop"] { --stage-h: 480px; }
+.stage[data-size="transit-loop"] { --stage-h: 470px; }
+.stage[data-size="river-loop"] { --stage-h: 510px; }
+.stage[data-size="airmail-loop"] { --stage-h: 490px; }
+
+/* ── flow shell / hud ─────────────────────────────────────── */
+.flow-wrap { position: relative; z-index: 2; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.flow-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  cursor: grab;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 13px, #000 calc(100% - 13px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 13px, #000 calc(100% - 13px), transparent 100%);
+}
+.flow-scroll.is-dragging { cursor: grabbing; }
+.flow-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.sl-loop, .cu-loop, .tr-loop, .rv-loop, .am-loop { opacity: 0; transition: opacity .7s var(--ease-out); }
+.sl-loop.is-loop, .cu-loop.is-loop, .tr-loop.is-loop, .rv-loop.is-loop, .am-loop.is-loop { opacity: 1; }
+.loop-badge { position: absolute; z-index: 4; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 8px; letter-spacing: .08em; white-space: nowrap; opacity: 0; transition: opacity .6s var(--ease-out); pointer-events: none; box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+.loop-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid var(--accent); border-top-color: transparent; animation: loop-spin 2.4s linear infinite; }
+.loop-badge.is-loop { opacity: 1; }
+@keyframes loop-spin { to { transform: rotate(360deg); } }
+.stage:focus { outline: none; }
+.flow-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.flow-scroll::-webkit-scrollbar-track { background: transparent; }
+.flow-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
+.flow-canvas { position: relative; flex: 0 0 auto; margin: auto; z-index: 1; }
+.flow-svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; z-index: 1; }
+.flow-hud {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 35px;
+  height: 35px;
+  padding: 0 13px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 56%, transparent);
+  backdrop-filter: blur(12px);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--faint);
+}
+.hud-clock { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.hud-track { flex: 1 1 auto; min-width: 36px; height: 2px; border-radius: 2px; overflow: hidden; background: var(--line); }
+.hud-track i { display: block; width: 0; height: 100%; border-radius: 2px; background: var(--art, var(--accent)); box-shadow: 0 0 8px var(--art, var(--accent)); transition: width .12s linear; }
+.hud-active { flex: 0 1 auto; min-width: 0; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.hud-legend { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 10px; }
+.hud-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.hud-legend i { width: 4px; height: 4px; border-radius: 50%; background: var(--art, var(--accent)); }
+.hud-legend span:last-child i { background: var(--error); }
+
+/* ── shared node ──────────────────────────────────────────── */
+.flow-node {
+  --state: var(--success);
+  --soft: var(--success-soft);
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 11px;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px) scale(.985);
+  transition:
+    opacity .55s var(--ease-out),
+    transform .6s var(--ease-out),
+    border-color .35s var(--ease),
+    box-shadow .35s var(--ease),
+    filter .35s var(--ease);
+}
+.flow-node.is-in { opacity: 1; transform: none; }
+.flow-node.is-failed { --state: var(--error); --soft: var(--error-soft); }
+.flow-node.is-running { --state: var(--st-running); --soft: var(--success-soft); }
+.flow-node.is-succeeded { --state: var(--success); --soft: var(--success-soft); }
+.flow-node.is-pending { --state: var(--st-pending); --soft: var(--surface-2); }
+.flow-node > * { position: relative; z-index: 2; }
+.n-icon {
+  grid-row: 1 / 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--state) 10%, transparent);
+  color: color-mix(in srgb, var(--state) 78%, var(--text));
+}
+.n-icon svg { width: 14px; height: 14px; stroke-width: 1.7; }
+.n-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.n-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 590;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+.n-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  line-height: 1.3;
+  letter-spacing: -.01em;
+  color: var(--faint);
+}
+.n-sub.is-error { color: var(--error-300); }
+.n-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 26px; }
+.n-step { font-family: var(--font-mono); font-size: 6.5px; line-height: 1; letter-spacing: .06em; color: var(--faint); }
+.n-dur { font-family: var(--font-mono); font-size: 8px; line-height: 1; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.n-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--state); box-shadow: 0 0 0 3px color-mix(in srgb, var(--state) 12%, transparent); }
+.flow-node.is-failed .n-dot { box-shadow: 0 0 0 3px var(--error-soft), 0 0 12px color-mix(in srgb, var(--error) 45%, transparent); }
+.flow-node .n-sub .n-err { color: var(--error-300); }
+.stage-body[data-narrow="1"] .flow-node .n-side { display: none; }
+
+/* ── 01 SILK ──────────────────────────────────────────────── */
+.stage-body[data-variant="silk"] {
+  --art: var(--accent);
+  background:
+    radial-gradient(52% 74% at 7% 18%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 72%),
+    radial-gradient(46% 66% at 94% 82%, color-mix(in srgb, var(--st-acked) 9%, transparent), transparent 76%),
+    linear-gradient(156deg, color-mix(in srgb, var(--surface-1) 92%, var(--accent) 2%), var(--surface-1) 56%, color-mix(in srgb, var(--surface-1) 94%, var(--st-acked) 2%));
+}
+.stage-body[data-variant="silk"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .5;
+  background: repeating-linear-gradient(112deg, transparent 0 26px, color-mix(in srgb, var(--text) 2.2%, transparent) 26px 27px);
+  mask-image: linear-gradient(90deg, #000, transparent 24%, transparent 76%, #000);
+}
+.silk-bg-glow { position: absolute; z-index: 0; pointer-events: none; border-radius: 50%; filter: blur(40px); opacity: .55; }
+.sl-edge { opacity: 0; transition: opacity .5s var(--ease-out); }
+.sl-edge.is-on { opacity: 1; }
+.sl-under { fill: none; stroke-linecap: round; stroke-width: 30; opacity: .28; filter: url(#sl-soft); }
+.sl-mid { fill: none; stroke-linecap: round; stroke-width: 11; opacity: .52; }
+.sl-core { fill: none; stroke-linecap: round; stroke-width: 1.5; opacity: .86; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset .8s var(--ease-out); }
+.sl-edge.is-on .sl-core { stroke-dashoffset: 0; }
+.sl-shim { fill: none; stroke-linecap: round; stroke-width: 4.2; opacity: 0; stroke-dasharray: 24 144; animation: sl-flow 3.1s linear infinite; }
+.sl-bead { fill: color-mix(in srgb, var(--text) 74%, var(--accent)); opacity: .95; filter: drop-shadow(0 0 6px var(--accent)); }
+.sl-edge.is-on .sl-shim { opacity: .95; }
+@keyframes sl-flow { from { stroke-dashoffset: 180; } to { stroke-dashoffset: 0; } }
+.sl-node {
+  background: color-mix(in srgb, var(--surface-1) 74%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--text) 7%, transparent) inset,
+    0 14px 30px -20px color-mix(in srgb, #000 65%, transparent);
+}
+.sl-node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--state);
+  opacity: .85;
+  z-index: 3;
+}
+.sl-node::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(118deg, color-mix(in srgb, var(--text) 4.5%, transparent), transparent 38%);
+  z-index: 0;
+}
+.sl-node.is-trigger {
+  background: linear-gradient(132deg, color-mix(in srgb, var(--accent) 13%, var(--surface-1)), color-mix(in srgb, var(--surface-1) 76%, transparent));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--text) 8%, transparent) inset,
+    0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent),
+    0 18px 42px -26px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.sl-node.is-trigger .n-icon { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); }
+.sl-node.is-trigger .n-step { color: var(--accent); }
+.sl-node.is-hot {
+  border-color: color-mix(in srgb, var(--state) 36%, var(--line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--state) 24%, transparent),
+    0 0 34px -8px color-mix(in srgb, var(--state) 20%, transparent),
+    0 14px 30px -20px color-mix(in srgb, #000 65%, transparent);
+}
+
+:root[data-theme="light"] .sl-under { opacity: .5; }
+:root[data-theme="light"] .sl-mid { opacity: .8; }
+:root[data-theme="light"] .sl-core { opacity: .95; }
+:root[data-theme="light"] .sl-shim { opacity: 1; }
+:root[data-theme="light"] .sl-node { background: color-mix(in srgb, var(--surface-1) 86%, transparent); border-color: color-mix(in srgb, var(--text) 12%, transparent); }
+
+/* ── 02 CURRENT ───────────────────────────────────────────── */
+.stage-body[data-variant="current"] {
+  --art: var(--st-acked);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--st-acked) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--st-acked) 7%, transparent) 1px, transparent 1px),
+    radial-gradient(48% 62% at 8% 20%, color-mix(in srgb, var(--st-acked) 14%, transparent), transparent 70%),
+    radial-gradient(44% 60% at 92% 84%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 72%);
+  background-size: 46px 46px, 46px 46px, 100% 100%, 100% 100%;
+}
+.stage-body[data-variant="current"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--st-acked) 18%, transparent) 1px, transparent 1.4px);
+  background-size: 46px 46px;
+  background-position: 23px 23px;
+  opacity: .5;
+}
+.current-glow { position: absolute; z-index: 0; pointer-events: none; border-radius: 50%; filter: blur(44px); opacity: .55; }
+.cu-edge { opacity: 0; transition: opacity .45s var(--ease-out); }
+.cu-edge.is-on { opacity: 1; }
+.cu-under { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 5; opacity: .12; }
+.cu-core { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1; opacity: .55; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset .7s var(--ease-out); }
+.cu-edge.is-on .cu-core { stroke-dashoffset: 0; }
+.cu-stream { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; stroke-dasharray: 1 13; animation: cu-stream 1.35s linear infinite; opacity: .9; }
+.cu-pulse { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.6; stroke-dasharray: 16 210; animation: cu-pulse 3.8s linear infinite; filter: url(#cu-glow); }
+@keyframes cu-stream { from { stroke-dashoffset: 28; } to { stroke-dashoffset: 0; } }
+@keyframes cu-pulse { from { stroke-dashoffset: 230; } to { stroke-dashoffset: 0; } }
+.cu-node {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-acked) 24%, var(--line));
+  border-radius: 6px;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  filter: drop-shadow(0 12px 18px color-mix(in srgb, #000 45%, transparent));
+}
+.cu-node::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--state);
+  box-shadow: 0 0 6px var(--state);
+  z-index: 3;
+}
+.cu-node .n-icon { border-radius: 4px; background: color-mix(in srgb, var(--st-acked) 9%, transparent); color: color-mix(in srgb, var(--st-acked) 76%, var(--text)); }
+.cu-node .n-title { font-size: 11.5px; font-weight: 560; }
+.cu-node .n-sub { font-size: 7px; color: color-mix(in srgb, var(--st-acked) 35%, var(--faint)); }
+.cu-node .n-step { color: color-mix(in srgb, var(--st-acked) 55%, var(--faint)); }
+.cu-node.is-trigger {
+  background: linear-gradient(156deg, color-mix(in srgb, var(--st-acked) 13%, var(--surface-2)), color-mix(in srgb, var(--surface-2) 86%, transparent));
+  border-color: color-mix(in srgb, var(--st-acked) 48%, var(--line));
+}
+.cu-node.is-hot {
+  border-color: color-mix(in srgb, var(--state) 55%, var(--line));
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--state) 28%, transparent)) drop-shadow(0 12px 18px color-mix(in srgb, #000 45%, transparent));
+}
+
+/* ── 03 TRANSIT ───────────────────────────────────────────── */
+.stage-body[data-variant="transit"] {
+  --art: var(--accent);
+  background-color: color-mix(in srgb, var(--surface-1) 96%, var(--accent) 2%);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--text) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--text) 4.5%, transparent) 1px, transparent 1px),
+    radial-gradient(66% 80% at 50% 50%, transparent 56%, color-mix(in srgb, var(--bg) 30%, transparent));
+  background-size: 72px 72px, 72px 72px, 100% 100%;
+}
+.stage-body[data-variant="transit"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(132deg, transparent 30%, color-mix(in srgb, var(--accent) 3%, transparent) 30.2%, transparent 30.5%);
+  opacity: .7;
+}
+.tr-edge { opacity: 0; transition: opacity .5s var(--ease-out); }
+.tr-edge.is-on { opacity: 1; }
+.tr-casing { fill: none; stroke: var(--surface-1); stroke-width: 8.6; stroke-linecap: round; stroke-linejoin: round; opacity: .96; }
+.tr-route { fill: none; stroke-width: 4.8; stroke-linecap: round; stroke-linejoin: round; }
+.tr-flow { fill: none; stroke: color-mix(in srgb, var(--text) 58%, transparent); stroke-width: 1.2; stroke-linecap: round; stroke-dasharray: 1 14; opacity: .48; animation: tr-flow 2.4s linear infinite; }
+@keyframes tr-flow { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+.tr-node {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tr-node .n-icon {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  border: 3px solid var(--state);
+  background: var(--surface-1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--surface-1) 78%, transparent);
+  color: transparent;
+}
+.tr-node .n-icon::after {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--state);
+}
+.tr-node .n-main {
+  position: absolute;
+  left: 29px;
+  top: 0;
+  width: calc(100% - 65px);
+  height: 31px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface-1) 94%, var(--accent) 3%);
+  box-shadow: 0 3px 10px -8px color-mix(in srgb, #000 60%, transparent);
+}
+.tr-node .n-title { font-size: 12.5px; font-weight: 590; }
+.tr-node .n-sub { font-size: 8px; color: var(--muted); }
+.tr-node .n-sub.is-error { color: var(--error-300); }
+.tr-node .n-step { font-size: 6px; }
+.tr-node .n-dur { font-size: 7.5px; }
+.tr-node .n-side {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  z-index: 3;
+  width: 29px;
+  align-items: flex-end;
+}
+.tr-node.is-trigger .n-icon {
+  left: -3px;
+  width: 29px;
+  height: 29px;
+  border-width: 2px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--surface-1) 78%, transparent), 0 0 0 5px color-mix(in srgb, var(--state) 20%, transparent);
+}
+.tr-node.is-trigger .n-main {
+  left: 31px;
+  width: calc(100% - 67px);
+  background: color-mix(in srgb, var(--surface-1) 90%, var(--accent) 8%);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+.tr-node.is-hot .n-main {
+  border-color: color-mix(in srgb, var(--state) 42%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--state) 14%, transparent), 0 6px 18px -12px color-mix(in srgb, var(--state) 40%, transparent);
+}
+.tr-node.is-failed .n-icon { border-color: var(--error); }
+.tr-node.is-failed .n-main { border-color: color-mix(in srgb, var(--error) 45%, var(--line)); }
+.tr-train { opacity: 0; transition: opacity .6s var(--ease-out); }
+.tr-train.is-visible { opacity: 1; }
+.tr-train-body { fill: var(--text); }
+.tr-train-window { fill: var(--surface-1); opacity: .9; }
+.tr-train-glow { fill: var(--art); opacity: .3; filter: url(#tr-glow); }
+
+/* ── 04 RIVER ─────────────────────────────────────────────── */
+.stage-body[data-variant="river"] {
+  --art: var(--st-acked);
+  background:
+    radial-gradient(48% 66% at 6% 12%, color-mix(in srgb, var(--st-acked) 11%, transparent), transparent 70%),
+    radial-gradient(44% 62% at 92% 86%, color-mix(in srgb, var(--success) 8%, transparent), transparent 74%),
+    linear-gradient(158deg, color-mix(in srgb, var(--surface-1) 96%, var(--st-acked) 4%), var(--surface-1) 62%, color-mix(in srgb, var(--surface-1) 97%, var(--success) 3%));
+}
+.stage-body[data-variant="river"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .5;
+  background:
+    repeating-radial-gradient(ellipse 60% 30% at 12% 30%, transparent 0 22px, color-mix(in srgb, var(--st-acked) 4%, transparent) 23px 24px, transparent 25px 48px),
+    repeating-radial-gradient(ellipse 54% 26% at 90% 72%, transparent 0 28px, color-mix(in srgb, var(--success) 3%, transparent) 29px 30px, transparent 31px 58px);
+}
+.river-glow { position: absolute; z-index: 0; pointer-events: none; border-radius: 50%; filter: blur(50px); opacity: .52; }
+.rv-edge { opacity: 0; transition: opacity .55s var(--ease-out); }
+.rv-edge.is-on { opacity: 1; }
+.rv-band { fill: none; stroke: var(--st-acked); stroke-linecap: round; stroke-width: 46; opacity: .26; filter: url(#rv-soft); }
+.rv-water { fill: none; stroke: var(--st-acked); stroke-linecap: round; stroke-width: 26; opacity: .38; }
+.rv-core { fill: none; stroke-linecap: round; stroke-width: 2; opacity: .92; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset .9s var(--ease-out); }
+.rv-edge.is-on .rv-core { stroke-dashoffset: 0; }
+.rv-flow { fill: none; stroke: color-mix(in srgb, var(--text) 62%, var(--st-acked)); stroke-linecap: round; stroke-width: 2.4; stroke-dasharray: 4 26; opacity: .75; animation: rv-flow 3s linear infinite; }
+.rv-flow-2 { stroke-dasharray: 2 30; opacity: .42; animation-duration: 4.4s; animation-delay: -1.6s; }
+.rv-flow-3 { stroke-dasharray: 7 34; opacity: .3; animation-duration: 5.2s; animation-delay: -2.7s; }
+@keyframes rv-flow { from { stroke-dashoffset: 54; } to { stroke-dashoffset: 0; } }
+.rv-particle { opacity: .7; }
+.rv-branch .rv-band { stroke-width: 20; opacity: .32; }
+.rv-branch .rv-water { stroke-width: 12; opacity: .48; }
+.rv-branch .rv-core { stroke-width: 1.4; }
+.rv-branch .rv-flow { stroke-width: 1.6; }
+.rv-trunk .rv-band { stroke-width: 30; opacity: .3; }
+.rv-trunk .rv-water { stroke-width: 18; opacity: .42; }
+.rv-loop .rv-band { stroke-width: 32; opacity: .3; }
+.rv-loop .rv-water { stroke-width: 20; opacity: .42; }
+:root:not([data-theme="light"]) .rv-band { opacity: .34; }
+:root:not([data-theme="light"]) .rv-water { opacity: .46; }
+.rv-node {
+  background: linear-gradient(174deg, color-mix(in srgb, var(--surface-1) 90%, var(--st-acked) 8%), color-mix(in srgb, var(--surface-1) 82%, var(--st-acked) 14%));
+  border: 1px solid color-mix(in srgb, var(--st-acked) 30%, var(--line));
+  border-radius: 15px;
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--text) 6%, transparent) inset,
+    0 18px 36px -24px color-mix(in srgb, #000 60%, transparent);
+}
+.rv-node::after {
+  content: "";
+  position: absolute;
+  left: 15px;
+  right: 15px;
+  bottom: 4px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--st-acked) 40%, transparent), transparent);
+  z-index: 3;
+}
+.rv-node .n-icon { border-radius: 50% 50% 45% 55%; background: color-mix(in srgb, var(--st-acked) 11%, transparent); color: color-mix(in srgb, var(--st-acked) 76%, var(--text)); }
+.rv-node.is-trigger {
+  background: linear-gradient(156deg, color-mix(in srgb, var(--st-acked) 14%, var(--surface-1)), color-mix(in srgb, var(--surface-1) 84%, transparent));
+  border-color: color-mix(in srgb, var(--st-acked) 42%, var(--line));
+}
+.rv-node.is-hot { border-color: color-mix(in srgb, var(--state) 44%, var(--line)); box-shadow: 0 0 30px -10px color-mix(in srgb, var(--state) 22%, transparent), 0 18px 36px -24px color-mix(in srgb, #000 60%, transparent); }
+.rv-pool { position: absolute; z-index: 2; width: 48px; height: 36px; pointer-events: none; border-radius: 50%; opacity: 0; transition: opacity .5s var(--ease-out); background: radial-gradient(ellipse at center, color-mix(in srgb, var(--st-acked) 34%, transparent), color-mix(in srgb, var(--st-acked) 14%, transparent) 45%, transparent 72%); filter: blur(3px); }
+.rv-pool.is-on { opacity: 1; }
+.rv-ripple { position: absolute; z-index: 2; width: 90px; height: 34px; border: 1px solid color-mix(in srgb, var(--st-acked) 34%, transparent); border-radius: 50%; opacity: 0; pointer-events: none; }
+.rv-ripple.is-on { animation: rv-ripple 1.7s var(--ease-out) forwards; }
+@keyframes rv-ripple { from { transform: scale(.6); opacity: .7; } to { transform: scale(1.5); opacity: 0; } }
+
+/* ── 05 AIRMAIL ───────────────────────────────────────────── */
+.stage-body[data-variant="airmail"] {
+  --art: var(--st-abandoned);
+  background-color: color-mix(in srgb, var(--surface-1) 94%, var(--st-abandoned) 6%);
+  background-image:
+    radial-gradient(circle, color-mix(in srgb, var(--text) 10%, transparent) .7px, transparent 1px),
+    linear-gradient(132deg, transparent 0 48%, color-mix(in srgb, var(--st-abandoned) 3.5%, transparent) 48.1% 48.4%, transparent 48.5%);
+  background-size: 17px 17px, 100% 100%;
+}
+.stage-body[data-variant="airmail"]::before,
+.stage-body[data-variant="airmail"]::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  z-index: 4;
+  height: 7px;
+  pointer-events: none;
+  opacity: .35;
+  background: repeating-linear-gradient(132deg, var(--accent) 0 10px, transparent 10px 20px);
+}
+.stage-body[data-variant="airmail"]::before { top: 0; }
+.stage-body[data-variant="airmail"]::after { bottom: 0; transform: scaleY(-1); }
+.airmail-postmark {
+  position: absolute;
+  z-index: 0;
+  right: 5%;
+  top: 5%;
+  width: 120px;
+  height: 120px;
+  border: 1px solid color-mix(in srgb, var(--st-abandoned) 20%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: .55;
+  transform: rotate(-14deg);
+}
+.airmail-postmark::before { content: ""; position: absolute; inset: 8px; border: 1px dashed color-mix(in srgb, var(--st-abandoned) 22%, transparent); border-radius: 50%; }
+.airmail-postmark span { position: absolute; left: 50%; top: 50%; width: 100%; transform: translate(-50%, -50%); text-align: center; font-family: var(--font-mono); font-size: 6px; letter-spacing: .14em; color: color-mix(in srgb, var(--st-abandoned) 48%, transparent); }
+.am-edge { opacity: 0; transition: opacity .55s var(--ease-out); }
+.am-edge.is-on { opacity: 1; }
+.am-route { fill: none; stroke: color-mix(in srgb, var(--st-abandoned) 58%, var(--accent)); stroke-width: 1.2; stroke-dasharray: 4 7; stroke-linecap: round; opacity: .65; }
+.am-route-glow { fill: none; stroke: color-mix(in srgb, var(--st-abandoned) 22%, transparent); stroke-width: 5; stroke-linecap: round; opacity: .2; filter: url(#am-soft); }
+.am-plane { fill: var(--st-abandoned); opacity: .85; }
+.am-plane-path { fill: var(--st-abandoned); }
+.am-node {
+  background: color-mix(in srgb, var(--surface-1) 92%, var(--st-abandoned) 8%);
+  border: 1px dashed color-mix(in srgb, var(--text) 24%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 10px 22px -18px color-mix(in srgb, #000 55%, transparent);
+  padding: 9px 11px;
+}
+.am-node::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 0;
+}
+.am-node::after {
+  content: "ANOTIFY";
+  position: absolute;
+  right: 5px;
+  top: 3px;
+  z-index: 3;
+  font-family: var(--font-mono);
+  font-size: 4px;
+  letter-spacing: .13em;
+  color: color-mix(in srgb, var(--st-abandoned) 58%, transparent);
+  transform: rotate(7deg);
+}
+.am-node .n-title { font-family: "Fraunces", Georgia, serif; font-size: 13px; font-weight: 410; letter-spacing: -.015em; }
+.am-node .n-sub { font-size: 7.5px; }
+.am-node .n-icon { border-radius: 50%; background: color-mix(in srgb, var(--st-abandoned) 9%, transparent); color: color-mix(in srgb, var(--st-abandoned) 72%, var(--text)); }
+.am-node.is-trigger {
+  background: color-mix(in srgb, var(--st-abandoned) 9%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--st-abandoned) 42%, var(--line));
+  transform: rotate(-.35deg);
+}
+.am-node.is-trigger.is-in { transform: rotate(-.35deg); }
+.am-node.is-hot { border-color: color-mix(in srgb, var(--st-abandoned) 58%, var(--line)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-abandoned) 10%, transparent), 0 10px 22px -18px color-mix(in srgb, #000 55%, transparent); }
+.am-node.is-failed { border-color: color-mix(in srgb, var(--error) 55%, var(--line)); }
+
+/* ── notes / footer ───────────────────────────────────────── */
+.sample-notes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-1) 44%, transparent);
+}
+.note { padding: 10px 14px; border-left: 1px solid var(--line); min-width: 0; }
+.note:first-child { border-left: 0; }
+.note b {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.note b.is-strong { color: var(--accent); }
+.note p { margin: 0; font-size: 10.5px; line-height: 1.6; color: var(--muted); }
+.lab-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 28px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-top: 82px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.8;
+  letter-spacing: .02em;
+  color: var(--faint);
+}
+.lab-foot b { color: var(--muted); font-weight: 500; }
+.lab-foot .foot-rec { max-width: 62ch; }
+.lab-foot .foot-rec em { color: var(--accent); font-style: normal; }
+
+/* ── responsive ───────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .sample-head { grid-template-columns: 52px minmax(0, 1fr); }
+  .sample-tags { grid-column: 2; justify-content: flex-start; max-width: none; }
+}
+@media (max-width: 760px) {
+  .lab-wrap { padding: 0 16px 62px; }
+  .lab-wrap::before { height: 380px; }
+  .lab-head { padding: 42px 0 20px; }
+  .lab-title { font-size: 38px; }
+  .lab-lead { margin-top: 14px; font-size: 12px; line-height: 1.75; }
+  .lab-facts { margin-top: 14px; gap: 5px; }
+  .lab-fact { font-size: 7px; padding: 5px 7px; }
+  .lab-bar { flex-wrap: wrap; gap: 7px; padding: 8px 0; }
+  .lab-tools { width: 100%; justify-content: space-between; order: 1; }
+  .lab-nav { width: 100%; order: 2; margin: 0 -4px; padding-bottom: 1px; }
+  .lab-nav a { padding: 5px 7px; font-size: 9.5px; }
+  .lab-btn { margin-left: auto; }
+  .sample { padding-top: 46px; scroll-margin-top: 82px; }
+  .sample-head { grid-template-columns: 39px minmax(0, 1fr); gap: 8px; margin-bottom: 11px; }
+  .sample-no { font-size: 7.5px; padding-top: 3px; }
+  .sample-title { font-size: 22px; }
+  .sample-title small { display: block; margin: 4px 0 0; font-size: 6.5px; }
+  .sample-thesis { font-size: 11.5px; line-height: 1.65; }
+  .sample-tags { gap: 4px; }
+  .sample-tag { height: 18px; font-size: 6.5px; padding: 0 5px; }
+  .stage { border-radius: 12px; }
+  .stage-bar { height: 35px; flex-basis: 35px; gap: 7px; padding-left: 10px; }
+  .stage-id { max-width: 38%; }
+  .stage-meta { display: none; }
+  .stage-btn span { display: none; }
+  .stage-btn { min-width: 30px; min-height: 28px; justify-content: center; padding: 6px; }
+  .stage-esc { top: 43px; }
+  .flow-hud { flex-basis: 31px; height: 31px; gap: 7px; padding: 0 9px; font-size: 7px; }
+  .hud-active, .hud-legend { display: none; }
+  .flow-hud::after { content: "拖动查看 →"; font-family: var(--font-mono); font-size: 7px; color: var(--faint); white-space: nowrap; flex: 0 0 auto; }
+  .stage[data-size="silk-simple"] { --stage-h: 300px; }
+  .stage[data-size="silk-complex"] { --stage-h: 560px; }
+  .stage[data-size="current-simple"] { --stage-h: 296px; }
+  .stage[data-size="current-complex"] { --stage-h: 550px; }
+  .stage[data-size="transit-simple"] { --stage-h: 286px; }
+  .stage[data-size="transit-complex"] { --stage-h: 540px; }
+  .stage[data-size="river-simple"] { --stage-h: 310px; }
+  .stage[data-size="river-complex"] { --stage-h: 570px; }
+  .stage[data-size="airmail-simple"] { --stage-h: 300px; }
+  .stage[data-size="airmail-complex"] { --stage-h: 560px; }
+  .stage[data-size="silk-loop"] { --stage-h: 410px; }
+  .stage[data-size="current-loop"] { --stage-h: 400px; }
+  .stage[data-size="transit-loop"] { --stage-h: 390px; }
+  .stage[data-size="river-loop"] { --stage-h: 430px; }
+  .stage[data-size="airmail-loop"] { --stage-h: 410px; }
+  .sample-notes { grid-template-columns: 1fr; }
+  .note { border-left: 0; border-top: 1px solid var(--line); padding: 9px 12px; }
+  .note:first-child { border-top: 0; }
+  .lab-foot { margin-top: 56px; font-size: 7px; }
+}
+@media (max-width: 400px) {
+  .lab-title { font-size: 33px; }
+  .seg button { padding: 4px 5px; font-size: 8px; }
+  .lab-btn { padding: 5px 7px; font-size: 7.5px; }
+}
+
+/* reduced motion: keep the final composition, remove movement */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+  .sl-shim, .sl-bead, .cu-stream, .cu-pulse, .tr-flow, .rv-flow { display: none !important; }
+  .tr-train, .rv-particle, .am-plane { display: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="lab-wrap">
+  <header class="lab-head">
+    <div class="lab-kicker"><b>ANOTIFY</b> · FLOWLINE STUDIES · 2026</div>
+    <h1 class="lab-title"><em>Flowline</em> 五种流法</h1>
+    <p class="lab-lead">
+      同一条 trace 的横向旅程：<b>源 → 步骤 → 出口</b>。五个方案都保留步骤卡片、父子关系和回放；
+      差别在流体的材质、方向感和动效语言。也覆盖 <b>review ↔ fix 循环</b>，以及 PR / 通知的 <b>扇出与汇合</b>。
+    </p>
+    <div class="lab-facts">
+      <span class="lab-fact"><i></i><b>5</b> 个流法</span>
+      <span class="lab-fact"><i></i>同一份 <b>/v1/tasks</b></span>
+      <span class="lab-fact"><i></i>真实 <b>2 步</b> / 演示 <b>10 步</b> / 循环 <b>9 步</b></span>
+      <span class="lab-fact"><i></i>深 / 浅色 · 移动端</span>
+      <span class="lab-fact"><i></i>零新依赖 · 纯 <b>DOM + SVG</b></span>
+    </div>
+  </header>
+
+  <div class="lab-bar">
+    <nav class="lab-nav" id="labNav" aria-label="五种流法"></nav>
+    <div class="lab-tools">
+      <div class="seg" role="group" aria-label="数据规模">
+        <button type="button" data-data-btn="simple" aria-pressed="true">2 步</button>
+        <button type="button" data-data-btn="complex" aria-pressed="false">10 步</button>
+        <button type="button" data-data-btn="loop" aria-pressed="false">循环</button>
+      </div>
+      <div class="seg" role="group" aria-label="主题">
+        <button type="button" data-theme-btn="dark" aria-pressed="true">暗</button>
+        <button type="button" data-theme-btn="light" aria-pressed="false">亮</button>
+      </div>
+      <button type="button" class="lab-btn" id="replayAll">全部重播</button>
+    </div>
+  </div>
+
+  <main class="samples" id="samples"></main>
+
+  <footer class="lab-foot">
+    <div class="foot-rec">
+      <b>推荐</b> · 默认 <em>Silk 丝带</em>；工程控制台用 <em>Current 电流</em>；复杂链先看 <em>Transit 线路</em>；
+      品牌分享用 <em>Airmail 航线</em>；想要最强的“流动”感选 <em>River 河道</em>。<br>
+      五个方案共用同一份 trace 布局与回放时钟，只改变流体的画法，方便横向比较。
+    </div>
+    <div>
+      DATA · GET /v1/tasks?traceId=<br>
+      TYPE · Inter / JetBrains Mono / Fraunces<br>
+      MOTION · CSS + SVG · respect prefers-reduced-motion
+    </div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============================================================
+     1. DATA — 与 trace.html 完全同源
+     ============================================================ */
+  const DATA = {
+    simple: {
+      key: "simple",
+      id: "trace_1793940009022727148_2b628e16928418eb",
+      namespace: "默认",
+      source: { name: "enen", kind: "manual", kindLabel: "手动", label: "手动触发", sub: "源 enen · 手动" },
+      event: { type: "enen", at: "2026-11-06 12:40:09" },
+      total: 1,
+      note: "真实数据 · 时间戳精度 1s",
+      tasks: [
+        {
+          id: "tsk_BCA1JjKOxtR4CCmEdk", name: "haha", display: "空白脚本", version: 1, parent: null,
+          status: "succeeded", created: 0, start: 0, end: 0, node: "host-zxfxyo", attempts: 1,
+        },
+        {
+          id: "tsk_BCA1JoFkmGUUbdff77", name: "script.echo", display: "回声（示例）", version: 1,
+          parent: "tsk_BCA1JjKOxtR4CCmEdk", status: "succeeded", created: 0, start: 1, end: 1,
+          node: "host-zxfxyo", attempts: 1,
+        },
+      ],
+    },
+    complex: {
+      key: "complex",
+      id: "trace_mock_t2_demo_chain",
+      namespace: "生产 · prod",
+      source: { name: "GitHub PR", kind: "webhook", kindLabel: "Webhook", label: "GitHub PR", sub: "pull_request.reopened" },
+      event: { type: "pull_request.reopened", at: "2026-11-06 12:55:03" },
+      total: 114.2,
+      note: "演示数据 · 10 步 / 扇出 / 重试",
+      tasks: [
+        { id: "tsk_mock_6", name: "analyze-pr", display: "分析 PR", version: 1, parent: null, status: "succeeded", created: 0, start: 0, end: 3.8, node: "laptop-worker", attempts: 1 },
+        { id: "tsk_mock_15", name: "report.send", display: "发告警", version: 1, parent: null, status: "succeeded", created: 0.2, start: 0.2, end: 1.1, node: "laptop-worker", attempts: 1 },
+        { id: "tsk_mock_7", name: "lint-fix", display: "清理构建缓存", version: 1, parent: "tsk_mock_6", status: "succeeded", created: 3.9, start: 3.9, end: 6.0, node: "laptop-worker", attempts: 1 },
+        { id: "tsk_mock_11", name: "run-tests", display: "跑测试", version: 1, parent: "tsk_mock_6", status: "succeeded", created: 3.9, start: 3.9, end: 99.9, node: "ci-runner", attempts: 1 },
+        { id: "tsk_mock_8", name: "run-tests", display: "跑测试", version: 1, parent: "tsk_mock_7", status: "failed", created: 6.1, start: 6.1, end: 40.3, node: "ci-runner", attempts: 1, error: "e2e: 3 specs timed out (30s)" },
+        { id: "tsk_mock_9", name: "apply-fix", display: "应用修复", version: 1, parent: "tsk_mock_8", status: "succeeded", created: 40.4, start: 40.4, end: 53.0, node: "ci-runner", attempts: 1 },
+        { id: "tsk_mock_10", name: "run-tests", display: "跑测试", version: 1, parent: "tsk_mock_9", status: "succeeded", created: 53.1, start: 53.1, end: 94.4, node: "ci-runner", attempts: 2 },
+        { id: "tsk_mock_12", name: "deploy-preview", display: "部署预发", version: 1, parent: "tsk_mock_10", status: "succeeded", created: 94.5, start: 94.5, end: 112.9, node: "ci-runner", attempts: 1 },
+        { id: "tsk_mock_13", name: "gen-changelog", display: "生成变更日志", version: 1, parent: "tsk_mock_12", status: "succeeded", created: 113.0, start: 113.0, end: 114.2, node: "laptop-worker", attempts: 1 },
+        { id: "tsk_mock_14", name: "alert.oncall", display: "告警升级", version: 1, parent: "tsk_mock_12", status: "succeeded", created: 113.0, start: 113.0, end: 113.3, node: "laptop-worker", attempts: 1 },
+      ],
+    },
+    loop: {
+      key: "loop",
+      id: "trace_mock_review_cycle",
+      namespace: "演示 · review loop",
+      source: { name: "review-bot", kind: "automation", kindLabel: "Automation", label: "Review 循环", sub: "review ↔ fix ↔ pr" },
+      event: { type: "review.cycle", at: "2026-11-06 13:10:02" },
+      total: 124,
+      note: "演示数据 · 循环 / 扇出 / 汇合",
+      loop: { from: "fix_2", to: "review_1", label: "review ↔ fix ×2" },
+      merge: { from: "notify", to: "done" },
+      tasks: [
+        { id: "review_1", name: "code-review", display: "评审 #1", version: 1, parent: null, status: "succeeded", created: 0, start: 0, end: 18, node: "laptop-worker", attempts: 1 },
+        { id: "fix_1", name: "apply-fix", display: "修复 #1", version: 1, parent: "review_1", status: "succeeded", created: 18, start: 18, end: 42, node: "laptop-worker", attempts: 1 },
+        { id: "review_2", name: "code-review", display: "评审 #2", version: 1, parent: "fix_1", status: "succeeded", created: 42, start: 42, end: 60, node: "laptop-worker", attempts: 1 },
+        { id: "fix_2", name: "apply-fix", display: "修复 #2", version: 1, parent: "review_2", status: "succeeded", created: 60, start: 60, end: 84, node: "laptop-worker", attempts: 1 },
+        { id: "review_3", name: "code-review", display: "评审通过", version: 1, parent: "fix_2", status: "succeeded", created: 84, start: 84, end: 102, node: "laptop-worker", attempts: 1 },
+        { id: "fan", name: "pr-and-notify", display: "PR & 通知", version: 1, parent: "review_3", status: "succeeded", created: 102, start: 102, end: 110, node: "ci-runner", attempts: 1 },
+        { id: "pr", name: "open-pr", display: "开 PR", version: 1, parent: "fan", status: "succeeded", created: 110, start: 110, end: 120, node: "ci-runner", attempts: 1 },
+        { id: "notify", name: "notify", display: "通知 Slack", version: 1, parent: "fan", status: "succeeded", created: 110, start: 110, end: 116, node: "laptop-worker", attempts: 1 },
+        { id: "done", name: "finalize", display: "完成", version: 1, parent: "pr", status: "succeeded", created: 120, start: 120, end: 124, node: "ci-runner", attempts: 1 },
+      ],
+    },
+  };
+
+  /* ============================================================
+     2. UTIL
+     ============================================================ */
+  const ICONS = {
+    bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
+    box: '<path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+    terminal: '<path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h4"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    server: '<path d="M4 4h16v7H4zM4 13h16v7H4z"/><path d="M8 7h.01M8 16h.01"/>',
+    branch: '<path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v3a6 6 0 0 1-6 6H9"/>',
+    bell: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M10 21h4"/>',
+    spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>',
+    rotate: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+    expand: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/>',
+    play: '<path d="M8 5v14l11-7z"/>',
+    droplet: '<path d="M12 2s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
+    send: '<path d="m22 2-7 20-4-9-9-4 20-7z"/><path d="M22 2 11 13"/>',
+    station: '<circle cx="12" cy="12" r="7"/>',
+    train: '<rect x="5" y="4" width="14" height="13" rx="3"/><path d="M8 20l-2 2M16 20l2 2M5 10h14"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  };
+  function iconSVG(name) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || ICONS.box) + "</svg>";
+  }
+  function icon(name, cls) {
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("viewBox", "0 0 24 24");
+    s.setAttribute("fill", "none");
+    s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-width", "1.8");
+    s.setAttribute("stroke-linecap", "round");
+    s.setAttribute("stroke-linejoin", "round");
+    s.setAttribute("aria-hidden", "true");
+    if (cls) s.setAttribute("class", cls);
+    s.innerHTML = ICONS[name] || ICONS.box;
+    return s;
+  }
+  function capIcon(name) {
+    if (/echo|script/.test(name)) return "terminal";
+    if (/test|deploy/.test(name)) return "check";
+    if (/analy|lint|fix/.test(name)) return "spark";
+    if (/report|alert|notify/.test(name)) return "bell";
+    if (/change|log/.test(name)) return "terminal";
+    return "box";
+  }
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function esc(v) {
+    return String(v == null ? "" : v).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function shortNode(name) {
+    if (!name) return "未分配";
+    return String(name).replace(/-(worker|runner|server|node)$/i, "");
+  }
+  function fmtDur(sec) {
+    if (sec == null || !isFinite(sec) || sec <= 0) return "—";
+    if (sec < 1) return Math.round(sec * 1000) + "ms";
+    if (sec < 10) return sec.toFixed(1).replace(/\.0$/, "") + "s";
+    return Math.round(sec) + "s";
+  }
+  function fmtClock(sec) {
+    if (sec == null || !isFinite(sec)) return "0.0s";
+    return sec < 10 ? sec.toFixed(1) + "s" : Math.round(sec) + "s";
+  }
+  function stageMetaText(d) {
+    const failed = d.tasks.filter(function (t) { return t.status === "failed"; }).length;
+    return d.tasks.length + " 步 · " + fmtDur(d.total) + (failed ? " · " + failed + " 失败" : " · 全部成功");
+  }
+  function dataNow() {
+    const key = document.documentElement.dataset.data;
+    return DATA[key] || DATA.simple;
+  }
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  /* ============================================================
+     3. LAYOUT — 同一条链的骨架
+     ============================================================ */
+  const PAD = 34;
+  function normalize(data) {
+    const byId = new Map();
+    const tasks = data.tasks.map(function (t) {
+      return Object.assign({}, t, { children: [] });
+    });
+    tasks.forEach(function (t) { byId.set(t.id, t); });
+    const roots = [];
+    tasks.forEach(function (t) {
+      if (t.parent && byId.has(t.parent)) byId.get(t.parent).children.push(t);
+      else roots.push(t);
+    });
+    tasks.forEach(function (t) {
+      t.children.sort(function (a, b) { return (a.created || 0) - (b.created || 0) || String(a.id).localeCompare(String(b.id)); });
+    });
+    roots.sort(function (a, b) { return (a.created || 0) - (b.created || 0) || String(a.id).localeCompare(String(b.id)); });
+    let leaf = 0, maxDepth = 0;
+    const ordered = [];
+    function walk(t, depth) {
+      t.depth = depth;
+      t.row = leaf;
+      if (t.children.length) {
+        t.children.forEach(function (c) { walk(c, depth + 1); });
+        t.row = (t.children[0].row + t.children[t.children.length - 1].row) / 2;
+      } else {
+        leaf += 1;
+      }
+      maxDepth = Math.max(maxDepth, depth);
+      ordered.push(t);
+    }
+    roots.forEach(function (r) { walk(r, 0); });
+    const all = [];
+    function collect(t) { all.push(t); t.children.forEach(collect); }
+    roots.forEach(collect);
+    const trigRow = roots.length ? roots.reduce(function (s, r) { return s + r.row; }, 0) / roots.length : 0;
+    return {
+      byId: byId, tasks: tasks, roots: roots, ordered: ordered, all: all,
+      maxDepth: maxDepth, maxRow: Math.max(0, leaf - 1), trigRow: trigRow,
+    };
+  }
+
+  function layout(data, cfg, body) {
+    const n = normalize(data);
+    const narrow = body.clientWidth < 620;
+    const W = narrow ? cfg.narrow.W : cfg.W;
+    const H = narrow ? cfg.narrow.H : cfg.H;
+    const GX = narrow ? cfg.narrow.GX : cfg.GX;
+    const GY = narrow ? cfg.narrow.GY : cfg.GY;
+    const PX = narrow ? 14 : PAD;
+    const TOP = data.loop ? (narrow ? 56 : 88) : (narrow ? 14 : PAD);
+    const TRIGW = narrow ? cfg.narrow.TRIGW : cfg.TRIGW;
+    const trigRow = narrow ? (n.roots.length ? n.roots[0].row : 0) : n.trigRow;
+    const x = function (depth) { return PX + TRIGW + GX + depth * (W + GX); };
+    const y = function (row) { return TOP + row * (H + GY); };
+    const trigger = {
+      id: "__trigger__", x: PX, y: y(trigRow), w: TRIGW, h: H,
+      isTrigger: true, display: data.source.label, sub: data.source.sub,
+    };
+    n.ordered.forEach(function (t) {
+      t.x = x(t.depth);
+      t.y = y(t.row);
+      t.w = W;
+      t.h = H;
+    });
+    n.tasks.forEach(function (t) { t.x = x(t.depth); t.y = y(t.row); t.w = W; t.h = H; });
+    const contentW = PX * 2 + TRIGW + GX + (n.maxDepth + 1) * W + n.maxDepth * GX;
+    const contentH = TOP * 2 + (n.maxRow + 1) * H + n.maxRow * GY + (narrow ? 0 : 14);
+    const edges = [];
+    n.roots.forEach(function (r) {
+      edges.push({ from: trigger, to: r });
+    });
+    n.all.forEach(function (t) {
+      t.children.forEach(function (c) { edges.push({ from: t, to: c }); });
+    });
+    if (data.merge) {
+      const mf = n.byId.get(data.merge.from);
+      const mt = n.byId.get(data.merge.to);
+      if (mf && mt) edges.push({ from: mf, to: mt, merge: true });
+    }
+    return {
+      n: n, narrow: narrow, W: W, H: H, GX: GX, GY: GY, P: PX, top: TOP, TRIGW: TRIGW,
+      trigger: trigger, tasks: n.all, edges: edges, contentW: contentW, contentH: contentH,
+      loop: data.loop || null,
+    };
+  }
+
+  function chrono(data) {
+    return data.tasks.slice().sort(function (a, b) {
+      return (a.start || 0) - (b.start || 0) || (a.created || 0) - (b.created || 0) || String(a.id).localeCompare(String(b.id));
+    });
+  }
+
+  /* ============================================================
+     4. FLOW SHELL / PLAYER
+     ============================================================ */
+  function flowShell(body, contentW, contentH, legendLabel) {
+    const wrap = el("div", "flow-wrap");
+    const scroll = el("div", "flow-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", (legendLabel || "Flowline") + "；可拖动，或使用左右方向键平移");
+    scroll.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "Home" || e.key === "End") {
+        e.preventDefault();
+        const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+        if (e.key === "Home") scroll.scrollTo({ left: 0, behavior: behavior });
+        else if (e.key === "End") scroll.scrollTo({ left: scroll.scrollWidth, behavior: behavior });
+        else scroll.scrollBy({ left: e.key === "ArrowRight" ? 140 : -140, behavior: behavior });
+      }
+    });
+    const canvas = el("div", "flow-canvas");
+    canvas.style.width = contentW + "px";
+    canvas.style.height = contentH + "px";
+    const hud = el("div", "flow-hud");
+    const clock = el("span", "hud-clock", "0.0s");
+    const track = el("span", "hud-track");
+    const fill = el("i");
+    track.appendChild(fill);
+    const active = el("span", "hud-active", "准备回放");
+    const legend = el("span", "hud-legend");
+    const l1 = el("span"); l1.appendChild(el("i")); l1.appendChild(document.createTextNode(legendLabel || "执行路径"));
+    const l2 = el("span"); l2.appendChild(el("i")); l2.appendChild(document.createTextNode("失败步"));
+    legend.appendChild(l1); legend.appendChild(l2);
+    hud.appendChild(clock); hud.appendChild(track); hud.appendChild(active); hud.appendChild(legend);
+    scroll.appendChild(canvas);
+    wrap.appendChild(scroll); wrap.appendChild(hud);
+    body.appendChild(wrap);
+    const hudCtl = { fill: fill, clock: clock, active: active };
+    return { wrap: wrap, scroll: scroll, canvas: canvas, hud: hudCtl, hudEl: hud, clock: clock, fill: fill, active: active };
+  }
+
+  function makeNode(t, step, variant, opts) {
+    opts = opts || {};
+    const status = t.status || "succeeded";
+    const n = el("div", "flow-node " + variant + "-node is-" + status + (status === "failed" ? " is-failed" : ""));
+    if (opts.trigger) n.classList.add("is-trigger");
+    const iconBox = el("span", "n-icon");
+    if (opts.station) {
+      iconBox.classList.add("n-stop");
+    } else {
+      iconBox.appendChild(icon(opts.icon || capIcon(t.name)));
+    }
+    const main = el("span", "n-main");
+    const title = el("span", "n-title", opts.trigger ? t.display : t.display);
+    const sub = el("span", "n-sub" + (status === "failed" && t.error ? " is-error" : ""));
+    if (opts.trigger) sub.textContent = t.sub;
+    else if (status === "failed" && t.error) sub.textContent = t.error;
+    else sub.textContent = t.name + "@" + t.version + " · " + shortNode(t.node);
+    main.appendChild(title); main.appendChild(sub);
+    const side = el("span", "n-side");
+    side.appendChild(el("span", "n-step", opts.trigger ? "SRC" : String(step).padStart(2, "0")));
+    const dur = opts.trigger ? t.total : (t.end || 0) - (t.start || 0);
+    side.appendChild(el("span", "n-dur", fmtDur(dur) + (!opts.trigger && t.attempts > 1 ? " ×" + t.attempts : "")));
+    side.appendChild(el("span", "n-dot"));
+    n.appendChild(iconBox); n.appendChild(main); n.appendChild(side);
+    n.style.left = t.x + "px";
+    n.style.top = t.y + "px";
+    n.style.width = t.w + "px";
+    n.style.height = t.h + "px";
+    n.title = (opts.trigger ? t.display : t.name + "@" + t.version) + (t.node ? " · " + t.node : "");
+    return n;
+  }
+
+  function loopInfo(L) {
+    if (!L.loop) return null;
+    const from = L.n.byId.get(L.loop.from);
+    const to = L.n.byId.get(L.loop.to);
+    if (!from || !to) return null;
+    const x1 = from.x + from.w / 2;
+    const y1 = from.y;
+    const x2 = to.x + to.w / 2;
+    const y2 = to.y;
+    const top = Math.max(8, Math.min(y1, y2) - 62);
+    const d = "M" + x1 + " " + y1 + " C" + x1 + " " + top + ", " + x2 + " " + top + ", " + x2 + " " + y2;
+    return {
+      from: from, to: to, x1: x1, y1: y1, x2: x2, y2: y2,
+      top: top, midX: (x1 + x2) / 2, midY: top,
+      label: L.loop.label || "loop ×2", d: d,
+    };
+  }
+
+  function addLoopBadge(canvas, li) {
+    const b = el("div", "loop-badge");
+    b.textContent = li.label;
+    b.title = "循环：" + li.label + " · 从 " + li.from.display + " 回到 " + li.to.display;
+    b.style.left = li.midX + "px";
+    b.style.top = li.midY + "px";
+    canvas.appendChild(b);
+    return b;
+  }
+
+  function makePlayer(opts) {
+    let timers = [];
+    let raf = 0;
+    let followOff = false;
+    let current = null;
+    const scroll = opts.scroll;
+    const reduce = opts.reduce;
+
+    function clearTimers() {
+      timers.forEach(function (id) { clearTimeout(id); });
+      timers = [];
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    }
+    function clockText(sec) {
+      return "回放 " + fmtClock(sec) + " / " + fmtClock(opts.total);
+    }
+    function setProgress(sec) {
+      const p = opts.total ? Math.max(0, Math.min(1, sec / opts.total)) : 0;
+      opts.hud.fill.style.width = (p * 100).toFixed(1) + "%";
+      opts.hud.clock.textContent = clockText(sec);
+    }
+    function resetCamera() {
+      followOff = false;
+      scroll.scrollTo({ left: 0, behavior: "auto" });
+    }
+    function stopFollow() { followOff = true; }
+    scroll.addEventListener("pointerdown", function (ev) {
+      if (ev.pointerType === "mouse") {
+        followOff = true;
+        scroll.classList.add("is-dragging");
+        const startX = ev.clientX, startLeft = scroll.scrollLeft;
+        const move = function (e) {
+          scroll.scrollLeft = startLeft - (e.clientX - startX);
+        };
+        const up = function () {
+          scroll.classList.remove("is-dragging");
+          scroll.removeEventListener("pointermove", move);
+          scroll.removeEventListener("pointerup", up);
+          scroll.removeEventListener("pointercancel", up);
+        };
+        scroll.setPointerCapture && scroll.setPointerCapture(ev.pointerId);
+        scroll.addEventListener("pointermove", move);
+        scroll.addEventListener("pointerup", up);
+        scroll.addEventListener("pointercancel", up);
+        ev.preventDefault();
+      } else {
+        followOff = true;
+      }
+    }, { passive: false });
+    scroll.addEventListener("wheel", stopFollow, { passive: true });
+    scroll.addEventListener("touchstart", stopFollow, { passive: true });
+    scroll.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "Home" || e.key === "End") followOff = true;
+    });
+
+    function followTo(t) {
+      if (followOff || !t || t.isTrigger) return;
+      const target = t.x + t.w / 2 - scroll.clientWidth / 2;
+      const max = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+      scroll.scrollTo({ left: Math.max(0, Math.min(max, target)), behavior: reduce ? "auto" : "smooth" });
+    }
+
+    function finish() {
+      clearTimers();
+      setProgress(opts.total);
+      opts.hud.active.textContent = opts.doneLabel || "全部完成";
+      opts.onEnd && opts.onEnd();
+      current = null;
+    }
+
+    function replay() {
+      clearTimers();
+      opts.onReset && opts.onReset();
+      resetCamera();
+      setProgress(0);
+      opts.hud.active.textContent = "准备回放";
+      if (reduce) {
+        opts.onTrigger && opts.onTrigger();
+        opts.order.forEach(function (t) {
+          opts.onNode(t);
+          (opts.edgesTo.get(t.id) || []).forEach(opts.onEdge);
+        });
+        finish();
+        return;
+      }
+      const dur = Math.max(2100, Math.min(6200, (opts.total || 1) * 46));
+      const start = 120;
+      timers.push(setTimeout(function () {
+        opts.onTrigger && opts.onTrigger();
+        opts.hud.active.textContent = "源 · " + opts.sourceLabel;
+      }, 40));
+      opts.order.forEach(function (t) {
+        const at = start + ((t.start || 0) / Math.max(0.001, opts.total)) * (dur - start - 120);
+        timers.push(setTimeout(function () {
+          current = t;
+          opts.onNode(t);
+          (opts.edgesTo.get(t.id) || []).forEach(opts.onEdge);
+          followTo(t);
+          opts.hud.active.textContent = (opts.stepOf ? opts.stepOf(t) : String(t.id)) + " · " + t.display;
+        }, at));
+      });
+      const t0 = performance.now();
+      const tick = function (now) {
+        const p = Math.min(1, (now - t0) / dur);
+        setProgress(opts.total * p);
+        if (p < 1) raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+      timers.push(setTimeout(finish, dur + 60));
+    }
+    return { replay: replay, stop: clearTimers, followTo: followTo };
+  }
+
+  function edgesByTarget(edges) {
+    const map = new Map();
+    edges.forEach(function (e) {
+      if (!map.has(e.to.id)) map.set(e.to.id, []);
+      map.get(e.to.id).push(e);
+    });
+    return map;
+  }
+
+  function chronoStep(data) {
+    const map = new Map();
+    chrono(data).forEach(function (t, i) { map.set(t.id, i + 1); });
+    return function (t) { return String(map.get(t.id) || 1).padStart(2, "0"); };
+  }
+
+  function statusColor(status) {
+    if (status === "failed") return "var(--error)";
+    if (status === "succeeded") return "var(--success)";
+    if (status === "running") return "var(--st-running)";
+    return "var(--st-pending)";
+  }
+
+
+  /* ============================================================
+     5. SVG + PATHS
+     ============================================================ */
+  function svgEl(tag, attrs) {
+    const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+    });
+    return n;
+  }
+  function pathBezier(x1, y1, x2, y2) {
+    const k = Math.max(38, Math.abs(x2 - x1) * 0.44);
+    if (Math.abs(y2 - y1) < 3) {
+      const wave = Math.min(13, Math.max(6, Math.abs(x2 - x1) * 0.09));
+      return "M" + x1 + " " + y1 + " C" + (x1 + k) + " " + (y1 - wave) + " " + (x2 - k) + " " + (y2 + wave) + " " + x2 + " " + y2;
+    }
+    return "M" + x1 + " " + y1 + " C" + (x1 + k) + " " + y1 + " " + (x2 - k) + " " + y2 + " " + x2 + " " + y2;
+  }
+  function pathOrtho(x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    if (Math.abs(dy) < 1) return "M" + x1 + " " + y1 + " L" + x2 + " " + y2;
+    const mid = x1 + dx * 0.5;
+    const r = Math.min(10, Math.abs(dx) * 0.35, Math.abs(dy) * 0.35);
+    const s = dy > 0 ? 1 : -1;
+    return "M" + x1 + " " + y1 + " L" + (mid - r) + " " + y1 +
+      " Q" + mid + " " + y1 + " " + mid + " " + (y1 + s * r) +
+      " L" + mid + " " + (y2 - s * r) +
+      " Q" + mid + " " + y2 + " " + (mid + r) + " " + y2 +
+      " L" + x2 + " " + y2;
+  }
+  function pathMetro(x1, y1, x2, y2) {
+    const dx = x2 - x1, ad = Math.abs(y2 - y1);
+    if (ad < 1) return "M" + x1 + " " + y1 + " L" + x2 + " " + y2;
+    if (dx > ad + 18) {
+      const mid = x1 + (dx - ad) / 2;
+      return "M" + x1 + " " + y1 + " L" + mid + " " + y1 + " L" + (mid + ad) + " " + y2 + " L" + x2 + " " + y2;
+    }
+    return "M" + x1 + " " + y1 + " L" + x2 + " " + y1 + " L" + x2 + " " + y2;
+  }
+  function pathArc(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const lift = Math.min(112, 44 + Math.abs(dx) * 0.1);
+    return "M" + x1 + " " + y1 + " C" + (x1 + dx * 0.38) + " " + (y1 - lift) +
+      " " + (x2 - dx * 0.38) + " " + (y2 - lift) + " " + x2 + " " + y2;
+  }
+  function addGradient(defs, id, x1, y1, x2, y2, from, to) {
+    const g = svgEl("linearGradient", { id: id, gradientUnits: "userSpaceOnUse", x1: x1, y1: y1, x2: x2, y2: y2 });
+    const s0 = svgEl("stop", { offset: "0", "stop-color": from, "stop-opacity": ".22" });
+    const s1 = svgEl("stop", { offset: ".58", "stop-color": from, "stop-opacity": ".85" });
+    const s2 = svgEl("stop", { offset: "1", "stop-color": to, "stop-opacity": ".95" });
+    g.appendChild(s0); g.appendChild(s1); g.appendChild(s2);
+    defs.appendChild(g);
+    return g;
+  }
+  function addMarker(defs, id, color) {
+    const m = svgEl("marker", { id: id, viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "5.2", markerHeight: "5.2", orient: "auto" });
+    m.appendChild(svgEl("path", { d: "M0 0 8 4 0 8z", fill: color, "fill-opacity": ".72" }));
+    defs.appendChild(m);
+  }
+  function taskStep(data) {
+    const m = new Map();
+    chrono(data).forEach(function (t, i) { m.set(t.id, i + 1); });
+    return m;
+  }
+  function chronoLayout(L, data) {
+    return chrono(data).map(function (t) { return L.n.byId.get(t.id); }).filter(Boolean);
+  }
+  function doneText(data) {
+    const bad = data.tasks.filter(function (t) { return t.status === "failed"; }).length;
+    return data.tasks.length + " 步完成" + (bad ? " · " + bad + " 失败" : " · 全部成功");
+  }
+  function makeTrigger(L, data) {
+    return Object.assign({}, L.trigger, { total: data.total, status: "succeeded" });
+  }
+
+  /* ============================================================
+     6. 01 SILK
+     ============================================================ */
+  const SILK_CFG = {
+    W: 238, H: 78, GX: 92, GY: 30, TRIGW: 198,
+    narrow: { W: 164, H: 68, GX: 26, GY: 20, TRIGW: 124 },
+  };
+  function renderSilk(body, data) {
+    const L = layout(data, SILK_CFG, body);
+    body.dataset.narrow = L.narrow ? "1" : "0";
+    const shell = flowShell(body, L.contentW, L.contentH, "执行路径");
+    const canvas = shell.canvas;
+    const svg = svgEl("svg", { class: "flow-svg", width: L.contentW, height: L.contentH, viewBox: "0 0 " + L.contentW + " " + L.contentH });
+    const defs = svgEl("defs");
+    svg.appendChild(defs);
+    addMarker(defs, "sl-arrow", "var(--accent)");
+    const soft = svgEl("filter", { id: "sl-soft", x: "-30%", y: "-30%", width: "160%", height: "160%" });
+    soft.appendChild(svgEl("feGaussianBlur", { stdDeviation: "5" }));
+    defs.appendChild(soft);
+    canvas.appendChild(svg);
+
+    const nodes = new Map();
+    const nodeEls = [];
+    const steps = taskStep(data);
+    const trig = makeNode(makeTrigger(L, data), 0, "sl", { trigger: true, icon: "bolt" });
+    canvas.appendChild(trig);
+    nodes.set("__trigger__", trig);
+    nodeEls.push(trig);
+    L.tasks.forEach(function (t) {
+      const n = makeNode(t, steps.get(t.id) || 1, "sl");
+      canvas.appendChild(n);
+      nodes.set(t.id, n);
+      nodeEls.push(n);
+    });
+
+    L.edges.forEach(function (e, i) {
+      const x1 = e.from.x + e.from.w;
+      const y1 = e.from.y + e.from.h / 2;
+      const x2 = e.to.x - 4;
+      const y2 = e.to.y + e.to.h / 2;
+      const d = pathBezier(x1, y1, x2, y2);
+      const gid = "slg" + i;
+      addGradient(defs, gid, x1, y1, x2, y2, "var(--accent)", statusColor(e.to.status));
+      const g = svgEl("g", { class: "sl-edge" });
+      const under = svgEl("path", { class: "sl-under", d: d, stroke: "url(#" + gid + ")" });
+      const mid = svgEl("path", { class: "sl-mid", d: d, stroke: "url(#" + gid + ")" });
+      const core = svgEl("path", { class: "sl-core", d: d, stroke: "url(#" + gid + ")", pathLength: "1", "marker-end": "url(#sl-arrow)" });
+      const shim = svgEl("path", { class: "sl-shim", d: d, stroke: "url(#" + gid + ")" });
+      g.appendChild(under); g.appendChild(mid); g.appendChild(core); g.appendChild(shim);
+      if (!reduceMotion.matches) {
+        const bead = svgEl("circle", { class: "sl-bead", r: "2.4" });
+        bead.appendChild(svgEl("animateMotion", { path: d, dur: "3.8s", begin: (i * 0.28) + "s", repeatCount: "indefinite" }));
+        g.appendChild(bead);
+      }
+      svg.appendChild(g);
+      e.el = g;
+    });
+
+    const li = loopInfo(L);
+    let loopEl = null, loopBadge = null;
+    if (li) {
+      addGradient(defs, "sl-loop-g", li.x2, li.y2, li.x1, li.y1, "var(--accent)", "var(--st-acked)");
+      const g = svgEl("g", { class: "sl-loop" });
+      const under = svgEl("path", { class: "sl-under", d: li.d, stroke: "url(#sl-loop-g)" });
+      const mid = svgEl("path", { class: "sl-mid", d: li.d, stroke: "url(#sl-loop-g)" });
+      const core = svgEl("path", { class: "sl-core", d: li.d, stroke: "url(#sl-loop-g)", pathLength: "1", "marker-end": "url(#sl-arrow)" });
+      const shim = svgEl("path", { class: "sl-shim", d: li.d, stroke: "url(#sl-loop-g)" });
+      g.appendChild(under); g.appendChild(mid); g.appendChild(core); g.appendChild(shim);
+      if (!reduceMotion.matches) {
+        const bead = svgEl("circle", { class: "sl-bead", r: "2.6" });
+        bead.appendChild(svgEl("animateMotion", { path: li.d, dur: "5.2s", begin: "0.2s", repeatCount: "indefinite" }));
+        g.appendChild(bead);
+      }
+      svg.appendChild(g);
+      loopEl = g;
+      loopBadge = addLoopBadge(canvas, li);
+    }
+
+    const timers = new Set();
+    function reset() {
+      timers.forEach(clearTimeout); timers.clear();
+      nodeEls.forEach(function (n) { n.classList.remove("is-in", "is-hot"); });
+      L.edges.forEach(function (e) { e.el.classList.remove("is-on"); });
+      if (loopEl) { loopEl.classList.remove("is-loop"); loopBadge.classList.remove("is-loop"); }
+    }
+    function onNode(t) {
+      const n = nodes.get(t.id);
+      if (!n) return;
+      n.classList.add("is-in", "is-hot");
+      if (li && t.id === L.loop.from) { loopEl.classList.add("is-loop"); loopBadge.classList.add("is-loop"); }
+      const id = setTimeout(function () { n.classList.remove("is-hot"); timers.delete(id); }, 950);
+      timers.add(id);
+    }
+    function onTrigger() { trig.classList.add("is-in"); }
+    function onEdge(e) { e.el.classList.add("is-on"); }
+    const player = makePlayer({
+      order: chronoLayout(L, data), total: data.total, scroll: shell.scroll, hud: shell.hud,
+      edgesTo: edgesByTarget(L.edges), reduce: reduceMotion.matches,
+      sourceLabel: data.source.label, stepOf: chronoStep(data), doneLabel: doneText(data),
+      onReset: reset, onTrigger: onTrigger, onNode: onNode, onEdge: onEdge,
+    });
+    return { replay: player.replay };
+  }
+
+  /* ============================================================
+     7. 02 CURRENT
+     ============================================================ */
+  const CURRENT_CFG = {
+    W: 226, H: 76, GX: 100, GY: 30, TRIGW: 190,
+    narrow: { W: 160, H: 66, GX: 28, GY: 20, TRIGW: 122 },
+  };
+  function renderCurrent(body, data) {
+    const L = layout(data, CURRENT_CFG, body);
+    body.dataset.narrow = L.narrow ? "1" : "0";
+    const shell = flowShell(body, L.contentW, L.contentH, "信号流");
+    const canvas = shell.canvas;
+    const svg = svgEl("svg", { class: "flow-svg", width: L.contentW, height: L.contentH, viewBox: "0 0 " + L.contentW + " " + L.contentH });
+    const defs = svgEl("defs");
+    addMarker(defs, "cu-arrow", "var(--st-acked)");
+    addMarker(defs, "cu-arrow-bad", "var(--error)");
+    const glow = svgEl("filter", { id: "cu-glow", x: "-60%", y: "-60%", width: "220%", height: "220%" });
+    glow.appendChild(svgEl("feGaussianBlur", { stdDeviation: "3.4" }));
+    defs.appendChild(glow);
+    svg.appendChild(defs);
+    canvas.appendChild(svg);
+
+    const nodes = new Map();
+    const nodeEls = [];
+    const steps = taskStep(data);
+    const trig = makeNode(makeTrigger(L, data), 0, "cu", { trigger: true, icon: "bolt" });
+    canvas.appendChild(trig);
+    nodes.set("__trigger__", trig);
+    nodeEls.push(trig);
+    L.tasks.forEach(function (t) {
+      const n = makeNode(t, steps.get(t.id) || 1, "cu");
+      canvas.appendChild(n);
+      nodes.set(t.id, n);
+      nodeEls.push(n);
+    });
+
+    L.edges.forEach(function (e) {
+      const x1 = e.from.x + e.from.w;
+      const y1 = e.from.y + e.from.h / 2;
+      const x2 = e.to.x - 5;
+      const y2 = e.to.y + e.to.h / 2;
+      const d = pathOrtho(x1, y1, x2, y2);
+      const color = e.to.status === "failed" ? "var(--error)" : "var(--st-acked)";
+      const g = svgEl("g", { class: "cu-edge" });
+      const under = svgEl("path", { class: "cu-under", d: d, stroke: color });
+      const core = svgEl("path", { class: "cu-core", d: d, stroke: color, pathLength: "1", "marker-end": "url(#" + (e.to.status === "failed" ? "cu-arrow-bad" : "cu-arrow") + ")" });
+      const stream = svgEl("path", { class: "cu-stream", d: d, stroke: color });
+      const pulse = svgEl("path", { class: "cu-pulse", d: d, stroke: color });
+      g.appendChild(under); g.appendChild(core); g.appendChild(stream); g.appendChild(pulse);
+      svg.appendChild(g);
+      e.el = g;
+    });
+
+    const li = loopInfo(L);
+    let loopEl = null, loopBadge = null;
+    if (li) {
+      const lane = li.top + 8;
+      const ld = "M" + li.x1 + " " + li.y1 + " V" + lane + " H" + li.x2 + " V" + li.y2;
+      const g = svgEl("g", { class: "cu-loop" });
+      const under = svgEl("path", { class: "cu-under", d: ld, stroke: "var(--st-acked)" });
+      const core = svgEl("path", { class: "cu-core", d: ld, stroke: "var(--st-acked)", pathLength: "1", "marker-end": "url(#cu-arrow)" });
+      const stream = svgEl("path", { class: "cu-stream", d: ld, stroke: "var(--st-acked)" });
+      const pulse = svgEl("path", { class: "cu-pulse", d: ld, stroke: "var(--st-acked)" });
+      g.appendChild(under); g.appendChild(core); g.appendChild(stream); g.appendChild(pulse);
+      svg.appendChild(g);
+      loopEl = g;
+      loopBadge = addLoopBadge(canvas, li);
+    }
+
+    const timers = new Set();
+    function reset() {
+      timers.forEach(clearTimeout); timers.clear();
+      nodeEls.forEach(function (n) { n.classList.remove("is-in", "is-hot"); });
+      L.edges.forEach(function (e) { e.el.classList.remove("is-on"); });
+      if (loopEl) { loopEl.classList.remove("is-loop"); loopBadge.classList.remove("is-loop"); }
+    }
+    function onNode(t) {
+      const n = nodes.get(t.id);
+      if (!n) return;
+      n.classList.add("is-in", "is-hot");
+      if (li && t.id === L.loop.from) { loopEl.classList.add("is-loop"); loopBadge.classList.add("is-loop"); }
+      const id = setTimeout(function () { n.classList.remove("is-hot"); timers.delete(id); }, 950);
+      timers.add(id);
+    }
+    const player = makePlayer({
+      order: chronoLayout(L, data), total: data.total, scroll: shell.scroll, hud: shell.hud,
+      edgesTo: edgesByTarget(L.edges), reduce: reduceMotion.matches,
+      sourceLabel: data.source.label, stepOf: chronoStep(data), doneLabel: doneText(data),
+      onReset: reset, onTrigger: function () { trig.classList.add("is-in"); },
+      onNode: onNode, onEdge: function (e) { e.el.classList.add("is-on"); },
+    });
+    return { replay: player.replay };
+  }
+
+  /* ============================================================
+     8. 03 TRANSIT
+     ============================================================ */
+  const TRANSIT_CFG = {
+    W: 192, H: 64, GX: 106, GY: 34, TRIGW: 178,
+    narrow: { W: 158, H: 62, GX: 32, GY: 22, TRIGW: 126 },
+  };
+  function transitRingX(n) { return n.x + (n.isTrigger ? 14.5 : 11.5); }
+  function transitColor(t) {
+    if (t.id === "tsk_mock_15") return "var(--st-abandoned)";
+    if (t.id === "tsk_mock_11") return "var(--st-acked)";
+    return "var(--accent)";
+  }
+  function renderTransit(body, data) {
+    const L = layout(data, TRANSIT_CFG, body);
+    body.dataset.narrow = L.narrow ? "1" : "0";
+    const shell = flowShell(body, L.contentW, L.contentH, "执行线路");
+    const canvas = shell.canvas;
+    const svg = svgEl("svg", { class: "flow-svg", width: L.contentW, height: L.contentH, viewBox: "0 0 " + L.contentW + " " + L.contentH });
+    const defs = svgEl("defs");
+    const glow = svgEl("filter", { id: "tr-glow", x: "-80%", y: "-80%", width: "260%", height: "260%" });
+    glow.appendChild(svgEl("feGaussianBlur", { stdDeviation: "4" }));
+    defs.appendChild(glow);
+    svg.appendChild(defs);
+    canvas.appendChild(svg);
+
+    const nodes = new Map();
+    const nodeEls = [];
+    const steps = taskStep(data);
+    const trig = makeNode(makeTrigger(L, data), 0, "tr", { trigger: true, station: true });
+    canvas.appendChild(trig);
+    nodes.set("__trigger__", trig);
+    nodeEls.push(trig);
+    L.tasks.forEach(function (t) {
+      const n = makeNode(t, steps.get(t.id) || 1, "tr", { station: true });
+      canvas.appendChild(n);
+      nodes.set(t.id, n);
+      nodeEls.push(n);
+    });
+
+    L.edges.forEach(function (e) {
+      const x1 = transitRingX(e.from);
+      const y1 = e.from.y + e.from.h / 2;
+      const x2 = transitRingX(e.to);
+      const y2 = e.to.y + e.to.h / 2;
+      const d = pathMetro(x1, y1, x2, y2);
+      const color = transitColor(e.to);
+      const g = svgEl("g", { class: "tr-edge" });
+      const casing = svgEl("path", { class: "tr-casing", d: d });
+      const route = svgEl("path", { class: "tr-route", d: d, stroke: color });
+      const flow = svgEl("path", { class: "tr-flow", d: d });
+      g.appendChild(casing); g.appendChild(route); g.appendChild(flow);
+      svg.appendChild(g);
+      e.el = g;
+    });
+
+    /* main-chain train */
+    let chain = [L.trigger];
+    let cur = L.n.roots[0];
+    while (cur) { chain.push(cur); cur = cur.children[0]; }
+    let train = null;
+    if (chain.length > 2 && !reduceMotion.matches) {
+      const segs = [];
+      for (let i = 1; i < chain.length; i++) {
+        segs.push(pathMetro(transitRingX(chain[i - 1]), chain[i - 1].y + chain[i - 1].h / 2, transitRingX(chain[i]), chain[i].y + chain[i].h / 2));
+      }
+      const d = segs.join(" ");
+      train = svgEl("g", { class: "tr-train" });
+      const g1 = svgEl("rect", { x: "-21", y: "-8.5", width: "42", height: "17", rx: "8.5", class: "tr-train-glow" });
+      const g2 = svgEl("rect", { x: "-16", y: "-6", width: "32", height: "12", rx: "6", class: "tr-train-body" });
+      const w1 = svgEl("rect", { x: "-11", y: "-2", width: "4", height: "4", rx: "1", class: "tr-train-window" });
+      const w2 = svgEl("rect", { x: "-5", y: "-2", width: "4", height: "4", rx: "1", class: "tr-train-window" });
+      const w3 = svgEl("rect", { x: "1", y: "-2", width: "4", height: "4", rx: "1", class: "tr-train-window" });
+      const anim = svgEl("animateMotion", { path: d, dur: "12s", repeatCount: "indefinite", rotate: "auto", begin: "0s" });
+      train.appendChild(g1); train.appendChild(g2); train.appendChild(w1); train.appendChild(w2); train.appendChild(w3); train.appendChild(anim);
+      svg.appendChild(train);
+    }
+
+    const li = loopInfo(L);
+    let loopEl = null, loopBadge = null;
+    if (li) {
+      const lane = li.top + 10;
+      const dx = 14;
+      const ld = "M" + li.x1 + " " + li.y1 + " L" + li.x1 + " " + (lane + dx) + " L" + (li.x1 - dx) + " " + lane + " L" + (li.x2 + dx) + " " + lane + " L" + li.x2 + " " + (lane + dx) + " L" + li.x2 + " " + li.y2;
+      const g = svgEl("g", { class: "tr-loop" });
+      const casing = svgEl("path", { class: "tr-casing", d: ld });
+      const route = svgEl("path", { class: "tr-route", d: ld, stroke: "var(--accent)" });
+      const flow = svgEl("path", { class: "tr-flow", d: ld });
+      g.appendChild(casing); g.appendChild(route); g.appendChild(flow);
+      svg.appendChild(g);
+      loopEl = g;
+      loopBadge = addLoopBadge(canvas, li);
+    }
+
+    const timers = new Set();
+    function reset() {
+      timers.forEach(clearTimeout); timers.clear();
+      nodeEls.forEach(function (n) { n.classList.remove("is-in", "is-hot"); });
+      L.edges.forEach(function (e) { e.el.classList.remove("is-on"); });
+      if (train) train.classList.remove("is-visible");
+      if (loopEl) { loopEl.classList.remove("is-loop"); loopBadge.classList.remove("is-loop"); }
+    }
+    function onNode(t) {
+      const n = nodes.get(t.id);
+      if (!n) return;
+      n.classList.add("is-in", "is-hot");
+      if (li && t.id === L.loop.from) { loopEl.classList.add("is-loop"); loopBadge.classList.add("is-loop"); }
+      const id = setTimeout(function () { n.classList.remove("is-hot"); timers.delete(id); }, 950);
+      timers.add(id);
+    }
+    const player = makePlayer({
+      order: chronoLayout(L, data), total: data.total, scroll: shell.scroll, hud: shell.hud,
+      edgesTo: edgesByTarget(L.edges), reduce: reduceMotion.matches,
+      sourceLabel: data.source.label, stepOf: chronoStep(data), doneLabel: doneText(data),
+      onReset: reset, onTrigger: function () { trig.classList.add("is-in"); },
+      onNode: onNode, onEdge: function (e) { e.el.classList.add("is-on"); },
+      onEnd: function () { if (train) train.classList.add("is-visible"); },
+    });
+    return { replay: player.replay };
+  }
+
+  /* ============================================================
+     9. 04 RIVER
+     ============================================================ */
+  const RIVER_CFG = {
+    W: 230, H: 80, GX: 96, GY: 34, TRIGW: 198,
+    narrow: { W: 164, H: 70, GX: 28, GY: 22, TRIGW: 126 },
+  };
+  function renderRiver(body, data) {
+    const L = layout(data, RIVER_CFG, body);
+    body.dataset.narrow = L.narrow ? "1" : "0";
+    const shell = flowShell(body, L.contentW, L.contentH, "水流方向");
+    const canvas = shell.canvas;
+    const svg = svgEl("svg", { class: "flow-svg", width: L.contentW, height: L.contentH, viewBox: "0 0 " + L.contentW + " " + L.contentH });
+    const defs = svgEl("defs");
+    const soft = svgEl("filter", { id: "rv-soft", x: "-30%", y: "-30%", width: "160%", height: "160%" });
+    soft.appendChild(svgEl("feGaussianBlur", { stdDeviation: "6" }));
+    defs.appendChild(soft);
+    svg.appendChild(defs);
+    canvas.appendChild(svg);
+
+    const nodes = new Map();
+    const nodeEls = [];
+    const ripples = new Map();
+    const steps = taskStep(data);
+    const trig = makeNode(makeTrigger(L, data), 0, "rv", { trigger: true, icon: "droplet" });
+    canvas.appendChild(trig);
+    nodes.set("__trigger__", trig);
+    nodeEls.push(trig);
+    L.tasks.forEach(function (t) {
+      const n = makeNode(t, steps.get(t.id) || 1, "rv");
+      canvas.appendChild(n);
+      nodes.set(t.id, n);
+      nodeEls.push(n);
+    });
+    L.tasks.concat([makeTrigger(L, data)]).forEach(function (t) {
+      const rip = el("div", "rv-ripple");
+      rip.style.left = (t.x + t.w / 2 - 45) + "px";
+      rip.style.top = (t.y + t.h - 18) + "px";
+      canvas.appendChild(rip);
+      ripples.set(t.id, rip);
+    });
+    /* Branch sources get one trunk + a pool, then the child streams fan out.
+       This avoids the wide-band overlap block at every fan-out. */
+    const trunkMap = new Map();
+    const poolMap = new Map();
+    L.edges.forEach(function (e, i) {
+      const y1 = e.from.y + e.from.h / 2;
+      const x1 = e.from.x + e.from.w;
+      const branch = e.from.isTrigger ? L.n.roots.length > 1 : !!(e.from.children && e.from.children.length > 1);
+      let sx = x1;
+      if (branch) {
+        const jx = x1 + 26;
+        sx = jx;
+        if (!trunkMap.has(e.from.id)) {
+          const td = "M" + x1 + " " + y1 + " L" + jx + " " + y1;
+          const tgid = "rvt" + i;
+          addGradient(defs, tgid, x1, y1, jx, y1, "var(--st-acked)", statusColor(e.from.status || "succeeded"));
+          const tg = svgEl("g", { class: "rv-edge rv-trunk" });
+          tg.appendChild(svgEl("path", { class: "rv-band", d: td, stroke: "url(#" + tgid + ")" }));
+          tg.appendChild(svgEl("path", { class: "rv-water", d: td, stroke: "url(#" + tgid + ")" }));
+          tg.appendChild(svgEl("path", { class: "rv-core", d: td, stroke: "url(#" + tgid + ")", pathLength: "1" }));
+          tg.appendChild(svgEl("path", { class: "rv-flow", d: td, stroke: "url(#" + tgid + ")" }));
+          svg.appendChild(tg);
+          trunkMap.set(e.from.id, tg);
+          const pool = el("div", "rv-pool");
+          pool.style.left = (jx - 24) + "px";
+          pool.style.top = (y1 - 18) + "px";
+          canvas.appendChild(pool);
+          poolMap.set(e.from.id, pool);
+        }
+        e.trunk = trunkMap.get(e.from.id);
+        e.pool = poolMap.get(e.from.id);
+      }
+      const x2 = e.to.x - 4;
+      const y2 = e.to.y + e.to.h / 2;
+      const d = pathBezier(sx, y1, x2, y2);
+      const gid = "rvg" + i;
+      addGradient(defs, gid, sx, y1, x2, y2, "var(--st-acked)", statusColor(e.to.status));
+      const g = svgEl("g", { class: "rv-edge" + (branch ? " rv-branch" : "") });
+      const band = svgEl("path", { class: "rv-band", d: d, stroke: "url(#" + gid + ")" });
+      const water = svgEl("path", { class: "rv-water", d: d, stroke: "url(#" + gid + ")" });
+      const core = svgEl("path", { class: "rv-core", d: d, stroke: "url(#" + gid + ")", pathLength: "1" });
+      const flow = svgEl("path", { class: "rv-flow", d: d, stroke: "url(#" + gid + ")" });
+      const flow2 = svgEl("path", { class: "rv-flow rv-flow-2", d: d, stroke: "url(#" + gid + ")", transform: "translate(0 5)" });
+      const flow3 = svgEl("path", { class: "rv-flow rv-flow-3", d: d, stroke: "url(#" + gid + ")", transform: "translate(0 -5)" });
+      g.appendChild(band); g.appendChild(water); g.appendChild(core); g.appendChild(flow); g.appendChild(flow2); g.appendChild(flow3);
+      for (let j = 0; j < 4; j++) {
+        const c = svgEl("circle", { class: "rv-particle", r: String(2.3 + j * 0.5), fill: j === 3 ? statusColor(e.to.status) : "var(--st-acked)", opacity: String(0.55 + j * 0.1) });
+        if (!reduceMotion.matches) {
+          const am = svgEl("animateMotion", { path: d, dur: (4.2 + j * 0.85) + "s", begin: (j * 0.72) + "s", repeatCount: "indefinite", rotate: "auto" });
+          c.appendChild(am);
+        }
+        g.appendChild(c);
+      }
+      svg.appendChild(g);
+      e.el = g;
+    });
+
+    const li = loopInfo(L);
+    let loopEl = null, loopBadge = null;
+    if (li) {
+      addGradient(defs, "rv-loop-g", li.x2, li.y2, li.x1, li.y1, "var(--st-acked)", "var(--accent)");
+      const g = svgEl("g", { class: "rv-loop" });
+      const band = svgEl("path", { class: "rv-band", d: li.d, stroke: "url(#rv-loop-g)" });
+      const water = svgEl("path", { class: "rv-water", d: li.d, stroke: "url(#rv-loop-g)" });
+      const core = svgEl("path", { class: "rv-core", d: li.d, stroke: "url(#rv-loop-g)", pathLength: "1" });
+      const flow = svgEl("path", { class: "rv-flow", d: li.d, stroke: "url(#rv-loop-g)" });
+      const flow2 = svgEl("path", { class: "rv-flow rv-flow-2", d: li.d, stroke: "url(#rv-loop-g)", transform: "translate(0 4)" });
+      g.appendChild(band); g.appendChild(water); g.appendChild(core); g.appendChild(flow); g.appendChild(flow2);
+      for (let j = 0; j < 3; j++) {
+        const c = svgEl("circle", { class: "rv-particle", r: String(2.2 + j * 0.5), fill: "var(--st-acked)", opacity: String(0.6 + j * 0.1) });
+        if (!reduceMotion.matches) {
+          c.appendChild(svgEl("animateMotion", { path: li.d, dur: (5.4 + j * 0.9) + "s", begin: (j * 0.8) + "s", repeatCount: "indefinite", rotate: "auto" }));
+        }
+        g.appendChild(c);
+      }
+      svg.appendChild(g);
+      loopEl = g;
+      loopBadge = addLoopBadge(canvas, li);
+    }
+
+    const timers = new Set();
+    function reset() {
+      timers.forEach(clearTimeout); timers.clear();
+      nodeEls.forEach(function (n) { n.classList.remove("is-in", "is-hot"); });
+      L.edges.forEach(function (e) { e.el.classList.remove("is-on"); });
+      trunkMap.forEach(function (t) { t.classList.remove("is-on"); });
+      poolMap.forEach(function (p) { p.classList.remove("is-on"); });
+      if (loopEl) { loopEl.classList.remove("is-loop"); loopBadge.classList.remove("is-loop"); }
+      ripples.forEach(function (r) { r.classList.remove("is-on"); r.style.animation = "none"; });
+    }
+    function onNode(t) {
+      const n = nodes.get(t.id);
+      if (!n) return;
+      n.classList.add("is-in", "is-hot");
+      if (li && t.id === L.loop.from) { loopEl.classList.add("is-loop"); loopBadge.classList.add("is-loop"); }
+      const rip = ripples.get(t.id);
+      if (rip) {
+        rip.classList.remove("is-on");
+        void rip.offsetWidth;
+        rip.classList.add("is-on");
+      }
+      const id = setTimeout(function () {
+        n.classList.remove("is-hot"); timers.delete(id);
+      }, 950);
+      timers.add(id);
+    }
+    const player = makePlayer({
+      order: chronoLayout(L, data), total: data.total, scroll: shell.scroll, hud: shell.hud,
+      edgesTo: edgesByTarget(L.edges), reduce: reduceMotion.matches,
+      sourceLabel: data.source.label, stepOf: chronoStep(data), doneLabel: doneText(data),
+      onReset: reset, onTrigger: function () { trig.classList.add("is-in"); },
+      onNode: onNode, onEdge: function (e) {
+        e.el.classList.add("is-on");
+        if (e.trunk) e.trunk.classList.add("is-on");
+        if (e.pool) e.pool.classList.add("is-on");
+      },
+    });
+    return { replay: player.replay };
+  }
+
+  /* ============================================================
+     10. 05 AIRMAIL
+     ============================================================ */
+  const AIRMAIL_CFG = {
+    W: 208, H: 76, GX: 100, GY: 32, TRIGW: 190,
+    narrow: { W: 156, H: 68, GX: 30, GY: 22, TRIGW: 122 },
+  };
+  function renderAirmail(body, data) {
+    const L = layout(data, AIRMAIL_CFG, body);
+    body.dataset.narrow = L.narrow ? "1" : "0";
+    const postmark = el("div", "airmail-postmark");
+    postmark.appendChild(el("span", "", "ANOTIFY · TRACE · 2026"));
+    body.appendChild(postmark);
+    const shell = flowShell(body, L.contentW, L.contentH, "邮路");
+    const canvas = shell.canvas;
+    const svg = svgEl("svg", { class: "flow-svg", width: L.contentW, height: L.contentH, viewBox: "0 0 " + L.contentW + " " + L.contentH });
+    const defs = svgEl("defs");
+    const soft = svgEl("filter", { id: "am-soft", x: "-60%", y: "-60%", width: "220%", height: "220%" });
+    soft.appendChild(svgEl("feGaussianBlur", { stdDeviation: "3" }));
+    defs.appendChild(soft);
+    svg.appendChild(defs);
+    canvas.appendChild(svg);
+
+    const nodes = new Map();
+    const nodeEls = [];
+    const steps = taskStep(data);
+    const trig = makeNode(makeTrigger(L, data), 0, "am", { trigger: true, icon: "send" });
+    canvas.appendChild(trig);
+    nodes.set("__trigger__", trig);
+    nodeEls.push(trig);
+    L.tasks.forEach(function (t) {
+      const n = makeNode(t, steps.get(t.id) || 1, "am");
+      canvas.appendChild(n);
+      nodes.set(t.id, n);
+      nodeEls.push(n);
+    });
+
+    L.edges.forEach(function (e, i) {
+      const x1 = e.from.x + e.from.w;
+      const y1 = e.from.y + e.from.h / 2;
+      const x2 = e.to.x - 5;
+      const y2 = e.to.y + e.to.h / 2;
+      const d = pathArc(x1, y1, x2, y2);
+      const g = svgEl("g", { class: "am-edge" });
+      const glow = svgEl("path", { class: "am-route-glow", d: d });
+      const route = svgEl("path", { class: "am-route", d: d });
+      const plane = svgEl("g", { class: "am-plane" });
+      plane.appendChild(svgEl("path", { class: "am-plane-path", d: "M-1 -5 L11 0 L-1 5 L1.5 0 Z" }));
+      if (!reduceMotion.matches) {
+        const am = svgEl("animateMotion", { path: d, dur: (3.6 + (i % 3) * 0.35) + "s", begin: (i * 0.22) + "s", repeatCount: "indefinite", rotate: "auto" });
+        plane.appendChild(am);
+      }
+      g.appendChild(glow); g.appendChild(route); g.appendChild(plane);
+      svg.appendChild(g);
+      e.el = g;
+    });
+
+    const li = loopInfo(L);
+    let loopEl = null, loopBadge = null;
+    if (li) {
+      const g = svgEl("g", { class: "am-loop" });
+      const glow = svgEl("path", { class: "am-route-glow", d: li.d });
+      const route = svgEl("path", { class: "am-route", d: li.d });
+      const plane = svgEl("g", { class: "am-plane" });
+      plane.appendChild(svgEl("path", { class: "am-plane-path", d: "M-1 -5 L11 0 L-1 5 L1.5 0 Z" }));
+      if (!reduceMotion.matches) {
+        plane.appendChild(svgEl("animateMotion", { path: li.d, dur: "7.5s", begin: "0.2s", repeatCount: "indefinite", rotate: "auto" }));
+      }
+      g.appendChild(glow); g.appendChild(route); g.appendChild(plane);
+      svg.appendChild(g);
+      loopEl = g;
+      loopBadge = addLoopBadge(canvas, li);
+    }
+
+    const timers = new Set();
+    function reset() {
+      timers.forEach(clearTimeout); timers.clear();
+      nodeEls.forEach(function (n) { n.classList.remove("is-in", "is-hot"); });
+      L.edges.forEach(function (e) { e.el.classList.remove("is-on"); });
+      if (loopEl) { loopEl.classList.remove("is-loop"); loopBadge.classList.remove("is-loop"); }
+    }
+    function onNode(t) {
+      const n = nodes.get(t.id);
+      if (!n) return;
+      n.classList.add("is-in", "is-hot");
+      if (li && t.id === L.loop.from) { loopEl.classList.add("is-loop"); loopBadge.classList.add("is-loop"); }
+      const id = setTimeout(function () { n.classList.remove("is-hot"); timers.delete(id); }, 950);
+      timers.add(id);
+    }
+    const player = makePlayer({
+      order: chronoLayout(L, data), total: data.total, scroll: shell.scroll, hud: shell.hud,
+      edgesTo: edgesByTarget(L.edges), reduce: reduceMotion.matches,
+      sourceLabel: data.source.label, stepOf: chronoStep(data), doneLabel: doneText(data),
+      onReset: reset, onTrigger: function () { trig.classList.add("is-in"); },
+      onNode: onNode, onEdge: function (e) { e.el.classList.add("is-on"); },
+    });
+    return { replay: player.replay };
+  }
+
+
+  /* ============================================================
+     6. PAGE MOUNT
+     ============================================================ */
+  const SCHEMES = [
+    {
+      id: "silk", no: "01", name: "Silk 丝带", en: "FLOW AS FABRIC",
+      tags: ["最像流", "材质感", "默认候选"],
+      thesis: "把每一步缝在一条连续的丝带上：不是“节点 + 连线”，而是一块会发光的织物。",
+      notes: {
+        strong: "最接近“流”的直觉；半透明卡片让带子从底下穿过，适合作为默认视图。",
+        cost: "分支多时曲线容易缠；需要控制带宽和透明度，避免盖住文字。",
+        landing: "SVG path + 双色渐变 + dashoffset shimmer；零新依赖。",
+      },
+      render: renderSilk,
+    },
+    {
+      id: "current", no: "02", name: "Current 电流", en: "FLOW AS SIGNAL",
+      tags: ["方向最明确", "工程感", "暗色强"],
+      thesis: "把链路当成一块通电的板：直角走线、流动的点阵、周期性脉冲，方向一眼可读。",
+      notes: {
+        strong: "最适合工程侧栏；点阵持续流动，失败步像断路一样显眼。",
+        cost: "暗色是主场；亮色需要把辉光收干净，否则会像仪表盘。",
+        landing: "正交 path + 两段 dashoffset（点阵 / 脉冲）+ 低亮网格。",
+      },
+      render: renderCurrent,
+    },
+    {
+      id: "transit", no: "03", name: "Transit 线路", en: "FLOW AS ROUTE",
+      tags: ["结构最清楚", "复杂链", "信息图"],
+      thesis: "把执行链当地铁线路：粗线、45° 折角、站点环，一列车沿着主链反复开过。",
+      notes: {
+        strong: "复杂链最不容易迷路；分支像换乘线，失败站用红色环标出。",
+        cost: "卡片信息密度最低，适合“先看结构，再看细节”。",
+        landing: "45° 折线 + 站点锚点 + 单列车 animateMotion；主链路径拼接。",
+      },
+      render: renderTransit,
+    },
+    {
+      id: "river", no: "04", name: "River 河道", en: "FLOW AS CURRENT",
+      tags: ["最有机", "艺术性", "品牌页"],
+      thesis: "把链路当成一条分汊的河：宽带子、漂流粒子、节点像露出水面的石头。",
+      notes: {
+        strong: "最有生命感；扇出像分流，重试像回流，适合品牌/复盘长图。",
+        cost: "宽带子容易糊；粒子数量要克制，移动端只保留关键流。",
+        landing: "多层 stroke 叠出河宽 + 粒子 animateMotion + 节点涟漪。",
+      },
+      render: renderRiver,
+    },
+    {
+      id: "airmail", no: "05", name: "Airmail 航线", en: "FLOW AS JOURNEY",
+      tags: ["叙事感", "品牌分享", "编辑风"],
+      thesis: "把链路当成一次邮路：虚线航线、纸飞机、邮戳卡片，每一步都是一站。",
+      notes: {
+        strong: "最有故事感；适合分享、复盘和对外解释“一次任务去了哪”。",
+        cost: "数据密度低；航线弧度要统一，否则会像随手画的草图。",
+        landing: "虚线弧 + 纸飞机 animateMotion + 邮票卡 / 邮戳；Fraunces 标题。",
+      },
+      render: renderAirmail,
+    },
+  ];
+
+  const nav = document.getElementById("labNav");
+  const main = document.getElementById("samples");
+  nav.innerHTML = SCHEMES.map(function (s) {
+    return '<a href="#' + s.id + '"><span>' + s.no + "</span>" + s.name + "</a>";
+  }).join("");
+  main.innerHTML = SCHEMES.map(function (s) {
+    return '<section class="sample" id="' + s.id + '">' +
+      '<div class="sample-head">' +
+        '<div class="sample-no"><b>' + s.no + '</b> / 05</div>' +
+        '<div><h2 class="sample-title">' + s.name + ' <small>' + s.en + '</small></h2>' +
+        '<p class="sample-thesis">' + s.thesis + '</p></div>' +
+        '<div class="sample-tags">' + s.tags.map(function (t, i) {
+          return '<span class="sample-tag' + (i === 0 ? " is-key" : "") + '">' + t + '</span>';
+        }).join("") + '</div>' +
+      '</div>' +
+      '<div class="stage" data-size="' + s.id + '-simple">' +
+        '<div class="stage-bar">' +
+          '<i class="stage-dot"></i>' +
+          '<span class="stage-id"></span>' +
+          '<span class="stage-meta"></span>' +
+          '<span class="stage-spacer"></span>' +
+          '<button type="button" class="stage-btn" data-act="replay" aria-label="重播这个方案">' + iconSVG("rotate") + '<span>重播</span></button>' +
+          '<button type="button" class="stage-btn" data-act="zoom" aria-label="放大这个方案">' + iconSVG("expand") + '<span>放大</span></button>' +
+        '</div>' +
+        '<div class="stage-body" data-variant="' + s.id + '"></div>' +
+        '<button type="button" class="stage-esc" data-act="zoom">Esc 退出</button>' +
+      '</div>' +
+      '<div class="sample-notes">' +
+        '<div class="note"><b class="is-strong">强项</b><p>' + s.notes.strong + '</p></div>' +
+        '<div class="note"><b>代价</b><p>' + s.notes.cost + '</p></div>' +
+        '<div class="note"><b>落地</b><p>' + s.notes.landing + '</p></div>' +
+      '</div>' +
+    '</section>';
+  }).join("");
+
+  const views = new Map();
+  SCHEMES.forEach(function (scheme) {
+    const section = document.getElementById(scheme.id);
+    const stage = section.querySelector(".stage");
+    const body = section.querySelector(".stage-body");
+    const idEl = section.querySelector(".stage-id");
+    const metaEl = section.querySelector(".stage-meta");
+    const dot = section.querySelector(".stage-dot");
+    const view = {
+      render: function () {
+        const data = dataNow();
+        stage.dataset.size = scheme.id + "-" + data.key;
+        idEl.textContent = data.id;
+        metaEl.innerHTML = "<b>" + esc(stageMetaText(data)) + "</b> · " + esc(data.note);
+        const failed = data.tasks.some(function (t) { return t.status === "failed"; });
+        dot.classList.toggle("is-fail", failed);
+        dot.title = failed ? "有失败步骤" : "全部成功";
+        body.innerHTML = "";
+        const api = scheme.render(body, data);
+        view.replay = api.replay;
+      },
+      replay: function () {},
+      seen: false,
+    };
+    views.set(scheme.id, view);
+    view.render();
+    section.querySelector('[data-act="replay"]').addEventListener("click", function () { view.replay(); });
+    section.querySelectorAll('[data-act="zoom"]').forEach(function (b) {
+      b.addEventListener("click", function () { toggleZoom(stage); });
+    });
+    const io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        if (!view.seen) {
+          view.seen = true;
+          view.replay();
+        }
+      });
+    }, { threshold: 0.55 });
+    io.observe(stage);
+    if (window.ResizeObserver) {
+      let lastNarrow = body.clientWidth < 620;
+      let raf = 0;
+      const ro = new ResizeObserver(function () {
+        const next = body.clientWidth < 620;
+        if (next === lastNarrow) return;
+        lastNarrow = next;
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(function () {
+          view.render();
+          view.replay();
+        });
+      });
+      ro.observe(body);
+    }
+  });
+
+  let zoomReturnFocus = null;
+  let zoomInert = [];
+  function setZoomBackgroundInert(on, stage) {
+    if (on) {
+      zoomInert = Array.from(document.querySelectorAll(".lab-head, .lab-bar, .lab-foot, .sample-head, .sample-notes, .stage")).filter(function (el) {
+        return el !== stage && !el.contains(stage);
+      });
+      zoomInert.forEach(function (el) { el.setAttribute("inert", ""); });
+    } else {
+      zoomInert.forEach(function (el) { el.removeAttribute("inert"); });
+      zoomInert = [];
+    }
+  }
+  function openZoom(stage) {
+    zoomReturnFocus = document.activeElement;
+    const title = stage.closest(".sample") ? stage.closest(".sample").querySelector(".sample-title") : null;
+    stage.classList.add("is-zoom");
+    stage.setAttribute("role", "dialog");
+    stage.setAttribute("aria-modal", "true");
+    stage.setAttribute("aria-label", (title ? title.textContent.trim() : "Flowline") + " 放大视图；按 Esc 退出");
+    stage.setAttribute("tabindex", "-1");
+    document.body.classList.add("is-locked");
+    setZoomBackgroundInert(true, stage);
+    stage.focus({ preventScroll: true });
+  }
+  function closeZoom(stage) {
+    stage.classList.remove("is-zoom");
+    stage.removeAttribute("role");
+    stage.removeAttribute("aria-modal");
+    stage.removeAttribute("aria-label");
+    stage.removeAttribute("tabindex");
+    document.body.classList.remove("is-locked");
+    setZoomBackgroundInert(false, stage);
+    if (zoomReturnFocus && typeof zoomReturnFocus.focus === "function") {
+      zoomReturnFocus.focus({ preventScroll: true });
+    }
+    zoomReturnFocus = null;
+  }
+  function toggleZoom(stage) {
+    const opening = !stage.classList.contains("is-zoom");
+    document.querySelectorAll(".stage.is-zoom").forEach(function (s) { if (s !== stage) closeZoom(s); });
+    if (opening) openZoom(stage);
+    else closeZoom(stage);
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    const z = document.querySelector(".stage.is-zoom");
+    if (z) toggleZoom(z);
+  });
+
+  /* theme / data */
+  const themeBtns = Array.from(document.querySelectorAll("[data-theme-btn]"));
+  const dataBtns = Array.from(document.querySelectorAll("[data-data-btn]"));
+  function setTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    themeBtns.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.themeBtn === theme)); });
+    try { localStorage.setItem("ano-flow-theme", theme); } catch (e) {}
+  }
+  function setData(key) {
+    document.documentElement.dataset.data = key;
+    dataBtns.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.dataBtn === key)); });
+    try { localStorage.setItem("ano-flow-data", key); } catch (e) {}
+    views.forEach(function (v) { v.render(); v.seen = true; v.replay(); });
+  }
+  themeBtns.forEach(function (b) { b.addEventListener("click", function () { setTheme(b.dataset.themeBtn); }); });
+  dataBtns.forEach(function (b) { b.addEventListener("click", function () { setData(b.dataset.dataBtn); }); });
+  document.getElementById("replayAll").addEventListener("click", function () {
+    views.forEach(function (v) { v.replay(); });
+  });
+
+  /* restore */
+  try {
+    const savedTheme = localStorage.getItem("ano-flow-theme");
+    const savedData = localStorage.getItem("ano-flow-data");
+    if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
+    if (savedData === "simple" || savedData === "complex" || savedData === "loop") {
+      document.documentElement.dataset.data = savedData;
+      dataBtns.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.dataBtn === savedData)); });
+      views.forEach(function (v) { v.render(); v.seen = true; v.replay(); });
+    }
+  } catch (e) {}
+
+  /* nav spy */
+  const navLinks = Array.from(document.querySelectorAll(".lab-nav a"));
+  const spy = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      const id = entry.target.id;
+      navLinks.forEach(function (a) { a.classList.toggle("is-active", a.getAttribute("href") === "#" + id); });
+    });
+  }, { rootMargin: "-20% 0px -66% 0px", threshold: 0 });
+  document.querySelectorAll(".sample").forEach(function (s) { spy.observe(s); });
+
+  /* reduced-motion preference changes: re-render the five */
+  reduceMotion.addEventListener && reduceMotion.addEventListener("change", function () {
+    views.forEach(function (v) { v.render(); v.replay(); });
+  });
+})();
+</script>
+</body>
+</html>

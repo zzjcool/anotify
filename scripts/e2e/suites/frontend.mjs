@@ -20,7 +20,7 @@
  *     sent 超 60s → 「节点未回复」；四语言文案不串（mock）+ 真后端版本/已是最新（接口在则断言）
  *  J. 共享拓扑推导（graphs.js 的 sourceTopology）：源 1:N 的出边、source 页与 trace 页
  *     的图同源一致、环仍画出来并标 cycle、声明了出口却没接下游的能力仍显示成灰点
- *     （文案是「没有下游」，不再提端口）（真后端）
+ *     （灰点标题优先用出口名，通用端口 out 才退回「（没有下游）」）（真后端）
  *  L. 端口从界面消失（CONTRACT-hide-ports.md）：表单只剩一个逗号分隔的
  *     「下游能力（候选）」输入框、详情区只谈下游、图上不标出口名。
  *     端口 UI（出口 chips / 按出口分行 / balance 模式 / 优先级数字）**不许回来** ——
@@ -6105,6 +6105,14 @@ async function checkWaterfall(page) {
 					return d ? getComputedStyle(d).backgroundColor : "";
 				}),
 				labels: nodeEls.map((n) => n.querySelector(".wf-node-title")?.textContent || ""),
+				// 交给渲染层的那份 spec：副标题是**推导结果**，从 DOM 读回
+				// 只能看到最终字符串，看不到 role / deadport，断言就没法
+				// 区分「终点」和「灰点」两类卡片。
+				spec: ((host._graphSpec && host._graphSpec.nodes) || []).map((n) => ({
+					id: n.id,
+					sub: n.sub || "",
+					role: n.role || "",
+				})),
 			};
 		});
 
@@ -6168,6 +6176,115 @@ async function checkWaterfall(page) {
 				"节点副标题显示状态",
 				cg.subs.some((x) => /succeeded|failed|running|pending/.test(x)),
 				cg.subs.join(" | "),
+			);
+			// 结构身份（终点 / 没有下游）在 trace 页也必须在场：
+			//
+			// 终端能力（outputs 空 = 跑完就结束）在图上**没有灰点**，副标题
+			// 若只写执行状态，读者分不清「这条链到头了」和「这次刚好没往下
+			// 走」。源详情页的同一张卡片写「终点」，trace 页不写就是同一个
+			// 节点两个页面上说两句话。
+			//
+			// 这里**不靠演示数据形状**（「刚好有一个终点节点」只是数据巧合）：
+			// 直接给 taskChain 喂一份合成底图 + 一个已执行任务，断言推导结果。
+			const structSub = await page.evaluate(() => {
+				const host = document.createElement("div");
+				host.style.cssText = "position:absolute;left:-9999px;top:0;width:600px;height:400px";
+				document.body.appendChild(host);
+				try {
+					window.AnotifyGraphs.taskChain(host, {
+						tasks: [
+							{
+								id: "tsk_probe",
+								capabilityId: "cap_probe",
+								capability: "probe.end",
+								version: 1,
+								status: "succeeded",
+								startedAt: 100,
+								finishedAt: 100,
+								createdAt: 100,
+							},
+						],
+						baseGraph: {
+							nodes: [
+								{ id: "cap_probe", label: "probe.end", kind: "end", entry: true },
+								// 通用占位端口（out）→ 标题退回人话
+								{
+									id: "dead|cap_probe|out",
+									label: "out",
+									kind: "deadport",
+									deadport: true,
+									entry: false,
+								},
+								// 有信息量的端口名（echoed）→ 标题就是端口名
+								{
+									id: "dead|cap_probe|echoed",
+									label: "echoed",
+									kind: "deadport",
+									deadport: true,
+									entry: false,
+								},
+							],
+							edges: [
+								{
+									from: "cap_probe",
+									to: "dead|cap_probe|out",
+									port: "out",
+									showPort: false,
+									muted: true,
+								},
+								{
+									from: "cap_probe",
+									to: "dead|cap_probe|echoed",
+									port: "echoed",
+									showPort: false,
+									muted: true,
+								},
+							],
+						},
+						t: (k, fb) => (window.AnotifyI18n && window.AnotifyI18n[k]) || fb || k,
+					});
+					const spec = host._graphSpec || { nodes: [] };
+					return (spec.nodes || []).map((n) => ({
+						id: n.id,
+						role: n.role || "",
+						label: n.label || "",
+						sub: n.sub || "",
+					}));
+				} finally {
+					host.remove();
+				}
+			});
+			const probeEnd = structSub.find((n) => n.role === "end");
+			const probeOut = structSub.find((n) => n.id === "dead|cap_probe|out");
+			const probeNamed = structSub.find((n) => n.id === "dead|cap_probe|echoed");
+			H.check(
+				"已执行的终点能力，副标题带「终点」（trace 页也讲结构身份）",
+				!!probeEnd && probeEnd.sub.includes("终点"),
+				JSON.stringify(structSub),
+			);
+			// 灰点必须说清「是哪个出口悬着」：
+			//   · 端口名是通用占位（out）→ 名字没有信息量，标题退回人话；
+			//   · 端口名自带含义（echoed）→ 标题就是端口名，副标题说它怎么了。
+			// 之前两种情况一律「（没有下游）」，几个灰点并排时读者分不出差别。
+			H.check(
+				"通用端口（out）的灰点：标题「（没有下游）」/ 副标题「没有下游」",
+				!!probeOut && probeOut.label === "（没有下游）" && probeOut.sub === "没有下游",
+				JSON.stringify(probeOut || null),
+			);
+			H.check(
+				"有名字的端口（echoed）的灰点：标题是端口名 / 副标题「未接下游能力」",
+				!!probeNamed &&
+					probeNamed.label === "echoed" &&
+					probeNamed.sub === "未接下游能力",
+				JSON.stringify(probeNamed || null),
+			);
+			// 真实页面上也得有灰点：证明 trace.html 把底图真的传进来了
+			// （合成断言只验推导，验不到“这一页用不用底图”）。
+			const deads = cg.spec.filter((n) => n.role === "deadport");
+			H.check(
+				"真实链路图里有灰点，且副标题不是空串",
+				deads.length > 0 && deads.every((n) => n.sub === "没有下游"),
+				JSON.stringify(deads),
 			);
 		}
 
@@ -8589,8 +8706,10 @@ async function checkFlowChart(page, base) {
 	// #112：流向图从**列表卡片**搬到了**源详情页**（source.html?id=…）。
 	// 列表只回答"有哪些源、活着吗"，细节（配置/参数/流向）点进去看。
 	//
-	// 端口从图上消失（契约 hide-ports §4）：边标签不再显示出口名，
-	// 灰点文案改成「没有下游」。例外（多出口的历史数据 + 同名多版本的 @N）
+	// 端口从图上消失（契约 hide-ports §4）：**边标签**不再显示出口名，
+	// 多出口的历史数据才标。灰点（没接下游的出口）不一样：它的标题就是
+	// 出口名（`echoed` / `done`），只有通用占位 `out` 才退回「（没有下游）」——
+	// 读者要能看出「是哪个出口悬着」。例外（多出口的边标签 + 同名多版本的 @N）
 	// 在纯推导层用 sourceTopology 单测钉住。
 	//
 	// 从**已渲染的 DOM** 拿链接，不发任何请求：这是 mock 预览环境，
@@ -8747,9 +8866,10 @@ async function checkFlowChart(page, base) {
 	// ---- 端口不上图（契约 hide-ports §4）----
 	//
 	// 单出口能力的出口名（内部固定 out）对读者是噪声，所以：
-	//   · 渲染层（host._graphSpec）收到的 port 是空串 → 图上没有边标签；
-	//   · 灰点只说事实「没有下游」，不再提某个出口没接线。
+	//   · 渲染层（host._graphSpec）收到的 port 是空串 → 图上没有边标签。
 	// 例外只有一个：**多出口的历史数据**（见下面的推导单测）。
+	// 灰点不受这条限制：那个点的标题就是出口名（`echoed`），通用占位 `out`
+	// 才退回「（没有下游）」—— 边标签是噪音，悬着的出口则必须点名。
 	const spec = await page.evaluate(() => {
 		const host = document.querySelector(".flograph");
 		const sp = host && host._graphSpec;
@@ -8778,7 +8898,7 @@ async function checkFlowChart(page, base) {
 		JSON.stringify({ dom: g.ports, spec: (spec || {}).edgeLabels }),
 	);
 	H.check(
-		"灰点文案是「（没有下游）」/「没有下游」（不再说某个出口没接）",
+		"通用端口（out）的灰点仍是「（没有下游）」/「没有下游」",
 		!!spec &&
 			(spec.nodes || []).some(
 				(n) => n.dead && n.label === "（没有下游）" && n.sub === "没有下游",
@@ -9891,7 +10011,7 @@ async function checkTaskLogs(ctx, base) {
 //   ① 菱形：源节点有 2 条出边（用**图的实例数据**断言，不数 SVG 路径 —— 布局会合并视觉连线）
 //   ② 同源跨页一致：source 页与 trace 页的能力节点集合、边集合完全相同
 //   ③ 环（A→B→A）仍画出来并标 cycle（重构不许把它吞掉）
-//   ④ 声明了但没接边的出口仍显示 deadport 灰点（文案是「没有下游」，不再提端口）
+//   ④ 声明了但没接边的出口仍显示 deadport 灰点（标题 = 出口名，如 done）
 //   ⑤ 端口不上图：单出口的边传空串，只有**多出口（历史数据）**才带出口名
 //
 // 为什么 ③ 的环可能仍直插库：契约 §2 已放开配置期环检测（`review → fix → review` 是合法编排，
@@ -10125,9 +10245,12 @@ async function checkSharedTopology(server, newCtx) {
 			!!deadNode && deadNode.kind === "deadport" && deadNode.deadport === true,
 			JSON.stringify(srcSpec?.nodes?.filter((n) => n.deadport)),
 		);
+		// 灰点标题 = **出口名**（这里造的数就是带名字的 done）：
+		// 「是哪个出口悬着」比一句通用的「（没有下游）」有用得多 ——
+		// 一张图上好几个灰点并排时，通用文案完全分不出差别。
 		H.check(
-			"④ 灰点文案是「（没有下游）」/「没有下游」（不再说某个出口没接）",
-			!!deadNode && deadNode.label === "（没有下游）" && deadNode.sub === "没有下游",
+			"④ 灰点标题是出口名（done），副标题说它没接下游能力",
+			!!deadNode && deadNode.label === "done" && deadNode.sub === "未接下游能力",
 			JSON.stringify(deadNode),
 		);
 		const deadEdge = (srcSpec?.edges || []).find((e) => e.to === deadID);

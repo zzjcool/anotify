@@ -568,10 +568,20 @@ async function main() {
 		indexResources.length > 5,
 		JSON.stringify({ n: indexResources.length }),
 	);
+	// V5 的原始契约是「index 一个图脚本都不许加载」—— 那时首页没有图。
+	//
+	// 现在首页自带一张「最新事件链路」图（#latest-flow，silk 舞台），它需要
+	// graphs.js + flograph.js；**不需要** dagre（silk 是自定义布局，不跑 dagre）
+	// 与 traceview（那是 trace 页的视图装配）。所以契约收窄成：
+	// 「只许 graphs/flograph，不许 dagre/traceview」—— 省掉的仍是两个最重的，
+	// 而且这条**否定**断言依然是"多加载就会红"。
 	const indexLoaded = loadedGraphLibs(indexResources);
+	const indexHeavy = indexLoaded.filter(
+		(b) => b === "dagre.min.js" || b === "traceview.js",
+	);
 	H.check(
-		"index.html 不加载四个图脚本（V5：-150.7KB / -4 请求）",
-		indexLoaded.length === 0,
+		"index.html 只加载 graphs/flograph，不加载 dagre/traceview（V5 收窄：首页自带链路图）",
+		indexHeavy.length === 0,
 		JSON.stringify({ loaded: indexLoaded }),
 	);
 	H.check("index 页无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 200));
