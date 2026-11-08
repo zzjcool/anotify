@@ -171,7 +171,7 @@
       Anotify.mountLayout({
         active: "playbooks",
         title: t("pb.title", "预案"),
-        subtitle: t("pb.subtitle", "把能力、出口、触发器组成一份能体检、能补齐的预案"),
+        subtitle: t("pb.subtitle", "把能力、下游、源组成一份能体检、能补齐的预案"),
       });
 
       // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
@@ -249,7 +249,7 @@
           el(
             "div",
             "pb-meta",
-            t("pb.meta", "能力 {c} · 出口 {e} · 触发器 {tr}")
+            t("pb.meta", "能力 {c} · 下游 {e} · 源 {tr}")
               .replace("{c}", pb.counts.capabilities)
               .replace("{e}", pb.counts.edges)
               .replace("{tr}", pb.counts.triggers),

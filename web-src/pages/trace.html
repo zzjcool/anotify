@@ -587,7 +587,7 @@
       Anotify.mountLayout({
         active: "events",
         title: t("trace.title", "链路"),
-        subtitle: t("trace.subtitle", "一条 trace 的全貌：谁触发的、走了哪条路、每一步多久"),
+        subtitle: t("trace.subtitle", "一条 trace 的全貌：谁触发的、走了哪条路、每个任务多久"),
       });
 
       // el / code 是本页的小工具，不依赖 events.html。
@@ -746,7 +746,7 @@
           el(
             "p",
             "card-sub",
-            t("trace.emits.subtitle", "这次运行里每一次 emit：出口、时间、派发结果与原始 data"),
+            t("trace.emits.subtitle", "这次任务里每一次 emit：出口、时间、派发结果与原始 data"),
           ),
         );
         head.appendChild(titles);
@@ -769,7 +769,7 @@
                 ? t("trace.emits.failed", "产出列表没能加载（不影响上面的链路）")
                 : t(
                     "trace.emits.empty",
-                    "这次运行还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。",
+                    "这次任务还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。",
                   ),
             ),
           );
@@ -1255,7 +1255,7 @@
           stats.appendChild(stat(t("trace.stat.duration", "总耗时"), fmtDur(totalMs)));
           stats.appendChild(
             stat(
-              t("trace.stat.slowest", "最慢一步"),
+              t("trace.stat.slowest", "最慢任务"),
               slowest ? slowest.name + " · " + fmtDur(slowest.d * 1000) : "—",
             ),
           );
@@ -1289,7 +1289,7 @@
                 t("trace.empty_title", "没有任务"),
                 t(
                   "trace.empty",
-                  "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。",
+                  "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的目标能力、参数不合 schema、或没有节点声明目标能力）。",
                 ),
               ),
             );

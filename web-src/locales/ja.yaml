@@ -15,7 +15,7 @@ common:
   nav:
     overview: 概要
     events: イベントストリーム
-    capabilities: ケイパビリティ
+    capabilities: 能力
     playbooks: "プレイブック"
     nodes: ノード
     receivers: 通知先
@@ -109,8 +109,8 @@ common:
     cwd: プロジェクト CWD
     task_id: タスク ID
     trace: トレース
-    capability: ケイパビリティ
-    node: 実行ノード
+    capability: 能力
+    node: 'ノード'
     attempts: 試行回数
     parent_task: 親タスク
     started_at: 開始時刻
@@ -192,7 +192,7 @@ index:
     refresh: 更新 →
     count: '最新 {n} 件'
     loading: イベントを読み込み中…
-    empty: イベントはまだありません。webhook や cron トリガーを繋ぐと、ここに流れが表示されます。
+    empty: 'イベントはまだありません。webhook や cron ソースを繋ぐと、ここに流れが表示されます。'
 scope:
   switcher_label: "ネームスペースを切り替え"
   section_ns: "ネームスペース"
@@ -215,6 +215,16 @@ graph:
   fullscreen_hint: ホイールで拡大縮小 · ドラッグで移動 · Esc で終了
   silk_preview_done: プレビュー完了
   hud_flow: 下流フロー
+  hud_path: 'タスク経路'
+  hud_fail: '失敗タスク'
+  silk_region: 'タスクチェーン；ドラッグ、または左右の矢印キーで移動できます'
+  silk_ready: '再生の準備'
+  silk_meta_preview: '{n} 個の能力 · {m} 本の下流'
+  silk_meta_run: '{n} 個のタスク · 再生 {t}'
+  silk_meta_ok: 'すべて成功'
+  silk_meta_failed: '{n} 個失敗'
+  silk_meta_done: '{n} 個のタスク完了'
+  silk_clock: '再生 {t}'
 
 message:
   title: 通知の詳細
@@ -232,7 +242,7 @@ message:
     not_found: メッセージが見つからないか削除されました
   task_title: タスク詳細
   chain_title: タスクチェーン
-  back_events: イベント一覧に戻る
+  back_events: 'イベント一覧に戻る'
   missing_id_hint: ディープリンクにはタスク id が必要です（例：message.html?id=tsk_xxx）。
   not_found_hint: このタスクは存在しません。削除されたか、別のネームスペースに属している可能性があります。
   task_state:
@@ -248,7 +258,7 @@ message:
   node:
     central: ハブが実行
   chain:
-    count: '{n} ステップ'
+    count: '{n} 個のタスク'
     empty: このトレースに他のタスクはありません
     current: 現在
 login:
@@ -630,8 +640,8 @@ docs:
       sources: ソース
       namespaces: ネームスペース
       stats: 統計
-      capabilities: ケイパビリティ
-      edges: 出口
+      capabilities: 能力
+      edges: '下流'
       playbooks: プレイブック
       nodes: ノード
       node-stream: ノード常時接続
@@ -644,12 +654,12 @@ docs:
       devices: Web Push
   events:
     core: 中核
-    intro: イベントはすべての起点です。外部の変化はここから入り、ハブがエッジ表に従ってタスクチェーンへ派発します。
+    intro: 'イベントはすべての起点です。外部の変化はここから入り、ハブが下流表に従ってタスクチェーンへ派発します。'
     required: 必須
     optional: 任意
     params:
       title: イベントのフィールド
-      source: イベントの発生元。起点ケイパビリティ名を兼ねます（github、cron、http）。
+      source: イベントの発生元。起点能力名を兼ねます（github、cron、http）。
       type: イベント種別。その発生元にとって意味のある名前（例：pull_request.opened）。
       payload: イベントのペイロード。下流タスクの params としてそのまま渡されます。
       idem: 冪等キー。同じ source + idemKey は 1 つのイベントだけを生みます。
@@ -658,7 +668,7 @@ docs:
     curl:
       title: curl の例
   node:
-    intro: ノードは実行者です。ハブに接続し、実行できるケイパビリティを宣言して assign フレームを受け取ります。
+    intro: 'ノードはコードを実行する側です。ハブに接続し、実行できる能力を宣言して assign フレームを受け取ります。'
     connect:
       title: 接続
     up:
@@ -667,7 +677,7 @@ docs:
     down:
       title: ハブ → ノード（下り）
       comment: '# welcome / assign / cancel / error'
-    note: ハブは「何をするか」（ケイパビリティ + params）だけを伝え、「どうやるか」は決して伝えません — argv も shell もコマンドラインもありません。
+    note: ハブは「何をするか」（能力 + params）だけを伝え、「どうやるか」は決して伝えません — argv も shell もコマンドラインもありません。
   copy: コピー
   your_domain: あなたのドメイン
   agent:
@@ -692,7 +702,7 @@ docs:
     map:
       title: エンドポイントマップ
       notify: Agent による通知上報（中核）
-      tasks: タスク一覧（イベントハブ）
+      tasks: 'タスク一覧（イベントストリーム）'
       notifications: 通知履歴一覧
       devices_list: デバイス一覧
       devices_sub: デバイス購読（登録）
@@ -841,7 +851,7 @@ cliauth:
     notfound_action: 再入力
     consumed_badge: 使用済み
     consumed_title: このセッションは承認済みです
-    consumed_desc: このセッションのキーはすでに発行されています。新しいキーが必要な場合は、ターミナルでログインスクリプトを再実行してください。
+    consumed_desc: 'このセッションのキーはすでに発行されています。新しいキーが必要な場合は、ターミナルでログインスクリプトを再実行してください。'
     error_title: サーバーに接続できません
     error_desc: ネットワーク接続を確認して再試行してください。
     rejected_desc: 承認リクエストが拒否されました。選択した権限スコープを確認して再試行してください。
@@ -1061,20 +1071,20 @@ events:
     no_match: このページに一致なし。古いページへ進むか最新へ戻れます
     invalid_cursor: カーソルが無効です。最新へ戻りました
 caps:
-  title: ケイパビリティ
+  title: 能力
   step_pick: テンプレートを選ぶ
   step_fill: 入力して作成
-  sidebar: 'ここで定義し、ノードが実行'
-  subtitle: ケイパビリティは「何をするか」（「どうやるか」ではない）。下流のエッジは独立したページになりました。
-  new: ケイパビリティを定義
-  loading: ケイパビリティを読み込み中…
+  sidebar: 'コンソールで作成、ノードが実行'
+  subtitle: '能力は「何をするか」（「どうやるか」ではない）。ここで作成・デプロイし、下流を指定します。'
+  new: '能力を作成'
+  loading: 能力を読み込み中…
   load_failed: 'capabilities 一覧の読み込みに失敗しました。再読み込みしてください'
-  empty: ケイパビリティがまだありません。定義するとノードが宣言できます。
-  count: '{n} 個のケイパビリティ'
+  empty: '能力がまだありません。作成するとノードが宣言できます。'
+  count: '{n} 個の能力'
   source_builtin: '組み込み'
   declared_by: 宣言ノード
   no_node: 宣言ノードなし
-  no_node_hint: ノードが宣言するまでこのケイパビリティは実行できません
+  no_node_hint: ノードが宣言するまでこの能力は実行できません
   by_hub: 中枢で実行、ノード不要
   by_none: イベント起点、コードは実行しません
   any_event_type: 任意のイベント種別（起点）
@@ -1148,79 +1158,84 @@ caps:
     load_failed: 'テンプレートの読み込みに失敗しました: '
     empty: 'テンプレートが返されませんでした'
     created: '能力を作成しました'
-    created_digest: '作成しました · digest {digest}'
+    created_digest: '作成しました · 内容フィンガープリント {digest}'
   deploy:
-    col: '配備'
-    status_applied: '{n} 台に配備済み'
-    status_pending: '{n} 台に配備中'
+    col: 'デプロイ'
+    status_applied: '{n} 台にデプロイ済み'
+    status_pending: '{n} 台にデプロイ中'
     status_failed: '{n} 台失敗'
     status_local: '{n} 台がローカル変種'
-    status_none: '未配備'
+    status_none: '未デプロイ'
     status_unknown: '—'
-    btn: '配備'
-    title: '「{name}」を配備'
-    subtitle: 'マシンを選択するか tag でまとめて選び、配備を押してください。'
-    pick_hint: 'マシンを選択'
+    btn: 'デプロイ'
+    title: '「{name}」をデプロイ'
+    subtitle: 'ノードを選択するか tag でまとめて選び、デプロイを押してください。'
+    pick_hint: 'ノードを選択'
     tag_pick: 'tag で選択'
-    node_digest: '配備済み {digest}'
-    node_none: '未配備'
-    push: '配備'
-    pushing: '配備中…'
+    node_digest: 'デプロイ済み {digest}'
+    node_none: '未デプロイ'
+    push: 'デプロイ'
+    pushing: 'デプロイ中…'
     close: '閉じる'
     undo: '取り消す'
     undone: '取り消しました'
     undo_failed: '取り消しに失敗しました: '
-    pushed: '送信済み'
+    pushed: 'デプロイ済み'
     queued: '待機中（ノードがオフライン）'
     queued_other: '待機中'
     nodes_failed: 'ノード一覧を取得できませんでした。しばらくしてから再試行してください'
-    result_title: '送信結果'
-    none_selected: 'マシンを 1 台以上選んでください'
+    result_title: 'デプロイ結果'
+    none_selected: 'ノードを 1 台以上選んでください'
     no_nodes: 'この名前空間にはまだノードがありません'
-    err: '配備に失敗しました: '
+    err: 'デプロイに失敗しました: '
     builtin: 中枢が実行するためデプロイ不要
     builtin_hint: '組み込みエグゼキュータ {name} は中枢プロセスで動くため、ノードへのデプロイは不要かつ不可です'
   list:
-    title: ケイパビリティ一覧
+    title: 能力一覧
   form:
     display_name: 表示名
     display_name_ph: "例：「PR を分析」「ステージングへデプロイ」"
     display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
-    name: ケイパビリティ名
-    name_hint: 技術名：ノード宣言・辺・ログで使います。作成後は変更できません。
-    downstream: 下流ケイパビリティ（候補）
+    name: 能力名
+    name_hint: '技術名：ノード宣言・下流・ログで使います。作成後は変更できません。'
+    outputs: '出口'
+    outputs_optional: '（省略可）'
+    outputs_ph: 'approved, needs-fix（空 = 内部出口が 1 つだけ）'
+    outputs_hint: '能力が宣言する出口名（カンマ区切り）。下流はこの中の名前しか指せません。空 = 内部出口が 1 つだけ（そのまま下流へ渡す）。能力の契約の一部なので、変更には新バージョンが必要です。'
+    outputs_bad: '出口名が不正です：{name}（英数字・ドット・アンダースコア・ハイフンのみ、1〜32 文字）'
+    downstream: 下流能力（候補）
     downstream_optional: 空でも可
     downstream_ph: script.echo, notify.phone
-    downstream_hint: 実行後に誰へ渡すか。複数 = 候補で、実行時に優先度で 1 つ選ばれます。空 = 終端ケイパビリティ（実行したら終わり）。
-    downstream_missing: '次のケイパビリティが見つかりません：{names}'
+    downstream_hint: 実行後に誰へ渡すか。複数 = 候補で、実行時に優先度で 1 つ選ばれます。空 = 終端能力（実行したら終わり）。
+    downstream_missing: '次の能力が見つかりません：{names}'
     downstream_cands_hint: クリックで追加：
-    downstream_cands_empty: 選択できる下流ケイパビリティがまだありません（ケイパビリティを定義するか、上の別カードに名前を付けてください）。
+    downstream_cands_empty: '選択できるターゲット能力がまだありません（能力を作成するか、上の別カードに名前を付けてください）。'
     cand_add: 下流に追加
     cand_picked: 選択済み
-    cards_title: このバッチのケイパビリティ
-    cards_hint: 複数のケイパビリティを一度に定義できます。各カードは独自の下流・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。
-    card_add: ＋ ケイパビリティを追加
-    card_remove: このケイパビリティを削除
-    card_n: 'ケイパビリティ {n}'
+    cards_title: このバッチの能力
+    cards_hint: '複数の能力を一度に作成できます。各カードは独自の下流・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。'
+    card_add: ＋ 能力を追加
+    card_remove: この能力を削除
+    card_n: '能力 {n}'
     card_unnamed: 無名
-    card_editor: '編集中: ケイパビリティ {n} / {total}'
+    card_editor: '編集中: 能力 {n} / {total}'
     card_down: '下流：{names}'
-    card_name_dupe: 'バッチ内でケイパビリティ名が重複しています: {name}'
-    card_err_field: 'ケイパビリティ {n} / {field}: {reason}'
-    card_err_generic: 'ケイパビリティ {n}: {reason}'
+    card_name_dupe: 'バッチ内で能力名が重複しています: {name}'
+    card_err_field: '能力 {n} / {field}: {reason}'
+    card_err_generic: '能力 {n}: {reason}'
     cand_hint: 実行時は優先度で 1 つだけ選ばれます。同順位はラウンドロビン（数値が小さいほど優先）。
     cand_batch_tag: （このバッチ）
-    batch_created: '{caps} 件のケイパビリティを作成 · {edges} 本のエッジ'
+    batch_created: '{caps} 個の能力を作成 · {m} 本の下流'
     batch_failed: '一括作成に失敗しました（何も保存されていません）: '
-    created_with_edges: '{n} 本のエッジを接続しました'
+    created_with_edges: '{n} 本の下流を接続しました'
     link_rejected: '{n} 番目の下流 → {to} が不正なため、何も作成されませんでした：{reason}'
     schema: パラメータ検証（JSON Schema）
     schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
     cancel: キャンセル
     submit: 作成
-    created: ケイパビリティを作成しました
+    created: 能力を作成しました
     create_failed: '作成に失敗: '
-    err_name: ケイパビリティ名を入力してください
+    err_name: 能力名を入力してください
     err_schema: paramsSchema が正しい JSON ではありません
     schema_mode_form: フォーム
     schema_mode_json: JSON
@@ -1252,13 +1267,16 @@ caps:
   detail:
     btn: 詳細
     params: パラメータ契約
+    outputs: '出口（何を出せるか）'
+    no_outputs: '出口はありません — 終わったら終わりで、下流は何も起動しません。'
+    implicit_output: '内部出口が 1 つだけ（ここでは名前を付けません）'
     no_params: パラメータなし
     downstream: 下流（候補）
     no_downstream: 実行したら終わり。下流は呼び出されません。
     cand_prio_hint: '優先度 {n} · 編集で変更'
-    edges_failed: エッジ一覧を取得できず、下流の状態は不明です
+    edges_failed: '下流一覧を取得できず、下流の状態は不明です'
     inbound: どこから呼ばれるか
-    no_inbound: 入ってくるエッジはありません — ここにイベントは来ません
+    no_inbound: '上流はありません — ここにイベントは来ません'
     me: 自分
     source_prefix: ソース
     follow: 最新に追従
@@ -1293,15 +1311,15 @@ caps:
     sticky_carried: 'スティッキー・ルーティング {v}'
     lifecycle_carried: 'ライフサイクル {v}'
     name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
-    multi_output_note: 'このケイパビリティは複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
+    multi_output_note: 'この能力は複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
     submit: 新バージョンを公開
     publishing: 公開中…
     failed: '公開に失敗：'
     created: '{ref} を公開しました'
-    impact_title: このバージョンは既存の下流を壊します
+    impact_title: 'このバージョンは既存の下流を壊します'
     impact_changes: 変わったこと
-    impact_links: '壊れる下流（名前を指しているため、新バージョンがその参照先になります）'
-    impact_no_links: 最新追従の下流に影響はありません
+    impact_links: '切れる下流（名前で繋がっているため、新バージョンがその参照先になります）'
+    impact_no_links: '最新を追う下流はこのバージョンの影響を受けません'
     force: それでも公開
     artifact_failed: 実装を読み込めませんでした — この状態では公開できません（ファイルが失われます）
     builtin_locked: '中枢が実行する組み込み能力です。実装は中枢側にあり、ここでは変更できません'
@@ -1312,18 +1330,18 @@ caps:
     literals_ph: '定数の上書き（任意）例: {"urgent":true}'
     save: 保存
     cancel: キャンセル
-    created: エッジを作成しました
-    failed: 'エッジの作成に失敗：'
+    created: '下流を作成しました'
+    failed: '下流の作成に失敗：'
     err_target: 対象の能力を選択してください
     err_self: 自分自身にはリンクできません
     err_literals: 定数の上書きは JSON オブジェクトである必要があります
   down:
-    add_ph: ケイパビリティ名を入力して Enter（検索可）
-    name_ph: ケイパビリティ名
+    add_ph: 能力名を入力して Enter（検索可）
+    name_ph: 能力名
     prio: 優先度
     prio_hint: 数値が小さいほど先にディスパッチされます。空 = 0
     del: この下流を削除
-    empty: '下流はまだありません。このケイパビリティは実行後に終了します（終端）。'
+    empty: '下流はまだありません。この能力は実行後に終了します（終端）。'
     save: 下流を保存
     saving: 保存中…
     saved: 下流を保存しました（新しいバージョンは作りません）
@@ -1331,38 +1349,38 @@ caps:
     dirty: 未保存の下流変更があります
     hint_edit: 下流の編集は新しいバージョンを作りません（接続先と優先度だけが変わります）。
     hint_keep_ref: 参照は name（最新に追従）または name@2（バージョン固定）で書きます。
-    err_unknown: '対象のケイパビリティが見つかりません: {ref}'
+    err_unknown: '対象の能力が見つかりません: {ref}'
     err_self: 自分自身には接続できません
     err_duplicate: その下流はすでに一覧にあります
     err_too_many: 下流は最大 100 件です
     err_priority: 優先度は 0〜1000 の整数で指定してください
-    err_notfound: ケイパビリティが見つかりません（削除された可能性）
-    err_removed: '旧エンドポイントは閉じました。下流は「ケイパビリティを編集 → 下流」で保存してください'
-    need_target: 先に対象のケイパビリティを選んでください
+    err_notfound: 能力が見つかりません（削除された可能性）
+    err_removed: '旧エンドポイントは閉じました。下流は「能力を編集 → 下流」で保存してください'
+    need_target: 先に対象の能力を選んでください
     current_version_note: これらの下流は全バージョンで共有されます。新しいバージョンを出しても変わりません。
 prune:
   no_edge: 候補が接続されていません
-  no_capability: 対象のケイパビリティが存在しません
+  no_capability: 対象の能力が存在しません
   param_schema: パラメータが対象の契約を満たしていません
   param_missing: 必須パラメータがありません
   param_type: パラメータの型が一致しません
-  no_node: 対象のケイパビリティにオンラインノードがありません
+  no_node: 対象の能力にオンラインノードがありません
   foreign_user: ネームスペース/ユーザーをまたいでいます
-  event_schema: イベント payload がトリガーの resultSchema を満たしていません
+  event_schema: 'イベント payload がソースの resultSchema を満たしていません'
   max_hops: hop 予算を超過（チェーンが深すぎます）
   budget: この trace のタスク数が予算を超過しました
   no_impl: 宛先はプレースホルダー（noop）です — ハブは実行しません
 nodes:
   title: ノード
-  subtitle: 実行者です。ノードはケイパビリティの実行方法を知っており、ハブは「何をするか」だけを伝えます。
+  subtitle: 'ノードは能力の実行方法を知っており、ハブは「何をするか」だけを伝えます。'
   refresh: 更新
   loading: ノードを読み込み中…
   empty: "このネームスペースにはまだノードがありません。下の手順で最初の 1 台を登録してください。"
   count: '{online}/{total} オンライン'
   never: なし
   last_seen: ハートビート
-  no_caps: ケイパビリティ未宣言
-  caps_label: 宣言ケイパビリティ
+  no_caps: 能力未宣言
+  caps_label: 宣言能力
   caps_more: '+{n} 件'
   slots: スロット {busy}/{total}
   drain: ドレイン
@@ -1378,7 +1396,7 @@ nodes:
     btn: アップグレード
     sending: アップグレード中…
     confirm: '{name} の agent をアップグレードしますか？ノード上のバイナリを置き換えて agent を再起動します。実行中のタスクは完了を待ちます（grace 20 秒）。'
-    sent: 'アップグレードを送信しました。ノードの再起動後に有効になります（しばらくしてから更新すると新しいバージョンが見えます）'
+    sent: 'アップグレードを開始しました。ノードの再起動後に有効になります（しばらくしてから更新すると新しいバージョンが見えます）'
     failed: 'アップグレードに失敗: '
     ack_failed: 'ノード上のアップグレードが失敗しました: '
     ack_stale: ノードが応答していません（切断された可能性があります）
@@ -1411,11 +1429,11 @@ nodes:
     step1: 上の「トークンを生成」でワンタイムトークンを取得
     step2: 'どちらかを選択：コンテナ（ホストのファイルは見えない）／ネイティブ（自分のプロジェクト内で能力を動かすならこちら）'
     docker: 'コンテナ：ホストのファイルは見えず、能力はコンテナ内でのみ実行'
-    native: 'ネイティブ：ホスト上で自分のユーザーとして実行。能力がどのディレクトリで動くかは能力定義の作業ディレクトリで決まります'
+    native: 'ネイティブ：ホスト上で自分のユーザーとして実行。能力がどのディレクトリで動くかは能力自身の作業ディレクトリで決まります'
     yaml_title: node.yaml（ネイティブインストール用）
     yaml_intro: 'エージェントのバイナリを直接インストールする場合はこの設定を使います。bootstrap の 4 項目だけで、能力とその作業ディレクトリはコンソール側で定義します：'
     install_title: ネイティブインストールのコマンド
-    step3: ノードがオンラインになったら「能力」ページでデプロイすれば、仕事が割り当たります
+    step3: 'ノードがオンラインになったら「能力」ページでデプロイすれば、仕事が割り当たります'
   view_events: イベントを見る
   register:
     btn: 'ノードを登録'
@@ -1425,7 +1443,7 @@ nodes:
     name_ph: '例: my-mbp'
     name_hint: '小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字'
     instances: 'インスタンス数（任意）'
-    instances_hint: 'このマシンで並列に走らせるインスタンス数（目安。中枢が 20 に丸めます）。実際のスロット数は agent が接続時に申告します。'
+    instances_hint: 'このノードで並列に走らせるインスタンス数（目安。中枢が 20 に丸めます）。実際のスロット数は agent が接続時に申告します。'
     submit: '登録'
     cancel: 'キャンセル'
     submitting: '登録中…'
@@ -1436,12 +1454,12 @@ nodes:
     copy_token: 'トークンをコピー'
     cmd_title: "1 行のコマンドで起動（推奨）"
     copy_cmd: "コマンドをコピー"
-    yaml_intro: "またはエージェントのバイナリを直接インストールし、この node.yaml を使ってください（bootstrap の 4 項目 name / server / token / instances のみ。作業ディレクトリは能力定義で設定します）："
-    yaml_title: 'マシン上でこの行を実行'
+    yaml_intro: 'またはエージェントのバイナリを直接インストールし、この node.yaml を使ってください（bootstrap の 4 項目 name / server / token / instances のみ。作業ディレクトリは能力側で設定します）：'
+    yaml_title: 'ノード上でこの行を実行'
     copy_yaml: 'コマンドをコピー'
     yaml_hint: 'このコマンドのトークンは一度しか表示されません。失うとノードを削除して再登録が必要です。'
-    cmd_intro: '次のコマンドをマシン上で実行してください（設定ファイルは不要）:'
-    cmd_after: 'マシンがオンラインになったら「能力」ページで配備すると動き始めます。'
+    cmd_intro: '次のコマンドをノード上で実行してください（設定ファイルは不要）:'
+    cmd_after: 'ノードがオンラインになったら「能力」ページでデプロイすると動き始めます。'
     err:
       empty_name: '先にノード名を入力してください'
       invalid_name: '名前が不正です。小文字・数字・ドット（.）・アンダースコア（_）・ハイフン（-）のみ、1〜63 文字、先頭は英数字にしてください'
@@ -1453,7 +1471,7 @@ nodes:
     install_intro: コンテナからホストのファイルは見えません。自分のプロジェクトディレクトリで能力を実行する（make test、git status、ファイルを直接編集）には、このコマンドでホストに導入します。
     install_after: 'バイナリを導入し、~/.anotify/node.yaml（権限 600、トークン入り）を書き、systemd ユーザーサービスを生成します。コマンドにトークンが含まれるため、シェル履歴に残ります。'
     copy_install: コマンドをコピー
-    yaml_workdir_note: '作業ディレクトリは「能力」ページの能力定義（run.workDir）で設定し、デプロイと一緒に配布されます。この yaml には書きません。'
+    yaml_workdir_note: '作業ディレクトリは「能力」ページの能力（run.workDir）で設定し、デプロイと一緒に配布されます。この yaml には書きません。'
   emptyTitle: 'ノードがありません'
 sources:
   empty_title: ソースがまだありません
@@ -1466,21 +1484,21 @@ sources:
   confirm_delete: "削除すると元に戻せません。「{n}」を削除しますか？"
   delete_failed: "削除に失敗しました"
   title: ソース
-  subtitle: ソースはイベントの入口です：タイマーが発火する、webhook が呼ばれる、または手動で実行します。自らイベントを生成し、選択したケイパビリティに配信します。
+  subtitle: ソースはイベントの入口です：タイマーが発火する、webhook が呼ばれる、または手動で実行します。自らイベントを生成し、選択した能力に配信します。
   new: ソースを作成
   refresh: 更新
   empty: ソースがまだありません。「ソースを作成」から始めてください。
   explain:
-    title: ソースとケイパビリティの役割分担：
-    body: ケイパビリティは「何ができるか」に答えます（ノードが宣言し、中枢がタスクを配信）。ソースは「いつ始めるか」に答えます（設定を持ち、イベントを生成し、自分では作業しません）。そのためソースは辺を作りません。出口はここで選んだケイパビリティです。
+    title: ソースと能力の役割分担：
+    body: '能力は「何ができるか」に答えます（ノードが宣言し、中枢がタスクを配信）。ソースは「いつ始めるか」に答えます（設定を持ち、イベントを生成し、自分では作業しません）。そのためソースは下流を作りません。ここで選んだ能力がそのままターゲットです。'
   kind:
     cron: タイマー
     webhook: Webhook
     manual: 手動
-    github: "GitHub トリガー"
+    github: 'GitHub'
   next_fire: 次回 {t}
   manual_hint: 「今すぐ実行」を押すと発火します
-  targets_label: 出口
+  targets_label: 'ターゲット能力'
   no_target: 未設定
   target_missing: 削除済み
   fire: 今すぐ実行
@@ -1517,25 +1535,25 @@ sources:
   form:
     name: 名前
     name_ph: 例：夜間チェック
-    kind: トリガー
+    kind: '種類'
     kind_hint: 作成後は変更できません（種類の変更は意味の変更）。削除して作り直してください。
     expr: Cron 式（5 フィールド：分 時 日 月 曜）
     expr_hint: '* / , - に対応。@daily などのマクロは非対応。例：0 3 * * * は毎日 03:00。'
     hook_hint: 作成後に専用 URL が生成され、外部システムがそこへ POST すると発火します。URL を知っていれば誰でもイベントを送れるため、厳重に管理してください。
-    targets: 出口ケイパビリティ（複数選択可）
-    targets_hint: イベントは選択したすべてのケイパビリティに配信されます（ファンアウト）。チェックすると、そのケイパビリティ固有のパラメータを入力できます（能力ごとに独立）。
+    targets: 'ターゲット能力（複数選択可）'
+    targets_hint: イベントは選択したすべての能力に配信されます（ファンアウト）。チェックすると、その能力固有のパラメータを入力できます（能力ごとに独立）。
     enabled: 有効
     cancel: キャンセル
     save: 保存
     name_required: 名前を入力してください
     expr_required: Cron 式を入力してください
-    targets_required: 出口ケイパビリティを 1 つ以上選択してください
+    targets_required: 'ターゲット能力を 1 つ以上選択してください'
     result_schema: "イベント payload 契約（resultSchema、任意）"
     result_schema_hint: "任意。JSON Schema（例: {\"type\":\"object\",\"required\":[\"action\"]}）を入れると、配信のたびに検証します：契約に合わないイベントは保存されますが配信されず、trace に event_schema の剪枝が残ります。空 = 検証しない。"
     bad_schema: "payload 契約が正しい JSON ではありません: {e}"
     schema_not_object: "payload 契約は JSON オブジェクトである必要があります（配列/スカラーは schema ではありません）"
-    no_caps: 利用可能なケイパビリティがありません。先に「ケイパビリティ」ページで定義してください。
-    no_params: このケイパビリティはパラメータを取りません
+    no_caps: '利用可能な能力がありません。先に「能力」ページで作成してください。'
+    no_params: この能力はパラメータを取りません
     bad_json: パラメータ {k} が正しい JSON ではありません
     bad_num: パラメータ {k} が数値ではありません
     from_hint: "イベント payload へのドットパス（例 pull_request.title、items.0.name）。取得できない場合は既定値を使います。"
@@ -1545,32 +1563,32 @@ sources:
     demo_hint: "動作する設定を一括入力：パラメータは payload のフィールドを直接参照"
     demo_name: "デモ · GitHub PR 分析"
     demo_ok: "サンプルを入力しました：変数 4 個 + パラメータの変数参照"
-    demo_no_caps: "パラメータ付きの出口能力がありません。変数のみ入力しました"
-    avail_vars: "このトリガーが提供するフィールド（クリックでコピー）"
+    demo_no_caps: 'パラメータ付きのターゲット能力がありません。変数のみ入力しました'
+    avail_vars: 'このソースが提供するフィールド（クリックでコピー）'
     av_fill: "クリックして変数の取得元を入力"
     hook_url: "ペイロード URL"
     hook_url_pending: "保存後に生成（/v1/hooks/src_xxx の形式）"
     hook_github: "GitHub 側の設定方法"
     hook_github_events: "これだけで十分です。他のイベントはディスパッチされません"
     hook_github_secret: "Secret は GitHub 側の検証用です。本システムは署名検証をまだ行わないため、URL には長いランダムトークンを使ってください"
-    hook_github_why: "入力後に「Add webhook」をクリックしてください。GitHub がすぐに ping を送り、イベントは保存されます。その後「出口能力」でパラメータを紐付けます。"
+    hook_github_why: '入力後に「Add webhook」をクリックしてください。GitHub がすぐに ping を送り、イベントは保存されます。その後「ターゲット能力」でパラメータを紐付けます。'
     ref_tip: "イベントまたは変数から取得"
     ref_mix_tip: "テンプレート連結。結果はテキストとして渡されます"
     bad_placeholder: "パラメータ {k}：プレースホルダーが閉じていません"
     pv_broken: "プレースホルダーが閉じていません"
-    pv_nosample: "まだイベントがありません。1 回トリガーするとプレビューできます"
+    pv_nosample: "まだイベントがありません。1 回実行するとプレビューできます"
     pv_missing: "直近のイベントに「{p}」というフィールドがありません"
     pv_missing_multi: "直近のイベントに次のフィールドがありません: {p}"
     dry_run: "試運転"
     dry_running: "実行中…"
-    dry_no_target: "先に出口能力を 1 つ以上選んでください"
-    dry_will_run: "{n} 件の出口に配信されます"
+    dry_no_target: '先にターゲット能力を 1 つ以上選んでください'
+    dry_will_run: '{n} 個のタスクに配信されます'
     dry_and_pruned: "、{n} 件スキップ"
-    dry_nothing: "配信される出口はありません（すべてスキップ）"
+    dry_nothing: '配信されるタスクはありません（すべてスキップ）'
     pick_no_sample: "サンプルにできるイベントがありません"
     pick_none: "一致するフィールドがありません"
     av_no_event_hook: "まだイベントを受信していません。コールバックを設定して外部システムから 1 回送ると、実際のフィールドがここに表示されます。"
-    av_no_event: "このトリガーには外部イベントがないため、参照できるフィールドはありません。値はパラメータに直接書いてください。"
+    av_no_event: 'このソースには外部イベントがないため、参照できるフィールドはありません。値はパラメータに直接書いてください。'
     kind_github_hint: "GitHub の PR / push イベント。既知のフィールドと GitHub 側の設定方法が組み込まれています。"
     av_copied: "コピーしました。パラメータに貼り付けてください"
     av_src_builtin: "GitHub 公式の {ty} イベント構造に基づく（値はサンプル）"
@@ -1593,21 +1611,21 @@ sources:
     hascycle: 循環あり
     back: ↩ {n} に戻る（循環）
     seen: （上で展開済み）
-    missing: （ケイパビリティ削除済み）
+    missing: （能力削除済み）
     terminal: 終点
     noedge: 下流なし
-    no_target: このソースには出口ケイパビリティがありません。
+    no_target: 'このソースにはターゲット能力がありません。'
     unconnected: （下流なし）
     truncated: グラフが大きすぎます（{n} ノード）。最初の {m} 個のみ表示します。
     nolib: グラフライブラリを読み込めなかったため、フローを描画できません。
     source: ソース
     terminal_short: 終点
     no_edge: 下流なし
-    cycle: ループ · このエッジは戻ってくる
+    cycle: 'ループ · この下流は戻ってくる'
   view_events: イベントを見る
 trace:
   legend_hot: "線が濃いほど · この経路は何度も通った（再試行／ループ）"
-  legend_origin: "ソース · トリガー（ここからイベントが入る）"
+  legend_origin: 'ソース · ここからイベントが入る'
   legend_pipe: "パイプ · 下流へ派遣を続ける"
   legend_end: "終点 · ここで終了、派遣しない"
   legend_ok: "成功"
@@ -1615,7 +1633,7 @@ trace:
   legend_pruned: "未実行（設定にあるが今回は通らなかった）"
   graph_legend: "凡例"
   title: トレース
-  subtitle: 1 本のトレースの全体像 — 何が起点で、どの経路を通り、各ステップがどれだけかかったか
+  subtitle: '1 本のトレースの全体像 — 何が起点で、どの経路を通り、各タスクがどれだけかかったか'
   back: イベント一覧へ戻る
   refresh: 更新
   loading: トレースを読み込み中…
@@ -1626,12 +1644,12 @@ trace:
   copy_failed: コピーに失敗
   triggered_by: 起点
   nolib: 描画スクリプトを読み込めませんでした。
-  empty: このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致する辺がない、パラメータが schema に合わない、対象能力を宣言したノードがない）。
+  empty: 'このトレースにはタスクがありません。最初のステップで剪定された可能性があります（一致するターゲット能力がない、パラメータが schema に合わない、対象能力を宣言したノードがない）。'
   empty_title: タスクがありません
   emits:
     title: 产出（emits）
-    subtitle: この実行での各 emit — 出口、時刻、配信結果、元の data
-    empty: この実行はまだ emit していません。emit は唯一の産出経路です — 何も無いのは、まだ何も産出していない（またはプロセスが実行中）ということです。
+    subtitle: 'このタスクでの各 emit — 出口、時刻、配信結果、元の data'
+    empty: 'このタスクはまだ emit していません。emit は唯一の産出経路です — 何も無いのは、まだ何も産出していない（またはプロセスが実行中）ということです。'
     failed: 産出リストを読み込めませんでした（上のチェーンには影響しません）
     routed: 配信
     pruned: 剪定
@@ -1657,7 +1675,7 @@ trace:
   stat:
     spans: タスク
     duration: 所要時間
-    slowest: 最遅ステップ
+    slowest: '最遅タスク'
     failed: 失敗
 
 srcpage:
@@ -1666,11 +1684,11 @@ srcpage:
   loading: "読み込み中…"
   back: "ソース一覧へ戻る"
   layout_title: "ソース詳細"
-  layout_subtitle: "1 つのソースのトリガー設定・出口パラメータ・下流フロー"
+  layout_subtitle: '1 つのソースの種類・ターゲットパラメータ・下流フロー'
   no_id: "URL に ?id= がないため、どのソースか特定できません"
   load_failed: "読み込み失敗：{m}"
   notfound: "このソースは存在しません（削除された可能性）"
-  config: "トリガー設定"
+  config: "ソース設定"
   tz: "タイムゾーン"
   next_fire: "次回実行"
   last_fire: "前回実行"
@@ -1679,9 +1697,9 @@ srcpage:
   copy: "コピー"
   copied: "コピーしました"
   copy_failed: "コピー失敗"
-  manual_hint: "トリガー方法"
+  manual_hint: '種類'
   created: "作成日時"
-  targets: "出口能力"
+  targets: 'ターゲット能力'
   no_params: "パラメータ未設定"
   mapped: "マッピング"
   default_is: "既定 {v}"
@@ -1696,7 +1714,7 @@ srcpage:
 nodepage:
   title: ノード詳細
   layout_title: ノード詳細
-  layout_subtitle: ノードの宣言ケイパビリティ・同時実行スロット・最近の実行
+  layout_subtitle: 'ノードの宣言能力・同時実行スロット・最近のタスク'
   back: ノード一覧へ戻る
   loading: 読み込み中…
   basic: 基本情報
@@ -1707,15 +1725,15 @@ nodepage:
   limits_val: 'インスタンス {i} · 同時実行 {c}'
   tags: タグ
   no_tags: なし
-  caps: 宣言ケイパビリティ
+  caps: 宣言能力
   slots: 同時実行スロット
   no_slots: スロット未申告（ノード接続時に申告されます）
   slot_n: '#{n}'
   concurrency: '同時 {n}'
   busy_task: '{id} を実行中'
   idle: アイドル
-  recent: 最近の実行
-  no_tasks: このノードで実行されたタスクはまだありません
+  recent: '最近のタスク'
+  no_tasks: 'このノードで実行されたタスクはまだありません'
   open_trace: トレースを開く
   not_found: ノードが見つかりません
   not_found_hint: この id に一致するノードはありません（削除された可能性）。
@@ -1724,8 +1742,8 @@ nodepage:
 
 pb:
   title: プレイブック
-  subtitle: 能力・出口・トリガーを、点検して補完できるひとつのプレイブックにまとめる
-  detail_subtitle: 点検：定義 → ノード → 出口 → トリガー
+  subtitle: '能力・下流・ソースを、点検して補完できるひとつのプレイブックにまとめる'
+  detail_subtitle: '点検：能力 → 下流 → ノード → ソース'
   detail_title: プレイブックの詳細
   rescan: 再点検
   rescanned: 再点検しました
@@ -1737,44 +1755,44 @@ pb:
   empty: このネームスペースにはまだプレイブックがありません。
   empty_title: プレイブックはまだありません
   load_failed: 読み込みに失敗しました。再読み込みしてください。
-  meta: 能力 {c} · 出口 {e} · トリガー {tr}
+  meta: '能力 {c} · 下流 {e} · ソース {tr}'
   ready_n: '{n}/{m} 準備完了'
   n_of_m: '{n}/{m} 準備完了'
   remaining: 残り {n} 件
   status:
     ready: 準備完了
     needs_node: ノード不足
-    blocked: 定義不足
+    blocked: '能力不足'
     partial: 不完全
   next:
     ready: すべて準備完了です。実行を開始できます
     capability:
-      missing: 能力定義がありません：{ref}
+      missing: '能力がありません：{ref}'
       no-node: '{ref} を実行できるノードがありません'
       offline: '{ref} のノードがすべてオフラインです'
     edge:
-      missing: 出口がありません：{label}
+      missing: '下流がありません：{label}'
     trigger:
-      missing: トリガーがありません：{label}
+      missing: 'ソースがありません：{label}'
   sec:
-    capabilities: 能力定義
+    capabilities: '能力'
     nodes: 実行するノード
-    edges: 出口
-    triggers: トリガー
+    edges: '下流'
+    triggers: 'ソース'
   fix:
     capability:
-      missing: 能力定義がまだ足りません。まずこのネームスペースに追加してください
-      no-node: 定義は揃っていますが、まだ実行しているノードがありません — ノードページでマシンを接続し、そこへデプロイしてください
-      offline: 宣言しているノードはありますがオフラインです — 接続するだけで済みます
+      missing: '能力がまだ足りません。まずこのネームスペースに追加してください'
+      no-node: '能力は揃っていますが、まだ実行しているノードがありません — ノードページでノードを接続し、そこへデプロイしてください'
+      offline: '宣言しているノードはありますがオフラインです — 接続するだけで済みます'
     edge:
-      missing: 能力は揃っていますが、出口がまだ繋がっていません
+      missing: '能力は揃っていますが、下流がまだ繋がっていません'
     trigger:
       missing: プレイブックは揃っていますが、まだイベントで起動されません
   cap:
     outputs: 出口：{o}
-    missing: このネームスペースにはまだこの定義がありません
+    missing: 'このネームスペースにはまだこの能力がありません'
     declared:
-      inline: インライン spec
+      inline: 'インライン能力'
       ref: '{r} を参照'
       legacy: 旧形式の宣言
     impl:
@@ -1782,33 +1800,33 @@ pb:
       noop: noop プレースホルダー
       handler: ハブ内蔵エグゼキュータ
   node:
-    blocked: 先に能力定義を追加してください
-    none: まだどのノードも実行していません — オンラインのマシンへデプロイしてください
+    blocked: '先に能力を追加してください'
+    none: 'まだどのノードも実行していません — オンラインのノードへデプロイしてください'
     hub: ハブのプロセス内で実行（ノード不要）
     offline: ノードはありますがオフラインです：
   edges:
-    none: このプレイブックは出口を宣言していません
+    none: 'このプレイブックは下流を宣言していません'
   edge:
-    blocked: 端点「{c}」にまだ定義がありません。先に定義を追加してください
-    missing: この辺はまだルーティングテーブルにありません
+    blocked: '端点「{c}」にまだ能力がありません。先に能力を追加してください'
+    missing: 'この下流はまだルーティングテーブルにありません'
   trg:
-    missing: 入口能力 {c} にイベントを送る源がありません
+    missing: '能力 {c} にイベントを送るソースがありません'
   act:
-    install_cap: 定義を導入
+    install_cap: '能力を導入'
     open_nodes: ノードページを開く
-    install_edge: この辺を補完
+    install_edge: 'この下流を補完'
     create_source: 源を作成
 
 node:
   artifacts:
     title: 'キャッシュ済みの成果物'
-    empty: 'このマシンにはまだ何も配備されていません'
+    empty: 'このノードにはまだ何もデプロイされていません'
     load_failed: '成果物一覧の読み込みに失敗しました'
-    state_applied: '適用済み'
-    state_pending: '送信中'
+    state_applied: 'デプロイ済み'
+    state_pending: 'デプロイ中'
     state_failed: '失敗'
     state_local: 'ローカル変種'
-    digest: 'digest'
+    digest: '内容フィンガープリント'
 
 # ---- UI v2 シェル / コンポーネント層（wave 1、追加のみ）----
 ui:

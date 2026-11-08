@@ -1190,9 +1190,31 @@
         <!-- 模板要求的预装命令：机器上缺了部署会失败，所以放在参数上方显眼处 -->
         <p id="tpl-requires" class="tpl-hint mt-3"></p>
 
+        <!-- 出口：能力**自己声明**的封闭集合（Capability Spec v3 §3 / §13.3）。
+             显式出口必须看得见、改得动 —— 名字是用户起的（approved / needs-fix …），
+             藏起来等于让人猜（§13.3 推翻了 CONTRACT-hide-ports 「端口不可见」）。
+             留空 = 单出口形态：那个唯一的 out 是内部路由键，不在这里表达。
+             下游边只接在隐式 out 上，所以有下游时 out 会被自动并进 outputs（R5）。 -->
+        <div id="cap-outputs-wrap" class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.outputs"}}</h4>
+            <span class="tpl-hint">{{t "caps.form.outputs_optional"}}</span>
+          </div>
+          <input
+            id="cap-outputs"
+            class="input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="{{t "caps.form.outputs_ph"}}"
+          />
+          <p id="cap-outputs-hint" class="field-hint">{{t "caps.form.outputs_hint"}}</p>
+        </div>
+
         <!-- 下游能力（候选）：这是「把两个能力串起来」的地方。
-             用户脑子里只有一件事：这个能力跑完交给谁。出口是**内部路由键**
-             （一个能力只有一个，内部名固定 out），界面上不表达它。
+             用户脑子里只有一件事：这个能力跑完交给谁。**隐式**的 out 仍是内部路由键
+             （上面那个「出口」框留空时就是它），界面上不表达它；
+             用户自己声明的出口反过来必须看得见（上面那栏，§13.3）。
 
              两种模式共用这一块，但**真相不同**（这是最容易搞错的一处）：
                · 新建能力：下面那个逗号分隔的输入框原文就是真相，随能力一起提交（links[]）；
@@ -1422,7 +1444,7 @@
         title: t("caps.title", "能力"),
         // subtitle 是侧栏标题下面那行 11px 小字，不能塞页面 H2 的长文案
         // （caps.subtitle 是一整段解释）——单独给一个短 key。
-        subtitle: t("caps.sidebar", "控制台定义，节点执行"),
+        subtitle: t("caps.sidebar", "控制台新建，节点执行"),
       });
 
       // ==================== 页面状态 ====================
@@ -1812,9 +1834,9 @@
         if (!CAPS.length) {
           const box = el("div", "empty");
           box.appendChild(
-            el("p", "", t("caps.empty", "还没有能力。定义一个，节点才能声明它。")),
+            el("p", "", t("caps.empty", "还没有能力。新建一个，节点才能声明它。")),
           );
-          const cta = el("button", "btn btn-primary btn-sm mt-3", "+ " + t("caps.new", "定义能力"));
+          const cta = el("button", "btn btn-primary btn-sm mt-3", "+ " + t("caps.new", "新建能力"));
           cta.type = "button";
           cta.addEventListener("click", () => openCapModal(cta));
           box.appendChild(cta);
@@ -1893,7 +1915,7 @@
             );
           } else if (!EDGES_OK) {
             outs.appendChild(
-              el("span", "list-meta", t("caps.detail.edges_failed", "边列表读不到，下游状态未知")),
+              el("span", "list-meta", t("caps.detail.edges_failed", "下游列表读不到，下游状态未知")),
             );
           } else if (!outsList.length) {
             outs.appendChild(
@@ -2303,7 +2325,7 @@
             el(
               "span",
               "cap-cand-caption",
-              t("caps.form.downstream_cands_empty", "还没有可选的目标能力。"),
+              t("caps.form.downstream_cands_empty", "还没有可选的目标能力（先新建能力，或在上面给另一张卡起个名字）。"),
             ),
           );
           return;
@@ -2832,7 +2854,7 @@
         if (!EDGES_OK) {
           // 不知道 ≠ 没有：接口挂了就说不知道，不能退化成一排「跑完就结束」
           box.appendChild(
-            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "边列表读不到，下游状态未知")),
+            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "下游列表读不到，下游状态未知")),
           );
           return box;
         }
@@ -2945,14 +2967,14 @@
         const box = el("div", "cap-detail-secs");
         if (!EDGES_OK) {
           box.appendChild(
-            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "边列表读不到，下游状态未知")),
+            el("div", "cap-detail-empty", t("caps.detail.edges_failed", "下游列表读不到，下游状态未知")),
           );
           return box;
         }
         const ins = edgesInto(c.id);
         if (!ins.length) {
           box.appendChild(
-            el("div", "cap-detail-empty", t("caps.detail.no_inbound", "没有入边：事件不会从这里进来")),
+            el("div", "cap-detail-empty", t("caps.detail.no_inbound", "没有上游：事件不会从这里进来")),
           );
           return box;
         }
@@ -3074,6 +3096,7 @@
         box.appendChild(detailActions(c));
         box.appendChild(scriptSection(c));
         box.appendChild(detailSec(t("caps.detail.params", "参数契约"), paramsNode(c)));
+        box.appendChild(detailSec(t("caps.detail.outputs", "出口（能发什么）"), outputsNode(c)));
         box.appendChild(detailSec(t("caps.detail.downstream", "下游（候选）"), downstreamNode(c)));
         box.appendChild(detailSec(t("caps.detail.inbound", "谁接到我"), inboundNode(c)));
         box.appendChild(detailSec(t("caps.detail.runtime", "运行参数"), runtimeNode(c)));
@@ -3359,13 +3382,13 @@
               c,
               existing.concat([{ toRef: picked.name, priority: 0, literals: literals }]),
             );
-            toast(t("caps.add.created", "边已创建"));
+            toast(t("caps.add.created", "下游已创建"));
             // 就地刷新：loadAll 会重建列表，OPEN_DETAIL 会把这一行的展开态还原，
             // 用户立刻能在同一块下游列表里看到新加的那条。
             await loadAll();
           } catch (e) {
             save.disabled = false;
-            toast(t("caps.add.failed", "创建边失败：") + downstreamErrText(e));
+            toast(t("caps.add.failed", "创建下游失败：") + downstreamErrText(e));
           }
         });
       }
@@ -3397,6 +3420,10 @@
           workDir: "",
           requires: [], // 模板 requires（从 TPL_SEL 继承）
           downstream: "", // #cap-downstream 的原文（逗号分隔，提交时才解析）
+          // #cap-outputs 的原文（逗号分隔）：能力自己声明的出口名。
+          // 它和 downstream 一样属于**一张卡自己的数据** —— 切卡必须整份跟着走，
+          // 否则「卡 2 声明了 approved」会变成「整批都声明了 approved」。
+          outputs: "",
           // 实现（P4）：文件表 + 入口 + env 行。三件都是一张卡自己的数据，
           // 切卡时必须整份跟着走 —— 只带入口正文就是「其余文件静默丢失」。
           files: { "run.sh": "" },
@@ -3427,6 +3454,7 @@
         c.workDir = String(val("cap-workdir") || "").trim();
         if (TPL_SEL) c.requires = (TPL_SEL.requires || []).slice();
         c.downstream = val("cap-downstream");
+        c.outputs = val("cap-outputs");
         // 实现：先把编辑区正文收进 FILES，再整份落进卡片（多文件 + env 一个不丢）。
         filesSyncFromDom();
         envRowsSync();
@@ -3459,6 +3487,7 @@
         set("cap-workdir", c.workDir);
         set("cap-schema", c.schemaText);
         set("cap-downstream", c.downstream);
+        set("cap-outputs", c.outputs);
         syncWorkdirEcho();
         TIMEOUT_DIRTY = !!c.timeoutDirty;
         DOWN_TEXT = String(c.downstream || "");
@@ -3604,6 +3633,73 @@
         return out;
       }
 
+      // OUTPUT_NAME_RE 与后端同一口径（internal/artifact/artifact.go 的 outputPattern）：
+      // 只能包含字母、数字、点、下划线、短横线，长度 1..32。
+      // 前端先拦一道 —— 名字不合法时后端回的是整批 400，用户看不出是哪一项错的。
+      const OUTPUT_NAME_RE = /^[a-zA-Z0-9._-]{1,32}$/;
+
+      // parseOutputNames 把「逗号分隔的出口名」解成数组：trim + 去空 + 去重（保序）。
+      // 全角逗号也认：中文输入法下打出「a，b」是常态。
+      function parseOutputNames(raw) {
+        const out = [];
+        for (const part of String(raw == null ? "" : raw).split(/[,，]/)) {
+          const name = part.trim();
+          if (!name) continue;
+          if (out.indexOf(name) >= 0) continue;
+          out.push(name);
+        }
+        return out;
+      }
+
+      // badOutputNames 返回第一个不合法的出口名（没有就返回 ""）。
+      // 三条提交路径（单建 / 批量 / 发新版本）共用，口径只能有一份。
+      function badOutputNames(raw) {
+        const bad = parseOutputNames(raw).filter((o) => !OUTPUT_NAME_RE.test(o));
+        return bad.length ? bad[0] : "";
+      }
+
+      // finalOutputs 把「用户声明的出口名」变成提交用的 spec.outputs。
+      //
+      // 两条不变量（Capability Spec v3 §3 / R5）：
+      //   ① fromPort ∈ outputs —— 下游边只接在隐式 out 上（PUT …/downstreams 的口径），
+      //      所以有下游时 out 必须出现在 outputs 里，否则整个提交会被 R5 拒。
+      //   ② 没下游也没声明 → 终端能力，outputs 必须是 []（不是 [out]）。
+      // out 追加在最后：顺序按用户填的来，详情区也按这个顺序显示。
+      function finalOutputs(names, hasDownstream) {
+        const out = (names || []).slice();
+        if (hasDownstream && out.indexOf(OUT_PORT) < 0) out.push(OUT_PORT);
+        return out;
+      }
+
+      // explicitOutputs 取一个能力**用户起过名**的出口：隐式 out 不算。
+      //
+      // §13.3 的第 2 条：隐式 out 仍然不显示（那个名字是内部路由键，不是用户的概念）。
+      // 第 1 条反过来：显式出口必须显示 —— 它是能力契约的一部分。
+      function explicitOutputs(c) {
+        const all = Array.isArray(c && c.outputs) ? c.outputs : [];
+        return all.filter((o) => o && o !== OUT_PORT);
+      }
+
+      // outputsNode 是详情区里「这个能力能发什么」那一块（与下游相对）。
+      function outputsNode(c) {
+        const names = explicitOutputs(c);
+        if (names.length) {
+          const row = el("div", "cap-link");
+          names.forEach((n) => row.appendChild(el("span", "cap-link-target mono", n)));
+          return row;
+        }
+        // 没有显式出口：两种情形读起来必须不一样 ——
+        // 终端能力是「不会触发任何下游」，单出口是「只有一个内部出口」。
+        const terminal = !(Array.isArray(c && c.outputs) && c.outputs.length);
+        return el(
+          "div",
+          "cap-detail-empty",
+          terminal
+            ? t("caps.detail.no_outputs", "没有出口：跑完就结束，不触发任何下游。")
+            : t("caps.detail.implicit_output", "只有一个内部出口（不在这里为它起名）"),
+        );
+      }
+
       // knownTarget 判断一个名字能不能当下游：既有能力（含暂未在列表显示的内置能力）
       // 或本批里还没落库的卡片名。
       //
@@ -3727,7 +3823,7 @@
         nameEl.classList.remove("cap-lock-input");
         document.getElementById("cap-name-hint").textContent = t(
           "caps.form.name_hint",
-          "技术名：节点声明、边、日志都用它，建好后不能改。",
+          "技术名：节点声明、下游、日志都用它，建好后不能改。",
         );
         document.getElementById("cap-display-name").value = "";
         document.getElementById("cap-timeout").value = "";
@@ -3792,6 +3888,9 @@
         document.getElementById("cap-steps").classList.remove("hidden");
         document.getElementById("cap-down-wrap").classList.remove("hidden");
         document.getElementById("cap-down-existing").classList.add("hidden");
+        // 出口栏复位：新建一律从「只留隐式 out」开始
+        document.getElementById("cap-outputs-wrap").classList.remove("hidden");
+        document.getElementById("cap-outputs").value = "";
         document.getElementById("cap-modal-title").textContent = t("caps.tpl.title", "新建能力");
         const submit = document.getElementById("cap-submit");
         submit.disabled = false;
@@ -5155,9 +5254,22 @@
         // 连到自己跳过：新建里的自环几乎总是误操作，而后端会把它当一条环拒掉 ——
         // 一次原子提交里混进一条自连，会让整个提交（含能力）都失败。
         const wanted = downNames.filter((n) => n !== name);
-        // 有下游就把内部唯一出口声明出来；没下游就是终端能力（outputs 空）。
-        // 出口名固定 out（契约 §1）：界面不表达它，协议仍然需要它。
-        const outputs = wanted.length ? [OUT_PORT] : [];
+        // 出口：用户在「出口」框里声明的名字 + 必要的隐式 out（见 finalOutputs）。
+        // 留空且没有下游 → outputs 空（终端能力），与改动前完全一致。
+        const outVal = (document.getElementById("cap-outputs") || {}).value;
+        const declaredOut = parseOutputNames(outVal);
+        const badOut = badOutputNames(outVal);
+        if (badOut) {
+          toast(
+            t(
+              "caps.form.outputs_bad",
+              "出口名不合法：{name}（只能包含字母、数字、点、下划线、短横线，1–32 个字符）",
+            ).replace("{name}", badOut),
+            "error",
+          );
+          return;
+        }
+        const outputs = finalOutputs(declaredOut, wanted.length > 0);
 
         // 请求体是 **spec 形状**（Capability Spec v3 §3/§5 的 P4 列）：契约与实现
         // 一起装在 spec 里，服务端不再接受扁平字段（paramsSchema / outputs / run …）。
@@ -5194,7 +5306,7 @@
           // digest 可能在顶层，也可能在 capability.digest，也可能没有
           const digest = (res && (res.digest || (res.capability && res.capability.digest))) || "";
           const baseMsg = digest
-            ? t("caps.tpl.created_digest", "能力已创建（{digest}）").replace(
+            ? t("caps.tpl.created_digest", "已创建 · 内容指纹 {digest}").replace(
                 "{digest}",
                 shortDigest(digest),
               )
@@ -5206,7 +5318,7 @@
             toast(
               baseMsg +
                 " · " +
-                t("caps.form.created_with_edges", "已连 {n} 条边").replace("{n}", createdLinks),
+                t("caps.form.created_with_edges", "已连 {n} 条下游").replace("{n}", createdLinks),
             );
           } else {
             toast(baseMsg);
@@ -5410,6 +5522,19 @@
             );
             return false;
           }
+          // 出口名：与后端 outputPattern 同一口径，先拦一道（否则整批 400，看不出是哪张卡）。
+          const badOut = badOutputNames(c.outputs);
+          if (badOut) {
+            cardFailAt(
+              i,
+              "outputs",
+              t(
+                "caps.form.outputs_bad",
+                "出口名不合法：{name}（只能包含字母、数字、点、下划线、短横线，1–32 个字符）",
+              ).replace("{name}", badOut),
+            );
+            return false;
+          }
         }
         return true;
       }
@@ -5435,8 +5560,8 @@
         for (let i = 0; i < CARDS.length; i++) {
           const c = CARDS[i];
           const name = String(c.name || "").trim();
-          // 本卡的下游候选（已去自连）：有下游 → 声明内部唯一出口；
-          // 没下游 → 终端能力（outputs 空）。
+          // 本卡的下游候选（已去自连）：有下游 → 至少声明内部出口；
+          // 没下游且没声明 → 终端能力（outputs 空）。
           const wanted = parseDownstream(c.downstream).filter((n) => n !== name);
           // 每张卡自己的文件表 + 入口 + env（多文件与空值 env 都要整份带上）
           const files = filesFromMap(c.files);
@@ -5465,7 +5590,7 @@
             // spec 形状（与单建同一套字段；服务端不再接受扁平字段）
             spec: {
               params: cardSchema(c),
-              outputs: wanted.length ? [OUT_PORT] : [],
+              outputs: finalOutputs(parseOutputNames(c.outputs), wanted.length > 0),
               requires: (c.requires || []).slice(),
               run: run,
             },
@@ -5528,9 +5653,9 @@
         const createdCaps = Array.isArray(data && data.capabilities) ? data.capabilities : [];
         const createdEdges = Array.isArray(data && data.edges) ? data.edges : [];
         toast(
-          t("caps.form.batch_created", "已创建 {caps} 个能力 · {edges} 条边")
+          t("caps.form.batch_created", "已创建 {caps} 个能力 · {m} 条下游")
             .replace("{caps}", String(createdCaps.length))
-            .replace("{edges}", String(createdEdges.length)),
+            .replace("{m}", String(createdEdges.length)),
         );
         closeCapModal();
         // 建完自动展开**每个**新能力的详情：用户刚建完最想看到的就是它们接上了没有
@@ -5667,6 +5792,17 @@
         // 而那是个不存在的功能）。现在改成预填 + 可改。
         // 多出口（历史数据）只补一句只读说明：出口是内部路由键，行编辑器只表达隐式 out。
         document.getElementById("cap-down-wrap").classList.remove("hidden");
+        // 出口（§13.3）：显式出口可改；多出口（历史数据）整栏隐藏，只留只读说明。
+        const outWrap = document.getElementById("cap-outputs-wrap");
+        const outInput = document.getElementById("cap-outputs");
+        const explicit = explicitOutputs(c);
+        if (Array.isArray(c.outputs) && c.outputs.length > 1) {
+          outWrap.classList.add("hidden");
+          outInput.value = "";
+        } else {
+          outWrap.classList.remove("hidden");
+          outInput.value = explicit.join(", ");
+        }
         const existing = document.getElementById("cap-down-existing");
         if (Array.isArray(c.outputs) && c.outputs.length > 1) {
           existing.classList.remove("hidden");
@@ -5952,11 +6088,30 @@
           btn.textContent = prevLabel;
           if (!saved) return; // saveDownstreams 已经把原因说清楚了
         }
-        // 出口：一个能力只有一个（隐式 out）。有下游就声明它，没有就是终端能力（空）。
-        // 行数就是真相 —— 不再看「输入框里填了几个名字」，也不再受「已有边就隐藏那一栏」影响。
-        // 多出口是历史数据 —— 原样保留它的出口结构（不能替用户合并成 out）。
+        // 出口：显式出口必须看得见、改得动（§13.3）。留空就退回单出口形态
+        // （有下游 → [out]，没下游 → 终端能力）。
+        // 多出口是历史数据 —— 原样保留它的出口结构（不能替用户合并成 out），
+        // 表单里那一栏已被 applyVersionMode 隐藏，这里也不去读它。
         const multiOutput = Array.isArray(c.outputs) && c.outputs.length > 1;
-        const outputs = multiOutput ? c.outputs.slice() : DOWN_ROWS.length ? [OUT_PORT] : [];
+        let outputs;
+        if (multiOutput) {
+          outputs = c.outputs.slice();
+        } else {
+          const outVal = (document.getElementById("cap-outputs") || {}).value;
+          const declaredOut = parseOutputNames(outVal);
+          const badOut = badOutputNames(outVal);
+          if (badOut) {
+            toast(
+              t(
+                "caps.form.outputs_bad",
+                "出口名不合法：{name}（只能包含字母、数字、点、下划线、短横线，1–32 个字符）",
+              ).replace("{name}", badOut),
+              "error",
+            );
+            return;
+          }
+          outputs = finalOutputs(declaredOut, DOWN_ROWS.length > 0);
+        }
 
         // 请求体是 spec 形状（P4）：契约与实现都在 spec 里，旧的扁平字段已删除。
         const spec = {
@@ -6186,13 +6341,13 @@
         if (!cap) return;
         const nodeIds = selectedNodeIds();
         if (!nodeIds.length) {
-          toast(t("caps.deploy.none_selected", "请先选择机器"));
+          toast(t("caps.deploy.none_selected", "至少选一个节点"));
           return;
         }
 
         const btn = document.getElementById("deploy-submit");
         btn.disabled = true;
-        btn.textContent = t("caps.deploy.pushing", "下发中…");
+        btn.textContent = t("caps.deploy.pushing", "部署中…");
         try {
           // 请求体只带 capabilityId + nodeIds（不带 digest / tags）：
           // 服务端取该能力的最新产物，前端不该决定版本。
@@ -6220,7 +6375,7 @@
           // 勾选态也被清两次。
           await loadAll();
         } catch (err) {
-          toast(t("caps.deploy.err", "下发失败：") + (err.detail || err.message));
+          toast(t("caps.deploy.err", "部署失败：") + (err.detail || err.message));
         } finally {
           btn.disabled = false;
           btn.textContent = t("caps.deploy.push", "部署");
@@ -6238,7 +6393,7 @@
           return;
         }
         box.classList.remove("hidden");
-        box.appendChild(el("div", "dep-res-title", t("caps.deploy.result_title", "下发结果")));
+        box.appendChild(el("div", "dep-res-title", t("caps.deploy.result_title", "部署结果")));
         // 逐台结果出现 → 步骤条走到第 2 步（与新建弹层同一套组件）
         stepSet("deploy-steps", 2);
         for (const r of results) {
@@ -6250,7 +6405,7 @@
           // 文案不替 error 断言原因：「节点离线」这个结论只在 error 真提到 offline 时才给，
           // 其它原因（例如同一台机器重复部署返回的 store 错误）说中性的「已排队」+ 原样 error。
           let label;
-          if (pushed) label = t("caps.deploy.pushed", "已下发");
+          if (pushed) label = t("caps.deploy.pushed", "已部署");
           // 判定按「error 里带 offline」（大小写无关）：后端 ws.ErrNodeOffline 的文案是
           // "node is offline"（internal/ws/node_hub.go:164），不认 snake_case 的 "node_offline"；
           // 放宽成子串匹配后，措辞再变也不至于把「已排队（节点离线）」退化成中性文案。

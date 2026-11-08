@@ -39,17 +39,16 @@
 		lease_expired: "lease_expired",
 	};
 
-	const STATUS_LABEL = {
-		pending: "排队中",
-		assigned: "已分配",
-		acked: "已接单",
-		running: "执行中",
-		succeeded: "成功",
-		failed: "失败",
-		canceled: "已取消",
-		abandoned: "已放弃",
-		lease_expired: "租约过期",
-	};
+	// 九态 → 显示名。**不写死中文**：文案走 `message.task_state.*`
+	//
+	// 为什么删掉原来的 STATUS_LABEL 常量：它是一张硬编码中文表，于是同一个
+	// 任务状态在 message/node 页读「已派发」、在这张树视图里读「已分配」——
+	// 两套词在同一页并存（capability-spec-v3 §13.4 点名的那个 bug）。
+	// 现在只留一个兜底：locale 里查不到就把状态码原样显示，不猜。
+	function statusLabel(t, st) {
+		const key = "message.task_state." + st;
+		return t ? t(key, st) : st;
+	}
 
 	/** 毫秒 → "1.2s" / "340ms" / "1m12s" */
 	function fmtDur(ms) {
@@ -247,7 +246,7 @@
 		line.appendChild(name);
 
 		line.appendChild(code("v" + tk.version, "text-[10px] tx-faint"));
-		line.appendChild(el("span", "text-[11px] tx-meta", STATUS_LABEL[st] || st));
+		line.appendChild(el("span", "text-[11px] tx-meta", statusLabel(t, st)));
 
 		if (tk.startedAt && tk.finishedAt) {
 			line.appendChild(

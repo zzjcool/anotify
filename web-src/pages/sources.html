@@ -899,7 +899,7 @@
 
       const KIND_LABEL = {
         cron: () => t("sources.kind.cron", "定时器"),
-        github: () => t("sources.kind.github", "GitHub 触发器"),
+        github: () => t("sources.kind.github", "GitHub"),
         webhook: () => t("sources.kind.webhook", "Webhook"),
         manual: () => t("sources.kind.manual", "手动"),
       };
@@ -1052,7 +1052,7 @@
         // 出口能力
         const tgtWrap = el("div", "src-meta mt-1 flex flex-wrap items-center gap-1.5");
         tgtWrap.appendChild(
-          el("span", "", t("sources.targets_label", "出口") + " →"),
+          el("span", "", t("sources.targets_label", "目标能力") + " →"),
         );
         const caps = s.targetCaps || [];
         if (!caps.length) {
@@ -1479,7 +1479,7 @@
             el(
               "div",
               "src-meta p-2",
-              t("sources.form.no_caps", "还没有可用能力。先到「能力与出口」页定义能力。"),
+              t("sources.form.no_caps", "还没有可用能力。先到「能力」页新建能力。"),
             ),
           );
           return;
@@ -2266,7 +2266,7 @@
           return;
         }
         if (!targets.length) {
-          toast(t("sources.form.targets_required", "至少要选一个出口能力"));
+          toast(t("sources.form.targets_required", "至少要选一个目标能力"));
           return;
         }
 
@@ -2385,7 +2385,7 @@
               )
             : t(
                 "sources.form.av_no_event",
-                "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。",
+                "这个源没有外部事件，没有可引用的字段；值直接写在参数里即可。",
               );
           body.appendChild(el("div", "av-empty", hint));
           return;
@@ -2712,7 +2712,7 @@
           return;
         }
         if (!draft.targets.length) {
-          renderDryError(box, t("sources.form.dry_no_target", "先勾选至少一个出口能力"));
+          renderDryError(box, t("sources.form.dry_no_target", "先勾选至少一个目标能力"));
           return;
         }
 
@@ -2760,7 +2760,7 @@
             el(
               "span",
               "",
-              t("sources.form.dry_will_run", "会派发 {n} 个出口")
+              t("sources.form.dry_will_run", "会派发 {n} 个任务")
                 .replace("{n}", tasks.length)
                 + (pruned.length ? t("sources.form.dry_and_pruned", "，{n} 个被跳过").replace("{n}", pruned.length) : ""),
             ),
@@ -2768,7 +2768,7 @@
         } else {
           head.appendChild(el("span", "", "⚠"));
           head.appendChild(
-            el("span", "", t("sources.form.dry_nothing", "没有出口会派发（全部被跳过）")),
+            el("span", "", t("sources.form.dry_nothing", "没有任务会派发（全部被跳过）")),
           );
         }
         box.appendChild(head);
@@ -2825,7 +2825,7 @@
             Object.keys(schemaProps(c.paramsSchema)).length,
         );
         if (!usable.length) {
-          toast(t("sources.form.demo_no_caps", "没有带参数的出口能力，变量部分已填好"));
+          toast(t("sources.form.demo_no_caps", "没有带参数的目标能力，变量部分已填好"));
           return;
         }
         const cap = usable[0];

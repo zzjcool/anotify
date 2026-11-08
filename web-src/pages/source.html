@@ -339,7 +339,7 @@
       Anotify.mountLayout({
         active: "sources",
         title: t("srcpage.layout_title", "源详情"),
-        subtitle: t("srcpage.layout_subtitle", "一个源的触发配置、出口参数和下游流向"),
+        subtitle: t("srcpage.layout_subtitle", "一个源的目标能力、参数和下游流向"),
       });
 
       // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
@@ -382,7 +382,7 @@
 
       const KIND_LABEL = {
         cron: () => t("sources.kind.cron", "定时器"),
-        github: () => t("sources.kind.github", "GitHub 触发器"),
+        github: () => t("sources.kind.github", "GitHub"),
         webhook: () => t("sources.kind.webhook", "Webhook"),
         manual: () => t("sources.kind.manual", "手动"),
       };
@@ -595,7 +595,7 @@
           if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
         } else {
           add(
-            t("srcpage.manual_hint", "触发方式"),
+            t("srcpage.manual_hint", "种类"),
             t("sources.manual_hint", "页面上点「立即运行」时触发"),
           );
           if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));

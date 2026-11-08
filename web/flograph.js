@@ -1547,6 +1547,21 @@
 		return s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s";
 	}
 
+	/**
+	 * silkFill 把 locale 文案里的 `{n}` 这类占位符换成值。
+	 *
+	 * 为什么需要它：silk 条与 HUD 的文案以前是**硬编码中文**拼接的
+	 * （`nodes.length + " 节点 · " + ...`），于是四语言页面上这几处永远说中文，
+	 * 而且用的是契约里已经废弃的词（节点/连线）。改走 i18n key 之后
+	 * 插值也得跟着走 —— 否则 key 里的 `{n}` 会原样显示给用户。
+	 * 只替换已知的键名，不认识的占位符原样保留（词序不同的语言也不会丢内容）。
+	 */
+	function silkFill(tpl, vars) {
+		return String(tpl == null ? "" : tpl).replace(/\{(\w+)\}/g, (m, k) =>
+			Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m,
+		);
+	}
+
 	/** 从副标题（"succeeded · 4.8s · ×2"）里取时长段；没有就留空。 */
 	function silkDurOf(sub) {
 		const parts = String(sub == null ? "" : sub).split(" \u00b7 ");
@@ -1783,18 +1798,31 @@
 		// 结论文案（全部成功 / N 失败）是**回放跑完才得出的结论**，不能在第一帧
 		// 就摆出来：丝带还在一条条描出时条上已经写着「全部成功」，用户会以为
 		// 动画已经播完 —— 于是把描到一半的图当成「图缺线、少了东西」。
-		// 播放期间只说规模与时长（3 步 · 回放 1.5s），结束时才定性（settleBar）。
+		// 播放期间只说规模与时长（3 个任务 · 回放 1.5s），结束时才定性（settleBar）。
 		//
-		// 预览（源详情页）**没有执行事实**：不能说「全部成功」，也不适合叫「步」
-		// （那是任务的节拍）。改成「N 节点 · M 连线」，结束时说「预览完成」。
+		// 预览（源详情页）**没有执行事实**：不能说「全部成功」，也不适合叫「任务」
+		// （那是执行事实的节拍）。改成「N 个能力 · M 条下游」，结束时说「预览完成」。
+		//
+		// 两串都走 i18n key（capability-spec-v3 §13.1）：以前是硬编码中文，
+		// 于是 en/ja/es 的图上永远读出一句中文。
 		const barMeta = document.createElement("span");
 		barMeta.className = "flograph-bar-meta";
 		const barMetaPrefix = preview
-			? nodes.length + " 节点 · " + edgeItems.length + " 连线"
-			: beats.length + " 步 · 回放 " + silkFmtClock(totalSec);
+			? silkFill(tt("graph.silk_meta_preview", "{n} 个能力 · {m} 条下游"), {
+					n: nodes.length,
+					m: edgeItems.length,
+				})
+			: silkFill(tt("graph.silk_meta_run", "{n} 个任务 · 回放 {t}"), {
+					n: beats.length,
+					t: silkFmtClock(totalSec),
+				});
 		const barMetaFinal = preview
 			? barMetaPrefix + " · " + tt("graph.silk_preview_done", "预览完成")
-			: barMetaPrefix + (failedCount ? " · " + failedCount + " 失败" : " · 全部成功");
+			: barMetaPrefix +
+				" · " +
+				(failedCount
+					? silkFill(tt("graph.silk_meta_failed", "{n} 个失败"), { n: failedCount })
+					: tt("graph.silk_meta_ok", "全部成功"));
 		barMeta.textContent = barMetaPrefix;
 		let barSettled = false;
 		const settleBar = () => {
@@ -1822,7 +1850,7 @@
 		scroll.setAttribute("role", "region");
 		scroll.setAttribute(
 			"aria-label",
-			tt("graph.silk_region", "执行链；可拖动，或使用左右方向键平移"),
+			tt("graph.silk_region", "任务链；可拖动，或使用左右方向键平移"),
 		);
 		const canvas = div("flograph-canvas");
 		scroll.appendChild(canvas);
@@ -1841,7 +1869,7 @@
 		hud.appendChild(hudClock);
 		hud.appendChild(hudTrack);
 		hud.appendChild(hudActive);
-		// lab 的 HUD 只有两项：执行路径 / 失败步。7 行完整图例是产品契约
+		// lab 的 HUD 只有两项：任务路径 / 失败任务。7 行完整图例是产品契约
 		// （E2E 逐行读 textContent），但不再挤进 35px HUD——放到容器里做
 		// 视觉隐藏的无障碍副本，HUD 才能像演示一样留出进度条空间。
 		const hudLegend = div("hud-legend");
@@ -1849,7 +1877,7 @@
 		const hudPathDot = document.createElement("i");
 		hudPathDot.className = preview ? "lg-flow" : "lg-ok";
 		hudPath.appendChild(hudPathDot);
-		hudPath.appendChild(document.createTextNode(tt("graph.hud_path", "执行路径")));
+		hudPath.appendChild(document.createTextNode(tt("graph.hud_path", "任务路径")));
 		const hudFail = document.createElement("span");
 		const hudFailDot = document.createElement("i");
 		hudFailDot.className = preview ? "lg-pruned" : "lg-bad";
@@ -1859,7 +1887,7 @@
 			hudPath.lastChild.textContent = tt("graph.hud_flow", "下游流向");
 			hudFail.appendChild(document.createTextNode(tt("sources.flow.no_edge", "没有下游")));
 		} else {
-			hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败步")));
+			hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败任务")));
 		}
 		hudLegend.appendChild(hudPath);
 		hudLegend.appendChild(hudFail);
@@ -2529,14 +2557,20 @@
 			const p = totalSec > 0 ? Math.max(0, Math.min(1, sec / totalSec)) : 0;
 			hudFill.style.width = (p * 100).toFixed(1) + "%";
 			hudClock.textContent =
-				"\u56de\u653e " + silkFmtClock(Math.min(sec, totalSec)) + " / " + silkFmtClock(totalSec);
+				silkFill(tt("graph.silk_clock", "\u56de\u653e {t}"), {
+					t: silkFmtClock(Math.min(sec, totalSec)),
+				}) +
+				" / " +
+				silkFmtClock(totalSec);
 		}
 		const doneLabel = () =>
 			preview
 				? tt("graph.silk_preview_done", "\u9884\u89c8\u5b8c\u6210")
-				: beats.length +
-					" \u6b65\u5b8c\u6210" +
-					(failedCount ? " \u00b7 " + failedCount + " \u5931\u8d25" : "");
+				: silkFill(tt("graph.silk_meta_done", "{n} 个任务完成"), { n: beats.length }) +
+					(failedCount
+						? " · " +
+							silkFill(tt("graph.silk_meta_failed", "{n} 个失败"), { n: failedCount })
+						: "");
 		setProgress(0);
 		hudActive.textContent = tt("graph.silk_ready", "\u51c6\u5907\u56de\u653e");
 

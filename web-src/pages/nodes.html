@@ -519,7 +519,7 @@
       Anotify.mountLayout({
         active: "nodes",
         title: t("nodes.title", "节点"),
-        subtitle: t("nodes.subtitle", "接活的机器"),
+        subtitle: t("nodes.subtitle", "节点自己知道怎么跑某个能力，中枢只告诉它\"做什么\"。"),
       });
 
       let NODES = [];
@@ -799,7 +799,7 @@
             // sent：upgrade 帧已推给节点，结果靠 upgrade_ack 回写 nodes.agent_upgrade。
             // 主动补两次刷新（ack 通常一两秒内到），用户不用手点刷新。
             toast(
-              t("nodes.upgrade.sent", "已下发升级，节点重启后生效（稍后刷新可看到新版本）"),
+              t("nodes.upgrade.sent", "已发出升级，节点重启后生效（稍后刷新可看到新版本）"),
             );
             setTimeout(() => loadAll(), 900);
             setTimeout(() => loadAll(), 3000);
@@ -1124,7 +1124,7 @@
         // 很容易以为节点页少给了一项。注释不参与解析（agent 只看四个键）。
         y += "# " + t(
           "nodes.register.yaml_workdir_note",
-          "工作目录在「能力」页的能力定义里配（run.workDir），随部署下发；这份 yaml 不需要写。",
+          "工作目录在「能力」页的能力里配（run.workDir），随部署一起发到节点；这份 yaml 不需要写。",
         ) + "\n";
         return y;
       }
@@ -1416,7 +1416,7 @@
           "# " + t("nodes.howto.step1", "点上方「生成令牌」拿一次性令牌") + "\n" +
           "# " + t("nodes.howto.step2", "二选一：容器（看不到宿主机文件）或原生装") + "\n\n" +
           agentDockerCmd(token, origin, name, 1) + "\n\n" +
-          "# " + t("nodes.howto.step3", "机器上线后到「能力」页点部署，它就有活了");
+          "# " + t("nodes.howto.step3", "节点上线后到「能力」页点部署，它就有活了");
         host.appendChild(cmd.wrap);
 
         const yaml = howtoBlock(
@@ -1437,7 +1437,7 @@
           t("nodes.register.copy_install", "复制命令"),
           t(
             "nodes.howto.native",
-            "原生装：以你的用户身份在宿主机上跑；能力在哪个目录里跑由能力定义里的工作目录决定",
+            "原生装：以你的用户身份在宿主机上跑；能力在哪个目录里跑由能力自己的工作目录决定",
           ),
         );
         install.code.textContent = agentInstallCmd(token, origin, name, 1);

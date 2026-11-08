@@ -110,7 +110,7 @@ common:
     task_id: Task ID
     trace: Trace
     capability: Capability
-    node: Node
+    node: 'Node'
     attempts: Attempts
     parent_task: Parent task
     started_at: Started
@@ -192,7 +192,7 @@ index:
     refresh: Refresh →
     count: 'Latest {n}'
     loading: Loading events…
-    empty: No events yet. Once a webhook or cron trigger is wired up, the stream shows here.
+    empty: 'No events yet. Once a webhook or cron source is wired up, the stream shows here.'
 scope:
   switcher_label: "Switch namespace"
   section_ns: "Namespace"
@@ -215,6 +215,16 @@ graph:
   fullscreen_hint: Scroll to zoom · drag to pan · Esc to exit
   silk_preview_done: Preview complete
   hud_flow: Downstream flow
+  hud_path: 'Task path'
+  hud_fail: 'Failed tasks'
+  silk_region: 'Task chain; drag, or use the left and right arrow keys to pan'
+  silk_ready: 'Ready to replay'
+  silk_meta_preview: '{n} capabilities · {m} downstream'
+  silk_meta_run: '{n} tasks · replay {t}'
+  silk_meta_ok: 'all succeeded'
+  silk_meta_failed: '{n} failed'
+  silk_meta_done: '{n} tasks done'
+  silk_clock: 'replay {t}'
 
 message:
   title: Notification detail
@@ -232,7 +242,7 @@ message:
     not_found: Message not found or has been cleaned up
   task_title: Task Detail
   chain_title: Task Chain
-  back_events: Back to events
+  back_events: 'Back to events'
   missing_id_hint: Deep links must carry a task id, for example message.html?id=tsk_xxx.
   not_found_hint: This task does not exist — it may have been cleaned up, or it belongs to another namespace.
   task_state:
@@ -248,7 +258,7 @@ message:
   node:
     central: Executed by hub
   chain:
-    count: '{n} steps'
+    count: '{n} tasks'
     empty: No other tasks on this trace
     current: Current
 login:
@@ -563,7 +573,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one for this machine.
+  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one on this device.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -631,7 +641,7 @@ docs:
       namespaces: Namespaces
       stats: Stats
       capabilities: Capabilities
-      edges: Edges
+      edges: 'Downstream'
       playbooks: Playbooks
       nodes: Nodes
       node-stream: Node stream
@@ -644,7 +654,7 @@ docs:
       devices: Web Push
   events:
     core: Core
-    intro: Events are where everything begins. Every external change enters here; the hub dispatches it into task chains along the edge table.
+    intro: 'Events are where everything begins. Every external change enters here; the hub dispatches it into task chains along the downstream table.'
     required: Required
     optional: Optional
     params:
@@ -658,7 +668,7 @@ docs:
     curl:
       title: curl example
   node:
-    intro: Nodes are the executors. A node connects to the hub, declares which capabilities it can run, then takes assign frames.
+    intro: 'Nodes run code. A node connects to the hub, declares which capabilities it can run, then takes assign frames.'
     connect:
       title: Connect
     up:
@@ -692,7 +702,7 @@ docs:
     map:
       title: Endpoint map
       notify: Agent reports a notification (core)
-      tasks: Task list (event hub)
+      tasks: 'Task list (event stream)'
       notifications: Notification history list
       devices_list: Device list
       devices_sub: Subscribe (register) a device
@@ -841,7 +851,7 @@ cliauth:
     notfound_action: Try again
     consumed_badge: Already used
     consumed_title: This session was already authorized
-    consumed_desc: A key was already issued for this session. Run the login script again in your terminal to create a new one.
+    consumed_desc: 'A key was already issued for this session. Run the login script again in your terminal to create a new one.'
     error_title: Cannot reach the server
     error_desc: Check your connection and try again.
     rejected_desc: The authorization request was rejected. Please verify the selected scopes and try again.
@@ -1064,12 +1074,12 @@ caps:
   title: Capabilities
   step_pick: Pick a template
   step_fill: Fill in & create
-  sidebar: 'Declared here, run on nodes'
-  subtitle: A capability is "what to do" (not "how"). Downstream edges have their own page.
-  new: Define capability
+  sidebar: 'Created here, run on nodes'
+  subtitle: 'A capability is "what to do" (not "how"). Create and deploy them here, and point them downstream.'
+  new: 'New capability'
   loading: Loading capabilities…
   load_failed: 'Failed to load capabilities, please refresh'
-  empty: No capabilities yet. Define one so nodes can declare it.
+  empty: 'No capabilities yet. Create one so nodes can declare it.'
   count: '{n} capabilities'
   source_builtin: 'Built-in'
   declared_by: Declared by
@@ -1148,7 +1158,7 @@ caps:
     load_failed: 'Failed to load templates: '
     empty: 'The backend returned no templates'
     created: 'Capability created'
-    created_digest: 'Created · digest {digest}'
+    created_digest: 'Created · content fingerprint {digest}'
   deploy:
     col: 'Deployment'
     status_applied: 'Deployed to {n}'
@@ -1159,8 +1169,8 @@ caps:
     status_unknown: '—'
     btn: 'Deploy'
     title: 'Deploy “{name}”'
-    subtitle: 'Tick machines or pick them by tag, then hit Deploy.'
-    pick_hint: 'Machines'
+    subtitle: 'Tick nodes or pick them by tag, then hit Deploy.'
+    pick_hint: 'Nodes'
     tag_pick: 'Pick by tag'
     node_digest: 'Deployed {digest}'
     node_none: 'Not deployed'
@@ -1170,12 +1180,12 @@ caps:
     undo: 'Remove'
     undone: 'Deployment removed'
     undo_failed: 'Remove failed: '
-    pushed: 'Pushed'
+    pushed: 'Deployed'
     queued: 'Queued (node offline)'
     queued_other: 'Queued'
     nodes_failed: 'Could not load the node list, try again later'
-    result_title: 'Results'
-    none_selected: 'Select at least one machine'
+    result_title: 'Deployment result'
+    none_selected: 'Select at least one node'
     no_nodes: 'This namespace has no nodes yet'
     err: 'Deploy failed: '
     builtin: Executed by the hub — no deployment needed
@@ -1187,18 +1197,23 @@ caps:
     display_name_ph: "e.g. \"Analyze PR\", \"Deploy to staging\""
     display_name_hint: Shown in the UI. Leave blank to use the technical name below.
     name: Capability name
-    name_hint: Technical name — nodes, edges and logs use it. Cannot be changed after creation.
+    name_hint: 'Technical name — nodes, downstream and logs use it. Cannot be changed after creation.'
+    outputs: 'Outputs'
+    outputs_optional: '(optional)'
+    outputs_ph: 'approved, needs-fix (empty = a single internal output)'
+    outputs_hint: 'Output names this capability declares, comma separated — downstream can only target these. Empty = a single internal output (hand off to the downstream directly). They are part of the capability contract, so changing them needs a new version.'
+    outputs_bad: 'Invalid output name: {name} (letters, digits, dot, underscore and hyphen only, 1–32 chars)'
     downstream: Downstream capabilities (candidates)
     downstream_optional: optional
     downstream_ph: script.echo, notify.phone
     downstream_hint: Who runs after this one. Several = candidates, one is picked at run time by priority; leave empty = terminal capability (it ends when it finishes).
     downstream_missing: 'No such capability: {names}'
     downstream_cands_hint: 'Click to add:'
-    downstream_cands_empty: No target capability to pick yet (define one, or name another card above).
+    downstream_cands_empty: 'No target capability to pick yet (create one, or name another card above).'
     cand_add: Add as downstream
     cand_picked: Selected
     cards_title: Capabilities in this batch
-    cards_hint: Define several capabilities at once — each card has its own downstream, params and script; they are written in one transaction (all succeed or nothing is created).
+    cards_hint: 'Create several capabilities at once — each card has its own downstream, params and script; they are written in one transaction (all succeed or nothing is created).'
     card_add: + Add another capability
     card_remove: Remove this capability
     card_n: 'Capability {n}'
@@ -1210,9 +1225,9 @@ caps:
     card_err_generic: 'Capability {n}: {reason}'
     cand_hint: At runtime exactly one candidate is picked by priority; ties rotate (lower number wins).
     cand_batch_tag: (this batch)
-    batch_created: 'Created {caps} capabilities and {edges} edges'
+    batch_created: 'Created {caps} capabilities · {m} downstream'
     batch_failed: 'Batch create failed (nothing was saved): '
-    created_with_edges: 'linked {n} edge(s)'
+    created_with_edges: 'linked {n} downstream'
     link_rejected: 'Downstream #{n} → {to} is invalid; nothing was created: {reason}'
     schema: Param validation (JSON Schema)
     schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
@@ -1252,13 +1267,16 @@ caps:
   detail:
     btn: Details
     params: Parameter contract
+    outputs: 'Outputs (what it can emit)'
+    no_outputs: 'No outputs — it just finishes and triggers nothing downstream.'
+    implicit_output: 'A single internal output (not named here)'
     no_params: No parameters
     downstream: Downstream (candidates)
     no_downstream: It ends when it finishes — nothing downstream is triggered.
     cand_prio_hint: 'Priority {n} · edit to change'
-    edges_failed: Edge list unavailable, downstream state unknown
+    edges_failed: 'Downstream unavailable, downstream state unknown'
     inbound: Who feeds me
-    no_inbound: No inbound edges — events never enter here
+    no_inbound: 'No upstream — events never enter here'
     me: me
     source_prefix: Source
     follow: Follows latest
@@ -1298,10 +1316,10 @@ caps:
     publishing: Publishing…
     failed: 'Publish failed: '
     created: 'Published {ref}'
-    impact_title: This version breaks existing downstream edges
+    impact_title: 'This version breaks existing downstream'
     impact_changes: What changed
-    impact_links: 'Edges that will break (they bind to the name, so the new version is what they point to)'
-    impact_no_links: No follow-latest downstream is affected by this version
+    impact_links: 'Downstream that will break (they bind to the name, so the new version is what they point to)'
+    impact_no_links: 'No downstream that follows latest is affected'
     force: Publish anyway
     artifact_failed: Could not load the implementation — publishing is blocked (it would drop files)
     builtin_locked: 'Built-in capability executed by the hub: the implementation lives in the hub and cannot be edited here'
@@ -1312,8 +1330,8 @@ caps:
     literals_ph: 'Literal overrides (optional), e.g. {"urgent":true}'
     save: Save
     cancel: Cancel
-    created: Edge created
-    failed: 'Failed to create edge: '
+    created: 'Downstream created'
+    failed: 'Failed to create downstream: '
     err_target: Pick a target capability
     err_self: A capability cannot link to itself
     err_literals: Literals must be a JSON object
@@ -1350,13 +1368,13 @@ prune:
   param_type: param type mismatch
   no_node: target capability has no online node
   foreign_user: crosses namespace/user
-  event_schema: event payload does not satisfy the trigger resultSchema
+  event_schema: 'event payload does not satisfy the source resultSchema'
   max_hops: hop budget exhausted (chain too deep)
   budget: this trace hit its task budget
   no_impl: the target is a placeholder (noop) — the hub will not run it
 nodes:
   title: Nodes
-  subtitle: The executors. A node knows how to run a capability; the hub only tells it what to do.
+  subtitle: 'A node knows how to run a capability; the hub only tells it what to do.'
   refresh: Refresh
   loading: Loading nodes…
   empty: "No nodes in this namespace yet. Register your first one below — it only takes work once it's online."
@@ -1380,7 +1398,7 @@ nodes:
     btn: Upgrade
     sending: Upgrading…
     confirm: 'Upgrade the agent on {name}? This replaces the binary on the node and restarts the agent; running tasks finish first (grace 20s).'
-    sent: 'Upgrade sent — it takes effect when the node restarts (refresh later to see the new version)'
+    sent: 'Upgrade started — it takes effect when the node restarts (refresh later to see the new version)'
     failed: 'Upgrade failed: '
     ack_failed: 'The upgrade on the node failed: '
     ack_stale: The node has not replied (it may have gone offline)
@@ -1413,11 +1431,11 @@ nodes:
     step1: Hit "Generate token" above to get a one-time token
     step2: 'Pick one: a container (cannot see host files) or a native install (choose this to run capabilities inside your own project)'
     docker: 'Container: cannot see host files, capabilities run inside the container only'
-    native: 'Native: runs as your user on the host; the directory a capability runs in comes from the work dir in its capability definition'
+    native: 'Native: runs as your user on the host; the directory a capability runs in comes from the work dir in the capability itself'
     yaml_title: node.yaml (for the native install)
     yaml_intro: 'Use this config when you install the agent binary directly. Just the four bootstrap fields — capabilities and their work dirs are defined in the console:'
     install_title: Native install command
-    step3: Once the node is online, deploy a capability on the "Capabilities" page and it has work to do
+    step3: 'Once the node is online, deploy a capability on the "Capabilities" page and it has work to do'
   view_events: View events
   register:
     btn: 'Register node'
@@ -1427,7 +1445,7 @@ nodes:
     name_ph: 'e.g. my-mbp'
     name_hint: 'Lowercase letters, digits, dot (.), underscore (_) or hyphen (-) — 1–63 characters, starting with a letter or digit'
     instances: 'Instances (optional)'
-    instances_hint: 'How many instances to run on this machine (a suggestion — the hub caps it at 20). The real slot count is reported by the agent when it connects.'
+    instances_hint: 'How many instances to run on this node (a suggestion — the hub caps it at 20). The real slot count is reported by the agent when it connects.'
     submit: 'Register'
     cancel: 'Cancel'
     submitting: 'Registering…'
@@ -1438,12 +1456,12 @@ nodes:
     copy_token: 'Copy token'
     cmd_title: "Start with one command (recommended)"
     copy_cmd: "Copy command"
-    yaml_intro: "Or install the agent binary directly and use this node.yaml (only the four bootstrap fields — name / server / token / instances; the work dir is set in the capability definition):"
-    yaml_title: 'Run this on the machine'
+    yaml_intro: 'Or install the agent binary directly and use this node.yaml (only the four bootstrap fields — name / server / token / instances; the work dir is set on the capability):'
+    yaml_title: 'Run this on the node'
     copy_yaml: 'Copy command'
     yaml_hint: 'The token in this command is shown only once — lose it and you have to delete the node and register again.'
-    cmd_intro: 'Paste this command on the machine (no config file needed):'
-    cmd_after: 'Once the machine is online, deploy a capability from the Capabilities page and it starts working.'
+    cmd_intro: 'Paste this command on the node (no config file needed):'
+    cmd_after: 'Once the node is online, deploy a capability from the Capabilities page and it starts working.'
     err:
       empty_name: 'Enter a node name first'
       invalid_name: 'Invalid name: lowercase letters, digits, dot (.), underscore (_) or hyphen (-) only, 1–63 characters, starting with a letter or digit'
@@ -1455,7 +1473,7 @@ nodes:
     install_intro: A container cannot see host files. To run capabilities inside your own project directory (make test, git status, editing files in place), install on the host with this command.
     install_after: 'It installs the binary, writes ~/.anotify/node.yaml (mode 600, contains the token) and generates a systemd user service. Note: the command contains the token, so it stays in your shell history.'
     copy_install: Copy command
-    yaml_workdir_note: 'The work dir is set in the capability definition on the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
+    yaml_workdir_note: 'The work dir is set on the capability itself in the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
   emptyTitle: 'No nodes yet'
 sources:
   empty_title: No sources yet
@@ -1474,15 +1492,15 @@ sources:
   empty: No sources yet. Click “New source” to start.
   explain:
     title: 'Sources vs. capabilities: '
-    body: 'A capability answers “what can be done” — nodes declare it and the hub dispatches tasks to it. A source answers “when to start” — it has config, produces events, and does no work itself. So a source needs no edges: its exits are the capabilities you pick here.'
+    body: 'A capability answers “what can be done” — nodes declare it and the hub dispatches tasks to it. A source answers “when to start” — it has config, produces events, and does no work itself. So a source needs no downstream: the capabilities you pick here are its targets.'
   kind:
     cron: Timer
     webhook: Webhook
     manual: Manual
-    github: "GitHub trigger"
+    github: 'GitHub'
   next_fire: next {t}
   manual_hint: Fires when you click Run
-  targets_label: Exits
+  targets_label: 'Targets'
   no_target: none
   target_missing: deleted
   fire: Run now
@@ -1519,24 +1537,24 @@ sources:
   form:
     name: Name
     name_ph: e.g. nightly-check
-    kind: Trigger
+    kind: 'Kind'
     kind_hint: Cannot be changed after creation (switching kind changes semantics). Delete and recreate instead.
     expr: 'Cron expression (5 fields: min hour dom month dow)'
     expr_hint: 'Supports * / , - ; macros like @daily are not supported. Example: 0 3 * * * means daily at 03:00.'
     hook_hint: A dedicated URL is generated after creation; any external system can POST to it. Whoever holds the URL can send events — keep it safe.
-    targets: Exit capabilities (multi-select)
+    targets: 'Target capabilities (multi-select)'
     targets_hint: The event is dispatched to all selected capabilities (fan-out). Once checked, fill in that capability's own parameters — each capability keeps its own set.
     enabled: Enabled
     cancel: Cancel
     save: Save
     name_required: Name is required
     expr_required: Cron expression is required
-    targets_required: Pick at least one exit capability
+    targets_required: 'Pick at least one target capability'
     result_schema: "Event payload contract (resultSchema, optional)"
     result_schema_hint: "Optional. With a JSON Schema here (e.g. {\"type\":\"object\",\"required\":[\"action\"]}) every delivery is checked before dispatch: non-conforming events are still stored but not dispatched, and an event_schema prune shows up in the trace. Empty = no check."
     bad_schema: "payload contract is not valid JSON: {e}"
     schema_not_object: "payload contract must be a JSON object (arrays/scalars are not a schema)"
-    no_caps: No usable capabilities yet. Define some on the “Capabilities” page first.
+    no_caps: 'No usable capabilities yet. Create some on the “Capabilities” page first.'
     no_params: This capability takes no parameters
     bad_json: Parameter {k} is not valid JSON
     bad_num: Parameter {k} is not a number
@@ -1547,15 +1565,15 @@ sources:
     demo_hint: "Fill in a working config: params reference payload fields directly"
     demo_name: "Demo · GitHub PR analysis"
     demo_ok: "Example filled: 4 variables + params bound to them"
-    demo_no_caps: "No target capability with params; variables were filled in"
-    avail_vars: "Which fields does this trigger provide? (click to copy)"
+    demo_no_caps: 'No target capability with params; variables were filled in'
+    avail_vars: 'Which fields does this source provide? (click to copy)'
     av_fill: "Click to fill the variable source"
     hook_url: "Payload URL"
     hook_url_pending: "Generated after saving (e.g. /v1/hooks/src_xxx)"
     hook_github: "How to configure it on GitHub"
     hook_github_events: "This one is enough; other events are not dispatched"
     hook_github_secret: "GitHub verifies against its own Secret; this system does not verify signatures yet, so use a long random token in the URL"
-    hook_github_why: "After filling these in, click \"Add webhook\". GitHub sends a ping immediately and the event is stored; then bind the target params below."
+    hook_github_why: 'After filling these in, click "Add webhook". GitHub sends a ping immediately and the event is stored; then bind the target params below.'
     ref_tip: "Reads from event or variable"
     ref_mix_tip: "Template concatenation; result passed as text"
     bad_placeholder: "Param {k}: unclosed placeholder"
@@ -1565,14 +1583,14 @@ sources:
     pv_missing_multi: "The latest event is missing these fields: {p}"
     dry_run: "Dry run"
     dry_running: "Running…"
-    dry_no_target: "Select at least one target capability first"
-    dry_will_run: "Will dispatch to {n} target(s)"
+    dry_no_target: 'Select at least one target capability first'
+    dry_will_run: 'Will dispatch {n} task(s)'
     dry_and_pruned: ", {n} skipped"
-    dry_nothing: "Nothing will be dispatched (all skipped)"
+    dry_nothing: 'Nothing will be dispatched (all skipped)'
     pick_no_sample: "No events yet to use as a sample"
     pick_none: "No matching fields"
     av_no_event_hook: "No events received yet. Once the callback is configured and the external system sends one, real fields show up here."
-    av_no_event: "This trigger has no external event, so there are no fields to reference — just write values directly in params."
+    av_no_event: 'This source has no external event, so there are no fields to reference — just write values directly in params.'
     kind_github_hint: "GitHub PR/push events. Known fields and the GitHub-side setup are built in — no doc digging."
     av_copied: "Copied — paste it into the param"
     av_src_builtin: "From the official GitHub {ty} event structure (sample values)"
@@ -1598,18 +1616,18 @@ sources:
     missing: (capability deleted)
     terminal: terminal
     noedge: no downstream
-    no_target: This source has no target capabilities.
+    no_target: 'This source has no target capabilities.'
     unconnected: (no downstream)
     truncated: Graph too large ({n} nodes); showing the first {m}.
     nolib: Graph library failed to load; cannot render the flow.
     source: Source
     terminal_short: terminal
     no_edge: no downstream
-    cycle: Cycle · this edge loops back
+    cycle: 'Cycle · this downstream loops back'
   view_events: View events
 trace:
   legend_hot: "Deeper line · this path was walked many times (retry / loop)"
-  legend_origin: "Source · trigger (events enter here)"
+  legend_origin: 'Source · events enter here'
   legend_pipe: "Pipe · keeps dispatching downstream"
   legend_end: "End · stops here, no further dispatch"
   legend_ok: "Succeeded"
@@ -1617,7 +1635,7 @@ trace:
   legend_pruned: "Not executed (configured but skipped this time)"
   graph_legend: "Legend"
   title: Trace
-  subtitle: One trace end to end — what triggered it, which path it took, how long each step ran
+  subtitle: 'One trace end to end — what triggered it, which path it took, how long each task ran'
   back: Back to events
   refresh: Refresh
   loading: Loading trace…
@@ -1628,12 +1646,12 @@ trace:
   copy_failed: Copy failed
   triggered_by: Triggered by
   nolib: Renderer failed to load.
-  empty: No tasks under this trace. Usually means it was pruned at the first step (no matching edge, params failed the schema, or no node declares the target capability).
+  empty: 'No tasks under this trace. Usually means it was pruned at the first step (no matching target capability, params failed the schema, or no node declares the target capability).'
   empty_title: No tasks
   emits:
     title: Output (emits)
-    subtitle: Every emit in this run — port, time, dispatch result and raw data
-    empty: This run has not emitted anything yet. emit is the only output channel — nothing means no output so far (or the process is still running).
+    subtitle: 'Every emit in this task — output, time, dispatch result and raw data'
+    empty: 'This task has not emitted anything yet. emit is the only output channel — nothing means no output so far (or the process is still running).'
     failed: Could not load the emit list (the trace above is unaffected)
     routed: Routed
     pruned: Pruned
@@ -1659,7 +1677,7 @@ trace:
   stat:
     spans: Tasks
     duration: Duration
-    slowest: Slowest step
+    slowest: 'Slowest task'
     failed: Failed
 
 srcpage:
@@ -1668,11 +1686,11 @@ srcpage:
   loading: "Loading…"
   back: "Back to sources"
   layout_title: "Source"
-  layout_subtitle: "Trigger config, target params and downstream flow of one source"
+  layout_subtitle: 'Kind, target params and downstream flow of one source'
   no_id: "Missing ?id= in the URL, cannot tell which source"
   load_failed: "Failed to load: {m}"
   notfound: "This source does not exist; it may have been deleted"
-  config: "Trigger config"
+  config: "Source config"
   tz: "Timezone"
   next_fire: "Next run"
   last_fire: "Last run"
@@ -1681,9 +1699,9 @@ srcpage:
   copy: "Copy"
   copied: "Copied"
   copy_failed: "Copy failed"
-  manual_hint: "Triggered by"
+  manual_hint: 'Triggered by'
   created: "Created"
-  targets: "Targets"
+  targets: 'Targets'
   no_params: "No params configured"
   mapped: "mapped"
   default_is: "default {v}"
@@ -1698,7 +1716,7 @@ srcpage:
 nodepage:
   title: Node detail
   layout_title: Node detail
-  layout_subtitle: A node's declared capabilities, concurrency slots and recent runs
+  layout_subtitle: 'A node''s declared capabilities, concurrency slots and recent tasks'
   back: Back to nodes
   loading: Loading…
   basic: Basics
@@ -1716,8 +1734,8 @@ nodepage:
   concurrency: '{n} concurrent'
   busy_task: 'Running {id}'
   idle: Idle
-  recent: Recent runs
-  no_tasks: No tasks have run on this node yet
+  recent: 'Recent tasks'
+  no_tasks: 'No tasks have run on this node yet'
   open_trace: Open trace
   not_found: Node not found
   not_found_hint: No node matches this id; it may have been deleted.
@@ -1726,8 +1744,8 @@ nodepage:
 
 pb:
   title: Playbooks
-  subtitle: Turn capabilities, edges and triggers into one playbook you can check and complete
-  detail_subtitle: 'Readiness: definitions → nodes → edges → triggers'
+  subtitle: 'Turn capabilities, downstream and sources into one playbook you can check and complete'
+  detail_subtitle: 'Readiness: capabilities → downstream → nodes → sources'
   detail_title: Playbook detail
   rescan: Re-check
   rescanned: Re-checked
@@ -1739,44 +1757,44 @@ pb:
   empty: No playbooks in this namespace yet.
   empty_title: No playbooks yet
   load_failed: Failed to load. Please refresh.
-  meta: '{c} capabilities · {e} edges · {tr} triggers'
+  meta: '{c} capabilities · {e} downstream · {tr} sources'
   ready_n: '{n}/{m} ready'
   n_of_m: '{n}/{m} ready'
   remaining: '{n} left'
   status:
     ready: Ready
     needs_node: Needs node
-    blocked: Needs definition
+    blocked: 'Needs capability'
     partial: Incomplete
   next:
     ready: Everything is ready — you can start running it
     capability:
-      missing: 'Missing capability definition: {ref}'
+      missing: 'Missing capability: {ref}'
       no-node: No node can run {ref}
       offline: All nodes for {ref} are offline
     edge:
-      missing: 'Missing edge: {label}'
+      missing: 'Missing downstream: {label}'
     trigger:
-      missing: 'Missing trigger: {label}'
+      missing: 'Missing source: {label}'
   sec:
-    capabilities: Capability definitions
+    capabilities: 'Capabilities'
     nodes: Who runs it
-    edges: Edges
-    triggers: Triggers
+    edges: 'Downstream'
+    triggers: 'Sources'
   fix:
     capability:
-      missing: A capability definition is still missing — add it to this namespace first
-      no-node: All definitions exist, but no node is running it yet — connect a machine on the nodes page, then deploy it there
-      offline: A node declares it but is offline — just reconnect it
+      missing: 'A capability is still missing — add it to this namespace first'
+      no-node: 'All capabilities exist, but no node is running it yet — connect a node on the nodes page, then deploy it there'
+      offline: 'A node declares it but is offline — just reconnect it'
     edge:
-      missing: Capabilities are in place; the edges are not connected yet
+      missing: 'Capabilities are in place; the downstream is not connected yet'
     trigger:
       missing: The playbook is ready, but nothing triggers it yet
   cap:
     outputs: 'Outputs: {o}'
-    missing: No such definition in this namespace yet
+    missing: 'No such capability in this namespace yet'
     declared:
-      inline: Inline spec
+      inline: 'Inline capability'
       ref: Reference {r}
       legacy: Legacy declaration
     impl:
@@ -1784,33 +1802,33 @@ pb:
       noop: noop placeholder
       handler: Built-in handler
   node:
-    blocked: Add the capability definition first
-    none: No node is running it yet — deploy it to an online machine
+    blocked: 'Add the capability first'
+    none: 'No node is running it yet — deploy it to an online node'
     hub: Runs inside the hub process (no node needed)
     offline: 'Nodes exist but are offline: '
   edges:
-    none: This playbook declares no edges
+    none: 'This playbook declares no downstream'
   edge:
-    blocked: Endpoint "{c}" has no definition yet — add the definition first
-    missing: This edge is not in the routing table yet
+    blocked: 'Endpoint "{c}" has no capability yet — add the capability first, then the downstream'
+    missing: 'This downstream is not in the routing table yet'
   trg:
-    missing: No source feeds events into entry capability {c}
+    missing: 'No source feeds events into capability {c}'
   act:
-    install_cap: Install definition
+    install_cap: 'Install capability'
     open_nodes: Open nodes
-    install_edge: Add this edge
+    install_edge: 'Add this downstream'
     create_source: Create source
 
 node:
   artifacts:
     title: 'Cached artifacts'
-    empty: 'No capability has been deployed to this machine yet'
+    empty: 'No capability has been deployed to this node yet'
     load_failed: 'Failed to load artifacts'
-    state_applied: 'Applied'
-    state_pending: 'Pushing'
+    state_applied: 'Deployed'
+    state_pending: 'Deploying'
     state_failed: 'Failed'
     state_local: 'Local variant'
-    digest: 'digest'
+    digest: 'content fingerprint'
 
 # ---- UI v2 shell / component layer (wave 1, additive only) ----
 ui:

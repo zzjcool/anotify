@@ -2383,7 +2383,7 @@ async function checkCapabilityTemplates(page) {
 //   ② 「新建能力这里无法指定下游是什么，如果我想串起来（比如 touchnow → echo）应该怎么办」
 //
 // 这里钉六件事，每一件都对应一个会**静默**坏掉的环节：
-//   ① 行能展开，四节（参数契约 / 下游（候选） / 谁接到我 / 运行参数）都在，
+//   ① 行能展开，五节（参数契约 / 出口 / 下游（候选） / 谁接到我 / 运行参数）都在，
 //      且参数契约显示的是 paramsSchema 的**原文**（而不是「无参数」占位）
 //   ② 下游按**边**逐条列成候选（一条出边 = 一个候选），不再按出口分块
 //   ③ 没有下游的能力显眼地说「跑完就结束」（终端能力是合法的一等语义）
@@ -2394,8 +2394,10 @@ async function checkCapabilityTemplates(page) {
 //   ⑦ 自连 → 400 `self loop`，能力/边一样都没建（原子性钉在后端，不靠按钮过滤；
 //      产物那一面在 store/server 单测里断言——mock 没有 artifacts 端点）
 //
-// 端口在这里**不可见**（CONTRACT-hide-ports.md）：请求体里仍然是
-// outputs:["out"] + links[].fromPort="out"，但界面上只说「下游能力（候选）」。
+// 隐式端口在这里**不可见**（CONTRACT-hide-ports §5 仍然有效，但 §3/§4 已被
+// capability-spec-v3 §13.3 部分取代）：请求体里仍然是
+// outputs:["out"] + links[].fromPort="out"，界面上只说「下游能力（候选）」；
+// 用户**自己声明**的出口反过来必须可见 —— 那是详情区第一节之后的「出口」节。
 //   ⑥ 一条坏边 → **整体回滚**：能力根本没建出来，400 里带 `links[i]` 下标，弹层不关
 //   ⑦ 自连 → 400 `self loop`，能力/边一样都没建（原子性钉在后端，不靠按钮过滤；
 //      产物那一面在 store/server 单测里断言——mock 没有 artifacts 端点）
@@ -2406,7 +2408,7 @@ async function checkCapabilityDetail(page, base) {
 	await page.goto(base + "/capabilities.html", { waitUntil: "load", timeout: 20000 });
 	await page.waitForTimeout(1800);
 
-	// ① 展开一行：四节 + 参数契约原文
+	// ① 展开一行：五节 + 参数契约原文（出口那一节是 P7 §13.3 新加的）
 	const detail = await page.evaluate(() => {
 		const row = document.querySelector('.cap-row[data-cap-name="analyze-pr"]');
 		if (!row) return { err: "找不到 analyze-pr 行（data-cap-name 钩子丢了？）" };
@@ -2430,14 +2432,18 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(detail),
 	);
 	H.check(
-		"详情区四节齐全：参数契约 / 下游（候选） / 谁接到我 / 运行参数",
-		detail.titles.length === 4 &&
+		"详情区五节齐全：参数契约 / 出口 / 下游（候选） / 谁接到我 / 运行参数",
+		detail.titles.length === 5 &&
 			/参数/.test(detail.titles[0]) &&
-			// 端口从界面消失：第二节只说「下游（候选）」，不再有「产出端口 / 出口与下游」
-			/下游/.test(detail.titles[1]) &&
-			!/端口|出口/.test(detail.titles[1]) &&
-			/接到|feeds/.test(detail.titles[2]) &&
-			/运行|Runtime/.test(detail.titles[3]),
+			// §13.3 推翻了 CONTRACT-hide-ports §3/§4 的「产出端口不展示」：
+			// 显式出口是用户自己声明的封闭集合，**必须看得见**，所以多了这一节。
+			/出口|Outputs/.test(detail.titles[1]) &&
+			// 仍然不展示的是**隐式 out**：「下游（候选）」这一节只说下游，
+			// 既不出现「端口」，也不把出口名混进来（端口选择不出现）。
+			/下游/.test(detail.titles[2]) &&
+			!/端口|出口/.test(detail.titles[2]) &&
+			/接到|feeds/.test(detail.titles[3]) &&
+			/运行|Runtime/.test(detail.titles[4]),
 		JSON.stringify(detail.titles),
 	);
 	H.check(
@@ -6979,7 +6985,7 @@ async function checkNodeDetail(page, base) {
 			hasBasic: txt.includes("基本信息"),
 			hasCaps: txt.includes("声明的能力"),
 			hasSlots: txt.includes("并发槽位"),
-			hasRecent: txt.includes("最近执行"),
+			hasRecent: txt.includes("最近任务"),
 			capChips: document.querySelectorAll(".out-chip").length,
 			// 逐槽展示（不是只给一个总数）
 			slotRows: document.querySelectorAll(".np-slot").length,
@@ -6994,7 +7000,7 @@ async function checkNodeDetail(page, base) {
 	});
 	H.check("详情页显示节点名", d.name.length > 0 && d.name !== "加载中…", d.name);
 	H.check(
-		"详情页有基本信息 / 声明的能力 / 并发槽位 / 最近执行 四块",
+		"详情页有基本信息 / 声明的能力 / 并发槽位 / 最近任务 四块",
 		d.hasBasic && d.hasCaps && d.hasSlots && d.hasRecent,
 		JSON.stringify({
 			basic: d.hasBasic,
@@ -7006,7 +7012,7 @@ async function checkNodeDetail(page, base) {
 	H.check("详情页列出声明的能力", d.capChips > 0, `chips=${d.capChips}`);
 	H.check("槽位逐个展示（不是只给总数）", d.slotRows > 0, `slots=${d.slotRows}`);
 	H.check(
-		"最近执行能点进链路",
+		"最近任务能点进链路",
 		d.taskRows > 0 && d.traceLinks === d.taskRows,
 		`tasks=${d.taskRows} links=${d.traceLinks}`,
 	);
@@ -8566,7 +8572,7 @@ async function checkScopeEmptyState(page) {
 // checkPlaybooks 验证「预案」的体检界面。
 //
 // 锁四件事（都是这一版真正想表达的产品语义）：
-//   ① 四种总体状态都能看到（就绪 / 缺节点 / 缺定义），不是只有一个"未就绪"
+//   ① 四种总体状态都能看到（就绪 / 缺节点 / 缺能力），不是只有一个"未就绪"
 //   ② 每张卡都给出「最该先做的一件事」—— 全页最有价值的一行
 //   ③ 缺节点的能力给的是**只含缺的那几个**的 node.yaml，不是整份文件
 //   ④ 「补齐」只补定义/边/源，**不会假装修好节点**
@@ -8593,8 +8599,8 @@ async function checkPlaybooks(page, base) {
 	});
 
 	H.check(
-		"预案列表把三种状态分开展示（就绪 / 缺节点 / 缺定义）",
-		list.n >= 4 && ["就绪", "缺节点", "缺定义"].every((x) => list.badges.includes(x)),
+		"预案列表把三种状态分开展示（就绪 / 缺节点 / 缺能力）",
+		list.n >= 4 && ["就绪", "缺节点", "缺能力"].every((x) => list.badges.includes(x)),
 		`卡片=${list.n} 状态=${Array.from(new Set(list.badges)).join(",")}`,
 	);
 	H.check(

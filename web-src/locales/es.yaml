@@ -28,7 +28,7 @@ common:
     notification: Notificaciones
     admin_section: Admin
     admin: Consola Admin
-    sources: Fuentes
+    sources: Orígenes
   lang:
     label: Idioma
     switcher_label: Cambiar idioma
@@ -110,7 +110,7 @@ common:
     task_id: ID de tarea
     trace: Traza
     capability: Capacidad
-    node: Nodo
+    node: 'Nodo'
     attempts: Intentos
     parent_task: Tarea padre
     started_at: Iniciada
@@ -192,7 +192,7 @@ index:
     refresh: Actualizar →
     count: 'Últimos {n}'
     loading: Cargando eventos…
-    empty: Aún no hay eventos. Cuando conectes un webhook o un disparador cron, el flujo aparecerá aquí.
+    empty: 'Aún no hay eventos. Cuando conectes un webhook o un origen cron, el flujo aparecerá aquí.'
 scope:
   switcher_label: "Cambiar de espacio de nombres"
   section_ns: "Espacio de nombres"
@@ -215,6 +215,16 @@ graph:
   fullscreen_hint: Rueda para zoom · arrastra para mover · Esc para salir
   silk_preview_done: Vista previa completada
   hud_flow: Flujo descendente
+  hud_path: 'Ruta de tareas'
+  hud_fail: 'Tareas fallidas'
+  silk_region: 'Cadena de tareas; arrastra, o usa las flechas izquierda y derecha para desplazarte'
+  silk_ready: 'Listo para reproducir'
+  silk_meta_preview: '{n} capacidades · {m} destinos'
+  silk_meta_run: '{n} tareas · reproducción {t}'
+  silk_meta_ok: 'todo correcto'
+  silk_meta_failed: '{n} fallidas'
+  silk_meta_done: '{n} tareas completadas'
+  silk_clock: 'reproducción {t}'
 
 message:
   title: Detalle de notificación
@@ -232,7 +242,7 @@ message:
     not_found: Mensaje no encontrado o ha sido eliminado
   task_title: Detalle de tarea
   chain_title: Cadena de tareas
-  back_events: Volver a eventos
+  back_events: 'Volver a eventos'
   missing_id_hint: Los enlaces directos deben incluir el id de la tarea, por ejemplo message.html?id=tsk_xxx.
   not_found_hint: Esta tarea no existe; puede que se haya eliminado o que pertenezca a otro espacio de nombres.
   task_state:
@@ -248,7 +258,7 @@ message:
   node:
     central: Ejecutada por el hub
   chain:
-    count: '{n} pasos'
+    count: '{n} tareas'
     empty: No hay otras tareas en esta traza
     current: Actual
 login:
@@ -627,11 +637,11 @@ docs:
     tag:
       events: Eventos
       tasks: Tareas
-      sources: Fuentes
+      sources: Orígenes
       namespaces: Espacios de nombres
       stats: Estadísticas
       capabilities: Capacidades
-      edges: Salidas
+      edges: 'Destinos'
       playbooks: Playbooks
       nodes: Nodos
       node-stream: Conexión de nodos
@@ -644,7 +654,7 @@ docs:
       devices: Web Push
   events:
     core: Núcleo
-    intro: Los eventos son el origen de todo. Cada cambio externo entra aquí y el hub lo despacha en cadenas de tareas según la tabla de aristas.
+    intro: 'Los eventos son el origen de todo. Cada cambio externo entra aquí y el hub lo despacha en cadenas de tareas según la tabla de destinos.'
     required: Obligatorio
     optional: Opcional
     params:
@@ -658,7 +668,7 @@ docs:
     curl:
       title: ejemplo curl
   node:
-    intro: Los nodos son los ejecutores. Se conectan al hub, declaran qué capacidades pueden ejecutar y aceptan los frames assign.
+    intro: 'Los nodos ejecutan código. Se conectan al hub, declaran qué capacidades pueden ejecutar y aceptan los frames assign.'
     connect:
       title: Conexión
     up:
@@ -692,7 +702,7 @@ docs:
     map:
       title: Mapa de endpoints
       notify: El Agent reporta una notificación (núcleo)
-      tasks: Lista de tareas (centro de eventos)
+      tasks: 'Lista de tareas (flujo de eventos)'
       notifications: Lista del historial de notificaciones
       devices_list: Lista de dispositivos
       devices_sub: Suscribir (registrar) un dispositivo
@@ -841,7 +851,7 @@ cliauth:
     notfound_action: Reintentar
     consumed_badge: Ya utilizado
     consumed_title: Esta sesión ya fue autorizada
-    consumed_desc: Ya se emitió una clave para esta sesión. Vuelve a ejecutar el script en tu terminal si necesitas una nueva.
+    consumed_desc: 'Ya se emitió una clave para esta sesión. Vuelve a ejecutar el script en tu terminal si necesitas una nueva.'
     error_title: No se puede conectar con el servidor
     error_desc: Comprueba tu conexión e inténtalo de nuevo.
     rejected_desc: La solicitud de autorización fue rechazada. Verifica los permisos seleccionados e inténtalo de nuevo.
@@ -1027,10 +1037,10 @@ events:
   filter:
     trace: Trace ID
     apply: Filtrar
-    source: Fuente
+    source: Origen
     kind: Tipo de origen
     all_kinds: Todos los tipos
-    all_sources: Todas las fuentes
+    all_sources: Todos los orígenes
     node: Nodo
     all_nodes: Todos los nodos
     active: Activo
@@ -1064,12 +1074,12 @@ caps:
   title: Capacidades
   step_pick: Elegir plantilla
   step_fill: Rellenar y crear
-  sidebar: 'Se define aquí, se ejecuta en los nodos'
-  subtitle: Una capacidad es "qué hacer" (no "cómo"). Las aristas de destino tienen su propia página.
-  new: Definir capacidad
+  sidebar: 'Se crea aquí, se ejecuta en los nodos'
+  subtitle: 'Una capacidad es "qué hacer" (no "cómo"). Créalas y despliégalas aquí, y define sus destinos.'
+  new: 'Nueva capacidad'
   loading: Cargando capacidades…
   load_failed: 'No se pudo cargar la lista de capacidades, actualiza la página'
-  empty: Aún no hay capacidades. Define una para que los nodos puedan declararla.
+  empty: 'Aún no hay capacidades. Crea una para que los nodos puedan declararla.'
   count: '{n} capacidades'
   source_builtin: 'Integrado'
   declared_by: Declarada por
@@ -1148,7 +1158,7 @@ caps:
     load_failed: 'No se pudieron cargar las plantillas: '
     empty: 'El backend no devolvió ninguna plantilla'
     created: 'Capacidad creada'
-    created_digest: 'Creada · digest {digest}'
+    created_digest: 'Creada · huella de contenido {digest}'
   deploy:
     col: 'Despliegue'
     status_applied: 'Desplegada en {n}'
@@ -1159,8 +1169,8 @@ caps:
     status_unknown: '—'
     btn: 'Desplegar'
     title: 'Desplegar «{name}»'
-    subtitle: 'Marca máquinas o elige por tag y pulsa Desplegar.'
-    pick_hint: 'Máquinas'
+    subtitle: 'Marca nodos o elige por tag y pulsa Desplegar.'
+    pick_hint: 'Nodos'
     tag_pick: 'Elegir por tag'
     node_digest: 'Desplegada {digest}'
     node_none: 'Sin desplegar'
@@ -1170,12 +1180,12 @@ caps:
     undo: 'Quitar'
     undone: 'Despliegue quitado'
     undo_failed: 'No se pudo quitar: '
-    pushed: 'Enviado'
+    pushed: 'Desplegado'
     queued: 'En cola (nodo desconectado)'
     queued_other: 'En cola'
     nodes_failed: 'No se pudo cargar la lista de nodos, inténtalo más tarde'
-    result_title: 'Resultado'
-    none_selected: 'Selecciona al menos una máquina'
+    result_title: 'Resultado del despliegue'
+    none_selected: 'Selecciona al menos un nodo'
     no_nodes: 'Este espacio de nombres aún no tiene nodos'
     err: 'Fallo al desplegar: '
     builtin: Lo ejecuta el hub — no requiere despliegue
@@ -1187,18 +1197,23 @@ caps:
     display_name_ph: "p. ej. «Analizar PR», «Desplegar a staging»"
     display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
     name: Nombre de la capacidad
-    name_hint: 'Nombre técnico: lo usan nodos, aristas y logs. No se puede cambiar después.'
-    downstream: Capacidades posteriores (candidatas)
+    name_hint: 'Nombre técnico: lo usan nodos, destinos y logs. No se puede cambiar después.'
+    outputs: 'Salidas'
+    outputs_optional: '(opcional)'
+    outputs_ph: 'approved, needs-fix (vacío = una sola salida interna)'
+    outputs_hint: 'Nombres de salida que declara esta capacidad, separados por comas; los destinos solo pueden apuntar a ellos. Vacío = una sola salida interna (se entrega directamente al destino). Forman parte del contrato de la capacidad: cambiarlos requiere una versión nueva.'
+    outputs_bad: 'Nombre de salida no válido: {name} (solo letras, dígitos, punto, guion bajo y guion, 1–32 caracteres)'
+    downstream: Capacidades destino (candidatas)
     downstream_optional: opcional
     downstream_ph: script.echo, notify.phone
     downstream_hint: A quién se entrega al terminar. Varias = candidatas, en ejecución se elige una por prioridad; vacío = capacidad terminal (termina y ya).
     downstream_missing: 'No existe la capacidad: {names}'
     downstream_cands_hint: 'Haz clic para añadir:'
-    downstream_cands_empty: Aún no hay capacidades de destino para elegir (define una, o ponle nombre a otra tarjeta arriba).
-    cand_add: Añadir como posterior
+    downstream_cands_empty: 'Aún no hay capacidades destino para elegir (crea una, o ponle nombre a otra tarjeta arriba).'
+    cand_add: Añadir como destino
     cand_picked: Seleccionada
     cards_title: Capacidades de este lote
-    cards_hint: 'Define varias capacidades a la vez: cada tarjeta tiene su propio destino, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
+    cards_hint: 'Crea varias capacidades a la vez: cada tarjeta tiene su propio destino, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
     card_add: ＋ Añadir otra capacidad
     card_remove: Eliminar esta capacidad
     card_n: 'Capacidad {n}'
@@ -1210,9 +1225,9 @@ caps:
     card_err_generic: 'Capacidad {n}: {reason}'
     cand_hint: En ejecución se elige un solo candidato por prioridad; los empates rotan (el número menor gana).
     cand_batch_tag: (este lote)
-    batch_created: 'Se crearon {caps} capacidades y {edges} aristas'
+    batch_created: 'Se crearon {caps} capacidades · {m} destinos'
     batch_failed: 'Error al crear el lote (no se guardó nada): '
-    created_with_edges: 'conectadas {n} aristas'
+    created_with_edges: 'conectados {n} destinos'
     link_rejected: 'El destino n.º {n} → {to} no es válido; no se creó nada: {reason}'
     schema: Validación de parámetros (JSON Schema)
     schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
@@ -1252,13 +1267,16 @@ caps:
   detail:
     btn: Detalles
     params: Contrato de parámetros
+    outputs: 'Salidas (qué puede emitir)'
+    no_outputs: 'Sin salidas — termina y no activa ningún destino.'
+    implicit_output: 'Una sola salida interna (no se le pone nombre aquí)'
     no_params: Sin parámetros
     downstream: Posteriores (candidatas)
-    no_downstream: 'Termina al acabar: no se dispara ninguna capacidad posterior.'
+    no_downstream: 'Termina al acabar: no se dispara ninguna capacidad destino.'
     cand_prio_hint: 'Prioridad {n} · editar para cambiar'
-    edges_failed: No se pudo cargar la lista de aristas, estado del destino desconocido
+    edges_failed: 'No se pudo cargar la lista de destinos, estado del destino desconocido'
     inbound: Quién me alimenta
-    no_inbound: Sin aristas de entrada — los eventos no llegan aquí
+    no_inbound: 'Sin entradas — los eventos no llegan aquí'
     me: yo
     source_prefix: Origen
     follow: Sigue la última
@@ -1293,27 +1311,27 @@ caps:
     sticky_carried: 'Enrutado fijo {v}'
     lifecycle_carried: 'Ciclo de vida {v}'
     name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
-    multi_output_note: 'Esta capacidad se ramifica por más de un camino posterior (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
+    multi_output_note: 'Esta capacidad se ramifica por más de un camino de destino (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
     submit: Publicar nueva versión
     publishing: Publicando…
     failed: 'Error al publicar: '
     created: 'Publicado {ref}'
-    impact_title: Esta versión rompe aristas de destino existentes
+    impact_title: 'Esta versión rompe destinos existentes'
     impact_changes: Qué cambió
-    impact_links: 'Aristas que se romperán (apuntan al nombre, así que la nueva versión es su destino)'
-    impact_no_links: Ninguna arista que sigue la última se ve afectada
+    impact_links: 'Destinos que se romperán (apuntan al nombre, así que la nueva versión es su destino)'
+    impact_no_links: 'Ningún destino que sigue la última se ve afectado'
     force: Publicar igualmente
     artifact_failed: No se pudo cargar la implementación; no se puede publicar (se perderían archivos)
     builtin_locked: 'Capacidad integrada ejecutada por el hub: la implementación vive en el hub y no se puede editar aquí'
   add:
     btn: destino
-    title: 'Añadir posterior'
+    title: 'Añadir destino'
     target_ph: Elige una capacidad destino (con búsqueda)
     literals_ph: 'Sobrescritura de constantes (opcional), p. ej. {"urgent":true}'
     save: Guardar
     cancel: Cancelar
-    created: Arista creada
-    failed: 'No se pudo crear la arista: '
+    created: 'Destino creado'
+    failed: 'No se pudo crear el destino: '
     err_target: Elige una capacidad destino
     err_self: Una capacidad no puede enlazarse consigo misma
     err_literals: Las constantes deben ser un objeto JSON
@@ -1348,13 +1366,13 @@ prune:
   param_type: el tipo de parámetro no coincide
   no_node: la capacidad destino no tiene nodo en línea
   foreign_user: cruza espacio de nombres/usuario
-  event_schema: el payload del evento no cumple el resultSchema del disparador
+  event_schema: 'el payload del evento no cumple el resultSchema de el origen'
   max_hops: presupuesto de saltos agotado (cadena demasiado profunda)
   budget: este trace superó su presupuesto de tareas
   no_impl: el destino es un marcador (noop) — el hub no lo ejecutará
 nodes:
   title: Nodos
-  subtitle: Los ejecutores. Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.
+  subtitle: 'Un nodo sabe cómo ejecutar una capacidad; el hub solo le dice qué hacer.'
   refresh: Actualizar
   loading: Cargando nodos…
   empty: "Todavía no hay nodos en este espacio de nombres. Registra el primero con los pasos de abajo."
@@ -1378,7 +1396,7 @@ nodes:
     btn: Actualizar
     sending: Actualizando…
     confirm: '¿Actualizar el agent de {name}? Se reemplaza el binario del nodo y se reinicia el agent; las tareas en curso terminan primero (grace 20 s).'
-    sent: 'Actualización enviada: se aplica cuando el nodo se reinicie (actualiza más tarde para ver la versión nueva)'
+    sent: 'Actualización iniciada: se aplica cuando el nodo se reinicie (actualiza más tarde para ver la versión nueva)'
     failed: 'Error al actualizar: '
     ack_failed: 'La actualización en el nodo falló: '
     ack_stale: 'El nodo no ha respondido (puede haberse desconectado)'
@@ -1411,11 +1429,11 @@ nodes:
     step1: Pulsa «Generar token» arriba para obtener un token de un solo uso
     step2: 'Elige una: contenedor (no ve los archivos del host) o instalación nativa (para ejecutar capacidades dentro de tu propio proyecto)'
     docker: 'Contenedor: no ve los archivos del host; las capacidades solo corren dentro del contenedor'
-    native: 'Nativa: corre como tu usuario en el host; en qué directorio corre cada capacidad lo decide el directorio de trabajo de su definición'
+    native: 'Nativa: corre como tu usuario en el host; en qué directorio corre cada capacidad lo decide el directorio de trabajo de la propia capacidad'
     yaml_title: node.yaml (para la instalación nativa)
     yaml_intro: 'Usa esta configuración si instalas el binario del agente directamente. Solo los cuatro campos bootstrap — las capacidades y sus directorios de trabajo se definen en la consola:'
     install_title: Comando de instalación nativa
-    step3: Cuando el nodo esté en línea, despliega una capacidad en la página «Capacidades» y tendrá trabajo
+    step3: 'Cuando el nodo esté en línea, despliega una capacidad en la página «Capacidades» y tendrá trabajo'
   view_events: Ver eventos
   register:
     btn: 'Registrar nodo'
@@ -1425,7 +1443,7 @@ nodes:
     name_ph: 'p. ej. my-mbp'
     name_hint: 'Minúsculas, dígitos, punto (.), guion bajo (_) o guion (-): de 1 a 63 caracteres, empezando por letra o dígito'
     instances: 'Instancias (opcional)'
-    instances_hint: 'Cuántas instancias ejecutar en esta máquina (valor sugerido; el hub lo limita a 20). El número real de slots lo declara el agent al conectarse.'
+    instances_hint: 'Cuántas instancias ejecutar en este nodo (valor sugerido; el hub lo limita a 20). El número real de slots lo declara el agent al conectarse.'
     submit: 'Registrar'
     cancel: 'Cancelar'
     submitting: 'Registrando…'
@@ -1436,12 +1454,12 @@ nodes:
     copy_token: 'Copiar token'
     cmd_title: "Arrancar con un solo comando (recomendado)"
     copy_cmd: "Copiar comando"
-    yaml_intro: "O instala el binario del agente directamente y usa este node.yaml (solo los cuatro campos bootstrap — name / server / token / instances; el directorio de trabajo se define en la capacidad):"
-    yaml_title: 'Ejecuta esta línea en la máquina'
+    yaml_intro: 'O instala el binario del agente directamente y usa este node.yaml (solo los cuatro campos bootstrap — name / server / token / instances; el directorio de trabajo se define en la capacidad):'
+    yaml_title: 'Ejecuta esta línea en el nodo'
     copy_yaml: 'Copiar comando'
     yaml_hint: 'El token de este comando se muestra una sola vez: si lo pierdes, borra el nodo y vuelve a registrarlo.'
-    cmd_intro: 'Pega este comando en la máquina (no hace falta ningún archivo de configuración):'
-    cmd_after: 'Cuando la máquina esté en línea, despliega una capacidad desde la página «Capacidades» y empezará a trabajar.'
+    cmd_intro: 'Pega este comando en el nodo (no hace falta ningún archivo de configuración):'
+    cmd_after: 'Cuando el nodo esté en línea, despliega una capacidad desde la página «Capacidades» y empezará a trabajar.'
     err:
       empty_name: 'Escribe primero un nombre de nodo'
       invalid_name: 'Nombre no válido: solo minúsculas, dígitos, punto (.), guion bajo (_) o guion (-), de 1 a 63 caracteres, empezando por letra o dígito'
@@ -1453,10 +1471,10 @@ nodes:
     install_intro: Un contenedor no ve los archivos del host. Para ejecutar capacidades dentro de tu propio proyecto (make test, git status, editar archivos in situ), instálalo en el host con este comando.
     install_after: 'Instala el binario, escribe ~/.anotify/node.yaml (modo 600, contiene el token) y genera un servicio de usuario systemd. Ojo: el comando contiene el token, así que queda en el historial del shell.'
     copy_install: Copiar comando
-    yaml_workdir_note: 'El directorio de trabajo se define en la capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
+    yaml_workdir_note: 'El directorio de trabajo se define en la propia capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
   emptyTitle: 'Aún no hay nodos'
 sources:
-  empty_title: Aún no hay fuentes
+  empty_title: Aún no hay orígenes
   detail: "Detalles"
   open_detail: "Abrir detalles"
   "on": "En ejecución"
@@ -1465,22 +1483,22 @@ sources:
   toggle_failed: "La operación falló"
   confirm_delete: "Esto no se puede deshacer. ¿Eliminar «{n}»?"
   delete_failed: "Error al eliminar"
-  title: Fuentes
-  subtitle: 'Una fuente es la entrada de eventos: un temporizador se dispara, un webhook es llamado, o haces clic en ejecutar. Produce eventos y los despacha a las capacidades que elijas.'
-  new: Nueva fuente
+  title: Orígenes
+  subtitle: 'Un origen es la entrada de eventos: un temporizador se dispara, un webhook es llamado, o haces clic en ejecutar. Produce eventos y los despacha a las capacidades que elijas.'
+  new: Nuevo origen
   refresh: Actualizar
-  empty: Aún no hay fuentes. Haz clic en «Nueva fuente» para empezar.
+  empty: Aún no hay orígenes. Haz clic en «Nuevo origen» para empezar.
   explain:
-    title: 'Fuentes vs. capacidades: '
-    body: 'Una capacidad responde «qué se puede hacer»: los nodos la declaran y el hub le despacha tareas. Una fuente responde «cuándo empezar»: tiene configuración, produce eventos y no hace trabajo por sí misma. Por eso una fuente no necesita aristas: sus salidas son las capacidades que eliges aquí.'
+    title: 'Orígenes vs. capacidades: '
+    body: 'Una capacidad responde «qué se puede hacer»: los nodos la declaran y el hub le despacha tareas. Un origen responde «cuándo empezar»: tiene configuración, produce eventos y no hace trabajo por sí misma. Por eso un origen no necesita destinos: las capacidades que eliges aquí son sus destinos.'
   kind:
     cron: Temporizador
     webhook: Webhook
     manual: Manual
-    github: "Disparador de GitHub"
+    github: 'GitHub'
   next_fire: próximo {t}
   manual_hint: Se dispara al hacer clic en Ejecutar
-  targets_label: Salidas
+  targets_label: 'Destinos'
   no_target: ninguna
   target_missing: eliminada
   fire: Ejecutar ahora
@@ -1503,7 +1521,7 @@ sources:
   fire_payload_hint: Los marcadores de los parámetros del origen se resuelven con este payload. Si lo dejas vacío se envía {}, igual que sin payload.
   fire_submit: Disparar
   fire_bad_json: 'El payload no es JSON válido: {e}'
-  delete_confirm: ¿Eliminar la fuente «{n}»? Los eventos y tareas existentes se conservan.
+  delete_confirm: ¿Eliminar el origen «{n}»? Los eventos y tareas existentes se conservan.
   in: en {n}
   ago: hace {n}
   unit:
@@ -1512,29 +1530,29 @@ sources:
     hour: h
     day: d
   modal:
-    new: Nueva fuente
-    edit: Editar fuente
+    new: Nuevo origen
+    edit: Editar origen
   form:
     name: Nombre
     name_ph: 'ej.: chequeo-nocturno'
-    kind: Disparador
+    kind: 'Tipo'
     kind_hint: No se puede cambiar tras crearla (cambiar el tipo cambia la semántica). Elimínala y créala de nuevo.
     expr: 'Expresión cron (5 campos: min hora dom mes dow)'
     expr_hint: 'Admite * / , - ; las macros como @daily no están soportadas. Ejemplo: 0 3 * * * significa diario a las 03:00.'
     hook_hint: 'Tras crearla se genera una URL dedicada; cualquier sistema externo puede hacer POST a ella. Quien tenga la URL puede enviar eventos: guárdala con cuidado.'
-    targets: Capacidades de salida (selección múltiple)
+    targets: 'Capacidades destino (selección múltiple)'
     targets_hint: El evento se despacha a todas las capacidades seleccionadas (fan-out). Al marcarlas, rellena los parámetros propios de cada capacidad — cada una mantiene su propio conjunto.
     enabled: Activada
     cancel: Cancelar
     save: Guardar
     name_required: El nombre es obligatorio
     expr_required: La expresión cron es obligatoria
-    targets_required: Elige al menos una capacidad de salida
+    targets_required: 'Elige al menos una capacidad destino'
     result_schema: "Contrato del payload del evento (resultSchema, opcional)"
     result_schema_hint: "Opcional. Con un JSON Schema aquí (p. ej. {\"type\":\"object\",\"required\":[\"action\"]}) cada entrega se valida antes de despachar: los eventos que no cumplen se guardan igual pero no se despachan, y queda una poda event_schema en el trace. Vacío = sin validación."
     bad_schema: "el contrato del payload no es JSON válido: {e}"
     schema_not_object: "el contrato del payload debe ser un objeto JSON (arrays/escalares no son un schema)"
-    no_caps: Aún no hay capacidades utilizables. Defínelas primero en la página «Capacidades».
+    no_caps: 'Aún no hay capacidades utilizables. Créalas primero en la página «Capacidades».'
     no_params: Esta capacidad no toma parámetros
     bad_json: El parámetro {k} no es JSON válido
     bad_num: El parámetro {k} no es un número
@@ -1545,15 +1563,15 @@ sources:
     demo_hint: "Rellena una configuración funcional: los parámetros referencian campos del payload"
     demo_name: "Demo · Análisis de PR de GitHub"
     demo_ok: "Ejemplo rellenado: 4 variables + parámetros enlazados a ellas"
-    demo_no_caps: "No hay capacidad de destino con parámetros; se rellenaron las variables"
-    avail_vars: "¿Qué campos ofrece este disparador? (clic para copiar)"
+    demo_no_caps: 'No hay capacidad destino con parámetros; se rellenaron las variables'
+    avail_vars: '¿Qué campos ofrece este origen? (clic para copiar)'
     av_fill: "Haz clic para rellenar el origen de la variable"
     hook_url: "URL de carga"
     hook_url_pending: "Se genera al guardar (p. ej. /v1/hooks/src_xxx)"
     hook_github: "Cómo configurarlo en GitHub"
     hook_github_events: "Con este basta; los demás eventos no se despachan"
     hook_github_secret: "El Secret lo valida GitHub; este sistema aún no verifica firmas, usa un token largo y aleatorio en la URL"
-    hook_github_why: "Tras rellenar, pulsa «Add webhook». GitHub enviará un ping de inmediato y el evento se guarda; luego enlaza los parámetros de destino."
+    hook_github_why: 'Tras rellenar, pulsa «Add webhook». GitHub enviará un ping de inmediato y el evento se guarda; luego enlaza los parámetros de destino.'
     ref_tip: "Se lee del evento o la variable"
     ref_mix_tip: "Concatenación de plantilla; el resultado se pasa como texto"
     bad_placeholder: "Parámetro {k}: marcador sin cerrar"
@@ -1563,18 +1581,18 @@ sources:
     pv_missing_multi: "Al último evento le faltan estos campos: {p}"
     dry_run: "Simulación"
     dry_running: "Ejecutando…"
-    dry_no_target: "Selecciona al menos una capacidad de salida"
-    dry_will_run: "Se enviará a {n} salida(s)"
+    dry_no_target: 'Selecciona al menos una capacidad destino'
+    dry_will_run: 'Se enviará a {n} tarea(s)'
     dry_and_pruned: ", {n} omitida(s)"
-    dry_nothing: "No se enviará nada (todas omitidas)"
+    dry_nothing: 'No se enviará nada (todas omitidas)'
     pick_no_sample: "Aún no hay eventos para usar como muestra"
     pick_none: "Ningún campo coincide"
     av_no_event_hook: "Aún no se han recibido eventos. Cuando el sistema externo envíe uno, aquí aparecerán los campos reales."
-    av_no_event: "Este disparador no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros."
+    av_no_event: 'Este origen no tiene evento externo, así que no hay campos que referenciar; escribe los valores directamente en los parámetros.'
     kind_github_hint: "Eventos PR/push de GitHub. Los campos conocidos y la configuración del lado de GitHub vienen incluidos."
     av_copied: "Copiado; pégalo en el parámetro"
     av_src_builtin: "Según la estructura oficial del evento {ty} de GitHub (valores de ejemplo)"
-    av_src_event: "Del evento real más reciente de esta fuente: {ty}"
+    av_src_event: "Del evento real más reciente de este origen: {ty}"
     gh_event: "Tipo de evento de GitHub"
     gh_event_hint: "Cada tipo de evento tiene una estructura de payload distinta; la lista de campos sigue tu elección."
     av_src_unknown: "No hay estructura integrada para «{ty}»; los campos reales aparecerán cuando llegue un evento."
@@ -1596,18 +1614,18 @@ sources:
     missing: (capacidad eliminada)
     terminal: terminal
     noedge: sin destino
-    no_target: Esta fuente no tiene capacidades de salida.
-    unconnected: (sin posterior)
+    no_target: 'Este origen no tiene capacidades destino.'
+    unconnected: (sin destino)
     truncated: Grafo demasiado grande ({n} nodos); mostrando los primeros {m}.
     nolib: No se pudo cargar la librería de grafos.
     source: Origen
     terminal_short: terminal
-    no_edge: sin posterior
-    cycle: Ciclo · esta arista vuelve
+    no_edge: sin destino
+    cycle: 'Ciclo · este destino vuelve'
   view_events: Ver eventos
 trace:
   legend_hot: "Línea más intensa · este camino se recorrió muchas veces (reintento / bucle)"
-  legend_origin: "Origen · disparador (los eventos entran aquí)"
+  legend_origin: 'Origen · los eventos entran aquí'
   legend_pipe: "Tubería · sigue despachando aguas abajo"
   legend_end: "Fin · termina aquí, sin más despacho"
   legend_ok: "Correcto"
@@ -1615,7 +1633,7 @@ trace:
   legend_pruned: "No ejecutado (configurado pero omitido esta vez)"
   graph_legend: "Leyenda"
   title: Traza
-  subtitle: Una traza completa — qué la activó, qué ruta siguió y cuánto tardó cada paso
+  subtitle: 'Una traza completa — qué la activó, qué ruta siguió y cuánto tardó cada tarea'
   back: Volver a eventos
   refresh: Actualizar
   loading: Cargando traza…
@@ -1626,12 +1644,12 @@ trace:
   copy_failed: No se pudo copiar
   triggered_by: Activada por
   nolib: No se pudo cargar el renderizador.
-  empty: No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin arista coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).
+  empty: 'No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin capacidad destino coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).'
   empty_title: No hay tareas
   emits:
     title: Salidas (emits)
-    subtitle: Cada emit de esta ejecución — puerto, hora, resultado del despacho y data original
-    empty: Esta ejecución aún no ha emitido nada. emit es el único canal de salida — nada significa que todavía no hay salida (o el proceso sigue en marcha).
+    subtitle: 'Cada emit de esta tarea — salida, hora, resultado del despacho y data original'
+    empty: 'Esta tarea aún no ha emitido nada. emit es el único canal de salida — nada significa que todavía no hay salida (o el proceso sigue en marcha).'
     failed: No se pudo cargar la lista de salidas (la traza de arriba no se ve afectada)
     routed: Despachados
     pruned: Podados
@@ -1657,7 +1675,7 @@ trace:
   stat:
     spans: Tareas
     duration: Duración
-    slowest: Paso más lento
+    slowest: 'Tarea más lenta'
     failed: Fallidas
 
 srcpage:
@@ -1666,11 +1684,11 @@ srcpage:
   loading: "Cargando…"
   back: "Volver a orígenes"
   layout_title: "Detalle del origen"
-  layout_subtitle: "Configuración del disparador, parámetros de destino y flujo descendente"
+  layout_subtitle: 'Tipo de el origen, parámetros de destino y flujo descendente'
   no_id: "Falta ?id= en la URL, no se puede saber qué origen es"
   load_failed: "Error al cargar: {m}"
   notfound: "Este origen no existe; puede haber sido eliminado"
-  config: "Configuración del disparador"
+  config: "Configuración del origen"
   tz: "Zona horaria"
   next_fire: "Próxima ejecución"
   last_fire: "Última ejecución"
@@ -1679,9 +1697,9 @@ srcpage:
   copy: "Copiar"
   copied: "Copiado"
   copy_failed: "Error al copiar"
-  manual_hint: "Se dispara con"
+  manual_hint: 'Tipo'
   created: "Creado"
-  targets: "Destinos"
+  targets: 'Destinos'
   no_params: "Sin parámetros configurados"
   mapped: "mapeado"
   default_is: "por defecto {v}"
@@ -1696,7 +1714,7 @@ srcpage:
 nodepage:
   title: Detalle del nodo
   layout_title: Detalle del nodo
-  layout_subtitle: Capacidades declaradas, ranuras de concurrencia y ejecuciones recientes
+  layout_subtitle: 'Capacidades declaradas, ranuras de concurrencia y tareas recientes'
   back: Volver a nodos
   loading: Cargando…
   basic: Datos básicos
@@ -1714,8 +1732,8 @@ nodepage:
   concurrency: '{n} en paralelo'
   busy_task: 'Ejecutando {id}'
   idle: Libre
-  recent: Ejecuciones recientes
-  no_tasks: Este nodo aún no ha ejecutado tareas
+  recent: 'Tareas recientes'
+  no_tasks: 'Este nodo aún no ha ejecutado tareas'
   open_trace: Abrir traza
   not_found: Nodo no encontrado
   not_found_hint: Ningún nodo coincide con este id; puede haber sido eliminado.
@@ -1724,8 +1742,8 @@ nodepage:
 
 pb:
   title: Playbooks
-  subtitle: Convierte capacidades, aristas y disparadores en un playbook verificable y completable
-  detail_subtitle: 'Verificación: definiciones → nodos → aristas → disparadores'
+  subtitle: 'Convierte capacidades, destinos y orígenes en un playbook verificable y completable'
+  detail_subtitle: 'Verificación: capacidades → destinos → nodos → orígenes'
   detail_title: Detalle del playbook
   rescan: Verificar de nuevo
   rescanned: Verificado de nuevo
@@ -1737,44 +1755,44 @@ pb:
   empty: Todavía no hay playbooks en este espacio de nombres.
   empty_title: Aún no hay playbooks
   load_failed: No se pudo cargar. Actualiza la página.
-  meta: '{c} capacidades · {e} aristas · {tr} disparadores'
+  meta: '{c} capacidades · {e} destinos · {tr} orígenes'
   ready_n: '{n}/{m} listos'
   n_of_m: '{n}/{m} listos'
   remaining: Faltan {n}
   status:
     ready: Listo
     needs_node: Falta nodo
-    blocked: Falta definición
+    blocked: 'Falta capacidad'
     partial: Incompleto
   next:
     ready: Todo listo — puedes empezar a ejecutarlo
     capability:
-      missing: 'Falta la definición de capacidad: {ref}'
+      missing: 'Falta la capacidad: {ref}'
       no-node: Ningún nodo puede ejecutar {ref}
       offline: Todos los nodos de {ref} están desconectados
     edge:
-      missing: 'Falta la arista: {label}'
+      missing: 'Falta el destino: {label}'
     trigger:
-      missing: 'Falta el disparador: {label}'
+      missing: 'Falta el origen: {label}'
   sec:
-    capabilities: Definiciones de capacidad
+    capabilities: 'Capacidades'
     nodes: Quién lo ejecuta
-    edges: Aristas
-    triggers: Disparadores
+    edges: 'Destinos'
+    triggers: 'Orígenes'
   fix:
     capability:
-      missing: Aún falta una definición de capacidad — añádela a este espacio primero
-      no-node: Las definiciones están, pero ningún nodo lo está ejecutando todavía — conecta una máquina en la página de nodos y despliégalo allí
-      offline: Un nodo lo declara pero está desconectado — solo reconéctalo
+      missing: 'Aún falta una capacidad — añádela a este espacio primero'
+      no-node: 'Las capacidades están, pero ningún nodo lo está ejecutando todavía — conecta un nodo en la página de nodos y despliégalo allí'
+      offline: 'Un nodo lo declara pero está desconectado — solo reconéctalo'
     edge:
-      missing: Las capacidades están; las aristas aún no están conectadas
+      missing: 'Las capacidades están; los destinos aún no están conectados'
     trigger:
       missing: El playbook está listo, pero nada lo dispara todavía
   cap:
     outputs: 'Salidas: {o}'
-    missing: Todavía no hay esta definición en el espacio de nombres
+    missing: 'Todavía no hay esta capacidad en el espacio de nombres'
     declared:
-      inline: Spec en línea
+      inline: 'Capacidad en línea'
       ref: Referencia {r}
       legacy: Declaración heredada
     impl:
@@ -1782,33 +1800,33 @@ pb:
       noop: Marcador noop
       handler: Ejecutor interno
   node:
-    blocked: Añade primero la definición de capacidad
-    none: Ningún nodo lo está ejecutando todavía — despliégalo en una máquina en línea
+    blocked: 'Añade primero la capacidad'
+    none: 'Ningún nodo lo está ejecutando todavía — despliégalo en un nodo en línea'
     hub: Se ejecuta dentro del proceso del hub (sin nodo)
     offline: 'Hay nodos pero están desconectados: '
   edges:
-    none: Este playbook no declara aristas
+    none: 'Este playbook no declara destinos'
   edge:
-    blocked: El extremo «{c}» aún no tiene definición — añádela primero
-    missing: Esta arista todavía no está en la tabla de rutas
+    blocked: 'El extremo «{c}» aún no tiene capacidad — añádela primero'
+    missing: 'Este destino todavía no está en la tabla de rutas'
   trg:
-    missing: Ningún origen envía eventos a la capacidad de entrada {c}
+    missing: 'Ningun origen envía eventos a la capacidad {c}'
   act:
-    install_cap: Instalar definición
+    install_cap: 'Instalar capacidad'
     open_nodes: Abrir nodos
-    install_edge: Añadir esta arista
+    install_edge: 'Añadir este destino'
     create_source: Crear origen
 
 node:
   artifacts:
     title: 'Artefactos en caché'
-    empty: 'Todavía no se ha desplegado ninguna capacidad en esta máquina'
+    empty: 'Todavía no se ha desplegado ninguna capacidad en este nodo'
     load_failed: 'No se pudo cargar la lista de artefactos'
-    state_applied: 'Aplicada'
-    state_pending: 'Enviando'
+    state_applied: 'Desplegada'
+    state_pending: 'Desplegando'
     state_failed: 'Fallo'
     state_local: 'Variante local'
-    digest: 'digest'
+    digest: 'huella de contenido'
 
 # ---- UI v2 shell / capa de componentes (wave 1, solo adiciones) ----
 ui:

@@ -474,7 +474,7 @@
       return el("a", {
         class: "btn btn-ghost btn-sm",
         href: "events.html",
-        text: t("message.back_events", "返回事件中心"),
+        text: t("message.back_events", "返回事件流"),
       });
     }
 
@@ -590,7 +590,7 @@
           false,
         ),
         field(
-          t("common.field.node", "执行节点"),
+          t("common.field.node", "节点"),
           task.nodeId || t("message.node.central", "中枢执行"),
           true,
         ),
@@ -677,7 +677,7 @@
     function renderChain(chain, currentId) {
       const list = Array.isArray(chain) ? chain : [];
 
-      countEl.textContent = t("message.chain.count", "共 {n} 步").replace(
+      countEl.textContent = t("message.chain.count", "共 {n} 个任务").replace(
         "{n}",
         list.length,
       );

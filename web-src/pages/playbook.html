@@ -224,7 +224,7 @@
       Anotify.mountLayout({
         active: "playbooks",
         title: t("pb.title", "预案"),
-        subtitle: t("pb.detail_subtitle", "体检：定义 → 节点 → 出口 → 触发器"),
+        subtitle: t("pb.detail_subtitle", "体检：能力 → 下游 → 节点 → 源"),
       });
 
       // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
@@ -293,7 +293,7 @@
       function declaredLabel(c) {
         if (c.declared === "ref")
           return t("pb.cap.declared.ref", "引用 {r}").replace("{r}", c.ref || "");
-        if (c.declared === "inline") return t("pb.cap.declared.inline", "内联 spec");
+        if (c.declared === "inline") return t("pb.cap.declared.inline", "内联能力");
         if (c.declared === "legacy") return t("pb.cap.declared.legacy", "旧形态声明");
         return "";
       }
@@ -312,7 +312,7 @@
       function capSub(c, ok) {
         const parts = [declaredLabel(c), implLabel(c)].filter(Boolean);
         if (!ok) {
-          parts.push(t("pb.cap.missing", "当前命名空间里还没有这个定义"));
+          parts.push(t("pb.cap.missing", "当前命名空间里还没有这个能力"));
           return parts.join(" · ");
         }
         parts.push(
@@ -394,31 +394,31 @@
         if (caps.some((c) => c.status === "no-node"))
           return t(
             "pb.fix.capability.no-node",
-            "定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器",
+            "能力齐了，但还没有节点在跑它 —— 去节点页接入一个节点，再把它部署到那个节点",
           );
         if (caps.some((c) => c.status === "offline"))
-          return t("pb.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行");
-        if (caps.some((c) => c.status === "missing")) return t("pb.node.blocked", "先补能力定义");
+          return t("pb.fix.capability.offline", "有节点声明了，但那个节点离线 —— 把它连上就行");
+        if (caps.some((c) => c.status === "missing")) return t("pb.node.blocked", "先补能力");
         if (!caps.length) return t(...CAP_MISSING);
         return t(...ALL_READY);
       }
       function edgeLead(edges) {
-        if (!edges.length) return t("pb.edges.none", "这份预案不声明出口");
+        if (!edges.length) return t("pb.edges.none", "这份预案不声明下游");
         const bad = edges.find((e) => e.status !== "ok");
         if (!bad) return t(...ALL_READY);
         if (bad.blockedByCap)
-          return t("pb.edge.blocked", "端点「{c}」还没有定义，先补定义再补边").replace(
+          return t("pb.edge.blocked", "端点「{c}」还没有能力，先补能力再补下游").replace(
             "{c}",
             bad.blockedByCap,
           );
-        return t("pb.edge.missing", "这条边还不在路由表里");
+        return t("pb.edge.missing", "这条下游还不在路由表里");
       }
       function trgLead(trgs) {
         // 一条触发器都没声明时，"还差触发器"这句本身就是结论 —— 不需要新 key。
         if (!trgs.length) return t("pb.fix.trigger.missing", "预案齐了，但还没有事件把它叫起来");
         const bad = trgs.find((g) => g.status !== "ok");
         if (!bad) return t(...ALL_READY);
-        return t("pb.trg.missing", "没有把事件送进入口能力 {c} 的源").replace(
+        return t("pb.trg.missing", "没有把事件送进能力 {c} 的源").replace(
           "{c}",
           (bad.entryCaps || []).join(", "),
         );
@@ -491,7 +491,7 @@
         setSum("cap-sum", capLead(caps));
         setAct(
           "cap-act",
-          caps.some((c) => c.status === "missing") ? t("pb.act.install_cap", "安装定义") : "",
+          caps.some((c) => c.status === "missing") ? t("pb.act.install_cap", "安装能力") : "",
           install,
         );
 
@@ -503,7 +503,7 @@
           let sub = "";
           if (c.status === "missing") {
             dot = "is-warn";
-            sub = t("pb.node.blocked", "先补能力定义");
+            sub = t("pb.node.blocked", "先补能力");
           } else if (c.impl === "handler") {
             // handler 形式由中枢进程内的内置执行器跑：它本来就不需要节点，
             // 这一行要看得出「不是缺机器，而是压根不用机器」。
@@ -512,7 +512,7 @@
             dot = "is-bad";
             sub = t(
               "pb.node.none",
-              "还没有节点在跑它 —— 部署到一台在线机器就会有",
+              "还没有节点在跑它 —— 部署到一个在线节点就会有",
             );
           } else if (c.status === "offline") {
             dot = "is-warn";
@@ -547,7 +547,7 @@
         const edgeList = document.getElementById("edge-list");
         edgeList.textContent = "";
         if (!edges.length) {
-          edgeList.appendChild(row("is-ok", t("pb.edges.none", "这份预案不声明出口"), "", null));
+          edgeList.appendChild(row("is-ok", t("pb.edges.none", "这份预案不声明下游"), "", null));
         }
         for (const e of edges) {
           const ok = e.status === "ok";
@@ -558,8 +558,8 @@
               ok
                 ? ""
                 : e.blockedByCap
-                  ? t("pb.edge.blocked", "端点「{c}」还没有定义，先补定义再补边").replace("{c}", e.blockedByCap)
-                  : t("pb.edge.missing", "这条边还不在路由表里"),
+                  ? t("pb.edge.blocked", "端点「{c}」还没有能力，先补能力再补下游").replace("{c}", e.blockedByCap)
+                  : t("pb.edge.missing", "这条下游还不在路由表里"),
               null,
             ),
           );
@@ -568,7 +568,7 @@
         setSum("edge-sum", edgeLead(edges));
         setAct(
           "edge-act",
-          edges.some((e) => e.status !== "ok") ? t("pb.act.install_edge", "补齐这条边") : "",
+          edges.some((e) => e.status !== "ok") ? t("pb.act.install_edge", "补齐这条下游") : "",
           install,
         );
 
@@ -583,7 +583,7 @@
               g.label,
               ok
                 ? ""
-                : t("pb.trg.missing", "没有把事件送进入口能力 {c} 的源").replace(
+                : t("pb.trg.missing", "没有把事件送进能力 {c} 的源").replace(
                     "{c}",
                     (g.entryCaps || []).join(", "),
                   ),

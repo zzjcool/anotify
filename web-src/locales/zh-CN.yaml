@@ -110,7 +110,7 @@ common:
     task_id: 任务 ID
     trace: Trace
     capability: 能力
-    node: 执行节点
+    node: '节点'
     attempts: 尝试次数
     parent_task: 父任务
     started_at: 开始时间
@@ -192,7 +192,7 @@ index:
     refresh: 刷新 →
     count: '最近 {n} 条'
     loading: 正在加载事件…
-    empty: 还没有事件。接上 webhook 或定时触发器后，这里会显示事件流。
+    empty: '还没有事件。接上 webhook 或定时源后，这里会显示事件流。'
 scope:
   switcher_label: "切换命名空间"
   section_ns: "命名空间"
@@ -215,6 +215,16 @@ graph:
   fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
   silk_preview_done: 预览完成
   hud_flow: 下游流向
+  hud_path: '任务路径'
+  hud_fail: '失败任务'
+  silk_region: '任务链；可拖动，或使用左右方向键平移'
+  silk_ready: '准备回放'
+  silk_meta_preview: '{n} 个能力 · {m} 条下游'
+  silk_meta_run: '{n} 个任务 · 回放 {t}'
+  silk_meta_ok: '全部成功'
+  silk_meta_failed: '{n} 个失败'
+  silk_meta_done: '{n} 个任务完成'
+  silk_clock: '回放 {t}'
 
 message:
   title: 通知详情
@@ -232,7 +242,7 @@ message:
     not_found: 消息不存在或已被清理
   task_title: 任务详情
   chain_title: 任务链
-  back_events: 返回事件中心
+  back_events: '返回事件流'
   missing_id_hint: 深链需要带上任务 id，例如 message.html?id=tsk_xxx。
   not_found_hint: 任务不存在——可能已被清理，或不属于当前命名空间。
   task_state:
@@ -248,7 +258,7 @@ message:
   node:
     central: 中枢执行
   chain:
-    count: 共 {n} 步
+    count: '共 {n} 个任务'
     empty: 这条 trace 上没有其它任务
     current: 当前
 login:
@@ -631,7 +641,7 @@ docs:
       namespaces: 命名空间
       stats: 统计
       capabilities: 能力
-      edges: 出口
+      edges: '下游'
       playbooks: 预案
       nodes: 节点
       node-stream: 节点长连接
@@ -644,7 +654,7 @@ docs:
       devices: Web Push
   events:
     core: 核心
-    intro: 事件是图里一切的起点。任何外部变化都从这里进入，中枢按出口表把它派发成任务链。
+    intro: '事件是图里一切的起点。任何外部变化都从这里进入，中枢按下游表把它派发成任务链。'
     required: 必填
     optional: 可选
     params:
@@ -658,7 +668,7 @@ docs:
     curl:
       title: curl 示例
   node:
-    intro: 节点是执行者。它主动连中枢、声明自己能跑哪些能力，然后接收 assign 帧干活。
+    intro: '节点是跑代码的地方。它主动连中枢、声明自己能跑哪些能力，然后接收 assign 帧干活。'
     connect:
       title: 连接
     up:
@@ -692,7 +702,7 @@ docs:
     map:
       title: 接口地图
       notify: Agent 上报通知（核心）
-      tasks: 任务列表（事件中心）
+      tasks: '任务列表（事件流）'
       notifications: 通知历史列表
       devices_list: 设备列表
       devices_sub: 订阅（注册）设备
@@ -841,7 +851,7 @@ cliauth:
     notfound_action: 重新输入
     consumed_badge: 已使用
     consumed_title: 该会话已完成授权
-    consumed_desc: Key 已下发过，不能重复授权。如需新的 Key，请回到终端重新运行登录脚本。
+    consumed_desc: 'Key 已经发过一次，不能重复授权。如需新的 Key，请回到终端重新运行登录脚本。'
     error_title: 无法连接服务器
     error_desc: 请检查网络连接后重试。
     rejected_desc: 授权请求被拒绝，请确认所选权限范围后重试。
@@ -1064,12 +1074,12 @@ caps:
   title: 能力
   step_pick: 选模板
   step_fill: 填写并创建
-  sidebar: '控制台定义，节点执行'
-  subtitle: 能力是"做什么"（不含"怎么做"）。下游连线已独立成页。
-  new: 定义能力
+  sidebar: '控制台新建，节点执行'
+  subtitle: '能力是"做什么"（不含"怎么做"）。在这里新建、部署，并指定它的下游。'
+  new: '新建能力'
   loading: 正在加载能力…
   load_failed: '能力列表载入失败，请刷新重试'
-  empty: 还没有能力。定义一个，节点才能声明它。
+  empty: '还没有能力。新建一个，节点才能声明它。'
   count: '{n} 个能力'
   source_builtin: '内置'
   declared_by: 声明节点
@@ -1148,7 +1158,7 @@ caps:
     load_failed: '模板载入失败：'
     empty: '后端没有返回任何模板'
     created: '能力已创建'
-    created_digest: '已创建 · digest {digest}'
+    created_digest: '已创建 · 内容指纹 {digest}'
   deploy:
     col: '部署'
     status_applied: '已部署 {n} 台'
@@ -1159,8 +1169,8 @@ caps:
     status_unknown: '—'
     btn: '部署'
     title: '部署「{name}」'
-    subtitle: '勾机器或按 tag 批量选，然后点部署。'
-    pick_hint: '选机器'
+    subtitle: '勾节点或按 tag 批量选，然后点部署。'
+    pick_hint: '选节点'
     tag_pick: '按 tag 选'
     node_digest: '已部署 {digest}'
     node_none: '未部署'
@@ -1170,12 +1180,12 @@ caps:
     undo: '撤销'
     undone: '已撤销'
     undo_failed: '撤销失败：'
-    pushed: '已下发'
+    pushed: '已部署'
     queued: '已排队（节点离线）'
     queued_other: '已排队'
     nodes_failed: '节点列表读不到，稍后重试'
-    result_title: '下发结果'
-    none_selected: '至少选一台机器'
+    result_title: '部署结果'
+    none_selected: '至少选一个节点'
     no_nodes: '这个命名空间还没有节点'
     err: '部署失败：'
     builtin: 由中枢执行，无需部署
@@ -1187,18 +1197,23 @@ caps:
     display_name_ph: "例如「分析 PR」「部署预发」"
     display_name_hint: 界面上显示这个。留空就用下面的技术名。
     name: 能力名
-    name_hint: 技术名：节点声明、边、日志都用它，建好后不能改。
+    name_hint: '技术名：节点声明、下游、日志都用它，建好后不能改。'
+    outputs: '出口'
+    outputs_optional: '（可留空）'
+    outputs_ph: 'approved, needs-fix（留空 = 只有一个内部出口）'
+    outputs_hint: '能力自己声明、下游可以接的出口名，逗号分隔。留空 = 只有一个内部出口（跑完直接交给下游）。这些名字会写进能力契约，建好后改要发新版本。'
+    outputs_bad: '出口名不合法：{name}（只能包含字母、数字、点、下划线、短横线，1–32 个字符）'
     downstream: 下游能力（候选）
     downstream_optional: 可留空
     downstream_ph: script.echo, notify.phone
     downstream_hint: 跑完之后交给谁。多个 = 候选，运行期按优先级选一个；留空 = 终端能力（跑完就结束）。
     downstream_missing: '找不到这些能力：{names}'
     downstream_cands_hint: 点一下加入：
-    downstream_cands_empty: 还没有可选的目标能力（先定义能力，或在上面给另一张卡起个名字）。
+    downstream_cands_empty: '还没有可选的目标能力（先新建能力，或在上面给另一张卡起个名字）。'
     cand_add: 加入下游
     cand_picked: 已选
     cards_title: 本批能力
-    cards_hint: 一次可以定义多个能力：每张卡有自己的下游、参数与脚本；提交时一次写库，要么全成，要么全不成。
+    cards_hint: '一次可以新建多个能力：每张卡有自己的下游、参数与脚本；提交时一次写库，要么全成，要么全不成。'
     card_add: ＋ 再加一个能力
     card_remove: 删除这个能力
     card_n: '能力 {n}'
@@ -1210,9 +1225,9 @@ caps:
     card_err_generic: '能力 {n}：{reason}'
     cand_hint: 运行期按优先级选一个；同级轮盘（数值小的先选）。
     cand_batch_tag: （本批）
-    batch_created: '已创建 {caps} 个能力 · {edges} 条边'
+    batch_created: '已创建 {caps} 个能力 · {m} 条下游'
     batch_failed: '批量创建失败（整批未落库）：'
-    created_with_edges: '已连 {n} 条边'
+    created_with_edges: '已连 {n} 条下游'
     link_rejected: '第 {n} 条下游 → {to} 不合法，本次提交什么都没创建：{reason}'
     schema: 参数校验（JSON Schema）
     schema_hint: 只支持受控子集（不支持 $ref / if-then-else），中枢不做表达式求值。
@@ -1252,13 +1267,16 @@ caps:
   detail:
     btn: 详情
     params: 参数契约
+    outputs: '出口（能发什么）'
+    no_outputs: '没有出口：跑完就结束，不触发任何下游。'
+    implicit_output: '只有一个内部出口（不在这里为它起名）'
     no_params: 无参数
     downstream: 下游（候选）
     no_downstream: 跑完就结束，不会触发任何下游。
     cand_prio_hint: '优先级 {n} · 点「编辑」可调'
-    edges_failed: 边列表读不到，下游状态未知
+    edges_failed: '下游列表读不到，下游状态未知'
     inbound: 谁接到我
-    no_inbound: 没有入边：事件不会从这里进来
+    no_inbound: '没有上游：事件不会从这里进来'
     me: 我
     source_prefix: 来源
     follow: 跟随最新
@@ -1298,10 +1316,10 @@ caps:
     publishing: 发布中…
     failed: '发布失败：'
     created: '已发布 {ref}'
-    impact_title: 这一版会破坏已有的下游
+    impact_title: '这一版会破坏已有的下游'
     impact_changes: 变了什么
     impact_links: '会断的下游（它们接的是名字，新版本就是它们指向的版本）'
-    impact_no_links: 没有跟随最新的下游受这一版影响
+    impact_no_links: '没有跟随最新的下游受这一版影响'
     force: 仍然发布
     artifact_failed: 实现载入失败 —— 现在不能发布（否则会丢文件）
     builtin_locked: '由中枢执行的内置能力：实现在中枢里，不能在控制台改'
@@ -1312,8 +1330,8 @@ caps:
     literals_ph: '常量覆盖（可选），形如 {"urgent":true}'
     save: 保存
     cancel: 取消
-    created: 边已创建
-    failed: '创建边失败：'
+    created: '下游已创建'
+    failed: '创建下游失败：'
     err_target: 请选择一个目标能力
     err_self: 不能让能力连到自己
     err_literals: 常量覆盖必须是一个 JSON 对象
@@ -1350,13 +1368,13 @@ prune:
   param_type: 参数类型不符
   no_node: 目标能力没有在线节点
   foreign_user: 跨命名空间/跨用户
-  event_schema: 事件 payload 不符合触发器的 resultSchema
+  event_schema: '事件 payload 不符合源的 resultSchema'
   max_hops: 超出 hop 预算（链路太深）
   budget: 本次 trace 任务数超出预算
   no_impl: 目标是占位实现（noop），中枢不会执行它
 nodes:
   title: 节点
-  subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。
+  subtitle: '节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。'
   refresh: 刷新
   loading: 正在加载节点…
   empty: "这个命名空间里还没有节点。按下面的步骤注册第一台，它上线后才会接活。"
@@ -1382,7 +1400,7 @@ nodes:
     btn: 升级
     sending: 升级中…
     confirm: 升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。
-    sent: 已下发升级，节点重启后生效（稍后刷新可看到新版本）
+    sent: '已发出升级，节点重启后生效（稍后刷新可看到新版本）'
     failed: '升级失败：'
     ack_failed: '节点上的升级没成功：'
     ack_stale: 节点未回复（可能已断线）
@@ -1415,11 +1433,11 @@ nodes:
     step1: 点上面「生成令牌」拿一次性令牌
     step2: 二选一：容器（看不到宿主机文件）或原生装（要在自己的项目目录里跑能力就选这条）
     docker: 容器：看不到宿主机文件，能力只能在容器里跑
-    native: 原生装：以你的用户身份在宿主机上跑；能力在哪个目录里跑由能力定义里的工作目录决定
+    native: '原生装：以你的用户身份在宿主机上跑；能力在哪个目录里跑由能力自己的工作目录决定'
     yaml_title: node.yaml（原生装用）
     yaml_intro: 直接装 agent 二进制时用这份配置。只有四项 bootstrap —— 能力及其工作目录都在控制台定义：
     install_title: 原生安装命令
-    step3: 机器上线后到「能力」页点部署，它就有活了
+    step3: '节点上线后到「能力」页点部署，它就有活了'
   view_events: 查看事件
   register:
     btn: '注册节点'
@@ -1429,7 +1447,7 @@ nodes:
     name_ph: '例如 my-mbp'
     name_hint: '小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
     instances: '实例数（可选）'
-    instances_hint: '这台机器上并行跑几个实例（建议值，中枢会夹到 20）。真正的槽位数由 agent 上线握手时申报。'
+    instances_hint: '这个节点上并行跑几个实例（建议值，中枢会夹到 20）。真正的槽位数由 agent 上线握手时申报。'
     submit: '注册'
     cancel: '取消'
     submitting: '注册中…'
@@ -1440,12 +1458,12 @@ nodes:
     copy_token: '复制令牌'
     cmd_title: "一行命令启动（推荐）"
     copy_cmd: "复制命令"
-    yaml_intro: "或者把 agent 二进制直接装在机器上，用这份 node.yaml（只有四项 bootstrap：名字 / 中枢地址 / 令牌 / 槽位数；工作目录在能力定义里配）："
-    yaml_title: '在机器上执行这一行'
+    yaml_intro: '或者把 agent 二进制直接装在节点上，用这份 node.yaml（只有四项 bootstrap：名字 / 中枢地址 / 令牌 / 槽位数；工作目录在能力里配）：'
+    yaml_title: '在节点上执行这一行'
     copy_yaml: '复制命令'
     yaml_hint: '命令里的 token 只出现这一次，丢了这个节点就得删掉重新注册。'
-    cmd_intro: '把下面这行命令贴到机器上执行（不需要任何配置文件）：'
-    cmd_after: '机器上线后在「能力」页点部署，它就有活了。'
+    cmd_intro: '把下面这行命令贴到节点上执行（不需要任何配置文件）：'
+    cmd_after: '节点上线后在「能力」页点部署，它就有活了。'
     err:
       empty_name: '先填节点名'
       invalid_name: '名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头'
@@ -1457,7 +1475,7 @@ nodes:
     install_intro: 容器里看不到宿主机的文件。要在自己的项目目录里跑能力（make test、git status、就地改文件），就用这条命令装在宿主机上。
     install_after: 它会装好二进制、写 ~/.anotify/node.yaml（权限 600，里面有令牌）、生成 systemd 用户服务。注意：命令里带令牌，会留在 shell 历史里。
     copy_install: 复制命令
-    yaml_workdir_note: '工作目录在「能力」页的能力定义里配（run.workDir），随部署下发；这份 yaml 不需要写。'
+    yaml_workdir_note: '工作目录在「能力」页的能力里配（run.workDir），随部署一起发到节点；这份 yaml 不需要写。'
   emptyTitle: '还没有节点'
 sources:
   empty_title: 还没有源
@@ -1476,15 +1494,15 @@ sources:
   empty: 还没有源。点右上角「新建源」开始。
   explain:
     title: 源与能力的分工：
-    body: 能力回答「能干什么」，由节点声明、中枢派任务给它；源回答「什么时候开始干」，有配置、自己产生事件、自己不干活。所以源不需要建边——它的出口就是你在这里选的能力。
+    body: '能力回答「能干什么」，由节点声明、中枢派任务给它；源回答「什么时候开始干」，有配置、自己产生事件、自己不干活。所以源不需要建下游——你在这里选的能力就是它的目标。'
   kind:
     cron: 定时器
     webhook: Webhook
     manual: 手动
-    github: "GitHub 触发器"
+    github: 'GitHub'
   next_fire: 下次 {t}
   manual_hint: 点「立即运行」时触发
-  targets_label: 出口
+  targets_label: '目标能力'
   no_target: 未配置
   target_missing: 已删除
   fire: 立即运行
@@ -1521,24 +1539,24 @@ sources:
   form:
     name: 名字
     name_ph: 如：每晚体检
-    kind: 触发方式
+    kind: '种类'
     kind_hint: 创建后不可修改（换种类等于换语义，请删除后重建）。
     expr: Cron 表达式（五段：分 时 日 月 周）
     expr_hint: 支持 * / , - ；不支持 @daily 这类宏。示例：0 3 * * * 表示每天 03:00。
     hook_hint: 创建后会生成一个专属 URL，外部系统 POST 到它即可触发。谁拿到这个 URL 谁就能发事件，请妥善保管。
-    targets: 出口能力（可多选）
+    targets: '目标能力（可多选）'
     targets_hint: 事件会同时派给选中的能力（扇出）。勾选后可以填该能力需要的参数——每个能力的参数是独立的。
     enabled: 启用
     cancel: 取消
     save: 保存
     name_required: 请填名字
     expr_required: 请填 cron 表达式
-    targets_required: 至少要选一个出口能力
+    targets_required: '至少要选一个目标能力'
     result_schema: "事件 payload 契约（resultSchema，可选）"
     result_schema_hint: "可选。填一份 JSON Schema（如 {\"type\":\"object\",\"required\":[\"action\"]}）后，每次投递都先按它校验：不合规的事件照常入库、但不派发，trace 里留一条 event_schema 剪枝。留空 = 不校验。"
     bad_schema: "payload 契约不是合法 JSON：{e}"
     schema_not_object: "payload 契约必须是 JSON 对象（数组/标量都不是 schema）"
-    no_caps: 还没有可用能力。先到「能力与出口」页定义能力。
+    no_caps: '还没有可用能力。先到「能力」页新建能力。'
     no_params: 该能力不需要参数
     bad_json: 参数 {k} 不是合法 JSON
     bad_num: 参数 {k} 不是数字
@@ -1549,15 +1567,15 @@ sources:
     demo_hint: "一键填入一套可用的配置：参数直接引用 payload 字段"
     demo_name: "演示 · GitHub PR 分析"
     demo_ok: "已填入演示配置：4 个变量 + 参数引用变量"
-    demo_no_caps: "没有带参数的出口能力，变量部分已填好"
-    avail_vars: "这个触发方式能提供哪些字段？（点一下复制）"
+    demo_no_caps: '没有带参数的目标能力，变量部分已填好'
+    avail_vars: '这个源能提供哪些字段？（点一下复制）'
     av_fill: "点一下填入变量的来源"
     hook_url: "回调地址"
     hook_url_pending: "保存后生成（形如 /v1/hooks/src_xxx）"
     hook_github: "GitHub 那边怎么配"
     hook_github_events: "只勾这个就够；其它事件不会派发"
     hook_github_secret: "GitHub 的 Secret 由 GitHub 侧校验；本系统暂不校验签名，建议用长随机 token 的 URL"
-    hook_github_why: "填好后点「Add webhook」。GitHub 会立刻发一个 ping，事件照收；回来看「出口能力」把参数接上。"
+    hook_github_why: '填好后点「Add webhook」。GitHub 会立刻发一个 ping，事件照收；回来看「目标能力」把参数接上。'
     ref_tip: "从事件或变量取值"
     ref_mix_tip: "模板拼接，结果按文本传入"
     bad_placeholder: "参数 {k}：占位符没闭合"
@@ -1567,14 +1585,14 @@ sources:
     pv_missing_multi: "最近一次事件里没有这些字段：{p}"
     dry_run: "试运行"
     dry_running: "试运行中…"
-    dry_no_target: "先勾选至少一个出口能力"
-    dry_will_run: "会派发 {n} 个出口"
+    dry_no_target: '先勾选至少一个目标能力'
+    dry_will_run: '会派发 {n} 个任务'
     dry_and_pruned: "，{n} 个被跳过"
-    dry_nothing: "没有出口会派发（全部被跳过）"
+    dry_nothing: '没有任务会派发（全部被跳过）'
     pick_no_sample: "还没有事件可当样本"
     pick_none: "没有匹配的字段"
     av_no_event_hook: "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。"
-    av_no_event: "这个触发方式没有外部事件，没有可引用的字段；值直接写在参数里即可。"
+    av_no_event: '这个源没有外部事件，没有可引用的字段；值直接写在参数里即可。'
     kind_github_hint: "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法，不用自己翻文档。"
     av_copied: "已复制，粘到参数里即可"
     av_src_builtin: "来自 GitHub 官方 {ty} 事件结构（示例值）"
@@ -1600,18 +1618,18 @@ sources:
     missing: （能力已删除）
     terminal: 终点
     noedge: 没有下游
-    no_target: 这个源没有出口能力。
+    no_target: '这个源没有目标能力。'
     unconnected: （没有下游）
     truncated: 图太大（{n} 个节点），只显示前 {m} 个。
     nolib: 图库未能加载，无法渲染流向图。
     source: 源
     terminal_short: 终点
     no_edge: 没有下游
-    cycle: 环 · 这条边会绕回来
+    cycle: '环 · 这条下游会绕回来'
   view_events: 查看事件
 trace:
   legend_hot: "线与数字越深 · 这条路走了很多次（重试/回环）"
-  legend_origin: "源 · 触发器（事件从这里进来）"
+  legend_origin: '源 · 事件从这里进来'
   legend_pipe: "管道 · 会继续往下派发"
   legend_end: "终点 · 到此结束，不再派发"
   legend_ok: "执行成功"
@@ -1619,7 +1637,7 @@ trace:
   legend_pruned: "未执行（配置里有、这次没走）"
   graph_legend: "图例"
   title: 链路
-  subtitle: 一条 trace 的全貌：谁触发的、走了哪条路、每一步多久
+  subtitle: '一条 trace 的全貌：谁触发的、走了哪条路、每个任务多久'
   back: 返回事件流
   refresh: 刷新
   loading: 正在加载链路…
@@ -1630,12 +1648,12 @@ trace:
   copy_failed: 复制失败
   triggered_by: 触发于
   nolib: 渲染脚本未能加载。
-  empty: 这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的出口、参数不合 schema、或没有节点声明目标能力）。
+  empty: '这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的目标能力、参数不合 schema、或没有节点声明目标能力）。'
   empty_title: 没有任务
   emits:
     title: 产出（emits）
-    subtitle: 这次运行里每一次 emit：出口、时间、派发结果与原始 data
-    empty: 这次运行还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。
+    subtitle: '这次任务里每一次 emit：出口、时间、派发结果与原始 data'
+    empty: '这次任务还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。'
     failed: 产出列表没能加载（不影响上面的链路）
     routed: 派发
     pruned: 剪枝
@@ -1661,7 +1679,7 @@ trace:
   stat:
     spans: 任务
     duration: 总耗时
-    slowest: 最慢一步
+    slowest: '最慢任务'
     failed: 失败
 
 srcpage:
@@ -1670,7 +1688,7 @@ srcpage:
   loading: "加载中…"
   back: "返回源列表"
   layout_title: "源详情"
-  layout_subtitle: "一个源的触发配置、出口参数和下游流向"
+  layout_subtitle: '一个源的目标能力、参数和下游流向'
   no_id: "地址里缺少 ?id=，无法确定是哪个源"
   load_failed: "加载失败：{m}"
   notfound: "这个源不存在，可能已被删除"
@@ -1683,9 +1701,9 @@ srcpage:
   copy: "复制"
   copied: "已复制"
   copy_failed: "复制失败"
-  manual_hint: "触发方式"
+  manual_hint: '种类'
   created: "创建时间"
-  targets: "出口能力"
+  targets: '目标能力'
   no_params: "没有配置参数"
   mapped: "映射"
   default_is: "默认 {v}"
@@ -1700,7 +1718,7 @@ srcpage:
 nodepage:
   title: 节点详情
   layout_title: 节点详情
-  layout_subtitle: 一台执行者的声明能力、并发槽位和最近执行过的任务
+  layout_subtitle: '一台节点的声明能力、并发槽位和最近的任务'
   back: 返回节点列表
   loading: 加载中…
   basic: 基本信息
@@ -1718,8 +1736,8 @@ nodepage:
   concurrency: '并发 {n}'
   busy_task: '正在跑 {id}'
   idle: 空闲
-  recent: 最近执行
-  no_tasks: 还没有在这台机器上执行过的任务
+  recent: '最近任务'
+  no_tasks: '还没有在这个节点上执行过的任务'
   open_trace: 查看链路
   not_found: 节点不存在
   not_found_hint: 这个 id 没有对应的节点，可能已被删除。
@@ -1728,8 +1746,8 @@ nodepage:
 
 pb:
   title: 预案
-  subtitle: 把能力、出口、触发器组成一份能体检、能补齐的预案
-  detail_subtitle: 体检：定义 → 节点 → 出口 → 触发器
+  subtitle: '把能力、下游、源组成一份能体检、能补齐的预案'
+  detail_subtitle: '体检：能力 → 下游 → 节点 → 源'
   detail_title: 预案详情
   rescan: 重新体检
   rescanned: 已重新体检
@@ -1741,44 +1759,44 @@ pb:
   empty: 这个命名空间里还没有预案。
   empty_title: 还没有预案
   load_failed: 载入失败，请刷新重试。
-  meta: 能力 {c} · 出口 {e} · 触发器 {tr}
+  meta: '能力 {c} · 下游 {e} · 源 {tr}'
   ready_n: '{n}/{m} 项就绪'
   n_of_m: '{n}/{m} 就绪'
   remaining: 还差 {n} 项
   status:
     ready: 就绪
     needs_node: 缺节点
-    blocked: 缺定义
+    blocked: '缺能力'
     partial: 不完整
   next:
     ready: 全部就绪，可以开始跑了
     capability:
-      missing: 缺能力定义：{ref}
+      missing: '缺能力：{ref}'
       no-node: 「{ref}」没有节点能执行
       offline: 「{ref}」的节点都离线
     edge:
-      missing: 缺出口：{label}
+      missing: '缺下游：{label}'
     trigger:
-      missing: 缺触发器：{label}
+      missing: '缺源：{label}'
   sec:
-    capabilities: 能力定义
+    capabilities: '能力'
     nodes: 由谁执行
-    edges: 出口
-    triggers: 触发器
+    edges: '下游'
+    triggers: '源'
   fix:
     capability:
-      missing: 还缺能力定义，先把它补进当前命名空间
-      no-node: 定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器
-      offline: 有节点声明了，但机器离线 —— 把它连上就行
+      missing: '还缺能力，先把它补进当前命名空间'
+      no-node: '能力齐了，但还没有节点在跑它 —— 去节点页接入一个节点，再把它部署到那个节点'
+      offline: '有节点声明了，但那个节点离线 —— 把它连上就行'
     edge:
-      missing: 能力齐了，出口还没连上
+      missing: '能力齐了，下游还没连上'
     trigger:
       missing: 预案齐了，但还没有事件把它叫起来
   cap:
     outputs: 出口：{o}
-    missing: 当前命名空间里还没有这个定义
+    missing: '当前命名空间里还没有这个能力'
     declared:
-      inline: 内联 spec
+      inline: '内联能力'
       ref: 引用 {r}
       legacy: 旧形态声明
     impl:
@@ -1786,33 +1804,33 @@ pb:
       noop: noop 占位
       handler: 中枢内置执行器
   node:
-    blocked: 先补能力定义
-    none: 还没有节点在跑它 —— 部署到一台在线机器就会有
+    blocked: '先补能力'
+    none: '还没有节点在跑它 —— 部署到一个在线节点就会有'
     hub: 中枢进程内执行（不需要节点）
     offline: 有节点，但离线：
   edges:
-    none: 这份预案不声明出口
+    none: '这份预案不声明下游'
   edge:
-    blocked: 端点「{c}」还没有定义，先补定义再补边
-    missing: 这条边还不在路由表里
+    blocked: '端点「{c}」还没有能力，先补能力再补下游'
+    missing: '这条下游还不在路由表里'
   trg:
-    missing: 没有把事件送进入口能力 {c} 的源
+    missing: '没有把事件送进能力 {c} 的源'
   act:
-    install_cap: 安装定义
+    install_cap: '安装能力'
     open_nodes: 打开节点页
-    install_edge: 补齐这条边
+    install_edge: '补齐这条下游'
     create_source: 创建源
 
 node:
   artifacts:
     title: '已缓存的产物'
-    empty: '这台机器还没有部署任何能力'
+    empty: '这个节点还没有部署任何能力'
     load_failed: '产物列表载入失败'
-    state_applied: '已应用'
-    state_pending: '下发中'
+    state_applied: '已部署'
+    state_pending: '部署中'
     state_failed: '失败'
     state_local: '本地变体'
-    digest: 'digest'
+    digest: '内容指纹'
 
 # ---- UI v2 外壳 / 组件层（wave 1 新增，仅新增不改旧）----
 ui:

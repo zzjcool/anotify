@@ -408,7 +408,7 @@
         title: t("nodepage.layout_title", "节点详情"),
         subtitle: t(
           "nodepage.layout_subtitle",
-          "一台执行者的声明能力、并发槽位和最近执行过的任务",
+          "一台节点的声明能力、并发槽位和最近的任务",
         ),
       });
 
@@ -862,7 +862,7 @@
         if (short) {
           const dig = el("span", "np-digest", short);
           // 页面上只给前 12 位；完整值挂 title，对照日志时不用另查接口。
-          dig.title = t("node.artifacts.digest", "digest") + " " + fullDigest;
+          dig.title = t("node.artifacts.digest", "内容指纹") + " " + fullDigest;
           sub.appendChild(dig);
         }
         const reason = depField(d, "reason", "reason");
@@ -893,7 +893,7 @@
           return card;
         }
         if (!DEPS.length) {
-          card.appendChild(emptyNote(t("node.artifacts.empty", "这台机器还没有部署任何能力")));
+          card.appendChild(emptyNote(t("node.artifacts.empty", "这个节点还没有部署任何能力")));
           return card;
         }
 
@@ -999,7 +999,7 @@
 
       function tasksCard() {
         const card = el("div", "card np-list-card");
-        card.appendChild(secHead(t("nodepage.recent", "最近执行")));
+        card.appendChild(secHead(t("nodepage.recent", "最近任务")));
 
         if (TASKS === null) {
           // 读不到 ≠ 没跑过：别让故障显示成「这机器很闲」
@@ -1007,7 +1007,7 @@
           return card;
         }
         if (!TASKS.length) {
-          card.appendChild(emptyNote(t("nodepage.no_tasks", "还没有在这台机器上执行过的任务")));
+          card.appendChild(emptyNote(t("nodepage.no_tasks", "还没有在这个节点上执行过的任务")));
           return card;
         }
 
@@ -1061,7 +1061,7 @@
             renderHead();
             return;
           }
-          toast(t("nodes.upgrade.sent", "已下发升级，节点重启后生效（稍后刷新可看到新版本）"));
+          toast(t("nodes.upgrade.sent", "已发出升级，节点重启后生效（稍后刷新可看到新版本）"));
           // 主动补两次重拉：ack 通常一两秒内到，用户不用手点刷新。
           setTimeout(() => load(), 900);
           setTimeout(() => load(), 3000);
