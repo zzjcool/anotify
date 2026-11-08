@@ -69,8 +69,7 @@ spec:
         anode emit fixer --data '{"file":"a.go"}'
 
         # ② 直接调接口：与上一行完全等价，任何语言都能这么发
-        curl -fsS --unix-socket "$ANOTIFY_EMIT_ENDPOINT" \
-          -X POST http://anode/emit \
+        curl -fsS "$ANOTIFY_EMIT_ENDPOINT/emit" \
           -H "Authorization: Bearer $ANOTIFY_TASK_TOKEN" \
           -H 'Content-Type: application/json' \
           -d '{"to":"notify","data":{"text":"ok"}}'
@@ -254,23 +253,41 @@ digest = sha256( canonical{
 
 ### 4.0 谁在 emit：一个接口、一个令牌
 
-节点上只有一个守护进程 **`anode`**，它**只开一个监听**（默认 unix socket；可配成 TCP，
-以便跨用户、跨容器的能力也能调）。没有"每个任务一条通道"这回事。
+节点上只有一个守护进程 **`anode`**，它**只开一个监听**。能力不关心自己是什么形态
+（脚本、二进制、进程内的实现都一样），要做的事只有一件：
+**带着本次任务的令牌，调这个 HTTP 接口。**
 
-能力不关心自己是什么形态（脚本、二进制、进程内的实现都一样），要做的事只有一件：
-**带着本次任务的令牌，调这个接口。**
+```yaml
+# anode.yaml —— 默认就这样，不用配
+listen: tcp://127.0.0.1:0        # :0 = 内核挑一个空闲端口
+# 需要跨用户 / 容器映射 / 固定端口时：
+# listen: tcp://0.0.0.0:7070
+# listen: unix:///run/anode.sock
+```
+
+启动后把**真实地址**注入每个任务：
+
+```bash
+ANOTIFY_EMIT_ENDPOINT = http://127.0.0.1:41237   # 带协议与端口
+ANOTIFY_TASK_TOKEN    = <本次任务的高熵令牌>
+```
 
 ```bash
 # 脚本里（CLI 只是薄封装）
 anode emit fixer --data '{"file":"a.go"}'
 
-# 它等价于一次请求，任何语言都能自己发
-POST /emit
+# 它等价于一次普通 HTTP 请求 —— 任何语言的标准库都能发
+POST $ANOTIFY_EMIT_ENDPOINT/emit
 Authorization: Bearer $ANOTIFY_TASK_TOKEN      # 凭据走头，不进 payload
 Content-Type: application/json
 
 { "to": "fixer", "data": { "file": "a.go" } }
 ```
+
+**为什么默认是 TCP 而不是 unix socket**：这是「任何语言都能调」的前提。
+TCP + JSON 在 Python / Node / Go / Java 里都是标准库五行以内；unix socket 在
+Python（要手搓 `http.client`）、Java（几乎得手写 HTTP 报文）里都要额外胶水。
+`:0` 让内核挑端口，所以也不用用户配、不会撞端口。
 
 **身份来自令牌，不来自通道**：`ANOTIFY_TASK_TOKEN` 是高熵、每任务一个的凭据，
 守护进程按 `token → 任务` 查出 task / trace / 能力版本。所以：

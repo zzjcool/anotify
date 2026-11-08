@@ -12,8 +12,14 @@
 |---|---|
 | `anotify-agent` | **`anode`**（和 AI 的 agent 撞名，改掉） |
 | `cmd/agent/` | `cmd/anode/` |
-| `node.yaml` | **`anode.yaml`** |
+| `node.yaml` | **`anode.yaml`**（+ 新增 `listen`） |
 | systemd 单元 `anotify-agent.service` | `anode.service` |
+
+配置文件名 `node.yaml` → **`anode.yaml`**，新增一个字段：
+
+```yaml
+listen: tcp://127.0.0.1:0     # 默认，内核挑端口；emit 接口就开在这里
+```
 
 **只有一个二进制**，三个子命令：
 
