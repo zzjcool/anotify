@@ -61,13 +61,15 @@ spec:
         #!/usr/bin/env bash
         anotify-agent emit fixer    --data '{"file":"a.go"}'
         anotify-agent emit apply-fix --data '{"text":"ok"}'
-    timeoutSec: 900
     env: { GIT_TERMINAL_PROMPT: "0" }
     workDir: "~/src/{{repo}}"
 
   requires: [git]                 # 节点要装什么
-  lifecycle: { idempotent: true, resultTtlSec: 3600 }
-  sticky: worktree
+
+  lifecycle:                      # 生命周期策略（一次运行能活多久、能不能重放）
+    idempotent: true
+    resultTtlSec: 3600
+    timeoutSec: 900               # 从 run 挪进来：超时本来属于生命周期
 
 status:                           # 全部派生。apply 时一律忽略
   ready: false
@@ -123,9 +125,8 @@ digest = sha256( canonical{
   metadata.version,
   spec.params,
   spec.requires,
-  spec.lifecycle,
-  spec.sticky,
-  spec.run            (entrypoint / files / timeoutSec / env / workDir)
+  spec.lifecycle,      (idempotent / resultTtlSec / timeoutSec / …)
+  spec.run            (entrypoint / files / env / workDir)
   spec.handler        (handler 形式时)
 } )
 ```
