@@ -46,6 +46,67 @@
     color: var(--text);
     font-variant-numeric: tabular-nums;
   }
+  /* ---------- 密码登录区块（第二套登录模型）---------- */
+  /* 与相邻两张列表同一套语言：.card.list > 一行 .list-row。
+     这里只补换行与左右分布（窄屏下按钮换到下一行，不挤压状态文字）。 */
+  .sec-pwd-row {
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px 12px;
+    padding: 12px 14px;
+  }
+  .sec-pwd-row:hover {
+    /* 这一行不可点：不要给点击反馈（旁边两张列表的行是可点的） */
+    background: transparent;
+  }
+  .sec-pwd-status {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .sec-pwd-state {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--text);
+  }
+  /* 第二行小字：上次更新时间 / 从未设置 */
+  .sec-pwd-meta {
+    display: block;
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .sec-pwd-acts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  /* 弹层：窄一点（只装三个输入框 + 提示），字段用 .field 自带纵向布局 */
+  .pwd-panel {
+    max-width: 420px;
+  }
+  .pwd-body > * + * {
+    margin-top: 12px;
+  }
+  .pwd-fields > * + * {
+    margin-top: 12px;
+  }
+  /* 移除密码时的二次确认条（与恢复码 warn 同一语义色） */
+  .pwd-note {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 12px;
+    line-height: 1.6;
+  }
   /* 强调片段（原 text-zinc-300）：正文里的一个词加粗，不要整段反白 */
   .sec-strong {
     font-weight: 600;
@@ -631,7 +692,46 @@
       <div id="passkey-list" class="card list mt-3" aria-busy="true"></div>
     </section>
 
-    <!-- ② 登录会话 -->
+    <!-- ② 密码登录（第二套登录模型，与 Passkey 并存）
+         「每个账号至少保留一种登录方式」是后端护栏：没有 Passkey 时移除密码 → 409，
+         这里只负责把服务端文案原样展示（不自己造规则）。 -->
+    <section>
+      <div class="sec-sec-head">
+        <div class="min-w-0">
+          <h3 class="sec-sec-title">{{t "security.password.title"}}</h3>
+          <p class="sec-sec-sub">{{t "security.password.subtitle"}}</p>
+        </div>
+      </div>
+      <div class="card list mt-3">
+        <div class="list-row sec-pwd-row">
+          <div class="min-w-0">
+            <!-- 状态文字由 JS 填：已设置 / 未设置（+ 上次更新时间）。
+                 初值是纯占位符，不带任何“未设置”字样，避免闪烁时误报状态。 -->
+            <div id="password-status" class="sec-pwd-status">—</div>
+          </div>
+          <div class="sec-pwd-acts">
+            <!-- 未载入完成前禁用：不让用户对着未知状态直接开改 -->
+            <button
+              type="button"
+              id="password-edit-btn"
+              class="btn btn-ghost btn-sm"
+              disabled
+            >
+              {{t "security.password.set_button"}}
+            </button>
+            <button
+              type="button"
+              id="password-remove-btn"
+              class="btn btn-ghost btn-sm hidden"
+            >
+              {{t "security.password.remove_button"}}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ③ 登录会话 -->
     <section>
       <div class="sec-sec-head">
         <div class="min-w-0">
@@ -664,7 +764,7 @@
       <div id="session-list" class="card list mt-3" aria-busy="true"></div>
     </section>
 
-    <!-- ③ 恢复码（#29 · 接 #24 后端）。#recovery-nudge 初值带 hidden，
+    <!-- ④ 恢复码（#29 · 接 #24 后端）。#recovery-nudge 初值带 hidden，
          仅 ?from=recovery 时由 JS 摘掉（maybeShowRecoveryNudge）。 -->
     <div id="recovery-nudge" class="sec-nudge hidden">
       <div class="sec-nudge-main">
@@ -1109,6 +1209,75 @@
   </div>
 </div>
 
+<!-- ===== 密码登录弹层（设置 / 修改 / 移除三态共用一套骨架） =====
+     外壳走 ui.css 的 .modal-backdrop / .modal-panel / .modal-head / .modal-body /
+     .modal-foot；.modal-backdrop 不声明 display，显隐由 Anotify.openModal /
+     closeModal 在该元素上切 hidden↔flex。
+     三个字段的显隐由 JS 切 .field 上的 hidden：设置=新+确认，修改=当前+新+确认，移除=当前。 -->
+<div
+  id="password-modal"
+  class="modal-backdrop hidden"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="password-modal-title"
+>
+  <div class="modal-panel pwd-panel">
+    <div class="modal-head">
+      <h3 id="password-modal-title">{{t "security.password.modal.set_title"}}</h3>
+    </div>
+    <div class="modal-body pwd-body">
+      <div class="pwd-fields">
+        <div class="field hidden" id="pwd-current-field">
+          <label class="field-label" for="pwd-current"
+            >{{t "security.password.modal.current_label"}}</label
+          >
+          <input
+            id="pwd-current"
+            class="input"
+            type="password"
+            autocomplete="current-password"
+          />
+        </div>
+        <div class="field hidden" id="pwd-new-field">
+          <label class="field-label" for="pwd-new"
+            >{{t "security.password.modal.new_label"}}</label
+          >
+          <input
+            id="pwd-new"
+            class="input"
+            type="password"
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="field hidden" id="pwd-confirm-field">
+          <label class="field-label" for="pwd-confirm"
+            >{{t "security.password.modal.confirm_label"}}</label
+          >
+          <input
+            id="pwd-confirm"
+            class="input"
+            type="password"
+            autocomplete="new-password"
+          />
+        </div>
+      </div>
+      <p class="field-hint">{{t "security.password.modal.hint"}}</p>
+      <!-- 移除时的二次确认（只有 remove 态显示） -->
+      <p id="password-modal-note" class="pwd-note hidden"></p>
+      <!-- 失败一律写在这里，不用 toast 顶替表单内错误 -->
+      <p id="password-modal-error" class="field-error hidden" role="alert"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="password-modal-cancel" class="btn btn-ghost">
+        {{t "security.password.modal.cancel"}}
+      </button>
+      <button type="button" id="password-modal-submit" class="btn btn-primary">
+        {{t "security.password.modal.save"}}
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
   // toast hover 暂停自动隐藏（方便选中复制错误信息）
@@ -1264,7 +1433,7 @@
   }
 
   // 失败状态码：只在 render 时用来拼错误卡文案（0 = 连不上服务端）
-  let loadError = { passkeys: 0, sessions: 0 };
+  let loadError = { passkeys: 0, sessions: 0, password: 0 };
 
   // 两张列表共用的错误卡：Anotify.loadErrorNode 自己翻译、自己带重试。
   function errorCard(status, onRetry) {
@@ -1987,21 +2156,322 @@
     } catch (_) {}
   }
 
+  // ==================== 密码登录（第二套登录模型） ====================
+  // 端点：GET / POST / DELETE /v1/auth/password
+  // PWD = { hasPassword, updatedAt }；null = 还没载入 / 载入失败。
+  // 后一种情况必须渲染成错误态，不能渲染成「未设置」（不伪造数据）。
+  let PWD = null;
+  let pwdMode = "set"; // set | change | remove
+  let pwdBusy = false;
+
+  // updatedAt 是 unix 秒（0 = 从未设置）→ YYYY-MM-DD（与列表里的日期同格式）
+  function passwordUpdatedDate(ts) {
+    if (!ts) return "";
+    const d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
+  }
+
+  function renderPasswordStatus() {
+    const statusEl = document.getElementById("password-status");
+    const editBtn = document.getElementById("password-edit-btn");
+    const removeBtn = document.getElementById("password-remove-btn");
+    if (!statusEl || !editBtn || !removeBtn) return;
+
+    statusEl.replaceChildren();
+
+    if (!PWD) {
+      // 载入失败：错误卡 + 重试（与两张列表同一套失败态），按钮保持禁用
+      statusEl.appendChild(
+        errorCard(loadError.password, () => loadPasswordStatus()),
+      );
+      editBtn.disabled = true;
+      editBtn.classList.add("hidden");
+      removeBtn.classList.add("hidden");
+      return;
+    }
+
+    const state = document.createElement("span");
+    state.className = "sec-pwd-state";
+    state.textContent = PWD.hasPassword
+      ? t("security.password.status_set", "已设置")
+      : t("security.password.status_unset", "未设置");
+    statusEl.appendChild(state);
+
+    // 第二行小字：已设时显上次更新时间，未设时显「从未设置」
+    const when = passwordUpdatedDate(PWD.updatedAt);
+    const meta = document.createElement("span");
+    meta.className = "sec-pwd-meta";
+    meta.textContent =
+      PWD.hasPassword && when
+        ? t("security.password.updated_at", "上次更新：{date}").replace(
+            "{date}",
+            when,
+          )
+        : t("security.password.never", "从未设置");
+    statusEl.appendChild(meta);
+
+    editBtn.disabled = false;
+    editBtn.classList.remove("hidden");
+    editBtn.textContent = PWD.hasPassword
+      ? t("security.password.change_button", "修改密码")
+      : t("security.password.set_button", "设置密码");
+    removeBtn.classList.toggle("hidden", !PWD.hasPassword);
+    removeBtn.disabled = !PWD.hasPassword;
+  }
+
+  async function loadPasswordStatus() {
+    const { data, status } = await fetchApiResult(
+      API + "/auth/password",
+      { credentials: "same-origin" },
+    );
+    loadError.password = status;
+    PWD =
+      data && typeof data === "object"
+        ? {
+            hasPassword: !!data.hasPassword,
+            updatedAt: Number(data.updatedAt) || 0,
+          }
+        : null;
+    renderPasswordStatus();
+  }
+
+  function passwordModalEl() {
+    return document.getElementById("password-modal");
+  }
+
+  function showPasswordModalError(msg) {
+    const errEl = document.getElementById("password-modal-error");
+    if (!errEl) return;
+    const text = msg || "";
+    errEl.textContent = text;
+    errEl.classList.toggle("hidden", !text);
+  }
+
+  // 三种模式共用一套骨架，只换标题 / 按钮文案 / 可见字段
+  function openPasswordModal(mode) {
+    const modal = passwordModalEl();
+    if (!modal) return;
+    pwdMode = mode;
+    const needCurrent = mode === "change" || mode === "remove";
+    const needNew = mode !== "remove";
+
+    const title = document.getElementById("password-modal-title");
+    const submit = document.getElementById("password-modal-submit");
+    const note = document.getElementById("password-modal-note");
+    const cur = document.getElementById("pwd-current");
+    const nw = document.getElementById("pwd-new");
+    const cf = document.getElementById("pwd-confirm");
+
+    // 每次打开都是干净的表单：清掉上一轮的输入与报错
+    for (const input of [cur, nw, cf]) if (input) input.value = "";
+    showPasswordModalError("");
+
+    document
+      .getElementById("pwd-current-field")
+      .classList.toggle("hidden", !needCurrent);
+    document
+      .getElementById("pwd-new-field")
+      .classList.toggle("hidden", !needNew);
+    document
+      .getElementById("pwd-confirm-field")
+      .classList.toggle("hidden", !needNew);
+
+    if (title) {
+      title.textContent =
+        mode === "remove"
+          ? t("security.password.modal.remove_title", "移除密码")
+          : mode === "change"
+            ? t("security.password.modal.change_title", "修改密码")
+            : t("security.password.modal.set_title", "设置密码");
+    }
+    if (submit) {
+      submit.textContent =
+        mode === "remove"
+          ? t("security.password.modal.remove_submit", "移除密码")
+          : t("security.password.modal.save", "保存");
+      // 移除是破坏性操作：换 .btn-danger，避免和「保存」长成一模一样
+      submit.className =
+        mode === "remove" ? "btn btn-danger" : "btn btn-primary";
+    }
+    if (note) {
+      note.textContent =
+        mode === "remove"
+          ? t(
+              "security.password.confirm.remove",
+              "移除后只能用 Passkey 或恢复码登录。确定继续？",
+            )
+          : "";
+      note.classList.toggle("hidden", mode !== "remove");
+    }
+
+    Anotify.openModal(modal);
+    // 同步聚焦，不要用 setTimeout(…, 30) 延迟：那个延迟回调会与「用户（或密码管理器）
+    // 立刻点进另一个输入框」赛跑，把焦点从当前输入框抢走——实测在慢速机器上
+    // 会让键入落到错误的字段（当前密码框变成 old+new 拼接、新密码框被清空）。
+    // openModal 已同步摘掉 hidden/flex，元素此刻就可聚焦。
+    const first = needCurrent ? cur : nw;
+    if (first) first.focus();
+  }
+
+  function closePasswordModal() {
+    const modal = passwordModalEl();
+    if (modal) Anotify.closeModal(modal);
+    showPasswordModalError("");
+  }
+
+  async function submitPasswordModal() {
+    if (pwdBusy) return;
+    const cur = document.getElementById("pwd-current");
+    const nw = document.getElementById("pwd-new");
+    const cf = document.getElementById("pwd-confirm");
+    const submit = document.getElementById("password-modal-submit");
+    const currentPassword = cur ? cur.value : "";
+    const newPassword = nw ? nw.value : "";
+
+    showPasswordModalError("");
+
+    // ---- 前端校验：不合格就地报错，不发请求 ----
+    if (pwdMode !== "remove") {
+      // 按码点数（与后端 PasswordMin/MaxLen 的 rune 计数一致）
+      const len = Array.from(newPassword).length;
+      if (!len) {
+        showPasswordModalError(t("security.password.err_empty", "请输入密码"));
+        if (nw) nw.focus();
+        return;
+      }
+      if (len < 8) {
+        showPasswordModalError(
+          t("security.password.err_short", "密码至少 8 个字符"),
+        );
+        if (nw) nw.focus();
+        return;
+      }
+      if (len > 128) {
+        showPasswordModalError(
+          t("security.password.err_long", "密码最多 128 个字符"),
+        );
+        if (nw) nw.focus();
+        return;
+      }
+      if (newPassword !== (cf ? cf.value : "")) {
+        showPasswordModalError(
+          t("security.password.err_mismatch", "两次输入的密码不一致"),
+        );
+        if (cf) cf.focus();
+        return;
+      }
+    }
+    // 修改与移除都要先验当前密码
+    if (pwdMode !== "set" && !currentPassword) {
+      showPasswordModalError(t("security.password.err_empty", "请输入密码"));
+      if (cur) cur.focus();
+      return;
+    }
+
+    pwdBusy = true;
+    if (submit) submit.disabled = true;
+    try {
+      const body =
+        pwdMode === "remove"
+          ? { currentPassword }
+          : pwdMode === "change"
+            ? { currentPassword, newPassword }
+            : { newPassword };
+      const res = await fetch(API + "/auth/password", {
+        method: pwdMode === "remove" ? "DELETE" : "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        // 后端文案优先（例：409 的「至少保留一种登录方式：…」）
+        let msg = "HTTP " + res.status;
+        try {
+          const data = await res.json();
+          if (data && data.error) msg = data.error;
+        } catch (_) {
+          /* 非 JSON 响应：保留状态码 */
+        }
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      toast(
+        pwdMode === "remove"
+          ? t("security.password.toast.removed", "密码已移除")
+          : t("security.password.toast.saved", "密码已保存"),
+      );
+      closePasswordModal();
+      await loadPasswordStatus();
+    } catch (e) {
+      const status = (e && e.status) || 0;
+      const msg = String((e && e.message) || e);
+      // 409 = 「没有 Passkey 时不允许移除密码」的护栏：原样展示服务端文案，
+      // 不包一层自己编的规则说明。
+      showPasswordModalError(
+        status === 409
+          ? msg
+          : t("security.password.toast.failed", "操作失败：{msg}").replace(
+              "{msg}",
+              msg,
+            ),
+      );
+    } finally {
+      pwdBusy = false;
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  // 绑定：入口按钮、取消、提交、点遮罩关闭（Esc 在文件末尾与 enroll-modal 共用）
+  document.getElementById("password-edit-btn").addEventListener("click", () => {
+    openPasswordModal(PWD && PWD.hasPassword ? "change" : "set");
+  });
+  document
+    .getElementById("password-remove-btn")
+    .addEventListener("click", () => openPasswordModal("remove"));
+  document
+    .getElementById("password-modal-cancel")
+    .addEventListener("click", () => closePasswordModal());
+  document
+    .getElementById("password-modal-submit")
+    .addEventListener("click", () => submitPasswordModal());
+  (function bindPasswordModal() {
+    const modal = passwordModalEl();
+    if (!modal) return;
+    // 点遮罩关闭：只有点在遮罩本身（不是面板内部）才算（与 keys.html 同一判据）
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closePasswordModal();
+    });
+    // 弹层里回车 = 提交（输入法组合中的 Enter 忽略，与登录页同一判据）
+    modal.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitPasswordModal();
+    });
+  })();
+
   // ==================== 页面组装 ====================
   Anotify.mountLayout({
     active: "security",
     scopeLevel: "deployment",
     title: t("security.title", "安全与登录"),
-    subtitle: t("security.subtitle", "Passkey · 会话 · 恢复码"),
+    subtitle: t("security.subtitle", "Passkey · 密码 · 会话 · 恢复码"),
   });
   loadPasskeys();
   loadSessions();
+  loadPasswordStatus();
   loadRecoveryStatus();
   maybeShowRecoveryNudge();
-  /* 下拉刷新：重新拉取 Passkey、会话与恢复码状态 */
+  /* 下拉刷新：重新拉取 Passkey、会话、密码状态与恢复码状态 */
   mountPullRefresh(async () => {
     recoveryPlaintext = null;
-    await Promise.all([loadPasskeys(), loadSessions(), loadRecoveryStatus()]);
+    await Promise.all([
+      loadPasskeys(),
+      loadSessions(),
+      loadPasswordStatus(),
+      loadRecoveryStatus(),
+    ]);
   });
 
   // ==================== Passkey 新设备授权弹层 ====================
@@ -2593,9 +3063,16 @@
     loadPasskeys();
   }
 
-  // Esc 关闭
+  // Esc 关闭弹层。enroll-modal 与 password-modal 共用同一个监听（不各装一个
+  // 互相抢）：谁开着就关谁；两个都开着时先关叠在上面的密码弹层。
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    const pwd = document.getElementById("password-modal");
+    if (pwd && !pwd.classList.contains("hidden")) {
+      e.preventDefault();
+      closePasswordModal();
+      return;
+    }
     const modal = document.getElementById("enroll-modal");
     if (modal.classList.contains("hidden")) return;
     closeEnrollModal();

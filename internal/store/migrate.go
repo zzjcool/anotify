@@ -35,7 +35,7 @@ const baselineVersion = 1
 // 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
 // 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
 // （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
-const headVersion = 7
+const headVersion = 8
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)

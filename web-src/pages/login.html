@@ -267,6 +267,36 @@
         width: 16px;
         height: 16px;
       }
+
+      /* ---- 「或」分隔 + 用密码登录（第二套登录模型，Passkey 仍是主路径）----
+         只在不可切换的 .auth-or 上声明 display（它永远可见）；
+         #password-panel 的显隐交给 JS 切 .hidden，这里绝不写 display，
+         否则页级规则会盖掉 ui.css 的 .hidden !important。
+         颜色只取 tokens，不出现硬编码色值。 */
+      .auth-or {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.4;
+        letter-spacing: 0.08em;
+      }
+      /* 两侧细线用 ::before/::after 画，避免为两根线再加 DOM 节点 */
+      .auth-or::before,
+      .auth-or::after {
+        content: "";
+        flex: 1 1 auto;
+        height: 1px;
+        background: var(--line);
+      }
+      .auth-or span {
+        flex: 0 0 auto;
+      }
+      /* 密码表单内部节奏（表单自身的高度由内容决定，不参与分屏拉伸） */
+      .auth-password > * + * {
+        margin-top: 10px;
+      }
       .auth-recovery-toggle svg {
         width: 14px;
         height: 14px;
@@ -610,7 +640,8 @@
         </button>
       </div>
 
-      <!-- 登录面板（仅 Passkey，无需输入用户名） -->
+      <!-- 登录面板：Passkey 一键登录（主路径，无需输入用户名）
+           + 可收起的「用密码登录」表单（第二套登录模型）。 -->
       <div id="login-panel" class="auth-panel">
         <button
           id="login-btn"
@@ -632,6 +663,57 @@
           </svg>
           <span>{{t "login.login.button"}}</span>
         </button>
+
+        <!-- 或：用密码登录。默认收起，展开前不占高度；
+             #password-panel 初值带 hidden，由 JS 切显隐并同步 aria-expanded。 -->
+        <div class="auth-or"><span>{{t "login.password.or"}}</span></div>
+        <button
+          type="button"
+          id="password-login-toggle"
+          class="btn btn-ghost auth-submit"
+          aria-expanded="false"
+          aria-controls="password-panel"
+        >
+          {{t "login.password.toggle"}}
+        </button>
+        <form id="password-panel" class="auth-password hidden" novalidate>
+          <div class="field">
+            <label class="field-label" for="password-username"
+              >{{t "login.password.username_label"}}</label
+            >
+            <input
+              id="password-username"
+              class="input"
+              type="text"
+              autocomplete="username"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              maxlength="32"
+              placeholder="{{t "login.password.username_placeholder"}}"
+            />
+          </div>
+          <div class="field">
+            <label class="field-label" for="password-password"
+              >{{t "login.password.password_label"}}</label
+            >
+            <input
+              id="password-password"
+              class="input"
+              type="password"
+              autocomplete="current-password"
+              placeholder="{{t "login.password.password_placeholder"}}"
+            />
+          </div>
+          <button
+            type="submit"
+            id="password-login-btn"
+            class="btn btn-primary auth-submit"
+          >
+            {{t "login.password.button"}}
+          </button>
+          <p class="field-hint">{{t "login.password.hint"}}</p>
+        </form>
       </div>
 
       <!-- 注册面板 -->
@@ -680,6 +762,61 @@
           </svg>
           <span>{{t "login.signup.button"}}</span>
         </button>
+
+        <!-- 或：用用户名 + 密码注册（第二套注册方式，不要求 WebAuthn ——
+             没有 Passkey 的浏览器也能注册）。默认收起，展开前不占高度；
+             #password-signup-panel 初值带 hidden，由 JS 切显隐并同步 aria-expanded。
+             上面 #signup-btn 的 Passkey ceremony 一行都不动。 -->
+        <div class="auth-or">
+          <span>{{t "login.signup.password.or"}}</span>
+        </div>
+        <button
+          type="button"
+          id="password-signup-toggle"
+          class="btn btn-ghost auth-submit"
+          aria-expanded="false"
+          aria-controls="password-signup-panel"
+        >
+          {{t "login.signup.password.toggle"}}
+        </button>
+        <form
+          id="password-signup-panel"
+          class="auth-password hidden"
+          novalidate
+        >
+          <div class="field">
+            <label class="field-label" for="signup-password"
+              >{{t "login.signup.password.password_label"}}</label
+            >
+            <input
+              id="signup-password"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="{{t "login.signup.password.password_placeholder"}}"
+            />
+          </div>
+          <div class="field">
+            <label class="field-label" for="signup-password-confirm"
+              >{{t "login.signup.password.confirm_label"}}</label
+            >
+            <input
+              id="signup-password-confirm"
+              class="input"
+              type="password"
+              autocomplete="new-password"
+              placeholder="{{t "login.signup.password.confirm_placeholder"}}"
+            />
+          </div>
+          <button
+            type="submit"
+            id="password-signup-btn"
+            class="btn btn-primary auth-submit"
+          >
+            {{t "login.signup.password.button"}}
+          </button>
+          <p class="field-hint">{{t "login.signup.password.hint"}}</p>
+        </form>
 
         <div class="auth-note">
           <svg
@@ -1248,6 +1385,93 @@
         }
         loginBtn.addEventListener("click", doLogin);
 
+        /* ---------- 用密码登录（第二套登录模型）----------
+         Passkey 仍是主路径：下方的密码表单默认收起，展开后才发请求。
+         端点：POST /v1/auth/password/login { username, password } */
+        const pwdToggle = document.getElementById("password-login-toggle");
+        const pwdPanel = document.getElementById("password-panel");
+        const pwdUserInput = document.getElementById("password-username");
+        const pwdPassInput = document.getElementById("password-password");
+        const pwdLoginBtn = document.getElementById("password-login-btn");
+        let pwdBusy = false;
+
+        // 展开/收起：#password-panel 的 hidden、aria-expanded、按钮文案三者同步。
+        // 展开后把焦点送进用户名；收起后交回 Passkey 按钮（键盘用户不丢焦点）。
+        pwdToggle.addEventListener("click", () => {
+          const expand = pwdPanel.classList.contains("hidden");
+          pwdPanel.classList.toggle("hidden", !expand);
+          pwdToggle.setAttribute("aria-expanded", expand ? "true" : "false");
+          pwdToggle.textContent = expand
+            ? t("login.password.toggle_hide", "收起密码登录")
+            : t("login.password.toggle", "用密码登录");
+          if (expand) {
+            hideStatus();
+            pwdUserInput.focus();
+          } else {
+            loginBtn.focus();
+          }
+        });
+
+        async function doPasswordLogin() {
+          if (pwdBusy) return;
+          hideStatus();
+          const username = pwdUserInput.value.trim();
+          // 密码本身不 trim 后再发送：首尾空白是密码的一部分（后端只拒绝全空白），
+          // trim 仅用于判断「有没有填」——否则带尾空白的密码永远登不上。
+          const password = pwdPassInput.value;
+          if (!username || !password.trim()) {
+            showStatus(
+              t("login.password.err_empty", "请填写用户名和密码。"),
+              "warn",
+            );
+            return;
+          }
+          pwdBusy = true;
+          pwdLoginBtn.disabled = true;
+          const prevLabel = pwdLoginBtn.textContent;
+          pwdLoginBtn.textContent = t("login.password.busy", "正在登录…");
+          try {
+            await postJSON("/v1/auth/password/login", {
+              username,
+              password,
+            });
+            showStatus(
+              t("login.password.success", "登录成功，正在进入工作台…"),
+              "success",
+            );
+            navigate(nextTarget(), 500);
+          } catch (e) {
+            // 限速（IP / 用户名 10 次每分钟）单独说清楚，
+            // 不能伪装成凭据错误，否则用户会拿同一个密码一直重试。
+            if ((e && e.status) === 429) {
+              showStatus(
+                t(
+                  "login.password.err_rate_limited",
+                  "尝试过于频繁，请稍后再试。",
+                ),
+                "warn",
+              );
+            } else {
+              // postJSON 的 message 已经是「服务端 error 或 HTTP <status>」。
+              showStatus(
+                t("login.password.err_failed", "密码登录失败：{msg}").replace(
+                  "{msg}",
+                  (e && e.message) || String(e),
+                ),
+                "error",
+              );
+            }
+          } finally {
+            pwdBusy = false;
+            pwdLoginBtn.disabled = false;
+            pwdLoginBtn.textContent = prevLabel;
+          }
+        }
+        pwdPanel.addEventListener("submit", (e) => {
+          e.preventDefault(); // 单页表单：不发原生 POST，也不跳转
+          doPasswordLogin();
+        });
+
         /* ---------- 注册 ---------- */
         const signupBtn = document.getElementById("signup-btn");
         async function doSignup() {
@@ -1372,12 +1596,184 @@
         }
         signupBtn.addEventListener("click", doSignup);
 
+        /* ---------- 用用户名 + 密码注册（第二套注册方式）----------
+         **不要求 WebAuthn**：没有 Passkey 的浏览器也能走这条路。
+         端点：POST /v1/auth/password/register { username, displayName, password }，
+         成功同样回一组一次性恢复码，直接复用 #codes-modal 展示。 */
+        const pwdSignupToggle = document.getElementById(
+          "password-signup-toggle",
+        );
+        const pwdSignupPanel = document.getElementById(
+          "password-signup-panel",
+        );
+        const signupPwdInput = document.getElementById("signup-password");
+        const signupPwdConfirm = document.getElementById(
+          "signup-password-confirm",
+        );
+        const pwdSignupBtn = document.getElementById("password-signup-btn");
+        let pwdSignupBusy = false;
+
+        // 展开/收起：与「用密码登录」同款——hidden / aria-expanded / 文案三者同步，
+        // 展开后把焦点送进新密码，收起后交回 Passkey 注册按钮（键盘用户不丢焦点）。
+        pwdSignupToggle.addEventListener("click", () => {
+          const expand = pwdSignupPanel.classList.contains("hidden");
+          pwdSignupPanel.classList.toggle("hidden", !expand);
+          pwdSignupToggle.setAttribute(
+            "aria-expanded",
+            expand ? "true" : "false",
+          );
+          pwdSignupToggle.textContent = expand
+            ? t("login.signup.password.toggle_hide", "收起密码注册")
+            : t("login.signup.password.toggle", "用密码注册");
+          if (expand) {
+            hideStatus();
+            signupPwdInput.focus();
+          } else {
+            signupBtn.focus();
+          }
+        });
+
+        // 密码长度按**码点**数（Array.from 展开），与后端 auth.ValidatePassword 的
+        // rune 计数一致：用 .length 会把 emoji / 生僻字算成 2 个字符，误判为「太长」。
+        function passwordProblem(password, confirm) {
+          const chars = Array.from(String(password || "")).length;
+          if (!chars) {
+            return t("login.signup.password.err_empty", "请设置密码。");
+          }
+          if (chars < 8) {
+            return t(
+              "login.signup.password.err_short",
+              "密码至少 8 个字符。",
+            );
+          }
+          if (chars > 128) {
+            return t(
+              "login.signup.password.err_long",
+              "密码最多 128 个字符。",
+            );
+          }
+          if (String(password) !== String(confirm)) {
+            return t(
+              "login.signup.password.err_mismatch",
+              "两次输入的密码不一致。",
+            );
+          }
+          return "";
+        }
+
+        async function _doPasswordSignup() {
+          const usernameInput = document.getElementById("new-username");
+          hideStatus();
+          // 用户名复用注册面板既有的校验/错误位（#username-error），不另写一套。
+          if (!refreshUsername(true)) {
+            usernameInput.focus();
+            return;
+          }
+          const username = usernameInput.value.trim();
+          // 密码不 trim 后再发送：首尾空白是密码的一部分（后端只拒绝全空白），
+          // trim 仅用于「有没有填」的判断——否则带尾空白的密码永远登不上。
+          const password = signupPwdInput.value;
+          const problem = passwordProblem(password, signupPwdConfirm.value);
+          if (problem) {
+            showStatus(problem, "warn");
+            return;
+          }
+          pwdSignupBtn.disabled = true;
+          const prevLabel = pwdSignupBtn.textContent;
+          pwdSignupBtn.textContent = t(
+            "login.signup.password.busy",
+            "正在创建账号…",
+          );
+          try {
+            const reg = await postJSON("/v1/auth/password/register", {
+              username,
+              displayName: username,
+              password,
+            });
+            const codes = Array.isArray(reg && reg.recoveryCodes)
+              ? reg.recoveryCodes.filter(Boolean)
+              : [];
+            if (codes.length) {
+              showCodesPanel(codes, () => {
+                navigate(nextTarget());
+              });
+            } else {
+              showStatus(
+                t(
+                  "login.signup.password.success",
+                  "注册成功！正在进入工作台…",
+                ),
+                "success",
+              );
+              navigate(nextTarget(), 600);
+            }
+          } catch (e) {
+            // 限速（IP 10 次/分钟）单独说清楚，不能伪装成「用户名已存在」。
+            if ((e && e.status) === 429) {
+              showStatus(
+                t(
+                  "login.signup.password.err_rate_limited",
+                  "注册过于频繁，请稍后再试。",
+                ),
+                "warn",
+              );
+            } else {
+              // 与 Passkey 注册共用同一条失败模板
+              // （{msg} = 服务端 error 或 postJSON 抛的 HTTP <status>）。
+              showStatus(
+                t("login.status.signup_failed", "注册失败：").replace(
+                  "{msg}",
+                  (e && e.message) || String(e),
+                ),
+                "error",
+              );
+            }
+          } finally {
+            pwdSignupBusy = false;
+            pwdSignupBtn.disabled = false;
+            pwdSignupBtn.textContent = prevLabel;
+          }
+        }
+        async function doPasswordSignup() {
+          if (pwdSignupBusy) return;
+          pwdSignupBusy = true;
+          try {
+            await _doPasswordSignup();
+          } finally {
+            pwdSignupBusy = false;
+          }
+        }
+        pwdSignupPanel.addEventListener("submit", (e) => {
+          e.preventDefault(); // 单页表单：不发原生 POST，也不跳转
+          doPasswordSignup();
+        });
+
         /* ---------- 回车提交 ---------- */
         // 注意：中文输入法选词时按 Enter 确认候选词，e.key 也可能是 "Enter"，
         // 必须忽略 isComposing / keyCode 229（输入法组合中），否则候选词确认被误判为提交。
         window.addEventListener("keydown", (e) => {
           if (e.key !== "Enter") return;
           if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，忽略
+          // 密码表单自带 submit 处理：在它内部按回车时交给原生 submit，
+          // 否则会额外触发一次 Passkey 登录 ceremony。
+          if (pwdPanel.contains(e.target)) return;
+          // 密码注册表单同理：内部的回车交给它的原生 submit（上面已绑），
+          // 否则会额外触发一次 Passkey 注册 ceremony。
+          if (pwdSignupPanel.contains(e.target)) return;
+          // 密码注册面板展开时，#new-username 不在表单内：这里的回车应提交密码注册
+          // （用户刚填完用户名就去填密码），而不是悄悄启动 Passkey ceremony。
+          if (
+            !signupPanel.classList.contains("hidden") &&
+            !pwdSignupPanel.classList.contains("hidden")
+          ) {
+            e.preventDefault();
+            if (typeof pwdSignupPanel.requestSubmit === "function") {
+              pwdSignupPanel.requestSubmit();
+            } else {
+              pwdSignupBtn.click();
+            }
+            return;
+          }
           const rp = document.getElementById("recovery-panel");
           if (rp && !rp.classList.contains("hidden")) {
             doRecoveryLogin();

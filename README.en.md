@@ -3,8 +3,8 @@
 [中文](README.md) | **[English](README.en.md)**
 
 Push notifications to all your devices (iOS / Mac / PC / Android) automatically
-when an Agent finishes a task. Passkey passwordless login, no polling, single
-binary — easy to self-host.
+when an Agent finishes a task. Passkey passwordless login (or an optional
+password), no polling, single binary — easy to self-host.
 
 > This repository evolved from a prototype (iOS Web Push proof-of-concept) into
 > a full implementation. See `design/` for mockups and `design/tech-scheme.html`
@@ -103,7 +103,8 @@ After start:
 
 - **Public**: <https://dev.openaaas.org>
 - **Local**: <http://localhost:8080>
-- Homepage redirects to login → register your first Passkey (first user auto-admin)
+- Homepage redirects to login → create the first account with a Passkey or a username + password (first user auto-admin)
+- Prefer a password? Pick password sign-up on the form, or set one later under **Security & login** (Passkey and password coexist)
 - server log: `tail -f /tmp/anotify-dev.log`; tunnel log: `tail -f /tmp/anotify-tunnel.log`
 
 | Command | Purpose |
@@ -153,7 +154,10 @@ go run ./cmd/devseed     # seed test user + keys + sessions
 | Endpoint | Description |
 | --- | --- |
 | `POST /v1/auth/register[/options]` | Passkey registration |
+| `POST /v1/auth/password/register` | Password sign-up (username + password) |
 | `POST /v1/auth/login[/options]` | Passkey login |
+| `POST /v1/auth/password/login` | Password login (username + password) |
+| `GET/POST/DELETE /v1/auth/password` | Password status / set / change / remove (session required) |
 | `POST /v1/notify` | **Agent reporting** (Bearer Key, scope=notify:send) |
 | `GET /v1/stream` | WebSocket receiving (Bearer Key, scope=notify:receive) |
 | `GET/POST /v1/devices` | Push subscription device management |
@@ -193,7 +197,7 @@ cmd/devseed/        test seeding tool
 internal/
   store/            SQLite data access + schema
   broker/           message queue abstraction + SQLiteBroker
-  auth/             Passkey(WebAuthn) + API Key(argon2id) + sessions
+  auth/             Passkey(WebAuthn)/password sign-up + password(argon2id) + API Key(argon2id) + sessions
   api/              /v1/notify reporting
   ws/               WebSocket dispatcher
   push/             Web Push dispatcher(VAPID)
@@ -209,6 +213,7 @@ design/             mockups + technical spec
 
 - API Keys are stored as **argon2id hashes only**; plaintext shown once at creation,
   with scope (notify:send / notify:receive / devices:read)
-- Passkey (WebAuthn) passwordless; sessions via httpOnly cookies
+- Passkey (WebAuthn) passwordless; an optional password can be set at sign-up or later under Security & login. Sessions via httpOnly cookies
+- **Every account keeps at least one login method**: deleting the last Passkey requires a password, removing the password requires a Passkey
 - Push payloads end-to-end encrypted (p256dh/auth), VAPID private key stays server-side
 - `vapid.json` / `*.db` / `.env.local` are gitignored — do not commit

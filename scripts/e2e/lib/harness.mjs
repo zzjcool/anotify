@@ -596,6 +596,8 @@ export const SUITE_PORTS = {
 	ui_shift: 7100,
 	// P2 工程守卫（p2_guards）：Chrome 类，接在 ui_shift 段之后（7100 段到 7149 止）。
 	p2_guards: 7200,
+	// 密码登录（password_login）：Chrome 类，接在 p2_guards 段之后（7200 段到 7249 止）。
+	password_login: 7250,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

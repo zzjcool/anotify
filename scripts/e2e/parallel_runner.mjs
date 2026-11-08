@@ -73,6 +73,9 @@ const CHROME_SUITES = [
 	"ui_shift",
 	// P2 工程守卫：字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions
 	"p2_guards",
+	// 密码登录（第二套登录模型）：真后端 + 真 Chrome，覆盖设置/修改/移除密码、
+	// 密码登录与 Passkey 并存、最后一个 Passkey 删除护栏
+	"password_login",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 

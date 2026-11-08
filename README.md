@@ -3,7 +3,7 @@
 **[中文](README.md)** | [English](README.en.md)
 
 Agent 完成任务后，把通知自动推送到你的所有设备（iOS / Mac / PC / Android）。
-Passkey 无密码登录、无需轮询、单二进制易自托管。
+Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进制易自托管。
 
 > 本仓库由原型（iOS Web Push 机制验证）演进为完整实现。
 > 设计稿见 `design/`，技术方案见 `design/tech-scheme.html`。
@@ -99,7 +99,8 @@ make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
 
 - **公网**：<https://dev.openaaas.org>
 - **本地**：<http://localhost:8080>
-- 首页跳登录页 → 注册首个 Passkey（首个用户自动成管理员）
+- 首页跳登录页 → 注册首个账号：可用 Passkey，也可选「用户名 + 密码」（首个用户自动成管理员）
+- 想用密码登录？注册时直接选密码注册，或登录后在「安全与登录」页设置（Passkey 与密码两套模型并存）
 - server 日志：`tail -f /tmp/anotify-dev.log`；tunnel 日志：`tail -f /tmp/anotify-tunnel.log`
 
 | 命令 | 用途 |
@@ -161,7 +162,10 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 | 端点 | 说明 |
 | --- | --- |
 | `POST /v1/auth/register[/options]` | Passkey 注册 |
+| `POST /v1/auth/password/register` | 密码注册（用户名 + 密码） |
 | `POST /v1/auth/login[/options]` | Passkey 登录 |
+| `POST /v1/auth/password/login` | 密码登录（用户名 + 密码） |
+| `GET/POST/DELETE /v1/auth/password` | 密码状态 / 设置 / 修改 / 移除（需会话） |
 | `POST /v1/notify` | **Agent 上报**（Bearer Key，scope=notify:send） |
 | `GET /v1/stream` | WebSocket 接收（Bearer Key，scope=notify:receive） |
 | `GET/POST /v1/devices` | 推送订阅设备管理 |
@@ -200,7 +204,7 @@ cmd/devseed/        测试播种工具
 internal/
   store/            SQLite 数据访问 + schema
   broker/           消息队列抽象 + SQLiteBroker
-  auth/             Passkey(WebAuthn) + API Key(argon2id) + 会话
+  auth/             Passkey(WebAuthn)/密码注册 + 密码(argon2id) + API Key(argon2id) + 会话
   api/              /v1/notify 上报
   ws/               WebSocket 派发器
   push/             Web Push 派发器(VAPID)
@@ -215,6 +219,7 @@ design/             设计稿 + 技术方案
 ## 安全
 
 - API Key **只存 argon2id 哈希**，明文仅创建时显示一次，带 scope（notify:send / notify:receive / devices:read）
-- Passkey(WebAuthn) 无密码；会话 httpOnly Cookie
+- Passkey(WebAuthn) 无密码；也可注册时选密码，或登录后在安全页设置密码作为第二套登录方式；会话 httpOnly Cookie
+- **每个账号至少保留一种登录方式**：删除最后一个 Passkey 需先设置密码，移除密码需先有 Passkey
 - 推送载荷端到端加密（p256dh/auth），VAPID 私钥只在服务端
 - `vapid.json` / `*.db` / `.env.local` 已 gitignore，勿提交
