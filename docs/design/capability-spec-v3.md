@@ -274,3 +274,62 @@ SELECT DISTINCT name FROM capability_versions WHERE json_extract(spec,'$.handler
 - `make e2e-one S=deploy` / `S=ws_protocol` / `S=real_backend` / `S=live_agent`
 - 手工确认：`notify.phone` 的推送链路仍能跑（`make demo-chain` 或 `live_agent` 套件）
 - 确认 `artifacts` 表已不存在（`schema_baseline_test.go` 这类断言要跟着更新）
+
+## 12. 预案 manifest v2（P5）
+
+预案就是**一份可导入的配置**：一组能力 + 它们之间的边 + 触发器。P5 把它从「名字清单」
+升级成能表达完整 spec 的清单。
+
+### 12.1 形状
+
+```jsonc
+{
+  "capabilities": [
+    // ① 引用已有定义（含内置）：不新建任何行
+    { "ref": "review@2" },
+    { "ref": "notify.phone" },            // 裸名字 = 跟随 latest
+
+    // ② 内联完整产物：装出来就是一份真能跑的能力
+    { "spec": {
+        "apiVersion": "anotify/v1",
+        "kind": "Capability",
+        "metadata": { "name": "review", "version": 1, "displayName": "审查" },
+        "spec": { "params": {...}, "outputs": ["needs-fix"], "run": { "entrypoint": "run.sh",
+                  "files": { "run.sh": "#!/usr/bin/env bash\n…" }, "timeoutSec": 900 } }
+    } }
+  ],
+
+  "edges": [
+    { "from": "review", "fromPort": "needs-fix", "to": "apply-fix@1",
+      "literals": { "mode": "safe" },   // 常量覆盖（语义同 edges.literals）
+      "priority": 0 }                    // 同端口候选的优先级
+  ],
+
+  "triggers": [
+    { "name": "pr-review-github",        // 可选；省略时沿用 <slug>-<kind>-<idx>
+      "kind": "github",
+      "config": { "event": "pull_request", "resultSchema": {...} },
+      "enabled": true,
+      "targets": [                       // 入口边；mapping 只在入口边允许
+        { "to": "review", "mapping": { "repo": "{{repository.full_name}}" } }
+      ] }
+  ]
+}
+```
+
+### 12.2 三条硬规则
+
+1. **`ref` 与 `spec` 恰好给一个**。两个都给 / 都不给 → 400。
+2. **内联 `spec` 只允许两种实现形式**：脚本形式（`run.files`+`entrypoint`），或 `handler: "noop"`。
+   **禁止 manifest 携带其他 handler** —— 否则一份配置文件就能把任意能力挂到中枢执行，
+   I1 直接破掉。要「链尾发推送」请 `ref: notify.phone`。
+3. **装出来的能力必须能通过 `artifact.Validate`**：install 在落库前逐条校验，失败带下标 400，
+   引用不到的名字（`ref` / 边的端点）带下标 400 —— 不允许「装了一半」。
+
+### 12.3 兼容与幂等
+
+- 旧 manifest（`{name, version, outputs, paramsSchema, runner}`）**继续接受**，
+  等价于一条 `handler: noop` 的内联 spec（与 P1-b1 的回填口径一致）。
+- 已存在的 `name@version`：内容相同 → 归入 `skipped`；内容不同 → **skip + note**（append-only，
+  绝不覆盖用户改过的实现）。
+- install 仍然只做「能力 → 边 → 源」，单事务，冲突只 skip。
