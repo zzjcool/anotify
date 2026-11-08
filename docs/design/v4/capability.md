@@ -63,8 +63,8 @@ spec:
     files:
       run.sh: |
         #!/usr/bin/env bash
-        anotify-agent emit fixer    --data '{"file":"a.go"}'
-        anotify-agent emit notify --data '{"text":"ok"}'
+        anode emit fixer    --data '{"file":"a.go"}'
+        anode emit notify --data '{"text":"ok"}'
     env: { GIT_TERMINAL_PROMPT: "0" }
     workDir: "~/src/{{repo}}"
 
@@ -243,38 +243,39 @@ digest = sha256( canonical{
 
 ## 4. 运行语义
 
-### 4.0 谁在 emit：任务身份与存活窗口
+### 4.0 谁在 emit：一个接口、一个令牌
 
-一台节点可以**同时**跑多个任务。`emit` 之所以不会串，靠的是**每个任务一条独立通道 + 一个独立令牌**，
-不是靠"猜当前是哪个任务"：
+节点上只有一个守护进程 **`anode`**，它**只开一个监听**（默认 unix socket；可配成 TCP，
+以便跨用户、跨容器的能力也能调）。没有"每个任务一条通道"这回事。
+
+能力不关心自己是什么形态（脚本、二进制、进程内的实现都一样），要做的事只有一件：
+**带着本次任务的令牌，调这个接口。**
 
 ```bash
-# 节点 agent 启动任务进程时注入（cmd/agent/emit.go）
-ANOTIFY_EMIT_SOCK  = /…/task-<taskid>.sock   # 这条任务专属的 unix socket
-ANOTIFY_TASK_TOKEN = <每次任务随机生成>       # 凭据
+# 脚本里（CLI 只是薄封装）
+anode emit fixer --data '{"file":"a.go"}'
+
+# 它等价于一次请求，任何语言都能自己发
+POST /emit
+{ "token": "$ANOTIFY_TASK_TOKEN", "to": "fixer", "data": { "file": "a.go" } }
 ```
 
-能力脚本只写 `anotify-agent emit <name> --data …`；CLI 内部连 `$ANOTIFY_EMIT_SOCK`、带 `$ANOTIFY_TASK_TOKEN`。
-agent 校验令牌（不匹配直接拒收），再以协议帧转发给中枢：
+**身份来自令牌，不来自通道**：`ANOTIFY_TASK_TOKEN` 是高熵、每任务一个的凭据，
+守护进程按 `token → 任务` 查出 task / trace / 能力版本。所以：
 
-```go
-type EmitFrame struct {
-    TaskID string  // 哪个任务 —— trace / 能力 / 版本 全由它带出
-    Seq    int64   // 同一任务内第几次 emit（v4 允许 0..N 次）
-    To     string  // 下游能力名（name 或 name@version）；v4 起**必填**
-    Data   …
-}
-```
-
-并发安全性由此成立：N 个任务 = N 条 socket + N 个令牌；能力 fork 出的子进程继承 env，
-也只能发**父任务**的 emit；拿不到别的任务的令牌，伪造直接拒收。
+- 跨用户、跨容器、跨机器的调用者都是同一条路径；
+- 脚本 fork 出的子进程继承 env，仍然只能发**父任务**的 emit；
+- 没有第二种调用形态（不再有"进程内句柄"那条路径）——一种凭据，一条代码路径，一份测试面。
 
 **不变量 I8（emit 的存活窗口）**：
 
-> 一次任务的 `emit` 只能发生在**该任务的存活期内**。任务结束后 socket 关闭，
-> 迟到的 `emit`（例如脚本 `nohup` 出去的后台进程）是**错误**，不补发、不重投。
+> 一个 emit 必须被归属到一个**当前处于运行态**的任务。任务结束（完成 / 失败 / cancel /
+> 租约过期）后，迟到的 emit 一律**拒绝**，不补发、不重投。
 
-要「慢活」就把那部分做成**下游能力**，让链条继续——不允许一个已经结束的任务从背后补一刀，
+这条由守护进程在**一处**守：收到请求先 `token → task`，任务不在运行态直接拒。
+（所以实现上换 socket 布局、换监听方式都不影响它——它是语义，不是实现。）
+
+要「慢活」就把那部分做成**下游能力**，让链条继续；不允许一个已经结束的任务从背后补一刀，
 否则「这份产物属于哪次运行」永远说不清。
 
 ### 4.1 `emit <name> --data <json>`
@@ -379,6 +380,7 @@ type EmitFrame struct {
 
 | 期 | 内容 | 门禁 |
 |---|---|---|
+| **P9-0** | 改名 `anotify-agent` → `anode`（含 `cmd/anode`、`anode.yaml`、systemd 单元、Dockerfile、install skill、e2e 夹具，约 460 处）— 必须全绿才算完 |
 | **P9-a** | `spec.next` 形状 + digest 边界调整 + `edges` 派生 + migration 12 | `go test ./...`、`make contract`、e2e deploy/ws_protocol |
 | **P9-b** | agent CLI：`emit <name>`（去 `--port` / `--to`）、`unknown_target` / `missing_target` | `live_agent`、`routing` |
 | **P9-c** | 派发：同名直取（删 mapping/literals/priority 的读路径）+ 一次派发内快照 | `routing`、`edge_cases` |
@@ -428,7 +430,7 @@ spec:
         set -euo pipefail
         if grep -rq 'TODO' .; then
           # fixer 要 file（必填无 default）—— 只给它要的
-          anotify-agent emit fixer --data '{"file":"a.go"}'
+          anode emit fixer --data '{"file":"a.go"}'
         fi
 ```
 
@@ -455,8 +457,8 @@ spec:
       run.sh: |
         #!/usr/bin/env bash
         set -euo pipefail
-        anotify-agent emit fixer    --data '{"file":"a.go"}'
-        anotify-agent emit notify --data '{"text":"审查完成"}'
+        anode emit fixer    --data '{"file":"a.go"}'
+        anode emit notify --data '{"text":"审查完成"}'
 ```
 
 两次 emit 各带各的字段，各自只对**那一个**下游的 `params` 负责。缺 `file` 只剪 fixer 那条，notify 照常。
@@ -484,7 +486,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         ./deploy.sh "$ANOTIFY_PARAM_SHA"
-        anotify-agent emit notify --data '{"text":"deploy ok"}'
+        anode emit notify --data '{"text":"deploy ok"}'
 ---
 apiVersion: anotify/v1
 kind: Capability
