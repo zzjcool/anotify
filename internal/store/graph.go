@@ -202,6 +202,17 @@ func createEdgeTx(ctx context.Context, ex queryExec, e *Edge) error {
 	if strings.TrimSpace(e.FromRef) == "" || e.FromPort == "" || strings.TrimSpace(e.ToRef) == "" {
 		return fmt.Errorf("%w: from/port/to all required", ErrEdgeRejected)
 	}
+	// 优先级必须与 PUT …/downstreams 同一条口径。
+	//
+	// 为什么必须在这里也拦：`createEdgeTx` 是 POST /capabilities 的 `links[]` 与
+	// /batch 的 `links[]` 的写入口，而那个入口**没有** priority 的校验；只有
+	// `ReplaceDownstreams` 查 [0,1000]。同一个值走 A 路径 400、走 B 路径静默入库——
+	// 而 priority 直接决定候选顺序（小的先走），越界值会让“为什么这条线永远不跑”
+	// 变成一件靠猜的事。
+	if e.Priority < DownstreamPriorityMin || e.Priority > DownstreamPriorityMax {
+		return fmt.Errorf("%w: priority_out_of_range: priority %d out of range [%d, %d]",
+			ErrEdgeRejected, e.Priority, DownstreamPriorityMin, DownstreamPriorityMax)
+	}
 
 	// 右端（I11 第 ① 条）：引用必须在本命名空间里解析得到。
 	// 解析不到 / 跨命名空间 → 都是客户端可修的错误（400）。

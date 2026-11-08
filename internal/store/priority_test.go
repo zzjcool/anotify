@@ -136,3 +136,41 @@ func TestEdgePriorityInGraphSnapshot(t *testing.T) {
 		t.Fatalf("快照里没有 priority：%s", g2.Snapshot)
 	}
 }
+
+// TestCreateEdgeRejectsOutOfRangePriority 钉住「两条写路径同一条口径」。
+//
+// 背景：`ReplaceDownstreams`（PUT …/downstreams）一直查 [0,1000]，而
+// `createEdgeTx`（POST /capabilities 的 links[]、/batch 的 links[]）以前**完全不查**
+// —— 同一个值走 A 路径 400、走 B 路径静默入库。priority 直接决定候选顺序
+// （小的先走），越界值会让「为什么这条线永远不跑」变成一件靠猜的事。
+func TestCreateEdgeRejectsOutOfRangePriority(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	for _, name := range []string{"prio.src", "prio.dst"} {
+		if err := db.CreateCapability(ctx, withSpec(mkCap(nsID, name, 1, []string{"out"}))); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	edge := func(priority int) error {
+		return db.CreateEdge(ctx, &Edge{
+			NamespaceID: nsID, FromRef: "prio.src", FromPort: "out",
+			ToRef: "prio.dst", Priority: priority,
+		})
+	}
+	for _, bad := range []int{-1, DownstreamPriorityMax + 1} {
+		err := edge(bad)
+		if err == nil {
+			t.Fatalf("priority %d 应该被拒（越界会静默影响候选顺序）", bad)
+		}
+		if !strings.Contains(err.Error(), "priority_out_of_range") {
+			t.Fatalf("priority %d 的错误码应可机器识别，got %v", bad, err)
+		}
+	}
+	// 边界值合法（含 0 —— 它就是默认值，omitempty 只影响序列化）。
+	for _, ok := range []int{0, DownstreamPriorityMin, DownstreamPriorityMax} {
+		if err := edge(ok); err != nil {
+			t.Fatalf("priority %d 应该合法: %v", ok, err)
+		}
+	}
+}

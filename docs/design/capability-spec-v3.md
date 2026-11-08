@@ -1,6 +1,6 @@
 # Capability Spec v3 · 冻结契约
 
-> 状态：**冻结**（2026-11-07）。实施中若要改本文，先改本文再改代码，禁止「代码这么写所以文档也这么写」。
+> 状态：**冻结 · 已全部落地**（冻结 2026-11-07，P1–P6 于 2026-11-08 交付完成）。实施中若要改本文，先改本文再改代码，禁止「代码这么写所以文档也这么写」。
 > 权威性：本文取代 `docs/design/playbooks.md` §2（定义/产物分离）与 `api/openapi.yaml` 的 `CapabilityInput`。
 > `docs/contracts/CONTRACT.md` §2.2/§2.8 是陈旧副本（写着 `-- +migration 13` + `org_id`），与 `schema.sql` 不符，**以本文和 `schema.sql` 为准**。
 
@@ -8,7 +8,7 @@
 
 ## 0. 一句话
 
-**能力 = 一份不可卖的、自包含的规格。规格里既有契约，也有实现。**
+**能力 = 一份不可变的、自包含的规格。规格里既有契约，也有实现。**
 
 不存在「定义」与「实现」两个物体。过去的 `capability_versions`（壳） + `artifacts`（实现）是本契约要消灭的形态。
 
@@ -274,6 +274,14 @@ SELECT DISTINCT name FROM capability_versions WHERE json_extract(spec,'$.handler
 - `make e2e-one S=deploy` / `S=ws_protocol` / `S=real_backend` / `S=live_agent`
 - 手工确认：`notify.phone` 的推送链路仍能跑（`make demo-chain` 或 `live_agent` 套件）
 - 确认 `artifacts` 表已不存在（`schema_baseline_test.go` 这类断言要跟着更新）
+
+## 11.5 已知空洞（P6 的门禁查出来、不在本次范围内）
+
+| 项 | 现状 | 处置 |
+|---|---|---|
+| `lifecycle.retryable` / `expiresInSec` | 进 digest、会往返，但**没有任何代码读它** | 文档与 openapi 已标「保留字段，当前不生效」。要真做重试是另一个特性 |
+| `store.UpdateEdgePriority` | 唯一能原地改边优先级的实现，但**没有 HTTP 入口** | 保留（有测试、`downstreams` 全量替换也走它）；要单独改优先级再加路由 |
+| 边优先级的范围校验 | `ReplaceDownstreams` 查 `[0,1000]`，`createEdgeTx`（`links[]` 两条写路径）以前不查 | **已修**：`createEdgeTx` 同一条口径，`TestCreateEdgeRejectsOutOfRangePriority` |
 
 ## 12. 预案 manifest v2（P5）
 

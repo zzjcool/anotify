@@ -4121,8 +4121,16 @@ components:
         lifecycle:
           type: object
           properties:
-            expiresInSec: { type: integer }
-            retryable: { type: boolean }
+            expiresInSec:
+              type: integer
+              description: >-
+                **保留字段，当前不生效**：进 digest、会往返，但没有任何代码读它（重试与过期
+                策略尚未实现）。写在这里是为了把形状钉住，不代表行为存在。
+            retryable:
+              type: boolean
+              description: >-
+                **保留字段，当前不生效**：进 digest、会往返，但没有任何代码读它。
+                不要据此期待重试会发生。
             maxAttempts: { type: integer }
             resultTtlSec: { type: integer }
             idempotent:
