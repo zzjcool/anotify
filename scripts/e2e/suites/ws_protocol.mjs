@@ -39,10 +39,16 @@ let server, session, sendKey, nsId;
 // （缺 run → 400 impl_missing，Capability Spec v3 §5）。
 const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
 
+// 造数走 P4 的 spec 形状（Capability Spec v3 §5）：契约与实现都在 spec 里。
 async function defineCapability(name, outputs = [], extra = {}) {
+	const { paramsSchema, requires, sticky, lifecycle, run, ...outer } = extra;
+	const spec = { outputs, params: paramsSchema || { type: "object" }, run: run || MIN_RUN };
+	if (requires) spec.requires = requires;
+	if (sticky) spec.sticky = sticky;
+	if (lifecycle) spec.lifecycle = lifecycle;
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { run: MIN_RUN, name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
+		body: { name, ...outer, spec },
 	});
 	if (r.status !== 200) throw new Error(`define ${name}: ${r.status} ${r.text}`);
 	return r.json.capability;
@@ -58,9 +64,11 @@ async function defineCapabilityWithRun(name, outputs, script, requires = []) {
 		session,
 		body: {
 			name,
-			outputs,
-			requires,
-			run: { entrypoint: "run.sh", files: { "run.sh": script } },
+			spec: {
+				outputs,
+				requires,
+				run: { entrypoint: "run.sh", files: { "run.sh": script } },
+			},
 		},
 	});
 	if (r.status !== 200) throw new Error(`define ${name}: ${r.status} ${r.text}`);

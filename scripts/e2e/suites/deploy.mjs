@@ -63,11 +63,14 @@ async function pollUntil(fn, { timeoutMs = 6000, intervalMs = 50 } = {}) {
 
 // mkCapability 建一个带 run 的能力，返回 {id,name,version,digest}。
 async function mkCapability(name, { script = OK_SCRIPT, outputs = [], requires = [], version } = {}) {
+	// P4：请求体是 spec 形状（Capability Spec v3 §5）——契约与实现都在 spec 里。
 	const body = {
 		name,
-		outputs,
-		requires,
-		run: { entrypoint: "run.sh", files: { "run.sh": script } },
+		spec: {
+			outputs,
+			requires,
+			run: { entrypoint: "run.sh", files: { "run.sh": script } },
+		},
 	};
 	if (version) body.version = version;
 	const r = await H.req(server.base, "/v1/capabilities", { session, body });
@@ -183,8 +186,10 @@ async function main() {
 			body: {
 				name: "dep.hello",
 				version: cap.version,
-				outputs: ["go"],
-				run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				spec: {
+					outputs: ["go"],
+					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				},
 			},
 		});
 		H.eq("同内容同版本重复建 → 200（幂等，不是 409）", again.status, 200);
@@ -201,8 +206,10 @@ async function main() {
 			session,
 			body: {
 				name: "dep.hello",
-				outputs: ["go"],
-				run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				spec: {
+					outputs: ["go"],
+					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				},
 			},
 		});
 		H.eq("同内容省略版本重复建 → 200", reup.status, 200);
@@ -224,11 +231,17 @@ async function main() {
 			body: {
 				name: "dep.hello",
 				version: nextVer,
-				outputs: ["go"],
-				run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				spec: {
+					outputs: ["go"],
+					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+				},
 			},
 		});
-		H.eq(`同内容显式 v${nextVer} → 200（显式版本永不折叠）`, reupV2.status, 200);
+		H.check(
+			`同内容显式 v${nextVer} → 200（显式版本永不折叠）`,
+			reupV2.status === 200,
+			`${reupV2.status} ${String(reupV2.text).slice(0, 240)}`,
+		);
 		H.eq(`→ 能力行确实是 v${nextVer}`, reupV2.json?.capability?.version, nextVer);
 		H.check(
 			`→ version 进 digest：v${nextVer} 的 digest 与 v${cap.version} 不同（§3.2）`,
@@ -247,7 +260,7 @@ async function main() {
 			session,
 			body: {
 				name: "dep.badshebang",
-				run: { entrypoint: "run.sh", files: { "run.sh": "echo no-shebang\n" } },
+				spec: { run: { entrypoint: "run.sh", files: { "run.sh": "echo no-shebang\n" } } },
 			},
 		});
 		H.eq("入口无 shebang → 400", bad.status, 400);
@@ -302,7 +315,8 @@ async function main() {
 	{
 		const plain = await H.req(server.base, "/v1/capabilities", {
 			session,
-			body: { name: "dep.noartifact", outputs: [] },
+			// P4：spec 里**没有 run** → 缺实现。
+			body: { name: "dep.noartifact", spec: { outputs: [] } },
 		});
 		H.eq("建能力不带 run → 400", plain.status, 400);
 		H.eq("→ code=impl_missing（能力必须有实现）", plain.json?.code, "impl_missing");

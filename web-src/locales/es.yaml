@@ -1097,10 +1097,24 @@ caps:
     params: 'Parámetros'
     no_params: 'Esta plantilla no tiene parámetros'
     required: 'obligatorio'
-    script: 'Script generado'
+    files: Archivos
+    files_hint: 'Cada archivo forma parte de la capacidad. El archivo de entrada se ejecuta directamente (sin shell), así que su primera línea debe ser un shebang #!.'
+    file_ph: 'p. ej. lib/helper.sh'
+    file_add: Añadir archivo
+    file_pick_hint: Haz clic para editar este archivo
+    file_set_entry: Marcar como entrada
+    file_del: Eliminar este archivo
+    file_err_empty: El nombre del archivo no puede estar vacío
+    file_err_long: El nombre del archivo es demasiado largo
+    file_err_slash: 'Usa una ruta relativa separada por / (sin barras invertidas)'
+    file_err_abs: 'Debe ser una ruta relativa (no puede empezar por /)'
+    file_err_empty_seg: 'La ruta contiene un segmento vacío (//)'
+    file_err_dotdot: 'La ruta no puede contener segmentos . ni ..'
+    file_err_dup: 'Ya existe un archivo con ese nombre: {name}'
+    file_err_none: 'Se requiere al menos un archivo: es la implementación'
+    file_err_no_entry: El archivo de entrada no está en la lista
     script_view: 'Solo lectura'
     script_edit: 'Editar script'
-    script_hint: 'El script se ejecuta directamente (sin shell), así que la primera línea debe ser un shebang #!.'
     schema_advanced: "Contrato de parámetros"
     schema_toggle: "Editar JSON"
     schema_visual: "Visual"
@@ -1164,6 +1178,8 @@ caps:
     none_selected: 'Selecciona al menos una máquina'
     no_nodes: 'Este espacio de nombres aún no tiene nodos'
     err: 'Fallo al desplegar: '
+    builtin: Lo ejecuta el hub — no requiere despliegue
+    builtin_hint: 'El ejecutor integrado {name} corre dentro del proceso del hub; no necesita ni admite despliegue en nodos'
   list:
     title: Capacidades
   form:
@@ -1224,6 +1240,15 @@ caps:
     err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
     workdir: Directorio de trabajo
     workdir_hint: 'Ruta absoluta que empieza por /, o una ruta que empieza por ~/ (la ~ se expande en el nodo al directorio home del usuario del agent); si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
+    env: Variables de entorno
+    env_hint: 'Un valor vacío significa que lo aporta el entorno del nodo (p. ej. GH_TOKEN). El prefijo ANOTIFY_ está reservado.'
+    env_add: + Añadir variable
+    env_value_ph: Valor (vacío = lo aporta el entorno del nodo)
+    env_del: Eliminar esta variable
+    env_err_key: El nombre de la variable no puede estar vacío
+    env_err_name: 'Los nombres solo admiten letras, dígitos y guiones bajos, y no pueden empezar por dígito'
+    env_err_reserved: El prefijo ANOTIFY_ está reservado por el contrato y no se puede sobrescribir
+    env_err_dupe: 'Variable de entorno duplicada: {key}'
   detail:
     btn: Detalles
     params: Contrato de parámetros
@@ -1255,9 +1280,11 @@ caps:
     unknown: '—'
     script: Script
     script_entrypoint: entrada
-    script_empty: Esta capacidad aún no tiene artefacto (sin script al definirla, o sin desplegar)
     script_failed: No se pudo cargar el script
     retry: Reintentar
+    executor: Ejecutor
+    executor_builtin: 'Integrado {name} (lo ejecuta el hub)'
+    script_builtin: 'Ejecutor integrado {name}: la implementación está compilada en el proceso del hub, así que no hay archivos de script'
   edit:
     btn: Editar
     title: 'Nueva versión: {name}'
@@ -1265,7 +1292,6 @@ caps:
     from_version: 'Copiado de {ref}'
     sticky_carried: 'Enrutado fijo {v}'
     lifecycle_carried: 'Ciclo de vida {v}'
-    no_artifact: Esta capacidad aún no tiene artefacto — el script empieza en blanco
     name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
     multi_output_note: 'Esta capacidad se ramifica por más de un camino posterior (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
     submit: Publicar nueva versión
@@ -1277,6 +1303,8 @@ caps:
     impact_links: 'Aristas que se romperán (apuntan al nombre, así que la nueva versión es su destino)'
     impact_no_links: Ninguna arista que sigue la última se ve afectada
     force: Publicar igualmente
+    artifact_failed: No se pudo cargar la implementación; no se puede publicar (se perderían archivos)
+    builtin_locked: 'Capacidad integrada ejecutada por el hub: la implementación vive en el hub y no se puede editar aquí'
   add:
     btn: destino
     title: 'Añadir posterior'

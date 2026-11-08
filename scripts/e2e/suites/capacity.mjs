@@ -62,8 +62,11 @@ async function mkCustomCap(server, session, ns, name) {
 		body: {
 			namespaceId: ns,
 			name,
-			paramsSchema: { type: "object" },
-			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+			// P4：请求体是 spec 形状（Capability Spec v3 §5）。
+			spec: {
+				params: { type: "object" },
+				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+			},
 		},
 	});
 	const id = r.json?.capability?.id;

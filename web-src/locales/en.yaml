@@ -1097,10 +1097,24 @@ caps:
     params: 'Parameters'
     no_params: 'This template has no parameters'
     required: 'required'
-    script: 'Generated script'
+    files: Files
+    files_hint: 'Every file is part of the capability. The entry file is executed directly (no shell), so its first line must be a #! shebang.'
+    file_ph: 'e.g. lib/helper.sh'
+    file_add: Add file
+    file_pick_hint: Click to edit this file
+    file_set_entry: Set as entry
+    file_del: Delete this file
+    file_err_empty: File name cannot be empty
+    file_err_long: File name is too long
+    file_err_slash: 'Use a relative path with / separators (no backslashes)'
+    file_err_abs: 'Must be a relative path (cannot start with /)'
+    file_err_empty_seg: 'Path contains an empty segment (//)'
+    file_err_dotdot: 'Path cannot contain . or .. segments'
+    file_err_dup: 'A file with that name already exists: {name}'
+    file_err_none: 'At least one file is required — it is the implementation'
+    file_err_no_entry: The entry file is not in the file list
     script_view: 'Read-only'
     script_edit: 'Edit script'
-    script_hint: 'The script is executed directly (no shell), so the first line must be a #! shebang.'
     schema_advanced: "Parameter contract"
     schema_toggle: "Edit JSON"
     schema_visual: "Visual"
@@ -1164,6 +1178,8 @@ caps:
     none_selected: 'Select at least one machine'
     no_nodes: 'This namespace has no nodes yet'
     err: 'Deploy failed: '
+    builtin: Executed by the hub — no deployment needed
+    builtin_hint: 'The built-in executor {name} runs inside the hub process; it neither needs nor accepts node deployment'
   list:
     title: Capabilities
   form:
@@ -1224,6 +1240,15 @@ caps:
     err_timeout: 'Timeout must be an integer between 0 and 86400'
     workdir: Work dir
     workdir_hint: 'An absolute path starting with /, or a path starting with ~/ (the ~ is expanded on the node to the agent user''s home directory); if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
+    env: Environment variables
+    env_hint: 'An empty value means the node environment provides it (e.g. GH_TOKEN). The ANOTIFY_ prefix is reserved.'
+    env_add: + Add a variable
+    env_value_ph: Value (empty = provided by the node environment)
+    env_del: Remove this variable
+    env_err_key: Variable name cannot be empty
+    env_err_name: 'Variable names may only contain letters, digits and underscores, and cannot start with a digit'
+    env_err_reserved: The ANOTIFY_ prefix is reserved by the contract and cannot be overridden
+    env_err_dupe: 'Duplicate environment variable: {key}'
   detail:
     btn: Details
     params: Parameter contract
@@ -1255,9 +1280,11 @@ caps:
     unknown: '—'
     script: Script
     script_entrypoint: entrypoint
-    script_empty: This capability has no artifact yet (no script given at definition time, or not deployed)
     script_failed: Failed to load the script
     retry: Retry
+    executor: Executor
+    executor_builtin: 'Built-in {name} (executed by the hub)'
+    script_builtin: 'Built-in executor {name}: the implementation is compiled into the hub process, so there are no script files'
   edit:
     btn: Edit
     title: 'New version: {name}'
@@ -1265,7 +1292,6 @@ caps:
     from_version: 'Copied from {ref}'
     sticky_carried: 'Sticky routing {v}'
     lifecycle_carried: 'Lifecycle {v}'
-    no_artifact: This capability has no artifact yet — start the script from blank
     name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
     multi_output_note: 'This capability fans out along more than one downstream path (legacy data): the structure is preserved as-is and is not edited here.'
     submit: Publish new version
@@ -1277,6 +1303,8 @@ caps:
     impact_links: 'Edges that will break (they bind to the name, so the new version is what they point to)'
     impact_no_links: No follow-latest downstream is affected by this version
     force: Publish anyway
+    artifact_failed: Could not load the implementation — publishing is blocked (it would drop files)
+    builtin_locked: 'Built-in capability executed by the hub: the implementation lives in the hub and cannot be edited here'
   add:
     btn: downstream
     title: 'Add downstream'

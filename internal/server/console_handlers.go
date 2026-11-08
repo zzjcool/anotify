@@ -897,26 +897,25 @@ func (h *consoleHandler) abandonTask(w http.ResponseWriter, r *http.Request) {
 
 // capabilityListRequest 是 POST /v1/capabilities 的请求体（camelCase）。
 //
+// P4 起请求体是 **spec 形状**（Capability Spec v3 §5 的 P4 列）：契约与实现一起装在
+// `spec` 里，服务端**不再派生任何字段**（派生列由 store 从 spec 单向算出，契约 §4）。
+// 旧的扁平字段（paramsSchema / outputs / run / requires / sticky / lifecycle / balance）
+// 全部删除：留在 decode 结构里只会让「同一个字段有两个来历」的旧病复发。
+//
 // NamespaceID 也可以放在 query 里（query 优先，见 namespaceParam）；
 // body 与 query 都没给 → 400（绝不回退默认命名空间）。
 type capabilityListRequest struct {
-	NamespaceID  string           `json:"namespaceId"`
-	Name         string           `json:"name"`
-	DisplayName  string           `json:"displayName,omitempty"`
-	Version      int              `json:"version,omitempty"`
-	ParamsSchema json.RawMessage  `json:"paramsSchema,omitempty"`
-	Outputs      []string         `json:"outputs,omitempty"`
-	Sticky       string           `json:"sticky,omitempty"`
-	Lifecycle    *store.Lifecycle `json:"lifecycle,omitempty"`
-	Source       string           `json:"source,omitempty"`
+	NamespaceID string `json:"namespaceId"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Version     int    `json:"version,omitempty"`
 
-	// Run 是这个能力的**实现**（可选）。有 run → 正文里带上 files（产物就是这一行），
-	// 之后就能在控制台点「部署」。没有 run → 纯定义（例如占位节点、内置能力）。
+	// Spec 是能力**正文**（Capability Spec v3 §3）：params / outputs / requires /
+	// lifecycle / sticky + 实现（run 脚本形式，或 handler —— 后者由 HTTP 一律拒绝）。
 	//
-	// v2 的语义变化：执行方式属于能力定义，不再由节点在 node.yaml 里自报。
-	Run *capabilityRunInput `json:"run,omitempty"`
-	// Requires 是机器上必须预装的外部命令（部署时探测，缺了部署失败）。
-	Requires []string `json:"requires,omitempty"`
+	// 用指针是为了区分「没给 spec」与「给了空对象」：前者是 400 impl_missing 的
+	// 机器可读来源（前端据此高亮「实现」那块），后者由 artifact.Validate 报缺实现。
+	Spec *artifact.Spec `json:"spec,omitempty"`
 
 	// Force 显式越过**升级闸门**（P2.2，设计 §3.6）。
 	//
@@ -1223,24 +1222,14 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		// 没有这个字段的话，"没有节点声明"就无法区分"中枢执行"和
 		// "根本没机器能跑"—— 前者是正常的，后者是配了个跑不起来的空壳。
 		ExecutedBy string `json:"executedBy"`
-		// Run 是「这个能力怎么跑」的只读投影（超时 / 工作目录 / 依赖）。
-		//
-		// 真相在正文里（`spec.run`），随 digest 走、中枢只存不解释（I1）。
-		// 之所以在列表里再投影一份：详情页要回答「它跑多久超时、在哪个目录跑」，
-		// 而这属于**能力定义**的一部分（#289），不该要求用户去翻产物。
-		// 取不到 run 时留 null：前端据此显示「—」，而不是把两行藏起来
-		// ——藏起来会让人以为这个能力没有超时。
-		//
-		// **与 Spec 同源**：两者都从同一份 `c.Spec` 算出来（P1-b2 之前这里是读
-		// artifacts 表解一份产物——那张表 P2 已经删了）。P4 删掉这个旧投影。
-		Run *capabilityRunView `json:"run,omitempty"`
 		// Spec 是能力正文（Capability Spec v3 §3）在**列表**里的投影。
 		//
 		// files 的正文件**不进列表**：单文件 256 KiB、合计 1 MiB，一次几十条的能力页
 		// 会被白涨几百 KB，而列表页一行脚本也不展示（详情走懒加载的
 		// GET /v1/capabilities/{id}/artifact）。所以 files 换成 `{count, bytes}` 摘要。
 		//
-		// 与旧的 `run` 投影**同源**：两者都从 `c.Spec` 算（P2 起也没有别的表可反推了）。
+		// 旧里那个 `run` 投影（只给 entrypoint/timeoutSec/workDir）P4 已删（契约 §5）：
+		// 它是 spec.run 的子集，留着就是第二份形状，而两份迟早会分叉。前端改读 spec.run。
 		Spec capabilitySpecView `json:"spec"`
 	}
 	// 每种能力由哪些节点声明。
@@ -1283,7 +1272,6 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 			Kind:              h.capabilityKind(r.Context(), c),
 			DeclaredBy:        list,
 			ExecutedBy:        executedBy,
-			Run:               h.capabilityRun(c),
 			Spec:              specSummary(c.Spec),
 		})
 	}
@@ -1299,7 +1287,41 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 // 「**能力必须有实现**」——用户下一步要做的不是修 JSON，是补一份脚本。占位就用一个
 // 什么都不做、退出码 0 的空脚本，而不是让服务端替他造一个假实现（那会让「未实现」
 // 在列表页和派发链上看不出来）。
-const implMissingMessage = "能力必须有实现：给 run（脚本）或 handler（内置执行器）；占位请写 `exit 0` 的空脚本"
+//
+// P4 起 HTTP 创建只接受脚本形式：`handler` 是**平台侧**的东西（内置播种 / 回填 / 预案），
+// 所以文案里不再把 handler 写成一条可选补救。
+const implMissingMessage = "能力必须有实现：给 spec.run（脚本：files + entrypoint）；" +
+	"handler 只能由内置播种 / 回填 / 预案产生"
+
+// handlerNotAllowedMessage 是 I1 红线（契约 §3.1）的拒绝文案。
+//
+// **API 永不接受 handler**：handler 是编译进中枢进程的白名单执行器，谁能写它谁就能
+// 把任意能力挂到中枢执行 —— 那是 I1（中枢不得执行用户代码）唯一的缺口。所以它不是
+// 「暂时不支持」而是「永远不接受」，也是本端点唯一一条硬性形状检查。
+const handlerNotAllowedMessage = "handler 只能由内置播种 / 回填 / 预案产生；" +
+	"自定义能力请给 run（spec.run：files + entrypoint，由节点执行）"
+
+// rejectUnacceptableSpec 做服务端那两条形状检查，返回要写出去的 400（code + 文案）。
+//
+// 只有两条，其余全部留给 artifact.Validate（一份形状规则只能有一个实现）：
+//
+//	① I1：spec.handler 非空 → 400 `handler_not_allowed`（红线，必须在落库前拦）；
+//	② 契约 §5：`spec` 没给 / 两组实现都没给 → 400 `impl_missing`。
+//	   store 里同样的请求也会被 Validate 拒（ErrCapabilityInvalid），但它给的 code 是
+//	   `invalid_artifact`；`impl_missing` 是**端点**的语义（前端据此高亮实现那块），
+//	   所以在这里先判一次。
+func rejectUnacceptableSpec(spec *artifact.Spec) (code, message string) {
+	if spec == nil {
+		return "impl_missing", implMissingMessage
+	}
+	if spec.Handler != "" {
+		return "handler_not_allowed", handlerNotAllowedMessage
+	}
+	if spec.Run.Entrypoint == "" && len(spec.Run.Files) == 0 {
+		return "impl_missing", implMissingMessage
+	}
+	return "", ""
+}
 
 func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request) {
 	var req capabilityListRequest
@@ -1316,74 +1338,31 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// 形状检查（I1 红线 + 缺实现）必须在**任何写之前**：能力表是 append-only 的，
+	// 一条只建了一半的定义永远改不掉、也永远跑不起来。
+	if code, msg := rejectUnacceptableSpec(req.Spec); code != "" {
+		slog.Warn("create capability rejected: unacceptable spec",
+			"event", "console.caps.rejected",
+			"namespace_id", ns.ID, "name", req.Name, "code", code)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "code": code})
+		return
+	}
 
 	// 省略版本（0）= 「内容寻址的创建」：同一份正文已存在就复用那一行，否则开下一个
 	// 版本。分配在 store 的事务内做（契约 §10-B）—— 这里不再预猜一个号：预猜与真正
 	// 插入之间有一个窗口，并发写者会撞同一个 next。
-	version := req.Version
-
-	schema := req.ParamsSchema
-	if len(schema) == 0 {
-		schema = json.RawMessage(`{"type":"object"}`)
-	}
-	source := req.Source
-	if source == "" {
-		source = store.CapSourceCustom
-	}
 	c := &store.CapabilityVersion{
-		NamespaceID:  ns.ID,
-		Name:         req.Name,
-		DisplayName:  strings.TrimSpace(req.DisplayName),
-		Version:      version,
-		ParamsSchema: schema,
-		Outputs:      req.Outputs,
-		Sticky:       req.Sticky,
-		Source:       source,
-	}
-	if req.Lifecycle != nil {
-		c.Lifecycle = *req.Lifecycle
-	}
-
-	// 正文（spec）在这里组装：P1-b1 的请求体仍是旧的**扁平形状**（契约 §5 把形状切换
-	// 推到 P4），服务端负责把它拼成 spec —— store 只认 spec，派生列由它自己算。
-	//
-	// **缺实现 → 400 `impl_missing`**（契约 §5 / §7 的 P1-b2 行）。这是 P1-b 唯一一处
-	// 行为收紧：P1-b1 时「没有 run」被降级成 `handler: noop` 占位，于是 HTTP 建出来的
-	// 能力从来不含实现 —— 而契约 R2 说的是「一个能力**永远有实现**」，占位只允许由平台
-	// 认领（回填 / 预案安装），不允许由创建端点凭空造一个。所以这里不再兜底：
-	// 要么给 run（脚本），要么这条请求不成立。
-	//
-	// 注意 `noop` 本身没被删：它在 store 里仍然合法（回填与预案安装要用），只是 HTTP
-	// 创建路径不再产生它。
-	if req.Run != nil {
-		// 产物必须在**建能力之前**先校验一遍：一份 run 写错的请求不该留下一个
-		// 只建了一半的能力（append-only 的能力表里，那会成为一条永远改不掉、也
-		// 永远跑不起来的定义）。这里只做校验、不落库 —— 落库用的是 c 归一后的正文。
-		// 预校验用占位版本 1：真正的版本号由 store 在事务内分配（契约 §10-B），
-		// 而 version 只进 digest、不进正文 —— 校验结论与版本无关。
-		probe := *c
-		if probe.Version <= 0 {
-			probe.Version = 1
-		}
-		built, err := buildArtifact(&probe, req.Run, req.Requires)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
-				"code":  "invalid_artifact",
-			})
-			return
-		}
-		c.Spec = built.Spec
-	} else {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": implMissingMessage,
-			"code":  "impl_missing",
-		})
-		return
+		NamespaceID: ns.ID,
+		Name:        req.Name,
+		DisplayName: strings.TrimSpace(req.DisplayName),
+		Version:     req.Version,
+		// 正文原样装进能力行：P4 起服务端**不派生**任何东西（派生列由 store 从 spec
+		// 单向算出，契约 §4 的「一个写者」）。这里填 ParamsSchema / Outputs 之类的
+		// 派生字段是错的方向——它们会被 store 覆盖，而覆盖不掉的那天就是第二真相。
+		Spec: *req.Spec,
 	}
 
 	// 带 links → 原子路径（能力 + 产物 + 边，同一事务，要么全成要么全不成）。
-	// 不带 links → 今天的行为一个字节都不变（下面这条路径）。
 	if len(req.Links) > 0 {
 		h.createCapabilityWithLinks(w, r, ns, c, req)
 		return
@@ -1395,6 +1374,22 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	//  1. 前端要能**先看到**「这一版会让哪几条 link 断」（不是先被拒再猜）；
 	//  2. 破坏性变更且没传 force → 409 带结构化 impact，而不是一句
 	//     “conflict”（那会被当成「版本号重了」，与「会改线」完全不是一回事）。
+	//
+	// 闸门读的是「契约投影」（outputs / params），而这一行**还没进** store 的
+	// deriveFromSpec（那是写入时才发生的，契约 §4 的唯一写者）。P4 起 HTTP 层不再
+	// 自己派生这些列，所以这里从正文做一次**同向**搬运（spec → 列，方向与 store 一致，
+	// 不做反向反推），只为了让预计算看到真实的契约：
+	// 否则每个「删出口 / 改入参」都会被误判成破坏性变更（旧版有出口、新版看起来没有）。
+	// 落库的值仍由 store 在事务里重算，两处同向同口径。
+	if c.Outputs == nil {
+		c.Outputs = []string{}
+	}
+	c.Outputs = c.Spec.Outputs
+	if len(c.Spec.Params) > 0 {
+		c.ParamsSchema = c.Spec.Params
+	} else {
+		c.ParamsSchema = json.RawMessage(`{}`)
+	}
 	impact, err := h.db.CheckUpgrade(r.Context(), ns.ID, c)
 	if err != nil {
 		if handleNamespaceError(w, err) {
@@ -1402,14 +1397,14 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		}
 		slog.Error("capability upgrade check failed",
 			"event", "console.caps.upgrade_check_failed",
-			"namespace_id", ns.ID, "name", req.Name, "version", version, "error", err.Error())
+			"namespace_id", ns.ID, "name", req.Name, "version", req.Version, "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	if impact.Breaking && !req.Force {
 		slog.Warn("capability upgrade rejected by gate",
 			"event", "console.caps.upgrade_rejected",
-			"namespace_id", ns.ID, "name", req.Name, "version", version,
+			"namespace_id", ns.ID, "name", req.Name, "version", req.Version,
 			"changes", len(impact.Changes), "links", len(impact.Links))
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":         (&store.UpgradeBreakingError{Impact: impact}).Error(),
@@ -1431,7 +1426,7 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		if errors.As(err, &breaking) {
 			slog.Warn("create capability rejected by upgrade gate",
 				"event", "console.caps.upgrade_rejected",
-				"namespace_id", ns.ID, "name", req.Name, "version", version)
+				"namespace_id", ns.ID, "name", req.Name, "version", req.Version)
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error":         breaking.Error(),
 				"code":          "upgrade_breaking",
@@ -1454,7 +1449,7 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		// 「同 name@version 换内容」与「同内容已有」由 store 区分，这里统一按冲突处理
 		slog.Warn("create capability rejected",
 			"event", "console.caps.create_rejected",
-			"name", req.Name, "version", version, "error", err.Error())
+			"name", req.Name, "version", c.Version, "error", err.Error())
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": err.Error(),
 			"code":  "capability_conflict",
@@ -1470,27 +1465,28 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		// 前端不必为「这一次到底查过没有」判空，也不必自己再算一遍。
 		"upgradeImpact": impact,
 	}
-	if req.Run != nil {
-		// **用 c 归一后的正文**重建产物：store 可能把行改成另一份内容（幂等重放回到
-		// 已有那一行），此时请求里的版本号是过期的。行上的 Spec 才是权威的那份正文
-		// ——从它拼产物，与 capability_versions.spec 与 content_hash 天然同源。
-		built := c.Artifact()
-		saved, digest, err := newStoreArtifact(ns.ID, c.ID, &built)
-		if err != nil {
-			// 纯计算也能失败（canonical 序列化 / digest）——那说明正文本身有问题，
-			// 不是「能力建了但产物没存」：产物就是这一行的正文，没有第二步可失败。
-			slog.Error("build artifact failed",
-				"event", "console.caps.artifact_failed",
-				"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "capability created but artifact could not be built: " + err.Error(),
-				"code":  "artifact_build_failed",
-			})
-			return
-		}
-		resp["artifact"] = saved
-		resp["digest"] = digest
+	// **用 c 归一后的正文**重建产物：store 可能把行改成另一份内容（幂等重放回到
+	// 已有那一行），此时请求里的版本号是过期的。行上的 Spec 才是权威的那份正文
+	// ——从它拼产物，与 capability_versions.spec 与 content_hash 天然同源。
+	//
+	// P4 起不需要条件：HTTP 创建**只**接受脚本形式（handler 在入口就被 400 拒了），
+	// 所以「建成了却没产物」这个分支已经不存在，digest/artifact 恒在。
+	built := c.Artifact()
+	saved, digest, err := newStoreArtifact(ns.ID, c.ID, &built)
+	if err != nil {
+		// 纯计算也能失败（canonical 序列化 / digest）——那说明正文本身有问题，
+		// 不是「能力建了但产物没存」：产物就是这一行的正文，没有第二步可失败。
+		slog.Error("build artifact failed",
+			"event", "console.caps.artifact_failed",
+			"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "capability created but artifact could not be built: " + err.Error(),
+			"code":  "artifact_build_failed",
+		})
+		return
 	}
+	resp["artifact"] = saved
+	resp["digest"] = digest
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1540,19 +1536,16 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 	// 归一化之后版本号可能变，而产物里嵌着 name@version（digest 也吃它）。
 	// 用请求里的版本建产物 = 写出一份元数据与能力定义不一致、digest 也算错的产物。
 	var digest string
-	var build store.ArtifactBuilder
-	if req.Run != nil {
-		build = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
-			// 正文以事务内归一后的那一行为准（见上面的 ArtifactBuilder 注释）：
-			// 从行拼产物，digest 与 content_hash 必然同源。
-			built := authoritative.Artifact()
-			row, dg, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &built)
-			if berr != nil {
-				return nil, berr
-			}
-			digest = dg
-			return row, nil
+	build := func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
+		// 正文以事务内归一后的那一行为准（见上面的 ArtifactBuilder 注释）：
+		// 从行拼产物，digest 与 content_hash 必然同源。
+		built := authoritative.Artifact()
+		row, dg, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &built)
+		if berr != nil {
+			return nil, berr
 		}
+		digest = dg
+		return row, nil
 	}
 
 	res, err := h.db.CreateCapabilityWithLinksAndArtifact(r.Context(), c, req.Links, build, req.Force)
@@ -1730,69 +1723,37 @@ func (h *consoleHandler) createCapabilitiesBatch(w http.ResponseWriter, r *http.
 		}
 		force = force || item.Force
 
-		// 省略版本（0）= 内容寻址（父注释）；分配在 store 事务内做。
-		version := item.Version
-
-		schema := item.ParamsSchema
-		if len(schema) == 0 {
-			schema = json.RawMessage(`{"type":"object"}`)
-		}
-		source := item.Source
-		if source == "" {
-			source = store.CapSourceCustom
-		}
-		c := &store.CapabilityVersion{
-			NamespaceID:  ns.ID,
-			Name:         item.Name,
-			DisplayName:  strings.TrimSpace(item.DisplayName),
-			Version:      version,
-			ParamsSchema: schema,
-			Outputs:      item.Outputs,
-			Sticky:       item.Sticky,
-			Source:       source,
-		}
-		if item.Lifecycle != nil {
-			c.Lifecycle = *item.Lifecycle
-		}
-
-		// 正文（spec）在这里组装，口径与单建逐字一致（见 createCapability）：
-		// 有 run → 产物正文；没有 run → **400 impl_missing**（与单建逐字一致）。
-		//
-		// 产物必须在**建能力之前**先校验一遍（与单建同一个理由）：一份 run 写错的
-		// 请求不该留下一个永远跑不起来的定义。这里只校验、不落库。
-		if item.Run != nil {
-			// 预校验用占位版本 1（同单建：版本号由 store 事务内分配）。
-			probe := *c
-			if probe.Version <= 0 {
-				probe.Version = 1
-			}
-			built, err := buildArtifact(&probe, item.Run, item.Requires)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{
-					"error": fmt.Sprintf("capabilities[%d]: %v", i, err),
-					"code":  "invalid_artifact",
-				})
-				return
-			}
-			c.Spec = built.Spec
-			// 落库的产物与能力行必须同源：用事务内**归一后**那一行的正文重建
-			// （幂等重放时版本号可能来自已有行）。
-			builders[i] = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
-				art := authoritative.Artifact()
-				row, _, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &art)
-				if berr != nil {
-					return nil, berr
-				}
-				return row, nil
-			}
-		} else {
-			// 与单建同一条收紧：缺实现是客户端可修的内容错误 → 400。
-			// 批量不整批回滚到“已写部分”：这里还没进事务，一行都还没建。
+		// 形状检查与单建**逐字一致**（同一函数，不写第二份）：I1 红线（handler）
+		// 与缺实现在批量的**每一项**上都要拦，并且要带下标 —— 前端靠它定位第几张卡。
+		if code, msg := rejectUnacceptableSpec(item.Spec); code != "" {
+			slog.Warn("create capabilities batch rejected: unacceptable spec",
+				"event", "console.caps.batch_rejected",
+				"namespace_id", ns.ID, "name", item.Name, "code", code)
 			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": fmt.Sprintf("capabilities[%d]: %s", i, implMissingMessage),
-				"code":  "impl_missing",
+				"error": fmt.Sprintf("capabilities[%d]: %s", i, msg),
+				"code":  code,
 			})
 			return
+		}
+
+		c := &store.CapabilityVersion{
+			NamespaceID: ns.ID,
+			Name:        item.Name,
+			DisplayName: strings.TrimSpace(item.DisplayName),
+			// 省略版本（0）= 内容寻址（父注释）；分配在 store 事务内做。
+			Version: item.Version,
+			// 与单建同一条规则：正文原样入库，派生列交给 store（契约 §4）。
+			Spec: *item.Spec,
+		}
+		// 落库的产物与能力行必须同源：用事务内**归一后**那一行的正文重建
+		// （幂等重放时版本号可能来自已有行）。
+		builders[i] = func(authoritative *store.CapabilityVersion) (*store.Artifact, error) {
+			art := authoritative.Artifact()
+			row, _, berr := newStoreArtifact(authoritative.NamespaceID, authoritative.ID, &art)
+			if berr != nil {
+				return nil, berr
+			}
+			return row, nil
 		}
 		caps = append(caps, c)
 	}
@@ -2635,36 +2596,6 @@ func intParam(raw string, def, min, max int) int {
 		return max
 	}
 	return n
-}
-
-// capabilityRun 返回一个能力「怎么跑」的旧投影（P4 删）。
-//
-// **与 spec 同源**：P1-b2 之前这里要读一次 artifacts 表、解一份完整产物才能拿到
-// run；现在正文就在能力行上（`c.Spec.Run`），而 artifacts 那张镜像表 P2 已整张删除
-// （Capability Spec v3 §11）——绕过去反推既没有表，也是第二份真相。顺带的好处：列表不再每个能力
-// 一次额外查询。
-//
-// 没有 run（handler 形式的内置执行器）返回 nil：这是**正常状态**，前端据此显示「—」，
-// 不该让整个能力列表 500。
-//
-// capabilityRunView 是列表里「怎么跑」的**瘦投影**：不含 files。
-//
-// 为什么必须剥掉 files：artifact.Run 的 files 没有 omitempty，直接把 Run 塞进
-// 列表响应会让**每一行能力都带全部脚本正文**——列表页不需要它（详情区有专门的
-// GET /v1/capabilities/{id}/artifact 懒加载），而一份几十个能力、每个几 KB 脚本的
-// 列表会白涨几百 KB。
-type capabilityRunView struct {
-	Entrypoint string `json:"entrypoint"`
-	TimeoutSec int    `json:"timeoutSec"`
-	WorkDir    string `json:"workDir"`
-}
-
-func (h *consoleHandler) capabilityRun(c *store.CapabilityVersion) *capabilityRunView {
-	if c == nil || runIsZero(c.Spec.Run) {
-		return nil
-	}
-	r := c.Spec.Run
-	return &capabilityRunView{Entrypoint: r.Entrypoint, TimeoutSec: r.TimeoutSec, WorkDir: r.WorkDir}
 }
 
 // capabilityFilesSummary 是列表里 files 的**摘要**（剔除正文，Capability Spec v3 §5）。

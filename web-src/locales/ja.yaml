@@ -1097,10 +1097,24 @@ caps:
     params: 'パラメータ'
     no_params: 'このテンプレートにパラメータはありません'
     required: '必須'
-    script: '生成されたスクリプト'
+    files: ファイル
+    files_hint: 'どのファイルも能力の一部です。エントリファイルは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
+    file_ph: '例: lib/helper.sh'
+    file_add: ファイルを追加
+    file_pick_hint: クリックしてこのファイルを編集
+    file_set_entry: エントリに指定
+    file_del: このファイルを削除
+    file_err_empty: ファイル名は必須です
+    file_err_long: ファイル名が長すぎます
+    file_err_slash: '相対パスを / 区切りで指定してください（バックスラッシュ不可）'
+    file_err_abs: '相対パスである必要があります（/ で始められません）'
+    file_err_empty_seg: 'パスに空のセグメント（//）があります'
+    file_err_dotdot: 'パスに . や .. のセグメントは使えません'
+    file_err_dup: '同名のファイルが既にあります: {name}'
+    file_err_none: 'ファイルが最低 1 つ必要です（それが実装そのものです）'
+    file_err_no_entry: エントリファイルがファイル一覧にありません
     script_view: '読み取り専用'
     script_edit: 'スクリプトを編集'
-    script_hint: 'スクリプトは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
     schema_advanced: "パラメータ契約"
     schema_toggle: "JSON を編集"
     schema_visual: "ビジュアル"
@@ -1164,6 +1178,8 @@ caps:
     none_selected: 'マシンを 1 台以上選んでください'
     no_nodes: 'この名前空間にはまだノードがありません'
     err: '配備に失敗しました: '
+    builtin: 中枢が実行するためデプロイ不要
+    builtin_hint: '組み込みエグゼキュータ {name} は中枢プロセスで動くため、ノードへのデプロイは不要かつ不可です'
   list:
     title: ケイパビリティ一覧
   form:
@@ -1224,6 +1240,15 @@ caps:
     err_timeout: 'タイムアウトは 0〜86400 の整数で指定してください'
     workdir: 作業ディレクトリ
     workdir_hint: '/ で始まる絶対パス、または ~/ で始まるパス（~ はノード上で agent ユーザーのホームディレクトリに展開されます）。存在しない場合はそのまま失敗します（既定のディレクトリへは戻りません）。空 = タスクごとに独立したディレクトリ。'
+    env: 環境変数
+    env_hint: '値が空 = ノードの環境から提供されます（例: GH_TOKEN）。ANOTIFY_ 接頭辞は契約用に予約されています。'
+    env_add: + 変数を追加
+    env_value_ph: 値（空 = ノードの環境から提供）
+    env_del: この変数を削除
+    env_err_key: 変数名は必須です
+    env_err_name: '変数名は英字・数字・アンダースコアのみ、先頭に数字は使えません'
+    env_err_reserved: ANOTIFY_ は契約予約の接頭辞のため上書きできません
+    env_err_dupe: '環境変数が重複しています: {key}'
   detail:
     btn: 詳細
     params: パラメータ契約
@@ -1255,9 +1280,11 @@ caps:
     unknown: '—'
     script: スクリプト
     script_entrypoint: エントリ
-    script_empty: この能力にはまだ成果物がありません（定義時にスクリプト未記入、または未デプロイ）
     script_failed: スクリプトを読み込めませんでした
     retry: 再試行
+    executor: 実行主体
+    executor_builtin: '組み込み {name}（中枢が実行）'
+    script_builtin: '組み込みエグゼキュータ {name}: 実装は中枢プロセスに組み込まれており、スクリプトファイルはありません'
   edit:
     btn: 編集
     title: '新バージョン：{name}'
@@ -1265,7 +1292,6 @@ caps:
     from_version: '{ref} からコピー'
     sticky_carried: 'スティッキー・ルーティング {v}'
     lifecycle_carried: 'ライフサイクル {v}'
-    no_artifact: この能力にはまだ成果物がないため、スクリプトは空から書き始めます
     name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
     multi_output_note: 'このケイパビリティは複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
     submit: 新バージョンを公開
@@ -1277,6 +1303,8 @@ caps:
     impact_links: '壊れる下流（名前を指しているため、新バージョンがその参照先になります）'
     impact_no_links: 最新追従の下流に影響はありません
     force: それでも公開
+    artifact_failed: 実装を読み込めませんでした — この状態では公開できません（ファイルが失われます）
+    builtin_locked: '中枢が実行する組み込み能力です。実装は中枢側にあり、ここでは変更できません'
   add:
     btn: 下流
     title: '下流を追加'

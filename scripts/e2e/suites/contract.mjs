@@ -43,10 +43,23 @@ function A(id, name, cond, detail) {
 // 免得每个用例各写一遍；需要自定义实现的用例照旧自己传 run。
 const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
 
+// defineCapability 是**造数夹具**：body 里用的是 P4 的 spec 形状
+// （Capability Spec v3 §5 —— 契约与实现都装在 spec 里，扁平字段已删除）。
+// extra 里的键（如 paramsSchema / requires / sticky）按 spec 内层字段拼进去；
+// 顶层的 name / version / displayName / force / links 原样留在外层。
 async function defineCapability(name, outputs = [], extra = {}) {
+	const { paramsSchema, requires, sticky, lifecycle, run, ...outer } = extra;
+	const spec = {
+		outputs,
+		params: paramsSchema || { type: "object" },
+		run: run || MIN_RUN,
+	};
+	if (requires) spec.requires = requires;
+	if (sticky) spec.sticky = sticky;
+	if (lifecycle) spec.lifecycle = lifecycle;
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: { run: MIN_RUN, name, outputs, paramsSchema: extra.paramsSchema || { type: "object" }, ...extra },
+		body: { name, ...outer, spec },
 	});
 	return r;
 }
@@ -225,11 +238,14 @@ async function main() {
 	const atomicName = "c.atomic";
 	const atomicRes = await H.req(server.base, "/v1/capabilities", {
 		session,
+		// P4：请求体是 spec 形状（Capability Spec v3 §5）：契约与实现都装在 spec 里。
 		body: {
-			run: MIN_RUN,
 			name: atomicName,
-			outputs: ["done", "failed"],
-			paramsSchema: { type: "object" },
+			spec: {
+				outputs: ["done", "failed"],
+				params: { type: "object" },
+				run: MIN_RUN,
+			},
 			links: [
 				{ fromPort: "done", toRef: "c.fin" },
 				{ fromPort: "failed", toRef: "c.work" },
@@ -276,10 +292,8 @@ async function main() {
 	const badCap = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
-			run: MIN_RUN,
 			name: badName,
-			outputs: ["done"],
-			paramsSchema: { type: "object" },
+			spec: { outputs: ["done"], params: { type: "object" }, run: MIN_RUN },
 			links: [{ fromPort: "done", toRef: "c.nope.ghost" }],
 		},
 	});
@@ -314,10 +328,8 @@ async function main() {
 	const selfCap = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
-			run: MIN_RUN,
 			name: selfName,
-			outputs: ["done"],
-			paramsSchema: { type: "object" },
+			spec: { outputs: ["done"], params: { type: "object" }, run: MIN_RUN },
 			links: [{ fromPort: "done", toRef: selfName }],
 		},
 	});
@@ -342,10 +354,8 @@ async function main() {
 	const badPort = await H.req(server.base, "/v1/capabilities", {
 		session,
 		body: {
-			run: MIN_RUN,
 			name: badPortName,
-			outputs: ["done"],
-			paramsSchema: { type: "object" },
+			spec: { outputs: ["done"], params: { type: "object" }, run: MIN_RUN },
 			links: [{ fromPort: "not-a-port", toRef: selfName }],
 		},
 	});
@@ -384,7 +394,7 @@ async function main() {
 	const conflict = await H.req(server.base, "/v1/capabilities", {
 		session,
 		// 同一份最小实现配不同 outputs：内容不同 → 同版本换内容必须 409。
-		body: { run: MIN_RUN, name: "c.versioned", version: 1, outputs: ["totally-different"] },
+		body: { name: "c.versioned", version: 1, spec: { outputs: ["totally-different"], run: MIN_RUN } },
 	});
 	A(11, "同版本换内容 → 409", conflict.status === 409, String(conflict.status));
 
@@ -446,13 +456,13 @@ async function main() {
 		const sameA = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsA), {
 				session,
-				body: { run: MIN_RUN, name: "same.name", paramsSchema: { type: "object" } },
+				body: { name: "same.name", spec: { params: { type: "object" }, run: MIN_RUN } },
 			})
 		).json?.capability;
 		const sameB = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
 				session,
-				body: { run: MIN_RUN, name: "same.name", paramsSchema: { type: "object" } },
+				body: { name: "same.name", spec: { params: { type: "object" }, run: MIN_RUN } },
 			})
 		).json?.capability;
 		A(
@@ -1001,7 +1011,7 @@ async function main() {
 		const sinkResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
-			body: { run: MIN_RUN, name: "a10.sink", outputs: [], paramsSchema: { type: "object" } },
+			body: { name: "a10.sink", spec: { outputs: [], params: { type: "object" }, run: MIN_RUN } },
 		});
 		const sinkId = sinkResp.json?.capability?.id;
 		const wildEdge = await H.req(server.base, "/v1/edges", {
@@ -1020,7 +1030,7 @@ async function main() {
 		const customResp = await H.req(server.base, "/v1/capabilities", {
 			session,
 			method: "POST",
-			body: { run: MIN_RUN, name: "a10.custom", outputs: ["only_port"], paramsSchema: { type: "object" } },
+			body: { name: "a10.custom", spec: { outputs: ["only_port"], params: { type: "object" }, run: MIN_RUN } },
 		});
 		const badEdge = await H.req(server.base, "/v1/edges", {
 			session,

@@ -28,16 +28,21 @@ let server, session, sendKey, nsId;
 // （缺 run → 400 impl_missing，Capability Spec v3 §5）。
 const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } };
 
+// defineCapability 造数走 P4 的 spec 形状（Capability Spec v3 §5）：
+// 契约与实现都装在 spec 里；extra 里的键按 spec 内层字段拼进去。
 async function defineCapability(name, outputs = [], extra = {}) {
+	const { paramsSchema, requires, sticky, lifecycle, run, ...outer } = extra;
+	const spec = {
+		outputs,
+		params: paramsSchema || { type: "object" },
+		run: run || MIN_RUN,
+	};
+	if (requires) spec.requires = requires;
+	if (sticky) spec.sticky = sticky;
+	if (lifecycle) spec.lifecycle = lifecycle;
 	const r = await H.req(server.base, "/v1/capabilities", {
 		session,
-		body: {
-			run: MIN_RUN,
-			name,
-			outputs,
-			paramsSchema: extra.paramsSchema || { type: "object" },
-			...extra,
-		},
+		body: { name, ...outer, spec },
 	});
 	if (r.status !== 200) throw new Error(`定义能力 ${name} 失败: ${r.status} ${r.text}`);
 	return r.json.capability;
@@ -312,7 +317,7 @@ async function main() {
 		const sameB = (
 			await H.req(server.base, withNSId("/v1/capabilities", nsB), {
 				session,
-				body: { run: MIN_RUN, name: "cycle.a", outputs: ["go"], paramsSchema: { type: "object" } },
+				body: { name: "cycle.a", spec: { outputs: ["go"], params: { type: "object" }, run: MIN_RUN } },
 			})
 		).json?.capability;
 		H.check("A10 在第二个命名空间建同名能力 cycle.a", !!sameB?.id, String(sameB?.id));

@@ -83,13 +83,16 @@ async function makeCapability(name, script, workDir) {
 		body: {
 			namespaceId: nsId,
 			name,
-			outputs: [],
-			// 必须带 params，而且 key 顺序要和**页面**发的一样（type 在前）。
-			// 内容寻址的坑就藏在这里：Parse 会把 params 归一成 key 有序，
-			// 而 Digest 当年没归一 → 中枢存一个 digest、节点重算得另一个，
-			// 部署永远判成 local。没有 params 的能力复现不出来，所以不能省。
-			paramsSchema: { type: "object", properties: { note: { type: "string" } } },
-			run,
+			// P4：请求体是 spec 形状（Capability Spec v3 §5）。
+			spec: {
+				outputs: [],
+				// 必须带 params，而且 key 顺序要和**页面**发的一样（type 在前）。
+				// 内容寻址的坑就藏在这里：Parse 会把 params 归一成 key 有序，
+				// 而 Digest 当年没归一 → 中枢存一个 digest、节点重算得另一个，
+				// 部署永远判成 local。没有 params 的能力复现不出来，所以不能省。
+				params: { type: "object", properties: { note: { type: "string" } } },
+				run,
+			},
 		},
 	});
 	H.eq(`建能力 ${name} → 200`, r.status, 200);
@@ -425,9 +428,11 @@ async function main() {
 			body: {
 				namespaceId: nsId,
 				name,
-				outputs,
-				paramsSchema: paramsSchema || { type: "object" },
-				run: { entrypoint: "run.sh", files: { "run.sh": script }, timeoutSec: 60 },
+				spec: {
+					outputs,
+					params: paramsSchema || { type: "object" },
+					run: { entrypoint: "run.sh", files: { "run.sh": script }, timeoutSec: 60 },
+				},
 			},
 		});
 		H.eq(`建能力 ${name} → 200`, r.status, 200);

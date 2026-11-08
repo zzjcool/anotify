@@ -117,7 +117,7 @@
 		return out;
 	}
 
-	function cap(name, version, outputs, paramsSchema, source, displayName, balance) {
+	function cap(name, version, outputs, paramsSchema, source, displayName) {
 		// sticky 是「同一条能力尽量落到同一台机器」的提示，值是 params 里的**键名**
 		// （internal/route/dispatch.go:stickySelectorValue）。演示数据里给两个能力开上，
 		// 能力详情区才能同时看到「有值」和「空」两种形态。
@@ -132,14 +132,9 @@
 			displayName: displayName || "",
 			version: version,
 			outputs: outputs,
-			// balance 是**能力版本上**的字段（契约 §3.3）：{出口: {mode}}，缺省 {}。
-			// 出口名对用户不可见（单出口的内部名恒为 "out"），界面上只谈「下游」。
-			// 缺省等价于每个出口都是 {mode:"priority"}；本期只实现 priority，
-			// 其它模式在写入路径上就被 400 拦下（见 checkBalance），不静默降级。
-			balance:
-				balance && typeof balance === "object" && !Array.isArray(balance)
-					? clone(balance)
-					: {},
+			// balance 字段本身已经不存在了（P3 删除：语义上只有一个合法值 priority）。
+			// 能力详情要读的一切都在下面的 paramsSchema / lifecycle / sticky / run 里，
+			// 而它们在列表响应里由 specOf() 汇成 spec（Capability Spec v3 §3）。
 			paramsSchema: paramsSchema || { type: "object" },
 			// lifecycle / sticky 是**能力定义的一部分**（参与 contentHash）。
 			// 真实后端每条能力都有（未声明的时候是零值），所以 mock 也得给：
@@ -165,7 +160,17 @@
 			//
 			// 真实来源（GitHub webhook / 定时触发…）在「源」页面配置。
 			// 中枢执行的终端能力：没有下游（outputs 空 = 终端能力，跑完就结束）。
-			cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"),
+			// notify.phone 是中枢执行的内置能力（handler 形式，契约 §3.1）：它**没有**脚本，
+			// 也没有可部署的产物 —— 名字 + handler 一起表达「谁跑它」。
+			Object.assign(cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"), {
+				handler: "notify-phone",
+			}),
+			// handler 形式的内置能力（契约 §3.1）：实现在中枢进程里，节点上没有文件。
+			// 为什么种一个**可见**的：notify.phone 被 filterCaps 隐起来了，页面看不到它，
+			// 「部署按钮按实现形式分叉」这条就没有可测的样本。
+			Object.assign(cap("notify.demo", 1, [], { type: "object" }, "builtin", "推送通知（内置执行器）"), {
+				handler: "notify-phone",
+			}),
 			// 示例能力（新建表单的占位符里写的就是它）：一个出口 + 一段脚本。
 			// 刻意**不接下游**：它同时是「跑完就结束」这条空态演示的样本。
 			cap(
@@ -688,6 +693,9 @@
 	const ORIGIN_NAMES = ["github", "cron", "http", "manual"];
 	// 中枢执行的终端能力（BuiltinCapability.Central）
 	const CENTRAL_NAMES = ["notify.phone"];
+	// EXECUTABLE_HANDLERS 与 internal/artifact 的 executableHandlers 同口径：
+	// 白名单不等于可执行（`noop` 合法但中枢不执行它，见 IsExecutableHandler）。
+	const EXECUTABLE_HANDLERS = ["notify-phone"];
 
 	function kindOf(c) {
 		if (!c) return "origin";
@@ -1030,11 +1038,7 @@
 				},
 			},
 		};
-		for (const [name, spec] of Object.entries(scripts)) {
-			const c = state.capabilities.find((x) => x.name === name);
-			if (!c) continue;
-			c.requires = spec.requires.slice();
-			c.run = spec.run;
+		const addArtifact = (c) => {
 			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
 			state.artifacts.push({
 				id: uid("art"),
@@ -1043,6 +1047,27 @@
 				digest: c.digest,
 				createdAt: now() - 3600,
 			});
+		};
+		for (const [name, spec] of Object.entries(scripts)) {
+			const c = state.capabilities.find((x) => x.name === name);
+			if (!c) continue;
+			c.requires = spec.requires.slice();
+			c.run = spec.run;
+			addArtifact(c);
+		}
+		// 其余演示能力也要有实现（P1-b1 起**不存在**「还没有产物」的能力，契约 R2）：
+		// 没有实现的能力在真后端里根本建不出来，预览里留一批「脚本载入失败」只会
+		// 让人以为功能坏了。handler 形式的（内置执行器）没有脚本，跳过。
+		for (const c of state.capabilities) {
+			if (c.run || c.handler) continue;
+			c.run = {
+				entrypoint: "run.sh",
+				files: { "run.sh": "#!/bin/sh\nset -eu\nexit 0\n" },
+				timeoutSec: 0,
+				workDir: "",
+				env: {},
+			};
+			addArtifact(c);
 		}
 	})();
 
@@ -2770,6 +2795,9 @@
 				paramsSchema: (c.spec && c.spec.spec && c.spec.spec.params) || c.paramsSchema || {
 					type: "object",
 				},
+				// 与真后端 P1-b1 的回填口径一致：没有实现的声明装成 `handler: noop`
+				// （平台认领的占位，不假装是用户脚本）。前端据此把它标成「由中枢执行」。
+				handler: "noop",
 				source: "custom",
 				contentHash: "hash" + Math.random().toString(16).slice(2, 10),
 				createdAt: now(),
@@ -2927,6 +2955,57 @@
 
 	// 视图：能力列表带推导出的 kind
 	// capView 与真实 handler（consoleHandler.capabilities）同形状：
+	// HANDLER_NOT_ALLOWED_MSG 与 Go 侧 handlerNotAllowedMessage 同一句话。
+	//
+	// 为什么 mock 也要拦：前端套件钉的是**契约**，而「API 永不接受 handler」是 I1
+	// 红线（契约 §3.1）。mock 放行会让前端在预览里能建出一个真后端必拒的能力，
+	// 于是那条红线在前端侧永远测不到。
+	const HANDLER_NOT_ALLOWED_MSG =
+		"handler 只能由内置播种 / 回填 / 预案产生；自定义能力请给 run（spec.run：files + entrypoint，由节点执行）";
+
+	// specOf 把一个 mock 能力对象还原成**完整正文**（Capability Spec v3 §3）。
+	//
+	// mock 内部仍然按扁平字段（paramsSchema / outputs / run / …）存：那是最省事的
+	// 表示，而 spec 是**线上形状**。所以只在出口处汇一次 —— 不要在写入路径上也存一份
+	// spec，否则两份数据迟早分叉（真后端那套「spec 是输入、派生列是缓存」的坑就会
+	// 以另一个形式在 mock 里重演）。
+	function specOf(c) {
+		if (!c) return null;
+		const sp = {};
+		if (c.paramsSchema) sp.params = clone(c.paramsSchema);
+		sp.outputs = Array.isArray(c.outputs) ? c.outputs.slice() : [];
+		if (Array.isArray(c.requires) && c.requires.length) sp.requires = c.requires.slice();
+		if (c.lifecycle && typeof c.lifecycle === "object") sp.lifecycle = clone(c.lifecycle);
+		if (c.sticky) sp.sticky = c.sticky;
+		if (c.run) sp.run = clone(c.run);
+		// handler 形式（内置执行器）：只有平台侧的能力才有，控制台永远建不出来。
+		if (c.handler) sp.handler = c.handler;
+		return sp;
+	}
+
+	// specSummaryOf 是列表用的投影：`run.files` 换成 {count, bytes}（正文不进列表）。
+	//
+	// 细节与 Go 侧 capabilityRunSpecView **逐键对齐**：entrypoint 恒在；
+	// timeoutSec / env / workDir 空就省略（omitempty）—— 否则「没声明」与
+	// 「声明成 0 / 空」在前端看起来是两回事，而它们语义上是同一件事。
+	function specSummaryOf(c) {
+		const sp = specOf(c);
+		if (!sp) return null;
+		if (sp.run) {
+			const files = sp.run.files || {};
+			const summary = { entrypoint: sp.run.entrypoint, files: { count: 0, bytes: 0 } };
+			for (const name of Object.keys(files)) {
+				summary.files.count += 1;
+				summary.files.bytes += String(files[name] == null ? "" : files[name]).length;
+			}
+			if (sp.run.timeoutSec) summary.timeoutSec = sp.run.timeoutSec;
+			if (sp.run.env && Object.keys(sp.run.env).length) summary.env = clone(sp.run.env);
+			if (sp.run.workDir) summary.workDir = sp.run.workDir;
+			sp.run = summary;
+		}
+		return sp;
+	}
+
 	// 除了推导的 kind，还带"谁声明了它"。
 	//
 	// declaredBy 是**关键信息**：能力定义只是"能干什么"的白名单，真正让它
@@ -2940,13 +3019,26 @@
 				return rank(a.status) - rank(b.status) || (a.name < b.name ? -1 : 1);
 			})
 			.map((n) => ({ id: n.id, name: n.name, status: n.status }));
-		// 谁执行它：和真实 handler 一致
-		const executedBy = CENTRAL_NAMES.includes(c.name)
-			? "hub"
-			: ORIGIN_NAMES.includes(c.name)
-				? "none"
-				: "node";
-		return Object.assign(clone(c), { kind: kindOf(c), declaredBy, executedBy });
+		// 谁执行它：判据是**实现形式**（P2 起不再是一张名字表，契约 §11.3）：
+		// handler ∈ 可执行白名单 → 中枢；否则起点能力 → 不执行；其余 → 节点。
+		// mock 用名字表兜 CENTRAL_NAMES 只是演示数据的历史惯性（notify.phone 没有 handler 字段）。
+		const handler = c.handler ? String(c.handler) : "";
+		const executedBy =
+			EXECUTABLE_HANDLERS.includes(handler) || CENTRAL_NAMES.includes(c.name)
+				? "hub"
+				: ORIGIN_NAMES.includes(c.name)
+					? "none"
+					: "node";
+		// 出口形状 = 真后端的列表行：`spec` 是**列表投影**（files 只有 {count,bytes}），
+		// 旧的 `run` 投影 P4 已删（它是 spec.run 的子集，留着就是第二份形状）。
+		const v = Object.assign(clone(c), {
+			kind: kindOf(c),
+			declaredBy,
+			executedBy,
+			spec: specSummaryOf(c),
+		});
+		delete v.run;
+		return v;
 	}
 
 	// 视图：源带出口能力信息 + hookUrl
@@ -3282,11 +3374,12 @@
 		}),
 	);
 
-	// 最新产物的**解析后**内容（详情页展示脚本用）。
+	// 最新产物的**解析后**内容（详情页展示脚本 / 编辑弹层回填用）。
 	//
-	// 真后端从 artifacts.spec.run 里解出来；mock 的产物就是能力对象上的 run
+	// 真后端从能力行的正文里解出来；mock 的产物就是能力对象上的 run
 	// （POST 时写进去的），所以直接投影即可 —— 但**形状必须一致**，否则控制台
-	// 在预览里能跑、在真后端会拿不到脚本。
+	// 在预览里能跑、在真后端会拿不到脚本。P4 起还多给 `env` 与**完整 spec**
+	// （多文件编辑器与 env 列表都靠它们回填，缺一个键就是一次静默的数据丢失）。
 	//
 	// 404 语义与真后端一样：“不属于本命名空间”与“没有产物”同一个回答。
 	on("GET", /^\/v1\/capabilities\/([^/]+)\/artifact$/, (ctx) => {
@@ -3303,7 +3396,12 @@
 			files: c.run.files || {},
 			timeoutSec: c.run.timeoutSec || 0,
 			workDir: c.run.workDir || "",
-			requires: c.requires || [],
+			requires: Array.isArray(c.requires) ? c.requires : [],
+			// 空 env 给 `{}` 而不是 null（不变量 I9：前端不必为一个 null 判空）
+			env: Object.assign({}, c.run.env || {}),
+			// 完整正文（含 files 正文）：与上面几个扁平字段同一份数据，
+			// 详情端点的语义就是「这就是正文」。
+			spec: specOf(c),
 		});
 	});
 
@@ -3365,6 +3463,22 @@
 		// 能力归属命名空间（缺省 = 当前范围）。真实后端这里必须是必填，
 		// mock 宽松的理由见 nsScope 的注释。
 		b.namespaceId = b.namespaceId || nsScope(ctx.query) || NS;
+		// P4：请求体是 spec 形状（Capability Spec v3 §5）。扁平字段（paramsSchema /
+		// outputs / run / requires / sticky / lifecycle / balance）已经删除 ——
+		// mock 与真后端**同一口径**：扁平字段不解释、不兜底，发了也只会因为没有
+		// spec.run 得到 400 impl_missing。
+		const reqSpec = b.spec && typeof b.spec === "object" && !Array.isArray(b.spec) ? b.spec : null;
+		// I1 红线与真后端逐字一致：handler 只能由平台侧产生，HTTP 一律拒。
+		if (reqSpec && reqSpec.handler) {
+			return err(400, HANDLER_NOT_ALLOWED_MSG, { code: "handler_not_allowed" });
+		}
+		if (!reqSpec || !reqSpec.run || !reqSpec.run.entrypoint) {
+			return err(
+				400,
+				"能力必须有实现：给 spec.run（脚本：files + entrypoint）；handler 只能由内置播种 / 回填 / 预案产生",
+				{ code: "impl_missing" },
+			);
+		}
 		const existing = state.capabilities.filter((c) => c.name === b.name);
 		const nextVer = existing.length
 			? Math.max(...existing.map((c) => c.version)) + 1
@@ -3375,23 +3489,16 @@
 		const c = cap(
 			b.name,
 			b.version || nextVer,
-			normalizeOutputs(b.outputs, links.length > 0),
-			b.paramsSchema,
+			normalizeOutputs(reqSpec.outputs, links.length > 0),
+			reqSpec.params,
 		);
 		if (b.displayName) c.displayName = String(b.displayName).trim();
 		// sticky / lifecycle 是能力定义的一部分（参与 contentHash）。
 		// 控制台发新版本时会把当前值原样带过来，预览里也得真的接住 ——
 		// 否则「发一版就把粘性路由弄丢了」在预览里永远复现不了。
-		if (typeof b.sticky === "string") c.sticky = b.sticky;
-		if (b.lifecycle && typeof b.lifecycle === "object") c.lifecycle = b.lifecycle;
-		// balance（契约 §3.3）：{出口: {mode}}，缺省 {} = 每个出口都是 priority。
-		// 其它 mode 保存时就 400「尚未实现」——不静默降级（降级会让人以为
-		// “选了 all 真的全派了”，而那正是此功能最容易造成的错觉）。
-		const balRes = checkBalance(b.balance);
-		if (balRes.error) {
-			return err(400, balRes.error, balRes.code ? { code: balRes.code } : undefined);
-		}
-		c.balance = balRes.balance;
+		if (typeof reqSpec.sticky === "string") c.sticky = reqSpec.sticky;
+		if (reqSpec.lifecycle && typeof reqSpec.lifecycle === "object") c.lifecycle = reqSpec.lifecycle;
+		c.requires = Array.isArray(reqSpec.requires) ? reqSpec.requires.slice() : [];
 
 		// 升级闸门（P2.2）：新版本成为 latest 且删了出口 → 409 upgrade_breaking，
 		// 除非显式传 force:true。判定与影响面计算在 upgradeBlock（单建/批量共用）。
@@ -3471,25 +3578,28 @@
 			});
 		}
 
-		// run（新增，CONTRACT-artifact §2）：入口文件 + 文件正文 + 超时 + env。
-		// 有它才编译产物、算 digest；没有它就是「只定义了参数契约」的老用法。
-		// mock 也走一遍 shebang 校验：控制台的「改脚本」必须能立刻看到这条错。
-		const run = b.run || null;
-		if (run && run.files) {
-			const entry = run.entrypoint || "run.sh";
+		// run 来自 spec.run（P4）：入口文件 + **全部**文件正文 + 超时 + env + workDir。
+		//
+		// 这里必须逐个字段接住（而不是只抄 entrypoint + 入口正文）：
+		// 控制台的多文件编辑器 / env 列表就是靠这段数据回填的，漏一个键 = 预览里
+		// 「我加的文件/环境变量发一版就没了」，而真后端其实是存下来的。
+		{
+			const run = reqSpec.run;
+			const entry = run.entrypoint;
 			const body = String((run.files || {})[entry] || "");
 			if (!body.startsWith("#!")) {
 				return err(400, "entrypoint_no_shebang: 入口文件必须以 #! 开头（节点直接 exec，不经 shell）");
 			}
-			c.requires = Array.isArray(b.requires) ? b.requires.slice() : [];
 			c.run = {
 				entrypoint: entry,
-				files: run.files,
+				// files 原样整份拷贝（多文件是正文的一部分，不是「只有入口」）
+				files: Object.assign({}, run.files || {}),
 				timeoutSec: run.timeoutSec || 0,
 				// workDir 属于能力定义（run.workDir，不是部署参数）。
 				// 这里以前把它丢了 —— 于是「填了工作目录 → 详情里看不到」在预览里永远复现不了。
 				workDir: run.workDir || "",
-				env: run.env || {},
+				// env 原样接住（空值合法：`GH_TOKEN: ""` = 由节点环境提供）
+				env: Object.assign({}, run.env || {}),
 			};
 			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
 			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
@@ -3533,12 +3643,15 @@
 		const nsId = b.namespaceId || nsScope(ctx.query) || NS;
 		const links = Array.isArray(b.links) ? b.links : [];
 
-		// ① 逐条算新版本 + 校验（顺序与单建对齐：name 规则 → 版本自增 → balance）。
+		// ① 逐条算新版本 + 校验（顺序与单建对齐：name 规则 → I1/缺实现 → 版本自增）。
+		//
+		// 元素形状与单建**同一个**（P4：`{name, version?, displayName?, spec, ...}`），
+		// 所以这里对 `item.spec` 做与单建逐字一致的形状检查（I1 红线 + 缺实现）。
 		const prepared = [];
 		const byName = new Map();
 		for (let i = 0; i < specs.length; i++) {
-			const spec = specs[i] || {};
-			const name = String(spec.name == null ? "" : spec.name).trim();
+			const item = specs[i] || {};
+			const name = String(item.name == null ? "" : item.name).trim();
 			if (!name) return err(400, `capabilities[${i}].name: is required`);
 			// 名字规则与 internal/artifact/artifact.go 的 namePattern 一致
 			if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) {
@@ -3552,15 +3665,22 @@
 					code: "duplicate_name",
 				});
 			}
-			const balRes = checkBalance(spec.balance);
-			if (balRes.error) {
-				// 前缀 capabilities[i] 是给控制台定位「第几张卡」用的（契约 §3.5）
+			const itemSpec =
+				item.spec && typeof item.spec === "object" && !Array.isArray(item.spec) ? item.spec : null;
+			// 与单建逐字一致的两条形状检查（错误文案带 capabilities[i] 下标，控制台据此定位卡片）
+			if (itemSpec && itemSpec.handler) {
+				return err(400, `capabilities[${i}]: ${HANDLER_NOT_ALLOWED_MSG}`, {
+					code: "handler_not_allowed",
+				});
+			}
+			if (!itemSpec || !itemSpec.run || !itemSpec.run.entrypoint) {
 				return err(
 					400,
-					`capabilities[${i}]: ${balRes.error}`,
-					balRes.code ? { code: balRes.code } : undefined,
+					`capabilities[${i}]: 能力必须有实现：给 spec.run（脚本：files + entrypoint）；handler 只能由内置播种 / 回填 / 预案产生`,
+					{ code: "impl_missing" },
 				);
 			}
+			const spec = item;
 			// 版本在同一个命名空间内自增（契约 §4.1；与单建一样按名字找上一版）
 			const existing = state.capabilities.filter(
 				(x) => x.name === name && (!x.namespaceId || x.namespaceId === nsId),
@@ -3575,21 +3695,21 @@
 				// 「这次提交里有没有从它出发的 link」按能力名判断（不能整批一概而论：
 				// 同一批里另一个能力可能就是终端能力，它的 outputs [] 是用户明说的）。
 				normalizeOutputs(
-					spec.outputs,
+					itemSpec.outputs,
 					links.some((l) => splitRef(String((l || {}).fromRef || "")).name === name),
 				),
-				spec.paramsSchema,
-				undefined,
-				undefined,
-				balRes.balance,
+				itemSpec.params,
 			);
 			// cap() 的演示默认落在 NS；批量按请求的命名空间落库
 			c.namespaceId = nsId;
 			if (spec.displayName) c.displayName = String(spec.displayName).trim();
-			if (typeof spec.sticky === "string") c.sticky = spec.sticky;
-			if (spec.lifecycle && typeof spec.lifecycle === "object") c.lifecycle = spec.lifecycle;
-			c.requires = Array.isArray(spec.requires) ? spec.requires.slice() : [];
-			prepared.push({ c: c, spec: spec, prev: prev, artifact: null });
+			if (typeof itemSpec.sticky === "string") c.sticky = itemSpec.sticky;
+			if (itemSpec.lifecycle && typeof itemSpec.lifecycle === "object") {
+				c.lifecycle = itemSpec.lifecycle;
+			}
+			c.requires = Array.isArray(itemSpec.requires) ? itemSpec.requires.slice() : [];
+			// builders 侧的 `spec` 保留**元素本身**（下面 ③ 读 p.spec.spec.run）
+			prepared.push({ c: c, spec: item, prev: prev, artifact: null });
 			byName.set(name, c);
 		}
 
@@ -3600,13 +3720,12 @@
 			if (blocked) return json(blocked, 409);
 		}
 
-		// ③ run（CONTRACT-artifact §2）：与单建同一套校验与派生 ——
+		// ③ run（来自元素自己的 spec.run，P4）：与单建同一套校验与派生 ——
 		//    入口文件必须以 #! 开头，digest 由内容算出来，命中就多一条产物行。
 		for (let i = 0; i < prepared.length; i++) {
 			const p = prepared[i];
-			const run = p.spec.run || null;
-			if (!run || !run.files) continue;
-			const entry = run.entrypoint || "run.sh";
+			const run = p.spec.spec.run;
+			const entry = run.entrypoint;
 			const body = String((run.files || {})[entry] || "");
 			if (!body.startsWith("#!")) {
 				return err(
@@ -3616,10 +3735,11 @@
 			}
 			p.c.run = {
 				entrypoint: entry,
-				files: run.files,
+				// 多文件整份拷贝（与单建同一口径）
+				files: Object.assign({}, run.files || {}),
 				timeoutSec: run.timeoutSec || 0,
 				workDir: run.workDir || "",
-				env: run.env || {},
+				env: Object.assign({}, run.env || {}),
 			};
 			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
 			p.c.digest = mockDigest(
@@ -4537,33 +4657,6 @@
 			};
 		}
 		return { literals };
-	}
-
-	// checkBalance 校验并归一化能力版本上的 balance（契约 §3.3）。
-	//
-	// 形状：{出口: {"mode": "priority"}}；缺省（或空对象）= 每个出口都是 priority。
-	// **本期只实现 priority**：all / random / least_loaded / hash 一律 400「尚未实现」，
-	// 带上 code: "balance_unimplemented" 让前端能只拦住那一种错。
-	// 不允许静默降级成 priority —— 用户选了 all 却只派了一个，比报错更伤人。
-	function checkBalance(raw) {
-		if (raw === undefined || raw === null) return { balance: {} };
-		if (typeof raw !== "object" || Array.isArray(raw)) {
-			return { error: "balance must be a JSON object, got " + jsonTypeName(raw) };
-		}
-		const out = {};
-		for (const output of Object.keys(raw).sort()) {
-			const spec = raw[output];
-			// 出口写了但没写 mode（或给的不是对象）——当作缺省 priority。
-			const mode = spec && typeof spec === "object" && !Array.isArray(spec) ? String(spec.mode || "priority") : "priority";
-			if (mode !== "priority") {
-				return {
-					error: "balance[" + output + "]: mode " + mode + " 尚未实现",
-					code: "balance_unimplemented",
-				};
-			}
-			out[output] = { mode: "priority" };
-		}
-		return { balance: out };
 	}
 
 	// edgePriority 归一化一条边的 priority（契约 §1）：缺省 0，必须是非负整数。

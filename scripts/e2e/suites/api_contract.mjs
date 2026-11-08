@@ -326,14 +326,14 @@ async function main() {
 				session,
 				method: "POST",
 				namespaceId: otherNs,
-				body: { run: MIN_RUN, name: "iso.only_other", outputs: ["x"], paramsSchema: { type: "object" } },
+				body: { name: "iso.only_other", spec: { params: { type: "object" }, outputs: ["x"], run: MIN_RUN } },
 			});
 			H.eq("在新命名空间里建能力 → 200", capOther.status, 200);
 			const capDefault = await H.req(B, "/v1/capabilities", {
 				session,
 				method: "POST",
 				namespaceId: defNs,
-				body: { run: MIN_RUN, name: "iso.only_default", outputs: ["x"], paramsSchema: { type: "object" } },
+				body: { name: "iso.only_default", spec: { params: { type: "object" }, outputs: ["x"], run: MIN_RUN } },
 			});
 			H.eq("在默认命名空间里建能力 → 200", capDefault.status, 200);
 
@@ -390,17 +390,20 @@ async function main() {
 		const withRun = await H.req(B, "/v1/capabilities", {
 			session,
 			method: "POST",
+			// P4：请求体是 spec 形状（Capability Spec v3 §5）：契约与实现都装在 spec 里。
 			body: {
 				name: "contract.artifact",
-				outputs: ["done"],
-				paramsSchema: { type: "object" },
-				run: {
-					entrypoint: "run.sh",
-					files: { "run.sh": scriptBody },
-					timeoutSec: 77,
-					workDir: "/tmp/work",
+				spec: {
+					outputs: ["done"],
+					params: { type: "object" },
+					run: {
+						entrypoint: "run.sh",
+						files: { "run.sh": scriptBody },
+						timeoutSec: 77,
+						workDir: "/tmp/work",
+					},
+					requires: ["curl"],
 				},
-				requires: ["curl"],
 			},
 		});
 		H.eq("建带产物的能力 → 200", withRun.status, 200);
@@ -455,10 +458,35 @@ async function main() {
 			const plain = await H.req(B, "/v1/capabilities", {
 				session,
 				method: "POST",
-				body: { name: "contract.noartifact", outputs: [], paramsSchema: { type: "object" } },
+				// P4：spec 里没有 run = 缺实现。
+			body: { name: "contract.noartifact", spec: { outputs: [], params: { type: "object" } } },
 			});
 			H.eq("② 缺 run 建能力 → 400", plain.status, 400);
 			H.eq("② → code=impl_missing（能力必须有实现）", plain.json?.code, "impl_missing");
+
+			// P4 / I1 红线：`spec.handler` 非空 → 400 handler_not_allowed。
+			//
+			// 白名单只会约束「中枢能跑哪些内置动作」，而「谁有权声明一个 handler 能力」
+			// 是另一件事：一旦 HTTP 能写 handler，任何登录用户都能把能力挂到中枢进程里
+			// 执行。handler 只能由内置播种 / 回填 / 预案（服务端代码路径）产生。
+			const handlerTry = await H.req(B, "/v1/capabilities", {
+				session,
+				method: "POST",
+				// 连**白名单里**的 handler 都要拒（notify-phone 是中枢真会执行的那一个）
+				body: { name: "contract.handler", spec: { outputs: [], handler: "notify-phone" } },
+			});
+			H.eq("P4：spec.handler 非空 → 400", handlerTry.status, 400);
+			H.eq(
+				"P4：→ code=handler_not_allowed（I1：API 永不接受 handler）",
+				handlerTry.json?.code,
+				"handler_not_allowed",
+			);
+			const capsNoHandler = await H.req(B, "/v1/capabilities", { session });
+			H.check(
+				"P4：被拒的 handler 能力一行都没建",
+				!(capsNoHandler.json?.capabilities || []).some((c) => c.name === "contract.handler"),
+				JSON.stringify((capsNoHandler.json?.capabilities || []).map((c) => c.name)).slice(0, 200),
+			);
 
 			const capsForHandler = await H.req(B, "/v1/capabilities", { session });
 			const phone = (capsForHandler.json?.capabilities || []).find(

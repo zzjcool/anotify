@@ -127,15 +127,16 @@ func TestCreateCapabilityStoresRunWorkDir(t *testing.T) {
 	}
 }
 
-// TestListCapabilitiesExposesRun 是详情页的数据来源护栏。
+// TestListCapabilitiesExposesSpecRun 是详情页的数据来源护栏。
 //
-// 详情页要显示「这个能力跑多久超时、在哪个目录跑」，而这两项住在产物 spec.run 里
-// （#289：它们属于能力定义，不属于节点配置）。列表接口只读地投影一份，否则
-// 前端只能显示「—」，用户会以为「我填的超时没生效」。
+// 详情页要显示「这个能力跑多久超时、在哪个目录跑」，而这两项住在能力正文 spec.run 里
+// （#289：它们属于能力定义，不属于节点配置）。列表接口投影一份**正文摘要**
+// （`spec.run`，files 只有 {count, bytes}），否则前端只能显示「—」，
+// 用户会以为「我填的超时没生效」。
 //
-// 同时钉住**失败方向**：没有产物的能力（刚定义、还没部署）必须照常出现在列表里，
-// 只是 run 为 null —— 一条没有产物的能力不能把整张列表带崩。
-func TestListCapabilitiesExposesRun(t *testing.T) {
+// P4 起列表**不再有**旧的 `run` 投影（契约 §5）：它是 spec.run 的子集，留着就是
+// 第二份形状。这条用例同时钉住「旧投影没有回来」。
+func TestListCapabilitiesExposesSpecRun(t *testing.T) {
 	env := newConsoleEnv(t)
 
 	rr := env.do(t, http.MethodPost, env.withNS("/v1/capabilities"), map[string]any{
@@ -170,23 +171,37 @@ func TestListCapabilitiesExposesRun(t *testing.T) {
 	if got == nil {
 		t.Fatalf("列表里没有刚建的能力")
 	}
-	run, _ := got["run"].(map[string]any)
+	spec, _ := got["spec"].(map[string]any)
+	if spec == nil {
+		t.Fatalf("列表里的能力没有 spec：%v", got)
+	}
+	run, _ := spec["run"].(map[string]any)
 	if run == nil {
-		t.Fatalf("列表里的能力没有 run 投影：%v", got)
+		t.Fatalf("列表里的 spec 没有 run：%v", spec)
 	}
 	if run["timeoutSec"] != float64(900) {
-		t.Errorf("run.timeoutSec = %v, want 900（详情页要显示它）", run["timeoutSec"])
+		t.Errorf("spec.run.timeoutSec = %v, want 900（详情页要显示它）", run["timeoutSec"])
 	}
 	if run["workDir"] != "/home/me/project" {
-		t.Errorf("run.workDir = %v, want /home/me/project", run["workDir"])
+		t.Errorf("spec.run.workDir = %v, want /home/me/project", run["workDir"])
 	}
 
 	// 列表必须**不带脚本正文**：files 是详情区按需懒加载的，
 	// 每行都塞进来会让列表白涨几百 KB（几十个能力 × 每个几 KB 脚本）。
-	for _, k := range []string{"files", "env"} {
-		if _, exists := run[k]; exists {
-			t.Errorf("列表里的 run 不该有 %q（详情用 /artifact 懒加载）：%v", k, run)
-		}
+	files, _ := run["files"].(map[string]any)
+	if files == nil {
+		t.Fatalf("spec.run.files 应该是 {count, bytes} 摘要：%v", run)
+	}
+	if files["count"] != float64(1) || files["bytes"] == nil {
+		t.Errorf("spec.run.files = %v, want {count:1, bytes:<n>}", files)
+	}
+	if _, exists := run["env"]; exists {
+		t.Errorf("列表里的 spec.run 不该有 env 正文（详情用 /artifact 懒加载）：%v", run)
+	}
+
+	// P4 红线：旧的 `run` 投影已经删了，不能回来（两份形状迟早分叉）。
+	if _, exists := got["run"]; exists {
+		t.Errorf("列表里不该再有旧的 run 投影（P4 删除，改读 spec.run）：%v", got["run"])
 	}
 
 	// 失败方向：每个能力都得有名字，列表不能因为某条没有产物就少人

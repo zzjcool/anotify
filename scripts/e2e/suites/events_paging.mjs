@@ -266,12 +266,15 @@ async function main() {
 	const cap = await H.req(base, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
+		// P4：请求体是 spec 形状（Capability Spec v3 §5）。
 		body: {
 			name: "e2e.paging",
-			outputs: ["ok"],
-			paramsSchema: { type: "object" },
-			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+			spec: {
+				outputs: ["ok"],
+				params: { type: "object" },
+				// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
+			},
 		},
 	});
 	H.eq("建能力 e2e.paging → 200", cap.status, 200);

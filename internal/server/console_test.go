@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
@@ -196,7 +197,17 @@ func (e *consoleEnv) seedNamespace(t *testing.T, slug, name string) *store.Names
 }
 
 // do 发一个带会话 Cookie 的请求。
+//
+// POST /v1/capabilities 与 /batch 的请求体在这里**机械翻译**成 P4 的 spec 形状
+// （见 zz_spec_fixture_test.go:bodyToSpec）：本包几百条用例关心的从来不是
+// 「字段摆在哪一层」。想钉请求形状本身的用例走 doRaw（不翻译）。
 func (e *consoleEnv) do(t *testing.T, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return e.doRaw(t, method, path, adaptCapabilityBody(method, path, body))
+}
+
+// doRaw 发一个**不翻译**请求体的请求（P4 的 spec 形状用例用它）。
+func (e *consoleEnv) doRaw(t *testing.T, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -514,7 +525,7 @@ func TestCapabilityCreate(t *testing.T) {
 
 	// 第一次：不给 version → 自动 1
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
-		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix"},
+		NamespaceID: env.nsID, Name: "review", Spec: &artifact.Spec{Outputs: []string{"fix"}},
 	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
@@ -538,7 +549,7 @@ func TestCapabilityCreate(t *testing.T) {
 
 	// 同名换内容 → 自动开版本 2
 	rr = env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
-		NamespaceID: env.nsID, Name: "review", Outputs: []string{"fix", "clean"},
+		NamespaceID: env.nsID, Name: "review", Spec: &artifact.Spec{Outputs: []string{"fix", "clean"}},
 	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("second create status = %d, body=%s", rr.Code, rr.Body.String())
@@ -634,7 +645,7 @@ func TestCapabilityKindFollowsEdgesNotOutputs(t *testing.T) {
 	env := newConsoleEnv(t)
 
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
-		NamespaceID: env.nsID, Name: "sink", Outputs: []string{},
+		NamespaceID: env.nsID, Name: "sink", Spec: &artifact.Spec{Outputs: []string{}},
 	}))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
@@ -677,7 +688,8 @@ func TestCapabilitySameVersionDifferentContentRejected(t *testing.T) {
 	env.seedCapability(t, "review", 1, []string{"fix"})
 
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRunReq(capabilityListRequest{
-		NamespaceID: env.nsID, Name: "review", Version: 1, Outputs: []string{"totally-different"},
+		NamespaceID: env.nsID, Name: "review", Version: 1,
+		Spec: &artifact.Spec{Outputs: []string{"totally-different"}},
 	}))
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (version cannot change content); body=%s", rr.Code, rr.Body.String())

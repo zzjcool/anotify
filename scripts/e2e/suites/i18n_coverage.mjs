@@ -203,17 +203,20 @@ async function main() {
 		method: "POST",
 		body: {
 			name: "i18n.cover",
-			outputs: ["go"],
-			paramsSchema: { type: "object" },
-			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-			run: MIN_RUN,
+			// P4：请求体是 spec 形状（Capability Spec v3 §5）。
+			spec: {
+				outputs: ["go"],
+				params: { type: "object" },
+				// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+				run: MIN_RUN,
+			},
 		},
 	});
 	const coverCap = capResp.json?.capability;
 	const sinkResp = await H.req(server.base, "/v1/capabilities", {
 		session: seedData.session,
 		method: "POST",
-		body: { run: MIN_RUN, name: "i18n.sink", outputs: [], paramsSchema: { type: "object" } },
+		body: { name: "i18n.sink", spec: { params: { type: "object" }, outputs: [], run: MIN_RUN } },
 	});
 	const sinkCap = sinkResp.json?.capability;
 

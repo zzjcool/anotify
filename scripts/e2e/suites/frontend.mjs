@@ -554,12 +554,12 @@ async function main() {
 			session: s.session,
 			method: "POST",
 			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-			body: { name: "frontend.src", outputs: ["go"], paramsSchema: { type: "object" }, run: MIN_RUN }, 
+			body: { name: "frontend.src", spec: { outputs: ["go"], params: { type: "object" }, run: MIN_RUN } },
 		});
 		const capB = await H.req(server.base, "/v1/capabilities", {
 			session: s.session,
 			method: "POST",
-			body: { name: "frontend.work", outputs: [], paramsSchema: { type: "object" }, run: MIN_RUN },
+			body: { name: "frontend.work", spec: { outputs: [], params: { type: "object" }, run: MIN_RUN } },
 		});
 		await H.req(server.base, "/v1/edges", {
 			session: s.session,
@@ -735,13 +735,17 @@ async function main() {
 				const r = await fetch("/v1/capabilities", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					// P4：请求体是 spec 形状（Capability Spec v3 §5）。
 					body: JSON.stringify({
 						name: "e2e-params",
 						version: 1,
 						namespaceId: ns || undefined,
-						paramsSchema: {
-							type: "object",
-							properties: { note: { type: "string" } },
+						spec: {
+							params: {
+								type: "object",
+								properties: { note: { type: "string" } },
+							},
+							run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
 						},
 					}),
 				});
@@ -1048,22 +1052,25 @@ async function main() {
 				const capResp = await H.req(server.base, "/v1/capabilities", {
 					session: s.session,
 					method: "POST",
+					// P4：请求体是 spec 形状（Capability Spec v3 §5）。
 					body: {
 						name: "e2e.report",
 						// 有显示名才能验「显示名 + 唯一标识同时可见」（用户原话：
 						// 「既显示名字，也显示能力的唯一标志」）。
 						displayName: "E2E 报表",
-						outputs: [],
-						// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-						run: MIN_RUN,
-						paramsSchema: {
-							type: "object",
-							required: ["channel", "title"],
-							properties: {
-								channel: { type: "string", enum: ["slack", "email"] },
-								title: { type: "string" },
-								urgent: { type: "boolean" },
-								retries: { type: "integer", minimum: 0, maximum: 5 },
+						spec: {
+							outputs: [],
+							// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
+							run: MIN_RUN,
+							params: {
+								type: "object",
+								required: ["channel", "title"],
+								properties: {
+									channel: { type: "string", enum: ["slack", "email"] },
+									title: { type: "string" },
+									urgent: { type: "boolean" },
+									retries: { type: "integer", minimum: 0, maximum: 5 },
+								},
 							},
 						},
 					},
@@ -2076,10 +2083,11 @@ async function checkCapabilityTemplates(page) {
 	await page.click("#cap-submit");
 	await page.waitForTimeout(1400);
 	const withWd = await page.evaluate(() => (window.__capBodies || [])[0] || null);
+	// P4：请求体切成 spec 形状，所以「怎么跑」读的是 spec.run（旧的扁平 run 已删除）。
 	H.check(
-		"提交时 run.workDir 就是填的路径（工作目录属于能力定义）",
-		!!withWd && !!withWd.run && withWd.run.workDir === wdPath,
-		JSON.stringify({ run: withWd && withWd.run, workDir: withWd && withWd.run && withWd.run.workDir }),
+		"提交时 spec.run.workDir 就是填的路径（工作目录属于能力定义）",
+		!!withWd && !!withWd.spec && !!withWd.spec.run && withWd.spec.run.workDir === wdPath,
+		JSON.stringify({ spec: withWd && withWd.spec, run: withWd && withWd.spec && withWd.spec.run }),
 	);
 	H.check(
 		"工作目录不在请求体顶层（不是部署参数）",
@@ -2108,8 +2116,8 @@ async function checkCapabilityTemplates(page) {
 	});
 	H.check(
 		"工作目录留空 → 请求体里没有 workDir（每次任务一个独立目录）",
-		!!noWd && !!noWd.run && !("workDir" in noWd.run),
-		JSON.stringify({ run: noWd && noWd.run }),
+		!!noWd && !!noWd.spec && !!noWd.spec.run && !("workDir" in noWd.spec.run),
+		JSON.stringify({ run: noWd && noWd.spec && noWd.spec.run }),
 	);
 
 	// ⑤ 参数契约的**可视化**填写（#schema-visual-editor）。
@@ -2479,30 +2487,86 @@ async function checkCapabilityDetail(page, base) {
 		JSON.stringify(scriptBlock).slice(0, 260),
 	);
 
-	// 没有产物的能力：说清事实（而不是留一块空白 —— 空白读起来像「功能坏了」）
-	const noArtifact = await page.evaluate(async () => {
-		const row = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
-		if (!row) return { text: "", err: "找不到 deploy-preview 行" };
-		const btn = row.querySelector('[data-act="detail"]');
-		btn.click();
-		const box = row.querySelector(".cap-script");
-		let text = "";
-		for (let i = 0; i < 40; i++) {
-			const e = box && box.querySelector(".cap-script-empty");
-			if (e && e.textContent.trim()) {
-				text = e.textContent.trim();
-				break;
+	// 「还没有产物」这个状态**已经不存在**（P1-b1 起每个能力永远有实现，契约 R2）。
+	//
+	// 语义变了，所以这条断言改写成钉**新形状**（不是删掉）：
+	//   ① 脚本形式的每个能力，详情区都能看到正文（永远不出现「还没有产物」）
+	//   ② handler 形式（内置执行器）：部署按钮**禁用** + 说清「由中枢执行」，且没有编辑入口
+	//   ③ 两种形式的「运行参数」区都不再靠旧的 run 投影（P4 删了它，只读 spec.run）
+	const forms = await page.evaluate(async () => {
+		const out = {};
+		// ① 脚本形式：deploy-preview（mock 种子里有实现）
+		const sRow = document.querySelector('.cap-row[data-cap-name="deploy-preview"]');
+		if (sRow) {
+			const btn = sRow.querySelector('[data-act="detail"]');
+			btn.click();
+			const box = sRow.querySelector(".cap-script");
+			for (let i = 0; i < 40; i++) {
+				const pre = box && box.querySelector(".cap-script-pre");
+				if (pre && pre.textContent.trim()) break;
+				await new Promise((r) => setTimeout(r, 100));
 			}
-			await new Promise((r) => setTimeout(r, 100));
+			out.scriptPre = ((box && box.querySelector(".cap-script-pre")) || {}).textContent || "";
+			out.scriptEmpty = !!(box && box.querySelector(".cap-script-empty"));
+			out.scriptHasEdit = !!sRow.querySelector('[data-act="edit"]');
+			const dep = sRow.querySelector('[data-act="deploy"]');
+			out.scriptDeployDisabled = dep ? dep.disabled === true : null;
+			if (sRow.querySelector(".cap-detail").classList.contains("open")) btn.click();
 		}
-		// 关回去：后面的用例会自己点开这一行的详情，状态不能被我改掉
-		if (row.querySelector(".cap-detail").classList.contains("open")) btn.click();
-		return { text: text };
+		// ② handler 形式：notify.demo（mock 种子里的内置执行器能力）
+		const hRow = document.querySelector('.cap-row[data-cap-name="notify.demo"]');
+		if (hRow) {
+			const dep = hRow.querySelector('[data-act="deploy"]');
+			out.handlerDeployDisabled = dep ? dep.disabled === true : null;
+			out.handlerDeployText = dep ? (dep.textContent || "").trim() : "";
+			out.handlerHasEdit = !!hRow.querySelector('[data-act="edit"]');
+			hRow.querySelector('[data-act="detail"]').click();
+			const box = hRow.querySelector(".cap-script");
+			let text = "";
+			for (let i = 0; i < 40; i++) {
+				const e = box && box.querySelector(".cap-script-empty");
+				if (e && e.textContent.trim()) {
+					text = e.textContent.trim();
+					break;
+				}
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			out.handlerScriptText = text;
+			// 运行参数区：handler 形式要说清是谁在跑（不是两行「—」）
+			out.handlerRuntime = (hRow.querySelector(".cap-detail") || {}).textContent || "";
+			if (hRow.querySelector(".cap-detail").classList.contains("open")) {
+				hRow.querySelector('[data-act="detail"]').click();
+			}
+		}
+		return out;
 	});
 	H.check(
-		"没有产物的能力显示「还没有产物」（不是空白块）",
-		/还没有产物|no artifact/i.test(noArtifact.text || ""),
-		String(noArtifact.text).slice(0, 160),
+		"脚本形式的能力详情永远有正文（「还没有产物」这个状态已不存在）",
+		/^#!/.test((forms.scriptPre || "").trim()) && forms.scriptEmpty === false && forms.scriptHasEdit === true,
+		JSON.stringify({ pre: (forms.scriptPre || "").slice(0, 40), empty: forms.scriptEmpty, edit: forms.scriptHasEdit }),
+	);
+	H.check(
+		"handler 形式：部署按钮禁用并说明「由中枢执行，无需部署」",
+		forms.handlerDeployDisabled === true &&
+			/中枢|hub/i.test(forms.handlerDeployText || "") &&
+			/部署|deploy/i.test(forms.handlerDeployText || ""),
+		JSON.stringify({ disabled: forms.handlerDeployDisabled, text: forms.handlerDeployText }),
+	);
+	H.check(
+		"handler 形式没有编辑入口（实现在中枢里，不能在控制台改）",
+		forms.handlerHasEdit === false,
+		String(forms.handlerHasEdit),
+	);
+	H.check(
+		"handler 形式的脚本块说清「内置执行器」（不是空白块，也不是载入失败）",
+		/内置|built-in|integrado|組み込み/i.test(forms.handlerScriptText || "") &&
+			!/失败|failed/i.test(forms.handlerScriptText || ""),
+		String(forms.handlerScriptText).slice(0, 160),
+	);
+	H.check(
+		"handler 形式的运行参数区点名执行器（不是两行「—」）",
+		/内置|built-in|integrado|組み込み/i.test(forms.handlerRuntime || ""),
+		String(forms.handlerRuntime).replace(/\s+/g, " ").slice(0, 200),
 	);
 
 	// ②③ 下游按**边**逐条列成候选；没有下游的能力显式说「跑完就结束」
@@ -2900,11 +2964,13 @@ async function checkCapabilityDetail(page, base) {
 			modalOpen: !document.getElementById("cap-modal").classList.contains("hidden"),
 		};
 	}, capName);
+	// P4：请求体是 spec 形状 —— 出口在 spec.outputs 里（扁平 outputs 已删除）。
 	H.check(
-		"有下游 → 请求体声明内部唯一出口 outputs:[out]（端口名不出现在界面）",
+		"有下游 → 请求体在 spec.outputs 里声明内部唯一出口 [out]（端口名不出现在界面）",
 		!!created.capBody &&
-			JSON.stringify(created.capBody.outputs) === JSON.stringify(["out"]),
-		JSON.stringify(created.capBody && created.capBody.outputs),
+			!!created.capBody.spec &&
+			JSON.stringify(created.capBody.spec.outputs) === JSON.stringify(["out"]),
+		JSON.stringify(created.capBody && created.capBody.spec && created.capBody.spec.outputs),
 	);
 	// ② 全合法 → 能力与全部边**一次出现**：
 	//  - 请求只有**一个** POST /v1/capabilities，且带两条 links（左端不用传 = 新能力裸名字）
@@ -3069,10 +3135,13 @@ async function checkCapabilityDetail(page, base) {
 		const res = await fetch("/v1/capabilities", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
+			// P4：请求体是 spec 形状（Capability Spec v3 §5）。
 			body: JSON.stringify({
 				name: name,
-				outputs: ["out"],
-				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+				spec: {
+					outputs: ["out"],
+					run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+				},
 				links: [{ fromPort: "out", toRef: name }],
 			}),
 		});
@@ -3731,12 +3800,13 @@ async function checkBatchCreate(page, base) {
 		JSON.stringify(batch.posts),
 	);
 	const body0 = (batch.bodies || [])[0] || {};
+	// P4：每个元素也是 spec 形状（spec.outputs / spec.run），扁平字段已删除。
+	const caps0 = Array.isArray(body0.capabilities) ? body0.capabilities : [];
 	H.check(
-		"批量请求体：capabilities 两条（有下游 outputs:[out] / 留空 []）+ links 带 fromRef/fromPort:out/priority:0",
-		Array.isArray(body0.capabilities) &&
-			body0.capabilities.length === 2 &&
-			JSON.stringify(body0.capabilities[0].outputs) === JSON.stringify(["out"]) &&
-			JSON.stringify(body0.capabilities[1].outputs) === JSON.stringify([]) &&
+		"批量请求体：capabilities 两条（有下游 spec.outputs:[out] / 留空 []）+ links 带 fromRef/fromPort:out/priority:0",
+		caps0.length === 2 &&
+			JSON.stringify(caps0[0]?.spec?.outputs) === JSON.stringify(["out"]) &&
+			JSON.stringify(caps0[1]?.spec?.outputs) === JSON.stringify([]) &&
 			Array.isArray(body0.links) &&
 			body0.links.length === 1 &&
 			body0.links[0].fromRef === capA &&
@@ -3744,7 +3814,7 @@ async function checkBatchCreate(page, base) {
 			body0.links[0].toRef === capB &&
 			body0.links[0].priority === 0,
 		JSON.stringify({
-			caps: (body0.capabilities || []).map((c) => c.outputs),
+			caps: caps0.map((c) => c && c.spec && c.spec.outputs),
 			links: body0.links,
 		}),
 	);
@@ -3852,10 +3922,13 @@ async function checkBatchCreate(page, base) {
 	// ③ API 层：mock 的批量接口同样「先全量校验再写入」（真后端由 A/B 组单测钉住，
 	//    这里钉 mock 的语义一致，避免预览里能建出真后端会拒的半成品）
 	const apiChecks = await page.evaluate(async ([an, bn]) => {
+		// P4：批量元素与单建同形状（spec 里装契约 + 实现）。
 		const mk = (name, outputs) => ({
 			name,
-			outputs,
-			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+			spec: {
+				outputs,
+				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+			},
 		});
 		const post = async (body) => {
 			const res = await fetch("/v1/capabilities/batch", {
@@ -3880,8 +3953,11 @@ async function checkBatchCreate(page, base) {
 			hasA: (caps.capabilities || []).some((c) => c.name === an),
 			hasB: (caps.capabilities || []).some((c) => c.name === bn),
 		};
-		// balance 非 priority：保存即 400（本期只实现 priority）
-		// 注：界面已经表达不了 balance（端口选择器删掉了），但 API 仍是协议的一部分
+		// balance 的**旧假分支已删**（P3 遗留：非 priority 保存即 400）。
+		//
+		// 能力版本上根本没有 balance 字段（契约 §3.3：语义上只有一个合法值），
+		// 所以这里反过来钉新形状：带 balance 的请求**不报错、也不生效**——
+		// 它只是一个被忽略的未知字段（真后端同样不解释未知字段）。
 		const bal = mk(an, ["out"]);
 		bal.balance = { out: { mode: "all" } };
 		const balRes = await post({ capabilities: [bal], links: [] });
@@ -3907,12 +3983,10 @@ async function checkBatchCreate(page, base) {
 		JSON.stringify({ status: apiChecks.badLink.status, body: apiChecks.badLink.body, after: apiChecks.afterBad }),
 	);
 	H.check(
-		"balance 非 priority 保存即 400「尚未实现」（不静默降级）",
-		apiChecks.balRes.status === 400 &&
-			/尚未实现|not implemented|未実装|no implementado/.test(
-				String((apiChecks.balRes.body || {}).error || ""),
-			),
-		JSON.stringify(apiChecks.balRes),
+		"balance 不再是请求体字段：带它 200 且不落库（旧的「非 priority → 400」假分支已删）",
+		(apiChecks.balRes.status === 200 || apiChecks.balRes.status === 201) &&
+			(apiChecks.balRes.body?.capabilities || []).every((c) => !("balance" in c)),
+		JSON.stringify(apiChecks.balRes).slice(0, 320),
 	);
 	H.check(
 		"成环可建：a→b 与 b→a 同一批提交成功（配置期不再拒环）",
@@ -4327,7 +4401,7 @@ async function checkCapabilityEditReal(server, newCtx) {
 		method: "POST",
 		// P1-b2：建能力必须有实现 —— 「只是接住上游」也是实现（空脚本），
 		// 而 `handler: noop` 那种占位不再由 HTTP 创建产出。
-		body: { name: echoName, outputs: ["out"], paramsSchema: { type: "object" }, run: MIN_RUN },
+		body: { name: echoName, spec: { outputs: ["out"], params: { type: "object" }, run: MIN_RUN } },
 	});
 	H.eq("真后端：建下游能力 echo → 200", echo.status, 200);
 
@@ -4340,20 +4414,27 @@ async function checkCapabilityEditReal(server, newCtx) {
 		"anotify-agent emit --data '{\"touched\":true}'",
 		"",
 	].join("\n");
+	// 第二个文件 + env（含一个**空值**：GH_TOKEN:"" = 由节点环境提供）：
+	// 这两样正是 P4 前「发一版就静默丢掉」的数据，编辑链路必须原样带过去。
+	const helperV1 = ["#!/bin/sh", "set -eu", 'echo "helper v1"', ""].join("\n");
 	const schemaV1 = { type: "object", properties: { changedLines: { type: "number" } } };
 	const made = await H.req(B, "/v1/capabilities", {
 		session: s.session,
 		method: "POST",
+		// P4：请求体是 spec 形状（Capability Spec v3 §5）。
 		body: {
 			name: touchName,
 			displayName: "定时嗃唤",
-			// 单出口：内部名固定 out。它只活在请求体/库里，界面上没有它的位置。
-			outputs: ["out"],
-			paramsSchema: schemaV1,
-			run: {
-				entrypoint: "run.sh",
-				files: { "run.sh": scriptV1 },
-				timeoutSec: 120,
+			spec: {
+				// 单出口：内部名固定 out。它只活在请求体/库里，界面上没有它的位置。
+				outputs: ["out"],
+				params: schemaV1,
+				run: {
+					entrypoint: "run.sh",
+					files: { "run.sh": scriptV1, "lib/helper.sh": helperV1 },
+					timeoutSec: 120,
+					env: { GH_TOKEN: "", LOG_LEVEL: "info" },
+				},
 			},
 			links: [{ fromPort: "out", toRef: echoName }],
 		},
@@ -4470,8 +4551,50 @@ async function checkCapabilityEditReal(server, newCtx) {
 			legacyPortUI: document.querySelectorAll(
 				"#cap-ports, #cap-port-input, #cap-ports-hint, .cap-chip, #cap-down-rows, .cap-down-row, .cap-bal-select, .cap-bal-wrap, .cap-cand-prio",
 			).length,
+			// P4：多文件编辑器 —— 文件列表列出**全部**文件，入口有标记
+			files: Array.from(document.querySelectorAll("#cap-files-list [data-file]")).map((x) => ({
+				name: x.getAttribute("data-file"),
+				entry: !!x.querySelector(".tpl-hint"),
+			})),
+			// P4：env 行 —— 含空值的那一行也必须预填出来
+			env: Array.from(document.querySelectorAll("#cap-env-rows [data-env-row]")).map((r) => ({
+				key: (r.querySelector('[data-env-f="key"]') || {}).value || "",
+				value: (r.querySelector('[data-env-f="value"]') || {}).value || "",
+			})),
 		};
 	}, touchName);
+	// 切到第二个文件：编辑器里必须是**那个文件的正文**（不是入口的）
+	const secondFile = await p.evaluate(async () => {
+		const btn = document.querySelector('#cap-files-list [data-file="lib/helper.sh"] [data-act="file-pick"]');
+		if (!btn) return { err: "文件列表里没有 lib/helper.sh" };
+		btn.click();
+		await new Promise((r) => setTimeout(r, 150));
+		const pre = document.getElementById("script-pre").textContent || "";
+		// 切回入口文件：下面的「改脚本」改的是 run.sh（用户改的永远是入口那一份）
+		const back = document.querySelector('#cap-files-list [data-file="run.sh"] [data-act="file-pick"]');
+		if (back) back.click();
+		await new Promise((r) => setTimeout(r, 100));
+		return { pre: pre, backTo: (document.getElementById("script-pre").textContent || "").slice(0, 40) };
+	});
+	H.check(
+		"② 多文件编辑器列出全部文件（入口有标记）",
+		(editMode.files || []).length === 2 &&
+			(editMode.files || []).some((f) => f.name === "run.sh" && f.entry === true) &&
+			(editMode.files || []).some((f) => f.name === "lib/helper.sh" && f.entry === false),
+		JSON.stringify(editMode.files),
+	);
+	H.check(
+		"② 切到第二个文件，编辑器显示的是它自己的正文",
+		/helper v1/.test(secondFile.pre || "") && !/touchnow v1/.test(secondFile.pre || ""),
+		String(secondFile.pre).slice(0, 120),
+	);
+	H.check(
+		'② env 行被预填（含空值 GH_TOKEN:""，不许被吞掉）',
+		(editMode.env || []).length === 2 &&
+			(editMode.env || []).some((r) => r.key === "GH_TOKEN" && r.value === "") &&
+			(editMode.env || []).some((r) => r.key === "LOG_LEVEL" && r.value === "info"),
+		JSON.stringify(editMode.env),
+	);
 	H.check(
 		"② 点「编辑」进的是新版本模式（预告下一版版本号）",
 		editMode.open === true && /@2$/.test(editMode.banner || ""),
@@ -4578,7 +4701,23 @@ async function checkCapabilityEditReal(server, newCtx) {
 		};
 		const v1Script = await scriptOf(v1.id);
 		const v2Script = await scriptOf(v2 && v2.id);
+		// P4 的两条数据完整性证明：发一版之后**其它文件**与 **env** 必须还在
+		// （前一版只发入口文件、env 恒发 {}，两处都会静默丢数据）。
+		const fullArtifact = async (id) => {
+			if (!id) return null;
+			try {
+				return await window.Anotify.api(`/v1/capabilities/${id}/artifact`);
+			} catch (e) {
+				return null;
+			}
+		};
+		const v2Art = await fullArtifact(v2 && v2.id);
+		const v1Art = await fullArtifact(v1.id);
 		return {
+			v2Files: Object.keys((v2Art || {}).files || {}).sort(),
+			v2Helper: (((v2Art || {}).files || {})["lib/helper.sh"] || "").trim(),
+			v2Env: (v2Art || {}).env || {},
+			v1Files: Object.keys((v1Art || {}).files || {}).sort(),
 			versions: order.map((c) => c.version),
 			v1Outputs: (v1 && v1.outputs) || [],
 			v2Outputs: (v2 && v2.outputs) || [],
@@ -4633,6 +4772,23 @@ async function checkCapabilityEditReal(server, newCtx) {
 		"③ 保存后自动展开**新版本**的详情",
 		afterSave.rowV2Open === true,
 		`v2 行展开=${afterSave.rowV2Open}`,
+	);
+	// P4 数据丢失 bug #1：多文件。改入口脚本发一版，**其它文件**必须原样还在
+	H.check(
+		"③ [数据丢失回归] 发 v2 后 lib/helper.sh 仍在且正文未变",
+		JSON.stringify(afterSave.v2Files) === JSON.stringify(["lib/helper.sh", "run.sh"]) &&
+			JSON.stringify(afterSave.v2Files) === JSON.stringify(afterSave.v1Files) &&
+			/helper v1/.test(afterSave.v2Helper || ""),
+		JSON.stringify({ v1: afterSave.v1Files, v2: afterSave.v2Files, helper: String(afterSave.v2Helper).slice(0, 60) }),
+	);
+	// P4 数据丢失 bug #2：env。发一版必须把环境变量整份带过去，空值也要保留
+	H.check(
+		"③ [数据丢失回归] 发 v2 后 env 原样还在（含空值 GH_TOKEN）",
+		afterSave.v2Env &&
+			Object.prototype.hasOwnProperty.call(afterSave.v2Env, "GH_TOKEN") &&
+			afterSave.v2Env.GH_TOKEN === "" &&
+			afterSave.v2Env.LOG_LEVEL === "info",
+		JSON.stringify(afterSave.v2Env),
 	);
 
 	// ---------- ④ 破坏性定义变更 → 409 闸门弹影响面 → force 后成功 ----------
@@ -4741,9 +4897,11 @@ async function checkCapabilityEditReal(server, newCtx) {
 	const dropBody = (outputs, force) => {
 		const body = {
 			name: dropName,
-			outputs: outputs,
-			paramsSchema: { type: "object" },
-			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+			spec: {
+				outputs: outputs,
+				params: { type: "object" },
+				run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho hi\n" } },
+			},
 		};
 		if (force) body.force = true;
 		return body;
@@ -9918,7 +10076,7 @@ async function checkSharedTopology(server, newCtx) {
 			session: s.session,
 			method: "POST",
 			// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-			body: { name, outputs, paramsSchema: { type: "object" }, run: MIN_RUN },
+			body: { name, spec: { outputs, params: { type: "object" }, run: MIN_RUN } },
 		});
 		H.check(`拓扑造数：建能力 ${name} → 200`, r.status === 200, r.text?.slice(0, 200));
 		return r.json?.capability || {};

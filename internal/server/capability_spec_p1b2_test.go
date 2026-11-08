@@ -1,14 +1,15 @@
 package server
 
-// 本文件钉住 Capability Spec v3 §5 在 HTTP 层的三条行为（P1-b2）：
+// 本文件钉住 Capability Spec v3 §5 在 HTTP 层的三条行为（P1-b2 起，P4 收口）：
 //
 //	① 缺实现 → 400 `impl_missing`（单建与批量**每一项**同一口径）
-//	② 列表里的 `spec` 剔除 files 正文（换成 {count, bytes}），旧 `run` 投影保留且同源
+//	② 列表里的 `spec` 剔除 files 正文（换成 {count, bytes}）；旧的 `run` 投影 P4 已删
 //	③ 详情（GET /v1/capabilities/{id}/artifact）给**完整** spec（含 files 正文）
 //
 // 为什么这些必须写在 server 包里而不是只靠 store 的单测：store 只认正文，它不知道
-// 「HTTP 请求体有没有带 run」；而 impl_missing 恰恰是**端点**的语义（契约 §5 的
-// 「唯一的行为收紧」）。
+// 「HTTP 请求体有没有带实现」；而 impl_missing 恰恰是**端点**的语义（契约 §5 的
+// 「唯一的行为收紧」）。P4 起请求体是 spec 形状，用例里的造数走 withMinimalRun
+// 那一层翻译（见 zz_spec_fixture_test.go），形状本身由 capability_spec_p4_test.go 钉住。
 
 import (
 	"net/http"
@@ -151,21 +152,10 @@ func TestCapabilityListSpecStripsFiles(t *testing.T) {
 		t.Fatal("列表响应里出现了文件正文（files 正文必须剔除）")
 	}
 
-	// ③ 旧投影保留（P4 才删），且与 spec 同源
-	runOld, _ := got["run"].(map[string]any)
-	if runOld == nil {
-		t.Fatalf("旧 run 投影被删了（P4 才删）: %v", got["run"])
-	}
-	if runOld["entrypoint"] != runSpec["entrypoint"] {
-		t.Fatalf("run.entrypoint = %v 与 spec.run.entrypoint = %v 不同源",
-			runOld["entrypoint"], runSpec["entrypoint"])
-	}
-	if runOld["timeoutSec"] != runSpec["timeoutSec"] {
-		t.Fatalf("run.timeoutSec = %v 与 spec.run.timeoutSec = %v 不同源",
-			runOld["timeoutSec"], runSpec["timeoutSec"])
-	}
-	if runOld["workDir"] != "/srv/work" || runSpec["workDir"] != "/srv/work" {
-		t.Fatalf("workDir 投影 = %v / %v, want /srv/work", runOld["workDir"], runSpec["workDir"])
+	// ③ 旧的 `run` 投影 P4 已删（契约 §5）：它不能回来。留着就是第二份形状，
+	//    而两份形状迟早会在某个新字段上分叉（#289 的 workDir 就是这么丢的）。
+	if _, has := got["run"]; has {
+		t.Fatalf("列表里不该再有旧的 run 投影（P4 删除，改读 spec.run）: %v", got["run"])
 	}
 
 	// ④ env 是正文的一部分，摘要里保留（它决定「跑起来时环境里有什么」）。

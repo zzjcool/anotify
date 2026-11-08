@@ -833,8 +833,11 @@ async function runUiArtifactChecks(ctxData, nsId) {
 					body: {
 						namespaceId: nsId,
 						name,
-						outputs,
-						run: { entrypoint: "run.sh", files: { "run.sh": script } },
+						// P4：请求体是 spec 形状（Capability Spec v3 §5）。
+						spec: {
+							outputs,
+							run: { entrypoint: "run.sh", files: { "run.sh": script } },
+						},
 					},
 				});
 				H.check(
@@ -1307,7 +1310,7 @@ async function runNamespaceSwitchChecks(ctxData, nsId) {
 		session: ctxData.session,
 		method: "POST",
 		// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-		body: { namespaceId: nsId, name: CAP_MAIN, outputs: ["ok"], run: MIN_RUN },
+		body: { namespaceId: nsId, name: CAP_MAIN, spec: { outputs: ["ok"], run: MIN_RUN } },
 	});
 	H.check(
 		`默认命名空间建出能力 ${CAP_MAIN}（200/201）`,
@@ -1334,7 +1337,7 @@ async function runNamespaceSwitchChecks(ctxData, nsId) {
 	const capAlt = await H.req(server.base, "/v1/capabilities", {
 		session: ctxData.session,
 		method: "POST",
-		body: { namespaceId: ns2, name: CAP_ALT, outputs: ["ok"], run: MIN_RUN },
+		body: { namespaceId: ns2, name: CAP_ALT, spec: { outputs: ["ok"], run: MIN_RUN } },
 	});
 	H.check(
 		`第二个命名空间建出能力 ${CAP_ALT}（200/201）`,

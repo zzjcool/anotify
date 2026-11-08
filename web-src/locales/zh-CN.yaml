@@ -1097,10 +1097,24 @@ caps:
     params: '参数'
     no_params: '这个模板没有参数'
     required: '必填'
-    script: '生成的脚本'
+    files: 文件
+    files_hint: '每个文件都是能力的一部分：入口文件由节点直接 exec（不经 shell），第一行必须是 #! shebang。'
+    file_ph: '例如 lib/helper.sh'
+    file_add: 加文件
+    file_pick_hint: 点一下编辑这个文件
+    file_set_entry: 设为入口
+    file_del: 删除这个文件
+    file_err_empty: 文件名不能为空
+    file_err_long: 文件名太长
+    file_err_slash: 只能用 / 分隔的相对路径（不接受反斜杠）
+    file_err_abs: 必须是相对路径（不能以 / 开头）
+    file_err_empty_seg: 路径里出现了空段（//）
+    file_err_dotdot: 路径不能含 . 或 .. 段
+    file_err_dup: '已经有同名文件：{name}'
+    file_err_none: 至少要有一个文件（能力的实现就是它）
+    file_err_no_entry: 入口文件名不在文件列表里
     script_view: '只读'
     script_edit: '改脚本'
-    script_hint: '脚本会被直接 exec（不经 shell），第一行必须是 #! shebang。'
     schema_advanced: "参数契约"
     schema_toggle: "手写 JSON"
     schema_visual: "可视化"
@@ -1164,6 +1178,8 @@ caps:
     none_selected: '至少选一台机器'
     no_nodes: '这个命名空间还没有节点'
     err: '部署失败：'
+    builtin: 由中枢执行，无需部署
+    builtin_hint: '内置执行器 {name} 跑在中枢进程里，不需要也不可以部署到节点'
   list:
     title: 能力列表
   form:
@@ -1224,6 +1240,15 @@ caps:
     err_timeout: '超时必须是 0–86400 的整数'
     workdir: 工作目录
     workdir_hint: '以 / 开头的绝对路径，或 ~/ 开头（~ 在节点上展开为 agent 用户的家目录）；不存在会直接失败（不会退回默认目录）。留空 = 每次任务一个独立目录。'
+    env: 环境变量
+    env_hint: '值留空 = 由节点环境提供（例如 GH_TOKEN）。ANOTIFY_ 前缀是契约保留的。'
+    env_add: + 加一个变量
+    env_value_ph: 值（留空 = 由节点环境提供）
+    env_del: 删除这个变量
+    env_err_key: 变量名不能为空
+    env_err_name: 变量名只能用字母、数字、下划线，且不能以数字开头
+    env_err_reserved: ANOTIFY_ 是契约保留前缀，不能覆盖
+    env_err_dupe: '环境变量重复：{key}'
   detail:
     btn: 详情
     params: 参数契约
@@ -1255,9 +1280,11 @@ caps:
     unknown: '—'
     script: 脚本
     script_entrypoint: 入口
-    script_empty: 这个能力还没有产物（定义时没填脚本，或还没部署）
     script_failed: 脚本载入失败
     retry: 重试
+    executor: 执行器
+    executor_builtin: '内置 {name}（由中枢执行）'
+    script_builtin: '内置执行器 {name}：实现编译在中枢进程里，没有脚本文件'
   edit:
     btn: 编辑
     title: '新版本：{name}'
@@ -1265,7 +1292,6 @@ caps:
     from_version: '从 {ref} 复制'
     sticky_carried: '粘性路由 {v}'
     lifecycle_carried: '生命周期 {v}'
-    no_artifact: 这个能力还没有产物，脚本从空白开始写
     name_locked: '名字锁定：这一版就叫这个名字，改名字请另建一个能力。'
     multi_output_note: '这个能力有多条下游路径（历史数据）：结构原样保留，不在这里改。'
     submit: 发布新版本
@@ -1277,6 +1303,8 @@ caps:
     impact_links: '会断的下游（它们接的是名字，新版本就是它们指向的版本）'
     impact_no_links: 没有跟随最新的下游受这一版影响
     force: 仍然发布
+    artifact_failed: 实现载入失败 —— 现在不能发布（否则会丢文件）
+    builtin_locked: '由中枢执行的内置能力：实现在中枢里，不能在控制台改'
   add:
     btn: 下游
     title: '加下游'

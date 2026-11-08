@@ -1737,7 +1737,7 @@ paths:
         前端可以先展示再决定要不要 `force`。
 
         **`links`：能力 + 下游边一次提交**（可选）。带 `links` 时走**原子路径**：
-        能力行、产物行（由 `CapabilityInput.run` 编译）、边行写在**同一个事务**里 ——
+        能力行、产物行（由 `CapabilityInput.spec.run` 编译）、边行写在**同一个事务**里 ——
         要么全成，要么全不成（任何一条边不合法 → 整体回滚，不会留下「能力在、边缺」的半成品）。
         不带 `links` = 原有的两步流程（建完能力再逐条 `POST /edges`），行为不变。
 
@@ -1762,8 +1762,8 @@ paths:
             已创建（或幂等返回已有）。带 `links` 时额外返回建成的边与产物：
             `links` 是本次入库的边（形状与 `GET /edges` 的行一致）。
 
-            `digest` / `artifact` **恒在**：请求体的 `run` 是必填的（见
-            `CapabilityInput.run`），每个能力创建成功都伴一份产物。
+            `digest` / `artifact` **恒在**：P4 起本端点只接受脚本形式（`handler` 一律
+            `400 handler_not_allowed`），所以「建成了却没有产物」这个状态不存在。
           content:
             application/json:
               schema:
@@ -1782,17 +1782,22 @@ paths:
                     type: string
                     description: |
                       产物 digest（`sha256:<64 hex>`）。与 `artifact.digest` 同值，
-                      由请求体的 `run`（见 `CapabilityInput.run`）编译出的产物算出。
+                      由请求体的 `spec.run`（见 `CapabilityInput.spec`）编译出的产物算出。
                   artifact: { $ref: "#/components/schemas/Artifact" }
         "400":
           description: |
-            三种 400，看 `code` 区分：
-            - `impl_missing`：**没给实现**（请求体缺 `run`）。能力必须有实现
-              （契约 R2），占位请写一个 `exit 0` 的空脚本；缺了什么都不建
+            四种 400，看 `code` 区分：
+            - `impl_missing`：**没给实现**（`spec` 缺失，或 `spec.run` 既没有
+              `entrypoint` 也没有 `files`）。能力必须有实现（契约 R2）；缺了什么
+              都不建
+            - `handler_not_allowed`：`spec.handler` 非空（**I1 红线**）。handler 只能
+              由内置播种 / 回填 / 预案产生，自定义能力请给 `spec.run`；同样什么都不建
             - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
               `literals` 的键不存在 / 成环或自连 / 跨命名空间）。`error` 里带
               `links[i]`，且**能力一行都没建**（整个事务已回滚）
-            - `invalid_artifact`：`run` 编译不出产物（同样什么都没建）
+            - `invalid_artifact`：`spec` 过不了 `artifact.Validate`（files 不是合法
+              相对路径 / 入口没有 `#!` / env 用了保留前缀 / 缺实现以外的形状错误），
+              同样什么都没建
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1930,16 +1935,19 @@ paths:
                         `fromRef` / `toRef`）
         "400":
           description: |
-            五类 400，看 `code` 区分（没有 `code` 表示请求本身不成立，文案里带下标）：
+            六类 400，看 `code` 区分（没有 `code` 表示请求本身不成立，文案里带下标）：
 
             - `duplicate_name`：批内 `capabilities[].name` 重复（`error` 里带
               `capabilities[i]` 下标，并指出第一次出现的位置）
-            - `impl_missing`：某个元素**没给实现**（缺 `run`，见 `CapabilityInput.run`）。
-              与单建同一口径：`error` 里带 `capabilities[i]` 下标，整批一条都没建
+            - `impl_missing`：某个元素**没给实现**（`spec` 缺失，或 `spec.run` 既没有
+              `entrypoint` 也没有 `files`）。与单建同一口径：`error` 里带
+              `capabilities[i]` 下标，整批一条都没建
+            - `handler_not_allowed`：某个元素的 `spec.handler` 非空（**I1 红线**，
+              与单建同一口径，同样带下标、整批不落库）
             - `edge_rejected`：某条 link 不合法（目标不存在 / 端口不在 `outputs` /
               `literals` 的键不存在 / 跨命名空间）。`error` 里带 `links[i]` 下标，
               且**整批已回滚**（能力 0 条、产物 0 条、边 0 条）
-            - `invalid_artifact`：某个 `run` 编译不出产物（同样什么都没建）
+            - `invalid_artifact`：某个 `spec` 过不了 `artifact.Validate`（同样什么都没建）
             - 无 `code`：`capabilities` 为空 / 元素缺 `name` / 元素里的 `namespaceId`
               与批级冲突 / 元素里写了 `links`（边必须放批级）/ 缺 `namespaceId`
           content:
@@ -3955,49 +3963,12 @@ components:
 
     # ---------- 能力正文（Capability Spec v3 §3）----------
     #
-    # 三份 schema 说的是同一件东西的三种视角：
-    #   CapabilityRunInput    请求体里的实现（扁平形状，P1-b 的入参）
-    #   CapabilitySpec        正文**全文**（详情端点 / 产物里的 spec）
+    # 两份 schema 说的是同一件东西的两种视角：
+    #   CapabilitySpec        正文**全文**（请求体的 spec / 详情端点 / 产物里的 spec）
     #   CapabilitySpecSummary 正文的**列表投影**（files 换成 {count,bytes}）
-    CapabilityRunInput:
-      type: object
-      required: [entrypoint, files]
-      description: |
-        能力的实现（**脚本形式**）：由任意 `agent` 节点执行。
-
-        Capability Spec v3 §3.1 说实现只有两种形式、**恰好给一组**：
-        本对象（files + entrypoint）或 `handler`（内置执行器，白名单，只有中枢的
-        builtin 节点能认领）。HTTP 创建设计的只有前者；`handler` 形式由平台侧播种。
-      properties:
-        entrypoint:
-          type: string
-          example: run.sh
-          description: |
-            入口文件名，必须是 `files` 的一个 key，且正文以 `#!` 开头（直接 exec，
-            不经 shell —— 没有 shell 就没有插值、拼接与引号问题）。
-            省略时服务端按 `run.sh` 处理。
-        files:
-          type: object
-          additionalProperties: { type: string }
-          description: |
-            相对路径 → 文件正文（普通文本）。单文件 ≤ 256 KiB、合计 ≤ 1 MiB；
-            路径必须是相对路径（不得以 `/` 开头、不得含 `..`）。
-        timeoutSec:
-          type: integer
-          default: 0
-          description: |
-            节点本地超时（秒）。0 = 不设本地超时，只受中枢租约约束。上限 86400。
-        env:
-          type: object
-          additionalProperties: { type: string }
-          description: |
-            产物自带的环境变量。键必须是合法 shell 变量名，且**不得**以 `ANOTIFY_`
-            开头（契约保留前缀）。
-        workDir:
-          type: string
-          description: |
-            执行目录：绝对路径，或 `~` / `~/…`（`~` 由**节点**展开为 agent 用户的
-            家目录，不展开 `$VAR`）。空 = 每次任务一个独立目录。
+    #
+    # 旧的 `CapabilityRunInput`（扁平 run 入参）P4 已删：请求体切成 spec 形状后，
+    # run 就是 `CapabilitySpec.run`，再留一份「几乎一样的入参 schema」只会分叉。
 
     CapabilityFilesSummary:
       type: object
@@ -4115,19 +4086,6 @@ components:
           type: array
           items: { type: string }
           description: 出口名的**封闭集合**（不变量 I2）；边的 fromPort 必须属于它
-        run:
-          type: object
-          nullable: true
-          description: |
-            「这个能力怎么跑」的**只读投影**（超时 / 工作目录 / 依赖），真相在产物 spec.run 里
-            （随 digest 走、中枢只存不解释）。取不到产物时为 null —— 前端据此显示「—」，
-            而不是把这两行藏起来（藏起来会让人以为这个能力没有超时）。
-          properties:
-            entrypoint: { type: string }
-            timeoutSec: { type: integer, description: 0 = 不设本地超时，交给中枢租约兜底 }
-            workDir:
-              type: string
-              description: 绝对路径，或以 ~/ 开头（~ 在节点上展开为 agent 用户的家目录，不展开 $VAR）；空 = 每次任务一个独立目录（#289：目录属于能力定义，不是节点配置）
         sticky:
           type: string
           description: 粘性路由的 selector 键名（空表示不粘）
@@ -4153,7 +4111,8 @@ components:
             几十条会被白涨几百 MB 级。要看正文，走
             `GET /capabilities/{id}/artifact`（那里的 `spec` 是**全文**）。
 
-            注意 `run`（旧投影）与本字段**同源**：都由同一份能力正文算出，P4 删旧投影。
+            旧的 `run` 投影（只给 entrypoint/timeoutSec/workDir）**P4 已删**：它是
+            `spec.run` 的子集，留着就是第二份形状。要看「怎么跑」请读 `spec.run`。
 
     CapabilityWithKind:
       allOf:
@@ -4226,16 +4185,23 @@ components:
 
     CapabilityInput:
       type: object
-      required: [name, run]
+      required: [name, spec]
       description: |
-        建能力的请求体（**扁平形状**：Capability Spec v3 §5 把请求形状切换推到 P4，
-        P1-b 里服务端负责把它组装成 `spec`）。
+        建能力的请求体（**spec 形状**，Capability Spec v3 §3/§5 的 P4 列）。
 
-        `run` 是**必填**的（P1-b2 起）：能力必须有实现（契约 R2），缺了就是
-        `400 impl_missing`。占位请给一个什么都不做、退出码 0 的脚本。
+        P4 起请求体就是**一份能力正文**：契约（params / outputs / requires /
+        lifecycle / sticky）与实现（`spec.run`）都装在 `spec` 里。服务端**不派生**
+        任何字段——派生列（`paramsSchema` / `outputs` / `lifecycle` / `sticky`）由
+        store 从 `spec` 单向算出（契约 §4 的「一个写者」）。
 
-        注意：`handler` 形式（内置执行器）**不接受**由本端点创建 —— 那是平台侧
-        （内置播种 / 预案安装）的事，HTTP 创建一律走 `run`。
+        旧扁平字段（`paramsSchema` / `outputs` / `run` / `requires` / `sticky` /
+        `lifecycle` / `balance`）**已全部删除**：发了也不会被解释，只会因缺实现得到
+        `400 impl_missing`。这是**破坏性切换**，与前端同一次提交一起改。
+
+        **I1 红线**：`spec.handler` 非空 → 一律 `400 handler_not_allowed`。
+        handler 是编译进中枢进程的白名单执行器，只能由**内置播种 / 回填 / 预案**
+        产生（服务端代码路径）；一旦 HTTP 能写它，任何登录用户都能把能力挂到中枢执行。
+        自定义能力请给 `spec.run`（脚本形式，由节点执行）。
       properties:
         namespaceId:
           type: string
@@ -4252,22 +4218,14 @@ components:
         version:
           type: integer
           description: 省略时自动开下一个版本（append-only，不变量 I8）
-        paramsSchema: { type: object }
-        outputs:
-          type: array
-          items: { type: string }
-          description: 出口名的**封闭集合**（不变量 I2）；边的 `fromPort` 必须属于它
-        requires:
-          type: array
-          items: { type: string }
+        spec:
+          $ref: "#/components/schemas/CapabilitySpec"
           description: |
-            节点必须预装的外部命令（部署时 `LookPath` 探测，缺了部署失败）。
-            上限 16 个；名字只允许 `[A-Za-z0-9._+-]`。
-        sticky: { type: string }
-        lifecycle: { type: object }
-        source: { type: string, enum: [builtin, custom], default: custom }
-        run:
-          $ref: "#/components/schemas/CapabilityRunInput"
+            能力正文（Capability Spec v3 §3）：`params` / `outputs` / `requires` /
+            `lifecycle` / `sticky` + 实现。
+
+            实现**恰好一种**：`run`（files + entrypoint，节点执行）。本端点不接受
+            `handler`（见上，`400 handler_not_allowed`）。缺实现 → `400 impl_missing`。
         force:
           type: boolean
           default: false
@@ -4279,8 +4237,8 @@ components:
           type: array
           description: |
             **能力 + 下游边一次提交**（可选）。带它就走**原子路径**：
-            能力行、产物行（由 `CapabilityInput.run` 编译）、边行写在同一个事务里 ——
-            要么全成，要么全不成。
+            能力行、产物行（由 `CapabilityInput.spec.run` 编译）、边行写在同一个事务里
+            —— 要么全成，要么全不成。
 
             不带它 = 原有的两步流程（建完能力再用 `POST /edges` 逐条建边），行为不变。
 

@@ -1291,7 +1291,7 @@
 
         <div class="mt-4">
           <div class="card-head mb-2">
-            <h4 class="card-title">{{t "caps.tpl.script"}}</h4>
+            <h4 class="card-title">{{t "caps.tpl.files"}}</h4>
             <!-- 默认只读：模板脚本是"能跑的东西"，先让人看清它要做什么，
                  想改的人再切到编辑 —— 而不是一进去就给一个空编辑器。 -->
             <div class="seg-switch">
@@ -1303,14 +1303,47 @@
               </button>
             </div>
           </div>
+          <!-- 文件列表（P4）：一个能力可以带**多个文件**，这里平铺列出全部。
+               点名字 = 编辑那个文件；「入口」标记 = entrypoint（点「设为入口」换）。
+               为什么不能只给一个 textarea：提交时只取入口文件会让**其余文件静默消失**
+               （发一版就丢数据，而能力是 append-only 的，丢掉就再也找不回来了）。 -->
+          <div id="cap-files-list" class="flex flex-wrap items-center gap-2 mb-2"></div>
+          <div class="flex items-center gap-2 mb-2">
+            <input
+              id="cap-file-name"
+              class="input mono flex-1"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="{{t "caps.tpl.file_ph"}}"
+            />
+            <button id="cap-file-add" type="button" class="btn btn-ghost btn-sm">
+              {{t "caps.tpl.file_add"}}
+            </button>
+          </div>
+          <p id="cap-file-err" class="field-error mb-2 hidden"></p>
           <pre id="script-pre" class="yaml-box mono"></pre>
           <textarea id="script-input" class="textarea mono hidden" rows="12"></textarea>
-          <p class="tpl-hint mt-1">{{t "caps.tpl.script_hint"}}</p>
+          <p class="tpl-hint mt-1">{{t "caps.tpl.files_hint"}}</p>
           <!-- 工作目录也是 run 的一部分，跟着只读脚本一起展示：留空显示「—」
                （= 每次任务一个独立目录），填了就显示绝对路径。 -->
           <p class="tpl-hint mt-1">
             {{t "caps.form.workdir"}}<code id="cap-workdir-echo" class="mono ml-1"></code>
           </p>
+        </div>
+
+        <!-- env（能力的 run.env）：P4 前这个发版本恒发 `{}`，于是**每发一版就
+             把已有环境变量清空**（第二个靜默数据丢失）。空值是合法的：
+             `GH_TOKEN: ""` 的意思是「由节点环境提供」，不是没填。 -->
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.env"}}</h4>
+            <span class="tpl-hint">{{t "caps.form.env_hint"}}</span>
+          </div>
+          <div id="cap-env-rows" class="space-y-1"></div>
+          <button id="cap-env-add" type="button" class="btn btn-ghost btn-sm mt-2">
+            {{t "caps.form.env_add"}}
+          </button>
         </div>
 
       </div>
@@ -1445,7 +1478,7 @@
 
       // ==================== 本批能力卡片（批量创建）====================
       // 一个表单建多个能力（契约 §4：POST /v1/capabilities/batch，单事务）。
-      // CARDS 是**唯一真相**；DOWN_TEXT / SCRIPT_TEXT / DOM 表单
+      // CARDS 是**唯一真相**；DOWN_TEXT / FILES / ENV_ROWS / DOM 表单
       // 都只是**活动卡的镜像**：saveActive() 把镜像写回 CARDS[ACTIVE_CARD]，
       // loadActive(k) 反向回填。这样多卡片不需要第二套渲染/校验代码。
       let CARDS = [newCard()];
@@ -1470,10 +1503,25 @@
       let TPLS = [];
       let TPLS_LOADED = false;
       let TPL_SEL = null; // 当前选中的模板
-      // SCRIPT_TEXT 是脚本正文的唯一真相：只读区（pre）和编辑区（textarea）都读它。
-      // 提交时直接用它 —— 模板脚本是字面量（后端不做插值），任何改写都必须是用户显式做的。
-      let SCRIPT_TEXT = "";
+      // ==================== 文件表（多文件编辑器）====================
+      //
+      // P4 前这里是一个单字符串（`SCRIPT_TEXT`），提交时拼成 `{run.sh: script}` ——
+      // **其余文件全部静默消失**。能力是 append-only 的，丢了的文件再也回不来，
+      // 所以现在换成「文件表 + 入口」。
+      //
+      //   FILES        {相对路径: 正文}，是**能力正文的一部分**（run.files）
+      //   FILES_ENTRY  入口文件名（必须是 FILES 的一个 key）
+      //   FILE_SEL     当前正在编辑哪个文件（纯 UI 选中项，不进请求）
+      //
+      // 三者与 DOM（#cap-files-list / #script-pre / #script-input）是镜像关系：
+      // filesSyncFromDom() 把 textarea 写回 FILES，filesPaint() 反向回填。
+      let FILES = {};
+      let FILES_ENTRY = "run.sh";
+      let FILE_SEL = "run.sh";
       let SCRIPT_MODE = "view"; // view | edit
+      // ENV_ROWS 是 run.env 的**有序**行（{key, value}）：对象不保序，而行编辑器要靠下标定位。
+      // 空值合法（`GH_TOKEN: ""` = 由节点环境提供），所以不得把空值的行删掉。
+      let ENV_ROWS = [];
 
       // 参数契约的行视图：SCHEMA_ROWS 是真相（活动卡的镜像），SCHEMA_EXTRA 装
       // 行编辑器表达不了的顶层键，SCHEMA_VIEW 决定哪个视图在显示。
@@ -1960,24 +2008,43 @@
             detailBtn.textContent = detailBase + (open ? " ▴" : " ▾");
             if (open) OPEN_DETAIL.add(c.id);
             else OPEN_DETAIL.delete(c.id);
-            // 脚本是懒加载的：展开那一刻才去问产物（列表里不带 files）
-            if (open) loadArtifact(c);
+            // 脚本是懒加载的：展开那一刻才去问产物（列表里不带 files）。
+            // handler 形式没有文件（实现在中枢里），不发这个请求。
+            if (open && !handlerOf(c)) loadArtifact(c);
           });
           right.appendChild(detailBtn);
-          // 「编辑」= 发一个新版本（能力定义 append-only，没有就地改）。
-          // 行上给一个：用户看完列表就想改，不该先展开详情才找得到入口。
-          const editBtn = el("button", "btn btn-ghost btn-sm", t("caps.edit.btn", "编辑"));
-          editBtn.type = "button";
-          editBtn.setAttribute("data-act", "edit");
-          editBtn.addEventListener("click", () => openVersionModal(c, editBtn));
-          right.appendChild(editBtn);
+          // handler 形式（内置执行器）没有编辑入口 —— 见 detailActions 的说明。
+          const handler = handlerOf(c);
+          if (!handler) {
+            // 「编辑」= 发一个新版本（能力定义 append-only，没有就地改）。
+            // 行上给一个：用户看完列表就想改，不该先展开详情才找得到入口。
+            const editBtn = el("button", "btn btn-ghost btn-sm", t("caps.edit.btn", "编辑"));
+            editBtn.type = "button";
+            editBtn.setAttribute("data-act", "edit");
+            editBtn.addEventListener("click", () => openVersionModal(c, editBtn));
+            right.appendChild(editBtn);
+          }
+          // 「部署」按**实现形式**分叉（契约 §3.1）：handler 形式由中枢的 builtin 节点
+          // 执行，节点上没有文件可跑 —— 后端也会 400 `builtin_not_deployable`。
+          // 所以这里直接是禁用态 + 说清为什么，而不是让人点了才被拒。
           const depBtn = el(
             "button",
             "btn btn-ghost btn-sm",
-            t("caps.deploy.btn", "部署"),
+            handler
+              ? t("caps.deploy.builtin", "由中枢执行，无需部署")
+              : t("caps.deploy.btn", "部署"),
           );
           depBtn.type = "button";
-          depBtn.addEventListener("click", () => openDeployModal(c, depBtn));
+          depBtn.setAttribute("data-act", "deploy");
+          if (handler) {
+            depBtn.disabled = true;
+            depBtn.title = t(
+              "caps.deploy.builtin_hint",
+              "内置执行器 {name} 跑在中枢进程里，不需要也不可以部署到节点",
+            ).replace("{name}", handler);
+          } else {
+            depBtn.addEventListener("click", () => openDeployModal(c, depBtn));
+          }
           right.appendChild(depBtn);
 
           row.appendChild(left);
@@ -1992,7 +2059,7 @@
           list.appendChild(row);
           // 展开态能跨 renderCaps 保留，脚本也必须跟着重新取一遍：
           // 新节点上的脚本块是骨架，不拉一次就永远停在「载入中」。
-          if (OPEN_DETAIL.has(c.id)) loadArtifact(c);
+          if (OPEN_DETAIL.has(c.id) && !handlerOf(c)) loadArtifact(c);
         }
       }
 
@@ -2938,9 +3005,24 @@
       // runtimeNode 是「它怎么跑」：这些字段决定行为，和「跑什么」（出口）分开看。
       function runtimeNode(c) {
         const box = el("div", "cap-detail-secs");
-        // run（超时/工作目录）在能力列表接口里**不一定**有（它是产物 spec 的一部分）。
-        // 没有就写「—」而不是把那两行藏起来：藏起来会让人以为这个能力没有超时。
-        const run = c.run && typeof c.run === "object" ? c.run : null;
+        // 「怎么跑」就在能力正文里（spec.run）—— P4 起不再有旧的 `run` 投影
+        // （它是 spec.run 的子集，两份形状迟早分叉）。
+        // handler 形式没有 run（实现编译在中枢进程里）：这时说清楚它是内置执行器，
+        // 而不是把超时/目录留成「—」（那会让人以为「我填的超时没生效」）。
+        const spec = c.spec && typeof c.spec === "object" ? c.spec : {};
+        const run = spec.run && typeof spec.run === "object" ? spec.run : null;
+        if (spec.handler) {
+          box.appendChild(
+            kv(
+              t("caps.detail.executor", "执行器"),
+              t("caps.detail.executor_builtin", "内置 {name}（由中枢执行）").replace(
+                "{name}",
+                String(spec.handler),
+              ),
+              true,
+            ),
+          );
+        }
         box.appendChild(
           kv(
             t("caps.detail.timeout", "超时"),
@@ -2999,14 +3081,30 @@
       }
 
       // detailActions 是详情区顶部的动作行（现在就一个：编辑 / 发新版本）。
+      //
+      // handler 形式的能力**没有编辑入口**：它的实现是编译进中枢的白名单执行器
+      // （契约 §3.1 / I1），在控制台「发一版脚本」等于把内置能力改成用户脚本 ——
+      // 那不是编辑，是换掉实现形式。改它只能走平台侧（内置播种 / 迁移）。
       function detailActions(c) {
         const row = el("div", "cap-detail-actions");
+        if (handlerOf(c)) {
+          row.appendChild(
+            el("span", "tpl-hint", t("caps.edit.builtin_locked", "由中枢执行的内置能力：实现在中枢里，不能在控制台改")),
+          );
+          return row;
+        }
         const btn = el("button", "btn btn-ghost btn-sm", t("caps.edit.btn", "编辑"));
         btn.type = "button";
         btn.setAttribute("data-act", "edit-version");
         btn.addEventListener("click", () => openVersionModal(c, btn));
         row.appendChild(btn);
         return row;
+      }
+
+      // handlerOf 取能力的 handler（实现形式 = 内置执行器）；没有就是空串（脚本形式）。
+      function handlerOf(c) {
+        const spec = c && c.spec && typeof c.spec === "object" ? c.spec : null;
+        return spec && spec.handler ? String(spec.handler) : "";
       }
 
       // ==================== 详情区：脚本（产物里的文件正文）====================
@@ -3039,11 +3137,29 @@
         head.appendChild(el("span", "cap-detail-sub", t("caps.detail.script", "脚本")));
         head.appendChild(el("span", "cap-script-entry"));
         box.appendChild(head);
-        box.appendChild(el("div", "cap-script-body"));
+        const body = el("div", "cap-script-body");
+        box.appendChild(body);
+        const handler = handlerOf(c);
+        if (handler) {
+          // handler 形式没有文件（实现在中枢进程里）：不去问 /artifact（那是 404），
+          // 直接把「谁跑它」写在这里。P1-b1 起不存在「这个能力还没有产物」这个状态，
+          // 所以除这一支以外不再有任何「空」分支。
+          body.appendChild(
+            el(
+              "div",
+              "cap-script-empty",
+              t("caps.detail.script_builtin", "内置执行器 {name}：实现编译在中枢进程里，没有脚本文件").replace(
+                "{name}",
+                handler,
+              ),
+            ),
+          );
+          return box;
+        }
         // 不在这里填缓存条目：
         // 「没取过」和「正在取」不是一回事。详情没展开时没人发请求，
-        // 先占一个 {state:"loading"} 会让后来打开的编辑弹层误以为在等一个
-        // 根本不存在的请求（而等不到结果 → 弹层里直接报「还没有产物」）。
+        // 先占一个 {state:"loading"} 会让后来的编辑弹层误以为在等一个
+        // 根本不存在的请求。
         // 无缓存时 paintScript 同样画骨架（不会空白闪一下）。
         paintScript(c);
         return box;
@@ -3073,10 +3189,10 @@
             const entry = data && typeof data === "object" ? data : {};
             ART_CACHE.set(c.id, { state: "ok", data: entry });
           } catch (e) {
-            // 404 = 这个能力还没有产物（正常状态：定义时没填脚本 / 还没部署）
-            // 其它 = 真故障（给「重试」，不能让人以为这个能力就是没有脚本）
-            if (e && e.status === 404) ART_CACHE.set(c.id, { state: "empty" });
-            else ART_CACHE.set(c.id, { state: "error", err: e });
+            // P1-b1 起**不存在**「这个能力还没有产物」这个状态（每个能力永远有实现，
+            // 契约 R2），所以 404 也是故障，不是空态：它意味着「能力行存在但没有可解析
+            // 的正文」——如实报错 + 给「重试」，比假装这个能力没有脚本安全。
+            ART_CACHE.set(c.id, { state: "error", err: e });
           }
         })();
         ART_INFLIGHT.set(c.id, p);
@@ -3111,19 +3227,6 @@
             body.appendChild(skel);
             continue;
           }
-          if (entry.state === "empty") {
-            body.appendChild(
-              el(
-                "div",
-                "cap-script-empty",
-                t(
-                  "caps.detail.script_empty",
-                  "这个能力还没有产物（定义时没填脚本，或还没部署）",
-                ),
-              ),
-            );
-            continue;
-          }
           if (entry.state === "error") {
             const row = el("div", "cap-script-row");
             row.appendChild(
@@ -3153,19 +3256,6 @@
           if (entrypoint && names.includes(entrypoint)) {
             names.splice(names.indexOf(entrypoint), 1);
             names.unshift(entrypoint);
-          }
-          if (!names.length) {
-            body.appendChild(
-              el(
-                "div",
-                "cap-script-empty",
-                t(
-                  "caps.detail.script_empty",
-                  "这个能力还没有产物（定义时没填脚本，或还没部署）",
-                ),
-              ),
-            );
-            continue;
           }
           for (const name of names) {
             const file = el("div", "cap-script-file");
@@ -3292,7 +3382,7 @@
       // ==================== 本批能力卡片（批量创建）====================
       //
       // 一个表单建多个能力（契约 §4：POST /v1/capabilities/batch，单事务）。
-      // CARDS 是**唯一真相**；DOWN_TEXT / SCRIPT_TEXT 与表单输入框都是**活动卡的镜像**：
+      // CARDS 是**唯一真相**；DOWN_TEXT / FILES / ENV_ROWS 与表单输入框都是**活动卡的镜像**：
       //   saveActive()     镜像 → CARDS[ACTIVE_CARD]
       //   loadActive(k)    CARDS[k] → 镜像 + 重画
       // 于是多卡片不需要第二套渲染与校验代码 —— 脚本区原地复用，
@@ -3307,7 +3397,11 @@
           workDir: "",
           requires: [], // 模板 requires（从 TPL_SEL 继承）
           downstream: "", // #cap-downstream 的原文（逗号分隔，提交时才解析）
-          script: "",
+          // 实现（P4）：文件表 + 入口 + env 行。三件都是一张卡自己的数据，
+          // 切卡时必须整份跟着走 —— 只带入口正文就是「其余文件静默丢失」。
+          files: { "run.sh": "" },
+          entry: "run.sh",
+          envRows: [],
           scriptMode: "view",
           schemaRows: [], // 参数契约的可视化行（活动卡的镜像，见 schemaSyncFromDom）
           schemaExtra: {}, // 行编辑器表达不了的顶层键（additionalProperties…），原样保留
@@ -3333,7 +3427,12 @@
         c.workDir = String(val("cap-workdir") || "").trim();
         if (TPL_SEL) c.requires = (TPL_SEL.requires || []).slice();
         c.downstream = val("cap-downstream");
-        c.script = SCRIPT_TEXT;
+        // 实现：先把编辑区正文收进 FILES，再整份落进卡片（多文件 + env 一个不丢）。
+        filesSyncFromDom();
+        envRowsSync();
+        c.files = Object.assign({}, FILES);
+        c.entry = FILES_ENTRY;
+        c.envRows = ENV_ROWS.map((r) => ({ key: r.key, value: r.value }));
         c.scriptMode = SCRIPT_MODE;
         c.schemaText = val("cap-schema");
         // 参数契约：行是镜像（真相），JSON 文本是 json 视图的原文。
@@ -3363,9 +3462,13 @@
         syncWorkdirEcho();
         TIMEOUT_DIRTY = !!c.timeoutDirty;
         DOWN_TEXT = String(c.downstream || "");
-        SCRIPT_TEXT = c.script || "";
-        document.getElementById("script-pre").textContent = SCRIPT_TEXT;
-        document.getElementById("script-input").value = SCRIPT_TEXT;
+        FILES = filesFromMap(c.files);
+        FILES_ENTRY = c.entry && c.entry in FILES ? c.entry : Object.keys(FILES)[0];
+        FILE_SEL = FILES_ENTRY;
+        ENV_ROWS = (c.envRows || []).map((r) => ({ key: r.key, value: r.value }));
+        setFileError("");
+        renderFiles();
+        renderEnvRows();
         // 先写好 textarea/pre 再切模式：scriptModeSet("view") 会以 textarea 为准回写正文
         scriptModeSet(c.scriptMode === "edit" ? "edit" : "view");
         // 参数契约：先把卡里的行装回镜像，再按视图渲染（顺序不能反）
@@ -3403,7 +3506,8 @@
         const c = newCard();
         if (TPL_SEL) {
           c.requires = (TPL_SEL.requires || []).slice();
-          c.script = TPL_SEL.script || "";
+          c.files = { "run.sh": TPL_SEL.script || "" };
+          c.entry = "run.sh";
           c.timeout = String(TPL_SEL.timeoutSec || 0);
           // 参数契约从模板推导：与 pickTemplate 同一口径（否则第二张卡的
           // 参数契约会是一份空契约，而用户以为自己只是「再加一个一样的能力」）
@@ -3632,7 +3736,13 @@
         // 脏标记也要清：新一次新建又没被人碰过，超时应该重新跟模板走
         TIMEOUT_DIRTY = false;
         TPL_SEL = null;
-        SCRIPT_TEXT = "";
+        FILES = { "run.sh": "" };
+        FILES_ENTRY = "run.sh";
+        FILE_SEL = "run.sh";
+        ENV_ROWS = [];
+        setFileError("");
+        const fileNameEl = document.getElementById("cap-file-name");
+        if (fileNameEl) fileNameEl.value = "";
         // 下游也要清：上一次建的链路不能静默带到下一次新建里
         // （那会凭空造出几条用户没点过的边）。
         DOWN_TEXT = "";
@@ -3657,9 +3767,9 @@
         renderCards();
         fillTargetDatalist();
         renderDownstreamHint();
-        // 脚本区回到空白 + 只读态（否则上一次的正文会留在 pre / textarea 里）
-        document.getElementById("script-pre").textContent = "";
-        document.getElementById("script-input").value = "";
+        // 实现区回到空白 + 只读态（否则上一次的文件表 / env 会留在 DOM 里）
+        renderFiles();
+        renderEnvRows();
         scriptModeSet("view");
         document.getElementById("tpl-requires").textContent = "";
         // 参数契约：回到「可视化 + 空行」。新建时如果模板有字段，
@@ -3835,7 +3945,15 @@
 
       function pickTemplate(tpl) {
         TPL_SEL = tpl;
-        SCRIPT_TEXT = tpl.script || "";
+        // 模板只给一份 run.sh 正文（模板是「一段预置脚本」）；想要更多文件就在
+        // 文件列表里加 —— 那是能力定义的一部分，模板无从知道。
+        FILES = { "run.sh": tpl.script || "" };
+        FILES_ENTRY = "run.sh";
+        FILE_SEL = "run.sh";
+        ENV_ROWS = [];
+        setFileError("");
+        renderFiles();
+        renderEnvRows();
 
         // 超时：用户没手改过就跟着模板默认值走，手改过才保留。
         // 只判断“输入框是否为空”是不够的：从 script.http（120）换到
@@ -3843,8 +3961,6 @@
         const timeoutEl = document.getElementById("cap-timeout");
         if (!TIMEOUT_DIRTY) timeoutEl.value = String(tpl.timeoutSec || 0);
 
-        document.getElementById("script-pre").textContent = SCRIPT_TEXT;
-        document.getElementById("script-input").value = SCRIPT_TEXT;
         scriptModeSet("view");
 
         // 参数定义只有一处：下面的「参数契约」行视图。模板字段不再渲染成
@@ -3876,6 +3992,298 @@
         document.getElementById("tpl-requires").textContent = requiresText(tpl.requires || []);
       }
 
+      // ==================== 文件表编辑器（多文件 + entrypoint + env）====================
+      //
+      // 这里把「一个 textarea」换成「文件列表 + 编辑器 + env 行」。两件事必须真的成立（
+      // 否则就是两个真实的数据丢失 bug）：
+      //
+      //   ① 提交时带的是 **FILES 全部文件**，而不是「只取入口那个」——
+      //      后者会把其余文件静默删掉；
+      //   ② 发新版本时先把**当前版本的全部文件与 env** 读回来（loadArtifact），
+      //      改完再整份提交 —— 否则一改一发就丢。
+
+      // 后端 artifact.Validate 的路径规则（只能更严，不能更宽）：
+      // 非空、不用反斜杠、不是绝对路径、无空段、无 . / ..。
+      // 前端先拦只是为了省一次往返 —— 真正的判定在后端。
+      function filePathError(name) {
+        if (!name) return t("caps.tpl.file_err_empty", "文件名不能为空");
+        if (name.length > 200) return t("caps.tpl.file_err_long", "文件名太长");
+        if (name.includes("\\")) {
+          return t("caps.tpl.file_err_slash", "只能用 / 分隔的相对路径（不接受反斜杠）");
+        }
+        if (name.startsWith("/")) {
+          return t("caps.tpl.file_err_abs", "必须是相对路径（不能以 / 开头）");
+        }
+        for (const seg of name.split("/")) {
+          if (seg === "") return t("caps.tpl.file_err_empty_seg", "路径里出现了空段（//）");
+          if (seg === "." || seg === "..") {
+            return t("caps.tpl.file_err_dotdot", "路径不能含 . 或 .. 段");
+          }
+        }
+        return "";
+      }
+
+      // env 键规则与 artifact.Validate 一致：合法 shell 变量名，且不得以 ANOTIFY_ 开头。
+      function envKeyError(key) {
+        if (!key) return t("caps.form.env_err_key", "变量名不能为空");
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          return t("caps.form.env_err_name", "变量名只能用字母、数字、下划线，且不能以数字开头");
+        }
+        if (key.toUpperCase().startsWith("ANOTIFY_")) {
+          return t("caps.form.env_err_reserved", "ANOTIFY_ 是契约保留前缀，不能覆盖");
+        }
+        return "";
+      }
+
+      // filesSyncFromDom 把**编辑区当前文本**收进 FILES（切文件/存卡/提交前必调）。
+      function filesSyncFromDom() {
+        const ta = document.getElementById("script-input");
+        if (ta && FILE_SEL) FILES[FILE_SEL] = ta.value;
+      }
+
+      // filesPaint 把 FILES[FILE_SEL] 画进只读区 / 编辑区（按当前模式）。
+      function filesPaint() {
+        const body = FILES[FILE_SEL] == null ? "" : String(FILES[FILE_SEL]);
+        const pre = document.getElementById("script-pre");
+        const ta = document.getElementById("script-input");
+        if (pre) pre.textContent = body;
+        if (ta) ta.value = body;
+      }
+
+      // renderFiles 重画文件列表（名字 / 入口标记 / 删除）与编辑器正文。
+      function renderFiles() {
+        const box = document.getElementById("cap-files-list");
+        if (!box) return;
+        box.replaceChildren();
+        const names = Object.keys(FILES);
+        for (const name of names) {
+          const row = el("div", "flex items-center gap-1");
+          row.setAttribute("data-file", name);
+          const pick = el(
+            "button",
+            "btn btn-sm mono " + (name === FILE_SEL ? "btn-primary" : "btn-ghost"),
+            name,
+          );
+          pick.type = "button";
+          pick.setAttribute("data-act", "file-pick");
+          pick.title = t("caps.tpl.file_pick_hint", "点一下编辑这个文件");
+          pick.addEventListener("click", () => filesSelect(name));
+          row.appendChild(pick);
+          if (name === FILES_ENTRY) {
+            row.appendChild(el("span", "tpl-hint", t("caps.detail.script_entrypoint", "入口")));
+          } else {
+            const setEntry = el("button", "btn btn-ghost btn-sm", t("caps.tpl.file_set_entry", "设为入口"));
+            setEntry.type = "button";
+            setEntry.setAttribute("data-act", "file-set-entry");
+            setEntry.addEventListener("click", () => filesSetEntry(name));
+            row.appendChild(setEntry);
+          }
+          const del = el("button", "btn btn-ghost btn-sm", "×");
+          del.type = "button";
+          del.setAttribute("data-act", "file-del");
+          del.title = t("caps.tpl.file_del", "删除这个文件");
+          // 至少留一个文件：一个都没有 = 没有实现（后端会 400 impl_missing），
+          // 而点了没反应的按钮比不可点更糟。
+          del.hidden = names.length <= 1;
+          del.addEventListener("click", () => filesDelete(name));
+          row.appendChild(del);
+          box.appendChild(row);
+        }
+        filesPaint();
+      }
+
+      // setFileError 在文件区下方显示/清空错误（textContent，防 XSS）。
+      function setFileError(msg) {
+        const node = document.getElementById("cap-file-err");
+        if (!node) return;
+        node.textContent = msg || "";
+        node.classList.toggle("hidden", !msg);
+      }
+
+      // filesSelect 切到另一个文件（先把当前编辑区写回，否则刚打的字会消失）。
+      function filesSelect(name) {
+        if (!(name in FILES)) return;
+        filesSyncFromDom();
+        FILE_SEL = name;
+        setFileError("");
+        renderFiles();
+      }
+
+      function filesSetEntry(name) {
+        if (!(name in FILES)) return;
+        FILES_ENTRY = name;
+        renderFiles();
+      }
+
+      // filesAdd 新增一个空文件并选中它（名字来自 #cap-file-name）。
+      function filesAdd() {
+        const inp = document.getElementById("cap-file-name");
+        const name = String((inp && inp.value) || "").trim();
+        const err = filePathError(name);
+        if (err) {
+          setFileError(err);
+          return;
+        }
+        if (name in FILES) {
+          setFileError(t("caps.tpl.file_err_dup", "已经有同名文件：{name}").replace("{name}", name));
+          return;
+        }
+        filesSyncFromDom();
+        FILES[name] = "";
+        if (inp) inp.value = "";
+        FILE_SEL = name;
+        setFileError("");
+        renderFiles();
+      }
+
+      // filesDelete 删一个文件；删掉的正是入口时自动把第一个剩下的文件接成入口
+      // （入口是必填的：没有入口 = 没实现）。
+      function filesDelete(name) {
+        const names = Object.keys(FILES);
+        if (names.length <= 1) return;
+        filesSyncFromDom();
+        delete FILES[name];
+        const rest = Object.keys(FILES);
+        if (FILES_ENTRY === name) FILES_ENTRY = rest[0] || "";
+        if (FILE_SEL === name) FILE_SEL = FILES_ENTRY || rest[0] || "";
+        renderFiles();
+      }
+
+      // envRowsSync 把 DOM 里的 key/value 读回 ENV_ROWS（切卡/提交前必调）。
+      function envRowsSync() {
+        const box = document.getElementById("cap-env-rows");
+        if (!box) return;
+        const rows = [];
+        for (const row of box.querySelectorAll("[data-env-row]")) {
+          const k = row.querySelector('[data-env-f="key"]');
+          const v = row.querySelector('[data-env-f="value"]');
+          rows.push({ key: String((k && k.value) || ""), value: String((v && v.value) || "") });
+        }
+        ENV_ROWS = rows;
+      }
+
+      // renderEnvRows 重画 env 行（每行 = key + value + 删除）。
+      //
+      // 值可以是空串（`GH_TOKEN: ""` = 由节点环境提供），所以**不能**把空值行当成没填。
+      function renderEnvRows() {
+        const box = document.getElementById("cap-env-rows");
+        if (!box) return;
+        box.replaceChildren();
+        ENV_ROWS.forEach((row, i) => {
+          const line = el("div", "flex items-center gap-2");
+          line.setAttribute("data-env-row", String(i));
+          const k = el("input", "input mono flex-1");
+          k.type = "text";
+          k.value = row.key || "";
+          k.setAttribute("data-env-f", "key");
+          k.setAttribute("placeholder", "GH_TOKEN");
+          k.setAttribute("spellcheck", "false");
+          k.setAttribute("autocomplete", "off");
+          k.addEventListener("input", () => envRowsSync());
+          line.appendChild(k);
+          const v = el("input", "input mono flex-1");
+          v.type = "text";
+          v.value = row.value == null ? "" : String(row.value);
+          v.setAttribute("data-env-f", "value");
+          v.setAttribute("placeholder", t("caps.form.env_value_ph", "值（留空 = 由节点环境提供）"));
+          v.setAttribute("spellcheck", "false");
+          v.setAttribute("autocomplete", "off");
+          v.addEventListener("input", () => envRowsSync());
+          line.appendChild(v);
+          const del = el("button", "btn btn-ghost btn-sm", "×");
+          del.type = "button";
+          del.setAttribute("data-act", "env-del");
+          del.title = t("caps.form.env_del", "删除这个变量");
+          del.addEventListener("click", () => {
+            envRowsSync();
+            ENV_ROWS.splice(i, 1);
+            renderEnvRows();
+          });
+          line.appendChild(del);
+          box.appendChild(line);
+        });
+      }
+
+      // filesFromMap / envFromMap 是「从服务端读回」的统一入口（新建默认 / 发新版本预填）。
+      // 空表时给一个默认的 run.sh，不能给 `{}`：没有文件 = 没有实现。
+      function filesFromMap(map) {
+        const out = {};
+        if (map && typeof map === "object") {
+          for (const name of Object.keys(map)) out[name] = String(map[name] == null ? "" : map[name]);
+        }
+        if (!Object.keys(out).length) out["run.sh"] = "";
+        return out;
+      }
+
+      function envFromMap(map) {
+        const rows = [];
+        if (map && typeof map === "object") {
+          // 键排序：env 对象不保序，靠排序保证「同一个能力每次打开看到同一个顺序」
+          for (const key of Object.keys(map).sort()) {
+            rows.push({ key: key, value: String(map[key] == null ? "" : map[key]) });
+          }
+        }
+        return rows;
+      }
+
+      // envToObject 把 ENV_ROWS 汇成请求里的 run.env（丢弃全空的行）。
+      //
+      // 「丢掉空行」与「保留空值」是两件不同的事：整行没填（键也空）= 用户没填的占位行；
+      // 键有值、value 空 = 显式声明「由节点环境提供」，必须保留。
+      function envToObject() {
+        const out = {};
+        for (const row of ENV_ROWS) {
+          const key = String((row && row.key) || "").trim();
+          if (!key) continue;
+          out[key] = row.value == null ? "" : String(row.value);
+        }
+        return out;
+      }
+
+      // filesError 校验「一份文件表 + 入口 + env 行」（返回错误文案，空串 = 可以提交）。
+      //
+      // 单建 / 批量 / 发新版本共用这一份实现：三处各写一遍迟早会出现
+      // 「单建拦住、批量却放过去」的不一致，而那种错的代价是建出一个跑不起来的能力。
+      function filesError(files, entry, envRows) {
+        const map = files && typeof files === "object" ? files : {};
+        const names = Object.keys(map);
+        if (!names.length) return t("caps.tpl.file_err_none", "至少要有一个文件（能力的实现就是它）");
+        for (const name of names) {
+          const err = filePathError(name);
+          if (err) return name + ": " + err;
+        }
+        if (!entry || !(entry in map)) {
+          return t("caps.tpl.file_err_no_entry", "入口文件名不在文件列表里");
+        }
+        // 无条件校验、不 trim：后端是 strings.HasPrefix(body, "#!")，比它宽就等于
+        // “前端放行、后端拒收”——那种错只在提交后才看到。
+        if (!/^#!/.test(String(map[entry] == null ? "" : map[entry]))) {
+          return t("caps.tpl.script_shebang_err", "脚本第一行必须以 #! 开头");
+        }
+        const seen = new Set();
+        for (const row of envRows || []) {
+          const key = String((row && row.key) || "").trim();
+          if (!key) continue;
+          const err = envKeyError(key);
+          if (err) return key + ": " + err;
+          if (seen.has(key)) return t("caps.form.env_err_dupe", "环境变量重复：{key}").replace("{key}", key);
+          seen.add(key);
+        }
+        return "";
+      }
+
+      // validateFiles 校验**当前编辑区**（单建 / 发新版本走它）。
+      function validateFiles() {
+        return filesError(FILES, FILES_ENTRY, ENV_ROWS);
+      }
+
+      // cardFilesError 校验**某一张卡**（批量走它：卡里存的是自己的文件表，不是镜像）。
+      function cardFilesError(c) {
+        const files = filesFromMap(c && c.files);
+        const entry = c && c.entry && c.entry in files ? c.entry : Object.keys(files)[0];
+        return filesError(files, entry, (c && c.envRows) || []);
+      }
+
       // scriptModeSet 切「只读 / 改脚本」。
       // 从编辑态切回只读时以 textarea 为准（用户刚改的内容必须留在 pre 里，
       // 否则会看着自己的修改凭空消失）。
@@ -3884,12 +4292,12 @@
         const pre = document.getElementById("script-pre");
         const ta = document.getElementById("script-input");
         if (SCRIPT_MODE === "edit") {
-          ta.value = SCRIPT_TEXT;
+          ta.value = FILES[FILE_SEL] == null ? "" : String(FILES[FILE_SEL]);
           ta.classList.remove("hidden");
           pre.classList.add("hidden");
         } else {
-          SCRIPT_TEXT = ta.value;
-          pre.textContent = SCRIPT_TEXT;
+          filesSyncFromDom();
+          pre.textContent = FILES[FILE_SEL] == null ? "" : String(FILES[FILE_SEL]);
           ta.classList.add("hidden");
           pre.classList.remove("hidden");
         }
@@ -4683,21 +5091,20 @@
         // 工作目录（能力定义的一部分）：只 trim，合法性判定留在后端一处。
         const workDir = String(document.getElementById("cap-workdir").value || "").trim();
 
-        const script = SCRIPT_TEXT;
-        // 无条件校验，而且**不 trim**：后端是 strings.HasPrefix(body, "#!")、
-        // mock 是 body.startsWith("#!")，两边都不看空白。这里比后端宽就等于
-        // “前端放行、后端拒收”——那种错只在提交后才看到。
-        // 九个内置模板的正文都以 #! 开头，无条件校验不会误伤。
-        if (!/^#!/.test(script)) {
-          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"), "error");
+        // 实现：文件表 + 入口 + env。**全部**文件都要发（只发入口那次是真 bug：
+        // 其余文件被静默删掉，而能力 append-only，删了就回不来）。
+        filesSyncFromDom();
+        envRowsSync();
+        const fileErr = validateFiles();
+        if (fileErr) {
+          toast(t("caps.form.create_failed", "创建失败：") + fileErr, "error");
           return;
         }
-
         const run = {
-          entrypoint: "run.sh",
-          files: { "run.sh": script },
+          entrypoint: FILES_ENTRY,
+          files: Object.assign({}, FILES),
           timeoutSec: timeoutSec,
-          env: {},
+          env: envToObject(),
         };
         // 工作目录跟其它 run 字段放一起（不属于部署参数）：
         // 空就不带 —— 等于「每次任务一个独立目录」，后端按缺省处理。
@@ -4752,13 +5159,17 @@
         // 出口名固定 out（契约 §1）：界面不表达它，协议仍然需要它。
         const outputs = wanted.length ? [OUT_PORT] : [];
 
+        // 请求体是 **spec 形状**（Capability Spec v3 §3/§5 的 P4 列）：契约与实现
+        // 一起装在 spec 里，服务端不再接受扁平字段（paramsSchema / outputs / run …）。
         const body = {
           name: name,
           displayName: displayName,
-          paramsSchema: paramsSchema,
-          outputs: outputs,
-          run: run,
-          requires: tpl.requires || [],
+          spec: {
+            params: paramsSchema,
+            outputs: outputs,
+            requires: tpl.requires || [],
+            run: run,
+          },
         };
         // 下游边跟能力**同一次提交**（links）：后端在一个事务里写能力 + 产物 + 边，
         // 要么全成，要么全不成。这是**只在新建时**存在的路径（一条链一次建完）——
@@ -4958,13 +5369,10 @@
             );
             return false;
           }
-          // 无条件校验、不 trim：后端看 HasPrefix("#!")，比它宽就等于“前端放行、后端拒收”
-          if (!/^#!/.test(String(c.script || ""))) {
-            cardFailAt(
-              i,
-              "run",
-              t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"),
-            );
+          // 实现（多文件 + 入口 + env）：与单建同一套校验（validateFiles 是唯一实现）
+          const fileErr = cardFilesError(c);
+          if (fileErr) {
+            cardFailAt(i, "run", fileErr);
             return false;
           }
           // 参数契约：视图即真相（与 cardSchema 同一口径）
@@ -5030,11 +5438,19 @@
           // 本卡的下游候选（已去自连）：有下游 → 声明内部唯一出口；
           // 没下游 → 终端能力（outputs 空）。
           const wanted = parseDownstream(c.downstream).filter((n) => n !== name);
+          // 每张卡自己的文件表 + 入口 + env（多文件与空值 env 都要整份带上）
+          const files = filesFromMap(c.files);
+          const entry = c.entry && c.entry in files ? c.entry : Object.keys(files)[0];
+          const env = {};
+          for (const row of c.envRows || []) {
+            const key = String((row && row.key) || "").trim();
+            if (key) env[key] = row.value == null ? "" : String(row.value);
+          }
           const run = {
-            entrypoint: "run.sh",
-            files: { "run.sh": String(c.script || "") },
+            entrypoint: entry,
+            files: files,
             timeoutSec: cardTimeoutSec(c),
-            env: {},
+            env: env,
           };
           // 工作目录跟其它 run 字段放一起（空就不带 = 每次任务一个独立目录）
           if (c.workDir) run.workDir = c.workDir;
@@ -5046,10 +5462,13 @@
               String(c.displayName || "").trim() ||
               (CARDS.length === 1 && TPL_SEL ? TPL_SEL.displayName : "") ||
               "",
-            paramsSchema: cardSchema(c),
-            outputs: wanted.length ? [OUT_PORT] : [],
-            run: run,
-            requires: (c.requires || []).slice(),
+            // spec 形状（与单建同一套字段；服务端不再接受扁平字段）
+            spec: {
+              params: cardSchema(c),
+              outputs: wanted.length ? [OUT_PORT] : [],
+              requires: (c.requires || []).slice(),
+              run: run,
+            },
           });
           for (const toName of wanted) {
             links.push({
@@ -5200,10 +5619,11 @@
         parts.push(
           t("caps.edit.lifecycle_carried", "生命周期 {v}").replace("{v}", lifecycleText(c.lifecycle)),
         );
-        if (vm.artifactMissing) {
-          parts.push(
-            t("caps.edit.no_artifact", "这个能力还没有产物，脚本从空白开始写"),
-          );
+        // P1-b1 起不存在「还没有产物」的能力（每个能力永远有实现，契约 R2），
+        // 所以这里不再有那个提示分支。唯一可能读不到的是**接口失败** ——
+        // 那种情况下面单独说「载入失败，不能发布」，而不是让人以为能力是空的。
+        if (vm.artifactFailed) {
+          parts.push(t("caps.edit.artifact_failed", "实现载入失败 —— 现在不能发布（否则会丢文件）"));
         }
         return parts.join(" · ");
       }
@@ -5300,10 +5720,14 @@
         const vm = {
           cap: c,
           nextVersion: latest + 1,
-          // 没有产物时的默认值：与新建表单同一口径（run.sh + shebang）
+          // 预填前的占位（接口回来后会被当前版本的**全部**文件覆盖）。
           entrypoint: "run.sh",
+          files: { "run.sh": "" },
+          env: {},
           requires: [],
-          artifactMissing: false,
+          // 产物没读回来时**禁止发布**：那时文件表是空的，发出去就是一次
+          // 「把用户的多文件实现整份清空」的数据丢失（能力 append-only，删了就回不来）。
+          artifactFailed: false,
         };
         VERSION_MODE = vm;
 
@@ -5325,12 +5749,21 @@
         if (!VERSION_MODE || VERSION_MODE !== vm) return;
         if (art && art.state === "ok") {
           const data = art.data || {};
-          const files = data.files && typeof data.files === "object" ? data.files : {};
-          vm.entrypoint = String(data.entrypoint || "run.sh");
+          // **整份**文件表 + env：只回填入口那个文件 = 「发一版就把别的文件删掉」
+          // （这条路径以前就是这么丢数据的）。env 同理：以前恒发 {}，一发就清空。
+          vm.files = filesFromMap(data.files);
+          vm.entrypoint = data.entrypoint && data.entrypoint in vm.files
+            ? String(data.entrypoint)
+            : Object.keys(vm.files)[0];
+          vm.env = data.env && typeof data.env === "object" ? data.env : {};
           vm.requires = Array.isArray(data.requires) ? data.requires.slice() : [];
-          SCRIPT_TEXT = String(files[vm.entrypoint] == null ? "" : files[vm.entrypoint]);
-          document.getElementById("script-input").value = SCRIPT_TEXT;
-          document.getElementById("script-pre").textContent = SCRIPT_TEXT;
+          FILES = Object.assign({}, vm.files);
+          FILES_ENTRY = vm.entrypoint;
+          FILE_SEL = vm.entrypoint;
+          ENV_ROWS = envFromMap(vm.env);
+          setFileError("");
+          renderFiles();
+          renderEnvRows();
           scriptModeSet("view");
           // 0 是合法值（= 不设本地超时），所以显式写 “0” 而不是留空
           document.getElementById("cap-timeout").value = String(data.timeoutSec || 0);
@@ -5339,9 +5772,13 @@
           document.getElementById("tpl-requires").textContent = requiresText(vm.requires);
           TIMEOUT_DIRTY = true; // 已经在编辑一个已存在的版本：不要再被模板默认值覆盖
         } else {
-          vm.artifactMissing = true;
+          // 读不回来 → 文件表是空的。这里**不能**让用户带着一份空实现发版：
+          // 那不是「编辑」，那是「把这一版实现清空」。显式禁用发布并说明原因。
+          vm.artifactFailed = true;
           document.getElementById("cap-version-meta").textContent = versionMetaText(vm);
           document.getElementById("tpl-requires").textContent = requiresText(vm.requires);
+          const submitBtn = document.getElementById("cap-submit");
+          if (submitBtn) submitBtn.disabled = true;
         }
 
         // 聚焦：从「加一个出口」的旧入口进来时直接定位到下游输入框
@@ -5469,10 +5906,18 @@
         }
 
         const workDir = String(document.getElementById("cap-workdir").value || "").trim();
-        // 脚本校验与新建同一口径（不 trim：后端看 HasPrefix("#!")）
-        const script = SCRIPT_TEXT;
-        if (!/^#!/.test(script)) {
-          toast(t("caps.tpl.script_shebang_err", "脚本必须以 #! 开头"), "error");
+        // 实现读不回来时**不许发布**：此刻文件表是空的，发出去等于把这一版实现清空
+        // （能力 append-only，删掉的文件再也回不来）。
+        if (vm.artifactFailed) {
+          toast(t("caps.edit.artifact_failed", "实现载入失败 —— 现在不能发布（否则会丢文件）"), "error");
+          return;
+        }
+        // 文件表 + env 校验（与新建同一套实现：filesError）
+        filesSyncFromDom();
+        envRowsSync();
+        const fileErr = validateFiles();
+        if (fileErr) {
+          toast(t("caps.form.create_failed", "创建失败：") + fileErr, "error");
           return;
         }
 
@@ -5484,12 +5929,13 @@
         }
         const paramsSchema = gotSchema.schema || { type: "object" };
 
-        const entrypoint = vm.entrypoint || "run.sh";
+        // 整份文件表（**不是**只有入口那个文件）+ 全部 env：这两个字段以前是数据丢失
+        // 的来源（files 只发入口、env 恒发 {}），现在都从当前版本的正文带过来。
         const run = {
-          entrypoint: entrypoint,
-          files: { [entrypoint]: script },
+          entrypoint: FILES_ENTRY,
+          files: Object.assign({}, FILES),
           timeoutSec: timeoutSec,
-          env: {},
+          env: envToObject(),
         };
         if (workDir) run.workDir = workDir;
 
@@ -5512,20 +5958,25 @@
         const multiOutput = Array.isArray(c.outputs) && c.outputs.length > 1;
         const outputs = multiOutput ? c.outputs.slice() : DOWN_ROWS.length ? [OUT_PORT] : [];
 
+        // 请求体是 spec 形状（P4）：契约与实现都在 spec 里，旧的扁平字段已删除。
+        const spec = {
+          params: paramsSchema,
+          outputs: outputs,
+          run: run,
+        };
+        if (vm.requires && vm.requires.length) spec.requires = vm.requires.slice();
+        // sticky / lifecycle 不在表单里，但它们是能力定义的一部分（参与 contentHash），
+        // 「发一版」不能把它们弄丢 —— 原样带过去。
+        if (c.sticky) spec.sticky = c.sticky;
+        if (c.lifecycle && typeof c.lifecycle === "object") spec.lifecycle = c.lifecycle;
+
         const body = {
           name: name,
           // 空就真的是空（= 清掉显示名）：不再回退到旧值，
           // 否则用户把显示名删干净后发版，旧名字会悄悄回来。
           displayName: document.getElementById("cap-display-name").value.trim(),
-          paramsSchema: paramsSchema,
-          outputs: outputs,
-          run: run,
+          spec: spec,
         };
-        if (vm.requires && vm.requires.length) body.requires = vm.requires.slice();
-        // sticky / lifecycle 不在表单里，但它们是能力定义的一部分（参与 contentHash），
-        // 「发一版」不能把它们弄丢 —— 原样带过去。
-        if (c.sticky) body.sticky = c.sticky;
-        if (c.lifecycle && typeof c.lifecycle === "object") body.lifecycle = c.lifecycle;
         // 注：这里**不再**发 links —— 下游只走 PUT …/downstreams（已在上方落库）。
         // 一份拓扑两个写口，一个成功一个失败就会造出「能力在、边缺」的半成品。
         if (force) body.force = true;
@@ -5586,6 +6037,11 @@
       // ==================== 部署面板 ====================
       function openDeployModal(c, trigger) {
         if (!c) return;
+        // 兜底：handler 形式不可部署（按钮已经是禁用态，这里防的是别的入口/旧 DOM）。
+        if (handlerOf(c)) {
+          toast(t("caps.deploy.builtin", "由中枢执行，无需部署"), "error");
+          return;
+        }
         DEPLOY_CAP = c;
         document.getElementById("deploy-title").textContent = t(
           "caps.deploy.title",
@@ -5841,9 +6297,24 @@
       document.getElementById("script-mode-edit").addEventListener("click", () => {
         scriptModeSet("edit");
       });
-      // 编辑区改一个字就先同步进 SCRIPT_TEXT，切回只读时 pre 才是最新的
+      // 编辑区改一个字就先同步进 FILES[FILE_SEL]：切文件 / 切回只读时 pre 才是最新的
       document.getElementById("script-input").addEventListener("input", (e) => {
-        SCRIPT_TEXT = e.target.value;
+        if (FILE_SEL) FILES[FILE_SEL] = e.target.value;
+      });
+      // 文件：加一个（回车也算）/ 切文件 / 设入口 / 删
+      document.getElementById("cap-file-add").addEventListener("click", () => filesAdd());
+      document.getElementById("cap-file-name").addEventListener("keydown", (e) => {
+        // 回车 = 「加这个文件」。这让批量加文件不必每次去点按钮。
+        if (e.key === "Enter") {
+          e.preventDefault();
+          filesAdd();
+        }
+      });
+      // env：加一行空 key/value（空值合法，见 ENV_ROWS 的注释）
+      document.getElementById("cap-env-add").addEventListener("click", () => {
+        envRowsSync();
+        ENV_ROWS.push({ key: "", value: "" });
+        renderEnvRows();
       });
       // 超时被手改过之后就置脏：换模板时不再用模板默认值覆盖用户填的数字
       document.getElementById("cap-timeout").addEventListener("input", () => {
