@@ -19,15 +19,15 @@
 | **Capability@version** | 一份不可变规格：入口参数、出口、脚本文件、超时、env、依赖命令 | 不是一个「壳」，实现不是它的一半 |
 | **Source** | 事件从哪来（cron / webhook / github / manual） | 不是能力（它不执行） |
 | **Edge** | 端口 → 能力 + 参数映射 | 不描述能力内容 |
-| **Node** | 执行者（`agent` 或 `builtin`） | 不「拥有」能力 |
+| **Node** | 执行者，**只有 `agent` 一种**（一台真实机器） | 不是「中枢」：中枢不占 node 行，它在自己的进程里跑内置执行器 |
 | **Deployment** | 期望：某节点该持有哪个 digest | 不是「安装实现」 |
 | **Event** | 发生了一件事 | — |
 | **Task** | 一次执行（谁、什么参数、哪份 digest） | — |
 
 ## 2. 六条无例外规则（可机检的才是规则）
 
-- **R1** 实现永远跑在节点上。中枢只是一台 `builtin` 节点，它只跑编译进去的白名单 handler。
-- **R2** 一个能力永远有实现。最简实现是 `handler: "noop"`（合法、可部署、无副作用、不发 emit）。
+- **R1** 实现永远跑在节点上；唯一例外是**中枢进程内的内置执行器**，它只跑编译进去的白名单 handler（目前仅 `notify-phone`）。这个例外**不表现为一台节点**：`nodes` 表没有 `kind` 列，中枢不是一行 node，判据就一个字段 —— `spec.handler`。
+- **R2** 一个能力永远有实现。最简实现是 `handler: "noop"`（**占位**：不部署、不派发，路由到它会被剪枝成 `pruned/no_impl`，绝不静默成功）。
 - **R3** 版本正文不可变。**digest 是内容的身份，`name@version` 是指向它的指针。**
 - **R4** 中枢不得 `os/exec`（I1 不变）。
 - **R5** 端口是封闭集合：`spec.outputs` 是唯一真相，边只能引用已声明的端口。
@@ -61,7 +61,7 @@ spec:
     env:       { GH_TOKEN: "" }         # 键不得以 ANOTIFY_ 开头
     workDir:   ~                        # 绝对路径或 ~/…；~ 只在节点展开
   # 或者（handler 形式**不得**带 run 的任何字段）
-  handler: notify-phone                 # 内置执行器白名单；只有 builtin 节点能认领
+  handler: notify-phone                 # 中枢内置执行器能认领；没有 builtin 节点行
 ```
 
 > 字段序（决定 canonical JSON / digest）：`params, outputs, requires, lifecycle, sticky, run, handler`。
