@@ -173,6 +173,10 @@ ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
 ## 8. 验收（每期都跑）
 
 ```bash
+make fe                                    # ⚠️ 必做：internal/server/dist 是 gitignore 产物，
+                                           #    run_all.sh 只在缺失/为空时才重建。dist 陈旧会让前端
+                                           #    套件出现**假红**（断言数也会变少，例如 309 而不是 639）。
+gofmt -l $(git ls-files '*.go')
 go test ./internal/... ./cmd/agent/...     # 单元
 make contract                              # A2/A4/A5/A6/A7 + openapi↔mux
 make ci                                    # PR 门禁（含 build / vet / 基准冒烟）
