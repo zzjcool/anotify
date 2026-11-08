@@ -63,8 +63,17 @@ spec:
     files:
       run.sh: |
         #!/usr/bin/env bash
-        anode emit fixer    --data '{"file":"a.go"}'
-        anode emit notify --data '{"text":"ok"}'
+        set -euo pipefail
+
+        # ① CLI：薄封装，最常用
+        anode emit fixer --data '{"file":"a.go"}'
+
+        # ② 直接调接口：与上一行完全等价，任何语言都能这么发
+        curl -fsS --unix-socket "$ANOTIFY_EMIT_ENDPOINT" \
+          -X POST http://anode/emit \
+          -H "Authorization: Bearer $ANOTIFY_TASK_TOKEN" \
+          -H 'Content-Type: application/json' \
+          -d '{"to":"notify","data":{"text":"ok"}}'
     env: { GIT_TERMINAL_PROMPT: "0" }
     workDir: "~/src/{{repo}}"
 
@@ -257,7 +266,10 @@ anode emit fixer --data '{"file":"a.go"}'
 
 # 它等价于一次请求，任何语言都能自己发
 POST /emit
-{ "token": "$ANOTIFY_TASK_TOKEN", "to": "fixer", "data": { "file": "a.go" } }
+Authorization: Bearer $ANOTIFY_TASK_TOKEN      # 凭据走头，不进 payload
+Content-Type: application/json
+
+{ "to": "fixer", "data": { "file": "a.go" } }
 ```
 
 **身份来自令牌，不来自通道**：`ANOTIFY_TASK_TOKEN` 是高熵、每任务一个的凭据，
