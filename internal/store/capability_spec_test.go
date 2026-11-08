@@ -17,7 +17,7 @@ import (
 //	① 正文（spec）是输入、派生列是输出：一个写者、方向单向（§4）；
 //	② content_hash ≡ digest（裸 hex），且能从落库的那一行重算出来；
 //	③ 产物是**派生**的：能力行正文算得出产物，快照表（artifacts）已随 P2 删除（§11）；
-//	④ migration 8 的回填：三类老能力各得其所、重跑幂等、回填后能过 Validate（§6/§6.2）。
+//	④ migration 9 的回填：三类老能力各得其所、重跑幂等、回填后能过 Validate（§6/§6.2）。
 
 // TestCapabilitySpecRoundTrip 存什么读什么：正文与派生列都必须一模一样。
 func TestCapabilitySpecRoundTrip(t *testing.T) {
@@ -169,7 +169,7 @@ func TestCapabilityArtifactDerivedNotPersisted(t *testing.T) {
 	}
 	// 快照表不存在了：产物只能从能力行拼出来。
 	if tableExists(t, db, "artifacts") {
-		t.Fatal("artifacts 表还在：migration 10 应该已经删掉它（P2 §11.1）")
+		t.Fatal("artifacts 表还在：migration 11 应该已经删掉它（P2 §11.1）")
 	}
 	// digest 与 content_hash 同源：按能力行的 digest 必须能取到那份产物。
 	row, err := db.GetArtifactByDigest(ctx, nsID, script.Digest())
@@ -309,16 +309,16 @@ func TestBuiltinNotifyPhoneHasNoArtifact(t *testing.T) {
 	}
 }
 
-// ---------- migration 8 的回填（契约 §6 / §6.2） ----------
+// ---------- migration 9 的回填（契约 §6 / §6.2） ----------
 
-// TestMigration8Backfill 模拟「上一版（migration 7）建的库」升级到本版本：
+// TestMigration9Backfill 模拟「上一版（migration 7）建的库」升级到本版本：
 //
 //	① 有产物的能力 → 正文取产物的 spec；
 //	② notify.phone    → handler: notify-phone，且**不**补产物行；
 //	③ 其它零产物能力 → handler: noop 占位（原 schema/outputs 保留）；
 //	④ content_hash 按新口径重算（≡ digest），回填后能过 Validate；
 //	⑤ 重跑 hook 幂等：行内容与 hash 都不变。
-func TestMigration8Backfill(t *testing.T) {
+func TestMigration9Backfill(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "v7.db")
 
@@ -341,7 +341,7 @@ func TestMigration8Backfill(t *testing.T) {
 		oldIDs[name] = id
 		// v7 的书写方式：只有派生列，没有 spec；content_hash 还是老口径（这里随便给一个，
 		// 回填必须把它换成新口径的值）。balance 列在这里是**真的存在**的——这个夹具停在
-		// migration 7（老库的样子），P3 的 migration 9 还没跑（重开时才跑）。
+		// migration 7（老库的样子），P3 的 migration 10 还没跑（重开时才跑）。
 		if _, err := v7.Exec(
 			`INSERT INTO capability_versions
 			   (id, namespace_id, name, display_name, version, params_schema, outputs,
@@ -385,7 +385,7 @@ func TestMigration8Backfill(t *testing.T) {
 		t.Fatalf("close v7: %v", err)
 	}
 
-	// 用本版本代码重开 → migration 8（ALTER + 回填钩子）。
+	// 用本版本代码重开 → migration 9（ALTER + 回填钩子）。
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("reopen (migrate) db: %v", err)
@@ -480,11 +480,11 @@ func TestMigration8Backfill(t *testing.T) {
 	}
 }
 
-// TestMigration8BackfillRejectsInvalidLegacyRow 老库里的坏行会让迁移**指名道姓**地失败。
+// TestMigration9BackfillRejectsInvalidLegacyRow 老库里的坏行会让迁移**指名道姓**地失败。
 //
 // 为什么宁可失败也不跳过：回填出来的正文必须能过 Validate（§6.2），跳过等于把一个
 // 坏正文留在库里，第一次部署/派发时才炸——那时已经看不出是迁移的锅。
-func TestMigration8BackfillRejectsInvalidLegacyRow(t *testing.T) {
+func TestMigration9BackfillRejectsInvalidLegacyRow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v7bad.db")
 	v7, err := openWith(path, func(set *migrationSet) { *set = (*set)[:7] })
 	if err != nil {
@@ -492,7 +492,7 @@ func TestMigration8BackfillRejectsInvalidLegacyRow(t *testing.T) {
 	}
 	nsID := newRawNamespace(t, v7)
 	// 坏行：params_schema 不是 JSON 对象（老库手改的痕迹）。
-	// 同样停在 migration 7：balance 列还在（migration 9 删它），别把它当死列删掉。
+	// 同样停在 migration 7：balance 列还在（migration 10 删它），别把它当死列删掉。
 	if _, err := v7.Exec(
 		`INSERT INTO capability_versions
 		   (id, namespace_id, name, display_name, version, params_schema, outputs,

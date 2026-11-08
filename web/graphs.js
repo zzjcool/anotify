@@ -458,22 +458,46 @@
 	 * 所以「（没有下游）」这类人话留在这里翻译。两个渲染入口（capabilityFlow 与
 	 * taskChain）都必须走这一个函数，否则同一个灰点在两页会显示成两个名字。
 	 *
-	 * 灰点现在表达的是「这个能力不会再触发任何能力」（终端能力本身不是问题，
-	 * 是**声明了输出却没接**才画灰点），不是「哪条接线缺了」。
+	 * 灰点表达的是「这个出口没有接到任何能力」（终端能力本身不是问题，是
+	 * **声明了输出却没接**才画灰点）。标题优先用**出口名** —— 读者第一眼要知道
+	 * 是哪个出口悬着（`echoed` / `clean` / `notify` 都自带含义），一句「（没有下游）」
+	 * 在有多个灰点时完全分不出来。只有出口名是通用占位（`out`/空）时才退回人话：
+	 * 那种名字对读者是噪声（契约 hide-ports §4 只针对"通用端口名"，不是禁止说端口）。
 	 */
 	function topoNodeLabel(n, t) {
-		if (n && n.deadport) return t("sources.flow.unconnected", "（没有下游）");
+		if (n && n.deadport) {
+			return genericPort(n.label)
+				? t("sources.flow.unconnected", "（没有下游）")
+				: String(n.label);
+		}
 		return (n && n.label) || "";
+	}
+
+	/**
+	 * genericPort —— 出口名是不是「通用占位」。
+	 *
+	 * `out` 是建能力时的默认出口名（也是后端单出口能力的固定内部名），单独一个
+	 * 名字说明不了任何事，当标题只会把灰点都说成同一句话。空串同理。
+	 */
+	function genericPort(port) {
+		const p = String(port == null ? "" : port);
+		return p === "" || p === "out";
 	}
 
 	/**
 	 * flowSub —— 源详情页节点的副标题。
 	 *
-	 * 这里只讲**结构身份**（终点 / 没有下游 / 已删除），不是执行状态：
+	 * 这里只讲**结构身份**（终点 / 未接下游 / 已删除），不是执行状态：
 	 * 源详情页没有执行事实，拿状态词上去就是编造。
 	 */
 	function flowSub(n, t) {
-		if (n.deadport) return t("sources.flow.no_edge", "没有下游");
+		if (n.deadport) {
+			// 标题已经是出口名了，副标题就该说清"它怎么了"；通用占位端口
+			// 反过来：标题是状态词，副标题补一句同样的话会显得像卡住了。
+			return genericPort(n.label)
+				? t("sources.flow.no_edge", "没有下游")
+				: t("sources.flow.dead_port", "未接下游能力");
+		}
 		if (n.unknown) return t("sources.flow.missing", "能力已删除");
 		if (n.kind === "end") return t("sources.flow.terminal_short", "终点");
 		return "";
@@ -513,11 +537,12 @@
 				},
 			);
 		} else {
-			// 源详情页没有执行数据，但有"声明了输出却没接下游"这种配置问题
+			// 源详情页没有执行数据，但有"声明了出口却没接下游"这种配置问题
+			// （灰点的标题是**出口名**，图例这里只解释○这个标记本身）。
 			rows.push({
 				icon: "○",
 				cls: "lg-pruned",
-				text: t("sources.flow.no_edge", "没有下游"),
+				text: t("sources.flow.dead_port", "未接下游能力"),
 			});
 			// 配置预览里没有「走了几次」这个维度（每条边只描出一遍），
 			// 所以 ↺ 只解释环本身：图会绕回来。别把 trace 页的 "×N" 说法
@@ -563,6 +588,9 @@
 			// 入场动画只对"有执行事实"的图有意义 —— 源详情页没有执行数据，
 			// 但预览有自己的节拍（见 capabilityFlow），所以是否播放由调用方决定。
 			animate: !!spec.animate,
+			// idle：只摆成"一拍还没开始"的定格、不自动播。首页那张卡在折叠线
+			// 以下，自动播等于在没人看的时候放完；它自己按"进入视口"再 replay。
+			idle: !!spec.idle,
 			// 节拍（{cap, from, port}）与触发器节点 id：flograph 靠它决定
 			// "第几拍点亮谁、什么时候画线"。trace 页来自任务时间，源详情页
 			// 来自拓扑顺序（previewBeats）—— **同一套播放机器**。
@@ -875,11 +903,24 @@
 		);
 		const capOfTaskID = new Map(tasks.map((tk) => [tk.id, tk.capabilityId]));
 		const outOfTaskID = new Map(tasks.map((tk) => [tk.id, tk.out]));
+		//
+		// ★ 节拍必须和**节点 id 用同一套 id 空间**。
+		//
+		// 有底图时节点 id 是能力 id，节拍的 cap 也是能力 id；没有底图（只画
+		// 执行链，比如首页）时节点 id 是**任务 id** —— 那时 cap 若还写能力 id，
+		// flograph 里 `beatCaps.has(n.id)` 一个都对不上，participates 全是
+		// false：入场动画既不压暗也不逐个点亮，重播也只重启时钟、卡片纹丝不动
+		//（表现就是"这张图没有动画"）。from 同理，要跟边的两端对齐。
+		const useTaskIds = !(base && base.nodes && base.nodes.length);
 		const beats = sortedTasks
 			.filter((tk) => tk.capabilityId)
 			.map((tk) => ({
-				cap: tk.capabilityId,
-				from: tk.parentTaskId ? capOfTaskID.get(tk.parentTaskId) || "" : "",
+				cap: useTaskIds ? tk.id : tk.capabilityId,
+				from: tk.parentTaskId
+					? useTaskIds
+						? tk.parentTaskId
+						: capOfTaskID.get(tk.parentTaskId) || ""
+					: "",
 				port: tk.parentTaskId ? outOfTaskID.get(tk.parentTaskId) || "" : "",
 			}));
 
@@ -904,13 +945,20 @@
 					// 用独立 kind（不是简单的变灰），让它能同时表达
 					// "这是配置里真实存在的路"和"这次没走"。
 					//
-					// 灰点（deadport）不说「未执行」：它永远执行不了（没接下游）。
+					// 灰点（deadport）/ 坏引用（unknown）不说「未执行」：它们根本
+					// 执行不了（没接下游 / 能力已删）。副标题就走 flowSub —— 和源
+					// 详情页同一条推导：同一个节点在两个页面上不该说两句话
+					// （此前 trace 页对灰点是空串，源页是「没有下游」，读者以为
+					//  两个灰点不是一回事）。
 					return {
 						id: n.id,
 						// 底图节点来自 sourceTopology，label 是配置事实；
 						// 「（没有下游）」这类人话统一在 topoNodeLabel 里翻译。
 						label: topoNodeLabel(n, t),
-						sub: n.deadport ? "" : t("trace.legend_pruned", "未执行"),
+						sub:
+							n.deadport || n.unknown
+								? flowSub(n, t)
+								: t("trace.legend_pruned", "未执行"),
 						kind: "pruned",
 						icon: roleIcon,
 						role: n.kind,
@@ -927,6 +975,15 @@
 				const bits = [st];
 				if (dur != null) bits.push(fmtDur(dur));
 				if (hits.length > 1) bits.push("×" + hits.length);
+				// 结构身份也要在场：源详情页的同一张卡片副标题写「终点」，
+				// trace 页只写执行状态的话，读者分不清「这条链到头了」和
+				// 「这次刚好没往下走」—— 尤其终端能力（outputs 空）旁边
+				// 没有灰点，图上就是一片空白，什么提示都没有。
+				//
+				// 顺序固定「状态 · 耗时 · 结构」：flograph 的 silkDurOf 按
+				// " · " 切段找时长，追加在末尾不会破坏右侧耗时列。
+				const struct = flowSub(n, t);
+				if (struct) bits.push(struct);
 				return {
 					id: n.id,
 					label: topoNodeLabel(n, t),
@@ -1095,6 +1152,16 @@
 					// 单出口是常态，把 `out` 挂在线上对读者只是噪音（与有底图时同一口径）。
 					port: "",
 					cycle: tk.status === "failed",
+					// ★ 这条边是父子任务之间的**真实遍历**，一定要报出来。
+					//
+					// flograph 的判据是 `walked = !muted && times > 0`；这里不写
+					// times，它就是 0 → walked=false → 边被当成「这次没走」，
+					// 画成灰色虚线、而且**不参与入场动画**。表现是卡片一张张
+					// 亮起来、连线从头到尾一动不动（首页与「源已删除」的 trace
+					// 都会中招）。有底图那条路是同一个道理，它的 times 是数出来的。
+					times: 1,
+					heat: 1,
+					muted: false,
 				});
 			}
 		}
@@ -1114,8 +1181,16 @@
 		const graph = renderFlow(host, {
 			// 有底图时才有"执行状态"这一层可讲；只画执行链时图例没有意义
 			scope: base && base.nodes && base.nodes.length ? "trace" : "none",
-			// 首次进入图视图时按真实执行顺序点亮（排序信息来自任务时间）
-			animate: !enterAnimated,
+			// 首次进入图视图时按真实执行顺序点亮（排序信息来自任务时间）。
+			//
+			// opts.animate === false 是给首页用的逃生口：那张卡排在折叠线以下，
+			// 挂载时自动播会在**没人看**的时候放完（用户反馈"没看到动画"）。
+			// 首页自己按"进入视口"决定何时播，所以这里要能关掉这一次自动播放。
+			animate: opts.animate === false ? false : !enterAnimated,
+			// 首页：先定格在"第 0 拍"（压暗、连线还没画），等它真被看见再播。
+			// 不能只关 animate —— 关掉等于直接给终态，用户先看到一张"已经连好
+			// 的图"，然后才被清空重播。
+			idle: opts.idle === true,
 			beats: beats,
 			root: opts.sourceLabel ? "__trigger__" : "",
 			t: t,
@@ -1220,11 +1295,56 @@
 		return m + "m" + s + "s";
 	}
 
+	/**
+	 * loadBaseGraph —— 取某个源（按名字）的静态拓扑底图，给 taskChain 当底。
+	 *
+	 * **取数与推导都只有这一份**：trace 页和首页都调它。以前 trace 页在页面里
+	 * 自己写了一遍（fetch sources/capabilities/edges + 源详情 → sourceTopology），
+	 * 首页另走一条"只画执行链"的路 —— 结果同一份配置在两处长出不同的节点：
+	 * 首页只能拿任务记录里的能力 slug 拼 `haha@1`，图标也只能按状态猜，
+	 * 而 trace 页有能力的显示名、结构图标、「终点」标注和剪枝分支。
+	 * 用户报的「首页节点显示不对，以完整链路为准」就是这两条路分叉。
+	 *
+	 * 取数顺序与 trace 页原实现逐字一致；拿不到（源已删、没权限、图库没就绪）
+	 * 返回 null，调用方退回"只画执行链"。
+	 */
+	async function loadBaseGraph(opts) {
+		const o = opts || {};
+		const api = o.api || "/v1";
+		const fj =
+			o.fetchJson ||
+			((u) =>
+				fetch(u, { credentials: "same-origin" }).then((r) =>
+					r.ok ? r.json() : null,
+				));
+		if (!o.source) return null;
+		const [srcData, capData, edgeData] = await Promise.all([
+			fj(api + "/sources"),
+			fj(api + "/capabilities"),
+			fj(api + "/edges"),
+		]);
+		const srcList = (srcData && srcData.sources) || [];
+		const srcObj = srcList.find((x) => x.name === o.source);
+		if (!srcObj) return null;
+		const detail = await fj(api + "/sources/" + encodeURIComponent(srcObj.id));
+		const full = (detail && detail.source) || srcObj;
+		const caps = (capData && capData.capabilities) || [];
+		if (!caps.length) return null;
+		const topo = sourceTopology({
+			src: full,
+			caps: caps,
+			edges: (edgeData && edgeData.edges) || [],
+		});
+		return topo && topo.nodes && topo.nodes.length ? topo : null;
+	}
+
 	window.AnotifyGraphs = {
 		// 拓扑推导（唯一一份）：源详情页的流向图与 trace 页的底图都从这里来。
 		// 导出它而不是只导渲染函数，是为了让两个页面真的调**同一个**函数
 		// （否则下一个人又会"顺手"在页面里再写一份推导）。
 		sourceTopology,
+		// 底图取数（唯一一份）：trace 页与首页共用，别在页面里再写一遍
+		loadBaseGraph,
 		// 预览节拍（唯一一份）：源详情页的「按顺序流过所有节点和边」就是它。
 		// 导出给 E2E 直接验顺序（与页面上卡片步号对账），而不是靠截图猜。
 		previewBeats,

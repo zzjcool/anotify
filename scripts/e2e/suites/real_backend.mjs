@@ -44,8 +44,7 @@
  *   - 端口走 `H.SUITE_PORTS.real_backend`（段内独占，不与其它套件重叠）。
  */
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -1641,7 +1640,7 @@ async function main() {
 		"=== SUITE: real_backend（真后端页面健康 + UI 产物交给真 cmd/agent）===",
 	);
 	server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
-	tmpDir = mkdtempSync(path.join(tmpdir(), "anotify-e2e-real-backend-"));
+	tmpDir = H.mkdtempTmp("anotify-e2e-real-backend-");
 	const s = H.seed(server.dbPath, "real_backend");
 	H.check("建出真会话（devseed）", !!s.session, String(s.session || "").slice(0, 8));
 
@@ -1752,7 +1751,7 @@ async function main() {
 	await browser.close();
 	if (wsNode?.conn) wsNode.conn.close();
 	server.stop();
-	rmSync(tmpDir, { recursive: true, force: true });
+	H.removeTmpDir(tmpDir);
 	// 不用 process.exit()：它可能截断 stdout（失败详情/失败项清单正好在尾部，
 	// 那些恰恰是排障要看的）。设 exitCode 让进程自然退出；再挂一个 unref 的兜底
 	// 定时器，万一还有句柄没释放也不会挂死。
@@ -1767,7 +1766,7 @@ main().catch(async (e) => {
 		await browser?.close();
 		if (wsNode?.conn) wsNode.conn.close();
 		server?.stop();
-		if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+		H.removeTmpDir(tmpDir);
 	} catch {
 		/* ignore */
 	}

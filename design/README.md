@@ -52,3 +52,11 @@ git show <commit>:design/archive/hub-blueprint.md
 - [mockup-passkey.html](./mockup-passkey.html) — 登录
 - [mockup-login-states.html](./mockup-login-states.html) — 登录 UX 态
 - [mockup-style.html](./mockup-style.html) — 配色系统
+
+### 交互稿（建能力 · 2026-11）
+
+- [mockup-capability-agent-tui.html](./mockup-capability-agent-tui.html) — 用 `agent.tui`
+  模板建能力的「现在 / 改后」对照：模板成本预告、参数按 task/run/worktree 分组折叠、
+  默认值进 schema、多行 prompt。顶部可切视图与状态；深链可直达某一态：
+  `?view=create|source|pick&state=now|after&theme=dark|light&open=1`。
+  复用 `web/ui.css` + `web/tokens.css`，与真实控制台同源，不是另一套样式。

@@ -40,7 +40,7 @@ const baselineVersion = 1
 // 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
 // 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
 // （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
-const headVersion = 10
+const headVersion = 11
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)
@@ -126,11 +126,11 @@ func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 // 约定见 migrateWith：hook 返回 error 时整个迁移回滚；hook 必须**幂等**——
 // 同一版本在旧库升级/新建库两条路径上都可能跑到，而重跑必须得到同一结果。
 var migrationHooks = map[int]func(*sql.Tx) error{
-	8:  backfillCapabilitySpec,
-	10: referenceCapabilityFromDeployments,
+	9:  backfillCapabilitySpec,
+	11: referenceCapabilityFromDeployments,
 }
 
-// backfillCapabilitySpec 是 migration 8 的钩子：给正文为空的老行补 spec（契约 §6）。
+// backfillCapabilitySpec 是 migration 9 的钩子：给正文为空的老行补 spec（契约 §6）。
 //
 // 三类输入一份输出（都只写 spec 列 + 重算 content_hash，不动任何既有列）：
 //
@@ -225,7 +225,7 @@ func backfillCapabilitySpec(tx *sql.Tx) error {
 	return nil
 }
 
-// deploymentsCapabilityDDL 是 migration 10 重建出来的 deployments（终态形状，契约 §11.1）。
+// deploymentsCapabilityDDL 是 migration 11 重建出来的 deployments（终态形状，契约 §11.1）。
 //
 // 放在 Go 里而不是 schema.sql 的迁移块里：重建的**顺序**（新建 → 拷 → 删旧 → 改名）
 // 与逐行映射是一件事，拆成「SQL 块 + hook」只会让读者以为其中一半能单独跑。
@@ -243,7 +243,7 @@ const deploymentsCapabilityDDL = `CREATE TABLE deployments_new (
     UNIQUE (node_id, capability_id, digest)
 )`
 
-// referenceCapabilityFromDeployments 是 migration 10 的钩子：把 deployments 从
+// referenceCapabilityFromDeployments 是 migration 11 的钩子：把 deployments 从
 // 「引用 artifacts 行」改写成「引用能力行」，然后拆掉 artifacts 镜像表（契约 §11.1）。
 //
 // 三条硬要求：
@@ -391,8 +391,8 @@ func specForBackfill(tx *sql.Tx, namespaceID, capabilityID, name, params, output
 	// ① 有产物 → 正文就是产物里的 spec（契约 §6 第一行）。取最新那份：
 	// 老库可能给同一能力留过多行产物（旧版允许历史行），最新的才代表现状。
 	//
-	// 这里读的是**只在版本 ≤9 存在**的 artifacts 表：migration 8 的钩子只可能跑在
-	// 那之前的库上（migration 10 才删表）。仍然探测一次，是为了让「直接重跑 hook」
+	// 这里读的是**只在版本 ≤10 存在**的 artifacts 表：migration 9 的钩子只可能跑在
+	// 那之前的库上（migration 11 才删表）。仍然探测一次，是为了让「直接重跑 hook」
 	// （契约 §6.2 的幂等要求）在表已经删掉的库上也安全地退回 ②③，而不是撞 no such table。
 	hasArtifacts, perr := tableExistsTx(tx, "artifacts")
 	if perr != nil {

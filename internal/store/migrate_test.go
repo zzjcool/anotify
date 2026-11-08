@@ -102,22 +102,22 @@ func TestMigrationTwoColumns(t *testing.T) {
 	}
 }
 
-// TestMigrationNineDropsBalance 钉住 P3：`balance` 整列不存在了。
+// TestMigrationTenDropsBalance 钉住 P3：`balance` 整列不存在了。
 //
 // 这条不是「删了一个用例」的附属物——它守的是两件事：
-//   - migration 2 的 ALTER（历史块，不再改）与 migration 9 的 DROP 在**新建库**上
+//   - migration 2 的 ALTER（历史块，不再改）与 migration 10 的 DROP 在**新建库**上
 //     真的按顺序跑完了（新建库是先加后删，结尾不能有这列）；
-//   - 升级库（v8 → v9）也真的没这列了（见 TestMigration8Backfill 的 v7 升级路径）。
+//   - 升级库（v9 → v10）也真的没这列了（见 TestMigration9Backfill 的 v7 升级路径）。
 //
 // 为什么必须为「删列」单独留一条：列还在而代码不读它，症状是「能写进库、读出来丢」，
 // 谁也不知道该信哪一个；列真被删掉才只有一份真相。
-func TestMigrationNineDropsBalance(t *testing.T) {
+func TestMigrationTenDropsBalance(t *testing.T) {
 	db := newTestDB(t)
 
 	if columnNames(t, db, "capability_versions")["balance"] {
-		t.Fatal("capability_versions.balance 还在：migration 9 没生效（P3 已删该字段）")
+		t.Fatal("capability_versions.balance 还在：migration 10 没生效（P3 已删该字段）")
 	}
-	// 相关的老列不能跟着一起没：migration 2 的 priority、migration 8 的 spec 都在。
+	// 相关的老列不能跟着一起没：migration 2 的 priority、migration 9 的 spec 都在。
 	for _, tc := range []struct{ table, col string }{
 		{"edges", "priority"},
 		{"capability_versions", "spec"},
@@ -342,9 +342,9 @@ func readSource(t *testing.T, name string) string {
 	return string(b)
 }
 
-// ---------- migration 10：deployments 改引用能力行（Capability Spec v3 §11.1）----------
+// ---------- migration 11：deployments 改引用能力行（Capability Spec v3 §11.1）----------
 
-// mig10Legacy 是一份「停在 migration 9 的库」里的产物夹具：
+// mig10Legacy 是一份「停在 migration 10 的库」里的产物夹具：
 //   - capA 有两份产物（当前 + 历史），capB 有一份；
 //   - 三条部署：A 的当前产物（applied）、B 的产物（pending）、A 的**历史**产物（applied）。
 //
@@ -392,7 +392,7 @@ func seedMig10Legacy(t *testing.T, v9 *DB) mig10Legacy {
 		}
 	}
 	for i, c := range []struct{ id, name string }{{f.capA, "legacy.a"}, {f.capB, "legacy.b"}} {
-		// v9 的样子：有 spec 列（migration 8），没有 balance（migration 9 删了）。
+		// v9 的样子：有 spec 列（migration 9），没有 balance（migration 10 删了）。
 		// content_hash 各给一个（UNIQUE(namespace_id, content_hash) 在 v9 就已生效）。
 		if _, err := v9.Exec(
 			`INSERT INTO capability_versions
@@ -444,9 +444,9 @@ func seedMig10Legacy(t *testing.T, v9 *DB) mig10Legacy {
 	return f
 }
 
-// TestMigration10DeploymentsReferenceCapability 是 P2a 的**迁移正确性证明**。
+// TestMigration11DeploymentsReferenceCapability 是 P2a 的**迁移正确性证明**。
 //
-// 造一个停在 migration 9 的库（能力行 + 产物行 + 部署行，含 applied/pending 两种 state，
+// 造一个停在 migration 10 的库（能力行 + 产物行 + 部署行，含 applied/pending 两种 state，
 // 且其中一条部署指向**历史** digest），跑到 10，断言：
 //
 //	① deployments 行数不变（一条都没丢）；
@@ -454,7 +454,7 @@ func seedMig10Legacy(t *testing.T, v9 *DB) mig10Legacy {
 //	③ artifacts 表不存在了（镜像表拆掉）；
 //	④ 外键自洽（PRAGMA foreign_key_check 干净）+ 两个新索引都在；
 //	⑤ 重跑迁移不炸、也不改任何一行（幂等）。
-func TestMigration10DeploymentsReferenceCapability(t *testing.T) {
+func TestMigration11DeploymentsReferenceCapability(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v9.db")
 
 	v9, err := openWith(path, func(set *migrationSet) { *set = (*set)[:9] })
@@ -469,7 +469,7 @@ func TestMigration10DeploymentsReferenceCapability(t *testing.T) {
 		t.Fatalf("close v9: %v", err)
 	}
 
-	// 用本版本代码重开 → migration 10 的 hook 重建 deployments 并删掉 artifacts。
+	// 用本版本代码重开 → migration 11 的 hook 重建 deployments 并删掉 artifacts。
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("reopen (migrate) db: %v", err)
@@ -523,7 +523,7 @@ func TestMigration10DeploymentsReferenceCapability(t *testing.T) {
 
 	// ③ 镜像表不存在了
 	if tableExists(t, db, "artifacts") {
-		t.Fatal("artifacts 表还在：migration 10 没生效")
+		t.Fatal("artifacts 表还在：migration 11 没生效")
 	}
 	if columnNames(t, db, "deployments")["artifact_id"] {
 		t.Fatal("deployments.artifact_id 还在：外键没改成 capability_id")
@@ -565,7 +565,7 @@ func TestMigration10DeploymentsReferenceCapability(t *testing.T) {
 	}
 	if err := referenceCapabilityFromDeployments(tx); err != nil {
 		_ = tx.Rollback()
-		t.Fatalf("重跑 migration 10 的 hook 炸了（幂等要求）：%v", err)
+		t.Fatalf("重跑 migration 11 的 hook 炸了（幂等要求）：%v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit rerun: %v", err)
@@ -594,14 +594,14 @@ func TestMigration10DeploymentsReferenceCapability(t *testing.T) {
 	}
 }
 
-// TestMigration10RefusesToDropUnmappedDeployment 旧行映射不到能力行时**绝不静默丢**。
+// TestMigration11RefusesToDropUnmappedDeployment 旧行映射不到能力行时**绝不静默丢**。
 //
 // 判据在 LEFT JOIN + 指名道姓的报错：INNER JOIN 会把这种行悄悄筛掉，而「丢一行部署」
 // = 那台机器上的能力从此没有期望，谁都不会发现。
 //
 // 造这行需要一个**没有外键约束**的连接（正常连接上 artifacts 外键会拦住它）——
 // 模拟的是「库被外部工具写坏」这种真实存在的场景。
-func TestMigration10RefusesToDropUnmappedDeployment(t *testing.T) {
+func TestMigration11RefusesToDropUnmappedDeployment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v9orphan.db")
 
 	v9, err := openWith(path, func(set *migrationSet) { *set = (*set)[:9] })

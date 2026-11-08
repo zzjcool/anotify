@@ -164,16 +164,19 @@ index:
       count: '{n} eventos'
       none: Sin eventos
       date: '{d}/{m} {w}'
+    foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
+    foot_na: Estadísticas no disponibles
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
     subtitle: Recibe avisos automáticos al terminar tu agente
     recommended: Recomendado
-    option_a: Configura tu Agent con una línea
-    option_b: O reporta desde un script / CI
     copy: Copiar
+    cmd_install: pi install npm:pi-anotify
+    steps_short: Instalar → Aprobar → Avisos
+    copy_prompt: Copiar guía completa
+    docs: Ver docs →
     curl_example_title: Despliegue listo
-    cmd_a_comment: '# Copia esto y envíaloelo a tu pi'
     cmd_a: 'Instálame el plugin de notificaciones de anotify:
 
       1. Ejecuta pi install npm:pi-anotify
@@ -185,6 +188,15 @@ index:
       '
   summary: '{total} eventos en total · {today} hoy.'
   summary_load_failed: Los datos no están disponibles ahora — vuelve a intentarlo.
+  flow:
+    title: Cadena del último evento
+    subtitle: Las capacidades por las que pasó este evento
+    subtitle_of: 'Último: {src} · {type}'
+    open: Traza completa →
+    empty: Aún no hay eventos. Cuando un origen se active, su cadena aparecerá aquí.
+    pruned: Este evento no despachó ninguna tarea (purgado en el primer paso). Abre la traza completa para ver el motivo.
+    nolib: El motor de grafos no se cargó — abre la traza completa.
+    failed: No se pudo dibujar esta cadena — abre la traza completa.
   events:
     title: Flujo de eventos
     subtitle: Últimos eventos · clic para ver la cadena
@@ -264,7 +276,7 @@ message:
 login:
   title: Iniciar sesión
   welcome: Bienvenido de nuevo a
-  subtitle: Sin contraseñas · Acceso con Passkey en un toque
+  subtitle: Passkey en un toque · o con contraseña
   tab:
     login: Entrar
     signup: Registrarse
@@ -272,6 +284,21 @@ login:
     hint: Toca el botón para entrar con un Passkey (Face ID / huella / llave de dispositivo) en este equipo. No necesitas nombre de usuario.
     button: Entrar con Passkey
     security_note: Huella / Face ID / llave · Resistente a phishing
+  password:
+    or: o
+    toggle: Entrar con contraseña
+    toggle_hide: Ocultar acceso con contraseña
+    username_label: Nombre de usuario
+    username_placeholder: your-name
+    password_label: Contraseña
+    password_placeholder: Introduce tu contraseña
+    button: Entrar con contraseña
+    busy: Entrando…
+    hint: La contraseña es la segunda forma de entrar, junto al Passkey; se configura en la página Seguridad y acceso. Las cuentas sin contraseña siguen usando Passkey.
+    err_empty: Introduce el usuario y la contraseña.
+    err_failed: 'Error al entrar con contraseña: {msg}'
+    err_rate_limited: Demasiados intentos. Espera un momento y vuelve a intentarlo.
+    success: Sesión iniciada — entrando al espacio…
   signup:
     username_label: Elige un nombre de usuario
     username_placeholder: Ponte un nombre
@@ -285,6 +312,23 @@ login:
     err_short: El nombre de usuario necesita al menos 2 caracteres.
     err_long: El nombre de usuario puede tener como máximo 32 caracteres.
     err_chars: Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - .
+    password:
+      or: o
+      toggle: Registrarse con usuario y contraseña
+      toggle_hide: Ocultar el registro con contraseña
+      password_label: Contraseña
+      password_placeholder: Al menos 8 caracteres
+      confirm_label: Confirma la contraseña
+      confirm_placeholder: Escríbela otra vez
+      button: Registrarse con contraseña
+      busy: Creando la cuenta…
+      hint: De 8 a 128 caracteres; mejor si los genera un gestor de contraseñas.
+      err_empty: Elige una contraseña.
+      err_short: La contraseña necesita al menos 8 caracteres.
+      err_long: La contraseña puede tener como máximo 128 caracteres.
+      err_mismatch: Las dos contraseñas no coinciden.
+      err_rate_limited: Demasiados intentos de registro. Espera un momento y vuelve a probar.
+      success: Cuenta creada. Entrando al espacio de trabajo…
   ios_tip_label: 'Usuarios de iOS: '
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
   recovery_soon: ''
@@ -524,13 +568,44 @@ keys:
   emptyTitle: 'Aún no hay claves de API'
 security:
   title: Seguridad y acceso
-  subtitle: Passkey · Sesiones · Códigos de recuperación
-  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
+  subtitle: Passkey · Contraseña · Sesiones · Códigos de recuperación
+  intro: 'Gestiona todo sobre quién eres: credenciales Passkey, contraseña, sesiones de acceso y códigos de recuperación. Son independientes de a dónde van las notificaciones (dispositivos receptores).'
   add_passkey: Añadir Passkey
   passkey:
     title: Credenciales Passkey
     subtitle: Tus credenciales de acceso sin contraseña. Una cuenta puede tener varios Passkeys, sincronizados entre dispositivos del mismo ecosistema.
     count: ' credenciales'
+  password:
+    title: Acceso con contraseña
+    subtitle: Una segunda forma de entrar además del Passkey, útil en dispositivos sin autenticador de plataforma. Cada cuenta conserva siempre al menos una forma de entrar
+    status_set: Configurada
+    status_unset: Sin configurar
+    updated_at: 'Actualizada el {date}'
+    never: Nunca configurada
+    set_button: Configurar contraseña
+    change_button: Cambiar contraseña
+    remove_button: Eliminar contraseña
+    modal:
+      set_title: Configurar una contraseña
+      change_title: Cambiar la contraseña
+      remove_title: Eliminar la contraseña
+      current_label: Contraseña actual
+      new_label: Nueva contraseña
+      confirm_label: Confirma la nueva contraseña
+      save: Guardar
+      remove_submit: Eliminar contraseña
+      cancel: Cancelar
+      hint: De 8 a 128 caracteres. Genérala con un gestor de contraseñas y no la reutilices en otros sitios.
+    err_empty: Introduce una contraseña
+    err_short: La contraseña necesita al menos 8 caracteres
+    err_long: La contraseña puede tener como máximo 128 caracteres
+    err_mismatch: Las dos contraseñas no coinciden
+    toast:
+      saved: Contraseña guardada
+      removed: Contraseña eliminada
+      failed: 'Error: {msg}'
+    confirm:
+      remove: Si la eliminas solo podrás entrar con Passkey o con un código de recuperación. ¿Continuar?
   session:
     title: Sesiones de acceso
     subtitle: En qué dispositivos está tu cuenta iniciada ahora. Las sesiones son independientes y se pueden revocar individualmente.
@@ -561,7 +636,7 @@ security:
     title: Dos ejes independientes
     auth_label: Eje de autenticación
     auth_axis: quién eres (esta página)
-    auth_p1: '· Credenciales Passkey: una cuenta puede tener varias'
+    auth_p1: '· Métodos de acceso: Passkey o contraseña, siempre al menos uno'
     auth_p2: '· Sesiones de acceso: multidispositivo, revocables individualmente'
     auth_p3: '· Códigos de recuperación: respaldo si se pierden todos los dispositivos'
     delivery_label: Eje de entrega
@@ -1621,6 +1696,7 @@ sources:
     source: Origen
     terminal_short: terminal
     no_edge: sin destino
+    dead_port: sin capacidad conectada
     cycle: 'Ciclo · este destino vuelve'
   view_events: Ver eventos
 trace:

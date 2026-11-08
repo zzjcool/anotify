@@ -1882,10 +1882,14 @@
 		const hudFailDot = document.createElement("i");
 		hudFailDot.className = preview ? "lg-pruned" : "lg-bad";
 		hudFail.appendChild(hudFailDot);
-		// 预览没有「执行 / 失败」：两颗灯分别说「流向」与「没有下游」。
+		// 预览没有「执行 / 失败」：两颗灯分别说「流向」与「没接下游的出口」。
+		// 文案与灰点卡片的副标题同一个 key —— 同一个概念在同一屏里说两个词，
+		// 读者会以为是两回事。
 		if (preview) {
 			hudPath.lastChild.textContent = tt("graph.hud_flow", "下游流向");
-			hudFail.appendChild(document.createTextNode(tt("sources.flow.no_edge", "没有下游")));
+			hudFail.appendChild(
+				document.createTextNode(tt("sources.flow.dead_port", "未接下游能力")),
+			);
 		} else {
 			hudFail.appendChild(document.createTextNode(tt("graph.hud_fail", "失败任务")));
 		}
@@ -2273,13 +2277,19 @@
 			const GX = nm.GX;
 			const GY = nm.GY;
 			const TRIGW = nm.TRIGW;
+			// 触发器列只在**真有触发器节点**时占位。
+			//
+			// 无底图的链路（首页只画执行链、或源已被删）里没有 __trigger__ 节点，
+			// 无条件留 198+92px 会让整张图整体右移，左边空出一大片空白 —— 看上去
+			// 像图没画完，还白占掉可视区 1/5 的宽度。
+			const trigCol = trigger ? TRIGW + GX : 0;
 			for (const n of nodes) {
 				if (n.id === ROOT_ID) continue;
 				const d = G.depth.get(n.id) || 0;
 				const r = G.row.get(n.id) || 0;
 				n.depth = d;
 				n.row = r;
-				n.x = P + TRIGW + GX + d * (W + GX);
+				n.x = P + trigCol + d * (W + GX);
 				n.y = TOP + r * (H + GY);
 				n.w = W;
 				n.h = H;
@@ -2298,7 +2308,7 @@
 				trigger.h = H;
 				trigger.y = TOP + trigRow * (H + GY);
 			}
-			const contentW = P * 2 + TRIGW + GX + (G.maxDepth + 1) * W + G.maxDepth * GX;
+			const contentW = P * 2 + trigCol + (G.maxDepth + 1) * W + G.maxDepth * GX;
 			const contentH = TOP * 2 + (G.maxRow + 1) * H + G.maxRow * GY + (narrow ? 0 : 14);
 			return {
 				narrow: narrow,
@@ -3044,6 +3054,33 @@
 			settleBar();
 		}
 
+		/**
+		 * 把整张图摆成"一拍还没开始"的定格：参与的节点/走过的边压暗、连线
+		 * 全部收起（`.sl-edge` 没有 `is-on` = opacity 0）、进度归零、HUD 回到
+		 * "准备回放"。
+		 *
+		 * 入场播放和「先定格、等有人看再播」（idle，见 mount options）共用这一段：
+		 * 两处的第一帧必须完全一致。否则就会先摆出"终态"、再清空重播 —— 用户
+		 * 看到的第一眼是一张**已经连好线**的图，而不是"还没开始"。
+		 */
+		function armReveal() {
+			resetReveal();
+			// 只压暗**参与这次执行**的元素：剪枝节点与 muted 边本来就"没走"，
+			// 再压暗一次会在动画结束时"慢慢浮出来"，看起来像最后又跑了一步。
+			for (const rec of nodeEls.values()) {
+				if (rec.participates) rec.el.classList.add("is-pre");
+			}
+			for (const e of edgeItems) {
+				if (e.walked) e.core.classList.add("is-pre");
+			}
+			if (barSettled) {
+				// 重播：上一次的结论作废，回到"只说规模"的进行时文案
+				barSettled = false;
+				barMeta.textContent = barMetaPrefix;
+				barDot.classList.remove("is-fail");
+			}
+		}
+
 		function playEnter(force) {
 			// 自动播放尊重系统"减少动态效果"；用户亲手点重播是明确意图，不该再挡。
 			if (!force && reduceNow()) {
@@ -3054,7 +3091,7 @@
 				showFinal();
 				return;
 			}
-			resetReveal();
+			armReveal();
 			// 预览重播从**起点**开始（相机也回去）：否则上一轮的尾巴还在屏上，
 			// 新的一轮却从左边开始点亮 —— 用户会以为这一轮在播别的东西。
 			if (preview) resetCamera();
@@ -3071,22 +3108,8 @@
 				: Math.max(180, 900 / speed);
 			lastStepMs = stepMs;
 
-			// 只压暗**参与这次执行**的元素：剪枝节点与 muted 边本来就"没走"，
-			// 再压暗一次会在动画结束时"慢慢浮出来"，看起来像最后又跑了一步。
-			for (const rec of nodeEls.values()) {
-				if (rec.participates) rec.el.classList.add("is-pre");
-			}
-			for (const e of edgeItems) {
-				if (e.walked) e.core.classList.add("is-pre");
-			}
 			container.classList.add("is-playing");
 			animated = true;
-			if (barSettled) {
-				// 重播：上一次的结论作废，回到"只说规模"的进行时文案
-				barSettled = false;
-				barMeta.textContent = barMetaPrefix;
-				barDot.classList.remove("is-fail");
-			}
 
 			// 绝对时刻表 + 40ms ticker：重播时一个 clearInterval 就收干净，
 			// 不会留孤儿子回调（层层 setTimeout 的经典漏法）。
@@ -3143,6 +3166,7 @@
 		}
 
 		if (options.animate) playEnter();
+		else if (options.idle) armReveal();
 		else showFinal();
 
 		return {

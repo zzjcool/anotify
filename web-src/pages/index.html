@@ -1,22 +1,116 @@
 {{define "title"}}{{t "index.title"}}{{end}} {{define "style"}}
 <style>
-  /* 总览两列栅格：热力图占主列，右列是「接入 Agent」。
-     1440 下能把 2190px 压到 ~1550px；≤1100 单列回落。
-     `minmax(0,1fr)` 是必须的：不加会让宽内容（热力图 53 周）把整页顶宽。 */
-  .dash-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-    gap: 24px;
-    align-items: start;
+  /* 事件活动独占一行：53 周铺满整幅宽度，格子比两列时大一倍，才像一张
+     真正的活动日历。卡片是 flex column（标题 / 图 / 底注三段），图在中间
+     撑满并垂直居中 —— 卡片被拉高时不会在底部露出一截空气。 */
+  .hm-card {
+    display: flex;
+    flex-direction: column;
   }
-  .dash-side {
-    display: grid;
-    gap: 24px;
+  .hm-scroll {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+  }
+  .hm-scroll > .hm {
+    width: 100%;
+  }
+  .hm-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 20px;
+    padding: 10px 0 14px;
+    border-top: 1px solid var(--line);
+  }
+  /* ---- 接入横幅（一条命令 + 三个动作）----
+     原来它是右栏里的一张卡：和左边的热力图并排时，收起态只剩一个
+     标题 + 一行提示（≈59px），旁边却是 200px+ 的高卡 —— 页面上那条
+     断崖式空白就是它造成的。改成横幅后高度固定，放哪一排都不会打架。 */
+  .qs-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 14px 20px;
+  }
+  .qs-strip-text {
     min-width: 0;
+    flex: 1 1 240px;
   }
-  @media (max-width: 1100px) {
-    .dash-grid {
-      grid-template-columns: minmax(0, 1fr);
+  .qs-strip-lead {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    flex: 1 1 240px;
+  }
+  .qs-strip-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+  /* 窄屏：图标 + 标题一行，命令条和按钮另起两行（横排会挤成一条乱码）。 */
+  @media (max-width: 639px) {
+    .qs-strip {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 12px;
+      padding: 14px 16px;
+    }
+    .qs-strip-lead {
+      /* 竖排后 flex 主轴变成纵向：不动它的话 `flex: 1 1 240px` 会被当成
+         **高度** 240px 的基准，整条横幅瞬间长到三百多像素。 */
+      flex: 0 0 auto;
+    }
+    .qs-strip-actions {
+      margin-left: 0;
+    }
+    .qs-strip-actions > .qs-cmd {
+      flex: 1 1 100%;
+    }
+  }
+  .qs-cmd {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+  }
+  .qs-cmd > .mono {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .qs-prompt {
+    color: var(--faint);
+    user-select: none;
+  }
+  /* ---- 最新事件链路 ----
+     silk 舞台自带边框 / 圆角 / 阴影（.flograph--silk），外层卡只负责留白。
+     骨架高度对齐示意图实测值，数据到达时下面的事件流不会往下跳。 */
+  .flow-skel {
+    height: 300px;
+    border-radius: var(--r-sm);
+  }
+  .flow-body {
+    padding: 0 20px 20px;
+  }
+  /* 手机上不画链路图。silk 舞台是**像素 1:1 的横向画布**：390 宽时一屏
+     只能站下一张卡，而舞台高 ~536px，大半是空的 —— 看着像一张坏掉的图。
+     CSS 藏卡片 + JS 提前返回（连任务都不拉），两边同一断点。 */
+  @media (max-width: 639px) {
+    #latest-flow {
+      display: none;
     }
   }
   /* 事件流：加载期骨架与数据期同高（实测 8 行 × 62px + 容器 py-1 的 8px
@@ -24,9 +118,74 @@
   #index-events[aria-busy="true"] {
     min-height: 504px;
   }
+  /* 事件流加载骨架：照数据态的**盒子结构**画（左：源 chip + 类型 / traceId，
+     右：相对时间），而不是旧版「8 条整宽实心条」——那 8 条 62px 高的条首尾
+     相接，屏幕上就是一块 504px 的灰板，跟数据态的行列表毫无相似之处。
+     行高不写死：padding 8×2 + head 24 + gap 4 + trace 行盒 18 = 62px，与
+     数据态实测同高；窄屏下第一行会像真实的长类型名那样折行、行高一起变高
+     （与 .ev-feed-row 是同一套盒模型，所以不会各走各的）。 */
   .ev-skel-row {
-    height: 62px;
-    border-radius: var(--r-sm);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 8px;
+  }
+  .ev-skel-main {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .ev-skel-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* chip 条 24px = 数据态 .tag-chip 的实测高度，靠它锁死 head 那一行；
+     类型条只是「文字」而非 chip，所以细一档（16px + 上下 4px = 同一个 24px 行盒），
+     否则两个等高胶囊并排，看着像两颗 chip。 */
+  .ev-skel-chip,
+  .ev-skel-type {
+    flex: none;
+    border-radius: var(--r-full);
+  }
+  .ev-skel-chip {
+    width: 76px;
+    height: 24px;
+  }
+  /* 类型条三档宽度循环：8 行等宽会看着像一排进度条，参差才像内容 */
+  .ev-skel-type {
+    width: 152px;
+    height: 16px;
+    margin: 4px 0;
+  }
+  .ev-skel-row:nth-child(3n + 1) .ev-skel-type {
+    width: 224px;
+  }
+  .ev-skel-row:nth-child(3n + 2) .ev-skel-type {
+    width: 104px;
+  }
+  /* traceId / 时间条：数据态这两行 line-height 18px，条 12px + 上下 3px 补行盒，
+     于是骨架行高不必硬编码也恰好是 62px。 */
+  .ev-skel-trace,
+  .ev-skel-time {
+    height: 12px;
+    margin: 3px 0;
+  }
+  .ev-skel-trace {
+    width: 112px;
+  }
+  .ev-skel-row:nth-child(2n) .ev-skel-trace {
+    width: 88px;
+  }
+  .ev-skel-time {
+    width: 44px;
+  }
+  .ev-skel-row:nth-child(3n + 2) .ev-skel-time {
+    width: 60px;
   }
   /* 事件行：整行是 <a>（右键新开 / 键盘可达 / 读屏有名字）。
      两列：左 = 源 → 类型 + traceId，右 = 相对时间。 */
@@ -63,9 +222,39 @@
   .ev-feed-time {
     white-space: nowrap;
   }
+  /* 事件活动骨架：旧实现把 .skeleton 直接放进 .hm 网格，它只是**一个格子项**，
+     于是被塞进第 1 列（12px 的星期标签列）—— 页面上只剩左边一根 12×87 的竖条
+     （用户报的「事件活动骨架显示不对」）。
+     现在它只占**格子区**（第 2 列到末列 × 第 2 行到末行）：顶部月份行和左侧
+     星期列由 paintHeatmapAxis() 在首帧就画出来（那两个东西只跟今天有关，不等
+     数据），所以加载期看到的就是「有日期的日历在等数据」。
+     格子区高度用 aspect-ratio 按数据态的方格比例自己撑（1440 下实测 1056×137.7），
+     数据到达时卡片高度不变；格纹用两层 repeating-linear-gradient 画 53×7 的方格、
+     取色 --hm-empty（与数据态空格同色），而不是一块没有信息的灰板。 */
   .hm-skel {
-    height: 87px;
+    /* 列是显式网格（54 列），行是**隐式**的：所以行不能写 -1（会算到显式网格
+       最后一行，把月份行挤到骨架下面去），只写 span 7（7 个星期行）。 */
+    grid-column: 2 / -1;
+    grid-row: 2 / span 7;
+    /* 53 列 × 7 行的方格区：aspect-ratio 直接写 53/7（格子是 1:1），
+       1440 下得到 1056×139.5，加上 11px 月份行 = 150.5 ≈ 数据态 150.8。 */
+    aspect-ratio: 53 / 7;
     border-radius: var(--r-sm);
+    /* 格子 = --hm-empty，缝 = 卡片底色：两层渐变各自把「缝」画成卡片色，
+       并集正好是整片缝网，剩下的就是 53×7 个方格 —— 与数据态的空格子一模一样。
+       （两层都画「格子」色是不行的：并集会把缝也涂上，只剩几个透明小点。） */
+    background-color: var(--hm-empty);
+    background-image:
+      repeating-linear-gradient(
+        to right,
+        transparent 0 calc(100% / 53 - 2px),
+        var(--surface-1) calc(100% / 53 - 2px) calc(100% / 53)
+      ),
+      repeating-linear-gradient(
+        to bottom,
+        transparent 0 calc(100% / 7 - 2px),
+        var(--surface-1) calc(100% / 7 - 2px) calc(100% / 7)
+      );
   }
 </style>
 {{end}} {{define "content"}}
@@ -291,11 +480,61 @@
       </div>
     </section>
 
-    <!-- ===== 第二行：[事件活动热力图] ∥ [接入 Agent] =====
-         横向组织是 v2 的密度来源：两列让 1440 首屏能同时看到活动与接入。 -->
-    <div class="dash-grid">
-    <!-- ===== 事件活动热力图（数据源是 /v1/stats 的 daily 事件数）===== -->
-    <section class="card">
+    <!-- ===== 接入横幅（一条命令把 Agent 接进来）=====
+         它以前是右栏里的一张卡：和左侧热力图并排时，收起态只剩标题 + 一行
+         提示，旁边却是 200px+ 的高卡 —— 「右边块那么小」的断崖空白就是它。
+         改成横幅后高度固定，不需要拿邻居的高度凑，也不会把任何一排拉高。 -->
+    <section id="quickstart" class="card qs-strip">
+      <div class="qs-strip-lead">
+        <span class="stat-icon" aria-hidden="true">
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M13 2 4.5 14H11l-1 8 8.5-12H12l1-8Z" />
+          </svg>
+        </span>
+        <div class="qs-strip-text">
+          <div class="card-title">{{t "index.quickstart.title"}}</div>
+          <div class="card-sub">
+            {{t "ui.index.quickstart_hint"}} ·
+            {{t "index.quickstart.steps_short"}}
+          </div>
+        </div>
+      </div>      <div class="qs-strip-actions">
+        <div class="qs-cmd">
+          <code class="mono"
+            ><span class="qs-prompt" aria-hidden="true">$ </span
+            ><span>{{t "index.quickstart.cmd_install"}}</span></code
+          >
+          <button
+            class="copy-btn shrink-0"
+            data-copy-text="{{t "index.quickstart.cmd_install"}}"
+          >
+            {{t "index.quickstart.copy"}}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="copy-btn"
+          data-copy-text="{{t "index.quickstart.cmd_a"}}"
+        >
+          {{t "index.quickstart.copy_prompt"}}
+        </button>
+        <a href="docs.html#agent" class="btn btn-ghost btn-sm"
+          >{{t "index.quickstart.docs"}}</a
+        >
+      </div>
+    </section>
+
+    <!-- ===== 事件活动热力图（数据源是 /v1/stats 的 daily 事件数）=====
+         独占一行：53 周铺满整页宽度，格子大一倍，才像一张真的活动日历。 -->
+    <section class="card hm-card">
       <div class="card-head card-pad">
         <div>
           <div class="card-title">{{t "index.heatmap.title"}}</div>
@@ -332,64 +571,43 @@
            frontend.mjs 只在 .overflow-x-auto / .code-body / pre 内豁免横向溢出，
            两个类必须同时存在。 */}}
       <div class="hm-scroll overflow-x-auto px-5 py-3">
-        <!-- 热力图首帧占位：87px = 数据态 #hm 实测高度，避免 1.3s 的空白卡 -->
+        <!-- 热力图首帧占位：53×7 的格纹只占格子区（月份行 / 星期列首帧就有），
+             高度由 .hm-skel 的 aspect-ratio 跟着卡片宽度走，避免 1.3s 的空白卡
+             与数据到达时的下推 -->
         <div class="hm" id="hm" aria-busy="true">
           <div class="skeleton hm-skel" aria-hidden="true"></div>
         </div>
       </div>
+      <!-- 底注：近 30 天摘要（与格子同源，都是 /v1/stats 的 daily）。 -->
+      <div class="hm-foot">
+        <span id="hm-foot" class="card-sub">—</span>
+      </div>
     </section>
 
-    <div class="dash-side">
-    <!-- ===== 快速接入（粘给 Agent 的引导文本 + CTA）=====
-         默认**收起**：只留标题 + 一句话提示，展开后才显示安装指引。
-         首页在 1440×900 下要压到 2600px 以内，这一块是最大的可折叠项。 -->
-    <section id="quickstart" class="card">
+    <!-- ===== 最新事件链路（复用 trace 页那套 silk 图，数据源 /v1/tasks?traceId=）=====
+         放首页的理由：事件的“为什么”全在这张图里——走了哪个能力、哪个出口、
+         哪一步失败了。以前要先点进事件流才知道，现在抬眼看得到。
+         未挂图前先占一块同等高度的骨架，数据到达时下面的事件流不会往下跳。 -->
+    <section id="latest-flow" class="card">
       <div class="card-head card-pad">
         <div>
-          <div class="card-title">{{t "index.quickstart.title"}}</div>
-          <div class="card-sub">{{t "ui.index.quickstart_hint"}}</div>
+          <div class="card-title">{{t "index.flow.title"}}</div>
+          <div class="card-sub" id="flow-sub">
+            {{t "index.flow.subtitle"}}
+          </div>
         </div>
         <div class="card-actions">
-          <button
-            id="qs-toggle"
-            type="button"
-            class="btn btn-ghost btn-sm"
-            aria-expanded="false"
-            aria-controls="qs-body"
+          <a id="flow-open" href="events.html" class="btn btn-ghost btn-sm"
+            >{{t "index.flow.open"}}</a
           >
-            {{t "ui.action.expand"}}
-          </button>
         </div>
       </div>
-      <div id="qs-body" class="hidden px-5 py-3">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div class="min-w-0 flex-1">
-            <div class="card-sub">{{t "index.quickstart.option_a"}}</div>
-            <div class="mt-3 code-block" style="min-width: 0">
-              <div class="code-head">
-                <span class="mono">{{t "index.quickstart.cmd_a_comment"}}</span>
-                <button
-                  class="copy-btn"
-                  data-copy-text="{{t "index.quickstart.cmd_a"}}"
-                >
-                  {{t "index.quickstart.copy"}}
-                </button>
-              </div>
-              <div class="code-body">
-                <span class="tk-comment">{{t "index.quickstart.cmd_a"}}</span>
-              </div>
-            </div>
-          </div>
-          <a
-            href="docs.html#agent"
-            class="btn-primary shrink-0 px-4 py-2 text-sm"
-            >{{t "index.quickstart.cta"}}</a
-          >
+      <div class="flow-body">
+        <div id="flow-host" aria-busy="true">
+          <div class="skeleton flow-skel" aria-hidden="true"></div>
         </div>
       </div>
     </section>
-    </div>
-    </div>
 
     <!-- ===== 事件流（首页主列表，数据源 /v1/console/events）=====
          旧「最近任务」列表已下线：产品对象是事件（event → 任务链），
@@ -408,16 +626,89 @@
         </div>
       </div>
       <div id="index-events" class="anim-stagger px-3 py-1" aria-busy="true">
-        <!-- 8 行骨架 = 数据回来后的 8 条事件行高度（与 .ev-feed-row 同高）。
-             不预留的话，加载完成时会把下面内容整块推下去（首页 CLS）。 -->
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
-        <div class="skeleton ev-skel-row"></div>
+        <!-- 8 行骨架 = 数据回来后的 8 条事件行（与 .ev-feed-row 同一套盒模型，
+             桌面 62px/行，窄屏随折行变高）。四段条对应真实行的 chip / 类型 /
+             traceId / 相对时间；不再是一条整宽的灰块。 -->
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
       </div>
       <div class="card-head card-pad">
         <span id="ev-count" class="card-sub">—</span>
@@ -429,6 +720,13 @@
   </div>
 </div>
 
+{{end}} {{define "graph-libs"}}
+    <!-- 图渲染四件套里的**两个**：首页只画一条已执行的任务链（silk 舞台），
+         不画“源 → 能力”的配置底图，所以不需要 dagre（全局 dagre 只有老渲染路径
+         才用，而链路图钉死走 silk）也不需要 traceview.js 的三视图切换。
+         顺序仍然是 Flograph 在前：graphs.js 挂载时会用 window.FlowGraph。 -->
+    <script defer src="/flograph.js"></script>
+    <script defer src="/graphs.js"></script>
 {{end}} {{define "script"}}
 <script src="/vendor/marked.min.js" defer></script>
 
@@ -551,6 +849,7 @@
     let STATS = null;
     let TASK_COUNTS = null; // /v1/tasks 取不到时保持 null：KPI 显示 – 而不是谎报 0
     let loadError = null; // 最近一次首屏加载失败的原因（有值就渲染错误态，不伪造数据）
+    let LATEST_EVENTS = []; // loadEvents() 的成品（已倒序），给链路图取最新一条
 
     const TASK_WORKING = ["pending", "assigned", "acked", "running"];
     const TASK_FAILED = ["failed", "canceled", "abandoned", "lease_expired"];
@@ -591,6 +890,7 @@
       renderSummary();
       renderHeatmap();
       await loadEvents();
+      await loadLatestFlow(LATEST_EVENTS);
     }
 
     /* ================= 事件流（首页主列表） ================= */
@@ -602,6 +902,7 @@
     async function loadEvents() {
       const box = document.getElementById("index-events");
       const countEl = document.getElementById("ev-count");
+      LATEST_EVENTS = [];
       if (!box) return;
       let events = [];
       let evErr = null;
@@ -613,6 +914,8 @@
       }
       // 后端按插入顺序返回，事件时间不一定同序（补录 / 幂等重投）→ 显式倒序
       events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      // 倒序后的第一条就是「最新事件」，链路图取它（不另外再请求一次列表）
+      LATEST_EVENTS = events;
       box.removeAttribute("aria-busy");
       box.replaceChildren();
 
@@ -674,6 +977,250 @@
         }),
       );
       return row;
+    }
+
+    /* ================= 最新事件链路（复用 trace 页那套 silk 图） =================
+     * 三个取舍，每条都是为了避免把首页变成第二个 trace 页：
+     *
+     * 1) **不建底图**。trace 页会用 /v1/sources + /v1/capabilities + /v1/edges
+     *    拼出这个源的静态拓扑当底图（被剪枝的分支也会画成灰线）。那是 trace
+     *    页该回答的问题（“本来还有哪条路”），首页只为回答“这次到底跑了什么”，
+     *    为此多打三四个请求不值。
+     * 2) **只取一条 trace**：/v1/tasks?traceId=<最新事件> —— 列表已经在
+     *    loadEvents() 里拿到了，不重复请求。
+     * 3) **图库是页面级的**（layout 的 graph-libs 槽位）：只有真画图的页面才
+     *    加载 flograph.js + graphs.js。这里不需要 dagre —— silk 舞台是自定
+     *    义布局，dagre 只有老渲染路径才用。
+     */
+    const FLOW_TASK_LIMIT = 14;
+
+    /* 入场动画只在**用户真的在看的时候**放。
+     *
+     * taskChain 的 silk 一挂载就开始按真实执行顺序逐拍点亮，但首页这张卡排在
+     * 折叠线以下（1440×900 下从 y≈883 开始）。自动播 = 在没人看的时候放完，
+     * 用户滚下来只剩一张静态图。
+     *
+     * 所以**挂载时不播**（taskChain 传 animate:false，先给终态），等它第一次
+     * 真的被看见再 replay()（就是 HUD 上那个重播钮走的路）。
+     *
+     * 判据用**轮询几何**，不用 IntersectionObserver，也不只监听 scroll：
+     *   · IO 的回调只在交集变化那一帧触发，用户一路滚过来时回调都发生在还没
+     *     滚到位的时候，等他停住就不再回调了（实测：慢慢滚一次都不触发）；
+     *   · 只监听 window.scroll 则绑死"页面由 window 滚动"这个前提。
+     * 200ms 读一次 rect 最笨也最稳：谁把它滚进来的都能发现。连续两次满足
+     * （≈400ms 没变）才算"停稳"。
+     *
+     * 两个条件（宁可不播，也不要又在屏幕外放一遍）：
+     *   ① 卡片至少 60% 露在视口里；
+     *   ② 卡片顶部落在视口上牛区（top < 60% 视口高）—— "挂在屏底、人还在看
+     *      KPI" 不算看到。
+     *
+     * 系统开了「减少动态效果」就一律不播：那是用户的明确选择。
+     * 排障：F12 里 document.getElementById("flow-host").dataset.intro
+     *   的值就是结论 —— waiting / played / skipped / muted / nograph。
+     */
+    let stopFlowIntro = null; // 上一张图的收尾（刷新时先解掉，别叠）
+
+    function playIntroWhenSeen(graph, host) {
+      if (typeof stopFlowIntro === "function") stopFlowIntro();
+      stopFlowIntro = null;
+      if (!host) return;
+      if (!graph || typeof graph.replay !== "function") {
+        host.dataset.intro = "nograph";
+        return;
+      }
+      if (
+        window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ) {
+        host.dataset.intro = "muted";
+        return;
+      }
+      host.dataset.intro = "waiting";
+
+      let done = false;
+      let stable = 0;
+      let timer = 0;
+      let giveUp = 0;
+
+      function cleanup() {
+        clearInterval(timer);
+        clearTimeout(giveUp);
+        if (stopFlowIntro === cleanup) stopFlowIntro = null;
+      }
+      const play = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        host.dataset.intro = "played";
+        try {
+          graph.replay();
+        } catch (e) {
+          console.warn("[index] 链路回放失败", e);
+        }
+      };
+      const visibleEnough = () => {
+        const rect = host.getBoundingClientRect();
+        const vh = window.innerHeight || 0;
+        if (!(rect.height > 0)) return false;
+        const shown = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
+        return shown / rect.height >= 0.6 && rect.top < vh * 0.6;
+      };
+
+      timer = setInterval(() => {
+        if (done) return;
+        if (!host.isConnected) {
+          cleanup();
+          host.dataset.intro = "skipped";
+          return;
+        }
+        if (!visibleEnough()) {
+          stable = 0;
+          return;
+        }
+        if (++stable < 2) return;
+        play();
+      }, 200);
+      // 一分钟都没滚下来就不惦记了（用户可能一直在看别的）
+      giveUp = setTimeout(() => {
+        if (done) return;
+        cleanup();
+        host.dataset.intro = "skipped";
+      }, 60000);
+      stopFlowIntro = cleanup;
+    }
+
+    async function loadLatestFlow(events) {
+      const host = document.getElementById("flow-host");
+      if (!host) return;
+      // 手机不画（CSS 已藏卡片）：silk 舞台不能塞进 390 宽，理由见页内 <style>。
+      if (window.matchMedia("(max-width: 639px)").matches) return;
+      const sub = document.getElementById("flow-sub");
+      const open = document.getElementById("flow-open");
+      const latest = events && events[0];
+
+      function emptyState(msg) {
+        host.removeAttribute("aria-busy");
+        host.replaceChildren(el("div", { class: "empty", text: msg }));
+      }
+
+      if (!latest) {
+        emptyState(
+          t(
+            "index.flow.empty",
+            "还没有事件。接上触发器后，这里会画出最新一条事件的链路。",
+          ),
+        );
+        return;
+      }
+
+      const traceId = latest.traceId || "";
+      // 卡头两个元素始终指向“最新的这一条”：标题下写清是哪条事件，
+      // 右上角按钮直达它的 trace 页（而不是笼统的事件列表）。
+      if (sub) {
+        sub.textContent = t(
+          "index.flow.subtitle_of",
+          "最近一条：{src} · {type}",
+        )
+          .replace("{src}", latest.source || "—")
+          .replace("{type}", latest.type || "—");
+      }
+      if (open) {
+        open.href = "trace.html?traceId=" + encodeURIComponent(traceId);
+      }
+
+      let tasks = [];
+      try {
+        const data = await api("/v1/tasks?traceId=" + encodeURIComponent(traceId));
+        tasks = data && Array.isArray(data.tasks) ? data.tasks : [];
+      } catch (e) {
+        host.removeAttribute("aria-busy");
+        host.replaceChildren(
+          window.Anotify.loadErrorNode(e, () => loadLatestFlow(events)),
+        );
+        return;
+      }
+
+      if (!tasks.length) {
+        // 剪枝不是错误：事件入库了，但没有一个出口接住它。
+        emptyState(
+          t(
+            "index.flow.pruned",
+            "这条事件没有派发任何任务（在第一步就被剪枝）。点右上角看完整链路的原因。",
+          ),
+        );
+        return;
+      }
+      if (!window.AnotifyGraphs || !window.FlowGraph) {
+        emptyState(
+          t(
+            "index.flow.nolib",
+            "链路渲染脚本没能加载，点右上角看完整链路。",
+          ),
+        );
+        return;
+      }
+
+      host.removeAttribute("aria-busy");
+      // 刷新时先拆上一次的图：mountSilk 在 window 上挂了 resize / keydown 监听，
+      // 只 replaceChildren 会把它们留在那儿（每刷一次多一套）。
+      if (host._graph && typeof host._graph.destroy === "function") {
+        host._graph.destroy();
+      }
+      host.replaceChildren();
+
+      // 底图：这个事件所属源的静态拓扑（能力的显示名、结构图标、「终点」标注、
+      // 被剪枝的分支都在里面）。
+      //
+      // 取数和推导都走 graphs.js 的 loadBaseGraph —— trace 页用的是**同一个
+      // 函数**。曾经这里传 baseGraph:null 想省掉那几次请求，代价是首页只能拿
+      // 任务记录里的能力 slug 拼 `haha@1`、图标按状态猜，同一份配置在两页长
+      // 得不一样（用户报的「首页节点显示不对，以完整链路为准」）。
+      let baseGraph = null;
+      if (latest.source && window.AnotifyGraphs.loadBaseGraph) {
+        try {
+          baseGraph = await window.AnotifyGraphs.loadBaseGraph({
+            api: "/v1",
+            source: latest.source,
+            fetchJson: api,
+          });
+        } catch (e) {
+          // 拿不到底图不算错（源已删/未知源）：退回只画执行链
+          baseGraph = null;
+        }
+      }
+      try {
+        const out = window.AnotifyGraphs.taskChain(host, {
+          tasks: tasks,
+          baseGraph: baseGraph,
+          // 没有底图时这些只是回退信息：sourceLabel 决定要不要画触发器节点
+          sourceLabel: latest.source || "",
+          sourceSub: latest.type || "",
+          sourcePort: latest.type || "",
+          // 挂载时先定格在"第 0 拍"（卡片压暗、连线还没画），等它真被看见
+          // 再 replay（见 playIntroWhenSeen）。
+          //
+          // 注意不能只关 animate：关掉等于直接给终态 —— 用户先看到一张
+          // **已经连好线**的图，然后才被清空重播，第一眼就是错的。
+          animate: false,
+          idle: true,
+          t: t,
+          limit: FLOW_TASK_LIMIT,
+        });
+        playIntroWhenSeen(out && out.graph, host);
+      } catch (e) {
+        // 图崩了不能把首屏一起带走：退化成一句可读的话 + 直链。
+        host.replaceChildren(
+          el("div", {
+            class: "empty",
+            text: t(
+              "index.flow.failed",
+              "这条链路画不出来，点右上角看完整链路。",
+            ),
+          }),
+        );
+        console.warn("[index] 链路图渲染失败", e);
+      }
     }
 
     /* ================= KPI ================= */
@@ -875,21 +1422,6 @@
 
     document.getElementById("ev-refresh").addEventListener("click", refresh);
 
-    /* ================= 快速接入折叠 ================= */
-    // 默认收起（#qs-body 带 hidden）；展开/收起只切 hidden + aria-expanded，
-    // 不重建 DOM —— code-block 里的「复制」按钮监听在启动时绑一次就够了。
-    document.getElementById("qs-toggle").addEventListener("click", (e) => {
-      const btn = e.currentTarget;
-      const body = document.getElementById("qs-body");
-      const expanded = btn.getAttribute("aria-expanded") === "true";
-      document.getElementById("qs-body").classList.toggle("hidden", expanded);
-      btn.setAttribute("aria-expanded", expanded ? "false" : "true");
-      btn.textContent = expanded
-        ? t("ui.action.expand", "展开")
-        : t("ui.action.collapse", "收起");
-      if (!expanded) body.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    });
-
     /* ================= 下拉刷新（公共能力） =================
      * 触屏 / standalone PWA 下拉刷新。指示器 DOM 与手势逻辑由 partials.js
      * 的 mountPullRefresh() 提供，这里只传刷新回调。文案复用
@@ -923,6 +1455,71 @@
       );
 
     /* ================= 热力图 ================= */
+    /* ================= 事件活动（热力图）=================
+     * 时间轴（顶部月份行 + 左侧星期列）只由「今天是哪天」决定，跟 /v1/stats
+     * 没有关系 —— 所以加载期就先画出来（paintHeatmapAxis），骨架只占格子区：
+     * 用户一进页面看到的就是「一张有日期的日历在等数据」，而不是一块没有刻度
+     * 的灰片。数据到手后 renderHeatmap() 清空重画，轴用的还是同一个函数，
+     * 两个状态逐像素对齐（月份位置、标签行高都一样，不会跳）。 */
+    const HM_WEEKS = 53;
+
+    /* 53 周窗口：最后一列是本周（周一起算），第一列是 52 周前的周一。 */
+    function hmCalendar() {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const startMonday = new Date(today);
+      startMonday.setDate(
+        today.getDate() - ((today.getDay() + 6) % 7) - (HM_WEEKS - 1) * 7,
+      );
+      return { today, startMonday };
+    }
+
+    function hmMondayOf(startMonday, w) {
+      const monday = new Date(startMonday);
+      monday.setDate(startMonday.getDate() + w * 7);
+      return monday;
+    }
+
+    /* 轴 = 左侧星期列（一 / 三 / 五）+ 顶部月份行（月份变化处一个标签）。 */
+    function hmAxisFragment(startMonday) {
+      const DAY_LABELS = {
+        0: t("index.heatmap.week.mon", "一"),
+        2: t("index.heatmap.week.wed", "三"),
+        4: t("index.heatmap.week.fri", "五"),
+      };
+      const frag = document.createDocumentFragment();
+      for (let d = 0; d < 7; d++) {
+        const s = document.createElement("span");
+        s.className = "hm-day";
+        s.style.gridRow = d + 2;
+        s.textContent = DAY_LABELS[d] || "";
+        frag.append(s);
+      }
+      let prevMonth = -1;
+      for (let w = 0; w < HM_WEEKS; w++) {
+        const m = hmMondayOf(startMonday, w).getMonth();
+        if (m === prevMonth) continue;
+        prevMonth = m;
+        const label = document.createElement("span");
+        label.className = "hm-month";
+        label.style.gridColumn = w + 2;
+        label.textContent = t("index.heatmap.month", "{n}月").replace(
+          "{n}",
+          m + 1,
+        );
+        frag.append(label);
+      }
+      return frag;
+    }
+
+    /* 首帧：只画轴（幂等，重复调用不会叠标签），骨架继续占格子区等 /v1/stats。 */
+    function paintHeatmapAxis() {
+      const hm = document.getElementById("hm");
+      if (!hm) return;
+      hm.querySelectorAll(".hm-day, .hm-month").forEach((n) => n.remove());
+      hm.append(hmAxisFragment(hmCalendar().startMonday));
+    }
+
     function renderHeatmap() {
       const hm = document.getElementById("hm");
       if (!hm) return;
@@ -944,7 +1541,7 @@
         t("index.heatmap.week.fri", "五"),
         t("index.heatmap.week.sat", "六"),
       ];
-      const WEEKS = 53;
+      const WEEKS = HM_WEEKS;
       // 真实数据：STATS.daily = [{day:"YYYY-MM-DD",count}] → Map 便于查
       const countByDay = new Map();
       if (STATS && Array.isArray(STATS.daily)) {
@@ -968,42 +1565,12 @@
       }
       const tip = el("div", { class: "hm-tip" });
       document.body.append(tip);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const dow = (today.getDay() + 6) % 7;
-      const endMonday = new Date(today);
-      endMonday.setDate(today.getDate() - dow);
-      const startMonday = new Date(endMonday);
-      startMonday.setDate(endMonday.getDate() - (WEEKS - 1) * 7);
-      const DAY_LABELS = {
-        0: t("index.heatmap.week.mon", "一"),
-        2: t("index.heatmap.week.wed", "三"),
-        4: t("index.heatmap.week.fri", "五"),
-      };
-      const frag = document.createDocumentFragment();
-      for (let d = 0; d < 7; d++) {
-        const s = document.createElement("span");
-        s.className = "hm-day";
-        s.style.gridRow = d + 2;
-        s.textContent = DAY_LABELS[d] || "";
-        frag.append(s);
-      }
-      let prevMonth = -1;
+      const { today, startMonday } = hmCalendar();
+      // 轴与数据无关：加载期已经画过，这里清空重画一遍，保证「有数据」和
+      // 「加载中」两个状态的轴是同一份代码产出的（逐像素对齐）。
+      const frag = hmAxisFragment(startMonday);
       for (let w = 0; w < WEEKS; w++) {
-        const monday = new Date(startMonday);
-        monday.setDate(startMonday.getDate() + w * 7);
-        const m = monday.getMonth();
-        if (m !== prevMonth) {
-          const label = document.createElement("span");
-          label.className = "hm-month";
-          label.style.gridColumn = w + 2;
-          label.textContent = t("index.heatmap.month", "{n}月").replace(
-            "{n}",
-            m + 1,
-          );
-          frag.append(label);
-          prevMonth = m;
-        }
+        const monday = hmMondayOf(startMonday, w);
         for (let d = 0; d < 7; d++) {
           const date = new Date(monday);
           date.setDate(monday.getDate() + d);
@@ -1052,10 +1619,39 @@
         }
       }
       hm.append(frag);
+
+      /* 底注：近 30 天的事件量与活跃天数。数据源与上面的格子完全同源
+       * （都是 STATS.daily），不新增接口、也不拿别的字段冒充。
+       * STATS 不可用时只写「暂无」，不写 0 —— 「统计不到」和「真的是 0 条」
+       * 在用户眼里是两件事。 */
+      const foot = document.getElementById("hm-foot");
+      if (foot) {
+        if (!STATS || !Array.isArray(STATS.daily)) {
+          foot.textContent = t("index.heatmap.foot_na", "统计数据暂不可用");
+        } else {
+          let sum = 0;
+          let activeDays = 0;
+          for (let i = 0; i < 30; i++) {
+            const d = new Date(today);
+            d.setDate(today.getDate() - i);
+            const c = dayCount(d);
+            if (c > 0) activeDays++;
+            sum += c;
+          }
+          foot.textContent = t(
+            "index.heatmap.foot",
+            "近 30 天 {n} 条事件 · 活跃 {d}/30 天",
+          )
+            .replace("{n}", sum)
+            .replace("{d}", activeDays);
+        }
+      }
     }
 
     /* ================= 启动 ================= */
     renderSparks();
+    // 热力图时间轴是固定的（只跟今天有关）：不等 /v1/stats，首帧就画出来
+    paintHeatmapAxis();
     load();
   })();
 </script>

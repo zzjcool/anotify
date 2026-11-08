@@ -48,6 +48,97 @@ scripts/e2e/
 1. `scripts/e2e/parallel_runner.mjs` 的 `CHROME_SUITES`（或 `HTTP_SUITES`）
 2. `scripts/e2e/lib/harness.mjs` 的 `SUITE_PORTS`（每套件独占 50 个端口段）
 
+另外：**临时目录一律用 `H.mkdtempTmp()` 创建、`finally` 里 `H.removeTmpDir()` 删除**，
+不要裸写 `mkdtempSync(tmpdir(), ...)`（见下节；`make ci` 的静态守卫会拦）。
+
+## 临时目录与 /tmp 卫生（#326）
+
+**本机 `/tmp` 是 tmpfs（7.5G）——测试漏下的临时目录吃的是内存，不是磁盘。**
+2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（`go test ./cmd/agent`
+每次编一份真二进制）、1424 个 `anotify-e2e-*`（端口重试失败的那些尝试从不删）、
+214 个 `anotify-script-*`（cli_auth 的假 HOME）。泄漏还会放大并行 e2e 的
+"环境型失败"：tmpfs 余量越小 → Chrome 越容易崩；端口越抢不到 → 漏得越多。
+
+规矩只有一条：**测试创建的临时目录，测试自己必须删干净。**
+
+### e2e 侧（`scripts/e2e/`）
+
+统一用 harness 的 helper，不要裸写 `mkdtempSync(tmpdir(), ...)`：
+
+```js
+import * as H from "../lib/harness.mjs";
+
+const tmp = H.mkdtempTmp("anotify-xxx-"); // 创建即登记
+try {
+	// ... 用例 ...
+} finally {
+	H.removeTmpDir(tmp); // 正常路径：立刻删并注销
+}
+```
+
+- `mkdtempTmp(prefix, parentDir?)`：`parentDir` 只用于「在已登记的套件目录下再建子目录」。
+- 进程退出（断言崩溃 / `process.exit` / 未捕获异常）时 harness 的 `process.on("exit")`
+  兜底删除所有仍登记的目录；**但这只是保险丝**，正常路径仍应在 `finally` 里删。
+- 端口重试循环（`startServer`）里每次尝试的临时目录必须在 `continue` 之前删掉 ——
+  失败尝试最容易被忘掉，而它正是历史上泄漏的大头。
+
+### Go 侧（`cmd/agent`）
+
+跨用例共享、不属于任何单个用例的目录（例如 `buildAgentBinary` 编出来的真 agent 二进制）
+用 `mkTestTempDir(prefix)` 登记，由包级 `TestMain` 在 `m.Run()` 之后统一 `os.RemoveAll`。
+单个用例自己的目录继续用 `t.TempDir()`（testing 会删，且 `-run` 子集下也能工作）。
+
+覆盖「没有 `--data-dir` → 工作目录/数据目录兜底到系统临时目录」的用例（standalone
+的 `run`、真进程 `emit` 等）用 `isolateSystemTemp(t)`：`t.Setenv("TMPDIR", t.TempDir())`
+把兜底行为指到 testing 自己会删的目录里。兜底逻辑仍被真实验证，但超时/失败路径
+（故意保留现场）不会再往真实 `/tmp` 里写。
+
+### 守卫（防回归）
+
+```bash
+# 包住一条命令：给被包命令一个私有 TMPDIR，跑完只断言「本次运行自己的新增 = 0」
+node scripts/check-tmp-leaks.mjs -- go test ./cmd/agent -count=3
+
+node scripts/check-tmp-leaks.mjs --lint        # 静态：e2e 里不许有裸 mkdtempSync
+node scripts/check-tmp-leaks.mjs --self-test   # 守卫自己的红/绿/不误报/透传自测
+```
+
+- **为什么是「私有 TMPDIR + 新增比对」而不是直接比对 `/tmp` 总量或集合差**：
+  本机经常**同时**有别的 e2e / 测试在跑（并行子 agent、另一个 worktree 的
+  `make ci`）。它们用的也是 `/tmp/anotify-*`，直接看总量必然误报；只看
+  "运行期间新增"也不行 —— 实测就撞过：本分支最后一次全量 e2e 时另一个
+  worktree 正在跑旧代码的 `make e2e`，它漏的 4 个目录全记到了本次头上。
+  所以守卫给被包命令一个私有的 `TMPDIR`（`/tmp/.tXXXXXX`）。
+  Go 的 `os.MkdirTemp` / `t.TempDir` 与 Node 的 `os.tmpdir()` 都跟随
+  `TMPDIR`，因此「我们的泄漏」全部落在这个私有目录里、与别的进程天然分开；
+  跑完只断言私有目录里 `anotify-*` 为 0（有就逐个列出路径并 `exit 1`，
+  同时把私有目录连同残留清掉）。`/tmp` 顶层的新增只作为 ⚠️ 提示打印
+  （按定义不归因于本次运行），不算失败。
+- 隔离目录名故意很短（`/tmp/.tXXXXXX`）：unix domain socket 的 `sun_path` 上限是
+  108 字节，而测试的 socket 路径常拼在 `t.TempDir()` 下；长名字会把「本来刚好
+  放得下」的用例挤爆（实测 `TestEmitJSONSuccessAndTextMode` 的 fake.sock
+  因此 `bind: invalid argument`）。
+- 前提：测试临时目录必须走 `os.tmpdir()` / `tmpdir()`（Go `os.MkdirTemp("", …)`、
+  Node `H.mkdtempTmp()` 都满足）。**不要在测试里硬编码 `/tmp`** —— 那会绕过归因，
+  而且不可移植。
+- 已接线：`make ci` 跑 `--lint` + `--self-test`，并用它包住 `make test`（含
+  `go test ./cmd/agent`）；`./scripts/e2e/run_all.sh` 在收尾前 `--lint` 并包住
+  并行执行器。因此 `go test ./cmd/agent` 与全部 e2e 都受守卫覆盖，新增套件不用单独登记。
+
+### 主机兜底（可选，不在仓库里跑）
+
+`systemd-tmpfiles` 默认对 `/tmp` 是 10 天保留，对高频测试太慢。想加一道主机层兜底：
+
+```ini
+# /etc/tmpfiles.d/anotify-tests.conf
+q /tmp/anotify-agent-bin* - - - 12h
+q /tmp/anotify-e2e-*      - - - 12h
+q /tmp/anotify-script-*   - - - 12h
+```
+
+`q`（cleanup only if exists）比默认 10d 激进得多，只清这些前缀，不影响别的程序。
+这是**兜底**不是修复：守卫红的时候请修测试，不要靠它。
+
 ## 运行
 
 ```bash

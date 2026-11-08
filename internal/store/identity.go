@@ -31,6 +31,28 @@ const RoleAuto = "auto"
 //     建用户的**同一个事务**里数用户数并定角色（见 RoleAuto）。让调用方先查后写
 //     会与 INSERT 拆成两次池操作，池放开后就不再串行（#240 → 双 admin 竞态）。
 func (d *DB) RegisterUser(ctx context.Context, u *User) (*Namespace, error) {
+	// Passkey 注册路径：不写密码列（"" / 0 = 迁移 8 的列默认值）。
+	return d.registerUser(ctx, u, "", 0)
+}
+
+// RegisterUserWithPassword 与 RegisterUser **完全同语义**（RoleAuto 首用户判定 /
+// 默认命名空间 / 内置能力播种），额外在**同一个事务**里写入密码列。
+//
+// 为什么必须同事务（契约「追加：用密码注册」§A1）：密码是这条注册路径唯一的登录方式。
+// 若先把用户行提交、再 UPDATE 密码，中间失败就留下一个「有账号、却没有任何登录方式」
+// 的半成品——它既进不去（没有 Passkey），又会占住用户名。一个事务全成或全不成。
+//
+// passwordHash 必须是 argon2id PHC 串（由 auth 层用 hashKey 生成）；store 不解析它，
+// 也不做校验——这层只保证「存什么读什么」。
+func (d *DB) RegisterUserWithPassword(
+	ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64,
+) (*Namespace, error) {
+	return d.registerUser(ctx, u, passwordHash, passwordUpdatedAt)
+}
+
+// registerUser 是两个导出注册入口的共同主体：
+// 建用户 + 建 `default` 命名空间 + 播种内置能力，**在同一个事务里**完成。
+func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64) (*Namespace, error) {
 	if u == nil {
 		return nil, fmt.Errorf("register user: nil user")
 	}
@@ -60,10 +82,28 @@ func (d *DB) RegisterUser(ctx context.Context, u *User) (*Namespace, error) {
 	if u.Disabled {
 		disabled = 1
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO users (id, username, display_name, role, disabled, created_at) VALUES (?,?,?,?,?,?)`,
-		u.ID, u.Username, u.DisplayName, role, disabled, u.CreatedAt); err != nil {
-		return nil, fmt.Errorf("insert user: %w", err)
+	// INSERT 的列集分两档：
+	//   - 密码路径：password_hash / password_updated_at 与用户行同一个 INSERT 写入；
+	//   - Passkey 路径：**不点名**这两列，让它们取列默认值（迁移 8：'' / 0）。
+	//
+	// 为什么 Passkey 路径不能也显式点名：migration 8 之前建的库（老库）的 users 表
+	// 没有这两列，而现有升级用例会在**未升级的 v2 schema** 上用当前代码注册用户
+	// （node_agent_version_test.go 的 TestMigration3AgentColumnsFromV2）——
+	// 显式点名会直接报 “table users has no column named password_hash”。
+	// 两种写法语义等价：省略列 == 列默认值（'' / 0）。
+	var ierr error
+	if passwordHash == "" && passwordUpdatedAt == 0 {
+		_, ierr = tx.ExecContext(ctx,
+			`INSERT INTO users (id, username, display_name, role, disabled, created_at) VALUES (?,?,?,?,?,?)`,
+			u.ID, u.Username, u.DisplayName, role, disabled, u.CreatedAt)
+	} else {
+		_, ierr = tx.ExecContext(ctx,
+			`INSERT INTO users (id, username, display_name, role, disabled, created_at, password_hash, password_updated_at)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			u.ID, u.Username, u.DisplayName, role, disabled, u.CreatedAt, passwordHash, passwordUpdatedAt)
+	}
+	if ierr != nil {
+		return nil, fmt.Errorf("insert user: %w", ierr)
 	}
 
 	ns, err := createDefaultNamespaceTx(ctx, tx)

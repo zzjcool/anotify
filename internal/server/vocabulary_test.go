@@ -137,7 +137,13 @@ var vocabWhitelist = map[string]map[string]string{
 //
 // 英文不需要禁「边」相关的汉字，但同样有「一个词两个意思」的问题：
 // Edge 在界面上只许叫 Downstream。所以凡是独立的 edge/edges 一律判红。
-var enBannedPattern = regexp.MustCompile(`(?i)\bedge(s)?\b`)
+//
+// 名词位的 trigger 同理（Source 只许叫 Source）。为什么只抓「a/the trigger」
+// 这两个短语、而不是 trigger：英文里 trigger 是**合法动词**（"this will
+// trigger biometrics"、"nothing downstream is triggered"、"triggered by"），
+// 一网打尽会逼着后来的人写一堆豁免，豁免一多门禁就形同虚设。而名词位几乎只以
+// 「a trigger / the trigger」出现 —— 抓这两个就够，且误报率接近零。
+var enBannedPattern = regexp.MustCompile(`(?i)\bedge(s)?\b|\b(?:a|the) trigger\b`)
 
 // enWhitelist 同上：key → 理由。
 var enWhitelist = map[string]string{
@@ -286,7 +292,7 @@ func TestVocabulary(t *testing.T) {
 				continue
 			}
 			if m := enBannedPattern.FindString(val); m != "" {
-				t.Errorf("en %q 命中禁词 %q（Edge 在界面上只许叫 Downstream）\n  实际文案：%s",
+				t.Errorf("en %q 命中禁词 %q（Edge 只许叫 Downstream；名词位的 trigger 只许叫 Source）\n  实际文案：%s",
 					key, m, val)
 			}
 		}

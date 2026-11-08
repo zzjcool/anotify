@@ -680,7 +680,15 @@ DROP INDEX IF EXISTS idx_edges_lookup;
 -- 因此永远不会匹配 RollbackPin 的条件（正是想要的语义）。
 ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
 
--- +migration 8 capability_spec
+-- +migration 8 user_password
+
+-- 密码登录（第二套登录模型，与 Passkey 并存）。空串 = 未设置密码（纯 Passkey 账号）。
+-- 只存 argon2id PHC 哈希（复用 auth.hashKey/verifyKey，与 api_keys / recovery_codes 同一实现），
+-- 明文永不落库、不落日志。password_updated_at = 最近一次设置/修改的 unix 秒；0 = 从未设置。
+ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN password_updated_at INTEGER NOT NULL DEFAULT 0;
+
+-- +migration 9 capability_spec
 
 -- `spec` 是能力的**正文**（Capability Spec v3 §4）：params / outputs / requires /
 -- lifecycle / sticky + 实现（run 或 handler），canonical JSON 一串。
@@ -693,7 +701,7 @@ ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
 -- （有产物的取产物正文，其余给内置 noop 占位），回填后库里不再有 ''。
 ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
 
--- +migration 9 drop_balance
+-- +migration 10 drop_balance
 
 -- `balance` 是端口级平衡策略的旧列（migration 2 加的）。它语义上只有**一个**合法值：
 -- 保存路径只放行 priority，all / random / least_loaded / hash 一律 400，于是「配了它」
@@ -707,7 +715,7 @@ ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
 -- 表结构迁移的那些限制。
 ALTER TABLE capability_versions DROP COLUMN balance;
 
--- +migration 10 deployments_reference_capability
+-- +migration 11 deployments_reference_capability
 
 -- 部署行改引用**能力行**（Capability Spec v3 §11.1）：`deployments.artifact_id` →
 -- `capability_id`，唯一键随之变成 UNIQUE (node_id, capability_id, digest)。

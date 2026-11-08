@@ -164,16 +164,19 @@ index:
       count: '{n} 件のイベント'
       none: イベントなし
       date: '{m}月{d}日 {w}曜日'
+    foot: '直近 30 日 {n} 件 · アクティブ {d}/30 日'
+    foot_na: 統計を取得できません
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
     subtitle: Agent のタスク完了を自動で通知
     recommended: おすすめ
-    option_a: 一言で Agent にセットアップ
-    option_b: またはスクリプト / CI から送信
     copy: コピー
+    cmd_install: pi install npm:pi-anotify
+    steps_short: インストール → 承認 → 通知
+    copy_prompt: 完全な手順をコピー
+    docs: ドキュメント →
     curl_example_title: デプロイ完了
-    cmd_a_comment: '# コピーしてあなたの pi に送る'
     cmd_a: 'anotify 通知プラグインをインストールしてください：
 
       1. pi install npm:pi-anotify を実行
@@ -185,6 +188,15 @@ index:
       '
   summary: '累計 {total} 件のイベント、今日 {today} 件。'
   summary_load_failed: データを取得できません。再試行してください。
+  flow:
+    title: 最新イベントのチェーン
+    subtitle: このイベントが実際に通った能力
+    subtitle_of: '最新: {src} · {type}'
+    open: チェーン全体 →
+    empty: イベントはまだありません。ソースが動くと、ここに最新のチェーンが描かれます。
+    pruned: このイベントはタスクを 1 つも派発しませんでした（最初の段階で剪枝）。理由はチェーン全体で確認できます。
+    nolib: グラフ描画スクリプトを読み込めませんでした。チェーン全体を開いてください。
+    failed: このチェーンを描画できませんでした。チェーン全体を開いてください。
   events:
     title: イベントストリーム
     subtitle: 最新のイベント · クリックでチェーンを表示
@@ -264,7 +276,7 @@ message:
 login:
   title: ログイン
   welcome: おかえりなさい
-  subtitle: パスワード不要 · Passkey でワンタップログイン
+  subtitle: Passkey でワンタップログイン・パスワードも可
   tab:
     login: ログイン
     signup: 登録
@@ -272,6 +284,21 @@ login:
     hint: 下のボタンをタップし、この端末の Passkey（Face ID / 指紋 / デバイスキー）でログイン。ユーザー名は不要です。
     button: Passkey でログイン
     security_note: 指紋 / Face ID / デバイスキー · フィッシング耐性
+  password:
+    or: または
+    toggle: パスワードでログイン
+    toggle_hide: パスワードログインを閉じる
+    username_label: ユーザー名
+    username_placeholder: your-name
+    password_label: パスワード
+    password_placeholder: パスワードを入力
+    button: パスワードでログイン
+    busy: ログイン中…
+    hint: パスワードは Passkey に並ぶ2つ目のログイン手段です。「セキュリティとログイン」ページで設定・変更できます。パスワード未設定のアカウントは Passkey でログインしてください。
+    err_empty: ユーザー名とパスワードを入力してください。
+    err_failed: パスワードログインに失敗：{msg}
+    err_rate_limited: 試行回数が多すぎます。しばらく待ってから再試行してください。
+    success: ログイン成功 — ワークスペースに入ります…
   signup:
     username_label: ユーザー名を選択
     username_placeholder: 名前を決める
@@ -285,6 +312,23 @@ login:
     err_short: ユーザー名は 2 文字以上にしてください。
     err_long: ユーザー名は 32 文字以内にしてください。
     err_chars: 使える文字は英字、数字、_、-、. のみです。_ - . で始めたり終わったりできません。
+    password:
+      or: または
+      toggle: ユーザー名 + パスワードで登録
+      toggle_hide: パスワード登録を閉じる
+      password_label: パスワード
+      password_placeholder: 8 文字以上
+      confirm_label: パスワード（確認）
+      confirm_placeholder: もう一度入力
+      button: パスワードで登録
+      busy: アカウントを作成しています…
+      hint: 8〜128 文字。パスワードマネージャーでの生成がおすすめです。
+      err_empty: パスワードを設定してください。
+      err_short: パスワードは 8 文字以上にしてください。
+      err_long: パスワードは 128 文字以内にしてください。
+      err_mismatch: 2 つのパスワードが一致しません。
+      err_rate_limited: 登録の試行が多すぎます。しばらく待ってからお試しください。
+      success: 登録できました。ワークスペースに移動しています…
   ios_tip_label: iOS ユーザー：
   ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
   recovery_soon: ''
@@ -524,13 +568,44 @@ keys:
   emptyTitle: 'API キーがまだありません'
 security:
   title: セキュリティとログイン
-  subtitle: Passkey · セッション · リカバリーコード
-  intro: 「あなたは誰か」をすべて管理：Passkey 認証情報、ログインセッション、 リカバリーコード。これらは「通知をどこへ送るか」（受信デバイス）と は独立した軸です。
+  subtitle: Passkey · パスワード · セッション · リカバリーコード
+  intro: 「あなたは誰か」をすべて管理：Passkey 認証情報、パスワード、ログインセッション、 リカバリーコード。これらは「通知をどこへ送るか」（受信デバイス）と は独立した軸です。
   add_passkey: Passkey を追加
   passkey:
     title: Passkey 認証情報
     subtitle: パスワード不要のログイン認証情報。1アカウントで複数の Passkey を保持でき、同じエコシステム内のデバイス間で同期できます
     count: 件の認証情報
+  password:
+    title: パスワードログイン
+    subtitle: Passkey に並ぶ2つ目のログイン手段。プラットフォーム認証器がない端末でも使えます。各アカウントは常に1つ以上のログイン手段を保持します
+    status_set: 設定済み
+    status_unset: 未設定
+    updated_at: 最終更新 {date}
+    never: まだ設定されていません
+    set_button: パスワードを設定
+    change_button: パスワードを変更
+    remove_button: パスワードを削除
+    modal:
+      set_title: パスワードを設定
+      change_title: パスワードを変更
+      remove_title: パスワードを削除
+      current_label: 現在のパスワード
+      new_label: 新しいパスワード
+      confirm_label: 新しいパスワード（確認）
+      save: 保存
+      remove_submit: パスワードを削除
+      cancel: キャンセル
+      hint: 8〜128文字。パスワードマネージャーで生成し、他のサイトと使い回さないでください。
+    err_empty: パスワードを入力してください
+    err_short: パスワードは8文字以上にしてください
+    err_long: パスワードは128文字以内にしてください
+    err_mismatch: 2回入力したパスワードが一致しません
+    toast:
+      saved: パスワードを保存しました
+      removed: パスワードを削除しました
+      failed: 操作に失敗：{msg}
+    confirm:
+      remove: 削除すると Passkey かリカバリーコードでしかログインできなくなります。続行しますか？
   session:
     title: ログインセッション
     subtitle: あなたのアカウントが現在どのデバイスでログイン中か。セッションは独立しており、個別に失効できます
@@ -561,7 +636,7 @@ security:
     title: 2つの独立した軸
     auth_label: 認証軸
     auth_axis: 「あなたは誰か」を決定（このページ）
-    auth_p1: · Passkey 認証情報：1アカウントで複数保持可
+    auth_p1: · ログイン方法：Passkey またはパスワード（最低1つを保持）
     auth_p2: · ログインセッション：複数端末で並存、個別失効可
     auth_p3: · リカバリーコード：全デバイス紛失時のフォールバック
     delivery_label: 配信軸
@@ -1621,6 +1696,7 @@ sources:
     source: ソース
     terminal_short: 終点
     no_edge: 下流なし
+    dead_port: 下流能力なし
     cycle: 'ループ · この下流は戻ってくる'
   view_events: イベントを見る
 trace:

@@ -43,7 +43,7 @@ assign 帧 = {capability, version, params, digest, trace_id, 租约}   ← 仍�
 
 ## 1. 项目是什么
 
-Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，后端用 Web Push 把结果推送到用户所有设备（iOS/Mac/PC/Android）。Passkey 无密码登录，单 Go 二进制 + SQLite，易自托管。
+Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，后端用 Web Push 把结果推送到用户所有设备（iOS/Mac/PC/Android）。Passkey 无密码登录（可选密码登录作为第二套模型），单 Go 二进制 + SQLite，易自托管。
 
 完整设计见 `design/tech-scheme.html`，产品定位见 `README.md`。
 
@@ -53,7 +53,7 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 | --- | --- | --- |
 | 后端 | **Go 单二进制** + `go:embed` 内嵌前端 | 自托管首要价值是「单文件分发」，不引入运行时依赖 |
 | 存储 | **SQLite**（纯 Go `modernc.org/sqlite`，无 CGO） | 数据库先行；Broker 接口抽象，未来可换 NATS/Redis/Kafka 零业务改动 |
-| 认证 | **Passkey (WebAuthn)** + API Key (argon2id) | 无密码；Key 仅存哈希带 scope |
+| 认证 | **Passkey (WebAuthn)** + 密码登录（可选） + API Key (argon2id) | Passkey 为主路径；密码是第二套模型（可移除）；Key 仅存哈希带 scope |
 | 推送 | **Web Push (VAPID)**，FCM + APNs 双链路 | 标准 Web Push，按 endpoint 自动路由 |
 | 前端 | **纯静态 HTML + Tailwind CDN + tokens.css** | 无构建框架；用指纹脚本实现 content-hash（不引入 Vite 等重型链） |
 | 测试 | Go 单测 + Node E2E（Playwright 虚拟认证器） | Passkey 全流程无头自动化；除 iOS 真机外全自动 |
@@ -72,6 +72,28 @@ Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS �
 1. `device.enabled = true`
 2. `scopeMatch(device.event_scope, msg.agentState)`：all 全过；final 仅终态（done/interrupted/error）
 3. `tagMatch`：消息无 deviceTags → 广播到所有 enabled 设备；设备无 tags → catch-all 收一切；双方都有 tags → 交集 ≥1（ANY，非 ALL）
+
+### 登录模型（两套并存）
+
+登录是**两种可选方式**，不是二选一的产品分支：
+
+- **Passkey（主路径）**：可发现凭据（resident key）支持免用户名登录。
+- **密码（可选）**：两种设置时机——注册时直接选「用户名 + 密码」，或登录后在
+  「安全与登录」页设置。只存 argon2id PHC 哈希
+  （`users.password_hash`，迁移 8），明文不进库、不进日志；登录接口对
+  username / password 双维度限速 10/min。
+- **注册也有两条路**：Passkey ceremony（`/v1/auth/register[/options]`）或
+  `POST /v1/auth/password/login/register`（用户名 + 密码，IP 10/min）。密码路径在
+  **同一个事务**里写用户行、默认命名空间、内置能力与密码哈希（失败不留半成品），
+  成功后同样一次性展示 8 个恢复码。首用户自动 admin 的判定仍由
+  `store.RegisterUser*` 在事务内完成（`RoleAuto`），两条路语义一致。
+- **不变量：每个账号至少保留一种登录方式**（≥1 Passkey 或已设置密码）。
+  - 删除最后一个 Passkey：已设置密码才允许，否则 409。
+  - 移除密码：有 ≥1 Passkey 才允许，否则 409。
+- 端点：`POST /v1/auth/password/login`（匿名）与 `GET|POST|DELETE /v1/auth/password`
+  （需会话；首次设置忽略 `currentPassword`，修改 / 移除必须校验当前密码）。
+- 两套模型共用同一会话层（`sessions` 表 + httpOnly Cookie）；改密码**不吊销**已有会话
+  （当前契约，改密码 ≠ 踢其它设备下线）。
 
 ## 3. 环境准备
 
@@ -561,6 +583,7 @@ make ci
 | Go 单测 | `internal/*_test.go` | broker/auth/api/push/ws/store/server 包级逻辑 |
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
+| 密码登录 | `scripts/e2e/suites/password_login.mjs` | 用密码注册、设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
 | 节点协议 | `scripts/e2e/suites/ws_protocol.mjs` | 九帧（hello/heartbeat/ack/progress/result + welcome/assign/cancel/error）、握手鉴权、out 三态、心跳判死 |
 | 派发路由 | `scripts/e2e/suites/routing.mjs` | 派发四步 + 六种未触发原因（no_edge/param_schema/no_node/foreign_user/path）、扇出、容量不足留 pending |
 | 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后 events/tasks 存活、状态机与 out 三态保持、终态不可变 |
@@ -572,6 +595,8 @@ make ci
 ### 测试底座
 
 `scripts/e2e/lib/harness.mjs`：服务生命周期（自动分配端口/临时 DB/等健康）、HTTP 客户端（key/session 注入）、断言收集、devseed 播种。每个套件独立起服务，互不干扰。`run_all.sh` 套件间加 1.5s 间隔避免端口释放时序问题。
+
+**e2e 的默认浏览器语言 = 站点默认语言（zh-CN）**：`harness.mjs` 给子进程设 `LANGUAGE=zh_CN.UTF-8`（Chrome 据此推导 `navigator.languages`），因为语言提示条（`.lang-hint`）全站按「浏览器首选语言 ≠ 当前页语言」出现，Playwright 默认的 en-US 会让每个中文页面凭空多出一条 45px 横幅，给布局类断言加噪声。需要别的语言时用 `browser.newContext({ locale })`（会覆盖默认值）；全局改：`E2E_BROWSER_LANG=en_US.UTF-8`。
 
 ### 关键技术：Passkey 自动化
 
@@ -603,7 +628,7 @@ internal/
   sitegen/         站点生成核心（模板缓存/layout+content/i18n 合成）
   store/           SQLite 数据访问 + schema.sql（baseline）+ 迁移 runner
   broker/          消息队列抽象 + SQLiteBroker
-  auth/            Passkey(WebAuthn) + API Key(argon2id) + 会话
+  auth/            Passkey(WebAuthn)/密码注册 + 密码登录(argon2id) + API Key(argon2id) + 会话
   authn/           Key 校验接口（解耦 auth 与 api/ws）
   api/             /v1/notify 上报处理器
   ws/              WebSocket 派发器（消费者1）

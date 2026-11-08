@@ -100,14 +100,14 @@ func TestBaselineNoHistoricalBaggage(t *testing.T) {
 	if columnNames(t, db, "node_capabilities")["run_spec"] {
 		t.Error("node_capabilities.run_spec 不该存在：执行方式属于能力正文，归属属于部署")
 	}
-	// artifacts 镜像表已删（migration 10）：产物是能力行正文算出来的值，
+	// artifacts 镜像表已删（migration 11）：产物是能力行正文算出来的值，
 	// 留着镜像就是同一条内容两处存、两处可能不一致（Capability Spec v3 §11）。
 	if tableExists(t, db, "artifacts") {
 		t.Error("artifacts 表不该存在：产物 = 能力行正文算出来的值（Capability Spec v3 §11.1）")
 	}
 	// deployments 的旧外键列（指向 artifacts 行）随之消失。
 	if columnNames(t, db, "deployments")["artifact_id"] {
-		t.Error("deployments.artifact_id 不该存在：P2 起引用 capability_id（migration 10）")
+		t.Error("deployments.artifact_id 不该存在：P2 起引用 capability_id（migration 11）")
 	}
 	// edges 两端是**引用**，不是 capability id：旧的 from_key / to_capability 不该回来。
 	edgeCols := columnNames(t, db, "edges")

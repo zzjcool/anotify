@@ -52,3 +52,6 @@ web/i18n.*.js
 
 # worktree 里软链到主 checkout 的 node_modules（不提交、不复制）
 node_modules
+
+# design 目录下的截图产物（7.8MB PNG，只是视觉对照，不入库）
+design/silk-shots/

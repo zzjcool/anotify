@@ -526,6 +526,11 @@ async function main() {
 		(depFrame2?.artifact?.spec?.requires || []).includes("definitely-not-installed-cmd"),
 		JSON.stringify(depFrame2?.artifact?.spec?.requires || null),
 	);
+	// #322：节点回报的 reason 现在还带 PATH 上下文。这里发**新形状**，
+	// 除了前缀语义（missing_requirement）不变，还要确认中枢原样落库：
+	// 空格 / 括号被吞掉的话，排障时就不知道「到底是哪串 PATH 下没探到」。
+	const failReason =
+		"missing_requirement:definitely-not-installed-cmd (PATH=/usr/local/sbin:/usr/local/bin:/usr/bin)";
 	node.conn.send({
 		type: "apply",
 		deploy_id: failItem.deployId,
@@ -533,7 +538,7 @@ async function main() {
 		version: reqCap.version,
 		digest: reqCap.digest,
 		state: "failed",
-		reason: "missing_requirement:definitely-not-installed-cmd",
+		reason: failReason,
 	});
 	const failedRow = await waitDeployment(failItem.deployId, (r) => r.state === "failed");
 	H.check(
@@ -546,6 +551,7 @@ async function main() {
 		/missing_requirement/.test(failedRow?.reason || ""),
 		String(failedRow?.reason),
 	);
+	H.eq("failed 行原样保存 reason 里的 PATH 上下文", failedRow?.reason, failReason);
 
 	// ================= 完整任务流：assign → ack → progress → result =================
 	console.log("--- 任务流（十一帧里的一条完整链）---");

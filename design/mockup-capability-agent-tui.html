@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>设计稿 · agent.tui 建能力交互（现在 / 改后）</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%238b8bfd'/%3E%3C/svg%3E"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 直接复用产品样式：tokens.css（唯一色彩来源）+ ui.css（组件类）。
+         这样这份稿子里的按钮 / 输入框 / 弹层与真实控制台逐像素一致，
+         而不是另造一套「看起来差不多」的样式。 -->
+    <link rel="stylesheet" href="../web/fonts/fonts.css" />
+    <link rel="stylesheet" href="../web/tokens.css" />
+    <link rel="stylesheet" href="../web/ui.css" />
+    <style>
+      /* ============================================================
+         这份稿子只做三件事：
+         ① 复刻「现在」的新建能力弹层（CSS 抄自 web-src/pages/capabilities.html，
+            保证与线上一致）；
+         ② 画出「改后」的同一屏（分组 + 折叠 + 默认值）；
+         ③ 两种状态可一键切换，方便对照。
+         所有自定义类都在本 <style> 里定义（不借 Tailwind 之外的空类）。
+         ============================================================ */
+
+      /* ---------- 页面外壳（设计稿自己的，不属于产品）---------- */
+      .mk-page {
+        min-height: 100dvh;
+        background:
+          radial-gradient(900px 480px at 12% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+          var(--bg);
+      }
+      .mk-top {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.7rem 1.1rem;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--bg) 78%, transparent);
+        backdrop-filter: blur(14px);
+      }
+      .mk-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .mk-sub {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .mk-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        margin-left: auto;
+      }
+      .mk-stage {
+        display: flex;
+        justify-content: center;
+        padding: 1.2rem 1rem 4rem;
+      }
+      .mk-col {
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+        width: 100%;
+        max-width: 720px;
+        min-width: 0;
+      }
+      /* 说明条：给评审看的话，不属于产品的 UI */
+      .mk-note {
+        padding: 0.6rem 0.8rem;
+        border: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+        border-radius: var(--r-md);
+        background: var(--accent-soft);
+        font-size: 11px;
+        line-height: 1.75;
+        color: var(--text);
+      }
+      .mk-note b {
+        color: var(--accent-strong);
+        font-weight: 500;
+      }
+      .mk-note ul {
+        margin: 0.2rem 0 0;
+        padding-left: 1rem;
+        color: var(--muted);
+      }
+      .mk-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 0.35rem;
+        border-radius: var(--r-full);
+        background: var(--surface-3);
+        font-size: 10px;
+        color: var(--muted);
+      }
+      /* 弹层：真实产品是 fixed 覆盖全屏；稿子里改成随页面排布，好截全图 */
+      .mk-panel {
+        position: relative;
+        width: 100%;
+        max-height: none; /* 产品是 85dvh 内部滚动；设计稿要一屏看全 */
+        background: var(--panel-modal);
+        border: 1px solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow-3);
+      }
+      .mk-panel .modal-body {
+        padding: 16px 18px;
+      }
+      .mk-panel .modal-head {
+        padding: 12px 18px;
+      }
+
+      /* 复刻页的组件类（抄自 capabilities.html 的页内 <style>） ---------- */
+      .cap-modal-wide { max-width: 720px; }
+      .cap-steps {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px;
+      }
+      .cap-step {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 3px 10px; border: 1px solid var(--line); border-radius: var(--r-full);
+        background: var(--surface-2); color: var(--muted); font-size: 12px; line-height: 1.6;
+      }
+      .cap-step-n {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: var(--r-full);
+        background: var(--surface-3); color: var(--faint);
+        font-size: 10px; font-variant-numeric: tabular-nums;
+      }
+      .cap-step.active {
+        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+        background: var(--accent-soft); color: var(--accent);
+      }
+      .cap-step.active .cap-step-n { background: var(--accent); color: var(--on-solid); }
+      .cap-step.done .cap-step-n { background: var(--success-soft); color: var(--success); }
+      .cap-step-sep { color: var(--faint); font-size: 11px; }
+
+      .tpl-hint { font-size: 11px; color: var(--faint); line-height: 1.7; }
+      .tpl-top { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+      .tpl-req { margin-left: 0.2rem; color: var(--warn); }
+
+      .cap-cards-wrap {
+        display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.9rem;
+        padding: 0.6rem 0.7rem; border: 1px solid var(--line);
+        border-radius: var(--r-md); background: var(--surface-1);
+      }
+      .cap-cards { display: flex; flex-direction: column; gap: 0.35rem; }
+      .cap-cards-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+      .cap-card {
+        display: flex; align-items: stretch; gap: 0.35rem;
+        padding: 0.15rem 0.25rem; border: 1px solid var(--line);
+        border-radius: var(--r-sm); background: var(--surface-2);
+      }
+      .cap-card.is-active {
+        border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+        background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent);
+      }
+      .cap-card-pick {
+        display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline;
+        gap: 0.45rem; min-width: 0; padding: 0.35rem 0.4rem;
+        border: 0; background: transparent; color: inherit; font: inherit;
+        text-align: left; cursor: pointer;
+      }
+      .cap-card-n { font-size: 11px; color: var(--muted); white-space: nowrap; }
+      .cap-card-name { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+      .cap-card-down { margin-left: auto; font-size: 10px; color: var(--faint); }
+      .cap-card-editor { margin: 0 0 0.7rem; font-size: 11px; color: var(--faint); }
+
+      .cap-cand-list { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.45rem; }
+      .cap-cand-caption { font-size: 11px; color: var(--faint); }
+      .cap-cand-pill {
+        display: inline-flex; align-items: baseline; gap: 0.3rem;
+        padding: 0.12rem 0.5rem; border: 1px solid var(--line);
+        border-radius: var(--r-full); background: var(--surface-2);
+        color: var(--text); font-size: 11px; line-height: 1.5; cursor: pointer;
+      }
+      .cap-cand-pill.is-picked {
+        border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+        background: var(--accent-soft);
+      }
+      .cap-cand-id { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+      .cap-cand-tag { font-size: 10px; color: var(--faint); }
+
+      .schema-rows { display: grid; gap: 0.45rem; }
+      .schema-row {
+        display: grid; gap: 0.4rem; padding: 0.45rem 0.5rem;
+        border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2);
+      }
+      .schema-row-main { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+      .schema-row-key { flex: 1 1 9rem; min-width: 0; font-family: var(--font-mono); }
+      .schema-row-main .select { flex: 1 1 7rem; min-width: 0; }
+      .schema-row-main > .btn { flex: 0 0 auto; }
+      .schema-row-req {
+        display: inline-flex; align-items: center; gap: 0.25rem;
+        font-size: 11px; color: var(--muted); white-space: nowrap; cursor: pointer;
+      }
+      .schema-row-del { color: var(--faint); }
+      .schema-row-hint { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
+      .schema-rows-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; margin-top: 0.55rem; }
+
+      .seg-switch {
+        display: inline-flex; gap: 2px; padding: 2px;
+        border: 1px solid var(--line); border-radius: var(--r-full); background: var(--surface-1);
+      }
+      .seg-item {
+        padding: 0.1rem 0.5rem; border: 0; border-radius: var(--r-full);
+        background: transparent; color: var(--muted); font-size: 11px; cursor: pointer;
+      }
+      .seg-item-active { background: var(--surface-3); color: var(--text); }
+
+      .yaml-box {
+        margin: 0; padding: 0.6rem 0.7rem; border: 1px solid var(--line);
+        border-radius: var(--r-sm); background: var(--code-bg); color: var(--code-text);
+        font-family: var(--font-mono); font-size: 11px; line-height: 1.65;
+        max-height: 9.5rem; overflow: hidden;
+      }
+      .yaml-fade { position: relative; }
+      .yaml-fade::after {
+        content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3rem;
+        background: linear-gradient(transparent, var(--code-bg)); pointer-events: none;
+      }
+      .yaml-more { margin-top: 0.3rem; font-size: 11px; color: var(--faint); }
+
+      /* ---------- 「改后」的新组件：折叠区 / 值胶囊 ---------- */
+      .acc {
+        border: 1px solid var(--line); border-radius: var(--r-md);
+        background: var(--surface-1);
+      }
+      .acc + .acc { margin-top: 0.55rem; }
+      .acc > summary {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem;
+        padding: 0.55rem 0.7rem; cursor: pointer; list-style: none;
+      }
+      .acc > summary::-webkit-details-marker { display: none; }
+      .acc > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .acc-chev { color: var(--faint); transition: transform 160ms ease; }
+      .acc[open] .acc-chev { transform: rotate(90deg); }
+      .acc-title { font-size: 13px; color: var(--text); }
+      .acc-count { font-size: 11px; color: var(--faint); }
+      .acc-hint { margin-left: auto; font-size: 11px; color: var(--faint); }
+      .acc-body { display: grid; gap: 0.6rem; padding: 0.15rem 0.7rem 0.75rem; }
+      .acc-sub { display: grid; gap: 0.45rem; }
+
+      .run-chip {
+        display: inline-flex; align-items: center;
+        padding: 0.08rem 0.4rem; border: 1px solid var(--line);
+        border-radius: var(--r-full); background: var(--surface-2);
+        font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+      }
+      .run-chip b { font-weight: 500; color: var(--text); }
+      .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+      @media (max-width: 640px) {
+        .grid-2, .tpl-top { grid-template-columns: minmax(0, 1fr); }
+        .acc-hint { display: none; }
+      }
+      .badge-req {
+        display: inline-flex; align-items: center; padding: 0 0.3rem;
+        border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+        border-radius: var(--r-full); background: var(--warn-soft);
+        font-size: 10px; color: var(--warn);
+      }
+      .badge-opt {
+        display: inline-flex; align-items: center; padding: 0 0.3rem;
+        border: 1px solid var(--line); border-radius: var(--r-full);
+        background: var(--surface-2); font-size: 10px; color: var(--faint);
+      }
+      /* 参数区标题行：标题 + 一句「什么时候填」 */
+      .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0 0 0.5rem; }
+      .sec-title { font-size: 13px; font-weight: 500; color: var(--text); }
+      .sec-hint { font-size: 11px; color: var(--faint); }
+      .sec { margin-top: 1rem; }
+      .sec:first-of-type { margin-top: 0; }
+
+      /* 「现在」面板上的问题标记 */
+      .mk-flag {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: var(--r-full);
+        background: var(--error-soft); color: var(--error-300);
+        font-size: 10px; font-variant-numeric: tabular-nums;
+      }
+      .mk-count {
+        display: inline-flex; align-items: center; gap: 0.25rem;
+        font-size: 11px; color: var(--error-300);
+      }
+      /* 建源页的参数网格（简化示意） */
+      .param-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+      @media (max-width: 640px) { .param-grid { grid-template-columns: minmax(0, 1fr); } }
+      .param-req { color: var(--warn); margin-left: 0.15rem; }
+      .mk-cap-pill {
+        display: inline-flex; align-items: baseline; gap: 0.35rem;
+        padding: 0.2rem 0.55rem; border: 1px solid var(--line);
+        border-radius: var(--r-full); background: var(--surface-2); font-size: 12px;
+      }
+      .mk-arrow { color: var(--faint); font-size: 11px; }
+      .mk-hidden { display: none !important; }
+
+      /* 模板卡片对照（选模板视图） */
+      .tpl-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+      @media (max-width: 720px) { .tpl-cards { grid-template-columns: minmax(0, 1fr); } }
+      .tpl-card {
+        display: block; width: 100%; text-align: left; padding: 0.7rem 0.85rem;
+        border: 1px solid var(--line); border-radius: var(--r-md);
+        background: var(--surface-2); color: var(--text);
+      }
+      .tpl-desc { margin-top: 0.3rem; font-size: 11px; line-height: 1.6; color: var(--muted); }
+      .tpl-meta { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+      .tpl-cost {
+        display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem;
+        padding-top: 0.45rem; border-top: 1px dashed var(--line);
+      }
+      .tpl-cost-chip {
+        font-size: 10px; padding: 0.05rem 0.4rem; border-radius: var(--r-full);
+        border: 1px solid var(--line); color: var(--muted);
+      }
+      .tpl-cost-chip b { color: var(--text); font-weight: 500; }
+    </style>
+  </head>
+
+  <body class="mk-page">
+    <!-- ================= 顶栏：视图 / 状态 / 主题 ================= -->
+    <header class="mk-top">
+      <div>
+        <div class="mk-title">设计稿 · 用 <span class="mono">agent.tui</span> 建能力的交互</div>
+        <div class="mk-sub">改哪几处：模板成本预告 · 参数分组 · 默认值 · 折叠（不动协议、不改产物语义）</div>
+      </div>
+      <div class="mk-controls">
+        <div class="seg-switch" id="view-switch">
+          <button class="seg-item" data-view="pick">选模板</button>
+          <button class="seg-item seg-item-active" data-view="create">新建能力</button>
+          <button class="seg-item" data-view="source">建源（派发参数）</button>
+        </div>
+        <div class="seg-switch" id="state-switch">
+          <button class="seg-item seg-item-active" data-state="now">现在</button>
+          <button class="seg-item" data-state="after">改后</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="theme-btn">亮色</button>
+      </div>
+    </header>
+
+    <div class="mk-stage">
+      <div class="mk-col">
+        <!-- ============ 视图 1：选模板（现在 / 改后 并排） ============ -->
+        <div data-view="pick">
+          <div class="mk-note">
+            模板卡片先说<b>成本</b>：点进去之前就知道要填几个东西。现在只说「需要预装」和默认超时。
+          </div>
+          <div class="mt-3 grid-2" style="gap: 1rem; align-items: start">
+            <div>
+              <p class="tpl-hint mb-2">现在 · 点「hc 托管 TUI Agent」才知道里面有 11 个参数</p>
+              <div class="tpl-card">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span style="font-size: 13px">hc 托管 TUI Agent</span>
+                  <span class="tpl-meta">agent.tui</span>
+                </div>
+                <p class="tpl-desc">
+                  把一个任务交给 hc 托管的 TUI agent（pi / claude / codex …）：agent 自己按提示词里的 emit
+                  契约上报产出，人随时能 hc read / hc attach。注意：herdr 与 hc 是两套会话，看不见彼此。
+                </p>
+                <div class="tpl-meta mt-1">需要预装：hc, git · 默认 3600 秒</div>
+              </div>
+            </div>
+            <div>
+              <p class="tpl-hint mb-2">改后 · 一眼看出「只有 1 个要填」</p>
+              <div class="tpl-card" style="border-color: color-mix(in srgb, var(--accent) 40%, transparent)">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span style="font-size: 13px">hc 托管 TUI Agent</span>
+                  <span class="tpl-meta">agent.tui</span>
+                </div>
+                <p class="tpl-desc">
+                  把一个任务交给 hc 托管的 TUI agent（pi / claude / codex …）：agent 自己按提示词里的 emit
+                  契约上报产出，人随时能 hc read / hc attach。
+                </p>
+                <div class="tpl-meta mt-1">需要预装：hc, git · 默认 3600 秒</div>
+                <div class="tpl-cost">
+                  <span class="tpl-cost-chip"><b>1</b> 个必填（任务正文）</span>
+                  <span class="tpl-cost-chip"><b>10</b> 项运行配置 · 有默认值</span>
+                  <span class="tpl-cost-chip">建能力时都不用改</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mk-note mt-3">
+            依据：<span class="mono">template_agent_tui.go</span> 的 Fields 共 11 项，其中只有
+            <span class="mono">prompt</span> 是「每次派发才给」的任务输入，其余 10 项是能力的运行策略。
+          </div>
+        </div>
+
+        <!-- ============ 视图 2 · 现在：新建能力 ============ -->
+        <div data-view="create" data-state="now">
+          <div class="mk-note">
+            <b>现在 · 新建能力</b>：一屏 8 个区块。真正必填只有「能力名」，但中间那块参数契约是 11 行 × 5 个控件
+            + 11 行说明 —— <span class="mk-count"><span class="mk-flag">1</span> 11 行里 10 行是运行策略</span>
+            <ul>
+              <li>模板字段的 <span class="mono">default</span> 只在这里当小字显示，派发时看不到（也不生效）</li>
+              <li>行视图的「类型」对 select 字段显示 <span class="mono">string</span>，枚举藏在「更多」里</li>
+            </ul>
+          </div>
+
+          <div class="mk-panel cap-modal-wide" style="margin-top: 0.8rem">
+            <div class="modal-head">
+              <h3 style="font-size: 15px">新建能力</h3>
+              <button class="btn btn-ghost btn-icon" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="cap-steps">
+                <span class="cap-step done"><span class="cap-step-n">1</span>选模板</span>
+                <span class="cap-step-sep">→</span>
+                <span class="cap-step active"><span class="cap-step-n">2</span>填写</span>
+              </div>
+
+              <div class="cap-cards-wrap">
+                <div class="card-head mb-2 flex items-center justify-between">
+                  <h4 class="card-title" style="font-size: 13px">本批能力</h4>
+                  <span class="tpl-hint">一次可以定义多个能力：每张卡有自己的下游、参数与脚本</span>
+                </div>
+                <div class="cap-cards">
+                  <div class="cap-card is-active">
+                    <button class="cap-card-pick">
+                      <span class="cap-card-n">能力 1</span>
+                      <span class="cap-card-name">agent-tui-review</span>
+                      <span class="cap-card-down">下游：—</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="cap-cards-actions">
+                  <button class="btn btn-ghost btn-sm">＋ 再加一个能力</button>
+                </div>
+              </div>
+              <p class="cap-card-editor">正在编辑：能力 1 / 1</p>
+
+              <div class="tpl-top">
+                <div class="field">
+                  <label class="field-label" for="now-name">能力名<span class="tpl-req">*</span></label>
+                  <input id="now-name" class="input" placeholder="review" />
+                  <p class="field-hint">技术名：节点声明、边、日志都用它，建好后不能改。</p>
+                </div>
+                <div class="field">
+                  <label class="field-label">名字（给人看）</label>
+                  <input class="input" placeholder="例如「分析 PR」「部署预发」" />
+                  <p class="field-hint">界面上显示这个。留空就用下面的技术名。</p>
+                </div>
+                <div class="field">
+                  <label class="field-label">超时（秒）</label>
+                  <input class="input" type="number" value="3600" />
+                  <p class="field-hint">0 = 不设本地超时，交给中枢租约</p>
+                </div>
+              </div>
+
+              <div class="field mt-3">
+                <label class="field-label">工作目录</label>
+                <input class="input mono" placeholder="/home/me/project 或 ~/project（留空 = 每次任务一个独立目录）" />
+                <p class="field-hint">
+                  以 / 开头的绝对路径，或 ~/ 开头（~ 在节点上展开为 agent 用户的家目录）；不存在会直接失败。留空 = 每次任务一个独立目录。
+                </p>
+              </div>
+
+              <p class="tpl-hint mt-3">需要预装：hc, git</p>
+
+              <div class="mt-4">
+                <div class="card-head mb-2 flex items-center justify-between">
+                  <h4 class="card-title" style="font-size: 13px">下游能力（候选）</h4>
+                  <span class="tpl-hint">可留空</span>
+                </div>
+                <input class="input" placeholder="script.echo, notify.phone" />
+                <div class="cap-cand-list">
+                  <span class="cap-cand-caption">点一下加入：</span>
+                  <button class="cap-cand-pill">通知到手机<span class="cap-cand-id">notify.phone</span></button>
+                  <button class="cap-cand-pill">跑测试<span class="cap-cand-id">script.test</span></button>
+                  <button class="cap-cand-pill">回调 Webhook<span class="cap-cand-id">script.notify</span></button>
+                </div>
+                <p class="field-hint mt-1">
+                  跑完之后交给谁。多个 = 候选，运行期按优先级选一个；留空 = 终端能力（跑完就结束）。
+                </p>
+              </div>
+
+              <div class="mt-4">
+                <div class="card-head mb-2 flex items-center justify-between">
+                  <h4 class="card-title flex items-center gap-2" style="font-size: 13px">
+                    参数契约 <span class="mk-flag">2</span>
+                  </h4>
+                  <div class="seg-switch">
+                    <button class="seg-item seg-item-active">可视化</button>
+                    <button class="seg-item">手写 JSON</button>
+                  </div>
+                </div>
+                <div class="schema-rows" id="rows-now"></div>
+                <div class="schema-rows-actions">
+                  <button class="btn btn-ghost btn-sm">+ 加一个参数</button>
+                </div>
+                <p class="tpl-hint mt-1">
+                  可视化里填的是最常用的约束；更复杂的形状切「手写 JSON」。没动过契约时它跟着模板字段走。支持 JSON Schema 的受控子集。
+                </p>
+              </div>
+
+              <div class="mt-4">
+                <div class="card-head mb-2 flex items-center justify-between">
+                  <h4 class="card-title" style="font-size: 13px">生成的脚本</h4>
+                  <div class="seg-switch">
+                    <button class="seg-item seg-item-active">只读</button>
+                    <button class="seg-item">改脚本</button>
+                  </div>
+                </div>
+                <div class="yaml-fade">
+                  <pre class="yaml-box">#!/bin/bash
+# anotify 能力模板 agent.tui：把一个任务交给 hc 托管的 TUI agent（issue #321）。
+# 三条纪律（改这段脚本前先读）：
+#   1. 不解析屏幕：结果只走 emit（agent 自己调 emit），屏幕只 hc read 归档。
+#   2. token 不进 argv / 不进提示词正文：只写进 .anotify/task.json（0600）。
+#   3. 模板层零插值：用户填的值都从参数环境变量来。
+set -uo pipefail
+
+SUMMARY_PRINTED=0
+DETAIL=""
+SESSION=""
+WT_CREATED=0
+WAIT_OUT=""
+…
+</pre>
+                </div>
+                <p class="yaml-more">脚本共 320 行（hc 模板生成 / worktree / 等待哨兵 / 清理）。</p>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn btn-ghost">← 换模板</button>
+              <button class="btn btn-ghost">取消</button>
+              <button class="btn btn-primary">创建</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 视图 2 · 改后：新建能力 ============ -->
+        <div data-view="create" data-state="after" class="mk-hidden">
+          <div class="mk-note">
+            <b>改后 · 新建能力</b>：只留三块 ——「基本信息 → 任务参数 → 运行配置」，其余进折叠。
+            首屏从 <b>11 行参数</b> 变成 <b>1 行</b>，能力和改动量都没少。
+            <ul>
+              <li>折叠区标题自报 <span class="mono">10 项 · 默认即可</span>，不是「高级（别点）」</li>
+              <li>Worktree 默认 <span class="mono">off</span> 时 4 个子项整组不出现（选了 new 才展开）</li>
+              <li>参数契约 / 脚本 / 工作目录 / 下游 收进「高级」，标题上带值摘要</li>
+            </ul>
+          </div>
+
+          <div class="mk-panel cap-modal-wide" style="margin-top: 0.8rem">
+            <div class="modal-head">
+              <h3 style="font-size: 15px">新建能力 · hc 托管 TUI Agent</h3>
+              <button class="btn btn-ghost btn-icon" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="cap-steps">
+                <span class="cap-step done"><span class="cap-step-n">1</span>选模板</span>
+                <span class="cap-step-sep">→</span>
+                <span class="cap-step active"><span class="cap-step-n">2</span>填写</span>
+              </div>
+
+              <!-- ① 基本信息 -->
+              <div class="grid-2">
+                <div class="field">
+                  <label class="field-label" for="after-name">能力名<span class="tpl-req">*</span></label>
+                  <input id="after-name" class="input mono" placeholder="agent-tui-review" />
+                  <p class="field-hint">小写字母、数字、点、下划线、短横线；建好后不能改。</p>
+                </div>
+                <div class="field">
+                  <label class="field-label">名字（给人看）</label>
+                  <input class="input" placeholder="留空 = 用 hc 托管 TUI Agent" />
+                  <p class="field-hint">界面上显示这个。</p>
+                </div>
+              </div>
+
+              <!-- ② 任务参数 -->
+              <div class="sec">
+                <div class="sec-head">
+                  <span class="sec-title">任务参数</span>
+                  <span class="sec-hint">每次派发时给 —— 建源 / 手动触发才填</span>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="after-prompt">
+                    prompt
+                    <span class="badge-req">必填</span>
+                    <span class="mono" style="font-size: 10px; color: var(--faint)">→ $ANOTIFY_PARAM_PROMPT</span>
+                  </label>
+                  <textarea
+                    id="after-prompt"
+                    class="textarea mono"
+                    rows="3"
+                    placeholder="交给 agent 的提示词。例：把 PR #42 的失败用例补上，跑 go test ./... 直到通过，最后 emit 一次 summary。"
+                  ></textarea>
+                  <p class="field-hint">任务正文只在这里定义一次；派发时中枢把值传进来（多行，不会被压成一行）。</p>
+                </div>
+              </div>
+
+              <!-- ③ 运行配置（折叠） -->
+              <div class="sec">
+                <details class="acc">
+                  <summary>
+                    <svg class="acc-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="9 6 15 12 9 18" />
+                    </svg>
+                    <span class="acc-title">运行配置</span>
+                    <span class="acc-count">10 项 · 默认即可</span>
+                    <span class="acc-hint">
+                      <span class="run-chip">agent=<b>pi</b></span>
+                      <span class="run-chip">space=<b>default</b></span>
+                      <span class="run-chip">worktree=<b>off</b></span>
+                      <span class="run-chip"><b>3600</b>s</span>
+                    </span>
+                  </summary>
+                  <div class="acc-body">
+                    <div class="grid-2">
+                      <div class="field">
+                        <label class="field-label">Agent</label>
+                        <select class="select">
+                          <option selected>pi</option>
+                          <option>claude</option>
+                          <option>codex</option>
+                          <option>gemini</option>
+                          <option>cursor</option>
+                          <option>opencode</option>
+                        </select>
+                        <p class="field-hint">决定 hc 认不认得这个会话（它靠命令行认 agent）。</p>
+                      </div>
+                      <div class="field">
+                        <label class="field-label">任务上限（秒）</label>
+                        <input class="input" type="number" value="3600" />
+                        <p class="field-hint">整个任务的上限，不是单次等待的上限。</p>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <label class="field-label">Agent 参数</label>
+                      <input class="input mono" placeholder="--model gpt-6.1-sol --thinking medium" />
+                      <p class="field-hint">原样拼到命令行；只挡换行与引号不配对。</p>
+                    </div>
+                    <div class="field">
+                      <label class="field-label">产出说明</label>
+                      <textarea class="textarea" rows="2" placeholder="只在真的做完时 emit 一次 summary"></textarea>
+                      <p class="field-hint">原样进提示词：写「什么时候 emit、内容期望」。</p>
+                    </div>
+                    <div class="grid-2">
+                      <div class="field">
+                        <label class="field-label">空间（标签）</label>
+                        <input class="input mono" value="default" />
+                        <p class="field-hint">hc ls --label anotify.space=… 只看这一组。</p>
+                      </div>
+                      <div class="field">
+                        <label class="field-label">Worktree</label>
+                        <select class="select" id="wt-select">
+                          <option value="off" selected>off · 直接用工作目录</option>
+                          <option value="new">new · 节点自己开一棵</option>
+                          <option value="existing">existing · 用现成目录</option>
+                        </select>
+                        <p class="field-hint">要隔离 agent 的提交才开；失败/中断永远保留现场。</p>
+                      </div>
+                    </div>
+                    <!-- worktree != off 才出现（改后：条件显示，不占空位） -->
+                    <div class="acc-sub mk-hidden" id="wt-extra">
+                      <div class="grid-2">
+                        <div class="field">
+                          <label class="field-label">分支</label>
+                          <input class="input mono" value="anotify/{{trace8}}-{{seq}}" />
+                          <p class="field-hint">{{trace8}} / {{seq}} 在任务期展开；留空 = detached。</p>
+                        </div>
+                        <div class="field">
+                          <label class="field-label">起点</label>
+                          <input class="input mono" value="HEAD" />
+                          <p class="field-hint">git worktree add 的起点 ref。</p>
+                        </div>
+                      </div>
+                      <div class="grid-2">
+                        <div class="field">
+                          <label class="field-label">Worktree 路径</label>
+                          <input class="input mono" placeholder="缺省 &lt;工作目录&gt;/wt" />
+                        </div>
+                        <div class="field">
+                          <label class="field-label">结束后清理</label>
+                          <select class="select">
+                            <option selected>remove</option>
+                            <option>keep</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                <!-- ④ 高级 -->
+                <details class="acc">
+                  <summary>
+                    <svg class="acc-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="9 6 15 12 9 18" />
+                    </svg>
+                    <span class="acc-title">高级</span>
+                    <span class="acc-count">工作目录 · 下游 · 参数契约（11）· 脚本</span>
+                    <span class="acc-hint">一般不用改</span>
+                  </summary>
+                  <div class="acc-body">
+                    <div class="field">
+                      <label class="field-label">工作目录</label>
+                      <input class="input mono" placeholder="留空 = 每次任务一个独立目录" />
+                      <p class="field-hint">绝对路径或 ~/…（在节点上展开）。不存在会直接失败。</p>
+                    </div>
+                    <div class="field">
+                      <label class="field-label">下游能力（候选）</label>
+                      <input class="input" placeholder="留空 = 终端能力（跑完就结束）" />
+                      <div class="cap-cand-list">
+                        <button class="cap-cand-pill">通知到手机<span class="cap-cand-id">notify.phone</span></button>
+                        <button class="cap-cand-pill">回调 Webhook<span class="cap-cand-id">script.notify</span></button>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <label class="field-label">参数契约</label>
+                        <button class="btn btn-ghost btn-sm">展开编辑 11 行 ▸</button>
+                      </div>
+                      <p class="field-hint">
+                        11 个参数 · 1 个必填 · 由模板预置。改它等于改「这个能力接受什么入参」，一般不需要。
+                      </p>
+                    </div>
+                    <div class="field">
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <label class="field-label">脚本</label>
+                        <button class="btn btn-ghost btn-sm">查看只读脚本 ▸</button>
+                      </div>
+                      <p class="field-hint">hc 托管脚本 320 行，第一行 #! shebang；直接 exec，不经 shell。</p>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <span class="tpl-hint" style="margin-right: auto">1 个必填 · 10 项运行配置都有默认值 · 什么都没少</span>
+              <button class="btn btn-ghost">取消</button>
+              <button class="btn btn-primary">创建能力</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 视图 3 · 现在：建源（派发参数） ============ -->
+        <div data-view="source" data-state="now" class="mk-hidden">
+          <div class="mk-note">
+            <b>现在 · 建源</b>：为能力配参数时，同一批 11 个参数再填一遍。这里有两个坑：
+            <ul>
+              <li>没有默认值提示 —— 留空其实会落到脚本里的 <span class="mono">${X:-pi}</span>，但界面不说，用户只能硬填</li>
+              <li><span class="mono">prompt</span> 是多行文本，却渲染成单行 <span class="mono">&lt;input&gt;</span>（sources.html:2043）</li>
+            </ul>
+          </div>
+
+          <div class="mk-panel" style="margin-top: 0.8rem">
+            <div class="modal-head">
+              <h3 style="font-size: 15px">新建源 · 变量</h3>
+              <button class="btn btn-ghost btn-icon" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body">
+              <p class="tpl-hint mb-2">能力</p>
+              <div class="mk-cap-pill">
+                hc 托管 TUI Agent
+                <span class="mono" style="font-size: 10px; color: var(--faint)">agent.tui@1</span>
+              </div>
+
+              <p class="tpl-hint mt-3 mb-2">参数（11）</p>
+              <div class="param-grid" id="src-now"></div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn btn-ghost">取消</button>
+              <button class="btn btn-primary">保存</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 视图 3 · 改后：建源 ============ -->
+        <div data-view="source" data-state="after" class="mk-hidden">
+          <div class="mk-note">
+            <b>改后 · 建源</b>：任务参数在前（多行），运行配置收进折叠并写明「留空 = 用能力默认值」。
+            <ul>
+              <li>默认值来自 schema 的 <span class="mono">default</span>（<span class="mono">paramsSchemaFor</span> 补一行就能带上）</li>
+              <li>折叠区自报「10 项 · 留空即默认」，不需要读脚本源码才知道留空是安全的</li>
+            </ul>
+          </div>
+
+          <div class="mk-panel" style="margin-top: 0.8rem">
+            <div class="modal-head">
+              <h3 style="font-size: 15px">新建源 · 变量</h3>
+              <button class="btn btn-ghost btn-icon" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body">
+              <p class="tpl-hint mb-2">能力</p>
+              <div class="mk-cap-pill">
+                hc 托管 TUI Agent
+                <span class="mono" style="font-size: 10px; color: var(--faint)">agent.tui@1</span>
+              </div>
+
+              <div class="sec mt-3">
+                <div class="sec-head">
+                  <span class="sec-title">任务参数</span>
+                  <span class="sec-hint">每次触发都不同</span>
+                </div>
+                <div class="field">
+                  <label class="field-label">prompt<span class="param-req">*</span></label>
+                  <textarea
+                    class="textarea mono"
+                    rows="3"
+                    placeholder="支持 {{ trigger.payload.title }} 这类引用；多行照原样传入"
+                  ></textarea>
+                  <p class="field-hint">多行文本 → 多行输入框（现在是一行）。</p>
+                </div>
+              </div>
+
+              <div class="sec">
+                <details class="acc">
+                  <summary>
+                    <svg class="acc-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="9 6 15 12 9 18" />
+                    </svg>
+                    <span class="acc-title">运行配置</span>
+                    <span class="acc-count">10 项 · 留空 = 用能力默认值</span>
+                    <span class="acc-hint">一般不用填</span>
+                  </summary>
+                  <div class="acc-body">
+                    <p class="field-hint" style="margin: 0">
+                      留空 = 不传这个参数，脚本用它的默认值（agent=<span class="mono">pi</span> ·
+                      space=<span class="mono">default</span> · worktree=<span class="mono">off</span> ·
+                      timeout=<span class="mono">3600</span>）。要按事件覆盖时才填。
+                    </p>
+                    <div class="param-grid">
+                      <div class="field">
+                        <label class="field-label">agent</label>
+                        <select class="select">
+                          <option value="" selected>—（默认 pi）</option>
+                          <option>pi</option>
+                          <option>claude</option>
+                          <option>codex</option>
+                          <option>gemini</option>
+                          <option>cursor</option>
+                          <option>opencode</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label class="field-label">timeout_sec</label>
+                        <input class="input mono" placeholder="默认 3600" />
+                      </div>
+                      <div class="field">
+                        <label class="field-label">space</label>
+                        <input class="input mono" placeholder="默认 default" />
+                      </div>
+                      <div class="field">
+                        <label class="field-label">worktree</label>
+                        <select class="select">
+                          <option value="" selected>—（默认 off）</option>
+                          <option>off</option>
+                          <option>new</option>
+                          <option>existing</option>
+                        </select>
+                      </div>
+                      <div class="field" style="grid-column: 1 / -1">
+                        <label class="field-label">agent_args</label>
+                        <input class="input mono" placeholder="默认空（原样拼到命令行）" />
+                      </div>
+                      <div class="field" style="grid-column: 1 / -1">
+                        <label class="field-label">ports（产出说明）</label>
+                        <textarea class="textarea" rows="2" placeholder="默认：只在真的做完时 emit 一次 summary"></textarea>
+                      </div>
+                    </div>
+                    <p class="field-hint" style="margin: 0">
+                      branch / base / worktree_path / worktree_cleanup 只在 worktree≠off 时才需要，选中后出现在这里（现在 4 个都常驻）。
+                    </p>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="modal-foot">
+              <button class="btn btn-ghost">取消</button>
+              <button class="btn btn-primary">保存</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 改动面 ============ -->
+        <div class="mk-note" style="border-style: solid; background: var(--surface-1)">
+          <b>改动面</b>（不动协议、不改产物语义，老产物照常可读）
+          <ul>
+            <li><span class="mono">internal/artifact/templates.go</span>：Field 加 <span class="mono">group</span>（task / run / worktree）；
+              <span class="mono">paramsSchemaFor</span> 把 <span class="mono">default</span> 写进 schema（+8 行）</li>
+            <li><span class="mono">internal/artifact/template_agent_tui.go</span>：11 个字段各标一个 group（纯元数据）</li>
+            <li><span class="mono">web-src/pages/capabilities.html</span>：参数区按 group 分块 + 折叠（约 60 行渲染）</li>
+            <li><span class="mono">web-src/pages/sources.html</span>：同一份 group 折叠 + 默认值 placeholder + prompt 用 textarea（约 20 行）</li>
+            <li>测试：模板 JSON 往返（group/default）+ 前端 e2e 按 data-group 定位</li>
+          </ul>
+          <div class="mt-2"><span class="mk-tag">P0</span> 分组 / 折叠 · <span class="mk-tag">P0.5</span> 模板成本预告 ·
+            <span class="mk-tag">P1</span> 默认值进 schema + textarea</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // ---------- 稿子里的数据：agent.tui 的 11 个字段（顺序与模板一致） ----------
+      const FIELDS = [
+        {
+          key: "agent", type: "string", req: false,
+          hint: "Agent · 必须是 hc 认得的 agent：它靠命令行认 agent（status/wait 才准）。填不认识的程序名，编排层就只剩瞎等超时这一条路。 · 默认 pi",
+        },
+        {
+          key: "agent_args", type: "string", req: false,
+          hint: "Agent 参数 · 原样拼到命令行：--model gpt-6.1-sol --thinking medium。不做各家 flag 映射；只挡换行与引号不配对（hc 模板的 command 是单行）。",
+        },
+        {
+          key: "ports", type: "string", req: false,
+          hint: "产出说明 · 每行一条：先写「什么时候 emit」，再写内容期望，原样进提示词。留空则只在真的做完时 emit 一次 summary。",
+        },
+        {
+          key: "space", type: "string", req: false,
+          hint: "空间（标签） · label anotify.space=<值>：hc ls --label anotify.space=<值> 只看这一组。hc 没有选 space 的参数，标签就是命名空间。 · 默认 default",
+        },
+        {
+          key: "worktree", type: "string", req: false,
+          hint: "Worktree · off = 直接用工作目录；new = 节点自己 git worktree add 再交给 agent；existing = 用 worktree_path 指的那个现成目录。 · 默认 off",
+        },
+        {
+          key: "branch", type: "string", req: false,
+          hint: "分支 · 仅 worktree=new。{{trace8}} / {{seq}} 由节点在任务期展开；留空 = --detach（agent 的提交会变悬挂 commit）。 · 默认 anotify/{{trace8}}-{{seq}}",
+        },
+        { key: "base", type: "string", req: false, hint: "起点 · 仅 worktree=new：git worktree add 的起点 ref。 · 默认 HEAD" },
+        {
+          key: "worktree_path", type: "string", req: false,
+          hint: "Worktree 路径 · existing 必填；new 缺省 <工作目录>/wt。支持 ~/ 前缀（节点展开）。",
+        },
+        {
+          key: "worktree_cleanup", type: "string", req: false,
+          hint: "结束后清理 · 仅 worktree=new 且任务成功时：remove = git worktree remove --force（只删目录，分支与 agent 的提交都保留）；失败/blocked 永远保留现场。 · 默认 remove",
+        },
+        {
+          key: "prompt", type: "string", req: true,
+          hint: "任务正文 · 交给 agent 的提示词（中枢每次派发时给的）。",
+        },
+        {
+          key: "timeout_sec", type: "number", req: false,
+          hint: "任务上限（秒） · 整个任务的上限，不是单次 hc wait 的上限（wait 到点是 check-in，会接着等）。 · 默认 3600",
+        },
+      ];
+
+      const el = (tag, cls, text) => {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = text;
+        return n;
+      };
+
+      // ---------- 现在：参数契约的 11 行（复刻 schemaRowEl 的结构） ----------
+      function schemaRowNow(f) {
+        const row = el("div", "schema-row");
+        row.dataset.field = f.key;
+        const main = el("div", "schema-row-main");
+
+        const key = el("input", "input schema-row-key");
+        key.value = f.key;
+        main.appendChild(key);
+
+        const sel = el("select", "select");
+        sel.appendChild(new Option(f.type, f.type));
+        main.appendChild(sel);
+
+        const req = el("label", "schema-row-req");
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = !!f.req;
+        req.appendChild(cb);
+        req.appendChild(el("span", "", "必填"));
+        main.appendChild(req);
+
+        main.appendChild(el("button", "btn btn-ghost btn-sm", "更多"));
+        main.appendChild(el("button", "btn btn-ghost btn-sm schema-row-del", "×"));
+        row.appendChild(main);
+        row.appendChild(el("p", "schema-row-hint", f.hint));
+        return row;
+      }
+      const rowsNow = document.getElementById("rows-now");
+      FIELDS.forEach((f) => rowsNow.appendChild(schemaRowNow(f)));
+
+      // ---------- 现在：建源的 11 个输入框（全部单行，复刻 renderParamFields） ----------
+      const srcNow = document.getElementById("src-now");
+      FIELDS.forEach((f) => {
+        const wrap = el("div", "field");
+        const lab = el("label", "field-label");
+        lab.appendChild(document.createTextNode(f.key));
+        if (f.req) {
+          lab.appendChild(el("span", "param-req", "*"));
+        }
+        wrap.appendChild(lab);
+        const inp = el("input", "input mono");
+        inp.placeholder = f.req ? "" : "";
+        // prompt 也是 input：这就是要改的那个坑
+        if (f.key === "prompt") inp.placeholder = "多行提示词 —— 现在只有一行";
+        wrap.appendChild(inp);
+        if (f.key === "prompt") {
+          const tip = el("p", "field-hint");
+          tip.style.color = "var(--error-300)";
+          tip.textContent = "多行文本被渲染成单行 <input>";
+          wrap.appendChild(tip);
+        }
+        srcNow.appendChild(wrap);
+      });
+
+      // ---------- Worktree：选了 new/existing 才显示那 4 个字段 ----------
+      const wtSelect = document.getElementById("wt-select");
+      const wtExtra = document.getElementById("wt-extra");
+      wtSelect.addEventListener("change", () => {
+        wtExtra.classList.toggle("mk-hidden", wtSelect.value === "off");
+      });
+
+      // ---------- 视图 / 状态切换 ----------
+      // 支持深链，方便评审直接看某一态：
+      //   ?view=create|source|pick &state=now|after &theme=dark|light &open=1（展开所有折叠）
+      const QS = new URLSearchParams(location.search);
+      let VIEW = ["pick", "create", "source"].includes(QS.get("view"))
+        ? QS.get("view")
+        : "create";
+      let STATE = QS.get("state") === "after" ? "after" : "now";
+      const stateSwitch = document.getElementById("state-switch");
+
+      function render() {
+        // 只作用于视图包层（.mk-col > [data-view]）；顶部切换按钮也带 data-view，
+        // 用属性选择器整片扫会把按钮本身也隐掉。
+        document.querySelectorAll(".mk-col > [data-view]").forEach((n) => {
+          const viewOK = n.dataset.view === VIEW;
+          const stateOK = !n.dataset.state || n.dataset.state === STATE;
+          const show = VIEW === "pick" ? viewOK : viewOK && stateOK;
+          n.classList.toggle("mk-hidden", !show);
+        });
+        stateSwitch.style.display = VIEW === "pick" ? "none" : "inline-flex";
+      }
+
+      document.querySelectorAll("#view-switch .seg-item").forEach((b) => {
+        b.addEventListener("click", () => {
+          VIEW = b.dataset.view;
+          document
+            .querySelectorAll("#view-switch .seg-item")
+            .forEach((x) => x.classList.toggle("seg-item-active", x === b));
+          render();
+        });
+      });
+      stateSwitch.querySelectorAll(".seg-item").forEach((b) => {
+        b.addEventListener("click", () => {
+          STATE = b.dataset.state;
+          stateSwitch
+            .querySelectorAll(".seg-item")
+            .forEach((x) => x.classList.toggle("seg-item-active", x === b));
+          render();
+        });
+      });
+
+      // ---------- 主题 ----------
+      const themeBtn = document.getElementById("theme-btn");
+      function applyTheme(next) {
+        const root = document.documentElement;
+        root.dataset.theme = next;
+        root.style.colorScheme = next;
+        themeBtn.textContent = next === "dark" ? "亮色" : "暗色";
+      }
+      themeBtn.addEventListener("click", () => {
+        applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+      });
+      if (QS.get("theme") === "light") applyTheme("light");
+
+      // 深链：把顶部控件的高亮对上
+      document
+        .querySelectorAll("#view-switch .seg-item")
+        .forEach((b) => b.classList.toggle("seg-item-active", b.dataset.view === VIEW));
+      stateSwitch
+        .querySelectorAll(".seg-item")
+        .forEach((b) => b.classList.toggle("seg-item-active", b.dataset.state === STATE));
+      // ?open=1：所有折叠展开（评审要看展开后的样子）
+      if (QS.get("open") === "1") {
+        document.querySelectorAll("details").forEach((d) => (d.open = true));
+      }
+
+      render();
+    </script>
+  </body>
+</html>

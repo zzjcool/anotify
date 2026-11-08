@@ -19,6 +19,18 @@ const (
 	// recovery-code 登录：高价值密钥，双维度限速（对齐 CLI create / enroll 量级）。
 	rlRecoveryLoginIPPerMin   = 10 // 10/min/IP
 	rlRecoveryLoginUserPerMin = 10 // 10/min/username（小写）
+
+	// 密码登录（第二套登录模型）：与恢复码登录同一口径——它就是一条新的
+	// "拿一串秘密换会话" 的匿名入口，撞库成本必须和恢复码持平。
+	rlPasswordLoginIPPerMin   = 10 // 10/min/IP
+	rlPasswordLoginUserPerMin = 10 // 10/min/username（小写）
+
+	// 密码注册（第二套注册方式）：只做 IP 维，10/min/IP。
+	//
+	// 为什么没有 username 维：注册不是秘密猜测接口（密码是调用方自己选的，
+	// 它不需要猜），username 维留给登录那两条路径。这里要拦的是“一台机器批量
+	// 灌号”与“argon2 计算洪泛”——两条都是 IP 维能盖住、username 维盖不住的。
+	rlPasswordRegisterPerMin = 10 // 10/min/IP
 )
 
 var (
@@ -28,6 +40,14 @@ var (
 
 	rlRecoveryLoginIP   = newFixedWindow(rlRecoveryLoginIPPerMin, time.Minute)
 	rlRecoveryLoginUser = newFixedWindow(rlRecoveryLoginUserPerMin, time.Minute)
+
+	// 密码登录的两个维度：IP 维管单机狂刷，username 维管分布式撞库
+	// （换 IP 不换用户名时，只有第二维能拦住）。两维都过才放行。
+	rlPasswordLoginIP   = newFixedWindow(rlPasswordLoginIPPerMin, time.Minute)
+	rlPasswordLoginUser = newFixedWindow(rlPasswordLoginUserPerMin, time.Minute)
+
+	// 密码注册只有 IP 维（见上面的常量注释）。
+	rlPasswordRegisterIP = newFixedWindow(rlPasswordRegisterPerMin, time.Minute)
 
 	// hooks 入口是**双维度**限流（见 rateLimitedHook 的注释）。
 	// nil 表示该维度被显式关闭（配置为负数，见 configureHookRateLimit）。

@@ -164,16 +164,19 @@ index:
       count: '{n} 条事件'
       none: 无事件
       date: '{m}月{d}日 周{w}'
+    foot: '近 30 天 {n} 条事件 · 活跃 {d}/30 天'
+    foot_na: 统计数据暂不可用
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
     subtitle: 让 Agent 在任务完成时自动通知你
     recommended: 推荐方式
-    option_a: 一句话让 Agent 自己装好
-    option_b: 或脚本 / CI 直接上报
     copy: 复制
+    cmd_install: pi install npm:pi-anotify
+    steps_short: 装插件 → 登录授权 → 收通知
+    copy_prompt: 复制完整指引
+    docs: 查看文档 →
     curl_example_title: 部署完成
-    cmd_a_comment: '# 复制这段话，发给你的 pi'
     cmd_a: '请为我安装 anotify 通知插件：
 
       1. 运行 pi install npm:pi-anotify
@@ -185,6 +188,15 @@ index:
       '
   summary: '累计 {total} 条事件，今天 {today} 条。'
   summary_load_failed: 暂时取不到数据，请重试。
+  flow:
+    title: 最新事件链路
+    subtitle: 这条事件实际走了哪些能力
+    subtitle_of: '最近一条：{src} · {type}'
+    open: 查看完整链路 →
+    empty: 还没有事件。接上源之后，这里会画出最新一条事件的链路。
+    pruned: 这条事件没有派发任何任务（在第一步就被剪枝）。点右上角看完整链路的原因。
+    nolib: 链路渲染脚本没能加载，点右上角看完整链路。
+    failed: 这条链路画不出来，点右上角看完整链路。
   events:
     title: 事件流
     subtitle: 最新事件 · 点击查看链路
@@ -264,7 +276,7 @@ message:
 login:
   title: 登录
   welcome: 欢迎回到
-  subtitle: 无需密码 · 用 Passkey 一键登录
+  subtitle: Passkey 一键登录 · 也可选用密码
   tab:
     login: 登录
     signup: 注册
@@ -272,6 +284,21 @@ login:
     hint: 点击下方按钮，用本机的 Passkey（Face ID / 指纹 / 设备密钥）直接登录，无需输入用户名。
     button: 用 Passkey 登录
     security_note: 指纹 / Face ID / 设备密钥 · 抗钓鱼
+  password:
+    or: 或
+    toggle: 用密码登录
+    toggle_hide: 收起密码登录
+    username_label: 用户名
+    username_placeholder: your-name
+    password_label: 密码
+    password_placeholder: 输入密码
+    button: 用密码登录
+    busy: 正在登录…
+    hint: 密码是 Passkey 之外的第二套登录方式，可在「安全与登录」页设置或修改；尚未设置密码的账号请继续用 Passkey 登录。
+    err_empty: 请填写用户名和密码。
+    err_failed: 密码登录失败：{msg}
+    err_rate_limited: 尝试过于频繁，请稍后再试。
+    success: 登录成功，正在进入工作台…
   signup:
     username_label: 选择用户名
     username_placeholder: 给自己起个名字
@@ -285,6 +312,23 @@ login:
     err_short: 用户名至少 2 个字符。
     err_long: 用户名最多 32 个字符。
     err_chars: 只能包含字母、数字、_、-、.，且不能以 _ - . 开头或结尾。
+    password:
+      or: 或
+      toggle: 用用户名 + 密码注册
+      toggle_hide: 收起密码注册
+      password_label: 密码
+      password_placeholder: 至少 8 个字符
+      confirm_label: 确认密码
+      confirm_placeholder: 再输入一次
+      button: 用密码注册
+      busy: 正在创建账号…
+      hint: 8–128 个字符，建议用密码管理器生成。
+      err_empty: 请设置密码。
+      err_short: 密码至少 8 个字符。
+      err_long: 密码最多 128 个字符。
+      err_mismatch: 两次输入的密码不一致。
+      err_rate_limited: 注册过于频繁，请稍后再试。
+      success: 注册成功！正在进入工作台…
   ios_tip_label: iOS 用户：
   ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
   recovery_soon: ''
@@ -524,13 +568,44 @@ keys:
   emptyTitle: '还没有 API Key'
 security:
   title: 安全与登录
-  subtitle: Passkey · 会话 · 恢复码
-  intro: 这里管理「你是谁」的一切：Passkey 凭证、登录会话、恢复码。它们与「通知发到哪」（接收设备）是两条独立的轴。
+  subtitle: Passkey · 密码 · 会话 · 恢复码
+  intro: 这里管理「你是谁」的一切：Passkey 凭证、密码、登录会话、恢复码。它们与「通知发到哪」（接收设备）是两条独立的轴。
   add_passkey: 添加 Passkey
   passkey:
     title: Passkey 凭证
     subtitle: 你的免密登录凭证。一个账号可挂多个 Passkey，可经系统同步到同生态设备
     count: 个凭证
+  password:
+    title: 密码登录
+    subtitle: 除 Passkey 之外的第二套登录方式，适合没有平台认证器的设备。每个账号至少保留一种登录方式
+    status_set: 已设置
+    status_unset: 未设置
+    updated_at: 上次更新：{date}
+    never: 从未设置
+    set_button: 设置密码
+    change_button: 修改密码
+    remove_button: 移除密码
+    modal:
+      set_title: 设置密码
+      change_title: 修改密码
+      remove_title: 移除密码
+      current_label: 当前密码
+      new_label: 新密码
+      confirm_label: 确认新密码
+      save: 保存
+      remove_submit: 移除密码
+      cancel: 取消
+      hint: 8–128 个字符。建议用密码管理器生成，不要与其他站点复用。
+    err_empty: 请输入密码
+    err_short: 密码至少 8 个字符
+    err_long: 密码最多 128 个字符
+    err_mismatch: 两次输入的密码不一致
+    toast:
+      saved: 密码已保存
+      removed: 密码已移除
+      failed: 操作失败：{msg}
+    confirm:
+      remove: 移除后只能用 Passkey 或恢复码登录。确定继续？
   session:
     title: 登录会话
     subtitle: 你的账号当前在哪些设备上处于登录态。会话各自独立、可单独吊销
@@ -561,7 +636,7 @@ security:
     title: 两条独立的轴
     auth_label: 认证轴
     auth_axis: 决定「你是谁」（本页）
-    auth_p1: · Passkey 凭证：一个账号可挂多个
+    auth_p1: · 登录方式：Passkey 或密码，至少保留一种
     auth_p2: · 登录会话：多端并存、可单独吊销
     auth_p3: · 恢复码：所有设备丢失时的兜底
     delivery_label: 投递轴
@@ -1625,6 +1700,7 @@ sources:
     source: 源
     terminal_short: 终点
     no_edge: 没有下游
+    dead_port: 未接下游能力
     cycle: '环 · 这条下游会绕回来'
   view_events: 查看事件
 trace:

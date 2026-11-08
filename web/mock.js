@@ -676,18 +676,23 @@
 	// 必须和后端 route.KindForCapability 一字不差，否则 mock 里看到的
 	// 标签和真实产品对不上，等于在演示里撒谎。
 	//
-	// 后端真身（internal/route/kind.go:68）：
+	// 后端真身（internal/route/kind.go:52 KindForCapability ⇄ :25 DeriveKind）：
 	//
 	//	if 是内置能力:
 	//	    Central(notify.phone)  → end      // 中枢执行，没有节点
 	//	    Origin(github/cron/...) → origin   // 起点，不产生任务行
-	//	return DeriveKind(outputs, declared)   // 其余一律按 outputs 推导
+	//	return DeriveKind(hasOutEdges, hasInEdges)   // 其余一律按**边**推导
 	//
 	// 关键：`origin` 只给那 4 个内置起点（OriginCapability 的调用只有
 	// github / cron / http / manual），**不是**"所有 builtin 都算起点"。
 	// 之前这里写成 `c.source === "builtin" → origin`，导致 report.send
 	// 这种用户能力因为 source 标记而被误标成 origin —— 它有一条出边
-	// （→ alert.oncall）、也有节点声明，按规则该是 pipe。
+	// （→ alert.oncall），按规则该是 pipe。
+	//
+	// 另一个已修的错误口径：这里曾经按 `outputs` 推导（有出口 → pipe）。
+	// 后端 #383 已经把拓扑真相改成**边**（outputs 只是产物里声明的端口，
+	// 建能力时写 [] 之后又加下游的能力不该一直显示「链到这里结束」），
+	// mock 没跟上，于是「声明了出口但没接下游」的能力在演示里被画成管道。
 
 	// 内置起点的名字（后端 store.BuiltinCapabilities 里 OriginCapability 的四个）
 	const ORIGIN_NAMES = ["github", "cron", "http", "manual"];
@@ -697,16 +702,27 @@
 	// 白名单不等于可执行（`noop` 合法但中枢不执行它，见 IsExecutableHandler）。
 	const EXECUTABLE_HANDLERS = ["notify-phone"];
 
+	// 引用 → 能力名：`x@1` 与 `x` 指向同一个名字。
+	// 版本不参与拓扑推导 —— 后端读的是**按名字**的边形状（store.EdgeShape）。
+	const refName = (ref) => String(ref || "").replace(/@\d+$/, "");
+
 	function kindOf(c) {
 		if (!c) return "origin";
 		if (CENTRAL_NAMES.includes(c.name)) return "end";
 		if (ORIGIN_NAMES.includes(c.name)) return "origin";
-		// 其余按 DeriveKind：有节点声明 + 有出口 → pipe，否则 end/origin
-		const declared = state.nodes.some((n) =>
-			(n.capabilities || []).some((x) => x.id === c.id),
-		);
-		if (!declared) return "origin";
-		return (c.outputs || []).some((o) => o) ? "pipe" : "end";
+		// 其余按 DeriveKind —— **只看边**（后端 #383 之后就是这条口径）：
+		//   没有出边            → end     链到这里结束
+		//   有出边、没有入边    → origin  链的起点
+		//   两者都有            → pipe    链的中间段
+		//
+		// 这里曾经按 `outputs` + 「有没有节点声明」推导，于是 alert.oncall
+		// （声明了 out、但一条出边都没接）被画成「管道 ◆」—— 正是 #383
+		// 修掉的那个 bug，mock 却还留着：演示里教的和线上不一样。
+		const hasOut = state.edges.some((e) => !e.fromIsSource && refName(e.fromRef) === c.name);
+		const hasIn = state.edges.some((e) => refName(e.toRef) === c.name);
+		if (!hasOut) return "end";
+		if (!hasIn) return "origin";
+		return "pipe";
 	}
 
 	// ---------- 初始边 ----------
