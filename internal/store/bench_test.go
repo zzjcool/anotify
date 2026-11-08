@@ -81,9 +81,19 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 		ParamsSchema: json.RawMessage(`{}`),
 		Outputs:      []string{"fix"},
 		Source:       store.CapSourceCustom,
-		// 正文（spec）是能力的输入：基准里的能力用 handler: noop 占位（合法实现、
-		// 不写 artifacts 行），于是基准量到的仍然是写任务/派发，而不是产物构建。
-		Spec: store.HandlerSpec(artifact.HandlerNoop, json.RawMessage(`{}`), []string{"fix"}, nil),
+		// 正文（spec）是能力的输入。这里**必须是真脚本**，不能用 handler: noop 占位：
+		// P2b 起 noop 是「声明了但没实现」，派发时被剪成 pruned/no_impl。
+		// 用它做夹具的后果特别阴——基准里的「应派出 1 条任务」会变 0，
+		// 而 benchmark 只有 -bench 才跑（`go test ./...` 看不见），`make ci` 的
+		// bench-dispatch 才抳住它。
+		Spec: artifact.Spec{
+			Params:  json.RawMessage(`{}`),
+			Outputs: []string{"fix"},
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
+			},
+		},
 	}
 	if err := db.CreateCapability(ctx, capDef); err != nil {
 		tb.Fatalf("create capability: %v", err)
