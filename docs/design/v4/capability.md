@@ -12,6 +12,10 @@
 **能力声明三件事：我要什么（`params`）、交给谁（`next`）、怎么跑（`run`）。**
 中间没有第四样东西：没有端口、没有独立的「边」、没有参数映射。
 
+**所有能力都在节点上跑。中枢只做派发与记账，不执行任何能力。** v4 删除了
+`handler`（中枢内置执行器）这种实现形式，因此也**不再有内置推送能力**——
+链尾就是终端（`next: []`），要通知就自己写一个脚本能力，或用外部系统。
+
 ---
 
 ## 1. 四样东西的消亡
@@ -52,7 +56,7 @@ spec:
       mode: { type: string, default: safe }
     required: [repo]
 
-  next: [fixer, apply-fix@2]       # 交给谁（封闭集合；省略 = [] = 终端能力）
+  next: [fixer, notify@2]       # 交给谁（封闭集合；省略 = [] = 终端能力）
 
   run:                            # 怎么跑
     entrypoint: run.sh
@@ -60,7 +64,7 @@ spec:
       run.sh: |
         #!/usr/bin/env bash
         anotify-agent emit fixer    --data '{"file":"a.go"}'
-        anotify-agent emit apply-fix --data '{"text":"ok"}'
+        anotify-agent emit notify --data '{"text":"ok"}'
     env: { GIT_TERMINAL_PROMPT: "0" }
     workDir: "~/src/{{repo}}"
 
@@ -92,13 +96,13 @@ status:                           # 全部派生。apply 时一律忽略
     next:
       - { name: fixer,    version: 2, digest: sha256:9c1…, ready: true,
           requires: { file: { type: string } } }
-      - { name: apply-fix, missing: true, reason: NotFound }
+      - { name: notify, missing: true, reason: NotFound }
 
   observed:
     lastRun: 2026-11-08T13:20:00Z
     emits:
       - { to: fixer,    fields: [file],        ok: true }
-      - { to: apply-fix, fields: [text, extra], ok: true }
+      - { to: notify, fields: [text, extra], ok: true }
     pruned:
       - { to: fixer, reason: param_missing, detail: "需要 file" }
     tasks: { total: 12, failed: 1 }
@@ -109,7 +113,7 @@ status:                           # 全部派生。apply 时一律忽略
 ```yaml
 next: []                    # 终端：跑完就结束（等价于省略）
 next: [fixer]               # 一个下游
-next: [fixer, apply-fix@2]   # 多个；裸名跟随 latest，@ver 钉死版本
+next: [fixer, notify@2]   # 多个；裸名跟随 latest，@ver 钉死版本
 ```
 
 ### 2.2 `metadata`（身份）
@@ -239,6 +243,40 @@ digest = sha256( canonical{
 
 ## 4. 运行语义
 
+### 4.0 谁在 emit：任务身份与存活窗口
+
+一台节点可以**同时**跑多个任务。`emit` 之所以不会串，靠的是**每个任务一条独立通道 + 一个独立令牌**，
+不是靠"猜当前是哪个任务"：
+
+```bash
+# 节点 agent 启动任务进程时注入（cmd/agent/emit.go）
+ANOTIFY_EMIT_SOCK  = /…/task-<taskid>.sock   # 这条任务专属的 unix socket
+ANOTIFY_TASK_TOKEN = <每次任务随机生成>       # 凭据
+```
+
+能力脚本只写 `anotify-agent emit <name> --data …`；CLI 内部连 `$ANOTIFY_EMIT_SOCK`、带 `$ANOTIFY_TASK_TOKEN`。
+agent 校验令牌（不匹配直接拒收），再以协议帧转发给中枢：
+
+```go
+type EmitFrame struct {
+    TaskID string  // 哪个任务 —— trace / 能力 / 版本 全由它带出
+    Seq    int64   // 同一任务内第几次 emit（v4 允许 0..N 次）
+    To     string  // 下游能力名（name 或 name@version）；v4 起**必填**
+    Data   …
+}
+```
+
+并发安全性由此成立：N 个任务 = N 条 socket + N 个令牌；能力 fork 出的子进程继承 env，
+也只能发**父任务**的 emit；拿不到别的任务的令牌，伪造直接拒收。
+
+**不变量 I8（emit 的存活窗口）**：
+
+> 一次任务的 `emit` 只能发生在**该任务的存活期内**。任务结束后 socket 关闭，
+> 迟到的 `emit`（例如脚本 `nohup` 出去的后台进程）是**错误**，不补发、不重投。
+
+要「慢活」就把那部分做成**下游能力**，让链条继续——不允许一个已经结束的任务从背后补一刀，
+否则「这份产物属于哪次运行」永远说不清。
+
 ### 4.1 `emit <name> --data <json>`
 
 - 一次 `emit` 触发**一个**下游：建一条任务，目标 = `name` 解析到的版本，版本与 digest **钉在任务上**。
@@ -358,7 +396,8 @@ digest = sha256( canonical{
 | **CRD / `spec.type`** | 内置只留 bash 一种形态。类型系统会引入第二个 breaking 轴，等 `next` 稳定后单开一期 |
 | **`mapping` / `literals` / 表达式** | 它们抹平「参数对不上」这个信号。改名或拆能力是更好的答案 |
 | **`priority` / 候选排序** | 没有候选可排 |
-| **handler（中枢内置执行器）** | 本期**删除**。只保留脚本形式（`run`）。需要时再单开一期，不提前造 |
+| **handler（中枢内置执行器）** | 本期**删除**，只保留脚本形式（`run`）。需要时再单开一期，不提前造 |
+| **内置推送能力（`notify-phone`）** | 随 `handler` 一起删除。v4 没有"中枢执行的能力"，所以也没有"系统预置的特殊能力"——种子清单里剩下的只有普通脚本示例，它和用户建的没有任何执行差异 |
 | **status 落库** | 派生值落库就是第二真相 |
 | **`lastTransitionTime`** | 同上 |
 
@@ -409,7 +448,7 @@ spec:
     properties:
       repo: { type: string }
     required: [repo]
-  next: [fixer, apply-fix]        # 扇出 = 脚本 emit 两次
+  next: [fixer, notify]        # 扇出 = 脚本 emit 两次
   run:
     entrypoint: run.sh
     files:
@@ -417,26 +456,27 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         anotify-agent emit fixer    --data '{"file":"a.go"}'
-        anotify-agent emit apply-fix --data '{"text":"审查完成"}'
+        anotify-agent emit notify --data '{"text":"审查完成"}'
 ```
 
-两次 emit 各带各的字段，各自只对**那一个**下游的 `params` 负责。缺 `file` 只剪 fixer 那条，apply-fix 照常。
+两次 emit 各带各的字段，各自只对**那一个**下游的 `params` 负责。缺 `file` 只剪 fixer 那条，notify 照常。
 
-### 11.3 链尾：用内置能力发手机推送
+### 11.3 链尾：终端能力自己发通知
+
+v4 没有内置推送能力，链尾就是一个 `next: []` 的普通脚本能力。
 
 ```yaml
 apiVersion: anotify/v1
 kind: Capability
 metadata:
   name: deploy
-  namespace: prod
 spec:
   params:
     type: object
     properties:
       sha: { type: string }
     required: [sha]
-  next: [notify]                 # 另一个能力：发通知
+  next: [notify]
   run:
     entrypoint: run.sh
     files:
@@ -445,9 +485,31 @@ spec:
         set -euo pipefail
         ./deploy.sh "$ANOTIFY_PARAM_SHA"
         anotify-agent emit notify --data '{"text":"deploy ok"}'
+---
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: notify
+spec:
+  params:
+    type: object
+    properties:
+      text: { type: string }
+    required: [text]
+  next: []                       # 终端：链到这里结束
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # 通知由这个能力自己发（调外部系统），中枢不参与
+        curl -fsS -X POST "$NOTIFY_URL" \
+          -H 'Content-Type: application/json' \
+          -d "$(printf '{"text":"%s"}' "$ANOTIFY_PARAM_TEXT")"
 ```
 
-`notify` 是另一个普通能力（脚本形式，跑在节点上）。它必须存在——否则这个 `next` 解析不到，`status.DownstreamResolved` 会是 false。
+`notify` 必须真的存在——否则 `deploy` 的 `next` 解析不到，`status.DownstreamResolved` 会是 false。
 
 ### 11.4 两处约定
 
