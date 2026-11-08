@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // ===== 夹具 =====
@@ -1286,5 +1288,486 @@ func TestListPlaybooksCreatedAtOrder(t *testing.T) {
 	}
 	if list[0].Slug != "earlier-plan" || list[1].Slug != "later-plan" {
 		t.Fatalf("列表应按 created_at 升序（早的在前），got [%s, %s]", list[0].Slug, list[1].Slug)
+	}
+}
+
+// ===== 15. manifest v2：内联完整 spec / ref 引用（Capability Spec v3 §12）=====
+
+// inlineScriptSpec 造一份**脚本形式**的内联 spec（manifest 里唯一允许的实现形式之一，
+// 另一种是 handler: noop）。
+//
+// 注意它是**字符串拼的 JSON**：内联 spec 走的是"用户提交的原文 → 严格解码"这条路，
+// 用 map 拼会把「原文里多个键」这类形状差异吃掉，测出来的东西与真实请求不一样。
+func inlineScriptSpec(name string, version int, outputs []string, script string) string {
+	outputsJSON, _ := json.Marshal(outputs)
+	return fmt.Sprintf(`{
+		"apiVersion":"anotify/v1",
+		"kind":"Capability",
+		"metadata":{"name":%q,"version":%d,"displayName":"内联能力"},
+		"spec":{
+			"params":{"type":"object"},
+			"outputs":%s,
+			"run":{"entrypoint":"run.sh","files":{"run.sh":%q},"timeoutSec":900}
+		}
+	}`, name, version, string(outputsJSON), script)
+}
+
+// TestInstallPlaybookInlineSpecStoresScriptBody 钉住 §12.2 第 3 条在 store 侧的一半：
+// 内联 spec 装出来的能力是**真能跑的**（有正文、有 content_hash），不是空壳。
+//
+// 断言方式：装完直接从库/正文端点读回脚本字节——只断言 "created 里有它" 是不够的，
+// 那种断言在「装出一行没有实现的空壳」时也是绿的。
+func TestInstallPlaybookInlineSpecStoresScriptBody(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	const script = "#!/usr/bin/env bash\nset -e\necho inline-ok\n"
+	manifest := fmt.Sprintf(`{
+		"capabilities":[{"spec":%s}],
+		"edges":[],
+		"triggers":[]
+	}`, inlineScriptSpec("vb-inline", 1, []string{"done"}, script))
+
+	pb := mustCreatePlaybook(t, db, nsID, "inline-spec", manifest)
+	_, res, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if fmt.Sprint(res.Created.Capabilities) != fmt.Sprint([]string{"vb-inline@1"}) {
+		t.Fatalf("created.capabilities want [vb-inline@1]，got %v（skipped=%v notes=%v）",
+			res.Created.Capabilities, res.Skipped.Capabilities, res.Notes)
+	}
+	// 它**不是**占位：noop 说明不该出现（那会让列表页把一份真实现标成「未实现」）。
+	if notesContain(res.Notes, "noop 占位") {
+		t.Fatalf("内联脚本能力不该被标成 noop 占位：%v", res.Notes)
+	}
+
+	def, err := db.GetCapability(ctx, nsID, "vb-inline", 1)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	if def.ContentHash == "" {
+		t.Fatal("装出来的能力 content_hash 为空：它就不是内容寻址的了")
+	}
+	if def.DisplayName != "内联能力" {
+		t.Fatalf("displayName 应取 spec.metadata.displayName，got %q", def.DisplayName)
+	}
+	if got := def.Spec.Run.Files["run.sh"]; got != script {
+		t.Fatalf("脚本正文没落库（got %q）", got)
+	}
+	if def.Spec.Run.Entrypoint != "run.sh" || def.Spec.Handler != "" {
+		t.Fatalf("实现形式应是脚本（entrypoint=run.sh、无 handler），got %+v", def.Spec)
+	}
+	// 正文端点（详情页展示脚本用的那个）必须能拿到同一份字节。
+	art, err := db.CurrentArtifact(ctx, nsID, def.ID)
+	if err != nil {
+		t.Fatalf("current artifact: %v", err)
+	}
+	if !strings.Contains(string(art.Spec), "inline-ok") {
+		t.Fatalf("产物正文里没有脚本（got %s）", string(art.Spec))
+	}
+}
+
+// TestInstallPlaybookRefDoesNotCreateCapability 钉住 §12.1 ① ：`ref` **不建任何行**，
+// 但边与源照常建立（引用的是命名空间里已有的定义，内置能力也算）。
+//
+// 反例（这条测要能挡住的那种实现）：把 ref 也当成"声明一份定义"去装 —— 于是
+// 命名空间里凭空长出一行与内置能力同名同版本的重复定义，或者干脆装失败。
+func TestInstallPlaybookRefDoesNotCreateCapability(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	capsBefore := countRows(t, db, "capability_versions", "namespace_id = ?", nsID)
+
+	pb := mustCreatePlaybook(t, db, nsID, "ref-only", `{
+		"capabilities":[{"ref":"notify.phone"}],
+		"edges":[],
+		"triggers":[{"kind":"manual","targets":[{"to":"notify.phone"}]}]
+	}`)
+	_, res, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if len(res.Created.Capabilities) != 0 {
+		t.Fatalf("ref 不该建任何能力行，created.capabilities=%v", res.Created.Capabilities)
+	}
+	if n := countRows(t, db, "capability_versions", "namespace_id = ?", nsID); n != capsBefore {
+		t.Fatalf("ref 装完能力行数变了：want %d got %d", capsBefore, n)
+	}
+	// 源与入口边照常建立：引用形态不影响「事件从哪进来」。
+	if fmt.Sprint(res.Created.Sources) != fmt.Sprint([]string{"ref-only-manual-0"}) {
+		t.Fatalf("created.sources want [ref-only-manual-0]，got %v（notes=%v）",
+			res.Created.Sources, res.Notes)
+	}
+	src := sourceByName(t, db, nsID, "ref-only-manual-0")
+	if len(src.Targets) != 1 {
+		t.Fatalf("源应有 1 个 target，got %+v", src.Targets)
+	}
+	notify, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
+	if err != nil {
+		t.Fatalf("get notify.phone@1: %v", err)
+	}
+	if src.Targets[0].CapabilityID != notify.ID {
+		t.Fatalf("源的 target 应指向被引用的 notify.phone@1（%s），got %s", notify.ID, src.Targets[0].CapabilityID)
+	}
+}
+
+// TestInstallPlaybookRejectsForeignHandler 是 I1 的红线（§12.2 第 2 条）：
+// manifest **只允许** handler: noop。允许别的 handler 等于「一份配置文件就能把任意
+// 能力挂到中枢执行」——中枢会 os/exec 用户写的代码的反面同样致命：它会替用户声称
+// 一份平台内置执行器（比如把任意能力的链尾变成"发手机推送"）。
+//
+// 两处都要拦：创建期（正常路径）与安装期（绕过创建期的手改数据）。
+func TestInstallPlaybookRejectsForeignHandler(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	foreign := fmt.Sprintf(`{
+		"capabilities":[{"spec":{
+			"apiVersion":"anotify/v1","kind":"Capability",
+			"metadata":{"name":"vb-sneaky","version":1},
+			"spec":{"outputs":[],"handler":%q}
+		}}]
+	}`, artifact.HandlerNotifyPhone)
+	noop := fmt.Sprintf(`{
+		"capabilities":[{"spec":{
+			"apiVersion":"anotify/v1","kind":"Capability",
+			"metadata":{"name":"vb-placeholder","version":1},
+			"spec":{"outputs":[],"handler":%q}
+		}}]
+	}`, artifact.HandlerNoop)
+
+	// ① 创建期：400 语义 + 消息带下标
+	err := db.CreatePlaybook(ctx, &Playbook{
+		NamespaceID: nsID, Slug: "sneaky", Name: "偷偷上报",
+		Manifest: json.RawMessage(foreign),
+	})
+	if !errors.Is(err, ErrPlaybookManifestInvalid) {
+		t.Fatalf("manifest 带 notify-phone 应被拒（ErrPlaybookManifestInvalid），got %v", err)
+	}
+	if !strings.Contains(err.Error(), "capabilities[0]") {
+		t.Fatalf("错误里要带下标，got %q", err.Error())
+	}
+	// 反例：noop 是唯一被接受的 handler（占位能力不伪造、也不越权）。
+	if err := db.CreatePlaybook(ctx, &Playbook{
+		NamespaceID: nsID, Slug: "placeholder", Name: "占位",
+		Manifest: json.RawMessage(noop),
+	}); err != nil {
+		t.Fatalf("handler: noop 应被接受，got %v", err)
+	}
+
+	// ② 安装期：手改坏的 manifest（绕过创建期）同样 400，并带下标。
+	raw := &Playbook{
+		ID: NewPlaybookID(), NamespaceID: nsID, Slug: "hand-edited",
+		Name: "手改的", Description: "", Manifest: json.RawMessage(foreign), CreatedAt: Now(),
+	}
+	if _, insErr := db.ExecContext(ctx,
+		`INSERT INTO playbooks (`+playbookColumns+`) VALUES (?,?,?,?,?,?,?)`,
+		raw.ID, raw.NamespaceID, raw.Slug, raw.Name, raw.Description,
+		string(raw.Manifest), raw.CreatedAt); insErr != nil {
+		t.Fatalf("seed hand-edited playbook: %v", insErr)
+	}
+	if _, _, insErr := db.InstallPlaybook(ctx, nsID, raw.Slug); !errors.Is(insErr, ErrPlaybookManifestInvalid) {
+		t.Fatalf("安装期也要拒外来 handler（ErrPlaybookManifestInvalid），got %v", insErr)
+	} else if !strings.Contains(insErr.Error(), "capabilities[0]") {
+		t.Fatalf("安装期错误里要带下标，got %q", insErr.Error())
+	}
+}
+
+// TestInstallPlaybookRefAndSpecBothGiven 钉住 §12.2 第 1 条：ref 与 spec **恰好给一个**。
+// 两个都给 / 都不给都是 400，且消息带下标（用户得知道是哪一条）。
+func TestInstallPlaybookRefAndSpecBothGiven(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		manifest string
+		wantSub  string
+	}{
+		{
+			name: "ref 与 spec 都给",
+			manifest: fmt.Sprintf(`{"capabilities":[{"ref":"notify.phone","spec":%s}]}`,
+				inlineScriptSpec("vb-both", 1, nil, "#!/bin/sh\nexit 0\n")),
+			wantSub: "恰好给一个",
+		},
+		{
+			name:     "ref 与 spec 都不给",
+			manifest: `{"capabilities":[{"ref":""}]}`,
+			wantSub:  "必须给 ref 或 spec",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := db.CreatePlaybook(ctx, &Playbook{
+				NamespaceID: nsID, Slug: fmt.Sprintf("both-%d", i),
+				Name: "两种都给", Manifest: json.RawMessage(tc.manifest),
+			})
+			if !errors.Is(err, ErrPlaybookManifestInvalid) {
+				t.Fatalf("应被拒，got %v", err)
+			}
+			if !strings.Contains(err.Error(), "capabilities[0]") {
+				t.Fatalf("错误里要带下标，got %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("错误里应说清原因（含 %q），got %q", tc.wantSub, err.Error())
+			}
+		})
+	}
+}
+
+// TestInstallPlaybookEdgeCarriesLiteralsAndPriority 钉住 §12.1 的边扩展：
+// literals（常量覆盖）与 priority（同端口候选优先级）都要落进 edges 行。
+//
+// 为什么值得单测：这两列在派发路径上是**真的会用**的（literals 覆盖参数、
+// priority 决定先选谁）。manifest 里写了却没落库 = 用户配置静默失效。
+func TestInstallPlaybookEdgeCarriesLiteralsAndPriority(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	// 目标能力的 params_schema 里必须有 mode：常量的键要 ∈ 目标契约（与 CreateEdge 同口径）。
+	pb := mustCreatePlaybook(t, db, nsID, "edge-attrs", `{
+		"capabilities":[
+			{"name":"up","version":1,"outputs":["go"]},
+			{"name":"down","version":1,"outputs":[],"paramsSchema":{
+				"type":"object","properties":{"mode":{"type":"string"}}
+			}}
+		],
+		"edges":[{"from":"up","fromPort":"go","to":"down","literals":{"mode":"safe"},"priority":3}],
+		"triggers":[]
+	}`)
+	_, res, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if fmt.Sprint(res.Created.Edges) != fmt.Sprint([]string{"up --go--> down"}) {
+		t.Fatalf("边应被创建，created=%v skipped=%v notes=%v",
+			res.Created.Edges, res.Skipped.Edges, res.Notes)
+	}
+	edges, err := db.ListEdges(ctx, nsID, "")
+	if err != nil {
+		t.Fatalf("list edges: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("应有 1 条边，got %d", len(edges))
+	}
+	if got := string(edges[0].Literals); got != `{"mode":"safe"}` {
+		t.Fatalf("edges.literals want {\"mode\":\"safe\"}，got %s", got)
+	}
+	if edges[0].Priority != 3 {
+		t.Fatalf("edges.priority want 3，got %d", edges[0].Priority)
+	}
+}
+
+// TestInstallPlaybookTriggerNameAndMapping 钉住 §12.1 的触发器扩展：
+// `name` 决定源名（省略才用 <slug>-<kind>-<idx>）、`config` 走 ValidateSourceConfig、
+// `enabled` 落库、`targets[].mapping` 落进入口边。
+func TestInstallPlaybookTriggerNameAndMapping(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	pb := mustCreatePlaybook(t, db, nsID, "trg-v2", `{
+		"capabilities":[
+			{"name":"entry","version":1,"outputs":[],"paramsSchema":{
+				"type":"object","properties":{"repo":{"type":"string"}}
+			}}
+		],
+		"edges":[],
+		"triggers":[
+			{
+				"name":"pr-review-github",
+				"kind":"github",
+				"config":{"event":"pull_request"},
+				"targets":[{"to":"entry","mapping":{"repo":"{{repository.full_name}}"}}]
+			},
+			{
+				"name":"nightly",
+				"kind":"cron",
+				"enabled":false,
+				"config":{"expr":"0 3 * * *"},
+				"targets":[{"to":"entry"}]
+			}
+		]
+	}`)
+	_, res, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if fmt.Sprint(res.Created.Sources) != fmt.Sprint([]string{"pr-review-github", "nightly"}) {
+		t.Fatalf("created.sources 应使用触发器声明的 name，got %v（notes=%v）",
+			res.Created.Sources, res.Notes)
+	}
+
+	gh := sourceByName(t, db, nsID, "pr-review-github")
+	if gh.Kind != SourceKindGitHub || !gh.Enabled {
+		t.Fatalf("github 源应启用，got kind=%s enabled=%v", gh.Kind, gh.Enabled)
+	}
+	var ghCfg struct {
+		Event string `json:"event"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(gh.Config, &ghCfg); err != nil {
+		t.Fatalf("decode github config: %v", err)
+	}
+	if ghCfg.Event != "pull_request" {
+		t.Fatalf("config 应原样走 ValidateSourceConfig（event=pull_request），got %+v", ghCfg)
+	}
+	if ghCfg.Token == "" {
+		t.Fatalf("github 源的 token 应由 ValidateSourceConfig 生成，got %+v", ghCfg)
+	}
+
+	nightly := sourceByName(t, db, nsID, "nightly")
+	if nightly.Enabled {
+		t.Fatal("enabled:false 的触发器不该装成启用的源")
+	}
+	if nightly.NextFireAt == nil {
+		t.Fatal("cron 源应算好首次触发时刻")
+	}
+
+	// targets[].mapping 要落在**入口边**上（edges.mapping），不是源自己的一张表。
+	edges, err := db.ListEdges(ctx, nsID, "")
+	if err != nil {
+		t.Fatalf("list edges: %v", err)
+	}
+	var found bool
+	for _, e := range edges {
+		if !e.FromIsSource || e.FromRef != "pr-review-github" {
+			continue
+		}
+		found = true
+		if got := string(e.Mapping); got != `{"repo":"{{repository.full_name}}"}` {
+			t.Fatalf("入口边 mapping want {\"repo\":\"{{repository.full_name}}\"}，got %s", got)
+		}
+	}
+	if !found {
+		t.Fatalf("没有入口边 from_ref=pr-review-github（got %d 条边）", len(edges))
+	}
+}
+
+// TestInstallPlaybookLegacyManifestStillInstalls 是 §12.3 的回归门：
+// 旧形态（name/version/outputs/paramsSchema/runner）继续接受，且**与回填口径一致**——
+// 装成 handler: noop 的占位（不伪造用户脚本），runner 原样存不解释。
+func TestInstallPlaybookLegacyManifestStillInstalls(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	manifest := `{
+		"capabilities":[{"name":"vb-legacy","version":1,"outputs":["ok"],
+			"paramsSchema":{"type":"object","properties":{"branch":{"type":"string"}}},
+			"runner":{"runner":"bash","command":"echo hi"}}],
+		"edges":[],
+		"triggers":[]
+	}`
+	pb := mustCreatePlaybook(t, db, nsID, "legacy-form", manifest)
+	// manifest 仍然存原文（D1）：runner / 自定义键原样往返。
+	stored, err := db.GetPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("get playbook: %v", err)
+	}
+	if string(stored.Manifest) != manifest {
+		t.Fatalf("manifest 应逐字节存原文，got %s", string(stored.Manifest))
+	}
+
+	_, res, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if err != nil {
+		t.Fatalf("旧形态 manifest 仍能装: %v", err)
+	}
+	if fmt.Sprint(res.Created.Capabilities) != fmt.Sprint([]string{"vb-legacy@1"}) {
+		t.Fatalf("created.capabilities want [vb-legacy@1]，got %v（notes=%v）",
+			res.Created.Capabilities, res.Notes)
+	}
+	def, err := db.GetCapability(ctx, nsID, "vb-legacy", 1)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	if def.Spec.Handler != artifact.HandlerNoop {
+		t.Fatalf("旧形态应装成 handler: noop 占位（与回填口径一致），got %q", def.Spec.Handler)
+	}
+	if fmt.Sprint(def.Outputs) != fmt.Sprint([]string{"ok"}) {
+		t.Fatalf("outputs 应原样保留，got %v", def.Outputs)
+	}
+	if !strings.Contains(string(def.ParamsSchema), "branch") {
+		t.Fatalf("paramsSchema 应原样保留，got %s", string(def.ParamsSchema))
+	}
+	if !notesContain(res.Notes, "noop 占位") {
+		t.Fatalf("占位能力必须在 notes 里说明，got %v", res.Notes)
+	}
+}
+
+// TestPlaybookChecksHubHandlerRefIsReady 钉住「ref: notify.phone 这条链尾」在体检里是**就绪**的。
+//
+// handler 形式的能力由中枢执行（spec.handler 在可执行白名单里），它本来就不需要任何
+// 节点声明。若体检按「能力 → 节点」的通用规则报 no-node，`ref: notify.phone` 这条
+// 唯一合法的「链尾发推送」会永远显示缺节点 —— 而它其实已经能跑了。
+func TestPlaybookChecksHubHandlerRefIsReady(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	pb := mustCreatePlaybook(t, db, nsID, "notify-sink", `{
+		"capabilities":[
+			{"name":"collect","version":1,"outputs":["out"]},
+			{"ref":"notify.phone"}
+		],
+		"edges":[{"from":"collect","fromPort":"out","to":"notify.phone"}],
+		"triggers":[{"kind":"manual","targets":[{"to":"collect"}]}]
+	}`)
+	if _, _, err := db.InstallPlaybook(ctx, nsID, pb.Slug); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	checks := mustChecks(t, db, pb)
+	// 能力项 0 = collect（旧形态，无节点 → no-node），1 = ref notify.phone（中枢执行 → ok）
+	capRef := itemOf(t, checks, PlaybookItemCapability, 1)
+	if capRef.Declared != "ref" {
+		t.Fatalf("第二项应是 ref 声明，got declared=%q ref=%q", capRef.Declared, capRef.Ref)
+	}
+	if capRef.Status != PlaybookCheckOK {
+		t.Fatalf("中枢执行的能力不该报缺节点（got %s）：%+v", capRef.Status, capRef)
+	}
+	if capRef.Impl != "handler" {
+		t.Fatalf("实现形式应是 handler（notify-phone），got %q", capRef.Impl)
+	}
+	// 旧形态那一项仍然如实报缺节点（占位能力中枢不执行，链并不真的能跑）——
+	// 于是**唯一的** blocked/needs-node 项必须是它，而不是 ref 那一条。
+	if got := itemOf(t, checks, PlaybookItemCapability, 0); got.Status != PlaybookCheckNoNode {
+		t.Fatalf("旧形态（noop 占位）仍应报缺节点，got %s", got.Status)
+	}
+	if checks.Next == nil || checks.Next.Ref != "collect@1" {
+		t.Fatalf("「最该先做的一件事」应是那个占位能力，got %+v", checks.Next)
+	}
+	if other := checks.Next; other.Kind != PlaybookItemCapability || other.Status != PlaybookCheckNoNode {
+		t.Fatalf("next 应是 collect@1 的 no-node，got %+v", other)
+	}
+}
+
+// TestInstallPlaybookRejectsUnresolvableRef 钉住 §12.2 第 3 条对 `ref` 的要求：
+// 引用不到的定义**带下标 400**，不允许「装了一半」（边指向一个不存在的名字，
+// 装出来的源永远不会产生任务，而且没有任何报错）。
+//
+// 创建期刻意**不**拦：能力可能是别处先建、预案后装（顺序自由）。但安装时必须拦。
+func TestInstallPlaybookRejectsUnresolvableRef(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	pb := mustCreatePlaybook(t, db, nsID, "ghost-ref", `{
+		"capabilities":[{"ref":"ghost@3"}],
+		"edges":[],
+		"triggers":[]
+	}`)
+	_, _, err := db.InstallPlaybook(ctx, nsID, pb.Slug)
+	if !errors.Is(err, ErrPlaybookManifestInvalid) {
+		t.Fatalf("引用不到的定义应 400（ErrPlaybookManifestInvalid），got %v", err)
+	}
+	if !strings.Contains(err.Error(), "capabilities[0]") || !strings.Contains(err.Error(), "ghost@3") {
+		t.Fatalf("错误里要带下标与被引用的名字，got %q", err.Error())
 	}
 }

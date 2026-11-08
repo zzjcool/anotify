@@ -2222,11 +2222,13 @@
 	// 真实状态永远从 capabilities / edges / sources / node_capabilities 里读。
 	// 所以"装完之后手工改了一条边"，体检会如实反映 —— 两边不会各说各话。
 	//
-	// 四个包刻意覆盖四种总体状态，让人一眼看到每个状态长什么样：
-	//   pr-review      needs-node（能力都有，但 run-tests 的机器离线了）
-	//   nightly-audit  needs-node（archive-logs 定义了，没有任何节点声明它）
-	//   release-train  blocked（notify.sms 连定义都没有）
-	//   lint-guard     ready（能力 + 触发器都齐）
+	// 五个包刻意覆盖三种总体状态 + manifest v2 的三种声明形态，让人一眼看到
+	// 每个状态、每种声明长什么样：
+	//   pr-review      needs-node（能力都有，但 run-tests 的机器离线了）· 旧形态声明
+	//   nightly-audit  needs-node（archive-logs 定义了，没有任何节点声明它）· 内联 spec
+	//   release-train  blocked（notify.sms 连定义都没有）· 旧形态声明
+	//   lint-guard     ready（能力 + 触发器都齐）· 旧形态声明
+	//   notify-sink    needs-node · ref 引用内置推送 + 内联 spec（链尾推送的标准写法）
 	const RUN = (name, extra) =>
 		Object.assign(
 			{
@@ -2299,10 +2301,23 @@
 						runner: RUN("archive-logs", { timeoutSec: 3600 }),
 					},
 					{
-						name: "report.send",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("report.send"),
+						// manifest v2 的内联**完整 spec**：装出来就是一份真能跑的能力
+						// （脚本形式）。mock 不执行它，但体检 / 安装走与后端同一条归一
+						// 函数（pbDecl），所以界面上的「内联 spec · 脚本」是真的。
+						spec: {
+							apiVersion: "anotify/v1",
+							kind: "Capability",
+							metadata: { name: "report.send", version: 1, displayName: "发送报告" },
+							spec: {
+								params: { type: "object" },
+								outputs: ["out"],
+								run: {
+									entrypoint: "run.sh",
+									files: { "run.sh": "#!/usr/bin/env bash\necho report\n" },
+									timeoutSec: 600,
+								},
+							},
+						},
 					},
 				],
 				edges: [{ from: "archive-logs", fromPort: "out", to: "report.send" }],
@@ -2370,6 +2385,120 @@
 		},
 	];
 
+	// ---------- manifest v2：一条能力声明的归一形态 ----------
+	//
+	// 与 internal/store 的 capDecl 同构（Capability Spec v3 §12.1）：三种声明形态
+	// **互斥** —— ref（引用已有定义，安装不建任何行）/ spec（内联完整产物）/
+	// 旧形态（name+version，等价于 handler: noop 的占位）。
+	//
+	// 界面要能分辨它们：装不出来的时候，用户第一件要知道的就是「这条到底想装一份
+	// 实现，还是只想引用一份已有的」。
+	function pbDecl(c) {
+		const ref = String(c.ref || "").trim();
+		if (ref) {
+			const { name, version, pinned } = splitRef(ref);
+			return { kind: "ref", ref, name, version: pinned ? version : null, outputs: [] };
+		}
+		if (c.spec && typeof c.spec === "object") {
+			const meta = c.spec.metadata || {};
+			const body = c.spec.spec || {};
+			const handler = String(body.handler || "");
+			return {
+				kind: "inline",
+				name: String(meta.name || ""),
+				version: Number(meta.version || 0),
+				outputs: Array.isArray(body.outputs) ? body.outputs : [],
+				impl: handler ? (handler === "noop" ? "noop" : "handler") : "script",
+			};
+		}
+		return {
+			kind: "legacy",
+			name: String(c.name || ""),
+			version: Number(c.version || 0),
+			outputs: Array.isArray(c.outputs) ? c.outputs : [],
+			impl: "noop", // 旧形态一律装成占位（与后端回填口径一致）
+			runner: c.runner || null,
+		};
+	}
+
+	// 声明的人读标签：ref 原样（`notify.phone` / `review@2`），其余是 `name@version`。
+	function pbDeclLabel(d) {
+		return d.kind === "ref" ? d.ref : d.name + "@" + d.version;
+	}
+
+	// 解析一条声明该用哪条定义：ref 钉版本就精确找，裸名字跟随 latest；其余按 name+version。
+	function pbResolveDecl(d, ns, caps) {
+		const pool = caps.filter((c) => c.namespaceId === ns);
+		if (d.kind === "ref") {
+			return d.version == null
+				? pool.find((c) => c.name === d.name) || null
+				: pool.find((c) => c.name === d.name && c.version === d.version) || null;
+		}
+		return pool.find((c) => c.name === d.name && c.version === d.version) || null;
+	}
+
+	// 实现形式：内联 / 旧形态的正文自己就说明了；ref 只能看被引用的那份定义
+	// （mock 没有 spec 列，用的是它自己那张「谁在中枢执行」的名字表）。
+	function pbImplOf(d) {
+		if (d.impl) return d.impl;
+		return CENTRAL_NAMES.includes(d.name) ? "handler" : "script";
+	}
+
+	state.playbooks.push({
+		id: "pb_mock_notify_sink",
+		orgId: ORG,
+		namespaceId: NS,
+		slug: "notify-sink",
+		name: "跑完就推送",
+		description: "审查完把结论推到手机：链尾**引用**内置推送，不自己造实现。",
+		createdAt: now() - 3600,
+		manifest: {
+			capabilities: [
+				{
+					spec: {
+						apiVersion: "anotify/v1",
+						kind: "Capability",
+						metadata: { name: "collect-review", version: 1, displayName: "汇总结论" },
+						spec: {
+							params: {
+								type: "object",
+								properties: { repo: { type: "string" } },
+							},
+							outputs: ["out"],
+							run: {
+								entrypoint: "run.sh",
+								files: { "run.sh": "#!/usr/bin/env bash\necho done\n" },
+								timeoutSec: 300,
+							},
+						},
+					},
+				},
+				// 引用**内置**能力：不建任何行，中枢执行（Capability Spec v3 §12.1 ①）
+				{ ref: "notify.phone" },
+			],
+			edges: [
+				{
+					from: "collect-review",
+					fromPort: "out",
+					to: "notify.phone",
+					literals: { title: "审查完成" },
+					priority: 0,
+				},
+			],
+			triggers: [
+				{
+					name: "notify-sink-github",
+					kind: "github",
+					config: { event: "pull_request" },
+					enabled: true,
+					targets: [
+						{ to: "collect-review", mapping: { repo: "{{repository.full_name}}" } },
+					],
+				},
+			],
+		},
+	});
+
 	// 就绪体检：全部是查询时算出来的（推导量不落库，I3 同源）
 	//
 	// 四类检查按依赖顺序：能力定义 → 节点实现 → 出口 → 触发器。
@@ -2386,16 +2515,32 @@
 			caps.find((c) => c.name === name && (version == null || c.version === version));
 
 		// ① 能力定义 + ② 节点实现（绑在同一行上，因为第二项依赖第一项）
+		//
+		// manifest v2：能力声明可以是 ref / 内联 spec / 旧形态（见 pbDecl）。
+		// `declared` 与 `impl` 上到界面上——两者安装行为完全不同（一个建行、一个不建行），
+		// 用户得能分辨自己在看哪一种。
 		const capItems = (m.capabilities || []).map((c) => {
-			const ref = c.name + "@" + c.version;
-			const def = findCap(c.name, c.version);
+			const d = pbDecl(c);
+			const ref = pbDeclLabel(d);
+			const impl = pbImplOf(d);
+			const def = pbResolveDecl(d, ns, caps);
+			// ref 的出口就是被引用那份定义的出口（那才是边能用的端口集合）。
+			const outputs = d.kind === "ref" ? (def ? def.outputs : []) : d.outputs;
 			if (!def) {
+				return { kind: "capability", ref, status: "missing", outputs, runner: d.runner || null, declared: d.kind, impl };
+			}
+			// handler 形式由**中枢**执行（如 notify.phone）：不需要任何节点声明。
+			// 占位（noop）不在此列——中枢不执行它，那条链并不真的能跑。
+			if (impl === "handler") {
 				return {
 					kind: "capability",
-					ref: ref,
-					status: "missing",
-					outputs: c.outputs || [],
-					runner: c.runner || null,
+					ref,
+					status: "ok",
+					outputs: def.outputs,
+					capId: def.id,
+					runner: d.runner || null,
+					declared: d.kind,
+					impl,
 				};
 			}
 			const owners = nodes.filter((n) =>
@@ -2404,29 +2549,44 @@
 			if (!owners.length) {
 				return {
 					kind: "capability",
-					ref: ref,
+					ref,
 					status: "no-node",
 					outputs: def.outputs,
 					capId: def.id,
-					runner: c.runner || null,
+					runner: d.runner || null,
+					declared: d.kind,
+					impl,
 				};
 			}
 			const online = owners.filter((n) => n.status === "online");
 			return {
 				kind: "capability",
-				ref: ref,
+				ref,
 				status: online.length ? "ok" : "offline",
 				outputs: def.outputs,
 				capId: def.id,
-				runner: c.runner || null,
+				runner: d.runner || null,
 				nodes: owners.map((n) => ({ name: n.name, status: n.status })),
+				declared: d.kind,
+				impl,
 			};
 		});
 
+		// 名字 → 声明（同名多版本取第一条，与后端 declaredDecls 同口径）
+		const declared = new Map();
+		for (const c of m.capabilities || []) {
+			const d = pbDecl(c);
+			if (d.name && !declared.has(d.name)) declared.set(d.name, d);
+		}
+		const resolveName = (name) => {
+			const d = declared.get(name);
+			return d ? pbResolveDecl(d, ns, caps) : findCap(name);
+		};
+
 		// ③ 出口：两端能力都要有定义才能谈"这条边在不在"
 		const edgeItems = (m.edges || []).map((e) => {
-			const from = findCap(e.from);
-			const to = findCap(e.to);
+			const from = resolveName(e.from);
+			const to = resolveName(e.to);
 			const label = e.from + " --" + e.fromPort + "--> " + e.to;
 			if (!from || !to) {
 				return {
@@ -2458,25 +2618,44 @@
 			};
 		});
 
-		// ④ 触发器：kind 匹配**且**这个源的目标里有本包的入口能力
+		// ④ 触发器：kind 匹配**且**这个源的目标里有本触发器要的入口能力
 		//
 		// 只匹配 kind 会把"你有一个 webhook 源"当成"这条流程有触发器了"，
 		// 而那个源可能指向完全无关的能力。
 		const toSet = new Set((m.edges || []).map((e) => e.to));
-		const entries = (m.capabilities || []).filter((c) => !toSet.has(c.name));
-		const entryIds = entries.map((c) => findCap(c.name, c.version)).filter(Boolean).map((c) => c.id);
+		const entries = Array.from(declared.values()).filter(
+			(d) => d.name && !toSet.has(d.name),
+		);
+		const entryIds = entries
+			.map((d) => pbResolveDecl(d, ns, caps))
+			.filter(Boolean)
+			.map((c) => c.id);
 		const triggerItems = (m.triggers || []).map((t) => {
+			// v2 的 targets 是**显式**的入口边：命中判据就是它（不再回落到入口能力全集）。
+			let wantIds = entryIds;
+			let wantNames = entries.map((d) => d.name);
+			if (Array.isArray(t.targets) && t.targets.length) {
+				wantIds = [];
+				wantNames = [];
+				for (const tg of t.targets) {
+					wantNames.push(tg.to);
+					const def = resolveName(tg.to);
+					if (def) wantIds.push(def.id);
+				}
+			}
 			const hit = sources.some(
 				(x) =>
 					x.kind === t.kind &&
-					(x.targets || []).some((g) => entryIds.includes(g.capabilityId)),
+					(x.targets || []).some((g) => wantIds.includes(g.capabilityId)),
 			);
+			let label = t.kind;
+			if (t.name) label = t.name + " · " + label;
+			if (t.types && t.types.length) label += " · " + t.types.join(" / ");
 			return {
 				kind: "trigger",
-				label:
-					t.kind + (t.types && t.types.length ? " · " + t.types.join(" / ") : ""),
+				label: label,
 				status: hit ? "ok" : "missing",
-				entryCaps: entries.map((c) => c.name),
+				entryCaps: wantNames,
 				declaredKind: t.kind,
 			};
 		});
@@ -2531,44 +2710,79 @@
 
 	// 幂等补齐。顺序必须是 能力 → 出口 → 源：
 	// 出口两端没有定义就建不了，源没有入口能力就没人可派。
+	//
+	// manifest v2 的三类声明语义不同（与 internal/store 的 InstallPlaybook 对齐）：
+	//   ref    **不建任何行**，只解析成落库引用
+	//   spec   内联完整产物，装出来就是一份新定义（mock 只记名字与出口）
+	//   旧形态 等价于 handler: noop 的占位
 	function installPlaybook(pb) {
 		const ns = pb.namespaceId;
 		const m = pb.manifest || {};
 		const created = { capabilities: [], edges: [], sources: [] };
 		const skipped = { capabilities: [], edges: [], sources: [] };
+		const notes = [];
 		const find = (name) =>
 			state.capabilities.find((c) => c.namespaceId === ns && c.name === name);
 
+		// 名字 → 声明（同名多版本取第一条，与后端同一口径）
+		const declared = new Map();
 		for (const c of m.capabilities || []) {
-			const ref = c.name + "@" + c.version;
+			const d = pbDecl(c);
+			if (d.name && !declared.has(d.name)) declared.set(d.name, d);
+		}
+		const resolveName = (name) => {
+			const d = declared.get(name);
+			if (!d) return find(name);
+			if (d.kind === "ref") {
+				return d.version == null
+					? find(d.name)
+					: state.capabilities.find(
+							(x) => x.namespaceId === ns && x.name === d.name && x.version === d.version,
+						);
+			}
+			return state.capabilities.find(
+				(x) => x.namespaceId === ns && x.name === d.name && x.version === d.version,
+			);
+		};
+
+		for (const c of m.capabilities || []) {
+			const d = pbDecl(c);
+			const ref = pbDeclLabel(d);
+			// 引用形态不建任何行（§12.1）：它指的是命名空间里已有的定义。
+			if (d.kind === "ref") continue;
 			if (
 				state.capabilities.some(
 					(x) =>
-						x.namespaceId === ns && x.name === c.name && x.version === c.version,
+						x.namespaceId === ns && x.name === d.name && x.version === d.version,
 				)
 			) {
 				skipped.capabilities.push(ref);
 				continue;
 			}
 			state.capabilities.push({
-				id: "cap_" + ns + "_" + c.name.replace(/\./g, "_") + "_v" + c.version,
+				id: "cap_" + ns + "_" + d.name.replace(/\./g, "_") + "_v" + d.version,
 				orgId: pb.orgId,
 				namespaceId: ns,
-				name: c.name,
+				name: d.name,
 				displayName: "",
-				version: c.version,
-				outputs: c.outputs || [],
-				paramsSchema: c.paramsSchema || { type: "object" },
+				version: d.version,
+				outputs: d.outputs || [],
+				paramsSchema: (c.spec && c.spec.spec && c.spec.spec.params) || c.paramsSchema || {
+					type: "object",
+				},
 				source: "custom",
 				contentHash: "hash" + Math.random().toString(16).slice(2, 10),
 				createdAt: now(),
 			});
 			created.capabilities.push(ref);
+			if (d.kind === "legacy") {
+				notes.push(ref + ": 该能力尚无实现，已装为 noop 占位（旧形态声明不解释成实现）");
+			}
 		}
 
 		for (const e of m.edges || []) {
-			const from = find(e.from);
-			const to = find(e.to);
+			const from = resolveName(e.from);
+			const to = resolveName(e.to);
 			const label = e.from + " --" + e.fromPort + "--> " + e.to;
 			// 端点还缺定义：这一轮补不了，等能力补完再点一次（幂等所以无害）
 			if (!from || !to) continue;
@@ -2592,53 +2806,79 @@
 				fromRef: capRef(from),
 				fromPort: e.fromPort,
 				toRef: capRef(to),
-				// 预案里的边不带常量覆盖（'{}' = 没有覆盖），形状与新建边一致
-				literals: {},
+				// literals / priority 与后端同语义：常量覆盖 + 同端口候选优先级
+				literals: e.literals || {},
+				priority: e.priority || 0,
 				createdAt: now(),
 			});
 			created.edges.push(label);
 		}
 
+		// 入口边：v2 的 triggers[].targets 显式给出（带 mapping）；旧形态回落到入口能力全集。
 		const toSet = new Set((m.edges || []).map((e) => e.to));
-		const entries = (m.capabilities || []).filter((c) => !toSet.has(c.name));
-		const entryCaps = entries.map((c) => find(c.name)).filter(Boolean);
-		for (const t of m.triggers || []) {
-			if (!entryCaps.length) continue;
+		const entryDecls = Array.from(declared.values()).filter(
+			(d) => d.name && !toSet.has(d.name),
+		);
+		const entryCaps = entryDecls
+			.map((d) => resolveName(d.name))
+			.filter(Boolean)
+			.map((c) => ({ id: c.id, params: {} }));
+		for (const [i, t] of (m.triggers || []).entries()) {
+			const wantName =
+				(t.name && String(t.name).trim()) || pb.slug + "-" + t.kind + "-" + i;
+			let targets = entryCaps;
+			if (Array.isArray(t.targets) && t.targets.length) {
+				targets = t.targets
+					.map((tg) => {
+						const c = resolveName(tg.to);
+						return c ? { capabilityId: c.id, params: tg.mapping || {} } : null;
+					})
+					.filter(Boolean);
+			}
+			if (!targets.length) continue;
 			const hit = state.sources.some(
 				(x) =>
 					x.namespaceId === ns &&
 					x.kind === t.kind &&
 					(x.targets || []).some((g) =>
-						entryCaps.some((c) => c.id === g.capabilityId),
+						targets.some((c) => c.id === g.capabilityId),
 					),
 			);
 			if (hit) {
 				skipped.sources.push(t.kind);
 				continue;
 			}
-			const config =
-				t.kind === "cron"
-					? { expr: (t.types && t.types[0]) || "0 3 * * *", tz: "Local" }
-					: t.kind === "webhook" || t.kind === "github"
-						? { token: "mock-" + Math.random().toString(36).slice(2, 8) }
-						: {};
+			// config：v2 的显式 config 优先，省略时按旧形态的 types 翻译。
+			let config = t.config || null;
+			if (!config) {
+				config =
+					t.kind === "cron"
+						? { expr: (t.types && t.types[0]) || "0 3 * * *", tz: "Local" }
+						: t.kind === "webhook" || t.kind === "github"
+							? { token: "mock-" + Math.random().toString(36).slice(2, 8) }
+							: {};
+			} else if ((t.kind === "webhook" || t.kind === "github") && !config.token) {
+				config = Object.assign({}, config, {
+					token: "mock-" + Math.random().toString(36).slice(2, 8),
+				});
+			}
 			const src = {
 				id: uid("src"),
 				orgId: pb.orgId,
 				namespaceId: ns,
-				name: pb.name + " · " + t.kind,
+				name: wantName,
 				kind: t.kind,
 				config: config,
-				enabled: true,
+				enabled: t.enabled !== false,
 				lastFiredAt: null,
 				createdAt: now(),
-				targets: entryCaps.map((c) => ({ capabilityId: c.id, params: {} })),
+				targets: targets,
 			};
 			state.sources.push(src);
 			created.sources.push(src.name);
 		}
 
-		return { created, skipped };
+		return { created, skipped, notes };
 	}
 
 	// ---------- 初始 keys ----------
@@ -2817,8 +3057,8 @@
 
 	// 幂等补齐：能力定义 → 出口 → 触发器，能补什么补什么。
 	//
-	// "缺节点"补不了：那是机器侧的事（要写 node.yaml 重启 agent），
-	// 所以这个接口不碰节点 —— 也正是体检里那一项要单独给 YAML 片段的原因。
+	// "缺节点"补不了：那是机器侧的事（连机器 + 部署），所以这个接口不碰节点。
+	// notes 与后端同形状（人话说明，只在"跳过有原因可讲"时出现）。
 	on("POST", /^\/v1\/playbooks\/([^/]+)\/install$/, (ctx) => {
 		const key = ctx.m[1];
 		const pb = state.playbooks.find((p) => p.id === key || p.slug === key);
@@ -2827,6 +3067,7 @@
 		return json({
 			created: res.created,
 			skipped: res.skipped,
+			notes: res.notes,
 			playbook: pbView(pb, true),
 		});
 	});

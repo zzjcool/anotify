@@ -5469,16 +5469,25 @@ components:
       type: object
       additionalProperties: true
       description: |
-        预案清单。中枢**认得的**只有三个数组，其余键一律原样存、原样返回 ——
-        所以这里的 schema 是**宽松**的（`additionalProperties: true`）：
-        多一个字段不会被当成错误。
+        预案清单（**manifest v2**，Capability Spec v3 §12）。中枢**认得的**只有三个数组，
+        其余键一律原样存、原样返回 —— 所以这里的 schema 是**宽松**的
+        （`additionalProperties: true`）：多一个字段不会被当成错误。
 
         缺省 / `null` → 归一化成
         `{"capabilities":[],"edges":[],"triggers":[]}`（空是 `[]`）。
+
+        三条硬规则（都在**创建预案**时校验，不通过就是 400 且消息带下标）：
+
+        1. 每条能力声明 **`ref` 与 `spec` 恰好给一个**（旧形态的 `name`+`version` 也算一种）；
+        2. 内联 `spec` 只允许两种实现形式：脚本形式（`run.files`+`entrypoint`），
+           或 `handler: "noop"`。**禁止别的 handler** —— 否则一份配置文件就能把能力
+           挂到中枢执行（I1 破掉）。要「链尾发推送」请 `{ "ref": "notify.phone" }`；
+        3. 装出来的能力必须能通过 `artifact.Validate`；边端口的封闭集合与
+           触发器入口都必须能解析到。
       properties:
         capabilities:
           type: array
-          description: 需要的能力定义（无项为 `[]`）
+          description: 需要的能力声明（无项为 `[]`）
           items: { $ref: "#/components/schemas/PlaybookManifestCapability" }
         edges:
           type: array
@@ -5492,35 +5501,70 @@ components:
     PlaybookManifestCapability:
       type: object
       additionalProperties: true
-      required: [name, version]
       description: |
-        manifest 里声明的一条能力定义。`name` 不能是内置 origin 的保留名
-        （`github` / `cron` / `http` / `manual`），`version` 必须 > 0 ——
-        这些在**创建预案**时就校验（→ 400），而不是等到安装时。
+        manifest 里声明的一条能力。**三种声明形态，互斥**：
+
+        | 写法 | 安装行为 |
+        |---|---|
+        | `{ "ref": "review@2" }` | **不建任何行**，只解析成落库引用（裸名字 = 跟随 latest） |
+        | `{ "spec": { …完整产物… } }` | 装出来就是一份真能跑的能力（脚本形式）或 noop 占位 |
+        | `{ "name": …, "version": …, … }` | 旧形态（v1）：等价于 `handler: noop` 的内联 spec |
+
+        混用（比如 `ref` + `name`）一律 400：两种声明同时存在时「以哪个为准」
+        没有一个能让人预测的答案。名字不能是内置 origin 的保留名
+        （`github` / `cron` / `http` / `manual`）。
       properties:
-        name: { type: string, example: analyze-pr }
-        version: { type: integer, example: 1 }
+        ref:
+          type: string
+          example: notify.phone
+          description: |
+            引用已有定义的**名字**：`review`（跟随 latest）或 `review@2`（钉死某版）。
+            安装时**不建任何行**；引用不到 → install 400（带下标）。
+        spec:
+          description: |
+            内联的**完整产物**（`apiVersion` / `kind` / `metadata` / `spec`，形状见
+            `CapabilityArtifact` / Capability Spec v3 §3）。解析走 `artifact.Parse` +
+            `artifact.Validate`；`spec.handler` **只允许 `noop`**。
+          type: object
+          additionalProperties: true
+        name:
+          type: string
+          example: analyze-pr
+          deprecated: true
+          description: |
+            **旧形态（v1）**：能力名。与 `ref` / `spec` 互斥。
+        version:
+          type: integer
+          example: 1
+          deprecated: true
+          description: '**旧形态（v1）**：版本号（必须 > 0）。与 `ref` / `spec` 互斥。'
         outputs:
           type: array
           items: { type: string }
+          deprecated: true
           description: |
-            出口名的**封闭集合**（不变量 I2）；本 manifest 里的边的 `fromPort`
-            必须属于它。无项为 `[]`。
+            **旧形态（v1）**：出口名的封闭集合（不变量 I2）；本 manifest 里的边的
+            `fromPort` 必须属于它。无项为 `[]`。内联 `spec` 形态下出口写在 `spec.outputs`。
         paramsSchema:
           type: object
-          description: JSON Schema 的受控子集；**原样透传**（中枢不求值，不变量 I6）
-        runner:
+          deprecated: true
           description: |
-            节点侧的运行配置（怎么执行）。**中枢只存不解释**（不变量 I1）：
-            任意 JSON 原样往返，所以这里不限定类型。
+            **旧形态（v1）**：JSON Schema 的受控子集；**原样透传**（中枢不求值，不变量 I6）。
+            内联 `spec` 形态下写在 `spec.params`。
+        runner:
+          deprecated: true
+          description: |
+            **旧形态（v1）**：节点侧的运行配置（怎么执行）。**中枢只存不解释**（I1）：
+            任意 JSON 原样往返。旧形态装出来的能力一律是 `handler: noop` 占位
+            （不猜 runner 的语义伪造实现）。
 
     PlaybookManifestEdge:
       type: object
       additionalProperties: true
       required: [from, fromPort, to]
       description: |
-        manifest 里声明的一条边。三个字段都写**能力名**（不是 id）：
-        安装与体检时在本次命名空间里解析成 `capability_versions.id`（I11：不跨命名空间）。
+        manifest 里声明的一条边。`from` / `to` 都写**能力名**（不是 id）：
+        安装与体检时在本次命名空间里解析（I11：不跨命名空间）。
       properties:
         from:
           type: string
@@ -5529,27 +5573,77 @@ components:
           type: string
           description: |
             必须属于上游的 `outputs`（不变量 I2）。
-            `from` 在本 manifest 里声明过时，创建期就校验；否则安装时只能 skip。
+            `from` 在本 manifest 里声明过（内联 / 旧形态）时，创建期就校验；
+            声明形态是 `ref` 时创建期按解析到的定义校验；否则安装时只能 skip。
         to: { type: string, description: 下游能力名 }
+        literals:
+          type: object
+          additionalProperties: true
+          description: |
+            这条边的**常量覆盖**（语义与 `edges.literals` 完全一致）：进入下游的
+            params = data ⊎ literals。安装时按**目标版本**的 `params_schema` 校验
+            （键必须已声明），通过后原样落库。
+        priority:
+          type: integer
+          default: 0
+          description: |
+            同一（能力, 端口）下多个候选的**优先级**（小的优先，0 = 默认）。
+            落进 `edges.priority`。
 
     PlaybookManifestTrigger:
       type: object
       additionalProperties: true
       required: [kind]
       description: |
-        manifest 里声明的一个触发器。`kind` 非法（不在 `webhook/github/cron/manual` 里）
-        在**创建预案**时就 400。安装时每个触发建一个源，它的 targets 指向本预案的
-        **入口能力**（没有作为任何边 `to` 的那些能力）；入口能力为空 → 该触发 skip。
+        manifest 里声明的一个触发器。安装时每个触发器建一个源，它的 target 就是
+        **入口边**（`from_is_source=1`）。`kind` 非法（不在 `webhook/github/cron/manual` 里）
+        在**创建预案**时就 400。
       properties:
+        name:
+          type: string
+          example: pr-review-github
+          description: |
+            安装出来的**源名**。省略时沿用旧口径 `<slug>-<kind>-<idx>`
+            （slug 在命名空间内唯一 → 名字确定、可幂等比对）。
+            同一 manifest 里两个触发器不能重名（源名在命名空间内唯一）。
         kind:
           type: string
           enum: [webhook, github, cron, manual]
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            源的配置（按 kind 解释），走与 `POST /v1/sources` **同一套**校验
+            （`ValidateSourceConfig`）：cron 要 `expr`（五段表达式；webhook/github 的
+            `token` 由服务端生成）。省略时回落到旧形态的 `types` 翻译。
+        enabled:
+          type: boolean
+          default: true
+          description: 源的启用状态；省略 = `true`。
         types:
           type: array
           items: { type: string }
+          deprecated: true
           description: |
-            事件类型（如 `pull_request.opened`）；`cron` 时 `types[0]` 就是五段表达式
-            本身，安装源时**原样**写进 `config.expr`。无项为 `[]`。
+            **旧形态（v1）**：事件类型（如 `pull_request.opened`）；`cron` 时 `types[0]`
+            就是五段表达式本身，安装源时原样写进 `config.expr`。无项为 `[]`。
+        targets:
+          type: array
+          description: |
+            入口边（无项时回落到旧口径「本预案的入口能力全集、mapping 为空」）。
+            `to` 必须能解析到（本 manifest 声明的，或命名空间里已有的），否则创建期 400。
+          items:
+            type: object
+            additionalProperties: true
+            required: [to]
+            properties:
+              to: { type: string, description: 入口能力名 }
+              mapping:
+                type: object
+                additionalProperties: true
+                description: |
+                  入口边的参数模板（语义同 `edges.mapping`）：可以写常量，也可以写
+                  `{{点号路径}}` 引用事件 payload。只有入口边允许 mapping。
 
     PlaybookView:
       allOf:
@@ -5633,7 +5727,8 @@ components:
       description: |
         一项体检结果。`kind` 决定哪些字段会出现（其余字段省略）：
 
-        - `capability`：`ref`（`name@version`）、`outputs`、`capId`、`runner`、`nodes`
+        - `capability`：`ref`（`name@version` 或 `ref` 原样）、`outputs`、`capId`、`runner`、
+          `declared`（内联 / 引用 / 旧形态）、`impl`（脚本 / noop / 内置）、`nodes`
         - `edge`：`label`（`a --port--> b`）、`from` / `fromPort` / `to` /
           `fromId` / `toId`、或 `blockedByCap`（端点缺定义时）
         - `trigger`：`label`（`webhook · t1 / t2`）、`entryCaps`、`declaredKind`
@@ -5673,6 +5768,25 @@ components:
         capId:
           type: string
           description: 能力定义 id（解析到定义时才有）
+        declared:
+          type: string
+          enum: [inline, ref, legacy]
+          description: |
+            能力项的**声明形态**（manifest v2）：
+
+            - `inline`：内联了一份完整 `spec`（装出来就是新的一行）
+            - `ref`：引用已有定义（**不建任何行**）
+            - `legacy`：旧形态（`name`+`version`，等价于 `handler: noop` 的占位）
+
+            两者安装行为完全不同，界面必须能分辨 —— 装不出来时，用户第一件要知道的
+            就是「这条到底想装一份实现，还是只想引用一份已有的」。
+        impl:
+          type: string
+          enum: [script, noop, handler]
+          description: |
+            这条能力的**实现形式**：`script`（脚本，任意 agent 节点执行）/
+            `noop`（合法占位，中枢不执行、不发 emit）/ `handler`（中枢内置执行器，
+            如 `notify-phone`）。空 = 还没解析到正文（`ref` 引用不到 / 定义缺失）。
         runner:
           description: 清单里声明的 runner 原样带回（任意 JSON；没声明则省略）
         nodes:

@@ -92,8 +92,10 @@ func newPlaybookEnv(t *testing.T) *playbookEnv {
 	mux.Handle("POST /v1/playbooks/{idOrSlug}/install", noStore(sessMW(http.HandlerFunc(pbH.install))))
 	// webhook 入口**不要会话**（鉴权是 URL 里的 token），要真 sourceHandler + 假派发器
 	mux.Handle("POST /v1/hooks/{token}", noStore(http.HandlerFunc(srcH.hook)))
-	// 安装结果要在 HTTP 视角被看见：能力 / 源列表
+	// 安装结果要在 HTTP 视角被看见：能力 / 源列表 + 能力产物详情
+	// （/artifact 是「装出来的能力真能跑」的唯一可读证据：脚本正文在那里）。
 	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
+	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(consoleH.capabilityArtifact))))
 	mux.Handle("GET /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
 
 	return &playbookEnv{
@@ -855,5 +857,141 @@ func TestPlaybookDelete(t *testing.T) {
 	rr = env.do(t, http.MethodGet, withNSID("/v1/sources", env.nsID), nil)
 	if !strings.Contains(rr.Body.String(), "pr-review-webhook-0") {
 		t.Fatalf("删掉预案后 webhook 源不见了: %s", rr.Body.String())
+	}
+}
+
+// ===== manifest v2：内联完整 spec 装出来就是一份真能跑的能力（Capability Spec v3 §12）=====
+
+// TestInstallPlaybookInlineSpecCreatesRunnableCapability 是 P5 的核心验收：
+// manifest 里内联一份**完整产物**，装出来的能力必须能通过
+// `GET /v1/capabilities/{id}/artifact` 拿回脚本正文。
+//
+// 为什么要走 HTTP 而不是只看 store：正文端点是详情页展示脚本用的**唯一**入口，
+// 它在 store 之上还多一层（CurrentArtifact → canonical JSON → 解析）。只断言
+// 「created 里有 vb-inline@1」的话，一条装出空壳的实现也能绿。
+func TestInstallPlaybookInlineSpecCreatesRunnableCapability(t *testing.T) {
+	env := newPlaybookEnv(t)
+	const script = "#!/usr/bin/env bash\nset -e\necho inline-runnable\n"
+	inline := map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Capability",
+		"metadata":   map[string]any{"name": "vb-inline", "version": 1, "displayName": "内联能力"},
+		"spec": map[string]any{
+			"params":  map[string]any{"type": "object"},
+			"outputs": []string{"done"},
+			"run": map[string]any{
+				"entrypoint": "run.sh",
+				"files":      map[string]any{"run.sh": script},
+				"timeoutSec": 900,
+			},
+		},
+	}
+
+	env.create(t, env.nsID, map[string]any{
+		"slug": "inline-runnable",
+		"name": "内联能力预案",
+		"manifest": map[string]any{
+			"capabilities": []any{map[string]any{"spec": inline}},
+			"edges":        []any{},
+			"triggers":     []any{},
+		},
+	})
+	body := env.install(t, env.nsID, "inline-runnable")
+	created := body["created"].(map[string]any)
+	if got := strList(t, created, "capabilities"); len(got) != 1 || got[0] != "vb-inline@1" {
+		t.Fatalf("created.capabilities want [vb-inline@1]，got %v（body=%v）", got, body)
+	}
+	// 内联脚本能力不是占位：noop 说明不该出现。
+	for _, n := range strList(t, body, "notes") {
+		if strings.Contains(n, "noop 占位") {
+			t.Fatalf("内联脚本能力不该被标成 noop 占位：%v", strList(t, body, "notes"))
+		}
+	}
+
+	// 列表里拿到它的 id 与 contentHash（非空 = 内容寻址）。
+	rr := env.do(t, http.MethodGet, withNSID("/v1/capabilities", env.nsID), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /v1/capabilities status = %d; body=%s", rr.Code, rr.Body.String())
+	}
+	caps, _ := decode(t, rr)["capabilities"].([]any)
+	var id, hash string
+	for _, raw := range caps {
+		c := raw.(map[string]any)
+		if c["name"] == "vb-inline" && c["version"] == float64(1) {
+			id, _ = c["id"].(string)
+			hash, _ = c["contentHash"].(string)
+		}
+	}
+	if id == "" {
+		t.Fatalf("列表里没有装出来的 vb-inline@1：%s", rr.Body.String())
+	}
+	if hash == "" {
+		t.Fatal("装出来的能力 contentHash 为空：它就不是内容寻址的了")
+	}
+
+	// 正文端点：详情页展示脚本靠它。
+	rr = env.do(t, http.MethodGet, withNSID("/v1/capabilities/"+id+"/artifact", env.nsID), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /v1/capabilities/%s/artifact status = %d; body=%s", id, rr.Code, rr.Body.String())
+	}
+	art := decode(t, rr)
+	if got, _ := art["entrypoint"].(string); got != "run.sh" {
+		t.Fatalf("entrypoint want run.sh，got %q", got)
+	}
+	files, _ := art["files"].(map[string]any)
+	if got, _ := files["run.sh"].(string); got != script {
+		t.Fatalf("脚本正文没拿到（got %q）；body=%s", got, rr.Body.String())
+	}
+	if got, _ := art["digest"].(string); got == "" {
+		t.Fatal("产物 digest 为空")
+	}
+
+	// 「装出来真能跑」的第三重证据：它有声明的出口（不是空壳）。
+	spec, _ := art["spec"].(map[string]any)
+	outputs, _ := spec["outputs"].([]any)
+	if len(outputs) != 1 || outputs[0] != "done" {
+		t.Fatalf("产物 outputs want [done]，got %v", spec["outputs"])
+	}
+}
+
+// TestPlaybookCreateRejectsForeignHandler 把 I1 的红线钉在 HTTP 语义上（§12.2 第 2 条）：
+// manifest 内联 spec 只允许 handler: noop，别的 handler 一律 400 invalid_playbook。
+//
+// 为什么必须在端点层也测一遍：store 返回的是哨兵错误，映射成 400 是 handler 的事。
+// 映射漏了（落到 default 分支）就是 500 —— 用户看到「服务器错误」，而真正的原因是
+// 他自己写错了一行 YAML。
+func TestPlaybookCreateRejectsForeignHandler(t *testing.T) {
+	env := newPlaybookEnv(t)
+	build := func(handler string) map[string]any {
+		return map[string]any{
+			"slug": "sneaky-" + handler,
+			"name": "偷偷上报",
+			"manifest": map[string]any{
+				"capabilities": []any{map[string]any{"spec": map[string]any{
+					"apiVersion": "anotify/v1",
+					"kind":       "Capability",
+					"metadata":   map[string]any{"name": "vb-sneaky", "version": 1},
+					"spec":       map[string]any{"outputs": []string{}, "handler": handler},
+				}}},
+			},
+		}
+	}
+
+	rr := env.do(t, http.MethodPost, withNSID("/v1/playbooks", env.nsID), build("notify-phone"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("外来 handler 应 400，got %d; body=%s", rr.Code, rr.Body.String())
+	}
+	body := decode(t, rr)
+	if code, _ := body["code"].(string); code != "invalid_playbook" {
+		t.Fatalf("code want invalid_playbook，got %v", body["code"])
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "capabilities[0]") {
+		t.Fatalf("错误消息要带下标（哪一条声明坏了），got %q", msg)
+	}
+
+	// 反例：noop 是唯一被接受的 handler。
+	rr = env.do(t, http.MethodPost, withNSID("/v1/playbooks", env.nsID), build("noop"))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("handler: noop 应被接受，got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }

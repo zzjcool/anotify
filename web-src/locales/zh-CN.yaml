@@ -1325,6 +1325,7 @@ prune:
   event_schema: 事件 payload 不符合触发器的 resultSchema
   max_hops: 超出 hop 预算（链路太深）
   budget: 本次 trace 任务数超出预算
+  no_impl: 目标是占位实现（noop），中枢不会执行它
 nodes:
   title: 节点
   subtitle: 执行者。节点自己知道怎么跑某个能力，中枢只告诉它"做什么"。
@@ -1716,9 +1717,6 @@ pb:
   ready_n: '{n}/{m} 项就绪'
   n_of_m: '{n}/{m} 就绪'
   remaining: 还差 {n} 项
-  copy: 复制
-  copied: 已复制，贴进 node.yaml 后重启 agent
-  copy_failed: 复制失败，请手动选中复制
   status:
     ready: 就绪
     needs_node: 缺节点
@@ -1742,7 +1740,7 @@ pb:
   fix:
     capability:
       missing: 还缺能力定义，先把它补进当前命名空间
-      no-node: 定义齐了，但没有节点声明它能执行 —— 去写 node.yaml
+      no-node: 定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器
       offline: 有节点声明了，但机器离线 —— 把它连上就行
     edge:
       missing: 能力齐了，出口还没连上
@@ -1751,9 +1749,18 @@ pb:
   cap:
     outputs: 出口：{o}
     missing: 当前命名空间里还没有这个定义
+    declared:
+      inline: 内联 spec
+      ref: 引用 {r}
+      legacy: 旧形态声明
+    impl:
+      script: 脚本
+      noop: noop 占位
+      handler: 中枢内置执行器
   node:
     blocked: 先补能力定义
-    none: 没有任何节点声明它能执行 —— 这是最常见的「跑不起来」
+    none: 还没有节点在跑它 —— 部署到一台在线机器就会有
+    hub: 中枢进程内执行（不需要节点）
     offline: 有节点，但离线：
   edges:
     none: 这份预案不声明出口
@@ -1765,11 +1772,8 @@ pb:
   act:
     install_cap: 安装定义
     open_nodes: 打开节点页
-    copy_yaml: 复制 YAML
     install_edge: 补齐这条边
     create_source: 创建源
-  yaml:
-    hint: 下面是要补进节点的那一段（只含缺的能力）。粘进 node.yaml 后重启 agent，节点上线就会自动声明。
 
 node:
   artifacts:

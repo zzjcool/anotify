@@ -98,21 +98,6 @@
         width: 100%;
         height: 11px;
       }
-      /* 复制按钮压在代码块右上角（.yaml-copy 是 position:absolute）：
-         给代码留出右上角的呼吸位，窄屏下首行才不会滑到按钮下面。 */
-      .yaml-box {
-        padding-right: 76px;
-      }
-      /* node.yaml 的复制按钮：.yaml-copy 在 ui.css 里有两个定义（旧段落 + 组件层），
-         叠上 .btn.btn-ghost 的透明底后会和代码文字糊在一起。ui.css 本轮冻结，
-         所以在页级按语义改回实底。 */
-      .yaml-copy.btn {
-        background: var(--panel-overlay);
-        border-color: var(--line);
-      }
-      .yaml-copy.btn:hover {
-        background: var(--surface-3);
-      }
     </style>
 {{end}}
 
@@ -187,16 +172,6 @@
         <div class="skeleton pb-sk-line"></div>
       </div>
       <div id="node-list" class="pb-sec-list"></div>
-      <div id="yaml-wrap" class="hidden">
-        <p class="card-sub mt-2">{{t "pb.yaml.hint"}}</p>
-        <!-- 代码块是 white-space:pre：`<span id="yaml-text">` 必须紧跟开标签，
-             否则标签之间的缩进会被当成 YAML 首行的一部分（首行白挪两个字符）。 -->
-        <div class="yaml-box"><span id="yaml-text"></span>
-          <button id="btn-copy-yaml" type="button" class="yaml-copy btn btn-ghost btn-sm">
-            {{t "pb.copy"}}
-          </button>
-        </div>
-      </div>
     </div>
 
     <!-- ③ 出口 -->
@@ -310,41 +285,40 @@
         return b;
       }
 
-      // 只把**缺的那个能力**写成 YAML，不是把整份文件吐出来让人自己删。
-      // 生成的 node.yaml 必须能**直接**被 cmd/agent 解析（严格 YAML 解码：
-      // 多一个未知字段就报 "field xxx not found"）。形状以 cmd/agent/config.go 为准：
-      //   顶层 name/server/token/instances
-      //   capabilities[].capability（不是 name）+ run 是**映射**（runner/command/timeoutSec/concurrency）
-      // 以前这里生成的是 `node:` 包一层、`run: bash` 标量、`timeout_sec`，
-      // 贴进 agent 立刻解析失败 —— 命令一条都跑不起来。
-      function yamlFor(items) {
-        const lines = [
-          "# node.yaml —— 填好 server / token 后：agent -f node.yaml",
-          "# token 来自「节点」页注册节点时返回的一次性令牌",
-          "name: " + (items[0] && items[0].ref
-            ? String(items[0].ref).split("@")[0] + "-node"
-            : "my-node"),
-          "server: https://anotify.example.com",
-          "token: n_请替换为节点令牌",
-          "instances: 1",
-          "capabilities:",
-        ];
-        for (const it of items) {
-          const name = String(it.ref || "").split("@")[0];
-          const ver = String(it.ref || "").split("@")[1] || "1";
-          const r = it.runner || {};
-          lines.push("  - capability: " + name);
-          lines.push("    version: " + ver);
-          lines.push("    run:");
-          lines.push("      runner: " + (r.runner || "bash"));
-          // command 用块标量：带引号/换行的命令按缩进原样保留
-          lines.push("      command: |");
-          const cmd = String(r.command || "echo hello");
-          for (const l of cmd.split("\n")) lines.push("        " + l);
-          if (r.timeoutSec) lines.push("      timeoutSec: " + r.timeoutSec);
-          if (r.concurrency) lines.push("      concurrency: " + r.concurrency);
+      // 声明形态 → 人话（manifest v2，Capability Spec v3 §12.1）。
+      //
+      // 两种形态的**安装行为完全不同**：「内联 spec」会装出一份新实现，
+      // 「引用 x」不建任何行、只连到已有的那份定义。装不出来的时候，
+      // 用户第一件要知道的就是「这条到底想装一份实现，还是只想引用一份已有的」。
+      function declaredLabel(c) {
+        if (c.declared === "ref")
+          return t("pb.cap.declared.ref", "引用 {r}").replace("{r}", c.ref || "");
+        if (c.declared === "inline") return t("pb.cap.declared.inline", "内联 spec");
+        if (c.declared === "legacy") return t("pb.cap.declared.legacy", "旧形态声明");
+        return "";
+      }
+
+      // 实现形式 → 人话：脚本跑在节点上；noop 是合法占位（中枢不执行）；
+      // handler 是编译进中枢的内置执行器（如推送）。
+      function implLabel(c) {
+        if (c.impl === "script") return t("pb.cap.impl.script", "脚本");
+        if (c.impl === "noop") return t("pb.cap.impl.noop", "noop 占位");
+        if (c.impl === "handler") return t("pb.cap.impl.handler", "中枢内置执行器");
+        return "";
+      }
+
+      // 能力行的一行说明：声明形态 · 实现形式 · 出口。
+      // 三段都是可选（ref 引用不到定义时只有前两段），空段直接不出现。
+      function capSub(c, ok) {
+        const parts = [declaredLabel(c), implLabel(c)].filter(Boolean);
+        if (!ok) {
+          parts.push(t("pb.cap.missing", "当前命名空间里还没有这个定义"));
+          return parts.join(" · ");
         }
-        return lines.join("\n");
+        parts.push(
+          t("pb.cap.outputs", "出口：{o}").replace("{o}", (c.outputs || []).join(", ") || "—"),
+        );
+        return parts.join(" · ");
       }
 
       function count(n, m) {
@@ -418,7 +392,10 @@
       }
       function nodeLead(caps) {
         if (caps.some((c) => c.status === "no-node"))
-          return t("pb.fix.capability.no-node", "定义齐了，但没有节点声明它能执行 —— 去写 node.yaml");
+          return t(
+            "pb.fix.capability.no-node",
+            "定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器",
+          );
         if (caps.some((c) => c.status === "offline"))
           return t("pb.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行");
         if (caps.some((c) => c.status === "missing")) return t("pb.node.blocked", "先补能力定义");
@@ -477,7 +454,10 @@
           const first = bad[0];
           const map = {
             "capability.missing": ["pb.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"],
-            "capability.no-node": ["pb.fix.capability.no-node", "定义齐了，但没有节点声明这个能力 —— 去写 node.yaml"],
+            "capability.no-node": [
+              "pb.fix.capability.no-node",
+              "定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器",
+            ],
             "capability.offline": ["pb.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行"],
             "edge.missing": ["pb.fix.edge.missing", "能力齐了，出口还没连上"],
             "trigger.missing": ["pb.fix.trigger.missing", "图能跑了，但还没有事件把它叫起来"],
@@ -501,9 +481,7 @@
             row(
               ok ? "is-ok" : "is-bad",
               c.ref,
-              ok
-                ? t("pb.cap.outputs", "出口：{o}").replace("{o}", (c.outputs || []).join(", ") || "—")
-                : t("pb.cap.missing", "当前命名空间里还没有这个定义"),
+              capSub(c, ok),
               null,
             ),
           );
@@ -520,16 +498,22 @@
         // ---- ② 节点实现 ----
         const nodeList = document.getElementById("node-list");
         nodeList.textContent = "";
-        const needYaml = caps.filter((c) => c.status === "no-node");
         for (const c of caps) {
           let dot = "is-ok";
           let sub = "";
           if (c.status === "missing") {
             dot = "is-warn";
             sub = t("pb.node.blocked", "先补能力定义");
+          } else if (c.impl === "handler") {
+            // handler 形式由中枢进程内的内置执行器跑：它本来就不需要节点，
+            // 这一行要看得出「不是缺机器，而是压根不用机器」。
+            sub = t("pb.node.hub", "中枢进程内执行（不需要节点）");
           } else if (c.status === "no-node") {
             dot = "is-bad";
-            sub = t("pb.node.none", "没有任何节点声明它 —— 这是最常见的「跑不起来」");
+            sub = t(
+              "pb.node.none",
+              "还没有节点在跑它 —— 部署到一台在线机器就会有",
+            );
           } else if (c.status === "offline") {
             dot = "is-warn";
             sub =
@@ -538,28 +522,20 @@
           } else {
             sub = (c.nodes || []).map((n) => n.name).join(", ");
           }
+          // 行内动作只剩「打开节点页」：「缺节点」是机器侧的事（连上 + 部署），
+          // 控制台能给的唯一帮助就是把人送到那个页面去。
           const action =
-            c.status === "offline"
+            c.status === "offline" || c.status === "no-node"
               ? actBtn(t("pb.act.open_nodes", "打开节点页"), () => (location.href = "nodes.html"))
-              : c.status === "no-node"
-                ? actBtn(t("pb.act.copy_yaml", "复制 YAML"), () => copyText(yamlFor([c])))
-                : null;
+              : null;
           nodeList.appendChild(row(dot, c.ref, sub, action));
         }
         setBadge("node-count", caps.filter((c) => c.status === "ok").length, caps.length);
         setSum("node-sum", nodeLead(caps));
 
-        const yamlWrap = document.getElementById("yaml-wrap");
-        if (needYaml.length) {
-          document.getElementById("yaml-text").textContent = yamlFor(needYaml);
-          yamlWrap.classList.remove("hidden");
-        } else {
-          yamlWrap.classList.add("hidden");
-        }
-        // 节点这一节的动作只给一件事：去节点页（令牌在那里发、agent 在那里连）。
-        // 「补齐」补不了节点，复制 YAML 的入口已经在行内和代码块上 —— 节标题
-        // 再放一个就是第三个副本文案按钮。
-        if (needYaml.length || caps.some((c) => c.status === "offline")) {
+        // 节点这一节的动作只给一件事：去节点页（令牌在那里发、agent 在那里连，
+        // 能力在那里被部署到机器上）。
+        if (caps.some((c) => c.status === "no-node" || c.status === "offline")) {
           setAct("node-act", t("pb.act.open_nodes", "打开节点页"), () => {
             location.href = "nodes.html";
           });
@@ -626,15 +602,6 @@
         document.getElementById("btn-install").style.display = p.status === "ready" ? "none" : "";
       }
 
-      async function copyText(txt) {
-        try {
-          await navigator.clipboard.writeText(txt);
-          toast(t("pb.copied", "已复制，贴进 node.yaml 后重启 agent"));
-        } catch (e) {
-          toast(t("pb.copy_failed", "复制失败，请手动选中复制"));
-        }
-      }
-
       // 返回 true 表示这一轮真的拿到了数据（重新体检按钮据此决定要不要报"已重新体检"）。
       async function load() {
         try {
@@ -691,9 +658,6 @@
         if (ok) toast(t("pb.rescanned", "已重新体检"));
       });
       document.getElementById("btn-install").addEventListener("click", install);
-      document.getElementById("btn-copy-yaml").addEventListener("click", () => {
-        copyText(document.getElementById("yaml-text").textContent);
-      });
       document.addEventListener("DOMContentLoaded", load);
     </script>
 {{end}}

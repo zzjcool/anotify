@@ -1325,6 +1325,7 @@ prune:
   event_schema: event payload does not satisfy the trigger resultSchema
   max_hops: hop budget exhausted (chain too deep)
   budget: this trace hit its task budget
+  no_impl: the target is a placeholder (noop) — the hub will not run it
 nodes:
   title: Nodes
   subtitle: The executors. A node knows how to run a capability; the hub only tells it what to do.
@@ -1714,9 +1715,6 @@ pb:
   ready_n: '{n}/{m} ready'
   n_of_m: '{n}/{m} ready'
   remaining: '{n} left'
-  copy: Copy
-  copied: Copied — paste into node.yaml and restart the agent
-  copy_failed: Copy failed — select and copy manually
   status:
     ready: Ready
     needs_node: Needs node
@@ -1740,7 +1738,7 @@ pb:
   fix:
     capability:
       missing: A capability definition is still missing — add it to this namespace first
-      no-node: All definitions exist, but no node declares it can run this — write node.yaml
+      no-node: All definitions exist, but no node is running it yet — connect a machine on the nodes page, then deploy it there
       offline: A node declares it but is offline — just reconnect it
     edge:
       missing: Capabilities are in place; the edges are not connected yet
@@ -1749,9 +1747,18 @@ pb:
   cap:
     outputs: 'Outputs: {o}'
     missing: No such definition in this namespace yet
+    declared:
+      inline: Inline spec
+      ref: Reference {r}
+      legacy: Legacy declaration
+    impl:
+      script: Script
+      noop: noop placeholder
+      handler: Built-in handler
   node:
     blocked: Add the capability definition first
-    none: No node declares it can run this — the most common reason it will not run
+    none: No node is running it yet — deploy it to an online machine
+    hub: Runs inside the hub process (no node needed)
     offline: 'Nodes exist but are offline: '
   edges:
     none: This playbook declares no edges
@@ -1763,11 +1770,8 @@ pb:
   act:
     install_cap: Install definition
     open_nodes: Open nodes
-    copy_yaml: Copy YAML
     install_edge: Add this edge
     create_source: Create source
-  yaml:
-    hint: This is the snippet to add on the node side (only the missing capabilities). Paste it into node.yaml, restart the agent, and the node will declare it on connect.
 
 node:
   artifacts:

@@ -1323,6 +1323,7 @@ prune:
   event_schema: イベント payload がトリガーの resultSchema を満たしていません
   max_hops: hop 予算を超過（チェーンが深すぎます）
   budget: この trace のタスク数が予算を超過しました
+  no_impl: 宛先はプレースホルダー（noop）です — ハブは実行しません
 nodes:
   title: ノード
   subtitle: 実行者です。ノードはケイパビリティの実行方法を知っており、ハブは「何をするか」だけを伝えます。
@@ -1712,9 +1713,6 @@ pb:
   ready_n: '{n}/{m} 準備完了'
   n_of_m: '{n}/{m} 準備完了'
   remaining: 残り {n} 件
-  copy: コピー
-  copied: コピーしました。node.yaml に貼って agent を再起動してください
-  copy_failed: コピーに失敗しました。手動で選択してコピーしてください
   status:
     ready: 準備完了
     needs_node: ノード不足
@@ -1738,7 +1736,7 @@ pb:
   fix:
     capability:
       missing: 能力定義がまだ足りません。まずこのネームスペースに追加してください
-      no-node: 定義は揃っていますが、実行できると宣言したノードがありません — node.yaml を書いてください
+      no-node: 定義は揃っていますが、まだ実行しているノードがありません — ノードページでマシンを接続し、そこへデプロイしてください
       offline: 宣言しているノードはありますがオフラインです — 接続するだけで済みます
     edge:
       missing: 能力は揃っていますが、出口がまだ繋がっていません
@@ -1747,9 +1745,18 @@ pb:
   cap:
     outputs: 出口：{o}
     missing: このネームスペースにはまだこの定義がありません
+    declared:
+      inline: インライン spec
+      ref: '{r} を参照'
+      legacy: 旧形式の宣言
+    impl:
+      script: スクリプト
+      noop: noop プレースホルダー
+      handler: ハブ内蔵エグゼキュータ
   node:
     blocked: 先に能力定義を追加してください
-    none: どのノードも実行できると宣言していません — 動かない最も多い原因です
+    none: まだどのノードも実行していません — オンラインのマシンへデプロイしてください
+    hub: ハブのプロセス内で実行（ノード不要）
     offline: ノードはありますがオフラインです：
   edges:
     none: このプレイブックは出口を宣言していません
@@ -1761,11 +1768,8 @@ pb:
   act:
     install_cap: 定義を導入
     open_nodes: ノードページを開く
-    copy_yaml: YAML をコピー
     install_edge: この辺を補完
     create_source: 源を作成
-  yaml:
-    hint: 以下はノード側に追加する断片です（足りない能力のみ）。node.yaml に貼って agent を再起動すると、接続時に自動で宣言されます。
 
 node:
   artifacts:
