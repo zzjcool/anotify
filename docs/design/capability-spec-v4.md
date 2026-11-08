@@ -112,10 +112,110 @@ next: [fixer]               # 一个下游
 next: [fixer, apply-fix@2]   # 多个；裸名跟随 latest，@ver 钉死版本
 ```
 
-- 元素必须是**能力引用**（`name` 或 `name@ver`），解析不到 → 见 §6。
-- **省略 = `[]` = 终端**。「忘了写 next」不是错误状态——终端是合法且常见的（链尾多半是通知）。
+### 2.2 `metadata`（身份）
 
----
+| 字段 | 类型 | 必填 | 取值 / 约束 | 说明 |
+|---|---|---|---|---|
+| `name` | string | ✅ | `^[a-z0-9][a-z0-9._-]{0,62}$`（≤63） | 能力**名**，也是谱系：`next` 引用它、任务记它。改名 = 另一个能力 |
+| `version` | int | 可选 | ≥1 | 省略 = **内容寻址**：按 `(name, 执行部分)` 复用已有行；显式给就永不折叠 |
+| `displayName` | string | 可选 | 任意 | 纯展示（列表/标题）。**不进 digest**，改它不会让部署变 stale |
+
+命名空间不在这里：它由 API/CLI 上下文决定。
+
+### 2.3 `spec`（正文）
+
+#### `spec.params` — 我要什么
+
+| 项 | 值 |
+|---|---|
+| 类型 | JSON Schema（对象） |
+| 必填 | 否，省略 = `{}`（怎么传都过） |
+| 消费方 | 派发时校验上游 payload；建源/改源时校验源配置 |
+
+#### `spec.next` — 交给谁
+
+| 项 | 值 |
+|---|---|
+| 类型 | `[]string` |
+| 元素 | `name`（跟随 latest）或 `name@version`（钉死） |
+| 上限 | 32 个（沿用 `MaxOutputs`） |
+| 省略 | = `[]` = **终端能力**（跑完就结束），不是错误 |
+| 消费方 | 写入时校验目标存在（见 §6）；派生 `edges` 行；`emit <name>` 必须 ∈ 它 |
+
+#### `spec.run` — 怎么跑（脚本形式，与 `handler` 二选一）
+
+| 字段 | 类型 | 必填 | 取值 / 约束 | 说明 |
+|---|---|---|---|---|
+| `entrypoint` | string | ✅ | 必须是 `files` 里的一个 key；内容必须以 `#!` 开头 | 否则报 `entrypoint_no_shebang` |
+| `files` | map[路径]正文 | ✅ | ≥1 个；路径为**相对路径**，不含 `\`、不含 NUL，≤255 字符；单文件 ≤256 KiB；合计 ≤1 MiB | 全部展开进工作目录；多文件原样保留（不会被压扁） |
+| `env` | map[string]string | 可选 | 键匹配 `^[A-Za-z_][A-Za-z0-9_]*$`；**不得以 `ANOTIFY_` 开头**（保留给契约变量）；空值 = 由节点环境提供 | handler 形式下不允许出现 |
+| `workDir` | string | 可选 | 空 = 每次任务一个独立目录；否则**绝对路径**或 `~` / `~/…`（`~` 由节点展开成 agent 用户家目录）；≤1024 字节；不含 NUL、不含 `..` 段 | 参与 digest。字面量存库，所以与机器无关 |
+
+> `timeoutSec` **不在 run 里** —— 它是生命周期的一部分，见下。
+
+#### `spec.requires` — 节点要装什么
+
+| 项 | 值 |
+|---|---|
+| 类型 | `[]string` |
+| 上限 | 16 个 |
+| 语义 | 节点必须预装的**外部命令**。部署时节点 `LookPath` 探测；缺任何一条 → 该节点跑不了它（任务报 `missing_requirement`，并把探过的 PATH 带上） |
+| 消费方 | 部署前的节点匹配、`NodesAvailable` condition |
+
+#### `spec.lifecycle` — 一次运行的生命周期
+
+| 字段 | 类型 | 默认 | 取值 | 语义 |
+|---|---|---|---|---|
+| `idempotent` | bool | **true** | true / false | `false` = 重放不安全：租约过期后任务直接 `abandoned`，不回 `pending` 重跑 |
+| `maxAttempts` | int | **3** | ≥1 | 重试上限 |
+| `resultTtlSec` | int | **0** | ≥0 | 结果保留期（秒）。`0` = **永不清理**（清理任务跳过它） |
+| `timeoutSec` | int | **0** | 0..86400（24h） | 本地执行超时。`0` = 不设本地超时，交给中枢租约兜底 |
+| `retryable` | bool | — | — | ⚠️ **保留字段，当前无消费者**（v3 遗留，是否删除待定） |
+| `expiresInSec` | int | — | — | ⚠️ **保留字段，当前无消费者**（v3 遗留，是否删除待定） |
+
+#### `spec.handler` — 内置执行器（与 `run` 二选一）
+
+| 项 | 值 |
+|---|---|
+| 类型 | string |
+| 白名单 | `notify-phone`（可执行）；`noop`（占位：不可部署、不可派发） |
+| 约束 | 与 `run` **恰给一组**：都没给 → `impl_missing`；都给 → `impl_ambiguous`；不在白名单 → `unknown_handler` |
+| HTTP | **API 永不可创建**（传了就 400 `handler_not_allowed`）。只能由内置播种 / 迁移回填 / 预案产生 |
+
+### 2.4 `status`（全部派生，apply 时一律忽略）
+
+| 字段 | 类型 | 值 | 说明 |
+|---|---|---|---|
+| `ready` | bool | — | 四条 `conditions` 全为 true 才 true |
+| `version` | int | — | 实际解析到的版本（省略 version 时由内容寻址分配） |
+| `digest` | string | `sha256:…` | 内容指纹 = 执行部分的身份（见 §3） |
+| `conditions` | array | 见下 | 为什么没就绪 |
+| `nodes` | array | `{name, state}` | state ∈ `deployed` / `stale` / `missing` |
+| `resolved` | object | 见下 | 从图反推（每个 `next` 各算各的） |
+| `observed` | object | 见下 | 上次真实运行长什么样 |
+
+**`conditions[].type` 只有这四个**：
+
+| type | false 的含义 | 谁能让它变 true |
+|---|---|---|
+| `Implemented` | spec 过不了校验（迁移/回填遗留的坏行） | 改能力定义 |
+| `NodesAvailable` | 没有节点同时满足 `requires` | 接机器 / 在机器上装依赖 |
+| `DownstreamResolved` | `next` 里某个名字解析不到 | 补那个能力，或改 `next` |
+| `Deployed` | 没有节点持有当前 digest | 点部署 |
+
+每条形如 `{type, status(bool), reason(稳定机器码), message(人话)}`。`reason` 取值举例：`Valid` / `NoMatchingNode` / `NotFound` / `NotDeployed`。
+
+**`resolved.next[]`**：`{name, version, digest, ready, requires, missing?}`。
+`requires` 是该下游**自己**的必填参数（同名直取），不是多个下游的并集——每次 `emit` 只对一个下游负责。
+
+**`observed`**：
+
+| 字段 | 值 |
+|---|---|
+| `lastRun` | 最近一次运行的时间 |
+| `emits[]` | `{to, fields[], ok}` —— 这次运行里每一次 emit 交给了谁、带了哪些字段 |
+| `pruned[]` | `{to, reason, detail}` —— 被剪掉的下游及原因（如 `param_missing`） |
+| `tasks{}` | `{total, failed}` —— 够判断「最近是不是老挂」，不做统计报表 |
 
 ## 3. digest 边界（逐字段，不许有「大概」）
 
