@@ -1298,20 +1298,23 @@ async function main() {
 		await ctx.close();
 	}
 
-	// ---- L. index 加载期骨架：8 行事件行结构，不是一整块灰板 ----
+	// ---- L. index 加载期骨架：照数据态的结构画（事件活动格纹 + 事件流行）----
 	//
-	// 回归防线。事件流骨架曾经是「8 条整宽 62px 实心条」，且首尾相接 ——
-	// 屏幕上看到的就是一块 504px 高的灰板，跟数据态的行列表毫无相似之处
-	// （用户报的「骨架图显示不对」）。现在骨架照数据态的盒子结构画
-	// （chip / 类型 / traceId / 相对时间 四段）。这里钉住三条：8 行、每行四段、
-	// 没有任何一段是整行宽（旧的实心条会 ≈ 1.0）。
+	// 回归防线，钉的都是用户报过的「骨架显示不对」：
+	// ① 事件流骨架曾经是「8 条整宽 62px 实心条」首尾相接 —— 屏幕上就是一块
+	//    504px 高的灰板。现在照数据态的盒子结构画（chip / 类型 / traceId /
+	//    相对时间 四段）：8 行、每行四段、没有一段是整行宽。
+	// ② 事件活动骨架是 .hm（54 列网格）里的**一个格子项**，被塞进第 1 列，
+	//    页面上只剩左边一根 12×87 的竖条。现在占满全部列 × 全部行，并用
+	//    aspect-ratio 按数据态的方格比例预留高度。
 	console.log("--- index 加载期骨架结构 ---");
 	{
 		const s = H.seed(server.dbPath, "index_skel");
 		const ctx = await newCtx();
 		await injectSession(ctx, s.session, server.base);
-		// 挂住事件接口不响应 → 页面停在加载态（不 mock 数据，测的是真实骨架）
+		// 挂住两个接口不响应 → 页面停在加载态（不 mock 数据，测的是真实骨架）
 		await ctx.route("**/v1/console/events*", () => {});
+		await ctx.route("**/v1/stats*", () => {});
 		const page = await ctx.newPage();
 		await page.goto(server.base + "/index.html", {
 			waitUntil: "load",
@@ -1325,6 +1328,10 @@ async function main() {
 			const rows = Array.from(box?.querySelectorAll(".ev-skel-row") || []);
 			const bars = rows.flatMap((r) => Array.from(r.querySelectorAll(".skeleton")));
 			const boxW = box ? box.getBoundingClientRect().width : 0;
+			const hm = document.getElementById("hm");
+			const hmSkel = document.querySelector(".hm-skel");
+			const hmB = hm?.getBoundingClientRect();
+			const skB = hmSkel?.getBoundingClientRect();
 			return {
 				busy: box?.getAttribute("aria-busy") === "true",
 				rows: rows.length,
@@ -1333,6 +1340,11 @@ async function main() {
 					? Math.max(0, ...bars.map((b) => b.getBoundingClientRect().width)) / boxW
 					: 1,
 				labels: rows.map((r) => r.getAttribute("aria-hidden")),
+				hmBusy: hm?.getAttribute("aria-busy") === "true",
+				// 骨架宽度 / 网格宽度：旧 bug 是 12 / 1070 ≈ 0.01
+				hmWidthRatio: hmB && skB && hmB.width ? skB.width / hmB.width : 0,
+				hmSkelH: skB ? Math.round(skB.height) : 0,
+				hmSkelHidden: hmSkel?.getAttribute("aria-hidden") === "true",
 			};
 		});
 		H.check("加载期 #index-events 处于 aria-busy", skel.busy, JSON.stringify(skel));
@@ -1351,6 +1363,22 @@ async function main() {
 			"骨架行全部 aria-hidden（纯装饰，读屏不念灰块）",
 			skel.labels.every((v) => v === "true"),
 			JSON.stringify(skel.labels),
+		);
+		H.check("加载期 #hm（事件活动）处于 aria-busy", skel.hmBusy, JSON.stringify(skel));
+		H.check(
+			"事件活动骨架铺满整张网格，不是左边一根竖条（旧 bug ≈ 0.01）",
+			skel.hmWidthRatio >= 0.9,
+			`ratio=${skel.hmWidthRatio.toFixed(2)}`,
+		);
+		H.check(
+			"事件活动骨架预留了热力图的高度（不是塌成一条线）",
+			skel.hmSkelH >= 60,
+			`h=${skel.hmSkelH}px`,
+		);
+		H.check(
+			"事件活动骨架 aria-hidden（格纹是纯装饰）",
+			skel.hmSkelHidden === true,
+			JSON.stringify(skel),
 		);
 		await page.close();
 		await ctx.close();
