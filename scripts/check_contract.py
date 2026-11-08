@@ -46,8 +46,16 @@ CENTRAL_PACKAGES = [
     "internal/server",
 ]
 
-# A6 管辖的表：内容寻址是「可审计」的全部来源。
-DIGEST_REQUIRED_TABLES = ["artifacts", "deployments"]
+# A6 管辖的表 → 它的「内容标识」列：内容寻址是「可审计」的全部来源。
+#
+# P2 删掉了 artifacts 表（Capability Spec v3 §11.1）：产物不再是独立的一行，它就是
+# 能力行的正文算出来的值（content_hash ≡ digest，契约 §4）。所以这条断言盯的两条腿
+# 变成「能力行的 content_hash」与「部署行钉住的 digest」——继续盯 artifacts 只是在
+# 断言一段 baseline 里已经不存在于运行期的 DDL，看起来绿、其实什么都没守住。
+DIGEST_COLUMN_TABLES = {
+    "capability_versions": "content_hash",
+    "deployments": "digest",
+}
 
 # A7 管辖的目录：节点侧不得有任何「写 node_capabilities」的痕迹。
 NODE_SIDE_DIR = "cmd/agent"
@@ -146,20 +154,20 @@ def check_a5() -> list[str]:
 
 
 def check_a6(tables: dict[str, list[tuple[int, str]]]) -> list[str]:
-    """内容寻址表必须有 digest 列。"""
+    """内容寻址表必须有内容标识列（digest / content_hash）。"""
     errors = []
-    for table in DIGEST_REQUIRED_TABLES:
+    for table, column in DIGEST_COLUMN_TABLES.items():
         cols = tables.get(table)
         if not cols:
             errors.append(f"A6 自检失败：解析不到表 {table}")
             continue
         has = any(
-            re.match(r"^\s*digest\s+\w", strip_sql_comment(line), re.IGNORECASE)
+            re.match(r"^\s*" + re.escape(column) + r"\s+\w", strip_sql_comment(line), re.IGNORECASE)
             for _, line in cols
         )
         if not has:
             errors.append(
-                f"A6 (I1: 内容寻址): {table} 表缺少 digest 列 —— 没有内容寻址就没有可审计性"
+                f"A6 (I1: 内容寻址): {table} 表缺少 {column} 列 —— 没有内容寻址就没有可审计性"
             )
     return errors
 
@@ -206,7 +214,7 @@ def main() -> int:
     print(
         f"  A2/A4/A5/A6/A7 通过"
         f"（解析到 {len(tables)} 张表；检查 {len(KIND_FORBIDDEN_TABLES)} 张 kind、"
-        f"{len(DIGEST_REQUIRED_TABLES)} 张 digest、{len(CENTRAL_PACKAGES)} 个中枢包）"
+        f"{len(DIGEST_COLUMN_TABLES)} 张内容标识、{len(CENTRAL_PACKAGES)} 个中枢包）"
     )
     return 0
 

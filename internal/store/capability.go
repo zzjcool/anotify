@@ -108,7 +108,7 @@ type CapabilityVersion struct {
 // Artifact 把行拼成一份完整产物：metadata 来自列（name / version / displayName），
 // 正文来自 Spec 字段。
 //
-// 「行 → 产物」只有这一处拼装：校验、digest、写穿、回填都走它。多拼一份的后果是
+// 「行 → 产物」只有这一处拼装：校验、digest、回填、读取时拼产物都走它。多拼一份的后果是
 // 某天有人少填一个字段，digest 与产物正文悄悄不一致（症状是部署永远被判成 stale）。
 func (c *CapabilityVersion) Artifact() artifact.Artifact {
 	if c == nil {
@@ -342,7 +342,7 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 	if assignVersion {
 		c.Version = 1
 	}
-	fullArtifact, specJSON, err := prepareCapabilitySpec(c)
+	specJSON, err := prepareCapabilitySpec(c)
 	if err != nil {
 		return err
 	}
@@ -367,7 +367,7 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 		}
 		c.Version = next
 		// 版本进了 digest → 规范字节必须用定下来的版本重算一遍。
-		if fullArtifact, specJSON, err = prepareCapabilitySpec(c); err != nil {
+		if specJSON, err = prepareCapabilitySpec(c); err != nil {
 			return err
 		}
 	}
@@ -440,22 +440,10 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 		string(lifecycleJSON), c.Sticky, c.Source, hash, c.CreatedAt,
 		string(specJSON))
 	if err == nil {
-		// ⑤ artifacts 写穿（同一事务）：`deployments.artifact_id` 的外键还指着这张表，
-		//    P1 期间它只是**镜像**（读了不用它当真相，P2 删）。
-		//
-		//    只对**脚本形式**写：handler 形式没有 files，把一份没有 files 的产物推给
-		//    节点只会被拒——那正是 notify.phone 不该出现在部署面板的原因（契约 §6.1）。
-		if c.Spec.Handler == "" {
-			if _, aerr := createArtifactOn(ctx, ex, &Artifact{
-				NamespaceID:  c.NamespaceID,
-				CapabilityID: c.ID,
-				Digest:       c.Digest(),
-				Spec:         fullArtifact,
-				CreatedAt:    c.CreatedAt,
-			}); aerr != nil {
-				return fmt.Errorf("create capability: write through artifact: %w", aerr)
-			}
-		}
+		// ⑤ 没有第五步：P1 期间这里还写一行 artifacts 镜像（只为保住
+		//    deployments.artifact_id 的外键）。P2 删掉了那张表，产物改为
+		//    **从这一行正文算出来**（Capability Spec v3 §11.2，见 currentArtifactOn）。
+		//    能力行落库 = 产物就有了，不需要第二张表跟着保持一致。
 		return nil
 	}
 	if !isUniqueConstraintError(err) {
@@ -491,26 +479,28 @@ func createCapabilityTx(ctx context.Context, ex queryExec, c *CapabilityVersion,
 }
 
 // prepareCapabilitySpec 校验正文、把它归一化成 canonical 形状并写回 c.Spec，
-// 返回「整份产物的 canonical 字节」（写穿 artifacts 用）与「spec 子文档的字节」
-// （capability_versions.spec 列用）。
+// 返回「spec 子文档的字节」（capability_versions.spec 列用）。
 //
-// 两者都取自**同一次** canonical 序列化：存的正文与算 digest 的正文必须是同一串
-// 字节，否则 digest 与内容会悄悄对不上（部署永远判 stale，且看不出根因）。
-func prepareCapabilitySpec(c *CapabilityVersion) (full, specJSON []byte, err error) {
+// 归一化走的是 canonicalizeSpec —— 与算 digest 同一次序列化。存的正文与算 digest 的
+// 正文必须是同一串字节，否则 digest 与内容会悄悄对不上（部署永远收敛不了，且看不出根因）。
+//
+// P2 之后这里**不再**返回「整份产物」的字节：没有 artifacts 表可写，整份产物由
+// artifactOf(c) 在读取时从这一行拼出来（同一套 canonical 序列化，逐字节一致）。
+func prepareCapabilitySpec(c *CapabilityVersion) (specJSON []byte, err error) {
 	a := c.Artifact()
 	if verr := artifact.Validate(&a); verr != nil {
-		return nil, nil, fmt.Errorf("%w: %s", ErrCapabilityInvalid, verr.Error())
+		return nil, fmt.Errorf("%w: %s", ErrCapabilityInvalid, verr.Error())
 	}
-	spec, fullDoc, cerr := canonicalizeSpec(&a)
+	spec, _, cerr := canonicalizeSpec(&a)
 	if cerr != nil {
-		return nil, nil, cerr
+		return nil, cerr
 	}
 	c.Spec = spec
 	raw, merr := json.Marshal(c.Spec)
 	if merr != nil {
-		return nil, nil, fmt.Errorf("marshal capability spec: %w", merr)
+		return nil, fmt.Errorf("marshal capability spec: %w", merr)
 	}
-	return fullDoc, raw, nil
+	return raw, nil
 }
 
 // foldIntoExistingOn 把这次请求折叠成库里已有的那一行（幂等创建）。

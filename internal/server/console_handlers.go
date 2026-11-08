@@ -910,7 +910,7 @@ type capabilityListRequest struct {
 	Lifecycle    *store.Lifecycle `json:"lifecycle,omitempty"`
 	Source       string           `json:"source,omitempty"`
 
-	// Run 是这个能力的**实现**（可选）。有 run → 编译成一份产物并落 artifacts，
+	// Run 是这个能力的**实现**（可选）。有 run → 正文里带上 files（产物就是这一行），
 	// 之后就能在控制台点「部署」。没有 run → 纯定义（例如占位节点、内置能力）。
 	//
 	// v2 的语义变化：执行方式属于能力定义，不再由节点在 node.yaml 里自报。
@@ -1078,11 +1078,12 @@ func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	row, err := h.db.LatestArtifact(r.Context(), ns.ID, id)
+	row, err := h.db.CurrentArtifact(r.Context(), ns.ID, id)
 	if err != nil {
 		if errors.Is(err, store.ErrArtifactNotFound) {
-			// 还没产物是**正常状态**（刚定义、还没部署），但对「这一份产物」
-			// 而言就是不存在 —— 与能力不存在同一个回答，不额外泄露信息。
+			// 两种来源：能力是 handler 形式（实现编译在中枢里，没有 files 可看），
+			// 或者库里的行没有正文。对「这一份产物」而言就是不存在 —— 与能力不存在
+			// 同一个回答，不额外泄露信息。
 			notFound()
 			return
 		}
@@ -1094,13 +1095,13 @@ func (h *consoleHandler) capabilityArtifact(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	// artifacts.spec 存的是**整份产物**的 canonical JSON，run 在 spec 下面。
+	// 产物是能力行的正文拼出来的**整份** canonical JSON，run 在 spec 下面。
 	var art artifact.Artifact
 	if err := json.Unmarshal(row.Spec, &art); err != nil {
 		// 解不开不是「不存在」：这是库里的数据坏了，如实报 500（前端会显示载入失败 + 重试）。
 		slog.Error("decode artifact spec failed",
 			"event", "console.caps.artifact_decode_failed",
-			"namespace_id", ns.ID, "capability_id", id, "artifact_id", row.ID, "error", err.Error())
+			"namespace_id", ns.ID, "capability_id", id, "digest", row.Digest, "error", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
@@ -1231,7 +1232,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		// ——藏起来会让人以为这个能力没有超时。
 		//
 		// **与 Spec 同源**：两者都从同一份 `c.Spec` 算出来（P1-b2 之前这里是读
-		// artifacts 表解一份产物，那是第二份真相）。P4 删掉这个旧投影。
+		// artifacts 表解一份产物——那张表 P2 已经删了）。P4 删掉这个旧投影。
 		Run *capabilityRunView `json:"run,omitempty"`
 		// Spec 是能力正文（Capability Spec v3 §3）在**列表**里的投影。
 		//
@@ -1239,7 +1240,7 @@ func (h *consoleHandler) listCapabilities(w http.ResponseWriter, r *http.Request
 		// 会被白涨几百 KB，而列表页一行脚本也不展示（详情走懒加载的
 		// GET /v1/capabilities/{id}/artifact）。所以 files 换成 `{count, bytes}` 摘要。
 		//
-		// 与旧的 `run` 投影**同源**：两者都从 `c.Spec` 算，不从 artifacts 表反推。
+		// 与旧的 `run` 投影**同源**：两者都从 `c.Spec` 算（P2 起也没有别的表可反推了）。
 		Spec capabilitySpecView `json:"spec"`
 	}
 	// 每种能力由哪些节点声明。
@@ -1473,16 +1474,16 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		// 已有那一行），此时请求里的版本号是过期的。行上的 Spec 才是权威的那份正文
 		// ——从它拼产物，与 capability_versions.spec 与 content_hash 天然同源。
 		built := c.Artifact()
-		saved, digest, err := storeArtifact(r.Context(), h.db, ns.ID, c.ID, &built)
+		saved, digest, err := newStoreArtifact(ns.ID, c.ID, &built)
 		if err != nil {
-			// 能力已经建好了（append-only，无法回滚），产物落库失败只能如实报错：
-			// 用户看到的应该是「能力建了但产物没存，请重试」，而不是一个假的 200。
-			slog.Error("store artifact failed",
+			// 纯计算也能失败（canonical 序列化 / digest）——那说明正文本身有问题，
+			// 不是「能力建了但产物没存」：产物就是这一行的正文，没有第二步可失败。
+			slog.Error("build artifact failed",
 				"event", "console.caps.artifact_failed",
 				"namespace_id", ns.ID, "name", c.Name, "version", c.Version, "error", err.Error())
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "capability created but artifact could not be stored: " + err.Error(),
-				"code":  "artifact_store_failed",
+				"error": "capability created but artifact could not be built: " + err.Error(),
+				"code":  "artifact_build_failed",
 			})
 			return
 		}
@@ -2638,8 +2639,8 @@ func intParam(raw string, def, min, max int) int {
 // capabilityRun 返回一个能力「怎么跑」的旧投影（P4 删）。
 //
 // **与 spec 同源**：P1-b2 之前这里要读一次 artifacts 表、解一份完整产物才能拿到
-// run；现在正文就在能力行上（`c.Spec.Run`），还绕到 artifacts 表反推就是第二份真相
-// （artifacts 只是 P1 的写穿镜像，P2 整张表删除）。顺带的好处：列表不再每个能力
+// run；现在正文就在能力行上（`c.Spec.Run`），而 artifacts 那张镜像表 P2 已整张删除
+// （Capability Spec v3 §11）——绕过去反推既没有表，也是第二份真相。顺带的好处：列表不再每个能力
 // 一次额外查询。
 //
 // 没有 run（handler 形式的内置执行器）返回 nil：这是**正常状态**，前端据此显示「—」，

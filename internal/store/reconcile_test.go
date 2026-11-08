@@ -25,13 +25,25 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
-// 对账用例用的 digest（形状与 artifact.Digest 一致，这里不需要真算）。
-const (
-	rcDigestDesired = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	rcDigestLocal   = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-)
+// rcDigestLocal 是「节点上那份，与中枢期望不同的」digest（形状合法即可，不需要真算）。
+//
+// 中枢的**期望值**不再是常量：P2 起它就是能力行的 content_hash（产物是能力行正文
+// 算出来的，没有 artifacts 表），所以用例用 rcCapDigest 现取。
+const rcDigestLocal = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+// rcCapDigest 返回某能力**当前**的产物 digest —— 也就是中枢对账时用的期望值。
+func rcCapDigest(t *testing.T, db *DB, nsID, name string, version int) string {
+	t.Helper()
+	c, err := db.GetCapability(context.Background(), nsID, name, version)
+	if err != nil {
+		t.Fatalf("get capability %s@%d: %v", name, version, err)
+	}
+	return c.Digest()
+}
 
 // rcApplied 拼一条 applied[]（少打点字）。
 func rcApplied(name string, version int, digest string) AppliedRef {
@@ -39,13 +51,24 @@ func rcApplied(name string, version int, digest string) AppliedRef {
 }
 
 // rcSeedCaps 定义一批能力，返回 name@version → id 的映射。
+//
+// 用**脚本形式**（不是 mkCap + withSpec 的 handler noop）：对账用例里
+// rcDeploymentFixture 要真的部署它们，而 handler 形式刻意不可部署（契约 §5）。
 func rcSeedCaps(t *testing.T, db *DB, nsID string, names ...string) map[string]string {
 	t.Helper()
 	ctx := context.Background()
 	out := map[string]string{}
 	for _, name := range names {
 		c := mkCap(nsID, name, 1, []string{"fix"})
-		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
+		c.Spec = artifact.Spec{
+			Params:  c.ParamsSchema,
+			Outputs: c.Outputs,
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files:      map[string]string{"run.sh": "#!/bin/bash\nexit 0\n"},
+			},
+		}
+		if err := db.CreateCapability(ctx, c); err != nil {
 			t.Fatalf("create capability %s: %v", name, err)
 		}
 		out[name] = c.ID
@@ -80,7 +103,7 @@ func TestReconcileAppliedRoundTrip(t *testing.T) {
 	ids := rcSeedCaps(t, db, nsID, "review", "test")
 
 	got, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
-		rcApplied("review", 1, rcDigestDesired),
+		rcApplied("review", 1, rcCapDigest(t, db, nsID, "review", 1)),
 		rcApplied("test", 1, ""),
 	})
 	if err != nil {
@@ -116,7 +139,7 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 	rcSeedCaps(t, db, nsID, "review", "test")
 
 	if _, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
-		rcApplied("review", 1, rcDigestDesired),
+		rcApplied("review", 1, rcCapDigest(t, db, nsID, "review", 1)),
 		rcApplied("test", 1, ""),
 	}); err != nil {
 		t.Fatalf("first reconcile: %v", err)
@@ -127,7 +150,7 @@ func TestReconcileAppliedFullReplace(t *testing.T) {
 
 	// 节点上删掉了 test 的缓存（或升级后不再需要它）→ 只剩 review
 	if _, _, err := db.ReconcileApplied(ctx, nsID, n.ID, []AppliedRef{
-		rcApplied("review", 1, rcDigestDesired),
+		rcApplied("review", 1, rcCapDigest(t, db, nsID, "review", 1)),
 	}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
@@ -164,19 +187,20 @@ func TestReconcileAppliedToleratesStaleCache(t *testing.T) {
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	rcSeedCaps(t, db, nsID, "review")
+	desired := rcCapDigest(t, db, nsID, "review", 1)
 
 	fresh, _ := mkNode(t, db, nsID, "fresh")
 	withOld, _ := mkNode(t, db, nsID, "with-old")
 
 	// withOld 先成功对账一份，用来断言「含陈旧项的对账仍会重建归属」
 	if _, _, err := db.ReconcileApplied(ctx, nsID, withOld.ID,
-		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
+		[]AppliedRef{rcApplied("review", 1, desired)}); err != nil {
 		t.Fatalf("baseline reconcile: %v", err)
 	}
 
 	for _, node := range []*Node{fresh, withOld} {
 		ids, stale, err := db.ReconcileApplied(ctx, nsID, node.ID, []AppliedRef{
-			rcApplied("review", 1, rcDigestDesired),
+			rcApplied("review", 1, desired),
 			rcApplied("does-not-exist", 9, ""),
 		})
 		if err != nil {
@@ -244,31 +268,26 @@ func TestReconcileAppliedListsAllStale(t *testing.T) {
 	}
 }
 
-// rcDeploymentFixture 造一台节点 + 一个能力 + 一份产物 + 一条 pending 部署。
-func rcDeploymentFixture(t *testing.T, db *DB, nsID string) (node *Node, dp *Deployment, capID string) {
+// rcDeploymentFixture 造一台节点 + 一个能力 + 一条 pending 部署。
+//
+// 第三个返回值是**中枢期望的 digest**（= 能力行的 digest）：对账用例要拿它去喂
+// hello.applied[]，所以由 fixture 现算，别在用例里写死一个常量。
+func rcDeploymentFixture(t *testing.T, db *DB, nsID string) (node *Node, dp *Deployment, capID, desired string) {
 	t.Helper()
 	ctx := context.Background()
 	ids := rcSeedCaps(t, db, nsID, "review")
 	capID = ids["review"]
 	node, _ = mkNode(t, db, nsID, "mbp")
 
-	art, err := db.CreateArtifact(ctx, &Artifact{
-		NamespaceID:  nsID,
-		CapabilityID: capID,
-		Digest:       rcDigestDesired,
-		Spec:         []byte(`{"apiVersion":"anotify/v1"}`),
-	})
-	if err != nil {
-		t.Fatalf("create artifact: %v", err)
-	}
-	dp, err = db.CreateDeployment(ctx, nsID, node.ID, art.ID)
+	var err error
+	dp, err = db.CreateDeployment(ctx, nsID, node.ID, capID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}
 	if dp.State != DeploymentPending {
 		t.Fatalf("新建部署的 state = %q, want %q", dp.State, DeploymentPending)
 	}
-	return node, dp, capID
+	return node, dp, capID, dp.Digest
 }
 
 // TestReconcileAppliedDigestMismatchMarksPending applied 的 digest 与中枢期望
@@ -282,7 +301,7 @@ func TestReconcileAppliedDigestMismatchMarksPending(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	node, dp, _ := rcDeploymentFixture(t, db, nsID)
+	node, dp, _, desired := rcDeploymentFixture(t, db, nsID)
 
 	// 节点上缓存的是另一份产物（旧 digest，或本地被改过）
 	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
@@ -297,7 +316,7 @@ func TestReconcileAppliedDigestMismatchMarksPending(t *testing.T) {
 	if got.State != DeploymentPending {
 		t.Fatalf("digest 不一致时 state = %q, want %q（要重新下发）", got.State, DeploymentPending)
 	}
-	for _, want := range []string{rcDigestLocal, rcDigestDesired} {
+	for _, want := range []string{rcDigestLocal, desired} {
 		if !strings.Contains(got.Reason, want) {
 			t.Errorf("reason %q 里没有 %q（两端 digest 都要给，否则排障只能靠猜）", got.Reason, want)
 		}
@@ -313,10 +332,10 @@ func TestReconcileAppliedDigestMatchMarksApplied(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	node, dp, _ := rcDeploymentFixture(t, db, nsID)
+	node, dp, _, desired := rcDeploymentFixture(t, db, nsID)
 
 	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
-		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
+		[]AppliedRef{rcApplied("review", 1, desired)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}
 	got, err := db.GetDeployment(ctx, nsID, dp.ID)
@@ -337,7 +356,7 @@ func TestReconcileAppliedDigestMatchMarksApplied(t *testing.T) {
 		t.Fatalf("reconcile to local: %v", err)
 	}
 	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
-		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
+		[]AppliedRef{rcApplied("review", 1, desired)}); err != nil {
 		t.Fatalf("reconcile back to applied: %v", err)
 	}
 	got, err = db.GetDeployment(ctx, nsID, dp.ID)
@@ -358,7 +377,7 @@ func TestReconcileAppliedFeedsDispatch(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	node, _, capID := rcDeploymentFixture(t, db, nsID)
+	node, _, capID, desired := rcDeploymentFixture(t, db, nsID)
 
 	// 部署行已存在但节点还没 hello → 归属还是空的
 	if got, err := db.NodesForCapability(ctx, nsID, capID); err != nil {
@@ -368,7 +387,7 @@ func TestReconcileAppliedFeedsDispatch(t *testing.T) {
 	}
 
 	if _, _, err := db.ReconcileApplied(ctx, nsID, node.ID,
-		[]AppliedRef{rcApplied("review", 1, rcDigestDesired)}); err != nil {
+		[]AppliedRef{rcApplied("review", 1, desired)}); err != nil {
 		t.Fatalf("reconcile applied: %v", err)
 	}
 	got, err := db.NodesForCapability(ctx, nsID, capID)

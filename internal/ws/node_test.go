@@ -701,21 +701,13 @@ func TestHelloAppliedDigestMismatchResendsDesiredArtifact(t *testing.T) {
 	f := newNodeFixture(t)
 	ctx := context.Background()
 
-	// 中枢侧：给 review@1 登记一份产物并部署给这台节点（state=pending）
+	// 中枢侧：把 review@1 部署给这台节点（state=pending）。
+	// 产物是能力行的正文算出来的（P2 删了 artifacts 表），期望 digest 就是它的 digest。
 	cap1, err := f.db.GetCapability(ctx, f.nsID, "review", 1)
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
-	art, err := f.db.CreateArtifact(ctx, &store.Artifact{
-		NamespaceID:  f.nsID,
-		CapabilityID: cap1.ID,
-		Digest:       "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-		Spec:         []byte(`{"apiVersion":"anotify/v1","kind":"Capability","metadata":{"name":"review","version":1}}`),
-	})
-	if err != nil {
-		t.Fatalf("create artifact: %v", err)
-	}
-	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID)
+	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, cap1.ID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}
@@ -736,8 +728,8 @@ func TestHelloAppliedDigestMismatchResendsDesiredArtifact(t *testing.T) {
 	if got.State != store.DeploymentPending {
 		t.Fatalf("hello 对账后 state = %q, want %q（要重新下发）", got.State, store.DeploymentPending)
 	}
-	if !strings.Contains(got.Reason, art.Digest) {
-		t.Fatalf("reason %q 里没有中枢期望的 digest %s", got.Reason, art.Digest)
+	if !strings.Contains(got.Reason, cap1.Digest()) {
+		t.Fatalf("reason %q 里没有中枢期望的 digest %s", got.Reason, cap1.Digest())
 	}
 
 	// 2) 期望的那份产物真的推下来了（节点据此覆盖本地那份）

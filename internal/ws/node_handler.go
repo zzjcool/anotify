@@ -528,9 +528,14 @@ func (s *nodeSession) handleHello(ctx context.Context, f *HelloFrame, ver helloV
 // resendDeployments 把「中枢期望、节点上还没有（或还是旧的那份）」的产物补发下去。
 //
 // 中枢是部署的唯一写者，所以这里不做“本地变体”协商：不一致就覆盖。它同时覆盖两个场景：
-//   - 重连后节点缓存的 digest 不是中枢期望的那份（换了部署目标 / 产物在中枢更新过）；
+//   - 重连后节点缓存的 digest 不是中枢期望的那份（换了部署目标 / 内容在中枢更新过）；
 //   - 部署时节点离线：行建好了、帧没发出去，等它上线补推
 //     （原来只有一句“节点上线时会补推”的注释，代码里没有）。
+//
+// 期望值（r.Digest）与帧正文（r.Spec）都来自**能力行**：P2 删掉 artifacts 表之后，
+// 产物就是 capability_versions 的正文拼出来的整份 canonical JSON（store 的
+// DeploymentsForNode 负责，见 Capability Spec v3 §11.2）。两者同源是必须的——
+// 节点拿正文重算 digest，中枢拿能力行算期望值，分叉的症状是「每次连上来都重推一遍」。
 //
 // 失败只记日志、不断连接：补推不是握手的前置条件，能接活比“产物一致”更要紧，
 // 下一次连上来还会再试。

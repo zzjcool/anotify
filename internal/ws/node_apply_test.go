@@ -19,37 +19,23 @@ import (
 //
 // 所以这里的断言必须落在**库里的 state** 上，而不是「回了什么帧」。
 
-// createDeploymentFixture 造一套「能力定义 + 产物 + 部署行」，返回部署 id。
+// createDeploymentFixture 造一套「能力定义 + 部署行」，返回 (部署 id, 中枢期望的 digest)。
+//
+// P2 起产物不是独立的行：它就是能力行的正文（digest = content_hash），
+// 所以夹具只需要部署这个能力，期望 digest 由 store 自己算出来。
 func createDeploymentFixture(t *testing.T, f *nodeFixture) (deployID string, digest string) {
 	t.Helper()
 	ctx := context.Background()
 
-	art, err := f.db.CreateArtifact(ctx, &store.Artifact{
-		NamespaceID:  f.nsID,
-		CapabilityID: mustCapabilityID(t, f, "review", 1),
-		Digest:       "sha256:" + repeatByte('a', 64),
-		Spec:         []byte(`{"apiVersion":"anotify/v1","kind":"Capability"}`),
-	})
-	if err != nil {
-		t.Fatalf("create artifact: %v", err)
-	}
-
-	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, art.ID)
+	capID := mustCapabilityID(t, f, "review", 1)
+	dp, err := f.db.CreateDeployment(ctx, f.nsID, f.node.ID, capID, "")
 	if err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}
 	if dp.State != store.DeploymentPending {
 		t.Fatalf("新建部署 state = %q，期望 pending", dp.State)
 	}
-	return dp.ID, art.Digest
-}
-
-func repeatByte(b byte, n int) string {
-	out := make([]byte, n)
-	for i := range out {
-		out[i] = b
-	}
-	return string(out)
+	return dp.ID, dp.Digest
 }
 
 func mustCapabilityID(t *testing.T, f *nodeFixture, name string, version int) string {

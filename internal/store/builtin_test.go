@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -623,7 +624,7 @@ func TestExampleBuiltinScriptEmitsDeclaredPort(t *testing.T) {
 // TestExampleBuiltinIsUsable 守三件事（缺一条，「新账号第一次就能跑通」就是空话）：
 //
 //	① 产物本身合法（artifact.Validate 通过）—— 不合法的话部署时才会报错
-//	② 播种后 artifacts 表里真有它，且 digest 与本地重算一致（内容寻址）
+//	② 播种后**能力行**就是那份产物，digest 与本地重算一致（内容寻址）
 //	③ 重复播种幂等（老库升级会再跑一遍，不能插出第二行）
 func TestExampleBuiltinIsUsable(t *testing.T) {
 	ctx := context.Background()
@@ -638,36 +639,43 @@ func TestExampleBuiltinIsUsable(t *testing.T) {
 		t.Fatalf("产物 outputs=%v 与能力定义 outputs=%v 不一致", got, want)
 	}
 
-	// ② 播种后有 artifact 行，digest 一致
+	// ② 播种后按 digest 就能取到产物（P2 起产物 = 能力行正文，没有 artifacts 表）
 	wantDigest, err := artifact.Digest(ExampleCapability.Artifact)
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
 	got, err := db.GetArtifactByDigest(ctx, nsID, wantDigest)
 	if err != nil {
-		t.Fatalf("新命名空间里应该已经有示例能力的产物（否则部署不了）：%v", err)
+		t.Fatalf("新命名空间里应该已经能取到示例能力的产物（否则部署不了）：%v", err)
 	}
 	if got.Digest != wantDigest {
 		t.Fatalf("artifact digest = %q, want %q", got.Digest, wantDigest)
 	}
 
-	// ③ 重复播种幂等：行数不变
-	before := countRows(t, db, "artifacts", "namespace_id = ?", nsID)
+	// ③ 重复播种幂等：能力行与部署行都不变
+	beforeCaps := countRows(t, db, "capability_versions", "namespace_id = ?", nsID)
+	beforeDeps := countRows(t, db, "deployments", "namespace_id = ?", nsID)
 	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
 		t.Fatalf("reseed: %v", err)
 	}
-	after := countRows(t, db, "artifacts", "namespace_id = ?", nsID)
-	if after != before {
-		t.Fatalf("重复播种把 artifact 行数从 %d 变成了 %d（幂等破了）", before, after)
+	if after := countRows(t, db, "capability_versions", "namespace_id = ?", nsID); after != beforeCaps {
+		t.Fatalf("重复播种把能力行数从 %d 变成了 %d（幂等破了）", beforeCaps, after)
+	}
+	if after := countRows(t, db, "deployments", "namespace_id = ?", nsID); after != beforeDeps {
+		t.Fatalf("重复播种把部署行数从 %d 变成了 %d（幂等破了）", beforeDeps, after)
 	}
 }
 
-// TestExampleBuiltinArtifactUpdateRepointsDeployment 内置产物更新后（比如修了脚本的 bug），
-// 已有部署会被自动指到新产物上并回到 pending，等节点上线时 ws.resendDeployments 补推——
+// TestExampleBuiltinArtifactUpdateRepointsDeployment 内置能力的内容更新后（比如修了示例里的
+// bug），已有部署会被打回 pending 并等节点上线时 ws.resendDeployments 补推——
 // 不需要人去控制台逐台重部署。
 //
-// 这是“中枢覆盖”在播种侧的对应物：播种幂等键是 name@version，所以修脚本不会
-// 换能力行，只能靠这里把已有的部署行指过去（否则旧 digest 会永远指着旧内容）。
+// 这是“中枢覆盖”在播种侧的对应物：播种幂等键是 name@version，所以修内容不会换能力行，
+// 只能靠这里把已有的部署行对齐到**当前 digest**（否则旧 digest 会永远指着旧内容）。
+//
+// P2 之后没有 artifacts 表：对齐的就是 deployments.digest 列与能力行的 content_hash，
+// 而**期望值**永远是能力行（见 deploymentDigestSQL），所以这里断言两件事：
+// 列被对齐了，状态被打回 pending。
 func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -677,20 +685,20 @@ func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
-	latest, err := db.LatestArtifact(ctx, nsID, cap1.ID)
-	if err != nil {
-		t.Fatalf("latest artifact: %v", err)
+	wantDigest := cap1.Digest()
+	if wantDigest == "" {
+		t.Fatal("示例能力没有 content_hash")
 	}
 
-	// 造一份“旧产物”的已应用部署（模拟上一版播种出来的那份）
+	// 造一条「指向历史 digest 且已 applied」的部署行（模拟上一版播种出来的那份）
 	node, _ := mkNode(t, db, nsID, "box")
-	old := dpArtifact(t, db, nsID, cap1.ID, dpDigest("dead"), `{"old":true}`)
-	dep, err := db.CreateDeployment(ctx, nsID, node.ID, old.ID)
-	if err != nil {
-		t.Fatalf("create deployment: %v", err)
-	}
-	if err := db.MarkDeployResult(ctx, nsID, dep.ID, DeploymentApplied, ""); err != nil {
-		t.Fatalf("mark applied: %v", err)
+	stale := "sha256:" + "dead" + strings.Repeat("0", 60)
+	depID := NewDeploymentID()
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		depID, nsID, node.ID, cap1.ID, stale, DeploymentApplied, "", Now(), Now()); err != nil {
+		t.Fatalf("insert stale deployment: %v", err)
 	}
 
 	// 重启（= 重新播种）
@@ -706,15 +714,17 @@ func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 		t.Fatalf("deployments 行数 = %d, want 1（一个能力一条期望）", len(rows))
 	}
 	got := rows[0]
-	if got.ArtifactID != latest.ID || got.Digest != latest.Digest {
-		t.Fatalf("部署没被指到新产物：artifact=%s digest=%s，want %s / %s",
-			got.ArtifactID, got.Digest, latest.ID, latest.Digest)
+	if got.Digest != wantDigest {
+		t.Fatalf("部署没被对齐到当前内容：digest=%s，want %s", got.Digest, wantDigest)
+	}
+	if n := countRows(t, db, "deployments", "id = ? AND digest = ?", depID, wantDigest); n != 1 {
+		t.Fatalf("deployments.digest 列没被对齐（还是历史值），行数 = %d", n)
 	}
 	if got.State != DeploymentPending {
 		t.Fatalf("重指后 state = %q, want %q（等节点上线补推）", got.State, DeploymentPending)
 	}
 	if !strings.Contains(got.Reason, "builtin artifact updated") {
-		t.Fatalf("reason = %q，应该说明是内置产物更新导致的", got.Reason)
+		t.Fatalf("reason = %q，应该说明是内置内容更新导致的", got.Reason)
 	}
 
 	// 幂等：再一次播种不会把 pending 打回别处、也不会变出第二行
@@ -725,30 +735,23 @@ func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list deployments again: %v", err)
 	}
-	if len(again) != 1 || again[0].ArtifactID != latest.ID {
+	if len(again) != 1 || again[0].Digest != wantDigest || again[0].ID != depID {
 		t.Fatalf("重复播种把部署弄乱了: %+v", again)
 	}
 
-	// 旧库形状：同一个能力上两行（旧版允许并存）。播种要收敛成一行，
+	// 旧库形状：同一 (节点, 能力) 上两行不同 digest。播种要收敛成一行，
 	// 而且**保留最新那条**（它才是用户最后一次部署的意图）。
-	// 先清掉当前那条，才能造出“两行指向不同产物”的旧库形状。
-	if _, err := db.ExecContext(ctx, `DELETE FROM deployments WHERE namespace_id = ? AND node_id = ?`, nsID, node.ID); err != nil {
-		t.Fatalf("clear deployments: %v", err)
-	}
-	newerID := NewDeploymentID()
 	now := Now() + 1000
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
+		`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		newerID, nsID, node.ID, latest.ID, latest.Digest, DeploymentApplied, "", now, now); err != nil {
-		t.Fatalf("insert legacy duplicate: %v", err)
-	}
-	// 再加一条更早的旧行（模拟旧版本留下的“历史”）
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO deployments (id, namespace_id, node_id, artifact_id, digest, state, reason, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		NewDeploymentID(), nsID, node.ID, old.ID, old.Digest, DeploymentApplied, "", now-2000, now-2000); err != nil {
+		NewDeploymentID(), nsID, node.ID, cap1.ID, stale, DeploymentApplied, "", now-2000, now-2000); err != nil {
 		t.Fatalf("insert legacy stale row: %v", err)
+	}
+	// 让 depID 成为「最新那条」：它不是最新就说明用例造错了夹具。
+	if _, err := db.ExecContext(ctx,
+		`UPDATE deployments SET created_at = ?, updated_at = ? WHERE id = ?`, now, now, depID); err != nil {
+		t.Fatalf("pin created_at: %v", err)
 	}
 
 	if err := db.SeedBuiltinCapabilities(ctx, nsID); err != nil {
@@ -761,40 +764,52 @@ func TestExampleBuiltinArtifactUpdateRepointsDeployment(t *testing.T) {
 	if len(legacy) != 1 {
 		t.Fatalf("旧库多行没被收敛: %d 行", len(legacy))
 	}
-	if legacy[0].ID != newerID {
-		t.Fatalf("收敛时保留的不是最新那条：id=%s, want %s", legacy[0].ID, newerID)
+	if legacy[0].ID != depID {
+		t.Fatalf("收敛时保留的不是最新那条：id=%s, want %s", legacy[0].ID, depID)
 	}
-	if legacy[0].ArtifactID != latest.ID {
-		t.Fatalf("收敛后没指到当前产物: %s", legacy[0].ArtifactID)
+	if legacy[0].Digest != wantDigest {
+		t.Fatalf("收敛后没对齐到当前内容: %s, want %s", legacy[0].Digest, wantDigest)
 	}
 }
 
-// TestExampleBuiltinBackfillsExistingNamespace：老命名空间（能力已存在、产物没有）
-// 在 Backfill 之后也要拿到产物 —— 这是升级路径，光靠"新建时播种"覆盖不到。
-func TestExampleBuiltinBackfillsExistingNamespace(t *testing.T) {
+// TestExampleBuiltinContentDerivedNotBackfilled 产物是**派生**的：能力行在，产物就在。
+//
+// P1 期间「老命名空间有定义、没有产物行」要靠 BackfillBuiltinCapabilities 补一行；
+// P2 删掉 artifacts 表之后这个失败模式整体消失了——这正是要钉住的东西：
+// 新命名空间与老命名空间从同一行正文算出同一份产物，重播（幂等）不会改变 digest。
+func TestExampleBuiltinContentDerivedNotBackfilled(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 	nsID, _ := newTestNS(t, db)
 
-	var capID string
+	var capID, hashBefore string
 	if err := db.QueryRowContext(ctx,
-		`SELECT id FROM capability_versions WHERE namespace_id = ? AND name = ?`,
-		nsID, ExampleCapability.Name).Scan(&capID); err != nil {
+		`SELECT id, content_hash FROM capability_versions WHERE namespace_id = ? AND name = ?`,
+		nsID, ExampleCapability.Name).Scan(&capID, &hashBefore); err != nil {
 		t.Fatalf("capability 应该已被播种：%v", err)
 	}
-	// 模拟"老库"：能力在，产物不在
-	if _, err := db.ExecContext(ctx, `DELETE FROM artifacts WHERE namespace_id = ?`, nsID); err != nil {
-		t.Fatalf("清掉产物: %v", err)
-	}
-	if n := countRows(t, db, "artifacts", "namespace_id = ?", nsID); n != 0 {
-		t.Fatalf("前置条件：产物应为 0 行，实际 %d", n)
+	first, err := db.CurrentArtifact(ctx, nsID, capID)
+	if err != nil {
+		t.Fatalf("播种后就应该有产物（派生，不需要回填）：%v", err)
 	}
 
 	if _, err := db.BackfillBuiltinCapabilities(ctx); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
-	if n := countRows(t, db, "artifacts", "namespace_id = ? AND capability_id = ?", nsID, capID); n != 1 {
-		t.Fatalf("backfill 后示例能力的产物应有 1 行，实际 %d", n)
+	second, err := db.CurrentArtifact(ctx, nsID, capID)
+	if err != nil {
+		t.Fatalf("backfill 之后取不到产物: %v", err)
+	}
+	if second.Digest != first.Digest || !bytes.Equal(second.Spec, first.Spec) {
+		t.Fatalf("幂等重播改变了产物: %s → %s", first.Digest, second.Digest)
+	}
+	var hashAfter string
+	if err := db.QueryRowContext(ctx,
+		`SELECT content_hash FROM capability_versions WHERE id = ?`, capID).Scan(&hashAfter); err != nil {
+		t.Fatalf("read content_hash: %v", err)
+	}
+	if hashAfter != hashBefore {
+		t.Fatalf("幂等重播改变了 content_hash: %s → %s", hashBefore, hashAfter)
 	}
 }
 

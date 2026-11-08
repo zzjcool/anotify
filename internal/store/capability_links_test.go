@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 本文件钉住「能力 + 下游边（+ 产物）一次提交」的**原子性**。
@@ -17,7 +19,8 @@ import (
 //
 //	① capability_versions 里没有这一行（能力没建成）
 //	② edges 里没有它发出去的边（边一条都没有）
-//	③ artifacts 里没有它的产物（产物也没漏在事务外）
+//	③ 产物**不是独立行**（P2 删了 artifacts 表）：它由能力行算出来，所以①成立
+//	   就等于③成立 —— 这里仍然显式断言「产物查不到」，防止有人重新引入一张镜像表。
 //
 // 只有三个面都为 0，才说明「要么全成，要么全不成」是真的。
 
@@ -35,7 +38,7 @@ func linksTarget(t *testing.T, db *DB, nsID, name string, props string) *Capabil
 }
 
 // assertNothingPersisted 断言「这个能力名在三个面上全是 0」。
-func assertNothingPersisted(t *testing.T, db *DB, nsID, capName, artifactDigest string) {
+func assertNothingPersisted(t *testing.T, db *DB, nsID, capName string) {
 	t.Helper()
 	if n := countRows(t, db, "capability_versions", "namespace_id = ? AND name = ?",
 		nsID, capName); n != 0 {
@@ -44,11 +47,29 @@ func assertNothingPersisted(t *testing.T, db *DB, nsID, capName, artifactDigest 
 	if n := countRows(t, db, "edges", "namespace_id = ? AND from_ref = ?", nsID, capName); n != 0 {
 		t.Fatalf("回滚失败：edges 里留下了 %d 条从 %s 出发的边", n, capName)
 	}
-	if artifactDigest != "" {
-		if n := countRows(t, db, "artifacts", "namespace_id = ? AND digest = ?",
-			nsID, artifactDigest); n != 0 {
-			t.Fatalf("回滚失败：artifacts 里留下了 %d 行 digest=%s", n, artifactDigest)
+	if tableExists(t, db, "artifacts") {
+		t.Fatalf("artifacts 表又回来了：产物是能力行算出来的派生值（Capability Spec v3 §11）")
+	}
+}
+
+// realBuild 是「按权威行构建产物」的标准 builder（与服务端 newStoreArtifact 同口径）。
+//
+// P2 起产物不落库，builder 的职责变成**用另一条路径再算一次**：所以它必须真的从
+// 能力行算 digest 与 canonical 字节，编一个 digest 出来会被 verifyBuiltArtifact 拒掉。
+func realBuild(t *testing.T) ArtifactBuilder {
+	t.Helper()
+	return func(cv *CapabilityVersion) (*Artifact, error) {
+		a := cv.Artifact()
+		spec, err := artifact.CanonicalJSON(&a)
+		if err != nil {
+			return nil, err
 		}
+		return &Artifact{
+			NamespaceID:  cv.NamespaceID,
+			CapabilityID: cv.ID,
+			Digest:       cv.Digest(),
+			Spec:         spec,
+		}, nil
 	}
 }
 
@@ -173,16 +194,8 @@ func TestCreateCapabilityWithLinksRollsBackOnBadLink(t *testing.T) {
 			nsID, _ := newTestNS(t, db)
 			target := linksTarget(t, db, nsID, "notify.send", `{"text":{"type":"string"}}`)
 
-			// 产物也一起提交：产物行漏在事务外就还是半成品，所以每个失败用例都带上它。
-			digest := "sha256:" + strings.Repeat("ab", 32)
-			build := func(cv *CapabilityVersion) (*Artifact, error) {
-				return &Artifact{
-					NamespaceID:  cv.NamespaceID,
-					CapabilityID: cv.ID,
-					Digest:       digest,
-					Spec:         []byte(`{"kind":"capability"}`),
-				}, nil
-			}
+			// 产物也一起构建：素材与真实路径一致（从权威行算），失败用例同样带上它。
+			build := realBuild(t)
 
 			c := mkCap(nsID, "chain", 1, []string{"done", "failed"})
 			_, err := db.CreateCapabilityWithLinksAndArtifact(ctx, withSpec(c), tc.links(nsID, target), build, false)
@@ -196,7 +209,7 @@ func TestCreateCapabilityWithLinksRollsBackOnBadLink(t *testing.T) {
 				t.Fatalf("错误里没有原因 %q: %v", tc.wantSub, err)
 			}
 			// 事务回滚的三个面
-			assertNothingPersisted(t, db, nsID, "chain", digest)
+			assertNothingPersisted(t, db, nsID, "chain")
 		})
 	}
 }
@@ -225,18 +238,30 @@ func TestCreateCapabilityWithLinksArtifactBuildFailureRollsBack(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("原始错误必须可 unwrap: %v", err)
 	}
-	assertNothingPersisted(t, db, nsID, "chain", "")
+	assertNothingPersisted(t, db, nsID, "chain")
 }
 
-// TestCreateCapabilityWithLinksArtifactInTx：产物与能力/边同一个事务，成功时三个面都在。
+// TestCreateCapabilityWithLinksArtifactInTx：成功时能力 / 边 / 产物三个面都在。
+//
+// 产物的「在」在 P2 之后意味着：**能力行的正文算得出它**，且回执里的 digest 与
+// 能力行的 content_hash 是同一个值（verifyBuiltArtifact 在事务内就对过账）。
 func TestCreateCapabilityWithLinksArtifactInTx(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 	target := linksTarget(t, db, nsID, "notify.send", "")
 
-	digest := "sha256:" + strings.Repeat("cd", 32)
+	// 脚本形式（不是 handler 占位）：只有它才有可部署的产物（契约 §5）。
 	c := mkCap(nsID, "chain", 1, []string{"done"})
+	c.Spec = artifact.Spec{
+		Params:  c.ParamsSchema,
+		Outputs: c.Outputs,
+		Run: artifact.Run{
+			Entrypoint: "run.sh",
+			Files:      map[string]string{"run.sh": "#!/bin/bash\nexit 0\n"},
+		},
+	}
+	inner := realBuild(t)
 	res, err := db.CreateCapabilityWithLinksAndArtifact(ctx, withSpec(c),
 		[]LinkSpec{{FromPort: "done", ToRef: target.Name}},
 		func(cv *CapabilityVersion) (*Artifact, error) {
@@ -244,22 +269,20 @@ func TestCreateCapabilityWithLinksArtifactInTx(t *testing.T) {
 			if cv.ID == "" || cv.Version != 1 {
 				t.Fatalf("回调拿到的能力行不是权威行: %+v", cv)
 			}
-			return &Artifact{
-				NamespaceID:  cv.NamespaceID,
-				CapabilityID: cv.ID,
-				Digest:       digest,
-				Spec:         []byte(`{"kind":"capability"}`),
-			}, nil
+			return inner(cv)
 		}, false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if res.Artifact == nil || res.Artifact.Digest != digest || res.Artifact.CapabilityID != c.ID {
+	if res.Artifact == nil || res.Artifact.CapabilityID != c.ID {
 		t.Fatalf("回执里的产物不对: %+v", res.Artifact)
 	}
-	saved, err := db.GetArtifactByDigest(ctx, nsID, digest)
+	if res.Artifact.Digest != c.Digest() {
+		t.Fatalf("回执里的 digest = %q, want 能力行的 %q", res.Artifact.Digest, c.Digest())
+	}
+	saved, err := db.GetArtifactByDigest(ctx, nsID, c.Digest())
 	if err != nil {
-		t.Fatalf("产物没落库: %v", err)
+		t.Fatalf("按能力 digest 取不到产物: %v", err)
 	}
 	if saved.CapabilityID != c.ID {
 		t.Fatalf("产物挂错了能力: %s != %s", saved.CapabilityID, c.ID)

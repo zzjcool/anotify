@@ -41,8 +41,9 @@ var baselineTables = []string{
 	"node_pins", "edges",
 	// 事件 / 任务 / 图
 	"events", "tasks", "graph_versions",
-	// 产物与部署（内容寻址）
-	"artifacts", "deployments",
+	// 部署（内容寻址）：P2 起 deployments 直接引用能力行，artifacts 表已删
+	// （Capability Spec v3 §11.1）——产物就是能力行的正文算出来的值。
+	"deployments",
 	// emit 落库
 	"emissions",
 	// 任务日志（迁移 4：stdout/stderr 原文，随任务级联删除）
@@ -95,9 +96,18 @@ func TestBaselineNoHistoricalBaggage(t *testing.T) {
 	if columnNames(t, db, "tasks")["out"] {
 		t.Error("tasks.out 不该存在：路由结果只在 emissions.port 上（恒 NULL 的可读列会被误用）")
 	}
-	// node_capabilities.run_spec 整列删掉：执行方式属于产物（artifacts.spec）。
+	// node_capabilities.run_spec 整列删掉：执行方式属于能力正文，归属属于部署。
 	if columnNames(t, db, "node_capabilities")["run_spec"] {
-		t.Error("node_capabilities.run_spec 不该存在：执行方式属于产物（artifacts），归属属于部署")
+		t.Error("node_capabilities.run_spec 不该存在：执行方式属于能力正文，归属属于部署")
+	}
+	// artifacts 镜像表已删（migration 10）：产物是能力行正文算出来的值，
+	// 留着镜像就是同一条内容两处存、两处可能不一致（Capability Spec v3 §11）。
+	if tableExists(t, db, "artifacts") {
+		t.Error("artifacts 表不该存在：产物 = 能力行正文算出来的值（Capability Spec v3 §11.1）")
+	}
+	// deployments 的旧外键列（指向 artifacts 行）随之消失。
+	if columnNames(t, db, "deployments")["artifact_id"] {
+		t.Error("deployments.artifact_id 不该存在：P2 起引用 capability_id（migration 10）")
 	}
 	// edges 两端是**引用**，不是 capability id：旧的 from_key / to_capability 不该回来。
 	edgeCols := columnNames(t, db, "edges")
@@ -136,7 +146,6 @@ func TestBaselineForeignKeys(t *testing.T) {
 		"recovery_codes.user_id -> users(id) ON DELETE CASCADE",
 		"sessions.user_id -> users(id) ON DELETE CASCADE",
 		// 命名空间是唯一隔离边界：删命名空间带走它的全部资源
-		"artifacts.namespace_id -> namespaces(id) ON DELETE CASCADE",
 		"capability_versions.namespace_id -> namespaces(id) ON DELETE CASCADE",
 		"deployments.namespace_id -> namespaces(id) ON DELETE CASCADE",
 		"edges.namespace_id -> namespaces(id) ON DELETE CASCADE",
@@ -150,8 +159,8 @@ func TestBaselineForeignKeys(t *testing.T) {
 		"sources.namespace_id -> namespaces(id) ON DELETE CASCADE",
 		"tasks.namespace_id -> namespaces(id) ON DELETE CASCADE",
 		// 能力归属（部署派生）与部署的父行
-		"artifacts.capability_id -> capability_versions(id) ON DELETE CASCADE",
-		"deployments.artifact_id -> artifacts(id) ON DELETE CASCADE",
+		//（P2 起 deployments 引用能力行：删掉一个能力带走它的部署，与 artifacts 时代同语义）
+		"deployments.capability_id -> capability_versions(id) ON DELETE CASCADE",
 		"deployments.node_id -> nodes(id) ON DELETE CASCADE",
 		"node_capabilities.capability_id -> capability_versions(id) ON DELETE CASCADE",
 		"node_capabilities.node_id -> nodes(id) ON DELETE CASCADE",
@@ -187,7 +196,10 @@ func TestBaselineForeignKeys(t *testing.T) {
 	}
 }
 
-// baselineIndexes 是全部 26 条索引的期望形状（列序 = 查询形状）。
+// baselineIndexes 是全部显式索引的期望形状（列序 = 查询形状）。
+//
+// P2 的 migration 10 删掉了 artifacts（连带 idx_artifacts_cap），把
+// idx_deploy_artifact 换成了 idx_deploy_cap —— 数量没变，指向变了。
 var baselineIndexes = []struct {
 	name    string
 	table   string
@@ -196,10 +208,9 @@ var baselineIndexes = []struct {
 	partial bool
 }{
 	{name: "idx_apikeys_user", table: "api_keys", cols: []string{"user_id"}},
-	{name: "idx_artifacts_cap", table: "artifacts", cols: []string{"capability_id"}},
 	{name: "idx_cap_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}},
 	{name: "idx_cli_auth_expires", table: "cli_auth_sessions", cols: []string{"expires_at"}},
-	{name: "idx_deploy_artifact", table: "deployments", cols: []string{"artifact_id"}},
+	{name: "idx_deploy_cap", table: "deployments", cols: []string{"capability_id"}},
 	{name: "idx_deploy_node", table: "deployments", cols: []string{"node_id"}},
 	{name: "idx_devices_user", table: "devices", cols: []string{"user_id"}},
 	{name: "idx_events_idem", table: "events",
@@ -318,8 +329,7 @@ func TestBaselineUniqueConstraints(t *testing.T) {
 		{"namespaces", []string{"slug"}},
 		{"node_instances", []string{"node_id", "slot"}},
 		{"graph_versions", []string{"namespace_id", "content_hash"}},
-		{"artifacts", []string{"namespace_id", "digest"}},
-		{"deployments", []string{"node_id", "artifact_id"}},
+		{"deployments", []string{"node_id", "capability_id", "digest"}},
 		{"playbooks", []string{"namespace_id", "slug"}},
 		{"sources", []string{"namespace_id", "name"}},
 		{"users", []string{"username"}},

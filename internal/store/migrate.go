@@ -40,7 +40,7 @@ const baselineVersion = 1
 // 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
 // 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
 // （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
-const headVersion = 9
+const headVersion = 10
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)
@@ -126,7 +126,8 @@ func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 // 约定见 migrateWith：hook 返回 error 时整个迁移回滚；hook 必须**幂等**——
 // 同一版本在旧库升级/新建库两条路径上都可能跑到，而重跑必须得到同一结果。
 var migrationHooks = map[int]func(*sql.Tx) error{
-	8: backfillCapabilitySpec,
+	8:  backfillCapabilitySpec,
+	10: referenceCapabilityFromDeployments,
 }
 
 // backfillCapabilitySpec 是 migration 8 的钩子：给正文为空的老行补 spec（契约 §6）。
@@ -195,8 +196,8 @@ func backfillCapabilitySpec(tx *sql.Tx) error {
 		}
 		// 回填出来的正文必须自己站得住（Validate 一次），否则宁可让迁移失败并指名道姓，
 		// 也不能把一个坏正文写进库、等第一次部署/派发时才发现（契约 §6.2）。
-		// 回填**不**建 artifacts 行（契约 §6.1），所以只需要 spec 子文档的字节。
-		_, specJSON, cerr := prepareCapabilitySpec(c)
+		// 回填只需要 spec 子文档的字节：产物是读的时候从这一行拼出来的（P2 删了镜像表）。
+		specJSON, cerr := prepareCapabilitySpec(c)
 		if cerr != nil {
 			return fmt.Errorf("backfilled spec for %s@%d is invalid (老库里的 schema/outputs "+
 				"可能不合当前规则，先人工修好再升级): %w", p.name, p.version, cerr)
@@ -224,6 +225,164 @@ func backfillCapabilitySpec(tx *sql.Tx) error {
 	return nil
 }
 
+// deploymentsCapabilityDDL 是 migration 10 重建出来的 deployments（终态形状，契约 §11.1）。
+//
+// 放在 Go 里而不是 schema.sql 的迁移块里：重建的**顺序**（新建 → 拷 → 删旧 → 改名）
+// 与逐行映射是一件事，拆成「SQL 块 + hook」只会让读者以为其中一半能单独跑。
+// 表名先叫 deployments_new，拷完再改名——SQLite 没有 ALTER TABLE ... ALTER COLUMN。
+const deploymentsCapabilityDDL = `CREATE TABLE deployments_new (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    digest        TEXT NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'pending',
+    reason        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (node_id, capability_id, digest)
+)`
+
+// referenceCapabilityFromDeployments 是 migration 10 的钩子：把 deployments 从
+// 「引用 artifacts 行」改写成「引用能力行」，然后拆掉 artifacts 镜像表（契约 §11.1）。
+//
+// 三条硬要求：
+//
+//   - **一行都不丢**：拷贝走 LEFT JOIN，映射不到能力行的旧行让迁移失败并指名道姓，
+//     而不是被 INNER JOIN 静默筛掉（丢一行部署 = 那台机器上的能力从此没有期望）。
+//   - **幂等**：重跑时如果 deployments 已经是终态（有 capability_id、没有 artifact_id），
+//     只补最后一步（确保镜像表不在）。旧库升级与新建库都会跑到这里，两条路必须同结果。
+//   - **不编造**：映射不到就不迁，绝不猜一个 capability_id 出来。
+func referenceCapabilityFromDeployments(tx *sql.Tx) error {
+	cols, err := tableColumnsTx(tx, "deployments")
+	if err != nil {
+		return fmt.Errorf("probe deployments columns: %w", err)
+	}
+	if len(cols) == 0 {
+		return fmt.Errorf("deployments 表不存在（迁移顺序坏了？）")
+	}
+	if cols["capability_id"] && !cols["artifact_id"] {
+		// 终态：重建已经做过。这里只把最后一步补齐（镜像表不能留）。
+		if _, derr := tx.Exec(`DROP TABLE IF EXISTS artifacts`); derr != nil {
+			return fmt.Errorf("drop artifacts mirror: %w", derr)
+		}
+		return nil
+	}
+	if !cols["artifact_id"] {
+		return fmt.Errorf("deployments 既没有 artifact_id 也没有 capability_id，认不出这是什么结构")
+	}
+	hasArtifacts, err := tableExistsTx(tx, "artifacts")
+	if err != nil {
+		return fmt.Errorf("probe artifacts: %w", err)
+	}
+	if !hasArtifacts {
+		return fmt.Errorf("deployments 还带着 artifact_id 外键，但 artifacts 表已不存在——库不自洽")
+	}
+
+	type legacyDeployment struct {
+		id, namespaceID, nodeID, artifactID, digest, state, reason string
+		createdAt, updatedAt                                       int64
+		capabilityID                                               sql.NullString
+	}
+	// 先全部读出来再写：同一个事务里「边读游标边重建表」会把游标下悬空的表删掉。
+	rows, err := tx.Query(`SELECT d.id, d.namespace_id, d.node_id, d.artifact_id, d.digest,
+	                              d.state, d.reason, d.created_at, d.updated_at,
+	                              a.capability_id
+	                         FROM deployments d
+	                    LEFT JOIN artifacts a ON a.id = d.artifact_id
+	                     ORDER BY d.id`)
+	if err != nil {
+		return fmt.Errorf("query legacy deployments: %w", err)
+	}
+	var legacy []legacyDeployment
+	for rows.Next() {
+		var d legacyDeployment
+		if err := rows.Scan(&d.id, &d.namespaceID, &d.nodeID, &d.artifactID, &d.digest,
+			&d.state, &d.reason, &d.createdAt, &d.updatedAt, &d.capabilityID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy deployment: %w", err)
+		}
+		legacy = append(legacy, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate legacy deployments: %w", err)
+	}
+	rows.Close()
+
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS deployments_new`); err != nil {
+		return fmt.Errorf("drop stale deployments_new: %w", err)
+	}
+	if _, err := tx.Exec(deploymentsCapabilityDDL); err != nil {
+		return fmt.Errorf("create deployments_new: %w", err)
+	}
+	for _, d := range legacy {
+		if !d.capabilityID.Valid || d.capabilityID.String == "" {
+			return fmt.Errorf("部署行 %s 的 artifact_id=%s 在 artifacts 里找不到（不丢行、也不编造能力：请人工处理这个库）",
+				d.id, d.artifactID)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO deployments_new
+			   (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?)`,
+			d.id, d.namespaceID, d.nodeID, d.capabilityID.String, d.digest,
+			d.state, d.reason, d.createdAt, d.updatedAt); err != nil {
+			return fmt.Errorf("copy deployment %s: %w", d.id, err)
+		}
+	}
+
+	// 删旧表会连带删掉它上面的索引（idx_deploy_node / idx_deploy_artifact），
+	// 所以改名之后按新形状重建：索引是查询形状的一部分，不能少。
+	if _, err := tx.Exec(`DROP TABLE deployments`); err != nil {
+		return fmt.Errorf("drop legacy deployments: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE deployments_new RENAME TO deployments`); err != nil {
+		return fmt.Errorf("rename deployments_new: %w", err)
+	}
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_deploy_cap ON deployments(capability_id)`,
+	} {
+		if _, err := tx.Exec(ddl); err != nil {
+			return fmt.Errorf("recreate deployment index: %w", err)
+		}
+	}
+
+	// 最后一步：镜像表没有读者了（契约 §11.1）。
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS artifacts`); err != nil {
+		return fmt.Errorf("drop artifacts mirror: %w", err)
+	}
+	return nil
+}
+
+// tableExistsTx 判断表是否存在。
+func tableExistsTx(tx *sql.Tx, name string) (bool, error) {
+	var n int
+	if err := tx.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// tableColumnsTx 返回表上的列名集合（表不存在时返回空 map）。
+func tableColumnsTx(tx *sql.Tx, table string) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
 // specForBackfill 算出某个老能力该拿到的正文，返回 (正文, 占位类型, error)。
 //
 // 占位类型非空时表示「这是编造的（noop/notify-phone）」，调用方据此打清单；
@@ -231,10 +390,23 @@ func backfillCapabilitySpec(tx *sql.Tx) error {
 func specForBackfill(tx *sql.Tx, namespaceID, capabilityID, name, params, outputs, lifecycle string) (artifact.Spec, string, error) {
 	// ① 有产物 → 正文就是产物里的 spec（契约 §6 第一行）。取最新那份：
 	// 老库可能给同一能力留过多行产物（旧版允许历史行），最新的才代表现状。
+	//
+	// 这里读的是**只在版本 ≤9 存在**的 artifacts 表：migration 8 的钩子只可能跑在
+	// 那之前的库上（migration 10 才删表）。仍然探测一次，是为了让「直接重跑 hook」
+	// （契约 §6.2 的幂等要求）在表已经删掉的库上也安全地退回 ②③，而不是撞 no such table。
+	hasArtifacts, perr := tableExistsTx(tx, "artifacts")
+	if perr != nil {
+		return artifact.Spec{}, "", fmt.Errorf("probe artifacts: %w", perr)
+	}
 	var raw string
-	err := tx.QueryRow(
-		`SELECT spec FROM artifacts WHERE namespace_id = ? AND capability_id = ?
-		  ORDER BY created_at DESC, id DESC LIMIT 1`, namespaceID, capabilityID).Scan(&raw)
+	var err error
+	if hasArtifacts {
+		err = tx.QueryRow(
+			`SELECT spec FROM artifacts WHERE namespace_id = ? AND capability_id = ?
+			  ORDER BY created_at DESC, id DESC LIMIT 1`, namespaceID, capabilityID).Scan(&raw)
+	} else {
+		err = sql.ErrNoRows
+	}
 	switch {
 	case err == nil:
 		var doc struct {

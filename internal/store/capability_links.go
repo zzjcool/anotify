@@ -41,12 +41,15 @@ type LinkSpec struct {
 	Priority int `json:"priority,omitempty"`
 }
 
-// ArtifactBuilder 在事务内、能力行**归一化之后**被调用，返回要落库的产物行。
+// ArtifactBuilder 在事务内、能力行**归一化之后**被调用，返回这次创建对应的产物值。
 //
 // 为什么是回调而不是直接传 *Artifact：content-hash 幂等会把「同内容但版本号不同」
 // 的请求折叠到**已有的那一行**（append-only，不变量 I8）——归一化之后版本号可能变。
-// 产物里嵌着 name@version（digest 也吃它），用请求里的版本号建产物，就会写出一份
+// 产物里嵌着 name@version（digest 也吃它），用请求里的版本号建产物，就会得到一份
 // 元数据与能力定义不一致、digest 也算错的产物。所以产物必须在拿到权威行之后再构建。
+//
+// P2 起产物**不落库**（artifacts 表已删）：回调的唯一作用是「用另一条路径算一遍，
+// 在事务内与权威行对账」（见 verifyBuiltArtifact）；对不上就整体失败。
 //
 // 回调返回 nil 表示「这次没有产物」（等价于不传回调）。
 // 构建失败会作为 *ArtifactBuildError 返回：整个事务回滚，能力一行都不会留下。
@@ -74,6 +77,33 @@ func (e *ArtifactBuildError) Unwrap() error {
 	return e.Err
 }
 
+// verifyBuiltArtifact 用 builder 的输出对账**权威能力行**（P2 起产物是派生值，不落库）。
+//
+// 为什么还要这个回调：构建发生在事务内、归一化之后，所以它算出的 digest 是
+// 「这一行正文的 digest」的唯一独立算法。P1 期间它的产物被写进 artifacts 表；
+// P2 删表之后它唯一的用处就是这个对账——两条路径算出不同 digest 的症状是
+// 「响应里的 digest 与部署时钉住的不同」，只在某类请求上复现，事后极难查。
+func verifyBuiltArtifact(c *CapabilityVersion, art *Artifact) error {
+	if art == nil {
+		return errors.New("artifact builder returned nil")
+	}
+	if art.NamespaceID == "" {
+		art.NamespaceID = c.NamespaceID
+	}
+	if art.CapabilityID == "" {
+		art.CapabilityID = c.ID
+	}
+	if art.NamespaceID != c.NamespaceID || art.CapabilityID != c.ID {
+		return fmt.Errorf("artifact builder returned an artifact for %s/%s, want %s/%s",
+			art.NamespaceID, art.CapabilityID, c.NamespaceID, c.ID)
+	}
+	if want := c.Digest(); art.Digest != want {
+		return fmt.Errorf("artifact digest %q != capability digest %q（构建路径与读取路径分叉了）",
+			art.Digest, want)
+	}
+	return nil
+}
+
 // CapabilityWrite 是一次原子写入的回执：权威能力行 + 建成的边 + 产物 + 影响面。
 //
 // Capability 是**归一后**的行（幂等折叠时它的 version/id 来自已有那一行），
@@ -82,7 +112,8 @@ type CapabilityWrite struct {
 	Capability *CapabilityVersion
 	// Edges 按 links 的顺序返回（每条都已归一：引用、literals 都是落库的形态）。
 	Edges []*Edge
-	// Artifact 是落库的产物行；没传 ArtifactBuilder 时为 nil。
+	// Artifact 是这次创建对应的产物值（由 builder 算出来，P2 起不落库）；
+	// 没传 ArtifactBuilder 时为 nil。
 	Artifact *Artifact
 	// Impact 是本次「成为 latest」的影响面（空影响面也是空数组，不是 nil）。
 	Impact *UpgradeImpact
@@ -111,7 +142,7 @@ func (d *DB) CreateCapabilityWithLinks(ctx context.Context, c *CapabilityVersion
 //
 //	① 升级闸门 —— 在同一快照里算影响面（与别的写者交错算出来的影响面没有意义）
 //	② 建能力（createCapabilityTx：闸门是权威拦截，幂等折叠也在这里）
-//	③ 产物（可选，用归一后的能力行构建 → 同一事务落库）
+//	③ 产物（可选，用归一后的能力行构建 → 与能力行对账，不落库）
 //	④ 逐条建边（createEdgeTx：引用解析 / 端口封闭 / literals / 静态环检测）
 //	⑤ 提交
 //
@@ -161,16 +192,12 @@ func (d *DB) CreateCapabilityWithLinksAndArtifact(ctx context.Context, c *Capabi
 			return nil, &ArtifactBuildError{Err: errors.New("artifact builder returned nil")}
 		}
 		// 归属由这里兜底：产物必须挂在刚建的那一行能力上，调用方不必再拼一遍。
-		if art.NamespaceID == "" {
-			art.NamespaceID = c.NamespaceID
+		if verr := verifyBuiltArtifact(c, art); verr != nil {
+			return nil, &ArtifactBuildError{Err: verr}
 		}
-		if art.CapabilityID == "" {
-			art.CapabilityID = c.ID
-		}
-		savedArtifact, berr = createArtifactOn(ctx, ex, art)
-		if berr != nil {
-			return nil, fmt.Errorf("create capability with links: %w", berr)
-		}
+		// 不再落库（P2 删了 artifacts 表）：产物就是这一行正文算出来的东西。
+		// 回执里带上它，是因为响应要回 digest 与整份产物（契约 §5）。
+		savedArtifact = art
 	}
 
 	// ④ 边：逐条建，失败带下标整体回滚
@@ -259,14 +286,14 @@ type CapabilityBatchWrite struct {
 	Impact *UpgradeImpact
 }
 
-// CreateCapabilitiesBatch 在一个事务里建 N 个能力 + 它们的产物 + M 条边。
+// CreateCapabilitiesBatch 在一个事务里建 N 个能力 + 它们的产物（派生值，不落库）+ M 条边。
 //
 // 事务里的顺序（每一步的读都必须走 tx，见 txexec.go）：
 //
 //	① 逐条算影响面并**合并**（整批 409 要报全部破坏性能力，而 createCapabilityTx
 //	   的闸门只会报出第一个撞上的那一个）
 //	② 逐条建能力（createCapabilityTx：校验 / 闸门 / 幂等折叠都在那一处）
-//	③ 产物（可选，用归一后的能力行构建 → 同一事务落库）
+//	③ 产物（可选，用归一后的能力行构建 → 与能力行对账，不落库）
 //	④ 逐条建边（createEdgeTx：引用解析 / 端口封闭 / literals），此时 ② 建的行已经可见
 //	⑤ 提交
 //
@@ -356,15 +383,10 @@ func (d *DB) CreateCapabilitiesBatch(ctx context.Context, caps []*CapabilityVers
 		if art == nil {
 			return nil, &ArtifactBuildError{Err: fmt.Errorf("capabilities[%d]: artifact builder returned nil", i)}
 		}
-		// 归属兜底：产物必须挂在刚建的那一行能力上。
-		if art.NamespaceID == "" {
-			art.NamespaceID = c.NamespaceID
-		}
-		if art.CapabilityID == "" {
-			art.CapabilityID = c.ID
-		}
-		if _, berr := createArtifactOn(ctx, ex, art); berr != nil {
-			return nil, fmt.Errorf("capabilities[%d]: create artifact: %w", i, berr)
+		// 归属兜底 + 与权威行对账（P2 起产物不再落库，builder 的作用从「写入」变成
+		// 「在事务内自检：构建路径与读取路径算出来的是同一份内容」）。
+		if verr := verifyBuiltArtifact(c, art); verr != nil {
+			return nil, &ArtifactBuildError{Err: fmt.Errorf("capabilities[%d]: %w", i, verr)}
 		}
 	}
 

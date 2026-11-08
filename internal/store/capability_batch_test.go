@@ -115,19 +115,11 @@ func TestCreateCapabilitiesBatchRollsBackOnBadLink(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	linksTarget(t, db, nsID, "notify.send", "")
 
-	digest := "sha256:" + strings.Repeat("ab", 32)
 	caps := []*CapabilityVersion{
 		mkCap(nsID, "batch.ok", 1, []string{"done"}),
 		mkCap(nsID, "batch.ok2", 1, []string{"done"}),
 	}
-	build := func(cv *CapabilityVersion) (*Artifact, error) {
-		return &Artifact{
-			NamespaceID:  nsID,
-			CapabilityID: cv.ID,
-			Digest:       digest,
-			Spec:         []byte(`{}`),
-		}, nil
-	}
+	build := realBuild(t)
 	// 第二条 link 指向不存在的名字：此时两个能力 + 两份产物已经在事务里了。
 	_, err := db.CreateCapabilitiesBatch(ctx, capsWithSpec(caps),
 		[]BatchLinkSpec{
@@ -146,13 +138,10 @@ func TestCreateCapabilitiesBatchRollsBackOnBadLink(t *testing.T) {
 	}
 	// 三个面逐项为 0
 	for _, name := range []string{"batch.ok", "batch.ok2"} {
-		assertNothingPersisted(t, db, nsID, name, digest)
+		assertNothingPersisted(t, db, nsID, name)
 	}
 	if n := countRows(t, db, "edges", "namespace_id = ?", nsID); n != 0 {
 		t.Fatalf("回滚失败：edges 里留下了 %d 条", n)
-	}
-	if n := countRows(t, db, "artifacts", "namespace_id = ? AND digest = ?", nsID, digest); n != 0 {
-		t.Fatalf("回滚失败：artifacts 里留下了 %d 行", n)
 	}
 }
 
@@ -163,9 +152,7 @@ func TestCreateCapabilitiesBatchArtifactBuildFailureRollsBack(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 
 	boom := errors.New("entrypoint: 入口文件必须以 #! 开头")
-	okBuild := func(cv *CapabilityVersion) (*Artifact, error) {
-		return &Artifact{NamespaceID: nsID, CapabilityID: cv.ID, Digest: "sha256:" + strings.Repeat("cd", 32)}, nil
-	}
+	okBuild := realBuild(t)
 	// 第二个能力的产物构建失败（第一个已经建成、产物已落库）
 	_, err := db.CreateCapabilitiesBatch(ctx,
 		capsWithSpec([]*CapabilityVersion{mkCap(nsID, "batch.one", 1, nil), mkCap(nsID, "batch.two", 1, nil)}),
@@ -181,12 +168,8 @@ func TestCreateCapabilitiesBatchArtifactBuildFailureRollsBack(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("原始错误必须可 unwrap: %v", err)
 	}
-	assertNothingPersisted(t, db, nsID, "batch.one", "")
-	assertNothingPersisted(t, db, nsID, "batch.two", "")
-	if n := countRows(t, db, "artifacts", "namespace_id = ? AND digest = ?",
-		nsID, "sha256:"+strings.Repeat("cd", 32)); n != 0 {
-		t.Fatalf("回滚失败：artifacts 里留下了 %d 行", n)
-	}
+	assertNothingPersisted(t, db, nsID, "batch.one")
+	assertNothingPersisted(t, db, nsID, "batch.two")
 }
 
 // TestCreateCapabilitiesBatchMergesBreakingImpact：整批 409 必须报**全部**破坏性能力。

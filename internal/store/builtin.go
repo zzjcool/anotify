@@ -272,7 +272,7 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc Bu
 		namespaceID, bc.Name, bc.Version).Scan(&existingID, &existingDisplay)
 	if err == nil {
 		// 能力已存在（老库升级 / 重复播种）：产物可能还没建过，仍要补一次。
-		if err := seedBuiltinArtifactTx(ctx, tx, namespaceID, existingID, bc); err != nil {
+		if err := syncBuiltinDeploymentsTx(ctx, tx, namespaceID, existingID); err != nil {
 			return err
 		}
 		if bc.DisplayName != "" && existingDisplay == "" {
@@ -335,7 +335,7 @@ func seedOneBuiltinTx(ctx context.Context, tx *sql.Tx, namespaceID string, bc Bu
 		string(specJSON)); err != nil {
 		return fmt.Errorf("seed builtin capability %s@%d: %w", bc.Name, bc.Version, err)
 	}
-	return seedBuiltinArtifactTx(ctx, tx, namespaceID, capID, bc)
+	return syncBuiltinDeploymentsTx(ctx, tx, namespaceID, capID)
 }
 
 // builtinSpec 返回内置能力播种时要写进 capability_versions.spec 的正文。
@@ -364,82 +364,65 @@ func builtinSpec(bc BuiltinCapability) (artifact.Spec, error) {
 	}
 }
 
-// seedBuiltinArtifactTx 给带产物的内置能力播种它的 artifact 行（幂等）。
+// syncBuiltinDeploymentsTx 让已有的部署行跟着内置能力的**当前内容**走（幂等）。
 //
-// 幂等键是 `UNIQUE(namespace_id, digest)`：digest 是内容寻址的，同一份内容重复插入
-// 就是 no-op。所以「老库升级」与「重复播种」都能安全地走这条路。
-func seedBuiltinArtifactTx(ctx context.Context, tx *sql.Tx, namespaceID, capabilityID string, bc BuiltinCapability) error {
-	if bc.Artifact == nil {
+// 内置能力的内容是**平台自己的**：修了示例里的 bug 之后，部署不该等人去控制台
+// 逐台重点一次。部署是中枢下发的期望状态，平台换了内容，期望就该跟着换 —— 这里把
+// 该能力的部署行打回 pending（reason 说明是内置更新），帧由节点连接时的
+// ws.resendDeployments 补发（播种发生在启动阶段，那时还没有连接可推）。
+//
+// P2 之后没有 artifacts 表可指：内容标识就是**能力行**的 content_hash
+// （≡ digest，契约 §4），所以这里读回那一行、把 digest 列对齐、状态打回 pending。
+//
+// 两步都不能省：
+//   - 先收敛（同一 (node, capability) 只留最新那条）：旧版允许「旧 digest 的行保留为
+//     历史」，多行并存时 UPDATE 会撞 UNIQUE(node_id, capability_id, digest)；
+//   - 再打回 pending：内容变了而状态还是 applied，控制台上就是一个假的绿勾。
+func syncBuiltinDeploymentsTx(ctx context.Context, tx *sql.Tx, namespaceID, capabilityID string) error {
+	var contentHash, spec string
+	err := tx.QueryRowContext(ctx,
+		`SELECT content_hash, spec FROM capability_versions WHERE id = ? AND namespace_id = ?`,
+		capabilityID, namespaceID).Scan(&contentHash, &spec)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // 行不见了（并发删库？）：没有可同步的部署
+	}
+	if err != nil {
+		return fmt.Errorf("read builtin capability %s: %w", capabilityID, err)
+	}
+	// handler 形式（中枢内置执行器）不可部署：不碰部署行，也不要造出「待推送」的假象。
+	var sp artifact.Spec
+	if strings.TrimSpace(spec) != "" {
+		if jerr := json.Unmarshal([]byte(spec), &sp); jerr != nil {
+			return fmt.Errorf("decode builtin spec %s: %w", capabilityID, jerr)
+		}
+	}
+	if sp.Handler != "" {
 		return nil
 	}
-	// 防御性探测：artifacts 表不存在就跳过（那时插产物会直接报 no such table）。
-	// 这不是错误：启动流程里 BackfillBuiltinCapabilities 在**迁移之后**还会再跑一遍，
-	// 那时会把产物补上——所以这里自愈而不是阻塞启动。
-	var exists int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts'`).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("probe artifacts table: %w", err)
-	}
-	digest, err := artifact.Digest(bc.Artifact)
-	if err != nil {
-		return fmt.Errorf("digest builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
-	}
-	spec, err := artifact.CanonicalJSON(bc.Artifact)
-	if err != nil {
-		return fmt.Errorf("canonical json for builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO artifacts (id, namespace_id, capability_id, digest, spec, created_at)
-		 VALUES (?,?,?,?,?,?)
-		 ON CONFLICT(namespace_id, digest) DO NOTHING`,
-		NewArtifactID(), namespaceID, capabilityID, digest, string(spec), Now()); err != nil {
-		return fmt.Errorf("seed builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
-	}
+	digest := artifact.DigestPrefix + contentHash
 
-	// 内置产物更新（比如修了脚本的 bug）→ 把已有部署指到新产物上。
-	//
-	// 为什么要在播种里做：内置产物是**平台自己的内容**，更新后不该等人去控制台逐台重部署。
-	// 部署是中枢下发的期望状态，平台换了内容，期望就该跟着换。
-	// 这里只动 deployments 的“指向”与状态（pending），帧由节点连接时的
-	// ws.resendDeployments 补发——播种发生在启动阶段，此时还没有连接可推。
-	//
-	// 先查回产物 id（INSERT 可能是 no-op，新编的 id 丢弃了）。
-	var artifactID string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM artifacts WHERE namespace_id = ? AND digest = ?`,
-		namespaceID, digest).Scan(&artifactID); err != nil {
-		return fmt.Errorf("read back builtin artifact %s@%d: %w", bc.Name, bc.Version, err)
-	}
-
-	// 老库可能同一个能力上存着多行（旧版允许「旧 digest 的行保留为历史」）。
-	// 先收敛成一行：**保留最新那条**（它代表最近一次部署意图），其余删掉。
-	// 不收敛就重指会撞 UNIQUE(node_id, artifact_id)；而保留最旧的 id 会让
-	// 「我刚点的那次部署」凭空换了个 id。
+	// ① 收敛成一行：**保留最新那条**（它代表最近一次部署意图），其余删掉。
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM deployments
 		  WHERE namespace_id = ?1
-		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?2)
+		    AND capability_id = ?2
 		    AND id NOT IN (
 		      SELECT id FROM (
 		        SELECT d.id AS id, ROW_NUMBER() OVER (PARTITION BY d.node_id ORDER BY d.created_at DESC, d.id DESC) AS rn
-		          FROM deployments d JOIN artifacts a ON a.id = d.artifact_id
-		         WHERE d.namespace_id = ?1 AND a.capability_id = ?2
+		          FROM deployments d
+		         WHERE d.namespace_id = ?1 AND d.capability_id = ?2
 		      ) WHERE rn = 1)`,
 		namespaceID, capabilityID); err != nil {
-		return fmt.Errorf("dedupe builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+		return fmt.Errorf("dedupe builtin deployment %s: %w", capabilityID, err)
 	}
-	// 再把剩下那行指到当前产物上（内容没变时是 0 行更新，纯幂等）。
+	// ② 对齐 digest 并打回 pending（内容没变时是 0 行更新，纯幂等）。
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE deployments
-		    SET artifact_id = ?, digest = ?, state = ?, reason = ?, updated_at = ?
-		  WHERE namespace_id = ? AND artifact_id <> ?
-		    AND artifact_id IN (SELECT id FROM artifacts WHERE capability_id = ?)`,
-		artifactID, digest, DeploymentPending, "builtin artifact updated", Now(),
-		namespaceID, artifactID, capabilityID); err != nil {
-		return fmt.Errorf("repoint builtin deployment %s@%d: %w", bc.Name, bc.Version, err)
+		    SET digest = ?, state = ?, reason = ?, updated_at = ?
+		  WHERE namespace_id = ? AND capability_id = ? AND digest <> ?`,
+		digest, DeploymentPending, "builtin artifact updated", Now(),
+		namespaceID, capabilityID, digest); err != nil {
+		return fmt.Errorf("repoint builtin deployment %s: %w", capabilityID, err)
 	}
 	return nil
 }

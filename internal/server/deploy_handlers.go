@@ -17,7 +17,7 @@ import (
 // 本文件是「部署模型」的控制台端点（console-declares epic）。
 //
 //	GET    /v1/capability-templates  内置模板（模板 = 代码生成器的输入，不是执行器类型）
-//	GET    /v1/artifacts             某能力的产物列表
+//	GET    /v1/artifacts             某能力的**当前产物**（P2 起最多一条）
 //	POST   /v1/deployments           把产物部署到选中的节点
 //	GET    /v1/deployments           部署状态列表
 //	DELETE /v1/deployments           撤销
@@ -71,7 +71,13 @@ func (h *deployHandler) capabilityTemplates(w http.ResponseWriter, r *http.Reque
 
 // ---------- GET /v1/artifacts ----------
 
-// artifacts 列出某个能力的产物。
+// artifacts 返回某个能力的**当前产物**（0 或 1 条）。
+//
+// P2 之后产物不再是可累加的行：一个能力行 = 一份内容 = 一个 digest
+// （Capability Spec v3 §11.2）。端点保留、形状保留（`{artifacts:[…]}`）是因为
+// e2e 与外部调用方钉着它，而且「把整份 canonical JSON 拿走」这件事仍然只有它有
+// ——`/v1/capabilities/{id}/artifact` 给的是解析后的展示形状（files 是普通文本）。
+// 列表语义收窄成「至多一条」正是这里不再有 artifacts 表的直接后果，不是遗漏。
 func (h *deployHandler) artifacts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
@@ -219,7 +225,7 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 
 	// 0. handler 形式的能力**不可部署**（Capability Spec v3 §5）。
 	//
-	// 这一步必须排在产物解析**之前**：handler 形式刻意没有 artifacts 行（契约 §6.1
+	// 这一步必须排在产物解析**之前**：handler 形式刻意没有可部署的产物（契约 §6.1
 	// —— 给它造一行会让它出现在部署面板里，推给节点后节点只会拒），所以顺着产物解析
 	// 走下去必然撞上 404「这个能力还没有可部署的产物：新建能力时需要填 run」。
 	// 那句话对 handler 能力是**指错方向**的：它不需要 run（实现已经在中枢里），也不
@@ -273,7 +279,7 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 	// 3. 逐台建行 + 推帧
 	results := make([]deploymentResult, 0, len(nodes))
 	for _, n := range nodes {
-		dp, err := h.db.CreateDeployment(r.Context(), ns.ID, n.ID, art.ID)
+		dp, err := h.db.CreateDeployment(r.Context(), ns.ID, n.ID, art.CapabilityID, art.Digest)
 		if err != nil {
 			results = append(results, deploymentResult{
 				NodeID: n.ID, NodeName: n.Name, Error: err.Error(),
@@ -301,26 +307,35 @@ func (h *deployHandler) createDeployments(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// resolveArtifact 取要部署的产物：显式 digest 优先，否则取该能力最新一份。
+// resolveArtifact 取要部署的产物：显式 digest 优先，否则取该能力的当前产物。
+//
+// 两条路都读 capability_versions（P2 删了 artifacts 表）：
+//   - 显式 digest → 命中 content_hash 相同的那一行（内容寻址，同一命名空间里唯一）；
+//   - 否则 → 该能力行的正文。
+//
+// 顺序不能反：显式 digest 表达的是「我就要这一份内容」，ignoring 它会把一次
+// 钉版本的部署变成「部署当前版本」，而两者的 digest 不同，节点侧就会判成不一致。
 func (h *deployHandler) resolveArtifact(ctx context.Context, nsID, capabilityID, digest string) (*store.Artifact, error) {
 	if digest != "" {
 		return h.db.GetArtifactByDigest(ctx, nsID, digest)
 	}
-	return h.db.LatestArtifact(ctx, nsID, capabilityID)
+	return h.db.CurrentArtifact(ctx, nsID, capabilityID)
 }
 
 func (h *deployHandler) writeArtifactError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrArtifactNotFound):
-		// 「这个能力还没有产物」在 P1-b2 之后只剩一种可能：行比 artifacts 写穿早
-		// （老库且回填没跑到），或者 digest 指向一份已被删除的产物。给一个能直接指导
-		// 操作的说法，而不是 404 not found。
+		// P2 之后没有 artifacts 表，「找不到产物」只剩两种来源：
+		//   · 能力 id 不存在 / 不属于这个命名空间；
+		//   · 显式 digest 不对应该命名空间里的任何一份内容（含「那个 digest 属于另一个能力」）。
+		// 文案要能直接指导操作，而不是一句 404 not found。
 		//
-		// 注意 handler 形式（handler != ""）走不到这里：它们在 createDeployments 里
-		// 已被判成 400 builtin_not_deployable（契约 §5）。
+		// handler 形式（spec.handler != ""）走不到这里：它们在 createDeployments 里
+		// 已被判成 400 builtin_not_deployable（契约 §5），那一步必须先判。
 		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": "这个能力还没有可部署的产物：新建能力时需要填 run（入口文件 + 文件内容）",
-			"code":  "artifact_not_found",
+			"error": "这个能力当前没有可部署的产物：它需要有 run（入口文件 + 文件内容）实现；" +
+				"带 digest 部署时请确认这个 digest 是该能力当前的内容",
+			"code": "artifact_not_found",
 		})
 	case handleNamespaceError(w, err):
 		// 已写响应
@@ -428,12 +443,14 @@ func (h *deployHandler) deleteDeployment(w http.ResponseWriter, r *http.Request)
 	// 拿不到产物不阻断撤销（行已经删了），但要把原因记下来 —— 静默不推会让
 	// 「撤销成功」变成一句谎话。
 	var removeArtifact json.RawMessage
-	if art, aerr := h.db.GetArtifact(r.Context(), ns.ID, dp.ArtifactID); aerr == nil {
+	if art, aerr := h.db.CurrentArtifact(r.Context(), ns.ID, dp.CapabilityID); aerr == nil {
 		removeArtifact = json.RawMessage(art.Spec)
 	} else {
+		// 能力行没了（或变成了 handler 形式）→ 产物拼不出来。节点靠产物里的 metadata
+		// 才知道要摘掉哪一条索引，所以这一帧推不了，只能留痕。
 		slog.Warn("remove: artifact gone, node won't be told",
 			"event", "console.deployments.remove_no_artifact",
-			"deployment_id", dp.ID, "artifact_id", dp.ArtifactID, "error", aerr.Error())
+			"deployment_id", dp.ID, "capability_id", dp.CapabilityID, "error", aerr.Error())
 	}
 
 	if err := h.publish(ns.ID, dp.NodeID, &ws.DeployFrame{
@@ -530,11 +547,11 @@ func buildArtifact(c *store.CapabilityVersion, run *capabilityRunInput, requires
 	return a, nil
 }
 
-// newStoreArtifact 把一份编译好的产物转成 store.Artifact 行（**不落库**）。
+// newStoreArtifact 把一份编译好的产物转成 store.Artifact 值（纯计算，**不落库**）。
 //
-// 拆出来是因为「能力 + 边 + 产物」的一次提交必须在**事务内**落产物行，
-// 而构建（digest + canonical spec）是纯计算、只依赖产物本身：两条路径共用这一份，
-// 免得「事务内的产物」与「事务外的产物」算出两个 digest。
+// P2 之后产物不再有行（artifacts 表已删，契约 §11）：它就是能力行的正文算出来的值。
+// 这个函数留下来只为「一次算对 digest + canonical 字节」——响应里的 digest、
+// 部署时钉住的 digest、节点从字节重算的 digest 必须是同一个值，三处各算一遍迟早分叉。
 func newStoreArtifact(nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
 	digest, err := artifact.Digest(a)
 	if err != nil {
@@ -550,22 +567,4 @@ func newStoreArtifact(nsID, capabilityID string, a *artifact.Artifact) (*store.A
 		Digest:       digest,
 		Spec:         spec,
 	}, digest, nil
-}
-
-// storeArtifact 把产物落库（按 digest 幂等）。
-//
-// capabilityID 由调用方直接给（**不要**在这里用 name@version 反查）：
-// store.CreateCapability 的 content-hash 幂等会把"同内容换个版本号"归一到原版本，
-// 于是请求里的版本号与落库的版本号可能不一致 —— 用请求的版本去反查会 ErrNotFound，
-// 把一个本该成功的请求变成 500（e2e 抓到的 P1）。
-func storeArtifact(ctx context.Context, db *store.DB, nsID, capabilityID string, a *artifact.Artifact) (*store.Artifact, string, error) {
-	row, digest, err := newStoreArtifact(nsID, capabilityID, a)
-	if err != nil {
-		return nil, "", err
-	}
-	saved, err := db.CreateArtifact(ctx, row)
-	if err != nil {
-		return nil, "", err
-	}
-	return saved, digest, nil
 }

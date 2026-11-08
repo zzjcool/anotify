@@ -206,14 +206,15 @@ func TestCreateCapabilityWithInvalidRunRejected(t *testing.T) {
 	if _, err := env.db.GetCapability(ctx, env.nsID, "bad.run", 1); err == nil {
 		t.Fatal("被拒的请求留下了能力定义")
 	}
-	// 也不该留下产物。**限定到这次失败的能力**：命名空间里本来就有内置能力
-	// （notify.phone 没有产物、script.echo 有）——按全表数会随内置清单变化而误报，
-	// 而这里要断言的是「这次被拒的请求没写产物」。
+	// 也不该留下产物。P2 之后「产物」就是能力行的正文（artifacts 表已删，
+	// Capability Spec v3 §11），所以「按名字查不到带正文的行」就是「没有产物」。
+	// **限定到这次失败的能力**：命名空间里本来就有内置能力（script.echo 有正文），
+	// 按全表数会随内置清单变化而误报。
 	var n int
 	if err := env.db.QueryRow(
-		`SELECT count(*) FROM artifacts a JOIN capability_versions c ON c.id = a.capability_id
-		  WHERE a.namespace_id = ? AND c.name = ?`, env.nsID, "bad.run").Scan(&n); err != nil {
-		t.Fatalf("count artifacts: %v", err)
+		`SELECT count(*) FROM capability_versions WHERE namespace_id = ? AND name = ? AND spec <> ''`,
+		env.nsID, "bad.run").Scan(&n); err != nil {
+		t.Fatalf("count capability bodies: %v", err)
 	}
 	if n != 0 {
 		t.Fatalf("被拒的请求留下了 %d 份产物", n)

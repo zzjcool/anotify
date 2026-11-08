@@ -5806,14 +5806,18 @@ components:
 
     Artifact:
       type: object
-      required: [id, namespaceId, capabilityId, digest, spec, createdAt]
+      description: |
+        一份能力的**当前产物**。P2 起产物不再是表里的一行，而是由能力行正文算出来的
+        值（Capability Spec v3 §11）：`digest` = 能力行的 content_hash，
+        `spec` = 该行的 canonical JSON。所以这里没有 `id` / `createdAt`
+        ——产物没有行身份，也就没有落库时间。
+      required: [namespaceId, capabilityId, digest, spec]
       properties:
-        id: { type: string, example: af_xxx }
         namespaceId: { type: string }
-        capabilityId: { type: string }
+        capabilityId: { type: string, description: 产物属于哪个能力行 }
         digest:
           type: string
-          description: '内容寻址标识 `sha256:<64 hex>`'
+          description: '内容寻址标识 `sha256:<64 hex>`（≡ 能力行的 content_hash）'
           example: "sha256:ab12"
         spec:
           type: string
@@ -5825,7 +5829,6 @@ components:
             解出来是一份完整产物：`{apiVersion, kind, metadata, spec}`，
             其中 `spec` 就是 `CapabilitySpec`。给人看的**解析后**形状请走
             `GET /capabilities/{id}/artifact`（那里的 `files` 是普通文本）。
-        createdAt: { type: integer }
 
     Deployment:
       type: object
@@ -5834,8 +5837,7 @@ components:
         id: { type: string, example: dp_xxx }
         namespaceId: { type: string }
         nodeId: { type: string }
-        artifactId: { type: string }
-        capabilityId: { type: string }
+        capabilityId: { type: string, description: '部署引用的能力行（P2 起不再有 artifactId）' }
         capability: { type: string }
         version: { type: integer }
         digest: { type: string }
@@ -5852,7 +5854,7 @@ components:
       properties:
         namespaceId: { type: string }
         capabilityId: { type: string }
-        digest: { type: string, description: 缺省取该能力最新一份产物 }
+        digest: { type: string, description: '缺省取该能力的当前产物；给了就必须等于它的 digest' }
         nodeIds:
           type: array
           items: { type: string }

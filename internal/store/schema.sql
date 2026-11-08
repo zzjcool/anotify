@@ -706,3 +706,22 @@ ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
 -- 列上没有任何索引 / UNIQUE / 部分索引谓词引用它，因此 DROP 是就地重写，不触发
 -- 表结构迁移的那些限制。
 ALTER TABLE capability_versions DROP COLUMN balance;
+
+-- +migration 10 deployments_reference_capability
+
+-- 部署行改引用**能力行**（Capability Spec v3 §11.1）：`deployments.artifact_id` →
+-- `capability_id`，唯一键随之变成 UNIQUE (node_id, capability_id, digest)。
+--
+-- 为什么：产物不再是独立存在的物体，它就是能力行的正文（content_hash ≡ digest）。
+-- P1 期间 artifacts 只是 capability_versions 的**写穿镜像**，存在的唯一理由是让
+-- 这个外键成立；镜像没有别的读者之后，留着它就是第二份真相（同一条内容两处存，
+-- 两处可能不一致），所以这一块把镜像表和指向它的外键一起拆掉。
+--
+-- 怎么做：SQLite 改外键只能重建表（新建 → 拷贝 → 删旧 → 改名）。拷贝时
+-- `artifact_id` 要**逐行**经 artifacts 映射成 `capability_id`，映射不到的行宁可让
+-- 迁移失败并指名道姓，也不能被 INNER JOIN 静默筛掉。这段需要 Go 逻辑，所以本块的
+-- SQL 留空 —— 实现（以及这里的终态 DDL）见 migrate.go 的
+-- referenceCapabilityFromDeployments；hook 必须幂等（旧库升级与新建库两条路径都会跑到）。
+--
+-- baseline 里那份带 artifact_id 的 deployments DDL 是**版本 1 的历史形态**，
+-- 按「baseline 已发布、不再改动」的规则保留；今天库里的形状以 hook 为准。

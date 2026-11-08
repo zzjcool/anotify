@@ -118,9 +118,11 @@ func TestPostCapabilityWithLinksCreatesAtomically(t *testing.T) {
 	if digest, _ := m["digest"].(string); !strings.HasPrefix(digest, "sha256:") {
 		t.Fatalf("响应里没有 digest: %v", m)
 	}
-	if n := countIn(t, env, `SELECT count(*) FROM artifacts WHERE namespace_id = ? AND capability_id = ?`,
+	// 产物不再是独立的行：能力行带正文 = 有产物（Capability Spec v3 §11）
+	if n := countIn(t, env,
+		`SELECT count(*) FROM capability_versions WHERE namespace_id = ? AND id = ? AND spec <> ''`,
 		env.nsID, capID); n != 1 {
-		t.Fatalf("产物行数 = %d, want 1", n)
+		t.Fatalf("带正文的能力行数 = %d, want 1", n)
 	}
 	// 边真的落库了（两条）
 	if n := countIn(t, env, `SELECT count(*) FROM edges WHERE namespace_id = ? AND from_ref = ?`,
@@ -165,7 +167,8 @@ func TestPostCapabilityWithLinks400PointsAtBadIndex(t *testing.T) {
 			// 命名空间建行时播种的内置能力/产物本来就在表里。
 			baseCaps := countIn(t, env, `SELECT count(*) FROM capability_versions`)
 			baseEdges := countIn(t, env, `SELECT count(*) FROM edges`)
-			baseArtifacts := countIn(t, env, `SELECT count(*) FROM artifacts`)
+			// 「产物」= 能力行的正文（P2 删了 artifacts 表）
+			baseBodies := countIn(t, env, `SELECT count(*) FROM capability_versions WHERE spec <> ''`)
 
 			res := postCapabilityLinks(t, env, map[string]any{
 				"namespaceId": env.nsID,
@@ -203,8 +206,8 @@ func TestPostCapabilityWithLinks400PointsAtBadIndex(t *testing.T) {
 			if n := countIn(t, env, `SELECT count(*) FROM edges`); n != baseEdges {
 				t.Fatalf("边行数 %d → %d，回滚失败", baseEdges, n)
 			}
-			if n := countIn(t, env, `SELECT count(*) FROM artifacts`); n != baseArtifacts {
-				t.Fatalf("产物行数 %d → %d，回滚失败", baseArtifacts, n)
+			if n := countIn(t, env, `SELECT count(*) FROM capability_versions WHERE spec <> ''`); n != baseBodies {
+				t.Fatalf("带正文的能力行数 %d → %d，回滚失败", baseBodies, n)
 			}
 		})
 	}

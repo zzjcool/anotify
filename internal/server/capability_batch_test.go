@@ -144,10 +144,14 @@ func TestPostCapabilityBatchCreatesAllFaces(t *testing.T) {
 		t.Fatalf("upgradeImpact.breaking = %v, want false", impact["breaking"])
 	}
 
-	// ④ 落库三个面都对得上（产物 2 份、边 1 条）
-	if n := countIn(t, env, `SELECT count(*) FROM artifacts WHERE namespace_id = ? AND capability_id IN (?,?)`,
+	// ④ 落库三个面都对得上（两份正文、一条边）
+	//
+	// 「产物」在 P2 之后不再是独立的行：能力行的正文算出来就是产物
+	// （Capability Spec v3 §11），所以这里数「有正文的能力行」。
+	if n := countIn(t, env,
+		`SELECT count(*) FROM capability_versions WHERE namespace_id = ? AND id IN (?,?) AND spec <> ''`,
 		env.nsID, firstID, secondID); n != 2 {
-		t.Fatalf("产物行数 = %d, want 2（每个带 run 的能力一份）", n)
+		t.Fatalf("带正文的能力行数 = %d, want 2（每个带 run 的能力都有产物）", n)
 	}
 	if n := countIn(t, env, `SELECT count(*) FROM edges WHERE namespace_id = ? AND from_ref = ?`,
 		env.nsID, "batch.a"); n != 1 {
@@ -227,9 +231,10 @@ func TestPostCapabilityBatchIdempotentReplay(t *testing.T) {
 		env.nsID, "replay.a", "replay.b"); n != 2 {
 		t.Fatalf("能力行数 = %d, want 2（重放不许再建一份）", n)
 	}
-	if n := countIn(t, env, `SELECT count(*) FROM artifacts WHERE namespace_id = ? AND capability_id IN (?,?)`,
+	if n := countIn(t, env,
+		`SELECT count(*) FROM capability_versions WHERE namespace_id = ? AND id IN (?,?) AND spec <> ''`,
 		env.nsID, firstIDs[0], firstIDs[1]); n != 2 {
-		t.Fatalf("产物行数 = %d, want 2", n)
+		t.Fatalf("带正文的能力行数 = %d, want 2", n)
 	}
 	if n := countIn(t, env, `SELECT count(*) FROM edges WHERE namespace_id = ? AND from_ref = ?`,
 		env.nsID, "replay.a"); n != 1 {
@@ -308,7 +313,8 @@ func TestPostCapabilityBatchRollsBackEverything(t *testing.T) {
 			// 播种的内置能力（script.echo / notify.phone…）本来就在表里。
 			baseCaps := countIn(t, env, `SELECT count(*) FROM capability_versions`)
 			baseEdges := countIn(t, env, `SELECT count(*) FROM edges`)
-			baseArtifacts := countIn(t, env, `SELECT count(*) FROM artifacts`)
+			// 「产物」= 能力行的正文（P2 删了 artifacts 表）：数有正文的行。
+			baseBodies := countIn(t, env, `SELECT count(*) FROM capability_versions WHERE spec <> ''`)
 
 			res := postCapabilityBatch(t, env, tc.body(env))
 			if res.code != tc.wantCode {
@@ -329,8 +335,8 @@ func TestPostCapabilityBatchRollsBackEverything(t *testing.T) {
 			if n := countIn(t, env, `SELECT count(*) FROM capability_versions`); n != baseCaps {
 				t.Fatalf("能力行数 %d → %d，整批回滚失败", baseCaps, n)
 			}
-			if n := countIn(t, env, `SELECT count(*) FROM artifacts`); n != baseArtifacts {
-				t.Fatalf("产物行数 %d → %d，整批回滚失败", baseArtifacts, n)
+			if n := countIn(t, env, `SELECT count(*) FROM capability_versions WHERE spec <> ''`); n != baseBodies {
+				t.Fatalf("带正文的能力行数 %d → %d，整批回滚失败", baseBodies, n)
 			}
 			if n := countIn(t, env, `SELECT count(*) FROM edges`); n != baseEdges {
 				t.Fatalf("边行数 %d → %d，整批回滚失败", baseEdges, n)
@@ -636,15 +642,14 @@ func TestPostCapabilityBatchEqualsSinglePath(t *testing.T) {
 		}
 	}
 
-	// 产物 digest：同内容同 name@version → 内容寻址的 digest 必须相同
+	// 产物 digest（= 能力行的 content_hash）：同内容同 name@version → 必须相同
 	digests := func(nsID string) map[string]string {
 		out := map[string]string{}
 		rows, err := env.db.Query(
-			`SELECT c.name, a.digest FROM artifacts a
-			   JOIN capability_versions c ON c.id = a.capability_id
-			  WHERE a.namespace_id = ? AND c.name IN (?,?)`, nsID, "eq.a", "eq.b")
+			`SELECT name, content_hash FROM capability_versions
+			  WHERE namespace_id = ? AND name IN (?,?)`, nsID, "eq.a", "eq.b")
 		if err != nil {
-			t.Fatalf("query artifacts: %v", err)
+			t.Fatalf("query capability hashes: %v", err)
 		}
 		defer rows.Close()
 		for rows.Next() {

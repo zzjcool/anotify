@@ -16,7 +16,7 @@ import (
 //
 //	① 正文（spec）是输入、派生列是输出：一个写者、方向单向（§4）；
 //	② content_hash ≡ digest（裸 hex），且能从落库的那一行重算出来；
-//	③ artifacts 写穿：脚本形式写（保 deployments 外键），handler 形式**不写**（§6.1）；
+//	③ 产物是**派生**的：能力行正文算得出产物，快照表（artifacts）已随 P2 删除（§11）；
 //	④ migration 8 的回填：三类老能力各得其所、重跑幂等、回填后能过 Validate（§6/§6.2）。
 
 // TestCapabilitySpecRoundTrip 存什么读什么：正文与派生列都必须一模一样。
@@ -141,11 +141,15 @@ func TestCapabilitySpecInvalidRejected(t *testing.T) {
 	}
 }
 
-// TestCapabilityArtifactWriteThrough artifacts 写穿：脚本形式写、handler 形式跳过。
+// TestCapabilityArtifactDerivedNotPersisted 产物由能力行**算出来**，没有落库的镜像。
 //
-// 目的是保住 deployments.artifact_id 的外键（P1 期间 artifacts 只是镜像，P2 删）；
-// 而 handler 形式没有 files，给它造一行会让部署面板把它推给节点（契约 §6.1）。
-func TestCapabilityArtifactWriteThrough(t *testing.T) {
+// 这条的 P1 版本是 TestCapabilityArtifactWriteThrough（断言「写穿出一行 artifacts」）。
+// P2 把 artifacts 表删了（Capability Spec v3 §11）：写穿这件事整体消失，
+// 所以要钉的东西反过来 ——
+//   - 快照表不存在；
+//   - 脚本形式的产物仍然拿得到，且 digest 与能力行同源（部署/派发都靠它）；
+//   - handler 形式**没有**可部署的产物（否则部署面板会给节点推一份没有 files 的产物）。
+func TestCapabilityArtifactDerivedNotPersisted(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
@@ -163,24 +167,28 @@ func TestCapabilityArtifactWriteThrough(t *testing.T) {
 	if err := db.CreateCapability(ctx, script); err != nil {
 		t.Fatalf("create script form: %v", err)
 	}
-	// digest 与 content_hash 同源：artifacts 行必须能被 capability 的 digest 命中。
+	// 快照表不存在了：产物只能从能力行拼出来。
+	if tableExists(t, db, "artifacts") {
+		t.Fatal("artifacts 表还在：migration 10 应该已经删掉它（P2 §11.1）")
+	}
+	// digest 与 content_hash 同源：按能力行的 digest 必须能取到那份产物。
 	row, err := db.GetArtifactByDigest(ctx, nsID, script.Digest())
 	if err != nil {
-		t.Fatalf("脚本形式没有写出 artifacts 行（deployments 外键会断）: %v", err)
+		t.Fatalf("脚本形式取不到产物（部署/派发都要靠它）: %v", err)
 	}
 	if row.CapabilityID != script.ID {
-		t.Fatalf("写穿的产物挂错了能力: %s vs %s", row.CapabilityID, script.ID)
+		t.Fatalf("产物挂错了能力: %s vs %s", row.CapabilityID, script.ID)
 	}
-	// 写穿的是 canonical 整份产物，能解回同一份正文。
+	// 拿到的是 canonical 整份产物，能解回同一份正文。
 	var doc artifact.Artifact
 	if err := json.Unmarshal(row.Spec, &doc); err != nil {
-		t.Fatalf("artifacts.spec 不是合法产物: %v", err)
+		t.Fatalf("产物正文不是合法产物: %v", err)
 	}
 	if len(doc.Spec.Run.Files) != 1 || doc.Metadata.Version != 1 {
-		t.Fatalf("写穿的产物正文不对: %+v", doc)
+		t.Fatalf("产物正文不对: %+v", doc)
 	}
 
-	// handler 形式：**不写** artifacts 行。
+	// handler 形式：**没有**可部署的产物。
 	handler := &CapabilityVersion{
 		NamespaceID: nsID, Name: "notify.only", Version: 1, Source: CapSourceCustom,
 		Spec: HandlerSpec(artifact.HandlerNotifyPhone, json.RawMessage(`{"type":"object"}`), nil, nil),
@@ -191,7 +199,10 @@ func TestCapabilityArtifactWriteThrough(t *testing.T) {
 	if arts, err := db.ListArtifacts(ctx, nsID, handler.ID); err != nil {
 		t.Fatalf("list artifacts: %v", err)
 	} else if len(arts) != 0 {
-		t.Fatalf("handler 形式不该有 artifacts 行（契约 §6.1），got %d 行", len(arts))
+		t.Fatalf("handler 形式不该有可部署的产物（契约 §6.1），got %d 行", len(arts))
+	}
+	if _, err := db.CurrentArtifact(ctx, nsID, handler.ID); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("handler 形式取产物 err = %v, want ErrArtifactNotFound", err)
 	}
 }
 
@@ -261,7 +272,7 @@ func TestBuiltinHandlersAreKnownHandlers(t *testing.T) {
 	}
 }
 
-// TestBuiltinNotifyPhoneHasNoArtifact 契约 §6.1 的落地点：notify.phone 只有正文、没有产物行。
+// TestBuiltinNotifyPhoneHasNoArtifact 契约 §6.1 的落地点：notify.phone 只有正文、没有可部署的产物。
 func TestBuiltinNotifyPhoneHasNoArtifact(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -277,7 +288,7 @@ func TestBuiltinNotifyPhoneHasNoArtifact(t *testing.T) {
 	if arts, err := db.ListArtifacts(ctx, nsID, phone.ID); err != nil {
 		t.Fatalf("list artifacts: %v", err)
 	} else if len(arts) != 0 {
-		t.Fatalf("notify.phone 不该有产物行（会让部署面板推一份没有 files 的产物），got %d 行", len(arts))
+		t.Fatalf("notify.phone 不该有可部署的产物（会让部署面板推一份没有 files 的产物），got %d 行", len(arts))
 	}
 	// 反证：示例能力（脚本形式）有产物，否则「有产物」这条判据本身就没验到。
 	echo, err := db.GetCapability(ctx, nsID, ExampleCapability.Name, ExampleCapability.Version)
@@ -287,7 +298,7 @@ func TestBuiltinNotifyPhoneHasNoArtifact(t *testing.T) {
 	if arts, err := db.ListArtifacts(ctx, nsID, echo.ID); err != nil {
 		t.Fatalf("list echo artifacts: %v", err)
 	} else if len(arts) != 1 {
-		t.Fatalf("script.echo 应有 1 行产物，got %d", len(arts))
+		t.Fatalf("script.echo 应有 1 份产物（派生自能力行），got %d", len(arts))
 	}
 }
 
@@ -409,7 +420,7 @@ func TestMigration8Backfill(t *testing.T) {
 	if arts, aerr := db.ListArtifacts(ctx, nsID, phone.ID); aerr != nil {
 		t.Fatalf("list phone artifacts: %v", aerr)
 	} else if len(arts) != 0 {
-		t.Fatalf("%s 回填不该产出 artifacts 行，got %d", phoneName, len(arts))
+		t.Fatalf("%s 回填不该产出可部署的产物，got %d", phoneName, len(arts))
 	}
 
 	// ③ 零产物 → noop 占位，原 schema/outputs 保留。

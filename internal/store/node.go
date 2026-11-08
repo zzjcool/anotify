@@ -152,7 +152,7 @@ type CapabilityRef struct {
 
 // NodeCapability 是「某节点拥有这个能力」的一行：能力定义。
 //
-// v2 起这里**不再有 run_spec**：执行方式属于产物（artifacts）、归属属于部署
+// v2 起这里**不再有 run_spec**：执行方式属于能力正文、归属属于部署
 // （deployments），node_capabilities 只从 deployments 派生（契约 D4）。
 //
 // 嵌入 *CapabilityVersion 是为了不动既有调用点的 .Name/.Outputs 等字段访问
