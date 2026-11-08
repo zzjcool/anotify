@@ -205,3 +205,68 @@ make e2e-one S=real_backend                # 真后端全链
 被排掉的选项：
 - **A 保持现状**（省略版本 = 永远开新版本）：重试/双击会留下重复行，而能力不可删。
 - **C digest 去掉 version**：显式 `x@2` 会被折成 `x@1`，边的 `to_ref` 悬空。已试过并回退，playbook 四个用例当场变红。
+
+## 11. P2 实施细化（删 artifacts 表 + 运行时切到 spec.handler）
+
+P1 期间 `artifacts` 是**写穿镜像**：真相在 `capability_versions.spec`，镜像只为保住
+`deployments.artifact_id` 外键。P2 把镜像与双重依赖一起拆掉。
+
+### 11.1 表
+
+```sql
+-- +migration 10 deployments_reference_capability
+-- SQLite 改外键只能重建表：新建 → 拷 → 删旧 → 改名（migrate.go 的 hook，必须幂等）。
+CREATE TABLE deployments_new (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    digest        TEXT NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'pending',
+    reason        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (node_id, capability_id, digest)
+);
+-- 拷贝：artifact_id → artifacts.capability_id（旧行一条都不能丢）
+-- 拷完 DROP TABLE deployments; ALTER TABLE deployments_new RENAME TO deployments;
+-- 再建索引 idx_deploy_node(node_id) / idx_deploy_cap(capability_id)
+DROP TABLE artifacts;
+```
+
+### 11.2 读路径（全部改读 `capability_versions`）
+
+| 旧 | 新 |
+|---|---|
+| `LatestArtifact(ns, capID)` | `GetCapabilityByID` → `(digest, spec)`；产物 = `Artifact()` |
+| `GetArtifactByDigest(ns, digest)` | 查 `capability_versions WHERE namespace_id=? AND content_hash = ?`（digest 去掉 `sha256:` 前缀） |
+| `ListArtifacts` | 按 `capability_id` 查版本行；或直接删端点 |
+| `CreateDeployment(artifactID)` | `CreateDeployment(capabilityID, digest)` |
+| `resolveArtifact` | 从能力行构建 `artifact.Artifact`（帧形状**不变**：`WsDeployFrame.Artifact` 仍是整份 canonical JSON） |
+
+**协议零改动**：deploy 帧内容不变，只是它的来源从 artifacts 行变成能力行。
+`GET /v1/artifacts` 与 `GET /v1/capabilities/{id}/artifact`：前者的 `spec` 语义变成
+「该能力的当前产物」，后者保持；若实现成本高，`/v1/artifacts` 可以**只保留 GET 一版并标注 deprecated**。
+
+### 11.3 运行时：中枢执行由 `spec.handler` 认领
+
+现在 `CentralCapabilityNames()` 是一张硬编码名字表（`builtin.go:435`），派发与
+`ClaimCentralTasks` 都读它。P2 换成**数据驱动**：
+
+```
+SELECT DISTINCT name FROM capability_versions WHERE json_extract(spec,'$.handler') IS NOT NULL
+```
+
+- 允许进程内缓存 + 写路径失效；缓存失效的 bug 比每次查库慢更难查，但**不要**让它成为第二真相。
+- `BuiltinCapabilities` 里的 `Central` 布尔**删掉**：它的唯一作用是喂那张名字表。
+  `Handler` 字段是唯一来源。
+- 白名单仍然只有 `artifact.KnownHandlers()`；播种时校验（已有测试
+  `TestBuiltinHandlersAreKnownHandlers`）。
+- 派发对 handler 能力的「跳过找节点」逻辑不变，只是判据从名字表变成 `spec.handler != ""`。
+
+### 11.4 验收（除 §8 那套之外）
+
+- `go test ./internal/store/... ./internal/route/... ./internal/server/... ./internal/ws/...`
+- `make e2e-one S=deploy` / `S=ws_protocol` / `S=real_backend` / `S=live_agent`
+- 手工确认：`notify.phone` 的推送链路仍能跑（`make demo-chain` 或 `live_agent` 套件）
+- 确认 `artifacts` 表已不存在（`schema_baseline_test.go` 这类断言要跟着更新）
