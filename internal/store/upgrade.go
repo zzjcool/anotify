@@ -142,6 +142,18 @@ func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *Ca
 	if c.Name == "" || c.Version <= 0 {
 		return impact, nil
 	}
+	// 闸门比的是「契约」（outputs / params_schema），而 P4 起 HTTP 层只提交**正文**，
+	// 派生列的唯一写者是 store 的写入路径（契约 §4）。这里必须**先从正文派生**：
+	// 否则新版本的契约被看成空的，任何带出口的显式新版本都会被 diffContracts 判成
+	// 「端口被删」而永久 409 upgrade_breaking —— 那是「改了脚本就发不出去」。
+	//
+	// 派到副本上：调用方（server 的 CheckUpgrade / 事务内的写入路径）都不能因为
+	// 「算一次影响面」就拿到一个被改过的对象。
+	next := *c
+	if derr := deriveFromSpec(&next); derr != nil {
+		return nil, derr
+	}
+	c = &next
 	prev, err := getCapabilityLatestOn(ctx, ex, namespaceID, c.Name)
 	if errors.Is(err, ErrNotFound) {
 		return impact, nil // 首个版本：没有可比对的契约，也就谈不上破坏

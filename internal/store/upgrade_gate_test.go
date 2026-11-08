@@ -51,12 +51,12 @@ func TestUpgradeGateRemovedPort(t *testing.T) {
 	ctx := context.Background()
 
 	// 新版删掉 failed 出口
-	next := &CapabilityVersion{
+	next := withSpec(&CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"string"}}}`),
 		Outputs:      []string{"done"},
 		Source:       CapSourceCustom,
-	}
+	})
 
 	// CheckUpgrade 先算影响面（handler 用它给前端展示）
 	impact, err := db.CheckUpgrade(ctx, nsID, next)
@@ -112,13 +112,13 @@ func TestUpgradeGateListsAffectedLinks(t *testing.T) {
 		t.Fatalf("create pinned link: %v", err)
 	}
 
-	next := &CapabilityVersion{
+	next := withSpec(&CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue","note"],"properties":{
 			"issue":{"type":"string"},"note":{"type":"string"}}}`),
 		Outputs: []string{"done"}, // 删 failed + 新增必填 note
 		Source:  CapSourceCustom,
-	}
+	})
 	impact, err := db.CheckUpgrade(ctx, nsID, next)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)
@@ -162,14 +162,14 @@ func TestUpgradeGateAllowsAdditiveChanges(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
 
-	next := &CapabilityVersion{
+	next := withSpec(&CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
 		// 只加：一个可选入参 + 一个新 port
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{
 			"issue":{"type":"string"},"note":{"type":"string"}}}`),
 		Outputs: []string{"done", "failed", "skipped"},
 		Source:  CapSourceCustom,
-	}
+	})
 	impact, err := db.CheckUpgrade(ctx, nsID, next)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)
@@ -187,13 +187,13 @@ func TestUpgradeGateParamTypeChanged(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
 
-	next := &CapabilityVersion{
+	next := withSpec(&CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
 		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{
 			"issue":{"type":"integer"}}}`), // string → integer
 		Outputs: []string{"done", "failed"},
 		Source:  CapSourceCustom,
-	}
+	})
 	err := db.CreateCapability(ctx, withSpec(next))
 	if !errors.Is(err, ErrUpgradeBreaking) {
 		t.Fatalf("err = %v (%T), want ErrUpgradeBreaking", err, err)
@@ -232,10 +232,14 @@ func TestUpgradeGateOnlyForLatest(t *testing.T) {
 	}
 	// 再把 v2 的内容当 v3 提交：相对 @2 无破坏性变更 → 闸门放行，落成 @3。
 	// （v3 不再把「同 schema 换版本号」折叠回旧行：digest 吃 version。）
-	same := &CapabilityVersion{
+	//
+	// 构造点就套 withSpec：闸门读的是**正文**（P4 起 HTTP 只交正文，派生列的唯一写者
+	// 是 store 写入路径），先 withSpec 才能让 CheckUpgrade 与 CreateCapability 看到
+	// 同一份契约。不是“为了测试通过”——沿用旧字段的夹具表达的是已经不存在的模型。
+	same := withSpec(&CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 3,
 		ParamsSchema: v2.ParamsSchema, Outputs: v2.Outputs, Source: CapSourceCustom,
-	}
+	})
 	impact, err := db.CheckUpgrade(ctx, nsID, same)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)

@@ -1375,21 +1375,10 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 	//  2. 破坏性变更且没传 force → 409 带结构化 impact，而不是一句
 	//     “conflict”（那会被当成「版本号重了」，与「会改线」完全不是一回事）。
 	//
-	// 闸门读的是「契约投影」（outputs / params），而这一行**还没进** store 的
-	// deriveFromSpec（那是写入时才发生的，契约 §4 的唯一写者）。P4 起 HTTP 层不再
-	// 自己派生这些列，所以这里从正文做一次**同向**搬运（spec → 列，方向与 store 一致，
-	// 不做反向反推），只为了让预计算看到真实的契约：
-	// 否则每个「删出口 / 改入参」都会被误判成破坏性变更（旧版有出口、新版看起来没有）。
-	// 落库的值仍由 store 在事务里重算，两处同向同口径。
-	if c.Outputs == nil {
-		c.Outputs = []string{}
-	}
-	c.Outputs = c.Spec.Outputs
-	if len(c.Spec.Params) > 0 {
-		c.ParamsSchema = c.Spec.Params
-	} else {
-		c.ParamsSchema = json.RawMessage(`{}`)
-	}
+	// 闸门读的是「契约投影」（outputs / params），而这一行还没进 store 的
+	// deriveFromSpec。**派生在 store 里做**（checkUpgradeOn 内部从正文推一份副本），
+	// 服务端不再自己搬列：P4 之前这里搬过一次，结果「搬的地方漏一个就永久 409」，
+	// 而那种 bug 只在「显式新版本 + 带出口」这条窄路径上出现。
 	impact, err := h.db.CheckUpgrade(r.Context(), ns.ID, c)
 	if err != nil {
 		if handleNamespaceError(w, err) {
