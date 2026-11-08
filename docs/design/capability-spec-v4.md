@@ -344,7 +344,7 @@ spec:
     properties:
       sha: { type: string }
     required: [sha]
-  next: [notify.phone]              # 内置能力，直接按名字引用
+  next: [notify]                 # 内置能力，按名字引用
   run:
     entrypoint: run.sh
     files:
@@ -352,10 +352,10 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         ./deploy.sh "$ANOTIFY_PARAM_SHA"
-        anotify-agent emit notify.phone --data '{"text":"deploy ok"}'
+        anotify-agent emit notify --data '{"text":"deploy ok"}'
 ```
 
-`notify.phone` 是内置的中枢执行能力（`handler: notify-phone`），按名字引用即可，不需要部署到任何节点。
+`notify` 是内置的中枢执行能力（`handler: notify-phone`），按名字引用即可，不需要部署到任何节点。
 
 ### 11.4 两处约定
 
