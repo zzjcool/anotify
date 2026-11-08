@@ -450,6 +450,58 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  # 用密码注册（契约「追加：用密码注册」§A2）：与 Passkey 注册（/auth/register）并存的第二条注册方式。
+  #
+  # 原子性：用户行 + 默认命名空间 + 内置能力 + 密码哈希在**同一个事务**里写入，
+  # 不会出现「有账号但没有任何登录方式」的半成品。首用户 admin 的判定也在那个事务内。
+  /auth/password/register:
+    post:
+      security: []  # 匿名可访问（IP 维限速在 handler 里做）
+      tags: [auth]
+      summary: 用用户名 + 密码注册（成功即 Set-Cookie 会话 + 返回 8 个恢复码）
+      description: |
+        body: `{username, password, displayName?}`（displayName 缺省用 username）。
+        密码 8–128 字符（按 rune，全空白拒绝），只以 argon2id PHC 哈希落库，
+        明文不进库、不进日志。
+
+        首个注册用户（不论 Passkey 还是密码注册）自动成为 admin——判定在 store 的
+        建用户事务内完成。成功时同时签发 8 个一次性恢复码（**明文仅此一次**）并建会话；
+        注册出来的账号没有 Passkey（密码就是它的登录方式）。
+
+        错误码：缺字段 / 用户名不合规 / 密码不合规 / 用户名已存在 `400`（文案为中文，
+        前端可直接展示）；超限 `429`（带 Retry-After）。
+
+        限速：10/min/IP（**只做 IP 维**——注册不是秘密猜测接口，username 维留给登录），
+        限速判定先于读 body。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, description: 2–32 字符，字母 / 数字 / _ - . }
+                password: { type: string, description: 8–128 字符（按 rune）；仅本次请求体，服务端只存哈希 }
+                displayName: { type: string, description: 可选，缺省用 username }
+      responses:
+        "200":
+          description: 注册成功，Set-Cookie 会话 + 一次性恢复码（明文仅此一次）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, recoveryCodes]
+                properties:
+                  ok: { type: boolean }
+                  recoveryCodes:
+                    type: array
+                    description: 8 个恢复码（XXXX-XXXX-XXXX-XXXX），明文仅此一次；空时是 [] 而非 null
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429":
+          description: '限速（IP 10/min）；响应头 Retry-After'
+
   # ========== 统计（命名空间级）==========
   #
   # 统计不再是组织级：「本组织有多少事件」这个数字不存在了，同一套流程在

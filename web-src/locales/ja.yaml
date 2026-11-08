@@ -290,6 +290,23 @@ login:
     err_short: ユーザー名は 2 文字以上にしてください。
     err_long: ユーザー名は 32 文字以内にしてください。
     err_chars: 使える文字は英字、数字、_、-、. のみです。_ - . で始めたり終わったりできません。
+    password:
+      or: または
+      toggle: ユーザー名 + パスワードで登録
+      toggle_hide: パスワード登録を閉じる
+      password_label: パスワード
+      password_placeholder: 8 文字以上
+      confirm_label: パスワード（確認）
+      confirm_placeholder: もう一度入力
+      button: パスワードで登録
+      busy: アカウントを作成しています…
+      hint: 8〜128 文字。パスワードマネージャーでの生成がおすすめです。
+      err_empty: パスワードを設定してください。
+      err_short: パスワードは 8 文字以上にしてください。
+      err_long: パスワードは 128 文字以内にしてください。
+      err_mismatch: 2 つのパスワードが一致しません。
+      err_rate_limited: 登録の試行が多すぎます。しばらく待ってからお試しください。
+      success: 登録できました。ワークスペースに移動しています…
   ios_tip_label: iOS ユーザー：
   ios_tip: プッシュ通知を受信するには、まず Safari で本サイトを開き、 「共有 → ホーム画面に追加」を選択し、ホーム画面のアイコンから 起動してログインしてください。
   recovery_soon: ''

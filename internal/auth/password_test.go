@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -329,5 +330,287 @@ func TestPassword_ListPasskeysEmptyIsNotNil(t *testing.T) {
 	}
 	if len(pks) != 0 {
 		t.Fatalf("len = %d", len(pks))
+	}
+}
+
+// ---------- 用密码注册（契约「追加：用密码注册」§A3 / §A6） ----------
+//
+// 灯板：
+//   - 成功一次 = 能用密码立刻登录（会话可 Validate）+ 8 个恢复码 + 库里只有 PHC 哈希
+//   - 账号没有任何 Passkey（密码就是它的登录方式）
+//   - 重复用户名（含并发输家）统一「auth: 用户名已存在」——与 BeginRegister 同文案
+//   - 校验失败**不留用户行**（§A1 的原子性：不能有「有账号没登录方式」的半成品）
+//   - 首用户 admin、第二个 member（判定在 store 事务内，RoleAuto）
+
+func TestRegisterWithPassword_Success(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	const pw = "correct horse battery"
+	sessID, codes, err := svc.RegisterWithPassword(ctx, "pwreguser", "", pw, "Test · Linux")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if sessID == "" {
+		t.Fatal("注册成功后应直接建会话（返回 sessionID）")
+	}
+	if len(codes) != recoveryCodeCount {
+		t.Fatalf("恢复码数量 = %d, want %d（明文仅此一次）", len(codes), recoveryCodeCount)
+	}
+	for _, c := range codes {
+		if c == "" {
+			t.Error("恢复码里出现空串")
+		}
+	}
+
+	u, err := svc.db.GetUserByUsername("pwreguser")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	// displayName 缺省用 username。
+	if u.DisplayName != "pwreguser" {
+		t.Errorf("displayName = %q, want username（缺省用 username）", u.DisplayName)
+	}
+	// 首个注册用户是 admin（判定在 store 事务内，不是这里先查后写）。
+	if u.Role != store.RoleAdmin {
+		t.Errorf("首个注册用户 role = %q, want %q", u.Role, store.RoleAdmin)
+	}
+
+	// 密码只存 PHC 哈希，明文不在库里。
+	rec, err := svc.db.GetUserPassword(u.ID)
+	if err != nil {
+		t.Fatalf("get user password: %v", err)
+	}
+	if !strings.HasPrefix(rec.Hash, "$argon2id$") {
+		t.Errorf("存储应为 argon2id PHC: %q", rec.Hash)
+	}
+	if strings.Contains(rec.Hash, pw) {
+		t.Error("库里出现了明文密码")
+	}
+	if rec.UpdatedAt == 0 {
+		t.Error("password_updated_at 应 > 0")
+	}
+
+	// 恢复码在库里是 8 条未使用。
+	n, err := svc.db.CountUnusedRecoveryCodes(u.ID)
+	if err != nil {
+		t.Fatalf("count codes: %v", err)
+	}
+	if n != recoveryCodeCount {
+		t.Errorf("未使用恢复码 = %d, want %d", n, recoveryCodeCount)
+	}
+
+	// 没有任何 Passkey：密码注册不走 WebAuthn。
+	pks, err := svc.db.ListPasskeysByUser(u.ID)
+	if err != nil {
+		t.Fatalf("list passkeys: %v", err)
+	}
+	if len(pks) != 0 {
+		t.Errorf("密码注册不应创建 Passkey, got %d", len(pks))
+	}
+
+	// 会话可用，设备名来自调用方。
+	sess, err := svc.Sessions().Validate(sessID)
+	if err != nil {
+		t.Fatalf("validate session: %v", err)
+	}
+	if sess.UserID != u.ID || sess.DeviceName != "Test · Linux" {
+		t.Errorf("会话 = %+v, want user=%s device=Test · Linux", sess, u.ID)
+	}
+
+	// 注册完立刻能用密码登录（round-trip：哈希是可用且匹配的）。
+	if _, err := svc.LoginWithPassword("pwreguser", pw, "UA"); err != nil {
+		t.Errorf("注册后密码登录应成功: %v", err)
+	}
+	if _, err := svc.LoginWithPassword("pwreguser", pw+"x", "UA"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("错密码 err = %v, want ErrInvalidCredentials", err)
+	}
+
+	// 默认命名空间 + 内置能力：注册是原子的（store.RegisterUserWithPassword 的事务）。
+	nss, err := svc.db.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces: %v", err)
+	}
+	if len(nss) != 1 {
+		t.Fatalf("命名空间数 = %d, want 1（注册必须建默认命名空间）", len(nss))
+	}
+	if _, err := svc.db.GetCapability(ctx, nss[0].ID, "notify.phone", 1); err != nil {
+		t.Errorf("内置能力没播下去: %v", err)
+	}
+}
+
+// TestRegisterWithPassword_FirstAdminSecondMember 角色规则与 Passkey 路径一致。
+func TestRegisterWithPassword_FirstAdminSecondMember(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	if _, _, err := svc.RegisterWithPassword(ctx, "pwadmin", "", "correct horse battery", "UA"); err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	first, err := svc.db.GetUserByUsername("pwadmin")
+	if err != nil {
+		t.Fatalf("get first: %v", err)
+	}
+	if first.Role != store.RoleAdmin {
+		t.Errorf("first role = %q, want admin", first.Role)
+	}
+
+	if _, _, err := svc.RegisterWithPassword(ctx, "pwmember", "", "correct horse battery", "UA"); err != nil {
+		t.Fatalf("register second: %v", err)
+	}
+	second, err := svc.db.GetUserByUsername("pwmember")
+	if err != nil {
+		t.Fatalf("get second: %v", err)
+	}
+	if second.Role != store.RoleMember {
+		t.Errorf("second role = %q, want member", second.Role)
+	}
+}
+
+// TestRegisterWithPassword_DuplicateUsername 重复用户名：文案与 BeginRegister 一致，
+// 且不会留下第二个用户行。
+func TestRegisterWithPassword_DuplicateUsername(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	if _, _, err := svc.RegisterWithPassword(ctx, "dupuser", "", "correct horse battery", "UA"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	_, _, err := svc.RegisterWithPassword(ctx, "dupuser", "", "another good password", "UA")
+	if err == nil {
+		t.Fatal("重复用户名应报错")
+	}
+	if err.Error() != "auth: 用户名已存在" {
+		t.Errorf("文案 = %q, want %q（与 BeginRegister 同文案）", err.Error(), "auth: 用户名已存在")
+	}
+	var n int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ?`, "dupuser").Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("用户行数 = %d, want 1", n)
+	}
+	// 失败不该多建命名空间（每个用户恰一个）。
+	nss, err := svc.db.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces: %v", err)
+	}
+	if len(nss) != 1 {
+		t.Errorf("命名空间数 = %d, want 1（重复注册不能建出第二个）", len(nss))
+	}
+	// 原密码仍然可用（重复注册没有覆盖它）。
+	if _, err := svc.LoginWithPassword("dupuser", "correct horse battery", "UA"); err != nil {
+		t.Errorf("重复注册不应影响已有密码: %v", err)
+	}
+}
+
+// TestRegisterWithPassword_ConcurrentDuplicate 并发注册同名：恰好一个赢家，
+// 输家（无论输在预检还是输在 UNIQUE）都必须拿到同一句「用户名已存在」。
+//
+// 用文件库：":memory:" 会把池压到 1，两个注册被串行化，永远走不到 UNIQUE 那条分支。
+func TestRegisterWithPassword_ConcurrentDuplicate(t *testing.T) {
+	const rounds = 5
+	for round := 0; round < rounds; round++ {
+		svc, _ := newTestServiceFile(t)
+		const racers = 2
+		var (
+			start  = make(chan struct{})
+			wg     sync.WaitGroup
+			errs   = make([]error, racers)
+			sessOK = make([]bool, racers)
+		)
+		wg.Add(racers)
+		for i := 0; i < racers; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				sessID, _, err := svc.RegisterWithPassword(context.Background(), "samename", "", "correct horse battery", "UA")
+				errs[i] = err
+				sessOK[i] = sessID != ""
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		wins, dups := 0, 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				wins++
+				if !sessOK[i] {
+					t.Fatalf("round %d: 赢家没有会话", round)
+				}
+			case err.Error() == "auth: 用户名已存在":
+				dups++
+			default:
+				t.Fatalf("round %d: 输家的错误不在契约内: %v", round, err)
+			}
+		}
+		if wins != 1 || dups != racers-1 {
+			t.Fatalf("round %d: wins=%d dups=%d, want 1/%d", round, wins, dups, racers-1)
+		}
+		var n int
+		if err := svc.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ?`, "samename").Scan(&n); err != nil {
+			t.Fatalf("round %d: count: %v", round, err)
+		}
+		if n != 1 {
+			t.Fatalf("round %d: 同名用户 = %d, want 1", round, n)
+		}
+	}
+}
+
+// TestRegisterWithPassword_RejectsInvalid 校验失败：原文案返回，且**不留用户行**
+// （原子性：哈希都还没生成，绝不能先把用户建出来）。
+func TestRegisterWithPassword_RejectsInvalid(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		username string
+		password string
+		want     string
+	}{
+		{"用户名太短", "a", "correct horse battery", "用户名至少 2 个字符"},
+		{"用户名非法字符", "bad name", "correct horse battery", "用户名只能包含字母、数字"},
+		{"空用户名", "", "correct horse battery", "用户名不能为空"},
+		{"密码太短", "okname", "short", "密码至少 8 个字符"},
+		{"密码太长", "okname", strings.Repeat("a", PasswordMaxLen+1), "密码最多 128 个字符"},
+		{"密码全空白", "okname", strings.Repeat(" ", PasswordMinLen), "密码不能全为空白"},
+	}
+	for _, tc := range cases {
+		_, _, err := svc.RegisterWithPassword(ctx, tc.username, "", tc.password, "UA")
+		if err == nil {
+			t.Errorf("%s: 期望拒绝, got nil", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: 文案 = %q, want 含 %q", tc.name, err.Error(), tc.want)
+		}
+	}
+	var n int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("校验失败的注册留下了 %d 个用户行（应为 0：不能有「有账号没登录方式」的半成品）", n)
+	}
+	if _, err := svc.db.GetUserByUsername("okname"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("校验失败后用户名不该被占用: %v", err)
+	}
+}
+
+// TestRegisterWithPassword_LongDisplayNameKept displayName 显式给出时按原值落库。
+func TestRegisterWithPassword_LongDisplayNameKept(t *testing.T) {
+	svc := newTestService(t)
+	if _, _, err := svc.RegisterWithPassword(context.Background(), "nameduser", "显示 名字", "correct horse battery", "UA"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	u, err := svc.db.GetUserByUsername("nameduser")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if u.DisplayName != "显示 名字" {
+		t.Errorf("displayName = %q", u.DisplayName)
 	}
 }

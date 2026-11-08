@@ -256,6 +256,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	//   - login 匿名（限速在 handler 里做，不包 sessMW，否则未登录的合法请求会被 401）
 	//   - 管理端点包 sessMW：未登录 401，而不是被 /v1/auth/ 兜底成 404/405。
 	mux.Handle("/v1/auth/password/login", noStore(http.HandlerFunc(authH.passwordLogin)))
+	// 用密码注册（契约「追加：用密码注册」§A2）：**匿名**端点，与 password/login 同族。
+	// 与 login 不同，它只能显式注册：/v1/auth/ 的兜底 handler 不覆盖这个同族前缀，
+	// 漏挂的话请求会落到静态资源（SPA 404），而那条路径没有任何测试会红。
+	mux.Handle("/v1/auth/password/register", noStore(http.HandlerFunc(authH.passwordRegister)))
 	mux.Handle("/v1/auth/password", noStore(sessMW(http.HandlerFunc(authH.password))))
 	// 恢复码：regenerate/status 需登录；login 走 /v1/auth/ 兜底（匿名）。
 	mux.Handle("/v1/auth/recovery/regenerate", noStore(sessMW(http.HandlerFunc(authH.recoveryRegenerate))))

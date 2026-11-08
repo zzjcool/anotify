@@ -290,6 +290,23 @@ login:
     err_short: El nombre de usuario necesita al menos 2 caracteres.
     err_long: El nombre de usuario puede tener como máximo 32 caracteres.
     err_chars: Usa solo letras, dígitos, _, - y . — y no empieces ni termines con _ - .
+    password:
+      or: o
+      toggle: Registrarse con usuario y contraseña
+      toggle_hide: Ocultar el registro con contraseña
+      password_label: Contraseña
+      password_placeholder: Al menos 8 caracteres
+      confirm_label: Confirma la contraseña
+      confirm_placeholder: Escríbela otra vez
+      button: Registrarse con contraseña
+      busy: Creando la cuenta…
+      hint: De 8 a 128 caracteres; mejor si los genera un gestor de contraseñas.
+      err_empty: Elige una contraseña.
+      err_short: La contraseña necesita al menos 8 caracteres.
+      err_long: La contraseña puede tener como máximo 128 caracteres.
+      err_mismatch: Las dos contraseñas no coinciden.
+      err_rate_limited: Demasiados intentos de registro. Espera un momento y vuelve a probar.
+      success: Cuenta creada. Entrando al espacio de trabajo…
   ios_tip_label: 'Usuarios de iOS: '
   ios_tip: para recibir notificaciones push, abre primero este sitio en Safari, toca Compartir → Añadir a pantalla de inicio y luego ábrelo desde el icono e inicia sesión.
   recovery_soon: ''

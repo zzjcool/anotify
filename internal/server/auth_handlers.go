@@ -536,6 +536,61 @@ func (h *authHandler) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// passwordRegister POST <password>/register —— 用用户名 + 密码注册（契约「追加：用密码注册」§A2）。
+//
+// 匿名端点，**显式路由**（mux.go），因为 /v1/auth/ 的兜底 handler 根本不覆盖
+// 与本路径同族的前缀；不显式挂的话它会掉到静态资源里去（SPA 404）。
+//
+// 限速：只做 IP 维（10/min/IP）——注册不是秘密猜测接口，username 维留给登录；
+// 但它是**一条会算 argon2 与签发 8 个恢复码的匿名写入口**，没有 IP 维就是一个
+// 现成的“灌号 + 烧 CPU”放大镜。IP 维先于读 body（与 recovery/password login 一致）：
+// 空请求洪泛连 JSON 都不解析。
+//
+// 日志：auth.register.success / auth.register.fail（字段与 Passkey 注册同一形状：只有
+// 事件名 + ip + 错误文案；**绝不含 username / 密码 / 哈希**）。
+func (h *authHandler) passwordRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	// IP 限速先于读 body：挡住空请求洪泛（不解析 JSON、不打 argon2）。
+	if rateLimited(w, rlPasswordRegisterIP, clientIP(r)) {
+		return
+	}
+	var req struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"displayName"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" || req.Password == "" {
+		writeErr(w, 400, "缺少 username 或 password")
+		return
+	}
+	sessID, codes, err := h.svc.RegisterWithPassword(
+		r.Context(), req.Username, req.DisplayName, req.Password, auth.DeviceNameFromUA(r.UserAgent()))
+	if err != nil {
+		// 文案原样回给前端（用户名已存在 / 密码太短 / 用户名不合法都由 auth 层给定）；
+		// 不记 username、不记明文、不记哈希。
+		slog.Warn("password register failed",
+			"event", "auth.register.fail",
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
+		writeErr(w, 400, err.Error())
+		return
+	}
+	h.svc.Sessions().SetCookie(w, sessID)
+	slog.Info("password register success",
+		"event", "auth.register.success",
+		"ip", clientIP(r),
+	)
+	// recoveryCodes 明文仅此一次；空时回 [] 而不是 null（AGENTS.md 第 3 节）。
+	if codes == nil {
+		codes = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "recoveryCodes": codes})
+}
+
 // password GET / POST / DELETE /v1/auth/password —— 密码管理（需登录会话）。
 //
 // 路由在 mux.go 里包了 sessMW，所以未登录在这里已经 401（不会走到这个方法）。

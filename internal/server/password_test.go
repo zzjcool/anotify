@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +35,8 @@ const (
 	// 与生产 mux.go 完全相同的两条路径（契约 §2）。
 	passwordLoginPath = "/v1/auth/password/login"
 	passwordPath      = "/v1/auth/password"
+	// 用密码注册的路径 = 密码资源路径 + /register（与 mux.go 的显式路由同形）。
+	passwordRegisterPath = passwordPath + "/register"
 
 	testOldPassword = "old-password-1"
 	testNewPassword = "new-password-2"
@@ -44,6 +47,8 @@ func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
 	t.Helper()
 	rlPasswordLoginIP = newFixedWindow(rlPasswordLoginIPPerMin, time.Minute)
 	rlPasswordLoginUser = newFixedWindow(rlPasswordLoginUserPerMin, time.Minute)
+	// 注册的 IP 维同样要重置：所有用例共用一个 httptest RemoteAddr IP 桶。
+	rlPasswordRegisterIP = newFixedWindow(rlPasswordRegisterPerMin, time.Minute)
 
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -78,6 +83,7 @@ func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
 	mux.Handle("/v1/auth/passkeys", noStore(sessMW(http.HandlerFunc(authH.passkeysRoot))))
 	mux.Handle("/v1/auth/passkeys/", noStore(sessMW(http.HandlerFunc(authH.passkeysItem))))
 	mux.Handle(passwordLoginPath, noStore(http.HandlerFunc(authH.passwordLogin)))
+	mux.Handle(passwordRegisterPath, noStore(http.HandlerFunc(authH.passwordRegister)))
 	mux.Handle(passwordPath, noStore(sessMW(http.HandlerFunc(authH.password))))
 	mux.Handle("/v1/auth/", noStore(http.HandlerFunc(authH.ServeHTTP)))
 
@@ -441,5 +447,217 @@ func TestPassword_RoutesUseExplicitPaths(t *testing.T) {
 	rr = pwReq(t, env, "POST", passwordLoginPath, map[string]any{}, false)
 	if rr.Code != 400 || strings.Contains(rr.Body.String(), "unknown auth endpoint") {
 		t.Errorf("POST %s = %d %s", passwordLoginPath, rr.Code, rr.Body.String())
+	}
+}
+
+// ---------- 用密码注册的 HTTP 面（契约「追加：用密码注册」§A2 / §A6） ----------
+//
+// 端点契约：匿名 + IP 维 10/min 限速；200 带 Set-Cookie 与 8 个恢复码；
+// 用户名/密码不合规与「用户名已存在」都是 400；超限 429。
+
+// registerReq 是一次 POST <password>/register（匿名，不带旧 Cookie）。
+func registerReq(t *testing.T, env *passwordTestEnv, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return pwReq(t, env, "POST", passwordRegisterPath, body, false)
+}
+
+// TestPasswordRegister_Success 成功路径：200 + Cookie + 8 个恢复码，
+// 且该账号 hasPassword=true、Passkey 为 0（密码就是它的登录方式）。
+func TestPasswordRegister_Success(t *testing.T) {
+	env := newPasswordTestEnv(t)
+
+	rr := registerReq(t, env, map[string]any{"username": "signup-user", "password": testPassword})
+	if rr.Code != 200 {
+		t.Fatalf("注册应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	// 命中显式路由：否则这条路径不在 /v1/auth/ 前缀下，会掉进静态资源（SPA）。
+	if strings.Contains(rr.Body.String(), "unknown auth endpoint") {
+		t.Fatalf("请求掉进了兜底 handler: %s", rr.Body.String())
+	}
+	m := decodeBody(t, rr)
+	if m["ok"] != true {
+		t.Errorf("响应 ok = %v, want true", m["ok"])
+	}
+	codes, ok := m["recoveryCodes"].([]any)
+	if !ok {
+		t.Fatalf("recoveryCodes 应为数组, got %T (%v)", m["recoveryCodes"], m["recoveryCodes"])
+	}
+	if len(codes) != 8 {
+		t.Fatalf("recoveryCodes 长度 = %d, want 8", len(codes))
+	}
+	for _, c := range codes {
+		s, _ := c.(string)
+		if len(s) != len("XXXX-XXXX-XXXX-XXXX") || strings.Count(s, "-") != 3 {
+			t.Errorf("恢复码形状异常: %q", s)
+		}
+	}
+	// 响应里不该有任何哈希形态（连 PHC 前缀都不能出现）。
+	if strings.Contains(rr.Body.String(), "argon2id") {
+		t.Errorf("注册响应泄露了哈希: %s", rr.Body.String())
+	}
+
+	var sessCookie *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == auth.SessionCookieName && c.Value != "" {
+			sessCookie = c
+		}
+	}
+	if sessCookie == nil {
+		t.Fatal("注册成功没有种会话 Cookie")
+	}
+	sess, err := env.svc.Sessions().Validate(sessCookie.Value)
+	if err != nil {
+		t.Fatalf("validate session: %v", err)
+	}
+	if sess.DeviceName != "Chrome · macOS" {
+		t.Errorf("deviceName = %q, 期望 Chrome · macOS（来自 UA）", sess.DeviceName)
+	}
+
+	// 用注册拿到的 Cookie 访问 /v1/auth/me：身份正确、且不泄露密码列。
+	env.cookie = sessCookie
+	rr = pwReq(t, env, "GET", "/v1/auth/me", nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("GET /v1/auth/me 应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	if m := decodeBody(t, rr); m["username"] != "signup-user" {
+		t.Errorf("/me username = %v, want signup-user", m["username"])
+	}
+	if strings.Contains(rr.Body.String(), "argon2id") || strings.Contains(rr.Body.String(), "hasPassword") {
+		t.Errorf("/me 泄露了密码信息: %s", rr.Body.String())
+	}
+
+	// GET <password>：hasPassword=true。
+	rr = pwReq(t, env, "GET", passwordPath, nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("GET 密码状态应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	m = decodeBody(t, rr)
+	if m["hasPassword"] != true {
+		t.Errorf("注册后 hasPassword = %v, want true", m["hasPassword"])
+	}
+	if m["updatedAt"] == float64(0) {
+		t.Error("注册后 updatedAt 应 > 0")
+	}
+
+	// GET /v1/auth/passkeys：0 个，且是 []（不是 null）。
+	rr = pwReq(t, env, "GET", "/v1/auth/passkeys", nil, true)
+	if rr.Code != 200 {
+		t.Fatalf("GET passkeys 应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	m = decodeBody(t, rr)
+	if m["count"] != float64(0) {
+		t.Errorf("Passkey count = %v, want 0（密码注册不建 Passkey）", m["count"])
+	}
+	if pk, ok := m["passkeys"].([]any); !ok || len(pk) != 0 {
+		t.Errorf("passkeys = %v, want []", m["passkeys"])
+	}
+	if !strings.Contains(rr.Body.String(), `"passkeys":[]`) {
+		t.Errorf("空列表必须是 [] 而不是 null: %s", rr.Body.String())
+	}
+
+	// 注册完能立刻用密码登录（第二条独立会话）。
+	rr = pwReq(t, env, "POST", passwordLoginPath, map[string]any{"username": "signup-user", "password": testPassword}, false)
+	if rr.Code != 200 {
+		t.Fatalf("注册后密码登录应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPasswordRegister_DuplicateUsername 重复用户名 → 400 + 同一句文案（不泄露内部错误）。
+func TestPasswordRegister_DuplicateUsername(t *testing.T) {
+	env := newPasswordTestEnv(t)
+	body := map[string]any{"username": "dup-signup", "password": testPassword}
+	if rr := registerReq(t, env, body); rr.Code != 200 {
+		t.Fatalf("首次注册应 200, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+
+	rr := registerReq(t, env, body)
+	if rr.Code != 400 {
+		t.Fatalf("重复用户名应 400, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	m := decodeBody(t, rr)
+	if s, _ := m["error"].(string); !strings.Contains(s, "用户名已存在") {
+		t.Errorf("文案 = %v, want 含「用户名已存在」", m["error"])
+	}
+	// 不能把 sqlite 的约束名/列名漏给前端。
+	if s, _ := m["error"].(string); strings.Contains(s, "UNIQUE") || strings.Contains(s, "insert user") {
+		t.Errorf("文案泄露了存储层细节: %q", s)
+	}
+}
+
+// TestPasswordRegister_RejectsBadInput 短密码 / 非法用户名 / 缺字段 → 400，且不留用户行。
+func TestPasswordRegister_RejectsBadInput(t *testing.T) {
+	env := newPasswordTestEnv(t)
+
+	cases := []struct {
+		name string
+		body any
+		want string
+	}{
+		{"短密码", map[string]any{"username": "shortpw", "password": "short"}, "密码至少 8 个字符"},
+		{"非法用户名", map[string]any{"username": "bad name", "password": testPassword}, "用户名只能包含字母、数字"},
+		{"缺 username", map[string]any{"password": testPassword}, "缺少 username 或 password"},
+		{"缺 password", map[string]any{"username": "nopass"}, "缺少 username 或 password"},
+		{"空 body", map[string]any{}, "缺少 username 或 password"},
+	}
+	for _, tc := range cases {
+		rr := registerReq(t, env, tc.body)
+		if rr.Code != 400 {
+			t.Errorf("%s: 应 400, got %d (body=%s)", tc.name, rr.Code, rr.Body.String())
+			continue
+		}
+		m := decodeBody(t, rr)
+		if s, _ := m["error"].(string); !strings.Contains(s, tc.want) {
+			t.Errorf("%s: 文案 = %v, want 含 %q", tc.name, m["error"], tc.want)
+		}
+	}
+	// 失败路径不许留下用户行（§A1：不能有「有账号没登录方式」的半成品）。
+	for _, name := range []string{"shortpw", "nopass"} {
+		if _, err := env.db.GetUserByUsername(name); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s 不应被创建: %v", name, err)
+		}
+	}
+}
+
+// TestPasswordRegister_RateLimit 同一 IP 连续 11 次 → 第 11 次 429 + Retry-After。
+//
+// 限速判定**先于读 body**：这里前 10 次用空 body（400）也照样占额度——
+// 否则攻击者可以靠发坏请求白嫖 argon2 与恢复码签发的 CPU。
+func TestPasswordRegister_RateLimit(t *testing.T) {
+	env := newPasswordTestEnv(t)
+	rlPasswordRegisterIP = newFixedWindow(rlPasswordRegisterPerMin, time.Minute)
+
+	for i := 0; i < rlPasswordRegisterPerMin; i++ {
+		rr := registerReq(t, env, map[string]any{})
+		if rr.Code != 400 {
+			t.Fatalf("第 %d 次应 400（限速尚未触发）, got %d (body=%s)", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := registerReq(t, env, map[string]any{"username": "ratelimit-user", "password": testPassword})
+	if rr.Code != 429 {
+		t.Fatalf("第 %d 次应 429, got %d (body=%s)", rlPasswordRegisterPerMin+1, rr.Code, rr.Body.String())
+	}
+	if ra := rr.Header().Get("Retry-After"); ra == "" {
+		t.Error("429 应带 Retry-After")
+	}
+	if m := decodeBody(t, rr); !strings.Contains(m["error"].(string), "请求过于频繁") {
+		t.Errorf("429 文案 = %v", m["error"])
+	}
+	// 被限速的这次不该建出用户（限速在读写之前）。
+	if _, err := env.db.GetUserByUsername("ratelimit-user"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("429 的请求不应建出用户: %v", err)
+	}
+}
+
+// TestPasswordRegister_RouteUseExplicitPath 兜住 §A2 的「显式路由」：
+// 这条路径不在 /v1/auth/ 的兜底下，漏挂会掉进静态资源（SPA），而不是一个显式错误码。
+func TestPasswordRegister_RouteUseExplicitPath(t *testing.T) {
+	env := newPasswordTestEnv(t)
+	// GET 打到注册端点：命中 handler（405），而不是掉进静态资源。
+	rr := pwReq(t, env, "GET", passwordRegisterPath, nil, false)
+	if rr.Code != 405 {
+		t.Errorf("GET 注册端点应 405, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "unknown auth endpoint") {
+		t.Errorf("注册端点掉进了兜底 handler: %s", rr.Body.String())
 	}
 }

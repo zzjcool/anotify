@@ -286,3 +286,146 @@ make fe
 ```
 
 全量（协调者）：`make ci`、`make e2e`、`web_verify` dark/light 截图。
+
+---
+
+# 追加：用密码注册（第二套注册方式）
+
+> 首轮已交付「密码登录 + Passkey 注册」。本轮让注册也能选「用户名 + 密码」，
+> 与 Passkey 注册并存。**不改变首轮任何已冻结项**。
+
+## A1. 目标与不变量
+
+- 注册两种方式：Passkey ceremony（现有）**或** 用户名 + 密码（新增）。
+- 首个注册用户（无论哪种方式）自动成为 admin —— 判定仍必须发生在
+  `store.RegisterUser*` 的**同一个事务**里（`RoleAuto`），不得先查后写。
+- 密码注册必须**原子**：用户行 + 默认命名空间 + 内置能力播种 + 密码哈希，
+  一个事务全成或全不成（不能留下「有账号但没有任何登录方式」的半成品）。
+- 密码注册成功后同样签发 8 个一次性恢复码（明文仅此一次返回），
+  前端复用现有 `#codes-modal` 展示。
+- 会话与设备名语义同 Passkey 注册（`SessionManager.Create` + `DeviceNameFromUA`）。
+
+## A2. HTTP 契约（冻结）
+
+```
+POST /v1/auth/password/register      # 匿名 + 限速
+body: {"username":"...","password":"...","displayName":"可选"}
+200:  {"ok":true,"recoveryCodes":["XXXX-XXXX-XXXX-XXXX", ...]}   + Set-Cookie
+400:  {"error":"中文文案"}   # 用户名/密码不合规、用户名已存在
+429:  限速（IP 10/min，带 Retry-After）
+```
+
+- 路由必须**显式注册**（与 password/login 同族）：
+  `mux.Handle("/v1/auth/password/register", noStore(http.HandlerFunc(authH.passwordRegister)))`
+- 限速：新增 `rlPasswordRegisterPerMin = 10` + 包级 `rlPasswordRegisterIP`；
+  IP 维先于读 body（与 recovery/password login 一致）。本轮只做 IP 维
+  （注册不是秘密猜测接口；username 维留给登录）。
+- 日志：`auth.register.success` / `auth.register.fail`（含 ip；**不得**记密码/哈希）。
+- `api/openapi.yaml` 增加该 path，`security: []`。
+
+## A3. 服务层（`internal/auth/password.go`）
+
+```go
+// RegisterWithPassword 用用户名 + 密码注册（不创建 Passkey）。
+// 返回会话 ID 与一次性恢复码（明文仅此一次）。
+func (s *Service) RegisterWithPassword(
+    ctx context.Context, username, displayName, password, deviceName string,
+) (sessionID string, recoveryCodes []string, err error)
+```
+
+细则：
+1. `ValidateUsername(username)` → 原样返回其错误；`ValidatePassword(password)` → 原样。
+2. `displayName` 为空时用 `username`。
+3. 预检 `GetUserByUsername`：已存在 → `errors.New("auth: 用户名已存在")`（与
+   `BeginRegister` 同文案）。
+4. 先生成 `hashKey(password)`（失败直接返回，不建用户）。
+5. 调 `store.RegisterUserWithPassword(ctx, u, hash, store.Now())`，`u.Role = store.RoleAuto`。
+   若返回错误：再查一次用户名是否已存在（并发注册输家）→ 「用户名已存在」；
+   否则原样包装返回。失败时不允许留下用户行。
+6. `IssueRecoveryCodes(user.ID)`（8 个）→ 失败则返回错误（用户已建，与 Passkey
+   注册的既有语义一致）。
+7. `s.sess.Create(user.ID, deviceName)` 建会话，返回 sess.ID。
+8. 首个用户升 admin 的日志沿用 `ensureRegisteredUser` 的
+   `auth.register.first_admin` 语义（抽公共函数或复制同样的 slog，字段一致）。
+   提示：`ensureRegisteredUser` 现在绑定「无密码」路径，可把它重构成
+   「接受一个 register 回调」或改成调用方传入 `registerFn`；**不要**破坏
+   Passkey 路径现有测试。
+
+## A4. store 层（`internal/store/identity.go`）
+
+```go
+// RegisterUserWithPassword 与 RegisterUser 完全同语义（RoleAuto / 命名空间 /
+// 内置能力播种），额外在**同一个事务**里写入密码列。
+func (d *DB) RegisterUserWithPassword(
+    ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64,
+) (*Namespace, error)
+```
+
+实现方式：把 `RegisterUser` 的主体抽成内部 `registerUser(ctx, u, passwordHash, passwordUpdatedAt)`，
+两个导出函数都调它；INSERT 的列增加 `password_hash, password_updated_at`。
+`RegisterUser` 传 `("", 0)`，行为与列默认值完全一致（现有单测必须继续绿）。
+
+## A5. 前端（`web-src/pages/login.html` + 四语 locale）
+
+在 `#signup-panel` 内、现有 `#signup-btn`（创建 Passkey 并注册）**之后**追加：
+
+```html
+<div class="auth-or"><span>{{t "login.signup.password.or"}}</span></div>
+<button type="button" id="password-signup-toggle" class="btn btn-ghost auth-submit"
+        aria-expanded="false" aria-controls="password-signup-panel">
+  {{t "login.signup.password.toggle"}}
+</button>
+<form id="password-signup-panel" class="auth-password hidden" novalidate>
+  <div class="field">
+    <label class="field-label" for="signup-password">{{t "login.signup.password.password_label"}}</label>
+    <input id="signup-password" class="input" type="password" autocomplete="new-password"
+           placeholder="{{t "login.signup.password.password_placeholder"}}" />
+  </div>
+  <div class="field">
+    <label class="field-label" for="signup-password-confirm">{{t "login.signup.password.confirm_label"}}</label>
+    <input id="signup-password-confirm" class="input" type="password" autocomplete="new-password"
+           placeholder="{{t "login.signup.password.confirm_placeholder"}}" />
+  </div>
+  <button type="submit" id="password-signup-btn" class="btn btn-primary auth-submit">
+    {{t "login.signup.password.button"}}
+  </button>
+  <p class="field-hint">{{t "login.signup.password.hint"}}</p>
+</form>
+```
+
+行为：
+- toggle 切换 `.hidden` / `aria-expanded` / 文案（toggle ↔ toggle_hide），展开后聚焦
+  `#signup-password`，收起后聚焦 `#signup-btn`（与登录页的密码 toggle 同款）。
+- 提交：先 `refreshUsername(true)` 校验用户名；密码按码点 8–128；两次一致。
+  不满足就地报错（不发请求）。
+- POST `/v1/auth/password/register` body `{username, displayName: username, password}`。
+  成功：`recoveryCodes` 非空 → 复用 `showCodesPanel(codes, () => navigate(nextTarget()))`；
+  为空 → `showStatus(success)` + `navigate(nextTarget(), 600)`。
+  失败：429 → `login.signup.password.err_rate_limited`（warn）；其它 →
+  `login.status.signup_failed` 模板（error，`{msg}` 用服务端 error）。
+- 请求期间按钮 disabled + `busy` 文案，结束恢复。
+- 全局 Enter 处理器：在 `#password-signup-panel` 内部的回车交给表单原生 submit，
+  不得再触发一次 Passkey 注册 ceremony（与密码登录同一处守卫，写法一致）。
+- **不改** `#new-username` / `#signup-btn` / `#username-hint` / `#username-error` /
+  `#codes-modal` / `showCodesPanel` 的契约与行为；`.auth-or` / `.auth-password` 复用
+  已定义的页内样式。
+- 密码注册**不要求** WebAuthn 支持（无 Passkey 的浏览器也能注册）。
+
+i18n（四语：zh-CN / en / ja / es，全部非空）：
+`login.signup.password.or` / `.toggle` / `.toggle_hide` / `.password_label` /
+`.password_placeholder` / `.confirm_label` / `.confirm_placeholder` / `.button` /
+`.busy` / `.hint` / `.err_empty` / `.err_short` / `.err_long` / `.err_mismatch` /
+`.err_rate_limited` / `.success`。
+
+## A6. 测试要求
+
+- store：`RegisterUserWithPassword` 往返（用户 + 密码列 + 命名空间 + 内置能力）、
+  Passkey 路径 `RegisterUser` 仍写空密码、并发首注册仍恰好一个 admin。
+- auth：`RegisterWithPassword` 成功（可立即用密码登录、会话可 `Validate`、8 个恢复码、
+  密码只存哈希）；重复用户名 / 弱密码 / 非法用户名错误；首个用户 admin、第二个 member。
+- server：端点 200 + Cookie + `recoveryCodes` 长度 8、重复用户名 400、短密码 400、
+  限速第 11 次 429、注册后 `GET /v1/auth/password` `hasPassword=true` 且无 Passkey。
+- e2e（`scripts/e2e/suites/password_login.mjs`，由协调者追加）：
+  登录页切注册 tab → 用密码注册新用户 → `#codes-modal` 出现且 8 条码 → 继续进入工作台
+  → `/v1/auth/me` 用户名正确、`/v1/auth/passkeys` 为 `[]`、密码状态 true
+  → 登出后密码登录该账号 200；重复用户名注册 400。

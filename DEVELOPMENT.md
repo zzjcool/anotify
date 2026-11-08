@@ -77,10 +77,16 @@ Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS �
 
 登录是**两种可选方式**，不是二选一的产品分支：
 
-- **Passkey（主路径）**：注册即建 Passkey；可发现凭据（resident key）支持免用户名登录。
-- **密码（可选）**：注册后在「安全与登录」页设置。只存 argon2id PHC 哈希
+- **Passkey（主路径）**：可发现凭据（resident key）支持免用户名登录。
+- **密码（可选）**：两种设置时机——注册时直接选「用户名 + 密码」，或登录后在
+  「安全与登录」页设置。只存 argon2id PHC 哈希
   （`users.password_hash`，迁移 8），明文不进库、不进日志；登录接口对
   username / password 双维度限速 10/min。
+- **注册也有两条路**：Passkey ceremony（`/v1/auth/register[/options]`）或
+  `POST /v1/auth/password/login/register`（用户名 + 密码，IP 10/min）。密码路径在
+  **同一个事务**里写用户行、默认命名空间、内置能力与密码哈希（失败不留半成品），
+  成功后同样一次性展示 8 个恢复码。首用户自动 admin 的判定仍由
+  `store.RegisterUser*` 在事务内完成（`RoleAuto`），两条路语义一致。
 - **不变量：每个账号至少保留一种登录方式**（≥1 Passkey 或已设置密码）。
   - 删除最后一个 Passkey：已设置密码才允许，否则 409。
   - 移除密码：有 ≥1 Passkey 才允许，否则 409。
@@ -577,7 +583,7 @@ make ci
 | Go 单测 | `internal/*_test.go` | broker/auth/api/push/ws/store/server 包级逻辑 |
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
-| 密码登录 | `scripts/e2e/suites/password_login.mjs` | 设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
+| 密码登录 | `scripts/e2e/suites/password_login.mjs` | 用密码注册、设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
 | 节点协议 | `scripts/e2e/suites/ws_protocol.mjs` | 九帧（hello/heartbeat/ack/progress/result + welcome/assign/cancel/error）、握手鉴权、out 三态、心跳判死 |
 | 派发路由 | `scripts/e2e/suites/routing.mjs` | 派发四步 + 六种未触发原因（no_edge/param_schema/no_node/foreign_user/path）、扇出、容量不足留 pending |
 | 持久化 | `scripts/e2e/suites/persistence.mjs` | 重启后 events/tasks 存活、状态机与 out 三态保持、终态不可变 |
@@ -620,7 +626,7 @@ internal/
   sitegen/         站点生成核心（模板缓存/layout+content/i18n 合成）
   store/           SQLite 数据访问 + schema.sql（baseline）+ 迁移 runner
   broker/          消息队列抽象 + SQLiteBroker
-  auth/            Passkey(WebAuthn) + 密码登录(argon2id) + API Key(argon2id) + 会话
+  auth/            Passkey(WebAuthn)/密码注册 + 密码登录(argon2id) + API Key(argon2id) + 会话
   authn/           Key 校验接口（解耦 auth 与 api/ws）
   api/             /v1/notify 上报处理器
   ws/              WebSocket 派发器（消费者1）

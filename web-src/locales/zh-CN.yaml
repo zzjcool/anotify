@@ -290,6 +290,23 @@ login:
     err_short: 用户名至少 2 个字符。
     err_long: 用户名最多 32 个字符。
     err_chars: 只能包含字母、数字、_、-、.，且不能以 _ - . 开头或结尾。
+    password:
+      or: 或
+      toggle: 用用户名 + 密码注册
+      toggle_hide: 收起密码注册
+      password_label: 密码
+      password_placeholder: 至少 8 个字符
+      confirm_label: 确认密码
+      confirm_placeholder: 再输入一次
+      button: 用密码注册
+      busy: 正在创建账号…
+      hint: 8–128 个字符，建议用密码管理器生成。
+      err_empty: 请设置密码。
+      err_short: 密码至少 8 个字符。
+      err_long: 密码最多 128 个字符。
+      err_mismatch: 两次输入的密码不一致。
+      err_rate_limited: 注册过于频繁，请稍后再试。
+      success: 注册成功！正在进入工作台…
   ios_tip_label: iOS 用户：
   ios_tip: 要接收推送通知，请先用 Safari 打开本站，点「共享 → 添加到主屏幕」，再从主屏幕图标打开并登录。
   recovery_soon: ''

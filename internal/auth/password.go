@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -234,4 +235,94 @@ func (s *Service) LoginWithPassword(username, password, deviceName string) (sess
 		return "", err
 	}
 	return sess.ID, nil
+}
+
+// RegisterWithPassword 用用户名 + 密码注册（不创建 Passkey）。
+// 返回会话 ID 与一次性恢复码（明文仅此一次）。
+//
+// 这是**第二条注册方式**：Passkey ceremony 仍是主路径（register/options + register），
+// 本条只服务「没有/不想用认证器」的用户。两条路径落库后的用户行必须长得一样
+// （同样的默认命名空间、同样的内置能力、同样的首用户 admin 判定），差别只有
+// 「有没有 Passkey 凭证」与「有没有密码列」。
+//
+// 原子性（契约 §A1）：用户行 + 默认命名空间 + 内置能力 + 密码哈希由
+// store.RegisterUserWithPassword 在**同一个事务**里写入。任何一步失败都不留用户行
+// ——不允许出现「有账号、但没有任何登录方式」的半成品。
+//
+// 错误文案纪律：用户名/密码不合规原样返回 ValidateUsername / ValidatePassword 的文案
+// （前端把服务端 error 直接贴到表单下方）；重复用户名与 Passkey 路径的
+// BeginRegister 同一句话（前端按文案分支，不能有两套说法）。
+func (s *Service) RegisterWithPassword(
+	ctx context.Context, username, displayName, password, deviceName string,
+) (sessionID string, recoveryCodes []string, err error) {
+	// 1) 规则校验：原样返回，不做包装（文案就是给用户看的）。
+	if verr := ValidateUsername(username); verr != nil {
+		return "", nil, verr
+	}
+	if verr := ValidatePassword(password); verr != nil {
+		return "", nil, verr
+	}
+	// 2) 显示名缺省用用户名（与 WebAuthn 的 WebAuthnDisplayName 同口径）。
+	if displayName == "" {
+		displayName = username
+	}
+	// 3) 预检重复用户名。真正的唯一性由 users.username UNIQUE 保证——
+	//    这一步只是为了在**最常见的顺序路径**上给出干净文案、不白跑一次 argon2。
+	if _, gerr := s.db.GetUserByUsername(username); gerr == nil {
+		return "", nil, errors.New("auth: 用户名已存在")
+	} else if !errors.Is(gerr, store.ErrNotFound) {
+		return "", nil, fmt.Errorf("auth: 查询用户名失败: %w", gerr)
+	}
+	// 4) 先生成哈希、再建用户：hashKey 失败（熵源异常）绝不能留下一个没有密码的账号
+	//    （那正是 §A1 禁止的半成品）。密码明文只活在这个局部变量里，不落库、不落日志。
+	hash, err := hashKey(password)
+	if err != nil {
+		return "", nil, err
+	}
+	u := &store.User{
+		ID:          store.NewUserID(),
+		Username:    username,
+		DisplayName: displayName,
+		CreatedAt:   store.Now(),
+	}
+	// 5) 首个注册用户 → admin 的判定交给 store，在它建用户的**同一个事务**里完成
+	//    （store.RoleAuto → 事务内 SELECT COUNT(*)）。绝不在这里先查后写：
+	//    两次独立池操作之间没有事务，并发首注册会双双拿到 admin（见 store.RoleAuto）。
+	u.Role = store.RoleAuto
+	if _, rerr := s.db.RegisterUserWithPassword(ctx, u, hash, store.Now()); rerr != nil {
+		// 并发输家：预检时还没这行，INSERT 时撞了 users.username 的唯一约束。
+		// 复查一次用户名把「数据库约束失败」统一翻成「用户名已存在」——
+		// 既与 BeginRegister 文案一致，也不把 sqlite 的约束名漏给前端。
+		if _, cerr := s.db.GetUserByUsername(username); cerr == nil {
+			return "", nil, errors.New("auth: 用户名已存在")
+		}
+		slog.Error("register: register user with password failed",
+			"event", "auth.register.namespace_failed",
+			"user_id", u.ID,
+			"error", rerr.Error(),
+		)
+		return "", nil, fmt.Errorf("auth: 注册失败（已回滚，未建用户）: %w", rerr)
+	}
+	// 首个用户升 admin 的日志：字段与 ensureRegisteredUser 的 auth.register.first_admin
+	// 完全一致（两条注册路径的运维视图必须长得一样，否则「谁成了超管」要分两处查）。
+	// 绝不记密码或哈希。
+	if u.Role == store.RoleAdmin {
+		slog.Info("first user promoted to admin",
+			"event", "auth.register.first_admin",
+			"user_id", u.ID,
+			"username", u.Username,
+		)
+	}
+	// 6) 恢复码：明文仅此一次返回。失败时用户已经建好（与 Passkey 注册的既有语义一致：
+	//    账号可用，只是拿不到这批码，可稍后 regenerate）。
+	codes, cerr := s.IssueRecoveryCodes(u.ID)
+	if cerr != nil {
+		return "", nil, fmt.Errorf("auth: 签发恢复码失败: %w", cerr)
+	}
+	// 7) 建会话（设备名语义同 Passkey 注册：调用方传 DeviceNameFromUA）。
+	sess, serr := s.sess.Create(u.ID, deviceName)
+	if serr != nil {
+		return "", nil, serr
+	}
+	return sess.ID, codes, nil
 }

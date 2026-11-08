@@ -184,14 +184,14 @@ async function goto(url, opts = {}) {
 	}
 }
 
-// fillPasswordModal 稳定地填密码弹层：Chrome 的密码管理器会与 fill 抢同一个字段
+// fillStable 稳定地填密码弹层：Chrome 的密码管理器会与 fill 抢同一个字段
 // （实测：current-password 被自动填充/改写、new-password 被异步清空），
 // 单次 fill 之后回读可能拿到的不是我们写的值。这里「填 → 回读 → 不一致再填」，
 // 最多 4 轮；最终值仍不一致就返回 false，由断言把它曝光成失败。
 //
 // 顺序有意义：先 new/confirm、最后 current —— Chrome 在「当前密码」变化时会
 // 清空 new-password 类字段，把 current 放最后就不会把刚填的新密码抹掉。
-async function fillPasswordModal(fields) {
+async function fillStable(fields) {
 	for (let attempt = 0; attempt < 4; attempt++) {
 		for (const [sel, val] of fields) await page.fill(sel, val);
 		await page.waitForTimeout(120);
@@ -359,7 +359,7 @@ async function main() {
 		setTitle.includes("设置密码"),
 		setTitle,
 	);
-	const filledSet = await fillPasswordModal([
+	const filledSet = await fillStable([
 		["#pwd-new", P1],
 		["#pwd-confirm", P1],
 	]);
@@ -526,7 +526,7 @@ async function main() {
 		"修改态显示当前密码字段 #pwd-current",
 		await page.isVisible("#pwd-current"),
 	);
-	const filledChange = await fillPasswordModal([
+	const filledChange = await fillStable([
 		["#pwd-new", P2],
 		["#pwd-confirm", P2],
 		["#pwd-current", P1],
@@ -665,7 +665,125 @@ async function main() {
 	);
 	H.eq("移除失败后密码登录仍 200", stillLogin.status, 200);
 
-	// ---------- 13. 前端无未捕获异常 ----------
+	// ---------- 13. 用密码注册（第二种注册方式） ----------
+	// 当前会话属于纯密码账号（步骤 12 之后密码仍是 P2），先登出再走注册 UI。
+	const signupUser = "pwd_signup_" + Date.now();
+	const SIGNUP_PASS = "Signup!Passw0rd";
+	await H.req(server.base, "/v1/auth/logout", {
+		session: sess,
+		method: "POST",
+	});
+
+	await goto(server.base + "/login.html");
+	await H.waitForAppReady(page, "login");
+	await page.click("#tab-signup");
+	await page.waitForSelector("#signup-panel:not(.hidden)", { timeout: 5000 });
+	H.check(
+		"切到注册 tab 后 #signup-panel 可见",
+		await page.isVisible("#signup-panel"),
+	);
+	H.check(
+		"密码注册面板默认收起",
+		!(await page.isVisible("#password-signup-panel")),
+	);
+
+	await page.fill("#new-username", signupUser);
+	await page.click("#password-signup-toggle");
+	await page.waitForSelector("#password-signup-panel:not(.hidden)", {
+		timeout: 5000,
+	});
+	H.eq(
+		"展开密码注册面板后 aria-expanded === true",
+		await page.getAttribute("#password-signup-toggle", "aria-expanded"),
+		"true",
+	);
+	const filledSignup = await fillStable([
+		["#signup-password", SIGNUP_PASS],
+		["#signup-password-confirm", SIGNUP_PASS],
+	]);
+	H.check("密码注册表单字段值已就位（未被密码管理器改写）", filledSignup);
+	// 在用户名框里按 Enter：密码注册面板已展开，回车必须走密码注册，
+	// 不能退回 Passkey ceremony（后者会建出 1 个 Passkey，后面的断言会抓到）。
+	await page.click("#new-username");
+	await page.keyboard.press("Enter");
+
+	// 密码注册成功同样展示一次性恢复码（复用 #codes-modal）
+	const codesShown = await page
+		.waitForSelector("#codes-modal:not(.hidden)", { timeout: 12000 })
+		.then(() => true)
+		.catch(() => false);
+	H.check("密码注册成功后展示一次性恢复码", codesShown);
+	const signupCodeCount = await page.evaluate(
+		() => document.querySelectorAll("#codes-grid .code-row").length,
+	);
+	H.eq("恢复码一次展示 8 个", signupCodeCount, 8);
+	await page.click("#codes-continue");
+	const signupLanded = await waitForWorkspaceNav();
+	let signupPath = "";
+	try {
+		signupPath = new URL(signupLanded).pathname;
+	} catch {
+		/* 保持空串：下面会报失败并带上原始 URL */
+	}
+	H.check(
+		"密码注册后进入工作台",
+		signupPath === "/" || signupPath.endsWith("/index.html"),
+		signupLanded,
+	);
+	await page.waitForLoadState("load").catch(() => {});
+
+	const signupSess = await cookieVal();
+	H.check("密码注册后会话 Cookie 已建立", !!signupSess);
+	const me2 = await H.req(server.base, "/v1/auth/me", { session: signupSess });
+	H.eq("密码注册后 GET /v1/auth/me → 200", me2.status, 200);
+	H.eq("密码注册的 username 正确", me2.json?.username, signupUser);
+	const pk2 = await H.req(server.base, "/v1/auth/passkeys", {
+		session: signupSess,
+	});
+	H.eq("密码注册后 GET /v1/auth/passkeys → 200", pk2.status, 200);
+	H.check(
+		"密码注册账号没有 Passkey（空数组 []）",
+		Array.isArray(pk2.json?.passkeys) && pk2.json.passkeys.length === 0,
+		JSON.stringify(pk2.json?.passkeys),
+	);
+	const st3 = await H.req(server.base, "/v1/auth/password", {
+		session: signupSess,
+	});
+	H.eq("密码注册后 hasPassword === true", st3.json?.hasPassword, true);
+
+	// 重复用户名 / 过短密码（API 级；注册端点 IP 限速 10/min，本套件共 3 次）
+	const dupSignup = await H.req(server.base, "/v1/auth/password/register", {
+		method: "POST",
+		body: { username: signupUser, password: SIGNUP_PASS },
+	});
+	H.eq("重复用户名密码注册 → 400", dupSignup.status, 400);
+	H.check(
+		"重复用户名文案不含数据库约束细节",
+		!/UNIQUE|constraint|insert user/i.test(String(dupSignup.json?.error || "")),
+		String(dupSignup.json?.error || ""),
+	);
+	const weakSignup = await H.req(server.base, "/v1/auth/password/register", {
+		method: "POST",
+		body: { username: signupUser + "_weak", password: "short" },
+	});
+	H.eq("过短密码注册 → 400", weakSignup.status, 400);
+
+	// 登出后用密码登录这个新账号
+	await H.req(server.base, "/v1/auth/logout", {
+		session: signupSess,
+		method: "POST",
+	});
+	const signupLogin = await H.req(server.base, "/v1/auth/password/login", {
+		method: "POST",
+		body: { username: signupUser, password: SIGNUP_PASS },
+	});
+	H.eq("密码注册的账号可密码登录 → 200", signupLogin.status, 200);
+	H.check(
+		"密码注册账号登录返回会话 Cookie",
+		!!sessionFromSetCookie(signupLogin.headers["set-cookie"]),
+	);
+
+	// ---------- 14. 前端无未捕获异常 ----------
 	H.check(
 		"UI 流程无未捕获前端异常（pageerror）",
 		pageErrors.length === 0,

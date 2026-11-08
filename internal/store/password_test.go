@@ -1,7 +1,11 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -142,5 +146,242 @@ func TestUserPassword_ColumnsExist(t *testing.T) {
 	}
 	if got.Username != "pw-nohash" || got.Role != RoleMember || got.Disabled {
 		t.Errorf("用户行读回异常: %+v", got)
+	}
+}
+
+// ---------- 用密码注册（契约「追加：用密码注册」§A4 / §A6） ----------
+//
+// 这两条盯的是同一个不变量：**注册出来的用户行怎么建，决定它有什么登录方式**。
+// 密码注册必须在同一个事务里把「用户 + 默认命名空间 + 内置能力 + 密码列」一次写全；
+// Passkey 注册则必须继续留空密码列（否则一个只能走 Passkey 的账号会凭空多出
+// 「hasPassword=true」的对外状态）。
+
+// phcHash 是一个形状正确的 argon2id PHC 假串：store 不解析哈希，只做往返。
+const phcHash = "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGJ5dGVz"
+
+// TestRegisterUserWithPassword_RoundTrip 往返一致性：用户 / 密码列 / 命名空间 / 内置能力。
+func TestRegisterUserWithPassword_RoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	const at = int64(1700000000)
+	u := &User{ID: NewUserID(), Username: "pw-signup", DisplayName: "Pw Signup", CreatedAt: Now(), Role: RoleAuto}
+	ns, err := db.RegisterUserWithPassword(ctx, u, phcHash, at)
+	if err != nil {
+		t.Fatalf("register with password: %v", err)
+	}
+	// 首用户判定仍在 store 的事务里（RoleAuto）；这里顺手钉住它对密码路径同样生效。
+	if u.Role != RoleAdmin {
+		t.Errorf("首个注册用户 role = %q, want %q", u.Role, RoleAdmin)
+	}
+	if ns == nil || ns.ID == "" {
+		t.Fatalf("默认命名空间没建出来: %+v", ns)
+	}
+
+	// 1) 用户行
+	got, err := db.GetUserByID(u.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.Username != "pw-signup" || got.DisplayName != "Pw Signup" || got.Role != RoleAdmin || got.Disabled {
+		t.Errorf("用户行读回异常: %+v", got)
+	}
+	// 2) 密码列（与用户行同一事务写入）
+	pw, err := db.GetUserPassword(u.ID)
+	if err != nil {
+		t.Fatalf("get password: %v", err)
+	}
+	if pw.Hash != phcHash {
+		t.Errorf("password_hash 往返不一致:\n got %q\nwant %q", pw.Hash, phcHash)
+	}
+	if pw.UpdatedAt != at {
+		t.Errorf("password_updated_at = %d, want %d", pw.UpdatedAt, at)
+	}
+	// 3) 命名空间
+	if _, err := db.GetNamespace(ctx, ns.ID); err != nil {
+		t.Errorf("默认命名空间查不到: %v", err)
+	}
+	nss, err := db.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatalf("list namespaces: %v", err)
+	}
+	if len(nss) != 1 || nss[0].ID != ns.ID {
+		t.Errorf("命名空间列表 = %+v, want 只有 %s", nss, ns.ID)
+	}
+	// 4) 内置能力播种（与命名空间同事务：#162）
+	cap, err := db.GetCapability(ctx, ns.ID, "notify.phone", 1)
+	if err != nil {
+		t.Fatalf("内置能力没播下去: %v", err)
+	}
+	if cap.Source != CapSourceBuiltin {
+		t.Errorf("notify.phone source = %q, want %q", cap.Source, CapSourceBuiltin)
+	}
+
+	// 5) 第二个用户不是 admin（RoleAuto 不是「永远是 admin」）
+	u2 := &User{ID: NewUserID(), Username: "pw-signup-2", CreatedAt: Now(), Role: RoleAuto}
+	if _, err := db.RegisterUserWithPassword(ctx, u2, phcHash, at+1); err != nil {
+		t.Fatalf("register second: %v", err)
+	}
+	if u2.Role != RoleMember {
+		t.Errorf("第二个注册用户 role = %q, want %q", u2.Role, RoleMember)
+	}
+}
+
+// TestRegisterUser_PasskeyPathKeepsPasswordEmpty Passkey 注册路径必须仍然写空密码列，
+// 且与「列默认值」完全一致（CreateUser 走的是不传密码列的 INSERT）。
+func TestRegisterUser_PasskeyPathKeepsPasswordEmpty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	u := &User{ID: NewUserID(), Username: "passkey-only", CreatedAt: Now(), Role: RoleAuto}
+	if _, err := db.RegisterUser(ctx, u); err != nil {
+		t.Fatalf("register (passkey path): %v", err)
+	}
+	pw, err := db.GetUserPassword(u.ID)
+	if err != nil {
+		t.Fatalf("get password: %v", err)
+	}
+	if pw.Hash != "" || pw.UpdatedAt != 0 {
+		t.Errorf("Passkey 路径密码列 = (%q,%d), want (\"\",0)", pw.Hash, pw.UpdatedAt)
+	}
+
+	// 与列默认值对齐：CreateUser 不写密码列，读回来必须一模一样。
+	def := &User{ID: NewUserID(), Username: "column-default", CreatedAt: Now()}
+	if err := db.CreateUser(def); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	defPw, err := db.GetUserPassword(def.ID)
+	if err != nil {
+		t.Fatalf("get default password: %v", err)
+	}
+	if defPw.Hash != pw.Hash || defPw.UpdatedAt != pw.UpdatedAt {
+		t.Errorf("RegisterUser 与列默认值不一致: (%q,%d) vs (%q,%d)",
+			pw.Hash, pw.UpdatedAt, defPw.Hash, defPw.UpdatedAt)
+	}
+}
+
+// TestRegisterUserWithPassword_ConcurrentFirstAdmin 并发首注册恰好一个 admin（密码路径）。
+//
+// 用**文件**库：":memory:" 会把连接池压到 1，所有池操作被串行化，竞态永远不命中
+// （见 auth/first_admin_test.go 的同款说明）。断言与 Passkey 路径那条一致：
+// admin 恰好 1 个、用户数等于注册者数 —— 「首个用户」判定必须与 INSERT 同事务。
+func TestRegisterUserWithPassword_ConcurrentFirstAdmin(t *testing.T) {
+	const rounds = 5
+	for round := 0; round < rounds; round++ {
+		db, _ := newTestDBFile(t)
+		ctx := context.Background()
+
+		const registers = 2
+		var (
+			start = make(chan struct{})
+			wg    sync.WaitGroup
+			roles = make([]string, registers)
+			errs  = make([]error, registers)
+		)
+		wg.Add(registers)
+		for i := 0; i < registers; i++ {
+			go func() {
+				defer wg.Done()
+				u := &User{
+					ID:        NewUserID(),
+					Username:  fmt.Sprintf("pw-racer-%d-%d", round, i),
+					CreatedAt: Now(),
+					Role:      RoleAuto,
+				}
+				<-start
+				if _, err := db.RegisterUserWithPassword(ctx, u, phcHash, Now()); err != nil {
+					errs[i] = err
+					return
+				}
+				roles[i] = u.Role
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		var admins int
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: register %d failed: %v", round, i, err)
+			}
+			switch roles[i] {
+			case RoleAdmin:
+				admins++
+			case RoleMember:
+			default:
+				t.Fatalf("round %d: register %d 拿到非法角色 %q", round, i, roles[i])
+			}
+		}
+		var userCount, adminCount int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount); err != nil {
+			t.Fatalf("round %d: count users: %v", round, err)
+		}
+		if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, RoleAdmin).Scan(&adminCount); err != nil {
+			t.Fatalf("round %d: count admins: %v", round, err)
+		}
+		if admins != 1 || adminCount != 1 || userCount != registers {
+			t.Fatalf("round %d: admins=%d dbAdmins=%d users=%d，want 1/1/%d —— "+
+				"首用户判定必须与 INSERT 同一事务", round, admins, adminCount, userCount, registers)
+		}
+		// 并发下两个密码哈希都必须落库（没有「有账号没登录方式」的半成品）。
+		var withPassword int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE password_hash = ?`, phcHash).Scan(&withPassword); err != nil {
+			t.Fatalf("round %d: count hashed users: %v", round, err)
+		}
+		if withPassword != registers {
+			t.Fatalf("round %d: 带密码的用户数 = %d, want %d", round, withPassword, registers)
+		}
+	}
+}
+
+// TestRegisterUser_PreMigration8SchemaStillWorks 老库（migration 8 之前）上 Passkey 注册仍可用。
+//
+// 为什么要有这条：registerUser 的 Passkey 分支故意**不点名** password_hash /
+// password_updated_at（只让列取默认值），因为升级用例会在未升级的 v2 schema 上用
+// 当前代码注册用户（node_agent_version_test.go 的 TestMigration3AgentColumnsFromV2）。
+// 谁把两条分支合并成「总是显式写密码列」，这里会立刻红，而不是让那个升级用例
+// 报一句 “table users has no column named password_hash”。
+func TestRegisterUser_PreMigration8SchemaStillWorks(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v2-register.db")
+
+	// 只应用 baseline + migration 2 = 迁移 8 之前的库。
+	v2, err := openWith(path, func(set *migrationSet) {
+		*set = (*set)[:2]
+	})
+	if err != nil {
+		t.Fatalf("open v2 db: %v", err)
+	}
+	if cols := columnNames(t, v2, "users"); cols["password_hash"] {
+		t.Fatal("v2 库里已经有 password_hash：这个用例证明不了老库兼容")
+	}
+	u := &User{ID: NewUserID(), Username: "v2-passkey", CreatedAt: Now()}
+	if _, err := v2.RegisterUser(ctx, u); err != nil {
+		t.Fatalf("老库上 Passkey 注册失败（Passkey 分支不应点名密码列）: %v", err)
+	}
+	if err := v2.Close(); err != nil {
+		t.Fatalf("close v2 db: %v", err)
+	}
+
+	// 升到当前版本后：两条 password 列补上，且老用户的密码状态是「未设置」。
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen (migrate) db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	pw, err := db.GetUserPassword(u.ID)
+	if err != nil {
+		t.Fatalf("get user password: %v", err)
+	}
+	if pw.Hash != "" || pw.UpdatedAt != 0 {
+		t.Errorf("老用户升级后密码列 = (%q,%d), want (\"\",0)", pw.Hash, pw.UpdatedAt)
+	}
+	// 升级后的库上密码注册路径照常工作（分支的另一半）。
+	u2 := &User{ID: NewUserID(), Username: "v2-then-password", CreatedAt: Now(), Role: RoleAuto}
+	if _, err := db.RegisterUserWithPassword(ctx, u2, phcHash, Now()); err != nil {
+		t.Fatalf("升级后密码注册失败: %v", err)
+	}
+	if got, err := db.GetUserPassword(u2.ID); err != nil || got.Hash != phcHash {
+		t.Errorf("升级后密码列往返异常: %+v (err %v)", got, err)
 	}
 }
