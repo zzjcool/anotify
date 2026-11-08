@@ -4320,7 +4320,7 @@ components:
 
         `capabilities[]` 的元素**就是** `CapabilityInput` —— 不另造一份「几乎一样」的
         schema：handler 复用同一个 decode 结构，而两份 schema 迟早会在「单建生效、
-        批量静默丢弃」这种字段上分叉（例如以后加 `balance`，批量应该自动跟着有）。
+        批量静默丢弃」这种字段上分叉（例如以后加 `requires` 的子字段，批量应该自动跟着有）。
         代价是元素里也能写出 `links` / `namespaceId` / `force` 这三个**批级**字段，
         它们的处置写在字段说明里（冲突或取或，不静默吃掉）。
       required: [capabilities]

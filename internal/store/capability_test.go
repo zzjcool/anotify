@@ -825,8 +825,7 @@ func TestCapabilityDisplayName(t *testing.T) {
 // TestContentHashEqualsDigest content_hash 就是 digest 的裸 hex（契约 §4）。
 //
 // 判据是「从落库的那一行拼出产物再算一次 digest」——两边必须逐字节一致，否则
-// 部署永远判 stale、幂等永远命不中。顺带钉住两条 v3 推论：
-//   - balance 是死字段（P1-b 起恒写 '{}'），**不参与** hash；
+// 部署永远判 stale、幂等永远命不中。顺带钉住一条 v3 推论：
 //   - displayName 不在 digest 里，改它不算换内容。
 func TestContentHashEqualsDigest(t *testing.T) {
 	db := newTestDB(t)

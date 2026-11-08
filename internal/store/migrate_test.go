@@ -83,6 +83,49 @@ func TestSchemaVersionRecorded(t *testing.T) {
 	}
 }
 
+// TestMigrationTwoColumns 全新库必须带上 migration 2 加的列（`-- +migration 2` 真的跑了）。
+//
+// baseline 没有改（契约 §1）：新列只能由追加块加出来，所以这条同时守住
+// 「别顺手把列加进 baseline」——那样老库永远拿不到它。
+func TestMigrationTwoColumns(t *testing.T) {
+	db := newTestDB(t)
+
+	if !columnNames(t, db, "edges")["priority"] {
+		t.Error("edges 缺列 priority（migration 2 没生效？）")
+	}
+	// 默认值必须是 0（老行的行为与加列之前一致）：空表当然读不出行。
+	var prio int
+	if err := db.QueryRow(`SELECT priority FROM edges LIMIT 1`).Scan(&prio); err == nil {
+		t.Fatalf("空表竟然读出了 priority=%d", prio)
+	}
+}
+
+// TestMigrationNineDropsBalance 钉住 P3：`balance` 整列不存在了。
+//
+// 这条不是「删了一个用例」的附属物——它守的是两件事：
+//   - migration 2 的 ALTER（历史块，不再改）与 migration 9 的 DROP 在**新建库**上
+//     真的按顺序跑完了（新建库是先加后删，结尾不能有这列）；
+//   - 升级库（v8 → v9）也真的没这列了（见 TestMigration8Backfill 的 v7 升级路径）。
+//
+// 为什么必须为「删列」单独留一条：列还在而代码不读它，症状是「能写进库、读出来丢」，
+// 谁也不知道该信哪一个；列真被删掉才只有一份真相。
+func TestMigrationNineDropsBalance(t *testing.T) {
+	db := newTestDB(t)
+
+	if columnNames(t, db, "capability_versions")["balance"] {
+		t.Fatal("capability_versions.balance 还在：migration 9 没生效（P3 已删该字段）")
+	}
+	// 相关的老列不能跟着一起没：migration 2 的 priority、migration 8 的 spec 都在。
+	for _, tc := range []struct{ table, col string }{
+		{"edges", "priority"},
+		{"capability_versions", "spec"},
+	} {
+		if !columnNames(t, db, tc.table)[tc.col] {
+			t.Errorf("%s 缺列 %s（迁移跑过头了？）", tc.table, tc.col)
+		}
+	}
+}
+
 // TestMigrationIdempotent 重复 Open 同一库：不应重复应用，也不应报错。
 func TestMigrationIdempotent(t *testing.T) {
 	db, path := newTestDBFile(t)

@@ -85,10 +85,6 @@ func TestCapabilitySpecRoundTrip(t *testing.T) {
 	if !got.Lifecycle.Retryable || got.Lifecycle.MaxAttempts != 2 || got.Lifecycle.ResultTTLSec != 600 {
 		t.Fatalf("lifecycle 不是正文派生的: %+v", got.Lifecycle)
 	}
-	// balance 是死字段（P1-b 起恒写 '{}'）。
-	if len(got.Balance) != 0 {
-		t.Fatalf("balance 应恒为空（死字段），got %+v", got.Balance)
-	}
 	// 列表路径必须与详情一致（同一个 scanner）。
 	list, err := db.ListCapabilities(ctx, nsID)
 	if err != nil {
@@ -326,7 +322,8 @@ func TestMigration8Backfill(t *testing.T) {
 		id := NewCapabilityID("legacy-" + name)
 		oldIDs[name] = id
 		// v7 的书写方式：只有派生列，没有 spec；content_hash 还是老口径（这里随便给一个，
-		// 回填必须把它换成新口径的值）。
+		// 回填必须把它换成新口径的值）。balance 列在这里是**真的存在**的——这个夹具停在
+		// migration 7（老库的样子），P3 的 migration 9 还没跑（重开时才跑）。
 		if _, err := v7.Exec(
 			`INSERT INTO capability_versions
 			   (id, namespace_id, name, display_name, version, params_schema, outputs,
@@ -477,6 +474,7 @@ func TestMigration8BackfillRejectsInvalidLegacyRow(t *testing.T) {
 	}
 	nsID := newRawNamespace(t, v7)
 	// 坏行：params_schema 不是 JSON 对象（老库手改的痕迹）。
+	// 同样停在 migration 7：balance 列还在（migration 9 删它），别把它当死列删掉。
 	if _, err := v7.Exec(
 		`INSERT INTO capability_versions
 		   (id, namespace_id, name, display_name, version, params_schema, outputs,

@@ -24,7 +24,7 @@ const runScriptLinks = "#!/bin/sh\nset -eu\necho done\n"
 func postCapabilityLinks(t *testing.T, env *consoleEnv, body map[string]any) *decodeResult {
 	t.Helper()
 	// withMinimalRun：P1-b2 起建能力**必须**带实现（缺 run → 400 impl_missing）。
-	// 这一层补的是「造一个合法请求」，用例自己的意图（links / balance / 闸门）
+	// 这一层补的是「造一个合法请求」，用例自己的意图（links / 闸门）
 	// 不受影响；显式写了 run 的 body 原样使用。
 	rr := env.do(t, http.MethodPost, "/v1/capabilities", withMinimalRun(body))
 	return &decodeResult{code: rr.Code, body: rr.Body.String()}

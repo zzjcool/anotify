@@ -412,7 +412,9 @@ type candidate struct {
 // 实现是 plan（①②③ + 候选选择 + 试运行早退 + 构造 pending 任务，只读）→ CreateTasks →
 // launch（④⑤ 占槽位/推帧）三段。对外签名、返回值语义、剪枝留痕与拆分前一致；
 // 唯一的变化是语义：一个 (能力, 端口) 从「全部下游各建一个任务（扇出）」变成
-// 「候选集合里选一个」（契约 §3，全派需要 balance.mode=all，本期不实现）。
+// 「候选集合里选一个」（契约 §3）。全派（扇出到全部候选）**不是**一个配置项：
+// 旧字段 balance.mode 在 P3 已被删掉（它只放行 priority，保存即 400 其它值），
+// 候选选择因此只有一种行为，写死在 pickCandidate 里。
 func (d *Dispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchOutput, error) {
 	if err := d.checkInput(in); err != nil {
 		return nil, err
@@ -781,8 +783,9 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	// ---------- 候选选择（契约 §3） ----------
 	//
 	// 走到这里的 cands 已经只剩**可达**的候选（不可达的在上面逐条剪掉，各有理由）。
-	// 一个 (能力, 端口) 默认只派**一个**下游（1:1）：取最小 priority 组，组内轮盘选一个。
-	// 想「全派」（扇出到全部候选）需要 balance.mode=all，本期不实现（保存时已 400）。
+	// 一个 (能力, 端口) 只派**一个**下游（1:1）：取最小 priority 组，组内轮盘选一个。
+	// 这是**唯一**的行为（P3 删掉了只放行 priority 的 balance.mode 字段：它语义上只有
+	// 一个合法值，等于恒等于默认）。想「全派」（扇出到全部候选）是另一个概念，本版不做。
 	//
 	// **入口边不参与候选选择**：一个源喂多个能力是「源扇出」（设计 §1 的静态 1:N），
 	// 不是「端口候选」。两者的区别是语义的，不是实现细节：
@@ -794,11 +797,6 @@ func (d *Dispatcher) plan(ctx context.Context, in DispatchInput, out *DispatchOu
 	// 把入口边也按候选选，症状是「一个源配了 2 个目标，实际只喂了 1 个」——
 	// e2e routing A6 抓到过这个（配置对、任务只建一条，极难从日志看出来）。
 	if !in.FromIsSource {
-		// 端口平衡策略先看一眼：库被手改出 all / random 之类时按 priority 处理
-		// （**不扇出**：没实现的语义不能靠猜），同时留一条 WARN。
-		if mode := d.portBalanceMode(ctx, in, fromKey, fromPort, cache); mode != store.BalanceModePriority {
-			warnUnsupportedBalanceMode(in.NamespaceID, fromKey, fromPort, mode)
-		}
 		// `--to` 的收敛已在 ③ 之前做完（连参数校验都不该看见没被点名的边）。
 		chosen := d.pickCandidate(in.NamespaceID, fromKey, fromPort, cands)
 		// 没被选中的候选**不是剪枝**：它们只是这一圈没轮到（下一次 emit 的轮盘会轮到别人）。
@@ -1029,45 +1027,6 @@ func (d *Dispatcher) rotate(key cursorKey, n int) int {
 	// 组长度可能变（加了/删了一条边）：取模保证下标永远有效。
 	d.cursor[key] = (idx + 1) % n
 	return idx % n
-}
-
-// portBalanceMode 取上游能力在这个端口上的 balance.mode（缺省 = priority）。
-//
-// 入口边没有上游能力（来源不是能力定义），一律 priority：源的「全派」不是一个
-// 端口级配置，没有对应概念。解析不到上游能力（能力刚被删 / 名字不是有效引用）
-// 也回落到 priority：balance 只决定「多个候选里选几个」，缺了它按 1:1 走是安全方向。
-func (d *Dispatcher) portBalanceMode(ctx context.Context, in DispatchInput, fromKey, fromPort string, cache refCache) string {
-	if in.FromIsSource {
-		return store.BalanceModePriority
-	}
-	up, err := d.resolveRef(ctx, in.NamespaceID, fromKey, cache)
-	if err != nil || up == nil {
-		return store.BalanceModePriority
-	}
-	return up.BalanceModeOf(fromPort)
-}
-
-// balanceWarnOnce 让「未实现的 balance 模式」在进程里只 WARN 一次。
-//
-// 每次派发都打会把这个 WARN 变成噪音（热路径上每个任务一条），而它表达的是
-// 一个**部署级**事实（库里有本版本不认识的配置）。
-var balanceWarnOnce sync.Once
-
-// warnUnsupportedBalanceMode 记录一次「库里有未实现的 balance 模式」。
-//
-// 保存路径已经在 store 层拒掉这些值（ErrBalanceRejected → 400），所以走到这里
-// 只可能是手改库。按 priority 处理（1:1），**绝不扇出**：没实现的语义不能靠猜。
-func warnUnsupportedBalanceMode(namespaceID, capability, port, mode string) {
-	balanceWarnOnce.Do(func() {
-		slog.Warn("balance mode not implemented, falling back to priority",
-			"event", "route.balance.unsupported_mode",
-			"namespace_id", namespaceID,
-			"capability", capability,
-			"port", port,
-			"mode", mode,
-			"note", "本期只实现 priority；该端口的候选按最小 priority 组轮盘选一个（不扇出）",
-		)
-	})
 }
 
 // formatPath 把 path 渲染成给人看的箭头链（剪枝 Detail 用）。

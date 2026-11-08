@@ -155,36 +155,6 @@ func TestDispatchStartupRandomization(t *testing.T) {
 	}
 }
 
-// TestDispatchBalanceAllFallsBackToPriority balance.mode=all 本期不实现：
-// 派发侧按 priority 处理（**1:1**，不扇出），并留一次 WARN。
-//
-// 保存路径已经把 all 拒成 400，所以这里手工把定义改成 all（模拟手改库）：
-// 派发**不能**因此变成扇出，否则「没实现的语义」就靠猜被实现了。
-func TestDispatchBalanceAllFallsBackToPriority(t *testing.T) {
-	ctx := context.Background()
-	f := newFakeStore()
-	review := f.addCap(testNS, "review", 1, []string{"fix"}, `{"type":"object"}`)
-	// 直接改内存里的定义（fakeStore 的 ResolveRef 会原样返回它）。
-	review.Balance = store.Balance{"fix": {Mode: "all"}}
-	a := f.addCap(testNS, "fix-a", 1, nil, `{"type":"object"}`)
-	b := f.addCap(testNS, "fix-b", 1, nil, `{"type":"object"}`)
-	f.addEdge(testNS, review.ID, "fix", a.ID)
-	f.addEdge(testNS, review.ID, "fix", b.ID)
-	f.addNode("nd_a", a.ID, 2)
-	f.addNode("nd_b", b.ID, 2)
-
-	out, err := New(f).Dispatch(ctx, DispatchInput{
-		NamespaceID: testNS, TraceID: "t_all", FromCap: review.ID, Out: "fix",
-		Params: map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(out.Tasks) != 1 {
-		t.Fatalf("balance=all 在派发侧仍然只能建 1 个任务（本期不实现扇出），got %d", len(out.Tasks))
-	}
-}
-
 // TestEmitTwiceTwoIndependentTasks 两次 emit = 两个独立任务。
 //
 // 两次 emit 是两次独立派发：各自走一遍候选选择，游标 +1 让它们**可以**落到

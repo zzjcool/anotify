@@ -934,13 +934,6 @@ type capabilityListRequest struct {
 	// 为什么不能逐条建：中间失败就留下「能力在、边缺」的半成品，而能力表是
 	// append-only 的——那个半成品永远撤不回来，客户端只能自己记一份待重试清单。
 	Links []store.LinkSpec `json:"links,omitempty"`
-
-	// Balance 是端口级平衡策略（契约 §1）：`{端口: {"mode": "priority"}}`，缺省 = priority。
-	//
-	// 本期只实现 priority；all / random / least_loaded / hash 会被 store 拒成
-	// 400 balance_rejected（"尚未实现"），**不静默降级** —— 静默降级会让
-	// 「我配了 all、跑起来却是 1:1」永远查不出来。
-	Balance store.Balance `json:"balance,omitempty"`
 }
 
 // capabilities 处理 GET（列表）/ POST（定义新能力）。
@@ -1342,7 +1335,6 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 		Version:      version,
 		ParamsSchema: schema,
 		Outputs:      req.Outputs,
-		Balance:      req.Balance,
 		Sticky:       req.Sticky,
 		Source:       source,
 	}
@@ -1454,18 +1446,6 @@ func (h *consoleHandler) createCapability(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": err.Error(),
 				"code":  "invalid_artifact",
-			})
-			return
-		}
-		// balance 不合法（未实现的 mode / 端口不在 outputs）：客户端可修 → 400。
-		// 必须排在「统一 409」之前：否则「配了 all」会被当成版本冲突，用户改不对。
-		if errors.Is(err, store.ErrBalanceRejected) {
-			slog.Warn("create capability rejected: invalid balance",
-				"event", "console.caps.balance_rejected",
-				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
-				"code":  "balance_rejected",
 			})
 			return
 		}
@@ -1632,17 +1612,6 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 			})
 			return
 		}
-		// balance 不合法（未实现的 mode / 端口不在 outputs）：客户端可修 → 400
-		if errors.Is(err, store.ErrBalanceRejected) {
-			slog.Warn("create capability rejected: invalid balance",
-				"event", "console.caps.balance_rejected",
-				"namespace_id", ns.ID, "name", req.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
-				"code":  "balance_rejected",
-			})
-			return
-		}
 		// 事务内的产物构建失败（run 写错）：整体已回滚，能力一行都没留下
 		var buildErr *store.ArtifactBuildError
 		if errors.As(err, &buildErr) {
@@ -1684,7 +1653,7 @@ func (h *consoleHandler) createCapabilityWithLinks(w http.ResponseWriter, r *htt
 // capabilityBatchRequest 是 POST /v1/capabilities/batch 的请求体。
 //
 // `Capabilities` 的元素类型**就是**单建的请求体（`capabilityListRequest`）：
-// 不另造一份 decode 结构。单建以后加字段（例如 balance），批量会自动跟着有——
+// 不另造一份 decode 结构。单建以后加字段（例如 `requires`），批量会自动跟着有——
 // 造第二份结构的代价就是「同一个字段在一个端点生效、在另一个端点静默丢弃」。
 //
 // 三个字段随元素一起被解码（因为元素形状与单建一致），但**语义在批级**：

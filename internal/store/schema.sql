@@ -5,8 +5,8 @@
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- baseline 之后是六块：`-- +migration 1 baseline`、`2 priority_balance`、
--- `3 agent_version`、`4 task_logs`、`5 task_seq_in_trace`、`6 drop_edges_lookup`（新变更继续往后追加）。
+-- 块号从 `-- +migration 1 baseline` 起连续递增（当前最高版本 = migrate.go 的 headVersion），
+-- 新变更继续往后追加块；不在这里逐块点名——那串清单一定会落后于代码。
 --
 -- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
 -- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
@@ -573,9 +573,9 @@ CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(enabled, next_fire_at);
 -- （idx_edges_lookup 的形状不变），priority 只是被选出来的排序键。
 ALTER TABLE edges ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 
--- 端口级平衡策略（契约 §1）：JSON 对象 {端口: {"mode": "priority"}}，缺省 {} = priority。
--- 本期只实现 priority；all / random / least_loaded / hash 保存时 400（尚未实现），
--- 不静默降级 —— 静默降级会让「我配了 all 却是 1:1」这种分歧永远查不出来。
+-- 同一块里还给 capability_versions 加过一列端口级平衡策略（`balance`），它在
+-- P3 已被 migration 9 删掉——这里保留当时的 ALTER 是因为已发布的库按版本号记账，
+-- 改动历史块的语义等于让老库和新库分叉；新建的库会在同一次 Open 里加上再删掉。
 ALTER TABLE capability_versions ADD COLUMN balance TEXT NOT NULL DEFAULT '{}';
 
 -- +migration 3 agent_version
@@ -692,3 +692,17 @@ ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
 -- 默认 '' 只为覆盖「加这一列之前建的老行」：它们由本迁移的 Go 钩子回填
 -- （有产物的取产物正文，其余给内置 noop 占位），回填后库里不再有 ''。
 ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
+
+-- +migration 9 drop_balance
+
+-- `balance` 是端口级平衡策略的旧列（migration 2 加的）。它语义上只有**一个**合法值：
+-- 保存路径只放行 priority，all / random / least_loaded / hash 一律 400，于是「配了它」
+-- 与「没配它」跑起来逐字相同——恒等于默认行为，等于这个字段从来没表达过任何选择
+-- （Capability Spec v3 §7 的 P3 行）。删掉它，也就没有「配了 all 却按 1:1 跑」这种
+-- 永远查不出来的分歧了。
+--
+-- 3.35+ 的 DROP COLUMN 已实测可跑（本表有数据、有外键指向它、有其它列上的索引），
+-- 不需要「重建表 + 拷贝」那条重路径。只执行一次：applyMigration 按 schema_version 记账。
+-- 列上没有任何索引 / UNIQUE / 部分索引谓词引用它，因此 DROP 是就地重写，不触发
+-- 表结构迁移的那些限制。
+ALTER TABLE capability_versions DROP COLUMN balance;
