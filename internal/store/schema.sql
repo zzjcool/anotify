@@ -428,6 +428,7 @@ CREATE TABLE IF NOT EXISTS playbooks (
     namespace_id     TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     slug             TEXT NOT NULL,
     name             TEXT NOT NULL,
+    display_name     TEXT NOT NULL DEFAULT '',
     descr            TEXT NOT NULL DEFAULT '',
     version          INTEGER NOT NULL DEFAULT 1,
     files            TEXT NOT NULL DEFAULT '{}',

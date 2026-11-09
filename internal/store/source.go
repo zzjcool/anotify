@@ -177,33 +177,44 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	s.NextFireAt = nextFire
 
-	targetsJSON, err := json.Marshal(s.Targets)
-	if err != nil {
-		return fmt.Errorf("create source: marshal targets: %w", err)
-	}
-
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("create source: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO sources (`+sourceColumns+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.NamespaceID, s.Name, s.Kind, string(s.Config), string(targetsJSON),
-		boolToInt(s.Enabled), nil, nullableUnix(nextFire), s.InstalledFrom, s.ResourceVersion,
-		s.CreatedAt); err != nil {
-		if isUniqueViolation(err) {
-			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
-		}
-		return fmt.Errorf("create source: %w", err)
-	}
-	if err := replaceSourceEdgesOn(ctx, txExec{tx: tx}, s.NamespaceID, s.Name, targetRefs(s)); err != nil {
+	if err := insertSourceOn(ctx, txExec{tx: tx}, s); err != nil {
 		return fmt.Errorf("create source: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("create source: commit: %w", err)
+	}
+	return nil
+}
+
+// insertSourceOn 落一行源 + 同事务重建入口边（CreateSource 与 Playbook 安装共用）。
+//
+// 直写语义不变：唯一冲突 → ErrSourceNameTaken；config / targets 原样落库；入口边是
+// targets 的投影（只对**新建**源写，复用已有源不调用它）。调用方负责校验、归一化
+// （含 webhook token 生成）与 next_fire_at；本函数只做两件写。
+func insertSourceOn(ctx context.Context, ex queryExec, s *Source) error {
+	targetsJSON, err := json.Marshal(s.Targets)
+	if err != nil {
+		return fmt.Errorf("marshal targets: %w", err)
+	}
+	if _, err := ex.execContext(ctx,
+		`INSERT INTO sources (`+sourceColumns+`)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		s.ID, s.NamespaceID, s.Name, s.Kind, string(s.Config), string(targetsJSON),
+		boolToInt(s.Enabled), nil, nullableUnix(s.NextFireAt), s.InstalledFrom, s.ResourceVersion,
+		s.CreatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %q", ErrSourceNameTaken, s.Name)
+		}
+		return fmt.Errorf("insert source: %w", err)
+	}
+	if err := replaceSourceEdgesOn(ctx, ex, s.NamespaceID, s.Name, targetRefs(s)); err != nil {
+		return err
 	}
 	return nil
 }

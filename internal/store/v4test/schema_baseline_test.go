@@ -146,8 +146,8 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 		},
 		"node_instances": {"id", "node_id", "slot", "concurrency", "busy_task", "alive", "updated_at"},
 		"playbooks": {
-			"id", "namespace_id", "slug", "name", "descr", "version", "files", "source",
-			"resource_version", "created_at", "updated_at",
+			"id", "namespace_id", "slug", "name", "display_name", "descr", "version",
+			"files", "source", "resource_version", "created_at", "updated_at",
 		},
 		"playbook_installs": {
 			// playbook_id 是**历史 id**（无 live-parent 外键），slug/ns 快照让删包后
@@ -363,4 +363,47 @@ func TestSchemaBaselineNodeFactsColumns(t *testing.T) {
 			t.Errorf("node_configs 缺列 %q（现有 %v）", col, sortedKeys(cfg))
 		}
 	}
+}
+
+// TestSchemaBaselinePlaybookNoLiveParentFK 是「删包仍可读回执」的结构前提（playbook.md §7.3）：
+// `playbook_installs.playbook_id` 是**历史 id**，不能有 live-parent 外键；
+// `capability_versions/sources.installed_from` 也只是逻辑引用（无 FK），
+// 引用安全由显式 GC 的引用检查保证，而不是「CASCADE 顺手删掉」。
+func TestSchemaBaselinePlaybookNoLiveParentFK(t *testing.T) {
+	db := openTestDB(t)
+
+	fks := foreignKeyColumns(t, db, "playbook_installs")
+	if target, ok := fks["playbook_id"]; ok {
+		t.Fatalf("playbook_installs.playbook_id 不能有外键（删包会连带删回执），实际指向 %q", target)
+	}
+	if _, ok := fks["namespace_id"]; !ok {
+		t.Fatalf("playbook_installs.namespace_id 应保留外键（删命名空间才级联删回执）")
+	}
+	for _, table := range []string{"capability_versions", "sources"} {
+		if target, ok := foreignKeyColumns(t, db, table)["installed_from"]; ok {
+			t.Fatalf("%s.installed_from 不能有外键（回执可被显式 GC），实际指向 %q", table, target)
+		}
+	}
+}
+
+// foreignKeyColumns 返回某表的外键列 → 目标表（无外键时返回空 map）。
+func foreignKeyColumns(t *testing.T, db *store.DB, table string) map[string]string {
+	t.Helper()
+	rows, err := db.Query(`SELECT "from", "table" FROM pragma_foreign_key_list(?)`, table)
+	if err != nil {
+		t.Fatalf("foreign_key_list %s: %v", table, err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var from, target string
+		if err := rows.Scan(&from, &target); err != nil {
+			t.Fatalf("scan foreign key: %v", err)
+		}
+		out[from] = target
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate foreign keys: %v", err)
+	}
+	return out
 }
