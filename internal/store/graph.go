@@ -145,7 +145,7 @@ func (d *DB) ReplaceSourceEdges(ctx context.Context, s *Source) error {
 	}
 	refs := make([]string, 0, len(s.Targets))
 	for _, t := range s.Targets {
-		ref := strings.TrimSpace(t.CapabilityID)
+		ref := strings.TrimSpace(t.Capability)
 		if ref == "" {
 			continue
 		}

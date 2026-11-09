@@ -129,17 +129,19 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 
 	// 任务完成统计（口径见 #80）：
 	//
-	//	DeliveredCount = 成功任务数
-	//	DeliveryTotal  = 已结束任务数（四个终态）
+	//	DeliveredCount = 成功任务数（phase=succeeded）
+	//	DeliveryTotal  = 已结束任务数（四个终态相位）
 	//
 	// 以前查 deliveries 表统计"推送送达"，但那张表随旧消息模型一起删除了。
 	// 现在的语义是"任务办成了没有"——推送只是其中一种任务结果。
 	if err := d.QueryRowContext(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN phase = ? THEN 1 ELSE 0 END),0),
 		   COUNT(*)
 		 FROM tasks
-		 WHERE status IN ('succeeded','failed','canceled','abandoned')`).Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
+		 WHERE phase IN (?,?,?,?)`,
+		TaskSucceeded, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
+		Scan(&s.DeliveredCount, &s.DeliveryTotal); err != nil {
 		return nil, fmt.Errorf("system stats delivered: %w", err)
 	}
 
@@ -228,7 +230,7 @@ type AdminGlobalEvent struct {
 	Source      string `json:"source"`
 	Type        string `json:"type"`
 	TraceID     string `json:"traceId"`
-	IdemKey     string `json:"idemKey"`
+	DeliveryID  string `json:"deliveryId"`
 	CreatedAt   int64  `json:"createdAt"`
 }
 
@@ -238,7 +240,7 @@ func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEve
 		limit = 50
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, namespace_id, source, type, trace_id, idem_key, created_at
+		`SELECT id, namespace_id, source, type, trace_id, COALESCE(delivery_id, ''), created_at
 		 FROM events
 		 ORDER BY created_at DESC
 		 LIMIT ?`, limit)
@@ -249,7 +251,7 @@ func (d *DB) ListGlobalEvents(ctx context.Context, limit int) ([]*AdminGlobalEve
 	out := []*AdminGlobalEvent{} // 不变量 I9：空列表是 [] 不是 null
 	for rows.Next() {
 		var e AdminGlobalEvent
-		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.Source, &e.Type, &e.TraceID, &e.IdemKey, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.NamespaceID, &e.Source, &e.Type, &e.TraceID, &e.DeliveryID, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan global event: %w", err)
 		}
 		out = append(out, &e)

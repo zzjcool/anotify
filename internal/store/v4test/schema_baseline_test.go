@@ -22,6 +22,7 @@ var baselineTables = []string{
 	"cli_auth_sessions",
 	"deployments",
 	"devices",
+	"event_deliveries",
 	"edges",
 	"emits",
 	"events",
@@ -149,8 +150,10 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 			"resource_version", "created_at", "updated_at",
 		},
 		"playbook_installs": {
-			"id", "namespace_id", "playbook_id", "values", "values_digest", "receipt",
-			"source", "created_at",
+			// playbook_id 是**历史 id**（无 live-parent 外键），slug/ns 快照让删包后
+			// 回执仍可读、且不会被同名重建的新包认领（父裁决 D3）。
+			"id", "namespace_id", "namespace_slug", "playbook_id", "playbook_slug",
+			"values", "values_digest", "receipt", "source", "created_at",
 		},
 		"sources": {
 			"id", "namespace_id", "name", "kind", "config", "targets", "enabled",
@@ -235,13 +238,20 @@ func TestSchemaBaselineUniqueConstraints(t *testing.T) {
 		table string
 		cols  []string
 	}{
-		{"events", []string{"namespace_id", "source", "delivery_id"}},
+		// 去重窗与事件实体解耦（父裁决 D6）：唯一性落在 event_deliveries 上，
+		// 而不是 events 本体——否则「旧事件因引用保留」与「同 id 过期后可再接收」
+		// 会互相排斥。
+		{"event_deliveries", []string{"namespace_id", "source", "delivery_id"}},
 		{"emits", []string{"task_id", "emit_id"}},
 		{"deployments", []string{"node_id", "capability_id", "digest"}},
 	} {
 		if !hasUniqueIndex(t, db, tc.table, tc.cols) {
 			t.Errorf("%s 缺唯一索引 %v", tc.table, tc.cols)
 		}
+	}
+	// 反向断言：events 上**不能**再有 delivery 级唯一索引（那会把去重绑死在实体上）。
+	if hasUniqueIndex(t, db, "events", []string{"namespace_id", "source", "delivery_id"}) {
+		t.Error("events 不该有 (namespace_id,source,delivery_id) 唯一索引：去重窗必须独立于事件实体")
 	}
 }
 

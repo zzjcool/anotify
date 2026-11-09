@@ -181,42 +181,35 @@ func (d *DB) ListArtifacts(ctx context.Context, namespaceID, capabilityID string
 	return []*Artifact{got}, nil
 }
 
-// CreateDeployment 建一条部署（state=pending）。
+// CreateDeployments 人工部署：为每个节点写一行 pending（「中枢希望这台机器持有这份内容」）。
 //
-// 同一 (node, capability) **只保留一行**：部署是中枢对「这台机器该有哪份内容」的
-// 期望状态，新期望直接取代旧的。
+// 语义（capability.md §2.4 Deployed condition / 契约 §11.2）：
+//   - 只引用 capability_id + digest，没有 artifact 行可指（产物不再是可引用物体）；
+//   - digest 的唯一来源是能力行：传空 = 用能力行的 digest；传了就必须与它相等
+//     （部署别的能力的 digest 是自相矛盾的请求，按「找不到这份产物」拒绝）；
+//   - 同一 (node, capability) **只保留一行**：部署是期望状态，新期望直接取代旧的。
+//     留着旧行会让同一能力同时存在两条互斥期望，节点每次重连都在两份内容之间来回被推。
 //
-// 为什么不再把旧 digest 的行当“历史”留着：留着会让同一能力同时存在两条互斥的期望。
-// hello 对账按行逐个比对 digest，于是旧行总是“与节点上那份一致”、新行总是“不一致”，
-// 两者每次重连都互相推翻——节点会在两份内容之间来回被推。收敛的前提是
-// 「一个 (机器, 能力) 只有一个期望」（见 markDeployedDigest）。
-//
-// 签名（契约 §11.2 / P2a）：(namespaceID, nodeID, **capabilityID**, digest)。
-// digest 是「要部署的那份内容」的身份：
-//   - 传空串 = 该能力行的当前内容；
-//   - 传了就必须等于该能力行的 digest。传给别的能力的 digest 是自相矛盾的请求
-//     （部署的期望内容与被引用的能力行不是一回事），按「找不到这份产物」拒绝，
-//     而不是悄悄换一个能力去部署。
-//
-// 同一 (node, capability, digest) 已存在时是幂等 no-op：控制台重复点部署不该报错，
-// 也不该重置已经 applied 的状态（否则一次误点会把绿标打回灰）。
-func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabilityID, digest string) (*Deployment, error) {
+// nodeIDs 为空是 no-op（不是错误）：控制台要部署的机器集合可能被筛空了。
+// 已存在的 (node, capability, digest) 视为幂等 no-op：重复点部署不该把绿标打回灰。
+func (d *DB) CreateDeployments(ctx context.Context, namespaceID, capabilityID, digest string, nodeIDs []string) ([]*Deployment, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
 	if capabilityID == "" {
-		return nil, fmt.Errorf("create deployment: empty capability_id")
+		return nil, fmt.Errorf("create deployments: empty capability_id")
+	}
+	if len(nodeIDs) == 0 {
+		return []*Deployment{}, nil
 	}
 	now := Now()
-	id := NewDeploymentID()
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin create deployment: %w", err)
+		return nil, fmt.Errorf("begin create deployments: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 期望内容的唯一来源是能力行（digest 也是它算出来的）。
 	capRow, err := getCapabilityByIDOn(ctx, txExec{tx: tx}, namespaceID, capabilityID)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrArtifactNotFound
@@ -225,8 +218,6 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabili
 		return nil, fmt.Errorf("resolve deployment capability: %w", err)
 	}
 	if derr := deployable(capRow); derr != nil {
-		// 不可部署的形态（handler 形式 / 纯定义，见 deployable）。handler 层先判并回
-		// 400 builtin_not_deployable；走到这里说明是别的调用方，同样不给建行。
 		return nil, derr
 	}
 	digest = strings.TrimSpace(digest)
@@ -237,26 +228,55 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabili
 		return nil, ErrArtifactNotFound
 	}
 
-	// 取代范围只能是**同一能力**的旧行（别的能力不碰）。
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM deployments
-		  WHERE namespace_id = ? AND node_id = ? AND capability_id = ? AND digest <> ?`,
-		namespaceID, nodeID, capabilityID, digest); err != nil {
-		return nil, fmt.Errorf("supersede previous deployment: %w", err)
+	seen := make(map[string]bool, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if nodeID == "" || seen[nodeID] {
+			continue
+		}
+		seen[nodeID] = true
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE id = ?`, nodeID).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("create deployments: probe node %s: %w", nodeID, err)
+		}
+		if exists == 0 {
+			return nil, fmt.Errorf("create deployments: node %s: %w", nodeID, ErrNotFound)
+		}
+		// 取代范围只能是同一能力的旧行（别的能力不碰）。
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM deployments
+			  WHERE namespace_id = ? AND node_id = ? AND capability_id = ? AND digest <> ?`,
+			namespaceID, nodeID, capabilityID, digest); err != nil {
+			return nil, fmt.Errorf("supersede previous deployment: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,'',?,?)
+			 ON CONFLICT(node_id, capability_id, digest) DO NOTHING`,
+			NewDeploymentID(), namespaceID, nodeID, capabilityID, digest, DeploymentPending, now, now); err != nil {
+			return nil, fmt.Errorf("create deployment for %s: %w", nodeID, err)
+		}
 	}
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,'',?,?)
-		 ON CONFLICT(node_id, capability_id, digest) DO NOTHING`,
-		id, namespaceID, nodeID, capabilityID, digest, DeploymentPending, now, now); err != nil {
-		return nil, fmt.Errorf("create deployment: %w", err)
-	}
-
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit create deployment: %w", err)
+		return nil, fmt.Errorf("commit create deployments: %w", err)
 	}
-	return d.GetDeploymentByNodeCapability(ctx, namespaceID, nodeID, capabilityID)
+
+	out := make([]*Deployment, 0, len(seen))
+	rows, err := d.QueryContext(ctx,
+		deploymentSelect+` WHERE d.namespace_id = ? AND d.capability_id = ? ORDER BY d.node_id`, namespaceID, capabilityID)
+	if err != nil {
+		return nil, fmt.Errorf("read created deployments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dp, serr := scanDeploymentRow(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		if seen[dp.NodeID] {
+			out = append(out, dp)
+		}
+	}
+	return out, rows.Err()
 }
 
 // GetDeploymentByNodeCapability 取一条部署（同一 (node, capability) 至多一行）。
@@ -286,18 +306,38 @@ SELECT d.id, d.namespace_id, d.node_id, d.capability_id, ` + deploymentDigestSQL
   JOIN capability_versions c ON c.id = d.capability_id`
 
 func (d *DB) scanDeployment(ctx context.Context, query string, args ...any) (*Deployment, error) {
-	var dp Deployment
-	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
-		&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
-		&dp.Capability, &dp.Version)
+	dp, err := scanDeploymentOne(d.QueryRowContext(ctx, query, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get deployment: %w", err)
 	}
+	return dp, nil
+}
+
+// deploymentScanner 是 *sql.Rows / *sql.Row 的最小公共面（都只有 Scan）。
+type deploymentScanner interface{ Scan(dest ...any) error }
+
+// scanDeploymentOne 从任意 Scan 面解析一条部署。
+func scanDeploymentOne(row deploymentScanner) (*Deployment, error) {
+	var dp Deployment
+	if err := row.Scan(
+		&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
+		&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
+		&dp.Capability, &dp.Version); err != nil {
+		return nil, err
+	}
 	return &dp, nil
+}
+
+// scanDeploymentRow 从结果集解析一条部署（列表路径）。
+func scanDeploymentRow(rows *sql.Rows) (*Deployment, error) {
+	dp, err := scanDeploymentOne(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan deployment: %w", err)
+	}
+	return dp, nil
 }
 
 // DeploymentFilter 是部署列表的过滤条件（零值 = 不过滤）。
@@ -333,14 +373,11 @@ func (d *DB) ListDeployments(ctx context.Context, namespaceID string, f Deployme
 
 	out := []*Deployment{}
 	for rows.Next() {
-		var dp Deployment
-		if err := rows.Scan(
-			&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
-			&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
-			&dp.Capability, &dp.Version); err != nil {
-			return nil, fmt.Errorf("scan deployment: %w", err)
+		dp, serr := scanDeploymentRow(rows)
+		if serr != nil {
+			return nil, serr
 		}
-		out = append(out, &dp)
+		out = append(out, dp)
 	}
 	return out, rows.Err()
 }
@@ -378,63 +415,125 @@ func (d *DB) MarkDeployResult(ctx context.Context, namespaceID, deployID, state,
 	return nil
 }
 
-// markDeployedDigest 是 hello 对账的入口：拿「节点实际缓存的 digest」和中枢的期望
-// 逐能力比对。
+// AppliedCapability 是节点 hello 自报的「我持有这份内容」的一条事实。
 //
-// 语义（中枢覆盖）：
-//   - digest 一致 → applied（绿勾）
-//   - 不一致   → pending，reason 里两端 digest 都写上，回来后由 handleHello
-//     把中枢期望的那份推下去（节点不需要知道自己错在哪里，它只要拿到对的东西）
+// 三者一起才构成部署身份：能力 id 说「是哪个能力」，version 说「哪一版」，
+// digest 说「哪份字节」。只对 digest 会让「同内容不同版本」被误判成已部署。
+type AppliedCapability struct {
+	CapabilityID string
+	Capability   string
+	Version      int
+	Digest       string
+}
+
+// ReconcileStats 汇总一次节点对账的结果。
+type ReconcileStats struct {
+	// Applied 是与中枢期望一致的行数。
+	Applied int
+	// Stale 是节点上的内容与期望不一致（已被打回 pending，等着被重推）的行数。
+	Stale int
+	// Missing 是节点上根本没有上报这条能力（同样打回 pending）的行数。
+	Missing int
+	// Extra 是节点上有、中枢没有要求的内容（「本地变体」）。
+	//
+	// v4 的处置：**不**替它建部署行。部署是中枢下发的意图，节点自报不能变成
+	// 「中枢曾经要求过」；把它作为漂移事实返回给调用方记日志/展示即可。
+	// 这正是 v3 `state=local` 想表达的信息，但不再需要一个永不收敛的颜色。
+	Extra []AppliedCapability
+}
+
+// ReconcileNode 用节点自报的 applied 列表对账它名下的部署行。
 //
-// 期望值取**能力行**的 digest（deploymentDigestSQL），不是 deployments.digest 列的
-// 副本：列里那份是建行那一刻的快照，而「这个能力现在的产物」只有能力行说了算
-// （契约 §11.2）。老库里指向历史内容的行因此会自然收敛到当前内容。
+// 判据（中枢覆盖语义，capability.md §2.4）：
+//   - digest 与期望一致 → applied（绿勾）
+//   - digest 不一致       → pending + reason 里写明两端 digest（stale，等重推）
+//   - 节点没上报这条能力  → pending（缺失，等重推）
 //
-// 早先这里标 `local`（“本地变体，中枢永不覆盖”，契约 §7 的旧口径），实践中行不通：
-// 部署本来就是中枢下发的，节点上那份不一致是“还没收到”而不再是“用户改过”，
-// 标黄只会让一条正常的部署永远停在黄标上，还得人去点一次。
-func (d *DB) markDeployedDigest(ctx context.Context, tx *sql.Tx, nodeID, capabilityID, digest string) (int, error) {
-	now := Now()
+// 期望值取**能力行**的 digest（deploymentDigestSQL），不是 deployments.digest 列的副本：
+// 列里那份是建行那一刻的快照，而「这个能力现在的产物」只有能力行说了算。
+// 老库里指向历史内容的行因此会自然收敛到当前内容。
+//
+// 只动该节点名下的行；一个事务内完成（对账是「读一遍自报 + 写一批状态」，中间被插入
+// 新部署时不会产生半新半旧的观测）。
+func (d *DB) ReconcileNode(ctx context.Context, nodeID string, applied []AppliedCapability, now int64) (ReconcileStats, error) {
+	var stats ReconcileStats
+	if nodeID == "" {
+		return stats, fmt.Errorf("reconcile node: empty node_id")
+	}
+	if now == 0 {
+		now = Now()
+	}
+	byCapability := make(map[string]AppliedCapability, len(applied))
+	for _, a := range applied {
+		if a.CapabilityID == "" {
+			continue
+		}
+		byCapability[a.CapabilityID] = a
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return stats, fmt.Errorf("reconcile node: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	rows, err := tx.QueryContext(ctx,
-		`SELECT d.id, `+deploymentDigestSQL+`
+		`SELECT d.id, d.capability_id, `+deploymentDigestSQL+`
 		   FROM deployments d
 		   JOIN capability_versions c ON c.id = d.capability_id
-		  WHERE d.node_id = ? AND d.capability_id = ?`, nodeID, capabilityID)
+		  WHERE d.node_id = ?`, nodeID)
 	if err != nil {
-		return 0, fmt.Errorf("query deployments for reconcile: %w", err)
+		return stats, fmt.Errorf("reconcile node: read deployments: %w", err)
 	}
-	defer rows.Close()
-
-	type row struct{ id, digest string }
+	type row struct {
+		id, capabilityID, digest string
+	}
 	var all []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.digest); err != nil {
-			return 0, fmt.Errorf("scan deployment for reconcile: %w", err)
+		if err := rows.Scan(&r.id, &r.capabilityID, &r.digest); err != nil {
+			rows.Close()
+			return stats, fmt.Errorf("reconcile node: scan deployment: %w", err)
 		}
 		all = append(all, r)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		rows.Close()
+		return stats, fmt.Errorf("reconcile node: iterate deployments: %w", err)
 	}
+	rows.Close()
 
-	n := 0
+	known := make(map[string]bool, len(all))
 	for _, r := range all {
+		known[r.capabilityID] = true
 		state, reason := DeploymentPending, ""
-		if r.digest == digest {
+		got, reported := byCapability[r.capabilityID]
+		switch {
+		case reported && got.Digest == r.digest:
 			state = DeploymentApplied
-		} else {
-			reason = fmt.Sprintf("digest mismatch: node has %s, console expects %s — 重新下发",
-				digest, r.digest)
+			stats.Applied++
+		case reported:
+			reason = fmt.Sprintf("stale: node has %s, console expects %s — 重新下发", got.Digest, r.digest)
+			stats.Stale++
+		default:
+			reason = "missing: node did not report this capability"
+			stats.Missing++
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE deployments SET state = ?, reason = ?, updated_at = ? WHERE id = ?`,
 			state, reason, now, r.id); err != nil {
-			return 0, fmt.Errorf("mark deployment: %w", err)
+			return stats, fmt.Errorf("reconcile node: mark deployment: %w", err)
 		}
-		n++
 	}
-	return n, nil
+	for capabilityID, a := range byCapability {
+		if !known[capabilityID] {
+			stats.Extra = append(stats.Extra, a)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return stats, fmt.Errorf("reconcile node: commit: %w", err)
+	}
+	return stats, nil
 }
 
 // DeploymentDelivery 是「把一份产物推给某台节点」所需的全部信息（行 + 产物原文）。

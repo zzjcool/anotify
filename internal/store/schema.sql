@@ -282,17 +282,42 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_trace
     ON events(namespace_id, trace_id);
 
--- 去重记录：唯一性只对非 NULL 的 delivery_id 生效（窗口内同 id 不重复派发）。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_delivery
-    ON events(namespace_id, source, delivery_id)
-    WHERE delivery_id IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS idx_events_retention
     ON events(namespace_id, created_at);
 
+-- 投递去重记录（source.md §3.3 D7/D12）：去重窗**独立于事件实体**。
+--
+-- 为什么必须单独一张表：同一次投递的去重窗（accepted_at + expires_at）与
+-- 事件行的保留期是两件事——一个事件可能因为被 task 引用而活得更久，也可能
+-- 早于窗口被清。绑在 events 上的唯一索引会逼出一个二选一：
+--   · 旧事件还在 → 同 id 的新投递永远收不进来（违反「窗口过期后可再接收」）；
+--   · 旧事件删了 → 唯一索引跟着消失，窗口内的重复投递反而收进来了。
+-- 拆表后：窗口判定只看 expires_at；过期后同 id 得到**新 eventId** 并刷新本行记录，
+-- 旧事件实体不受影响（不因为去重而删实体）。
+--
+-- source 用**源名**：v4 的源名创建后不可改（source.md §2），所以它就是稳定标识。
+-- expires_at = 0 表示永久窗口（eventTtlSec=0 时的语义）。
+CREATE TABLE IF NOT EXISTS event_deliveries (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,
+    delivery_id  TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
+    accepted_at  INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    PRIMARY KEY (namespace_id, source, delivery_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_deliveries_expiry
+    ON event_deliveries(expires_at);
+
 -- 任务：一个**逻辑 task 一行**。attempt 只是计数器（lease.grant 生效时 +1）。
--- waiting_reason ∈ waiting_for_slot | retry_backoff | waiting_for_config。
--- lease_id / lease_until / attempt_token_hash 是执行授权事实。
+-- phase ∈ pending | running | succeeded | failed | cancelled | abandoned。
+-- waiting_reason ∈ waiting_for_slot | retry_backoff | waiting_for_config（只有 pending 有意义）。
+-- lease_id / lease_until / attempt_token_hash 是执行授权事实（token 只存 sha256）。
+-- assignment_id / proposed_attempt 是「这次派给谁」的候选事实（assign 时不授执行权）。
+-- idempotent 在派发时从 spec.lifecycle 钉住（重试判定只看这一列，不回读能力）。
+-- cancel_reason / cancel_requested_at 记录取消意图：running 时要等 cancel.ack 的
+-- processGroupReaped 才释放槽位，pending 时直接终态。
 -- reported=1 表示节点已回报终态；summary/artifacts/error 是结果。
 CREATE TABLE IF NOT EXISTS tasks (
     id                 TEXT PRIMARY KEY,
@@ -310,11 +335,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     config_revision    INTEGER NOT NULL DEFAULT 0,
     attempt            INTEGER NOT NULL DEFAULT 0,
     max_attempts       INTEGER NOT NULL DEFAULT 3,
+    assignment_id      TEXT NOT NULL DEFAULT '',
+    proposed_attempt   INTEGER NOT NULL DEFAULT 0,
+    idempotent         INTEGER NOT NULL DEFAULT 0,
     lease_id           TEXT NOT NULL DEFAULT '',
     lease_until        INTEGER,
     attempt_token_hash TEXT NOT NULL DEFAULT '',
     waiting_reason     TEXT NOT NULL DEFAULT '',
     next_attempt_at    INTEGER,
+    cancel_reason      TEXT NOT NULL DEFAULT '',
+    cancel_requested_at INTEGER,
     reported           INTEGER NOT NULL DEFAULT 0,
     summary            TEXT NOT NULL DEFAULT '',
     artifacts          TEXT NOT NULL DEFAULT '[]',
@@ -398,16 +428,24 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 
 -- 安装回执：每次 install 一行（dryRun 不写）。values 是有效 values，
 -- values_digest 对未打码的值取哈希；receipt 是回执原文。
--- 回执被 installed_from 引用时延长保留（不允许悬空引用）。
+--
+-- playbook_id 是**历史 id，不是外键**：删一个 playbook 清单不该连带删掉它装过的回执
+-- （回执是「这次安装做了什么」的审计，也是 capability_versions/sources.installed_from
+-- 指向的锚点）。带 ON DELETE CASCADE 的外键会让删包同时抹掉回执并留下悬挂引用；
+-- 带 RESTRICT 的外键会让删包永远失败。所以这里不放 live-parent 外键，
+-- 而是把「当时是谁」**快照**进回执自己：原 id + 原 slug + 原命名空间 slug。
+-- 快照好之后，playbook 行消失也不影响读回执（也不会把同名重建的新包认成来源）。
 CREATE TABLE IF NOT EXISTS playbook_installs (
-    id            TEXT PRIMARY KEY,
-    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    playbook_id   TEXT NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
-    "values"      TEXT NOT NULL DEFAULT '{}',
-    values_digest TEXT NOT NULL,
-    receipt       TEXT NOT NULL DEFAULT '{}',
-    source        TEXT NOT NULL DEFAULT '',
-    created_at    INTEGER NOT NULL
+    id                TEXT PRIMARY KEY,
+    namespace_id      TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    namespace_slug    TEXT NOT NULL DEFAULT '',
+    playbook_id       TEXT NOT NULL DEFAULT '',
+    playbook_slug     TEXT NOT NULL DEFAULT '',
+    "values"          TEXT NOT NULL DEFAULT '{}',
+    values_digest     TEXT NOT NULL,
+    receipt           TEXT NOT NULL DEFAULT '{}',
+    source            TEXT NOT NULL DEFAULT '',
+    created_at        INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_playbook_installs_lookup

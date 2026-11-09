@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -76,9 +77,9 @@ func TestSourceEdgesProjection(t *testing.T) {
 	src := &store.Source{
 		NamespaceID: nsID,
 		Name:        "deploy-hook",
-		Targets: []store.SourceTarget{
-			{CapabilityID: "deploy"},
-			{CapabilityID: "notify@2"},
+		Targets: []sourcespec.Target{
+			{Capability: "deploy"},
+			{Capability: "notify@2"},
 		},
 	}
 	if err := db.ReplaceSourceEdges(ctx, src); err != nil {
@@ -88,7 +89,7 @@ func TestSourceEdgesProjection(t *testing.T) {
 		t.Fatalf("入口边 = %v, want [deploy notify@2]", got)
 	}
 
-	src.Targets = []store.SourceTarget{{CapabilityID: "audit"}}
+	src.Targets = []sourcespec.Target{{Capability: "audit"}}
 	if err := db.ReplaceSourceEdges(ctx, src); err != nil {
 		t.Fatalf("replace source edges again: %v", err)
 	}

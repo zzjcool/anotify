@@ -1007,6 +1007,12 @@ func (d *DB) EligibleNodes(ctx context.Context, namespaceID string, spec artifac
 	crows.Close()
 
 	// ⑥ 部署事实：哪些节点持有这个 digest（state=applied 才算「持有」）。
+	//
+	// **pending 不算候选**（G1-4 实现裁决）：pending 的含义是「中枢希望这台机器持有，
+	// 但还没收到确认」——此时节点上多半还没有这份字节，派过去只会换来一次注定失败的
+	// 执行（消耗的是有限的 attempt 预算，且对非幂等能力是永久损失）。
+	// 正确顺序是：deploy 收敛成 applied → 下一轮 EligibleNodes 自然把该节点纳入候选。
+	// `state=local` 是 v3 的历史态，v4 不再产生；旧行按 pending 处理（下一次对账会收敛）。
 	deployed := map[string]bool{}
 	drows, err := d.queryContext(ctx,
 		`SELECT node_id FROM deployments
