@@ -18,7 +18,8 @@
 // 和「节点报了个空」分不开。
 //
 // 帧集合 = 配置 5 帧（config.md §4.2）+ 执行 10 帧（capability.md §8.5）+ 保留的
-// 运维 4 帧（upgrade / upgrade_ack / logs_request / logs_response）。
+// 运维 4 帧（upgrade / upgrade_ack / logs_request / logs_response）+ 人工部署 2 帧
+// （capability.deploy / capability.deployed，父 CONTRACT rev2 §7）。
 //
 // 本包不含传输与会话状态机：ws 只做收发、心跳与背压；派发、租约、结果、emit 的
 // 权威判定都在 route/store。

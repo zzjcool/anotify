@@ -43,7 +43,8 @@ func Encode(f any) ([]byte, error) {
 // Decode 把收到的 JSON 解码成对应类型的帧。
 //
 // 返回的具体类型是 *HelloFrame / *WelcomeFrame / … / *CancelAckFrame /
-// *UpgradeFrame / *LogsResponseFrame；未知 type 返回 (*UnknownFrame, nil)。
+// *UpgradeFrame / *LogsResponseFrame / *CapabilityDeployFrame /
+// *CapabilityDeployedFrame；未知 type 返回 (*UnknownFrame, nil)。
 func Decode(data []byte) (any, error) {
 	frameType, err := FrameTypeOf(data)
 	if err != nil {
@@ -92,6 +93,11 @@ func Decode(data []byte) (any, error) {
 		target = &LogsRequestFrame{}
 	case FrameLogsResponse:
 		target = &LogsResponseFrame{}
+	// 部署 2 帧（人工部署接缝）。
+	case FrameCapabilityDeploy:
+		target = &CapabilityDeployFrame{}
+	case FrameCapabilityDeployed:
+		target = &CapabilityDeployedFrame{}
 	default:
 		return &UnknownFrame{Type: frameType}, nil
 	}
@@ -113,6 +119,7 @@ var upstreamFrames = []string{
 	FrameCancelAck,
 	FrameUpgradeAck,
 	FrameLogsResponse,
+	FrameCapabilityDeployed,
 }
 
 // downstreamFrames 是中枢 → 节点的帧。
@@ -126,6 +133,7 @@ var downstreamFrames = []string{
 	FrameTaskCancel,
 	FrameUpgrade,
 	FrameLogsRequest,
+	FrameCapabilityDeploy,
 }
 
 // IsUpstream 判定帧类型是否是节点 → 中枢方向。
