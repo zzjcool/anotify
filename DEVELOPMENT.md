@@ -677,6 +677,8 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 ### schema 变更：baseline 往后追加块（不再有增量迁移链）
 
+> **本轮 v4 开发期例外（用户已批准）**：全量转向 `docs/design/v4/`，不背旧版本数据/API/协议兼容包袱。允许直接重建 v4 baseline 并移除旧迁移链与 hooks，不追加 v3→v4 兼容迁移。旧库必须明确拒绝，程序不得自动删除数据。新库结构、字段往返、重新打开幂等和错误处理测试仍为硬门禁。具体分工见 `.pi-orchestrator/v4/CONTRACT.md`；以下规则继续适用于已发布结构的后续变更。
+
 `internal/store/schema.sql` 现在只有一块 `-- +migration 1 baseline`：squash 之后的**终态 DDL**。
 迁移链上的「建表 → 加列 → 删列 → 重建表 → 删表」已经合并进这一块，所以这里描述的就是
 **今天库里长什么样**，不再有「迁移 4 建表、迁移 28 再删列」这种历史包袱

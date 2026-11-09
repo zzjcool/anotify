@@ -26,7 +26,8 @@
 - **前端**：纯静态 HTML + Tailwind CDN + `tokens.css`（颜色只用 tokens 变量，不硬编码色值）；无构建框架
   - **class 纪律（硬红线）**：HTML 里的类只允许三种来源——① `ui.css`/`tokens.css` 组件类、② `ui.css`/页面内联 `<style>` 里定义的类、③ Tailwind 工具类。**禁止自造无定义的类**（如 `input-field` 这种不在任何 CSS 里的类，Tailwind CDN 会静默不生效，导致风格脱节）。`make fe`/`make sitegen`/`make dev` 已接入 `scripts/check-classes.mjs` 死类守卫，会拦住这种类；手写新类前先确认它落在上述三个来源内（若想要新组件类，就加进 `ui.css`）。
 - **API 契约**：JSON 字段统一 camelCase（给结构体加 `json` tag）；空列表返回 `[]` 而非 `null`
-- **store 层**：新增字段必加"往返一致性"单测（存什么读什么）；**schema 变更从 baseline 往后追加迁移块**
+- **v4 开发期全量切换（用户已批准）**：以 `docs/design/v4/decisions.md` 和 `.pi-orchestrator/v4/CONTRACT.md` 为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外覆盖下面的历史 baseline 追加规则，仅适用于本次尚未发布的 v4 全量开发。
+- **store 层**：新增字段必加"往返一致性"单测（存什么读什么）；**已发布结构的 schema 变更从 baseline 往后追加迁移块**
   （`schema.sql` 只有 `-- +migration 1 baseline`；加列就追加 `-- +migration 2 …`，不存在的 `ADD COLUMN IF NOT EXISTS`
   用 `migrate.go` 的 hooks 兜，见 DEVELOPMENT.md「schema 变更」）。squash 之前的老库不支持升级（`Open` 会明确报错）
 - 提交信息：`type(scope): 中文描述`，如 `feat(broker): 实现 Publish/Replay`
@@ -66,8 +67,8 @@ DONE <任务ID>
 - **UpsertDevice vs UpdateDevice**：前者是订阅刷新（只更新密钥），后者是改配置（全字段）；PATCH 用 Update
 - **store 不依赖 broker**：用本地 `MessageRow`，避免 import 循环
 - **空列表返回 `[]`**：别返回 `null`，否则前端误判"未连接"
-- **新增列要迁移**：`CREATE TABLE IF NOT EXISTS` 不改已存在的表 → 追加一个 `-- +migration N` 块
-  （SQLite 没有 `ADD COLUMN IF NOT EXISTS` 时走 `migrate.go` 的 hooks，必须幂等）；baseline 本身不再改
+- **已发布结构新增列要迁移**：`CREATE TABLE IF NOT EXISTS` 不改已存在的表 → 追加一个 `-- +migration N` 块
+  （SQLite 没有 `ADD COLUMN IF NOT EXISTS` 时走 `migrate.go` 的 hooks，必须幂等）；已发布 baseline 本身不再改。本轮 v4 开发库全量重建适用 §3 的用户批准例外，不追加旧版本兼容迁移链。
 
 ## 7. 测试要求
 

@@ -27,6 +27,12 @@ worker(后端) ∥ frontend(前端) 实施 → tester 把关 → reviewer 终审
 
 ## 当前任务
 
+### v4-full-cutover：全量切换 v4（进行中）
+
+- 用户已批准：以 `docs/design/v4/`（文档提交 `368b489`）全量改造，不做旧 API/协议/数据库迁移兼容层。
+- 分工、接口与验收：[`v4/CONTRACT.md`](v4/CONTRACT.md)；阶段计划：[`v4/PLAN.md`](v4/PLAN.md)；实时进度：[`v4/STATUS.md`](v4/STATUS.md)。
+- 仅父会话在独立 review 和集成验收通过后标记完成，子团队自报 DONE 不等于交付。
+
 ### index-event-stream：首页淘汰「最近任务」，事件流升为主列表（fix/index-event-stream，2026-11-03）
 
 **用户诉求**（原话）：「首页这里进来看到的为什么还是以前的消息，这里都要被淘汰掉，我们现在是事件流」。
