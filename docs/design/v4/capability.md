@@ -307,22 +307,23 @@ spec:
 | `timeoutSec` 到点 | ❌ | `failed`（不因超时自动重跑） |
 | 用户取消 / 放弃 | ❌ | `cancelled_by_user` / `abandoned_by_user` |
 | `stale_config`（`task.accept` 前配置校验失败） | ❌（不计 attempt） | 回 `pending` / `waiting_for_config`，带退避或换候选节点 |
+| `slot_unavailable`（`task.accept` 前无真实空槽 / 预算已满） | ❌（不计 attempt） | 回 `pending` / `waiting_for_slot`，带有界退避；不是脚本失败 |
 
 - **同一逻辑 task 只有一行**：`attempt` 是计数器，不新建 task_id；`parentTaskId` / `parentRef` 只表示业务 emit 的父子，不表示 attempt 父子。
-  可以另存 attempt 诊断事实（每 attempt 一行），但逻辑任务仍是一行。
+  历史执行绑定另存于 `task_attempts`（每 attempt 一行，含 node / lease / slot），不能被当前 task 行覆盖；公开诊断投影可选，逻辑任务仍是一行。
 - **重试是同一逻辑任务**：钉住原版本、原参数、原 digest，以及本次任务的 namespace 默认输入；不改写“跑的是哪一版”，也不重新做参数对齐。
 - **换节点重试重新解析机器值**：`local` / `node` 值按**本次执行节点**重新解析，`configRevision` 跟着该 attempt 的节点；不能把 A 机目录带到 B 机。
   每个 attempt 解析完成后，运行期间不再受后续配置更新影响；ns 输入由中枢保留可复现载体（不写成公开 env 值）。
-- **attempt 计数**：配置校验在 `task.accept` 前；`attempt++` 只在**中枢 `lease.grant` 生效、进入启动时**发生。排队（`waiting_for_slot`）不计 attempt、不耗租约。
+- **attempt 计数**：配置校验与真实空槽原子预留在 `task.accept` 前；`attempt++` 只在**中枢 `lease.grant` 事务生效、授权启动时**发生。排队（`waiting_for_slot`）不计 attempt、不耗租约；grant 后未能启动也不能倒减 attempt 或改成 accept 前拒绝。
 - **租约参数（全目录一致）**：基础租约 **60s**、续租间隔 **20s**、TERM 宽限 **5s** 后 **KILL 整个进程组**。
   续租必须有 ACK 与本地 deadline；失联时**尽力**停止旧进程（外部进程不保证停得住）。
 - **旧 attempt 作废**：重试开始后，旧 attempt 的任务 token 立刻失效；迟到的 commit / emit / 结果由**中枢权威检查**拒绝（`token_invalid` / `task_not_running`），节点本地只做预检。
-- **stale_config 不是执行失败**：它是 `task.accept` 前的调度拒绝，不计 attempt、不授 lease、不消耗非幂等重试预算；任务回 `pending`（`waiting_for_config`），带退避，不能热循环。
+- **启动前调度拒绝不是执行失败**：`task.reject.reason` 封闭为 `stale_config | slot_unavailable`，均发生在 accept / grant 前，不计 attempt、不授 lease、不消耗非幂等重试预算；分别回 `pending` 的 `waiting_for_config` / `waiting_for_slot`，带有界退避，不能热循环。无槽不能伪报 `stale_config`；未知 reason fail-closed。`missing_requirement` / workDir / HOME / export 错误仍在 grant 后计 attempt 并 `failed`，不进入 reject。
 - **infra 事实只能来自运行器**：`node_lost` / `lease_expired` / `infra_transient` 由运行器结构化判定；脚本的退出码（包括 emit 的 exit 5）不是 infra 事实。
 - **只承诺 at-least-once**：不虚假保证外部 exactly-once；业务副作用仍需作者自己幂等。
-- **退避**：attempt 间有退避，退避不占槽位、不耗租约；具体参数实现时定，但语义必须是“冷却后再试”，不是忙等。
+- **退避**：attempt 间有退避，退避不新增槽位占用、不耗租约；旧执行的物理占用仍须等真正回收才释放。具体参数实现时定，但语义必须是“冷却后再试”，不是忙等。
 - **`failed` vs `abandoned`**：`failed` = 有明确失败原因（脚本 / 配置 / 超时）；`abandoned` = 节点失联 / 租约丢失且无法确认结果。两者都进终态，不互相顶替。
-- **取消 / 放弃的收尾**：立即停止授权、下发停止并停止续租；节点先 TERM，5s 后 KILL 整个进程组。**槽位在进程组真正回收后才释放**，不能数据库改终态就当节点空闲。
+- **取消 / 放弃的收尾**：立即停止授权、下发停止并停止续租；节点按历史 task / attempt / lease / slot 绑定先 TERM，5s 后 KILL 整个进程组。**槽位在进程组真正回收后才释放**；旧回收事实只清匹配的旧占用，不清新 attempt，也不恢复旧 result / emit 授权。终态、重连或新 hello 都不是回收证据。
 
 #### `spec.concurrency` — 能同时跑几个
 
@@ -699,7 +700,8 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 | `script_failed` | 运行 | 脚本非零退出；**默认不自动重试**（含 emit exit 5 导致的非零） |
 | `files_escape` | 运行（执行前） | `run.files` 展开后越出允许目录（符号链接/实际路径）；**非重试配置错误** |
 | `artifact_export_invalid` | 运行 / 结果收集 | A2 系统导出目录创建、注入或枚举失败，或导出文件不符合普通文件 / 路径 / 限额约束；明确 `failed`，不返回假空产物，不自动重试 |
-| `stale_config` | 调度（`task.accept` 前） | 机器级 `configRevision` 与本机 applied 不一致；不计 attempt、不授 lease、回 pending |
+| `stale_config` | 调度（`task.accept` 前） | 机器级 `configRevision` 与本机 applied 不一致；不计 attempt、不授 lease、回 pending / waiting_for_config，带退避 |
+| `slot_unavailable` | 调度（`task.accept` 前） | 无真实空槽、本地已有占用或预算吃满；不计 attempt、不授 lease、回 pending / waiting_for_slot，带有界退避；不是 script_failed |
 | `cancelled_by_user` | 运行 | 用户取消；节点 TERM/KILL 进程组，槽位回收后释放 |
 | `abandoned_by_user` | 运行 | 用户放弃；同上 |
 | `workdir_unavailable` | 运行（`lease.grant` 后启动前） | `workDir` 展开后不可用：变量缺失 / 不是绝对路径 / 含 `..` / 不存在 / 不是目录；attempt 已计，`failed`，不自动重试 |
@@ -709,13 +711,14 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 
 两张表都是**封闭集合**：新增码要改本文。
 
-**三个错误域不要混用响应体**：
+**错误域不要混用响应体**：
 
 | 域 | 载体 | 例子 |
 |---|---|---|
 | 公共 API | `Status.reason` | `unknown_field_path` / `emit_id_conflict` |
 | 本地 emit 网关 | `{error, message}` + CLI 退出码 | `target_not_declared` / `emit_unreachable` |
 | 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `artifact_export_invalid` / `workdir_unavailable` / `home_unavailable` |
+| Node 启动前调度拒绝 | `task.reject.reason`；公开 Task 仅投影等待态 | `stale_config` → `waiting_for_config`；`slot_unavailable` → `waiting_for_slot`，不是任务结果失败 |
 
 字面码可以复用，但响应形状与判定时机不同；不要把本地 emit error 当 HTTP `Status`，也不要把剪枝当 4xx。
 
@@ -786,14 +789,14 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 - **任务**钉住目标引用：`to_name` + `to_version` + `to_digest` + `payload` + 令牌摘要 + 租约/截止时间。派发后上游再改 `next` 也不影响这条已建任务。
 - **重试字段**：同一逻辑 task 一行；`attempt`（配置校验在 accept 前，**中枢 `lease.grant` 生效、进入启动时**递增）、`max_attempts`（总尝试次数）、
   `node_name` / `config_revision` 记**当前 attempt** 的执行节点与配置版本；旧 attempt 的令牌摘要作废，迟到 commit / emit / 结果由中枢拒绝。
-  可以另存 attempt 诊断事实，但不新建 task_id，也不使用 `parent_attempt`（`parentTaskId` / `parentRef` 只表示业务 emit 父子）。
+  `task_attempts` 保留每次历史 node / attempt / lease / slot 与执行输入快照，供回收、历史日志、产物引用与 GC；不被当前 task 行覆盖，不新建 task_id，也不使用 `parent_attempt`（`parentTaskId` / `parentRef` 只表示业务 emit 父子）。
 - **phase 小写**：`pending` / `running` / `succeeded` / `failed` / `cancelled` / `abandoned`，与 wire 一致。
 - **等待态**：`waitingReason` ∈ `waiting_for_slot` / `retry_backoff` / `waiting_for_config`；带 `nextAttemptAt`，不计 `failed`、不占租约、不计 attempt。
 - **命名口径**：存储列用 snake_case（`max_attempts` / `node_name` / `config_revision`），wire 用 camelCase（`maxAttempts` / `nodeName` / `configRevision`）；语义同名，不另造词。
 - **emit 去重记录**：`(task_id, emit_id)` → 首次派发结果（含剪枝回执 `taskId:null`）；作用域仅在本逻辑任务内，不跨 task 合并，
   不按调用序号自动去重；不同版本 / 不同参数不继承。
 - **运行中值不漂移**：每个 attempt 解析出的 env（机器级 + ns 级）就是该 attempt 的值；解析完成后后续配置更新不改它。
-  机器级值按当前执行节点重新解析，ns 默认输入由中枢保留可复现载体（不是公开 env 快照）。
+  机器级执行快照在 grant 事务固定，按本次执行节点重新解析；namespace 在逻辑 task 首次解析时钉住，ns 默认输入由中枢保留可复现载体（不是公开 env 快照）。
 - **事件**记 `emit`（`to`、`fields[]`、`ok`）与 `prune`（`to`、`reason`、`detail`），`status.observed` 全部由它们现算。
   剪枝 reason（`no_target` / `event_schema` / `param_schema` / `param_type` / `param_missing`）是**观察原因**，不是任务失败码；其中 `no_target` 只表示“源没有 targets”，emit 缺 `to` 是 `missing_target` 错误。
 - **结果保留期**由 `lifecycle.resultTtlSec` 决定，默认 **7 天**，`0` = 清理任务跳过它。
@@ -831,21 +834,27 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 
 | 帧 | 方向 | 必需字段 | 时序 / 说明 |
 |---|---|---|---|
-| `task.dispatch` | 中枢 → 节点 | `taskId, assignmentId, proposedAttempt, namespace, capability{name,version,digest}, params, namespaceVars, namespaceVarsRevision, configRevision` | 目标用 `{name,version,digest}`，**没有 `port`**；节点先校验 digest 与 `configRevision == applied`。**不携带 lease / attemptToken，不授执行权** |
-| `task.accept` | 节点 → 中枢 | `taskId, assignmentId, proposedAttempt, node` | 配置校验通过后接受；`stale_config` 走 `task.reject`，**不计 attempt、不授 lease** |
-| `task.reject` | 节点 → 中枢 | `taskId, assignmentId, proposedAttempt, node, reason` | `reason` **封闭，只有 `stale_config`**（槽位/派发前调度处理）；不发 grant |
-| `lease.grant` | 中枢 → 节点 | `taskId, attempt, node, leaseId, attemptToken, expiresAt` | `leaseId` / `attemptToken` 由**中枢生成并授权**；grant 生效时 `attempt` 才计数，节点收到后才启动子进程 |
+| `task.dispatch` | 中枢 → 节点 | `taskId, assignmentId, proposedAttempt, assignmentExpiresAt, namespace, capability{name,version,digest}, params, namespaceVars, namespaceVarsRevision, configRevision` | 目标用 `{name,version,digest}`，**没有 `port`**；先校验 digest 与 `configRevision == applied`。中枢给出统一派发窗口（初值 30s）；**不携带 lease / attemptToken / slot 授权，不授执行权** |
+| `task.accept` | 节点 → 中枢 | `taskId, assignmentId, proposedAttempt, node, slot` | 配置通过且 Node 已原子预留真实空槽才接受；`slot` 必填且有 presence，整数 `0..N-1`，0 合法，缺失 / 负数无效；accept 本身不计 attempt、不授 lease |
+| `task.reject` | 节点 → 中枢 | `taskId, assignmentId, proposedAttempt, node, reason` | `reason` **封闭为 `stale_config` / `slot_unavailable`**；两者 pre-accept / pre-grant，不执行、不计 attempt、不发 grant；未知 reason fail-closed |
+| `lease.grant` | 中枢 → 节点 | `taskId, assignmentId, attempt, node, slot, leaseId, attemptToken, expiresAt` | 回显 accepted 的同一 slot 与 assignmentId；中枢事务复核 assignment / slot / Node / ns 权限与预算，生成 lease / token 并持久计 attempt；Node 只在匹配 pending reservation 后启动，不任意收到 grant 就执行 |
 | `lease.renew` | 节点 → 中枢 | `taskId, attempt, leaseId` | 围绕**同一个中枢 leaseId** 续租；节点不得自生成 lease |
 | `lease.ack` | 中枢 → 节点 | `taskId, attempt, leaseId, expiresAt` | 节点以最后一次 ACK + 本地 deadline 判定失联；到期自行 TERM，5s 后 KILL 进程组 |
 | `task.result` | 节点 → 中枢 | `taskId, attempt, node, leaseId, phase, exitCode?, result{summary,artifacts,error}, startedAt, finishedAt` | 脚本没有隐式返回值路由 ≠ 节点没有执行结果通道；结果由节点显式上报 |
 | `result.ack` | 中枢 → 节点 | `taskId, attempt, accepted` | 中枢权威校验 attempt/lease/token；旧 attempt 的结果拒绝 |
-| `task.cancel` | 中枢 → 节点 | `taskId, attempt, reason, graceSec` | `reason` 区分 `cancelled_by_user` / `abandoned_by_user` / 基础设施 `abandoned`；节点 TERM，5s 后 KILL 进程组 |
-| `cancel.ack` | 节点 → 中枢 | `taskId, attempt, processGroupReaped` | 只有 `processGroupReaped: true` 才算槽位回收；中枢不能只改 DB 状态就释放槽位 |
+| `task.cancel` | 中枢 → 节点 | `taskId, attempt, leaseId, slot, reason, graceSec` | slot 有 presence（0 合法）；按完整历史执行绑定定位，不能停止同 task 的新 attempt；reason 区分用户取消 / 放弃 / 基础设施 abandoned，TERM 后 5s KILL 进程组 |
+| `cancel.ack` | 节点 → 中枢 | `taskId, attempt, leaseId, slot, processGroupReaped` | slot 有 presence（0 合法）；真正回收后才发 `processGroupReaped: true`。中枢验证连接 Node 身份及历史 task_attempts 的 node / task / attempt / lease / slot，只 CAS 清匹配旧占用，重复 ACK 幂等 |
 
 - **时序**：`dispatch → accept/reject → lease.grant → 启动 → (lease.renew/lease.ack)* → task.result/result.ack`；`task.cancel` 可随时抢占并进入 `cancel.ack`。
-- 所有帧的 `taskId + attempt + node + leaseId` 必须可验证；节点本地只预检，中枢是 emit/结果/旧 attempt 的权威。
+- 派发帧验证 assignment 关联；已授权执行帧验证 `taskId + attempt + node + leaseId`，取消 / 回收还须匹配 slot。节点本地只预检，中枢是 emit / 结果 / 旧 attempt 的权威。
 - `assignmentId` / `proposedAttempt` 只是派发关联信息，不是执行授权；`leaseId` / `attemptToken` 只在中枢 `lease.grant` 时生成，`lease.renew` / `lease.ack` 始终围绕同一个 `leaseId`。
-- 中枢租约过期可授权新 attempt，允许短时进程重叠；不虚假保证外部 exactly-once。
+- **物理槽与预留**：slot 是 Node 的整数槽号，不是数据库 instanceId，每槽最多一个能力进程。候选容量只是已知事实提示；grant 必须原子绑定 accepted 的 node + slot 到 instance，不能另挑槽。不存在的 Node、超预算、slot 有未回收占用或 assignment 已过期 / 取消均不得 grant。
+- **统一窗口**：reservation（taskId + assignmentId + proposedAttempt + slot）沿 dispatch.assignmentExpiresAt 到期，双方不各猜 30s 起点。同一有效 assignment 的重复 dispatch / accept 返回同一 reservation，不占第二槽；不同 assignment 不共享。未获执行权且本机确知从未创建进程时，才可在过期 / 断连 / assignment 失败后释放预留。
+- **晚到 grant**：过期 / 不匹配 reservation 的 grant 不执行；若中枢已计 attempt，走现有结构化基础设施失败 / lease 回收，不倒减 attempt，不伪装成 pre-accept 拒绝。
+- **历史回收**：旧 token 不再 current 不妨碍报告真实回收；自然结束、lease 失效或重连后也可补报 cancel.ack，不要求旧执行仍 running 或收到当前 cancel。无匹配历史绑定不能清任何槽；旧 ACK 不清新 occupancy、不恢复旧 result / emit 授权。不能用 task phase 或终态清理代替物理回收。
+- **hello / applied 实例事实**：`hello.instances` 每项 slot 与 busy 均有 presence（slot 0 有效）；缺 busy、缺 instances 或空默认数组均为未知 / 无新断言，不是 idle；重复 slot / 非法项不更新安全账本。busy=true 的执行 / 回收中占用给 taskId / attempt / leaseId；pre-grant reservation 可给 taskId / assignmentId / proposedAttempt，不伪造 leaseId 或运行 attempt 授权。busy=false 只有携带相符历史 taskId / attempt / leaseId 才能清该旧 slot 绑定，否则需真实 cancel.ack；无匹配引用的 idle 不清旧 busy。
+- **配置与重连**：`config.applied` 可附与 hello 同型的 instances 快照，未附不更新实例账本；本轮删除旧每 instance 多份模型的 wire concurrency，不增加预算，limits.total / perCapability / maxPerNode 不变。预算缩小仍报告超范围存量直至回收；重启 / 重连须恢复或核查持久执行记录与进程组，未确认 reaped 保持 busy / unknown，不能因内存为空或新 hello 到达假报空闲。
+- 中枢租约过期可授权新 attempt，允许不同空槽上的短时进程重叠，但未回收旧槽不得复用；不虚假保证外部 exactly-once。
 - 节点上报：`node_capabilities`（`requires.commands` 探测结果）+ **机器级**变量快照（本机 + 节点默认值，值只用于匹配与节点页，不进能力侧 `status`，见 §2.4）；ns 默认值不进快照、只随任务内存下发。
 
 ### 8.6 落库方式
@@ -1056,7 +1065,7 @@ spec:
 | emit 可选显式 `id`，同逻辑任务同请求去重，不同请求 409 | 不按调用序号自动去重，不跨 task 合并，不继承不同版本实现 |
 | 三层 `vars`：local > node > namespace | 机器级两层跨 ns 共用，ns 层按任务所属 ns 取；展示带 ns 上下文（V4-D2） |
 | 同一逻辑 task 一行，`attempt` 只是计数器 | 不新建 task_id；`parentTaskId` 只表示业务 emit 父子；换节点重试重新解析机器级值（V4-D4） |
-| `stale_config` 是 `task.accept` 前的调度拒绝，不计 attempt | 回 pending 等配置/换候选，不消耗非幂等重试预算 |
+| `task.reject` 封闭为 `stale_config` / `slot_unavailable`，accept 前拒绝不计 attempt | 分别回 pending / waiting_for_config 或 waiting_for_slot，带退避，不消耗非幂等重试预算；grant 后失败不能倒退 |
 | CLI exit 5 只表示请求结果未知，不是 infra 事实 | 脚本非零默认 `script_failed`；infra 重试只认运行器结构化事实 |
 | emit 剪枝回执 `taskId:null` + `pruned`，CLI exit 0 | 事件已接收但没建 task；不伪装成功派发，回执也进幂等结果 |
 | 产物显式写本 attempt 的 `ANOTIFY_ARTIFACT_DIR`，托管复制/上传后结果引用 | 默认 7 天清系统 export/staging/副本，显式 0 永久；活动 attempt 不清理，用户 workDir 原文件不动 |

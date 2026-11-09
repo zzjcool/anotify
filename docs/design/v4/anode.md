@@ -95,8 +95,11 @@ envPassthrough:                    # 可选；把本机已有的这些变量名�
   - `perCapability.<NAME>`：对这个能力额外收紧；没列的看 `"*"`，连 `"*"` 也没有 = 不限。
   有效并发 = `min(total 的空闲槽位, perCapability[NAME] ?? "*" ?? ∞, 能力 spec.concurrency.maxPerNode)`
   ——**节点只能收紧，不能突破能力自己声明的预算**。吃满时任务停在 `pending`（`waitingReason: waiting_for_slot`），
-  不失败、不占槽位、不耗租约（`capability.md §2.3`）；派发器只在**有空闲槽位的节点**里挑（§7 D5）。
+  不失败、不新增槽位占用、不耗租约（`capability.md §2.3`）；派发器在已知有空闲槽的候选里挑（§7 D5），但该事实不代替 Node 的原子预留及 grant 事务复核。
   要加新维度（按下游、按 `workDir` 组…）就加新 key，不改 `total` 的语义。
+- **物理槽（D4-A3）**：slot 是整数 `0..N-1`（当前有效 total 对应的槽），每槽最多一个能力进程；数据库 instanceId 不是 wire slot。Node 在 accept 前预留真实空槽并回报有 presence 的 slot（0 合法），grant 必须 echo 同 slot + assignmentId，且匹配 taskId / assignmentId / proposedAttempt / slot 的 reservation 才 exec。中枢不在 dispatch 授权或改挑另一槽；dispatch.assignmentExpiresAt 给出统一初值 30s 的有界预留窗口。
+  无真实空槽 / 预算满 / 本地已有占用 → task.reject.reason=slot_unavailable，回 pending / waiting_for_slot 并有界退避，不计 attempt、不授 lease，不是 script_failed；reject 仅 stale_config | slot_unavailable。重复有效 assignment 幂等用同一预留；未 grant 且确知从未创建进程的预留才可在到期 / 断连 / assignment 失败后释放。grant 已计 attempt 不倒退，晚到 / 不匹配 grant 不执行，按现有基础设施失败 / lease 回收处理。
+  本轮移除旧 hello.instances.concurrency（每 instance 多份模型），不增加预算；limits.total / perCapability 与能力 maxPerNode 不变。预算缩小时，超出新范围的旧占用仍报告至真正回收，不假造空槽。
 - **`vars` 三处可定义、逐层优先**：本机压住节点默认值，节点默认值压住 ns 默认值；本机没写的键仍用节点默认，再落到 ns。
 - **`limits` 只有本机 + 节点两层**：没有 ns 级配额；ns 默认值不参与 limits。
   合并逐叶：`total` 覆盖，`perCapability` 递归到每个能力键；本机同名覆盖 node，未写继承。
@@ -205,7 +208,7 @@ TOOLCHAIN=/opt/go1.25
 | 层 | 检查什么 | 结果 |
 |---|---|---|
 | **写入期**（中枢，建/改能力） | `run.env` 引用的名字是否 ∈ `spec.requires.values`；`workDir` 的 `$(vars.NAME)` 是否声明在 `run.env` 里 | 400 `undeclared_need` / `undefined_env_ref`（另有 `unknown_field_path`、`non_path_field`） |
-| **派发期**（`task.accept` 前，节点匹配） | 逐个 `requires.values` 解析：本机 `vars` → 节点默认值 → 任务所属 ns 默认值；机器级 `configRevision` 与本机 applied 一致 | 该节点不匹配 → `NodesAvailable: False / ValueMissing`（message 列出名字）；配置没 apply → `ConfigPending`；revision 不一致 → `stale_config` / `task.reject` |
+| **派发期**（`task.accept` 前，节点匹配） | 逐个 `requires.values` 解析：本机 `vars` → 节点默认值 → 任务所属 ns 默认值；机器级 `configRevision` 与本机 applied 一致；按有效预算原子预留真实空槽 | 该节点不匹配 → `NodesAvailable: False / ValueMissing`（message 列出名字）；配置没 apply → `ConfigPending`；`task.reject` 仅 `stale_config`（revision 不一致）/ `slot_unavailable`（无槽），分别等待配置 / 槽位，带退避，不计 attempt、不授 lease |
 | **运行期**（`lease.grant` 后启动前） | 用本地 applied 值 + 本次下发的值重新求值；校验 `workDir`（绝对、无 `..`、已存在、是目录、解软链）、`HOME`（绝对、存在、是目录）、`requires.commands` | `workdir_unavailable` / `home_unavailable` / `missing_requirement` → 任务 `failed`；attempt 已计，确定性配置错误不自动重试 |
 
 **"已存在"是硬要求，节点不创建它**。目录不存在是**配置问题**；
@@ -287,6 +290,9 @@ conditions:
 
 设计边界：
 
+- **hello / config.applied 的槽事实**：instances 每项 slot 与 busy 都须有 presence（slot 0 有效）；缺 busy、缺 instances 或空默认数组是未知 / 无新断言，不当作 idle；重复 slot / 非法项不更新安全账本。busy=true 的已执行 / 回收中占用带 taskId / attempt / leaseId；pre-grant reservation 可带 taskId / assignmentId / proposedAttempt，不伪造 lease 或运行 attempt。config.applied 可附同型 instances，未附不更新实例账本。
+- **重启 / 重连不等于回收**：恢复或核查本机持久执行记录与进程组；未确认 reaped 保持 busy / unknown，不能因内存为空、Task 对象被删、phase 终态或新 hello 到达报 idle。busy=false 断言具体 slot 无进程，若有旧绑定，必须带相符历史 taskId / attempt / leaseId（或真实 cancel.ack）才清该旧绑定；无匹配引用的 idle 不清旧 busy。离线可撤销授权 / 停止派发，重回 online 也须先按物理事实对齐，不能立即复用仍活的旧槽。
+- **历史回收绑定**：task.cancel / cancel.ack 带 taskId / attempt / leaseId / 有 presence 的 slot，Node 只定位该历史执行；进程组真正回收后 ACK。中枢按连接 Node 身份及历史 task_attempts 核验，再 CAS 清匹配旧 occupancy，重复 ACK 幂等，不清新 attempt。旧 token 无效不妨碍自然结束 / lease 失效 / 重连后的补报回收，但不恢复旧 result / emit 授权；不要求旧 phase 仍 running 或收到当前 cancel。
 - **能力 `status` 只说"缺不缺"，不说值**。值写进能力文档就变成第二个真相，还会泄漏路径/主机信息。
 - **想看值去看节点页**：`node-a` 的 `SOURCE_ROOT = /home/ci/src`（附上报时间）。
 - **离线节点不参与匹配**：`online: false` 的节点既不满足 `requires.values`，也不提供槽位。

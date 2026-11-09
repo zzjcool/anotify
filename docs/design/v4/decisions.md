@@ -128,10 +128,10 @@
 - 只有**明确幂等**（`idempotent: true`）的任务，遇到**短暂基础设施失败 / 失联**才允许自动重试。
 - 普通脚本非零退出、确定性配置错误、超时、取消：**默认终态，不重试**。
 - 重试是**同一逻辑任务（同一 task 行）**，`attempt` 只是计数器；不新建 task_id，也不把 attempt 关系伪装成 `parentTaskId`（那是业务 emit 的父子关系）。
-  可以另存 attempt 诊断事实，但逻辑任务仍是一行。
+  历史执行绑定存于 task_attempts，不能被当前 task 行覆盖；公开 attempt 诊断投影可选，逻辑任务仍是一行。
 - 重试钉住原版本 / 原 digest / 原 params，以及本次任务的 namespace 默认输入；机器级 `local` / `node` 值按**本次执行节点**重新解析（见 D2）。
-- `attempt` 在**通过配置校验、获得槽位 + 执行租约、进入启动时**递增；排队不计 attempt、不耗租约。
-- `stale_config` 是**启动前的调度拒绝**，不是执行失败：不计 attempt、不消耗非幂等重试预算，任务回 `pending`（`waiting_for_config`）等待配置或换候选节点，带退避，不能热循环。
+- `attempt` 在**通过配置校验、grant 事务绑定槽位并授执行租约时**递增；排队不计 attempt、不耗租约，grant 后未能启动也不倒减 attempt。
+- `task.reject` 封闭为 **stale_config | slot_unavailable**，都是 accept / grant 前调度拒绝，不是执行失败：不计 attempt、不授 lease、不消耗非幂等重试预算，任务回 pending（分别 waiting_for_config / waiting_for_slot），带有界退避或换候选，不能热循环。missing_requirement / workDir / HOME / export 错误仍在 grant 后计 attempt failed，不进入 reject。
 - **取消 / 放弃**：立即停止授权、下发停止并停止续租；节点 TERM 进程组，5s 后 KILL；槽位只在**进程组真正回收后**释放，不能数据库改终态就当节点空闲。
   原因要分清 `cancelled_by_user` / `abandoned_by_user` / 基础设施 `abandoned`。
 - 租约技术默认（全目录一致，可按一致性调整参数，但不能一套文档一个值）：
@@ -154,6 +154,17 @@
   - 幂等记录不继承到不同版本实现（换版本 / 换参数不是同一逻辑任务）。
 - `timeoutSec` 从**子进程启动**起算；默认 `0` 只表示“不设本地执行 timeout”，
   仍有运行任务续租，不是“固定总时长”。
+
+### D4-A3 正式实现期增补：物理 slot / 历史回收接缝
+
+**原因**：落实既有 D4“授权停止不等于进程退出、槽位真实回收”的必要数据相关性与容量拒绝；父正式裁决见 `.pi-orchestrator/v4/SLOT-HANDOFF.md`。这是技术接缝，不是用户新增产品功能，不重开 D1～D6 其它选择或 A2 env / stdout / error producer 语义。
+
+- Node 在 accept 前原子预留真实空槽：slot 为整数 0..N-1，每槽单能力进程，0 有效、必填有 presence；数据库 instanceId 不是 wire slot。候选容量只是提示，grant 事务复核 Node / ns 权限、预算、assignment 有效期与 accepted slot 未绑其它占用，不另选槽。dispatch 不授 lease / token / slot 执行权，新增 assignmentExpiresAt，双方用同一初值 30s 的窗口；grant echo 同 slot + assignmentId，Node 匹配 taskId / assignmentId / proposedAttempt / slot 的 reservation 才 exec。
+- 同一有效 assignment 重复 dispatch / accept 幂等回同一预留，不多占槽，不同 assignment 不共享。无真实空槽 / 预算满 / 本地占用用 slot_unavailable，回 pending / waiting_for_slot 并有界退避，不伪造 stale_config 或更多 reject 码。pending 预留只有未授权且本机确知从未创建进程，才可在到期 / 断连 / assignment 失败后释放；过期 assignment 不得新 grant。晚到 / 不匹配 grant 不执行；已 grant 计 attempt 走既有结构化基础设施失败 / lease 回收，不倒减 attempt、不伪装 pre-accept 拒绝。
+- task_attempts 必须保留历史 node / task / attempt / lease / slot 与 grant 时固定的机器执行快照，不被当前 task 行覆盖；namespace 仍在逻辑任务首次解析时钉住。task.cancel / cancel.ack 增 leaseId 与有 presence 的 slot，Node 定位完整历史绑定，不能停止同 task 的新 attempt；真正 reaped 后才 ACK。中枢验证连接 Node 身份与历史执行绑定，仅 CAS 清匹配旧 occupancy，重复 ACK 幂等，无匹配不清槽。旧 token 不 current 不妨碍自然结束 / lease 失效 / 重连后补报物理回收，也不要求旧执行仍 running 或收到当前 cancel；但旧 result / emit 仍拒绝，旧 ACK 不清新槽。
+- hello.instances.slot 与 busy 有 presence；缺 busy / 缺 instances / 空默认数组是未知或无新断言，重复 slot / 非法记录不更新安全账本。busy=true 的执行 / 回收中占用给 taskId / attempt / leaseId，pre-grant reservation 可给 taskId / assignmentId / proposedAttempt，不伪造 lease；busy=false 清旧绑定须匹配历史 task / attempt / lease 或真实 cancel.ack。config.applied 可附同型 instances，未附不更新账本。
+- 删除旧每 instance 多份模型的 wire concurrency，不增加预算，limits.total / perCapability / 能力 maxPerNode 不变；预算缩小仍报告超范围存量至回收。重启 / 重连核查持久执行记录与进程组，未确认 reaped 保持 busy / unknown，不能以 phase 终态、内存为空、Task 对象删除或新 hello 证明空闲。离线可停止授权 / 派发，回 online 先按真实占用对齐，不能复用仍活旧槽。
+- 仅增补既有帧字段与物理事实；不新增 bootId / occupancySeq 控制框架、新帧、paths 锁、权限系统、业务配额或全局 at-most-once 承诺；公开 Task / root Node instances 沿既有只读诊断，协议事实不误变资源 API。
 
 **明确不做**
 

@@ -258,8 +258,10 @@ R == 当前值       → 写，并给该行分配新的 resourceVersion
 **运行 / 派发期**（`capability.md §6.2`）：
 `target_not_declared` `missing_target` `token_invalid` `task_not_running` `emit_id_conflict`
 `downstream_missing` `param_missing` `param_schema` `param_type` `workdir_unavailable` `home_unavailable` `missing_requirement`
-`files_escape` `artifact_export_invalid` `script_failed` `stale_config` `cancelled_by_user` `abandoned_by_user`
+`files_escape` `artifact_export_invalid` `script_failed` `stale_config` `slot_unavailable` `cancelled_by_user` `abandoned_by_user`
 `node_lost` `lease_expired` `infra_transient` `max_attempts_exceeded`
+
+此处是跨域码索引，不意味着每个码都用于 HTTP `Status`：`stale_config` / `slot_unavailable` 是 Node 的启动前调度拒绝，公开 Task 读接口只沿等待态诊断，不把它们记成执行失败。
 
 **源**（`source.md §6`，`kind` 命名）：
 `invalid_source_kind` `invalid_source_config` `source_name_used` `source_kind_immutable`
@@ -290,13 +292,14 @@ R == 当前值       → 写，并给该行分配新的 resourceVersion
 > `status.observed.pruned[].reason` 的观察原因，不是任务失败码，不进上表。`no_target` 只表示**源**的 `targets` 为空
 > （事件 200 接收、不建 task）；emit 没给 `to` 是 `missing_target`（400 / CLI 2，不派发），不是剪枝。
 
-**三个错误域不要混用响应体**：
+**错误域不要混用响应体**：
 
 | 域 | 载体 | 例子 |
 |---|---|---|
 | 公共 API | `Status.reason` | `unknown_field_path` / `emit_id_conflict` |
 | 本地 emit 网关 | `{error, message}` + CLI 退出码 | `target_not_declared` / `emit_unreachable` |
 | 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `artifact_export_invalid` / `workdir_unavailable` / `home_unavailable` |
+| Node 启动前调度拒绝 | Node 协议 task.reject.reason；资源 API 投影 Task 等待态 | 封闭为 stale_config / slot_unavailable，分别 waiting_for_config / waiting_for_slot，不是 result.error / script_failed，也不自动转成 HTTP Status |
 
 码字面可以复用，但响应形状、HTTP 语义与判定时机不同；剪枝不是 4xx。
 
@@ -598,7 +601,7 @@ status:
   appliedHash: "sha256:…"
   effectiveNamespaces: [default, team-a]
   agentVersion: "1.4.9"
-  instances: [ { id: 1, task: "cron-9f2-013", busy: true } ]
+  instances: [ { id: 1, task: "cron-9f2-013", busy: true } ] # 沿用只读诊断投影；id 不是 wire slot
   lastSeenAt: "..."
 ```
 
@@ -610,6 +613,7 @@ status:
 | `spec.vars` / `spec.limits` | 机器级默认值；本机同键优先；`limits` 只有本机 + 节点两层 |
 | `anode.yaml` 私有字段 | `server` / `token` / `listen` / `envPassthrough` **不进 Node spec、不上报快照**；任务用到的名字可在任务 `envDiagnostics` 标 `passthrough`，不回报完整名单/值 |
 | `status.machineVars` | 机器级合并结果；**没有一份扁平 `effectiveVars`**。要看某个 ns 的有效值：`GET /v1/nodes/{name}?namespace=team-a`，响应额外给 `status.namespaceVars` + `status.effectiveVars` 并标 `context.namespace` |
+| `status.instances` | 沿公开只读诊断字段，不作为用户分配 / 清槽接口。slot presence、reservation、历史 lease 与 reaped 事实属于 Node 协议（capability.md §8.5 / anode.md §6），不新增资源 API 字段 / 动作；缺失快照不是 idle，phase / 重连不证明回收，旧回收只清匹配旧占用 |
 | drain / upgrade | 沿用现有动作端点（`POST /nodes/{name}/drain`、`/upgrade`）；不改成 spec 字段 |
 | 节点配置 | `GET/PUT /v1/nodes/{name}/config`（节点默认值 wrapper，见下方）；批量 `POST /v1/nodes/config/batch`（`config.md §4.4`） |
 
@@ -680,7 +684,7 @@ status:
   waitingReason: null          # waiting_for_slot | retry_backoff | waiting_for_config | null
   nextAttemptAt: null          # waitingReason 非空时的下一次尝试时间（退避）
   nodeName: anode-1            # 当前 attempt 的执行节点
-  instanceId: 2
+  instanceId: 2                # 内部实例键的只读诊断，不是 Node wire slot
   attempt: 1                   # 配置校验在 accept 前；lease.grant 生效、进入启动时递增
   maxAttempts: 3               # 总尝试次数（含第一次）
   leaseExpiresAt: "..."
@@ -705,8 +709,9 @@ status:
 | 不可 `POST` / `DELETE` | Task 只由派发器 / ingress 产生；要停用 `POST …/tasks/{name}/cancel` / `/abandon`（沿用现有动作） |
 | `spec` 不可变 | 改 `capability` / `params` → 400 `immutable_field`（否则“重试的是另一次执行”） |
 | 重试 | **同一逻辑 task 一行**，钉住 version / digest / params 与本次 ns 输入；配置校验在 `task.accept` 前，`attempt` 只在中枢 `lease.grant` 生效、进入启动时递增；排队不计。换节点时 `local` / `node` 值按新节点重新解析，`configRevision` 跟当前 attempt；`parentRef` 是业务 emit 父子，不是 attempt 父子 |
-| stale_config | `task.accept` 前的调度拒绝：不计 attempt、不授 lease、不消耗非幂等预算，`phase=pending` / `waitingReason=waiting_for_config`，带退避或换候选 |
-| 取消/放弃 | `POST …/tasks/{name}/cancel` / `/abandon`；原因区分 `cancelled_by_user` / `abandoned_by_user`；节点 TERM/KILL 进程组，槽位在进程组回收后释放 |
+| stale_config / slot_unavailable | Node 在 accept / grant 前分别因配置过期 / 无真实空槽拒绝；不计 attempt、不授 lease、不消耗非幂等预算。公开 phase=pending，waitingReason 分别 waiting_for_config / waiting_for_slot，带有界退避或换候选；不记为 script_failed，也不扩更多 reject 码 |
+| 预留与 grant | dispatch 不授执行权；accept 先预留，grant 事务生效才计 attempt。未 grant 且确知无进程的预留可到期释放；晚到 / 不匹配 grant 不执行，但已计 attempt 不倒退。slot / assignmentExpiresAt / 回收绑定是 Node 协议，不新增 Task 可写字段 |
+| 取消/放弃 | 沿用 POST …/tasks/{name}/cancel / abandon；原因区分 cancelled_by_user / abandoned_by_user。phase 终态不证明物理回收；Node 按历史 attempt / lease / slot TERM/KILL 并真实 ACK 后，中枢验证连接身份与历史绑定，仅清匹配旧占用，不清新 attempt / 不恢复旧 result 或 emit 授权 |
 | 诊断 | `status.envDiagnostics` 只有名字 + 来源（`local` / `node` / `namespace` / `passthrough` / `builtin`），**没有 `resolvedEnv` 实际值**；执行输入快照是内部载体，不公开成 env 值 |
 | 保留 | 终态后 **30 天**（`retention.taskTtlSec`）；活动任务不清理；被任务钉住的版本/事实按引用完整性保留 |
 | 保留 | 日志 / 产物 / 系统创建目录默认 7 天（`resultTtlSec` 默认 `604800`）；显式 `0` 永久；用户 `workDir` 永不删 |

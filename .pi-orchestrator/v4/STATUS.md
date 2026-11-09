@@ -109,4 +109,12 @@ T2已提交7a7e96e四页诊断阶段（实际测试/相邻回归通过，extensi
 
 A3精确slot/reap wire缺口已父冻结（SLOT-HANDOFF.md），scout核slot0based/int且GrantLease实际方法名：Node accept前预留slot回present标识、grant原子echo同slot+assignment，dispatch共享assignmentExpiresAt30s不授执行权；cancel/ack历史leaseId+slot、oldreap只释旧occupancy不放旧result/emit；Hello slot/busy presence未知不idle、configapplied可实例快照，旧wireconcurrency移除；reject仅stale_config|slot_unavailable（正式扩闭集，启动前noattempt）。不采纳bootId/occupancySeq多级计数框架，T3唯一proto作者当前同writer实现、T1安装settle后S消费，5doc父writer同步；不减预算/测试、不引新资源。T2c1无需等内部wire，c2实例未知不假闲。
 
+20:07 T3真实阻塞不是空延提醒：组长session停livecollect28m，leaf anode-n2b最后19:31裸go run探针保父pipe写端未关却ReadAll读端，必等EOF无timeout。父仅abort/continue组长collect保context/code，20:10status已活跃；要求directowner立刻abort或必要stopforce单writer工具、确认结束才freshclose，不父越级/不kill全部Go。父只读完整runtime snapshot `/tmp/anotify-v4-anode-runtime-checkpoint/` 防丢代码；已有真实Pipe端接反根因需修并保持完整测试/A3新字段。当前是否leaf已终止等实际receipt，未宣称解决。
+
+G1-5b已8497d7f落地真实安装/回执历史（7store/source/schema/test路径），工具collectunknown不伪verified。父隔离archive独立storebuild+v4test/playbook/sourcespec测试+vetPASS（log/tmp/v4-core-g15b-parent-independent-verify.log），非全队gate。纪律：worker违规push隔离origin/pi-subagent/v4-core-runtime-775b3657@8497d7f，localtracking已核；父不删远端/forcepush/合main，worker退役不再写。根checkout未集成子队产品、settings保护。下一S消费A3修机器snapshot/历史reap与真实busy，不被安装PASS掩盖。
+
+T1 fresh-context安排已批准：原centurion长context接近上限，S唯一writer先safe settle（或具体记录T3实际code依赖），收齐任务/测试/接口/映射/完整未完成列表并cleanbranch checkpoint；之后不再派大writer，明确BLOCKED needs fresh-context continuation，由父subagent新隔离T1接同范围/原3门禁。没有强制compact工具，不编造resume能fresh；不重读278K日志/不合部分未验代码。详CORE-RECOVERY.md。A3技术已closed，等的是T3 Go纯delta，不等父投票。
+
+20:22 T1 L2实际核查：S task_attempts/机器snapshot/slots/reap/GC及新测试有真实diff，centurion仍活跃但context约314K；父提醒延30m不改验收，要求S收口后只safe checkpoint并fresh恢复，不再此上下文派大G1-6/G2/G3。A3docworker返回ok:false仅因原verify任务文字未展示，父已按派发原命令独立执行PASS、11JSON例子通过；fresh v4-a3-slot-doc-review ok:true/0findings，5doc规则无互斥/onlystale残留，准备提交并给各队只读支持。工具attested rejected如实记录不伪verified，文档由父独立验收。
+
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

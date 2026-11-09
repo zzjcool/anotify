@@ -255,13 +255,13 @@ ns 默认值**没有独立的同步帧**：它随任务派发帧下发（§2.4�
 anode                                          中枢
  │ hello {name, token, namespaces,               │
  │        localVars, localLimits,                │
- │        appliedRevision, appliedHash} ────────►│
+ │        appliedRevision, appliedHash, instances?} ─►│
  │                                                │  该 Node 已由 API 登记；首见 → 只建这台的配置默认行（可为空），不建 Node 本体
  │ ◄────── welcome {configRevision, nodeVars,    │
  │                  nodeLimits, namespaces}      │
  │ 本机 + 节点默认值逐键合并 → 落盘 anode.applied.yaml → 生效
  │ ─ config.applied {revision, hash,             │
- │                   machineVars} ──────────────►│
+ │                   machineVars, instances?} ───►│
  │                                                        │
  │ … 中枢里有人改了这台的默认值 …                        │
  │ ◄────── config.changed {revision}   （只是提示，不是命令）
@@ -276,7 +276,8 @@ anode                                          中枢
 | **落盘** | `anode.applied.yaml`（0600，人不要改）= **本机 + 节点默认值**的合并结果；任务执行读它 |
 | **原子** | 写临时文件 + `rename`；写成功前不切生效值 |
 | **幂等** | 同一 revision 重复下发 → 直接用，不重复写盘 |
-| **任务绑定** | `task.dispatch` 带 `configRevision`（机器级）+ `namespaceVarsRevision`（ns 级）；节点在 **`task.accept` 之前**校验机器级 revision，不一致 → `task.reject`（`stale_config`），中枢换台节点重派；ns 值随任务自带，节点不校验历史 ns revision。`task.dispatch` 不授 lease/执行权 |
+| **任务绑定** | `task.dispatch` 带 `configRevision`（机器级）+ `namespaceVarsRevision`（ns 级）及 `assignmentExpiresAt`（统一窗口，初值 30s），不授 lease / token / slot 执行权。Node 在 accept 前校验机器级 revision 并原子预留真实空槽；revision 不一致 → stale_config，无槽 / 预算满 → slot_unavailable，均走 task.reject、不计 attempt；ns 值随任务自带，不校验历史 ns revision。grant 回显同一 slot + assignmentId，匹配 reservation 后才能执行 |
+| **实例事实** | hello / config.applied 可带同型 instances 快照（capability.md §8.5）：slot 与 busy 有 presence，缺失 / 空默认数组不是 idle；未附 instances 不更新账本。busy=false 清已有绑定须匹配历史 task / attempt / lease，配置 apply / phase / 新 hello 本身不证明进程已回收；预算缩小仍报告存量占用，不假释放 |
 | **重启** | 启动读 `anode.applied.yaml` → `hello` 带上 `appliedRevision` → 中枢回当前 revision → 不同才拉 |
 
 帧里还带 `namespaces`：`hello` 带上本机申报的列表，`welcome` 回 `Node.spec.namespaces`（授权列表）；
@@ -347,8 +348,8 @@ envPassthrough:               # 只写变量名；值留在本机，不回传中
 | 层 | 时机 | 检查 | 结果 |
 |---|---|---|---|
 | 写入期 | 建/改能力、写配置 | 名字形状、`requires.values` 声明 | 400，当场拒 |
-| 派发期 | `task.accept` 之前 | 按 §2.1 逐键解析 `requires.values`：local → node → 任务 ns；机器级配置是否已 apply；能力所属 ns 是否 ∈ 节点生效 ns（§4.1）；**机器级 `configRevision` 与本机 applied 一致** | 不匹配 → `NodesAvailable` condition；`stale_config` → `task.reject`，回 pending / 换节点（**不计 attempt、不授 lease**） |
-| 运行期 | `lease.grant` 后、启动前 | 本地重新求值 `workDir`（绝对路径、已存在、是目录、无 `..`、符号链接解后仍在允许目录）、`HOME`（绝对、存在、是目录）、`requires.commands` | `workdir_unavailable` / `home_unavailable` / `missing_requirement` → `failed`（此 attempt 已计，确定性配置错误不自动重试） |
+| 派发期 | `task.accept` 之前 | 按 §2.1 逐键解析 `requires.values`：local → node → 任务 ns；机器级配置是否已 apply；能力所属 ns 是否 ∈ 节点生效 ns（§4.1）；**机器级 `configRevision` 与本机 applied 一致**；Node 按有效预算原子预留真实空槽 | 不匹配 → `NodesAvailable` condition；`task.reject` 封闭为 `stale_config` / `slot_unavailable`，分别回 pending / waiting_for_config 或 waiting_for_slot，带有界退避 / 换节点（**不计 attempt、不授 lease**） |
+| 运行期 | `lease.grant` 后、启动前 / 结果收集 | 本地重新求值 `workDir`（绝对路径、已存在、是目录、无 `..`、符号链接解后仍在允许目录）、`HOME`（绝对、存在、是目录）、`requires.commands`；A2 export 校验沿既定规则 | `workdir_unavailable` / `home_unavailable` / `missing_requirement` / `artifact_export_invalid` → `failed`（attempt 已计，确定性错误不自动重试，不进入 task.reject）；晚到 / 不匹配 grant 不执行，但已计 attempt 不倒退 |
 
 写入期**不校验「中枢有没有这个值」**：值也可能来自本机或节点默认，三层都没有是派发期才知道的事。
 
@@ -363,7 +364,8 @@ envPassthrough:               # 只写变量名；值留在本机，不回传中
 | `resource_version_conflict` | 写入 | 配置写带的 `resourceVersion` 已旧（409；不再使用 `if_revision` 字段） |
 | `ValueMissing` | 部署 | 三层都没有这个值（`NodesAvailable` condition 的 reason；message 带任务 ns） |
 | `ConfigPending` | 部署 | 该节点的机器级配置还没 apply |
-| `stale_config` | 调度（`task.accept` 前） | 任务带的机器级 `configRevision` 与本地 applied 不一致；不计 attempt、不授 lease、不当作执行失败，回 pending / 换候选 |
+| `stale_config` | 调度（`task.accept` 前） | 任务带的机器级 configRevision 与本地 applied 不一致；不计 attempt、不授 lease、不当作执行失败，回 pending / waiting_for_config，带退避 / 换候选 |
+| `slot_unavailable` | 调度（`task.accept` 前） | 无真实空槽、本地有占用或预算满；不伪装成 stale_config，不计 attempt、不授 lease，回 pending / waiting_for_slot，带有界退避，不是 script_failed |
 | `override_stale` | 展示 | 上层默认值更新，被下层值压住的节点 / ns 未更新（不是错误） |
 
 ---
