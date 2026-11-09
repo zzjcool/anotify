@@ -19,8 +19,10 @@
 //
 // 帧集合 = 配置 5 帧（config.md §4.2）+ 执行 10 帧（capability.md §8.5）+ 保留的
 // 运维 4 帧（upgrade / upgrade_ack / logs_request / logs_response）+ 人工部署 2 帧
-// （capability.deploy / capability.deployed，父 CONTRACT rev2 §7）。
+// （capability.deploy / capability.deployed，父 CONTRACT rev2 §7）+ emit 转发 2 帧
+// （task.emit 上行 / task.emit.ack 下行，父 E1 批准）。
 //
 // 本包不含传输与会话状态机：ws 只做收发、心跳与背压；派发、租约、结果、emit 的
-// 权威判定都在 route/store。
+// 权威判定都在 route/store。emit 的有界等待 / 超时 / 迟到 ack 丢弃在节点网关，
+// 本包只提供帧、字段校验与方向。
 package protocol

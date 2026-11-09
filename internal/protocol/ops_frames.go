@@ -88,6 +88,13 @@ type UpgradeAckFrame struct {
 // 与 UpgradeFrame.URLPath 共用同一个常量：改路径只有一处，帧和 HTTP 路由不会漂移。
 const NodeBinaryPath = "/v1/node/binary"
 
+// NodeStreamPath 是节点 WS 连接的路径（GET 升级到 WebSocket，拼在中枢根上）。
+//
+// 与 NodeBinaryPath 并列：地址字符串是协议的一部分，节点与中枢必须用同一个常量，
+// 不要在两侧各写一份字面量。中枢侧的空 path 或 "/" 归一为本值；显式配置的
+// 反代前缀原样使用（本常量只是标准默认值），不提供 legacy 别名。
+const NodeStreamPath = "/v1/node/stream"
+
 // LogsRequestFrame 让节点回报某条任务的日志尾巴。
 //
 // 帧里只有「问的是哪条任务的哪一次请求」：任务入参（params）属于内部输入快照，

@@ -44,7 +44,8 @@ func Encode(f any) ([]byte, error) {
 //
 // 返回的具体类型是 *HelloFrame / *WelcomeFrame / … / *CancelAckFrame /
 // *UpgradeFrame / *LogsResponseFrame / *CapabilityDeployFrame /
-// *CapabilityDeployedFrame；未知 type 返回 (*UnknownFrame, nil)。
+// *CapabilityDeployedFrame / *TaskEmitFrame / *TaskEmitAckFrame；未知 type 返回
+// (*UnknownFrame, nil)。
 func Decode(data []byte) (any, error) {
 	frameType, err := FrameTypeOf(data)
 	if err != nil {
@@ -98,6 +99,11 @@ func Decode(data []byte) (any, error) {
 		target = &CapabilityDeployFrame{}
 	case FrameCapabilityDeployed:
 		target = &CapabilityDeployedFrame{}
+	// emit 转发 2 帧（父 E1 批准；复用 HTTP EmitRequest 的解释）。
+	case FrameTaskEmit:
+		target = &TaskEmitFrame{}
+	case FrameTaskEmitAck:
+		target = &TaskEmitAckFrame{}
 	default:
 		return &UnknownFrame{Type: frameType}, nil
 	}
@@ -120,6 +126,7 @@ var upstreamFrames = []string{
 	FrameUpgradeAck,
 	FrameLogsResponse,
 	FrameCapabilityDeployed,
+	FrameTaskEmit,
 }
 
 // downstreamFrames 是中枢 → 节点的帧。
@@ -134,6 +141,7 @@ var downstreamFrames = []string{
 	FrameUpgrade,
 	FrameLogsRequest,
 	FrameCapabilityDeploy,
+	FrameTaskEmitAck,
 }
 
 // IsUpstream 判定帧类型是否是节点 → 中枢方向。

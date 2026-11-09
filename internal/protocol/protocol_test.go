@@ -38,13 +38,15 @@ func TestFrameNamesAreWireValues(t *testing.T) {
 		"logs_response":       FrameLogsResponse,
 		"capability.deploy":   FrameCapabilityDeploy,
 		"capability.deployed": FrameCapabilityDeployed,
+		"task.emit":           FrameTaskEmit,
+		"task.emit.ack":       FrameTaskEmitAck,
 	}
 	for wire, got := range want {
 		if got != wire {
 			t.Fatalf("帧类型常量 = %q，期望 %q", got, wire)
 		}
 	}
-	// 21 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
+	// 23 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
 	up, down := UpstreamFrames(), DownstreamFrames()
 	if len(up)+len(down) != len(want) {
 		t.Fatalf("上行 %d + 下行 %d 帧，期望共 %d", len(up), len(down), len(want))
@@ -267,6 +269,23 @@ func frameFixtures() []frameFixture {
 				Error:      "",
 			},
 			wantKeys: []string{"digest", "name", "namespace", "requestId", "status", "type", "version"},
+		},
+		{
+			name: "task.emit",
+			frame: &TaskEmitFrame{
+				Type: FrameTaskEmit, RequestID: "ereq_1", TaskID: "tsk_1", Attempt: 2,
+				LeaseID: "lease_1", AttemptToken: "tok_1",
+				EmitRequest: EmitRequest{To: "fixer", ID: "review-a.go", Data: json.RawMessage(`{"file":"a.go"}`)},
+			},
+			wantKeys: []string{"attempt", "attemptToken", "data", "id", "leaseId", "requestId", "taskId", "to", "type"},
+		},
+		{
+			name: "task.emit.ack",
+			frame: &TaskEmitAckFrame{
+				Type: FrameTaskEmitAck, RequestID: "ereq_1", TaskID: "tsk_1", Attempt: 2, HTTPStatus: 200,
+				Response: &EmitResponse{TaskID: testStr("tsk_2"), EventID: "evt_1", To: "fixer", Version: 2},
+			},
+			wantKeys: []string{"attempt", "httpStatus", "requestId", "response", "taskId", "type"},
 		},
 	}
 }
