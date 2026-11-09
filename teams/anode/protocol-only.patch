@@ -1,0 +1,966 @@
+diff --git a/internal/protocol/codec.go b/internal/protocol/codec.go
+index 6d28619..f375d0a 100644
+--- a/internal/protocol/codec.go
++++ b/internal/protocol/codec.go
+@@ -43,7 +43,8 @@ func Encode(f any) ([]byte, error) {
+ // Decode 把收到的 JSON 解码成对应类型的帧。
+ //
+ // 返回的具体类型是 *HelloFrame / *WelcomeFrame / … / *CancelAckFrame /
+-// *UpgradeFrame / *LogsResponseFrame；未知 type 返回 (*UnknownFrame, nil)。
++// *UpgradeFrame / *LogsResponseFrame / *CapabilityDeployFrame /
++// *CapabilityDeployedFrame；未知 type 返回 (*UnknownFrame, nil)。
+ func Decode(data []byte) (any, error) {
+ 	frameType, err := FrameTypeOf(data)
+ 	if err != nil {
+@@ -92,6 +93,11 @@ func Decode(data []byte) (any, error) {
+ 		target = &LogsRequestFrame{}
+ 	case FrameLogsResponse:
+ 		target = &LogsResponseFrame{}
++	// 部署 2 帧（人工部署接缝）。
++	case FrameCapabilityDeploy:
++		target = &CapabilityDeployFrame{}
++	case FrameCapabilityDeployed:
++		target = &CapabilityDeployedFrame{}
+ 	default:
+ 		return &UnknownFrame{Type: frameType}, nil
+ 	}
+@@ -113,6 +119,7 @@ var upstreamFrames = []string{
+ 	FrameCancelAck,
+ 	FrameUpgradeAck,
+ 	FrameLogsResponse,
++	FrameCapabilityDeployed,
+ }
+ 
+ // downstreamFrames 是中枢 → 节点的帧。
+@@ -126,6 +133,7 @@ var downstreamFrames = []string{
+ 	FrameTaskCancel,
+ 	FrameUpgrade,
+ 	FrameLogsRequest,
++	FrameCapabilityDeploy,
+ }
+ 
+ // IsUpstream 判定帧类型是否是节点 → 中枢方向。
+diff --git a/internal/protocol/deploy_frames.go b/internal/protocol/deploy_frames.go
+new file mode 100644
+index 0000000..e781a16
+--- /dev/null
++++ b/internal/protocol/deploy_frames.go
+@@ -0,0 +1,87 @@
++package protocol
++
++// 部署接缝的 2 个帧（父 CONTRACT rev2 §7；设计文档尚无独立章节，见 PROTOCOL-HANDOFF）。
++//
++// 能力投递是**人工部署动作**的传输接缝，不是自收敛控制器：中枢只把「部署意图」
++// 发给一台在线节点；节点按自己的身份认证，用
++//
++//	GET /v1/node/capabilities/{digest}   （Authorization: Bearer <node token>）
++//
++// 取完整、不可变的 Artifact 文档，校验 spec / digest / 路径后原子缓存，再回
++// capability.deployed。**Artifact 整份文档不进 WS 帧**：帧有 1 MiB 软上限，脚本
++// 包体不该挤进受软上限约束的通道；WS 只传递「要哪个 digest」和「结果如何」。
++//
++// 两帧的 refs 是同一组四元组 {namespace,name,version,digest}（共享 DeployRefs，
++// 不是两份各自手写的 tag）：中枢据此把回执配回部署意图，不靠 name 猜版本。
++// 离线节点在重连时重放**已明确请求**的未完成部署由中枢负责；不新增帧、不做
++// 通用 reconcile。
++const (
++	// FrameCapabilityDeploy 是中枢 → 节点的部署通知（只带 refs，不带包体）。
++	FrameCapabilityDeploy = "capability.deploy"
++	// FrameCapabilityDeployed 是节点 → 中枢的部署回执（applied / failed）。
++	FrameCapabilityDeployed = "capability.deployed"
++)
++
++// DeployStatus 是 capability.deployed 的状态（封闭集合）。
++type DeployStatus string
++
++const (
++	// DeployStatusApplied 表示节点已获取、校验并缓存该 digest。
++	DeployStatusApplied DeployStatus = "applied"
++	// DeployStatusFailed 表示获取/校验/缓存失败（error 带人话原因）。
++	DeployStatusFailed DeployStatus = "failed"
++)
++
++// Valid 报告状态是否是封闭集合里的值。
++func (s DeployStatus) Valid() bool {
++	switch s {
++	case DeployStatusApplied, DeployStatusFailed:
++		return true
++	}
++	return false
++}
++
++// DeployRefs 是部署意图/回执共享的身份四元组。
++//
++// 匿名嵌入两帧，wire 上**平铺**成 `namespace` / `name` / `version` / `digest`
++// 四个顶层键（与父契约的字段表逐字对应），Go 侧只有一份定义，避免「两个帧各写
++// 一遍 tag，改一处漏一处」。
++type DeployRefs struct {
++	// Namespace 是能力所属命名空间（中枢只能部署该节点被授权且明确指向的 ns）。
++	Namespace string `json:"namespace"`
++	// Name 是能力名（谱系，不是某个版本）。
++	Name string `json:"name"`
++	// Version 是解析到的版本号（省略 version 的能力由内容寻址分配）。
++	Version int `json:"version"`
++	// Digest 是部署身份（artifact.Digest，`sha256:<hex>`）：节点按它 GET 包体，
++	// 拿到后必须自己重算并比对，不信任传输内容。
++	Digest string `json:"digest"`
++}
++
++// CapabilityDeployFrame 是中枢 → 节点的部署请求。
++//
++// 它是在线节点上的一次显式人工部署；离线节点不靠这一帧，重连后由中枢重放
++// 已请求的部署。**不带 Artifact 内容**（也没有 files 字段）。
++type CapabilityDeployFrame struct {
++	Type string `json:"type"`
++	// RequestID 是部署请求 id（中枢生成；回执按它配对，同一次重放保持同一个）。
++	RequestID string `json:"requestId"`
++	// DeployRefs 平铺为 namespace/name/version/digest。
++	DeployRefs
++}
++
++// CapabilityDeployedFrame 是节点 → 中枢的部署回执。
++//
++// refs 必须与请求**完全相同**（Namespace/Name/Version/Digest 四元组）；
++// 中枢按 requestId 配对并用 refs 校验没有被篡改的部署目标。
++type CapabilityDeployedFrame struct {
++	Type string `json:"type"`
++	// RequestID 对应 capability.deploy.requestId。
++	RequestID string `json:"requestId"`
++	// DeployRefs 与请求同一组 refs。
++	DeployRefs
++	// Status 是 applied（已获取、校验并缓存）或 failed。
++	Status DeployStatus `json:"status"`
++	// Error 是失败的人话原因（status=failed 时非空；成功时省略，不进任何判断）。
++	Error string `json:"error,omitempty"`
++}
+diff --git a/internal/protocol/deploy_frames_test.go b/internal/protocol/deploy_frames_test.go
+new file mode 100644
+index 0000000..80b0a12
+--- /dev/null
++++ b/internal/protocol/deploy_frames_test.go
+@@ -0,0 +1,212 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/json"
++	"reflect"
++	"sort"
++	"strings"
++	"testing"
++)
++
++// TestDeployFrameNamesAndDirection 钉死部署两帧的 wire 名与方向：
++// capability.deploy 中枢 → 节点（下行），capability.deployed 节点 → 中枢（上行）。
++func TestDeployFrameNamesAndDirection(t *testing.T) {
++	if FrameCapabilityDeploy != "capability.deploy" {
++		t.Fatalf("FrameCapabilityDeploy = %q", FrameCapabilityDeploy)
++	}
++	if FrameCapabilityDeployed != "capability.deployed" {
++		t.Fatalf("FrameCapabilityDeployed = %q", FrameCapabilityDeployed)
++	}
++	if !IsDownstream(FrameCapabilityDeploy) {
++		t.Fatal("capability.deploy 必须是中枢 → 节点（下行）")
++	}
++	if IsUpstream(FrameCapabilityDeploy) {
++		t.Fatal("capability.deploy 不可能是上行")
++	}
++	if !IsUpstream(FrameCapabilityDeployed) {
++		t.Fatal("capability.deployed 必须是节点 → 中枢（上行）")
++	}
++	if IsDownstream(FrameCapabilityDeployed) {
++		t.Fatal("capability.deployed 不可能是下行")
++	}
++	// 两帧必须都进方向表（Decode 的 type 集合 = 上行 ∪ 下行）。
++	if !containsString(UpstreamFrames(), FrameCapabilityDeployed) {
++		t.Fatal("上行方向表缺 capability.deployed")
++	}
++	if !containsString(DownstreamFrames(), FrameCapabilityDeploy) {
++		t.Fatal("下行方向表缺 capability.deploy")
++	}
++}
++
++// deployKeys 把帧编码后的顶层 wire 键取出来排序。
++func deployKeys(t *testing.T, frame any) []string {
++	t.Helper()
++	raw, err := Encode(frame)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	var m map[string]json.RawMessage
++	if err := json.Unmarshal(raw, &m); err != nil {
++		t.Fatalf("unmarshal %T: %v", frame, err)
++	}
++	keys := make([]string, 0, len(m))
++	for k := range m {
++		keys = append(keys, k)
++	}
++	sort.Strings(keys)
++	return keys
++}
++
++// TestCapabilityDeployFrameWire capability.deploy 只带 requestId + refs 四元组：
++// 不夹带 Artifact 包体（files）、不夹带执行/租约字段。
++func TestCapabilityDeployFrameWire(t *testing.T) {
++	frame := &CapabilityDeployFrame{
++		Type:      FrameCapabilityDeploy,
++		RequestID: "dep_1",
++		DeployRefs: DeployRefs{
++			Namespace: "default",
++			Name:      "review",
++			Version:   3,
++			Digest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
++		},
++	}
++	gotKeys := deployKeys(t, frame)
++	wantKeys := []string{"digest", "name", "namespace", "requestId", "type", "version"}
++	if !reflect.DeepEqual(gotKeys, wantKeys) {
++		t.Fatalf("capability.deploy 键 = %v，期望 %v", gotKeys, wantKeys)
++	}
++	raw, err := Encode(frame)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	// Artifact 整份文档不走 WS：包里没有 files / script / artifacts 这类字段。
++	for _, banned := range []string{`"files"`, `"script"`, `"artifacts"`, `"yaml"`} {
++		if bytes.Contains(raw, []byte(banned)) {
++			t.Fatalf("capability.deploy 不该带 %s：%s", banned, raw)
++		}
++	}
++
++	decoded, err := Decode(raw)
++	if err != nil {
++		t.Fatalf("Decode: %v", err)
++	}
++	got, ok := decoded.(*CapabilityDeployFrame)
++	if !ok {
++		t.Fatalf("Decode 返回 %T，期望 *CapabilityDeployFrame", decoded)
++	}
++	if !reflect.DeepEqual(*got, *frame) {
++		t.Fatalf("往返丢了字段：\n got %+v\nwant %+v", *got, *frame)
++	}
++}
++
++// TestCapabilityDeployedFrameWire capability.deployed 的 refs 与请求同形，
++// 另带 status（applied|failed）与可选 error（空时省略）。
++func TestCapabilityDeployedFrameWire(t *testing.T) {
++	refs := DeployRefs{Namespace: "team-a", Name: "fixer", Version: 2, Digest: "sha256:abcd"}
++	failed := &CapabilityDeployedFrame{
++		Type:       FrameCapabilityDeployed,
++		RequestID:  "dep_1",
++		DeployRefs: refs,
++		Status:     DeployStatusFailed,
++		Error:      "digest mismatch",
++	}
++	gotKeys := deployKeys(t, failed)
++	wantKeys := []string{"digest", "error", "name", "namespace", "requestId", "status", "type", "version"}
++	if !reflect.DeepEqual(gotKeys, wantKeys) {
++		t.Fatalf("capability.deployed 键 = %v，期望 %v", gotKeys, wantKeys)
++	}
++	raw, err := Encode(failed)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	decoded, err := Decode(raw)
++	if err != nil {
++		t.Fatalf("Decode: %v", err)
++	}
++	got, ok := decoded.(*CapabilityDeployedFrame)
++	if !ok {
++		t.Fatalf("Decode 返回 %T，期望 *CapabilityDeployedFrame", decoded)
++	}
++	if !reflect.DeepEqual(*got, *failed) {
++		t.Fatalf("往返丢了字段：\n got %+v\nwant %+v", *got, *failed)
++	}
++
++	// 成功回执省略 error（wire 上真的没有这个键）。
++	applied := &CapabilityDeployedFrame{
++		Type:       FrameCapabilityDeployed,
++		RequestID:  "dep_2",
++		DeployRefs: refs,
++		Status:     DeployStatusApplied,
++	}
++	appliedRaw, err := Encode(applied)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	if bytes.Contains(appliedRaw, []byte(`"error"`)) {
++		t.Fatalf("applied 回执不该带 error：%s", appliedRaw)
++	}
++	gotKeys = deployKeys(t, applied)
++	wantKeys = []string{"digest", "name", "namespace", "requestId", "status", "type", "version"}
++	if !reflect.DeepEqual(gotKeys, wantKeys) {
++		t.Fatalf("applied 回执键 = %v，期望 %v", gotKeys, wantKeys)
++	}
++}
++
++// TestDeployStatus 状态封闭集合：只有 applied / failed。
++func TestDeployStatus(t *testing.T) {
++	if DeployStatusApplied != "applied" || DeployStatusFailed != "failed" {
++		t.Fatalf("部署状态 wire 值漂了：%q / %q", DeployStatusApplied, DeployStatusFailed)
++	}
++	for _, s := range []DeployStatus{DeployStatusApplied, DeployStatusFailed} {
++		if !s.Valid() {
++			t.Fatalf("%q 应当合法", s)
++		}
++	}
++	for _, s := range []DeployStatus{"", "applying", "APPLIED", "success", "ok"} {
++		if s.Valid() {
++			t.Fatalf("%q 不该通过 Valid()", s)
++		}
++	}
++}
++
++// TestDeployFramesShareRefs 请求与回执的 refs 必须逐字段相同（同一四元组），
++// requestId 也是同一个：中枢据此把回执配回部署意图，不靠 name 猜版本。
++func TestDeployFramesShareRefs(t *testing.T) {
++	refs := DeployRefs{
++		Namespace: "default",
++		Name:      "review",
++		Version:   5,
++		Digest:    "sha256:0123",
++	}
++	req := &CapabilityDeployFrame{Type: FrameCapabilityDeploy, RequestID: "dep_9", DeployRefs: refs}
++	ack := &CapabilityDeployedFrame{Type: FrameCapabilityDeployed, RequestID: "dep_9", DeployRefs: refs, Status: DeployStatusApplied}
++
++	reqRaw, err := Encode(req)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	ackRaw, err := Encode(ack)
++	if err != nil {
++		t.Fatalf("Encode: %v", err)
++	}
++	reqDecoded, err := Decode(reqRaw)
++	if err != nil {
++		t.Fatalf("Decode: %v", err)
++	}
++	ackDecoded, err := Decode(ackRaw)
++	if err != nil {
++		t.Fatalf("Decode: %v", err)
++	}
++	reqGot := reqDecoded.(*CapabilityDeployFrame)
++	ackGot := ackDecoded.(*CapabilityDeployedFrame)
++	if reqGot.DeployRefs != ackGot.DeployRefs {
++		t.Fatalf("请求/回执 refs 不一致：%+v vs %+v", reqGot.DeployRefs, ackGot.DeployRefs)
++	}
++	if reqGot.RequestID != ackGot.RequestID {
++		t.Fatalf("请求/回执 requestId 不一致：%q vs %q", reqGot.RequestID, ackGot.RequestID)
++	}
++	if !strings.Contains(string(reqRaw), `"digest":"sha256:0123"`) {
++		t.Fatalf("digest 必须原样出现在 wire 上：%s", reqRaw)
++	}
++}
+diff --git a/internal/protocol/doc.go b/internal/protocol/doc.go
+index 00c168a..4127680 100644
+--- a/internal/protocol/doc.go
++++ b/internal/protocol/doc.go
+@@ -18,7 +18,8 @@
+ // 和「节点报了个空」分不开。
+ //
+ // 帧集合 = 配置 5 帧（config.md §4.2）+ 执行 10 帧（capability.md §8.5）+ 保留的
+-// 运维 4 帧（upgrade / upgrade_ack / logs_request / logs_response）。
++// 运维 4 帧（upgrade / upgrade_ack / logs_request / logs_response）+ 人工部署 2 帧
++// （capability.deploy / capability.deployed，父 CONTRACT rev2 §7）。
+ //
+ // 本包不含传输与会话状态机：ws 只做收发、心跳与背压；派发、租约、结果、emit 的
+ // 权威判定都在 route/store。
+diff --git a/internal/protocol/env.go b/internal/protocol/env.go
+new file mode 100644
+index 0000000..2c27f52
+--- /dev/null
++++ b/internal/protocol/env.go
+@@ -0,0 +1,48 @@
++package protocol
++
++import "strings"
++
++// 任务环境里的 ANOTIFY_ 契约变量（capability.md §4.0）。
++//
++// 这张表就是**全部** ANOTIFY_ 变量，一个不多：能力脚本只靠这四个名字拿到
++// 本次任务的端点、令牌、任务 id 与参数。守护进程注入，中枢从不直接下发它们；
++// 名字是协议的一部分，节点/中枢/能力三方都从这里取，禁止各写一份字面量。
++const (
++	// EnvEmitEndpoint 是本次任务的 emit 端点（协议 + 地址 + 端口，如
++	// `http://127.0.0.1:41237`）。脚本拼 `/emit` 后 POST。
++	EnvEmitEndpoint = "ANOTIFY_EMIT_ENDPOINT"
++	// EnvTaskToken 是本次任务的高熵令牌：`Authorization: Bearer <token>`。
++	// 它按 token → task 归属请求，不进 argv、不进 payload。
++	EnvTaskToken = "ANOTIFY_TASK_TOKEN"
++	// EnvTaskID 是本次任务 id（只读，用于日志关联）。
++	EnvTaskID = "ANOTIFY_TASK_ID"
++	// EnvParamPrefix 是任务参数变量的前缀（`ANOTIFY_PARAM_<NAME>`）。
++	EnvParamPrefix = "ANOTIFY_PARAM_"
++)
++
++// ParamEnvName 是参数名 → 任务环境变量名的归一函数（capability.md §2.3）：
++// 全大写、非 [A-Z0-9] 的字符替换成 '_'，**不插大小写边界**。
++//
++//	sha       → ANOTIFY_PARAM_SHA
++//	repo-url  → ANOTIFY_PARAM_REPO_URL
++//	repoUrl   → ANOTIFY_PARAM_REPOURL
++//	参数      → ANOTIFY_PARAM__（每个 rune 一个 '_'）
++//
++// 归一可能撞名（`sha` / `SHA` / `Sha`，`repo-url` / `repo.url`）：**撞名不在这里
++// 报错**，写入期由 artifact 用同一个函数检测并拒绝（param_env_collision）。
++// 只有一份规则：artifact 的校验与节点的注入必须调用本函数，禁止各写一份。
++func ParamEnvName(name string) string {
++	var b strings.Builder
++	b.Grow(len(EnvParamPrefix) + len(name))
++	for _, r := range name {
++		switch {
++		case r >= 'a' && r <= 'z':
++			b.WriteRune(r - 'a' + 'A')
++		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
++			b.WriteRune(r)
++		default:
++			b.WriteByte('_')
++		}
++	}
++	return EnvParamPrefix + b.String()
++}
+diff --git a/internal/protocol/env_test.go b/internal/protocol/env_test.go
+new file mode 100644
+index 0000000..c6d9db5
+--- /dev/null
++++ b/internal/protocol/env_test.go
+@@ -0,0 +1,136 @@
++package protocol
++
++import (
++	"strings"
++	"testing"
++)
++
++// TestEnvContractVariables 钉死四个 ANOTIFY_ 契约变量的字面值（capability.md §4.0）。
++//
++// 这些名字是协议：能力脚本、节点注入、文档三方必须逐字一致；改一个字就是
++// 「脚本读不到端点」。所以连值一起快照，不接受「反正 Go 常量两边都用」。
++func TestEnvContractVariables(t *testing.T) {
++	if EnvEmitEndpoint != "ANOTIFY_EMIT_ENDPOINT" {
++		t.Fatalf("EnvEmitEndpoint = %q", EnvEmitEndpoint)
++	}
++	if EnvTaskToken != "ANOTIFY_TASK_TOKEN" {
++		t.Fatalf("EnvTaskToken = %q", EnvTaskToken)
++	}
++	if EnvTaskID != "ANOTIFY_TASK_ID" {
++		t.Fatalf("EnvTaskID = %q", EnvTaskID)
++	}
++	if EnvParamPrefix != "ANOTIFY_PARAM_" {
++		t.Fatalf("EnvParamPrefix = %q", EnvParamPrefix)
++	}
++	// 全部以 ANOTIFY_ 开头；参数变量名必须真的挂在这个前缀上。
++	for _, name := range []string{EnvEmitEndpoint, EnvTaskToken, EnvTaskID, EnvParamPrefix} {
++		if !strings.HasPrefix(name, "ANOTIFY_") {
++			t.Fatalf("%q 不是 ANOTIFY_ 契约变量", name)
++		}
++	}
++	if got := ParamEnvName("x"); !strings.HasPrefix(got, EnvParamPrefix) {
++		t.Fatalf("ParamEnvName 没用 EnvParamPrefix：%q", got)
++	}
++}
++
++// TestParamEnvNameUppercase 大写规则：a-z 抬成 A-Z；已经是 A-Z 的原样保留。
++func TestParamEnvNameUppercase(t *testing.T) {
++	cases := map[string]string{
++		"sha":  "ANOTIFY_PARAM_SHA",
++		"SHA":  "ANOTIFY_PARAM_SHA",
++		"Sha":  "ANOTIFY_PARAM_SHA",
++		"repo": "ANOTIFY_PARAM_REPO",
++	}
++	for in, want := range cases {
++		if got := ParamEnvName(in); got != want {
++			t.Fatalf("ParamEnvName(%q) = %q，期望 %q", in, got, want)
++		}
++	}
++}
++
++// TestParamEnvNameDigits 数字原样保留，且不插任何分隔。
++func TestParamEnvNameDigits(t *testing.T) {
++	cases := map[string]string{
++		"sha256": "ANOTIFY_PARAM_SHA256",
++		"v2":     "ANOTIFY_PARAM_V2",
++		"3d":     "ANOTIFY_PARAM_3D",
++		"a1b2":   "ANOTIFY_PARAM_A1B2",
++	}
++	for in, want := range cases {
++		if got := ParamEnvName(in); got != want {
++			t.Fatalf("ParamEnvName(%q) = %q，期望 %q", in, got, want)
++		}
++	}
++}
++
++// TestParamEnvNameSymbols 符号规则：非 [A-Z0-9] 的字符替换成一个 '_'。
++func TestParamEnvNameSymbols(t *testing.T) {
++	cases := map[string]string{
++		"repo-url": "ANOTIFY_PARAM_REPO_URL",
++		"a.b c":    "ANOTIFY_PARAM_A_B_C",
++		"a/b":      "ANOTIFY_PARAM_A_B",
++		"x--y":     "ANOTIFY_PARAM_X__Y",
++		"_lead":    "ANOTIFY_PARAM__LEAD",
++		"":         "ANOTIFY_PARAM_",
++		// 非 ASCII 逐个 rune 换一个 '_'（多字节 rune 不变成多个下划线）。
++		"参数":    "ANOTIFY_PARAM___",
++		"naïve": "ANOTIFY_PARAM_NA_VE",
++	}
++	for in, want := range cases {
++		if got := ParamEnvName(in); got != want {
++			t.Fatalf("ParamEnvName(%q) = %q，期望 %q", in, got, want)
++		}
++	}
++}
++
++// TestParamEnvNameNoCamelBoundary 不插 camel 大小写边界：
++// repoUrl → REPOURL（不是 REPO_URL），workDirPath → WORKDIRPATH。
++//
++// 这条与 artifact 的私有实现逐字一致（artifact_test.go 的 TestParamEnvName
++// 有同样的样例）：两处必须同一行为，否则「写入期算的 env 名」和「运行期注入的
++// env 名」会分叉，脚本读不到参数。
++func TestParamEnvNameNoCamelBoundary(t *testing.T) {
++	cases := map[string]string{
++		"repoUrl":     "ANOTIFY_PARAM_REPOURL",
++		"workDirPath": "ANOTIFY_PARAM_WORKDIRPATH",
++	}
++	for in, want := range cases {
++		if got := ParamEnvName(in); got != want {
++			t.Fatalf("ParamEnvName(%q) = %q，期望 %q（不插 camel 边界）", in, got, want)
++		}
++	}
++	// 反证：带符号的形式才会出现下划线，两者不能混为一谈。
++	if ParamEnvName("repoUrl") == ParamEnvName("repo-url") {
++		t.Fatal("repoUrl 与 repo-url 归一后不该相同（不插 camel 边界）")
++	}
++}
++
++// TestParamEnvNameCollisions 归一撞名是**预期行为**：函数不报错、不消歧，
++// 由 artifact 在写入期用同一个函数检测并拒绝（param_env_collision）。
++//
++// 共享函数只负责规则一致；「谁覆盖谁」这种隐式行为不允许进入运行期。
++func TestParamEnvNameCollisions(t *testing.T) {
++	groups := [][]string{
++		{"sha", "SHA", "Sha"},
++		{"repo-url", "repo.url", "repo_url", "repo url", "REPO-URL"},
++		{"a-b", "a_b", "a b", "a.b"},
++	}
++	for _, group := range groups {
++		want := ParamEnvName(group[0])
++		for _, name := range group[1:] {
++			if got := ParamEnvName(name); got != want {
++				t.Fatalf("%q 与 %q 应当归一撞名：%q != %q", group[0], name, want, got)
++			}
++		}
++	}
++	// 不撞的名字不能被误并。
++	for _, pair := range [][2]string{
++		{"sha", "sha1"},
++		{"repo-url", "repoUrl"},
++		{"a", "A1"},
++	} {
++		if ParamEnvName(pair[0]) == ParamEnvName(pair[1]) {
++			t.Fatalf("%q 与 %q 不该撞名", pair[0], pair[1])
++		}
++	}
++}
+diff --git a/internal/protocol/hash.go b/internal/protocol/hash.go
+new file mode 100644
+index 0000000..1cc6403
+--- /dev/null
++++ b/internal/protocol/hash.go
+@@ -0,0 +1,86 @@
++package protocol
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++)
++
++// MachineConfigHash 是机器级配置（本机 ⊕ 节点默认值）的内容哈希。
++//
++// 它只回答一个问题：「两台机器/两个时刻的**生效机器配置**是不是同一份」。
++// 因此输入只有两样东西：
++//
++//   - vars：机器级生效变量（local > node 合并结果）；
++//   - limits：机器级生效并发预算（local > node 逐叶合并结果，缺省 total=1）。
++//
++// 明确**不包含** revision（版本号变化不代表内容变化）、namespace 默认值
++// （ns 级、随任务内存下发，不进 applied）、token、宿主凭证、envPassthrough
++// （完整名单只在本机，不上报）。两侧（中枢算期望值 / 节点算 appliedHash）
++// 只调用这一份实现，禁止第二份 hash 算法。
++//
++// 归一化后取 canonical JSON（`vars` / `limits` 两个键，map 键由
++// encoding/json 排序），SHA-256 输出 `sha256:<64 hex>`（与 artifact 的 digest
++// 同前缀）。空 map 与 nil 一律写成 `{}`；`limits.total` 未设置（0）归一为
++// 缺省 1；`limits.perCapability` 同理缺省 `{}`。
++//
++// 负的 total 不是「未设置」，无法归一成缺省值：返回 error（正常配置在
++// 写入期就被拒，这里只是不静默吞掉非法输入）。
++func MachineConfigHash(vars map[string]string, limits Limits) (string, error) {
++	canonical, err := machineConfigCanonicalJSON(vars, limits)
++	if err != nil {
++		return "", err
++	}
++	sum := sha256.Sum256(canonical)
++	return "sha256:" + hex.EncodeToString(sum[:]), nil
++}
++
++// machineConfigDoc 是 hash 的 canonical 文档形状。
++//
++// 字段顺序即字节顺序：`vars` 在前、`limits` 在后；两级 map 的键都由
++// encoding/json 按字节序排序，所以同一内容永远得到同一串字节。
++type machineConfigDoc struct {
++	Vars   map[string]string   `json:"vars"`
++	Limits machineConfigLimits `json:"limits"`
++}
++
++// machineConfigLimits 是 canonical 文档里的 limits。
++//
++// 两个字段都**不加 omitempty**：空 perCapability 必须写成 `{}`（而不是省略或
++// null），否则「没配 perCapability」和「配了个空的」会在 hash 上分叉。
++type machineConfigLimits struct {
++	Total         int            `json:"total"`
++	PerCapability map[string]int `json:"perCapability"`
++}
++
++// machineConfigCanonicalJSON 产出 hash 的输入字节（归一 + canonical 排序）。
++func machineConfigCanonicalJSON(vars map[string]string, limits Limits) ([]byte, error) {
++	total := limits.Total
++	if total == 0 {
++		total = DefaultLimitsTotal
++	}
++	if total < 0 {
++		return nil, fmt.Errorf("protocol: MachineConfigHash: limits.total 不能为负：%d", total)
++	}
++	// 复制一份：不把调用方的 nil / map 别名带进编码，也避免后续被并发改。
++	normVars := make(map[string]string, len(vars))
++	for name, value := range vars {
++		normVars[name] = value
++	}
++	perCapability := make(map[string]int, len(limits.PerCapability))
++	for name, value := range limits.PerCapability {
++		perCapability[name] = value
++	}
++	raw, err := json.Marshal(machineConfigDoc{
++		Vars: normVars,
++		Limits: machineConfigLimits{
++			Total:         total,
++			PerCapability: perCapability,
++		},
++	})
++	if err != nil {
++		return nil, fmt.Errorf("protocol: MachineConfigHash: 编码 canonical JSON: %w", err)
++	}
++	return raw, nil
++}
+diff --git a/internal/protocol/hash_test.go b/internal/protocol/hash_test.go
+new file mode 100644
+index 0000000..6a466b2
+--- /dev/null
++++ b/internal/protocol/hash_test.go
+@@ -0,0 +1,221 @@
++package protocol
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"sort"
++	"strings"
++	"testing"
++)
++
++// goldenMachineHash 独立于实现算一遍期望值：喂**手写的** canonical JSON，
++// 避免「实现自己算一遍再和自己比」的假绿。
++func goldenMachineHash(canonical string) string {
++	sum := sha256.Sum256([]byte(canonical))
++	return "sha256:" + hex.EncodeToString(sum[:])
++}
++
++// TestMachineConfigHashGolden 钉死 canonical 文档形状与 golden hash。
++//
++// canonical JSON 只有两个顶层键 `vars` / `limits`；两级 map 的键按字节序排序；
++// 空 map/nil 写成 `{}` 而不是 null；total 未设置归一成缺省 1。
++func TestMachineConfigHashGolden(t *testing.T) {
++	cases := []struct {
++		name      string
++		vars      map[string]string
++		limits    Limits
++		canonical string
++	}{
++		{
++			name:      "nil vars + 零值 limits 归一",
++			vars:      nil,
++			limits:    Limits{},
++			canonical: `{"vars":{},"limits":{"total":1,"perCapability":{}}}`,
++		},
++		{
++			name:      "空 map 与 nil 等价",
++			vars:      map[string]string{},
++			limits:    Limits{Total: 1, PerCapability: map[string]int{}},
++			canonical: `{"vars":{},"limits":{"total":1,"perCapability":{}}}`,
++		},
++		{
++			name: "vars 与 perCapability 键排序",
++			vars: map[string]string{"B": "2", "A": "1"},
++			limits: Limits{
++				Total:         8,
++				PerCapability: map[string]int{"review": 2, "*": 1},
++			},
++			canonical: `{"vars":{"A":"1","B":"2"},"limits":{"total":8,"perCapability":{"*":1,"review":2}}}`,
++		},
++		{
++			name:      "HTML 字符按 encoding/json 默认转义（两侧同字节）",
++			vars:      map[string]string{"A": "a<b&c"},
++			limits:    Limits{Total: 2},
++			canonical: `{"vars":{"A":"a\u003cb\u0026c"},"limits":{"total":2,"perCapability":{}}}`,
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got, err := MachineConfigHash(tc.vars, tc.limits)
++			if err != nil {
++				t.Fatalf("MachineConfigHash: %v", err)
++			}
++			want := goldenMachineHash(tc.canonical)
++			if got != want {
++				t.Fatalf("hash = %s，期望 %s（canonical %s）", got, want, tc.canonical)
++			}
++			// 同时钉 canonical 字节本身：hash 对了但形状漂了同样是断约。
++			raw, err := machineConfigCanonicalJSON(tc.vars, tc.limits)
++			if err != nil {
++				t.Fatalf("machineConfigCanonicalJSON: %v", err)
++			}
++			if string(raw) != tc.canonical {
++				t.Fatalf("canonical JSON = %s，期望 %s", raw, tc.canonical)
++			}
++		})
++	}
++}
++
++// TestMachineConfigHashDefaults 显式缺省值 == 未设置（total:0 归一成 1）。
++func TestMachineConfigHashDefaults(t *testing.T) {
++	unset, err := MachineConfigHash(nil, Limits{})
++	if err != nil {
++		t.Fatalf("MachineConfigHash: %v", err)
++	}
++	explicit, err := MachineConfigHash(nil, Limits{Total: DefaultLimitsTotal})
++	if err != nil {
++		t.Fatalf("MachineConfigHash: %v", err)
++	}
++	if unset != explicit {
++		t.Fatalf("total 未设置与显式缺省值必须同 hash：%s != %s", unset, explicit)
++	}
++	if DefaultLimitsTotal != 1 {
++		t.Fatalf("DefaultLimitsTotal = %d，期望 1", DefaultLimitsTotal)
++	}
++}
++
++// TestMachineConfigHashCanonicalKeys 只含 vars/limits 两个顶层键，绝不夹带
++// revision / ns 默认 / token / 凭证 / envPassthrough（那些不进机器配置内容）。
++func TestMachineConfigHashCanonicalKeys(t *testing.T) {
++	raw, err := machineConfigCanonicalJSON(
++		map[string]string{"SOURCE_ROOT": "/srv/src"},
++		Limits{Total: 4, PerCapability: map[string]int{"review": 2}},
++	)
++	if err != nil {
++		t.Fatalf("machineConfigCanonicalJSON: %v", err)
++	}
++	var top map[string]json.RawMessage
++	if err := json.Unmarshal(raw, &top); err != nil {
++		t.Fatalf("canonical JSON 不可解析：%v", err)
++	}
++	keys := make([]string, 0, len(top))
++	for k := range top {
++		keys = append(keys, k)
++	}
++	sort.Strings(keys)
++	if len(keys) != 2 || keys[0] != "limits" || keys[1] != "vars" {
++		t.Fatalf("canonical 顶层键 = %v，期望只有 [limits vars]", keys)
++	}
++	var limits map[string]json.RawMessage
++	if err := json.Unmarshal(top["limits"], &limits); err != nil {
++		t.Fatalf("limits 不可解析：%v", err)
++	}
++	limitKeys := make([]string, 0, len(limits))
++	for k := range limits {
++		limitKeys = append(limitKeys, k)
++	}
++	sort.Strings(limitKeys)
++	if len(limitKeys) != 2 || limitKeys[0] != "perCapability" || limitKeys[1] != "total" {
++		t.Fatalf("limits 键 = %v，期望 [perCapability total]", limitKeys)
++	}
++	for _, banned := range []string{"revision", "namespace", "secret", "token", "envPassthrough", "credentials"} {
++		if strings.Contains(string(raw), banned) {
++			t.Fatalf("canonical JSON 夹带了 %q：%s", banned, raw)
++		}
++	}
++}
++
++// TestMachineConfigHashOrderInsensitive map 迭代顺序不得影响结果。
++func TestMachineConfigHashOrderInsensitive(t *testing.T) {
++	vars := map[string]string{"Z": "26", "A": "1", "M": "13", "B": "2"}
++	limits := Limits{Total: 8, PerCapability: map[string]int{"review": 2, "fix": 1, "*": 3}}
++	want, err := MachineConfigHash(vars, Limits{Total: 8, PerCapability: map[string]int{"review": 2, "fix": 1, "*": 3}})
++	if err != nil {
++		t.Fatalf("MachineConfigHash: %v", err)
++	}
++	for i := 0; i < 32; i++ {
++		// 每次重建 map（Go 的 map 迭代顺序随机，重建后编码路径必须仍稳定）。
++		v := map[string]string{}
++		for k, val := range vars {
++			v[k] = val
++		}
++		l := Limits{Total: limits.Total, PerCapability: map[string]int{}}
++		for k, val := range limits.PerCapability {
++			l.PerCapability[k] = val
++		}
++		got, err := MachineConfigHash(v, l)
++		if err != nil {
++			t.Fatalf("MachineConfigHash: %v", err)
++		}
++		if got != want {
++			t.Fatalf("第 %d 次 hash 漂了：%s != %s", i, got, want)
++		}
++	}
++}
++
++// TestMachineConfigHashContentSensitive 内容变了 hash 必须变（否则 drift 判不出来）。
++func TestMachineConfigHashContentSensitive(t *testing.T) {
++	base, err := MachineConfigHash(map[string]string{"A": "1"}, Limits{Total: 4})
++	if err != nil {
++		t.Fatalf("MachineConfigHash: %v", err)
++	}
++	variants := []struct {
++		name   string
++		vars   map[string]string
++		limits Limits
++	}{
++		{"变量值变", map[string]string{"A": "2"}, Limits{Total: 4}},
++		{"变量名变", map[string]string{"B": "1"}, Limits{Total: 4}},
++		{"多一个变量", map[string]string{"A": "1", "B": "1"}, Limits{Total: 4}},
++		{"total 变", map[string]string{"A": "1"}, Limits{Total: 5}},
++		{"perCapability 变", map[string]string{"A": "1"}, Limits{Total: 4, PerCapability: map[string]int{"review": 2}}},
++	}
++	for _, v := range variants {
++		got, err := MachineConfigHash(v.vars, v.limits)
++		if err != nil {
++			t.Fatalf("%s: MachineConfigHash: %v", v.name, err)
++		}
++		if got == base {
++			t.Fatalf("%s 之后 hash 没变（%s）", v.name, got)
++		}
++	}
++}
++
++// TestMachineConfigHashNegativeTotal 负 total 不是「未设置」，不静默归一。
++func TestMachineConfigHashNegativeTotal(t *testing.T) {
++	if _, err := MachineConfigHash(nil, Limits{Total: -1}); err == nil {
++		t.Fatal("负 total 必须报错")
++	}
++}
++
++// TestMachineConfigHashFormat 输出形如 sha256:<64 hex>（与 artifact digest 同前缀）。
++func TestMachineConfigHashFormat(t *testing.T) {
++	got, err := MachineConfigHash(map[string]string{"A": "1"}, Limits{Total: 2})
++	if err != nil {
++		t.Fatalf("MachineConfigHash: %v", err)
++	}
++	if !strings.HasPrefix(got, "sha256:") {
++		t.Fatalf("hash 前缀不对：%s", got)
++	}
++	hexPart := strings.TrimPrefix(got, "sha256:")
++	if len(hexPart) != 64 {
++		t.Fatalf("hash hex 长度 = %d，期望 64（%s）", len(hexPart), got)
++	}
++	if _, err := hex.DecodeString(hexPart); err != nil {
++		t.Fatalf("hash 不是 hex：%v", err)
++	}
++	if len(got) != len("sha256:")+64 {
++		t.Fatalf("hash 总长 = %d", len(got))
++	}
++}
+diff --git a/internal/protocol/protocol_test.go b/internal/protocol/protocol_test.go
+index 3cd3047..1f5c3a0 100644
+--- a/internal/protocol/protocol_test.go
++++ b/internal/protocol/protocol_test.go
+@@ -17,32 +17,34 @@ import (
+ // TestFrameNamesAreWireValues 钉死帧类型名：字符串本身就是协议，改一个字就是断连。
+ func TestFrameNamesAreWireValues(t *testing.T) {
+ 	want := map[string]string{
+-		"hello":          FrameHello,
+-		"welcome":        FrameWelcome,
+-		"config.changed": FrameConfigChanged,
+-		"config.get":     FrameConfigGet,
+-		"config.applied": FrameConfigApplied,
+-		"task.dispatch":  FrameTaskDispatch,
+-		"task.accept":    FrameTaskAccept,
+-		"task.reject":    FrameTaskReject,
+-		"lease.grant":    FrameLeaseGrant,
+-		"lease.renew":    FrameLeaseRenew,
+-		"lease.ack":      FrameLeaseAck,
+-		"task.result":    FrameTaskResult,
+-		"result.ack":     FrameResultAck,
+-		"task.cancel":    FrameTaskCancel,
+-		"cancel.ack":     FrameCancelAck,
+-		"upgrade":        FrameUpgrade,
+-		"upgrade_ack":    FrameUpgradeAck,
+-		"logs_request":   FrameLogsRequest,
+-		"logs_response":  FrameLogsResponse,
++		"hello":               FrameHello,
++		"welcome":             FrameWelcome,
++		"config.changed":      FrameConfigChanged,
++		"config.get":          FrameConfigGet,
++		"config.applied":      FrameConfigApplied,
++		"task.dispatch":       FrameTaskDispatch,
++		"task.accept":         FrameTaskAccept,
++		"task.reject":         FrameTaskReject,
++		"lease.grant":         FrameLeaseGrant,
++		"lease.renew":         FrameLeaseRenew,
++		"lease.ack":           FrameLeaseAck,
++		"task.result":         FrameTaskResult,
++		"result.ack":          FrameResultAck,
++		"task.cancel":         FrameTaskCancel,
++		"cancel.ack":          FrameCancelAck,
++		"upgrade":             FrameUpgrade,
++		"upgrade_ack":         FrameUpgradeAck,
++		"logs_request":        FrameLogsRequest,
++		"logs_response":       FrameLogsResponse,
++		"capability.deploy":   FrameCapabilityDeploy,
++		"capability.deployed": FrameCapabilityDeployed,
+ 	}
+ 	for wire, got := range want {
+ 		if got != wire {
+ 			t.Fatalf("帧类型常量 = %q，期望 %q", got, wire)
+ 		}
+ 	}
+-	// 19 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
++	// 21 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
+ 	up, down := UpstreamFrames(), DownstreamFrames()
+ 	if len(up)+len(down) != len(want) {
+ 		t.Fatalf("上行 %d + 下行 %d 帧，期望共 %d", len(up), len(down), len(want))
+@@ -248,6 +250,24 @@ func frameFixtures() []frameFixture {
+ 			},
+ 			wantKeys: []string{"bytes", "error", "requestId", "stderr", "stdout", "taskId", "truncated", "type"},
+ 		},
++		{
++			name: "capability.deploy",
++			frame: &CapabilityDeployFrame{
++				Type: FrameCapabilityDeploy, RequestID: "dep_1",
++				DeployRefs: DeployRefs{Namespace: "default", Name: "review", Version: 3, Digest: "sha256:aa"},
++			},
++			wantKeys: []string{"digest", "name", "namespace", "requestId", "type", "version"},
++		},
++		{
++			name: "capability.deployed",
++			frame: &CapabilityDeployedFrame{
++				Type: FrameCapabilityDeployed, RequestID: "dep_1",
++				DeployRefs: DeployRefs{Namespace: "default", Name: "review", Version: 3, Digest: "sha256:aa"},
++				Status:     DeployStatusApplied,
++				Error:      "",
++			},
++			wantKeys: []string{"digest", "name", "namespace", "requestId", "status", "type", "version"},
++		},
+ 	}
+ }
+ 
