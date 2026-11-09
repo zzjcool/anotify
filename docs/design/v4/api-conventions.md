@@ -258,7 +258,7 @@ R == 当前值       → 写，并给该行分配新的 resourceVersion
 **运行 / 派发期**（`capability.md §6.2`）：
 `target_not_declared` `missing_target` `token_invalid` `task_not_running` `emit_id_conflict`
 `downstream_missing` `param_missing` `param_schema` `param_type` `workdir_unavailable` `home_unavailable` `missing_requirement`
-`files_escape` `script_failed` `stale_config` `cancelled_by_user` `abandoned_by_user`
+`files_escape` `artifact_export_invalid` `script_failed` `stale_config` `cancelled_by_user` `abandoned_by_user`
 `node_lost` `lease_expired` `infra_transient` `max_attempts_exceeded`
 
 **源**（`source.md §6`，`kind` 命名）：
@@ -296,7 +296,7 @@ R == 当前值       → 写，并给该行分配新的 resourceVersion
 |---|---|---|
 | 公共 API | `Status.reason` | `unknown_field_path` / `emit_id_conflict` |
 | 本地 emit 网关 | `{error, message}` + CLI 退出码 | `target_not_declared` / `emit_unreachable` |
-| 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `workdir_unavailable` / `home_unavailable` |
+| 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `artifact_export_invalid` / `workdir_unavailable` / `home_unavailable` |
 
 码字面可以复用，但响应形状、HTTP 语义与判定时机不同；剪枝不是 4xx。
 

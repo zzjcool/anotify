@@ -181,6 +181,13 @@
 - v4 **不新增中枢凭证管理资源**（无 secrets 资源、无 at-rest 加密需求、无下发密钥）；透传的只是宿主已有权限。
 - 这只是**宿主权限执行**，不是 sandbox：系统不承诺阻止脚本把密钥写进 stdout / 日志；能力作者对输出负责，文档必须写明。
 
+**A2 实现期细则（正式修订，尚不代表实现完成）**
+
+- **修订原因与授权**：用户已授权协调者安排技术细则；既有产物能力需要真实生产入口，固定用户 `workDir/.anotify-artifacts` 存在就拒绝会破坏第二次任务、重试和共享目录并发，故不采用。A2 正式新增基础契约变量 `ANOTIFY_ARTIFACT_DIR`，不是原清单已经包含它；原 `ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN` / `ANOTIFY_TASK_ID` / `ANOTIFY_PARAM_<NAME>` 保留，参数前缀不变，D1～D6 产品语义不变。
+- 节点在系统自有 `exportRoot` 下为每个 `(taskId, attempt)` 创建唯一目录（0700、唯一随机后缀），以新变量提供绝对路径；脚本显式写普通文件（例子见 `capability.md §4.0`）。节点仅安全枚举本 attempt 目录（禁止符号链接/非普通文件/越界）→ 按 A1 限额托管复制、上传 → `task.result.artifacts` 引用；空目录才可真实返回 `[]`，创建/注入/枚举失败或安全边界违规须以 `artifact_export_invalid` 或 `files_escape` 明确 `failed`，不得假空。
+- `run.env` / `envPassthrough` 不得覆盖新变量或任何 `ANOTIFY_` 基础契约变量；新变量不进 `vars`、配置 hash 或公开 env 值快照。不新增 `run.artifacts`、第四 CLI、魔法 stdout 或额外宿主 env 继承。
+- 同 task 跨 attempt/旧 attempt 重叠与多 task 共用 `workDir` 均使用不同导出目录，不混旧产物；不在用户目录内创建/删除专用导出目录。沿 V4-D6 的 result TTL 默认 7 天、显式 `0` 永久，只清系统自有 export/staging/托管副本，活动 attempt/上传不清理，用户 `workDir` 原文件不动。
+
 **明确不做**
 
 - 不做完整宿主 env 继承；不做凭证 UI / 下发 / 轮换；不声称能防恶意脚本外泄。

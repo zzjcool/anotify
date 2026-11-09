@@ -492,7 +492,7 @@ Content-Type: application/json
 { "to": "fixer", "data": { "file": "a.go" } }
 ```
 
-**`ANOTIFY_` 契约变量只有这些，一个不多**（`PATH` / `HOME` 基线与 `envPassthrough` 见下）：
+**`ANOTIFY_` 基础契约变量如下（A2 在原清单外正式新增 `ANOTIFY_ARTIFACT_DIR`，原变量与参数前缀不变）**（`PATH` / `HOME` 基线与 `envPassthrough` 见下）：
 
 | 变量 | 值 |
 |---|---|
@@ -500,8 +500,18 @@ Content-Type: application/json
 | `ANOTIFY_TASK_TOKEN` | 本次任务的高熵令牌 |
 | `ANOTIFY_TASK_ID` | 本次任务 id（只读，用于日志关联） |
 | `ANOTIFY_PARAM_<NAME>` | `spec.params` 的顶层字段（规则见 §2.3） |
+| `ANOTIFY_ARTIFACT_DIR` | 节点在系统自有 `exportRoot` 下为本 `(taskId, attempt)` 创建的唯一导出目录（0700）的绝对路径 |
 
-任务环境是**干净的**：除上表与 `run.env` 显式声明的键以外，不继承节点/守护进程的完整环境。
+**产物登记入口（V4-D5 A2）**：脚本显式把待导出的普通文件写入该目录，例如：
+
+```bash
+mkdir -p "$ANOTIFY_ARTIFACT_DIR/reports"; cp report.md "$ANOTIFY_ARTIFACT_DIR/reports/report.md"
+```
+
+节点完成后仅安全枚举本 attempt 目录（禁止符号链接、非普通文件、越界），按 A1 限额托管复制、上传，成功后才以 `task.result.artifacts` 的 `[{path,sha256}]` 引用；`path` 相对此导出目录。空目录可真实返回 `[]`；创建/注入/枚举失败或安全边界违规必须以 `artifact_export_invalid` 或 `files_escape` 明确置 `failed`，不能假装空成功。每次创建使用唯一随机后缀，同 task 重试/旧 attempt 重叠及多 task 共用 `workDir` 都不混产物；不使用固定 `workDir/.anotify-artifacts` 存在就拒绝的约定，也不在用户目录内创建/删除专用导出目录。
+新变量由节点注入，`run.env` / `envPassthrough` 不得覆盖；不进 `vars`、配置 hash 或公开 env 值快照。不新增 `run.artifacts`、第四 CLI、魔法 stdout 或额外宿主 env 继承。
+
+任务环境是**干净的**：除上表、`PATH` / `HOME` 基线、`run.env` 显式声明的键与 `envPassthrough` 白名单以外，不继承节点/守护进程的完整环境。
 基线只有 `PATH` / `HOME`（`HOME` 取 `status.homeDir`）：
 
 - **PATH**：取 **`anode` 守护进程启动时的基线**，`requires.commands` 探测与任务初始 PATH 是**同一份**；
@@ -688,6 +698,7 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 | `event_schema` | 投递 | payload 不符合源 `payloadSchema` → 剪枝（不失败，不建 task） |
 | `script_failed` | 运行 | 脚本非零退出；**默认不自动重试**（含 emit exit 5 导致的非零） |
 | `files_escape` | 运行（执行前） | `run.files` 展开后越出允许目录（符号链接/实际路径）；**非重试配置错误** |
+| `artifact_export_invalid` | 运行 / 结果收集 | A2 系统导出目录创建、注入或枚举失败，或导出文件不符合普通文件 / 路径 / 限额约束；明确 `failed`，不返回假空产物，不自动重试 |
 | `stale_config` | 调度（`task.accept` 前） | 机器级 `configRevision` 与本机 applied 不一致；不计 attempt、不授 lease、回 pending |
 | `cancelled_by_user` | 运行 | 用户取消；节点 TERM/KILL 进程组，槽位回收后释放 |
 | `abandoned_by_user` | 运行 | 用户放弃；同上 |
@@ -704,7 +715,7 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 |---|---|---|
 | 公共 API | `Status.reason` | `unknown_field_path` / `emit_id_conflict` |
 | 本地 emit 网关 | `{error, message}` + CLI 退出码 | `target_not_declared` / `emit_unreachable` |
-| 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `workdir_unavailable` / `home_unavailable` |
+| 任务结果 | `Task.status.result.error.reason` | `script_failed` / `files_escape` / `artifact_export_invalid` / `workdir_unavailable` / `home_unavailable` |
 
 字面码可以复用，但响应形状与判定时机不同；不要把本地 emit error 当 HTTP `Status`，也不要把剪枝当 4xx。
 
@@ -791,9 +802,9 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 
 | 对象 | 默认保留 | 说明 |
 |---|---|---|
-| 日志 / 产物 / **系统创建**的任务目录 | **7 天**（`resultTtlSec` 默认 `604800`） | 显式 `0` = 永久；清理任务只动自己创建并记录的路径 |
+| 日志 / 产物 / **系统创建**的任务目录 | **7 天**（`resultTtlSec` 默认 `604800`） | 显式 `0` = 永久；清理任务只动自己创建并记录的路径，含系统自有 export/staging/托管副本；活动 attempt 不清理 |
 | 用户指定 `workDir` | **永不删除** | 清理不递归删除用户路径；`run.files` 写入只覆盖允许目录内的文件，不跟随链接写出。**用户目录内任何原文件（含脚本生成的产物）都不被 resultTtl 自动删** |
-| 需托管保留的 artifact | **7 天副本** | 复制到**独立系统结果目录**再按 `resultTtlSec` 清理；artifact API 指向托管副本，不指向用户原文件 |
+| 需托管保留的 artifact | **7 天副本**（显式 `0` = 永久） | 仅从本 attempt 的 `ANOTIFY_ARTIFACT_DIR` 安全枚举、复制到**独立系统结果目录**再按 `resultTtlSec` 清理；活动 attempt/上传不清理；artifact API 指向托管副本，不指向用户原文件 |
 | 任务行（终态后） | **30 天**（`retention.taskTtlSec`，可配置） | 活动任务不清理；终态后开始计时；与事件/trace 各自计时 |
 | 事件 / trace 元数据 | **30 天**（`retention.eventTtlSec` 默认 `2592000`，可配置） | 事件从接收时间、trace 从结束时间各自计时；过期物理删除（不做软删） |
 | 事件去重记录（`(source, deliveryId)`） | **30 天**，与事件同窗口 | 从首次接收时计时；窗口内同 `deliveryId` 不重复派发，窗口外可再次接收；与实体引用延长保留分开 |
@@ -1048,7 +1059,7 @@ spec:
 | `stale_config` 是 `task.accept` 前的调度拒绝，不计 attempt | 回 pending 等配置/换候选，不消耗非幂等重试预算 |
 | CLI exit 5 只表示请求结果未知，不是 infra 事实 | 脚本非零默认 `script_failed`；infra 重试只认运行器结构化事实 |
 | emit 剪枝回执 `taskId:null` + `pruned`，CLI exit 0 | 事件已接收但没建 task；不伪装成功派发，回执也进幂等结果 |
-| 产物需托管时复制到系统结果目录，7 天清副本 | 用户 workDir 原文件不动；artifact API 指向副本 |
+| 产物显式写本 attempt 的 `ANOTIFY_ARTIFACT_DIR`，托管复制/上传后结果引用 | 默认 7 天清系统 export/staging/副本，显式 0 永久；活动 attempt 不清理，用户 workDir 原文件不动 |
 | 任务行终态后保留 30 天 | `retention.taskTtlSec`；活动任务不清理，与事件/去重各自计时 |
 | 节点缺变量在**派发期（accept 前）**拦，不派下去再失败 | 派下去再失败等于把配置问题变成运行时故障 |
 | `workDir` 默认每次任务一个独立目录 | 并发安全优先；要共享目录的人显式声明并自己负责并发 |

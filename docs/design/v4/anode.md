@@ -148,12 +148,16 @@ TOOLCHAIN=/opt/go1.25
 |---|---|
 | **白名单** | 只注入本能力 `run.env` 显式引用过的那几个。节点上另外 18 个 `vars` 一个都不出现 |
 | **键名由能力定** | `SRC` / `TOOLCHAIN` 是能力选的；节点的 `vars.SOURCE_ROOT` **从不以这个名字**进入环境 |
-| **环境是干净的** | 不继承节点/守护进程的完整环境。基线只有 `PATH` / `HOME`（`HOME` 取 `status.homeDir`），加上契约变量（`ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN` / `ANOTIFY_TASK_ID` / `ANOTIFY_PARAM_*`）、`run.env` 与 `envPassthrough` 白名单。其它一律不继承 |
+| **环境是干净的** | 不继承节点/守护进程的完整环境。基线只有 `PATH` / `HOME`（`HOME` 取 `status.homeDir`），加上契约变量（`ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN` / `ANOTIFY_TASK_ID` / `ANOTIFY_PARAM_*`，以及 A2 正式新增的 `ANOTIFY_ARTIFACT_DIR`）、`run.env` 与 `envPassthrough` 白名单。原变量与参数前缀不变，其它一律不继承 |
+| **产物导出变量** | `ANOTIFY_ARTIFACT_DIR` 是节点为本 `(taskId, attempt)` 创建的独立系统导出目录的绝对路径；`run.env` / `envPassthrough` 不得覆盖，不进 `vars`、配置 hash 或公开 env 值快照 |
 | **PATH 一致** | PATH 取 `anode` 守护进程启动时的基线；命令探测（`requires.commands`）与任务初始 PATH 是**同一份**。**暂不支持 `run.env` 覆盖 `PATH`**（写 `PATH` → 400 `env_invalid`）；脚本自行改 PATH 属于作者逻辑 |
 | **HOME 可显式覆盖** | 默认 `status.homeDir`；`run.env` 显式写 `HOME` 时，字面量不是绝对路径 → 写入期 400 `env_invalid`；执行前不存在 / 不是目录 → `home_unavailable`（`failed`，不重试） |
 | **凭证只走名字白名单** | `envPassthrough` 里的变量名，值取自本机进程环境；值不回传中枢、不进 `vars`、不主动记录 env 快照。`PATH` / `HOME` / `ANOTIFY_` 开头的名字禁止透传；完整名单只在本机 |
 | **同名优先级** | `run.env` 与 `envPassthrough` 同名时，**显式 `run.env` 优先**；未列入白名单的非 `ANOTIFY_` 变量一律不继承 |
 | **缺即不存在** | 节点与中枢都解析不出这个值 → 该键**不出现**（不是空串）。`workDir` 依赖它就报 `workdir_unavailable`；脚本里 `set -u` 当场炸 |
+
+**产物执行细则（V4-D5 A2）**：节点在系统自有 `exportRoot` 下为每个 `(taskId, attempt)` 创建 0700、带唯一随机后缀的目录，注入 `ANOTIFY_ARTIFACT_DIR`；脚本显式写普通文件（例子见 `capability.md §4.0`）。完成后只安全枚举本 attempt 目录，禁止符号链接/非普通文件/越界，按 A1 托管复制、上传后再以 `task.result` 引用。空目录可真实返回 `[]`，创建/注入/枚举失败或安全边界违规须以 `artifact_export_invalid` 或 `files_escape` 明确 `failed`，不得假空。
+同 task 跨 attempt、旧 attempt 重叠和多 task 共用 `workDir` 均用不同导出目录，不收集旧文件；不以固定 `workDir/.anotify-artifacts` 存在就拒绝，不在用户目录内创建/删除专用导出目录。默认 7 天、显式 `0` 永久的 result TTL 只清系统自有 export/staging/托管副本，活动 attempt/上传不清理，用户 `workDir` 原文件不动；没有 `run.artifacts`、第四 CLI、魔法 stdout 或额外宿主 env 继承。
 
 > 派发期（`task.accept` 前）已经保证 `requires.values` 可解析，所以"缺"只可能来自"中枢值被删、本机 `vars` 改了没重启、或者配置还没 apply"。
 >

@@ -60,6 +60,8 @@ v4 是 breaking change：`spec.outputs` 改名 `next`、边不再是用户实体
 **凭证不建模**：`vars` 都是非敏感值（会上报、展示、进日志）；需要 token 的能力用机器上已有的登录态（`gh auth` / ssh key / CI 环境变量）。
 节点可用 `anode.yaml.envPassthrough` 按**变量名白名单**透传 `SSH_AUTH_SOCK` / 指定 CI 凭证变量：值不进 `vars`、不回传中枢、不主动记 env 快照；`run.env` 同名时显式 `run.env` 优先（`decisions.md` V4-D5）。
 `PATH` 取 `anode` 启动时的基线，命令探测与任务初始 PATH 同一份，`run.env` **不支持覆盖 PATH**（400 `env_invalid`）；`HOME` 默认 `status.homeDir`，可显式覆盖但必须是绝对目录。
+`ANOTIFY_` 基础契约变量为 `ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN` / `ANOTIFY_TASK_ID` / `ANOTIFY_PARAM_<NAME>`，以及 A2 **正式新增**的 `ANOTIFY_ARTIFACT_DIR`（参数前缀与原变量不变）。节点在系统自有 `exportRoot` 下为每个 `(taskId, attempt)` 创建唯一目录（0700），以新变量提供其绝对路径；脚本显式写入待导出文件，节点仅安全枚举本 attempt 目录、托管复制并按 A1 上传，再以 `task.result` 引用（例子见 `capability.md §4.0`）。
+`run.env` / `envPassthrough` 不得覆盖这些保留变量；新变量不进 `vars`、配置 hash 或公开 env 值快照，不引入 `run.artifacts`、第四 CLI、魔法 stdout 或额外宿主 env 继承（`decisions.md` V4-D5 A2）。
 仍是**宿主权限执行，不是 sandbox**，系统不阻止脚本把密钥写进 stdout。
 
 形状、逐键合并、同步协议、权限、错误码、决策 C1–C19：见 **`config.md`**。

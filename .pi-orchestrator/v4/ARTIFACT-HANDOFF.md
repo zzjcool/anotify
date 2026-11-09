@@ -1,4 +1,6 @@
-# V4 日志 attempt 与运行产物传输补充 · A1（父批准）
+# V4 日志 attempt 与运行产物传输补充 · A1/A2（父批准）
+
+A2（正式执行细则修订）：以每 attempt 独立的系统导出目录和基础变量 `ANOTIFY_ARTIFACT_DIR` 登记产物。拒绝固定 user workDir 导出目录“存在就失败”的方案；它会破坏重复任务、重试与共享目录并发。此项仅补齐既有产物能力的生产入口，不新增 run 字段、CLI 子命令或宿主环境继承。
 
 范围：落实已批准 task 日志/托管产物读取，不新增 Artifact 独立资源、额外节点监听、凭证中心或历史协议兼容。T3为纯协议/node唯一作者，T1为中枢HTTP/store作者；两侧按此补最小接缝。
 
@@ -29,7 +31,10 @@
 - 上传所需副本成功（201/200）后才发`task.result`；result.artifacts仍`[{path,sha256}]`，server仅允许当前attempt已经验证登记的引用。不能拿另一个task/ns的已知hash作为引用借读别人文件。
 - 上传与结果提交期间正常续租仍继续；进程结束时的finishedAt保留，不把传输耗时伪装脚本执行时长。取消/lease失效即停上传与授权；迟到result仍拒绝。
 - 断线/超时可用同path/hash/attempt幂等重试上传，必须仍持有效lease，次数/总时间有界；不因此整任务重跑或把未知接受当没有上传。确认失败且仍有授权时，以结构化`artifact_upload_failed`终止结果（保留已成功托管的manifest和错误，不伪造成功空artifacts）；仅有可靠infra事实且任务明确幂等时才按既定D4自动重试。
-- 本次只补现有TaskResult.artifacts传输，不擅自新增第四CLI命令、run.artifacts配置字段、额外宿主环境继承或JSON stdout魔法。生产运行如何明确登记导出文件必须由T3基于已有runner输出机制给出最小事实；若缺入口，先报父，不能用永远空数组隐藏未实现需求。
+- 正式登记入口：节点在系统自有 export 根下为每个 `(taskId, attempt)` 创建独立、不可与其它执行重用的目录（0700、唯一随机后缀），注入只读契约变量 `ANOTIFY_ARTIFACT_DIR`（绝对路径）；共享常量为 `protocol.EnvArtifactDir`。不得以固定 `workDir/.anotify-artifacts` 存在就拒绝，不创建/删除用户工作目录内的专用目录。
+- 脚本显式把要导出的普通文件写入该目录，例如 `mkdir -p "$ANOTIFY_ARTIFACT_DIR/reports"; cp report.md "$ANOTIFY_ARTIFACT_DIR/reports/report.md"`。逻辑 path 相对此导出目录，节点完成后安全枚举本 attempt 目录、禁止符号链接/非普通文件/越界并按 A1 限额托管复制、上传、登记结果。空目录是真正无导出文件，可以返回空 artifacts；创建/注入/枚举失败必须明确报错，不能当空成功。
+- `ANOTIFY_ARTIFACT_DIR` 由节点提供，`run.env`/`envPassthrough` 都不能覆盖它（保留 ANOTIFY_ 规则）；不放 vars、配置 hash 或中枢环境值快照，不额外继承宿主变量。按已批准 result TTL 清理系统自有 export/staging/托管副本，活动 attempt 不清理；用户 workDir 原文件完全不动。
+- 该 A2 只增加一个正式基础契约变量，不新增第四 CLI、run.artifacts 字段或 stdout JSON 魔法。两个任务共享 workDir、同任务重试及旧 attempt 短时重叠必须用不同 export 目录，不能收集彼此文件；具名测试覆盖这些反例与 symlink/GC 用户目录安全。
 - 中枢托管bytes按resultTtlSec默认7天；有效/活动上传不清理；manifest/task事实按taskTtlSec默认30天/引用保护。用户workDir原文件不受这个TTL影响。已到期副本不从node回源，不因task元数据还存在伪装可下载。
 
 ## 4. 用户下载仅 Task 子资源

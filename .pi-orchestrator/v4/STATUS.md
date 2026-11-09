@@ -83,4 +83,14 @@ A1运行产物/日志接缝已父批准（ARTIFACT-HANDOFF.md）：logs原帧增
 
 T1新checkpoint已见：G1-5a c654058纯render/12格计划测试通过，但完整store install尚未做；当前g1-4r修major竞态/D2输入钉住，W1-W6支持已08b7a18同步，接口清单暂态非最终。
 
+18:51 T2旧L2检查：5d79bbf Source双页闭包已真实提交，26d1a79父wire同步，新唯一writer f2b2-diagnostics做index/events/trace/message四页，mock/helper/test有实际diff，非空转；L2延30m验收不改。团队async registry admission closed与父旧generation工具同类，已明确不能假称父原工具可托管/无限重试/改settings。长验证ready后发精确cwd/cmd/env/sourcecommit/日志/预算，由父安排新managed验证上下文；短独立timeout60可分case保完整断言，不能裸长期bash/tail吞exit。源码阶段继续，不以工具问题虚报PASS/重派并发writer。
+
+18:56 T3旧L2核查：实际867be7e E1严格Decode修复、63570df A1logs attempt/artifact headerDTO已提交，N2B clock/execenv/resultstore新目录实施中，不卡死，不因旧通知重启。父capture纯protocol **caecd9d→63570df** 增量 `/tmp/anotify-v4-e1-a1-handoff/protocol-delta.patch`（SHA61498bf4…），干净协议目录，隔离archive applycheck/apply+protocol/artifact test+vet独立PASS；fresh短review v4-e1-a1-handoff-review **4/4 PASS/无major**，父现已转T1在G1-4R单writer安全边界消费caecd9d→63570df增量；不得再apply旧N1或消费179e999缺strict校验版本。包括E1 strictDecode/Validate和NodeStreamPath/A1attempt-headerDTO，legacyws镜像待T1G2退役。N2B生产产物登记入口仍待最小事实，scope不能以空数组省略。
+
+19:05复核T1旧18:33 L2：当前G1-4R task/node/orphan/schema有真实修复、新task_inputs_test落盘，未DONE/未宣称测试完成，组长等唯一writer；同旧notice早于18:36已处理不重复延期/重启。父要求下一checkpoint按取消竞态/ns输入/drain/槽位/过期结果具名测试报PASS/FAIL，不以diff/读文件量代验收；组长context大，任务卡/接口已落盘，避免SOP工具探索分心，G1-4R收口后真实G1-5b安装事务继续。
+
+A2产物生产入口正式父裁决：不接受固定userworkDir/.anotify-artifacts存在就拒绝（破坏重复任务/重试/共享目录）。最低复杂度第二意见建议独立system attempt目录，父采纳：ANOTIFY_ARTIFACT_DIR新增基础变量（原清单正式+1）指每task/attempt唯一0700 exportdir，脚本显式写files、安全枚举/托管copy/A1upload；空才[]、创建枚举错误failed；不新增runfield/CLI/stdout魔法/宿主继承、不碰用户原目录。T3当前单writer实现并给EnvArtifactDir纯delta；T1/T2已通知。根docwriter v4-artifact-env-docs显式同步4份基础env/decisions，不能假称原4变量包含此项，不回头全量重审产品D1-D6。
+
+19:21 T3 L2实际核查：新增runner/app/emitgw/execenv/ops/resultstore/runner_test，上传client b44ff6a与shared控制字符/header编解码8a8173f已提交，非空转；父延提醒30m，要求运行链具名test PASS/FAIL和63570df后纯协议delta（T1已有635不能重复整N1）。A2docworker accepted verified（4docs基础env/执行目录清单），父独立同断言+diffcheckPASS，fresh v4-a2-export-doc-review定向读4短段 **ok:true/A2全部一致**，仅minor错误码artifact_export_invalid未进封闭词表。父已精准补capability结果码表/错误域和API同词表，不重开全量评审；新增env正式补充不假称原4项已有，不跑实现测试，准备提交A2支持。
+
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

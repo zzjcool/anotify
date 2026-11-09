@@ -1,4 +1,6 @@
-# V4 全量实施冻结契约 · rev2
+# V4 全量实施冻结契约 · rev2 / A2
+
+A2（父会话正式执行细则补齐）：新增 `ANOTIFY_ARTIFACT_DIR` 作为每 attempt 独立系统导出目录的基础变量，替代不可重复运行的固定用户目录约定；原 D1～D6 产品方向不变，基础环境变量清单与脚本示例必须显式同步，不偷偷新增。
 
 rev2（父会话实施编排修订）：在 T1 的纯协议/产物已稳定后拆出 T3 anode 并行，消除串行关键链，不减少功能或测试。T3 接收只读产物快照并成为 `internal/protocol` 唯一作者，T1 消费其冻结更新；新增传输接缝见 §7。
 
@@ -94,7 +96,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 ### N1 最先冻结（先向父交快照，再做完整节点）
 
-- 导出环境常量：`EnvEmitEndpoint`、`EnvTaskToken`、`EnvTaskID`、`EnvParamPrefix`，值沿批准契约；统一参数环境名函数（例如 `ParamEnvName(string) string`），行为必须与现有 artifact 归一化/碰撞规则相同，测试大写/数字/符号/碰撞。T1 artifact 校验在后续闭包直接调用共享函数，避免两套。
+- 导出环境常量：`EnvEmitEndpoint`、`EnvTaskToken`、`EnvTaskID`、`EnvParamPrefix` 及 A2 正式补充的 `EnvArtifactDir`（`ANOTIFY_ARTIFACT_DIR`），值沿批准契约；统一参数环境名函数（例如 `ParamEnvName(string) string`），行为必须与现有 artifact 归一化/碰撞规则相同，测试大写/数字/符号/碰撞。T1 artifact 校验在后续闭包直接调用共享函数，避免两套。
 - 导出机器配置hash函数（例如 `MachineConfigHash(map[string]string, Limits) (string,error)`）：默认值归一化后，以字段 `vars`、`limits` 的 canonical JSON（map按键排序）算 SHA-256、输出 `sha256:<hex>`；空map与nil归一为 `{}`，limits中的perCapability同理。不包含 revision、namespace默认、token、宿主凭证、envPassthrough；两侧只用同一实现。
 - 能力投递是人工部署动作的传输接缝，不新增自收敛控制器：`capability.deploy` 中枢→node 只带 `requestId/namespace/name/version/digest`；节点按身份认证 `GET /v1/node/capabilities/{digest}` 获取不可变 Artifact 文档并校验digest/路径/规格后缓存；`capability.deployed` node→中枢回 `requestId/namespace/name/version/digest/status/error?`（applied/failed）。两帧进入统一Decode/方向表，不别造同名snake版本。
 - T1 人工deploy动作写部署意图/事实，向目标在线节点发送通知；离线节点在重连时重放已明确请求的未完成部署，不运行通用reconciler。artifact GET只允许有效Node身份且该digest在本节点允许ns的明确部署目标中，不能凭已知digest跨ns读私有代码。namespace交集/节点身份验证仍适用。
@@ -105,7 +107,7 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 ### 运行产物与日志 attempt（A1补充）
 
-详见父 `ARTIFACT-HANDOFF.md`：既有 logs_request/response 增可选attempt/实际attempt，HTTPprevious定位历史attempt与node。运行产物只通过node出站流式PUT `/v1/node/tasks/{taskId}/artifacts/{sha256}` 到中枢（现Node身份+当前attempt授权，完成发布时再CAS验权），不新增node监听或Artifact大WS帧；Task下载使用namespace子路径、实际manifest授权、7天副本过期410，原用户文件不删除。共享header/路径常量T3唯一作者，T1中枢spool/引用/GC/下载，T2只用正确链接与过期状态。输出清单实际登记入口仍须T3给最小事实后父定，不用永久空数组隐藏未实现产物能力。
+详见父 `ARTIFACT-HANDOFF.md`：既有 logs_request/response 增可选attempt/实际attempt，HTTPprevious定位历史attempt与node。运行产物只通过node出站流式PUT `/v1/node/tasks/{taskId}/artifacts/{sha256}` 到中枢（现Node身份+当前attempt授权，完成发布时再CAS验权），不新增node监听或Artifact大WS帧；Task下载使用namespace子路径、实际manifest授权、7天副本过期410，原用户文件不删除。共享header/路径常量T3唯一作者，T1中枢spool/引用/GC/下载，T2只用正确链接与过期状态。A2 正式登记入口采用每 attempt 独立系统 export 目录（0700、唯一后缀），以 `ANOTIFY_ARTIFACT_DIR` 提供给脚本显式写待导出文件；不增加 run 字段/第四 CLI，不扫描 stdout，不因用户目录中旧固定输出目录存在而拒绝。节点安全枚举/托管复制/上传，空目录才是真实空结果；运行期创建/枚举错误不可假空。结果 TTL 只动系统目录，两个共享工作目录任务与逻辑任务重试不混产物。
 
 ### 并行验证边界
 
