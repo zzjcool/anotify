@@ -98,8 +98,10 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 - 导出机器配置hash函数（例如 `MachineConfigHash(map[string]string, Limits) (string,error)`）：默认值归一化后，以字段 `vars`、`limits` 的 canonical JSON（map按键排序）算 SHA-256、输出 `sha256:<hex>`；空map与nil归一为 `{}`，limits中的perCapability同理。不包含 revision、namespace默认、token、宿主凭证、envPassthrough；两侧只用同一实现。
 - 能力投递是人工部署动作的传输接缝，不新增自收敛控制器：`capability.deploy` 中枢→node 只带 `requestId/namespace/name/version/digest`；节点按身份认证 `GET /v1/node/capabilities/{digest}` 获取不可变 Artifact 文档并校验digest/路径/规格后缓存；`capability.deployed` node→中枢回 `requestId/namespace/name/version/digest/status/error?`（applied/failed）。两帧进入统一Decode/方向表，不别造同名snake版本。
 - T1 人工deploy动作写部署意图/事实，向目标在线节点发送通知；离线节点在重连时重放已明确请求的未完成部署，不运行通用reconciler。artifact GET只允许有效Node身份且该digest在本节点允许ns的明确部署目标中，不能凭已知digest跨ns读私有代码。namespace交集/节点身份验证仍适用。
+- 标准节点WS端点是 `/v1/node/stream`（protocol导出 `NodeStreamPath`），不新增 `/v1/node/ws`、`/v1/agent/ws` 或旧路径兼容alias。anode.server空path或仅`/`时补标准path；显式非根path保留用于反向代理映射，凭证不塞query。`GET /v1/node/capabilities/{digest}` 200直接返回完整 `artifact.Artifact` JSON（apiVersion/kind/metadata/spec和run.files，无data/artifact wrapper和派生status），客户端验证规范/digest与deployrefs后原子缓存；这是受Node鉴权的内容通道，不适用公开Resource四键status要求。
 - T1负责新Node GET路由、部署通知producer及回执落事实；T3负责客户端获取/校验/cache/回执。不把整份脚本塞进受软上限约束的WS帧，不把安装包安装与部署合并。
 - 已有配置/执行/升级/logs帧语义不变；shared协议更新必须包含实际Go字段、JSONtag、Decode、方向校验和具名测试，N1交 `PROTOCOL-HANDOFF.md` 后冻结，T1再接快照开始G2。必要修正经父协调，不双方私下改字段。
+- 父批准补本地HTTP→中枢权威的 `task.emit` 上行（requestId/taskId/attempt/leaseId/attemptToken/to/id?/data）与 `task.emit.ack` 下行（requestId/taskId/attempt/httpStatus+互斥response或error，复用HTTP DTO）。requestId仅RPC关联不是业务seq；业务去重仍(taskId,id)。中枢当前授权验证与接受/派发同事务，旧attempt不能借已存在id绕过授权。node等待有界timeout、断连结果未知CLI5，不自动重发无id；迟到ack不得串另一个HTTP请求。protocol由T3统一定义并先交最终N1快照，T1消费，中枢和节点行为测试各自所有权；完整裁决记录 `/tmp/anotify-v4-emit-ws-approval.md`。
 
 ### 并行验证边界
 
