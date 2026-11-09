@@ -155,7 +155,7 @@ type CapabilityRef struct {
 // v2 起这里**不再有 run_spec**：执行方式属于能力正文、归属属于部署
 // （deployments），node_capabilities 只从 deployments 派生（契约 D4）。
 //
-// 嵌入 *CapabilityVersion 是为了不动既有调用点的 .Name/.Outputs 等字段访问
+// 嵌入 *CapabilityVersion 是为了不动既有调用点的 .Name/.Version 等字段访问
 // （派发选点、控制台都只关心能力定义）。
 type NodeCapability struct {
 	*CapabilityVersion
@@ -757,22 +757,8 @@ func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCa
 	out := []*NodeCapability{}
 	for rows.Next() {
 		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
-		if err := rows.Scan(&c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema, &outputs,
-			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt); err != nil {
+		if err := scanCapabilityRow(rows, &c); err != nil {
 			return nil, fmt.Errorf("scan node capability: %w", err)
-		}
-		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-			return nil, fmt.Errorf("decode params_schema: %w", err)
-		}
-		if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-			return nil, fmt.Errorf("decode outputs: %w", err)
-		}
-		if c.Outputs == nil {
-			c.Outputs = []string{}
-		}
-		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-			return nil, fmt.Errorf("decode lifecycle: %w", err)
 		}
 		out = append(out, &NodeCapability{CapabilityVersion: &c})
 	}
@@ -818,8 +804,8 @@ func uniqueNodeIDs(nodeIDs []string) []string {
 // 语义必须与 ListNodeCapabilities **逐字一致**（否则列表页与详情页会对同一台机器
 // 给出不同的能力/顺序/runSpec）：
 //   - 每节点内顺序仍是 c.name, c.version 升序（ORDER BY 带上 node_id 不破坏这一点）
-//   - params_schema / outputs / lifecycle 的反序列化、Outputs nil → []、
-//     run_spec 空串 → emptyRunSpec 全部照抄单节点实现
+//   - spec 正文的反序列化（next/requires nil → [] 的空列表纪律）与
+//     scanCapabilityRow 逐字一致（两处只有一份解码实现）
 //   - 没有能力的节点**不出现在** map 里（调用方按 nil → 空切片处理）
 //   - nodeIDs 为空 → 空 map + nil error；重复 id 去重
 //
@@ -866,12 +852,8 @@ func (d *DB) listCapabilitiesChunk(ctx context.Context, ids []string, out map[st
 	for rows.Next() {
 		var nodeID string
 		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
-		if err := rows.Scan(&nodeID, &c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema,
-			&outputs, &lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt); err != nil {
-			return fmt.Errorf("scan node capability by node: %w", err)
-		}
-		if err := decodeCapabilityJSON(&c, paramsSchema, outputs, lifecycle); err != nil {
+		// 第一列是 join 的 node_id，其余是 prefixedCapabilityColumns 的能力列。
+		if err := scanCapabilityRowWithPrefix(rows, &nodeID, &c); err != nil {
 			// 坏数据只降级这一台（见 ListCapabilitiesByNode 的降级粒度注释）：
 			// 静默 continue 会让页面少一条能力却没人知道，所以必须留声。
 			slog.Warn("skip node capability with invalid JSON",
@@ -888,22 +870,36 @@ func (d *DB) listCapabilitiesChunk(ctx context.Context, ids []string, out map[st
 	return rows.Err()
 }
 
-// decodeCapabilityJSON 反序列化能力定义里的三列 JSON。
-//
-// 抽出来只为让批量路径与单节点路径共用同一份解码规则（空值判据、nil→[] 都在这里），
-// 把「两处各写一遍」的漂移风险消掉。
-func decodeCapabilityJSON(c *CapabilityVersion, paramsSchema, outputs, lifecycle string) error {
-	if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-		return fmt.Errorf("decode params_schema: %w", err)
+// scanCapabilityRowWithPrefix 解「首列是 node_id、其余是 prefixedCapabilityColumns」
+// 的一行（批量路径用）。解码规则与 scanCapabilityRow 只有一份。
+func scanCapabilityRowWithPrefix(row scanner, nodeID *string, c *CapabilityVersion) error {
+	var (
+		id, namespaceID, name, displayName, spec, digest, foldKey, installedFrom string
+		version, resourceVersion, createdAt                                      int64
+	)
+	if err := row.Scan(nodeID, &id, &namespaceID, &name, &displayName, &version, &spec,
+		&digest, &foldKey, &installedFrom, &resourceVersion, &createdAt); err != nil {
+		return err
 	}
-	if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-		return fmt.Errorf("decode outputs: %w", err)
+	c.ID, c.NamespaceID, c.Name, c.DisplayName = id, namespaceID, name, displayName
+	c.Version, c.ResourceVersion, c.CreatedAt = int(version), resourceVersion, createdAt
+	c.Digest, c.FoldKey, c.InstalledFrom = digest, foldKey, installedFrom
+	if strings.TrimSpace(spec) != "" {
+		if err := json.Unmarshal([]byte(spec), &c.Spec); err != nil {
+			return fmt.Errorf("decode capability spec: %w", err)
+		}
 	}
-	if c.Outputs == nil {
-		c.Outputs = []string{}
+	if c.Spec.Next == nil {
+		c.Spec.Next = []string{}
 	}
-	if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-		return fmt.Errorf("decode lifecycle: %w", err)
+	if c.Spec.Requires.Commands == nil {
+		c.Spec.Requires.Commands = []string{}
+	}
+	if c.Spec.Requires.Values == nil {
+		c.Spec.Requires.Values = []string{}
+	}
+	if len(c.Spec.Params) == 0 {
+		c.Spec.Params = json.RawMessage(`{}`)
 	}
 	return nil
 }
@@ -959,10 +955,10 @@ func (d *DB) InstanceStatsByNode(ctx context.Context, nodeIDs []string) (map[str
 
 // prefixedCapabilityColumns 给能力列加表别名前缀，
 // 避免与 join 表的同名列（id/namespace_id）混淆。
-// 列顺序必须与下面的 scan 一致（scan 只取展示需要的子集，不含 display_name）。
+// 列顺序必须与 scanCapabilityRow / scanCapabilityRowWithPrefix 一致（= capabilityColumns）。
 func prefixedCapabilityColumns(alias string) string {
-	cols := []string{"id", "namespace_id", "name", "version", "params_schema", "outputs",
-		"lifecycle", "sticky", "source", "content_hash", "created_at"}
+	cols := []string{"id", "namespace_id", "name", "display_name", "version", "spec", "digest",
+		"fold_key", "installed_from", "resource_version", "created_at"}
 	parts := make([]string, len(cols))
 	for i, c := range cols {
 		parts[i] = alias + "." + c

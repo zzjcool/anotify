@@ -23,19 +23,6 @@ const ImplicitPort = "out"
 
 // Edge 是 edges 表的一行：出口表是路由的唯一依据（契约 §2.4）。
 //
-// isOriginCapability 判断某个能力定义是不是内置起点。
-//
-// 起点没有节点声明（kind=origin），出口是「任意事件类型」。
-// 注意这里按 name+version 查内置表，而不是看 outputs——
-// 用户自定义的、恰好没有 outputs 的能力**不应该**获得通配出口。
-func isOriginCapability(c *CapabilityVersion) bool {
-	if c == nil {
-		return false
-	}
-	bc, ok := IsBuiltinCapability(c.Name, c.Version)
-	return ok && bc.Origin
-}
-
 // 一行 = 一条边；同一 (FromRef, FromPort) 可有多行 → 扇出（不变量 I7：
 // 两端都是能力引用，图里没有机器）。
 type Edge struct {
@@ -260,14 +247,14 @@ func createEdgeTx(ctx context.Context, ex queryExec, e *Edge) error {
 			return asEdgeRejected(ferr, "from link ref %q", e.FromRef)
 		}
 		e.FromRef = fromRef
-		// 出口封闭集合（不变量 I2）：from_port 必须属于**解析到的那个版本**的 outputs。
+		// 边是 spec.next 的投影：目标必须已经在该能力的 next 里声明。
 		//
-		// 为什么按解析到的版本判而不是按名字的并集：`analyze@1` 钉的是那一版的契约；
-		// `analyze` 跟随 latest，那就按此刻的 latest 判——用户配的是「此刻这条线」，
-		// 以后 latest 换了端口集合，由升级闸门（ErrUpgradeBreaking）拦下来。
-		if !from.HasOutput(e.FromPort) {
-			return fmt.Errorf("%w: port %q not in %s@%d outputs %v",
-				ErrEdgeRejected, e.FromPort, from.Name, from.Version, from.Outputs)
+		// v4 没有端口概念（一次运行只有一个结果），所以「这条边能不能存在」的答案
+		// 就是「这个目标在不在 next 里」。from_port 列在 v4 schema 里已经不存在；
+		// 本文件的手写边 API 属于 G1-3 的重写范围，这里保留最小一致性校验。
+		if !capabilityDeclaresNext(from, e.ToRef) {
+			return fmt.Errorf("%w: %s@%d 的 spec.next 里没有 %q（边是 next 的投影）",
+				ErrEdgeRejected, from.Name, from.Version, e.ToRef)
 		}
 		// 这里**没有**环检测（契约 §2）：环是合法编排（`review → fix → review`）。
 		// 兜底交给运行期 hop 预算（route/dispatch.go 的 max_hops）：它按**实际走过的**
@@ -439,18 +426,36 @@ func checkEdgeLiterals(to *CapabilityVersion, literals json.RawMessage) (json.Ra
 	return literals, nil
 }
 
-// paramsSchemaProperties 取目标能力 params_schema 的 properties（字段字典）。
+// capabilityDeclaresNext 判定 toRef 是否属于能力的 spec.next。
+//
+// 按名字比较（裸名与 name@version 指向同一个能力）：next 里写 `notify` 而边里
+// 归一成 `notify@2` 是同一意图，不该因为写法差异被判成「没声明」。
+func capabilityDeclaresNext(c *CapabilityVersion, toRef string) bool {
+	if c == nil {
+		return false
+	}
+	wantName, _, _ := SplitRef(toRef)
+	for _, ref := range c.Spec.Next {
+		name, _, _ := SplitRef(ref)
+		if name == wantName && wantName != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// paramsSchemaProperties 取目标能力 params（JSON Schema）的 properties（字段字典）。
 //
 // 空 schema / 非法 schema 当作「没有声明任何字段」而不是错误：
 // 能力保存时已经把 schema 格式过一道（store.CreateCapability），走到这里还是坏的
 // 就是数据被写坏了；此时任何字面量 key 都无法被声明，于是会被 b 拒掉（fail closed）。
 func paramsSchemaProperties(to *CapabilityVersion) (map[string]any, error) {
-	if to == nil || len(to.ParamsSchema) == 0 {
+	if to == nil || len(to.Spec.Params) == 0 {
 		return nil, nil
 	}
 	var schema map[string]any
-	if err := json.Unmarshal(to.ParamsSchema, &schema); err != nil {
-		return nil, fmt.Errorf("%w: target %s@%d params_schema is not a JSON object: %v",
+	if err := json.Unmarshal(to.Spec.Params, &schema); err != nil {
+		return nil, fmt.Errorf("%w: target %s@%d params is not a JSON object: %v",
 			ErrEdgeRejected, to.Name, to.Version, err)
 	}
 	props, _ := schema["properties"].(map[string]any)

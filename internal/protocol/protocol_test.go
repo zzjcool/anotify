@@ -109,8 +109,23 @@ func frameFixtures() []frameFixture {
 				LocalLimits:     Limits{Total: 8, PerCapability: map[string]int{"review": 2}},
 				AppliedRevision: "7",
 				AppliedHash:     "abc123",
+				AgentVersion:    "1.4.0",
+				AgentCommit:     "3fd5a59",
+				Facts: NodeFacts{
+					HostIP: "10.0.0.7", Hostname: "node-a", OS: "linux", Arch: "amd64",
+					CPU: 8, WorkRoot: "/var/lib/anode/runs", HomeDir: "/home/anode",
+				},
+				Capabilities: []HelloCapability{{
+					Name: "review", Version: 2, Digest: "sha256:abc",
+					Commands: []HelloCommand{{Name: "git", Found: true, Path: "/usr/bin/git"}},
+				}},
+				Instances: []HelloInstance{{Slot: 0, Concurrency: 2, Busy: true}},
 			},
-			wantKeys: []string{"appliedHash", "appliedRevision", "localLimits", "localVars", "name", "namespaces", "token", "type"},
+			wantKeys: []string{
+				"agentCommit", "agentVersion", "appliedHash", "appliedRevision",
+				"capabilities", "facts", "instances", "localLimits", "localVars",
+				"name", "namespaces", "token", "type",
+			},
 		},
 		{
 			name: "welcome",
@@ -285,6 +300,106 @@ func TestFrameRoundTripAndKeys(t *testing.T) {
 				t.Fatalf("往返后字节不同：\n first %s\nsecond %s", raw, again)
 			}
 		})
+	}
+}
+
+// TestHelloFactsAndProbesKeys 钉 D-I13 的嵌套 wire 字段名：
+// facts{hostIP,hostname,os,arch,cpu,workRoot,homeDir}、
+// capabilities[]{name,version,digest,commands[]{name,found,path}}、
+// instances[]{slot,concurrency,busy}。
+//
+// 这些字段是「中枢回答 NodesAvailable 的唯一输入」，键名漂一个就是节点报的东西
+// 中枢读不到——而两侧都编译通过。所以单独一条快照，不复用顶层帧快照。
+func TestHelloFactsAndProbesKeys(t *testing.T) {
+	hello := &HelloFrame{
+		Type:         FrameHello,
+		Name:         "node-a",
+		Token:        "tok",
+		AgentVersion: "1.4.0",
+		AgentCommit:  "3fd5a59",
+		Facts: NodeFacts{
+			HostIP: "10.0.0.7", Hostname: "node-a", OS: "linux", Arch: "amd64",
+			CPU: 8, WorkRoot: "/var/lib/anode/runs", HomeDir: "/home/anode",
+		},
+		Capabilities: []HelloCapability{{
+			Name: "review", Version: 2, Digest: "sha256:abc",
+			Commands: []HelloCommand{{Name: "git", Found: true, Path: "/usr/bin/git"}},
+		}},
+		Instances: []HelloInstance{{Slot: 1, Concurrency: 3, Busy: false}},
+	}
+	raw, err := Encode(hello)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// facts 的键集合（全部必填：节点事实是定长的一组，不是可选扩展）。
+	var facts map[string]json.RawMessage
+	if err := json.Unmarshal(m["facts"], &facts); err != nil {
+		t.Fatalf("facts 不是对象：%s", m["facts"])
+	}
+	wantFacts := []string{"arch", "cpu", "homeDir", "hostIP", "hostname", "os", "workRoot"}
+	gotFacts := make([]string, 0, len(facts))
+	for k := range facts {
+		gotFacts = append(gotFacts, k)
+	}
+	sort.Strings(gotFacts)
+	if !reflect.DeepEqual(gotFacts, wantFacts) {
+		t.Fatalf("facts 键 = %v，期望 %v", gotFacts, wantFacts)
+	}
+
+	// capabilities[] 的元素键 + commands[] 的元素键。
+	var caps []map[string]json.RawMessage
+	if err := json.Unmarshal(m["capabilities"], &caps); err != nil || len(caps) != 1 {
+		t.Fatalf("capabilities 形状不对：%s", m["capabilities"])
+	}
+	for _, k := range []string{"name", "version", "digest", "commands"} {
+		if _, ok := caps[0][k]; !ok {
+			t.Fatalf("capabilities[0] 缺字段 %q", k)
+		}
+	}
+	var cmds []map[string]json.RawMessage
+	if err := json.Unmarshal(caps[0]["commands"], &cmds); err != nil || len(cmds) != 1 {
+		t.Fatalf("commands 形状不对：%s", caps[0]["commands"])
+	}
+	for _, k := range []string{"name", "found", "path"} {
+		if _, ok := cmds[0][k]; !ok {
+			t.Fatalf("commands[0] 缺字段 %q", k)
+		}
+	}
+
+	// instances[] 的元素键。
+	var insts []map[string]json.RawMessage
+	if err := json.Unmarshal(m["instances"], &insts); err != nil || len(insts) != 1 {
+		t.Fatalf("instances 形状不对：%s", m["instances"])
+	}
+	for _, k := range []string{"slot", "concurrency", "busy"} {
+		if _, ok := insts[0][k]; !ok {
+			t.Fatalf("instances[0] 缺字段 %q", k)
+		}
+	}
+
+	// 反序列化必须把嵌套结构完整还原（round-trip 的深一层校验）。
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	got, ok := decoded.(*HelloFrame)
+	if !ok {
+		t.Fatalf("Decode 返回 %T", decoded)
+	}
+	if got.Facts.HostIP != hello.Facts.HostIP || got.Facts.CPU != hello.Facts.CPU {
+		t.Fatalf("facts 往返丢了：%+v", got.Facts)
+	}
+	if len(got.Capabilities) != 1 || len(got.Capabilities[0].Commands) != 1 ||
+		!got.Capabilities[0].Commands[0].Found {
+		t.Fatalf("capabilities 往返丢了：%+v", got.Capabilities)
+	}
+	if len(got.Instances) != 1 || got.Instances[0].Slot != 1 {
+		t.Fatalf("instances 往返丢了：%+v", got.Instances)
 	}
 }
 

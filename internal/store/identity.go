@@ -36,7 +36,7 @@ func (d *DB) RegisterUser(ctx context.Context, u *User) (*Namespace, error) {
 }
 
 // RegisterUserWithPassword 与 RegisterUser **完全同语义**（RoleAuto 首用户判定 /
-// 默认命名空间 / 内置能力播种），额外在**同一个事务**里写入密码列。
+// 默认命名空间），额外在**同一个事务**里写入密码列。
 //
 // 为什么必须同事务（契约「追加：用密码注册」§A1）：密码是这条注册路径唯一的登录方式。
 // 若先把用户行提交、再 UPDATE 密码，中间失败就留下一个「有账号、却没有任何登录方式」
@@ -51,7 +51,10 @@ func (d *DB) RegisterUserWithPassword(
 }
 
 // registerUser 是两个导出注册入口的共同主体：
-// 建用户 + 建 `default` 命名空间 + 播种内置能力，**在同一个事务里**完成。
+// 建用户 + 建 `default` 命名空间，**在同一个事务里**完成。
+//
+// v4 不再播种任何内置能力：链尾就是 next: [] 的普通脚本能力，没有中枢内置执行器，
+// 因此也没有「每个命名空间必须有一份 notify.phone」这种起点。
 func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, passwordUpdatedAt int64) (*Namespace, error) {
 	if u == nil {
 		return nil, fmt.Errorf("register user: nil user")
@@ -84,13 +87,9 @@ func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, pas
 	}
 	// INSERT 的列集分两档：
 	//   - 密码路径：password_hash / password_updated_at 与用户行同一个 INSERT 写入；
-	//   - Passkey 路径：**不点名**这两列，让它们取列默认值（迁移 8：'' / 0）。
+	//   - Passkey 路径：**不点名**这两列，让它们取列默认值（v4 baseline：'' / 0）。
 	//
-	// 为什么 Passkey 路径不能也显式点名：migration 8 之前建的库（老库）的 users 表
-	// 没有这两列，而现有升级用例会在**未升级的 v2 schema** 上用当前代码注册用户
-	// （node_agent_version_test.go 的 TestMigration3AgentColumnsFromV2）——
-	// 显式点名会直接报 “table users has no column named password_hash”。
-	// 两种写法语义等价：省略列 == 列默认值（'' / 0）。
+	// 两种写法语义等价：省略列 == 列默认值。
 	var ierr error
 	if passwordHash == "" && passwordUpdatedAt == 0 {
 		_, ierr = tx.ExecContext(ctx,
@@ -109,10 +108,6 @@ func (d *DB) registerUser(ctx context.Context, u *User, passwordHash string, pas
 	ns, err := createDefaultNamespaceTx(ctx, tx)
 	if err != nil {
 		return nil, err
-	}
-	// 内置能力与命名空间同事务：否则新命名空间里连 notify.phone 都没有（#162）。
-	if err := SeedBuiltinCapabilitiesTx(ctx, tx, ns.ID); err != nil {
-		return nil, fmt.Errorf("seed builtin capabilities for namespace %s: %w", ns.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit register user: %w", err)

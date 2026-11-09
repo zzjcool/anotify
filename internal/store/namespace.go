@@ -142,9 +142,12 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 // 空列表返回 []（不变量 I9）。
 func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	rows, err := d.cachedQueryContext(ctx,
+		// v4 的 nodes 是集群级对象（不绑 ns），所以这里的 NodeCount 恒为 0：
+		// 一台机器服务哪些 ns 由 node_configs.namespaces（授权）× 节点申报决定，
+		// 按 ns 反查节点属于派发期/展示层（G1-3）的事，不是命名空间行的计数。
 		`SELECT n.id, n.slug, n.name, n.created_at,
 		        (SELECT count(*) FROM capability_versions c WHERE c.namespace_id = n.id),
-		        (SELECT count(*) FROM nodes nd WHERE nd.namespace_id = n.id),
+		        0,
 		        (SELECT count(*) FROM sources s WHERE s.namespace_id = n.id),
 		        (SELECT count(*) FROM edges e WHERE e.namespace_id = n.id)
 		   FROM namespaces n
@@ -165,10 +168,10 @@ func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	return out, rows.Err()
 }
 
-// CreateNamespace 建命名空间，并**在同一事务内**播种内置能力。
+// CreateNamespace 建命名空间（同一事务内完成）。
 //
-// 为什么必须同事务：新命名空间里没有 notify.phone 的话，连一个 end 节点都
-// 声明不出来，推送直接失效；而"稍后补播种"在失败时没有任何人会发现。
+// v4 不在命名空间里播种任何锚点能力/源：链尾是普通脚本能力，没有中枢内置执行器，
+// 因此「新建的 ns 必须自带一份某能力」这个前提不存在了。
 //
 // slug 全局唯一：已占用返回 ErrNamespaceExists（HTTP 409）。
 func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace, error) {
@@ -195,9 +198,6 @@ func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace
 			return nil, fmt.Errorf("%w: %q", ErrNamespaceExists, slug)
 		}
 		return nil, fmt.Errorf("insert namespace: %w", err)
-	}
-	if err := SeedBuiltinCapabilitiesTx(ctx, tx, ns.ID); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit create namespace: %w", err)
@@ -268,17 +268,16 @@ func (d *DB) DeleteNamespace(ctx context.Context, id string, force bool) error {
 	// 显式按依赖顺序删，而不是依赖 FK 级联的顺序：
 	// tasks 对 capability_versions 有**不带级联**的外键，级联触发顺序若先删能力
 	// 就会撞上还存在的 tasks 行。显式删除让顺序确定。
+	//
+	// v4 的 nodes 不在这里：节点是集群级对象，删命名空间不该顺手删机器
+	// （一台机器可能同时服务别的 ns）。其余子表都有 ON DELETE CASCADE，
+	// 但这里仍显式删——顺序确定，且不依赖 SQLite 的级联触发顺序。
 	stmts := []string{
 		`DELETE FROM tasks WHERE namespace_id = ?`,
 		`DELETE FROM playbooks WHERE namespace_id = ?`,
 		`DELETE FROM events WHERE namespace_id = ?`,
-		`DELETE FROM node_pins WHERE namespace_id = ?`,
-		`DELETE FROM node_instances WHERE namespace_id = ?`,
-		`DELETE FROM node_capabilities WHERE namespace_id = ?`,
 		`DELETE FROM edges WHERE namespace_id = ?`,
 		`DELETE FROM sources WHERE namespace_id = ?`,
-		`DELETE FROM graph_versions WHERE namespace_id = ?`,
-		`DELETE FROM nodes WHERE namespace_id = ?`,
 		`DELETE FROM capability_versions WHERE namespace_id = ?`,
 		`DELETE FROM namespaces WHERE id = ?`,
 	}
@@ -302,7 +301,7 @@ func (d *DB) namespaceBlockingObjects(ctx context.Context, namespaceID string) (
 		{"sources", `SELECT count(*) FROM sources WHERE namespace_id = ?`},
 		{"edges", `SELECT count(*) FROM edges WHERE namespace_id = ?`},
 		{"tasks", `SELECT count(*) FROM tasks WHERE namespace_id = ?`},
-		{"nodes", `SELECT count(*) FROM nodes WHERE namespace_id = ?`},
+		{"playbooks", `SELECT count(*) FROM playbooks WHERE namespace_id = ?`},
 	}
 	out := []string{}
 	for _, p := range probes {

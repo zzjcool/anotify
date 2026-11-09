@@ -48,6 +48,72 @@ type HelloFrame struct {
 	AppliedRevision string `json:"appliedRevision"`
 	// AppliedHash 是 applied 文件的归一化哈希（中枢据此判定 drift）。
 	AppliedHash string `json:"appliedHash"`
+	// AgentVersion / AgentCommit 是节点自报的版本事实（D-I13；空串 = 未知）。
+	// 它们不进 digest、不进配置 revision：只用于 NodesAvailable / Node.status / upgrade。
+	AgentVersion string `json:"agentVersion"`
+	AgentCommit  string `json:"agentCommit"`
+	// Facts 是节点内置事实（anode.md §3.6）：能力用 status.* 引用它们，
+	// 中枢用它回答 Node.status 与「这台机器能不能跑」。它们只走 hello/welcome，
+	// 不新增帧、也不参与节点匹配的配置 revision。
+	Facts NodeFacts `json:"facts"`
+	// Capabilities 是本机的能力探测结果（D-I13）：每条带 requires.commands 的
+	// 命中情况（LookPath 结果）与可执行能力名。中枢据此回答 NodesAvailable
+	// 的 CommandMissing，不需要再问节点。
+	Capabilities []HelloCapability `json:"capabilities"`
+	// Instances 是本机申报的并发槽位（slot / concurrency / busy，D-I13）。
+	// 槽位事实只在 hello 上报；派发授槽仍由中枢的 lease 协议决定。
+	Instances []HelloInstance `json:"instances"`
+}
+
+// NodeFacts 是节点内置事实（anode.md §3.6 的 status.* 那一组）。
+//
+// 它们是「机器说了算」的值：不进 vars、不进配置 revision、不上报值来源，
+// 每个节点都有。字段名是 wire 名（camelCase，D-I13）。
+type NodeFacts struct {
+	HostIP   string `json:"hostIP"`
+	Hostname string `json:"hostname"`
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	// CPU 是逻辑核数（注入任务环境时是字符串，wire 上是数字）。
+	CPU int `json:"cpu"`
+	// WorkRoot 是任务目录的父目录；HomeDir 是 anode 用户家目录（都是目录类事实）。
+	WorkRoot string `json:"workRoot"`
+	HomeDir  string `json:"homeDir"`
+}
+
+// HelloCapability 是 hello.capabilities[] 的一条：能力名 + 它的命令探测结果。
+//
+// 为什么把「能力名」与「命令探测」放在同一条：中枢要回答的是
+// 「这台机器能不能跑这个能力」，缺的往往是 requires.commands 里的一条命令；
+// 分开两条会让这个判断变成一次跨数组 join。
+type HelloCapability struct {
+	// Name 是能力名（与 spec.metadata.name 同一套正则）。
+	Name string `json:"name"`
+	// Version / Digest 是这台机器上持有的那份（0 / "" = 未知或未部署）。
+	Version int    `json:"version"`
+	Digest  string `json:"digest"`
+	// Commands 是 requires.commands 的逐条探测结果。
+	Commands []HelloCommand `json:"commands"`
+}
+
+// HelloCommand 是一条命令探测结果：查到了给路径，没查到 Path 为空。
+type HelloCommand struct {
+	// Name 是命令名（requires.commands 的原样值）。
+	Name string `json:"name"`
+	// Found 是 LookPath 是否命中。
+	Found bool `json:"found"`
+	// Path 是命中的绝对路径（Found=false 时为空串）。
+	Path string `json:"path"`
+}
+
+// HelloInstance 是 hello.instances[] 的一条并发槽位申报。
+type HelloInstance struct {
+	// Slot 是 0..N-1 的槽位号。
+	Slot int `json:"slot"`
+	// Concurrency 是这个实例能同时跑几份。
+	Concurrency int `json:"concurrency"`
+	// Busy 表示当前是否有任务占着这个槽位。
+	Busy bool `json:"busy"`
 }
 
 // WelcomeFrame 是中枢对 hello（以及 config.get）的应答。

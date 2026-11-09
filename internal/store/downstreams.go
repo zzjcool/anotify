@@ -308,11 +308,14 @@ func (d *DB) ReplaceCapabilityDownstreams(ctx context.Context, namespaceID, name
 // 空集合时补上隐式出口 `out`：这是"建时声明 outputs: []（终端），后来在编辑里加了
 // 一条下游"的真实场景——不补的话第一次接下游就会被 unknown_port 挡回去。
 //
-// 注意它只用于**校验**，不改产物：outputs 仍属于不可变的能力版本（I8），派发侧
-// 自己会按「声明 ∪ 有出边的端口」合并（见 ws/route 的 ports 推导）。
+// 注意它只用于**校验**，不改正文：next 属于能力行（改线是原地更新，见
+// capability.go 的 UpdateNext），派发侧按「声明的 next ∪ 库里的出边」理解这张图。
+//
+// v4 没有端口概念，本函数名与端口语义都是 v3 残留，随 G1-3 重写 downstreams 一并删除。
 func capabilityPortsOn(ctx context.Context, ex txExec, namespaceID, name string, capDef *CapabilityVersion) (map[string]bool, error) {
-	allowed := make(map[string]bool, len(capDef.Outputs)+2)
-	for _, p := range capDef.Outputs {
+	// v4 没有端口：能力侧的「可挂下游」就是它声明的 spec.next。
+	allowed := make(map[string]bool, len(capDef.Spec.Next)+2)
+	for _, p := range capDef.Spec.Next {
 		if p = strings.TrimSpace(p); p != "" {
 			allowed[p] = true
 		}

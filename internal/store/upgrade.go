@@ -32,8 +32,6 @@ var ErrUpgradeBreaking = errors.New("upgrade_breaking")
 type UpgradeChangeKind string
 
 const (
-	// ChangeRemovedPort 新版删掉了一个 port：接在这个出口上的 name 型 link 会失效。
-	ChangeRemovedPort UpgradeChangeKind = "removed_port"
 	// ChangeParamTypeChanged 某个入参的类型变了：上游照旧喂旧类型 → 派发时被 param_schema 剪掉。
 	ChangeParamTypeChanged UpgradeChangeKind = "param_type_changed"
 	// ChangeParamAddedRequired 新增了必填入参：已有的上游根本不知道要喂它。
@@ -142,18 +140,8 @@ func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *Ca
 	if c.Name == "" || c.Version <= 0 {
 		return impact, nil
 	}
-	// 闸门比的是「契约」（outputs / params_schema），而 P4 起 HTTP 层只提交**正文**，
-	// 派生列的唯一写者是 store 的写入路径（契约 §4）。这里必须**先从正文派生**：
-	// 否则新版本的契约被看成空的，任何带出口的显式新版本都会被 diffContracts 判成
-	// 「端口被删」而永久 409 upgrade_breaking —— 那是「改了脚本就发不出去」。
-	//
-	// 派到副本上：调用方（server 的 CheckUpgrade / 事务内的写入路径）都不能因为
-	// 「算一次影响面」就拿到一个被改过的对象。
-	next := *c
-	if derr := deriveFromSpec(&next); derr != nil {
-		return nil, derr
-	}
-	c = &next
+	// v4 的契约只有 params（JSON Schema）：next 改线是原地更新、不产生新版本，
+	// 也没有端口。闸门因此只比 params。
 	prev, err := getCapabilityLatestOn(ctx, ex, namespaceID, c.Name)
 	if errors.Is(err, ErrNotFound) {
 		return impact, nil // 首个版本：没有可比对的契约，也就谈不上破坏
@@ -188,30 +176,9 @@ func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *Ca
 func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 	changes := []UpgradeChange{}
 
-	// ① port：新版删掉的出口
-	nextPorts := make(map[string]bool, len(next.Outputs))
-	for _, p := range next.Outputs {
-		nextPorts[p] = true
-	}
-	removed := make([]string, 0, len(prev.Outputs))
-	for _, p := range prev.Outputs {
-		if !nextPorts[p] {
-			removed = append(removed, p)
-		}
-	}
-	sort.Strings(removed)
-	for range removed {
-		changes = append(changes, UpgradeChange{
-			Kind: ChangeRemovedPort,
-			// 不提"端口"这个词（CONTRACT-hide-ports.md §6）：用户脑子里只有
-			// "这个能力跑完交给谁"。旧版有多个出口时把它们列出来，让人认得出断的是哪一路。
-			Detail: fmt.Sprintf("删掉了一个出口（旧版有 %v），接在它下游的连线会断", prev.Outputs),
-		})
-	}
-
-	// ② 入参：类型变了 / 新增必填
-	prevProps, _ := schemaProperties(prev.ParamsSchema)
-	nextProps, nextRequired := schemaProperties(next.ParamsSchema)
+	// 入参：类型变了 / 新增必填（v4 没有端口，删掉出口不再是破坏性变更）。
+	prevProps, _ := schemaProperties(prev.Spec.Params)
+	nextProps, nextRequired := schemaProperties(next.Spec.Params)
 
 	// 稳定顺序：同一份输入永远报同样的顺序
 	keys := make([]string, 0, len(prevProps))
@@ -272,19 +239,9 @@ func (d *DB) upgradeAffectedLinks(ctx context.Context, namespaceID string, prev,
 
 // upgradeAffectedLinksOn 是 upgradeAffectedLinks 的 ex 版。
 func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
-	nextPorts := make(map[string]bool, len(next.Outputs))
-	for _, p := range next.Outputs {
-		nextPorts[p] = true
-	}
-	removedPorts := make(map[string]bool, len(prev.Outputs))
-	for _, p := range prev.Outputs {
-		if !nextPorts[p] {
-			removedPorts[p] = true
-		}
-	}
-	// 入参契约真的变了才去查右端（两类变化都可能为空，空则这一类不产生候选）。
-	prevProps, prevReq := schemaProperties(prev.ParamsSchema)
-	nextProps, nextReq := schemaProperties(next.ParamsSchema)
+	// 入参契约真的变了才去查右端（v4 只有这一类破坏性变更）。
+	prevProps, prevReq := schemaProperties(prev.Spec.Params)
+	nextProps, nextReq := schemaProperties(next.Spec.Params)
 	paramsChanged := false
 	for k, spec := range prevProps {
 		oldSpec, ok := spec.(map[string]any)
@@ -300,7 +257,7 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 			paramsChanged = true
 		}
 	}
-	if len(removedPorts) == 0 && !paramsChanged {
+	if !paramsChanged {
 		return []UpgradeLink{}, nil
 	}
 
@@ -311,12 +268,7 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 	out := make([]UpgradeLink, 0, 8)
 	seen := make(map[string]int, len(edges))
 	for _, e := range edges {
-		reasons := make([]string, 0, 2)
-		if !e.FromIsSource && removedPorts[e.FromPort] {
-			if fromName, _, fromPinned := SplitRef(e.FromRef); !fromPinned && fromName == next.Name {
-				reasons = append(reasons, fmt.Sprintf("出口 %q 在新版里被删掉了，这条 link 会断", e.FromPort))
-			}
-		}
+		reasons := make([]string, 0, 1)
 		if paramsChanged {
 			if toName, _, toPinned := SplitRef(e.ToRef); !toPinned && toName == next.Name {
 				reasons = append(reasons, "跟随 latest，会拿到新版的入参契约")
@@ -348,7 +300,33 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 	return out, nil
 }
 
-// schemaProperties 取 params_schema 的 properties 与 required（坏 schema 当作空）。
+// sortJSON 递归地把 map 转成键排序的紧凑结构（json.Marshal 对 map 的键本身
+// 就是按字节序排序的，这里只是显式走一遍，避免依赖未来实现细节）。
+func sortJSON(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make(map[string]any, len(t))
+		for _, k := range keys {
+			out[k] = sortJSON(t[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = sortJSON(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// schemaProperties 取 params 的 properties 与 required（坏 schema 当作空）。
 //
 // 与 validateValue / checkEdgeLiterals 同一口径：读不懂的 schema 不拦任何东西
 // （能力保存时已经把 schema 格式过一道；走到这里还坏只能是手改库）。

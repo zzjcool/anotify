@@ -97,7 +97,7 @@ func verifyBuiltArtifact(c *CapabilityVersion, art *Artifact) error {
 		return fmt.Errorf("artifact builder returned an artifact for %s/%s, want %s/%s",
 			art.NamespaceID, art.CapabilityID, c.NamespaceID, c.ID)
 	}
-	if want := c.Digest(); art.Digest != want {
+	if want := c.Digest; art.Digest != want {
 		return fmt.Errorf("artifact digest %q != capability digest %q（构建路径与读取路径分叉了）",
 			art.Digest, want)
 	}

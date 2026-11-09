@@ -35,10 +35,9 @@ const (
 
 // ErrArtifactNotFound 表示「这个能力此刻没有可部署/可引用的产物」。
 //
-// 语义在 P2 之后收窄成两种（artifact 表已删，产物是能力行的正文算出来的）：
+// v4 只有 run 一种实现形式，所以它只有两种来源：
 //   - 能力不存在，或不属于该命名空间；
-//   - 能力是 **handler 形式**（中枢内置执行器认领，没有 files）——它不该被部署到节点，
-//     也不存在「一份可推下去的产物」。
+//   - 能力没有 run（spec 过不了 artifact.Validate 的行不该出现在库里，防御性判一次）。
 //
 // 名字沿用旧哨兵：handler 层靠它翻 404 artifact_not_found，改名字换不来任何好处。
 var ErrArtifactNotFound = errors.New("store: artifact not found")
@@ -89,10 +88,8 @@ type Deployment struct {
 // CurrentArtifact 返回某能力**当前产物**：digest = 能力行的 content_hash，
 // Spec = 由 capability_versions.spec 拼出的整份 canonical JSON。
 //
-// 能力不存在、或它是 handler 形式（没有 files，不该出现在部署面板里）时返回
-// ErrArtifactNotFound —— 「还没有产物」与「这个能力不该有产物」在**部署**这条路上
-// 是同一个回答（handler 形式的那条更具体的 400 builtin_not_deployable 在 handler 层
-// 先判，见 internal/server 的 createDeployments）。
+// 能力不存在、或它没有 run 时返回 ErrArtifactNotFound —— 「还没有产物」与
+// 「这个能力不该有产物」在**部署**这条路上是同一个回答。
 func (d *DB) CurrentArtifact(ctx context.Context, namespaceID, capabilityID string) (*Artifact, error) {
 	return currentArtifactOn(ctx, d, namespaceID, capabilityID)
 }
@@ -111,14 +108,11 @@ func currentArtifactOn(ctx context.Context, ex queryExec, namespaceID, capabilit
 
 // deployable 判「这个能力有没有一份可推给节点的产物」。
 //
-// 可部署 ⟺ **有 run**（entrypoint + files）。两种「没有实现」的形态都必须挡住：
-//   - handler 形式：实现编译在中枢里，没有 files 可推（Capability Spec v3 §6.1）；
-//   - 纯定义（既没 handler 也没 run）：根本不是能跑的东西——迁移 8 之前建的老行、
-//     事件起点类能力的残壳都属于这一类。
-//
-// 放过去的后果完全相同：它会出现在部署面板里，推下去节点只会拒。
+// 可部署 ⟺ **有 run**（entrypoint + files）。v4 只有脚本一种实现形式，
+// 「纯定义」不在合法形状里（写入期 artifact.Validate 就拒），这里只是防御性判一次：
+// 放过去的后果是它出现在部署面板里，推下去节点只会拒。
 func deployable(c *CapabilityVersion) error {
-	if c.Spec.Handler != "" || c.Spec.Run.Entrypoint == "" {
+	if c.Spec.Run.Entrypoint == "" {
 		return ErrArtifactNotFound
 	}
 	return nil
@@ -127,10 +121,9 @@ func deployable(c *CapabilityVersion) error {
 // artifactOf 把一行能力拼成整份产物（**唯一**的拼装点）。
 //
 // 两件事必须一起做对，否则症状极难查：
-//   - digest 取 `c.Digest()`（content_hash，契约 §4 的「content_hash ≡ digest」）。
+//   - digest 取能力行上的 digest（含 version 的部署身份，capability.md §3）。
 //     它必须与节点从收到的字节重算出来的一致，否则部署永远收敛不了；
-//   - Spec 取 `artifact.CanonicalJSON(c.Artifact())`。P1 期间写穿到 artifacts 表里的
-//     就是这串字节，所以「产物内容」在 P2 前后逐字节相同（deploy 帧零改动）。
+//   - Spec 取 `artifact.CanonicalJSON(c.Artifact())`（与 digest 同一次归一化）。
 func artifactOf(c *CapabilityVersion) (*Artifact, error) {
 	if err := deployable(c); err != nil {
 		return nil, err
@@ -143,26 +136,24 @@ func artifactOf(c *CapabilityVersion) (*Artifact, error) {
 	return &Artifact{
 		NamespaceID:  c.NamespaceID,
 		CapabilityID: c.ID,
-		Digest:       c.Digest(),
+		Digest:       c.Digest,
 		Spec:         spec,
 	}, nil
 }
 
-// GetArtifactByDigest 按内容寻址标识取产物：digest 去掉 `sha256:` 前缀就是
-// capability_versions.content_hash（契约 §11.2）。
+// GetArtifactByDigest 按内容寻址标识取产物：digest 就是 capability_versions.digest。
 //
-// 内容寻址的含义没变：同一个 digest 在同一命名空间里最多命中一行能力
-// （UNIQUE(namespace_id, content_hash)）。handler 形式命中时返回 ErrArtifactNotFound
-// ——它没有可推的产物。
+// 内容寻址：同一个 digest 在同一命名空间里最多命中一行能力（UNIQUE(namespace_id, digest)）。
+// 没有 run 的行命中时返回 ErrArtifactNotFound ——它没有可推的产物。
 func (d *DB) GetArtifactByDigest(ctx context.Context, namespaceID, digest string) (*Artifact, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	hash := strings.TrimPrefix(digest, artifact.DigestPrefix)
-	if hash == "" {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
 		return nil, ErrArtifactNotFound
 	}
-	c, err := getCapabilityByHashOn(ctx, d, namespaceID, hash)
+	c, err := getCapabilityByDigestOn(ctx, d, namespaceID, digest)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrArtifactNotFound
 	}
@@ -240,9 +231,9 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabili
 	}
 	digest = strings.TrimSpace(digest)
 	if digest == "" {
-		digest = capRow.Digest()
+		digest = capRow.Digest
 	}
-	if digest != capRow.Digest() {
+	if digest != capRow.Digest {
 		return nil, ErrArtifactNotFound
 	}
 
@@ -280,13 +271,13 @@ func (d *DB) GetDeployment(ctx context.Context, namespaceID, id string) (*Deploy
 	return d.scanDeployment(ctx, deploymentSelect+` WHERE d.namespace_id = ? AND d.id = ?`, namespaceID, id)
 }
 
-// deploymentDigestSQL 是「中枢期望的 digest」的**唯一**口径：能力行的 content_hash
-// 加上标准前缀。不读 d.digest 列——列里那份是建行那一刻的副本（审计用），
-// 而期望永远是「这个能力此刻的内容」（契约 §11.2：对账改从能力行取 digest）。
+// deploymentDigestSQL 是「中枢期望的 digest」的**唯一**口径：能力行的 digest 列
+// （含 `sha256:` 前缀的部署身份）。不读 d.digest 列——列里那份是建行那一刻的副本
+// （审计用），而期望永远是「这个能力此刻的内容」。
 //
 // 为什么要统一：节点算 digest 用的是它收到的产物字节，中枢若拿别的值去比，
 // 症状是「每次连上来都判不一致、每次都重推一遍」——不影响正确性，但永远收敛不了。
-const deploymentDigestSQL = `'` + artifact.DigestPrefix + `' || c.content_hash`
+const deploymentDigestSQL = `c.digest`
 
 const deploymentSelect = `
 SELECT d.id, d.namespace_id, d.node_id, d.capability_id, ` + deploymentDigestSQL + ` AS digest,
@@ -501,8 +492,8 @@ func (d *DB) DeploymentsForNode(ctx context.Context, namespaceID, nodeID string)
 				return nil, fmt.Errorf("decode capability spec for deployment %s: %w", it.DeploymentID, err)
 			}
 		}
-		// handler 形式不可部署（建行时就拒了），真在库里出现说明行是历史残留：
-		// 直接跳过而不是推一份没有 files 的产物下去（节点只会拒，日志还会骗人）。
+		// 没有 run 的行不可部署（写入期就拒了）：直接跳过而不是推一份空产物下去
+		// （节点只会拒，日志还会骗人）。
 		full, aerr := artifactOf(c)
 		if errors.Is(aerr, ErrArtifactNotFound) {
 			continue

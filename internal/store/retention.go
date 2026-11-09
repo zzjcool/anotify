@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 保留策略（保留期过期清理，issue #143）。
@@ -140,7 +142,7 @@ type RetentionReport struct {
 func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionScope, error) {
 	statusIn, statusArgs := terminalStatusSQL()
 	rows, err := d.QueryContext(ctx,
-		`SELECT DISTINCT t.namespace_id, t.capability_id, cv.lifecycle
+		`SELECT DISTINCT t.namespace_id, t.capability_id, cv.spec
 		   FROM tasks t
 		   JOIN capability_versions cv ON cv.id = t.capability_id
 		  WHERE t.status IN (`+statusIn+`) AND t.finished_at IS NOT NULL
@@ -152,30 +154,31 @@ func (d *DB) ListResultRetentionScopes(ctx context.Context) ([]ResultRetentionSc
 
 	out := []ResultRetentionScope{}
 	for rows.Next() {
-		var namespaceID, capabilityID, lifecycleJSON string
-		if err := rows.Scan(&namespaceID, &capabilityID, &lifecycleJSON); err != nil {
+		var namespaceID, capabilityID, specJSON string
+		if err := rows.Scan(&namespaceID, &capabilityID, &specJSON); err != nil {
 			return nil, fmt.Errorf("scan retention scope: %w", err)
 		}
-		var lc Lifecycle
-		if lifecycleJSON != "" {
-			if err := json.Unmarshal([]byte(lifecycleJSON), &lc); err != nil {
-				// 见方法注释「坏 lifecycle 不毒丸」：跳过这一条，不要整轮失败。
-				slog.Warn("skip capability with invalid lifecycle",
-					"event", "store.retention.bad_lifecycle",
+		var spec artifact.Spec
+		if specJSON != "" {
+			if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+				// 见方法注释「坏正文不毒丸」：跳过这一条，不要整轮失败。
+				slog.Warn("skip capability with invalid spec",
+					"event", "store.retention.bad_spec",
 					"namespace_id", namespaceID,
 					"capability_id", capabilityID,
 					"error", err.Error())
 				continue
 			}
 		}
-		if lc.ResultTTLSec <= 0 {
-			// 未声明 TTL（0）意味着**永不清理**：放进 scope 列表只会每轮白扫一遍。
+		ttl := spec.Lifecycle.EffectiveResultTTLSec()
+		if ttl <= 0 {
+			// 显式 0 = **永不清理**：放进 scope 列表只会每轮白扫一遍。
 			continue
 		}
 		out = append(out, ResultRetentionScope{
 			NamespaceID:  namespaceID,
 			CapabilityID: capabilityID,
-			ResultTTLSec: lc.ResultTTLSec,
+			ResultTTLSec: ttl,
 		})
 	}
 	if err := rows.Err(); err != nil {

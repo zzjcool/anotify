@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
 )
 
 // 九态任务状态机（契约 §3.1）。
@@ -944,27 +946,28 @@ func (d *DB) resolveLostOne(ctx context.Context, namespaceID, nodeID string, o T
 	//   ② 领了单但没跑 → pending：没有副作用可重复，与幂等性、policy 都无关；
 	//   ③ 能力声明 idempotent:false → abandoned：宁可放弃也不重放（#222 at-most-once）；
 	//   ④ 剩下才由 policy 决定：unclean 结束（执行者可能还活着）→ abandoned。
-	var lifecycleJSON string
+	var specJSON string
 	qerr := tx.QueryRowContext(ctx,
-		`SELECT lifecycle FROM capability_versions WHERE id = ?`, capabilityID).Scan(&lifecycleJSON)
+		`SELECT spec FROM capability_versions WHERE id = ?`, capabilityID).Scan(&specJSON)
 	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
-		return false, false, fmt.Errorf("resolve lost task %s: read capability lifecycle: %w", o.TaskID, qerr)
+		return false, false, fmt.Errorf("resolve lost task %s: read capability spec: %w", o.TaskID, qerr)
 	}
-	var lc Lifecycle
-	if lifecycleJSON != "" {
-		if err := json.Unmarshal([]byte(lifecycleJSON), &lc); err != nil {
-			return false, false, fmt.Errorf("resolve lost task %s: decode capability lifecycle: %w", o.TaskID, err)
+	var spec artifact.Spec
+	if specJSON != "" {
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return false, false, fmt.Errorf("resolve lost task %s: decode capability spec: %w", o.TaskID, err)
 		}
 	}
+	lc := spec.Lifecycle
 	to := TaskPending
 	cause := ""
 	switch {
-	case attempts >= lc.MaxAttemptsOrDefault():
+	case attempts >= lc.EffectiveMaxAttempts():
 		to, cause = TaskAbandoned, "attempts exhausted"
 	case cur == TaskAssigned && !startedAt.Valid:
 		// 安全例外：领了单但一行代码都没跑（#221 那条不用 kill agent 也能钉死的路径）
 		to = TaskPending
-	case !lc.IsIdempotent():
+	case !lc.Idempotent:
 		to, cause = TaskAbandoned, "capability is not idempotent"
 	case policy == LostAbandon:
 		to = TaskAbandoned
@@ -1376,25 +1379,26 @@ func (d *DB) sweepOne(ctx context.Context, taskID, namespaceID, capabilityID, st
 		return false, fmt.Errorf("mark lease expired: %w", err)
 	}
 
-	// ② 查能力的重试策略，决定回 pending 还是 abandoned
-	var lifecycleJSON string
+	// ② 查能力的重试策略（v4：策略在产物正文的 lifecycle 里），决定回 pending 还是 abandoned
+	var specJSON string
 	err = tx.QueryRowContext(ctx,
-		`SELECT lifecycle FROM capability_versions WHERE id = ?`, capabilityID).Scan(&lifecycleJSON)
+		`SELECT spec FROM capability_versions WHERE id = ?`, capabilityID).Scan(&specJSON)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("read capability lifecycle: %w", err)
+		return false, fmt.Errorf("read capability spec: %w", err)
 	}
-	var lc Lifecycle
-	if lifecycleJSON != "" {
-		if err := json.Unmarshal([]byte(lifecycleJSON), &lc); err != nil {
-			return false, fmt.Errorf("decode capability lifecycle: %w", err)
+	var spec artifact.Spec
+	if specJSON != "" {
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return false, fmt.Errorf("decode capability spec: %w", err)
 		}
 	}
+	lc := spec.Lifecycle
 
 	to := TaskPending
 	finished := false
 	reason := "lease_expired: attempts exhausted"
 	switch {
-	case attempts >= lc.MaxAttemptsOrDefault():
+	case attempts >= lc.EffectiveMaxAttempts():
 		// ① 重试预算用尽：无论如何都放弃。
 		//
 		// 这条**必须排在"从未开始"之前**：attempts 在派发成功时就 +1，
@@ -1409,7 +1413,7 @@ func (d *DB) sweepOne(ctx context.Context, taskID, namespaceID, capabilityID, st
 		// 不存在副作用。这条证据比能力声明更可靠，所以优先于幂等性判断
 		// ——以前这类任务被白丢，用户看到 abandoned 而节点根本没动过（#144）。
 		to = TaskPending
-	case !lc.IsIdempotent():
+	case !lc.Idempotent:
 		// ③ 重放不安全的能力：宁可放弃也不重复执行
 		to = TaskAbandoned
 		finished = true
