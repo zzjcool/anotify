@@ -142,7 +142,7 @@
 | `namespace` | string? | 客户端 | 可省略：由 path 或 CLI 明确上下文补。显式值与 path 不同 → 400 `namespace_mismatch`；两者都没有 → 400 |
 | `uid` | string | 服务端 | 不透明、永不复用 |
 | `version` | int? | 客户端 | **仅 `Capability` / `Playbook` 使用**，语义见主文档；不是所有 kind 都有 |
-| `resourceVersion` | string | 服务端 | 不透明并发令牌。**不等于 `version`**；只用于写前置条件，不表达内容修订 |
+| `resourceVersion` | string | 服务端 | 不透明并发令牌，绑定不可复用的资源 UID 与内部写修订（例如 `rv1:<uid>:<revision>`）；删后重建同名资源不能复用旧令牌。**不等于 `version`**，客户端不做数值运算；写入在同一事务核验 UID、修订、路径身份与可见状态 |
 | `creationTimestamp` | string(RFC3339) | 服务端 | 原 `createdAt` |
 | `displayName` | string? | 客户端 | 纯展示；不进 digest、不产生新版本 |
 
@@ -247,7 +247,7 @@ R == 当前值       → 写，并给该行分配新的 resourceVersion
 ### 4.2 `reason` 封闭集合
 
 **通用**：`BadRequest` `Unauthorized` `Forbidden` `NotFound` `AlreadyExists` `Conflict`
-`resource_version_required` `resource_version_conflict` `kind_mismatch` `namespace_mismatch` `name_immutable`
+`resource_version_required` `resource_version_invalid` `resource_version_conflict` `kind_mismatch` `namespace_mismatch` `name_immutable`
 `unknown_field` `status_not_writable` `immutable_field` `TooManyRequests`
 
 **能力写入期**（`capability.md §6.1`，全保留）：
