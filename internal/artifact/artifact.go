@@ -1,34 +1,41 @@
-// Package artifact 定义「能力产物」（Capability Artifact）的线上格式、校验与
+// Package artifact 定义「能力产物」（Capability Artifact）的 v4 线上格式、校验与
 // 内容寻址标识。
 //
-// 一份产物是一份**自包含**的规格：参数契约 + 出口 + 生命周期/粘性 + 实现
-// （脚本文件，或一个白名单内置执行器）+ 超时 + 环境变量 + 依赖的外部命令。
-// 它是控制台表单的**编译产物**，不是人手写的源文件；用户可以改，但改过之后 digest
-// 变了，中枢会把它识别为「本地变体」而永不覆盖。
+// 一份产物就是一份自包含的能力定义：**我要什么（params）、交给谁（next）、怎么
+// 跑（run）**，外加节点要提供什么（requires）、生命周期（lifecycle）与并发预算
+// （concurrency）。实现形式**只有脚本一种**：没有 handler、没有中枢执行器、
+// 没有 outputs/port/sticky（capability.md §1 / §7）。
 //
 // # 为什么自包含
 //
-// 「拷到另一台机器、直接跑起来」是这套模型的信任基础：产物不引用任何外部 blob
-// 或 URL，脱开中枢也能执行（cmd/agent 的 standalone 模式）。
+// 产物不引用任何外部 blob 或 URL：节点拿到它就能跑，中枢只派发与记账。
 //
-// # 执行边界
+// # 两级内容身份（capability.md §3）
 //
-// 产物只在**节点**上执行，中枢既不解释也不运行其中的内容（契约 I1）。
-// 入口文件必须带 shebang：执行方式是直接 exec，不经 shell —— 没有 shell 就没有
-// 插值、拼接与引号问题。
+//	foldKey = sha256(canonical{name, params, requires, lifecycle, concurrency, run})
+//	digest  = sha256(canonical{name, version, params, requires, lifecycle, concurrency, run})
 //
-// # 两种实现形式（Capability Spec v3 §3.1）
+// foldKey 判「是不是同一行」：省略 version 时，先按 foldKey 复用已有行、没有才
+// 分配下一个 version；digest 是部署身份，含 version。
 //
-// 规格里既有契约也有实现，实现只有两种形式，**恰好给一组**：
+// 刻意不进身份的两个字段：
 //
-//	files + entrypoint   普通脚本，由任意 agent 节点执行（99% 的能力）
-//	handler              内置执行器（白名单，编译进中枢），只有 builtin 节点能认领
+//   - metadata.displayName：纯展示，改它不该让部署变 stale；
+//   - spec.next：路由属于图，不属于内容；改线不产生新版本、不重推节点。
 //
-// 所以「能力有没有实现」是 Validate 的一条硬规则（impl_missing / impl_ambiguous），
-// 而不是一个可以事后补的状态：占位能力用 handler: noop。
+// 两级身份的直接推论：**改 next 不产生新版本；改 run.files 一定产生新版本**。
+// 显式 version 的正文不可变是同一条边界的另一面（store 在写入事务里用
+// SameContent / SameFold 判定，见 §3「显式 version 的内容不可变」）。
+//
+// # 归一化
+//
+// Normalize 补齐默认值（省略 ≡ 显式默认）并把 params 归一成 key 有序的 JSON：
+// 内容寻址必须与「输入怎么排版」无关，否则同一份产物在不同书写顺序下算出不同
+// digest，部署永远被判成 stale/local。
 package artifact
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -38,6 +45,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -53,117 +61,103 @@ const (
 	// DigestPrefix 是内容寻址标识的前缀（与容器镜像生态一致）。
 	DigestPrefix = "sha256:"
 
-	// MaxFileBytes 是单个文件的体积上限。
+	// MaxFileBytes 是单个文件的体积上限（256 KiB）。
 	MaxFileBytes = 256 << 10
-	// MaxTotalBytes 是一份产物全部文件的合计上限。
+	// MaxTotalBytes 是一份产物全部文件的合计上限（1 MiB）。
 	MaxTotalBytes = 1 << 20
-	// MaxOutputs 是一份产物最多能声明的出口名个数。
-	MaxOutputs = 32
-	// MaxRequires 是一份产物最多能声明的外部命令个数。
-	MaxRequires = 16
-	// MaxTimeoutSec 是超时上限（24 小时）。
-	MaxTimeoutSec = 86400
+	// MaxFiles 是一份产物最多的文件数。
+	MaxFiles = 255
 	// MaxFilePathLen 是产物内相对路径的长度上限。
 	MaxFilePathLen = 255
+	// MaxNext 是 spec.next 的元素上限（capability.md §2.3）。
+	MaxNext = 32
+	// MaxRequires 是 requires.commands / requires.values 各自的上限。
+	MaxRequires = 16
+	// MaxTimeoutSec 是本地执行超时上限（24 小时）。
+	MaxTimeoutSec = 86400
 	// MaxNameLen 是能力名长度上限（与节点名同口径）。
 	MaxNameLen = 63
 	// MaxWorkDirLen 是 run.workDir 的长度上限。
-	//
-	// PATH_MAX 在 Linux 上是 4096，但那是**含相对路径解析后**的中转缓冲；
-	// 一份能力的人读声明写到 1024 字符已远超任何真实项目目录，再长基本是
-	// 复制粘贴事故，早报错比让节点在 chdir 时报 ENAMETOOLONG 好查。
 	MaxWorkDirLen = 1024
 )
 
-// 内置执行器白名单（Capability Spec v3 §3.1）。
-//
-// handler 是「编译进中枢进程里的执行器」，不是节点上的一段脚本：它由中枢的
-// builtin 节点认领（契约 R1/R2）。白名单必须**只有**这里列出的几个——「猜一个
-// 名字试试」必须在校验期失败，而不是等到派发时才发现没有执行器（那时任务已经
-// 建好、已经扣了租约，失败现场比一个 YAML 错误难查得多）。
+// spec 默认值（capability.md §2.3）。归一化把这些填进产物，所以「省略」与
+// 「显式写默认值」是同一份内容、同一个 digest。
 const (
-	// HandlerNotifyPhone 是平台自带的手机推送动作（曾经的 notify.phone@1）。
-	HandlerNotifyPhone = "notify-phone"
-	// HandlerNoop 是合法、可部署、无副作用、不发 emit 的占位执行器。
-	//
-	// 它的存在是契约 R2 的落地方式：**能力永远有实现**，而占位不许伪造用户脚本
-	// （不许给空壳编造一份 `exit 0` 的正文）——用平台认领的 noop 明确表达「还没实现」。
-	HandlerNoop = "noop"
+	// DefaultMaxAttempts 是总尝试次数（含第一次）。
+	DefaultMaxAttempts = 3
+	// DefaultResultTTLSec 是结果保留期（7 天）；0 = 永不清理。
+	DefaultResultTTLSec = 604800
+	// DefaultMaxPerNode 是同一能力在一台节点上的并发预算。
+	DefaultMaxPerNode = 1
 )
 
-// knownHandlers 是白名单本体（顺序稳定：错误信息与播种输出要可 diff）。
-var knownHandlers = []string{HandlerNotifyPhone, HandlerNoop}
+// 问题短码（capability.md §6.1 的封闭集合；BadRequest 是 api-conventions.md §4.2
+// 的通用码，用于 §6.1 没有单列码的信封/取值形状错误）。
+const (
+	// CodeBadRequest 是信封与取值形状的通用写期错误（apiVersion/name/version/
+	// params 形状/next 形状/lifecycle 取值）。
+	CodeBadRequest = "BadRequest"
+	// CodeUnknownField 是未知字段（DisallowUnknownFields / YAML 解析不出）。
+	CodeUnknownField = "unknown_field"
+	// CodeInvalidYAML 是 YAML 本身解析不了。
+	CodeInvalidYAML = "invalid_yaml"
+	// CodeKindMismatch 是 kind 不是 Capability。
+	CodeKindMismatch = "kind_mismatch"
 
-// KnownHandlers 返回内置执行器白名单（拷贝，调用方可安全修改）。
-//
-// 导出的理由：白名单是**中枢侧**概念，播种（P1-b 把零产物的老能力补成
-// handler: noop）与端点校验都要用它，各写一份常量必然某天分叉。
-func KnownHandlers() []string {
-	out := make([]string, len(knownHandlers))
-	copy(out, knownHandlers)
-	return out
-}
-
-// isKnownHandler 报告 h 是否在白名单里。
-func isKnownHandler(h string) bool {
-	for _, known := range knownHandlers {
-		if h == known {
-			return true
-		}
-	}
-	return false
-}
-
-// executableHandlers 是白名单里**真的会被中枢执行**的那一部分（顺序稳定）。
-//
-// 白名单不等于可执行：`noop` 合法、可校验通过，但中枢**不执行**它——它只是契约 R2
-// 的占位（「能力永远有实现」），跑到它等于什么都不做。所以三件事必须分开：
-//
-//	KnownHandlers       校验用：handler 是不是一个我们认识的名字
-//	executableHandlers  认领用：中枢会不会为它建/领任务（即「谁是真中枢能力」）
-//	noop                占位：派发遇到它要**留痕剪枝**，不能静默成功
-//
-// 把 noop 混进「可执行」的后果是：一条指向占位能力的边会建出一个任务、悄悄什么都
-// 不做地"成功"，用户看到绿勾而链其实没跑（见 route 的 pruned.no_impl）。
-var executableHandlers = []string{HandlerNotifyPhone}
-
-// ExecutableHandlers 返回「中枢真的会执行」的 handler 列表（拷贝，调用方可安全修改）。
-//
-// 它是**运行时认领**的唯一数据来源（Capability Spec v3 §11.3）：数据库里
-// json_extract(spec,'$.handler') 落在这些值上的能力就是中枢能力，不再有第二张
-// 硬编码名字表。
-func ExecutableHandlers() []string {
-	out := make([]string, len(executableHandlers))
-	copy(out, executableHandlers)
-	return out
-}
-
-// IsExecutableHandler 报告 h 是不是中枢真的会执行的 handler。
-//
-// 只有 notify-phone 返回 true：`noop` 与未知值（含空串）都返回 false——
-// 空串表示「不是 handler 形式」（脚本由节点执行），同样不该被中枢认领。
-func IsExecutableHandler(h string) bool {
-	for _, eh := range executableHandlers {
-		if h == eh {
-			return true
-		}
-	}
-	return false
-}
+	// CodeEntrypointNoShebang 是 entrypoint 缺失 / 不在 files 里 / 内容不以 #! 开头。
+	CodeEntrypointNoShebang = "entrypoint_no_shebang"
+	// CodeFilesInvalid 是 files 的路径形状或限额不合格（写入期不解析符号链接）。
+	CodeFilesInvalid = "files_invalid"
+	// CodeEnvInvalid 是 env 的键名、保留前缀、PATH 覆盖或 HOME 字面量不合格。
+	CodeEnvInvalid = "env_invalid"
+	// CodeWorkDirInvalid 是 workDir 超长/含 NUL/不是绝对路径/含 .. 或非常规写法。
+	CodeWorkDirInvalid = "workdir_invalid"
+	// CodeUndeclaredNeed 是 run.env 引用了 vars.* 却没写进 requires.values。
+	CodeUndeclaredNeed = "undeclared_need"
+	// CodeUnknownFieldPath 是 fieldPath 不在 README.md 的封闭集合里。
+	CodeUnknownFieldPath = "unknown_field_path"
+	// CodeNonPathField 是 workDir 引用的 env 值不是目录类事实。
+	CodeNonPathField = "non_path_field"
+	// CodeUndefinedEnvRef 是 workDir 引用了 run.env 里没声明的名字。
+	CodeUndefinedEnvRef = "undefined_env_ref"
+	// CodeUndefinedParamRef 是 workDir 引用了 spec.params 里没声明的参数。
+	CodeUndefinedParamRef = "undefined_param_ref"
+	// CodeConcurrencyInvalid 是 concurrency.maxPerNode < 1 或不是整数。
+	CodeConcurrencyInvalid = "concurrency_invalid"
+	// CodeParamEnvCollision 是两个参数名归一后撞同一个 ANOTIFY_PARAM_*。
+	CodeParamEnvCollision = "param_env_collision"
+	// CodeRequiresInvalid 是 requires 不是对象 / 元素不合格 / 超上限 / 未知子键。
+	CodeRequiresInvalid = "requires_invalid"
+	// CodeVersionContentImmutable 是显式同版内容不同（store 判定，本包给辅助）。
+	CodeVersionContentImmutable = "version_content_immutable"
+)
 
 var (
 	namePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
-	outputPattern  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,32}$`)
-	requirePattern = regexp.MustCompile(`^[a-zA-Z0-9._+-]{1,64}$`)
 	envKeyPattern  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	varNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	// workDirRefPattern 只认 $(vars.NAME) / $(params.NAME)：其它 $ 写法一律不认。
+	workDirRefPattern = regexp.MustCompile(`\$\((vars|params)\.([A-Za-z_][A-Za-z0-9_]*)\)`)
 )
 
-// Artifact 是一份能力产物。
+// builtinFieldPaths 是 fieldPath 封闭集合里的内置事实（README.md「fieldPath 封闭
+// 集合」）。值是"能不能当 workDir 的最终值"：目录类才允许被 workDir 引用。
 //
-// 字段声明顺序即 canonical JSON 的字段顺序，而顺序参与 digest —— 改动字段顺序会让
-// 所有已有产物的 digest 失效（v3 接受并只接受这一次性代价，见契约 §3.2）。
-// 注意「在这份文档里」与「在 digest 里」不是同一件事：apiVersion / kind 与
-// metadata.displayName 留在文档中（落盘、落库要用），但不进 digest（见 digestDocument）。
+// vars.<NAME> 不在这张表里：它是开放命名空间（名字由本机/节点默认/ns 默认提供），
+// 但同样是目录类。
+var builtinFieldPaths = map[string]bool{
+	"metadata.name":       false,
+	"status.hostIP":       false,
+	"status.hostname":     false,
+	"status.os":           false,
+	"status.arch":         false,
+	"status.capacity.cpu": false,
+	"status.workRoot":     true,
+	"status.homeDir":      true,
+}
+
+// Artifact 是一份能力产物。
 type Artifact struct {
 	APIVersion string   `json:"apiVersion"`
 	Kind       string   `json:"kind"`
@@ -172,99 +166,241 @@ type Artifact struct {
 }
 
 // Metadata 是产物的身份。
+//
+// version 省略（= 0）表示**内容寻址**：按 (name, 执行正文) 复用已有行；显式给就
+// 永不折叠。displayName 是纯展示，不进 digest。
 type Metadata struct {
-	Name    string `json:"name"    yaml:"name"`
-	Version int    `json:"version" yaml:"version"`
-	// DisplayName 是**纯展示**的名字（控制台列表、节点标题）。
-	//
-	// v3 把它从 Spec 搬到这里，理由只有一条：它不参与 digest（契约 §3.2）。
-	// 留在 Spec 里时，改一次显示名就会让 digest 变化 —— 而 PATCH /v1/capabilities
-	// 只改这一列、不重新编译产物，于是「列里的名字」与「产物里的名字」永久漂移，
-	// 部署还一层层判出 stale/local。搬出来以后它天然不漂：名字不参与内容寻址。
+	Name        string `json:"name" yaml:"name"`
+	Version     int    `json:"version,omitempty" yaml:"version,omitempty"`
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
 }
 
-// Spec 是产物的全部内容。
+// Spec 是产物的全部内容。顶层字段严格是这六个（capability.md §2.3）。
 //
-// 字段声明顺序即 canonical JSON 的字段顺序（顺序参与 digest，见契约 §3）：
-// params / outputs / requires / lifecycle / sticky，然后是 run（脚本侧的
-// entrypoint/files/timeoutSec/env/workDir 仍收在 Run 下，不拍平），最后 handler。
+// 字段声明顺序即 canonical JSON 的字段顺序，顺序参与 digest —— 改动顺序会让所有
+// 已有产物的 digest 失效。
 type Spec struct {
-	Params  json.RawMessage `json:"params,omitempty"    yaml:"params,omitempty"`
-	Outputs []string        `json:"outputs"             yaml:"outputs"`
-	// Requires 是节点必须预装的外部命令（部署时 LookPath 探测）。
-	Requires []string `json:"requires,omitempty"  yaml:"requires,omitempty"`
-	// Lifecycle 是重试/幂等/结果保留策略，v3 起进规格（改它 = 改内容 = 新版本）。
-	//
-	// 类型是 json.RawMessage（**不透明透传**）而不是严格结构体：internal/store 已经
-	// import 本包（builtin.go），本包反向 import store 会成环（契约 §4）。所以本包只负
-	// 责「带着它进 digest」，内容校验（retryable / maxAttempts / TTL 范围）留在 store 层。
-	Lifecycle json.RawMessage `json:"lifecycle,omitempty" yaml:"lifecycle,omitempty"`
-	// Sticky 是粘性路由键的类型（"" | worktree | …）。
-	Sticky string `json:"sticky,omitempty"    yaml:"sticky,omitempty"`
-	// Run 是脚本形式的「怎么跑」；handler 形式下它必须是零值（见 validateImpl）。
-	Run Run `json:"run"                 yaml:"run"`
-	// Handler 是内置执行器的名字（白名单见 KnownHandlers）；与 Run 恰好给一组。
-	Handler string `json:"handler,omitempty"   yaml:"handler,omitempty"`
+	// Params 是任务的输入契约（JSON Schema 对象；省略 = {} = 怎么传都过）。
+	Params json.RawMessage `json:"params"`
+	// Next 是下游引用（`name` 或 `name@version`；省略 = [] = 终端能力）。
+	// 它是路由事实，**不参与 foldKey / digest**。
+	Next []string `json:"next"`
+	// Run 是怎么跑（脚本，唯一实现形式）。
+	Run Run `json:"run"`
+	// Requires 是节点要提供什么。
+	Requires Requires `json:"requires"`
+	// Lifecycle 是一次运行能活多久、能不能重放。
+	Lifecycle Lifecycle `json:"lifecycle"`
+	// Concurrency 是这台节点上最多同时跑几个。
+	Concurrency Concurrency `json:"concurrency"`
 }
 
 // Run 是「怎么跑」。
 type Run struct {
-	// Entrypoint 必须是 Files 里的一个 key，且内容以 "#!" 开头。
-	Entrypoint string `json:"entrypoint" yaml:"entrypoint"`
-	// Files 是相对路径 → 文件内容。全部按相对路径展开进工作目录。
-	Files map[string]string `json:"files" yaml:"files"`
-	// TimeoutSec 为 0 表示不设本地超时（交给中枢租约兜底）。
-	TimeoutSec int `json:"timeoutSec,omitempty" yaml:"timeoutSec,omitempty"`
-	// Env 是产物自带的环境变量；ANOTIFY_ 前缀保留给契约变量。
-	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
-	// WorkDir 是能力声明的执行目录：绝对路径，或 `~` / `~/…`（空 = 每次任务一个
-	// 独立目录）。`~` 由**节点**在执行时展开成 agent 用户的家目录（见 ExpandWorkDir）
-	// ——产物里存的永远是字面量，所以它参与 digest 时与机器无关。
-	//
-	// 为什么放在产物里而不是节点配置里："这个能力要在哪个目录里跑" 是能力的
-	// 一部分（跟入口文件、超时一样决定它怎么跑），定义它的地方只有一个——控制台
-	// 的能力定义。节点侧再留一份白名单/映射，就会出现两份会分叉的事实，而分叉的
-	// 症状是 "控制台改了却没生效"，极难查。
-	//
-	// 字段顺序参与 digest，所以只能加在最后（插中间会让所有已有产物的 digest 失效）。
-	WorkDir string `json:"workDir,omitempty" yaml:"workDir,omitempty"`
+	// Entrypoint 必须是 Files 里的一个 key，且内容以 "#!" 开头（直接 exec，不经 shell）。
+	Entrypoint string `json:"entrypoint"`
+	// Files 是相对路径 → 文件内容；全部展开进工作目录（0600，入口额外 0700）。
+	Files map[string]string `json:"files"`
+	// Env 是机器事实的唯一入口：键名就是脚本里的 $NAME，值 = 字面量或 valueFrom。
+	Env map[string]EnvValue `json:"env,omitempty"`
+	// WorkDir 是执行目录模板：空 = 每次任务一个独立目录；否则绝对路径模板，
+	// 可含 $(vars.NAME)（必须 ∈ Env）或 $(params.NAME)（必须 ∈ Params）。
+	// 解析后必须是绝对路径、无 ..、已存在（执行前检查）。
+	WorkDir string `json:"workDir,omitempty"`
 }
 
-// isZero 报告 run 是否**完全没有内容**（= handler 形式下唯一合法的状态）。
-func (r Run) isZero() bool {
-	return r.Entrypoint == "" && len(r.Files) == 0 && r.TimeoutSec == 0 &&
-		len(r.Env) == 0 && r.WorkDir == ""
+// EnvValue 是 env 的一个值：字面量，或 `{valueFrom:{fieldRef:{fieldPath}}}`。
+//
+// FieldPath 非空 = 引用机器事实（唯一的取值边界）；否则 Value 是字面量。
+// 空串本身是合法字面量（"空串就是空串"），所以这里不能用 "" 表示「未设置」。
+type EnvValue struct {
+	// Value 是字面量值。
+	Value string
+	// FieldPath 是 k8s 风格的取值路径（封闭集合见 builtinFieldPaths / vars.<NAME>）。
+	FieldPath string
 }
 
-// MarshalJSON 在 **handler 形式**下省略空的 run 块。
-//
-// 为什么需要它：Run 是（非指针）struct，encoding/json 不会替它 omitempty，于是
-// handler 形式的规格会序列化出 `"run":{"entrypoint":"","files":null}`。那有两个毛病：
-//
-//   - `files: null` 违反空列表纪律（AGENTS.md：空列表给 []，别给 null）；
-//   - 它正好撞上「handler 形式不得带 files / entrypoint」这条规则（见 validateImpl）——
-//     Validate 只是放过了**零值**，序列化却把这两个键写了出来。于是任何拿本包的规范
-//     字节去过一遍 `anotify-agent schema capability` 的工具都会看到「一份合法产物被
-//     判非法」，而 artifact 与 schema 两份真理的守卫又抓不到（它们各自都和 Validate
-//     对齐，只是 canonical 输出这一侧没人验）。
-//
-// 只在「handler 非空且 Run 是零值」时省略：脚本形式的字节一个都不动（type plain
-// 只丢掉方法、保留字段顺序与 tag，所以除这一支以外输出与默认序列化逐字节相同）。
-func (s Spec) MarshalJSON() ([]byte, error) {
-	if s.Handler != "" && s.Run.isZero() {
-		return json.Marshal(struct {
-			Params    json.RawMessage `json:"params,omitempty"`
-			Outputs   []string        `json:"outputs"`
-			Requires  []string        `json:"requires,omitempty"`
-			Lifecycle json.RawMessage `json:"lifecycle,omitempty"`
-			Sticky    string          `json:"sticky,omitempty"`
-			Handler   string          `json:"handler,omitempty"`
-		}{s.Params, s.Outputs, s.Requires, s.Lifecycle, s.Sticky, s.Handler})
+// IsValueFrom 报告这个 env 值是不是 fieldRef 引用。
+func (v EnvValue) IsValueFrom() bool { return v.FieldPath != "" }
+
+// envFieldRef / envValueFrom / envRefValue 是 wire 上的 k8s 风格引用形状。
+type envFieldRef struct {
+	FieldPath string `json:"fieldPath"`
+}
+
+type envValueFrom struct {
+	FieldRef envFieldRef `json:"fieldRef"`
+}
+
+type envRefValue struct {
+	ValueFrom envValueFrom `json:"valueFrom"`
+}
+
+// MarshalJSON 把 env 值写成 wire 形状：字面量是字符串，引用是 k8s 风格的 valueFrom。
+func (v EnvValue) MarshalJSON() ([]byte, error) {
+	if v.FieldPath == "" {
+		return json.Marshal(v.Value)
 	}
-	type plain Spec // 别名去掉方法，避免 MarshalJSON 递归调用自己
-	return json.Marshal(plain(s))
+	return json.Marshal(envRefValue{ValueFrom: envValueFrom{FieldRef: envFieldRef{FieldPath: v.FieldPath}}})
 }
+
+// UnmarshalJSON 解析字面量或 valueFrom 两种形状。
+//
+// 严格拒绝其它形状（含数字/布尔/null）：env 的值类型是 string（capability.md
+// §2.3），把 `JOBS: 4` 静默转成 "4" 会让「类型写错了」变成「跑起来才发现」。
+func (v *EnvValue) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return &fieldError{code: CodeEnvInvalid, msg: "env 值为空"}
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return &fieldError{code: CodeEnvInvalid, msg: "env 字面量不是合法字符串: " + err.Error()}
+		}
+		*v = EnvValue{Value: s}
+		return nil
+	}
+	var ref struct {
+		ValueFrom *struct {
+			FieldRef *struct {
+				FieldPath string `json:"fieldPath"`
+			} `json:"fieldRef"`
+		} `json:"valueFrom"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&ref); err != nil {
+		return &fieldError{code: CodeEnvInvalid,
+			msg: "env 值必须是字面量字符串或 {valueFrom:{fieldRef:{fieldPath}}}: " + err.Error()}
+	}
+	if ref.ValueFrom == nil || ref.ValueFrom.FieldRef == nil || ref.ValueFrom.FieldRef.FieldPath == "" {
+		return &fieldError{code: CodeEnvInvalid,
+			msg: "env 的 valueFrom 必须给出 fieldRef.fieldPath"}
+	}
+	*v = EnvValue{FieldPath: ref.ValueFrom.FieldRef.FieldPath}
+	return nil
+}
+
+// Requires 是「节点要提供什么」：要装的命令 + 要能解析出的值。
+type Requires struct {
+	// Commands 是命令名（节点 LookPath 探测；缺一条 → 该节点不匹配）。
+	Commands []string `json:"commands"`
+	// Values 是 `vars.<NAME>`（不写来源；解析顺序 local → node → namespace）。
+	Values []string `json:"values"`
+}
+
+// UnmarshalJSON 严格解析 requires：未知子键是 requires_invalid，而不是被静默忽略。
+//
+// 为什么不用 DisallowUnknownFields：spec 的反序列化会在解码整份文档时一次性报
+// "unknown field"，那个短码会盖掉「requires 里有个拼错的键」这个更准确的诊断。
+func (r *Requires) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return &fieldError{code: CodeRequiresInvalid,
+			msg: "requires 必须是对象（{commands,values}），实际 " + compactJSON(data)}
+	}
+	var out Requires
+	for key, value := range raw {
+		switch key {
+		case "commands":
+			if err := json.Unmarshal(value, &out.Commands); err != nil {
+				return &fieldError{code: CodeRequiresInvalid, msg: "requires.commands 必须是字符串数组"}
+			}
+		case "values":
+			if err := json.Unmarshal(value, &out.Values); err != nil {
+				return &fieldError{code: CodeRequiresInvalid, msg: "requires.values 必须是字符串数组"}
+			}
+		default:
+			return &fieldError{code: CodeRequiresInvalid,
+				msg: fmt.Sprintf("requires 不认识的子键 %q（只有 commands / values）", key)}
+		}
+	}
+	*r = out
+	return nil
+}
+
+// Lifecycle 是一次运行的生命周期（capability.md §2.3）。
+//
+// 指针字段是"省略 vs 显式"的分界线：maxAttempts 省略 = 3、显式 0 = 非法；
+// resultTtlSec 省略 = 604800、显式 0 = 永不清理。用 int 吞掉这个区别就会把
+// 「写错了」变成「按默认值跑」。
+type Lifecycle struct {
+	// Idempotent 是「明确幂等」的声明：true 才允许对短暂基础设施失败自动重试。
+	Idempotent bool `json:"idempotent"`
+	// MaxAttempts 是总尝试次数（含第一次，≥1，默认 3）。
+	MaxAttempts *int `json:"maxAttempts,omitempty"`
+	// ResultTTLSec 是结果保留期（秒，≥0，默认 604800；0 = 永不清理）。
+	ResultTTLSec *int `json:"resultTtlSec,omitempty"`
+	// TimeoutSec 是本地执行超时（从子进程启动起算，0..86400；0 = 不设）。
+	TimeoutSec int `json:"timeoutSec"`
+}
+
+// EffectiveMaxAttempts 返回生效的总尝试次数（省略 → 3）。
+func (l Lifecycle) EffectiveMaxAttempts() int {
+	if l.MaxAttempts == nil {
+		return DefaultMaxAttempts
+	}
+	return *l.MaxAttempts
+}
+
+// EffectiveResultTTLSec 返回生效的结果保留期（省略 → 604800）。
+func (l Lifecycle) EffectiveResultTTLSec() int {
+	if l.ResultTTLSec == nil {
+		return DefaultResultTTLSec
+	}
+	return *l.ResultTTLSec
+}
+
+// EffectiveTimeoutSec 返回生效的本地执行超时。
+func (l Lifecycle) EffectiveTimeoutSec() int { return l.TimeoutSec }
+
+// Concurrency 是「这台节点上最多同时跑几个」。
+type Concurrency struct {
+	// MaxPerNode ≥1（默认 1）。超了不失败：任务停在 waiting_for_slot。
+	MaxPerNode *int `json:"maxPerNode,omitempty"`
+}
+
+// UnmarshalJSON 严格解析 concurrency：未知子键与非法形状都是 concurrency_invalid。
+func (c *Concurrency) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return &fieldError{code: CodeConcurrencyInvalid,
+			msg: "concurrency 必须是对象（{maxPerNode}），实际 " + compactJSON(data)}
+	}
+	var out Concurrency
+	for key, value := range raw {
+		switch key {
+		case "maxPerNode":
+			var n int
+			if err := json.Unmarshal(value, &n); err != nil {
+				return &fieldError{code: CodeConcurrencyInvalid, msg: "concurrency.maxPerNode 必须是整数"}
+			}
+			out.MaxPerNode = &n
+		default:
+			return &fieldError{code: CodeConcurrencyInvalid,
+				msg: fmt.Sprintf("concurrency 不认识的子键 %q（只有 maxPerNode）", key)}
+		}
+	}
+	*c = out
+	return nil
+}
+
+// EffectiveMaxPerNode 返回生效的单节点并发预算（省略 → 1）。
+func (c Concurrency) EffectiveMaxPerNode() int {
+	if c.MaxPerNode == nil {
+		return DefaultMaxPerNode
+	}
+	return *c.MaxPerNode
+}
+
+// fieldError 是解码期的带码错误：Parse 把它翻译成对应短码，而不是一律 unknown_field。
+type fieldError struct {
+	code string
+	msg  string
+}
+
+func (e *fieldError) Error() string { return e.code + ": " + e.msg }
 
 // Error 汇总一份产物上的全部问题。
 //
@@ -274,15 +410,9 @@ type Error struct {
 	Problems []string
 }
 
-func (e *Error) Error() string {
-	return strings.Join(e.Problems, "; ")
-}
+func (e *Error) Error() string { return strings.Join(e.Problems, "; ") }
 
-func (e *Error) add(format string, args ...any) {
-	e.Problems = append(e.Problems, fmt.Sprintf(format, args...))
-}
-
-// Err 如果 problems 非空就返回一个 *Error，否则返回 nil。
+// errIf 如果 problems 非空就返回一个 *Error，否则返回 nil。
 func errIf(problems []string) error {
 	if len(problems) == 0 {
 		return nil
@@ -290,7 +420,7 @@ func errIf(problems []string) error {
 	return &Error{Problems: problems}
 }
 
-// Code 返回第一个问题的机器可读短码（用于 apply 帧的 reason）。
+// Code 返回第一个问题的机器可读短码（用于 HTTP Status.reason / apply 帧的 reason）。
 func Code(err error) string {
 	var e *Error
 	if errors.As(err, &e) && len(e.Problems) > 0 {
@@ -299,25 +429,17 @@ func Code(err error) string {
 	return "invalid_artifact"
 }
 
-// ProblemCode 取**单条**问题文本的机器可读短码（Code 的单条版本）。
-//
-// 一条问题写成 "<短码>: <人话>"（见 Error.add 的各调用点），短码是第一个 ':' 之前
-// 那一段。抽成导出函数是因为 `anotify-agent check --json` 要逐条给出 code（issue #319）：
-// 如果那边自己再切一次字符串，某天改了分隔符就会变成「CLI 的 code 与 Code() 的词表
-// 悄悄不是同一套」——而两处都看不出自己错在哪。
+// ProblemCode 取**单条**问题文本的机器可读短码（"<短码>: <人话>" 的第一段）。
 func ProblemCode(problem string) string {
-	if i := strings.IndexByte(problem, ':'); i > 0 {
+	if i := strings.Index(problem, ":"); i > 0 {
 		return problem[:i]
 	}
 	return problem
 }
 
-// ProblemMessage 取单条问题文本的**人话部分**（去掉短码前缀与它后面的空白）。
-//
-// 短码给机器 switch，人话给人（也进 check --json 的 message）：两段来自同一句话，
-// 不会出现「码说 A、话在说 B」。
+// ProblemMessage 取单条问题文本的人话部分（去掉短码前缀）。
 func ProblemMessage(problem string) string {
-	if i := strings.IndexByte(problem, ':'); i > 0 {
+	if i := strings.Index(problem, ":"); i > 0 {
 		return strings.TrimSpace(problem[i+1:])
 	}
 	return problem
@@ -327,53 +449,43 @@ func ProblemMessage(problem string) string {
 //
 // YAML 是 JSON 的超集，所以单条路径同时支持两种写法：先解成 map，再转 JSON，
 // 最后严格解码进结构体（未知字段是错误——拼错的字段名静默失效比解析失败更难查）。
+// 返回的产物是**归一化后**的（默认值已补齐、params 已 canonical），因此
+// Parse → MarshalYAML → Parse 的 digest 永远相同。
 func Parse(data []byte) (*Artifact, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, &Error{Problems: []string{"invalid_yaml: " + err.Error()}}
+		return nil, &Error{Problems: []string{CodeInvalidYAML + ": " + err.Error()}}
 	}
 	if raw == nil {
-		return nil, &Error{Problems: []string{"invalid_yaml: 文档为空"}}
+		return nil, &Error{Problems: []string{CodeInvalidYAML + ": 文档为空"}}
 	}
 	norm, err := json.Marshal(normalizeMaps(raw))
 	if err != nil {
-		return nil, &Error{Problems: []string{"invalid_yaml: " + err.Error()}}
+		return nil, &Error{Problems: []string{CodeInvalidYAML + ": " + err.Error()}}
 	}
 
 	var a Artifact
-	dec := json.NewDecoder(strings.NewReader(string(norm)))
+	dec := json.NewDecoder(bytes.NewReader(norm))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&a); err != nil {
-		return nil, &Error{Problems: []string{"unknown_field: " + err.Error()}}
+		var fe *fieldError
+		if errors.As(err, &fe) {
+			return nil, &Error{Problems: []string{fe.Error()}}
+		}
+		return nil, &Error{Problems: []string{CodeUnknownField + ": " + err.Error()}}
 	}
 
-	// Params 归一成 canonical JSON：digest 必须与「输入怎么排版」无关。
-	if len(a.Spec.Params) > 0 {
-		canon, cerr := canonicalizeJSON(a.Spec.Params)
-		if cerr != nil {
-			return nil, &Error{Problems: []string{"invalid_params_schema: " + cerr.Error()}}
-		}
-		a.Spec.Params = canon
-	}
-	// lifecycle 同理（它也是 RawMessage 透传，不归一就会出现「两种书写顺序 = 两份产物」）。
-	// 这个错误码只有程序自己写坏一个 RawMessage 时才可能命中——从 Parse 进来的一定是
-	// 一次成功的 JSON 解码，必然是合法 JSON；口径与 invalid_params_schema 同构。
-	if len(a.Spec.Lifecycle) > 0 {
-		canon, cerr := canonicalizeJSON(a.Spec.Lifecycle)
-		if cerr != nil {
-			return nil, &Error{Problems: []string{"invalid_lifecycle: " + cerr.Error()}}
-		}
-		a.Spec.Lifecycle = canon
-	}
-
-	if err := Validate(&a); err != nil {
+	out, err := Normalize(&a)
+	if err != nil {
 		return nil, err
 	}
-	return &a, nil
+	if err := Validate(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-// normalizeMaps 把 yaml.v3 可能产出的 map[any]any 递归换成 map[string]any，
-// 否则 json.Marshal 会直接失败。
+// normalizeMaps 把 yaml.v3 可能产出的 map[any]any 递归换成 map[string]any。
 func normalizeMaps(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -412,158 +524,319 @@ func canonicalizeJSON(raw []byte) (json.RawMessage, error) {
 	return json.RawMessage(out), nil
 }
 
+// Normalize 返回归一化副本（**不修改调用方的对象**）：
+//
+//   - 省略的默认值补成显式值（所以「省略」与「显式写默认值」是同一份内容）；
+//   - params 缺省成 `{}`、next/requires 的空列表补成 `[]`（空列表纪律：不是 null）；
+//   - params 归一成 key 有序的紧凑 JSON（digest 与书写顺序无关）。
+//
+// 只补默认值、不改非法值：显式 `maxPerNode: 0` 归一后仍是 0，由 Validate 拒。
+func Normalize(a *Artifact) (*Artifact, error) {
+	if a == nil {
+		return nil, &Error{Problems: []string{CodeBadRequest + ": 产物为空"}}
+	}
+	clone := *a
+	clone.Spec = cloneSpec(a.Spec)
+
+	params := clone.Spec.Params
+	if len(bytes.TrimSpace(params)) == 0 {
+		params = json.RawMessage(`{}`)
+	}
+	canon, err := canonicalizeJSON(params)
+	if err != nil {
+		return nil, &Error{Problems: []string{CodeBadRequest + ": spec.params 不是合法 JSON: " + err.Error()}}
+	}
+	clone.Spec.Params = canon
+	return &clone, nil
+}
+
+// cloneSpec 深拷贝 spec（map / slice / 指针），保证 Normalize 不动调用方。
+func cloneSpec(spec Spec) Spec {
+	out := spec
+	out.Next = append(make([]string, 0, len(spec.Next)), spec.Next...)
+	out.Requires = Requires{
+		Commands: append(make([]string, 0, len(spec.Requires.Commands)), spec.Requires.Commands...),
+		Values:   append(make([]string, 0, len(spec.Requires.Values)), spec.Requires.Values...),
+	}
+	out.Run = Run{Entrypoint: spec.Run.Entrypoint, WorkDir: spec.Run.WorkDir}
+	if spec.Run.Files != nil {
+		out.Run.Files = make(map[string]string, len(spec.Run.Files))
+		for k, v := range spec.Run.Files {
+			out.Run.Files[k] = v
+		}
+	}
+	if spec.Run.Env != nil {
+		out.Run.Env = make(map[string]EnvValue, len(spec.Run.Env))
+		for k, v := range spec.Run.Env {
+			out.Run.Env[k] = v
+		}
+	}
+	if spec.Lifecycle.MaxAttempts == nil {
+		out.Lifecycle.MaxAttempts = intPtr(DefaultMaxAttempts)
+	} else {
+		out.Lifecycle.MaxAttempts = intPtr(*spec.Lifecycle.MaxAttempts)
+	}
+	if spec.Lifecycle.ResultTTLSec == nil {
+		out.Lifecycle.ResultTTLSec = intPtr(DefaultResultTTLSec)
+	} else {
+		out.Lifecycle.ResultTTLSec = intPtr(*spec.Lifecycle.ResultTTLSec)
+	}
+	if spec.Concurrency.MaxPerNode == nil {
+		out.Concurrency.MaxPerNode = intPtr(DefaultMaxPerNode)
+	} else {
+		out.Concurrency.MaxPerNode = intPtr(*spec.Concurrency.MaxPerNode)
+	}
+	return out
+}
+
+func intPtr(v int) *int { return &v }
+
 // Validate 校验一份产物，返回汇总了**全部**问题的 *Error（或 nil）。
 func Validate(a *Artifact) error {
 	if a == nil {
-		return &Error{Problems: []string{"nil_artifact: 产物为空"}}
+		return &Error{Problems: []string{CodeBadRequest + ": 产物为空"}}
 	}
 	var p []string
+	add := func(code, format string, args ...any) {
+		p = append(p, code+": "+fmt.Sprintf(format, args...))
+	}
 
 	if a.APIVersion != APIVersion {
-		p = append(p, fmt.Sprintf("unsupported_api_version: 期望 %q，实际 %q", APIVersion, a.APIVersion))
+		add(CodeBadRequest, "apiVersion 期望 %q，实际 %q", APIVersion, a.APIVersion)
 	}
 	if a.Kind != KindCapability {
-		p = append(p, fmt.Sprintf("unsupported_kind: 期望 %q，实际 %q", KindCapability, a.Kind))
+		add(CodeKindMismatch, "kind 期望 %q，实际 %q", KindCapability, a.Kind)
 	}
 	if !namePattern.MatchString(a.Metadata.Name) {
-		p = append(p, fmt.Sprintf("invalid_name: 「%s」只能包含小写字母、数字、点、下划线、短横线，"+
-			"长度 1..%d，且必须以字母或数字开头", a.Metadata.Name, MaxNameLen))
+		add(CodeBadRequest, "能力名「%s」只能包含小写字母、数字、点、下划线、短横线，"+
+			"长度 1..%d，且必须以字母或数字开头", a.Metadata.Name, MaxNameLen)
 	}
-	if a.Metadata.Version < 1 {
-		p = append(p, fmt.Sprintf("invalid_version: 版本必须 >= 1，实际 %d", a.Metadata.Version))
+	if a.Metadata.Version < 0 {
+		add(CodeBadRequest, "version 必须 ≥1（省略 = 内容寻址），实际 %d", a.Metadata.Version)
 	}
 
-	p = append(p, validateImpl(&a.Spec)...)
-	p = append(p, validateOutputs(a.Spec.Outputs)...)
-	p = append(p, validateRequires(a.Spec.Requires)...)
-	p = append(p, validateParams(a.Spec.Params)...)
+	params, paramProblems := validateParams(a.Spec.Params)
+	p = append(p, paramProblems...)
+	p = append(p, validateNext(a.Spec.Next)...)
+	p = append(p, validateRequires(&a.Spec.Requires)...)
+	p = append(p, validateRun(&a.Spec, params)...)
+	p = append(p, validateLifecycle(&a.Spec.Lifecycle)...)
+	p = append(p, validateConcurrency(&a.Spec.Concurrency)...)
 
 	return errIf(p)
 }
 
-// validateImpl 校验「实现形式」：`files`+`entrypoint` 与 `handler` **恰好给一组**
-// （契约 §3.1 的三条规则），返回这两支该报的全部问题。
-//
-// 两支是互斥的，所以各自验各自的：脚本形式跑 validateRun（入口/文件/超时/env/workDir
-// 的原有规则一条不动，错误码也不动）；handler 形式反过来——那些字段**一个都不许出现**。
-// 两者都跑会制造噪音：一份 handler 规格里的 timeoutSec 并不是“超时值不合法”，而是
-// “这个字段在这支里没有意义”，两者得分开说。
-func validateImpl(spec *Spec) []string {
-	// 这里**不 TrimSpace**：白名单比较必须与运行时查执行器用的是同一个字符串。
-	// 容忍边空格的结果是「校验通过、派发时找不到执行器」（那时任务已经建好、租约
-	// 已经扣了），而 `handler: " noop "` 几乎只能是引号写法事故。
-	handler := spec.Handler
-	run := &spec.Run
-
-	if handler != "" {
-		var p []string
-		if !isKnownHandler(handler) {
-			p = append(p, fmt.Sprintf("unknown_handler: 内置执行器 %q 不在白名单里（可用：%s）",
-				handler, strings.Join(KnownHandlers(), "、")))
-		}
-		// handler 形式不得再带 run 侧字段：带了就是「两种实现混在一份规格里」，
-		// 中枢无法判定到底谁该跑（最坏的情形是内置节点抢了作者的脚本）。
-		if len(run.Files) > 0 {
-			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得再带 files（%d 个文件）："+
-				"files+entrypoint 与 handler 只能给一组", len(run.Files)))
-		}
-		if run.Entrypoint != "" {
-			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得再带 entrypoint（%q）："+
-				"files+entrypoint 与 handler 只能给一组", run.Entrypoint))
-		}
-		if run.TimeoutSec != 0 {
-			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 timeoutSec（%d）："+
-				"超时由内置执行器自己定", run.TimeoutSec))
-		}
-		if run.WorkDir != "" {
-			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 workDir（%q）："+
-				"工作目录由中枢进程自己定", run.WorkDir))
-		}
-		if len(run.Env) > 0 {
-			p = append(p, fmt.Sprintf("impl_ambiguous: handler 形式不得带 env（%d 个键）："+
-				"内置执行器不读能力自带的环境变量", len(run.Env)))
-		}
-		return p
-	}
-
-	// 没有 handler → 必须是脚本形式；两边都不给等于没有实现（契约 R2）。
-	if len(run.Files) == 0 && run.Entrypoint == "" {
-		return []string{"impl_missing: 缺实现：files+entrypoint（脚本，节点执行）" +
-			"或 handler（内置执行器，中枢 builtin 节点执行），两者恰好给一组"}
-	}
-	return validateRun(run)
+// paramInfo 是校验期从 params schema 里读出来的那点信息。
+type paramInfo struct {
+	// properties 是声明的顶层参数名（workDir 的 $(params.X) 只能引用这里）。
+	properties map[string]struct{}
 }
 
-func validateRun(run *Run) []string {
+// validateParams 校验 params 是 JSON 对象，并检查 ANOTIFY_PARAM_* 归一撞名。
+func validateParams(params json.RawMessage) (paramInfo, []string) {
+	info := paramInfo{properties: map[string]struct{}{}}
 	var p []string
-
-	if len(run.Files) == 0 {
-		p = append(p, "invalid_file_path: files 至少要有一个文件")
+	add := func(format string, args ...any) {
+		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
+	}
+	if len(params) == 0 {
+		return info, nil
 	}
 
-	names := make([]string, 0, len(run.Files))
-	for name := range run.Files {
-		names = append(names, name)
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
-	sort.Strings(names)
+	if err := json.Unmarshal(params, &schema); err != nil {
+		add("params 必须是 JSON Schema 对象（省略 = {}）：%s", err.Error())
+		return info, p
+	}
 
-	var total int
-	for _, name := range names {
-		body := run.Files[name]
-		if msg := validateFilePath(name); msg != "" {
-			p = append(p, "invalid_file_path: "+msg)
+	// 两个参数名归一后撞同一个 ANOTIFY_PARAM_* → 写入期拒（capability.md §2.3）：
+	// 运行期「谁覆盖谁」是隐式的，而隐式行为在排障时永远说不清。
+	byEnvName := map[string][]string{}
+	for name := range schema.Properties {
+		info.properties[name] = struct{}{}
+		envName := paramEnvName(name)
+		byEnvName[envName] = append(byEnvName[envName], name)
+	}
+	collisions := make([]string, 0)
+	for envName, names := range byEnvName {
+		if len(names) > 1 {
+			sort.Strings(names)
+			collisions = append(collisions,
+				fmt.Sprintf("%s（%s）", envName, strings.Join(names, "、")))
+		}
+	}
+	if len(collisions) > 0 {
+		sort.Strings(collisions)
+		p = append(p, CodeParamEnvCollision+": 参数名归一后撞同一个环境变量："+strings.Join(collisions, "; "))
+	}
+	return info, p
+}
+
+// paramEnvName 是参数名 → ANOTIFY_PARAM_<NAME> 的归一规则（capability.md §2.3）：
+// 全大写、非 [A-Z0-9] 的字符替换成 '_'，**不插大小写边界**
+// （sha → SHA，repo-url → REPO_URL，repoUrl → REPOURL）。
+func paramEnvName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return "ANOTIFY_PARAM_" + b.String()
+}
+
+// validateNext 校验 spec.next 的形状（≤32 个，`name` 或 `name@version`）。
+//
+// 名字能不能解析（目标是否存在）是**写入路径**的事（单建报 unknown_target，
+// 预案 install 允许先装上游），不是本包的静态校验。
+func validateNext(next []string) []string {
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
+	}
+	if len(next) > MaxNext {
+		add("spec.next 最多 %d 个下游，实际 %d", MaxNext, len(next))
+	}
+	for _, ref := range next {
+		name, version, hasVersion := splitRef(ref)
+		if name == "" {
+			add("spec.next 的元素 %q 为空：必须是 name 或 name@version", ref)
 			continue
 		}
-		if len(body) > MaxFileBytes {
-			p = append(p, fmt.Sprintf("payload_too_large: 文件 %q 有 %d 字节，单文件上限 %d",
-				name, len(body), MaxFileBytes))
-		}
-		total += len(body)
-	}
-	if total > MaxTotalBytes {
-		p = append(p, fmt.Sprintf("payload_too_large: 全部文件合计 %d 字节，上限 %d", total, MaxTotalBytes))
-	}
-
-	if run.Entrypoint == "" {
-		p = append(p, "entrypoint_missing: run.entrypoint 必填")
-	} else if body, ok := run.Files[run.Entrypoint]; !ok {
-		p = append(p, fmt.Sprintf("entrypoint_missing: run.entrypoint %q 不在 files 里", run.Entrypoint))
-	} else if !strings.HasPrefix(body, "#!") {
-		p = append(p, fmt.Sprintf("entrypoint_no_shebang: 入口文件 %q 必须以 #! 开头"+
-			"（执行方式是直接 exec，不经 shell）", run.Entrypoint))
-	}
-
-	if run.TimeoutSec < 0 || run.TimeoutSec > MaxTimeoutSec {
-		p = append(p, fmt.Sprintf("invalid_timeout: timeoutSec 必须在 0..%d 之间，实际 %d",
-			MaxTimeoutSec, run.TimeoutSec))
-	}
-
-	// workDir 在这里只做**静态**校验（能不能表达成一个安全的目录声明，含 `~` 前缀）；
-	// 目录存不存在、是不是目录、`~` 落在哪只有节点知道，那是执行层的失败（见 cmd/agent）。
-	if msg := validateWorkDir(run.WorkDir); msg != "" {
-		p = append(p, msg)
-	}
-
-	envKeys := make([]string, 0, len(run.Env))
-	for k := range run.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
-		if !envKeyPattern.MatchString(k) {
-			p = append(p, fmt.Sprintf("reserved_env: 环境变量名 %q 不合法"+
-				"（只能包含字母、数字、下划线，且不能以数字开头）", k))
+		if !namePattern.MatchString(name) {
+			add("spec.next 的元素 %q：能力名不合法（%s）", ref, namePattern.String())
 			continue
 		}
-		if strings.HasPrefix(strings.ToUpper(k), "ANOTIFY_") {
-			p = append(p, fmt.Sprintf("reserved_env: 环境变量名 %q 属于契约变量，产物不得覆盖", k))
+		if !hasVersion {
+			continue
+		}
+		if version < 1 {
+			add("spec.next 的元素 %q：@version 必须是 ≥1 的整数", ref)
 		}
 	}
 	return p
 }
 
-// validateFilePath 校验产物体内的相对路径，返回空串表示合法。
-func validateFilePath(name string) string {
+// splitRef 拆 `name@version`（没有 @ 时 hasVersion=false）。
+//
+// 只拆最后一个 @：能力名正则里没有 @，所以位置唯一；版本不是整数时 version=0
+// 交由调用方报错。
+func splitRef(ref string) (name string, version int, hasVersion bool) {
+	i := strings.LastIndexByte(ref, '@')
+	if i < 0 {
+		return ref, 0, false
+	}
+	v, err := strconv.Atoi(ref[i+1:])
+	if err != nil {
+		return ref[:i], 0, true
+	}
+	return ref[:i], v, true
+}
+
+// validateRequires 校验 requires（capability.md §2.3：各 ≤16、values 形状固定）。
+func validateRequires(req *Requires) []string {
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeRequiresInvalid+": "+fmt.Sprintf(format, args...))
+	}
+	if len(req.Commands) > MaxRequires {
+		add("requires.commands 最多 %d 项，实际 %d", MaxRequires, len(req.Commands))
+	}
+	for _, cmd := range req.Commands {
+		if cmd == "" {
+			add("requires.commands 含空命令名")
+			continue
+		}
+		if strings.Contains(cmd, `\`) {
+			add("requires.commands 的命令名 %q 含反斜杠（只接受命令名，不接受路径）", cmd)
+		}
+		if strings.ContainsRune(cmd, 0) {
+			add("requires.commands 的命令名 %q 含 NUL 字节", cmd)
+		}
+	}
+	if len(req.Values) > MaxRequires {
+		add("requires.values 最多 %d 项，实际 %d", MaxRequires, len(req.Values))
+	}
+	for _, value := range req.Values {
+		name, ok := trimVarPrefix(value)
+		if !ok || !varNamePattern.MatchString(name) {
+			add("requires.values 的元素 %q 必须是 vars.<NAME>（NAME 匹配 %s）",
+				value, varNamePattern.String())
+		}
+	}
+	return p
+}
+
+// trimVarPrefix 把 `vars.<NAME>` 拆出 NAME（不是 vars. 前缀时 ok=false）。
+func trimVarPrefix(fieldPath string) (string, bool) {
+	const prefix = "vars."
+	if !strings.HasPrefix(fieldPath, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(fieldPath, prefix), true
+}
+
+// validateRun 校验 run：files / entrypoint / env / workDir。
+func validateRun(spec *Spec, params paramInfo) []string {
+	run := &spec.Run
+	var p []string
+	add := func(code, format string, args ...any) {
+		p = append(p, code+": "+fmt.Sprintf(format, args...))
+	}
+
+	// files：路径形状 + 限额。写入期**只校验字符串/限额**，不解析符号链接
+	// （真实边界在执行前查，越界是运行期 files_escape）。
+	paths := make([]string, 0, len(run.Files))
+	for name := range run.Files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	if len(run.Files) == 0 {
+		add(CodeFilesInvalid, "run.files 至少要有一个文件")
+	}
+	if len(run.Files) > MaxFiles {
+		add(CodeFilesInvalid, "run.files 最多 %d 个文件，实际 %d", MaxFiles, len(run.Files))
+	}
+	var total int
+	for _, name := range paths {
+		body := run.Files[name]
+		if msg := filePathProblem(name); msg != "" {
+			add(CodeFilesInvalid, "%s", msg)
+			continue
+		}
+		if len(body) > MaxFileBytes {
+			add(CodeFilesInvalid, "文件 %q 有 %d 字节，单文件上限 %d", name, len(body), MaxFileBytes)
+		}
+		total += len(body)
+	}
+	if total > MaxTotalBytes {
+		add(CodeFilesInvalid, "run.files 合计 %d 字节，上限 %d", total, MaxTotalBytes)
+	}
+
+	// entrypoint：必须在 files 里，且以 #! 开头。
+	if run.Entrypoint == "" {
+		add(CodeEntrypointNoShebang, "run.entrypoint 必填（必须是 files 里的一个 key）")
+	} else if body, ok := run.Files[run.Entrypoint]; !ok {
+		add(CodeEntrypointNoShebang, "run.entrypoint %q 不在 files 里", run.Entrypoint)
+	} else if !strings.HasPrefix(body, "#!") {
+		add(CodeEntrypointNoShebang, "入口文件 %q 必须以 #! 开头（执行方式是直接 exec，不经 shell）",
+			run.Entrypoint)
+	}
+
+	p = append(p, validateEnv(run, &spec.Requires)...)
+	p = append(p, validateWorkDir(run, params)...)
+	return p
+}
+
+// filePathProblem 校验产物体内的相对路径，返回空串表示合法。
+func filePathProblem(name string) string {
 	if name == "" {
 		return "文件路径不能为空"
 	}
@@ -590,263 +863,355 @@ func validateFilePath(name string) string {
 	return ""
 }
 
-// validateWorkDir 校验 run.workDir，返回 "<错误码>: <说明>"，空串表示合法。
+// validateEnv 校验 run.env 的键与值。
+func validateEnv(run *Run, req *Requires) []string {
+	var p []string
+	add := func(code, format string, args ...any) {
+		p = append(p, code+": "+fmt.Sprintf(format, args...))
+	}
+	declared := make(map[string]struct{}, len(req.Values))
+	for _, v := range req.Values {
+		declared[v] = struct{}{}
+	}
+
+	keys := make([]string, 0, len(run.Env))
+	for k := range run.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		value := run.Env[k]
+		if !envKeyPattern.MatchString(k) {
+			add(CodeEnvInvalid, "环境变量名 %q 不合法（只能包含字母、数字、下划线，且不能以数字开头）", k)
+			continue
+		}
+		if strings.HasPrefix(k, "ANOTIFY_") {
+			add(CodeEnvInvalid, "环境变量名 %q 属于契约变量（ANOTIFY_ 开头），产物不得覆盖", k)
+			continue
+		}
+		if k == "PATH" {
+			// PATH 取 anode 守护进程启动时的基线，探测与执行同一份；本轮不支持覆盖。
+			add(CodeEnvInvalid, "不得在 run.env 里覆盖 PATH（任务 PATH = 节点启动基线，%s）", k)
+			continue
+		}
+		if !value.IsValueFrom() {
+			if k == "HOME" && !filepath.IsAbs(value.Value) {
+				add(CodeEnvInvalid, "HOME 的字面量必须是绝对路径，实际 %q", value.Value)
+			}
+			continue
+		}
+		// valueFrom：fieldPath 必须是封闭集合里的名字；vars.* 必须写进 requires.values。
+		if !isKnownFieldPath(value.FieldPath) {
+			add(CodeUnknownFieldPath, "fieldPath %q 不在封闭集合里（%s / vars.<NAME>）",
+				value.FieldPath, "metadata.* / status.*")
+			continue
+		}
+		if _, isVar := trimVarPrefix(value.FieldPath); isVar {
+			if _, ok := declared[value.FieldPath]; !ok {
+				add(CodeUndeclaredNeed, "run.env 的 %s 引用了 %s，但没写进 spec.requires.values",
+					k, value.FieldPath)
+			}
+		}
+	}
+	return p
+}
+
+// isKnownFieldPath 报告 fieldPath 是否属于 README.md 的封闭集合。
+func isKnownFieldPath(fieldPath string) bool {
+	if _, ok := builtinFieldPaths[fieldPath]; ok {
+		return true
+	}
+	if name, ok := trimVarPrefix(fieldPath); ok {
+		return varNamePattern.MatchString(name)
+	}
+	return false
+}
+
+// isDirFieldPath 报告一个 fieldPath 的值是否属于「目录类」（能当 workDir 的最终值）。
+func isDirFieldPath(fieldPath string) bool {
+	if _, isVar := trimVarPrefix(fieldPath); isVar {
+		return true
+	}
+	dir, ok := builtinFieldPaths[fieldPath]
+	return ok && dir
+}
+
+// validateWorkDir 校验 run.workDir 的模板形状。
 //
-// 空值是合法的（= 每次任务一个独立目录），除此之外只接受两种写法：
-//
-//   - 绝对路径（以 `/` 开头）：节点直接拿它当 cwd；
-//   - `~` 或 `~/…`：由**节点**在执行时展开成 agent 用户的家目录（见 ExpandWorkDir）。
-//
-// 其余仍不接受，三条理由不变：
-//
-//   - 相对路径的含义取决于 agent 进程的 cwd，那是运维看不见的上下文，等于让能力
-//     跑在一个随机目录里；`~user/x`、`$HOME/x` 同样不行——它们要么取决于机器上
-//     有没有这个用户，要么取决于进程环境（见 ExpandWorkDir 的注释）；
-//   - 不含 `..`：声明里出现上跳段几乎都是拼接事故；把它挡在定义期，节点就不必
-//     去猜用户到底想去哪儿（也避免了"声明 /a/../etc 却能绕过审计"这类怪事）。
-//     `..` 的检查必须对**字面量**做，且必须在展开**之前**：`~/../etc` 一旦先展开
-//     就变成了"家目录的父目录"，那时再查已经晚了；
-//   - 不含 NUL：NUL 会被 exec/chdir 的底层 syscall 截断，是典型的路径伪造手法。
-//
-// 这里**只校验、不展开**：run.workDir 参与 digest，展开后的路径是机器事实，
-// 混进 digest 会让同一份产物在不同节点上算出不同摘要（节点会把它判成"本地变体"）。
-func validateWorkDir(dir string) string {
+// 只做**静态**校验：解析后的目录存不存在、是不是目录、软链是否越界只有节点知道
+// （workdir_unavailable / files_escape 是执行层的事）。
+func validateWorkDir(run *Run, params paramInfo) []string {
+	dir := run.WorkDir
+	var p []string
+	addCode := func(code, format string, args ...any) {
+		p = append(p, code+": "+fmt.Sprintf(format, args...))
+	}
+	add := func(format string, args ...any) {
+		addCode(CodeWorkDirInvalid, format, args...)
+	}
 	if dir == "" {
-		return ""
-	}
-	if len(dir) > MaxWorkDirLen {
-		return fmt.Sprintf("invalid_work_dir: run.workDir 有 %d 字节，上限 %d", len(dir), MaxWorkDirLen)
-	}
-	if strings.ContainsRune(dir, 0) {
-		return fmt.Sprintf("invalid_work_dir: run.workDir %q 含 NUL 字节", dir)
-	}
-	if !IsHomeRelative(dir) && !filepath.IsAbs(dir) {
-		return fmt.Sprintf("work_dir_not_absolute: run.workDir 必须是绝对路径，或以 ~/ 开头"+
-			"（~ 由节点展开为 agent 用户的家目录），实际 %q（留空 = 每次任务一个独立目录）", dir)
-	}
-	for _, seg := range strings.Split(dir, "/") {
-		if seg == ".." {
-			return fmt.Sprintf("invalid_work_dir: run.workDir %q 含 \"..\" 路径段", dir)
-		}
-	}
-	return ""
-}
-
-// IsHomeRelative 报告 run.workDir 是否以家目录前缀起头（`~` 本身或 `~/…`）。
-//
-// 只认这两种写法：`~user/x` 取决于机器上有没有那个用户，`$HOME/x` / 任意 `$VAR`
-// 取决于进程环境——它们都会让同一份能力在不同节点、不同启动方式下跑进不同目录，
-// 那就不是声明式常量而是求值表达式了（理由详见 ExpandWorkDir）。
-func IsHomeRelative(dir string) bool {
-	return dir == "~" || strings.HasPrefix(dir, "~/")
-}
-
-// ExpandWorkDir 把 `~` / `~/…` 展开成 home，其他写法原样返回。
-//
-// **只在节点执行时调用**（见 cmd/agent 的 resolveChdir）。中枢/解析期绝不展开：
-// run.workDir 参与 digest，展开后的路径随机器变，先展开再算 digest 等于让同一份
-// 产物在不同机器上有不同摘要。
-//
-// 为什么只展开 `~`、不做 `$VAR` 展开：`~` 在 POSIX 里只有"当前用户的家目录"一种
-// 读法；而 `os.ExpandEnv` 会把 `$ANOTIFY_TASKDIR`、`$PATH` 甚至未定义的变量一并
-// 求值，等于把"声明一个目录"变成"节点上的一次表达式求值"——中枢不再能解释自己
-// 下发的产物，排障时看到的路径也不再是定义里那一行。需要家目录就用 `~/`。
-func ExpandWorkDir(dir, home string) string {
-	switch {
-	case dir == "~":
-		return home
-	case strings.HasPrefix(dir, "~/"):
-		return filepath.Join(home, dir[len("~/"):])
-	}
-	return dir
-}
-
-func validateOutputs(outputs []string) []string {
-	var p []string
-	if len(outputs) > MaxOutputs {
-		p = append(p, fmt.Sprintf("invalid_output: 出口名最多 %d 个，实际 %d", MaxOutputs, len(outputs)))
-	}
-	seen := make(map[string]struct{}, len(outputs))
-	dups := make([]string, 0)
-	for _, o := range outputs {
-		if !outputPattern.MatchString(o) {
-			p = append(p, fmt.Sprintf("invalid_output: 出口名 %q 不合法"+
-				"（只能包含字母、数字、点、下划线、短横线，长度 1..32）", o))
-			continue
-		}
-		if _, ok := seen[o]; ok {
-			dups = append(dups, o)
-			continue
-		}
-		seen[o] = struct{}{}
-	}
-	if len(dups) > 0 {
-		sort.Strings(dups)
-		p = append(p, fmt.Sprintf("invalid_output: 出口名重复：%s", strings.Join(dups, ", ")))
-	}
-	return p
-}
-
-func validateRequires(requires []string) []string {
-	var p []string
-	if len(requires) > MaxRequires {
-		p = append(p, fmt.Sprintf("invalid_requirement: requires 最多 %d 项，实际 %d",
-			MaxRequires, len(requires)))
-	}
-	seen := make(map[string]struct{}, len(requires))
-	for _, r := range requires {
-		if !requirePattern.MatchString(r) {
-			p = append(p, fmt.Sprintf("invalid_requirement: 依赖命令 %q 不合法"+
-				"（只能包含字母、数字、点、下划线、加号、短横线，长度 1..64）", r))
-			continue
-		}
-		seen[r] = struct{}{}
-	}
-	return p
-}
-
-func validateParams(params json.RawMessage) []string {
-	if len(params) == 0 {
 		return nil
 	}
-	var probe any
-	if err := json.Unmarshal(params, &probe); err != nil {
-		return []string{"invalid_params_schema: " + err.Error()}
+	if len(dir) > MaxWorkDirLen {
+		add("run.workDir 有 %d 字节，上限 %d", len(dir), MaxWorkDirLen)
+		return p
 	}
-	if _, ok := probe.(map[string]any); !ok {
-		return []string{"invalid_params_schema: params 必须是 JSON 对象"}
+	if strings.ContainsRune(dir, 0) {
+		add("run.workDir %q 含 NUL 字节", dir)
+		return p
+	}
+	if strings.HasPrefix(dir, "~") {
+		add("run.workDir 不支持 ~ 写法（家目录也是机器事实：用 fieldPath status.homeDir）")
+		return p
+	}
+
+	matches := workDirRefPattern.FindAllStringSubmatchIndex(dir, -1)
+	if len(matches) == 0 {
+		if !strings.HasPrefix(dir, "/") {
+			add("run.workDir 必须是绝对路径或 $(vars.X)/$(params.X) 模板，实际 %q"+
+				"（留空 = 每次任务一个独立目录）", dir)
+			return p
+		}
+		return append(p, workDirLiteralProblems(dir)...)
+	}
+
+	// 字面量前缀：模板以引用开头（引用值本身可能是绝对路径）或者以 / 开头。
+	if matches[0][0] != 0 && !strings.HasPrefix(dir[:matches[0][0]], "/") {
+		add("run.workDir 必须以绝对路径或 $(vars.X)/$(params.X) 开头，实际 %q", dir)
+	}
+	cursor := 0
+	for _, m := range matches {
+		literal := dir[cursor:m[0]]
+		if strings.Contains(literal, "$") {
+			add("run.workDir 只接受 $(vars.X) / $(params.X)，实际 %q", dir)
+			return p
+		}
+		p = append(p, workDirLiteralProblems(literal)...)
+		kind, name := dir[m[2]:m[3]], dir[m[4]:m[5]]
+		switch kind {
+		case "vars":
+			value, ok := run.Env[name]
+			if !ok {
+				addCode(CodeUndefinedEnvRef, "run.workDir 引用了 $(vars.%s)，但 run.env 里没有声明 %s",
+					name, name)
+			} else if value.IsValueFrom() && !isDirFieldPath(value.FieldPath) {
+				addCode(CodeNonPathField, "run.workDir 引用了 $(vars.%s)，但它指向 %s（标量，不是目录类事实）",
+					name, value.FieldPath)
+			}
+		case "params":
+			if _, ok := params.properties[name]; !ok {
+				addCode(CodeUndefinedParamRef, "run.workDir 引用了 $(params.%s)，但 spec.params 里没有声明这个参数", name)
+			}
+		}
+		cursor = m[1]
+	}
+	if tail := dir[cursor:]; strings.Contains(tail, "$") {
+		add("run.workDir 只接受 $(vars.X) / $(params.X)，实际 %q", dir)
+	}
+	p = append(p, workDirLiteralProblems(dir[cursor:])...)
+	return p
+}
+
+// workDirLiteralProblems 校验 workDir 里的一段字面量：不含 NUL 外的怪异段
+// （空段 / "." / ".."），且不含未解析的 $。
+func workDirLiteralProblems(literal string) []string {
+	if literal == "" || literal == "/" {
+		return nil
+	}
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeWorkDirInvalid+": "+fmt.Sprintf(format, args...))
+	}
+	if strings.Contains(literal, "//") {
+		add("run.workDir %q 含连续斜杠（空路径段）", literal)
+	}
+	for _, seg := range strings.Split(literal, "/") {
+		switch seg {
+		case "..":
+			add("run.workDir %q 含 \"..\" 路径段", literal)
+		case ".":
+			add("run.workDir %q 含 \".\" 路径段", literal)
+		}
+	}
+	return p
+}
+
+// validateLifecycle 校验 lifecycle 的取值（默认值由 Normalize 补）。
+func validateLifecycle(lc *Lifecycle) []string {
+	var p []string
+	add := func(format string, args ...any) {
+		p = append(p, CodeBadRequest+": "+fmt.Sprintf(format, args...))
+	}
+	if lc.MaxAttempts != nil && *lc.MaxAttempts < 1 {
+		add("lifecycle.maxAttempts 必须 ≥1（总尝试次数含第一次），实际 %d", *lc.MaxAttempts)
+	}
+	if lc.ResultTTLSec != nil && *lc.ResultTTLSec < 0 {
+		add("lifecycle.resultTtlSec 必须 ≥0（0 = 永不清理），实际 %d", *lc.ResultTTLSec)
+	}
+	if lc.TimeoutSec < 0 || lc.TimeoutSec > MaxTimeoutSec {
+		add("lifecycle.timeoutSec 必须在 0..%d 之间（0 = 不设本地执行超时），实际 %d",
+			MaxTimeoutSec, lc.TimeoutSec)
+	}
+	return p
+}
+
+// validateConcurrency 校验 concurrency.maxPerNode。
+func validateConcurrency(c *Concurrency) []string {
+	if c.MaxPerNode != nil && *c.MaxPerNode < 1 {
+		return []string{fmt.Sprintf("%s: concurrency.maxPerNode 必须 ≥1，实际 %d",
+			CodeConcurrencyInvalid, *c.MaxPerNode)}
 	}
 	return nil
 }
 
-// digestMetadata 是参与 digest 计算的**那两件**身份字段（契约 §3.2）。
-//
-// 刻意不能直接序列化 Metadata：它带着 displayName，而展示名不参与 digest ——
-// 这正是 v3 把 displayName 从 Spec 搬走的理由（PATCH 改表不改产物 → 名字与产物
-// 永久漂移）。把“参与 digest 的字段”写成一个**独立结构体**而不是靠 omitempty，
-// 是为了让下一个给 Metadata 加字段的人不需要记得这件事：不在这里声明的就不进 digest。
-type digestMetadata struct {
-	Name    string `json:"name"`
-	Version int    `json:"version"`
-}
-
-// digestDocument 是契约 §3.2 字面式的那份 canonical 文档：
-//
-//	digest = "sha256:" + hex(sha256(canonical{metadata.name, metadata.version, spec}))
-//
-// 刻意**不含** apiVersion / kind：两者都是 Validate 钉死的常量（anotify/v1、Capability），
-// 写进摘要只是把两个恒定值混进来，不增加任何判别力。更重要的是形状：因此**任何人**
-// （中枢、节点、第三方审计）都能从「name + version + 整份 spec」三件套重算出同一个
-// digest —— P1-b 的 content_hash ≡ digest 就是这么定义的，两边不能分歧。
+// digestDocument 是 digest 的 canonical 文档：{name, version, 内容字段}。
 type digestDocument struct {
-	Metadata digestMetadata `json:"metadata"`
-	Spec     Spec           `json:"spec"`
+	Name        string          `json:"name"`
+	Version     int             `json:"version"`
+	Params      json.RawMessage `json:"params"`
+	Requires    Requires        `json:"requires"`
+	Lifecycle   Lifecycle       `json:"lifecycle"`
+	Concurrency Concurrency     `json:"concurrency"`
+	Run         Run             `json:"run"`
 }
 
-// canonicalDoc 是 CanonicalJSON 的形状：整份产物，但 metadata 只取 name+version。
+// foldDocument 是 foldKey 的 canonical 文档：{name, 内容字段}（**不含 version**）。
+type foldDocument struct {
+	Name        string          `json:"name"`
+	Params      json.RawMessage `json:"params"`
+	Requires    Requires        `json:"requires"`
+	Lifecycle   Lifecycle       `json:"lifecycle"`
+	Concurrency Concurrency     `json:"concurrency"`
+	Run         Run             `json:"run"`
+}
+
+// canonicalMetadata 是参与 CanonicalJSON 的身份字段（name + version）。
+type canonicalMetadata struct {
+	Name    string `json:"name"`
+	Version int    `json:"version,omitempty"`
+}
+
+// canonicalDoc 是 CanonicalJSON 的形状：整份产物，metadata 只取 name+version。
 //
-// 为什么还要 apiVersion/kind：CanonicalJSON 同时被当成「产物正文」用（store 的
-// artifacts.spec 列、控制台把那一列解回 artifact.Artifact —— 见 console_handlers），
-// 少了两者就不再是一份可 Parse 的产物。它们是常量，不参与 digest。
+// 没有 displayName：它不进 digest，也不该出现在「规范字节」里。next 在——它不参与
+// 身份，但它是路由的原始事实，落库必须存（capability.md §8.2）。
 type canonicalDoc struct {
-	APIVersion string         `json:"apiVersion"`
-	Kind       string         `json:"kind"`
-	Metadata   digestMetadata `json:"metadata"`
-	Spec       Spec           `json:"spec"`
-}
-
-// canonicalCopy 归一化一份产物的副本（**不修改调用方的对象**）：
-//
-//   - outputs 为空时给 []（AGENTS.md 的空列表纪律）；
-//   - params / lifecycle 归一成「key 有序、无多余空白」。
-//
-// 后一条不同步的后果是**内容寻址整个失效**：中枢拿请求里的原始字节算 digest，
-// 存下来的是归一后的 spec；节点（或任何第三方）从存下来的 spec 重算，得到的是另一个
-// digest → 部署永远被判成 local（"节点上是本地变体"），而两边的产物内容其实一模一样。
-// 症状极隐蔽：digest 看起来都合法（都是 sha256:…），只有把两个值并排看才会发现不同。
-//
-// lifecycle 也是 RawMessage（不透明透传）：encoding/json 不会替它排 key，所以这里
-// 必须自己归一，否则 lifecycle: {retryable, maxAttempts} 两种书写顺序就是两份产物。
-func canonicalCopy(a *Artifact) (*Artifact, error) {
-	if a == nil {
-		return nil, errors.New("artifact: nil")
-	}
-	clone := *a
-	if clone.Spec.Outputs == nil {
-		clone.Spec.Outputs = []string{}
-	}
-	var err error
-	if clone.Spec.Params, err = canonicalRawMessage("params", clone.Spec.Params); err != nil {
-		return nil, err
-	}
-	if clone.Spec.Lifecycle, err = canonicalRawMessage("lifecycle", clone.Spec.Lifecycle); err != nil {
-		return nil, err
-	}
-	return &clone, nil
-}
-
-// canonicalRawMessage 归一化 spec 里的一个不透明 JSON 字段（空值原样返回）。
-func canonicalRawMessage(field string, raw json.RawMessage) (json.RawMessage, error) {
-	if len(raw) == 0 {
-		return raw, nil
-	}
-	canon, err := canonicalizeJSON(raw)
-	if err != nil {
-		return nil, fmt.Errorf("artifact: spec.%s 不是合法 JSON：%w", field, err)
-	}
-	return canon, nil
+	APIVersion string            `json:"apiVersion"`
+	Kind       string            `json:"kind"`
+	Metadata   canonicalMetadata `json:"metadata"`
+	Spec       Spec              `json:"spec"`
 }
 
 // CanonicalJSON 返回产物的规范字节（**不含 displayName**）。
 //
-// 确定性来自三处：struct 字段顺序固定、map key 由 encoding/json 排序、params/lifecycle
-// 先归一。因此同一份产物无论用 YAML 还是 JSON 写、无论 key 顺序如何，结果相同。
-//
-// displayName 不在里面（契约 §3.2）：它是展示标签，不是内容。这也是把 Metadata 拆成
-// digestMetadata 的原因 —— 只取 name+version，不靠“记得给新字段加 omitempty”。
+// 确定性来自三处：struct 字段顺序固定、map key 由 encoding/json 排序、
+// params 先归一。因此同一份产物无论用 YAML 还是 JSON 写、无论 key 顺序如何，结果相同。
 func CanonicalJSON(a *Artifact) ([]byte, error) {
-	clone, err := canonicalCopy(a)
+	clone, err := Normalize(a)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(&canonicalDoc{
 		APIVersion: clone.APIVersion,
 		Kind:       clone.Kind,
-		Metadata:   digestMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
+		Metadata:   canonicalMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
 		Spec:       clone.Spec,
 	})
 }
 
-// Digest 返回形如 "sha256:<64 hex>" 的内容寻址标识。
+// FoldKey 返回折叠键（形如 "sha256:<64 hex>"），用于判「是不是同一行」。
 //
-// 吃的是 {metadata.name, metadata.version, spec}（契约 §3.2），所以：
-//
-//   - 只改 displayName → digest **不变**（改展示名不产生新版本、不漂移）；
-//   - 改任意 spec 字段（含 lifecycle / sticky / handler）或改 version → digest 变。
-func Digest(a *Artifact) (string, error) {
-	clone, err := canonicalCopy(a)
+// 不含 version / next / displayName：省略 version 时先按它复用已有行、没有才分配
+// 下一个 version；「只改 next」因此不会长出新版本。
+func FoldKey(a *Artifact) (string, error) {
+	clone, err := Normalize(a)
 	if err != nil {
 		return "", err
 	}
-	b, err := json.Marshal(&digestDocument{
-		Metadata: digestMetadata{Name: clone.Metadata.Name, Version: clone.Metadata.Version},
-		Spec:     clone.Spec,
+	return hashJSON(&foldDocument{
+		Name:        clone.Metadata.Name,
+		Params:      clone.Spec.Params,
+		Requires:    clone.Spec.Requires,
+		Lifecycle:   clone.Spec.Lifecycle,
+		Concurrency: clone.Spec.Concurrency,
+		Run:         clone.Spec.Run,
 	})
+}
+
+// Digest 返回部署身份（形如 "sha256:<64 hex>"），覆盖 {name, version, 内容字段}。
+//
+// 调用前 version 必须已确定（显式给或由 store 分配）：version=0 是「还没分配」，
+// 这时候算 digest 会把「未分配」当成一个版本号混进身份里。
+func Digest(a *Artifact) (string, error) {
+	clone, err := Normalize(a)
 	if err != nil {
 		return "", err
+	}
+	if clone.Metadata.Version < 1 {
+		return "", &Error{Problems: []string{fmt.Sprintf(
+			"%s: 算 digest 之前必须先确定 version（省略 version = 内容寻址，由 store 先分配），实际 %d",
+			CodeBadRequest, clone.Metadata.Version)}}
+	}
+	return hashJSON(&digestDocument{
+		Name:        clone.Metadata.Name,
+		Version:     clone.Metadata.Version,
+		Params:      clone.Spec.Params,
+		Requires:    clone.Spec.Requires,
+		Lifecycle:   clone.Spec.Lifecycle,
+		Concurrency: clone.Spec.Concurrency,
+		Run:         clone.Spec.Run,
+	})
+}
+
+// hashJSON 是两级身份共用的哈希入口。
+func hashJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("artifact: 序列化内容身份: %w", err)
 	}
 	sum := sha256.Sum256(b)
 	return DigestPrefix + hex.EncodeToString(sum[:]), nil
 }
 
+// SameFold 报告两份产物是否会折叠到同一行（foldKey 相同）。
+//
+// 它是「省略 version 时是否复用已有版本」的判据。
+func SameFold(a, b *Artifact) (bool, error) {
+	ka, err := FoldKey(a)
+	if err != nil {
+		return false, err
+	}
+	kb, err := FoldKey(b)
+	if err != nil {
+		return false, err
+	}
+	return ka == kb, nil
+}
+
+// SameContent 报告两份产物的部署身份是否相同（digest 相同）。
+//
+// 它是「显式同版内容不可变」的判据：同一 (namespace, name, version) 的两份产物
+// SameContent=false 时必须换 version（否则 400 version_content_immutable）；
+// next / displayName 是既定例外——它们不进 digest，SameContent 仍为 true。
+func SameContent(a, b *Artifact) (bool, error) {
+	da, err := Digest(a)
+	if err != nil {
+		return false, err
+	}
+	db, err := Digest(b)
+	if err != nil {
+		return false, err
+	}
+	return da == db, nil
+}
+
 // MarshalYAML 把产物序列化成落盘用的 YAML。
 //
 // 先转 JSON 再转 YAML：保证「落盘 → 重新 Parse」得到完全相同的 digest。
-// 与 CanonicalJSON 的唯一差别是**保留 displayName**：它不进 digest，但不是不存在 ——
-// 节点侧人读产物文件（cache 目录里的 artifact.yaml）时应该看得见作者取的那个名字，
-// 否则一次落盘就静默丢掉了一个用户字段。
+// 与 CanonicalJSON 的差别只有一个：**保留 displayName**（它不进 digest，但不是
+// 不存在——节点侧人读产物文件时应该看得见作者取的名字）。
 func MarshalYAML(a *Artifact) ([]byte, error) {
-	clone, err := canonicalCopy(a)
+	clone, err := Normalize(a)
 	if err != nil {
 		return nil, err
 	}
@@ -872,4 +1237,13 @@ func Decode(data []byte) (*Artifact, string, error) {
 		return nil, "", err
 	}
 	return a, d, nil
+}
+
+// compactJSON 把一段原始 JSON 压成一行，用于错误信息（不改变语义）。
+func compactJSON(raw []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
 }

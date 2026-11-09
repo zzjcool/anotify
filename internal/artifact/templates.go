@@ -9,9 +9,9 @@ import (
 
 // Template 是控制台的「新建能力」入口。
 //
-// 关键裁决（契约 D2）：模板是**代码生成器的输入**，不是执行器类型。
-// v1 只有一种执行器——脚本。所谓「Agent 类型」只是预置的脚本 + 预置的表单字段。
-// 想加一个新 Agent，加一个模板即可，不用改协议、不用发节点。
+// 模板是**代码生成器的输入**，不是执行器类型：v4 只有一种执行形式（脚本），
+// 所谓「Agent 类型」只是预置的脚本 + 预置的表单字段。想加一个新 Agent，加一个
+// 模板即可，不用改协议、不用发节点。
 //
 // 模板**不做文本插值**：脚本正文是固定的，用户填的字段值在运行时通过
 // ANOTIFY_PARAM_* 环境变量进入脚本。这样模板层就没有任何注入面。
@@ -23,17 +23,17 @@ type Template struct {
 	Fields      []Field `json:"fields"`
 	// Script 是入口文件 run.sh 的正文。
 	Script string `json:"script"`
-	// Requires 是机器上必须预装的外部命令（部署时探测，缺了部署失败）。
+	// Requires 是机器上必须预装的命令（写进 spec.requires.commands，部署期探测）。
 	Requires []string `json:"requires"`
-	// Outputs 是建议的出口名。
-	Outputs []string `json:"outputs"`
-	// TimeoutSec 是默认超时。
+	// Next 是建议的下游（写进 spec.next；空 = 终端能力）。
+	Next []string `json:"next"`
+	// TimeoutSec 是默认的本地执行超时（写进 spec.lifecycle.timeoutSec）。
 	TimeoutSec int `json:"timeoutSec"`
 }
 
 // Field 是表单上的一个输入项。key 必须是 snake_case——
-// 它会变成 ANOTIFY_PARAM_<UPPER>，而 paramEnvName 只做「大写 + 非字母数字换下划线」，
-// 所以 camelCase 会变成不可猜的名字（见 CONTRACT-artifact §6）。
+// 它会变成 ANOTIFY_PARAM_<UPPER>，而参数名归一（paramEnvName）只做「大写 + 非
+// 字母数字换下划线」，camelCase 会变成不可猜的名字（capability.md §2.3）。
 type Field struct {
 	Key      string   `json:"key"`
 	Label    string   `json:"label"`
@@ -65,14 +65,18 @@ var templates = []Template{
 		ID:          "script.blank",
 		DisplayName: "空白脚本",
 		Category:    "script",
-		Description: "从零开始写一段 bash。参数通过 ANOTIFY_PARAM_* 环境变量读取。",
+		Description: "从零开始写一段 bash。参数通过 ANOTIFY_PARAM_* 环境变量读取，" +
+			"下游用 anode 的 emit 网关派发。",
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
-echo "capability: $ANOTIFY_CAPABILITY"
-echo "digest:     $ANOTIFY_DIGEST"
-echo "params:     $ANOTIFY_PARAMS"
+# 工作目录就是本次任务目录（$PWD）；除 HOME / PATH 与 ANOTIFY 前缀的契约变量，环境一个都不继承。
+# 机器事实（目录、端点）要经 run.env 的 valueFrom 显式引用，例如：
+#   env:
+#     SRC: {valueFrom: {fieldRef: {fieldPath: vars.SOURCE_ROOT}}}
+# 下游用 emit 派发（目标必须在本能力 spec.next 里）：
+#   anode emit <下游能力> --data '{"k":"v"}'
+echo "task: $ANOTIFY_TASK_ID"
 `,
 		TimeoutSec: 900,
 	},
@@ -89,7 +93,6 @@ echo "params:     $ANOTIFY_PARAMS"
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 curl -fsS -X "${ANOTIFY_PARAM_METHOD:-POST}" \
   -H 'content-type: application/json' \
@@ -110,7 +113,6 @@ curl -fsS -X "${ANOTIFY_PARAM_METHOD:-POST}" \
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 args=(--depth 1)
 if [ -n "${ANOTIFY_PARAM_REF:-}" ]; then
@@ -133,10 +135,9 @@ git log -1 --stat
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 # 注意：这里的命令来自能力参数，是能力作者自己给的——它就是要执行任意命令。
-# 契约 I1 管的是「中枢不得执行」，不是「脚本里不许调 shell」。
+# 「中枢不得执行能力代码」管的是执行位置，不是「脚本里不许调 shell」。
 bash -c "$ANOTIFY_PARAM_COMMAND"
 `,
 		TimeoutSec: 1800,
@@ -153,7 +154,6 @@ bash -c "$ANOTIFY_PARAM_COMMAND"
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 payload=$(jq -n \
   --arg t "${ANOTIFY_PARAM_TITLE:-}" \
@@ -171,7 +171,7 @@ curl -fsS -X POST -H 'content-type: application/json' --data "$payload" \
 		ID:          "agent.claude",
 		DisplayName: "Claude Code",
 		Category:    "agent",
-		Description: "用 Claude Code 执行一段提示词。密钥留在机器上（机器需已装 llm 与登录态）。",
+		Description: "用 Claude Code 执行一段提示词。密钥留在机器上（机器需已装 claude 与登录态）。",
 		Fields: []Field{
 			{Key: "prompt", Label: "提示词", Type: "text", Required: true},
 			{Key: "model", Label: "模型", Type: "string", Help: "留空用默认"},
@@ -179,7 +179,6 @@ curl -fsS -X POST -H 'content-type: application/json' --data "$payload" \
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 args=(--print)
 if [ -n "${ANOTIFY_PARAM_MODEL:-}" ]; then
@@ -203,7 +202,6 @@ claude "${args[@]}" "$ANOTIFY_PARAM_PROMPT"
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 codex exec "$ANOTIFY_PARAM_PROMPT"
 `,
@@ -221,7 +219,6 @@ codex exec "$ANOTIFY_PARAM_PROMPT"
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 if [ -n "${ANOTIFY_PARAM_MODEL:-}" ]; then
   pi --print -m "$ANOTIFY_PARAM_MODEL" -p "$ANOTIFY_PARAM_PROMPT"
@@ -244,7 +241,6 @@ fi
 		},
 		Script: `#!/bin/bash
 set -euo pipefail
-cd "$ANOTIFY_WORKDIR"
 
 "$ANOTIFY_PARAM_AGENT_COMMAND" "$ANOTIFY_PARAM_PROMPT"
 `,
@@ -257,15 +253,14 @@ func Templates() []Template {
 	out := make([]Template, len(templates))
 	copy(out, templates)
 	for i := range out {
-		// 空列表一律给 []（不变量 I9）：`null` 会让前端把「没有字段」误判成
-		// 「字段没加载出来」，而且控制台是直接 JSON.parse 后遍历的。
+		// 空列表一律给 []（不是 null）：前端会直接遍历它们。
 		out[i].Fields = append(make([]Field, 0, len(templates[i].Fields)), templates[i].Fields...)
 		for j := range out[i].Fields {
 			out[i].Fields[j].Options = append(make([]string, 0, len(templates[i].Fields[j].Options)),
 				templates[i].Fields[j].Options...)
 		}
 		out[i].Requires = append(make([]string, 0, len(templates[i].Requires)), templates[i].Requires...)
-		out[i].Outputs = append(make([]string, 0, len(templates[i].Outputs)), templates[i].Outputs...)
+		out[i].Next = append(make([]string, 0, len(templates[i].Next)), templates[i].Next...)
 	}
 	return out
 }
@@ -283,18 +278,19 @@ func LookupTemplate(id string) (Template, bool) {
 // Render 把模板编译成一份产物。
 //
 // 走「脚本模式」时调用方把 Files 填进来，模板的脚本体被整体覆盖；
-// 否则用模板自带的脚本体。
+// 否则用模板自带的脚本体。返回的是**归一化后**的产物（默认值已补齐），因此
+// 渲染结果与「渲染 → 落盘 → 重新 Parse」的 digest 一致。
 func Render(templateID string, in RenderInput) (*Artifact, error) {
 	tpl, ok := LookupTemplate(templateID)
 	if !ok {
 		return nil, &Error{Problems: []string{
-			fmt.Sprintf("unknown_template: 没有 id 为 %q 的模板", templateID),
+			fmt.Sprintf("%s: 没有 id 为 %q 的模板", CodeBadRequest, templateID),
 		}}
 	}
 
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		return nil, &Error{Problems: []string{"invalid_name: 能力名必填"}}
+		return nil, &Error{Problems: []string{CodeBadRequest + ": 能力名必填"}}
 	}
 
 	version := in.Version
@@ -327,22 +323,21 @@ func Render(templateID string, in RenderInput) (*Artifact, error) {
 		return nil, err
 	}
 
-	a := &Artifact{
+	a, err := Normalize(&Artifact{
 		APIVersion: APIVersion,
 		Kind:       KindCapability,
-		// displayName 在 Metadata 里（v3 起）：它是展示标签，不参与 digest，
-		// 所以改一次名字不该产生一个新版本。
-		Metadata: Metadata{Name: name, Version: version, DisplayName: displayName},
+		Metadata:   Metadata{Name: name, Version: version, DisplayName: displayName},
 		Spec: Spec{
-			Params:   params,
-			Outputs:  append([]string{}, tpl.Outputs...),
-			Requires: append([]string{}, tpl.Requires...),
-			Run: Run{
-				Entrypoint: entrypoint,
-				Files:      files,
-				TimeoutSec: timeout,
-			},
+			Params:      params,
+			Next:        append([]string{}, tpl.Next...),
+			Run:         Run{Entrypoint: entrypoint, Files: files},
+			Requires:    Requires{Commands: append([]string{}, tpl.Requires...)},
+			Lifecycle:   Lifecycle{TimeoutSec: timeout},
+			Concurrency: Concurrency{},
 		},
+	})
+	if err != nil {
+		return nil, err
 	}
 	if err := Validate(a); err != nil {
 		return nil, err
@@ -360,8 +355,8 @@ func paramsSchemaFor(fields []Field) (json.RawMessage, error) {
 	for _, f := range fields {
 		if !isSnakeCase(f.Key) {
 			return nil, &Error{Problems: []string{
-				fmt.Sprintf("invalid_field: 字段名 %q 必须是 snake_case"+
-					"（它会变成 ANOTIFY_PARAM_<UPPER>）", f.Key),
+				fmt.Sprintf("%s: 字段名 %q 必须是 snake_case（它会变成 ANOTIFY_PARAM_<UPPER>）",
+					CodeBadRequest, f.Key),
 			}}
 		}
 		prop := map[string]any{}
