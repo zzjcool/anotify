@@ -91,6 +91,22 @@ T1新checkpoint已见：G1-5a c654058纯render/12格计划测试通过，但完�
 
 A2产物生产入口正式父裁决：不接受固定userworkDir/.anotify-artifacts存在就拒绝（破坏重复任务/重试/共享目录）。最低复杂度第二意见建议独立system attempt目录，父采纳：ANOTIFY_ARTIFACT_DIR新增基础变量（原清单正式+1）指每task/attempt唯一0700 exportdir，脚本显式写files、安全枚举/托管copy/A1upload；空才[]、创建枚举错误failed；不新增runfield/CLI/stdout魔法/宿主继承、不碰用户原目录。T3当前单writer实现并给EnvArtifactDir纯delta；T1/T2已通知。根docwriter v4-artifact-env-docs显式同步4份基础env/decisions，不能假称原4变量包含此项，不回头全量重审产品D1-D6。
 
-19:21 T3 L2实际核查：新增runner/app/emitgw/execenv/ops/resultstore/runner_test，上传client b44ff6a与shared控制字符/header编解码8a8173f已提交，非空转；父延提醒30m，要求运行链具名test PASS/FAIL和63570df后纯协议delta（T1已有635不能重复整N1）。A2docworker accepted verified（4docs基础env/执行目录清单），父独立同断言+diffcheckPASS，fresh v4-a2-export-doc-review定向读4短段 **ok:true/A2全部一致**，仅minor错误码artifact_export_invalid未进封闭词表。父已精准补capability结果码表/错误域和API同词表，不重开全量评审；新增env正式补充不假称原4项已有，不跑实现测试，准备提交A2支持。
+19:21 T3 L2实际核查：新增runner/app/emitgw/execenv/ops/resultstore/runner_test，上传client b44ff6a与shared控制字符/header编解码8a8173f已提交，非空转；父延提醒30m，要求运行链具名test PASS/FAIL和63570df后纯协议delta（T1已有635不能重复整N1）。A2docworker accepted verified（4docs基础env/执行目录清单），父独立同断言+diffcheckPASS，fresh v4-a2-export-doc-review定向读4短段 **ok:true/A2全部一致**，仅minor错误码artifact_export_invalid未进封闭词表。父已精准补capability结果码表/错误域和API同词表，不重开全量评审；新增env正式补充不假称原4项已有，不跑实现测试，A2文档/父契约已提交 `0a5c551`，用户settings未包含；生成只读doc支持 `/tmp/anotify-v4-a2-docs-handoff/docs-only.patch`（base2fe→0a，5design+ARTIFACT-HANDOFF）发3团队安全边界接。T3须给63570df→最新protocol小delta包含路径headerguard/EnvArtifactDir/错误码，不让T1重复apply旧N1。
+
+19:31 T1 L2复核：真实8b1b95c修取消授权竞态/TaskInputs钉版已提交，1b420e6原样同步最终E1-A1；独立protocol/artifact/store-v4test/playbook/sourcespec测试PASS。g1-5b唯一writer已接DB单事务12格安装/dryRun/回执实例历史，fresh只读复审固定8b1/c654，未宣称G1全量通过。父延提醒30m不改验收，强调DB反例不能用纯Plan测试替代、G1-6旧测试/CAS/hash/实际接口还需闭包；组长context高要求任务文件化、不重扫未来模块。
+
+T2 F2b2 codeREADY后机械77tests/sitegen/Vocabulary/makefe已绿，独立selfhost短case16视口PASS，但4行为caseFAIL（events请求记录response定位/图DOMlocator/envdiagnostic泛词'value'检测），A1artifact410后段尚未跑，未闭包。父要求基于真实请求/DOM精确修，env凭证检查使用唯一sentinel+结构字段白名单不泛词误判，不删除诊断/断言；重跑完整原case至artifact410/404，fix后再次freeze/build新标记。短case总timeout55/内部48s/finally回收有效，不假称async恢复、不重做Source。
+
+19:39 T2 L2复核：四页/locale/mock/helper/tests真实diff，最新worker已保存完整REPORT并自报79/79与最终Chrome cases全部收齐（原fail证据保留），组长仍在wait拿实际最终verdict，未commit/未标阶段verified。父延提醒30m不改验收，要求receipt收齐后stage提交→F2c包/node/config→F3，不报告附件无限polish；需要共享相邻回归过才能phase绿，最终真实服务/节点集成仍未做。
+
+runner基本执行阻塞定向诊断已确认根因（只读v4-runner-pipe-diagnosis）：attempt.go249/253把os.Pipe返回(r,w)接为(W,R)，childStdout/Stderr得到读端、collector得到写端；io.Copy错误被忽略导致emptylogs。父已发T3同writer精准swap/正确Close ownership与collector错误显式处理，禁CombinedOutput替代流式/继承整env/弱断言。要求EmptyExport基本脚本+双流标记+孙进程/cancel/lease定向和完整3verify再过；A2目录已实际建立/注入，不是A2业务失败。尚未验证修复，不宣称全node已解。
+
+T1 fresh复审8b1b95c仍3major已父批准串行修：grant事务固化attempt机器vars/limits/configRevision，TaskInputs读snapshot不能中途apply漂移；task_attempts持久node/instance/lease/回收状态，旧attempt reapedACK只释旧槽不动新授权，节点身份+历史绑定可验（旧result/emit仍拒）；ReclaimStaleSlots不从DBphase/重hello推物理空闲，必须实际reaped/no-process事实或offline不可eligible状态，回online需实际对齐。先G1-5bsettle再G1-6S/R2，不抢writer；测试rev更新/旧ACK/重复ACK/伪rehello/offline与GC引用。T3也同步旧物理reap/重连真实busy原D4覆盖，字段缺口须协调不私镜像。
+
+T2 F2b2最终清理Task未定义provenance后message5checks/trace2checks重新EXIT0，79Node/fe/sitegen/Vocab自主重跑绿；writer已settled/retired，完整finalJSON可恢复，但collect因最后ACK/记录时序acceptanceunknown，不能当verified。父允许阶段独立branch提交继续c1，必须标实际测试已过/extensionunknown，保留launchverify证据，必要无活writer安全边界独立机械close（不并发c1）；最终父3verify与真实crossqueue仍不可替代。A2docs-only已588e34c安全原样同步。
+
+T2已提交7a7e96e四页诊断阶段（实际测试/相邻回归通过，extension尾ACK receipt差异记录F2B2-COLLECTED.md不伪verified）。唯一writer f2c1-playbook已派，包两页/4locale/model/mock/tests/CSS/证据按W3实现files信封/raw/read/render与dryRun分工/12格原子conflict/unapplied/打码/回执折叠历史/deletekept，父A2支持588e34c已接；不重做前面已完成页面。后续c2Node/config/保留域、F3、freshreview和整队真实cross验证仍未完成。
+
+A3精确slot/reap wire缺口已父冻结（SLOT-HANDOFF.md），scout核slot0based/int且GrantLease实际方法名：Node accept前预留slot回present标识、grant原子echo同slot+assignment，dispatch共享assignmentExpiresAt30s不授执行权；cancel/ack历史leaseId+slot、oldreap只释旧occupancy不放旧result/emit；Hello slot/busy presence未知不idle、configapplied可实例快照，旧wireconcurrency移除；reject仅stale_config|slot_unavailable（正式扩闭集，启动前noattempt）。不采纳bootId/occupancySeq多级计数框架，T3唯一proto作者当前同writer实现、T1安装settle后S消费，5doc父writer同步；不减预算/测试、不引新资源。T2c1无需等内部wire，c2实例未知不假闲。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

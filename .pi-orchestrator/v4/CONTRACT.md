@@ -109,6 +109,10 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 
 详见父 `ARTIFACT-HANDOFF.md`：既有 logs_request/response 增可选attempt/实际attempt，HTTPprevious定位历史attempt与node。运行产物只通过node出站流式PUT `/v1/node/tasks/{taskId}/artifacts/{sha256}` 到中枢（现Node身份+当前attempt授权，完成发布时再CAS验权），不新增node监听或Artifact大WS帧；Task下载使用namespace子路径、实际manifest授权、7天副本过期410，原用户文件不删除。共享header/路径常量T3唯一作者，T1中枢spool/引用/GC/下载，T2只用正确链接与过期状态。A2 正式登记入口采用每 attempt 独立系统 export 目录（0700、唯一后缀），以 `ANOTIFY_ARTIFACT_DIR` 提供给脚本显式写待导出文件；不增加 run 字段/第四 CLI，不扫描 stdout，不因用户目录中旧固定输出目录存在而拒绝。节点安全枚举/托管复制/上传，空目录才是真实空结果；运行期创建/枚举错误不可假空。结果 TTL 只动系统目录，两个共享工作目录任务与逻辑任务重试不混产物。
 
+### 物理 slot / 历史回收（A3补充）
+
+详见父 `SLOT-HANDOFF.md`：Node accept前预留slot，grant echo相同slot和assignment；dispatch同一有界assignmentExpiresAt窗口但不授执行权；cancel/ack带历史leaseId/slot，旧reaped事实只回收旧occupancy不恢复执行授权。hello busy/slot显式presence，未知不idle，config.applied可附实例；不按phase/rehello假回收。原reject闭集正式扩stale_config|slot_unavailable，均启动前不计attempt，无真实容量回waiting_for_slot。wire每instance concurrency旧模型删除，limits预算不变。共享协议T3唯一作者、T1S阶段消费，当前各自单writer不并发抢写；不引bootId/occupancySeq框架或新帧。
+
 ### 并行验证边界
 
 - T3只依赖protocol/artifact及纯schema工具，不导入store/ws/server/lease/executor，节点不得链接SQLite。T1不用等待完整anode即可按冻结protocol实现server，真实端到端仍等最终集成。
