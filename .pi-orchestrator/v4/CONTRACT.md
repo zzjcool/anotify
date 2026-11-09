@@ -103,6 +103,10 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 - 已有配置/执行/升级/logs帧语义不变；shared协议更新必须包含实际Go字段、JSONtag、Decode、方向校验和具名测试，N1交 `PROTOCOL-HANDOFF.md` 后冻结，T1再接快照开始G2。必要修正经父协调，不双方私下改字段。
 - 父批准补本地HTTP→中枢权威的 `task.emit` 上行（requestId/taskId/attempt/leaseId/attemptToken/to/id?/data）与 `task.emit.ack` 下行（requestId/taskId/attempt/httpStatus+互斥response或error，复用HTTP DTO）。requestId仅RPC关联不是业务seq；业务去重仍(taskId,id)。中枢当前授权验证与接受/派发同事务，旧attempt不能借已存在id绕过授权。node等待有界timeout、断连结果未知CLI5，不自动重发无id；迟到ack不得串另一个HTTP请求。protocol由T3统一定义并先交最终N1快照，T1消费，中枢和节点行为测试各自所有权；完整裁决记录 `/tmp/anotify-v4-emit-ws-approval.md`。
 
+### 运行产物与日志 attempt（A1补充）
+
+详见父 `ARTIFACT-HANDOFF.md`：既有 logs_request/response 增可选attempt/实际attempt，HTTPprevious定位历史attempt与node。运行产物只通过node出站流式PUT `/v1/node/tasks/{taskId}/artifacts/{sha256}` 到中枢（现Node身份+当前attempt授权，完成发布时再CAS验权），不新增node监听或Artifact大WS帧；Task下载使用namespace子路径、实际manifest授权、7天副本过期410，原用户文件不删除。共享header/路径常量T3唯一作者，T1中枢spool/引用/GC/下载，T2只用正确链接与过期状态。输出清单实际登记入口仍须T3给最小事实后父定，不用永久空数组隐藏未实现产物能力。
+
 ### 并行验证边界
 
 - T3只依赖protocol/artifact及纯schema工具，不导入store/ws/server/lease/executor，节点不得链接SQLite。T1不用等待完整anode即可按冻结protocol实现server，真实端到端仍等最终集成。

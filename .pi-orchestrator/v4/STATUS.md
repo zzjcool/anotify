@@ -75,6 +75,12 @@ T2 F2b1 worker缺async工具已诚实报告；centurion托管named preview/长�
 
 18:31 T3 L2核查：实际commits N2A `4a8b2f6`（22文件config/applied/cache/WS基础）和E1 `179e999`+`08ef49a`，当前anode-e1-fix正在修Decode unknown字段/ACK互斥接收路径验证；确认有进展，仅延提醒30m。E1未作为最终无缺陷快照转T1，等增量修复后交唯一HANDOFF，然后N2B执行/lease/emit/GC。N2A独立close已补验收，整节点未完成。
 
-WIRE正文最终修复已完成。最后worker的extension验收因父命令中shell双引号内反引号导致unexpectedEOF（验证基础设施引用错误，不是正文不通过）；父已按相同断言用安全heredoc独立运行PASS、14JSON解析PASS、diffcheckPASS。只读config259/273确认hello身份校验非注册、首见只配置行；playbook472-474打码落库明确。两路review原major仅hello旧句已修，minor安全收紧均落实，允许提交正文wire补充；未跑实现build/e2e。
+WIRE正文最终修复已完成。最后worker的extension验收因父命令中shell双引号内反引号导致unexpectedEOF（验证基础设施引用错误，不是正文不通过）；父已按相同断言用安全heredoc独立运行PASS、14JSON解析PASS、diffcheckPASS。只读config259/273确认hello身份校验非注册、首见只配置行；playbook472-474打码落库明确。两路review原major仅hello旧句已修，minor安全收紧均落实，正文wire补充已提交 `2fe8597`，未包含用户settings。父生成只读doc支持快照 `/tmp/anotify-v4-wire-docs-handoff/docs-only.patch`+SHA（base设计368b489→2fe8597），发3团队在单writer安全边界原样同步；仅5design+WIRE-HANDOFF，不合整父分支、不得自行改design。未跑实现build/e2e。
+
+18:36 T1旧L2核查：已真实新提交52b17a6(task/emit/事件/GC)、19827b3(N1纯协议同步)、4cdea61(纯目录包render/安装计划)，当前g1-5a修复仍有diff，非空转。3fresh checkpointreview发现cancel恢复/RequestCancel竞态、逻辑task ns输入载体、资源CAS原子入口及槽位/过期结果等major，接口清单已落但暂非冻结。父已批准按原语义串行修复：g1-5a→G1-4R→G1-5b→G1-6，drain只停新接单不当失联、取消持久意图不可expiry复活、slot等真实reaped、CAS同事务，ns输入钉住机器换节点重解析；具名竞态/rollback/跨ns测试。仅延L2提醒30m，未改变原验收/范围。
+
+A1运行产物/日志接缝已父批准（ARTIFACT-HANDOFF.md）：logs原帧增attempt/实际attempt，previous找历史node档案；托管bytes用Node出站HTTPPUT到中枢（现身份+attempt授权、流式+完成CAS），不另开node监听/大artifactWS帧；Task实际manifest授权下载ns子路径/7d expired410，user原files不碰。T3shared常量和client、T1spool/引用/GC/handler、T2链接与过期状态已同步。不采纳第二意见把node出站HTTP误当新node公开监听的前提。脚本/runner实际如何登记输出清单仍有事实缺口，已要求T3最小事实再父定，不能永远empty[]假完成/擅加第四CLI/run字段。
+
+T1新checkpoint已见：G1-5a c654058纯render/12格计划测试通过，但完整store install尚未做；当前g1-4r修major竞态/D2输入钉住，W1-W6支持已08b7a18同步，接口清单暂态非最终。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。
