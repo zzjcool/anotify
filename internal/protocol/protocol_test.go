@@ -17,32 +17,34 @@ import (
 // TestFrameNamesAreWireValues 钉死帧类型名：字符串本身就是协议，改一个字就是断连。
 func TestFrameNamesAreWireValues(t *testing.T) {
 	want := map[string]string{
-		"hello":          FrameHello,
-		"welcome":        FrameWelcome,
-		"config.changed": FrameConfigChanged,
-		"config.get":     FrameConfigGet,
-		"config.applied": FrameConfigApplied,
-		"task.dispatch":  FrameTaskDispatch,
-		"task.accept":    FrameTaskAccept,
-		"task.reject":    FrameTaskReject,
-		"lease.grant":    FrameLeaseGrant,
-		"lease.renew":    FrameLeaseRenew,
-		"lease.ack":      FrameLeaseAck,
-		"task.result":    FrameTaskResult,
-		"result.ack":     FrameResultAck,
-		"task.cancel":    FrameTaskCancel,
-		"cancel.ack":     FrameCancelAck,
-		"upgrade":        FrameUpgrade,
-		"upgrade_ack":    FrameUpgradeAck,
-		"logs_request":   FrameLogsRequest,
-		"logs_response":  FrameLogsResponse,
+		"hello":               FrameHello,
+		"welcome":             FrameWelcome,
+		"config.changed":      FrameConfigChanged,
+		"config.get":          FrameConfigGet,
+		"config.applied":      FrameConfigApplied,
+		"task.dispatch":       FrameTaskDispatch,
+		"task.accept":         FrameTaskAccept,
+		"task.reject":         FrameTaskReject,
+		"lease.grant":         FrameLeaseGrant,
+		"lease.renew":         FrameLeaseRenew,
+		"lease.ack":           FrameLeaseAck,
+		"task.result":         FrameTaskResult,
+		"result.ack":          FrameResultAck,
+		"task.cancel":         FrameTaskCancel,
+		"cancel.ack":          FrameCancelAck,
+		"upgrade":             FrameUpgrade,
+		"upgrade_ack":         FrameUpgradeAck,
+		"logs_request":        FrameLogsRequest,
+		"logs_response":       FrameLogsResponse,
+		"capability.deploy":   FrameCapabilityDeploy,
+		"capability.deployed": FrameCapabilityDeployed,
 	}
 	for wire, got := range want {
 		if got != wire {
 			t.Fatalf("帧类型常量 = %q，期望 %q", got, wire)
 		}
 	}
-	// 19 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
+	// 21 帧一个不多一个不少：上行 ∪ 下行 = 全集，且两边不相交。
 	up, down := UpstreamFrames(), DownstreamFrames()
 	if len(up)+len(down) != len(want) {
 		t.Fatalf("上行 %d + 下行 %d 帧，期望共 %d", len(up), len(down), len(want))
@@ -247,6 +249,24 @@ func frameFixtures() []frameFixture {
 				Stdout: "out", Stderr: "err", Truncated: true, Bytes: 6, Error: LogsErrNoLocalArchive,
 			},
 			wantKeys: []string{"bytes", "error", "requestId", "stderr", "stdout", "taskId", "truncated", "type"},
+		},
+		{
+			name: "capability.deploy",
+			frame: &CapabilityDeployFrame{
+				Type: FrameCapabilityDeploy, RequestID: "dep_1",
+				DeployRefs: DeployRefs{Namespace: "default", Name: "review", Version: 3, Digest: "sha256:aa"},
+			},
+			wantKeys: []string{"digest", "name", "namespace", "requestId", "type", "version"},
+		},
+		{
+			name: "capability.deployed",
+			frame: &CapabilityDeployedFrame{
+				Type: FrameCapabilityDeployed, RequestID: "dep_1",
+				DeployRefs: DeployRefs{Namespace: "default", Name: "review", Version: 3, Digest: "sha256:aa"},
+				Status:     DeployStatusApplied,
+				Error:      "",
+			},
+			wantKeys: []string{"digest", "name", "namespace", "requestId", "status", "type", "version"},
 		},
 	}
 }
