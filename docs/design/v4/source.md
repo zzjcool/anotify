@@ -1,7 +1,9 @@
 # Source Spec v4 · 源（触发器）
 
-> 状态：**讨论中**（2026-11-08）。标记 ⚠️ 的地方是待定项，尚未定稿。
-> 配套：`capability.md`（能力）、`playbook.md`（安装包，待写）。
+> 状态：**已定（语义冻结；实现未开始）**（2026-11-08；2026-11-09 按 `decisions.md` V4-D6 补事件去重窗口/过期语义）。本文是 v4 的**目标状态**：按它从零构建，不兼容、不迁移任何早期形态。
+> 所有待定项已裁决，见 §7「决策记录」。要翻案就改对应编号那一行并写明理由，
+> **不要只改正文**——正文与决策记录不一致时以 §7 为准。
+> 配套：`capability.md`（能力）、`playbook.md`（安装包）。
 
 ---
 
@@ -15,22 +17,38 @@
 2. **源不属于命名空间之外的任何层**：一个源属于一个命名空间（和能力的隔离维度相同）。
 3. **源与能力只通过「事件」相连**：源触发 → 产生一条事件 → 事件按入口边交给目标能力的 params。中间没有任何直接调用。
 
-用户词（`../capability-spec-v3.md §13`）：**源**。英文 Source。界面不叫「触发器」「入口能力」。
+用户词：**源**。英文 Source。界面不叫「触发器」「入口能力」。
 
 ---
 
-## 1. 四种 kind
+## 1. kind：本期三个内置项，开放集合
 
-| kind | 什么时候触发 | 谁触发 |
-|---|---|---|
-| `cron` | 按五段 cron 表达式到点 | 中枢调度器（`nextFireAt`） |
-| `webhook` | 外部系统 POST 到唯一 URL | 外部系统 |
-| `github` | GitHub webhook 投递 | GitHub（`webhook` 的「知道载荷长什么样」版本） |
-| `manual` | 用户在页面上点一下 | 人 |
+| kind | 什么时候触发 | 谁触发 | 请求体格式 | 凭据 |
+|---|---|---|---|---|
+| `cron` | 按五段 cron 表达式到点 | 中枢调度器（`nextFireAt`） | 无（载荷来自 `config.payload`） | 无 |
+| `webhook` | 外部系统 POST 到唯一 URL | 外部系统 | 包装体 `{type, id?, payload}`（§3.3） | URL 里的 token + 可选签名 secret |
+| `manual` | 用户在页面上点一下 | 人 | 无（载荷来自 `config.payload` 或页面输入） | 登录会话 |
 
-`webhook` 与 `github` 后端校验完全同一条路径，差别只有两处：**前端给哪份字段清单**、**用哪个事件名**（GitHub 放在 `X-GitHub-Event` 头里）。
+**kind 是开放集合，不是封闭枚举。** 合法值 = **注册表里有的项**；本期注册表只种了三个内置项，
+所以此刻 `store.SourceKinds` 就是这三项、别的 kind → `invalid source kind`。注册表本身能加东西
+（包括用户自定义），那是 CRD 那一期的事（§8）——**本期没有外部写入入口，新增 kind 只能改代码**。
 
-合法值就这四个（`store.SourceKinds`），别的 kind → `invalid source kind`。
+这条措辞对实现是有要求的：判定要写成「注册表里有没有这一项」，而不是「不是这三个就拒」。
+两者在今天的可观测行为完全一样，但后者开注册表时要逐处翻。
+
+**kind 只决定两件事：校验走哪条路径、请求体按什么格式解析。它不决定载荷的形状。**
+载荷长什么样是调用方（外部系统）的事——靠 §3.2 的 `payloadSchema` 声明；至于哪个字段填到能力的
+哪个参数，由 target 的 `params` 模板（§4）决定。
+
+**没有「按外部系统定制」的 kind**（D0）。给某个平台单开一个 kind，代价是三样：多一条投递格式
+（body 就是载荷、事件名在请求头里）、多一个只有它用得上的 `config` 字段、以及**kind 的语义开始
+跟着「是谁在调用」走**——同一个 kind 出现两条解析路径，前端也就必须知道调用方是谁。要接原生格式
+固定、又改不了的外部系统，在它那一侧（或中间层）包成 §3.3 的格式，或等 §8 的自定义 kind。
+
+这三个内置项的关系不是「能力等级」而是「入口位置」：`cron` / `manual` 的载荷由配置和人给，
+`webhook` 的载荷由外面给。**鉴权、幂等、样例是「载荷从外面来」这类入口才需要的**，所以本期只有
+`webhook` 要用（§3.1、§3.3）；将来自定义一个「从外面来」的 kind，同样要背这三件事，§8 没把它们
+算成可选。
 
 ---
 
@@ -40,19 +58,33 @@
 apiVersion: anotify/v1
 kind: Source
 metadata:
-  name: on-pull-request            # 命名空间内唯一（重名 → source name already used）
+  name: on-deploy-report           # 命名空间内唯一（重名 → source name already used）
 spec:
-  kind: github                     # cron | webhook | github | manual
-  enabled: true                    # 关掉 = 不触发（webhook 也不收）
+  kind: webhook                    # cron | webhook | manual
+  enabled: true                    # 关掉 = 不触发（webhook 也不收，对外 404）
 
-  config:                          # 见 §3，按 kind 解释
-    event: [pull_request]
+  config:                          # 见 §3
+    token: ""                      # 空 = 创建时服务端随机生成；拼出 /v1/hooks/<token>
+    secret: ""                     # 空 = 不校验签名（默认）；填了则要求 HMAC 签名
+    payloadSchema:                 # 可选载荷契约：不合规 → 入库但不派发（§3.2）
+      type: object
+      required: [environment]
+      properties:
+        environment: { type: string }
+        commit: { type: object, properties: { sha: { type: string } } }
+    sample:                        # 仅用于编辑器里的字段提示，不参与派发
+      environment: "prod"
+      commit: { sha: "abc123" }
 
   targets:                         # 见 §4
-    - capability: review
+    - capability: analyze
       params:
-        repo: "{{payload.repository.full_name}}"
+        env: $(payload.environment)           # 整个值只有一个引用 → 保留原类型（§4.1）
+        report: reports/$(payload.environment)/$(payload.commit.sha).json
+                                              # 与常量拼接 → 结果一定是字符串
 ```
+
+`kind` 与 `metadata.name` 创建后都不可修改（换 kind 等于换语义，换名等于断掉入口边，请删除后重建）。
 
 ---
 
@@ -65,26 +97,106 @@ spec:
 | 字段 | 类型 | 必填 | 默认 | 约束 |
 |---|---|---|---|---|
 | `expr` | string | ✅ | — | 五段 cron 表达式，**创建时真的解析一遍**（`61 * * * *` 当场拒，不等到触发才发现永不运行） |
-| `tz` | string | 可选 | `Local` | 时区名 |
+| `tz` | string | 可选 | `Local` | IANA 时区名 |
 
-#### `webhook` / `github`
+#### `webhook`
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `token` | string | 可选 | 决定唯一 URL：`/v1/hooks/<token>`。**空 = 创建时服务端随机生成**。它本身是凭据：谁拿到 URL 谁就能往里发事件，所以支持轮换 |
-| `event` | []string | 仅 github | 订阅哪些 GitHub 事件（`push` / `pull_request` / `issues` / `release` / `workflow_run` …）。决定前端给哪份字段清单，也决定本次投递用哪个事件名 |
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `token` | string | 可选 | 服务端随机生成 | 决定唯一 URL：`/v1/hooks/<token>`。它本身是凭据：谁拿到 URL 谁就能往里发事件，所以支持轮换 |
+| `secret` | string | 可选 | 空（不校验） | 填了之后投递必须带合法签名（§3.3），否则 `401`。**它保护的是"这是不是我们发的"，token 保护的是"发给哪个源"** |
+| `sample` | object | 可选 | 空 | 一条示意载荷，**只用于编辑器提示**（D8）：不参与派发、不参与 `payloadSchema` 校验、不进事件 |
+
+`token` 与 `secret` 都是**轮换友好**的：换 `token` 换 URL（旧 URL 立刻 404）；换 `secret`
+旧签名立刻失效。两者都不会出现在日志里，也**不作为读字段回显**：
+`GET` 只给 `config.hookUrl`（授权读，含 token 拼出的 URL）和 `config.secretSet`（布尔），
+不返回 `config.token` / `config.secret` 原文。创建/更新请求示例与 GET 响应示例必须分开写，不能拿写入示例当读响应。
+
+```yaml
+# 写请求（POST / PATCH）可以出现 token / secret
+spec:
+  kind: webhook
+  config: { token: src_xxx, secret: "…", payloadSchema: {…} }
+
+# GET 响应：同一份 spec，但敏感字段换成只读投影
+spec:
+  kind: webhook
+  config:
+    hookUrl: https://hub.example/v1/hooks/src_xxx   # 授权读可见
+    secretSet: true                                  # 只告诉“配没配”
+    payloadSchema: {…}
+```
 
 #### `manual`
 
 没有 kind 专属字段。
 
-### 3.2 四种 kind 通用
+### 3.2 三种 kind 通用
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `vars` | array | 这个触发方式**能提供哪些字段**的声明（`{name, from}`）。前端据此做变量提示，后端逐项校验（出错会指出是哪一项） |
-| `resultSchema` | JSON Schema | 事件 payload 的契约。**每次投递都要在派发前过它**，不合法 → 剪枝（不是收下来再爆）。缺省与显式 `null` 都算「不声明」；数组/标量/字符串一律拒 |
-| `payload` | object | **静态打底数据**，只有 `cron` / `manual` 保留。webhook / github 的 payload 是投递进来的请求体，存到 config 里没有意义 |
+| `payloadSchema` | JSON Schema | 载荷契约。**每次投递都要在派发前过它**，不合法 → 入库 + 剪枝留痕（`event_schema`），不派发。缺省与显式 `null` 都算「不声明」；数组/标量/字符串一律拒 |
+| `payload` | object | **静态打底数据**，只有 `cron` / `manual` 保留。`webhook` 的载荷是投递进来的请求体，存到 config 里没有意义——给了也会被丢弃（留 `sample` 做提示） |
+
+**不设 `vars`**（D5）。「能提供哪些字段」若单独写成一份 `{name, from}` 声明，就是和 `payloadSchema`
+说同一件事的两个方向，两份必然漂移。字段清单直接从数据或 schema 推（§3.4）；「取不到时用默认值」
+归**能力参数契约**（该参数 JSON Schema 的 `default`），源侧不发明兜底语法。
+
+`cron` / `manual` 的 `payload` 与 `payloadSchema` 可以同时给：`payload` 是本次载荷的实际值，
+`payloadSchema` 是对它的额外约束。
+
+### 3.3 `webhook` 投递体协议
+
+**只有一种格式**，外部系统把载荷包一层：
+
+```http
+POST /v1/hooks/src_xxx HTTP/1.1
+Content-Type: application/json
+X-Anotify-Signature: sha256=5f1d…（配了 secret 时必填）
+
+{ "type": "deploy.succeeded", "id": "evt-9f2", "payload": { "environment": "prod" } }
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `type` | 可选 | 写进 `events.type`；缺省回落成**源自己的名字**。它是**数据**，不是路由键（D2） |
+| `id`（外部 deliveryId） | 可选（但**强烈建议**） | 调用方幂等键（D7）。同一源的保留窗口内收到同一个 `id` 再次投递 → `200` + 返回已有 event/trace，**不重复派发**；窗口过期后同 `id` **可以再次被接收**（见 §3.3 保留窗口）。内部事件行另有 `eventId`，二者不混用 |
+| `payload` | 可选 | 事件载荷本体，缺省 / 空 → `{}` |
+
+边界：
+
+- body 不是合法 JSON → `400`；**空 body 允许**（有些系统只发 ping），等价于三者全缺省。
+- body 超过 **4 MiB** → `413`。
+- 不做「body 就是载荷、事件名放请求头」这类格式探测：那会让同一个 kind 出现两条解析路径，
+  前端也就必须知道调用方是谁。接一个原生格式固定、又改不了的外部系统时，由调用方补一层包装
+  （或等 §8 的自定义 kind）。
+- 不认识的顶层键**忽略**（不报错），方便调用方带自己的元数据。
+
+**签名（D7）**：配了 `secret` 时，签名值是 `HMAC-SHA256(secret, 原始 body 字节)` 的十六进制，
+放在 `X-Anotify-Signature: sha256=<hex>`。校验对**原始字节**做（不是解析后的 JSON），
+避免序列化差异导致假失败。不带 / 不合法 → `401`，且不产生事件。协议与调用方无关，
+不引入任何「知道某个平台格式」的知识。
+
+**重放与保留窗口（V4-D6）**：签名本身不定时，靠 `id` 幂等兜。这里的 `id` 是**外部 deliveryId**；事件行另有内部 `eventId`，去重记录按 `(source, deliveryId)`，事件主键不要求 deliveryId 全局唯一。
+
+- `id` 的去重记录与事件元数据默认保留 **30 天**（`2592000s`，可配置）；窗口内同一 `id` 重复投递只算一条事件。
+- `id` 只表示“事件已接收”，**不保证下游执行成功**；下游失败时不要指望“同 `id` 重投”能重新执行。
+- 修改 payload / `type` 或需要重新执行时，**用新 `id`** 重新投递；系统不自动比较同一 `id` 的请求体。
+- 窗口过期后同 `id` **可以再次被接收**，会当成新事件——外部系统长期重试时必须知道这一点。
+- v4 **不加 replay API**：回放就是调用方用新 `id` 重新发一次。
+
+### 3.4 字段清单从哪来（前端提示的唯一依据）
+
+编辑器里「这个源能提供哪些字段」按以下优先级取值，**没有任何一份是可以手写的**：
+
+1. 这个源**最近一条真实事件**的载荷（最可信，反映外部系统的真实形状）
+2. `config.sample`（新建、还没收到过事件时）
+3. `payloadSchema` 的 `properties` 递归展开（只有契约、没有样例时）
+4. `config.payload` 的键（`cron` / `manual`）
+
+试运行（dry-run）里手填一条 payload 也会立刻按它生成清单——这是新建 `webhook` 源在收到第一条
+真实事件之前配参数的正常路径（D8）。清单永远只是**提示**：真正校验的是 `payloadSchema` 与目标能力的
+参数契约，写错的引用在试运行里就会报错。
 
 ---
 
@@ -93,61 +205,191 @@ spec:
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `capability` | string | 目标能力名（多行 = 扇出） |
-| `params` | object | 参数模板。可写常量，也可写 `{{payload 路径}}`；空对象 = 不额外传参 |
+| `params` | object | 参数模板。可写常量、可写 `$(payload.路径)`，或两者混写（§4.1）；空对象 = 不额外传参 |
 
-⚠️ **待定 D1**：v4 里能力→能力已改成「同名直取、无 mapping」，但**源→能力仍保留模板**，因为事件 payload 的形状**不由我们决定**（GitHub 的 `payload.repository.full_name` 这种嵌套没法靠改字段名解决）。三个选项待定：
+**模板就写在这里**（D10）。它需要知道载荷长什么样，而这份知识在源的创建者手里——他看得到最近一条
+真实事件、`sample`、`payloadSchema`（§3.4 的清单就是给他准备的）。把映射抽成另一个对象，只会让
+写映射的人离信息更远，还多出一份生命周期（谁建、谁改、与源不同步怎么办）。
 
-1. 保留模板（现在这样）
-2. 只允许 `params` 里写 `{{字段}}`，不允许任意表达式（收紧）
-3. 也强制同名直取，能力侧自己适配外部形状（最狠，会逼所有能力写得跟 GitHub 一样）
+### 4.1 模板语法（D1：只有一种，可自由拼接）
+
+在 `params` 里，唯一合法形态是：
+
+```text
+$(payload)         # 整个载荷（对象）
+$(payload.a.b)     # 根名 + 点号路径，数字段表示数组下标（D11）
+```
+
+- **一个值里可以放任意多个引用，也可以和常量任意混写**——拼接是第一等用法，不是例外
+  （`reports/$(payload.environment)/$(payload.commit.sha).json`）。
+- 没有算术、没有函数、没有条件、没有默认值、没有管道。
+- **`$(…)` 只认 `payload` 一个根名**；其余 `$(…)` 一律字面。将来 `event` / `secret` 在同一根名
+  规则下扩展。
+- **同一个 `$(…)`，在字段里和脚本体里含义不同**：写在本文件的 `targets[].params`、或能力的
+  `workDir` 里，是**我们**在派发前解析；写在 `run.files` 的脚本正文里，才是 shell 的
+  `$NAME` / `${…}` / `$(cmd)`（命令替换），我们不碰。判据是**字段还是脚本正文**，不是字符本身。
+- **`{{…}}` 不属于这一层**：它是安装包模板的定界符（`{{values.*}}`，见 `playbook.md`），只在装包时
+  组装一次。所以源参数里出现的 `{{…}}` 就是**字面文本**——我们不解析、不报错（要引载荷就写 `$(payload…)`）。
+- 结果类型只由一件事决定：**整个值是否恰好只有一个引用**。
+  - 恰好是（`$(payload.commit.reviewed)`）→ **保留原类型**：布尔还是布尔，数组还是数组。
+  - 否则（掺了任何常量，**哪怕只是首尾多一个空格**）→ **字符串拼接**：`v$(payload.number)` → `"v12"`。
+    想拿原类型就别掺任何字符。
+- 路径取不到 → 剪枝 `param_missing`（**不静默给空**）。默认值写在能力参数 schema 的 `default` 里，
+  由能力侧兜。
+- 以 `payload` 开头却写不完整（`$(payload.a-b)`、`$(payload.`、`$(payload..x)`）→ **创建源时直接拒**
+  （`invalid source config`），不等到触发。根名不是 `payload` 的不算错——那是字面文本（上一条）。
+- 但 `$(vars.…)` / `$(params.…)` 出现在源参数里**直接拒**：那两个根名只在能力的 `workDir` 里
+  有意义（`capability.md §2`），写在这里一定是弄错了上下文——不能静默当字面。
+
+为什么不再放宽（D1 原三个选项里的「保留任意表达式」）：中枢不该解释用户写的逻辑，一套表达式语法
+进来就是永久的维护面；能力侧已经有 JSON Schema 做转换前的校验，源侧再发明一套只会让两处语义打架。
+
+两样东西不为它们发明逃逸字符（D11）：**字面 `$(payload…)`**（想让一段文本看起来
+像合法引用，例如在参数里举例说明本产品语法）；**字面 `{{` 不需要逃逸**——包层模板只在装包时
+组装，源参数里的 `{{…}}` 我们不解析，它就是普通文本。
+
+**字段用 `$(…)`，脚本体用 shell**：`{{…}}` 是包层安装期（渲染 `values`），`$(…)` 是字段里的
+触发期解析（源参数、能力 `workDir`），`$NAME` / `${…}` / `$(cmd)` 写进**脚本正文**就是 shell 自己的。
+判据是“字段还是正文”，不是字符本身；`{{…}}` 在源参数里就是字面文本（包层模板只在装包时组装）。
+
+**与 `valueFrom.fieldPath` 是两套机制，不混用**（词汇见 `README.md`）：`valueFrom` 是能力 `run.env`
+取**机器事实 / 配置值**的入口，路径是封闭集合、整值引用、不能拼接；`$(payload.*)` 只在**触发期**
+解事件载荷、可拼接。能力定义里的 `{{…}}` 是字面文本（包层模板只在装包时组装）；`$(…)` 在 `workDir` 里合法
+（`capability.md §2`），在脚本正文里归 shell。
+
+### 4.2 扇出
+
+多行 = 扇出。同一个事件对每一行**独立**求值、独立校验：一行参数不合格只剪掉那一条
+（留痕 `param_missing` / `param_schema` / `param_type`），不影响同事件的其它行。
+
+**`targets` 的日常修改走源 PATCH**（`PATCH /v1/namespaces/{namespace}/sources/{name}`）：
+同一事务内删除并重建该源的入口边（`edges.from_is_source = 1`），投影始终跟着 `spec.targets` 走；
+没有直接写 Edge 的 API。安装时只有**本次新建**的源写入口边，复用已有源不写 targets / 入口边
+（`playbook.md §4.2` 第 9/12 行）。
+
+### 4.3 不按事件类型分流（D2）
+
+入口恒为一条：**一个源的所有事件送给它声明的同一批能力**。同一个 webhook 源被两个 `type` 调用
+（`deploy.succeeded` / `deploy.failed`），两条事件照旧扇给同一批能力，能力从载荷里自己判断。
+
+要表达「不同事件去不同能力」，做法是**建两个源**（两个 token、各自一份能力清单），不是让 target
+声明类型。理由：按类型条件化等于在源内部又造一层路由，而路由的第一原则是「一眼能看出这条事件
+去哪了」。
+
+翻案条件：如果实际使用里出现「同一个外部系统的同一个 token 必须接多种事件、且各自去不同能力」
+且建两个源的成本不可接受（例如外部系统只能配一个 URL），再来讨论「一个源声明多种 target」。
 
 ---
 
 ## 5. 运行期行为
 
-```yaml
-# 一次触发发生了什么
-源触发（cron 到点 / webhook 被 POST / GitHub 投递 / 人工点击）
-  → events 插一行：{source: <源名>, type: <事件类型>, payload: <请求体>}
+```text
+源触发（cron 到点 / webhook 被 POST / 人工点击）
+  → events 插一行：{source: <源名>, type: <事件类型>, payload: <载荷>}
   → 按入口边找到目标能力（from_is_source = 1, from_ref = <源名>）
-  → 对每个 target 求值 params（模板 + payload）
+  → 对每个 target 求值 params（模板 + 载荷）
   → 目标能力入参校验 → 建任务（或剪枝留痕）
 ```
 
-两个细节：
+细节：
 
-- **事件类型**：写进 `events.type`。传空时用**源自己的名字**。
-- **入口边匹配**：`from_port IN (事件类型, '*')`。控制台建的 target 恒为 `'*'`（收全部事件类型），所以现在**不按事件类型分流**。
-
-⚠️ **待定 D2**：要不要让 target 声明「只响应某个事件类型」。现在恒收全部，能力只能从事件里自己判断。
+- **事件类型**：`webhook` 取投递体的 `type`；`cron` / `manual` 没有外部事件，用**源自己的名字**；
+  任何 kind 拿不到类型都回落源名。
+- **载荷入库**：`webhook` 的载荷是投递体里的 `payload`（缺省 `{}`）；`cron` / `manual` 以
+  `config.payload` 打底、本次输入的载荷覆盖同名键（深合并不做——一层覆盖）。
+- **没有 target 的源**：事件照常入库，不派发，留一条 `no_target` 的剪枝痕。这是合法状态（§4），
+  不是错误——先把入口建起来、再接能力是正常顺序。
+- **停用的源**：`enabled: false` 时 webhook 对外一律 `404`——**不区分"token 不存在"与"源已停用"**，
+  免得用状态码差异探测 token 是否有效。
+- **限流**：`/v1/hooks/<token>` 是唯一免登录的写入口，双维度限流——每 token **600/min**、
+  每 IP **1200/min**（可用 `ANOTIFY_HOOK_RATE_PER_MIN` / `ANOTIFY_HOOK_RATE_PER_IP_PER_MIN`
+  覆盖，非正数=关闭该维度）。超限 `429`。为什么两维：只看 IP，一个出口 IP 后面的正常批量回放会被
+  掐死；只看 token，换个 token 就绕过。
 
 ---
 
 ## 6. 校验与错误
 
-| 情况 | 结果 |
-|---|---|
-| kind 不在四种里 | `invalid source kind` |
-| config 不合法（cron 表达式、vars 项、resultSchema 形状） | `invalid source config`，消息点到具体项 |
-| 重名 | `source name already used` |
-| 命名空间不存在 | `source not found` 系列 |
-
-投递期：
+配置期：
 
 | 情况 | 结果 |
 |---|---|
-| `enabled: false` | 不收 |
-| payload 不满足 `resultSchema` | 剪枝，留痕（`resultSchema` 相关 reason） |
-| 目标能力参数不满足 | 剪枝 `param_missing` / 参数校验类 reason |
+| kind 不在注册表里（本期注册表 = 三个内置项） | `invalid_source_kind`（消息里带上可选值清单） |
+| config 不合法（cron 表达式、`payloadSchema` 形状、`$(…)` 引用不完整或 `payload` 路径语法错、用了 `vars` / `params` 根名、`sample` 不是对象） | `invalid_source_config`，消息点到具体项 |
+| 重名 | `source_name_used` |
+| 命名空间不存在 | `NotFound` 系列 |
+| 换 kind | 拒绝 `source_kind_immutable`（`kind` 不可变） |
+
+投递期（`webhook`）：
+
+| 情况 | 结果 |
+|---|---|
+| token 不存在 / 源已停用 | `404`（不区分） |
+| 限流超限 | `429` |
+| body 不是 JSON | `400` |
+| body 超过 4 MiB | `413` |
+| 配了 `secret` 但签名缺失 / 不匹配 | `401`（不产生事件） |
+| 同一 `id` 重复投递（同一源的保留窗口内） | `200`，返回已有 event/trace，不重复派发；窗口外同 `id` 当新事件接收 |
+| 载荷不满足 `payloadSchema` | 入库 + 剪枝留痕（`event_schema`），不派发 |
+| 源没有 target（任何 kind） | 入库 + 剪枝留痕（`no_target`），不派发 |
+| 目标能力参数不满足 | 剪枝 `param_missing` / `param_schema` / `param_type` |
+
+剪枝**永远留痕**（`source='route'` 的剪枝事件行），所以「事件收到了但没派出去」在 trace 里可查。
 
 ---
 
-## 7. 待定清单
+## 7. 决策记录
 
-| 编号 | 问题 | 影响 |
-|---|---|---|
-| **D1** | 源→能力的 `params` 模板保留到什么程度 | 决定 v4 会不会留下唯一的表达式语法 |
-| **D2** | target 能不能按事件类型分流 | 决定「一个源接多个事件、各自去找不同能力」能不能表达 |
-| **D3** | 安装包（Playbook）里的源是内联还是引用 | 已倾向内联（自包含），待与 Playbook 契约一起定 |
-| **D4** | 独立 `kind: Source` 文档能不能单独 apply | 决定源是不是「一等文档」 |
-| **D5** | `vars` 与 `resultSchema` 是否合并成一份（前者说「能提供什么」，后者说「必须长什么样」，现在是两份） | 可能是一份 schema 的两个方向 |
+编号是稳定标识：**下游按编号引用，不重排、不复用**。每条都写翻案条件：没有触发条件的就不要改。
+
+| 编号 | 决定 | 理由 | 翻案条件 |
+|---|---|---|---|
+| **D0** | 只设 `cron` / `webhook` / `manual`，不为外部系统开专用 kind | 一个外部系统不值得一条专用投递格式 + 一个专属 config 字段；它也让「kind = 投递协议」退化成「kind = 调用方是谁」 | 不翻案；需要时走 §8 的自定义 kind |
+| **D1** | `params` 模板只允许 `$(payload.点号路径)`，个数与混写不限；无表达式、无函数、无默认值 | 中枢不解释用户逻辑（I6）；表达式语法是永久维护面。默认值归能力参数的 `default` | 出现「必须做字段运算才能拼参数」的真实用例，且能力侧无法兜 |
+| **D2** | 不做「target 按事件类型分流」：一个源的所有事件送给它声明的同一批能力 | 分流应是「多建一个源」，不该在源内部再造一层路由——`edges` 里没有端口列（`capability.md §8.1`），源也没有可填的端口 | 外部系统只能配一个 URL、又必须按类型分派的真实场景出现（见 §4.3） |
+| **D3** | Playbook 里的源以**独立文件引用**（源文件自包含，包内相对路径） | 安装包要自包含（与能力文件一致），引用外部运行时状态会让「装得上」依赖别处；但源仍然是包内的一份普通 Source 文档，不是内联大 YAML | Playbook 需要复用同一源给多份安装包时 |
+| **D4** | 独立的 `kind: Source` 文档**可以单独 apply** | 否则改一个 cron 表达式要重装整个 Playbook；源的生命周期与安装包不同（日常要改、要停用） | 单独 apply 会导致源与 Playbook 的所有权不清（例如 Playbook 卸载时该不该删这个源）——那时改成「归属者」标记 |
+| **D5** | 不设 `vars`，只留 `payloadSchema` + `payload`；字段清单从数据/契约派生 | 两份声明同一件事必然漂移；「能提供什么」本就能从样例或 `payloadSchema` 推出来 | `payloadSchema` 无法表达某个必须提示的字段（例如只在极少数投递里出现的可选键）——那时补 `sample`，不增加字段声明 |
+| **D6** | **空号（不复用）**——本方案不含任何数据迁移：源从零创建、从零触发 | 编号是外部引用的锚点，删行会让下游按编号的引用断链；留空号比重排便宜 | — |
+| **D7** | `webhook` 加两个**可选**能力：`secret`（HMAC 签名，`401`）与投递体 `id`（幂等键，保留窗口内重复投递不重复派发） | 唯一免登录写入口，token 泄漏即永久可发事件；且外部系统重试是常态，没幂等就会重复派任务 | 不做的前提是接受「URL 保密 = 全部安全模型」+「重试等于重复执行」——不建议 |
+| **D12** | `id` 去重只保护**接收窗口**（默认 30 天，可配置），不保证执行成功；过期后同 `id` 可再次接收；修正 payload / 重投用新 `id`；v4 不加 replay API | 去重记录有限保留（V4-D6），不能把“同一 `id` 永远只派一次”当承诺；执行语义由下游能力自己负责 | 需要长期可回放的事件源——那是有状态队列的产品，不是本系统的入口 |
+| **D8** | 字段清单来源固定为「最近一条真实事件 → `sample` → `payloadSchema.properties` → `payload` 键」，且清单只做提示 | 新建源在收到第一条真实事件之前没有载荷可提示，会出现「没有字段可点」的空窗；`sample` 是最小的补法，且不污染派发 | 若外部系统能给机器可读的 schema 并主动上报，那时 `sample` 可以退化成它的缓存 |
+| **D9** | 载荷契约的字段名是 **`payloadSchema`**（不采用任何以 `result` 命名的变体） | 它约束的是**入口**载荷，而 `result` 在本系统专指任务/能力的执行结果——名字与方向相反；且它只校投递体里的 `payload` 成员，不校 `type` / `id`。`payloadSchema` 与 `config.payload`、`events.payload`、「载荷」这条用词链同名同根，不需要解释 | 若将来需要校投递体的其它成员（`type` / `id`），它就不再是「payload 的 schema」，那时升级成投递体契约并重新命名（不在 `config` 里堆第二个 schema） |
+| **D10** | 模板留在源的 `targets[].params`，**不引入独立的「接线」对象** | 映射需要载荷知识，而知识在源的创建者手里（真实事件 / `sample` / `payloadSchema`，§3.4）——抽出独立对象会让写映射的人离信息更远，还多一份生命周期与所有权（谁建、谁改、与源不同步怎么办）。源的日常改动（改 cron、换 token）本来就不在 `params` 上，风险可控 | 出现「同一源同一能力、要按环境切多套映射」的真实需求 → 那时把映射做成**可选覆盖层**（源里仍有默认），而不是把模板整体搬走 |
+| **D11** | 触发期引用统一用 `$(payload)` / `$(payload.点号路径)`；`{{…}}` 是包层的事（只在装包时组装），源参数里出现就是字面文本；不设逃逸字符 | 和 k8s 的 `$(NAME)` 同一个记号：`$(…)` 在**字段**里是我们解析、在**脚本正文**里是 shell 的事，两种上下文分明；不引入第四个记号，也不用 YAML 加引号（`$(` 开头的 plain scalar 合法） | 出现“必须在参数值里字面输出一个合法 `$(payload…)`”的真实需求 → 加一个显式字面量形态（单字段 wrapper），仍不引入逃逸字符 |
+
+---
+
+## 8. 自定义 kind（CRD）：契约上开放，本期不实现
+
+**kind 的契约是「一张注册表」，本期这张表里只有三个内置项。** 自定义 kind——包括把事件级细分提升成
+kind，比如 `github.pull_request`、`stripe.invoice_paid`、`deploy.failed`——是**平台级能力**，
+不是某个命名空间的配置项，**单开一期**：
+
+- 需要一份 kind 定义文档（投递格式 / 事件名匹配 / 载荷样例 / 默认 `payloadSchema`），还要定清楚
+  谁能建、跨命名空间可不可见、和内置 kind 撞名怎么处理、停用了自定义 kind 的在用源怎么办；
+- 定义必须是**纯声明**（schema + 字段路径），不能带表达式或代码，否则中枢就要解释用户提供的逻辑（I6）；
+- 内置项与自定义项**走同一条路**（都从注册表取），差别只有「谁能写这张表」。
+
+所以「三种 kind」只是**这一期注册表的快照**，不是架构上限。本期不实现的具体含义：没有外部写入入口、
+`SourceKinds` 只读、不在 `config` 里预埋扩展点、不给 kind 加版本号或 group 字段。
+
+代价是明确的：接一个「原生格式固定、又不能改」的外部系统，本期只能由调用方（或中间层）包成
+§3.3 的格式。这是有意的：为单个外部系统开专用路径的代价（§1）远高于让调用方包一层。
+
+---
+
+## 9. 构建顺序（不改设计，只列顺序）
+
+本文是目标状态；实现分四步，每步独立可验证：
+
+1. **源与派发主干**：`kind: Source` 文档的创建与校验（kind 走注册表查询、config 校验、名字唯一、
+   引用语法）、`events` 入库、入口边（`from_is_source = 1, from_ref = <源名>`）匹配、扇出与逐
+   target 独立求值校验、剪枝留痕（含 `no_target`）。
+2. **webhook 入口协议**：投递体解析（`type` / `id` / `payload`，空 body 允许）、`id` 幂等
+   （`events.idem_key`）、`secret` 的 HMAC 验签（`401`）、`sample`（只提示）、双维度限流。
+3. **模板与提示**：`$(payload.点号路径)` 求值（整值保类型、混写拼接、取不到 → `param_missing`）
+   与创建期校验（只校引用语法；路径能不能取到属于运行期与前端提示，§3.4）；前端字段清单按
+   §3.4 的四级优先级取值，试运行（dry-run）能手填一条载荷就生成清单。
+4. **契约与界面**：`api/openapi.yaml` 的 kind 枚举与描述、`docs/contracts/CONTRACT.md` 里与源
+   相关的条款，以及三种 kind 各自的表单（`web-src/`）。
