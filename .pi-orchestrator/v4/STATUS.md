@@ -25,8 +25,8 @@
 | v4-plan-node | 节点执行/emit/租约/协议/安装命名 | 只读侦察完成 |
 | v4-plan-frontend-tests | 静态前端/API/OpenAPI/测试工具链 | 只读侦察完成 |
 | v4-plan-second-opinion | 仅分工第二意见 | 完成；采纳Go单一原子团队+独立前端，不采纳削减E2E或核心范围建议；其报告分支/MR不纳入产品改动 |
-| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），父已派新v4-core-runtime-recovery GPT隔离WT接snapshot同完整范围；先layoutmarker/Open闭包，原全Go/contract/e2equick门禁不变 |
-| T2 frontend (`v4-frontend-finish`) | 复用已完成F1/F2，接F3/sitegen/5E2E/freshreview/最终门禁 | 原v4-frontend-recovery已safe BLOCKED/retired、clean767c27c、C2lateverified；父保护31MB产品/证据快照，待新finishteam接续，同3门禁 |
+| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），新v4-core-runtime-recovery已SHA/applycheck/apply完整恢复，先layoutmarker/Open闭包；最终T3 635→33e纯delta路径/SHA已再次明确，无需等待旧cd6；原全Go/contract/e2equick门禁不变 |
+| T2 frontend (`v4-frontend-delivery`) | 复用F1/F2，接F3/sitegen/5E2E/freshreview/最终门禁 | finish节点新阶段机意外terminalfailed，未派writer；父保clean c7503fa，改用工具支持的新无阶段机centurion入口，文件流程+同3机械gate/freshreview不削 |
 | T3 anode (`v4-anode`) | 纯共享protocol+节点本机执行/emit/config/GC/install，N1→N2→N3 | 新隔离centurion已派gpt-6.1-sol；先N1协议接缝/handoff；父protocol/artifact/anode测试+vet+diffcheck门禁 |
 
 已冻结 `PLAN.md` 与 `CONTRACT.md`（含文件所有权、跨团队HTTP/协议/模型接口、验收命令）。AGENTS/DEVELOPMENT已明确用户批准v4baseline例外。
@@ -138,5 +138,13 @@ A3codecd6 freshreview **2项阻塞**：Cancel/CancelAck.Validate未拒nilslot，
 21:08 T3 implementing180min advisory处理：真实N3完整命令/安装/真实upgrade1d6519d、slot/race75fd43d、A3nilslot/comments修33e517a与真实接收反例5a02d76已提交，当前仅team证据dirty，父决定继续终review/verify不abort/假done。capture **63570df→33e517a** 最终proto `/tmp/anotify-v4-a3-final-handoff/protocol-delta.patch`+SHA，独立archiveapply/protoartifacttest/vetPASS；fresh v4-a3-final-fix-review确认proto两修复PASS但限读slots_test未定位missing实际反例；utility限域澄清5a02d76新增cancel_e2e_test.go13走真实WS→hub/app→runner580ValidateCancel，缺slot保lease/不假reap/任务成功，ACK decode→Validate也测。故仅定位偏差非缺test，最终635→33e纯delta已转新core；T1生产ACK接收必须ValidateCancelAck+历史绑定CAS，Node不接自己ACK。不重写已完成测试/全量发散。T3全队3freshreview/正确cwd原3verify仍要求完整，不能凭commit/title/时间宣称完成。
 
 21:12处理延迟C2首轮FAILnotice：旧T2已经safe BLOCKED/retired，steer no terminal所以父status/collect确认最新C2lateacceptedverified；并非仍卡那10FAIL。早期controller apiList.items真bug已修、docs contained横滚证据已完成；clean767c27c(C2c052230)，F3/全隊review/verify未做。父capture `/tmp/anotify-v4-frontend-finish-recovery/`（31MB仅T2产品/PNG证据patch+SHA/CHECKPOINT），旧WT不动；计划freshfinish接完整F3/最终门禁不重做F1F2。没有用NOterminal错误假称已steer成功，已按真实终态恢复流程。
+
+父恢复计划提交f94532d，新v4-frontend-finish已启动；应用31MB已完成F1F2产品/证据只读snapshot，先F3纯sitegen五specfixture→5suite新wire/mockonly明确入口→3freshreview→最后原3机械门禁。不重做已验页面、不弱化保留域/真实默认套件，api/Makefile/harness仍T1，Node仍T3。原T2lateC2verified已收、整体还未完成。
+
+T3 N3最终a2486c5已settle且工具accepted(verified)，原3命令显式cd正确WT全0；已机械close N2B旧wrongcwdrejected，完整18包/race16/真实binaryemit与升级/install/Docker证据保存。机器进入reviewing，3fresh只读GPTscout按批准scope并行正确性/覆盖/简洁性审查，无活writer；major必须返修，后续wholeteam自动verify仍待，protocolfinal33e517a不再改。阶段verified不等整队DONE/父cross通过。
+
+T3 reviewing fresh审查已发现major：procDone提前停lease renewal导致导出/upload/result阶段授权失效；install先binary后cfg/unit失败留下自身partial状态却不能安全重跑；grant比较>=proposed而非精确绑定。父确认现契约返修：收齐3verdict去重→单freshwriter，finalization继续续租至可信ack/终结，fakeclock延迟20/60秒+失ACK停upload；已确认本次安装partial安全恢复/补偿但未知路径仍拒，faultinject重跑；grant精确attempt/assignment/slot/window真实receiver反例。原验证虽绿不跳review，返修后正确cwd三门禁/targetedrace与限域复审；整队未DONE。
+
+T2 finish运行时阻塞：首次phase转implementing却被自动failed终态拒，未启动writer/没跑baseline，safe c7503fa恢复checkpoint已保存；根因未确认不改DB/旧phase。父diagnose后选择受支持**新不声明phase machine** centurion模式接F3，所有文件流程/freshreview/workerverify/父机械原3gate保留，不把旧failed当done。复用原31MB全F1F2snapshot，不重做页面；详FRONTEND-DELIVERY.md和RUNTIME-ISSUES，旧WT不动。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

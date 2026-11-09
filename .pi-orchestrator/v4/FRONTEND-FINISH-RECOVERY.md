@@ -1,6 +1,6 @@
 # T2 C2 后 fresh-context 收尾安排（父批准，安全检查点已完成）
 
-原T2已safe BLOCKED/retired，clean HEAD `767c27c962d60250e34603aef7c24d2490a8409d`（C2生产 `c052230`），最后延迟通知确认C2 accepted(verified)。全部writer/命令已收齐，F3与终review未做；不是T2DONE。父已只读保存 `/tmp/anotify-v4-frontend-finish-recovery/frontend-products-and-evidence.patch`（base0e0ff0f、仅T2产品/团队证据）+SHA/checkpoint，旧worktree不动。
+原T2已safe BLOCKED/retired，clean HEAD `767c27c962d60250e34603aef7c24d2490a8409d`（C2生产 `c052230`），最后延迟通知确认C2 accepted(verified)。全部writer/命令已收齐，F3与终review未做；不是T2DONE。原提前F3只读scout的迟到通知现accepted(attested)/retired，既有F3-FACTS.md可复用；只表示事实收齐，不是F3代码或机械验收通过。父已只读保存 `/tmp/anotify-v4-frontend-finish-recovery/frontend-products-and-evidence.patch`（base0e0ff0f、仅T2产品/团队证据）+SHA/checkpoint，旧worktree不动。
 
 原恢复centurion上下文约287K，实施期180分钟为advisory，当前Node/config/保留功能仍推进，不应停止writer或伪造phase通过。
 

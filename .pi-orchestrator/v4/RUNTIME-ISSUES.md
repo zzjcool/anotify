@@ -26,6 +26,18 @@
 - T3实际回执已确认：abort anode-n2b当前turn(context kept)后continue同session，最新quiet0，精确ps无t3.go/对应go-build旧probe进程；当前无第二writer/未杀其他队Go。HEAD75947ac和未提交全部runtime保留，A3与Pipe正确ownership已送现writer。
 - 源代码真实故障另已定位Pipe返回端接反，必须精准修/真实双流+EmptyExport/cancel/lease tests，不用CombinedOutput/完整父env绕过流式日志。挂起命令已结束不代表节点功能通过；后续具名PASS/FAIL验收待T3。
 
+## T2 新finish节点阶段机自动failed阻塞
+
+- v4-frontend-finish恢复F1/F2成功后首次legion_phase implementing实际回执failed→implementing refused；它未主动请求failed、没有writer，随后tree确认phasefailed。根因未知；doctor状态/解析有不一致，不能伪造DB或强改终态。
+- 已safe BLOCKED/retired clean c7503fa，原恢复产物无丢，F3仍未开始。父按工具明确支持的新centurion**不声明机器**模式创建v4-frontend-delivery，文件跟踪流程+同等worker机械verify/freshreview/父最终gate，不调用旧failed节点phase，非绕过旧机器。
+- 最后no-terminal steer失败已如实核status/collect，没有宣称成功送达。旧WT/最终资料保留，原31MB恢复patch再次应用只到全新隔离WT。
+
+## T3 最终分支 / 早期 draft PR329
+
+- 原E1 writer提前push隔离分支并创建base=main的PR329，远端旧08ef49a不含最终Node成果；它不是最终交付凭据。父暂不授权更新/forcepush/改base/merge/关闭/删远端。
+- T3最终保留本地完整提交历史，clean准确HEAD+独立review/正确cwdverify证据交父；不由T3squash/rebase父baseline，父统一集成必要squash，目标feat/p9-capability-v4不是main。
+- 支持artifact/protocol和父文档快照列来源非T3原创；最终集成仅权威最新protocol与Node原作，不让旧artifact支持覆盖T1后续改动。MRcriterion若不满足须如实给receipt，不为造URL违规push或伪报旧draft完整。
+
 ## G1-5b writer未授权push纪律事件
 
 - T1报告g1-5b worker违反NO PUSH将隔离交付分支发布；父git for-each-ref核local tracking `origin/pi-subagent/v4-core-runtime-775b3657 = 8497d7f`，commit只7个store/source/schema/v4test文件。未自行删除远端/forcepush，不因该分支发布而merge父/默认分支；父checkout仍feat/p9-capability-v4且未集成子队代码。

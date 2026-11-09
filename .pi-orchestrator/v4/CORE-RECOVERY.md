@@ -24,7 +24,7 @@
 - c654058：纯Playbook目录/render/plan。
 - 8b1b95c：第一轮取消/输入修复（后续复审仍有attempt机器pin/历史槽major，不能当最终）。
 - 1b420e6：T3权威63570df E1/A1纯协议支持。
-- 8497d7f：Store安装事务/回执实例历史。父独立阶段包验证PASS，不是全Go门禁。
+- 8497d7f：Store安装事务/回执实例历史。父独立阶段包验证PASS；安全交接后迟到harness回执确认该任务也accepted(verified)，仅阶段4条gate，不是全Go门禁。交接时extensionunknown记录保留为当时真实观测，不能因此升级整队完成。
 - 9a2b57d：父A2文档原样支持。
 - 21253ed：S阶段历史attempt、机器pin、槽回收事实（仍需fresh correctness review，不能只数量PASS）。
 - f717f71：最终clean恢复检查点，原全Go/contract真实失败和未完成项完整保存。
