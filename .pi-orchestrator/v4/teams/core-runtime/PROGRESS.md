@@ -43,3 +43,12 @@ G1-1 verify 通过 → G1-2（schema v4 baseline）。
 - 测试策略修订：旧 in-package 测试保持 HEAD 原样（G1-6 闭包）；新 v4 测试在 `internal/store/v4test/`（35 用例）。
 - 实测坑：SQLite 保留字 `values` 必须带引号。
 - 已知中间态：route/server/ws 仍 v3 编译失败（G1-3/G1-4/G3 迁移面）。
+
+### G1-3 ✅ commit a39ce4e（centurion 复核 gofmt/build/v4test 56 tests/protocol 全绿）
+- config.go：三层 vars（source 标记）、limits 两层递归逐叶合并、双 revision、三套配置 CAS（缺 rv/旧 rv 哨兵，成功 bump）、RecordHello/RecordApplied、AuthorizedNamespaces=申报∩授权。
+- node.go 集群化：无 namespace_id；facts/declared caps/declared namespaces；槽位/LeaseSlot/FreeSlots；EligibleNodes 六类 reason；删 pins/sticky/node_capabilities。
+- graph.go 投影：Edge 四列；EdgesFrom/ReplaceCapabilityEdges(spec.next)/ReplaceSourceEdges(targets)；删 graph_versions/downstreams/edge_mapping/capability_links/ports/priority/mapping/literals。
+- namespace NodeCount 推导；删除阻塞清单 v4 化。
+- 新增 v4test：config 8 + cluster_node/edges/namespace 等，共 56 tests。
+- 留白：nodes.declared_namespaces（申报落点）；edges.position 文档有但 D-I6/baseline 门禁不建（按 D-I6）；无候选非 error。
+- 已知中间态：source 读路径/orphan 仍 v3（G1-4）；route/ws/server 编译失败（G2/G3）。
