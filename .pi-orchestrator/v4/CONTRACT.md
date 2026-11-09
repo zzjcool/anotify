@@ -1,4 +1,6 @@
-# V4 全量实施冻结契约 · rev1
+# V4 全量实施冻结契约 · rev2
+
+rev2（父会话实施编排修订）：在 T1 的纯协议/产物已稳定后拆出 T3 anode 并行，消除串行关键链，不减少功能或测试。T3 接收只读产物快照并成为 `internal/protocol` 唯一作者，T1 消费其冻结更新；新增传输接缝见 §7。
 
 状态：用户已授权实施；父会话冻结分工与技术边界。设计基线 `368b489`。
 语义权威：`docs/design/v4/decisions.md` V4-D1～D6 为批准增补，四主文档为其余语义基线；`config.md`/`api-conventions.md` 是派生接口约定。实现不得自行修改已冻结设计迁就旧代码/测试。
@@ -15,18 +17,19 @@
 
 | 团队 | 独占文件 | 不得改 |
 |---|---|---|
-| T1 core-runtime | 全部 `internal/` **除 `internal/sitegen/`**；`cmd/` **除 `cmd/sitegen/`、`cmd/fe-preview/`**；`api/`；Go依赖文件（仅必要新增）、`Makefile`、Dockerfile(s)、compose文件；`scripts/` **除下方 T2 列出的文件**；`docs/contracts/CONTRACT.md`、安装/开发/测试/README/CHANGELOG说明；`.gitignore` 中新二进制忽略项 | `web/`、`web-src/`、T2文件、已冻结 `docs/design/v4/`、根 `.pi-orchestrator/v4/{CONTRACT,PLAN,STATUS}.md`、用户 settings/env/依赖目录 |
+| T1 core-runtime | 全部 `internal/` **除 `internal/sitegen/`、`internal/protocol/`**；`cmd/` **除 `cmd/sitegen/`、`cmd/fe-preview/`、`cmd/anode/`**；`api/`；Go依赖文件（仅必要新增）、`Makefile`、Dockerfile(s) **除 `Dockerfile.anode`**、compose文件；`scripts/` **除下方 T2/T3 列出的文件**；`docs/contracts/CONTRACT.md`、安装/开发/测试/README/CHANGELOG说明 **除 `docs/anode-install.md`**；`.gitignore` 中新二进制忽略项 | `web/`、`web-src/`、T2/T3文件、已冻结 `docs/design/v4/`、根 `.pi-orchestrator/v4/{CONTRACT,PLAN,STATUS}.md`、用户 settings/env/依赖目录 |
 | T2 frontend | `web-src/**`；跟踪的 `web/**` 静态 JS/CSS/SW/assets（不提交生成HTML/hash dist）；`internal/sitegen/**`、`cmd/sitegen/**`、`cmd/fe-preview/**`；`scripts/v4-frontend.test.mjs`；`scripts/e2e/suites/frontend.mjs`、`i18n.mjs`、`i18n_coverage.mjs`、`ui_shift.mjs`、`ux_regression_19_23.mjs` | T1文件（尤其Makefile/api/schema/harness）、已冻结v4设计、根编排状态 |
+| T3 anode | `internal/protocol/**`（接收 T1 已冻结代码后唯一作者）；新增 `cmd/anode/**`、`Dockerfile.anode`、`scripts/install-anode.sh`、`docs/anode-install.md`；自己的 `teams/anode/` 进度/接口 | store/artifact/ws/route/server/api/Makefile/其它scripts、T2文件、冻结v4设计、父状态；不得写T1旧worktree |
 | 父会话 | 根编排契约/状态、集成决策、仅必要跨团队缝隙、最终合并及验收 | 不在团队写入中抢改其文件 |
 
-两个 centurion 各一个隔离 worktree，团队成员 `worktree:false`。每个 worktree 同时只有一个 writer；可以并行只读 scout/review。成员不得自己再派写入 worker。centurion 负责按串行里程碑调度 writer，不在共享文件并发写。
+三个 centurion 各一个隔离 worktree，团队成员 `worktree:false`。每个 worktree 同时只有一个 writer；可以并行只读 scout/review。成员不得自己再派写入 worker。centurion 负责按串行里程碑调度 writer，不在共享文件并发写。
 
 ## 3. T1 内部阶段与交付规则
 
 T1 是一个 Go 原子交付单元，避免隔离的小模块因同 module 类型变更互相无法验收，且不靠兼容层恢复编译。
 
 1. **G1 领域与存储**：artifact/spec/foldKey/digest；v4 baseline；cluster Node、配置三层、Task/attempt/lease事实、next/targets投影、目录 Playbook/render/回执/原子安装、去重与GC。先独立验证 artifact/store/protocol；允许中间旧依赖暂时编译失败，记录原因，不宣称整体通过，不合入父分支。
-2. **G2 执行与节点**：route/trigger/source/ws/lease + 新 `cmd/anode`；更新节点二进制/安装器；同帧定义、grant授权、HTTP emit、取消/结果/环境/物理产物清理。
+2. **G2 执行与节点接线**：route/trigger/source/ws/lease；消费 T3 冻结纯协议并实现中枢授权、emit派发、取消/结果及配置。`cmd/anode`、新安装入口和节点本机执行由 T3 并行实施；T1 负责 Makefile/旧 cmd/agent 与旧安装脚本退役、二进制分发和最终工具链接线，不另派 anode writer。
 3. **G3 HTTP与系统装配**：namespace路径、spec/status DTO、CAS、派生状态、源/能力/包/任务/配置/部署、人工部署、auth/device未退役域；生成新的 OpenAPI 与契约门禁，删除旧生产兼容结构。
 4. **G4 测试/工具链与整体验证**：devseed、E2E harness/WS fixtures及 T1 套件、命名/安装/构建/静态契约说明。全 Go 编译与相关单测、contract、E2E quick 通过后才能整队交付。
 
@@ -81,6 +84,25 @@ G1后产出可读的 `EXPORTED-INTERFACES.md`（团队自己的进度目录）�
 ## 6. 上报与集成
 
 - 团队自己的进度、接口清单、测试映射、问题写入 `.pi-orchestrator/v4/teams/{core-runtime|frontend}/`，不要改父STATUS/PLAN/CONTRACT。
-- 父会话先fresh review（正确性/覆盖/简洁性），重大项返修；在当前 `feat/p9-capability-v4` 集成分支按 T1→T2 合并，T2不得merge T1或反之。中间代码提交仅留各自交付分支。
+- 父会话先fresh review（正确性/覆盖/简洁性），重大项返修；在当前 `feat/p9-capability-v4` 集成分支按 T1→T3→T2 合并；团队不得自行 merge 其他团队。T1/T3 间的纯协议/产物快照交换仅为父授权依赖同步，不是合并其它团队产品工作。中间代码提交仅留各自交付分支。
 - 契约矛盾必须上报父会话决定，不擅自改冻结v4设计。文档在另一分支看不到时要任务卡内容，不另建同名权威。
 - 实施交付可能由harness生成隔离分支/MR，只有父会话决定最终合入；不推当前集成分支或用户settings。
+
+## 7. rev2 · T3 接缝与依赖快照
+
+侦察核实基线：T1 `ba21a89` 的 protocol/artifact（已含 `38cc153` hello扩展）两目录无未提交改动。T3 先接收父保存的纯依赖补丁，仅在自己的隔离 worktree 应用；artifact 为只读支持快照，protocol 从此归 T3 单一作者。T1 后续不得自行修改 protocol，而是接收 T3 的冻结快照；应用他队权威支持快照不算自行创作双版本。
+
+### N1 最先冻结（先向父交快照，再做完整节点）
+
+- 导出环境常量：`EnvEmitEndpoint`、`EnvTaskToken`、`EnvTaskID`、`EnvParamPrefix`，值沿批准契约；统一参数环境名函数（例如 `ParamEnvName(string) string`），行为必须与现有 artifact 归一化/碰撞规则相同，测试大写/数字/符号/碰撞。T1 artifact 校验在后续闭包直接调用共享函数，避免两套。
+- 导出机器配置hash函数（例如 `MachineConfigHash(map[string]string, Limits) (string,error)`）：默认值归一化后，以字段 `vars`、`limits` 的 canonical JSON（map按键排序）算 SHA-256、输出 `sha256:<hex>`；空map与nil归一为 `{}`，limits中的perCapability同理。不包含 revision、namespace默认、token、宿主凭证、envPassthrough；两侧只用同一实现。
+- 能力投递是人工部署动作的传输接缝，不新增自收敛控制器：`capability.deploy` 中枢→node 只带 `requestId/namespace/name/version/digest`；节点按身份认证 `GET /v1/node/capabilities/{digest}` 获取不可变 Artifact 文档并校验digest/路径/规格后缓存；`capability.deployed` node→中枢回 `requestId/namespace/name/version/digest/status/error?`（applied/failed）。两帧进入统一Decode/方向表，不别造同名snake版本。
+- T1 人工deploy动作写部署意图/事实，向目标在线节点发送通知；离线节点在重连时重放已明确请求的未完成部署，不运行通用reconciler。artifact GET只允许有效Node身份且该digest在本节点允许ns的明确部署目标中，不能凭已知digest跨ns读私有代码。namespace交集/节点身份验证仍适用。
+- T1负责新Node GET路由、部署通知producer及回执落事实；T3负责客户端获取/校验/cache/回执。不把整份脚本塞进受软上限约束的WS帧，不把安装包安装与部署合并。
+- 已有配置/执行/升级/logs帧语义不变；shared协议更新必须包含实际Go字段、JSONtag、Decode、方向校验和具名测试，N1交 `PROTOCOL-HANDOFF.md` 后冻结，T1再接快照开始G2。必要修正经父协调，不双方私下改字段。
+
+### 并行验证边界
+
+- T3只依赖protocol/artifact及纯schema工具，不导入store/ws/server/lease/executor，节点不得链接SQLite。T1不用等待完整anode即可按冻结protocol实现server，真实端到端仍等最终集成。
+- 纯依赖快照可在团队分支记录support commit，交付时明确哪些来自T1、哪些T3原创。父最终T1→T3合并，相同权威代码只保留一份，不把support快照假装独立产品实现。
+- 单writer规则不变：T1当前G1-4不停；T3新worktree独立作者不占其writer。T1旧cmd/agent退役/Makefile/安装器自测由T1接线；新脚本只按anode install单源初始化，禁止保留旧CLI alias兼容。

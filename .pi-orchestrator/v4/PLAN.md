@@ -4,7 +4,9 @@
 
 三路 scout 已确认当前是 v3 数据模型，v4 的配置/授权帧/目录包/API信封大部分为新增；store→route→ws→server 为同一Go module的强依赖链。把这些模块分到独立隔离团队会在中途互相无法编译，容易逼出旧兼容层或虚假的绿灯。
 
-采用 **两个隔离写团队**：T1 全部核心Go+协议/API/工具链，T2 静态前端+sitegen+前端专属测试。T1内部按领域→运行→HTTP→集成串行推进；每个worktree同一时刻只有一个writer，侦察/review可并行。父会话负责整队复审、跨团队集成和最终门禁。
+初始采用两个团队；在 T1 的纯协议/产物已稳定后，**rev2 拆成三个隔离写团队**：T1 核心Go/store/调度/server/API/工具链，T2 静态前端/sitegen，T3 anode 本机执行+纯共享协议。T1内部仍按领域→运行→HTTP→集成串行推进；每个worktree同一时刻只有一个writer，侦察/review可并行。父会话负责协议快照接缝、整队复审、跨团队集成和最终门禁。
+
+拆出 T3 的条件已经只读核实：当前 `internal/protocol` 仅stdlib，`internal/artifact` 仅stdlib+yaml，不依赖store/ws/route/SQLite；anode可独立编译测试而不恢复旧服务兼容。T3成为protocol唯一作者，先补具名的常量/hash/部署投递接缝并冻结给T1，不另起产品架构。
 
 不是一次脚本替换；不承诺一小时完成，不缩减冻结核心范围。途中可恢复的阶段进度不等于最终交付。
 
@@ -23,7 +25,10 @@
 | 编号 | 所属 | 交付 | 门禁 |
 |---|---|---|---|
 | G1 | T1 | artifact+纯共享协议、store基线/模型、版本/图投影、配置/授权事实、目录包安装/回执/GC | artifact/store/protocol包测试；新字段往返和行为测试 |
-| G2 | T1 | route/ws/lease/source/trigger、cmd/anode及安装器、grant/renew/result/cancel、emit/env/files | route/ws/lease/anode包测试；旧attempt/取消/幂等专项 |
+| G2 | T1 | route/ws/lease/source/trigger、消费T3协议的中枢授权/派发/结果/CAS与部署接线 | route/ws/lease包测试；旧attempt/取消/幂等专项 |
+| N1 | T3 | 冻结纯protocol接缝（常量/hash/投递帧）+anode config/cache/WS client | protocol/artifact/anode独立包测试 |
+| N2 | T3 | 本机grant执行/HTTPemit/lease deadline/取消/环境/files/产物GC | anode真实进程/httptest/WS模拟测试 |
+| N3 | T3 | serve/install/emit三命令、安装脚本/服务/节点镜像/使用说明 | 全节点包测试、CLI自检、安装器离线自测 |
 | G3 | T1 | /v1/namespaces路径、资源信封、派生status、CAS、人工deploy、OpenAPI/checkers | server/api测试、make contract、全Go编译 |
 | G4 | T1 | devseed/E2E harness与非前端套件、构建/命名、保留域回归、测试迁移映射 | go test ./... -count=1、make contract、make e2e-quick |
 | F1 | T2 | shared API helper/namespace scope、新信封mock、UI模型和图投影 | 新的JS单测/空数组错误CAS/ns隔离用例 |
@@ -48,6 +53,14 @@ T2：
 make fe
 GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/sitegen/... -count=1
 node --test scripts/v4-frontend.test.mjs
+```
+
+T3：
+
+```sh
+GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/protocol/... ./internal/artifact/... ./cmd/anode/... -count=1
+GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go vet ./internal/protocol/... ./cmd/anode/...
+git diff --check
 ```
 
 另要求T2起本地preview并逐个改动页面检查console/网络/滚动/溢出，保存dark/light截图；父会话仍独立验收。长期命令用async_run命名保存输出并收齐，禁止裸交互/无限socket等待。
