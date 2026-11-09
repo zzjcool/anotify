@@ -51,14 +51,18 @@ func TestEveryTemplateRenders(t *testing.T) {
 				t.Fatalf("往返后 digest 变了：%s != %s", d1, d2)
 			}
 
-			// 入口必须有 shebang 且 exec 可用
+			// 入口必须有 shebang（执行方式是直接 exec）。
 			body := a.Spec.Run.Files[a.Spec.Run.Entrypoint]
 			if !strings.HasPrefix(body, "#!") {
 				t.Fatalf("入口没有 shebang：%q", body)
 			}
-			// 脚本不得引用未声明的契约变量以外的东西（轻量冒烟）
-			if a.Spec.Run.TimeoutSec <= 0 {
+			// v4 的 timeoutSec 在 lifecycle 里。
+			if a.Spec.Lifecycle.EffectiveTimeoutSec() <= 0 {
 				t.Fatalf("模板 %s 没有默认超时", tpl.ID)
+			}
+			// 归一化后默认值齐全（省略 ≡ 显式默认）。
+			if a.Spec.Lifecycle.MaxAttempts == nil || a.Spec.Concurrency.MaxPerNode == nil {
+				t.Fatalf("模板 %s 渲染结果没有归一化", tpl.ID)
 			}
 		})
 	}
@@ -81,19 +85,28 @@ func TestRenderDefaults(t *testing.T) {
 	if a.Spec.Run.Entrypoint != "run.sh" {
 		t.Fatalf("entrypoint = %q", a.Spec.Run.Entrypoint)
 	}
+	if len(a.Spec.Next) != 0 {
+		t.Fatalf("模板默认 next 应当是终端能力，实际 %v", a.Spec.Next)
+	}
 }
 
 func TestRenderUnknownTemplate(t *testing.T) {
 	_, err := Render("nope", RenderInput{Name: "x"})
-	if err == nil || !strings.Contains(err.Error(), "unknown_template") {
-		t.Fatalf("期望 unknown_template，实际 %v", err)
+	if err == nil {
+		t.Fatal("未知模板必须报错")
+	}
+	if got := Code(err); got != CodeBadRequest {
+		t.Fatalf("期望 %q，实际 %q（%v）", CodeBadRequest, got, err)
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("错误信息里应当有模板 id：%v", err)
 	}
 }
 
 func TestRenderRequiresName(t *testing.T) {
 	_, err := Render("script.blank", RenderInput{})
-	if err == nil || !strings.Contains(err.Error(), "invalid_name") {
-		t.Fatalf("期望 invalid_name，实际 %v", err)
+	if err == nil || Code(err) != CodeBadRequest {
+		t.Fatalf("缺 name 必须报 %q，实际 %v", CodeBadRequest, err)
 	}
 }
 
@@ -116,18 +129,18 @@ func TestRenderScriptMode(t *testing.T) {
 		t.Fatalf("version = %d", a.Metadata.Version)
 	}
 	// 覆盖脚本后仍保留模板的 requires（探测依赖仍然有意义）
-	if len(a.Spec.Requires) == 0 {
+	if len(a.Spec.Requires.Commands) == 0 {
 		t.Fatal("脚本模式不应丢掉模板的 requires")
 	}
 }
 
-func TestRenderScriptModeRejectsRelativeEscape(t *testing.T) {
+func TestRenderScriptModeRejectsPathEscape(t *testing.T) {
 	_, err := Render("script.blank", RenderInput{
 		Name:  "x",
 		Files: map[string]string{"../evil": "#!/bin/bash\n"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid_file_path") {
-		t.Fatalf("期望 invalid_file_path，实际 %v", err)
+	if err == nil || Code(err) != CodeFilesInvalid {
+		t.Fatalf("期望 %q，实际 %v", CodeFilesInvalid, err)
 	}
 }
 
@@ -138,38 +151,32 @@ func TestRenderParamsSchemaFromFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
-
 	var schema struct {
-		Type       string                     `json:"type"`
-		Required   []string                   `json:"required"`
-		Properties map[string]json.RawMessage `json:"properties"`
+		Type       string                    `json:"type"`
+		Required   []string                  `json:"required"`
+		Properties map[string]map[string]any `json:"properties"`
 	}
 	if err := json.Unmarshal(a.Spec.Params, &schema); err != nil {
-		t.Fatalf("params 不是合法 JSON：%v", err)
+		t.Fatalf("params 不是 JSON：%v", err)
 	}
 	if schema.Type != "object" {
 		t.Fatalf("params.type = %q", schema.Type)
 	}
-	if len(schema.Required) != 1 || schema.Required[0] != "url" {
-		t.Fatalf("required = %v（期望只有 url）", schema.Required)
+	if got, want := strings.Join(schema.Required, ","), "url"; got != want {
+		t.Fatalf("required = %q，期望 %q", got, want)
 	}
-	if _, ok := schema.Properties["method"]; !ok {
-		t.Fatalf("缺少 method 属性：%v", schema.Properties)
+	if schema.Properties["url"]["type"] != "string" {
+		t.Fatalf("url 的类型不对：%v", schema.Properties["url"])
 	}
-	// select 必须带 enum
-	var method struct {
-		Enum []string `json:"enum"`
+	hooks, ok := schema.Properties["method"]["enum"]
+	if !ok {
+		t.Fatalf("select 字段应当有 enum：%v", schema.Properties["method"])
 	}
-	if err := json.Unmarshal(schema.Properties["method"], &method); err != nil {
-		t.Fatalf("method 属性解析失败：%v", err)
-	}
-	if len(method.Enum) != 5 {
-		t.Fatalf("method enum = %v", method.Enum)
+	if len(hooks.([]any)) != 5 {
+		t.Fatalf("method 的 enum = %v", hooks)
 	}
 }
 
-// TestAllFieldKeysAreSnakeCase 是环境变量契约的守卫：
-// camelCase 的 key 会变成 PRNUMBER 这种不可猜的变量名。
 func TestAllFieldKeysAreSnakeCase(t *testing.T) {
 	for _, tpl := range Templates() {
 		for _, f := range tpl.Fields {
@@ -188,29 +195,18 @@ func TestAllFieldKeysAreSnakeCase(t *testing.T) {
 
 // TestTemplateScriptsOnlyUseDeclaredParams 防止脚本引用一个表单里不存在的参数。
 func TestTemplateScriptsOnlyUseDeclaredParams(t *testing.T) {
-	// 允许的契约变量（非参数）。来源：cmd/agent/runner.go 的 buildEnv（任务身份、
-	// 工作目录、emit 通道、出口契约、agent 自己的绝对路径）。
+	// 允许的契约变量（非参数）。v4 只有这三个 + 参数（capability.md §4.0）。
 	contract := map[string]bool{
-		"ANOTIFY_TASK_ID":    true,
-		"ANOTIFY_CAPABILITY": true,
-		"ANOTIFY_PARAMS":     true,
-		"ANOTIFY_WORKDIR":    true,
-		"ANOTIFY_TRACE_ID":   true,
-		"ANOTIFY_DIGEST":     true,
-		// emit 通道（agent.tui 要把它们落进 0600 的 task.json，因为 env 进不去 hc）
-		"ANOTIFY_EMIT_SOCK":  true,
-		"ANOTIFY_TASK_TOKEN": true,
-		"ANOTIFY_EMIT_PORTS": true,
-		"ANOTIFY_TASKDIR":    true,
-		"ANOTIFY_AGENT_BIN":  true,
+		"ANOTIFY_TASK_ID":       true,
+		"ANOTIFY_TASK_TOKEN":    true,
+		"ANOTIFY_EMIT_ENDPOINT": true,
 	}
 	for _, tpl := range Templates() {
 		declared := make(map[string]bool, len(tpl.Fields))
 		for _, f := range tpl.Fields {
-			// 与 cmd/agent 的 paramEnvName 同口径：大写 + 非字母数字换下划线
-			declared["ANOTIFY_PARAM_"+envName(f.Key)] = true
+			// 与本包的 paramEnvName 同口径（大写 + 非字母数字换下划线）。
+			declared[paramEnvName(f.Key)] = true
 		}
-		// 脚本里出现的所有 ANOTIFY_* 变量
 		for _, ref := range anotifyRefs(tpl.Script) {
 			if contract[ref] || declared[ref] {
 				continue
@@ -220,17 +216,30 @@ func TestTemplateScriptsOnlyUseDeclaredParams(t *testing.T) {
 	}
 }
 
-func envName(key string) string {
-	var b strings.Builder
-	for _, r := range strings.ToUpper(key) {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
+// TestTemplateScriptsAreV4 钉住模板正文的口径：v4 的出口只有 emit，没有 port /
+// socket / 出口白名单 / 工作目录环境变量。
+func TestTemplateScriptsAreV4(t *testing.T) {
+	for _, tpl := range Templates() {
+		for _, banned := range []string{
+			"ANOTIFY_WORKDIR",   // v4 的工作目录就是 cwd
+			"ANOTIFY_EMIT_SOCK", // v4 是 HTTP 网关
+			"ANOTIFY_EMIT_PORTS",
+			"ANOTIFY_CAPABILITY",
+			"ANOTIFY_TRACE_ID",
+			"--task-file",
+			"--port ",
+			"anotify-agent", // v4 二进制叫 anode
+		} {
+			if strings.Contains(tpl.Script, banned) {
+				t.Fatalf("模板 %s 的脚本还带着 v3 口径 %q", tpl.ID, banned)
+			}
 		}
 	}
-	return b.String()
+	// script.blank 是「怎么调 emit」的样板：必须教用户写 anode emit。
+	blank, _ := LookupTemplate("script.blank")
+	if !strings.Contains(blank.Script, "anode emit") {
+		t.Fatalf("空白模板应当示范 v4 的 emit 命令：\n%s", blank.Script)
+	}
 }
 
 // anotifyRefs 抽出脚本文本里出现的 ANOTIFY_ 变量名。
@@ -266,6 +275,7 @@ func TestTemplatesIsCopy(t *testing.T) {
 	a := Templates()
 	a[0].Fields = append(a[0].Fields, Field{Key: "injected"})
 	a[0].Requires = append(a[0].Requires, "injected")
+	a[0].Next = append(a[0].Next, "injected")
 
 	b := Templates()
 	for _, f := range b[0].Fields {
@@ -276,6 +286,11 @@ func TestTemplatesIsCopy(t *testing.T) {
 	for _, r := range b[0].Requires {
 		if r == "injected" {
 			t.Fatal("Templates() 的 Requires 被污染")
+		}
+	}
+	for _, n := range b[0].Next {
+		if n == "injected" {
+			t.Fatal("Templates() 的 Next 被污染")
 		}
 	}
 }
