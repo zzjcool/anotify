@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/store"
@@ -365,4 +366,226 @@ func childTaskID(t *testing.T, db *store.DB, nsID, traceID, capability string) s
 	}
 	t.Fatalf("trace %s 上找不到能力 %s 的子任务", traceID, capability)
 	return ""
+}
+
+// TestEmitAuthorizedRejectsNamespaceDenied 验命名空间授权拒绝（E1 的 ns 交集判定）。
+//
+// 节点身份是真的、任务在跑、令牌也对——只是这台机器没被授权碰任务所属的 ns。
+// 这种拒绝必须是 ErrEmitNamespaceDenied，且什么都不写。
+func TestEmitAuthorizedRejectsNamespaceDenied(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "emit-nsdenied")
+	parent, auth := emitSetup(t, db, ns, "nsdenied")
+	child := createCap(t, db, testCap(ns, "child", 1, nil))
+
+	// 授权列表收窄到别的 ns（本机申报 ["*"]，交集 = ["other"]）。
+	cfg := &store.NodeConfig{NodeID: auth.NodeID, Namespaces: []string{"other"}, ResourceVersion: 1}
+	if err := db.PutNodeConfig(ctx, cfg); err != nil {
+		t.Fatalf("put node config: %v", err)
+	}
+	emitID := "ns-denied"
+	_, _, err := db.EmitAuthorized(ctx, auth,
+		&store.EmitRecord{TaskID: parent.ID, EmitID: &emitID, ToRef: "child", Data: json.RawMessage(`{}`)},
+		childTasks(ns, parent.TraceID, child, 1))
+	if !errors.Is(err, store.ErrEmitNamespaceDenied) {
+		t.Fatalf("未授权的 ns 应 ErrEmitNamespaceDenied，得到 %v", err)
+	}
+	if rows, err := db.ListEmits(ctx, parent.ID); err != nil || len(rows) != 0 {
+		t.Fatalf("被拒的 emit 不该写行：%v %v", rows, err)
+	}
+	if tasks, err := db.ListTasksByTrace(ctx, ns, parent.TraceID); err != nil || len(tasks) != 1 {
+		t.Fatalf("被拒的 emit 不该建子任务：%v %d", err, len(tasks))
+	}
+}
+
+// TestEmitConcurrentSameIDOnlyOnce 验并发同 id 只产生**一条** emission 与**一组**子任务。
+//
+// 授权与写入在同一个事务里，唯一索引 + 回读兜底保证并发请求合并成一次派发；
+// 两个并发请求都拿到同一份回执，其中恰好一个 first=true。
+func TestEmitConcurrentSameIDOnlyOnce(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "emit-concurrent")
+	parent, auth := emitSetup(t, db, ns, "concurrent")
+	child := createCap(t, db, testCap(ns, "child", 1, nil))
+	emitID := "same-id"
+
+	const n = 6
+	type outcome struct {
+		first bool
+		err   error
+	}
+	results := make(chan outcome, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			rec := &store.EmitRecord{
+				TaskID: parent.ID, EmitID: &emitID, ToRef: "child", Data: json.RawMessage(`{"n":1}`),
+			}
+			_, first, err := db.EmitAuthorized(ctx, auth, rec, childTasks(ns, parent.TraceID, child, 1))
+			results <- outcome{first: first, err: err}
+		}()
+	}
+	close(start)
+
+	firstCount := 0
+	for i := 0; i < n; i++ {
+		out := <-results
+		if out.err != nil {
+			t.Fatalf("并发同 id emit 不该报错：%v", out.err)
+		}
+		if out.first {
+			firstCount++
+		}
+	}
+	if firstCount != 1 {
+		t.Fatalf("并发同 id 应恰好一次 first=true，得到 %d", firstCount)
+	}
+	rows, err := db.ListEmits(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("list emits: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("并发同 id 应只有一条 emission，得到 %d", len(rows))
+	}
+	tasks, err := db.ListTasksByTrace(ctx, ns, parent.TraceID)
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("并发同 id 应只建一组子任务（1 个），trace 里共 %d 行", len(tasks))
+	}
+}
+
+// TestEmitChildFailureRollsBackAll 验子任务写入失败 → emit 与整组子任务 0 写（同事务回滚）。
+func TestEmitChildFailureRollsBackAll(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "emit-rollback")
+	parent, auth := emitSetup(t, db, ns, "rollback")
+	child := createCap(t, db, testCap(ns, "child", 1, nil))
+	emitID := "rollback-1"
+
+	bad := &store.Task{NamespaceID: ns, TraceID: parent.TraceID} // 缺 capability → 校验失败
+	batch := append(childTasks(ns, parent.TraceID, child, 2), bad)
+	if _, _, err := db.EmitAuthorized(ctx, auth,
+		&store.EmitRecord{TaskID: parent.ID, EmitID: &emitID, ToRef: "child", Data: json.RawMessage(`{}`)},
+		batch); err == nil {
+		t.Fatalf("含非法子任务的 emit 应失败")
+	}
+	if rows, err := db.ListEmits(ctx, parent.ID); err != nil || len(rows) != 0 {
+		t.Fatalf("子任务失败必须回滚 emit 行：%v %v", rows, err)
+	}
+	if tasks, err := db.ListTasksByTrace(ctx, ns, parent.TraceID); err != nil || len(tasks) != 1 {
+		t.Fatalf("子任务失败必须回滚整组子任务（0 写）：%v %d", err, len(tasks))
+	}
+}
+
+// TestEmitRejectedForTerminalTask 验终态任务（succeeded/failed）的 emit 一律拒。
+func TestEmitRejectedForTerminalTask(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "emit-terminal")
+	child := createCap(t, db, testCap(ns, "child", 1, nil))
+
+	for i, phase := range []string{store.TaskSucceeded, store.TaskFailed} {
+		parent, auth := emitSetup(t, db, ns, fmt.Sprintf("terminal-%d", i))
+		// emitSetup 已经 grant 过（auth 里就是这次 attempt 的权威事实）。
+		if err := db.CompleteTask(ctx, parent.ID, auth.Attempt, auth.LeaseID, store.TaskResult{
+			Phase: phase, Reason: "script_failed", Error: "boom",
+		}); err != nil {
+			t.Fatalf("complete %s: %v", phase, err)
+		}
+		emitID := fmt.Sprintf("terminal-emit-%d", i)
+		_, _, err := db.EmitAuthorized(ctx, auth,
+			&store.EmitRecord{TaskID: parent.ID, EmitID: &emitID, ToRef: "child", Data: json.RawMessage(`{}`)},
+			childTasks(ns, parent.TraceID, child, 1))
+		if !errors.Is(err, store.ErrTaskNotRunning) {
+			t.Fatalf("%s 任务的 emit 应 ErrTaskNotRunning，得到 %v", phase, err)
+		}
+		if rows, err := db.ListEmits(ctx, parent.ID); err != nil || len(rows) != 0 {
+			t.Fatalf("%s 任务不该留下 emit 行：%v %v", phase, rows, err)
+		}
+	}
+}
+
+// TestEmitCancelRaceLinearizable 验 emit 与取消没有「校验后再写」的窗口：
+//
+// 每一次并发都只能有两种结局——取消先赢（emit 被拒、0 写）或 emit 先赢（一组子任务 +
+// 取消意图随后落下）。绝不允许「emit 写了一半」或「取消后还有子任务冒出来」。
+func TestEmitCancelRaceLinearizable(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "emit-cancelrace")
+	child := createCap(t, db, testCap(ns, "child", 1, nil))
+
+	for i := 0; i < 4; i++ {
+		parent, auth := emitSetup(t, db, ns, fmt.Sprintf("cancelrace-%d", i))
+		emitID := fmt.Sprintf("race-emit-%d", i)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var (
+			emitErr   error
+			first     bool
+			cancelErr error
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, first, emitErr = db.EmitAuthorized(ctx, auth,
+				&store.EmitRecord{TaskID: parent.ID, EmitID: &emitID, ToRef: "child", Data: json.RawMessage(`{}`)},
+				childTasks(ns, parent.TraceID, child, 1))
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			cancelErr = db.RequestCancel(ctx, parent.ID, "cancelled_by_user", store.Now())
+		}()
+		close(start)
+		wg.Wait()
+
+		if cancelErr != nil {
+			t.Fatalf("round %d: 取消不该失败：%v", i, cancelErr)
+		}
+		emits, err := db.ListEmits(ctx, parent.ID)
+		if err != nil {
+			t.Fatalf("round %d: list emits: %v", i, err)
+		}
+		tasks, err := db.ListTasksByTrace(ctx, ns, parent.TraceID)
+		if err != nil {
+			t.Fatalf("round %d: list tasks: %v", i, err)
+		}
+		if len(emits) == 0 {
+			// 取消先赢：emit 必须被拒且 0 写。
+			if !errors.Is(emitErr, store.ErrTaskNotRunning) {
+				t.Fatalf("round %d: 取消先赢时 emit 应 ErrTaskNotRunning，得到 %v", i, emitErr)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("round %d: 取消先赢时不该有子任务，trace 有 %d 行", i, len(tasks))
+			}
+			continue
+		}
+		// emit 先赢：回执与子任务同生共死（1 条 emit + 1 个子任务 + 取消意图）。
+		if emitErr != nil || !first {
+			t.Fatalf("round %d: emit 先赢时应 first=true 且无错：first=%v err=%v", i, first, emitErr)
+		}
+		if len(emits) != 1 || len(tasks) != 2 {
+			t.Fatalf("round %d: emit/子任务必须成对，emits=%d tasks=%d", i, len(emits), len(tasks))
+		}
+		got, err := db.GetTask(ctx, ns, parent.ID)
+		if err != nil {
+			t.Fatalf("round %d: get parent: %v", i, err)
+		}
+		if got.CancelRequestedAt == nil {
+			t.Fatalf("round %d: emit 先赢后取消必须留下意图", i)
+		}
+		// 收尾：确认 reap 释放槽位。
+		if err := db.AckCancel(ctx, parent.ID, auth.Attempt, true, store.Now()); err != nil {
+			t.Fatalf("round %d: ack reap: %v", i, err)
+		}
+	}
 }

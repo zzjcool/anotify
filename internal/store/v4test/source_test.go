@@ -301,3 +301,131 @@ func TestSourceListAndDelete(t *testing.T) {
 		t.Fatalf("删除源必须清掉入口边，剩 %v", got)
 	}
 }
+
+// TestSourceTargetsParamsRoundTrip 验 targets[].params 的往返：模板参数存什么读什么。
+//
+// 只断言 Capability 是不够的——params 解码坏掉时派发会拿不到参数，而目标是「解析成功」，
+// 静默给出空参数比报错更难查。
+func TestSourceTargetsParamsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "src-params")
+	createCap(t, db, testCap(ns, "analyze", 1, nil))
+
+	s := &store.Source{
+		NamespaceID: ns, Name: "with-params", Kind: store.SourceKindManual, Enabled: true,
+		Config: json.RawMessage(`{"payload":{"environment":"prod"}}`),
+		Targets: []sourcespec.Target{{
+			Capability: "analyze",
+			Params:     map[string]any{"env": "$(payload.environment)", "mode": "fast"},
+		}},
+	}
+	if err := db.CreateSource(ctx, s); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := db.GetSource(ctx, ns, s.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.Targets) != 1 || got.Targets[0].Capability != "analyze" {
+		t.Fatalf("targets 结构失真：%+v", got.Targets)
+	}
+	if got.Targets[0].Params["env"] != "$(payload.environment)" || got.Targets[0].Params["mode"] != "fast" {
+		t.Fatalf("targets.params 往返失真：%+v", got.Targets[0].Params)
+	}
+
+	// 更新 targets：params 跟着声明走（旧键不残留）。
+	upd := &store.Source{
+		NamespaceID: ns, ID: s.ID, Name: "with-params", Kind: store.SourceKindManual, Enabled: true,
+		Config: json.RawMessage(`{"payload":{"environment":"prod"}}`),
+		Targets: []sourcespec.Target{{
+			Capability: "analyze", Params: map[string]any{"env": "staging"},
+		}},
+	}
+	if err := db.UpdateSource(ctx, upd); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got2, err := db.GetSource(ctx, ns, s.ID)
+	if err != nil {
+		t.Fatalf("get updated: %v", err)
+	}
+	if got2.Targets[0].Params["env"] != "staging" {
+		t.Fatalf("更新后的 params = %+v", got2.Targets[0].Params)
+	}
+	if _, stale := got2.Targets[0].Params["mode"]; stale {
+		t.Fatalf("旧参数不该残留：%+v", got2.Targets[0].Params)
+	}
+}
+
+// TestSourceListDueSourcesTimeLimitNamespace 验 cron 调度查询：按 next_fire_at 到点、
+// 按时间排序、limit 生效、跨 ns 全 cluster 取但每条保留自己的 ns、停用/非 cron 不入选。
+func TestSourceListDueSourcesTimeLimitNamespace(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	nsA := newNS(t, db, "cron-a")
+	nsB := newNS(t, db, "cron-b")
+
+	a1 := newSource(t, db, nsA, "a1", store.SourceKindCron, `{"expr":"0 3 * * *"}`)
+	a2 := newSource(t, db, nsA, "a2", store.SourceKindCron, `{"expr":"0 4 * * *"}`)
+	b1 := newSource(t, db, nsB, "b1", store.SourceKindCron, `{"expr":"0 5 * * *"}`)
+	webhook := newSource(t, db, nsA, "hook", store.SourceKindWebhook, `{"payload":{}}`)
+	off := newSource(t, db, nsA, "off", store.SourceKindCron, `{"expr":"0 6 * * *"}`)
+	offUpd := &store.Source{NamespaceID: nsA, ID: off.ID, Name: "off", Kind: store.SourceKindCron, Enabled: false,
+		Config: json.RawMessage(`{"expr":"0 6 * * *"}`)}
+	if err := db.UpdateSource(ctx, offUpd); err != nil {
+		t.Fatalf("disable source: %v", err)
+	}
+
+	now := store.Now()
+	stamps := []struct {
+		src  *store.Source
+		next int64
+	}{
+		{a1, now - 1},
+		{b1, now - 5},
+		{a2, now + 3600},
+	}
+	for _, st := range stamps {
+		if err := db.MarkSourceFired(ctx, st.src.ID, now-10, st.next); err != nil {
+			t.Fatalf("mark fired %s: %v", st.src.Name, err)
+		}
+	}
+
+	due, err := db.ListDueSources(ctx, now, 0) // limit<=0 → 默认 100
+	if err != nil {
+		t.Fatalf("list due: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("此刻应有 2 个到点的 cron 源，得到 %d", len(due))
+	}
+	// 按 next_fire_at 升序：b1(-5) 先于 a1(-1)。
+	if due[0].ID != b1.ID || due[1].ID != a1.ID {
+		t.Fatalf("due 排序不对：%s, %s", due[0].Name, due[1].Name)
+	}
+	// 跨 ns 全 cluster 取，但每条保留自己的 ns。
+	if due[0].NamespaceID != nsB || due[1].NamespaceID != nsA {
+		t.Fatalf("ns 归属错乱：%s→%s %s→%s", due[0].Name, due[0].NamespaceID, due[1].Name, due[1].NamespaceID)
+	}
+	// limit 生效（取最早的那个）。
+	one, err := db.ListDueSources(ctx, now, 1)
+	if err != nil {
+		t.Fatalf("list due limit=1: %v", err)
+	}
+	if len(one) != 1 || one[0].ID != b1.ID {
+		t.Fatalf("limit=1 应只取最早的 b1，得到 %+v", one)
+	}
+	// 停用的、非 cron 的永远不入选。
+	for _, s := range due {
+		if s.ID == webhook.ID || s.ID == off.ID {
+			t.Fatalf("停用/非 cron 源不该入选：%+v", s)
+		}
+	}
+	// 时间推进后 a2 也到点。
+	later, err := db.ListDueSources(ctx, now+3601, 0)
+	if err != nil {
+		t.Fatalf("list due later: %v", err)
+	}
+	if len(later) != 3 {
+		t.Fatalf("时间推进后应有 3 个到点源，得到 %d", len(later))
+	}
+}

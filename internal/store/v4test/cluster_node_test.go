@@ -541,3 +541,177 @@ func sameStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestNodeRehelloReplacesDeclaredCapabilities 验二次 hello **覆写**（不是合并）声明事实：
+// 能力探测、申报 ns、本机 vars 快照都以后一次为准，旧条目不能残留。
+func TestNodeRehelloReplacesDeclaredCapabilities(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	n := newClusterNode(t, db, "node-a")
+	nodeOnline(t, db, n.ID)
+
+	declareHello(t, db, n.ID, []string{"team-a"}, []store.DeclaredCapability{{
+		Name: "build", Version: 1, Digest: "sha256:one",
+		Commands: []protocol.HelloCommand{{Name: "git", Found: true, Path: "/usr/bin/git"}},
+	}}, map[string]string{"OLD_VAR": "1"})
+	first, err := db.GetNode(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if len(first.DeclaredCapabilities) != 1 || first.DeclaredCapabilities[0].Name != "build" {
+		t.Fatalf("首次 hello 的能力声明 = %+v", first.DeclaredCapabilities)
+	}
+	cfg, err := db.GetNodeConfig(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("get node config: %v", err)
+	}
+	if cfg.LocalVars["OLD_VAR"] != "1" {
+		t.Fatalf("首次 hello 的本机值 = %+v", cfg.LocalVars)
+	}
+
+	// 二次 hello：完全换一套（旧能力/旧 ns/旧本机值都不该残留）。
+	declareHello(t, db, n.ID, []string{"team-b"}, []store.DeclaredCapability{{
+		Name: "deploy", Version: 2, Digest: "sha256:two",
+		Commands: []protocol.HelloCommand{{Name: "kubectl", Found: false}},
+	}}, map[string]string{"NEW_VAR": "2"})
+	second, err := db.GetNode(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("get node after rehello: %v", err)
+	}
+	if len(second.DeclaredCapabilities) != 1 || second.DeclaredCapabilities[0].Name != "deploy" ||
+		second.DeclaredCapabilities[0].Version != 2 {
+		t.Fatalf("二次 hello 必须整体替换能力声明，得到 %+v", second.DeclaredCapabilities)
+	}
+	if len(second.DeclaredNamespaces) != 1 || second.DeclaredNamespaces[0] != "team-b" {
+		t.Fatalf("二次 hello 必须替换申报 ns，得到 %v", second.DeclaredNamespaces)
+	}
+	cfg, err = db.GetNodeConfig(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("get node config after rehello: %v", err)
+	}
+	if _, stale := cfg.LocalVars["OLD_VAR"]; stale {
+		t.Fatalf("旧本机值不该残留：%+v", cfg.LocalVars)
+	}
+	if cfg.LocalVars["NEW_VAR"] != "2" {
+		t.Fatalf("新本机值没写进去：%+v", cfg.LocalVars)
+	}
+}
+
+// TestOrphanPendingTasksUseEligibilityReasons 验孤儿视图用**与派发同一份**资格判定：
+// 值缺 / 配置未 apply / 授权不足 / 节点离线都能被看见，且原因取已批准词表。
+func TestOrphanPendingTasksUseEligibilityReasons(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	nsID := newNS(t, db, "orphan-ns")
+	cap := testCap(nsID, "needs-value", 1, nil)
+	cap.Spec.Requires = artifact.Requires{Values: []string{"vars.SOURCE_ROOT"}}
+	createCap(t, db, cap)
+
+	node := newClusterNode(t, db, "node-a")
+	nodeOnline(t, db, node.ID)
+	declareHello(t, db, node.ID, []string{"*"}, nil, nil)
+	deployApplied(t, db, nsID, node.ID, cap)
+
+	// 任务 1：接受时 ns 还没有 SOURCE_ROOT（钉住的是空快照）。
+	old := newTask(t, db, nsID, cap, "trace-old", "")
+	// 之后给 ns 默认值：只影响**下一个**任务（任务 1 的输入已钉住）。
+	setNamespaceVars(t, db, nsID, map[string]string{"SOURCE_ROOT": "/srv/ns"})
+	fresh := newTask(t, db, nsID, cap, "trace-fresh", "")
+
+	now := store.Now()
+	if _, err := db.Exec(`UPDATE tasks SET created_at = ? WHERE id IN (?,?)`, now-7200, old.ID, fresh.ID); err != nil {
+		t.Fatalf("age tasks: %v", err)
+	}
+
+	findOrphan := func(tasks []store.OrphanPendingTask, id string) *store.OrphanPendingTask {
+		for i := range tasks {
+			if tasks[i].ID == id {
+				return &tasks[i]
+			}
+		}
+		return nil
+	}
+
+	// ① 值缺：节点其它都合格，但任务钉住的 ns 快照里没有 SOURCE_ROOT。
+	orphans, err := db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans: %v", err)
+	}
+	got := findOrphan(orphans, old.ID)
+	if got == nil {
+		t.Fatalf("缺值的 pending 任务应被列为孤儿：%+v", orphans)
+	}
+	if got.Reason != store.OrphanNoOnlineNode || got.NodeReason != protocol.ConditionReasonValueMissing {
+		t.Fatalf("孤儿原因 = %q/%q，want no_online_node/ValueMissing", got.Reason, got.NodeReason)
+	}
+	if findOrphan(orphans, fresh.ID) != nil {
+		t.Fatalf("钉住快照里有值的任务不该是孤儿（新任务用的是 B 版输入）")
+	}
+
+	// ② 授权收紧（优先级高于配置未 apply）。
+	putNodeCfg(t, db, node.ID, []string{"other"}, nil, nil)
+	orphans, err = db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans after unauthorize: %v", err)
+	}
+	for _, id := range []string{old.ID, fresh.ID} {
+		item := findOrphan(orphans, id)
+		if item == nil || item.NodeReason != protocol.ConditionReasonNamespaceUnauthorized {
+			t.Fatalf("授权不足应报 NamespaceUnauthorized，得到 %+v", item)
+		}
+	}
+
+	// ③ 恢复授权但配置 revision 前进、节点还没 apply。
+	putNodeCfg(t, db, node.ID, []string{"*"}, nil, nil)
+	orphans, err = db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans after config bump: %v", err)
+	}
+	if item := findOrphan(orphans, old.ID); item == nil || item.NodeReason != protocol.ConditionReasonConfigPending {
+		t.Fatalf("配置未 apply 应报 ConfigPending，得到 %+v", item)
+	}
+
+	// ④ 节点回报 applied → 回到「只有任务 1 缺值」。
+	cfg, err := db.GetNodeConfig(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("get node config: %v", err)
+	}
+	if err := db.RecordApplied(ctx, node.ID, cfg.Revision, "sha256:orphan-test"); err != nil {
+		t.Fatalf("record applied: %v", err)
+	}
+	orphans, err = db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans after applied: %v", err)
+	}
+	if item := findOrphan(orphans, old.ID); item == nil || item.NodeReason != protocol.ConditionReasonValueMissing {
+		t.Fatalf("apply 之后应回到 ValueMissing，得到 %+v", item)
+	}
+	if findOrphan(orphans, fresh.ID) != nil {
+		t.Fatalf("任务 2 应可派发，不该是孤儿")
+	}
+
+	// ⑤ 节点离线（最高优先级）。
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOffline); err != nil {
+		t.Fatalf("mark offline: %v", err)
+	}
+	orphans, err = db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans offline: %v", err)
+	}
+	if item := findOrphan(orphans, old.ID); item == nil || item.NodeReason != protocol.ConditionReasonNodeOffline {
+		t.Fatalf("节点离线应报 NodeOffline，得到 %+v", item)
+	}
+
+	// ⑥ 安全阀：没到 olderThanSec 的 pending 不当孤儿（刚建出来可能只是还没轮到）。
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOnline); err != nil {
+		t.Fatalf("mark online: %v", err)
+	}
+	tooNew := newTask(t, db, nsID, cap, "trace-new", "")
+	orphans, err = db.ListOrphanPendingTasks(ctx, nsID, 3600, 200)
+	if err != nil {
+		t.Fatalf("list orphans (safety valve): %v", err)
+	}
+	if findOrphan(orphans, tooNew.ID) != nil {
+		t.Fatalf("安全阀内的新任务不该被列为孤儿")
+	}
+}

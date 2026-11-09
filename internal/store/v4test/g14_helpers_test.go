@@ -160,3 +160,57 @@ func mustJSON(t *testing.T, raw json.RawMessage, want string) {
 
 // pruneType 是测试里常用的剪枝码（param_missing）。
 const pruneType = protocol.ReasonParamMissing
+
+// setNamespaceVars 写一个命名空间的默认 vars（带当前 resourceVersion 做 CAS）。
+// 返回写入后的配置（Revision 就是 namespaceVarsRevision）。
+func setNamespaceVars(t *testing.T, db *store.DB, nsID string, vars map[string]string) *store.NamespaceConfig {
+	t.Helper()
+	ctx := context.Background()
+	cur, err := db.GetNamespaceConfig(ctx, nsID)
+	if err != nil {
+		t.Fatalf("get namespace config: %v", err)
+	}
+	next, err := db.PutNamespaceConfig(ctx, nsID, vars, cur.ResourceVersion)
+	if err != nil {
+		t.Fatalf("put namespace config: %v", err)
+	}
+	return next
+}
+
+// helloNode 让节点上报一次 hello（本机 vars 快照 + 能力探测 + 申报 ns）。
+//
+// 本机 vars 只能由 hello 写（RecordHello 是唯一入口，D-I3），所以测试要用
+// local 层值时必须先过一遍它。
+func helloNode(t *testing.T, db *store.DB, node *store.Node, localVars map[string]string,
+	caps []store.DeclaredCapability) {
+	t.Helper()
+	err := db.RecordHello(context.Background(), node.ID,
+		store.NodeFacts{Hostname: node.Name}, caps, []string{"*"},
+		localVars, nil, "test-agent", "test-commit")
+	if err != nil {
+		t.Fatalf("record hello for %s: %v", node.Name, err)
+	}
+}
+
+// newSource 建一个源（空 targets 合法），返回带 id/反转义 config 的行。
+func newSource(t *testing.T, db *store.DB, nsID, name, kind, cfg string) *store.Source {
+	t.Helper()
+	s := &store.Source{NamespaceID: nsID, Name: name, Kind: kind, Enabled: true}
+	if cfg != "" {
+		s.Config = json.RawMessage(cfg)
+	}
+	if err := db.CreateSource(context.Background(), s); err != nil {
+		t.Fatalf("create source %q: %v", name, err)
+	}
+	return s
+}
+
+// taskByID 从一批任务里按 id 找一条（ListDispatchableTasks 之类的结果用）。
+func taskByID(tasks []*store.Task, id string) *store.Task {
+	for _, task := range tasks {
+		if task.ID == id {
+			return task
+		}
+	}
+	return nil
+}

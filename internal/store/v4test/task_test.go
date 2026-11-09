@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -319,6 +320,11 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 		now-1, idemTask.ID, plainTask.ID); err != nil {
 		t.Fatalf("expire leases: %v", err)
 	}
+	// 显式模拟**真实 offline 事实**（会话死亡）：只有这种事实才允许回收物理槽位。
+	// 在线节点上的 lease 过期只吊销授权、不释放槽位（见 TestTaskOnlineLeaseExpiryKeepsSlot）。
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOffline); err != nil {
+		t.Fatalf("mark node offline: %v", err)
+	}
 	requeued, abandoned, err := db.RecoverLostLeases(ctx, now)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
@@ -340,10 +346,14 @@ func TestTaskRecoverIdempotentRequeues(t *testing.T) {
 	if dead.Error != protocol.ReasonLeaseExpired {
 		t.Fatalf("非幂等过期应 abandoned + lease_expired，得到 %q", dead.Error)
 	}
+	// offline = 明确的会话死亡事实：物理槽位这时才允许回收。
 	if busySlots(t, db, node.ID) != 0 {
-		t.Fatalf("两条路径都必须释放槽位")
+		t.Fatalf("节点 offline（会话死亡事实）后应回收槽位，仍占 %d 个", busySlots(t, db, node.ID))
 	}
-	// 重排后的任务可以再次被派发（attempt 变 2）。
+	// 节点回来后再派发：重排后的任务可以再次被授权（attempt 变 2）。
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOnline); err != nil {
+		t.Fatalf("mark node online: %v", err)
+	}
 	if _, _, attempt, _, err := func() (string, string, int, int64, error) {
 		if err := db.AssignTask(ctx, idemTask.ID, node.ID, "asg-3", 2); err != nil {
 			t.Fatalf("re-assign: %v", err)
@@ -555,13 +565,24 @@ func TestTaskMaxAttemptsThreeTotal(t *testing.T) {
 		if got != attempt {
 			t.Fatalf("第 %d 次 grant 的 attempt = %d", attempt, got)
 		}
-		// 用「租约过期」制造一次 infra 失败；非最后一次应当重排。
+		// 用「租约过期 + 节点真的掉了」制造一次 infra 失败：非最后一次应当重排。
+		// 物理槽位只由节点侧事实回收——显式模拟 offline（会话死亡）再巡检；
+		// 在线节点的 lease 过期只吊销授权、不释放槽位
+		// （见 TestTaskOnlineLeaseExpiryKeepsSlotUntilNodeFact）。
 		if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
 			t.Fatalf("expire lease: %v", err)
 		}
-		_, _, err := db.RecoverLostLeases(ctx, store.Now())
-		if err != nil {
+		if uerr := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOffline); uerr != nil {
+			t.Fatalf("mark node offline after attempt %d: %v", attempt, uerr)
+		}
+		if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
 			t.Fatalf("recover after attempt %d: %v", attempt, err)
+		}
+		if busySlots(t, db, node.ID) != 0 {
+			t.Fatalf("offline（会话死亡事实）后槽位应被回收（attempt %d）", attempt)
+		}
+		if uerr := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOnline); uerr != nil {
+			t.Fatalf("mark node online after attempt %d: %v", attempt, uerr)
 		}
 		if attempt < 3 {
 			back := mustPhase(t, db, ns, task.ID, store.TaskPending)
@@ -585,5 +606,598 @@ func TestTaskMaxAttemptsThreeTotal(t *testing.T) {
 	}
 	if busySlots(t, db, node.ID) != 0 {
 		t.Fatalf("预算用尽后不该占槽位")
+	}
+}
+
+// TestTaskOnlineLeaseExpiryKeepsSlotUntilNodeFact 验**在线节点**的租约过期只吊销授权：
+// 物理槽位不被巡检「假 reaped」清掉，只由节点侧事实（ReclaimStaleSlots）回收。
+func TestTaskOnlineLeaseExpiryKeepsSlotUntilNodeFact(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "slot-online")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 1)
+	task := newTask(t, db, ns, c, "trace-1", "")
+	grant(t, db, task.ID, node.ID, "asg-1")
+
+	now := store.Now()
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, now-1, task.ID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	requeued, terminal, err := db.RecoverLostLeases(ctx, now)
+	if err != nil || requeued != 1 || terminal != 0 {
+		t.Fatalf("recover: requeued=%d terminal=%d err=%v", requeued, terminal, err)
+	}
+	mustPhase(t, db, ns, task.ID, store.TaskPending)
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("在线节点的 lease 过期不该释放物理槽位（上一代进程可能还在跑），得到 busy=%d",
+			busySlots(t, db, node.ID))
+	}
+	// 节点重新上报（hello/巡检）是「会话事实」：任务已不在 running → 槽位可回收。
+	n, err := db.ReclaimStaleSlots(ctx, node.ID, now)
+	if err != nil || n != 1 {
+		t.Fatalf("reclaim stale slots = %d, err=%v（want 1）", n, err)
+	}
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("节点侧事实回收后不该再有 busy 槽位")
+	}
+}
+
+// TestTaskCancelSlotHeldUntilReapOrOfflineFact 验取消后的槽位：
+//   - 在线 + reaped 未确认 → 终局也不释放（reaped=false / 租约巡检都不放）；
+//   - 节点真 offline（会话死亡事实）→ 允许回收；
+//   - 确认 reap（reaped=true）→ 释放。
+func TestTaskCancelSlotHeldUntilReapOrOfflineFact(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "slot-cancel")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+
+	// ① 在线 + 未 reap：巡检把取消收成终局，但槽位保持占用。
+	online := newNode(t, db, "node-online", 1)
+	taskA := newTask(t, db, ns, c, "trace-a", "")
+	_, _, attemptA := grant(t, db, taskA.ID, online.ID, "asg-a")
+	if err := db.RequestCancel(ctx, taskA.ID, protocol.ReasonCancelledByUser, store.Now()); err != nil {
+		t.Fatalf("cancel A: %v", err)
+	}
+	if err := db.AckCancel(ctx, taskA.ID, attemptA, false, store.Now()); err != nil {
+		t.Fatalf("ack A (not reaped): %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, taskA.ID); err != nil {
+		t.Fatalf("expire A: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
+		t.Fatalf("recover A: %v", err)
+	}
+	doneA := mustPhase(t, db, ns, taskA.ID, store.TaskCancelled)
+	if doneA.Error != protocol.ReasonCancelledByUser || doneA.Attempt != attemptA {
+		t.Fatalf("取消终局应保留用户原因/attempt：%+v", doneA)
+	}
+	if busySlots(t, db, online.ID) != 1 {
+		t.Fatalf("reaped 未确认时槽位必须保持占用，得到 busy=%d", busySlots(t, db, online.ID))
+	}
+	// 确认 reap 才释放。
+	if err := db.AckCancel(ctx, taskA.ID, attemptA, true, store.Now()); err != nil {
+		t.Fatalf("ack A (reaped): %v", err)
+	}
+	if busySlots(t, db, online.ID) != 0 {
+		t.Fatalf("reaped=true 后必须释放槽位")
+	}
+
+	// ② 真 offline（会话死亡事实）：允许回收。
+	offline := newNode(t, db, "node-offline", 1)
+	taskB := newTask(t, db, ns, c, "trace-b", "")
+	_, _, attemptB := grant(t, db, taskB.ID, offline.ID, "asg-b")
+	if err := db.RequestCancel(ctx, taskB.ID, protocol.ReasonCancelledByUser, store.Now()); err != nil {
+		t.Fatalf("cancel B: %v", err)
+	}
+	if err := db.AckCancel(ctx, taskB.ID, attemptB, false, store.Now()); err != nil {
+		t.Fatalf("ack B (not reaped): %v", err)
+	}
+	if err := db.UpdateNodeStatus(ctx, offline.ID, store.NodeStatusOffline); err != nil {
+		t.Fatalf("mark offline: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, taskB.ID); err != nil {
+		t.Fatalf("expire B: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
+		t.Fatalf("recover B: %v", err)
+	}
+	mustPhase(t, db, ns, taskB.ID, store.TaskCancelled)
+	if busySlots(t, db, offline.ID) != 0 {
+		t.Fatalf("节点 offline（会话死亡事实）后应回收槽位")
+	}
+}
+
+// TestTaskOldAckCannotReleaseNewAttemptSlot 验**旧 attempt 的 reap ACK 不能释放新 attempt 的槽**：
+//
+// 同一逻辑任务重排后可能同时占着旧 attempt 的槽（旧进程未回收）与新 attempt 的槽。
+// 释放必须按「node + 这次 attempt 绑定的实例」（tasks.lease_instance_id）精确释放，
+// 不能按 task_id 一把清。
+func TestTaskOldAckCannotReleaseNewAttemptSlot(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "slot-oldack")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 2)
+	task := newTask(t, db, ns, c, "trace-1", "")
+
+	_, _, attempt1 := grant(t, db, task.ID, node.ID, "asg-1")
+	first, err := db.GetTask(ctx, ns, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	slot1 := first.LeaseInstanceID
+	if slot1 == "" {
+		t.Fatalf("grant 必须把这次 attempt 绑定的物理槽位记在任务行上（lease_instance_id）")
+	}
+
+	// 租约过期 → 重排（在线节点：旧槽位保持占用）→ 再授权第二个 attempt。
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET next_attempt_at = NULL WHERE id = ?`, task.ID); err != nil {
+		t.Fatalf("clear backoff: %v", err)
+	}
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-2", attempt1+1); err != nil {
+		t.Fatalf("re-assign: %v", err)
+	}
+	_, _, attempt2, _, err := db.GrantLease(ctx, task.ID, "asg-2", node.ID, store.Now())
+	if err != nil {
+		t.Fatalf("re-grant: %v", err)
+	}
+	if attempt2 != 2 {
+		t.Fatalf("第二次 attempt = %d", attempt2)
+	}
+	second, err := db.GetTask(ctx, ns, task.ID)
+	if err != nil {
+		t.Fatalf("get task after re-grant: %v", err)
+	}
+	if second.LeaseInstanceID == slot1 {
+		t.Fatalf("第二次 grant 应绑到另一个槽位（旧槽仍被 attempt1 占着）")
+	}
+	if busySlots(t, db, node.ID) != 2 {
+		t.Fatalf("两个 attempt 各占一个槽，得到 busy=%d", busySlots(t, db, node.ID))
+	}
+
+	// 旧 attempt 的 reap ACK：attempt 对不上 → 拒绝，且**不释放任何槽**。
+	if err := db.AckCancel(ctx, task.ID, attempt1, true, store.Now()); !errors.Is(err, store.ErrLeaseMismatch) {
+		t.Fatalf("旧 attempt 的 reap ACK 应 ErrLeaseMismatch，得到 %v", err)
+	}
+	if busySlots(t, db, node.ID) != 2 {
+		t.Fatalf("旧 ACK 不得释放新 attempt 的槽（也不得释放旧槽），得到 busy=%d", busySlots(t, db, node.ID))
+	}
+
+	// 当前 attempt 取消 + 确认 reap：只释放它自己绑定的那个槽。
+	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonCancelledByUser, store.Now()); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := db.AckCancel(ctx, task.ID, attempt2, true, store.Now()); err != nil {
+		t.Fatalf("ack current attempt: %v", err)
+	}
+	mustPhase(t, db, ns, task.ID, store.TaskCancelled)
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("当前 attempt 的 reap 只该释放它自己的槽，剩 busy=%d", busySlots(t, db, node.ID))
+	}
+	var stillBound int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM node_instances WHERE node_id = ? AND id = ? AND busy_task = ?`,
+		node.ID, slot1, task.ID).Scan(&stillBound); err != nil {
+		t.Fatalf("probe slot1: %v", err)
+	}
+	if stillBound != 1 {
+		t.Fatalf("旧 attempt 的槽位必须仍被它占着（等它的 reap/会话事实），实际 %d", stillBound)
+	}
+	// 旧槽位只在节点侧事实（终态任务不再在跑）后才回收。
+	if n, err := db.ReclaimStaleSlots(ctx, node.ID, store.Now()); err != nil || n != 1 {
+		t.Fatalf("reclaim stale slots = %d, err=%v（want 1）", n, err)
+	}
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("终态后旧 attempt 的残影槽位应被节点侧事实回收")
+	}
+}
+
+// TestTaskCancelInFlightNeverRegranted 验取消在飞的任务**永不再授权**（F1 反例）：
+// 租约过期/巡检不会把它重排成 pending 再 grant，且终局原因是取消（不是 lease_expired）。
+func TestTaskCancelInFlightNeverRegranted(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "cancel-regrant")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 1)
+	task := newTask(t, db, ns, c, "trace-1", "")
+	_, _, attempt := grant(t, db, task.ID, node.ID, "asg-1")
+
+	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonCancelledByUser, store.Now()); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	requeued, terminal, err := db.RecoverLostLeases(ctx, store.Now())
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if requeued != 0 || terminal != 1 {
+		t.Fatalf("取消在飞的任务不得重排：requeued=%d terminal=%d", requeued, terminal)
+	}
+	done := mustPhase(t, db, ns, task.ID, store.TaskCancelled)
+	if done.Error != protocol.ReasonCancelledByUser {
+		t.Fatalf("终局原因必须是用户取消，得到 %q（lease_expired 是错的）", done.Error)
+	}
+	if done.Attempt != attempt {
+		t.Fatalf("取消终局不得产生新 attempt：%d != %d", done.Attempt, attempt)
+	}
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("reaped 未确认前槽位必须保持占用")
+	}
+
+	// 永不进派发候选、永不再授权。
+	now := store.Now()
+	dispatchable, err := db.ListDispatchableTasks(ctx, now+3600, 100)
+	if err != nil {
+		t.Fatalf("list dispatchable: %v", err)
+	}
+	if taskByID(dispatchable, task.ID) != nil {
+		t.Fatalf("已取消的任务不能再进派发候选")
+	}
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-2", 2); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("取消后 assign 应被拒，得到 %v", err)
+	}
+	if _, _, _, _, err := db.GrantLease(ctx, task.ID, "", node.ID, now); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("取消后 grant 应被拒，得到 %v", err)
+	}
+	// 再巡检一轮也不会有新动作。
+	if rq, term, err := db.RecoverLostLeases(ctx, now+60); err != nil || rq != 0 || term != 0 {
+		t.Fatalf("第二轮巡检不该再处理它：rq=%d term=%d err=%v", rq, term, err)
+	}
+	// 迟到的 reap ACK 仍可补上槽位回收（终局不变）。
+	if err := db.AckCancel(ctx, task.ID, attempt, true, store.Now()); err != nil {
+		t.Fatalf("reap ack after terminal: %v", err)
+	}
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("确认 reap 后槽位应释放")
+	}
+}
+
+// TestTaskCancelGrantRace 验取消与 grant 的竞争可线性化（不靠 sleep，用屏障并发）：
+//
+// 两种赢法都必须自洽——取消先赢 → 终局且永不授权、无槽位；
+// grant 先赢 → running + 取消意图 + 槽位占用，等 reap。绝不出现「取消后还在跑且无取消标记」。
+func TestTaskCancelGrantRace(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "cancel-race")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 1)
+
+	for i := 0; i < 8; i++ {
+		task := newTask(t, db, ns, c, fmt.Sprintf("trace-rc-%d", i), "")
+		assignID := fmt.Sprintf("asg-rc-%d", i)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var (
+			cancelErr error
+			grantErr  error
+			attempt   int
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			cancelErr = db.RequestCancel(ctx, task.ID, protocol.ReasonCancelledByUser, store.Now())
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			if aerr := db.AssignTask(ctx, task.ID, node.ID, assignID, 1); aerr != nil {
+				grantErr = aerr
+				return
+			}
+			_, _, attempt, _, grantErr = db.GrantLease(ctx, task.ID, assignID, node.ID, store.Now())
+		}()
+		close(start)
+		wg.Wait()
+
+		if cancelErr != nil {
+			t.Fatalf("round %d: 取消不该失败（task 只可能被自己的取消终结）：%v", i, cancelErr)
+		}
+		got, err := db.GetTask(ctx, ns, task.ID)
+		if err != nil {
+			t.Fatalf("round %d: get task: %v", i, err)
+		}
+		switch got.Phase {
+		case store.TaskCancelled:
+			// 取消先赢：grant 必须失败，且没有占槽、没有 attempt。
+			if grantErr == nil {
+				t.Fatalf("round %d: 取消先赢时 grant 不该成功", i)
+			}
+			if got.Attempt != 0 {
+				t.Fatalf("round %d: 取消先赢时不该有 attempt：%d", i, got.Attempt)
+			}
+			if busySlots(t, db, node.ID) != 0 {
+				t.Fatalf("round %d: 取消先赢时不该占槽位", i)
+			}
+			if got.Error != protocol.ReasonCancelledByUser {
+				t.Fatalf("round %d: 终局原因 = %q", i, got.Error)
+			}
+		case store.TaskRunning:
+			// grant 先赢：必须带取消意图、槽位占用，结果/续租都已被收回。
+			if grantErr != nil {
+				t.Fatalf("round %d: grant 先赢却报错 %v", i, grantErr)
+			}
+			if got.CancelRequestedAt == nil {
+				t.Fatalf("round %d: grant 先赢后取消必须留下意图（否则运行中的任务无法被停）", i)
+			}
+			if busySlots(t, db, node.ID) != 1 {
+				t.Fatalf("round %d: running + 取消在飞时槽位必须仍占用", i)
+			}
+			if err := db.AckCancel(ctx, task.ID, attempt, true, store.Now()); err != nil {
+				t.Fatalf("round %d: ack reap: %v", i, err)
+			}
+			mustPhase(t, db, ns, task.ID, store.TaskCancelled)
+			if busySlots(t, db, node.ID) != 0 {
+				t.Fatalf("round %d: reap 后必须释放槽位", i)
+			}
+		default:
+			t.Fatalf("round %d: 不合法终态 %q（取消后不得留下 pending）", i, got.Phase)
+		}
+		// 取消之后永不再授权（两种赢法都一样）。
+		if err := db.AssignTask(ctx, task.ID, node.ID, "asg-late", 2); !errors.Is(err, store.ErrInvalidTransition) {
+			t.Fatalf("round %d: 取消后 assign 应被拒，得到 %v", i, err)
+		}
+	}
+}
+
+// TestTaskGrantBudgetExhaustedReleasesSlot 验 grant 预算用尽分支**不泄漏槽位**（F3）：
+//
+// 占槽在事务外先发生；预算用尽直接终态，必须同事务把 busy_task 还回去，
+// 否则那个槽位要等到节点下次 hello 才被兜底清掉。
+func TestTaskGrantBudgetExhaustedReleasesSlot(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "grant-budget")
+	c := lifeCycleCap(t, db, ns, "idem", true, 1)
+	node := newNode(t, db, "node-a", 1)
+	task := newTask(t, db, ns, c, "trace-1", "")
+	// 制造「attempt 已用掉一次、任务又回到 pending」的真实形状（能力预算被改小后重排）。
+	if _, err := db.Exec(`UPDATE tasks SET attempt = 1 WHERE id = ?`, task.ID); err != nil {
+		t.Fatalf("seed attempt: %v", err)
+	}
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-1", 2); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if _, _, _, _, err := db.GrantLease(ctx, task.ID, "asg-1", node.ID, store.Now()); !errors.Is(err, store.ErrMaxAttemptsExceeded) {
+		t.Fatalf("预算用尽应 ErrMaxAttemptsExceeded，得到 %v", err)
+	}
+	dead := mustPhase(t, db, ns, task.ID, store.TaskAbandoned)
+	if dead.Error != protocol.ReasonMaxAttemptsExceeded {
+		t.Fatalf("终态原因 = %q", dead.Error)
+	}
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("预算用尽分支必须归还槽位，仍占 %d 个", busySlots(t, db, node.ID))
+	}
+}
+
+// TestTaskDrainingNotLost 验 drain 语义：停止新派发，但 running 续租/结果不受影响（F2）。
+func TestTaskDrainingNotLost(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "drain")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 2)
+	running := newTask(t, db, ns, c, "trace-run", "")
+	leaseID, _, attempt := grant(t, db, running.ID, node.ID, "asg-1")
+
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusDraining); err != nil {
+		t.Fatalf("mark draining: %v", err)
+	}
+	// 巡检不把 draining 当失联。
+	if rq, term, err := db.RecoverLostLeases(ctx, store.Now()); err != nil || rq != 0 || term != 0 {
+		t.Fatalf("draining 不是 lost：requeued=%d terminal=%d err=%v", rq, term, err)
+	}
+	mustPhase(t, db, ns, running.ID, store.TaskRunning)
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("draining 不该动在跑任务的槽位")
+	}
+	// 在跑的任务照常续租、照常回报结果。
+	if _, err := db.RenewLease(ctx, running.ID, attempt, leaseID, store.Now()); err != nil {
+		t.Fatalf("draining 节点上的 running 任务应可续租：%v", err)
+	}
+	// 但不接新任务：选点（EligibleNodes）与 assign/grant 都不行。
+	next := newTask(t, db, ns, c, "trace-next", "")
+	eligible, reasons, err := db.EligibleNodesForTask(ctx, next)
+	if err != nil {
+		t.Fatalf("eligible for task: %v", err)
+	}
+	if len(eligible) != 0 {
+		t.Fatalf("draining 节点不该是派发候选：%v", eligible)
+	}
+	if reason := store.NodeAvailabilityReason(reasons); reason != protocol.ConditionReasonNodeOffline {
+		t.Fatalf("draining 节点的不可用原因 = %q，want NodeOffline", reason)
+	}
+	if err := db.AssignTask(ctx, next.ID, node.ID, "asg-2", 1); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("draining 节点不该接受新 assign，得到 %v", err)
+	}
+	if _, _, _, _, err := db.GrantLease(ctx, next.ID, "", node.ID, store.Now()); !errors.Is(err, store.ErrInvalidTransition) {
+		t.Fatalf("draining 节点不该接受新 grant，得到 %v", err)
+	}
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("被拒的 grant 不该留下槽位")
+	}
+	// 结果仍然写得进去（drain 不影响存量）。
+	if err := db.CompleteTask(ctx, running.ID, attempt, leaseID, store.TaskResult{
+		Phase: store.TaskSucceeded, Summary: "drained-ok",
+	}); err != nil {
+		t.Fatalf("draining 节点上 running 任务的 result 应可写：%v", err)
+	}
+	mustPhase(t, db, ns, running.ID, store.TaskSucceeded)
+
+	// 恢复 online 后可以接新任务。
+	if err := db.UpdateNodeStatus(ctx, node.ID, store.NodeStatusOnline); err != nil {
+		t.Fatalf("mark online: %v", err)
+	}
+	if err := db.AssignTask(ctx, next.ID, node.ID, "asg-3", 1); err != nil {
+		t.Fatalf("online 后应可 assign：%v", err)
+	}
+	if _, _, got, _, err := db.GrantLease(ctx, next.ID, "asg-3", node.ID, store.Now()); err != nil || got != 1 {
+		t.Fatalf("online 后应可 grant：attempt=%d err=%v", got, err)
+	}
+}
+
+// TestTaskCompleteRejectsOldAttemptLeaseAndExpiry 验 result 的权威校验（F5）：
+// 旧 attempt / 错 lease / **过期租约**都必须拒，且不改任务事实、不释放槽位。
+func TestTaskCompleteRejectsOldAttemptLeaseAndExpiry(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "result-auth")
+	c := createCap(t, db, testCap(ns, "analyze", 1, nil))
+	node := newNode(t, db, "node-a", 1)
+	task := newTask(t, db, ns, c, "trace-1", "")
+	leaseID, token, attempt, expiresAt, err := func() (string, string, int, int64, error) {
+		if aerr := db.AssignTask(ctx, task.ID, node.ID, "asg-1", 1); aerr != nil {
+			t.Fatalf("assign: %v", aerr)
+		}
+		return db.GrantLease(ctx, task.ID, "asg-1", node.ID, store.Now())
+	}()
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	ok := store.TaskResult{Phase: store.TaskSucceeded, Summary: "ok"}
+
+	if err := db.CompleteTaskAt(ctx, task.ID, attempt+1, leaseID, store.Now(), ok); !errors.Is(err, store.ErrLeaseMismatch) {
+		t.Fatalf("旧 attempt 的 result 应 ErrLeaseMismatch，得到 %v", err)
+	}
+	if err := db.CompleteTaskAt(ctx, task.ID, attempt, "lse_bogus", store.Now(), ok); !errors.Is(err, store.ErrLeaseMismatch) {
+		t.Fatalf("错 lease 的 result 应 ErrLeaseMismatch，得到 %v", err)
+	}
+	if err := db.CompleteTaskAt(ctx, task.ID, attempt, leaseID, expiresAt+1, ok); !errors.Is(err, store.ErrLeaseMismatch) {
+		t.Fatalf("过期租约的 result 应 ErrLeaseMismatch，得到 %v", err)
+	}
+	still := mustPhase(t, db, ns, task.ID, store.TaskRunning)
+	if still.FinishedAt != nil || still.Reported {
+		t.Fatalf("被拒的 result 不该改终态事实：%+v", still)
+	}
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("被拒的 result 不该释放槽位")
+	}
+	// 过期租约的 token 也不再被接受（VerifyAttemptToken 不得声称授权却漏到期）。
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if _, err := db.VerifyAttemptToken(ctx, task.ID, token); !errors.Is(err, store.ErrLeaseMismatch) {
+		t.Fatalf("过期租约的 token 应 ErrLeaseMismatch，得到 %v", err)
+	}
+	// 恢复租约后，有效窗口内的 result 正常落库。
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, expiresAt, task.ID); err != nil {
+		t.Fatalf("restore lease: %v", err)
+	}
+	if err := db.CompleteTaskAt(ctx, task.ID, attempt, leaseID, expiresAt-1, ok); err != nil {
+		t.Fatalf("有效 result 应成功：%v", err)
+	}
+	mustPhase(t, db, ns, task.ID, store.TaskSucceeded)
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("正常结束应释放槽位")
+	}
+}
+
+// TestTaskParentNamespaceRoundTrip 验 parentTaskId 的往返与跨 ns 拒绝（不是 attempt 父子）。
+func TestTaskParentNamespaceRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "parent-ns")
+	other := newNS(t, db, "parent-other")
+	c := createCap(t, db, testCap(ns, "analyze", 1, nil))
+	parent := newTask(t, db, ns, c, "trace-parent", "")
+
+	// 子任务不给 ns：继承父任务的命名空间（I11④）。
+	child := &store.Task{
+		TraceID:      "trace-child",
+		CapabilityID: c.ID,
+		Capability:   c.Name,
+		Version:      c.Version,
+		Digest:       c.Digest,
+		ParentTaskID: &parent.ID,
+	}
+	if err := db.CreateTasks(ctx, []*store.Task{child}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if child.NamespaceID != ns {
+		t.Fatalf("子任务应继承父 ns：%q != %q", child.NamespaceID, ns)
+	}
+	got, err := db.GetTask(ctx, ns, child.ID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if got.ParentTaskID == nil || *got.ParentTaskID != parent.ID {
+		t.Fatalf("parentTaskId 往返失真：%v", got.ParentTaskID)
+	}
+
+	// 给了不同的 ns：拒绝（不静默修正），且一条都不建。
+	cross := &store.Task{
+		NamespaceID:  other,
+		TraceID:      "trace-cross",
+		CapabilityID: c.ID,
+		Capability:   c.Name,
+		Version:      c.Version,
+		Digest:       c.Digest,
+		ParentTaskID: &parent.ID,
+	}
+	err = db.CreateTasks(ctx, []*store.Task{cross})
+	var crossErr *store.CrossNamespaceError
+	if !errors.As(err, &crossErr) {
+		t.Fatalf("跨 ns 的 parentTaskId 应 *CrossNamespaceError，得到 %v", err)
+	}
+	if crossErr.Want != ns {
+		t.Fatalf("CrossNamespaceError.Want = %q, want %q", crossErr.Want, ns)
+	}
+	otherTasks, err := db.ListTasks(ctx, other, store.TaskFilter{})
+	if err != nil {
+		t.Fatalf("list other: %v", err)
+	}
+	if len(otherTasks) != 0 {
+		t.Fatalf("被拒的批次不该建行，other ns 有 %d 行", len(otherTasks))
+	}
+}
+
+// TestTaskReapOfRequeuedAttemptReleasesOnlyItsSlot 验**重排后**旧 attempt 的确认 reap
+// 只释放它自己绑定的那个槽（不按 task_id 清、不改相位、不动后续 attempt 的可能绑定）。
+func TestTaskReapOfRequeuedAttemptReleasesOnlyItsSlot(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "slot-requeue-reap")
+	c := lifeCycleCap(t, db, ns, "idem", true, 3)
+	node := newNode(t, db, "node-a", 1)
+	task := newTask(t, db, ns, c, "trace-1", "")
+
+	_, _, attempt := grant(t, db, task.ID, node.ID, "asg-1")
+	if _, err := db.Exec(`UPDATE tasks SET lease_until = ? WHERE id = ?`, store.Now()-1, task.ID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, store.Now()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	requeued := mustPhase(t, db, ns, task.ID, store.TaskPending)
+	if requeued.NodeID != nil {
+		t.Fatalf("重排应清掉 node 归属：%v", *requeued.NodeID)
+	}
+	if busySlots(t, db, node.ID) != 1 {
+		t.Fatalf("在线节点的槽位在 reap 前必须保持占用")
+	}
+
+	// 旧 attempt 自己的「进程组已回收」事实到达：只释放那个槽，任务仍是 pending。
+	if err := db.AckCancel(ctx, task.ID, attempt, true, store.Now()); err != nil {
+		t.Fatalf("reap of requeued attempt: %v", err)
+	}
+	after := mustPhase(t, db, ns, task.ID, store.TaskPending)
+	if after.Attempt != attempt || after.FinishedAt != nil {
+		t.Fatalf("reap 不该改任务相位/attempt：%+v", after)
+	}
+	if busySlots(t, db, node.ID) != 0 {
+		t.Fatalf("确认 reap 后槽位应释放")
 	}
 }

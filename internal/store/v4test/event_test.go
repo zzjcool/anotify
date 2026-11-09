@@ -290,3 +290,110 @@ func TestEventRoundTrip(t *testing.T) {
 	}
 	_ = protocol.ReasonParamMissing
 }
+
+// TestEventDeliveryStableSourceIDAcrossRecreate 验去重键是**源稳定 id**，不是源名：
+//
+// 同 ns 同名源删掉后用同名重建 = 新的源身份。旧源的投递窗不能把新源的同 id 投递吞掉，
+// 旧事件实体也不能因为「窗口过期」被删。事件行上的 source 仍是人类可读的源名。
+func TestEventDeliveryStableSourceIDAcrossRecreate(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	ns := newNS(t, db, "evt-srcid")
+	window := int64(3600)
+	now := store.Now()
+
+	srcA := newSource(t, db, ns, "hook", store.SourceKindManual, `{"payload":{"x":1}}`)
+	first := evt(ns, "trace-1", "hook", "deliver-1")
+	if inserted, err := db.InsertEvent(ctx, first, now, window); err != nil || !inserted {
+		t.Fatalf("first insert: %v %v", inserted, err)
+	}
+	var key string
+	if err := db.QueryRow(
+		`SELECT source FROM event_deliveries WHERE namespace_id = ? AND delivery_id = ?`,
+		ns, "deliver-1").Scan(&key); err != nil {
+		t.Fatalf("read delivery key: %v", err)
+	}
+	if key != srcA.ID {
+		t.Fatalf("去重键必须是源稳定 id %q，得到 %q（源名会让同名重建混窗）", srcA.ID, key)
+	}
+	// 事件行保留人类可读的源名。
+	stored, err := db.GetEvent(ctx, ns, first.ID)
+	if err != nil {
+		t.Fatalf("get event: %v", err)
+	}
+	if stored.Source != "hook" {
+		t.Fatalf("事件行的 source 应是源名，得到 %q", stored.Source)
+	}
+
+	// 删源 → 同名重建（新 id）。
+	if err := db.DeleteSource(ctx, ns, srcA.ID); err != nil {
+		t.Fatalf("delete source: %v", err)
+	}
+	srcB := newSource(t, db, ns, "hook", store.SourceKindManual, `{"payload":{"x":2}}`)
+	if srcB.ID == srcA.ID {
+		t.Fatalf("重建的同名源必须是新 id")
+	}
+
+	// 窗口内、同 deliveryId：新源身份 → 当成**新事件**接收。
+	second := evt(ns, "trace-2", "hook", "deliver-1")
+	inserted, err := db.InsertEvent(ctx, second, now+10, window)
+	if err != nil {
+		t.Fatalf("insert after recreate: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("同名源重建后，同 id 投递不该被旧源的窗口吞掉")
+	}
+	if second.ID == first.ID {
+		t.Fatalf("新源的同 id 投递必须得到新 eventId")
+	}
+	var deliveries int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM event_deliveries WHERE namespace_id = ? AND delivery_id = ?`,
+		ns, "deliver-1").Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 2 {
+		t.Fatalf("两个源身份应各有一条去重记录，得到 %d", deliveries)
+	}
+	// 旧事件实体仍在（去重窗与实体生命周期解耦）。
+	if _, err := db.GetEvent(ctx, ns, first.ID); err != nil {
+		t.Fatalf("旧事件不该被删：%v", err)
+	}
+	// 新源的窗口继续生效：再投一次命中第二条。
+	third := evt(ns, "trace-3", "hook", "deliver-1")
+	if inserted, err := db.InsertEvent(ctx, third, now+20, window); err != nil || inserted {
+		t.Fatalf("新源窗口内重复投递应去重：inserted=%v err=%v", inserted, err)
+	}
+	if third.ID != second.ID {
+		t.Fatalf("重复投递应回新源那条事件")
+	}
+	// 过窗合法重收（新 eventId）。
+	fourth := evt(ns, "trace-4", "hook", "deliver-1")
+	if inserted, err := db.InsertEvent(ctx, fourth, now+window+100, window); err != nil || !inserted {
+		t.Fatalf("窗口过期后应可再接收：inserted=%v err=%v", inserted, err)
+	}
+	if fourth.ID == third.ID {
+		t.Fatalf("过窗后应得到新事件")
+	}
+
+	// 源行不存在时用带前缀的临时键：它不会与任何真实源 id 混窗。
+	ghost := evt(ns, "trace-5", "ghost", "deliver-ghost")
+	if inserted, err := db.InsertEvent(ctx, ghost, now, window); err != nil || !inserted {
+		t.Fatalf("未知源投递：inserted=%v err=%v", inserted, err)
+	}
+	var ghostKey string
+	if err := db.QueryRow(
+		`SELECT source FROM event_deliveries WHERE namespace_id = ? AND delivery_id = ?`,
+		ns, "deliver-ghost").Scan(&ghostKey); err != nil {
+		t.Fatalf("read ghost key: %v", err)
+	}
+	if ghostKey == "ghost" || len(ghostKey) <= len("name:") || ghostKey[:len("name:")] != "name:" {
+		t.Fatalf("未知源的临时键必须带 name: 前缀（与 src_ id 不相交），得到 %q", ghostKey)
+	}
+	// 同名源随后建出来：投同一个 id 是新事件（临时键 ≠ 稳定 id）。
+	newSource(t, db, ns, "ghost", store.SourceKindManual, `{"payload":{}}`)
+	afterCreate := evt(ns, "trace-6", "ghost", "deliver-ghost")
+	if inserted, err := db.InsertEvent(ctx, afterCreate, now+1, window); err != nil || !inserted {
+		t.Fatalf("源建起来后同 id 应算新源的新投递：inserted=%v err=%v", inserted, err)
+	}
+}

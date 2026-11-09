@@ -33,18 +33,27 @@ type OrphanPendingTask struct {
 	Task
 	// IdleSec 是「创建至今」的秒数。用创建时间而不是 attempt，因为孤儿任务通常
 	// attempt=0（连第一次派发都没发生过）。
-	IdleSec int64  `json:"idleSec"`
-	Reason  string `json:"reason"`
+	IdleSec int64 `json:"idleSec"`
+	// Reason 是孤儿**类别**（no_capability / no_online_node），处置方式按它分。
+	Reason string `json:"reason"`
+	// NodeReason 是「没有任何节点能跑」的**具体**原因：直接复用已批准的
+	// NodesAvailable 词表（NodeOffline / NamespaceUnauthorized / ConfigPending /
+	// NotDeployed / CommandMissing / ValueMissing / NoMatchingNode），
+	// 让「值缺」与「配置没 apply」在运维眼里是两件事。no_capability 时为空。
+	NodeReason string `json:"nodeReason,omitempty"`
 }
 
-// ListOrphanPendingTasks 列出命名空间内「pending 且当前没有任何在线节点能跑」的任务。
+// ListOrphanPendingTasks 列出命名空间内「pending 且当前没有任何节点能跑」的任务。
 //
 // 判据分两类（见文件头），候选统一要求 `phase='pending'`：
 //
 //  1. no_capability：`tasks.capability_id` 在 capability_versions 里查不到（被删/被换版）；
-//  2. no_online_node：能力行在，但**没有一台 online 节点满足**「ns 授权 + 部署了该 digest
-//     + 机器级配置已 apply」。这与派发路径用的是**同一组**判据（EligibleNodes），
-//     差别只是这里按行判定、不重复解析 spec。
+//  2. no_online_node：能力行在，但**没有一台节点满足**派发前提。这一条与派发路径
+//     用的是**同一份判定**（EligibleNodesForTask → nodeEligibility）：在线 + ns 申报∩授权
+//     + 机器级配置已 applied + 部署了该 digest(applied) + commands 全 found +
+//     `spec.requires.values` 在**任务钉住的 ns 输入快照**里都能解析。
+//     不用「online + 已部署」这种近似判据：那会把「配置没 apply」「缺命令」「缺值」
+//     的任务从孤儿视图里漏掉，而它们正是最需要被看见的一批。
 //
 // olderThanSec 是安全阀：刚建出来的任务在派发瞬间也可能短暂「没有在线节点」，
 // 把它当孤儿会误报。<=0 按 1 小时兜底——这里不允许「立刻把所有 pending 都列成孤儿」。
@@ -94,7 +103,7 @@ func (d *DB) ListOrphanPendingTasks(ctx context.Context, namespaceID string, old
 	}
 	rows.Close()
 
-	// ② 能力还在、但超过安全阀且没有任何在线节点能满足派发前提的任务。
+	// ② 能力还在、但超过安全阀且没有任何节点满足派发前提的任务。
 	if len(out) >= limit {
 		return out, nil
 	}
@@ -102,30 +111,69 @@ func (d *DB) ListOrphanPendingTasks(ctx context.Context, namespaceID string, old
 		`SELECT `+taskColumns+` FROM tasks t
 		  WHERE t.namespace_id = ? AND t.phase = ? AND t.created_at <= ?
 		    AND EXISTS (SELECT 1 FROM capability_versions cv WHERE cv.id = t.capability_id)
-		    AND NOT EXISTS (
-		        SELECT 1 FROM nodes n
-		         WHERE n.status = ?
-		           AND EXISTS (SELECT 1 FROM deployments dp
-		                        WHERE dp.node_id = n.id AND dp.capability_id = t.capability_id
-		                          AND dp.digest = t.digest AND dp.state = ?))
 		  ORDER BY t.created_at, t.id
-		  LIMIT ?`, namespaceID, TaskPending, cutoff, NodeStatusOnline, DeploymentApplied, limit-len(out))
+		  LIMIT ?`, namespaceID, TaskPending, cutoff, limit-len(out))
 	if err != nil {
 		return nil, fmt.Errorf("list orphan pending tasks: %w", err)
 	}
-	defer rows.Close()
+	candidates := []*Task{}
 	for rows.Next() {
 		t, serr := scanTask(rows)
 		if serr != nil {
+			rows.Close()
 			return nil, serr
 		}
 		if seen[t.ID] {
 			continue
 		}
-		out = append(out, OrphanPendingTask{Task: *t, IdleSec: idleSec(now, t.CreatedAt), Reason: OrphanNoOnlineNode})
+		candidates = append(candidates, t)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("list orphan pending tasks: %w", err)
+	}
+	rows.Close()
+
+	// 逐任务复用派发判定；同一份「能力 + digest + ns 输入版本」只算一次
+	// （同一次请求内 revision 相同 ⇒ ns 快照相同）。
+	type verdict struct {
+		eligible bool
+		reason   string
+	}
+	cache := map[string]verdict{}
+	for _, t := range candidates {
+		key := t.CapabilityID + "|" + t.Digest + "|" + itoa64(t.NamespaceVarsRevision)
+		v, hit := cache[key]
+		if !hit {
+			eligible, reasons, eerr := d.EligibleNodesForTask(ctx, t)
+			switch {
+			case errors.Is(eerr, ErrNotFound):
+				// 能力行在两次查询之间被删：按「没有能力」报（下一轮会归到 ①）。
+				v = verdict{eligible: false, reason: ""}
+			case eerr != nil:
+				return nil, fmt.Errorf("list orphan pending tasks: %w", eerr)
+			default:
+				v = verdict{
+					eligible: len(eligible) > 0,
+					reason:   NodeAvailabilityReason(reasons),
+				}
+			}
+			cache[key] = v
+		}
+		if v.eligible {
+			continue
+		}
+		if v.reason == "" {
+			// 能力行刚被删（上面那个分支）：类别仍是「没有能力」。
+			out = append(out, OrphanPendingTask{
+				Task: *t, IdleSec: idleSec(now, t.CreatedAt), Reason: OrphanNoCapability,
+			})
+			continue
+		}
+		out = append(out, OrphanPendingTask{
+			Task: *t, IdleSec: idleSec(now, t.CreatedAt),
+			Reason: OrphanNoOnlineNode, NodeReason: v.reason,
+		})
 	}
 	return out, nil
 }

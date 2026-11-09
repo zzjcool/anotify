@@ -13,9 +13,14 @@ import (
 // 事件（events 表）：只存不解释的原始输入，是链的根。
 //
 // 幂等键是 **deliveryId**（外部投递 id，source.md §3.3 / D7）：
-// 同一 (namespace, source, deliveryId) 在**保留窗口内**只算一条事件、不重复派发；
+// 同一 (namespace, **源稳定 id**, deliveryId) 在**保留窗口内**只算一条事件、不重复派发；
 // 窗口过期后同一个 id 可以再次被接收（当新事件）。窗口长度就是 events 的保留期
 // （system_config.retention_event_ttl_sec，0 = 永久 → 去重窗口也是永久）。
+//
+// 去重键的第二段必须是**源的稳定 id**（sources.id），不是源名：源可以删掉后用同一个
+// 名字重建，那是**另一个源**。拿名字当键会把「旧源的投递窗」与「新源的同 id 投递」
+// 合成一条，新源的第一条事件被静默吞掉。事件行上的 source 仍是人类可读的源名
+// （列表/详情要给人看），两者用途不同、不能混用。
 //
 // 没有 deliveryId 的投递每次都是新事件：不是所有来源都有稳定投递 id，硬造一个
 // 只会制造假幂等（把两次真的不同的事件吞掉一次）。
@@ -123,7 +128,13 @@ func (d *DB) InsertEvent(ctx context.Context, e *Event, now int64, windowSec int
 	defer func() { _ = tx.Rollback() }()
 	ex := txExec{tx: tx}
 
-	hit, err := claimDeliveryOn(ctx, ex, e, now, windowSec)
+	// 源解析与窗口占用必须在**同一个事务**里：否则「解析出旧源 id → 源被删/同名重建
+	// → 占窗」之间会用一个已经不成立的源身份去占用一条新源的投递窗口。
+	sourceKey, err := resolveDeliverySourceKeyOn(ctx, ex, e.NamespaceID, e.Source)
+	if err != nil {
+		return false, err
+	}
+	hit, err := claimDeliveryOn(ctx, ex, e, sourceKey, now, windowSec)
 	if err != nil {
 		return false, err
 	}
@@ -140,7 +151,32 @@ func (d *DB) InsertEvent(ctx context.Context, e *Event, now int64, windowSec int
 	return true, nil
 }
 
-// claimDeliveryOn 在事务内「占用」这次投递的窗口：
+// deliverySourceKeyPrefix 是「源行不存在」时的临时去重键前缀。
+//
+// 源 id 一律是 `src_...`（base62，无冒号），所以 `name:<源名>` 与任何真实源 id
+// 都不相交：临时键只会在「这条投递来自一个当前查不到的源」时出现，
+// 将来同名源建出来（拿到 `src_...` id）也不会与它混窗。
+const deliverySourceKeyPrefix = "name:"
+
+// resolveDeliverySourceKeyOn 在同一事务里把「事件上的源名」解析成**源的稳定 id**。
+//
+// 解析不到源行（外部入口在源已删除后的竞态、或内部直写事件）时退回带前缀的名字键：
+// 那种投递没有稳定身份可钉，用名字当临时身份至少保证「同一次投递在窗口内只收一次」，
+// 而前缀保证它不会冒充任何真实源。
+func resolveDeliverySourceKeyOn(ctx context.Context, ex queryExec, namespaceID, sourceName string) (string, error) {
+	var id string
+	err := ex.queryRowContext(ctx,
+		`SELECT id FROM sources WHERE namespace_id = ? AND name = ?`, namespaceID, sourceName).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return deliverySourceKeyPrefix + sourceName, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("insert event: resolve source id: %w", err)
+	}
+	return id, nil
+}
+
+// claimDeliveryOn 在事务内「占用」这次投递的窗口（sourceKey = 源稳定 id）：
 //
 //	返回 (nil, nil)      → 窗口可写，调用方插入**新事件行**
 //	返回 (已有事件, nil) → 窗口内的重复投递，调用方原样回给发送方
@@ -149,7 +185,7 @@ func (d *DB) InsertEvent(ctx context.Context, e *Event, now int64, windowSec int
 // 覆盖失败（RowsAffected==0）就说明窗口内的记录还在——那条记录指向的事件就是答案。
 // 两个并发投递在 SQLite 的 BEGIN IMMEDIATE 下天然串行，而这里的语义在
 // 「任一时刻只有一个写者」之外也成立（第二次会看到第一次的提交并命中窗口）。
-func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, now int64, windowSec int64) (*Event, error) {
+func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, sourceKey string, now int64, windowSec int64) (*Event, error) {
 	expiresAt := int64(0)
 	if windowSec > 0 {
 		expiresAt = now + windowSec
@@ -162,7 +198,7 @@ func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, now int64, win
 		      accepted_at = excluded.accepted_at,
 		      expires_at  = excluded.expires_at
 		  WHERE event_deliveries.expires_at > 0 AND event_deliveries.expires_at <= ?`,
-		e.NamespaceID, e.Source, *e.DeliveryID, e.ID, now, expiresAt, now)
+		e.NamespaceID, sourceKey, *e.DeliveryID, e.ID, now, expiresAt, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert event: claim delivery window: %w", err)
 	}
@@ -178,7 +214,7 @@ func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, now int64, win
 	if err := ex.queryRowContext(ctx,
 		`SELECT event_id FROM event_deliveries
 		  WHERE namespace_id = ? AND source = ? AND delivery_id = ?`,
-		e.NamespaceID, e.Source, *e.DeliveryID).Scan(&eventID); err != nil {
+		e.NamespaceID, sourceKey, *e.DeliveryID).Scan(&eventID); err != nil {
 		return nil, fmt.Errorf("insert event: read delivery record: %w", err)
 	}
 	hit, err := getEventByIDOn(ctx, ex, e.NamespaceID, eventID)
@@ -192,13 +228,13 @@ func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, now int64, win
 	// 「吸收到一个不存在的事件」上，直接按新事件接收并刷新记录。
 	if _, err := ex.execContext(ctx,
 		`DELETE FROM event_deliveries WHERE namespace_id = ? AND source = ? AND delivery_id = ?`,
-		e.NamespaceID, e.Source, *e.DeliveryID); err != nil {
+		e.NamespaceID, sourceKey, *e.DeliveryID); err != nil {
 		return nil, fmt.Errorf("insert event: drop dangling delivery record: %w", err)
 	}
 	if _, err := ex.execContext(ctx,
 		`INSERT INTO event_deliveries (namespace_id, source, delivery_id, event_id, accepted_at, expires_at)
 		 VALUES (?,?,?,?,?,?)`,
-		e.NamespaceID, e.Source, *e.DeliveryID, e.ID, now, expiresAt); err != nil {
+		e.NamespaceID, sourceKey, *e.DeliveryID, e.ID, now, expiresAt); err != nil {
 		return nil, fmt.Errorf("insert event: reclaim delivery window: %w", err)
 	}
 	return nil, nil

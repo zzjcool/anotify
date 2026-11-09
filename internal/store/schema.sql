@@ -295,7 +295,11 @@ CREATE INDEX IF NOT EXISTS idx_events_retention
 -- 拆表后：窗口判定只看 expires_at；过期后同 id 得到**新 eventId** 并刷新本行记录，
 -- 旧事件实体不受影响（不因为去重而删实体）。
 --
--- source 用**源名**：v4 的源名创建后不可改（source.md §2），所以它就是稳定标识。
+-- source 存的是**源的稳定 id**（sources.id，`src_...`），不是源名（D7/D12）：
+-- 源可以删掉后用同名重建，那是一次新的源身份——拿名字当去重键会把「旧源的窗口」
+-- 与「新源的投递」混成一条。接收事务在同一事务里按 (namespace_id, 源名) 解析出
+-- 稳定 id 再写这里；解析不到源行时用 `name:<源名>` 前缀键（与 `src_` id 不相交）。
+-- 事件行上的 source 仍是**人类可读的源名**（列表/详情要给人看），两者不能混用。
 -- expires_at = 0 表示永久窗口（eventTtlSec=0 时的语义）。
 CREATE TABLE IF NOT EXISTS event_deliveries (
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
@@ -314,8 +318,15 @@ CREATE INDEX IF NOT EXISTS idx_event_deliveries_expiry
 -- phase ∈ pending | running | succeeded | failed | cancelled | abandoned。
 -- waiting_reason ∈ waiting_for_slot | retry_backoff | waiting_for_config（只有 pending 有意义）。
 -- lease_id / lease_until / attempt_token_hash 是执行授权事实（token 只存 sha256）。
+-- lease_instance_id 是**这一次 attempt 绑定的物理槽位**（node_instances.id）：
+-- 同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽（旧进程未回收），
+-- 释放只能按「node + 这个 attempt 绑的槽」精确释放，不能按 task_id 一把清掉
+-- （否则旧 attempt 的进程还在跑，槽位就被新任务用了）。
 -- assignment_id / proposed_attempt 是「这次派给谁」的候选事实（assign 时不授执行权）。
 -- idempotent 在派发时从 spec.lifecycle 钉住（重试判定只看这一列，不回读能力）。
+-- namespace_vars / namespace_vars_revision 是**任务被接受时**钉住的命名空间默认输入快照
+-- 与它的 namespaceVarsRevision（D2）：排队期间 ns 配置更新不影响已接受的任务，
+-- 换节点重试沿用同一份快照；值只在内部执行输入里用，不进公共 DTO（json:"-"）。
 -- cancel_reason / cancel_requested_at 记录取消意图：running 时要等 cancel.ack 的
 -- processGroupReaped 才释放槽位，pending 时直接终态。
 -- reported=1 表示节点已回报终态；summary/artifacts/error 是结果。
@@ -338,8 +349,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     assignment_id      TEXT NOT NULL DEFAULT '',
     proposed_attempt   INTEGER NOT NULL DEFAULT 0,
     idempotent         INTEGER NOT NULL DEFAULT 0,
+    namespace_vars          TEXT NOT NULL DEFAULT '{}',
+    namespace_vars_revision INTEGER NOT NULL DEFAULT 0,
     lease_id           TEXT NOT NULL DEFAULT '',
     lease_until        INTEGER,
+    lease_instance_id  TEXT NOT NULL DEFAULT '',
     attempt_token_hash TEXT NOT NULL DEFAULT '',
     waiting_reason     TEXT NOT NULL DEFAULT '',
     next_attempt_at    INTEGER,

@@ -145,9 +145,21 @@ type Task struct {
 	ProposedAttempt int    `json:"proposedAttempt"`
 	// Idempotent 是派发时钉住的幂等声明（重试判定只看它，不回读能力）。
 	Idempotent bool `json:"idempotent"`
+	// NamespaceVars 是**任务被接受时**钉住的命名空间默认输入快照（D2）。
+	//
+	// 它是内部执行输入：不进任何公共 DTO（`json:"-"`），避免 ns env 值随任务列表/
+	// 详情泄漏；需要值的地方只通过 TaskInputs 按名字点名取。
+	NamespaceVars map[string]string `json:"-"`
+	// NamespaceVarsRevision 是上面那份快照对应的 namespaceVarsRevision（D2 的两个
+	// 配置版本之一）：诊断可以回显**版本号**，值本身不回显。
+	NamespaceVarsRevision int64 `json:"namespaceVarsRevision"`
 	// LeaseID / LeaseUntil 是执行授权；AttemptTokenHash 只存 sha256，明文只在 grant 时返回一次。
-	LeaseID          string `json:"leaseId"`
-	LeaseUntil       *int64 `json:"leaseUntil"`
+	LeaseID    string `json:"leaseId"`
+	LeaseUntil *int64 `json:"leaseUntil"`
+	// LeaseInstanceID 是这次 attempt 绑定的物理槽位（node_instances.id，内部事实）。
+	// 释放槽位必须按它精确释放：同一逻辑任务换 attempt 重试时可能同时占着旧 attempt
+	// 的槽（旧进程未回收），按 task_id 一把清会把别人的槽也放了。
+	LeaseInstanceID  string `json:"-"`
 	AttemptTokenHash string `json:"-"`
 	// WaitingReason 只有 pending 有意义；NextAttemptAt 是退避后的最早可派时刻（nil = 立刻）。
 	WaitingReason string `json:"waitingReason"`
@@ -168,9 +180,9 @@ type Task struct {
 const taskColumns = `id, namespace_id, trace_id, parent_task_id, capability_id, capability,
 	version, digest, params, phase, node_id, node_name, config_revision,
 	attempt, max_attempts, assignment_id, proposed_attempt, idempotent,
-	lease_id, lease_until, attempt_token_hash, waiting_reason, next_attempt_at,
+	lease_id, lease_until, lease_instance_id, attempt_token_hash, waiting_reason, next_attempt_at,
 	cancel_reason, cancel_requested_at, reported, summary, artifacts, error,
-	created_at, started_at, finished_at`
+	created_at, started_at, finished_at, namespace_vars, namespace_vars_revision`
 
 // scanTask 从一行结果解析 Task（三处 JSON 列在这里一次解完）。
 func scanTask(rows *sql.Rows) (*Task, error) {
@@ -178,6 +190,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		t          Task
 		params     string
 		artifacts  string
+		nsVars     string
 		idempotent int
 		reported   int
 	)
@@ -185,9 +198,9 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &t.CapabilityID, &t.Capability,
 		&t.Version, &t.Digest, &params, &t.Phase, &t.NodeID, &t.NodeName, &t.ConfigRevision,
 		&t.Attempt, &t.MaxAttempts, &t.AssignmentID, &t.ProposedAttempt, &idempotent,
-		&t.LeaseID, &t.LeaseUntil, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
+		&t.LeaseID, &t.LeaseUntil, &t.LeaseInstanceID, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
 		&t.CancelReason, &t.CancelRequestedAt, &reported, &t.Summary, &artifacts, &t.Error,
-		&t.CreatedAt, &t.StartedAt, &t.FinishedAt,
+		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &nsVars, &t.NamespaceVarsRevision,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
@@ -196,6 +209,15 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	t.Params = json.RawMessage(params)
 	if len(t.Params) == 0 {
 		t.Params = json.RawMessage("{}")
+	}
+	t.NamespaceVars = map[string]string{}
+	if trimmed := strings.TrimSpace(nsVars); trimmed != "" && trimmed != "null" {
+		if err := json.Unmarshal([]byte(trimmed), &t.NamespaceVars); err != nil {
+			return nil, fmt.Errorf("decode task namespace vars: %w", err)
+		}
+		if t.NamespaceVars == nil {
+			t.NamespaceVars = map[string]string{}
+		}
 	}
 	t.Artifacts = []string{}
 	if err := json.Unmarshal([]byte(artifacts), &t.Artifacts); err != nil {
@@ -237,6 +259,8 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 	if len(ts) == 0 {
 		return nil
 	}
+	// 同一次扇出里同 ns 的任务共一份快照（同一事务里读，不可能两样）。
+	nsCache := map[string]namespaceInputs{}
 	for i, t := range ts {
 		if t == nil {
 			return fmt.Errorf("create tasks: nil task at index %d", i)
@@ -274,6 +298,25 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		if err := CheckTaskParamsSize(t.ID, t.Params); err != nil {
 			return fmt.Errorf("create tasks: task %d: %w", i, err)
 		}
+		// D2：**接受即为任务输入钉版**。ns 默认值属于任务输入，不是层叠配置：
+		// 它必须留下可复现载体，否则排队期间改一次 ns 配置，已接受的任务就换了一
+		// 套输入（重试前/后不一致）。机器层（local > node）不在这里钉：它按
+		// attempt 的节点重新解析（TaskInputs）。
+		pin, ok := nsCache[t.NamespaceID]
+		if !ok {
+			loaded, perr := loadNamespaceInputsOn(ctx, txExec{tx: tx}, t.NamespaceID)
+			if perr != nil {
+				return fmt.Errorf("create tasks: task %d: %w", i, perr)
+			}
+			pin = loaded
+			nsCache[t.NamespaceID] = pin
+		}
+		t.NamespaceVars = pin.vars
+		t.NamespaceVarsRevision = pin.revision
+		nsVarsJSON, err := marshalStringMap(pin.vars)
+		if err != nil {
+			return fmt.Errorf("create tasks: task %d: %w", i, err)
+		}
 		if t.Artifacts == nil {
 			t.Artifacts = []string{}
 		}
@@ -284,16 +327,115 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO tasks
 			   (id, namespace_id, trace_id, parent_task_id, capability_id, capability,
-			    version, digest, params, phase, max_attempts, idempotent, created_at, artifacts)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			    version, digest, params, phase, max_attempts, idempotent, created_at, artifacts,
+			    namespace_vars, namespace_vars_revision)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.ID, t.NamespaceID, t.TraceID, t.ParentTaskID, t.CapabilityID, t.Capability,
 			t.Version, t.Digest, string(t.Params), t.Phase, t.MaxAttempts, boolToInt(t.Idempotent),
-			t.CreatedAt, string(artifactsJSON),
+			t.CreatedAt, string(artifactsJSON), nsVarsJSON, pin.revision,
 		); err != nil {
 			return fmt.Errorf("insert task %d (%s): %w", i, t.Capability, err)
 		}
 	}
 	return nil
+}
+
+// namespaceInputs 是任务接受时钉住的第三层输入（ns 默认值）。
+//
+// revision 就是 config.md 的 namespaceVarsRevision：它只说明「这组 ns 默认是哪一版」，
+// 与任务行上的 configRevision（机器 applied 版本）是两件事（C18：不能压成一个）。
+type namespaceInputs struct {
+	vars     map[string]string
+	revision int64
+}
+
+// loadNamespaceInputsOn 在同一事务/句柄上读某个 ns 的默认值与版本。
+// 没有配置行 = 空默认 + revision 0（与 GetNamespaceConfig 的「空默认」同口径）。
+func loadNamespaceInputsOn(ctx context.Context, ex queryExec, namespaceID string) (namespaceInputs, error) {
+	out := namespaceInputs{vars: map[string]string{}}
+	var raw string
+	err := ex.queryRowContext(ctx,
+		`SELECT vars, revision FROM namespace_configs WHERE namespace_id = ?`, namespaceID).
+		Scan(&raw, &out.revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, fmt.Errorf("read namespace inputs: %w", err)
+	}
+	vars, derr := decodeStringMap(raw)
+	if derr != nil {
+		return out, fmt.Errorf("read namespace inputs: %w", derr)
+	}
+	out.vars = vars
+	return out, nil
+}
+
+// TaskInputs 解析一条任务在一次执行里**实际可用**的输入值（名字 → 值 + 来源层）。
+//
+// 两层判据（D2）：
+//   - namespace 层只读任务接受时钉住的快照（NamespaceVars）与它的 revision：
+//     后续 namespace 配置更新不会改动已接受任务的输入，重试/换节点也一样；
+//   - local / node 是机器级值，按任务**当前节点**（本次 attempt 的 node_id）重新解析：
+//     换节点重试拿到那台机器自己的值，而不是上一台的。
+//
+// 只返回 names 点名的键（不把整份 ns 快照灌进 run.env、也不隐式给全部键）；
+// 三层都没有的名字不出现在结果里（缺失 = 该 env 键不出现，不是空串）。
+//
+// G2 应在 grant 时调一次，并把结果用于该 attempt（同一 attempt 期间不重算）。
+func (d *DB) TaskInputs(ctx context.Context, taskID string, names []string) (map[string]EffectiveVar, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("task inputs: empty task_id")
+	}
+	t, err := d.getTaskByID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return d.taskInputsOn(ctx, d, t, names)
+}
+
+// taskInputsOn 是 TaskInputs 的句柄版（内部/测试复用）。
+func (d *DB) taskInputsOn(ctx context.Context, ex queryExec, t *Task, names []string) (map[string]EffectiveVar, error) {
+	out := make(map[string]EffectiveVar, len(names))
+	if len(names) == 0 {
+		return out, nil
+	}
+	local, node := map[string]string{}, map[string]string{}
+	if t.NodeID != nil && *t.NodeID != "" {
+		var rawLocal, rawNode string
+		err := ex.queryRowContext(ctx,
+			`SELECT local_vars, vars FROM node_configs WHERE node_id = ?`, *t.NodeID).
+			Scan(&rawLocal, &rawNode)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("task inputs: read node config: %w", err)
+		}
+		if err == nil {
+			if local, err = decodeStringMap(rawLocal); err != nil {
+				return nil, fmt.Errorf("task inputs: node local vars: %w", err)
+			}
+			if node, err = decodeStringMap(rawNode); err != nil {
+				return nil, fmt.Errorf("task inputs: node vars: %w", err)
+			}
+		}
+	}
+	for _, raw := range names {
+		name, ok := varRefName(raw)
+		if !ok {
+			continue
+		}
+		if v, hit := local[name]; hit {
+			out[name] = EffectiveVar{Value: v, Source: VarSourceLocal}
+			continue
+		}
+		if v, hit := node[name]; hit {
+			out[name] = EffectiveVar{Value: v, Source: VarSourceNode}
+			continue
+		}
+		if v, hit := t.NamespaceVars[name]; hit {
+			out[name] = EffectiveVar{Value: v, Source: VarSourceNamespace}
+		}
+	}
+	return out, nil
 }
 
 // inheritParentNamespaceTx 实现 I11④：子任务的 namespace_id 必须与父任务一致。
@@ -444,7 +586,8 @@ func (d *DB) CountTasksByTrace(ctx context.Context, namespaceID, traceID string)
 
 // ListDispatchableTasks 取出「此刻可以派发」的 pending 任务（跨命名空间，调度器用）。
 //
-// 判据：phase=pending 且 (next_attempt_at IS NULL OR next_attempt_at <= now)。
+// 判据：phase=pending 且 (next_attempt_at IS NULL OR next_attempt_at <= now)，
+// 且**没有取消在飞**（cancel_requested_at IS NULL）：已请求取消的任务永不再进派发候选。
 // 退避中的与等待配置的任务不会被捞出来——它们的 next_attempt_at 在未来。
 func (d *DB) ListDispatchableTasks(ctx context.Context, now int64, limit int) ([]*Task, error) {
 	if limit <= 0 {
@@ -453,6 +596,7 @@ func (d *DB) ListDispatchableTasks(ctx context.Context, now int64, limit int) ([
 	rows, err := d.cachedQueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
 		  WHERE phase = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		    AND cancel_requested_at IS NULL
 		  ORDER BY created_at, id
 		  LIMIT ?`, TaskPending, now, limit)
 	if err != nil {
@@ -478,6 +622,12 @@ func (d *DB) ListDispatchableTasks(ctx context.Context, now int64, limit int) ([
 //
 // assignmentID 是这次候选的身份（中枢生成，随 task.assign 帧下发）；节点 grant 时
 // 必须带回同一个值，否则视为旧派发（ErrNoAssignment）。
+//
+// 两条硬条件写在**同一条 UPDATE** 里（不先读后写）：
+//   - cancel_requested_at IS NULL：已请求取消的任务永不再被选点；
+//   - 目标节点必须仍 online（EXISTS 子查询）：draining/offline 的节点不接新任务。
+//
+// 前面的节点状态读只用于给出准确错误，真正的判定在 UPDATE 的 WHERE 里（原子）。
 func (d *DB) AssignTask(ctx context.Context, taskID, nodeID, assignmentID string, proposedAttempt int) error {
 	if taskID == "" || nodeID == "" || assignmentID == "" {
 		return fmt.Errorf("assign task: taskID/nodeID/assignmentID required")
@@ -486,13 +636,26 @@ func (d *DB) AssignTask(ctx context.Context, taskID, nodeID, assignmentID string
 	if err != nil {
 		return fmt.Errorf("assign task %s: %w", taskID, err)
 	}
+	// 槽位已在此前抢过；节点不存在/非 online → 不该选它（EligibleNodes 的硬条件）。
+	var nodeStatus string
+	nerr := d.QueryRowContext(ctx, `SELECT status FROM nodes WHERE id = ?`, nodeID).Scan(&nodeStatus)
+	if errors.Is(nerr, sql.ErrNoRows) {
+		return fmt.Errorf("%w: node %s", ErrNotFound, nodeID)
+	}
+	if nerr != nil {
+		return fmt.Errorf("assign task %s: read node: %w", taskID, nerr)
+	}
+	if nodeStatus != NodeStatusOnline {
+		return fmt.Errorf("%w: node %s is %s（不再接新任务）", ErrInvalidTransition, nodeID, nodeStatus)
+	}
 	res, err := d.ExecContext(ctx,
 		`UPDATE tasks SET assignment_id = ?, node_id = ?, proposed_attempt = ?,
 		        idempotent = ?, max_attempts = ?
-		  WHERE id = ? AND phase = ?`,
+		  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL
+		    AND EXISTS (SELECT 1 FROM nodes WHERE id = ? AND status = ?)`,
 		assignmentID, nodeID, proposedAttempt,
 		boolToInt(spec.Idempotent), spec.EffectiveMaxAttempts(),
-		taskID, TaskPending)
+		taskID, TaskPending, nodeID, NodeStatusOnline)
 	if err != nil {
 		return fmt.Errorf("assign task %s: %w", taskID, err)
 	}
@@ -501,7 +664,7 @@ func (d *DB) AssignTask(ctx context.Context, taskID, nodeID, assignmentID string
 		return fmt.Errorf("assign task %s rows: %w", taskID, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("%w: task %s is not pending", ErrInvalidTransition, taskID)
+		return fmt.Errorf("%w: task %s is not dispatchable（pending 且未取消才可派）", ErrInvalidTransition, taskID)
 	}
 	return nil
 }
@@ -604,11 +767,13 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 		rowAttempt   int
 		maxAttempts  int
 		capabilityID string
+		cancelReq    sql.NullInt64
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, assignment_id, node_id, attempt, max_attempts, capability_id
+		`SELECT phase, assignment_id, node_id, attempt, max_attempts, capability_id,
+		        cancel_requested_at
 		   FROM tasks WHERE id = ?`, taskID).
-		Scan(&phase, &rowAssign, &rowNode, &rowAttempt, &maxAttempts, &capabilityID)
+		Scan(&phase, &rowAssign, &rowNode, &rowAttempt, &maxAttempts, &capabilityID, &cancelReq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", 0, 0, ErrNotFound
 	}
@@ -617,6 +782,10 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 	}
 	if phase != TaskPending {
 		return "", "", 0, 0, fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
+	}
+	if cancelReq.Valid {
+		// 取消已经发出：永不再授新执行权（即使它又变回了 pending）。
+		return "", "", 0, 0, fmt.Errorf("%w: task %s 已请求取消，不再授权", ErrInvalidTransition, taskID)
 	}
 	if assignmentID != "" && rowAssign != "" && rowAssign != assignmentID {
 		return "", "", 0, 0, fmt.Errorf("%w: task %s assignment %s != %s",
@@ -637,8 +806,23 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 	if nextAttempt > maxAttempts {
 		// 预算用尽：不再授租约，直接终态。错误码是调度层的 max_attempts_exceeded，
 		// 所以相位取 abandoned（不是能力自己的失败）。
-		if err := d.finishTx(ctx, tx, taskID, TaskAbandoned, "", nil, now); err != nil {
-			return "", "", 0, 0, err
+		//
+		// 已经抢到的槽位必须在**同一事务里**还回去：这条路径不产生 running 行，
+		// 没人会再为它走 CompleteTask/AckCancel，漏在这里就是一个永久 busy_task。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE node_instances SET busy_task = NULL, updated_at = ?
+			  WHERE node_id = ? AND id = ? AND busy_task = ?`,
+			now, nodeID, instanceID, taskID); err != nil {
+			return "", "", 0, 0, fmt.Errorf("grant lease %s: release slot: %w", taskID, err)
+		}
+		if ok, ferr := d.finishTxGuarded(ctx, tx, taskID, TaskPending, TaskAbandoned, "", nil, now); ferr != nil {
+			return "", "", 0, 0, ferr
+		} else if !ok {
+			return "", "", 0, 0, fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET error = ? WHERE id = ?`, protocol.ReasonMaxAttemptsExceeded, taskID); err != nil {
+			return "", "", 0, 0, fmt.Errorf("grant lease %s: write reason: %w", taskID, err)
 		}
 		if err := tx.Commit(); err != nil {
 			return "", "", 0, 0, fmt.Errorf("grant lease %s: commit terminal: %w", taskID, err)
@@ -648,10 +832,21 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 			ErrMaxAttemptsExceeded, taskID, rowAttempt, maxAttempts)
 	}
 
-	var nodeName string
-	if qerr := tx.QueryRowContext(ctx, `SELECT name FROM nodes WHERE id = ?`, nodeID).Scan(&nodeName); qerr != nil &&
-		!errors.Is(qerr, sql.ErrNoRows) {
+	var (
+		nodeName string
+		nodeStat string
+	)
+	if qerr := tx.QueryRowContext(ctx, `SELECT name, status FROM nodes WHERE id = ?`, nodeID).
+		Scan(&nodeName, &nodeStat); qerr != nil {
+		if errors.Is(qerr, sql.ErrNoRows) {
+			return "", "", 0, 0, fmt.Errorf("%w: node %s", ErrNotFound, nodeID)
+		}
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: read node: %w", taskID, qerr)
+	}
+	if nodeStat != NodeStatusOnline {
+		// draining/offline 的节点不接新租约（drain 只停新派发，在跑的续租不受影响）。
+		return "", "", 0, 0, fmt.Errorf("%w: node %s is %s（不再接新任务）",
+			ErrInvalidTransition, nodeID, nodeStat)
 	}
 	// config_revision 是「这次执行是在哪一版机器配置下开始的」——诊断用，缺行按 0。
 	var configRevision int64
@@ -665,12 +860,12 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 		`UPDATE tasks
 		    SET phase = ?, attempt = ?, assignment_id = '', proposed_attempt = 0,
 		        idempotent = ?, max_attempts = ?, node_id = ?, node_name = ?, config_revision = ?,
-		        lease_id = ?, lease_until = ?, attempt_token_hash = ?,
+		        lease_id = ?, lease_until = ?, lease_instance_id = ?, attempt_token_hash = ?,
 		        waiting_reason = '', next_attempt_at = NULL,
 		        started_at = COALESCE(started_at, ?)
-		  WHERE id = ? AND phase = ?`,
+		  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
 		TaskRunning, nextAttempt, boolToInt(lc.Idempotent), maxAttempts, nodeID, nodeName, configRevision,
-		leaseID, expiresAt, tokenHash, now, taskID, TaskPending)
+		leaseID, expiresAt, instanceID, tokenHash, now, taskID, TaskPending)
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: write: %w", taskID, err)
 	}
@@ -679,7 +874,7 @@ func (d *DB) GrantLease(ctx context.Context, taskID, assignmentID, nodeID string
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE node_instances SET busy_task = ?, updated_at = ?
-		  WHERE node_id = ? AND id = ?`, taskID, now, nodeID, instanceID); err != nil {
+		  WHERE node_id = ? AND id = ? AND busy_task = ?`, taskID, now, nodeID, instanceID, taskID); err != nil {
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: bind slot: %w", taskID, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -783,7 +978,7 @@ type TaskResult struct {
 	Error     string
 }
 
-// CompleteTask 写入一次执行结果（中枢权威校验 attempt + lease_id）。
+// CompleteTask 写入一次执行结果（中枢权威校验 attempt + lease_id + 未过期）。
 //
 // **取消在飞时一律拒**（ErrTaskNotRunning）：那条执行的结局由 cancel.ack 裁定，
 // 谁能改写终态必须只有一个答案。授权已经在 RequestCancel 那一刻收回
@@ -792,11 +987,23 @@ type TaskResult struct {
 // 正常结束（没有取消在飞）→ 落终态并释放槽位：result 帧本身就意味着进程已退出。
 // 槽位在「取消等 reap」这条路上只由 AckCancel(reaped=true) 释放（契约 D-I8）。
 func (d *DB) CompleteTask(ctx context.Context, taskID string, attempt int, leaseID string, result TaskResult) error {
+	return d.CompleteTaskAt(ctx, taskID, attempt, leaseID, Now(), result)
+}
+
+// CompleteTaskAt 是 CompleteTask 的显式时钟版（G2 可用帧/连接时刻传入；测试可注入）。
+//
+// 五条授权事实全部在同**一**个事务里校验（BEGIN IMMEDIATE 下读—写是原子的）：
+// 当前 attempt、当前 lease_id、phase=running、未取消、**租约未过期**。
+// 过期租约的 result 必须拒：那一代执行已经失去授权（巡检随时会重派），
+// 接受它会与下一次尝试争着写同一行终态。
+func (d *DB) CompleteTaskAt(ctx context.Context, taskID string, attempt int, leaseID string, now int64, result TaskResult) error {
 	if !IsTerminalPhase(result.Phase) || result.Phase == TaskCancelled {
 		return fmt.Errorf("%w: result phase must be succeeded|failed|abandoned, got %q",
 			ErrInvalidTransition, result.Phase)
 	}
-	now := Now()
+	if now == 0 {
+		now = Now()
+	}
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -811,11 +1018,14 @@ func (d *DB) CompleteTask(ctx context.Context, taskID string, attempt int, lease
 		nodeID          sql.NullString
 		cancelReq       sql.NullInt64
 		rowCancelReason sql.NullString
+		leaseUntil      sql.NullInt64
+		instanceID      string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, attempt, lease_id, node_id, cancel_requested_at, cancel_reason
+		`SELECT phase, attempt, lease_id, node_id, cancel_requested_at, cancel_reason, lease_until,
+		        lease_instance_id
 		   FROM tasks WHERE id = ?`, taskID).
-		Scan(&phase, &rowAttempt, &rowLease, &nodeID, &cancelReq, &rowCancelReason)
+		Scan(&phase, &rowAttempt, &rowLease, &nodeID, &cancelReq, &rowCancelReason, &leaseUntil, &instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -836,21 +1046,24 @@ func (d *DB) CompleteTask(ctx context.Context, taskID string, attempt int, lease
 		return fmt.Errorf("%w: task %s 已请求取消（%s），结果由 cancel.ack 裁定",
 			ErrTaskNotRunning, taskID, rowCancelReason.String)
 	}
+	if !leaseUntil.Valid || leaseUntil.Int64 <= now {
+		return fmt.Errorf("%w: task %s 的租约已过期（结果不再被接受）", ErrLeaseMismatch, taskID)
+	}
 
-	if err := d.finishTx(ctx, tx, taskID, result.Phase, result.Summary, result.Artifacts, now); err != nil {
+	ok, err := d.finishTxGuarded(ctx, tx, taskID, TaskRunning, result.Phase, result.Summary, result.Artifacts, now)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET reported = 1, error = ? WHERE id = ?`, normalizeTaskError(result), taskID); err != nil {
 		return fmt.Errorf("complete task %s: write result: %w", taskID, err)
 	}
 
-	if nodeID.Valid && nodeID.String != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-			  WHERE node_id = ? AND busy_task = ?`, now, nodeID.String, taskID); err != nil {
-			return fmt.Errorf("complete task %s: release slot: %w", taskID, err)
-		}
+	if err := releaseLeaseSlotTx(ctx, tx, nodeID.String, instanceID, taskID, now); err != nil {
+		return fmt.Errorf("complete task %s: %w", taskID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("complete task %s: commit: %w", taskID, err)
@@ -873,13 +1086,20 @@ func normalizeTaskError(result TaskResult) string {
 	return msg
 }
 
-// RequestCancel 记录一次取消意图。
+// RequestCancel 记录一次取消意图（取消与 grant 的**唯一线性化点**）。
 //
 //   - pending：没有执行者，直接终态（cancelled / abandoned），不需要等 ack；
 //   - running：只落 cancel_reason + cancel_requested_at，等节点 cancel.ack 带回
 //     processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
 //
-// 已终态时返回 ErrInvalidTransition（调用方翻 409）。
+// 读与写必须在**同一个事务**里（DSN `_txlock=immediate`，写锁在事务起点拿下）：
+// 先读后写的两步之间如果被 grant 插进来，就会把一条**正在跑**的任务无条件改成已取消，
+// 而节点上的进程还在用着那个槽位。现在两种赢法都是对的：
+//   - 取消先赢（pending → 终态）：随后的 grant 看到终态/取消标记，直接拒；
+//   - grant 先赢（pending → running）：取消走 running 分支，只记意图，等 reap。
+//
+// 重复取消是幂等的（返回 nil，保留第一次的原因）：网关重试/两个管理员同时点
+// 不该变成 409。已终态 → ErrInvalidTransition（调用方翻 409）。
 func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64) error {
 	if reason == "" {
 		reason = protocol.ReasonCancelledByUser
@@ -887,40 +1107,68 @@ func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64
 	if now == 0 {
 		now = Now()
 	}
-	var phase string
-	err := d.QueryRowContext(ctx, `SELECT phase FROM tasks WHERE id = ?`, taskID).Scan(&phase)
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("request cancel %s: begin: %w", taskID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		phase     string
+		cancelReq sql.NullInt64
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT phase, cancel_requested_at FROM tasks WHERE id = ?`, taskID).
+		Scan(&phase, &cancelReq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("request cancel %s: %w", taskID, err)
+		return fmt.Errorf("request cancel %s: read: %w", taskID, err)
 	}
 	if IsTerminalPhase(phase) {
 		return fmt.Errorf("%w: task %s already %s", ErrInvalidTransition, taskID, phase)
 	}
-	if phase == TaskPending {
-		tx, err := d.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("request cancel %s: begin: %w", taskID, err)
+
+	switch phase {
+	case TaskPending:
+		// 条件 UPDATE：取消与 grant 的竞争在这里分出胜负（不先读后写）。
+		res, uerr := tx.ExecContext(ctx,
+			`UPDATE tasks SET phase = ?, finished_at = ?, summary = '', artifacts = '[]',
+			        lease_until = NULL, lease_id = '', waiting_reason = '', next_attempt_at = NULL,
+			        assignment_id = '', proposed_attempt = 0,
+			        cancel_reason = ?, cancel_requested_at = ?, error = ?
+			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
+			cancelPhase(reason), now, reason, now, reason, taskID, TaskPending)
+		if uerr != nil {
+			return fmt.Errorf("request cancel %s: write: %w", taskID, uerr)
 		}
-		defer func() { _ = tx.Rollback() }()
-		if err := d.finishTx(ctx, tx, taskID, cancelPhase(reason), "", nil, now); err != nil {
-			return err
+		if n, rerr := res.RowsAffected(); rerr != nil {
+			return fmt.Errorf("request cancel %s: rows: %w", taskID, rerr)
+		} else if n == 0 {
+			return fmt.Errorf("%w: task %s 已不在可取消状态", ErrInvalidTransition, taskID)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET cancel_reason = ?, cancel_requested_at = ?, error = ?
-			  WHERE id = ?`, reason, now, reason, taskID); err != nil {
-			return fmt.Errorf("request cancel %s: write: %w", taskID, err)
+	case TaskRunning:
+		if cancelReq.Valid {
+			return nil // 幂等：第一次的意图与原因不被覆盖
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("request cancel %s: commit: %w", taskID, err)
+		res, uerr := tx.ExecContext(ctx,
+			`UPDATE tasks SET cancel_reason = ?, cancel_requested_at = ?
+			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
+			reason, now, taskID, TaskRunning)
+		if uerr != nil {
+			return fmt.Errorf("request cancel %s: write: %w", taskID, uerr)
 		}
-		return nil
+		if n, rerr := res.RowsAffected(); rerr != nil {
+			return fmt.Errorf("request cancel %s: rows: %w", taskID, rerr)
+		} else if n == 0 {
+			return fmt.Errorf("%w: task %s 已不在可取消状态", ErrInvalidTransition, taskID)
+		}
+	default:
+		return fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
 	}
-	if _, err := d.ExecContext(ctx,
-		`UPDATE tasks SET cancel_reason = ?, cancel_requested_at = ? WHERE id = ?`,
-		reason, now, taskID); err != nil {
-		return fmt.Errorf("request cancel %s: %w", taskID, err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("request cancel %s: commit: %w", taskID, err)
 	}
 	return nil
 }
@@ -938,6 +1186,14 @@ func cancelPhase(reason string) string {
 // **只有 processGroupReaped=true 才置终态、才释放槽位**：reaped=false 表示节点收到了
 // 取消但进程组还没死透，此时把任务标成终态会让同一槽位跑两条任务。
 // attempt 必须等于库里的当前 attempt（旧 attempt 的 ack 属于上一代执行，拒掉）。
+//
+// 已终态的取消仍可被一次 reaped=true 的 ack **幂等地补上槽位回收**：租约巡检可能
+// 已经把一条已取消的任务先收成终局（它不释放槽位），节点随后才带着「进程组已回收」
+// 的事实回来——那个事实才是释放物理槽位的依据，不能让它的 acks 白跑。
+//
+// 槽位只按**这个 attempt 绑定的那个实例**释放（tasks.lease_instance_id）：同一逻辑
+// 任务换 attempt 重试时可能同时占着旧 attempt 的槽（旧进程还没回收），按 task_id
+// 一把清会把上一个 attempt 的槽放给下一个任务。attempt 对不上的 ack 一律不释放任何槽。
 func (d *DB) AckCancel(ctx context.Context, taskID string, attempt int, processGroupReaped bool, now int64) error {
 	if now == 0 {
 		now = Now()
@@ -953,21 +1209,53 @@ func (d *DB) AckCancel(ctx context.Context, taskID string, attempt int, processG
 		rowAttempt   int
 		nodeID       sql.NullString
 		cancelReason sql.NullString
+		cancelReq    sql.NullInt64
+		instanceID   string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, attempt, node_id, cancel_reason FROM tasks WHERE id = ?`, taskID).
-		Scan(&phase, &rowAttempt, &nodeID, &cancelReason)
+		`SELECT phase, attempt, node_id, cancel_reason, cancel_requested_at, lease_instance_id
+		   FROM tasks WHERE id = ?`, taskID).
+		Scan(&phase, &rowAttempt, &nodeID, &cancelReason, &cancelReq, &instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("ack cancel %s: read: %w", taskID, err)
 	}
-	if phase != TaskRunning {
-		return fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
-	}
+	// **先核 attempt**：旧 attempt 的 reap 不能碰新 attempt 的槽（即使 busy_task 同名）。
 	if rowAttempt != attempt {
 		return fmt.Errorf("%w: task %s attempt %d != %d", ErrLeaseMismatch, taskID, rowAttempt, attempt)
+	}
+	if IsTerminalPhase(phase) {
+		if !cancelReq.Valid {
+			// 不是取消造成终态（succeeded/failed 后的迟到 ack）：不接。
+			return fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
+		}
+		if processGroupReaped {
+			if err := releaseLeaseSlotTx(ctx, tx, nodeID.String, instanceID, taskID, now); err != nil {
+				return fmt.Errorf("ack cancel %s: %w", taskID, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ack cancel %s: commit: %w", taskID, err)
+		}
+		return nil
+	}
+	if phase == TaskPending {
+		// 任务已被租约巡检重排（旧 attempt 作废），旧 attempt 自己的进程组回收事实
+		// 仍然有效：它只释放**那个 attempt 绑定的槽**，不改相位、不动新 attempt。
+		if processGroupReaped {
+			if err := releaseLeaseSlotTx(ctx, tx, nodeID.String, instanceID, taskID, now); err != nil {
+				return fmt.Errorf("ack cancel %s: %w", taskID, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ack cancel %s: commit: %w", taskID, err)
+		}
+		return nil
+	}
+	if phase != TaskRunning {
+		return fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
 	}
 	if !processGroupReaped {
 		// 收到了，但还没回收完：不改相位、不释放槽位，**也不清租约**。
@@ -982,19 +1270,19 @@ func (d *DB) AckCancel(ctx context.Context, taskID string, attempt int, processG
 	if reason == "" {
 		reason = protocol.ReasonAbandonedByUser
 	}
-	if err := d.finishTx(ctx, tx, taskID, cancelPhase(reason), "", nil, now); err != nil {
+	ok, err := d.finishTxGuarded(ctx, tx, taskID, TaskRunning, cancelPhase(reason), "", nil, now)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: task %s changed phase concurrently", ErrInvalidTransition, taskID)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET error = ? WHERE id = ?`, reason, taskID); err != nil {
 		return fmt.Errorf("ack cancel %s: write reason: %w", taskID, err)
 	}
-	if nodeID.Valid && nodeID.String != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-			  WHERE node_id = ? AND busy_task = ?`, now, nodeID.String, taskID); err != nil {
-			return fmt.Errorf("ack cancel %s: release slot: %w", taskID, err)
-		}
+	if err := releaseLeaseSlotTx(ctx, tx, nodeID.String, instanceID, taskID, now); err != nil {
+		return fmt.Errorf("ack cancel %s: %w", taskID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("ack cancel %s: commit: %w", taskID, err)
@@ -1002,27 +1290,36 @@ func (d *DB) AckCancel(ctx context.Context, taskID string, attempt int, processG
 	return nil
 }
 
-// RecoverLostLeases 回收过期租约（调度巡检的唯一入口）。
+// RecoverLostLeases 回收**真正失联**的 running 任务（调度巡检的唯一入口）。
 //
-// 两类候选人：租约到点的 running 任务，以及**所在节点已不 online** 的 running 任务。
-// 决策只有两条，判据来自任务行上钉住的 idempotent（不回读能力，避免「能力改过一次就换了语义」）：
+// 两类候选人：租约到点的 running 任务，以及**所在节点已 offline** 的 running 任务。
+// `draining` **不是**失联：drain 的语义是「不再接新任务、把存量跑完」，在跑的
+// 任务照常续租/回报结果（只有 offline 才是「这台机器不在了」）。
 //
+// 决策分三条，判据来自任务行上钉住的 idempotent（不回读能力，避免「能力改过一次就换了语义」）：
+//
+//	已请求取消                    → 终局（cancelPhase(原因)），**绝不 retry**
 //	幂等 且 attempt < maxAttempts → 回 pending + retry_backoff + 退避（会重跑）
 //	否则                          → abandoned（infra 原因，绝不重跑非幂等能力）
 //
-// 两条都释放槽位：槽位是「节点上正在跑」的证据，租约都过期了它就不再成立。
-// 返回 (重排条数, 放弃条数)。
+// **物理槽位不在常规路径释放**：只有节点已 offline/不存在（会话死亡事实）时才清
+// busy_task；仍 online 的节点上的旧进程可能还在跑，槽位由节点后续事实释放
+// （AckCancel 的 reaped=true，或节点重新上报时 ReclaimStaleSlots）。
+// 取消终局一律不释放槽位：reaped 未 ACK 前那个槽位必须保持占用。
+//
+// 返回 (重排条数, 直接终态条数)。
 func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error) {
 	if now == 0 {
 		now = Now()
 	}
+	// 只把 offline（或节点行已不在）当失联：draining 仍算「在跑」。
 	rows, err := d.QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
 		  WHERE phase = ? AND (
 		        (lease_until IS NOT NULL AND lease_until <= ?)
-		     OR (node_id IS NOT NULL AND node_id <> '' AND node_id NOT IN
-		            (SELECT id FROM nodes WHERE status = ?)))`,
-		TaskRunning, now, NodeStatusOnline)
+		     OR (node_id IS NOT NULL AND node_id <> '' AND NOT EXISTS (
+		            SELECT 1 FROM nodes n WHERE n.id = tasks.node_id AND n.status IN (?,?))))`,
+		TaskRunning, now, NodeStatusOnline, NodeStatusDraining)
 	if err != nil {
 		return 0, 0, fmt.Errorf("recover lost leases: %w", err)
 	}
@@ -1060,6 +1357,8 @@ func (d *DB) RecoverLostLeases(ctx context.Context, now int64) (int, int, error)
 //
 // CAS 双守卫 `phase='running' AND attempt=?`：判断与写入之间任务可能刚被续租/
 // 被取消/被重派，那种情况下这一行一行都不该动。
+//
+// 槽位释放只由**会话死亡事实**（节点 offline / 节点行已不在）触发；取消终局一律不清。
 func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool, err error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -1067,9 +1366,16 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var phase string
-	var attempt int
-	err = tx.QueryRowContext(ctx, `SELECT phase, attempt FROM tasks WHERE id = ?`, t.ID).Scan(&phase, &attempt)
+	var (
+		phase        string
+		attempt      int
+		cancelReq    sql.NullInt64
+		cancelReason sql.NullString
+		instanceID   string
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT phase, attempt, cancel_requested_at, cancel_reason, lease_instance_id FROM tasks WHERE id = ?`, t.ID).
+		Scan(&phase, &attempt, &cancelReq, &cancelReason, &instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1080,48 +1386,98 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 		return false, nil // 并发下已经被别人处理过
 	}
 
-	if t.Idempotent && t.Attempt < t.MaxAttempts {
-		if _, err := tx.ExecContext(ctx,
+	// 「真失联」= 节点行不在了或已 offline；draining / online 都不算。
+	nodeLost := true
+	if t.NodeID != nil && *t.NodeID != "" {
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM nodes WHERE id = ?`, *t.NodeID).Scan(&status)
+		switch {
+		case err == nil:
+			nodeLost = status == NodeStatusOffline
+		case errors.Is(err, sql.ErrNoRows):
+			nodeLost = true
+		default:
+			return false, fmt.Errorf("recover lease %s: read node: %w", t.ID, err)
+		}
+	}
+
+	switch {
+	case cancelReq.Valid:
+		// 已请求取消：授权回收 = 直接终局，**绝不重排/重试**。
+		// 原因码保留用户的取消原因（不是 lease_expired）：用户看到的是「我取消了」。
+		reason := cancelReason.String
+		if reason == "" {
+			reason = protocol.ReasonAbandonedByUser
+		}
+		ok, ferr := d.finishTxGuarded(ctx, tx, t.ID, TaskRunning, cancelPhase(reason), "", nil, now)
+		if ferr != nil {
+			return false, ferr
+		}
+		if !ok {
+			return false, nil
+		}
+		if _, werr := tx.ExecContext(ctx,
+			`UPDATE tasks SET error = ? WHERE id = ?`, reason, t.ID); werr != nil {
+			return false, fmt.Errorf("recover lease %s: write reason: %w", t.ID, werr)
+		}
+		// 槽位不在这里释放（落到下面统一的 nodeLost 分支）：
+		// 节点仍 online 时进程组 reap 还没被确认，物理槽必须保持占用；
+		// 节点真 offline（会话死亡事实）才允许回收。
+	case t.Idempotent && t.Attempt < t.MaxAttempts:
+		if _, uerr := tx.ExecContext(ctx,
 			`UPDATE tasks SET phase = ?, waiting_reason = ?, next_attempt_at = ?,
 			        node_id = NULL, node_name = '', lease_id = '', lease_until = NULL,
 			        attempt_token_hash = '', assignment_id = '', proposed_attempt = 0
-			  WHERE id = ? AND phase = ? AND attempt = ?`,
+			  WHERE id = ? AND phase = ? AND attempt = ? AND cancel_requested_at IS NULL`,
 			TaskPending, WaitingRetryBackoff, now+RetryBackoff(t.Attempt),
-			t.ID, TaskRunning, t.Attempt); err != nil {
-			return false, fmt.Errorf("recover lease %s: requeue: %w", t.ID, err)
+			t.ID, TaskRunning, t.Attempt); uerr != nil {
+			return false, fmt.Errorf("recover lease %s: requeue: %w", t.ID, uerr)
 		}
 		requeued = true
-	} else {
+	default:
 		reason := protocol.ReasonLeaseExpired
 		if t.Idempotent && t.Attempt >= t.MaxAttempts {
 			reason = protocol.ReasonMaxAttemptsExceeded
 		}
-		if err := d.finishTx(ctx, tx, t.ID, TaskAbandoned, "", nil, now); err != nil {
-			return false, err
+		ok, ferr := d.finishTxGuarded(ctx, tx, t.ID, TaskRunning, TaskAbandoned, "", nil, now)
+		if ferr != nil {
+			return false, ferr
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET error = ? WHERE id = ?`, reason, t.ID); err != nil {
-			return false, fmt.Errorf("recover lease %s: write reason: %w", t.ID, err)
+		if !ok {
+			return false, nil
 		}
-	}
-	if t.NodeID != nil && *t.NodeID != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-			  WHERE node_id = ? AND busy_task = ?`, now, *t.NodeID, t.ID); err != nil {
-			return false, fmt.Errorf("recover lease %s: release slot: %w", t.ID, err)
+		if _, uerr := tx.ExecContext(ctx,
+			`UPDATE tasks SET error = ? WHERE id = ?`, reason, t.ID); uerr != nil {
+			return false, fmt.Errorf("recover lease %s: write reason: %w", t.ID, uerr)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("recover lease %s: commit: %w", t.ID, err)
+	if nodeLost {
+		// 会话死亡事实（节点 offline/行已不在）才允许回收物理槽位；按这次 attempt
+		// 绑定的实例精确释放（不碰同名 task 的另一个 attempt 的槽）。
+		var nodeID string
+		if t.NodeID != nil {
+			nodeID = *t.NodeID
+		}
+		if uerr := releaseLeaseSlotTx(ctx, tx, nodeID, instanceID, t.ID, now); uerr != nil {
+			return false, fmt.Errorf("recover lease %s: %w", t.ID, uerr)
+		}
+	}
+	if cerr := tx.Commit(); cerr != nil {
+		return false, fmt.Errorf("recover lease %s: commit: %w", t.ID, cerr)
 	}
 	return requeued, nil
 }
 
 // VerifyAttemptToken 用明文令牌换任务（emit / task.result 的权威校验）。
 //
-// 判据三条，缺一不可：库里 sha256 与传入一致、相位是 running、**没有取消在飞**。
-// 旧 attempt 的令牌必然对不上：每次 grant 都会换一个随机令牌并覆盖哈希，
-// 于是「上一代执行的进程在重派后继续 emit」会被稳定拒掉。
+// 判据四条，缺一不可：库里 sha256 与传入一致、相位是 running、**没有取消在飞**、
+// **租约尚未过期**。旧 attempt 的令牌必然对不上：每次 grant 都会换一个随机令牌并
+// 覆盖哈希，于是「上一代执行的进程在重派后继续 emit」会被稳定拒掉。
+//
+// 过期租约返回 ErrLeaseMismatch（与 emit 接受事务里的同一条判据同口径）：
+// 这个函数被声明为 task.result 的权威校验，不能声称「令牌对就算授权」却漏掉到期。
+// 真正不可绕过的版本仍是 EmitAuthorized / CompleteTaskAt：它们在同一个事务里
+// 重做全部判定，本函数只是快速失败与诊断。
 //
 // 取消一发起就**立刻收回令牌**（返回 ErrTaskNotRunning → 网关 409 task_not_running）：
 // 被要求停下的执行体不该还能 emit 出新任务、也不该还能写终态——它的结局由
@@ -1148,6 +1504,9 @@ func (d *DB) VerifyAttemptToken(ctx context.Context, taskID, token string) (*Tas
 		return nil, fmt.Errorf("%w: task %s 已请求取消（%s），执行授权已收回",
 			ErrTaskNotRunning, taskID, t.CancelReason)
 	}
+	if t.LeaseUntil == nil || *t.LeaseUntil <= Now() {
+		return nil, fmt.Errorf("%w: task %s 的租约已过期", ErrLeaseMismatch, taskID)
+	}
 	return t, nil
 }
 
@@ -1162,32 +1521,70 @@ func hashAttemptToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// finishTx 是「进入终态」的唯一 SQL 点：相位 + finished_at + summary/artifacts，
-// 并清掉执行授权事实（终态行不该再持有租约证据）。
+// releaseLeaseSlotTx 按「node + 这次 attempt 绑定的槽位」精确释放物理槽位。
+//
+// 为什么不能按 task_id 释放：同一逻辑任务换 attempt 重试时会同时占着旧 attempt 的槽
+// （旧进程还没回收），按 task_id 一把清会把旧进程还在用的槽位放给下一个任务
+// ——同一槽位跑两条任务，比泄漏严重得多。instanceID 为空 = 这次 attempt 没绑过槽
+// （例如授权失败回滚），什么都不做。
+func releaseLeaseSlotTx(ctx context.Context, tx *sql.Tx, nodeID, instanceID, taskID string, now int64) error {
+	if instanceID == "" {
+		return nil // 这次 attempt 没绑过槽（授权失败回滚 / 空行）
+	}
+	// 实例 id 是全局主键，nodeID 只是额外的防御性谓词：重排会把 task.node_id 清空，
+	// 旧 attempt 的确认 reap 仍要能按实例释放它自己那个槽。
+	q := `UPDATE node_instances SET busy_task = NULL, updated_at = ?
+	       WHERE id = ? AND busy_task = ?`
+	args := []any{now, instanceID, taskID}
+	if nodeID != "" {
+		q += ` AND node_id = ?`
+		args = append(args, nodeID)
+	}
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("release lease slot %s/%s: %w", nodeID, instanceID, err)
+	}
+	return nil
+}
+
+// finishTxGuarded 是「进入终态」的唯一 SQL 点：相位 + finished_at + summary/artifacts，
+// 清掉执行授权事实（终态行不该再持有租约证据），并以 fromPhase 为 CAS 守卫
+// （fromPhase 空 = 不守）。
 //
 // 传 tx 而不是直接用连接池：所有调用点都已经在事务里，走池既看不到本事务的写，
 // 又平白多占一条连接（SQLite 单写，会直接把自己锁死）。
-func (d *DB) finishTx(ctx context.Context, tx *sql.Tx, taskID, phase, summary string,
-	artifacts []string, now int64) error {
+//
+// 返回 false 表示该行已不在 fromPhase（并发下被别人推进过），调用方必须放弃本次写。
+func (d *DB) finishTxGuarded(ctx context.Context, tx *sql.Tx, taskID, fromPhase, phase, summary string,
+	artifacts []string, now int64) (bool, error) {
 	if !IsTerminalPhase(phase) {
-		return fmt.Errorf("%w: finish requires terminal phase, got %q", ErrInvalidTransition, phase)
+		return false, fmt.Errorf("%w: finish requires terminal phase, got %q", ErrInvalidTransition, phase)
 	}
 	if artifacts == nil {
 		artifacts = []string{}
 	}
 	artifactsJSON, err := json.Marshal(artifacts)
 	if err != nil {
-		return fmt.Errorf("finish task %s: marshal artifacts: %w", taskID, err)
+		return false, fmt.Errorf("finish task %s: marshal artifacts: %w", taskID, err)
 	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET phase = ?, finished_at = ?, summary = ?, artifacts = ?,
+	q := `UPDATE tasks SET phase = ?, finished_at = ?, summary = ?, artifacts = ?,
 		        lease_until = NULL, lease_id = '', waiting_reason = '', next_attempt_at = NULL
-		  WHERE id = ?`, phase, now, summary, string(artifactsJSON), taskID); err != nil {
-		return fmt.Errorf("finish task %s: %w", taskID, err)
+		  WHERE id = ?`
+	args := []any{phase, now, summary, string(artifactsJSON), taskID}
+	if fromPhase != "" {
+		q += ` AND phase = ?`
+		args = append(args, fromPhase)
+	}
+	res, err := tx.ExecContext(ctx, q, args...)
+	if err != nil {
+		return false, fmt.Errorf("finish task %s: %w", taskID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("finish task %s: rows: %w", taskID, err)
 	}
 	// reason 的落点是 error 列（由调用方按语义写）：相位已经表达了终态类别，
 	// 具体原因（script_failed / cancelled_by_user / …）必须留在 error 里才可判别。
-	return nil
+	return n > 0, nil
 }
 
 // getTaskByID 是不带命名空间的读（内部路径用：taskID 全局唯一）。

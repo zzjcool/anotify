@@ -800,6 +800,11 @@ func (d *DB) ReleaseSlot(ctx context.Context, nodeID, instanceID string) error {
 }
 
 // ReleaseSlotByTask 按任务 ID 释放它占用的槽位（不知道 instance_id 时用）。
+//
+// **只给「确实知道这台机器上没有这个任务的进程了」的场景**（例如节点自报丢失全部
+// 状态后的强制清槽）。同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽，
+// 按 task_id 一把清会把旧进程还在用的槽放给下一个任务——正常结束/取消/租约回收
+// 必须走按实例精确释放的路径（tasks.lease_instance_id）。
 func (d *DB) ReleaseSlotByTask(ctx context.Context, nodeID, taskID string) error {
 	if _, err := d.ExecContext(ctx,
 		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
@@ -906,18 +911,10 @@ func (d *DB) EligibleNodes(ctx context.Context, namespaceID string, spec artifac
 		return nil, nil, fmt.Errorf("eligible nodes: empty digest")
 	}
 
-	// 只读路径**不**开事务：DSN 是 `_txlock=immediate`，读事务会先拿写锁，
-	// 把并发派发串行化。这里每条查询各自读最新快照——最坏情况只是某个 reason
-	// 用到了另一秒的配置，不会伪造出「可派发」（保守方向的偏差）。
-
 	// ① ns 名（授权/申报列表存的是 ns 名，不是内部 id）。
-	var namespaceName string
-	err := d.QueryRowContext(ctx, `SELECT slug FROM namespaces WHERE id = ?`, namespaceID).Scan(&namespaceName)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, ErrNamespaceNotFound
-	}
+	namespaceName, err := d.namespaceSlug(ctx, namespaceID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("eligible nodes: read namespace: %w", err)
+		return nil, nil, fmt.Errorf("eligible nodes: %w", err)
 	}
 
 	// ② 能力身份（name@version）由 digest 反查：digest 是部署身份，每 ns 唯一。
@@ -933,19 +930,105 @@ func (d *DB) EligibleNodes(ctx context.Context, namespaceID string, spec artifac
 		return nil, nil, fmt.Errorf("eligible nodes: read capability: %w", err)
 	}
 
-	// ③ 任务 ns 的默认值（第三层）。
-	nsVars := map[string]string{}
-	var rawNSVars string
-	qerr := d.QueryRowContext(ctx,
-		`SELECT vars FROM namespace_configs WHERE namespace_id = ?`, namespaceID).Scan(&rawNSVars)
-	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
-		return nil, nil, fmt.Errorf("eligible nodes: read namespace config: %w", qerr)
+	// ③ 任务 ns 的默认值（第三层）：配置诊断/普通派发用**当前**值；
+	// 已经接受的任务按钉住的快照走 EligibleNodesForTask。
+	nsVars, err := d.namespaceVarsQueried(ctx, namespaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: %w", err)
 	}
-	if qerr == nil {
-		if nsVars, err = decodeStringMap(rawNSVars); err != nil {
-			return nil, nil, fmt.Errorf("eligible nodes: %w", err)
+
+	return d.nodeEligibility(ctx, namespaceID, namespaceName, nsVars, capName, capVersion, spec, digest)
+}
+
+// EligibleNodesForTask 是派发路径的入口：**任务钉住的 ns 输入快照**参与判定（D2）。
+//
+// 为什么不能用 EligibleNodes（当前 ns 配置）：一条已接受的任务如果因为排队期间
+// ns 默认值被改过，用当前值判「能不能跑」会得出与它实际执行输入不一致的结论
+// （典型症状：能力要求 vars.SOURCE_ROOT，当前配置有、任务快照里没有 → 派发说可用，
+// 节点上却拿不到值）。孤儿视图与调度必须用这个函数。
+func (d *DB) EligibleNodesForTask(ctx context.Context, t *Task) ([]*Node, map[string]string, error) {
+	if t == nil {
+		return nil, nil, fmt.Errorf("eligible nodes for task: nil task")
+	}
+	if t.NamespaceID == "" || t.NamespaceID == AllNamespaces {
+		return nil, nil, ErrNamespaceRequired
+	}
+	namespaceName, err := d.namespaceSlug(ctx, t.NamespaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes for task %s: %w", t.ID, err)
+	}
+	// 能力身份按**任务钉住的 capability_id** 取（不是按 digest 猜）：同一 ns 里
+	// 不同名字的能力可以共享同一份 spec 内容，digest 反查会有多义。
+	var (
+		capName    string
+		capVersion int
+		rawSpec    string
+	)
+	err = d.QueryRowContext(ctx,
+		`SELECT name, version, spec FROM capability_versions WHERE id = ? AND namespace_id = ?`,
+		t.CapabilityID, t.NamespaceID).Scan(&capName, &capVersion, &rawSpec)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes for task %s: read capability: %w", t.ID, err)
+	}
+	var spec artifact.Spec
+	if trimmed := strings.TrimSpace(rawSpec); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &spec); err != nil {
+			return nil, nil, fmt.Errorf("eligible nodes for task %s: decode capability spec: %w", t.ID, err)
 		}
 	}
+	digest := t.Digest
+	if strings.TrimSpace(digest) == "" {
+		// 任务行没有钉 digest（建任务时 caller 没给）：没有任何节点能被证明持有它，
+		// 按 NotDeployed 报（不能当成「随便哪台都能跑」）。
+		return nil, map[string]string{}, nil
+	}
+	return d.nodeEligibility(ctx, t.NamespaceID, namespaceName, t.NamespaceVars, capName, capVersion, spec, digest)
+}
+
+// namespaceSlug 取 ns 名（授权/申报列表存的是名字，不是内部 id）。
+func (d *DB) namespaceSlug(ctx context.Context, namespaceID string) (string, error) {
+	var slug string
+	err := d.QueryRowContext(ctx, `SELECT slug FROM namespaces WHERE id = ?`, namespaceID).Scan(&slug)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNamespaceNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read namespace: %w", err)
+	}
+	return slug, nil
+}
+
+// namespaceVarsQueried 读某 ns 当前的默认 vars（没有配置行 = 空默认）。
+func (d *DB) namespaceVarsQueried(ctx context.Context, namespaceID string) (map[string]string, error) {
+	out := map[string]string{}
+	var raw string
+	err := d.QueryRowContext(ctx,
+		`SELECT vars FROM namespace_configs WHERE namespace_id = ?`, namespaceID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read namespace config: %w", err)
+	}
+	vars, derr := decodeStringMap(raw)
+	if derr != nil {
+		return nil, derr
+	}
+	return vars, nil
+}
+
+// nodeEligibility 是判定核心：给定 ns 名 / ns 默认值 / 能力身份 / digest，逐节点算可用性。
+//
+// 调用方（EligibleNodes / EligibleNodesForTask / 孤儿视图）只决定「ns 默认值从哪来」，
+// 判定本身只有这一份实现——否则「能派发」与「孤儿」会给出两个互相矛盾的答案。
+func (d *DB) nodeEligibility(ctx context.Context, namespaceID, namespaceName string, nsVars map[string]string,
+	capName string, capVersion int, spec artifact.Spec, digest string) ([]*Node, map[string]string, error) {
+	// 只读路径**不**开事务：DSN 是 `_txlock=immediate`，读事务会先拿写锁，
+	// 把并发派发串行化。这里每条查询各自读最新快照——最坏情况只是某个 reason
+	// 用到了另一秒的配置，不会伪造出「可派发」（保守方向的偏差）。
 
 	// ④ 全部节点（集群级：没有「本 ns 的节点」这种过滤，判定交给逐节点 reason）。
 	nodes := []*Node{}
