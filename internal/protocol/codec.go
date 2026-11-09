@@ -44,7 +44,8 @@ func Encode(f any) ([]byte, error) {
 //
 // 返回的具体类型是 *HelloFrame / *WelcomeFrame / … / *CancelAckFrame /
 // *UpgradeFrame / *LogsResponseFrame / *CapabilityDeployFrame /
-// *CapabilityDeployedFrame；未知 type 返回 (*UnknownFrame, nil)。
+// *CapabilityDeployedFrame / *TaskEmitFrame / *TaskEmitAckFrame；未知 type 返回
+// (*UnknownFrame, nil)。
 func Decode(data []byte) (any, error) {
 	frameType, err := FrameTypeOf(data)
 	if err != nil {
@@ -98,8 +99,19 @@ func Decode(data []byte) (any, error) {
 		target = &CapabilityDeployFrame{}
 	case FrameCapabilityDeployed:
 		target = &CapabilityDeployedFrame{}
+	// emit 转发 2 帧（父 E1 批准；复用 HTTP EmitRequest 的解释）。
+	case FrameTaskEmit:
+		target = &TaskEmitFrame{}
+	case FrameTaskEmitAck:
+		target = &TaskEmitAckFrame{}
 	default:
 		return &UnknownFrame{Type: frameType}, nil
+	}
+	// E1 两帧（task.emit / task.emit.ack）是父批准的「严格字段」帧：未知顶层/嵌套
+	// 字段一律拒绝，并且解码成功就立即 Validate——不给调用方「解出来就算数、忘调
+	// Validate」的机会。其余 21 帧保持既有宽松语义：一条老/新帧多一个键不该断连。
+	if strict, ok := target.(strictFrame); ok {
+		return decodeStrictEmit(frameType, data, strict)
 	}
 	if err := json.Unmarshal(data, target); err != nil {
 		return nil, fmt.Errorf("protocol: 解码 %s: %w", frameType, err)
@@ -120,6 +132,7 @@ var upstreamFrames = []string{
 	FrameUpgradeAck,
 	FrameLogsResponse,
 	FrameCapabilityDeployed,
+	FrameTaskEmit,
 }
 
 // downstreamFrames 是中枢 → 节点的帧。
@@ -134,6 +147,7 @@ var downstreamFrames = []string{
 	FrameUpgrade,
 	FrameLogsRequest,
 	FrameCapabilityDeploy,
+	FrameTaskEmitAck,
 }
 
 // IsUpstream 判定帧类型是否是节点 → 中枢方向。
