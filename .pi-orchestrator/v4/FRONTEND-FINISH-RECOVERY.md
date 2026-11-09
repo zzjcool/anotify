@@ -1,4 +1,6 @@
-# T2 C2 后 fresh-context 收尾安排（父批准）
+# T2 C2 后 fresh-context 收尾安排（父批准，安全检查点已完成）
+
+原T2已safe BLOCKED/retired，clean HEAD `767c27c962d60250e34603aef7c24d2490a8409d`（C2生产 `c052230`），最后延迟通知确认C2 accepted(verified)。全部writer/命令已收齐，F3与终review未做；不是T2DONE。父已只读保存 `/tmp/anotify-v4-frontend-finish-recovery/frontend-products-and-evidence.patch`（base0e0ff0f、仅T2产品/团队证据）+SHA/checkpoint，旧worktree不动。
 
 原恢复centurion上下文约287K，实施期180分钟为advisory，当前Node/config/保留功能仍推进，不应停止writer或伪造phase通过。
 
@@ -19,4 +21,4 @@
 
 不变：T2仅web-src/web静态、sitegen/fe-preview、规定的前端tests，T1 server/GoAPI/tooling、T3protocol/anode，不合他队分支。恢复以原团队最终HEAD+dirty证据快照为准，不重读287K旧JSONL/全仓。
 
-参考已见阶段：F1支持+修复恢复aad4b15、能力ca450e7、Source5d79bbf、诊断7a7e96e、Playbook090365e；A2docs588e34c。C2尚未交，后续以实际checkpoint更新。A3技术已848正文，可能需原样同步支持；没有父强制compact能力，resume不是清空context。
+参考已见阶段：F1支持+修复恢复aad4b15、能力ca450e7、Source5d79bbf、诊断7a7e96e、Playbook090365e；A2docs588e34c。C2已提交c052230，99Node/13Chrome含44checks/49shots阶段通过；早期apiList.items误消费与docs内部滚动已准确修复/验收。最后checkpoint767c27c，F3未开工，后续以文件完整恢复。A3技术已848正文，可能需原样同步支持；没有父强制compact能力，resume不是清空context。

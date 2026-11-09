@@ -25,8 +25,8 @@
 | v4-plan-node | 节点执行/emit/租约/协议/安装命名 | 只读侦察完成 |
 | v4-plan-frontend-tests | 静态前端/API/OpenAPI/测试工具链 | 只读侦察完成 |
 | v4-plan-second-opinion | 仅分工第二意见 | 完成；采纳Go单一原子团队+独立前端，不采纳削减E2E或核心范围建议；其报告分支/MR不纳入产品改动 |
-| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），父保护snapshot待fresh接续；原全Go/contract/e2equick门禁不变 |
-| T2 frontend (`v4-frontend-recovery`) | 静态前端+sitegen+前端测试，复用F1接续F2→F3 | 原v4-frontend因checkpoint final提前terminal未交付；新隔离centurion已启动恢复，model显式gpt-6.1-sol，父make fe+sitegen+Node三门禁不变 |
+| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），父已派新v4-core-runtime-recovery GPT隔离WT接snapshot同完整范围；先layoutmarker/Open闭包，原全Go/contract/e2equick门禁不变 |
+| T2 frontend (`v4-frontend-finish`) | 复用已完成F1/F2，接F3/sitegen/5E2E/freshreview/最终门禁 | 原v4-frontend-recovery已safe BLOCKED/retired、clean767c27c、C2lateverified；父保护31MB产品/证据快照，待新finishteam接续，同3门禁 |
 | T3 anode (`v4-anode`) | 纯共享protocol+节点本机执行/emit/config/GC/install，N1→N2→N3 | 新隔离centurion已派gpt-6.1-sol；先N1协议接缝/handoff；父protocol/artifact/anode测试+vet+diffcheck门禁 |
 
 已冻结 `PLAN.md` 与 `CONTRACT.md`（含文件所有权、跨团队HTTP/协议/模型接口、验收命令）。AGENTS/DEVELOPMENT已明确用户批准v4baseline例外。
@@ -132,5 +132,11 @@ T1已达到safe交接条件：clean f717f711…（production21253ed，S extensio
 A3codecd6 freshreview **2项阻塞**：Cancel/CancelAck.Validate未拒nilslot，测试漏此反例；exec_frames旧注释仍onlystale/命令reject。已父转T3同N3 writer安全精准修，不重复N2B/不双writer。纯proto虽测试PASS不冻结交付，待最终635→newdelta；已有node字段正式name非DBUID，rootSLOT勘误。T1恢复队可先marker/旧测试/CAS闭包不消费错误nilguardproto。
 
 旧T1已正式safe BLOCKED，collect确认phasefailed/不再派工、无新push/merge；clean f717f711（production21253ed），各writer/review已收齐。父capture `/tmp/anotify-v4-core-recovery/core-production-and-evidence.patch`（base0e，只T1产品/纯protocol支持+本team证据，无settings/design/UI）+SHA及CHECKPOINT，旧WT未改。计划新core-runtime-recovery由文件继续完整G1闭包/G2-G4，不重做已过领域/不全读353Ksession。A3codecd6两个review项待T3小修，新team先layoutmarker/Open边界等已确任务；原3最终门禁不减。
+
+父恢复编排提交42a9cfb，新v4-core-runtime-recovery已启动显式GPT，接/tmp/anotify-v4-core-recovery证据代码快照与完整文件checkpoint，不重读旧353Ksession/不重复已实现G1；第一小卡G1-6C1 layoutmarker/Open拒旧baseline1，后续完整G1测试/CAS/typedmanifest→G2→G3→G4不减原3verify。协议cd6待T3修nilslot+comments后给新core最终delta，T3已通知不等旧retired队。原旧WTclean保留，root集成仍未开始。
+
+21:08 T3 implementing180min advisory处理：真实N3完整命令/安装/真实upgrade1d6519d、slot/race75fd43d、A3nilslot/comments修33e517a与真实接收反例5a02d76已提交，当前仅team证据dirty，父决定继续终review/verify不abort/假done。capture **63570df→33e517a** 最终proto `/tmp/anotify-v4-a3-final-handoff/protocol-delta.patch`+SHA，独立archiveapply/protoartifacttest/vetPASS；fresh v4-a3-final-fix-review确认proto两修复PASS但限读slots_test未定位missing实际反例；utility限域澄清5a02d76新增cancel_e2e_test.go13走真实WS→hub/app→runner580ValidateCancel，缺slot保lease/不假reap/任务成功，ACK decode→Validate也测。故仅定位偏差非缺test，最终635→33e纯delta已转新core；T1生产ACK接收必须ValidateCancelAck+历史绑定CAS，Node不接自己ACK。不重写已完成测试/全量发散。T3全队3freshreview/正确cwd原3verify仍要求完整，不能凭commit/title/时间宣称完成。
+
+21:12处理延迟C2首轮FAILnotice：旧T2已经safe BLOCKED/retired，steer no terminal所以父status/collect确认最新C2lateacceptedverified；并非仍卡那10FAIL。早期controller apiList.items真bug已修、docs contained横滚证据已完成；clean767c27c(C2c052230)，F3/全隊review/verify未做。父capture `/tmp/anotify-v4-frontend-finish-recovery/`（31MB仅T2产品/PNG证据patch+SHA/CHECKPOINT），旧WT不动；计划freshfinish接完整F3/最终门禁不重做F1F2。没有用NOterminal错误假称已steer成功，已按真实终态恢复流程。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。
