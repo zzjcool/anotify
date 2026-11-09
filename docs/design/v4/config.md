@@ -183,9 +183,10 @@ GET /v1/namespaces/{name}/config
 
 PUT /v1/namespaces/{name}/config
   body { metadata: { resourceVersion }, vars: { ... } }
+  只接 metadata.resourceVersion + vars（namespaceVarsRevision 只读，UI 不提交）
   缺 resourceVersion → 400 resource_version_required
   旧 resourceVersion → 409 resource_version_conflict
-  成功后 bump namespaceVarsRevision（配置生效版本，不是写并发令牌）
+  成功后 bump namespaceVarsRevision（配置生效版本，不是写并发令牌），并返回与 GET 相同的 wrapper
 ```
 
 - `vars` 是**命名空间默认值**（§3.1 的规则）；这里没有 `limits`（limits 只在节点配置里）。
@@ -204,7 +205,7 @@ PUT /v1/namespaces/{name}/config
 
 ```
 GET /v1/system/config        → { metadata: { resourceVersion }, retention: { ... } }
-PUT /v1/system/config        → 同上；必须带 resourceVersion（CAS）
+PUT /v1/system/config        → 只接 metadata.resourceVersion + retention，返回同 GET wrapper；缺 / 旧 resourceVersion 同上（CAS）
 ```
 
 去重窗口与实体保留分开：去重记录跟 `retention.eventTtlSec` 同窗口；被任务/回执引用的实体必须延长保留（`capability.md §8.4` / `playbook.md §7.3`）。
@@ -233,6 +234,18 @@ limits:                        # 并发预算，见 anode.md §2；跨 ns 共享
   合并时 `total` 与 `perCapability` 内部都**递归逐叶**：本机同名键覆盖 node，未写继承；没有 ns 层。
 - `listen` / `envPassthrough` **不在**中枢：它们只在这台机器上有意义，留在 `anode.yaml`。
 
+**wire 形状（配置子资源 wrapper，不是独立 kind）**：
+
+`GET /v1/nodes/{name}/config`
+
+```json
+{ "metadata": { "resourceVersion": "R" },
+  "namespaces": ["*"], "vars": {}, "limits": { "total": 1, "perCapability": {} },
+  "configRevision": "C", "appliedRevision": "A", "appliedHash": "sha256:…" }
+```
+
+`PUT` 只接 `metadata.resourceVersion` / `namespaces` / `vars` / `limits`，返回**同 GET wrapper**；`configRevision` / `appliedRevision` / `appliedHash` 是只读派生字段，UI **不提交**，也不拿它们当 CAS 令牌（一律先 `GET …/config` 取 `metadata.resourceVersion`）。Node 配置与 `Node.spec` 的底层默认值是**同一份事实**（同一底层版本 / 同一事务），不能各用一个版本绕过 CAS。
+
 ### 4.2 同步：所有动作由 anode 发起
 
 中枢**从不主动去问节点**：**每次连上（启动 / 断线重连）anode 第一帧就把自己的机器级配置报上来**，中枢只回应。
@@ -243,7 +256,7 @@ anode                                          中枢
  │ hello {name, token, namespaces,               │
  │        localVars, localLimits,                │
  │        appliedRevision, appliedHash} ────────►│
- │                                                │  首见 → 建这台的默认值行（可为空）
+ │                                                │  该 Node 已由 API 登记；首见 → 只建这台的配置默认行（可为空），不建 Node 本体
  │ ◄────── welcome {configRevision, nodeVars,    │
  │                  nodeLimits, namespaces}      │
  │ 本机 + 节点默认值逐键合并 → 落盘 anode.applied.yaml → 生效
@@ -257,7 +270,7 @@ anode                                          中枢
 
 | 规则 | 说明 |
 |---|---|
-| **谁发起** | 全部同步动作由 anode 发起：`hello`（注册 + 上报 + 拉默认值）、`config.get`、`config.applied`。中枢只回应 |
+| **谁发起** | 全部同步动作由 anode 发起：`hello`（身份校验 + 上报 + 拉默认值）、`config.get`、`config.applied`。中枢只回应 |
 | **中枢只提示** | `config.changed` 只带 revision，不带值也不带命令；节点丢了这条提示也不会漂移（下次 `hello` 自己对齐） |
 | **只改节点默认值** | apply 只更新中枢那份节点默认值；**本机写过的键不受影响**（那是本地真相）；**ns 默认值不参与 apply** |
 | **落盘** | `anode.applied.yaml`（0600，人不要改）= **本机 + 节点默认值**的合并结果；任务执行读它 |
@@ -290,8 +303,9 @@ ns 默认值也不走这个状态机：它没有“节点 applied”概念，改
 
 ### 4.4 批量编辑
 
-- `POST /v1/nodes/config/batch`，body `{nodes: [{name, resourceVersion}], set: {namespaces, vars, limits}}`：对每台各生成新 revision，逐台 CAS。
-- 单台写带 `metadata.resourceVersion`；批量写逐台带 `{name, resourceVersion}`。缺失 → 400 `resource_version_required`；旧版本 → 409 `resource_version_conflict`。
+- `POST /v1/nodes/config/batch`，body `{updates: [{name, metadata: {resourceVersion}, vars?, limits?, namespaces?}]}`：对每台各生成新 revision，逐台 CAS。
+- 响应 `{items: [{name, ok: true, config: <同 GET wrapper>} | {name, ok: false, error: <Status>}]}`：**逐节点原子、可部分成功**（不是 Playbook 那种整包原子规则）；错误里**不得带原始凭证值**。
+- 单台写带 `metadata.resourceVersion`；批量写逐台带 `{name, metadata:{resourceVersion}}`。缺失 → 400 `resource_version_required`；旧版本 → 409 `resource_version_conflict`。
   `resourceVersion` 是写并发令牌，**不是** `configRevision` / `namespaceVarsRevision`（那是配置生效版本）。
 
 ### 4.5 `anode.yaml`
@@ -299,7 +313,7 @@ ns 默认值也不走这个状态机：它没有“节点 applied”概念，改
 ```yaml
 name: node-a
 server: wss://anotify.example.com
-token: <bootstrap token>
+token: <node token>              # 中枢签发的节点身份令牌；明文只返回这一次，再次签发 = 轮换（旧 token 失效）
 
 namespaces: [default, team-a] # 这台机器允许被哪些 ns 使用（申报），缺省 [default]
 

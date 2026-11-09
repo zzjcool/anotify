@@ -398,7 +398,7 @@ POST /v1/namespaces/{namespace}/playbooks/{slug}/render   { "values": {...} }
 | 情况 | 算不算冲突 | 说明 |
 |---|---|---|
 | 包里省略服务端生成字段（如 `config.token`），库里已有值 | **不算** | 视为“保留已有值”；回执不报差异 |
-| 包里显式写 token，值与库里不同 | **算**（走第 10 行拒绝，或按源的独立 PATCH 轮换） | 参与比较；但回执/差异报告**脱敏**（只给后 4 位或 `***`） |
+| 包里显式写 token，值与库里不同 | **算**（走第 10 行拒绝，或按源的独立 PATCH 轮换） | 参与比较；但 API 回执/冲突字段**脱敏**（固定为 `***`，不回显 token 后 4 位） |
 | 两边都有、只是默认值未写全（如 `enabled` 缺省 = `true`） | **不算** | 先归一化默认值再比较 |
 | 其它省略字段 | **不能**一律当等价 | 只有契约明确“服务端生成 / 可省略”的字段才走保留规则；其余按真实差异处理 |
 
@@ -463,13 +463,15 @@ notes:                          # 稳定机器码 + 人话；不是一串自由�
       message: "a-fixer 装上了，但没有上游指向它：a-review 的路由未改" }
 ```
 
+**回执是响应文档，不是资源信封**：顶层形状（`playbook` / `source` / `install` / `namespace` / `values` / `valuesDigest`）与 `created` / `skipped` 两个**对象**原样保留；不为 `InstallReceipt` 新建 kind 或端点，也不把回执搬进 `Playbook.status`（`api-conventions.md §3.1` 的明确例外）。
+
 五条规则：
 
 | 规则 | 内容 |
 |---|---|
-| **回执落库** | 每次 install 写一行 `playbook_installs`（含 `values` JSON、`values_digest`、`source`）；`dryRun` **不写行**（§4.6 的 0 写入）；`GET /v1/namespaces/{namespace}/playbooks/{slug}` 带 `lastInstallId` |
-| **values 必须留痕** | 回执存**有效** values（含补上的默认值）+ digest。没有它，"这次装的是哪一组值"事后无从回答——而 values 现在就是那个身份（§0.1） |
-| **secret 打码** | `writeOnly: true` 是合法 JSON Schema 关键字（不是非法扩展）；这类字段在回执里是 `"***"`，digest 对**打码前**的值算，这样"同一组值"仍可比较。显式的 `config.token` 差异同样只显示后 4 位 / `***`；源读响应只给 `secretSet`，不回显 `secret` / `token` |
+| **回执落库** | 每次 install 写一行 `playbook_installs`（含打码后的 `values` JSON 与 `receipt` JSON、`values_digest`、`source`；`writeOnly` 字段均为 `"***"`）；`dryRun` **不写行**（§4.6 的 0 写入）；`GET /v1/namespaces/{namespace}/playbooks/{slug}` 带 `lastInstallId` |
+| **values 必须留痕** | 回执存**有效** values（含补上的默认值，`writeOnly` 字段替换为 `"***"`）+ digest。未打码的有效 values 只用于当前渲染与 `valuesDigest`，不另存未打码 `valuesJSON` 快照、不回显，也不把安装 values 快照记入任务 env；**渲染结果里资源自己的 `config.token` / `config.secret` 等仍按 Source 自己的持久化/鉴权规则保存，不把所有已渲染资源配置强制打码**。打码后的 values + digest 留住“这次装的是哪一组值”的身份（§0.1） |
+| **secret 打码** | `writeOnly: true` 是合法 JSON Schema 关键字（不是非法扩展）；这类字段在回执里是 `"***"`，digest 对**打码前**的值算，这样"同一组值"仍可比较。API 回执/冲突字段中的 `config.token` / `config.secret` 差异固定为 `"***"`，不回显 token 后 4 位；源读响应只给 `secretSet`，不回显 `secret` / `token` |
 | **note 有 `code`** | 每个 note 是 `{code, ref?, message}`。`code` 是稳定标识（e2e 断言它），`message` 只给人读 |
 | **跳过必有原因** | 只有"早装过了（第 2/5/9 行）"不写 note；其余跳过 / 未生效 / 断链都必须有一条 |
 
@@ -593,7 +595,7 @@ GET /v1/namespaces/{namespace}/playbooks/{slug}/installs        # 折叠读模�
 
 ## 5. 升级
 
-**升级 = 同名包再装一次**（换包体、换 values，或两者都换）。包体就是 §1 那组文件：改包用 **`PUT /v1/namespaces/{namespace}/playbooks/{slug}` 整体替换**（§10），不要求“删除重建”；已存在同 slug 再 `POST` 则 409 `slug_taken`。没有 `upgrade` 动词，没有版本区间，没有迁移脚本。
+**升级 = 同名包再装一次**（换包体、换 values，或两者都换）。包体就是 §1 那组文件：改包用 **`PUT /v1/namespaces/{namespace}/playbooks/{slug}` 整体替换**（§10，必须带 `metadata.resourceVersion`），不要求“删除重建”；已存在同 slug 再 `POST` 则 409 `slug_taken`。没有 `upgrade` 动词，没有版本区间，没有迁移脚本。
 
 **install 本身不部署。** 安装只写能力/源/回执；要让节点持有新 digest，走人工部署动作
 `POST /v1/namespaces/{namespace}/capabilities/{name}/deploy`（可选 version / 目标节点，写 `deployments` 事实）。
@@ -687,7 +689,7 @@ v3 的 `status.next` 是"最该先做的一件事"。v4 里 **`next` 已经是"�
 
 ## 7. 生命周期（D20）
 
-**不支持卸载。** `DELETE /v1/namespaces/{namespace}/playbooks/{slug}` 只删清单，且回执要告诉用户留下了什么：
+**不支持卸载。** `DELETE /v1/namespaces/{namespace}/playbooks/{slug}?resourceVersion=<R>` 只删清单：**不带请求体**，CAS 令牌只在 query（缺失 400 `resource_version_required`、旧值 409 `resource_version_conflict`），且回执要告诉用户留下了什么：
 
 ```yaml
 # DELETE → 200
@@ -716,7 +718,7 @@ v3 的 `status.next` 是"最该先做的一件事"。v4 里 **`next` 已经是"�
 | 记录 | 位置 | 用途 |
 |---|---|---|
 | `installedFrom` | `capability_versions.installed_from`、`sources.installed_from`（空 = 手建） | 反向溯源：能力页显示"由 project-chain 装的（project=a）"，`DELETE … kept` 靠它 |
-| 回执行 | `playbook_installs`（`receipt` JSON 原文 + `values` + `values_digest` + `source`） | 正向溯源：预案详情页显示"上次安装时间 + 回执"；`GET …/installs` 在它上面折叠（§4.10） |
+| 回执行 | `playbook_installs`（`receipt` JSON 与 `values` 均已打码，`writeOnly` 字段为 `"***"`；另含 `values_digest` + `source`） | 正向溯源：预案详情页显示"上次安装时间 + 回执"；`GET …/installs` 在它上面折叠（§4.10） |
 
 **这两处都是记录，不是所有权**：不用于 GC、不阻止手工编辑、不阻止手删。
 
@@ -834,17 +836,21 @@ v3 的 `status.next` 是"最该先做的一件事"。v4 里 **`next` 已经是"�
 | `oci_digest_mismatch` | 拉下来的字节与声明的 digest 不符（**不写库**，一个字节都不落） |
 | `oci_too_large` | 解压后超过 §1.5 的上界（按**解压后**判，防 tar 炸弹） |
 
-`playbook_conflict` 的响应形状：
+`playbook_conflict` 是 HTTP **400** 的统一 `Status`（不是 409）：`code` 是**数字** 400，`reason` 是**字符串** `playbook_conflict`；12 格判定（§4.2）与每条 conflict 的 `kind` / `ref` / `reason` / `declaredDigest` / `actualDigest` / `fields` 全部保留在 `details`，不得裁成自由文本。可另给通用 `details.causes[]`，但 `causes` **不能**替代结构化冲突矩阵。响应形状：
 
-```yaml
-error: "预案冲突：2 条需要覆盖已有定义，安装被拒绝"
-code: playbook_conflict
-valuesDigest: sha256:9c1f…
-conflicts:
-  - { kind: capability, ref: a-review@3, reason: version_conflict,
-      declaredDigest: sha256:ab12…, actualDigest: sha256:cd34… }
-  - { kind: source, ref: a-on-push, reason: config_differs, fields: [config.token] }
-hint: "给该能力改一个 metadata.version 再装；或删掉库里那一行重建"
+```json
+{ "apiVersion": "anotify/v1", "kind": "Status", "status": "Failure",
+  "code": 400, "reason": "playbook_conflict",
+  "message": "预案冲突：2 条需要覆盖已有定义，安装被拒绝",
+  "details": {
+    "valuesDigest": "sha256:9c1f…",
+    "conflicts": [
+      { "kind": "capability", "ref": "a-review@3", "reason": "version_conflict",
+        "declaredDigest": "sha256:ab12…", "actualDigest": "sha256:cd34…" },
+      { "kind": "source", "ref": "a-on-push", "reason": "config_differs", "fields": ["config.token"] }
+    ],
+    "hint": "给该能力改一个 metadata.version 再装；或删掉库里那一行重建"
+  } }
 ```
 
 > `hint` 是必须的：一个 400 如果不告诉人下一步做什么，它跟 500 对用户是一样的。
@@ -856,13 +862,13 @@ hint: "给该能力改一个 metadata.version 再装；或删掉库里那一行�
 
 | 端点 | 作用 |
 |---|---|
-| `POST /v1/namespaces/{namespace}/playbooks` | 存包（创建）：`{slug, files}` 或 `{slug, source: "oci://…"}` **二选一**（§1.3 / §11）。校验只看形状，值无关；同 slug 已存在 → 409 `slug_taken` |
-| `PUT /v1/namespaces/{namespace}/playbooks/{slug}` | **整体替换包体**（升级模板）；body 同上。不要求删除重建；不影响已装的行 |
-| `GET /v1/namespaces/{namespace}/playbooks` / `GET /v1/namespaces/{namespace}/playbooks/{slug}` | 列表 / 详情；详情默认摘要 + `lastInstallId`（回执摘要入口）+ 体检（§6） |
-| `GET /v1/namespaces/{namespace}/playbooks/{slug}?includeBody=true` | 返回**原始 `files` 集合（未渲染）**，供编辑 / 导出；`render` 返回渲染结果，不替代原始模板读取 |
+| `POST /v1/namespaces/{namespace}/playbooks` | 存包（创建）：body 是 `Playbook` **信封**（`metadata.name` = slug，`metadata.namespace` 可省）；`spec.files` 与 `spec.source` **二选一**（§1.3 / §11），body 不带 `status`；`spec` 里**不复制** `values` / `capabilities` / `sources`（根清单只在包内 `playbook.yaml`）。校验只看形状，值无关；同 slug 已存在 → 409 `slug_taken` |
+| `PUT /v1/namespaces/{namespace}/playbooks/{slug}` | **整体替换包体**（升级模板）：同一信封 + `metadata.resourceVersion`（缺失 400 / 旧值 409）。不要求删除重建；不影响已装的行 |
+| `GET /v1/namespaces/{namespace}/playbooks` / `GET /v1/namespaces/{namespace}/playbooks/{slug}` | 列表 / 详情；详情默认摘要 + `lastInstallId`（回执摘要入口）+ 体检（§6）。默认**不含包体全文**：`spec` 可因投影为空 `{}`，计数 / 体检 / `lastInstallId` 在 `status`，OCI 来源在 `status.source` |
+| `GET /v1/namespaces/{namespace}/playbooks/{slug}?includeBody=true` | `spec.files` 返回**原始整份 map（未渲染）**，供编辑 / 导出；默认摘要**不能**当完整 `PUT` 模板；`render` 返回渲染结果，不替代原始模板读取 |
 | `POST /v1/namespaces/{namespace}/playbooks/{slug}/render` | `{values}` → `{values, valuesDigest, documents, files}`（`files` = 渲染后的 `{路径: 正文}`），纯函数（§2.4） |
 | `POST /v1/namespaces/{namespace}/playbooks/{slug}/install` | `{values, dryRun?}` → 回执（§4.5）；`dryRun: true` 0 写入（§4.6） |
-| `DELETE /v1/namespaces/{namespace}/playbooks/{slug}` | 只删清单 + `kept` 报告（§7） |
+| `DELETE /v1/namespaces/{namespace}/playbooks/{slug}?resourceVersion=<R>` | 只删清单 + `kept` 报告（§7）；不带请求体，CAS 令牌只在 query |
 | `GET /v1/namespaces/{namespace}/playbooks/{slug}/installs` | 实例清单（**读模型**，§4.10）：按 `valuesDigest` 折叠回执行 |
 
 约定：
@@ -870,7 +876,9 @@ hint: "给该能力改一个 metadata.version 再装；或删掉库里那一行�
 - **JSON 字段全 camelCase**；空列表返回 `[]` 不是 `null`。
 - `install` 的 body 是 `{values, dryRun}`；**不要** query 参数版本（同一件事只有一种写法）。
 - 每次 install 都产生一行 `playbook_installs`，`GET` 详情里给最近一次 + 次数。
-- `files` 是 `{路径: 正文}` 的 JSON map，键 = §1.3 的相对路径；`source` 与 `files` 同时给 → 400 `invalid_playbook`。
+- `files` 是 `{路径: 正文}` 的 JSON map，放在 `spec.files`，键 = §1.3 的相对路径；`spec.source` 与 `spec.files` 同时给 → 400 `invalid_playbook`。
+- 包内 `playbook.yaml` 是**唯一根清单**；请求里不再复制 `spec.values` / `spec.capabilities` / `spec.sources`，它们只存在于那个文件里。
+- **空列表返回 `[]` 不是 `null`**；默认详情里的 `spec` 为空对象（轻量投影），不代表包里没有文件。
 - 同 slug 再 `POST` → 409 `slug_taken`；改包用 **`PUT /v1/namespaces/{namespace}/playbooks/{slug}` 整体替换**（升级就靠它，§5）；不做 `PATCH`、不做部分修改。
 
 ---
@@ -884,7 +892,10 @@ project-chain/  ──oras push──▶  ghcr.io/acme/playbooks/project-chain:1
                                           │
                                           │ 中枢 pull（一次，然后就不碰 registry）
                                           ▼
-              POST /v1/namespaces/{namespace}/playbooks {slug, source: "oci://…:1.4.2"}
+              POST /v1/namespaces/{namespace}/playbooks
+              { "apiVersion": "anotify/v1", "kind": "Playbook",
+                "metadata": { "name": "project-chain" },
+                "spec": { "source": "oci://…:1.4.2" } }
 ```
 
 | 项 | 定死的事 |
@@ -893,7 +904,7 @@ project-chain/  ──oras push──▶  ghcr.io/acme/playbooks/project-chain:1
 | 引用形态 | `oci://<registry>/<repository>:<tag>` 或 `…@sha256:<hex>`。**tag 只在拉取那一刻有意义** |
 | 谁拉 | **中枢拉**。节点永远不碰 registry（它的出网面保持只有中枢一条，`anode.md`） |
 | 拉完就存 | **copy-on-pull**：文件集合按 digest 落库，之后 render / install 完全不碰 registry。registry 挂了不影响已存的包——"外面变了怎么办"的答案是"它进不来第二次" |
-| 身份 | 库里记 `source: oci://…@sha256:…`，回执带同一个 digest。**tag 不参与身份**：同 tag 换 digest = 另一份包体，按“`PUT` 替换包体”处理（§5） |
+| 身份 | 库里记 `source: oci://…@sha256:…`，回执带同一个 digest；读取时它在 `status.source` 作为**只读来源投影**出现（不是第二份配置源）。**tag 不参与身份**：同 tag 换 digest = 另一份包体，按“`PUT` 替换包体”处理（§5） |
 | 校验 | ① 媒体类型不认识 → 400 `oci_unsupported`；② 自己算 digest 再比，不信 registry → 不符 400 `oci_digest_mismatch`；③ 解压后超 §1.5 上界 → 400 `oci_too_large`；④ 文件集合按 §1.3 判（与手传 body 完全同一条路径） |
 | 凭据 | **不进配置模型、不进 values**（`config.md` 没有 `secrets`）：中枢进程读标准 `$DOCKER_CONFIG/config.json`（默认 `~/.docker/config.json`）。私有 registry 就照 docker 的办法配一次 |
 | 发布 | **不做 push 端点**：发就是 `oras push` / `crane` / CI，我们只定 mediaType。CLI 面保持三个子命令（`README.md`） |

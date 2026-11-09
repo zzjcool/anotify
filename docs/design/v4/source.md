@@ -58,7 +58,7 @@
 apiVersion: anotify/v1
 kind: Source
 metadata:
-  name: on-deploy-report           # 命名空间内唯一（重名 → source name already used）
+  name: on-deploy-report           # 命名空间内唯一（重名 → source_name_used）
 spec:
   kind: webhook                    # cron | webhook | manual
   enabled: true                    # 关掉 = 不触发（webhook 也不收，对外 404）
@@ -111,6 +111,7 @@ spec:
 旧签名立刻失效。两者都不会出现在日志里，也**不作为读字段回显**：
 `GET` 只给 `config.hookUrl`（授权读，含 token 拼出的 URL）和 `config.secretSet`（布尔），
 不返回 `config.token` / `config.secret` 原文。创建/更新请求示例与 GET 响应示例必须分开写，不能拿写入示例当读响应。
+`config.hookUrl` / `config.secretSet`（含 GET 返回的对应 `status` 字段）都是只读投影；写请求出现 `spec.config.hookUrl` / `spec.config.secretSet` → 400 `unknown_field`，编辑前必须移除。不能把 `secretSet: false` 当作清空 `secret`；`PATCH` 省略 `config.token` / `config.secret` 保持已有值，轮换必须显式写已定义的 `config.token` / `config.secret`。
 
 ```yaml
 # 写请求（POST / PATCH）可以出现 token / secret
@@ -160,7 +161,7 @@ X-Anotify-Signature: sha256=5f1d…（配了 secret 时必填）
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `type` | 可选 | 写进 `events.type`；缺省回落成**源自己的名字**。它是**数据**，不是路由键（D2） |
-| `id`（外部 deliveryId） | 可选（但**强烈建议**） | 调用方幂等键（D7）。同一源的保留窗口内收到同一个 `id` 再次投递 → `200` + 返回已有 event/trace，**不重复派发**；窗口过期后同 `id` **可以再次被接收**（见 §3.3 保留窗口）。内部事件行另有 `eventId`，二者不混用 |
+| `id`（外部 deliveryId） | 可选（但**强烈建议**） | 调用方幂等键（D7）。同一源的保留窗口内收到同一个 `id` 再次投递 → `200` + 返回**原** event/trace（统一接收回执，§5.1），**不重复派发**；窗口过期后同 `id` **可以再次被接收**（见 §3.3 保留窗口）。内部事件行另有 `eventId`，二者不混用 |
 | `payload` | 可选 | 事件载荷本体，缺省 / 空 → `{}` |
 
 边界：
@@ -305,6 +306,47 @@ $(payload.a.b)     # 根名 + 点号路径，数字段表示数组下标（D11�
   每 IP **1200/min**（可用 `ANOTIFY_HOOK_RATE_PER_MIN` / `ANOTIFY_HOOK_RATE_PER_IP_PER_MIN`
   覆盖，非正数=关闭该维度）。超限 `429`。为什么两维：只看 IP，一个出口 IP 后面的正常批量回放会被
   掐死；只看 token，换个 token 就绕过。
+
+### 5.1 接收回执（三个入口共用一份）
+
+`POST /v1/namespaces/{namespace}/events`、`POST /v1/hooks/{token}` 与手动 `fire` 返回**同一份接收回执**：
+
+```json
+{ "eventId": "…", "traceId": "…", "duplicate": false,
+  "tasks":  [ { "taskId": "cron-9f2-001", "capability": "analyze", "version": 3 } ],
+  "pruned": [ { "capability": "analyze", "reason": "param_missing", "detail": "需要 environment" } ] }
+```
+
+| 入口 | body |
+|---|---|
+| `POST /v1/namespaces/{namespace}/events` | `{source, type?, id?, payload?}`；`source` 在本入口**必填** |
+| `POST /v1/hooks/{token}` | `{type?, id?, payload?}`；`source` 由 token 定位 |
+
+- 入库剪枝也返回**合法 `eventId` / `traceId`**（只是 `tasks` 为空），不因为“没派出去”就变成裸错误。
+- 同一 `(source, deliveryId)` 命中保留窗口 → `duplicate: true`，返回**原** event / trace，**不重复派发**。
+- 回执是响应文档，不是资源信封，也不为它新建 kind。
+
+### 5.2 手动触发（`fire`）
+
+`POST /v1/namespaces/{namespace}/sources/{name}/fire`：body `{payload?}`；省略 `payload` 时用该源已有的 `config.payload`（没有则 `{}`）。
+源不存在 → `404`；源停用（`enabled: false`）按 §5 的停用规则处理；**必须做 ns 授权**。
+它复用 §5.1 的接收回执，**不新增** manual 专属幂等键、也不加额外路由语法。
+
+### 5.3 试运行（dry-run）：预览文档，不落库
+
+| 入口 | body |
+|---|---|
+| 保存过的源：`POST /v1/namespaces/{namespace}/sources/{name}/dry-run` | `{payload?}` |
+| 未保存的源：`POST /v1/namespaces/{namespace}/sources/dry-run` | `{source: <Source 信封>, payload?}` |
+
+```json
+{ "targets": [ { "capability": "analyze", "version": 3, "params": { "env": "prod" }, "state": "ready" } ],
+  "pruned":  [ { "capability": "analyze", "reason": "param_missing", "detail": "需要 environment" } ] }
+```
+
+- `targets[].state` ∈ `ready` / `pruned` / `missing`；`pruned` / `missing` 带 `reason` / `detail`，原因取 §6 的封闭表，不新造词。
+- **没有 `eventId` / `taskId`**：试运行不入事件、不入任务、不进去重表，也不需要保存 token、不返回 `secret`。
+- 它是**预览文档**：不是资源、不可写，不要把它当可持久化对象或自动注册的源。
 
 ---
 

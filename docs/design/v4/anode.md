@@ -28,7 +28,7 @@
   - 中枢 `Node.spec.namespaces`：管理员的**授权**，缺省 `["*"]`（= 不额外限制，以申报为准）。
   任一侧写 `"*"` = 全部。**这里不做"本地优先"**：它是权限，只能收紧、不能自我扩张。
 - **派发**：能力属于某个 ns，只有 `ns ∈ 生效列表` 的节点才是候选；同 ns 没候选 → `NodesAvailable: False / NoMatchingNode`。
-- **`token` 不绑 ns**：它是**节点身份令牌**（中枢 `POST /nodes/{name}/tokens` 签发），一个节点一份，与它服务多少个 ns 无关。
+- **`token` 不绑 ns**：它是**节点身份令牌**，一个节点一份，与它服务多少个 ns 无关。引导顺序固定：管理员先 `POST /v1/nodes` 登记一个离线 `Node`（`metadata.name` 必填），再 `POST /v1/nodes/{name}/tokens` 签发令牌；Node 不存在时该端点 404，**签 token 不会隐式创建节点、也不会顺手替你选命名空间**。令牌**明文只返回这一次**（这不是一次性 bootstrap：它长期做节点身份），v4 不定义 `expiresAt` / 自动续签；再次签发 = 显式轮换，旧 token 立即失效（旧会话也随旧 token 一起失效）。`anode install` 只配已签发的令牌，**不做自动注册**。
 - **`name` 集群内唯一**：节点是**集群级**对象，不再是某个 ns 下的资源。
 - **`vars` 三层作用域不同**：本机 `vars` 与中枢**节点默认值**是**机器级**（所有 ns 共用）；中枢**命名空间默认值**是 **ns 级**（按任务所属 ns 取）。
   解析顺序 **local > node > namespace**：跟 ns 相关的值不要写本机或节点默认——一写就压住所有 ns（`config.md §2.1`）。
@@ -55,7 +55,7 @@
 # anode.yaml
 name: node-a                       # 必填，集群内唯一
 server: wss://anotify.example.com  # 必填，中枢地址
-token: <node token>                # 必填，节点身份凭证（不绑 ns）
+token: <node token>                # 必填，中枢签发的节点身份凭证（不绑 ns；明文只返回这一次）
 
 namespaces: [default, team-a]      # 可选；这台机器允许被哪些 ns 使用，缺省 [default]；["*"] = 全部
 
@@ -83,7 +83,7 @@ envPassthrough:                    # 可选；把本机已有的这些变量名�
 |---|---|---|---|---|
 | `name` | string | ✅ | `^[a-z0-9][a-z0-9._-]{0,62}$` | **集群内**唯一；换名字 = 换一台节点机器 |
 | `server` | string | ✅ | `ws://` / `wss://` | 中枢地址 |
-| `token` | string | ✅ | 非空 | 节点身份凭证；**节点身份令牌，不绑 ns** |
+| `token` | string | ✅ | 非空 | 节点身份凭证；**不绑 ns**；明文只返回一次，长期使用（无 `expiresAt`），再次签发即轮换且旧 token 失效 |
 | `namespaces` | []string | 可选 | 元素 `^[a-z0-9][a-z0-9._-]{0,62}$` 或 `"*"`；去重；非空；缺省 `["default"]` | 这台机器**允许被哪些 ns 使用**（申报）；与中枢授权取**交集**生效，见 §0 |
 | `listen` | string | 可选 | 见 §4，默认 `tcp://127.0.0.1:0` | emit 端点 |
 | `vars` | map[名字]string | 可选 | 名字见 §3.1；值非空、≤4096 字节、不含 NUL | 节点变量；中枢也有一份，**同键本地优先**；能力侧 `fieldPath: vars.<NAME>` 引用 |
@@ -163,8 +163,10 @@ TOOLCHAIN=/opt/go1.25
 
 ### 3.3 上报（中枢只存快照）
 
-注册与上报是**同一个动作**：每次连上中枢，第一帧 `hello` 带
+**上报**与**身份校验**是同一个动作：每次连上中枢，第一帧 `hello` 带
 `{name, token, namespaces, localVars, localLimits, appliedRevision, appliedHash}`——中枢不需要问，节点也不需要等指令。
+`hello` **不是注册**：该节点必须已由管理员 `POST /v1/nodes` 登记、并由 `POST /v1/nodes/{name}/tokens` 签发过令牌；
+中枢侧没有这台 `Node` 或令牌已轮换作废时，连接直接被拒（不是“自动建一台”）。
 执行帧（派发/接受拒绝、租约、结果、取消）见 `capability.md §8.5`，不在配置帧里重复。
 帧里带的是 **ns 列表**（申报值），不是单个 `namespace`。
 帧里**不带 `namespace`**：节点令牌是集群身份，**不绑 ns**（§0）；一个节点可以服务多个 ns。
@@ -259,7 +261,7 @@ listen: tcp://127.0.0.1:0      # 默认：内核挑端口，仅本机可连
 | `vars` 名/值不合规（名字不符正则、空串、含 NUL、超 4096 字节） | 启动失败，指出是哪一项 |
 | `namespaces` 为空 / 元素不是 ns 名也不是 `"*"` / 有重复 | 启动失败，指出是哪一项 |
 | `envPassthrough` 不是变量名 / 超过 32 项 / 有重复 / 含 `PATH`、`HOME` 或以 `ANOTIFY_` 开头 | 启动失败，指出是哪一项 |
-| 中枢拒绝身份（token 无效） | 启动失败 |
+| 中枢拒绝身份（token 无效 / 已轮换作废 / 中枢没有这台 `Node`） | 启动失败（不是“半在线”重试态） |
 
 启动后 `anode.yaml` **不热更**：改 `namespaces` / `vars` / `limits` / `envPassthrough` / `listen` → 重启。
 `vars` / `limits` **逐层本机优先**：本地改了重启生效，不动中枢 revision；节点默认值走 apply，只影响本地没覆盖的键（`config.md §4.2`）；
