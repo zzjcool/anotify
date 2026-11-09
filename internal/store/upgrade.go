@@ -11,12 +11,12 @@ import (
 
 // 本文件是 P2.2 的**升级闸门**（设计 typed-pipeline §3.6）。
 //
-// 为什么闸门必须先于「引用语义」落地（施工计划 §7.1）：一旦 link 可以按名字跟随
+// 为什么闸门必须先于「引用语义」落地（capability.md §3）：一旦边可以按名字跟随
 // latest，把一个会破坏下游的新版本推上去就等于**静默改线**——没人点过任何东西，
 // 线上那条链却换了契约。闸门把这一步变成一次显式决定：
 //
-//	加可选入参 / 加 port   → 直接通过（只增不减，旧 link 仍然成立）
-//	删 port / 改入参类型 / 加必填 → 拒绝，并列出受影响的 link，除非调用方传 force
+//	加可选入参        → 直接通过（只增不减，旧 link 仍然成立）
+//	改入参类型 / 加必填 → 拒绝，并列出受影响的 link，除非调用方传 force
 //
 // 「受影响」的判据只有一个：这条 link **会解析到这一版**。
 // 所以 `name` 型 link 会被拦（它跟随 latest），`name@version` 型不受影响
@@ -44,21 +44,21 @@ type UpgradeChange struct {
 	Detail string            `json:"detail"`
 }
 
-// UpgradeLink 是一条**会受影响**的 link：`FromRef --Port--> ToRef`。
+// UpgradeLink 是一条**会受影响**的边：`FromRef --> ToRef`。
 //
-// 三端都用**引用**（不是 id）：用户看到的就是他当初配的那一行，
-// 而不是一串需要在能力表里反查的 id。
+// 两端都用**引用**（不是 id）：用户看到的就是他当初配的那一行，
+// 而不是一串需要在能力表里反查的 id。v4 没有端口（一次运行一个结果），
+// 所以受影响判定只看「这条边会不会解析到新版」。
 type UpgradeLink struct {
 	FromRef string `json:"fromRef"`
-	Port    string `json:"port"`
 	ToRef   string `json:"toRef"`
-	// Reason 说明这条 link 为什么会被影响（会拿到新契约 / 出口在新版里没了）。
+	// Reason 说明这条 link 为什么会被影响（会拿到新契约）。
 	Reason string `json:"reason"`
 }
 
-// String 渲染成 `from_ref --port--> to_ref`（错误消息与日志用）。
+// String 渲染成 `from_ref --> to_ref`（错误消息与日志用）。
 func (l UpgradeLink) String() string {
-	return fmt.Sprintf("%s --%s--> %s", l.FromRef, l.Port, l.ToRef)
+	return fmt.Sprintf("%s --> %s", l.FromRef, l.ToRef)
 }
 
 // UpgradeImpact 是「把这个版本变成 latest」的影响面。
@@ -227,8 +227,6 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 //
 // 两类受影响者，判据都落在「这条 link 会不会解析到新版」上：
 //
-//   - 删 port：**左端**跟随 latest 的能力边（`from_ref` 是裸名字）且端口正是被删的那个。
-//     钉死的 from_ref（`analyze@1`）不受影响——它仍然按那一版的契约走。
 //   - 改入参类型 / 新增必填：**右端**跟随 latest 的 link（`to_ref` 是裸名字）。
 //     钉死的 to_ref 不受影响（它钉的就是旧版）。
 //
@@ -261,7 +259,7 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 		return []UpgradeLink{}, nil
 	}
 
-	edges, err := listEdgesOn(ctx, ex, namespaceID, "")
+	edges, err := listEdgesOn(ctx, ex, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("upgrade impact: load edges: %w", err)
 	}
@@ -277,23 +275,20 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 		if len(reasons) == 0 {
 			continue
 		}
-		key := e.FromRef + "\x00" + e.FromPort + "\x00" + e.ToRef
+		key := e.FromRef + "\x00" + e.ToRef
 		if i, ok := seen[key]; ok {
 			out[i].Reason = out[i].Reason + "；" + strings.Join(reasons, "；")
 			continue
 		}
 		seen[key] = len(out)
 		out = append(out, UpgradeLink{
-			FromRef: e.FromRef, Port: e.FromPort, ToRef: e.ToRef,
+			FromRef: e.FromRef, ToRef: e.ToRef,
 			Reason: strings.Join(reasons, "；"),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].FromRef != out[j].FromRef {
 			return out[i].FromRef < out[j].FromRef
-		}
-		if out[i].Port != out[j].Port {
-			return out[i].Port < out[j].Port
 		}
 		return out[i].ToRef < out[j].ToRef
 	})
@@ -328,7 +323,7 @@ func sortJSON(v any) any {
 
 // schemaProperties 取 params 的 properties 与 required（坏 schema 当作空）。
 //
-// 与 validateValue / checkEdgeLiterals 同一口径：读不懂的 schema 不拦任何东西
+// 与 route 的派发期校验同一口径：读不懂的 schema 不拦任何东西
 // （能力保存时已经把 schema 格式过一道；走到这里还坏只能是手改库）。
 func schemaProperties(raw json.RawMessage) (map[string]any, map[string]bool) {
 	props := map[string]any{}

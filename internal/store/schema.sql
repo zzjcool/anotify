@@ -165,31 +165,40 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- max_instances 是实例数硬顶；max_concurrency 是节点级并发上限。
 -- agent_version / agent_commit 是 hello 自报的版本事实（空串 = 未知）。
 -- agent_upgrade 是最近一次升级尝试的状态 JSON。
+-- facts 是 hello 上报的内置机器事实（hostIP/hostname/os/arch/cpu/workRoot/homeDir）。
+-- declared_capabilities 是 hello.capabilities[]：中枢据此回答 CommandMissing。
+-- declared_namespaces 是本机申报的 ns 列表（与 node_configs.namespaces 取交集）。
 CREATE TABLE IF NOT EXISTS nodes (
-    id               TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    tags             TEXT NOT NULL DEFAULT '[]',
-    status           TEXT NOT NULL DEFAULT 'offline',
-    token_hash       TEXT NOT NULL,
-    max_instances    INTEGER NOT NULL DEFAULT 20,
-    max_concurrency  INTEGER NOT NULL DEFAULT 8,
-    last_seen_at     INTEGER,
-    agent_version    TEXT NOT NULL DEFAULT '',
-    agent_commit     TEXT NOT NULL DEFAULT '',
-    agent_upgrade    TEXT NOT NULL DEFAULT '{}',
-    resource_version INTEGER NOT NULL DEFAULT 1,
-    created_at       INTEGER NOT NULL,
+    id                    TEXT PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    tags                  TEXT NOT NULL DEFAULT '[]',
+    status                TEXT NOT NULL DEFAULT 'offline',
+    token_hash            TEXT NOT NULL,
+    max_instances         INTEGER NOT NULL DEFAULT 20,
+    max_concurrency       INTEGER NOT NULL DEFAULT 8,
+    last_seen_at          INTEGER,
+    agent_version         TEXT NOT NULL DEFAULT '',
+    agent_commit          TEXT NOT NULL DEFAULT '',
+    agent_upgrade         TEXT NOT NULL DEFAULT '{}',
+    facts                 TEXT NOT NULL DEFAULT '{}',
+    declared_capabilities TEXT NOT NULL DEFAULT '[]',
+    declared_namespaces   TEXT NOT NULL DEFAULT '[]',
+    resource_version      INTEGER NOT NULL DEFAULT 1,
+    created_at            INTEGER NOT NULL,
     UNIQUE (name)
 );
 
 -- 中枢节点默认值（config.md §4.1）：机器级、跨 ns 共用。
 -- namespaces 是授权列表（与节点申报取交集）；vars/limits 是逐键默认值。
+-- local_vars/local_limits 是节点 hello 上报的本机快照（只用于匹配与展示，不参与 apply）。
 -- revision 是 configRevision（配置生效版本）；applied_* 是节点回报的快照。
 CREATE TABLE IF NOT EXISTS node_configs (
     node_id          TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
     namespaces       TEXT NOT NULL DEFAULT '["*"]',
     vars             TEXT NOT NULL DEFAULT '{}',
     limits           TEXT NOT NULL DEFAULT '{}',
+    local_vars       TEXT NOT NULL DEFAULT '{}',
+    local_limits     TEXT NOT NULL DEFAULT '{}',
     revision         INTEGER NOT NULL DEFAULT 0,
     resource_version INTEGER NOT NULL DEFAULT 1,
     applied_revision INTEGER NOT NULL DEFAULT 0,

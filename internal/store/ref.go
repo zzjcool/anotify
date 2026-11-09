@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
@@ -125,123 +124,6 @@ func resolveRefOn(ctx context.Context, ex queryExec, namespaceID, ref string) (*
 		return getCapabilityLatestOn(ctx, ex, namespaceID, name)
 	}
 	return getCapabilityOn(ctx, ex, namespaceID, name, version)
-}
-
-// resolveLinkRef 把「用户给的字符串」归一成要落库的引用，并返回它解析到的定义。
-//
-// 三种输入，一条**唯一**的归一规则：
-//
-//	`name`         → 原样保存（跟随 latest），校验它现在能解析
-//	`name@version` → 原样保存（钉死），校验那一版存在
-//	能力 id         → 转成 `name@version`（**输入兼容**，绝不把 id 存进 ref 列）
-//
-// id 那条是给「P2.2 之前的客户端 / e2e」留的一个版本：它们只会传
-// `capability_versions.id`。这也是**唯一**会往库里写钉死引用的旧路径——
-// 用户的意图本来就是「就是这个 id 那一版」，钉死正好等价。
-//
-// 解析不到返回 ErrNotFound；如果那个引用在**别的命名空间**里存在，
-// 返回 *CrossNamespaceError（I11：跨命名空间引用一律 400，不静默当成「不存在」——
-// 后者会让「我把 staging 的能力 id 填进 prod 了」变成一个查不到的谜）。
-func (d *DB) resolveLinkRef(ctx context.Context, namespaceID, raw, what string) (string, *CapabilityVersion, error) {
-	return resolveLinkRefOn(ctx, d, namespaceID, raw, what)
-}
-
-// resolveLinkRefOn 是 resolveLinkRef 的 ex 版（验参与归一逻辑**只有这一份**）。
-func resolveLinkRefOn(ctx context.Context, ex queryExec, namespaceID, raw, what string) (string, *CapabilityVersion, error) {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return "", nil, fmt.Errorf("%w: empty %s", ErrRefUnresolved, what)
-	}
-	if c, err := resolveRefOn(ctx, ex, namespaceID, s); err == nil {
-		// 原样保存用户给的引用：`name` 就是跟随，`name@1` 就是钉死。
-		return s, c, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return "", nil, err
-	}
-
-	// 兼容：传的是能力 id（P2.2 之前的调用方）。转成 name@version，
-	// **不**把 id 写进 ref 列——ref 列只放引用，这是这次迁移的全部意义。
-	if c, err := getCapabilityByIDOn(ctx, ex, namespaceID, s); err == nil {
-		return FormatRef(c.Name, c.Version), c, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return "", nil, err
-	}
-
-	// 本命名空间里没有：如果别处有，说明是跨命名空间引用（I11），要明确报出来。
-	if other, err := namespaceOfCapabilityKeyOn(ctx, ex, s); err != nil {
-		return "", nil, err
-	} else if other != "" && other != namespaceID {
-		return "", nil, &CrossNamespaceError{What: what, Want: namespaceID, Got: other}
-	}
-	return "", nil, fmt.Errorf("%w: %s %q", ErrNotFound, what, s)
-}
-
-// namespaceOfCapabilityKey 在**全局**范围里找一个能力（按引用名或 id），
-// 返回它所属的 namespace_id；找不到返回 ""。
-//
-// 只在解析失败的路径上调用（成功路径一次都不查）：它存在的唯一目的是把
-// 「跨命名空间引用」与「写错名字」区分开——两者在只查本命名空间的视图里长得一样，
-// 但一个是配置越界（要让用户看见），一个是拼写错误（也要让用户看见，但文案不同）。
-func (d *DB) namespaceOfCapabilityKey(ctx context.Context, key string) (string, error) {
-	return namespaceOfCapabilityKeyOn(ctx, d, key)
-}
-
-// namespaceOfCapabilityKeyOn 是 namespaceOfCapabilityKey 的 ex 版。
-func namespaceOfCapabilityKeyOn(ctx context.Context, ex queryExec, key string) (string, error) {
-	name, version, pinned := SplitRef(key)
-	var ns string
-	var err error
-	if pinned {
-		err = ex.queryRowContext(ctx,
-			`SELECT namespace_id FROM capability_versions WHERE name = ? AND version = ? LIMIT 1`,
-			name, version).Scan(&ns)
-	} else {
-		err = ex.queryRowContext(ctx,
-			`SELECT namespace_id FROM capability_versions WHERE name = ? LIMIT 1`, name).Scan(&ns)
-	}
-	if err == nil {
-		return ns, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("lookup capability namespace by ref: %w", err)
-	}
-	// 再按 id 试一次（老客户端的形状）
-	err = ex.queryRowContext(ctx,
-		`SELECT namespace_id FROM capability_versions WHERE id = ?`, key).Scan(&ns)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("lookup capability namespace by id: %w", err)
-	}
-	return ns, nil
-}
-
-// refLookupKeys 返回「用来匹配这一端引用」的候选值（精确的在前）。
-//
-// 为什么可能有两个：调用方（控制台 / e2e / 老客户端）可能用**能力 id** 来定位
-// 一条 link（P2.2 之前 id 就是主键的一部分）。这时它真正的意图是「这条 link」，
-// 而库里那一端可能是 `name@1`，也可能是 `name`（跟随 latest）——两种都要删/查到。
-//
-// 传进来的本身就是引用（`name` / `name@version`）时**只有一个候选**：
-// `fixer@1` 与 `fixer` 是两条不同的 link，绝不能互相匹配。
-func (d *DB) refLookupKeys(ctx context.Context, namespaceID, raw string) []string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return nil
-	}
-	if _, _, pinned := SplitRef(s); pinned {
-		return []string{s}
-	}
-	// 先看它是不是一个已知的能力名（是 → 库里就是这个名字，唯一候选）
-	if _, err := d.GetCapabilityLatest(ctx, namespaceID, s); err == nil {
-		return []string{s}
-	}
-	// 不是名字：试 id（输入兼容）
-	if c, err := d.GetCapabilityByID(ctx, namespaceID, s); err == nil {
-		return []string{FormatRef(c.Name, c.Version), c.Name}
-	}
-	return []string{s}
 }
 
 // nsRefIndex 是「一个命名空间的能力定义」在内存里的引用索引（一次查表，多次解析）。

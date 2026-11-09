@@ -14,7 +14,9 @@ import (
 // 设计见 docs/design/namespaces.md，契约 §2.1.1 / 不变量 I11。
 // （I10「一切租户数据先过 org_id」随组织层一起作废，重写留给阶段 3。）
 //
-// 一句话：能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照**全部**属于某个命名空间。
+// 一句话：能力 / 边 / 源 / 事件 / 任务 / 部署 / 预案**全部**属于某个命名空间。
+// 节点是集群级对象（不绑 ns）：一台机器服务哪些 ns 由「申报 ∩ 授权」决定，
+// 这里的 NodeCount 是**推导量**（在线且被授权使用该 ns 的机器数），不是所有权。
 // 组织（org）这一层已经删除：一套部署 = 一个团队，`namespace_id`
 // 是行上唯一的隔离维度，没有比它更粗的过滤锚点了。
 const (
@@ -142,9 +144,8 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 // 空列表返回 []（不变量 I9）。
 func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	rows, err := d.cachedQueryContext(ctx,
-		// v4 的 nodes 是集群级对象（不绑 ns），所以这里的 NodeCount 恒为 0：
-		// 一台机器服务哪些 ns 由 node_configs.namespaces（授权）× 节点申报决定，
-		// 按 ns 反查节点属于派发期/展示层（G1-3）的事，不是命名空间行的计数。
+		// v4 的 nodes 是集群级对象（不绑 ns），NodeCount 由「在线 × 申报 ∩ 授权」
+		// 在 Go 侧推导（见下面 nodeCountsByNamespace）：它是展示计数，不是所有权。
 		`SELECT n.id, n.slug, n.name, n.created_at,
 		        (SELECT count(*) FROM capability_versions c WHERE c.namespace_id = n.id),
 		        0,
@@ -155,17 +156,81 @@ func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list namespaces: %w", err)
 	}
-	defer rows.Close()
 	out := []*Namespace{}
 	for rows.Next() {
 		var ns Namespace
 		if err := rows.Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt,
 			&ns.CapabilityCount, &ns.NodeCount, &ns.SourceCount, &ns.EdgeCount); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan namespace: %w", err)
 		}
 		out = append(out, &ns)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// 先把结果集读完并关闭，再发第二个查询（`:memory:` 库连接池上限是 1，
+	// 边读边查会自己把自己锁死）。
+	rows.Close()
+
+	counts, err := d.nodeCountsByNamespace(ctx, out)
+	if err != nil {
+		return nil, err
+	}
+	for _, ns := range out {
+		ns.NodeCount = counts[ns.Slug]
+	}
+	return out, nil
+}
+
+// nodeCountsByNamespace 推导每个命名空间的在线节点数（Node.status 的 counts.nodes）。
+//
+// 一台节点算某个 ns 的「在线节点」当且仅当：status=online，且
+// ns ∈ node_configs.namespaces（授权，缺省 ["*"]）∩ nodes.declared_namespaces（申报）。
+// 这与 EligibleNodes 的授权判定同一份实现（intersectNamespaces），不另写一套口径。
+func (d *DB) nodeCountsByNamespace(ctx context.Context, namespaces []*Namespace) (map[string]int, error) {
+	counts := make(map[string]int, len(namespaces))
+	if len(namespaces) == 0 {
+		return counts, nil
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT COALESCE(c.namespaces, '["*"]'), n.declared_namespaces
+		   FROM nodes n
+		   LEFT JOIN node_configs c ON c.node_id = n.id
+		  WHERE n.status = ?`, NodeStatusOnline)
+	if err != nil {
+		return nil, fmt.Errorf("count namespace nodes: %w", err)
+	}
+	defer rows.Close()
+	type lists struct{ authorized, declared []string }
+	online := []lists{}
+	for rows.Next() {
+		var rawAuthorized, rawDeclared string
+		if err := rows.Scan(&rawAuthorized, &rawDeclared); err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		authorized, err := decodeStringList(rawAuthorized)
+		if err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		declared, err := decodeStringList(rawDeclared)
+		if err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		online = append(online, lists{authorized: authorized, declared: declared})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count namespace nodes: %w", err)
+	}
+	for _, ns := range namespaces {
+		for _, n := range online {
+			if namespacesAllow(intersectNamespaces(n.authorized, n.declared), ns.Slug) {
+				counts[ns.Slug]++
+			}
+		}
+	}
+	return counts, nil
 }
 
 // CreateNamespace 建命名空间（同一事务内完成）。
@@ -231,10 +296,12 @@ func (d *DB) RenameNamespace(ctx context.Context, id, name string) error {
 
 // DeleteNamespace 删命名空间。
 //
-// 两档：
-//   - 默认：里面还有 sources / edges / tasks / nodes 时返回 *NamespaceBlockedError（HTTP 409），
-//     把这些对象列出来——删命名空间 = 里面的机器全部掉线，不能当"清理配置"做。
-//   - force=true：显式级联删除，连机器、能力、事件、任务、图快照一起删。
+// 两档（api-conventions §7.5：沿用现有删除语义，不做新的级联协议）：
+//   - 默认：里面还有能力 / 源 / 预案 / 任务 / 事件 / 部署时返回 *NamespaceBlockedError（HTTP 409），
+//     把这些对象列出来——删命名空间不能当"清理配置"做。
+//   - force=true：显式级联删除，连能力、源、预案、任务、事件、部署一起删。
+//
+// 节点（集群级）不在删除范围：一台机器可能同时服务别的 ns，删一个 ns 不该顺手删机器。
 //
 // **不允许删最后一个命名空间**：删了之后这套部署就没有"这套流程属于哪里"了，
 // 而代码里不存在「没有命名空间」的分支（契约 §2.1.1）。
@@ -273,12 +340,16 @@ func (d *DB) DeleteNamespace(ctx context.Context, id string, force bool) error {
 	// （一台机器可能同时服务别的 ns）。其余子表都有 ON DELETE CASCADE，
 	// 但这里仍显式删——顺序确定，且不依赖 SQLite 的级联触发顺序。
 	stmts := []string{
+		`DELETE FROM emits WHERE task_id IN (SELECT id FROM tasks WHERE namespace_id = ?)`,
 		`DELETE FROM tasks WHERE namespace_id = ?`,
+		`DELETE FROM playbook_installs WHERE namespace_id = ?`,
 		`DELETE FROM playbooks WHERE namespace_id = ?`,
 		`DELETE FROM events WHERE namespace_id = ?`,
 		`DELETE FROM edges WHERE namespace_id = ?`,
 		`DELETE FROM sources WHERE namespace_id = ?`,
+		`DELETE FROM deployments WHERE namespace_id = ?`,
 		`DELETE FROM capability_versions WHERE namespace_id = ?`,
+		`DELETE FROM namespace_configs WHERE namespace_id = ?`,
 		`DELETE FROM namespaces WHERE id = ?`,
 	}
 	for _, q := range stmts {
@@ -298,10 +369,12 @@ func (d *DB) namespaceBlockingObjects(ctx context.Context, namespaceID string) (
 		label string
 		query string
 	}{
+		{"capabilities", `SELECT count(*) FROM capability_versions WHERE namespace_id = ?`},
 		{"sources", `SELECT count(*) FROM sources WHERE namespace_id = ?`},
-		{"edges", `SELECT count(*) FROM edges WHERE namespace_id = ?`},
-		{"tasks", `SELECT count(*) FROM tasks WHERE namespace_id = ?`},
 		{"playbooks", `SELECT count(*) FROM playbooks WHERE namespace_id = ?`},
+		{"tasks", `SELECT count(*) FROM tasks WHERE namespace_id = ?`},
+		{"events", `SELECT count(*) FROM events WHERE namespace_id = ?`},
+		{"deployments", `SELECT count(*) FROM deployments WHERE namespace_id = ?`},
 	}
 	out := []string{}
 	for _, p := range probes {

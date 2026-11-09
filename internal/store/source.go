@@ -63,13 +63,13 @@ type Source struct {
 
 	// Targets 是源的目标能力（多行 = 扇出），每个带自己的参数模板。
 	//
-	// 它是**入口边的 DTO**（P2.1）：库里只有 edges 一份真相——每个 target 对应一条
-	// from_is_source=1、from_ref=<来源名>、from_port='*' 的边，模板存在 edges.mapping 上。
-	// 建源/改源就是重建这些边；读源就是从边读回来。
+	// 它是**入口边的 DTO**（source.md §4）：每个 target 在 edges 里投影成一条
+	// from_is_source=1、from_ref=<来源名> 的边（to_ref = 目标引用）；
+	// 参数模板属于源自己的配置。建源/改源就是重建这些边。
 	Targets []SourceTarget `json:"targets"`
 }
 
-// SourceTarget 是一个出口：能力 + 该能力专属的参数模板（= 入口边的 mapping）。
+// SourceTarget 是一个出口：能力 + 该能力专属的参数模板（source.md §4）。
 //
 // 为什么参数按出口分别存：每个能力的 params_schema 各不相同（字段名、
 // 必填项都不同），一份公共参数必然对不上至少一边，触发时被剪枝却无从察觉。
@@ -78,7 +78,7 @@ type Source struct {
 // 语义会有两份实现：事件入口走 edges、源触发走另一条旁路。现在两者都只认入口边。
 type SourceTarget struct {
 	CapabilityID string `json:"capabilityId"`
-	// Params 是这个出口的参数模板（入口边的 mapping，触发时按目标能力分别求值）。
+	// Params 是这个出口的参数模板（触发时按目标能力分别求值）。
 	// 可以写常量，也可以写 `{{payload 路径}}` 引用；空对象 = 不额外传参。
 	Params map[string]any `json:"params,omitempty"`
 }
@@ -576,24 +576,18 @@ func scanSource(r scanner) (*Source, error) {
 // 它是「校验（要读能力定义，在事务之前）」与「写库（事务之内）」两半之间的唯一交接物：
 // 两半只认这一个形状，免得一边按 SourceTarget 写、另一边按 Edge 写。
 type entryEdge struct {
-	// toRef 是右端引用（P2.2）：`name@version` 钉死。
+	// toRef 是右端引用：`name@version` 钉死当前选中的那一版。
 	//
 	// 源的目标在控制台上是「选一个能力（某个版本）」：把它搬成**跟随 latest** 会改变
-	// 已有源的行为（升级一次就改线），而源不在 P2.2 的范围内——所以这里显式钉死
-	// 当前选中的那一版，与「存量 link 一律钉死 `name@version`」同一个口径。
+	// 已有源的行为（升级一次就改线），所以这里显式钉死当前选中的那一版。
 	toRef string
-	// mapping 是已归一化的参数模板（'{}' = 没有模板）。
-	mapping json.RawMessage
 }
 
 // checkSourceTargets 校验源的每个目标，返回可落库的入口边列表。
 //
-// 两件事：
-//  1. I11 第 ② 条：目标能力必须与源**同命名空间**（违反一律报错，不静默忽略——
-//     静默忽略会让人以为配置生效了）；
-//  2. 参数模板必须是合法的 mapping：与 CreateEdge 同一套硬拒。入口边是库里唯一
-//     真相，若这里放行一份坏模板，「保存时就拒」那道门形同虚设——库里会出现一条
-//     只能等到触发时才以 param_missing 暴露的边。
+// I11 第 ② 条：目标能力必须与源**同命名空间**（违反一律报错，不静默忽略——
+// 静默忽略会让人以为配置生效了）。参数模板的写入期校验（`$(payload...)` 形状，
+// source.md §4.1/§6）属于源领域，在 G1-4 重写 source 写路径时落地。
 func (d *DB) checkSourceTargets(ctx context.Context, s *Source) ([]entryEdge, error) {
 	out := make([]entryEdge, 0, len(s.Targets))
 	for _, t := range s.Targets {
@@ -607,48 +601,24 @@ func (d *DB) checkSourceTargets(ctx context.Context, s *Source) ([]entryEdge, er
 		if err != nil {
 			return nil, fmt.Errorf("出口能力 %s: %w", t.CapabilityID, err)
 		}
-		paramsJSON, err := marshalTargetParams(t.Params)
-		if err != nil {
-			return nil, err
-		}
-		// fromIsSource=true：入口边允许模板（这正是这条路径存在的理由）。
-		mapping, err := checkEdgeMapping(def, json.RawMessage(paramsJSON), true)
-		if err != nil {
-			return nil, fmt.Errorf("出口 %s@%d 的参数不合法: %w", def.Name, def.Version, err)
-		}
-		out = append(out, entryEdge{toRef: FormatRef(def.Name, def.Version), mapping: mapping})
+		out = append(out, entryEdge{toRef: FormatRef(def.Name, def.Version)})
 	}
 	return out, nil
 }
 
 // replaceEntryEdgesTx 用「先删该源的全部入口边，再逐 target 建边」重建源的目标。
 //
-// 为什么是删+建而不是逐条 diff：入口边的主键是 (namespace_id, from_is_source,
-// from_ref, from_port, to_ref)，改名、删目标、换目标都能被这一次删除兜住，
+// 为什么是删+建而不是逐条 diff：改名、删目标、换目标都能被这一次删除兜住，
 // 不会留下没人能派发的残留行。代价是 created_at 会刷新——边不存版本，也不参与调度。
 //
 // 事务由调用方持有（与 sources 行的写入同一个事务）：失败回滚后库里仍是旧图。
+// 投影实现与 ReplaceSourceEdges 共用一份（replaceSourceEdgesOn）。
 func replaceEntryEdgesTx(ctx context.Context, tx *sql.Tx, namespaceID, sourceName string, edges []entryEdge, now int64) error {
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM edges WHERE namespace_id = ? AND from_is_source = 1 AND from_ref = ?`,
-		namespaceID, sourceName); err != nil {
-		return fmt.Errorf("clear entry edges: %w", err)
-	}
+	refs := make([]string, 0, len(edges))
 	for _, e := range edges {
-		// from_port='*'：源能收任意事件类型（EdgesFrom 对入口边做 OR '*' 匹配）。
-		// literals='{}'：源的常量走 mapping 里的字面量值，不在边上另开一列。
-		// ON CONFLICT DO UPDATE：同一份 targets 里重复写了同一个能力时，后写入的模板生效
-		// （不可能变成两行——主键不允许）。
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO edges (namespace_id, from_is_source, from_ref, from_port, to_ref, literals, mapping, created_at)
-			 VALUES (?,1,?,'*',?,'{}',?,?)
-			 ON CONFLICT(namespace_id, from_is_source, from_ref, from_port, to_ref)
-			 DO UPDATE SET mapping = excluded.mapping`,
-			namespaceID, sourceName, e.toRef, string(e.mapping), now); err != nil {
-			return fmt.Errorf("insert entry edge: %w", err)
-		}
+		refs = append(refs, e.toRef)
 	}
-	return nil
+	return replaceSourceEdgesOn(ctx, txExec{tx: tx}, namespaceID, sourceName, refs)
 }
 
 // CreateSource 建一个源，并把它的目标写成**入口边**（P2.1）。
@@ -656,8 +626,8 @@ func replaceEntryEdgesTx(ctx context.Context, tx *sql.Tx, namespaceID, sourceNam
 // targets 至少一个：没有出口的源产生的事件永远派不出去，
 // 那正是我们要消灭的"静默失败"。空列表直接拒绝。
 //
-// 库里只有 edges 一份真相：每个 target = 一条 from_is_source=1、from_ref=<来源名>、
-// from_port='*' 的边，参数模板存 edges.mapping（没有 source_targets 这张旁路表）。
+// 每个 target 在 edges 里投影成一条 from_is_source=1、from_ref=<来源名> 的入口边
+// （没有 source_targets 这张旁路表）。
 func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s == nil {
 		return fmt.Errorf("create source: nil")
@@ -692,8 +662,7 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	}
 	s.Config = cfg
 
-	// I11 第 ② 条：出口能力必须属于**同一个命名空间**；顺带把参数模板校验成
-	// 合法的 mapping（与 CreateEdge 同一套硬拒，否则库里会出现一条永远求值失败的边）。
+	// I11 第 ② 条：出口能力必须属于**同一个命名空间**。
 	edges, err := d.checkSourceTargets(ctx, s)
 	if err != nil {
 		return fmt.Errorf("create source: %w", err)
@@ -925,8 +894,7 @@ func (d *DB) UpdateSource(ctx context.Context, s *Source) error {
 	if err != nil {
 		return err
 	}
-	// I11 第 ② 条同样适用于更新路径（建完再改一样能引入跨命名空间引用）；
-	// 参数模板也在这里过一遍与 CreateEdge 同一套的硬拒。
+	// I11 第 ② 条同样适用于更新路径（建完再改一样能引入跨命名空间引用）。
 	edges, err := d.checkSourceTargets(ctx, s)
 	if err != nil {
 		return fmt.Errorf("update source: %w", err)
@@ -1063,18 +1031,6 @@ func isUniqueViolation(err error) bool {
 	}
 	s := err.Error()
 	return strings.Contains(s, "UNIQUE constraint failed") || strings.Contains(s, "constraint failed: UNIQUE")
-}
-
-// marshalTargetParams 把参数序列化成 JSON（nil → "{}"）。
-func marshalTargetParams(p map[string]any) (string, error) {
-	if len(p) == 0 {
-		return "{}", nil
-	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return "", fmt.Errorf("marshal params: %w", err)
-	}
-	return string(b), nil
 }
 
 // unmarshalTargetParams 反序列化参数（坏数据 → nil，不阻塞读取）。

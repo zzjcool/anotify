@@ -132,8 +132,9 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 		},
 		"edges": {"namespace_id", "from_is_source", "from_ref", "to_ref", "created_at"},
 		"node_configs": {
-			"node_id", "namespaces", "vars", "limits", "revision", "resource_version",
-			"applied_revision", "applied_hash", "applied_at", "updated_at",
+			"node_id", "namespaces", "vars", "limits", "local_vars", "local_limits",
+			"revision", "resource_version", "applied_revision", "applied_hash",
+			"applied_at", "updated_at",
 		},
 		"namespace_configs": {
 			"namespace_id", "vars", "revision", "resource_version", "updated_at",
@@ -332,4 +333,24 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestSchemaBaselineNodeFactsColumns G1-3 的节点事实列（hello 快照的落点）。
+//
+// 这些列不是「可选缓存」：没有它们，NodesAvailable 的 CommandMissing /
+// NamespaceUnauthorized 与节点页的 status.* 都答不出来（anode.md §0/§3.3/§6）。
+func TestSchemaBaselineNodeFactsColumns(t *testing.T) {
+	db := openTestDB(t)
+	nodes := columnNames(t, db, "nodes")
+	for _, col := range []string{"facts", "declared_capabilities", "declared_namespaces"} {
+		if !nodes[col] {
+			t.Errorf("nodes 缺列 %q（现有 %v）", col, sortedKeys(nodes))
+		}
+	}
+	cfg := columnNames(t, db, "node_configs")
+	for _, col := range []string{"local_vars", "local_limits"} {
+		if !cfg[col] {
+			t.Errorf("node_configs 缺列 %q（现有 %v）", col, sortedKeys(cfg))
+		}
+	}
 }

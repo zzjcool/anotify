@@ -1475,7 +1475,7 @@ func (d *DB) CancelTask(ctx context.Context, namespaceID, taskID string) error {
 		return err
 	}
 	if task.NodeID != nil {
-		if err := d.ReleaseInstanceByTask(ctx, *task.NodeID, taskID); err != nil {
+		if err := d.ReleaseSlotByTask(ctx, *task.NodeID, taskID); err != nil {
 			return err
 		}
 	}
