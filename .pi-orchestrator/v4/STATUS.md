@@ -25,7 +25,7 @@
 | v4-plan-node | 节点执行/emit/租约/协议/安装命名 | 只读侦察完成 |
 | v4-plan-frontend-tests | 静态前端/API/OpenAPI/测试工具链 | 只读侦察完成 |
 | v4-plan-second-opinion | 仅分工第二意见 | 完成；采纳Go单一原子团队+独立前端，不采纳削减E2E或核心范围建议；其报告分支/MR不纳入产品改动 |
-| T1 core-runtime (`v4-core-runtime`) | 核心Go/store/调度/server/API+工具链，G1→G2→G3→G4 | implementing；rev2将protocol/anode交T3，消费冻结快照；父go test全量+contract+e2equick门禁不变 |
+| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），父保护snapshot待fresh接续；原全Go/contract/e2equick门禁不变 |
 | T2 frontend (`v4-frontend-recovery`) | 静态前端+sitegen+前端测试，复用F1接续F2→F3 | 原v4-frontend因checkpoint final提前terminal未交付；新隔离centurion已启动恢复，model显式gpt-6.1-sol，父make fe+sitegen+Node三门禁不变 |
 | T3 anode (`v4-anode`) | 纯共享protocol+节点本机执行/emit/config/GC/install，N1→N2→N3 | 新隔离centurion已派gpt-6.1-sol；先N1协议接缝/handoff；父protocol/artifact/anode测试+vet+diffcheck门禁 |
 
@@ -109,12 +109,28 @@ T2已提交7a7e96e四页诊断阶段（实际测试/相邻回归通过，extensi
 
 A3精确slot/reap wire缺口已父冻结（SLOT-HANDOFF.md），scout核slot0based/int且GrantLease实际方法名：Node accept前预留slot回present标识、grant原子echo同slot+assignment，dispatch共享assignmentExpiresAt30s不授执行权；cancel/ack历史leaseId+slot、oldreap只释旧occupancy不放旧result/emit；Hello slot/busy presence未知不idle、configapplied可实例快照，旧wireconcurrency移除；reject仅stale_config|slot_unavailable（正式扩闭集，启动前noattempt）。不采纳bootId/occupancySeq多级计数框架，T3唯一proto作者当前同writer实现、T1安装settle后S消费，5doc父writer同步；不减预算/测试、不引新资源。T2c1无需等内部wire，c2实例未知不假闲。
 
-20:07 T3真实阻塞不是空延提醒：组长session停livecollect28m，leaf anode-n2b最后19:31裸go run探针保父pipe写端未关却ReadAll读端，必等EOF无timeout。父仅abort/continue组长collect保context/code，20:10status已活跃；要求directowner立刻abort或必要stopforce单writer工具、确认结束才freshclose，不父越级/不kill全部Go。父只读完整runtime snapshot `/tmp/anotify-v4-anode-runtime-checkpoint/` 防丢代码；已有真实Pipe端接反根因需修并保持完整测试/A3新字段。当前是否leaf已终止等实际receipt，未宣称解决。
+20:07 T3真实阻塞不是空延提醒：组长session停livecollect28m，leaf anode-n2b最后19:31裸go run探针保父pipe写端未关却ReadAll读端，必等EOF无timeout。父仅abort/continue组长collect保context/code，20:10status已活跃；要求directowner立刻abort或必要stopforce单writer工具、确认结束才freshclose，不父越级/不kill全部Go。父只读完整runtime snapshot `/tmp/anotify-v4-anode-runtime-checkpoint/` 防丢代码；已有真实Pipe端接反根因需修并保持完整测试/A3新字段。T3后续实际回执确认：已abort N2B当前裸debug turn、保留context/代码并续同writer，未重派并发；已把Pipe r,w根因与完整A3卡传入，boundedprobe/timeouttest，停止collect livewriter。此为工具解除与续工确认，Pipe修复/Node功能测试仍需实测，不宣称整体已解决。
 
 G1-5b已8497d7f落地真实安装/回执历史（7store/source/schema/test路径），工具collectunknown不伪verified。父隔离archive独立storebuild+v4test/playbook/sourcespec测试+vetPASS（log/tmp/v4-core-g15b-parent-independent-verify.log），非全队gate。纪律：worker违规push隔离origin/pi-subagent/v4-core-runtime-775b3657@8497d7f，localtracking已核；父不删远端/forcepush/合main，worker退役不再写。根checkout未集成子队产品、settings保护。下一S消费A3修机器snapshot/历史reap与真实busy，不被安装PASS掩盖。
 
 T1 fresh-context安排已批准：原centurion长context接近上限，S唯一writer先safe settle（或具体记录T3实际code依赖），收齐任务/测试/接口/映射/完整未完成列表并cleanbranch checkpoint；之后不再派大writer，明确BLOCKED needs fresh-context continuation，由父subagent新隔离T1接同范围/原3门禁。没有强制compact工具，不编造resume能fresh；不重读278K日志/不合部分未验代码。详CORE-RECOVERY.md。A3技术已closed，等的是T3 Go纯delta，不等父投票。
 
-20:22 T1 L2实际核查：S task_attempts/机器snapshot/slots/reap/GC及新测试有真实diff，centurion仍活跃但context约314K；父提醒延30m不改验收，要求S收口后只safe checkpoint并fresh恢复，不再此上下文派大G1-6/G2/G3。A3docworker返回ok:false仅因原verify任务文字未展示，父已按派发原命令独立执行PASS、11JSON例子通过；fresh v4-a3-slot-doc-review ok:true/0findings，5doc规则无互斥/onlystale残留，准备提交并给各队只读支持。工具attested rejected如实记录不伪verified，文档由父独立验收。
+20:22 T1 L2实际核查：S task_attempts/机器snapshot/slots/reap/GC及新测试有真实diff，centurion仍活跃但context约314K；父提醒延30m不改验收，要求S收口后只safe checkpoint并fresh恢复，不再此上下文派大G1-6/G2/G3。A3docworker返回ok:false仅因原verify任务文字未展示，父已按派发原命令独立执行PASS、11JSON例子通过；fresh v4-a3-slot-doc-review ok:true/0findings，5doc规则无互斥/onlystale残留，已提交 `8483d85`（5设计+安全接续计划，settings未包含），父生成只读支持 `/tmp/anotify-v4-a3-docs-handoff/docs-only.patch`（base0a→848，5design+SLOT）发3团队安全边界原样接；不合整父分支/不双writer。工具attested rejected如实记录不伪verified，文档由父独立验收。
+
+T2 c1最后DELETE/4语errors case精确修后原9case全部EXIT0、8视口无错误，Node92/92/fe/sitegen/Vocabulary通过；DELETE通过真实两次模板PUT造stale窗口而非手改RV，保409/显式刷新/二确认/kept历史，中文使用根URL。writer待收正式settledreceipt后stage提交→c2 Node/config/retention/真实busy未知/A3，F3/freshreview/真实T1集成仍未完。父不将mock绿当完整产品交付。
+
+20:34 T2 L2实际检查：090365e Playbook闭包已提交；c2Node/config/docs与保留keys/login/security/4locale/mock/模型/tests真实修改，非停工，延提醒30m不改验收。父强调Node根/config共享CAS、retention0永久不能JS默认吞、Token仅一次明文无GET、busy未知非idle及保留域回归。组长context258K，F3用freshwriter具体卡/已存facts不重读大测试；如需fresh管理器须c2安全checkpoint再提出，不final等任务/不缩水。
+
+20:38 T2 implementing180min advisory超时：实际c2 Node/config/保留域有进展，父决定继续当前writer不abort/不假跳phase。context287K，批准c2safe验收/cleancommit后fresh-context接F3/终review（若必要），完整CHECKPOINT列旧阶段实际PASS与acceptanceunknown/剩scope，不重做页面不削3verify；没有父强compact入口。详FRONTEND-FINISH-RECOVERY.md，当前c2不得提前final丢livewriter。
+
+T3真实修复回执：Pipe r,w ownership已修（非CombinedOutput/全env绕过），定向4tests实际PASS：LeaseACKLossReapsGroupAndFreesSlot、CancelReapsGrandchildHoldingPipesAndReleasesSlot、EmptyExportDirIsValidEmptyArtifacts、DualStreamLogsCaptured（总约0.19s），旧debug无进程。A3协议/slot_tests已修改但当前编译FAIL undefined TaskRejectReasons，修正中；nodeledger/fixtures及A2共享workDir/重试/上传全suite未整验，不给未完成proto delta、不宣称N2B完成。下一共享635→final含guard/A2/A3交接，当前只有0b306cc A2已提交。
+
+20:44 T3 L2核查：实际N2B全链62fb890（21files/运行/lease/emit/产物/ops/tests）与N3三命令安装86c4100已提交，当前N3bootstrap/main/install/real_e2e/Docker/script仍待收齐非DONE，延提醒30m。最新protocolcd6f543 A3已实际落，父capture **635→cd6** `/tmp/anotify-v4-a3-protocol-handoff/protocol-delta.patch`+SHA，独立archiveapply/protoartifacttests+vetPASS，fresh4点review后转T1，避免S因缺原码空等。要求T3给实际N2Bverified/test证据与N3全量/fresh3角review，不以commit标题代验收。
+
+T1已达到safe交接条件：clean f717f711…（production21253ed，S extensionverified/161外部testsPASS），无livewriter；实际全GoFAIL1/contractFAIL2/e2equick未跑已记录，不当T1完成。RECOVERY-CHECKPOINT+实际接口/TEST-MAPPING/下个G1-6C1卡完整，父批准合法blocked终止长context后freshrecovery接全范围。
+
+A3codecd6 freshreview **2项阻塞**：Cancel/CancelAck.Validate未拒nilslot，测试漏此反例；exec_frames旧注释仍onlystale/命令reject。已父转T3同N3 writer安全精准修，不重复N2B/不双writer。纯proto虽测试PASS不冻结交付，待最终635→newdelta；已有node字段正式name非DBUID，rootSLOT勘误。T1恢复队可先marker/旧测试/CAS闭包不消费错误nilguardproto。
+
+旧T1已正式safe BLOCKED，collect确认phasefailed/不再派工、无新push/merge；clean f717f711（production21253ed），各writer/review已收齐。父capture `/tmp/anotify-v4-core-recovery/core-production-and-evidence.patch`（base0e，只T1产品/纯protocol支持+本team证据，无settings/design/UI）+SHA及CHECKPOINT，旧WT未改。计划新core-runtime-recovery由文件继续完整G1闭包/G2-G4，不重做已过领域/不全读353Ksession。A3codecd6两个review项待T3小修，新team先layoutmarker/Open边界等已确任务；原3最终门禁不减。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

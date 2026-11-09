@@ -1,4 +1,6 @@
-# T1 fresh-context 安全接续安排（父批准，待 S 检查点）
+# T1 fresh-context 安全接续安排（父批准，S 检查点已完成）
+
+最终旧团队已安全BLOCKED/failed，不是T1DONE：clean HEAD `f717f711120b3e1d4672a6c9c5127977be986bd0`，生产S检查点 `21253ed`，全部writer/review收齐。阶段161外部测试通过；实际全Go测试FAIL1、contractFAIL2、e2equick未跑，完整记录在团队checkpoint。父已只读保存代码+证据到 `/tmp/anotify-v4-core-recovery/core-production-and-evidence.patch`（base0e0ff0f）及SHA/checkpoint；旧worktree保留。
 
 ## 原因与边界
 
@@ -24,12 +26,16 @@
 - 1b420e6：T3权威63570df E1/A1纯协议支持。
 - 8497d7f：Store安装事务/回执实例历史。父独立阶段包验证PASS，不是全Go门禁。
 - 9a2b57d：父A2文档原样支持。
+- 21253ed：S阶段历史attempt、机器pin、槽回收事实（仍需fresh correctness review，不能只数量PASS）。
+- f717f71：最终clean恢复检查点，原全Go/contract真实失败和未完成项完整保存。
+
+T3 A3当前代码 `cd6f543` 虽独立机械测试通过，但freshreview有Cancel/ACK缺slot校验与旧reject注释两项，T3正在精准修；新team在最终pure delta确认前不把此视为完整验证，先执行已有G1-6C1 layout/Open测试闭包。
 
 ## 必须接续的完整范围
 
 T1仍负责store/route/ws/source/trigger/lease/server/API/OpenAPI/契约/构建/seed/非前端E2E/旧agent退役。protocol、cmd/anode归T3；web/sitegen/前端专属tests归T2，不得抢写。
 
-未完成至少：S后复审、原store测试闭包、原子CAS接口、A1typedattemptmanifest/GC引用；G2中枢调度与WS/日志部署/emit；G3namespace资源API与Status/status派生/OpenAPI；G4工具链/seed/e2e及真实最终门禁。具体以旧团队最终checkpoint逐项确认，不把此表替代实际验收。
+未完成至少：S后复审、原store测试闭包、原子CAS接口、A1typedattemptmanifest/GC引用；**Open旧库拒绝边界**：旧v3与新v4都可能schema_version=1，必须独立v4layout marker（仅新空库baseline事务设置）+必需结构校验，不能只maxVersion>1。覆盖旧1/无版本/>1/unknownmarker/marker4半写/新库重开，拒绝不删除或补写旧数据；G2中枢调度与WS/日志部署/emit；G3namespace资源API与Status/status派生/OpenAPI；G4工具链/seed/e2e及真实最终门禁。具体以旧团队最终checkpoint逐项确认，不把此表替代实际验收。
 
 最终固定：`go test ./... -count=1`、`make contract`、`make e2e-quick`。父另跑fresh review及跨T1/T3/T2完整CI/build/E2E/页面验证；不能因fresh恢复放宽。
 

@@ -4,6 +4,7 @@
 
 ## 1. 标识与职责
 
+- 执行帧中已有 `node` 字符串指已登记的集群 `metadata.name`（即 anode.yaml.name），不是数据库内部 Node UID；中枢由认证会话映射数据库 nodeId，不能让正文 node 自由选择身份或记录。
 - 使用现有 Node 实例槽号 `slot`：整数 **0..N-1**，每槽最多一个能力进程；数据库 instanceId 是内部键，不是 wire slot。新分配必须符合本机当前有效预算，缩小预算时仍报告超出新范围的存量占用直至回收。
 - Node在 `task.accept` 前原子预留真实空闲槽，accept回报slot；中枢候选容量只是已知事实提示，grant事务必须复核该slot未绑定其它执行、Node/ns权限与预算、assignment当前有效。
 - 不在 dispatch 授权或让中枢自行猜另一个槽；只有 `lease.grant` 才持久计attempt/授权启动。旧 attempt 的真实槽必须由 task_attempts 与节点物理事实保留，不被当前 task 行覆盖。
@@ -14,6 +15,7 @@
 - `task.accept`：新增**必填有presence的 `slot`**，可用 `*int` JSON类型表达，0有效、缺失或负数无效；保留taskId/assignmentId/proposedAttempt/node。
 - `lease.grant`：回同一 `slot`，并带本次 `assignmentId`；保留taskId/attempt/node/leaseId/attemptToken/expiresAt。Node必须有匹配的pending reservation（taskId+assignmentId+proposedAttempt+slot）才允许启动，不能收到任意grant就执行。
 - `task.cancel` 与 `cancel.ack`：增加 `leaseId` 与有presence的 `slot`，保留taskId/attempt与既有reason/graceSec/processGroupReaped。Node取消必须按完整历史绑定定位，不停止同task的新attempt。
+- `task.cancel` / `cancel.ack` 的显式校验必须拒绝缺失 / null slot 或负数；present slot=0 合法，不得因条件只检查“非nil负数”而让缺绑定回执通过。
 - `cancel.ack`在进程组真正回收后发送。中枢从连接验证当前Node身份，再按**历史 task_attempts**的node+taskId+attempt+leaseId+slot核验；旧attempt当前执行token已无效也可报告物理回收，但不能因此让旧result/emit恢复授权。
 - 同时绑定Node槽账本到attempt/lease或等效唯一执行标识，释放旧ACK必须CAS匹配旧occupancy，不能仅检查busy_task==同一个logicaltask而清掉新attempt。重复ACK幂等；无匹配绑定不能清任何槽。该物理回收事实也可在自然结束、lease失效或重连恢复后补报；不是重新授权的任务结果，不要求旧执行仍running或必须收到一条当前cancel请求才能回收。
 
