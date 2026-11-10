@@ -259,7 +259,8 @@ func TestCancelAckMatrix(t *testing.T) {
 	}
 	// 错 lease：fail closed，不动任何槽/相位。
 	e.send(t, conn, ack("lease-wrong", 0, true))
-	time.Sleep(100 * time.Millisecond)
+	// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+	e.handled(t, conn)
 	if stored := e.task(t, task.ID); stored.Phase != store.TaskRunning {
 		t.Fatalf("错 lease 的 ACK 不得改相位: %+v", stored)
 	}
@@ -268,13 +269,15 @@ func TestCancelAckMatrix(t *testing.T) {
 	}
 	// 错 slot：同样 fail closed。
 	e.send(t, conn, ack(grant.LeaseID, 3, true))
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask == nil {
 		t.Fatalf("错 slot 的 ACK 不得清槽: %+v", inst)
 	}
 	// reaped=false：进程组没真回收，不得释放。
 	e.send(t, conn, ack(grant.LeaseID, 0, false))
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask == nil {
 		t.Fatalf("reaped=false 不得清槽: %+v", inst)
 	}
@@ -290,7 +293,8 @@ func TestCancelAckMatrix(t *testing.T) {
 	}
 	// 重复精确 ACK：幂等，且不把槽重新弄脏。
 	e.send(t, conn, ack(grant.LeaseID, 0, true))
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	if stored := e.task(t, task.ID); stored.Phase != store.TaskCancelled {
 		t.Fatalf("重复 ACK 不应改变终态: %+v", stored)
 	}
@@ -650,7 +654,8 @@ func TestUpgradeFrameAndAck(t *testing.T) {
 	}
 	// 失败回报：版本列保持旧值（二进制没换，不谎报成功）。
 	e.send(t, conn, &protocol.UpgradeAckFrame{Type: protocol.FrameUpgradeAck, OK: false, Error: "mystery"})
-	time.Sleep(100 * time.Millisecond)
+	// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+	e.handled(t, conn)
 	node, err := e.db.GetNode(context.Background(), e.node.ID)
 	if err != nil {
 		t.Fatalf("读节点: %v", err)

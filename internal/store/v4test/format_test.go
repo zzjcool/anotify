@@ -919,6 +919,267 @@ func TestFormatMarkerForeignKeysRequired(t *testing.T) {
 	}
 }
 
+// TestFormatMarkerGuttedTaskShapeCheckRejected marker=4 但 tasks 的具名表级 CHECK
+// 被改成恒真（列、主键、外键、唯一索引一个没变，只掏空 CHECK 表达式）。
+//
+// PRAGMA 不暴露 CHECK，所以「结构完整」的旧门禁看不见这条漂移；可这两条 CHECK 正是
+// tasks 行的唯一形状不变量：掏空它们等于允许「没有解析事实却有 Node/租约」的行、
+// 或「有 UID 但没有 digest/version」的行。两条都要被看见：第二条在 DDL 末尾，
+// 前面隔着大段注释与嵌套括号——只认第一条的解析器会漏掉它。
+func TestFormatMarkerGuttedTaskShapeCheckRejected(t *testing.T) {
+	for _, tc := range []struct{ name, constraint, old, replacement string }{
+		{
+			name:       "unresolved_failure_shape",
+			constraint: "tasks.tasks_unresolved_failure_shape",
+			old:        "capability_id IS NOT NULL OR (",
+			// 只动表达式：插一段 (1=1) OR 把未解析行的合法形状变成恒真，DDL 依然是合法 SQL。
+			replacement: "capability_id IS NOT NULL OR (1=1) OR (",
+		},
+		{
+			name:        "resolved_pin_shape",
+			constraint:  "tasks.tasks_resolved_pin_shape",
+			old:         "capability_id IS NULL OR (",
+			replacement: "capability_id IS NULL OR (1=1) OR (",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := seededFormatFixture(t)
+			raw := openRawFixture(t, path)
+			rebuildFormatFixtureTable(t, raw, "tasks", tc.old, tc.replacement)
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid, tc.constraint)
+			// hint 只证明点到了这条约束；再钉一次缺陷类别，防止误命中别的文案
+			// （例如「缺 CHECK」与「CHECK 不一致」是两种不同的退化）。
+			assertCheckDefect(t, path, "CHECK 约束与 baseline 不一致 "+tc.constraint)
+
+			// 拒绝不许顺带自愈：掏空的表达式必须原样留在库里。
+			raw = openRawFixture(t, path)
+			defer func() { _ = raw.Close() }()
+			var ddl string
+			if err := raw.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'`).Scan(&ddl); err != nil {
+				t.Fatalf("read gutted tasks ddl: %v", err)
+			}
+			if !strings.Contains(ddl, "1=1") {
+				t.Fatalf("坏库被自愈了：被掏空的 CHECK 又被改回 baseline:\n%s", ddl)
+			}
+			if !rawTableExists(t, path, "tasks") {
+				t.Fatal("拒绝时删了表：程序不许改用户的数据结构")
+			}
+			if got := rawRowCount(t, path, "tasks"); got != 1 {
+				t.Fatalf("拒绝后业务数据丢了：tasks 行数 = %d, want 1", got)
+			}
+		})
+	}
+}
+
+// TestFormatMarkerDroppedColumnCheckRejected marker=4 但 system_config 的单行列级 CHECK
+// 被整条删掉（列类型/主键/非空一模一样）。单行表不变量消失后，配置表能被写成多行。
+func TestFormatMarkerDroppedColumnCheckRejected(t *testing.T) {
+	path := seededFormatFixture(t)
+	raw := openRawFixture(t, path)
+	rebuildFormatFixtureTable(t, raw, "system_config",
+		"id                      INTEGER PRIMARY KEY CHECK (id = 1),",
+		"id                      INTEGER PRIMARY KEY,")
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// helper 内部先比全库快照（DDL/marker/全部行值），再判错误分类与具名缺陷。
+	assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid, "system_config.id")
+	assertCheckDefect(t, path, "缺 CHECK 约束 system_config.id")
+}
+
+// TestFormatMarkerExtraCheckRejected marker=4 却多了一条 baseline 没有的 CHECK。
+// 「比 baseline 更严」同样拒绝：CHECK 必须逐条等价，不能只是「包含」。
+func TestFormatMarkerExtraCheckRejected(t *testing.T) {
+	path := seededFormatFixture(t)
+	raw := openRawFixture(t, path)
+	// 种子节点 name='keep-node' 满足这个附加 CHECK，所以失败只可能来自结构比对。
+	rebuildFormatFixtureTable(t, raw, "nodes",
+		"name                  TEXT NOT NULL,",
+		"name                  TEXT NOT NULL CHECK (length(name) > 0),")
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid, "多余 CHECK 约束 ")
+	assertCheckDefect(t, path, "多余 CHECK 约束 nodes.name")
+}
+
+// TestFormatCheckInCommentIsNotAConstraint CHECK 只在**真实的约束位置**才算数：
+// 注释里的 CHECK 文本不是约束。字符串搜索式实现会在这里误报「多余 CHECK 约束」。
+//
+// 两个子用例分别盯两个面：
+//   - after_comma：注释在列定义行尾（基线里 tasks 的 DDL 本来就有带 CHECK 字样的注释）；
+//   - between_name_and_parens：块注释夹在表名与括号之间——把注释当 token 留下的实现
+//     会在这里直接把一个合法库拒掉（fail closed 误报），是最直观的变异靶点。
+func TestFormatCheckInCommentIsNotAConstraint(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement string }{
+		{
+			name:        "after_comma",
+			old:         "name                  TEXT NOT NULL,",
+			replacement: "name                  TEXT NOT NULL, -- CHECK (1=1) 这是注释不是约束",
+		},
+		{
+			name:        "between_name_and_parens",
+			old:         "CREATE TABLE nodes (",
+			replacement: "CREATE TABLE nodes /* CHECK (1=1) 注释不是约束 */ (",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := seededFormatFixture(t)
+			raw := openRawFixture(t, path)
+			rebuildFormatFixtureTable(t, raw, "nodes", tc.old, tc.replacement)
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotDatabase(t, path)
+			db, err := store.Open(path)
+			if err != nil {
+				t.Fatalf("注释里的 CHECK 不是约束，这个库必须能打开: %v", err)
+			}
+			var nodeName string
+			if err := db.QueryRow(`SELECT name FROM nodes WHERE id='n-keep'`).Scan(&nodeName); err != nil {
+				_ = db.Close()
+				t.Fatalf("重开后读 nodes 种子行: %v", err)
+			}
+			if nodeName != "keep-node" {
+				_ = db.Close()
+				t.Fatalf("重开后 nodes.name = %q, want keep-node", nodeName)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if after := snapshotDatabase(t, path); after != before {
+				t.Fatalf("Open 改动了数据目录:\n before %s\n after  %s", before, after)
+			}
+		})
+	}
+}
+
+// assertCheckDefect 再开一次坏库，确认拒绝文案里出现 want 这条具名缺陷。
+// 只读：拒绝路径不写任何东西（写不改动由 assertFormatRefusalUnchanged 的全库快照负责）。
+func assertCheckDefect(t *testing.T, path, want string) {
+	t.Helper()
+	db, err := store.Open(path)
+	if db != nil {
+		_ = db.Close()
+	}
+	if !errors.Is(err, store.ErrSchemaInvalid) {
+		t.Fatalf("want store.ErrSchemaInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("want named defect %q, got %v", want, err)
+	}
+}
+
+// TestFormatMarkerDuplicateCheckNameRejected SQLite 允许重复的约束名，而"逐条等价比对"
+// 靠名字配对：若把同名项折叠成 map[name]tokens，结果就取决于声明顺序——把一条恒真的
+// 重名 CHECK 插到真约束**之前**，比较器只看得到后面那条真约束，于是"多出来一条约束"
+// 这件事在校验视图里消失（SQLite 自己仍 AND 执行所有 CHECK，所以被削弱的是判定视图，
+// 不是行约束执行）。所以重名必须 fail closed 拒绝，与顺序无关，绝不折叠。
+func TestFormatMarkerDuplicateCheckNameRejected(t *testing.T) {
+	path := seededFormatFixture(t)
+	raw := openRawFixture(t, path)
+	// 重名恒真约束插在真约束之前（列/PK/FK/unique 一字不动）。
+	rebuildFormatFixtureTable(t, raw, "tasks",
+		"CONSTRAINT tasks_unresolved_failure_shape CHECK (",
+		"CONSTRAINT tasks_unresolved_failure_shape CHECK (1=1), CONSTRAINT tasks_unresolved_failure_shape CHECK (")
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// helper 内部先比全库快照（DDL/marker/全部行值），再判错误分类与具名缺陷。
+	assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid, "CHECK 约束名重复")
+	assertCheckDefect(t, path, "CHECK 约束名重复 tasks_unresolved_failure_shape")
+
+	// 拒绝不许自愈：两条重名约束必须原样留在库里，数据也不能动。
+	raw = openRawFixture(t, path)
+	defer func() { _ = raw.Close() }()
+	var ddl string
+	if err := raw.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'`).Scan(&ddl); err != nil {
+		t.Fatalf("read duplicated tasks ddl: %v", err)
+	}
+	if got := strings.Count(ddl, "CONSTRAINT tasks_unresolved_failure_shape CHECK ("); got != 2 {
+		t.Fatalf("拒绝时改了 DDL：重名约束剩 %d 条，want 2（不许自愈/去重）", got)
+	}
+	if !strings.Contains(ddl, "(1=1)") {
+		t.Fatalf("坏库被自愈了：重名恒真 CHECK 被改回 baseline:\n%s", ddl)
+	}
+	if !rawTableExists(t, path, "tasks") {
+		t.Fatal("拒绝时删了表：程序不许改用户的数据结构")
+	}
+	if got := rawRowCount(t, path, "tasks"); got != 1 {
+		t.Fatalf("拒绝后业务数据丢了：tasks 行数 = %d, want 1", got)
+	}
+}
+
+// TestFormatMarkerPreviousBaselineCheckRejected 上一版 baseline 的
+// tasks_unresolved_failure_shape（未含本轮新增的 summary/artifacts/result_accepted_at
+// 与 finished_at/version 两条谓词）必须被明确拒绝，而不是被自动迁移。
+//
+// 刻意行为：v4 尚未发布、baseline 直接重建（本轮用户授权的 v4 开发期全量切换，见
+// AGENTS.md §3 与 issue #337 卡），所以上一版开发库走 fail-closed 拒绝——这是刻意后果，
+// 不是缺迁移；拒绝时一行数据也不删、CHECK 文本不被改写。
+func TestFormatMarkerPreviousBaselineCheckRejected(t *testing.T) {
+	// 上一版文本 = 本版减去这两行谓词（与存储态 DDL 逐字一致，含 12 空格缩进）。
+	const removedPredicates = "            AND summary = '' AND artifacts = '[]' AND result_accepted_at IS NULL\n" +
+		"            AND finished_at IS NOT NULL AND version >= 0"
+	path := seededFormatFixture(t)
+	raw := openRawFixture(t, path)
+	rebuildFormatFixtureTable(t, raw, "tasks", removedPredicates, "")
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertFormatRefusalUnchanged(t, path, store.ErrSchemaInvalid,
+		"CHECK 约束与 baseline 不一致 tasks.tasks_unresolved_failure_shape")
+
+	// 没被自动迁移/自愈：谓词没回来，行还在。
+	raw = openRawFixture(t, path)
+	defer func() { _ = raw.Close() }()
+	var ddl string
+	if err := raw.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'`).Scan(&ddl); err != nil {
+		t.Fatalf("read previous-baseline tasks ddl: %v", err)
+	}
+	if strings.Contains(ddl, "AND summary = ''") {
+		t.Fatalf("坏库被自动迁移成新 baseline 了（上一版必须被拒绝而不是被修）:\n%s", ddl)
+	}
+	if got := rawRowCount(t, path, "tasks"); got != 1 {
+		t.Fatalf("拒绝后业务数据丢了：tasks 行数 = %d, want 1", got)
+	}
+}
+
+// TestFormatCheckValidationReopenIdempotent 正常库（含 baseline 的三条 CHECK）必须能被
+// strict Open 反复重开：新校验只拒绝结构漂移，不能把正常库连数据一起拒掉。
+func TestFormatCheckValidationReopenIdempotent(t *testing.T) {
+	path := seededFormatFixture(t)
+	before := snapshotDatabase(t, path)
+	for round := 1; round <= 2; round++ {
+		db, err := store.Open(path)
+		if err != nil {
+			t.Fatalf("第 %d 次重开正常库被拒: %v", round, err)
+		}
+		var nodeName, taskDigest string
+		if err := db.QueryRow(`SELECT name FROM nodes WHERE id='n-keep'`).Scan(&nodeName); err != nil {
+			_ = db.Close()
+			t.Fatalf("第 %d 次重开读 nodes: %v", round, err)
+		}
+		if err := db.QueryRow(`SELECT digest FROM tasks WHERE id='t-keep'`).Scan(&taskDigest); err != nil {
+			_ = db.Close()
+			t.Fatalf("第 %d 次重开读 tasks: %v", round, err)
+		}
+		if nodeName != "keep-node" || taskDigest != "sha256:keep" {
+			_ = db.Close()
+			t.Fatalf("第 %d 次重开后数据变了: nodes.name=%q tasks.digest=%q", round, nodeName, taskDigest)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatalf("第 %d 次关闭: %v", round, err)
+		}
+	}
+	if after := snapshotDatabase(t, path); after != before {
+		t.Fatalf("strict Open 重开改动了数据目录:\n before %s\n after  %s", before, after)
+	}
+}
+
 func TestFormatMarkerMalformedLedgerRejected(t *testing.T) {
 	for _, tc := range []struct {
 		name string
