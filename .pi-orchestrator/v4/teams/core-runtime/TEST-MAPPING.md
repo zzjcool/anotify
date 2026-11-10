@@ -1200,3 +1200,528 @@ FULL_GATE3_EXIT=0
 父 fresh G1 correctness/coverage/simplicity、原 460 mapping 与真实白盒复核仍必需；G2 runtime、G3 HTTP5、G4 tools/Node quick 及最终 whole-Go/contract/quick 不在本 leaf，未声称执行或通过。
 
 报告工具事故与恢复：整文件 read 遭 50KB 截断，append write 一度误删 mapping 尾段；交付前完整 diff 重读当场发现。已从本 HEAD 原文精确恢复并仅重放上述 5 处 source-name 行修改与本 report，原库存/历史验证输出全部保留。恢复后逐字比较非授权内容，未改任何 Go 源码，不额外重跑完整 Go baseline。
+
+---
+
+## G2 runtime 逐名迁移映射（branch `pi-subagent/core-g2-resume-52fc54d4`，code commit `e552bd3`）
+
+> 本节只追加 G2 行；以上 G1 映射原样保留，不改写、不重排。
+> 逐名口径：`git show e552bd3^:<旧文件>` 里每一个 `func Test…` 都有一行结论；
+> 新测试名来自当前 `internal/{route,ws,lease,source,trigger,logging}`。
+> 本表不把「整文件 deprecated」当理由：每个旧名要么落到具体新测试，要么带 D 依据退役。
+
+
+### 退役/映射理由码（D 依据）
+
+| 码 | 依据 |
+|---|---|
+| `R:PURE_V3_SCHED` | v3 调度概念（priority / cursor / least-loaded / redispatch / 启动随机化）在 v4 没有对应物：候选由 `EligibleNodesForTask`（在线 + ns 申报∩授权 + 配置 applied + deployments applied + commands + values）与真实空槽决定（capability.md §8.5）。 |
+| `R:PURE_V3_PORT` | v3 多端口 / ports 整体删除（capability.md §1「一个能力一个结果」；emit 只有一个出口，wire 无 `port`）。 |
+| `R:PURE_V3_PIN` | v3 NodePin / GraphVersion / LinkTarget / 边跳数 / 用户作用域图投影删除；v4 边只是 `spec.next` / `source.targets` 的派生表（§8.1），任务只钉目标 refs。 |
+| `R:PURE_V3_LITERAL` | v3 literals / mapping 表达式删除（source.md D1/D10：只有 `$(payload.路径)` 模板，可拼接；没有 literals / 表达式 / 默认值语法）。 |
+| `R:PURE_V3_KIND` | v3 trigger kind 分类（user / agent / builtin central）删除；v4 kind = source 注册表（cron / webhook / manual，sourcespec 由 G1 覆盖）。 |
+| `R:PURE_V3_SEQ` | v3 emit seq / note / status 白名单删除（V4-D4：显式 `id` 是唯一业务幂等键；`requestId` 只做 RPC 关联）。 |
+| `R:PURE_V3_ASSIGN` | v3 assign/publish library 帧与本地 argv 生成删除（v4 派发只给 refs/params；节点在 grant 后按脚本执行）。 |
+| `R:PURE_V3_WS` | v3 WS 兼容缓存 / 协议版本 / 心跳 / 测试 harness 细节删除（v4 开发期只有一种 agent，协议无版本协商，`anode.md §3.3`）。 |
+| `R:PURE_V3_TRACE` | v3 显式/确定性 trace id 删除（v4 trace 由接收动作生成；外部幂等键是 `deliveryId`，capability.md §8.4）。 |
+| `R:PURE_V3_INGEST` | v3 trigger 包特有的事件入库/kind/未知源语义删除；v4 统一在 `internal/source`（三入口共用一份回执）。 |
+| `R:PURE_V3_SWEEPER` | v3 sweeper 的 redispatch/nudge/可注入 options 删除；v4 调度循环在 `ws.DispatchOnce`，巡检只做 store 的真实回收/保留/统计。 |
+| `R:V3_CENTRAL` | v4 明确不留中枢内置执行器（capability.md §7：只有脚本 + 节点执行），`internal/executor` 整体删除。 |
+| `R:V3_NODE_BINARY` | v4 唯一 Node 产品是 `cmd/anode`（Node 队实现）；旧 `cmd/agent` 二进制整体删除，任何 CLI/apply/cache/emit 语义都不进 G2。 |
+| `R:V4_STORE` | 语义保留，但权威覆盖在 G1 的 store authorized 事务 / artifact / 并发测试；G2 不另造假 store 断言。 |
+| `R:V4_PROTOCOL` | 语义保留，但权威覆盖在 T3 protocol 帧/方向/严格解码/限额测试（共享 wire 只能有一份）。 |
+| `R:V4_G3` | 属于 G3 HTTP 传输层的参数/状态码/授权（user-scoped dispatch、bearer 解析映射等）；G2 只提供 typed error 供 G3 翻译。 |
+| `R:V4_POLICY` | v4 有意改变策略：剪枝留痕失败必须报错（不静默继续派发）；webhook 不使用 `config.payload`（source.md §5 载荷来自投递体）。 |
+| `R:V4_GAP` | 明确未实现并记录为 gap（见文末「G2 明确 pending」）。 |
+| `R:SELF` | 文件未改、测试原样保留（`internal/logging` 独立 logger）。 |
+
+
+### `internal/route`（141 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestDispatchPriorityPrefersLower` | `R:PURE_V3_SCHED` |
+| `TestDispatchFallsBackWhenHigherPriorityUnreachable` | `R:PURE_V3_SCHED` |
+| `TestDispatchAllCandidatesUnreachable` | `R:PURE_V3_SCHED` |
+| `TestDispatchStartupRandomization` | `R:PURE_V3_SCHED` |
+| `TestEmitTwiceTwoIndependentTasks` | `TestEmitWithoutIDAlwaysCreatesNew` |
+| `TestDispatchCursorKeyedByPort` | `R:PURE_V3_PORT` |
+| `TestPlanPinsCurrentArtifactDigest` | `TestPlanTasksArePendingWithoutAuthority` |
+| `TestDispatchKeepsDigestThroughCreate` | `TestEmitCreatesPinnedChildTask` |
+| `TestDispatchNoArtifactKeepsDigestEmpty` | `R:V4_STORE` |
+| `TestDispatchEntryEdgeResolvesPayloadPath` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestDispatchEntryEdgeFanoutPartialPrune` | `TestIngestParamPruneIsPerTarget` |
+| `TestDispatchEntryEdgeRequiresEntryFields` | `TestPlanFromSourceParamMissing` |
+| `TestDispatchEntryEdgeBrokenMappingFailClosed` | `TestPlanFromSourceParamMissing` |
+| `TestDispatchEntryEdgeEmptyMappingIsIdentity` | `TestPrepareParamsPermissiveSchema` |
+| `TestDispatchEntryEdgeEmptyMappingStillAppliesLiterals` | `R:PURE_V3_LITERAL` |
+| `TestDispatchLiteralsOverride` | `R:PURE_V3_LITERAL` |
+| `TestDispatchLiteralsFanoutIsolation` | `R:PURE_V3_LITERAL` |
+| `TestDispatchNoLiteralsUnchanged` | `TestPrepareParamsPermissiveSchema` |
+| `TestDispatchLiteralTypeCheckedAtDispatch` | `R:PURE_V3_LITERAL` |
+| `TestDispatchBrokenLiteralsFailClosed` | `R:PURE_V3_LITERAL` |
+| `TestDispatchEntryEdgeLiteralsOverride` | `R:PURE_V3_LITERAL` |
+| `TestDispatchResolvesLinkRef` | `TestPlanFromSourceMissingCapability` |
+| `TestDispatchPrunesUnresolvableLinkRef` | `TestPlanFromSourceMissingCapability` |
+| `TestDispatchSelectsOneCandidate` | `R:PURE_V3_SCHED` |
+| `TestDispatchPartialPrune` | `TestIngestParamPruneIsPerTarget` |
+| `TestDispatchNoEdge` | `TestPlanFromSourceNoTargets` |
+| `TestDispatchNoReportIsNotPrune` | `R:PURE_V3_PIN` |
+| `TestDispatchValidation` | `R:V4_STORE` |
+| `TestDispatchRejectsEmptyNamespace` | `R:V4_STORE` |
+| `TestDispatchIsolatesNamespaces` | `R:V4_STORE` |
+| `TestDispatchEntryEdgeStaysInNamespace` | `R:V4_STORE` |
+| `TestDispatchNoNode` | `R:PURE_V3_SCHED` |
+| `TestDispatchLeavesPendingWhenNoCapacity` | `R:V4_STORE` |
+| `TestDispatchLeaseAndAssignFailureDoesNotLeakSlot` | `R:V4_STORE` |
+| `TestDispatchPicksLeastLoadedNode` | `R:PURE_V3_SCHED` |
+| `TestDispatchPathIncludedInChildTask` | `R:PURE_V3_PORT` |
+| `TestDispatchAckLeaseWindow` | `R:V4_STORE` |
+| `TestDispatchStoreErrorsPropagate` | `R:V4_STORE` |
+| `TestDispatchStickyPin` | `R:PURE_V3_PIN` |
+| `TestDispatchStickyHitDoesNotRewritePin` | `R:PURE_V3_PIN` |
+| `TestDispatchStickyFallsBackWhenPinnedNodeGone` | `R:PURE_V3_PIN` |
+| `TestValidateParamsSubset` | `TestPrepareParamsDefaultsRequiredAndExtra` |
+| `TestValidateErrorIsDeterministic` | `TestPrepareParamsMissingRequired` |
+| `TestValidateNestedPathError` | `TestPrepareParamsTypeMismatch` |
+| `TestDispatchResolvesParamTemplate` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestDispatchParamTemplateMissing` | `TestPlanFromSourceParamMissing` |
+| `TestDispatchParamTemplateTypeError` | `TestPrepareParamsTypeMismatch` |
+| `TestDispatchParamTemplateMixed` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestDispatchRecursiveDoesNotResolve` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestDispatchParamMissingDetailSources` | `TestPlanFromSourceParamMissing` |
+| `TestParamPruneDetailExact` | `TestPlanFromSourceParamMissing` |
+| `TestDispatchDryRunPreviewUsesResolvedParams` | `TestPreviewWritesNothing` |
+| `TestParamDetailFormattersNilCap` | `TestPrepareParamsBadSchema` |
+| `TestDispatchUserScopedLookupErrorFailsClosed` | `R:V4_G3` |
+| `TestDispatchEntryEdgesFanOut` | `R:PURE_V3_PORT` |
+| `TestRedispatchTaskNoCapacityReturnsSentinel` | `R:PURE_V3_SCHED` |
+| `TestRedispatchTaskNoNodeStillReturnsNoError` | `R:PURE_V3_SCHED` |
+| `TestDispatchStickyPublishFailureRollsBackPin` | `R:PURE_V3_PIN` |
+| `TestDispatchStickyPublishFailureKeepsForeignPin` | `R:PURE_V3_PIN` |
+| `TestDispatchToNarrowsBeforeValidation` | `R:PURE_V3_PORT` |
+| `TestDispatchToNamedTargetStillValidated` | `R:PURE_V3_PORT` |
+| `TestDispatchToNotCandidate` | `R:PURE_V3_PORT` |
+| `TestEmitRejectsForeignNode` | `TestEmitRoundTripAndErrors` |
+| `TestEmitPersistsNote` | `R:PURE_V3_SEQ` |
+| `TestEmitPortsAreIndependentAndShaped` | `R:PURE_V3_PORT` |
+| `TestEmitPortShapeRejectsWrongPayload` | `R:PURE_V3_PORT` |
+| `TestEmitIdempotent` | `TestEmitSameIDReplaysAndConflicts` |
+| `TestEmitSeqGapRejected` | `R:PURE_V3_SEQ` |
+| `TestEmitSeqReusedRejected` | `R:PURE_V3_SEQ` |
+| `TestEmitRejectedOnClosedTask` | `TestEmitOnFinishedTaskIsNotRunning` |
+| `TestEmitOnRunningTasks` | `TestEmitCreatesPinnedChildTask` |
+| `TestEmitStatusWhitelist` | `R:PURE_V3_SEQ` |
+| `TestEmitUnknownTask` | `TestEmitUnknownTaskIsTokenInvalid` |
+| `TestEmitNoLinksIsNotAnError` | `TestPlanFromEmitSameNameAndNotDeclared` |
+| `TestEmitCandidatePartialPrune` | `TestEmitPruneReceiptAndTrace` |
+| `TestEmitEmissionAndTasksSameTransaction` | `TestEmitSameIDReplaysAndConflicts` |
+| `TestEmitInputValidation` | `TestEmitMissingTargetRejected` |
+| `TestEmitDataMustBeObject` | `TestPlanFromEmitSameNameAndNotDeclared` |
+| `TestEmitChildTasksInheritParent` | `TestEmitCreatesPinnedChildTask` |
+| `TestEmitLiteralsWin` | `R:PURE_V3_LITERAL` |
+| `TestEmitParamPrunePerLink` | `TestEmitPruneReceiptAndTrace` |
+| `TestEmitConcurrentSameSeq` | `R:PURE_V3_SEQ` |
+| `TestBuildExpectsTargetsCarryPriority` | `R:PURE_V3_SCHED` |
+| `TestBuildExpectsUnionWithLiterals` | `R:PURE_V3_LITERAL` |
+| `TestBuildExpectsNoLinksAbsent` | `R:PURE_V3_PIN` |
+| `TestBuildExpectsEmptyNeedsSchema` | `R:PURE_V3_PIN` |
+| `TestBuildExpectsEmptyPortList` | `R:PURE_V3_PORT` |
+| `TestBuildExpectsNamespaceRequired` | `R:V4_STORE` |
+| `TestBuildExpectsDedupesRequired` | `R:V4_STORE` |
+| `TestDeriveKind` | `R:PURE_V3_KIND` |
+| `TestKindForCapabilityFollowsEdges` | `R:PURE_V3_KIND` |
+| `TestKindForCapabilityBuiltinOverrideWins` | `R:PURE_V3_KIND` |
+| `TestNodeKindMixedCapabilities` | `R:PURE_V3_KIND` |
+| `TestKindValues` | `R:PURE_V3_KIND` |
+| `TestDeriveKindIsPure` | `R:PURE_V3_KIND` |
+| `TestKindForCapabilityDoesNotMutateShape` | `R:PURE_V3_KIND` |
+| `TestDispatchNoopPrunedNoImpl` | `R:V3_CENTRAL` |
+| `TestDispatchExecutableHandlerWithoutNodeIsCentral` | `R:V3_CENTRAL` |
+| `TestRenderTemplate` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestRenderTemplateSinglePass` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsNoRecursion` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsWholeRefKeepsType` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestGetPath` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsMissingRefs` | `TestPlanFromSourceParamMissing` |
+| `TestValidateParamTemplatesPlaceholderForms` | `R:PURE_V3_LITERAL` |
+| `TestValidateParamTemplatesMappings` | `R:PURE_V3_LITERAL` |
+| `TestValidateParamTemplatesMappingOrLiteral` | `R:PURE_V3_LITERAL` |
+| `TestValidateLiteralParams` | `R:PURE_V3_LITERAL` |
+| `TestIsMapping` | `R:PURE_V3_LITERAL` |
+| `TestIsVarRef` | `R:PURE_V3_PIN` |
+| `TestCoerceValue` | `R:PURE_V3_LITERAL` |
+| `TestSchemaPropType` | `R:PURE_V3_LITERAL` |
+| `TestResolveVars` | `R:PURE_V3_PIN` |
+| `TestResolveParamsMappings` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsTypeError` | `TestPrepareParamsTypeMismatch` |
+| `TestResolveParamsEmptyTemplate` | `TestPrepareParamsPermissiveSchema` |
+| `TestResolveParamsLiteralClone` | `R:PURE_V3_LITERAL` |
+| `TestValidateParamTemplatesLiteralBraces` | `R:PURE_V3_LITERAL` |
+| `TestValidateParamTemplatesFormTiers` | `R:PURE_V3_LITERAL` |
+| `TestValidateParamTemplatesDollarRefRejected` | `R:PURE_V3_LITERAL` |
+| `TestResolveParamsMappingNoRecursion` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsVarNilIsMiss` | `R:PURE_V3_PIN` |
+| `TestResolveParamsExplicitNullIsMiss` | `TestPrepareParamsMissingRequired` |
+| `TestParamPruneReasons` | `R:V4_PROTOCOL` |
+| `TestValidateEventPayload` | `TestValidatePayloadSchema` |
+| `TestValidateEventPayloadMatchesParamsSemantics` | `TestValidatePayloadSchema` |
+| `TestMergePortsUnion` | `R:PURE_V3_PORT` |
+| `TestMergePortsDoesNotMutateInputs` | `R:PURE_V3_PORT` |
+| `TestEffectivePortsScenario` | `R:PURE_V3_PORT` |
+| `TestDispatchRecordsEveryPruneReason` | `TestEmitPruneReceiptAndTrace` |
+| `TestDispatchPruneNotDuplicated` | `TestEmitPruneReceiptAndTrace` |
+| `TestDispatchDryRunWritesNoPruneEvent` | `TestPreviewWritesNothing` |
+| `TestDispatchNoOutWritesNoPruneEvent` | `R:PURE_V3_PORT` |
+| `TestDispatchPruneRecordFailureDoesNotBreakDispatch` | `R:V4_POLICY` |
+| `TestPruneEventTypeMapping` | `R:V4_PROTOCOL` |
+| `TestPruneReasons` | `R:V4_PROTOCOL` |
+| `TestPruneMaxHopsCycle` | `R:PURE_V3_PIN` |
+| `TestForeignUser` | `R:V4_G3` |
+| `TestForeignUserEmptyTo` | `R:V4_G3` |
+| `TestNonUserScopedCapabilitySkipsMemberCheck` | `R:V4_G3` |
+| `TestPruneReasonValues` | `R:V4_PROTOCOL` |
+
+### `internal/ws`（110 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestApplyFrameLandsInStore` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestApplyFrameFailureIsVisible` | `R:V4_STORE` |
+| `TestApplyFrameRejectsBadInput` | `R:V4_PROTOCOL` |
+| `TestApplyFrameUnknownDeploymentIgnored` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestApplyFrameJSONShape` | `R:V4_PROTOCOL` |
+| `TestAssignFrameForCarriesDigest` | `R:PURE_V3_ASSIGN` |
+| `TestAssignFrameForOmitsEmptyDigest` | `R:PURE_V3_ASSIGN` |
+| `TestAssignPortsFollowEdgesWhenOutputsEmpty` | `R:PURE_V3_PORT` |
+| `TestAssignPortsStayEmptyWithoutOutEdges` | `R:PURE_V3_PORT` |
+| `TestAssignPortsKeepDeclaredWhenUnwired` | `R:PURE_V3_PORT` |
+| `TestAssignPortsKeepLegacyMultiPorts` | `R:PURE_V3_PORT` |
+| `TestAssignFrameForIsPure` | `R:PURE_V3_ASSIGN` |
+| `TestPublishAssignCarriesLibraryAttemptsAndSeq` | `R:PURE_V3_ASSIGN` |
+| `TestPublishAssignUsesLibraryValuesNotInMemory` | `R:PURE_V3_ASSIGN` |
+| `TestPublishAssignOmitsZeroSeq` | `R:PURE_V3_ASSIGN` |
+| `TestPublishAssignUsesTokenWrittenAtAssign` | `R:PURE_V3_ASSIGN` |
+| `TestDecodeUpstreamApplyFrame` | `R:V4_PROTOCOL` |
+| `TestDecodeUpstreamApplyMinimal` | `R:V4_PROTOCOL` |
+| `TestDeployFrameRoundTrip` | `R:V4_PROTOCOL` |
+| `TestFrameDirectionTable` | `R:V4_PROTOCOL` |
+| `TestAssignFrameCarriesDigestAndTraceID` | `R:PURE_V3_ASSIGN` |
+| `TestPublishDeployOfflineNode` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestPublishDeployCrossNamespaceRejected` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestPublishDeployDeliversFrame` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestEmitFrameRoutesAndAcks` | `TestEmitRoundTripAndErrors` |
+| `TestEmitFrameRejectedKeepsConnectionOpen` | `TestEmitRoundTripAndErrors` |
+| `TestEmitFrameNotWired` | `TestEmitRoundTripAndErrors` |
+| `TestExpectsFrameShapeMatches` | `R:V4_PROTOCOL` |
+| `TestEmitFrameCarriesNoteAndSeq` | `R:PURE_V3_SEQ` |
+| `TestEmitAckFrameShape` | `R:V4_PROTOCOL` |
+| `TestAckedNonIdempotentCleanEndAbandons` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestKilledAgentAbandonsInflightTask` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestHelloReassertKeepsNodeOnline` | `TestConfigAppliedAndAgentFactsPersist` |
+| `TestPublishAssignFailsWhenGenerationUnreadable` | `R:PURE_V3_ASSIGN` |
+| `TestPublishAssignSkipsTerminalTask` | `R:V4_STORE` |
+| `TestReleaseIgnoresForeignOwner` | `R:PURE_V3_ASSIGN` |
+| `TestClassifyReadError` | `R:PURE_V3_WS` |
+| `TestHelloReclaimsStaleSlots` | `TestRehelloUnknownBusyDoesNotRelease` |
+| `TestInflightReleasedAfterResult` | `TestCancelAckMatrix` |
+| `TestCleanEndAllowsRedispatch` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestHeartbeatLeaseFailureClosesConnection` | `TestRenewAtExpiryIsRejected` |
+| `TestCleanupInsideWindowKeepsNewConnectionOnline` | `R:V4_STORE` |
+| `TestSupersededCleanupKeepsNewConnectionOnline` | `TestDisconnectKeepsBusyUntilExplicitFact` |
+| `TestPublishAssignUsesAuthoritativeAttempts` | `R:V4_STORE` |
+| `TestEmitOversizedParamsIsDiagnosable` | `R:V4_STORE` |
+| `TestHeartbeatRenewsOnlyOwnedTasks` | `TestRenewAtExpiryIsRejected` |
+| `TestUncleanEndAbandonsStartedTask` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestCleanEndRequeuesStartedTask` | `TestRunOnceRequeuesExpiredIdempotentLease` |
+| `TestAssignedNotStartedRequeuedOnUncleanEnd` | `TestRunOnceRequeuesExpiredIdempotentLease` |
+| `TestSameTaskNotExecutedByTwoConnections` | `R:V4_STORE` |
+| `TestLogsFrameWire` | `R:V4_PROTOCOL` |
+| `TestDecodeUpstreamLogsResponse` | `R:V4_PROTOCOL` |
+| `TestFetchLogsDeliversResponse` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsNoLocalArchive` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsOffline` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsCrossNamespace` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsTimeout` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsDropsUnpairedResponse` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsWakesOnDisconnect` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestLogsRequestIDUniqueAndSafe` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestCrossNamespaceTaskNotVisible` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestPublishAssignRoutesByNamespace` | `R:V4_STORE` |
+| `TestResultFreesSlotNudgesDispatcher` | `R:V4_STORE` |
+| `TestRejectedResultDoesNotNudge` | `R:V4_STORE` |
+| `TestHelloNudgesDispatcher` | `R:PURE_V3_SCHED` |
+| `TestBigHelloFrameAccepted` | `R:V4_PROTOCOL` |
+| `TestFrameTooLargeIsDiagnosable` | `R:V4_PROTOCOL` |
+| `TestPublishRejectsOversizedParams` | `R:V4_STORE` |
+| `TestResultLegacyOutCreatesNoDownstream` | `TestAcceptGrantsSameSlotAndResultAcks` |
+| `TestResultRecordsTerminalStateWithoutRouting` | `TestAcceptGrantsSameSlotAndResultAcks` |
+| `TestEmitBeforeFailedResultStillRoutes` | `TestEmitRoundTripAndErrors` |
+| `TestUnauthorizedNoUpgrade` | `TestRotatedCredentialGrantsNothing` |
+| `TestHandshake` | `TestDispatchFrameCarriesNoExecutionAuthority` |
+| `TestHelloStaleCacheIsPruned` | `R:PURE_V3_WS` |
+| `TestHelloWrongNodeID` | `TestAcceptRejectsInvalidSlotAndIdentity` |
+| `TestHelloInstances` | `TestRehelloUnknownBusyDoesNotRelease` |
+| `TestHelloAppliedPersists` | `TestConfigAppliedAndAgentFactsPersist` |
+| `TestHelloAppliedIsFullReplacement` | `R:PURE_V3_WS` |
+| `TestHelloAppliedUnknownListsAll` | `R:PURE_V3_WS` |
+| `TestHelloAppliedDigestMismatchResendsDesiredArtifact` | `R:PURE_V3_WS` |
+| `TestHelloProtocolVersion1Rejected` | `R:PURE_V3_WS` |
+| `TestFramesBeforeHelloRejected` | `TestRotatedCredentialGrantsNothing` |
+| `TestBearerTokenParsing` | `R:PURE_V3_WS` |
+| `TestAuthErrorStatusMapping` | `R:V4_G3` |
+| `TestFrameCodec` | `R:V4_PROTOCOL` |
+| `TestResultFrameHasNoOut` | `R:V4_PROTOCOL` |
+| `TestAssignFrameHasNoArgv` | `R:V4_PROTOCOL` |
+| `TestNoArgvInNodeProtocolSources` | `R:V4_PROTOCOL` |
+| `TestHeartbeatTimeout` | `R:PURE_V3_WS` |
+| `TestHeartbeatKeepsAlive` | `R:PURE_V3_WS` |
+| `TestLeaseExtended` | `TestAcceptGrantsSameSlotAndResultAcks` |
+| `TestDownstreamNoTouch` | `R:PURE_V3_ASSIGN` |
+| `TestAckProgressResultFlow` | `TestAcceptGrantsSameSlotAndResultAcks` |
+| `TestResultNoOutMeansStop` | `TestAcceptGrantsSameSlotAndResultAcks` |
+| `TestAckOtherNodesTaskRejected` | `R:V4_STORE` |
+| `TestUnknownTypeKeepsConnection` | `TestUnknownFrameKeepsConnectionAndBadFrameCloses` |
+| `TestBadJSONKeepsConnection` | `TestUnknownFrameKeepsConnectionAndBadFrameCloses` |
+| `TestDisconnectMarksNodeOffline` | `TestDisconnectKeepsBusyUntilExplicitFact` |
+| `TestDecodeUpstreamUpgradeAck` | `R:V4_PROTOCOL` |
+| `TestUpgradeFrameWire` | `TestUpgradeFrameAndAck` |
+| `TestNormalizeUpgradeError` | `R:V4_PROTOCOL` |
+| `TestPublishUpgradeOfflineNode` | `TestUpgradeFrameAndAck` |
+| `TestPublishUpgradeDeliversFrame` | `TestUpgradeFrameAndAck` |
+| `TestPublishUpgradeCrossNamespaceRejected` | `R:V4_G3` |
+| `TestHelloAgentVersionPersisted` | `TestConfigAppliedAndAgentFactsPersist` |
+| `TestHelloWithoutAgentVersion` | `TestConfigAppliedAndAgentFactsPersist` |
+| `TestUpgradeAckSuccessPersists` | `TestUpgradeFrameAndAck` |
+| `TestUpgradeAckFailurePersistsAndLogs` | `TestUpgradeFrameAndAck` |
+| `TestUpgradeAckUnknownErrorCodeNormalized` | `TestUpgradeFrameAndAck` |
+| `TestMain` | `R:PURE_V3_WS` |
+
+### `internal/lease`（30 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestRetentionNilIsNoop` | `R:PURE_V3_SWEEPER` |
+| `TestRetentionFirstTickThenHourlyGate` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestRetentionFailureDoesNotStallTick` | `R:PURE_V3_SWEEPER` |
+| `TestNewAutoWiresRetention` | `R:PURE_V3_SWEEPER` |
+| `TestNewWiresRealStoreRetention` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestRetentionOverrides` | `R:PURE_V3_SWEEPER` |
+| `TestRetentionDoesNotBlockTick` | `R:PURE_V3_SWEEPER` |
+| `TestRetentionOverlapGuard` | `R:PURE_V3_SWEEPER` |
+| `TestRetentionEventSecPlumbing` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestRetentionCatchUpWhenTruncated` | `R:PURE_V3_SWEEPER` |
+| `TestEventRetentionLogState` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestRetentionSweepsPerNamespace` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestRetentionAuditFieldsOnFailureAndCancel` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestRetentionAuditFieldsOnSuccess` | `TestRunOnceRetentionHonorsTTLAndKeepsActive` |
+| `TestSweeperStatsRunsOnFirstTick` | `TestOccupancyByNodeReadsRealLedger` |
+| `TestSweeperStatsRespectsInterval` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperStatsDisabled` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperStatsNoStore` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperTickSweepsAndRedispatches` | `TestRunOnceRecoversExpiredNonIdempotentLease` |
+| `TestSweeperContinuesWhenSweepFails` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperSkipsWhenNoNode` | `TestOccupancyByNodeReadsRealLedger` |
+| `TestSweeperListErrorDoesNotPanic` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperRespectsBatchLimit` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperRedispatchNilIsNoop` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperRunStopsOnContextCancel` | `R:PURE_V3_SWEEPER` |
+| `TestRetryBackoffSequence` | `TestRunOnceRequeuesExpiredIdempotentLease` |
+| `TestSweeperNudgeRedispatchesImmediately` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperNudgeCoalesces` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperNudgeRateLimited` | `R:PURE_V3_SWEEPER` |
+| `TestSweeperNudgeWithoutRedispatch` | `R:PURE_V3_SWEEPER` |
+
+### `internal/source`（18 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestFireUsesEntryEdge` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestFireDisabledSource` | `TestFireDisabledSourceRejected` |
+| `TestFireIdempotent` | `TestIngestDuplicateDeliveryReturnsOriginal` |
+| `TestSchedulerTickFiresDueCron` | `TestRunDueFiresCronAndAdvances` |
+| `TestSchedulerSkipsNotDue` | `TestRunDueFiresCronAndAdvances` |
+| `TestFirePassesPayloadAndVars` | `TestIngestManualPayloadOverridesConfigOneLevel` |
+| `TestFireConfigPayloadIsBaseConfigPayload` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestSchedulerTickCronPayloadIncludesConfig` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestSchedulerTickCronPayloadSystemFields` | `R:PURE_V3_INGEST` |
+| `TestSchedulerTickCronPayloadUserFieldsWin` | `TestIngestManualPayloadOverridesConfigOneLevel` |
+| `TestFireWebhookIgnoresConfigPayload` | `R:V4_POLICY` |
+| `TestEventPayloadKindScope` | `R:PURE_V3_KIND` |
+| `TestDryRunPassesPayloadAndVars` | `TestPreviewWritesNothing` |
+| `TestFireDoesNotFlattenParams` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestFireDispatchesWhenPayloadSatisfiesResultSchema` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestFirePrunesEventSchemaViolation` | `TestIngestPayloadSchemaPrune` |
+| `TestFireWithoutResultSchemaUnchanged` | `TestPrepareParamsPermissiveSchema` |
+| `TestDryRunAppliesResultSchema` | `TestPreviewWritesNothing` |
+
+### `internal/trigger`（18 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestEventIdempotent` | `TestIngestDuplicateDeliveryReturnsOriginal` |
+| `TestNoIdemKeyAllowsDuplicates` | `TestIngestDeliveryIDScopeAndAbsence` |
+| `TestEmptyIdemKeyTreatedAsAbsent` | `TestIngestDeliveryIDScopeAndAbsence` |
+| `TestIdemKeyScopedToSource` | `TestIngestDeliveryIDScopeAndAbsence` |
+| `TestIdemKeyScopedToDefaultNamespace` | `R:V4_STORE` |
+| `TestIdemKeyScopedToNamespace` | `R:V4_STORE` |
+| `TestTraceIDFromTrigger` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestTraceIDUniqueness` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestExplicitTraceIDHonored` | `R:PURE_V3_TRACE` |
+| `TestCronDeterministicID` | `R:PURE_V3_TRACE` |
+| `TestCronIdempotentAcrossFire` | `R:PURE_V3_TRACE` |
+| `TestEntryEdgeUsesSourceName` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestUnknownSourceNoEntryEdge` | `R:PURE_V3_INGEST` |
+| `TestDispatchFailureKeepsEvent` | `R:V4_GAP` |
+| `TestPayloadPassThrough` | `TestIngestManualUnifiedReceiptAndTask` |
+| `TestInvalidPayloadDefaultsToEmpty` | `TestIngestRejectsNonObjectPayload` |
+| `TestIngestValidation` | `TestIngestRejectsNonObjectPayload` |
+| `TestConcurrentIngestSameIdemKey` | `R:V4_STORE` |
+
+### `internal/executor`（9 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestTickNotifyPhoneSucceeds` | `R:V3_CENTRAL` |
+| `TestTickMarksFailedOnSendError` | `R:V3_CENTRAL` |
+| `TestTickSurvivesClaimError` | `R:V3_CENTRAL` |
+| `TestTickZeroDevicesIsSuccess` | `R:V3_CENTRAL` |
+| `TestTickMissingToFails` | `R:V3_CENTRAL` |
+| `TestTickUnknownCentralCapability` | `R:V3_CENTRAL` |
+| `TestFinishUsesTaskNamespacePerTask` | `R:V3_CENTRAL` |
+| `TestBatchLimitRespected` | `R:V3_CENTRAL` |
+| `TestRunStopsOnContextCancel` | `R:V3_CENTRAL` |
+
+### `internal/logging`（10 个旧名）
+
+| 旧测试 | 结论 |
+|---|---|
+| `TestParseLevel` | 保留原测试（文件未改，独立 logger） |
+| `TestParseFormat` | 保留原测试（文件未改，独立 logger） |
+| `TestIsValidLevel` | 保留原测试（文件未改，独立 logger） |
+| `TestIsValidFormat` | 保留原测试（文件未改，独立 logger） |
+| `TestNewRequestID` | 保留原测试（文件未改，独立 logger） |
+| `TestRequestIDContext` | 保留原测试（文件未改，独立 logger） |
+| `TestUserIDContext` | 保留原测试（文件未改，独立 logger） |
+| `TestFromContext` | 保留原测试（文件未改，独立 logger） |
+| `TestFromContext_Empty` | 保留原测试（文件未改，独立 logger） |
+| `TestInit_JSONOutput` | 保留原测试（文件未改，独立 logger） |
+
+### `cmd/agent`（整个旧 Node 产品，314 个旧名）
+
+
+结论：**整包删除**（`R:V3_NODE_BINARY`）。v4 唯一 Node 产品是 `cmd/anode`（由 Node 队交付），
+旧 `cmd/agent` 的 CLI/apply/cache/emit/runner/runstore/logs_serve 语义没有任何一条进入 G2
+运行期；不保留兼容二进制、不迁移旧测试、不新建同名包。以下逐名列出（同一结论）：
+
+<details><summary>314 个旧测试名</summary>
+
+
+  `TestHandleDeployApply` · `TestHandleDeployMissingRequirement` · `TestPathReasonDetail` · `TestHandleDeployRequirementPresent`
+  `TestHandleDeployInvalidArtifact` · `TestHandleDeployRemove` · `TestHandleDeployRemoveWithoutArtifact` · `TestHandleDeployUnsupportedAction`
+  `TestHandleDeployDrainingCtx` · `TestCachePutGetRoundTrip` · `TestCachePutIdempotent` · `TestCachePutDigestMismatch`
+  `TestCachePathTraversalRejected` · `TestCacheRemove` · `TestCacheAppliedReportsContentDigest` · `TestCacheAppliedOrderAndSkipsGarbage`
+  `TestCacheAppliedEmptyIsNotNil` · `TestSafeJoin` · `TestCachePrune` · `TestCheckReportsAllProblemsAndExitsOne`
+  `TestCheckJSONShapeAndCodes` · `TestCheckOKExitsZeroWithoutExecutingOrWriting` · `TestCheckJSONOKShape` · `TestCheckBrokenYAMLListsInvalidYAML`
+  `TestCheckMissingFileIsCommandError` · `TestCheckUsageErrors` · `TestCheckAcceptsFlagsAfterPath` · `TestCheckHelpListsBoundaries`
+  `TestUsageListsEverySubcommand` · `TestAgentCommandsMatchDispatch` · `TestHelpExitsZeroAndShowsCommandTable` · `TestVersionIsOneLine`
+  `TestSkillInEmptyDir` · `TestVersionAndSkillShareVersionString` · `TestPreludeCommandPosition` · `TestSubcommandAfterGraceFlag`
+  `TestVersionAndSkillIgnoreBrokenConfig` · `TestCapabilitiesEmptyDataDirExitsZero` · `TestCapabilitiesListsCachedArtifacts` · `TestCapabilitiesHelpExplainsEmptyIsZero`
+  `TestStatusLive` · `TestStatusStaleWhenPIDGone` · `TestStatusStaleWhenHeartbeatOld` · `TestStatusMissingStateFile`
+  `TestStatusHelpSaysLocalView` · `TestStateWriterSnapshots` · `TestStateWriterFromDaemon` · `TestClientHelloWelcomeHeartbeat`
+  `TestClientHelloReportsCachedArtifacts` · `TestClientDeployThenHelloReconcile` · `TestClientAssignAckThenResult` · `TestClientAssignByDigest`
+  `TestClientFailedCommand` · `TestClientCancel` · `TestClientGracefulShutdown` · `TestClientNoArtifact`
+  `TestClientPassesParams` · `TestClientTraceIDAndDigestReachTask` · `TestClientSemaphoreLimitsConcurrency` · `TestClientHandshakeRejected`
+  `TestClientConnectionClosed` · `TestHeartbeatInterval` · `TestClientAckBeforeSemaphore` · `TestServeNodeRealWSAssignAckResult`
+  `TestServeNodeRealWSGracefulShutdownKeepsResult` · `TestRunsJSONShape` · `TestRunsJSONEmpty` · `TestRunsOutputModeBothWays`
+  `TestShowJSONMatchesDisk` · `TestShowWindows` · `TestShowAcceptsTracePrefix` · `TestRunsTracePrefix`
+  `TestAmbiguousTracePrefix` · `TestEmitExitKinds` · `TestEmitJSONSuccessAndTextMode` · `TestUpgradeJSON`
+  `TestShowRunNotFoundKind` · `TestRunArtifactKindReusesArtifactCode` · `TestSubcommandHelpShowsExitCodes` · `TestConfigLoadBootstrap`
+  `TestConfigValidateErrors` · `TestConfigValidateListsAllProblems` · `TestConfigUnknownField` · `TestConfigMissingFile`
+  `TestConfigStreamURL` · `TestConfigHello` · `TestConfigHelloEmptyApplied` · `TestConfigDefaults`
+  `TestDefaultDataDir` · `TestConfigFromEnv` · `TestConfigFromEnvNeedsToken` · `TestConfigFromEnvBadInstances`
+  `TestConfigFromEnvMissingServer` · `TestLoadConfigFromPrecedence` · `TestRunEmitLocalModeNoSocket` · `TestRunEmitSocketMissing`
+  `TestRunEmitBadArguments` · `TestRunEmitHelp` · `TestRunEmitAgainstServer` · `TestRunEmitExitCodeTable`
+  `TestRunEmitWaitRoutedFlag` · `TestMainWithEmitDispatch` · `TestEmitCLIRealProcess` · `TestEmitCLIRealProcessLocalMode`
+  `TestResolveEmitPort` · `TestBuildEnvEmitPorts` · `TestBuildEnvEmitPortsEmpty` · `TestBuildEnvEmitPortsSchemaNull`
+  `TestBuildEnvEmitPortsWriteFails` · `TestBuildEnvEmitPortsSameSourceAsExpects` · `TestRunJobEmitPortsProbe` · `TestEmitPortsOfFallsBackToArtifactOutputs`
+  `TestBuildEnvEmitPortsCandidatesCarryOwnNeeds` · `TestRunEmitTaskFileHappyPath` · `TestRunEmitTaskFileSinglePortNoTo` · `TestEmitSourceRejectsBothEntrypoints`
+  `TestEmitSourceRejectsBadTaskFile` · `TestEmitSourceTaskFilePermTooOpen` · `TestEmitSourceTaskFileMissing` · `TestEmitSourceTaskFileEmptySock`
+  `TestEmitCLITaskFileRealProcess` · `TestEmitServerDurablePath` · `TestEmitSocketPermissions` · `TestEmitRejectToken`
+  `TestEmitTokenEmptyMeansNoAuth` · `TestEmitRejectPort` · `TestEmitRejectSchemaMissingField` · `TestEmitToPinnedCandidateUsesItsNeeds`
+  `TestEmitRejectDataNotObject` · `TestEmitRejectOversize` · `TestEmitRejectRateLimit` · `TestEmitSeqPersistedAcrossRestart`
+  `TestEmitAckStopsResend` · `TestEmitWaitRouted` · `TestEmitWaitRoutedHubRejects` · `TestEmitGapRequeuesEarlier`
+  `TestEmitRejectsAfterTaskCancel` · `TestEmitSocketRemovedOnClose` · `TestEmitSocketRemovedWithTask` · `TestClientEmitSocketAndAck`
+  `TestRunnerInjectsEmitEnv` · `TestClientResendsUnackedOutboxOnRedispatch` · `TestClientHelloCarriesAgentVersion` · `TestHelloAgentVersionDevBuild`
+  `TestLogsServeHitReturnsArchiveTail` · `TestLogsServeMissReturnsNoLocalArchive` · `TestLogsServeTruncatesToOneMiB` · `TestLogsServeDropsControlBytesAndInvalidUTF8`
+  `TestRunStoreTaskRefFallsBackAndRepairs` · `TestRunStoreGCDeletesOnlyMatchingIndex` · `TestRunStoreIndexSkipsUnsafeTaskID` · `TestLogsServeRealWSRequestAfterTask`
+  `TestRunMissingConfigFile` · `TestRunBadConfig` · `TestGraceDuration` · `TestParseFlagsDefaults`
+  `TestParseFlagsExplicit` · `TestParseFlagsUnknownFlag` · `TestRunHelp` · `TestNewLoggerLevel`
+  `TestRunStandaloneEndToEnd` · `TestRunStandaloneFlagsAfterPath` · `TestRunStandaloneExitCodePassThrough` · `TestRunStandaloneTimeout`
+  `TestRunStandaloneOwnExit124` · `TestRunStandaloneBadInput` · `TestMainWithDispatch` · `TestSubcommandAfterGlobalFlags`
+  `TestFrameGoldenUpstream` · `TestFrameTypeConstantsMatchServer` · `TestFrameEncodeError` · `TestHelloGoldenReadableByServer`
+  `TestResultFrameHasNoOut` · `TestResultFrameTagsMatchServer` · `TestResultFrameReadableByServer` · `TestDecodeDownstream`
+  `TestBackoffDelaySequence` · `TestBackoffDelayJitterBounds` · `TestClassifyNodeFailure` · `TestClassifyHandshakeTimeout`
+  `TestDialErrorCarriesRealStatus` · `TestDialErrorNoResponse` · `TestHandshakeRejectKeepsMessage` · `TestRetryStateLogNoise`
+  `TestReconnectLoopRetriesTransientUntilSuccess` · `TestReconnectLoopResetsAfterHandshake` · `TestReconnectLoopPermanentStopsImmediately` · `TestReconnectLoopNoRetry`
+  `TestReconnectLoopSignalDuringBackoff` · `TestReconnectLoopSignalDuringAttempt` · `TestServeNodeCallsHandshakeHook` · `TestPostHandshakeDropIsTransient`
+  `TestNodeConfigErrorExitsNonZero` · `TestParseFlagsNoRetry` · `TestRunStandaloneArchivesToRuns` · `TestRunStandaloneNoDataDirDoesNotArchive`
+  `TestRunStandaloneTimeoutArchivesWithRef` · `TestRunStandaloneArchiveTruncatesHugeStream` · `TestRunJobParamEnv` · `TestRunJobEnvIdentity`
+  `TestRunJobEnvEmptyTraceID` · `TestRunJobWorkDirIsolation` · `TestRunJobCleansWorkDirOnSuccess` · `TestRunJobKeepsWorkDirOnFailure`
+  `TestRunJobWorkDirRejectsBadTaskID` · `TestRunJobShebangPicksInterpreter` · `TestRunJobExitCodePropagated` · `TestRunJobFailureErrorUsesStderrFirstLine`
+  `TestRunJobSuccess` · `TestRunJobSuccessEmptyOutput` · `TestRunJobNoOutPlumbing` · `TestRunJobTimeout`
+  `TestRunJobTimeoutFromMaxDuration` · `TestRunJobCanceled` · `TestRunJobWaitDelay` · `TestRunJobWaitDelayKeepsTailOutput`
+  `TestRunJobNoArtifact` · `TestRunJobSeparatesStdoutStderr` · `TestRunJobLogsTruncatedPerStream` · `TestRunJobInvalidUTF8Replaced`
+  `TestRunJobSummaryIsFirstStdoutLine` · `TestStreamLogWindow` · `TestBuildEnv` · `TestBuildEnvPathPrefix`
+  `TestBuildEnvPathPrefixEndToEnd` · `TestBuildEnvInjectsWorkDir` · `TestBuildEnvEmptyParams` · `TestBuildEnvParamError`
+  `TestEffectiveTimeout` · `TestParamEnvName` · `TestOneLine` · `TestOneLineSummaryThroughRunJob`
+  `TestRunJobIgnoresLegacyOutFile` · `TestRunJobLegacyOutFileNoEffectOnFailure` · `TestRunJobFailureKeepsWorkDir` · `TestRunJobUndeclaredOutNoLongerFails`
+  `TestRunJobExampleCapability` · `TestRunJobSummarySurvivesTailTruncation` · `TestRunPersistArchiveKeepsFullOutputBeyondUploadWindow` · `TestRunPersistSaveKeepsFullOutputAndInput`
+  `TestRunPersistCaptureOffByDefault` · `TestRunPersistExitCode` · `TestRunPersistClientArchivesBeforeResult` · `TestRunPersistBrokenRunsDirKeepsTaskSucceeded`
+  `TestRunPersistStoreRejectsFileAsRunsDir` · `TestRunsCLISeedRefs` · `TestRunsCLIRecentList` · `TestRunsCLIListLimit`
+  `TestRunsCLITraceMode` · `TestRunsCLICapabilityMode` · `TestRunsCLIShow` · `TestRunsCLIShowTruncatedHint`
+  `TestRunsCLIShowHalfWritten` · `TestRunsCLIEmptyAndNotFound` · `TestRunsCLIBadArgs` · `TestRunsCLIHelp`
+  `TestRunsCLISubcommandRegistration` · `TestRunStoreSavePathAndFiles` · `TestRunStoreListFiltersAndOrder` · `TestRunStoreLoadRoundTrip`
+  `TestRunStoreSaveIsIdempotent` · `TestRunStoreSaveFailsGracefully` · `TestRunStorePathSegmentsFromPeer` · `TestRunLogKeepsHead`
+  `TestRunStoreGCByAgeAndCount` · `TestStartRunGCStopsOnCancel` · `TestSchemaOutputStableAndParseable` · `TestSchemaDefaultIsCapability`
+  `TestSchemaUnknownNameIsUsageError` · `TestSchemaExtraArgsIsUsageError` · `TestSchemaHelpListsThreeNames` · `TestCapabilitySchemaMatchesValidate`
+  `TestCapabilityCanonicalJSONSatisfiesSchema` · `TestCapabilitySchemaRequiredKeys` · `TestNodeSchemaMatchesConfigValidate` · `TestEmitSchemaMatchesWireContract`
+  `TestEmitSchemaPortPatternMatchesOutputs` · `TestMain` · `TestHandleUpgradeRejectsBadSHA` · `TestHandleUpgradeRefusesForeignHost`
+  `TestHandleUpgradeBadSHAOnDownload` · `TestHandleUpgradeSuccess` · `TestHandleUpgradeNeedRootDoesNotExit` · `TestUpgradeReplacesBinary`
+  `TestUpgradeCheckModes` · `TestUpgradeSkipsWhenUpToDate` · `TestUpgradeForceOverwrites` · `TestUpgradeBadSHADoesNotReplace`
+  `TestUpgradeDownloadInterruptedKeepsTarget` · `TestUpgradeServerNotEnabled` · `TestUpgradeNeedRoot` · `TestUpgradeRestartFailureStillZero`
+  `TestUpgradeServerOverride` · `TestUpgradeHelpExitsZero` · `TestMainWithUpgradeDispatch` · `TestResolveTarget`
+  `TestOpenDownloadFilePlacesTempBesideTarget` · `TestBinaryEndpoint` · `TestRestartCandidates` · `TestResolveChdirDefaultsToTaskDir`
+  `TestResolveChdirUsesDeclaredDir` · `TestResolveChdirRejects` · `TestResolveChdirSymlinkResolved` · `TestRunJobWorkDirEndToEnd`
+  `TestRunJobTaskDirWhenNoWorkDir` · `TestRunJobFailsWhenWorkDirMissing` · `TestRunJobFailsWhenWorkDirIsFile` · `TestRunJobFailsWhenWorkDirRelative`
+  `TestResolveChdirExpandsHome` · `TestResolveChdirExpandedHomeStillChecked` · `TestResolveChdirRejectsUnsupportedHomeForms` · `TestRunJobWorkDirHomeEndToEnd`
+  `TestRunJobFailsWhenHomeUnavailable` · `TestRunJobFailsWhenHomeIsRelative`
+
+</details>
+
+
+### G2 明确 pending（不是“已用别的实现替代”）
+
+1. **结构化日志（受保护协议接缝）**：共享 `protocol.LogsResponseFrame` 目前只有
+   `stdout/stderr/truncated/bytes/attempt`，没有 W6/A1 要求的逐条
+   `sequence/stream/text/at`。G2 只做**真实** history node/attempt 定位、requestId/taskId/
+   attempt 关联校验与合法响应转发；不补时间戳、不跨流排序、不把离线/缺档案/过期伪装成空成功。
+   结构化采集与帧补口由父冻结的 Node-log 单元（`LOG-RECORDS-HANDOFF.md` R1–R8）交付，
+   G2 侧 `LogsResult.Structured` 恒为 `false`，接入后再由父授权消费。
+2. **事件 + 任务的跨事务原子性**：store 只有 `InsertEvent`（投递窗口 + 事件同一事务）与
+   `CreateTasks`（整批任务同一事务），**没有**「事件 + 扇出任务」同一事务入口
+   （`store.(*DB).InsertEvent` event.go:207；`store.(*DB).CreateTasks` task.go:254；
+   无 `AcceptEventTasks` / tx 变体）。G2 的顺序是 InsertEvent → 剪枝留痕 → CreateTasks：
+   任务批失败时事件已存在，调用方拿到错误，重投由 deliveryId 窗口吸收；不伪造原子性、
+   不返回假成功回执。需要真正跨表原子时须由 store owner 增补事务入口（不在 G2 写权限内）。
+3. **emit 已声明但下游解析不到**：capability.md §6.2 要求 `downstream_missing` 是
+   「任务失败 + 事件」，但 `CreateTasks` 要求 `capability_id/capability/trace` 且只允许
+   `pending` 起始，无法为解析不到的能力落一条 failed 任务。G2 记一条真实剪枝观察
+   （`source='route'`、type=`downstream_missing`）并回 `taskId:null + pruned`；
+   不捏造 failed task；属已知契约/存储缺口，父裁决后补。
+4. **日志 HTTP 五态映射由 G3 落地**：G2 提供可判别错误——`store.ErrNotFound` /
+   `ErrNoAttempt`（404 任务不存在/跨 ns/无该 attempt）、`ErrNodeOffline`（503）、
+   `ErrLogsTimeout`（504）、`ErrLogsCorrelation`（502 非法/错误绑定回包）、
+   帧内 `error=no_local_archive`（410 真实 attempt 但档案不在，原样转发）。
+   `previous=true` 且确实无上一 attempt → `Empty=true`（对应 200 + attempt 0 + 空数组），
+   仅此场景使用 attempt 0。
