@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zzjcool/anotify/internal/artifact"
@@ -102,6 +103,47 @@ type Store struct {
 	Root string
 	// WorkRoot 是系统创建的任务目录根（status.workRoot）。
 	WorkRoot string
+
+	// 同进程活跃日志索引写入者的私有登记（R9-A）：key = logs 目录绝对路径。
+	// 只用于读侧区分「正常活跃的零记录」与「崩溃留下的 header-only」，不是
+	// wire 协议、不跨进程、不落盘。
+	liveMu sync.Mutex
+	live   map[string]*LogRecorder
+}
+
+// registerLive 登记一个本进程打开的日志索引写入者。
+func (s *Store) registerLive(key string, r *LogRecorder) {
+	if s == nil || key == "" || r == nil {
+		return
+	}
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if s.live == nil {
+		s.live = make(map[string]*LogRecorder)
+	}
+	s.live[key] = r
+}
+
+// unregisterLive 注销写入者；只有当前登记的还是同一个 recorder 才删（重开竞态安全）。
+func (s *Store) unregisterLive(key string, r *LogRecorder) {
+	if s == nil || key == "" {
+		return
+	}
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	if s.live[key] == r {
+		delete(s.live, key)
+	}
+}
+
+// liveLogRecorder 返回登记在该 logs 目录上的活跃写入者（没有 = nil）。
+func (s *Store) liveLogRecorder(key string) *LogRecorder {
+	if s == nil || key == "" {
+		return nil
+	}
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	return s.live[key]
 }
 
 // New 构造（目录可尚不存在）。
@@ -112,6 +154,12 @@ type Attempt struct {
 	store  *Store
 	dir    string
 	record Record
+	// openIndexPublished 是索引打开器的**私有测试 seam**（生产恒为 nil）：
+	// openLogIndexFS 在把 recorder 登记进 Store 私有 live 表、即对读侧发布
+	// 的那个边界调用它一次。回归测试借此确定性地钉住「已登记、初始化尚未
+	// 完成」的窗口，证明发布发生在 writer 初始化锁内，不靠并发碰撞碰运气。
+	// 它不是 wire 协议、不是公开构造参数、不参与生产行为。
+	openIndexPublished func(*LogRecorder)
 }
 
 // Dir 返回 attempt 结果目录（绝对路径）。

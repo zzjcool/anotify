@@ -1,5 +1,11 @@
 package protocol
 
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
 // 保留的运维帧：升级与节点日志。
 //
 // 它们不是 v4 重新设计的协议，而是既有功能的**唯一定义源搬迁**：帧从 internal/ws
@@ -16,9 +22,31 @@ const (
 	FrameLogsResponse = "logs_response"
 )
 
-// LogsErrNoLocalArchive 是 logs_response.error 的唯一取值：这台节点上没有那次
-// 执行的档案（被 GC 了 / 老任务 / 不是这台机器跑的）。
-const LogsErrNoLocalArchive = "no_local_archive"
+// 日志错误码是**封闭集合**：中枢按枚举做映射，新增码必须双方同时上。
+const (
+	// LogsErrNoLocalArchive：这台节点上没有那次执行的档案（被 GC 了 / 老任务 /
+	// 不是这台机器跑的）。
+	LogsErrNoLocalArchive = "no_local_archive"
+	// LogsErrUnreadable：档案在，但结构化记录索引缺失/损坏/版本不支持/写入失败
+	// 锁存——无法证明记录完整性。绝不能退化成一个空成功。
+	LogsErrUnreadable = "logs_unreadable"
+	// LogsErrIllegalRequest：请求本身不合法（空 taskId/requestId、attempt<0、
+	// tailLines/sinceSeconds 越界）。
+	LogsErrIllegalRequest = "illegal_log_request"
+)
+
+// 日志记录与查询的共享常量。
+const (
+	// LogStreamStdout / LogStreamStderr 是 LogLine.stream 的封闭取值。
+	LogStreamStdout = "stdout"
+	LogStreamStderr = "stderr"
+	// LogLineTextMaxBytes 是单条记录文字段的上限（64 KiB）。超长行由节点按
+	// 实际采集片段形成多条记录；这不代表脚本写过额外换行，原始字节仍以
+	// stdout.log/stderr.log 为准。
+	LogLineTextMaxBytes = 64 << 10
+	// LogsTailLinesMax 是 logs_request.tailLines 的上限（0/省略 = 不限条数）。
+	LogsTailLinesMax = 5000
+)
 
 // FrameSoftLimit 是逐帧软上限（1 MiB）。
 //
@@ -110,26 +138,101 @@ type LogsRequestFrame struct {
 	// 有档案的 attempt。跨节点重试时中枢必须按 attempt 的历史节点发请求，不能
 	// 拿当前节点的日志冒充另一次执行。
 	Attempt int `json:"attempt,omitempty"`
+	// TailLines 是记录条数上限（0/省略 = 不限）。上限 LogsTailLinesMax；
+	// 节点先按 sinceSeconds 过滤、再取最新 tailLines 条。
+	TailLines int `json:"tailLines,omitempty"`
+	// SinceSeconds 是时间窗（0/省略 = 不限）。节点用自己的当前时间算出阈值，
+	// 只回采集时间不早于阈值的记录；中枢不按服务器时钟二次过滤。
+	SinceSeconds int `json:"sinceSeconds,omitempty"`
+}
+
+// ValidateLogsRequest 校验 logs_request 的封闭参数域。
+//
+// 非法请求必须回 LogsErrIllegalRequest，而不是把它当成「0 = 最新」悄悄读档：
+// 负数 attempt / 越界 tailLines 若被归一化，中枢看到的成功就无法与它发出的
+// 请求一一对应。
+func ValidateLogsRequest(f *LogsRequestFrame) error {
+	if f == nil {
+		return errors.New("protocol: logs_request 为空")
+	}
+	if f.Type != FrameLogsRequest {
+		return fmt.Errorf("protocol: 帧类型 %q 不是 %s", f.Type, FrameLogsRequest)
+	}
+	if strings.TrimSpace(f.TaskID) == "" {
+		return errors.New("protocol: logs_request.taskId 为空")
+	}
+	if strings.TrimSpace(f.RequestID) == "" {
+		return errors.New("protocol: logs_request.requestId 为空")
+	}
+	if f.Attempt < 0 {
+		return fmt.Errorf("protocol: logs_request.attempt 不能为负（%d）", f.Attempt)
+	}
+	if f.TailLines < 0 || f.TailLines > LogsTailLinesMax {
+		return fmt.Errorf("protocol: logs_request.tailLines=%d 越界（0..%d）", f.TailLines, LogsTailLinesMax)
+	}
+	if f.SinceSeconds < 0 {
+		return fmt.Errorf("protocol: logs_request.sinceSeconds 不能为负（%d）", f.SinceSeconds)
+	}
+	return nil
+}
+
+// LogLine 是一条真实采集到的日志记录。
+//
+// 恰有四个 wire 字段，不增不减：
+//   - sequence：attempt 内跨 stdout/stderr 严格递增、从 1 开始。它描述**节点实际
+//     观察并串行记录的顺序**，不是脚本跨流的因果先后，也不承诺两个 pipe 的写入顺序。
+//   - stream：stdout / stderr。
+//   - text：实际采集文字（LF 分行，EOF 残片是真实记录；单段 ≤ 64 KiB，超长行按
+//     实际片段拆成多条）。无效 UTF-8 按标准 JSON 文字投影（替换字符），raw 档案
+//     保持逐字节不变。
+//   - at：节点采集该记录时的真实时间（RFC3339Nano）；不是 finishedAt，也不校正成
+//     中枢时钟。
+type LogLine struct {
+	Sequence int    `json:"sequence"`
+	Stream   string `json:"stream"`
+	Text     string `json:"text"`
+	At       string `json:"at"`
 }
 
 // LogsResponseFrame 是节点对一次 logs_request 的回答。
 //
-// 三条纪律：
+// 四条纪律：
 //   - 配对靠 requestId：中枢看不到的 requestId 一律丢弃（晚到的回包、过期请求）。
-//   - error 非空 = 没取到（目前只有 LogsErrNoLocalArchive）；空 error + 两个空串是
-//     「这次执行什么都没打印」，两者语义不同，不能合并。
+//   - error 非空 = 没取到（封闭集合：no_local_archive / logs_unreadable /
+//     illegal_log_request）；空 error + 零条记录是「这次执行什么都没打印」，
+//     两者语义不同，不能合并。
 //   - 编码后 ≤ LogsResponseMaxBytes：truncated=true 表示档案里还有更多（档案本身
 //     完整，被截的是这次回包）。
+//   - Lines 只在成功响应里出现：成功必须是非 null 数组（零条 = []），错误响应
+//     不能伪造成功记录。用指针是为了让 wire 上「错误时没有 lines 键」与
+//     「成功零条 = []」在同一个 struct 上都能精确表达。
 type LogsResponseFrame struct {
 	Type      string `json:"type"`
 	TaskID    string `json:"taskId"`
 	RequestID string `json:"requestId"`
 	// Attempt 是**实际**读到的 attempt：成功时必填（≥1），错误/无档案时为空。
 	// 错误响应不能伪造一个 latest 冒充请求的历史 attempt。
-	Attempt   int    `json:"attempt,omitempty"`
-	Stdout    string `json:"stdout"`
-	Stderr    string `json:"stderr"`
-	Truncated bool   `json:"truncated"`
-	Bytes     int64  `json:"bytes"`
-	Error     string `json:"error,omitempty"`
+	Attempt   int        `json:"attempt,omitempty"`
+	Stdout    string     `json:"stdout"`
+	Stderr    string     `json:"stderr"`
+	Truncated bool       `json:"truncated"`
+	Bytes     int64      `json:"bytes"`
+	Error     string     `json:"error,omitempty"`
+	Lines     *[]LogLine `json:"lines,omitempty"`
+}
+
+// SetLogLines 设置成功响应的记录数组：nil 也编码成 []，而不是缺键/null。
+func (f *LogsResponseFrame) SetLogLines(lines []LogLine) {
+	if lines == nil {
+		lines = []LogLine{}
+	}
+	f.Lines = &lines
+}
+
+// LogLines 返回记录数组（nil 安全；错误响应返回 nil）。
+func (f *LogsResponseFrame) LogLines() []LogLine {
+	if f == nil || f.Lines == nil {
+		return nil
+	}
+	return *f.Lines
 }

@@ -23,6 +23,8 @@ func testStore(t *testing.T) *resultstore.Store {
 	return resultstore.New(filepath.Join(dir, "results"), filepath.Join(dir, "work"))
 }
 
+// writeLogs 造一份**真实**档案：raw 逐字节 + 结构化记录索引（L1 起 raw-only 档案
+// 明确不可结构化读取，成功用例必须来自真实 index.jsonl）。
 func writeLogs(t *testing.T, s *resultstore.Store, taskID string, attempt int, stdout, stderr string) {
 	t.Helper()
 	rec, err := s.Begin(resultstore.Record{
@@ -33,15 +35,33 @@ func writeLogs(t *testing.T, s *resultstore.Store, taskID string, attempt int, s
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	for name, text := range map[string]string{"stdout.log": stdout, "stderr.log": stderr} {
-		f, err := rec.OpenLogFile(name)
+	idx := rec.OpenLogIndex(nil)
+	if err := idx.Err(); err != nil {
+		t.Fatalf("OpenLogIndex: %v", err)
+	}
+	for _, pair := range []struct {
+		stream string
+		name   string
+		text   string
+	}{
+		{protocol.LogStreamStdout, resultstore.StdoutFileName, stdout},
+		{protocol.LogStreamStderr, resultstore.StderrFileName, stderr},
+	} {
+		f, err := rec.OpenLogFile(pair.name)
 		if err != nil {
 			t.Fatalf("OpenLogFile: %v", err)
 		}
-		if _, err := f.WriteString(text); err != nil {
+		if _, err := f.WriteString(pair.text); err != nil {
 			t.Fatal(err)
 		}
 		_ = f.Close()
+		if _, err := idx.Writer(pair.stream).Write([]byte(pair.text)); err != nil {
+			t.Fatal(err)
+		}
+		idx.CloseStream(pair.stream)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("关闭索引: %v", err)
 	}
 }
 
@@ -92,11 +112,29 @@ func TestLogsResponseTruncatedWithinLimit(t *testing.T) {
 	if len(raw) > protocol.LogsResponseMaxBytes {
 		t.Fatalf("回包必须 ≤ %d 字节，实际 %d", protocol.LogsResponseMaxBytes, len(raw))
 	}
-	if !strings.HasSuffix(resp.Stdout, "x") || !strings.HasSuffix(resp.Stderr, "err-tail") {
-		t.Fatal("截断必须取尾部（最近的日志）")
+	lines := resp.LogLines()
+	if len(lines) == 0 {
+		t.Fatal("R4 记录优先：大档案也必须回最新能完整装下的记录")
+	}
+	var lastStdout string
+	for _, line := range lines {
+		if line.Stream == protocol.LogStreamStdout {
+			lastStdout = line.Text
+		}
+	}
+	// 记录按喂入顺序编号：stdout 先、stderr 后，所以帧内最后一条必须是 stderr 的
+	// err-tail（它是全局最新记录），而 stdout 保留的必须是最新尾部片段。
+	if last := lines[len(lines)-1]; last.Text != "err-tail" || last.Stream != protocol.LogStreamStderr {
+		t.Fatalf("最新记录必须保留：%+v", last)
+	}
+	if !strings.HasSuffix(lastStdout, "x") {
+		t.Fatalf("stdout 截断必须保留最新尾部片段：%q", lastStdout)
+	}
+	if resp.Stdout != "" && !strings.HasSuffix(resp.Stdout, "x") {
+		t.Fatal("raw 尾部窗口若返回必须是最近的尾部")
 	}
 	if resp.Bytes != int64(len(resp.Stdout)+len(resp.Stderr)) {
-		t.Fatalf("bytes 必须是实际返回的字节数：%d", resp.Bytes)
+		t.Fatalf("bytes 必须是实际返回的 raw 字节数：%d", resp.Bytes)
 	}
 	// 本机档案完整（截的只是回包）。
 	_, stdout, _, found, err := store.Logs("t1", 1)

@@ -341,6 +341,14 @@ func (a *Attempt) spawn() error {
 		return err
 	}
 
+	// 结构化日志记录索引：真实旁路档案（序号/采集时间/分行文字），与 raw 双流
+	// 并行写入。打开失败只锁存状态（index.error / 缺失索引 → logs_unreadable），
+	// 不阻止执行、不截断 raw、也不改变进程退出事实。
+	recorder := a.record.OpenLogIndex(nil)
+	if err := recorder.Err(); err != nil {
+		a.r.logf("runner: 打开日志记录索引失败（raw 继续写，档案将不可结构化读取）：%v", err)
+	}
+
 	entry := execenv.EntrypointPath(a.workDir, a.art.Spec.Run.Entrypoint)
 	cmd := exec.Command(entry)
 	cmd.Dir = a.workDir
@@ -355,6 +363,7 @@ func (a *Attempt) spawn() error {
 		_ = stderrR.Close()
 		_ = stdoutLog.Close()
 		_ = stderrLog.Close()
+		_ = recorder.Close()
 		return fmt.Errorf("启动 %s: %w", entry, err)
 	}
 	a.groupMu.Lock()
@@ -393,10 +402,13 @@ func (a *Attempt) spawn() error {
 
 	var copies sync.WaitGroup
 	copies.Add(2)
-	go a.copyLog(a.stdoutR, a.record, resultstore.StdoutFileName, &copies)
-	go a.copyLog(a.stderrR, a.record, resultstore.StderrFileName, &copies)
+	go a.copyLog(a.stdoutR, a.record, resultstore.StdoutFileName, protocol.LogStreamStdout, recorder, &copies)
+	go a.copyLog(a.stderrR, a.record, resultstore.StderrFileName, protocol.LogStreamStderr, recorder, &copies)
 	go func() {
 		copies.Wait()
+		if err := recorder.Close(); err != nil {
+			a.r.logf("runner: 关闭日志记录索引失败：%v", err)
+		}
 		close(a.copiesDone)
 	}()
 
@@ -407,7 +419,12 @@ func (a *Attempt) spawn() error {
 }
 
 // copyLog 把一条流写进本机档案；滚动写入，不把全文留在内存。
-func (a *Attempt) copyLog(src *os.File, rec *resultstore.Attempt, name string, wg *sync.WaitGroup) {
+//
+// raw 文件先写，结构化记录 writer 再消费同一批字节；后者对外永远返回成功，
+// 所以旁路索引故障不会让 io.Copy 提前结束（raw 保持完整），也不会经 copyErr
+// 改变任务的终态/进程退出事实。
+func (a *Attempt) copyLog(src *os.File, rec *resultstore.Attempt, name, stream string,
+	recorder *resultstore.LogRecorder, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer src.Close()
 	dst, err := rec.OpenLogFile(name)
@@ -418,7 +435,12 @@ func (a *Attempt) copyLog(src *os.File, rec *resultstore.Attempt, name string, w
 		return
 	}
 	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
+	defer recorder.CloseStream(stream)
+	sink := io.Writer(dst)
+	if recorder != nil {
+		sink = io.MultiWriter(dst, recorder.Writer(stream))
+	}
+	if _, err := io.Copy(sink, src); err != nil {
 		a.r.logf("runner: 复制 %s 日志失败：%v", name, err)
 		a.noteCopyErr(fmt.Errorf("复制 %s: %w", name, err))
 	}

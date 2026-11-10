@@ -76,10 +76,15 @@ func (a *Agent) logf(format string, args ...any) {
 	}
 }
 
-// HandleLogsRequest 读取 (taskId, attempt) 的本机档案并编码回一帧。
+// HandleLogsRequest 读取 (taskId, attempt) 的本机档案并把一帧编码回中枢。
 //
-// attempt=0（帧里省略）表示该逻辑 task 最近一次有档案的 attempt；成功响应必须
-// 回实际 attempt，错误 / 无档案不能伪造 latest。
+// 语义（L1-R3/R4）：
+//   - 请求先过 closed-set 校验，非法参数回 illegal_log_request（不归一化）。
+//   - attempt=0（帧里省略）表示该逻辑 task 最近一次有档案的 attempt；成功响应必须
+//     回实际 attempt，错误 / 无档案不能伪造 latest。
+//   - 成功响应带真实结构化记录 Lines（零条 = []）与 raw 尾部窗口；任何记录级/
+//     raw 级/帧级截断都只通过 truncated 表达。
+//   - 档案存在但索引缺失/损坏/版本不支持/写入失败 → logs_unreadable，绝不空成功。
 func (a *Agent) HandleLogsRequest(ctx context.Context, f *protocol.LogsRequestFrame) *protocol.LogsResponseFrame {
 	if f == nil || f.Type != protocol.FrameLogsRequest {
 		return nil
@@ -89,81 +94,134 @@ func (a *Agent) HandleLogsRequest(ctx context.Context, f *protocol.LogsRequestFr
 		TaskID:    f.TaskID,
 		RequestID: f.RequestID,
 	}
+	if err := protocol.ValidateLogsRequest(f); err != nil {
+		resp.Error = protocol.LogsErrIllegalRequest
+		a.logf("ops: 非法日志请求 task=%q attempt=%d tailLines=%d sinceSeconds=%d: %v",
+			f.TaskID, f.Attempt, f.TailLines, f.SinceSeconds, err)
+		return resp
+	}
 	if a.Results == nil {
 		resp.Error = protocol.LogsErrNoLocalArchive
 		return resp
 	}
-	var (
-		attempt int
-		found   bool
-		stdout  []byte
-		stderr  []byte
-		err     error
-	)
-	if f.Attempt > 0 {
-		attempt, stdout, stderr, found, err = a.Results.Logs(f.TaskID, f.Attempt)
-	} else {
-		attempt, stdout, stderr, found, err = a.Results.LatestLogs(f.TaskID)
-	}
+	arch, found, err := a.Results.ReadLogs(f.TaskID, f.Attempt, resultstore.LogQuery{
+		SinceSeconds: f.SinceSeconds,
+		Now:          time.Now().UTC(),
+		TailLines:    f.TailLines,
+	})
 	if err != nil {
-		resp.Error = protocol.LogsErrNoLocalArchive
-		a.logf("ops: 读取日志档案失败 task=%s attempt=%d: %v", f.TaskID, f.Attempt, err)
+		resp.Error = protocol.LogsErrUnreadable
+		a.logf("ops: 日志档案不可读 task=%s attempt=%d: %v", f.TaskID, f.Attempt, err)
 		return resp
 	}
 	if !found {
 		resp.Error = protocol.LogsErrNoLocalArchive
 		return resp
 	}
-	resp.Attempt = attempt
-	truncated, out, errOut := encodeWithinLimit(resp, stdout, stderr)
-	resp.Stdout = out
-	resp.Stderr = errOut
-	resp.Truncated = truncated
-	resp.Bytes = int64(len(out) + len(errOut))
+	resp.Attempt = arch.Attempt
+	resp.SetLogLines(arch.Lines)
+	fitLogsResponse(resp, arch)
 	return resp
 }
 
-// encodeWithinLimit 把两段日志按「编码后 ≤ LogsResponseMaxBytes」收缩（取尾部，
-// 不破坏 UTF-8 边界）。本机档案不动：截的只是这一次回包。
-func encodeWithinLimit(resp *protocol.LogsResponseFrame, stdout, stderr []byte) (bool, string, string) {
-	out, errOut := string(stdout), string(stderr)
-	resp.Stdout, resp.Stderr = out, errOut
-	raw, err := protocol.Encode(resp)
-	if err != nil || len(raw) <= protocol.LogsResponseMaxBytes {
-		return false, out, errOut
+// fitLogsResponse 把「结构化记录 + raw 尾部窗口」装进一帧 ≤ LogsResponseMaxBytes。
+//
+// 顺序固定为 R4：since 过滤与 tailLines 已在 resultstore 完成；这里先最大化能完整
+// 传输的**最新**记录（此时 raw 置空，避免 raw 挤掉记录），再把剩余预算分给 raw
+// 尾部窗口。任何一边被丢都只通过 truncated 表达（本机档案本身完整，不动）。
+func fitLogsResponse(resp *protocol.LogsResponseFrame, arch resultstore.LogArchive) {
+	lines := resp.LogLines()
+	keep := maxFittingLines(resp, lines)
+	lineDropped := keep < len(lines)
+
+	stdout, stderr, rawDropped := fitRawWithinLimit(resp, arch.Stdout, arch.Stderr)
+	resp.Stdout, resp.Stderr = stdout, stderr
+	resp.Bytes = int64(len(stdout) + len(stderr))
+	resp.Truncated = arch.StdoutMore || arch.StderrMore || arch.Omitted || arch.Partial ||
+		lineDropped || rawDropped
+}
+
+// maxFittingLines 在 raw 置空的前提下最大化可完整装下的最新记录条数。
+//
+// 编码体积对「保留条数」单调：丢掉更早的记录只会变小，所以可以二分。
+func maxFittingLines(resp *protocol.LogsResponseFrame, lines []protocol.LogLine) int {
+	if tryLogsFrame(resp, lines, len(lines), "", "") {
+		return len(lines)
 	}
-	truncated := true
-	// 逐步收缩：先按比例估计，再二分到刚好能装下。
-	budget := len(stdout) + len(stderr)
-	bestOut, bestErr := "", ""
-	_ = bestOut
-	_ = bestErr
-	lo, hi := 0, budget
-	// 找到最大的「每条流尾部最多 k 字节」使编码后仍 ≤ 上限。
-	var fits bool
+	lo, hi, best := 0, len(lines), 0
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		candOut := tailString(stdout, mid)
-		candErr := tailString(stderr, mid)
-		resp.Stdout, resp.Stderr = candOut, candErr
-		// bytes 的值本身也要算进帧大小（先写再编码，否则截断后反而变长）。
-		resp.Bytes = int64(len(candOut) + len(candErr))
-		raw, err := protocol.Encode(resp)
-		if err == nil && len(raw) <= protocol.LogsResponseMaxBytes {
-			bestOut, bestErr = candOut, candErr
-			fits = true
+		if tryLogsFrame(resp, lines, mid, "", "") {
+			best = mid
 			lo = mid + 1
 		} else {
 			hi = mid - 1
 		}
 	}
-	if !fits {
-		resp.Stdout, resp.Stderr = "", ""
-		resp.Bytes = 0
-		return truncated, "", ""
+	_ = tryLogsFrame(resp, lines, best, "", "")
+	return best
+}
+
+// fitRawWithinLimit 在已选定的记录集合下最大化 raw 尾部窗口。
+//
+// 两条流用同一个字节预算（与既有 raw 截断行为一致），取各自尾部并保持 UTF-8
+// 起点对齐；被丢掉的字节只由 truncated 说话，档案本身不动。
+func fitRawWithinLimit(resp *protocol.LogsResponseFrame, stdout, stderr []byte) (string, string, bool) {
+	lines := resp.LogLines()
+	if tryLogsFrame(resp, lines, len(lines), string(stdout), string(stderr)) {
+		return resp.Stdout, resp.Stderr, false
 	}
-	resp.Bytes = int64(len(bestOut) + len(bestErr))
-	return truncated, bestOut, bestErr
+	maxLen := len(stdout)
+	if len(stderr) > maxLen {
+		maxLen = len(stderr)
+	}
+	lo, hi := 0, maxLen
+	best := -1
+	var bestOut, bestErr string
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		out := tailString(stdout, mid)
+		errOut := tailString(stderr, mid)
+		if tryLogsFrame(resp, lines, len(lines), out, errOut) {
+			best = mid
+			bestOut, bestErr = out, errOut
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best < 0 {
+		// 连空 raw 都装不下（元数据自身超限）：不回任何内容，只让 truncated 说话。
+		_ = tryLogsFrame(resp, lines, len(lines), "", "")
+		return resp.Stdout, resp.Stderr, len(stdout)+len(stderr) > 0
+	}
+	_ = tryLogsFrame(resp, lines, len(lines), bestOut, bestErr)
+	dropped := len(bestOut) < len(stdout) || len(bestErr) < len(stderr)
+	return bestOut, bestErr, dropped
+}
+
+// tryLogsFrame 以候选记录尾部 / raw 尾部编码一次，报告是否仍 ≤ 帧上限。
+//
+// bytes 也参与编码（先写再量），避免「截断后反而变长」。
+func tryLogsFrame(resp *protocol.LogsResponseFrame, lines []protocol.LogLine, keep int, stdout, stderr string) bool {
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > len(lines) {
+		keep = len(lines)
+	}
+	tail := lines[len(lines)-keep:]
+	if tail == nil {
+		tail = []protocol.LogLine{}
+	}
+	resp.SetLogLines(tail)
+	resp.Stdout, resp.Stderr = stdout, stderr
+	resp.Bytes = int64(len(stdout) + len(stderr))
+	raw, err := protocol.Encode(resp)
+	if err != nil {
+		return false
+	}
+	return len(raw) <= protocol.LogsResponseMaxBytes
 }
 
 // tailString 返回 data 的尾部最多 max 字节，并对齐到合法 UTF-8 起点。
