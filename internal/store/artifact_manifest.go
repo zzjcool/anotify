@@ -360,6 +360,16 @@ func (d *DB) ListArtifactManifest(ctx context.Context, namespaceID, taskID strin
 // Caller supplies an already user-authorized immutable namespace ID. 404 means
 // no result ref; ErrArtifactExpired means retained metadata with no system copy.
 // G3 must open only the returned opaque system object (never node fallback).
+//
+// Selection (G3-D4): the SAME sha256 may be referenced by several logical paths of
+// the current reported result. Any still-live copy wins — the first live entry in
+// canonical path order (ListArtifactManifest is ORDER BY path) is returned so the
+// download can hand out a deterministic safe basename. Only when every matching
+// result reference is expired does this report ErrArtifactExpired. A leading
+// expired row must never mask a later live one (that was the pre-#332 defect).
+// Borrowed bytes are impossible: the scan is restricted to this taskId + its
+// current reported attempt + result_ref rows, so another task/namespace/attempt
+// holding a live copy of the same hash is invisible here.
 func (d *DB) GetTaskArtifactDownload(ctx context.Context, namespaceID, taskID, sha256 string, now int64) (*ArtifactManifestEntry, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
@@ -380,13 +390,19 @@ func (d *DB) GetTaskArtifactDownload(ctx context.Context, namespaceID, taskID, s
 	if err != nil {
 		return nil, err
 	}
-	for _, a := range entries {
-		if a.SHA256 == sha256 && a.ResultRef {
-			if a.ExpiredAt != nil || a.ExpiresAt > 0 && a.ExpiresAt <= now {
-				return nil, ErrArtifactExpired
-			}
-			return &a, nil
+	expired := false
+	for i := range entries {
+		a := &entries[i]
+		if a.SHA256 != sha256 || !a.ResultRef {
+			continue
 		}
+		if a.ExpiredAt == nil && (a.ExpiresAt == 0 || a.ExpiresAt > now) {
+			return a, nil
+		}
+		expired = true
+	}
+	if expired {
+		return nil, ErrArtifactExpired
 	}
 	return nil, ErrNotFound
 }

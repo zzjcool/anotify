@@ -13,7 +13,9 @@ import (
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/lease"
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/push"
+	"github.com/zzjcool/anotify/internal/resultspool"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
@@ -26,6 +28,13 @@ type App struct {
 	Handler http.Handler
 	DB      *store.DB
 	AuthSvc *auth.Service
+
+	// Spool 是中枢自有的产物字节池（#332）：nil = 托管根不可用（产物端点回 503）。
+	Spool *resultspool.Store
+	// ArtifactGC 是产物字节回收驱动（nil = 未配置周期，或 spool 不可用）。
+	// 它由 NewApp 用装配期的 ctx 启动（`go ArtifactGC.Run(ctx)`）；测试可直接
+	// 调 RunOnce 做**真实**回收验证，不需要等 ticker。
+	ArtifactGC *resultspool.GC
 }
 
 // NewMux 装配完整应用：/v1/* 动态 API（no-store），其余静态资源（CDN 缓存分级）。
@@ -226,11 +235,58 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
 	sweeper := lease.NewSweeper(db, slog.Default())
+
+	// 产物托管池（#332 / A1）：中枢自有的 0700 目录 + 0600 对象文件。
+	//
+	// 建不出来时**不**让整个进程起不来：/v1 的其余域与该能力无关，产物端点会回
+	// 503 `artifact_upload_unavailable`（诚实的「没配置好」，不是假成功）。
+	// 但日志必须 ERROR 级别——否则产物上传会静默降级成「节点侧 artifact_upload_failed」。
+	spool, spoolErr := resultspool.New(cfg.ArtifactSpoolPath())
+	if spoolErr != nil {
+		slog.Error("artifact spool unavailable: uploads/downloads will return 503",
+			"event", "server.artifact.spool.unavailable",
+			"component", "resultspool",
+			"path", cfg.ArtifactSpoolPath(),
+			"error", spoolErr.Error(),
+		)
+		spool = nil
+	} else {
+		slog.Info("artifact spool configured",
+			"event", "server.artifact.spool.configured",
+			"path", spool.Root(),
+			"gc_interval_sec", int(cfg.ArtifactGCInterval()/time.Second),
+			"note", "副本 0700/0600；保留期 7 天由 store 的 retention_result_ttl_sec 决定（0 = 永久）",
+		)
+	}
+
 	deps := &serverDeps{
 		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
 		Log: slog.Default(), Now: store.Now, Session: sessMW, Backpressure: bp.Wrap,
+		Spool: spool,
 		// namespace id → slug 缓存（slug 不可变，见 serverDeps.display 的注释）。
 		display: &nsDisplay{},
+	}
+
+	// 产物字节 GC（#332）：Expire→删私有文件→Ack 的单一有界驱动。
+	//
+	// 保留期事实全部在 store（expires_at / 0=永久 / 活跃 ticket 保护），这里只负责
+	// 「到点了就把字节删掉并记账」。周期 0 = 不启动（显式运维选择）。
+	var artifactGC *resultspool.GC
+	if spool != nil && cfg.ArtifactGCInterval() > 0 {
+		gc, err := resultspool.NewGC(newArtifactGCStore(db), spool, resultspool.GCOptions{
+			Interval: cfg.ArtifactGCInterval(),
+			Now:      store.Now,
+			Log:      slog.Default(),
+		})
+		if err != nil {
+			slog.Error("artifact gc disabled: invalid configuration",
+				"event", "server.artifact.gc.disabled",
+				"error", err.Error(),
+			)
+		} else {
+			artifactGC = gc
+			go func() { _ = gc.Run(ctx) }()
+		}
 	}
 
 	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。
@@ -345,6 +401,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/node/stream", noStore(hub))
 	// 二进制下载走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
 	mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: agentBin, db: db}))
+	// 运行产物上行（#332 / A1）：同样是 **node token**（不是会话），所以刻意挂在
+	// 资源域之外——域内 register 一律包 session 中间件（节点请求会被 401）。
+	// 授权不走中间件：handler 自己用 Bearer → token hash 定位节点，再由
+	// store 的 Begin/Register 在事务内复核 attempt/lease/token/相位/撤销。
+	mux.Handle("PUT "+protocol.NodeTaskArtifactsPathPrefix+"{taskId}"+protocol.NodeTaskArtifactsPathInfix+"{sha256}",
+		noStore(newArtifactUploadHandler(db, spool, slog.Default())))
 
 	// --- 事件投递入口（Bearer key + 背压）---
 	//
@@ -455,7 +517,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// （回归用例：gzip_test.go 的 TestGzipJSONKeepsStatusWriter）。
 	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
 	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
-	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc}
+	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc, Spool: spool, ArtifactGC: artifactGC}
 }
 
 // runBackgroundLoop 启动一条后台循环，并把「非取消」的退出记成 WARN。

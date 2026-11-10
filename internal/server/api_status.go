@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -188,6 +189,23 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusConflict, reasonAlreadyExists, "node already exists", nil)
 	case errors.Is(err, store.ErrNodeDraining):
 		writeStatus(w, http.StatusConflict, reasonConflict, "node is draining", nil)
+	// A1/#332 产物域的封闭错误码（上传动作端点自己有 {"error":…} 动作文档，
+	// 但下载/其它资源路径会把这些 sentinel 传到这里，落 default 500 会把
+	// 「副本已过期」报成「服务器坏了」）。
+	case errors.Is(err, store.ErrArtifactExpired):
+		writeStatus(w, http.StatusGone, reasonArtifactExpired, "artifact copy expired", nil)
+	case errors.Is(err, store.ErrArtifactConflict):
+		writeStatus(w, http.StatusConflict, protocol.ArtifactErrConflict, err.Error(), nil)
+	case errors.Is(err, store.ErrArtifactTooLarge):
+		writeStatus(w, http.StatusRequestEntityTooLarge, protocol.ArtifactErrTooLarge, err.Error(), nil)
+	case errors.Is(err, store.ErrArtifactPathInvalid):
+		writeStatus(w, http.StatusBadRequest, protocol.ArtifactErrPathInvalid, err.Error(), nil)
+	case errors.Is(err, store.ErrArtifactHashMismatch):
+		writeStatus(w, http.StatusBadRequest, protocol.ArtifactErrHashMismatch, err.Error(), nil)
+	case errors.Is(err, store.ErrArtifactUploadExpired):
+		writeStatus(w, http.StatusConflict, reasonConflict, "artifact upload ticket expired", nil)
+	case errors.Is(err, store.ErrArtifactReference):
+		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	case errors.Is(err, store.ErrNoCapacity), errors.Is(err, store.ErrSlotUnavailable):
 		writeStatus(w, http.StatusConflict, reasonConflict, err.Error(), nil)
 	case errors.Is(err, store.ErrTooManyInstances):
