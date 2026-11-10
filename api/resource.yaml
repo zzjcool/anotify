@@ -1,0 +1,3015 @@
+# anotify v4 · 资源域 HTTP 契约（exact-five 之一，共享组件的家）
+#
+# 本文件是五份 OpenAPI 真源中的 **resource.yaml**：#333 冻结的归属表
+# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，其余四份
+# （events/agent/ingress/auth）通过**相对 `$ref`** 引用本文件的 components：
+#
+#     $ref: './resource.yaml#/components/schemas/Status'
+#     $ref: './resource.yaml#/components/responses/Status400'
+#
+# 为什么共享组件放这里：api-conventions §3（信封）、§4（Status）、§7.5（配置 wrapper）
+# 是**资源域**的语义，其它文件只是复用它们；放第六个文件会变成第二个真源。
+#
+# 归属键 = (METHOD, canonical path)：同 path 不同 method 不互相覆盖
+# （`GET …/events` 在 events.yaml、`POST …/events` 在 ingress.yaml）。
+# 路径写真实全路径 `/v1/...`，`servers` 不再补 `/v1`。
+openapi: 3.1.0
+info:
+  title: "anotify v4 资源域 API"
+  version: v4-g3c
+  description: |
+    Capability / Source / Playbook / Namespace / Node / Task 的管理与只读状态，以及
+    只读的 edge / deployment 投影与公共 capability-templates。
+
+    统一形状（api-conventions §3）：资源文档恒有 `apiVersion`(=anotify/v1) / `kind` /
+    `metadata` / `spec` / `status` 五键；列表恒有 `items`（空为 `[]`）与 `metadata`。
+    `status` 只读、从事实派生；写请求带非空 `status` → 400 `status_not_writable`。
+    CAS 只走 `metadata.resourceVersion`（PUT/PATCH 在 body，DELETE 在 `?resourceVersion=`）。
+servers:
+  - url: /
+    description: "路径自身已含 `/v1`，此处不再加前缀（否则会拼出 `/v1/v1/…`）"
+tags:
+  - name: capabilities
+    description: "能力（版本 = capability_versions 的行；内容变化 = 新版本）"
+  - name: sources
+    description: "源（入口配置；fire / dry-run 属 ingress.yaml）"
+  - name: playbooks
+    description: "包（整份 playbook.yaml + 引用文件；install 只加不改）"
+  - name: namespaces
+    description: "命名空间与其配置 / 计数派生面"
+  - name: nodes
+    description: "节点登记、令牌、配置、drain / upgrade"
+  - name: tasks
+    description: "任务只读事实与动作（cancel / abandon / logs / emissions / 产物下载）"
+  - name: deployments
+    description: "只读的「某节点持有某 digest」事实投影"
+paths:
+  # ---------------------------------------------------------------- capabilities
+  /v1/namespaces/{namespace}/capabilities:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listCapabilities
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "列出命名空间内的能力（同名多版本各一行，name 升序、版本降序）"
+      parameters:
+        - name: includeBody
+          in: query
+          required: false
+          description: |
+            `true`/`1` 时返回 `spec.run.files` 正文；默认剥离（文件正文可能很大，
+            列表默认不带）。剥离只影响 `files`，其它字段不变。
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "CapabilityList（items 恒为数组）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    post:
+      operationId: createCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "创建能力版本（省略 version 时按内容折叠复用已有行）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityWrite'}
+      responses:
+        '201':
+          description: "创建出的 Capability（version 与 digest 是真实派生值）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    get:
+      operationId: getCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "读取单个能力（省略 version = 最新版本）"
+      parameters:
+        - name: version
+          in: query
+          required: false
+          description: "指定版本（正整数）；省略 = 最新。"
+          schema: {type: integer, minimum: 1}
+        - name: includeBody
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "Capability"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    patch:
+      operationId: patchCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "原地更新 `next` / `displayName`（正文与 version 不可变）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityPatch'}
+      responses:
+        '200':
+          description: "更新后的 Capability（digest 不变、不新增版本行）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "删除能力版本（CAS 走 query，无请求体）"
+      parameters:
+        - $ref: '#/components/parameters/ResourceVersionQuery'
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/versions:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    get:
+      operationId: listCapabilityVersions
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "列出某能力名的全部版本（版本降序）"
+      parameters:
+        - name: includeBody
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "CapabilityList（每个版本一行，各有独立 metadata.uid）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/versions/{version}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+      - name: version
+        in: path
+        required: true
+        description: "版本号（≥1 的整数，不做前导零归一）"
+        schema: {type: integer, minimum: 1}
+    get:
+      operationId: getCapabilityVersion
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "读取指定版本"
+      parameters:
+        - name: includeBody
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "Capability"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/deploy:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    post:
+      operationId: deployCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "人工部署到指定节点（写「某节点持有某 digest」事实并推 capability.deploy）"
+      description: |
+        部署是**人工**动作（v4 不做自动收敛）。省略 `nodes` = 全部已授权且在线节点。
+        响应逐节点给 `deployed` 结论；节点离线是 `state=offline`，不是 5xx。
+        动作 POST 不套 CAS（api-conventions §4.5）。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityDeployRequest'}
+      responses:
+        '200':
+          description: "部署结论"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityDeployResponse'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/edges:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listEdges
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "只读的派发边投影（能力 spec.next + 源 spec.targets）"
+      description: |
+        Edge 不是可写资源：它由 `Capability.spec.next` 与 `Source.spec.targets` 派生。
+        v4 删除了 `POST/DELETE /v1/edges` 与 `PUT …/downstreams`（api-conventions A5）。
+        响应是 `{items: [...]}` 文档，不是资源列表（没有 apiVersion/kind）。
+      responses:
+        '200':
+          description: "边投影"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EdgeList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '405': {$ref: '#/components/responses/Status405'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/capability-templates:
+    get:
+      operationId: listCapabilityTemplates
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "控制台「新建能力」的内置模板（cluster 级公共数据）"
+      description: |
+        模板是代码生成器的输入，不是执行器类型：v4 只有脚本一种执行形式。
+        模板不做文本插值——用户填的值在运行时经环境变量进入脚本。
+      responses:
+        '200':
+          description: "模板集合"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityTemplateList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+
+  # -------------------------------------------------------------------- sources
+  /v1/namespaces/{namespace}/sources:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listSources
+      tags: [sources]
+      security: [{session: []}]
+      summary: "列出命名空间内的源"
+      responses:
+        '200':
+          description: "SourceList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    post:
+      operationId: createSource
+      tags: [sources]
+      security: [{session: []}]
+      summary: "创建源"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SourceWrite'}
+      responses:
+        '201':
+          description: "创建出的 Source（config 已脱敏）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Source'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/sources/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "源名（同命名空间内唯一；与共享的来源名校验器同口径）"
+        schema: {type: string}
+    get:
+      operationId: getSource
+      tags: [sources]
+      security: [{session: []}]
+      summary: "读取单个源（`config.token`/`config.secret` 永不回显）"
+      responses:
+        '200':
+          description: "Source"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Source'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    patch:
+      operationId: patchSource
+      tags: [sources]
+      security: [{session: []}]
+      summary: "merge-patch 更新源（省略 config.token = 保留旧值）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SourceWrite'}
+      responses:
+        '200':
+          description: "更新后的 Source"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Source'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteSource
+      tags: [sources]
+      security: [{session: []}]
+      summary: "删除源（CAS 走 query）"
+      parameters:
+        - $ref: '#/components/parameters/ResourceVersionQuery'
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  # ------------------------------------------------------------------ playbooks
+  /v1/namespaces/{namespace}/playbooks:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listPlaybooks
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "列出命名空间内的包（默认摘要，不含包体全文）"
+      parameters:
+        - name: includeBody
+          in: query
+          required: false
+          description: "`true`/`1` 时每项返回整份 `spec.files`；默认 `spec` 是 `{}`。"
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "PlaybookList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    post:
+      operationId: createPlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "创建包（整份包体；同 slug 已存在 → 409 slug_taken）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookWrite'}
+      responses:
+        '201':
+          description: "创建出的 Playbook"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Playbook'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        description: "包的 slug（`metadata.name`；创建后不可变）"
+        schema: {type: string}
+    get:
+      operationId: getPlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "读取包（默认摘要）"
+      parameters:
+        - name: includeBody
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: "Playbook"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Playbook'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: replacePlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "整体替换包体（必须带 metadata.resourceVersion）"
+      description: |
+        PUT 是整体替换（不是 merge-patch）：`spec.files` 与 `spec.source` 二选一，
+        两个都给/都不给 → 400 `invalid_playbook`；只给 `source` → 400 `oci_unsupported`
+        （v4 一期没有 registry 拉取实现）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookWrite'}
+      responses:
+        '200':
+          description: "替换后的 Playbook"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Playbook'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deletePlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "删除包清单（不级联卸载；响应说明留下了什么）"
+      parameters:
+        - $ref: '#/components/parameters/ResourceVersionQuery'
+      responses:
+        '200':
+          description: "删除结果（deleted / kept / values / note）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookDeleteResult'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}/render:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      operationId: renderPlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "只读渲染（不写库、不产生回执）"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookActionRequest'}
+      responses:
+        '200':
+          description: "渲染产物（写库前形态）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookRenderResult'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}/install:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+    post:
+      operationId: installPlaybook
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "幂等安装（单事务；`dryRun` 时 0 持久写）"
+      description: |
+        安装冲突（库里已有行不许改）→ **400** `playbook_conflict`（不是 409），
+        `details` 带 `valuesDigest` / `conflicts[]` / `hint`，整包原子 0 写。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaybookActionRequest'}
+      responses:
+        '200':
+          description: "安装回执（values 已按 writeOnly 打码）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookReceipt'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}/installs:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: listPlaybookInstalls
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "实例清单（按 valuesDigest 折叠的读模型）"
+      responses:
+        '200':
+          description: "折叠组清单（total 可能大于返回条数）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookInstallList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/playbooks/{slug}/installs/{installId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: slug
+        in: path
+        required: true
+        schema: {type: string}
+      - name: installId
+        in: path
+        required: true
+        description: "安装回执 id（`ins_…`）"
+        schema: {type: string}
+    get:
+      operationId: getPlaybookInstall
+      tags: [playbooks]
+      security: [{session: []}]
+      summary: "读取单条安装回执"
+      responses:
+        '200':
+          description: "安装回执"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlaybookReceipt'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  # ----------------------------------------------------------------- namespaces
+  /v1/namespaces:
+    get:
+      operationId: listNamespaces
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "列出当前用户可见的命名空间（带计数派生面）"
+      responses:
+        '200':
+          description: "NamespaceList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '500': {$ref: '#/components/responses/Status500'}
+    post:
+      operationId: createNamespace
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "创建命名空间（spec 恒 `{}`，不接受任何 spec 字段）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NamespaceWrite'}
+      responses:
+        '201':
+          description: "创建出的 Namespace"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Namespace'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: "命名空间 slug（`^[a-z0-9][a-z0-9-]{0,30}$`）"
+        schema: {type: string}
+    get:
+      operationId: getNamespace
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "读取命名空间（含 counts/stats 派生面）"
+      responses:
+        '200':
+          description: "Namespace"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Namespace'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    patch:
+      operationId: patchNamespace
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "更新显示名（name 不可变；CAS 走 body）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NamespaceWrite'}
+      responses:
+        '200':
+          description: "更新后的 Namespace"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Namespace'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteNamespace
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "删除命名空间（CAS 走 query；有依赖 → 409）"
+      parameters:
+        - $ref: '#/components/parameters/ResourceVersionQuery'
+        - name: force
+          in: query
+          required: false
+          description: "`true`/`1` 时强制删除（仍受「最后一个命名空间不可删」约束）"
+          schema: {type: boolean, default: false}
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{name}/config:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getNamespaceConfig
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "读取命名空间变量与生效版本"
+      responses:
+        '200':
+          description: "配置 wrapper（不是资源：没有 apiVersion/kind/spec/status）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceConfig'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNamespaceConfig
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "整体替换命名空间变量（CAS 走 body）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NamespaceConfigWrite'}
+      responses:
+        '200':
+          description: "写入后的配置 wrapper"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceConfig'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{name}/stats:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getNamespaceStats
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "命名空间计数与相位分布（派生，不落库）"
+      responses:
+        '200':
+          description: "NamespaceStatus（不带信封）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NamespaceStatus'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/system/config:
+    get:
+      operationId: getSystemConfig
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "读取系统保留期配置"
+      responses:
+        '200':
+          description: "系统配置 wrapper"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SystemConfig'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putSystemConfig
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "写入保留期（三个字段都必填；0 = 永久保留）"
+      description: |
+        `metadata.resourceVersion` 这一项用的是**纯十进制整数**（不是 `rv1:<uid>:<rev>`），
+        这是 system config 的既定形状（它没有 UID）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SystemConfigWrite'}
+      responses:
+        '200':
+          description: "写入后的系统配置"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SystemConfig'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  # ---------------------------------------------------------------------- nodes
+  /v1/nodes:
+    get:
+      operationId: listNodes
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "列出全部节点（cluster 对象，无 namespace 参数）"
+      responses:
+        '200':
+          description: "NodeList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '500': {$ref: '#/components/responses/Status500'}
+    post:
+      operationId: createNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "登记节点"
+      description: |
+        登记时**不**返回令牌明文（`POST …/tokens` 才是唯一一次）；响应里没有任何
+        密钥材料。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NodeWrite'}
+      responses:
+        '201':
+          description: "登记出的 Node"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/config/batch:
+    post:
+      operationId: batchNodeConfig
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "批量改节点配置（逐台 CAS，逐台给结论）"
+      description: |
+        `updates[].namespaces`/`vars`/`limits` 省略 = 该项不动（不是清空）。
+        逐台失败只影响该台：`items[].error` 是 Status 文档，**不带**原始配置值或凭证。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NodeConfigBatchRequest'}
+      responses:
+        '200':
+          description: "逐台结果（items 恒为数组）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeConfigBatchResponse'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/{name}:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    get:
+      operationId: getNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "读取节点（`?namespace=` 时多一个顶层 `context` 与有效值）"
+      parameters:
+        - name: namespace
+          in: query
+          required: false
+          description: |
+            带上下文读某个命名空间下的有效变量。v4 刻意**不**提供「覆盖全部
+            ns 的扁平 effectiveVars」——有效值离开命名空间没有意义。
+          schema: {type: string}
+      responses:
+        '200':
+          description: "Node（可选带 context）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    patch:
+      operationId: patchNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "merge-patch 更新节点期望（namespaces/vars/limits/tags）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NodeWrite'}
+      responses:
+        '200':
+          description: "更新后的 Node"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+    delete:
+      operationId: deleteNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "删除节点登记（CAS 走 query）"
+      parameters:
+        - $ref: '#/components/parameters/ResourceVersionQuery'
+      responses:
+        '204':
+          description: "已删除（无响应体）"
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/{name}/tokens:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    post:
+      operationId: issueNodeToken
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "签发节点令牌（明文只在这里出现一次；再签发 = 轮换）"
+      description: |
+        没有 GET / list / DELETE：库里只有 sha256，读端点不可能回显明文。
+        请求体必须为空（动作没有参数）。
+      responses:
+        '200':
+          description: "令牌文档（kind=NodeToken）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeToken'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/{name}/config:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    get:
+      operationId: getNodeConfig
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "读取节点默认值子资源（与 Node.spec 同一份底层事实、同一个 rv）"
+      responses:
+        '200':
+          description: "配置 wrapper（不是资源）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeConfig'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNodeConfig
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "整体替换节点默认值（CAS 走 body；revision 三兄弟只读）"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NodeConfigWrite'}
+      responses:
+        '200':
+          description: "写入后的配置 wrapper"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeConfig'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/{name}/drain:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    post:
+      operationId: drainNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "排空节点（不再派新任务；已在跑的不动）"
+      responses:
+        '200':
+          description: "排空后的 Node"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/nodes/{name}/upgrade:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    post:
+      operationId: upgradeNode
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "让节点升级到中枢自带的目标版本"
+      responses:
+        '200':
+          description: |
+            升级结论：`{"status":"sent"|"up_to_date","targetVersion":"..."}`
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NodeUpgradeResult'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+        '501': {$ref: '#/components/responses/Status501'}
+
+  # ---------------------------------------------------------------------- tasks
+  /v1/namespaces/{namespace}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "列出命名空间内的任务（最新在前）"
+      description: |
+        查询参数是**封闭集合**（`limit`/`status`/`traceId`/`nodeId`），未知参数 →
+        400 `unknown_field`（不静默忽略）。`limit` 缺省 50、>500 折回 50。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, default: 50}
+        - name: status
+          in: query
+          required: false
+          description: "按相位过滤"
+          schema: {type: string}
+        - name: traceId
+          in: query
+          required: false
+          schema: {type: string}
+        - name: nodeId
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: "TaskList"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    get:
+      operationId: getTask
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "读取单个任务（Task 无 CAS、无 resourceVersion）"
+      responses:
+        '200':
+          description: "Task"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    post:
+      operationId: cancelTask
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "请求取消（写 cancel_requested 事实；不 pretending 立刻终止）"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskActionRequest'}
+      responses:
+        '200':
+          description: "更新后的 Task"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}/abandon:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    post:
+      operationId: abandonTask
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "放弃任务（终态 abandoned_by_user）"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskActionRequest'}
+      responses:
+        '200':
+          description: "更新后的 Task"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}/logs:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    get:
+      operationId: getTaskLogs
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "向节点要一次日志（有界等待，非流式）"
+      description: |
+        错误语义是**闭集**：`404` 任务不存在；`410 no_local_archive` 节点上没有该
+        attempt 的档案；`503 node_offline` 节点离线；`504 timeout` 节点超时未回；
+        `502` 其它节点侧错误（透传节点错误码）。唯一的空成功是 `previous=true` 且
+        确实没有上一次 attempt → `200` + `attempt:0` + `lines:[]`。
+      parameters:
+        - name: previous
+          in: query
+          required: false
+          description: "读上一次 attempt 的日志"
+          schema: {type: boolean, default: false}
+        - name: tail
+          in: query
+          required: false
+          description: "只取尾部 N 行（0..5000）"
+          schema: {type: integer, minimum: 0, maximum: 5000}
+        - name: sinceSeconds
+          in: query
+          required: false
+          description: "只取最近 N 秒"
+          schema: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: "日志文档（lines 恒为数组）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskLogs'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '410': {$ref: '#/components/responses/Status410'}
+        '500': {$ref: '#/components/responses/Status500'}
+        '502': {$ref: '#/components/responses/Status502'}
+        '503': {$ref: '#/components/responses/Status503'}
+        '504': {$ref: '#/components/responses/Status504'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}/emissions:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+    get:
+      operationId: listTaskEmissions
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "列出该任务的 emit 事实（游标分页，最新在前）"
+      description: |
+        `metadata.continue` 是不透明游标，绑定 `(namespace, taskId)`；拿别的查询的
+        游标来用 → 400。剪枝回执的 `taskId` 是**真 null**（已接收、没派发）。
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/ContinueQuery'
+      responses:
+        '200':
+          description: "emissions 文档（没有 apiVersion/kind）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskEmissions'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/tasks/{taskId}/artifacts/{sha256}:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/TaskIDPath'
+      - name: sha256
+        in: path
+        required: true
+        description: "产物字节的 sha256（64 位小写 hex，不带 `sha256:` 前缀）"
+        schema: {type: string, pattern: '^[a-f0-9]{64}$'}
+    get:
+      operationId: downloadTaskArtifact
+      tags: [tasks]
+      security: [{session: []}]
+      summary: "下载用户任务运行产物（原始字节，不套信封）"
+      description: |
+        授权 = 命名空间 + 该 Task **当前** reported result manifest 的实际引用（G3-D4）：
+        未在该 manifest 引用、跨 ns/task、未知 hash → `404`；副本已过期 → `410
+        artifact_expired`；同一 sha 多个逻辑路径时只要有任一 live 条目就 `200`。
+        中枢没配置托管目录 → `503 artifact_download_unavailable`。
+        响应头恒为 `application/octet-stream` + `X-Content-Type-Options: nosniff` +
+        以登记路径安全 basename 生成的 `Content-Disposition`；支持 Range/HEAD。
+      responses:
+        '200':
+          description: "产物字节流"
+          headers:
+            Content-Disposition:
+              description: "`attachment; filename*=UTF-8''<safe basename>`（禁 CRLF / 路径逃逸）"
+              schema: {type: string}
+            X-Content-Type-Options:
+              description: "恒为 `nosniff`（产物可能是 HTML/SVG，禁止在中枢域渲染）"
+              schema: {type: string}
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '410': {$ref: '#/components/responses/Status410'}
+        '503': {$ref: '#/components/responses/Status503'}
+
+  # ----------------------------------------------------------------- deployments
+  /v1/namespaces/{namespace}/deployments:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    get:
+      operationId: listDeployments
+      tags: [deployments]
+      security: [{session: []}]
+      summary: "只读部署投影（某节点持有某 digest + 节点回报状态）"
+      description: |
+        写/删随 v3 部署入口一起退役（api-conventions §9）：部署事实只由
+        `POST …/capabilities/{name}/deploy` 产生。没有其他方法 → 405。
+      parameters:
+        - name: nodeId
+          in: query
+          required: false
+          schema: {type: string}
+        - name: capabilityId
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: "部署投影"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeploymentList'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '405': {$ref: '#/components/responses/Status405'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: "控制台登录会话 Cookie（7 天 TTL；`HttpOnly`+`SameSite`）"
+    consoleKey:
+      type: http
+      scheme: bearer
+      description: "控制台 API key（`Authorization: Bearer <key>`；scope 在后端判定）"
+    nodeToken:
+      type: http
+      scheme: bearer
+      description: "节点身份令牌（`Authorization: Bearer <node token>`；库里只存 sha256）"
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: "登录会话 + 超管权限（两层中间件：先 401 再 403）"
+
+  parameters:
+    NamespacePath:
+      name: namespace
+      in: path
+      required: true
+      description: "命名空间 slug（也接受 `ns_…` 内部 id；slug 优先）"
+      schema: {type: string}
+    CapabilityNamePath:
+      name: name
+      in: path
+      required: true
+      description: "能力名（`metadata.name`；跨版本不变）"
+      schema: {type: string}
+    NodeNamePath:
+      name: name
+      in: path
+      required: true
+      description: "节点名"
+      schema: {type: string}
+    TaskIDPath:
+      name: taskId
+      in: path
+      required: true
+      description: "任务 id（`tsk_…`）"
+      schema: {type: string}
+    ResourceVersionQuery:
+      name: resourceVersion
+      in: query
+      required: true
+      description: |
+        DELETE 的 CAS 令牌（唯一承载：**不带请求体**）。缺失 → 400
+        `resource_version_required`；不是当前值 → 409 `resource_version_conflict`
+        （`details.current.resourceVersion` 给当前值）。不透明字符串，禁止 parseInt。
+      schema: {type: string}
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      description: "每页条数（缺省 50，上限 500）"
+      schema: {type: integer, default: 50, minimum: 1, maximum: 500}
+    ContinueQuery:
+      name: continue
+      in: query
+      required: false
+      description: "不透明游标（上一次响应的 `metadata.continue`；绑定查询作用域）"
+      schema: {type: string}
+
+  schemas:
+    ObjectMeta:
+      type: object
+      description: |
+        资源 metadata（api-conventions §3.2 的封闭集合）：没有 labels/annotations/
+        generation/finalizers/deletionTimestamp。
+      required: [name]
+      properties:
+        name: {type: string}
+        namespace:
+          type: string
+          description: "命名空间 slug（Cluster 级资源没有这个键）"
+        uid:
+          type: string
+          description: "资源身份（删后同名重建会换一个新的）"
+        version:
+          type: integer
+          minimum: 1
+          description: "只有 Capability / Playbook 有；**不是** generation"
+        resourceVersion:
+          type: string
+          description: |
+            CAS 写并发令牌（`rv1:<uid>:<revision>`，不透明）。POST 不需要；PUT/PATCH
+            放在 body 的 `metadata.resourceVersion`，DELETE 放在 `?resourceVersion=`。
+        creationTimestamp:
+          type: string
+          format: date-time
+        displayName: {type: string}
+      additionalProperties: false
+    ListMeta:
+      type: object
+      description: "列表 metadata。只有 `continue`（不透明游标，仅 console events / emissions 会填）。"
+      properties:
+        continue:
+          type: string
+          description: "下一页游标；末页省略。"
+    StatusCause:
+      type: object
+      properties:
+        reason: {type: string}
+        message: {type: string}
+        field:
+          type: string
+          description: "出错字段路径（如 `spec.config.token`、`blocking`）"
+    StatusDetails:
+      type: object
+      description: |
+        结构化补充。`causes` 是逐点校验结论；`current` 在 CAS 冲突时带当前令牌；
+        `retryAfterSeconds` 给 429。playbook 安装冲突额外带
+        `valuesDigest` / `conflicts[]` / `hint`（`playbook_conflict` 是 400 专用形状）。
+      properties:
+        causes:
+          type: array
+          items: {$ref: '#/components/schemas/StatusCause'}
+        current:
+          type: object
+          description: "CAS 冲突时的当前事实（至少 `resourceVersion`）"
+          additionalProperties: true
+        retryAfterSeconds:
+          type: integer
+          minimum: 0
+        valuesDigest:
+          type: string
+          description: "仅 `playbook_conflict`"
+        conflicts:
+          type: array
+          description: "仅 `playbook_conflict`（逐条 kind/ref/reason/declaredDigest/actualDigest/fields）"
+          items:
+            type: object
+            additionalProperties: true
+        hint:
+          type: string
+          description: "仅 `playbook_conflict`"
+      additionalProperties: true
+    Status:
+      type: object
+      description: |
+        统一错误体（api-conventions §4.1）。所有错误响应都带 body；`code` 是 HTTP 状态
+        码的冗余副本，`reason` 是封闭机器码。`status` 恒为 `Failure`。
+      required: [apiVersion, kind, status, code, reason]
+      properties:
+        apiVersion:
+          type: string
+          enum: [anotify/v1]
+        kind:
+          type: string
+          enum: [Status]
+        status:
+          type: string
+          enum: [Failure]
+        code:
+          type: integer
+          description: "HTTP 状态码（与响应行一致）"
+        reason:
+          type: string
+          description: "封闭机器码（`BadRequest` / `resource_version_conflict` / …）"
+        message: {type: string}
+        details: {$ref: '#/components/schemas/StatusDetails'}
+    AuthError:
+      type: object
+      description: |
+        认证/授权中间件的真实错误体：`{"error": "<人话或机器码>"}`。
+        它**不是** Status 信封（中间件在 handler 之前返回，`Content-Type` 是
+        `text/plain; charset=utf-8` 且正文以换行结尾）。列入本文件是为了让 spec
+        说实话，而不是假装所有错误都是 Status。
+      required: [error]
+      properties:
+        error: {type: string}
+    BackpressureError:
+      type: object
+      description: |
+        派发积压时的 503 body（backpressure.go 冻结形状，**snake_case**）：
+        调用方据此判断等多久再来。同时带 `Retry-After` 头。
+      required: [error, pending_age_sec, max_pending_age_sec, retry_after_sec]
+      properties:
+        error: {type: string}
+        pending_age_sec:
+          type: integer
+          description: "最近一次采样到的积压年龄（秒）"
+        max_pending_age_sec:
+          type: integer
+          description: "当前生效的阈值（秒）"
+        retry_after_sec:
+          type: integer
+          description: "与 `Retry-After` 头同值"
+    NodeUploadError:
+      type: object
+      description: |
+        A1 节点产物上传的封闭错误体：`{"error": "<code>"}`。码集固定
+        （`artifact_path_invalid` / `artifact_hash_mismatch` / `artifact_too_large` /
+        `artifact_conflict` / `unauthorized` / `forbidden` /
+        `artifact_upload_unavailable` / `internal`），节点侧只认这一种形状。
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - artifact_path_invalid
+            - artifact_hash_mismatch
+            - artifact_too_large
+            - artifact_conflict
+            - unauthorized
+            - forbidden
+            - artifact_upload_unavailable
+            - internal
+
+    # ------------------------------------------------------------ capability
+    CapabilityEnvValue:
+      description: |
+        env 的一个值：字面量字符串，或 `{valueFrom:{fieldRef:{fieldPath}}}` 引用机器事实
+        （字段路径是封闭集合，含 `vars.<NAME>`）。
+      oneOf:
+        - type: string
+        - type: object
+          required: [valueFrom]
+          properties:
+            valueFrom:
+              type: object
+              required: [fieldRef]
+              properties:
+                fieldRef:
+                  type: object
+                  required: [fieldPath]
+                  properties:
+                    fieldPath: {type: string}
+    CapabilityRun:
+      type: object
+      description: "「怎么跑」（v4 只有脚本一种执行形式）"
+      required: [entrypoint, files]
+      properties:
+        entrypoint:
+          type: string
+          description: "必须是 `files` 里的一个 key，且正文以 `#!` 开头（直接 exec，不经 shell）"
+        files:
+          type: object
+          description: "相对路径 → 正文（全部展开进工作目录，0600；入口额外 0700）"
+          additionalProperties: {type: string}
+        env:
+          type: object
+          additionalProperties: {$ref: '#/components/schemas/CapabilityEnvValue'}
+        workDir:
+          type: string
+          description: |
+            执行目录模板：空 = 每次任务独立目录；否则绝对路径模板，可含
+            `$(vars.NAME)` / `$(params.NAME)`。
+    CapabilityRequires:
+      type: object
+      required: [commands, values]
+      properties:
+        commands:
+          type: array
+          description: "节点必须能 LookPath 到的命令（缺一条 → 该节点不匹配）"
+          items: {type: string}
+        values:
+          type: array
+          description: "必须能解析出的 `vars.<NAME>`（local → node → namespace 顺序）"
+          items: {type: string}
+    CapabilityLifecycle:
+      type: object
+      required: [idempotent, timeoutSec]
+      description: |
+        指针字段是「省略 vs 显式」的分界线：省略 `maxAttempts` = 3、省略
+        `resultTtlSec` = 604800；显式 0 在 `resultTtlSec` 表示永不清、在
+        `maxAttempts` 是非法值。
+      properties:
+        idempotent:
+          type: boolean
+          description: "明确幂等才允许对短暂基础设施失败自动重试"
+        maxAttempts:
+          type: integer
+          minimum: 1
+          description: "总尝试次数（含首次）；省略 = 3"
+        resultTtlSec:
+          type: integer
+          minimum: 0
+          description: "结果保留期（秒）；省略 = 604800，0 = 永不清理"
+        timeoutSec:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: "本地执行超时（秒，0 = 不设）"
+    CapabilityConcurrency:
+      type: object
+      properties:
+        maxPerNode:
+          type: integer
+          minimum: 1
+          description: "该节点上最多同时跑几个；省略 = 1。超了不失败（停在 waiting_for_slot）"
+    CapabilitySpec:
+      type: object
+      description: "能力的全部内容（六个字段；字段顺序参与 digest）"
+      required: [params, next, run, requires, lifecycle, concurrency]
+      properties:
+        params:
+          type: object
+          description: "任务输入契约（JSON Schema 对象；省略 = `{}` = 怎么传都过）"
+          additionalProperties: true
+        next:
+          type: array
+          description: "下游引用（`name` 或 `name@version`）；空 = 终端能力。不参与 digest"
+          items: {type: string}
+        run: {$ref: '#/components/schemas/CapabilityRun'}
+        requires: {$ref: '#/components/schemas/CapabilityRequires'}
+        lifecycle: {$ref: '#/components/schemas/CapabilityLifecycle'}
+        concurrency: {$ref: '#/components/schemas/CapabilityConcurrency'}
+      additionalProperties: false
+    CapabilityCondition:
+      type: object
+      required: [type, status, reason]
+      properties:
+        type: {type: string}
+        status: {type: string}
+        reason: {type: string}
+        message: {type: string}
+    CapabilityNodeState:
+      type: object
+      required: [name, state]
+      properties:
+        name: {type: string}
+        state:
+          type: string
+          description: "节点侧该 digest 的部署状态（deployed / pending / offline / …）"
+    CapabilityResolvedNext:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        version:
+          type: integer
+          description: "解析出的版本；解析不到时**省略**（不公开哨兵 0）"
+        digest:
+          type: string
+          description: "解析出的 digest；解析不到时省略"
+        missing:
+          type: boolean
+          description: "下游不存在"
+        reason:
+          type: string
+          description: "未解析原因（如 `downstream_missing`）"
+    CapabilityResolved:
+      type: object
+      required: [next]
+      properties:
+        next:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityResolvedNext'}
+    CapabilityStatus:
+      type: object
+      description: "只读派生面（无 reconciler、无 observedGeneration）"
+      required: [version, digest, ready, conditions, nodes, resolved, observed]
+      properties:
+        version: {type: integer}
+        digest: {type: string, description: 内容标识（能力 spec 的 canonical sha256）}
+        ready:
+          type: boolean
+          description: "四条 condition 全 True 且无 missing 下游"
+        conditions:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityCondition'}
+        nodes:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityNodeState'}
+        resolved: {$ref: '#/components/schemas/CapabilityResolved'}
+        observed:
+          type: object
+          description: "观测到的派生事实；当前恒 `{}`（不编造计数）"
+          additionalProperties: true
+        installedFrom:
+          type: string
+          description: "初次安装来源（`ins_…`）；手工创建的能力没有这个键"
+    Capability:
+      type: object
+      description: "能力文档（信封）"
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Capability]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/CapabilitySpec'}
+        status: {$ref: '#/components/schemas/CapabilityStatus'}
+    CapabilityList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [CapabilityList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Capability'}
+    CapabilityWrite:
+      type: object
+      description: "写请求（`status` 非空 → 400 status_not_writable；未知字段 → 400 unknown_field）"
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Capability]}
+        metadata:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+            displayName: {type: string}
+            version:
+              type: integer
+              minimum: 1
+              description: "省略 = 按内容折叠复用已有行"
+            namespace: {type: string}
+            resourceVersion:
+              type: string
+              description: "PATCH 必填（CAS）"
+          additionalProperties: false
+        spec: {$ref: '#/components/schemas/CapabilitySpec'}
+      additionalProperties: false
+    CapabilityPatch:
+      type: object
+      description: "原地更新（只允许 `spec.next` / `metadata.displayName`；正文改动 → 400 immutable_field）"
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Capability]}
+        metadata:
+          type: object
+          required: [name, resourceVersion]
+          properties:
+            name: {type: string}
+            displayName: {type: string}
+            resourceVersion: {type: string}
+          additionalProperties: false
+        spec: {$ref: '#/components/schemas/CapabilitySpec'}
+      additionalProperties: false
+    CapabilityDeployRequest:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: "省略 = 最新版本"
+        nodes:
+          type: array
+          description: "目标节点名；省略 = 全部已授权且在线节点"
+          items: {type: string}
+    CapabilityDeployOutcome:
+      type: object
+      required: [node, state, sent]
+      properties:
+        node: {type: string}
+        state:
+          type: string
+          description: "deployed / pending / offline / …"
+        sent:
+          type: boolean
+          description: "是否真的发出了 capability.deploy 帧"
+        requestId: {type: string}
+    CapabilityDeployResponse:
+      type: object
+      required: [deployed, version]
+      properties:
+        deployed:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityDeployOutcome'}
+        version: {type: integer}
+    CapabilityEdge:
+      type: object
+      required: [from, to, kind]
+      properties:
+        from: {type: string}
+        to: {type: string}
+        kind:
+          type: string
+          enum: [capability, source]
+          description: "边的来源（能力 spec.next 还是源 spec.targets）"
+    EdgeList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityEdge'}
+    CapabilityTemplateField:
+      type: object
+      required: [key, label, type, required, default, help]
+      properties:
+        key:
+          type: string
+          description: "必须是 snake_case（会变成 ANOTIFY_PARAM_<UPPER>）"
+        label: {type: string}
+        type:
+          type: string
+          enum: [string, text, number, select]
+        required: {type: boolean}
+        default: {type: string}
+        options:
+          type: array
+          items: {type: string}
+        help: {type: string}
+    CapabilityTemplate:
+      type: object
+      required: [id, displayName, category, description, fields, script, requires, next, timeoutSec]
+      properties:
+        id: {type: string}
+        displayName: {type: string}
+        category: {type: string, enum: [script, agent]}
+        description: {type: string}
+        fields:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityTemplateField'}
+        script: {type: string, description: 入口文件 `run.sh` 的正文（不做文本插值）}
+        requires:
+          type: array
+          items: {type: string}
+        next:
+          type: array
+          items: {type: string}
+        timeoutSec: {type: integer}
+    CapabilityTemplateList:
+      type: object
+      required: [templates]
+      properties:
+        templates:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityTemplate'}
+
+    # ---------------------------------------------------------------- source
+    SourceTarget:
+      type: object
+      required: [capability]
+      properties:
+        capability: {type: string, description: 能力引用（`name` 或 `name@version`）}
+        params:
+          type: object
+          description: "该下游的固定入参（JSON 对象，可省）"
+          additionalProperties: true
+    SourceSpec:
+      type: object
+      description: |
+        读形态的源 spec。`config` 是 kind 相关的自由对象，但**读**的时候
+        `token`/`secret` 永不出现，webhook 另给只读投影 `hookUrl` / `secretSet`。
+      required: [kind, enabled, config, targets]
+      properties:
+        kind:
+          type: string
+          description: "源类型（如 `webhook` / `cron`）；创建后不可变"
+        enabled: {type: boolean}
+        config:
+          type: object
+          description: |
+            kind 相关的配置。读形态含只读投影 `hookUrl`（webhook）与 `secretSet`（bool）；
+            `token`/`secret` 只写不读。
+          additionalProperties: true
+        targets:
+          type: array
+          items: {$ref: '#/components/schemas/SourceTarget'}
+    SourceStatus:
+      type: object
+      description: "只读派生面"
+      required: [hookUrl, enabled, health, targetsResolved, lastError]
+      properties:
+        hookUrl:
+          type: string
+          description: "webhook 源的调用地址（含 token 之外的公开部分）"
+        lastFiredAt:
+          type: string
+          format: date-time
+          description: "省略 = 从未触发"
+        nextFireAt:
+          type: string
+          format: date-time
+          description: "cron 源下次触发；省略 = 无排期"
+        enabled: {type: boolean}
+        health:
+          type: string
+          enum: [ok, blocked, disabled]
+        targetsResolved: {type: boolean}
+        lastError:
+          type: string
+          nullable: true
+          description: "恒 `null`：v4 没有「源的最后一次错误」这个落库事实"
+    Source:
+      type: object
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Source]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/SourceSpec'}
+        status: {$ref: '#/components/schemas/SourceStatus'}
+    SourceList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [SourceList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Source'}
+    SourceWrite:
+      type: object
+      description: |
+        写请求。`spec.config.hookUrl` / `spec.config.secretSet` 是**只读投影**，
+        出现在写请求里 → 400 `unknown_field`。PATCH 省略 token = 保留旧值。
+        `metadata.name` 创建后不可变；`spec.kind` 创建后不可变。
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Source]}
+        metadata:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+            resourceVersion:
+              type: string
+              description: "PATCH/DELETE 的 CAS（DELETE 走 query）"
+          additionalProperties: false
+        spec:
+          type: object
+          properties:
+            kind: {type: string}
+            enabled: {type: boolean}
+            config:
+              type: object
+              description: "kind 相关配置；`token`/`secret` 为写入态（只写不读）"
+              additionalProperties: true
+            targets:
+              type: array
+              items: {$ref: '#/components/schemas/SourceTarget'}
+          additionalProperties: false
+      additionalProperties: false
+    PruneFact:
+      type: object
+      required: [reason]
+      properties:
+        capability:
+          type: string
+          description: "被剪枝的目标（省略 = 整条输入没解析出目标）"
+        reason:
+          type: string
+          description: |
+            剪枝原因（封闭集合：`no_target` / `event_schema` / `param_schema` /
+            `param_type` / `param_missing` / `downstream_missing`）。它是**剪枝事实**，
+            不是任务失败码、也不是 4xx。
+        detail: {type: string}
+    SourceReceiptTask:
+      type: object
+      required: [taskId, capability]
+      properties:
+        taskId: {type: string}
+        capability: {type: string, description: 真实请求名（保留 basename 语义）}
+        version:
+          type: integer
+          description: "已解析版本；没有事实时**省略**（不公开 0）"
+    SourceReceipt:
+      type: object
+      description: |
+        投递/触发回执（W6 冻结形状）。`tasks[].taskId` 一定是**已建任务**的 id：
+        未解析下游导致的失败任务也有真实 id，且出现在这里（E1）。
+      required: [eventId, traceId, duplicate, tasks, pruned]
+      properties:
+        eventId: {type: string}
+        traceId: {type: string}
+        duplicate:
+          type: boolean
+          description: "幂等键命中（同 `deliveryId`/`id` 的重复投递）"
+        tasks:
+          type: array
+          items: {$ref: '#/components/schemas/SourceReceiptTask'}
+        pruned:
+          type: array
+          items: {$ref: '#/components/schemas/PruneFact'}
+    SourcePreviewTarget:
+      type: object
+      required: [capability, params, state]
+      properties:
+        capability: {type: string}
+        version:
+          type: integer
+          description: "解析不到具体版本时省略（不回会被当成真实版本的 0）"
+        params:
+          type: object
+          additionalProperties: true
+        state:
+          type: string
+          enum: [ready, pruned, missing]
+        reason: {type: string}
+        detail: {type: string}
+    SourcePreview:
+      type: object
+      description: "试运行预览（**不**入事件/任务/去重表，所以没有 eventId/taskId）"
+      required: [targets, pruned]
+      properties:
+        targets:
+          type: array
+          items: {$ref: '#/components/schemas/SourcePreviewTarget'}
+        pruned:
+          type: array
+          items: {$ref: '#/components/schemas/PruneFact'}
+
+    # -------------------------------------------------------------- playbook
+    PlaybookSpec:
+      type: object
+      description: "默认摘要时是 `{}`；`?includeBody=true` 时给整份包体"
+      properties:
+        files:
+          type: object
+          additionalProperties: {type: string}
+    PlaybookCondition:
+      type: object
+      required: [type, status]
+      properties:
+        type: {type: string}
+        status: {type: string}
+        reason: {type: string}
+        message: {type: string}
+        members:
+          type: array
+          items: {type: string}
+    PlaybookItem:
+      type: object
+      required: [kind, name, state]
+      properties:
+        kind: {type: string, enum: [Capability, Source]}
+        name: {type: string}
+        version: {type: integer}
+        state:
+          type: string
+          enum: [ok]
+          description: "当前只有「定义在库里」这一个已知事实"
+    PlaybookSourceStatus:
+      type: object
+      required: [total, unapplied]
+      properties:
+        total: {type: integer}
+        unapplied: {type: integer}
+    PlaybookUnappliedEntry:
+      type: object
+      required: [kind, ref, field, declared, actual, reason]
+      properties:
+        kind: {type: string}
+        ref: {type: string}
+        field: {type: string}
+        declared:
+          description: "声明值（JSON；能力路由是数组，源 targets 是对象数组）"
+        actual:
+          description: "库里现值"
+        reason: {type: string}
+    PlaybookStatus:
+      type: object
+      required: [ready, unapplied, total, conditions, items, sources, lastInstallId, source]
+      properties:
+        ready:
+          type: boolean
+          description: "四条 condition 全 True 且 unapplied 为空；当前事实不足时恒 false"
+        unapplied:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookUnappliedEntry'}
+        total: {type: integer}
+        conditions:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookCondition'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookItem'}
+        sources: {$ref: '#/components/schemas/PlaybookSourceStatus'}
+        lastInstallId: {type: string}
+        source:
+          type: string
+          nullable: true
+          description: "OCI 来源的只读投影（`oci://…@sha256:…`）；手传包体时是 `null`"
+    Playbook:
+      type: object
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Playbook]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/PlaybookSpec'}
+        status: {$ref: '#/components/schemas/PlaybookStatus'}
+    PlaybookList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [PlaybookList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Playbook'}
+    PlaybookWrite:
+      type: object
+      description: "整份包体（`playbook.yaml` 是唯一根清单，不复制第二份并行 spec）"
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Playbook]}
+        metadata:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string, description: 包的 slug；创建后不可变}
+            displayName: {type: string}
+            version:
+              type: integer
+              minimum: 1
+            namespace: {type: string}
+            resourceVersion:
+              type: string
+              description: "PUT（整体替换）必填"
+          additionalProperties: false
+        spec:
+          type: object
+          description: "`files` 与 `source` **二选一**"
+          properties:
+            files:
+              type: object
+              additionalProperties: {type: string}
+            source:
+              type: string
+              description: "OCI 引用；v4 一期返回 400 `oci_unsupported`"
+          additionalProperties: false
+      additionalProperties: false
+    PlaybookActionRequest:
+      type: object
+      description: "动作请求（`render` 忽略 `dryRun`）"
+      properties:
+        values:
+          type: object
+          description: "包 values（缺省用 playbook.yaml 的默认值）"
+          additionalProperties: true
+        dryRun:
+          type: boolean
+          description: "install 时 0 持久写（回执仍返回）"
+    PlaybookRef:
+      type: object
+      required: [name, version]
+      properties:
+        name: {type: string}
+        version: {type: integer}
+    PlaybookInstallRef:
+      type: object
+      description: "安装回执的身份（`ins_…` + 内容身份）"
+      properties:
+        id: {type: string}
+        valuesDigest: {type: string}
+    PlaybookCreated:
+      type: object
+      required: [capabilities, sources]
+      properties:
+        capabilities:
+          type: array
+          items: {type: string}
+        sources:
+          type: array
+          items: {type: string}
+    PlaybookUpgradedEntry:
+      type: object
+      description: "「已存在且被本次安装升级」的一条"
+      additionalProperties: true
+    PlaybookNote:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        ref: {type: string}
+        message: {type: string}
+    PlaybookReceipt:
+      type: object
+      description: |
+        安装回执（`InstallReceipt`，动作文档例外：不是资源 kind）。
+        `values` 里 JSON Schema 标 `writeOnly` 的字段已被替换成 `"***"`；
+        `valuesDigest` 对**打码前**的值算（同一组值仍然可比）。
+      required: [apiVersion, kind, playbook, install, namespace, values, valuesDigest, created, skipped, upgraded, unapplied, external, pending, notes]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [InstallReceipt]}
+        playbook: {$ref: '#/components/schemas/PlaybookRef'}
+        source:
+          type: string
+          description: "从 registry 拉来的包才有（`oci://…@sha256:…`）"
+        install: {$ref: '#/components/schemas/PlaybookInstallRef'}
+        namespace: {type: string}
+        values:
+          type: object
+          description: "打码后的有效 values"
+          additionalProperties: true
+        valuesDigest: {type: string}
+        created: {$ref: '#/components/schemas/PlaybookCreated'}
+        skipped: {$ref: '#/components/schemas/PlaybookCreated'}
+        upgraded:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookUpgradedEntry'}
+        unapplied:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookUnappliedEntry'}
+        external:
+          type: array
+          items: {type: string}
+        pending:
+          type: array
+          items: {type: string}
+        notes:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookNote'}
+    RenderedCapability:
+      type: object
+      description: "归一化后的能力文档（默认值已补齐；与手工创建逐字节等价）"
+      additionalProperties: true
+    RenderedSource:
+      type: object
+      description: "渲染后的源文档"
+      additionalProperties: true
+    PlaybookRenderResult:
+      type: object
+      required: [values, valuesDigest, files, capabilities, sources]
+      properties:
+        values:
+          type: object
+          description: "有效 values（打码前）"
+          additionalProperties: true
+        valuesDigest: {type: string}
+        files:
+          type: object
+          description: "渲染后的 `{路径: 正文}`（不含 playbook.yaml）"
+          additionalProperties: {type: string}
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/RenderedCapability'}
+        sources:
+          type: array
+          items: {$ref: '#/components/schemas/RenderedSource'}
+    PlaybookInstallGroup:
+      type: object
+      required: [valuesDigest, values, firstAt, lastAt, attempts, lastInstallId, capabilities, sources]
+      description: "一个折叠组 = 一套 values（`attempts` 是这组装了几次，不是版本号）"
+      properties:
+        valuesDigest: {type: string}
+        values:
+          type: object
+          additionalProperties: true
+        firstAt: {type: string, format: date-time}
+        lastAt: {type: string, format: date-time}
+        attempts: {type: integer}
+        lastInstallId: {type: string}
+        capabilities:
+          type: array
+          items: {type: string}
+        sources:
+          type: array
+          items: {type: string}
+    PlaybookInstallList:
+      type: object
+      required: [total, installs]
+      properties:
+        total:
+          type: integer
+          description: "折叠组总数（可能大于返回条数：超过上限按 lastAt 截断）"
+        installs:
+          type: array
+          items: {$ref: '#/components/schemas/PlaybookInstallGroup'}
+    PlaybookKept:
+      type: object
+      required: [capabilities, sources]
+      properties:
+        capabilities:
+          type: array
+          description: "留下了什么能力（`name@version`）"
+          items: {type: string}
+        sources:
+          type: array
+          description: "留下了什么源（名字）"
+          items: {type: string}
+    PlaybookDeleteResult:
+      type: object
+      required: [deleted, kept, values, note]
+      properties:
+        deleted: {type: boolean}
+        kept: {$ref: '#/components/schemas/PlaybookKept'}
+        values:
+          type: array
+          description: "这包装过的有效 values 组（打码后，按 valuesDigest 去重）"
+          items:
+            type: object
+            additionalProperties: true
+        note: {type: string}
+
+    # ------------------------------------------------------------- namespace
+    NamespaceSpec:
+      type: object
+      description: "空对象（v4 不做「建命名空间时播种内置能力」）"
+      additionalProperties: false
+    NamespaceCounts:
+      type: object
+      required: [capabilities, nodes, sources, tasks]
+      properties:
+        capabilities: {type: integer}
+        nodes: {type: integer}
+        sources: {type: integer}
+        tasks: {type: integer}
+    NamespaceAggregate:
+      type: object
+      required: [tasksByPhase, edges]
+      properties:
+        tasksByPhase:
+          type: object
+          additionalProperties: {type: integer}
+        edges: {type: integer}
+    NamespaceStatus:
+      type: object
+      required: [counts, stats]
+      properties:
+        counts: {$ref: '#/components/schemas/NamespaceCounts'}
+        stats: {$ref: '#/components/schemas/NamespaceAggregate'}
+    Namespace:
+      type: object
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Namespace]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/NamespaceSpec'}
+        status: {$ref: '#/components/schemas/NamespaceStatus'}
+    NamespaceList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [NamespaceList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Namespace'}
+    NamespaceWrite:
+      type: object
+      description: "创建只需要 `metadata.name`；PATCH 带 `metadata.resourceVersion`"
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Namespace]}
+        metadata:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+            displayName: {type: string, description: PATCH 必填}
+            resourceVersion:
+              type: string
+              description: "PATCH 必填（CAS）"
+          additionalProperties: false
+        spec: {$ref: '#/components/schemas/NamespaceSpec'}
+      additionalProperties: false
+    ConfigMeta:
+      type: object
+      required: [resourceVersion]
+      properties:
+        resourceVersion:
+          type: string
+          description: "配置子资源的 CAS 令牌（系统配置是纯十进制整数）"
+    NamespaceConfig:
+      type: object
+      description: "命名空间配置 wrapper（不是资源：没有 apiVersion/kind/spec/status）"
+      required: [metadata, vars, namespaceVarsRevision]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        namespaceVarsRevision:
+          type: string
+          description: "配置生效版本（不是 CAS 令牌；PUT 不接受该字段）"
+    NamespaceConfigWrite:
+      type: object
+      required: [metadata, vars]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        status:
+          type: object
+          description: "非空 → 400 `status_not_writable`"
+      additionalProperties: false
+    Retention:
+      type: object
+      required: [eventTtlSec, taskTtlSec, resultTtlSec]
+      properties:
+        eventTtlSec: {type: integer, minimum: 0, description: 0 = 永久保留}
+        taskTtlSec: {type: integer, minimum: 0, description: 0 = 永久保留}
+        resultTtlSec: {type: integer, minimum: 0, description: 0 = 永久保留}
+    SystemConfig:
+      type: object
+      required: [metadata, retention]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        retention: {$ref: '#/components/schemas/Retention'}
+    SystemConfigWrite:
+      type: object
+      description: "三个字段都必填（省略不是 0：0 是「永久保留」这个有语义的常量）"
+      required: [metadata, retention]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        retention: {$ref: '#/components/schemas/Retention'}
+      additionalProperties: false
+
+    # ------------------------------------------------------------------ node
+    NodeSpec:
+      type: object
+      required: [namespaces, vars, limits, tags]
+      properties:
+        namespaces:
+          type: array
+          description: "授权列表（与本机申报取交集，只能收紧）"
+          items: {type: string}
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        limits:
+          type: object
+          additionalProperties: true
+        tags:
+          type: array
+          items: {type: string}
+    NodeCapacity:
+      type: object
+      required: [cpu]
+      properties:
+        cpu:
+          type: string
+          description: "wire 上是字符串（与本机 facts 的 int 不是同一形状）"
+    NodeInstanceRef:
+      type: object
+      required: [id, task, busy]
+      properties:
+        id:
+          type: string
+          description: "实例身份（`nins_…`），**不是** wire 上的 slot"
+        task:
+          type: string
+          nullable: true
+          description: "该槽此刻的任务；`null` = 空闲"
+        busy: {type: boolean}
+    NodeStatus:
+      type: object
+      required: [localVars, nodeVars, machineVars, configRevision, appliedRevision, appliedHash, effectiveNamespaces, instances]
+      properties:
+        hostIP: {type: string}
+        hostname: {type: string}
+        os: {type: string}
+        arch: {type: string}
+        capacity: {$ref: '#/components/schemas/NodeCapacity'}
+        workRoot: {type: string}
+        homeDir: {type: string}
+        localVars:
+          type: object
+          additionalProperties: {type: string}
+        nodeVars:
+          type: object
+          additionalProperties: {type: string}
+        machineVars:
+          type: object
+          additionalProperties: {type: string}
+        configRevision:
+          type: string
+          description: "配置生效版本（中枢生成）；不是 CAS 令牌"
+        appliedRevision:
+          type: string
+          description: "节点回报的已应用版本"
+        appliedHash: {type: string}
+        effectiveNamespaces:
+          type: array
+          items: {type: string}
+        agentVersion: {type: string}
+        instances:
+          type: array
+          items: {$ref: '#/components/schemas/NodeInstanceRef'}
+        lastSeenAt: {type: string, format: date-time}
+        namespaceVars:
+          type: object
+          description: "只有 `GET …?namespace=` 时出现"
+          additionalProperties: {type: string}
+        effectiveVars:
+          type: object
+          description: "只有 `GET …?namespace=` 时出现（每项是 `{value,source}`）"
+          additionalProperties:
+            type: object
+            additionalProperties: true
+    NodeReadContext:
+      type: object
+      required: [namespace]
+      properties:
+        namespace: {type: string}
+    Node:
+      type: object
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Node]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/NodeSpec'}
+        status: {$ref: '#/components/schemas/NodeStatus'}
+        context:
+          $ref: '#/components/schemas/NodeReadContext'
+    NodeList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [NodeList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Node'}
+    NodeWrite:
+      type: object
+      description: "PATCH 是 merge-patch：`namespaces`/`tags` 省略 = 不动，显式空数组 = 清空"
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Node]}
+        metadata:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+            resourceVersion:
+              type: string
+              description: "PATCH 必填（CAS）"
+          additionalProperties: false
+        spec:
+          type: object
+          properties:
+            namespaces:
+              type: array
+              items: {type: string}
+            vars:
+              type: object
+              additionalProperties: {type: string}
+            limits:
+              type: object
+              additionalProperties: true
+            tags:
+              type: array
+              items: {type: string}
+          additionalProperties: false
+      additionalProperties: false
+    NodeConfig:
+      type: object
+      description: |
+        节点默认值子资源（不是独立 kind：没有 apiVersion/kind/spec/status）。
+        与 `Node.spec` 是同一份底层事实、同一个 `resourceVersion`。
+      required: [metadata, namespaces, vars, limits, configRevision, appliedRevision, appliedHash]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        namespaces:
+          type: array
+          items: {type: string}
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        limits:
+          type: object
+          additionalProperties: true
+        configRevision:
+          type: string
+          description: "只读（UI 不提交，也不当 CAS 令牌）"
+        appliedRevision: {type: string}
+        appliedHash: {type: string}
+    NodeConfigWrite:
+      type: object
+      required: [metadata, namespaces, vars, limits]
+      properties:
+        metadata: {$ref: '#/components/schemas/ConfigMeta'}
+        namespaces:
+          type: array
+          items: {type: string}
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        limits:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    NodeToken:
+      type: object
+      description: "令牌文档（动作响应例外，不是资源：没有 GET/list/DELETE）"
+      required: [apiVersion, kind, node, token]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [NodeToken]}
+        node:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+        token:
+          type: string
+          writeOnly: false
+          description: |
+            节点身份令牌**明文**，只在这个响应里出现一次；库里只存 sha256。
+            再次 POST = 轮换，旧令牌立即失效。
+    NodeConfigBatchUpdate:
+      type: object
+      description: "三个可写字段都可选：省略 = 该项不动（不是清空）"
+      required: [name, metadata]
+      properties:
+        name: {type: string}
+        metadata:
+          type: object
+          required: [resourceVersion]
+          properties:
+            resourceVersion: {type: string}
+          additionalProperties: false
+        vars:
+          type: object
+          additionalProperties: {type: string}
+        limits:
+          type: object
+          additionalProperties: true
+        namespaces:
+          type: array
+          items: {type: string}
+    NodeConfigBatchRequest:
+      type: object
+      required: [updates]
+      properties:
+        updates:
+          type: array
+          items: {$ref: '#/components/schemas/NodeConfigBatchUpdate'}
+    NodeConfigBatchItem:
+      type: object
+      required: [name, ok]
+      properties:
+        name: {type: string}
+        ok: {type: boolean}
+        config: {$ref: '#/components/schemas/NodeConfig'}
+        error:
+          $ref: '#/components/schemas/Status'
+    NodeConfigBatchResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NodeConfigBatchItem'}
+    NodeUpgradeResult:
+      type: object
+      required: [status, targetVersion]
+      properties:
+        status:
+          type: string
+          enum: [sent, up_to_date]
+        targetVersion: {type: string}
+
+    # ------------------------------------------------------------------ task
+    TaskRef:
+      type: object
+      required: [name]
+      properties:
+        kind: {type: string, enum: [Task]}
+        name: {type: string}
+    TaskCapabilityRef:
+      type: object
+      description: |
+        任务钉住的能力身份。`version`/`digest` **只在有真实事实时出现**（S1/E1）：
+        未解析的派发失败没有解析出能力行，就不公开 version 0、更不造 digest。
+      required: [name]
+      properties:
+        name: {type: string, description: 真实请求名（保留 basename 语义）}
+        version:
+          type: integer
+          description: "声明/解析出的正版本；未声明且未解析时省略"
+        digest: {type: string}
+    TaskSpec:
+      type: object
+      required: [traceUID, parentRef, parentTaskId, capability, params]
+      properties:
+        traceUID: {type: string}
+        parentRef:
+          allOf: [{$ref: '#/components/schemas/TaskRef'}]
+          nullable: true
+        parentTaskId:
+          type: string
+          nullable: true
+        capability:
+          allOf: [{$ref: '#/components/schemas/TaskCapabilityRef'}]
+          nullable: true
+        params:
+          type: object
+          additionalProperties: true
+    TaskEnvDiagnostic:
+      type: object
+      required: [name, source]
+      properties:
+        name: {type: string}
+        source:
+          type: string
+          description: "值的来源层（local / node / namespace / machine / …）"
+    TaskResult:
+      type: object
+      description: "结果事实；`artifacts` 恒为 `[]`"
+      required: [summary, artifacts, error]
+      properties:
+        summary: {type: string}
+        artifacts:
+          type: array
+          items: {$ref: '#/components/schemas/TaskArtifactRef'}
+        error:
+          allOf: [{$ref: '#/components/schemas/TaskResultError'}]
+          nullable: true
+    TaskResultError:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: "封闭失败码（`script_failed` / `downstream_missing` / `max_attempts_exceeded` / …）"
+        message: {type: string}
+    TaskArtifactRef:
+      type: object
+      required: [path, sha256]
+      properties:
+        path:
+          type: string
+          description: "逻辑相对路径（无绝对路径 / `..` / 反斜杠）"
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+    TaskStatus:
+      type: object
+      description: "全部从 tasks 行派生（S2）。`configRevision`/`namespaceVarsRevision` 是**生效版本**，不是 CAS。"
+      required: [phase, waitingReason, nextAttemptAt, nodeName, attempt, maxAttempts, leaseExpiresAt, startedAt, finishedAt, configRevision, namespaceVarsRevision, result]
+      properties:
+        phase:
+          type: string
+          description: "pending / waiting_for_slot / running / succeeded / failed / cancelled / abandoned"
+        waitingReason:
+          type: string
+          nullable: true
+        nextAttemptAt:
+          type: string
+          format: date-time
+          nullable: true
+        nodeName:
+          type: string
+          nullable: true
+        attempt:
+          type: integer
+          description: "只有 lease.grant 生效才递增；未派发即失败的任务恒为 0"
+        maxAttempts: {type: integer}
+        leaseExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        configRevision: {type: string}
+        namespaceVarsRevision: {type: string}
+        result: {$ref: '#/components/schemas/TaskResult'}
+        envDiagnostics:
+          type: array
+          items: {$ref: '#/components/schemas/TaskEnvDiagnostic'}
+    Task:
+      type: object
+      description: "任务文档。Task 不可 POST/DELETE，spec 不可变，没有 resourceVersion。"
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [Task]}
+        metadata: {$ref: '#/components/schemas/ObjectMeta'}
+        spec: {$ref: '#/components/schemas/TaskSpec'}
+        status: {$ref: '#/components/schemas/TaskStatus'}
+    TaskList:
+      type: object
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion: {type: string, enum: [anotify/v1]}
+        kind: {type: string, enum: [TaskList]}
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Task'}
+    TaskActionRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: "人话原因（可选；写进 cancel_requested 事实）"
+      additionalProperties: false
+    TaskLogLine:
+      type: object
+      required: [sequence, stream, text, at]
+      properties:
+        sequence:
+          type: integer
+          description: "节点采集序号（保持节点侧顺序，不按时间重排）"
+        stream:
+          type: string
+          enum: [stdout, stderr]
+        text: {type: string}
+        at:
+          type: string
+          format: date-time
+          description: "节点采集时间"
+    TaskLogs:
+      type: object
+      description: "logs 子资源（例外文档：没有 apiVersion/kind）"
+      required: [taskId, attempt, lines, truncated]
+      properties:
+        taskId: {type: string}
+        attempt:
+          type: integer
+          description: "**真实读到**的 attempt（`previous` 且无上一次时为 0）"
+        lines:
+          type: array
+          items: {$ref: '#/components/schemas/TaskLogLine'}
+        truncated: {type: boolean}
+    TaskEmissionItem:
+      type: object
+      description: |
+        一次 emit 调用的事实。`taskId`/`pruned` 是可空事实：剪枝回执的 `taskId`
+        就是**真 null**（已接收、没派发）；解析不出时给 null，不猜。
+      required: [eventId, to, taskId, pruned]
+      properties:
+        eventId: {type: string}
+        to: {type: string}
+        version:
+          type: integer
+          description: "省略 = 未声明且未解析（不公开哨兵 0）"
+        taskId:
+          type: string
+          nullable: true
+        id:
+          type: string
+          description: "调用方给的幂等键（可重复请求但只留一条事实）"
+        pruned:
+          allOf: [{$ref: '#/components/schemas/PruneFact'}]
+          nullable: true
+    TaskEmissions:
+      type: object
+      description: "emissions 子资源（例外文档：没有 apiVersion/kind）"
+      required: [metadata, items]
+      properties:
+        metadata: {$ref: '#/components/schemas/ListMeta'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/TaskEmissionItem'}
+
+    # ----------------------------------------------------------- deployments
+    Deployment:
+      type: object
+      description: "「某节点应当拥有某份产物」+ 节点回报的状态（只读投影）"
+      required: [id, namespaceId, nodeId, capabilityId, capability, version, digest, state, reason, createdAt, updatedAt]
+      properties:
+        id: {type: string}
+        namespaceId: {type: string}
+        nodeId: {type: string}
+        capabilityId: {type: string}
+        capability: {type: string}
+        version: {type: integer}
+        digest: {type: string}
+        state: {type: string}
+        reason: {type: string}
+        createdAt: {type: integer}
+        updatedAt: {type: integer}
+    DeploymentList:
+      type: object
+      required: [deployments]
+      properties:
+        deployments:
+          type: array
+          items: {$ref: '#/components/schemas/Deployment'}
+
+  responses:
+    Status400:
+      description: "请求内容/字段校验失败（`reason` 见 Status.reason 封闭集合）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status401:
+      description: "未认证（handler 内产生的 Status 形状；中间件产生的见 AuthError401）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status403:
+      description: "已认证但无权限"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status404:
+      description: "资源不存在（或不可见）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status405:
+      description: "路径存在但该方法已退役（`Allow: GET, HEAD`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status409:
+      description: |
+        冲突：`resource_version_conflict`（带 `details.current.resourceVersion`）、
+        `AlreadyExists`、`Conflict`、`slug_taken`、`source_name_used`、`node_offline` 等
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status410:
+      description: |
+        事实已消失但引用仍在：`artifact_expired`（托管副本已清、manifest 仍在）、
+        `no_local_archive`（节点上没有该 attempt 的日志档案）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status413:
+      description: "请求体过大"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status429:
+      description: "限流（`details.retryAfterSeconds` 与 `Retry-After` 头同值）"
+      headers:
+        Retry-After:
+          description: "建议重试间隔（秒）"
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status500:
+      description: "服务端内部错误"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status501:
+      description: "能力未启用（如中枢没有自带 agent 二进制 → `agent_binary_unavailable`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status502:
+      description: "上游（节点）返回不可用响应（透传节点错误码）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status503:
+      description: |
+        依赖不可用：`node_offline`（节点离线）、`artifact_download_unavailable`
+        （中枢没配置托管目录）等
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    Status504:
+      description: "上游超时（`timeout`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Status'}
+    AuthError401:
+      description: |
+        未登录/凭据无效（**中间件**产生）。真实 `Content-Type` 是
+        `text/plain; charset=utf-8`，body 是 `{"error": "..."}`。
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError403:
+      description: "已登录但被中间件拒绝（超管/管理员权限不足）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError429:
+      description: "限流（hook 入口的写入口径）；带 `Retry-After` 头"
+      headers:
+        Retry-After:
+          description: "建议重试间隔（秒）"
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    Backpressure503:
+      description: |
+        派发积压（最老 pending 任务等待超过阈值）：只拒**新事件入口**，已入库任务不动。
+        body 是 snake_case 的 `BackpressureError`，并带 `Retry-After` 头。
+      headers:
+        Retry-After:
+          description: "建议重试间隔（秒）"
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/BackpressureError'}
+    NodeUploadError400:
+      description: "逻辑路径不合法（`artifact_path_invalid`）或字节与 URL 里的 sha256 不符（`artifact_hash_mismatch`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
+    NodeUploadError401:
+      description: "节点身份无效（`unauthorized`）——节点侧终止不重试"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
+    NodeUploadError403:
+      description: "授权事实不成立（`forbidden`：attempt/lease/token/相位/撤销/命名空间授权）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
+    NodeUploadError409:
+      description: "同 attempt 同逻辑 path 但不同 hash（`artifact_conflict`，不偷偷覆盖）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
+    NodeUploadError413:
+      description: "超过单文件 16 MiB / 单 attempt 64 MiB / 32 项（`artifact_too_large`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
+    NodeUploadError503:
+      description: "中枢没配置托管目录（`artifact_upload_unavailable`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/NodeUploadError'}
