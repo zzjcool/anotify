@@ -49,6 +49,7 @@ import copy
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 try:
@@ -215,9 +216,6 @@ def ref_errors(ref: str, where: str, is_path_item: bool = False) -> list[str]:
                 f"{where}: $ref 指向第六真源 {file_part!r}（只允许 {sorted(allowed)}）"
             )
             return errors
-        if base == "":
-            errors.append(f"{where}: 空文件名 $ref（{ref}）")
-            return errors
     if not pointer.startswith("/components/"):
         errors.append(
             f"{where}: $ref 的目标必须是 components 下（{ref}）"
@@ -257,23 +255,63 @@ def resolve_ref(ref: str, docs: dict[str, dict], current: str) -> tuple[object |
     return resolve_pointer(doc, pointer), target_file
 
 
-def walk_refs(node: object, where: str, out: list[tuple[str, str, bool]]) -> None:
-    """收集文档里全部 `$ref`（含 path item 位置标记）。"""
+def walk_refs(
+    node: object, where: str, out: list[tuple[str, str, bool]], trail: tuple[str, ...] = ()
+) -> None:
+    """收集文档里全部 `$ref`（含 path item 位置标记）。
+
+    `is_path_item` 用**键路径**判（`paths.<path>.$ref`），不数字符串里的点：
+    path 本身可能带点（`/agent-login.sh`），按点数会把它判成普通引用。
+    """
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "$ref" and isinstance(value, str):
-                is_path_item = where.startswith("paths.") and where.count(".") == 1
+                is_path_item = len(trail) == 2 and trail[0] == "paths"
                 out.append((value, where, is_path_item))
             else:
-                walk_refs(value, f"{where}.{key}" if where else str(key), out)
+                walk_refs(value, f"{where}.{key}" if where else str(key), out, trail + (str(key),))
     elif isinstance(node, list):
         for idx, value in enumerate(node):
-            walk_refs(value, f"{where}[{idx}]", out)
+            walk_refs(value, f"{where}[{idx}]", out, trail + (str(idx),))
 
 
 def response_component_name(ref: str) -> str:
     _, pointer = split_ref(ref)
     return pointer.rsplit("/", 1)[-1]
+
+
+LEGACY_SPECS = ("openapi.yaml", "openapi.yml")
+SPEC_SUFFIXES = ("*.yaml", "*.yml")
+
+
+def exact_five_errors_from_names(names: Iterable[str]) -> list[str]:
+    """`api/` 里的文件名清单 → exact-five 违规。
+
+    单一实现：`check_contract.py` 的 A9 也调这里，避免两套 glob/两套 message 漂移
+    （review 指出过：`.yml` 后缀能同时绕过两处）。
+    """
+    errors: list[str] = []
+    present = set(names)
+    expected = set(SPEC_FILES.values())
+    for name in sorted(present - expected):
+        if name in LEGACY_SPECS:
+            errors.append(
+                f"api/{name} 仍存在：旧单文件真源已退役（exact-five），"
+                "消费者不得回退到它；请删除"
+            )
+        else:
+            errors.append(
+                f"api/{name} 是第六个 spec 文件（exact-five 只允许 {sorted(expected)}）"
+            )
+    for name in sorted(expected - present):
+        errors.append(f"api/{name} 缺失（exact-five 要求五份真实 spec 同时存在）")
+    return errors
+
+
+def exact_five_errors(api_dir: Path) -> list[str]:
+    """目录版：`*.yaml` 与 `*.yml` 都算（换后缀不该溜过去）。"""
+    names = {p.name for suffix in SPEC_SUFFIXES for p in api_dir.glob(suffix)}
+    return exact_five_errors_from_names(names)
 
 
 def check_documents(docs: dict[str, dict], files: dict[str, list[str]] | None = None) -> list[str]:
@@ -285,18 +323,7 @@ def check_documents(docs: dict[str, dict], files: dict[str, list[str]] | None = 
 
     # ---------- 1. exact-five（目录清单由调用方给，self_test 里可为空） ----------
     if files is not None:
-        unexpected = sorted(set(files) - set(SPEC_FILES.values()))
-        missing = sorted(set(SPEC_FILES.values()) - set(files))
-        for name in unexpected:
-            if name == LEGACY_SPEC:
-                errors.append(
-                    f"api/{name} 仍存在：旧单文件真源已退役（exact-five），"
-                    "消费者不得回退到它；请删除"
-                )
-            else:
-                errors.append(f"api/{name} 是第六个 spec 文件（exact-five 只允许 {sorted(SPEC_FILES.values())}）")
-        for name in missing:
-            errors.append(f"api/{name} 缺失（exact-five 要求五份真实 spec 同时存在）")
+        errors.extend(exact_five_errors_from_names(files))
 
     # ---------- 2. 每份文档的骨架 ----------
     for name in SPEC_NAMES:
@@ -359,10 +386,6 @@ def check_documents(docs: dict[str, dict], files: dict[str, list[str]] | None = 
                 if not isinstance(resolved_item, dict):
                     errors.append(f"{where}: path item 的 $ref 目标不是映射（{item['$ref']}）")
                     continue
-                if target_file != name:
-                    # 跨文件 path item 是合法的（checker 必须支持），但要报出来，
-                    # 因为它把一条 operation 的定义搬到了另一个文件的 components 里。
-                    pass
             if not isinstance(resolved_item, dict):
                 errors.append(f"{where}: path item 必须是映射")
                 continue
@@ -417,6 +440,14 @@ def check_documents(docs: dict[str, dict], files: dict[str, list[str]] | None = 
                             if not isinstance(entry, dict):
                                 errors.append(f"{op_where}: security 的元素必须是映射")
                                 continue
+                            if not entry:
+                                # `{}` 是 OpenAPI 的「允许匿名」。它和具名方案写在同一条
+                                # operation 上等于「既要鉴权又不用鉴权」——生成客户端会
+                                # 随机选一种，必须显式二选一。
+                                errors.append(
+                                    f"{op_where}: security 里同时出现匿名项 {{}} 和具名方案 "
+                                    "（匿名就写 security: []）"
+                                )
                             for scheme in entry:
                                 if scheme not in SECURITY_SCHEMES:
                                     errors.append(
@@ -860,6 +891,35 @@ def self_test() -> list[str]:
         body = docs["events"]["paths"].pop("/v1/stub-events")
         docs["events"]["paths"]["/things"] = body
 
+    def drop_2xx(docs: dict) -> None:
+        docs["resource"]["components"]["pathItems"]["ThingItem"]["get"]["responses"] = {
+            "404": {"$ref": "./resource.yaml#/components/responses/Status404"}
+        }
+
+    def drop_all_errors(docs: dict) -> None:
+        docs["resource"]["components"]["pathItems"]["ThingItem"]["get"]["responses"] = {
+            "200": {"description": "ok"}
+        }
+
+    def non_spec_route(docs: dict) -> None:
+        docs["events"]["paths"]["/health"] = {
+            "get": {
+                "operationId": "healthProbe",
+                "tags": ["t"],
+                "security": [],
+                "responses": {"200": {"description": "ok"}},
+            }
+        }
+
+    def undeclared_tag(docs: dict) -> None:
+        docs["resource"]["components"]["pathItems"]["ThingItem"]["get"]["tags"] = ["nope"]
+
+    def mixed_anonymous_security(docs: dict) -> None:
+        docs["resource"]["components"]["pathItems"]["ThingItem"]["get"]["security"] = [
+            {},
+            {"session": []},
+        ]
+
     expect("重复 method+path 跨文件", dup_method_path, "已被")
     expect("重复 method+path 同文件（{ns} 改名绕不过）", dup_method_path_same_file, "重复（同文件同 method+path）")
     expect("重复 operationId", dup_operation_id, "operationId")
@@ -867,7 +927,7 @@ def self_test() -> list[str]:
     expect("逃逸 $ref", escape_ref, "逃逸")
     expect("remote $ref", remote_ref, "remote")
     expect("第六真源 $ref", sixth_source, "第六真源")
-    expect("缺 security", missing_security, "security")
+    expect("缺 security", missing_security, "缺少 security 声明")
     expect("未知 scheme", bad_scheme, "安全方案")
     expect("scheme 未在本文件定义", undeclared_scheme, "未定义它")
     expect("path item 打错方法键", bad_path_item_key, "非法键")
@@ -878,6 +938,11 @@ def self_test() -> list[str]:
     expect("path 缺 /v1 前缀", relative_path, "真实全路径")
     expect("路径占位符缺 path 参数声明", missing_path_parameter, "没有对应的")
     expect("悬空的 path 参数声明", orphan_path_parameter, "悬空参数")
+    expect("没有 2xx 响应", drop_2xx, "至少需要一个 2xx 响应")
+    expect("没有 4xx/5xx 响应", drop_all_errors, "没有声明任何 4xx/5xx 响应")
+    expect("spec 里出现非 spec 路由", non_spec_route, "显式排除清单")
+    expect("用了未在顶层声明的 tag", undeclared_tag, "未在顶层 tags 声明")
+    expect("匿名与具名方案混写", mixed_anonymous_security, "同时出现匿名项")
 
     # alias/rest 两个「负向目录清单」case：第六文件与旧单文件
     expect(
@@ -900,7 +965,7 @@ def main() -> int:
         print(f"❌ 找不到 {API_DIR}", file=sys.stderr)
         return 1
 
-    files = sorted(p.name for p in API_DIR.glob("*.yaml"))
+    files = sorted({p.name for suffix in SPEC_SUFFIXES for p in API_DIR.glob(suffix)})
     try:
         docs = load_specs(API_DIR)
     except Exception as exc:  # noqa: BLE001 - 任何读取/解析失败都要具名报出

@@ -89,7 +89,6 @@ paths:
               schema: {$ref: '#/components/schemas/Capability'}
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
-        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/capabilities/{name}:
@@ -240,6 +239,7 @@ paths:
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
+        '403': {$ref: '#/components/responses/Status403'}
 
   /v1/namespaces/{namespace}/edges:
     parameters:
@@ -892,6 +892,7 @@ paths:
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
+        '400': {$ref: '#/components/responses/Status400'}
     patch:
       operationId: patchNode
       tags: [nodes]
@@ -1006,8 +1007,8 @@ paths:
               schema: {$ref: '#/components/schemas/Node'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
-        '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
+        '400': {$ref: '#/components/responses/Status400'}
 
   /v1/nodes/{name}/upgrade:
     parameters:
@@ -1029,6 +1030,7 @@ paths:
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
         '501': {$ref: '#/components/responses/Status501'}
+        '400': {$ref: '#/components/responses/Status400'}
 
   # ---------------------------------------------------------------------- tasks
   /v1/namespaces/{namespace}/tasks:
@@ -1163,7 +1165,7 @@ paths:
           required: false
           description: "读上一次 attempt 的日志"
           schema: {type: boolean, default: false}
-        - name: tail
+        - name: tailLines
           in: query
           required: false
           description: "只取尾部 N 行（0..5000）"
@@ -1240,7 +1242,10 @@ paths:
           description: "产物字节流"
           headers:
             Content-Disposition:
-              description: "`attachment; filename*=UTF-8''<safe basename>`（禁 CRLF / 路径逃逸）"
+              description: |
+                附件名由登记路径的安全 basename 生成（禁 CRLF / 路径逃逸）。ASCII 名走
+                `attachment; filename="…"`，含非 ASCII 才走 `filename*=UTF-8''…`
+                （`mime.FormatMediaType` 的选择，两种都合法）。
               schema: {type: string}
             X-Content-Type-Options:
               description: "恒为 `nosniff`（产物可能是 HTML/SVG，禁止在中枢域渲染）"
@@ -1252,6 +1257,7 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '410': {$ref: '#/components/responses/Status410'}
         '503': {$ref: '#/components/responses/Status503'}
+        '500': {$ref: '#/components/responses/Status500'}
 
   # ----------------------------------------------------------------- deployments
   /v1/namespaces/{namespace}/deployments:
@@ -1343,8 +1349,10 @@ components:
       name: limit
       in: query
       required: false
-      description: "每页条数（缺省 50，上限 500）"
-      schema: {type: integer, default: 50, minimum: 1, maximum: 500}
+      description: |
+        每页条数。缺省 50；`<=0` 按 50 处理（不报错）；`>500` 由实现钳到 500
+        （tasks 列表钳到 50）。这是实现口径，不是校验边界——写错数值不会 400。
+      schema: {type: integer, default: 50}
     ContinueQuery:
       name: continue
       in: query
@@ -1453,10 +1461,12 @@ components:
     AuthError:
       type: object
       description: |
-        认证/授权中间件的真实错误体：`{"error": "<人话或机器码>"}`。
-        它**不是** Status 信封（中间件在 handler 之前返回，`Content-Type` 是
-        `text/plain; charset=utf-8` 且正文以换行结尾）。列入本文件是为了让 spec
-        说实话，而不是假装所有错误都是 Status。
+        身份域（auth / admin / devices / keys / passkey-enroll / cli-auth）的**唯一**
+        错误体：`{"error": "<人话或机器码>"}`。它**不是** Status 信封。
+        两种产生点形状相同、`Content-Type` 不同：
+        - 中间件（`internal/auth/*`）用 `http.Error` → `text/plain` 且正文带换行；
+        - handler（`writeErr`）用 `writeJSON` → `application/json`。
+        列入本文件是为了让 spec 说实话，而不是假装所有错误都是 Status。
       required: [error]
       properties:
         error: {type: string}
@@ -3005,6 +3015,51 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/BackpressureError'}
+    AuthError400:
+      description: "请求内容/字段校验失败（auth 域用 `writeErr`，`reason` 是**人话**而不是机器码）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError404:
+      description: "对象不存在或不可见（auth 域用 `writeErr`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError405:
+      description: "方法不允许（裸挂载的 handler 内部 switch 落到 default）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError409:
+      description: "冲突（用户名已存在 / resourceVersion 冲突等，auth 域用 `writeErr`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError413:
+      description: "请求体过大"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError500:
+      description: "服务端内部错误（auth 域会把底层错误文本放进 `error`）"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError502:
+      description: "上游不可用"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError503:
+      description: "依赖不可用"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
+    AuthError504:
+      description: "上游超时"
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AuthError'}
     NodeUploadError400:
       description: "逻辑路径不合法（`artifact_path_invalid`）或字节与 URL 里的 sha256 不符（`artifact_hash_mismatch`）"
       content:

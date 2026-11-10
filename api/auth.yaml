@@ -64,8 +64,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WebAuthnCreationOptions" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/register:
     post:
@@ -97,8 +97,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/login/options:
     post:
@@ -125,8 +125,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WebAuthnRequestOptions" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/login:
     post:
@@ -162,7 +162,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/logout:
     post:
@@ -179,7 +179,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/recovery/login:
     post:
@@ -206,10 +206,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/password/login:
     post:
@@ -237,10 +237,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/password/register:
     post:
@@ -268,9 +268,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   # ======================================================================================
   # 9–20 · 当前用户、会话、Passkey 管理、密码管理、恢复码（需登录会话）
@@ -294,8 +294,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/sessions:
     get:
@@ -315,8 +315,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SessionList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/passkeys:
     get:
@@ -333,8 +333,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/passkeys/register/options:
     post:
@@ -353,9 +353,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WebAuthnCreationOptions" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/passkeys/register:
     post:
@@ -383,9 +383,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/passkeys/{id}:
     patch:
@@ -413,11 +413,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
     delete:
       tags: [auth]
       summary: 删除 Passkey
@@ -440,10 +440,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/password:
     get:
@@ -461,8 +461,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PasswordStatus" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
     post:
       tags: [auth]
       summary: 设置 / 修改密码
@@ -485,9 +485,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasswordSetResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
     delete:
       tags: [auth]
       summary: 移除密码（仅当账号还有 Passkey 时允许）
@@ -509,10 +509,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasswordRemoveResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/recovery/regenerate:
     post:
@@ -529,9 +529,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/auth/recovery/status:
     get:
@@ -549,8 +549,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RecoveryStatus" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   # ======================================================================================
   # 21–25 · VAPID 公钥与 Web Push 订阅设备
@@ -589,7 +589,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DeviceList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
     post:
       tags: [devices]
@@ -614,9 +614,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DeviceResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/devices/{id}:
     patch:
@@ -649,10 +649,10 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DeviceResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
     delete:
       tags: [devices]
@@ -675,7 +675,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================
   # 26–29 · API Key
@@ -697,7 +697,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/APIKeyList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
     post:
       tags: [keys]
@@ -721,7 +721,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/APIKeyCreateResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
 
   /v1/keys/{id}/revoke:
@@ -748,7 +748,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/keys/self:
     get:
@@ -798,9 +798,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CLIAuthSessionCreated" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/cli-auth/sessions/{id}/poll:
     get:
@@ -836,9 +836,9 @@ paths:
               schema: { $ref: "#/components/schemas/CLIAuthPollResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/cli-auth/sessions/{id}/qr.txt:
     get:
@@ -863,9 +863,9 @@ paths:
           content:
             text/plain:
               schema: { type: string }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/cli-auth/sessions/by-code:
     get:
@@ -888,9 +888,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CLIAuthSessionView" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/cli-auth/sessions/{id}:
@@ -915,7 +915,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/CLIAuthSessionView" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
 
   /v1/cli-auth/sessions/{id}/approve:
     post:
@@ -946,11 +946,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CLIAuthStatusResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/cli-auth/sessions/{id}/deny:
     post:
@@ -973,11 +973,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CLIAuthStatusResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================
   # 37–47 · Passkey 设备补建（旧设备批准 → 新设备建凭证）
@@ -1010,9 +1010,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollCreated" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/by-code:
     get:
@@ -1035,8 +1035,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollAnonView" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/passkey-enroll/sessions/{id}:
@@ -1063,7 +1063,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollAnonView" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
     delete:
@@ -1087,8 +1087,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/{id}/request:
     post:
@@ -1119,9 +1119,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollKnockResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/passkey-enroll/sessions/{id}/poll:
@@ -1158,9 +1158,9 @@ paths:
               schema: { $ref: "#/components/schemas/PasskeyEnrollPollResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/{id}/complete:
     post:
@@ -1202,9 +1202,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollCompleteResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/passkey-enroll/sessions/{id}/qr.txt:
@@ -1228,9 +1228,9 @@ paths:
           content:
             text/plain:
               schema: { type: string }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/{id}/watch:
     get:
@@ -1256,7 +1256,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollWatchView" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
 
   /v1/passkey-enroll/sessions/{id}/approve:
     post:
@@ -1280,11 +1280,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/{id}/deny:
     post:
@@ -1307,11 +1307,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================
   # 48–57 · 管理后台（会话 + 超管两层中间件；401 来自会话层，403 来自超管层）
@@ -1361,7 +1361,7 @@ paths:
               schema: { $ref: "#/components/schemas/AdminSystemStats" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/users:
     get:
@@ -1381,8 +1381,8 @@ paths:
               schema: { $ref: "#/components/schemas/AdminUserList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/users/{id}:
     get:
@@ -1406,9 +1406,9 @@ paths:
               schema: { $ref: "#/components/schemas/AdminUser" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
     patch:
       tags: [admin]
       summary: 改用户角色 / 禁用状态（超管，不能改自己）
@@ -1439,13 +1439,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/users/{id}/role:
     patch:
@@ -1474,12 +1474,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OkResult" }
-        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/users/{id}/disable:
     post:
@@ -1504,9 +1504,9 @@ paths:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/users/{id}/enable:
     post:
@@ -1531,9 +1531,9 @@ paths:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/messages:
     get:
@@ -1561,8 +1561,8 @@ paths:
               schema: { $ref: "#/components/schemas/AdminEventList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/admin/sessions:
     get:
@@ -1581,8 +1581,8 @@ paths:
               schema: { $ref: "#/components/schemas/AdminSessionList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
-        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================
   # 58 · 登录脚本（唯一不在 /v1 下的端点）
@@ -1608,8 +1608,8 @@ paths:
           content:
             text/x-sh:
               schema: { type: string }
-        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
-        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
+        "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
 components:
   # 安全方案必须在本文件定义（不能跨文件引用）。四份 spec 里的同名声明的定义逐字一致；
