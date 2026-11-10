@@ -1,0 +1,2513 @@
+openapi: 3.1.0
+info:
+  title: Anotify Auth API
+  version: "4.0.0"
+  description: |
+    Anotify v4 身份域（exact-five 之一，清单见 `docs/v4/g3c-spec-inventory.md` §4.5）。
+    覆盖 58 个 operation：Passkey / 密码 / 恢复码三套登录模型、会话、API Key、Web Push 设备、
+    VAPID 公钥、CLI 设备授权（`curl | sh` 登录）、Passkey 设备补建、管理后台，以及唯一不在
+    `/v1` 下的 `/agent-login.sh`。
+
+    鉴权方案：`session`（Cookie `anotify_session`）/ `consoleKey`（`Authorization: Bearer ant_...`）/
+    `adminSession`（会话 + 超管，两层中间件）。匿名端点逐个显式写 `security: []`。
+
+    错误体形状：本域 **401/403/429 用 `AuthError*`**（`{"error":"..."}`）——会话/超管中间件与
+    auth handler 都是这个形状；其余 4xx/5xx 按 #333 契约统一 `$ref` `Status<code>`
+    （组件定义在 `./resource.yaml`）。注意：实现里 auth handler 的 4xx/5xx 真实体同样是
+    `{"error":"..."}`，而 409（CLI/Passkey 授权终态冲突）是 `{"status":"..."}`——两处与本文件的
+    `Status` 信封不一致，属已知分歧（见 PR 说明）；本文件不伪造字段，只按冻结契约挂组件名。
+
+    约定：所有 JSON 字段 camelCase；空列表返回 `[]` 而不是 `null`；时间字段是 unix 秒（int64）。
+    405 只在「由 handler 自己分派方法」的路径上声明（`/v1/auth/*`、`/v1/devices*`、`/v1/keys`、
+    `/v1/admin/*` 里显式判方法的端点）；由 Go 1.22 ServeMux 方法模式拒绝的 405 是裸文本，未建模。
+servers:
+  - url: /
+tags:
+  - name: auth
+    description: 身份与凭据：Passkey / 密码 / 恢复码登录、会话、当前用户
+  - name: keys
+    description: API Key 的签发、列表、吊销与自检
+  - name: devices
+    description: Web Push 订阅设备与 VAPID 公钥
+  - name: cli-auth
+    description: CLI 设备授权（一次性短码 + 轮询领 Key）与登录脚本分发
+  - name: passkey-enroll
+    description: Passkey 设备补建（旧设备批准 → 新设备建凭证）
+  - name: admin
+    description: 管理后台（需会话 + 超管）
+
+paths:
+  # ======================================================================================
+  # 1–8 · Passkey 注册/登录、登出、恢复码登录、密码登录/注册（匿名）
+  # ======================================================================================
+
+  /v1/auth/register/options:
+    post:
+      tags: [auth]
+      summary: 开始 Passkey 注册（取 WebAuthn challenge）
+      description: |
+        匿名端点。按 `username` 生成 creation options，并**强制 resident key**
+        （免用户名登录依赖它）。用户名已存在时 `400`（文案「用户名已存在」）。
+
+        成功响应的 `publicKey` 直接交给 `navigator.credentials.create()`；challenge 按 username
+        暂存在内存里，`POST /v1/auth/register?username=` 时校验。
+      operationId: registerOptions
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UsernameRequest" }
+      responses:
+        "200":
+          description: WebAuthn creation options（`publicKey` 交给浏览器）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnCreationOptions" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      summary: 完成 Passkey 注册（校验 attestation，建用户 + 会话 + 恢复码）
+      description: |
+        匿名端点。`username` 走 **query**（`?username=`），body 是裸 WebAuthn attestation JSON
+        （`r.Body` 交给 go-webauthn 解析，服务端不预读）。校验通过后：建用户（首个用户自动
+        admin）、存 Passkey、签会话 Cookie、发 8 个恢复码。
+
+        `recoveryCodes` 明文**仅此一次**返回；无码时是 `[]`（不是 `null`）。失败一律 `400`
+        （attestation 无效 / 用户名缺失 / challenge 过期），文案原样给前端展示。
+      operationId: register
+      security: []
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema: { type: string }
+          description: 注册用户名（与 options 阶段同一个值，用于取回 challenge）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialCreationResponse" }
+      responses:
+        "200":
+          description: 注册成功，`Set-Cookie` 会话；恢复码明文仅此一次
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/login/options:
+    post:
+      tags: [auth]
+      summary: 开始 Passkey 登录（取 challenge；可免用户名）
+      description: |
+        匿名端点，两种模式：
+
+        - 给了 `username`：指定用户的 assertion options（用户不存在 / 已禁用 → `400`）
+        - 没给 `username`：**discoverable（免用户名）登录**，用 `token` 作为 challenge 的暂存键
+          （调用方自带，`POST /v1/auth/login?token=` 时回传同一个值）
+
+        body 可缺省（缺省 = discoverable，token 为空串）。
+      operationId: loginOptions
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UsernameRequest" }
+      responses:
+        "200":
+          description: WebAuthn request options（`publicKey` 交给 `navigator.credentials.get()`）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnRequestOptions" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 完成 Passkey 登录（校验 assertion，建会话）
+      description: |
+        匿名端点。`username` 或 `token` 走 **query**（二选一，对应 options 阶段的两条路径），
+        body 是裸 WebAuthn assertion JSON。校验通过后签会话 Cookie（设备名从 UA 推断）。
+
+        失败统一 `401`（不区分「用户不存在 / 断言无效 / 账户禁用」），文案原样给前端。
+      operationId: login
+      security: []
+      parameters:
+        - name: username
+          in: query
+          required: false
+          schema: { type: string }
+          description: 指定用户名登录时必填（与 options 阶段同一个值）
+        - name: token
+          in: query
+          required: false
+          schema: { type: string }
+          description: 免用户名（discoverable）登录时必填（与 options 阶段同一个值）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialAssertionResponse" }
+      responses:
+        "200":
+          description: 登录成功，`Set-Cookie` 会话
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出（吊销会话 + 清 Cookie）
+      description: |
+        匿名端点：没有 Cookie 也是 `200`（幂等）。带 Cookie 时会话行被删除；删除失败**不**把错误
+        抛给用户（Cookie 照样清），但会留 Error 级日志（会话行可能仍存在，属安全事件）。
+      operationId: logout
+      security: []
+      responses:
+        "200":
+          description: 已登出
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/recovery/login:
+    post:
+      tags: [auth]
+      summary: 用恢复码登录（一次性码换会话）
+      description: |
+        匿名端点。成功后该恢复码立即作废；会话模型与 Passkey 登录相同。码格式
+        `XXXX-XXXX-XXXX-XXXX`（去歧义字符集，大小写不敏感、连字符可选）。
+
+        限速 **双维度**：10/min/IP + 10/min/username（小写），两维都放行才继续；
+        超限 `429` + `Retry-After`。限速判定先于读 body。
+
+        错误：缺字段 `400`；码错 / 用户不存在 / 账户禁用 `401`（不区分，防枚举）。
+      operationId: recoveryLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecoveryLoginRequest" }
+      responses:
+        "200":
+          description: 登录成功，`Set-Cookie` 会话
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/password/login:
+    post:
+      tags: [auth]
+      summary: 用用户名 + 密码登录（成功即 Set-Cookie 会话）
+      description: |
+        匿名端点（密码是第二套登录模型，与 Passkey 并存）。密码只以 argon2id PHC 哈希落库，
+        明文不进库、不进日志。
+
+        限速 **双维度**：10/min/IP + 10/min/username（小写），两维都放行才继续；
+        超限 `429` + `Retry-After`。限速判定先于读 body（空请求洪泛连 JSON 都不解析）。
+
+        错误：缺字段 `400`；凭据错误 / 未设置密码 / 账户禁用 `401`
+        （「用户不存在」与「密码错」文案一致，防用户名枚举）。
+      operationId: passwordLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordLoginRequest" }
+      responses:
+        "200":
+          description: 登录成功，`Set-Cookie` 会话
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/password/register:
+    post:
+      tags: [auth]
+      summary: 用用户名 + 密码注册（建会话 + 返回 8 个恢复码）
+      description: |
+        匿名端点，显式路由（不挂在 `/v1/auth/` 兜底里）。用户行 + 密码哈希在**同一个事务**里写入，
+        不会出现「有账号但没有任何登录方式」的半成品；首个注册用户（不论 Passkey 还是密码注册）
+        自动成为 admin。
+
+        限速只做 **IP 维**（10/min/IP，带 `Retry-After`）：注册不是秘密猜测接口。限速先于读 body。
+
+        错误 `400`：缺字段 / 用户名不合规（2–32 字符，字母数字与 `_-.`，不能以 `_-.` 起止）/
+        密码不合规（8–128 字符按 rune，全空白拒绝）/ 用户名已存在。
+      operationId: passwordRegister
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordRegisterRequest" }
+      responses:
+        "200":
+          description: 注册成功，`Set-Cookie` 会话；恢复码明文仅此一次
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  # ======================================================================================
+  # 9–20 · 当前用户、会话、Passkey 管理、密码管理、恢复码（需登录会话）
+  # ======================================================================================
+
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: 当前会话的用户（扁平字段）
+      description: |
+        返回**扁平**的用户字段，不是 `{user: ...}` 包装。前端顶栏/侧栏显示真实用户名用。
+
+        会话中间件已保证有 Cookie 且有效（否则走不到 handler）；走到 handler 但库里查不到用户
+        （删号 / 竞态）时回 `404`，不伪造一个空用户。
+      operationId: getMe
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 当前用户
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/sessions:
+    get:
+      tags: [auth]
+      summary: 列出当前用户的登录会话
+      description: |
+        列出 `sessions` 表里属于当前用户的全部会话（**不过滤过期**：过期行由后台清理，
+        前端按 `expiresAt` 自行判断），按 `createdAt` 倒序。空时为 `[]`。
+
+        注意 `id` 本身是一条 bearer 凭据（`<sessionID>.<随机后缀>`），不要当无害日志字段。
+      operationId: listAuthSessions
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/passkeys:
+    get:
+      tags: [auth]
+      summary: 列出当前用户的 Passkey
+      description: |
+        安全公开视图（不含 publicKey 原始字节）。空时为 `[]`（不是 `null`）。
+      operationId: listPasskeys
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: Passkey 列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/passkeys/register/options:
+    post:
+      tags: [auth]
+      summary: 补建 Passkey（已登录用户）——取 challenge
+      description: |
+        与匿名 `/v1/auth/register/options` 区分：**不传 username**，userID 取自会话；
+        不建新用户，challenge 存在 `addcred:<userID>` 命名空间下。
+
+        同样强制 resident key（免用户名登录依赖它）。
+      operationId: passkeyRegisterOptions
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: WebAuthn creation options
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnCreationOptions" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/passkeys/register:
+    post:
+      tags: [auth]
+      summary: 补建 Passkey（已登录用户）——提交 attestation
+      description: |
+        body 是**裸** WebAuthn attestation JSON（服务端不预读，go-webauthn 直接解析 `r.Body`）。
+        `name` 走 query（可选，缺省「新设备」）。不建会话（用户已登录），只存凭证。
+      operationId: passkeyRegister
+      security: [{ session: [] }]
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema: { type: string, default: 新设备 }
+          description: 凭证展示名（缺省「新设备」）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialCreationResponse" }
+      responses:
+        "200":
+          description: 已补建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/passkeys/{id}:
+    patch:
+      tags: [auth]
+      summary: 重命名 Passkey
+      description: |
+        `{id}` 是 base64url 的凭证 ID。**越权（改别人的凭证）一律 `404`**，不泄露存在性。
+        缺 `name` 或解析失败 `400`；写库失败 `500`。
+      operationId: renamePasskey
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Passkey 的凭证 ID（base64url）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyRenameRequest" }
+      responses:
+        "200":
+          description: 已重命名
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+    delete:
+      tags: [auth]
+      summary: 删除 Passkey
+      description: |
+        越权（删别人的凭证）转 `404`。**不变量：每个账号至少保留一种登录方式**
+        （≥1 Passkey **或**已设置密码）——删的是最后一个凭证且账号没有密码时 `409`。
+        密码状态读不到时 fail-closed（按「没有密码」处理，宁可拒删不可锁号）。
+      operationId: deletePasskey
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Passkey 的凭证 ID（base64url）
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/password:
+    get:
+      tags: [auth]
+      summary: 密码状态（是否已设置 / 最近更新时间）
+      description: |
+        只回答「有没有密码、什么时候改的」——**不返回**哈希（连前缀也不返回）。
+        未设置时 `updatedAt` 为 `0`。读库失败 `500`（不伪造「未设置」）。
+      operationId: getPasswordStatus
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 密码状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordStatus" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+    post:
+      tags: [auth]
+      summary: 设置 / 修改密码
+      description: |
+        body `{currentPassword, newPassword}`。首次设置忽略 `currentPassword`；已有密码时
+        **必须**校验当前密码。新密码 8–128 字符（按 rune，全空白拒绝）。
+
+        不吊销已有会话（改密码 ≠ 踢其它设备下线）。失败一律 `400`（新密码不合规 / 当前密码错），
+        文案为中文，前端可直接展示。
+      operationId: setPassword
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordSetRequest" }
+      responses:
+        "200":
+          description: 已设置 / 已修改
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordSetResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+    delete:
+      tags: [auth]
+      summary: 移除密码（仅当账号还有 Passkey 时允许）
+      description: |
+        body `{currentPassword}`，**可缺**：本来就没设置密码时移除是幂等的（前端可能不带 body）。
+
+        账号没有 Passkey 时拒绝 `409`（否则移除之后它再没有任何登录方式）。当前密码错 / 用户
+        不存在统一 `400`。
+      operationId: deletePassword
+      security: [{ session: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordRemoveRequest" }
+      responses:
+        "200":
+          description: 已移除（或本来就没有密码）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordRemoveResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/recovery/regenerate:
+    post:
+      tags: [auth]
+      summary: 重新生成恢复码（作废全部未用旧码）
+      description: |
+        作废当前用户全部未使用恢复码并签发新一批（8 个），明文仅在本响应返回**一次**。
+        签发失败 `400`。无码时 `recoveryCodes` 是 `[]`（不是 `null`）。
+      operationId: regenerateRecoveryCodes
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 新恢复码明文（仅此一次）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodesResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  /v1/auth/recovery/status:
+    get:
+      tags: [auth]
+      summary: 恢复码状态（未用码数量，不含明文）
+      description: |
+        只回答「还剩几个没用」：`unusedCount` 是未使用的恢复码行数，`hasCodes` 是它的便捷布尔。
+        **不返回**任何码的明文或哈希。读库失败 `500`。
+      operationId: getRecoveryStatus
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 未用码数量
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryStatus" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+
+  # ======================================================================================
+  # 21–25 · VAPID 公钥与 Web Push 订阅设备
+  # ======================================================================================
+
+  /v1/vapid-public-key:
+    get:
+      tags: [devices]
+      summary: 返回 VAPID 公钥（前端订阅用）
+      description: |
+        匿名可读（前端在订阅推送时拿它当 `applicationServerKey`）。单一事实源是启动时装载的
+        VAPID 配置：**未配置时返回空串**（不是 `404`）——推送未启用是合法部署形态，前端据此
+        隐藏推送开关。v4 中枢不再构造 Sender：「谁发推送」由节点的能力进程负责。
+      operationId: getVAPIDPublicKey
+      security: []
+      responses:
+        "200":
+          description: VAPID 公钥（未配置时 `publicKey` 为空串）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VAPIDPublicKey" }
+
+  /v1/devices:
+    get:
+      tags: [devices]
+      summary: 列出接收设备
+      description: |
+        当前用户全部设备（**不限** `enabled`，含被 `DELETE` 软禁用的）。空时为 `[]`。
+        `endpoint` / `p256dh` / `auth` 是推送凭据，只回给设备属主。
+      operationId: listDevices
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: 设备列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+    post:
+      tags: [devices]
+      summary: 注册 / 刷新推送订阅（幂等 upsert）
+      description: |
+        前端拿到 PushSubscription 后上报。`endpoint` + `keys.p256dh` + `keys.auth` 三者缺一即
+        `400`（「订阅数据不完整」）。`platform` 缺省 `other`，`tags` 缺省 `[]`。
+
+        语义是 **upsert（订阅刷新）**：同一个 endpoint 只更新密钥，**不**改配置——改名/开关/事件
+        范围/标签请走 `PATCH /v1/devices/{id}`（`UpsertDevice` 与 `UpdateDevice` 是两条路径，
+        混用会丢配置）。
+      operationId: upsertDevice
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceUpsertRequest" }
+      responses:
+        "200":
+          description: 已保存（回显落库后的设备行）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/devices/{id}:
+    patch:
+      tags: [devices]
+      summary: 更新设备配置（重命名 / 开关 / 事件范围 / 标签）
+      description: |
+        `{id}` 是「剩余多段」：handler 把 `/v1/devices` 之后的整段路径当一个 id
+        （`TrimPrefix` 后不做段切分），因此带斜杠的 id 也落在这里。
+
+        未提供的字段保持原值（`name` / `enabled` / `eventScope` 是指针语义，`tags` 为 `nil`
+        表示不改）。`eventScope` 只接受 `final|all`，其余 `400`。设备不属于当前用户 → `404`。
+
+        用 `UpdateDevice`（按 id 全字段更新配置），不是订阅刷新。
+      operationId: patchDevice
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 设备 id（实现上是 `/v1/devices/` 之后的剩余多段路径）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DevicePatchRequest" }
+      responses:
+        "200":
+          description: 已更新（回显落库后的设备行）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+    delete:
+      tags: [devices]
+      summary: 解绑设备（置 enabled=false，保留记录以便审计）
+      description: |
+        软删除：`DisableDevice` 按 id 置 `enabled=0`，**不**物理删除行（保留投递审计）。
+        幂等：id 不存在也是 `200`。「设备不存在」不是错误，所以没有 `404`。
+      operationId: deleteDevice
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 设备 id（实现上是 `/v1/devices/` 之后的剩余多段路径）
+      responses:
+        "200":
+          description: 已禁用
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  # ======================================================================================
+  # 26–29 · API Key
+  # ======================================================================================
+
+  /v1/keys:
+    get:
+      tags: [keys]
+      summary: 列出 API Key（不含明文 / 哈希）
+      description: |
+        只回当前用户的 Key。`prefix` 是明文的前 16 个字符（含 `ant_<label>_` 开头部分），
+        够识别、不够使用。空时为 `[]`。
+      operationId: listAPIKeys
+      security: [{ session: [] }]
+      responses:
+        "200":
+          description: Key 列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKeyList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+    post:
+      tags: [keys]
+      summary: 新建 API Key（仅此处返回一次明文）
+      description: |
+        `scopes` 至少一个且必须属于冻结集合：`notify:send` / `notify:receive` / `devices:read`。
+        空列表或未知 scope → `400`（文案指明「至少选择一个 scope」或「未知 scope」）。
+
+        响应的 `key` 是**明文**（`ant_<label>_<随机串>`），**仅此一次**返回，库里只存 argon2id
+        哈希；`record` 是安全公开视图（不含哈希）。
+      operationId: createAPIKey
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/APIKeyCreateRequest" }
+      responses:
+        "200":
+          description: 新建成功（`key` 为明文，仅此一次）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKeyCreateResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+
+  /v1/keys/{id}/revoke:
+    post:
+      tags: [keys]
+      summary: 吊销 API Key（同步失效验证缓存）
+      description: |
+        走 `KeyManager.RevokeKey`（DB 写成功后**同步**让本进程的验证缓存失效）——不直接调 store，
+        否则被吊销的 Key 还能继续用到缓存 TTL 结束（默认 60s），那是真实的安全回归。
+
+        幂等：id 不存在也 `200`。写库失败 `500`。
+      operationId: revokeAPIKey
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: API Key 的 id（`api_keys.id`，不是明文）
+      responses:
+        "200":
+          description: 已吊销
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/keys/self:
+    get:
+      tags: [keys]
+      summary: Key 自检（Bearer，任何有效 Key）
+      description: |
+        用 `Authorization: Bearer ant_...` 自证身份：返回该 Key 的名称、前缀与生效 scope。
+
+        鉴权**不是**会话中间件，而是 handler 自己取 Bearer 头校验（`ValidateKey`）：
+        缺 Key 或 Key 无效 / 已停用 / 属主账户被禁用都回 `401`（文案分别是「缺少 API Key」
+        与「API Key 无效」）。被禁用的账户不能用 Key（#254）。
+      operationId: getKeySelf
+      security: [{ consoleKey: [] }]
+      responses:
+        "200":
+          description: 该 Key 的信息
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeySelf" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+
+  # ======================================================================================
+  # 30–36 · CLI 设备授权（一次性短码 + 轮询领 Key）
+  # ======================================================================================
+
+  /v1/cli-auth/sessions:
+    post:
+      tags: [cli-auth]
+      summary: 创建 CLI 设备授权会话（匿名，IP 限速 10/min）
+      description: |
+        命令行客户端发起：提交设备名与需要的 scope，拿回 `secret`（轮询凭证，**仅此一次**返回）
+        与 `userCode`（人去浏览器里输入的 8 字符短码，展示为 `XXXX-XXXX`）。
+
+        会话有效期 10 分钟，`pollInterval` 是建议轮询间隔（秒）。限速 10/min/IP，超限 `429`。
+
+        错误 `400`：`deviceName` 为空或超过 64 字符、`scopes` 为空或含未知 scope。
+      operationId: createCLIAuthSession
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CLIAuthSessionCreateRequest" }
+      responses:
+        "200":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthSessionCreated" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/cli-auth/sessions/{id}/poll:
+    get:
+      tags: [cli-auth]
+      summary: 轮询授权结果（匿名，secret 门控）
+      description: |
+        命令行客户端用 `?secret=` 轮询。`status` 走 `pending → approved → consumed`
+        （旁路终态 `denied` / `expired`）；`approved` 首次轮询时**一次性**返回明文 `apiKey`
+        与 `keyId` / `name` / `scopes`，此时会话转 `consumed`（再轮询就只剩 status）。
+
+        - `secret` 错 `401`
+        - `kind` 不匹配（passkey-kind 会话走了 apikey 轮询）`403`
+        - 会话不存在 / 已过期 `404`
+        - 轮询过快（最小间隔 2s）`429` + `Retry-After: 2`
+      operationId: pollCLIAuthSession
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 授权会话 id（建会话时返回的 `sessionId`）
+        - name: secret
+          in: query
+          required: true
+          schema: { type: string }
+          description: 建会话时返回的明文 secret（服务端只存 sha256）
+      responses:
+        "200":
+          description: 轮询结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthPollResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/cli-auth/sessions/{id}/qr.txt:
+    get:
+      tags: [cli-auth]
+      summary: 获取 ASCII 二维码（匿名，IP 限速 30/min）
+      description: |
+        把授权链接渲染成 ASCII 半块字符二维码（`▀▄█` + 空格，含 2 模块 quiet zone，
+        80 列终端可完整显示），内容 = `authUrl`。返回 `text/plain`。
+
+        先校验会话存在（不泄露 secret，仅 `404`）；渲染失败 `500`。
+      operationId: getCLIAuthQRCode
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 授权会话 id
+      responses:
+        "200":
+          description: ASCII 二维码正文
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/cli-auth/sessions/by-code:
+    get:
+      tags: [cli-auth]
+      summary: 按短码查授权会话（需登录，按用户限速 20/min）
+      description: |
+        浏览器侧输入 `userCode` 后用。`code` 缺参 `400`；短码无效/过期 `404`
+        （文案「授权会话不存在或已过期」）；按用户限速 20/min，超限 `429`。
+      operationId: findCLIAuthSessionByCode
+      security: [{ session: [] }]
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+          description: 8 字符短码（`XXXX-XXXX`，大小写不敏感、容忍连字符）
+      responses:
+        "200":
+          description: 会话信息
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthSessionView" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+
+  /v1/cli-auth/sessions/{id}:
+    get:
+      tags: [cli-auth]
+      summary: 查询授权会话信息（需登录）
+      description: |
+        浏览器授权页展示「哪个设备在申请哪些 scope」。会话不存在/过期 `404`。
+        注意这里**不**回 secret、也不回已签发的明文 Key。
+      operationId: getCLIAuthSession
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 授权会话 id
+      responses:
+        "200":
+          description: 会话信息
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthSessionView" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+
+  /v1/cli-auth/sessions/{id}/approve:
+    post:
+      tags: [cli-auth]
+      summary: 批准授权（需登录，签发 API Key）
+      description: |
+        登录用户批准后即签发一把 Key（`granted scopes` 应 ⊆ 请求的 scopes）。
+        `scopes` 为空或未知 `400`。
+
+        终态冲突（会话已 approved/consumed/denied/expired）回 `409`，body 是
+        `{"status":"<当前状态>"}`；会话已不存在时 `404`。其它写库失败 `500`。
+      operationId: approveCLIAuthSession
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 授权会话 id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CLIAuthApproveRequest" }
+      responses:
+        "200":
+          description: 已批准
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthStatusResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/cli-auth/sessions/{id}/deny:
+    post:
+      tags: [cli-auth]
+      summary: 拒绝授权（需登录）
+      description: |
+        把会话推到 `denied` 终态。终态冲突 `409`（body `{"status":"<当前状态>"}`）、
+        会话不存在 `404`、参数不合法 `400`、其它 `500`。
+      operationId: denyCLIAuthSession
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 授权会话 id
+      responses:
+        "200":
+          description: 已拒绝
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CLIAuthStatusResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  # ======================================================================================
+  # 37–47 · Passkey 设备补建（旧设备批准 → 新设备建凭证）
+  # ======================================================================================
+  #
+  # 状态机：pending → requested → approved → consumed（旁路终态 denied / expired）。
+  # 复用 cli_auth_sessions 表（kind=passkey），但端点与 apikey-kind 的 CLI 授权完全独立；
+  # 两侧都有 kind guard，走错端点分别是 403（poll）或 404（lookup/watch/cancel）。
+
+  /v1/passkey-enroll/sessions:
+    post:
+      tags: [passkey-enroll]
+      summary: 旧设备发起 Passkey 补建会话（需登录）
+      description: |
+        已登录设备（旧设备）发起：拿回 `secret`（**仅供旧设备持有，不进二维码/链接**）与
+        `userCode`。新设备用短码/二维码加入，旧设备用 `secret` 侧的信道批准。
+
+        会话有效期 10 分钟，`pollInterval` 是建议轮询间隔（秒），`kind` 恒为 `passkey`。
+        `deviceName` 为空或超过 64 字符 `400`。
+      operationId: createPasskeyEnrollSession
+      security: [{ session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyEnrollCreateRequest" }
+      responses:
+        "200":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollCreated" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/passkey-enroll/sessions/by-code:
+    get:
+      tags: [passkey-enroll]
+      summary: 按短码查补建会话（匿名，IP 限速 10/min）
+      description: |
+        新设备输入短码后用。为了**防枚举**，「短码无效/过期」与「kind 不匹配」都回同一个
+        `404`（「授权码无效或已过期」）。缺 `code` 参数 `400`；限速 10/min/IP。
+      operationId: findPasskeyEnrollSessionByCode
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+          description: 8 字符短码（`XXXX-XXXX`）
+      responses:
+        "200":
+          description: 会话的最小视图（不含 secret / user_id）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollAnonView" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+
+  /v1/passkey-enroll/sessions/{id}:
+    get:
+      tags: [passkey-enroll]
+      summary: 匿名查补建会话（IP 限速 10/min）
+      description: |
+        新设备扫码后打开授权页时用：只回最小视图（`sessionId` / `status` / `initiatorName` /
+        `deviceHint` / `expiresAt`），**不含** secret 与 user_id。`initiatorName` 所有状态都回
+        （建会话时已存 user_id），让新设备在 pending 态就能核对「给哪个账号加 Passkey」。
+
+        kind 不匹配（apikey-kind 会话）也回 `404`。
+      operationId: getPasskeyEnrollSession
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: 最小视图
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollAnonView" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+
+    delete:
+      tags: [passkey-enroll]
+      summary: 取消补建会话（需登录，属主校验）
+      description: |
+        旧设备取消：删除会话行，回 `{"status":"deleted"}`。属主校验与 kind guard 失败都是 `404`；
+        删库失败 `500`。
+      operationId: cancelPasskeyEnrollment
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: 已取消（会话行已删除）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/passkey-enroll/sessions/{id}/request:
+    post:
+      tags: [passkey-enroll]
+      summary: 新设备敲门（pending → requested，返回 secret）
+      description: |
+        新设备自报设备信息（`deviceHint`）并进入 `requested`，等旧设备批准。返回的 `secret`
+        供后续 `poll` 使用。限速 10/min/IP。
+
+        错误：body 解析失败 `400`；会话不存在 `404`；状态不对（已 approved/denied/expired）
+        `409`（body `{"status":"<当前状态>"}`）。
+      operationId: requestPasskeyEnrollment
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyEnrollKnockRequest" }
+      responses:
+        "200":
+          description: 已进入 requested
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollKnockResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+
+  /v1/passkey-enroll/sessions/{id}/poll:
+    get:
+      tags: [passkey-enroll]
+      summary: 新设备轮询（匿名，secret 门控）
+      description: |
+        `status` 走 `pending → requested → approved → consumed`。`approved` 时返回
+        `attestationOptions`（creation options）与一次性 `registrationToken`（提交
+        `/complete` 时用），并带 `initiatorName`（批准者显示名）。
+
+        - `secret` 错 `401`
+        - kind 不匹配（apikey-kind 会话走了 enroll 轮询）`403`
+        - 会话不存在 `404`
+        - 轮询过快（最小间隔 2s）`429` + `Retry-After: 2`
+      operationId: pollPasskeyEnrollSession
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+        - name: secret
+          in: query
+          required: true
+          schema: { type: string }
+          description: 敲门（`/request`）时返回的明文 secret
+      responses:
+        "200":
+          description: 轮询结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollPollResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/passkey-enroll/sessions/{id}/complete:
+    post:
+      tags: [passkey-enroll]
+      summary: 新设备提交 attestation，完成 Passkey 建凭证
+      description: |
+        `registrationToken` 与 `name` 走 **query**（body 必须留给 go-webauthn 解析，服务端不预读）。
+        本调用原子完成「consume 会话 + 建凭证」，会话从 `approved` 迁到 `consumed`。
+
+        错误：缺 `registrationToken` / attestation 无效 / 会话已完成外的参数问题 `400`；
+        `registrationToken` 不匹配 `401`；会话已完成（重复提交）或状态不对 `409`；
+        限速 10/min/IP `429`。
+      operationId: completePasskeyEnrollment
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+        - name: registrationToken
+          in: query
+          required: true
+          schema: { type: string }
+          description: 轮询 approved 时拿到的一次性凭证
+        - name: name
+          in: query
+          required: false
+          schema: { type: string, default: 新设备 }
+          description: 新凭证的展示名（缺省「新设备」）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialCreationResponse" }
+      responses:
+        "200":
+          description: 凭证已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollCompleteResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+
+  /v1/passkey-enroll/sessions/{id}/qr.txt:
+    get:
+      tags: [passkey-enroll]
+      summary: 补建会话的 ASCII 二维码（匿名，IP 限速 30/min）
+      description: |
+        内容 = `<scheme>://<host>/passkey-enroll.html?s=<sessionId>` 的 ASCII 半块字符二维码，
+        返回 `text/plain`。kind 不匹配或会话不存在都是 `404`。
+      operationId: getPasskeyEnrollQRCode
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: ASCII 二维码正文
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/passkey-enroll/sessions/{id}/watch:
+    get:
+      tags: [passkey-enroll]
+      summary: 旧设备轮询会话状态（需登录，属主校验）
+      description: |
+        旧设备侧展示「新设备是否已敲门」。属主校验：`userID` 非空且不是自己 → `404`
+        （pending/requested 阶段 user_id 还为空，允许已登录用户查看）。
+
+        `deviceHint` 在该会话进入 requested 之后才有值。kind 不匹配也是 `404`。
+      operationId: watchPasskeyEnrollSession
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: 会话状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollWatchView" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+
+  /v1/passkey-enroll/sessions/{id}/approve:
+    post:
+      tags: [passkey-enroll]
+      summary: 旧设备批准补建（requested → approved）
+      description: |
+        批准后 owner 回填为当前用户，新设备的 `poll` 才能拿到 attestation options。
+        错误：参数不合法 `400`；会话不存在 `404`；状态不对 `409`（body `{"status":"<当前状态>"}`）；
+        其它 `500`。
+      operationId: approvePasskeyEnrollment
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: 已批准
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/passkey-enroll/sessions/{id}/deny:
+    post:
+      tags: [passkey-enroll]
+      summary: 旧设备拒绝补建（→ denied）
+      description: |
+        错误：参数不合法 `400`；会话不存在 `404`；状态不对 `409`
+        （body `{"status":"<当前状态>"}`）；其它 `500`。
+      operationId: denyPasskeyEnrollment
+      security: [{ session: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 补建会话 id
+      responses:
+        "200":
+          description: 已拒绝
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyEnrollStatusResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  # ======================================================================================
+  # 48–57 · 管理后台（会话 + 超管两层中间件；401 来自会话层，403 来自超管层）
+  # ======================================================================================
+  #
+  # 装配：`sessMW(AdminMiddleware(adminH))`。未登录 / 会话无效 / 用户已禁用 → 401；
+  # 角色不是 admin → 403。两者都是 `{"error":"..."}`（AuthError 族）。
+
+  /v1/admin:
+    get:
+      tags: [admin]
+      summary: 管理后台端点索引
+      description: |
+        无尾斜杠访问（`/v1/admin`）返回可用子端点清单，**不发** `301` 重定向。
+
+        实现上 `/v1/admin` 与 `/v1/admin/` 都注册到同一个 handler，且**不校验 method**——
+        任何方法都回这份清单。spec 只声明 canonical 的 `GET`。
+      operationId: getAdminIndex
+      security: [{ adminSession: [] }]
+      responses:
+        "200":
+          description: 子端点清单
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminIndex" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+
+  /v1/admin/stats:
+    get:
+      tags: [admin]
+      summary: 系统总览统计（超管）
+      description: |
+        `messageCount` / `todayMessages` / `daily` 的口径都是**事件**数（事件的旧名叫 message，
+        字段名保留是为了不破坏管理后台前端）。`daily` 覆盖近 371 天（53 周热力图），
+        日期是服务端本地时区的 `YYYY-MM-DD`。`topUsers` 活跃度用会话的 `lastSeenAt`
+        （唯一的 per-user 活动事实）。
+
+        实现上**不校验 method**（任何方法回同一份统计）；spec 只声明 canonical 的 `GET`。
+      operationId: getAdminStats
+      security: [{ adminSession: [] }]
+      responses:
+        "200":
+          description: 系统级总览统计
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSystemStats" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/users:
+    get:
+      tags: [admin]
+      summary: 用户列表（含各用户实体计数，超管）
+      description: |
+        按 `createdAt` 升序（首注册用户排最前，便于识别超管来源）。每个用户附 `deviceCount` /
+        `keyCount` / `sessionCount`（不存在的用户也不会有这三项之外的假字段）。
+        非 `GET` 方法由 handler 自己回 `405`。
+      operationId: listAdminUsers
+      security: [{ adminSession: [] }]
+      responses:
+        "200":
+          description: 用户列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/users/{id}:
+    get:
+      tags: [admin]
+      summary: 单用户详情（超管）
+      description: |
+        与列表项同一形状（安全公开视图 + 实体计数）。id 不存在 `404`（「用户不存在」）。
+      operationId: getAdminUser
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 用户 id
+      responses:
+        "200":
+          description: 用户详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+    patch:
+      tags: [admin]
+      summary: 改用户角色 / 禁用状态（超管，不能改自己）
+      description: |
+        body `{role?, disabled?}`，两个字段都可缺（缺的不动）。
+
+        - `role` 只接受 `admin|member` → 否则 `400`
+        - 不能改自己的角色、不能禁用自己的账户 → `409`
+        - 降权 / 禁用**最后一个 admin** → `409`（防误锁唯一超管）
+        - 目标用户不存在 → `404`
+        - 成功后会同步失效目标用户的会话缓存与 Key 缓存（#241 / #254）：「禁用」点了就下
+      operationId: patchAdminUser
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 用户 id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserPatchRequest" }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/users/{id}/role:
+    patch:
+      tags: [admin]
+      summary: 改用户角色（超管，不能改自己，不能降权最后一个 admin）
+      description: |
+        body `{role}`（必填）。校验同 `PATCH /v1/admin/users/{id}` 的角色分支：
+        `role` 非 `admin|member` → `400`；改自己 → `409`；降权最后一个 admin → `409`；
+        用户不存在 → `404`。非 `PATCH` 方法落在这个前缀下会被当成未知 admin 端点 → `404`。
+      operationId: changeAdminUserRole
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 用户 id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserRoleRequest" }
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "400": { $ref: "./resource.yaml#/components/responses/Status400" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/users/{id}/disable:
+    post:
+      tags: [admin]
+      summary: 禁用用户（超管，不能禁自己，不能禁最后一个 admin）
+      description: |
+        禁用后该用户的会话与 API Key 立刻失效（缓存同步失效）。不能禁用自己 → `409`；
+        禁用最后一个 admin → `409`；用户不存在 → `404`。
+      operationId: disableAdminUser
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 用户 id
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/users/{id}/enable:
+    post:
+      tags: [admin]
+      summary: 启用用户（超管）
+      description: |
+        启用不触发「最后一个 admin」判定，但「不能启用/禁用自己」这条与 disable 共用
+        （`409`）。用户不存在 → `404`。
+      operationId: enableAdminUser
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 用户 id
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResult" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "409": { $ref: "./resource.yaml#/components/responses/Status409" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/messages:
+    get:
+      tags: [admin]
+      summary: 全站事件流（跨命名空间，超管）
+      description: |
+        端点形状保留（path 与响应键名都不变），但数据源是 **events**：事件中心里没有「消息」
+        这个实体，硬留只能返回空列表。管理后台前端因此无需改动，只是看到的内容从「推过的通知」
+        变成「进来的事件」。
+
+        `limit` 缺省 50；非正整数或 `> 500` 都回落到 50（不是钳到上限）。空列表是 `[]`。
+      operationId: listAdminMessages
+      security: [{ adminSession: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+          description: 返回条数（1–500；其它值按默认 50 处理）
+      responses:
+        "200":
+          description: 全站事件列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminEventList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  /v1/admin/sessions:
+    get:
+      tags: [admin]
+      summary: 全站活跃会话总览（超管）
+      description: |
+        只列**未过期**会话（`expiresAt > now`），按 `lastSeen` 倒序，硬顶 500 条。
+        空时为 `[]`（不是 `null`）。
+      operationId: listAdminSessions
+      security: [{ adminSession: [] }]
+      responses:
+        "200":
+          description: 活跃会话列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSessionList" }
+        "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
+        "405": { $ref: "./resource.yaml#/components/responses/Status405" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+  # ======================================================================================
+  # 58 · 登录脚本（唯一不在 /v1 下的端点）
+  # ======================================================================================
+
+  /agent-login.sh:
+    get:
+      tags: [cli-auth]
+      summary: 获取 CLI 登录脚本（`curl … | sh` 的源头）
+      description: |
+        本文件里**唯一**不以 `/v1/` 开头的路径（`servers` 的 `url` 是 `/`，所以拼出来的就是
+        `/agent-login.sh`）。返回 shell 脚本正文（`text/x-sh`），供
+        `curl -fsSL <host>/agent-login.sh | sh` 用：脚本内部走 `POST /v1/cli-auth/sessions`
+        + 轮询领 Key。
+
+        匿名、`no-store`。脚本文件不存在（静态资源未打包 / 未挂载）时 `404`（「登录脚本暂不可用」），
+        读不到大小 `500`。
+      operationId: getAgentLoginScript
+      security: []
+      responses:
+        "200":
+          description: shell 脚本正文
+          content:
+            text/x-sh:
+              schema: { type: string }
+        "404": { $ref: "./resource.yaml#/components/responses/Status404" }
+        "500": { $ref: "./resource.yaml#/components/responses/Status500" }
+
+components:
+  # 安全方案必须在本文件定义（不能跨文件引用）。四份 spec 里的同名声明的定义逐字一致；
+  # 本文件只写自己用到的三个（`nodeToken` 属节点通道，不在本文件）。
+  # 注：`description` 按四份兄弟文件（resource/events/ingress/agent）的同一份文本照拄——
+  # `check_openapi.py` 比对的是整段定义（含 description），任一处多/少描述都会红。
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 控制台登录会话 Cookie（7 天 TTL；`HttpOnly`+`SameSite`）
+    consoleKey:
+      type: http
+      scheme: bearer
+      description: '控制台 API key（`Authorization: Bearer <key>`；scope 在后端判定）'
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 登录会话 + 超管权限（两层中间件：先 401 再 403）
+
+  schemas:
+    # ---------- 通用 ----------
+    OkResult:
+      type: object
+      description: 最小的成功响应（`{"ok":true}`）。
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+
+    UsernameRequest:
+      type: object
+      description: |
+        Passkey 注册 / 登录 options 的请求体（`usernameReq`）。
+        注册必须给 `username`；登录时三个字段都可缺省（缺省 = discoverable 免用户名登录）。
+      required: [username]
+      properties:
+        username:
+          type: string
+          description: 2–32 字符，字母/数字与 `_` `-` `.`，不能以这三个字符开头或结尾
+        displayName:
+          type: string
+          description: 展示名；空则回落到 `username`（仅注册用）
+        token:
+          type: string
+          description: |
+            discoverable（免用户名）登录的 challenge 暂存键，调用方自带并原样回传给
+            `POST /v1/auth/login?token=`。注册路径不使用。
+
+    # ---------- 身份与凭据 ----------
+    User:
+      type: object
+      description: '当前会话用户的扁平视图（`GET /v1/auth/me`），不是 `{user: ...}` 包装。'
+      required: [id, username, displayName, role, disabled, createdAt]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, member] }
+        disabled:
+          type: boolean
+          description: 账户是否被超管禁用（禁用后会话与 API Key 都失效）
+        createdAt: { type: integer, format: int64, description: 注册时刻（unix 秒） }
+
+    Passkey:
+      type: object
+      description: Passkey 的安全公开视图（不含 publicKey 原始字节）。
+      required: [id, name, type, transports, backupEligible, createdAt, lastUsedAt, current]
+      properties:
+        id:
+          type: string
+          description: 凭证 ID（base64url；`PATCH`/`DELETE /v1/auth/passkeys/{id}` 用）
+        name:
+          type: string
+          description: 用户可改的展示名（补建时缺省「新设备」）
+        type:
+          type: string
+          enum: [passkey]
+          description: 固定 `passkey`（当前只支持可发现凭证）
+        transports:
+          type: array
+          items: { type: string }
+          description: 认证器自报的传输方式（`usb` / `nfc` / `ble` / `internal` / `hybrid`）；恒为数组，空为 `[]`
+        backupEligible:
+          type: boolean
+          description: 注册时认证器申报的 BE 位（必须落库，否则登录校验不一致）
+        createdAt: { type: integer, format: int64 }
+        lastUsedAt:
+          type: integer
+          format: int64
+          description: 最近一次使用时刻（unix 秒）；`0` = 从未使用
+        current:
+          type: boolean
+          description: |
+            保留字段：`passkeyOut` 里有它，但当前实现从不置位（恒 `false`）。
+            见 PR 的「已知分歧」清单。
+
+    PasskeyList:
+      type: object
+      required: [passkeys, count]
+      properties:
+        passkeys:
+          type: array
+          items: { $ref: "#/components/schemas/Passkey" }
+          description: 空时是 `[]`（不是 `null`）
+        count: { type: integer }
+
+    PasskeyRenameRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: 新的展示名（空串 → `400`） }
+
+    Session:
+      type: object
+      description: 登录会话（`sessions` 表一行）。`id` 本身是一条 bearer 凭据。
+      required: [id, userId, deviceName, createdAt, expiresAt, lastSeen]
+      properties:
+        id:
+          type: string
+          description: 会话 id（`<sessionID>.<随机后缀>`，即 Cookie `anotify_session` 的值）
+        userId: { type: string }
+        deviceName:
+          type: string
+          description: 登录设备名，从 UA 推断（如「Chrome · macOS」）
+        createdAt: { type: integer, format: int64 }
+        expiresAt: { type: integer, format: int64, description: 过期时刻（unix 秒；默认 TTL 7 天） }
+        lastSeen: { type: integer, format: int64, description: 最近活跃时刻（落库有 60s 节流） }
+
+    SessionList:
+      type: object
+      required: [sessions, count]
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/Session" }
+          description: 空时是 `[]`
+        count: { type: integer }
+
+    # ---------- 密码与恢复码 ----------
+    PasswordLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, description: 明文密码（只在本次请求体里，服务端不保存） }
+
+    PasswordRegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: 2–32 字符，字母/数字与 `_` `-` `.`，不能以这三个字符开头或结尾
+        password:
+          type: string
+          description: 8–128 字符（按 rune 计），不能全为空白
+        displayName:
+          type: string
+          description: 展示名；缺省用 `username`
+
+    PasswordSetRequest:
+      type: object
+      required: [newPassword]
+      properties:
+        currentPassword:
+          type: string
+          description: 已设置过密码时必填（校验失败 `400` 文案「当前密码不正确」）
+        newPassword:
+          type: string
+          description: 8–128 字符（按 rune 计），不能全为空白
+
+    PasswordRemoveRequest:
+      type: object
+      description: body 可整个缺省（本来就没设置密码时移除是幂等的）。
+      properties:
+        currentPassword:
+          type: string
+          description: 已设置密码时必填（错误 `400`）
+
+    PasswordStatus:
+      type: object
+      description: 「这个账号有没有密码」的对外视图（不含哈希）。
+      required: [hasPassword, updatedAt]
+      properties:
+        hasPassword: { type: boolean }
+        updatedAt:
+          type: integer
+          format: int64
+          description: 最近一次设置/修改密码的时刻（unix 秒）；`0` = 从未设置
+
+    PasswordSetResult:
+      type: object
+      required: [ok, hasPassword, updatedAt]
+      properties:
+        ok: { type: boolean }
+        hasPassword: { type: boolean, description: 恒为 true }
+        updatedAt: { type: integer, format: int64 }
+
+    PasswordRemoveResult:
+      type: object
+      required: [ok, hasPassword]
+      properties:
+        ok: { type: boolean }
+        hasPassword: { type: boolean, description: 恒为 false }
+
+    RecoveryLoginRequest:
+      type: object
+      required: [username, code]
+      properties:
+        username: { type: string }
+        code:
+          type: string
+          description: 恢复码明文（`XXXX-XXXX-XXXX-XXXX`，大小写不敏感、连字符可选）
+
+    RecoveryCodesResult:
+      type: object
+      description: 恢复码明文，**仅此一次**返回（注册后与重新生成后各一次）。
+      required: [ok, recoveryCodes]
+      properties:
+        ok: { type: boolean }
+        recoveryCodes:
+          type: array
+          items: { type: string }
+          description: 8 个一次性恢复码明文；无码时是 `[]`（不是 `null`）
+
+    RecoveryStatus:
+      type: object
+      required: [unusedCount, hasCodes]
+      properties:
+        unusedCount: { type: integer, description: 未使用恢复码数量（不含明文） }
+        hasCodes: { type: boolean, description: '`unusedCount > 0` 的便捷布尔' }
+
+    # ---------- VAPID / 设备 ----------
+    VAPIDPublicKey:
+      type: object
+      required: [publicKey]
+      properties:
+        publicKey:
+          type: string
+          description: VAPID 公钥（base64url）；**空串 = 本部署未配置推送**
+
+    Device:
+      type: object
+      description: Web Push 订阅设备（`devices` 表一行）。
+      required: [id, userId, name, platform, enabled, eventScope, tags, endpoint, p256dh, auth, userAgent, createdAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        name: { type: string }
+        platform:
+          type: string
+          description: 平台标签（`ios` / `mac` / `win` / `android` / `other`；上报缺省为 `other`）
+        enabled:
+          type: boolean
+          description: '`DELETE /v1/devices/{id}` 是软禁用（置 false，保留行以便审计）'
+        eventScope:
+          type: string
+          enum: [final, all]
+          description: 推送范围；新建恒为 `final`
+        tags:
+          type: array
+          items: { type: string }
+          description: 设备标签（路由用），空为 `[]`
+        endpoint: { type: string, description: Push 端点 URL }
+        p256dh: { type: string, description: 订阅公钥（base64url） }
+        auth: { type: string, description: 订阅 auth secret（base64url） }
+        userAgent: { type: string }
+        createdAt: { type: integer, format: int64 }
+        lastActive:
+          type: integer
+          format: int64
+          description: 最近活跃时刻；**缺省**表示从未
+        lastDelivered:
+          type: integer
+          format: int64
+          description: 最近一次投递成功时刻；**缺省**表示从未
+
+    DeviceUpsertRequest:
+      type: object
+      description: 上报 PushSubscription（订阅刷新，只更新密钥）。
+      required: [endpoint, keys]
+      properties:
+        name: { type: string }
+        platform: { type: string, description: '`ios` / `mac` / `win` / `android` / `other`（缺省 `other`）' }
+        tags:
+          type: array
+          items: { type: string }
+        endpoint: { type: string }
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh: { type: string }
+            auth: { type: string }
+        userAgent: { type: string }
+
+    DevicePatchRequest:
+      type: object
+      description: 只改提供的字段（`name` / `enabled` / `eventScope` 是「缺省 = 不改」语义）。
+      properties:
+        name: { type: string }
+        enabled: { type: boolean }
+        eventScope: { type: string, enum: [final, all], description: 其它值 → `400` }
+        tags:
+          type: array
+          items: { type: string }
+          description: 缺省不改；给 `[]` 表示清空
+
+    DeviceResult:
+      type: object
+      required: [ok, device]
+      properties:
+        ok: { type: boolean }
+        device: { $ref: "#/components/schemas/Device" }
+
+    DeviceList:
+      type: object
+      required: [devices, count]
+      properties:
+        devices:
+          type: array
+          items: { $ref: "#/components/schemas/Device" }
+          description: 空时是 `[]`
+        count: { type: integer }
+
+    # ---------- API Key ----------
+    APIKey:
+      type: object
+      description: API Key 的安全公开视图（**绝不含** `keyHash`）。
+      required: [id, name, prefix, scopes, enabled, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix:
+          type: string
+          description: 明文前 16 个字符（含 `ant_<label>_` 开头），够识别、不够使用
+        scopes:
+          type: array
+          items: { type: string }
+          description: '`notify:send` / `notify:receive` / `devices:read`'
+        enabled: { type: boolean, description: 吊销后为 false }
+        createdAt: { type: integer, format: int64 }
+        lastUsedAt:
+          type: integer
+          format: int64
+          description: 最近一次使用时刻；**缺省**表示从未使用
+
+    APIKeyList:
+      type: object
+      required: [keys, count]
+      properties:
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/APIKey" }
+          description: 空时是 `[]`
+        count: { type: integer }
+
+    APIKeyCreateRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name: { type: string }
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [notify:send, notify:receive, devices:read]
+          description: 至少一个；未知 scope 或空列表 → `400`
+
+    APIKeyCreateResult:
+      type: object
+      description: |
+        `key` 是**明文**（`ant_<label>_<随机串>`），仅此一次返回；`record` 是安全公开视图。
+      required: [ok, key, record]
+      properties:
+        ok: { type: boolean }
+        key: { type: string, description: 明文 Key（仅此一次，服务端只存 argon2id 哈希） }
+        record: { $ref: "#/components/schemas/APIKey" }
+
+    KeySelf:
+      type: object
+      description: '`GET /v1/keys/self` 的自检结果（Bearer 自身信息）。'
+      required: [name, prefix, scopes]
+      properties:
+        name: { type: string }
+        prefix: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+          description: 该 Key 的生效 scope（空为 `[]`）
+
+    # ---------- CLI 设备授权 ----------
+    CLIAuthSessionCreateRequest:
+      type: object
+      required: [deviceName, scopes]
+      properties:
+        deviceName:
+          type: string
+          description: 设备名（如 hostname）；非空且 ≤64 字符（先 TrimSpace）
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [notify:send, notify:receive, devices:read]
+          description: 请求的 scope 列表（非空、全部合法）
+
+    CLIAuthSessionCreated:
+      type: object
+      description: 建会话的响应。`secret` 仅此一次返回（库里只存 sha256）。
+      required: [sessionId, secret, userCode, authUrl, pollInterval, expiresAt, scopes]
+      properties:
+        sessionId: { type: string }
+        secret: { type: string, description: 轮询凭证（仅此一次返回，不进 URL、不进二维码） }
+        userCode:
+          type: string
+          description: 8 字符短码，展示为 `XXXX-XXXX`（去歧义字符集）
+        authUrl: { type: string, description: '浏览器授权链接（`<host>/cli-auth.html?s=<sessionId>`）' }
+        pollInterval: { type: integer, description: 建议轮询间隔（秒），当前恒为 2 }
+        expiresAt: { type: integer, format: int64, description: 过期时刻（unix 秒；TTL 10 分钟） }
+        scopes:
+          type: array
+          items: { type: string }
+          description: 请求的 scope（空为 `[]`）
+
+    CLIAuthSessionView:
+      type: object
+      description: 浏览器侧看到的会话信息（**不含** secret 与已签发 Key）。
+      required: [sessionId, deviceName, requestedScopes, status, createdAt, expiresAt]
+      properties:
+        sessionId: { type: string }
+        deviceName: { type: string }
+        requestedScopes:
+          type: array
+          items: { type: string }
+          description: 请求的 scope（空为 `[]`）
+        status:
+          type: string
+          enum: [pending, approved, consumed, denied, expired]
+          description: apikey-kind 会话的状态机（没有 `requested`）
+        createdAt: { type: integer, format: int64 }
+        expiresAt: { type: integer, format: int64 }
+
+    CLIAuthPollResult:
+      type: object
+      description: |
+        命令行侧轮询结果。只有 `approved` 首次轮询会带 `apiKey`（明文，仅此一次）与
+        `keyId` / `name` / `scopes`；此时会话转 `consumed`。
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, approved, consumed, denied, expired]
+        apiKey:
+          type: string
+          description: 明文 API Key（**仅此一次**，之后不再返回）
+        keyId: { type: string, description: 已签发 Key 的 id }
+        name: { type: string, description: 已签发 Key 的名称 }
+        scopes:
+          type: array
+          items: { type: string }
+          description: 已签发 Key 的 scope（空为 `[]`）
+
+    CLIAuthApproveRequest:
+      type: object
+      required: [scopes]
+      properties:
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [notify:send, notify:receive, devices:read]
+          description: 授予的 scope（应 ⊆ 请求的 scopes；空或未知 → `400`）
+
+    CLIAuthStatusResult:
+      type: object
+      description: 批准/拒绝后的状态回执（`approved` / `denied`）。
+      required: [status]
+      properties:
+        status: { type: string, enum: [approved, denied] }
+
+    # ---------- Passkey 设备补建 ----------
+    PasskeyEnrollCreateRequest:
+      type: object
+      required: [deviceName]
+      properties:
+        deviceName:
+          type: string
+          description: 发起设备名；非空且 ≤64 字符（先 TrimSpace）
+
+    PasskeyEnrollCreated:
+      type: object
+      description: 旧设备发起后的响应。`secret` 仅供旧设备持有，**不进二维码/链接**。
+      required: [sessionId, secret, userCode, authUrl, pollInterval, expiresAt, kind]
+      properties:
+        sessionId: { type: string }
+        secret: { type: string, description: 旧设备侧持有的密钥（仅此一次返回） }
+        userCode: { type: string, description: 8 字符短码，展示为 `XXXX-XXXX` }
+        authUrl: { type: string, description: '新设备授权链接（`<host>/passkey-enroll.html?s=<sessionId>`）' }
+        pollInterval: { type: integer, description: 建议轮询间隔（秒），当前恒为 2 }
+        expiresAt: { type: integer, format: int64, description: 过期时刻（unix 秒；TTL 10 分钟） }
+        kind: { type: string, enum: [passkey], description: 恒为 `passkey` }
+
+    PasskeyEnrollAnonView:
+      type: object
+      description: 新设备看到的最小视图（**不含** secret 与 user_id）。
+      required: [sessionId, status, expiresAt]
+      properties:
+        sessionId: { type: string }
+        status:
+          type: string
+          enum: [pending, requested, approved, consumed, denied, expired]
+          description: pending → requested → approved → consumed（旁路终态 denied / expired）
+        initiatorName:
+          type: string
+          description: 发起账号的显示名（缺省时回落 username）；**缺省**表示没有值
+        deviceHint:
+          type: string
+          description: 新设备自报的设备信息；只在 requested 之后有值（**缺省**表示还没有）
+        expiresAt: { type: integer, format: int64 }
+
+    PasskeyEnrollWatchView:
+      type: object
+      description: 旧设备侧轮询的视图。
+      required: [status, expiresAt]
+      properties:
+        status:
+          type: string
+          enum: [pending, requested, approved, consumed, denied, expired]
+        deviceHint:
+          type: string
+          description: 新设备自报的设备信息；**缺省**表示新设备还没敲门
+        expiresAt: { type: integer, format: int64 }
+
+    PasskeyEnrollPollResult:
+      type: object
+      description: |
+        新设备轮询结果。只有 `approved` 会带 `attestationOptions` + 一次性 `registrationToken`
+        + `initiatorName`；其余状态只有 `status`。
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, requested, approved, consumed, denied, expired]
+        attestationOptions:
+          $ref: "#/components/schemas/WebAuthnCreationOptions"
+          description: 交给 `navigator.credentials.create()` 的 creation options
+        registrationToken:
+          type: string
+          description: 一次性凭证，提交 `/complete` 时用（二次 poll 会覆盖旧 token）
+        initiatorName:
+          type: string
+          description: 批准者显示名（approved 时才有值）
+
+    PasskeyEnrollKnockRequest:
+      type: object
+      properties:
+        deviceHint:
+          type: string
+          description: 新设备自报的设备信息（如「iPhone · Safari」），展示给旧设备核对
+
+    PasskeyEnrollKnockResult:
+      type: object
+      required: [secret]
+      properties:
+        secret: { type: string, description: 后续 `poll` 用的明文 secret（仅此一次返回） }
+
+    PasskeyEnrollCompleteResult:
+      type: object
+      required: [ok, passkeyId]
+      properties:
+        ok: { type: boolean }
+        passkeyId: { type: string, description: 新建凭证的 id }
+
+    PasskeyEnrollStatusResult:
+      type: object
+      description: 批准/拒绝/取消的状态回执。
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [approved, denied, deleted]
+          description: 批准 `approved`、拒绝 `denied`、取消 `deleted`
+
+    # ---------- 管理后台 ----------
+    AdminIndex:
+      type: object
+      required: [endpoints]
+      properties:
+        endpoints:
+          type: array
+          items: { type: string }
+          description: 可用子端点（`/v1/admin/stats`、`/v1/admin/users`、`/v1/admin/messages`、`/v1/admin/sessions`）
+
+    AdminSystemStats:
+      type: object
+      description: 管理后台系统总览统计（`messageCount` / `daily` 的口径都是**事件**数）。
+      required: [userCount, adminCount, messageCount, todayMessages, deviceCount, enabledDevices, keyCount, sessionCount, deliveredCount, deliveryTotal, daily, topUsers]
+      properties:
+        userCount: { type: integer }
+        adminCount: { type: integer, description: 角色为 `admin` 的用户数 }
+        messageCount: { type: integer, description: 全站事件总数（字段名保留，语义是事件） }
+        todayMessages: { type: integer, description: 今日（服务端本地时区）事件数 }
+        deviceCount: { type: integer }
+        enabledDevices: { type: integer }
+        keyCount: { type: integer }
+        sessionCount: { type: integer, description: 未过期会话数 }
+        deliveredCount: { type: integer, description: 已送达投递数（sent/delivered/acked） }
+        deliveryTotal: { type: integer, description: 投递尝试总数 }
+        daily:
+          type: array
+          items: { $ref: "#/components/schemas/AdminDayCount" }
+          description: 近 371 天（53 周热力图）每天的事件数；空为 `[]`
+        topUsers:
+          type: array
+          items: { $ref: "#/components/schemas/AdminUserMetric" }
+          description: 最近活跃 Top N 用户；空为 `[]`
+
+    AdminDayCount:
+      type: object
+      required: [day, count]
+      properties:
+        day: { type: string, description: 'YYYY-MM-DD（服务端本地时区）' }
+        count: { type: integer }
+
+    AdminUserMetric:
+      type: object
+      description: Top 活跃用户指标（活跃度 = 会话 `last_seen` 的最大值）。
+      required: [userId, username, displayName, deviceCount, lastSeenAt]
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        deviceCount: { type: integer }
+        lastSeenAt:
+          type: integer
+          format: int64
+          description: 最近一次会话活跃时刻（unix 秒）；`0` = 从没登录过
+
+    AdminUser:
+      type: object
+      description: 管理后台用户视图（安全公开视图 + 各实体计数）。
+      required: [id, username, displayName, role, disabled, createdAt, deviceCount, keyCount, sessionCount]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        role: { type: string, enum: [admin, member] }
+        disabled: { type: boolean }
+        createdAt: { type: integer, format: int64 }
+        deviceCount: { type: integer }
+        keyCount: { type: integer }
+        sessionCount: { type: integer }
+
+    AdminUserList:
+      type: object
+      required: [users, count]
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/AdminUser" }
+          description: 按 `createdAt` 升序；空为 `[]`
+        count: { type: integer }
+
+    AdminUserPatchRequest:
+      type: object
+      description: 两个字段都可缺（缺的不动）。
+      properties:
+        role: { type: string, enum: [admin, member], description: 其它值 → `400` }
+        disabled: { type: boolean }
+
+    AdminUserRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role: { type: string, enum: [admin, member] }
+
+    AdminEvent:
+      type: object
+      description: 全站事件流的一行（`AdminGlobalEvent`；不含 payload）。
+      required: [id, namespaceId, source, type, traceId, deliveryId, createdAt]
+      properties:
+        id: { type: string }
+        namespaceId: { type: string }
+        source: { type: string }
+        type: { type: string }
+        traceId: { type: string }
+        deliveryId:
+          type: string
+          description: 外部投递幂等键（可空串）
+        createdAt: { type: integer, format: int64 }
+
+    AdminEventList:
+      type: object
+      required: [messages, count]
+      properties:
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/AdminEvent" }
+          description: 键名沿用历史（`messages`），内容是事件；空为 `[]`
+        count: { type: integer }
+
+    AdminSessionRow:
+      type: object
+      description: 全站活跃会话总览的一行（只含未过期会话）。
+      required: [id, userId, username, deviceName, createdAt, expiresAt, lastSeen]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        username: { type: string, description: 关联用户的用户名（用户已删时为空串） }
+        deviceName: { type: string }
+        createdAt: { type: integer, format: int64 }
+        expiresAt: { type: integer, format: int64 }
+        lastSeen: { type: integer, format: int64 }
+
+    AdminSessionList:
+      type: object
+      required: [sessions, count]
+      properties:
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/AdminSessionRow" }
+          description: 按 `lastSeen` 倒序，硬顶 500 条；空为 `[]`
+        count: { type: integer }
+
+    # ---------- WebAuthn 选项与凭证（go-webauthn v0.17 的线路形状） ----------
+    WebAuthnCreationOptions:
+      type: object
+      description: |
+        `protocol.CredentialCreation` —— 直接交给 `navigator.credentials.create()`。
+        字段名就是库的 json tag（`publicKey` 包装 + WebAuthn L2/L3 的成员）。
+      required: [publicKey]
+      properties:
+        publicKey:
+          type: object
+          required: [rp, user, challenge]
+          properties:
+            rp:
+              type: object
+              required: [id, name]
+              properties:
+                id: { type: string, description: Relying Party ID（配置的 RPID） }
+                name: { type: string, description: 展示名（配置的 RPDisplay） }
+            user:
+              type: object
+              required: [id, name, displayName]
+              properties:
+                id:
+                  type: string
+                  description: user handle（base64url；登录时原样回传给服务端定位用户）
+                name: { type: string, description: 用户名 }
+                displayName: { type: string, description: 展示名 }
+            challenge:
+              type: string
+              description: base64url 编码的 challenge
+            pubKeyCredParams:
+              type: array
+              items: { $ref: "#/components/schemas/WebAuthnCredentialParameter" }
+              description: 支持的算法（库默认 ES256/RS256 等）
+            timeout:
+              type: integer
+              description: 建议超时（毫秒）
+            excludeCredentials:
+              type: array
+              items: { $ref: "#/components/schemas/WebAuthnCredentialDescriptor" }
+              description: 不允许重复注册的已有凭证
+            authenticatorSelection:
+              type: object
+              properties:
+                authenticatorAttachment: { type: string, enum: [platform, cross-platform] }
+                requireResidentKey: { type: boolean }
+                residentKey:
+                  type: string
+                  enum: [discouraged, preferred, required]
+                  description: 本服务**强制** `required`（免用户名登录依赖可发现凭证）
+                userVerification:
+                  type: string
+                  enum: [required, preferred, discouraged]
+                  description: 本服务用 `preferred`
+            attestation:
+              type: string
+              description: 认证器证明偏好（`none` / `indirect` / `direct` / `enterprise`）
+            attestationFormats:
+              type: array
+              items: { type: string }
+            hints:
+              type: array
+              items: { type: string }
+            extensions:
+              type: object
+              additionalProperties: true
+        mediation:
+          type: string
+          enum: [silent, optional, conditional, required]
+
+    WebAuthnRequestOptions:
+      type: object
+      description: |
+        `protocol.CredentialAssertion` —— 直接交给 `navigator.credentials.get()`。
+      required: [publicKey]
+      properties:
+        publicKey:
+          type: object
+          required: [challenge]
+          properties:
+            challenge: { type: string, description: base64url 编码的 challenge }
+            timeout: { type: integer, description: 建议超时（毫秒） }
+            rpId: { type: string, description: Relying Party ID（配置的 RPID） }
+            allowCredentials:
+              type: array
+              items: { $ref: "#/components/schemas/WebAuthnCredentialDescriptor" }
+              description: 允许的凭证（discoverable 登录时可以缺省）
+            userVerification:
+              type: string
+              enum: [required, preferred, discouraged]
+            hints:
+              type: array
+              items: { type: string }
+            extensions:
+              type: object
+              additionalProperties: true
+        mediation:
+          type: string
+          enum: [silent, optional, conditional, required]
+
+    WebAuthnCredentialParameter:
+      type: object
+      required: [type, alg]
+      properties:
+        type: { type: string, description: 恒为 `public-key` }
+        alg: { type: integer, description: COSE 算法标识（如 `-7` = ES256） }
+
+    WebAuthnCredentialDescriptor:
+      type: object
+      required: [type, id]
+      properties:
+        type: { type: string, description: 恒为 `public-key` }
+        id: { type: string, description: base64url 凭证 ID }
+        transports:
+          type: array
+          items: { type: string }
+
+    CredentialCreationResponse:
+      type: object
+      description: |
+        浏览器 `navigator.credentials.create()` 的序列化结果（**裸** WebAuthn attestation）。
+        服务端把它整体交给 go-webauthn 校验，不预读、不改写。
+      required: [id, rawId, type, response]
+      properties:
+        id: { type: string, description: 凭证 ID（base64url） }
+        rawId: { type: string, description: 同 `id` 的原始形式（base64url） }
+        type: { type: string, description: 恒为 `public-key` }
+        response:
+          type: object
+          required: [clientDataJSON, attestationObject]
+          properties:
+            clientDataJSON: { type: string, description: base64url 编码的 clientDataJSON }
+            attestationObject: { type: string, description: base64url 编码的 attestationObject }
+            transports:
+              type: array
+              items: { type: string }
+              description: 认证器支持的传输方式（会落库到 Passkey.transports）
+            authenticatorData: { type: string, description: base64url（现代浏览器附加字段） }
+            publicKey: { type: string, description: base64url（现代浏览器附加字段） }
+            publicKeyAlgorithm: { type: integer, description: COSE 算法（现代浏览器附加字段） }
+        clientExtensionResults:
+          type: object
+          additionalProperties: true
+        authenticatorAttachment:
+          type: string
+          enum: [platform, cross-platform]
+
+    CredentialAssertionResponse:
+      type: object
+      description: |
+        浏览器 `navigator.credentials.get()` 的序列化结果（**裸** WebAuthn assertion）。
+      required: [id, rawId, type, response]
+      properties:
+        id: { type: string, description: 凭证 ID（base64url） }
+        rawId: { type: string, description: 同 `id` 的原始形式（base64url） }
+        type: { type: string, description: 恒为 `public-key` }
+        response:
+          type: object
+          required: [clientDataJSON, authenticatorData, signature]
+          properties:
+            clientDataJSON: { type: string, description: base64url 编码的 clientDataJSON }
+            authenticatorData: { type: string, description: base64url 编码的 authenticatorData }
+            signature: { type: string, description: base64url 编码的签名 }
+            userHandle:
+              type: string
+              description: base64url 的 user handle（discoverable 登录用它定位用户）
+        clientExtensionResults:
+          type: object
+          additionalProperties: true
+        authenticatorAttachment:
+          type: string
+          enum: [platform, cross-platform]
