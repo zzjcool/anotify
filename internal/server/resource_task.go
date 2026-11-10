@@ -30,7 +30,9 @@ import (
 //   - status **从事实派生**（S2）：全部来自 tasks 行的投影，不落库、不需要 reconciler。
 //     没事实的字段一律 null / 省略（S1/E1：未声明 version 不公开 0，不造 digest）。
 //   - 日志的真相在**节点**上（A1/G3-D3）：中枢只转发一次 logs_request，不落库、不缓存。
-//     取不到不是「服务出错」，但**也绝不伪造空成功**：无档案 → 200 空 lines；
+//     取不到不是「服务出错」，但**也绝不伪造空成功**：唯一允许的空结果是
+//     `previous=true` 且没有上一次执行（200 / attempt 0 / `lines: []`）；
+//     「没有档案」（任务还没 grant 或节点回 no_local_archive）→ 410；
 //     节点离线 → 503；超时 → 504；其它 → 502。
 //   - emissions 是**任务子资源**：一次 emit 调用一条事实（不是端口 / 自动业务 seq）。
 //     默认最新在前，`limit` + 不透明 `continue`（绑 ns + taskId）。
@@ -92,7 +94,9 @@ func (a *taskAPI) register(mux *http.ServeMux) {
 
 // list 列出命名空间内的任务（最新在前，OFFSET 分页无 cursor：store.ListTasks 的既有口径）。
 //
-// 过滤参数是显式白名单（phase / trace / node / capability），不引 selector 语法。
+// 过滤参数是显式白名单：`status` / `traceId` / `nodeId`（v3 console 与 §3.3 的现有参数名）。
+// 未知参数一律 400 `unknown_field`：静默忽略会让 `?phase=running` 这类旧写法拿到
+// **未过滤的全量列表**（客户端以为筛过了，最危险的一种错误成功）。
 func (a *taskAPI) list(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -100,16 +104,19 @@ func (a *taskAPI) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	if err := taskListUnknownParams(q); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	limit, err := taskQueryInt(r, "limit", 0)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	rows, err := a.d.DB.ListTasks(r.Context(), ns, store.TaskFilter{
-		Phase:      strings.TrimSpace(q.Get("phase")),
-		TraceID:    strings.TrimSpace(q.Get("trace")),
-		NodeID:     strings.TrimSpace(q.Get("node")),
-		Capability: strings.TrimSpace(q.Get("capability")),
+		Phase:   strings.TrimSpace(q.Get("status")),
+		TraceID: strings.TrimSpace(q.Get("traceId")),
+		NodeID:  strings.TrimSpace(q.Get("nodeId")),
 		// store 的夹取是 <=0||>500 → 50；这里先算一次，行为与 store 逐字一致。
 		Limit: taskListLimit(limit),
 	})
@@ -271,8 +278,10 @@ func (a *taskAPI) logs(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(rerr, store.ErrNotFound), errors.Is(rerr, store.ErrNamespaceNotFound):
 			writeAPIError(w, errStatus(http.StatusNotFound, reasonNotFound, "task not found"))
 		case errors.Is(rerr, ws.ErrNoAttempt):
-			// 任务还没 grant / 历史 attempt 行不存在：没有档案可取，与「档案被 GC」同口径。
-			writeLogsEmpty(w, id)
+			// 任务还没 grant / 历史 attempt 行不存在：**没有档案**。
+			// G3-D3 只允许「previous 指定了一次不存在的上一次」回 200 空；这里不是，
+			// 所以 410 + 封闭 reason，绝不把「没有档案」伪装成「这次没输出」。
+			writeLogsGone(w, id)
 		case errors.Is(rerr, ws.ErrNodeOffline):
 			writeAPIError(w, errStatus(http.StatusServiceUnavailable, "node_offline",
 				"the node that ran this attempt is offline"))
@@ -298,8 +307,10 @@ func (a *taskAPI) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	if ferr := strings.TrimSpace(res.Frame.Error); ferr != "" {
 		if ferr == protocol.LogsErrNoLocalArchive {
-			// 节点在线、档案不在（被 GC / 不是这台机器跑的）：真空结果，不是错误。
-			writeLogsEmpty(w, id)
+			// 节点在线、档案不在（被 GC / 不是这台机器跑的）：**没有档案**。
+			// G3-D3 明确 noarchive410 —— 不能缺档案假空成功（那会让「日志丢了」
+			// 与「脚本什么都没打印」在页面上长得一样）。
+			writeLogsGone(w, id)
 			return
 		}
 		// 其它节点侧错误（logs_unreadable / illegal_log_request / 未知码）**不伪造空成功**：
@@ -320,9 +331,18 @@ func (a *taskAPI) logs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// writeLogsEmpty 写「没有档案」的 200：attempt 0 + lines [] + truncated false。
+// writeLogsEmpty 写 G3-D3 允许的**唯一**空结果：previous 指定了不存在的上一次执行
+// （200 + attempt 0 + lines [] + truncated false）。
 func writeLogsEmpty(w http.ResponseWriter, taskID string) {
 	writeJSON(w, http.StatusOK, taskLogsDoc{TaskID: taskID, Lines: []protocol.LogLine{}})
+}
+
+// writeLogsGone 写「没有档案」的 410（G3-D3 的 noarchive410）：任务还没 grant、
+// 历史 attempt 行不存在，或节点回 no_local_archive。reason 用节点侧的同一个封闭码，
+// 调用方无需区分是中枢没档案还是节点没档案——两者对「这次日志取不到」是同一个结论。
+func writeLogsGone(w http.ResponseWriter, taskID string) {
+	writeAPIError(w, errStatus(http.StatusGone, protocol.LogsErrNoLocalArchive,
+		fmt.Sprintf("no local log archive for task %s", taskID)))
 }
 
 // ---------- GET …/tasks/{taskId}/emissions ----------
@@ -426,16 +446,21 @@ func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	// 契约 `api-conventions.md:167`：资源列表沿用现有 limit（默认/上限不变）。
+	// store.ListEvents 对 >500 的处理是**折回 50**（一个静默的不同窗口），所以 handler
+	// 先钳到 500：要 501 条就给你 500 条，不悄悄换成 50（#236 的守卫必须留住）。
+	limit = taskClampListLimit(limit)
 	rows, err := a.d.DB.ListEvents(r.Context(), ns,
 		strings.TrimSpace(q.Get("trace")), strings.TrimSpace(q.Get("source")), limit)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, e := range rows {
-		items = append(items, eventEnvelope(e, nsDisplay))
+		// metadata.namespace 是**对象自身**的命名空间（§3.2）：逐条解析，不拿路径/查询的
+		// ns 去覆盖它（`*` 汇总时那是唯一能归属每条事件的信息）。
+		items = append(items, eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID)))
 	}
 	writeList(w, http.StatusOK, "EventList", listMeta{}, items)
 }
@@ -488,9 +513,11 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 		Pruned: make([]apiEnvelope, 0, len(rows)),
 	}
 	for _, e := range rows {
-		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), ns))
+		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), e.NamespaceID))
 		view.Events = append(view.Events, env)
-		if e.Source == store.EventPruneSource {
+		// pruned[] 只收**纯剪枝**（事件收到了但没派发）。未解析派发失败
+		// （downstream_missing）是 failed Task + 观察事件，不是剪枝（capability.md §6.2）。
+		if e.Source == store.EventPruneSource && !eventIsDispatchFailure(e) {
 			view.Pruned = append(view.Pruned, env)
 		}
 	}
@@ -587,7 +614,14 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(merged))
 	for _, e := range merged {
-		items = append(items, eventEnvelope(e, nsDisplay))
+		// 逐条回显事件**自己**的命名空间（§3.2）：`*` 汇总下如果每行都写 "*"，
+		// 客户端就无法把事件归属回命名空间——而这正是跨 ns 视图唯一多出来的信息。
+		// 单 ns 视图下 namespaceDisplay(e.NamespaceID) == nsDisplay（已被 display 缓存）。
+		display := nsDisplay
+		if ns == store.AllNamespaces {
+			display = a.d.namespaceDisplay(r.Context(), e.NamespaceID)
+		}
+		items = append(items, eventEnvelope(e, display))
 	}
 	writeList(w, http.StatusOK, "EventList", meta, items)
 }
@@ -849,8 +883,12 @@ func taskResultReasonCode(s string) bool {
 //
 // `type`（Normal/Warning 严重度）与 `signature`（HMAC 验证结论）**刻意省略**：
 // events 表没有这两列事实，编一个默认值等于把「没验证」说成「已验证」。
+//
+// reason 对**未解析派发失败**的观察事件也省略（见 eventIsDispatchFailure）：store 把
+// 失败观察行统一写成 reason='Pruned'，照抄会把「任务失败」报告成「剪枝」。events 表
+// 没有独立的失败观察 reason 事实，所以宁可不给（§7.7 的封闭值里没有对应项）。
 type eventSpecDoc struct {
-	Reason         string          `json:"reason"`
+	Reason         string          `json:"reason,omitempty"`
 	EventType      string          `json:"eventType"`
 	InvolvedObject eventObjectRef  `json:"involvedObject"`
 	TraceUID       string          `json:"traceUID"`
@@ -893,8 +931,14 @@ func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
 	if len(bytes.TrimSpace(payload)) == 0 {
 		payload = json.RawMessage("{}")
 	}
+	reason := e.Reason
+	if eventIsDispatchFailure(e) {
+		// 失败观察行在 store 里的 reason 固定为 'Pruned'（insertPruneFactEventOn 的
+		// 同一份边写）：直接给出去等于把「任务失败」报告成「剪枝」。省略比编造安全。
+		reason = ""
+	}
 	return newEnvelope("Event", meta, eventSpecDoc{
-		Reason:         e.Reason,
+		Reason:         reason,
 		EventType:      e.Type,
 		InvolvedObject: eventObjectRef{Kind: "Source", Name: e.Source},
 		TraceUID:       e.TraceID,
@@ -903,12 +947,23 @@ func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
 	}, eventStatusDoc{Pruned: eventPruneFactOf(e)})
 }
 
+// eventIsDispatchFailure 报告这条观察行是不是**未解析派发失败**（downstream_missing）。
+//
+// store 的失败观察事件和剪枝留痕共用 `insertPruneFactEventOn`（source='route'、
+// reason='Pruned'），只有 type 能区分：这里 type 就是封闭原因码。capability.md §6.2
+// 把 downstream_missing 定义为「任务失败 + 事件」，不是剪枝，所以投影层必须把它从
+// Pruned 语义里拿出来（store 加独立 reason / 失败标记是后续缺口，owner 见 inventory）。
+func eventIsDispatchFailure(e *store.Event) bool {
+	return e != nil && e.Source == store.EventPruneSource && e.Type == protocol.ReasonDownstreamMissing
+}
+
 // eventPruneFactOf 从剪枝留痕行取观察原因（非剪枝行 → nil）。
 //
 // 剪枝行的 type 就是原因码（store 保证是封闭集合），payload 里另有一份 reason + detail
 // （+ capability/taskId 等诊断），这里只用 reason/detail：其它字段属于内部链路身份。
+// 失败观察行（downstream_missing）不是剪枝 → status.pruned 必须是 null。
 func eventPruneFactOf(e *store.Event) *pruneFactDoc {
-	if e == nil || e.Source != store.EventPruneSource {
+	if e == nil || e.Source != store.EventPruneSource || eventIsDispatchFailure(e) {
 		return nil
 	}
 	var payload struct {
@@ -1025,6 +1080,27 @@ func taskActionReason(r *http.Request, def string) (string, error) {
 	return reason, nil
 }
 
+// taskListUnknownParams 拒绝 Task 列表上未定义的 query 参数。
+//
+// 契约（api-conventions §3.3）定义的现有参数名是 `status` / `traceId` / `nodeId`；
+// `limit` 是分页。旧实现用过 `phase` / `trace` / `node` / `capability`——保留它们
+// 看似宽容，实际后果是「传旧名 → 拿到未过滤全量」的静默错结果，所以显式 400。
+func taskListUnknownParams(q map[string][]string) error {
+	allowed := map[string]bool{"limit": true, "status": true, "traceId": true, "nodeId": true}
+	bad := make([]string, 0, len(q))
+	for name := range q {
+		if !allowed[name] {
+			bad = append(bad, name)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	sort.Strings(bad)
+	return errStatus(http.StatusBadRequest, reasonUnknownField,
+		fmt.Sprintf("query parameter %q is not defined for this list", bad[0]))
+}
+
 // taskQueryInt 取整数 query 参数；缺省用 def，非整数 → 400（不静默落回默认值）。
 func taskQueryInt(r *http.Request, name string, def int) (int, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(name))
@@ -1055,6 +1131,22 @@ func taskQueryBool(r *http.Request, name string) bool {
 func taskListLimit(n int) int {
 	if n <= 0 || n > taskListLimitCap {
 		return taskListDefaultLimit
+	}
+	return n
+}
+
+// taskClampListLimit 是资源列表（events）的 limit 口径：缺省 50、超过上限**钳到** 500。
+//
+// 与 taskListLimit 的差别是刻意的：tasks 列表沿用 store 的既有夹取（>500 折回 50），
+// 而 events 是资源列表——契约 §3.3 要求默认/上限不变，折回 50 会让 `limit=501`
+// 静默拿到一个**更小**的窗口（#236 的回归）。明细集合（emissions / console events）
+// 用的是同一档钳位。
+func taskClampListLimit(n int) int {
+	if n <= 0 {
+		return taskListDefaultLimit
+	}
+	if n > taskListLimitCap {
+		return taskListLimitCap
 	}
 	return n
 }

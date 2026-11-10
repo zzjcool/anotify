@@ -619,25 +619,48 @@ func TestTaskResourceLogsParamBounds(t *testing.T) {
 		http.StatusNotFound, reasonNotFound)
 }
 
-// TestTaskResourceLogsNoArchive 没有档案 = 200 + attempt 0 + lines []（不是 5xx，也不是假成功）。
-func TestTaskResourceLogsNoArchive(t *testing.T) {
+// TestTaskResourceLogsPreviousNoneIs200Empty 钉住 G3-D3 的**唯一**空结果例外：
+// `previous=true` 且没有上一次执行 → 200 + attempt 0 + lines []。
+func TestTaskResourceLogsPreviousNoneIs200Empty(t *testing.T) {
+	env := newTaskResEnv(t)
+	taskID := env.insertTask(seededTask{}) // 还没 grant：没有 attempt 行，也没有「上一次」
+
+	rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs")+"?previous=true", nil)
+	if !strings.Contains(rr.Body.String(), `"lines":[]`) {
+		t.Fatalf("previous-none 时 lines 必须是 []（不是 null）: %s", rr.Body.String())
+	}
+	doc := trWant(t, rr, http.StatusOK)
+	if got := trNumber(t, doc, "attempt"); got != 0 {
+		t.Fatalf("previous-none 时 attempt = %v, want 0", got)
+	}
+	if got := doc["truncated"]; got != false {
+		t.Fatalf("previous-none 时 truncated 必须是 false，得到 %v", got)
+	}
+	if got := trString(t, doc, "taskId"); got != taskID {
+		t.Fatalf("taskId = %q, want %q", got, taskID)
+	}
+}
+
+// TestTaskResourceLogsNoAttemptIs410 任务还没有任何 attempt 行 = **没有档案** → 410。
+//
+// 这是 G3-D3 的 noarchive410：以前这里回 200 空 lines，把「日志根本不存在」伪装成
+// 「这次脚本什么都没打印」——两种情况的处置完全不同（前者查节点/GC，后者查脚本）。
+// 唯一允许的 200 空只有上面的 previous-none（见上一条用例）。
+func TestTaskResourceLogsNoAttemptIs410(t *testing.T) {
 	env := newTaskResEnv(t)
 	taskID := env.insertTask(seededTask{}) // 还没 grant：没有 attempt 行
 
-	for _, q := range []string{"", "?previous=true", "?tailLines=10&sinceSeconds=60"} {
+	for _, q := range []string{"", "?tailLines=10&sinceSeconds=60"} {
 		rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs")+q, nil)
-		if !strings.Contains(rr.Body.String(), `"lines":[]`) {
-			t.Fatalf("无档案时 lines 必须是 []（不是 null）: %s", rr.Body.String())
+		body := trWant(t, rr, http.StatusGone)
+		if got := trNumber(t, body, "code"); got != http.StatusGone {
+			t.Fatalf("Status.code = %v, want 410", got)
 		}
-		doc := trWant(t, rr, http.StatusOK)
-		if got := trNumber(t, doc, "attempt"); got != 0 {
-			t.Fatalf("无档案时 attempt = %v, want 0", got)
+		if got := trString(t, body, "reason"); got != protocol.LogsErrNoLocalArchive {
+			t.Fatalf("reason = %q, want %q", got, protocol.LogsErrNoLocalArchive)
 		}
-		if got := doc["truncated"]; got != false {
-			t.Fatalf("无档案时 truncated 必须是 false，得到 %v", got)
-		}
-		if got := trString(t, doc, "taskId"); got != taskID {
-			t.Fatalf("taskId = %q, want %q", got, taskID)
+		if strings.Contains(rr.Body.String(), `"lines"`) {
+			t.Fatalf("410 不该伪造 lines：%s", rr.Body.String())
 		}
 	}
 }
@@ -795,6 +818,26 @@ func TestTaskResourceConsoleEventsNamespaceScopes(t *testing.T) {
 	if got := trString(t, allItems[0].(map[string]any), "metadata", "uid"); got != bIDs[1] {
 		t.Fatalf("跨 ns 汇总最新在前: items[0] = %q, want %q", got, bIDs[1])
 	}
+	// metadata.namespace 必须是**每条事件自己**的命名空间 slug（不是 "*"）：
+	// 跨 ns 汇总唯一多出来的信息就是归属，回 "*" 等于把这条信息丢了。
+	slugB := nsSlugByID(t, env.db, env.ns2)
+	seenNS := map[string]int{}
+	for _, item := range allItems {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("事件 item 不是对象：%T", item)
+		}
+		seenNS[trString(t, obj, "metadata", "namespace")]++
+	}
+	if seenNS[env.nsSlug] != 3 || seenNS[slugB] != 2 || len(seenNS) != 2 {
+		t.Fatalf("namespace=* 的逐 item metadata.namespace = %v, want {%s:3, %s:2}", seenNS, env.nsSlug, slugB)
+	}
+	// 单 ns 视图里每条也回该 ns 的 slug（同一份判据，不是特例）。
+	for _, item := range aItems {
+		if got := trString(t, item.(map[string]any), "metadata", "namespace"); got != env.nsSlug {
+			t.Fatalf("单 ns 视图 metadata.namespace = %q, want %q", got, env.nsSlug)
+		}
+	}
 
 	// limit=2 翻页：三页分别是 2/2/1，且没有重复行。
 	seen := map[string]bool{}
@@ -837,6 +880,33 @@ func TestTaskResourceConsoleEventsNamespaceScopes(t *testing.T) {
 	trReason(t, env.do(http.MethodGet,
 		consoleEventsPath+"?namespace="+env.ns2+"&limit=1&continue="+crossCursor, nil),
 		http.StatusBadRequest, reasonBadRequest)
+}
+
+// TestTaskResourceEventsListLimitClamps 钉住资源列表的 limit 口径：
+// 超过上限**钳到 500**（不是静默折回默认 50 —— #236 的回归）。
+func TestTaskResourceEventsListLimitClamps(t *testing.T) {
+	env := newTaskResEnv(t)
+	base := store.Now() - 500
+	for i := 0; i < 60; i++ {
+		env.seedEvent(env.ns, "trace_limit", "github", "push", `{}`, "", base+int64(i))
+	}
+	path := "/v1/namespaces/" + env.ns + "/events"
+
+	count := func(q string) int {
+		t.Helper()
+		doc := trWant(t, env.do(http.MethodGet, path+q, nil), http.StatusOK)
+		return len(trArray(t, doc, "items"))
+	}
+	// 上限内/超上限/远超上限都给同一个窗口（60 条全部在 500 以内）。
+	for _, q := range []string{"?limit=500", "?limit=501", "?limit=1000"} {
+		if got := count(q); got != 60 {
+			t.Fatalf("%s 返回 %d 条, want 60（>500 必须钳到 500，不能折回 50）", q, got)
+		}
+	}
+	// 缺省仍是 50：默认窗口不变。
+	if got := count(""); got != 50 {
+		t.Fatalf("缺省 limit 返回 %d 条, want 50", got)
+	}
 }
 
 // TestTaskResourceEventsAndTrace 命名空间事件列表 + trace 全景（events / tasks / pruned）。
@@ -926,14 +996,19 @@ func TestTaskResourceListFilters(t *testing.T) {
 		return out
 	}
 
-	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?phase="+store.TaskRunning, nil), http.StatusOK)); len(got) != 1 || got[0] != runningB {
-		t.Fatalf("phase=running 过滤得到 %v, want [%s]", got, runningB)
+	// 过滤参数按契约命名（v3 console 同款）：status / traceId / nodeId。
+	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?status="+store.TaskRunning, nil), http.StatusOK)); len(got) != 1 || got[0] != runningB {
+		t.Fatalf("status=running 过滤得到 %v, want [%s]", got, runningB)
 	}
-	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?trace=trace_a", nil), http.StatusOK)); len(got) != 2 {
-		t.Fatalf("trace=trace_a 过滤得到 %v, want 2 条", got)
+	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?traceId=trace_a", nil), http.StatusOK)); len(got) != 2 {
+		t.Fatalf("traceId=trace_a 过滤得到 %v, want 2 条", got)
 	}
-	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?capability=notify", nil), http.StatusOK)); len(got) != 2 {
-		t.Fatalf("capability=notify 过滤得到 %v, want 2 条", got)
+	// nodeId 需要真实 node_id 事实：给 runningB 钉一个执行节点。
+	if _, err := env.db.Exec(`UPDATE tasks SET node_id = ? WHERE id = ?`, "nd_filter", runningB); err != nil {
+		t.Fatalf("pin node_id: %v", err)
+	}
+	if got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?nodeId=nd_filter", nil), http.StatusOK)); len(got) != 1 || got[0] != runningB {
+		t.Fatalf("nodeId=nd_filter 过滤得到 %v, want [%s]", got, runningB)
 	}
 	got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?limit=1", nil), http.StatusOK))
 	if len(got) != 1 || got[0] != newest {
@@ -944,6 +1019,11 @@ func TestTaskResourceListFilters(t *testing.T) {
 	}
 	// 非整数 limit 是调用方错误（不静默落回默认值）。
 	trReason(t, env.do(http.MethodGet, env.tasksPath()+"?limit=abc", nil), http.StatusBadRequest, reasonBadRequest)
+	// 契约未定义的过滤参数不得静默忽略返回全量（旧名 phase/trace/node/capability 一律 400）。
+	for _, q := range []string{"?phase=running", "?trace=trace_a", "?node=nd_filter", "?capability=notify"} {
+		rr := env.do(http.MethodGet, env.tasksPath()+q, nil)
+		trReason(t, rr, http.StatusBadRequest, reasonUnknownField)
+	}
 }
 
 // TestTaskResourceCancelRunningRecordsIntent running 任务只记取消意图（终态等 cancel.ack），
@@ -1006,6 +1086,74 @@ func TestTaskResourceRoutesAreSessionWrapped(t *testing.T) {
 
 // taskResPtr 是取地址的小工具（构造可选幂等键用）。
 func taskResPtr(s string) *string { return &s }
+
+// TestTaskResourceDownstreamMissingEventIsNotPruned 钉住 m12：
+// downstream_missing 是 failed Task + 观察事件（capability.md §6.2），**不是剪枝**。
+// store 把失败观察行写成 source='route'/reason='Pruned'（与剪枝共用边写），投影层必须
+// 按 type 把它从 Pruned 语义里摘出来，否则 wire 上会同时出现三处假剪枝信号：
+// spec.reason=Pruned / status.pruned≠null / trace.pruned[] 收录。
+func TestTaskResourceDownstreamMissingEventIsNotPruned(t *testing.T) {
+	env := newTaskResEnv(t)
+	traceID := "trace_downstream_missing"
+	base := store.Now() - 20
+	env.seedEvent(env.ns, traceID, "github", "push", `{"n":1}`, "", base)
+	failID := env.seedEvent(env.ns, traceID, store.EventPruneSource,
+		string(protocol.ReasonDownstreamMissing),
+		`{"capability":"fixer@2","version":2,"reason":"downstream_missing","message":"下游解析不到","taskId":"tsk_missing"}`,
+		store.EventReasonPruned, base+1)
+	pruneID := env.seedEvent(env.ns, traceID, store.EventPruneSource, "param_missing",
+		`{"reason":"param_missing","detail":"缺少 file","capability":"fixer"}`, store.EventReasonPruned, base+2)
+
+	trace := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/traces/"+traceID, nil), http.StatusOK)
+	// ① pruned[] 只收纯剪枝（param_missing），失败观察不进去。
+	pruned := trArray(t, trace, "pruned")
+	if len(pruned) != 1 {
+		t.Fatalf("trace.pruned = %d 条, want 1（downstream_missing 不是剪枝）", len(pruned))
+	}
+	if got := trString(t, pruned[0].(map[string]any), "metadata", "uid"); got != pruneID {
+		t.Fatalf("trace.pruned[0] = %q, want %q", got, pruneID)
+	}
+
+	// ② 失败观察事件本身仍在 events[] 里（事实不能丢），但 spec.reason 不得是 Pruned、
+	//    status.pruned 必须是 null。
+	var failure map[string]any
+	for _, item := range trArray(t, trace, "events") {
+		obj := item.(map[string]any)
+		if trString(t, obj, "metadata", "uid") == failID {
+			failure = obj
+			break
+		}
+	}
+	if failure == nil {
+		t.Fatalf("trace.events 里找不到失败观察事件 %s", failID)
+	}
+	spec := trObject(t, failure, "spec")
+	if got, ok := spec["reason"]; ok {
+		t.Fatalf("失败观察事件的 spec.reason 必须省略，得到 %v（不得报告成 Pruned）", got)
+	}
+	if got := trString(t, spec, "eventType"); got != protocol.ReasonDownstreamMissing {
+		t.Fatalf("spec.eventType = %q, want %q（失败原因码必须保留）", got, protocol.ReasonDownstreamMissing)
+	}
+	status := trObject(t, failure, "status")
+	if got, ok := status["pruned"]; !ok || got != nil {
+		t.Fatalf("失败观察事件的 status.pruned 必须是 null，得到 %v", status)
+	}
+
+	// ③ 按 trace 查事件列表同样不得出现 pruned 语义（同一份投影）。
+	events := trWant(t, env.do(http.MethodGet, "/v1/namespaces/"+env.ns+"/events?trace="+traceID, nil), http.StatusOK)
+	for _, item := range trArray(t, events, "items") {
+		obj := item.(map[string]any)
+		if trString(t, obj, "metadata", "uid") != failID {
+			continue
+		}
+		if got, ok := trObject(t, obj, "spec")["reason"]; ok {
+			t.Fatalf("事件列表里失败观察事件的 spec.reason 必须省略，得到 %v", got)
+		}
+		if got, ok := trObject(t, obj, "status")["pruned"]; !ok || got != nil {
+			t.Fatalf("事件列表里失败观察事件的 status.pruned 必须是 null，得到 %v", got)
+		}
+	}
+}
 
 // ---------- fresh review 补测：logs 降级矩阵（G3-D3） ----------
 
@@ -1347,5 +1495,46 @@ func TestTaskResourceLogsNodeReturnsStructuredLines(t *testing.T) {
 	}
 	if stream := trString(t, second, "stream"); stream != "stderr" {
 		t.Fatalf("lines[1].stream = %q, want stderr", stream)
+	}
+}
+
+// TestTaskResourceLogsNoLocalArchiveIs410 钉降级矩阵的「档案不在」格（G3-D3 noarchive410）：
+// 节点在线、真实收到 logs.request，但回 `error=no_local_archive` → **410**（不是 200 空）。
+//
+// 与 TestTaskResourceLogsNoAttemptIs410 的区别：那条是中枢侧就没有 attempt 行；这条是
+// 节点侧档案被 GC / 不是这台机器跑的——两者是同一档「没有档案」，但链路不同，
+// 所以各有一条真实用例（review 指出原套件只测了前者）。
+func TestTaskResourceLogsNoLocalArchiveIs410(t *testing.T) {
+	env := newNodeLogsEnv(t)
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: env.node.Name})
+	env.insertAttempt(taskID, 1, env.node.ID, env.node.Name)
+
+	done := taskResReplyLogs(env.conn, func(req *protocol.LogsRequestFrame) *protocol.LogsResponseFrame {
+		// 节点侧错误响应：不伪造 attempt / lines，只回封闭码。
+		return &protocol.LogsResponseFrame{
+			Type: protocol.FrameLogsResponse, TaskID: req.TaskID, RequestID: req.RequestID,
+			Error: protocol.LogsErrNoLocalArchive,
+		}
+	})
+	rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs"), nil)
+	if err := <-done; err != nil {
+		t.Fatalf("节点侧回包失败: %v", err)
+	}
+
+	if rr.Code != http.StatusGone {
+		t.Fatalf("no_local_archive 期望 410，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	body := trBody(t, rr)
+	if kind := trString(t, body, "kind"); kind != kindStatus {
+		t.Fatalf("410 必须是 Status 文档，kind = %q", kind)
+	}
+	if code := trNumber(t, body, "code"); code != http.StatusGone {
+		t.Fatalf("Status.code = %v, want 410", code)
+	}
+	if reason := trString(t, body, "reason"); reason != protocol.LogsErrNoLocalArchive {
+		t.Fatalf("410 的 reason 期望封闭码 %q，得到 %q", protocol.LogsErrNoLocalArchive, reason)
+	}
+	if strings.Contains(rr.Body.String(), `"lines"`) {
+		t.Fatalf("410 不该伪造 lines：%s", rr.Body.String())
 	}
 }

@@ -79,7 +79,7 @@ func (a *playbookAPI) list(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	includeBody := includePlaybookBody(r)
+	includeBody := includeBodyQuery(r)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, row := range rows {
 		env, err := a.envelope(r.Context(), ns, row, includeBody)
@@ -106,7 +106,7 @@ func (a *playbookAPI) get(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), ns, row, includePlaybookBody(r))
+	env, err := a.envelope(r.Context(), ns, row, includeBodyQuery(r))
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -203,7 +203,7 @@ func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), ns, row, includePlaybookBody(r))
+	env, err := a.envelope(r.Context(), ns, row, includeBodyQuery(r))
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -259,7 +259,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), ns, row, includePlaybookBody(r))
+	env, err := a.envelope(r.Context(), ns, row, includeBodyQuery(r))
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
@@ -632,18 +632,6 @@ func playbookReady(conditions []playbookCondition, unapplied []playbook.Unapplie
 		}
 	}
 	return true
-}
-
-// includePlaybookBody 报告读端点是否要包体全文（W3：默认摘要，`?includeBody=true` 才回）。
-func includePlaybookBody(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("includeBody"))) {
-	case "true", "1":
-		return true
-	}
-	return false
 }
 
 // row 取 URL 里的 {slug} 对应清单行。

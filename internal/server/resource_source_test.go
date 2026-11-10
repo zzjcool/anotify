@@ -1098,3 +1098,42 @@ func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
 		t.Fatalf("失败的 fire 不该改动源配置，得到 enabled=%v", spec["enabled"])
 	}
 }
+
+// TestSourceResourceReservedNameIs400 恢复 v3 的保留源名守卫（review m1）。
+//
+// `route` 是剪枝/失败观察留痕的保留来源名（store.EventPruneSource）。把它当普通源名
+// 建出来，会让自己投递的业务事件在事件流里被**静默过滤**（并且 trace 视图把它当剪枝）
+// ——这是会丢数据的调用方输入错误，必须是 400，而不是 500（服务端故障）。
+//
+// v3 有专门用例 `TestWriteSourceErrReservedNameIs400`（三层：包装错误→400、其它错误→500、
+// body 含 `route` 提示）；v4 迁移时丢了，这里恢复同一安全意图。
+func TestSourceResourceReservedNameIs400(t *testing.T) {
+	env := newSourceResEnv(t)
+
+	rr := env.request(http.MethodPost, env.sourcesPath(), map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "route"},
+		"spec":       map[string]any{"kind": "manual"},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("保留源名期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	doc := env.doc(rr)
+	if got := doc["kind"]; got != kindStatus {
+		t.Fatalf("错误体 kind = %v, want %s", got, kindStatus)
+	}
+	if got := doc["reason"]; got != "invalid_source_config" {
+		t.Fatalf("reason = %v, want invalid_source_config", got)
+	}
+	// 提示里必须点出是哪个名字（v3 的 body 含 route 断言；错误信息是给人改的）。
+	msg, _ := doc["message"].(string)
+	if !strings.Contains(msg, "route") {
+		t.Fatalf("错误信息应提到 route，得到 %q", msg)
+	}
+	// 拒绝是**0 写**：源表里不能出现半条 route 源。
+	if got := env.count("sources"); got != 0 {
+		t.Fatalf("被拒绝的创建不得落行，sources = %d", got)
+	}
+
+}

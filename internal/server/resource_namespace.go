@@ -212,14 +212,18 @@ func namespaceSlugFromPath(r *http.Request) (string, error) {
 	return slug, nil
 }
 
-// resolve 解析并授权路径指向的命名空间，返回**带派生计数**的行。
+// resolve 解析并授权路径指向的命名空间，返回带派生计数的行。
 //
 // 判据顺序（未登录 401 → 不存在 404）与 namespace_scope.go 的收口一致：
 // 先要登录（cluster 资源也不能匿名读），再判存在，最后把**行 id** 交给
 // store.AuthorizeNamespace —— 授权收口吃的是 id，不是 slug（把 slug 传进去会
 // 让每个真实命名空间都变成 404，因为幂等键是 `ns_…` 那一列）。
+//
+// 解析用 namespaceBySlugOrIDOn（slug 优先、兼容 id）：资源路径（`/v1/namespaces/{ns}/…`）
+// 已经接受两种写法，Namespace 自身的 CRUD 如果只认 slug，就会出现「同一个 ns：
+// `/ns_xxx/capabilities` 200、`/ns_xxx` 404」的不对称。读写路径必须同一份判据。
 func (a *namespaceAPI) resolve(r *http.Request) (*store.Namespace, error) {
-	slug, err := namespaceSlugFromPath(r)
+	raw, err := namespaceSlugFromPath(r)
 	if err != nil {
 		return nil, err
 	}
@@ -227,24 +231,14 @@ func (a *namespaceAPI) resolve(r *http.Request) (*store.Namespace, error) {
 	if err != nil {
 		return nil, err
 	}
-	list, err := a.d.DB.ListNamespaces(r.Context())
+	ns, err := namespaceBySlugOrIDOn(r.Context(), a.d.DB, raw)
 	if err != nil {
 		return nil, err
 	}
-	var found *store.Namespace
-	for _, cand := range list {
-		if cand.Slug == slug {
-			found = cand
-			break
-		}
-	}
-	if found == nil {
-		return nil, store.ErrNamespaceNotFound
-	}
-	if err := a.d.DB.AuthorizeNamespace(r.Context(), userID, found.ID); err != nil {
+	if err := a.d.DB.AuthorizeNamespace(r.Context(), userID, ns.ID); err != nil {
 		return nil, err
 	}
-	return found, nil
+	return ns, nil
 }
 
 // ---------- Namespace CRUD ----------
@@ -331,8 +325,7 @@ func (a *namespaceAPI) get(w http.ResponseWriter, r *http.Request) {
 // 一律 400 name_immutable —— 而不是静默忽略（"我改了但没生效"比"你不能改"难查得多）。
 // CAS 令牌只认 body `metadata.resourceVersion`（W1）。
 func (a *namespaceAPI) patch(w http.ResponseWriter, r *http.Request) {
-	slug, err := namespaceSlugFromPath(r)
-	if err != nil {
+	if _, err := namespaceSlugFromPath(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -345,9 +338,16 @@ func (a *namespaceAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if meta.Name != "" && meta.Name != slug {
+	// resolve 同时完成 slug-or-id 解析 + 授权：写路径也必须对称地接受 id，
+	// 并且 store 写入口只认 slug，所以后续一律用行上的 ns.Slug（不用路径原文）。
+	resolved, err := a.resolve(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if meta.Name != "" && meta.Name != resolved.Slug {
 		writeAPIError(w, errStatus(http.StatusBadRequest, reasonNameImmutable,
-			fmt.Sprintf("metadata.name %q does not match path namespace %q (slug is immutable)", meta.Name, slug)))
+			fmt.Sprintf("metadata.name %q does not match path namespace %q (slug is immutable)", meta.Name, resolved.Slug)))
 		return
 	}
 	token, err := casTokenFromMeta(meta)
@@ -361,11 +361,7 @@ func (a *namespaceAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "metadata.displayName is required"))
 		return
 	}
-	if _, err := a.resolve(r); err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	ns, err := a.d.DB.UpdateNamespace(r.Context(), slug, displayName, token)
+	ns, err := a.d.DB.UpdateNamespace(r.Context(), resolved.Slug, displayName, token)
 	if err != nil {
 		writeAPIError(w, err) // 缺 CAS 400 / 旧值 409 + details.current / 不存在 404
 		return
@@ -389,8 +385,7 @@ func (a *namespaceAPI) patch(w http.ResponseWriter, r *http.Request) {
 // 阻塞清单；force=true 才是显式级联；最后一个命名空间不能删（400）。
 // CAS 令牌只在 query（DELETE 没有请求体），缺失 400、旧值 409、不存在 404。
 func (a *namespaceAPI) remove(w http.ResponseWriter, r *http.Request) {
-	slug, err := namespaceSlugFromPath(r)
-	if err != nil {
+	if _, err := namespaceSlugFromPath(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -405,13 +400,14 @@ func (a *namespaceAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := a.d.DB.DeleteNamespaceByName(r.Context(), slug, force == "true" || force == "1", token); err != nil {
+	// store 删入口只认 slug：路径可能给的是 id（对称解析），这里必须用行上的 slug。
+	if err := a.d.DB.DeleteNamespaceByName(r.Context(), ns.Slug, force == "true" || force == "1", token); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	a.d.logger().Info("namespace deleted",
 		"event", "console.namespaces.deleted",
-		"namespace", slug, "uid", ns.ID, "force", force,
+		"namespace", ns.Slug, "uid", ns.ID, "force", force,
 	)
 	// 删除没有对象可回：204 无响应体（与能力/源/节点域一致，客户端只看状态码）。
 	w.WriteHeader(http.StatusNoContent)

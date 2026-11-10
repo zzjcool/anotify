@@ -46,8 +46,11 @@ func NewMux(cfg Config) http.Handler {
 // 就是 /v1/node/stream 的 handler）、`db.BackfillBuiltinCapabilities`（内置能力播种随
 // 中央执行域一起退役）、`source.Trigger` / `source.Scheduler`（换成 source.Service +
 // trigger.Scheduler）、`lease.New` + Redispatch/Nudge/SetNotBefore 那一套重派回调
-// （租约回收由 ws.Hub 的派发循环接手），以及全部 v3 扁平资源路由
-// （/v1/capabilities、/v1/sources、/v1/playbooks、/v1/nodes、/v1/stats、/v1/events 等）。
+// （租约回收由 ws.Hub 的派发循环接手），以及 v3 扁平**资源**路由
+// （/v1/capabilities、/v1/sources、/v1/playbooks、/v1/nodes、/v1/events 等）。
+//
+// 注意「保留域读模型」不是退役项（api-conventions §8.4/§8.5）：/v1/stats、/v1/orphans、
+// /v1/namespaces/{ns}/deployments 仍由 newRetainedReadAPI 注册，形状不动、只统一错误体。
 func NewApp(ctx context.Context, cfg Config) *App {
 	// 1. 存储
 	db, err := store.Open(cfg.DBPath)
@@ -322,6 +325,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	newPlaybookAPI(deps).register(mux)
 	newNamespaceAPI(deps).register(mux)
 	newTaskAPI(deps).register(mux)
+	// 保留域读模型（§8.4）：stats / orphans / deployments。不是资源，也不套信封。
+	newRetainedReadAPI(deps).register(mux)
 	// Node 域多一步注入：它是升级源（agent 二进制）的消费方。
 	//
 	// 注入的是「目标版本 + 内容 sha256」两个事实（nodeUpgradeSource），不是整个

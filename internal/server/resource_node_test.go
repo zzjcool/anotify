@@ -634,7 +634,13 @@ func TestNodeResourceGetNamespaceContext(t *testing.T) {
 		http.StatusBadRequest, reasonBadRequest)
 }
 
-// TestNodeResourceUpgrade 钉住升级动作的三个前置分支（帧内容属于 ws 包测试）。
+// TestNodeResourceUpgrade 钉住升级动作在**离线**节点上的判定（帧内容属于 ws 包测试）。
+//
+// 顺序是契约 §4 的「离线 409 → 无二进制 501 → 已最新 up_to_date」：没有活跃连接就没有
+// 下发对象，与「服务端带没带二进制」无关。所以这里两种装配都必须先回 409；501 与
+// up_to_date 的在线分支由 node_upgrade_test.go 的
+// `TestNodeUpgradeEndpointGuards` / `TestNodeUpgradeEndpointUpToDateAndForce`
+// 用真实 WS 会话覆盖（本夹具不起 WebSocket，只能表达离线）。
 func TestNodeResourceUpgrade(t *testing.T) {
 	env := newNodeTestEnv(t)
 	wantStatus(t, env.do(http.MethodPost, "/v1/nodes/ghost/upgrade", map[string]any{}),
@@ -643,11 +649,11 @@ func TestNodeResourceUpgrade(t *testing.T) {
 	env.createNode("node-a", nil)
 	env.deps.Hub = ws.NewHub(env.db, nil)
 
-	// 没有升级源（部署里没带 agent 二进制）→ 501
+	// 没有升级源 + 节点离线 → 离线优先（409），不是 501。
 	rr := env.do(http.MethodPost, "/v1/nodes/node-a/upgrade", map[string]any{})
-	wantStatus(t, rr, http.StatusNotImplemented, "agent_binary_unavailable")
+	wantStatus(t, rr, http.StatusConflict, "node_offline")
 
-	// 有升级源、但节点没有活跃连接 → 409 node_offline
+	// 有升级源、但节点没有活跃连接 → 仍然 409 node_offline。
 	env.api.setUpgradeSource(fakeNodeUpgradeSource{version: "9.9.9+test", sha: strings.Repeat("a", 64)})
 	rr = env.do(http.MethodPost, "/v1/nodes/node-a/upgrade", map[string]any{})
 	wantStatus(t, rr, http.StatusConflict, "node_offline")
@@ -868,5 +874,46 @@ func TestNodeResourceConfigBatchMissingTokenIsItemError(t *testing.T) {
 	cfgNow := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/node-batch/config", nil))
 	if raw := cfgNow["vars"].(map[string]any); raw["NOPE"] != nil {
 		t.Fatalf("缺令牌的更新不得写入，config.vars = %v", raw)
+	}
+}
+
+// TestNodeResourceConfigWriteStatusIsNotWritable 钉住 m6：配置写入口的 `status`
+// 必须是 `status_not_writable`（契约 E6 / S1），而不是 strict 解码兜底的 `unknown_field`。
+//
+// 同一个客户端错误在信封路径、ns/system 配置、节点配置三处必须给同一个 reason；
+// 否则调用方只能把它归到「未知字段」桶里，改字段名而不是去掉 status。
+func TestNodeResourceConfigWriteStatusIsNotWritable(t *testing.T) {
+	env := newNodeTestEnv(t)
+	env.createNode("status-writer", nil)
+	rv := env.configRV("status-writer")
+
+	// ① 单台 PUT：带正确 CAS 但 body 写了 status —— 仍然是 status_not_writable。
+	rr := env.do(http.MethodPut, "/v1/nodes/status-writer/config", map[string]any{
+		"metadata": map[string]any{"resourceVersion": rv},
+		"vars":     map[string]string{"A": "1"},
+		"status":   map[string]any{"online": true},
+	})
+	wantStatus(t, rr, http.StatusBadRequest, reasonStatusNotWritable)
+
+	// ② 即使令牌缺失/非法，status 语义优先（先判只读字段，再谈 CAS）。
+	rr = env.do(http.MethodPut, "/v1/nodes/status-writer/config", map[string]any{
+		"status": map[string]any{},
+	})
+	wantStatus(t, rr, http.StatusBadRequest, reasonStatusNotWritable)
+
+	// ③ 批量入口的 updates[].status 同样是只读违规（不是 unknown_field）。
+	rr = env.do(http.MethodPost, "/v1/nodes/config/batch", map[string]any{
+		"updates": []any{map[string]any{
+			"name":     "status-writer",
+			"status":   map[string]any{"online": true},
+			"metadata": map[string]any{"resourceVersion": rv},
+		}},
+	})
+	wantStatus(t, rr, http.StatusBadRequest, reasonStatusNotWritable)
+
+	// ④ 两次被拒都是 0 写：vars 没有旁路落库。
+	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/status-writer/config", nil))
+	if vars := nodeObject(t, cfg, "vars"); len(vars) != 0 {
+		t.Fatalf("被拒的写请求不得改配置，vars = %v", vars)
 	}
 }

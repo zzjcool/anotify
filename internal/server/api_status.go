@@ -167,6 +167,11 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", err.Error(), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+	case errors.Is(err, store.ErrReservedEventSource):
+		// 保留来源名（`route`）是**调用方输入错误**，不是服务端故障：v3 有专门用例钉它
+		// 必须是 400（§4.2 的 reason 封闭集合里没有 5xx 用户错误码）。不加这一条就会落到
+		// default 500，把「名字选错了」报成「服务器坏了」。
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
 	case errors.Is(err, store.ErrCapabilityInvalid):
 		writeStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error(), nil)
 	case errors.Is(err, store.ErrVersionConflict):

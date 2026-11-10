@@ -412,6 +412,35 @@ func TestPlaybookResourceCreateListGet(t *testing.T) {
 	if bodyFiles["playbook.yaml"] != files["playbook.yaml"] {
 		t.Fatalf("包体必须原样往返（未渲染）")
 	}
+
+	// includeBody 的取值语义必须与契约一致，且与 Capability 域共用同一份判据：
+	// false / 缺省 → 摘要；true 与 v3 前端写法 1 等价 → 全文。之前 Playbook 认 1、
+	// Capability 只认 true，同一参数在两个域给出不同结果（静默退化）。
+	for _, q := range []string{"?includeBody=false", "?includeBody=0", ""} {
+		rec = env.do(t, "GET", env.path("/"+slug)+q, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET%s 应 200, got %d: %s", q, rec.Code, rec.Body.String())
+		}
+		var summary pbTestEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+			t.Fatalf("decode%s: %v", q, err)
+		}
+		if _, hasFiles := summary.Spec["files"]; hasFiles {
+			t.Fatalf("includeBody%s 必须是摘要（不带 files），得到 %v", q, summary.Spec)
+		}
+	}
+	rec = env.do(t, "GET", env.path("/"+slug)+"?includeBody=1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("includeBody=1 应 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var alias pbTestEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &alias); err != nil {
+		t.Fatalf("decode includeBody=1: %v", err)
+	}
+	var aliasFiles map[string]string
+	if err := json.Unmarshal(alias.Spec["files"], &aliasFiles); err != nil || len(aliasFiles) != len(files) {
+		t.Fatalf("includeBody=1 应与 true 等价（整份包体），得到 %v (err=%v)", aliasFiles, err)
+	}
 }
 
 // TestPlaybookResourceCreateBodyRules 覆盖 spec.files / spec.source 的二选一与写请求校验。

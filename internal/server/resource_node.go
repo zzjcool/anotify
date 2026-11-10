@@ -506,7 +506,7 @@ func (a *nodeAPI) configGet(w http.ResponseWriter, r *http.Request) {
 func (a *nodeAPI) configPut(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
 	var in nodeConfigPUT
-	if err := nodeDecodeStrictJSON(r, &in); err != nil {
+	if err := nodeDecodeConfigStrictJSON(r, &in); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -557,7 +557,7 @@ func (a *nodeAPI) configPut(w http.ResponseWriter, r *http.Request) {
 // "把 namespaces 重置成 ['*']"（那是权限扩张，不可接受）。
 func (a *nodeAPI) configBatch(w http.ResponseWriter, r *http.Request) {
 	var in nodeConfigBatchRequest
-	if err := nodeDecodeStrictJSON(r, &in); err != nil {
+	if err := nodeDecodeConfigStrictJSON(r, &in); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -650,15 +650,26 @@ func (a *nodeAPI) drain(w http.ResponseWriter, r *http.Request) {
 
 // upgradeNode 处理 POST /v1/nodes/{name}/upgrade：把「去哪拿、拿到后该是什么」推给节点。
 //
-// 顺序：节点不存在 404 → 服务端没有升级源 501 → 节点不在线 409 → 推帧。
-// 二进制不走进 WS 帧（15 MB 会堵住同一条连接上的心跳与派发），帧里只有
-// 版本 + sha256 + protocol.NodeBinaryPath，下载走普通 HTTP。
+// 顺序（agent-upgrade.md §4 / CONTRACT.md:1185）：
+//  1. 节点不存在 404；
+//  2. 装配缺 hub → 500（部署错误，不是调用方错误）；
+//  3. 节点不在线 → 409 `node_offline`（没有下发对象，与「有没有二进制」无关）；
+//  4. 服务端没有升级源 → 501 `agent_binary_unavailable`；
+//  5. `agent_version == 目标版本` 且未 `force` → 200 `{"status":"up_to_date"}`，**不写**
+//     `agent_upgrade=sent`、不推 upgrade 帧（已最新的节点不该被多重启一次：agent 侧
+//     apply 不比较字节，收到帧就 Restart）；
+//  6. 否则写 sent + 推帧 → 200 `{"status":"sent"}`。
+//
+// `force` 支持 body `{"force":true}` 与 query `?force=1|true`（v3 两种都认；
+// curl 用 query 更顺手，控制台用 body）。脏构建（`dev` / 含 `dirty`）**永不判最新**：
+// 同一版本号可以对应任意多次不同构建，按版本号判等会让「点了升级却没发生」成为常态。
 //
 // body 的 version 可选：不给就用中枢自己的版本（二进制就是那次构建的产物，
 // 版本与内容必须同源，否则节点会拿「版本对不上」的包）。
 func (a *nodeAPI) upgradeNode(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Version string `json:"version"`
+		Force   bool   `json:"force"`
 	}
 	if err := nodeDecodeOptionalJSON(r, &in); err != nil {
 		writeAPIError(w, err)
@@ -671,6 +682,11 @@ func (a *nodeAPI) upgradeNode(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.d.Hub == nil {
 		writeAPIError(w, errStatus(http.StatusInternalServerError, reasonInternal, "node hub is not wired"))
+		return
+	}
+	// 离线先判：没有连接就没有下发对象，这一步与「服务端带没带二进制」无关。
+	if !a.d.Hub.Online(n.ID) {
+		writeAPIError(w, errStatus(http.StatusConflict, "node_offline", "node has no live connection"))
 		return
 	}
 	if a.upgrade == nil {
@@ -688,8 +704,15 @@ func (a *nodeAPI) upgradeNode(w http.ResponseWriter, r *http.Request) {
 			"agent binary is not loaded"))
 		return
 	}
+	force := in.Force || nodeForceFromQuery(r)
+	if !force && isUniqueVersion(version) && strings.TrimSpace(n.AgentVersion) == version {
+		// 已最新：只回事实，不写 sent、不推帧。
+		writeJSON(w, http.StatusOK, map[string]any{"status": "up_to_date", "targetVersion": version})
+		return
+	}
 	err = a.d.Hub.RequestUpgrade(r.Context(), n.ID, version, sha, protocol.NodeBinaryPath)
 	if errors.Is(err, ws.ErrNodeOffline) {
+		// 查库与推帧之间掉线是正常竞态：仍报 409（不假装已下发）。
 		writeAPIError(w, errStatus(http.StatusConflict, "node_offline", "node has no live connection"))
 		return
 	}
@@ -699,9 +722,18 @@ func (a *nodeAPI) upgradeNode(w http.ResponseWriter, r *http.Request) {
 	}
 	a.d.logger().Info("agent upgrade dispatched",
 		"event", "api.nodes.upgrade_sent", "node_id", n.ID,
-		"target_version", version, "sha256", sha)
+		"target_version", version, "sha256", sha, "force", force)
 	// 动作回执（W1 明确：动作 POST 不套 CAS，也不需要伪装成资源信封）。
 	writeJSON(w, http.StatusOK, map[string]any{"status": "sent", "targetVersion": version})
+}
+
+// nodeForceFromQuery 读 `?force=`（true / 1 为真，与 v3 的两种写法一致）。
+func nodeForceFromQuery(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("force"))) {
+	case "true", "1":
+		return true
+	}
+	return false
 }
 
 // ---------- 内部工具 ----------
@@ -843,16 +875,9 @@ func nodeValidateConfigInput(namespaces *[]string, vars map[string]string, limit
 //
 // 未知字段一律 400 unknown_field：静默忽略会让调用方以为字段生效了（§3.1 E4）。
 func nodeDecodeStrictJSON(r *http.Request, dst any) error {
-	if r == nil || r.Body == nil {
-		return errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
-	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	raw, err := nodeReadJSONBody(r, 8<<20)
 	if err != nil {
-		return errStatus(http.StatusBadRequest, reasonBadRequest, "cannot read request body")
-	}
-	_ = r.Body.Close()
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
+		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -860,6 +885,73 @@ func nodeDecodeStrictJSON(r *http.Request, dst any) error {
 		return unknownFieldError(err)
 	}
 	return nil
+}
+
+// nodeDecodeConfigStrictJSON 解码配置写请求，并把 `status` 识别为**只读字段**。
+//
+// 为什么单独一层：config wrapper（PUT /v1/nodes/{name}/config 与批量）没有 spec/status
+// 结构，`status` 不在 dst 里，strict 解码会把它报成 `unknown_field`。但契约 E6 与 S1
+// 都规定「写 status → 400 status_not_writable」（信封路径与 ns/system 配置也是后者）。
+// 同一个客户端错误在两个入口给两个 reason，调用方只能把它当未知错误。
+//
+// 判据同时覆盖两种承载：顶层 `status`（单台）与 `updates[].status`（批量）。
+func nodeDecodeConfigStrictJSON(r *http.Request, dst any) error {
+	raw, err := nodeReadJSONBody(r, 8<<20)
+	if err != nil {
+		return err
+	}
+	if nodeHasStatusKey(raw) {
+		return errStatus(http.StatusBadRequest, reasonStatusNotWritable, "status is read-only")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return unknownFieldError(err)
+	}
+	return nil
+}
+
+// nodeHasStatusKey 在请求体里找 `status`：顶层键或 `updates[]` 每一项的顶层键。
+//
+// 只看对象顶层的键：spec 深处的同名键不属于写语义（这里也没有 spec 层）。
+func nodeHasStatusKey(raw []byte) bool {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return false // 坏 JSON 交给 strict 解码报可理解的 400
+	}
+	if _, ok := top["status"]; ok {
+		return true
+	}
+	var updates []json.RawMessage
+	if rawUpdates, ok := top["updates"]; ok {
+		_ = json.Unmarshal(rawUpdates, &updates)
+	}
+	for _, item := range updates {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(item, &obj); err != nil {
+			continue
+		}
+		if _, ok := obj["status"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeReadJSONBody 读一次有界的 JSON body（空 body → 400 BadRequest）。
+func nodeReadJSONBody(r *http.Request, limit int64) ([]byte, error) {
+	if r == nil || r.Body == nil {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, limit))
+	if err != nil {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, "cannot read request body")
+	}
+	_ = r.Body.Close()
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
+	}
+	return raw, nil
 }
 
 // nodeDecodeOptionalJSON 解码**可选** body（空 body / `null` / `{}` 都当"没给"）。

@@ -330,6 +330,29 @@ func TestCapabilityResourceCreateAndGet(t *testing.T) {
 		t.Fatalf("includeBody=true 应回脚本正文，实际 %#v", bodyFiles)
 	}
 
+	// includeBody 的取值语义与 Playbook 域共用同一份判据（m9）：
+	// false / 0 / 缺省 → 摘要；1（v3 前端写法）与 true 等价 → 全文。
+	for _, q := range []string{"?includeBody=false", "?includeBody=0", ""} {
+		rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "review", "")+q, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET%s: status=%d body=%s", q, rec.Code, rec.Body.String())
+		}
+		summarySpec := capObject(t, decodeCapJSON(t, rec)["spec"], "spec")
+		summaryFiles := capObject(t, capObject(t, summarySpec["run"], "run")["files"], "files")
+		if len(summaryFiles) != 0 {
+			t.Fatalf("includeBody%s 必须回摘要（files={}），实际 %#v", q, summaryFiles)
+		}
+	}
+	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "review", "")+"?includeBody=1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET includeBody=1: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	aliasSpec := capObject(t, decodeCapJSON(t, rec)["spec"], "spec")
+	aliasFiles := capObject(t, capObject(t, aliasSpec["run"], "run")["files"], "files")
+	if len(aliasFiles) != 1 {
+		t.Fatalf("includeBody=1 应与 true 等价（回正文），实际 %#v", aliasFiles)
+	}
+
 	// 不存在的 name → 404。
 	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "missing-one", ""), nil)
 	if rec.Code != http.StatusNotFound {

@@ -96,6 +96,7 @@ func newITEnv(t *testing.T) *itEnv {
 	newNodeAPI(deps).register(mux)
 	newNamespaceAPI(deps).register(mux)
 	newTaskAPI(deps).register(mux)
+	newRetainedReadAPI(deps).register(mux)
 
 	return &itEnv{
 		db:     db,
@@ -211,8 +212,6 @@ func TestAPIIntegrationRouteTableIsV4Only(t *testing.T) {
 		{"POST", "/v1/events"},
 		{"GET", "/v1/deployments"},
 		{"PUT", "/v1/capabilities/whatever/downstreams"},
-		{"GET", "/v1/orphans"},
-		{"GET", "/v1/stats"},
 	}
 	for _, r := range retired {
 		rec := e.do(t, r.method, r.path, nil)
@@ -229,9 +228,16 @@ func TestAPIIntegrationRouteTableIsV4Only(t *testing.T) {
 		"/v1/namespaces/" + e.slugA + "/playbooks",
 		"/v1/namespaces/" + e.slugA + "/tasks",
 		"/v1/namespaces/" + e.slugA + "/events",
+		// 保留域读模型：edges 是派生投影，deployments 是事实读模型（§8.4/§9）。
+		"/v1/namespaces/" + e.slugA + "/edges",
+		"/v1/namespaces/" + e.slugA + "/deployments",
+		// cluster 路径的保留读模型必须显式带 ?namespace=（缺参 400，不是 404）。
+		"/v1/stats?namespace=" + e.slugA,
+		"/v1/orphans?namespace=" + e.slugA,
 		"/v1/nodes",
 		"/v1/namespaces",
 		"/v1/system/config",
+		"/v1/capability-templates",
 	} {
 		rec := e.do(t, http.MethodGet, path, nil)
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {

@@ -17,6 +17,24 @@ import (
 // finalizers / deletionTimestamp（V4-D1「刻意不做」）。status 只读且必须恒存在
 // （无事实时 `{}` 而不是 null），空列表恒 `[]`。
 
+// includeBodyQuery 是读取正文全文的统一判据（Capability versions / Playbook 详情）。
+//
+// 契约（api-conventions §7.1/§7.3）写的是 `?includeBody=true`：两个域必须逐字一致。
+// 之前 Capability 只认字面 "true"、Playbook 另认 "1"，同一个前端参数在两个域给出
+// 不同结果（一个回正文、一个静默回摘要）——静默退化比 400 更难查。
+//
+// `1` 作为 v3 前端已发布的写法保留：它是对契约 `true` 的等价别名，不是第四种语义。
+func includeBodyQuery(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("includeBody"))) {
+	case "true", "1":
+		return true
+	}
+	return false
+}
+
 // objectMeta 是信封 metadata（§3.2）。没有 uid 列的资源（playbook 以外的多数资源
 // 都有 id 列）仍回填 UID：它是不透明身份，来自 store 行的 id。
 type objectMeta struct {

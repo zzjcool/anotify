@@ -746,3 +746,48 @@ func TestNamespaceResourceDeleteBlockedAndForce(t *testing.T) {
 		t.Fatalf("force 删除应级联清掉能力行，实际还剩 %d 条", len(caps))
 	}
 }
+
+// TestNamespaceResourceResolveByIDSlugSymmetry 钉住 m5：命名空间解析在**读写两条路径**
+// 上必须对称（资源路径已接受 slug-or-id，Namespace 自身 CRUD 不能只认 slug）。
+//
+// 不对称的症状：`GET /v1/namespaces/ns_xxx/capabilities` → 200，但
+// `GET /v1/namespaces/ns_xxx` → 404 —— 客户端会以为这个 ns 不存在/被删了。
+// 写路径（PATCH/DELETE）尤其危险：路径给 id 时若仍拿原文当 slug 去 store 写，
+// 会得到「读到 200、写到 404」的分裂。
+func TestNamespaceResourceResolveByIDSlugSymmetry(t *testing.T) {
+	env := newNamespaceTestEnv(t)
+	slug, uid, rv := nsrCreateNamespace(t, env, "by-id", "按 id 访问")
+
+	bySlug := nsrJSON(t, env.authed(http.MethodGet, "/v1/namespaces/"+slug, nil), http.StatusOK)
+	byID := nsrJSON(t, env.authed(http.MethodGet, "/v1/namespaces/"+uid, nil), http.StatusOK)
+	slugMeta := nsrObj(t, bySlug, "metadata")
+	idMeta := nsrObj(t, byID, "metadata")
+	if nsrStr(t, slugMeta, "uid") != nsrStr(t, idMeta, "uid") || nsrStr(t, idMeta, "name") != slug {
+		t.Fatalf("slug/id 两种写法应指向同一对象：slug=%v id=%v", slugMeta, idMeta)
+	}
+
+	// PATCH 走 id：真的写到同一个对象（displayName 生效、metadata.name 仍是 slug）。
+	patched := nsrJSON(t, env.authed(http.MethodPatch, "/v1/namespaces/"+uid, map[string]any{
+		"metadata": map[string]any{"displayName": "按 id 改名", "resourceVersion": rv},
+	}), http.StatusOK)
+	meta := nsrObj(t, patched, "metadata")
+	if got := nsrStr(t, meta, "name"); got != slug {
+		t.Fatalf("PATCH by id 后 metadata.name = %q, want %q", got, slug)
+	}
+	if got := nsrStr(t, meta, "displayName"); got != "按 id 改名" {
+		t.Fatalf("PATCH by id 未生效：displayName = %q", got)
+	}
+	nextRV := nsrResourceVersion(t, patched)
+
+	// 同一个 CAS 令牌在 slug 路径上已失效（证明两种写法操作的是同一个修订序列）。
+	nsrReason(t, env.authed(http.MethodPatch, "/v1/namespaces/"+slug, map[string]any{
+		"metadata": map[string]any{"displayName": "旧令牌", "resourceVersion": rv},
+	}), http.StatusConflict, reasonResourceVersionConflict)
+
+	// DELETE 走 id：同样按行上的 slug 删除。
+	rr := env.authed(http.MethodDelete, "/v1/namespaces/"+uid+"?resourceVersion="+nextRV, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("DELETE by id = %d, want 204（body=%s）", rr.Code, rr.Body.String())
+	}
+	nsrReason(t, env.authed(http.MethodGet, "/v1/namespaces/"+slug, nil), http.StatusNotFound, reasonNotFound)
+}

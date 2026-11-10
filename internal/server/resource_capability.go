@@ -103,7 +103,7 @@ func (a *capabilityAPI) list(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	includeBody := includeCapabilityBody(r)
+	includeBody := includeBodyQuery(r)
 	ordered := orderedCapabilityVersions(rows)
 	items := make([]apiEnvelope, 0, len(ordered))
 	for _, row := range ordered {
@@ -137,7 +137,7 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, store.ErrNotFound)
 		return
 	}
-	env, err := a.envelope(r.Context(), row, includeCapabilityBody(r))
+	env, err := a.envelope(r.Context(), row, includeBodyQuery(r))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -164,7 +164,7 @@ func (a *capabilityAPI) listVersions(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, store.ErrNotFound)
 		return
 	}
-	includeBody := includeCapabilityBody(r)
+	includeBody := includeBodyQuery(r)
 	items := make([]apiEnvelope, 0, len(versions))
 	for _, row := range versions {
 		env, err := a.envelope(r.Context(), row, includeBody)
@@ -195,7 +195,7 @@ func (a *capabilityAPI) getVersion(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), row, includeCapabilityBody(r))
+	env, err := a.envelope(r.Context(), row, includeBodyQuery(r))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -323,7 +323,7 @@ func (a *capabilityAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), cv, includeCapabilityBody(r))
+	env, err := a.envelope(r.Context(), cv, includeBodyQuery(r))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -393,7 +393,7 @@ func (a *capabilityAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	env, err := a.envelope(r.Context(), updated, includeCapabilityBody(r))
+	env, err := a.envelope(r.Context(), updated, includeBodyQuery(r))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -778,11 +778,6 @@ type capabilityStatus struct {
 	Resolved      capabilityResolved    `json:"resolved"`
 	Observed      map[string]any        `json:"observed"`
 	InstalledFrom string                `json:"installedFrom,omitempty"`
-}
-
-// includeCapabilityBody 判定是否回脚本正文（只有显式 `?includeBody=true` 才回）。
-func includeCapabilityBody(r *http.Request) bool {
-	return r.URL.Query().Get("includeBody") == "true"
 }
 
 // capabilityNameFromPath 取 `{name}` 路径段。
