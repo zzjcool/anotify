@@ -125,8 +125,11 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 	capA := v4Cap(t, db, alphaNS, "iso.alpha", 1)
 	task := v4Task(t, db, alphaNS, capA, "tr_iso", "{}")
 
-	// 只申报 beta 的在线节点（配置已 apply、持有 alpha 能力的正文）
+	// 只申报 beta 的在线节点（配置已 apply、持有 alpha 能力的正文）。
+	// S1-D7：显式部署现在同事务校验目标 ns 授权，所以「先在授权内下发、再撤销授权」
+	// 才是真实时序（节点仍持有内容，但不再被派发）。夹具按真实时序补 setup。
 	betaNode := v4Node(t, db, "beta-only", 1)
+	deployApplied(t, db, alphaNS, capA.ID, capA.Digest, betaNode.ID)
 	cfg, err := db.GetNodeConfig(ctx, betaNode.ID)
 	if err != nil {
 		t.Fatalf("get config: %v", err)
@@ -136,7 +139,6 @@ func TestNodeNamespaceIsolation(t *testing.T) {
 		t.Fatalf("put config: %v", err)
 	}
 	v4RecordApplied(t, db, betaNode.ID)
-	deployApplied(t, db, alphaNS, capA.ID, capA.Digest, betaNode.ID)
 
 	eligible, reasons, err := db.EligibleNodesForTask(ctx, task)
 	if err != nil {
@@ -258,6 +260,8 @@ func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 	deployApplied(t, db, nsID, c.ID, c.Digest, mine.ID)
 
 	theirs := v4Node(t, db, "theirs", 1)
+	// S1-D7：先在授权内下发，再撤销授权（真实时序；节点仍持有内容）。
+	deployApplied(t, db, nsID, c.ID, c.Digest, theirs.ID)
 	cfg, err := db.GetNodeConfig(ctx, theirs.ID)
 	if err != nil {
 		t.Fatalf("get config: %v", err)
@@ -267,7 +271,6 @@ func TestNodesForCapabilityNamespaceIsolation(t *testing.T) {
 		t.Fatalf("put config: %v", err)
 	}
 	v4RecordApplied(t, db, theirs.ID)
-	deployApplied(t, db, nsID, c.ID, c.Digest, theirs.ID)
 
 	eligible, reasons, err := db.EligibleNodesForTask(ctx, task)
 	if err != nil {

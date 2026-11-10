@@ -306,6 +306,9 @@ CREATE TABLE IF NOT EXISTS events (
     payload      TEXT NOT NULL DEFAULT '{}',
     delivery_id  TEXT,
     reason       TEXT NOT NULL DEFAULT 'Ingested',
+    -- receipt 是接收事务写下的**当时**回执（event/trace/task ids + pruned facts）。
+    -- 窗口内重复投递只能回这份持久事实，不许用当前可变资源重算一遍。
+    receipt      TEXT NOT NULL DEFAULT '{}',
     created_at   INTEGER NOT NULL
 );
 
@@ -367,7 +370,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     namespace_id       TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     trace_id           TEXT NOT NULL,
     parent_task_id     TEXT,
-    capability_id      TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE RESTRICT,
+    -- capability_id 只有「未解析派发失败」分支允许 NULL（见表尾两条 CHECK）：
+    -- 正常任务仍钉住真实能力行 UID；NULL 行没有 Node/lease/grant/结果事实。
+    capability_id      TEXT REFERENCES capability_versions(id) ON DELETE RESTRICT,
     capability         TEXT NOT NULL,
     version            INTEGER NOT NULL,
     digest             TEXT NOT NULL DEFAULT '',
@@ -400,7 +405,26 @@ CREATE TABLE IF NOT EXISTS tasks (
     started_at         INTEGER,
     finished_at        INTEGER,
     result_json        TEXT NOT NULL DEFAULT '',
-    result_accepted_at INTEGER
+    result_accepted_at INTEGER,
+    -- 未解析派发失败（downstream_missing）的唯一合法形状：failed、attempt=0、
+    -- 没有解析出的 digest、没有 Node/租约/token/候选/结果事实。
+    CONSTRAINT tasks_unresolved_failure_shape CHECK (
+        capability_id IS NOT NULL OR (
+            phase = 'failed' AND attempt = 0
+            AND digest = '' AND error = 'downstream_missing'
+            AND node_id IS NULL AND node_name = ''
+            AND lease_id = '' AND lease_until IS NULL AND lease_instance_id = ''
+            AND attempt_token_hash = ''
+            AND assignment_id = '' AND proposed_attempt = 0 AND assignment_expires_at IS NULL
+            AND waiting_reason = '' AND next_attempt_at IS NULL
+            AND cancel_reason = '' AND cancel_requested_at IS NULL
+            AND reported = 0 AND started_at IS NULL AND result_json = ''
+        )
+    ),
+    -- 已解析任务必须钉住真实版本 + digest（不允许「有 UID 但没有解析事实」的行）。
+    CONSTRAINT tasks_resolved_pin_shape CHECK (
+        capability_id IS NULL OR (digest <> '' AND version > 0)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_trace

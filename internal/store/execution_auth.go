@@ -307,7 +307,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 		rowProposedAttempt    int
 		rowAttempt            int
 		maxAttempts           int
-		capabilityID          string
+		capabilityID          sql.NullString
 		capability            string
 		namespaceID           string
 		cancelReq             sql.NullInt64
@@ -329,6 +329,11 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	}
 	if phase != TaskPending {
 		return "", "", 0, 0, fmt.Errorf("%w: task %s is %s", ErrInvalidTransition, taskID, phase)
+	}
+	// 未解析派发失败行（capability_id IS NULL）不是可执行任务：即使有人把它改回 pending
+	// 也不能拿到租约（表上的形状 CHECK 会先拒绝这种回写，这里是同一语义的入口护栏）。
+	if !capabilityID.Valid || capabilityID.String == "" {
+		return "", "", 0, 0, fmt.Errorf("%w: task %s 没有解析出的能力行，不能再授执行权", ErrInvalidTransition, taskID)
 	}
 	if cancelReq.Valid {
 		// 取消已经发出：永不再授新执行权（即使它又变回了 pending）。
@@ -376,7 +381,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 		return "", "", 0, 0, err
 	}
 
-	lc, lerr := lifecycleOn(ctx, ex, capabilityID)
+	lc, lerr := lifecycleOn(ctx, ex, capabilityID.String)
 	if lerr != nil {
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, lerr)
 	}
@@ -438,7 +443,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 	if terr != nil {
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, terr)
 	}
-	pinnedMaxPerNode, merr := maxPerNodeOn(ctx, ex, capabilityID)
+	pinnedMaxPerNode, merr := maxPerNodeOn(ctx, ex, capabilityID.String)
 	if merr != nil {
 		return "", "", 0, 0, fmt.Errorf("grant lease %s: %w", taskID, merr)
 	}
@@ -503,7 +508,7 @@ func (d *DB) GrantLeaseAuthorized(ctx context.Context, auth NodeAuthorization,
 
 	// attempt 快照与任务当前授权事实**同一事务**落盘：两者要么同时存在，要么都不存在。
 	if err := insertTaskAttemptOn(ctx, ex, &TaskAttempt{
-		CapabilityID:          capabilityID,
+		CapabilityID:          capabilityID.String,
 		TaskID:                taskID,
 		Attempt:               nextAttempt,
 		NodeID:                auth.NodeID,

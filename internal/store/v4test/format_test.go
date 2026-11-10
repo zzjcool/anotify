@@ -1008,7 +1008,8 @@ func seededFormatFixture(t *testing.T) string {
 		`INSERT INTO namespaces (id, slug, name, created_at) VALUES ('ns-keep', 'keep-ns', 'keep-name', 123)`,
 		`INSERT INTO namespace_configs (namespace_id, vars, updated_at) VALUES ('ns-keep', '{"input":"keep-ns-value"}', 123)`,
 		`INSERT INTO nodes (id, name, token_hash, created_at) VALUES ('n-keep', 'keep-node', 'keep-hash', 123)`,
-		`INSERT INTO tasks (id, namespace_id, trace_id, capability_id, capability, version, created_at) VALUES ('t-keep', 'ns-keep', 'trace-keep', 'cap-keep', 'cap-keep', 1, 123)`,
+		// S1-D1：已解析任务必须钉住真实 version/digest（baseline CHECK），种子行补 digest 事实。
+		`INSERT INTO tasks (id, namespace_id, trace_id, capability_id, capability, version, digest, created_at) VALUES ('t-keep', 'ns-keep', 'trace-keep', 'cap-keep', 'cap-keep', 1, 'sha256:keep', 123)`,
 		`INSERT INTO task_attempts (task_id, attempt, node_id, machine_limits, machine_vars, machine_var_sources) VALUES ('t-keep', 1, 'n-keep', '{"cpu":2}', '{"input":"keep-node-value"}', '{"input":"local"}')`,
 		`INSERT INTO emits (id, task_id, emit_id, to_ref, data, created_at) VALUES ('e-keep', 't-keep', 'emit-keep', 'target-keep', '{"input":"keep-emit-value"}', 123)`,
 	)

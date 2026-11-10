@@ -28,6 +28,28 @@ var ErrEmitNamespaceDenied = errors.New("namespace_unauthorized")
 // 某个节点 + 某个 attempt，两者都必须和权威事实对上。
 var ErrNodeIdentityMismatch = errors.New("node_identity_mismatch")
 
+// EmitPruneFact 是本次 emit 计划里被剪枝的一条观察事实（非 wire，不参与幂等回放比对）。
+//
+// 为什么计划事实要进同一个写事务：剪枝是「事件/emit 收到了但没派发出去」的唯一证据，
+// runtime 提前另一事务写会出现「授权/幂等都过了，剪枝却没落」的半截事实；也挡不住
+// 一次已经失去执行权的执行往观察流里写东西。
+type EmitPruneFact struct {
+	Capability string
+	Reason     string
+	Detail     string
+}
+
+// EmitFailureFact 是本次 emit 计划里未解析的下游目标（downstream_missing）。
+//
+// 它建的是**失败 Task**（phase=failed、attempt=0、NULL capability ref），不是剪枝：
+// capability.md §6.2 的下游缺失属于执行失败，必须能在任务/trace 里被看见。
+type EmitFailureFact struct {
+	Capability string
+	Version    int
+	Reason     string
+	Detail     string
+}
+
 // EmitRecord 是一次 emit 的落库行（capability.md §4.1 / D-I9）。
 //
 // 它是**幂等的唯一依据**：同一个 (task_id, emit_id) 只派发一次，重复请求回放同一结果。
@@ -46,6 +68,10 @@ type EmitRecord struct {
 	Data      json.RawMessage `json:"data"`
 	Result    json.RawMessage `json:"result"`
 	CreatedAt int64           `json:"createdAt"`
+	// PlannedPrunes / PlannedFailures 是**同事务计划事实**（没有 JSON 协议别名）：
+	// 一次 emit 的剪枝观察与下游缺失失败，与 emit 行/子任务同生共死。
+	PlannedPrunes   []EmitPruneFact   `json:"-"`
+	PlannedFailures []EmitFailureFact `json:"-"`
 }
 
 // EmitAuth 是一次 emit 的**授权事实**（store 内部形状，不镜像任何 wire DTO）。
@@ -171,6 +197,9 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 	if err := d.createTasksTx(ctx, tx, tasks); err != nil {
 		return nil, false, err
 	}
+	if err := d.writeEmitPlannedFactsOn(ctx, ex, rec, auth.Now); err != nil {
+		return nil, false, err
+	}
 	result, err := emitResult(rec, tasks)
 	if err != nil {
 		return nil, false, err
@@ -198,6 +227,66 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 		return nil, false, fmt.Errorf("emit: commit: %w", err)
 	}
 	return result, true, nil
+}
+
+// writeEmitPlannedFactsOn 在 emit 的**同一个事务**里写计划事实：
+//
+//   - 未解析失败 Task（downstream_missing）+ 它的错误观察事件；
+//   - 纯剪枝观察事件。
+//
+// 授权与历史 replay 已在前面完成（命中 replay 直接返回，不执行本函数——回放不得
+// 附带任何新写）。任何一条写失败都返回错误，由调用方整事务回滚；不吞 prune 错误。
+func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *EmitRecord, now int64) error {
+	if len(rec.PlannedFailures) == 0 && len(rec.PlannedPrunes) == 0 {
+		return nil
+	}
+	if now == 0 {
+		now = Now()
+	}
+	// 计划事实挂在发起 emit 的逻辑任务上（namespace/trace/父子关系都以它为准）。
+	var (
+		namespaceID string
+		traceID     string
+	)
+	err := ex.queryRowContext(ctx,
+		`SELECT namespace_id, trace_id FROM tasks WHERE id = ?`, rec.TaskID).Scan(&namespaceID, &traceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: task %s", ErrTaskNotRunning, rec.TaskID)
+	}
+	if err != nil {
+		return fmt.Errorf("emit %s: read parent task: %w", rec.TaskID, err)
+	}
+	parent := rec.TaskID
+	for _, f := range rec.PlannedFailures {
+		row, ferr := newDispatchFailureTask(namespaceID, traceID, &parent, DispatchFailureInputs{
+			Capability: f.Capability, Version: f.Version, Reason: f.Reason, Detail: f.Detail,
+		}, now)
+		if ferr != nil {
+			return ferr
+		}
+		if err := insertDispatchFailureTaskOn(ctx, ex, row, DispatchFailureInputs{
+			Capability: f.Capability, Version: f.Version, Reason: f.Reason, Detail: f.Detail,
+		}, now); err != nil {
+			return err
+		}
+	}
+	for _, p := range rec.PlannedPrunes {
+		payload, merr := json.Marshal(map[string]any{
+			"capability":   p.Capability,
+			"reason":       p.Reason,
+			"detail":       p.Detail,
+			"taskId":       rec.TaskID,
+			"parentTaskId": rec.TaskID,
+		})
+		if merr != nil {
+			return fmt.Errorf("emit %s: marshal prune: %w", rec.TaskID, merr)
+		}
+		ev := &Event{NamespaceID: namespaceID, TraceID: traceID, Type: p.Reason, Payload: payload, CreatedAt: now}
+		if err := insertPruneFactEventOn(ctx, ex, ev); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // authorizeEmitOn 做 EmitAuthorized 的第 1-3 步（节点身份 / ns 授权 / 执行授权）。

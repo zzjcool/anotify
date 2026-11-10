@@ -229,18 +229,32 @@ func (d *DB) CreateDeployments(ctx context.Context, namespaceID, capabilityID, d
 	}
 
 	seen := make(map[string]bool, len(nodeIDs))
+	targets := make([]string, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		if nodeID == "" || seen[nodeID] {
 			continue
 		}
 		seen[nodeID] = true
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE id = ?`, nodeID).Scan(&exists); err != nil {
-			return nil, fmt.Errorf("create deployments: probe node %s: %w", nodeID, err)
-		}
-		if exists == 0 {
+		targets = append(targets, nodeID)
+	}
+	// 权限 pass：显式目标必须**当前**存在且 declared ∩ authorized 覆盖目标 ns。
+	// 任何目标未授权/不存在 → 本包 0 写（不 supersede 先前合法 intent，不建新 pending）。
+	// offline 不是未授权：已配置授权的离线节点仍然是合法的 pending 意图。
+	ex := txExec{tx: tx}
+	for _, nodeID := range targets {
+		var rawDeclared string
+		err := tx.QueryRowContext(ctx, `SELECT declared_namespaces FROM nodes WHERE id = ?`, nodeID).Scan(&rawDeclared)
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("create deployments: node %s: %w", nodeID, ErrNotFound)
 		}
+		if err != nil {
+			return nil, fmt.Errorf("create deployments: probe node %s: %w", nodeID, err)
+		}
+		if err := namespaceAllowedOn(ctx, ex, nodeID, rawDeclared, namespaceID); err != nil {
+			return nil, fmt.Errorf("create deployments: node %s: %w", nodeID, err)
+		}
+	}
+	for _, nodeID := range targets {
 		// 取代范围只能是同一能力的旧行（别的能力不碰）。
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM deployments
@@ -411,6 +425,138 @@ func (d *DB) MarkDeployResult(ctx context.Context, namespaceID, deployID, state,
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// ErrDeploymentReceiptConflict 表示一次部署回执与**当前 intent/已记录 receipt** 不一致。
+//
+// 它覆盖三种同源事故：requestId/digest/capability 身份对不上当前 intent；intent 已被
+// supersede（旧行不存在已被 ErrNotFound 拦住）；同一 intent 已经记录过一个不同的
+// state/reason。任何一种都 0 写——不能拿迟到/伪造的回执改掉现在的期望。
+var ErrDeploymentReceiptConflict = errors.New("store: deployment receipt conflict")
+
+// DeploymentRequestID 是部署帧 requestId 的稳定格式：同一次重放保持同一个值（部署行 id 派生）。
+func DeploymentRequestID(deploymentID string) string { return "dep_" + deploymentID }
+
+// DeploymentResultInputs 是一次节点部署回执的 typed 事实（领域形态，不是 wire）。
+type DeploymentResultInputs struct {
+	DeploymentID string
+	// RequestID 只做关联（必须 == "dep_"+DeploymentID），**不选身份**。
+	RequestID    string
+	NamespaceID  string
+	CapabilityID string
+	Capability   string
+	Version      int
+	Digest       string
+	// State 闭集：applied | failed。
+	State string
+	// Reason 是节点给的短码/说明（applied 时可为空）。
+	Reason string
+	// Now 可信 server 时刻（0 → Now()）。
+	Now int64
+}
+
+// MarkDeployResultAuthorized 落一条节点部署回执（**当前凭证 + 当前 intent 同一事务**）。
+//
+// 事务内判据：
+//  1. 当前 credential hash（nodes.token_hash == auth.NodeTokenHash）；
+//  2. namespace 当前仍对该节点可用（撤销后 0 写）；
+//  3. intent 行存在且归属 auth.NodeID（跨 Node 拒绝）；
+//  4. requestId == "dep_"+deploymentID；capability UID/name/version/digest 与当前
+//     intent 及能力行完整一致（旧 receipt / 错 digest 不能改当前 intent）；
+//  5. 已记录 receipt：精确同 state+reason 幂等（0 DML）；changed body → 冲突。
+//
+// 旧内部 MarkDeployResult 保留给现存调用方，但新 wire 消费者只能走这里；
+// 不允许 Get/precheck 后裸 Mark。
+func (d *DB) MarkDeployResultAuthorized(ctx context.Context, auth NodeAuthorization, in DeploymentResultInputs) error {
+	if in.State != DeploymentApplied && in.State != DeploymentFailed {
+		return fmt.Errorf("%w: deployment result state 只允许 applied | failed，得到 %q", ErrInvalidTransition, in.State)
+	}
+	if in.DeploymentID == "" || in.NamespaceID == "" || in.CapabilityID == "" || in.Digest == "" {
+		return fmt.Errorf("%w: deployment result 必须带 deploymentID/namespace/capability/digest", ErrDeploymentReceiptConflict)
+	}
+	if in.RequestID != DeploymentRequestID(in.DeploymentID) {
+		return fmt.Errorf("%w: request %q 不属于 intent %q", ErrDeploymentReceiptConflict, in.RequestID, in.DeploymentID)
+	}
+	if err := auth.validate(); err != nil {
+		return err
+	}
+	if in.Now == 0 {
+		in.Now = Now()
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("mark deploy result %s: begin: %w", in.DeploymentID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+
+	rawDeclared, err := authorizeNodeOn(ctx, ex, auth)
+	if err != nil {
+		return err
+	}
+	if err := namespaceAllowedOn(ctx, ex, auth.NodeID, rawDeclared, in.NamespaceID); err != nil {
+		return err
+	}
+
+	var (
+		nodeID     string
+		capability string
+		capName    string
+		capVersion int
+		digest     string
+		state      string
+		reason     string
+	)
+	err = ex.queryRowContext(ctx,
+		`SELECT d.node_id, d.capability_id, `+deploymentDigestSQL+`, d.state, d.reason, c.name, c.version
+		   FROM deployments d
+		   JOIN capability_versions c ON c.id = d.capability_id
+		  WHERE d.namespace_id = ? AND d.id = ?`, in.NamespaceID, in.DeploymentID).
+		Scan(&nodeID, &capability, &digest, &state, &reason, &capName, &capVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: deployment %s", ErrNotFound, in.DeploymentID)
+	}
+	if err != nil {
+		return fmt.Errorf("mark deploy result %s: read intent: %w", in.DeploymentID, err)
+	}
+	if nodeID != auth.NodeID {
+		return fmt.Errorf("%w: deployment %s 属于节点 %s，不是 %s",
+			ErrNodeIdentityMismatch, in.DeploymentID, nodeID, auth.NodeID)
+	}
+	if capability != in.CapabilityID || capName != in.Capability || capVersion != in.Version || digest != in.Digest {
+		return fmt.Errorf("%w: deployment %s 的 intent 身份 %s/%s@%d %s 与回执 %s/%s@%d %s 不一致",
+			ErrDeploymentReceiptConflict, in.DeploymentID, capability, capName, capVersion, digest,
+			in.CapabilityID, in.Capability, in.Version, in.Digest)
+	}
+
+	// 已记录 receipt：精确同结果幂等（0 DML）；changed body 冲突。
+	if state == in.State && reason == in.Reason {
+		return nil // 只读命中，回滚空事务
+	}
+	if state == DeploymentApplied || state == DeploymentFailed {
+		return fmt.Errorf("%w: deployment %s 已记录 %s/%q，拒绝改成 %s/%q",
+			ErrDeploymentReceiptConflict, in.DeploymentID, state, reason, in.State, in.Reason)
+	}
+
+	res, err := ex.execContext(ctx,
+		`UPDATE deployments SET state = ?, reason = ?, updated_at = ?
+		  WHERE namespace_id = ? AND id = ? AND node_id = ? AND capability_id = ?
+		    AND state = ? AND reason = ?`,
+		in.State, in.Reason, in.Now, in.NamespaceID, in.DeploymentID, auth.NodeID, in.CapabilityID,
+		state, reason)
+	if err != nil {
+		return fmt.Errorf("mark deploy result %s: %w", in.DeploymentID, err)
+	}
+	if n, rerr := res.RowsAffected(); rerr != nil {
+		return fmt.Errorf("mark deploy result %s: rows: %w", in.DeploymentID, rerr)
+	} else if n == 0 {
+		return fmt.Errorf("%w: deployment %s 的 intent 已被并发改动", ErrDeploymentReceiptConflict, in.DeploymentID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("mark deploy result %s: commit: %w", in.DeploymentID, err)
 	}
 	return nil
 }

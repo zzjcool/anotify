@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/sourcespec"
@@ -246,6 +247,15 @@ func claimDeliveryOn(ctx context.Context, ex queryExec, e *Event, sourceKey stri
 // **永远留痕**：剪枝是「事件收到了但没派出去」的唯一证据，去重会把同一 trace 里
 // 多条相同的剪枝压成一条，反而掩盖了扇出规模。所以这里不做幂等（也不带 deliveryId）。
 func (d *DB) InsertPruneEvent(ctx context.Context, e *Event) error {
+	return insertPruneFactEventOn(ctx, d, e)
+}
+
+// insertPruneFactEventOn 是剪枝/失败观察事件的唯一边写实现（*DB 与 tx 共用）。
+//
+// 它跟 InsertPruneEvent 是同一份语义：**永远留痕**（不做投递幂等、不带 deliveryId），
+// source 固定为中枢观察来源 `route`，reason 固定 `Pruned`，type 是闭集剪枝码。
+// 失败 task 的 downstream_missing 观察也走这里（type=downstream_missing）。
+func insertPruneFactEventOn(ctx context.Context, ex queryExec, e *Event) error {
 	if e == nil {
 		return fmt.Errorf("insert prune event: nil")
 	}
@@ -274,10 +284,7 @@ func (d *DB) InsertPruneEvent(ctx context.Context, e *Event) error {
 	e.Source = EventPruneSource
 	e.Reason = EventReasonPruned
 	e.DeliveryID = nil
-	if err := d.insertEventRow(ctx, e, payload); err != nil {
-		return err
-	}
-	return nil
+	return insertEventRowOn(ctx, ex, e, payload)
 }
 
 // insertEventRow 在连接池上插一行（内部路径；事务内走 insertEventRowOn）。
@@ -299,6 +306,50 @@ func insertEventRowOn(ctx context.Context, ex queryExec, e *Event, payload strin
 	}
 	e.Payload = json.RawMessage(payload)
 	return nil
+}
+
+// insertIngestEventOn 插一行**接收事务**事件，并把当时回执作为内部持久事实写入。
+//
+// receipt 是 event/trace/task ids + pruned facts 的快照：窗口内重复投递只能回这份
+// 持久字节（不能第二次查询当前可变资源重算，那会给出与第一次不同的答案）。
+func insertIngestEventOn(ctx context.Context, ex queryExec, e *Event, payload string, receipt []byte) error {
+	if len(receipt) == 0 || !json.Valid(receipt) {
+		return fmt.Errorf("insert event: invalid receipt")
+	}
+	var deliveryID any
+	if e.DeliveryID != nil && *e.DeliveryID != "" {
+		deliveryID = *e.DeliveryID
+	}
+	if _, err := ex.execContext(ctx,
+		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, delivery_id, reason, receipt, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, deliveryID, e.Reason,
+		string(receipt), e.CreatedAt); err != nil {
+		return fmt.Errorf("insert event: %w", err)
+	}
+	e.Payload = json.RawMessage(payload)
+	return nil
+}
+
+// readEventReceiptOn 读一条事件行上持久化的接收回执（事务内）。
+//
+// 空列 / `{}` = 这行不是接收事务写的（没有 receipt 事实）→ ErrSourceEventReceiptMissing：
+// 宁可明确报错也不凭空造一份「看起来像第一次」的回执。
+func readEventReceiptOn(ctx context.Context, ex queryExec, namespaceID, eventID string) (json.RawMessage, error) {
+	var raw string
+	err := ex.queryRowContext(ctx,
+		`SELECT receipt FROM events WHERE namespace_id = ? AND id = ?`, namespaceID, eventID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSourceEventReceiptMissing
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read event receipt: %w", err)
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" || !json.Valid([]byte(trimmed)) {
+		return nil, ErrSourceEventReceiptMissing
+	}
+	return json.RawMessage(trimmed), nil
 }
 
 // getEventByIDOn 按 (namespace, id) 取事件（事务内读）；未命中 ErrNotFound。

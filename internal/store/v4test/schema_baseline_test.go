@@ -689,7 +689,9 @@ func TestC3bResultFactsSchemaRejectsMissingColumnsZeroWrites(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw := openRawFixture(t, path)
-			mustExecSQL(t, raw, `ALTER TABLE "`+tc.table+`" DROP COLUMN "`+tc.column+`"`)
+			// tasks 的未解析失败形状 CHECK 引用了 result_json，SQLite 不允许 DROP 被 CHECK
+			// 引用的列；RENAME 制造同样的「缺列」事实，严格 Open 的拒绝对不变。
+			mustExecSQL(t, raw, `ALTER TABLE "`+tc.table+`" RENAME COLUMN "`+tc.column+`" TO c1r_missing`)
 			if err := raw.Close(); err != nil {
 				t.Fatal(err)
 			}

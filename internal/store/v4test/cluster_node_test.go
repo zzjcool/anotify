@@ -506,9 +506,9 @@ func TestNodeInstancesAndLeases(t *testing.T) {
 		t.Fatalf("list other instances: %v %d", lerr, len(insts))
 	}
 	if _, err := db.Exec(
-		`INSERT INTO tasks (id, namespace_id, trace_id, capability_id, capability, version, phase, node_id, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		"tsk_running", nsID, "trace-1", cap.ID, cap.Name, cap.Version,
+		`INSERT INTO tasks (id, namespace_id, trace_id, capability_id, capability, version, digest, phase, node_id, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		"tsk_running", nsID, "trace-1", cap.ID, cap.Name, cap.Version, cap.Digest,
 		string(protocol.TaskPhaseRunning), other.ID, store.Now()); err != nil {
 		t.Fatalf("insert running task: %v", err)
 	}

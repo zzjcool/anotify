@@ -214,6 +214,11 @@ func TestResourceCASCapabilityDeletePinsAndRecreate(t *testing.T) {
 	}
 	task := newTask(t, db, ns, old, "pin-old", "")
 	node := newClusterNode(t, db, "pinned")
+	// S1-D7：显式部署必须先在事务里覆盖目标 ns 的授权。夹具节点默认没有申报任何
+	// namespace，这里补真实的申报事实（不改任何期望 0 写/FK/digest 行为）。
+	if _, err := db.Exec(`UPDATE nodes SET declared_namespaces = ? WHERE id = ?`, `["delete-pin"]`, node.ID); err != nil {
+		t.Fatalf("declare node namespace: %v", err)
+	}
 	if _, err := db.CreateDeployments(ctx, ns, old.ID, old.Digest, []string{node.ID}); err != nil {
 		t.Fatal(err)
 	}

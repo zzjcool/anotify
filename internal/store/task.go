@@ -201,11 +201,12 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		artifacts  string
 		nsVars     string
 		rawResult  string
+		capability sql.NullString
 		idempotent int
 		reported   int
 	)
 	if err := rows.Scan(
-		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &t.CapabilityID, &t.Capability,
+		&t.ID, &t.NamespaceID, &t.TraceID, &t.ParentTaskID, &capability, &t.Capability,
 		&t.Version, &t.Digest, &params, &t.Phase, &t.NodeID, &t.NodeName, &t.ConfigRevision,
 		&t.Attempt, &t.MaxAttempts, &t.AssignmentID, &t.ProposedAttempt, &t.AssignmentExpiresAt, &idempotent,
 		&t.LeaseID, &t.LeaseUntil, &t.LeaseInstanceID, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
@@ -214,6 +215,9 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
+	// NULL capability_id 只属于「未解析派发失败」：内部用空串表示没有解析事实，
+	// 不把 NULL 泄漏成扫描错误，也不把空串回写成 NULL（普通建行入口会拒绝空串）。
+	t.CapabilityID = capability.String
 	t.ResultJSON = json.RawMessage(rawResult)
 	if rawResult != "" {
 		var result TaskResult
@@ -315,6 +319,16 @@ func (d *DB) createTasksTx(ctx context.Context, tx *sql.Tx, ts []*Task) error {
 		}
 		if err := CheckTaskParamsSize(t.ID, t.Params); err != nil {
 			return fmt.Errorf("create tasks: task %d: %w", i, err)
+		}
+		// 未解析派发失败是**唯一**允许没有能力行的任务形状，它只能由 store 的
+		// 失败 fact 路径创建（phase=failed + error=downstream_missing + NULL ref）。
+		// 普通 pending 建行拿不到真实 UID 一律拒绝，不能把 nullable 当普通任务放行。
+		if t.CapabilityID == "" {
+			return fmt.Errorf("create tasks: task %d: 未解析任务必须经失败事实入口创建（capability_id 为空）", i)
+		}
+		if t.Digest == "" || t.Version <= 0 {
+			return fmt.Errorf("create tasks: task %d: 已解析任务必须钉住真实 version/digest（version=%d digest=%q）",
+				i, t.Version, t.Digest)
 		}
 		// D2：**接受即为任务输入钉版**。ns 默认值属于任务输入，不是层叠配置：
 		// 它必须留下可复现载体，否则排队期间改一次 ns 配置，已接受的任务就换了一
