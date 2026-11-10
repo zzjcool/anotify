@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -179,5 +180,121 @@ func TestEmitAuthorizedPruneFailureRollsBackWholeTransaction(t *testing.T) {
 		if task.ID != parent.ID {
 			t.Fatalf("prune 写失败后子任务/失败任务还在: %+v", task)
 		}
+	}
+}
+
+// TestEmitAuthorizedPlannedPruneClosedSet 把 Emit 侧的计划剪枝钉到与 Source 接收
+// **同一个闭集**（protocol.IsPruneReason）：downstream_missing 是失败 Task 的观察
+// 事件，不是剪枝；任意其它码同样不能从 Emit 混进 status.observed.pruned。
+//
+// 为什么必须在写之前拒：emit 的计划事实与子任务同事务，错误码一旦落库就变成
+// 「失败被伪装成剪枝」的假事实（事件 type 就是那个 reason）。
+func TestEmitAuthorizedPlannedPruneClosedSet(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	_, _, parent, auth, _ := emitFixture(t, db, nsID, "review", "prune-closed-node", "tr_emit_prune_closed")
+
+	tasksBefore, err := db.ListTasksByTrace(ctx, nsID, parent.TraceID)
+	if err != nil {
+		t.Fatalf("list tasks before: %v", err)
+	}
+	eventsBefore, err := db.ListEvents(ctx, nsID, parent.TraceID, "", 50)
+	if err != nil {
+		t.Fatalf("list events before: %v", err)
+	}
+
+	for _, reason := range []string{
+		protocol.ReasonDownstreamMissing, // 失败 Task 的观察码，不是剪枝
+		"script_failed",                  // 任意失败码
+		"",                               // 空 reason
+		"param_bogus",                    // 长得像剪枝码但不在闭集
+	} {
+		t.Run("reason="+reason, func(t *testing.T) {
+			emitID := "emit-prune-closed-" + reason
+			_, first, err := db.EmitAuthorized(ctx, auth, &EmitRecord{
+				TaskID: parent.ID, EmitID: &emitID, ToRef: "fix", Data: json.RawMessage(`{}`),
+				PlannedPrunes: []EmitPruneFact{{Capability: "review", Reason: reason, Detail: "非法剪枝码"}},
+			}, nil)
+			if err == nil {
+				t.Fatalf("计划剪枝接受了非闭集 reason %q（first=%v）", reason, first)
+			}
+			if !strings.Contains(err.Error(), "不是剪枝码") {
+				t.Fatalf("错误没点名剪枝闭集: %v", err)
+			}
+			// 0 写：任务/事件/emit 行一条都不许留（整事务回滚）。
+			tasksAfter, _ := db.ListTasksByTrace(ctx, nsID, parent.TraceID)
+			eventsAfter, _ := db.ListEvents(ctx, nsID, parent.TraceID, "", 50)
+			if len(tasksAfter) != len(tasksBefore) || len(eventsAfter) != len(eventsBefore) {
+				t.Fatalf("拒绝路径产生了写: tasks %d→%d events %d→%d",
+					len(tasksBefore), len(tasksAfter), len(eventsBefore), len(eventsAfter))
+			}
+			if _, lerr := db.LookupEmit(ctx, parent.ID, emitID); !errors.Is(lerr, ErrNotFound) {
+				t.Fatalf("拒绝路径写了 emit 行: %v", lerr)
+			}
+		})
+	}
+
+	// 合法对照：真剪枝码必须照旧成功写入 1 条 prune 事件（防过度收紧）。
+	emitID := "emit-prune-closed-ok"
+	if _, first, err := db.EmitAuthorized(ctx, auth, &EmitRecord{
+		TaskID: parent.ID, EmitID: &emitID, ToRef: "fix", Data: json.RawMessage(`{}`),
+		PlannedPrunes: []EmitPruneFact{{Capability: "review", Reason: protocol.ReasonParamMissing, Detail: "需要 diff"}},
+	}, nil); err != nil || !first {
+		t.Fatalf("合法剪枝码被拒: first=%v err=%v", first, err)
+	}
+	eventsAfter, err := db.ListEvents(ctx, nsID, parent.TraceID, "", 50)
+	if err != nil {
+		t.Fatalf("list events after: %v", err)
+	}
+	pruned := 0
+	for _, ev := range eventsAfter {
+		if ev.Type == protocol.ReasonParamMissing {
+			pruned++
+		}
+	}
+	if pruned != 1 || len(eventsAfter) != len(eventsBefore)+1 {
+		t.Fatalf("合法剪枝写入 = %d 条 param_missing（events %d→%d）", pruned, len(eventsBefore), len(eventsAfter))
+	}
+}
+
+// TestEmitAuthorizedPlannedFailureReasonClosedSet 是**既有防线，补覆盖**：
+// 计划失败事实的 reason 只能 downstream_missing（normalizeDispatchFailure），
+// 不允许把 script_failed 之类的失败码借 Emit 计划写进失败 Task 的 error 投影。
+func TestEmitAuthorizedPlannedFailureReasonClosedSet(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c, _, parent, auth, _ := emitFixture(t, db, nsID, "review", "failure-reason-node", "tr_emit_failure_reason")
+
+	tasksBefore, err := db.ListTasksByTrace(ctx, nsID, parent.TraceID)
+	if err != nil {
+		t.Fatalf("list tasks before: %v", err)
+	}
+	eventsBefore, err := db.ListEvents(ctx, nsID, parent.TraceID, "", 50)
+	if err != nil {
+		t.Fatalf("list events before: %v", err)
+	}
+
+	emitID := "emit-failure-reason"
+	_, _, err = db.EmitAuthorized(ctx, auth, &EmitRecord{
+		TaskID: parent.ID, EmitID: &emitID, ToRef: "fix", Data: json.RawMessage(`{}`),
+		PlannedFailures: []EmitFailureFact{{Capability: "ghost", Reason: "script_failed"}},
+	}, []*Task{mkTask(nsID, parent.TraceID, c)})
+	if err == nil {
+		t.Fatal("计划失败事实接受了 script_failed")
+	}
+	if !strings.Contains(err.Error(), "不是未解析派发失败") {
+		t.Fatalf("错误没点名失败 reason 闭集: %v", err)
+	}
+	// 0 写：createTasksTx 已写的子任务也随整事务回滚。
+	tasksAfter, _ := db.ListTasksByTrace(ctx, nsID, parent.TraceID)
+	eventsAfter, _ := db.ListEvents(ctx, nsID, parent.TraceID, "", 50)
+	if len(tasksAfter) != len(tasksBefore) || len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("拒绝路径产生了写: tasks %d→%d events %d→%d",
+			len(tasksBefore), len(tasksAfter), len(eventsBefore), len(eventsAfter))
+	}
+	if _, lerr := db.LookupEmit(ctx, parent.ID, emitID); !errors.Is(lerr, ErrNotFound) {
+		t.Fatalf("拒绝路径写了 emit 行: %v", lerr)
 	}
 }

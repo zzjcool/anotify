@@ -145,6 +145,10 @@ func lookupEmitOn(ctx context.Context, ex queryExec, taskID, emitID string) (*Em
 //     不同 → ErrEmitIDConflict（**第 3 步不过就一律拒，已存在也不能绕过**）；
 //  5. 写入：插入 emit 行 + 同事务建子任务（任何一条失败整体回滚）。
 //
+// 计划事实（PlannedPrunes）的 reason 必须是 protocol.IsPruneReason，校验位置在
+// 授权与 replay 之后、**任何写之前**——downstream_missing 是失败 Task 的观察码，
+// 不是剪枝，不能从这里混进 status.observed.pruned。
+//
 // 第 4 步为什么必须在授权之后：一条**已经失效**的执行（被取消 / 租约过期 / 被重派）
 // 如果能靠「我上次已经 emit 过」拿到回执，它就会认为自己仍然拥有执行权，
 // 于是继续跑完并写终态——幂等变成了绕过授权的后门。
@@ -197,6 +201,12 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 		}
 	}
 
+	// 计划事实的闭集校验先于**任何写**：非法剪枝码一旦落库，就是一条
+	// 「把失败伪装成剪枝」的假事实（事件 type 就是那个 reason）。
+	if err := validateEmitPlannedPrunes(rec); err != nil {
+		return nil, false, err
+	}
+
 	if err := d.createTasksTx(ctx, tx, tasks); err != nil {
 		return nil, false, err
 	}
@@ -231,6 +241,24 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 		return nil, false, fmt.Errorf("emit: commit: %w", err)
 	}
 	return result, true, nil
+}
+
+// validateEmitPlannedPrunes 把 Emit 侧的计划剪枝收紧到与 Source 接收同一个闭集：
+// 剪枝只允许 protocol.IsPruneReason；downstream_missing 是失败 Task 的观察事件，
+// 不是剪枝，不能从这里混进 status.observed.pruned。
+//
+// 为什么不能只靠 insertPruneFactEventOn（event.go）的守卫：它为了失败 Task 的
+// downstream_missing 观察事件而**显式允许**那个码，所以 Emit 计划里的剪枝必须
+// 在写之前用更紧的闭集单独校验（否则 downstream_missing / 空码 / 任意失败码
+// 都能从这条路径变成剪枝留痕）。
+func validateEmitPlannedPrunes(rec *EmitRecord) error {
+	for i, p := range rec.PlannedPrunes {
+		if !protocol.IsPruneReason(p.Reason) {
+			return fmt.Errorf("emit %s: planned prune %d reason %q 不是剪枝码（闭集：%v；downstream_missing 走失败 Task）",
+				rec.TaskID, i, p.Reason, protocol.PruneReasons())
+		}
+	}
+	return nil
 }
 
 // writeEmitPlannedFactsOn 在 emit 的**同一个事务**里写计划事实：
@@ -282,6 +310,8 @@ func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *Emi
 		failureTaskIDs = append(failureTaskIDs, row.ID)
 	}
 	for _, p := range rec.PlannedPrunes {
+		// Reason 已由 validateEmitPlannedPrunes 按剪枝闭集校验过；这里不再放宽，
+		// 事件类型就是那个 reason（观察面不另外存副本）。
 		payload, merr := json.Marshal(map[string]any{
 			"capability":   p.Capability,
 			"reason":       p.Reason,
