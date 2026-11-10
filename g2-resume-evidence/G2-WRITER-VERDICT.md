@@ -2,7 +2,8 @@
 
 - 分支：`pi-subagent/core-g2-resume-52fc54d4`
 - 基线：`5441426`（父冻结卡 `G2-RESUME-FROZEN.md`）
-- **source code commit**：`e552bd3`（136 files changed, +4897/−52940；含旧包/旧产品删除）
+- **runtime code commit**：`e552bd3`（136 files changed, +4897/−52940；含旧包/旧产品删除）
+- 追加「预算收缩」回归 + 本证据更新：本文件所在 HEAD（父用 `git log -1` 取）
 - 本文件 + `TEST-MAPPING.md` G2 行：紧随 code commit 的文档 commit（父以 `git log -1` 取本文件 SHA）
 - 本节点身份：G2 唯一 source writer，`worktree:false`，未派任何嵌套 writer/subagent，未 push/MR/merge/rebase/reset。
 
@@ -47,7 +48,7 @@ g2-resume-evidence/G2-WRITER-INTERFACES.md   （本文与 TEST-MAPPING G2 行见
 
 ---
 
-## 3. 新增测试（57 个，全部真实 store/httptest/共享 protocol）
+## 3. 新增测试（58 个，全部真实 store/httptest/共享 protocol）
 
 - `internal/route`（23）：`TestPrepareParamsPermissiveSchema`、`TestPrepareParamsDefaultsRequiredAndExtra`、
   `TestPrepareParamsMissingRequired`、`TestPrepareParamsTypeMismatch`、`TestPrepareParamsBadSchema`、
@@ -58,12 +59,13 @@ g2-resume-evidence/G2-WRITER-INTERFACES.md   （本文与 TEST-MAPPING G2 行见
   `TestEmitCreatesPinnedChildTask`、`TestEmitWithoutIDAlwaysCreatesNew`、`TestEmitSameIDReplaysAndConflicts`、
   `TestEmitUndeclaredTargetRejected`、`TestEmitMissingTargetRejected`、`TestEmitPruneReceiptAndTrace`、
   `TestEmitAuthorizesBeforeReplay`、`TestEmitOnFinishedTaskIsNotRunning`、`TestEmitUnknownTaskIsTokenInvalid`。
-- `internal/ws`（15）：`TestDispatchFrameCarriesNoExecutionAuthority`、`TestAcceptGrantsSameSlotAndResultAcks`、
+- `internal/ws`（16）：`TestDispatchFrameCarriesNoExecutionAuthority`、`TestAcceptGrantsSameSlotAndResultAcks`、
   `TestAcceptRejectsInvalidSlotAndIdentity`、`TestRotatedCredentialGrantsNothing`、`TestNamespaceRevocationGrantsNothing`、
   `TestRenewAtExpiryIsRejected`、`TestCancelAckMatrix`、`TestRehelloUnknownBusyDoesNotRelease`、
   `TestDisconnectKeepsBusyUntilExplicitFact`、`TestEmitRoundTripAndErrors`、
   `TestLogsRequestCorrelatesHistoryAndEmptyPrevious`、`TestDeployNotifiesOnlineAndReplaysOnReconnect`、
-  `TestConfigAppliedAndAgentFactsPersist`、`TestUpgradeFrameAndAck`、`TestUnknownFrameKeepsConnectionAndBadFrameCloses`。
+  `TestConfigAppliedAndAgentFactsPersist`、`TestUpgradeFrameAndAck`、`TestUnknownFrameKeepsConnectionAndBadFrameCloses`、
+  `TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant`（预算 2→1 后旧 busy 保留、新 accept 回 pending/waiting_for_slot）。
 - `internal/source`（11）：`TestIngestManualUnifiedReceiptAndTask`、`TestIngestNoTargetPruneAndEvent`、
   `TestIngestParamPruneIsPerTarget`、`TestIngestPayloadSchemaPrune`、`TestIngestDuplicateDeliveryReturnsOriginal`、
   `TestIngestManualPayloadOverridesConfigOneLevel`、`TestPreviewWritesNothing`、`TestHookDisabledIsNotFound`、
@@ -121,7 +123,7 @@ g2-resume-evidence/G2-WRITER-INTERFACES.md   （本文与 TEST-MAPPING G2 行见
 cwd/root/GOMOD 均为
 `/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume`。
 
-Gate 1（**只读**格式门禁；父纠错后的唯一形式）— log `/tmp/anotify-core-recovery-g2-final-gate1-format.log`：
+Gate 1（**只读**格式门禁；父纠错后的唯一形式）— log `/tmp/anotify-core-recovery-g2-final2-gate1-format.log`：
 
 ```text
 CMD: test -z "$(gofmt -l internal/route internal/ws internal/lease internal/source internal/trigger internal/logging)" && git diff --check
@@ -131,34 +133,34 @@ EXIT:0
 > 说明：编辑阶段用过 `gofmt -w` 做排版；它**不是**验收。原 `gofmt -w … && git diff --check`
 > 证书（历史 gate1 日志 `/tmp/anotify-core-recovery-g2-gate.log`）**无效**，本文件不引用它作为证据。
 
-Gate 2（vet）— log `/tmp/anotify-core-recovery-g2-final-gate2-vet.log`：
+Gate 2（vet）— log `/tmp/anotify-core-recovery-g2-final2-gate2-vet.log`：
 
 ```text
 CMD: go vet route/ws/lease/source/trigger/logging
 EXIT:0
 ```
 
-Gate 3（六个运行期包测试）— log `/tmp/anotify-core-recovery-g2-final-gate3-runtime-test.log`：
+Gate 3（六个运行期包测试）— log `/tmp/anotify-core-recovery-g2-final2-gate3-runtime-test.log`：
 
 ```text
 CMD: go test route/ws/lease/source/trigger/logging -count=1
-ok  	github.com/zzjcool/anotify/internal/route	0.382s
-ok  	github.com/zzjcool/anotify/internal/ws	1.658s
-ok  	github.com/zzjcool/anotify/internal/lease	0.169s
-ok  	github.com/zzjcool/anotify/internal/source	0.283s
-ok  	github.com/zzjcool/anotify/internal/trigger	0.093s
-ok  	github.com/zzjcool/anotify/internal/logging	0.003s
+ok  	github.com/zzjcool/anotify/internal/route	1.038s
+ok  	github.com/zzjcool/anotify/internal/ws	3.041s
+ok  	github.com/zzjcool/anotify/internal/lease	0.587s
+ok  	github.com/zzjcool/anotify/internal/source	0.901s
+ok  	github.com/zzjcool/anotify/internal/trigger	0.316s
+ok  	github.com/zzjcool/anotify/internal/logging	0.081s
 EXIT:0
 ```
 
-Gate 4（store/artifact/protocol 只读回归）— log `/tmp/anotify-core-recovery-g2-final-gate4-store-artifact-protocol-test.log`：
+Gate 4（store/artifact/protocol 只读回归）— log `/tmp/anotify-core-recovery-g2-final2-gate4-store-artifact-protocol-test.log`：
 
 ```text
 CMD: go test ./internal/store/... ./internal/artifact/... ./internal/protocol/... -count=1
-ok  	github.com/zzjcool/anotify/internal/store	10.922s
-ok  	github.com/zzjcool/anotify/internal/store/v4test	45.919s
-ok  	github.com/zzjcool/anotify/internal/artifact	13.770s
-ok  	github.com/zzjcool/anotify/internal/protocol	0.220s
+ok  	github.com/zzjcool/anotify/internal/store	5.093s
+ok  	github.com/zzjcool/anotify/internal/store/v4test	30.370s
+ok  	github.com/zzjcool/anotify/internal/artifact	2.447s
+ok  	github.com/zzjcool/anotify/internal/protocol	0.054s
 EXIT:0
 ```
 

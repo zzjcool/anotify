@@ -674,3 +674,72 @@ func TestUnknownFrameKeepsConnectionAndBadFrameCloses(t *testing.T) {
 		t.Fatal("坏帧必须断开连接")
 	}
 }
+
+func TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant(t *testing.T) {
+	e := newEnv(t)
+	capability := e.capability(t, "analyze", "", false, nil)
+	conn := e.dial(t)
+	hello := func(total int) {
+		e.send(t, conn, &protocol.HelloFrame{
+			Type: protocol.FrameHello, Name: "node-1", Token: e.token,
+			Namespaces:  []string{"default"},
+			LocalLimits: protocol.Limits{Total: total},
+			Instances: []protocol.HelloInstance{
+				{Slot: intPtr(0)}, {Slot: intPtr(1)},
+			},
+		})
+		if _, ok := e.read(t, conn).(*protocol.WelcomeFrame); !ok {
+			t.Fatal("hello 应回 welcome")
+		}
+	}
+	// 初始预算 2：第一条任务正常 grant，占住 slot 0。
+	hello(2)
+	taskA, dispatchA := e.dispatchOne(t, conn, capability)
+	e.send(t, conn, &protocol.TaskAcceptFrame{
+		Type: protocol.FrameTaskAccept, TaskID: taskA.ID, AssignmentID: dispatchA.AssignmentID,
+		ProposedAttempt: dispatchA.ProposedAttempt, Node: "node-1", Slot: intPtr(0),
+	})
+	if _, ok := e.read(t, conn).(*protocol.LeaseGrantFrame); !ok {
+		t.Fatal("预算内应授予 lease.grant")
+	}
+	// 预算收缩到 1：旧 busy 必须保留，新 accept 因预算/slot 越界被拒。
+	hello(1)
+	taskB := e.pendingTask(t, capability)
+	if n, err := e.hub.DispatchOnce(context.Background(), 10); err != nil || n != 1 {
+		t.Fatalf("DispatchOnce = %d, %v", n, err)
+	}
+	dispatchB, ok := e.read(t, conn).(*protocol.TaskDispatchFrame)
+	if !ok || dispatchB.TaskID != taskB.ID {
+		t.Fatalf("应收到第二条 dispatch: %+v", dispatchB)
+	}
+	e.send(t, conn, &protocol.TaskAcceptFrame{
+		Type: protocol.FrameTaskAccept, TaskID: taskB.ID, AssignmentID: dispatchB.AssignmentID,
+		ProposedAttempt: dispatchB.ProposedAttempt, Node: "node-1", Slot: intPtr(1),
+	})
+	if !waitFor(t, time.Second, func() bool {
+		stored := e.task(t, taskB.ID)
+		return stored.Phase == store.TaskPending && stored.WaitingReason == store.WaitingForSlot
+	}) {
+		t.Fatalf("预算收缩后的 accept 必须回 pending/waiting_for_slot: %+v", e.task(t, taskB.ID))
+	}
+	if stored := e.task(t, taskB.ID); stored.Attempt != 0 {
+		t.Fatalf("被预算拒绝的 accept 不得计 attempt: %+v", stored)
+	}
+	if stored := e.task(t, taskA.ID); stored.Phase != store.TaskRunning || stored.Attempt != 1 {
+		t.Fatalf("预算收缩不得影响已授权执行: %+v", stored)
+	}
+	instances := e.instances(t)
+	busy := 0
+	for _, inst := range instances {
+		if inst.BusyTask != nil {
+			busy++
+		}
+	}
+	if busy != 1 {
+		t.Fatalf("旧 busy 必须保留（收缩预算不假释放）: %+v", instances)
+	}
+	// 没有 grant 帧可收（最后的读会超时并关闭连接）。
+	if _, _, err := e.readRaw(t, conn, 300*time.Millisecond); err == nil {
+		t.Fatal("预算拒绝不得发 lease.grant")
+	}
+}
