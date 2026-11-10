@@ -141,7 +141,15 @@ func decodeWriteEnvelope(r *http.Request, wantKind string, specDst any, metaKeys
 			fmt.Sprintf("apiVersion %q is not supported", *top.APIVersion))
 	}
 
-	allowed := map[string]bool{"name": true, "displayName": true}
+	allowed := map[string]bool{
+		"name": true, "displayName": true,
+		// CAS 令牌与作用域声明是每一个写请求都可能携带的合法键：
+		// PUT/PATCH 的令牌只能放 metadata.resourceVersion（W1），
+		// metadata.namespace 由 §3.2 定义（可省略，显式值与 path 不同 → namespace_mismatch）。
+		// 这两个键对每个 kind 都成立，因此不再让每个调用点自己往白名单里补：
+		// 补漏的症状是「PATCH 永远 400 resourceVersion is not writable」这种死路。
+		"resourceVersion": true, "namespace": true,
+	}
 	for _, k := range metaKeys {
 		allowed[k] = true
 	}

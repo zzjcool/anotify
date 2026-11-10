@@ -5,354 +5,255 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
-	"github.com/zzjcool/anotify/internal/trigger"
 )
 
-// EventHandler 处理事件入口（契约 §6.2）。
+// 本文件是 v4 的**事件投递入口**（api-conventions §8.1 / source.md §5.1）。
 //
-//	POST /v1/events   外部事件入口（webhook 通用）
-//	GET  /v1/events   事件列表（按 trace）
+//	POST /v1/namespaces/{namespace}/events
+//
+// 只有这一条路由。v3 的 `POST /v1/events`（body 里带 namespaceId）与
+// `GET /v1/events`（按 trace 列事件）都已退役：
+//
+//   - 命名空间进路径（v4 的资源路径口径），不再有「body 里塞 namespaceId」的第二种写法；
+//   - 事件列表是**资源**：`GET /v1/namespaces/{namespace}/events`（EventList 信封 +
+//     ns 绑定的不透明 continue），由任务/事件资源域注册，不在本文件里实现。
+//
+// 鉴权是 **Bearer API Key**（scope notify:send），与控制台的会话 Cookie 是两套：
+// 调用方是外部系统 / CLI，它们不带浏览器会话。key 的 owner 再走过
+// store.AuthorizeNamespace 那一关（唯一收口：路径里的 ns 必须存在，将来按 ns 分权
+// 只改 store 一处）。
+//
+// 投递语义全部在 `source.Service.Ingest` 里（同一份归一化配置 / 载荷装配 / 幂等窗口 /
+// 剪枝留痕），本文件只做三件事：解析路径 + 鉴权、把 body 翻成 source.Input、把回执
+// 原样写出去。**不要在 handler 里重算派发**——那会让「hooks / fire / events 三个入口
+// 共用一份回执」这条纪律在第四个地方分叉。
 type EventHandler struct {
-	Store    *store.DB
-	Keys     authn.KeyValidator
-	Triggers *trigger.Service
+	Sources *source.Service
+	Keys    authn.KeyValidator
 }
 
-// eventListLimitCap 是事件列表一次能返回的最大条数（#236）。
-//
-// **handler 必须先夹住**，不能把调用方给的数字原样传给 store：
-// store.ListEvents 的夹取规则是 `limit <= 0 || limit > 500 { limit = 50 }`
-// （internal/store/event.go，那一行由 #55 引入）——它对**超出上限**的处理是折回
-// 历史默认值 50，而不是钳到 500。于是 `limit=501..1000` 会悄悄返回 50 条：
-// 比要求的少一个数量级，响应里还没有任何迹象（#236 的根因就是这个误合并）。
-//
-// 在 handler 侧钳到真实硬顶、并把生效值回显进响应，两个问题一起消掉：
-// 调用方拿到的行数永远是「它要的、或硬顶」，且知道到底生效了多少。
-const eventListLimitCap = 500
+// NewEventHandler 装配投递入口。
+func NewEventHandler(sources *source.Service, keys authn.KeyValidator) *EventHandler {
+	return &EventHandler{Sources: sources, Keys: keys}
+}
 
-// EventIngestRequest 是 POST /v1/events 的请求体（camelCase，契约 §6.2）。
-type EventIngestRequest struct {
+// eventIngestRequest 是投递体（api-conventions §8.1 / source.md §5）。
+//
+//	source  必填：命名空间内的源名（不是 id、不是 token）
+//	type    可选：事件类型；空 → 回落源名（source.md §5，免得调用方必须重复一遍）
+//	id      可选：外部投递幂等键；保留窗口内同 id 只算一条事件
+//	payload 可选：原始 JSON；空 → 只用源配置的打底载荷
+type eventIngestRequest struct {
 	Source  string          `json:"source"`
 	Type    string          `json:"type"`
-	IdemKey string          `json:"idemKey,omitempty"`
-	TraceID string          `json:"traceId,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	// NamespaceID 是事件落进哪个命名空间（**必填**，契约 §6.2）。
-	//
-	// 缺了就是 400 —— 绝不回退默认命名空间：回退等于把「调用方写错了」
-	// 藏成「悄悄写进了 default」，是最难查的那类串数据。
-	// query 上的 namespaceId 是等价的第二来源（body 优先，见 resolveNamespace）。
-	NamespaceID string `json:"namespaceId"`
+	ID      string          `json:"id"`
+	Payload json.RawMessage `json:"payload"`
 }
 
-// EventIngestResponse 是 POST /v1/events 的响应体。
-type EventIngestResponse struct {
-	EventID  string `json:"eventId"`
-	TraceID  string `json:"traceId"`
-	Inserted bool   `json:"inserted"`
-	// Tasks 是首轮派发建出来的任务（幂等命中时为空数组）。
-	Tasks []TaskBrief `json:"tasks"`
-	// Pruned 是首轮派发的剪枝记录（静默但留痕）。
-	Pruned []PrunedBrief `json:"pruned"`
-	// Origin 是这次事件被归到的**来源名**（"github"/"cron"/…）。
-	//
-	// 它曾经是"匹配到的起点能力 name@version"（#110 之前）。来源不再是一个
-	// 能力，所以这里只是把请求里的 source 原样回显 —— 方便调用方确认
-	// "我发的事件被归到哪个来源"，不再有"找不到起点能力"这种失败形态。
-	Origin string `json:"origin,omitempty"`
-}
-
-// TaskBrief 是响应里的任务摘要。
-type TaskBrief struct {
-	ID         string `json:"id"`
-	Capability string `json:"capability"`
-	Version    int    `json:"version"`
-	Status     string `json:"status"`
-}
-
-// PrunedBrief 是响应里的剪枝摘要。
-type PrunedBrief struct {
-	Reason       string `json:"reason"`
-	CapabilityID string `json:"capabilityId,omitempty"`
-	Port         string `json:"port,omitempty"`
-	Detail       string `json:"detail"`
-}
-
-// ServeHTTP 处理 POST / GET /v1/events。
+// ServeHTTP 处理 POST /v1/namespaces/{namespace}/events。
 func (h *EventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		// 事件列表（GET）在资源域，本 handler 只承担 ingress：给 405 + Allow
+		// 比让请求落到「路径不存在」更容易排障。
+		w.Header().Set("Allow", "POST")
+		writeAPIStatus(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	userID, err := authn.Authenticate(r, h.Keys, authn.ScopeNotifySend)
 	if err != nil {
-		status := http.StatusUnauthorized
+		// 401 与 403 必须分开：401 = 没带/令牌无效（去换一个），403 = 令牌有效但
+		// scope 不够（去加 scope）。合并成一个码会让调用方在错误的方向上重试。
 		if errors.Is(err, authn.ErrForbidden) {
-			status = http.StatusForbidden
-		}
-		writeError(w, status, err.Error())
-		return
-	}
-
-	switch r.Method {
-	case http.MethodPost:
-		h.ingest(w, r, userID)
-	case http.MethodGet:
-		h.list(w, r, userID)
-	default:
-		w.Header().Set("Allow", "GET, POST")
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
-
-// ingest 处理 POST /v1/events。
-func (h *EventHandler) ingest(w http.ResponseWriter, r *http.Request, userID string) {
-	var req EventIngestRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
-		return
-	}
-
-	// 必填校验要在落库前做：空 source/type 的事件没有任何路由意义
-	// （source 就是起点能力名），存进去只会污染事件流。
-	if strings.TrimSpace(req.Source) == "" {
-		writeError(w, http.StatusBadRequest, "source is required")
-		return
-	}
-	if strings.TrimSpace(req.Type) == "" {
-		writeError(w, http.StatusBadRequest, "type is required")
-		return
-	}
-
-	// 命名空间必填（契约 §6.2）：body 优先、其次 query、缺则 400。
-	// 解析里同时过 AuthorizeNamespace 收口（见 resolveNamespace）。
-	namespaceID, ok := h.resolveNamespace(w, r, userID, req.NamespaceID, false)
-	if !ok {
-		return
-	}
-
-	var idemKey *string
-	if req.IdemKey != "" {
-		k := req.IdemKey
-		idemKey = &k
-	}
-
-	res, err := h.Triggers.Ingest(r.Context(), &trigger.IngestRequest{
-		NamespaceID: namespaceID,
-		Source:      req.Source,
-		Type:        req.Type,
-		IdemKey:     idemKey,
-		TraceID:     req.TraceID,
-		Payload:     req.Payload,
-	})
-
-	// 命名空间相关失败（I11 跨命名空间引用、缺参、不存在、别的组织）
-	// 一律先翻成对应状态码：它们是**调用方**的问题，不是 5xx。
-	if writeNamespaceError(w, err) {
-		return
-	}
-
-	// 事件已入库但派发/起源失败：仍然返回 200（对发送方而言事件收下了），
-	// 但把问题写进响应的 origin 字段与日志——重投也还是同一条事件，不该让它 5xx。
-	if res == nil {
-		msg := "ingest failed"
-		if err != nil {
-			msg = err.Error()
-		}
-		writeError(w, http.StatusBadRequest, msg)
-		return
-	}
-
-	resp := EventIngestResponse{
-		EventID:  res.Event.ID,
-		TraceID:  res.Event.TraceID,
-		Inserted: res.Inserted,
-		Tasks:    []TaskBrief{},
-		Pruned:   []PrunedBrief{},
-	}
-	// 来源名原样回显（不再需要去能力表里解析 name@version）
-	if res.Event != nil {
-		resp.Origin = res.Event.Source
-	}
-	if res.Dispatch != nil {
-		for _, t := range res.Dispatch.Tasks {
-			resp.Tasks = append(resp.Tasks, TaskBrief{
-				ID: t.ID, Capability: t.Capability, Version: t.Version, Status: t.Status,
-			})
-		}
-		for _, p := range res.Dispatch.Pruned {
-			resp.Pruned = append(resp.Pruned, PrunedBrief{
-				Reason: string(p.Reason), CapabilityID: p.CapabilityID,
-				Port: p.Port, Detail: p.Detail,
-			})
-		}
-	}
-
-	if err != nil {
-		// 派发失败（非起点问题）：事件已落库，记日志后照常返回 200
-		slog.Warn("event dispatch failed after ingest",
-			"event", "events.dispatch.failed",
-			"event_id", resp.EventID,
-			"trace_id", resp.TraceID,
-			"error", err.Error(),
-		)
-	}
-
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// list 处理 GET /v1/events（按 trace 过滤）。
-//
-// namespaceId 必填；`*` 是本端点允许的**读**语义：遍历本部署的全部命名空间合并，
-// 再按 created_at desc 截断（契约 §4 / 设计文档 §6.2）。
-func (h *EventHandler) list(w http.ResponseWriter, r *http.Request, userID string) {
-	namespaceID, ok := h.resolveNamespace(w, r, userID, "", true)
-	if !ok {
-		return
-	}
-	traceID := r.URL.Query().Get("traceId")
-	source := r.URL.Query().Get("source")
-	// limit：缺省 100；给了正整数就 min(n, eventListLimitCap)；非整数 / n <= 0 仍回 100
-	// （沿用本端点一向的宽松语义，不为此新增 400）。
-	// 夹取不能省：store 对 `> 500` 会折回 50（#236），见 eventListLimitCap 的注释。
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
-			limit = n
-			if limit > eventListLimitCap {
-				limit = eventListLimitCap
-			}
-		}
-	}
-
-	var err error
-	var events []*store.Event
-	if namespaceID == store.AllNamespaces {
-		events, err = h.listAcrossNamespaces(r, traceID, source, limit)
-	} else {
-		events, err = h.Store.ListEvents(r.Context(), namespaceID, traceID, source, limit)
-	}
-	if err != nil {
-		if writeNamespaceError(w, err) {
+			writeAPIStatus(w, http.StatusForbidden, reasonForbidden, err.Error())
 			return
 		}
-		slog.Error("list events failed", "event", "events.list.failed", "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeAPIStatus(w, http.StatusUnauthorized, reasonUnauthorized, err.Error())
 		return
 	}
-	// 空列表返回 [] 而不是 null（契约 I9）
-	if events == nil {
-		events = []*store.Event{}
-	}
-	// limit 是**生效值**（已夹到 eventListLimitCap）：回显它，调用方才能区分
-	// 「就要到这么多」与「被硬顶截断了」（#236）。
-	writeJSON(w, http.StatusOK, map[string]any{"events": events, "limit": limit})
-}
 
-// listAcrossNamespaces 是 namespaceId=* 的实现：逐个命名空间查、合并、按
-// created_at desc（同秒按 id desc，与 store.ListEvents 的稳定序一致）截断到 limit。
-//
-// 为什么要合并后再截断：直接对每个命名空间各取 limit 再拼起来会返回 limit×N 行，
-// 而且最新的一条可能在最后一个命名空间里——那等于「汇总视图」不汇总。
-//
-// 不引入 SQL UNION（store 层不接受 `*`）：跨命名空间读是**管理视图**，走 N 次
-// 索引查询已经够快，而把它塞进 store 会让「`*` 只在 HTTP 层解释」这条边界消失。
-func (h *EventHandler) listAcrossNamespaces(r *http.Request, traceID, source string, limit int) ([]*store.Event, error) {
-	nss, err := h.Store.ListNamespaces(r.Context())
+	namespace := strings.TrimSpace(r.PathValue("namespace"))
+	if namespace == "" {
+		namespace = strings.TrimSpace(r.PathValue("ns"))
+	}
+	if namespace == "" {
+		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "namespace is required")
+		return
+	}
+
+	db := h.db()
+	if db == nil {
+		// 装配错误（没注入 Sources）：给 500 而不是 panic —— 一个没接线的端点不该
+		// 让整个进程崩在一个外部请求上。
+		slog.Error("event ingress is not wired: no store", "event", "events.ingress.unwired")
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, "event ingress is not configured")
+		return
+	}
+	// 唯一收口：已登录（key 的 owner）+ 命名空间存在。将来按 ns 分权只改 store。
+	if err := db.AuthorizeNamespace(r.Context(), userID, namespace); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+
+	var req eventIngestRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+		// 4 MiB 是 source.md §5 的投递上限（hooks 入口同一条），超出时 body 读取
+		// 会失败：这里统一 400 —— 413 的细分留给 hooks 的限流/大小测试，ingress
+		// 不额外造一套上限语义。
+		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	sourceName := strings.TrimSpace(req.Source)
+	if sourceName == "" {
+		// source 必填，且**不回退**任何默认值：源名决定「谁的路由模板生效」，
+		// 猜一个等于把调用方的拼写错误变成另一条流水线上的真实事件。
+		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "source is required")
+		return
+	}
+
+	src, err := db.GetSourceByName(r.Context(), namespace, sourceName)
 	if err != nil {
-		return nil, err
+		writeAPIError(w, err)
+		return
 	}
-	merged := []*store.Event{}
-	for _, ns := range nss {
-		part, err := h.Store.ListEvents(r.Context(), ns.ID, traceID, source, limit)
-		if err != nil {
-			return nil, err
+	if !src.Enabled {
+		// 停用的源不接收投递（source.md §5 / §5.2）。与「源不存在」同码不同文案：
+		// 调用方已经通过 ns 授权，知道这个 ns 里有哪些源，区分文案不泄露任何东西。
+		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "source is disabled")
+		return
+	}
+
+	receipt, err := h.Sources.Ingest(r.Context(), source.Input{
+		Source:     src,
+		Type:       req.Type,
+		DeliveryID: req.ID,
+		Payload:    req.Payload,
+	})
+	if err != nil {
+		if errors.Is(err, source.ErrBadPayload) {
+			writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, err.Error())
+			return
 		}
-		merged = append(merged, part...)
+		writeAPIError(w, err)
+		return
 	}
-	sortEventsNewestFirst(merged)
-	if len(merged) > limit {
-		merged = merged[:limit]
+	if receipt == nil {
+		slog.Error("event ingest returned no receipt", "event", "events.ingress.no_receipt",
+			"namespace", namespace, "source", sourceName)
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, "ingest produced no receipt")
+		return
 	}
-	return merged, nil
+
+	// 空列表恒 `[]`（I12）：receiptFromStore 已归一，这里再保一次底
+	// （装配层是唯一出口，不能依赖「上游永远会给非 nil」）。
+	if receipt.Tasks == nil {
+		receipt.Tasks = []source.TaskRef{}
+	}
+	if receipt.Pruned == nil {
+		receipt.Pruned = []route.Prune{}
+	}
+	writeJSON(w, http.StatusOK, receipt)
 }
 
-// sortEventsNewestFirst 按 created_at desc、id desc 排序（最新在前）。
+// db 取出 Ingest 用的同一份 store。
 //
-// 与 store.ListEvents 的 ORDER BY 同语义：跨命名空间合并后必须重新排一次，
-// 否则结果是「按命名空间分组」而不是「按时间」——汇总视图就失去意义。
-func sortEventsNewestFirst(events []*store.Event) {
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].CreatedAt != events[j].CreatedAt {
-			return events[i].CreatedAt > events[j].CreatedAt
-		}
-		return events[i].ID > events[j].ID
+// 为什么绕一层：v4 冻结的装配形状是 `EventHandler{Sources, Keys}`（不含 *store.DB），
+// 而「按名字取源行」与「ns 授权」都需要库。`source.Service` 只暴露 `Router()`，而
+// Router 持有的正是编排层那一个 *store.DB（`route.Router.DB()`）——用同一条连接保证
+// 「handler 里看到源行」与「Ingest 里写事件」是同一份事实，不是两份缓存。
+func (h *EventHandler) db() *store.DB {
+	if h == nil || h.Sources == nil {
+		return nil
+	}
+	router := h.Sources.Router()
+	if router == nil {
+		return nil
+	}
+	return router.DB()
+}
+
+// ---------- Status（api 包不能 import server：这里是最小的一份）
+
+// reason 字面量与 internal/server/api_status.go 的封闭集合逐字一致。
+//
+// 为什么复制而不 import：api 包是**被 server 依赖**的一侧（server → api），反向
+// import 会成一个环。Status 的形状与 reason 词表是 api-conventions §4 的公开契约，
+// 两处各写一份字符串常量不会漂移（测试会盯住响应体），但少一个环。
+const (
+	apiVersionV1 = "anotify/v1"
+	kindStatus   = "Status"
+
+	reasonBadRequest        = "BadRequest"
+	reasonUnauthorized      = "Unauthorized"
+	reasonForbidden         = "Forbidden"
+	reasonNotFound          = "NotFound"
+	reasonMethodNotAllowed  = "MethodNotAllowed"
+	reasonInternal          = "InternalError"
+	reasonNamespaceMismatch = "namespace_mismatch"
+)
+
+// statusDoc 是统一错误体（api-conventions §4.1）。
+//
+// 只带 ingress 会用到的字段：details 属于 CAS / 冲突类端点，投递入口不产生它。
+type statusDoc struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	Code       int    `json:"code"`
+	Reason     string `json:"reason"`
+	Message    string `json:"message,omitempty"`
+}
+
+// writeAPIStatus 写一个 Status 响应（失败一律带 body：§4.1 不允许空 body 的错误）。
+func writeAPIStatus(w http.ResponseWriter, code int, reason, message string) {
+	writeJSON(w, code, statusDoc{
+		APIVersion: apiVersionV1,
+		Kind:       kindStatus,
+		Status:     "Failure",
+		Code:       code,
+		Reason:     reason,
+		Message:    message,
 	})
 }
 
-// resolveNamespace 解析并校验这次请求作用于哪个命名空间（契约 §6.2）。
+// writeAPIError 把 store / 领域 sentinel 翻成 Status；未知错误一律 500。
 //
-// 取值顺序：body 已解码的 namespaceId → query 的 namespaceId → 空。
-// 空 → 400（**绝不回退默认命名空间**）；`*` → 只有 allowAll（读端点）才接受；
-// 其余走 store.AuthorizeNamespace 收口：不存在 404，未登录 401。
-//
-// **安全收口写在这里，不要散到 handler 里**：今天 AuthorizeNamespace 等价于
-// 「已登录 + 命名空间存在」；将来按命名空间分权限时，**只改 store.AuthorizeNamespace
-// 并新增 namespace_members 表**，本函数的形状不变。
-//
-// 返回 (namespaceID, ok)：ok=false 表示已写过错误响应，调用方直接 return。
-func (h *EventHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, userID, bodyNS string, allowAll bool) (string, bool) {
-	raw := strings.TrimSpace(bodyNS)
-	if raw == "" {
-		raw = strings.TrimSpace(r.URL.Query().Get("namespaceId"))
-	}
-	if raw == "" {
-		writeError(w, http.StatusBadRequest, "namespaceId is required（命名空间资源端点必须显式指定，不回退默认命名空间）")
-		return "", false
-	}
-	if raw == store.AllNamespaces {
-		if !allowAll {
-			writeError(w, http.StatusBadRequest, "namespaceId=* 只能用于跨命名空间汇总的读操作")
-			return "", false
-		}
-		return store.AllNamespaces, true
-	}
-	// 唯一收口：已登录 + 命名空间存在（将来加 namespace_members 只改这一个函数）。
-	if err := h.Store.AuthorizeNamespace(r.Context(), userID, raw); err != nil {
-		writeNamespaceError(w, err)
-		return "", false
-	}
-	return raw, true
-}
-
-// writeNamespaceError 把 store 的命名空间错误翻成 HTTP 状态码；returns true 表示已写响应。
-//
-// 跨命名空间引用（I11）一律 400 —— 不是静默忽略，也不是 500：它是**调用方的请求
-// 错了**，静默忽略会让人以为配置生效了。这段映射与 internal/server 的同名逻辑
-// 语义一致（那份在 console handler 里，api 包不跨包依赖 server，故本地复刻）。
-//
-// err == nil 时返回 false（什么都没写），这样调用方可以把它当成「是否是这类错误」
-// 的判定直接串在正常流程里（见 ingest）。
-func writeNamespaceError(w http.ResponseWriter, err error) bool {
+// 与 internal/server.writeAPIError 的映射保持同口径（同一类错误在两个入口不能给
+// 两个码）：只覆盖 ingress 真的会遇到的那几个。
+func writeAPIError(w http.ResponseWriter, err error) {
 	if err == nil {
-		return false
+		return
 	}
 	var cross *store.CrossNamespaceError
-	switch {
-	case errors.As(err, &cross):
-		writeError(w, http.StatusBadRequest, cross.Error())
-	case errors.Is(err, store.ErrNamespaceNotFound):
-		writeError(w, http.StatusNotFound, "namespace not found")
-	case errors.Is(err, store.ErrAuthRequired):
-		writeError(w, http.StatusUnauthorized, "authentication required")
-	case errors.Is(err, store.ErrNamespaceRequired):
-		writeError(w, http.StatusBadRequest, "namespaceId is required")
-	default:
-		return false
+	if errors.As(err, &cross) {
+		writeAPIStatus(w, http.StatusBadRequest, reasonNamespaceMismatch, cross.Error())
+		return
 	}
-	return true
+	switch {
+	case errors.Is(err, store.ErrSourceNotFound):
+		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "source not found")
+	case errors.Is(err, store.ErrAuthRequired):
+		writeAPIStatus(w, http.StatusUnauthorized, reasonUnauthorized, "authentication required")
+	case errors.Is(err, store.ErrNamespaceRequired):
+		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "namespace is required")
+	case errors.Is(err, store.ErrNamespaceNotFound):
+		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "namespace not found")
+	case errors.Is(err, store.ErrNotFound):
+		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "not found")
+	case errors.Is(err, store.ErrSourceEventReceiptMissing):
+		// 回执缺行是**服务端**的不变量破了（写事件与写回执同事务），必须 5xx。
+		slog.Error("source event receipt missing", "event", "events.ingress.receipt_missing", "err", err.Error())
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+	default:
+		slog.Error("event ingress failed", "event", "events.ingress.failed", "err", err.Error())
+		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, err.Error())
+	}
 }
 
 // writeJSON 写一个 JSON 响应。
@@ -361,19 +262,10 @@ func writeNamespaceError(w http.ResponseWriter, err error) bool {
 // 中间缓存会把一个组织的响应喂给另一个组织。
 //
 // 故意**不缩进**：客户端是 JSON parser 不是人眼，缩进对可解析性零收益，
-// 只是让 /v1/events 这类大响应白白多出 29.4% 体积（#243 实测 54,163B → 41,855B）。
-// 要看人读的格式化输出，拿 jq 管道一下就行。
-//
-// 原本在 api/notify.go 里，随旧通知终端模型（#80）搬到本文件：
-// 事件中心只剩这一个 API 包，helper 不该再挂在已删除的文件名下。
+// 只是让投递回执这类响应白白多出近三成体积（#243 实测 54,163B → 41,855B）。
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// writeError 写一个 {"error": msg} 响应。
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
 }

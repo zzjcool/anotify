@@ -2,6 +2,7 @@ package server
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/route"
@@ -24,6 +25,28 @@ type serverDeps struct {
 	Sweeper *lease.Sweeper
 	Log     *slog.Logger
 	Now     func() int64
+
+	// Session 是会话 Cookie 中间件（未登录直 401）。资源域与保留域共用同一份，
+	// 不允许各域自己再包一层鉴权：两份实现迟早对「未登录」给不同状态码。
+	Session func(http.Handler) http.Handler
+	// Backpressure 是事件/触发入口的背压中间件（只包写入口，读端点不受影响）。
+	Backpressure func(http.Handler) http.Handler
+}
+
+// session 用会话中间件包住 handler；未注入时直接透传（仅测试构造可能为 nil）。
+func (d *serverDeps) session(h http.Handler) http.Handler {
+	if d == nil || d.Session == nil {
+		return h
+	}
+	return d.Session(h)
+}
+
+// backpressure 用背压中间件包住 handler；未注入时透传。
+func (d *serverDeps) backpressure(h http.Handler) http.Handler {
+	if d == nil || d.Backpressure == nil {
+		return h
+	}
+	return d.Backpressure(h)
 }
 
 // now 返回可信 server 时间（毫秒）。nil 时回落到 0，调用方应保证构造时注入。

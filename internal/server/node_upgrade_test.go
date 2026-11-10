@@ -1,13 +1,22 @@
 package server
 
-// 本文件是 agent 自升级的**中枢 HTTP 面**验收（CONTRACT-agent-upgrade §2 / §5 / §5.1）：
+// 本文件是 agent 自升级在 **v4 HTTP 面** 的验收（CONTRACT-agent-upgrade §2 / api-conventions §8.2）：
 //
-//	GET  /v1/node/binary          node token 鉴权 + 二进制原文 + 两个版本头 + 501
-//	POST /v1/nodes/{id}/upgrade   会话鉴权 + 命名空间隔离 + 409/501/up_to_date/sent
-//	GET  /v1/nodes                targetAgentVersion + 每台节点的 agentUpgrade（§5.1）
+//	GET  /v1/node/binary            node token 鉴权 + 二进制原文 + 两个版本头 + 501
+//	POST /v1/nodes/{name}/upgrade   会话鉴权 + 节点不存在 404 + 无升级源 501 + 节点离线 409
 //
-// WS 那一侧（帧内容、ack 落库）在 internal/ws/node_upgrade_test.go；
-// 这里用假 publisher 覆盖「推没推、推了什么」，不起真连接。
+// v3 的重构（写在这里，避免下一个人以为漏了半个套件）：
+//
+//   - **帧内容不再在本包断言**：v3 用 fakeUpgradePublisher 记录 `ws.UpgradeFrame` 来钉
+//     「推了什么」。v4 的帧类型搬进共享协议包（`protocol.UpgradeFrame`），下发通道是
+//     `ws.Hub.RequestUpgrade`，帧/ack 的端到端覆盖在 `internal/ws/ws_test.go`
+//     （TestUpgradeFrameAndAck）。本包只钉 HTTP 面的状态码与响应体。
+//   - **fakeUpgradePublisher 已删**：`serverDeps.Hub` 是具体的 `*ws.Hub`（冻结骨架），
+//     没有注入点；用「真 hub + 没有连接」表达「离线」，比再造一个接口更接近线上。
+//   - **升级端点不再有本包自己的 handler**：它由 Node 资源域实现（resource_node.go 的
+//     nodeAPI.upgradeNode，路径 `/v1/nodes/{name}/upgrade`），本文件通过**真实装配**
+//     （`newNodeAPI(deps)` + `setUpgradeSource` + `register`）覆盖它。本包的
+//     node_upgrade_handlers.go 只提供升级源适配器（agentUpgradeSource）。
 
 import (
 	"bytes"
@@ -15,60 +24,72 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// fakeUpgradePublisher 记录「端点有没有推帧、推了什么」。
-type fakeUpgradePublisher struct {
-	online    bool
-	err       error
-	calls     int
-	namespace string
-	nodeID    string
-	frame     *ws.UpgradeFrame
-}
-
-func (f *fakeUpgradePublisher) Online(string) bool { return f.online }
-
-func (f *fakeUpgradePublisher) PublishUpgrade(namespaceID, nodeID string, frame *ws.UpgradeFrame) error {
-	f.calls++
-	f.namespace, f.nodeID, f.frame = namespaceID, nodeID, frame
-	return f.err
-}
-
-// upgradeFixture 是一套跑起来的升级环境（真 DB + 真 HTTP，假节点连接）。
+// upgradeFixture 是一套跑起来的升级环境（真 DB + 真会话 + 真 hub + 真路由）。
 type upgradeFixture struct {
-	env       *consoleEnv
-	mux       *http.ServeMux
-	pub       *fakeUpgradePublisher
-	bin       *agentBinary
-	handler   *nodeUpgradeHandler
-	node      *store.Node
-	nodeToken string
-	// target 是中枢自带的 agent 版本（= 升级目标版本）。
+	db     *store.DB
+	bin    *agentBinary
+	mux    *http.ServeMux
+	cookie *http.Cookie
+	node   *store.Node
+	token  string
 	target string
 }
 
-// newUpgradeFixture 建库/会话/节点 + 一个真的 agent 二进制文件（内容已知，便于比哈希）。
+// newUpgradeFixture 建库 / 会话 / 节点 + 一个内容已知的 agent 二进制文件。
 //
-// binEnabled=false 时给一个**不存在**的路径：模拟「服务端没带二进制」的部署。
+// binEnabled=false → 给一个**不存在**的路径：模拟「服务端没带二进制」的部署。
 func newUpgradeFixture(t *testing.T, binEnabled bool) *upgradeFixture {
 	t.Helper()
-	env := newConsoleEnv(t)
-	f := &upgradeFixture{env: env, target: "9.9.9+test"}
+	ctx := context.Background()
+
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	svc, err := auth.NewService(db, auth.Config{
+		RPDisplayName: "Anotify Test",
+		RPID:          "localhost",
+		RPOrigins:     []string{"http://localhost"},
+		SessionTTL:    time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new auth service: %v", err)
+	}
+	uid, err := db.InsertUser(ctx, "", "upgrade-user-"+store.NewUserID(), "Upgrade User")
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	sess, err := svc.Sessions().Create(uid, "Upgrade · test")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	f := &upgradeFixture{
+		db:     db,
+		target: "9.9.9+test",
+		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
+	}
 
 	binPath := filepath.Join(t.TempDir(), "nonexistent-agent")
 	if binEnabled {
-		dir := t.TempDir()
-		binPath = filepath.Join(dir, "agent")
+		binPath = filepath.Join(t.TempDir(), "agent")
 		if err := os.WriteFile(binPath, []byte("#!/bin/sh\necho anotify-agent-test\n"), 0o755); err != nil {
 			t.Fatalf("write agent binary: %v", err)
 		}
@@ -78,26 +99,25 @@ func newUpgradeFixture(t *testing.T, binEnabled bool) *upgradeFixture {
 		t.Fatalf("loadAgentBinary enabled = %v, want %v", f.bin.enabled(), binEnabled)
 	}
 
-	f.pub = &fakeUpgradePublisher{online: true}
-	consoleH := &consoleHandler{
-		db: env.db, auth: env.svc,
-		// 与生产 mux 的接线一致：顶层 targetAgentVersion 来自同一个 agentBinary。
-		targetAgentVersion: f.bin.targetVersion(),
-	}
-	f.handler = &nodeUpgradeHandler{db: env.db, console: consoleH, hub: f.pub, bin: f.bin}
-
-	sessMW := env.svc.Sessions().Middleware
-	f.mux = http.NewServeMux()
-	f.mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: f.bin, auth: env.db}))
-	f.mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
-	f.mux.Handle("POST /v1/nodes/{id}/upgrade", noStore(sessMW(http.HandlerFunc(f.handler.upgrade))))
-
-	node := &store.Node{NamespaceID: env.nsID, Name: "upgrade-node"}
-	token, err := env.db.CreateNode(context.Background(), node)
+	node := &store.Node{Name: "upgrade-node-" + store.NewUserID()}
+	token, err := db.CreateNode(ctx, node)
 	if err != nil {
 		t.Fatalf("create node: %v", err)
 	}
-	f.node, f.nodeToken = node, token
+	f.node, f.token = node, token
+
+	// 真 hub（一个会话都没有 → Online=false）。会话中间件用真的 auth.Service：
+	// 「未登录 401」这条断言必须来自生产同一条中间件，而不是测试里的假守卫。
+	deps := &serverDeps{
+		DB: db, Router: route.New(db), Hub: ws.NewHub(db, route.New(db)),
+		Log: slog.Default(), Now: store.Now, Session: svc.Sessions().Middleware,
+	}
+
+	f.mux = http.NewServeMux()
+	f.mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: f.bin, db: db}))
+	api := newNodeAPI(deps)
+	api.setUpgradeSource(newAgentUpgradeSource(f.bin))
+	api.register(f.mux)
 	return f
 }
 
@@ -111,7 +131,7 @@ func (f *upgradeFixture) do(t *testing.T, method, path string, body any) *httpte
 		}
 	}
 	req := httptest.NewRequest(method, path, &buf)
-	req.AddCookie(f.env.cookie)
+	req.AddCookie(f.cookie)
 	rr := httptest.NewRecorder()
 	f.mux.ServeHTTP(rr, req)
 	return rr
@@ -129,9 +149,30 @@ func (f *upgradeFixture) doBinary(t *testing.T, authorization string) *httptest.
 	return rr
 }
 
+// decodeJSON 把响应体解成 map（错误体要看 reason 字段）。
+func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode body %q: %v", rr.Body.String(), err)
+	}
+	return out
+}
+
+// reasonOf 读 Status.reason（v4 的错误体统一形状）。
+func reasonOf(t *testing.T, rr *httptest.ResponseRecorder) string {
+	t.Helper()
+	body := decodeJSON(t, rr)
+	if body["kind"] != kindStatus {
+		t.Fatalf("错误体 kind = %v, want %s（body=%s）", body["kind"], kindStatus, rr.Body.String())
+	}
+	reason, _ := body["reason"].(string)
+	return reason
+}
+
 // ---------- GET /v1/node/binary ----------
 
-// TestAgentBinaryEndpoint 二进制下载端点：鉴权（node token，不是会话）+ 头 + 原文。
+// TestAgentBinaryEndpoint 二进制下载端点：node token 鉴权（不是会话）+ 头 + 原文 + 501。
 func TestAgentBinaryEndpoint(t *testing.T) {
 	f := newUpgradeFixture(t, true)
 	wantBody, err := os.ReadFile(f.bin.path)
@@ -141,27 +182,40 @@ func TestAgentBinaryEndpoint(t *testing.T) {
 	sum := sha256.Sum256(wantBody)
 	wantSHA := hex.EncodeToString(sum[:])
 
-	t.Run("未登录 → 401", func(t *testing.T) {
+	t.Run("没带令牌 → 401", func(t *testing.T) {
 		rr := f.doBinary(t, "")
 		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401", rr.Code)
+			t.Fatalf("status = %d, want 401（body=%s）", rr.Code, rr.Body.String())
 		}
-		if got := decode(t, rr)["error"]; got != "missing_node_token" {
-			t.Fatalf("error = %v, want missing_node_token", got)
+		if got := reasonOf(t, rr); got != reasonUnauthorized {
+			t.Fatalf("reason = %q, want %q", got, reasonUnauthorized)
 		}
 	})
 
-	t.Run("会话令牌不行 → 403", func(t *testing.T) {
+	t.Run("错的令牌 → 401", func(t *testing.T) {
+		rr := f.doBinary(t, "Bearer ant_not_a_node_token")
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401（body=%s）", rr.Code, rr.Body.String())
+		}
+		if got := reasonOf(t, rr); got != reasonUnauthorized {
+			t.Fatalf("reason = %q, want %q", got, reasonUnauthorized)
+		}
+	})
+
+	t.Run("会话令牌不行 → 401", func(t *testing.T) {
 		// 会话 id 是浏览器 Cookie 里的凭据，不是节点令牌：拿它当 Bearer 必须被拒。
 		// （这正是「节点端点和控制台端点用两套鉴权」的护栏。）
-		rr := f.doBinary(t, "Bearer "+f.env.cookie.Value)
-		if rr.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want 403（会话令牌不能当 node token）", rr.Code)
+		//
+		// v3 这里回 403（「令牌有效但没权限」）；v4 统一 401：会话 id 根本不是
+		// node token，说 403 会把调用方指向「去申请权限」这个错误方向。
+		rr := f.doBinary(t, "Bearer "+f.cookie.Value)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401（会话令牌不能当 node token）", rr.Code)
 		}
 	})
 
 	t.Run("node token → 200 + 原文 + 两个版本头", func(t *testing.T) {
-		rr := f.doBinary(t, "Bearer "+f.nodeToken)
+		rr := f.doBinary(t, "Bearer "+f.token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
 		}
@@ -184,10 +238,10 @@ func TestAgentBinaryEndpoint(t *testing.T) {
 	})
 
 	t.Run("排空中的节点仍可下载（维护动作不是接新任务）", func(t *testing.T) {
-		if err := f.env.db.UpdateNodeStatus(context.Background(), f.env.nsID, f.node.ID, store.NodeStatusDraining); err != nil {
+		if err := f.db.UpdateNodeStatus(context.Background(), f.node.ID, store.NodeStatusDraining); err != nil {
 			t.Fatalf("drain node: %v", err)
 		}
-		rr := f.doBinary(t, "Bearer "+f.nodeToken)
+		rr := f.doBinary(t, "Bearer "+f.token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200（draining 不该挡升级）", rr.Code)
 		}
@@ -198,12 +252,12 @@ func TestAgentBinaryEndpoint(t *testing.T) {
 func TestAgentBinaryEndpointUnavailable(t *testing.T) {
 	f := newUpgradeFixture(t, false)
 
-	rr := f.doBinary(t, "Bearer "+f.nodeToken)
+	rr := f.doBinary(t, "Bearer "+f.token)
 	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", rr.Code)
+		t.Fatalf("status = %d, want 501（body=%s）", rr.Code, rr.Body.String())
 	}
-	if got := decode(t, rr)["error"]; got != "agent_binary_unavailable" {
-		t.Fatalf("error = %v, want agent_binary_unavailable", got)
+	if got := reasonOf(t, rr); got != reasonAgentBinaryUnavailable {
+		t.Fatalf("reason = %q, want %q", got, reasonAgentBinaryUnavailable)
 	}
 	// 未配置时**也要**先鉴权：不能把「服务端没带二进制」当成公开信息。
 	rr = f.doBinary(t, "")
@@ -212,326 +266,80 @@ func TestAgentBinaryEndpointUnavailable(t *testing.T) {
 	}
 }
 
-// ---------- POST /v1/nodes/{id}/upgrade ----------
+// ---------- POST /v1/nodes/{name}/upgrade ----------
 
-// TestNodeUpgradeEndpointGuards 判定顺序与两种拒绝：离线 409 / 无二进制 501。
+// TestNodeUpgradeEndpointGuards 四类拒绝：未登录 401 / 不存在 404 / 无升级源 501 / 离线 409。
 func TestNodeUpgradeEndpointGuards(t *testing.T) {
-	t.Run("离线 → 409 node_offline", func(t *testing.T) {
+	t.Run("无会话 → 401", func(t *testing.T) {
 		f := newUpgradeFixture(t, true)
-		f.pub.online = false
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-		if rr.Code != http.StatusConflict {
-			t.Fatalf("status = %d, want 409（body=%s）", rr.Code, rr.Body.String())
+		req := httptest.NewRequest(http.MethodPost, "/v1/nodes/"+f.node.Name+"/upgrade", nil)
+		rr := httptest.NewRecorder()
+		f.mux.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401（body=%s）", rr.Code, rr.Body.String())
 		}
-		if got := decode(t, rr)["error"]; got != "node_offline" {
-			t.Fatalf("error = %v, want node_offline", got)
+	})
+
+	t.Run("不存在的节点 → 404", func(t *testing.T) {
+		f := newUpgradeFixture(t, true)
+		rr := f.do(t, http.MethodPost, "/v1/nodes/nd_ghost/upgrade", nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404（body=%s）", rr.Code, rr.Body.String())
 		}
-		if f.pub.calls != 0 {
-			t.Fatalf("离线时推了 %d 帧，want 0", f.pub.calls)
+		if got := reasonOf(t, rr); got != reasonNotFound {
+			t.Fatalf("reason = %q, want %q", got, reasonNotFound)
 		}
 	})
 
 	t.Run("服务端无二进制 → 501", func(t *testing.T) {
 		f := newUpgradeFixture(t, false)
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
+		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.Name+"/upgrade", nil)
 		if rr.Code != http.StatusNotImplemented {
 			t.Fatalf("status = %d, want 501（body=%s）", rr.Code, rr.Body.String())
 		}
-		if got := decode(t, rr)["error"]; got != "agent_binary_unavailable" {
-			t.Fatalf("error = %v, want agent_binary_unavailable", got)
-		}
-		if f.pub.calls != 0 {
-			t.Fatalf("没有二进制时推了 %d 帧，want 0", f.pub.calls)
+		if got := reasonOf(t, rr); got != reasonAgentBinaryUnavailable {
+			t.Fatalf("reason = %q, want %q", got, reasonAgentBinaryUnavailable)
 		}
 	})
 
-	t.Run("推帧时节点恰好掉线 → 409", func(t *testing.T) {
+	t.Run("节点离线 → 409", func(t *testing.T) {
+		// hub 是真的、但没有会话：Online=false。选 409（不是 503）的理由：
+		// 「没连接」是**目标节点的状态**（换台节点/等它上线就能做），而 503 会读成
+		// 「中枢过载，退避重试」——两者对调用方的下一步动作完全不同。
 		f := newUpgradeFixture(t, true)
-		f.pub.err = ws.ErrNodeOffline
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
+		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.Name+"/upgrade", nil)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("status = %d, want 409（body=%s）", rr.Code, rr.Body.String())
 		}
-	})
-}
-
-// TestNodeUpgradeEndpointDispatch 目标版本判定 + 推帧内容 + sent 落库（§5 / §5.1）。
-func TestNodeUpgradeEndpointDispatch(t *testing.T) {
-	t.Run("同版本且未 force → up_to_date，不推帧", func(t *testing.T) {
-		f := newUpgradeFixture(t, true)
-		setAgentVersion(t, f, f.target, "")
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
-		}
-		body := decode(t, rr)
-		if body["status"] != "up_to_date" || body["targetVersion"] != f.target {
-			t.Fatalf("响应 = %v, want {status:up_to_date, targetVersion:%s}", body, f.target)
-		}
-		if f.pub.calls != 0 {
-			t.Fatalf("已有最新版本时推了 %d 帧，want 0", f.pub.calls)
-		}
-	})
-
-	t.Run("脏构建永不算已最新：dev / *-dirty 版本号不唯一标识内容", func(t *testing.T) {
-		// 两次 `make VERSION=…` 的 dirty 构建版本号一模一样、字节完全不同。
-		// 按版本号判等会让「点了升级却什么都没发生」变成常态，所以这两个值必须下发。
-		for _, target := range []string{"dev", "9.9.9+abc-dirty"} {
-			f := newUpgradeFixture(t, true)
-			f.target = target
-			setAgentVersion(t, f, target, "")
-			rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("%s: status = %d, want 200（body=%s）", target, rr.Code, rr.Body.String())
-			}
-			if body := decode(t, rr); body["status"] != "sent" {
-				t.Fatalf("%s: status = %v, want sent（脏构建不能判成已最新）", target, body["status"])
-			}
-			if f.pub.calls != 1 {
-				t.Fatalf("%s: 推了 %d 帧，want 1", target, f.pub.calls)
-			}
-		}
-	})
-
-	t.Run("force 越过同版本判断 → sent（body.force）", func(t *testing.T) {
-		f := newUpgradeFixture(t, true)
-		setAgentVersion(t, f, f.target, "")
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID,
-			map[string]any{"force": true})
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
-		}
-		body := decode(t, rr)
-		if body["status"] != "sent" || body["targetVersion"] != f.target {
-			t.Fatalf("响应 = %v, want {status:sent, targetVersion:%s}", body, f.target)
-		}
-		assertUpgradeFrame(t, f)
-	})
-
-	t.Run("force 也可用 query 表达", func(t *testing.T) {
-		f := newUpgradeFixture(t, true)
-		setAgentVersion(t, f, f.target, "")
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID+"&force=1", nil)
-		if rr.Code != http.StatusOK || decode(t, rr)["status"] != "sent" {
-			t.Fatalf("status = %d body=%s, want 200 sent", rr.Code, rr.Body.String())
-		}
-		assertUpgradeFrame(t, f)
-	})
-
-	t.Run("版本不同（老 agent）→ sent", func(t *testing.T) {
-		f := newUpgradeFixture(t, true)
-		setAgentVersion(t, f, "0.9.0+old", "")
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-		if rr.Code != http.StatusOK || decode(t, rr)["status"] != "sent" {
-			t.Fatalf("status = %d body=%s, want 200 sent", rr.Code, rr.Body.String())
-		}
-		assertUpgradeFrame(t, f)
-	})
-
-	t.Run("未知 agent 版本（空串）→ sent", func(t *testing.T) {
-		f := newUpgradeFixture(t, true)
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-		if rr.Code != http.StatusOK || decode(t, rr)["status"] != "sent" {
-			t.Fatalf("status = %d body=%s, want 200 sent", rr.Code, rr.Body.String())
+		if got := reasonOf(t, rr); got != "node_offline" {
+			t.Fatalf("reason = %q, want node_offline", got)
 		}
 	})
 }
 
-// TestNodeUpgradeEndpointAuthAndScope 会话鉴权 + 命名空间隔离 + 缺参。
-func TestNodeUpgradeEndpointAuthAndScope(t *testing.T) {
-	f := newUpgradeFixture(t, true)
-
-	t.Run("无会话 → 401", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost,
-			"/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+f.env.nsID, nil)
-		rr := httptest.NewRecorder()
-		f.mux.ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401", rr.Code)
-		}
-	})
-
-	t.Run("缺 namespaceId → 400", func(t *testing.T) {
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade", nil)
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400（body=%s）", rr.Code, rr.Body.String())
-		}
-	})
-
-	t.Run("别的命名空间查询这台节点 → 404", func(t *testing.T) {
-		other := f.env.seedNamespace(t, "upgrade-other", "升级隔离")
-		rr := f.do(t, http.MethodPost, "/v1/nodes/"+f.node.ID+"/upgrade?namespaceId="+other.ID, nil)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404（隔离边界）", rr.Code)
-		}
-		if f.pub.calls != 0 {
-			t.Fatalf("跨命名空间推了 %d 帧，want 0", f.pub.calls)
-		}
-	})
-
-	t.Run("不存在的节点 → 404", func(t *testing.T) {
-		rr := f.do(t, http.MethodPost, "/v1/nodes/nd_ghost/upgrade?namespaceId="+f.env.nsID, nil)
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404", rr.Code)
-		}
-	})
-}
-
-// assertUpgradeFrame 断言 fake publisher 收到了契约 §5 的帧，且 sent 已落库（§5.1）。
-func assertUpgradeFrame(t *testing.T, f *upgradeFixture) {
-	t.Helper()
-	if f.pub.calls != 1 {
-		t.Fatalf("推帧次数 = %d, want 1", f.pub.calls)
+// TestAgentUpgradeSourceUnwrappedWhenDisabled 钉住适配器的 nil 语义：
+//
+// 「没带二进制」必须在**接口层面**是 nil（走 501 分支），而不是一个包着 nil
+// *agentBinary 的非 nil 接口 —— 后者会让 `a.upgrade != nil` 为真，501 落到
+// 「agent binary is not loaded」那条更模糊的同码分支上（现象一样，排查方向差很远）。
+func TestAgentUpgradeSourceUnwrappedWhenDisabled(t *testing.T) {
+	disabled := loadAgentBinary(filepath.Join(t.TempDir(), "missing"), "1.0.0")
+	if src := newAgentUpgradeSource(disabled); src != nil {
+		t.Fatalf("未启用时 newAgentUpgradeSource = %#v, want nil 接口", src)
 	}
-	if f.pub.namespace != f.env.nsID || f.pub.nodeID != f.node.ID {
-		t.Fatalf("推给了 (%s,%s), want (%s,%s)",
-			f.pub.namespace, f.pub.nodeID, f.env.nsID, f.node.ID)
-	}
-	fr := f.pub.frame
-	if fr == nil || fr.Type != ws.NodeFrameUpgrade {
-		t.Fatalf("帧类型 = %+v, want upgrade", fr)
-	}
-	if fr.TargetVersion != f.target {
-		t.Errorf("target_version = %q, want %q", fr.TargetVersion, f.target)
-	}
-	if fr.SHA256 != f.bin.sha256 || len(fr.SHA256) != 64 {
-		t.Errorf("sha256 = %q, want 64 位 hex（%s）", fr.SHA256, f.bin.sha256)
-	}
-	if fr.URLPath != ws.NodeBinaryPath {
-		t.Errorf("url_path = %q, want %q", fr.URLPath, ws.NodeBinaryPath)
+	if src := newAgentUpgradeSource(nil); src != nil {
+		t.Fatalf("nil binary 时 newAgentUpgradeSource = %#v, want nil 接口", src)
 	}
 
-	// sent 落库：控制台刷新后要能看到「已经下发、还在等 ack」。
-	got, err := f.env.db.GetNode(context.Background(), f.env.nsID, f.node.ID)
-	if err != nil {
-		t.Fatalf("get node: %v", err)
+	enabled := newUpgradeFixture(t, true)
+	src := newAgentUpgradeSource(enabled.bin)
+	if src == nil {
+		t.Fatal("启用时 newAgentUpgradeSource 不该是 nil")
 	}
-	if got.AgentUpgrade.Status != store.AgentUpgradeSent {
-		t.Fatalf("agentUpgrade.status = %q, want sent", got.AgentUpgrade.Status)
+	if src.TargetVersion() != enabled.target {
+		t.Fatalf("TargetVersion = %q, want %q", src.TargetVersion(), enabled.target)
 	}
-	if got.AgentUpgrade.TargetVersion != f.target || got.AgentUpgrade.At <= 0 {
-		t.Fatalf("agentUpgrade = %+v, want targetVersion=%s 且 at>0", got.AgentUpgrade, f.target)
-	}
-}
-
-// ---------- GET /v1/nodes 的读侧（§5.1） ----------
-
-// TestNodesListAgentUpgradeFields 顶层 targetAgentVersion + 每台节点的 agentVersion /
-// agentCommit / agentUpgrade（**恒存在**，默认四键齐全）。
-func TestNodesListAgentUpgradeFields(t *testing.T) {
-	f := newUpgradeFixture(t, true)
-	ctx := context.Background()
-
-	// 两台节点：一台什么都没试过（默认对象），一台有 sent 状态。
-	fresh := &store.Node{NamespaceID: f.env.nsID, Name: "fresh-node"}
-	if _, err := f.env.db.CreateNode(ctx, fresh); err != nil {
-		t.Fatalf("create fresh node: %v", err)
-	}
-	setAgentVersion(t, f, "1.4.0+old", "oldsha")
-	if err := f.env.db.MarkAgentUpgradeSent(ctx, f.env.nsID, f.node.ID, f.target, 1762329600); err != nil {
-		t.Fatalf("mark sent: %v", err)
-	}
-
-	rr := f.do(t, http.MethodGet, "/v1/nodes?namespaceId="+f.env.nsID, nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
-	}
-	var body struct {
-		TargetAgentVersion *string `json:"targetAgentVersion"`
-		Nodes              []struct {
-			ID           string          `json:"id"`
-			AgentVersion string          `json:"agentVersion"`
-			AgentCommit  string          `json:"agentCommit"`
-			AgentUpgrade json.RawMessage `json:"agentUpgrade"`
-		} `json:"nodes"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v（body=%s）", err, rr.Body.String())
-	}
-	if body.TargetAgentVersion == nil {
-		t.Fatal("响应顶层缺 targetAgentVersion（§5.1 冻结字段）")
-	}
-	if *body.TargetAgentVersion != f.target {
-		t.Fatalf("targetAgentVersion = %q, want %q", *body.TargetAgentVersion, f.target)
-	}
-	if len(body.Nodes) != 2 {
-		t.Fatalf("nodes 数 = %d, want 2", len(body.Nodes))
-	}
-	byID := map[string]int{}
-	for i := range body.Nodes {
-		byID[body.Nodes[i].ID] = i
-	}
-	// ① 有 sent 的那台：三个字段都要有值 / 状态。
-	upd := body.Nodes[byID[f.node.ID]]
-	if upd.AgentVersion != "1.4.0+old" || upd.AgentCommit != "oldsha" {
-		t.Fatalf("agentVersion/agentCommit = (%q,%q), want (1.4.0+old, oldsha)",
-			upd.AgentVersion, upd.AgentCommit)
-	}
-	wantUpgrade := map[string]any{
-		"status": "sent", "targetVersion": f.target, "error": "", "at": float64(1762329600),
-	}
-	assertJSONObject(t, upd.AgentUpgrade, wantUpgrade)
-	// ② 从未尝试的那台：**默认对象**，四个键一个都不能少（UI 直接读 status/error）。
-	freshView := body.Nodes[byID[fresh.ID]]
-	assertJSONObject(t, freshView.AgentUpgrade, map[string]any{
-		"status": "", "targetVersion": "", "error": "", "at": float64(0),
-	})
-	if freshView.AgentVersion != "" || freshView.AgentCommit != "" {
-		t.Fatalf("新节点 agentVersion/agentCommit = (%q,%q), want 空串",
-			freshView.AgentVersion, freshView.AgentCommit)
-	}
-}
-
-// TestNodesListTargetAgentVersionEmptyWithoutBinary 服务端没带二进制 → 顶层空串
-// （UI 据此不显示升级按钮）。
-func TestNodesListTargetAgentVersionEmptyWithoutBinary(t *testing.T) {
-	f := newUpgradeFixture(t, false)
-
-	rr := f.do(t, http.MethodGet, "/v1/nodes?namespaceId="+f.env.nsID, nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200（body=%s）", rr.Code, rr.Body.String())
-	}
-	var body map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got, ok := body["targetAgentVersion"]
-	if !ok {
-		t.Fatal("响应顶层缺 targetAgentVersion（空也要出现）")
-	}
-	if got != "" {
-		t.Fatalf("targetAgentVersion = %v, want 空串", got)
-	}
-}
-
-// ---------- 小工具 ----------
-
-func setAgentVersion(t *testing.T, f *upgradeFixture, version, commit string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := f.env.db.UpdateNodeAgentVersion(ctx, f.env.nsID, f.node.ID, version); err != nil {
-		t.Fatalf("set agent version: %v", err)
-	}
-	if commit != "" {
-		if err := f.env.db.RecordAgentUpgrade(ctx, f.env.nsID, f.node.ID, version, commit, 1); err != nil {
-			t.Fatalf("set agent commit: %v", err)
-		}
-	}
-}
-
-// assertJSONObject 断言一个 JSON 对象的**键集合与值**完全等于 want（不多不少）。
-func assertJSONObject(t *testing.T, raw json.RawMessage, want map[string]any) {
-	t.Helper()
-	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("decode agentUpgrade %s: %v", raw, err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("agentUpgrade 键集合 = %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("agentUpgrade[%q] = %v, want %v", k, got[k], v)
-		}
+	if len(src.SHA256()) != 64 {
+		t.Fatalf("SHA256 = %q, want 64 位十六进制", src.SHA256())
 	}
 }

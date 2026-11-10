@@ -1,198 +1,47 @@
 package server
 
-import (
-	"encoding/json"
-	"errors"
-	"io"
-	"log/slog"
-	"net/http"
-	"strings"
+// 本文件是「agent 自升级」在 v4 HTTP 面的**装配缝**（CONTRACT-agent-upgrade §2 / api-conventions §8.2）。
+//
+// v3 → v4 的职责重排（读完这一段再看代码，否则会以为少了东西）：
+//
+//   - **端点实现**搬进了 Node 资源域：`POST /v1/nodes/{name}/upgrade` 由
+//     `resource_node.go` 的 `nodeAPI.upgradeNode` 实现（v4 的节点是 cluster-scoped 资源，
+//     路径从 `{id}` 变成 `{name}`；会话鉴权由 `nodeAPI.register` 用 `deps.session` 包裹）。
+//     本文件**不再**实现一份同名 handler —— 两份实现迟早对「离线/无二进制/版本相同」
+//     给出不同状态码，而那正是 v3 反复付账的地方。
+//   - **升级源的事实**留在这里：二进制在启动时一次性读入内存（`agentBinary`：字节 + sha256 +
+//     版本三者同一份快照），本文件把它适配成资源域要的 `nodeUpgradeSource`
+//     （`TargetVersion()` / `SHA256()` 两个只读事实）。适配器是**唯一**的注入点：
+//     `mux.go` 在装配时 `nodeAPI.setUpgradeSource(newAgentUpgradeSource(agentBin))`。
+//   - 未注入（或文件不存在 = 功能未启用）→ 接口是 nil → `POST /upgrade` 回
+//     501 `agent_binary_unavailable`，与 `GET /v1/node/binary` 的 501 同语义。
+//     这是合法部署形态（绝大多数开发/裸机部署本来就不带 agent 二进制），不是启动错误。
+//
+// 下发通道是 `ws.Hub.RequestUpgrade(ctx, nodeID, targetVersion, sha256, urlPath)`：
+// v3 的 `ws.NodeFrameUpgrade` / `ws.NodeBinaryPath` / `NodeUpgradePublisher` 已随
+// NodeHandler 退役，帧类型在共享协议包（`protocol.UpgradeFrame` / `protocol.NodeBinaryPath`）。
+// hub 自己负责「先落 sent 事实（MarkAgentUpgradeSent）再发帧」——**装配层不要再补一次写库**，
+// 那会让同一次下发在 nodes.agent_upgrade 上留两条事实。
 
-	"github.com/zzjcool/anotify/internal/store"
-	"github.com/zzjcool/anotify/internal/ws"
-)
-
-// 本文件是「控制台下发 agent 升级」端点（CONTRACT-agent-upgrade §5 / §5.1）。
+// agentUpgradeSource 把 `*agentBinary` 适配成资源域的只读升级源投影。
 //
-//	POST /v1/nodes/{id}/upgrade
-//
-// 语义只有一句话：把「去哪个路径拿什么版本的二进制」推给那台节点，节点自己下载、
-// 校验、原子替换、重启。中枢不碰节点磁盘，也不在帧里传二进制（15 MB 会撑爆心跳）。
-//
-// 响应形状（§5.1 冻结）：
-//
-//	200 {"status":"sent"|"up_to_date","targetVersion":"1.5.0+3fd5a59"}
-//	409 {"error":"node_offline"}                节点没有活跃连接
-//	501 {"error":"agent_binary_unavailable"}    服务端没带 agent 二进制
-//	404                                          节点不存在 / 不在这个命名空间
-//
-// 为什么把 targetVersion 放进响应：控制台点完要立刻能在弹窗里写「正在升级到 X」，
-// 不必再猜一次中枢版本。
-
-// isUniqueVersion 报告版本号是否**唯一标识构建内容**。
-//
-// `dev` 与含 `dirty` 的版本号不满足：同一版本号可以对应任意多次不同构建。
-// 生产构建来自干净 tag（VERSION=v1.5.0），版本号与内容一一对应。
-func isUniqueVersion(v string) bool {
-	v = strings.TrimSpace(v)
-	if v == "" || v == "dev" {
-		return false
-	}
-	return !strings.Contains(v, "dirty")
+// 用值类型而不是指针：`nodeAPI.upgrade` 是接口字段，如果塞一个 nil 的 `*agentBinary`
+// 进去，`a.upgrade != nil` 会是真的，501 分支就落到「二进制未装载」那条更模糊的路径上。
+// 值类型 + 构造时判空让「未启用」在接口层面就是 nil，语义只有一处。
+type agentUpgradeSource struct {
+	bin *agentBinary
 }
 
-// NodeUpgradePublisher 是中枢 → 节点的升级通道（*ws.NodeHub 满足它）。
-//
-// 抽成接口的理由与 DeployPublisher 相同：handler 的行为要能在不起 WebSocket 的
-// 情况下测试（离线 / 501 / up_to_date 这些分支与连接层无关）。
-type NodeUpgradePublisher interface {
-	// Online 报告节点此刻是否有活跃连接（离线 → 409，判定在推帧之前）。
-	Online(nodeID string) bool
-	// PublishUpgrade 向节点推一帧 upgrade。
-	PublishUpgrade(namespaceID, nodeID string, f *ws.UpgradeFrame) error
-}
+// TargetVersion 是本次下发的目标版本（= 中枢自己的版本）。
+func (s agentUpgradeSource) TargetVersion() string { return s.bin.targetVersion() }
 
-// nodeUpgradeHandler 持有升级端点需要的依赖。
-type nodeUpgradeHandler struct {
-	db      *store.DB
-	console *consoleHandler // 复用命名空间解析（错误码映射只有一处真相）
-	hub     NodeUpgradePublisher
-	bin     *agentBinary
-}
+// SHA256 是二进制内容的 sha256（64 位小写十六进制，不带 "sha256:" 前缀）。
+func (s agentUpgradeSource) SHA256() string { return s.bin.sha256 }
 
-// upgradeRequest 是 POST /v1/nodes/{id}/upgrade 的请求体（全部可选）。
-//
-// force 既支持 JSON body 也支持 `?force=1|true`：控制台用 body，curl 用 query
-// 更顺手。两种写法表达同一件事，不必为「怎么表达 force」再定一次协议。
-type upgradeRequest struct {
-	NamespaceID string `json:"namespaceId"`
-	Force       bool   `json:"force"`
-}
-
-// targetVersion 是本次下发的目标版本（没带二进制时为空串）。
-func (h *nodeUpgradeHandler) targetVersion() string {
-	if h.bin == nil {
-		return ""
+// newAgentUpgradeSource 构造升级源；未带二进制 → 返回**未包装的 nil 接口**。
+func newAgentUpgradeSource(bin *agentBinary) nodeUpgradeSource {
+	if bin == nil || !bin.enabled() {
+		return nil
 	}
-	return h.bin.targetVersion()
-}
-
-// upgrade 处理 POST /v1/nodes/{id}/upgrade。
-func (h *nodeUpgradeHandler) upgrade(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
-		return
-	}
-	nodeID := strings.TrimSpace(r.PathValue("id"))
-	if nodeID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node id required"})
-		return
-	}
-
-	var req upgradeRequest
-	if r.Body != nil && r.Body != http.NoBody {
-		// body 是**可选**的：坏 JSON 不 400，交给命名空间解析给出更有用的错误
-		// （「namespaceId is required」比「invalid JSON body」更接近调用方要改的东西）。
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req)
-	}
-	// 写端点：`*` → 400（跨命名空间的下发没有定义）。
-	ns, ok := h.console.resolveNamespace(w, r, req.NamespaceID, false)
-	if !ok {
-		return
-	}
-	force := req.Force || forceFromQuery(r)
-
-	node, err := h.db.GetNode(r.Context(), ns.ID, nodeID)
-	if errors.Is(err, store.ErrNotFound) {
-		// 命名空间隔离在这里收口：别的命名空间的节点 id 同样得到 404，
-		// 不区分「不存在」与「不属于你」（不回显资源是否存在）。
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
-		return
-	}
-	if err != nil {
-		slog.Error("get node failed", "event", "console.nodes.upgrade.get_failed",
-			"node_id", nodeID, "error", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-
-	// ① 离线优先（契约 §5 的顺序）：没有连接就没有下发对象，与「有没有二进制」无关。
-	if h.hub == nil || !h.hub.Online(nodeID) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "node_offline"})
-		return
-	}
-
-	// ② 服务端没带二进制 → 501（明确说「这里没有升级源」，不是节点的问题）。
-	target := h.targetVersion()
-	if target == "" {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "agent_binary_unavailable"})
-		return
-	}
-
-	// ③ 已是最新且没强制 → 什么都不发。
-	//
-	// 空 agent_version（老 agent）不等于目标版本，所以老 agent 永远走下发路径。
-	//
-	// **脏构建永不算「已是最新」**：`dev` / `*-dirty` 这类版本号不唯一标识内容
-	// （两次 dirty 构建版本号一模一样、字节完全不同），按版本号判等会让「点了升级
-	// 却什么都没发生」变成常态。判断依据退回内容本身——节点上的 sha256 中枢不知道，
-	// 那就干脆下发，agent 自己校验 sha：一致就 no-op，不一致才替换（这也是它的默认行为）。
-	if !force && node.AgentVersion == target && isUniqueVersion(target) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":        "up_to_date",
-			"targetVersion": target,
-		})
-		return
-	}
-
-	// ④ 推帧。节点在「查库」与「推帧」之间掉线是正常竞态 → 仍报 409。
-	frame := &ws.UpgradeFrame{
-		Type:          ws.NodeFrameUpgrade,
-		TargetVersion: target,
-		SHA256:        h.bin.sha256,
-		URLPath:       ws.NodeBinaryPath,
-	}
-	if err := h.hub.PublishUpgrade(ns.ID, nodeID, frame); err != nil {
-		if errors.Is(err, ws.ErrNodeOffline) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "node_offline"})
-			return
-		}
-		slog.Error("publish upgrade failed", "event", "console.nodes.upgrade.publish_failed",
-			"node_id", nodeID, "error", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-
-	// ⑤ 记 sent（CONTRACT-agent-upgrade §5.1）：控制台刷新后要能看到「上次下发过、
-	// 还没 ack」。写库失败只 WARN —— 帧已经推出去了，把它变成 500 会让调用方重试
-	// 并推第二遍，节点会白下载一次。
-	if err := h.db.MarkAgentUpgradeSent(r.Context(), ns.ID, nodeID, target, store.Now()); err != nil {
-		slog.Warn("record agent upgrade sent failed",
-			"event", "console.nodes.upgrade.record_failed",
-			"node_id", nodeID, "error", err.Error())
-	}
-
-	slog.Info("agent upgrade dispatched",
-		"event", "console.nodes.upgrade.sent",
-		"node_id", nodeID,
-		"namespace_id", ns.ID,
-		"target_version", target,
-		"sha256", h.bin.sha256,
-		"force", force,
-	)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":        "sent",
-		"targetVersion": target,
-	})
-}
-
-// forceFromQuery 解析 `?force=1|true|yes`（大小写不敏感）。
-//
-// 只认这三个肯定值：`?force=0` / 垃圾值都当作「没强制」，不猜意图。
-func forceFromQuery(r *http.Request) bool {
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("force"))) {
-	case "1", "true", "yes":
-		return true
-	}
-	return false
+	return agentUpgradeSource{bin: bin}
 }

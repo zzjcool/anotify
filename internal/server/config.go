@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/zzjcool/anotify/internal/route"
 )
 
 // 保留期 / 背压的默认值（#229 / #228）。
@@ -46,6 +44,20 @@ const (
 	// （与既有的「写错一个 env 不该把防线关掉」同一原则），而不是让它回绕。
 	maxEventRetentionDays = 36500     // 100 年：再长就等于永久保留，不如显式配 0
 	maxPendingMaxAgeSec   = 7 * 86400 // 7 天：超过这个量级已经不是「背压」，是「长期停机」
+
+	// defaultMaxHops / defaultTraceTaskBudget 是派发预算的默认值（v3 契约 §2）。
+	//
+	// v4 起 `route` 包不再导出这两个默认值：v3 的 Dispatcher（带 Publisher / MaxHops /
+	// TraceTaskBudget 的那个结构）已被 `route.Router` 取代，Router 只有 db/now ——
+	// 环与扇出的兜底挪进了 store 的派发事实（见 route 包注释与 capability.md §8.5），
+	// 中枢侧不再有「跳数预算」这个运行时旋钮。
+	//
+	// Config 字段与 Validate 行为**保留**（运维脚本 / 兼容面：非法值仍然启动即失败），
+	// 但默认值必须落在本包：继续引 route 会变成引一个已不存在的常量。两个数字与 v3
+	// 的 route.DefaultMaxHops / route.DefaultTraceTaskBudget 逐字相同，避免「同一个
+	// env 在升级前后给出两个不同的默认值」。
+	defaultMaxHops         = 16
+	defaultTraceTaskBudget = 512
 )
 
 // Config 服务配置（全部可用环境变量覆盖）。
@@ -144,7 +156,12 @@ type Config struct {
 	// 漂移，跨部署不可比；「最老的 pending 等了多久」才与部署规模无关。
 	PendingMaxAgeSec int
 
-	// MaxHops / TraceTaskBudget 是派发的两个预算（契约 §2）。
+	// MaxHops / TraceTaskBudget 是派发的两个预算（v3 契约 §2）。
+	//
+	// v4 状态：**保留配置面与 Validate 行为，但中枢侧已不再消费**（route.Router 没有
+	// 跳数预算；环与扇出的兜底在 store 的派发事实上）。保留而不是删：env 是已发布的
+	// 运维接口，删掉会让「配了却静默无效」变成「启动直接报错」+ 需要改所有部署脚本；
+	// 而且非法值继续在启动那一刻失败仍然是想要的行为。
 	//
 	// 语义（解析见 positiveIntFromEnv）：
 	//   - 未设置 / 空 → 默认（hop 16 / trace 512）；
@@ -410,12 +427,12 @@ func FromEnv() Config {
 		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
 		StatsIntervalSec:   statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
 
-		// 派发预算（契约 §2）：非法值由 Validate 拦在启动那一刻。
+		// 派发预算（v3 契约 §2）：非法值由 Validate 拦在启动那一刻。
 		//
-		// 默认值直接引 route 包（唯一事实源）：不配 env 时，cfg 里的值必须与
-		// route.New 填进去的一致。抄一份字面量就变成两个副本，只能靠测试兜住漂移。
-		MaxHops:         positiveIntFromEnv("ANOTIFY_MAX_HOPS", route.DefaultMaxHops),
-		TraceTaskBudget: positiveIntFromEnv("ANOTIFY_TRACE_TASK_BUDGET", route.DefaultTraceTaskBudget),
+		// v4 的 route.Router 不消费这两个值（中枢不再有跳数预算），默认值因此落在
+		// 本包的 defaultMaxHops / defaultTraceTaskBudget（理由见那两条常量）。
+		MaxHops:         positiveIntFromEnv("ANOTIFY_MAX_HOPS", defaultMaxHops),
+		TraceTaskBudget: positiveIntFromEnv("ANOTIFY_TRACE_TASK_BUDGET", defaultTraceTaskBudget),
 	}
 }
 

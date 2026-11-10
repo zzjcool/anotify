@@ -12,7 +12,6 @@ import (
 
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
-	"github.com/zzjcool/anotify/internal/executor"
 	"github.com/zzjcool/anotify/internal/lease"
 	"github.com/zzjcool/anotify/internal/push"
 	"github.com/zzjcool/anotify/internal/route"
@@ -34,7 +33,21 @@ func NewMux(cfg Config) http.Handler {
 	return NewApp(context.Background(), cfg).Handler
 }
 
-// NewApp 装配完整应用（含后台 push 派发器）。
+// NewApp 装配完整应用（含后台派发 / cron / 租约三条循环）。
+//
+// v4 的装配顺序（本文件是唯一的 mux 写入者，别在别处再挂路由）：
+//
+//	store → auth → cli-auth / passkey-enroll → VAPID → 保留域 handler →
+//	背压 → 会话中间件 → 限流 → route.Router / ws.Hub / source.Service / trigger / lease.Sweeper
+//	→ 资源域 register(mux) → 节点协议 → 健康检查 / pprof / 静态兜底
+//
+// 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：`internal/executor`（中枢
+// 执行器，连带 notify.phone / push.CentralNotifier 的接线）、`ws.NewNodeHandler`（hub 自己
+// 就是 /v1/node/stream 的 handler）、`db.BackfillBuiltinCapabilities`（内置能力播种随
+// 中央执行域一起退役）、`source.Trigger` / `source.Scheduler`（换成 source.Service +
+// trigger.Scheduler）、`lease.New` + Redispatch/Nudge/SetNotBefore 那一套重派回调
+// （租约回收由 ws.Hub 的派发循环接手），以及全部 v3 扁平资源路由
+// （/v1/capabilities、/v1/sources、/v1/playbooks、/v1/nodes、/v1/stats、/v1/events 等）。
 func NewApp(ctx context.Context, cfg Config) *App {
 	// 1. 存储
 	db, err := store.Open(cfg.DBPath)
@@ -115,24 +128,24 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// 4. Web Push（P-256 VAPID 密钥）
 	//
-	// #80 之后不再有"按用户的消息消费者"（那套依赖 broker 的消息订阅）。
-	// 推送由中枢执行器在 notify.phone 任务里直接发（见 push.CentralNotifier）。
-	var vapidSender push.Sender
+	// v4 只保留**密钥的装载与公钥下发**（GET /v1/vapid-public-key）：随 `internal/executor`
+	// 退役的 `push.CentralNotifier`（notify.phone 的内置执行者）带走了「谁发推送」这件事，
+	// v4 里推送由节点的能力进程自己发（能力正文带它需要的密钥材料），中枢不再构造 Sender。
+	// VAPID 缺失仍然只 WARN：绝大多数开发/裸机部署本来就没配推送，那不是启动错误。
+	var vapidCfg *push.VAPIDConfig
 	vapidCfg, vapidErr := push.LoadVAPID()
-	if vapidErr == nil {
-		vapidSender = push.NewVAPIDSender(vapidCfg)
-	} else {
+	if vapidErr != nil {
+		vapidCfg = nil
 		slog.Warn("VAPID not configured, push disabled",
 			"event", "push.vapid.missing",
 			"error", vapidErr.Error(),
 		)
 	}
 
-	// 5. HTTP 处理器
+	// 5. 保留域 HTTP 处理器（auth / admin / devices / keys / cli-auth / passkey-enroll）
 	//
-	// #80：旧通知终端模型的 handler（NotifyHandler / ws.Handler /
-	// notificationsHandler）已随 broker 包一起删除。事件中心用
-	// /v1/events（api.EventHandler）+ 会话版 /v1/console/events。
+	// 这些域**不**走资源信封（api-conventions §8.3「保持现有路径与请求体」），所以它们
+	// 的 handler 仍在各自的文件里，本函数只负责挂路由与中间件。
 	authH := &authHandler{svc: authSvc}
 	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
@@ -147,39 +160,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	enrollH := &passkeyEnrollHandler{mgr: enrollMgr, db: db}
 
-	// 节点连接注册表：派发器通过它把 assign 帧推给节点。
-	// 必须在 eventH 之前创建——派发器需要它作为 Publisher。
-	nodeHub := ws.NewNodeHub()
-
 	// 自带 agent 二进制（CONTRACT-agent-upgrade §2）：中枢同时是节点的**升级源**。
 	// 文件不存在 = 功能未启用（loadAgentBinary 只 WARN），此时 GET /v1/node/binary
 	// 返回 501、控制台不显示升级按钮——「不升级」是合法部署形态，不是启动错误。
 	agentBin := loadAgentBinary(cfg.AgentBin, serverVersion())
-
-	// 事件入口（#58）：触发器 + 派发器
-	// 派发器带 Publisher，这样「派发成功」包含「assign 帧真的推出去了」，
-	// 而不是仅仅把库里的状态改成 assigned（节点可能根本不在线）。
-	dispatcher := route.New(db)
-	dispatcher.Publisher = nodeHub
-	// 两个派发预算来自 env（契约 §2）：0 = 用 route 包的默认值（由 New 填好，
-	// 这里只在配置层真的给了正数时覆盖）。非法值已经在 cfg.Validate() 拦在启动那一刻。
-	if cfg.MaxHops > 0 {
-		dispatcher.MaxHops = cfg.MaxHops
-	}
-	if cfg.TraceTaskBudget > 0 {
-		dispatcher.TraceTaskBudget = cfg.TraceTaskBudget
-	}
-	slog.Info("dispatch budgets configured",
-		"event", "server.budget.configured",
-		"max_hops", dispatcher.MaxHops,
-		"trace_task_budget", dispatcher.TraceTaskBudget,
-		"note", "环靠 max_hops 兜底（环是合法编排）；单 trace 任务数靠 trace_task_budget 兜底",
-	)
-	eventH := &api.EventHandler{
-		Store:    db,
-		Keys:     keyValidator,
-		Triggers: trigger.New(db, dispatcher),
-	}
 
 	// 派发背压（#228）：判定信号 = **最老 pending 任务的等待时长**，超阈时**新事件入口**返回 503。
 	//
@@ -201,21 +185,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"event", "server.backpressure.configured",
 		"pending_max_age_sec", int(cfg.PendingMaxAge()/time.Second),
 		"enabled", cfg.PendingMaxAge() > 0,
-		"note", "0 = 不启用；超阈时 POST /v1/events · POST /v1/hooks/{token} · POST /v1/sources/{id}/fire 返回 503+Retry-After，读端点不受影响",
+		"note", "0 = 不启用；超阈时 POST /v1/namespaces/{ns}/events · POST /v1/hooks/{token} · POST …/sources/{name}/fire 返回 503+Retry-After，读端点不受影响",
 	)
-
-	// 控制台 API（#59）：8 个新端点，全部走组织维度（I10）
-	// targetAgentVersion 是 GET /v1/nodes 顶层下发的「中枢当前带的 agent 版本」
-	// （CONTRACT-agent-upgrade §5.1）；空串 = 服务端没带二进制。
-	consoleH := &consoleHandler{db: db, auth: authSvc, targetAgentVersion: agentBin.targetVersion()}
-
-	// 统计（/v1/stats）是**命名空间级**资源（契约 §6.2）：
-	// 它需要和资源端点**同一套**命名空间解析，所以复用 consoleH 的解析函数
-	// （注入而不是内联：错误码映射只有一处真相，抄一份必然漂移）。
-	statsH := &statsHandler{
-		db:               db,
-		resolveNamespace: consoleH.resolveNamespace,
-	}
 
 	sessMW := authSvc.Sessions().Middleware
 	// 管理后台：登录会话 + 超管权限（两层中间件）
@@ -241,6 +212,57 @@ func NewApp(ctx context.Context, cfg Config) *App {
 			"per_min_ip", perIP,
 		)
 	}
+
+	// 6. v4 运行期依赖（冻结契约 D1：资源域只拿这一份 serverDeps）
+	//
+	// 四个组件互相引用但都不持有对方的后台循环：Router 只做投影、Hub 做会话与派发、
+	// source.Service 做入口归一化、trigger.Scheduler 只把 cron 到期的源喂给 Service。
+	// 依赖方向单向（scheduler → service → router → store），所以可以在一个地方一次装好。
+	router := route.New(db)
+	hub := ws.NewHub(db, router, ws.WithLogger(slog.Default()))
+	sources := source.New(db, router)
+	sched := trigger.New(db, sources, slog.Default())
+	sweeper := lease.NewSweeper(db, slog.Default())
+	deps := &serverDeps{
+		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
+		Log: slog.Default(), Now: store.Now, Session: sessMW, Backpressure: bp.Wrap,
+	}
+
+	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。
+	//
+	// 顺序与 v3 的 POST /v1/events 一致：`noStore(bp.Wrap(eventH))`，即**背压在外、
+	// 鉴权在 handler 内**。这不违反「背压在会话中间件内侧」那条纪律（那条说的是带
+	// sessMW 的控制台端点：先 401 再谈积压），投递入口本来就不走会话中间件。
+	eventH := api.NewEventHandler(sources, keyValidator)
+
+	// 后台循环（各自 go，单轮失败只记日志不停摆）：
+	//
+	//   - 派发：扫可派发任务 → 记录候选 assignment → 推 task.dispatch（250ms，交互延迟
+	//     目标；每轮上限 100 条由 Hub 自己给）；
+	//   - cron：把到期的源交给 source.Service 触发（1min，cron 的最小粒度就是分钟）；
+	//   - 租约巡检：回收过期租约 + 保留期清理 + SQLite 统计维护（lease.DefaultInterval
+	//     = 30s；保留期秒数来自 system config，不再从 mux 注入）。
+	//
+	// 三条循环都在 ctx 结束时正常退出（返回 ctx.Err()），所以这里只把**非取消**的
+	// 退出记成 WARN：正常关库时的 context canceled 不该在日志里长得像故障。
+	runBackgroundLoop(ctx, "dispatch", func(loopCtx context.Context) error {
+		hub.RunDispatchLoop(loopCtx, 250*time.Millisecond)
+		return nil
+	})
+	runBackgroundLoop(ctx, "cron", func(loopCtx context.Context) error {
+		return sched.Run(loopCtx, time.Minute)
+	})
+	runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
+		return sweeper.Run(loopCtx, lease.DefaultInterval)
+	})
+	// 派发预算（v3 契约 §2）在 v4 只有配置面（route.Router 不再消费），但启动日志仍要
+	// 把它写出来：运维改了 env 却没生效时，至少要能在日志里看到「配的是多少」。
+	slog.Info("dispatch budgets configured",
+		"event", "server.budget.configured",
+		"max_hops", cfg.MaxHops,
+		"trace_task_budget", cfg.TraceTaskBudget,
+		"note", "v4 保留配置与校验；中枢侧派发（route.Router + ws.Hub）不再消费这两个预算",
+	)
 
 	mux := http.NewServeMux()
 	// --- 动态 API（no-store）---
@@ -278,227 +300,42 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("/v1/devices/", noStore(sessMW(devicesH)))
 	mux.Handle("/v1/keys", noStore(sessMW(keysH)))
 	mux.Handle("/v1/keys/", noStore(sessMW(keysH)))
-	mux.Handle("/v1/stats", noStore(sessMW(statsH)))
 
-	// --- 节点协议（#57）：WS，opaque token 鉴权在 Upgrade 之前 ---
-	// 必须复用上面的 nodeHub：否则 handler 会惰性建一个**独立**的 hub，
-	// 派发器往 nodeHub 里推，handler 往自己的 hub 里注册 —— 永远推不到。
-	nodeH := ws.NewNodeHandler(db)
-	nodeH.Hub = nodeHub
-	// emit 帧（P1）：唯一的产出通道，也是**下一跳的唯一入口**。不接它的话节点上报的
-	// emit 会被明确拒收（emit_ack.error），而不是静默丢掉——链路就一步都走不出去。
-	nodeH.Emit = dispatcher
-	// assign 帧里的 ports / expects（P1.4）：让实现知道「我的出口能去哪、对面要什么」，
-	// 不必被拒了再猜（token 由 handler 自己生成，见 ws.enrichAssign）。
-	nodeH.Expects = dispatcher
-
-	// 租约巡检（契约 §3.3）：每 5s 回收过期租约并重派到期的 pending 任务。
+	// --- v4 资源域（每个 domain 一个 register；路径为 /v1/namespaces/{ns}/… 或 cluster 级）---
 	//
-	// 没有它的话，节点异常下线后任务会永远停在 assigned/acked/running：
-	// 租约到期没人扫 → 任务不回收 → 槽位永久占用 → 节点并发能力逐次泄漏。
-	// 这是自愈机制，单轮失败只记日志，不能停摆。
-	// 启动时为所有已存在组织补齐内置能力（#83）。
+	// 顺序任意（ServeMux 按最具体模式匹配，不看注册顺序）。构造器名由契约冻结
+	// （D1 / 331 卡），它们是这些路由的**唯一**注册点——本文件不再手写任何扁平资源路径，
+	// 也不做「旧路径 → 新路径」的重定向（v4 明确不回兼容）。
+	newCapabilityAPI(deps).register(mux)
+	newSourceAPI(deps).register(mux)
+	newPlaybookAPI(deps).register(mux)
+	newNamespaceAPI(deps).register(mux)
+	newTaskAPI(deps).register(mux)
+	// Node 域多一步注入：它是升级源（agent 二进制）的消费方。
 	//
-	// 内置能力清单可能随版本升级新增；只在注册时播种的话，
-	// 已有组织永远补不上，notify.phone 派发会一直 pruned/no_node。
-	if n, err := db.BackfillBuiltinCapabilities(ctx); err != nil {
-		slog.Warn("backfill builtin capabilities failed",
-			"event", "server.builtin.backfill_failed",
-			"error", err.Error(),
-		)
-	} else if n > 0 {
-		slog.Info("builtin capabilities ready",
-			"event", "server.builtin.backfill",
-			"namespaces", n,
-		)
-	}
+	// 注入的是「目标版本 + 内容 sha256」两个事实（nodeUpgradeSource），不是整个
+	// *agentBinary：资源域不需要字节，也不需要知道文件路径。未带二进制时
+	// newAgentUpgradeSource 返回 nil 接口 → POST /v1/nodes/{name}/upgrade 回 501。
+	nodeAPI := newNodeAPI(deps)
+	nodeAPI.setUpgradeSource(newAgentUpgradeSource(agentBin))
+	nodeAPI.register(mux)
 
-	// 源（origin）的 cron 调度器。
+	// --- 节点协议（#57）：WS，opaque token 鉴权在 hello 帧（Upgrade 之后）---
 	//
-	// 与 sweeper / executor 并列：都是"后台自愈/驱动"循环，
-	// 单轮失败只记日志继续，不能因一次 DB 抖动就永久停摆。
+	// v4 的 Hub **自己就是** /v1/node/stream 的 handler：会话建立、配置对齐、派发、
+	// 执行子协议、日志与部署通知都在 hub 里。v3 的 nodeH（ws.NewNodeHandler）已退役，
+	// 它身上的 Emit / Expects / OnCapacityFreed 三个注入点也随之消失——emit 与槽位释放
+	// 现在都由 hub 直接处理（见 internal/ws 的包注释）。
+	mux.Handle("GET /v1/node/stream", noStore(hub))
+	// 二进制下载走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
+	mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: agentBin, db: db}))
+
+	// --- 事件投递入口（Bearer key + 背压）---
 	//
-	// 它需要 Dispatcher 才能把触发变成任务，所以只能在这里起
-	// （不能放进 store 层——那会让 store 依赖 route）。
-	srcTrigger := &source.Trigger{Store: db, Dispatcher: dispatcher}
-	srcSched := &source.Scheduler{Store: db, Dispatcher: dispatcher}
-	go srcSched.Run(ctx)
-	slog.Info("source scheduler wired", "event", "server.source.ready")
-
-	sweeper := lease.New(db)
-	// 运行期统计维护（#265）：默认 6h 一次，`ANOTIFY_STATS_INTERVAL_SEC=0` 可关。
-	// 默认值由 lease 层给（StatsInterval 零值 = 用默认），这里只表达"部署想改什么"。
-	if d := cfg.StatsInterval(); d != 0 {
-		sweeper.StatsInterval = d
-	}
-	slog.Info("sqlite stats maintenance wired",
-		"event", "server.stats.ready",
-		"interval", sweeper.StatsInterval.String(),
-		"note", "0 interval = 用默认 6h；负值 = 周期维护被配置关闭（启动时仍会问一次）")
-	// events 保留期（#229）：把部署配置注入巡检。默认 30 天（cfg.EventRetentionSec() 已换算成秒）；
-	// 0 = 永久保留（store 侧 EventRetentionDisabled → 整个 events 阶段跳过）。
-	//
-	// 注意 0 在这里的含义是「永久保留」而**不是**「保留 0 秒」——lease 侧不再替调用方补默认值，
-	// 补了就会让「不显式配置 = 删 30 天前的事件」变成不可逆的默认行为。
-	sweeper.RetentionEventSec = cfg.EventRetentionSec()
-	sweeper.Redispatch = redispatchHook(db, dispatcher)
-	go sweeper.Run(ctx)
-
-	// 槽位释放 → 即时重派（#219）。
-	//
-	// 接线放在这里而不是 ws 包内部：ws 不该知道"谁来重派"，
-	// 它只负责"我这边空出一个槽了"这一个事实。
-	nodeH.OnCapacityFreed = sweeper.Nudge
-	// 控制台的「取消任务」也是**槽位释放**的一条路径：CancelTask 在终态落库后
-	// 会 ReleaseInstanceByTask，若这里不接上，被取消腾出的槽位要等下一轮巡检
-	// （最坏 5s）才会有人去用——契约 §3.3 要求「槽位释放 → 立即重派」。
-	// consoleH 在 :209 构造（那时 sweeper 还不存在），所以只能在这里补这一行。
-	consoleH.nudge = sweeper.Nudge
-
-	// 中枢能力执行器（#83）：执行 notify.phone 这类没有节点执行者的内置能力。
-	//
-	// 它们在图里是正常的一条边，只是"执行者"是中枢自己而不是外部节点。
-	// 没有它的话，notify.phone 派发时永远 pruned/no_node——推送发不出去。
-	{
-		var notifier executor.Notifier
-		if vapidSender != nil {
-			notifier = &push.CentralNotifier{Store: db, Sender: vapidSender}
-		}
-		centralExec := executor.New(db, notifier)
-		go centralExec.Run(ctx, 0) // 0 = 默认间隔
-	}
-	mux.Handle("GET /v1/node/stream", noStore(nodeH))
-
-	// --- 事件中心（#58 / #59）---
-	// 事件入口用 API Key（机器调用），与控制台用会话是两套鉴权。
-	mux.Handle("POST /v1/events", noStore(bp.Wrap(eventH)))
-	mux.Handle("GET /v1/events", noStore(eventH))
-	// 控制台端点：登录会话 + 组织维度校验
-	mux.Handle("GET /v1/tasks", noStore(sessMW(http.HandlerFunc(consoleH.tasks))))
-	mux.Handle("GET /v1/tasks/{id}", noStore(sessMW(http.HandlerFunc(consoleH.task))))
-	// 任务日志（CONTRACT-logs-on-node §2）：namespaceId 走 **query** 而不是路径段，
-	// 与 /v1/tasks/{id} 同口径——这是一次「按 id 取单对象」，命名空间是收口参数，
-	// 不是资源标识的一部分（路径段形状留给「按命名空间列子资源」，如 emissions）。
-	//
-	// 日志只存在**节点**上：这里注入与派发**同一条连接**的 hub（nodeHub），handler
-	// 每次请求都现取一次，不落库、不缓存。取不到时回 200 + available:false
-	// （node_offline / no_local_archive / timeout），**不是** 5xx——那是前端已处理的
-	// 降级分支（见 serveTaskLogs / fetchTaskLogs 的注释）。
-	consoleH.taskLogs = nodeHub
-	mux.Handle("GET /v1/tasks/{taskId}/logs",
-		noStore(sessMW(http.HandlerFunc(consoleH.serveTaskLogs))))
-	// trace 视图（#142）：一条 trace 的全景（events + tasks + pruned）。
-	// 剪枝从 #142 起落进了 events（source='route'），这个端点是「为什么没跑」的查询出口。
-	mux.Handle("GET /v1/traces/{id}", noStore(sessMW(http.HandlerFunc(consoleH.trace))))
-	// 一次运行「到底发了什么」（P1.6）：某个任务的每一次 emit，按 seq 升序。
-	// 命名空间在**路径**里（任务的子资源 = 命名空间资源），不走 namespaceId query。
-	mux.Handle("GET /v1/namespaces/{ns}/tasks/{taskId}/emissions",
-		noStore(sessMW(http.HandlerFunc(consoleH.emissions))))
-	// 控制台读事件流：走会话 Cookie（机器入口的 GET /v1/events 走 Bearer Key）。
-	mux.Handle("GET /v1/console/events", noStore(sessMW(http.HandlerFunc(consoleH.events))))
-	mux.Handle("POST /v1/tasks/{id}/cancel", noStore(sessMW(http.HandlerFunc(consoleH.cancelTask))))
-	// 孤儿 pending 任务（#270）：先能看见（GET /v1/orphans），再能处置（abandon）。
-	// 没有这两个端点时，派不出去的任务只能永远 pending，还把背压信号钉死。
-	mux.Handle("GET /v1/orphans", noStore(sessMW(http.HandlerFunc(consoleH.orphanTasks))))
-	mux.Handle("POST /v1/tasks/{id}/abandon", noStore(sessMW(http.HandlerFunc(consoleH.abandonTask))))
-	mux.Handle("GET /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
-	mux.Handle("POST /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
-	// 批量创建（契约 §4）：一个表单建多个能力 + 它们之间的边，**整批一个事务**。
-	// 单列一条而不是给 POST /v1/capabilities 加一个“批量化”开关：两者的成功响应
-	// 形状不同（capability / capabilities），挤在同一个 handler 里只会让分支变多。
-	mux.Handle("POST /v1/capabilities/batch",
-		noStore(sessMW(http.HandlerFunc(consoleH.createCapabilitiesBatch))))
-	// PATCH 只改 display_name（装饰字段），不是能力定义的新版本。
-	mux.Handle("PATCH /v1/capabilities", noStore(sessMW(http.HandlerFunc(consoleH.capabilities))))
-	// 最新产物的**解析后**内容（详情页展示脚本用）。单列一条而不是塞进上面的列表：
-	// files 是全部文件正文，塞进列表会把响应撑爆（见 capabilityArtifact 的注释）。
-	mux.Handle("GET /v1/capabilities/{id}/artifact", noStore(sessMW(http.HandlerFunc(consoleH.capabilityArtifact))))
-	// 能力的下游：**整体替换**（CONTRACT-downstream-edit §2）。
-	// 这是能力边唯一的写入口（POST /v1/edges 的能力边分支返回 405 edge_write_removed）：
-	// 建、删、改优先级、重排都在这一次 PUT 里表达——界面上的「这组就是全部」
-	// 与线上的 replace 语义一一对应，不存在「删掉一个」要靠哨兵值的中间态。
-	mux.Handle("PUT /v1/capabilities/{name}/downstreams",
-		noStore(sessMW(http.HandlerFunc(consoleH.capabilityDownstreams))))
-	mux.Handle("GET /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
-	mux.Handle("POST /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
-	mux.Handle("DELETE /v1/edges", noStore(sessMW(http.HandlerFunc(consoleH.edges))))
-	// 源（origin）：事件的入口实例。增删改查 + 手动触发。
-	//
-	// 与控制台其它读接口一样走会话 Cookie。
-	// 源是命名空间资源（契约 §6.2）：除 webhook 入口外，每个方法都要 namespaceId。
-	srcH := &sourceHandler{
-		db:               db,
-		commander:        srcTrigger,
-		resolveNamespace: consoleH.resolveNamespace,
-	}
-	mux.Handle("GET /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
-	mux.Handle("POST /v1/sources", noStore(sessMW(http.HandlerFunc(srcH.sources))))
-	mux.Handle("GET /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
-	mux.Handle("PATCH /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
-	mux.Handle("DELETE /v1/sources/{id}", noStore(sessMW(http.HandlerFunc(srcH.sourceByID))))
-	// fire 走 sessMW **里面**再包背压：未登录的请求先被 401 挡掉，
-	// 不让外部从 503/200 的差别里读出「中枢现在积压了吗」。
-	mux.Handle("POST /v1/sources/{id}/fire", noStore(sessMW(bp.Wrap(http.HandlerFunc(srcH.fire)))))
-	mux.Handle("POST /v1/sources/{id}/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
-	// 草稿试运行：还没保存的配置也能先验一遍（弹窗里改完就想试）
-	mux.Handle("POST /v1/sources/dry-run", noStore(sessMW(http.HandlerFunc(srcH.dryRun))))
-	// webhook 入口**不需要会话**：鉴权是 URL 里的 token。
-	// 外部系统（GitHub / 监控告警）不可能带我们的 Cookie。
-	mux.Handle("POST /v1/hooks/{token}", noStore(bp.Wrap(http.HandlerFunc(srcH.hook))))
-
-	// --- 预案（playbook，#193 / 契约 §6）---
-	// 5 个端点**全部**用 resolveNamespaceCreate：缺参 400 / `*` 400 / 不存在 404 /
-	// 不存在 404（预案不提供跨命名空间汇总，体检结论只能按单个 ns 算）。
-	pbH := &playbookHandler{db: db, console: consoleH}
-	mux.Handle("GET /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.list))))
-	mux.Handle("POST /v1/playbooks", noStore(sessMW(http.HandlerFunc(pbH.create))))
-	mux.Handle("GET /v1/playbooks/{idOrSlug}", noStore(sessMW(http.HandlerFunc(pbH.byKey))))
-	mux.Handle("DELETE /v1/playbooks/{idOrSlug}", noStore(sessMW(http.HandlerFunc(pbH.byKey))))
-	mux.Handle("POST /v1/playbooks/{idOrSlug}/install", noStore(sessMW(http.HandlerFunc(pbH.install))))
-
-	// --- 命名空间自身（#162 / 契约 §6.1）---
-	// 组织级资源：请求**不带** namespaceId（问"这个命名空间属于哪个命名空间"是自指）。
-	// slug 建了不可改（PATCH 只改 name），删除有 force 档（见 namespace_handlers.go）。
-	nsH := &namespaceHandler{db: db}
-	mux.Handle("GET /v1/namespaces", noStore(sessMW(http.HandlerFunc(nsH.list))))
-	mux.Handle("POST /v1/namespaces", noStore(sessMW(http.HandlerFunc(nsH.create))))
-	mux.Handle("PATCH /v1/namespaces/{id}", noStore(sessMW(http.HandlerFunc(nsH.byID))))
-	mux.Handle("DELETE /v1/namespaces/{id}", noStore(sessMW(http.HandlerFunc(nsH.byID))))
-
-	mux.Handle("POST /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.createNode))))
-	mux.Handle("GET /v1/nodes", noStore(sessMW(http.HandlerFunc(consoleH.nodes))))
-	mux.Handle("GET /v1/nodes/{id}", noStore(sessMW(http.HandlerFunc(consoleH.nodeByID))))
-	mux.Handle("POST /v1/nodes/{id}/drain", noStore(sessMW(http.HandlerFunc(consoleH.drainNode))))
-
-	// --- agent 自升级（CONTRACT-agent-upgrade §2 / §5）---
-	//
-	// 下载端点走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
-	// 下发端点走会话 + 命名空间隔离（控制台按钮）。
-	upgradeH := &nodeUpgradeHandler{db: db, console: consoleH, hub: nodeHub, bin: agentBin}
-	mux.Handle("GET /v1/node/binary",
-		noStore(&agentBinaryHandler{bin: agentBin, auth: db}))
-	mux.Handle("POST /v1/nodes/{id}/upgrade",
-		noStore(sessMW(http.HandlerFunc(upgradeH.upgrade))))
-
-	// 任务日志**没有上传端点**了（CONTRACT-logs-on-node §3）：上一版这里是「节点把
-	// 子进程输出 POST 上来、中枢落 task_logs 表」的那条路由。日志的真相已经改回
-	// **节点本地档案**，控制台点开时中枢按需去取（GET /v1/tasks/{taskId}/logs，
-	// 见上面 /v1/tasks 那一段）：上传是一份必然更旧的截断副本，节点上那份才完整。
-
-	// --- 部署模型（console-declares epic，契约 CONTRACT-protocol §11）---
-	//
-	// 这是 v2 的核心：能力归属不再由节点在 hello 里自报，而是「控制台部署 + 节点确认」。
-	// hub 注入是**可空**的：没有连接层时部署仍会建行（state=pending），
-	// 只是逐台返回 pushed=false —— 与「节点离线」完全同构，UI 不必区别对待。
-	depH := &deployHandler{db: db, console: consoleH}
-	if nodeHub != nil {
-		depH.hub = nodeHub
-	}
-	mux.Handle("GET /v1/capability-templates", noStore(sessMW(http.HandlerFunc(depH.capabilityTemplates))))
-	mux.Handle("GET /v1/artifacts", noStore(sessMW(http.HandlerFunc(depH.artifacts))))
-	mux.Handle("GET /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
-	mux.Handle("POST /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
-	mux.Handle("DELETE /v1/deployments", noStore(sessMW(http.HandlerFunc(depH.deployments))))
+	// doc：api-conventions §8.1。事件**列表**（GET 同一路径）与 traces / console events
+	// 由任务资源域注册（resource_task.go 的 newTaskAPI）：那是读模型，走会话，与本入口
+	// 的两套鉴权互不干扰。
+	mux.Handle("POST /v1/namespaces/{namespace}/events", noStore(bp.Wrap(eventH)))
 
 	// --- 管理后台（/v1/admin/*，需登录会话 + 超管权限） ---
 	mux.Handle("/v1/admin/", noStore(adminMW))
@@ -605,46 +442,21 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc}
 }
 
-// redispatchHook 组装「租约巡检」的重派回调（契约 §3.3，注入点为 lease.Sweeper.Redispatch）。
+// runBackgroundLoop 启动一条后台循环，并把「非取消」的退出记成 WARN。
 //
-// 抽成一个函数而不是内联闭包，是为了让「失败后要不要退避」这条判断能被测试直接覆盖
-// （真库 + 真 dispatcher，见 console_handlers_test.go 的 TestRedispatchHook*）。
-//
-// 两条「没派成」的语义必须分开，这是 #219 的核心：
-//   - **没有节点声明该能力**（或节点全下线）：这是「集群暂时没有产能」，设退避
-//     （RetryBackoff：10s/60s/300s），避免每 5s 空转打日志、也避免坏节点被反复打；
-//   - **有节点但槽位占满**（store.ErrNoCapacity）：这是「马上就有人空出槽」，
-//     **绝不能设退避**——退避会写 not_before，而 ListRedispatchable 按它过滤，
-//     等槽位空出来的那一次 Nudge 就再也看不见这条任务了（= 白等 10s 起）。
-func redispatchHook(db *store.DB, dispatcher *route.Dispatcher) func(context.Context, *store.Task) (bool, error) {
-	return func(sctx context.Context, task *store.Task) (bool, error) {
-		ok, err := dispatcher.RedispatchTask(sctx, task)
-		// 必须在下面 `if err != nil` 之前判定：容量不足对调用方**不是错误**，
-		// 只是「这次没派成，且不需要退避」。吞成 (false, nil) 让 sweeper 当普通
-		// 「没派成」计数，同时下面那段写 not_before 的代码不会被执行到。
-		if errors.Is(err, store.ErrNoCapacity) {
-			return false, nil
+// 三条循环（派发 / cron / 租约）都遵循同一份纪律：单轮失败只记日志、继续下一轮；
+// 整个 Run 只在 ctx 结束时返回 ctx.Err()。所以这里把 ctx.Err() 当正常关闭处理——
+// 否则每次优雅停机都会在日志里留下三条像故障的 WARN。
+func runBackgroundLoop(ctx context.Context, name string, run func(context.Context) error) {
+	go func() {
+		err := run(ctx)
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
 		}
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			// 这次没派成（**没有节点**）：设退避，避免每 5s 空转打日志。
-			// 不动 status——任务本来就是 pending。
-			backoff := store.RetryBackoff(task.Attempts)
-			if backoff > 0 {
-				// 作用域是任务自己的命名空间（#162）：SetNotBefore 的 WHERE 是
-				// `namespace_id = ? AND id = ?`，传错 id 会一行也更新不到 → 退避永远
-				// 设不上（返回 ErrNotFound）→ 没节点的任务每 5s 被重扫一次、日志刷屏。
-				if serr := db.SetNotBefore(sctx, task.NamespaceID, task.ID, store.Now()+backoff); serr != nil {
-					slog.Warn("set retry backoff failed",
-						"event", "lease.sweeper.backoff_failed",
-						"task_id", task.ID,
-						"error", serr.Error(),
-					)
-				}
-			}
-		}
-		return ok, nil
-	}
+		slog.Warn("background loop exited",
+			"event", "server.loop.exited",
+			"loop", name,
+			"error", err.Error(),
+		)
+	}()
 }
