@@ -1,0 +1,480 @@
+# anotify v4 · 写入 / 触发入口（exact-five 之一）
+#
+# 本文件是五份 OpenAPI 真源中的 **ingress.yaml**：#333 冻结归属表
+# （docs/v4/g3c-spec-inventory.md §4.4）里的 5 个 operation 在这里：
+#
+#     POST /v1/namespaces/{namespace}/events                        投递入口（Bearer consoleKey，scope notify:send）
+#     POST /v1/hooks/{token}                                        外部 webhook 投递（**匿名**，token 即凭据）
+#     POST /v1/namespaces/{namespace}/sources/{name}/fire           手动触发一次（会话）→ 接收回执
+#     POST /v1/namespaces/{namespace}/sources/dry-run              未保存草稿试运行（会话）→ 预览文档
+#     POST /v1/namespaces/{namespace}/sources/{name}/dry-run       已保存源试运行（会话）→ 预览文档
+#
+# 三条纪律（与 check_openapi.py 的机械断言一一对应）：
+#
+#   1. `GET /v1/namespaces/{namespace}/events`（事件流）**不在这里**，它在 `events.yaml`
+#      的 `components.pathItems.NamespaceEvents` 里。同 path 不同 method 不互相覆盖：
+#      本文件只写 POST，绝不可把 GET 抄过来（归属键是 method+path）。
+#   2. 共享组件只在 `resource.yaml` 定义，这里用相对 `$ref` 引用
+#      （`SourceReceipt` / `SourcePreview` / `PruneFact` / `SourceTarget` / `Status` 族）。
+#      securitySchemes 不可跨文件：本文件用到 `consoleKey` 与 `session`，都自己定义且逐字一致。
+#   3. 每个 operation 显式声明 `security`（hook 是匿名 → `security: []`），每个 4xx/5xx
+#      都 `$ref` 具名错误组件，名字与状态码对齐。本文件用到两套**非 Status** 错误族：
+#        - `AuthError429`：`POST /v1/hooks/{token}` 的双维度限流（IP 维 + token 维）；
+#        - `Backpressure503`：派发积压时的 503（snake_case 的 `BackpressureError`，
+#          带 `Retry-After` 头）。三个写入口（events / hooks / fire）都在背压中间件内侧。
+#        其余错误（handler 内产生）是 `Status<code>`。
+#
+# 代码是权威（基线 issue/333-five-openapi @ 289896f）：
+#   - internal/api/events.go（events 投递：scope、回执、4 MiB 上限）
+#   - internal/server/resource_source.go（fire / hook / dry-run + srcReceiptDoc / srcPreviewDoc）
+#   - internal/server/backpressure.go（503 body）、internal/server/ratelimit.go（429 + Retry-After）
+openapi: 3.1.0
+info:
+  title: anotify v4 写入 / 触发入口 API
+  version: v4-g3c
+  description: |
+    这三个入口（`/events`、`/hooks/{token}`、`sources/{name}/fire`）共用**同一份接收回执**
+    （`SourceReceipt`）：`eventId` / `traceId` / `duplicate` / `tasks[]` / `pruned[]`。
+    回执的 `tasks[]` 含**未解析派发失败**的任务（真实 taskId + 明确声明的 version），
+    `pruned[]` 只含纯剪枝；两者空时都是 `[]`（不是 `null`）。
+
+    两条 dry-run 返回的是**预览文档**（`SourcePreview`）：没有 `eventId`/`taskId`，
+    **0 持久写入**（不落事件/任务/去重表/剪枝留痕/回执），也不需要保存 token。
+
+    认证是两套互不干扰的机制：
+      - `POST …/events`：**Bearer API key**（scope `notify:send`）。调用方是外部系统/CLI，
+        不带浏览器会话；key 的 owner 再走一次命名空间授权。
+      - `POST /v1/hooks/{token}`：**URL 里的 token 就是凭据**（谁拿到 URL 谁就能投递；
+        token 不可枚举、可轮换）。它是唯一免登录的公开写端点，所以有双维度限流。
+      - fire / dry-run：控制台**会话**（Cookie）。
+servers:
+  - url: /
+    description: 路径自身已含 `/v1`，此处不再加前缀（否则会拼出 `/v1/v1/…`）
+tags:
+  - name: ingress
+    description: 事件投递入口（Bearer API key，scope notify:send）
+  - name: hooks
+    description: 外部 webhook 投递（匿名，token 定位命名空间；双维度限流）
+  - name: source-actions
+    description: 源的手动触发与试运行（fire 返回回执，dry-run 返回预览）
+paths:
+  # 同 path 不同 method 的冻结案例：POST 在本文件、GET 在 events.yaml。
+  /v1/namespaces/{namespace}/events:
+    $ref: '#/components/pathItems/NamespaceEventIngest'
+
+  /v1/hooks/{token}:
+    post:
+      operationId: fireHook
+      tags: [hooks]
+      # 匿名：鉴权就是 URL 里的 token（外部系统不可能带我们的 Cookie）。
+      security: []
+      summary: 外部 webhook 投递（token 定位源与命名空间；限流 + 背压）
+      description: |
+        这个端点**没有会话**。token 定位源行，源行自带命名空间，后续写事件/建任务全部
+        用它的命名空间——不看任何请求参数（要求外部系统先知道 namespaceId 是没道理的）。
+
+        不区分"token 不存在"与"源已停用"：对外同码同文案（404 `source not found`），
+        否则就成了一个 token 存在性探测接口。
+
+        限流在查 token **之前**（IP 维 → token 维，任一维拒绝即 429），既保护 DB 查询，
+        也不给"用响应时间探测 token 是否存在"留窗口。额度默认 600/min/token 与
+        1200/min/IP，可被环境变量覆盖（某维度配成非正数 = 关闭该维度，只剩另一维兜底）。
+
+        投递体**不做严格白名单**：调用方是外部系统，它们会在包装体旁边带自己的字段
+        （签名头、平台 metadata）。资源写请求的 `unknown_field` 纪律针对我们自己发的
+        写请求，不是外部投递。
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: 源的 webhook token（空 token → 404，且不占用 token 维限流额度）
+          schema:
+            type: string
+      requestBody:
+        required: false
+        description: 可省（省略 = 只用源配置的打底载荷；webhook 没有静态打底时为 `{}`）
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HookBody'
+      responses:
+        '200':
+          description: 接收回执（与 `/events`、`fire` 同一份形状）
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/SourceReceipt'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '413':
+          $ref: './resource.yaml#/components/responses/Status413'
+        '429':
+          $ref: './resource.yaml#/components/responses/AuthError429'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+        '503':
+          $ref: './resource.yaml#/components/responses/Backpressure503'
+
+  /v1/namespaces/{namespace}/sources/{name}/fire:
+    post:
+      operationId: fireSource
+      tags: [source-actions]
+      security: [{session: []}]
+      summary: 手动触发一次源（返回与 /events、/hooks 同一份接收回执）
+      description: |
+        省略 `payload` → 用该源的 `spec.config.payload` 打底、本次输入一层覆盖
+        （source.md §5.2）；不新增 manual 专属幂等键，也没有额外的路由语法。
+
+        源不存在 / 已停用一律 404（同码同文案，`source.md` §5）；停用的源**不**触发，
+        避免把"已停用"记成一次真实事件。命名空间授权先于一切（路径 `{namespace}`）。
+
+        背压在 **session 内侧**：未登录先 401，不让外部从 503/200 的差别里读出
+        "中枢现在积压了吗"。
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/SourceNamePath'
+      requestBody:
+        required: false
+        description: 空 body 合法（`payload` 可省 → 用源配置的打底值）
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayloadBody'
+      responses:
+        '200':
+          description: 接收回执
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/SourceReceipt'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '413':
+          $ref: './resource.yaml#/components/responses/Status413'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+        '503':
+          $ref: './resource.yaml#/components/responses/Backpressure503'
+
+  /v1/namespaces/{namespace}/sources/dry-run:
+    post:
+      operationId: previewInlineSource
+      tags: [source-actions]
+      security: [{session: []}]
+      summary: 用请求体里的**草稿**源试运行（0 持久写入，返回预览文档）
+      description: |
+        为什么这是主路径：用户改完参数、还没保存时最想试。只支持已保存的源，就等于
+        "先保存一份坏的配置再试"——那正是要消灭的往返。
+
+        草稿的命名空间以**路径与授权**为准，不信请求体里手写的值（否则能用一条 body
+        把预览推到别的命名空间去）；`metadata.namespace` 显式给了且与路径不一致 → 400
+        `namespace_mismatch`。
+
+        草稿可带 GET 回来的只读投影字段（`config.hookUrl` / `config.secretSet`）：
+        预览不是写请求，容忍并剥离它们，免得"GET → 改 targets → 试运行"这条最自然的
+        流程被 400 `unknown_field` 挡住。除这两个键外，嵌套信封仍走**严格**解码
+        （未知字段 / 非空 `status` / `kind` 不匹配都是 400）。
+
+        注意：`/dry-run` 是字面段，比 `{name}` 更具体，所以这条路径与"对名为 dry-run 的
+        源做 dry-run"不冲突（Go 1.22+ 的最长匹配）。
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InlinePreviewBody'
+      responses:
+        '200':
+          description: 预览文档（没有 eventId / taskId；`targets`/`pruned` 恒为数组）
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/SourcePreview'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '413':
+          $ref: './resource.yaml#/components/responses/Status413'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+        '503':
+          $ref: './resource.yaml#/components/responses/Status503'
+
+  /v1/namespaces/{namespace}/sources/{name}/dry-run:
+    post:
+      operationId: previewSource
+      tags: [source-actions]
+      security: [{session: []}]
+      summary: 用**已保存**的源试运行（0 持久写入，返回预览文档）
+      description: |
+        拿库里的源行试运行：`spec.config.payload` 打底、本次输入一层覆盖，然后走与真实
+        投递**同一条**解析路径（归一化配置 / 载荷契约 / 路由投影），但完全不落库。
+
+        源不存在 → 404。停用的源仍可试运行（预览是读投影，不影响"停用 = 不接收投递"）。
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/SourceNamePath'
+      requestBody:
+        required: false
+        description: 空 body 合法（`payload` 可省 → 用源配置的打底值）
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayloadBody'
+      responses:
+        '200':
+          description: 预览文档（没有 eventId / taskId）
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/SourcePreview'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '413':
+          $ref: './resource.yaml#/components/responses/Status413'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+        '503':
+          $ref: './resource.yaml#/components/responses/Status503'
+components:
+  securitySchemes:
+    # 逐字与 resource.yaml / events.yaml / auth.yaml 一致：`description` 也是定义的一部分
+    # （门禁比对整个对象），少一个键就会被判“同一方案两种语义”。
+    session:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 控制台登录会话 Cookie（7 天 TTL；`HttpOnly`+`SameSite`）
+    consoleKey:
+      type: http
+      scheme: bearer
+      description: '控制台 API key（`Authorization: Bearer <key>`；scope 在后端判定）'
+  parameters:
+    SourceNamePath:
+      name: name
+      in: path
+      required: true
+      description: 源名（命名空间内唯一；不是 id、不是 token）
+      schema:
+        type: string
+  pathItems:
+    # `POST /v1/namespaces/{namespace}/events` 的 path item。
+    #
+    # 冻结案例：`GET` 同 path 在 events.yaml 的 NamespaceEvents 里——两份文件各自只持有
+    # 自己那个 method。合并到一处会破坏"归属键 = (METHOD, path)"。
+    NamespaceEventIngest:
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+      post:
+        operationId: ingestEvent
+        tags: [ingress]
+        # Bearer API key，scope 必须是 notify:send（与控制台会话是两套鉴权）。
+        security: [{consoleKey: []}]
+        summary: 外部系统投递一条事件（Bearer key，scope notify:send）→ 接收回执
+        description: |
+          v4 唯一的"外部事件投递"资源路径。v3 的 `POST /v1/events`（body 里带
+          `namespaceId`）已退役：命名空间进路径，不再有第二种写法。
+
+          投递语义全部在 `source.Service.Ingest` 里（同一份归一化配置 / 载荷装配 /
+          幂等窗口 / 剪枝留痕）；本入口只做三件事：解析路径 + 鉴权、把 body 翻成领域
+          输入、把回执原样写出去。
+
+          关键边界：
+
+            - **401 与 403 必须分开**：401 = 没带/令牌无效（去换一个）；403 = 令牌有效但
+              scope 不够（去加 scope）。合并会让调用方在错误的方向上重试。
+            - `source` 必填且**不回退**默认值：源名决定"谁的路由模板生效"，猜一个等于把
+              调用方的拼写错误变成另一条流水线上的真实事件。
+            - 源不存在 / 已停用都是 404（同码不同文案：调用方已过 ns 授权，区分文案不泄露
+              任何东西）。
+            - body 上限 **4 MiB**（source.md §5 的投递上限）：超出时解码失败 → **400**
+              （413 的细分只留给 hooks 入口，这里不额外造一套上限语义）。
+            - 背压（`503 Backpressure503`）：中枢派发积压超阈时**只拒新事件入口**，
+              已入库任务不动；带 `Retry-After` 头与 snake_case 的机器可读 body。
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventIngestRequest'
+        responses:
+          '200':
+            description: 接收回执（幂等命中时 `duplicate` 为 true；返回原 event/trace 且不重复派发）
+            content:
+              application/json:
+                schema:
+                  $ref: './resource.yaml#/components/schemas/SourceReceipt'
+          '400':
+            $ref: './resource.yaml#/components/responses/Status400'
+          '401':
+            $ref: './resource.yaml#/components/responses/AuthError401'
+          '403':
+            $ref: './resource.yaml#/components/responses/AuthError403'
+          '404':
+            $ref: './resource.yaml#/components/responses/Status404'
+          '500':
+            $ref: './resource.yaml#/components/responses/Status500'
+          '503':
+            $ref: './resource.yaml#/components/responses/Backpressure503'
+  schemas:
+    # ------------------------------------------------ 请求体（ingress 自己的 DTO）
+    EventIngestRequest:
+      type: object
+      description: |
+        `POST /v1/namespaces/{namespace}/events` 的投递体（`internal/api/events.go` 的
+        `eventIngestRequest`）。**非严格**解码：多余字段被忽略（对外入口，不因调用方
+        包装体旁边的自有字段而 400）。
+      required: [source]
+      properties:
+        source:
+          type: string
+          description: |
+            命名空间内的**源名**（不是 id、不是 token）。必填且不回退默认值。
+        type:
+          type: string
+          description: 事件类型；省略 → 回落成源名（免得调用方必须重复一遍）
+        id:
+          type: string
+          description: |
+            外部投递幂等键。保留窗口内同 `id` 只算一条事件（回执 `duplicate: true`、
+            不重复派发）；窗口外同 `id` 按新事件接收。它与内部 `eventId` 是两个字段。
+        payload:
+          type: object
+          additionalProperties: true
+          description: 原始载荷（JSON 对象）；省略 → 只用源配置的打底载荷
+      additionalProperties: true
+    HookBody:
+      type: object
+      description: |
+        webhook 投递体（source.md §3.3，`source.HookBody`）。**非严格**解码：外部系统
+        常在同一 body 里带自己的签名字段，那些字段被忽略而不是 400。
+      properties:
+        type:
+          type: string
+          description: 事件类型；省略 → 回落成源名
+        id:
+          type: string
+          description: 外部投递幂等键（窗口内同 id 只算一条事件）
+        payload:
+          type: object
+          additionalProperties: true
+          description: 原始载荷（JSON 对象）；webhook 没有静态打底，空即 `{}`
+      additionalProperties: true
+    PayloadBody:
+      type: object
+      description: |
+        fire / 已保存源 dry-run 的请求体（`srcPayloadBody`）：只有 `payload`，且
+        **严格**解码（未知字段 → 400 `unknown_field`）。空 body 合法。
+      properties:
+        payload:
+          type: object
+          additionalProperties: true
+          description: 本次输入（一层覆盖源配置的 `payload`，不做深合并）
+      additionalProperties: false
+    InlinePreviewBody:
+      type: object
+      description: 未保存源 dry-run 的请求体（`srcInlinePreviewBody`）：`source` 必填。
+      required: [source]
+      properties:
+        source:
+          $ref: '#/components/schemas/InlineSourceDraft'
+        payload:
+          type: object
+          additionalProperties: true
+          description: 本次输入（一层覆盖草稿的 `payload`）
+      additionalProperties: false
+    InlineSourceDraft:
+      type: object
+      description: |
+        试运行用的**草稿源信封**（`decodeWriteEnvelope(…, "Source", &srcSpecDoc)`）。
+
+        与 `resource.yaml` 的 `SourceWrite` 是同一条严格解码路径，但语义是"预览"：
+        `metadata.name` 可省（草稿还没有名字），没有任何 CAS 概念（`resourceVersion`
+        在这里是非法键），`spec.status` **不可写**（非空 → 400 `status_not_writable`）。
+        草稿可带读投影字段 `config.hookUrl` / `config.secretSet`（容忍并剥离）。
+
+        这是**写**文档，不是资源文档：所以没有 `status` 键（它是禁止项，不是必填项），
+        `apiVersion`/`kind` 用 `const` 而不是单值 `enum`——后者是 check_envelope.py
+        识别"资源信封"的判据（信封必须齐五键），写文档按定义不含 `status`。
+      required: [spec]
+      properties:
+        apiVersion:
+          type: string
+          const: anotify/v1
+          description: 省略或必须是 `anotify/v1`（其它值 400 `BadRequest`）
+        kind:
+          type: string
+          const: Source
+          description: 省略或必须是 `Source`（否则 400 `kind_mismatch`）
+        metadata:
+          type: object
+          properties:
+            name:
+              type: string
+              description: 草稿名（可省；预览不落库，所以不做唯一性/必填校验）
+            displayName:
+              type: string
+          additionalProperties: false
+        spec:
+          $ref: '#/components/schemas/InlineSourceSpec'
+      additionalProperties: false
+    InlineSourceSpec:
+      type: object
+      description: |
+        草稿的 `spec`（`srcSpecDoc`）：全部字段可省（省略 = 该字段用领域默认值：
+        `enabled` 缺省 `true`、`kind` 缺省空串、`config` 缺省 `{}`、`targets` 缺省 `[]`）。
+      properties:
+        kind:
+          type: string
+          description: 源类型 `webhook` / `cron` / `manual`（决定 `config` 的合法键）
+        enabled:
+          type: boolean
+          description: 缺省 `true`
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            kind 相关配置。合法键按 kind 封闭（`internal/sourcespec/config.go`）：
+
+              - `cron`：`expr` / `tz` / `payload` / `payloadSchema` / `sample`
+              - `webhook`：`token` / `secret` / `payload` / `payloadSchema` / `sample`
+              - `manual`：`payload` / `payloadSchema` / `sample`
+
+            读投影 `hookUrl` / `secretSet` 在预览里被剥离（不当成未知字段报错）。
+        targets:
+          type: array
+          items:
+            $ref: './resource.yaml#/components/schemas/SourceTarget'
+          description: 下游目标（空数组合法：源可以先建入口，事件会留一条 `no_target` 剪枝）
+      additionalProperties: false
+
+# ---------------------------------------------------------------------------------------
+# 已知分歧（契约 vs 代码，本文件**如实描述代码**，不改产品代码）
+#
+# 1. 同一条 4 MiB 投递上限在三个入口上落成**两种**状态码：`POST …/events` 用
+#    `http.MaxBytesReader` 让解码失败 → **400**；`POST /v1/hooks/{token}` 用
+#    `io.LimitReader` 显式判尺寸 → **413**；fire/dry-run 的 body 上限是 1 MiB → **413**。
+# 2. `fireSource` / `fireHook` / `ingestEvent` 都被背压中间件包住（503 `Backpressure503`），
+#    但 handler 还有另一条 503：source 服务未装配时 `sourcesReady` 回 `Status503`
+#    （`reason=InternalError`）。同一个状态码有两种 body 形状，spec 里只能列一个
+#    `503` 键——这里取**生产可达**的那条（背压）；dry-run 不是背压路径，因此它写
+#    `Status503`。
+# 3. 回执里"未解析派发失败"的任务也出现在 `tasks[]`（真实 taskId + 声明的 version），
+#    不是 `pruned[]`：`pruned[]` 只含纯剪枝（`capability.md` §6.2，E1）。
+# 4. hook 入口的 429 是 `{"error": "…"}`（`AuthError429`）而不是 `Status`：
+#    限流器在 handler 之前、在一个不认识 Status 的中间层里写响应。
