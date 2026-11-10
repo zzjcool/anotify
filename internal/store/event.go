@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 )
 
 // 事件（events 表）：只存不解释的原始输入，是链的根。
@@ -44,7 +45,7 @@ const EventPruneSource = "route"
 //
 // 业务事件若用了 `source='route'`，会被事件流过滤掉（**静默消失**）、并在 trace
 // 视图里被当成剪枝。这种丢数据的失败必须当场报错。
-var ErrReservedEventSource = errors.New(`"route" 是保留来源名（剪枝记录专用）`)
+var ErrReservedEventSource = sourcespec.ErrReservedName
 
 // Event 是 events 表的一行。
 type Event struct {

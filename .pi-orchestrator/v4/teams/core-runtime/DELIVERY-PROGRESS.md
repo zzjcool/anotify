@@ -59,3 +59,15 @@ NoPush/Merge/MR/remote deletion/oldWT deletion/T2/T3 writes. Local branch commit
 - Original31fixture red cases now0;13whiteboxes/namedprojection-invalidphase-oversize-v2/legalCAP/emptytargets actually executed. Map78originalnames reportedlyconcrete/currentoriginalrows, duplicateAappendix removed; independent460-vs486 coverage validation still required.
 - Manager source ownership check vs5d44685: ZERO production/non-owner paths changed. Root precise two-point product repair authorization requested (source.go157 existingguard/playbook_tx.go385 missingguard). No nextwriter/prodedit started before permission; failedB evidence staysfailed until actualrework/3green.
 - Initial defaultwait unknownchild was record-store lookup only; explicitcwdcanonical statusfoundretired, physicalpwd/gitroot unchanged. All future own controls use explicitcanonical cwd. No environmentdrift/scratchcleanup/teamrestore.
+
+## ROOT Source-name approval / sole GPT product writer
+- Parent only aborted manager stagnant turn, retainedcontext/approval, no team/worker loss. First resumed action verified B retired and actualHEADb99db8a, no livewriter.
+- SOURCE-NAME-CLOSURE.md readfully. Source-name-product workerGPT modelworkbuddy/gpt-6.1-sol actuallyadmitted worktreefalse withexact4prodpaths+tests/shortcard and fixed3 originalstore-auth-push PLUSsourcespec/playbook vet/test. Sharedonlytrim-empty/trimroute validator, no renames/regex/namespace/targets/credential/capoldban expansion; postmaterializationRender/Plan create/reuse/dryRun andinstalleddefense allrequired.
+- B original0/0/1 productred is targetedrework, not treated handled untilactualfull3green/review. OldA lateautomaticnotice is stale negativehistory, no revivedmethod/envreplica claim.
+- Managedasync mailwatch attemptedprior returned registryclosed/no taskId/no process; no blind retry/reload/newteam/settingshack. Existingfixedextensionverify remainsused.
+
+## Source-name actual fixed extension verification
+- source-name-product GPT trulysettled; wait returned acceptanceaccepted(verified), fullformat/fullfive-treevet/fullfive-treecount1test actual0/0/0. OriginalB store/auth/push scope intact, sourcespec/playbook added. SourceBnamedroute failure corrected via realpostmaterializedsharedvalidation, nottestretirement.
+- Source API absence expectation exactErrSourceNotFound corrected within authorizedtestowner while retainingallcaps/source/edge/receipt0writes. Sentinel existingexport/text/sharedpointer+dual%w preserved perROOT event.go preciseaddition; no initbridge/newfields/regex/namespace/targets/C3/Node changes. ExistingName input notsilentlyrenamed.
+- All C red/green/firstownershipprobe/finalmetadata partition/full3/extensionoutputs persisted verify/source-name. Parentmetadata edits distinctfromwriter13paths, firstprobe0? initial1 retained notfaked asgreen. Finalfullformat0.
+- Mapping read truncation caught/restored exactlyfromHEADb99 inventory and replayed5source-name rows+report; noinventorydeletion. FreshG1 original460/78mapping+true13whitebox coverage review stillrequired; packagegreen alone notwholeT1DONE.

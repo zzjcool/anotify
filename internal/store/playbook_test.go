@@ -25,8 +25,9 @@ package store
 //	    由 internal/playbook 的 Parse/Render 校验（在 render/install 时统一生效），
 //	    以及本文件的 TestPlaybookSlugValidation / TestRenderPlaybookReadOnly 覆盖。
 //	v3 TestPlaybookManifestReservedOriginNames
-//	  → 退役并上报：v4 的安装路径（createInstalledSourceOn → insertSourceOn）目前
-//	    **没有**保留名（route）检查，所以这条约束在 v4 不存在，无法迁移。
+//	  → 旧能力禁名 github/cron/http/manual 退役；v4 合法名字由允许清单测试覆盖。
+//	    源的 trim-empty/route 创建规则由共享 sourcespec.ValidateName 与
+//	    TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate 覆盖。
 //	v3 TestInstallPlaybookNewVersionSameSchema
 //	  → 由 TestInstallPlaybookIdempotent（同内容复用、不产生新版本行）接走。
 
@@ -737,8 +738,8 @@ func TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate(t *testing.T)
 	}
 
 	// ③ 整次安装 0 写：源/安装回执/能力/入口边一行都不许留。
-	if _, gerr := db.GetSourceByName(ctx, nsID, EventPruneSource); !errors.Is(gerr, ErrNotFound) {
-		t.Fatalf("被拒安装留下了源行 route: %v", gerr)
+	if row, gerr := db.GetSourceByName(ctx, nsID, EventPruneSource); row != nil || !errors.Is(gerr, ErrSourceNotFound) {
+		t.Fatalf("被拒安装留下了源行 route 或返回了错误的不存在哨兵: %v", gerr)
 	}
 	if n := pbInstalls(t, db); n != 0 {
 		t.Fatalf("被拒安装留下了 %d 行安装回执", n)
@@ -794,5 +795,56 @@ func TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3(t *testing.T
 		if c.Name != name || c.Version != 1 {
 			t.Fatalf("能力 %q 落库形状 = %+v", name, c)
 		}
+	}
+}
+
+func TestInstalledSourceNameFinalDefenseRollsBack(t *testing.T) {
+	for _, name := range []string{"route", " \troute\n ", "", " \t\n "} {
+		t.Run(name, func(t *testing.T) {
+			db := newTestDB(t)
+			ctx := context.Background()
+			ns, _ := newTestNS(t, db)
+			pkg, err := playbook.Parse(pbBundle("defense"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := playbook.Plan(pkg, pbValues("a"), playbook.EmptyExisting())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			ex := txExec{tx: tx}
+			for _, pc := range plan.Capabilities {
+				if err := insertInstalledCapabilityOn(ctx, ex, ns, "ins-defense", pc); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var caps int
+			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM capability_versions WHERE namespace_id = ?", ns).Scan(&caps); err != nil || caps != 1 {
+				t.Fatalf("defense did not exercise prior capability write: count=%d err=%v", caps, err)
+			}
+			ps := plan.Sources[0]
+			ps.Name = name // bypass Render to exercise the final write defense itself.
+			err = db.createInstalledSourceOn(ctx, ex, ns, "ins-defense", ps, Now())
+			want := sourcespec.ErrEmptyName
+			if strings.TrimSpace(name) == EventPruneSource {
+				want = ErrReservedEventSource
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("installed source final defense lost shared error: %v", err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			for _, table := range []string{"capability_versions", "sources", "edges", "playbook_installs", "events", "tasks", "deployments"} {
+				if n := countRows(t, db, table); n != 0 {
+					t.Fatalf("rollback left %d rows in %s", n, table)
+				}
+			}
+		})
 	}
 }

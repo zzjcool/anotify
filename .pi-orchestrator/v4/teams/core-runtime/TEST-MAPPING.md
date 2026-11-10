@@ -579,7 +579,7 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | `TestPlaybookChecksNodePresence` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
 | `TestPlaybookChecksPartialAndEntryCapabilities` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
 | `TestInstallPlaybookDoesNotOverwriteExistingDefinition` | migrated | `internal/store/playbook_test.go:386 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
-| `TestPlaybookManifestReservedOriginNames` | migrated（父裁定#2 拆成两条） | 能力名 github/cron/http/manual 合法 allowlist `internal/store/playbook_test.go:766 TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3`；源名 route 必须与直写同规则拒绝（当前产品红已上报）`internal/store/playbook_test.go:698 TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate` |
+| `TestPlaybookManifestReservedOriginNames` | migrated（父裁定#2 拆成两条；Source-name ROOT rework 实测通过） | 能力名 github/cron/http/manual 合法 allowlist `internal/store/playbook_test.go:767 TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3`；源名 route 与直写同规则拒绝并整装 0 写 `internal/store/playbook_test.go:699 TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate`；定向红→绿及固定五树完整 vet/test 证据见末尾 Source-name report（不代表 G1 DONE） |
 | `TestPlaybookInstallEmptyManifest` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:584 TestPlaybookInstallEmptyManifest` |
 | `TestPlaybookChecksResolvesDeclaredVersion` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
 | `TestInstallPlaybookNewVersionSameSchema` | migrated | `internal/store/playbook_test.go:386 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
@@ -1019,7 +1019,7 @@ cwd `/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery
 | `TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError` | `internal/store/task_test.go` | 后继成功清旧投影；成功带非空 submitted Error 按现实现保留（不施加旧“成功必清 error”） |
 | `TestCapabilitySameSpecExplicitNewVersionCreatesNewRow` | `internal/store/capability_test.go` | 新对象空 ID、显式 v2 同正文→新 UID/两行；FoldKey 相等、Digest 因含 version 不同 |
 | `TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3` | `internal/store/playbook_test.go` | 真原包安装 github/cron/http/manual 全部建出（allowlist，不是新黑名单） |
-| `TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate` | `internal/store/playbook_test.go` | 见 §4 产品红 |
+| `TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate` | `internal/store/playbook_test.go:699` | §4 保留原始产品红证据；本轮共享规则修复后定向/完整测试 PASS，原哨兵 errors.Is、row==nil、cap/source/edge/receipt 0 写均保留 |
 | `TestNodeHidesTokenHash` | `internal/store/node_test.go` | Node JSON 不含 tokenHash/原值 |
 | `TestSourceValidation`（零出口段） | `internal/store/source_test.go` | 空 targets 合法、0 入口边、事件→0 task、`no_target` 剪枝痕可落库 |
 
@@ -1039,7 +1039,7 @@ cwd `/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery
 全部调用**真实** `applyBaselineMigration/applyMigration/migrate/probeDatabaseFormat/validateV4Layout/userSchemaObjects`；
 没有生产测试钩子、没有 skip/noop。preOpen 拒绝（坏布局）与事务中回滚是两组不同用例。
 
-## 4. 唯一产品红（未改生产，父裁定 #2 要求先报）
+## 4. 唯一产品红历史（本轮 ROOT Source-name 修复；原始证据保留）
 
 `TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate`（`internal/store/playbook_test.go`）：
 真原包的源文档 `metadata.name: route`（字面量，非模板键/非前缀变体），安装**成功**并落库源行。
@@ -1051,7 +1051,7 @@ cwd `/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery
   **没有**同一校验；而 `playbook.md §2.2` 要求渲染产物走与直接创建完全相同的校验路径。
 - 期望（测试断言）：安装报 `ErrReservedEventSource` 且整装 0 写（源/回执/能力/入口边）。
 
-未修改生产、未降级断言；该 case 是 gate3 唯一失败项，等父裁决产品修复后再复跑。
+上列为前次 B tests-only 的真实红证据，不删除。ROOT 已批准末尾 Source-name 小产品修复；同名用例现定向/完整测试 PASS。仅按父批准纠正 GetSourceByName absence 为 ErrSourceNotFound 并加 row==nil，不改变生产/API，不减 0 写断言。
 
 ## 5. 三项机械门禁（实际命令/退出码）
 
@@ -1073,7 +1073,7 @@ EXIT 1   fails=1（仅 §4 产品红；store 其余/v4test/auth/push 全绿：ok
 
 ## 6. 未决 / 不声明
 
-- gate3 的 1 条产品红需父裁决（生产修复在 B 之外）；在此之前**不能**声明三项全绿/G1 DONE。
+- 原 gate3 的 Source-name 产品红现按 ROOT 批准修复，末尾固定五树三项门禁均实际 0；仍须父 fresh G1 审查，不能把本 leaf 的机械通过当作 G1 DONE。
 - `legacy central failed-empty-error / success-error-clear`：按冻结投影文档保留现 C3 语义，未做任何 normalization。
 - 旧 `TestFinishTaskWritesOutcome` 的正/负结果原意保留：正结果 → `TestCompleteRecordsResultAndFinishedAt`；
   失败空 Error 投影 → `TestCompleteErrorProjectionKeepsRawResultFacts`；成功清旧投影/保留 submitted →
@@ -1095,3 +1095,108 @@ EXIT 1   fails=1（仅 §4 产品红；store 其余/v4test/auth/push 全绿：ok
   `:642 TestTaskOnlineLeaseExpiryKeepsSlotUntilNodeFact`、`:1239 TestTaskReapOfRequeuedAttemptReleasesOnlyItsSlot`。
 - 注册失败回滚（认证安全，未重写）：`internal/auth/password_test.go:490 TestRegisterWithPassword_DuplicateUsername` /
   `:529 TestRegisterWithPassword_ConcurrentDuplicate`。
+
+
+# Source-name small product rework · ROOT approved · mechanical closure
+
+Authority: root SOURCE-NAME-CLOSURE.md + DELIVERY-B-ROUTE-REWORK.md + ROOT 第五路径 event.go 精确授权。
+Canonical worktree: /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery。
+Base HEAD: b99db8af256a722958bdc088232579c8e8dda347；未 commit/push/merge/MR，未开子 agent。
+这是 Source-name 实现与机械门禁交付，不是 G1/B/T1 总验收完成。
+
+## 做了什么 / 精确文件清单
+
+Production（5）：
+- internal/sourcespec/name.go：唯一共享签名 func ValidateName(name string) error；只在判定时 TrimSpace，空/纯空白、字面 route 拒绝，不改原输入。
+- internal/store/source.go：CreateSource 用共享规则，namespace/config/targets/原事务不改；不隐式 rename。
+- internal/playbook/render.go：Source name 在 values 物化后用共享规则；不借用能力名 regex。源名失败通过双 %w 同时保留 playbook render_name_invalid 的 errors.As 投影与共享 sentinel 的 errors.Is。
+- internal/store/playbook_tx.go：最终 installed source 写入前再校验同规则；不调用完整 CreateSource/checkSourceTargets，pending 引用仍允许，token 生成/原外事务不改。
+- internal/store/event.go：仅加 sourcespec import、保留导出 ErrReservedEventSource 为同一共享指针；原 sentinel 文本逐字保留，无 init/cause bridge/string identity，无 event 行为改动。
+
+Tests/helpers（7）：
+- internal/sourcespec/name_test.go
+- internal/playbook/render_test.go
+- internal/playbook/plan_test.go
+- internal/playbook/helpers_test.go
+- internal/store/source_test.go
+- internal/store/playbook_test.go
+- internal/store/v4test/source_name_test.go（精确 optional owner）
+
+Report/mapping（1）：本文件，仅 source-name 精确行与本轮实证。
+父 metadata 变更另列：.pi-legion/contract.md、DELIVERY-PROGRESS.md、task-card；不是本 writer 产出。
+
+## 新增具名测试与保护点
+
+| 具名测试 | 文件 | 实测保护 |
+|---|---|---|
+| TestValidateNameExistingRuleOnly | internal/sourcespec/name_test.go | 空/空白/trim-route 拒；github/cron/http/manual、Route、route-a、中文/空格、@、64 字符不被新禁 |
+| TestRenderSourceNameAfterMaterialization | internal/playbook/render_test.go:737 | 真 literal route + values route/trim-route/empty/whitespace；render_name_invalid 与共享 errors.Is；无 render 产出 |
+| TestRenderSourceLegalNamesNoInputRename | internal/playbook/render_test.go:766 | 合法名按原值输出到 Source 与 rendered 文件；空 targets；原 files/values 不改 |
+| TestPlanReservedSourceNameEmptyExistingCreateReuse | internal/playbook/plan_test.go:574 | literal/values route；EmptyExisting/create/reuse 全拒，nil Plan；共享 sentinel 不丢 |
+| TestCreateSourceNameRuleNoInputRename | internal/store/source_test.go | direct Create 同规则/errors.Is；合法名字落库往返不改，空 targets 合法 |
+| TestInstalledSourceNameFinalDefenseRollsBack | internal/store/playbook_test.go:801 | 绕过 Render 的真实写防御；先真写 capability，确认事务中 count=1，再错误源拒绝，rollback 后 cap/source/edge/receipt/event/task/deployment 全 0 |
+| TestStoredSourceNameRenderDryRunInstallRejectCreateReuse | internal/store/v4test/source_name_test.go:70 | 真存储包/正常能力/错误源；stored render、dryRun、实际 install；create 与历史坏行 reuse；nil 输出、共享 sentinel+domain code；8 表每一列 persistent facts 原样不变，raw files/values 不改 |
+| TestInstallSourceLegalKindsNamesEmptyTargetsAndPending | internal/store/v4test/source_name_test.go:130 | webhook/cron/manual × 7 合法源名；dryRun 0 写、真实 installedFrom、empty targets reuse；未解析 targets 真落库并报 pending |
+
+原测试保留：TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate（:699）；只按父批准将 absence expectation 纠正为实际 ErrSourceNotFound 并加 row==nil，cap/source/edge/receipt 0 写不减。原 TestSourceValidation 的零出口/0 task/no_target 痕仍实测 PASS。原 12 格配置/targets conflicts、receipt/rawinputs 与 auth/push 不被绕过：完整五树测试包含它们。
+
+## RED → GREEN / 失败尝试
+
+- 首先新增纯 Render/Plan create/reuse 与 direct no-rename 用例，再跑定向（不是 unchanged 全量 baseline）。actual TARGETED_RED_EXIT=1：literal/values route 的 Render 无错误、Plan EmptyExisting/create/reuse 无错误；原 install 真建 cap/source/receipt；合法源名误用能力 regex、direct 输入被 trim 改写。
+- 原样红输出：/tmp/anotify-v4-delivery-source-name-red.log（命令+完整原始输出留存；含原测试 config 原始字节，不在报告另复制凭证）。
+- 生产修复第一轮后 /tmp/anotify-v4-delivery-source-name-green.log actual exit1：原测试成功抵达 absence 断言，却将 ErrSourceNotFound 错认 ErrNotFound；新增存储夹具替换 schema 时遗失 env 默认。后者恢复原 pbValuesSchema + name property；前者按父精准批准纠正并增强 nil row。未改 API/规则、未弱化断言，未为绿灯绕过目标。第二次定向全绿，源码无需第二轮生产修复。
+- gate1 首次 /tmp/anotify-v4-delivery-source-name-gate1-format.log actual exit1：gofmt/diffcheck 已绿，ownership probe 看到父新写 .pi-legion/contract.md 与 DELIVERY-PROGRESS.md；归属统计将明确父 metadata 与 writer owners 分列后实际 gate1=0，不把两文档冒充 writer 产出。
+- pi-lens/async registry 工具未加载；没有配置/registry hack。使用权威 Go vet/test 与 bounded timeout/full tee logs，所有 bash 都有 canonical cd + pwd-P/gitroot exact guard。
+
+最终定向输出（原样）：
+
+```text
+GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto timeout 180 go test ./internal/sourcespec ./internal/playbook ./internal/store ./internal/store/v4test -run TestValidateNameExistingRuleOnly\|TestRenderSourceNameAfterMaterialization\|TestRenderSourceLegalNamesNoInputRename\|TestPlanReservedSourceNameEmptyExistingCreateReuse\|TestCreateSourceNameRuleNoInputRename\|TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate\|TestInstalledSourceNameFinalDefenseRollsBack\|TestStoredSourceNameRenderDryRunInstallRejectCreateReuse\|TestInstallSourceLegalKindsNamesEmptyTargetsAndPending\|TestSourceValidation -count=1
+ok  	github.com/zzjcool/anotify/internal/sourcespec	0.005s
+ok  	github.com/zzjcool/anotify/internal/playbook	0.024s
+ok  	github.com/zzjcool/anotify/internal/store	0.090s
+ok  	github.com/zzjcool/anotify/internal/store/v4test	0.935s
+TARGETED_GREEN_EXIT=0
+```
+
+## 固定 THREE full gates · actual exits [0, 0, 0]
+
+原 B store/auth/push 完整范围保留，并补共享 sourcespec/playbook 两树；没有改为 scoped-green substitute。
+这是源码全量完成后的唯一完整 test 执行，未重跑未改动 baseline。
+
+Gate1 最终原样输出（/tmp/anotify-v4-delivery-source-name-gate1-format-final.log）：
+
+```text
+gofmt -l internal/sourcespec internal/playbook internal/store internal/auth/password_test.go; git diff --check; exact writer ownership/parent metadata partition
+FORMAT_OK
+SCOPE_OK 12 writer implementation/test/report files
+PARENT_METADATA_NOT_WRITER_OWNED .pi-legion/contract.md, .pi-orchestrator/v4/teams/core-runtime/DELIVERY-PROGRESS.md, .pi-orchestrator/v4/teams/core-runtime/task-cards/DELIVERY-B-ROUTE-REWORK.md
+FULL_GATE1_EXIT=0
+```
+
+Gate2 原样输出（/tmp/anotify-v4-delivery-source-name-gate2-vet.log）：
+
+```text
+GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto timeout 600 go vet ./internal/store/... ./internal/auth/... ./internal/push/... ./internal/sourcespec/... ./internal/playbook/...
+FULL_GATE2_EXIT=0
+```
+
+Gate3 原样输出（/tmp/anotify-v4-delivery-source-name-gate3-test.log）：
+
+```text
+GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto timeout 600 go test ./internal/store/... ./internal/auth/... ./internal/push/... ./internal/sourcespec/... ./internal/playbook/... -count=1
+ok  	github.com/zzjcool/anotify/internal/store	9.044s
+ok  	github.com/zzjcool/anotify/internal/store/v4test	36.234s
+ok  	github.com/zzjcool/anotify/internal/auth	21.499s
+ok  	github.com/zzjcool/anotify/internal/push	0.007s
+ok  	github.com/zzjcool/anotify/internal/sourcespec	0.005s
+ok  	github.com/zzjcool/anotify/internal/playbook	0.111s
+FULL_GATE3_EXIT=0
+```
+
+## 未决 / 明确不做
+
+本授权 scope 无剩余失败项。未改 Node/protocol/artifact/C3 auth-budget-result/UI/settings/env，也未迁库/清数据/新 namespace/credential/kind/target 规则。未提交/推送/MR（本卡明确禁止，非漏做）。
+父 fresh G1 correctness/coverage/simplicity、原 460 mapping 与真实白盒复核仍必需；G2 runtime、G3 HTTP5、G4 tools/Node quick 及最终 whole-Go/contract/quick 不在本 leaf，未声称执行或通过。
+
+报告工具事故与恢复：整文件 read 遭 50KB 截断，append write 一度误删 mapping 尾段；交付前完整 diff 重读当场发现。已从本 HEAD 原文精确恢复并仅重放上述 5 处 source-name 行修改与本 report，原库存/历史验证输出全部保留。恢复后逐字比较非授权内容，未改任何 Go 源码，不额外重跑完整 Go baseline。

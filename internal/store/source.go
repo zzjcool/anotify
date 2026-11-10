@@ -148,14 +148,8 @@ func (d *DB) CreateSource(ctx context.Context, s *Source) error {
 	if s.NamespaceID == "" || s.NamespaceID == AllNamespaces {
 		return ErrNamespaceRequired
 	}
-	s.Name = strings.TrimSpace(s.Name)
-	if s.Name == "" {
-		return fmt.Errorf("create source: empty name")
-	}
-	// 保留来源名：叫 route 的源产生的事件会被事件流过滤掉（静默消失），
-	// 所以要在**配置期**就报错，而不是等事件没了再去猜。
-	if s.Name == EventPruneSource {
-		return fmt.Errorf("create source: %w", ErrReservedEventSource)
+	if err := sourcespec.ValidateName(s.Name); err != nil {
+		return fmt.Errorf("create source: %w", err)
 	}
 	cfg, err := d.prepareSourceConfig(s.Kind, s.Config)
 	if err != nil {

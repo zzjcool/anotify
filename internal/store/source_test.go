@@ -938,3 +938,36 @@ func TestUpdateSourceKeepsPayloadSchema(t *testing.T) {
 		t.Errorf("UpdateSource 应把新 resourceVersion 回写到入参：%d → %d", got.ResourceVersion, again.ResourceVersion)
 	}
 }
+
+func TestCreateSourceNameRuleNoInputRename(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	ns, _ := newTestNS(t, db)
+	for _, name := range []string{"", " \t\n ", "route", " \troute\n "} {
+		t.Run("reject_"+name, func(t *testing.T) {
+			src := &Source{NamespaceID: ns, Name: name, Kind: SourceKindManual, Config: json.RawMessage("{}")}
+			err := db.CreateSource(ctx, src)
+			if err == nil {
+				t.Fatal("invalid source name accepted")
+			}
+			if strings.TrimSpace(name) == EventPruneSource && !errors.Is(err, ErrReservedEventSource) {
+				t.Fatalf("original sentinel lost: %v", err)
+			}
+			if src.Name != name {
+				t.Fatalf("rejected name rewritten: %q -> %q", name, src.Name)
+			}
+		})
+	}
+	for _, name := range []string{"github", "cron", "http", "manual", "Route", "route-a", "a-route", " 每晚体检 ", "name@v1", strings.Repeat("a", 64)} {
+		t.Run("legal_"+name, func(t *testing.T) {
+			src := &Source{NamespaceID: ns, Name: name, Kind: SourceKindManual, Config: json.RawMessage("{}"), Targets: []sourcespec.Target{}, Enabled: true}
+			if err := db.CreateSource(ctx, src); err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.GetSource(ctx, ns, src.ID)
+			if err != nil || got.Name != name || src.Name != name || len(got.Targets) != 0 {
+				t.Fatalf("legal source renamed or empty targets rejected: input=%q source=%q err=%v", name, src.Name, err)
+			}
+		})
+	}
+}

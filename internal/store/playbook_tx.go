@@ -383,6 +383,9 @@ func insertInstalledCapabilityOn(ctx context.Context, ex queryExec, namespaceID,
 // token 的生成是创建期一次性副作用，生成的值只进这一行（dryRun 随事务回滚）。
 // **不校验 targets 可解析**：安装允许 pending（§3 第三行），那是 Plan 的判定，不是写路径的。
 func (d *DB) createInstalledSourceOn(ctx context.Context, ex queryExec, namespaceID, installID string, ps playbook.PlannedSource, now int64) error {
+	if err := sourcespec.ValidateName(ps.Name); err != nil {
+		return fmt.Errorf("source %q: %w", ps.Name, err)
+	}
 	cfg, err := d.prepareSourceConfig(ps.Spec.Kind, ps.Spec.Config)
 	if err != nil {
 		return fmt.Errorf("source %q config: %w", ps.Name, err)

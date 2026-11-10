@@ -378,3 +378,10 @@ func digestOf(t *testing.T, a *artifact.Artifact, version int) string {
 
 // ts 是测试里固定的时间戳（回执 at）。
 const ts = "2026-11-08T13:20:00Z"
+
+// sourceNameBundle keeps name materialization independent of the capability name rules.
+func sourceNameBundle(template string) *bundle {
+	return newBundle().setValues("type: object\nrequired: [name]\nproperties:\n  name: {type: string}\n").
+		cap("capabilities/audit.yaml", strings.ReplaceAll(fixerDoc, "{{values.project}}-fixer", "audit")).
+		source("sources/name.yaml", fmt.Sprintf("metadata:\n  name: %q\nspec:\n  kind: manual\n  config: {}\n  targets: []\n", template))
+}

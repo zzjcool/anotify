@@ -2,10 +2,12 @@ package playbook
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -729,5 +731,60 @@ func TestRenderEmptyPackage(t *testing.T) {
 	}
 	if len(out.Capabilities) != 0 || len(out.Sources) != 0 || len(out.Files) != 0 {
 		t.Fatalf("空包不该有文档: %+v", out)
+	}
+}
+
+func TestRenderSourceNameAfterMaterialization(t *testing.T) {
+	for _, tc := range []struct{ label, template, name string }{
+		{"literal_route", "route", "unused"},
+		{"values_route", "{{values.name}}", "route"},
+		{"trimmed_route", "{{values.name}}", " \troute\n "},
+		{"empty", "{{values.name}}", ""},
+		{"whitespace", "{{values.name}}", " \t\n "},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			pkg := sourceNameBundle(tc.template).pkg(t)
+			out, err := Render(pkg, map[string]any{"name": tc.name})
+			assertCode(t, err, CodeRenderNameInvalid)
+			want := sourcespec.ErrEmptyName
+			if tc.template == "route" || strings.TrimSpace(tc.name) == "route" {
+				want = sourcespec.ErrReservedName
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("render lost shared error identity: %v", err)
+			}
+			if out != nil {
+				t.Fatalf("rejected name returned render output")
+			}
+			if !strings.Contains(err.Error(), "sources/name.yaml") {
+				t.Fatalf("missing source path: %v", err)
+			}
+		})
+	}
+}
+
+func TestRenderSourceLegalNamesNoInputRename(t *testing.T) {
+	for _, name := range []string{"github", "cron", "http", "manual", "Route", "route-a", "a-route", " 每晚体检 ", "name@v1", strings.Repeat("a", 64)} {
+		t.Run(name, func(t *testing.T) {
+			pkg := sourceNameBundle("{{values.name}}").pkg(t)
+			before := pkg.Files["sources/name.yaml"]
+			values := map[string]any{"name": name}
+			out := mustRender(t, pkg, values)
+			if len(out.Sources) != 1 || out.Sources[0].Name != name || len(out.Sources[0].Spec.Targets) != 0 {
+				t.Fatalf("legal name or empty targets changed: %+v", out.Sources)
+			}
+			var doc sourceDocWire
+			tree, err := decodeDoc(out.Files["sources/name.yaml"], "rendered source")
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err = decodeSourceWire(tree, "rendered source")
+			if err != nil || doc.Metadata.Name != name {
+				t.Fatalf("rendered document renamed input: %q, %v", doc.Metadata.Name, err)
+			}
+			if pkg.Files["sources/name.yaml"] != before || values["name"] != name {
+				t.Fatal("Render changed source input or values")
+			}
+		})
 	}
 }

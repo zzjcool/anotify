@@ -2,6 +2,7 @@ package playbook
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -568,4 +569,28 @@ func hasNote(notes []Note, code, ref string) bool {
 		}
 	}
 	return false
+}
+
+func TestPlanReservedSourceNameEmptyExistingCreateReuse(t *testing.T) {
+	for _, template := range []string{"route", "{{values.name}}"} {
+		for _, tc := range []struct {
+			label    string
+			existing Existing
+		}{
+			{"EmptyExisting", EmptyExisting()},
+			{"create", newFakeExisting()},
+			{"reuse", newFakeExisting().withSource("route", sourcespec.KindManual, "{}")},
+		} {
+			t.Run(template+"/"+tc.label, func(t *testing.T) {
+				plan, err := Plan(sourceNameBundle(template).pkg(t), map[string]any{"name": "route"}, tc.existing)
+				assertCode(t, err, CodeRenderNameInvalid)
+				if !errors.Is(err, sourcespec.ErrReservedName) {
+					t.Fatalf("plan lost shared error identity: %v", err)
+				}
+				if plan != nil {
+					t.Fatal("reserved name reached create/reuse planning")
+				}
+			})
+		}
+	}
 }

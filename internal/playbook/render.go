@@ -166,7 +166,7 @@ func renderSource(where, body string, values map[string]any) (Source, string, er
 	if err != nil {
 		return Source{}, "", err
 	}
-	if err := checkRenderedName(tree, rendered, where, "源"); err != nil {
+	if err := checkRenderedSourceName(tree, rendered, where); err != nil {
 		return Source{}, "", err
 	}
 	name := fieldString(rendered, "metadata", "name")
@@ -256,6 +256,21 @@ func checkRenderedName(before, after map[string]any, where, what string) error {
 		"%s 的%s名不合法：模板 %q 渲染成 %q；名字必须匹配 %s（≤63）——"+
 			"建议在 spec.values 里给参与名字的字段写 pattern / maxLength",
 		where, what, tmpl, name, capNamePattern.String())
+}
+
+// checkRenderedSourceName 在 values 物化后校验源名，不借用能力名的正则。
+// 保留模板/物化名/路径的领域错误投影，同时保留共享错误的 errors.Is 身份。
+func checkRenderedSourceName(before, after map[string]any, where string) error {
+	tmpl := fieldString(before, "metadata", "name")
+	if tmpl == "" {
+		return errf(CodeInvalidPlaybook, "%s 的 metadata.name 缺失或不是字符串", where)
+	}
+	name := fieldString(after, "metadata", "name")
+	if err := sourcespec.ValidateName(name); err != nil {
+		return fmt.Errorf("%w: %w", errf(CodeRenderNameInvalid,
+			"%s 的源名不合法：模板 %q 渲染成 %q", where, tmpl, name), err)
+	}
+	return nil
 }
 
 // ---------- 结构内插值 ----------
