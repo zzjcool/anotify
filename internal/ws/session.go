@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -51,10 +52,21 @@ func (s *Session) Auth() store.NodeAuthorization { return s.auth }
 // 返回 ErrNodeOffline（表现为「节点在线却没回包」的请求拿到 503 node_offline，而不是
 // 调用方自己的 504）。调用方取消只该结束**它自己的等待**，不该拥有拆会话的权力；
 // 写的边界由 s.hub.writeTimeout 给（写自己也会在超时后关连接，这是 coder/websocket 的语义）。
+//
+// 「进入即已取消」不算写失败：返回可判别的 ErrSendCanceled，会话毫发无损
+// （hub 里会转给 hub.detachSessionOnWriteFailure 的三个发送口——dispatch / deploy /
+// logs——都靠这个哨兵放过会话；handler 回包那几处只把错误返回给帧处理器）。
 func (s *Session) Send(ctx context.Context, frame any) error {
 	// 进入时就已取消：尊重调用方，不再往线上写一帧没人等的请求。
+	//
+	// 不用裸 ctx.Err()：这个错误会经 detachSessionOnWriteFailure 决定**要不要拆掉整条
+	// 会话**（hub 的 dispatch / deploy / logs 三个发送口都会转给它），而调用方取消只该
+	// 结束它自己的等待（窗口窄但真实：HTTP 请求在调 Send 之前就被撤掉时，裸 ctx 错误会被
+	// 当成写失败 → 好端端的节点会话被关）。
+	// 保留 %w 链是有意的：errors.Is(err, context.Canceled/DeadlineExceeded) 仍然成立，
+	// HTTP 层对这两者的 504 映射（resource_task.go 的 logs 分支）语义不变。
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrSendCanceled, err)
 	}
 	data, err := protocol.Encode(frame)
 	if err != nil {
