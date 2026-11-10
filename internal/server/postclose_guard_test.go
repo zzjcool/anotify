@@ -19,12 +19,21 @@ package server
 //
 // ⚠️ 归因的诚实边界：受害用例 `TestNodeListAndDrain` 本身**不开 WS**（newConsoleEnv
 // 只用 httptest.NewRecorder + 同步 ServeHTTP），所以「它目录里的 -shm 就是 WS cleanup
-// 写的」无法从单次现场直接证明（受害测试是随机的）。**可证明的是**：本包唯一的异步
-// DB 写者就是 WS——`httptest.Server.Close()` 不等待已劫持连接（net/http/httptest
-// server.go 的 `case http.StateHijacked, http.StateClosed` 会把连接从 s.wg 摘掉），
-// 而 nodeSession.cleanup（internal/ws/node_handler.go）在 handler goroutine 里**同步**
-// 写库（MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks）。db.Close() 与它并发
-// 就成了上面两条 WARN，残留连接还会在 t.TempDir 的 RemoveAll 期间重建 -wal/-shm。
+// 写的」无法从单次现场直接证明（受害测试是随机的）。
+//
+// **可证明的是**本包有**两处**不受请求同步约束的 DB 写者：
+//   - 真 WS 会话：`httptest.Server.Close()` 不等待已劫持连接（net/http/httptest
+//     server.go 的 `case http.StateHijacked, http.StateClosed` 会把连接从 s.wg 摘掉），
+//     而 v4 的 `Hub.detach`（internal/ws/hub.go，由 internal/ws/session.go 的
+//     `serveSession` defer 调用）在 handler goroutine 里**同步**写库
+//     （MarkNodeOffline / MarkInstancesDead）；
+//   - 生产装配的后台循环：`NewApp` 起的背压采样与派发 / cron / 租约三条循环
+//     （internal/server/mux.go），cancel() 之后它们可能仍在一次查询里
+//     （`backpressure sample failed ... oldest pending: sql: database is closed`
+//     就是这条的现场）。
+//
+// db.Close() 与它们并发就成了上面三条 WARN，残留连接还会在 t.TempDir 的 RemoveAll
+// 期间重建 -wal/-shm。
 //
 // 夹具侧的正解见上面那两道屏障。本文件负责**证明**它们没退化：整包跑完
 // 只要出现过一条 `database is closed`（或夹具的确定性判据命中并上报），TestMain 就让
