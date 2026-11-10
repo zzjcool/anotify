@@ -25,7 +25,7 @@
 | v4-plan-node | 节点执行/emit/租约/协议/安装命名 | 只读侦察完成 |
 | v4-plan-frontend-tests | 静态前端/API/OpenAPI/测试工具链 | 只读侦察完成 |
 | v4-plan-second-opinion | 仅分工第二意见 | 完成；采纳Go单一原子团队+独立前端，不采纳削减E2E或核心范围建议；其报告分支/MR不纳入产品改动 |
-| T1 core-runtime (`v4-core-runtime-next`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），新v4-core-runtime-recovery已SHA/applycheck/apply完整恢复，先layoutmarker/Open闭包；最终T3 635→33e纯delta路径/SHA已再次明确，无需等待旧cd6；原全Go/contract/e2equick门禁不变 |
+| T1 core-runtime (`v4-core-delivery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），新v4-core-runtime-recovery已SHA/applycheck/apply完整恢复，先layoutmarker/Open闭包；最终T3 635→33e纯delta路径/SHA已再次明确，无需等待旧cd6；原全Go/contract/e2equick门禁不变 |
 | T2 frontend (`v4-frontend-delivery`) | 复用F1/F2，接F3/sitegen/5E2E/freshreview/最终门禁 | finish节点新阶段机意外terminalfailed，未派writer；父保clean c7503fa，改用工具支持的新无阶段机centurion入口，文件流程+同3机械gate/freshreview不削 |
 | T3 anode (`v4-anode`) | 纯共享protocol+节点本机执行/emit/config/GC/install，N1→N2→N3 | 新隔离centurion已派gpt-6.1-sol；先N1协议接缝/handoff；父protocol/artifact/anode测试+vet+diffcheck门禁 |
 
@@ -272,5 +272,13 @@ T2E1b实际acceptedverified170/170+8rawchecks（原164不删），100code/289sou
 T1 C3b-result-facts freshworker已actualadmitted，承接卡cc26a2e明确task/attempt/auth/schema/retention/精确tests、原4真实WT数组；旧243Kwriter已安全退役无resume，并非继续审批停工。现补nullableExit/nanosUTC/完整结果/服务器authNow与可信acceptedTTL独立，不重registry/C3a/新wire，后C3b完整3fresh→白盒G2G3G4/原finalgate保留。无sop_save工具以文件真实持久化不虚调用，NodeWScausefix独立不阻现工作。
 
 Node final5a3dae38组件门槛现父通过：current独立archive原全包/App30/Hub20/Runner10/vet/diff及6race全部首次0，实际ACK在Write返回前取消uploadCtx关闭共享WS的真barrierredgreen闭环/两fresh无major，HTTP确认安全freshclosed。原历史FAIL/零命令done继续保。仅Node产品60file frozenpatch+SHA/integrationbinary/完整proof已 `/tmp/anotify-v4-node-products-handoff/`，NODE-PRODUCTS-HANDOFF根批准T1安全无writer边界原样同步，不含protocol/artifact/gomod，T1committedb864shared依赖archivecompat全包PASS/GoModdiff空/Node无SQLite。已通知核心解除G4source等待，当前C3b先safe收口，不并发改同WT/私修Node/wholebranchmerge。仅Node组件与已知门槛通过，整体v4CoreAPI/FEfull5/CIbuildfullE2E尚待，不已合父主分支。
+
+T2S1combined9022863已actualacceptedverified五正确WTgate、原170保172Node、12nativechecks；原strongshift95frames绿/4views同nav跨adminrevealY恒定，角色入口/aria/mobile/overflow和rawNamespace数据来源/fallbackmarkerclear/chrome负均过，原98red留。无活writer，final3fresh已按固定F3+实际窄fixscope开启；重makefe76产物+原3mechanical/FINALREADY全sourceartifacthash在收，**full5仍UNRUN**不旧hash/注册代过。下一父newreadonlyclose需majorclear/frozenepoch/allID一次缺失败dup非0，最终真实CoreNodeFEx全CIbuildE2E仍独立。
+
+T2FINAL-READY902/314ebrun已被团队withdrawn：final3报告9major=2privacy实际产品根+7有限fixture/断言实施项（均先静态待红），父未启动旧epochfull5/不占attempt。已核17覆盖与R1卡，当前唯一FINAL-R1精修guest隔离/真包id/deviceowner/menu定位/keysdomain/Error501隔离/UX19calls+两privacy，禁改产品/删覆盖白名单假绿；原5registeredcounts不变。父managerctx419K要求当前R1代码/原gate/native/fresh安全收齐后cleancheckpoint再fresh短接最终gate，不停活writer/不丢成果/不缩scope/再次全页侦察。full5随机preview读源码无GoBuild、结果独立，必须新READYmajorclear后verifyeachonce而非self+verify双跑同runId；现不执行已withdrawnepoch。
+
+T1C3b finalb46fd2c结果facts实际原4EXTENSIONverified与final3strict无major，fullJSONnanos/UTC/nil0/独立authserverNow和可信acceptedTTL+24原C3b/11facts反例保。Node-only60file1efcce4已SHA15/check/apply原样同步，gomod/protocol/artifact0diff无覆盖；当前readonly节点shared依赖close receipt待收，之后立即原白盒单writer，不重做C1C2C3a。mixedsamehash首expiredlookup410minor纳G3task授权manifestpath+hash精确item/TTL测试，不全局digest fallback/不让别owner live延旧引用TTL。整个G1/T1尚未done，G2runtime/G3API5/G4与原全Go-contract-quick及父crossgate不减。
+
+04:35 T1旧04:05L2实际核：8baf0ae/ad8d21c原G1TEST真实format0/vet1/test1且同10compileerrors被截断，只有authsetup+460inventory，migrate/7whitebox草稿已回滚非production；不是whitebox已过或裸cmd卡死。父两路只读report确认fixture-first是真有证据方法改变，WHITEBOX-CLOSURE-HANDOFF批准原allstore tests+2明确testbuilderfile/A完整compile闭合→B真实白盒，单freshwriter不legacyalias/skip/删断言，不repeat未改baseline。stageverify与完整原store/auth/push gate/460逐案去向/finalGo-contract-quick不减。该次extend/steer实际返回旧节点已ended/no terminal，**没有移动提醒或送达批准**；随后collect确认safeBLOCKED cleanbb0f690所有writersettled。父保存4.8MB当前T1+已验Node源码/证据snapshot（非重做C3），CORE-DELIVERY新合法入口按已批fixture-firstA→B→G2G3G4完整接续，不伪延时/重启旧terminal。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。
