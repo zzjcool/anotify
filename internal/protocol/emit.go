@@ -46,12 +46,16 @@ type EmitPruned struct {
 // EmitResponse 是 emit 的成功回执（含剪枝）。
 //
 // TaskID 用指针：剪枝回执要真的写 `"taskId":null`（不是省略、不是空串）——前端与
-// 脚本据此区分「已建任务」和「接收了但没派发」。
+// 脚本据此区分「已建任务」和「接收了但没派发」。非 null 时它是**本次 emit 真实创建**
+// 的任务 id：正常派发是子任务；下游缺失（downstream_missing）是 phase=failed 的
+// **派发失败 Task**（已建行、无执行事实，不是「已成功执行」）。
 type EmitResponse struct {
-	TaskID  *string     `json:"taskId"`
-	EventID string      `json:"eventId,omitempty"`
-	To      string      `json:"to"`
-	Version int         `json:"version"`
+	TaskID  *string `json:"taskId"`
+	EventID string  `json:"eventId,omitempty"`
+	To      string  `json:"to"`
+	// Version 是回执目标的版本：已解析成功或明确声明了正版本时恒返回；
+	// 未声明且未解析（裸 ref 的下游缺失）没有版本事实，字段省略而不是公开哨兵 0。
+	Version int         `json:"version,omitempty"`
 	Pruned  *EmitPruned `json:"pruned,omitempty"`
 }
 

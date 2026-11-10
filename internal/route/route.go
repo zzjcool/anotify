@@ -300,7 +300,9 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	if capability == nil {
 		detail := fmt.Sprintf("下游 %q 解析不到", to)
 		plan.Targets = append(plan.Targets, Target{
-			Ref: to, Capability: to, Version: declaredVersion(effective), State: StateMissing,
+			// Ref 保留**真实请求引用**（回执 to 用它）；Capability 只存 basename，
+			// 版本不进名字（失败 Task 的 capability + version 是两个独立列）。
+			Ref: to, Capability: refName(to), Version: declaredVersion(effective), State: StateMissing,
 			Reason: protocol.ReasonDownstreamMissing, Detail: detail,
 		})
 		return plan, nil
@@ -344,6 +346,11 @@ func declaredRef(next []string, to string) (string, bool) {
 	if toName == "" {
 		return "", false
 	}
+	if toPinned && toVer < 0 {
+		// 坏版本写法（@3junk/@+3/@ 3/@02/@0）不是精确引用：不匹配任何声明，
+		// 也不能让两个坏写法因「都是 -1」互相命中。
+		return "", false
+	}
 	unique := make(map[string]bool)
 	for _, ref := range next {
 		name, ver, pinned := splitRef(ref)
@@ -384,17 +391,50 @@ func declaredVersion(ref string) int {
 	return ver
 }
 
+// refName 取引用的能力名部分（`name@version` → `name`）。
+func refName(ref string) string {
+	name, _, _ := splitRef(ref)
+	return name
+}
+
 // splitRef 把 `name` / `name@version` 拆成 (name, version, pinned)。
+//
+// 版本只接受**规范十进制正整数**（E1-D2）：`@0` / `@` / `@2junk` / `@+2` / `@ 2` / `@02`
+// 都不是精确引用——旧实现的 `fmt.Sscanf("%d")` 会把它们的数字前缀（或带符号/空格）
+// 当成精确版本，让一个坏引用碰上声明就变成「已声明」。坏写法一律 ver=-1（永不可能
+// 匹配任何声明），仍沿现 not_declared 拒绝，不新 reason。
 func splitRef(ref string) (string, int, bool) {
 	ref = strings.TrimSpace(ref)
 	name, verRaw, found := strings.Cut(ref, "@")
 	if !found {
 		return name, 0, false
 	}
-	var version int
-	if _, err := fmt.Sscanf(verRaw, "%d", &version); err != nil || version <= 0 {
-		// 坏的版本写法：当成钉版但永不可能匹配（fail closed）。
+	version, ok := parsePinnedVersion(verRaw)
+	if !ok {
 		return name, -1, true
 	}
 	return name, version, true
+}
+
+// parsePinnedVersion 严格解析 `@` 后的正整数（不跳空格、不接受符号/尾随字符/前导零）。
+func parsePinnedVersion(raw string) (int, bool) {
+	// >9 位十进制不是业务版本号（也从根上避开 int 溢出）。
+	if raw == "" || len(raw) > 9 {
+		return 0, false
+	}
+	if len(raw) > 1 && raw[0] == '0' {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
 }

@@ -48,6 +48,9 @@ type EmitFailureFact struct {
 	Version    int
 	Reason     string
 	Detail     string
+	// TaskID 是调用方预分配、要在回执里先给出的任务 id（可选）。
+	// 省略 → store 现场 NewTaskID；给定 → 落库必须用同一个 id（否则回执就是假身份）。
+	TaskID string
 }
 
 // EmitRecord 是一次 emit 的落库行（capability.md §4.1 / D-I9）。
@@ -197,10 +200,11 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 	if err := d.createTasksTx(ctx, tx, tasks); err != nil {
 		return nil, false, err
 	}
-	if err := d.writeEmitPlannedFactsOn(ctx, ex, rec, auth.Now); err != nil {
+	failureTaskIDs, err := d.writeEmitPlannedFactsOn(ctx, ex, rec, auth.Now)
+	if err != nil {
 		return nil, false, err
 	}
-	result, err := emitResult(rec, tasks)
+	result, err := emitResult(rec, tasks, failureTaskIDs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -236,9 +240,12 @@ func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord,
 //
 // 授权与历史 replay 已在前面完成（命中 replay 直接返回，不执行本函数——回放不得
 // 附带任何新写）。任何一条写失败都返回错误，由调用方整事务回滚；不吞 prune 错误。
-func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *EmitRecord, now int64) error {
+//
+// 返回值是**真实创建**的失败 Task id（按计划顺序）：调用方据此核对回执点名的
+// taskId 不是预先编好、实际没落库的假身份。
+func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *EmitRecord, now int64) ([]string, error) {
 	if len(rec.PlannedFailures) == 0 && len(rec.PlannedPrunes) == 0 {
-		return nil
+		return nil, nil
 	}
 	if now == 0 {
 		now = Now()
@@ -251,24 +258,28 @@ func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *Emi
 	err := ex.queryRowContext(ctx,
 		`SELECT namespace_id, trace_id FROM tasks WHERE id = ?`, rec.TaskID).Scan(&namespaceID, &traceID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: task %s", ErrTaskNotRunning, rec.TaskID)
+		return nil, fmt.Errorf("%w: task %s", ErrTaskNotRunning, rec.TaskID)
 	}
 	if err != nil {
-		return fmt.Errorf("emit %s: read parent task: %w", rec.TaskID, err)
+		return nil, fmt.Errorf("emit %s: read parent task: %w", rec.TaskID, err)
 	}
 	parent := rec.TaskID
+	failureTaskIDs := make([]string, 0, len(rec.PlannedFailures))
 	for _, f := range rec.PlannedFailures {
-		row, ferr := newDispatchFailureTask(namespaceID, traceID, &parent, DispatchFailureInputs{
+		// 同一个 typed input 同时用于构造行与落库：调用方预分配的 TaskID 从这里
+		// 一路带到 INSERT，回执里的 id 与真实行不可能分叉。
+		input := DispatchFailureInputs{
 			Capability: f.Capability, Version: f.Version, Reason: f.Reason, Detail: f.Detail,
-		}, now)
+			TaskID: f.TaskID,
+		}
+		row, ferr := newDispatchFailureTask(namespaceID, traceID, &parent, input, now)
 		if ferr != nil {
-			return ferr
+			return nil, ferr
 		}
-		if err := insertDispatchFailureTaskOn(ctx, ex, row, DispatchFailureInputs{
-			Capability: f.Capability, Version: f.Version, Reason: f.Reason, Detail: f.Detail,
-		}, now); err != nil {
-			return err
+		if err := insertDispatchFailureTaskOn(ctx, ex, row, input, now); err != nil {
+			return nil, err
 		}
+		failureTaskIDs = append(failureTaskIDs, row.ID)
 	}
 	for _, p := range rec.PlannedPrunes {
 		payload, merr := json.Marshal(map[string]any{
@@ -279,14 +290,14 @@ func (d *DB) writeEmitPlannedFactsOn(ctx context.Context, ex queryExec, rec *Emi
 			"parentTaskId": rec.TaskID,
 		})
 		if merr != nil {
-			return fmt.Errorf("emit %s: marshal prune: %w", rec.TaskID, merr)
+			return nil, fmt.Errorf("emit %s: marshal prune: %w", rec.TaskID, merr)
 		}
 		ev := &Event{NamespaceID: namespaceID, TraceID: traceID, Type: p.Reason, Payload: payload, CreatedAt: now}
 		if err := insertPruneFactEventOn(ctx, ex, ev); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return failureTaskIDs, nil
 }
 
 // authorizeEmitOn 做 EmitAuthorized 的第 1-3 步（节点身份 / ns 授权 / 执行授权）。
@@ -395,8 +406,14 @@ func authorizeEmitOn(ctx context.Context, ex queryExec, auth EmitAuth) error {
 }
 
 // emitResult 决定这次派发的回执：调用方给了就用它，否则按建出的任务行生成。
-func emitResult(rec *EmitRecord, tasks []*Task) (json.RawMessage, error) {
+func emitResult(rec *EmitRecord, tasks []*Task, failureTaskIDs []string) (json.RawMessage, error) {
 	if len(rec.Result) > 0 {
+		// 调用方给的 result 就是回放原字节，不改写；但要核对它点名的 taskId 确实是
+		// **本事务真实创建**的任务行（正常子任务或失败 Task）：失败 Task 的回执身份
+		// 由 route 预分配、store 用同一 id 落库，任何分叉都会变成假回执。
+		if err := checkReceiptTaskID(rec.Result, tasks, failureTaskIDs); err != nil {
+			return nil, err
+		}
 		return rec.Result, nil
 	}
 	ids := make([]string, 0, len(tasks))
@@ -411,6 +428,31 @@ func emitResult(rec *EmitRecord, tasks []*Task) (json.RawMessage, error) {
 		return nil, fmt.Errorf("emit: marshal result: %w", err)
 	}
 	return json.RawMessage(b), nil
+}
+
+// checkReceiptTaskID 核对回执里的 taskId（若有且非 null）是本次事务创建的任务。
+//
+// taskId:null（剪枝回执）与没有该字段的旧结果不做限制：它们不声称任何身份。
+// 这里只做**核对**，不重算回执字节——回放必须回原字节，身份必须对真实行。
+func checkReceiptTaskID(result json.RawMessage, tasks []*Task, failureTaskIDs []string) error {
+	var probe struct {
+		TaskID *string `json:"taskId"`
+	}
+	if err := json.Unmarshal(result, &probe); err != nil || probe.TaskID == nil {
+		return nil
+	}
+	want := *probe.TaskID
+	for _, t := range tasks {
+		if t != nil && t.ID == want {
+			return nil
+		}
+	}
+	for _, id := range failureTaskIDs {
+		if id == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("emit: 回执 taskId %q 不是本事务创建的任务（拒绝伪造回执身份）", want)
 }
 
 // insertEmitTx 在调用方事务里插一行幂等记录（唯一索引负责「同 id 只能一条」）。

@@ -22,7 +22,8 @@ import (
 
 // DispatchFailureInputs 是一条未解析派发失败的事实（store 本地 typed，不是 wire DTO）。
 type DispatchFailureInputs struct {
-	// Capability 是请求里写的引用/名字（原样保留请求事实，必填）。
+	// Capability 是这次失败的能力名（必填）：emit 存**请求引用的 basename**（版本单独进
+	// Version，不把 name@v 整体塞进 name），source 侧仍原样保留声明的引用。
 	Capability string
 	// Version 是请求**明确声明**的版本；0 = 请求未声明版本（内部无解析事实）。
 	Version int
@@ -30,6 +31,13 @@ type DispatchFailureInputs struct {
 	Reason string
 	// Detail 是给错误投影的 message（人可读说明）。
 	Detail string
+	// TaskID 是**可选**的调用方预分配任务 id（store 内部 typed 输入，不是 wire 字段）。
+	//
+	// 为什么需要它：emit 的单目标失败要在**写之前**就给出回执身份（route 把同一个 id
+	// 放进 EmitResponse.taskId），store 只有在落库时用同一个 id，回执才不是假身份。
+	// 省略 → store 现场 NewTaskID（source 多 fanout 的正常内部行为不变）。
+	// 形状非法或与既有任务碰撞 → 整个事务报错回滚（绝不覆盖既有 Task）。
+	TaskID string
 }
 
 // dispatchFailurePayload 是失败观察事件的 payload（沿用现 reason/message 对象）。
@@ -57,10 +65,31 @@ func normalizeDispatchFailure(in DispatchFailureInputs) (DispatchFailureInputs, 
 	if in.Version < 0 {
 		return in, fmt.Errorf("dispatch failure: negative declared version %d", in.Version)
 	}
+	if in.TaskID != "" && !validSuppliedTaskID(in.TaskID) {
+		return in, fmt.Errorf("dispatch failure: 预分配 task id %q 形状非法（只接受 tsk_<base62>）", in.TaskID)
+	}
 	return in, nil
 }
 
-// newDispatchFailureTask 构造一条**未落库**的失败 Task 行（ID 已生成）。
+// validSuppliedTaskID 只校验调用方预分配 id 的**形状**（tsk_ + 非空 base62 后缀）。
+//
+// 唯一性不在这里查：tasks 主键是唯一判据——碰撞时 INSERT 失败，调用方整事务回滚。
+// 这样既不会覆盖既有 Task，也不会因为「先查后插」在并发下给出假保证。
+func validSuppliedTaskID(id string) bool {
+	const prefix = "tsk_"
+	if !strings.HasPrefix(id, prefix) || len(id) == len(prefix) {
+		return false
+	}
+	for i := len(prefix); i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// newDispatchFailureTask 构造一条**未落库**的失败 Task 行（ID 已定）。
 //
 // 时间只用**真实 server 事务时刻**（created/finished），不编造 Node 过程时间：
 // startedAt/result/exitCode 一律没有事实，因此全部留空。
@@ -77,8 +106,13 @@ func newDispatchFailureTask(namespaceID, traceID string, parentTaskID *string,
 		return nil, fmt.Errorf("dispatch failure: empty trace_id")
 	}
 	finished := now
+	// 调用方预分配的 id（如有）就是落库 id：回执已经把它给出去了，不能另换一个。
+	id := norm.TaskID
+	if id == "" {
+		id = NewTaskID()
+	}
 	return &Task{
-		ID:           NewTaskID(),
+		ID:           id,
 		NamespaceID:  namespaceID,
 		TraceID:      traceID,
 		ParentTaskID: parentTaskID,

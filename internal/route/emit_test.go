@@ -1,8 +1,10 @@
 package route
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -305,33 +307,74 @@ func TestEmitPinnedDeclaredRefPinsChildAndTracksMutableNext(t *testing.T) {
 	}
 }
 
-// TestEmitMissingDeclaredTargetCreatesFailedTaskNotPrune 钉住 R1-C3：已声明但解析不到
-// 的目标落 failed Task（attempt 0）+ 错误事件，回执不是剪枝（Pruned 为空）。
-func TestEmitMissingDeclaredTargetCreatesFailedTaskNotPrune(t *testing.T) {
+// missingEmitFixture 建一个 next=[...] 的 running 父任务，用来打 downstream_missing 回执。
+func missingEmitFixture(t *testing.T, traceID string, next ...string) (*store.DB, *store.Namespace, *store.Task, store.EmitAuth, *Router) {
+	t.Helper()
 	db := testDB(t)
 	ns := testNamespace(t, db)
-	producer := testCapability(t, db, ns.ID, "producer", 1, capOpts{Next: []string{"ghost@2"}})
+	producer := testCapability(t, db, ns.ID, "producer", 1, capOpts{Next: next})
 	node, token := testNode(t, db)
 	tokenHash := store.HashNodeToken(token)
-	parent, leaseID, attemptToken := testRunningTask(t, db, ns.ID, "trace-missing", producer, node, tokenHash)
-	router := New(db)
+	parent, leaseID, attemptToken := testRunningTask(t, db, ns.ID, traceID, producer, node, tokenHash)
 	auth := store.EmitAuth{
 		TaskID: parent.ID, NodeID: node.ID, NodeTokenHash: tokenHash,
 		Attempt: 1, LeaseID: leaseID, AttemptToken: attemptToken, Now: store.Now(),
 	}
+	return db, ns, parent, auth, New(db)
+}
+
+// failedTasksInTrace 列 trace 里的未解析失败任务（capability_id IS NULL）。
+func failedTasksInTrace(t *testing.T, db *store.DB, namespaceID, traceID string) []*store.Task {
+	t.Helper()
+	tasks, err := db.ListTasksByTrace(testCtx(), namespaceID, traceID)
+	if err != nil {
+		t.Fatalf("列 trace 任务: %v", err)
+	}
+	out := make([]*store.Task, 0, 1)
+	for _, task := range tasks {
+		if task.CapabilityID == "" {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+// downstreamMissingEvents 数 trace 里的 downstream_missing 观察事件。
+func downstreamMissingEvents(t *testing.T, db *store.DB, namespaceID, traceID string) []*store.Event {
+	t.Helper()
+	events, err := db.ListEvents(testCtx(), namespaceID, traceID, "", 50)
+	if err != nil {
+		t.Fatalf("列事件: %v", err)
+	}
+	out := make([]*store.Event, 0, 1)
+	for _, ev := range events {
+		if ev.Type == protocol.ReasonDownstreamMissing {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// TestEmitMissingDeclaredTargetCreatesFailedTaskNotPrune 钉住 E1-D2：已声明但解析不到的
+// 目标落 failed Task（attempt 0）+ 错误事件，回执带**这个真实失败 Task 的 id**
+// （anode CLI 的成功判据就是 taskId 非 null），不是剪枝、也不是 null。
+func TestEmitMissingDeclaredTargetCreatesFailedTaskNotPrune(t *testing.T) {
+	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing", "ghost@2")
 	result, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2", EmitID: "missing-1"})
 	if err != nil {
 		t.Fatalf("已声明但解析不到应落失败事实，不是 emit 错误: %v", err)
 	}
-	// 冻结 emit wire（protocol.EmitResponse）没有 failed-task 字段，store 的
-	// EmitFailureFact 也不返回创建的 failed task id：这里只能诚实回“没有正常子任务”，
-	// 不伪造 taskId、不把失败伪装成剪枝（Pruned 必为空）；真实 failed Task 在 trace 可查。
 	if result.Response.Pruned != nil {
 		t.Fatalf("missing 回执不得伪装剪枝: %+v", result.Response)
 	}
-	if result.Response.TaskID != nil {
-		t.Fatalf("missing 回执不得把 failed task 假冒成成功 taskId: %+v", result.Response)
+	if result.Response.TaskID == nil || *result.Response.TaskID == "" {
+		t.Fatalf("missing 回执必须带真实失败 Task id（E1-D2），得到 %+v", result.Response)
 	}
+	taskID := *result.Response.TaskID
+	if !strings.HasPrefix(taskID, "tsk_") {
+		t.Fatalf("回执 taskId 不是真实任务 id: %q", taskID)
+	}
+	// 回执保真实请求 ref 与明确声明的 version（不改其它状态的 To 语义）。
 	if result.Response.To != "ghost@2" || result.Response.Version != 2 {
 		t.Fatalf("回执必须保真实请求 ref 与明确声明的 version: %+v", result.Response)
 	}
@@ -341,37 +384,166 @@ func TestEmitMissingDeclaredTargetCreatesFailedTaskNotPrune(t *testing.T) {
 	if got := fchildCount(t, db, parent.ID); got != 0 {
 		t.Fatalf("missing 不得建正常子任务，child=%d", got)
 	}
-	tasks, err := db.ListTasksByTrace(testCtx(), ns.ID, parent.TraceID)
+
+	// 回执 id 必须在同 namespace 里读得到，且是真实的 failed Task（不是假 id）。
+	failure, err := db.GetTask(testCtx(), ns.ID, taskID)
 	if err != nil {
-		t.Fatalf("列 trace 任务: %v", err)
+		t.Fatalf("回执 taskId 在 store 里读不到（假身份）: %v", err)
 	}
-	var failure *store.Task
-	for _, task := range tasks {
-		if task.CapabilityID == "" {
-			failure = task
-		}
-	}
-	if failure == nil {
-		t.Fatalf("没有 failed Task 落库: %+v", tasks)
-	}
-	if failure.Phase != store.TaskFailed || failure.Attempt != 0 || failure.Capability != "ghost@2" ||
-		failure.Version != 2 || failure.Digest != "" || failure.Error != protocol.ReasonDownstreamMissing ||
+	if failure.Phase != store.TaskFailed || failure.Attempt != 0 ||
+		failure.Capability != "ghost" || failure.Version != 2 ||
+		failure.Digest != "" || failure.Error != protocol.ReasonDownstreamMissing ||
 		failure.ParentTaskID == nil || *failure.ParentTaskID != parent.ID {
-		t.Fatalf("failed Task 事实不对: %+v", failure)
+		t.Fatalf("failed Task 事实不对（capability 存请求 basename、version 单独保）: %+v", failure)
 	}
-	// 错误事件（真实请求 ref + taskId）必须存在；不是剪枝回执。
-	events, err := db.ListEvents(testCtx(), ns.ID, parent.TraceID, "", 50)
+	// 没有执行事实：不编造 Node/slot/lease/过程时间/结果。
+	if failure.NodeID != nil || failure.LeaseID != "" || failure.StartedAt != nil ||
+		failure.ExitCode != nil || len(failure.ResultJSON) != 0 {
+		t.Fatalf("failed Task 编造了执行事实: %+v", failure)
+	}
+
+	// 错误事件与同一个 TaskID 绑定（同事务、不后查猜）。
+	events := downstreamMissingEvents(t, db, ns.ID, parent.TraceID)
+	if len(events) != 1 {
+		t.Fatalf("downstream_missing 错误事件应恰好一条，得到 %d", len(events))
+	}
+	var payload struct {
+		Capability string `json:"capability"`
+		Version    int    `json:"version"`
+		TaskID     string `json:"taskId"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("解析事件 payload: %v", err)
+	}
+	if payload.TaskID != taskID || payload.Capability != "ghost" || payload.Version != 2 {
+		t.Fatalf("错误事件没有绑定同一个真实 TaskID: %+v (回执 %s)", payload, taskID)
+	}
+	if n := len(failedTasksInTrace(t, db, ns.ID, parent.TraceID)); n != 1 {
+		t.Fatalf("trace 里 failed Task 数 = %d，want 1", n)
+	}
+}
+
+// TestEmitMissingReplayReturnsSameRealReceipt 钉住 E1-D2：同 emit id 回放回**同一个**
+// 真实失败 Task 的回执（存储字节原样），不再新建 task/事件。
+func TestEmitMissingReplayReturnsSameRealReceipt(t *testing.T) {
+	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing-replay", "ghost@2")
+	first, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2", EmitID: "missing-replay"})
+	if err != nil || first.Response.TaskID == nil {
+		t.Fatalf("首次 missing emit: %v / %+v", err, first.Response)
+	}
+	storedFirst, err := db.LookupEmit(testCtx(), parent.ID, "missing-replay")
 	if err != nil {
-		t.Fatalf("列事件: %v", err)
+		t.Fatalf("读首次 emit 事实: %v", err)
 	}
-	found := false
-	for _, ev := range events {
-		if ev.Type == protocol.ReasonDownstreamMissing {
-			found = true
+
+	replay, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2", EmitID: "missing-replay"})
+	if err != nil {
+		t.Fatalf("同 id 回放: %v", err)
+	}
+	if !replay.Duplicate {
+		t.Fatalf("同 id 同 body 应回放，不是新派发: %+v", replay)
+	}
+	if replay.Response.TaskID == nil || *replay.Response.TaskID != *first.Response.TaskID {
+		t.Fatalf("回放必须回同一个真实 taskId: %+v vs %+v", replay.Response, first.Response)
+	}
+	if replay.Response.EventID != first.Response.EventID {
+		t.Fatalf("回放必须回同一个 eventId: %+v vs %+v", replay.Response, first.Response)
+	}
+	storedReplay, err := db.LookupEmit(testCtx(), parent.ID, "missing-replay")
+	if err != nil {
+		t.Fatalf("回放后读 emit 事实: %v", err)
+	}
+	if !bytes.Equal(storedFirst.Result, storedReplay.Result) {
+		t.Fatalf("回放改写了已存回执字节: %s != %s", storedFirst.Result, storedReplay.Result)
+	}
+	if n := len(failedTasksInTrace(t, db, ns.ID, parent.TraceID)); n != 1 {
+		t.Fatalf("回放新建了失败 Task: %d", n)
+	}
+	if n := len(downstreamMissingEvents(t, db, ns.ID, parent.TraceID)); n != 1 {
+		t.Fatalf("回放新建了错误事件: %d", n)
+	}
+}
+
+// TestEmitMissingWithoutIDCreatesNewFailedTaskEachTime 钉住「无 id 每次都是新派发」：
+// 两次无 id 的 missing emit 必须各建一条真实失败 Task。
+func TestEmitMissingWithoutIDCreatesNewFailedTaskEachTime(t *testing.T) {
+	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing-noid", "ghost@2")
+	first, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2"})
+	if err != nil || first.Response.TaskID == nil {
+		t.Fatalf("首次无 id missing emit: %v / %+v", err, first.Response)
+	}
+	second, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2"})
+	if err != nil || second.Response.TaskID == nil {
+		t.Fatalf("第二次无 id missing emit: %v / %+v", err, second.Response)
+	}
+	if *first.Response.TaskID == *second.Response.TaskID {
+		t.Fatalf("无 id 的两次 emit 复用了同一个 TaskID: %s", *first.Response.TaskID)
+	}
+	ids := map[string]bool{}
+	for _, task := range failedTasksInTrace(t, db, ns.ID, parent.TraceID) {
+		ids[task.ID] = true
+	}
+	if len(ids) != 2 || !ids[*first.Response.TaskID] || !ids[*second.Response.TaskID] {
+		t.Fatalf("trace failed Task = %v，回执 id = %s/%s", ids, *first.Response.TaskID, *second.Response.TaskID)
+	}
+}
+
+// TestEmitStrictPinnedRefRejectsNonCanonicalVersion 钉住 E1-D2：`@version` 只接受
+// **规范十进制正整数**；`@2junk` / `@+2` / `@ 2` / `@02` / `@` / `@0` 都不是精确引用
+// （旧代码用 Sscanf 前缀解析，会把它们当成 @2 放行）。
+func TestEmitStrictPinnedRefRejectsNonCanonicalVersion(t *testing.T) {
+	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing-ref", "ghost@2")
+	beforeTasks, _ := db.ListTasksByTrace(testCtx(), ns.ID, parent.TraceID)
+	beforeEvents, _ := db.ListEvents(testCtx(), ns.ID, parent.TraceID, "", 50)
+
+	for _, to := range []string{"ghost@2junk", "ghost@+2", "ghost@ 2", "ghost@02", "ghost@", "ghost@0"} {
+		_, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: to, Data: json.RawMessage(`{}`)})
+		var emitErr *EmitError
+		if !errors.As(err, &emitErr) || emitErr.Reason != protocol.ReasonTargetNotDeclared {
+			t.Fatalf("to=%q 必须 target_not_declared（坏版本不是精确引用），得到 %v", to, err)
+		}
+		if emitErr.HTTPStatus() != 400 {
+			t.Fatalf("to=%q 的 HTTP 状态 = %d，want 400", to, emitErr.HTTPStatus())
 		}
 	}
-	if !found {
-		t.Fatalf("downstream_missing 错误事件缺失: %+v", events)
+	// 坏引用是纯拒绝：不建任务、不写事件。
+	afterTasks, _ := db.ListTasksByTrace(testCtx(), ns.ID, parent.TraceID)
+	afterEvents, _ := db.ListEvents(testCtx(), ns.ID, parent.TraceID, "", 50)
+	if len(afterTasks) != len(beforeTasks) || len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("坏引用产生了写: tasks %d→%d events %d→%d",
+			len(beforeTasks), len(afterTasks), len(beforeEvents), len(afterEvents))
+	}
+	// 精确写法仍放行（回到真实失败 Task 回执）。
+	ok, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost@2", Data: json.RawMessage(`{}`)})
+	if err != nil || ok.Response.TaskID == nil {
+		t.Fatalf("精确 @2 引用应放行为真实失败 Task: %v / %+v", err, ok.Response)
+	}
+}
+
+// TestSplitRefStrictPinnedVersions 直接钉住 strict ref 解析（emit 与 source 共用）。
+func TestSplitRefStrictPinnedVersions(t *testing.T) {
+	cases := map[string]struct {
+		name   string
+		ver    int
+		pinned bool
+	}{
+		"ghost":       {"ghost", 0, false},
+		"ghost@2":     {"ghost", 2, true},
+		"ghost@12":    {"ghost", 12, true},
+		"ghost@0":     {"ghost", -1, true},
+		"ghost@":      {"ghost", -1, true},
+		"ghost@2junk": {"ghost", -1, true},
+		"ghost@+2":    {"ghost", -1, true},
+		"ghost@ 2":    {"ghost", -1, true},
+		"ghost@02":    {"ghost", -1, true},
+		"ghost@2@3":   {"ghost", -1, true},
+	}
+	for ref, want := range cases {
+		name, ver, pinned := splitRef(ref)
+		if name != want.name || ver != want.ver || pinned != want.pinned {
+			t.Fatalf("splitRef(%q) = (%q,%d,%v)，want (%q,%d,%v)",
+				ref, name, ver, pinned, want.name, want.ver, want.pinned)
+		}
 	}
 }
 
@@ -465,4 +637,38 @@ func countTraceEvents(t *testing.T, db *store.DB, traceID string) int {
 		t.Fatalf("统计事件: %v", err)
 	}
 	return n
+}
+
+// TestEmitMissingUndeclaredVersionOmitsResponseVersion 钉住 E1-D2 的 wire presence：
+// 裸 ref（未声明版本、也没解析出能力行）没有版本事实 → 回执不公开哨兵 0（字段省略），
+// 但 taskId 仍是真实失败 Task（已建任务），失败 Task 的 version 就是 0。
+func TestEmitMissingUndeclaredVersionOmitsResponseVersion(t *testing.T) {
+	db, ns, parent, auth, router := missingEmitFixture(t, "trace-missing-bare", "ghost")
+	result, err := router.Emit(testCtx(), EmitInput{Auth: auth, To: "ghost", EmitID: "missing-bare"})
+	if err != nil {
+		t.Fatalf("裸 ref 的 missing emit: %v", err)
+	}
+	if result.Response.TaskID == nil {
+		t.Fatalf("裸 ref missing 回执也要带真实失败 Task id: %+v", result.Response)
+	}
+	if result.Response.Version != 0 || result.Response.To != "ghost" || result.Response.Pruned != nil {
+		t.Fatalf("裸 ref 回执事实不对: %+v", result.Response)
+	}
+	stored, err := db.LookupEmit(testCtx(), parent.ID, "missing-bare")
+	if err != nil {
+		t.Fatalf("读 emit 事实: %v", err)
+	}
+	if bytes.Contains(stored.Result, []byte(`"version"`)) {
+		t.Fatalf("未声明的版本不得公开哨兵 0: %s", stored.Result)
+	}
+	if !bytes.Contains(stored.Result, []byte(`"taskId":"`+*result.Response.TaskID+`"`)) {
+		t.Fatalf("已存回执必须是真实 taskId: %s", stored.Result)
+	}
+	task, err := db.GetTask(testCtx(), ns.ID, *result.Response.TaskID)
+	if err != nil {
+		t.Fatalf("读失败 Task: %v", err)
+	}
+	if task.Version != 0 || task.Capability != "ghost" || task.Phase != store.TaskFailed {
+		t.Fatalf("失败 Task 的未声明版本事实 = %+v", task)
+	}
 }

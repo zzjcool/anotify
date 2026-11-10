@@ -366,3 +366,33 @@ func TestPlanFromSourceTemplatesSinglePassAndKeepTypes(t *testing.T) {
 		t.Fatalf("混写必须拼成字符串: %#v", params["mixed"])
 	}
 }
+
+// TestPlanFromSourceBadPinnedVersionIsNotAVersionFact 钉住 E1-D2 的严格引用解析也适用于
+// source 的声明：`ghost@3junk` 不是「版本 3」（旧 fmt.Sscanf 会前缀解析成 3），
+// 而是坏钉版写法 —— 没有版本事实（0），仍是 downstream_missing 失败事实。
+func TestPlanFromSourceBadPinnedVersionIsNotAVersionFact(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	src := &store.Source{
+		NamespaceID: ns.ID, Name: "manual-1", Kind: sourcespec.KindManual,
+		Targets: []sourcespec.Target{{Capability: "ghost@3junk"}},
+		Enabled: true,
+	}
+	plan, err := New(db).PlanFromSource(testCtx(), src, "trace-1", map[string]any{})
+	if err != nil {
+		t.Fatalf("PlanFromSource: %v", err)
+	}
+	failures := plan.FailureInputs()
+	if len(failures) != 1 {
+		t.Fatalf("失败事实数 = %d，want 1", len(failures))
+	}
+	if failures[0].Version != 0 {
+		t.Fatalf("坏版本写法不能前缀解析成版本事实（got %d）: %+v", failures[0].Version, failures[0])
+	}
+	if failures[0].Capability != "ghost@3junk" {
+		t.Fatalf("source 侧仍保请求引用原文: %+v", failures[0])
+	}
+	if failures[0].Reason != protocol.ReasonDownstreamMissing {
+		t.Fatalf("reason = %q", failures[0].Reason)
+	}
+}

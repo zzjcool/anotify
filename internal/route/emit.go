@@ -101,6 +101,11 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 	}
 	tasks := plan.Tasks(parent.ID)
 	failures := plan.FailureInputs()
+	if len(failures) > 1 {
+		// 单目标 emit 计划只可能有一条失败事实。真出现多条时不能挑第一条伪造完整
+		// 回执（那会给出一个与其余失败事实不对应的 taskId）：交给父裁决，不扩数组协议。
+		return EmitResult{}, fmt.Errorf("emit: 计划有 %d 条未解析失败目标，E1 只支持单目标回执（不挑第一条）", len(failures))
+	}
 	// 回执的 eventId 是本次 emit **接受事实**（emits 行）的稳定 id。store 没有公开
 	// 的 emt_ 生成器，但 rec.ID 是写入的权威 id：预生成它并同时用于回执与落库，
 	// 同 id 回放返回的也是同一份 body（不会重算）。
@@ -135,9 +140,15 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 		}
 	case len(failures) > 0:
 		// StateMissing：真实事实是 failed Task + 错误事件（与 emit 行同事务写入），
-		// 不是剪枝、也不伪装成剪枝回执。回执保留真实请求 ref 与明确声明的 version。
+		// 不是剪枝、也不伪装成剪枝回执。回执里的 taskId 就是**本次事务马上要建**的
+		// 失败 Task：同一 ID 先给回执、再交给 store 同事务落库（store 用它去建行，
+		// 不会另换一个）。anode CLI 的成功判据就是 taskId 非 null，因此这条真失败
+		// 不再被当成 result unknown；To 保真实请求 ref，Version 只保明确声明的正版本。
+		failureTaskID := store.NewTaskID()
+		failures[0].TaskID = failureTaskID
+		response.TaskID = &failureTaskID
 		response.EventID = record.ID
-		response.To = plan.Targets[0].Capability
+		response.To = plan.Targets[0].Ref
 		response.Version = plan.Targets[0].Version
 	}
 	// 计划事实只进 store 的同事务参数（非 wire）：不提前 recordPrune、不吞错误。
@@ -149,7 +160,7 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 	for _, failure := range failures {
 		record.PlannedFailures = append(record.PlannedFailures, store.EmitFailureFact{
 			Capability: failure.Capability, Version: failure.Version,
-			Reason: failure.Reason, Detail: failure.Detail,
+			Reason: failure.Reason, Detail: failure.Detail, TaskID: failure.TaskID,
 		})
 	}
 	body, err := json.Marshal(response)
