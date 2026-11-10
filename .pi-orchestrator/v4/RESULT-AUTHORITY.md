@@ -16,6 +16,10 @@
 - 旧测试若要求生产runner发送失授权task.result，应精准改成无发送+归档/真reap/当前新pending不动。服务端late非法frame拒绝测试仍保留，可主动注入，而非逼生产代码违反guard。
 - 错/旧grant未合法执行不生成task.result，忽略告警且不能清新reservation；合法唯一grant的结果一直绑定到原lease，ACK不能从新current随意补身份。
 
+## 共享 WS 写生命周期
+
+发送准入后的网络写不能继承 attempt 正常 ACK 清理的取消传播，否则合法 ACK 可在 WebSocket Write 返回前关闭整个共享连接。实际写使用连接生命周期和不晚于原 lease snapshot 的有界截止；准入之前的撤销仍必须阻止发送，进程/HTTP 上传真撤权仍立即取消。精确边界与确定性反例见 `WS-WRITE-LIFECYCLE.md`，不增加协议字段。
+
 ## 必测与验收
 
 真实timeout终止→上传/发送等待跨20/60秒仍续租→合法failed结果ACK后终结；期间真expiry/cancel禁止latewrite并停上传；延迟ACK不释newslot；旧expiry结果本机保存/历史回收和服务端拒非法frame；mismatchgrant不exec/不污染newpending。

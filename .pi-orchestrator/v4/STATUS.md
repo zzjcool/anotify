@@ -213,6 +213,64 @@ T2 freshfec025f仅nodes/mock两roots：PUTgeneration已无major，但新3敏感�
 
 Node父finalfix已safeblocked：已修Fake非正即时/两credentialHTTP no-redirect红绿，但新增实际正duration跨注册反例确认t31采样d20到t61注册due81，deadline60清理迟。未越权改runner/未跑full门禁，8filesdirty保留。父二意见与事实核准最小内部Clock.NewTimerAt(absolute) + leaseLoop用已有min(renewAt,deadline)绝对next，不while采样/注册后if单补/额外Advance假绿；relative原语义保留、Real best-effort、Fake锁内absolute即fire。新唯一v4-node-absolute-clock-close（正常rootstore记录，实际分配旧NodeWT绝对路径）接已修8files+精确授权leaseLoop/wrapper；原5精确命令和affectedrace在task文字+工具数组明确，15min窄修，不新协议/重做Node。最终支持T1仍pending。
 
-00:30 T1旧23:45 L2已核：C2生产52d5870/精修e42fe84和scopedgate已收，clean新handoff **2a3c7ef…**（不是停写卡死）；全部writer/review安全结束，旧recovery已经safeBLOCKED/retired（无terminalsteer已据collect确认），原S3lateverified不升级整体完成。父已capture `/tmp/anotify-v4-core-runtime-next/core-source-and-evidence.patch`（base0e，3MB仅T1源码/支持protocol/团队证据）+SHA/CHECKPOINT-2，旧WT不动。新CORE-RUNTIME-NEXT明当前C3实际任务→旧tests→G2→G3→G4，根CORE-RECOVERY f717旧表已标历史；fresh接现C2不再重做格式/CAS、不等待已批准问题，原3finalgate不减。Node父absoluteclock+redirectfix仍pending，协议33e已可用。
+00:30 T1旧23:45 L2已核：C2生产52d5870/精修e42fe84和scopedgate已收，clean新handoff **2a3c7ef…**（不是停写卡死）；全部writer/review安全结束，旧recovery已经safeBLOCKED/retired（无terminalsteer已据collect确认），原S3lateverified不升级整体完成。父新core-runtime-next已启动显式GPT独立WT（不声明旧phase机），恢复当前2a3源码/文件checkpoint后第一actualwriter C3授权/预算，完整旧tests→G2G3G4/原3finalgate不削。父已capture `/tmp/anotify-v4-core-runtime-next/core-source-and-evidence.patch`（base0e，3MB仅T1源码/支持protocol/团队证据）+SHA/CHECKPOINT-2，旧WT不动。新CORE-RUNTIME-NEXT明当前C3实际任务→旧tests→G2→G3→G4，根CORE-RECOVERY f717旧表已标历史；fresh接现C2不再重做格式/CAS、不等待已批准问题，原3finalgate不减。Node父absoluteclock+redirectfix仍pending，协议33e已可用。
+
+T2F3b1已freeze注册35groups/19x4但Node128/129 UIDABA、graphblocked/auth501已知red，full未跑且asyncadmissionclosed。父核CLI：单caseopen前没硬限/48s非全过程，aggregate latest可掩多attempt，sourceHash漏HTMLCSS。裁决先单G1精准fix已批renderer+3maskroots/UID新身份/保留auth真实shape，再源码+产物freeze无writer由父read-only机械close verify数组跑完整35有限timeout1200/full日志，不旧async裸挂或before-G1已知红作final。阶段分片须outer55/allID/完整aggregate/finalrun1attempt+sourceepoch，补真正HTMLCSS/locale/assets fingerprint；actual35/19x4不假PASS，其他4suite/真服务cross不削。
+
+Node绝对clock/noRedirect修复已a6a3ee3本地提交，self原6通过但hubcount10首fail靠一次retry才绿；extension实际fullgate又App logsEOF FAIL→**rejected**，不被selfJSONoktrue覆盖。父App同fixeda6 isolatecount20PASS只是线索；限域factsHub849把0/missing/2都称reexec，Stat marker在printf前非ready。新唯一v4-node-reliability-gate仅hub/app测试准确ready/首close诊断与报告，production若需修给证据再授权，不全Node重写/盲retry。原全包、hub20/app20/runner10、vet/race真实门槛仍要求，Node-onlysupportT1G4pending，初redirect/absolute红绿保留。
+
+新T1 v4-core-runtime-next已SHA/apply完整恢复2a3(C2)源码/证据，正读短卡暂无writer；root明确无phases/legion_phase不可用为有意新受管模式，非需旧机器迁移阻塞。文件阶段+worker固定verify+父原3全量门禁不变，立即C3a实际auth/budget单writer，不派一轮权威侦察/不重复root56KBstatus或旧330Ksession。Node父测试reliabilityclose仍单独WT，不让Nodepending停C3。
+
+T1 NEXT firstactualC3a c3a-auth-budget已工具admitted，恢复支持df540616…/短合同e318a5e已提交；同WT唯一writer/四条verify显式真实cwd。当前只原子身份+三预算/旧公开绕路退役和snapshot判别，后C3btypedref→白盒旧tests→G2G3G4完整scope，原全Go/contract/quick不称PASS；无phase不阻塞，不改DB/不重做C1C2。
+
+T2 G1图/mask3roots已工具acceptedverified141tests/native8：被动事件证实祖先mouse capture把click retargetscroll，defercapture到真正pan threshold后nativeprodTaskGET一次/drag抑制/touchpan都绿，maskarchivepolicy与静态action不误码红绿，待commitfresh局部review不重全页。L1保留身份域真实2路facts已AUTH-HANDOFF：CookieOnlyGETme top6fields/anon401{error}，Passwordlogin{ok:true}+cookie/400401429{error}非ResourceStatus；最小startupme→现安全next，缺mockhandler补，不wrapper/authflag。T1后auth.yaml保持shape、当前C3a不停，原门槛不削。
+
+T2 G1图native/pan/capture3fresh无major、3941ca7/141tests/8Chrome已过，图生产closed不重做。但额外VM证实2有限mask组合：externalarchive resolver丢immutablepolicy/ref、Sourcetargets祖先wholewriteOnly投影漏标记。父批准当前B2locale单writer先safe结束后G2仅mock2接缝/2注册tests+PlaybookChrome，历史同对象策略不借current、祖先敏感性继承不伪[]no_target/***URL，rawrender/digest/实际身份不变；无globalSweep/framework。L1authDTO已AUTH-HANDOFF闭合不等新scout，剩suite范围/最终gate不减。
+
+01:59 T1NEXT首次旧01:13 L2核查：实际认证租约/三预算133fd03与预算预留/历史回收4925355新生产提交，WTclean非卡死；延提醒30m不改验收。要求下一checkpoint C3a真实gate/rotationrace/预算并发/snapshot判别及3fresh门槛，不以标题代验证；安全收口后C3btypedref→白盒→G2G3G4不重开C1C2/旧S3。ctx127K无需再管理器恢复，协议可用、Node真实支持仍待父reliability，不停现核心链/不假全量green。
+
+T2 B2locale14abafc已144self测试/注册29+40groups，但full未执行/tool不verified。JA rootfacts定位缺既存mockPATCHdevice非receivers UIbug：父核handler107-166关停{enabled:false}→200{ok:true,device:flat}，ownership/auth原shape不CAS；当前唯一G2L1worker精准补。LOCALIZATION-HANDOFF父裁决保用户/脚本/服务原始中文数据，UIchrome四语，raw独立叶可标记/有限排除但原文sentinel必须存在、chrome注入CJK仍红、不泛tablepre豁免/不将501当功能成功，敏感值规则不免。UIUX/F4/full5gate仍待，不把注册/144selfgreen当完成。
+
+C3a resulttoken接口缺口父已RESULT-WIRE-AUTH裁决：task.result共享33e无attemptToken，不增wire/缓存plaintext；CompleteAuthorized用真实NodeSession.auth hash与task/attempt/lease同txn当前身份/ns/expiry/cancel，不能DB取currenthash填自身校验；upload/emit已wiretoken照旧。预算反例必须合法slots+旧live缩容计数（并发0/1最多一），ownreserve仅exactslot/assignment排除；重复历史ACK整行reap/error/phase/finishedAt不漂。现已492精修若满足不重复，C3a门槛清后C3b实际引用闭包，原scope/最终3gate不削。
+
+T2G2L1两maskVM/auth4lang/native8已绿149self原4，tooltaskverify未跑不verified；额外ResourceStatus400case响应后立即读DOM失败，未证产品吞message。父批准仅browser脚本响应后最多3s等真实可见准确message再原强assert（非hiddentext/force/第三次盲跑），3s仍无再两consumer段定位；原两fail和未跑JA/ABA/graph后段保。若已有UIUXwriter先settle再test-onlyclose，密码auth仍{error}不能混Status，完整5suite/sourceepoch门槛不削。
+
+T2G2L1精修eea6bd0已安全提交，149self测试/8nativeauth与2包mask组合绿但额外Status时序及后段JA/ABA/graph未验，tool不伪verified；有界可见message等待已父批准，当前UIUX唯一writer先收齐再test-onlyclose。最后两suiteui_shift/UX19–23已admitted，304视口(19×4语×4view)与原UX5行为注册仍非执行PASS；locale两suitefull亦待，F4完整源码/产物hash+每ID一次+失败聚合后fresh3/真实full5gate不减。不用旧epoch/注册占位/空工具gate冒完成。
+
+02:24 T1NEXT旧01:43L2核：9e18f59历史回收精确整行反例提交，C3a-wire-close当前唯一writer正实际结果授权测试/等待，非卡死，延提醒30m不改deadline。C3b物理cap删除命中namespace.go357，父限域核force既有清空但无reapgate，NAMESPACE-FORCE-HANDOFF批准精确owner：同txn未grantreaped/busyunknown则409Conflict0写，可信回收后保原force显式删ns-owned数据/Node保留/共享外引用不毁；不finalizer/不把C2cap普通DELETE改in_use。C3a先settle→C3btypedref+精确保护，不因未列文件全停/重扫全库，原全量gate不削。
+
+02:31复核旧02:13L2：当前新a949623结果身份授权/总预算真实生产提交、WTclean，manager仍在先前600s有界C3a-wire-close收结果工具等待（session末无新LLM turn，非据quiet认死循环）。该提醒早于02:24已处理/延钟，不重复延期或重启；新commit仍须实际verify/fresh门槛，未以标题算安全通过。C3bnamespace引用精确owner已父裁决，不阻现闭包/不削完整运行链。
+
+T2 UI/UX674fffd8已152Node/11boundedcase自测绿，5suite全注册但full矩阵83cases/353views及8UX/13view仍未全执行；shift-lang-hint真实nav162→254.31红待证。父限域两文件核hint同步首帧终态，不支持'asyncbanner'归因，候选loadMe异步admin插nav前/初始rAF未确shellready；批准仅case被动同DOM/bbox/childheight/mount+mutations/me时间诊断，保原shift强assert，不延frames等稳定掩postpaint。额外Status≤3svisiblemessage已批准不再待确认，L1真实authdelta/leaf/F4/currentepoch5suite/fresh门槛不削；不以注册/11PASS盖shiftred。
+
+T2L1D157身份/device精确redgreen及JA/nativegraph/4lang已自测，工具taskverify未跑不verified；400Status3s真等待仍fail后2源码证loadErrorNode只genericHTTP而container非toast。父批准下一单E1仅partials.loadErrorNode追加实际可见rawmessage纯文本叶+真实#pb-action-state强assert，heading/button照译/401流程不改、不可整err/URL/header/HTML反射；L10n边界已补。NodeABA限case事件/loadedrv/discard诊断，429独立guestcontext核真响应不ignoreabort，未过项不伪绿。后rawleaf/F4/sourceepoch完整5suite/UI帧诊断仍串行，不重做G2mask/图/身份业务。
+
+父Node当前5b26d586可靠性测试本地提交已收（worker诊断okfalse/tool未验不冒verified）；父fixedarchive**全部首过0**：原协议/artifact/Node全包、hub20/App20/runner10、vet及6affectedrace，日志 /tmp/anotify-v4-node-final-verification/5b26d586-independent-*。Clock/lease调度与测试可靠性freshoktrue，历史AppEOF仍未证原因留风险不叫已修。HTTPfresh仍1新major：upload非2xxrawbody错误回显可泄credential（redirect已禁止仍有body通道）。新唯一v4-node-http-error-close仅upload/fetcherror+对应tests/报告，真实bodyecho/malformedLocation红绿/保status分类和零目标请求，不重做Node。最后该findingfresh清后再Node-onlysupportT1G4，现原包真正绿但安全门槛未清，不用2票盖1major。
+
+T1 C3a finala949623已四正确WT工具acceptedverified与3fresh strict实现门槛无major，真实tokenlessComplete/credentialrotation零写/total-only合法slots mutation红绿/历史ACK整行不漂均保；不是G1/T1DONE。立即下一唯一C3btypedmanifest/uploadfinalauth/refGC(含已批Namespaceforce)，duplicate结果仅有效当前Node+精确历史bind+完整同facts/manifest无写幂等ACK，任意DBerr/phase推断不得ACK或改新attempt，首次写与确认路径分离。C3b后白盒→G2G3G4实际链/原3fullgate保持，不重开已验阶段/不空等Node。
+
+T1 C3a最终接口/实际四gate+3fresh证据已c1c5638落盘，下一c3b-manifest-reference已acceptedlaunch为唯一writer，父批namespace.goforce引用保护纳卡，固定4verify显式真实WT。当前实际实施task/attempttypedmanifest、上传最终auth登记/16-64MiB32项/引用GC7-30day/Cap及NSforce/同事实duplicateACK，不冒HTTPstream已验；后原白盒/G2真实runtime/G3API5/G4quick仍待，不等Node/改协议或他队，原finalgate保持。
+
+Node51fa2f12 HTTPerrorclose工具acceptedverified，父fixedarchive原全包+hub20/App20/runner10/vet、6race/build全部首过0、protocolbyte保持33e。但finalHTTPfresh仍1同类漏分支：HTTP200/201确认不符时%+v公开parsed.taskId/path可反射credential，non2xx/Location已闭合。父新唯一confirmation-error-close仅upload两文件/原报告，固定安全message保确认一致性强度+200201反例红绿，原4verify/单点fresh后才sourcehandoff，不2票盖major/不改其它Node。辅助binary未加ldflags是dev/unknown非正式发布，当前先源码审闭合不假版本；历史AppEOF仍未证风险。
+
+T2E1a新epoch nativeauth/JA/ABA/prodgraph已实际绿，rawhelper12行/63新tests在收口，余Status详情与429断言仍未全验。父429最小policy确认：身份HTTP429固定语义用现localised login.rate_limited，不另强制英文UI重复后台CNerror；case必须真实429+nonemptyerror+有效RetryAfter+该语精确visible提示，禁ignoreabort/fake请求/套ResourceStatus。AUTH-HANDOFF已补，其它动态raw叶不免，既有summary原生展开才能assert可见原msg；单writer/finalhash全部groups门槛保持。
+
+02:59 T1NEXT L2实际核查：C3b task/attempt/auth/schema/force/retention与新manifest/registry/referenceforce tests真实diff，单writer推进非空转，延提醒30m不改验收。下一checkpoint实际typedregister/ACK幂等/7-30TTL/force未reap零写红绿+原4gate/fresh，后白盒→G2G3G4不重做已过阶段。T1artifact权威新变更Node-onlysourcehandoff不覆盖，集成Node用新artifact再测；Node最后确认错误字段tinysecurityclose仍待，不停核心现链/不以行数代完成。
+
+T2E1a actualacceptedverified：原4+完整E1A CLI五正确cwd命令0，原157保留164/164，7真实nativegroups17checks11.19s无JS；Resource400原始message实际#pb-action-state纯文本span8ms可见、四语heading/raw/负变异、JA持久false、NodeABA实际dialog/RV/草稿、真实429响应头+本地化提示、prodTaskGET全当前epochPASS，原fail留证。当前sourceHash56项只本scope非final产品，下一rawleaf/F4完整epoch/每ID一次与UI逐帧diag尚待，lang-shift红未据此解除；最终fresh3/full5newclose和真实T1T3cross不减、不重做G2图mask。
+
+Nodee64ca37确认error最后安全fix工具verified/fresh单根strictok无finding（decode安全静态确认/12真实mismatch反例，不伪全路径测试）；但父fixedcurrent full又App logsEOF FAIL1，**新增首Close堆栈**明确coderWS.setupWriteTimeout.AfterFunc，非cleanup，收到result后ACK/logs间发生且Runctx未退。两路限域核validACK cancelUpload→guardedWrite继承a.uploadCtx链存在，需确定性afterbytes-beforeWritereturn反例而非再retry。父WS-WRITE-LIFECYCLE精确裁决准入前guard仍fence、准入后WSWrite分离attemptcancel并保原deadline/conn关闭/服务端验权，HTTP上传真撤权不放宽；新唯一ws-ack-lifecycle仅hubSendGuarded/必要send接缝+真实tests，原6/fullApp30/hub20/runner10/race。Node支持T1仍blocked，不将e64安全closed或历史首过包当最终过。
+
+T2E1b98frame被动证据最终确认UIshift：同nav/header/shell/scope/hint不变，fontsready不shift，me后admin80.31+margin12插前推动nav162→254.31。父限域核partials1324-1325兄弟append，批准existingadminNav移到mainnav后/footer前，原role/href/aria/events不改、无CSS预留/hint/font/等待豁免；原test只强nav.y不用削assert。SIDEBAR-LAYOUT-HANDOFF落精确owner，E1b先settle再单tinyfix原4+native>=60frame4views/权限/原入口/overflow和fresh根，最终makefe/F4hash再生，新旧epoch不混，full5/cross门槛不削。
+
+T1C3b生产5e2331b、证据精确HEAD4e6aef6e2c048d6ef50e9d3c14709ea5b7b0782e（branch pi-subagent/v4-core-runtime-next-59fc6b04；仅管理器draft未提交）真实18file/24新testSELF4绿但内部Result模型漏现wireExitCode/StartedAt/FinishedAt→正确safeokfalse/toolverify未跑；父RESULT-FACTS-HANDOFF批准内部TaskResult+持久化/完整duplicate判等/投影及必要可信acceptedtime列，不新wire/公共字段，纳秒/nil0明确。serverNow认证expiry独立，actualprocessfinish不被uploadaccept覆盖、TTL不借Node旧/未来时间破安全；扩卡单writer续修，same可继续否则safe新接，不重做C3a/不fullterminalblock。原4extension+fresh3/白盒G2G3G4及最终gate不削。
+
+03:33 T1NEXT新L2核：C3b5e生产安全暂停fields carrier，当前manager最新tool实际read RESULT-FACTS-HANDOFF已成功，原writerretired243K；未见命令卡死，不假说生产继续改。父延提醒30m观察恢复，明确fresh唯一facts小writer接当前18file/已批内部acceptedTime+task/attempt完整结果/原4，不再等已闭合scope/大旧ctxresume。经理208K短卡协调，下一checkpoint须新字段代码/红绿测试而非重复审批，后白盒G2G3G4/原finalgate不削，NodeWSfix独立不阻当前字段。
+
+T2E1b实际acceptedverified170/170+8rawchecks（原164不删），100code/289source-artifact descriptors包含76HTML/locale/CSSJSfonts等、onceattempt不可覆盖/dup失败规则已测；全5full仍UNRUN。S1立即单tinywriter按已批两append换序，父追加scope触发/menu真实Namespace displayName/name最内层SPAN有限raw标记（保backend中文defaultDN，不翻译数据/标BUTTON/fallback前缀），loading转态清marker/HTML纯文本/四语chrome负变异保。同S1原shift强assert4view/role及raw新增反例/fresh后makefe+F4epoch再生，新旧descriptor不混，不以170绿盖full5未验。
+
+T1 C3b-result-facts freshworker已actualadmitted，承接卡cc26a2e明确task/attempt/auth/schema/retention/精确tests、原4真实WT数组；旧243Kwriter已安全退役无resume，并非继续审批停工。现补nullableExit/nanosUTC/完整结果/服务器authNow与可信acceptedTTL独立，不重registry/C3a/新wire，后C3b完整3fresh→白盒G2G3G4/原finalgate保留。无sop_save工具以文件真实持久化不虚调用，NodeWScausefix独立不阻现工作。
+
+Node final5a3dae38组件门槛现父通过：current独立archive原全包/App30/Hub20/Runner10/vet/diff及6race全部首次0，实际ACK在Write返回前取消uploadCtx关闭共享WS的真barrierredgreen闭环/两fresh无major，HTTP确认安全freshclosed。原历史FAIL/零命令done继续保。仅Node产品60file frozenpatch+SHA/integrationbinary/完整proof已 `/tmp/anotify-v4-node-products-handoff/`，NODE-PRODUCTS-HANDOFF根批准T1安全无writer边界原样同步，不含protocol/artifact/gomod，T1committedb864shared依赖archivecompat全包PASS/GoModdiff空/Node无SQLite。已通知核心解除G4source等待，当前C3b先safe收口，不并发改同WT/私修Node/wholebranchmerge。仅Node组件与已知门槛通过，整体v4CoreAPI/FEfull5/CIbuildfullE2E尚待，不已合父主分支。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。
