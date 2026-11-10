@@ -2,7 +2,7 @@ package server
 
 // 本文件是 #259 的**回归护栏**：把「cleanup 跑在 db.Close() 之后」从偶发红变成
 // 机器可检的不变量。机制照搬 internal/ws/postclose_guard_test.go（#255/#258），
-// 这里只换成 server 包名 + 本包的夹具名（internal/server/wsfixture_test.go）。
+// 这里只换成 server 包名 + 本包的屏障名（internal/server/ws_settle_test.go 的 serveHubWithSettle）。
 //
 // 失败签名（#259，本机 /tmp 遗留）：
 //
@@ -19,16 +19,17 @@ package server
 // 写库（MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks）。db.Close() 与它并发
 // 就成了上面两条 WARN，残留连接还会在 t.TempDir 的 RemoveAll 期间重建 -wal/-shm。
 //
-// 夹具侧的正解在 wsfixture_test.go 的 nodeStreamFixture.settle（handler 返回 →
-// 才关库）。本文件负责**证明**它没退化：整包跑完只要出现过一条 `database is closed`
-// （或夹具的确定性判据命中并上报），TestMain 就让包变红并打印样例。
+// 夹具侧的正解是 internal/server/ws_settle_test.go 的 serveHubWithSettle（等
+// hub.ServeHTTP 返回 → 才让 db.Close 发生）。本文件负责**证明**它没退化：整包跑完
+// 只要出现过一条 `database is closed`（或夹具的确定性判据命中并上报），TestMain 就让
+// 包变红并打印样例。
 //
 // 注意：这不是新增产品行为，也没有放宽任何断言——它只是把那条偶发红换成确定性红。
 //
 // 已知盲区（照实写出来，别让读者以为它是万能的）：
 //   - 只看得到经 slog.Default() 打的日志。`logger.With(...)` 绑定的 attrs 会在
 //     WithAttrs 里被内层 handler 预格式化，本包装看不到它们（当前产品代码没有这种用法）；
-//   - 因此 server 包的主判据仍是 console_test.go 里 closeDBForTempDir 的三条确定性断言
+//   - 因此 server 包的主判据仍是 testing_fixtures_test.go 里 closeDBForTempDir 的三条确定性断言
 //     （InUse==0 / OpenConnections==0 / 无 -wal|-shm），日志旁路是第二道网。
 
 import (
@@ -160,7 +161,7 @@ func formatGuardRecord(r slog.Record) string {
 	return b.String()
 }
 
-// reportPostCloseRace 由夹具在**确定性判据**命中时调用（见 console_test.go 的
+// reportPostCloseRace 由夹具在**确定性判据**命中时调用（见 testing_fixtures_test.go 的
 // closeDBForTempDir），把「已检测到收尾竞态」这一事实交给 TestMain 统一汇总：
 // 命中即打印样例并 exit=1，避免「断言只在某个用例的日志里、整包看起来还是绿的」。
 func reportPostCloseRace(sample string) {
@@ -202,9 +203,9 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "[postclose-guard] 样例 %d: %s\n", i+1, s)
 		}
 		fmt.Fprintf(os.Stderr,
-			"[postclose-guard] 期望：nodeStreamFixture.settle 在 db.Close() 之前等所有 ServeHTTP 返回"+
-				"（internal/server/wsfixture_test.go），且 closeDBForTempDir 的三条确定性判据全过"+
-				"（internal/server/console_test.go）；这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
+			"[postclose-guard] 期望：serveHubWithSettle 在 db.Close() 之前等所有 hub.ServeHTTP 返回"+
+				"（internal/server/ws_settle_test.go），且 closeDBForTempDir 的三条确定性判据全过"+
+				"（internal/server/testing_fixtures_test.go 的 closeDBForTempDir）；这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
 		os.Exit(1)
 	}
 	os.Exit(code)

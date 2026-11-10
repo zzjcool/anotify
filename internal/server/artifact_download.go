@@ -81,7 +81,12 @@ func (a *artifactDownloadAPI) get(w http.ResponseWriter, r *http.Request) {
 	// ③ 结果引用：这一步同时完成「任务属于这个 ns」「结果已上报」「当前 attempt 引用过
 	//    这个 hash」「副本未过期」四件事，全部在 store 里一次判定（G3-D4：同 hash 有多条
 	//    live 引用时按 path 序取首条，live 优先于 expired）。
-	entry, err := a.d.DB.GetTaskArtifactDownload(ctx, ns, taskID, sha, a.d.now())
+	//
+	// 时钟单位：store 的 expires_at/expired_at 是**秒**，而 serverDeps.Now 是**毫秒**
+	// （api_deps.go 的契约、#340 的生产时钟修复）。这里必须走 taskNowSeconds 折算——
+	// 直接把毫秒传进去会让所有 live 副本看起来都过期（一律 410），而单域测试若把
+	// Now 注入成秒级又会把这个问题藏起来。
+	entry, err := a.d.DB.GetTaskArtifactDownload(ctx, ns, taskID, sha, taskNowSeconds(a.d))
 	if err != nil {
 		// 404（无引用/跨 ns/未上报）、410（全过期）、500（真故障）三档都交给
 		// writeAPIError 的既有映射：#332 已把 store.ErrArtifactExpired 收口成

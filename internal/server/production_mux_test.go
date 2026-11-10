@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,4 +153,97 @@ func TestProductionMuxBootsAndServesRetainedDomains(t *testing.T) {
 	// ⑤ 后台循环是真实启动的：给它们一个极短的窗口，确认没有 panic / 立即退出。
 	// （循环只在 ctx 结束时退出；这里不做时序断言，只让"启动即崩"有机会暴露。）
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestProductionMuxRetiredWritesAre405 钉住「退役的写/删在**真实装配**上返回 405」。
+//
+// 为什么必须整机测：deployments / edges 只注册了 `GET …`。生产 mux 末尾还有
+// `mux.Handle("/", resolveStatic(cfg))` 兜底，未注册方法会落到静态处理器——测试构建 503
+// （static.go 的「未构建」分支）、真实构建 404（静态文件找不到）。两种都不是 405，客户端
+// 无法区分「这个资源没有这个方法」与「这个端点/文件不存在」，错误提示也因此误导。
+// domain 层的裸 mux（只有该域的 register）根本看不到这个差异：那里 ServeMux 会自动回 405。
+// 只有真实装配能把「显式方法兜底」钉住。
+//
+// 同一用例还钉三件事：
+//  1. 405 之后**一条写也没落库**（deployments 行数前后一致）；
+//  2. 读模型没被兜底遮住（GET 仍 200 且形状对，HEAD 命中 GET pattern 也是 200）；
+//  3. 兜底仍在**会话内侧**（匿名写请求先吃 401，不是 405）。
+func TestProductionMuxRetiredWritesAre405(t *testing.T) {
+	app := newProductionAppForTest(t)
+	ctx := context.Background()
+
+	// 真会话：注册即建默认命名空间（路径用 default，与上面的整机冒烟用例同口径）。
+	user := &store.User{
+		ID: store.NewUserID(), Username: "mux-retired-writes", DisplayName: "退役写兜底",
+		Role: store.RoleAdmin, CreatedAt: store.Now(),
+	}
+	if _, err := app.DB.RegisterUser(ctx, user); err != nil {
+		t.Fatalf("register user: %v", err)
+	}
+	sess, err := app.AuthSvc.Sessions().Create(user.ID, "production mux retired writes")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+
+	countDeployments := func() int {
+		t.Helper()
+		var n int
+		if err := app.DB.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&n); err != nil {
+			t.Fatalf("count deployments: %v", err)
+		}
+		return n
+	}
+
+	// edges 没有表（它是现算的派生投影，A5），deployments 有表——两者是同一条「只保留
+	// GET」的判据，但「0 写」只能落在 deployments 上。
+	paths := []string{
+		"/v1/namespaces/default/deployments",
+		"/v1/namespaces/default/edges",
+	}
+	retiredMethods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+
+	before := countDeployments()
+	for _, path := range paths {
+		for _, method := range retiredMethods {
+			rr := appDo(t, app, method, path, cookie)
+			// 405 必须是 Status 错误体（§4.1），reason 取封闭集合里的 MethodNotAllowed。
+			// 503/404 在这里会立刻红——那正是本轮要修的整机行为。
+			trReason(t, rr, http.StatusMethodNotAllowed, reasonMethodNotAllowed)
+			if got := rr.Header().Get("Allow"); !strings.Contains(got, http.MethodGet) {
+				t.Fatalf("%s %s 的 Allow = %q, want 含 GET（客户端据此知道剩下的合法方法）", method, path, got)
+			}
+		}
+	}
+	if after := countDeployments(); after != before {
+		t.Fatalf("退役的写/删落了库：deployments %d → %d（必须 0 写）", before, after)
+	} else {
+		// 显式打出来：这条断言的价值就在于「跑了 8 个写/删请求，表里一行没多」。
+		t.Logf("deployments 行数：%d → %d（POST/PUT/PATCH/DELETE × 2 路径后仍 0 写）", before, after)
+	}
+
+	// 读模型没被方法兜底遮住：`GET …` 比不带方法的 pattern 更具体，GET/HEAD 仍命中读端点。
+	for _, tc := range []struct{ path, key string }{
+		{"/v1/namespaces/default/deployments", "deployments"},
+		{"/v1/namespaces/default/edges", "items"},
+	} {
+		rr := appDo(t, app, http.MethodGet, tc.path, cookie)
+		doc := trWant(t, rr, http.StatusOK)
+		if _, ok := doc[tc.key]; !ok {
+			t.Fatalf("GET %s 缺 %q 键（body=%s）", tc.path, tc.key, rr.Body.String())
+		}
+		if rr := appDo(t, app, http.MethodHead, tc.path, cookie); rr.Code != http.StatusOK {
+			t.Fatalf("HEAD %s = %d, want 200（ServeMux 的 GET pattern 也匹配 HEAD）", tc.path, rr.Code)
+		}
+	}
+
+	// 兜底在会话内侧：405 不能抢在鉴权之前——否则匿名客户端能从「405 vs 401」探出
+	// 哪些路径存在。
+	for _, path := range paths {
+		for _, method := range retiredMethods {
+			if rr := appDo(t, app, method, path, nil); rr.Code != http.StatusUnauthorized {
+				t.Fatalf("匿名 %s %s = %d, want 401（方法兜底必须仍在 session 内侧）", method, path, rr.Code)
+			}
+		}
+	}
 }

@@ -261,7 +261,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	deps := &serverDeps{
 		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
-		Log: slog.Default(), Now: store.Now, Session: sessMW, Backpressure: bp.Wrap,
+		// Now 是**毫秒**时钟（api_deps.go 的契约）：store.Now 是秒，不能直接注入，
+		// 否则 stats 的 371 天窗口与 cancel_requested_at 会按 1970 年算（#340 r2 M-1）。
+		// #332 的产物端点同样按这个契约取值（下载用 taskNowSeconds 折算成 store 的秒）。
+		Log: slog.Default(), Now: nowMilli, Session: sessMW, Backpressure: bp.Wrap,
 		Spool: spool,
 		// namespace id → slug 缓存（slug 不可变，见 serverDeps.display 的注释）。
 		display: &nsDisplay{},

@@ -78,7 +78,7 @@ func newCapTestEnv(t *testing.T) *capTestEnv {
 		Sources: source.New(db, router),
 		Hub:     ws.NewHub(db, router),
 		Log:     slog.Default(),
-		Now:     store.Now,
+		Now:     nowMilli,
 		Session: sm.Middleware,
 	}
 	mux := http.NewServeMux()

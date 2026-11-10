@@ -85,7 +85,7 @@ func newITEnv(t *testing.T) *itEnv {
 		Sources: source.New(db, router),
 		Hub:     hub,
 		Log:     slog.Default(),
-		Now:     store.Now,
+		Now:     nowMilli,
 		Session: sm.Middleware,
 	}
 	mux := http.NewServeMux()

@@ -508,7 +508,10 @@ func TestArtifactDownloadZeroExpiryIsPermanent(t *testing.T) {
 
 	// ② 远期仍然 200：`deps.Now` 是既有的可注入时钟接缝（不改生产代码），
 	//    把它推到 50 年后，永久条目不得过期。
-	env.deps.Now = func() int64 { return time.Now().AddDate(50, 0, 0).Unix() }
+	//
+	//    单位必须是**毫秒**（serverDeps.Now 的契约，#340）：注入秒会被 handler 的
+	//    秒折算除成 1970 年，这条断言就会在「时钟根本没生效」的情况下也变绿。
+	env.deps.Now = func() int64 { return time.Now().AddDate(50, 0, 0).UnixMilli() }
 	rr = env.do(mux, http.MethodGet, target, nil, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expires_at=0 远期: HTTP 状态 = %d, want 200（permanent 语义，body=%s）", rr.Code, rr.Body.String())

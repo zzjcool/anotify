@@ -114,10 +114,12 @@ func newArtifactEnv(t *testing.T) *artifactEnv {
 		ns: ns, nsOther: nsOther, cap: capDef,
 	}
 	env.deps = &serverDeps{
-		DB:      db,
-		Spool:   spool,
-		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:     store.Now,
+		DB:    db,
+		Spool: spool,
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// 与生产装配同一个时钟口径（毫秒，#340）：夹具若注入秒级时间，下载端点的
+		// 「毫秒→秒折算」缺陷会被掩盖（早期单域测试就是这么漏掉的）。
+		Now:     nowMilli,
 		Session: sm.Middleware,
 	}
 	env.seedGrantedTask(t)

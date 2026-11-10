@@ -118,7 +118,7 @@ func newUpgradeFixture(t *testing.T, binEnabled bool) *upgradeFixture {
 	f.hub = hub
 	deps := &serverDeps{
 		DB: db, Router: route.New(db), Hub: hub,
-		Log: slog.Default(), Now: store.Now, Session: svc.Sessions().Middleware,
+		Log: slog.Default(), Now: nowMilli, Session: svc.Sessions().Middleware,
 	}
 
 	f.mux = http.NewServeMux()
@@ -361,8 +361,9 @@ func TestAgentUpgradeSourceUnwrappedWhenDisabled(t *testing.T) {
 // 节点行（走 hello 自报这一真实路径），并等到 hub 注册可见。
 func (f *upgradeFixture) connectNode(t *testing.T, agentVersion string) *websocket.Conn {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(f.hub.ServeHTTP))
-	t.Cleanup(srv.Close)
+	// 收尾屏障：srv.Close 只关 HTTP 层（hijack 连接它不等），必须再等 hub.ServeHTTP
+	// 返回才允许 db.Close —— 见 ws_settle_test.go 的 serveHubWithSettle（#259 / #340 r2 M-2）。
+	srv := serveHubWithSettle(t, f.hub)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

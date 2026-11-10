@@ -58,8 +58,12 @@ func newCapabilityAPI(d *serverDeps) *capabilityAPI { return &capabilityAPI{d: d
 // register 注册全部 Capability 路由（session + noStore 包裹；未登录直 401，
 // 动态 API 一律不许缓存）。
 //
-// 方法不匹配（例如 `PUT …/capabilities/{name}`）由 Go 1.22 ServeMux 自己回 405：
-// v4 里能力没有 PUT（内容变化 = 新版本，走 POST），不为它再实现一遍方法分派。
+// 方法不匹配（例如 `PUT …/capabilities/{name}`）仍由 Go 1.22 ServeMux 自己回 405：v4 里能力没有
+// PUT（内容变化 = 新版本，走 POST），不为它再实现一遍方法分派。
+//
+// 唯一的例外是**完全只读**的路径（edges）：它在生产 mux 上会落到末尾的静态兜底，自动 405 根本不会
+// 发生，所以另加一条不带方法的 pattern 显式回 405（见下表最后一行，与 deployments 共用同一个
+// methodNotAllowedAllowGet）。
 func (a *capabilityAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/capabilities"
 	routes := []struct {
@@ -76,6 +80,10 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 		{"POST " + base + "/{name}/deploy", a.deploy},
 		// edges 是两类派生投影的只读视图（能力 spec.next + 源 spec.targets）。
 		{"GET /v1/namespaces/{ns}/edges", a.edges},
+		// 「没有写端点」必须是一条**明确的** 405：不带方法的 pattern 只接非 GET/HEAD
+		// （GET 仍命中上面那条更具体的），否则 POST/PUT/PATCH/DELETE …/edges 会落到生产 mux
+		// 末尾的静态兜底（503/404），把「这个资源没有这个方法」伪装成「这个资源不存在」。
+		{"/v1/namespaces/{ns}/edges", methodNotAllowedAllowGet},
 		// capability-templates 是 cluster 公共模板（不能承载 ns 私有数据）。
 		{"GET /v1/capability-templates", a.templates},
 	}

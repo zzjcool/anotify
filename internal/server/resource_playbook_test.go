@@ -59,7 +59,7 @@ func newPlaybookTestEnv(t *testing.T) *playbookTestEnv {
 	}
 
 	mux := http.NewServeMux()
-	newPlaybookAPI(&serverDeps{DB: db, Now: store.Now, Session: sm.Middleware}).register(mux)
+	newPlaybookAPI(&serverDeps{DB: db, Now: nowMilli, Session: sm.Middleware}).register(mux)
 	return &playbookTestEnv{
 		mux:    mux,
 		db:     db,

@@ -65,7 +65,23 @@ func (d *serverDeps) backpressure(h http.Handler) http.Handler {
 	return d.Backpressure(h)
 }
 
-// now 返回可信 server 时间（毫秒）。nil 时回落到 0，调用方应保证构造时注入。
+// nowMilli 是 serverDeps.Now 的**生产实现**：契约单位是毫秒。
+//
+// 为什么需要这一层而不是直接注入 store.Now：store 的时钟是 **秒**（`internal/store/store.go`
+// `Now() int64 { return time.Now().Unix() }`，供所有写入点统一使用），而本包对外的
+// `Now` 契约是**毫秒**（D1）。两者混用不会被编译器发现，只会静默算错：
+//
+//   - `retained_reads.go` 的 stats 热力图窗口 = `taskNowSeconds(d) - 371*86400`；把秒当初
+//     毫秒再 `/1000` 得到 1.76e6（1970-01-21），`since` 变成负数 ⇒ `created_at >= since`
+//     恒真 ⇒ 热力图混入全部历史；
+//   - `store.RequestCancel` 的 `now` 参数于是落成 1970 年。
+//
+// 单位对齐是**装配的责任**，不是各 handler 的责任：handler 只读 `d.now()`（毫秒）并在
+// 需要秒的下游显式换算（`taskNowSeconds`）。测试夹具也必须注入毫秒——否则夹具会把这类
+// 单位错位遮住（这正是 #340 r2 review 的 M-1）。
+func nowMilli() int64 { return store.Now() * 1000 }
+
+// now 返回可信 server 时间（**毫秒**）。nil 时回落到 0，调用方应保证构造时注入。
 func (d *serverDeps) now() int64 {
 	if d == nil || d.Now == nil {
 		return 0
