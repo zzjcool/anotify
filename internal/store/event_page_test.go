@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// prunePayloadNoEdge 是剪枝留痕的 payload 形状（reason=no_edge 的诊断体）。
-const prunePayloadNoEdge = `{"reason":"no_edge"}`
+// prunePayloadNoEdge 是剪枝留痕的 payload 形状（reason=no_target 的诊断体：
+// v4 只有 no_target 这一类「源没有目标」的剪枝，v3 的 no_edge 随图对象退役）。
+const prunePayloadNoEdge = `{"reason":"no_target"}`
 
 // 本文件覆盖 #235 的存储侧：游标分页查询 ListEventsBefore。
 //
@@ -70,7 +71,7 @@ func seedPageEvents(t *testing.T, db *DB, nsID string) {
 			NamespaceID: nsID,
 			TraceID:     p.traceID,
 			Source:      "route",
-			Type:        "pruned.no_edge",
+			Type:        "no_target",
 			Payload:     []byte(prunePayloadNoEdge),
 			CreatedAt:   p.at,
 		}

@@ -17,7 +17,7 @@ const pendingBacklogIndex = "idx_tasks_pending_created_at"
 
 // oldestPendingProbeSQL 是背压信号查询的**探针**：与 OldestPendingCreatedAt 里的字面 SQL
 // 逐字一致（脱钩由 TestPendingBacklogSQLShape 兜住）。
-const oldestPendingProbeSQL = `SELECT MIN(created_at) FROM tasks WHERE phase = 'pending'`
+const oldestPendingProbeSQL = `SELECT MIN(created_at) FROM tasks WHERE phase = ?`
 
 // TestOldestPendingCreatedAtEmpty：一条 pending 都没有 → 0, nil。
 //
@@ -102,7 +102,9 @@ func TestOldestPendingCreatedAtIgnoresNotBefore(t *testing.T) {
 	}
 	// 走真实退避路径（assign → slot_unavailable reject）：它是「积压」的证据，
 	// 不是「不在等待」的证据。退避写的是 next_attempt_at + waiting_reason。
-	if err := db.AssignTask(ctx, backedOff.ID, "node_backlog", "asg_backlog", 1); err != nil {
+	// assign 要求节点行真实存在且 online（v4：派发候选只来自真实节点）。
+	node := v4Node(t, db, "node_backlog", 1)
+	if err := db.AssignTask(ctx, backedOff.ID, node.ID, "asg_backlog", 1); err != nil {
 		t.Fatalf("assign backed-off task: %v", err)
 	}
 	if err := db.RejectAssignment(ctx, backedOff.ID, "asg_backlog", TaskRejectSlotUnavailable, Now()); err != nil {
@@ -162,7 +164,7 @@ func TestPendingBacklogIndexQueryPlan(t *testing.T) {
 	seedPendingBacklog(t, first, 300)
 	plan := func(db *DB, tag string) string {
 		t.Helper()
-		p := strings.Join(explainQueryPlan(t, db, oldestPendingProbeSQL), "\n")
+		p := strings.Join(explainQueryPlan(t, db, oldestPendingProbeSQL, TaskPending), "\n")
 		t.Logf("EXPLAIN QUERY PLAN（%s）:\n%s", tag, p)
 		return p
 	}

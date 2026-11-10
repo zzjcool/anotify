@@ -887,3 +887,34 @@ func TestNodeAuthorizationGrant(t *testing.T) {
 		t.Fatalf("占满的 slot 应 ErrSlotUnavailable, got %v", err)
 	}
 }
+
+// TestNodeHidesTokenHash 节点 JSON 绝不带 token hash（它是认证秘密，不是资源字段）。
+//
+// v3 的 `TestNodeHidesTokenHash` 在 v4 恢复同名语义：Node.TokenHash 是 json:"-"，
+// 新建/读取两条路径都不得把它序列化出去。
+func TestNodeHidesTokenHash(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	n := v4Node(t, db, "node-json-token", 0)
+	got, err := db.GetNode(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if got.TokenHash == "" {
+		t.Fatal("前置：节点行应有真实 token hash（认证事实）")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal node: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode node JSON: %v", err)
+	}
+	if _, ok := decoded["tokenHash"]; ok {
+		t.Fatalf("节点 JSON 泄漏 tokenHash: %s", raw)
+	}
+	if strings.Contains(string(raw), got.TokenHash) {
+		t.Fatalf("节点 JSON 里出现了 token hash 原值: %s", raw)
+	}
+}

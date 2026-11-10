@@ -38,11 +38,12 @@ func TestCapabilitySpecRoundTrip(t *testing.T) {
 			},
 			Env: map[string]artifact.EnvValue{
 				"DIFF":  {Value: "static"},
-				"HOME2": {FieldPath: "homeDir"},
+				"HOME2": {FieldPath: "status.homeDir"},
+				"WORK":  {Value: "/work"},
 			},
 			WorkDir: "/tmp/$(vars.WORK)",
 		},
-		Requires: artifact.Requires{Commands: []string{"git"}, Values: []string{"WORK"}},
+		Requires: artifact.Requires{Commands: []string{"git"}, Values: []string{"vars.WORK"}},
 		Lifecycle: artifact.Lifecycle{
 			Idempotent:   true,
 			MaxAttempts:  &maxAttempts,
@@ -59,8 +60,10 @@ func TestCapabilitySpecRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get capability: %v", err)
 	}
-	if string(got.Spec.Params) != string(spec.Params) {
-		t.Fatalf("params 往返 = %s, want %s", got.Spec.Params, spec.Params)
+	// 落库的 params 是**归一化后的 canonical JSON**（键序固定），不是输入字节。
+	// 断言 canonical 形态：往返不丢字段，且归一化只做一次（再读还是同形）。
+	if string(got.Spec.Params) != `{"required":["diff"],"type":"object"}` {
+		t.Fatalf("params 归一化 = %s, want canonical {\"required\":[\"diff\"],\"type\":\"object\"}", got.Spec.Params)
 	}
 	if len(got.Spec.Next) != 2 || got.Spec.Next[1] != "notify@2" {
 		t.Fatalf("next 往返 = %v", got.Spec.Next)
@@ -68,13 +71,13 @@ func TestCapabilitySpecRoundTrip(t *testing.T) {
 	if len(got.Spec.Run.Files) != 2 || got.Spec.Run.Files["run.sh"] == "" {
 		t.Fatalf("run.files 往返 = %v", got.Spec.Run.Files)
 	}
-	if got.Spec.Run.Env["DIFF"].Value != "static" || got.Spec.Run.Env["HOME2"].FieldPath != "homeDir" {
+	if got.Spec.Run.Env["DIFF"].Value != "static" || got.Spec.Run.Env["HOME2"].FieldPath != "status.homeDir" {
 		t.Fatalf("run.env 往返 = %+v", got.Spec.Run.Env)
 	}
 	if got.Spec.Run.WorkDir != "/tmp/$(vars.WORK)" {
 		t.Fatalf("workDir 往返 = %q", got.Spec.Run.WorkDir)
 	}
-	if len(got.Spec.Requires.Commands) != 1 || got.Spec.Requires.Values[0] != "WORK" {
+	if len(got.Spec.Requires.Commands) != 1 || len(got.Spec.Requires.Values) != 1 || got.Spec.Requires.Values[0] != "vars.WORK" {
 		t.Fatalf("requires 往返 = %+v", got.Spec.Requires)
 	}
 	if !got.Spec.Lifecycle.Idempotent || got.Spec.Lifecycle.EffectiveMaxAttempts() != 5 ||

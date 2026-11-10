@@ -147,8 +147,8 @@ func TestEventGetAndList(t *testing.T) {
 	ctx := context.Background()
 
 	e1 := v4InsertEvent(t, db, v4Event(nsID, "github", "push"), Now(), 0)
-	e2 := v4InsertEvent(t, db, v4Event(nsID, "gitlab", "mr"), Now(), 0)
-	e2.TraceID = e1.TraceID
+	// 同一 trace 的第二条：TraceID 必须在**插入前**写好（插入后改字段不会落库）。
+	e2 := v4InsertEvent(t, db, &Event{NamespaceID: nsID, TraceID: e1.TraceID, Source: "gitlab", Type: "mr"}, Now(), 0)
 
 	got, err := db.GetEvent(ctx, nsID, e1.ID)
 	if err != nil {

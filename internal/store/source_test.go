@@ -219,14 +219,33 @@ func TestSourceValidation(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	sourceFixtureCap(t, db, nsID, "demo.t2")
 
-	// 零出口：A-continue 实测 v4 **不拒**（checkSourceTargetsOn → sourcespec.ValidateTargets
-	// 对空列表返回 nil，`internal/store/source.go:266` / `internal/sourcespec/config.go:210`）。
-	// v3 断言过「没有出口 → 拒绝（否则事件永远派不出去）」，v4 目前没有这道闸门；
-	// 已在交付报告里作为产品缺口上报，本文件暂不钉住该行为（不弱断言、也不假装它存在）。
-	var err error
+	// 零出口是**合法**的（source.md §5）：先把入口建起来、再接能力是正常顺序。
+	// 触发时没有可派发的目标，运行期留一条 no_target 剪枝痕（不是拒绝创建）。
+	emptyTargets := &Source{NamespaceID: nsID, Name: "零出口", Kind: SourceKindManual, Enabled: true}
+	if err := db.CreateSource(ctx, emptyTargets); err != nil {
+		t.Fatalf("零出口源应被允许（source.md §5），得到 %v", err)
+	}
+	if targets, err := db.EdgesFrom(ctx, nsID, true, "零出口"); err != nil {
+		t.Fatalf("读零出口源入口边: %v", err)
+	} else if len(targets) != 0 {
+		t.Fatalf("零出口源不应有入口边，得到 %+v", targets)
+	}
+	ev := v4InsertEvent(t, db, v4Event(nsID, "零出口", "manual"), Now(), 0)
+	if n, err := db.CountTasksByTrace(ctx, nsID, ev.TraceID); err != nil {
+		t.Fatalf("count tasks by trace: %v", err)
+	} else if n != 0 {
+		t.Fatalf("零出口事件派出了 %d 个任务，want 0", n)
+	}
+	// 剪枝码 no_target 对「源没有目标」是合法的回执类型（event_page 的 trace 视图保留它）。
+	if err := db.InsertPruneEvent(ctx, &Event{
+		NamespaceID: nsID, TraceID: ev.TraceID, Type: "no_target",
+		Payload: []byte(`{"reason":"no_target"}`),
+	}); err != nil {
+		t.Fatalf("零出口的 no_target 剪枝痕应可落库: %v", err)
+	}
 
 	// 未知 kind
-	err = db.CreateSource(ctx, &Source{
+	err := db.CreateSource(ctx, &Source{
 		NamespaceID: nsID, Name: "怪种类", Kind: "nope",
 		Targets: []sourcespec.Target{{Capability: "demo.t2"}},
 	})

@@ -687,3 +687,112 @@ func TestListPlaybooksCreatedAtOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate 父裁定 #2（B 轮）：
+// 渲染产物必须走**与直接创建完全相同**的校验路径（playbook.md §2.2）——
+// 源名 `route` 是保留剪枝来源名，直写 CreateSource 拒，安装写路径也必须拒，
+// 且整次安装 0 写（不建能力、不建源、不建安装回执、不落入口边）。
+//
+// 本用例用**真原包**（raw files map）证明物化后的 Source.name 恰好是 `route`：
+// 源文档里 `metadata.name: route` 是字面量，不经过 values 模板、不是前缀变体。
+func TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	// ① 直写路径的同一规则（对照组；没有包参与）。
+	direct := &Source{
+		NamespaceID: nsID, Name: EventPruneSource, Kind: SourceKindWebhook,
+		Config: json.RawMessage(`{}`), Enabled: true,
+	}
+	if err := db.CreateSource(ctx, direct); !errors.Is(err, ErrReservedEventSource) {
+		t.Fatalf("direct CreateSource(%q) err = %v, want ErrReservedEventSource", EventPruneSource, err)
+	}
+
+	// ② 真原包：能力 + 源（物化名恰好是保留名 route）。
+	capPath := "capabilities/audit.yaml"
+	srcPath := "sources/prune.yaml"
+	files := map[string]string{
+		"playbook.yaml": pbEntry("reserved-source", 1, []string{capPath}, []string{srcPath}),
+		capPath:         pbCapabilityDoc("{{values.project}}-audit", nil, "#!/bin/sh\ntrue"),
+		srcPath: "metadata:\n  name: route\n" +
+			"spec:\n  kind: webhook\n  enabled: true\n  config: {}\n  targets:\n" +
+			"    - capability: '{{values.project}}-audit'\n",
+	}
+	pbCreate(t, db, nsID, "reserved-source", files)
+
+	receipt, err := db.InstallPlaybook(ctx, nsID, "reserved-source", pbValues("demo"), false)
+	if err == nil {
+		// 产品缺陷：安装接受了保留源名。把「物化名恰好是 route」与 0 写要求
+		// 一起钉在报错里，便于父会话按具名 case + 2 处生产点裁决。
+		var src *Source
+		if got, gerr := db.GetSourceByName(ctx, nsID, EventPruneSource); gerr == nil {
+			src = got
+		}
+		t.Fatalf("安装接受了物化名为 %q 的源（direct CreateSource 拒绝同一名字）；receipt=%+v sourceRow=%+v",
+			EventPruneSource, receipt, src)
+	}
+	if !errors.Is(err, ErrReservedEventSource) {
+		t.Fatalf("安装保留源名应报 ErrReservedEventSource（与直写同规则），得到 %v", err)
+	}
+
+	// ③ 整次安装 0 写：源/安装回执/能力/入口边一行都不许留。
+	if _, gerr := db.GetSourceByName(ctx, nsID, EventPruneSource); !errors.Is(gerr, ErrNotFound) {
+		t.Fatalf("被拒安装留下了源行 route: %v", gerr)
+	}
+	if n := pbInstalls(t, db); n != 0 {
+		t.Fatalf("被拒安装留下了 %d 行安装回执", n)
+	}
+	caps, cerr := db.ListCapabilities(ctx, nsID)
+	if cerr != nil {
+		t.Fatalf("list capabilities: %v", cerr)
+	}
+	if len(caps) != 0 {
+		t.Fatalf("被拒安装留下了 %d 个能力行: %+v", len(caps), caps)
+	}
+	edges, eerr := db.ListEdges(ctx, nsID)
+	if eerr != nil {
+		t.Fatalf("list edges: %v", eerr)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("被拒安装留下了 %d 条边: %+v", len(edges), edges)
+	}
+}
+
+// TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3 父裁定 #2（前半）：
+// v3 的 `TestPlaybookManifestReservedOriginNames` 实际禁的是**能力名** github/cron/http/manual；
+// v4 里这些名字完全合法（能力名正则 ^[a-z0-9][a-z0-9._-]{0,62}$）。
+// 真原包安装必须全部建出来——这是“允许清单”用例，不是新的黑名单。
+func TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	names := []string{"github", "cron", "http", "manual"}
+	files := map[string]string{}
+	capPaths := make([]string, 0, len(names))
+	for _, name := range names {
+		path := "capabilities/" + name + ".yaml"
+		capPaths = append(capPaths, path)
+		files[path] = pbCapabilityDoc(name, nil, "#!/bin/sh\ntrue")
+	}
+	files["playbook.yaml"] = pbEntry("legal-names", 1, capPaths, nil)
+	pbCreate(t, db, nsID, "legal-names", files)
+
+	r, err := db.InstallPlaybook(ctx, nsID, "legal-names", pbValues("demo"), false)
+	if err != nil {
+		t.Fatalf("v4 合法能力名安装被拒: %v", err)
+	}
+	if r == nil {
+		t.Fatal("安装回执为空")
+	}
+	for _, name := range names {
+		c, gerr := db.GetCapability(ctx, nsID, name, 1)
+		if gerr != nil {
+			t.Fatalf("能力 %q 未建出: %v", name, gerr)
+		}
+		if c.Name != name || c.Version != 1 {
+			t.Fatalf("能力 %q 落库形状 = %+v", name, c)
+		}
+	}
+}

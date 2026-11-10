@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -332,75 +331,5 @@ func TestRegisterUserWithPassword_ConcurrentFirstAdmin(t *testing.T) {
 		if withPassword != registers {
 			t.Fatalf("round %d: 带密码的用户数 = %d, want %d", round, withPassword, registers)
 		}
-	}
-}
-
-// TestRegisterUser_PreMigration8SchemaStillWorks 老库（migration 8 之前）上 Passkey 注册仍可用。
-//
-// 为什么要有这条：registerUser 的 Passkey 分支故意**不点名** password_hash /
-// password_updated_at（只让列取默认值），因为升级用例会在未升级的 v2 schema 上用
-// 当前代码注册用户（node_agent_version_test.go 的 TestMigration3AgentColumnsFromV2）。
-// 谁把两条分支合并成「总是显式写密码列」，这里会立刻红，而不是让那个升级用例
-// 报一句 “table users has no column named password_hash”。
-func TestRegisterUser_PreMigration8SchemaStillWorks(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "pre-password-register.db")
-
-	// 造一份「还没有 password 列」的库：跑满当前迁移，再把 mig8 加的两列拆掉。
-	//
-	// 为什么不沿用「只跑 baseline + migration 2」：从 v9 起能力播种要写
-	// capability_versions.spec，v2 schema 上根本跑不起来 —— 那个夹具描述的库，
-	// 当前代码已经不支持了（真实升级路径永远是 Open 先迁移）。而这条用例要守的红线
-	// 只有一件事：**Passkey 分支不点名 password 列**。拆掉两列同样能证明它，
-	// 且库的其余部分与生产一致，不会因为 schema 太老而红在无关的地方。
-	db, err := openWith(path, nil)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, col := range []string{"password_hash", "password_updated_at"} {
-		if _, err := db.Exec(`ALTER TABLE users DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop users.%s: %v", col, err)
-		}
-	}
-	if cols := columnNames(t, db, "users"); cols["password_hash"] {
-		t.Fatal("库里还有 password_hash：这个用例证明不了老库兼容")
-	}
-	u := &User{ID: NewUserID(), Username: "pre-password-passkey", CreatedAt: Now()}
-	if _, err := db.RegisterUser(ctx, u); err != nil {
-		t.Fatalf("没有 password 列的库上 Passkey 注册失败（Passkey 分支不应点名密码列）: %v", err)
-	}
-
-	// 升级：跑 mig8 的原文 SQL —— 就是 Open 在「8 之前的库」上会做的那一步。
-	set, err := parseMigrations(schemaSQL)
-	if err != nil {
-		t.Fatalf("parse migrations: %v", err)
-	}
-	var upgrade string
-	for _, m := range set {
-		if m.version == 8 {
-			upgrade = m.body
-		}
-	}
-	if upgrade == "" {
-		t.Fatal("找不到 migration 8（password 列）：编号被改过就要同步这里")
-	}
-	if _, err := db.Exec(upgrade); err != nil {
-		t.Fatalf("apply migration 8: %v", err)
-	}
-	pw, err := db.GetUserPassword(u.ID)
-	if err != nil {
-		t.Fatalf("get user password: %v", err)
-	}
-	if pw.Hash != "" || pw.UpdatedAt != 0 {
-		t.Errorf("老用户升级后密码列 = (%q,%d), want (\"\",0)", pw.Hash, pw.UpdatedAt)
-	}
-	// 升级后的库上密码注册路径照常工作（分支的另一半）。
-	u2 := &User{ID: NewUserID(), Username: "v2-then-password", CreatedAt: Now(), Role: RoleAuto}
-	if _, err := db.RegisterUserWithPassword(ctx, u2, phcHash, Now()); err != nil {
-		t.Fatalf("升级后密码注册失败: %v", err)
-	}
-	if got, err := db.GetUserPassword(u2.ID); err != nil || got.Hash != phcHash {
-		t.Errorf("升级后密码列往返异常: %+v (err %v)", got, err)
 	}
 }

@@ -56,6 +56,8 @@ func TestNamespaceCRUD(t *testing.T) {
 	if err := db.DeleteNamespaceByName(ctx, "alpha", false, ResourceVersion(ns.ID, renamed.ResourceVersion+1)); !errors.Is(err, ErrResourceVersionConflict) {
 		t.Fatalf("错 resourceVersion 删除应冲突，得到 %v", err)
 	}
+	// 同部署再建一个命名空间：最后一个命名空间不允许删（ErrLastNamespace）。
+	newTestExtraNS(t, db, "beta")
 	if err := db.DeleteNamespaceByName(ctx, "alpha", false, ResourceVersion(ns.ID, renamed.ResourceVersion)); err != nil {
 		t.Fatalf("delete namespace: %v", err)
 	}
@@ -114,7 +116,7 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
-	cfg, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "cn"}, "")
+	cfg, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "cn"}, ResourceVersion(ns.ID, ns.ResourceVersion))
 	if err != nil {
 		t.Fatalf("put namespace config: %v", err)
 	}
@@ -128,8 +130,9 @@ func TestNamespaceRoundTrips(t *testing.T) {
 	if got.Vars["REGION"] != "cn" || got.Revision != cfg.Revision {
 		t.Fatalf("读回配置 = %+v, want %+v", got, cfg)
 	}
-	if _, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "us"}, "0"); !errors.Is(err, ErrResourceVersionConflict) {
-		t.Fatalf("空令牌应冲突，得到 %v", err)
+	// 配置写入会把命名空间 resourceVersion +1，旧令牌（建 ns 时那枚）必须冲突。
+	if _, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "us"}, ResourceVersion(ns.ID, ns.ResourceVersion)); !errors.Is(err, ErrResourceVersionConflict) {
+		t.Fatalf("旧令牌应冲突，得到 %v", err)
 	}
 }
 
@@ -183,6 +186,8 @@ func TestNamespaceDeleteRequiresForceWhenNotEmpty(t *testing.T) {
 	c := v4Cap(t, db, nsID, "review", 1)
 	node := v4Node(t, db, "ns-force-node", 1)
 
+	// 最后一个命名空间不允许删（ErrLastNamespace）；先补一个，让断言走「非空阻塞」分支。
+	newTestExtraNS(t, db, "force-spare")
 	ns, err := db.GetNamespace(ctx, nsID)
 	if err != nil {
 		t.Fatalf("get namespace: %v", err)

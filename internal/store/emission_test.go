@@ -147,16 +147,19 @@ func TestEmissionListOrderedAndScoped(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-	c, node, task, auth, _ := emitFixture(t, db, nsID, "review", "emit-scope", "tr_emit_scope")
+	c, _, task, auth, _ := emitFixture(t, db, nsID, "review", "emit-scope", "tr_emit_scope")
 
 	if _, _, err := db.EmitAuthorized(ctx, auth,
 		&EmitRecord{TaskID: task.ID, ToRef: "fix", Data: json.RawMessage(`{}`)}, nil); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	other := v4Task(t, db, nsID, c, "tr_emit_other", "")
-	otherLease, otherToken, otherAttempt := v4Grant(t, db, other.ID, node.ID, "asg-other")
+	// 另一个任务跑在**另一台**节点上：emitFixture 的节点只有一个真实槽，
+	// 已被第一个任务占着（v4 派发必须换到真实 slot）。
+	otherNode := v4Node(t, db, "emit-scope-other", 1)
+	otherLease, otherToken, otherAttempt := v4Grant(t, db, other.ID, otherNode.ID, "asg-other")
 	otherAuth := EmitAuth{
-		TaskID: other.ID, NodeID: node.ID, NodeTokenHash: v4Auth(t, db, node.ID).NodeTokenHash,
+		TaskID: other.ID, NodeID: otherNode.ID, NodeTokenHash: v4Auth(t, db, otherNode.ID).NodeTokenHash,
 		Attempt: otherAttempt, LeaseID: otherLease, AttemptToken: otherToken, Now: Now(),
 	}
 	if _, _, err := db.EmitAuthorized(ctx, otherAuth,

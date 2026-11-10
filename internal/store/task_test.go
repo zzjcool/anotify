@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/artifact"
@@ -415,11 +417,16 @@ func TestCompleteRecordsResultAndFinishedAt(t *testing.T) {
 	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-complete")
 
 	exit := 0
+	// v4 不替节点编造执行时间：结果是节点进程的事实，必须显式带上。
+	started := Now() * 1e9
+	finished := started + int64(2*1e9)
 	result := TaskResult{
-		Phase:     TaskSucceeded,
-		Summary:   "review 通过",
-		Artifacts: []protocol.TaskArtifact{},
-		ExitCode:  &exit,
+		Phase:      TaskSucceeded,
+		Summary:    "review 通过",
+		Artifacts:  []protocol.TaskArtifact{},
+		ExitCode:   &exit,
+		StartedAt:  timeAtUnixNano(started),
+		FinishedAt: timeAtUnixNano(finished),
 	}
 	disp := v4Complete(t, db, node.ID, task.ID, leaseID, attempt, result)
 	if disp != TaskResultRecorded {
@@ -453,8 +460,10 @@ func TestCompleteRequiresGrant(t *testing.T) {
 
 	_, err := db.CompleteTaskClassifiedAuthorized(context.Background(), v4Auth(t, db, node.ID),
 		task.ID, 1, "lease_missing", Now(), TaskResult{Phase: TaskSucceeded})
-	if !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("未 grant 的任务报结果应报 ErrInvalidTransition，得到 %v", err)
+	// v4 没有「未 grant 但处于 running」的隐含状态：attempt 1 没有保留的历史绑定，
+	// 结果提交在绑定核对这一层就被拒（ErrLeaseMismatch），比相位判断更早也更严。
+	if !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("未 grant 的任务报结果应报 ErrLeaseMismatch，得到 %v", err)
 	}
 }
 
@@ -503,7 +512,7 @@ func TestTerminalPhaseIsImmutable(t *testing.T) {
 	node := v4Node(t, db, "node-terminal", 1)
 	task := v4Task(t, db, nsID, c, "tr_terminal", "")
 
-	if err := db.RequestCancel(ctx, task.ID, "user", Now()); err != nil {
+	if err := db.RequestCancel(ctx, task.ID, "", Now()); err != nil {
 		t.Fatalf("cancel pending: %v", err)
 	}
 	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
@@ -532,7 +541,7 @@ func TestCancelRunningAwaitsAck(t *testing.T) {
 	task := v4Task(t, db, nsID, c, "tr_cancel", "")
 	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-cancel")
 
-	if err := db.RequestCancel(ctx, task.ID, "user", Now()); err != nil {
+	if err := db.RequestCancel(ctx, task.ID, "", Now()); err != nil {
 		t.Fatalf("request cancel: %v", err)
 	}
 	// 取消在飞：相位仍是 running，但 cancel_requested_at 有值；结果不得被接受。
@@ -623,14 +632,21 @@ func TestMaxAttemptsExceededAbandons(t *testing.T) {
 	})
 	node := v4Node(t, db, "node-budget", 1)
 	task := v4Task(t, db, nsID, c, "tr_budget", "")
-	if task.MaxAttempts != 1 {
-		t.Fatalf("建任务时应钉住 spec 的 maxAttempts=1，得到 %d", task.MaxAttempts)
+	// 建行时是默认预算（3）；真正的值在**派发时**从钉住的能力正文里取。
+	if task.MaxAttempts != artifact.DefaultMaxAttempts {
+		t.Fatalf("建任务时默认 maxAttempts = %d, want %d", task.MaxAttempts, artifact.DefaultMaxAttempts)
 	}
 	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-budget-1")
+	dispatched := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+	if dispatched.MaxAttempts != 1 {
+		t.Fatalf("派发时应钉住 spec 的 maxAttempts=1，得到 %d", dispatched.MaxAttempts)
+	}
 	if attempt != 1 {
 		t.Fatalf("首次 grant attempt = %d, want 1", attempt)
 	}
-	// 租约过期并被回收：幂等 → 回 pending（attempt 已用尽）→ 下一次 grant 拒绝并终局。
+	// 租约过期并被回收：这次 attempt 已经用尽预算（attempt 1 / 预算 1）→
+	// 回收直接把任务置终局 abandoned，原因码 = max_attempts_exceeded
+	// （不再排一次注定被拒的 grant：预算是钉住的正文事实）。
 	granted := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
 	if granted.LeaseUntil == nil {
 		t.Fatal("grant 后应有 leaseUntil")
@@ -638,16 +654,14 @@ func TestMaxAttemptsExceededAbandons(t *testing.T) {
 	if _, _, err := db.RecoverLostLeases(ctx, *granted.LeaseUntil+1); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	v4MustPhase(t, db, nsID, task.ID, TaskPending)
-	slot := v4FreeSlot(t, db, node.ID)
-	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-budget-2", 2); err != nil {
-		t.Fatalf("assign after requeue: %v", err)
+	dead := v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	if dead.Error != protocol.ReasonMaxAttemptsExceeded {
+		t.Fatalf("abandoned 原因 = %q, want %q", dead.Error, protocol.ReasonMaxAttemptsExceeded)
 	}
-	_, _, _, _, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID), task.ID, "asg-budget-2", 2, slot, Now())
-	if !errors.Is(err, ErrMaxAttemptsExceeded) {
-		t.Fatalf("预算用尽后的 grant 应报 ErrMaxAttemptsExceeded，得到 %v", err)
+	// 终局后不可再派发（预算用尽的事实已经落库）。
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-budget-2", 2); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("abandoned 任务再 assign 应报 ErrInvalidTransition，得到 %v", err)
 	}
-	v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
 }
 
 // TestTaskAttemptSnapshotRoundTrip attempt 快照（machine vars/limits/slot/lease）可回读。
@@ -657,7 +671,7 @@ func TestTaskAttemptSnapshotRoundTrip(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	c := v4Cap(t, db, nsID, "review", 1)
 	node := v4Node(t, db, "node-attempt", 1)
-	putV4NodeCfg(t, db, node.ID, []string{"ns"}, map[string]string{"REGION": "cn"}, map[string]any{"total": 1})
+	putV4NodeCfg(t, db, node.ID, []string{"default"}, map[string]string{"REGION": "cn"}, map[string]any{"total": 1})
 	v4RecordApplied(t, db, node.ID)
 	task := v4Task(t, db, nsID, c, "tr_attempt", "")
 	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-attempt")
@@ -733,4 +747,281 @@ func TestTaskTokenNeverSerializedToJSON(t *testing.T) {
 			t.Fatalf("任务 JSON 泄漏了内部字段 %q: %s", forbidden, raw)
 		}
 	}
+}
+
+// TestCreateTasksMixedBatchOversizedParamsWritesNothing 父裁定（limited review）：
+// 超限 params 是**整批**拒绝——混在合法任务里也一样，一条都不建；
+// 恰好等于上限则必须接受并逐字节往返。错误类型保留现有 detail 字段（谁/多大/上限）。
+func TestCreateTasksMixedBatchOversizedParamsWritesNothing(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "params-size", 1)
+
+	good := mkTask(nsID, "tr_size_good", c)
+	big := make([]byte, MaxTaskParamsBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	bad := mkTask(nsID, "tr_size_bad", c)
+	bad.Params = append(append([]byte(`{"p":"`), big...), '"', '}')
+	if err := db.CreateTasks(ctx, []*Task{good, bad}); err == nil {
+		t.Fatal("混批里的超限 params 被接受")
+	} else {
+		var tooLarge *ParamsTooLargeError
+		if !errors.As(err, &tooLarge) {
+			t.Fatalf("应报 *ParamsTooLargeError，得到 %T: %v", err, err)
+		}
+		if tooLarge.TaskID != bad.ID || tooLarge.Size != len(bad.Params) || tooLarge.Limit != MaxTaskParamsBytes {
+			t.Fatalf("错误 detail = %+v, want task=%q size=%d limit=%d",
+				tooLarge, bad.ID, len(bad.Params), MaxTaskParamsBytes)
+		}
+	}
+	// 整批 0 行：合法的 good 也不许留下。
+	for _, trace := range []string{"tr_size_good", "tr_size_bad"} {
+		if n, err := db.CountTasksByTrace(ctx, nsID, trace); err != nil {
+			t.Fatalf("count %s: %v", trace, err)
+		} else if n != 0 {
+			t.Fatalf("超限混批留下了 %d 行（trace=%s）", n, trace)
+		}
+	}
+
+	// 恰好等于上限：接受 + 逐字节往返。
+	atLimit := make([]byte, 0, MaxTaskParamsBytes)
+	atLimit = append(atLimit, []byte(`{"p":"`)...)
+	filler := MaxTaskParamsBytes - len(atLimit) - 2 // 留 `"}`
+	for i := 0; i < filler; i++ {
+		atLimit = append(atLimit, 'y')
+	}
+	atLimit = append(atLimit, '"', '}')
+	if len(atLimit) != MaxTaskParamsBytes {
+		t.Fatalf("夹具长度 = %d, want %d", len(atLimit), MaxTaskParamsBytes)
+	}
+	exact := mkTask(nsID, "tr_size_exact", c)
+	exact.Params = atLimit
+	if err := db.CreateTasks(ctx, []*Task{exact}); err != nil {
+		t.Fatalf("恰好等于上限的 params 应接受: %v", err)
+	}
+	got, err := db.GetTask(ctx, nsID, exact.ID)
+	if err != nil {
+		t.Fatalf("get exact task: %v", err)
+	}
+	if string(got.Params) != string(atLimit) {
+		t.Fatalf("上限 params 往返失真：%d → %d 字节", len(atLimit), len(got.Params))
+	}
+}
+
+// TestCompleteRejectsInvalidResultPhaseWithZeroWrites invalid result.phase 必须在
+// **相位闸门**（execution_auth 的终态集合检查）被拒——用当前有效认证身份 + 正确
+// lease/attempt 走到那一步，而不是靠坏 token/slot 在更早的绑定核对里被挡掉。
+// 拒绝后整行任务、attempt 账本、结果事实全部零写。
+func TestCompleteRejectsInvalidResultPhaseWithZeroWrites(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "phase-guard", 1)
+	node := v4Node(t, db, "node-phase-guard", 1)
+	task := v4Task(t, db, nsID, c, "tr_phase_guard", "")
+	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-phase-guard")
+
+	beforeTask, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task before: %v", err)
+	}
+	beforeAttempt, err := db.GetTaskAttempt(ctx, task.ID, attempt)
+	if err != nil {
+		t.Fatalf("get attempt before: %v", err)
+	}
+	beforeBusy := v4BusySlots(t, db, node.ID)
+
+	exit := 0
+	invalid := TaskResult{Phase: TaskRunning, ExitCode: &exit}
+	_, err = db.CompleteTaskClassifiedAuthorized(ctx, v4Auth(t, db, node.ID),
+		task.ID, attempt, leaseID, Now(), invalid)
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("非法 result.phase 应报 ErrInvalidTransition，得到 %v", err)
+	}
+	if !strings.Contains(err.Error(), "result phase") {
+		t.Fatalf("错误应点名 result phase（证明走到相位闸门而不是绑定核对）: %v", err)
+	}
+
+	afterTask, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task after: %v", err)
+	}
+	if !reflect.DeepEqual(beforeTask, afterTask) {
+		t.Fatalf("被拒结果改写了任务行:\nbefore %+v\nafter  %+v", beforeTask, afterTask)
+	}
+	afterAttempt, err := db.GetTaskAttempt(ctx, task.ID, attempt)
+	if err != nil {
+		t.Fatalf("get attempt after: %v", err)
+	}
+	if !reflect.DeepEqual(beforeAttempt, afterAttempt) {
+		t.Fatalf("被拒结果改写了 attempt 账本:\nbefore %+v\nafter  %+v", beforeAttempt, afterAttempt)
+	}
+	if n := len(v4Attempts(t, db, task.ID)); n != 1 {
+		t.Fatalf("被拒结果新增了 attempt 行，现 %d", n)
+	}
+	if got := v4BusySlots(t, db, node.ID); got != beforeBusy {
+		t.Fatalf("被拒结果改动了槽位占用: %d → %d", beforeBusy, got)
+	}
+}
+
+// TestCompleteErrorProjectionKeepsRawResultFacts 旧投影规则（normalizeTaskError）仍在：
+// 失败结果 Error 为空 → Task.error 落到 Reason；但完整 ResultJSON **从不**被投影改写，
+// 原始 error 仍是空串，reason/phase/summary 原样保留。
+func TestCompleteErrorProjectionKeepsRawResultFacts(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "projection", 1)
+	node := v4Node(t, db, "node-projection", 1)
+	task := v4Task(t, db, nsID, c, "tr_projection", "")
+	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-projection")
+
+	exit := 7
+	started := Now() * 1e9
+	finished := started + int64(1e9)
+	result := TaskResult{
+		Phase: TaskFailed, Reason: "exit_code", Summary: "失败了",
+		Error: "", ExitCode: &exit,
+		StartedAt: timeAtUnixNano(started), FinishedAt: timeAtUnixNano(finished),
+	}
+	if disp := v4Complete(t, db, node.ID, task.ID, leaseID, attempt, result); disp != TaskResultRecorded {
+		t.Fatalf("complete: %q", disp)
+	}
+	got, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Error != "exit_code" {
+		t.Fatalf("Task.error 投影 = %q, want Reason %q", got.Error, "exit_code")
+	}
+	raw := decodeRawResult(t, got.ResultJSON)
+	if raw["error"] != "" {
+		t.Fatalf("原始 ResultJSON.error 被投影改写了: %v", raw["error"])
+	}
+	if raw["reason"] != "exit_code" || raw["phase"] != TaskFailed || raw["summary"] != "失败了" {
+		t.Fatalf("原始 ResultJSON 事实丢失: %+v", raw)
+	}
+	if raw["exitCode"] != float64(7) {
+		t.Fatalf("原始 ResultJSON.exitCode = %v, want 7", raw["exitCode"])
+	}
+}
+
+// TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError：
+//   - 后继 attempt 成功且 incoming Error/Reason 为空 → Task.error 写空（不残留上一代投影）；
+//   - 成功结果带**非空** submitted Error → 按现实现保留（不施加 v3“成功必清 error”的旧措辞）。
+//
+// 「上一代投影残留」在 v4 只有一条真实可达路径：幂等能力租约过期 → attempt 重排
+// （旧 attempt 的进程可能还在跑，槽位保持占用）。v4 的失败 attempt 不会把 error 写到
+// 任务行（那是终态才有的事实），所以这里用一行显式种子模拟「先前投影」，再走真实的
+// 重排 + 第二代 grant/complete 验证写路径会把它清掉。
+func TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	// 重排时旧 attempt 的槽位保持占用（进程可能还在跑），所以这一代的并发预算
+	// 必须允许 2：node 也申报 2 个真实槽位。
+	two := 2
+	c := v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: "projection-retry", Version: 1,
+		Spec: artifact.Spec{
+			Params: json.RawMessage(`{}`),
+			Run:    artifact.Run{Entrypoint: "run.sh", Files: map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"}},
+			Lifecycle: artifact.Lifecycle{
+				Idempotent: true,
+			},
+			Concurrency: artifact.Concurrency{MaxPerNode: &two},
+		},
+	})
+	node := v4Node(t, db, "node-projection-retry", 2)
+	task := v4Task(t, db, nsID, c, "tr_projection_retry", "")
+
+	// 第一代：grant 后租约过期 → RecoverLostLeases 把它重排回 pending
+	// （幂等 + attempt 1 < 预算 3；旧 attempt 不写 reaped、槽位保持占用）。
+	_, _, attempt1 := v4Grant(t, db, task.ID, node.ID, "asg-projection-1")
+	running := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+	if running.LeaseUntil == nil {
+		t.Fatal("grant 后应有 leaseUntil")
+	}
+	if _, _, err := db.RecoverLostLeases(ctx, *running.LeaseUntil+1); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	v4MustPhase(t, db, nsID, task.ID, TaskPending)
+	// 显式种子：模拟上一代遗留在任务行上的 error 投影。
+	mustExec(t, db, `UPDATE tasks SET error = ? WHERE id = ?`, "stale_projection", task.ID)
+
+	// 第二代：真实 assign + grant（另一台真实空闲槽），然后成功且不带 error/reason。
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-projection-2", 2); err != nil {
+		t.Fatalf("assign second attempt: %v", err)
+	}
+	slot2 := v4FreeSlot(t, db, node.ID)
+	lease2, _, attempt2, _, gerr := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+		task.ID, "asg-projection-2", 2, slot2, Now())
+	if gerr != nil {
+		t.Fatalf("grant second attempt: %v", gerr)
+	}
+	if attempt2 <= attempt1 {
+		t.Fatalf("第二代 attempt = %d, want > %d", attempt2, attempt1)
+	}
+	if disp := v4Complete(t, db, node.ID, task.ID, lease2, attempt2, TaskResult{
+		Phase: TaskSucceeded, StartedAt: timeAtUnixNano(Now() * 1e9), FinishedAt: timeAtUnixNano(Now() * 1e9),
+	}); disp != TaskResultRecorded {
+		t.Fatalf("complete second attempt: %q", disp)
+	}
+	done, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatalf("get done task: %v", err)
+	}
+	if done.Phase != TaskSucceeded || done.Error != "" {
+		t.Fatalf("后继成功后 phase/error = %q/%q, want succeeded/空", done.Phase, done.Error)
+	}
+	rawSuccess := decodeRawResult(t, done.ResultJSON)
+	if rawSuccess["error"] != "" || rawSuccess["reason"] != "" {
+		t.Fatalf("成功结果的原始 error/reason 应为空: %+v", rawSuccess)
+	}
+
+	// 非空 submitted Error 在成功结果里按现实现保留（不偷偷清掉）。
+	task2 := v4Task(t, db, nsID, c, "tr_projection_keep", "")
+	lease3, _, attempt3 := v4Grant(t, db, task2.ID, node.ID, "asg-projection-3")
+	if disp := v4Complete(t, db, node.ID, task2.ID, lease3, attempt3, TaskResult{
+		Phase: TaskSucceeded, Error: "warn: partial",
+		StartedAt: timeAtUnixNano(Now() * 1e9), FinishedAt: timeAtUnixNano(Now() * 1e9),
+	}); disp != TaskResultRecorded {
+		t.Fatalf("complete keep-error: %q", disp)
+	}
+	kept, err := db.GetTask(ctx, nsID, task2.ID)
+	if err != nil {
+		t.Fatalf("get kept task: %v", err)
+	}
+	if kept.Error != "warn: partial" {
+		t.Fatalf("成功结果里的 submitted Error 被改写: %q", kept.Error)
+	}
+	if rawKept := decodeRawResult(t, kept.ResultJSON); rawKept["error"] != "warn: partial" {
+		t.Fatalf("原始 ResultJSON.error = %v, want submitted 值", rawKept["error"])
+	}
+}
+
+// v4Attempts 列出任务的 attempt 账本（数量断言用）。
+func v4Attempts(t *testing.T, db *DB, taskID string) []*TaskAttempt {
+	t.Helper()
+	all, err := db.ListTaskAttempts(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("list attempts %s: %v", taskID, err)
+	}
+	return all
+}
+
+// decodeRawResult 解原始 ResultJSON（投影绝不能反写它）。
+func decodeRawResult(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	if len(raw) == 0 {
+		t.Fatal("ResultJSON 为空")
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode ResultJSON %s: %v", raw, err)
+	}
+	return out
 }

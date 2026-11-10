@@ -178,7 +178,7 @@ func TestMessageStatsTotalsDeliveryAndDevices(t *testing.T) {
 	}
 	// CreateTasks 只能落在 pending（契约 §3.2），终态直接 SQL 改（tasks 无触发器）。
 	for i, status := range []string{TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned, TaskPending} {
-		mustExec(t, db, `UPDATE tasks SET status=? WHERE id=?`, status, tasks[i].ID)
+		mustExec(t, db, `UPDATE tasks SET phase=? WHERE id=?`, status, tasks[i].ID)
 	}
 
 	// 设备：启用 1 台、停用 1 台 → DeviceCount 只数启用的。

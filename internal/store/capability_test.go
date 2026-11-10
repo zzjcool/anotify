@@ -416,3 +416,63 @@ func TestCapabilityDigestMatchesArtifactContent(t *testing.T) {
 		t.Fatalf("行 foldKey %q != 正文 foldKey %q", c.FoldKey, fold)
 	}
 }
+
+// TestCapabilitySameSpecExplicitNewVersionCreatesNewRow 父裁定 #3（B 轮）：
+// 同一份正文 + **显式新版本号** = 合法的新行（新 UID、两行并存）。
+//
+// 两个输入都是「新对象、ID 为空」，只有 version 不同——这正是 v3
+// `TestCapabilityVersionAppendOnly` 的原意，v4 用真实输入/DDL/错误区分：
+//   - 同版不同内容 → ErrVersionConflict（TestCapabilitySameVersionDifferentContentRejected）；
+//   - 同版同内容 → 复用（TestCapabilityIdempotentCreate）；
+//   - 新版同内容 → 建新行（本用例）。
+//
+// fold_key 是普通索引、不是唯一键：两行共享同一 foldKey 是契约内的事实
+// （deployment digest 因含 version 而不同；foldKey 不含 version）。
+func TestCapabilitySameSpecExplicitNewVersionCreatesNewRow(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	spec := v4Spec(`{"type":"object"}`, []string{"notify@1"}, "#!/bin/sh\nexit 0\n")
+	v1 := &CapabilityVersion{NamespaceID: nsID, Name: "same-spec", Version: 1, Spec: spec}
+	if v1.ID != "" {
+		t.Fatalf("前置：新对象 ID 应为空，得到 %q", v1.ID)
+	}
+	if err := db.CreateCapability(ctx, v1); err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if v1.ID == "" {
+		t.Fatal("create v1 后没有分配 ID")
+	}
+	v2 := &CapabilityVersion{NamespaceID: nsID, Name: "same-spec", Version: 2, Spec: spec}
+	if err := db.CreateCapability(ctx, v2); err != nil {
+		t.Fatalf("同正文显式 v2 应允许建新行，得到 %v", err)
+	}
+	if v2.ID == "" || v2.ID == v1.ID {
+		t.Fatalf("v2 应有新 UID：v1=%q v2=%q", v1.ID, v2.ID)
+	}
+	got1, err := db.GetCapability(ctx, nsID, "same-spec", 1)
+	if err != nil {
+		t.Fatalf("get v1: %v", err)
+	}
+	got2, err := db.GetCapability(ctx, nsID, "same-spec", 2)
+	if err != nil {
+		t.Fatalf("get v2: %v", err)
+	}
+	if got1.ID != v1.ID || got2.ID != v2.ID {
+		t.Fatalf("两行 UID 往返不一致: v1 %q/%q v2 %q/%q", got1.ID, v1.ID, got2.ID, v2.ID)
+	}
+	if got1.FoldKey == "" || got1.FoldKey != got2.FoldKey {
+		t.Fatalf("同正文两行的 foldKey 应相同：v1=%q v2=%q", got1.FoldKey, got2.FoldKey)
+	}
+	if got1.Digest == got2.Digest {
+		t.Fatalf("digest 含 version，v1/v2 不应相同：%q", got1.Digest)
+	}
+	all, err := db.ListCapabilities(ctx, nsID)
+	if err != nil {
+		t.Fatalf("list capabilities: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("应有 2 行（同 name 两个版本），得到 %d: %+v", len(all), all)
+	}
+}

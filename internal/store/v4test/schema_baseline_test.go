@@ -110,7 +110,7 @@ func TestSchemaBaselineNoHistoricalBaggage(t *testing.T) {
 	}
 	// tasks：v3 的 status / attempts / 旧列都退役。
 	tasks := columnNames(t, db, "tasks")
-	for _, banned := range []string{"status", "attempts", "instance_id", "cap_hash", "graph_id", "path", "token", "not_before"} {
+	for _, banned := range []string{"status", "attempts", "instance_id", "cap_hash", "graph_id", "path", "token", "not_before", "seq_in_trace"} {
 		if tasks[banned] {
 			t.Errorf("tasks 仍带着退役列 %q", banned)
 		}
