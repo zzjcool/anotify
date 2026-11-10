@@ -71,7 +71,8 @@ All sockets have settimeout/context deadlines, read/write bounded, diagnostic pr
 
 Canonical cd/root/GOMOD guard applies to each command, GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto. Fixed launch verify array retains ALL four gates, no reduction:
 
-1. `gofmt -w internal/route internal/ws internal/lease internal/source internal/trigger internal/logging` plus `git diff --check`.
+1. **只读**格式门禁：`test -z "$(gofmt -l internal/route internal/ws internal/lease internal/source internal/trigger internal/logging)"` plus `git diff --check`.
+   Parent correction 2026-11-10：原 `gofmt -w …` 验收无效（可变格式器先改写再判绿，等于自证）；编辑期 `gofmt -w` 只允许作为排版动作，不作为门禁或证据。
 2. `env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go vet ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/...`
 3. `env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/... -count=1`
 4. `env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/store/... ./internal/artifact/... ./internal/protocol/... -count=1`

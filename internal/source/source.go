@@ -1,511 +1,349 @@
-// Package source 实现「源」（origin）的运行时：cron 到点触发、webhook 收事件。
+// Package source 是 v4 **源触发**的唯一运行期入口：手动 / webhook / cron 三个入口
+// 共用同一份归一化配置、同一份载荷装配、同一份接收回执（source.md §5.1）。
 //
-// 源与能力的区别（也是这个包存在的理由）：
+// 一次触发做四件事：
 //
-//	能力  回答"能干什么"——由节点声明，中枢派任务给它
-//	源    回答"什么时候开始干"——有配置、自己产生事件、自己不干活
+//  1. 装配载荷：cron/manual 以 `config.payload` 打底、本次输入一层覆盖；
+//     webhook 的载荷就是投递体里的 `payload`（没有静态打底）。
+//  2. 投递幂等：`(namespace, 源稳定 id, deliveryId)` 在保留窗口内只算一条事件，
+//     重复投递返回**原** event/trace 且不重复派发；窗口外同 id 按新事件接收。
+//  3. 载荷契约：不符合 `config.payloadSchema` → 入库 + `event_schema` 剪枝留痕，不派发。
+//  4. 路由投影：`route.PlanFromSource` 逐行求值 targets，成功的建任务、失败的每条
+//     留一条剪枝事件（`source='route'`）。源没有 targets → 单条 `no_target`。
 //
-// 所以源**不执行**任何东西：它只产生事件。它的出口就是 edges 里的**入口边**
-// （from_is_source=1、from_key=来源名、from_port='*'），参数模板存在边的 mapping 上。
-// 触发时只把「来源名 + 事件类型」递给 Dispatcher，取边/求值/扇出全在 route 一处
-// （P2.1 已删除原来那条跳过 edges 的旁路）。
+// 试运行（dry-run）走**同一条**解析路径但完全不落库：不写事件 / 任务 / 去重表 /
+// 回执，也不需要保存 token（source.md §5.3）。
 package source
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
-	"time"
+	"strings"
 
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
-	"github.com/zzjcool/anotify/internal/trigger"
 )
 
-// Store 是调度与触发需要的最小 store 表面。
-type Store interface {
-	DueCronSources(ctx context.Context, now int64, limit int) ([]*store.Source, error)
-	MarkSourceFired(ctx context.Context, id string, firedAt, nextFire int64) error
-	GetSource(ctx context.Context, namespaceID, id string) (*store.Source, error)
-	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
-	// InsertPruneEvent 落一条剪枝事件（#142）——入口校验失败时的留痕出口。
-	//
-	// 为什么要它：resultSchema 不合规的事件**照常落库、不派发**（设计 §4.2：
-	// 外部系统不重试，丢了就真没了），于是一次命中只能从事件流里看到。
-	// 它与派发期的剪枝用**同一张表、同一套 source/type 约定**
-	// （source='route'、type='pruned.<reason>'），trace 视图因此不用分两套口径读。
-	InsertPruneEvent(ctx context.Context, e *store.Event) (bool, error)
+// ErrBadPayload 表示投递体里的 `payload` 不是 JSON 对象（HTTP 400，不产生事件）。
+var ErrBadPayload = errors.New("source: payload 必须是 JSON 对象")
+
+// Clock 是秒级时钟（测试注入）。
+type Clock func() int64
+
+// Service 是源运行期的入口。
+type Service struct {
+	db     *store.DB
+	router *route.Router
+	now    Clock
 }
 
-// Dispatcher 是派发器（route.Dispatcher 满足它）。
-type Dispatcher interface {
-	Dispatch(ctx context.Context, in route.DispatchInput) (*route.DispatchOutput, error)
+// New 用真实时钟构造源服务。
+func New(db *store.DB, router *route.Router) *Service {
+	return &Service{db: db, router: router, now: func() int64 { return store.Now() }}
 }
 
-// Trigger 把一次"源触发"变成事件 + 首轮派发。
-//
-// 它和 trigger.Service.Ingest 现在是**同一条路**（P2.1）：两者都只给
-// 「来源名 + 事件类型」，目标能力与参数模板全从入口边（edges）里取。
-// 区别只在事件行由谁写：Ingest 是外部系统 POST 进来，Trigger 是源自己在内部发起。
-type Trigger struct {
-	Store      Store
-	Dispatcher Dispatcher
-
-	// Now / NewTraceID 可注入，便于测试断言。
-	Now        func() int64
-	NewTraceID func() string
-}
-
-func (t *Trigger) now() int64 {
-	if t.Now != nil {
-		return t.Now()
+// NewWithClock 是显式时钟版。
+func NewWithClock(db *store.DB, router *route.Router, now Clock) *Service {
+	if now == nil {
+		now = func() int64 { return store.Now() }
 	}
-	return store.Now()
+	return &Service{db: db, router: router, now: now}
 }
 
-func (t *Trigger) newTraceID() string {
-	if t.NewTraceID != nil {
-		return t.NewTraceID()
+// Router 返回共享的路由器（编排层复用同一份解析）。
+func (s *Service) Router() *route.Router { return s.router }
+
+// Now 返回当前时刻（秒）。
+func (s *Service) Now() int64 {
+	if s.now == nil {
+		return store.Now()
 	}
-	return trigger.NewTraceID()
+	return s.now()
 }
 
-// FireResult 是一次触发的产物。
-type FireResult struct {
-	Event    *store.Event          `json:"event"`
-	Inserted bool                  `json:"inserted"`
-	Dispatch *route.DispatchOutput `json:"dispatch,omitempty"`
-	// Idempotent=true 表示这次触发命中了幂等键，事件已存在、没有重复派发。
-	Idempotent bool `json:"idempotent"`
+// Input 是一次源触发的事实。
+type Input struct {
+	// Source 是已经解析到的源行（webhook 由 token 定位，manual/API 由名字定位）。
+	Source *store.Source
+	// Type 是事件类型：webhook 取投递体的 type；空 → 回落源名（source.md §5）。
+	Type string
+	// DeliveryID 是外部投递幂等键（可选；webhook 的 `id`）。
+	DeliveryID string
+	// Payload 是投递体里的 payload（原始 JSON；空 → 只用配置打底）。
+	Payload json.RawMessage
 }
 
-// DryRun 试运行：用给定 payload 算出"会派发什么、会剪枝什么"，**不落库**。
+// TaskRef 是回执里的一条已建任务。
+type TaskRef struct {
+	TaskID     string `json:"taskId"`
+	Capability string `json:"capability"`
+	Version    int    `json:"version"`
+}
+
+// Receipt 是三个入口共用的接收回执（source.md §5.1，不是资源信封）。
 //
-// 和 Fire 共用 Dispatcher.Dispatch（只差 DryRun 标志），所以试运行和真实
-// 触发不会给出不同判定 —— 那种"试运行说能跑、真点却剪枝"的差异会直接
-// 摧毁用户对这套配置的信任。
+// 空列表一律 `[]`（不是 null）：`tasks: []` / `pruned: []` 是「确实没有」，
+// 前端与脚本据此区分「没派发」与「字段缺失」。
+type Receipt struct {
+	EventID   string        `json:"eventId"`
+	TraceID   string        `json:"traceId"`
+	Duplicate bool          `json:"duplicate"`
+	Tasks     []TaskRef     `json:"tasks"`
+	Pruned    []route.Prune `json:"pruned"`
+}
+
+// Ingest 接收一次事件：落事件 → 剪枝留痕 → 建任务，返回统一回执。
 //
-// payload 的合并规则（打底 + 覆盖，且打底只对 cron/manual 生效，见
-// eventPayload）与变量求值同样与 Fire 一致：不一致的话，试运行看到的
-// `{{x}}` 取值就与真触发不同，试运行也就失去了意义。
-//
-// 不检查 src.Enabled：停用状态下也应该能试运行，否则用户没法先验证
-// 再启用。
-func (t *Trigger) DryRun(ctx context.Context, src *store.Source, eventType string, payload json.RawMessage) (*route.DispatchOutput, error) {
-	if src == nil {
-		return nil, fmt.Errorf("source: nil source")
+// 顺序与原子性说明：投递窗口与事件行由 `store.InsertEvent` 在**一个事务**里
+// 判定/写入；任务扇出由 `store.CreateTasks` 在**另一个事务**里整批写入。store 当前
+// 没有「事件 + 任务」同一事务的入口（见 G2-WRITER-VERDICT 的精确 gap 记录），所以
+// 事件先落、任务后建：任务批失败时事件仍在（返回错误给调用方重试，重复投递由
+// deliveryId 窗口吸收）。这里不伪造原子性，也不在失败时编造成功回执。
+func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
+	if in.Source == nil {
+		return nil, fmt.Errorf("source: 缺少源行")
 	}
+	src := in.Source
+	payload, perr := s.assemblePayload(src, in.Payload)
+	if perr != nil {
+		return nil, perr
+	}
+	traceID := store.NewEventID()
+	eventType := strings.TrimSpace(in.Type)
 	if eventType == "" {
 		eventType = src.Name
 	}
-	if len(payload) == 0 || !json.Valid(payload) {
-		payload = json.RawMessage(`{}`)
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("source: 编码载荷: %w", err)
 	}
-	if len(src.Targets) == 0 {
-		// 两种来源都可能为空：已保存的源（GetSource 从入口边读，空 = 边被删了）
-		// 或**还没保存的草稿**（用户在请求体里没选出口）。文案要同时说得通——
-		// 试运行是「保存前先验一遍」的主路径，不能假设它一定在库里。
-		return nil, fmt.Errorf("source: %s 没有配置出口（入口边）", src.Name)
+	event := &store.Event{
+		ID:          store.NewEventID(),
+		NamespaceID: src.NamespaceID,
+		TraceID:     traceID,
+		Source:      src.Name,
+		Type:        eventType,
+		Payload:     rawPayload,
+		Reason:      store.EventReasonIngested,
 	}
-	// payloadMap = config.payload 打底 + 本次事件 payload 覆盖（契约 §2.5）；
-	// 打底只对 cron/manual 生效，webhook/github 的 payload 就是投递体（A13）。
-	payloadMap, _ := eventPayload(src, payload)
-	// 入口校验与 Fire 同一判据：试运行必须能提前看到"这版 payload 会被
-	// event_schema 剪枝"，否则用户只会在真触发之后从事件流里发现。
-	// 试运行不落库：只把判定回给用户（不写事件、不写剪枝）。
-	if p, bad := resultSchemaPrune(src, eventType, payloadMap); bad {
-		return prunedOnly(p), nil
+	if in.DeliveryID != "" {
+		deliveryID := in.DeliveryID
+		event.DeliveryID = &deliveryID
 	}
-	return t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		NamespaceID: src.NamespaceID, // 派发（查边/找节点/建任务）的隔离维度
-		TraceID:     "dryrun",        // 不落库，trace 只是占位（Dispatch 要求非空）
-		// 入口边：来源名 + 事件类型。目标与参数模板都从这条边上取（P2.1）。
-		FromIsSource:  true,
-		EntryFromKey:  src.Name,
-		EntryFromPort: eventType,
-		// Payload / VarValues 是边上模板（{{路径}} / {from} / {var}）的取值来源。
-		// 试运行必须真解析一遍，用户才能看到 param_missing / param_type。
-		Payload:   payloadMap,
-		VarValues: route.ResolveVars(src.VarDefs(), payloadMap),
-		Path:      nil,
-		DryRun:    true,
-	})
+	window := s.eventWindow(ctx)
+	inserted, err := s.db.InsertEvent(ctx, event, s.Now(), window)
+	if err != nil {
+		return nil, fmt.Errorf("source: 落事件: %w", err)
+	}
+	if !inserted {
+		// 窗口内重复投递：回原 event/trace，不重复派发（source.md §5.1）。
+		return &Receipt{
+			EventID: event.ID, TraceID: event.TraceID, Duplicate: true,
+			Tasks: []TaskRef{}, Pruned: []route.Prune{},
+		}, nil
+	}
+	receipt := &Receipt{
+		EventID: event.ID, TraceID: event.TraceID,
+		Tasks: []TaskRef{}, Pruned: []route.Prune{},
+	}
+	// 载荷契约：不符合 payloadSchema → event_schema 剪枝，不派发。
+	if prune := route.ValidatePayload(s.payloadSchema(src), payload); prune != nil {
+		if _, perr := s.recordPrune(ctx, src.NamespaceID, traceID, *prune); perr != nil {
+			return nil, perr
+		}
+		receipt.Pruned = append(receipt.Pruned, *prune)
+		return receipt, nil
+	}
+	plan, err := s.router.PlanFromSource(ctx, src, traceID, payload)
+	if err != nil {
+		return nil, err
+	}
+	for _, prune := range plan.Pruned {
+		if _, perr := s.recordPrune(ctx, src.NamespaceID, traceID, prune); perr != nil {
+			return nil, perr
+		}
+		receipt.Pruned = append(receipt.Pruned, prune)
+	}
+	tasks := plan.Tasks("")
+	if len(tasks) > 0 {
+		if err := s.db.CreateTasks(ctx, tasks); err != nil {
+			return nil, fmt.Errorf("source: 建任务: %w", err)
+		}
+		for _, task := range tasks {
+			receipt.Tasks = append(receipt.Tasks, TaskRef{
+				TaskID: task.ID, Capability: task.Capability, Version: task.Version,
+			})
+		}
+	}
+	return receipt, nil
 }
 
-// Fire 触发一个源：写事件 + 派给它的入口边的目标。
+// Fire 是手动触发（`POST …/sources/{name}/fire`）：省略 payload 时用源配置的打底值。
 //
-// eventType 是这次事件的类型（写进 events.type）。它同时就是入口边的**端口**
-// （`from_port = ? OR from_port = '*'`），也是剪枝记录里的 port——
-// 排查"为什么没派出去"时两个地方用的是同一个值。
-//
-// payload 先与 config.payload 合并（打底 + 覆盖；打底只对 cron/manual 生效），
-// 再作为边上模板的取值来源：`[Payload]` 给 `{{x}}` / `{from}` 查路径，`[VarValues]` 是
-// `config.vars` 求出的别名表，给 `{{name}}` / `{var}` 用。两个都传下去，
-// Dispatcher 才能把 edges.mapping 里的模板解析成真正的参数（#114）。
-//
-// idemKey 为空时允许重复触发（manual 手工点两次就是两次，符合直觉）；
-// cron 必须给确定性 key（cron:<sourceID>:<计划时刻>），否则进程重启后
-// 同一时刻会被重复触发。
-func (t *Trigger) Fire(ctx context.Context, src *store.Source, eventType, idemKey string, payload json.RawMessage) (*FireResult, error) {
-	if src == nil {
-		return nil, fmt.Errorf("source: nil source")
+// 停用的源按 §5 的停用规则处理：**不**触发（调用方翻 404/409，本函数返回
+// ErrSourceDisabled，避免把「已停用」记成一次真实事件）。
+func (s *Service) Fire(ctx context.Context, namespaceID, name string, payload json.RawMessage) (*Receipt, error) {
+	src, err := s.db.GetSourceByName(ctx, namespaceID, name)
+	if err != nil {
+		return nil, err
 	}
 	if !src.Enabled {
-		return nil, fmt.Errorf("source: %s 已停用", src.Name)
+		return nil, ErrSourceDisabled
 	}
-	if eventType == "" {
-		eventType = src.Name
+	return s.Ingest(ctx, Input{Source: src, Type: src.Name, Payload: payload})
+}
+
+// ErrSourceDisabled 表示源已停用（webhook 对外 404，fire 拒绝触发）。
+var ErrSourceDisabled = errors.New("source: 源已停用")
+
+// HookBody 是 webhook 投递体（source.md §3.3）。
+type HookBody struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// Hook 处理一次 webhook 投递：token 定位源（停用/不存在一律 404，不区分）。
+func (s *Service) Hook(ctx context.Context, token string, body HookBody) (*Receipt, error) {
+	src, err := s.db.LookupHook(ctx, token)
+	if err != nil {
+		return nil, err
 	}
-	if len(payload) == 0 || !json.Valid(payload) {
+	return s.Ingest(ctx, Input{
+		Source: src, Type: body.Type, DeliveryID: body.ID, Payload: body.Payload,
+	})
+}
+
+// PreviewTarget 是试运行预览里的一条目标（source.md §5.3）。
+type PreviewTarget struct {
+	Capability string          `json:"capability"`
+	Version    int             `json:"version,omitempty"`
+	Params     json.RawMessage `json:"params,omitempty"`
+	State      string          `json:"state"`
+	Reason     string          `json:"reason,omitempty"`
+	Detail     string          `json:"detail,omitempty"`
+}
+
+// Preview 是试运行预览文档（不是资源、不可写；没有 eventId/taskId）。
+type Preview struct {
+	Targets []PreviewTarget `json:"targets"`
+	Pruned  []route.Prune   `json:"pruned"`
+}
+
+// Preview 对一个**已保存**的源做试运行（0 持久写入）。
+func (s *Service) Preview(ctx context.Context, namespaceID, name string, payload json.RawMessage) (*Preview, error) {
+	src, err := s.db.GetSourceByName(ctx, namespaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	return s.PreviewSource(ctx, src, payload)
+}
+
+// PreviewSource 对任意源文档做试运行（未保存的源也能预览）。
+//
+// 完全不写库：事件、任务、去重记录、剪枝留痕、回执一个都不落（source.md §5.3）。
+func (s *Service) PreviewSource(ctx context.Context, src *store.Source, payload json.RawMessage) (*Preview, error) {
+	if src == nil {
+		return nil, fmt.Errorf("source: 缺少源行")
+	}
+	assembled, perr := s.assemblePayload(src, payload)
+	if perr != nil {
+		return nil, perr
+	}
+	preview := &Preview{Targets: []PreviewTarget{}, Pruned: []route.Prune{}}
+	if prune := route.ValidatePayload(s.payloadSchema(src), assembled); prune != nil {
+		preview.Pruned = append(preview.Pruned, *prune)
+		return preview, nil
+	}
+	plan, err := s.router.PlanFromSource(ctx, src, "preview", assembled)
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range plan.Targets {
+		item := PreviewTarget{
+			Capability: target.Capability, Version: target.Version,
+			Params: target.Params, State: target.State,
+			Reason: target.Reason, Detail: target.Detail,
+		}
+		if item.State == route.StatePruned && item.Reason == "" && len(plan.Pruned) > 0 {
+			item.Reason = plan.Pruned[0].Reason
+		}
+		preview.Targets = append(preview.Targets, item)
+	}
+	preview.Pruned = append(preview.Pruned, plan.Pruned...)
+	return preview, nil
+}
+
+// assemblePayload 装配载荷：cron/manual 以 config.payload 打底、投递体一层覆盖。
+//
+// 深合并不做（source.md §5：一层覆盖）；webhook 没有静态打底。
+// 投递体不是 JSON 对象 → ErrBadPayload（400，不产生事件）。
+func (s *Service) assemblePayload(src *store.Source, incoming json.RawMessage) (map[string]any, error) {
+	base := map[string]any{}
+	if src.Kind == sourcespec.KindCron || src.Kind == sourcespec.KindManual {
+		if cfgPayload := sourcespec.ParseConfig(src.Kind, src.Config).Payload; len(cfgPayload) > 0 {
+			for name, value := range cfgPayload {
+				base[name] = value
+			}
+		}
+	}
+	overlay, ok := route.DecodePayload(incoming)
+	if !ok {
+		return nil, ErrBadPayload
+	}
+	for name, value := range overlay {
+		base[name] = value
+	}
+	return base, nil
+}
+
+// payloadSchema 读出源配置里的载荷契约（webhook/cron/manual 通用字段）。
+func (s *Service) payloadSchema(src *store.Source) json.RawMessage {
+	return sourcespec.ParseConfig(src.Kind, src.Config).PayloadSchema
+}
+
+// eventWindow 是投递去重窗口（= events 保留期；0 = 永久）。
+func (s *Service) eventWindow(ctx context.Context) int64 {
+	cfg, err := s.db.GetSystemConfig(ctx)
+	if err != nil || cfg == nil {
+		return store.DefaultRetentionEventTTLSec
+	}
+	return cfg.RetentionEventTTLSec
+}
+
+// recordPrune 写一条剪枝留痕并返回真实事件 id。
+func (s *Service) recordPrune(ctx context.Context, namespaceID, traceID string, prune route.Prune) (string, error) {
+	payload, err := json.Marshal(map[string]string{
+		"capability": prune.Capability, "detail": prune.Detail,
+	})
+	if err != nil {
 		payload = json.RawMessage(`{}`)
 	}
-
-	// 事件 payload = config.payload 打底 + 本次 payload 覆盖同名键（契约 §2.5）；
-	// 打底只对 cron/manual 生效，webhook/github 直接用投递体（A13）。
-	// 写进 events 的字节也用合并后的 map 重新 marshal：否则"剪枝说取不到 x"
-	// 与"事件体里明明有 x"会互相矛盾，事后无法复盘。
-	payloadMap, evPayload := eventPayload(src, payload)
-
-	ev := &store.Event{
-		NamespaceID: src.NamespaceID, // 事件属于源所在的命名空间（I10）
-		TraceID:     t.newTraceID(),
-		Source:      src.Name, // 事件来源记源的名字，而不是能力的名字
-		Type:        eventType,
-		Payload:     evPayload,
-		CreatedAt:   t.now(),
-	}
-	if idemKey != "" {
-		k := idemKey
-		ev.IdemKey = &k
-	}
-
-	inserted, err := t.Store.InsertEvent(ctx, ev)
-	if err != nil {
-		return nil, fmt.Errorf("source: insert event: %w", err)
-	}
-	res := &FireResult{Event: ev, Inserted: inserted, Idempotent: !inserted}
-	if !inserted {
-		// 幂等命中：事件已处理过，不重复派发
-		return res, nil
-	}
-
-	if len(src.Targets) == 0 {
-		// 建源时就要求至少一个目标，走到这里说明数据被外部改坏了。
-		// 不静默吞掉：这属于不一致状态，要能报警。
-		return res, fmt.Errorf("source: %s 没有入口边（edges 里没有 from_key=%s 的行）", src.Name, src.Name)
-	}
-
-	// 入口校验（设计 §4.2 / §7 P0.2）：事件**已经落库**（外部系统不重试，丢了就
-	// 真的没了），这里只决定派不派。不合规 → 一条都不派 + prune(event_schema)，
-	// trace 里看得到"收到了，但这版 payload 不合契约"。
-	//
-	// 为什么不在 handler 层直接 400：400 会让外部系统把事件丢在地上，而这整
-	// 套系统一直在消灭的正是静默失败。钳住派发、留住事件，才是可复盘的处理。
-	if p, bad := resultSchemaPrune(src, eventType, payloadMap); bad {
-		t.recordEventSchemaPrune(ctx, ev, p)
-		res.Dispatch = prunedOnly(p)
-		return res, nil
-	}
-
-	out, err := t.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		NamespaceID: src.NamespaceID, // 源触发：命名空间随源走（契约 §3）
-		TraceID:     ev.TraceID,
-		// 入口边：来源名 + 事件类型。目标能力与参数模板都从这条边上取（P2.1）——
-		// 不再有 Targets / TargetParams 旁路，所以源触发与 POST /v1/events
-		// 走的是同一条路、同一套判定。
-		FromIsSource:  true,
-		EntryFromKey:  src.Name,
-		EntryFromPort: eventType,
-		// Payload / VarValues 是边上模板（{{路径}} / {from} / {var}）的取值来源。
-		// 注意 Params 不传：入口边的参数来自边上的模板，不是整份 payload——
-		// 否则「参数从哪来」又会有两条口径。
-		Payload:   payloadMap,
-		VarValues: route.ResolveVars(src.VarDefs(), payloadMap),
-		// 源没有"能力 path"：它自己不是能力，所以环检测从空开始
-		Path: nil,
-	})
-	if err != nil {
-		return res, fmt.Errorf("source: dispatch: %w", err)
-	}
-	res.Dispatch = out
-	return res, nil
-}
-
-// ---------- 入口校验：resultSchema（设计 §4.2 / §7 P0.2）----------
-
-// resultSchemaPrune 用源的 resultSchema 判本次事件 payload。
-//
-// 返回 (记录, true) = 不合规：调用方**不派发**，但要留痕（事件本身已经落库）；
-// 返回 (_, false) = 通过，或者源根本没声明契约。
-//
-// **没声明 = 不校验**：加这个字段之前的所有源（含已经被手改成非对象的脏数据）
-// 行为与今天完全一致，不需要任何迁移。
-//
-// 判据不另写一套：用 route.ValidateEventPayload，与边上的 params_schema 同一个
-// 受控子集引擎（required/type/…）。同一个 payload 在入口和在边上不能得出不同结论。
-//
-// detail 必须能回答「凭什么说这次事件不合规」：引擎给的消息就是
-// `payload.title: want type string, got number` / `payload: missing required field "title"`
-// 这种形式——哪个字段、期望什么、实得什么全在里面。
-func resultSchemaPrune(src *store.Source, eventType string, payload map[string]any) (route.PrunedRecord, bool) {
-	schema := src.ResultSchema()
-	if len(schema) == 0 {
-		return route.PrunedRecord{}, false // 未声明 = 不校验（老源行为不变）
-	}
-	msg := route.ValidateEventPayload(schema, payload)
-	if msg == "" {
-		return route.PrunedRecord{}, false
-	}
-	return route.PrunedRecord{
-		Reason: route.ReasonEventSchema,
-		// Port 是事件类型：它与派发期剪枝里的 port 是同一个位置
-		//（"是哪一次触发派不出去"），trace 里能直接对上。
-		Port:   eventType,
-		Detail: fmt.Sprintf("payload 不符合源「%s」的 resultSchema：%s", src.Name, msg),
-	}, true
-}
-
-// recordEventSchemaPrune 把一条入口剪枝写进 events。
-//
-// 与派发期的剪枝（route.Dispatcher.prune）共用**同一套约定**而不共用那个函数：
-// source='route'、type='pruned.<reason>'、payload=PruneEventPayload。区别只在
-// 产生点——这里发生在派发**之前**（压根没走到 plan），所以那边那个函数用不上。
-//
-// 留痕是 best-effort：写失败只记日志，绝不反过来让这次投递失败。事件已经落库，
-// 一条诊断记录写不进去不能把"可观测的剪枝"变成"不可观测的错误"。
-func (t *Trigger) recordEventSchemaPrune(ctx context.Context, ev *store.Event, p route.PrunedRecord) {
-	payload, err := json.Marshal(route.PruneEventPayload{
-		// 入口剪枝的上游标识是**源的名字**（与入口边的 fromCapability 同一口径）。
-		FromCapability: ev.Source,
-		Port:           p.Port,
-		Detail:         p.Detail,
-	})
-	if err != nil {
-		// 三个字段全是 string，理论上不可达；保底不 panic。
-		slog.Warn("marshal event_schema prune payload failed",
-			"event", "source.schema_prune.record_failed",
-			"trace_id", ev.TraceID, "error", err.Error())
-		return
-	}
-	if _, err := t.Store.InsertPruneEvent(ctx, &store.Event{
-		NamespaceID: ev.NamespaceID, // 与事件同一个命名空间（I10）
-		TraceID:     ev.TraceID,     // 同一条 trace：这就是"这次事件为什么没派"
-		Source:      route.PruneEventSource,
-		Type:        route.PruneEventType(p.Reason),
+	event := &store.Event{
+		NamespaceID: namespaceID,
+		TraceID:     traceID,
+		Type:        prune.Reason,
 		Payload:     payload,
-		CreatedAt:   t.now(),
-	}); err != nil {
-		slog.Warn("record event_schema prune failed",
-			"event", "source.schema_prune.record_failed",
-			"trace_id", ev.TraceID, "source", ev.Source, "error", err.Error())
 	}
+	if err := s.db.InsertPruneEvent(ctx, event); err != nil {
+		return "", fmt.Errorf("source: 写剪枝留痕: %w", err)
+	}
+	return event.ID, nil
 }
 
-// prunedOnly 是一次「入口剪枝」的派发结果：0 个任务 + 1 条剪枝。
-//
-// 形状必须与派发期一致（Tasks 是 [] 而不是 null）：调用方（handler / 前端）只
-// 有一套读法，空列表返回 [] 也是仓库硬约束。
-func prunedOnly(p route.PrunedRecord) *route.DispatchOutput {
-	return &route.DispatchOutput{Tasks: []*store.Task{}, Pruned: []route.PrunedRecord{p}}
-}
-
-// extractParams 从 payload 里取交给任务用的参数。
-//
-// 与 trigger.extractParams 同语义：payload 原样只存不解释（不变量 I6），
-// 但任务 params 需要是有用的上游数据，所以整份 payload 作为 params 传下去。
-func extractParams(payload json.RawMessage) map[string]any {
-	if len(payload) == 0 {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil || m == nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-// eventPayload 算出本次事件的 payload：config.payload 打底，事件 payload
-// 覆盖同名键（契约 §2.5）。
-//
-// **打底只对 cron / manual 生效**（A13）：这两种源的事件体是源自己造的，
-// config.payload 就是它的默认值。webhook / github 的事件体来自外部投递，
-// 投递体本身就是 payload —— 历史行里残留的 `payload` 键（早期
-// ValidateSourceConfig 各 kind 都保留）绝不能被复活成事件字段：那样同一次
-// 投递在两版实现下会产出不同的 payload，事后复盘无从对齐。
-// 未知 kind 同样按"不合并"处理：宁可少合并，也不要凭空造字段。
-//
-// 两个返回值一定要成对使用：map 供参数求值 / 任务 params，字节供写进
-// events。两者必须同源，否则「剪枝说取不到 x」和「事件体里明明有 x」
-// 会互相矛盾，事后根本查不清到底发生了什么。
-//
-// 没有打底数据（不是 cron/manual，或 ConfigPayload 为 nil，即没配 / 不是
-// JSON 对象）时直接返回事件 payload 本身：不重新 marshal，保留调用方给的
-// 原始字节。
-func eventPayload(src *store.Source, payload json.RawMessage) (map[string]any, json.RawMessage) {
-	m := extractParams(payload)
-	if !usesConfigPayload(src.Kind) {
-		return m, payload
-	}
-	base := src.ConfigPayload()
-	if len(base) == 0 {
-		return m, payload
-	}
-	merged := make(map[string]any, len(base)+len(m))
-	for k, v := range base {
-		merged[k] = v
-	}
-	for k, v := range m {
-		merged[k] = v // 事件 payload 覆盖同名键
-	}
-	// 值都来自 JSON 反序列化，marshal 不会失败；失败时退回原始字节。
-	if b, err := json.Marshal(merged); err == nil {
-		return merged, b
-	}
-	return merged, payload
-}
-
-// usesConfigPayload 判断这种源是否用 config.payload 给事件体打底。
-//
-// 只有 cron / manual 才算（A13）：它们的 config.payload 就是源自己的默认
-// 事件体。webhook / github 的 payload 来自外部投递；未知 kind 也按保守
-// 处理（不合并）。
-func usesConfigPayload(kind string) bool {
-	switch kind {
-	case store.SourceKindCron, store.SourceKindManual:
-		return true
-	default:
-		return false
-	}
-}
-
-// ---------- cron 调度器 ----------
-
-// Scheduler 是 cron 源的调度循环。
-type Scheduler struct {
-	Store      Store
-	Dispatcher Dispatcher
-	// Interval 是轮询间隔（默认 1s：cron 最细粒度是分钟，1s 足够精确）
-	Interval time.Duration
-	// Now 可注入（测试用）
-	Now func() int64
-}
-
-func (s *Scheduler) interval() time.Duration {
-	if s.Interval > 0 {
-		return s.Interval
-	}
-	return time.Second
-}
-
-func (s *Scheduler) now() int64 {
-	if s.Now != nil {
-		return s.Now()
-	}
-	return store.Now()
-}
-
-// Run 启动调度循环，直到 ctx 取消。
-//
-// 单轮失败只记日志继续：调度是自愈机制，不能因一次 DB 抖动就永久停摆
-// （否则所有 cron 源再也不会触发）。
-func (s *Scheduler) Run(ctx context.Context) {
-	t := time.NewTicker(s.interval())
-	defer t.Stop()
-
-	slog.Info("cron scheduler started",
-		"event", "source.scheduler.start",
-		"interval", s.interval().String(),
-	)
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("cron scheduler stopped", "event", "source.scheduler.stop")
-			return
-		case <-t.C:
-			s.Tick(ctx)
+// 编译期断言：回执 reason 必须是封闭剪枝词表（防止有人在这里新造一个词）。
+var _ = func() bool {
+	for _, reason := range []string{
+		protocol.ReasonNoTarget, protocol.ReasonEventSchema, protocol.ReasonParamMissing,
+		protocol.ReasonParamSchema, protocol.ReasonParamType, protocol.ReasonDownstreamMissing,
+	} {
+		if !protocol.IsPruneReason(reason) && reason != protocol.ReasonDownstreamMissing {
+			panic("source: 非剪枝原因码 " + reason)
 		}
 	}
-}
-
-// Tick 执行一轮：取到点的 cron 源，逐个触发。
-//
-// 触发时刻用**计划时刻**（next_fire_at）而不是"现在"：
-// 它是幂等键的一部分，进程延迟醒来也不会导致同一分钟被触发两次。
-func (s *Scheduler) Tick(ctx context.Context) {
-	now := s.now()
-	due, err := s.Store.DueCronSources(ctx, now, 100)
-	if err != nil {
-		slog.Error("list due cron sources failed",
-			"event", "source.scheduler.due_failed", "error", err.Error())
-		return
-	}
-	if len(due) == 0 {
-		return
-	}
-
-	trig := &Trigger{Store: s.Store, Dispatcher: s.Dispatcher, Now: s.Now}
-	for _, src := range due {
-		fireAt := now
-		if src.NextFireAt != nil {
-			fireAt = *src.NextFireAt
-		}
-		// 确定性幂等键：同一个源、同一个计划时刻只会产生一条事件
-		idem := fmt.Sprintf("cron:%s:%d", src.ID, fireAt)
-
-		// src.NamespaceID 是 DueCronSources 行自带的命名空间（store 扫出来），
-		// GetSource 按它定位：令牌/名称只在命名空间内唯一。
-		full, err := s.Store.GetSource(ctx, src.NamespaceID, src.ID)
-		if err != nil {
-			slog.Error("load source failed",
-				"event", "source.scheduler.load_failed", "source_id", src.ID, "error", err.Error())
-			continue
-		}
-
-		// cron 的事件体：三个系统字段打底，config.payload 的用户字段覆盖
-		// 同名键（契约 §2.5）——用户声明的字段得能盖住系统默认值，否则
-		// "config.payload 里写了 source" 这件事会静默不生效。
-		payloadMap := map[string]any{
-			"source":  src.Name,
-			"kind":    store.SourceKindCron,
-			"firedAt": fireAt,
-		}
-		for k, v := range full.ConfigPayload() {
-			payloadMap[k] = v
-		}
-		payload, _ := json.Marshal(payloadMap)
-		res, err := trig.Fire(ctx, full, src.Name, idem, payload)
-		if err != nil {
-			slog.Error("cron fire failed",
-				"event", "source.scheduler.fire_failed",
-				"source_id", src.ID, "source", src.Name, "error", err.Error())
-			// 即使失败也推进 next_fire_at，否则这个源会卡在同一时刻反复重试、
-			// 把日志刷满。真实的失败会作为错误留在日志里。
-		} else if res.Idempotent {
-			slog.Debug("cron fire skipped (idempotent)",
-				"event", "source.scheduler.idempotent", "source", src.Name)
-		} else {
-			slog.Info("cron fired",
-				"event", "source.fired",
-				"source", src.Name, "source_id", src.ID,
-				"tasks", len(res.Dispatch.Tasks),
-				"pruned", len(res.Dispatch.Pruned),
-			)
-		}
-
-		// 算下一次：从**计划时刻**往后推，避免延迟醒来导致漏触发
-		next, nerr := store.NextCronTime(full.Config, time.Unix(fireAt, 0))
-		if nerr != nil || next.IsZero() {
-			// 表达式永不成立（如 2 月 30 日）：停用该源并记日志，
-			// 别让它每分钟被查一次却什么也不做。
-			slog.Warn("cron expression never fires, disabling source",
-				"event", "source.scheduler.never_fires",
-				"source", src.Name, "source_id", src.ID)
-			continue
-		}
-		if err := s.Store.MarkSourceFired(ctx, src.ID, fireAt, next.Unix()); err != nil {
-			slog.Error("mark source fired failed",
-				"event", "source.scheduler.mark_failed", "source_id", src.ID, "error", err.Error())
-		}
-	}
+	return true
 }

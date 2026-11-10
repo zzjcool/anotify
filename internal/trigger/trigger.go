@@ -1,283 +1,139 @@
-// Package trigger 实现「外部世界的变化 → 事件行 → 首次派发」的合流点。
+// Package trigger 是 v4 的 cron 调度器：到点的源触发一次标准接收（与手动/webhook
+// 完全同一条 Ingest 路径），然后按**上次计划时刻**推进下一次触发。
 //
-// 三类触发器（webhook / cron / watch）产出的东西完全一致：
+// 三条纪律：
 //
-//	source + type + payload + traceId  →  events 行  →  Dispatcher.Dispatch
-//
-// 差异只在**什么时候**产生事件、以及 trace_id 长什么样：
-//
-//	webhook  收到 HTTP 请求时         trace_<时间戳>_<随机>
-//	cron     到点触发时               trace_cron_<name>_<fire_time>
-//	watch    检测到变化时             trace_<时间戳>_<随机>
-//
-// 契约要点：
-//   - trace_id **由触发器生成**，中枢不代生成（§10 Q2）
-//   - 幂等键由触发器给（`idemKey`），中枢只做唯一约束（§10.1）
-//   - 带 idemKey 冲突时返回**已有**的 event_id + trace_id，不是 409
-//   - 首轮派发的目标来自**入口边**（edges.from_is_source=1），参数模板在边上
-//     （P2.1：源不再有一张自己的出口表）
+//   - 触发就是 source.Service.Ingest：没有 cron 专属的派发/幂等/回执逻辑；
+//   - 错误不吞：每条源的失败都带源身份返回并记录，互不连坐；
+//   - 不热循环：配置无法解析/表达式永不成立时也把 next_fire_at 推到远处并记 error，
+//     而不是让它每 tick 都「到点」。
 package trigger
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"log/slog"
 	"time"
 
-	"github.com/zzjcool/anotify/internal/route"
+	"github.com/zzjcool/anotify/internal/source"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// Store 是触发器需要的最小 store 表面（便于测试注入）。
+const (
+	// DefaultTick 是调度循环的节拍。
+	DefaultTick = time.Second
+	// DefaultBatch 是单轮最多触发的源数量。
+	DefaultBatch = 100
+	// neverFireHorizon 是「表达式永不成立」时的下一次触发距离（避免每 tick 重试）。
+	neverFireHorizon = 366 * 24 * time.Hour
+)
+
+// Scheduler 是 cron 源的调度器。
+type Scheduler struct {
+	db      *store.DB
+	sources *source.Service
+	log     *slog.Logger
+	now     func() int64
+}
+
+// New 构造调度器（时钟为真实时钟）。
+func New(db *store.DB, sources *source.Service, logger *slog.Logger) *Scheduler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Scheduler{db: db, sources: sources, log: logger, now: func() int64 { return store.Now() }}
+}
+
+// NewWithClock 是显式时钟版（测试用）。
+func NewWithClock(db *store.DB, sources *source.Service, logger *slog.Logger, now func() int64) *Scheduler {
+	s := New(db, sources, logger)
+	if now != nil {
+		s.now = now
+	}
+	return s
+}
+
+// FireResult 是单条源的触发结果（Err 非空表示这条失败，其它源照常）。
+type FireResult struct {
+	SourceID    string
+	SourceName  string
+	NamespaceID string
+	Receipt     *source.Receipt
+	Err         error
+}
+
+// RunDue 触发一轮到点的 cron 源。
 //
-// *store.DB 满足它。
-//
-// 参数名都是 namespaceID：命名空间是唯一隔离维度，也是唯一作用域参数（契约 §2.1）。
-type Store interface {
-	InsertEvent(ctx context.Context, e *store.Event) (bool, error)
-	ListCapabilities(ctx context.Context, namespaceID string) ([]*store.CapabilityVersion, error)
-	EnsureGraphVersion(ctx context.Context, namespaceID string) (*store.GraphVersion, error)
-}
-
-// Dispatcher 是派发器（route.Dispatcher 满足这个接口）。
-type Dispatcher interface {
-	Dispatch(ctx context.Context, in route.DispatchInput) (*route.DispatchOutput, error)
-}
-
-// Service 是触发器服务：入事件 + 触发首轮派发。
-type Service struct {
-	Store      Store
-	Dispatcher Dispatcher
-
-	// Now 返回当前 unixepoch 秒（测试可注入）。
-	Now func() int64
-	// NewTraceID 生成 trace_id（测试可注入以断言「由触发器生成」）。
-	NewTraceID func() string
-}
-
-// New 构造触发器服务。
-func New(st Store, d Dispatcher) *Service {
-	return &Service{
-		Store:      st,
-		Dispatcher: d,
-		Now:        store.Now,
-		NewTraceID: NewTraceID,
+// 下一次触发从**上次计划时刻**推算（不是 now）：调度器晚醒时不会把错过的窗口叠成
+// 一串立刻触发。无论 Ingest 成功与否都会推进 next_fire_at——cron 是时间驱动，
+// 「失败就原地重试」会变成热循环；失败本身以 FireResult.Err 返回，不吞。
+func (s *Scheduler) RunDue(ctx context.Context, now int64, limit int) ([]FireResult, error) {
+	if limit <= 0 {
+		limit = DefaultBatch
 	}
-}
-
-// IngestRequest 是一次事件摄入请求（对应 POST /v1/events 的 body）。
-type IngestRequest struct {
-	// NamespaceID 是事件落进哪个命名空间（**必填**）。
-	//
-	// 事件属于命名空间（I10）：入口边、trace 列表、统计全按它过滤。
-	// 缺了它就没有「这条事件属于哪套流程」的答案，所以直接报错——
-	// 绝不回退默认命名空间（契约 §6.2）。
-	NamespaceID string `json:"namespaceId"`
-	// Source 是事件来源，如 "github" / "cron" / "watch"。
-	Source string `json:"source"`
-	// Type 是事件类型，如 "pull_request.opened"。**它就是 origin 能力的出口名**。
-	Type string `json:"type"`
-	// IdemKey 可选幂等键（GitHub 用 X-GitHub-Delivery，cron 用 cron:<name>:<fire_time>）。
-	// 为 nil 表示这个来源没有稳定投递 ID —— 允许重复（契约 §10.1）。
-	IdemKey *string `json:"idemKey,omitempty"`
-	// TraceID 可选：给了就用它（同一 trace 的事件串起来），不给则由触发器生成。
-	TraceID string `json:"traceId,omitempty"`
-	// Payload 是事件原始负载。
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
-// IngestResult 是事件摄入的结果。
-type IngestResult struct {
-	Event *store.Event `json:"event"`
-	// Inserted=false 表示命中幂等，返回的是**已有**的事件（event_id + trace_id 都来自旧行）。
-	Inserted bool `json:"inserted"`
-	// Dispatch 是首轮派发的结果（幂等命中时为空——事件已经处理过了）。
-	Dispatch *route.DispatchOutput `json:"dispatch,omitempty"`
-}
-
-// Ingest 把一次外部变化变成事件行，并触发第一次派发（契约 §2.5 / §10.1）。
-//
-// 顺序（先落库，再派发）：
-//
-//  1. 校验必填：namespace_id / source / type（缺 namespaceId 不回退默认，契约 §6.2）
-//  2. 确定 trace_id：给了就用，没给由触发器生成
-//  3. 幂等写 events（带 idemKey 时冲突返回已有行，不是 409）
-//  4. 幂等命中 → 直接返回（事件已处理过，不重复派发）
-//  5. 首轮派发：入口边的左端就是**来源名**，出口名就是事件 type（契约 §2.4）
-//
-// 注意：**「来源没有入口边」不是错误**（#110）。事件照收（200），派发结果里记一条
-// pruned/no_edge —— 这样「为什么没触发」是可以回答的。旧模型里那种
-// 「source 必须对应一个 origin 能力，否则 422 + 可用来源列表」已经整条删除
-// （源 sources 取代了 origin 能力，见第 5 步的注释）。
-func (s *Service) Ingest(ctx context.Context, req *IngestRequest) (*IngestResult, error) {
-	if req == nil {
-		return nil, fmt.Errorf("ingest: nil request")
+	if now == 0 {
+		now = s.now()
 	}
-	if req.NamespaceID == "" {
-		// 不回退默认命名空间（契约 §6.2）：回退等于把人写错的地方藏起来。
-		return nil, fmt.Errorf("ingest: empty namespace_id: %w", store.ErrNamespaceRequired)
-	}
-	if req.Source == "" {
-		return nil, fmt.Errorf("ingest: source is required")
-	}
-	if req.Type == "" {
-		return nil, fmt.Errorf("ingest: type is required")
-	}
-
-	// ① trace_id：由触发器生成（契约 §10 Q2）。调用方给了就沿用
-	//（同一 trace 的多个事件串起来时，发起方才有全局视角）。
-	traceID := strings.TrimSpace(req.TraceID)
-	if traceID == "" {
-		traceID = s.newTraceID()
-	}
-
-	payload := req.Payload
-	if len(payload) == 0 || !json.Valid(payload) {
-		payload = json.RawMessage(`{}`)
-	}
-
-	ev := &store.Event{
-		NamespaceID: req.NamespaceID,
-		TraceID:     traceID,
-		Source:      req.Source,
-		Type:        req.Type,
-		Payload:     payload,
-		IdemKey:     normalizeIdemKey(req.IdemKey),
-		CreatedAt:   s.now(),
-	}
-
-	// ② 幂等写
-	inserted, err := s.Store.InsertEvent(ctx, ev)
+	due, err := s.db.ListDueSources(ctx, now, limit)
 	if err != nil {
-		return nil, fmt.Errorf("ingest: insert event: %w", err)
+		return nil, fmt.Errorf("trigger: 列到点源: %w", err)
 	}
-
-	result := &IngestResult{Event: ev, Inserted: inserted}
-
-	// ③ 幂等命中：事件已经处理过了，不重复派发。
-	// 仍然返回 200 + 已有的 event_id/trace_id —— 对发送方而言都是成功。
-	if !inserted {
-		return result, nil
+	results := make([]FireResult, 0, len(due))
+	var sweepErr error
+	for _, src := range due {
+		result := FireResult{SourceID: src.ID, SourceName: src.Name, NamespaceID: src.NamespaceID}
+		nextFire := s.nextFireAfter(src, now)
+		receipt, ierr := s.sources.Ingest(ctx, source.Input{Source: src, Type: src.Name})
+		if ierr != nil {
+			result.Err = ierr
+			s.log.Warn("cron source fire failed", "source_id", src.ID, "source", src.Name, "err", ierr)
+		} else {
+			result.Receipt = receipt
+		}
+		if merr := s.db.MarkSourceFired(ctx, src.ID, now, nextFire); merr != nil {
+			result.Err = errors.Join(result.Err, fmt.Errorf("trigger: 推进 %s 的下次触发: %w", src.Name, merr))
+			sweepErr = errors.Join(sweepErr, result.Err)
+		}
+		results = append(results, result)
 	}
+	return results, sweepErr
+}
 
-	// ④ 首轮派发：入口边的左端就是**来源名**，端口名就是事件 type。
-	//
-	// 这里原来要先 findOrigin 找一个叫 github@1 的"起点能力"当锚点。
-	// 那种能力不执行代码、不产生任务、也没地方存配置（cron 表达式之类），
-	// 却必须存在、而且会出现在能力列表上 —— 源（sources）已经是它的
-	// 完整替代，所以入口边直接以来源名为左端（契约 §2.4）。
-	//
-	// P2.1 之后这条路径与源自己的触发（source.Trigger.Fire）**完全同形**：
-	// 两者都只给「来源名 + 事件类型」，目标能力与参数模板都从入口边取。
-	out, err := s.Dispatcher.Dispatch(ctx, route.DispatchInput{
-		NamespaceID:   req.NamespaceID,
-		TraceID:       traceID,
-		FromIsSource:  true,
-		EntryFromKey:  req.Source,
-		EntryFromPort: req.Type,
-		// Payload 是入口边模板（{{路径}} / {from} / {var}）的取值来源：
-		// 与 source.Trigger.Fire 传的是同一个东西（合并后的 payload map），
-		// 所以两个入口给同一份模板求值出同样的参数。
-		Payload: extractParams(payload),
-		// 入口边没有父任务（parent_task_id 留空）
-		// path 为空：来源不是能力，不参与「A→B→A」环检测
-		Path: nil,
-	})
+// nextFireAfter 计算下一次触发时刻（以源的上次计划时刻为基准）。
+func (s *Scheduler) nextFireAfter(src *store.Source, now int64) int64 {
+	base := time.Unix(now, 0)
+	if src.NextFireAt != nil && *src.NextFireAt > 0 {
+		base = time.Unix(*src.NextFireAt, 0)
+	}
+	next, err := sourcespec.NextCronTime(src.Config, base)
 	if err != nil {
-		// 事件已入库，派发失败不该让发送方重投（重投也还是同一条事件）。
-		// 返回事件 + 包装后的错误，由上层决定状态码与重试。
-		return result, fmt.Errorf("ingest: dispatch: %w", err)
+		s.log.Error("cron expression unusable", "source_id", src.ID, "source", src.Name, "err", err)
+		return now + int64(neverFireHorizon/time.Second)
 	}
-	result.Dispatch = out
-	return result, nil
+	if next.IsZero() {
+		s.log.Error("cron expression never fires", "source_id", src.ID, "source", src.Name)
+		return now + int64(neverFireHorizon/time.Second)
+	}
+	return next.Unix()
 }
 
-// normalizeIdemKey 把空白串视为「没有幂等键」。
-//
-// 空字符串作为 idem_key 是危险的：它会让所有「带了空键」的事件被判为同一条。
-func normalizeIdemKey(k *string) *string {
-	if k == nil {
-		return nil
+// Run 按 tick 周期触发，直到 ctx 结束。
+func (s *Scheduler) Run(ctx context.Context, tick time.Duration) error {
+	if tick <= 0 {
+		tick = DefaultTick
 	}
-	trimmed := strings.TrimSpace(*k)
-	if trimmed == "" {
-		return nil
+	timer := time.NewTicker(tick)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			if _, err := s.RunDue(ctx, s.now(), DefaultBatch); err != nil {
+				s.log.Warn("cron sweep failed", "err", err)
+			}
+		}
 	}
-	return &trimmed
 }
-
-// extractParams 把事件 payload 解成**求值用**的 map（入口边模板的取值来源）。
-//
-// 不做任何转换/求值（不变量 I6）：payload 是对象就整个用它，其他类型（数组/字符串/数字）
-// 包一层 {"payload": ...}——否则一份 `[1,2]` 的投递在模板里没有任何点号路径可达，
-// 用户只能看到一个莫名其妙的 param_missing。
-//
-// 它与「参数」不是一回事（P2.1）：入口边的参数由边上 mapping 求值得到，
-// 这里只是把 payload 递到求值器手边。
-func extractParams(payload json.RawMessage) map[string]any {
-	if len(payload) == 0 {
-		return map[string]any{}
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(payload, &obj); err == nil && obj != nil {
-		return obj
-	}
-	var anyVal any
-	if err := json.Unmarshal(payload, &anyVal); err != nil {
-		return map[string]any{}
-	}
-	return map[string]any{"payload": anyVal}
-}
-
-func (s *Service) now() int64 {
-	if s.Now != nil {
-		return s.Now()
-	}
-	return store.Now()
-}
-
-func (s *Service) newTraceID() string {
-	if s.NewTraceID != nil {
-		return s.NewTraceID()
-	}
-	return NewTraceID()
-}
-
-// NewTraceID 生成一个 trace_id：trace_<unixnano>_<8 字节随机 hex>。
-//
-// trace_id 由**触发器**生成（契约 §10 Q2），不是中枢。
-// 用纳秒时间戳 + 随机后缀：时间部分便于人肉排序排查，
-// 随机后缀保证同一纳秒内的并发请求不会撞（同 #55 的 cap_/grf_ ID 教训）。
-func NewTraceID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand 失败意味着系统熵源不可用；trace_id 是日志关联的关键字段，
-		// 静默降级成纯时间戳会在并发下产生重复 trace——宁可 panic。
-		panic("trigger: crypto/rand unavailable: " + err.Error())
-	}
-	return fmt.Sprintf("trace_%d_%s", time.Now().UnixNano(), hex.EncodeToString(b[:]))
-}
-
-// CronTraceID 给 cron 触发器生成确定性 trace_id：cron:<name>:<fire_time>。
-//
-// 用确定性 ID（而不是随机）的理由：同一个 cron 同一时刻重复触发
-// 应该被幂等键挡住，而不是产生两条 trace。配合 IdemKey 使用：
-//
-//	idemKey  = cron:<name>:<fire_time>
-//	traceId  = 同上（或省略，由触发器生成随机 ID）
-//
-// 这里提供 trace 版本，便于把「同一个 cron 的多次触发」聚到一条 trace 上排查。
-func CronTraceID(name string, fireTime int64) string {
-	return fmt.Sprintf("cron:%s:%d", name, fireTime)
-}
-
-// CronIdemKey 是 cron 的幂等键（契约 §10.1 的示例）。
-func CronIdemKey(name string, fireTime int64) string {
-	return CronTraceID(name, fireTime)
-}
-
-// ParsedFireTime 把一个时间解析成 cron 的 fire_time（秒）。
-func ParsedFireTime(t time.Time) int64 { return t.Unix() }

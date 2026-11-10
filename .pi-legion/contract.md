@@ -47,8 +47,14 @@ Acceptance: all original G2 test names individually retained/migrated/intentiona
 
 Canonical cwd for every command: /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume. Before command assert pwd -P == git root and GOMOD == pwd/go.mod. Preserve full unique logs in /tmp/anotify-core-recovery-g2-*.log and exact actual exit. These four G2 commands are unchanged target sets from original parent G2.md, not substitutes for final three.
 
+Parent correction 2026-11-10 (serial ownership of this contract's G2 section and G2-RESUME-FROZEN.md temporarily transferred to the G2 worker ONLY for this correction; ownership returned after the edit; no other card/code scope): **gate 1 must be read-only**. The original `gofmt -w ... && git diff --check` acceptance is INVALID and any receipt produced with it is void: a mutating formatter can rewrite unformatted sources and then report green. Editing-phase `gofmt -w` remains allowed formatting, never a gate/certificate. The only gate 1 is:
+
+`test -z "$(gofmt -l internal/route internal/ws internal/lease internal/source internal/trigger internal/logging)" && git diff --check`
+
+Other three target/env sets are unchanged.
+
 ```legion-verify
-cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && gofmt -w internal/route internal/ws internal/lease internal/source internal/trigger internal/logging && git diff --check
+cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && test -z "$(gofmt -l internal/route internal/ws internal/lease internal/source internal/trigger internal/logging)" && git diff --check
 cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go vet ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/...
 cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/... -count=1
 cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/store/... ./internal/artifact/... ./internal/protocol/... -count=1
