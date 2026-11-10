@@ -88,3 +88,15 @@ NoPush/Merge/MR/remote deletion/oldWT deletion/T2/T3 writes. Local branch commit
 - ExactwholeTask/attempt/allnode_instancescols/manifest-upload-object facts snapshots +35independentv4ordinaryindexshape assertions nowwritten; realedgeINSERTfailureaftercap+firstedge provesrollback; noErrorReasonSummary=>literalfailed withrawErrorunchanged; cancelBeginTxclaimhonestlyrenamed/ledgerfullcontents; concurrency/sourceUPDATEcorrectexistingcitations and24anchorsfixed.
 - Two oldbadLinkmap rows stillprecisepolicyboundary: deletedbatchAPI/ghosttargetErrEdgeRejected formerlystrict; currentstoreprojectsrawnext andreaderresolves. HTTPstrictnamevalidationG3distinct. Rootpreciseadjudicationrequested withcapability.go150-164/346-372 andgraph.go27-29/parentcapability.md725-728, no productionrestore/oldcompat inferred. Do not markcurrentstorebadLinkguardproductbug or pretendRefread/invalidScriptrollbackequivalent.
 - No G1/T1approval before finitefindingrereview+mappingruling; rootcurrentmanagercontextcancontinuerealG2 onlyafteractualclosure, otherwisecleanhandoffONLYG2G3G4 fullscope.
+
+## Current rework frozen / limited sixfinding re-review
+- Same originalTESTleafcontinuationtrulysettled acceptedverified: newsubshellwrappedthreeformat/vet/testfive-treecommandsactualall0 andfinal-extension-test.logexists, no active-edit epoch substitutinghistory. Clean codecommit32ec26b.
+- ROOT twooldmaps settlednarrowretirebatch/CREATEghostguardONLY; currentatomicity retainedexactPlaybookconflict0writes/newedgeINSERTfailureaftercap+firstedgefullrollback; positiveghost536 accepteddeclare/project/readmissing preserved. Allotherfullfacts/indices/projection/anchorschangesretained.
+- ONLY2freshGPTreadonlyfinitefindingrereviewsrunning (prior2coverage+4maps/minors), no codewriter/no broad460/C3/Name/Nodeaudit. OriginalNamefreshclearcontinuesvalid. NeedmajorclearbeforeG1safeclosed.
+- Originalg1-whiteboxreviewraw childoutput source/SHA preservedlosslesslyJSON; priorlocalcopiedMarkdownhardbreaktrim doesnotalteroriginalraw/findings. Protectedpaths/settings/.gitignore untouched.
+
+## Actual G1 scope CLOSED (not full T1)
+- Final two finiteGPTreviewers trulysettled/acceptedattested/strictoktrue. Proof original2major+2minor resolved, map original4protectednames+24anchorsresolved. PriorNamecorrectnessoktrue/noactionablefinding retained. No wholeT1/repoPASS implied.
+- Finalsource32ec26b postcontinuationtruesettled EXT fullfive-treeformat/vet/test0/0/0 actualnewtestlogexists, original460/78inventoryexactcompleteness independentlyconfirmed. All teamchildrenresultspersisted/noactivewriter.
+- ROOTauthorizedsafecheckpointhandoff ONLYremainingG2/G3/G4 ifmanagerctxrisk. G1-CLOSURE-HANDOFF.md freezesactual C2/C3/Name interfaces/fixedreceipts/completeG2runtime-G3HTTP5-G4tools-realNode/finalmandatoryfullGo-contract-quick NOTPASSED. Nextmanager MUSTstartactualG2 no G1/C3/Node reimplementation.
+- Source-code equality againstverified32ec26b required atfinalmetadataHEAD; finalcommitonlyevidence/handoff. NoPushMerge/MR/no oldWT/session/data/scratchcleanup.
