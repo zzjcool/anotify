@@ -90,13 +90,18 @@ func TestDispatchFailureTaskReadPaths(t *testing.T) {
 }
 
 // insertTaskSQL 直插一行 tasks（合法性由表上的 CHECK/FK 判定）。
+//
+// 列顺序就是调用方的位置参数下标（0..17）：前 14 列是原有事实面，末尾 4 列
+// （summary/artifacts/result_accepted_at/finished_at，下标 14..17）是 R2 新钉的
+// **伪事实面**——它们没有任何 Node 过程来源，未解析失败行只能是空/真实 server 时刻。
 func insertTaskSQL(t *testing.T, db *DB, args ...any) error {
 	t.Helper()
 	_, err := db.Exec(
 		`INSERT INTO tasks
 		   (id, namespace_id, trace_id, capability_id, capability, version, digest, params,
-		    phase, attempt, error, node_id, lease_id, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, args...)
+		    phase, attempt, error, node_id, lease_id, created_at,
+		    summary, artifacts, result_accepted_at, finished_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, args...)
 	return err
 }
 
@@ -106,7 +111,8 @@ func TestDispatchFailureSchemaRejectsIllegalNullableShapes(t *testing.T) {
 	_ = ctx
 	base := func(id string) []any {
 		return []any{id, e.nsID, "trace-schema", nil, "ghost", 0, "", "{}", TaskFailed, 0,
-			protocol.ReasonDownstreamMissing, nil, "", 1000}
+			protocol.ReasonDownstreamMissing, nil, "", 1000,
+			"", "[]", nil, int64(1000)}
 	}
 	cases := map[string]func() error{
 		"null_ref_pending": func() error {
@@ -141,15 +147,46 @@ func TestDispatchFailureSchemaRejectsIllegalNullableShapes(t *testing.T) {
 		},
 		"resolved_empty_digest": func() error {
 			return insertTaskSQL(t, e.db, "tsk_bad7", e.nsID, "trace-schema", e.cap.ID,
-				e.cap.Name, e.cap.Version, "", "{}", TaskPending, 0, "", nil, "", 1000)
+				e.cap.Name, e.cap.Version, "", "{}", TaskPending, 0, "", nil, "", 1000,
+				"", "[]", nil, int64(1000))
 		},
 		"resolved_zero_version": func() error {
 			return insertTaskSQL(t, e.db, "tsk_bad8", e.nsID, "trace-schema", e.cap.ID,
-				e.cap.Name, 0, e.cap.Digest, "{}", TaskPending, 0, "", nil, "", 1000)
+				e.cap.Name, 0, e.cap.Digest, "{}", TaskPending, 0, "", nil, "", 1000,
+				"", "[]", nil, int64(1000))
 		},
 		"resolved_missing_capability_fk": func() error {
 			return insertTaskSQL(t, e.db, "tsk_bad9", e.nsID, "trace-schema", "cap_missing",
-				"ghost", 1, "sha256:fake", "{}", TaskPending, 0, "", nil, "", 1000)
+				"ghost", 1, "sha256:fake", "{}", TaskPending, 0, "", nil, "", 1000,
+				"", "[]", nil, int64(1000))
+		},
+		// R2：伪事实面——未解析失败行不可能有 Node 过程产物/被接受的结果/伪版本。
+		"null_ref_pseudo_summary": func() error {
+			args := base("tsk_bad10")
+			args[14] = "中枢伪造的摘要"
+			return insertTaskSQL(t, e.db, args...)
+		},
+		"null_ref_pseudo_artifacts": func() error {
+			args := base("tsk_bad11")
+			args[15] = `[{"name":"fake"}]`
+			return insertTaskSQL(t, e.db, args...)
+		},
+		"null_ref_pseudo_result_accepted": func() error {
+			args := base("tsk_bad12")
+			args[16] = int64(1000)
+			return insertTaskSQL(t, e.db, args...)
+		},
+		// finished_at 缺失 → retention 的 COALESCE(result_accepted_at, finished_at)
+		// 为 NULL → 该行永远不被回收（永久垃圾行）。
+		"null_ref_missing_finished": func() error {
+			args := base("tsk_bad13")
+			args[17] = nil
+			return insertTaskSQL(t, e.db, args...)
+		},
+		"null_ref_negative_version": func() error {
+			args := base("tsk_bad14")
+			args[5] = -1
+			return insertTaskSQL(t, e.db, args...)
 		},
 	}
 	for name, run := range cases {
@@ -167,7 +204,8 @@ func TestDispatchFailureSchemaRejectsIllegalNullableShapes(t *testing.T) {
 		})
 	}
 
-	// 合法形状：NULL ref + failed/attempt=0 + downstream_missing + 空 digest/Node/lease。
+	// 合法形状：NULL ref + failed/attempt=0 + downstream_missing + 空 digest/Node/lease
+	// + 空 summary/artifacts/无结果接受 + 真实 server 完成时刻 + version=0。
 	valid := base("tsk_valid")
 	if err := insertTaskSQL(t, e.db, valid...); err != nil {
 		t.Fatalf("合法未解析失败行被拒: %v", err)
@@ -175,6 +213,105 @@ func TestDispatchFailureSchemaRejectsIllegalNullableShapes(t *testing.T) {
 	got, err := e.db.GetTask(ctx, e.nsID, "tsk_valid")
 	if err != nil || got.CapabilityID != "" || got.Phase != TaskFailed {
 		t.Fatalf("valid failed row = %+v, %v", got, err)
+	}
+}
+
+// TestDispatchFailureTaskProjectsNoPseudoFacts 是 R2 的**读路径阴性**（同时覆盖 issue
+// R5 的第 ④ 项）：真实接收入口造出的 NULL-ref 失败行，经 GetTask /
+// ListTasksByTrace / ListTasks 读回来时不得投影出任何伪过程/伪结果事实。
+//
+// 为什么读路径也要钉：这些列会原样投影到 HTTP（task.go taskColumns/scanTask），
+// 表上 CHECK 只挡「写不进去」，读侧还要证明「从真实入口写进去的就是空」。
+func TestDispatchFailureTaskProjectsNoPseudoFacts(t *testing.T) {
+	e := newIngressEnv(t)
+	ctx := context.Background()
+	raw, first, err := e.db.AcceptSourceEvent(ctx, e.inputs("deliver-nullref-read", "trace-nullref-read", "entry", 1000))
+	if err != nil || !first {
+		t.Fatalf("accept: first=%v err=%v", first, err)
+	}
+	var receipt SourceEventReceipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if len(receipt.FailedTasks) != 1 {
+		t.Fatalf("receipt failed tasks = %+v", receipt.FailedTasks)
+	}
+	id := receipt.FailedTasks[0].TaskID
+
+	assertNoPseudo := func(where string, got *Task) {
+		t.Helper()
+		if got.Summary != "" {
+			t.Fatalf("%s 伪 summary: %q", where, got.Summary)
+		}
+		if len(got.Artifacts) != 0 {
+			t.Fatalf("%s 伪 artifacts: %+v", where, got.Artifacts)
+		}
+		if got.ResultAcceptedAt != nil {
+			t.Fatalf("%s 伪 resultAcceptedAt: %d", where, *got.ResultAcceptedAt)
+		}
+		if got.ExitCode != nil {
+			t.Fatalf("%s 伪 exitCode: %d", where, *got.ExitCode)
+		}
+		if got.StartedAt != nil {
+			t.Fatalf("%s 伪 startedAt（Node 过程时间）: %d", where, *got.StartedAt)
+		}
+		if string(got.ResultJSON) != "" {
+			t.Fatalf("%s 伪 resultJson: %s", where, got.ResultJSON)
+		}
+		if got.Reported || got.Attempt != 0 || got.Phase != TaskFailed || got.CapabilityID != "" {
+			t.Fatalf("%s 形状不是未解析失败行: %+v", where, got)
+		}
+		// 反向要求：真实 server 完成时刻必须存在，否则 retention 永远回收不到它。
+		if got.FinishedAt == nil {
+			t.Fatalf("%s 缺真实 server 完成时刻（会变成永久垃圾行）: %+v", where, got)
+		}
+	}
+
+	got, err := e.db.GetTask(ctx, e.nsID, id)
+	if err != nil {
+		t.Fatalf("get failed task: %v", err)
+	}
+	assertNoPseudo("GetTask", got)
+
+	byTrace, err := e.db.ListTasksByTrace(ctx, e.nsID, receipt.TraceID)
+	if err != nil {
+		t.Fatalf("list tasks by trace: %v", err)
+	}
+	seen := 0
+	for _, task := range byTrace {
+		if task.ID != id {
+			continue
+		}
+		assertNoPseudo("ListTasksByTrace", task)
+		seen++
+	}
+	if seen != 1 {
+		t.Fatalf("ListTasksByTrace 里失败行出现 %d 次（trace %s）", seen, receipt.TraceID)
+	}
+
+	list, err := e.db.ListTasks(ctx, e.nsID, TaskFilter{TraceID: receipt.TraceID, Limit: 50})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	seen = 0
+	for _, task := range list {
+		if task.ID == id {
+			assertNoPseudo("ListTasks", task)
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("ListTasks 里失败行出现 %d 次", seen)
+	}
+
+	// 0 写：这类行永远不能产生 attempt 行（GrantLeaseAuthorized 的 phase/能力行守卫
+	// 见 TestDispatchFailureNotDispatchable；这里补一条「表里真的没有 attempt」的计数）。
+	var attempts int
+	if err := e.db.QueryRow(`SELECT COUNT(*) FROM task_attempts WHERE task_id = ?`, id).Scan(&attempts); err != nil {
+		t.Fatalf("count task_attempts: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("未解析失败行有 %d 条 attempt 行", attempts)
 	}
 }
 
