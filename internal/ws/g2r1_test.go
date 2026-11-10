@@ -234,18 +234,22 @@ func TestRejectAssignmentRejectsForeignAndStaleRequests(t *testing.T) {
 		}
 	}
 	reject(conn, "node-1", "asg_wrong", dispatch.ProposedAttempt)
-	time.Sleep(100 * time.Millisecond)
+	// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+	e.handled(t, conn)
 	unchanged("错 assignment")
 	reject(conn, "node-1", dispatch.AssignmentID, dispatch.ProposedAttempt+1)
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障（避免 handler 未跑就断言 0 写）。
+	e.handled(t, conn)
 	unchanged("错 proposedAttempt")
 	reject(conn2, "node-2", dispatch.AssignmentID, dispatch.ProposedAttempt)
-	time.Sleep(100 * time.Millisecond)
+	// 同上：屏障必须发在发出该帧的连接（conn2）上。
+	e.handled(t, conn2)
 	unchanged("另一节点")
 	// 过期旧 id：同一 assignment 在窗口过期后也不能再改（expiry <= now 视过期）。
 	e.now += store.AssignmentWindowSec + 1
 	reject(conn, "node-1", dispatch.AssignmentID, dispatch.ProposedAttempt)
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	unchanged("过期旧 id")
 }
 
@@ -270,7 +274,8 @@ func TestRejectAssignmentAuthorizedSuccessAndCredentialMatrix(t *testing.T) {
 			Type: protocol.FrameTaskReject, TaskID: task.ID, AssignmentID: dispatch.AssignmentID,
 			ProposedAttempt: dispatch.ProposedAttempt, Node: "node-1", Reason: protocol.ReasonSlotUnavailable,
 		})
-		time.Sleep(100 * time.Millisecond)
+		// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+		e.handled(t, conn)
 		if stored := e.task(t, task.ID); stored.AssignmentID != dispatch.AssignmentID ||
 			stored.WaitingReason != "" || stored.NextAttemptAt != nil {
 			t.Fatalf("ns 撤销后 reject 必须 0 写: %+v", stored)
@@ -431,7 +436,8 @@ func TestDeployedReceiptAuthorizedNegatives(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: "dep_unknown",
 		DeployRefs: frame.DeployRefs, Status: protocol.DeployStatusApplied,
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+	e.handled(t, conn)
 	pending := func(tag string) {
 		t.Helper()
 		row, err := e.db.GetDeployment(context.Background(), e.ns.ID, deploymentID)
@@ -451,7 +457,8 @@ func TestDeployedReceiptAuthorizedNegatives(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: frame.RequestID,
 		DeployRefs: bad, Status: protocol.DeployStatusApplied,
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	pending("错 digest")
 
 	// 撤销 ns 授权（当前事实）：即使 refs 完全正确也必须 0 写；恢复后 exact 才生效。
@@ -467,7 +474,8 @@ func TestDeployedReceiptAuthorizedNegatives(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: frame.RequestID,
 		DeployRefs: frame.DeployRefs, Status: protocol.DeployStatusApplied,
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	pending("撤销 ns")
 
 	// 轮换 token：会话身份不再是当前事实 → 断开且 0 写。
@@ -516,7 +524,8 @@ func TestDeployedReceiptRoundTripIdempotentAndSuperseded(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: frame.RequestID,
 		DeployRefs: frame.DeployRefs, Status: protocol.DeployStatusApplied,
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 这里原来靠 sleep(100ms)，慢机 handler 还没跑就会假绿；现改成帧处理完成的有序屏障。
+	e.handled(t, conn)
 	row, err := e.db.GetDeployment(context.Background(), e.ns.ID, deploymentID)
 	if err != nil || row.State != store.DeploymentApplied || row.Reason != "" {
 		t.Fatalf("精确重复回执必须幂等: %v/%+v", err, row)
@@ -526,7 +535,8 @@ func TestDeployedReceiptRoundTripIdempotentAndSuperseded(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: frame.RequestID,
 		DeployRefs: frame.DeployRefs, Status: protocol.DeployStatusFailed, Error: "boom",
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	row, err = e.db.GetDeployment(context.Background(), e.ns.ID, deploymentID)
 	if err != nil || row.State != store.DeploymentApplied || row.Reason != "" {
 		t.Fatalf("changed body 必须 0 写: %v/%+v", err, row)
@@ -540,7 +550,8 @@ func TestDeployedReceiptRoundTripIdempotentAndSuperseded(t *testing.T) {
 		Type: protocol.FrameCapabilityDeployed, RequestID: frame.RequestID,
 		DeployRefs: frame.DeployRefs, Status: protocol.DeployStatusApplied,
 	})
-	time.Sleep(100 * time.Millisecond)
+	// 同上：sleep → 有序屏障。
+	e.handled(t, conn)
 	if _, err := e.db.GetDeployment(context.Background(), e.ns.ID, deploymentID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("superseded 旧 intent 回执不得复活事实: %v", err)
 	}
@@ -687,6 +698,20 @@ func TestLogsWaiterBoundedCorrelationAndWake(t *testing.T) {
 
 // TestHandshakeRejectsBadTokenAndName：坏 token / 名字不符 / 缺 token 必须在握手期
 // fail closed（连接关闭、不注册 online），不是「先连上再说」。
+//
+// 退役映射（v3 → v4）。本测试是**形态映射**，不声明「v4 仍在 HTTP 层拒绝」：
+//   - v3 的旧断言是「HTTP upgrade 不带合法凭证 → 不返回 101（连接根本不建立）」：
+//     旧客户端把节点凭证放在 upgrade 请求上，认证失败是 HTTP 层拒绝，拿不到 101。
+//   - v4 的等价防线在**首帧 hello** 上：upgrade 已建立（101）后，由 Hub.handshake
+//     （hub.go:237-263，ServeHTTP 在 hub.go:175 调用）读首帧、要求它必须是 hello，
+//     再用 Hub.authenticate 校验 token/name；失败时 ServeHTTP 直接
+//     close(websocket.StatusPolicyViolation, "handshake failed") 并 return ——
+//     会话从未 attach、不注册 online。serveSession 只跑握手之后的读循环，它分派到的
+//     HelloFrame 是 re-hello（同样再走一次 Hub.authenticate，失败按
+//     errProtocolViolation 断连）。凭证不再走 HTTP 头，所以 v4 不存在「HTTP 层拒绝」
+//     这一形态，唯一可验收的等价物是「非法 hello 后连接断开 + 中枢 0 写」。
+//   - 所以下面断言的是 v4 的真实形态（能建立连接、但非法 hello 必然断开且不留事实），
+//     比 v3 的「连不上」更严：v3 无法区分「被拒」与「根本没通」。
 func TestHandshakeRejectsBadTokenAndName(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -705,15 +730,48 @@ func TestHandshakeRejectsBadTokenAndName(t *testing.T) {
 				token = e.token
 			}
 			conn := e.dialRaw(t)
+			// hello 故意带上"会话事实"（能力申报 + 物理槽位 + agent 版本）：若服务端
+			// 先注册后校验，下面的 0 写断言就能真的抓住那些写入（否则断言无从判别）。
 			e.send(t, conn, &protocol.HelloFrame{
 				Type: protocol.FrameHello, Name: tc.who, Token: token,
-				Namespaces: []string{"default"},
+				Namespaces:   []string{"default"},
+				Capabilities: []protocol.HelloCapability{{Name: "analyze", Version: 1}},
+				Instances:    []protocol.HelloInstance{{Slot: intPtr(0)}},
+				AgentVersion: "v9.9.9-forged", AgentCommit: "deadbeef",
 			})
 			if _, _, err := e.readRaw(t, conn, time.Second); err == nil {
 				t.Fatal("非法 hello 必须断开连接")
 			}
 			if e.hub.Online(e.node.ID) {
 				t.Fatal("非法 hello 不得注册 online 会话")
+			}
+			// 判别性 0 写：非法 hello 不得留下任何会话事实。
+			//
+			// 关于「capability 行」：v4 baseline 没有 node_capabilities 表（注册表基线测试
+			// 明确要求该表在 v4 不存在：internal/store/node_test.go 的
+			// TestNodeCapabilitiesNoHarnessColumns）；hello 申报的能力落在
+			// nodes.declared_capabilities JSON。所以这里断言 v4 的等价事实：
+			// 节点的能力申报快照必须仍是空的（加上槽位表为空）。
+			ctx := context.Background()
+			if rows, err := e.db.ListInstances(ctx, e.node.ID); err != nil || len(rows) != 0 {
+				t.Fatalf("非法 hello 不得申报物理槽位: %v/%+v", err, rows)
+			}
+			node, err := e.db.GetNode(ctx, e.node.ID)
+			if err != nil {
+				t.Fatalf("回读节点: %v", err)
+			}
+			if len(node.DeclaredCapabilities) != 0 {
+				t.Fatalf("非法 hello 不得写能力申报: %+v", node.DeclaredCapabilities)
+			}
+			if node.Status != store.NodeStatusOffline {
+				t.Fatalf("非法 hello 不得把节点置为 %q（应保持 offline）", node.Status)
+			}
+			// agent 版本列同样必须仍为空：上面的 hello 明确声明了
+			// v9.9.9-forged/deadbeef，而 applyHello → store.RecordHello 真的会写
+			// nodes.agent_version/agent_commit（正常路径见 TestConfigAppliedAndAgentFactsPersist
+			// 的 rehello 断言），所以这两条断言有判别力。
+			if node.AgentVersion != "" || node.AgentCommit != "" {
+				t.Fatalf("非法 hello 不得写 agent 版本事实: %q/%q", node.AgentVersion, node.AgentCommit)
 			}
 		})
 	}
