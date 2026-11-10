@@ -1,4 +1,6 @@
-# T1 fresh-context 安全接续安排（父批准，S 检查点已完成）
+# T1 fresh-context 安全接续安排（历史 S 检查点）
+
+> **当前接续不是重新恢复本表的 f717f71。** 第一恢复队已经实现 C1/S3/C2，C2 精修生产 e42fe84，安全新交接见 `.pi-orchestrator/v4/CORE-RUNTIME-NEXT.md` 与该队 `RECOVERY-CHECKPOINT-2.md`。以下为第一次 S→C1 接续的历史记录。protocol 已实际更新到33e517a；Node产品等父绝对clock/redirect修复验收，不再等待cd6f543旧方案。
 
 最终旧团队已安全BLOCKED/failed，不是T1DONE：clean HEAD `f717f711120b3e1d4672a6c9c5127977be986bd0`，生产S检查点 `21253ed`，全部writer/review收齐。阶段161外部测试通过；实际全Go测试FAIL1、contractFAIL2、e2equick未跑，完整记录在团队checkpoint。父已只读保存代码+证据到 `/tmp/anotify-v4-core-recovery/core-production-and-evidence.patch`（base0e0ff0f）及SHA/checkpoint；旧worktree保留。
 

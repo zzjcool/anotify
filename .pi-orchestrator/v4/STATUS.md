@@ -25,7 +25,7 @@
 | v4-plan-node | 节点执行/emit/租约/协议/安装命名 | 只读侦察完成 |
 | v4-plan-frontend-tests | 静态前端/API/OpenAPI/测试工具链 | 只读侦察完成 |
 | v4-plan-second-opinion | 仅分工第二意见 | 完成；采纳Go单一原子团队+独立前端，不采纳削减E2E或核心范围建议；其报告分支/MR不纳入产品改动 |
-| T1 core-runtime (`v4-core-runtime-recovery`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），新v4-core-runtime-recovery已SHA/applycheck/apply完整恢复，先layoutmarker/Open闭包；最终T3 635→33e纯delta路径/SHA已再次明确，无需等待旧cd6；原全Go/contract/e2equick门禁不变 |
+| T1 core-runtime (`v4-core-runtime-next`) | 核心Go/store/调度/server/API+工具链，接G1闭包→G2→G3→G4 | 原v4-core-runtime已safe BLOCKED/failed、clean f717f71（非完成），新v4-core-runtime-recovery已SHA/applycheck/apply完整恢复，先layoutmarker/Open闭包；最终T3 635→33e纯delta路径/SHA已再次明确，无需等待旧cd6；原全Go/contract/e2equick门禁不变 |
 | T2 frontend (`v4-frontend-delivery`) | 复用F1/F2，接F3/sitegen/5E2E/freshreview/最终门禁 | finish节点新阶段机意外terminalfailed，未派writer；父保clean c7503fa，改用工具支持的新无阶段机centurion入口，文件流程+同3机械gate/freshreview不削 |
 | T3 anode (`v4-anode`) | 纯共享protocol+节点本机执行/emit/config/GC/install，N1→N2→N3 | 新隔离centurion已派gpt-6.1-sol；先N1协议接缝/handoff；父protocol/artifact/anode测试+vet+diffcheck门禁 |
 
@@ -198,5 +198,21 @@ T1 C1最终澄清门槛已过：fixed1a827268 freshscout8 oktrue/acceptedatteste
 T3最终R1/R2review已确认closed，但新1函数major：timeout保finalization lease后LookupEmit未查emitOpen，在stop已关emit而tokenmap未删窗口可准入。父批准tinyfix runnerLookup+attempt.emitAllowed+确定性反例（同时lease/session与emitOpen，不把resultlease撤销），合法timeout提交/续租仍过；R1R2/F2F6不重做/protocol33e不改。机器重workcap若实际拒报receipt不绕DB，若允许单writer原3+runner race后fresh只这一点再finalgate。RESULT-AUTHORITY已明确两种授权用途，不盲扩大。
 
 C2 CapDelete真实pin保留冲突父已精确裁决RESOURCE-DELETION.md：内部cap.deleted_at/tombstone，公开live过滤/删除自身outgoing、incoming保missing，pin旧ID/spec直到安全GC；active(nsnameversion)unique，新同名版本新UID不foldtombstone。定向scout核RV每行1+，须opaque公共token绑定UID+revision以防name重建ABA，CAS同txnexpectedUID/rev/path/live，不新增IfMatch/公开timestamp。父批准schema/migrate/capability/ref/cashelper/精确consumer及v4tests扩卡，Source展示前置不撤；edges_test40只参数适配。T2opaque仅保存编码不算数/不复用；API词表加入invalid和UID绑定说明，原最终3gate不减。
+
+23:14 T1recovery L2核查：不是挂命令，现仅CAS红tests+5889eec证据生产未改，曾等待CapDelete/opaqueCAS审批；父完整RESOURCE-DELETION授权已23:13实际送达turn。延提醒30m观察恢复，但明确不得说生产已推进/重复待批，立即扩卡并单writer实现，下一checkpoint必须生产字段/方法+红绿反例而非重复文档讨论。原Source/ref/schema/edges参数均批准，不减测试/全量gate，不无限延期代实施。
+
+T3已工具完整acceptedverified/clean最终8596964，本队结束不再writer；父已固定archive独立全原targets复验**FAIL1**：runner ReplayRechecksSecondPendingAfterBlockedFirst/deadline等待pending撤权1s超时，日志后两过期snapshot被drop，非先断言生产越权。独立isolatedcount5同case全PASS只是并发/定时线索，不覆盖首fullFAIL。父已派3freshNode-only门槛并把此失败交authority/coverage限域诊断，暂不合Node/不发最终支持给T1G4、不重启旧团队/无限retry到绿。完整原始logs /tmp/anotify-v4-node-final-verification/，代码未改、旧WTclean；核心与前端其它任务继续。
+
+父Node-only三fresh门槛已收不通过：独立full859 FAIL1+FakeClock.NewTimer非正不立即触发/测试未同步timer注册；isolated5PASS只是线索不放行。安全静态确认upload默认/注入*http.Client可redirect泄Node/attempt头，capabilityfetch同类后校验无效。父明确接管旧NodecleanWT给唯一worker v4-node-parent-final-fix（T3已retired）：仅clock/test同步、upload/fetch no-redirect及httptest/report，不改protocol/runner生产主体或重做全Node。原3+两个原flakycasescount10+vet/diff真实验收，若确认需生产deadline改授权先报；Node支持T1G4仍pending，不以旧工具verified代父门槛。
+
+T2新statusfailed报告父23:49实际核subagent仍working、F3b1套件/driverhelpers已有真实diff，未有admission拒绝，不又重建team/改DB。R1b fec025f 125tests/selfgate绿但真实prodgraph点两次未导航仍未验收。父scout限域确认callback签名匹配、鼠标祖先capture/dragMoved可能retarget但静态未定根因；批准flograph仅click/dragcapture局部owner+真实事件target诊断/图点击TaskGET测试，保drag语义不合成click假绿。当前F3b1writer先safe收齐再单graphfix，不并发；若真拒派给receipt根接管safeWT。大frontend.mjs迁driver必须完整注册/映射/保19page-retained覆盖，不空跑PASS。
+
+T3零命令finalphase回执已澄清：contractblock解析没取到cmds，自动done0不能当原3tests执行；原worker/collectverified与这phase分开保。父独立859 fullFAIL1+redirect风险已postdelivery单writer修，不因空gate放行Node/合代码、不恢复旧team/与修复writer并发跑旧epoch。修后实际命令+父限域review与最终cross才可交付。
+
+T2 freshfec025f仅nodes/mock两roots：PUTgeneration已无major，但新3敏感静态路径（version组合refs/fromto标记丢、归档漏policy/ref借current、pbStatus substring误mask action）尚未红复现。父批准F3b1settle后最小固定VM验证、成立再按来源路径/版本immutablepolicy精修，禁全局string sweep/rawhistory备份；rawrender/digest/真实身份不改，非敏感同值/含串action保持。同次可已获批flograph被动真实event→窄fix，单writer不并发；T1仅收到后续PB/G3同契约检查点，不声称其Go已有bug/不扩当前C2。其它4suite/finalgate不减。
+
+Node父finalfix已safeblocked：已修Fake非正即时/两credentialHTTP no-redirect红绿，但新增实际正duration跨注册反例确认t31采样d20到t61注册due81，deadline60清理迟。未越权改runner/未跑full门禁，8filesdirty保留。父二意见与事实核准最小内部Clock.NewTimerAt(absolute) + leaseLoop用已有min(renewAt,deadline)绝对next，不while采样/注册后if单补/额外Advance假绿；relative原语义保留、Real best-effort、Fake锁内absolute即fire。新唯一v4-node-absolute-clock-close（正常rootstore记录，实际分配旧NodeWT绝对路径）接已修8files+精确授权leaseLoop/wrapper；原5精确命令和affectedrace在task文字+工具数组明确，15min窄修，不新协议/重做Node。最终支持T1仍pending。
+
+00:30 T1旧23:45 L2已核：C2生产52d5870/精修e42fe84和scopedgate已收，clean新handoff **2a3c7ef…**（不是停写卡死）；全部writer/review安全结束，旧recovery已经safeBLOCKED/retired（无terminalsteer已据collect确认），原S3lateverified不升级整体完成。父已capture `/tmp/anotify-v4-core-runtime-next/core-source-and-evidence.patch`（base0e，3MB仅T1源码/支持protocol/团队证据）+SHA/CHECKPOINT-2，旧WT不动。新CORE-RUNTIME-NEXT明当前C3实际任务→旧tests→G2→G3→G4，根CORE-RECOVERY f717旧表已标历史；fresh接现C2不再重做格式/CAS、不等待已批准问题，原3finalgate不减。Node父absoluteclock+redirectfix仍pending，协议33e已可用。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。

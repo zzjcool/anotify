@@ -32,6 +32,24 @@
 - 已safe BLOCKED/retired clean c7503fa，原恢复产物无丢，F3仍未开始。父按工具明确支持的新centurion**不声明机器**模式创建v4-frontend-delivery，文件跟踪流程+同等worker机械verify/freshreview/父最终gate，不调用旧failed节点phase，非绕过旧机器。
 - 最后no-terminal steer失败已如实核status/collect，没有宣称成功送达。旧WT/最终资料保留，原31MB恢复patch再次应用只到全新隔离WT。
 
+## T2 delivery『全部children失败』告警与运行事实不一致
+
+- 21:44父接到v4-frontend-delivery all-direct-children-failed提示，立即status/doctor/run元数据只读核实：centurion仍working/livejobs；F3a有task-verify并有sitegen代码/testdata真实改动；coverage scout-1已accepted attested无major，另两scout仍working。
+- 当前证据不支持全部children失败或团队进程已终止；告警可能存在时序/归属问题，根因未证，不直接忽略真实失败也不据提示重建第四次团队。已要求实际receipt/子任务verdict收齐，若后续真terminal则safecheckpoint按支持工具恢复。
+- 此新delivery未声明阶段机，不调用旧phase或修改DB；文件流程、workerverify、独立review和父最终机械门禁仍保留。具体review有major必须返修，告警不等于代码通过。
+
+## T3 最终phase verifying零命令自动done
+
+- 迟到实际回执：`Verification passed by contract (0 commands ... contract lists no legion-verify block); phase automatically advanced to done`。合同heading+sh fence未被解析；这次phase升级**不等于原3命令执行**，不回写DB/伪verification。
+- 原worker正确WT原3验收和父collect的verified记录独立保留，不能用它们伪称上述零命令phase执行了tests。父固定859独立全包复验另已FAIL1，并发现Node上传/内容fetch redirect风险，当前父唯一修复worker处理，不因phase done放行Node或并发旧WT测试。
+- 最终只以修复后固定源码的完整实际命令+父限域review/真实cross验收为准；旧T3会话已retired，不恢复它修阶段机或重复运行空gate。
+
+## 父Node修复跨store控制与安全接续
+
+- 父首个v4-node-parent-final-fix launch指定cwd=旧NodeWT，其记录落NodeWT/.pi-subagents/runs/r-7fced08f，默认rootstore控制返回unknown；显式cwd status报告非当前directchild且已retired。父只读取精确finalreport，不越级操控/改DB。
+- 该worker正确在scope边界停止：Fake0/HTTPredirect包级红绿，但生产leaseLoop正duration跨注册新反例FAIL需父扩大runner权限，旧8dirtyfiles无丢。
+- 父新v4-node-absolute-clock-close用默认rootstore记录、代码任务明确分配旧NodeWT（所有文件绝对路径/verify cd），从8files接续，没有并发旧writer。批准内部absoluteTimerAt与leaseLoop精确段，不更改协议或通过重试把首FAIL抹去。
+
 ## T3 最终分支 / 早期 draft PR329
 
 - 原E1 writer提前push隔离分支并创建base=main的PR329，远端旧08ef49a不含最终Node成果；它不是最终交付凭据。父暂不授权更新/forcepush/改base/merge/关闭/删远端。
