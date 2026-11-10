@@ -2133,10 +2133,20 @@ components:
         version: {type: integer}
     PlaybookInstallRef:
       type: object
-      description: "安装回执的身份（`ins_…` + 内容身份）"
+      description: |
+        安装回执的身份（`playbook.InstallRef`，`ins_…`）。内容身份在回执**顶层**的
+        `valuesDigest` 上，不在这个对象里：这里是「这次 install 是哪一次」的三件事
+        （id / 时间 / 是否 dryRun）。
+      required: [id, at, dryRun]
       properties:
         id: {type: string}
-        valuesDigest: {type: string}
+        at:
+          type: string
+          format: date-time
+          description: "这次 install 的时间（RFC3339）"
+        dryRun:
+          type: boolean
+          description: "dryRun=true 的回执不进库（只是预览）"
     PlaybookCreated:
       type: object
       required: [capabilities, sources]
@@ -2833,7 +2843,19 @@ components:
           type: string
           description: "调用方给的幂等键（可重复请求但只留一条事实）"
         pruned:
-          allOf: [{$ref: '#/components/schemas/PruneFact'}]
+          # 与 PruneFact（route.Prune）**不是**同一个 DTO：emit 的剪枝回执来自节点侧的
+          # protocol.EmitPruned，只有 reason/detail —— 目标在本次 emit 的 `to` 上，
+          # 没有「解析出来的能力」可报（`taskEmissionItemOf` 只搬 reason/detail）。
+          allOf:
+            - type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  description: "剪枝原因（封闭集合：no_target / param_missing / downstream_missing …）"
+                detail:
+                  type: string
+                  description: "人话补充（缺哪个参数/字段），不参与判定"
           nullable: true
     TaskEmissions:
       type: object
