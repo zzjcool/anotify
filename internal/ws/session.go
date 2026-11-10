@@ -40,7 +40,22 @@ func (s *Session) NodeName() string { return s.nodeName }
 func (s *Session) Auth() store.NodeAuthorization { return s.auth }
 
 // Send 编码并写出一帧（写串行化 + 有界写超时）。
+//
+// 写超时上下文**不继承调用方的可取消性**（context.WithoutCancel）。
+//
+// 为什么：coder/websocket 的 write timeout 是 `context.AfterFunc(ctx, …c.close())`
+// 实现的（conn.go 的 setupWriteTimeout）——那个 AfterFunc 要到 writeFrame 的 defer
+// 里才被解除。调用方（HTTP 请求的 r.Context()）如果在帧已经写到 socket 之后、解除之前
+// 取消，AfterFunc 就会把**整条节点会话**关掉。真实触发路径：客户端读到帧立刻 cancel
+// 请求上下文 → 服务端还差一条 defer 没跑 → 会话被拆 → detach 唤醒在飞的 logs waiter
+// 返回 ErrNodeOffline（表现为「节点在线却没回包」的请求拿到 503 node_offline，而不是
+// 调用方自己的 504）。调用方取消只该结束**它自己的等待**，不该拥有拆会话的权力；
+// 写的边界由 s.hub.writeTimeout 给（写自己也会在超时后关连接，这是 coder/websocket 的语义）。
 func (s *Session) Send(ctx context.Context, frame any) error {
+	// 进入时就已取消：尊重调用方，不再往线上写一帧没人等的请求。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := protocol.Encode(frame)
 	if err != nil {
 		return err
@@ -50,7 +65,7 @@ func (s *Session) Send(ctx context.Context, frame any) error {
 	if s.closed() {
 		return ErrSessionClosed
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, s.hub.writeTimeout)
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.hub.writeTimeout)
 	defer cancel()
 	if err := s.conn.Write(writeCtx, websocket.MessageText, data); err != nil {
 		return err

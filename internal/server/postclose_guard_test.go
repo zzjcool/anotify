@@ -2,13 +2,20 @@ package server
 
 // 本文件是 #259 的**回归护栏**：把「cleanup 跑在 db.Close() 之后」从偶发红变成
 // 机器可检的不变量。机制照搬 internal/ws/postclose_guard_test.go（#255/#258），
-// 这里只换成 server 包名 + 本包的屏障名（internal/server/ws_settle_test.go 的 serveHubWithSettle）。
+// 这里只换成 server 包名 + 本包的两道屏障：
+//
+//   - 真 WebSocket 会话：internal/server/hub_fixture_test.go 的 newHubServer
+//     （seal + 等所有 hub.ServeHTTP 返回，才允许 db.Close）；
+//   - 生产装配（NewApp）：internal/server/production_mux_test.go 的
+//     newProductionAppForTest（cancel → app.WaitBackground() → closeDBForTempDir；
+//     背压采样是后台写者，不等它退出就会在关库后采一次样）。
 //
 // 失败签名（#259，本机 /tmp 遗留）：
 //
 //	/tmp/TestNodeListAndDrain1104048964/001/ 失败后只剩 console.db-shm(32KB)
 //	WARN mark instances dead failed ... error="mark instances dead: sql: database is closed"
 //	WARN mark node offline failed  ... error="update node status: sql: database is closed"
+//	WARN backpressure sample failed ... error="oldest pending: sql: database is closed"
 //
 // ⚠️ 归因的诚实边界：受害用例 `TestNodeListAndDrain` 本身**不开 WS**（newConsoleEnv
 // 只用 httptest.NewRecorder + 同步 ServeHTTP），所以「它目录里的 -shm 就是 WS cleanup
@@ -19,8 +26,7 @@ package server
 // 写库（MarkInstancesDead / UpdateNodeStatus / ResolveLostTasks）。db.Close() 与它并发
 // 就成了上面两条 WARN，残留连接还会在 t.TempDir 的 RemoveAll 期间重建 -wal/-shm。
 //
-// 夹具侧的正解是 internal/server/ws_settle_test.go 的 serveHubWithSettle（等
-// hub.ServeHTTP 返回 → 才让 db.Close 发生）。本文件负责**证明**它没退化：整包跑完
+// 夹具侧的正解见上面那两道屏障。本文件负责**证明**它们没退化：整包跑完
 // 只要出现过一条 `database is closed`（或夹具的确定性判据命中并上报），TestMain 就让
 // 包变红并打印样例。
 //
@@ -203,9 +209,10 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "[postclose-guard] 样例 %d: %s\n", i+1, s)
 		}
 		fmt.Fprintf(os.Stderr,
-			"[postclose-guard] 期望：serveHubWithSettle 在 db.Close() 之前等所有 hub.ServeHTTP 返回"+
-				"（internal/server/ws_settle_test.go），且 closeDBForTempDir 的三条确定性判据全过"+
-				"（internal/server/testing_fixtures_test.go 的 closeDBForTempDir）；这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
+			"[postclose-guard] 期望：① 真 hub 会话用 newHubServer 建（internal/server/hub_fixture_test.go，"+
+				"seal 后等所有 hub.ServeHTTP 返回）；② 生产装配夹具按 cancel → app.WaitBackground() → closeDBForTempDir 关停"+
+				"（internal/server/production_mux_test.go；背压采样是后台写者）；③ closeDBForTempDir 的三条确定性判据全过"+
+				"（internal/server/testing_fixtures_test.go）。这条护栏不是新增产品行为，是 #259 那条偶发红的不变量化\n\n")
 		os.Exit(1)
 	}
 	os.Exit(code)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/zzjcool/anotify/internal/api"
@@ -26,6 +27,31 @@ type App struct {
 	Handler http.Handler
 	DB      *store.DB
 	AuthSvc *auth.Service
+
+	// background 追踪 NewApp 起的后台循环（背压采样 + 派发 / cron / 租约三条）。
+	//
+	// 它只为一件事存在：让「关停」有确定的 happens-before。取消 ctx 只是**信号**，
+	// 循环可能正卡在一次库查询里；调用方若紧接着 db.Close()，那条查询就会拿到
+	// `sql: database is closed`（#259 / #340 r3 的收尾竞态）。WaitBackground 返回
+	// 才能保证「后台写者全部退出」——见测试夹具 newProductionAppForTest 的关停顺序。
+	background sync.WaitGroup
+}
+
+// WaitBackground 阻塞到 NewApp 启动的所有后台循环返回（前提：先取消传给 NewApp 的 ctx）。
+//
+// 生产入口 cmd/server 不关库（进程直接退出），所以不需要调用；需要「关库」的调用方
+// （测试夹具 / 将来的优雅停机）必须先 cancel 再 WaitBackground 再 db.Close。
+func (a *App) WaitBackground() {
+	if a == nil {
+		return
+	}
+	a.background.Wait()
+}
+
+// trackBackground 登记一个后台 goroutine：调用方拿到 done 后必须 defer 调用它。
+func (a *App) trackBackground() func() {
+	a.background.Add(1)
+	return a.background.Done
 }
 
 // NewMux 装配完整应用：/v1/* 动态 API（no-store），其余静态资源（CDN 缓存分级）。
@@ -123,6 +149,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	}
 	keyValidator := asKeyValidator(authSvc.Keys())
 
+	// App 从这一刻起就存在：后台循环的 WaitGroup 挂在它上面（关停顺序见 App.background）。
+	// Handler 在装配结束时赋值——中途的代码只往 mux 上挂路由，不读 app.Handler。
+	app := &App{DB: db, AuthSvc: authSvc}
+
 	// 3.5 CLI 设备授权管理器
 	cliAuthMgr := auth.NewCliAuthManager(db, 0)
 
@@ -183,7 +213,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		MaxAge: cfg.PendingMaxAge(),
 	})
 	// MaxAge <= 0 时 Run 立即返回（不启用的部署一个 goroutine、一次采样都不该多付）。
-	go bp.Run(ctx)
+	// 采样循环是**后台写者**之一：它读库，所以必须进 background（关库前等它退出）。
+	doneBP := app.trackBackground()
+	go func() {
+		defer doneBP()
+		bp.Run(ctx)
+	}()
 	slog.Info("dispatch backpressure configured",
 		"event", "server.backpressure.configured",
 		"pending_max_age_sec", int(cfg.PendingMaxAge()/time.Second),
@@ -261,14 +296,14 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	//
 	// 三条循环都在 ctx 结束时正常退出（返回 ctx.Err()），所以这里只把**非取消**的
 	// 退出记成 WARN：正常关库时的 context canceled 不该在日志里长得像故障。
-	runBackgroundLoop(ctx, "dispatch", func(loopCtx context.Context) error {
+	app.runBackgroundLoop(ctx, "dispatch", func(loopCtx context.Context) error {
 		hub.RunDispatchLoop(loopCtx, 250*time.Millisecond)
 		return nil
 	})
-	runBackgroundLoop(ctx, "cron", func(loopCtx context.Context) error {
+	app.runBackgroundLoop(ctx, "cron", func(loopCtx context.Context) error {
 		return sched.Run(loopCtx, time.Minute)
 	})
-	runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
+	app.runBackgroundLoop(ctx, "lease", func(loopCtx context.Context) error {
 		return sweeper.Run(loopCtx, lease.DefaultInterval)
 	})
 	// 派发预算（v3 契约 §2）在 v4 只有配置面（route.Router 不再消费），但启动日志仍要
@@ -457,7 +492,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// （回归用例：gzip_test.go 的 TestGzipJSONKeepsStatusWriter）。
 	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
 	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
-	return &App{Handler: gzipJSON(accessLog(mux)), DB: db, AuthSvc: authSvc}
+	app.Handler = gzipJSON(accessLog(mux))
+	return app
 }
 
 // runBackgroundLoop 启动一条后台循环，并把「非取消」的退出记成 WARN。
@@ -465,8 +501,10 @@ func NewApp(ctx context.Context, cfg Config) *App {
 // 三条循环（派发 / cron / 租约）都遵循同一份纪律：单轮失败只记日志、继续下一轮；
 // 整个 Run 只在 ctx 结束时返回 ctx.Err()。所以这里把 ctx.Err() 当正常关闭处理——
 // 否则每次优雅停机都会在日志里留下三条像故障的 WARN。
-func runBackgroundLoop(ctx context.Context, name string, run func(context.Context) error) {
+func (a *App) runBackgroundLoop(ctx context.Context, name string, run func(context.Context) error) {
+	done := a.trackBackground()
 	go func() {
+		defer done()
 		err := run(ctx)
 		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return

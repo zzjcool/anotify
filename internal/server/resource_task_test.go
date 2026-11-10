@@ -1207,17 +1207,11 @@ func newNodeLogsEnv(t *testing.T) *logsNodeEnv {
 	// handler 在请求期读 a.d.Hub：换成「这条真会话所在」的 Hub。
 	env.deps.Hub = hub
 
-	// 收尾屏障：等 hub.ServeHTTP 返回（= detach 的库写已完成）再让 db.Close 发生——
-	// srv.Close 对 hijack 连接不等 handler，单靠它会把竞态留在这里（#259 / #340 r2 M-2）。
-	srv := serveHubWithSettle(t, hub)
-
-	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	conn, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/node/stream", nil)
-	if err != nil {
-		t.Fatalf("dial node stream: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	// 收尾屏障在 fixture 里（hub_fixture_test.go）：一个 fixture 一个 server，cleanup
+	// 晚于 db.Close 注册 ⇒ LIFO 下先 seal + 等 hub.ServeHTTP 返回（detach 的库写已完成），
+	// 之后才轮到 db.Close —— srv.Close 对 hijack 连接不等 handler（#259 / #340 r2 M-2）。
+	srv := newHubServer(t, hub)
+	conn := srv.dial(t)
 
 	taskResWriteFrame(t, conn, &protocol.HelloFrame{
 		Type: protocol.FrameHello, Name: node.Name, Token: token,
