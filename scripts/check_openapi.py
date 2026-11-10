@@ -122,7 +122,9 @@ SCHEME_SEMANTIC_KEYS = ("type", "in", "name", "scheme", "bearerFormat")
 #   AuthError       —— 会话/超管/API-key 中间件与 hook 限流：`{"error":"..."}`（auth/session.go、ratelimit.go）
 #   NodeUploadError —— A1 节点产物上传的封闭 4 码：`{"error":"<code>"}`（protocol/artifact_transfer.go）
 #   Backpressure  —— 派发积压 503：`{error,pending_age_sec,max_pending_age_sec,retry_after_sec}`（backpressure.go）
-ERROR_FAMILIES = ("Status", "AuthError", "NodeUploadError", "Backpressure")
+# 错误响应族（组件名必须 == <Family><status>）。第五族 `AuthFlow` 是身份流程会话的 409：
+# 终态冲突回 `{"status"}`、已消费回 `{"error"}`，两形状用 oneOf 建模。
+ERROR_FAMILIES = ("Status", "AuthError", "AuthFlow", "NodeUploadError", "Backpressure")
 
 
 def load_specs(api_dir: Path) -> dict[str, dict]:

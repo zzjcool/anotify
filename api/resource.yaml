@@ -99,13 +99,8 @@ paths:
       operationId: getCapability
       tags: [capabilities]
       security: [{session: []}]
-      summary: "读取单个能力（省略 version = 最新版本）"
+      summary: "读取单个能力（恒为最新版本；按版本读请用 /versions/{version}）"
       parameters:
-        - name: version
-          in: query
-          required: false
-          description: "指定版本（正整数）；省略 = 最新。"
-          schema: {type: integer, minimum: 1}
         - name: includeBody
           in: query
           required: false
@@ -221,7 +216,10 @@ paths:
       security: [{session: []}]
       summary: "人工部署到指定节点（写「某节点持有某 digest」事实并推 capability.deploy）"
       description: |
-        部署是**人工**动作（v4 不做自动收敛）。省略 `nodes` = 全部已授权且在线节点。
+        部署是**人工**动作（v4 不做自动收敛）。省略 `nodes` 时由中枢自己挑合格节点
+        （已授权该 ns + 在线 + 配置已 apply + 命令齐 + 所需 vars 可解析）；显式给
+        `nodes` 时未获授权该 ns 的节点 → **403**（`ErrEmitNamespaceDenied`），
+        而不是逐节点 `deployed` 里的失败项。
         响应逐节点给 `deployed` 结论；节点离线是 `state=offline`，不是 5xx。
         动作 POST 不套 CAS（api-conventions §4.5）。
       requestBody:
@@ -1163,7 +1161,9 @@ paths:
         - name: previous
           in: query
           required: false
-          description: "读上一次 attempt 的日志"
+          description: |
+            读上一次 attempt 的日志。只有 `true`/`1` 算真值；其它任何值按 `false`
+            处理（**不报 400**，`taskQueryBool` 的既有口径）。
           schema: {type: boolean, default: false}
         - name: tailLines
           in: query
@@ -1350,8 +1350,8 @@ components:
       in: query
       required: false
       description: |
-        每页条数。缺省 50；`<=0` 按 50 处理（不报错）；`>500` 由实现钳到 500
-        （tasks 列表钳到 50）。这是实现口径，不是校验边界——写错数值不会 400。
+        每页条数。缺省 50；**非整数会 400**（解码失败）；数值越界不报错：
+        `<=0` 按 50 处理，`>500` 钳到 500（tasks 列表钳到 50）。
       schema: {type: integer, default: 50}
     ContinueQuery:
       name: continue
@@ -1470,6 +1470,17 @@ components:
       required: [error]
       properties:
         error: {type: string}
+    AuthFlow:
+      description: |
+        身份流程的 409 体：`{"status": "<当前状态>"}`（终态冲突）或
+        `{"error": "..."}`（已消费、重复提交）。用 `oneOf` 而不是把两者压成一个
+        宽对象，是因为消费方要按有没有 `error` 决定「还要不要重试」。
+      oneOf:
+        - type: object
+          required: [status]
+          properties:
+            status: {type: string}
+        - $ref: '#/components/schemas/AuthError'
     BackpressureError:
       type: object
       description: |
@@ -2985,8 +2996,9 @@ components:
           schema: {$ref: '#/components/schemas/Status'}
     AuthError401:
       description: |
-        未登录/凭据无效（**中间件**产生）。真实 `Content-Type` 是
-        `text/plain; charset=utf-8`，body 是 `{"error": "..."}`。
+        未登录/凭据无效。`Content-Type` 有两种：中间件用 `http.Error` →
+        `text/plain`（正文带换行），handler 用 `writeErr` → `application/json`；
+        两种的 body 都是 `{"error": "..."}`。
       content:
         application/json:
           schema: {$ref: '#/components/schemas/AuthError'}
@@ -3035,31 +3047,19 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/AuthError'}
-    AuthError413:
-      description: "请求体过大"
-      content:
-        application/json:
-          schema: {$ref: '#/components/schemas/AuthError'}
     AuthError500:
       description: "服务端内部错误（auth 域会把底层错误文本放进 `error`）"
       content:
         application/json:
           schema: {$ref: '#/components/schemas/AuthError'}
-    AuthError502:
-      description: "上游不可用"
+    AuthFlow409:
+      description: |
+        身份流程会话的状态冲突。两种真实形状（`oneOf`）：终态冲突回
+        `{"status": "<当前状态>"}`（expired/denied/consumed 等）；已消费/重复提交
+        回 `{"error": "..."}`。
       content:
         application/json:
-          schema: {$ref: '#/components/schemas/AuthError'}
-    AuthError503:
-      description: "依赖不可用"
-      content:
-        application/json:
-          schema: {$ref: '#/components/schemas/AuthError'}
-    AuthError504:
-      description: "上游超时"
-      content:
-        application/json:
-          schema: {$ref: '#/components/schemas/AuthError'}
+          schema: {$ref: '#/components/schemas/AuthFlow'}
     NodeUploadError400:
       description: "逻辑路径不合法（`artifact_path_invalid`）或字节与 URL 里的 sha256 不符（`artifact_hash_mismatch`）"
       content:

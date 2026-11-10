@@ -11,11 +11,11 @@ info:
     鉴权方案：`session`（Cookie `anotify_session`）/ `consoleKey`（`Authorization: Bearer ant_...`）/
     `adminSession`（会话 + 超管，两层中间件）。匿名端点逐个显式写 `security: []`。
 
-    错误体形状：本域 **401/403/429 用 `AuthError*`**（`{"error":"..."}`）——会话/超管中间件与
-    auth handler 都是这个形状；其余 4xx/5xx 按 #333 契约统一 `$ref` `Status<code>`
-    （组件定义在 `./resource.yaml`）。注意：实现里 auth handler 的 4xx/5xx 真实体同样是
-    `{"error":"..."}`，而 409（CLI/Passkey 授权终态冲突）是 `{"status":"..."}`——两处与本文件的
-    `Status` 信封不一致，属已知分歧（见 PR 说明）；本文件不伪造字段，只按冻结契约挂组件名。
+    错误体形状：本域 4xx/5xx **全部是 `AuthError*`**（`{"error":"..."}`）——会话/超管/API-key
+    中间件用 `http.Error`，handler 用 `writeErr`，两者 body 同形（`Content-Type` 不同：前者
+    `text/plain`、后者 `application/json`）。**唯一例外**是 CLI / Passkey 授权流程的 409：
+    终态冲突回 `{"status":"<当前状态>"}`、已消费回 `{"error":"..."}`，故挂 `AuthFlow409`
+    （`oneOf` 两形状）。所有组件定义都在 `./resource.yaml`。
 
     约定：所有 JSON 字段 camelCase；空列表返回 `[]` 而不是 `null`；时间字段是 unix 秒（int64）。
     405 只在「由 handler 自己分派方法」的路径上声明（`/v1/auth/*`、`/v1/devices*`、`/v1/keys`、
@@ -590,6 +590,7 @@ paths:
               schema: { $ref: "#/components/schemas/DeviceList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
     post:
       tags: [devices]
@@ -617,6 +618,7 @@ paths:
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/devices/{id}:
     patch:
@@ -653,6 +655,7 @@ paths:
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
     delete:
       tags: [devices]
@@ -676,6 +679,7 @@ paths:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   # ======================================================================================
   # 26–29 · API Key
@@ -698,6 +702,7 @@ paths:
               schema: { $ref: "#/components/schemas/APIKeyList" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
     post:
       tags: [keys]
@@ -723,6 +728,7 @@ paths:
               schema: { $ref: "#/components/schemas/APIKeyCreateResult" }
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/keys/{id}/revoke:
     post:
@@ -749,6 +755,7 @@ paths:
               schema: { $ref: "#/components/schemas/OkResult" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
+        "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
 
   /v1/keys/self:
     get:
@@ -949,7 +956,7 @@ paths:
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/cli-auth/sessions/{id}/deny:
@@ -976,7 +983,7 @@ paths:
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================
@@ -1121,7 +1128,7 @@ paths:
               schema: { $ref: "#/components/schemas/PasskeyEnrollKnockResult" }
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/passkey-enroll/sessions/{id}/poll:
@@ -1204,7 +1211,7 @@ paths:
               schema: { $ref: "#/components/schemas/PasskeyEnrollCompleteResult" }
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "429": { $ref: "./resource.yaml#/components/responses/AuthError429" }
 
   /v1/passkey-enroll/sessions/{id}/qr.txt:
@@ -1283,7 +1290,7 @@ paths:
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   /v1/passkey-enroll/sessions/{id}/deny:
@@ -1310,7 +1317,7 @@ paths:
         "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "404": { $ref: "./resource.yaml#/components/responses/AuthError404" }
-        "409": { $ref: "./resource.yaml#/components/responses/AuthError409" }
+        "409": { $ref: "./resource.yaml#/components/responses/AuthFlow409" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
 
   # ======================================================================================

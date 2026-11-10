@@ -117,6 +117,8 @@ SNAKE_CASE_EXCEPTIONS = {
 ERROR_FAMILY_TARGET = {
     "Status": "Status",
     "AuthError": "AuthError",
+    # 身份流程的 409：`{"status"}` 或 `{"error"}` 两形状（oneOf）。
+    "AuthFlow": "AuthFlow",
     "NodeUploadError": "NodeUploadError",
     "Backpressure": "BackpressureError",
 }

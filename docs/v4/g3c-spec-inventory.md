@@ -54,17 +54,19 @@ adminSession: {type: apiKey, in: cookie, name: anotify_session}   # 会话 + 超
 | `Status` | 错误信封：`apiVersion`(anotify/v1) `kind`(Status) `status`(Failure) `code`(int) `reason`(机器码) `message?` `details?` |
 | `StatusDetails` | `causes?[{reason?,message?,field?}]` `current?{resourceVersion?}` `retryAfterSeconds?` |
 | `StatusCause` | `reason` `message` `field` |
-| `AuthError` | `{error: string}` —— 会话/超管/API-key 中间件与 hook 限流的真实形状 |
+| `AuthError` | `{error: string}` —— **身份域**（auth/admin/devices/keys/passkey-enroll/cli-auth）除 409 外的全部错误体，含中间件与 hook 限流 |
+| `AuthFlow` | 身份流程会话的 409 体：`oneOf [{status}, AuthError]` —— 终态冲突回 `{"status":"<当前状态>"}`、已消费回 `{"error"}` |
 | `NodeUploadError` | `{error: <封闭码>}`，码集 `artifact_path_invalid|artifact_hash_mismatch|artifact_too_large|artifact_conflict|unauthorized|forbidden|artifact_upload_unavailable|internal` |
 | `BackpressureError` | `{error,pending_age_sec,max_pending_age_sec,retry_after_sec}`（snake_case 由实现冻结） |
 
 ### 3.3 responses（错误响应**必须** `$ref` 具名组件，名字与状态码对齐）
 
 `Status400/401/403/404/405/409/410/413/429/500/501/502/503/504`、
-`AuthError401/403/429`、`NodeUploadError400/401/403/409/413/503`、`Backpressure503`。
+`AuthError400/401/403/404/405/409/429/500`、`AuthFlow409`、
+`NodeUploadError400/401/403/409/413/503`、`Backpressure503`。
 
 `check_openapi.py` 强制：任何 4xx/5xx 响应必须是 `$ref`，且组件名 == `<Family><status>`，
-Family ∈ {Status, AuthError, NodeUploadError, Backpressure}。这条把「哪些错误形状是例外」变成显式清单，而不是靠缺 schema 蒙过去。
+Family ∈ {Status, AuthError, AuthFlow, NodeUploadError, Backpressure}。这条把「哪些错误形状是例外」变成显式清单，而不是靠缺 schema 蒙过去。
 
 ### 3.4 components.pathItems
 
@@ -238,14 +240,20 @@ path item 用 `$ref: '#/components/pathItems/<Name>'`（跨文件 `./x.yaml#/com
    - 中枢侧：`mux.go` 只有 `stream`/`binary`/`tasks/{taskId}/artifacts/{sha256}` 三条 `/v1/node/*`，**没有任何 handler**（`grep node/capabilities internal/server` 为空）。
    - 裁决：**不写进 `agent.yaml`**（本 issue 的规则是「以代码真实实现为准生成 spec」+ parity 禁止「spec 有、handler 无」）。
      → 列为 SAFE_BLOCKED / owner = Node 上行内容通道的实现 issue；`agent.yaml` 里留注释说明缺席原因。
-2. **三套非 Status 错误体是保留域的实现事实**（不是遗漏）：`AuthError`（中间件 `{"error"}`）、
-   `NodeUploadError`（A1 封闭 4 码）、`BackpressureError`（snake_case 503）。已在 spec 里显式建模为具名族，
+2. **三套非 Status 错误体是保留域的实现事实**（不是遗漏）：`AuthError`（**身份域全部 4xx/5xx**，
+   `writeErr` 与中间件都是 `{"error":...}`）、`NodeUploadError`（A1 封闭 4 码）、
+   `BackpressureError`（snake_case 503）。已在 spec 里显式建模为具名族，
    由 `check_openapi.py` 强制「错误响应必须有具名组件且名字与状态码对齐」。
    → 若产品要统一成 `Status`，属 handler 改造（不在 #333 文件所有权内），本 issue 只如实描述。
 3. **`GET /v1/namespaces/{name}/stats` 归 `resource.yaml`**（Namespace 子资源），
    而「事件/任务聚合」`GET /v1/stats`、`GET /v1/orphans` 归 `events.yaml`。
    依据：`API-SPEC-HANDOFF.md` 把「Namespace 的管理和只读状态」给 resource、「事件/任务聚合 stats」给 events。
-4. **`GET /v1/node/stream` 的鉴权发生在 WS 升级后的 hello 帧**（`internal/ws/hub.go`），
+7. **`GET …/capabilities/{name}?version=` 不生效（实现事实，已从 spec 移除该参数）**：
+   `internal/server/resource_capability.go` 的读端点只用 `newestVersionOf`，全文件没有
+   `Query().Get("version")`；按版本读要用 `GET …/capabilities/{name}/versions/{version}`。
+   → spec 不再声明 `version` 参数（声明一个实现忽略的输入比不写更糟）。若产品要恢复该参数，
+   owner = capability 域（本 issue 不改 handler）。
+8. **`GET /v1/node/stream` 的鉴权发生在 WS 升级后的 hello 帧**（`internal/ws/hub.go`），
    不是 HTTP 中间件；spec 记 `nodeToken` 并在描述里写明「token 在首帧 hello 校验」，parity 测试对该条走
    例外期望（401 不在升级前产生）。
 5. **`/health`、`/debug/pprof/*`、静态兜底**不在五份 spec（显式排除清单在 `check_openapi.py`）。
