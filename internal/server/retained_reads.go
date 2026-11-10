@@ -57,6 +57,25 @@ func (a *retainedReadAPI) register(mux *http.ServeMux) {
 	route("GET /v1/stats", a.stats)
 	route("GET /v1/orphans", a.orphans)
 	route("GET /v1/namespaces/{ns}/deployments", a.deployments)
+	// 方法兜底：写/删已随 v3 部署入口退役（§9），但**未注册的方法**在生产 mux 上会落到末尾的
+	// `mux.Handle("/", resolveStatic(cfg))` 静态兜底（测试构建 503 / 真实构建 404），客户端看到的
+	// 是「文件不存在」而不是「方法不允许」。不带方法的 pattern 比 `GET /…` 宽：Go 1.22 的优先级
+	// 规则保证 GET/HEAD 仍命中读端点，只有其余方法进这里。它走同一个 route 包裹（session 在内、
+	// no-store 在外），所以未登录的写请求先吃 401——兜底不是绕过鉴权的后门。
+	route("/v1/namespaces/{ns}/deployments", methodNotAllowedAllowGet)
+}
+
+// methodNotAllowedAllowGet 是「路径存在、方法退役」的显式 405 兜底（deployments / edges 共用）。
+//
+// 为什么不能靠 ServeMux 的自动 405：自动 405 只在**没有任何 pattern 匹配**时出现；生产 mux 末尾
+// 的 `mux.Handle("/", resolveStatic(cfg))` 总会接住未注册的方法，于是答案变成 503/404，把
+// 「这个方法不允许」伪装成「这个资源不存在」。显式注册一条不带方法的 pattern，才能把 405 钉在
+// API 层（且仍过 session / no-store）。
+//
+// Allow 只写 GET/HEAD：deployments（§9）与 edges（A5）都是只读视图，没有其他合法方法。
+func methodNotAllowedAllowGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Allow", "GET, HEAD")
+	writeStatus(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "method not allowed", nil)
 }
 
 // stats 处理 GET /v1/stats?namespace=NAME。

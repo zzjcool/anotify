@@ -1207,8 +1207,9 @@ func newNodeLogsEnv(t *testing.T) *logsNodeEnv {
 	// handler 在请求期读 a.d.Hub：换成「这条真会话所在」的 Hub。
 	env.deps.Hub = hub
 
-	srv := httptest.NewServer(http.HandlerFunc(hub.ServeHTTP))
-	t.Cleanup(srv.Close)
+	// 收尾屏障：等 hub.ServeHTTP 返回（= detach 的库写已完成）再让 db.Close 发生——
+	// srv.Close 对 hijack 连接不等 handler，单靠它会把竞态留在这里（#259 / #340 r2 M-2）。
+	srv := serveHubWithSettle(t, hub)
 
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

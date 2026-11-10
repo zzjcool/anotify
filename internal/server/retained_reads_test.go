@@ -285,14 +285,19 @@ func TestRetainedDeploymentsListAndFilters(t *testing.T) {
 	rr = retainedDo(t, mux, "/v1/namespaces/no-such-ns/deployments")
 	trReason(t, rr, http.StatusNotFound, reasonNotFound)
 
-	// 写/删仍退役（§9：deployments 只保留 GET）：同一路径的 POST/DELETE 必须是 405，
-	// 不能因为「读模型恢复」把 v3 的部署写入口一起带回来。
-	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+	// 写/删仍退役（§9：deployments 只保留 GET）：同一路径的 POST/PUT/PATCH/DELETE 必须是
+	// 405，不能因为「读模型恢复」把 v3 的部署写入口一起带回来。405 还要带 Status 错误体
+	// （reason=MethodNotAllowed），否则客户端分不清「方法不允许」与「路由不存在」。
+	//
+	// 注意：这条只钉 **domain 层裸 mux**（只挂了 newRetainedReadAPI 注册的 pattern）。裸 mux
+	// 上没有静态兜底，ServeMux 自己也会对方法不匹配回 405；生产 mux 末尾的
+	// `mux.Handle("/", resolveStatic(cfg))` 会把未注册方法吃成 503（测试构建）/404（真实构建），
+	// 那条整机链路是 production_mux_test.go 的 TestProductionMuxRetiredWritesAre405 钉的。
+	// 两者不能互相代替：本用例只能证明 pattern 没漏，证明不了生产装配的行为。
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(method, "/v1/namespaces/"+slugA+"/deployments", strings.NewReader("{}")))
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("%s deployments = %d, want 405（写/删已退役）", method, rec.Code)
-		}
+		trReason(t, rec, http.StatusMethodNotAllowed, reasonMethodNotAllowed)
 	}
 
 	// 三条端点都过会话：用一个「永远 401」的中间件再挂一次，确认不是裸露的。

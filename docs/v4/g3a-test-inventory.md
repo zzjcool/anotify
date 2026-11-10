@@ -1,4 +1,4 @@
-# G3a · #331 测试 inventory（server 345 + api 18 → server 261 + api 8）
+# G3a · #331 测试 inventory（server 345 + api 18 → server 265 + api 8）
 
 > G3-D6 要求：先逐名 inventory，再按当前安全事实迁移；**禁止整文件清空**认证/权限/CAS/
 > delete/secret/digest/FK/backpressure 断言；退役项必须**具名**并给出**替代用例**。
@@ -9,16 +9,19 @@
 >
 > | | 旧（`b30e998`） | 首轮交付（`2c3b2d3`） | 返修后（本轮） |
 > |---|---|---|---|
-> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 245（244 + 1） | **262（261 + 1）** |
+> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 245（244 + 1） | **265（264 + 1）** |
 > | `internal/api` | 18 | 8 | 8（本轮未改） |
 >
 > 差异全部是「v3 扁平资源面不存在了」的直接后果 + 返修轮补回被误删的覆盖；
 > **没有一条**是「为了让测试变绿而删除或放宽断言」。
 >
-> 删除文件口径：`git diff --name-status b30e998..HEAD -- internal/server internal/api` 共 **35 个文件**
-> （**28 个 `_test.go`** + **7 个源文件**：`console_handlers.go`、`deploy_handlers.go`、`emission_handlers.go`、
+> 删除文件口径：`git diff --name-status b30e998..HEAD -- internal/server internal/api` 共 **34 个文件**
+> （**27 个 `_test.go`** + **7 个源文件**：`console_handlers.go`、`deploy_handlers.go`、`emission_handlers.go`、
 > `namespace_handlers.go`、`playbook_handlers.go`、`source_handlers.go`、`task_logs_handlers.go`），
-> 其中 `_test.go` 内共 **181 个 `func Test`** 具名退役（逐类映射见 §4）。
+> 其中 `_test.go` 内共 **178 个 `func Test`** 具名退役（逐类映射见 §4）。
+>
+> 上述 34 / 27 / 178 三个数字都是**返修终态树**上的实测值（命令见 §9.5）；旧文写的 35 / 28 / 181
+> 与实测不符，本轮按命令输出改正（#340 r2 minor-1）。
 
 ## 0. 一句话结论
 
@@ -28,9 +31,10 @@
   `hook_ratelimit_test.go` 把夹具从 v3 的 builtin `notify.phone` 换成真实能力行；
   `hook_ratelimit_test.go` 的 13 条限流断言逐字保留。返修轮另在 `config_test` 之外补回
   `dispatch_budget_test.go`（见 §4.5）。
-- **rewritten**：`node_upgrade_test.go`（7→4）、`task_out_retired_test.go`（2→2，断言改为递归遍历 JSON）。
+- **rewritten**：`node_upgrade_test.go`（7→4；返修轮再 +2 = 6，见 §9.5）、`task_out_retired_test.go`（2→2，断言改为递归遍历 JSON）。
 - **migrated**：v3 扁平 capability/source/playbook/namespace/node/task/event/log/emission 面 →
-  v4 namespaced 资源面：新增 **83 个 server 用例**（72 + 11 个 review 补缺，含 8 个跨域集成）+ **8 个 `internal/api` 用例**。
+  v4 namespaced 资源面：新增 **84 个 server 用例**（首轮交付 `2c3b2d3` 的计数 = 72 + 11 个 review 补缺
+  + 1 个收尾；其中 `api_integration_test.go` 9 个跨域集成）+ **8 个 `internal/api` 用例**。
 - **retired**：v3 `edges`/`downstreams`/`deployments` 写、批量建能力、`CapabilityRevision`-式 spec、
   中央执行域（notify.phone）、跨 ns 归并快路径、v3 openapi parity —— 共 19 个文件（其中 3 个是 0 用例的纯夹具文件）。
 
@@ -62,7 +66,7 @@
 
 ## 2. rewritten：保留文件名但按 v4 重写（旧→新）
 
-### 2.1 `node_upgrade_test.go`（7 → 4）
+### 2.1 `node_upgrade_test.go`（7 → 4；返修轮再 +2 = 6，见 §9.5）
 
 | 旧用例 | 处理 | 替代 / 理由 |
 |---|---|---|
@@ -81,17 +85,17 @@
 | `TestTaskEndpointsExposeNoOut` | 迁移（v4 路径 + 加强） | v3 `/v1/tasks` → `/v1/namespaces/{ns}/tasks`；`out/port/exit/nextHop` 的禁用检查从「只看顶层 map」改为**递归遍历整份 JSON**，并新增「list items 必须是数组且 2 条 / 详情 kind=Task」 |
 | `TestTraceEndpointExposesNoOut` | 迁移（v4 路径 + 加强） | `/v1/traces/{id}` → `/v1/namespaces/{ns}/traces/{id}`；额外覆盖 `events[]` 内部 |
 
-## 3. migrated：v3 资源面 → v4 namespaced 资源面（78 个新用例）
+## 3. migrated：v3 资源面 → v4 namespaced 资源面（首轮 72 个新用例；当前合计 91）
 
 | 旧文件（用例数） | 新文件 | 新用例（逐名） | 安全意图映射 |
 |---|---|---|---|
 | `ability_*` 见下（`capability_artifact_test.go` 5、`capability_batch_test.go` 9、`capability_links_test.go` 5、`capability_run_workdir_test.go` 3、`capability_spec_p1b2_test.go` 5、`capability_spec_p4_test.go` 4、`console_test.go` 27 中的 capability 段） | `resource_capability_test.go`（11） | `TestCapabilityResourceCreateAndGet`、`…VersionsDescending`、`…PatchCAS`、`…DeleteCAS`、`…NamespaceIsolation`、`…WriteValidation`、`…DeployUnknownNode`、`…DeployToOfflineNode`、`…EdgesAndTemplates`、`…RequiresSession`、`…EmptyLists` | 能力创建/版本族/内容寻址/`includeBody`/deploy 事实/edge 派生投影/未登录 401/CAS/跨 ns |
-| `source_handlers_test.go`（19） | `resource_source_test.go`（**10**，首轮 8 + review 补 2，见 §8） | `TestSourceResourceCreateGetMasksSecrets`、`…WriteRejectsReadOnlyProjection`、`…PatchKeepsOmittedConfig`、`…PatchKindImmutable`、`…DeleteCAS`、`…FireReceiptShape`、`…DryRunSideEffectFree`、`…HookResolvesNamespaceByToken` | token/secret 脱敏（GET 与错误体）、PATCH 省略=保旧值、kind 不可变、DELETE CAS、fire 回执形状、dry-run 0 写、hook 由 token 定位 ns |
-| `playbook_handlers_test.go`（10） | `resource_playbook_test.go`（**11**，含 review 跨 ns 隔离补测，见 §8） | `TestPlaybookResourceCreateListGet`、`…CreateBodyRules`、`…SlugTaken`、`…PutCAS`、`…RenderIsReadOnly`、`…ActionValuesErrors`、`…InstallConflictWritesNothing`、`…InstallDryRunWritesNothing`、`…InstallReceiptsAndDeleteKeeps`、`…AuthRequired` | files/source 互斥、409 slug_taken、PUT CAS、render 0 写、**安装冲突 0 写**、dryRun 0 写、installs 折叠/单回执、DELETE `kept` |
-| `node_create_test.go`（11）、`nodes_batch_test.go`（5）、`console_test.go` 的 node 段 | `resource_node_test.go`（**14**：首轮 12 + review 补 2；返修轮再 +1，见 §9） | `TestNodeResourceCreateReturnsEnvelopeWithoutToken`、`…TokenRotatesAndPlaintextAppearsOnce`、`…TokenUnknownNodeIs404`、`…ConfigDefaults`、`…ConfigPutCAS`、`…PatchRequiresCAS`、`…DeleteRequiresCAS`、`…ConfigBatchPartialSuccess`、`…GetNamespaceContext`、`…Upgrade`、`…ListEmptyIsArray`、`…RoutesAreSessionWrapped` | 登记不回 token、**明文只回一次**+轮换后旧 hash 失效、404、config wrapper 默认/CAS、PATCH/DELETE CAS、批量部分成功、`?namespace=` 上下文、升级分支、空列表 `[]` |
-| `namespace_handlers_test.go`（12） | `resource_namespace_test.go`（**10**：首轮 9 + review 补 1；返修轮再 +1，见 §9） | `TestNamespaceResourceListCreateGet`、`…CreateDuplicateSlug`、`…PatchCAS`、`…DeleteCAS`、`…ConfigRoundTrip`、`…SystemConfig`、`…Stats`、`…SpecSwitchRejected`、`…RequiresSession` | 命名空间 CRUD、重复 409、CAS、ns 配置 revision 往返（不影响节点 configRevision）、system retention、stats 不跨 ns、`seedBuiltinCapabilities` 开关被拒 |
-| `console_test.go` 的 task/trace/event 段、`console_events_page_test.go`（9）、`merge_fastpath_test.go`（5） | `resource_task_test.go`（**19**：首轮 15 + review 补 4；返修轮再 +4，见 §9） | `TestTaskResourceListEmptyIsArray`、`TestTaskResourceGetEnvelopeFacts`、`TestTaskResourceDownstreamMissingShape`、`TestTaskResourceCancelUnknownIs404`、`TestTaskResourceCancelPendingBecomesCancelled`、`TestTaskResourceCancelRunningRecordsIntent`、`TestTaskResourceAbandonPendingBecomesAbandoned`、`TestTaskResourceLogsParamBounds`、`TestTaskResourceLogsNoArchive`、`TestTaskResourceEmissionsEmptyShape`、`TestTaskResourceEmissionsShapeAndCursor`、`TestTaskResourceConsoleEventsNamespaceScopes`、`TestTaskResourceEventsAndTrace`、`TestTaskResourceListFilters`、`TestTaskResourceRoutesAreSessionWrapped` | Task 只读信封 / failed-attempt0(S1/E1) / cancel+abandon 终态 / logs 参数界与无档案语义 / emissions 游标 / console events 跨 ns 与 cursor 绑定 / trace 视图 / 列表过滤 |
-| — （新增集成层） | `api_integration_test.go`（**9**：首轮 7 + review 补 2） | `TestAPIIntegrationRouteTableIsV4Only`、`…EnvelopeDiscipline`、`…CASRejectsABA`、`…NamespaceIsolation`、`…FailedAttemptZeroTask`、`…NodeTokenOneShot`、`…NodeConfigRevision` | 六域 register 共存无 pattern 冲突、v3 扁平路由**必须 404**、四键/`status` 非 null/`items:[]` 横向一致、CAS ABA、slug→id 与跨 ns 隔离、cursor 绑 ns、E1 回执、token 一次性、configRevision 前进 |
+| `source_handlers_test.go`（19） | `resource_source_test.go`（**11**：首轮 8 + review 补 2（§8）+ 返修 1（§9.5）） | `TestSourceResourceCreateGetMasksSecrets`、`…WriteRejectsReadOnlyProjection`、`…PatchKeepsOmittedConfig`、`…PatchKindImmutable`、`…DeleteCAS`、`…FireReceiptShape`、`…DryRunSideEffectFree`、`…HookResolvesNamespaceByToken` | token/secret 脱敏（GET 与错误体）、PATCH 省略=保旧值、kind 不可变、DELETE CAS、fire 回执形状、dry-run 0 写、hook 由 token 定位 ns |
+| `playbook_handlers_test.go`（10） | `resource_playbook_test.go`（**11**：首轮 10 + review 跨 ns 隔离补测 1（§8）） | `TestPlaybookResourceCreateListGet`、`…CreateBodyRules`、`…SlugTaken`、`…PutCAS`、`…RenderIsReadOnly`、`…ActionValuesErrors`、`…InstallConflictWritesNothing`、`…InstallDryRunWritesNothing`、`…InstallReceiptsAndDeleteKeeps`、`…AuthRequired` | files/source 互斥、409 slug_taken、PUT CAS、render 0 写、**安装冲突 0 写**、dryRun 0 写、installs 折叠/单回执、DELETE `kept` |
+| `node_create_test.go`（11）、`nodes_batch_test.go`（5）、`console_test.go` 的 node 段 | `resource_node_test.go`（**15**：首轮 12 + review 补 2（§8）+ 返修 1（§9.5）） | `TestNodeResourceCreateReturnsEnvelopeWithoutToken`、`…TokenRotatesAndPlaintextAppearsOnce`、`…TokenUnknownNodeIs404`、`…ConfigDefaults`、`…ConfigPutCAS`、`…PatchRequiresCAS`、`…DeleteRequiresCAS`、`…ConfigBatchPartialSuccess`、`…GetNamespaceContext`、`…Upgrade`、`…ListEmptyIsArray`、`…RoutesAreSessionWrapped` | 登记不回 token、**明文只回一次**+轮换后旧 hash 失效、404、config wrapper 默认/CAS、PATCH/DELETE CAS、批量部分成功、`?namespace=` 上下文、升级分支、空列表 `[]` |
+| `namespace_handlers_test.go`（12） | `resource_namespace_test.go`（**11**：首轮 9 + review 补 1（§8）+ 返修 1（§9.5）） | `TestNamespaceResourceListCreateGet`、`…CreateDuplicateSlug`、`…PatchCAS`、`…DeleteCAS`、`…ConfigRoundTrip`、`…SystemConfig`、`…Stats`、`…SpecSwitchRejected`、`…RequiresSession` | 命名空间 CRUD、重复 409、CAS、ns 配置 revision 往返（不影响节点 configRevision）、system retention、stats 不跨 ns、`seedBuiltinCapabilities` 开关被拒 |
+| `console_test.go` 的 task/trace/event 段、`console_events_page_test.go`（9）、`merge_fastpath_test.go`（5） | `resource_task_test.go`（**23**：首轮 15 + review 补 4（§8）+ 返修 4（§9.5）；另 `LogsNoArchive` 于返修轮改名 `LogsNoLocalArchiveIs410`，计数不变） | `TestTaskResourceListEmptyIsArray`、`TestTaskResourceGetEnvelopeFacts`、`TestTaskResourceDownstreamMissingShape`、`TestTaskResourceCancelUnknownIs404`、`TestTaskResourceCancelPendingBecomesCancelled`、`TestTaskResourceCancelRunningRecordsIntent`、`TestTaskResourceAbandonPendingBecomesAbandoned`、`TestTaskResourceLogsParamBounds`、`TestTaskResourceLogsNoArchive`、`TestTaskResourceEmissionsEmptyShape`、`TestTaskResourceEmissionsShapeAndCursor`、`TestTaskResourceConsoleEventsNamespaceScopes`、`TestTaskResourceEventsAndTrace`、`TestTaskResourceListFilters`、`TestTaskResourceRoutesAreSessionWrapped` | Task 只读信封 / failed-attempt0(S1/E1) / cancel+abandon 终态 / logs 参数界与无档案语义 / emissions 游标 / console events 跨 ns 与 cursor 绑定 / trace 视图 / 列表过滤 |
+| — （新增集成层） | `api_integration_test.go`（**9**：首轮 7 + review 补 1（§8 的 405）+ 收尾 1（`2f840ff` 的 `TestNamespaceResolveForUser`）；返修轮未增减） | `TestAPIIntegrationRouteTableIsV4Only`、`…EnvelopeDiscipline`、`…CASRejectsABA`、`…NamespaceIsolation`、`…FailedAttemptZeroTask`、`…NodeTokenOneShot`、`…NodeConfigRevision` | 六域 register 共存无 pattern 冲突、v3 扁平路由**必须 404**、四键/`status` 非 null/`items:[]` 横向一致、CAS ABA、slug→id 与跨 ns 隔离、cursor 绑 ns、E1 回执、token 一次性、configRevision 前进 |
 | `emission_handlers_test.go`（4）、`task_logs_test.go`（9）、`task_logs_wire_test.go`（1） | 同上 `resource_task_test.go` | 见上 | emissions 形状/跨 ns 不可见、logs 零字节可用/降级不 5xx/每次请求打节点 |
 | `internal/api/events_test.go`（18） | `internal/api/events_test.go`（8） | `TestEventIngressReceipt`、`…TypeFallsBackToSourceName`、`…Duplicate`、`…SourceRequired`、`…Unauthorized`、`…NamespaceScope`、`…DisabledSource` | 回执五字段/`tasks`/`pruned` 恒数组、同 `id` 去重回原 event/trace、source 必填 400、Bearer 鉴权、跨 ns 边界、停用源拒绝 |
 
@@ -127,7 +131,7 @@
 | `capability_spec_p1b2_test.go`（5） | `TestPostCapabilityImplMissing400`、`TestPostCapabilityBatchImplMissing400`、`TestCapabilityListSpecStripsFiles`、`TestCapabilityListSpecHandlerForm`、`TestCapabilityArtifactReturnsFullSpec` | 写入期校验（impl 缺失/入口无 shebang/handler 形状）→ `TestCapabilityResourceWriteValidation`（`entrypoint_no_shebang` 等）；列表剥离 files → `TestCapabilityResourceCreateAndGet`（默认 `spec.run.files` 是空 map） |
 | `capability_spec_p4_test.go`（4） | `TestPostCapabilityRejectsHandler`、`TestPostCapabilityBatchRejectsHandler`、`TestPostCapabilityLegacyFlatBodyRejected`、`TestPostCapabilitySpecRoundTrip` | v3 的「裸 body / legacy flat body / handler 字段」入口在 v4 只有资源信封一种，未知字段一律 400 → `TestCapabilityResourceWriteValidation`（unknown_field / status_not_writable / spec 未知字段）；spec 往返 → `TestCapabilityResourceCreateAndGet` |
 
-### 4.4 v3 部署写入口（7 个用例）
+### 4.4 v3 部署写入口（8 个用例，`deploy_test.go` 9 个中的 8 个；第 9 个 `TestListDeploymentsFilters` 是恢复不是退役）
 
 | 文件 | 退役 Test 名 | 理由 + 替代 |
 |---|---|---|
@@ -164,7 +168,7 @@
 
 ### 4.9 v3 命名空间 CRUD 的遗留口径（3 个用例）
 
-| 旧用例（`namespace_handlers_test.go`，12→9） | 处理 |
+| 旧用例（`namespace_handlers_test.go`，12→9；返修后 11，见 §9.5） | 处理 |
 |---|---|
 | `TestNamespaceListIncludesResourceCounts`、`TestNamespaceListRequiresSession`、`TestNamespaceCreateRejectsInvalidSlug`、`TestNamespaceCreateDuplicateSlugConflicts`、`TestNamespacePatchRenamesNameOnly`、`TestNamespacePatchUnknownIs404`、`TestNamespaceDeleteLastIs400`、`TestNamespaceDeleteBlockedListsBlocking`、`TestNamespaceDeleteUnknownIs404` | 迁移到 `TestNamespaceResource*`（见 §3） |
 | `TestStatsRequiresNamespaceId`、`TestStatsWithNamespaceCountsOnlyThatNamespace` | **返修轮恢复原路径**：`/v1/stats` 是 §8.4 冻结保留的 cluster 读模型（首轮误改成 ns 子资源路径且未登记）。替代/恢复：`TestRetainedStatsRequiresNamespaceAndScopes`（缺 `?namespace=` → 400、`*` → 400、slug/id 等价、逐 ns 计数）+ 保留 `TestNamespaceResourceStats`（ns 子资源是 `Namespace.status` 的镜像） |
@@ -174,30 +178,35 @@
 
 ## 5. 新增用例清单
 
-首轮交付：**server 新增 84（review 复算；旧文写 83 已修正）+ api 8**。
-返修轮（§9）：server **+17**（当前 `internal/server` = 262 个 `func Test`，含 1 个 `TestMain`）。
+首轮交付：**server 新增 84（实测 `2c3b2d3`；旧文写 83 已修正）+ api 8**。
+返修轮（§9）：server **+20**（其中首轮回修 `f0016b8` +17、M-1 +2、minor-2 +1、M-2 ±0，见 §9.5）；
+当前 `internal/server` = **265** 个 `func Test`（**264 个用例 + 1 个 `TestMain`**），`internal/api` = 8。
 
 ```
-# ---- 首轮交付（84 + 8）----
+# ---- 首轮交付（84 + 8；文件后数字为 `3243ef8` 的首轮初版计数）----
 internal/server/resource_capability_test.go  11  TestCapabilityResource*
-internal/server/resource_source_test.go       8  TestSourceResource*          # 返修前；当前 10（§8）
-internal/server/resource_playbook_test.go    10  TestPlaybookResource*        # 返修前；当前 11（§8）
-internal/server/resource_node_test.go        12  TestNodeResource*            # 返修前；当前 14（§8）
-internal/server/resource_namespace_test.go    9  TestNamespaceResource*       # 返修前；当前 10（§8）
-internal/server/resource_task_test.go        15  TestTaskResource*            # 返修前；当前 19（§8）
-internal/server/api_integration_test.go       7  TestAPIIntegration*          # 返修前；当前 9（§8）
+internal/server/resource_source_test.go       8  TestSourceResource*          # 首轮初版 8；当前 11（§8 +2、§9.5 +1）
+internal/server/resource_playbook_test.go    10  TestPlaybookResource*        # 首轮初版 10；当前 11（§8 +1）
+internal/server/resource_node_test.go        12  TestNodeResource*            # 首轮初版 12；当前 15（§8 +2、§9.5 +1）
+internal/server/resource_namespace_test.go    9  TestNamespaceResource*       # 首轮初版 9；当前 11（§8 +1、§9.5 +1）
+internal/server/resource_task_test.go        15  TestTaskResource*            # 首轮初版 15；当前 23（§8 +4、§9.5 +4）
+internal/server/api_integration_test.go       7  TestAPIIntegration*          # 首轮初版 7；当前 9（§8 +1、`2f840ff` +1）
 internal/server/node_upgrade_test.go          4  TestNodeUpgrade*
 internal/server/task_out_retired_test.go      2  TestTaskEndpointsExposeNoOut / TestTraceEndpointExposesNoOut
 internal/api/events_test.go                   8  TestEventIngress*（含 TestEventIngressSlugPath）
-# ---- 返修轮 +17（§9）----
+# ---- 返修轮 +17（=`f0016b8`，§9.1–§9.2）----
 internal/server/retained_reads_test.go        4  TestRetained*                # 冻结保留读模型恢复
-internal/server/production_mux_test.go        1  TestProductionMux*          # 生产 mux 整机冒烟
+internal/server/production_mux_test.go        1  TestProductionMux*          # 生产 mux 整机冒烟（§9.5 再 +1 → 2）
 internal/server/dispatch_budget_test.go       3  TestDispatchBudget*/TestValidateRejectsBadDispatchBudgets
 internal/server/resource_task_test.go        +4  previous-none / no-attempt410 / events-limit 钳位 / downstream_missing 投影
 internal/server/node_upgrade_test.go         +2  up_to_date+force+dirty / isUniqueVersion
 internal/server/resource_namespace_test.go   +1  TestNamespaceResourceResolveByIDSlugSymmetry
 internal/server/resource_node_test.go        +1  TestNodeResourceConfigWriteStatusIsNotWritable
 internal/server/resource_source_test.go      +1  TestSourceResourceReservedNameIs400
+# ---- r2 再 +3（§9.5）----
+internal/server/production_clock_test.go      2  TestProductionMuxStatsWindowUsesMillisecondClock / …CancelRequestedAtIsRealTime
+internal/server/production_mux_test.go       +1  TestProductionMuxRetiredWritesAre405
+internal/server/ws_settle_test.go             0  serveHubWithSettle（真 WS 收尾屏障夹具，无 func Test）
 ```
 
 ## 6. 断言强度自查（未放宽）
@@ -273,7 +282,7 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 | m1 | 保留源名 `route` 从 400 退化成 500 | `writeAPIError` 增加 `store.ErrReservedEventSource → 400 invalid_source_config`；恢复 v3 守卫用例（含 body 提 `route`、0 写） | `api_status.go`；`TestSourceResourceReservedNameIs400` |
 | m2 | events 列表 `limit>500` 静默折回 50（#236 回归） | handler 侧钳到 500（与 emissions/console events 同档）；缺省仍 50 | `resource_task.go` 的 `taskClampListLimit`；`TestTaskResourceEventsListLimitClamps` |
 | m3 | E2 `apiVersion`/`kind` 必填未强制 | **未改**：属信封写语义（`api_envelope.go`），与 #333 的 envelope checker 口径绑定；本轮不改以免与 G3b 契约冲突。记录在交付报告风险项（当前服务端对缺失 apiVersion/kind 宽松，客户端仍必须给） | — |
-| m4 | inventory 与代码 6 处不符 | 本文件整体重算：删除文件 35（28 test + 7 源）/ 181 个退役 `func Test`；`internal/api` 18→8 的 10 个旧名逐名登记（见下）；`§4.5` MaxHops 理由改正并恢复 3 条用例；`§5` 计数按实测；`§8` 时点说明；`§4.9` stats 恢复原路径 | 本文件 |
+| m4 | inventory 与代码 6 处不符 | 本文件整体重算：删除文件 34（27 test + 7 源）/ 178 个退役 `func Test`；`internal/api` 18→8 的 10 个旧名逐名登记（见下）；`§4.5` MaxHops 理由改正并恢复 3 条用例；`§5` 计数按实测；`§8` 时点说明；`§4.9` stats 恢复原路径 | 本文件 |
 | m5 | namespace 解析读写不对称（只读兼容 id、写只认 slug） | `namespaceAPI.resolve` 统一走 `namespaceBySlugOrIDOn`；PATCH/DELETE 用解析行的 `ns.Slug` 调 store 写入口 | `resource_namespace.go`；`TestNamespaceResourceResolveByIDSlugSymmetry` |
 | m6 | node config 写 `status` → `unknown_field` | 配置写解码前识别 `status`（顶层与 `updates[]`）→ 400 `status_not_writable` | `resource_node.go` 的 `nodeDecodeConfigStrictJSON`；`TestNodeResourceConfigWriteStatusIsNotWritable` |
 | m7 | drain 响应/Node 读模型不含 draining 事实 | **保持记录**（§7「未迁移项」），不在本 PR 发明 Node.status 字段 | §7 |
@@ -307,3 +316,40 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 
 `gofmt -l` 空 / `git diff --check` 0 / `go vet` 0 / `go test ./internal/server/... ./internal/api/... ./internal/auth/... ./internal/authn/...` 0 /
 `go test ./internal/store/...` 0 / `go build ./internal/...` 0 / `go build ./cmd/server` 0 / 生产代码无 `internal/executor` 引用。
+
+### 9.5 r2 返修（#340 第二轮 review 后的提交，计数全部实测）
+
+`f0016b8` 之后又落了 4 个提交。下表每一行的增量都用
+`git show <commit>:<file> | grep -c '^func Test'` 逐文件相减得到（复算命令见本节末）。
+
+| 批次 | 内容 | `internal/server` 用例增量 | 累计后总数 |
+|---|---|---|---|
+| `f0016b8` | §9.1/§9.2 的 major/minor 关闭（保留读模型、upgrade 判等、logs 410、events 投影、reserved source 400、limit 钳位等） | **+17** | 262（261 + 1 `TestMain`） |
+| 返修 · **M-1** | 新增 `production_clock_test.go` 2 个用例 `TestProductionMuxStatsWindowUsesMillisecondClock`、`TestProductionMuxCancelRequestedAtIsRealTime`，用真实 `NewApp` 装配钉住 `serverDeps.Now` 的毫秒契约 | **+2** | 264（263 + 1） |
+| 返修 · **minor-2** | deployments/edges 退役写在生产 mux 显式 405，`production_mux_test.go` 加 `TestProductionMuxRetiredWritesAre405` | **+1** | 265（264 + 1） |
+| 返修 · **M-2** | 新增 `ws_settle_test.go`（**0 个 `func Test`**，提供本包真 WS 收尾屏障 `serveHubWithSettle`，等价于被删 `wsfixture_test.go` 的 `nodeStreamFixture.settle`）；`node_upgrade_test.go`/`resource_task_test.go`/`postclose_guard_test.go` 改用该屏障 | **±0** | 265（264 + 1） |
+
+返修轮合计 = **+20**（`2c3b2d3` 的 245 → 返修终态的 265）；`internal/api` 返修轮未改，仍 8。
+
+同轮「改断言但不改用例数」的两处（因此不在上表增量里）：
+
+- `retained_reads_test.go`：方法断言从 POST/DELETE 扩到 POST/PUT/PATCH/DELETE，并改断 `Status` 体（仍 4 个用例）。
+- `node_upgrade_test.go` / `resource_task_test.go` / `postclose_guard_test.go`：收尾屏障改造（分别仍 6 / 23 / 1 个）。
+
+复算命令与实测结果（在返修终态树上执行）：
+
+```bash
+# 当前树逐文件
+for f in internal/server/*_test.go internal/api/*_test.go; do
+  printf "%-46s %s\n" "$f" "$(grep -c '^func Test' "$f")"
+done
+grep -rh '^func Test' internal/server/*_test.go | wc -l   # 265
+grep -rh '^func Test' internal/api/*_test.go   | wc -l   # 8
+grep -rc '^func TestMain' internal/server/*_test.go | grep -v ':0'   # postclose_guard_test.go:1
+# 删除口径（base=b30e998）
+git diff --name-status b30e998..HEAD -- internal/server internal/api | awk '$1=="D"' | wc -l               # 34
+git diff --name-status b30e998..HEAD -- internal/server internal/api | awk '$1=="D"&&$2~/_test\.go$/' | wc -l  # 27
+```
+
+结果：`internal/server` = **265** 个 `func Test` = 264 个用例 + 1 个 `TestMain`（`postclose_guard_test.go`）；
+`internal/api` = 8 个（`events_test.go`，无 `TestMain`）。

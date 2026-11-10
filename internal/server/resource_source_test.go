@@ -94,7 +94,7 @@ func newSourceResEnv(t *testing.T) *sourceResEnv {
 		DB:      db,
 		Router:  router,
 		Sources: source.NewWithClock(db, router, func() int64 { return sourceResClock }),
-		Now:     func() int64 { return sourceResClock },
+		Now:     func() int64 { return sourceResClock * 1000 }, // 契约单位是毫秒（D1）
 		Session: func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				next.ServeHTTP(w, r.WithContext(auth.WithUserID(r.Context(), userID)))

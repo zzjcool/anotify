@@ -157,7 +157,7 @@ func newHookTestEnv(t *testing.T) *hookTestEnv {
 	}
 
 	router := route.New(db)
-	deps := &serverDeps{DB: db, Router: router, Sources: source.New(db, router), Now: store.Now}
+	deps := &serverDeps{DB: db, Router: router, Sources: source.New(db, router), Now: nowMilli}
 	mux := http.NewServeMux()
 	newSourceAPI(deps).register(mux)
 
@@ -246,7 +246,7 @@ func newTaskOutEnv(t *testing.T) *taskOutEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
-	deps := &serverDeps{DB: db, Session: sm.Middleware, Now: store.Now}
+	deps := &serverDeps{DB: db, Session: sm.Middleware, Now: nowMilli}
 	mux := http.NewServeMux()
 	newTaskAPI(deps).register(mux)
 
