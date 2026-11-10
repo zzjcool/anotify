@@ -1,0 +1,82 @@
+{
+  "task": "V4-CORE-RUNTIME-NEXT/C3b exact parent-approved result facts",
+  "head": "b46fd2c4d8bd233a056d5313ee40f052ac004d3c",
+  "base": "cc26a2e820c08c18c09bf43e80c97ebc40a8ebc8",
+  "preservedProduction": "5e2331b",
+  "implementationGate": {
+    "storeC3bClosureImplemented": true,
+    "newWireOrToken": false,
+    "selfFixed4": "PASS",
+    "extensionVerified": false,
+    "reviewAndWhiteboxG2G3G4": "PENDING",
+    "finalGoContractQuick": "UNCHANGED/PENDING"
+  },
+  "changedFiles": [
+    "internal/store/task.go",
+    "internal/store/task_attempt.go",
+    "internal/store/execution_auth.go",
+    "internal/store/schema.sql",
+    "internal/store/retention.go",
+    "internal/store/v4test/result_facts_test.go",
+    "internal/store/v4test/schema_baseline_test.go",
+    "internal/store/v4test/retention_test.go",
+    "internal/store/v4test/execution_wire_test.go",
+    "internal/store/v4test/result_current_binding_test.go",
+    "internal/store/v4test/task_attempt_test.go"
+  ],
+  "newTests": [
+    "TestC3bCompleteResultFullJSONNanoseconds",
+    "TestC3bCompleteResultFullFactsDiscrimination",
+    "TestC3bCompleteResultReopenNullableExitUTC",
+    "TestC3bCompleteResultMonotonicEquivalentDuplicate",
+    "TestC3bCompleteResultCurrentClockAfterSlowUpload",
+    "TestC3bCompleteResultOldFinishCannotReviveExpiredLease",
+    "TestC3bCompleteResultBasicTimeOrderZeroWrite",
+    "TestC3bCompleteResultOldFutureClocksTrustedRetention",
+    "TestC3bCompleteResultTrustedRetentionActiveUnreapedProtected",
+    "TestC3bCompleteResultMissingFactsNeverInferACK",
+    "TestC3bResultFactsSchemaRejectsMissingColumnsZeroWrites"
+  ],
+  "redGreen": {
+    "baselineRedExit": 1,
+    "baselineGreenExit": 0,
+    "baselineHead": "cc26a2e820c08c18c09bf43e80c97ebc40a8ebc8",
+    "mutation": "only lease expiry compares result.FinishedAt.Unix() instead of server now",
+    "mutationRedExit": 1,
+    "restoredGreenExit": 0,
+    "exactRestoreCmpExit": 0,
+    "executionAuthSha256": "797477390ec9a9d8dc0aab3fe4f9ae7d228ebd52fc4621d614868e953dc7b75f",
+    "faultSha256": "f085d348660b9a3840fc28e166c4fc739cce83d4f07727caf1eee1ae8f4ef31f"
+  },
+  "selfVerify": [
+    {
+      "command": "sh -c 'unformatted=$(gofmt -l internal/store internal/artifact) && printf \"%s\" \"$unformatted\" && test -z \"$unformatted\"'",
+      "exit": 0,
+      "log": "/tmp/anotify-core-next-c3b-facts-final-verify1-gofmt.log"
+    },
+    {
+      "command": "go build ./internal/store ./internal/artifact",
+      "exit": 0,
+      "log": "/tmp/anotify-core-next-c3b-facts-final-verify2-build.log"
+    },
+    {
+      "command": "go vet ./internal/store/v4test ./internal/artifact",
+      "exit": 0,
+      "log": "/tmp/anotify-core-next-c3b-facts-final-verify3-vet.log"
+    },
+    {
+      "command": "go test ./internal/store/v4test ./internal/artifact ./internal/protocol -count=1",
+      "exit": 0,
+      "log": "/tmp/anotify-core-next-c3b-facts-final-verify4-full.log"
+    }
+  ],
+  "fullFirstRun": {
+    "exit": 1,
+    "reason": "approved exitCode projection absent from strict TestTaskAttemptJSONShape expected keys; added key and null assertion, no weakening",
+    "log": "/tmp/anotify-core-next-c3b-facts-verify4-full.log",
+    "retries": 1
+  },
+  "pushMergeMR": "NOT DONE per task",
+  "productBugs": [],
+  "report": "/tmp/anotify-core-next-c3b-facts-report.md"
+}

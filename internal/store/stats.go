@@ -3,110 +3,202 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 )
 
-// DayCount 是某一天的通知数量（热力图用）。
+// DayCount 是某一天的数量（热力图用）。
 type DayCount struct {
 	Day   string `json:"day"`   // YYYY-MM-DD（本地时区日期，由服务端时区决定）
-	Count int    `json:"count"` // 当天通知数
+	Count int    `json:"count"` // 当天数量
 }
 
-// Stats 是用户工作台的真实统计。
+// Stats 是用户工作台的真实统计（形状沿用旧契约，语义按 v4 口径）。
 type Stats struct {
-	// #80 后口径（messages → events/tasks）：
-	// Total/Today/Daily 是**事件**数；Delivered/DeliveryTotal 是**任务**终态统计。
-	// 字段名与 JSON key 保持不变，避免破坏前端契约；语义变了但形状没变。
-	Total         int        `json:"total"`         // 事件总数
-	Today         int        `json:"today"`         // 今日事件数
-	Delivered     int        `json:"delivered"`     // 成功任务数
-	DeliveryTotal int        `json:"deliveryTotal"` // 已结束任务数（分母）
-	DeviceCount   int        `json:"deviceCount"`   // 已启用推送设备数
-	Daily         []DayCount `json:"daily"`         // 近 N 天每天事件数（热力图）
+	Total int `json:"total"` // 事件总数
+	Today int `json:"today"` // 今日事件数
+	// Delivered / DeliveryTotal 是任务口径：成功数 / 已结束（终态）数。
+	Delivered     int `json:"delivered"`
+	DeliveryTotal int `json:"deliveryTotal"`
+	// DeviceCount 是已启用推送设备数（设备仍按用户维度）。
+	DeviceCount int        `json:"deviceCount"`
+	Daily       []DayCount `json:"daily"`
 }
 
-// MessageStats 计算**某个命名空间**的真实统计。sinceSec 为热力图起始（unixepoch 秒）。
+// PhaseCount 是「相位 → 任务数」一行（按 PhaseCounts 的固定顺序出现）。
+type PhaseCount struct {
+	Phase string `json:"phase"`
+	Count int    `json:"count"`
+}
+
+// RefCount 是「能力名或节点名 → 任务数」一行（按 Count 降序、Ref 升序）。
+type RefCount struct {
+	Ref   string `json:"ref"`
+	Count int    `json:"count"`
+}
+
+// TaskStats 是按 phase / 能力 / 节点切分的任务计数。
 //
-// #162：事件与任务都属于命名空间，所以统计的作用域是 namespaceID（不是 org）——
-// `/v1/stats` 缺 namespaceId 一律 400，绝不回退默认命名空间（契约 §6.2）。
-// userID 只用于「该用户启用的推送设备数」（设备仍按用户维度）。
+// 为什么不复用 v3 的 9 态名：v4 只有六个相位（capability.md §8.3），
+// 报出 assigned/acked/lease_expired 只会让前端去渲染不存在的状态。
+type TaskStats struct {
+	// ByPhase 恒含全部六个相位（计数为 0 也出现）：前端不必自己补零。
+	ByPhase []PhaseCount `json:"byPhase"`
+	// ByCapability / ByNode 只含有任务行的那些。
+	ByCapability []RefCount `json:"byCapability"`
+	ByNode       []RefCount `json:"byNode"`
+}
+
+// TaskStats 计算某命名空间的任务计数（按相位、能力名、节点名）。
+func (d *DB) TaskStats(ctx context.Context, namespaceID string) (*TaskStats, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	out := &TaskStats{
+		ByPhase:      phaseCountsZeroed(),
+		ByCapability: []RefCount{},
+		ByNode:       []RefCount{},
+	}
+
+	rows, err := d.QueryContext(ctx,
+		`SELECT phase, COUNT(*) FROM tasks WHERE namespace_id = ? GROUP BY phase`, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("task stats by phase: %w", err)
+	}
+	byPhase := map[string]int{}
+	for rows.Next() {
+		var phase string
+		var n int
+		if err := rows.Scan(&phase, &n); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan task phase count: %w", err)
+		}
+		byPhase[phase] = n
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate task phase counts: %w", err)
+	}
+	rows.Close()
+	for i := range out.ByPhase {
+		out.ByPhase[i].Count = byPhase[out.ByPhase[i].Phase]
+	}
+
+	if out.ByCapability, err = d.taskRefCounts(ctx,
+		`SELECT capability, COUNT(*) FROM tasks WHERE namespace_id = ? GROUP BY capability`,
+		namespaceID); err != nil {
+		return nil, err
+	}
+	if out.ByNode, err = d.taskRefCounts(ctx,
+		`SELECT node_name, COUNT(*) FROM tasks
+		  WHERE namespace_id = ? AND node_name <> '' GROUP BY node_name`,
+		namespaceID); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// phaseCountsZeroed 返回六个相位的零值行（固定顺序：排队 → 运行 → 终态四类）。
+func phaseCountsZeroed() []PhaseCount {
+	phases := TaskPhases()
+	out := make([]PhaseCount, 0, len(phases))
+	for _, p := range phases {
+		out = append(out, PhaseCount{Phase: p})
+	}
+	return out
+}
+
+// taskRefCounts 执行一条 group-by 并排序成 RefCount 列表。
 //
-// 口径（#80 事件中心化后的定义）：
+// 排序在 Go 侧做：SQLite 的 ORDER BY 在多列上有 NULL/大小写细节，
+// 而这里要的是稳定的「多者在前、同数按名字」——一次排序不值得依赖 SQL 方言。
+func (d *DB) taskRefCounts(ctx context.Context, query string, args ...any) ([]RefCount, error) {
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("task ref counts: %w", err)
+	}
+	defer rows.Close()
+	out := []RefCount{}
+	for rows.Next() {
+		var rc RefCount
+		if err := rows.Scan(&rc.Ref, &rc.Count); err != nil {
+			return nil, fmt.Errorf("scan task ref count: %w", err)
+		}
+		out = append(out, rc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task ref counts: %w", err)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Ref < out[j].Ref
+	})
+	return out, nil
+}
+
+// MessageStats 计算某命名空间的工作台统计（sinceSec 为热力图起点，unixepoch 秒）。
 //
-//	Total     = 该命名空间的事件总数（events 表）
-//	Today     = 今日事件数（**服务端本地时区** 0 点起，见 startOfLocalDayUnix）
-//	Delivered/DeliveryTotal = 任务成功数 / 已结束任务数（tasks 的终态统计）
-//	DeviceCount = 该用户启用的推送设备数（devices 仍按 user 维度）
-//	Daily     = 近 N 天每天事件数（热力图，日界同样是本地时区）
+// 口径：#80 之后「发生了什么」是 events、「做完没有」是 tasks：
 //
-// 为什么从 messages 改为 events/tasks：messages 是旧"通知历史"模型，
-// 事件中心里"发生了什么"是 events、"做完没有"是 tasks。
-// 数值会与旧版本不同（历史通知数 ≠ 事件数），这是口径变化不是 bug。
+//	Total/Today/Daily = 事件数（今日与日桶用**服务端本地时区**的日界）
+//	Delivered/DeliveryTotal = 终态任务里 succeeded 的占比
+//	DeviceCount = 该用户启用的推送设备数（设备仍按 user 维度）
+//
+// 字段名与 JSON key 沿用旧契约：改名会让前端变成破坏性变更，而收益只是语义更贴切。
 func (d *DB) MessageStats(ctx context.Context, namespaceID, userID string, sinceSec int64) (*Stats, error) {
 	return d.messageStats(ctx, namespaceID, userID, sinceSec, time.Now())
 }
 
-// startOfLocalDayUnix 返回 now 所在时区当天的 00:00:00 的 Unix 秒。
+// startOfLocalDayUnix 返回 now 所在时区当天 00:00:00 的 Unix 秒。
 //
-// 「今日」的日界取**服务端进程本地时区**（now.Location()），不是 UTC：
-// 对 UTC+8 的用户来说 UTC 0 点起算意味着「今天的统计从早上 8 点开始」，
-// 早上 7 点打开工作台会看到「今日 0 条」——这不是统计口径，是时区 bug。
-//
-// 用 time.Date 重组年月日而不是 `now.Unix() - now.Hour()*3600`：后者在
-// 半小时时区（UTC+5:30 等）上直接算错。
+// 日界取**服务端进程本地时区**而不是 UTC：对 UTC+8 的用户来说 UTC 0 点起算意味着
+// 「今天的统计从早上 8 点开始」。用 time.Date 重组年月日而不是减小时数：
+// 后者在半小时时区（UTC+5:30 等）上直接算错。
 func startOfLocalDayUnix(now time.Time) int64 {
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
 }
 
-// messageStats 是 MessageStats 的可注入时间版本（now 由调用方给，测试才能
-// 不依赖机器时区/真实时钟地验证「今日」与日桶口径）。
+// messageStats 是 MessageStats 的可注入时间版本（now 由调用方给，测试才能不依赖
+// 机器时区/真实时钟地验证「今日」与日桶口径）。
 func (d *DB) messageStats(ctx context.Context, namespaceID, userID string, sinceSec int64, now time.Time) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
 
-	// 总数
 	if err := d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM events WHERE namespace_id=?`, namespaceID).Scan(&s.Total); err != nil {
 		return nil, fmt.Errorf("stats total: %w", err)
 	}
-
-	// 今日（本地时区 0 点起）
 	if err := d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM events WHERE namespace_id=? AND created_at >= ?`,
 		namespaceID, startOfLocalDayUnix(now)).Scan(&s.Today); err != nil {
 		return nil, fmt.Errorf("stats today: %w", err)
 	}
-
-	// 成功/完成比（口径：终态任务里 succeeded 的比例）
 	if err := d.QueryRowContext(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN phase = ? THEN 1 ELSE 0 END),0),
 		   COUNT(*)
 		 FROM tasks
-		 WHERE namespace_id=? AND status IN ('succeeded','failed','canceled','abandoned')`,
-		namespaceID).Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
+		 WHERE namespace_id=? AND phase IN (?,?,?,?)`,
+		TaskSucceeded, namespaceID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
+		Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
 		return nil, fmt.Errorf("stats tasks: %w", err)
 	}
-
-	// 启用设备数（推送订阅仍按用户维度）
 	if err := d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM devices WHERE user_id=? AND enabled=1`, userID).Scan(&s.DeviceCount); err != nil {
 		return nil, fmt.Errorf("stats devices: %w", err)
 	}
 
-	// 近 N 天每天数量（热力图），日界与 Today 用同一个本地时区。
+	// 近 N 天每天数量：日界与 Today 用同一个本地时区。
 	//
-	// SQLite 的 'localtime' 修饰符读进程 TZ 环境变量，结果不确定（同一次请求
-	// 里 Today 与 Daily 可能落在不同时区），所以**不用它**：这里把 now 的时区
-	// 偏移（Go 语义：秒，东为正）加到 created_at 上再按 UTC 取日期，等价于
-	// 「按本地墙钟时间分桶」，且完全由 now 决定、可复现。
-	//
-	// DST 取舍：offset 只从 now 取一次，所以跨 DST 的窗口在切换日附近可能
-	// 有 ±1h 的分桶偏差（切换前一小时的事件可能落到相邻的日桶）。这是任务
-	// 明确选择的确定性写法——宁可接受极小的边界偏差，也不要依赖 SQLite
-	// 读进程 TZ 这种不可测的全局状态。
+	// SQLite 的 'localtime' 修饰符读进程 TZ，结果不确定（同一次请求里 Today 与 Daily
+	// 可能落在不同时区），所以把 now 的时区偏移加到 created_at 上再按 UTC 取日期
+	// ——等价于「按本地墙钟分桶」，且完全由 now 决定、可复现。
+	// DST 取舍：offset 只从 now 取一次，切换日附近可能有 ±1h 的分桶偏差；宁可接受
+	// 这个极小边界偏差，也不要依赖 SQLite 读进程 TZ 这种不可测的全局状态。
 	_, offset := now.Zone()
 	rows, err := d.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', created_at + ?, 'unixepoch') AS day, COUNT(*)

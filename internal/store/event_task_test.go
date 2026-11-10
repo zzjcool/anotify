@@ -1,685 +1,251 @@
 package store
 
+// event_task_test.go 覆盖 v4 事件入口（event.md）：
+//
+//	投递幂等 = (namespace, 源稳定 id, deliveryId) 的有界窗口；窗口过期后同一
+//	deliveryId 是一次**新的**投递（窗口只压重复，不吞告警）。
+//
+// v3 的 idem_key 全表唯一、path 扇出建任务、以及「事件驱动建任务一次成功」
+// 由 emit（EmitAuthorized 同事务）与 CreateTasks（任务事务）各自覆盖：
+// 任务侧用例在 task_test.go，emit 侧在 emission_test.go。
+
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 )
 
-// mkTask 构造一个 pending 任务。
-func mkTask(nsID, traceID string, cap *CapabilityVersion, path ...string) *Task {
-	if path == nil {
-		path = []string{}
-	}
-	return &Task{
-		NamespaceID:  nsID,
-		TraceID:      traceID,
-		Path:         path,
-		CapabilityID: cap.ID,
-		Capability:   cap.Name,
-		Version:      cap.Version,
-		Params:       json.RawMessage(`{"k":"v"}`),
-		CapHash:      cap.ContentHash,
-		GraphID:      "grf_test",
-	}
-}
-
-// setupTaskFixture 建用户（含默认命名空间）+ 能力 + 一个待派发的任务。
-func setupTaskFixture(t *testing.T) (db *DB, nsID string, cap *CapabilityVersion, task *Task) {
-	t.Helper()
-	db = newTestDB(t)
-	ctx := context.Background()
-	nsID, _ = newTestNS(t, db)
-	cap = mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create capability: %v", err)
-	}
-	task = mkTask(nsID, "trace_1", cap)
-	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	return db, nsID, cap, task
-}
-
-// driveToRunning 把任务按状态机推到 running（模拟真实节点时序：
-// pending → assigned → acked → running）。
-//
-// 不能直接对 pending 调 ReportResult：契约 §3.2 里 result 只能从 running 出发，
-// 而 pending 的任务还没有节点持有，拿不到 result 帧。
-func driveToRunning(t *testing.T, db *DB, nsID, nodeID string, task *Task) string {
-	t.Helper()
-	ctx := context.Background()
-	instID, err := db.LeaseInstance(ctx, nodeID, task.ID)
-	if err != nil {
-		t.Fatalf("lease instance: %v", err)
-	}
-	if err := db.AssignTask(ctx, nsID, task.ID, nodeID, instID, Now()+LeaseTTLSec); err != nil {
-		t.Fatalf("assign: %v", err)
-	}
-	if err := db.Transition(ctx, nsID, task.ID, TaskAssigned, TaskAcked); err != nil {
-		t.Fatalf("ack: %v", err)
-	}
-	if err := db.StartTask(ctx, nsID, task.ID); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	return instID
-}
-
-// expandCapacity 把节点扩到 n 个并发槽位（setupRunningTask 默认只申报 1 个，
-// 后续还要推别的任务时必须先扩，否则 LeaseInstance 会 ErrNoCapacity）。
-func expandCapacity(t *testing.T, db *DB, nsID, nodeID string, n int) {
-	t.Helper()
-	specs := make([]InstanceSpec, n)
-	for i := range specs {
-		specs[i] = InstanceSpec{Slot: i, Concurrency: 1}
-	}
-	if _, err := db.UpsertInstances(context.Background(), nsID, nodeID, specs); err != nil {
-		t.Fatalf("expand capacity to %d: %v", n, err)
-	}
-}
-
-// mustOnlyNode 返回命名空间里唯一的节点 ID（setupRunningTask 只建一个）。
-func mustOnlyNode(t *testing.T, db *DB, nsID string) string {
-	t.Helper()
-	nodes, err := db.ListNodes(context.Background(), nsID)
-	if err != nil {
-		t.Fatalf("list nodes: %v", err)
-	}
-	if len(nodes) != 1 {
-		t.Fatalf("want exactly 1 node, got %d", len(nodes))
-	}
-	return nodes[0].ID
-}
-
-// setupRunningTask 建一个已推到 running 的任务（含节点与槽位）。
-func setupRunningTask(t *testing.T) (db *DB, nsID, nodeID string, cap *CapabilityVersion, task *Task) {
-	t.Helper()
-	ctx := context.Background()
-	db = newTestDB(t)
-	nsID, _ = newTestNS(t, db)
-	cap = mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-	node, _ := mkNode(t, db, nsID, "mbp")
-	nodeID = node.ID
-	if _, err := db.ConfirmCapabilities(ctx, nsID, nodeID, []CapabilityRef{{Name: cap.Name, Version: cap.Version}}); err != nil {
-		t.Fatalf("confirm: %v", err)
-	}
-	if err := db.UpdateNodeStatus(ctx, nsID, nodeID, NodeStatusOnline); err != nil {
-		t.Fatalf("online: %v", err)
-	}
-	if _, err := db.UpsertInstances(ctx, nsID, nodeID, []InstanceSpec{{Slot: 0, Concurrency: 1}}); err != nil {
-		t.Fatalf("instances: %v", err)
-	}
-	task = mkTask(nsID, "trace_run", cap)
-	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	driveToRunning(t, db, nsID, nodeID, task)
-	return db, nsID, nodeID, cap, task
-}
-
-// ---------- #63：events 幂等 ----------
-
-// TestEventIdempotency 同一 idem_key 插两次 → inserted=false 且返回同一 event_id（#63 验收）。
+// TestEventIdempotency 同一 deliveryId 在窗口内重复投递 → 返回已有事件，不新增行。
 func TestEventIdempotency(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
 
-	key := "X-GitHub-Delivery-abc"
-	first := &Event{
-		NamespaceID: nsID, TraceID: "trace_abc", Source: "github",
-		Type: "pull_request.opened", Payload: json.RawMessage(`{"n":1}`), IdemKey: &key,
-	}
-	inserted, err := db.InsertEvent(ctx, first)
-	if err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-	if !inserted {
-		t.Fatal("first insert returned inserted=false")
-	}
-	if first.ID == "" {
-		t.Fatal("first insert did not assign event id")
+	delivery := "dlv-1"
+	first := v4Event(nsID, "github", "push")
+	first.DeliveryID = &delivery
+	if ok, err := db.InsertEvent(ctx, first, Now(), 300); err != nil || !ok {
+		t.Fatalf("first insert: inserted=%v err=%v", ok, err)
 	}
 
-	// 重投：不同 trace_id 也想插，但必须返回已有的
-	second := &Event{
-		NamespaceID: nsID, TraceID: "trace_DIFFERENT", Source: "github",
-		Type: "pull_request.opened", Payload: json.RawMessage(`{"n":1}`), IdemKey: &key,
-	}
-	inserted, err = db.InsertEvent(ctx, second)
+	second := v4Event(nsID, "github", "push")
+	second.DeliveryID = &delivery
+	ok, err := db.InsertEvent(ctx, second, Now(), 300)
 	if err != nil {
 		t.Fatalf("second insert: %v", err)
 	}
-	if inserted {
-		t.Fatal("duplicate idem_key reported inserted=true")
+	if ok {
+		t.Fatal("窗口内的重复投递被当成新事件插入")
 	}
 	if second.ID != first.ID {
-		t.Fatalf("duplicate returned event_id %q, want existing %q", second.ID, first.ID)
+		t.Fatalf("重复投递返回的事件 id = %q, want 已有 %q", second.ID, first.ID)
 	}
-	if second.TraceID != "trace_abc" {
-		t.Fatalf("duplicate returned trace_id %q, want existing trace_abc (not the new one)", second.TraceID)
+	list, err := db.ListEvents(ctx, nsID, "", "github", 0)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
 	}
-
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM events WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("events has %d rows, want 1", n)
+	if len(list) != 1 {
+		t.Fatalf("重复投递留下 %d 行，want 1", len(list))
 	}
 }
 
-// TestEventWithoutIdemKeyAllowsDuplicates 不带 idem_key 允许重复（契约 §10.1）。
+// TestEventWithoutIdemKeyAllowsDuplicates 不带 deliveryId 的投递永远是新事件。
 func TestEventWithoutIdemKeyAllowsDuplicates(t *testing.T) {
 	db := newTestDB(t)
-	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
-
-	for i := 0; i < 3; i++ {
-		e := &Event{NamespaceID: nsID, TraceID: "trace_x", Source: "manual", Type: "click"}
-		inserted, err := db.InsertEvent(ctx, e)
-		if err != nil {
-			t.Fatalf("insert %d: %v", i, err)
-		}
-		if !inserted {
-			t.Fatalf("insert %d (no idem_key) reported inserted=false", i)
-		}
-	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM events WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 3 {
-		t.Fatalf("events has %d rows, want 3 (no idem_key ⇒ duplicates allowed)", n)
-	}
-}
-
-// TestEventIdemKeyScopedPerSourceAndNamespace idem_key 的唯一性是 (命名空间, source, key)。
-//
-// #205 之后「组织」这一层不存在了，命名空间是唯一隔离维度：UNIQUE 索引前缀就是
-// namespace_id，于是每个命名空间各有独立的投递 ID 空间（否则两条流水线会互相
-// 吃掉对方的 webhook 重投）。
-func TestEventIdemKeyScopedPerSourceAndNamespace(t *testing.T) {
-	db := newTestDB(t)
 	ctx := context.Background()
-	nsA, _ := newTestNS(t, db)
-	nsB, _ := newTestNS(t, db)
-	key := "same-delivery-id"
 
-	// 同命名空间、不同 source：允许（各自独立的投递 ID 空间）
-	for _, src := range []string{"github", "gitlab"} {
-		e := &Event{NamespaceID: nsA, TraceID: "t-" + src, Source: src, Type: "push", IdemKey: &key}
-		inserted, err := db.InsertEvent(ctx, e)
-		if err != nil {
-			t.Fatalf("insert source %s: %v", src, err)
-		}
-		if !inserted {
-			t.Fatalf("source %s was deduped against another source", src)
+	a := v4Event(nsID, "github", "push")
+	b := v4Event(nsID, "github", "push")
+	b.TraceID = a.TraceID // 同 trace 也不去重（去重只认 deliveryId）
+	for _, e := range []*Event{a, b} {
+		inserted, err := db.InsertEvent(ctx, e, Now(), 300)
+		if err != nil || !inserted {
+			t.Fatalf("insert %s: inserted=%v err=%v", e.ID, inserted, err)
 		}
 	}
-	// 不同命名空间、同 source、同 key：允许（命名空间隔离，不变量 I11）
-	e := &Event{NamespaceID: nsB, TraceID: "t-b", Source: "github", Type: "push", IdemKey: &key}
-	inserted, err := db.InsertEvent(ctx, e)
+	if a.ID == b.ID {
+		t.Fatal("无 deliveryId 的两次投递共用了事件 id")
+	}
+	list, err := db.ListEvents(ctx, nsID, "", "", 0)
 	if err != nil {
-		t.Fatalf("insert nsB: %v", err)
+		t.Fatalf("list events: %v", err)
 	}
-	if !inserted {
-		t.Fatal("idem_key leaked across namespaces (invariant I11 violated)")
+	if len(list) != 2 {
+		t.Fatalf("事件数 = %d, want 2", len(list))
 	}
 }
 
-// TestEventGetAndList 事件读取与列表。
+// TestEventDeliveryWindowExpiry 窗口过期后同一 deliveryId 重新占窗 = 新事件。
+func TestEventDeliveryWindowExpiry(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
+
+	delivery := "dlv-expire"
+	now := int64(1_700_000_000)
+	first := v4Event(nsID, "webhook", "in")
+	first.DeliveryID = &delivery
+	if ok, err := db.InsertEvent(ctx, first, now, 60); err != nil || !ok {
+		t.Fatalf("first insert: %v %v", ok, err)
+	}
+	// 窗口内重复：吸收。
+	dup := v4Event(nsID, "webhook", "in")
+	dup.DeliveryID = &delivery
+	if ok, err := db.InsertEvent(ctx, dup, now+30, 60); err != nil || ok {
+		t.Fatalf("窗口内重复应被吸收: inserted=%v err=%v", ok, err)
+	}
+	// 窗口过期后（now+61 > expires_at）：新的一条。
+	after := v4Event(nsID, "webhook", "in")
+	after.DeliveryID = &delivery
+	ok, err := db.InsertEvent(ctx, after, now+61, 60)
+	if err != nil {
+		t.Fatalf("insert after window: %v", err)
+	}
+	if !ok {
+		t.Fatal("窗口过期后的投递仍被吸收（告警会被永久吞掉）")
+	}
+	if after.ID == first.ID {
+		t.Fatal("过期后的投递复用了旧事件行")
+	}
+}
+
+// TestEventDeliveryScopedPerSourceAndNamespace 同一 deliveryId 只在 (ns, 源) 内去重。
+func TestEventDeliveryScopedPerSourceAndNamespace(t *testing.T) {
+	db := newTestDB(t)
+	nsA, _ := newTestNS(t, db)
+	nsB := newTestExtraNS(t, db, "event-other")
+	ctx := context.Background()
+
+	delivery := "dlv-shared"
+	insert := func(nsID, source string) *Event {
+		e := v4Event(nsID, source, "in")
+		e.DeliveryID = &delivery
+		ok, err := db.InsertEvent(ctx, e, Now(), 300)
+		if err != nil {
+			t.Fatalf("insert %s/%s: %v", nsID, source, err)
+		}
+		if !ok {
+			t.Fatalf("%s/%s 的首次投递被判重复（去重串了维度）", nsID, source)
+		}
+		return e
+	}
+	insert(nsA, "github")
+	insert(nsA, "gitlab") // 同 ns、不同源
+	insert(nsB, "github") // 不同 ns、同名源
+
+	// 同名源在两个命名空间里是两条不同的事件。
+	if _, err := db.GetEvent(ctx, nsB, ""); err == nil {
+		t.Fatal("空事件 id 不该查到东西")
+	}
+}
+
+// TestEventGetAndList 读写往返 + 过滤（trace/source/limit）。
 func TestEventGetAndList(t *testing.T) {
 	db := newTestDB(t)
-	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
 
-	if _, err := db.GetEvent(ctx, nsID, "evt_nope"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetEvent missing err = %v, want ErrNotFound", err)
-	}
-	if _, err := db.GetEventByTrace(ctx, nsID, "trace_nope"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetEventByTrace missing err = %v, want ErrNotFound", err)
-	}
-
-	e1 := &Event{NamespaceID: nsID, TraceID: "trace_1", Source: "github", Type: "pr.opened", Payload: json.RawMessage(`{"a":1}`)}
-	if _, err := db.InsertEvent(ctx, e1); err != nil {
-		t.Fatalf("insert 1: %v", err)
-	}
-	e2 := &Event{NamespaceID: nsID, TraceID: "trace_2", Source: "cron", Type: "tick"}
-	if _, err := db.InsertEvent(ctx, e2); err != nil {
-		t.Fatalf("insert 2: %v", err)
-	}
+	e1 := v4InsertEvent(t, db, v4Event(nsID, "github", "push"), Now(), 0)
+	e2 := v4InsertEvent(t, db, v4Event(nsID, "gitlab", "mr"), Now(), 0)
+	e2.TraceID = e1.TraceID
 
 	got, err := db.GetEvent(ctx, nsID, e1.ID)
 	if err != nil {
 		t.Fatalf("get event: %v", err)
 	}
-	if got.TraceID != "trace_1" || got.Source != "github" || got.Type != "pr.opened" {
-		t.Fatalf("event round-trip mismatch: %+v", got)
+	if got.Source != "github" || got.Type != "push" || got.TraceID != e1.TraceID {
+		t.Fatalf("事件往返不一致: %+v", got)
 	}
-	if string(got.Payload) != `{"a":1}` {
-		t.Fatalf("payload not preserved: %s", got.Payload)
-	}
-
-	all, err := db.ListEvents(ctx, nsID, "", "", 10)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("want 2 events, got %d", len(all))
-	}
-	// 按 trace 过滤
-	byTrace, err := db.ListEvents(ctx, nsID, "trace_1", "", 10)
-	if err != nil {
-		t.Fatalf("list by trace: %v", err)
-	}
-	if len(byTrace) != 1 || byTrace[0].ID != e1.ID {
-		t.Fatalf("trace filter wrong: %+v", byTrace)
-	}
-	// by trace helper
-	root, err := db.GetEventByTrace(ctx, nsID, "trace_1")
+	byTrace, err := db.GetEventByTrace(ctx, nsID, e1.TraceID)
 	if err != nil {
 		t.Fatalf("get by trace: %v", err)
 	}
-	if root.ID != e1.ID {
-		t.Fatalf("GetEventByTrace returned %s, want %s", root.ID, e1.ID)
+	if byTrace.ID != e1.ID && byTrace.ID != e2.ID {
+		t.Fatalf("by-trace 返回 %s，不在同 trace 的两条里", byTrace.ID)
 	}
-
-	// 空列表是 []
-	empty, err := db.ListEvents(ctx, nsID, "trace_none", "", 10)
+	all, err := db.ListEvents(ctx, nsID, e1.TraceID, "", 0)
 	if err != nil {
-		t.Fatalf("list empty: %v", err)
+		t.Fatalf("list by trace: %v", err)
 	}
-	if empty == nil {
-		t.Fatal("ListEvents returned nil (need [])")
+	if len(all) != 2 {
+		t.Fatalf("同 trace 事件数 = %d, want 2", len(all))
+	}
+	onlyGitlab, err := db.ListEvents(ctx, nsID, "", "gitlab", 0)
+	if err != nil {
+		t.Fatalf("list by source: %v", err)
+	}
+	if len(onlyGitlab) != 1 || onlyGitlab[0].ID != e2.ID {
+		t.Fatalf("source 过滤 = %+v", onlyGitlab)
 	}
 }
 
-// TestEventValidation 入参校验。
+// TestEventEmptyListIsArray 空列表是 []。
+func TestEventEmptyListIsArray(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
+	list, err := db.ListEvents(context.Background(), nsID, "", "", 0)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if list == nil {
+		t.Fatal("空事件列表返回 nil，want 空切片")
+	}
+}
+
+// TestEventValidation 必填字段与保留源都必须拒。
 func TestEventValidation(t *testing.T) {
 	db := newTestDB(t)
-	ctx := context.Background()
 	nsID, _ := newTestNS(t, db)
+	ctx := context.Background()
 
-	if _, err := db.InsertEvent(ctx, nil); err == nil {
-		t.Error("InsertEvent(nil) accepted")
+	cases := []struct {
+		name string
+		e    *Event
+	}{
+		{"no-source", &Event{NamespaceID: nsID, TraceID: "tr", Type: "push"}},
+		{"no-type", &Event{NamespaceID: nsID, TraceID: "tr", Source: "github"}},
+		{"no-trace", &Event{NamespaceID: nsID, Source: "github", Type: "push"}},
+		{"reserved-source", &Event{NamespaceID: nsID, TraceID: "tr", Source: EventPruneSource, Type: "push"}},
+		{"no-namespace", &Event{TraceID: "tr", Source: "github", Type: "push"}},
 	}
-	if _, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, Source: "s", Type: "t"}); err == nil {
-		t.Error("InsertEvent without trace_id accepted (trigger must generate it)")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.InsertEvent(ctx, tc.e, Now(), 0); err == nil {
+				t.Fatalf("非法事件被接受: %+v", tc.e)
+			}
+		})
 	}
-	if _, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, TraceID: "t"}); err == nil {
-		t.Error("InsertEvent without source/type accepted")
-	}
-	if _, err := db.InsertEvent(ctx, &Event{TraceID: "t", Source: "s", Type: "t"}); err == nil {
-		t.Error("InsertEvent without namespace accepted")
+	if !errors.Is(func() error {
+		_, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, TraceID: "tr", Source: EventPruneSource, Type: "push"}, Now(), 0)
+		return err
+	}(), ErrReservedEventSource) {
+		t.Fatal("保留源应报 ErrReservedEventSource")
 	}
 }
 
-// ---------- #63：结果回报落库（没有 out 维度） ----------
-
-// TestReportResultWritesTerminalState 结果回报只写「这件事怎么样了」这一组字段：
-// status / summary / artifacts / error / finished_at，外加 reported=1。
-//
-// 出口**不在任务行上**：`tasks.out` 列已删掉（出口只存在于 emission），
-// 所以这里既不能也不该断言「选了哪个出口」。仍然可观察的三个状态是：
-//   - 没回报过：reported=false（任务停在 pending / running，等租约巡检）
-//   - 成功：reported=true + status=succeeded + summary 是「做了什么」
-//   - 失败：reported=true + status=failed + error/summary 同源（失败一定有原因）
-func TestReportResultWritesTerminalState(t *testing.T) {
-	db, nsID, nodeID, cap, _ := setupRunningTask(t)
-	ctx := context.Background()
-	expandCapacity(t, db, nsID, nodeID, 8)
-
-	// ① 还没回报：reported=false
-	fresh := mkTask(nsID, "trace_fresh", cap)
-	if err := db.CreateTasks(ctx, []*Task{fresh}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	got, err := db.GetTask(ctx, nsID, fresh.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.Reported {
-		t.Error("fresh task has reported=true")
-	}
-
-	// ② 成功回报：reported=true + 终态 + summary
-	okTask := mkTask(nsID, "trace_ok", cap)
-	if err := db.CreateTasks(ctx, []*Task{okTask}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), okTask)
-	if err := db.ReportResult(ctx, nsID, okTask.ID, TaskSucceeded, "done", nil, ""); err != nil {
-		t.Fatalf("report: %v", err)
-	}
-	got, err = db.GetTask(ctx, nsID, okTask.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if !got.Reported {
-		t.Fatal("reported=true was not persisted")
-	}
-	if got.Status != TaskSucceeded {
-		t.Fatalf("status = %q, want succeeded", got.Status)
-	}
-	if got.Summary != "done" {
-		t.Fatalf("summary = %q, want done", got.Summary)
-	}
-	if got.FinishedAt == nil {
-		t.Fatal("finished_at not set on terminal status")
-	}
-
-	// ③ 失败回报：error 是 summary 的派生位（单一来源），且优先取 error（更具体）
-	failTask := mkTask(nsID, "trace_fail", cap)
-	if err := db.CreateTasks(ctx, []*Task{failTask}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	driveToRunning(t, db, nsID, mustOnlyNode(t, db, nsID), failTask)
-	if err := db.ReportResult(ctx, nsID, failTask.ID, TaskFailed, "needs fix", nil, "type error"); err != nil {
-		t.Fatalf("report failed: %v", err)
-	}
-	got, err = db.GetTask(ctx, nsID, failTask.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.Status != TaskFailed {
-		t.Fatalf("status = %q, want failed", got.Status)
-	}
-	if got.Error != "type error" {
-		t.Fatalf("error = %q, want \"type error\"", got.Error)
-	}
-	if got.Summary != "type error" {
-		t.Fatalf("summary = %q, want 与 error 同源（\"type error\"）", got.Summary)
-	}
-}
-
-// TestReportedColumnDistinguishesNoResultFrame 「没回报」与「回报了」只差 reported 一位：
-// 前者没有结果帧（reported=false），后者有（reported=true）。任务行上**没有**别的
-// 维度可以表达这件事（旧的 out 列已删）。
-func TestReportedColumnDistinguishesNoResultFrame(t *testing.T) {
-	db, nsID, nodeID, cap, _ := setupRunningTask(t)
+// TestInsertPruneEventNeverDeduped 剪枝留痕永远留痕（同一 trace 多条也要各写一行）。
+func TestInsertPruneEventNeverDeduped(t *testing.T) {
+	db := newTestDB(t)
+	nsID, _ := newTestNS(t, db)
 	ctx := context.Background()
 
-	a := mkTask(nsID, "trace_a", cap)
-	b := mkTask(nsID, "trace_b", cap)
-	for _, x := range []*Task{a, b} {
-		if err := db.CreateTasks(ctx, []*Task{x}); err != nil {
-			t.Fatalf("create: %v", err)
+	for i := 0; i < 2; i++ {
+		e := &Event{NamespaceID: nsID, TraceID: "tr_prune", Type: "downstream_missing"}
+		if err := db.InsertPruneEvent(ctx, e); err != nil {
+			t.Fatalf("insert prune event %d: %v", i, err)
 		}
 	}
-	// b 推到 running 才能回报；a 停在 pending 表示「节点根本没上报」
-	expandCapacity(t, db, nsID, nodeID, 8)
-	driveToRunning(t, db, nsID, nodeID, b)
-	// a: 没回报（不调 ReportResult）
-	// b: 回报了
-	if err := db.ReportResult(ctx, nsID, b.ID, TaskSucceeded, "", nil, ""); err != nil {
-		t.Fatalf("report: %v", err)
-	}
-	ga, _ := db.GetTask(ctx, nsID, a.ID)
-	gb, _ := db.GetTask(ctx, nsID, b.ID)
-	if ga.Reported == gb.Reported {
-		t.Fatal("reported 列区分不了「没回报」与「回报了」")
-	}
-}
-
-// ---------- #63：批量建任务原子性 ----------
-
-// TestCreateTasksAtomic 第 3 个任务故意写坏 → 前 2 个也不落库（#63 验收）。
-func TestCreateTasksAtomic(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-
-	good1 := mkTask(nsID, "trace_1", cap)
-	good2 := mkTask(nsID, "trace_1", cap)
-	// 第 3 个：capability_id 指向不存在的行 → 外键失败
-	bad := mkTask(nsID, "trace_1", cap)
-	bad.CapabilityID = "cap_does_not_exist"
-
-	err := db.CreateTasks(ctx, []*Task{good1, good2, bad})
-	if err == nil {
-		t.Fatal("CreateTasks accepted a broken task")
-	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM tasks WHERE namespace_id=?`, nsID).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("partial write: %d tasks persisted, want 0 (fanout must be atomic)", n)
-	}
-}
-
-// TestCreateTasksFanout 扇出：一个事件产 N 个任务。
-func TestCreateTasksFanout(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-	var batch []*Task
-	for i := 0; i < 3; i++ {
-		batch = append(batch, mkTask(nsID, "trace_fanout", cap))
-	}
-	if err := db.CreateTasks(ctx, batch); err != nil {
-		t.Fatalf("create fanout: %v", err)
-	}
-	tasks, err := db.ListTasks(ctx, nsID, "trace_fanout", "", "", 10)
+	list, err := db.ListEvents(ctx, nsID, "tr_prune", "", 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(tasks) != 3 {
-		t.Fatalf("want 3 tasks, got %d", len(tasks))
+	if len(list) != 2 {
+		t.Fatalf("剪枝留痕 = %d 行, want 2（剪枝不去重）", len(list))
 	}
-	seen := map[string]bool{}
-	for _, x := range tasks {
-		if x.ID == "" {
-			t.Fatal("task created without id")
+	for _, e := range list {
+		if e.Source != EventPruneSource {
+			t.Fatalf("剪枝事件的 source = %q, want %q", e.Source, EventPruneSource)
 		}
-		if seen[x.ID] {
-			t.Fatal("duplicate task id in fanout")
-		}
-		seen[x.ID] = true
-		if x.Status != TaskPending {
-			t.Fatalf("new task status = %q, want pending", x.Status)
-		}
-	}
-}
-
-// TestCreateTasksRejectsNonPending 建任务只能落在 pending。
-func TestCreateTasksRejectsNonPending(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-	task := mkTask(nsID, "trace_1", cap)
-	task.Status = TaskSucceeded
-	if err := db.CreateTasks(ctx, []*Task{task}); err == nil {
-		t.Fatal("CreateTasks accepted a task that was not pending")
-	}
-}
-
-// TestCreateTasksEmptyIsNoop 空扇出是正常情况，不是错误。
-func TestCreateTasksEmptyIsNoop(t *testing.T) {
-	db := newTestDB(t)
-	if err := db.CreateTasks(context.Background(), nil); err != nil {
-		t.Fatalf("CreateTasks(nil) = %v, want nil", err)
-	}
-	if err := db.CreateTasks(context.Background(), []*Task{}); err != nil {
-		t.Fatalf("CreateTasks([]) = %v, want nil", err)
-	}
-}
-
-// TestTaskRoundTrip 每个新字段的往返一致性（AGENTS.md §3 要求）。
-func TestTaskRoundTrip(t *testing.T) {
-	db, nsID, cap, _ := setupTaskFixture(t)
-	ctx := context.Background()
-
-	node := "nd_round"
-	inst := "nins_round"
-	lease := int64(1730000000)
-	started := int64(1730000001)
-	finished := int64(1730000002)
-	parent := "tsk_parent"
-	task := &Task{
-		NamespaceID:  nsID,
-		TraceID:      "trace_rt",
-		ParentTaskID: &parent,
-		Path:         []string{"cap_a", "cap_b"},
-		CapabilityID: cap.ID,
-		Capability:   cap.Name,
-		Version:      cap.Version,
-		Params:       json.RawMessage(`{"diff":"x"}`),
-		Status:       TaskPending,
-		NodeID:       &node,
-		InstanceID:   &inst,
-		LeaseUntil:   &lease,
-		Attempts:     3,
-		Reported:     true,
-		Summary:      "发现 2 处类型错误",
-		Artifacts:    []string{"tsk_8f21a3c0"},
-		Error:        "",
-		CapHash:      cap.ContentHash,
-		GraphID:      "grf_rt",
-		StartedAt:    &started,
-		FinishedAt:   &finished,
-	}
-	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	got, err := db.GetTask(ctx, nsID, task.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-
-	if got.TraceID != "trace_rt" || got.Capability != cap.Name || got.Version != cap.Version {
-		t.Fatalf("identity mismatch: %+v", got)
-	}
-	if got.ParentTaskID == nil || *got.ParentTaskID != parent {
-		t.Fatalf("parent_task_id lost: %v", got.ParentTaskID)
-	}
-	if len(got.Path) != 2 || got.Path[0] != "cap_a" || got.Path[1] != "cap_b" {
-		t.Fatalf("path lost: %v", got.Path)
-	}
-	if string(got.Params) != `{"diff":"x"}` {
-		t.Fatalf("params lost: %s", got.Params)
-	}
-	if got.NodeID == nil || *got.NodeID != node {
-		t.Fatalf("node_id lost: %v", got.NodeID)
-	}
-	if got.InstanceID == nil || *got.InstanceID != inst {
-		t.Fatalf("instance_id lost: %v", got.InstanceID)
-	}
-	if got.LeaseUntil == nil || *got.LeaseUntil != lease {
-		t.Fatalf("lease_until lost: %v", got.LeaseUntil)
-	}
-	if got.Attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", got.Attempts)
-	}
-	if !got.Reported {
-		t.Fatal("reported lost")
-	}
-	if got.Summary != "发现 2 处类型错误" {
-		t.Fatalf("summary lost: %q", got.Summary)
-	}
-	if len(got.Artifacts) != 1 || got.Artifacts[0] != "tsk_8f21a3c0" {
-		t.Fatalf("artifacts lost: %v", got.Artifacts)
-	}
-	if got.CapHash != cap.ContentHash || got.GraphID != "grf_rt" {
-		t.Fatalf("version pinning lost: %q / %q", got.CapHash, got.GraphID)
-	}
-	if got.StartedAt == nil || *got.StartedAt != started {
-		t.Fatalf("started_at lost: %v", got.StartedAt)
-	}
-	if got.FinishedAt == nil || *got.FinishedAt != finished {
-		t.Fatalf("finished_at lost: %v", got.FinishedAt)
-	}
-}
-
-// TestListTasksEmptyIsArray 不变量 I9。
-func TestListTasksEmptyIsArray(t *testing.T) {
-	db := newTestDB(t)
-	nsID, _ := newTestNS(t, db)
-	tasks, err := db.ListTasks(context.Background(), nsID, "", "", "", 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if tasks == nil {
-		t.Fatal("ListTasks returned nil (need [])")
-	}
-}
-
-// TestListTasksFilters 过滤条件。
-func TestListTasksFilters(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-	cap := mkCap(nsID, "review", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-	a := mkTask(nsID, "trace_a", cap)
-	b := mkTask(nsID, "trace_b", cap)
-	if err := db.CreateTasks(ctx, []*Task{a, b}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	byTrace, err := db.ListTasks(ctx, nsID, "trace_a", "", "", 10)
-	if err != nil {
-		t.Fatalf("by trace: %v", err)
-	}
-	if len(byTrace) != 1 || byTrace[0].ID != a.ID {
-		t.Fatalf("trace filter wrong: %+v", byTrace)
-	}
-	byStatus, err := db.ListTasks(ctx, nsID, "", "", TaskPending, 10)
-	if err != nil {
-		t.Fatalf("by status: %v", err)
-	}
-	if len(byStatus) != 2 {
-		t.Fatalf("pending filter got %d, want 2", len(byStatus))
-	}
-	none, err := db.ListTasks(ctx, nsID, "", "", TaskSucceeded, 10)
-	if err != nil {
-		t.Fatalf("by status none: %v", err)
-	}
-	if len(none) != 0 {
-		t.Fatalf("want 0 succeeded, got %d", len(none))
-	}
-}
-
-// TestTaskNamespaceIsolation 不变量 I11：跨命名空间查不到任务。
-func TestTaskNamespaceIsolation(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsA, _ := newTestNS(t, db)
-	nsB, _ := newTestNS(t, db)
-	capA := mkCap(nsA, "review", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(capA)); err != nil {
-		t.Fatalf("create cap: %v", err)
-	}
-	task := mkTask(nsA, "trace_iso", capA)
-	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := db.GetTask(ctx, nsB, task.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-namespace GetTask err = %v, want ErrNotFound", err)
-	}
-	tasksB, err := db.ListTasks(ctx, nsB, "", "", "", 10)
-	if err != nil {
-		t.Fatalf("list B: %v", err)
-	}
-	if len(tasksB) != 0 {
-		t.Fatalf("nsB 看到了 nsA 的 %d 条任务（隔离破了）", len(tasksB))
 	}
 }

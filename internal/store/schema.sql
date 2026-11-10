@@ -1,42 +1,38 @@
--- Anotify · SQLite schema（单一事实源）
+-- Anotify · SQLite schema（v4 baseline，单一事实源）
 -- 连接初始化 PRAGMA（在代码里设置）：
 --   journal_mode=WAL; synchronous=NORMAL; busy_timeout=5000; foreign_keys=ON;
 --
 -- 本文件同时是**迁移脚本**：按 `-- +migration N name` 切块，
 -- store.migrateWith 逐块应用，schema_version 记账（见 migrate.go）。
 --
--- 块号从 `-- +migration 1 baseline` 起连续递增（当前最高版本 = migrate.go 的 headVersion），
--- 新变更继续往后追加块；不在这里逐块点名——那串清单一定会落后于代码。
+-- v4 开发期直接重建：只有一块 `-- +migration 1 baseline`，没有历史增量块。
+-- 旧库（有 schema_version 记账却没有 v4 布局标记、有未知布局标记、或没有记账但已有用户 schema 对象）
+-- 在应用 baseline **之前**被明确拒绝；视图/触发器/索引也意味着非空。
+-- 只排除字面 sqlite_ 内部前缀（sqliteXkeep 是用户对象），程序不会自动删数据（见 migrate.go）。
 --
--- squash：squash 之前的 28 块增量迁移（建表 → 加列 → 删列 → 重建表 → 删表）已经合并成
--- 这一份**终态 DDL**。这里描述的是「今天库里长什么样」，不残留任何「迁移 4 建表、
--- 迁移 28 再删列」式的历史包袱——tasks.out / source_targets / orgs / org_members /
--- node_capabilities.run_spec / 旧通知模型的三张表都不在这里。
---
--- 规则（从现在起）：
---   · baseline（版本 1）视为**已发布**，不再改动；新变更从 `-- +migration 2` 往后追加块。
---   · squash 之前建的库**不支持升级**：Open 会直接报错要求删库重建（判据与文案见
---     migrate.go 的 legacyVersionError）。这里没有「增量升级」这条路径了。
---   · 需要 Go 逻辑的变更（条件 ALTER、数据搬迁）写空的 SQL 块，在 migrate.go 的
---     hooks 参数里实现——机制仍在，只是 baseline 不需要它。
---
--- 语句文本逐字节沿用 squash 前 sqlite_master 里记录的内容（引号化的表名、缩进都在内），
--- 因为「结构没有变」的证明就是：squash 前后各建一个库，sqlite_master 逐行 diff 为空。
--- 顺手重排文本只会让这道证明变模糊；要读的说明都在每张表上方的注释里。
+-- 布局格式与记账是两件事（migrate.go 的 layoutFormatV4）：
+--   schema_version=1 说明「baseline 块跑过」——v3 的库同样记着 1；
+--   PRAGMA user_version=4 说明「这个文件的表结构是 v4 布局」，只由一次完整的
+--   baseline 应用写成：DDL、记账行、标记落在同一个事务里，要么全成、要么全空。
+--   所以 baseline 块里只能放可整体回滚的 DDL，不许有事务外副作用。
 --
 -- 注释约定：只描述**现在是什么、为什么**（不变量，不是迁移史）。
+-- A2 纪律：全文（含注释）不得出现可执行命令类概念的那几个英文子串（见 Makefile）。
 
 -- +migration 1 baseline
 
 -- 用户（Passkey 无密码）。首个注册用户自动成为 admin（契约 §2.1）。
 -- username 唯一；role = admin | member；disabled=1 表示超管禁用了这个用户（禁止登录）。
+-- password_hash / password_updated_at 是密码登录：只存 argon2id PHC 串，空串 = 未设置。
 CREATE TABLE IF NOT EXISTS users (
-    id          TEXT PRIMARY KEY,            -- usr_xxx
-    username    TEXT NOT NULL UNIQUE,
-    display_name TEXT NOT NULL DEFAULT '',
-    role        TEXT NOT NULL DEFAULT 'member',  -- admin | member（首个注册用户自动 admin）
-    disabled    INTEGER NOT NULL DEFAULT 0,      -- 超管禁用某用户（1=禁用，禁止登录）
-    created_at  INTEGER NOT NULL             -- unixepoch 秒
+    id                   TEXT PRIMARY KEY,
+    username             TEXT NOT NULL UNIQUE,
+    display_name         TEXT NOT NULL DEFAULT '',
+    role                 TEXT NOT NULL DEFAULT 'member',
+    disabled             INTEGER NOT NULL DEFAULT 0,
+    password_hash        TEXT NOT NULL DEFAULT '',
+    password_updated_at  INTEGER NOT NULL DEFAULT 0,
+    created_at           INTEGER NOT NULL
 );
 
 -- 按角色取用户（管理员列表 / 权限检查）。
@@ -46,690 +42,579 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 -- backup_eligible 必须持久化认证器上报的 BackupEligible flag：登录校验时
 -- 标志不一致会直接拒绝（Apple 系 passkey 一律 backup eligible）。
 CREATE TABLE IF NOT EXISTS passkeys (
-    id              TEXT PRIMARY KEY,           -- credential id (base64url)
+    id              TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     public_key      BLOB NOT NULL,
     sign_count      INTEGER NOT NULL DEFAULT 0,
-    name            TEXT NOT NULL DEFAULT '',   -- 设备名，如「主力手机」
-    transports      TEXT NOT NULL DEFAULT '[]', -- JSON 数组
-    backup_eligible INTEGER NOT NULL DEFAULT 0, -- BackupEligible flag（登录校验需一致）
+    name            TEXT NOT NULL DEFAULT '',
+    transports      TEXT NOT NULL DEFAULT '[]',
+    backup_eligible INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
     last_used_at    INTEGER
 );
 
 -- 登录会话（id 就是下发给浏览器的 token）。
--- device_name 是 UA 推断出来的设备名，只用于「设备列表」展示。
 CREATE TABLE IF NOT EXISTS sessions (
-    id          TEXT PRIMARY KEY,             -- sess_xxx token
+    id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    device_name TEXT NOT NULL DEFAULT '',     -- 登录设备名（UA 推断，如「Chrome · macOS」）
+    device_name TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL
 );
 
--- 按用户取会话（设备列表 / 全端登出）。
-CREATE INDEX IF NOT EXISTS idx_sessions_user         ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 -- API Key（只存 argon2id 哈希，明文只在创建时返回一次）。
--- scopes 控制 notify:send / notify:receive / devices:read；prefix 是明文前缀，便于用户识别。
 CREATE TABLE IF NOT EXISTS api_keys (
-    id          TEXT PRIMARY KEY,            -- key 的标识（ant_xxx 前缀部分）
-    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name        TEXT NOT NULL DEFAULT '',
-    key_hash    TEXT NOT NULL,               -- argon2id 哈希
-    prefix      TEXT NOT NULL,               -- 明文前缀，便于识别（如 ant_live_a1b2）
-    scopes      TEXT NOT NULL DEFAULT '[]',  -- JSON 数组
-    enabled     INTEGER NOT NULL DEFAULT 1,
-    created_at  INTEGER NOT NULL,
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL DEFAULT '',
+    key_hash     TEXT NOT NULL,
+    prefix       TEXT NOT NULL,
+    scopes       TEXT NOT NULL DEFAULT '[]',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL,
     last_used_at INTEGER
 );
 
--- 按用户取 API Key。
-CREATE INDEX IF NOT EXISTS idx_apikeys_user          ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_apikeys_user ON api_keys(user_id);
 
--- 接收设备（Web Push 订阅）——属于用户，不属于命名空间（契约 Q1）。
--- tags 是设备标签（派发时按标签选设备）；event_scope 决定推送范围（final|all）。
+-- 接收设备（Web Push 订阅）——属于用户，不属于命名空间。
 CREATE TABLE IF NOT EXISTS devices (
-    id           TEXT PRIMARY KEY,           -- dev_xxx
-    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL DEFAULT '',
-    platform     TEXT NOT NULL DEFAULT '',   -- ios|mac|win|android|other
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    event_scope TEXT NOT NULL DEFAULT 'final', -- final|all（push 设备默认 final，只收终态）
-    tags         TEXT NOT NULL DEFAULT '[]', -- JSON 数组（设备标签）
-    endpoint     TEXT NOT NULL UNIQUE,       -- push endpoint
-    p256dh       TEXT NOT NULL,
-    auth         TEXT NOT NULL,
-    user_agent   TEXT NOT NULL DEFAULT '',
-    created_at   INTEGER NOT NULL,
-    last_active  INTEGER,
+    id             TEXT PRIMARY KEY,
+    user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL DEFAULT '',
+    platform       TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    event_scope    TEXT NOT NULL DEFAULT 'final',
+    tags           TEXT NOT NULL DEFAULT '[]',
+    endpoint       TEXT NOT NULL UNIQUE,
+    p256dh         TEXT NOT NULL,
+    auth           TEXT NOT NULL,
+    user_agent     TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    last_active    INTEGER,
     last_delivered INTEGER
 );
 
--- 按用户取设备（推送扇出）。
-CREATE INDEX IF NOT EXISTS idx_devices_user          ON devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 
 -- CLI 设备授权会话（device authorization flow）。
--- 一次性会话：pending → approved → consumed；旁路终态 denied / expired。
--- secret 只留 sha256（明文仅建会话时返回一次）；user_code 是给用户手抄的 8 位码。
 CREATE TABLE IF NOT EXISTS cli_auth_sessions (
-    id               TEXT PRIMARY KEY,            -- cas_xxx
-    secret_hash      TEXT NOT NULL,               -- sha256 hex（secret 仅建会话时返回一次，不落明文）
-    user_code        TEXT NOT NULL UNIQUE,        -- 8 字符大写无连字符（去歧义字符集）
-    device_name      TEXT NOT NULL,               -- ≤64 字符（脚本上报 hostname）
-    kind             TEXT NOT NULL DEFAULT 'apikey', -- apikey / passkey（区分授权类型）
-    device_hint      TEXT NOT NULL DEFAULT '',     -- Passkey 授权：新设备敲门时自报设备信息
-    scopes_requested TEXT NOT NULL,               -- JSON 数组
-    scopes_granted   TEXT,                        -- JSON 数组，批准前 NULL
-    status           TEXT NOT NULL,               -- pending/requested/approved/consumed/denied/expired
-    user_id          TEXT,                        -- 批准前 NULL
-    key_id           TEXT,                        -- 领证前 NULL
+    id               TEXT PRIMARY KEY,
+    secret_hash      TEXT NOT NULL,
+    user_code        TEXT NOT NULL UNIQUE,
+    device_name      TEXT NOT NULL,
+    kind             TEXT NOT NULL DEFAULT 'apikey',
+    device_hint      TEXT NOT NULL DEFAULT '',
+    scopes_requested TEXT NOT NULL,
+    scopes_granted   TEXT,
+    status           TEXT NOT NULL,
+    user_id          TEXT,
+    key_id           TEXT,
     created_at       INTEGER NOT NULL,
-    expires_at       INTEGER NOT NULL,            -- created_at + 600（TTL 10 分钟）
+    expires_at       INTEGER NOT NULL,
     consumed_at      INTEGER
 );
 
--- 清理过期的一次性授权会话。
-CREATE INDEX IF NOT EXISTS idx_cli_auth_expires      ON cli_auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_cli_auth_expires ON cli_auth_sessions(expires_at);
 
 -- 恢复码（只存 argon2id PHC 哈希；明文只在签发时返回一次）。
--- 格式 XXXX-XXXX-XXXX-XXXX（去歧义字符集），一批 8 个；兑换单个后作废该码。
--- used_at IS NULL = 未使用。
 CREATE TABLE IF NOT EXISTS recovery_codes (
-    id          TEXT PRIMARY KEY,            -- rc_xxx
+    id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    code_hash   TEXT NOT NULL,               -- argon2id PHC
-    prefix      TEXT NOT NULL,               -- 规范化明文前缀（便于定位候选）
+    code_hash   TEXT NOT NULL,
+    prefix      TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
-    used_at     INTEGER                      -- NULL = 未使用
+    used_at     INTEGER
 );
 
--- 按用户取恢复码。
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_user   ON recovery_codes(user_id);
-
--- 兑换时按前缀定位候选码（只存哈希，不能按明文查）。
 CREATE INDEX IF NOT EXISTS idx_recovery_codes_prefix ON recovery_codes(prefix);
 
--- 命名空间：唯一的硬隔离边界（契约 §2.1.1）。
---
--- 能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照 / 产物 / 部署 / 预案**全部**属于某个
--- 命名空间；用户与密钥是部署级的（users / passkeys / sessions / api_keys）。
---
--- slug 全局唯一：它不是展示名，而是出现在 URL 里的稳定标识（/v1/namespaces/<slug>/…），
--- 两个命名空间同 slug 会让它失去意义。name 是展示名，可改。
--- created_at 决定 DefaultNamespaceID 取「最早注册的那一个」。
+-- 命名空间：唯一的硬隔离边界。
+-- resource_version 是写并发令牌（CAS）：每次写入 +1，与内容版本无关。
 CREATE TABLE IF NOT EXISTS namespaces (
-			id         TEXT PRIMARY KEY,
-			slug       TEXT NOT NULL,
-			name       TEXT NOT NULL,
-			created_at INTEGER NOT NULL,
-			UNIQUE (slug)
-		);
+    id               TEXT PRIMARY KEY,
+    slug             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL,
+    UNIQUE (slug)
+);
 
--- 命名空间列表按注册时间排序。
 CREATE INDEX IF NOT EXISTS idx_namespaces_created ON namespaces(created_at);
 
--- 能力定义（中枢侧，append-only，契约 §2.2）。
---
--- outputs 是出口名的唯一来源：既用于 kind 推导，也定义 edges.from_port 的封闭集合。
--- 没有 kind 列——推导量不落库（不变量 I3）。
---
--- UNIQUE (namespace_id, name, version) 是能力身份；
--- UNIQUE (namespace_id, content_hash) 保证同一份内容不会产生第二行。
---
--- display_name 是**纯展示**用的标签（用户自己取的中文名）：它绝不参与路由
--- （边按引用名指向能力，出口名来自 outputs），也**不参与 content_hash**
--- ——改个显示名不该算「内容变了」。
---
--- params_schema 是 JSON Schema（派发期用它剪枝）；lifecycle 是运行期策略
--- （expiresInSec / retryable / maxAttempts / resultTtlSec / idempotent）；
--- sticky 是粘性路由的类型（'' | worktree | …）；source 是 builtin | custom。
-CREATE TABLE IF NOT EXISTS capability_versions (
-			id            TEXT PRIMARY KEY,
-			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			name          TEXT NOT NULL,
-			display_name  TEXT NOT NULL DEFAULT '',
-			version       INTEGER NOT NULL,
-			params_schema TEXT NOT NULL,
-			outputs       TEXT NOT NULL,
-			lifecycle     TEXT NOT NULL DEFAULT '{}',
-			sticky        TEXT NOT NULL DEFAULT '',
-			source        TEXT NOT NULL,
-			content_hash  TEXT NOT NULL,
-			created_at    INTEGER NOT NULL,
-			UNIQUE (namespace_id, name, version),
-			UNIQUE (namespace_id, content_hash)
-		);
+-- 命名空间默认值（config.md §3）：vars 只读名字解析，机器事实不进这里。
+-- revision 是 namespaceVarsRevision（配置生效版本），resource_version 是 CAS 令牌。
+CREATE TABLE IF NOT EXISTS namespace_configs (
+    namespace_id     TEXT PRIMARY KEY REFERENCES namespaces(id) ON DELETE CASCADE,
+    vars             TEXT NOT NULL DEFAULT '{}',
+    revision         INTEGER NOT NULL DEFAULT 0,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    updated_at       INTEGER NOT NULL
+);
 
--- 按 name@version 找能力（引用解析、升级闸门）。
-CREATE INDEX IF NOT EXISTS idx_cap_name_ver ON capability_versions(namespace_id, name, version);
+-- 中枢系统配置（保留期；config.md §3.6）。单行表：id 恒为 1。
+CREATE TABLE IF NOT EXISTS system_config (
+    id                      INTEGER PRIMARY KEY CHECK (id = 1),
+    retention_event_ttl_sec INTEGER NOT NULL DEFAULT 2592000,
+    retention_task_ttl_sec  INTEGER NOT NULL DEFAULT 2592000,
+    retention_result_ttl_sec INTEGER NOT NULL DEFAULT 604800,
+    resource_version        INTEGER NOT NULL DEFAULT 1,
+    updated_at              INTEGER NOT NULL
+);
 
--- 节点（契约 §2.3）。
---
--- name 是用户可读名（可改，id 不变）；tags 是节点池标签（派发选点用）。
--- status = online | offline | draining。
+-- 节点（集群级对象，不绑命名空间）。name 是用户可读名（集群内唯一）。
+-- tags 是节点池标签；status = online | offline | draining。
 -- token_hash 存 sha256，明文只在创建时返回一次。
--- max_instances 是实例数硬顶（防一份 token 复制出一片）；
--- max_concurrency 是节点级并发上限。last_seen_at 由 hello/心跳刷新。
+-- max_instances 是实例数硬顶；max_concurrency 是节点级并发上限。
+-- agent_version / agent_commit 是 hello 自报的版本事实（空串 = 未知）。
+-- agent_upgrade 是最近一次升级尝试的状态 JSON。
+-- facts 是 hello 上报的内置机器事实（hostIP/hostname/os/arch/cpu/workRoot/homeDir）。
+-- declared_capabilities 是 hello.capabilities[]：中枢据此回答 CommandMissing。
+-- declared_namespaces 是本机申报的 ns 列表（与 node_configs.namespaces 取交集）。
 CREATE TABLE IF NOT EXISTS nodes (
-			id              TEXT PRIMARY KEY,
-			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			name            TEXT NOT NULL,
-			tags            TEXT NOT NULL DEFAULT '[]',
-			status          TEXT NOT NULL DEFAULT 'offline',
-			token_hash      TEXT NOT NULL,
-			max_instances   INTEGER NOT NULL DEFAULT 20,
-			max_concurrency INTEGER NOT NULL DEFAULT 8,
-			last_seen_at    INTEGER,
-			created_at      INTEGER NOT NULL,
-			UNIQUE (namespace_id, name)
-		);
+    id                    TEXT PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    tags                  TEXT NOT NULL DEFAULT '[]',
+    status                TEXT NOT NULL DEFAULT 'offline',
+    token_hash            TEXT NOT NULL,
+    max_instances         INTEGER NOT NULL DEFAULT 20,
+    max_concurrency       INTEGER NOT NULL DEFAULT 8,
+    last_seen_at          INTEGER,
+    agent_version         TEXT NOT NULL DEFAULT '',
+    agent_commit          TEXT NOT NULL DEFAULT '',
+    agent_upgrade         TEXT NOT NULL DEFAULT '{}',
+    facts                 TEXT NOT NULL DEFAULT '{}',
+    declared_capabilities TEXT NOT NULL DEFAULT '[]',
+    declared_namespaces   TEXT NOT NULL DEFAULT '[]',
+    resource_version      INTEGER NOT NULL DEFAULT 1,
+    created_at            INTEGER NOT NULL,
+    UNIQUE (name)
+);
 
--- 「这台节点上有这个能力」的归属关系。
+-- 中枢节点默认值（config.md §4.1）：机器级、跨 ns 共用。
+-- namespaces 是授权列表（与节点申报取交集）；vars/limits 是逐键默认值。
+-- local_vars/local_limits 是节点 hello 上报的本机快照（只用于匹配与展示，不参与 apply）。
+-- revision 是 configRevision（配置生效版本）；applied_* 是节点回报的快照。
+CREATE TABLE IF NOT EXISTS node_configs (
+    node_id          TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+    namespaces       TEXT NOT NULL DEFAULT '["*"]',
+    vars             TEXT NOT NULL DEFAULT '{}',
+    limits           TEXT NOT NULL DEFAULT '{}',
+    local_vars       TEXT NOT NULL DEFAULT '{}',
+    local_limits     TEXT NOT NULL DEFAULT '{}',
+    revision         INTEGER NOT NULL DEFAULT 0,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    applied_revision INTEGER NOT NULL DEFAULT 0,
+    applied_hash     TEXT NOT NULL DEFAULT '',
+    applied_at       INTEGER,
+    updated_at       INTEGER NOT NULL
+);
+
+-- 并发槽位：节点申报，中枢 upsert。slot 是 0..N-1（每槽最多一个能力进程）。
 --
--- 它不是真相源，而是**部署的派生**：控制台写 deployments，节点回报 apply 结果，
--- 归属关系由对账得到（见 store 的部署/对账实现）。
--- 没有 run_spec 列：执行方式属于产物（artifacts.spec 里的 run 块），随 digest 走；
--- 中枢只存不执行（不变量 I1）。也没有出口、没有 kind：那些由能力定义与边表推导。
-CREATE TABLE IF NOT EXISTS "node_capabilities" (
-			node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-			capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
-			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			PRIMARY KEY (node_id, capability_id)
-		);
-
--- 反查「哪些节点有这个能力」（派发选点）。
-CREATE INDEX IF NOT EXISTS idx_nodecap_cap ON node_capabilities(capability_id);
-
--- 并发槽位：节点申报，中枢 upsert。
--- slot 是 0..N-1；concurrency 是这个实例能同时跑几份；
--- busy_task 是当前任务 id（空闲 NULL）；alive=0 表示这个实例掉线（不等同于整个节点下线）。
+-- 物理预算只有两项：机器级 limits.total/perCapability（预算）与真实 slot 记录（容量）。
+-- 不再有 per-slot concurrency 乘数：v4 一次执行占一个 slot（一个进程）。
+--
+-- busy_task 是占用该槽的逻辑任务；busy_attempt / busy_lease_id 是**具体某一次执行**
+-- （task_attempts 的 (task_id, attempt) 与它那一代的 leaseId）的绑定。
+-- 为什么必须绑到 attempt：同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽
+-- （旧进程还没回收），释放必须按 (instance, task, attempt) 精确判定，不能按 task_id
+-- 一把清——那会把旧进程还在用的槽放给下一个任务（同一槽跑两条）。
+--
+-- busy_lease_id 为空是 **reservation**（节点已接住、还没 grant 的候选）与执行的唯一判别。
+-- reservation 没有 lease，因此它还必须带候选身份与有界窗口（busy_assignment_id /
+-- busy_expires_at）：否则旧 assignment 的观测可能清掉/复用新候选的预约，预算也无法
+-- 精确排除「本次 grant 自己那条同槽预约」。执行绑定把这两个字段清空（''/0）：
+-- 任何到期规则都不允许清一条真实执行（unreaped 只能由精确绑定的事实回收）。
 CREATE TABLE IF NOT EXISTS node_instances (
-			id           TEXT PRIMARY KEY,
-			node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			slot         INTEGER NOT NULL,
-			concurrency  INTEGER NOT NULL DEFAULT 1,
-			busy_task    TEXT,
-			alive        INTEGER NOT NULL DEFAULT 1,
-			updated_at   INTEGER NOT NULL,
-			UNIQUE (node_id, slot)
-		);
+    id                 TEXT PRIMARY KEY,
+    node_id            TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    slot               INTEGER NOT NULL,
+    busy_task          TEXT,
+    busy_attempt       INTEGER NOT NULL DEFAULT 0,
+    busy_lease_id      TEXT NOT NULL DEFAULT '',
+    busy_assignment_id TEXT NOT NULL DEFAULT '',
+    busy_expires_at    INTEGER NOT NULL DEFAULT 0,
+    alive              INTEGER NOT NULL DEFAULT 1,
+    updated_at         INTEGER NOT NULL,
+    UNIQUE (node_id, slot)
+);
 
--- 粘性路由（sticky）：同一条能力尽量落到同一台机器，工作目录/缓存才不会每次重建。
--- sticky_key = sha256(trace_id ∥ capability_id ∥ selector)；selector 是当时命中的标签，
--- 留下来是为了排障时回答「它凭什么被钉在这台机器上」。
-CREATE TABLE IF NOT EXISTS node_pins (
-			sticky_key   TEXT PRIMARY KEY,
-			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-			selector     TEXT NOT NULL,
-			created_at   INTEGER NOT NULL,
-			last_used_at INTEGER NOT NULL
-		);
-
--- 出口表（路由的唯一依据，契约 §2.4）。一行 = 一条边；同一 (from_ref, from_port)
--- 可有多行 → 扇出。右端一定是能力引用，不引用任何机器（不变量 I7）。
+-- 能力版本（中枢侧）：一行 = 一个 name@version。
 --
--- 两端都是**引用**而不是外键（P2.2）：引用有两种写法——`fixer` 跟随 latest、
--- `fixer@1` 钉死某版。它们是两条不同的边，所以主键里放的是引用本身。
--- 正因为「跟随 latest」在 SQL 里无法用外键表达（外键只能钉住某一行），
--- from_ref / to_ref 刻意没有 REFERENCES：解析发生在派发时（按名字找当前版本），
--- 解析不到就剪枝留痕，而不是让写入失败。
---
--- from_is_source 区分左端的两种语义：
---   0  能力之间的边：from_ref 是上游能力引用，from_port 必须 ∈ 该能力的 outputs
---      （不变量 I2：封闭集合）
---   1  入口边：from_ref 是**来源名**（如 github / cron），from_port 是事件类型，
---      任意值（外部系统决定，不可能预先枚举）。机器入口 POST /v1/events 与
---      sources 触发走的都是入口边——「事件 → 第一跳」只有这一条取目标的路径。
---
--- literals 是这条边的**常量覆盖**：进入下游的 params = data ⊎ literals（字面量优先）。
---   '{}' = 没有覆盖。校验在定义期完成（每个键 ∈ 目标 params_schema.properties，
---   值类型精确相等），派发期再过一遍 params_schema。
--- mapping 是**入口边**的引用模板（{"title":"{{pull_request.title}}"}）：参数怎么拼
---   只有入口边能声明，能力边保存时硬拒——能力边的参数由 emit 提供，是实现的内部事务。
--- 两者语义相反（常量 vs 引用模板），所以不合并成一列；也都不参与能力版本
--- （content_hash）——它们是对**这条边**的配置，不是能力契约的一部分。
--- created_at 是这条边的创建时刻（审计用）。
-CREATE TABLE IF NOT EXISTS "edges" (
-			namespace_id    TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			from_is_source  INTEGER NOT NULL DEFAULT 0,
-			from_ref        TEXT NOT NULL,
-			from_port       TEXT NOT NULL,
-			to_ref          TEXT NOT NULL,
-			literals        TEXT NOT NULL DEFAULT '{}',
-			mapping         TEXT NOT NULL DEFAULT '{}',
-			created_at      INTEGER NOT NULL,
-			PRIMARY KEY (namespace_id, from_is_source, from_ref, from_port, to_ref)
-		);
+-- spec 是**正文**的 canonical JSON（含 next；next 不入 digest 但必须存，
+-- 它是路由的原始事实）。digest 是部署身份（含 version），fold_key 是折叠键
+-- （不含 version / next / displayName，省略 version 时按它判「是不是同一行」）。
+-- installed_from 是首次安装来源（安装回执 id；空 = 手建，复用不覆盖）。
+-- resource_version 是写并发令牌；display_name 纯展示，不进 digest。
+CREATE TABLE IF NOT EXISTS capability_versions (
+    id               TEXT PRIMARY KEY,
+    namespace_id     TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    display_name     TEXT NOT NULL DEFAULT '',
+    version          INTEGER NOT NULL,
+    spec             TEXT NOT NULL,
+    digest           TEXT NOT NULL,
+    fold_key         TEXT NOT NULL,
+    installed_from   TEXT NOT NULL DEFAULT '',
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL,
+    deleted_at       INTEGER
+);
 
--- 派发主路径：按 (namespace_id, from_is_source, from_ref, from_port) 取下游。
--- 形状是唯一权威（列序即查询形状）；历史库里同名的漂移索引一律以本形状为准。
-CREATE INDEX IF NOT EXISTS idx_edges_lookup
-		   ON edges(namespace_id, from_is_source, from_ref, from_port);
+-- 仅可见资源占用名字/版本与内容身份；已钉住的历史正文保留原始 UID。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cap_live_name_ver
+    ON capability_versions(namespace_id, name, version) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cap_live_digest
+    ON capability_versions(namespace_id, digest) WHERE deleted_at IS NULL;
 
--- 事件（契约 §2.5）：只存不解释的原始输入。
--- payload 是原始 JSON（原样保存，不改写）；trace_id 串起「一个根事件引起的全部工作」。
--- idem_key 是幂等键（触发器给；NULL 允许重复）。
+CREATE INDEX IF NOT EXISTS idx_cap_name_ver
+    ON capability_versions(namespace_id, name, version);
+
+-- 折叠键查找（省略 version 的创建：同 ns + name + 同内容 → 复用已有行）。
+CREATE INDEX IF NOT EXISTS idx_cap_fold_key
+    ON capability_versions(namespace_id, name, fold_key);
+
+-- 边的派生投影：能力边来自 spec.next，源入口边来自源 targets。用户不直接写边。
+-- 只有四列身份 + created_at：没有端口、没有映射、没有优先级。
+-- from_is_source=0 时 from_ref 是能力名；=1 时 from_ref 是源 id。
+CREATE TABLE IF NOT EXISTS edges (
+    namespace_id   TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    from_is_source INTEGER NOT NULL DEFAULT 0,
+    from_ref       TEXT NOT NULL,
+    to_ref         TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (namespace_id, from_is_source, from_ref, to_ref)
+);
+
+-- 前缀查下游（按上游取全部出边；读取时按声明顺序在 Go 侧恢复）。
+CREATE INDEX IF NOT EXISTS idx_edges_from
+    ON edges(namespace_id, from_is_source, from_ref);
+
+-- 事件：只存不解释的原始输入。payload 原样保存；delivery_id 是调用方幂等键。
+-- reason 是稳定机器码（默认 Ingested）。
 CREATE TABLE IF NOT EXISTS events (
-			id           TEXT PRIMARY KEY,
-			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			trace_id     TEXT NOT NULL,
-			source       TEXT NOT NULL,
-			type         TEXT NOT NULL,
-			payload      TEXT NOT NULL DEFAULT '{}',
-			idem_key     TEXT,
-			created_at   INTEGER NOT NULL
-		);
-
--- 按 trace 看整条链路（trace 详情页）。
-CREATE INDEX IF NOT EXISTS idx_events_trace ON events(namespace_id, trace_id);
-
--- 幂等索引：唯一性只对非 NULL 的 idem_key 生效（NULL 允许重复）。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem ON events(namespace_id, source, idem_key)
-			   WHERE idem_key IS NOT NULL;
-
--- 保留期清理 + 事件流：按命名空间过滤、按时间排序。
-CREATE INDEX IF NOT EXISTS idx_events_retention ON events(namespace_id, created_at);
-
--- 任务（契约 §2.5 / §3）。id 同时是 OTel span_id。
---
---   path            JSON 数组：从根到本任务的能力**名**序列（运行期环剪枝按名字判重）
---   capability_id   派发时的能力定义。刻意**不带** ON DELETE CASCADE：
---                   删掉一个能力不该顺手清空它的任务历史（审计要靠它）
---   capability/version  冗余存 name@version，展示与引用解析用
---   params          派发参数，已过 params_schema
---   status          九态（契约 §3）
---   node_id/instance_id/lease_until/attempts  租约与重试
---   reported        1 = 节点已回报（终态已落账，中枢重启后不再重派）
---   summary/artifacts/error  节点回报的结果摘要 / 产物清单 / 失败原因
---   cap_hash        派发时的能力定义 content_hash
---   digest          派发时钉住的产物内容 digest（'' = 无产物 / 未知；审计字段，不参与路由）
---   graph_id        派发时的 graph_versions.id（事后能还原当时那张图）
---   token           每任务一次性令牌（节点本地 emit 的鉴权凭据）。'' = 尚未生成：
---                   中枢只在「第一次发布 assign」时生成并写回，之后重发一律用库里那个值
---                   （节点无从区分「该换令牌」与「有人在伪造」，两端必须一致）
---   not_before      退避：早于此刻的 pending 不该被重派（NULL = 立刻可派，契约 §3.3）
---   created_at/started_at/finished_at  时间戳
---
--- 没有 out 列：产出通道只有 emission（emissions.port）。任务行不记出口——
--- 一个恒为 NULL 的可读字段只会让人按它写判断（"路由结果在任务行上"）。
-CREATE TABLE IF NOT EXISTS tasks (
-			id             TEXT PRIMARY KEY,
-			namespace_id   TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			trace_id       TEXT NOT NULL,
-			parent_task_id TEXT,
-			path           TEXT NOT NULL DEFAULT '[]',
-			capability_id  TEXT NOT NULL REFERENCES capability_versions(id),
-			capability     TEXT NOT NULL,
-			version        INTEGER NOT NULL,
-			params         TEXT NOT NULL DEFAULT '{}',
-			status         TEXT NOT NULL DEFAULT 'pending',
-			node_id        TEXT,
-			instance_id    TEXT,
-			lease_until    INTEGER,
-			attempts       INTEGER NOT NULL DEFAULT 0,
-			reported       INTEGER NOT NULL DEFAULT 0,
-			summary        TEXT NOT NULL DEFAULT '',
-			artifacts      TEXT NOT NULL DEFAULT '[]',
-			error          TEXT NOT NULL DEFAULT '',
-			cap_hash       TEXT NOT NULL,
-			graph_id       TEXT NOT NULL,
-			created_at     INTEGER NOT NULL,
-			started_at     INTEGER,
-			finished_at    INTEGER,
-			not_before     INTEGER
-		, digest TEXT NOT NULL DEFAULT '', token TEXT NOT NULL DEFAULT '');
-
--- 按 trace 看整条链路。
-CREATE INDEX IF NOT EXISTS idx_tasks_trace ON tasks(namespace_id, trace_id);
-
--- 找派生任务（谁派生的）。
-CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(namespace_id, parent_task_id);
-
--- 租约回收 + 按状态取任务（status 是等值前缀）。
-CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, lease_until);
-
--- 按节点看它手上的任务（节点摘除 / 对账）。
-CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(node_id, status);
-
--- 保留期清理：正好覆盖 WHERE (namespace_id, capability_id, status) +
--- ORDER BY finished_at，避免「LIMIT 只限制删除行数、扫描/排序仍是整个命名空间」。
--- 它同时服务统计（同样按这三列过滤、按时间排序）。
-CREATE INDEX IF NOT EXISTS idx_tasks_retention
-			   ON tasks(namespace_id, capability_id, status, finished_at);
-
--- 任务列表（ListTasks：WHERE namespace_id=? ORDER BY created_at DESC, id DESC）。
--- 列序 (namespace_id, created_at, id)：前两列对齐过滤与排序，第三列 id 是同秒破平
--- （created_at 只到秒）。ASC 形状能被 SQLite **反向扫**来满足降序 ORDER BY，
--- 也仍然服务时间窗范围查询，所以不用 DESC 索引。
-CREATE INDEX IF NOT EXISTS idx_tasks_ns_created ON tasks(namespace_id, created_at, id);
-
--- 派发背压信号（#228）：SELECT MIN(created_at) FROM tasks WHERE status='pending'
--- 退化成一次索引最左端 seek（O(log n)，成本与积压量无关）。
--- **部分**索引（只收 pending 行）：终态行不进索引，索引体积只随积压量增长。
--- 统计：SQLite 的 min/max 优化要看到本索引自己的 sqlite_stat1 条目才会选它，
--- 条目由 Open 末尾的 PRAGMA optimize 在数据灌进来之后补上（空表上扫描一行都不写）。
-CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
-    ON tasks(created_at) WHERE status = 'pending';
-
--- 图快照（契约 §2.6）：全部 edges 的规范化快照。
--- UNIQUE (namespace_id, content_hash)：同一张图不产生第二个版本；
--- 任务行上的 graph_id 指回这里，事后能还原「当时那条链路长什么样」。
-CREATE TABLE IF NOT EXISTS graph_versions (
-			id           TEXT PRIMARY KEY,
-			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			content_hash TEXT NOT NULL,
-			snapshot     TEXT NOT NULL,
-			created_at   INTEGER NOT NULL,
-			UNIQUE (namespace_id, content_hash)
-		);
-
--- 每一次 emit 的落库行（P1.1，docs/design/emit-protocol.md §4）。
---
--- 三件事，缺一不可：
---   ① 幂等键。PRIMARY KEY(task_id, seq) 是中枢侧**唯一**的去重依据：节点重连后按 seq
---      重发未 ack 的 emit，靠它做到不重复派发下游。改成内存表就等于把「进程重启」
---      变成「重复派发 N 条任务」。
---   ② 缺口证据。seq 必须从 1 连续递增；「收到 seq=n 但 1..n-1 不齐」是丢消息的证据，
---      中枢明确拒绝而不是猜测/跳过。
---   ③ 审计。已落库的 emission 在任务被 cancel / 租约过期后仍然保留：回答「这个能力在
---      运行中到底上报过什么」，与任务终态是两件事。
---
--- routed / pruned 存的是**首次**处理的结果：重复 seq 一律回同一份计数（不重算、不重派）。
---
--- 没有 namespace_id：task_id 全局唯一，任务行自己带着命名空间；再存一列就是第二份真相。
--- ON DELETE CASCADE：任务被 retention 清掉时它的 emission 一起走——脱离任务行的
--- emission 既不能派发也不能解释。
-CREATE TABLE IF NOT EXISTS emissions (
-    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    seq        INTEGER NOT NULL,               -- 任务内单调递增，从 1 开始
-    port       TEXT NOT NULL,                  -- 上游回报的出口名（路由的唯一输入）
-    data       TEXT NOT NULL DEFAULT '{}',     -- 原样保存的 JSON 对象（审计用字节）
-    note       TEXT NOT NULL DEFAULT '',       -- 能力进程写的备注：不参与路由，只给排障看
-    routed     INTEGER NOT NULL DEFAULT 0,     -- 首次处理派发出去几条下游
-    pruned     INTEGER NOT NULL DEFAULT 0,     -- 首次处理剪枝条数
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (task_id, seq)
-);
-
--- 产物：一份能力的不可变快照。
--- digest 是内容寻址标识（sha256:<64 hex>），spec 是 canonical JSON。
--- UNIQUE (namespace_id, digest) 表达「同一份产物只有一个身份」：内容一样的产物
--- 重复部署不会产生第二行，digest 也就永远不会指向两份不同的内容。
-CREATE TABLE IF NOT EXISTS artifacts (
-    id            TEXT PRIMARY KEY,
-    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
-    digest        TEXT NOT NULL,
-    spec          TEXT NOT NULL,
-    created_at    INTEGER NOT NULL,
-    UNIQUE (namespace_id, digest)
-);
-
--- 按能力找它的产物（部署面板 / 钉 digest）。
-CREATE INDEX IF NOT EXISTS idx_artifacts_cap ON artifacts(capability_id);
-
--- 「控制台希望某台节点拥有某份产物」（desired，由 artifact_id 表达）
--- +「节点回报的状态」（observed，就是 state / reason / updated_at 三列）。
---
--- 写者纪律（CONTRACT-protocol §7）：
---   · 建行 / 删行只有控制台 API 会做；
---   · state / reason / updated_at 只有节点帧（apply）与 hello 对账会写。
--- 两边不得碰对方的列——这是「不产生第二个真相源」的全部机制。
---
--- state: pending | applied | failed | local
---   local = 节点上该能力的 digest 与 desired 不一致（用户手改过，即「本地变体」）。
---   中枢永不覆盖 local，UI 必须标黄而不是打绿勾。
---
--- 工作目录**不是**部署参数（#289）：它是能力定义的一部分（run.workDir），随产物 digest 走。
-CREATE TABLE IF NOT EXISTS deployments (
     id           TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    artifact_id  TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
-    digest       TEXT NOT NULL,
-    state        TEXT NOT NULL DEFAULT 'pending',
-    reason       TEXT NOT NULL DEFAULT '',
-    created_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL,
-    UNIQUE (node_id, artifact_id)
-);
-
--- 按节点看它该有哪些产物（节点 hello 对账）。
-CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id);
-
--- 按产物看它被部署到哪些节点。
-CREATE INDEX IF NOT EXISTS idx_deploy_artifact ON deployments(artifact_id);
-
--- 预案（可安装的流程零件，设计 docs/design/playbooks.md）。
---
--- 预案本身**不产生任务**：它只是一份清单（能力 / 边 / 触发器），安装时按
--- 「能力 → 边 → 源」的顺序补齐本命名空间里的真实资源（I8 append-only：已有定义不覆盖）。
--- 就绪体检是查询时算出来的推导量，不落库（I3 同源）。
---
--- manifest 存**提交的 JSON 原文**：run 配置 / paramsSchema 这类节点侧字段中枢只存不解释
--- （I1），重新编码会丢掉键序与用户自定义键（往返一致性）。
---
--- 本注释刻意不写任何「可执行概念」的英文关键词：make contract 的 A2 正则扫 schema.sql
--- 全文（注释也算），命中即失败。同理，说明文字这一列叫 `descr` 而不是它的完整英文单词：
--- A2 的正则是**子串**匹配，那个单词里恰好含有被禁的子串（契约 §4 的 DDL 写的是完整单词，
--- 与 A2 关卡直接冲突；列名缩写在 store 层之外不可见，Go 字段与 JSON 仍是完整单词）。
-CREATE TABLE IF NOT EXISTS playbooks (
-			id           TEXT PRIMARY KEY,
-			namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			slug         TEXT NOT NULL,
-			name         TEXT NOT NULL,
-			descr        TEXT NOT NULL DEFAULT '',
-			manifest     TEXT NOT NULL,
-			created_at   INTEGER NOT NULL,
-			UNIQUE (namespace_id, slug)
-		);
-
--- 命名空间内的预案列表（按安装时间）。
-CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_at);
-
--- 源（origin）：事件的**入口实例**，不是能力。
---
--- 能力回答「能干什么」（由节点声明、中枢派任务给它）；源回答「什么时候开始干」——
--- 它有配置（cron 表达式 / webhook 令牌 / 手动触发），自己产生事件，自己不干活。
---
--- config 是按 kind 解释的 JSON（不变量 I6：只读配置字段，不求值、不执行）：
---   cron    {"expr":"0 3 * * *","tz":"Local"}
---   webhook {"token":"..."}（token 用于拼出唯一 URL）
---   manual  {}
--- last_fired_at / next_fire_at 是调度元数据（只有 cron 用；其它 kind 为 NULL）。
---
--- 源的目标不是一张旁路表，而是 edges 里的**入口边**（from_is_source=1，
--- from_ref = 来源名，参数模板落在 edges.mapping 上）：这样「事件 → 第一跳」
--- 只有一条取目标的路径，不需要为每个事件类型手建一条边或一个空壳能力。
-CREATE TABLE IF NOT EXISTS sources (
-			id            TEXT PRIMARY KEY,
-			namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-			name          TEXT NOT NULL,
-			kind          TEXT NOT NULL,
-			config        TEXT NOT NULL DEFAULT '{}',
-			enabled       INTEGER NOT NULL DEFAULT 1,
-			last_fired_at INTEGER,
-			next_fire_at  INTEGER,
-			created_at    INTEGER NOT NULL,
-			UNIQUE (namespace_id, name)
-		);
-
--- 命名空间内的源列表（按创建时间）。
-CREATE INDEX IF NOT EXISTS idx_sources_ns ON sources(namespace_id, created_at);
-
--- 调度器取「该触发的源」：enabled=1 且 next_fire_at 到期。
-CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(enabled, next_fire_at);
-
--- +migration 2 priority_balance
-
--- 候选优先级（契约 §1 / §3）：同一个 (能力, 端口) 的下游是一个**候选集合**，
--- 派发按 priority 升序取最小的一组，组内轮盘选一个（小的优先）。
--- 0 = 默认值（加这一列之前建的边全部同级，行为与「只有一个下游」时完全一样）。
--- 不额外建索引：查边只按 (namespace_id, from_is_source, from_ref, from_port) 过滤
--- （idx_edges_lookup 的形状不变），priority 只是被选出来的排序键。
-ALTER TABLE edges ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
-
--- 同一块里还给 capability_versions 加过一列端口级平衡策略（`balance`），它在
--- P3 已被 migration 9 删掉——这里保留当时的 ALTER 是因为已发布的库按版本号记账，
--- 改动历史块的语义等于让老库和新库分叉；新建的库会在同一次 Open 里加上再删掉。
-ALTER TABLE capability_versions ADD COLUMN balance TEXT NOT NULL DEFAULT '{}';
-
--- +migration 3 agent_version
-
--- 节点上跑的 agent 版本（hello.agent_version 自报）与最近一次成功升级带来的 commit
--- （upgrade_ack 上报）。都 NOT NULL DEFAULT ''：**空串 = 未知（老 agent 不带这个字段）**，
--- 不是错误，控制台据此显示「未知（老版本）」。
---
--- 为什么拆成两列而不是一个 "1.5.0+3fd5a59" 字符串：版本号是**比较**用的（控制台据此判断
--- 「已是最新」），commit 是审计用的；拼在一起之后每次比较都要先拆串，拆错一次就是
--- 「明明同版本却一直提示可升级」。
---
--- agent_version 由 hello 落库（每次连接都刷新），agent_commit 只由 upgrade_ack 落库
--- （hello 帧没有这个字段，见 CONTRACT-agent-upgrade §3/§5）。
-ALTER TABLE nodes ADD COLUMN agent_version TEXT NOT NULL DEFAULT '';
-ALTER TABLE nodes ADD COLUMN agent_commit  TEXT NOT NULL DEFAULT '';
-
--- 最近一次升级尝试的状态（CONTRACT-agent-upgrade §5.1）：JSON
--- {"status":"","targetVersion":"","error":"","at":0}。
---   status  ∈ ""（从未尝试）/ sent（已下发等 ack）/ ok / failed
---   error   ∈ need_root / bad_sha / download_failed / not_supported / ""
---   at      那一刻的 unix 秒（sent/ok/failed 都有）
--- 为什么要落库而不是只留在内存：控制台刷新/重启后仍要显示上次升级的结果；
--- 没有它，UI 的失败映射（need_root → 提示去节点跑 sudo）就是死代码。
--- 默认 '{}' = 从未尝试；读取端把缺列补成零值对象（恒存在的 agentUpgrade）。
-ALTER TABLE nodes ADD COLUMN agent_upgrade TEXT NOT NULL DEFAULT '{}';
-
--- +migration 4 task_logs
-
--- **已停用**（CONTRACT-logs-on-node §3）：日志的真相只在**节点**上
--- （`<data-dir>/runs/<trace>/<capability>@<version>/<seq>-a<attempt>/` 下的
--- stdout.log / stderr.log，完整、8 MiB/流上限），控制台要看时中枢按需向节点取
--- （GET /v1/tasks/{taskId}/logs → 一帧 logs_request / logs_response）。
--- 本表**不再写入也不再读取**：中枢侧的读写函数已随上传端点一起删除，保留这张表只是
--- 为了不动已经发布的迁移（删表要另起一个迁移块，而这一轮明确不动 schema）。
--- 因此表里可能有**历史行**（上一版上传路径留下的），它们不再被任何代码读到，
--- 也不代表节点上现在有什么——排障请看节点上的档案。
--- 下面的说明保留下来当设计依据：它解释的是「当初为什么这么建」，不是「现在还在用」。
-
--- 任务的 stdout / stderr 原文（CONTRACT-task-logs §3）：节点在发 result 帧之前，
--- 用 node token 把**子进程自己的输出**POST 上来，控制台在 trace 页看得到「为什么炸了」。
---
--- 为什么单独一张表而不是 tasks 加三列：一张 20 MB 构建日志的截断版也有 64 KiB，
--- 塞进 tasks 会让每一次任务列表查询（ListTasks / stats / 巡检）都拖着大 TEXT 走；
--- 分表之后热路径一行都不碰它，读日志只有 GET /v1/tasks/{id}/logs 一条路径。
---
--- task_id 是**主键**（不是 (task_id) 索引）：一个任务只有一份日志，agent 重派/重启
--- 补传是**幂等覆盖**（ON CONFLICT DO UPDATE），不需要保留历史版本——历史版本没人读，
--- 只会让「这条日志是哪次 attempt」变成一个要额外解释的问题。
---
--- ON DELETE CASCADE：日志跟随任务生命周期。retention 清掉任务时日志一起走，
--- 否则「任务没了、日志留着」会变成一张没人回收的孤儿大表（磁盘只涨不降）。
---
--- truncated / bytes 是**采集侧**的事实（不是本表算出来的）：truncated=1 表示 agent 侧
--- 截断过（只留了最后 32 KiB/流），bytes 是截断**前**的真实字节数。前端必须据此
--- 提示「你看的不是全部」，所以它不能由 LENGTH(stdout) 反推。
-CREATE TABLE IF NOT EXISTS task_logs (
-    task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    namespace_id TEXT NOT NULL,
-    stdout       TEXT NOT NULL DEFAULT '',
-    stderr       TEXT NOT NULL DEFAULT '',
-    truncated    INTEGER NOT NULL DEFAULT 0,
-    bytes        INTEGER NOT NULL DEFAULT 0,
+    trace_id     TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    type         TEXT NOT NULL,
+    payload      TEXT NOT NULL DEFAULT '{}',
+    delivery_id  TEXT,
+    reason       TEXT NOT NULL DEFAULT 'Ingested',
     created_at   INTEGER NOT NULL
 );
 
--- +migration 5 task_seq_in_trace
+CREATE INDEX IF NOT EXISTS idx_events_trace
+    ON events(namespace_id, trace_id);
 
--- 这条任务在同一 (命名空间, trace, 能力名) 里是第几次执行（1 起），派发时算好落库。
+CREATE INDEX IF NOT EXISTS idx_events_retention
+    ON events(namespace_id, created_at);
+
+-- 投递去重记录（source.md §3.3 D7/D12）：去重窗**独立于事件实体**。
 --
--- 为什么要落库而不是读的时候现算：节点把每次执行存到本地 runs/<trace>/<cap>@<ver>/
--- 下的目录名里要它（`<seq>-a<attempt>`），而节点只知道中枢下发的那一帧——现算等于
--- 让节点自己数「同一个 trace 里我跑过几次这个能力」，跨节点/重连都会数错。
+-- 为什么必须单独一张表：同一次投递的去重窗（accepted_at + expires_at）与
+-- 事件行的保留期是两件事——一个事件可能因为被 task 引用而活得更久，也可能
+-- 早于窗口被清。绑在 events 上的唯一索引会逼出一个二选一：
+--   · 旧事件还在 → 同 id 的新投递永远收不进来（违反「窗口过期后可再接收」）；
+--   · 旧事件删了 → 唯一索引跟着消失，窗口内的重复投递反而收进来了。
+-- 拆表后：窗口判定只看 expires_at；过期后同 id 得到**新 eventId** 并刷新本行记录，
+-- 旧事件实体不受影响（不因为去重而删实体）。
 --
--- 语义口径：按**能力名**分组（不是 capability_id）——同一 trace 里 review@1 与 review@2
--- 属于同一个能力，seq 连续；按 **rowid** 定序（不是 created_at）——同一秒内扇出的多条
--- 任务也必须有确定先后。因此它只取决于「行在组内的位置」，重派同一条任务不会变。
+-- source 存的是**源的稳定 id**（sources.id，`src_...`），不是源名（D7/D12）：
+-- 源可以删掉后用同名重建，那是一次新的源身份——拿名字当去重键会把「旧源的窗口」
+-- 与「新源的投递」混成一条。接收事务在同一事务里按 (namespace_id, 源名) 解析出
+-- 稳定 id 再写这里；解析不到源行时用 `name:<源名>` 前缀键（与 `src_` id 不相交）。
+-- 事件行上的 source 仍是**人类可读的源名**（列表/详情要给人看），两者不能混用。
+-- expires_at = 0 表示永久窗口（eventTtlSec=0 时的语义）。
+CREATE TABLE IF NOT EXISTS event_deliveries (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,
+    delivery_id  TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
+    accepted_at  INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    PRIMARY KEY (namespace_id, source, delivery_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_deliveries_expiry
+    ON event_deliveries(expires_at);
+
+-- 任务：一个**逻辑 task 一行**。attempt 只是计数器（lease.grant 生效时 +1）。
+-- phase ∈ pending | running | succeeded | failed | cancelled | abandoned。
+-- waiting_reason ∈ waiting_for_slot | retry_backoff | waiting_for_config（只有 pending 有意义）。
+-- lease_id / lease_until / attempt_token_hash 是执行授权事实（token 只存 sha256）。
+-- lease_instance_id 是**这一次 attempt 绑定的物理槽位**（node_instances.id）：
+-- 同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽（旧进程未回收），
+-- 释放只能按「node + 这个 attempt 绑的槽」精确释放，不能按 task_id 一把清掉
+-- （否则旧 attempt 的进程还在跑，槽位就被新任务用了）。
+-- assignment_id / proposed_attempt 是「这次派给谁」的候选事实（assign 时不授执行权）。
+-- assignment_expires_at 是这次候选的**统一有界窗口**（初值 30s，与节点 reservation 同一
+-- 截止时刻）：窗口失效后不再接受对应 slot 的 grant；新派发会写新 assignment。
+-- idempotent 在派发时从 spec.lifecycle 钉住（重试判定只看这一列，不回读能力）。
+-- namespace_vars / namespace_vars_revision 是**任务被接受时**钉住的命名空间默认输入快照
+-- 与它的 namespaceVarsRevision（D2）：排队期间 ns 配置更新不影响已接受的任务，
+-- 换节点重试沿用同一份快照；值只在内部执行输入里用，不进公共 DTO（json:"-"）。
+-- cancel_reason / cancel_requested_at 记录取消意图：running 时要等 cancel.ack 的
+-- processGroupReaped 才释放槽位，pending 时直接终态。
+-- reported=1 表示节点已回报终态；summary/artifacts/error 是结果。
+CREATE TABLE IF NOT EXISTS tasks (
+    id                 TEXT PRIMARY KEY,
+    namespace_id       TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    trace_id           TEXT NOT NULL,
+    parent_task_id     TEXT,
+    capability_id      TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE RESTRICT,
+    capability         TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    digest             TEXT NOT NULL DEFAULT '',
+    params             TEXT NOT NULL DEFAULT '{}',
+    phase              TEXT NOT NULL DEFAULT 'pending',
+    node_id            TEXT,
+    node_name          TEXT NOT NULL DEFAULT '',
+    config_revision    INTEGER NOT NULL DEFAULT 0,
+    attempt            INTEGER NOT NULL DEFAULT 0,
+    max_attempts       INTEGER NOT NULL DEFAULT 3,
+    assignment_id      TEXT NOT NULL DEFAULT '',
+    proposed_attempt   INTEGER NOT NULL DEFAULT 0,
+    assignment_expires_at INTEGER,
+    idempotent         INTEGER NOT NULL DEFAULT 0,
+    namespace_vars          TEXT NOT NULL DEFAULT '{}',
+    namespace_vars_revision INTEGER NOT NULL DEFAULT 0,
+    lease_id           TEXT NOT NULL DEFAULT '',
+    lease_until        INTEGER,
+    lease_instance_id  TEXT NOT NULL DEFAULT '',
+    attempt_token_hash TEXT NOT NULL DEFAULT '',
+    waiting_reason     TEXT NOT NULL DEFAULT '',
+    next_attempt_at    INTEGER,
+    cancel_reason      TEXT NOT NULL DEFAULT '',
+    cancel_requested_at INTEGER,
+    reported           INTEGER NOT NULL DEFAULT 0,
+    summary            TEXT NOT NULL DEFAULT '',
+    artifacts          TEXT NOT NULL DEFAULT '[]',
+    error              TEXT NOT NULL DEFAULT '',
+    created_at         INTEGER NOT NULL,
+    started_at         INTEGER,
+    finished_at        INTEGER,
+    result_json        TEXT NOT NULL DEFAULT '',
+    result_accepted_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_trace
+    ON tasks(namespace_id, trace_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent
+    ON tasks(namespace_id, parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_lease
+    ON tasks(phase, lease_until);
+CREATE INDEX IF NOT EXISTS idx_tasks_node
+    ON tasks(node_id, phase);
+CREATE INDEX IF NOT EXISTS idx_tasks_retention
+    ON tasks(namespace_id, phase, finished_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_ns_created
+    ON tasks(namespace_id, created_at, id);
+
+-- 背压信号：取最早一条 pending（部分索引只收 pending 行）。
+CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
+    ON tasks(created_at) WHERE phase = 'pending';
+
+-- 每次执行（attempt）一行：逻辑任务仍然只有 tasks 一行，attempt 是它的**执行事实**。
 --
--- 默认 0 = 从未派发过（也包含加这一列之前建的老行）；节点侧对 <=0 退回到 attempt。
-ALTER TABLE tasks ADD COLUMN seq_in_trace INTEGER NOT NULL DEFAULT 0;
-
--- +migration 6 drop_edges_lookup
-
--- idx_edges_lookup 的四列是 edges 主键的**严格左前缀**（PRIMARY KEY 前四列逐列相同），
--- 给不了 sqlite_autoindex_edges_1 给不了的东西：派发 4 列等值实测一直选 autoindex，
--- 3 列前缀查询删掉它也仍由 autoindex 以同一 search shape 承担（无全表扫）。
--- 删掉只少一份等价的 B-tree 维护成本。IF EXISTS 保证重放旧块时不报错。
-DROP INDEX IF EXISTS idx_edges_lookup;
-
--- +migration 7 pin_id
-
--- node_pins 需要一个**唯一**的行身份，用来回答「这条 pin 是不是本次派发建的」
--- （推帧失败回滚的条件删除，见 node.go 的 RollbackPin）。
+-- 它不是 child task（parent_task_id 只表示业务 emit 的父子关系），也不参与路由。
+-- 为什么必须持久化机器快照：机器级输入（local > node 合并后的 vars/limits）在 grant
+-- 那一瞬确定，本次 attempt 期间后续 config 更新 / hello 上报不得改动它（D2）。
+-- TaskInputs 只读这张表，不回读当前 node_configs——那会让同一 attempt 中途换值。
+-- namespace 默认值仍由 tasks.namespace_vars 在任务接受时钉住（跨 attempt 不变，
+-- 本表只记它当时的 revision 作诊断）。
 --
--- 旧判据是 (sticky_key, node_id, created_at)，而 created_at 是**秒级**：同一秒里
--- 同一 (key, node) 的两次派发拿到同一个值 ⇒ 回滚会删掉**别人那一行**（#315）。
--- pin_id 由 PutPin 在**新建**时生成（store.NewPinID：毫秒时间戳 + 随机，时间有序），
--- 已存在的行走 ON CONFLICT 时**不覆盖**它——「谁建的就一直归谁」，后到的 upsert
--- 不会冒领身份。
+-- machine_vars / machine_limits / machine_var_sources 是**非敏感**机器值：
+-- 凭证、envPassthrough 名单、namespace 值都不进来（D5）。config_hash 只由共享
+-- protocol.MachineConfigHash 计算（canonical JSON 只有 vars + limits 两个键，
+-- 不含 revision / namespace / token / passthrough）。
 --
--- 默认 '' 只覆盖加这一列之前建的老行：它们不是任何一次「本次派发」新建的 pin，
--- 因此永远不会匹配 RollbackPin 的条件（正是想要的语义）。
-ALTER TABLE node_pins ADD COLUMN pin_id TEXT NOT NULL DEFAULT '';
+-- instance_id / slot 是这次 attempt 实际占用的物理槽（node_instances）；
+-- lease_id / attempt_token_hash 是这一代的授权摘要（token 只存 sha256）。
+-- reaped_at 是「该 attempt 的进程组已被可信事实证明回收」的落点；reaped_at IS NULL
+-- 的 attempt 是任务 GC 的硬保留条件（物理事实不能随任务行级联消失）。
+-- reclaim_reason 记录是哪一种事实（result / cancel_ack / node_instance_idle …）。
+-- phase / error 是 attempt 级诊断，不是任务状态机（任务相位仍只有 tasks.phase）。
+CREATE TABLE IF NOT EXISTS task_attempts (
+    task_id                 TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt                 INTEGER NOT NULL,
+    node_id                 TEXT NOT NULL,
+    node_name               TEXT NOT NULL DEFAULT '',
+    instance_id             TEXT NOT NULL DEFAULT '',
+    slot                    INTEGER NOT NULL DEFAULT -1,
+    lease_id                TEXT NOT NULL DEFAULT '',
+    attempt_token_hash      TEXT NOT NULL DEFAULT '',
+    config_revision         INTEGER NOT NULL DEFAULT 0,
+    config_hash             TEXT NOT NULL DEFAULT '',
+    machine_vars            TEXT NOT NULL DEFAULT '{}',
+    machine_var_sources     TEXT NOT NULL DEFAULT '{}',
+    machine_limits          TEXT NOT NULL DEFAULT '{}',
+    namespace_vars_revision INTEGER NOT NULL DEFAULT 0,
+    phase                   TEXT NOT NULL DEFAULT '',
+    error                   TEXT NOT NULL DEFAULT '',
+    started_at              INTEGER,
+    finished_at             INTEGER,
+    reaped_at               INTEGER,
+    reclaim_reason          TEXT NOT NULL DEFAULT '',
+    capability_id           TEXT NOT NULL DEFAULT '',
+    artifacts               TEXT NOT NULL DEFAULT '[]',
+    result_json             TEXT NOT NULL DEFAULT '',
+    result_accepted_at      INTEGER,
+    PRIMARY KEY (task_id, attempt)
+);
 
--- +migration 8 user_password
+-- 历史 attempt 定位（G2 的 previous 日志 / 运维按节点查执行事实）。
+CREATE INDEX IF NOT EXISTS idx_task_attempts_node
+    ON task_attempts(node_id, attempt);
 
--- 密码登录（第二套登录模型，与 Passkey 并存）。空串 = 未设置密码（纯 Passkey 账号）。
--- 只存 argon2id PHC 哈希（复用 auth.hashKey/verifyKey，与 api_keys / recovery_codes 同一实现），
--- 明文永不落库、不落日志。password_updated_at = 最近一次设置/修改的 unix 秒；0 = 从未设置。
-ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN password_updated_at INTEGER NOT NULL DEFAULT 0;
+-- GC 硬保留条件：仍有未 reaped attempt 的任务行不能删（部分索引只收未回收行）。
+CREATE INDEX IF NOT EXISTS idx_task_attempts_unreaped
+    ON task_attempts(task_id) WHERE reaped_at IS NULL;
 
--- +migration 9 capability_spec
+-- emit 幂等记录：同一逻辑任务内同 emit_id 只派发一次，回放同一份结果。
+-- emit_id 为 NULL 时每次都新派发（部分唯一索引只对非 NULL 生效）。
+CREATE TABLE IF NOT EXISTS emits (
+    id         TEXT PRIMARY KEY,
+    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    emit_id    TEXT,
+    to_ref     TEXT NOT NULL,
+    data       TEXT NOT NULL DEFAULT '{}',
+    result     TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
 
--- `spec` 是能力的**正文**（Capability Spec v3 §4）：params / outputs / requires /
--- lifecycle / sticky + 实现（run 或 handler），canonical JSON 一串。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_emits_task_emit
+    ON emits(task_id, emit_id) WHERE emit_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_emits_task
+    ON emits(task_id);
+
+-- 部署：「某节点持有某 digest」这条事实。人工部署写，节点回报更新 state。
+-- state: pending | applied | failed | local。
+CREATE TABLE IF NOT EXISTS deployments (
+    id            TEXT PRIMARY KEY,
+    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
+    digest        TEXT NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'pending',
+    reason        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (node_id, capability_id, digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id);
+CREATE INDEX IF NOT EXISTS idx_deploy_capability ON deployments(capability_id);
+
+-- 预案：一份清单（能力 / 源），不产生任务、不是所有权。
+-- files 是 canonical JSON：路径 → 文件内容（含 playbook.yaml 原文）。
+-- 说明列叫 descr：A2 正则扫全文，那个英文单词里恰好含被禁子串。
+CREATE TABLE IF NOT EXISTS playbooks (
+    id               TEXT PRIMARY KEY,
+    namespace_id     TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    slug             TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    display_name     TEXT NOT NULL DEFAULT '',
+    descr            TEXT NOT NULL DEFAULT '',
+    version          INTEGER NOT NULL DEFAULT 1,
+    files            TEXT NOT NULL DEFAULT '{}',
+    source           TEXT NOT NULL DEFAULT '',
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE (namespace_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_at);
+
+-- 安装回执：每次 install 一行（dryRun 不写）。values 是有效 values，
+-- values_digest 对未打码的值取哈希；receipt 是回执原文。
 --
--- 与派生列的关系是「一个写者」：spec 是输入，params_schema / outputs / lifecycle /
--- sticky 是**写入时**由它算出的只读缓存（热路径要的是列，不该每次解一份大 JSON）。
--- 任何单独改派生列的路径都是 bug —— 两者由同一个事务写入，不允许不同步。
---
--- 默认 '' 只为覆盖「加这一列之前建的老行」：它们由本迁移的 Go 钩子回填
--- （有产物的取产物正文，其余给内置 noop 占位），回填后库里不再有 ''。
-ALTER TABLE capability_versions ADD COLUMN spec TEXT NOT NULL DEFAULT '';
+-- playbook_id 是**历史 id，不是外键**：删一个 playbook 清单不该连带删掉它装过的回执
+-- （回执是「这次安装做了什么」的审计，也是 capability_versions/sources.installed_from
+-- 指向的锚点）。带 ON DELETE CASCADE 的外键会让删包同时抹掉回执并留下悬挂引用；
+-- 带 RESTRICT 的外键会让删包永远失败。所以这里不放 live-parent 外键，
+-- 而是把「当时是谁」**快照**进回执自己：原 id + 原 slug + 原命名空间 slug。
+-- 快照好之后，playbook 行消失也不影响读回执（也不会把同名重建的新包认成来源）。
+CREATE TABLE IF NOT EXISTS playbook_installs (
+    id                TEXT PRIMARY KEY,
+    namespace_id      TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    namespace_slug    TEXT NOT NULL DEFAULT '',
+    playbook_id       TEXT NOT NULL DEFAULT '',
+    playbook_slug     TEXT NOT NULL DEFAULT '',
+    "values"          TEXT NOT NULL DEFAULT '{}',
+    values_digest     TEXT NOT NULL,
+    receipt           TEXT NOT NULL DEFAULT '{}',
+    source            TEXT NOT NULL DEFAULT '',
+    created_at        INTEGER NOT NULL
+);
 
--- +migration 10 drop_balance
+CREATE INDEX IF NOT EXISTS idx_playbook_installs_lookup
+    ON playbook_installs(namespace_id, playbook_id, values_digest, created_at);
 
--- `balance` 是端口级平衡策略的旧列（migration 2 加的）。它语义上只有**一个**合法值：
--- 保存路径只放行 priority，all / random / least_loaded / hash 一律 400，于是「配了它」
--- 与「没配它」跑起来逐字相同——恒等于默认行为，等于这个字段从来没表达过任何选择
--- （Capability Spec v3 §7 的 P3 行）。删掉它，也就没有「配了 all 却按 1:1 跑」这种
--- 永远查不出来的分歧了。
---
--- 3.35+ 的 DROP COLUMN 已实测可跑（本表有数据、有外键指向它、有其它列上的索引），
--- 不需要「重建表 + 拷贝」那条重路径。只执行一次：applyMigration 按 schema_version 记账。
--- 列上没有任何索引 / UNIQUE / 部分索引谓词引用它，因此 DROP 是就地重写，不触发
--- 表结构迁移的那些限制。
-ALTER TABLE capability_versions DROP COLUMN balance;
+-- 源（触发器）：事件的入口实例，不是能力。kind 只允许注册表里的项
+-- （本期 cron / webhook / manual，判定在应用层）。
+-- config 是按 kind 解释的 JSON；targets 是 [{capability, params}]。
+-- installed_from 是首次安装来源（复用不覆盖）。
+CREATE TABLE IF NOT EXISTS sources (
+    id               TEXT PRIMARY KEY,
+    namespace_id     TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    display_name     TEXT NOT NULL DEFAULT '',
+    kind             TEXT NOT NULL,
+    config           TEXT NOT NULL DEFAULT '{}',
+    targets          TEXT NOT NULL DEFAULT '[]',
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    last_fired_at    INTEGER,
+    next_fire_at     INTEGER,
+    installed_from   TEXT NOT NULL DEFAULT '',
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL,
+    UNIQUE (namespace_id, name)
+);
 
--- +migration 11 deployments_reference_capability
+CREATE INDEX IF NOT EXISTS idx_sources_ns ON sources(namespace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(enabled, next_fire_at);
 
--- 部署行改引用**能力行**（Capability Spec v3 §11.1）：`deployments.artifact_id` →
--- `capability_id`，唯一键随之变成 UNIQUE (node_id, capability_id, digest)。
---
--- 为什么：产物不再是独立存在的物体，它就是能力行的正文（content_hash ≡ digest）。
--- P1 期间 artifacts 只是 capability_versions 的**写穿镜像**，存在的唯一理由是让
--- 这个外键成立；镜像没有别的读者之后，留着它就是第二份真相（同一条内容两处存，
--- 两处可能不一致），所以这一块把镜像表和指向它的外键一起拆掉。
---
--- 怎么做：SQLite 改外键只能重建表（新建 → 拷贝 → 删旧 → 改名）。拷贝时
--- `artifact_id` 要**逐行**经 artifacts 映射成 `capability_id`，映射不到的行宁可让
--- 迁移失败并指名道姓，也不能被 INNER JOIN 静默筛掉。这段需要 Go 逻辑，所以本块的
--- SQL 留空 —— 实现（以及这里的终态 DDL）见 migrate.go 的
--- referenceCapabilityFromDeployments；hook 必须幂等（旧库升级与新建库两条路径都会跑到）。
---
--- baseline 里那份带 artifact_id 的 deployments DDL 是**版本 1 的历史形态**，
--- 按「baseline 已发布、不再改动」的规则保留；今天库里的形状以 hook 为准。
+-- System-managed object identities never derive from a logical path or shared hash.
+-- Objects outlive task metadata so namespace/task deletion cannot lose GC work.
+CREATE TABLE IF NOT EXISTS task_artifact_objects (
+    id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    expired_at INTEGER,
+    purged_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS task_artifact_uploads (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    object_id TEXT NOT NULL REFERENCES task_artifact_objects(id) ON DELETE RESTRICT,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id, attempt) REFERENCES task_attempts(task_id, attempt) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS task_artifact_manifests (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt INTEGER NOT NULL,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    capability_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    object_id TEXT NOT NULL REFERENCES task_artifact_objects(id) ON DELETE RESTRICT,
+    published_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    expired_at INTEGER,
+    result_ref INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, attempt, path),
+    FOREIGN KEY (task_id, attempt) REFERENCES task_attempts(task_id, attempt) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_artifact_objects ON task_artifact_manifests(object_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifact_upload_expiry ON task_artifact_uploads(expires_at);

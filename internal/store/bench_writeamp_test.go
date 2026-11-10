@@ -81,7 +81,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,7 +146,7 @@ func openWriteAmpB(b *testing.B) (*DB, string, *CapabilityVersion) {
 	}
 	capDef := &CapabilityVersion{
 		NamespaceID: ns.ID, Name: "writeamp.probe", Version: 1,
-		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
+		Spec: v4Spec("", nil, ""), CreatedAt: Now(),
 	}
 	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
 		b.Fatalf("create capability: %v", err)

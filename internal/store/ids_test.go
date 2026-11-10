@@ -100,7 +100,7 @@ func TestNewIDTimeOrdered(t *testing.T) {
 	}
 }
 
-// TestCapabilityAndGraphIDShape cap_<UTC>_<hash8>_<rand> / grf_<UTC>_<hash8>_<rand>。
+// TestCapabilityIDShape cap_<UTC>_<hash8>_<rand> / grf_<UTC>_<hash8>_<rand>。
 //
 // 尾部随机后缀不是装饰：同一秒内为不同命名空间创建同名同内容能力时，
 // 时间戳与 hash8 会完全相同，而 id 是 PRIMARY KEY——只有随机后缀能保证唯一。
@@ -118,11 +118,6 @@ func TestCapabilityAndGraphIDShape(t *testing.T) {
 		t.Fatalf("capability id %q has empty random suffix", capID)
 	}
 
-	grfID := NewGraphVersionID(hash)
-	parts = strings.Split(grfID, "_")
-	if len(parts) != 4 || parts[0] != "grf" || parts[2] != hash[:8] || parts[3] == "" {
-		t.Fatalf("graph version id %q malformed", grfID)
-	}
 }
 
 // TestVersionIDUniqueness 同一秒、同一内容 hash 下生成的 ID 必须互不相同。
@@ -134,7 +129,7 @@ func TestVersionIDUniqueness(t *testing.T) {
 	hash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	seen := make(map[string]bool, 500)
 	for i := 0; i < 500; i++ {
-		for _, id := range []string{NewCapabilityID(hash), NewGraphVersionID(hash)} {
+		for _, id := range []string{NewCapabilityID(hash)} {
 			if seen[id] {
 				t.Fatalf("duplicate version id %q within same second", id)
 			}

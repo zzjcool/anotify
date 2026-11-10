@@ -1,0 +1,507 @@
+package playbook // import "github.com/zzjcool/anotify/internal/playbook"
+
+Package playbook 实现 v4 的**目录安装包**（Playbook）：解析、渲染、安装计划与回执。
+
+语义基线是 `docs/design/v4/playbook.md`（一个目录 + values 参数化 + 只做加法），
+本包只做**纯领域**计算，不碰数据库、不碰网络、不写任何东西：
+
+    Parse  包入库前的**值无关**校验（文件集合：入口 / 闭合 / 路径 / 计数 / 槽位形状）
+    Render (包, values) → 普通文档（默认值填充 + JSON Schema 校验 + 结构内插值 + 单建校验）
+    Plan   (包, values, 库快照) → 12 格动作矩阵（纯函数；有冲突时调用方整包 0 写）
+    BuildReceipt 把计划拼成回执行（values 打码、valuesDigest 对打码前值）
+
+三条硬边界（写代码时不要越过去）：
+
+ 1. **渲染严格只读包体**：不读库、不判冲突、不写库、不产生回执（§2.4 / D19）。 `render` 是 `helm
+    template`，`dryRun` 才读库。
+ 2. **包层模板只有 `{{values.点号路径}}` 一种**：其余 `{{…}}`、`$NAME`、`${…}`、 `$(…)`
+    全是普通文本，原样透传（§1.4 / D3）。只渲染值，不渲染键。
+ 3. **安装只做加法**：本包算出"哪一格"，写入由 store 在单事务里执行（G1-5b）；
+    任何"想改已有东西"的差异一律进回执（`unapplied[]`），不进数据库（I-P1）。
+
+本包的库依赖只有 `Existing` 这一个**只读快照接口**：store 在**当前事务内**实现它 （按 name/version/foldKey
+查能力、按 name 查源、算引用计数），本包既不知道表名， 也不私开连接。这样 `Plan` 是纯函数，`dryRun` 与真实 install
+走同一条代码路径。
+
+CONSTANTS
+
+const (
+	// EntryFile 是包的唯一入口：`playbook.yaml`（缺了就没法寻址，`entry_missing`）。
+	EntryFile = "playbook.yaml"
+	// APIVersion 是入口文档的格式版本。
+	APIVersion = "anotify/v1"
+	// KindPlaybook 是入口文档的 kind。
+	KindPlaybook = "Playbook"
+	// KindCapability / KindSource 是被引用文档的 kind（可省略不看，写了就必须对）。
+	KindCapability = "Capability"
+	KindSource     = "Source"
+	// KindInstallReceipt 是回执的 kind（§4.5：回执是主文档 top-level，不是资源信封）。
+	KindInstallReceipt = "InstallReceipt"
+	// DigestPrefix 与容器镜像生态一致（valuesDigest / conflicts 里的 digest 都用它）。
+	DigestPrefix = "sha256:"
+)
+    包格式常量（playbook.md §1）。
+
+const (
+	// MaxFileBytes 是包内单个文件的体积上限（2 MiB = 单能力 run.files 1 MiB 的 YAML 余量）。
+	MaxFileBytes = 2 << 20
+	// MaxYAMLBytes 是包内所有 YAML 合计上限（渲染前）。
+	MaxYAMLBytes = 8 << 20
+	// MaxFiles 是文件数上限（含 playbook.yaml；D-I5）。
+	MaxFiles = 64
+	// MaxCapabilities / MaxSources 是包内能力数 / 源数上限。
+	MaxCapabilities = 32
+	MaxSources      = 32
+	// MaxPathLen 是引用路径长度上限。
+	MaxPathLen = 255
+	// MaxNameLen 是包名（slug）长度上限。
+	MaxNameLen = 64
+)
+    体积与数量上界（playbook.md §1.5）。
+
+const (
+	// 创建期。
+	CodeInvalidPlaybook    = "invalid_playbook"
+	CodeSlugTaken          = "slug_taken"
+	CodeSlugInvalid        = "slug_invalid"
+	CodeNamespaceInPackage = "namespace_in_package"
+	CodeTooManyItems       = "too_many_items"
+	CodeEntryMissing       = "entry_missing"
+	CodeFilePathInvalid    = "file_path_invalid"
+	CodeFileMissing        = "file_missing"
+	CodeFileUnreferenced   = "file_unreferenced"
+	CodeFileDuplicate      = "file_duplicate"
+
+	// 渲染期。
+	CodeValuesMissing       = "values_missing"
+	CodeValuesInvalid       = "values_invalid"
+	CodeRenderNameInvalid   = "render_name_invalid"
+	CodeRenderTypeMismatch  = "render_type_mismatch"
+	CodeDuplicateCapability = "duplicate_capability"
+	CodeDuplicateSource     = "duplicate_source"
+	CodeCycle               = "cycle"
+
+	// 安装期。
+	CodePlaybookConflict        = "playbook_conflict"
+	CodeVersionContentImmutable = "version_content_immutable"
+	CodeNotFound                = "not_found"
+
+	// 分发期（OCI）。本包不做网络拉取，只留码位给将来的一致口径（§11）。
+	CodeOCIUnsupported    = "oci_unsupported"
+	CodeOCIPullFailed     = "oci_pull_failed"
+	CodeOCIDigestMismatch = "oci_digest_mismatch"
+	CodeOCITooLarge       = "oci_too_large"
+)
+    错误码（playbook.md §9.2 的封闭词表 + §11 分发期码）。
+
+    只有这里列出的码可以出现在 *Error 上：新增一个码要改设计文档（码是 e2e 断言的锚点）。
+
+const (
+	// NoteRoutingUnapplied 是"已存在的能力，包里 next 与库里不同"（§4.2 第 7 行）。
+	NoteRoutingUnapplied = "routing_unapplied"
+	// NoteTargetsUnapplied 是"已存在的源，包里 targets 与库里不同"（§4.2 第 12 行）。
+	NoteTargetsUnapplied = "targets_unapplied"
+	// NoteUnreachable 是装完自检：包内能力既无上游、也无源指向（§4.5）。
+	NoteUnreachable = "unreachable"
+	// NotePendingRef 是 next / targets 指向的名字库里也没有（§3 第三行）。
+	NotePendingRef = "pending_ref"
+	// NoteSourceDisabled 是包内源渲染后 enabled: false（只是提示）。
+	NoteSourceDisabled = "source_disabled"
+	// NoteNoNode 是包内没有任何能力能在当前节点池上跑。它需要节点池事实（哪些节点声明了
+	// 什么），属于读模型的体检/派生 status（§6.1，G3），本包的纯 Plan 不产出它；
+	// 常量放在这里是为了让码表在一处封闭。
+	NoteNoNode = "no_node"
+)
+    回执 notes 的 code 封闭集合（§4.5 六个码，一期不加）。
+
+    每个 note 是 {code, ref, message}：code 是稳定机器码（e2e 断言它），message 只给人读。
+
+const (
+	// ConflictVersionConflict 是显式 name@v 已存在且执行正文不同（§4.2 第 6 行）。
+	ConflictVersionConflict = "version_conflict"
+	// ConflictConfigDiffers 是源同名且 kind/config 真正不同（§4.2 第 10 行）。
+	ConflictConfigDiffers = "config_differs"
+)
+    Conflict 的原因码（400 的 conflicts[].reason，§9.2 的 playbook_conflict 响应形状）。
+
+const (
+	ReasonRoutingUnapplied = NoteRoutingUnapplied
+	ReasonTargetsUnapplied = NoteTargetsUnapplied
+)
+    Unapplied 的原因码（回执 unapplied[].reason，与 notes 的 code 同名同义）。
+
+const MaskedValue = "***"
+    MaskedValue 是 writeOnly 字段进回执时的占位（§1.2 / D16）。
+
+
+FUNCTIONS
+
+func Code(err error) string
+    Code 返回错误的领域码；不是本包错误时返回空串（调用方据此判断"是不是可翻译成 400 的领域错"）。
+
+func InstallsFoldKey(namespaceID, playbookID, valuesDigest string) string
+    InstallsFoldKey 是实例清单（§4.10）的折叠键：`(namespace_id, playbook_id,
+    values_digest)`。
+
+    纯函数部分（拼键）留在这里，一次 `GROUP BY` 的聚合由 store 做（G1-5b）：同一组 values 装 3 次 = 1 个折叠组 +
+    attempts=3，不是 3 个实例。
+
+func IsCode(err error, code string) bool
+    IsCode 报告 err 是否带指定领域码。
+
+func MaskValues(sch map[string]any, values map[string]any) map[string]any
+    MaskValues 返回回执用的 values：`writeOnly: true` 的字段换成 `"***"`（§1.2 / D16）。
+
+    打码跟着 schema 走（不是猜字段名）：对象按 `properties` 递归、数组按 `items` 递归。 打码只影响回执，不影响渲染与
+    digest。
+
+func NoteCodes() []string
+    NoteCodes 返回 notes 的封闭码表（拷贝；调用方可安全修改）。
+
+func ValuesDigest(values map[string]any) (string, error)
+    ValuesDigest 返回有效 values 的 canonical sha256（`sha256:<64 hex>`）。
+
+    两条约定（§4.5 / D16）：
+      - **对打码前**的有效 values 算：这样"同一组值"仍然可比较（回执里的 `***` 不参与身份）；
+      - canonical：encoding/json 对 map 键排序、对数字用最短表示，所以排版/键序无关。
+
+
+TYPES
+
+type Action string
+    Action 是 Plan 给 store 的动作（12 格矩阵的两类落点：建 / 复用）。
+
+const (
+	// ActionCreate 是"本次新建这一行"（INSERT）。
+	ActionCreate Action = "create"
+	// ActionReuse 是"复用库里已有的行"（什么都不写；差异进 unapplied[]）。
+	ActionReuse Action = "reuse"
+)
+type Affects struct {
+	// Edges 是库里引用**裸名** next 的边数。
+	Edges int `json:"edges"`
+	// Sources 是库里 targets 里写裸名的源数。
+	Sources int `json:"sources"`
+}
+    Affects 是新版本会影响到的落点计数（§5 D23：两个计数都要算）。
+
+type CapabilitySnapshot struct {
+	Name        string
+	Version     int
+	Digest      string
+	FoldKey     string
+	DisplayName string
+	// Next 是这一行**当前的路由**（行 7 的比较对象）。
+	Next []string
+}
+    CapabilitySnapshot 是库里一条能力行的快照（由 store 在当前事务内查出来填）。
+
+type Conflict struct {
+	Kind           string   `json:"kind"`
+	Ref            string   `json:"ref"`
+	Reason         string   `json:"reason"`
+	DeclaredDigest string   `json:"declaredDigest,omitempty"`
+	ActualDigest   string   `json:"actualDigest,omitempty"`
+	Fields         []string `json:"fields,omitempty"`
+}
+    Conflict 是 400 响应体里的 `conflicts[]` 一项（§9.2 的 playbook_conflict 形状）。
+
+    每个字段都不得丢（W3 冻结）：`kind` / `ref` / `reason`，能力冲突再给 `declaredDigest` /
+    `actualDigest`，源冲突再给 `fields`（字段名，**不给值**——token 脱敏）。
+
+type Created struct {
+	Capabilities []string `json:"capabilities"`
+	Sources      []string `json:"sources"`
+}
+    Created 是"这次建了什么"：能力写 `name@version`，源写名字。
+
+    **两份（created / skipped）都是对象而不是数组**：`{capabilities: [], sources: []}` （W3
+    冻结；空列表是 `[]` 不是 `null`）。
+
+type Error struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+    Error 是带码的领域错误：Code 来自 §9.2 的封闭词表，Message 是点名到路径/字段的人话， Details
+    放结构化补充（conflicts / valuesDigest / hint 这类）。
+
+func (e *Error) Error() string
+
+type Existing interface {
+	// CapabilityByFoldKey 按 (name, foldKey) 找一行：省略 version 时判"正文相同"（行 2）。
+	CapabilityByFoldKey(name, foldKey string) (*CapabilitySnapshot, bool)
+	// CapabilityByNameVersion 按 (name, version) 找一行：显式 version（行 4/5/6）。
+	CapabilityByNameVersion(name string, version int) (*CapabilitySnapshot, bool)
+	// CapabilityMaxVersion 返回该名字已存在的最大版本（不存在 → 0, false）：行 3 分配 max+1。
+	CapabilityMaxVersion(name string) (int, bool)
+	// SourceByName 按名字找源（行 9/10/12）。
+	SourceByName(name string) (*SourceSnapshot, bool)
+	// BareNameRefs 返回库里**引用裸名**（不带 @version）的边数与源数：`upgraded[].affects`。
+	BareNameRefs(name string) (edges, sources int)
+	// HasUpstream 报告库里是否已有指向 name 的引用（裸名，或 `name@任意版本`）：
+	// 装完自检的 `unreachable` note 用它排除"包外已有上游"。
+	HasUpstream(name string) bool
+}
+    Existing 是 Plan 需要的**全部**库事实，只有六个只读查询。
+
+    边界：本包不 import store，也不私开 DB——store（G1-5b）在当前事务内实现它， 于是 `dryRun` 与真实 install
+    走同一条代码路径（§4.4 的 ②"读一次库快照"）。
+
+func EmptyExisting() Existing
+    EmptyExisting 返回"库里什么都没有"的快照（新命名空间或纯单测用）。
+
+    刻意不把 `nil` 当空库：忘了传快照就装出一个"以为库是空的"的计划，比报错危险得多。
+
+type InstallMeta struct {
+	ID        string
+	At        string
+	DryRun    bool
+	Namespace string
+	// Source 是 OCI 来源（`oci://…@sha256:…`）；手传包体时为空。
+	Source string
+}
+    InstallMeta 是回执里"这次安装"的元信息（id / 时间 / dryRun / ns / OCI 来源）。
+
+type InstallRef struct {
+	ID     string `json:"id"`
+	At     string `json:"at"`
+	DryRun bool   `json:"dryRun"`
+}
+    InstallRef 是回执里的本次安装标识（id 由 store 生成；dryRun 不进库）。
+
+type Note struct {
+	Code    string `json:"code"`
+	Ref     string `json:"ref,omitempty"`
+	Message string `json:"message"`
+}
+    Note 是一条"稳定机器码 + 人话"的提示（§4.5：code 封闭六码）。
+
+type Package struct {
+	// Name 是 metadata.name（slug，命名空间内唯一，也是 URL 里那段）。
+	Name string `json:"name"`
+	// DisplayName / Description 是纯展示。
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+	// Version 是 metadata.version（只管展示与溯源，不参与 digest / 幂等 / 任何解析）。
+	Version int `json:"version,omitempty"`
+	// Values 是 spec.values（JSON Schema 原文，canonical JSON）。
+	Values json.RawMessage `json:"values"`
+	// Files 是包体（相对路径 → 正文），含 EntryFile 原文。
+	Files map[string]string `json:"files"`
+	// CapabilityPaths / SourcePaths 是 spec.capabilities / spec.sources（相对路径，按书写顺序）。
+	CapabilityPaths []string `json:"capabilityPaths"`
+	SourcePaths     []string `json:"sourcePaths"`
+}
+    Package 是一个已解析的目录包。
+
+    **Files 是包体的唯一真相**：它按 `{相对路径: 正文}` 保存原始文件（含 `playbook.yaml`）， store 直接把它当
+    `playbooks.files` 落库（D-I5），`includeBody` 也原样返回它。 渲染时按 CapabilityPaths /
+    SourcePaths 从 Files 取正文——不另存一份正文副本， 避免"改了 Files 忘了 Docs"这类两份真相。
+
+    Values 是 `spec.values` 的 canonical JSON（JSON Schema）；省略的包是 `{}`（接受一切、无默认值）。
+
+func Parse(files map[string]string) (*Package, error)
+    Parse 解析一个包的文件集合，做**创建期**校验（值无关；playbook.md §9.1 / I-P2）。
+
+    创建期只判"与 values 无关"的东西：
+
+        入口存在、引用闭合（存在 / 不重复 / 无未引用 YAML）、路径合法、
+        包的形状（entry / metadata / spec.values / 引用清单）、槽位形状、
+        metadata.namespace 禁止、计数与体积上界。
+
+    **刻意不做**的事（写了就是 bug，见 §9.1 的硬约束）：不跑单建校验、不判名字正则、 不解析 next ——此刻能力名可能还是
+    `{{values.project}}-review`，任何"当文档校验"的 逻辑都会让**所有**参数化包存不进来。
+
+    files 的语义是 `{相对路径: 正文}`；返回的 Package 保留 Files 原文（store 直接落库）。
+
+type PlanResult struct {
+	Playbook     PlaybookRef
+	Values       map[string]any
+	ValuesDigest string
+
+	Conflicts []Conflict
+	Created   Created
+	Skipped   Created
+	Upgraded  []UpgradedEntry
+	Unapplied []UnappliedEntry
+	External  []string
+	Pending   []string
+	Notes     []Note
+
+	// Capabilities / Sources 是执行指令（顺序 = 包里书写的顺序，store 照此写）。
+	Capabilities []PlannedCapability
+	Sources      []PlannedSource
+
+	// Has unexported fields.
+}
+    PlanResult 是 12 格判定的产物：回执基础字段 + 给 store 的执行指令。
+
+    有 Conflicts 时**调用方整包 0 写**（Plan 会把 result 和 error 一起返回，方便 400 body 直接带
+    `conflicts[]` / `valuesDigest` / `hint`）。
+
+func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, error)
+    Plan 按 playbook.md §4.2 的 12 格矩阵算出安装动作（**纯函数**）。
+
+    12 格 → 代码落点：
+
+        1  能力（省略 v）+ 无同名                       → addCreatedCapability(v1)
+        2  能力（省略 v）+ 同名同 foldKey                → reuseCapability（skipped，不写 note）
+        3  能力（省略 v）+ 同名不同正文                  → upgraded + addCreatedCapability(max+1)
+        4  能力（显式 v）+ 无 name@v                     → addCreatedCapability(v)
+        5  能力（显式 v）+ name@v 正文相同               → reuseCapability
+        6  能力（显式 v）+ name@v 正文不同               → Conflicts（version_content_immutable）
+        7  能力（任意）+ 该 name@v 的 next 不同           → Unapplied（routing_unapplied）+ note
+        8  源 + 无同名                                  → PlannedSource{create}（token 省略 → GenerateToken）
+        9  源 + 同名 kind/config 等价                    → PlannedSource{reuse}（不写 targets / 入口边）
+        10 源 + 同名 kind/config 不同                    → Conflicts（playbook_conflict）
+        11 源 targets 指向既不在包内也不在库里的名字      → Pending + note（pending_ref）
+        12 源 + 同名 config 等价但 targets 不同          → Unapplied（targets_unapplied）+ note
+
+    它把三件事分开：渲染后的文档（Render）、库快照（Existing）、以及由此决定的动作矩阵。 顺序照 §4.4：① render（values
+    错就地 400）→ ② 读快照（调用方做）→ ③ 算矩阵 （有 conflict 就 400，一行不写）。④⑤（单事务写入 + 回执）是 store
+    的事（G1-5b）。
+
+    返回约定：有 Conflicts 时同时返回 (result, error)——
+      - error 的 Code 是 `version_content_immutable`（只有能力冲突）或 `playbook_conflict`，
+        Details 带 `conflicts` / `valuesDigest` / `hint`（§9.2 的 400 形状）；
+      - result 仍然完整（调用方要展示冲突全貌）。
+
+type PlannedCapability struct {
+	// Artifact 是本次要建/已对上的产物。Action=create 时 Metadata.Version 已定（1 或 max+1），
+	// 因此 Digest 可直接落库；Action=reuse 时保持包里写的样子（可能省略 version）。
+	Artifact *artifact.Artifact
+	// Action 决定 INSERT 还是什么都不写。
+	Action Action
+	// FoldKey / Digest 是内容身份（create 时都是本次算出的；reuse 时是库里那行的）。
+	FoldKey string
+	Digest  string
+	// ReusedVersion 是 Action=reuse 时对上的版本（回执写 `name@version`）。
+	ReusedVersion int
+}
+    PlannedCapability 是一条能力的执行指令（Plan 算完，store 在单事务里照做）。
+
+type PlannedSource struct {
+	Name string
+	// Spec 是渲染后、config 已归一化的源（token 空 = 待生成/保留）。
+	Spec sourcespec.Spec
+	// Action 决定 INSERT 还是什么都不写。
+	Action Action
+	// GenerateToken 表示"本次新建 webhook 源且包里没给 token"→ store 生成一个随机 token。
+	// 它必须由 store 做（写库副作用），所以是计划里的一个动作标记，不是本包的副作用。
+	GenerateToken bool
+}
+    PlannedSource 是一条源的执行指令。
+
+type PlaybookRef struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+}
+    PlaybookRef 是回执里的包身份（§4.5）。
+
+type Receipt struct {
+	APIVersion   string           `json:"apiVersion"`
+	Kind         string           `json:"kind"`
+	Playbook     PlaybookRef      `json:"playbook"`
+	Source       string           `json:"source,omitempty"`
+	Install      InstallRef       `json:"install"`
+	Namespace    string           `json:"namespace"`
+	Values       map[string]any   `json:"values"`
+	ValuesDigest string           `json:"valuesDigest"`
+	Created      Created          `json:"created"`
+	Skipped      Created          `json:"skipped"`
+	Upgraded     []UpgradedEntry  `json:"upgraded"`
+	Unapplied    []UnappliedEntry `json:"unapplied"`
+	External     []string         `json:"external"`
+	Pending      []string         `json:"pending"`
+	Notes        []Note           `json:"notes"`
+}
+    Receipt 是安装回执（playbook.md §4.5，D15）。
+
+    形状硬约束：
+      - `created` / `skipped` 都是 `{capabilities: [], sources: []}` 对象；
+      - `values` 是**打码后**的有效 values（writeOnly → `"***"`），`valuesDigest`
+        对**打码前**算；
+      - **没有 `conflicts` 字段**：冲突只在 400 错误体里（`Error.Details`）。
+
+func BuildReceipt(plan *PlanResult, values map[string]any, valuesDigest string, meta InstallMeta) Receipt
+    BuildReceipt 把计划拼成回执（playbook.md §4.5）。
+
+    形状规则：`values` 打码（writeOnly → `***`）、`valuesDigest` 对**打码前**的值算、 `dryRun`
+    标记透传、**没有 conflicts 字段**（冲突只在 400 错误体里）。 values / valuesDigest 由调用方传（正常就是
+    plan.Values / plan.ValuesDigest）； 打码跟 plan 的 spec.values 走，所以调用方不需要再拿一份
+    schema。
+
+type RenderResult struct {
+	// Values 是**有效** values（传入 + 补上的默认值，打码前）。
+	Values map[string]any `json:"values"`
+	// ValuesDigest 对打码前的有效 values 取 canonical sha256（§4.5）。
+	ValuesDigest string `json:"valuesDigest"`
+	// Files 是渲染后的 `{路径: 正文}`（只含被引用的能力/源文件；playbook.yaml 不渲染，故不在内）。
+	Files map[string]string `json:"files"`
+	// Capabilities 是渲染后的能力（artifact.Parse 归一化过：默认值已补齐）。
+	Capabilities []*artifact.Artifact `json:"capabilities"`
+	// Sources 是渲染后的源文档。
+	Sources []Source `json:"sources"`
+}
+    RenderResult 是一次渲染的产物（playbook.md §2.4 的 render 响应体）。
+
+    它是**普通文档集合**：能力走 artifact 的归一化+校验，源走 sourcespec 的校验， 装出来的东西与手工建的逐字节等价（D6）。
+
+func Render(pkg *Package, values map[string]any) (*RenderResult, error)
+    Render 把包渲染成一组**普通文档**（playbook.md §2 / D19）。
+
+    三步，顺序固定：
+
+        ① 填默认：按 spec.values（JSON Schema）递归补 default
+        ② 校验 values：required（values_missing）/ 类型与 additionalProperties（values_invalid）
+        ③ 结构内插值：遍历解析后的文档树，对每个字符串叶子求值 `{{values.点号路径}}`
+
+    渲染后立即走**单建校验**（能力 artifact / 源 sourcespec，D6：不设第二套），再加三条
+    包视角的检查：渲染后同名（duplicate_capability / duplicate_source）、包内成环（cycle）、
+    数量上限（too_many_items）。
+
+    **纯函数**：只读写包体（Files / Values）与 values。不读库、不判冲突、不写库、不产生回执。
+
+type Source struct {
+	// Name 是 metadata.name（渲染后）。
+	Name string `json:"name"`
+	// DisplayName 是 metadata.displayName（纯展示，没有就不存在）。
+	DisplayName string `json:"displayName,omitempty"`
+	// Spec 是 source.md §2 的 spec 段（config 已归一化，token 空 = 待服务端生成）。
+	Spec sourcespec.Spec `json:"spec"`
+}
+    Source 是一份**渲染后**的源文档（源没有 version：身份就是名字，kind 创建后不可变）。
+
+type SourceSnapshot struct {
+	Name string
+	Kind string
+	// Enabled 只是事实记录：install 只做加法，不复用行上改它。
+	Enabled bool
+	// Config 是库里存的（已归一化的）config 原文。
+	Config json.RawMessage
+	// Targets 是这一行当前的出口声明（行 12 的比较对象，含 params 映射）。
+	Targets []sourcespec.Target
+}
+    SourceSnapshot 是库里一条源行的快照。
+
+type UnappliedEntry struct {
+	Kind     string `json:"kind"`
+	Ref      string `json:"ref"`
+	Field    string `json:"field"`
+	Declared any    `json:"declared"`
+	Actual   any    `json:"actual"`
+	Reason   string `json:"reason"`
+}
+    UnappliedEntry 是"装了，但库里已有行不许改 → 这条差异没生效"（§4.2 第 7 / 12 行）。
+
+    Declared / Actual 是 JSON 值：能力路由是 `[]string`，源 targets 是
+    `[]sourcespec.Target`。
+
+type UpgradedEntry struct {
+	Capability string  `json:"capability"`
+	From       int     `json:"from"`
+	To         int     `json:"to"`
+	Affects    Affects `json:"affects"`
+}
+    UpgradedEntry 是"同名能力长出了新版本"（§4.2 第 3 行）。

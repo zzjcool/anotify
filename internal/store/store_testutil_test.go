@@ -3,43 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/zzjcool/anotify/internal/artifact"
 )
-
-// withSpec 给测试夹具兜底：把行上的派生字段折叠成一份 `handler: noop` 正文。
-//
-// **只给测试用**。生产路径明令禁止从派生字段反推正文（契约 §4：正文是输入、派生列
-// 是输出，反推会让「只改脚本不产生新版本」那个 bug 换个马甲回来）。但测试夹具的意图
-// 恰恰是「给我一个 outputs=[a,b] 的能力」——在两百个用例里重复手写 spec 只会增加
-// 写错的机会，也让用例真正想验的东西被噪音淹没。
-//
-// 已经带了实现的正文（handler 或 run）原样返回：显式写的 spec 优先，
-// 于是「这条用例在验正文本身」的时候不会被夹具覆盖。
-func withSpec(c *CapabilityVersion) *CapabilityVersion {
-	if c == nil {
-		return nil
-	}
-	if c.Spec.Handler != "" || c.Spec.Run.Entrypoint != "" || len(c.Spec.Run.Files) > 0 {
-		return c
-	}
-	var lc json.RawMessage
-	if c.Lifecycle != (Lifecycle{}) {
-		b, err := json.Marshal(c.Lifecycle)
-		if err != nil {
-			panic(err) // Lifecycle 全是标量/指针，序列化不可能失败
-		}
-		lc = b
-	}
-	c.Spec = HandlerSpec(artifact.HandlerNoop, c.ParamsSchema, c.Outputs, lc)
-	c.Spec.Sticky = c.Sticky
-	return c
-}
 
 // newTestDBFile 打开一个**文件**后备的测试库并返回路径。
 //

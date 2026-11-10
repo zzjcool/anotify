@@ -78,7 +78,7 @@ func TestAuthorizeNamespace(t *testing.T) {
 	if err := db.AuthorizeNamespace(ctx, userID, extra); err != nil {
 		t.Fatalf("AuthorizeNamespace(new ns) err = %v, want nil", err)
 	}
-	if err := db.DeleteNamespace(ctx, extra, true); err != nil {
+	if err := db.DeleteNamespace(ctx, extra, true, 0); err != nil {
 		t.Fatalf("delete namespace: %v", err)
 	}
 	if err := db.AuthorizeNamespace(ctx, userID, extra); !errors.Is(err, ErrNamespaceNotFound) {
@@ -119,7 +119,7 @@ func TestAuthorizeNamespaceForNode(t *testing.T) {
 	// ④ 删除命名空间后立刻失效（真实删除路径，不只是伪造 id）
 	//    先多建一个，否则 DeleteNamespace 会因「不允许删除最后一个命名空间」被拒。
 	newTestExtraNS(t, db, "spare")
-	if err := db.DeleteNamespace(ctx, nsID, true); err != nil {
+	if err := db.DeleteNamespace(ctx, nsID, true, 0); err != nil {
 		t.Fatalf("DeleteNamespace err = %v", err)
 	}
 	if err := db.AuthorizeNamespaceForNode(ctx, nsID); !errors.Is(err, ErrNamespaceNotFound) {

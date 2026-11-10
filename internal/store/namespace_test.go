@@ -1,15 +1,13 @@
 package store
 
-// 命名空间（#162）的 store 层验收测试。
+// namespace_test.go 覆盖 v4 命名空间（config.md §3）：
 //
-// 覆盖三组硬约束：
-//  1. 命名空间生命周期（CRUD / 阻塞删除 / 最后一个不许删）——契约 §2.1；
-//  2. 所有命名空间资源的作用域参数**必须显式**（空串与 "*" 一律
-//     ErrNamespaceRequired，绝不回退默认命名空间）——契约 §2.3；
-//  3. I11：跨命名空间引用四处一律拒绝——契约 §2.4。
+//	命名空间是唯一隔离维度；注册用户原子地建 default 命名空间（v4 **不**播种内置能力）；
+//	改名/删除走 CAS（expectedVersion = 单一 UID+rev 令牌）；非空删除要 force，
+//	且有真实执行占用（未回收 attempt）时 force 也必须拒绝。
 //
-// 每条断言都写清「为什么重要」，因为这一层的失败方式大多是**静默串数据**：
-// 写错一处不会报错，只会在 prod 的库里看见 staging 的机器。
+// v3 的「建命名空间同时播种 builtin 能力」「CreateEdge/EnsureGraphVersion 跨 ns 图」
+// 随中央播种与图对象退役：隔离断言改用能力/部署/任务/事件这些真实资源。
 
 import (
 	"context"
@@ -18,698 +16,199 @@ import (
 	"testing"
 )
 
-// mkSiblingNamespace 在同一个部署里再建一个命名空间（默认命名空间之外的「第二套流程」）。
-//
-// 为什么测试要用**同一部署里的兄弟命名空间**：命名空间是**唯一**的硬隔离维度，
-// 用两个命名空间才能把隔离面钉死；组织这一层已经不存在了（#204 / #205）。
-func mkSiblingNamespace(t *testing.T, db *DB, slug string) *Namespace {
-	t.Helper()
-	ns, err := db.CreateNamespace(context.Background(), slug, slug)
-	if err != nil {
-		t.Fatalf("create namespace %q: %v", slug, err)
-	}
-	return ns
-}
-
-// TestNamespaceCreateSeedsBuiltins 新建命名空间必须**同事务**播种内置能力。
-//
-// 为什么重要：新命名空间里没有 notify.phone，就连一个 end 节点都声明不出来
-// （ConfirmCapabilities 报 unknown capability），推送在那边直接失效；
-// 而「稍后补播种」失败时没有任何人会看到。
-func TestNamespaceCreateSeedsBuiltins(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-
-	sandbox, err := db.CreateNamespace(ctx, "sandbox", "沙箱")
-	if err != nil {
-		t.Fatalf("create sandbox namespace: %v", err)
-	}
-
-	got, err := db.GetCapability(ctx, sandbox.ID, "notify.phone", 1)
-	if err != nil {
-		t.Fatalf("新建命名空间里没有 notify.phone@1（没有同事务播种？）: %v", err)
-	}
-	// sandbox 是「空命名空间」，但内置能力不是「用户数据」，它必须在。
-	if got.Source != CapSourceBuiltin {
-		t.Fatalf("notify.phone 的 source = %q, want %q", got.Source, CapSourceBuiltin)
-	}
-	if got.NamespaceID != sandbox.ID {
-		t.Fatalf("notify.phone 落到了命名空间 %q, want %q", got.NamespaceID, sandbox.ID)
-	}
-
-	// 每个命名空间一份：默认命名空间与 sandbox 是**两行**，不是共享同一行。
-	def, err := db.GetCapability(ctx, nsID, "notify.phone", 1)
-	if err != nil {
-		t.Fatalf("默认命名空间里没有 notify.phone@1: %v", err)
-	}
-	if def.ID == got.ID {
-		t.Fatal("两个命名空间共享同一个 capability id：播种没有按命名空间隔离")
-	}
-
-	// 播种后 sandbox 的能力列表里只有内置能力（不夹带默认命名空间的自定义能力）
-	defCap := mkCap(nsID, "review.only-in-default", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, withSpec(defCap)); err != nil {
-		t.Fatalf("create custom capability in default namespace: %v", err)
-	}
-	list, err := db.ListCapabilities(ctx, sandbox.ID)
-	if err != nil {
-		t.Fatalf("list sandbox capabilities: %v", err)
-	}
-	for _, c := range list {
-		if c.Name == "review.only-in-default" {
-			t.Fatal("sandbox 看到了默认命名空间的自定义能力（隔离破了）")
-		}
-	}
-}
-
-// TestNamespaceCRUD 命名空间生命周期：列表 / 建 / 取 / 改名 / 删。
+// TestNamespaceCRUD 建/读/列/改名（CAS）/删（CAS）。
 func TestNamespaceCRUD(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	// ---------- 列表：新库里还没有命名空间，返回 [] 不是 nil（不变量 I9）----------
-	empty, err := db.ListNamespaces(ctx)
+
+	ns, err := db.CreateNamespace(ctx, "alpha", "Alpha")
 	if err != nil {
-		t.Fatalf("list namespaces on empty db: %v", err)
+		t.Fatalf("create namespace: %v", err)
 	}
-	if empty == nil {
-		t.Fatal("ListNamespaces 返回 nil，需要 []（不变量 I9）")
+	if ns.ID == "" || ns.Slug != "alpha" || ns.Name != "Alpha" || ns.ResourceVersion == 0 {
+		t.Fatalf("create 返回 = %+v", ns)
 	}
-	if len(empty) != 0 {
-		t.Fatalf("新库返回 %d 个命名空间，want 0", len(empty))
+	got, err := db.GetNamespace(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("get namespace: %v", err)
 	}
-
-	nsID, _ := newTestNS(t, db)
-
-	// ---------- 列表：默认命名空间 + 计数 ----------
+	if got.Slug != "alpha" {
+		t.Fatalf("roundtrip slug = %q", got.Slug)
+	}
 	list, err := db.ListNamespaces(ctx)
 	if err != nil {
 		t.Fatalf("list namespaces: %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("注册一个用户后应有 1 个命名空间（default），got %d: %+v", len(list), list)
+	if len(list) != 1 || list[0].ID != ns.ID {
+		t.Fatalf("列表 = %+v, want 只有 %s", list, ns.ID)
 	}
-	def := list[0]
-	if def.ID != nsID || def.Slug != DefaultNamespaceSlug {
-		t.Fatalf("默认命名空间 = %+v, want id=%s slug=%s", def, nsID, DefaultNamespaceSlug)
-	}
-	// 计数直接给 UI 用：内置能力必须算进 CapabilityCount（否则列表显示 0 个能力、
-	// 点进去却有 notify.phone，前端会当成两套数据）。
-	//
-	// 2 = notify.phone@1（中枢执行，推送用）+ script.echo@1（示例能力，带产物，
-	// 让新命名空间一注册就有个能部署、能跑通的东西）。
-	if def.CapabilityCount != len(BuiltinCapabilities) {
-		t.Fatalf("默认命名空间 CapabilityCount = %d, want %d（内置能力清单）",
-			def.CapabilityCount, len(BuiltinCapabilities))
-	}
-	if def.NodeCount != 0 || def.SourceCount != 0 || def.EdgeCount != 0 {
-		t.Fatalf("空命名空间计数应为 0/0/0，got %d/%d/%d",
-			def.NodeCount, def.SourceCount, def.EdgeCount)
-	}
-
-	// ---------- 建：slug 校验 ----------
-	for _, bad := range []string{"", "  ", "Upper", "-lead", "under_score", "中文", strings.Repeat("a", 40)} {
-		if _, err := db.CreateNamespace(ctx, bad, "坏 slug"); err == nil {
-			t.Errorf("CreateNamespace(slug=%q) 应该被拒绝", bad)
-		}
-		// 非法 slug 不是「重名」：两者混淆会让 handler 回错状态码（400 vs 409）
-		if _, err := db.CreateNamespace(ctx, bad, "坏 slug"); errors.Is(err, ErrNamespaceExists) {
-			t.Errorf("CreateNamespace(slug=%q) 被报成了 ErrNamespaceExists（应为非法 slug）", bad)
-		}
-	}
-
-	staging, err := db.CreateNamespace(ctx, "staging", "预发布")
+	rv := ResourceVersion(ns.ID, ns.ResourceVersion)
+	renamed, err := db.UpdateNamespace(ctx, "alpha", "Alpha 2", rv)
 	if err != nil {
-		t.Fatalf("create staging: %v", err)
-	}
-	if staging.Name != "预发布" || staging.Slug != "staging" || staging.CreatedAt == 0 {
-		t.Fatalf("新建命名空间字段不对: %+v", staging)
-	}
-
-	// slug 全局唯一（UNIQUE(slug)）→ 重复一律 ErrNamespaceExists
-	if _, err := db.CreateNamespace(ctx, "staging", "又一份 staging"); !errors.Is(err, ErrNamespaceExists) {
-		t.Fatalf("重复 slug err = %v, want ErrNamespaceExists", err)
-	}
-	// 第二个注册用户的默认 slug 必须让位（否则撞 UNIQUE(slug)）
-	otherNS, _ := newTestNS(t, db)
-	other, err := db.GetNamespace(ctx, otherNS)
-	if err != nil {
-		t.Fatalf("get second default namespace: %v", err)
-	}
-	if other.Slug != "default-2" {
-		t.Fatalf("第二个用户的默认命名空间 slug = %q, want default-2（slug 全局唯一）", other.Slug)
-	}
-	// 手动抢 default 一样被拒
-	if _, err := db.CreateNamespace(ctx, DefaultNamespaceSlug, "抢默认"); !errors.Is(err, ErrNamespaceExists) {
-		t.Fatalf("显式抢 default slug err = %v, want ErrNamespaceExists", err)
-	}
-
-	// ---------- 取：命中 / 不存在 ----------
-	if got, err := db.GetNamespace(ctx, staging.ID); err != nil || got.Slug != "staging" {
-		t.Fatalf("GetNamespace = %+v, %v", got, err)
-	}
-	if _, err := db.GetNamespace(ctx, "ns_does_not_exist"); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Fatalf("GetNamespace(missing) err = %v, want ErrNamespaceNotFound", err)
-	}
-	// 空 id 与 "*" 一律 ErrNamespaceRequired（绝不回退默认命名空间）
-	if _, err := db.GetNamespace(ctx, ""); !errors.Is(err, ErrNamespaceRequired) {
-		t.Fatalf("GetNamespace(\"\") err = %v, want ErrNamespaceRequired", err)
-	}
-
-	// ---------- 改名：只改 name，slug 不动 ----------
-	if err := db.RenameNamespace(ctx, staging.ID, "预发布环境"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	renamed, err := db.GetNamespace(ctx, staging.ID)
-	if err != nil {
-		t.Fatalf("get renamed: %v", err)
+	if renamed.Name != "Alpha 2" {
+		t.Fatalf("改名后 name = %q", renamed.Name)
 	}
-	if renamed.Name != "预发布环境" {
-		t.Fatalf("rename 没生效: name=%q", renamed.Name)
+	if _, err := db.UpdateNamespace(ctx, "alpha", "Again", rv); !errors.Is(err, ErrResourceVersionConflict) {
+		t.Fatalf("旧 resourceVersion 应冲突，得到 %v", err)
 	}
-	// slug 是稳定标识（出现在 URL 与令牌作用域里），改名字不能动它
-	if renamed.Slug != "staging" {
-		t.Fatalf("rename 改了 slug: %q, want staging", renamed.Slug)
+	if err := db.DeleteNamespaceByName(ctx, "alpha", false, ResourceVersion(ns.ID, renamed.ResourceVersion+1)); !errors.Is(err, ErrResourceVersionConflict) {
+		t.Fatalf("错 resourceVersion 删除应冲突，得到 %v", err)
 	}
-	if err := db.RenameNamespace(ctx, staging.ID, "  "); err == nil {
-		t.Error("RenameNamespace(空名) 应该被拒绝")
+	if err := db.DeleteNamespaceByName(ctx, "alpha", false, ResourceVersion(ns.ID, renamed.ResourceVersion)); err != nil {
+		t.Fatalf("delete namespace: %v", err)
 	}
-	if err := db.RenameNamespace(ctx, "ns_does_not_exist", "偷改"); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Errorf("改名不存在的命名空间 err = %v, want ErrNamespaceNotFound", err)
-	}
-
-	// ---------- 删：非空且 !force → 409 + 列出阻塞对象 ----------
-	// 在 staging 里造齐四类阻塞对象（源 / 边 / 任务 / 节点）
-	stagingCap := mkCap(staging.ID, "review", 1, []string{"fix"})
-	sinkCap := mkCap(staging.ID, "fix", 1, nil)
-	for _, c := range []*CapabilityVersion{stagingCap, sinkCap} {
-		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
-			t.Fatalf("create capability in staging: %v", err)
-		}
-	}
-	if _, err := db.CreateNode(ctx, &Node{NamespaceID: staging.ID, Name: "staging-node"}); err != nil {
-		t.Fatalf("create node in staging: %v", err)
-	}
-	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: staging.ID, FromRef: stagingCap.ID, FromPort: "fix", ToRef: sinkCap.ID,
-	}); err != nil {
-		t.Fatalf("create edge in staging: %v", err)
-	}
-	if err := db.CreateSource(ctx, &Source{
-		NamespaceID: staging.ID, Name: "staging-src", Kind: SourceKindManual, Enabled: true,
-		Targets: []SourceTarget{{CapabilityID: stagingCap.ID}},
-	}); err != nil {
-		t.Fatalf("create source in staging: %v", err)
-	}
-	if err := db.CreateTasks(ctx, []*Task{mkTask(staging.ID, "trace_staging", stagingCap)}); err != nil {
-		t.Fatalf("create task in staging: %v", err)
-	}
-
-	err = db.DeleteNamespace(ctx, staging.ID, false)
-	var blocked *NamespaceBlockedError
-	if !errors.As(err, &blocked) {
-		t.Fatalf("非空命名空间删除 err = %v (%T), want *NamespaceBlockedError", err, err)
-	}
-	// 409 的正文必须说清「你在拆什么」：删命名空间 = 里面的机器全部掉线。
-	//
-	// edges=2 而不是 1：源的目标也是边（P2.1 之后建源 = 建入口边），
-	// 上面那条 CreateSource 贡献了第二条。
-	joined := strings.Join(blocked.Blocking, ",")
-	for _, want := range []string{"sources=1", "edges=2", "tasks=1", "nodes=1"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("阻塞清单缺 %q（实际 %q）", want, joined)
-		}
-	}
-	// 被拒的删除不能动数据
-	if n := countRows(t, db, "nodes", "namespace_id = ?", staging.ID); n != 1 {
-		t.Fatalf("被拒的删除动了节点：剩 %d 行", n)
-	}
-
-	// ---------- 删：force=true → 级联删干净 ----------
-	// 先塞一条事件，验证 events 也在级联范围里（它没有阻塞探针，但必须被删）
-	if _, err := db.InsertEvent(ctx, &Event{
-		NamespaceID: staging.ID, TraceID: "trace_staging", Source: "github", Type: "push",
-	}); err != nil {
-		t.Fatalf("insert event in staging: %v", err)
-	}
-	if _, err := db.EnsureGraphVersion(ctx, staging.ID); err != nil {
-		t.Fatalf("ensure graph version in staging: %v", err)
-	}
-
-	if err := db.DeleteNamespace(ctx, staging.ID, true); err != nil {
-		t.Fatalf("force delete: %v", err)
-	}
-	if _, err := db.GetNamespace(ctx, staging.ID); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Fatalf("删完还查得到命名空间: %v", err)
-	}
-	// 五张表 + 子表都得清空（用 namespace_id 直接数，避免依赖读路径先报错）
-	// 注意没有 source_targets：那张旁路表已删，源的目标就是 edges 里的入口边。
-	for _, table := range []string{
-		"capability_versions", "nodes", "node_capabilities", "node_instances", "node_pins",
-		"edges", "sources", "events", "tasks", "graph_versions",
-	} {
-		if n := countRows(t, db, table, "namespace_id = ?", staging.ID); n != 0 {
-			t.Errorf("force 删除后 %s 还剩 %d 行", table, n)
-		}
-	}
-	// 默认命名空间不受影响（级联只清被删的那个）
-	if n := countRows(t, db, "capability_versions", "namespace_id = ?", nsID); n == 0 {
-		t.Fatal("删 staging 顺手清空了默认命名空间")
-	}
-
-	// 同名 slug 可以重建（UNIQUE(slug) 随行一起释放）
-	if _, err := db.CreateNamespace(ctx, "staging", "预发布（重建）"); err != nil {
-		t.Fatalf("删除后同名 slug 应可重建: %v", err)
+	if _, err := db.GetNamespace(ctx, ns.ID); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("删后读应 ErrNamespaceNotFound，得到 %v", err)
 	}
 }
 
-// TestNamespaceRequirementEnforced 空串与 "*" 一律 ErrNamespaceRequired。
-//
-// 为什么这条是整个 #162 最重要的一条：**绝不回退默认命名空间**。
-// 回退会让「调用方忘了带 namespace」变成「悄悄写进了 default」，是最难查的串数据；
-// "*" 只是 HTTP 读端点的汇总标记，store 层不认识它，必须原样报错。
+// TestNamespaceRequirementEnforced 需要命名空间的入口必须拒空/通配。
 func TestNamespaceRequirementEnforced(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsID, userID := newTestNS(t, db)
-	// 造一套真实数据：若实现里存在「空 → 默认命名空间」的回退，下面每条都会
-	// 变成「成功返回默认命名空间的数据」，而不是报错。
-	capDef := mkCap(nsID, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
-		t.Fatalf("create capability: %v", err)
-	}
-	// 边的目标要另造一份：自连（a → a）被静态环检测拒掉（P2.3），那是配置错误。
-	capTo := mkCap(nsID, "fixer", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(capTo)); err != nil {
-		t.Fatalf("create target capability: %v", err)
-	}
-	if _, err := db.CreateNode(ctx, &Node{NamespaceID: nsID, Name: "mbp"}); err != nil {
-		t.Fatalf("create node: %v", err)
-	}
-	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromRef: capDef.ID, FromPort: "fix", ToRef: capTo.ID,
-	}); err != nil {
-		t.Fatalf("create edge: %v", err)
-	}
-	if err := db.CreateSource(ctx, &Source{
-		NamespaceID: nsID, Name: "src", Kind: SourceKindManual, Enabled: true,
-		Targets: []SourceTarget{{CapabilityID: capDef.ID}},
-	}); err != nil {
-		t.Fatalf("create source: %v", err)
-	}
-	if _, err := db.InsertEvent(ctx, &Event{NamespaceID: nsID, TraceID: "t1", Source: "github", Type: "push"}); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-	if err := db.CreateTasks(ctx, []*Task{mkTask(nsID, "t1", capDef)}); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
 
-	calls := []struct {
-		name string
-		call func(ns string) error
-	}{
-		{"ListCapabilities", func(ns string) error { _, err := db.ListCapabilities(ctx, ns); return err }},
-		{"GetCapability", func(ns string) error { _, err := db.GetCapability(ctx, ns, "review", 1); return err }},
-		{"GetCapabilityByID", func(ns string) error { _, err := db.GetCapabilityByID(ctx, ns, capDef.ID); return err }},
-		{"NextCapabilityVersion", func(ns string) error { _, err := db.NextCapabilityVersion(ctx, ns, "review"); return err }},
-		{"ListNodes", func(ns string) error { _, err := db.ListNodes(ctx, ns); return err }},
-		{"ListEdges", func(ns string) error { _, err := db.ListEdges(ctx, ns, ""); return err }},
-		{"EdgesFrom", func(ns string) error { _, err := db.EdgesFrom(ctx, ns, false, capDef.Name, "fix"); return err }},
-		{"ListSources", func(ns string) error { _, err := db.ListSources(ctx, ns); return err }},
-		{"ListEvents", func(ns string) error { _, err := db.ListEvents(ctx, ns, "", "", 10); return err }},
-		{"ListTasks", func(ns string) error { _, err := db.ListTasks(ctx, ns, "", "", "", 10); return err }},
-		{"GetEvent", func(ns string) error { _, err := db.GetEvent(ctx, ns, "evt_x"); return err }},
-		{"GetTask", func(ns string) error { _, err := db.GetTask(ctx, ns, "tsk_x"); return err }},
-		{"EnsureGraphVersion", func(ns string) error { _, err := db.EnsureGraphVersion(ctx, ns); return err }},
-		{"MessageStats", func(ns string) error { _, err := db.MessageStats(ctx, ns, userID, 0); return err }},
-		{"CreateEdge", func(ns string) error {
-			return db.CreateEdge(ctx, &Edge{NamespaceID: ns, FromRef: capDef.ID, FromPort: "fix", ToRef: capDef.ID})
-		}},
-		{"CreateTasks", func(ns string) error {
-			return db.CreateTasks(ctx, []*Task{mkTask(ns, "t2", capDef)})
-		}},
-		{"DeleteEdge", func(ns string) error { return db.DeleteEdge(ctx, ns, false, capDef.ID, "fix", capDef.ID) }},
-		{"InsertEvent", func(ns string) error {
-			_, err := db.InsertEvent(ctx, &Event{NamespaceID: ns, TraceID: "t3", Source: "github", Type: "push"})
-			return err
-		}},
+	if _, err := db.CreateNamespace(ctx, "", ""); err == nil {
+		t.Fatal("空 slug 建命名空间被接受")
 	}
-	for _, c := range calls {
-		for _, ns := range []string{"", AllNamespaces} {
-			err := c.call(ns)
-			if !errors.Is(err, ErrNamespaceRequired) {
-				t.Errorf("%s(ns=%q) err = %v, want ErrNamespaceRequired（绝不回退默认命名空间）",
-					c.name, ns, err)
-			}
-		}
+	if _, err := db.ListCapabilities(ctx, ""); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("空命名空间列表应 ErrNamespaceRequired，得到 %v", err)
+	}
+	if _, err := db.ListCapabilities(ctx, AllNamespaces); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("通配命名空间列表应 ErrNamespaceRequired，得到 %v", err)
+	}
+	if _, err := db.ListTasks(ctx, "", TaskFilter{}); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("空命名空间任务列表应 ErrNamespaceRequired，得到 %v", err)
+	}
+	if _, err := db.ListEvents(ctx, "", "", "", 10); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("空命名空间事件列表应 ErrNamespaceRequired，得到 %v", err)
 	}
 }
 
-// TestCrossNamespaceReferencesRejected I11 四处：跨命名空间引用一律拒绝。
-//
-// 为什么必须在 store 层拦：外键只保证「行存在」，不保证「同属一处」。
-// 能力 id / 任务 id 全局唯一，把别处的 id 填进来在 SQL 层完全合法，
-// 结构上防不住，只能显式校验。
+// TestCrossNamespaceReferencesRejected 跨命名空间引用被拒（能力 id / 名字都是局部身份）。
 func TestCrossNamespaceReferencesRejected(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	nsA, _ := newTestNS(t, db)
-	staging := mkSiblingNamespace(t, db, "staging")
-	nsB := staging.ID
+	nsB := newTestExtraNS(t, db, "ns-b")
 
-	// 两边各一套定义（同名不同行）
-	upA := mkCap(nsA, "review", 1, []string{"fix"})
-	sinkA := mkCap(nsA, "fix", 1, nil)
-	upB := mkCap(nsB, "review", 1, []string{"fix"})
-	sinkB := mkCap(nsB, "fix", 1, nil)
-	for _, c := range []*CapabilityVersion{upA, sinkA, upB, sinkB} {
-		if err := db.CreateCapability(ctx, withSpec(c)); err != nil {
-			t.Fatalf("create %s@%d: %v", c.Name, c.Version, err)
-		}
+	cA := v4Cap(t, db, nsA, "review", 1)
+	nodeB := v4Node(t, db, "ns-b-node", 0)
+	if _, err := db.CreateDeployments(ctx, nsB, cA.ID, cA.Digest, []string{nodeB.ID}); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("跨 ns 部署应 ErrArtifactNotFound，得到 %v", err)
 	}
-	// 每行都带着自己的命名空间
-	for _, c := range []*CapabilityVersion{upA, sinkA} {
-		if c.NamespaceID != nsA {
-			t.Fatalf("capability %s 落错命名空间: %+v", c.Name, c)
-		}
+	if _, err := db.GetCapabilityByID(ctx, nsB, cA.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("跨 ns 读能力应 ErrNotFound，得到 %v", err)
 	}
-	for _, c := range []*CapabilityVersion{upB, sinkB} {
-		if c.NamespaceID != nsB {
-			t.Fatalf("capability %s 落错命名空间: %+v", c.Name, c)
-		}
-	}
-
-	assertCross := func(label string, err error, want, got string) {
-		t.Helper()
-		var cross *CrossNamespaceError
-		if !errors.As(err, &cross) {
-			t.Fatalf("%s: err = %v (%T), want *CrossNamespaceError", label, err, err)
-		}
-		if cross.Want != want || cross.Got != got {
-			t.Fatalf("%s: CrossNamespaceError = {want:%q got:%q}, 真实值 {want:%q got:%q}",
-				label, cross.Want, cross.Got, want, got)
-		}
-	}
-
-	// ===== ① CreateEdge：两端各一条 =====
-	assertCross("edges.to_capability",
-		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromRef: upA.ID, FromPort: "fix", ToRef: sinkB.ID}),
-		nsA, nsB)
-	assertCross("edges.from_capability",
-		db.CreateEdge(ctx, &Edge{NamespaceID: nsA, FromRef: upB.ID, FromPort: "fix", ToRef: sinkA.ID}),
-		nsA, nsB)
-
-	// ===== ② CreateSource / UpdateSource 的 targets =====
-	assertCross("sources.targets(create)",
-		db.CreateSource(ctx, &Source{
-			NamespaceID: nsA, Name: "cross-src", Kind: SourceKindManual, Enabled: true,
-			Targets: []SourceTarget{{CapabilityID: sinkB.ID}},
-		}), nsA, nsB)
-
-	// 先建一个合法源，再把它改成指向别的命名空间的能力：建与改是两条独立路径，
-	// 只在 CreateSource 拦 = 先建后改就能绕过这道水闸。
-	okSrc := &Source{
-		NamespaceID: nsA, Name: "ok-src", Kind: SourceKindManual, Enabled: true,
-		Targets: []SourceTarget{{CapabilityID: sinkA.ID}},
-	}
-	if err := db.CreateSource(ctx, okSrc); err != nil {
-		t.Fatalf("create valid source: %v", err)
-	}
-	cur, err := db.GetSource(ctx, nsA, okSrc.ID)
-	if err != nil {
-		t.Fatalf("get source: %v", err)
-	}
-	cur.Targets = []SourceTarget{{CapabilityID: sinkB.ID}}
-	assertCross("sources.targets(update)", db.UpdateSource(ctx, cur), nsA, nsB)
-	// 被拒的更新不能半写：targets 保持原样
-	after, err := db.GetSource(ctx, nsA, okSrc.ID)
-	if err != nil {
-		t.Fatalf("get source after reject: %v", err)
-	}
-	if len(after.Targets) != 1 || after.Targets[0].CapabilityID != sinkA.ID {
-		t.Fatalf("被拒的更新改了 targets: %+v", after.Targets)
-	}
-
-	// ===== ③ ReconcileApplied：hello 里 applied[] 只在别的命名空间定义过的能力 =====
-	// 语义是「按 name@version 在**本节点所在命名空间**解析」，所以别处的同名同版本
-	// 定义在这里**根本不存在** → 归入 stale（陈旧缓存，节点侧会剪掉它），
-	// 而不是 CrossNamespaceError，也**不是**归属（隔离边界不允许跨命名空间借用）。
-	// 为什么保留这个语义：节点 hello 帧里带的是 capability name@version，没有 id 维度，
-	// 「这个能力属于别的命名空间」对节点来说与「这个能力不存在」不可区分。
-	//
-	// 这条断言在 v2 里换了入口（ConfirmCapabilityDecls → ReconcileApplied，旧的
-	// manifest 形状整个消失），但**语义一个字没变**：隔离边界仍然是节点所在命名空间，
-	// 越界的名字表现成「不存在」，而不是泄露「别处有这个能力」。
-	nodeA, _ := mkNode(t, db, nsA, "node-a")
-	// staging 里放一个默认命名空间没有的能力名
-	onlyB := mkCap(nsB, "staging-only", 1, []string{"go"})
-	if err := db.CreateCapability(ctx, withSpec(onlyB)); err != nil {
-		t.Fatalf("create staging-only: %v", err)
-	}
-	_, staleCross, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
-		[]AppliedRef{{Name: "staging-only", Version: 1}})
-	if err != nil {
-		t.Fatalf("applied 里出现别处的能力不该拒绝整帧: %v", err)
-	}
-	if len(staleCross) != 1 || staleCross[0].Name != "staging-only" {
-		t.Fatalf("stale = %+v, want 恰好一条 staging-only（按本命名空间解析 → 相当于不存在）", staleCross)
-	}
-	var cross *CrossNamespaceError
-	if errors.As(err, &cross) {
-		t.Fatalf("「别处才有这个能力」被报成了 CrossNamespaceError（语义不对）: %v", err)
-	}
-	// 隔离的实质：**别处存在**并不能让这台节点获得归属（不能跨命名空间借用）。
-	if caps, lerr := db.ListNodeCapabilities(ctx, nodeA.ID); lerr != nil {
-		t.Fatalf("list node caps: %v", lerr)
-	} else if len(caps) != 0 {
-		t.Fatalf("别处的能力被写进了 node_capabilities: %+v", caps)
-	}
-	// 反证：同名能力在**本**命名空间定义后就能对账（说明上一条不是别的错）
-	if err := db.CreateCapability(ctx, withSpec(mkCap(nsA, "staging-only", 1, []string{"go"}))); err != nil {
-		t.Fatalf("create local staging-only: %v", err)
-	}
-	if _, _, err := db.ReconcileApplied(ctx, nsA, nodeA.ID,
-		[]AppliedRef{{Name: "staging-only", Version: 1}}); err != nil {
-		t.Fatalf("本命名空间里定义后仍对账失败: %v", err)
-	}
-
-	// ===== ④ CreateTasks：子任务继承父任务的命名空间 =====
-	parent := mkTask(nsA, "trace_i11", upA)
-	if err := db.CreateTasks(ctx, []*Task{parent}); err != nil {
-		t.Fatalf("create parent task: %v", err)
-	}
-	parentID := parent.ID
-
-	// 给了不同命名空间 → CrossNamespaceError（不静默改写）
-	childCross := mkTask(nsB, "trace_i11", upB)
-	childCross.ParentTaskID = &parentID
-	assertCross("tasks.parent_task_id", db.CreateTasks(ctx, []*Task{childCross}), nsA, nsB)
-	// 被拒的子任务不能落库
-	if n := countRows(t, db, "tasks", "id = ?", childCross.ID); n != 0 {
-		t.Fatalf("被拒的子任务还是落库了（id=%s）", childCross.ID)
-	}
-
-	// 不给命名空间 → 继承父任务的（调用方不必自己填，也不许填错）
-	childInherit := mkTask("", "trace_i11", upA)
-	childInherit.NamespaceID = ""
-	childInherit.ParentTaskID = &parentID
-	if err := db.CreateTasks(ctx, []*Task{childInherit}); err != nil {
-		t.Fatalf("父任务同命名空间的子任务应被接受: %v", err)
-	}
-	got, err := db.GetTask(ctx, nsA, childInherit.ID)
-	if err != nil {
-		t.Fatalf("按父命名空间查子任务: %v", err)
-	}
-	if got.NamespaceID != nsA {
-		t.Fatalf("子任务 namespace = %q, want 继承父任务的 %q", got.NamespaceID, nsA)
+	if _, err := db.GetCapability(ctx, nsB, "review", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("B 里不应有 A 的 review，得到 %v", err)
 	}
 }
 
-// TestNamespaceRoundTrips 往返一致性（AGENTS.md §3）：七张表存什么读什么。
-//
-// 为什么专挑 namespace_id：它是 #162 的隔离维度，一旦读路径不 scan 它（或 scan 错列），
-// 上层拿到的行会「看起来对」，但据此再做写操作就会跨命名空间——静默串数据。
-// 手法：把行写进 **sandbox**（不是默认命名空间），读回来必须还是 sandbox。
+// TestNamespaceRoundTrips ns 默认 vars 与 revision 一起往返；旧令牌 CAS 必须冲突。
 func TestNamespaceRoundTrips(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	nsID, _ := newTestNS(t, db)
-
-	sandbox, err := db.CreateNamespace(ctx, "sandbox", "沙箱")
+	ns, err := db.CreateNamespace(ctx, "cfg", "配置")
 	if err != nil {
-		t.Fatalf("create sandbox: %v", err)
+		t.Fatalf("create namespace: %v", err)
 	}
-	ns := sandbox.ID
-
-	// capability
-	capDef := mkCap(ns, "review", 1, []string{"fix"})
-	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
-		t.Fatalf("create capability: %v", err)
-	}
-	// 第二份能力做边的目标：自连（a → a）现在被静态环检测拒掉（P2.3），
-	// 这是配置错误——真跑起来会无限扇出，只能靠运行期 path 剪枝兜住。
-	capTo := mkCap(ns, "fixer", 1, nil)
-	if err := db.CreateCapability(ctx, withSpec(capTo)); err != nil {
-		t.Fatalf("create target capability: %v", err)
-	}
-	gotCap, err := db.GetCapability(ctx, ns, "review", 1)
+	cfg, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "cn"}, "")
 	if err != nil {
-		t.Fatalf("get capability: %v", err)
+		t.Fatalf("put namespace config: %v", err)
 	}
-	if gotCap.NamespaceID != ns {
-		t.Fatalf("capability namespace = %q, want %q", gotCap.NamespaceID, ns)
+	if cfg.Vars["REGION"] != "cn" || cfg.Revision == 0 {
+		t.Fatalf("配置往返 = %+v", cfg)
 	}
-
-	// node
-	node := &Node{NamespaceID: ns, Name: "sandbox-node", Tags: []string{"pool-b"}}
-	if _, err := db.CreateNode(ctx, node); err != nil {
-		t.Fatalf("create node: %v", err)
-	}
-	gotNode, err := db.GetNode(ctx, ns, node.ID)
+	got, err := db.GetNamespaceConfig(ctx, ns.ID)
 	if err != nil {
-		t.Fatalf("get node: %v", err)
+		t.Fatalf("get namespace config: %v", err)
 	}
-	if gotNode.NamespaceID != ns {
-		t.Fatalf("node namespace = %q, want %q", gotNode.NamespaceID, ns)
+	if got.Vars["REGION"] != "cn" || got.Revision != cfg.Revision {
+		t.Fatalf("读回配置 = %+v, want %+v", got, cfg)
 	}
-
-	// source（+ 出口）
-	src := &Source{
-		NamespaceID: ns, Name: "sandbox-src", Kind: SourceKindManual, Enabled: true,
-		Targets: []SourceTarget{{CapabilityID: capDef.ID}},
-	}
-	if err := db.CreateSource(ctx, src); err != nil {
-		t.Fatalf("create source: %v", err)
-	}
-	gotSrc, err := db.GetSource(ctx, ns, src.ID)
-	if err != nil {
-		t.Fatalf("get source: %v", err)
-	}
-	if gotSrc.NamespaceID != ns {
-		t.Fatalf("source namespace = %q, want %q", gotSrc.NamespaceID, ns)
-	}
-	// 源的出口现在是**入口边**（P2.1：source_targets 已删）：必须落在源自己的
-	// 命名空间里，左端是来源名、端口是 "*"（源能收任意事件类型）。
-	if n := countRows(t, db, "edges",
-		"from_is_source = 1 AND from_ref = ? AND from_port = '*' AND namespace_id = ?", src.Name, ns); n != 1 {
-		t.Fatalf("源的入口边没落在源自己的命名空间里（匹配 %d 行）", n)
-	}
-
-	// event
-	ev := &Event{NamespaceID: ns, TraceID: "trace_rt", Source: "github", Type: "push"}
-	if _, err := db.InsertEvent(ctx, ev); err != nil {
-		t.Fatalf("insert event: %v", err)
-	}
-	gotEv, err := db.GetEvent(ctx, ns, ev.ID)
-	if err != nil {
-		t.Fatalf("get event: %v", err)
-	}
-	if gotEv.NamespaceID != ns {
-		t.Fatalf("event namespace = %q, want %q", gotEv.NamespaceID, ns)
-	}
-
-	// task
-	task := mkTask(ns, "trace_rt", capDef)
-	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	gotTask, err := db.GetTask(ctx, ns, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if gotTask.NamespaceID != ns {
-		t.Fatalf("task namespace = %q, want %q", gotTask.NamespaceID, ns)
-	}
-
-	// edge
-	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: ns, FromRef: capDef.ID, FromPort: "fix", ToRef: capTo.ID,
-	}); err != nil {
-		t.Fatalf("create edge: %v", err)
-	}
-	edges, err := db.ListEdges(ctx, ns, "")
-	if err != nil {
-		t.Fatalf("list edges: %v", err)
-	}
-	// 源的目标也是边（P2.1：建源 = 建入口边），所以按**能力边**过滤，
-	// 这条用例钉的是「边落在哪个命名空间」而不是边的总数。
-	var capabilityEdges []*Edge
-	for _, e := range edges {
-		if !e.FromIsSource {
-			capabilityEdges = append(capabilityEdges, e)
-		}
-	}
-	if len(capabilityEdges) != 1 || capabilityEdges[0].NamespaceID != ns {
-		t.Fatalf("edge 往返不一致: %+v", edges)
-	}
-
-	// graph_version
-	gv, err := db.EnsureGraphVersion(ctx, ns)
-	if err != nil {
-		t.Fatalf("ensure graph version: %v", err)
-	}
-	gotGV, err := db.GetGraphVersion(ctx, ns, gv.ID)
-	if err != nil {
-		t.Fatalf("get graph version: %v", err)
-	}
-	if gotGV.NamespaceID != ns {
-		t.Fatalf("graph_version namespace = %q, want %q", gotGV.NamespaceID, ns)
-	}
-	// 对照组：默认命名空间里这些资源一个都看不到（写进 sandbox 的东西不能漏过来）
-	if list, err := db.ListCapabilities(ctx, nsID); err != nil {
-		t.Fatalf("list default capabilities: %v", err)
-	} else {
-		for _, c := range list {
-			if c.NamespaceID != nsID {
-				t.Fatalf("默认命名空间列出了 sandbox 的能力: %+v", c)
-			}
-		}
+	if _, err := db.PutNamespaceConfigByName(ctx, "cfg", map[string]string{"REGION": "us"}, "0"); !errors.Is(err, ErrResourceVersionConflict) {
+		t.Fatalf("空令牌应冲突，得到 %v", err)
 	}
 }
 
-// TestRegisterUserCreatesDefaultNamespace 注册 = 建用户 + default 命名空间 + 播种（契约 §2.5）。
-//
-// 代码里不存在「没有命名空间的分支」：用户建好了却没有命名空间，之后所有资源端点
-// 都无处安放。所以 RegisterUser 必须同事务做完三件事；组织这一层已经删除（#205）。
+// TestRegisterUserCreatesDefaultNamespace 注册 = 用户 + default 命名空间原子创建，v4 不播种能力。
 func TestRegisterUserCreatesDefaultNamespace(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	u := &User{ID: NewUserID(), Username: "acme-" + NewUserID(), DisplayName: "注册用户", CreatedAt: Now()}
+	u := &User{ID: NewUserID(), Username: "ns-user", CreatedAt: Now()}
 	ns, err := db.RegisterUser(ctx, u)
 	if err != nil {
 		t.Fatalf("register user: %v", err)
 	}
-	if ns.Slug != DefaultNamespaceSlug {
-		t.Fatalf("默认命名空间 slug = %q, want %q", ns.Slug, DefaultNamespaceSlug)
+	if ns.ID == "" || ns.Slug != "default" {
+		t.Fatalf("注册返回命名空间 = %+v, want slug=default", ns)
 	}
-	if _, err := db.GetCapability(ctx, ns.ID, "notify.phone", 1); err != nil {
-		t.Fatalf("默认命名空间没有播种内置能力: %v", err)
-	}
-	// 用户与命名空间都真的落库了
-	if got, err := db.GetUserByUsername(u.Username); err != nil || got.ID != u.ID {
-		t.Fatalf("注册后查不到用户: %+v, %v", got, err)
-	}
-	// 再注册一个 → 第二个 default 让位成 default-2（slug 全局唯一）
-	u2 := &User{ID: NewUserID(), Username: "acme-" + NewUserID(), CreatedAt: Now()}
-	ns2, err := db.RegisterUser(ctx, u2)
+	caps, err := db.ListCapabilities(ctx, ns.ID)
 	if err != nil {
-		t.Fatalf("register second user: %v", err)
+		t.Fatalf("list capabilities: %v", err)
 	}
-	if ns2.Slug != "default-2" {
-		t.Fatalf("第二个默认命名空间 slug = %q, want default-2", ns2.Slug)
+	if len(caps) != 0 {
+		t.Fatalf("v4 注册不该播种内置能力，得到 %d 个", len(caps))
+	}
+	if err := db.AuthorizeNamespace(ctx, u.ID, ns.ID); err != nil {
+		t.Fatalf("authorize own namespace: %v", err)
+	}
+}
+
+// TestNamespaceCreateSeedsBuiltinsNot 反证：v4 新命名空间里 0 个能力（v3 的播种断言退役）。
+func TestNamespaceCreateSeedsBuiltinsNot(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	ns, err := db.CreateNamespace(ctx, "empty-seed", "空")
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	caps, err := db.ListCapabilities(ctx, ns.ID)
+	if err != nil {
+		t.Fatalf("list capabilities: %v", err)
+	}
+	if len(caps) != 0 {
+		t.Fatalf("新命名空间有 %d 个能力，v4 没有中央播种", len(caps))
+	}
+}
+
+// TestNamespaceDeleteRequiresForceWhenNotEmpty 非空必须 force；force 也拒绝真实执行占用。
+func TestNamespaceDeleteRequiresForceWhenNotEmpty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	node := v4Node(t, db, "ns-force-node", 1)
+
+	ns, err := db.GetNamespace(ctx, nsID)
+	if err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	err = db.DeleteNamespace(ctx, ns.ID, false, ns.ResourceVersion)
+	if err == nil {
+		t.Fatal("非空命名空间无 force 删除被接受")
+	}
+	var blocked *NamespaceBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("错误类型 = %T, want *NamespaceBlockedError", err)
+	}
+	if !strings.Contains(strings.Join(blocked.Blocking, ","), "capabilities") {
+		t.Fatalf("Blocking 说明 = %v, want 提到 capabilities", blocked.Blocking)
 	}
 
-	// DefaultNamespaceID 的两条分支：有命名空间 → 最早那个；空库 → ErrNamespaceNotFound
-	first, err := db.DefaultNamespaceID(ctx)
+	task := v4Task(t, db, nsID, c, "tr_ns_force", "")
+	v4Grant(t, db, task.ID, node.ID, "asg-ns-force")
+	after, err := db.GetNamespace(ctx, nsID)
 	if err != nil {
-		t.Fatalf("default namespace id: %v", err)
+		t.Fatalf("get namespace again: %v", err)
 	}
-	if first != ns.ID {
-		t.Fatalf("DefaultNamespaceID = %q, want 最早注册的 %q", first, ns.ID)
+	if err := db.DeleteNamespace(ctx, nsID, true, after.ResourceVersion); err == nil {
+		t.Fatal("有未回收 attempt 的命名空间被 force 删除")
 	}
-	emptyDB := newTestDB(t)
-	if _, err := emptyDB.DefaultNamespaceID(ctx); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Errorf("空库 DefaultNamespaceID err = %v, want ErrNamespaceNotFound", err)
+	if _, err := db.GetNamespace(ctx, nsID); err != nil {
+		t.Fatalf("被拒后命名空间应还在: %v", err)
 	}
 }

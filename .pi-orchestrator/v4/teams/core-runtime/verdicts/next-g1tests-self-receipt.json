@@ -1,0 +1,19 @@
+{
+  "implementationGate": false,
+  "task": "V4-CORE-RUNTIME-NEXT/G1TEST",
+  "head": "8baf0ae216463a22c950f5dc15e7235708859fed",
+  "files": [
+    ".pi-orchestrator/v4/teams/core-runtime/TEST-MAPPING.md",
+    "internal/auth/password_test.go"
+  ],
+  "originalInventory": 460,
+  "fixed3Exits": [
+    0,
+    1,
+    1
+  ],
+  "storeWhitebox": "rolled back; no execution claim",
+  "productBugs": [],
+  "reason": "Original in-package API fixture migration incomplete; existing compile families remain",
+  "noPushMergeMR": true
+}

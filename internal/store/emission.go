@@ -6,229 +6,391 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// Emission 是一次 emit 的落库行（P1.1，docs/design/emit-protocol.md §4 / §7）。
+// ErrEmitIDConflict 表示同一逻辑任务里同一个 emit id 被用于**不同**的请求（to/data）。
 //
-// 它是**唯一**的幂等依据：节点的 outbox 会在重连后按 seq 重发，中枢靠
-// PRIMARY KEY(task_id, seq) 把它折成一次派发。所以这张表不是日志——
-// 少了它，「agent 在 emit 与 ack 之间崩溃」就会变成「下游被派发两遍」。
+// 它是 emit 网关的 409 `emit_id_conflict`：调用方必须换一个 id（或用新 id 重发）。
+// 静默按第一次的请求重放会让「我改了 data 怎么没生效」变成一个查不出来的问题。
+var ErrEmitIDConflict = errors.New("emit_id_conflict")
+
+// ErrEmitNamespaceDenied 表示节点未获授权访问任务所属命名空间。
 //
-// Routed / Pruned 存的是**首次**处理的结果：重复 seq 一律回同一份计数
-// （emit_ack 的幂等语义要求如此，见 emit-protocol §3.2）。
-type Emission struct {
-	TaskID string `json:"taskId"`
-	// Seq 是任务内单调递增的序号（从 1 开始）。0 / 负数是非法值，插入直接拒。
-	Seq int64 `json:"seq"`
-	// Port 是上游回报的出口名，路由的唯一输入（不变量 I2/I4）。
-	Port string `json:"port"`
-	// Data 是原样保存的 JSON 对象（审计要的是当时那份字节，不重排键）。
-	Data json.RawMessage `json:"data"`
-	// Note 是能力进程自己写的一句人类可读备注（emit-protocol §3.1）。
-	//
-	// 它**不参与路由**，也不影响任何判定；存下来纯粹是因为排障时
-	// 「第 3 次 emit 到底在说什么」经常比 port/data 更有信息量。
-	Note string `json:"note"`
-	// Routed 是首次处理派发出去的下游条数（= 建出的子任务行数）。
-	Routed int `json:"routed"`
-	// Pruned 是首次处理剪掉的 link 条数（no_node / foreign_user / path / param_*）。
-	Pruned int `json:"pruned"`
-	// CreatedAt 是首次落库时刻（unixepoch 秒）；重复 seq 不会更新时间。
-	CreatedAt int64 `json:"createdAt"`
+// 它是**授权**失败（不是身份失败）：节点身份是真的，但它没被授权碰这个 ns。
+// 单独一个哨兵是为了让上层能把「不该派给它」与「伪造身份」分开记日志。
+var ErrEmitNamespaceDenied = errors.New("namespace_unauthorized")
+
+// ErrNodeIdentityMismatch 表示 emit 声明的节点身份与库里那条节点不一致。
+//
+// 它挡的是「拿到别人令牌的进程替自己冒领」：一次 emit 的执行权属于
+// 某个节点 + 某个 attempt，两者都必须和权威事实对上。
+var ErrNodeIdentityMismatch = errors.New("node_identity_mismatch")
+
+// EmitRecord 是一次 emit 的落库行（capability.md §4.1 / D-I9）。
+//
+// 它是**幂等的唯一依据**：同一个 (task_id, emit_id) 只派发一次，重复请求回放同一结果。
+// EmitID 是**可选**的：不给就每次都是新派发（不按调用序号自动去重——那会制造假幂等）。
+//
+// **不存业务 seq、不存 RPC requestId**：序号是传输层的事（重连重发靠 emit_id 幂等），
+// 把 requestId 当业务去重键会让「同一次执行换个传输发两次」被判成两次派发。
+//
+// ToRef 是目标引用（`name` / `name@version`），Data 是请求体原样字节，
+// Result 是首次派发的结果 JSON（含建出的 taskIds / 剪枝原因），CreatedAt 是首次落库时刻。
+type EmitRecord struct {
+	ID        string          `json:"id"`
+	TaskID    string          `json:"taskId"`
+	EmitID    *string         `json:"emitId"`
+	ToRef     string          `json:"toRef"`
+	Data      json.RawMessage `json:"data"`
+	Result    json.RawMessage `json:"result"`
+	CreatedAt int64           `json:"createdAt"`
 }
 
-// emissionColumns 是统一的列顺序，scanEmission 依赖它。
-const emissionColumns = `task_id, seq, port, data, note, routed, pruned, created_at`
-
-// InsertEmission 落一条 emission（幂等：重复 (task_id, seq) 什么都不写）。
+// EmitAuth 是一次 emit 的**授权事实**（store 内部形状，不镜像任何 wire DTO）。
 //
-// 返回值 first=false 表示这一条已经存在——调用方**不得**再派发下游，
-// 应回到库里读那份首次结果（见 GetEmission）。
+// 为什么授权参数必须进同一个事务：`VerifyAttemptToken` + 另一个事务写派发，
+// 中间会有一个窗口——任务刚好被取消 / 租约刚好过期 / 被重派给新 attempt。
+// 那个窗口里写下去的下游任务属于一次**已经失去执行权**的执行，
+// 而它无法被回收（下游任务看起来完全合法）。所以判定与写入必须同生共死。
 //
-// 单独一条插入不建子任务行；真正派发走 InsertEmissionAndCreateTasks
-// （两者必须同一个事务，否则进程在中间退出就静默丢一条 emit）。
-func (d *DB) InsertEmission(ctx context.Context, e *Emission) (bool, error) {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin insert emission: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	first, err := d.insertEmissionTx(ctx, tx, e)
-	if err != nil {
-		return false, err
-	}
-	if !first {
-		return false, nil
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit insert emission: %w", err)
-	}
-	return true, nil
+// NodeTokenHash 是节点身份令牌的 sha256（明文永远不进 store）：
+// 中枢按它判「这还是不是那台机器」，而不是只看 task.node_id（那是一个可伪造的字符串）。
+type EmitAuth struct {
+	// TaskID 是发起 emit 的逻辑任务。
+	TaskID string
+	// NodeID 是提交这次 emit 的节点。
+	NodeID string
+	// NodeTokenHash 是节点身份令牌的 sha256（与 nodes.token_hash 比对）。
+	NodeTokenHash string
+	// Attempt / LeaseID / AttemptToken 是本次执行的三件套（过期或错一个就拒）。
+	Attempt      int
+	LeaseID      string
+	AttemptToken string
+	// Now 是判定租约未过期的时刻（0 → Now()）。
+	Now int64
 }
 
-// InsertEmissionAndCreateTasks 在**一个事务**里完成「幂等写 emission + 建下一跳子任务行」。
+// LookupEmit 按 (task_id, emit_id) 取一条幂等记录；未命中返回 ErrNotFound。
 //
-// 为什么必须同一个事务（emit-protocol §7，与 #140 的接力原子性是同一条纪律）：
-// 拆成两次提交时，进程在「emission 已提交、子任务行还没建」之间退出，就会留下
-// 「这次 emit 中枢收到了、下游却永远不存在」的永久空洞——而节点已经拿到 ack，
-// 不会重发（重发本来也只会命中幂等）。反过来（先建子任务、后写 emission）
-// 则会在重发时**重复派发**，那是同一件事的另一种坏法。
-//
-// ts 为空是合法的（该 port 没接下游 / 全被剪枝）：emission 照样落库。
-// 这一步不能省——seq 的连续性靠它，漏一条会把后续 seq 全判成缺口。
-//
-// 返回 first=false 表示 (task_id, seq) 已存在：**什么都不写**（事务回滚），
-// 调用方读到首次结果后原样回给节点，绝不重复派发。
-func (d *DB) InsertEmissionAndCreateTasks(ctx context.Context, e *Emission, ts []*Task) (bool, error) {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin emit transaction: %w", err)
+// emitID 为空直接 ErrNotFound：没有幂等键就没有可查的记录（调用方据此走「总是新建」）。
+func (d *DB) LookupEmit(ctx context.Context, taskID, emitID string) (*EmitRecord, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("lookup emit: empty task_id")
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	first, err := d.insertEmissionTx(ctx, tx, e)
-	if err != nil {
-		return false, err
+	if emitID == "" {
+		return nil, ErrNotFound
 	}
-	if !first {
-		return false, nil // 幂等命中：不建行、不提交（defer 会回滚掉这次的空事务）
-	}
-	// 子任务行与 emission 同生共死：任何一条不合格都整体回滚，
-	// 于是「emission 在、下游不在」这个形状在库里**不可能**出现。
-	if err := d.createTasksTx(ctx, tx, ts); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit emit transaction: %w", err)
-	}
-	return true, nil
+	return lookupEmitOn(ctx, d, taskID, emitID)
 }
 
-// insertEmissionTx 是 InsertEmission / InsertEmissionAndCreateTasks 共用的事务内插入。
+// lookupEmitOn 是 LookupEmit 的 ex 版本（事务内读必须走它，否则看不到本事务的写）。
+func lookupEmitOn(ctx context.Context, ex queryExec, taskID, emitID string) (*EmitRecord, error) {
+	rows, err := ex.queryContext(ctx,
+		`SELECT `+emitColumns+` FROM emits WHERE task_id = ? AND emit_id = ?`, taskID, emitID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup emit %s#%s: %w", taskID, emitID, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("lookup emit %s#%s: %w", taskID, emitID, err)
+		}
+		return nil, ErrNotFound
+	}
+	return scanEmit(rows)
+}
+
+// EmitAuthorized 在**同一个事务**里完成「授权校验 + 幂等记录 + 建下一跳任务行」。
 //
-// ON CONFLICT(task_id, seq) DO NOTHING 是幂等的实现：不靠「先查再插」
-// （那样两个并发 emit 会都查到「不存在」然后都去派发），而是把判定交给唯一键。
-func (d *DB) insertEmissionTx(ctx context.Context, tx *sql.Tx, e *Emission) (bool, error) {
-	if e == nil {
-		return false, fmt.Errorf("insert emission: nil")
+// 事务内顺序（不可调整）：
+//
+//  1. 节点身份：nodes 行存在，token_hash == auth.NodeTokenHash；
+//  2. 命名空间授权：authorized(node_configs.namespaces) ∩ declared(nodes.declared_namespaces)
+//     覆盖任务所属 ns；
+//  3. 执行授权：task.phase=running、task.node_id=auth.NodeID、
+//     attempt/lease_id 相等、sha256(auth.AttemptToken)==attempt_token_hash、
+//     lease_until 未过期、**没有取消在飞**；
+//  4. 幂等：emit_id 非空且已存在 → to_ref/data 相同回旧 result（first=false），
+//     不同 → ErrEmitIDConflict（**第 3 步不过就一律拒，已存在也不能绕过**）；
+//  5. 写入：插入 emit 行 + 同事务建子任务（任何一条失败整体回滚）。
+//
+// 第 4 步为什么必须在授权之后：一条**已经失效**的执行（被取消 / 租约过期 / 被重派）
+// 如果能靠「我上次已经 emit 过」拿到回执，它就会认为自己仍然拥有执行权，
+// 于是继续跑完并写终态——幂等变成了绕过授权的后门。
+func (d *DB) EmitAuthorized(ctx context.Context, auth EmitAuth, rec *EmitRecord, tasks []*Task) (json.RawMessage, bool, error) {
+	if rec == nil {
+		return nil, false, fmt.Errorf("emit: nil record")
 	}
-	if e.TaskID == "" {
-		return false, fmt.Errorf("insert emission: empty task_id")
+	if rec.TaskID == "" || rec.ToRef == "" {
+		return nil, false, fmt.Errorf("emit: empty task_id/to_ref")
 	}
-	if e.Seq <= 0 {
-		return false, fmt.Errorf("insert emission: seq must be >= 1 (got %d)", e.Seq)
+	if auth.TaskID == "" || auth.NodeID == "" || auth.NodeTokenHash == "" ||
+		auth.LeaseID == "" || auth.AttemptToken == "" || auth.Attempt <= 0 {
+		return nil, false, fmt.Errorf("emit: 授权参数不完整（task/node/nodeTokenHash/attempt/lease/attemptToken 都必填）")
 	}
-	data := e.Data
+	if auth.TaskID != rec.TaskID {
+		return nil, false, fmt.Errorf("%w: auth.taskID %s != emit.taskID %s",
+			ErrLeaseMismatch, auth.TaskID, rec.TaskID)
+	}
+	if auth.Now == 0 {
+		auth.Now = Now()
+	}
+	data := rec.Data
 	if len(data) == 0 {
 		data = json.RawMessage("{}")
 	}
-	createdAt := e.CreatedAt
-	if createdAt == 0 {
-		createdAt = Now()
-	}
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO emissions (task_id, seq, port, data, note, routed, pruned, created_at)
-		 VALUES (?,?,?,?,?,?,?,?)
-		 ON CONFLICT(task_id, seq) DO NOTHING`,
-		e.TaskID, e.Seq, e.Port, string(data), e.Note, e.Routed, e.Pruned, createdAt)
+
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("insert emission (%s#%d): %w", e.TaskID, e.Seq, err)
+		return nil, false, fmt.Errorf("emit: begin: %w", err)
 	}
-	n, err := res.RowsAffected()
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+
+	if err := authorizeEmitOn(ctx, ex, auth); err != nil {
+		return nil, false, err
+	}
+
+	// 授权已过，才谈幂等。
+	if rec.EmitID != nil && *rec.EmitID != "" {
+		existing, lerr := lookupEmitOn(ctx, ex, rec.TaskID, *rec.EmitID)
+		switch {
+		case lerr == nil:
+			if existing.ToRef != rec.ToRef || !sameJSON(existing.Data, data) {
+				return nil, false, fmt.Errorf("%w: task %s emit id %s was used for to=%q",
+					ErrEmitIDConflict, rec.TaskID, *rec.EmitID, existing.ToRef)
+			}
+			return existing.Result, false, nil // 回滚空事务（只读命中）
+		case !errors.Is(lerr, ErrNotFound):
+			return nil, false, lerr
+		}
+	}
+
+	if err := d.createTasksTx(ctx, tx, tasks); err != nil {
+		return nil, false, err
+	}
+	result, err := emitResult(rec, tasks)
 	if err != nil {
-		return false, fmt.Errorf("insert emission rows affected: %w", err)
+		return nil, false, err
 	}
-	e.CreatedAt = createdAt
-	return n > 0, nil
+	if err := insertEmitTx(ctx, ex, rec, data, result); err != nil {
+		// 并发下另一条请求先插了同一个 (task_id, emit_id)：唯一索引会在这里报冲突。
+		// 那种情况按幂等命中处理（回读对方那份结果），而不是把错误抛给调用方。
+		if rec.EmitID != nil && *rec.EmitID != "" && isUniqueViolation(err) {
+			if rerr := tx.Rollback(); rerr != nil {
+				return nil, false, fmt.Errorf("emit: rollback after conflict: %w", rerr)
+			}
+			existing, lerr := d.LookupEmit(ctx, rec.TaskID, *rec.EmitID)
+			if lerr != nil {
+				return nil, false, fmt.Errorf("emit: reread after conflict: %w", lerr)
+			}
+			if existing.ToRef != rec.ToRef || !sameJSON(existing.Data, data) {
+				return nil, false, fmt.Errorf("%w: task %s emit id %s was used for to=%q",
+					ErrEmitIDConflict, rec.TaskID, *rec.EmitID, existing.ToRef)
+			}
+			return existing.Result, false, nil
+		}
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("emit: commit: %w", err)
+	}
+	return result, true, nil
 }
 
-// GetEmission 按 (task_id, seq) 取一条 emission；未命中返回 ErrNotFound。
+// authorizeEmitOn 做 EmitAuthorized 的第 1-3 步（节点身份 / ns 授权 / 执行授权）。
 //
-// 它是幂等路径的读口：路由层先用它判「这条 seq 是不是重发」，
-// 命中就直接把首次的 routed/pruned 回给节点（不再派发一次）。
-func (d *DB) GetEmission(ctx context.Context, taskID string, seq int64) (*Emission, error) {
-	if taskID == "" {
-		return nil, fmt.Errorf("get emission: empty task_id")
-	}
-	row := d.QueryRowContext(ctx,
-		`SELECT `+emissionColumns+` FROM emissions WHERE task_id = ? AND seq = ?`, taskID, seq)
-	e, err := scanEmissionRow(row)
+// 只用 tx 句柄读：授权判定必须看到与本事务写入一致的快照，否则
+// 「刚被取消的任务」在池上可能还是 running。
+func authorizeEmitOn(ctx context.Context, ex queryExec, auth EmitAuth) error {
+	// ① 节点身份（token_hash 是唯一可判据的身份事实）。
+	var (
+		nodeTokenHash string
+		rawDeclared   string
+	)
+	err := ex.queryRowContext(ctx,
+		`SELECT token_hash, declared_namespaces FROM nodes WHERE id = ?`, auth.NodeID).
+		Scan(&nodeTokenHash, &rawDeclared)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return fmt.Errorf("%w: node %s 不存在", ErrNodeIdentityMismatch, auth.NodeID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get emission %s#%d: %w", taskID, seq, err)
+		return fmt.Errorf("emit: read node identity: %w", err)
 	}
-	return e, nil
+	if nodeTokenHash == "" || nodeTokenHash != auth.NodeTokenHash {
+		return fmt.Errorf("%w: node %s 的令牌与提交者不一致", ErrNodeIdentityMismatch, auth.NodeID)
+	}
+
+	// ② 任务行（执行授权的权威事实）。
+	var (
+		namespaceID  string
+		phase        string
+		nodeID       sql.NullString
+		attempt      int
+		leaseID      string
+		tokenHash    string
+		leaseUntil   sql.NullInt64
+		cancelReq    sql.NullInt64
+		cancelReason sql.NullString
+	)
+	err = ex.queryRowContext(ctx,
+		`SELECT namespace_id, phase, node_id, attempt, lease_id, attempt_token_hash,
+		        lease_until, cancel_requested_at, cancel_reason
+		   FROM tasks WHERE id = ?`, auth.TaskID).
+		Scan(&namespaceID, &phase, &nodeID, &attempt, &leaseID, &tokenHash,
+			&leaseUntil, &cancelReq, &cancelReason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: task %s 不存在", ErrTaskNotRunning, auth.TaskID)
+	}
+	if err != nil {
+		return fmt.Errorf("emit: read task: %w", err)
+	}
+	if phase != TaskRunning {
+		return fmt.Errorf("%w: task %s is %s (reason %s)",
+			ErrTaskNotRunning, auth.TaskID, phase, protocol.ReasonTaskNotRunning)
+	}
+	if cancelReq.Valid {
+		return fmt.Errorf("%w: task %s 已请求取消（%s），执行授权已收回",
+			ErrTaskNotRunning, auth.TaskID, cancelReason.String)
+	}
+	if !nodeID.Valid || nodeID.String != auth.NodeID {
+		return fmt.Errorf("%w: task %s 归节点 %v，不是 %s",
+			ErrLeaseMismatch, auth.TaskID, nodeID.String, auth.NodeID)
+	}
+	if attempt != auth.Attempt || leaseID != auth.LeaseID {
+		return fmt.Errorf("%w: task %s 的 attempt/lease 已变（have %d/%s, want %d/%s）",
+			ErrLeaseMismatch, auth.TaskID, attempt, leaseID, auth.Attempt, auth.LeaseID)
+	}
+	if tokenHash == "" || hashAttemptToken(auth.AttemptToken) != tokenHash {
+		return fmt.Errorf("%w: task %s 的尝试令牌不匹配", ErrAttemptTokenInvalid, auth.TaskID)
+	}
+	if !leaseUntil.Valid || leaseUntil.Int64 <= auth.Now {
+		return fmt.Errorf("%w: task %s 的租约已过期", ErrLeaseMismatch, auth.TaskID)
+	}
+
+	// ③ 命名空间授权：申报 ∩ 授权必须覆盖任务所属 ns。
+	// 缺失 node_configs 行时默认 ["*"]（与 AuthorizedNamespaces 同口径）。
+	authorized := []string{NamespaceWildcard}
+	var rawAuthorized string
+	qerr := ex.queryRowContext(ctx,
+		`SELECT namespaces FROM node_configs WHERE node_id = ?`, auth.NodeID).Scan(&rawAuthorized)
+	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+		return fmt.Errorf("emit: read node config: %w", qerr)
+	}
+	if qerr == nil {
+		decoded, derr := decodeStringList(rawAuthorized)
+		if derr != nil {
+			return fmt.Errorf("emit: %w", derr)
+		}
+		authorized = decoded
+	}
+	declared, derr := decodeStringList(rawDeclared)
+	if derr != nil {
+		return fmt.Errorf("emit: %w", derr)
+	}
+	var namespaceName string
+	if serr := ex.queryRowContext(ctx,
+		`SELECT slug FROM namespaces WHERE id = ?`, namespaceID).Scan(&namespaceName); serr != nil {
+		if errors.Is(serr, sql.ErrNoRows) {
+			return fmt.Errorf("%w: 任务所属命名空间 %s 不存在", ErrNamespaceRequired, namespaceID)
+		}
+		return fmt.Errorf("emit: read namespace: %w", serr)
+	}
+	if !namespacesAllow(intersectNamespaces(authorized, declared), namespaceName) {
+		return fmt.Errorf("%w: 节点 %s 未获授权访问命名空间 %s",
+			ErrEmitNamespaceDenied, auth.NodeID, namespaceName)
+	}
+	return nil
 }
 
-// ListEmissions 按 seq 升序列出某任务的全部 emission（给 trace / 前端事件流用）。
-//
-// 空列表返回 []（不是 nil）：调用方常常直接把它塞进 JSON 响应，
-// 返回 null 会让前端把「还没 emit」和「查不到」混成一件事。
-func (d *DB) ListEmissions(ctx context.Context, taskID string) ([]*Emission, error) {
+// emitResult 决定这次派发的回执：调用方给了就用它，否则按建出的任务行生成。
+func emitResult(rec *EmitRecord, tasks []*Task) (json.RawMessage, error) {
+	if len(rec.Result) > 0 {
+		return rec.Result, nil
+	}
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		if t == nil || t.ID == "" {
+			continue
+		}
+		ids = append(ids, t.ID)
+	}
+	b, err := json.Marshal(map[string]any{"taskIds": ids})
+	if err != nil {
+		return nil, fmt.Errorf("emit: marshal result: %w", err)
+	}
+	return json.RawMessage(b), nil
+}
+
+// insertEmitTx 在调用方事务里插一行幂等记录（唯一索引负责「同 id 只能一条」）。
+func insertEmitTx(ctx context.Context, ex queryExec, rec *EmitRecord, data, result json.RawMessage) error {
+	if rec.ID == "" {
+		rec.ID = newID("emt")
+	}
+	if rec.CreatedAt == 0 {
+		rec.CreatedAt = Now()
+	}
+	var emitID any
+	if rec.EmitID != nil && *rec.EmitID != "" {
+		emitID = *rec.EmitID
+	}
+	if _, err := ex.execContext(ctx,
+		`INSERT INTO emits (id, task_id, emit_id, to_ref, data, result, created_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		rec.ID, rec.TaskID, emitID, rec.ToRef, string(data), string(result), rec.CreatedAt); err != nil {
+		return fmt.Errorf("emit %s -> %s: %w", rec.TaskID, rec.ToRef, err)
+	}
+	rec.Data = data
+	rec.Result = result
+	return nil
+}
+
+// ListEmits 按创建顺序列出某任务的全部 emit（trace 视图用）；空列表返回 []。
+func (d *DB) ListEmits(ctx context.Context, taskID string) ([]*EmitRecord, error) {
 	if taskID == "" {
-		return nil, fmt.Errorf("list emissions: empty task_id")
+		return nil, fmt.Errorf("list emits: empty task_id")
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+emissionColumns+` FROM emissions WHERE task_id = ? ORDER BY seq`, taskID)
+		`SELECT `+emitColumns+` FROM emits WHERE task_id = ? ORDER BY created_at, id`, taskID)
 	if err != nil {
-		return nil, fmt.Errorf("list emissions %s: %w", taskID, err)
+		return nil, fmt.Errorf("list emits %s: %w", taskID, err)
 	}
 	defer rows.Close()
-	out := []*Emission{}
+	out := []*EmitRecord{}
 	for rows.Next() {
-		e, err := scanEmissionRow(rows)
+		e, err := scanEmit(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan emission of %s: %w", taskID, err)
+			return nil, err
 		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
 }
 
-// EmissionSeqStatus 返回某任务已落库的 emission 条数与该任务的最大 seq。
-//
-// 缺口判定用（emit-protocol §4）：写入永远从 1 开始且连续（路由层自己把关），
-// 所以「条数 == n-1」且「最大 seq == n-1」两个条件同时成立，就等价于
-// 「集合恰好是 {1..n-1}」——中间有洞时条数会小于最大 seq，同样被这组条件挡住。
-//
-// 一次聚合查询而不是把整表读回来：这在一个**可能被高频调用**的路径上
-// （能力进程一次运行可以 emit 很多次），而返回的只有两个整数。
-func (d *DB) EmissionSeqBefore(ctx context.Context, taskID string, before int64) (count int, maxSeq int64, err error) {
-	if taskID == "" {
-		return 0, 0, fmt.Errorf("emission seq before: empty task_id")
-	}
-	// 只看 seq < before 的区间（= 判断 1..before-1 是否齐全）。
-	//
-	// **必须带这个界**：并发重发同一个 seq 时，库里已经躺着 seq=before 那一行，
-	// 用全表 COUNT 会算出「已经比你多一条」→ 把一次正常的幂等重发判成缺口。
-	// 这个 bug 在并发用例里随机复现过（"missing seq 2..0"）。
-	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM emissions WHERE task_id = ? AND seq < ?`,
-		taskID, before).
-		Scan(&count, &maxSeq); err != nil {
-		return 0, 0, fmt.Errorf("emission seq before %s: %w", taskID, err)
-	}
-	return count, maxSeq, nil
-}
+// emitColumns 是统一的列顺序，scanEmit 依赖它。
+const emitColumns = `id, task_id, emit_id, to_ref, data, result, created_at`
 
-// scanEmissionRow 从一行结果解析 Emission（*sql.Row 与 *sql.Rows 都满足 scanRow）。
-func scanEmissionRow(row scanRow) (*Emission, error) {
-	var e Emission
-	var data string
-	if err := row.Scan(&e.TaskID, &e.Seq, &e.Port, &data, &e.Note, &e.Routed, &e.Pruned, &e.CreatedAt); err != nil {
-		return nil, err
+// scanEmit 从一行结果解析 EmitRecord。
+func scanEmit(rows *sql.Rows) (*EmitRecord, error) {
+	var (
+		rec    EmitRecord
+		emitID sql.NullString
+		data   string
+		result string
+	)
+	if err := rows.Scan(&rec.ID, &rec.TaskID, &emitID, &rec.ToRef, &data, &result, &rec.CreatedAt); err != nil {
+		return nil, fmt.Errorf("scan emit: %w", err)
 	}
-	if data == "" {
-		data = "{}"
+	if emitID.Valid {
+		v := emitID.String
+		rec.EmitID = &v
 	}
-	e.Data = json.RawMessage(data)
-	return &e, nil
-}
-
-// scanRow 是 *sql.Row / *sql.Rows 的最小公共面（只有 Scan）。
-type scanRow interface {
-	Scan(dest ...any) error
+	rec.Data = json.RawMessage(data)
+	if len(rec.Data) == 0 {
+		rec.Data = json.RawMessage("{}")
+	}
+	rec.Result = json.RawMessage(result)
+	return &rec, nil
 }

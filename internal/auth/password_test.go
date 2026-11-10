@@ -426,7 +426,7 @@ func TestRegisterWithPassword_Success(t *testing.T) {
 		t.Errorf("错密码 err = %v, want ErrInvalidCredentials", err)
 	}
 
-	// 默认命名空间 + 内置能力：注册是原子的（store.RegisterUserWithPassword 的事务）。
+	// 注册仍原子地建立默认命名空间；v4 不再播种中央执行的内置能力。
 	nss, err := svc.db.ListNamespaces(ctx)
 	if err != nil {
 		t.Fatalf("list namespaces: %v", err)
@@ -434,8 +434,26 @@ func TestRegisterWithPassword_Success(t *testing.T) {
 	if len(nss) != 1 {
 		t.Fatalf("命名空间数 = %d, want 1（注册必须建默认命名空间）", len(nss))
 	}
-	if _, err := svc.db.GetCapability(ctx, nss[0].ID, "notify.phone", 1); err != nil {
-		t.Errorf("内置能力没播下去: %v", err)
+	if nss[0].Slug != store.DefaultNamespaceSlug || nss[0].Name != store.DefaultNamespaceName {
+		t.Fatalf("默认命名空间 = %+v", nss[0])
+	}
+	if err := svc.db.AuthorizeNamespace(ctx, u.ID, nss[0].ID); err != nil {
+		t.Fatalf("新用户不能使用注册建立的命名空间: %v", err)
+	}
+	// 用真实脚本正文建立批准的资源域，不把已退役的 builtin 播种搬回注册生产路径。
+	capability := &store.CapabilityVersion{NamespaceID: nss[0].ID, Name: "registration-probe", Version: 1}
+	capability.Spec.Params = []byte(`{"type":"object"}`)
+	capability.Spec.Run.Entrypoint = "run.sh"
+	capability.Spec.Run.Files = map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"}
+	if err := svc.db.CreateCapability(ctx, capability); err != nil {
+		t.Fatalf("新用户命名空间无法建立真实能力: %v", err)
+	}
+	stored, err := svc.db.GetCapability(ctx, nss[0].ID, capability.Name, capability.Version)
+	if err != nil {
+		t.Fatalf("读取真实注册资源: %v", err)
+	}
+	if stored.ID != capability.ID || stored.Digest == "" || stored.Spec.Run.Files["run.sh"] != capability.Spec.Run.Files["run.sh"] {
+		t.Fatalf("真实注册资源未按不可变身份往返: %+v", stored)
 	}
 }
 

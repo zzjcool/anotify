@@ -37,7 +37,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -779,7 +778,7 @@ func newStmtBenchEnv(tb testing.TB, tasks int) *stmtBenchEnv {
 	// tasks.capability_id 有外键（Open 的 DSN 开着 foreign_keys），必须先造父行。
 	cap := &CapabilityVersion{
 		NamespaceID: ns.ID, Name: "bench.taskcache", Version: 1,
-		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
+		Spec: v4Spec("", nil, ""), CreatedAt: Now(),
 	}
 	if err := db.CreateCapability(ctx, withSpec(cap)); err != nil {
 		tb.Fatalf("create bench capability: %v", err)
@@ -826,7 +825,7 @@ func BenchmarkListTasks(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ts, err := env.db.ListTasks(ctx, env.namespace, "", "", "", 200)
+		ts, err := env.db.ListTasks(ctx, env.namespace, TaskFilter{Limit: 200})
 		if err != nil {
 			b.Fatalf("ListTasks: %v", err)
 		}

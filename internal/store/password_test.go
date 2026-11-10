@@ -208,13 +208,14 @@ func TestRegisterUserWithPassword_RoundTrip(t *testing.T) {
 	if len(nss) != 1 || nss[0].ID != ns.ID {
 		t.Errorf("命名空间列表 = %+v, want 只有 %s", nss, ns.ID)
 	}
-	// 4) 内置能力播种（与命名空间同事务：#162）
-	cap, err := db.GetCapability(ctx, ns.ID, "notify.phone", 1)
+	// 4) v4 不播种任何内置能力（identity.go registerUser 注释：链尾是普通脚本能力）。
+	//    注册产生的命名空间必须是**空**的——这条断言取代了 v3 的 builtin 播种断言。
+	caps, err := db.ListCapabilities(ctx, ns.ID)
 	if err != nil {
-		t.Fatalf("内置能力没播下去: %v", err)
+		t.Fatalf("list capabilities: %v", err)
 	}
-	if cap.Source != CapSourceBuiltin {
-		t.Errorf("notify.phone source = %q, want %q", cap.Source, CapSourceBuiltin)
+	if len(caps) != 0 {
+		t.Errorf("新注册命名空间里有 %d 个能力，v4 不该播种内置能力", len(caps))
 	}
 
 	// 5) 第二个用户不是 admin（RoleAuto 不是「永远是 admin」）

@@ -203,9 +203,9 @@ func TestSystemStats(t *testing.T) {
 			idem := prefix + string(rune('0'+i))
 			if _, err := db.InsertEvent(ctx, &Event{
 				ID: NewEventID(), NamespaceID: namespaceID, Source: "github", Type: "pr_opened",
-				TraceID: "trace_" + idem, IdemKey: &idem, Payload: []byte("{}"),
+				TraceID: "trace_" + idem, DeliveryID: &idem, Payload: []byte("{}"),
 				CreatedAt: now + int64(i),
-			}); err != nil {
+			}, now+int64(i), 0); err != nil {
 				t.Fatalf("insert event %s: %v", idem, err)
 			}
 		}
@@ -270,10 +270,10 @@ func TestListGlobalEvents(t *testing.T) {
 			Source:      src,
 			Type:        "test",
 			TraceID:     "trace_" + src,
-			IdemKey:     &idem,
+			DeliveryID:  &idem,
 			Payload:     []byte("{}"),
 			CreatedAt:   now + int64(i),
-		}); err != nil {
+		}, now+int64(i), 0); err != nil {
 			t.Fatalf("insert event %s: %v", src, err)
 		}
 	}

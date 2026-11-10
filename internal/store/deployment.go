@@ -35,10 +35,9 @@ const (
 
 // ErrArtifactNotFound 表示「这个能力此刻没有可部署/可引用的产物」。
 //
-// 语义在 P2 之后收窄成两种（artifact 表已删，产物是能力行的正文算出来的）：
+// v4 只有 run 一种实现形式，所以它只有两种来源：
 //   - 能力不存在，或不属于该命名空间；
-//   - 能力是 **handler 形式**（中枢内置执行器认领，没有 files）——它不该被部署到节点，
-//     也不存在「一份可推下去的产物」。
+//   - 能力没有 run（spec 过不了 artifact.Validate 的行不该出现在库里，防御性判一次）。
 //
 // 名字沿用旧哨兵：handler 层靠它翻 404 artifact_not_found，改名字换不来任何好处。
 var ErrArtifactNotFound = errors.New("store: artifact not found")
@@ -89,10 +88,8 @@ type Deployment struct {
 // CurrentArtifact 返回某能力**当前产物**：digest = 能力行的 content_hash，
 // Spec = 由 capability_versions.spec 拼出的整份 canonical JSON。
 //
-// 能力不存在、或它是 handler 形式（没有 files，不该出现在部署面板里）时返回
-// ErrArtifactNotFound —— 「还没有产物」与「这个能力不该有产物」在**部署**这条路上
-// 是同一个回答（handler 形式的那条更具体的 400 builtin_not_deployable 在 handler 层
-// 先判，见 internal/server 的 createDeployments）。
+// 能力不存在、或它没有 run 时返回 ErrArtifactNotFound —— 「还没有产物」与
+// 「这个能力不该有产物」在**部署**这条路上是同一个回答。
 func (d *DB) CurrentArtifact(ctx context.Context, namespaceID, capabilityID string) (*Artifact, error) {
 	return currentArtifactOn(ctx, d, namespaceID, capabilityID)
 }
@@ -111,14 +108,11 @@ func currentArtifactOn(ctx context.Context, ex queryExec, namespaceID, capabilit
 
 // deployable 判「这个能力有没有一份可推给节点的产物」。
 //
-// 可部署 ⟺ **有 run**（entrypoint + files）。两种「没有实现」的形态都必须挡住：
-//   - handler 形式：实现编译在中枢里，没有 files 可推（Capability Spec v3 §6.1）；
-//   - 纯定义（既没 handler 也没 run）：根本不是能跑的东西——迁移 8 之前建的老行、
-//     事件起点类能力的残壳都属于这一类。
-//
-// 放过去的后果完全相同：它会出现在部署面板里，推下去节点只会拒。
+// 可部署 ⟺ **有 run**（entrypoint + files）。v4 只有脚本一种实现形式，
+// 「纯定义」不在合法形状里（写入期 artifact.Validate 就拒），这里只是防御性判一次：
+// 放过去的后果是它出现在部署面板里，推下去节点只会拒。
 func deployable(c *CapabilityVersion) error {
-	if c.Spec.Handler != "" || c.Spec.Run.Entrypoint == "" {
+	if c.Spec.Run.Entrypoint == "" {
 		return ErrArtifactNotFound
 	}
 	return nil
@@ -127,10 +121,9 @@ func deployable(c *CapabilityVersion) error {
 // artifactOf 把一行能力拼成整份产物（**唯一**的拼装点）。
 //
 // 两件事必须一起做对，否则症状极难查：
-//   - digest 取 `c.Digest()`（content_hash，契约 §4 的「content_hash ≡ digest」）。
+//   - digest 取能力行上的 digest（含 version 的部署身份，capability.md §3）。
 //     它必须与节点从收到的字节重算出来的一致，否则部署永远收敛不了；
-//   - Spec 取 `artifact.CanonicalJSON(c.Artifact())`。P1 期间写穿到 artifacts 表里的
-//     就是这串字节，所以「产物内容」在 P2 前后逐字节相同（deploy 帧零改动）。
+//   - Spec 取 `artifact.CanonicalJSON(c.Artifact())`（与 digest 同一次归一化）。
 func artifactOf(c *CapabilityVersion) (*Artifact, error) {
 	if err := deployable(c); err != nil {
 		return nil, err
@@ -143,26 +136,24 @@ func artifactOf(c *CapabilityVersion) (*Artifact, error) {
 	return &Artifact{
 		NamespaceID:  c.NamespaceID,
 		CapabilityID: c.ID,
-		Digest:       c.Digest(),
+		Digest:       c.Digest,
 		Spec:         spec,
 	}, nil
 }
 
-// GetArtifactByDigest 按内容寻址标识取产物：digest 去掉 `sha256:` 前缀就是
-// capability_versions.content_hash（契约 §11.2）。
+// GetArtifactByDigest 按内容寻址标识取产物：digest 就是 capability_versions.digest。
 //
-// 内容寻址的含义没变：同一个 digest 在同一命名空间里最多命中一行能力
-// （UNIQUE(namespace_id, content_hash)）。handler 形式命中时返回 ErrArtifactNotFound
-// ——它没有可推的产物。
+// 内容寻址：同一个 digest 在同一命名空间里最多命中一行能力（UNIQUE(namespace_id, digest)）。
+// 没有 run 的行命中时返回 ErrArtifactNotFound ——它没有可推的产物。
 func (d *DB) GetArtifactByDigest(ctx context.Context, namespaceID, digest string) (*Artifact, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	hash := strings.TrimPrefix(digest, artifact.DigestPrefix)
-	if hash == "" {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
 		return nil, ErrArtifactNotFound
 	}
-	c, err := getCapabilityByHashOn(ctx, d, namespaceID, hash)
+	c, err := getCapabilityByDigestOn(ctx, d, namespaceID, digest)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrArtifactNotFound
 	}
@@ -190,42 +181,35 @@ func (d *DB) ListArtifacts(ctx context.Context, namespaceID, capabilityID string
 	return []*Artifact{got}, nil
 }
 
-// CreateDeployment 建一条部署（state=pending）。
+// CreateDeployments 人工部署：为每个节点写一行 pending（「中枢希望这台机器持有这份内容」）。
 //
-// 同一 (node, capability) **只保留一行**：部署是中枢对「这台机器该有哪份内容」的
-// 期望状态，新期望直接取代旧的。
+// 语义（capability.md §2.4 Deployed condition / 契约 §11.2）：
+//   - 只引用 capability_id + digest，没有 artifact 行可指（产物不再是可引用物体）；
+//   - digest 的唯一来源是能力行：传空 = 用能力行的 digest；传了就必须与它相等
+//     （部署别的能力的 digest 是自相矛盾的请求，按「找不到这份产物」拒绝）；
+//   - 同一 (node, capability) **只保留一行**：部署是期望状态，新期望直接取代旧的。
+//     留着旧行会让同一能力同时存在两条互斥期望，节点每次重连都在两份内容之间来回被推。
 //
-// 为什么不再把旧 digest 的行当“历史”留着：留着会让同一能力同时存在两条互斥的期望。
-// hello 对账按行逐个比对 digest，于是旧行总是“与节点上那份一致”、新行总是“不一致”，
-// 两者每次重连都互相推翻——节点会在两份内容之间来回被推。收敛的前提是
-// 「一个 (机器, 能力) 只有一个期望」（见 markDeployedDigest）。
-//
-// 签名（契约 §11.2 / P2a）：(namespaceID, nodeID, **capabilityID**, digest)。
-// digest 是「要部署的那份内容」的身份：
-//   - 传空串 = 该能力行的当前内容；
-//   - 传了就必须等于该能力行的 digest。传给别的能力的 digest 是自相矛盾的请求
-//     （部署的期望内容与被引用的能力行不是一回事），按「找不到这份产物」拒绝，
-//     而不是悄悄换一个能力去部署。
-//
-// 同一 (node, capability, digest) 已存在时是幂等 no-op：控制台重复点部署不该报错，
-// 也不该重置已经 applied 的状态（否则一次误点会把绿标打回灰）。
-func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabilityID, digest string) (*Deployment, error) {
+// nodeIDs 为空是 no-op（不是错误）：控制台要部署的机器集合可能被筛空了。
+// 已存在的 (node, capability, digest) 视为幂等 no-op：重复点部署不该把绿标打回灰。
+func (d *DB) CreateDeployments(ctx context.Context, namespaceID, capabilityID, digest string, nodeIDs []string) ([]*Deployment, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
 	if capabilityID == "" {
-		return nil, fmt.Errorf("create deployment: empty capability_id")
+		return nil, fmt.Errorf("create deployments: empty capability_id")
+	}
+	if len(nodeIDs) == 0 {
+		return []*Deployment{}, nil
 	}
 	now := Now()
-	id := NewDeploymentID()
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin create deployment: %w", err)
+		return nil, fmt.Errorf("begin create deployments: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 期望内容的唯一来源是能力行（digest 也是它算出来的）。
 	capRow, err := getCapabilityByIDOn(ctx, txExec{tx: tx}, namespaceID, capabilityID)
 	if errors.Is(err, ErrNotFound) {
 		return nil, ErrArtifactNotFound
@@ -234,59 +218,86 @@ func (d *DB) CreateDeployment(ctx context.Context, namespaceID, nodeID, capabili
 		return nil, fmt.Errorf("resolve deployment capability: %w", err)
 	}
 	if derr := deployable(capRow); derr != nil {
-		// 不可部署的形态（handler 形式 / 纯定义，见 deployable）。handler 层先判并回
-		// 400 builtin_not_deployable；走到这里说明是别的调用方，同样不给建行。
 		return nil, derr
 	}
 	digest = strings.TrimSpace(digest)
 	if digest == "" {
-		digest = capRow.Digest()
+		digest = capRow.Digest
 	}
-	if digest != capRow.Digest() {
+	if digest != capRow.Digest {
 		return nil, ErrArtifactNotFound
 	}
 
-	// 取代范围只能是**同一能力**的旧行（别的能力不碰）。
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM deployments
-		  WHERE namespace_id = ? AND node_id = ? AND capability_id = ? AND digest <> ?`,
-		namespaceID, nodeID, capabilityID, digest); err != nil {
-		return nil, fmt.Errorf("supersede previous deployment: %w", err)
+	seen := make(map[string]bool, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if nodeID == "" || seen[nodeID] {
+			continue
+		}
+		seen[nodeID] = true
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes WHERE id = ?`, nodeID).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("create deployments: probe node %s: %w", nodeID, err)
+		}
+		if exists == 0 {
+			return nil, fmt.Errorf("create deployments: node %s: %w", nodeID, ErrNotFound)
+		}
+		// 取代范围只能是同一能力的旧行（别的能力不碰）。
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM deployments
+			  WHERE namespace_id = ? AND node_id = ? AND capability_id = ? AND digest <> ?`,
+			namespaceID, nodeID, capabilityID, digest); err != nil {
+			return nil, fmt.Errorf("supersede previous deployment: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
+			 VALUES (?,?,?,?,?,?,'',?,?)
+			 ON CONFLICT(node_id, capability_id, digest) DO NOTHING`,
+			NewDeploymentID(), namespaceID, nodeID, capabilityID, digest, DeploymentPending, now, now); err != nil {
+			return nil, fmt.Errorf("create deployment for %s: %w", nodeID, err)
+		}
 	}
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO deployments (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,'',?,?)
-		 ON CONFLICT(node_id, capability_id, digest) DO NOTHING`,
-		id, namespaceID, nodeID, capabilityID, digest, DeploymentPending, now, now); err != nil {
-		return nil, fmt.Errorf("create deployment: %w", err)
-	}
-
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit create deployment: %w", err)
+		return nil, fmt.Errorf("commit create deployments: %w", err)
 	}
-	return d.GetDeploymentByNodeCapability(ctx, namespaceID, nodeID, capabilityID)
+
+	out := make([]*Deployment, 0, len(seen))
+	rows, err := d.QueryContext(ctx,
+		deploymentSelect+` WHERE d.namespace_id = ? AND d.capability_id = ? ORDER BY d.node_id`, namespaceID, capabilityID)
+	if err != nil {
+		return nil, fmt.Errorf("read created deployments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dp, serr := scanDeploymentRow(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		if seen[dp.NodeID] {
+			out = append(out, dp)
+		}
+	}
+	return out, rows.Err()
 }
 
 // GetDeploymentByNodeCapability 取一条部署（同一 (node, capability) 至多一行）。
 func (d *DB) GetDeploymentByNodeCapability(ctx context.Context, namespaceID, nodeID, capabilityID string) (*Deployment, error) {
 	return d.scanDeployment(ctx,
-		deploymentSelect+` WHERE d.namespace_id = ? AND d.node_id = ? AND d.capability_id = ?`,
+		deploymentSelect+` WHERE c.deleted_at IS NULL AND d.namespace_id = ? AND d.node_id = ? AND d.capability_id = ?`,
 		namespaceID, nodeID, capabilityID)
 }
 
 // GetDeployment 按 id 取一条部署。
 func (d *DB) GetDeployment(ctx context.Context, namespaceID, id string) (*Deployment, error) {
-	return d.scanDeployment(ctx, deploymentSelect+` WHERE d.namespace_id = ? AND d.id = ?`, namespaceID, id)
+	return d.scanDeployment(ctx, deploymentSelect+` WHERE c.deleted_at IS NULL AND d.namespace_id = ? AND d.id = ?`, namespaceID, id)
 }
 
-// deploymentDigestSQL 是「中枢期望的 digest」的**唯一**口径：能力行的 content_hash
-// 加上标准前缀。不读 d.digest 列——列里那份是建行那一刻的副本（审计用），
-// 而期望永远是「这个能力此刻的内容」（契约 §11.2：对账改从能力行取 digest）。
+// deploymentDigestSQL 是「中枢期望的 digest」的**唯一**口径：能力行的 digest 列
+// （含 `sha256:` 前缀的部署身份）。不读 d.digest 列——列里那份是建行那一刻的副本
+// （审计用），而期望永远是「这个能力此刻的内容」。
 //
 // 为什么要统一：节点算 digest 用的是它收到的产物字节，中枢若拿别的值去比，
 // 症状是「每次连上来都判不一致、每次都重推一遍」——不影响正确性，但永远收敛不了。
-const deploymentDigestSQL = `'` + artifact.DigestPrefix + `' || c.content_hash`
+const deploymentDigestSQL = `c.digest`
 
 const deploymentSelect = `
 SELECT d.id, d.namespace_id, d.node_id, d.capability_id, ` + deploymentDigestSQL + ` AS digest,
@@ -295,18 +306,38 @@ SELECT d.id, d.namespace_id, d.node_id, d.capability_id, ` + deploymentDigestSQL
   JOIN capability_versions c ON c.id = d.capability_id`
 
 func (d *DB) scanDeployment(ctx context.Context, query string, args ...any) (*Deployment, error) {
-	var dp Deployment
-	err := d.QueryRowContext(ctx, query, args...).Scan(
-		&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
-		&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
-		&dp.Capability, &dp.Version)
+	dp, err := scanDeploymentOne(d.QueryRowContext(ctx, query, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get deployment: %w", err)
 	}
+	return dp, nil
+}
+
+// deploymentScanner 是 *sql.Rows / *sql.Row 的最小公共面（都只有 Scan）。
+type deploymentScanner interface{ Scan(dest ...any) error }
+
+// scanDeploymentOne 从任意 Scan 面解析一条部署。
+func scanDeploymentOne(row deploymentScanner) (*Deployment, error) {
+	var dp Deployment
+	if err := row.Scan(
+		&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
+		&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
+		&dp.Capability, &dp.Version); err != nil {
+		return nil, err
+	}
 	return &dp, nil
+}
+
+// scanDeploymentRow 从结果集解析一条部署（列表路径）。
+func scanDeploymentRow(rows *sql.Rows) (*Deployment, error) {
+	dp, err := scanDeploymentOne(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan deployment: %w", err)
+	}
+	return dp, nil
 }
 
 // DeploymentFilter 是部署列表的过滤条件（零值 = 不过滤）。
@@ -322,7 +353,7 @@ func (d *DB) ListDeployments(ctx context.Context, namespaceID string, f Deployme
 	}
 	var where []string
 	args := []any{namespaceID}
-	where = append(where, "d.namespace_id = ?")
+	where = append(where, "d.namespace_id = ?", "c.deleted_at IS NULL")
 	if f.NodeID != "" {
 		where = append(where, "d.node_id = ?")
 		args = append(args, f.NodeID)
@@ -342,14 +373,11 @@ func (d *DB) ListDeployments(ctx context.Context, namespaceID string, f Deployme
 
 	out := []*Deployment{}
 	for rows.Next() {
-		var dp Deployment
-		if err := rows.Scan(
-			&dp.ID, &dp.NamespaceID, &dp.NodeID, &dp.CapabilityID, &dp.Digest,
-			&dp.State, &dp.Reason, &dp.CreatedAt, &dp.UpdatedAt,
-			&dp.Capability, &dp.Version); err != nil {
-			return nil, fmt.Errorf("scan deployment: %w", err)
+		dp, serr := scanDeploymentRow(rows)
+		if serr != nil {
+			return nil, serr
 		}
-		out = append(out, &dp)
+		out = append(out, dp)
 	}
 	return out, rows.Err()
 }
@@ -387,63 +415,125 @@ func (d *DB) MarkDeployResult(ctx context.Context, namespaceID, deployID, state,
 	return nil
 }
 
-// markDeployedDigest 是 hello 对账的入口：拿「节点实际缓存的 digest」和中枢的期望
-// 逐能力比对。
+// AppliedCapability 是节点 hello 自报的「我持有这份内容」的一条事实。
 //
-// 语义（中枢覆盖）：
-//   - digest 一致 → applied（绿勾）
-//   - 不一致   → pending，reason 里两端 digest 都写上，回来后由 handleHello
-//     把中枢期望的那份推下去（节点不需要知道自己错在哪里，它只要拿到对的东西）
+// 三者一起才构成部署身份：能力 id 说「是哪个能力」，version 说「哪一版」，
+// digest 说「哪份字节」。只对 digest 会让「同内容不同版本」被误判成已部署。
+type AppliedCapability struct {
+	CapabilityID string
+	Capability   string
+	Version      int
+	Digest       string
+}
+
+// ReconcileStats 汇总一次节点对账的结果。
+type ReconcileStats struct {
+	// Applied 是与中枢期望一致的行数。
+	Applied int
+	// Stale 是节点上的内容与期望不一致（已被打回 pending，等着被重推）的行数。
+	Stale int
+	// Missing 是节点上根本没有上报这条能力（同样打回 pending）的行数。
+	Missing int
+	// Extra 是节点上有、中枢没有要求的内容（「本地变体」）。
+	//
+	// v4 的处置：**不**替它建部署行。部署是中枢下发的意图，节点自报不能变成
+	// 「中枢曾经要求过」；把它作为漂移事实返回给调用方记日志/展示即可。
+	// 这正是 v3 `state=local` 想表达的信息，但不再需要一个永不收敛的颜色。
+	Extra []AppliedCapability
+}
+
+// ReconcileNode 用节点自报的 applied 列表对账它名下的部署行。
 //
-// 期望值取**能力行**的 digest（deploymentDigestSQL），不是 deployments.digest 列的
-// 副本：列里那份是建行那一刻的快照，而「这个能力现在的产物」只有能力行说了算
-// （契约 §11.2）。老库里指向历史内容的行因此会自然收敛到当前内容。
+// 判据（中枢覆盖语义，capability.md §2.4）：
+//   - digest 与期望一致 → applied（绿勾）
+//   - digest 不一致       → pending + reason 里写明两端 digest（stale，等重推）
+//   - 节点没上报这条能力  → pending（缺失，等重推）
 //
-// 早先这里标 `local`（“本地变体，中枢永不覆盖”，契约 §7 的旧口径），实践中行不通：
-// 部署本来就是中枢下发的，节点上那份不一致是“还没收到”而不再是“用户改过”，
-// 标黄只会让一条正常的部署永远停在黄标上，还得人去点一次。
-func (d *DB) markDeployedDigest(ctx context.Context, tx *sql.Tx, nodeID, capabilityID, digest string) (int, error) {
-	now := Now()
+// 期望值取**能力行**的 digest（deploymentDigestSQL），不是 deployments.digest 列的副本：
+// 列里那份是建行那一刻的快照，而「这个能力现在的产物」只有能力行说了算。
+// 老库里指向历史内容的行因此会自然收敛到当前内容。
+//
+// 只动该节点名下的行；一个事务内完成（对账是「读一遍自报 + 写一批状态」，中间被插入
+// 新部署时不会产生半新半旧的观测）。
+func (d *DB) ReconcileNode(ctx context.Context, nodeID string, applied []AppliedCapability, now int64) (ReconcileStats, error) {
+	var stats ReconcileStats
+	if nodeID == "" {
+		return stats, fmt.Errorf("reconcile node: empty node_id")
+	}
+	if now == 0 {
+		now = Now()
+	}
+	byCapability := make(map[string]AppliedCapability, len(applied))
+	for _, a := range applied {
+		if a.CapabilityID == "" {
+			continue
+		}
+		byCapability[a.CapabilityID] = a
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return stats, fmt.Errorf("reconcile node: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	rows, err := tx.QueryContext(ctx,
-		`SELECT d.id, `+deploymentDigestSQL+`
+		`SELECT d.id, d.capability_id, `+deploymentDigestSQL+`
 		   FROM deployments d
 		   JOIN capability_versions c ON c.id = d.capability_id
-		  WHERE d.node_id = ? AND d.capability_id = ?`, nodeID, capabilityID)
+		  WHERE d.node_id = ?`, nodeID)
 	if err != nil {
-		return 0, fmt.Errorf("query deployments for reconcile: %w", err)
+		return stats, fmt.Errorf("reconcile node: read deployments: %w", err)
 	}
-	defer rows.Close()
-
-	type row struct{ id, digest string }
+	type row struct {
+		id, capabilityID, digest string
+	}
 	var all []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.digest); err != nil {
-			return 0, fmt.Errorf("scan deployment for reconcile: %w", err)
+		if err := rows.Scan(&r.id, &r.capabilityID, &r.digest); err != nil {
+			rows.Close()
+			return stats, fmt.Errorf("reconcile node: scan deployment: %w", err)
 		}
 		all = append(all, r)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		rows.Close()
+		return stats, fmt.Errorf("reconcile node: iterate deployments: %w", err)
 	}
+	rows.Close()
 
-	n := 0
+	known := make(map[string]bool, len(all))
 	for _, r := range all {
+		known[r.capabilityID] = true
 		state, reason := DeploymentPending, ""
-		if r.digest == digest {
+		got, reported := byCapability[r.capabilityID]
+		switch {
+		case reported && got.Digest == r.digest:
 			state = DeploymentApplied
-		} else {
-			reason = fmt.Sprintf("digest mismatch: node has %s, console expects %s — 重新下发",
-				digest, r.digest)
+			stats.Applied++
+		case reported:
+			reason = fmt.Sprintf("stale: node has %s, console expects %s — 重新下发", got.Digest, r.digest)
+			stats.Stale++
+		default:
+			reason = "missing: node did not report this capability"
+			stats.Missing++
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE deployments SET state = ?, reason = ?, updated_at = ? WHERE id = ?`,
 			state, reason, now, r.id); err != nil {
-			return 0, fmt.Errorf("mark deployment: %w", err)
+			return stats, fmt.Errorf("reconcile node: mark deployment: %w", err)
 		}
-		n++
 	}
-	return n, nil
+	for capabilityID, a := range byCapability {
+		if !known[capabilityID] {
+			stats.Extra = append(stats.Extra, a)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return stats, fmt.Errorf("reconcile node: commit: %w", err)
+	}
+	return stats, nil
 }
 
 // DeploymentDelivery 是「把一份产物推给某台节点」所需的全部信息（行 + 产物原文）。
@@ -501,8 +591,8 @@ func (d *DB) DeploymentsForNode(ctx context.Context, namespaceID, nodeID string)
 				return nil, fmt.Errorf("decode capability spec for deployment %s: %w", it.DeploymentID, err)
 			}
 		}
-		// handler 形式不可部署（建行时就拒了），真在库里出现说明行是历史残留：
-		// 直接跳过而不是推一份没有 files 的产物下去（节点只会拒，日志还会骗人）。
+		// 没有 run 的行不可部署（写入期就拒了）：直接跳过而不是推一份空产物下去
+		// （节点只会拒，日志还会骗人）。
 		full, aerr := artifactOf(c)
 		if errors.Is(aerr, ErrArtifactNotFound) {
 			continue

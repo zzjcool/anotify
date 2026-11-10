@@ -14,7 +14,9 @@ import (
 // 设计见 docs/design/namespaces.md，契约 §2.1.1 / 不变量 I11。
 // （I10「一切租户数据先过 org_id」随组织层一起作废，重写留给阶段 3。）
 //
-// 一句话：能力 / 节点 / 边 / 源 / 事件 / 任务 / 图快照**全部**属于某个命名空间。
+// 一句话：能力 / 边 / 源 / 事件 / 任务 / 部署 / 预案**全部**属于某个命名空间。
+// 节点是集群级对象（不绑 ns）：一台机器服务哪些 ns 由「申报 ∩ 授权」决定，
+// 这里的 NodeCount 是**推导量**（在线且被授权使用该 ns 的机器数），不是所有权。
 // 组织（org）这一层已经删除：一套部署 = 一个团队，`namespace_id`
 // 是行上唯一的隔离维度，没有比它更粗的过滤锚点了。
 const (
@@ -74,10 +76,11 @@ func (e *NamespaceBlockedError) Error() string {
 
 // Namespace 是 namespaces 表的一行（列表查询带资源计数，UI 直接用）。
 type Namespace struct {
-	ID        string `json:"id"`
-	Slug      string `json:"slug"`
-	Name      string `json:"name"`
-	CreatedAt int64  `json:"createdAt"`
+	ID              string `json:"id"`
+	Slug            string `json:"slug"`
+	Name            string `json:"name"`
+	CreatedAt       int64  `json:"createdAt"`
+	ResourceVersion int64  `json:"resourceVersion"`
 	// 计数（列表用；单取时为 0 也无所谓）
 	CapabilityCount int `json:"capabilityCount"`
 	NodeCount       int `json:"nodeCount"`
@@ -97,7 +100,7 @@ type nsQueryer interface {
 // 只允许小写字母、数字、连字符，且以字母或数字开头。
 var namespaceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 
-const nsColumns = `id, slug, name, created_at`
+const nsColumns = `id, slug, name, created_at, resource_version`
 
 // DefaultNamespaceID 返回本部署**最早插入**的命名空间 id。
 //
@@ -128,7 +131,7 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 	var ns Namespace
 	err := d.cachedQueryRowContext(ctx,
 		`SELECT `+nsColumns+` FROM namespaces WHERE id = ?`, id).
-		Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt)
+		Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt, &ns.ResourceVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNamespaceNotFound
 	}
@@ -142,9 +145,11 @@ func (d *DB) GetNamespace(ctx context.Context, id string) (*Namespace, error) {
 // 空列表返回 []（不变量 I9）。
 func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	rows, err := d.cachedQueryContext(ctx,
-		`SELECT n.id, n.slug, n.name, n.created_at,
-		        (SELECT count(*) FROM capability_versions c WHERE c.namespace_id = n.id),
-		        (SELECT count(*) FROM nodes nd WHERE nd.namespace_id = n.id),
+		// v4 的 nodes 是集群级对象（不绑 ns），NodeCount 由「在线 × 申报 ∩ 授权」
+		// 在 Go 侧推导（见下面 nodeCountsByNamespace）：它是展示计数，不是所有权。
+		`SELECT n.id, n.slug, n.name, n.created_at, n.resource_version,
+		        (SELECT count(*) FROM capability_versions c WHERE c.namespace_id = n.id AND c.deleted_at IS NULL),
+		        0,
 		        (SELECT count(*) FROM sources s WHERE s.namespace_id = n.id),
 		        (SELECT count(*) FROM edges e WHERE e.namespace_id = n.id)
 		   FROM namespaces n
@@ -152,23 +157,87 @@ func (d *DB) ListNamespaces(ctx context.Context) ([]*Namespace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list namespaces: %w", err)
 	}
-	defer rows.Close()
 	out := []*Namespace{}
 	for rows.Next() {
 		var ns Namespace
-		if err := rows.Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt,
+		if err := rows.Scan(&ns.ID, &ns.Slug, &ns.Name, &ns.CreatedAt, &ns.ResourceVersion,
 			&ns.CapabilityCount, &ns.NodeCount, &ns.SourceCount, &ns.EdgeCount); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan namespace: %w", err)
 		}
 		out = append(out, &ns)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// 先把结果集读完并关闭，再发第二个查询（`:memory:` 库连接池上限是 1，
+	// 边读边查会自己把自己锁死）。
+	rows.Close()
+
+	counts, err := d.nodeCountsByNamespace(ctx, out)
+	if err != nil {
+		return nil, err
+	}
+	for _, ns := range out {
+		ns.NodeCount = counts[ns.Slug]
+	}
+	return out, nil
 }
 
-// CreateNamespace 建命名空间，并**在同一事务内**播种内置能力。
+// nodeCountsByNamespace 推导每个命名空间的在线节点数（Node.status 的 counts.nodes）。
 //
-// 为什么必须同事务：新命名空间里没有 notify.phone 的话，连一个 end 节点都
-// 声明不出来，推送直接失效；而"稍后补播种"在失败时没有任何人会发现。
+// 一台节点算某个 ns 的「在线节点」当且仅当：status=online，且
+// ns ∈ node_configs.namespaces（授权，缺省 ["*"]）∩ nodes.declared_namespaces（申报）。
+// 这与 EligibleNodes 的授权判定同一份实现（intersectNamespaces），不另写一套口径。
+func (d *DB) nodeCountsByNamespace(ctx context.Context, namespaces []*Namespace) (map[string]int, error) {
+	counts := make(map[string]int, len(namespaces))
+	if len(namespaces) == 0 {
+		return counts, nil
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT COALESCE(c.namespaces, '["*"]'), n.declared_namespaces
+		   FROM nodes n
+		   LEFT JOIN node_configs c ON c.node_id = n.id
+		  WHERE n.status = ?`, NodeStatusOnline)
+	if err != nil {
+		return nil, fmt.Errorf("count namespace nodes: %w", err)
+	}
+	defer rows.Close()
+	type lists struct{ authorized, declared []string }
+	online := []lists{}
+	for rows.Next() {
+		var rawAuthorized, rawDeclared string
+		if err := rows.Scan(&rawAuthorized, &rawDeclared); err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		authorized, err := decodeStringList(rawAuthorized)
+		if err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		declared, err := decodeStringList(rawDeclared)
+		if err != nil {
+			return nil, fmt.Errorf("count namespace nodes: %w", err)
+		}
+		online = append(online, lists{authorized: authorized, declared: declared})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count namespace nodes: %w", err)
+	}
+	for _, ns := range namespaces {
+		for _, n := range online {
+			if namespacesAllow(intersectNamespaces(n.authorized, n.declared), ns.Slug) {
+				counts[ns.Slug]++
+			}
+		}
+	}
+	return counts, nil
+}
+
+// CreateNamespace 建命名空间（同一事务内完成）。
+//
+// v4 不在命名空间里播种任何锚点能力/源：链尾是普通脚本能力，没有中枢内置执行器，
+// 因此「新建的 ns 必须自带一份某能力」这个前提不存在了。
 //
 // slug 全局唯一：已占用返回 ErrNamespaceExists（HTTP 409）。
 func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace, error) {
@@ -187,7 +256,7 @@ func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	ns := &Namespace{ID: NewNamespaceID(), Slug: slug, Name: name, CreatedAt: Now()}
+	ns := &Namespace{ID: NewNamespaceID(), Slug: slug, Name: name, CreatedAt: Now(), ResourceVersion: 1}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO namespaces (id, slug, name, created_at) VALUES (?,?,?,?)`,
 		ns.ID, ns.Slug, ns.Name, ns.CreatedAt); err != nil {
@@ -196,9 +265,6 @@ func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace
 		}
 		return nil, fmt.Errorf("insert namespace: %w", err)
 	}
-	if err := SeedBuiltinCapabilitiesTx(ctx, tx, ns.ID); err != nil {
-		return nil, err
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit create namespace: %w", err)
 	}
@@ -206,108 +272,162 @@ func (d *DB) CreateNamespace(ctx context.Context, slug, name string) (*Namespace
 }
 
 // RenameNamespace 只改展示名。slug 是稳定标识（出现在 URL 与令牌作用域里），不可改。
-func (d *DB) RenameNamespace(ctx context.Context, id, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("rename namespace: empty name")
+// RenameNamespace only changes display metadata; slug remains immutable.
+func (d *DB) RenameNamespace(ctx context.Context, id, name string, expectedRV int64) error {
+	if expectedRV <= 0 {
+		return ErrResourceVersionRequired
 	}
-	if _, err := d.GetNamespace(ctx, id); err != nil {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rename namespace: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+	ns, err := getNamespaceOn(ctx, ex, "id", id)
+	if err != nil {
 		return err
 	}
-	res, err := d.ExecContext(ctx,
-		`UPDATE namespaces SET name = ? WHERE id = ?`, name, id)
-	if err != nil {
-		return fmt.Errorf("rename namespace: %w", err)
+	if err := checkResourceRevision(expectedRV, ns.ID, ns.ResourceVersion); err != nil {
+		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rename namespace rows: %w", err)
+	if err := renameNamespaceOn(ctx, ex, ns, name); err != nil {
+		return err
 	}
-	if n == 0 {
-		return ErrNamespaceNotFound
-	}
-	return nil
+	return tx.Commit()
 }
 
 // DeleteNamespace 删命名空间。
 //
-// 两档：
-//   - 默认：里面还有 sources / edges / tasks / nodes 时返回 *NamespaceBlockedError（HTTP 409），
-//     把这些对象列出来——删命名空间 = 里面的机器全部掉线，不能当"清理配置"做。
-//   - force=true：显式级联删除，连机器、能力、事件、任务、图快照一起删。
+// 两档（api-conventions §7.5：沿用现有删除语义，不做新的级联协议）：
+//   - 默认：里面还有能力 / 源 / 预案 / 任务 / 事件 / 部署时返回 *NamespaceBlockedError（HTTP 409），
+//     把这些对象列出来——删命名空间不能当"清理配置"做。
+//   - force=true：显式级联删除，连能力、源、预案、任务、事件、部署一起删。
+//
+// 节点（集群级）不在删除范围：一台机器可能同时服务别的 ns，删一个 ns 不该顺手删机器。
 //
 // **不允许删最后一个命名空间**：删了之后这套部署就没有"这套流程属于哪里"了，
 // 而代码里不存在「没有命名空间」的分支（契约 §2.1.1）。
-func (d *DB) DeleteNamespace(ctx context.Context, id string, force bool) error {
-	if _, err := d.GetNamespace(ctx, id); err != nil {
+func (d *DB) DeleteNamespace(ctx context.Context, id string, force bool, expectedRV int64) error {
+	if expectedRV <= 0 {
+		return ErrResourceVersionRequired
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete namespace: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+	ns, err := getNamespaceOn(ctx, ex, "id", id)
+	if err != nil {
 		return err
 	}
+	if err := checkResourceRevision(expectedRV, ns.ID, ns.ResourceVersion); err != nil {
+		return err
+	}
+	if err := deleteNamespaceOn(ctx, ex, id, force); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func deleteNamespaceOn(ctx context.Context, ex queryExec, id string, force bool) error {
 	var total int
-	if err := d.QueryRowContext(ctx,
-		`SELECT count(*) FROM namespaces`).Scan(&total); err != nil {
+	if err := ex.queryRowContext(ctx, "SELECT count(*) FROM namespaces").Scan(&total); err != nil {
 		return fmt.Errorf("count namespaces: %w", err)
 	}
 	if total <= 1 {
 		return ErrLastNamespace
 	}
-
-	blocking, err := d.namespaceBlockingObjects(ctx, id)
+	blocking, err := namespaceBlockingObjectsOn(ctx, ex, id)
 	if err != nil {
 		return err
 	}
 	if len(blocking) > 0 && !force {
 		return &NamespaceBlockedError{Blocking: blocking}
 	}
-
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin delete namespace: %w", err)
+	// All guards run BEFORE the first delete in the same UID/CAS transaction.
+	if force {
+		var unreaped, occupied int
+		if err := ex.queryRowContext(ctx, `SELECT COUNT(*) FROM task_attempts a JOIN tasks t ON t.id=a.task_id WHERE t.namespace_id=? AND a.reaped_at IS NULL`, id).Scan(&unreaped); err != nil {
+			return fmt.Errorf("namespace unreaped guard: %w", err)
+		}
+		// Any busy binding to a task in this namespace is physical/unknown occupancy,
+		// including reservation, terminal, offline, or mismatched historical ledger.
+		if err := ex.queryRowContext(ctx, `SELECT COUNT(*) FROM node_instances i JOIN tasks t ON t.id=i.busy_task WHERE t.namespace_id=?`, id).Scan(&occupied); err != nil {
+			return fmt.Errorf("namespace occupancy guard: %w", err)
+		}
+		if unreaped > 0 || occupied > 0 {
+			return &NamespaceBlockedError{Blocking: []string{fmt.Sprintf("unreaped executions=%d, busy/unknown namespace ledger=%d; cancel/abandon and wait for reliable process-group reap before force", unreaped, occupied)}}
+		}
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	// 显式按依赖顺序删，而不是依赖 FK 级联的顺序：
-	// tasks 对 capability_versions 有**不带级联**的外键，级联触发顺序若先删能力
-	// 就会撞上还存在的 tasks 行。显式删除让顺序确定。
+	if err := namespaceExternalReferencesOn(ctx, ex, id); err != nil {
+		return err
+	}
 	stmts := []string{
+		`DELETE FROM emits WHERE task_id IN (SELECT id FROM tasks WHERE namespace_id = ?)`,
 		`DELETE FROM tasks WHERE namespace_id = ?`,
+		`DELETE FROM playbook_installs WHERE namespace_id = ?`,
 		`DELETE FROM playbooks WHERE namespace_id = ?`,
+		`DELETE FROM event_deliveries WHERE namespace_id = ?`,
 		`DELETE FROM events WHERE namespace_id = ?`,
-		`DELETE FROM node_pins WHERE namespace_id = ?`,
-		`DELETE FROM node_instances WHERE namespace_id = ?`,
-		`DELETE FROM node_capabilities WHERE namespace_id = ?`,
 		`DELETE FROM edges WHERE namespace_id = ?`,
 		`DELETE FROM sources WHERE namespace_id = ?`,
-		`DELETE FROM graph_versions WHERE namespace_id = ?`,
-		`DELETE FROM nodes WHERE namespace_id = ?`,
+		`DELETE FROM deployments WHERE namespace_id = ?`,
 		`DELETE FROM capability_versions WHERE namespace_id = ?`,
+		`DELETE FROM namespace_configs WHERE namespace_id = ?`,
 		`DELETE FROM namespaces WHERE id = ?`,
 	}
 	for _, q := range stmts {
-		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+		if _, err := ex.execContext(ctx, q, id); err != nil {
 			return fmt.Errorf("delete namespace %s: %w", id, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete namespace: %w", err)
 	}
 	return nil
 }
 
-// namespaceBlockingObjects 列出阻塞删除的对象（用于 409 的可读清单）。
-func (d *DB) namespaceBlockingObjects(ctx context.Context, namespaceID string) ([]string, error) {
+// namespaceExternalReferencesOn prevents explicit namespace clearing from
+// cascading through owners outside this namespace. Never compare names/digests.
+func namespaceExternalReferencesOn(ctx context.Context, ex queryExec, id string) error {
+	probes := []string{
+		`SELECT COUNT(*) FROM tasks t JOIN capability_versions c ON c.id=t.capability_id WHERE c.namespace_id=? AND t.namespace_id<>c.namespace_id`,
+		`SELECT COUNT(*) FROM task_attempts a JOIN tasks t ON t.id=a.task_id JOIN capability_versions c ON c.id=a.capability_id WHERE c.namespace_id=? AND t.namespace_id<>c.namespace_id`,
+		`SELECT COUNT(*) FROM task_artifact_manifests m JOIN capability_versions c ON c.id=m.capability_id WHERE c.namespace_id=? AND m.namespace_id<>c.namespace_id`,
+		`SELECT COUNT(*) FROM deployments d JOIN capability_versions c ON c.id=d.capability_id WHERE c.namespace_id=? AND d.namespace_id<>c.namespace_id`,
+		`SELECT COUNT(*) FROM playbook_installs p JOIN capability_versions c ON EXISTS(SELECT 1 FROM json_tree(p.receipt) j WHERE j.type='text' AND j.value=c.id) WHERE c.namespace_id=? AND p.namespace_id<>c.namespace_id`,
+		`SELECT COUNT(*) FROM capability_versions c JOIN playbook_installs p ON p.id=c.installed_from WHERE p.namespace_id=? AND c.namespace_id<>p.namespace_id`,
+		`SELECT COUNT(*) FROM sources s JOIN playbook_installs p ON p.id=s.installed_from WHERE p.namespace_id=? AND s.namespace_id<>p.namespace_id`,
+		`SELECT COUNT(*) FROM tasks t JOIN playbook_installs p ON p.id=t.trace_id WHERE p.namespace_id=? AND t.namespace_id<>p.namespace_id`,
+		`SELECT COUNT(*) FROM events e JOIN playbook_installs p ON p.id=e.trace_id WHERE p.namespace_id=? AND e.namespace_id<>p.namespace_id`,
+		`SELECT COUNT(*) FROM tasks child JOIN tasks parent ON parent.id=child.parent_task_id WHERE parent.namespace_id=? AND child.namespace_id<>parent.namespace_id`,
+	}
+	for _, q := range probes {
+		var n int
+		if err := ex.queryRowContext(ctx, q, id).Scan(&n); err != nil {
+			return fmt.Errorf("namespace reference guard: %w", err)
+		}
+		if n > 0 {
+			return &NamespaceBlockedError{Blocking: []string{"retained references owned by another namespace; force cannot destroy them"}}
+		}
+	}
+	return nil
+}
+
+func namespaceBlockingObjectsOn(ctx context.Context, ex queryExec, namespaceID string) ([]string, error) {
 	probes := []struct {
 		label string
 		query string
 	}{
+		{"capabilities", `SELECT count(*) FROM capability_versions WHERE namespace_id = ?`},
 		{"sources", `SELECT count(*) FROM sources WHERE namespace_id = ?`},
-		{"edges", `SELECT count(*) FROM edges WHERE namespace_id = ?`},
+		{"playbooks", `SELECT count(*) FROM playbooks WHERE namespace_id = ?`},
 		{"tasks", `SELECT count(*) FROM tasks WHERE namespace_id = ?`},
-		{"nodes", `SELECT count(*) FROM nodes WHERE namespace_id = ?`},
+		{"events", `SELECT count(*) FROM events WHERE namespace_id = ?`},
+		{"deployments", `SELECT count(*) FROM deployments WHERE namespace_id = ?`},
 	}
 	out := []string{}
 	for _, p := range probes {
 		var n int
-		if err := d.QueryRowContext(ctx, p.query, namespaceID).Scan(&n); err != nil {
+		if err := ex.queryRowContext(ctx, p.query, namespaceID).Scan(&n); err != nil {
 			return nil, fmt.Errorf("probe %s in namespace: %w", p.label, err)
 		}
 		if n > 0 {
@@ -365,10 +485,11 @@ func createDefaultNamespaceTx(ctx context.Context, tx *sql.Tx) (*Namespace, erro
 			return nil, err
 		}
 		ns := &Namespace{
-			ID:        NewNamespaceID(),
-			Slug:      slug,
-			Name:      DefaultNamespaceName,
-			CreatedAt: Now(),
+			ID:              NewNamespaceID(),
+			Slug:            slug,
+			Name:            DefaultNamespaceName,
+			CreatedAt:       Now(),
+			ResourceVersion: 1,
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO namespaces (id, slug, name, created_at) VALUES (?,?,?,?)`,

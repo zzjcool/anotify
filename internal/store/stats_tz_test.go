@@ -43,31 +43,27 @@ func insertEventAt(t *testing.T, db *DB, nsID string, at time.Time) {
 		Source:      "test",
 		Type:        "ping",
 		CreatedAt:   at.Unix(),
-	}); err != nil {
+	}, at.Unix(), 0); err != nil {
 		t.Fatalf("insert event at %v: %v", at, err)
 	}
 }
 
-// statsTestCapability 取一个**真实**的能力定义行当 CreateTasks 的 capability_id。
+// statsTestCapability 造一个**真实**的能力定义行当 CreateTasks 的 capability_id。
 //
 // 不能伪造 id：capability_id 是外键（schema.sql `capability_id TEXT NOT NULL
-// REFERENCES capability_versions(id)`，外键是开着的）。newTestNS 会把内置能力
-// 播进默认命名空间，所以先按契约给的 "review@1" 试（内置清单里没有它，会
-// ErrNotFound），再退回列表第一个。
+// REFERENCES capability_versions(id)`，外键是开着的）。v4 的注册路径不播种任何
+// 内置能力（identity.go），所以统计夹具必须自己建一行真正文能力。
 func statsTestCapability(t *testing.T, db *DB, nsID string) *CapabilityVersion {
 	t.Helper()
 	ctx := context.Background()
 	if c, err := db.GetCapability(ctx, nsID, "review", 1); err == nil && c != nil {
 		return c
 	}
-	list, err := db.ListCapabilities(ctx, nsID)
-	if err != nil {
-		t.Fatalf("list capabilities: %v", err)
+	c := withSpec(mkCap(nsID, "review", 1, nil))
+	if err := db.CreateCapability(ctx, c); err != nil {
+		t.Fatalf("create stats capability: %v", err)
 	}
-	if len(list) == 0 {
-		t.Fatalf("命名空间 %q 里没有任何能力定义，CreateTasks 缺外键建不了任务", nsID)
-	}
-	return list[0]
+	return c
 }
 
 // TestStartOfLocalDayUnix 守「今日」日界函数本身：取本地 00:00:00，不是 UTC 0 点。
@@ -181,7 +177,7 @@ func TestMessageStatsTotalsDeliveryAndDevices(t *testing.T) {
 		t.Fatalf("create tasks: %v", err)
 	}
 	// CreateTasks 只能落在 pending（契约 §3.2），终态直接 SQL 改（tasks 无触发器）。
-	for i, status := range []string{TaskSucceeded, TaskFailed, TaskCanceled, TaskAbandoned, TaskPending} {
+	for i, status := range []string{TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned, TaskPending} {
 		mustExec(t, db, `UPDATE tasks SET status=? WHERE id=?`, status, tasks[i].ID)
 	}
 

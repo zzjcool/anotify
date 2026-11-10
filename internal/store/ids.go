@@ -61,14 +61,6 @@ func NewEventID() string        { return newID("evt") }
 func NewCliAuthID() string      { return newID("cas") }
 func NewRecoveryCodeID() string { return newID("rc") }
 
-// NewPinID 生成一条粘性 pin 的行身份（node_pins.pin_id，#315）。
-//
-// 它回答的是「这条 pin 是不是**本次**派发新建的」：回滚按它做条件删除，
-// 而不是按秒级的 created_at（同一秒两次派发会撞在一起，删到别人那一行）。
-// 这里用**时间有序**的 newID 而不是纯随机：同一 key 上先后两次建的 pin
-// 在库/日志里天然按时间排好，排查时不必再对 created_at。
-func NewPinID() string { return newID("pin") }
-
 // NewMessageID 生成旧通知模型（messages 表）的 ID。
 //
 // Deprecated: messages 表属于被 events/tasks 取代的旧模型，
@@ -127,11 +119,6 @@ func idHashSuffix(hash string) string {
 // 保持契约里「可读的时间 + hash 前缀」形态，同时真正唯一。
 func NewCapabilityID(contentHash string) string {
 	return "cap_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash) + "_" + randomSuffix()
-}
-
-// NewGraphVersionID 生成图快照 ID：grf_<UTC 秒>_<hash8>（同 NewCapabilityID 的唯一性考量）。
-func NewGraphVersionID(contentHash string) string {
-	return "grf_" + itoa64(time.Now().Unix()) + "_" + idHashSuffix(contentHash) + "_" + randomSuffix()
 }
 
 // randomSuffix 返回 6 位 base62 随机后缀（约 35 bit 熵）。

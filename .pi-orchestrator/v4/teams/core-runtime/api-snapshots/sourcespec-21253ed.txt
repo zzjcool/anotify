@@ -1,0 +1,192 @@
+package sourcespec // import "github.com/zzjcool/anotify/internal/sourcespec"
+
+Package sourcespec 是 Anotify v4 **源（Source / 触发器）**文档与配置的唯一纯校验源。
+
+为什么单独一个包：源的校验要在三个地方用同一套判据——store 的写路径（建/改源）、 playbook 的 12
+格安装比较（G1-5）、以及将来的拒绝理由展示。把它们抄两遍必然漂移 （症状是「保存说没问题、安装说不一样」），所以本包只做**纯函数**：
+
+  - 不 import 任何本项目包（store/route/server 都不行）：校验规则不依赖数据库；
+  - 不碰 IO、不读环境、不生成随机数（token 的生成是 store 的事，本包只判「空 = 待生成」）；
+  - 输入的 config 一律是 `json.RawMessage`，输出也是——调用方拿到的字节就是落库的字节。
+
+语义基线是 `docs/design/v4/source.md`（§1 kind 注册表、§2 文档形状、§3 config 字段、 §4 targets
+与模板语法、§6 校验与错误）。主文档与实现冲突时以主文档为准。
+
+CONSTANTS
+
+const (
+	KindCron    = "cron"
+	KindWebhook = "webhook"
+	KindManual  = "manual"
+)
+    本期 kind 注册表的三个内置项（source.md §1 / §7 D0）。
+
+    kind 是**开放集合**：合法值 = 注册表里有的项。判定一律走 IsKind（查表）， 不写「不是这三个就拒」——那样开注册表时要逐处翻。
+
+
+VARIABLES
+
+var (
+	// ErrInvalidKind 表示 kind 不在注册表里。
+	ErrInvalidKind = errors.New("invalid source kind")
+	// ErrInvalidConfig 表示 kind/config/targets 的形状不合法。
+	ErrInvalidConfig = errors.New("invalid source config")
+)
+    校验错误域。调用方（store / server）把它们翻译成 `invalid_source_kind` /
+    `invalid_source_config`（source.md §6 的封闭错误码）。
+
+
+FUNCTIONS
+
+func IsKind(kind string) bool
+    IsKind 报告 kind 是否在注册表里。
+
+func Kinds() []string
+    Kinds 返回合法 kind（拷贝；调用方可安全修改）。
+
+func MaskConfig(kind string, raw json.RawMessage) json.RawMessage
+    MaskConfig 返回用于回显的 config：token / secret 脱敏。
+
+    保留后 4 位（`***ab12`）而不是全 `***`：运维要能分辨「我正在轮换的是哪一把」， 后 4 位不足以还原凭据。长度 ≤ 4
+    的串没有「安全的后 4 位」，整体打码。
+
+    注意这只是 store 层的**兜底**：source.md §3.1 规定 GET 给 `hookUrl` + `secretSet`
+    两个投影字段，handler 层（G3）按那条实现，本函数保证「万一把 config 原样回显了」 也不会漏凭据。
+
+func MergeConfig(kind string, existing, patch json.RawMessage) (json.RawMessage, error)
+    MergeConfig 把 PATCH 语义应用到已有 config 上：**凭证字段「省略 = 保留已有」**。
+
+    为什么只有 token/secret 有这个例外：GET 永远不回显它们的原文（source.md §3.1： 只给 hookUrl /
+    secretSet），所以客户端在 PATCH 里根本拿不到旧值可发。若按 「省略 = 清空」处理，任何一次「只改 payloadSchema」的
+    PATCH 都会顺手把 webhook 的 URL 换掉、把签名失效——那是数据丢失，不是编辑。
+
+    其它字段（payload / payloadSchema / sample）没有这个例外：读接口会原样回显它们， 客户端有能力重发；省略即清空/缺省。
+
+func NextCronTime(config json.RawMessage, after time.Time) (time.Time, error)
+    NextCronTime 按源的 config 算下次触发时刻（供 store 与调度器共用）。
+
+    tz 为空或 "Local" 时用本地时区。返回零值时调用方应当放弃调度并记日志 （表达式永不成立），而不是把它当成「0 秒」。
+
+func NormalizeConfig(kind string, raw json.RawMessage) (json.RawMessage, error)
+    NormalizeConfig 归一化 config：只保留该 kind 认得的字段、补默认值、丢弃无意义字段。
+
+    归一化的意义是「库里存的就是规范形态」：创建与 PATCH 都过它，于是
+      - 同语义的两份 config（缺省 tz vs tz: Local）落库字节一致，比较不会假阴性；
+      - 坏形状（数组/标量/未知字段/坏 cron 表达式/payload 不是对象）在写路径当场拒。
+
+    **不做**的事：不生成 token（空 token 原样保留，由 store 在一次性的创建路径上生成）、 不校验 targets（那是
+    ValidateSpec / ValidateTargets 的事）。
+
+func RenderParams(target Target, payload map[string]any) (map[string]any, []string)
+    RenderParams 按一条载荷求值参数模板。
+
+    返回：
+      - params：求值后的参数（**只含取得到的项**）；
+      - missing：求值失败**参数名**（升序、去重）。缺任何一个引用的参数整条丢弃， 调用方据此留一条 param_missing
+        剪枝痕——不静默给空串（§4.1）。
+
+    类型规则只由一件事决定（§4.1）：整个值**恰好只有一个引用** → 保留原类型； 其余（掺了任何常量，哪怕只是首尾空格）→ 字符串拼接。
+
+func SameConfig(kind string, a, b json.RawMessage) bool
+    SameConfig 比较两份 config 是否**语义相同**（归一化后逐字节比）。
+
+    归一化先行：`{expr: X}` 与 `{expr: X, tz: "Local"}` 是同一份配置，
+    不归一会让安装包在「复用已有源」那一格上误判成「内容不同」。
+
+func SameTargets(a, b []Target) bool
+    SameTargets 比较两份 targets 是否语义相同。
+
+    顺序无关：扇出的求值顺序不是语义（每条 target 独立求值、独立剪枝，source.md §4.2）， 所以 `[a,b]` 与 `[b,a]`
+    是同一份声明。参数按 canonical JSON 比（键序无关）。
+
+func SortedKeys(m map[string]any) []string
+    SortedKeys 返回 map 的键（升序）——遍历参数/map 时的确定性来源。
+
+func ValidateParamsTemplate(params map[string]any) error
+    ValidateParamsTemplate 校验一份参数模板的**语法**（不校验路径取不取得到）。
+
+    递归整个 params 对象：值里任何字符串都可能含 `$(…)`；对象/数组里的字符串同样校 （模板就是参数值，嵌套不改变这一事实）。
+
+func ValidateSpec(spec Spec, forWrite bool) error
+    ValidateSpec 校验一份源 spec（kind / config / targets）。
+
+    forWrite 区分两个时机的判据：
+      - true：创建/更新。webhook 的 token **可以**为空（服务端随后生成）， cron 的表达式必须当场解析得过，targets
+        的模板语法必须成立。
+      - false：读/比对。webhook 的 token 必须已经存在（一个没有 token 的 webhook 源在外面对不上任何
+        URL），其余与写路径一致。
+
+    **空 targets 是合法的**（source.md §5：先把入口建起来、再接能力是正常顺序， 触发时留一条 no_target
+    剪枝痕），这里不判它。
+
+func ValidateTargets(targets []Target) error
+    ValidateTargets 校验出口声明：引用非空、参数模板语法成立。
+
+    模板只校**语法**（`$(payload.a.b)` 的形状、被禁的根名），不校「这个路径取不取得到」 ——那需要一条真实载荷，属于运行期（取不到 →
+    param_missing 剪枝，source.md §4.1）。
+
+
+TYPES
+
+type Config struct {
+	// Expr / TZ 是 kind=cron 的调度参数（tz 空 = Local）。
+	Expr string
+	TZ   string
+	// Token / Secret 是 kind=webhook 的入口凭据（token 空 = 待服务端生成）。
+	Token  string
+	Secret string
+	// Payload 是 cron/manual 的静态打底数据（webhook 的载荷来自投递体，这里恒为 nil）。
+	Payload map[string]any
+	// PayloadSchema 是载荷契约（缺省/null = 不校验）。
+	PayloadSchema json.RawMessage
+	// Sample 是编辑器提示用的示意载荷（不参与派发）。
+	Sample map[string]any
+}
+    Config 是按 kind 解释后的 config（归一化形态）。
+
+    未在本 kind 上有意义的字段恒为零值：`payload` 只有 cron/manual 保留， `token`/`secret` 只有
+    webhook 有（source.md §3.1/§3.2）。
+
+func ParseConfig(kind string, raw json.RawMessage) Config
+    ParseConfig 把 config 字节按 kind 解释成结构化形态（坏字节 → 零值，不报错）。
+
+    它是**读侧**入口：库里一条手改坏的数据不该让整个源列表打不开。 校验在 ValidateSpec / NormalizeConfig 里做（写侧）。
+
+type CronSchedule struct {
+	Minute, Hour, Dom, Month, Dow map[int]bool
+	// DomStar / DowStar 记录这两个字段是不是 `*`。
+	//
+	// 标准 cron 的语义：dom 和 dow 都受限时是 **OR**（"每月 1 号" 或 "每周一"），
+	// 只有一个受限时是 AND（即另一个必须是 *）。要正确表达 OR 语义，
+	// 必须知道哪个是通配。
+	DomStar, DowStar bool
+}
+    CronSchedule 是一个解析好的五段表达式。
+
+func ParseCron(expr string) (*CronSchedule, error)
+    ParseCron 解析五段表达式。
+
+func (s *CronSchedule) Next(after time.Time) time.Time
+    Next 返回 after 之后的第一个触发时刻（严格大于 after，秒/纳秒归零）。
+
+    找不到（例如表达式永不成立，如 2 月 30 日）时返回零值 time.Time。
+
+type Spec struct {
+	Kind    string          `json:"kind"`
+	Enabled bool            `json:"enabled"`
+	Config  json.RawMessage `json:"config"`
+	Targets []Target        `json:"targets"`
+}
+    Spec 是一份源文档的 spec 段（source.md §2）。
+
+    Config 保持原始字节：本包只判形状与默认值，归一化后的字节由 NormalizeConfig 产出，
+    调用方拿到什么就存什么——中途重新编码会把用户写的 schema 改写成另一种字节等价形式。
+
+type Target struct {
+	Capability string         `json:"capability"`
+	Params     map[string]any `json:"params,omitempty"`
+}
+    Target 是一条「事件送给哪个能力」的声明（source.md §4）。
+
+    Capability 是**引用**：能力名（跟随 latest）或 `name@version`（钉死某版）。 Params
+    是参数模板：常量、`$(payload.路径)` 引用，或两者混写（§4.1）。

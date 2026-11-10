@@ -3,15 +3,14 @@ package store
 import (
 	"database/sql"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/zzjcool/anotify/internal/artifact"
+	"sync"
 )
 
 //go:embed schema.sql
@@ -19,28 +18,71 @@ var schemaSQL string
 
 // schemaVersionTable 记录已应用的迁移版本。
 //
-// 为什么要有它：旧实现用一串 `_, _ = db.Exec("ALTER TABLE ...")` 补列，
-// 所有错误被静默吞掉——真实迁移失败会被当成「已经迁移过」，库就坏在无声处。
-// 现在每个迁移是编号版本：已记账则跳过，未记账则在一个事务里执行 + 记账，
-// 任何一步失败都返回错误（不吞错）。
+// 它是**记账**，不是布局身份：「哪些迁移块跑过」。v3 的库同样记着 1..11，
+// v4 baseline 也记 1——只看记账，一个 v3 库和一个刚建好的 v4 库长得一模一样。
+// 表结构到底是哪一代由 layoutFormatV4（PRAGMA user_version）单独记录。
 const schemaVersionTable = `CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,
     applied_at INTEGER NOT NULL
 )`
 
-// baselineVersion 是 squash 出来的那块终态 DDL 的版本号。
-//
-// schema.sql 从 `-- +migration 1 baseline`（squash 后的终态 DDL）开始，
-// 往后的新变更按 `-- +migration 2 …` 追加块（见本文件头的说明）。
-// baseline 本身**不再改动**：改它等于让「已发布的库」与「新建的库」分叉。
+// baselineVersion 是 v4 baseline 的版本号（schema.sql 唯一的一块）。
 const baselineVersion = 1
 
 // headVersion 是本版本代码认识的**最高**迁移版本（= schema.sql 的最后一块）。
 //
-// 它只用来识别「squash 之前建的库」：那种库的 schema_version 里记着 v2..v28，
-// 比本代码认识的最高版本还高，且结构与本仓库的终态 DDL 完全不同 → 明确拒绝
-// （见 legacyVersionError）。每追加一块迁移都要同步 +1，否则新建的库会被自己拒绝。
-const headVersion = 11
+// v4 开发期只有一块 baseline，没有历史增量块：`-- +migration 1 baseline` 之后
+// 不许再出现任何 v3 的迁移块（v3→v4 升级路径不存在，见 ErrUnsupportedFormat）。
+// 每追加一块 v4 迁移都要同步 +1。
+const headVersion = 1
+
+// layoutFormatV4 是 v4 **布局格式**标记（SQLite 的 PRAGMA user_version）。
+//
+// 为什么不能拿 schema_version=1 当布局身份：记账回答的是「跑过哪些迁移块」，
+// 不回答「表结构是哪一代」；v3 的库同样记着 schema_version=1（一直到 11）。
+// 所以 v4 用独立标记记录布局，并且只在**一个地方**写它：
+// 空库新建时，baseline DDL、记账行与这个标记落在**同一个事务**里，要么全有要么全无。
+//
+// 于是三件事被彻底分开：
+//   - marker=4：这个文件里的表结构就是 v4 baseline（再逐表/列/约束校验，见 validateV4Layout）；
+//   - 有 schema_version 却没 marker：不是 v4 建的库（v3 或半写）→ ErrUnsupportedFormat，
+//     **绝不补 marker** 当成新库（补了就等于把 v3 的旧表当成 v4 用，缺列/缺表会在业务路径上炸）；
+//   - marker 既不是 4 也不是 0：未知布局 → ErrUnsupportedFormat。
+const layoutFormatV4 = 4
+
+// 两个具名拒绝理由：Open 的失败必须能按类分辨（调用方/测试不该靠匹配中文文案）。
+var (
+	// ErrUnsupportedFormat：这个数据目录不是「v4 新建的库」——v3/更旧的库（有旧业务表，
+	// 或有 schema_version 记账但没布局标记）、未知的布局标记、或比本代码更高的记账版本。
+	// 拒绝时**不改写任何东西**：不补标记、不建 v4 表、不删用户数据。
+	ErrUnsupportedFormat = errors.New("store: 数据目录不是 v4 新建的库（不支持旧库升级）")
+	// ErrSchemaInvalid：库自称是 v4 布局（PRAGMA user_version=4），但结构与 baseline 不一致
+	// ——半写（缺记账）、缺表、缺列、残留 v3 列、缺关键唯一约束。
+	// 程序**不会**在坏库上做 `CREATE IF NOT EXISTS` 修补（那只会把「缺列」藏成「查询时才炸」），
+	// 也不会删除用户数据；只把缺什么说清楚。
+	ErrSchemaInvalid = errors.New("store: v4 布局标记与库结构不一致")
+)
+
+// legacyBusinessTables 是「没有 schema_version 但已经有业务表」的判定清单。
+//
+// 这种库只可能来自 v3 或更早：v4 的 Open 只在一次事务里建 baseline，
+// 所以「业务表在、记账表不在、布局标记也不是 4」= 旧库。命中就拒绝，绝不尝试兼容。
+var legacyBusinessTables = []string{
+	"users",
+	"passkeys",
+	"sessions",
+	"api_keys",
+	"devices",
+	"namespaces",
+	"capability_versions",
+	"nodes",
+	"tasks",
+	"events",
+	"edges",
+	"sources",
+	"playbooks",
+	"deployments",
+}
 
 // migrationHeader 匹配分块注释，例如：`-- +migration 2 add_column`
 var migrationHeader = regexp.MustCompile(`^--\s*\+migration\s+(\d+)\s+(\w+)\s*$`)
@@ -103,13 +145,7 @@ func parseMigrations(src string) (migrationSet, error) {
 // modify（测试注入用）在校验完版本序列后、执行前被调用，可修改待执行的迁移
 // ——用于断言「迁移失败必须回滚且不记账」。
 //
-// 第三个返回参数是「某版本需要用 Go 逻辑实现」的钩子表：SQL 表达不了的变更
-// （条件 ALTER TABLE——SQLite 没有 ADD COLUMN IF NOT EXISTS、数据搬迁、表重建）
-// 写在钩子里，SQL 块留空。约定：hook 返回 error 时整个迁移回滚；hook 必须**幂等**
-// ——同一版本在同一个事务内可能因重试被执行多次。
-//
-// baseline 全是 DDL，没有钩子，所以这里传 nil。机制本身是保留的：从 `-- +migration 2`
-// 往后追加块时，需要 Go 逻辑就把它加进 map。
+// v4 baseline 全是 DDL，没有钩子；migrateWith 的钩子表保留给后续新块。
 func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 	set, err := parseMigrations(schemaSQL)
 	if err != nil {
@@ -123,351 +159,49 @@ func migrate(db *sql.DB, modify func(*migrationSet)) (int, error) {
 
 // migrationHooks 是「SQL 表达不了」的变更（数据搬迁）的钩子表。
 //
-// 约定见 migrateWith：hook 返回 error 时整个迁移回滚；hook 必须**幂等**——
-// 同一版本在旧库升级/新建库两条路径上都可能跑到，而重跑必须得到同一结果。
-var migrationHooks = map[int]func(*sql.Tx) error{
-	9:  backfillCapabilitySpec,
-	11: referenceCapabilityFromDeployments,
-}
+// 约定见 migrateWith：hook 返回 error 时整个迁移回滚；hook 必须**幂等**。
+// v4 baseline 不需要钩子（它建的是一个空库的全部结构，没有要搬的数据）。
+var migrationHooks = map[int]func(*sql.Tx) error{}
 
-// backfillCapabilitySpec 是 migration 9 的钩子：给正文为空的老行补 spec（契约 §6）。
+// migrateWith 执行迁移：新库的 baseline（DDL + 记账 + 布局标记）一个事务，
+// 之后的版本各自一个事务。
 //
-// 三类输入一份输出（都只写 spec 列 + 重算 content_hash，不动任何既有列）：
-//
-//	① 有产物行的能力 → 正文 = 该产物的 spec 字段（canonical）
-//	② notify.phone       → {handler: "notify-phone", params: <原 schema>, outputs: <原>}
-//	③ 其它零产物能力 → {handler: "noop",        params: <原 schema>, outputs: <原>}
-//
-// 三条硬要求（契约 §6.2）：
-//   - **幂等**：只碰正文为空（spec = ”）的行，已填的不动；同一输入重跑得到同一 hash；
-//   - 回填后必须能过 artifact.Validate（否则缺陷会拖到第一次部署/派发才暴露）；
-//   - 拿到 noop 占位的能力**打进日志**（人工补实现的清单）。
-//
-// 为什么不能给空壳编一份 `exit 0` 正文：那是伪造用户代码（契约 §6 明令禁止）。
-// 占位必须是平台认领的 noop —— 列表页能标「未实现」，部署面板也不会把它当能跑的能力。
-//
-// 为什么必须同时重算 content_hash：v3 起 content_hash ≡ digest（吃 name+version+spec）。
-// 不重算的话库里留的是旧口径的 hash，与 spec 对不上，往后任何「同内容重提交」都算不出
-// 同一个值，幂等折叠永远命不中——而症状是「什么都对，就是每次都新建一行」。
-func backfillCapabilitySpec(tx *sql.Tx) error {
-	type pending struct {
-		id, namespaceID, name      string
-		version                    int
-		params, outputs, lifecycle string
-	}
-	// 先全读出来再写：同一个事务里「边读游标边写表」在 SQLite 上会让游标看到自己的写，
-	// 而这里的判定条件是 spec = ''，读到一半被改写会让行为依结果集而变。
-	rows, err := tx.Query(`SELECT id, namespace_id, name, version, params_schema, outputs, lifecycle
-	                         FROM capability_versions WHERE spec = ''`)
-	if err != nil {
-		return fmt.Errorf("query capabilities without spec: %w", err)
-	}
-	var todo []pending
-	for rows.Next() {
-		var p pending
-		if err := rows.Scan(&p.id, &p.namespaceID, &p.name, &p.version,
-			&p.params, &p.outputs, &p.lifecycle); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan capability without spec: %w", err)
-		}
-		todo = append(todo, p)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("iterate capabilities without spec: %w", err)
-	}
-	rows.Close()
-	if len(todo) == 0 {
-		return nil
-	}
-
-	var noopRefs []string
-	for _, p := range todo {
-		spec, kind, aerr := specForBackfill(tx, p.namespaceID, p.id, p.name,
-			p.params, p.outputs, p.lifecycle)
-		if aerr != nil {
-			return fmt.Errorf("backfill spec for %s@%d: %w", p.name, p.version, aerr)
-		}
-		c := &CapabilityVersion{
-			NamespaceID: p.namespaceID,
-			Name:        p.name,
-			Version:     p.version,
-			Spec:        spec,
-		}
-		// 回填出来的正文必须自己站得住（Validate 一次），否则宁可让迁移失败并指名道姓，
-		// 也不能把一个坏正文写进库、等第一次部署/派发时才发现（契约 §6.2）。
-		// 回填只需要 spec 子文档的字节：产物是读的时候从这一行拼出来的（P2 删了镜像表）。
-		specJSON, cerr := prepareCapabilitySpec(c)
-		if cerr != nil {
-			return fmt.Errorf("backfilled spec for %s@%d is invalid (老库里的 schema/outputs "+
-				"可能不合当前规则，先人工修好再升级): %w", p.name, p.version, cerr)
-		}
-		hash, herr := NormalizeCapability(c)
-		if herr != nil {
-			return fmt.Errorf("hash backfilled cap %s@%d: %w", p.name, p.version, herr)
-		}
-		if _, uerr := tx.Exec(
-			`UPDATE capability_versions SET spec = ?, content_hash = ? WHERE id = ? AND spec = ''`,
-			string(specJSON), hash, p.id,
-		); uerr != nil {
-			return fmt.Errorf("write backfilled spec for %s@%d: %w", p.name, p.version, uerr)
-		}
-		if kind != "" {
-			noopRefs = append(noopRefs, fmt.Sprintf("%s@%d", p.name, p.version))
-		}
-	}
-	if len(noopRefs) > 0 {
-		slog.Warn("能力正文回填：这些能力尚无实现，已装为 noop 占位（请补实现）",
-			"event", "store.migration.spec_backfill_noop",
-			"count", len(noopRefs),
-			"capabilities", strings.Join(noopRefs, ", "))
-	}
-	return nil
-}
-
-// deploymentsCapabilityDDL 是 migration 11 重建出来的 deployments（终态形状，契约 §11.1）。
-//
-// 放在 Go 里而不是 schema.sql 的迁移块里：重建的**顺序**（新建 → 拷 → 删旧 → 改名）
-// 与逐行映射是一件事，拆成「SQL 块 + hook」只会让读者以为其中一半能单独跑。
-// 表名先叫 deployments_new，拷完再改名——SQLite 没有 ALTER TABLE ... ALTER COLUMN。
-const deploymentsCapabilityDDL = `CREATE TABLE deployments_new (
-    id            TEXT PRIMARY KEY,
-    namespace_id  TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    node_id       TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    capability_id TEXT NOT NULL REFERENCES capability_versions(id) ON DELETE CASCADE,
-    digest        TEXT NOT NULL,
-    state         TEXT NOT NULL DEFAULT 'pending',
-    reason        TEXT NOT NULL DEFAULT '',
-    created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL,
-    UNIQUE (node_id, capability_id, digest)
-)`
-
-// referenceCapabilityFromDeployments 是 migration 11 的钩子：把 deployments 从
-// 「引用 artifacts 行」改写成「引用能力行」，然后拆掉 artifacts 镜像表（契约 §11.1）。
-//
-// 三条硬要求：
-//
-//   - **一行都不丢**：拷贝走 LEFT JOIN，映射不到能力行的旧行让迁移失败并指名道姓，
-//     而不是被 INNER JOIN 静默筛掉（丢一行部署 = 那台机器上的能力从此没有期望）。
-//   - **幂等**：重跑时如果 deployments 已经是终态（有 capability_id、没有 artifact_id），
-//     只补最后一步（确保镜像表不在）。旧库升级与新建库都会跑到这里，两条路必须同结果。
-//   - **不编造**：映射不到就不迁，绝不猜一个 capability_id 出来。
-func referenceCapabilityFromDeployments(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "deployments")
-	if err != nil {
-		return fmt.Errorf("probe deployments columns: %w", err)
-	}
-	if len(cols) == 0 {
-		return fmt.Errorf("deployments 表不存在（迁移顺序坏了？）")
-	}
-	if cols["capability_id"] && !cols["artifact_id"] {
-		// 终态：重建已经做过。这里只把最后一步补齐（镜像表不能留）。
-		if _, derr := tx.Exec(`DROP TABLE IF EXISTS artifacts`); derr != nil {
-			return fmt.Errorf("drop artifacts mirror: %w", derr)
-		}
-		return nil
-	}
-	if !cols["artifact_id"] {
-		return fmt.Errorf("deployments 既没有 artifact_id 也没有 capability_id，认不出这是什么结构")
-	}
-	hasArtifacts, err := tableExistsTx(tx, "artifacts")
-	if err != nil {
-		return fmt.Errorf("probe artifacts: %w", err)
-	}
-	if !hasArtifacts {
-		return fmt.Errorf("deployments 还带着 artifact_id 外键，但 artifacts 表已不存在——库不自洽")
-	}
-
-	type legacyDeployment struct {
-		id, namespaceID, nodeID, artifactID, digest, state, reason string
-		createdAt, updatedAt                                       int64
-		capabilityID                                               sql.NullString
-	}
-	// 先全部读出来再写：同一个事务里「边读游标边重建表」会把游标下悬空的表删掉。
-	rows, err := tx.Query(`SELECT d.id, d.namespace_id, d.node_id, d.artifact_id, d.digest,
-	                              d.state, d.reason, d.created_at, d.updated_at,
-	                              a.capability_id
-	                         FROM deployments d
-	                    LEFT JOIN artifacts a ON a.id = d.artifact_id
-	                     ORDER BY d.id`)
-	if err != nil {
-		return fmt.Errorf("query legacy deployments: %w", err)
-	}
-	var legacy []legacyDeployment
-	for rows.Next() {
-		var d legacyDeployment
-		if err := rows.Scan(&d.id, &d.namespaceID, &d.nodeID, &d.artifactID, &d.digest,
-			&d.state, &d.reason, &d.createdAt, &d.updatedAt, &d.capabilityID); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan legacy deployment: %w", err)
-		}
-		legacy = append(legacy, d)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("iterate legacy deployments: %w", err)
-	}
-	rows.Close()
-
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS deployments_new`); err != nil {
-		return fmt.Errorf("drop stale deployments_new: %w", err)
-	}
-	if _, err := tx.Exec(deploymentsCapabilityDDL); err != nil {
-		return fmt.Errorf("create deployments_new: %w", err)
-	}
-	for _, d := range legacy {
-		if !d.capabilityID.Valid || d.capabilityID.String == "" {
-			return fmt.Errorf("部署行 %s 的 artifact_id=%s 在 artifacts 里找不到（不丢行、也不编造能力：请人工处理这个库）",
-				d.id, d.artifactID)
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO deployments_new
-			   (id, namespace_id, node_id, capability_id, digest, state, reason, created_at, updated_at)
-			 VALUES (?,?,?,?,?,?,?,?,?)`,
-			d.id, d.namespaceID, d.nodeID, d.capabilityID.String, d.digest,
-			d.state, d.reason, d.createdAt, d.updatedAt); err != nil {
-			return fmt.Errorf("copy deployment %s: %w", d.id, err)
-		}
-	}
-
-	// 删旧表会连带删掉它上面的索引（idx_deploy_node / idx_deploy_artifact），
-	// 所以改名之后按新形状重建：索引是查询形状的一部分，不能少。
-	if _, err := tx.Exec(`DROP TABLE deployments`); err != nil {
-		return fmt.Errorf("drop legacy deployments: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE deployments_new RENAME TO deployments`); err != nil {
-		return fmt.Errorf("rename deployments_new: %w", err)
-	}
-	for _, ddl := range []string{
-		`CREATE INDEX IF NOT EXISTS idx_deploy_node ON deployments(node_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_deploy_cap ON deployments(capability_id)`,
-	} {
-		if _, err := tx.Exec(ddl); err != nil {
-			return fmt.Errorf("recreate deployment index: %w", err)
-		}
-	}
-
-	// 最后一步：镜像表没有读者了（契约 §11.1）。
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS artifacts`); err != nil {
-		return fmt.Errorf("drop artifacts mirror: %w", err)
-	}
-	return nil
-}
-
-// tableExistsTx 判断表是否存在。
-func tableExistsTx(tx *sql.Tx, name string) (bool, error) {
-	var n int
-	if err := tx.QueryRow(
-		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// tableColumnsTx 返回表上的列名集合（表不存在时返回空 map）。
-func tableColumnsTx(tx *sql.Tx, table string) (map[string]bool, error) {
-	rows, err := tx.Query(`SELECT name FROM pragma_table_info(?)`, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		out[name] = true
-	}
-	return out, rows.Err()
-}
-
-// specForBackfill 算出某个老能力该拿到的正文，返回 (正文, 占位类型, error)。
-//
-// 占位类型非空时表示「这是编造的（noop/notify-phone）」，调用方据此打清单；
-// 从产物里读到正文时返回空串——那是用户内容，不是占位。
-func specForBackfill(tx *sql.Tx, namespaceID, capabilityID, name, params, outputs, lifecycle string) (artifact.Spec, string, error) {
-	// ① 有产物 → 正文就是产物里的 spec（契约 §6 第一行）。取最新那份：
-	// 老库可能给同一能力留过多行产物（旧版允许历史行），最新的才代表现状。
-	//
-	// 这里读的是**只在版本 ≤10 存在**的 artifacts 表：migration 9 的钩子只可能跑在
-	// 那之前的库上（migration 11 才删表）。仍然探测一次，是为了让「直接重跑 hook」
-	// （契约 §6.2 的幂等要求）在表已经删掉的库上也安全地退回 ②③，而不是撞 no such table。
-	hasArtifacts, perr := tableExistsTx(tx, "artifacts")
-	if perr != nil {
-		return artifact.Spec{}, "", fmt.Errorf("probe artifacts: %w", perr)
-	}
-	var raw string
-	var err error
-	if hasArtifacts {
-		err = tx.QueryRow(
-			`SELECT spec FROM artifacts WHERE namespace_id = ? AND capability_id = ?
-			  ORDER BY created_at DESC, id DESC LIMIT 1`, namespaceID, capabilityID).Scan(&raw)
-	} else {
-		err = sql.ErrNoRows
-	}
-	switch {
-	case err == nil:
-		var doc struct {
-			Spec artifact.Spec `json:"spec"`
-		}
-		if jerr := json.Unmarshal([]byte(raw), &doc); jerr != nil {
-			return artifact.Spec{}, "", fmt.Errorf("decode artifact spec: %w", jerr)
-		}
-		return doc.Spec, "", nil
-	case !errors.Is(err, sql.ErrNoRows):
-		return artifact.Spec{}, "", fmt.Errorf("probe artifact: %w", err)
-	}
-
-	// ②③ 零产物：notify.phone 是平台自带的手机推送动作（中枢执行器），其余一律 noop 占位。
-	lc := lifecycleRaw(lifecycle)
-	outs := decodeStringList(outputs)
-	if name == NotifyPhoneCapability.Name {
-		return HandlerSpec(artifact.HandlerNotifyPhone, json.RawMessage(params), outs, lc),
-			artifact.HandlerNotifyPhone, nil
-	}
-	return HandlerSpec(artifact.HandlerNoop, json.RawMessage(params), outs, lc),
-		artifact.HandlerNoop, nil
-}
-
-// lifecycleRaw 把 lifecycle 列原样搬进正文；空列 / `null` / `{}` 一律当作「没声明」
-// 返回 nil（omitempty 会把它整个省掉，于是规范字节里不出现这个键）。
-func lifecycleRaw(raw string) json.RawMessage {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
-		return nil
-	}
-	return json.RawMessage(trimmed)
-}
-
-// decodeStringList 解 outputs 列；坏值退回空列表（这是老数据，不能因此让迁移失败——
-// 它只影响 spec 里的出口声明，不影响库能不能打开）。
-func decodeStringList(raw string) []string {
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return []string{}
-	}
-	return out
-}
-
-// migrateWith 执行迁移：每个版本一个事务，成功才记账。
+// **顺序是这里最重要的东西**：格式判定必须在任何写操作之前完成。
+// 旧实现先 `CREATE TABLE IF NOT EXISTS schema_version`、再按记账决定要不要跑 baseline，
+// 于是「schema_version=1 的 v3 库」会跳过 baseline，然后在业务路径上炸「no such column」。
+// 现在先探测（只读）→ 不匹配就具名拒绝 → 只有真正空的新库才会被建。
 func migrateWith(db *sql.DB, set migrationSet, hooks map[int]func(*sql.Tx) error) (applied int, err error) {
-	if _, err := db.Exec(schemaVersionTable); err != nil {
-		return 0, fmt.Errorf("create schema_version: %w", err)
-	}
-	done, err := appliedVersions(db)
+	probe, err := probeDatabaseFormat(db)
 	if err != nil {
 		return 0, err
 	}
-	if err := legacyVersionError(done); err != nil {
-		return 0, err
+	if probe.marker == layoutFormatV4 {
+		// 已经是 v4 布局：**只校验，不修复**。坏库必须在这里被点名，
+		// 而不是被 CREATE IF NOT EXISTS 自愈成「看起来正常」。
+		if err := validateV4Layout(db, probe); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := requireBrandNewDatabase(probe); err != nil {
+			return 0, err
+		}
+		if len(set) == 0 || set[0].version != baselineVersion {
+			return 0, fmt.Errorf(
+				"migrate: 空库必须先有一块 version %d 的 baseline（实际首块 = %v）",
+				baselineVersion, migrationVersions(set))
+		}
 	}
+
 	for _, m := range set {
-		if done[m.version] {
+		if probe.versions[m.version] {
 			continue
 		}
-		if err := applyMigration(db, m, hooks[m.version]); err != nil {
+		// 新库的首块 baseline：DDL、记账行、布局标记在同一个事务里（见 applyBaselineMigration）。
+		apply := applyMigration
+		if probe.marker != layoutFormatV4 && m.version == baselineVersion {
+			apply = applyBaselineMigration
+		}
+		if err := apply(db, m, hooks[m.version]); err != nil {
 			return applied, fmt.Errorf("migration %d (%s): %w", m.version, m.name, err)
 		}
 		applied++
@@ -475,41 +209,610 @@ func migrateWith(db *sql.DB, set migrationSet, hooks map[int]func(*sql.Tx) error
 	return applied, nil
 }
 
-// legacyVersionError 拦住「squash 之前建的库」。
+// migrationVersions 把迁移序列的版本号拍成切片（错误消息用）。
+func migrationVersions(set migrationSet) []int {
+	out := make([]int, 0, len(set))
+	for _, m := range set {
+		out = append(out, m.version)
+	}
+	return out
+}
+
+// databaseFormat 是「这个数据目录现在是什么」的只读探测结果。
+type databaseFormat struct {
+	// marker 是 PRAGMA user_version：0 = 从没写过布局标记（v3 与全新空库都是 0）。
+	marker int
+	// ledger 表示 schema_version 表存在。
+	ledger bool
+	// versions 是已记账的版本；未知非零格式不读取 ledger。
+	versions map[int]bool
+	// tables 是现有用户表名；objects 包括表/视图/触发器/索引。
+	// 只排除字面 sqlite_ 前缀，sqliteXkeep 不是内部对象。
+	tables  []string
+	objects []string
+}
+
+// probeDatabaseFormat 只读地摸清现状：布局标记、记账表、现有用户表。
 //
-// 判据：schema_version 里出现过比 baseline 更高的版本——baseline 只记 1，所以高了
-// 一定是老库（v2..v28）。
+// 它不建表、不写标记、不改任何东西——顺序错了（先建记账表再判定）就会把
+// 「没有记账表」这条旧库证据自己抹掉。
+func probeDatabaseFormat(db *sql.DB) (databaseFormat, error) {
+	f := databaseFormat{versions: map[int]bool{}}
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&f.marker); err != nil {
+		return f, fmt.Errorf("probe layout marker (PRAGMA user_version): %w", err)
+	}
+	tables, err := userTables(db)
+	if err != nil {
+		return f, err
+	}
+	f.tables = tables
+	f.objects, err = userSchemaObjects(db)
+	if err != nil {
+		return f, err
+	}
+	for _, name := range tables {
+		if name == "schema_version" {
+			f.ledger = true
+			break
+		}
+	}
+	// 未知非零标记直接按格式拒绝；无标记的旧 ledger 只读版本以保留既有具名诊断。
+	if !f.ledger || (f.marker != 0 && f.marker != layoutFormatV4) {
+		return f, nil
+	}
+	versions, err := appliedVersions(db)
+	if err != nil {
+		kind := ErrSchemaInvalid
+		if f.marker == 0 {
+			kind = ErrUnsupportedFormat
+		}
+		return f, fmt.Errorf("%w：schema_version 结构或记录损坏：%w", kind, err)
+	}
+	f.versions = versions
+	return f, nil
+}
+
+// userSchemaObjects 列出所有非 SQLite 内部的主库对象（不是仅用户表）。
+func userSchemaObjects(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT type || ':' || name FROM sqlite_master WHERE substr(name, 1, 7) <> 'sqlite_' ORDER BY type, name`)
+	if err != nil {
+		return nil, fmt.Errorf("list schema objects: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan schema object: %w", err)
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// userTables 列出用户表（sqlite_ 前缀是 SQLite 自己的内部表/统计表）。
+func userTables(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 7) <> 'sqlite_' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan table name: %w", err)
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tables: %w", err)
+	}
+	return out, nil
+}
+
+// requireBrandNewDatabase 拦住所有「不是 v4 新建的库」。
 //
-// 为什么必须**明说**而不是尽力兼容：squash 把 28 块增量迁移合并成了一份终态 DDL，
-// 升级路径（逐块 ALTER / 重建表 / 数据搬迁）已经整条删掉。老库就这么打开的话，
-// 缺列会在第一次查询时以 `no such column` 炸开，而且是在业务路径上炸——半死不活，
-// 还看不出根因。这里直接给出可操作的一句话。
+// 为什么必须**明说**而不是尽力兼容：v4 baseline 是全新结构（列、表、语义都变了），
+// 升级路径根本不存在。就这么打开的话，缺列/缺表会在第一次查询时以
+// `no such column` / `no such table` 炸开，而且是在业务路径上炸——半死不活，
+// 还看不出根因。
 //
-// 为什么**不**静默删数据重建：这是用户的数据目录。删不删由人决定，程序只负责说清
-// 「删掉就能起来，要留的数据先用 cmd/devseed 之类的工具重放」。
-func legacyVersionError(done map[int]bool) error {
+// 为什么**不**静默删数据重建、也不补标记：这是用户的数据目录。删不删由人决定；
+// 补标记更糟——把一个 v3 库标成 v4，等于用错误的结构继续写入新数据。
+func requireBrandNewDatabase(f databaseFormat) error {
+	if f.marker != 0 {
+		return fmt.Errorf(
+			"%w：数据目录带着未知的布局标记（PRAGMA user_version=%d，v4 只认 %d）。"+
+				"程序不会改写标记、不会自动删除数据；请换一个空数据目录",
+			ErrUnsupportedFormat, f.marker, layoutFormatV4)
+	}
+	if f.ledger {
+		return fmt.Errorf("%w：数据目录已有 schema_version 记账（最高版本 %d，共 %d 行）却没有 v4 布局标记（PRAGMA user_version=0）。schema_version 只记录迁移，不代表 v4 布局；程序不会补写标记、也不会自动删除数据", ErrUnsupportedFormat, maxVersion(f.versions), len(f.versions))
+	}
+	// 空库必须没有任何用户 schema 对象；不碰撞的视图也不属于新库。
+	if len(f.objects) > 0 {
+		if legacy := legacyTablesIn(f.tables); len(legacy) > 0 {
+			return fmt.Errorf("%w：数据目录里已有旧版业务表（%s）但没有 schema_version；v4 不支持旧库升级。程序不会自动删除数据", ErrUnsupportedFormat, strings.Join(legacy, ", "))
+		}
+		return fmt.Errorf("%w：数据目录已有用户 schema 对象（%s）；v4 只支持真正空的新库。程序不会自动删除数据", ErrUnsupportedFormat, strings.Join(f.objects, ", "))
+	}
+	return nil
+}
+
+// legacyTablesIn 挑出 f.tables 里已知的旧版业务表（错误消息点名用）。
+func legacyTablesIn(tables []string) []string {
+	var out []string
+	for _, name := range tables {
+		for _, legacy := range legacyBusinessTables {
+			if name == legacy {
+				out = append(out, name)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// columnRequirement 是「这张表必须有这些列」。
+type columnRequirement struct {
+	table   string
+	columns []string
+}
+
+// v4RetiredColumns 是 v3 有、v4 明确删掉的列。
+//
+// marker=4 的库里出现它们，说明这个文件不是「完整应用过 v4 baseline」的 v4 库
+// （半写、或者被旧版本代码/手工改动过）→ ErrSchemaInvalid。
+// 注意 nodes.status 是 v4 自己的列（offline|online|draining），不是 v3 的 tasks.status。
+var v4RetiredColumns = []columnRequirement{
+	{"nodes", []string{"namespace_id"}},
+	{"node_instances", []string{"namespace_id"}},
+	{"capability_versions", []string{
+		"outputs", "params_schema", "lifecycle", "sticky", "source", "content_hash", "balance", "handler",
+	}},
+	{"tasks", []string{
+		"status", "attempts", "instance_id", "cap_hash", "graph_id", "path", "token", "not_before",
+	}},
+	{"edges", []string{"from_port", "literals", "mapping", "priority", "position"}},
+}
+
+// validateV4Layout 对实际 PRAGMA 事实与嵌入 baseline 的参照结构做只读比对。
+// 参照库只在独立内存中创建一次；待打开的用户库从不接受 DDL、探针 DML 或修补。
+func validateV4Layout(db *sql.DB, f databaseFormat) error {
+	if !f.ledger {
+		return fmt.Errorf("%w：有 v4 布局标记但没有 schema_version 记账表（baseline DDL、记账行与标记必须同事务写成）", ErrSchemaInvalid)
+	}
+	if !f.versions[baselineVersion] {
+		return fmt.Errorf("%w：有 v4 布局标记但没有 baseline（版本 %d）记账行；程序不会补记账", ErrSchemaInvalid, baselineVersion)
+	}
+	if maxDone := maxVersion(f.versions); maxDone > headVersion {
+		return fmt.Errorf("%w：schema_version 记账版本 %d 高于本版本代码认识的 %d", ErrSchemaInvalid, maxDone, headVersion)
+	}
+	want, err := baselineLayout()
+	if err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(f.tables))
+	for _, name := range f.tables {
+		present[name] = true
+	}
+	var names []string
+	for name := range want {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var problems []string
+	for _, table := range names {
+		if !present[table] {
+			problems = append(problems, "缺表 "+table)
+			continue
+		}
+		got, err := readTableLayout(db, table)
+		if err != nil {
+			return fmt.Errorf("%w：读取 %s 结构：%w", ErrSchemaInvalid, table, err)
+		}
+		for _, req := range v4RetiredColumns {
+			if req.table != table {
+				continue
+			}
+			for _, col := range req.columns {
+				if _, ok := got.columns[col]; ok {
+					problems = append(problems, "残留 v3 列 "+table+"."+col)
+				}
+			}
+		}
+		for col, expected := range want[table].columns {
+			actual, ok := got.columns[col]
+			if !ok {
+				problems = append(problems, "缺列 "+table+"."+col)
+			} else if actual != expected {
+				problems = append(problems, "列定义/主键身份不符 "+table+"."+col)
+			}
+		}
+		for col := range got.columns {
+			if _, ok := want[table].columns[col]; !ok {
+				problems = append(problems, "多余列 "+table+"."+col)
+			}
+		}
+		if got.withoutRowID != want[table].withoutRowID || got.strict != want[table].strict || !reflect.DeepEqual(primaryKeys(got), primaryKeys(want[table])) {
+			problems = append(problems, "主键身份不符 "+table)
+		}
+		if !reflect.DeepEqual(got.foreignKeys, want[table].foreignKeys) {
+			problems = append(problems, "外键定义不符 "+table)
+		}
+		// Only the immutable UID primary key may cover tombstones. Every other
+		// unique key must use the exact live predicate, including extra indexes.
+		if table == "capability_versions" {
+			for _, actual := range got.unique {
+				if !actual.primary && (!actual.partial || !actual.livePredicate) {
+					problems = append(problems, "能力唯一键必须仅约束 live 行 "+table)
+				}
+			}
+		}
+		for _, required := range want[table].unique {
+			matched := false
+			for _, actual := range got.unique {
+				// capability 的 live 唯一键必须精确匹配，不能以全表唯一阻止删除后重建。
+				partialMatches := !actual.partial || (required.partial && actual.emitPredicate)
+				if table == "capability_versions" && required.partial {
+					partialMatches = actual.partial && actual.livePredicate
+				}
+				if reflect.DeepEqual(actual.columns, required.columns) && partialMatches {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				var cols []string
+				for _, col := range required.columns {
+					cols = append(cols, col.name.String)
+				}
+				problems = append(problems, "缺唯一约束 "+table+" ("+strings.Join(cols, ", ")+")")
+			}
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("%w：%s。程序不会在坏库上做 CREATE IF NOT EXISTS 修补，也不会删除用户数据", ErrSchemaInvalid, strings.Join(problems, "；"))
+	}
+	return nil
+}
+
+// baselineLayout 的唯一事实源是 schema.sql，而非另一份易漏字段/身份的手写清单。
+var baselineLayoutCache struct {
+	sync.Once
+	tables map[string]tableLayout
+	err    error
+}
+
+func baselineLayout() (map[string]tableLayout, error) {
+	baselineLayoutCache.Do(func() {
+		db, err := sql.Open("sqlite", ":memory:")
+		if err != nil {
+			baselineLayoutCache.err = err
+			return
+		}
+		defer func() { _ = db.Close() }()
+		db.SetMaxOpenConns(1)
+		set, err := parseMigrations(schemaSQL)
+		if err == nil && (len(set) != 1 || set[0].version != baselineVersion) {
+			err = fmt.Errorf("expected one v4 baseline")
+		}
+		if err == nil {
+			_, err = db.Exec(schemaVersionTable)
+		}
+		if err == nil {
+			_, err = db.Exec(set[0].body)
+		}
+		if err != nil {
+			baselineLayoutCache.err = err
+			return
+		}
+		names, err := userTables(db)
+		if err != nil {
+			baselineLayoutCache.err = err
+			return
+		}
+		baselineLayoutCache.tables = make(map[string]tableLayout, len(names))
+		for _, name := range names {
+			layout, err := readTableLayout(db, name)
+			if err != nil {
+				baselineLayoutCache.err = err
+				return
+			}
+			baselineLayoutCache.tables[name] = layout
+		}
+	})
+	if baselineLayoutCache.err != nil {
+		return nil, fmt.Errorf("read embedded v4 baseline: %w", baselineLayoutCache.err)
+	}
+	return baselineLayoutCache.tables, nil
+}
+
+type columnLayout struct {
+	typ                 string
+	notNull, pk, hidden int
+	defaultValue        sql.NullString
+}
+
+type indexColumn struct {
+	name      sql.NullString
+	ordinary  bool // cid=-2 是表达式，cid=-1 是 rowid；不能忽略后拿前缀匹配。
+	desc      int
+	collation string
+}
+
+type uniqueIndex struct {
+	columns                                        []indexColumn
+	primary, partial, emitPredicate, livePredicate bool
+}
+
+type tableLayout struct {
+	columns              map[string]columnLayout
+	unique               []uniqueIndex
+	foreignKeys          []string // 每条 FK 一组，按 seq 保留复合键顺序，忽略 SQLite 分配的 id。
+	withoutRowID, strict int
+}
+
+func readTableLayout(db *sql.DB, table string) (tableLayout, error) {
+	out := tableLayout{columns: map[string]columnLayout{}}
+	if err := db.QueryRow(`SELECT wr, strict FROM pragma_table_list WHERE schema='main' AND name=?`, table).Scan(&out.withoutRowID, &out.strict); err != nil {
+		return out, err
+	}
+	rows, err := db.Query(`SELECT name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo(?)`, table)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var name string
+		var col columnLayout
+		if err := rows.Scan(&name, &col.typ, &col.notNull, &col.defaultValue, &col.pk, &col.hidden); err != nil {
+			_ = rows.Close()
+			return out, err
+		}
+		col.typ = strings.ToUpper(col.typ)
+		out.columns[name] = col
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return out, err
+	}
+	if err := rows.Close(); err != nil {
+		return out, err
+	}
+	out.foreignKeys, err = foreignKeysDB(db, table)
+	if err != nil {
+		return out, err
+	}
+	out.unique, err = uniqueIndexesDB(db, table)
+	return out, err
+}
+
+func foreignKeysDB(db *sql.DB, table string) ([]string, error) {
+	rows, err := db.Query(`SELECT id, seq, "table", "from", "to", on_update, on_delete, match FROM pragma_foreign_key_list(?) ORDER BY id, seq`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := map[int]string{}
+	for rows.Next() {
+		var id, seq int
+		var target, from, to, update, deleteAction, match string
+		if err := rows.Scan(&id, &seq, &target, &from, &to, &update, &deleteAction, &match); err != nil {
+			return nil, err
+		}
+		groups[id] += fmt.Sprintf("%d:%q:%q:%q:%q:%q:%q;", seq, target, from, to, update, deleteAction, match)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, group := range groups {
+		out = append(out, group)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func uniqueIndexesDB(db *sql.DB, table string) ([]uniqueIndex, error) {
+	rows, err := db.Query(`SELECT name, origin, partial FROM pragma_index_list(?) WHERE "unique"=1 ORDER BY seq`, table)
+	if err != nil {
+		return nil, err
+	}
+	type info struct {
+		name, origin string
+		partial      bool
+	}
+	var indexes []info
+	for rows.Next() {
+		var i info
+		if err := rows.Scan(&i.name, &i.origin, &i.partial); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		indexes = append(indexes, i)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var out []uniqueIndex
+	for _, i := range indexes {
+		cols, err := indexKeyColumnsDB(db, i.name)
+		if err != nil {
+			return nil, err
+		}
+		index := uniqueIndex{columns: cols, primary: i.origin == "pk", partial: i.partial}
+		if i.partial && (table == "emits" || table == "capability_versions") {
+			var ddl string
+			if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, i.name).Scan(&ddl); err != nil {
+				return nil, err
+			}
+			if table == "emits" {
+				index.emitPredicate = validEmitPredicate(ddl)
+			} else {
+				index.livePredicate = validNullPredicate(ddl, "DELETED_AT", false)
+			}
+		}
+		out = append(out, index)
+	}
+	return out, nil
+}
+
+func indexKeyColumnsDB(db *sql.DB, index string) ([]indexColumn, error) {
+	// key=0 的辅助 rowid/covering 列不是唯一键；key=1 的所有列（含 NULL 表达式）全保留。
+	rows, err := db.Query(`SELECT cid, name, "desc", coll FROM pragma_index_xinfo(?) WHERE key=1 ORDER BY seqno`, index)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []indexColumn
+	for rows.Next() {
+		var cid int
+		var col indexColumn
+		if err := rows.Scan(&cid, &col.name, &col.desc, &col.collation); err != nil {
+			return nil, err
+		}
+		col.ordinary = cid >= 0
+		out = append(out, col)
+	}
+	return out, rows.Err()
+}
+
+func primaryKeys(layout tableLayout) [][]indexColumn {
+	var keys [][]indexColumn
+	for _, i := range layout.unique {
+		if i.primary {
+			keys = append(keys, i.columns)
+		}
+	}
+	return keys
+}
+
+// PRAGMA 不暴露部分索引谓词；只放行实际 SQL 中 baseline 的非 NULL emit 谓词。
+// 先按 SQLite 注释/引号规则取 token，不能让注释或对象名伪造 WHERE 文本。
+var schemaSQLToken = regexp.MustCompile(`(?s)--[^\n]*(?:\n|$)|/\*.*?\*/|"(?:[^"]|"")*"|` + "`(?:[^`]|``)*`" + `|\[[^\]]*\]|'(?:[^']|'')*'|[A-Za-z_][A-Za-z_0-9]*|[^\s]`)
+
+func validEmitPredicate(ddl string) bool {
+	return validNullPredicate(ddl, "EMIT_ID", true)
+}
+
+// Only the two baseline NULL predicates are recognized; operator grouping stays intact.
+func validNullPredicate(ddl, column string, notNull bool) bool {
+	var tokens []string
+	for _, token := range schemaSQLToken.FindAllString(ddl, -1) {
+		if strings.HasPrefix(token, "--") || strings.HasPrefix(token, "/*") {
+			continue
+		}
+		switch token[0] {
+		case '"', '`', '[':
+			quote := string(token[0])
+			token = "\x00" + strings.ReplaceAll(token[1:len(token)-1], quote+quote, quote)
+		}
+		tokens = append(tokens, strings.ToUpper(token))
+	}
+	where := -1
+	for i, token := range tokens {
+		if token == "WHERE" {
+			where = i
+			break
+		}
+	}
+	if where < 0 {
+		return false
+	}
+	predicate := tokens[where+1:]
+	if len(predicate) > 0 && predicate[len(predicate)-1] == ";" {
+		predicate = predicate[:len(predicate)-1]
+	}
+	// 只剥离包住整个表达式的括号，不能把 IS (NOT NULL) 的操作数分组抹掉。
+	unwrap := func(expr []string) []string {
+		for len(expr) >= 2 && expr[0] == "(" && expr[len(expr)-1] == ")" {
+			depth, end := 0, -1
+			for i, token := range expr {
+				switch token {
+				case "(":
+					depth++
+				case ")":
+					depth--
+				}
+				if depth == 0 {
+					end = i
+					break
+				}
+			}
+			if end != len(expr)-1 {
+				break
+			}
+			expr = expr[1:end]
+		}
+		return expr
+	}
+	predicate = unwrap(predicate)
+	operatorTokens := []string{"IS", "NULL"}
+	if notNull {
+		operatorTokens = []string{"IS", "NOT", "NULL"}
+	}
+	if len(predicate) < len(operatorTokens)+1 {
+		return false
+	}
+	operator := len(predicate) - len(operatorTokens)
+	// 只允许配对括号包住精确列标识；不抹除操作数/运算符分组。
+	identifier := unwrap(predicate[:operator])
+	return len(identifier) == 1 && strings.TrimPrefix(identifier[0], "\x00") == column &&
+		reflect.DeepEqual(predicate[operator:], operatorTokens)
+}
+
+// maxVersion 返回记账版本里的最高值（空 = 0）。
+func maxVersion(versions map[int]bool) int {
 	maxDone := 0
-	for v := range done {
+	for v := range versions {
 		if v > maxDone {
 			maxDone = v
 		}
 	}
-	if maxDone <= headVersion {
-		return nil
-	}
-	return fmt.Errorf(
-		"store: 这个库是 squash 之前的版本（v%d）；本版本不再支持增量升级，请删除数据目录后重启（数据可先用 cmd/devseed 重建）",
-		maxDone)
+	return maxDone
 }
 
 // applyMigration 在单个事务内执行一个迁移并记账。
 func applyMigration(db *sql.DB, m migration, hook func(*sql.Tx) error) error {
+	return applyMigrationTx(db, m, hook, false)
+}
+
+// applyBaselineMigration 是**空库首块**专用：baseline DDL、记账行与 v4 布局标记
+// 全部落在同一个事务里。
+//
+// 为什么必须同一个事务：分开写就会出现「有表没标记」（下次 Open 会被当旧库拒掉）
+// 或「有标记没表」（marker=4 的半写库）——两种半成品都要人来手工收拾。
+// 一次事务失败就整体回滚，库里只会剩下「空」这一种状态。
+func applyBaselineMigration(db *sql.DB, m migration, hook func(*sql.Tx) error) error {
+	return applyMigrationTx(db, m, hook, true)
+}
+
+// applyMigrationTx 是两者的实现：newBaseline=true 时先写布局标记、建记账表，
+// 再执行 SQL 块、钩子，最后写记账行；任何一步失败都整体回滚。
+func applyMigrationTx(db *sql.DB, m migration, hook func(*sql.Tx) error, newBaseline bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if newBaseline {
+		// PRAGMA user_version 是事务性的（写在库头里，随事务提交/回滚），
+		// 所以它能和 DDL、记账行一起原子落盘。这里先写，任何后续失败都会把它一起回滚。
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, layoutFormatV4)); err != nil {
+			return fmt.Errorf("write layout marker: %w", err)
+		}
+		if _, err := tx.Exec(schemaVersionTable); err != nil {
+			return fmt.Errorf("create schema_version: %w", err)
+		}
+	}
 	if m.body != "" {
 		if _, err := tx.Exec(m.body); err != nil {
 			return fmt.Errorf("exec sql: %w", err)
@@ -533,7 +836,7 @@ func applyMigration(db *sql.DB, m migration, hook func(*sql.Tx) error) error {
 
 // appliedVersions 读出已记账的版本。
 func appliedVersions(db *sql.DB) (map[int]bool, error) {
-	rows, err := db.Query(`SELECT version FROM schema_version`)
+	rows, err := db.Query(`SELECT version, applied_at, typeof(version), typeof(applied_at) FROM schema_version`)
 	if err != nil {
 		return nil, fmt.Errorf("query schema_version: %w", err)
 	}
@@ -541,8 +844,13 @@ func appliedVersions(db *sql.DB) (map[int]bool, error) {
 	done := make(map[int]bool)
 	for rows.Next() {
 		var v int
-		if err := rows.Scan(&v); err != nil {
+		var at int64
+		var versionType, timeType string
+		if err := rows.Scan(&v, &at, &versionType, &timeType); err != nil {
 			return nil, fmt.Errorf("scan schema_version: %w", err)
+		}
+		if v <= 0 || done[v] || versionType != "integer" || timeType != "integer" {
+			return nil, fmt.Errorf("invalid schema_version record: version=%d, applied_at=%d, types=%s/%s, duplicate=%t", v, at, versionType, timeType, done[v])
 		}
 		done[v] = true
 	}
@@ -553,6 +861,9 @@ func appliedVersions(db *sql.DB) (map[int]bool, error) {
 }
 
 // SchemaVersion 返回当前库的最高已应用版本（0 = 空库）。供健康检查/测试使用。
+//
+// 注意它返回的是**记账**版本（v4 baseline = 1），不是布局格式标记
+// （PRAGMA user_version = 4，见 layoutFormatV4）。
 func (d *DB) SchemaVersion() (int, error) {
 	var v sql.NullInt64
 	if err := d.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&v); err != nil {

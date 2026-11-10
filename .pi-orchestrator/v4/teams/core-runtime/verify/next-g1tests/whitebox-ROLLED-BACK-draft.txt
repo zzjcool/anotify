@@ -1,0 +1,187 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// These tests call the real transaction helper. Open's refusal of an existing
+// colliding view is deliberately not used as evidence of a mid-transaction rollback.
+func rawMigrationDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func migrationState(t *testing.T, db *sql.DB) (int, []string) {
+	t.Helper()
+	var marker int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&marker); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := userSchemaObjects(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marker, objects
+}
+
+func assertEmptyMigrationState(t *testing.T, db *sql.DB) {
+	t.Helper()
+	marker, objects := migrationState(t, db)
+	if marker != 0 || len(objects) != 0 {
+		t.Fatalf("failed baseline left marker=%d objects=%v; want pristine empty database", marker, objects)
+	}
+}
+
+func TestV4BaselineDDLFailureRollsBackMarkerAndLedger(t *testing.T) {
+	db := rawMigrationDB(t)
+	m := migration{version: baselineVersion, name: "broken_baseline", body: `CREATE TABLE half_done (id TEXT PRIMARY KEY); CREATE TABLE ))) broken;`}
+	err := applyBaselineMigration(db, m, nil)
+	if err == nil || !strings.Contains(err.Error(), "exec sql") {
+		t.Fatalf("expected baseline DDL error, got %v", err)
+	}
+	assertEmptyMigrationState(t, db)
+	// The same actual database can then initialize; no repair/delete is necessary.
+	if n, err := migrate(db, nil); err != nil || n != 1 {
+		t.Fatalf("initialize after rollback: applied=%d err=%v", n, err)
+	}
+	probe, err := probeDatabaseFormat(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateV4Layout(db, probe); err != nil {
+		t.Fatalf("baseline after failed transaction is incomplete: %v", err)
+	}
+}
+
+func TestV4BaselineLedgerWriteFailureRollsBackAllDDL(t *testing.T) {
+	db := rawMigrationDB(t)
+	m := migration{version: baselineVersion, name: "ledger_fail", body: schemaSQL}
+	// Installed locally inside the actual baseline transaction, after the real
+	// marker/ledger/table creation. The trigger aborts the final ledger INSERT.
+	hook := func(tx *sql.Tx) error {
+		_, err := tx.Exec(`CREATE TRIGGER fail_ledger BEFORE INSERT ON schema_version BEGIN SELECT RAISE(ABORT, 'injected ledger write failure'); END`)
+		return err
+	}
+	err := applyBaselineMigration(db, m, hook)
+	if err == nil || !strings.Contains(err.Error(), "record version") || !strings.Contains(err.Error(), "injected ledger write failure") {
+		t.Fatalf("expected ledger INSERT error, got %v", err)
+	}
+	assertEmptyMigrationState(t, db)
+}
+
+func TestV4BaselineHookFailureRollsBackMarkerAndData(t *testing.T) {
+	db := rawMigrationDB(t)
+	sentinel := errors.New("injected baseline hook failure")
+	m := migration{version: baselineVersion, name: "hook_fail", body: `CREATE TABLE partial_data (value TEXT); INSERT INTO partial_data VALUES ('must rollback');`}
+	err := applyBaselineMigration(db, m, func(tx *sql.Tx) error {
+		var marker, rows int
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&marker); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(`SELECT count(*) FROM partial_data`).Scan(&rows); err != nil {
+			return err
+		}
+		if marker != layoutFormatV4 || rows != 1 {
+			t.Fatalf("injection was not mid-transaction: marker=%d rows=%d", marker, rows)
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("hook error was swallowed or replaced: %v", err)
+	}
+	assertEmptyMigrationState(t, db)
+}
+
+func TestV4MigrationLedgerWriteFailurePreservesCheckpoint(t *testing.T) {
+	db := rawMigrationDB(t)
+	if _, err := migrate(db, nil); err != nil {
+		t.Fatal(err)
+	}
+	beforeMarker, beforeObjects := migrationState(t, db)
+	var beforeTime int64
+	if err := db.QueryRow(`SELECT applied_at FROM schema_version WHERE version=1`).Scan(&beforeTime); err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate ledger PK fails only after the new DDL and data have executed.
+	err := applyMigration(db, migration{version: 1, name: "duplicate_ledger", body: `CREATE TABLE duplicate_half (value TEXT); INSERT INTO duplicate_half VALUES ('rollback');`}, nil)
+	if err == nil || !strings.Contains(err.Error(), "record version") {
+		t.Fatalf("expected duplicate ledger INSERT error, got %v", err)
+	}
+	afterMarker, afterObjects := migrationState(t, db)
+	var afterTime int64
+	if err := db.QueryRow(`SELECT applied_at FROM schema_version WHERE version=1`).Scan(&afterTime); err != nil {
+		t.Fatal(err)
+	}
+	if beforeMarker != afterMarker || !reflect.DeepEqual(beforeObjects, afterObjects) || beforeTime != afterTime {
+		t.Fatalf("failed migration changed checkpoint: marker %d->%d objects %v->%v time %d->%d", beforeMarker, afterMarker, beforeObjects, afterObjects, beforeTime, afterTime)
+	}
+}
+
+func TestV4ParseMigrationsContinuousLedger(t *testing.T) {
+	set, err := parseMigrations("-- +migration 1 first\nSELECT 1;\n-- +migration 2 second\nSELECT 2;\n-- +migration 3 third\nSELECT 3;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationVersions(set); !reflect.DeepEqual(got, []int{1, 2, 3}) {
+		t.Fatalf("ledger sequence=%v", got)
+	}
+	for i, body := range []string{"SELECT 1;", "SELECT 2;", "SELECT 3;"} {
+		if set[i].body != body || set[i].name == "" {
+			t.Fatalf("migration block %d=%+v", i, set[i])
+		}
+	}
+	for name, text := range map[string]string{
+		"starts_above_one": "-- +migration 2 second\nSELECT 2;",
+		"gap":              "-- +migration 1 first\nSELECT 1;\n-- +migration 3 third\nSELECT 3;",
+		"duplicate":        "-- +migration 1 first\nSELECT 1;\n-- +migration 1 duplicate\nSELECT 2;",
+		"reverse":          "-- +migration 1 first\nSELECT 1;\n-- +migration 2 second\nSELECT 2;\n-- +migration 1 reverse\nSELECT 3;",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseMigrations(text); err == nil {
+				t.Fatal("broken ledger sequence accepted")
+			}
+		})
+	}
+}
+
+func TestV4MigrationClosedConnectionFailsWithoutSuccess(t *testing.T) {
+	db := rawMigrationDB(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyBaselineMigration(db, migration{version: 1, name: "closed", body: schemaSQL}, nil); err == nil || !strings.Contains(err.Error(), "begin") {
+		t.Fatalf("closed connection must fail at Begin: %v", err)
+	}
+}
+
+func TestV4MigrationCancelledContextDoesNotChangeLedger(t *testing.T) {
+	db := rawMigrationDB(t)
+	if _, err := migrate(db, nil); err != nil {
+		t.Fatal(err)
+	}
+	marker, objects := migrationState(t, db)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if tx, err := db.BeginTx(ctx, nil); !errors.Is(err, context.Canceled) {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+		t.Fatalf("cancelled BeginTx=%v", err)
+	}
+	afterMarker, afterObjects := migrationState(t, db)
+	if marker != afterMarker || !reflect.DeepEqual(objects, afterObjects) {
+		t.Fatal("cancelled transaction changed the baseline")
+	}
+}

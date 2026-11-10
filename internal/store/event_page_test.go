@@ -8,6 +8,9 @@ import (
 	"testing"
 )
 
+// prunePayloadNoEdge 是剪枝留痕的 payload 形状（reason=no_edge 的诊断体）。
+const prunePayloadNoEdge = `{"reason":"no_edge"}`
+
 // 本文件覆盖 #235 的存储侧：游标分页查询 ListEventsBefore。
 //
 // 它守的是一条**等价性**：ListEventsBefore 与 ListEvents 只在「有没有游标谓词」上
@@ -50,7 +53,7 @@ func seedPageEvents(t *testing.T, db *DB, nsID string) {
 			Type:        r.typ,
 			CreatedAt:   r.createdAt,
 		}
-		if _, err := db.InsertEvent(ctx, e); err != nil {
+		if _, err := db.InsertEvent(ctx, e, e.CreatedAt, 0); err != nil {
 			t.Fatalf("seed event %d: %v", i, err)
 		}
 	}
@@ -71,7 +74,7 @@ func seedPageEvents(t *testing.T, db *DB, nsID string) {
 			Payload:     []byte(prunePayloadNoEdge),
 			CreatedAt:   p.at,
 		}
-		if _, err := db.InsertPruneEvent(ctx, e); err != nil {
+		if err := db.InsertPruneEvent(ctx, e); err != nil {
 			t.Fatalf("seed prune event %d: %v", i, err)
 		}
 	}
@@ -159,7 +162,7 @@ func TestListEventsBeforeEquivalence(t *testing.T) {
 			Source:      "github",
 			Type:        "push",
 			CreatedAt:   int64(3000 + i),
-		}); err != nil {
+		}, int64(3000+i), 0); err != nil {
 			t.Fatalf("seed clamp event %d: %v", i, err)
 		}
 	}
@@ -243,7 +246,7 @@ func TestListEventsBeforeCursorSameCreatedAt(t *testing.T) {
 				Type:        "push",
 				CreatedAt:   g.at,
 			}
-			if _, err := db.InsertEvent(ctx, e); err != nil {
+			if _, err := db.InsertEvent(ctx, e, e.CreatedAt, 0); err != nil {
 				t.Fatalf("seed: %v", err)
 			}
 			total++

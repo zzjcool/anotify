@@ -10,59 +10,73 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
-// 节点状态（契约 §2.3 nodes.status）。
+// 节点领域（v4，anode.md §0/§2/§3.3/§6，api-conventions §7.4）。
+//
+// 节点是**集群级**对象：不绑命名空间。一台机器能服务哪些 ns 由两份列表的交集回答：
+//
+//	node_configs.namespaces      管理员授权（缺省 ["*"]）
+//	nodes.declared_namespaces    本机申报（hello 上报，缺省 ["default"]）
+//
+// 生效 = 申报 ∩ 授权（权限只能收紧，不做「本地优先」）。节点的身份令牌不绑 ns。
+// 执行资格由 hello 上报的事实（facts / declared_capabilities / appliedRevision）
+// 与中枢配置（node_configs.revision）+ 部署事实共同决定：见 EligibleNodes。
+
+// 节点状态（api-conventions §7.4 / anode.md §0）。
 const (
 	NodeStatusOnline   = "online"
 	NodeStatusOffline  = "offline"
 	NodeStatusDraining = "draining"
 )
 
-// 节点默认硬顶（契约 §2.3）。
+// 节点默认硬顶（schema 默认值，api-conventions §7.4）。
 const (
 	DefaultMaxInstances   = 20
 	DefaultMaxConcurrency = 8
 )
 
-// NodeNameMaxLen 是节点名的长度上限（1..63，与 slug 同口径的字符集）。
+// NodeNameMaxLen 是节点名的长度上限（1..63，与能力/ns 名同口径的字符集）。
 const NodeNameMaxLen = 63
 
 // Node 是 nodes 表的一行（一台机器）。
 //
-// TokenHash 是 sha256(token)，明文只在创建时返回一次（契约 §10.3）；
-// 所以它带 `json:"-"`，任何 API 响应都不会泄漏哈希。
+// TokenHash 是 sha256(token)，明文只在创建时返回一次，所以它带 `json:"-"`，
+// 任何 API 响应都不会泄漏哈希。Facts / DeclaredCapabilities / DeclaredNamespaces
+// 都是 hello 上报的**事实快照**：中枢不据此推断，只据此匹配与展示。
 type Node struct {
-	ID string `json:"id"`
-	// NamespaceID 是**隔离维度**（I11）：机器属于且只属于一个命名空间，
-	// 令牌、能力声明、槽位、粘性钉住都跟着它走。
-	NamespaceID    string   `json:"namespaceId"`
-	Name           string   `json:"name"`
-	Tags           []string `json:"tags"`
-	Status         string   `json:"status"`
-	TokenHash      string   `json:"-"`
-	MaxInstances   int      `json:"maxInstances"`
-	MaxConcurrency int      `json:"maxConcurrency"`
-	// AgentVersion / AgentCommit 是节点上跑的那个 agent 的版本信息（契约 §3/§5）。
-	//
-	// AgentVersion 由 hello 帧自报（老 agent 不带 = 空串 = 未知）；AgentCommit 只由
-	// upgrade_ack 落库（hello 帧没有这个字段）。两者都是 camelCase 出线：
-	// 控制台的节点列表直接靠这两个键显示「这台机器跑的是哪一版」。
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+	// Status ∈ online / offline / draining。
+	Status         string `json:"status"`
+	TokenHash      string `json:"-"`
+	MaxInstances   int    `json:"maxInstances"`
+	MaxConcurrency int    `json:"maxConcurrency"`
+	// AgentVersion / AgentCommit 是节点上跑的那个 anode 的版本信息（空串 = 未知）。
+	// AgentVersion/AgentCommit 由 hello 自报（D-I13）；两者都是事实，不参与 digest。
 	AgentVersion string `json:"agentVersion"`
 	AgentCommit  string `json:"agentCommit"`
-	// AgentUpgrade 是最近一次升级尝试的状态（CONTRACT-agent-upgrade §5.1）。
-	//
-	// 恒存在（零值 = 从未尝试）：控制台刷新页面/服务重启后仍要看到上次升级的结果，
-	// 否则 UI 的失败映射（need_root → 提示用户去节点跑 sudo）就是死代码。
+	// AgentUpgrade 是最近一次升级尝试的状态（零值 = 从未尝试）。
 	AgentUpgrade AgentUpgrade `json:"agentUpgrade"`
 	LastSeenAt   *int64       `json:"lastSeenAt"`
 	CreatedAt    int64        `json:"createdAt"`
+	// ResourceVersion 是节点对象的写并发令牌（配置另有 node_configs.resource_version）。
+	ResourceVersion int64 `json:"resourceVersion"`
+	// Facts 是 hello.facts（hostIP/hostname/os/arch/cpu/workRoot/homeDir）。
+	Facts NodeFacts `json:"facts"`
+	// DeclaredCapabilities 是 hello.capabilities[]：能力名 + 命令探测结果 + 持有版本。
+	DeclaredCapabilities []DeclaredCapability `json:"declaredCapabilities"`
+	// DeclaredNamespaces 是本机申报的 ns 列表（ns 名或 "*"）。
+	DeclaredNamespaces []string `json:"declaredNamespaces"`
 }
 
-// 升级尝试的状态（nodes.agent_upgrade 的 status，CONTRACT-agent-upgrade §5.1）。
+// 升级尝试的状态（nodes.agent_upgrade 的 status）。
 const (
 	// AgentUpgradeNone 表示从未尝试过升级（零值）。
 	AgentUpgradeNone = ""
@@ -74,11 +88,7 @@ const (
 	AgentUpgradeFailed = "failed"
 )
 
-// AgentUpgrade 是一次升级尝试的结果。
-//
-// 它同时是**落库形状**（nodes.agent_upgrade 的 JSON）与**出线形状**（GET /v1/nodes
-// 每台节点的 agentUpgrade）：一份 struct 只有一个字段名真相，避免「库里一个键、
-// 接口另一个键」这种只能靠人眼对的东西。json tag 一律 camelCase（项目 API 规范）。
+// AgentUpgrade 是一次升级尝试的结果（落库形状 = 出线形状）。
 type AgentUpgrade struct {
 	// Status ∈ "" / sent / ok / failed。
 	Status string `json:"status"`
@@ -92,96 +102,83 @@ type AgentUpgrade struct {
 
 // NodeInstance 是 node_instances 表的一行（并发槽位，由节点申报）。
 //
-// NamespaceID 从父行（nodes）取，不接受调用方传（契约 §2.3）。
+// 槽位是**机器级**的（一台机器上的并发预算跨 ns 共享），所以没有 namespace_id。
+// 每槽最多一个能力进程（v4 不再有 per-slot concurrency 乘数：容量 = 真实 slot 记录，
+// 预算 = 机器级 limits）。
+// BusyTask 是占用它的逻辑任务；BusyAttempt / BusyLeaseID 是具体那一代执行
+// （task_attempts 的 attempt 与它那次 grant 的 lease）：同一逻辑任务换 attempt
+// 重试时可能同时占着旧 attempt 的槽，释放必须按这三列精确判定。
 type NodeInstance struct {
-	ID string `json:"id"`
-	// NamespaceID 是槽位所属命名空间（隔离维度，I11）。
-	NamespaceID string  `json:"namespaceId"`
+	ID          string  `json:"id"`
 	NodeID      string  `json:"nodeId"`
 	Slot        int     `json:"slot"`
-	Concurrency int     `json:"concurrency"`
 	BusyTask    *string `json:"busyTask"`
+	BusyAttempt int     `json:"busyAttempt"`
+	BusyLeaseID string  `json:"busyLeaseId"`
 	Alive       bool    `json:"alive"`
 	UpdatedAt   int64   `json:"updatedAt"`
 }
 
-// NodePin 是 node_pins 表的一行（粘性路由）。
-//
-// StickyKey 全局唯一（sha256 摘要），所以查/删按 key 定位即可；但行上仍要带
-// NamespaceID —— 钉住的是「某个命名空间里的某台机器」。
-type NodePin struct {
-	StickyKey string `json:"stickyKey"`
-	// NamespaceID 必填（钉住的是「某个命名空间里的某台机器」）。
-	NamespaceID string `json:"namespaceId"`
-	NodeID      string `json:"nodeId"`
-	Selector    string `json:"selector"`
-	// PinID 是这一**行**的身份（#315）：RollbackPin 的条件删除按它匹配，
-	// 而不是按秒级的 CreatedAt（同一秒同 key 同节点的两次派发会撞车）。
-	//
-	// 由 PutPin 在新建时就地生成并写回调用方的 struct；已存在的行不会被后到的
-	// upsert 冒领（ON CONFLICT 只刷 last_used_at）。加这一列之前建的老行是 ""，
-	// 它们不属于任何一次「本次派发」，所以永远不匹配回滚条件。
-	PinID      string `json:"pinId"`
-	CreatedAt  int64  `json:"createdAt"`
-	LastUsedAt int64  `json:"lastUsedAt"`
-}
-
 // 节点注册 / 派发相关的哨兵错误。
 var (
-	// ErrTooManyInstances 申报实例数超过 nodes.max_instances 硬顶（契约 Q5）。
+	// ErrTooManyInstances 申报实例数超过 nodes.max_instances 硬顶。
 	ErrTooManyInstances = errors.New("too_many_instances")
-	// ErrNoCapacity 节点没有空闲并发槽位。
+	// ErrNoCapacity 节点没有任何可用实例槽位（原始绑定原语用；grant 路径用 ErrSlotUnavailable）。
 	ErrNoCapacity = errors.New("no_capacity")
+	// ErrSlotUnavailable 表示节点接受的 slot 此刻不可授权（未申报/已占/超出当前预算）。
+	//
+	// 语义与 task.reject 的 `slot_unavailable` 同源：不执行、不授 lease、不计 attempt，
+	// 任务回 pending + waiting_for_slot（有界退避）。绝不用 stale_config 伪装容量拒绝。
+	ErrSlotUnavailable = errors.New("slot_unavailable")
 	// ErrNodeDraining 节点在排空（不再接新任务）。
 	ErrNodeDraining = errors.New("node_draining")
-	// ErrNodeExists 同命名空间内节点重名（HTTP 409）。
-	//
-	// 由表约束 UNIQUE(namespace_id, name) 触发，**不是**预查——预查会给并发注册
-	// 留下 TOCTOU 窗口：两台同名的机器都能查空，然后一台插入失败变成 500。
+	// ErrNodeExists 节点重名（集群内唯一，HTTP 409）。
 	ErrNodeExists = errors.New("store: node name already exists")
 )
 
-// CapabilityRef 是节点声明自己具备的能力（只有 name + version，没有命令）。
+// InstanceSpec 是节点申报的并发槽位（hello.instances[]，D-I13）。
 //
-// 这是 hello 帧 capabilities 字段的语义（老路径）：中枢只知道「它有哪些能力」，
-// 不知道「它怎么跑」。带 manifest 的节点用 CapabilityDecl（多一个 Run）。
-type CapabilityRef struct {
-	Name    string `json:"capability"`
-	Version int    `json:"version"`
-}
-
-// NodeCapability 是「某节点拥有这个能力」的一行：能力定义。
-//
-// v2 起这里**不再有 run_spec**：执行方式属于能力正文、归属属于部署
-// （deployments），node_capabilities 只从 deployments 派生（契约 D4）。
-//
-// 嵌入 *CapabilityVersion 是为了不动既有调用点的 .Name/.Outputs 等字段访问
-// （派发选点、控制台都只关心能力定义）。
-type NodeCapability struct {
-	*CapabilityVersion
-}
-
-// CapabilityDeclError 是一份**形状坏掉**的声明的全部问题（一次列全，不是只报第一条）。
-//
-// 只剩一类问题：`applied[]` 里能力名为空。那不是「中枢没有这个能力」（那是陈旧
-// 缓存，见 ReconcileApplied 的注释），而是节点自己拼错了帧 —— 这类必须响。
-//
-// 为什么列全：修一条重启一次的成本远高于一次看全。
-type CapabilityDeclError struct {
-	Problems []string // 每条自描述，顺序确定
-}
-
-// Error 把全部问题拼成一行（; 分隔，顺序确定）。
-func (e *CapabilityDeclError) Error() string { return strings.Join(e.Problems, "; ") }
-
-// InstanceSpec 是节点申报的并发槽位（hello 帧的 instances 字段，契约 Q5）。
+// v4 每槽最多一个能力进程：没有 per-slot 乘数（wire 上的旧 concurrency 字段已移除），
+// 容量只看真实 slot 记录与机器级 limits。
 type InstanceSpec struct {
-	Slot        int `json:"slot"`
-	Concurrency int `json:"concurrency"`
+	Slot int `json:"slot"`
 }
 
-// NewNodeToken 生成节点 opaque token：ant_node_<base64url(24B)>（契约 §10.3，
-// 与既有 api_keys 形态一致）。返回 (明文, sha256 哈希)。
+// SlotObservation 是当前连接对某个物理槽位「此刻在跑什么」的**明确事实**。
+//
+// 它是槽位回收的唯一可信输入（G2 从 T3 最终帧映射；store 内部形状不镜像 wire）：
+//   - Busy 三态：nil = 未断言（未知），true = 明确仍在跑，false = 明确无进程；
+//   - busy=true 带 taskId/attempt/leaseId（已授权的执行）或 assignmentId/proposedAttempt
+//     （尚未 grant 的 reservation，**不伪造 lease**）；
+//   - busy=false 时必须带相符的历史 taskId/attempt/(leaseId)：无匹配引用的 idle 记录
+//     不能清旧 busy（rehello / 缺字段都不等于进程已死）。
+//
+// C3a 起 Busy=true 的 reservation 事实会落进**真实槽账本**（node_instances：
+// busy_task + busy_attempt=proposedAttempt + busy_lease_id 为空 + busy_assignment_id
+// + busy_expires_at），前提是能对上中枢当前候选（pending/同节点/同 assignment/同 proposed/
+// 窗口有效）。预算统计因此能看见「节点已经接住、但还没 grant」的真实占用；节点谎报一条
+// 对不上候选的 reservation 只会被忽略（不制造容量）。执行类的 Busy=true 不重绑：节点
+// 不能凭一句 busy 重新定义某次历史执行的绑定。
+//
+// `nil` 数组 / 空数组 / 没提到某个 slot 都**不表示空闲**。
+type SlotObservation struct {
+	Slot int
+	// Busy 为 nil 表示这次没有为该 slot 给出明确事实（未知），不得用于回收。
+	Busy *bool
+	// TaskID / Attempt / LeaseID 是这个占用的执行标识。
+	TaskID  string
+	Attempt int
+	LeaseID string
+	// AssignmentID / ProposedAttempt 是尚未 grant 的 reservation 标识（无 lease）。
+	AssignmentID    string
+	ProposedAttempt int
+	// ObservedAt 是节点采集这条事实的时刻（0 = 不设保护）。观察到之后才建立的
+	// 绑定（updated_at 更晚）不能被旧快照误放。
+	ObservedAt int64
+}
+
+// NewNodeToken 生成节点 opaque token：ant_node_<base64url(24B)>
+// （与既有 api_keys 形态一致）。返回 (明文, sha256 哈希)。
 func NewNodeToken() (token, hash string, err error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -197,19 +194,13 @@ func HashNodeToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// nodeNamePattern 是节点名的合法形状（契约 D6）：1..63 个字符，只允许小写字母、
-// 数字、点、下划线、短横线，且必须以字母或数字开头。
+// nodeNamePattern 是节点名的合法形状：1..63 个字符，只允许小写字母、数字、
+// 点、下划线、短横线，且必须以字母或数字开头（anode.md §2）。
 var nodeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
 // ValidateNodeName 校验节点名："" 表示合法，否则是给用户看的中文错误（含 "name"）。
 //
-// 规则严格按 nodeNamePattern（契约 D6），**不 trim**：`" mbp-16"` 这种带空白的输入
-// 必须当场拒绝，而不是静默改对后落库——名字是运维用来认机器的主键，改一个字符
-// 就可能变成另一台机器的名字。
-//
-// 与 ValidateVarDefs（internal/store/source.go）遵循同一约定（"" = 合法）。
-// 注意：CreateNode **不**调用它——devseed 与老测试直接走 store 层，行为保持原样；
-// 唯一调用点是 HTTP 写端点（POST /v1/nodes）。
+// 规则严格按 nodeNamePattern，**不 trim**：带空白的输入必须当场拒绝，而不是静默改对后落库。
 func ValidateNodeName(name string) string {
 	if strings.TrimSpace(name) == "" {
 		return "name 必填（节点名不能为空或全为空白字符）"
@@ -224,20 +215,72 @@ func ValidateNodeName(name string) string {
 	return ""
 }
 
-// CreateNode 创建节点，返回节点与**只出现一次**的明文 token。
+// nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与 schema.sql 的 nodes 定义同序）。
+const nodeColumns = `id, name, tags, status, token_hash, max_instances, max_concurrency,
+	last_seen_at, created_at, agent_version, agent_commit, agent_upgrade,
+	facts, declared_capabilities, declared_namespaces,
+	COALESCE((SELECT c.resource_version FROM node_configs c WHERE c.node_id = nodes.id), 1)`
+
+// scanNodeRow 从 rows 解析一行。
+func scanNodeRow(rows scanner) (*Node, error) {
+	var (
+		n                         Node
+		tags, agentUpgrade, facts string
+		declaredCaps, declaredNS  string
+	)
+	if err := rows.Scan(&n.ID, &n.Name, &tags, &n.Status, &n.TokenHash,
+		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt,
+		&n.AgentVersion, &n.AgentCommit, &agentUpgrade,
+		&facts, &declaredCaps, &declaredNS, &n.ResourceVersion); err != nil {
+		return nil, fmt.Errorf("scan node: %w", err)
+	}
+	if err := json.Unmarshal([]byte(tags), &n.Tags); err != nil {
+		return nil, fmt.Errorf("decode node tags: %w", err)
+	}
+	if n.Tags == nil {
+		n.Tags = []string{}
+	}
+	// 空串 = 早期行的防御（列默认 '{}'）→ 零值 = 从未尝试。
+	if agentUpgrade != "" && agentUpgrade != "{}" {
+		if err := json.Unmarshal([]byte(agentUpgrade), &n.AgentUpgrade); err != nil {
+			return nil, fmt.Errorf("decode node agent upgrade: %w", err)
+		}
+	}
+	if strings.TrimSpace(facts) != "" && facts != "{}" {
+		if err := json.Unmarshal([]byte(facts), &n.Facts); err != nil {
+			return nil, fmt.Errorf("decode node facts: %w", err)
+		}
+	}
+	if strings.TrimSpace(declaredCaps) != "" {
+		if err := json.Unmarshal([]byte(declaredCaps), &n.DeclaredCapabilities); err != nil {
+			return nil, fmt.Errorf("decode node declared capabilities: %w", err)
+		}
+	}
+	if n.DeclaredCapabilities == nil {
+		n.DeclaredCapabilities = []DeclaredCapability{}
+	}
+	for i := range n.DeclaredCapabilities {
+		if n.DeclaredCapabilities[i].Commands == nil {
+			n.DeclaredCapabilities[i].Commands = []protocol.HelloCommand{}
+		}
+	}
+	namespaces, err := decodeStringList(declaredNS)
+	if err != nil {
+		return nil, fmt.Errorf("decode node declared namespaces: %w", err)
+	}
+	n.DeclaredNamespaces = namespaces
+	return &n, nil
+}
+
+// CreateNode 创建节点，返回**只出现一次**的明文 token。
 //
-// n.TokenHash 可预先由调用方设置（用于测试注入已知 token）；为空时自动生成。
-//
-// n.NamespaceID 必填：机器归属哪个命名空间，决定了它的令牌、能力声明、
-// 槽位与粘性钉住活在哪片隔离域里（契约 §2.3）。
+// n.TokenHash 可预先由调用方设置（测试注入已知 token）；为空时自动生成。
+// n.Name 集群内唯一（UNIQUE(name)）→ 撞名返回 ErrNodeExists。
 func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) {
 	if n == nil {
 		return "", fmt.Errorf("create node: nil")
 	}
-	if n.NamespaceID == "" || n.NamespaceID == AllNamespaces {
-		return "", ErrNamespaceRequired
-	}
-	if n.Name == "" {
+	if strings.TrimSpace(n.Name) == "" {
 		return "", fmt.Errorf("create node: empty name")
 	}
 	if n.TokenHash == "" {
@@ -258,24 +301,51 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 	if n.CreatedAt == 0 {
 		n.CreatedAt = Now()
 	}
+	if n.ResourceVersion == 0 {
+		n.ResourceVersion = 1
+	}
 	if n.Tags == nil {
 		n.Tags = []string{}
+	}
+	if n.DeclaredCapabilities == nil {
+		n.DeclaredCapabilities = []DeclaredCapability{}
+	}
+	if n.DeclaredNamespaces == nil {
+		n.DeclaredNamespaces = []string{}
 	}
 	tagsJSON, err := json.Marshal(n.Tags)
 	if err != nil {
 		return "", fmt.Errorf("marshal node tags: %w", err)
 	}
+	factsJSON, err := json.Marshal(n.Facts)
+	if err != nil {
+		return "", fmt.Errorf("marshal node facts: %w", err)
+	}
+	capsJSON, err := json.Marshal(n.DeclaredCapabilities)
+	if err != nil {
+		return "", fmt.Errorf("marshal node declared capabilities: %w", err)
+	}
+	namespacesJSON, err := marshalStringList(n.DeclaredNamespaces)
+	if err != nil {
+		return "", err
+	}
 	if n.ID == "" {
 		n.ID = NewNodeID()
 	}
+	upgradeJSON, err := json.Marshal(n.AgentUpgrade)
+	if err != nil {
+		return "", fmt.Errorf("marshal node agent upgrade: %w", err)
+	}
 	if _, err := d.ExecContext(ctx,
 		`INSERT INTO nodes
-		   (id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, last_seen_at, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		n.ID, n.NamespaceID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
-		n.MaxInstances, n.MaxConcurrency, n.LastSeenAt, n.CreatedAt); err != nil {
-		// 同命名空间重名（UNIQUE(namespace_id, name)）要让调用方能判定成 409，
-		// 而不是从一句裸的 constraint failed 里去猜。
+		   (id, name, tags, status, token_hash, max_instances, max_concurrency,
+		    last_seen_at, created_at, agent_version, agent_commit, agent_upgrade,
+		    facts, declared_capabilities, declared_namespaces, resource_version)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		n.ID, n.Name, string(tagsJSON), n.Status, n.TokenHash,
+		n.MaxInstances, n.MaxConcurrency, n.LastSeenAt, n.CreatedAt,
+		n.AgentVersion, n.AgentCommit, string(upgradeJSON),
+		string(factsJSON), string(capsJSON), namespacesJSON, n.ResourceVersion); err != nil {
 		if isUniqueViolation(err) {
 			return "", fmt.Errorf("%w: %q", ErrNodeExists, n.Name)
 		}
@@ -284,56 +354,47 @@ func (d *DB) CreateNode(ctx context.Context, n *Node) (token string, err error) 
 	return token, nil
 }
 
-// nodeColumns 是统一的列顺序，scanNodeRow 依赖它（与 schema.sql 的 nodes 定义同序）。
-const nodeColumns = `id, namespace_id, name, tags, status, token_hash,
-	max_instances, max_concurrency, last_seen_at, created_at, agent_version, agent_commit,
-	agent_upgrade`
-
-// prefixedNodeColumns 给 nodeColumns 的每一列加表别名前缀，供 join 查询使用。
-//
-// 为什么必须带前缀：`node_capabilities` 也有 `namespace_id`（#162 加的隔离列），
-// 不限定表名的 `namespace_id` 会让 SQLite 报 ambiguous column name。
-func prefixedNodeColumns(alias string) string {
-	cols := []string{"id", "namespace_id", "name", "tags", "status", "token_hash",
-		"max_instances", "max_concurrency", "last_seen_at", "created_at",
-		"agent_version", "agent_commit", "agent_upgrade"}
-	parts := make([]string, len(cols))
-	for i, c := range cols {
-		parts[i] = alias + "." + c
+// GetNode 按 id 取节点；未命中返回 ErrNotFound。
+func (d *DB) GetNode(ctx context.Context, nodeID string) (*Node, error) {
+	if nodeID == "" {
+		return nil, ErrNotFound
 	}
-	return strings.Join(parts, ", ")
-}
-
-// scanNodeRow 从 rows 解析一行。
-func scanNodeRow(rows *sql.Rows) (*Node, error) {
-	var n Node
-	var tags, agentUpgrade string
-	if err := rows.Scan(&n.ID, &n.NamespaceID, &n.Name, &tags, &n.Status, &n.TokenHash,
-		&n.MaxInstances, &n.MaxConcurrency, &n.LastSeenAt, &n.CreatedAt,
-		&n.AgentVersion, &n.AgentCommit, &agentUpgrade); err != nil {
-		return nil, fmt.Errorf("scan node: %w", err)
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+nodeColumns+` FROM nodes WHERE id = ?`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("get node: %w", err)
 	}
-	if err := json.Unmarshal([]byte(tags), &n.Tags); err != nil {
-		return nil, fmt.Errorf("decode node tags: %w", err)
-	}
-	if n.Tags == nil {
-		n.Tags = []string{} // 不变量 I9
-	}
-	// 空串 = 迁移前就存在的行（列默认 '{}'，但防御旧行）→ 零值 = 从未尝试。
-	if agentUpgrade != "" && agentUpgrade != "{}" {
-		if err := json.Unmarshal([]byte(agentUpgrade), &n.AgentUpgrade); err != nil {
-			return nil, fmt.Errorf("decode node agent upgrade: %w", err)
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("get node: %w", err)
 		}
+		return nil, ErrNotFound
 	}
-	return &n, nil
+	return scanNodeRow(rows)
 }
 
-// GetNodeByTokenHash 按 token sha256 取节点（握手鉴权用，契约 §10.3）。
-//
-// 这是唯一一个「还不知道命名空间也能查」的节点查询：token 自带身份。
-// 拿到的行**必须**带 NamespaceID —— 握手后整条连接上的所有操作都靠它定位
-// 命名空间（hello 帧不带 namespace 字段，令牌绑在哪个命名空间就在哪片隔离域生效）；
-// token 全局唯一，所以本查询不看命名空间。
+// GetNodeByName 按集群内唯一名取节点；未命中返回 ErrNotFound。
+func (d *DB) GetNodeByName(ctx context.Context, name string) (*Node, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+nodeColumns+` FROM nodes WHERE name = ?`, strings.TrimSpace(name))
+	if err != nil {
+		return nil, fmt.Errorf("get node by name: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("get node by name: %w", err)
+		}
+		return nil, ErrNotFound
+	}
+	return scanNodeRow(rows)
+}
+
+// GetNodeByTokenHash 按 token sha256 取节点（握手鉴权用）。
 func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, error) {
 	if tokenHash == "" {
 		return nil, ErrNotFound
@@ -353,59 +414,10 @@ func (d *DB) GetNodeByTokenHash(ctx context.Context, tokenHash string) (*Node, e
 	return scanNodeRow(rows)
 }
 
-// GetNode 按 (namespaceID, id) 取节点（不变量 I11：必须带命名空间）。
-//
-// 节点 id 全局唯一，但读路径仍要过隔离维度：少了它，一个写错的 id 就能
-// 把别的命名空间的机器读出来。
-func (d *DB) GetNode(ctx context.Context, namespaceID, nodeID string) (*Node, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
-	}
+// ListNodes 列出集群内全部节点（空列表返回 []）。
+func (d *DB) ListNodes(ctx context.Context) ([]*Node, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? AND id = ?`, namespaceID, nodeID)
-	if err != nil {
-		return nil, fmt.Errorf("get node: %w", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("get node: %w", err)
-		}
-		return nil, ErrNotFound
-	}
-	return scanNodeRow(rows)
-}
-
-// GetNodeByName 按 (namespaceID, name) 取节点；未命中返回 ErrNotFound。
-//
-// 名字的唯一性也是命名空间内的（UNIQUE(namespace_id, name)）：prod 与 staging
-// 可以各有一台同名机器。
-func (d *DB) GetNodeByName(ctx context.Context, namespaceID, name string) (*Node, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
-	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? AND name = ?`, namespaceID, name)
-	if err != nil {
-		return nil, fmt.Errorf("get node by name: %w", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("get node by name: %w", err)
-		}
-		return nil, ErrNotFound
-	}
-	return scanNodeRow(rows)
-}
-
-// ListNodes 列出命名空间内节点（空列表返回 []）。
-func (d *DB) ListNodes(ctx context.Context, namespaceID string) ([]*Node, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
-	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT `+nodeColumns+` FROM nodes WHERE namespace_id = ? ORDER BY name, id`, namespaceID)
+		`SELECT `+nodeColumns+` FROM nodes ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -422,61 +434,90 @@ func (d *DB) ListNodes(ctx context.Context, namespaceID string) ([]*Node, error)
 }
 
 // UpdateNodeStatus 改节点状态（online/offline/draining），并刷新 last_seen_at。
-func (d *DB) UpdateNodeStatus(ctx context.Context, namespaceID, nodeID, status string) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
-	}
+func (d *DB) UpdateNodeStatus(ctx context.Context, nodeID, status string) error {
 	switch status {
 	case NodeStatusOnline, NodeStatusOffline, NodeStatusDraining:
 	default:
 		return fmt.Errorf("update node status: invalid status %q", status)
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET status = ?, last_seen_at = ? WHERE namespace_id = ? AND id = ?`,
-		status, Now(), namespaceID, nodeID)
+		`UPDATE nodes SET status = ?, last_seen_at = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, status, Now(), nodeID)
 	if err != nil {
 		return fmt.Errorf("update node status: %w", err)
 	}
 	return nodeRowsAffected(res, "update node status")
 }
 
-// UpdateNodeAgentVersion 记录节点自报的 agent 版本（hello.agent_version，契约 §3）。
+// nodeRowsAffected 把「更新了 0 行」翻译成 ErrNotFound（节点行的几个 UPDATE 共用）。
 //
-// 只写 version，**不碰** agent_commit：hello 帧里没有 commit，而 commit 是
-// upgrade_ack 的产物（见 RecordAgentUpgrade）。老 agent 不带这个字段时写入空串
-// ——「现在这台机器上的版本未知」是事实，保留一个上一版的旧值才是撒谎。
-//
-// 行不存在返回 ErrNotFound（与 UpdateNodeStatus 同口径）：作用域写错时必须响，
-// 不能静默影响 0 行然后让人以为写成功了。
-func (d *DB) UpdateNodeAgentVersion(ctx context.Context, namespaceID, nodeID, version string) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
+// 0 行只可能是 id 不对：静默成功会让一次写错 id 的调用看起来生效了。
+func nodeRowsAffected(res sql.Result, op string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s rows: %w", op, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchNode 刷新 last_seen_at（任何上行帧都续命）。
+func (d *DB) TouchNode(ctx context.Context, nodeID string, at int64) error {
+	if at == 0 {
+		at = Now()
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET agent_version = ? WHERE namespace_id = ? AND id = ?`,
-		version, namespaceID, nodeID)
+		`UPDATE nodes SET last_seen_at = ? WHERE id = ?`, at, nodeID)
+	if err != nil {
+		return fmt.Errorf("touch node: %w", err)
+	}
+	return nodeRowsAffected(res, "touch node")
+}
+
+// UpdateNodeAgentVersion 记录节点自报的 agent 版本（hello.agentVersion，D-I13）。
+//
+// 只写 version，**不碰** agent_commit：hello 帧里没有 commit，而 commit 是
+// upgrade_ack 的产物（见 RecordAgentUpgrade）。空串是事实（未知），不保留上一版的旧值。
+func (d *DB) UpdateNodeAgentVersion(ctx context.Context, nodeID, version string) error {
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET agent_version = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, version, nodeID)
 	if err != nil {
 		return fmt.Errorf("update node agent version: %w", err)
 	}
 	return nodeRowsAffected(res, "update node agent version")
 }
 
+// RecordNodeFacts 记录节点上报的内置事实（hello.facts，D-I13）。
+func (d *DB) RecordNodeFacts(ctx context.Context, nodeID string, facts NodeFacts) error {
+	raw, err := json.Marshal(facts)
+	if err != nil {
+		return fmt.Errorf("encode node facts: %w", err)
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET facts = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, string(raw), nodeID)
+	if err != nil {
+		return fmt.Errorf("record node facts: %w", err)
+	}
+	return nodeRowsAffected(res, "record node facts")
+}
+
 // MarkAgentUpgradeSent 记录一次已下发的升级尝试（agent_upgrade.status=sent）。
 //
 // 只写 agent_upgrade，不碰版本列 —— 帧刚推出去，节点还没换二进制；
 // 版本列要等 upgrade_ack 才是事实（提前改成目标版本就是谎报成功）。
-func (d *DB) MarkAgentUpgradeSent(ctx context.Context, namespaceID, nodeID, targetVersion string, at int64) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
-	}
+func (d *DB) MarkAgentUpgradeSent(ctx context.Context, nodeID, targetVersion string, at int64) error {
 	up := AgentUpgrade{Status: AgentUpgradeSent, TargetVersion: targetVersion, At: at}
 	raw, err := json.Marshal(up)
 	if err != nil {
 		return fmt.Errorf("encode agent upgrade: %w", err)
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET agent_upgrade = ? WHERE namespace_id = ? AND id = ?`,
-		string(raw), namespaceID, nodeID)
+		`UPDATE nodes SET agent_upgrade = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, string(raw), nodeID)
 	if err != nil {
 		return fmt.Errorf("mark agent upgrade sent: %w", err)
 	}
@@ -486,26 +527,17 @@ func (d *DB) MarkAgentUpgradeSent(ctx context.Context, namespaceID, nodeID, targ
 // RecordAgentUpgrade 记录一次**成功**的 agent 升级（upgrade_ack ok=true）。
 //
 // 一个 UPDATE 同时写三样：agent_version / agent_commit / agent_upgrade(status=ok)。
-// 与 UpdateNodeAgentVersion 分开的原因：ack 是「升级完成」的权威事实，版本与状态
-// 必须一起变——只更新其中一个会出现「列出 agentVersion=新版本、agentUpgrade 还是 sent」
-// 这种自相矛盾的视图。
-//
-// 升级后版本变了，旧 commit 就一定过期了——所以不做「空 commit 保留旧值」的兜底：
-// ack 没带 commit 就写空串（未知），留着上一版的 commit 才是错误关联。
-func (d *DB) RecordAgentUpgrade(ctx context.Context, namespaceID, nodeID, version, commit string, at int64) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
-	}
-	// ok 时「节点跑着的版本」就是这次尝试的目标版本（ack 只在替换成功后发）。
+// 版本与状态必须一起变，否则会列出「agentVersion=新版本、agentUpgrade 还是 sent」。
+func (d *DB) RecordAgentUpgrade(ctx context.Context, nodeID, version, commit string, at int64) error {
 	up := AgentUpgrade{Status: AgentUpgradeOK, TargetVersion: version, At: at}
 	raw, err := json.Marshal(up)
 	if err != nil {
 		return fmt.Errorf("encode agent upgrade: %w", err)
 	}
 	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET agent_version = ?, agent_commit = ?, agent_upgrade = ?
-		 WHERE namespace_id = ? AND id = ?`,
-		version, commit, string(raw), namespaceID, nodeID)
+		`UPDATE nodes SET agent_version = ?, agent_commit = ?, agent_upgrade = ?,
+		        resource_version = resource_version + 1
+		  WHERE id = ?`, version, commit, string(raw), nodeID)
 	if err != nil {
 		return fmt.Errorf("record node agent upgrade: %w", err)
 	}
@@ -516,13 +548,8 @@ func (d *DB) RecordAgentUpgrade(ctx context.Context, namespaceID, nodeID, versio
 //
 // 只改 agent_upgrade：status=failed + 错误短码 + 时刻。**版本列保持旧值** ——
 // 节点上的二进制没换，把它写成目标版本会让控制台谎报升级成功。
-//
-// targetVersion 沿用上一次 sent 写进去的值（ack 里没有它）：先读后写放在同一个
-// 事务里，避免与控制台的另一次下发交错时把目标版本写丢。
-func (d *DB) FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode string, at int64) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
-	}
+// targetVersion 沿用上一次 sent 写进去的值（ack 里没有它），先读后写在同一事务。
+func (d *DB) FailAgentUpgrade(ctx context.Context, nodeID, errCode string, at int64) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("fail agent upgrade begin: %w", err)
@@ -531,8 +558,7 @@ func (d *DB) FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode 
 
 	var raw string
 	err = tx.QueryRowContext(ctx,
-		`SELECT agent_upgrade FROM nodes WHERE namespace_id = ? AND id = ?`,
-		namespaceID, nodeID).Scan(&raw)
+		`SELECT agent_upgrade FROM nodes WHERE id = ?`, nodeID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -552,8 +578,8 @@ func (d *DB) FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode 
 		return fmt.Errorf("encode agent upgrade: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE nodes SET agent_upgrade = ? WHERE namespace_id = ? AND id = ?`,
-		string(out), namespaceID, nodeID); err != nil {
+		`UPDATE nodes SET agent_upgrade = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, string(out), nodeID); err != nil {
 		return fmt.Errorf("fail agent upgrade write: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -562,237 +588,528 @@ func (d *DB) FailAgentUpgrade(ctx context.Context, namespaceID, nodeID, errCode 
 	return nil
 }
 
-// nodeRowsAffected 把「更新了 0 行」翻译成 ErrNotFound（节点行的几个 UPDATE 共用）。
+// SetNodeTokenHash 覆盖节点的 token 哈希（仅用于开发工具重建节点凭据）。
 //
-// 0 行只可能是「作用域/ id 不对」：静默成功会让一次写错命名空间的调用看起来生效了。
-func nodeRowsAffected(res sql.Result, op string) error {
-	n, err := res.RowsAffected()
+// 明文 token 只在 CreateNode 时返回一次，之后无法复原；devseed 反复跑需要一个
+// 「同一个节点、换一把钥匙」的入口，否则只能不断新建节点行。
+func (d *DB) SetNodeTokenHash(ctx context.Context, nodeID, tokenHash string) error {
+	if nodeID == "" || tokenHash == "" {
+		return fmt.Errorf("set node token hash: empty node_id or hash")
+	}
+	res, err := d.ExecContext(ctx,
+		`UPDATE nodes SET token_hash = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, tokenHash, nodeID)
 	if err != nil {
-		return fmt.Errorf("%s rows: %w", op, err)
+		return fmt.Errorf("update node token hash: %w", err)
 	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return nodeRowsAffected(res, "set node token hash")
 }
 
-// TouchNode 刷新 last_seen_at（任何上行帧都续命，契约 §3.3）。
-func (d *DB) TouchNode(ctx context.Context, namespaceID, nodeID string, at int64) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
+// DeleteNode 删除一台节点（槽位 / 节点配置 / 部署随 FK 级联删除）。
+// DeleteNode uses an immutable-ID revision; public callers use DeleteNodeByName.
+func (d *DB) DeleteNode(ctx context.Context, nodeID string, expectedRV int64) error {
+	if expectedRV <= 0 {
+		return ErrResourceVersionRequired
 	}
-	if at == 0 {
-		at = Now()
-	}
-	if _, err := d.ExecContext(ctx,
-		`UPDATE nodes SET last_seen_at = ? WHERE namespace_id = ? AND id = ?`,
-		at, namespaceID, nodeID); err != nil {
-		return fmt.Errorf("touch node: %w", err)
-	}
-	return nil
-}
-
-// AppliedRef 是节点在 hello 里陈述的一条「我缓存了这份产物」。
-//
-// 注意它**不是**能力声明：能力归属的唯一写者是控制台的部署（契约 D4）。
-// 中枢拿到 applied 只做两件事 —— 对账 node_capabilities，以及把 deployments 的
-// observed 状态标成 applied / pending（发现不一致就要重新下发）。
-type AppliedRef struct {
-	Name    string `json:"capability"`
-	Version int    `json:"version"`
-	Digest  string `json:"digest"`
-}
-
-// ConfirmCapabilities 是 ReconcileApplied 的兼容入口（devseed / 测试造数据用）。
-//
-// 保留它是为了让「播种一个节点」不必先造部署行；语义完全一致：
-// 仍然只认中枢已定义的能力，仍然全量替换。
-func (d *DB) ConfirmCapabilities(ctx context.Context, namespaceID, nodeID string, caps []CapabilityRef) ([]string, error) {
-	applied := make([]AppliedRef, 0, len(caps))
-	for _, ref := range caps {
-		applied = append(applied, AppliedRef{Name: ref.Name, Version: ref.Version})
-	}
-	ids, _, err := d.ReconcileApplied(ctx, namespaceID, nodeID, applied)
-	return ids, err
-}
-
-// ReconcileApplied 用 hello.applied[] 全量重建这台节点的能力归属（契约 D4）。
-//
-// 两步，同事务：
-//  1. 逐条解析 name@version → capability_id（**只在本节点所在命名空间**内解析）。
-//     未定义的那条**不拒绝整帧**，而是作为「陈旧缓存」回给调用方（返回值第 2 项）
-//     —— 中枢随后在 welcome 里让节点删掉它。
-//  2. DELETE + INSERT 重建 node_capabilities（全量替换语义保留）。
-//
-// # 为什么未定义的能力不再拒绝整帧（曾经的 unknown_capability）
-//
-// 节点缓存是**派生物**，中枢是唯一真相。控制台删掉一个能力之后，节点的缓存里
-// 必然还留着它 —— 这是正常的管理动作，不是协议违规。旧行为是整帧拒绝：
-//
-//	hello(applied=[touchnow@1]) → 400 unknown_capability → agent 视为致命错误退出
-//	→ systemd 3 秒后重启 → 再拒 → 无限崩溃循环（节点永久离线，日志每 3 秒刷一次）
-//
-// 也就是说「删一个能力」会打死所有在线节点。现在的行为：认下认识的、把不认识的
-// 回给调用方去剪掉（ws 层放进 welcome.prune，agent 删缓存与索引）。
-//
-// 顺带把 deployments 的 observed 列对账成 applied / pending：
-//   - applied：节点缓存里的 digest 与中枢期望一致
-//   - pending：不一致 —— 中枢马上会把期望的那份重新下发（中枢覆盖，见 ws.resendDeployments）
-//
-// **它不会做的事**：不会因为 applied 里出现一条没部署过的能力就给它归属。
-// 那会让中枢数据库开始静默撒谎（页面显示「这台机器能跑」，真的派过去却 ack 后 failed）。
-// 唯一的归属写者是控制台的部署。
-// 返回值：
-//   - ids：与 applied 逐个对应（未定义的那条是 ""）
-//   - stale：中枢已经没有的能力引用（节点应当剪掉的陈旧缓存）
-//
-// 只有**形状坏掉**的 applied（空能力名）才返回错误：那不是陈旧缓存，是节点 bug。
-func (d *DB) ReconcileApplied(ctx context.Context, namespaceID, nodeID string, applied []AppliedRef) (ids []string, stale []AppliedRef, err error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, nil, ErrNamespaceRequired
-	}
-	if nodeID == "" {
-		return nil, nil, fmt.Errorf("reconcile applied: empty node_id")
-	}
-
-	// 节点行是唯一真相：能力定义只在它所属的命名空间里解析（I11③）。
-	node, err := d.GetNode(ctx, namespaceID, nodeID)
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("delete node: begin: %w", err)
 	}
+	defer func() { _ = tx.Rollback() }()
+	ex := txExec{tx: tx}
+	n, err := getNodeOn(ctx, ex, "id", nodeID)
+	if err != nil {
+		return err
+	}
+	if err := checkResourceRevision(expectedRV, n.ID, n.ResourceVersion); err != nil {
+		return err
+	}
+	if err := deleteNodeOn(ctx, ex, n); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	ids = make([]string, len(applied))
-	var (
-		nameProblems []string
-		unknownRefs  []string
-	)
-	for i, a := range applied {
-		if a.Name == "" {
-			// 形状坏掉 = 节点 bug，不是陈旧缓存：照旧拒绝整帧（这条必须响）。
-			nameProblems = append(nameProblems,
-				fmt.Sprintf("capability name is empty (version %d)", a.Version))
-			continue
-		}
-		ref := fmt.Sprintf("%s@%d", a.Name, a.Version)
-		c, err := d.GetCapability(ctx, node.NamespaceID, a.Name, a.Version)
-		switch {
-		case errors.Is(err, ErrNotFound):
-			// 陈旧缓存：记下来，交给 welcome.prune 让节点删掉，不拒绝整帧。
-			unknownRefs = append(unknownRefs, ref)
-			stale = append(stale, AppliedRef{Name: a.Name, Version: a.Version, Digest: a.Digest})
-		case err != nil:
-			return nil, nil, err
-		case c.NamespaceID != node.NamespaceID:
-			// 数据被写坏时才可能走到：宁可 400 说清楚，也不要把别的命名空间的
-			// 能力 id 写进本节点的声明。
-			return nil, nil, &CrossNamespaceError{
-				What: "node_capabilities.capability_id",
-				Want: node.NamespaceID,
-				Got:  c.NamespaceID,
-			}
-		default:
-			ids[i] = c.ID
-		}
+// UpsertInstances 落库节点申报的实例槽位；超过 nodes.max_instances 返回 ErrTooManyInstances。
+//
+// nil/空清单不构成新断言，保留账本。非空清单缩容只删除未占用的老槽位；
+// occupied 槽即使超预算也保留到精确历史回收。slot 必须唯一且 ≥ 0，
+// 已有槽位重报只更新 liveness，不改 busy_task/attempt/lease 绑定。
+func (d *DB) UpsertInstances(ctx context.Context, nodeID string, specs []InstanceSpec) ([]*NodeInstance, error) {
+	node, err := d.GetNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
 	}
-	if len(unknownRefs) > 0 {
-		// 只留痕：中枢认得清「这不是我的能力」，节点马上会在 welcome.prune 里收到它。
-		slog.Warn("node reports capabilities the hub no longer has (stale cache; pruning)",
-			"event", "node.reconcile.stale",
-			"node_id", nodeID,
-			"stale", strings.Join(unknownRefs, ", "))
+	if len(specs) > node.MaxInstances {
+		return nil, fmt.Errorf("%w: declared %d instances, node max is %d",
+			ErrTooManyInstances, len(specs), node.MaxInstances)
 	}
-
-	if len(nameProblems) > 0 {
-		return nil, nil, &CapabilityDeclError{Problems: nameProblems}
+	seen := make(map[int]bool, len(specs))
+	for _, s := range specs {
+		if s.Slot < 0 {
+			return nil, fmt.Errorf("upsert instances: negative slot %d", s.Slot)
+		}
+		if seen[s.Slot] {
+			return nil, fmt.Errorf("upsert instances: duplicate slot %d", s.Slot)
+		}
+		seen[s.Slot] = true
 	}
 
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin reconcile applied: %w", err)
+		return nil, fmt.Errorf("begin upsert instances: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM node_capabilities WHERE node_id = ?`, nodeID); err != nil {
-		return nil, nil, fmt.Errorf("clear node capabilities: %w", err)
-	}
-	for i := range applied {
-		if ids[i] == "" {
-			continue
+	if len(specs) > 0 {
+		placeholders := make([]string, len(specs))
+		args := make([]any, 0, len(specs)+1)
+		args = append(args, nodeID)
+		for i, s := range specs {
+			placeholders[i] = "?"
+			args = append(args, s.Slot)
 		}
-		// 同一 name@version 重复出现时后者胜（与旧实现的「后者胜」一致，行为确定）。
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?,?,?)
-			 ON CONFLICT(node_id, capability_id) DO NOTHING`,
-			nodeID, ids[i], node.NamespaceID); err != nil {
-			return nil, nil, fmt.Errorf("insert node capability: %w", err)
-		}
-		if _, err := d.markDeployedDigest(ctx, tx, nodeID, ids[i], applied[i].Digest); err != nil {
-			return nil, nil, err
+			`DELETE FROM node_instances WHERE node_id = ? AND (busy_task IS NULL OR busy_task = '') AND slot NOT IN (`+
+				strings.Join(placeholders, ",")+`)`, args...); err != nil {
+			return nil, fmt.Errorf("remove stale instances: %w", err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("commit reconcile applied: %w", err)
+	now := Now()
+	for _, s := range specs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO node_instances (id, node_id, slot, busy_task, busy_attempt, busy_lease_id, alive, updated_at)
+			 VALUES (?,?,?,NULL,0,'',1,?)
+			 ON CONFLICT(node_id, slot) DO UPDATE SET
+			   alive = 1,
+			   updated_at = excluded.updated_at`,
+			NewInstanceID(), nodeID, s.Slot, now); err != nil {
+			return nil, fmt.Errorf("upsert instance slot %d: %w", s.Slot, err)
+		}
 	}
-	return ids, stale, nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit upsert instances: %w", err)
+	}
+	return d.ListInstances(ctx, nodeID)
 }
 
-// ListNodeCapabilities 返回节点拥有的能力定义（含 outputs，供 kind 推导与派发选点）。
-//
-// 顺序（name, version）不变，空列表返回 []。
-// 数据来源是 node_capabilities —— 它只从 deployments 派生（契约 D4），
-// 所以「这台机器能跑什么」永远等于「控制台给它部署了什么」。
-func (d *DB) ListNodeCapabilities(ctx context.Context, nodeID string) ([]*NodeCapability, error) {
+// ListInstances 列出节点槽位（空列表返回 []）。
+func (d *DB) ListInstances(ctx context.Context, nodeID string) ([]*NodeInstance, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+prefixedCapabilityColumns("c")+`
-		 FROM node_capabilities nc
-		 JOIN capability_versions c ON c.id = nc.capability_id
-		 WHERE nc.node_id = ?
-		 ORDER BY c.name, c.version`, nodeID)
+		`SELECT id, node_id, slot, busy_task, busy_attempt, busy_lease_id, alive, updated_at
+		 FROM node_instances WHERE node_id = ? ORDER BY slot`, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("list node capabilities: %w", err)
+		return nil, fmt.Errorf("list instances: %w", err)
 	}
 	defer rows.Close()
-	out := []*NodeCapability{}
+	out := []*NodeInstance{}
 	for rows.Next() {
-		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
-		if err := rows.Scan(&c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema, &outputs,
-			&lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan node capability: %w", err)
+		var in NodeInstance
+		var alive int
+		if err := rows.Scan(&in.ID, &in.NodeID, &in.Slot,
+			&in.BusyTask, &in.BusyAttempt, &in.BusyLeaseID, &alive, &in.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan instance: %w", err)
 		}
-		if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-			return nil, fmt.Errorf("decode params_schema: %w", err)
-		}
-		if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-			return nil, fmt.Errorf("decode outputs: %w", err)
-		}
-		if c.Outputs == nil {
-			c.Outputs = []string{}
-		}
-		if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-			return nil, fmt.Errorf("decode lifecycle: %w", err)
-		}
-		out = append(out, &NodeCapability{CapabilityVersion: &c})
+		in.Alive = alive != 0
+		out = append(out, &in)
 	}
 	return out, rows.Err()
+}
+
+// FreeSlotsByNode 一次查出多个节点的空闲槽位数（LEFT JOIN：没申报槽位的节点给 0）。
+//
+// 口径：**alive 且 busy_task IS NULL** 的槽位算空闲（与 ListInstances 一致）。
+func (d *DB) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error) {
+	out := make(map[string]int, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if _, seen := out[id]; seen {
+			continue
+		}
+		out[id] = 0 // 先给 0：LEFT JOIN 没匹配到时不会出现在结果里
+		args = append(args, id)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := d.QueryContext(ctx,
+		`SELECT n.id, COUNT(i.id)
+		   FROM nodes n
+		   LEFT JOIN node_instances i
+		     ON i.node_id = n.id AND i.alive = 1 AND i.busy_task IS NULL
+		  WHERE n.id IN (`+placeholders+`)
+		  GROUP BY n.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("free slots by node: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var free int
+		if err := rows.Scan(&id, &free); err != nil {
+			return nil, fmt.Errorf("scan free slots: %w", err)
+		}
+		out[id] = free
+	}
+	return out, rows.Err()
+}
+
+// MarkInstancesDead 把节点全部实例标记为掉线（连接断开时调用）。
+//
+// 只是标记 alive=0，不删行：槽位申报是节点的事，中枢不替它决定「少了一个槽」。
+// 也不清 busy_task——任务归属由租约巡检回收，那是唯一入口。
+func (d *DB) MarkInstancesDead(ctx context.Context, nodeID string) error {
+	if _, err := d.ExecContext(ctx,
+		`UPDATE node_instances SET alive = 0, updated_at = ? WHERE node_id = ?`,
+		Now(), nodeID); err != nil {
+		return fmt.Errorf("mark instances dead: %w", err)
+	}
+	return nil
+}
+
+// MarkNodeOffline 是「会话死亡」的唯一入口：节点转 offline，并把它的全部槽位标成
+// **不可派发**（alive=0）。
+//
+// **不释放 busy 账本**：offline 只说明连接断了，不等于机器上的进程组已回收。容量在
+// 节点回来且给出明确实例事实（ReclaimStaleSlots）之前保持占用——否则中枢以为槽空了
+// 而旧进程还在跑，同一槽会被派第二条任务。
+func (d *DB) MarkNodeOffline(ctx context.Context, nodeID string, now int64) error {
+	if nodeID == "" {
+		return fmt.Errorf("mark node offline: empty node_id")
+	}
+	if now == 0 {
+		now = Now()
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("mark node offline: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE nodes SET status = ?, last_seen_at = ?, resource_version = resource_version + 1
+		  WHERE id = ?`, NodeStatusOffline, now, nodeID)
+	if err != nil {
+		return fmt.Errorf("mark node offline: %w", err)
+	}
+	if err := nodeRowsAffected(res, "mark node offline"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE node_instances SET alive = 0, updated_at = ? WHERE node_id = ?`, now, nodeID); err != nil {
+		return fmt.Errorf("mark node offline: instances: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("mark node offline: commit: %w", err)
+	}
+	return nil
+}
+
+// recordReservationOn 把节点「Busy=true 的 reservation」事实落进真实槽账本。
+//
+// 只接受能对上中枢当前候选的事实（taskId + assignmentId + proposedAttempt + 同节点 +
+// pending + 窗口未过 + 未取消）：节点不能凭一句 busy 就制造一笔占预算的幽灵预约。
+// 写入形态：busy_task=taskID、busy_attempt=proposedAttempt、busy_lease_id 为空
+// （**不伪造 lease**）、busy_assignment_id=assignmentId、busy_expires_at=该候选的有界窗口。
+//
+// 同一物理槽上的旧占用只能被三种情况替换：空槽、**同一个 assignment** 自己的重复观测
+// （幂等刷新），或一条**已过 recorded 窗口的 lease-free reservation**（它从未 grant、
+// 因此不可能有进程；执行绑定 lease 非空，永远走不到这条）。旧 assignment 的观测对不上
+// 当前候选、也清不掉新 reservation（新 reservation 的窗口未过）。
+func recordReservationOn(ctx context.Context, ex queryExec, nodeID string, obs SlotObservation, now int64) error {
+	if obs.TaskID == "" || obs.AssignmentID == "" || obs.ProposedAttempt <= 0 {
+		return nil
+	}
+	var expiresAt int64
+	err := ex.queryRowContext(ctx,
+		`SELECT assignment_expires_at FROM tasks
+		  WHERE id = ? AND phase = ? AND node_id = ? AND assignment_id = ?
+		    AND proposed_attempt = ? AND cancel_requested_at IS NULL
+		    AND assignment_expires_at IS NOT NULL AND assignment_expires_at > ?`,
+		obs.TaskID, TaskPending, nodeID, obs.AssignmentID, obs.ProposedAttempt, now).Scan(&expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 对不上中枢事实（旧 assignment / 已 grant / 已取消 / 窗口过期）：忽略。
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("record reservation: read task: %w", err)
+	}
+	var instanceID string
+	err = ex.queryRowContext(ctx,
+		`SELECT id FROM node_instances WHERE node_id = ? AND slot = ?`, nodeID, obs.Slot).Scan(&instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("record reservation: read instance: %w", err)
+	}
+	if _, err := ex.execContext(ctx,
+		`UPDATE node_instances
+		    SET busy_task = ?, busy_attempt = ?, busy_lease_id = '',
+		        busy_assignment_id = ?, busy_expires_at = ?, updated_at = ?
+		  WHERE id = ?
+		    AND (busy_task IS NULL
+		      OR (busy_task = ? AND busy_lease_id = '' AND busy_assignment_id = ?)
+		      OR (busy_lease_id = '' AND busy_expires_at > 0 AND busy_expires_at <= ?))`,
+		obs.TaskID, obs.ProposedAttempt, obs.AssignmentID, expiresAt, now, instanceID,
+		obs.TaskID, obs.AssignmentID, now); err != nil {
+		return fmt.Errorf("record reservation: %w", err)
+	}
+	return nil
+}
+
+// ReclaimStaleSlots 按**明确的实例事实**回收槽位绑定（绝不读任务相位做推断）。
+//
+// 旧判定是「槽位指向的任务已不在 running → 清槽」——那是拿数据库状态冒充物理回收
+// 事实：租约过期只吊销授权，进程组可能还在跑；hello 重连也不证明旧进程已死
+// （rehello ≠ reaped）。现在只有满足全部条件的观察才会回收：
+//   - Busy 显式为 false（缺字段/未提到的 slot 都是未知，不是空）；
+//   - 观察里带相符的历史 taskId/attempt/leaseId（无匹配引用的 idle 记录不能清旧 busy）；
+//   - 观察时刻不早于该绑定的建立时刻（旧快照不能放掉它没看见的新占用）。
+//
+// 回收只清**那一条** (instance, task, attempt) 绑定，并把该 attempt 记上 reaped 事实；
+// 不改变任务 phase / token / 新 attempt 的槽。返回真正回收的槽数（无事实 = 0，不是假成功）。
+func (d *DB) ReclaimStaleSlots(ctx context.Context, nodeID string, observations []SlotObservation, now int64) (int, error) {
+	if nodeID == "" {
+		return 0, fmt.Errorf("reclaim stale slots: empty node_id")
+	}
+	if now == 0 {
+		now = Now()
+	}
+	if len(observations) == 0 {
+		// 没申报任何实例事实：什么都不知道（不是「全部空闲」）。
+		return 0, nil
+	}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale slots: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ?`, nodeID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("reclaim stale slots: read node: %w", err)
+	}
+
+	ex := txExec{tx: tx}
+	released := 0
+	for _, obs := range observations {
+		if obs.Busy == nil || obs.Slot < 0 {
+			// 未知（未断言）或坏 slot：什么都不能做。
+			continue
+		}
+		if *obs.Busy {
+			// 明确的「仍在跑」：执行绑定不重绑；reservation 在能对上中枢当前候选时
+			// 落进真实槽账本（现有字段，不伪造 lease），供三层预算统计。
+			if rerr := recordReservationOn(ctx, ex, nodeID, obs, now); rerr != nil {
+				return released, fmt.Errorf("reclaim stale slots: %w", rerr)
+			}
+			continue
+		}
+		if obs.TaskID == "" {
+			continue
+		}
+		var (
+			instanceID     string
+			busyTask       string
+			busyAttempt    int
+			busyLease      string
+			busyAssignment string
+			updatedAt      int64
+		)
+		err := ex.queryRowContext(ctx,
+			`SELECT id, COALESCE(busy_task,''), busy_attempt, busy_lease_id, busy_assignment_id, updated_at
+			   FROM node_instances WHERE node_id = ? AND slot = ?`, nodeID, obs.Slot).
+			Scan(&instanceID, &busyTask, &busyAttempt, &busyLease, &busyAssignment, &updatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // 节点报的是它已不申报的 slot：没有可回收的绑定
+		}
+		if err != nil {
+			return released, fmt.Errorf("reclaim stale slots: read instance: %w", err)
+		}
+		if busyTask == "" {
+			continue
+		}
+		if obs.Attempt > 0 && obs.LeaseID != "" {
+			// 执行类 idle：引用必须与中枢旧绑定完全相符（task + attempt + lease）。
+			if busyTask != obs.TaskID || busyAttempt != obs.Attempt || busyLease != obs.LeaseID {
+				continue
+			}
+			if obs.ObservedAt > 0 && updatedAt > obs.ObservedAt {
+				// 绑定的生成晚于事实采集：旧快照不能释放一条它没看见的占用。
+				continue
+			}
+			if _, rerr := reapAttemptOn(ctx, ex, busyTask, busyAttempt, nodeID, busyLease, instanceID,
+				now, ReclaimReasonNodeIdle); rerr != nil && !errors.Is(rerr, ErrNotFound) {
+				return released, fmt.Errorf("reclaim stale slots: %w", rerr)
+			}
+			if _, rerr := releaseSlotBindingOn(ctx, ex, nodeID, instanceID, busyTask, busyAttempt, now); rerr != nil {
+				return released, rerr
+			}
+			released++
+			continue
+		}
+		// reservation 类 idle（busy_lease_id=''）：必须带相符 assignment/proposed，
+		// 只清 reservation 本身（没有 attempt 事实可写、也绝不伪造 reaped）。
+		// assignment 必须精确相等：旧 assignment 的 idle 观测（哪怕同 proposed）不能
+		// 清掉新候选的预约——那是两条不同的事实。
+		if obs.AssignmentID == "" || obs.ProposedAttempt <= 0 {
+			continue
+		}
+		if busyTask != obs.TaskID || busyAttempt != obs.ProposedAttempt || busyLease != "" ||
+			busyAssignment != obs.AssignmentID {
+			continue
+		}
+		if obs.ObservedAt > 0 && updatedAt > obs.ObservedAt {
+			continue
+		}
+		res, uerr := ex.execContext(ctx,
+			`UPDATE node_instances
+			    SET busy_task = NULL, busy_attempt = 0, busy_lease_id = '',
+			        busy_assignment_id = '', busy_expires_at = 0, updated_at = ?
+			  WHERE id = ? AND busy_task = ? AND busy_attempt = ? AND busy_lease_id = ''
+			    AND busy_assignment_id = ?`,
+			now, instanceID, obs.TaskID, obs.ProposedAttempt, obs.AssignmentID)
+		if uerr != nil {
+			return released, fmt.Errorf("reclaim stale slots: clear reservation: %w", uerr)
+		}
+		if n, rerr := res.RowsAffected(); rerr != nil {
+			return released, fmt.Errorf("reclaim stale slots: reservation rows: %w", rerr)
+		} else if n > 0 {
+			released++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reclaim stale slots: commit: %w", err)
+	}
+	return released, nil
+}
+
+// LeaseSlot 把一个任务的**具体 attempt** 绑到一个**已指定的**槽位上（CAS：busy_task IS NULL）。
+//
+// 正常执行路径必须走 GrantLease（消费节点 task.accept 回报的真实 slot，同事务映射
+// node+slot → instance）；中枢**不**自行随机挑槽。这个公开原语只留给运维/测试直接
+// 验证绑定行为；它同样写入 busy_attempt / busy_lease_id，不允许产生「不知道属于
+// 哪一代」的占用。
+//
+// 返回 instance_id；slot 不存在/不存活/已被占 → ErrSlotUnavailable。
+func (d *DB) LeaseSlot(ctx context.Context, nodeID, taskID string, attempt int, leaseID string, slot int) (string, error) {
+	if taskID == "" || attempt <= 0 || leaseID == "" || slot < 0 {
+		return "", fmt.Errorf("lease slot: taskID/attempt/leaseID/slot required")
+	}
+	instanceID, err := bindSlotOn(ctx, d, nodeID, slot, taskID, attempt, leaseID, "", 0, Now())
+	return instanceID, err
+}
+
+// bindSlotOn 是「把一次具体执行绑到指定 slot」的唯一 SQL 点（tx 内 / 池上共用）。
+//
+// 不随机挑槽：slot 是节点 task.accept 预留的真实空闲槽；中枢只复核它属于这台
+// 节点、存活、且此刻没有其它绑定，再用 CAS 写上执行身份。
+//
+// grant 路径（proposedAttempt>0）只能消费**本次候选自己**的 reservation：task +
+// proposed + assignment 三项都得对上。旧 assignment 的预约即使同 task/同 proposed
+// 也不能被新候选复用（否则新执行占着旧预约，预算与回收都会错位）。LeaseSlot 原语
+// （proposedAttempt=0）只接空槽。
+func bindSlotOn(ctx context.Context, ex queryExec, nodeID string, slot int, taskID string,
+	attempt int, leaseID, assignmentID string, proposedAttempt int, now int64) (string, error) {
+	var instanceID string
+	err := ex.queryRowContext(ctx,
+		`SELECT id FROM node_instances WHERE node_id = ? AND slot = ? AND alive = 1`, nodeID, slot).
+		Scan(&instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: node %s slot %d 未申报或不可用", ErrSlotUnavailable, nodeID, slot)
+	}
+	if err != nil {
+		return "", fmt.Errorf("bind slot: read instance: %w", err)
+	}
+	// CAS：空槽，或**本次候选自己**的已接受 reservation（busy_lease_id='' 是 reservation
+	// 与 execution 的唯一判别；assignment 是同一条预约的身份）。别人的 reservation/
+	// 执行（含旧 assignment 的预约）一律不能抢。
+	q := `UPDATE node_instances
+	        SET busy_task = ?, busy_attempt = ?, busy_lease_id = ?,
+	            busy_assignment_id = '', busy_expires_at = 0, updated_at = ?
+	      WHERE id = ? AND busy_task IS NULL`
+	args := []any{taskID, attempt, leaseID, now, instanceID}
+	if proposedAttempt > 0 {
+		q = `UPDATE node_instances
+		        SET busy_task = ?, busy_attempt = ?, busy_lease_id = ?,
+		            busy_assignment_id = '', busy_expires_at = 0, updated_at = ?
+		      WHERE id = ? AND (busy_task IS NULL
+		        OR (busy_task = ? AND busy_attempt = ? AND busy_lease_id = ''
+		            AND busy_assignment_id = ?))`
+		args = append(args, taskID, proposedAttempt, assignmentID)
+	}
+	res, err := ex.execContext(ctx, q, args...)
+	if err != nil {
+		return "", fmt.Errorf("bind slot: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("bind slot rows: %w", err)
+	}
+	if n != 1 {
+		return "", fmt.Errorf("%w: node %s slot %d 已有未回收的占用", ErrSlotUnavailable, nodeID, slot)
+	}
+	return instanceID, nil
+}
+
+// ReleaseSlot 精确释放一次占槽：instance + task + attempt 三者都对上才清。
+//
+// 为什么必须带 attempt：同一逻辑任务换 attempt 重试时可能同时占着旧 attempt 的槽，
+// 只按 (instance, task) 释放会把旧进程还在用的槽放给下一个任务。attempt 对不上的
+// 绑定（槽已归新 attempt）一行都不动。
+func (d *DB) ReleaseSlot(ctx context.Context, nodeID, instanceID, taskID string, attempt int) error {
+	_, err := releaseSlotBindingOn(ctx, d, nodeID, instanceID, taskID, attempt, Now())
+	return err
+}
+
+// releaseSlotBindingOn 是精确释槽的唯一 SQL 点（tx 内 / 池上共用）。
+//
+// `busy_attempt = 0` 的防御分支只对待「没有 attempt 身份的遗留行」：那种行没有更具体
+// 的身份可核，而 instance 是全局主键——它上面只可能有一个占用者。v4 grant 永不产生
+// 这种行（每条占用都绑到具体 attempt）。
+func releaseSlotBindingOn(ctx context.Context, ex queryExec, nodeID, instanceID, taskID string, attempt int, now int64) (int64, error) {
+	if instanceID == "" || taskID == "" {
+		return 0, nil
+	}
+	q := `UPDATE node_instances
+	        SET busy_task = NULL, busy_attempt = 0, busy_lease_id = '',
+	            busy_assignment_id = '', busy_expires_at = 0, updated_at = ?
+	       WHERE id = ? AND busy_task = ?`
+	args := []any{now, instanceID, taskID}
+	if nodeID != "" {
+		q += ` AND node_id = ?`
+		args = append(args, nodeID)
+	}
+	if attempt > 0 {
+		q += ` AND (busy_attempt = ? OR busy_attempt = 0)`
+		args = append(args, attempt)
+	}
+	res, err := ex.execContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("release lease slot %s/%s: %w", nodeID, instanceID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("release lease slot rows: %w", err)
+	}
+	return n, nil
 }
 
 // InstanceStat 是一台节点的槽位汇总（只读投影，供批量视图用）。
 //
 // 口径与 ListInstances 完全一致：Total 是**行数**（不看 alive —— 掉线的槽位
-// 仍然是节点申报过的槽位，控制台页面上要显示它，与旧实现 len(insts) 对齐）。
+// 仍然是节点申报过的槽位，控制台页面上要显示它）。
 type InstanceStat struct {
 	Total int // node_instances 行数（与 ListInstances 同口径：不看 alive）
 	Busy  int // busy_task IS NOT NULL 的行数
 }
 
-// nodeIDBatchSize 是一条 IN 查询里最多塞多少个 node_id。
-//
-// SQLite 的宿主参数个数有上限（老版本是 999），而 `/v1/nodes?namespaceId=*` 的节点数
-// **没有上限**（store.ListNodes 不分页）。不分批的话，节点一多就整页 500 —— 旧实现是
-// 每节点一条单参数查，不会有这个问题，所以这里必须分批把那个退路补回来。
+// nodeIDBatchSize 是一条 IN 查询里最多塞多少个 node_id（SQLite 宿主参数上限）。
 const nodeIDBatchSize = 400
 
 // uniqueNodeIDs 去重（IN 里重复只让参数列表变长，没有语义价值）。
@@ -809,114 +1126,9 @@ func uniqueNodeIDs(nodeIDs []string) []string {
 	return out
 }
 
-// ListCapabilitiesByNode 批量取多台节点声明的能力（替代每节点一次 ListNodeCapabilities）。
-//
-// 为什么需要它：控制台列表页对每台节点各查一次能力，SQL 条数随节点数线性增长
-// （#223：N=100 时整页 201 条串行 SQL）。这里合并成 IN 查询，条数与 N 无关
-// （每 nodeIDBatchSize 个 id 一条，节点数正常时就是 1 条）。
-//
-// 语义必须与 ListNodeCapabilities **逐字一致**（否则列表页与详情页会对同一台机器
-// 给出不同的能力/顺序/runSpec）：
-//   - 每节点内顺序仍是 c.name, c.version 升序（ORDER BY 带上 node_id 不破坏这一点）
-//   - params_schema / outputs / lifecycle 的反序列化、Outputs nil → []、
-//     run_spec 空串 → emptyRunSpec 全部照抄单节点实现
-//   - 没有能力的节点**不出现在** map 里（调用方按 nil → 空切片处理）
-//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重
-//
-// 降级粒度（审查 minor-3）：单行 JSON 坏掉时**只丢这台节点**的能力（等价于旧实现
-// 「这台节点的 ListNodeCapabilities 返回 error → caps=nil」），并留一条 WARN；
-// 绝不因为一行坏数据把整页所有节点的能力都清空。
-func (d *DB) ListCapabilitiesByNode(ctx context.Context, nodeIDs []string) (map[string][]*NodeCapability, error) {
-	ids := uniqueNodeIDs(nodeIDs)
-	out := make(map[string][]*NodeCapability, len(ids))
-	broken := make(map[string]struct{})
-	for start := 0; start < len(ids); start += nodeIDBatchSize {
-		end := start + nodeIDBatchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		if err := d.listCapabilitiesChunk(ctx, ids[start:end], out, broken); err != nil {
-			return nil, err
-		}
-	}
-	// 一台节点只要有一行坏数据，就整台降级（与旧实现的 per-node 语义一致）。
-	for id := range broken {
-		delete(out, id)
-	}
-	return out, nil
-}
-
-// listCapabilitiesChunk 是 ListCapabilitiesByNode 的一批。
-func (d *DB) listCapabilitiesChunk(ctx context.Context, ids []string, out map[string][]*NodeCapability, broken map[string]struct{}) error {
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
-	rows, err := d.QueryContext(ctx,
-		`SELECT nc.node_id, `+prefixedCapabilityColumns("c")+`
-		 FROM node_capabilities nc
-		 JOIN capability_versions c ON c.id = nc.capability_id
-		 WHERE nc.node_id IN (`+placeholders+`)
-		 ORDER BY nc.node_id, c.name, c.version`, args...)
-	if err != nil {
-		return fmt.Errorf("list node capabilities by node: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var nodeID string
-		var c CapabilityVersion
-		var paramsSchema, outputs, lifecycle string
-		if err := rows.Scan(&nodeID, &c.ID, &c.NamespaceID, &c.Name, &c.Version, &paramsSchema,
-			&outputs, &lifecycle, &c.Sticky, &c.Source, &c.ContentHash, &c.CreatedAt); err != nil {
-			return fmt.Errorf("scan node capability by node: %w", err)
-		}
-		if err := decodeCapabilityJSON(&c, paramsSchema, outputs, lifecycle); err != nil {
-			// 坏数据只降级这一台（见 ListCapabilitiesByNode 的降级粒度注释）：
-			// 静默 continue 会让页面少一条能力却没人知道，所以必须留声。
-			slog.Warn("skip node capability with invalid JSON",
-				"event", "store.node_capabilities.bad_json",
-				"node_id", nodeID,
-				"capability_id", c.ID,
-				"error", err.Error(),
-			)
-			broken[nodeID] = struct{}{}
-			continue
-		}
-		out[nodeID] = append(out[nodeID], &NodeCapability{CapabilityVersion: &c})
-	}
-	return rows.Err()
-}
-
-// decodeCapabilityJSON 反序列化能力定义里的三列 JSON。
-//
-// 抽出来只为让批量路径与单节点路径共用同一份解码规则（空值判据、nil→[] 都在这里），
-// 把「两处各写一遍」的漂移风险消掉。
-func decodeCapabilityJSON(c *CapabilityVersion, paramsSchema, outputs, lifecycle string) error {
-	if err := json.Unmarshal([]byte(paramsSchema), &c.ParamsSchema); err != nil {
-		return fmt.Errorf("decode params_schema: %w", err)
-	}
-	if err := json.Unmarshal([]byte(outputs), &c.Outputs); err != nil {
-		return fmt.Errorf("decode outputs: %w", err)
-	}
-	if c.Outputs == nil {
-		c.Outputs = []string{}
-	}
-	if err := json.Unmarshal([]byte(lifecycle), &c.Lifecycle); err != nil {
-		return fmt.Errorf("decode lifecycle: %w", err)
-	}
-	return nil
-}
-
 // InstanceStatsByNode 批量取多台节点的槽位总数/占用数（替代每节点一次 ListInstances）。
 //
-// 这里不返回槽位明细：列表页只要两个数字，把 N×M 行拉回来再在 Go 里数
-// 是把内存和 GC 也一起做成 N+1（详情页仍然走 ListInstances）。
-//
-// 语义与旧实现对齐（len(insts) / busy_task 非空计数）：
-//   - Total 不看 alive（掉线的槽位照样是申报过的槽位）
-//   - 没有槽位的节点**不出现在** map 里（调用方按零值处理）
-//   - nodeIDs 为空 → 空 map + nil error；重复 id 去重；按 nodeIDBatchSize 分批
+// 没有槽位的节点**不出现在** map 里（调用方按零值处理）；nodeIDs 为空 → 空 map。
 func (d *DB) InstanceStatsByNode(ctx context.Context, nodeIDs []string) (map[string]InstanceStat, error) {
 	ids := uniqueNodeIDs(nodeIDs)
 	out := make(map[string]InstanceStat, len(ids))
@@ -957,609 +1169,347 @@ func (d *DB) InstanceStatsByNode(ctx context.Context, nodeIDs []string) (map[str
 	return out, nil
 }
 
-// prefixedCapabilityColumns 给能力列加表别名前缀，
-// 避免与 join 表的同名列（id/namespace_id）混淆。
-// 列顺序必须与下面的 scan 一致（scan 只取展示需要的子集，不含 display_name）。
-func prefixedCapabilityColumns(alias string) string {
-	cols := []string{"id", "namespace_id", "name", "version", "params_schema", "outputs",
-		"lifecycle", "sticky", "source", "content_hash", "created_at"}
-	parts := make([]string, len(cols))
-	for i, c := range cols {
-		parts[i] = alias + "." + c
-	}
-	return strings.Join(parts, ", ")
+// nodeConfigSnapshot 是 EligibleNodes 用到的节点配置投影（不含本机快照的原始列）。
+type nodeConfigSnapshot struct {
+	namespaces      []string
+	vars            map[string]string
+	localVars       map[string]string
+	revision        int64
+	appliedRevision int64
 }
 
-// NodesForCapability 返回声明了该能力、且可接单的节点 ID（派发第 ③ 步的唯一查表入口）。
+// EligibleNodes 返回能执行 (namespace, capability@digest) 的节点，以及**逐节点**不可用原因。
 //
-// 「可接单」= 节点状态不是 offline/draining。排序按 last_seen_at 新→旧，
-// 让调用方（路由层）能在同分时偏向最近活跃的机器。
+// 判定条件（capability.md §2.4 NodesAvailable）：在线、ns ∈ 申报 ∩ 授权、
+// 机器级配置已 applied（node_configs.applied_revision == revision）、
+// deployments 有该 digest（applied）、hello 申报的对应能力 commands 全部 found、
+// spec.requires.values 全部可解析（local > node > 任务 ns）。
 //
-// 命名空间（I11③）：只在该命名空间内选机器 —— 同一个 capability_id 只可能
-// 属于一个命名空间（能力 id 全局唯一且声明写入时已校验）。
-func (d *DB) NodesForCapability(ctx context.Context, namespaceID, capabilityID string) ([]string, error) {
+// 返回的 reasons 是 nodeID → reason 的**全集**（"" = 可用），reason 取
+// protocol.ConditionReason* 的封闭值（NodeOffline / NamespaceUnauthorized /
+// ConfigPending / NotDeployed / CommandMissing / ValueMissing）。没有节点时 map 为空，
+// 调用方按 NoMatchingNode 处理。**无候选不是 error**：它是正常的派发结果。
+func (d *DB) EligibleNodes(ctx context.Context, namespaceID string, spec artifact.Spec, digest string) ([]*Node, map[string]string, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
+		return nil, nil, ErrNamespaceRequired
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT n.id
-		 FROM node_capabilities nc
-		 JOIN nodes n ON n.id = nc.node_id
-		 WHERE nc.capability_id = ? AND n.namespace_id = ?
-		   AND n.status IN (?, ?)
-		 ORDER BY COALESCE(n.last_seen_at, 0) DESC, n.id`,
-		capabilityID, namespaceID, NodeStatusOnline, NodeStatusOffline)
+	if strings.TrimSpace(digest) == "" {
+		return nil, nil, fmt.Errorf("eligible nodes: empty digest")
+	}
+
+	// ① ns 名（授权/申报列表存的是 ns 名，不是内部 id）。
+	namespaceName, err := d.namespaceSlug(ctx, namespaceID)
 	if err != nil {
-		return nil, fmt.Errorf("nodes for capability: %w", err)
+		return nil, nil, fmt.Errorf("eligible nodes: %w", err)
 	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan node id: %w", err)
-		}
-		out = append(out, id)
+
+	// ② 能力身份（name@version）由 digest 反查：digest 是部署身份，每 ns 唯一。
+	var capName string
+	var capVersion int
+	err = d.QueryRowContext(ctx,
+		`SELECT name, version FROM capability_versions WHERE namespace_id = ? AND digest = ? AND deleted_at IS NULL`,
+		namespaceID, digest).Scan(&capName, &capVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
 	}
-	return out, rows.Err()
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: read capability: %w", err)
+	}
+
+	// ③ 任务 ns 的默认值（第三层）：配置诊断/普通派发用**当前**值；
+	// 已经接受的任务按钉住的快照走 EligibleNodesForTask。
+	nsVars, err := d.namespaceVarsQueried(ctx, namespaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: %w", err)
+	}
+
+	return d.nodeEligibility(ctx, namespaceID, namespaceName, nsVars, capName, capVersion, spec, digest)
 }
 
-// NodesDeclaringCapability 返回声明了该能力的**所有**节点（含 offline / draining）。
+// EligibleNodesForTask 是派发路径的入口：**任务钉住的 ns 输入快照**参与判定（D2）。
 //
-// 与 NodesForCapability 的区别是**用途**，不是实现细节：
-//
-//	NodesForCapability    派发入口 —— 只给现在能接单的机器
-//	NodesDeclaringCapability  控制台展示 —— "谁声明了这个能力"是配置事实，
-//	                          排空中的机器仍然声明着它，页面上必须看得到，
-//	                          否则运维会以为这个能力没人管了
-//
-// 排序按状态（在线优先）+ 名字，让列表读起来稳定。
-// 作用域是该命名空间（I11）：跨命名空间的机器不应出现在这张表里。
-func (d *DB) NodesDeclaringCapability(ctx context.Context, namespaceID, capabilityID string) ([]*Node, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
+// 为什么不能用 EligibleNodes（当前 ns 配置）：一条已接受的任务如果因为排队期间
+// ns 默认值被改过，用当前值判「能不能跑」会得出与它实际执行输入不一致的结论
+// （典型症状：能力要求 vars.SOURCE_ROOT，当前配置有、任务快照里没有 → 派发说可用，
+// 节点上却拿不到值）。孤儿视图与调度必须用这个函数。
+func (d *DB) EligibleNodesForTask(ctx context.Context, t *Task) ([]*Node, map[string]string, error) {
+	if t == nil {
+		return nil, nil, fmt.Errorf("eligible nodes for task: nil task")
 	}
-	rows, err := d.QueryContext(ctx,
-		`SELECT `+prefixedNodeColumns("n")+`
-		 FROM node_capabilities nc
-		 JOIN nodes n ON n.id = nc.node_id
-		 WHERE nc.capability_id = ? AND n.namespace_id = ?
-		 ORDER BY CASE n.status WHEN 'online' THEN 0 WHEN 'draining' THEN 1 ELSE 2 END,
-		          n.name, n.id`,
-		capabilityID, namespaceID)
+	if t.NamespaceID == "" || t.NamespaceID == AllNamespaces {
+		return nil, nil, ErrNamespaceRequired
+	}
+	namespaceName, err := d.namespaceSlug(ctx, t.NamespaceID)
 	if err != nil {
-		return nil, fmt.Errorf("nodes declaring capability: %w", err)
+		return nil, nil, fmt.Errorf("eligible nodes for task %s: %w", t.ID, err)
 	}
-	defer rows.Close()
-	out := []*Node{}
-	for rows.Next() {
-		n, err := scanNodeRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, n)
+	// 能力身份按**任务钉住的 capability_id** 取（不是按 digest 猜）：同一 ns 里
+	// 不同名字的能力可以共享同一份 spec 内容，digest 反查会有多义。
+	// This internal scheduling entry uses the Task's pinned UID, never live name resolution.
+	capRow, err := getPinnedCapabilityByIDOn(ctx, d, t.NamespaceID, t.CapabilityID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes for task %s: read capability: %w", t.ID, err)
 	}
-	return out, rows.Err()
+	capName, capVersion, spec := capRow.Name, capRow.Version, capRow.Spec
+	digest := t.Digest
+	if strings.TrimSpace(digest) == "" {
+		// 任务行没有钉 digest（建任务时 caller 没给）：没有任何节点能被证明持有它，
+		// 按 NotDeployed 报（不能当成「随便哪台都能跑」）。
+		return nil, map[string]string{}, nil
+	}
+	return d.nodeEligibility(ctx, t.NamespaceID, namespaceName, t.NamespaceVars, capName, capVersion, spec, digest)
 }
 
-// ErrNoCapacity 上面的哨兵错误。
-
-// UpsertInstances 落库节点申报的实例槽位；超过 nodes.max_instances 返回 ErrTooManyInstances。
-//
-// 语义：节点每次 hello 申报的是一份**完整清单**，多余的老槽位删除（节点缩容）。
-// slot 必须唯一且 ≥ 0，concurrency 至少 1。
-//
-// namespace_id 从 node 行取（契约 §2.3），不接受调用方传。
-func (d *DB) UpsertInstances(ctx context.Context, namespaceID, nodeID string, specs []InstanceSpec) ([]*NodeInstance, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
+// namespaceSlug 取 ns 名（授权/申报列表存的是名字，不是内部 id）。
+func (d *DB) namespaceSlug(ctx context.Context, namespaceID string) (string, error) {
+	var slug string
+	err := d.QueryRowContext(ctx, `SELECT slug FROM namespaces WHERE id = ?`, namespaceID).Scan(&slug)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNamespaceNotFound
 	}
-	node, err := d.GetNode(ctx, namespaceID, nodeID)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("read namespace: %w", err)
 	}
-	if len(specs) > node.MaxInstances {
-		return nil, fmt.Errorf("%w: declared %d instances, node max is %d",
-			ErrTooManyInstances, len(specs), node.MaxInstances)
-	}
-	seen := make(map[int]bool, len(specs))
-	for _, s := range specs {
-		if s.Slot < 0 {
-			return nil, fmt.Errorf("upsert instances: negative slot %d", s.Slot)
-		}
-		if seen[s.Slot] {
-			return nil, fmt.Errorf("upsert instances: duplicate slot %d", s.Slot)
-		}
-		seen[s.Slot] = true
-	}
-
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin upsert instances: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// 删掉本次没申报的旧槽位（节点缩容）
-	if len(specs) == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM node_instances WHERE node_id = ?`, nodeID); err != nil {
-			return nil, fmt.Errorf("clear instances: %w", err)
-		}
-	} else {
-		placeholders := make([]string, len(specs))
-		args := make([]any, 0, len(specs)+1)
-		args = append(args, nodeID)
-		for i, s := range specs {
-			placeholders[i] = "?"
-			args = append(args, s.Slot)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM node_instances WHERE node_id = ? AND slot NOT IN (`+
-				strings.Join(placeholders, ",")+`)`, args...); err != nil {
-			return nil, fmt.Errorf("remove stale instances: %w", err)
-		}
-	}
-
-	now := Now()
-	for _, s := range specs {
-		conc := s.Concurrency
-		if conc <= 0 {
-			conc = 1
-		}
-		// 已有槽位保留 busy_task（重启不该把正在跑的任务丢掉），只更新并发与存活标记。
-		// namespace_id 取 node 行（父行先写入，所以这里一定拿得到）。
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO node_instances (id, node_id, namespace_id, slot, concurrency, busy_task, alive, updated_at)
-			 VALUES (?,?,?,?,?,NULL,1,?)
-			 ON CONFLICT(node_id, slot) DO UPDATE SET
-			   concurrency = excluded.concurrency,
-			   alive = 1,
-			   updated_at = excluded.updated_at`,
-			NewInstanceID(), nodeID, node.NamespaceID, s.Slot, conc, now); err != nil {
-			return nil, fmt.Errorf("upsert instance slot %d: %w", s.Slot, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit upsert instances: %w", err)
-	}
-	return d.ListInstances(ctx, nodeID)
+	return slug, nil
 }
 
-// ListInstances 列出节点实例（空列表返回 []）。
-// FreeSlotsByNode 一次查出多个节点的空闲槽位数（#145：消掉派发热路径上的 N+1）。
-//
-// 语义必须与 ListInstances 的口径一致：**alive 且 busy_task IS NULL** 的槽位算空闲。
-// 用 LEFT JOIN 而不是 INNER：没申报槽位的节点仍要出现在结果里（free=0），
-// 否则调用方会把它当成"查不到"而丢掉——它只是优先级最低，仍然可以接派发。
-func (d *DB) FreeSlotsByNode(ctx context.Context, nodeIDs []string) (map[string]int, error) {
-	out := make(map[string]int, len(nodeIDs))
-	if len(nodeIDs) == 0 {
+// namespaceVarsQueried 读某 ns 当前的默认 vars（没有配置行 = 空默认）。
+func (d *DB) namespaceVarsQueried(ctx context.Context, namespaceID string) (map[string]string, error) {
+	out := map[string]string{}
+	var raw string
+	err := d.QueryRowContext(ctx,
+		`SELECT vars FROM namespace_configs WHERE namespace_id = ?`, namespaceID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
 	}
-	args := make([]any, 0, len(nodeIDs))
-	for _, id := range nodeIDs {
-		if _, seen := out[id]; seen {
+	if err != nil {
+		return nil, fmt.Errorf("read namespace config: %w", err)
+	}
+	vars, derr := decodeStringMap(raw)
+	if derr != nil {
+		return nil, derr
+	}
+	return vars, nil
+}
+
+// nodeEligibility 是判定核心：给定 ns 名 / ns 默认值 / 能力身份 / digest，逐节点算可用性。
+//
+// 调用方（EligibleNodes / EligibleNodesForTask / 孤儿视图）只决定「ns 默认值从哪来」，
+// 判定本身只有这一份实现——否则「能派发」与「孤儿」会给出两个互相矛盾的答案。
+func (d *DB) nodeEligibility(ctx context.Context, namespaceID, namespaceName string, nsVars map[string]string,
+	capName string, capVersion int, spec artifact.Spec, digest string) ([]*Node, map[string]string, error) {
+	// 只读路径**不**开事务：DSN 是 `_txlock=immediate`，读事务会先拿写锁，
+	// 把并发派发串行化。这里每条查询各自读最新快照——最坏情况只是某个 reason
+	// 用到了另一秒的配置，不会伪造出「可派发」（保守方向的偏差）。
+
+	// ④ 全部节点（集群级：没有「本 ns 的节点」这种过滤，判定交给逐节点 reason）。
+	nodes := []*Node{}
+	rows, err := d.queryContext(ctx, `SELECT `+nodeColumns+` FROM nodes ORDER BY name, id`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: list nodes: %w", err)
+	}
+	for rows.Next() {
+		n, serr := scanNodeRow(rows)
+		if serr != nil {
+			rows.Close()
+			return nil, nil, serr
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, fmt.Errorf("eligible nodes: iterate nodes: %w", err)
+	}
+	rows.Close()
+
+	// ⑤ 逐节点配置快照（一次读完，避免 N+1）。
+	configs := map[string]nodeConfigSnapshot{}
+	crows, err := d.queryContext(ctx,
+		`SELECT node_id, namespaces, vars, local_vars, revision, applied_revision
+		   FROM node_configs`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: read node configs: %w", err)
+	}
+	for crows.Next() {
+		var (
+			nodeID, rawNamespaces, rawVars, rawLocalVars string
+			revision, appliedRevision                    int64
+		)
+		if err := crows.Scan(&nodeID, &rawNamespaces, &rawVars, &rawLocalVars,
+			&revision, &appliedRevision); err != nil {
+			crows.Close()
+			return nil, nil, fmt.Errorf("eligible nodes: scan node config: %w", err)
+		}
+		snap := nodeConfigSnapshot{revision: revision, appliedRevision: appliedRevision}
+		if snap.namespaces, err = decodeStringList(rawNamespaces); err != nil {
+			crows.Close()
+			return nil, nil, fmt.Errorf("eligible nodes: %w", err)
+		}
+		if snap.vars, err = decodeStringMap(rawVars); err != nil {
+			crows.Close()
+			return nil, nil, fmt.Errorf("eligible nodes: %w", err)
+		}
+		if snap.localVars, err = decodeStringMap(rawLocalVars); err != nil {
+			crows.Close()
+			return nil, nil, fmt.Errorf("eligible nodes: %w", err)
+		}
+		configs[nodeID] = snap
+	}
+	if err := crows.Err(); err != nil {
+		crows.Close()
+		return nil, nil, fmt.Errorf("eligible nodes: iterate node configs: %w", err)
+	}
+	crows.Close()
+
+	// ⑥ 部署事实：哪些节点持有这个 digest（state=applied 才算「持有」）。
+	//
+	// **pending 不算候选**（G1-4 实现裁决）：pending 的含义是「中枢希望这台机器持有，
+	// 但还没收到确认」——此时节点上多半还没有这份字节，派过去只会换来一次注定失败的
+	// 执行（消耗的是有限的 attempt 预算，且对非幂等能力是永久损失）。
+	// 正确顺序是：deploy 收敛成 applied → 下一轮 EligibleNodes 自然把该节点纳入候选。
+	// `state=local` 是 v3 的历史态，v4 不再产生；旧行按 pending 处理（下一次对账会收敛）。
+	deployed := map[string]bool{}
+	drows, err := d.queryContext(ctx,
+		`SELECT node_id FROM deployments
+		  WHERE namespace_id = ? AND digest = ? AND state = ?`,
+		namespaceID, digest, DeploymentApplied)
+	if err != nil {
+		return nil, nil, fmt.Errorf("eligible nodes: read deployments: %w", err)
+	}
+	for drows.Next() {
+		var nodeID string
+		if err := drows.Scan(&nodeID); err != nil {
+			drows.Close()
+			return nil, nil, fmt.Errorf("eligible nodes: scan deployment: %w", err)
+		}
+		deployed[nodeID] = true
+	}
+	if err := drows.Err(); err != nil {
+		drows.Close()
+		return nil, nil, fmt.Errorf("eligible nodes: iterate deployments: %w", err)
+	}
+	drows.Close()
+
+	eligible := []*Node{}
+	reasons := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		cfg, hasCfg := configs[n.ID]
+		if !hasCfg {
+			cfg = nodeConfigSnapshot{
+				namespaces: []string{NamespaceWildcard},
+				vars:       map[string]string{},
+				localVars:  map[string]string{},
+			}
+		}
+		reason := nodeIneligibilityReason(n, cfg, nsVars, namespaceName, deployed[n.ID], capName, capVersion, spec)
+		reasons[n.ID] = reason
+		if reason == "" {
+			eligible = append(eligible, n)
+		}
+	}
+	return eligible, reasons, nil
+}
+
+// nodeIneligibilityReason 判定一台节点是否可执行；"" = 可用。
+//
+// 优先级按「最具体的事实优先」：离线 > 授权 > 配置未 apply > 未部署 > 缺命令 > 缺值。
+// 同时存在离线与缺值时先报 NodeOffline（anode.md §6 的裁定）。
+func nodeIneligibilityReason(n *Node, cfg nodeConfigSnapshot, nsVars map[string]string,
+	namespaceName string, deployed bool, capName string, capVersion int, spec artifact.Spec) string {
+	if n.Status != NodeStatusOnline {
+		return protocol.ConditionReasonNodeOffline
+	}
+	if !namespacesAllow(intersectNamespaces(cfg.namespaces, n.DeclaredNamespaces), namespaceName) {
+		return protocol.ConditionReasonNamespaceUnauthorized
+	}
+	if cfg.appliedRevision != cfg.revision {
+		return protocol.ConditionReasonConfigPending
+	}
+	if !deployed {
+		return protocol.ConditionReasonNotDeployed
+	}
+	if commandMissing(n.DeclaredCapabilities, capName, capVersion, spec.Requires.Commands) {
+		return protocol.ConditionReasonCommandMissing
+	}
+	for _, raw := range spec.Requires.Values {
+		name, ok := varRefName(raw)
+		if !ok {
+			if strings.HasPrefix(strings.TrimSpace(raw), "vars.") {
+				return protocol.ConditionReasonValueMissing
+			}
+			continue // 内置事实（status./metadata.）不参与匹配
+		}
+		_, localHit := cfg.localVars[name]
+		_, nodeHit := cfg.vars[name]
+		_, nsHit := nsVars[name]
+		if !localHit && !nodeHit && !nsHit {
+			return protocol.ConditionReasonValueMissing
+		}
+	}
+	return ""
+}
+
+// commandMissing 判定节点申报的命令探测里是否缺了能力声明的命令。
+//
+// 节点没有申报这个能力（name@version）时：要求为空 = 不用命令 → 不算缺；
+// 有要求但探测结果未知 → 按缺处理（宁可少派，也不派给没探明命令的机器）。
+func commandMissing(declared []DeclaredCapability, capName string, capVersion int, required []string) bool {
+	if len(required) == 0 {
+		return false
+	}
+	var probe *DeclaredCapability
+	for i := range declared {
+		if declared[i].Name == capName && declared[i].Version == capVersion {
+			probe = &declared[i]
+			break
+		}
+	}
+	if probe == nil {
+		return true
+	}
+	found := make(map[string]bool, len(probe.Commands))
+	for _, c := range probe.Commands {
+		found[c.Name] = c.Found
+	}
+	for _, want := range required {
+		if !found[want] {
+			return true
+		}
+	}
+	return false
+}
+
+// NodeAvailabilityReason 把 EligibleNodes 的逐节点原因汇总成 NodesAvailable condition 的 reason。
+//
+// 返回 "" = 至少一台可用（condition True / reason Valid）；
+// 否则取**最具体**的那一个（anode.md §6：同时存在离线与解析不出值时先报 NodeOffline）：
+// NodeOffline > NamespaceUnauthorized > ConfigPending > NotDeployed > CommandMissing > ValueMissing。
+// 一个节点都没有（reasons 为空）→ NoMatchingNode（capability.md §2.4 的兜底 reason）。
+func NodeAvailabilityReason(reasons map[string]string) string {
+	precedence := []string{
+		protocol.ConditionReasonNodeOffline,
+		protocol.ConditionReasonNamespaceUnauthorized,
+		protocol.ConditionReasonConfigPending,
+		protocol.ConditionReasonNotDeployed,
+		protocol.ConditionReasonCommandMissing,
+		protocol.ConditionReasonValueMissing,
+	}
+	sawEligible := false
+	seen := make(map[string]bool, len(precedence))
+	for _, reason := range reasons {
+		if reason == "" {
+			sawEligible = true
 			continue
 		}
-		out[id] = 0 // 先给 0：LEFT JOIN 没匹配到时不会出现在结果里
-		args = append(args, id)
+		seen[reason] = true
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
-	rows, err := d.QueryContext(ctx,
-		`SELECT n.id, COUNT(i.id)
-		   FROM nodes n
-		   LEFT JOIN node_instances i
-		     ON i.node_id = n.id AND i.alive = 1 AND i.busy_task IS NULL
-		  WHERE n.id IN (`+placeholders+`)
-		  GROUP BY n.id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("free slots by node: %w", err)
+	if sawEligible {
+		return ""
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var free int
-		if err := rows.Scan(&id, &free); err != nil {
-			return nil, fmt.Errorf("scan free slots: %w", err)
-		}
-		out[id] = free
-	}
-	return out, rows.Err()
-}
-
-func (d *DB) ListInstances(ctx context.Context, nodeID string) ([]*NodeInstance, error) {
-	rows, err := d.QueryContext(ctx,
-		`SELECT id, node_id, namespace_id, slot, concurrency, busy_task, alive, updated_at
-		 FROM node_instances WHERE node_id = ? ORDER BY slot`, nodeID)
-	if err != nil {
-		return nil, fmt.Errorf("list instances: %w", err)
-	}
-	defer rows.Close()
-	out := []*NodeInstance{}
-	for rows.Next() {
-		var in NodeInstance
-		var alive int
-		if err := rows.Scan(&in.ID, &in.NodeID, &in.NamespaceID, &in.Slot, &in.Concurrency,
-			&in.BusyTask, &alive, &in.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan instance: %w", err)
-		}
-		in.Alive = alive != 0
-		out = append(out, &in)
-	}
-	return out, rows.Err()
-}
-
-// MarkInstancesDead 把节点全部实例标记为掉线（连接断开时调用）。
-//
-// 只是标记 alive=0，不删行：槽位申报是节点的事，中枢不替它决定「少了一个槽」。
-// 也不清 busy_task——任务归属由租约巡检（SweepExpiredLeases）回收，那是唯一入口。
-func (d *DB) MarkInstancesDead(ctx context.Context, nodeID string) error {
-	if _, err := d.ExecContext(ctx,
-		`UPDATE node_instances SET alive = 0, updated_at = ? WHERE node_id = ?`,
-		Now(), nodeID); err != nil {
-		return fmt.Errorf("mark instances dead: %w", err)
-	}
-	return nil
-}
-
-// ReclaimStaleSlots 清掉「槽位指向的任务已经不在这台机器上跑了」的钉子（#218 兜底）。
-//
-// 为什么需要它：`busy_task` 的语义是「这个槽位现在被哪条任务占着」。正常路径下
-// 它由 result / 巡检回收 / 连接结束时的主动释放（ResolveLostTasks）清掉。但中枢
-// 在「已派发、未回收」的窗口里被 kill -9（或旧版本升级上来）时，没人再清它，
-// 槽位就永久卡住——节点显示 online 却再也接不到任何任务。
-//
-// 所以节点每次 hello 时做一次幂等修复：**只清**那种任务已经不归本节点在飞的槽位
-// （任务已终态 / 已回 pending 等重派 / 已被改派到别的节点），仍在 assigned/acked/running
-// 且属于本节点的任务一行都不动（不抢跑租约巡检）。
-//
-// 返回清掉的槽位数。
-func (d *DB) ReclaimStaleSlots(ctx context.Context, namespaceID, nodeID string, now int64) (int, error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return 0, ErrNamespaceRequired
-	}
-	if now == 0 {
-		now = Now()
-	}
-	res, err := d.ExecContext(ctx,
-		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-		  WHERE node_id = ? AND namespace_id = ? AND busy_task IS NOT NULL
-		    AND NOT EXISTS (
-		      SELECT 1 FROM tasks t
-		       WHERE t.id = node_instances.busy_task
-		         AND t.namespace_id = ?
-		         AND t.node_id = node_instances.node_id
-		         AND t.status IN (?,?,?))`,
-		now, nodeID, namespaceID, namespaceID, TaskAssigned, TaskAcked, TaskRunning)
-	if err != nil {
-		return 0, fmt.Errorf("reclaim stale slots: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("reclaim stale slots rows: %w", err)
-	}
-	return int(n), nil
-}
-
-// LeaseInstance 把任务占到一个空闲实例上（CAS：busy_task IS NULL → taskID）。
-//
-// 实际并发由 instances（槽位数）决定，每槽一个任务；node_instances.concurrency
-// 与 nodes.max_concurrency 目前只是记录，不参与调度（#220/#252）。
-// 这里只做最后一道 CAS 抢占：并发 UPDATE 下只有一个能成功。
-// 返回 instance_id；没有空闲槽位返回 ErrNoCapacity。
-func (d *DB) LeaseInstance(ctx context.Context, nodeID, taskID string) (string, error) {
-	if taskID == "" {
-		return "", fmt.Errorf("lease instance: empty task_id")
-	}
-	// 先找最早的存活空闲槽位（ORDER BY slot 保证确定性），再由 CAS 更新抢占。
-	// 这两步之间没有事务包裹（走连接池），所以必须靠 CAS 兜：并发下可能被别人抢
-	// （RowsAffected==0），重试下一轮换下一个空闲槽，结果是不会有两个任务占同一槽位。
-	for attempt := 0; attempt < 3; attempt++ {
-		var instanceID string
-		err := d.QueryRowContext(ctx,
-			`SELECT id FROM node_instances
-			 WHERE node_id = ? AND alive = 1 AND busy_task IS NULL
-			 ORDER BY slot LIMIT 1`, nodeID).Scan(&instanceID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrNoCapacity
-		}
-		if err != nil {
-			return "", fmt.Errorf("find free instance: %w", err)
-		}
-		res, err := d.ExecContext(ctx,
-			`UPDATE node_instances SET busy_task = ?, updated_at = ?
-			 WHERE id = ? AND busy_task IS NULL`, taskID, Now(), instanceID)
-		if err != nil {
-			return "", fmt.Errorf("lease instance: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return "", fmt.Errorf("lease instance rows: %w", err)
-		}
-		if n == 1 {
-			return instanceID, nil
-		}
-		// CAS 失败：被另一个写者抢了，重试找下一个空闲槽
-	}
-	return "", ErrNoCapacity
-}
-
-// LeaseAndAssign 是派发的**一个事务**：占槽位 + pending→assigned + 写归属/attempts + 落令牌（#141 / #264）。
-//
-// 合并前派发要 3 次提交（LeaseInstance 的占槽 UPDATE 一次、AssignTask 里的
-// Transition 一次、写归属/attempts 一次），中间失败会出现两种
-// 脏状态：槽位占了任务却没派出去（槽位泄漏，要等巡检才收回），或任务已 assigned
-// 而 node_id 还空着（调用方必须自己补 ReleaseInstance 才不留坑）。
-//
-// 顺序与语义都和拆分版一致，只是原子化：
-//  1. 找最早的存活空闲槽位（口径与 LeaseInstance 完全一致）
-//  2. CAS 占位（busy_task IS NULL → taskID）；RowsAffected==0 → ErrNoCapacity
-//  3. transitionGuarded(pending → assigned)（状态写唯一入口）
-//  4. 写 node/instance/lease_until 并 attempts+1，同时落任务令牌（token 为空时才生成，
-//     已有则保留——见 assignTaskTx 的 token 段）
-//
-// 任一步失败都整体回滚——槽位不泄漏，attempts 也不会被提前 +1。
-//
-// 令牌为什么在这里（#264）：它原来在发布路径上（ws.PublishAssign → EnsureTaskToken），
-// 那是**每帧一次独立写事务**，跟这里抢同一把写锁（池=8、`_txlock=immediate`）。
-// 折进本事务后派发少一次提交，且令牌与 assigned 同生共死。
-//
-// 粘性 pin 为什么也在这里（#264）：同理（原来是 PublishAssign 成功之后再单独写一行），
-// 现作为可选入参 pin 一起落库；推帧失败的回滚由 requeue 路径负责（条件删除，
-// 只删本次新建的那条），见 route.launch 与 rollbackPinAfterPublishFailure 的注释。
-func (d *DB) LeaseAndAssign(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64) (string, error) {
-	return d.LeaseAndAssignWithPin(ctx, namespaceID, taskID, nodeID, leaseUntil, nil)
-}
-
-// LeaseAndAssignWithPin 是 LeaseAndAssign + 「同一个事务里落一条粘性 pin」（#264）。
-//
-// 为什么要合并：pin 原来在 route 的 launch/redispatch 里**等推帧成功之后**再单写一行
-// （每次派发一次独立写事务，跟派发抢同一把写锁）。折进来之后：派发少一次提交，
-// 且「任务 assigned」与「钉在哪台机器上」原子成立——不会出现「库里已 assigned、
-// 但 pin 还没写」的窗口被并发的下一跳看到（那会让同一 trace 的下一跳按负载换机器，
-// sticky 静默失效）。
-//
-// pin 为 nil 时行为与 LeaseAndAssign 完全一致（非 sticky 能力走的就是这条路）。
-//
-// 推帧失败怎么办（语义必须不变：推不出去的任务**不能**留下 pin）：
-// 回滚发生在 route 的 requeue 路径上，用 RollbackPin 做**条件删除**（只删本次事务
-// 新建的那条）。为什么不在"推成功之后才提交 pin"：
-//   - 那等于把这次写留在发布路径上，本次合并的收益直接归零；
-//   - 失败路径本来就写 3 次（释放槽位 / 过期租约 / 巡检回收），多一次条件 DELETE
-//     是罕见路径上可以接受的代价，而成功路径省下的是每一次。
-func (d *DB) LeaseAndAssignWithPin(ctx context.Context, namespaceID, taskID, nodeID string, leaseUntil int64, pin *NodePin) (instanceID string, err error) {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return "", ErrNamespaceRequired
-	}
-	if taskID == "" {
-		// 与 LeaseInstance 的参数校验口径一致：先拒绝，连事务都不开（不占槽）
-		return "", fmt.Errorf("lease and assign: empty task_id")
-	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("begin lease and assign: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// ① 空闲槽位：ORDER BY slot 保证确定性，且必须走 tx
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM node_instances
-		 WHERE node_id = ? AND alive = 1 AND busy_task IS NULL
-		 ORDER BY slot LIMIT 1`, nodeID).Scan(&instanceID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNoCapacity
-	}
-	if err != nil {
-		return "", fmt.Errorf("lease and assign: find free instance: %w", err)
-	}
-
-	// ② CAS 占位：并发 UPDATE 下只有一个能成功。
-	// 本进程内经 BEGIN IMMEDIATE 串行化后它仍不可达，但条件必须留着——
-	// 连接数已放开到 8，它是并发/跨进程场景下的最后一道闸。
-	res, err := tx.ExecContext(ctx,
-		`UPDATE node_instances SET busy_task = ?, updated_at = ?
-		 WHERE id = ? AND busy_task IS NULL`, taskID, Now(), instanceID)
-	if err != nil {
-		return "", fmt.Errorf("lease and assign: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return "", fmt.Errorf("lease and assign rows: %w", err)
-	}
-	if n == 0 {
-		return "", ErrNoCapacity
-	}
-
-	// ③ 改状态（唯一写入口）+ ④ 写归属/attempts
-	// 命名空间（I11）：任务与槽位必须在同一个命名空间里——nodeID 来自
-	// NodesForCapability 的同一命名空间查询，taskID 由调用方按同一命名空间获取，
-	// assignTaskTx 内的 WHERE 还会再过一次 namespace_id。
-	if err := d.assignTaskTx(ctx, tx, namespaceID, taskID, nodeID, instanceID, leaseUntil); err != nil {
-		return "", err
-	}
-
-	// ⑤ 粘性 pin（可选）：与上面三件事同一个事务。写失败 → 整笔回滚（任务留在
-	// pending、槽位不泄漏），比"派发出去了但没钉住"更好查：后者是静默的语义降级。
-	if pin != nil {
-		if err := putPinExec(ctx, tx, pin); err != nil {
-			return "", err
+	for _, reason := range precedence {
+		if seen[reason] {
+			return reason
 		}
 	}
-
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("commit lease and assign: %w", err)
-	}
-	return instanceID, nil
-}
-
-// ReleaseInstance 释放实例占用（任务结束/回收时调用）。
-func (d *DB) ReleaseInstance(ctx context.Context, nodeID, instanceID string) error {
-	if _, err := d.ExecContext(ctx,
-		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-		 WHERE node_id = ? AND id = ?`, Now(), nodeID, instanceID); err != nil {
-		return fmt.Errorf("release instance: %w", err)
-	}
-	return nil
-}
-
-// ReleaseInstanceByTask 按任务 ID 释放它占用的槽位（不知道 instance_id 时用）。
-func (d *DB) ReleaseInstanceByTask(ctx context.Context, nodeID, taskID string) error {
-	if _, err := d.ExecContext(ctx,
-		`UPDATE node_instances SET busy_task = NULL, updated_at = ?
-		 WHERE node_id = ? AND busy_task = ?`, Now(), nodeID, taskID); err != nil {
-		return fmt.Errorf("release instance by task: %w", err)
-	}
-	return nil
-}
-
-// ---------- 粘性路由 ----------
-
-// StickyKey 计算粘性键：sha256(trace_id ∥ capability_id ∥ selector)。
-//
-// 同一 trace 里同能力+同选择器永远落到同一台机器（例如同一个 worktree）。
-// 用 \x00 分隔，避免拼接歧义（("ab","c") 与 ("a","bc")）。
-func StickyKey(traceID, capabilityID, selector string) string {
-	sum := sha256.Sum256([]byte(traceID + "\x00" + capabilityID + "\x00" + selector))
-	return hex.EncodeToString(sum[:])
-}
-
-// GetPin 按 sticky_key 取粘性钉住；未命中返回 ErrNotFound。
-//
-// sticky_key 全局唯一（派发时按 trace/capability/selector 摘要算出），所以不需要
-// 命名空间参数；但返回的行带 NamespaceID，调用方靠它确认钉住的机器与任务同域。
-func (d *DB) GetPin(ctx context.Context, stickyKey string) (*NodePin, error) {
-	var p NodePin
-	err := d.QueryRowContext(ctx,
-		`SELECT sticky_key, namespace_id, node_id, selector, pin_id, created_at, last_used_at
-		 FROM node_pins WHERE sticky_key = ?`, stickyKey).
-		Scan(&p.StickyKey, &p.NamespaceID, &p.NodeID, &p.Selector, &p.PinID, &p.CreatedAt, &p.LastUsedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get pin: %w", err)
-	}
-	return &p, nil
-}
-
-// PutPin 写入（或刷新）粘性钉住。已存在时更新 last_used_at（钉住不换机器）。
-//
-// 新建时它会就地生成 p.PinID 并写回（行身份，回滚靠它认自己那一行）；
-// 已存在的行不会被这次调用改写身份（只有 last_used_at 变），见 putPinExec。
-//
-// p.NamespaceID 必填（钉住的是「哪个命名空间里的哪台机器」）；
-// p.NodeID 必须是该命名空间内的节点。
-func (d *DB) PutPin(ctx context.Context, p *NodePin) error {
-	return putPinExec(ctx, d, p)
-}
-
-// execContexter 是 `*sql.DB` 与 `*sql.Tx` 的公共执行面：
-// 让同一条写语句既能独立执行（PutPin），也能落在调用方的事务里（LeaseAndAssignWithPin）。
-type execContexter interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-// putPinExec 是 PutPin 的唯一实现（独立执行与事务内执行共用同一段 SQL/校验）。
-//
-// p.CreatedAt / p.LastUsedAt / p.PinID 为空时就地补上——**会把值写回调用方的 struct**：
-// route 的回滚路径要靠 PinID 做"只删本次新建那条"的条件删除（见 RollbackPin）。
-// 已存在的 pin 走 ON CONFLICT 分支：只刷新 last_used_at，created_at 与 pin_id 都保持
-// 原样（钉住不换机器，行身份也不换主人）——所以那条条件不会命中旧行。
-func putPinExec(ctx context.Context, ex execContexter, p *NodePin) error {
-	if p == nil || p.StickyKey == "" || p.NodeID == "" {
-		return fmt.Errorf("put pin: sticky_key/node_id required")
-	}
-	if p.NamespaceID == "" || p.NamespaceID == AllNamespaces {
-		return fmt.Errorf("put pin: %w", ErrNamespaceRequired)
-	}
-	now := Now()
-	if p.CreatedAt == 0 {
-		p.CreatedAt = now
-	}
-	if p.LastUsedAt == 0 {
-		p.LastUsedAt = now
-	}
-	if p.PinID == "" {
-		p.PinID = NewPinID()
-	}
-	if _, err := ex.ExecContext(ctx,
-		`INSERT INTO node_pins (sticky_key, namespace_id, node_id, selector, pin_id, created_at, last_used_at)
-		 VALUES (?,?,?,?,?,?,?)
-		 ON CONFLICT(sticky_key) DO UPDATE SET last_used_at = excluded.last_used_at`,
-		p.StickyKey, p.NamespaceID, p.NodeID, p.Selector, p.PinID, p.CreatedAt, p.LastUsedAt); err != nil {
-		return fmt.Errorf("put pin: %w", err)
-	}
-	return nil
-}
-
-// RollbackPin 撤掉一条**本次派发新建的**粘性 pin（推帧失败的回滚，#264）。
-//
-// 判据是 pin_id 全等（而非按 sticky_key 删，也不再比秒级的 created_at）：
-// pin 可能是**更早**的派发留下的（同一 trace 的上一跳），或者并发派发刚建的；
-// 只按 key 删会把别人的钉住一起清掉，那是「一次推送失败让整条 trace 的粘性失效」。
-//   - 已存在的行：pin_id 是**建它那次**派发的（putPinExec 的 ON CONFLICT 只刷
-//     last_used_at，不覆盖 pin_id）→ 条件不命中 → 不动；
-//   - 本次新建的行：pin_id 就是 putPinExec 写进 p.PinID 的那个值 → 删掉。
-//
-// 为什么不能继续用 created_at 做第三列（#315）：它是**秒级**的。同一秒里同一
-// (key, node) 上先后两次派发会拿到相同的 created_at，于是一次回滚能删掉**别人
-// 刚建的那一行**。pin_id 是毫秒时间有序 + 随机的真唯一值，不受秒级粒度影响。
-// node_id 仍留在条件里：它让「同 key 但机器不同」的病态数据也不会被误删。
-//
-// 返回是否真的删了一行（deleted=false 表示"这条 pin 本来就不属于本次派发"）。
-func (d *DB) RollbackPin(ctx context.Context, stickyKey, nodeID, pinID string) (deleted bool, err error) {
-	if stickyKey == "" || nodeID == "" || pinID == "" {
-		return false, fmt.Errorf("rollback pin: sticky_key/node_id/pin_id required")
-	}
-	res, err := d.ExecContext(ctx,
-		`DELETE FROM node_pins WHERE sticky_key = ? AND node_id = ? AND pin_id = ?`,
-		stickyKey, nodeID, pinID)
-	if err != nil {
-		return false, fmt.Errorf("rollback pin: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("rollback pin rows: %w", err)
-	}
-	return n > 0, nil
-}
-
-// DeletePin 删除粘性钉住（节点下线 / 换机器时用）。
-func (d *DB) DeletePin(ctx context.Context, stickyKey string) error {
-	if _, err := d.ExecContext(ctx, `DELETE FROM node_pins WHERE sticky_key = ?`, stickyKey); err != nil {
-		return fmt.Errorf("delete pin: %w", err)
-	}
-	return nil
-}
-
-// DeletePinsForNode 清掉某节点的全部钉住（节点下线/排空时用）。
-func (d *DB) DeletePinsForNode(ctx context.Context, nodeID string) error {
-	if _, err := d.ExecContext(ctx, `DELETE FROM node_pins WHERE node_id = ?`, nodeID); err != nil {
-		return fmt.Errorf("delete pins for node: %w", err)
-	}
-	return nil
-}
-
-// SetNodeTokenHash 覆盖节点的 token 哈希（仅用于开发工具重建节点凭据）。
-//
-// 明文 token 只在 CreateNode 时返回一次，之后无法复原。开发场景（devseed
-// 反复跑）需要一个"同一个节点、换一把钥匙"的入口，否则只能不断新建节点行，
-// 留下大量永远离线的死节点。
-//
-// 作用域仍是命名空间（I11）：换钥匙也得说清楚换的是哪片隔离域里的节点。
-func (d *DB) SetNodeTokenHash(ctx context.Context, namespaceID, nodeID, tokenHash string) error {
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return ErrNamespaceRequired
-	}
-	if nodeID == "" || tokenHash == "" {
-		return fmt.Errorf("set node token hash: empty node_id or hash")
-	}
-	res, err := d.ExecContext(ctx,
-		`UPDATE nodes SET token_hash = ? WHERE namespace_id = ? AND id = ?`, tokenHash, namespaceID, nodeID)
-	if err != nil {
-		return fmt.Errorf("update node token hash: %w", err)
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("set node token hash: %w", ErrNotFound)
-	}
-	return nil
+	return protocol.ConditionReasonNoMatchingNode
 }

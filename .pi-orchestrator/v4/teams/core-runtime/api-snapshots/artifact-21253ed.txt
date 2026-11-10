@@ -1,0 +1,385 @@
+package artifact // import "github.com/zzjcool/anotify/internal/artifact"
+
+Package artifact 定义「能力产物」（Capability Artifact）的 v4 线上格式、校验与 内容寻址标识。
+
+一份产物就是一份自包含的能力定义：**我要什么（params）、交给谁（next）、怎么
+跑（run）**，外加节点要提供什么（requires）、生命周期（lifecycle）与并发预算
+（concurrency）。实现形式**只有脚本一种**：没有 handler、没有中枢执行器、 没有
+outputs/port/sticky（capability.md §1 / §7）。
+
+# 为什么自包含
+
+产物不引用任何外部 blob 或 URL：节点拿到它就能跑，中枢只派发与记账。
+
+# 两级内容身份（capability.md §3）
+
+    foldKey = sha256(canonical{name, params, requires, lifecycle, concurrency, run})
+    digest  = sha256(canonical{name, version, params, requires, lifecycle, concurrency, run})
+
+foldKey 判「是不是同一行」：省略 version 时，先按 foldKey 复用已有行、没有才 分配下一个 version；digest 是部署身份，含
+version。
+
+刻意不进身份的两个字段：
+
+  - metadata.displayName：纯展示，改它不该让部署变 stale；
+  - spec.next：路由属于图，不属于内容；改线不产生新版本、不重推节点。
+
+两级身份的直接推论：**改 next 不产生新版本；改 run.files 一定产生新版本**。 显式 version
+的正文不可变是同一条边界的另一面（store 在写入事务里用 SameContent / SameFold 判定，见 §3「显式 version
+的内容不可变」）。
+
+# 归一化
+
+Normalize 补齐默认值（省略 ≡ 显式默认）并把 params 归一成 key 有序的 JSON：
+内容寻址必须与「输入怎么排版」无关，否则同一份产物在不同书写顺序下算出不同 digest，部署永远被判成 stale/local。
+
+CONSTANTS
+
+const (
+	// APIVersion 是本包唯一支持的格式版本。
+	APIVersion = "anotify/v1"
+
+	// KindCapability 是唯一支持的 kind。
+	KindCapability = "Capability"
+
+	// DigestPrefix 是内容寻址标识的前缀（与容器镜像生态一致）。
+	DigestPrefix = "sha256:"
+
+	// MaxFileBytes 是单个文件的体积上限（256 KiB）。
+	MaxFileBytes = 256 << 10
+	// MaxTotalBytes 是一份产物全部文件的合计上限（1 MiB）。
+	MaxTotalBytes = 1 << 20
+	// MaxFiles 是一份产物最多的文件数。
+	MaxFiles = 255
+	// MaxFilePathLen 是产物内相对路径的长度上限。
+	MaxFilePathLen = 255
+	// MaxNext 是 spec.next 的元素上限（capability.md §2.3）。
+	MaxNext = 32
+	// MaxRequires 是 requires.commands / requires.values 各自的上限。
+	MaxRequires = 16
+	// MaxTimeoutSec 是本地执行超时上限（24 小时）。
+	MaxTimeoutSec = 86400
+	// MaxNameLen 是能力名长度上限（与节点名同口径）。
+	MaxNameLen = 63
+	// MaxWorkDirLen 是 run.workDir 的长度上限。
+	MaxWorkDirLen = 1024
+)
+const (
+	// DefaultMaxAttempts 是总尝试次数（含第一次）。
+	DefaultMaxAttempts = 3
+	// DefaultResultTTLSec 是结果保留期（7 天）；0 = 永不清理。
+	DefaultResultTTLSec = 604800
+	// DefaultMaxPerNode 是同一能力在一台节点上的并发预算。
+	DefaultMaxPerNode = 1
+)
+    spec 默认值（capability.md §2.3）。归一化把这些填进产物，所以「省略」与 「显式写默认值」是同一份内容、同一个 digest。
+
+const (
+	// CodeBadRequest 是信封与取值形状的通用写期错误（apiVersion/name/version/
+	// params 形状/next 形状/lifecycle 取值）。
+	CodeBadRequest = "BadRequest"
+	// CodeUnknownField 是未知字段（DisallowUnknownFields / YAML 解析不出）。
+	CodeUnknownField = "unknown_field"
+	// CodeInvalidYAML 是 YAML 本身解析不了。
+	CodeInvalidYAML = "invalid_yaml"
+	// CodeKindMismatch 是 kind 不是 Capability。
+	CodeKindMismatch = "kind_mismatch"
+
+	// CodeEntrypointNoShebang 是 entrypoint 缺失 / 不在 files 里 / 内容不以 #! 开头。
+	CodeEntrypointNoShebang = "entrypoint_no_shebang"
+	// CodeFilesInvalid 是 files 的路径形状或限额不合格（写入期不解析符号链接）。
+	CodeFilesInvalid = "files_invalid"
+	// CodeEnvInvalid 是 env 的键名、保留前缀、PATH 覆盖或 HOME 字面量不合格。
+	CodeEnvInvalid = "env_invalid"
+	// CodeWorkDirInvalid 是 workDir 超长/含 NUL/不是绝对路径/含 .. 或非常规写法。
+	CodeWorkDirInvalid = "workdir_invalid"
+	// CodeUndeclaredNeed 是 run.env 引用了 vars.* 却没写进 requires.values。
+	CodeUndeclaredNeed = "undeclared_need"
+	// CodeUnknownFieldPath 是 fieldPath 不在 README.md 的封闭集合里。
+	CodeUnknownFieldPath = "unknown_field_path"
+	// CodeNonPathField 是 workDir 引用的 env 值不是目录类事实。
+	CodeNonPathField = "non_path_field"
+	// CodeUndefinedEnvRef 是 workDir 引用了 run.env 里没声明的名字。
+	CodeUndefinedEnvRef = "undefined_env_ref"
+	// CodeUndefinedParamRef 是 workDir 引用了 spec.params 里没声明的参数。
+	CodeUndefinedParamRef = "undefined_param_ref"
+	// CodeConcurrencyInvalid 是 concurrency.maxPerNode < 1 或不是整数。
+	CodeConcurrencyInvalid = "concurrency_invalid"
+	// CodeParamEnvCollision 是两个参数名归一后撞同一个 ANOTIFY_PARAM_*。
+	CodeParamEnvCollision = "param_env_collision"
+	// CodeRequiresInvalid 是 requires 不是对象 / 元素不合格 / 超上限 / 未知子键。
+	CodeRequiresInvalid = "requires_invalid"
+	// CodeVersionContentImmutable 是显式同版内容不同（store 判定，本包给辅助）。
+	CodeVersionContentImmutable = "version_content_immutable"
+)
+    问题短码（capability.md §6.1 的封闭集合；BadRequest 是 api-conventions.md §4.2 的通用码，用于
+    §6.1 没有单列码的信封/取值形状错误）。
+
+
+FUNCTIONS
+
+func CanonicalJSON(a *Artifact) ([]byte, error)
+    CanonicalJSON 返回产物的规范字节（**不含 displayName**）。
+
+    确定性来自三处：struct 字段顺序固定、map key 由 encoding/json 排序、 params 先归一。因此同一份产物无论用 YAML
+    还是 JSON 写、无论 key 顺序如何，结果相同。
+
+func Code(err error) string
+    Code 返回第一个问题的机器可读短码（用于 HTTP Status.reason / apply 帧的 reason）。
+
+func Digest(a *Artifact) (string, error)
+    Digest 返回部署身份（形如 "sha256:<64 hex>"），覆盖 {name, version, 内容字段}。
+
+    调用前 version 必须已确定（显式给或由 store 分配）：version=0 是「还没分配」， 这时候算 digest
+    会把「未分配」当成一个版本号混进身份里。
+
+func FoldKey(a *Artifact) (string, error)
+    FoldKey 返回折叠键（形如 "sha256:<64 hex>"），用于判「是不是同一行」。
+
+    不含 version / next / displayName：省略 version 时先按它复用已有行、没有才分配 下一个 version；「只改
+    next」因此不会长出新版本。
+
+func MarshalYAML(a *Artifact) ([]byte, error)
+    MarshalYAML 把产物序列化成落盘用的 YAML。
+
+    先转 JSON 再转 YAML：保证「落盘 → 重新 Parse」得到完全相同的 digest。 与 CanonicalJSON
+    的差别只有一个：**保留 displayName**（它不进 digest，但不是 不存在——节点侧人读产物文件时应该看得见作者取的名字）。
+
+func ProblemCode(problem string) string
+    ProblemCode 取**单条**问题文本的机器可读短码（"<短码>: <人话>" 的第一段）。
+
+func ProblemMessage(problem string) string
+    ProblemMessage 取单条问题文本的人话部分（去掉短码前缀）。
+
+func SameContent(a, b *Artifact) (bool, error)
+    SameContent 报告两份产物的部署身份是否相同（digest 相同）。
+
+    它是「显式同版内容不可变」的判据：同一 (namespace, name, version) 的两份产物 SameContent=false 时必须换
+    version（否则 400 version_content_immutable）； next / displayName 是既定例外——它们不进
+    digest，SameContent 仍为 true。
+
+func SameFold(a, b *Artifact) (bool, error)
+    SameFold 报告两份产物是否会折叠到同一行（foldKey 相同）。
+
+    它是「省略 version 时是否复用已有版本」的判据。
+
+func Validate(a *Artifact) error
+    Validate 校验一份产物，返回汇总了**全部**问题的 *Error（或 nil）。
+
+
+TYPES
+
+type Artifact struct {
+	APIVersion string   `json:"apiVersion"`
+	Kind       string   `json:"kind"`
+	Metadata   Metadata `json:"metadata"`
+	Spec       Spec     `json:"spec"`
+}
+    Artifact 是一份能力产物。
+
+func Decode(data []byte) (*Artifact, string, error)
+    Decode 一步完成 Parse + digest，是节点侧与应用侧最常用的入口。
+
+func Normalize(a *Artifact) (*Artifact, error)
+    Normalize 返回归一化副本（**不修改调用方的对象**）：
+
+      - 省略的默认值补成显式值（所以「省略」与「显式写默认值」是同一份内容）；
+      - params 缺省成 `{}`、next/requires 的空列表补成 `[]`（空列表纪律：不是 null）；
+      - params 归一成 key 有序的紧凑 JSON（digest 与书写顺序无关）。
+
+    只补默认值、不改非法值：显式 `maxPerNode: 0` 归一后仍是 0，由 Validate 拒。
+
+func Parse(data []byte) (*Artifact, error)
+    Parse 从 YAML 或 JSON 解析一份产物并做完整校验。
+
+    YAML 是 JSON 的超集，所以单条路径同时支持两种写法：先解成 map，再转 JSON，
+    最后严格解码进结构体（未知字段是错误——拼错的字段名静默失效比解析失败更难查）。 返回的产物是**归一化后**的（默认值已补齐、params 已
+    canonical），因此 Parse → MarshalYAML → Parse 的 digest 永远相同。
+
+func Render(templateID string, in RenderInput) (*Artifact, error)
+    Render 把模板编译成一份产物。
+
+    走「脚本模式」时调用方把 Files 填进来，模板的脚本体被整体覆盖； 否则用模板自带的脚本体。返回的是**归一化后**的产物（默认值已补齐），因此
+    渲染结果与「渲染 → 落盘 → 重新 Parse」的 digest 一致。
+
+type Concurrency struct {
+	// MaxPerNode ≥1（默认 1）。超了不失败：任务停在 waiting_for_slot。
+	MaxPerNode *int `json:"maxPerNode,omitempty"`
+}
+    Concurrency 是「这台节点上最多同时跑几个」。
+
+func (c Concurrency) EffectiveMaxPerNode() int
+    EffectiveMaxPerNode 返回生效的单节点并发预算（省略 → 1）。
+
+func (c *Concurrency) UnmarshalJSON(data []byte) error
+    UnmarshalJSON 严格解析 concurrency：未知子键与非法形状都是 concurrency_invalid。
+
+type EnvValue struct {
+	// Value 是字面量值。
+	Value string
+	// FieldPath 是 k8s 风格的取值路径（封闭集合见 builtinFieldPaths / vars.<NAME>）。
+	FieldPath string
+}
+    EnvValue 是 env 的一个值：字面量，或 `{valueFrom:{fieldRef:{fieldPath}}}`。
+
+    FieldPath 非空 = 引用机器事实（唯一的取值边界）；否则 Value 是字面量。 空串本身是合法字面量（"空串就是空串"），所以这里不能用
+    "" 表示「未设置」。
+
+func (v EnvValue) IsValueFrom() bool
+    IsValueFrom 报告这个 env 值是不是 fieldRef 引用。
+
+func (v EnvValue) MarshalJSON() ([]byte, error)
+    MarshalJSON 把 env 值写成 wire 形状：字面量是字符串，引用是 k8s 风格的 valueFrom。
+
+func (v *EnvValue) UnmarshalJSON(data []byte) error
+    UnmarshalJSON 解析字面量或 valueFrom 两种形状。
+
+    严格拒绝其它形状（含数字/布尔/null）：env 的值类型是 string（capability.md §2.3），把 `JOBS: 4` 静默转成
+    "4" 会让「类型写错了」变成「跑起来才发现」。
+
+type Error struct {
+	Problems []string
+}
+    Error 汇总一份产物上的全部问题。
+
+    一次报全部、不只报第一条：手写 YAML 时用户要的是「哪里全错了」， 而不是修一条、再跑一次、再发现下一条。
+
+func (e *Error) Error() string
+
+type Field struct {
+	Key      string   `json:"key"`
+	Label    string   `json:"label"`
+	Type     string   `json:"type"` // string | text | number | select
+	Required bool     `json:"required"`
+	Default  string   `json:"default"`
+	Options  []string `json:"options,omitempty"` // Type == "select" 时有效
+	Help     string   `json:"help"`
+}
+    Field 是表单上的一个输入项。key 必须是 snake_case—— 它会变成
+    ANOTIFY_PARAM_<UPPER>，而参数名归一（paramEnvName）只做「大写 + 非 字母数字换下划线」，camelCase
+    会变成不可猜的名字（capability.md §2.3）。
+
+type Lifecycle struct {
+	// Idempotent 是「明确幂等」的声明：true 才允许对短暂基础设施失败自动重试。
+	Idempotent bool `json:"idempotent"`
+	// MaxAttempts 是总尝试次数（含第一次，≥1，默认 3）。
+	MaxAttempts *int `json:"maxAttempts,omitempty"`
+	// ResultTTLSec 是结果保留期（秒，≥0，默认 604800；0 = 永不清理）。
+	ResultTTLSec *int `json:"resultTtlSec,omitempty"`
+	// TimeoutSec 是本地执行超时（从子进程启动起算，0..86400；0 = 不设）。
+	TimeoutSec int `json:"timeoutSec"`
+}
+    Lifecycle 是一次运行的生命周期（capability.md §2.3）。
+
+    指针字段是"省略 vs 显式"的分界线：maxAttempts 省略 = 3、显式 0 = 非法； resultTtlSec 省略 =
+    604800、显式 0 = 永不清理。用 int 吞掉这个区别就会把 「写错了」变成「按默认值跑」。
+
+func (l Lifecycle) EffectiveMaxAttempts() int
+    EffectiveMaxAttempts 返回生效的总尝试次数（省略 → 3）。
+
+func (l Lifecycle) EffectiveResultTTLSec() int
+    EffectiveResultTTLSec 返回生效的结果保留期（省略 → 604800）。
+
+func (l Lifecycle) EffectiveTimeoutSec() int
+    EffectiveTimeoutSec 返回生效的本地执行超时。
+
+type Metadata struct {
+	Name        string `json:"name" yaml:"name"`
+	Version     int    `json:"version,omitempty" yaml:"version,omitempty"`
+	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
+}
+    Metadata 是产物的身份。
+
+    version 省略（= 0）表示**内容寻址**：按 (name, 执行正文) 复用已有行；显式给就 永不折叠。displayName 是纯展示，不进
+    digest。
+
+type RenderInput struct {
+	// Name 是能力名（必填）。
+	Name string
+	// Version 缺省为 1。
+	Version int
+	// DisplayName 缺省用模板的 DisplayName。
+	DisplayName string
+	// TimeoutSec 为 0 时用模板默认。
+	TimeoutSec int
+	// Files 非空时整体覆盖模板生成的 files（控制台的「脚本模式」走这条路）。
+	Files map[string]string
+	// Entrypoint 在 Files 被覆盖时指定入口；空则用 "run.sh"。
+	Entrypoint string
+}
+    RenderInput 是编译模板时的输入。
+
+type Requires struct {
+	// Commands 是命令名（节点 LookPath 探测；缺一条 → 该节点不匹配）。
+	Commands []string `json:"commands"`
+	// Values 是 `vars.<NAME>`（不写来源；解析顺序 local → node → namespace）。
+	Values []string `json:"values"`
+}
+    Requires 是「节点要提供什么」：要装的命令 + 要能解析出的值。
+
+func (r *Requires) UnmarshalJSON(data []byte) error
+    UnmarshalJSON 严格解析 requires：未知子键是 requires_invalid，而不是被静默忽略。
+
+    为什么不用 DisallowUnknownFields：spec 的反序列化会在解码整份文档时一次性报 "unknown
+    field"，那个短码会盖掉「requires 里有个拼错的键」这个更准确的诊断。
+
+type Run struct {
+	// Entrypoint 必须是 Files 里的一个 key，且内容以 "#!" 开头（直接 exec，不经 shell）。
+	Entrypoint string `json:"entrypoint"`
+	// Files 是相对路径 → 文件内容；全部展开进工作目录（0600，入口额外 0700）。
+	Files map[string]string `json:"files"`
+	// Env 是机器事实的唯一入口：键名就是脚本里的 $NAME，值 = 字面量或 valueFrom。
+	Env map[string]EnvValue `json:"env,omitempty"`
+	// WorkDir 是执行目录模板：空 = 每次任务一个独立目录；否则绝对路径模板，
+	// 可含 $(vars.NAME)（必须 ∈ Env）或 $(params.NAME)（必须 ∈ Params）。
+	// 解析后必须是绝对路径、无 ..、已存在（执行前检查）。
+	WorkDir string `json:"workDir,omitempty"`
+}
+    Run 是「怎么跑」。
+
+type Spec struct {
+	// Params 是任务的输入契约（JSON Schema 对象；省略 = {} = 怎么传都过）。
+	Params json.RawMessage `json:"params"`
+	// Next 是下游引用（`name` 或 `name@version`；省略 = [] = 终端能力）。
+	// 它是路由事实，**不参与 foldKey / digest**。
+	Next []string `json:"next"`
+	// Run 是怎么跑（脚本，唯一实现形式）。
+	Run Run `json:"run"`
+	// Requires 是节点要提供什么。
+	Requires Requires `json:"requires"`
+	// Lifecycle 是一次运行能活多久、能不能重放。
+	Lifecycle Lifecycle `json:"lifecycle"`
+	// Concurrency 是这台节点上最多同时跑几个。
+	Concurrency Concurrency `json:"concurrency"`
+}
+    Spec 是产物的全部内容。顶层字段严格是这六个（capability.md §2.3）。
+
+    字段声明顺序即 canonical JSON 的字段顺序，顺序参与 digest —— 改动顺序会让所有 已有产物的 digest 失效。
+
+type Template struct {
+	ID          string  `json:"id"`
+	DisplayName string  `json:"displayName"`
+	Category    string  `json:"category"` // script | agent
+	Description string  `json:"description"`
+	Fields      []Field `json:"fields"`
+	// Script 是入口文件 run.sh 的正文。
+	Script string `json:"script"`
+	// Requires 是机器上必须预装的命令（写进 spec.requires.commands，部署期探测）。
+	Requires []string `json:"requires"`
+	// Next 是建议的下游（写进 spec.next；空 = 终端能力）。
+	Next []string `json:"next"`
+	// TimeoutSec 是默认的本地执行超时（写进 spec.lifecycle.timeoutSec）。
+	TimeoutSec int `json:"timeoutSec"`
+}
+    Template 是控制台的「新建能力」入口。
+
+    模板是**代码生成器的输入**，不是执行器类型：v4 只有一种执行形式（脚本）， 所谓「Agent 类型」只是预置的脚本 + 预置的表单字段。想加一个新
+    Agent，加一个 模板即可，不用改协议、不用发节点。
+
+    模板**不做文本插值**：脚本正文是固定的，用户填的字段值在运行时通过 ANOTIFY_PARAM_* 环境变量进入脚本。这样模板层就没有任何注入面。
+
+func LookupTemplate(id string) (Template, bool)
+    LookupTemplate 按 ID 取模板。
+
+func Templates() []Template
+    Templates 返回全部内置模板（深拷贝，调用方可安全修改）。

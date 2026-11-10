@@ -17,7 +17,7 @@ const pendingBacklogIndex = "idx_tasks_pending_created_at"
 
 // oldestPendingProbeSQL 是背压信号查询的**探针**：与 OldestPendingCreatedAt 里的字面 SQL
 // 逐字一致（脱钩由 TestPendingBacklogSQLShape 兜住）。
-const oldestPendingProbeSQL = `SELECT MIN(created_at) FROM tasks WHERE status = 'pending'`
+const oldestPendingProbeSQL = `SELECT MIN(created_at) FROM tasks WHERE phase = 'pending'`
 
 // TestOldestPendingCreatedAtEmpty：一条 pending 都没有 → 0, nil。
 //
@@ -62,14 +62,15 @@ func TestOldestPendingCreatedAtIgnoresNonPending(t *testing.T) {
 	}
 	// 终态行：created_at=50 比所有 pending 都早，但只要不是 pending 就不算积压。
 	done := mk("trace_succeeded", 50)
-	// 非 pending 的非终态行（lease_expired 在契约 §3.2 里可以回到 pending，此刻仍不是积压）。
-	expired := mk("trace_lease_expired", 10)
+	// running 是非 pending 的非终态行（v3 的 lease_expired 不是 v4 相位：派发步骤
+	// 不是状态，超时重派表现为 attempt/租约事实）。它同样不算积压。
+	running := mk("trace_running", 10)
 
-	if err := db.CreateTasks(ctx, append(append([]*Task{}, pending...), done, expired)); err != nil {
+	if err := db.CreateTasks(ctx, append(append([]*Task{}, pending...), done, running)); err != nil {
 		t.Fatalf("create tasks: %v", err)
 	}
-	pushToStatus(t, db, nsID, done, TaskSucceeded)
-	pushToStatus(t, db, nsID, expired, TaskLeaseExpired)
+	pushToPhase(t, db, done.ID, TaskSucceeded)
+	pushToPhase(t, db, running.ID, TaskRunning)
 
 	got, err := db.OldestPendingCreatedAt(ctx)
 	if err != nil {
@@ -99,9 +100,20 @@ func TestOldestPendingCreatedAtIgnoresNotBefore(t *testing.T) {
 	if err := db.CreateTasks(ctx, []*Task{backedOff}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	// 退避到很久以后：它是「积压」的证据，不是「不在等待」的证据。
-	if err := db.SetNotBefore(ctx, nsID, backedOff.ID, Now()+3600); err != nil {
-		t.Fatalf("set not_before: %v", err)
+	// 走真实退避路径（assign → slot_unavailable reject）：它是「积压」的证据，
+	// 不是「不在等待」的证据。退避写的是 next_attempt_at + waiting_reason。
+	if err := db.AssignTask(ctx, backedOff.ID, "node_backlog", "asg_backlog", 1); err != nil {
+		t.Fatalf("assign backed-off task: %v", err)
+	}
+	if err := db.RejectAssignment(ctx, backedOff.ID, "asg_backlog", TaskRejectSlotUnavailable, Now()); err != nil {
+		t.Fatalf("reject assignment (slot unavailable): %v", err)
+	}
+	waiting, err := db.GetTask(ctx, nsID, backedOff.ID)
+	if err != nil {
+		t.Fatalf("get backed-off task: %v", err)
+	}
+	if waiting.NextAttemptAt == nil || waiting.WaitingReason != WaitingForSlot {
+		t.Fatalf("退避事实未落库: waiting=%q next=%v", waiting.WaitingReason, waiting.NextAttemptAt)
 	}
 	stillWaiting := mkTask(nsID, "trace_still_waiting", cap)
 	stillWaiting.CreatedAt = 200
@@ -246,8 +258,8 @@ func assertPendingBacklogIndexShape(t *testing.T, db *DB, tag string) {
 		pendingBacklogIndex).Scan(&ddl); err != nil {
 		t.Fatalf("[%s] read ddl of %s: %v", tag, pendingBacklogIndex, err)
 	}
-	if flat := strings.Join(strings.Fields(ddl), " "); !strings.Contains(flat, "WHERE status = 'pending'") {
-		t.Fatalf("[%s] %s 的谓词不是 `WHERE status = 'pending'`:\n%s", tag, pendingBacklogIndex, flat)
+	if flat := strings.Join(strings.Fields(ddl), " "); !strings.Contains(flat, "WHERE phase = 'pending'") {
+		t.Fatalf("[%s] %s 的谓词不是 `WHERE phase = 'pending'`:\n%s", tag, pendingBacklogIndex, flat)
 	}
 }
 
@@ -271,11 +283,11 @@ func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	insertPending := func(task *Task) {
 		t.Helper()
 		mustExec(t, db, `INSERT INTO tasks
-			(id, namespace_id, trace_id, path, capability_id, capability, version, params,
-			 status, cap_hash, graph_id, created_at)
-			VALUES (?, ?, ?, '[]', ?, ?, ?, '{}', ?, ?, ?, ?)`,
+			(id, namespace_id, trace_id, capability_id, capability, version, digest, params,
+			 phase, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
 			task.ID, task.NamespaceID, task.TraceID, task.CapabilityID, task.Capability,
-			task.Version, TaskPending, task.CapHash, task.GraphID, task.CreatedAt)
+			task.Version, task.Digest, TaskPending, task.CreatedAt)
 	}
 	for i := 0; i < rows; i++ {
 		task := mkTask(nsID, "trace_seed", cap)
@@ -287,7 +299,7 @@ func seedPendingBacklog(t *testing.T, db *DB, rows int) {
 	done.ID = NewTaskID()
 	done.CreatedAt = 1699999999 // 比所有 pending 都早
 	insertPending(done)
-	pushToStatus(t, db, nsID, done, TaskSucceeded)
+	pushToPhase(t, db, done.ID, TaskSucceeded)
 }
 
 // pendingStat1Entries 返回 sqlite_stat1 里 tasks 的条目（"索引 = stat" 形式），仅供日志/前置断言。

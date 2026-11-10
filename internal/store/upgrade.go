@@ -11,12 +11,12 @@ import (
 
 // 本文件是 P2.2 的**升级闸门**（设计 typed-pipeline §3.6）。
 //
-// 为什么闸门必须先于「引用语义」落地（施工计划 §7.1）：一旦 link 可以按名字跟随
+// 为什么闸门必须先于「引用语义」落地（capability.md §3）：一旦边可以按名字跟随
 // latest，把一个会破坏下游的新版本推上去就等于**静默改线**——没人点过任何东西，
 // 线上那条链却换了契约。闸门把这一步变成一次显式决定：
 //
-//	加可选入参 / 加 port   → 直接通过（只增不减，旧 link 仍然成立）
-//	删 port / 改入参类型 / 加必填 → 拒绝，并列出受影响的 link，除非调用方传 force
+//	加可选入参        → 直接通过（只增不减，旧 link 仍然成立）
+//	改入参类型 / 加必填 → 拒绝，并列出受影响的 link，除非调用方传 force
 //
 // 「受影响」的判据只有一个：这条 link **会解析到这一版**。
 // 所以 `name` 型 link 会被拦（它跟随 latest），`name@version` 型不受影响
@@ -32,8 +32,6 @@ var ErrUpgradeBreaking = errors.New("upgrade_breaking")
 type UpgradeChangeKind string
 
 const (
-	// ChangeRemovedPort 新版删掉了一个 port：接在这个出口上的 name 型 link 会失效。
-	ChangeRemovedPort UpgradeChangeKind = "removed_port"
 	// ChangeParamTypeChanged 某个入参的类型变了：上游照旧喂旧类型 → 派发时被 param_schema 剪掉。
 	ChangeParamTypeChanged UpgradeChangeKind = "param_type_changed"
 	// ChangeParamAddedRequired 新增了必填入参：已有的上游根本不知道要喂它。
@@ -46,21 +44,21 @@ type UpgradeChange struct {
 	Detail string            `json:"detail"`
 }
 
-// UpgradeLink 是一条**会受影响**的 link：`FromRef --Port--> ToRef`。
+// UpgradeLink 是一条**会受影响**的边：`FromRef --> ToRef`。
 //
-// 三端都用**引用**（不是 id）：用户看到的就是他当初配的那一行，
-// 而不是一串需要在能力表里反查的 id。
+// 两端都用**引用**（不是 id）：用户看到的就是他当初配的那一行，
+// 而不是一串需要在能力表里反查的 id。v4 没有端口（一次运行一个结果），
+// 所以受影响判定只看「这条边会不会解析到新版」。
 type UpgradeLink struct {
 	FromRef string `json:"fromRef"`
-	Port    string `json:"port"`
 	ToRef   string `json:"toRef"`
-	// Reason 说明这条 link 为什么会被影响（会拿到新契约 / 出口在新版里没了）。
+	// Reason 说明这条 link 为什么会被影响（会拿到新契约）。
 	Reason string `json:"reason"`
 }
 
-// String 渲染成 `from_ref --port--> to_ref`（错误消息与日志用）。
+// String 渲染成 `from_ref --> to_ref`（错误消息与日志用）。
 func (l UpgradeLink) String() string {
-	return fmt.Sprintf("%s --%s--> %s", l.FromRef, l.Port, l.ToRef)
+	return fmt.Sprintf("%s --> %s", l.FromRef, l.ToRef)
 }
 
 // UpgradeImpact 是「把这个版本变成 latest」的影响面。
@@ -142,18 +140,8 @@ func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *Ca
 	if c.Name == "" || c.Version <= 0 {
 		return impact, nil
 	}
-	// 闸门比的是「契约」（outputs / params_schema），而 P4 起 HTTP 层只提交**正文**，
-	// 派生列的唯一写者是 store 的写入路径（契约 §4）。这里必须**先从正文派生**：
-	// 否则新版本的契约被看成空的，任何带出口的显式新版本都会被 diffContracts 判成
-	// 「端口被删」而永久 409 upgrade_breaking —— 那是「改了脚本就发不出去」。
-	//
-	// 派到副本上：调用方（server 的 CheckUpgrade / 事务内的写入路径）都不能因为
-	// 「算一次影响面」就拿到一个被改过的对象。
-	next := *c
-	if derr := deriveFromSpec(&next); derr != nil {
-		return nil, derr
-	}
-	c = &next
+	// v4 的契约只有 params（JSON Schema）：next 改线是原地更新、不产生新版本，
+	// 也没有端口。闸门因此只比 params。
 	prev, err := getCapabilityLatestOn(ctx, ex, namespaceID, c.Name)
 	if errors.Is(err, ErrNotFound) {
 		return impact, nil // 首个版本：没有可比对的契约，也就谈不上破坏
@@ -188,30 +176,9 @@ func checkUpgradeOn(ctx context.Context, ex queryExec, namespaceID string, c *Ca
 func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 	changes := []UpgradeChange{}
 
-	// ① port：新版删掉的出口
-	nextPorts := make(map[string]bool, len(next.Outputs))
-	for _, p := range next.Outputs {
-		nextPorts[p] = true
-	}
-	removed := make([]string, 0, len(prev.Outputs))
-	for _, p := range prev.Outputs {
-		if !nextPorts[p] {
-			removed = append(removed, p)
-		}
-	}
-	sort.Strings(removed)
-	for range removed {
-		changes = append(changes, UpgradeChange{
-			Kind: ChangeRemovedPort,
-			// 不提"端口"这个词（CONTRACT-hide-ports.md §6）：用户脑子里只有
-			// "这个能力跑完交给谁"。旧版有多个出口时把它们列出来，让人认得出断的是哪一路。
-			Detail: fmt.Sprintf("删掉了一个出口（旧版有 %v），接在它下游的连线会断", prev.Outputs),
-		})
-	}
-
-	// ② 入参：类型变了 / 新增必填
-	prevProps, _ := schemaProperties(prev.ParamsSchema)
-	nextProps, nextRequired := schemaProperties(next.ParamsSchema)
+	// 入参：类型变了 / 新增必填（v4 没有端口，删掉出口不再是破坏性变更）。
+	prevProps, _ := schemaProperties(prev.Spec.Params)
+	nextProps, nextRequired := schemaProperties(next.Spec.Params)
 
 	// 稳定顺序：同一份输入永远报同样的顺序
 	keys := make([]string, 0, len(prevProps))
@@ -260,8 +227,6 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 //
 // 两类受影响者，判据都落在「这条 link 会不会解析到新版」上：
 //
-//   - 删 port：**左端**跟随 latest 的能力边（`from_ref` 是裸名字）且端口正是被删的那个。
-//     钉死的 from_ref（`analyze@1`）不受影响——它仍然按那一版的契约走。
 //   - 改入参类型 / 新增必填：**右端**跟随 latest 的 link（`to_ref` 是裸名字）。
 //     钉死的 to_ref 不受影响（它钉的就是旧版）。
 //
@@ -272,19 +237,9 @@ func (d *DB) upgradeAffectedLinks(ctx context.Context, namespaceID string, prev,
 
 // upgradeAffectedLinksOn 是 upgradeAffectedLinks 的 ex 版。
 func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
-	nextPorts := make(map[string]bool, len(next.Outputs))
-	for _, p := range next.Outputs {
-		nextPorts[p] = true
-	}
-	removedPorts := make(map[string]bool, len(prev.Outputs))
-	for _, p := range prev.Outputs {
-		if !nextPorts[p] {
-			removedPorts[p] = true
-		}
-	}
-	// 入参契约真的变了才去查右端（两类变化都可能为空，空则这一类不产生候选）。
-	prevProps, prevReq := schemaProperties(prev.ParamsSchema)
-	nextProps, nextReq := schemaProperties(next.ParamsSchema)
+	// 入参契约真的变了才去查右端（v4 只有这一类破坏性变更）。
+	prevProps, prevReq := schemaProperties(prev.Spec.Params)
+	nextProps, nextReq := schemaProperties(next.Spec.Params)
 	paramsChanged := false
 	for k, spec := range prevProps {
 		oldSpec, ok := spec.(map[string]any)
@@ -300,23 +255,18 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 			paramsChanged = true
 		}
 	}
-	if len(removedPorts) == 0 && !paramsChanged {
+	if !paramsChanged {
 		return []UpgradeLink{}, nil
 	}
 
-	edges, err := listEdgesOn(ctx, ex, namespaceID, "")
+	edges, err := listEdgesOn(ctx, ex, namespaceID)
 	if err != nil {
 		return nil, fmt.Errorf("upgrade impact: load edges: %w", err)
 	}
 	out := make([]UpgradeLink, 0, 8)
 	seen := make(map[string]int, len(edges))
 	for _, e := range edges {
-		reasons := make([]string, 0, 2)
-		if !e.FromIsSource && removedPorts[e.FromPort] {
-			if fromName, _, fromPinned := SplitRef(e.FromRef); !fromPinned && fromName == next.Name {
-				reasons = append(reasons, fmt.Sprintf("出口 %q 在新版里被删掉了，这条 link 会断", e.FromPort))
-			}
-		}
+		reasons := make([]string, 0, 1)
 		if paramsChanged {
 			if toName, _, toPinned := SplitRef(e.ToRef); !toPinned && toName == next.Name {
 				reasons = append(reasons, "跟随 latest，会拿到新版的入参契约")
@@ -325,14 +275,14 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 		if len(reasons) == 0 {
 			continue
 		}
-		key := e.FromRef + "\x00" + e.FromPort + "\x00" + e.ToRef
+		key := e.FromRef + "\x00" + e.ToRef
 		if i, ok := seen[key]; ok {
 			out[i].Reason = out[i].Reason + "；" + strings.Join(reasons, "；")
 			continue
 		}
 		seen[key] = len(out)
 		out = append(out, UpgradeLink{
-			FromRef: e.FromRef, Port: e.FromPort, ToRef: e.ToRef,
+			FromRef: e.FromRef, ToRef: e.ToRef,
 			Reason: strings.Join(reasons, "；"),
 		})
 	}
@@ -340,17 +290,40 @@ func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID strin
 		if out[i].FromRef != out[j].FromRef {
 			return out[i].FromRef < out[j].FromRef
 		}
-		if out[i].Port != out[j].Port {
-			return out[i].Port < out[j].Port
-		}
 		return out[i].ToRef < out[j].ToRef
 	})
 	return out, nil
 }
 
-// schemaProperties 取 params_schema 的 properties 与 required（坏 schema 当作空）。
+// sortJSON 递归地把 map 转成键排序的紧凑结构（json.Marshal 对 map 的键本身
+// 就是按字节序排序的，这里只是显式走一遍，避免依赖未来实现细节）。
+func sortJSON(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make(map[string]any, len(t))
+		for _, k := range keys {
+			out[k] = sortJSON(t[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = sortJSON(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// schemaProperties 取 params 的 properties 与 required（坏 schema 当作空）。
 //
-// 与 validateValue / checkEdgeLiterals 同一口径：读不懂的 schema 不拦任何东西
+// 与 route 的派发期校验同一口径：读不懂的 schema 不拦任何东西
 // （能力保存时已经把 schema 格式过一道；走到这里还坏只能是手改库）。
 func schemaProperties(raw json.RawMessage) (map[string]any, map[string]bool) {
 	props := map[string]any{}
