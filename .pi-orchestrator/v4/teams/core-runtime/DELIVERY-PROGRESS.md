@@ -29,3 +29,10 @@ NoPush/Merge/MR/remote deletion/oldWT deletion/T2/T3 writes. Local branch commit
 - Parent preservation steering queued: exact per-name replacements for deleted lease/txn/auth/NS safety; no bulk-file retirement; no unchanged baseline vet repeat. Canonical cwd typo correction queued after two wrong '.pi/subagents' cd commands.
 - wait120s returned still running elapsed2678696ms, not a failure/verdict. Only bounded status/wait while live; defer collect until settled.
 - L2 reminder facts checked against actual recent tools. Extended reminder 45min only; does not restart worker, extend collection budget, or assert progress completion.
+
+## A settled checkpoint / same-A continuation
+- delivery-a-fixtures retired/settled, explicit ok:false, collected acceptance unknown(none). No active writer left before fresh continuation.
+- Exact wrong literal .pi/subagents in old leaf receipts explains missing files/module/mapping; canonical .pi-subagents identity/required paths verified once. No samepath-replica/productionbug/Nodewait evidence. Parent notified; wrong-path scratch untouched.
+- Safe checkpoint committed 658d05fcf0847cb6e08b6ae29459fca644a37f8d with restored support+actual partial tests/evidence, NOT acceptance. Ownership whitelist included patch rename source paths (store/cron.go -> sourcespec/cron.go); initial whitelist omission corrected, not a product edit finding.
+- Draft /tmp/a-safety-mapping has generic family targets and builtin-all retirement, not accepted exact460/security coverage.
+- DELIVERY-A-CONTINUE.md concrete fresh leaf card freezes canonical cwd+git-root guard at EVERY bash, relative write/edit paths, unchanged test-only ownership/gates/history. Launch after old writer truly settled per parent explicit authorization; no new team/no A->B jump.
