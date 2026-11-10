@@ -295,12 +295,14 @@ func TestAdmin_MessagesAndSessions(t *testing.T) {
 
 	// 建一条事件（挂在 admin 注册时建出的默认命名空间下）
 	nsID := env.adminNSID
-	idem := "admin-test-1"
+	// v4 的投递幂等键是 `DeliveryID *string`（v3 的 IdemKey 字段已随迁移删除），
+	// 去重窗口由调用方显式给：这里用默认事件保留期，语义与「同 key 在保留期内只收一次」等价。
+	deliveryID := "admin-test-1"
 	if _, err := env.db.InsertEvent(ctx, &store.Event{
 		ID: store.NewEventID(), NamespaceID: nsID, Source: "github", Type: "pr_opened",
-		TraceID: "trace_admin_test", IdemKey: &idem,
+		TraceID: "trace_admin_test", DeliveryID: &deliveryID,
 		Payload: []byte("{}"), CreatedAt: now.Unix(),
-	}); err != nil {
+	}, now.Unix(), store.DefaultRetentionEventTTLSec); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
 

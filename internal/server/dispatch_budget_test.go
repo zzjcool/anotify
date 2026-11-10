@@ -1,30 +1,31 @@
 package server
 
+// 派发预算（ANOTIFY_MAX_HOPS / ANOTIFY_TRACE_TASK_BUDGET）在**配置层**的验收。
+//
+// 为什么恢复这一组用例（m4-2）：review 指出 v3 的三条派发预算用例被退役，理由是
+// 「env 解析的对象不存在了」——但事实是 `Config.MaxHops/TraceTaskBudget` 仍在
+// `FromEnv` 解析、`Validate` 启动校验、`mux.go` 启动日志打印；退役之后
+// `grep MaxHops *_test.go` = 0，配置面完全裸奔。v4 只是**不再消费**这两个预算
+// （route.Router 没有跳数预算），不等于「配错也不该报错」。
+//
+// 断言逐条沿用 v3（意图不变，只把默认值来源从 route 包常量改成本包常量：
+// v4 的 route 包已不导出它们）：
+//   - 不配 env → 本包默认值（16 / 512，与 v3 逐字相同）；
+//   - 正整数原样使用；0 / 负数 / 非数字 → 哨兵 0，由 Validate 拒绝（启动即失败）。
+
 import (
 	"strings"
 	"testing"
-
-	"github.com/zzjcool/anotify/internal/route"
 )
 
-// 本文件是**两个派发预算**（ANOTIFY_MAX_HOPS / ANOTIFY_TRACE_TASK_BUDGET）在配置层的验收：
-//   - 不配 env 时用 route 包的默认值（不抄第二份）；
-//   - 非法（非正整数字面量）→ 启动即失败，不静默用默认。
-//
-// 这三条原在 capability_balance_test.go 里（那个文件是为了 balance 建的）。P3 删掉
-// balance 后，与它有关系的两条用例随之消失，预算这三条与 balance 毫无关系，搬到这里
-// 继续守着——「删一个字段」不该顺手放掉另一个功能的门禁。
-
-// TestDispatchBudgetDefaults 不配 env 时，配置层的值 = route 包的默认值。
+// TestDispatchBudgetDefaults 不配 env 时，配置层的值 = 本包默认值（不是 0）。
 func TestDispatchBudgetDefaults(t *testing.T) {
-	// 不配 env 时 FromEnv 给出默认值（不是 0，也不是别的数）。
-	// 默认值只有一份（route.Default*），所以这里同时守住「别在配置层抄第二份」。
 	t.Setenv("ANOTIFY_MAX_HOPS", "")
 	t.Setenv("ANOTIFY_TRACE_TASK_BUDGET", "")
 	cfg := FromEnv()
-	if cfg.MaxHops != route.DefaultMaxHops || cfg.TraceTaskBudget != route.DefaultTraceTaskBudget {
+	if cfg.MaxHops != defaultMaxHops || cfg.TraceTaskBudget != defaultTraceTaskBudget {
 		t.Fatalf("默认预算 = (%d, %d), want (%d, %d)",
-			cfg.MaxHops, cfg.TraceTaskBudget, route.DefaultMaxHops, route.DefaultTraceTaskBudget)
+			cfg.MaxHops, cfg.TraceTaskBudget, defaultMaxHops, defaultTraceTaskBudget)
 	}
 }
 
@@ -35,7 +36,7 @@ func TestDispatchBudgetEnvParsing(t *testing.T) {
 		raw  string
 		want int
 	}{
-		{"未设置", "", route.DefaultMaxHops},
+		{"未设置", "", defaultMaxHops},
 		{"正整数原样使用", "7", 7},
 		{"0 非法", "0", 0},
 		{"负数非法", "-3", 0},
@@ -52,11 +53,11 @@ func TestDispatchBudgetEnvParsing(t *testing.T) {
 	}
 }
 
-// TestValidateRejectsBadDispatchBudgets 非法预算 ⇒ **启动即失败**（不静默用默认）。
+// TestValidateRejectsBadDispatchBudgets 非法预算 ⇒ 启动即失败（不静默用默认）。
 func TestValidateRejectsBadDispatchBudgets(t *testing.T) {
 	base := Config{
 		VAPIDPublic: "pub", VAPIDPriv: "priv",
-		MaxHops: route.DefaultMaxHops, TraceTaskBudget: route.DefaultTraceTaskBudget,
+		MaxHops: defaultMaxHops, TraceTaskBudget: defaultTraceTaskBudget,
 	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("合法配置被拒: %v", err)

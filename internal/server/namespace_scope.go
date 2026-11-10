@@ -2,182 +2,223 @@ package server
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 命名空间作用域解析（契约 §6.2 / 不变量 I10、I11）。
+// 命名空间作用域与授权（v4 资源路径口径）。
 //
-// 两种端点形状共用同一套规则：`?namespaceId=` / body 字段（绝大多数端点）与
-// `{ns}` 路径段（`/v1/namespaces/{ns}/…`，见 resolvePathNamespace）。
+// v4 把命名空间放进路径（`/v1/namespaces/{namespace}/…`），所以「作用域从哪来」不再
+// 需要 query/body 两种来源的兼容：路径段就是唯一来源，query `?namespace=` 只用于
+// cluster 级读模型（`/v1/stats`、`/v1/console/events`）。
 //
-// 规则（没有例外、没有隐式默认）：
+// # 一个必须显式处理的错位：路径里是 slug，store 里是 id
 //
-//	缺 namespaceId        → 400（**绝不回退默认命名空间**：回退等于把人写错的地方藏起来）
-//	namespaceId=<具体 id>  → 过 store.AuthorizeNamespace 收口：不存在 404，未登录 401
-//	namespaceId=*         → 显式跨命名空间汇总（读端点专用），**只在读端点允许**
+// `namespaces` 表有两列：`id`（不透明 `ns_<base62>`，所有事实表的 `namespace_id`
+// 都引用它）与 `slug`（用户面稳定标识，URL 里用的就是它）。两者**永远不同值**，
+// 所以 handler 拿到路径段后必须先解析成行，store 调用一律用 `ns.ID`，
+// 响应 `metadata.namespace` 一律用 `ns.Slug`——混用会得到「创建成功但查不到」。
 //
-// 为什么把「缺参」和「不存在」分成两个状态码：缺参是调用方写错了（改自己的代码），
-// 不存在是资源没了（改数据）；混成 404 会让人以为"参数格式没问题、只是没找到"。
+// 判据只有一份（越权与不存在的边界必须一致，否则同一个 id 在 A 端点 404、B 端点 403）：
 //
-// #204 / #207 的变化：组织层删除后**没有「别人的命名空间」**了。原先把
-// 「属于别的 org」映射成 403（读端点）或 404（写端点，防 id 探测）——那套口径
-// 随迁移 14 一起消失：不存在就是 404，本部署内任何已登录用户都能访问任何存在的
-// 命名空间。所以 resolveNamespaceCreate 这个「写端点用 404 防探测」的变体也一并删除。
+//	未登录          → 401 Unauthorized
+//	缺 ns           → 400 BadRequest
+//	ns == "*"       → 400（路径）；`?namespace=*` 仅允许读端点且必须显式 allowAll
+//	ns 不存在       → 404 NotFound
+//
+// 唯一收口是 store.AuthorizeNamespace：将来按 ns 分权限只改 store 一处，本文件形状不变。
 
-// nsScope 是一次请求解析出的命名空间作用域。
-type nsScope struct {
-	// ID 是具体命名空间 id；All 为 true 时它是空串。
-	ID string
-	// All 表示 namespaceId=*：跨命名空间汇总（读端点专用）。
-	All bool
+// namespaceScope 解析路径 `{ns}` 并完成登录 + 存在性授权。
+//
+// 解析顺序：slug 优先，其次 id（id 兼容让「手写测试/CLI 传 ns_xxx」也能工作，
+// 且不会与 slug 冲突——slug 正则不允许下划线，id 前缀是 `ns_`）。
+func (d *serverDeps) namespaceScope(r *http.Request) (*store.Namespace, error) {
+	return d.scopeFor(r.Context(), r.PathValue("ns"))
 }
 
-// namespaceParam 取请求里的 namespaceId。
-//
-// query 优先，其次用调用方已解码的 body 字段（POST/PATCH/DELETE 的 body 里也可以带）。
-// 两者都没有 → 空串（由 namespaceScope 变成 400）。
-func namespaceParam(r *http.Request, bodyNS string) string {
-	if v := strings.TrimSpace(r.URL.Query().Get("namespaceId")); v != "" {
-		return v
+// authorizePathNamespace 是 namespaceScope 的「只要 store 用的 id」便捷版。
+func (d *serverDeps) authorizePathNamespace(r *http.Request) (string, error) {
+	ns, err := d.namespaceScope(r)
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(bodyNS)
+	return ns.ID, nil
 }
 
-var (
-	// errNamespaceParamMissing / errNamespaceAllNotAllowed 是「调用方参数写错」的两条，
-	// 消息即响应文案（必须与今天逐字一致，见契约 §6.2）。
-	errNamespaceParamMissing  = errors.New("namespaceId is required（命名空间资源端点必须显式指定，不回退默认命名空间）")
-	errNamespaceAllNotAllowed = errors.New("namespaceId=* 只能用于跨命名空间汇总的读操作")
-)
-
-// namespaceScope 是 resolveNamespace 的**唯一**规则实现。
+// authorizeQueryNamespace 解析 `?namespace=`（cluster 级读模型专用），返回 store id。
 //
-// 规则只有一份的理由：「缺参 400 / `*` 视端点 400 / 不存在 404 / 未登录 401」这套判断
-// 一旦在多个 handler 里各抄一遍，副本迟早分叉，最后表现为「同一个 namespaceId 在
-// A 端点 404、在 B 端点 500」——调用方无从适配。这里只返回 error，**不写响应**，
-// 由 resolveNamespace 统一挑错误映射。
-//
-// **安全收口在这里，不在各 handler 里。**
-// 今天 store.AuthorizeNamespace 等价于「已登录 + 命名空间存在」；
-// 将来要按命名空间分权限，**只改 store.AuthorizeNamespace 并新增 namespace_members 表**，
-// 本函数与本文件其余部分形状不变。不要在 handler 里散写归属判断。
-func (h *consoleHandler) namespaceScope(ctx context.Context, r *http.Request, bodyNS string, allowAll bool) (nsScope, error) {
-	return h.scopeForNamespaceID(ctx, namespaceParam(r, bodyNS), allowAll)
+// allowAll=true 时接受 `*`（跨 ns 汇总读）：汇总视图必须先过登录这一关，否则
+// `*` 就是绕过收口的后门。`*` 只允许出现在读端点。
+func (d *serverDeps) authorizeQueryNamespace(r *http.Request, allowAll bool) (string, error) {
+	raw := r.URL.Query().Get("namespace")
+	if strings.TrimSpace(raw) == store.AllNamespaces {
+		if auth.UserIDFromContext(r.Context()) == "" {
+			return "", store.ErrAuthRequired
+		}
+		if !allowAll {
+			return "", errStatus(http.StatusBadRequest, reasonBadRequest,
+				"namespace * is only allowed for cross-namespace reads")
+		}
+		return store.AllNamespaces, nil
+	}
+	ns, err := d.scopeFor(r.Context(), raw)
+	if err != nil {
+		return "", err
+	}
+	return ns.ID, nil
 }
 
-// scopeForNamespaceID 是 namespaceScope 的「命名空间 id 已确定」版本。
+// resolveNamespaceForUser 是 ingress 入口用的「显式 userID」版本。
 //
-// 为什么要把规则和「id 从哪来」拆开：`namespaceId` 有两种来源——query/body
-// （绝大多数端点，走 namespaceParam）与**路径段**（`/v1/namespaces/{ns}/…`
-// 形状的端点，namespace 是 URL 的一部分）。判据只能有一份（缺参 400 / `*` 视
-// 端点 / 不存在 404 / 未登录 401），抄第二份必然漂移，所以这里只把 raw 抽出来，
-// 其余逐字保留。
-func (h *consoleHandler) scopeForNamespaceID(ctx context.Context, raw string, allowAll bool) (nsScope, error) {
-	// 已登录是收口的第一环：`*` 汇总路径不查具体命名空间，也必须先过这一关，
-	// 否则 `*` 就成了绕过收口的后门（未登录也能汇总全部署）。
-	userID := auth.UserIDFromContext(ctx)
+// 为什么要单独一个：API-key 投递入口的调用方身份是 key 的 owner（authn 解出来），
+// 不经过会话中间件，所以 context 里没有 auth.UserIDFromContext 的值。判据仍然是
+// 同一份（见 scopeFor），只是 userID 由调用方给。
+func resolveNamespaceForUser(ctx context.Context, db *store.DB, userID, raw string) (*store.Namespace, error) {
+	raw = strings.TrimSpace(raw)
 	if userID == "" {
-		return nsScope{}, store.ErrAuthRequired
+		return nil, store.ErrAuthRequired
 	}
-
+	// 这里必须用 store 的 sentinel 而不是 server 私有的 *apiError：调用方
+	// （internal/api 的投递入口）只能映射 store 错误，否则一个「跨 ns 读 URL 被
+	// 复用到投递」的调用会拿到 500 并污染服务端错误率（review N1 的回归）。
 	if raw == "" {
-		return nsScope{}, errNamespaceParamMissing
+		return nil, store.ErrNamespaceRequired
 	}
 	if raw == store.AllNamespaces {
-		if !allowAll {
-			return nsScope{}, errNamespaceAllNotAllowed
-		}
-		// 汇总视图对「本部署任何已登录用户」都可见（#204 安全语义），
-		// 所以这里只需要上面那一关，不需要再对某个 id 收口。
-		return nsScope{All: true}, nil
+		return nil, store.ErrNamespaceRequired
 	}
-	// 唯一收口：已登录 + 命名空间存在（将来加 namespace_members 只改这一个函数）。
-	if err := h.db.AuthorizeNamespace(ctx, userID, raw); err != nil {
-		return nsScope{}, err
-	}
-	return nsScope{ID: raw}, nil
-}
-
-// resolveNamespace 解析并校验 namespaceId（读端点与写端点共用一份口径）。
-//
-// 缺参 400 / `*`（allowAll=false）400 / 不存在 404 / 未登录 401。
-// 签名也保持不变——statsHandler / sourceHandler 以方法值注入它。
-//
-// allowAll=false 时（写端点、单对象端点）`*` 直接 400：把"跨命名空间"用在
-// 写入或单对象读取上没有定义（写一条边属于哪个命名空间？）。
-//
-// 返回 (scope, ok)；ok=false 表示已经写过错误响应，调用方直接 return。
-func (h *consoleHandler) resolveNamespace(w http.ResponseWriter, r *http.Request, bodyNS string, allowAll bool) (nsScope, bool) {
-	ns, err := h.namespaceScope(r.Context(), r, bodyNS, allowAll)
+	ns, err := namespaceBySlugOrIDOn(ctx, db, raw)
 	if err != nil {
-		writeNamespaceScopeError(w, err)
-		return nsScope{}, false
+		return nil, err
 	}
-	return ns, true
+	if err := db.AuthorizeNamespace(ctx, userID, ns.ID); err != nil {
+		return nil, err
+	}
+	return ns, nil
 }
 
-// resolvePathNamespace 解析**路径里**的命名空间（`/v1/namespaces/{ns}/…` 端点专用）。
-//
-// 与 resolveNamespace 的区别只有「raw 从哪来」：这里取 `{ns}` 路径段，其余
-// （缺参 400 / `*` 400 / 不存在 404 / 未登录 401）走同一个 scopeForNamespaceID
-// 与同一个错误映射，所以两种形状的端点在错误码上不可能分叉。
-func (h *consoleHandler) resolvePathNamespace(w http.ResponseWriter, r *http.Request, allowAll bool) (nsScope, bool) {
-	ns, err := h.scopeForNamespaceID(r.Context(), strings.TrimSpace(r.PathValue("ns")), allowAll)
+// scopeFor 是全文件唯一的判据实现。
+func (d *serverDeps) scopeFor(ctx context.Context, raw string) (*store.Namespace, error) {
+	raw = strings.TrimSpace(raw)
+	userID := auth.UserIDFromContext(ctx)
+	if userID == "" {
+		return nil, store.ErrAuthRequired
+	}
+	if raw == "" {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest,
+			"namespace is required（不回退默认命名空间）")
+	}
+	if raw == store.AllNamespaces {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest,
+			"namespace * is only allowed for cross-namespace reads")
+	}
+	ns, err := d.namespaceBySlugOrID(ctx, raw)
 	if err != nil {
-		writeNamespaceScopeError(w, err)
-		return nsScope{}, false
+		return nil, err
 	}
-	return ns, true
+	if err := d.DB.AuthorizeNamespace(ctx, userID, ns.ID); err != nil {
+		return nil, err
+	}
+	if d.display != nil {
+		d.display.put(ns.ID, ns.Slug)
+	}
+	return ns, nil
 }
 
-// writeNamespaceScopeError 把 namespaceScope 的 error 统一映射成响应。
+// namespaceBySlugOrIDOn 是「slug 优先、兼容 id」的**唯一**解析实现。
 //
-// 参数回调已经删除：「写端点把跨命名空间报成 404 以免当 id 探测器」这套口径
-// 属于组织层（#185 / 契约 D2）。组织层删除后不存在「别人的命名空间」，
-// 不存在一律 404，探测与正常访问的回答本来就一致，没有第二套映射可挑。
-func writeNamespaceScopeError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, errNamespaceParamMissing), errors.Is(err, errNamespaceAllNotAllowed):
-		// 文案就是响应体：这两条是「调用方参数写错」，改一个字都会破坏既有契约。
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	default:
-		writeNamespaceError(w, err)
+// 两个入口（会话域 scopeFor 与 API-key 投递 resolveNamespaceForUser）都走它：
+// 解析顺序只允许有一份，否则改动兼容规则时只改一半，症状就是「同一路径在投递入口
+// 404、在资源域 200」（review N1/终审 minor#1 的同源风险）。
+func namespaceBySlugOrIDOn(ctx context.Context, db *store.DB, raw string) (*store.Namespace, error) {
+	all, err := db.ListNamespaces(ctx)
+	if err != nil {
+		return nil, err
 	}
-}
-
-// writeNamespaceError 把 store 的命名空间错误翻成 HTTP 状态码。
-//
-// 跨命名空间引用（I11）一律 400 —— 不是静默忽略，也不是 500：
-// 它是**调用方的请求错了**，静默忽略会让人以为配置生效了。
-func writeNamespaceError(w http.ResponseWriter, err error) {
-	var cross *store.CrossNamespaceError
-	switch {
-	case errors.As(err, &cross):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": cross.Error()})
-	case errors.Is(err, store.ErrNamespaceNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "namespace not found"})
-	case errors.Is(err, store.ErrAuthRequired):
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
-	case errors.Is(err, store.ErrNamespaceRequired):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "namespaceId is required"})
-	case errors.Is(err, store.ErrNamespaceExists):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "namespace slug already exists"})
-	case errors.Is(err, store.ErrLastNamespace):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不允许删除最后一个命名空间"})
-	default:
-		var blocked *store.NamespaceBlockedError
-		if errors.As(err, &blocked) {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"error":    "namespace is not empty",
-				"blocking": blocked.Blocking,
-			})
-			return
+	for _, ns := range all {
+		if ns.Slug == raw {
+			return ns, nil
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
+	for _, ns := range all {
+		if ns.ID == raw {
+			return ns, nil
+		}
+	}
+	return nil, store.ErrNamespaceNotFound
+}
+
+// namespaceBySlugOrID 按 slug（优先）或 id 查命名空间行。
+//
+// store 没有导出的 by-slug 读入口（D0.9：本 issue 不新增 store 接口），而
+// ListNamespaces 已经带了列表页需要的计数、且命名空间数量是「部署级」量级
+// （个位数到几十），所以这里用一次列表查询解析，不做缓存：命名空间增删是低频操作，
+// 缓存只会引入「新建的 ns 立刻 404」这类难查的时序 bug。
+func (d *serverDeps) namespaceBySlugOrID(ctx context.Context, raw string) (*store.Namespace, error) {
+	return namespaceBySlugOrIDOn(ctx, d.DB, raw)
+}
+
+// nsDisplay 是 namespace id → slug 的一次性缓存（见 serverDeps.display 的注释）。
+type nsDisplay struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func (c *nsDisplay) get(id string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.m[id]
+	return v, ok
+}
+
+func (c *nsDisplay) put(id, slug string) {
+	if id == "" || slug == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[string]string, 8)
+	}
+	c.m[id] = slug
+}
+
+// namespaceDisplay 返回命名空间的对外名字（slug）。
+//
+// **响应 metadata.namespace 必须是它**，不是 store 的 `ns_` id：契约 §3.2 的
+// metadata.namespace 是命名空间的名字，客户端拿它跟路径/自己的配置对齐；回一个
+// 内部 id 会让「同一资源在列表里和在 URL 里叫两个名字」。
+func (d *serverDeps) namespaceDisplay(ctx context.Context, id string) string {
+	if id == "" {
+		return ""
+	}
+	if id == store.AllNamespaces {
+		return store.AllNamespaces
+	}
+	if d != nil && d.display != nil {
+		if slug, ok := d.display.get(id); ok {
+			return slug
+		}
+	}
+	ns, err := d.namespaceBySlugOrID(ctx, id)
+	if err != nil || ns == nil {
+		return id
+	}
+	if d != nil && d.display != nil {
+		d.display.put(id, ns.Slug)
+	}
+	return ns.Slug
+}
+
+// requireUser 返回当前登录用户 id；未登录给 401。
+func requireUser(ctx context.Context) (string, error) {
+	userID := auth.UserIDFromContext(ctx)
+	if userID == "" {
+		return "", store.ErrAuthRequired
+	}
+	return userID, nil
 }

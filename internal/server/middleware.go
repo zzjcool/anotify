@@ -78,6 +78,18 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // accessLog 是请求级日志中间件，包在最外层覆盖所有路由。
 // 记录 method/path(剥离 query)/status/latency_ms/ip/request_id/user_id。
+// redactLogPath 抹掉路径里的凭据段（目前只有 webhook token）。
+//
+// 只做「按前缀替换」，不解析路由：访问日志在热路径上，任何正则/路由匹配都会变成
+// 每个请求的固定开销，而需要脱敏的前缀是可以穷举的少数几个。
+func redactLogPath(path string) string {
+	const hooksPrefix = "/v1/hooks/"
+	if strings.HasPrefix(path, hooksPrefix) && len(path) > len(hooksPrefix) {
+		return hooksPrefix + "***"
+	}
+	return path
+}
+
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := logging.NewRequestID()
@@ -98,7 +110,9 @@ func accessLog(next http.Handler) http.Handler {
 		// 保留小数（µs 精度），避免亚毫秒请求全被记成 0。
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 		// r.URL.Path 天然不含 query（AC-3: secret/registrationToken 走 query 传输，不会泄露）
-		path := r.URL.Path
+		// 但 webhook 的凭据就在 path 里（POST /v1/hooks/{token}），必须脱敏后再落日志：
+		// 日志是长期留存的，token 一旦写进去等于凭据泄露（且无法追回）。
+		path := redactLogPath(r.URL.Path)
 
 		args := []any{
 			"request_id", rid,

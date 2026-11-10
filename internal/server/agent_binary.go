@@ -10,14 +10,17 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/zzjcool/anotify/internal/ws"
+	"github.com/zzjcool/anotify/internal/authn"
+	"github.com/zzjcool/anotify/internal/store"
 )
 
-// 本文件是「中枢自带 agent 二进制」的升级源（CONTRACT-agent-upgrade §2）。
+// 本文件是「中枢自带 agent 二进制」的升级源（CONTRACT-agent-upgrade §2 / api-conventions §8.2）。
 //
 // 两个消费方：
-//   - GET /v1/node/binary：节点/CLI 下载（node token 鉴权，不是会话）；
-//   - POST /v1/nodes/{id}/upgrade：控制台把「去哪个路径拿、拿到后该是什么」推给节点。
+//   - GET /v1/node/binary：节点/CLI 下载（node token 鉴权，不是会话；本文件实现）；
+//   - POST /v1/nodes/{name}/upgrade：控制台把「去哪个路径拿、拿到后该是什么」推给节点
+//     （端点实现在 resource_node.go 的 nodeAPI.upgradeNode；本文件只提供它要的
+//     升级源事实，见 node_upgrade_handlers.go 的 agentUpgradeSource）。
 //
 // 二进制**不**走 WebSocket：agent 是 15 MB 量级，一帧塞进去会阻塞同一条连接上的
 // 心跳与 assign（节点读超时 = 掉线）。帧里只有版本 + sha256 + 路径，下载走普通 HTTP。
@@ -88,42 +91,71 @@ func (b *agentBinary) targetVersion() string {
 	return b.version
 }
 
-// agentBinaryHandler 处理 GET /v1/node/binary（CONTRACT-agent-upgrade §2）。
+// reasonAgentBinaryUnavailable 是「这台中枢没带 agent 二进制」的 Status.reason（501）。
 //
-// 鉴权是 **node token**（AuthenticateNodeHTTP），不是会话 Cookie：下载方是节点上的
-// agent / CLI，它们手里只有 node token。用 AuthenticateNode（WS 版）而不是它，
-// 是因为排空中的节点仍然应该能升级自己（维护动作，不是接新任务）。
+// 它**不在** api-conventions §4.2 的通用集合里：501 本身也不在那张 HTTP 码表里。这里
+// 保留一个专用 reason 而不是把 501 硬塞进 BadRequest/Conflict，是因为调用方必须能把
+// 「服务端没有升级源」与「节点/请求出错」分开（CLI 退出码 2 就映射到这里）；无 body
+// 或通用 reason 都会让这条分支在客户端侧不可判。与 `slug_taken` / `playbook_conflict`
+// 这类域内码同性质，属于本域的封闭补充。
+const reasonAgentBinaryUnavailable = "agent_binary_unavailable"
+
+// agentBinaryHandler 处理 GET /v1/node/binary（api-conventions §8.2）。
+//
+// 鉴权是 **node token**（Authorization: Bearer <token>），不是会话 Cookie：下载方是
+// 节点上的 anode / CLI，它们手里只有 node token。v4 的 node 是 cluster-scoped 资源，
+// 所以这里只做「这个 token 属于一台存在的节点」这一件事——token 的 sha256 命中
+// nodes.token_hash 即通过（与 WS hello 的握手同一条判据）。
+//
+// 不区分「没带令牌」与「令牌无效」的响应体措辞可以更精确，但状态码必须一致（401）：
+// 403 会让调用方以为「令牌有效但没权限」从而去申请权限，而真实原因是令牌根本不对。
+//
+// 排空中的节点仍然可以下载自己（维护动作，不是接新任务）：本 handler 不看 node.Status。
 type agentBinaryHandler struct {
-	bin  *agentBinary
-	auth ws.NodeAuthenticator
+	bin *agentBinary
+	db  *store.DB
 }
 
 func (h *agentBinaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		// 错误体统一 Status（§4.1）；405 + reason 是封闭集合里的成员。
+		w.Header().Set("Allow", "GET")
+		writeStatus(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "method not allowed", nil)
 		return
 	}
-	if _, err := ws.AuthenticateNodeHTTP(r.Context(), h.auth, r); err != nil {
-		// 401 = 没带令牌；403 = 令牌无效 / 命名空间没了。响应体不区分后两者：
-		// 对调用方来说它们是同一件事（这个令牌不能用），细节进服务端日志。
-		status := ws.HTTPStatusForAuthError(err)
-		msg := "invalid_node_token"
-		if status == http.StatusUnauthorized {
-			msg = "missing_node_token"
-		}
-		slog.Warn("agent binary download auth failed",
+
+	token := authn.BearerToken(r)
+	if token == "" {
+		// token 本身绝不进日志（它是节点的全部凭据）；只记来源地址。
+		slog.Warn("agent binary download rejected: missing node token",
 			"event", "agent.binary.auth_failed",
-			"status", status,
+			"reason", "missing_node_token",
+			"ip", r.RemoteAddr,
+		)
+		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "missing_node_token", nil)
+		return
+	}
+	node, err := h.db.GetNodeByTokenHash(r.Context(), store.HashNodeToken(token))
+	if err != nil {
+		// 查询失败（含 token 不匹配）一律 401：不区分「令牌不存在」与「库出错」，
+		// 细节进服务端日志，响应体只说「这个令牌不能用」。
+		slog.Warn("agent binary download rejected: unknown node token",
+			"event", "agent.binary.auth_failed",
+			"reason", "invalid_node_token",
 			"error", err.Error(),
 			"ip", r.RemoteAddr,
 		)
-		writeJSON(w, status, map[string]string{"error": msg})
+		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "invalid_node_token", nil)
 		return
 	}
+
 	if !h.bin.enabled() {
 		// 501 是**明确语义**（不是 404）：调用方据此区分「服务端没带二进制」
 		// 与「路径写错了」。CLI 的退出码 2 就映射到这里（契约 §4）。
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "agent_binary_unavailable"})
+		//
+		// 鉴权先于配置探测：不能把「服务端带没带二进制」当成匿名可读的信息。
+		writeStatus(w, http.StatusNotImplemented, reasonAgentBinaryUnavailable,
+			"this server ships no agent binary", nil)
 		return
 	}
 
@@ -139,6 +171,7 @@ func (h *agentBinaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("agent binary downloaded",
 		"event", "agent.binary.downloaded",
+		"node_id", node.ID,
 		"version", h.bin.version,
 		"sha256", h.bin.sha256,
 		"bytes", len(h.bin.data),
