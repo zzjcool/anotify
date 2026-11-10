@@ -1,4 +1,4 @@
-# G3a · #331 测试 inventory（server 345 + api 18 → server 233 + api 7）
+# G3a · #331 测试 inventory（server 345 + api 18 → server 244 + api 8）
 
 > G3-D6 要求：先逐名 inventory，再按当前安全事实迁移；**禁止整文件清空**认证/权限/CAS/
 > delete/secret/digest/FK/backpressure 断言；退役项必须**具名**并给出**替代用例**。
@@ -8,8 +8,8 @@
 >
 > | | 旧 | 新 |
 > |---|---|---|
-> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 233（232 用例 + 1 `TestMain`） |
-> | `internal/api` | 18 | 7 |
+> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 244（243 用例 + 1 `TestMain`） |
+> | `internal/api` | 18 | 8 |
 >
 > 差异全部是「v3 扁平资源面不存在了」的直接后果；**没有一条**是「为了让测试变绿而删除或放宽断言」。
 
@@ -19,7 +19,7 @@
   gzip / 限流 / 状态写入器 / 词汇 / 嵌入 —— 155 个用例**一行未改**（文件级不变）。
 - **rewritten**：`node_upgrade_test.go`（7→4）、`task_out_retired_test.go`（2→2，断言改为递归遍历 JSON）。
 - **migrated**：v3 扁平 capability/source/playbook/namespace/node/task/event/log/emission 面 →
-  v4 namespaced 资源面：新增 **72 个 server 用例**（含 7 个跨域集成）+ **7 个 `internal/api` 用例**。
+  v4 namespaced 资源面：新增 **83 个 server 用例**（72 + 11 个 review 补缺，含 8 个跨域集成）+ **8 个 `internal/api` 用例**。
 - **retired**：v3 `edges`/`downstreams`/`deployments` 写、批量建能力、`CapabilityRevision`-式 spec、
   中央执行域（notify.phone）、跨 ns 归并快路径、v3 openapi parity —— 共 19 个文件（其中 3 个是 0 用例的纯夹具文件）。
 
@@ -82,7 +82,7 @@
 | `console_test.go` 的 task/trace/event 段、`console_events_page_test.go`（9）、`merge_fastpath_test.go`（5） | `resource_task_test.go`（15） | `TestTaskResourceListEmptyIsArray`、`TestTaskResourceGetEnvelopeFacts`、`TestTaskResourceDownstreamMissingShape`、`TestTaskResourceCancelUnknownIs404`、`TestTaskResourceCancelPendingBecomesCancelled`、`TestTaskResourceCancelRunningRecordsIntent`、`TestTaskResourceAbandonPendingBecomesAbandoned`、`TestTaskResourceLogsParamBounds`、`TestTaskResourceLogsNoArchive`、`TestTaskResourceEmissionsEmptyShape`、`TestTaskResourceEmissionsShapeAndCursor`、`TestTaskResourceConsoleEventsNamespaceScopes`、`TestTaskResourceEventsAndTrace`、`TestTaskResourceListFilters`、`TestTaskResourceRoutesAreSessionWrapped` | Task 只读信封 / failed-attempt0(S1/E1) / cancel+abandon 终态 / logs 参数界与无档案语义 / emissions 游标 / console events 跨 ns 与 cursor 绑定 / trace 视图 / 列表过滤 |
 | — （新增集成层） | `api_integration_test.go`（7） | `TestAPIIntegrationRouteTableIsV4Only`、`…EnvelopeDiscipline`、`…CASRejectsABA`、`…NamespaceIsolation`、`…FailedAttemptZeroTask`、`…NodeTokenOneShot`、`…NodeConfigRevision` | 六域 register 共存无 pattern 冲突、v3 扁平路由**必须 404**、四键/`status` 非 null/`items:[]` 横向一致、CAS ABA、slug→id 与跨 ns 隔离、cursor 绑 ns、E1 回执、token 一次性、configRevision 前进 |
 | `emission_handlers_test.go`（4）、`task_logs_test.go`（9）、`task_logs_wire_test.go`（1） | 同上 `resource_task_test.go` | 见上 | emissions 形状/跨 ns 不可见、logs 零字节可用/降级不 5xx/每次请求打节点 |
-| `internal/api/events_test.go`（18） | `internal/api/events_test.go`（7） | `TestEventIngressReceipt`、`…TypeFallsBackToSourceName`、`…Duplicate`、`…SourceRequired`、`…Unauthorized`、`…NamespaceScope`、`…DisabledSource` | 回执五字段/`tasks`/`pruned` 恒数组、同 `id` 去重回原 event/trace、source 必填 400、Bearer 鉴权、跨 ns 边界、停用源拒绝 |
+| `internal/api/events_test.go`（18） | `internal/api/events_test.go`（8） | `TestEventIngressReceipt`、`…TypeFallsBackToSourceName`、`…Duplicate`、`…SourceRequired`、`…Unauthorized`、`…NamespaceScope`、`…DisabledSource` | 回执五字段/`tasks`/`pruned` 恒数组、同 `id` 去重回原 event/trace、source 必填 400、Bearer 鉴权、跨 ns 边界、停用源拒绝 |
 
 > 说明：v3 的「同一个表单建多个能力 + 它们之间的边」（`POST /v1/capabilities/batch`）与
 > `PUT /v1/capabilities/{name}/downstreams` 是 v3 的边写入口；v4 的边是 `spec.next` 的
@@ -159,7 +159,7 @@
 | `TestNamespaceAllWriteRejected`（在 `console_test.go`） | 迁移：`namespace=*` 只允许读 → `TestNamespaceResourceRequiresSession`/`TestAPIIntegration*` + `namespace_scope.go` 的 `allowAll` 判据 |
 | `TestListAcrossNamespaces`、`TestNamespaceUnknownIsNotFound`、`TestNamespaceNotFound`、`TestNamespaceRequired` | 迁移到 `TestAPIIntegrationRouteTableIsV4Only`（v3 路径 404）+ `TestNamespaceResource*`（v4 路径语义） |
 
-## 5. 新增用例清单（79 个：server 72 + api 7）
+## 5. 新增用例清单（91 个：server 83 + api 8）
 
 ```
 internal/server/resource_capability_test.go  11  TestCapabilityResource*
@@ -194,3 +194,25 @@ internal/api/events_test.go                   7  TestEventIngress*
 | Artifact 上传/下载（A1/A2 通道）与 `internal/resultspool/**` | #332 | 331 卡明确划归 #332 |
 | `cmd/devseed` / `cmd/` 旧接口静态断裂 | #334 | `go build ./...` 仅 devseed 失败，已如实列错误 |
 | `internal/push.CentralNotifier` 已成死代码 | 后续清理（无 owner） | 它原由中央执行器调用；v4 保留 VAPID 装载与公钥下发（`GET /v1/vapid-public-key`）、devices 域不动，但 Sender 构造路径不再被 server 引用。**未删除**：删除它属于 `internal/push`（只读）且不在本 issue 功能范围 |
+
+## 8. 补充用例（fresh review 覆盖缺口，追加至 §5 清单）
+
+review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩阵、405、非空 ns 删除、
+令牌是真凭证、批量逐项错误）。逐条补真实 httptest + 真 store 断言，**未改产品代码**。
+
+| # | 缺口 | 新用例（文件） | 真实断言内容 |
+|---|---|---|---|
+| 1 | Source 跨命名空间隔离（零覆盖） | `TestSourceResourceNamespaceIsolation`（`resource_source_test.go`） | 两个真命名空间 `src-a`/`src-b` 各建同名出口能力；在 A 建的源：B 的 list `items` 长度 0、B 单读 404 且响应体不含 A 的 uid（不泄露存在性）、拿 A 的令牌在 B 做 PATCH/DELETE 均 404 且 A 的 `resourceVersion` 未前进、`spec.enabled`/`spec.targets` 原样、A 列表仍 1 条 |
+| 2 | fire 失败 0 写（原来只断 404） | `TestSourceResourceFireFailureWritesNothing`（`resource_source_test.go`） | 停用源 + 不存在源各 fire 一次（两次都 404 `NotFound`）前后：`tasks`/`events` 表行数完全不变；`ListTasks`/`CountOpenTasks`/`ListEvents`（含剪枝）读模型均为 0；源本身仍 200 且 `enabled=false` |
+| 3 | Playbook 跨命名空间隔离 | `TestPlaybookResourceNamespaceIsolation`（`resource_playbook_test.go`） | A 建包后：B 的 list `items` 数组长度 0、B 单包 GET 404（Status/`NotFound`）、拿 A 的 CAS 令牌在 B DELETE 404；A 里 GET 仍 200、`resourceVersion` 未前进、A 清单仍 1 条 |
+| 4a | logs 降级：节点离线 503 | `TestTaskResourceLogsNodeOfflineIs503`（`resource_task_test.go`） | 真实 `task_attempts` 行指向无会话的 node → **503** + `Status.code=503` + `reason="node_offline"`，且响应**不含** `lines`（不把离线伪装成"这次没输出"） |
+| 4b | logs 降级：节点读不了档案 502 | `TestTaskResourceLogsNodeErrorIs502`（`resource_task_test.go`） | 真 WebSocket 节点会话（hello→welcome，真 Hub）收到 `logs.request` 后回 `error=logs_unreadable` → **502** + `reason` 原样回传封闭码，且不伪造 `lines` |
+| 4c | logs 降级：等不到回包 504 | `TestTaskResourceLogsWaitTimeoutIs504`（`resource_task_test.go`） | 同一真会话下节点收到 `logs.request` 但**不回包** → **504** + `reason="timeout"`（`protocol.ReasonTimeout`），不伪造 `lines`。用可取消的请求上下文确定性造出"等不到回包"（`taskLogsTimeout` 10s 是常量，不真等；Hub 自己的 `ErrLogsTimeout` 由 `internal/ws` 用例覆盖） |
+| 4d | logs 成功路径逐条记录（支撑"lines 恒数组/attempt 整数"） | `TestTaskResourceLogsNodeReturnsStructuredLines`（`resource_task_test.go`） | `tailLines=10&sinceSeconds=60` 原样进 `logs.request`；节点回 2 条真实记录 → 200、原文 `"lines":[...]`（数组）、`attempt=1` 整数、`truncated` 原样、逐条 `sequence/stream/text/at` 与节点给的一致 |
+| 5 | 405（Method Not Allowed） | `TestAPIIntegrationMethodNotAllowed`（`api_integration_test.go`） | `DELETE /v1/namespaces/{slug}/capabilities` 与 `POST /v1/nodes/{name}` 均 **405**（不是 404），并断言 `Allow` 头含该路径已注册的方法 |
+| 6 | 非空命名空间删除（409 + blocking + force） | `TestNamespaceResourceDeleteBlockedAndForce`（`resource_namespace_test.go`） | 真能力行阻塞：默认 DELETE → **409** `Conflict`、`details.causes[0].field="blocking"`、`message` 说明有依赖对象、`Status.message` 含 "not empty"；被拒后 ns 与能力行都还在（零写）；`?force=true` → **204** 级联、随后 GET 404、能力行被清 |
+| 7 | Node token 是真身份凭证 | `TestNodeResourceTokenIsRealCredential`（`resource_node_test.go`） | `HashNodeToken(明文)` → `GetNodeByTokenHash`（Hub 握手用的同一查询）必须返回同一 `metadata.uid` 且 `TokenHash == hash`（≠明文）；轮换前那枚哈希立刻失效；再轮换后旧明文哈希查不到、新明文哈希查到同一台 |
+| 8 | Node config batch 缺令牌逐项 400 | `TestNodeResourceConfigBatchMissingTokenIsItemError`（`resource_node_test.go`） | 一批两台：缺 `metadata.resourceVersion` 的那项 `ok:false` + `error.kind=Status` + `code=400` + `reason="resource_version_required"` 且无 `config`；同批带令牌的那项 `ok:true` 并真的写入；整请求仍是 **200**（不是 400），缺令牌项的 `vars` 没有旁路落库 |
+
+计数：新增 11 个用例（server 10 + 跨域集成 1，全部在 `internal/server` 包内），
+`internal/api` 与产品代码未改。

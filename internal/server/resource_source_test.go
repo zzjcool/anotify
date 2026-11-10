@@ -891,3 +891,210 @@ func mustJSONString(t *testing.T, doc map[string]any) string {
 	}
 	return string(raw)
 }
+
+// ---------- fresh review 补测：跨命名空间隔离 + 失败触发 0 写 ----------
+
+// sourceResCapability 是跨 ns 用例要用的出口能力（targets 在**源的命名空间**内解析，
+// 所以每个参与用例的命名空间都得有一个）。
+func sourceResCapability(t *testing.T, db *store.DB, nsID, name string) {
+	t.Helper()
+	if err := db.CreateCapability(context.Background(), &store.CapabilityVersion{
+		NamespaceID: nsID,
+		Name:        name,
+		Version:     1,
+		Spec: artifact.Spec{
+			Params: []byte(`{"type":"object"}`),
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("create capability %s in %s: %v", name, nsID, err)
+	}
+}
+
+// TestSourceResourceNamespaceIsolation 钉「源是命名空间内对象」这条边界：
+// A 的源在 B 下**完全不存在**——列表看不见、单读 404（不泄露存在性）、
+// 拿 A 的 CAS 令牌去 B 下 PATCH/DELETE 也改不动 A 的那一行。
+func TestSourceResourceNamespaceIsolation(t *testing.T) {
+	env := newSourceResEnv(t)
+	ctx := context.Background()
+
+	nsA, err := env.db.CreateNamespace(ctx, "src-a", "源命名空间 A")
+	if err != nil {
+		t.Fatalf("create namespace src-a: %v", err)
+	}
+	nsB, err := env.db.CreateNamespace(ctx, "src-b", "源命名空间 B")
+	if err != nil {
+		t.Fatalf("create namespace src-b: %v", err)
+	}
+	// 两个 ns 各有一个同名出口能力：源只在**自己那个** ns 里可解析。
+	sourceResCapability(t, env.db, nsA.ID, "notify")
+	sourceResCapability(t, env.db, nsB.ID, "notify")
+
+	pathA := "/v1/namespaces/" + nsA.Slug + "/sources"
+	pathB := "/v1/namespaces/" + nsB.Slug + "/sources"
+
+	created := env.request(http.MethodPost, pathA, map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "deploy-hook"},
+		"spec": map[string]any{
+			"kind":    "webhook",
+			"config":  map[string]any{"token": "src_tok_crossns"},
+			"targets": []any{map[string]any{"capability": "notify"}},
+		},
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("在 ns A 建源期望 201，得到 %d：%s", created.Code, created.Body.String())
+	}
+	createdDoc := env.doc(created)
+	metaA := sourceResObj(t, createdDoc["metadata"])
+	if got := sourceResString(t, metaA["namespace"]); got != nsA.Slug {
+		t.Fatalf("metadata.namespace 必须是 A 的 slug %q，得到 %q", nsA.Slug, got)
+	}
+	rvA := sourceResString(t, metaA["resourceVersion"])
+	uidA := sourceResString(t, metaA["uid"])
+	targetsA := sourceResArr(t, sourceResObj(t, createdDoc["spec"])["targets"])
+	if len(targetsA) != 1 || sourceResObj(t, targetsA[0])["capability"] != "notify" {
+		t.Fatalf("A 的源的 targets 应钉住 notify，得到 %v", targetsA)
+	}
+
+	// ① B 的列表看不到 A 的源（items 必须是 []，不是 null）。
+	listB := env.request(http.MethodGet, pathB, nil)
+	if listB.Code != http.StatusOK {
+		t.Fatalf("ns B 列表期望 200，得到 %d：%s", listB.Code, listB.Body.String())
+	}
+	if items := sourceResAssertRawArray(t, listB, "items"); len(items) != 0 {
+		t.Fatalf("ns B 的 sources 列表不应看见 ns A 的源，实际 %d 条：%s", len(items), listB.Body.String())
+	}
+
+	// ② B 的单对象读 → 404，且响应体里不出现 A 的 uid（不泄露存在性）。
+	gotB := env.request(http.MethodGet, pathB+"/deploy-hook", nil)
+	if gotB.Code != http.StatusNotFound {
+		t.Fatalf("ns B 读 A 的源期望 404，得到 %d：%s", gotB.Code, gotB.Body.String())
+	}
+	if reason := sourceResString(t, env.doc(gotB)["reason"]); reason != reasonNotFound {
+		t.Fatalf("跨 ns 单读的 reason 期望 %q，得到 %q", reasonNotFound, reason)
+	}
+	if body := gotB.Body.String(); strings.Contains(body, uidA) {
+		t.Fatalf("404 响应体泄露了 A 的对象 uid（存在性探测）：%s", body)
+	}
+
+	// ③ 拿 A 的令牌在 B 下 PATCH → 404，A 的行一个字段都不能变。
+	patchB := env.request(http.MethodPatch, pathB+"/deploy-hook", map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "deploy-hook", "resourceVersion": rvA},
+		"spec":       map[string]any{"enabled": false},
+	})
+	if patchB.Code != http.StatusNotFound {
+		t.Fatalf("ns B PATCH（带 A 的令牌）期望 404，得到 %d：%s", patchB.Code, patchB.Body.String())
+	}
+
+	// ④ 拿 A 的令牌在 B 下 DELETE → 404，A 的行不能被删。
+	delB := env.request(http.MethodDelete, pathB+"/deploy-hook?resourceVersion="+url.QueryEscape(rvA), nil)
+	if delB.Code != http.StatusNotFound {
+		t.Fatalf("ns B DELETE（带 A 的令牌）期望 404，得到 %d：%s", delB.Code, delB.Body.String())
+	}
+
+	// ⑤ A 里读回：200、令牌未前进、enabled/targets 原样（上面两次跨 ns 写一次都没落地）。
+	after := env.request(http.MethodGet, pathA+"/deploy-hook", nil)
+	if after.Code != http.StatusOK {
+		t.Fatalf("跨 ns 写之后 A 的源必须还在（期望 200），得到 %d：%s", after.Code, after.Body.String())
+	}
+	afterDoc := env.doc(after)
+	if got := sourceResString(t, sourceResObj(t, afterDoc["metadata"])["resourceVersion"]); got != rvA {
+		t.Fatalf("跨 ns 写不该推进 A 的 resourceVersion：%q → %q", rvA, got)
+	}
+	specAfter := sourceResObj(t, afterDoc["spec"])
+	if specAfter["enabled"] != true {
+		t.Fatalf("跨 ns PATCH 不该把 A 的源停用，得到 enabled=%v", specAfter["enabled"])
+	}
+	targetsAfter := sourceResArr(t, specAfter["targets"])
+	if len(targetsAfter) != 1 || sourceResObj(t, targetsAfter[0])["capability"] != "notify" {
+		t.Fatalf("跨 ns PATCH 不该改 A 的 targets，得到 %v", targetsAfter)
+	}
+	listA := env.request(http.MethodGet, pathA, nil)
+	if items := sourceResAssertRawArray(t, listA, "items"); len(items) != 1 {
+		t.Fatalf("A 的列表应仍有 1 条，实际 %d 条：%s", len(items), listA.Body.String())
+	}
+}
+
+// TestSourceResourceFireFailureWritesNothing 钉「fire 失败是**零副作用**」：
+// 停用源与不存在的源各打一次，tasks / events 一行都不许多（不是「回 404 就算了」）。
+func TestSourceResourceFireFailureWritesNothing(t *testing.T) {
+	env := newSourceResEnv(t)
+	ctx := context.Background()
+
+	// 停用源：token 有效、配置完整，只是 enabled=false。
+	env.createSource(map[string]any{
+		"kind":    "webhook",
+		"enabled": false,
+		"config":  map[string]any{"token": "src_tok_paused"},
+		"targets": []any{map[string]any{"capability": "notify"}},
+	}, map[string]any{"name": "paused-hook"})
+
+	tasksBefore := env.count("tasks")
+	eventsBefore := env.count("events")
+
+	// ① 停用源 fire → 404（ErrSourceDisabled 的传输面口径）。
+	rr := env.request(http.MethodPost, env.sourcePath("paused-hook")+"/fire", map[string]any{
+		"payload": map[string]any{"k": "v"},
+	})
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("停用源 fire 期望 404，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	if reason := sourceResString(t, env.doc(rr)["reason"]); reason != reasonNotFound {
+		t.Fatalf("停用源 fire 的 reason 期望 %q，得到 %q", reasonNotFound, reason)
+	}
+
+	// ② 不存在的源 fire → 404。
+	rr = env.request(http.MethodPost, env.sourcePath("never-existed")+"/fire", map[string]any{
+		"payload": map[string]any{"k": "v"},
+	})
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("不存在源 fire 期望 404，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+
+	// ③ 两次失败请求前后，tasks / events 的行数必须完全不变（直接数表，最硬的判据）。
+	if got := env.count("tasks"); got != tasksBefore {
+		t.Fatalf("fire 失败写了任务行：%d → %d", tasksBefore, got)
+	}
+	if got := env.count("events"); got != eventsBefore {
+		t.Fatalf("fire 失败写了事件行：%d → %d", eventsBefore, got)
+	}
+
+	// ④ 用 store 读模型复核（防「写了又删」这种把表数抹平的实现）。
+	tasks, err := env.db.ListTasks(ctx, env.nsID, store.TaskFilter{})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("fire 失败不该留下任务，实际 %d 条", len(tasks))
+	}
+	open, err := env.db.CountOpenTasks(ctx, env.nsID)
+	if err != nil {
+		t.Fatalf("count open tasks: %v", err)
+	}
+	if open != 0 {
+		t.Fatalf("fire 失败不该留下未终结任务，实际 %d 条", open)
+	}
+	events, err := env.db.ListEvents(ctx, env.nsID, "", "", 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("fire 失败不该留下事件（含剪枝留痕），实际 %d 条", len(events))
+	}
+
+	// ⑤ 源本身也没被改写：仍可读、仍停用。
+	kept := env.request(http.MethodGet, env.sourcePath("paused-hook"), nil)
+	if kept.Code != http.StatusOK {
+		t.Fatalf("失败的 fire 不该动到源本身，期望 200，得到 %d：%s", kept.Code, kept.Body.String())
+	}
+	if spec := sourceResObj(t, env.doc(kept)["spec"]); spec["enabled"] != false {
+		t.Fatalf("失败的 fire 不该改动源配置，得到 enabled=%v", spec["enabled"])
+	}
+}

@@ -18,6 +18,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,8 +26,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
 )
@@ -44,6 +50,9 @@ type taskResEnv struct {
 	// nsSlug 是主命名空间的对外名字（URL 与 metadata.namespace）。
 	nsSlug string
 	cap    string // 主命名空间里的能力行 id（tasks.capability_id 有外键）
+	// deps 是装配指针：logs 用例要把 taskAPI 的 Hub 换成「背后有真 WebSocket 会话」
+	// 的那一个（handler 在请求期读 a.d.Hub，注册后再改也生效）。
+	deps *serverDeps
 }
 
 // newTaskResEnv 建库 / 用户 / 两个命名空间 + 一条能力行 + 挂好路由。
@@ -86,6 +95,7 @@ func newTaskResEnv(t *testing.T) *taskResEnv {
 	mux := http.NewServeMux()
 	newTaskAPI(deps).register(mux)
 	env.mux = mux
+	env.deps = deps
 	return env
 }
 
@@ -996,3 +1006,346 @@ func TestTaskResourceRoutesAreSessionWrapped(t *testing.T) {
 
 // taskResPtr 是取地址的小工具（构造可选幂等键用）。
 func taskResPtr(s string) *string { return &s }
+
+// ---------- fresh review 补测：logs 降级矩阵（G3-D3） ----------
+
+// taskResIntPtr 是槽位指针小工具（hello.instances[].slot 是可选指针）。
+func taskResIntPtr(v int) *int { return &v }
+
+// insertAttempt 插一条真实的执行事实（task_attempts）：logs 的「这次跑在哪台机器」
+// 只能来自这里，不能拿 tasks.node_name 冒充历史。
+func (e *taskResEnv) insertAttempt(taskID string, attempt int, nodeID, nodeName string) {
+	e.t.Helper()
+	if _, err := e.db.Exec(
+		`INSERT INTO task_attempts (task_id, attempt, node_id, node_name, phase, started_at)
+		 VALUES (?,?,?,?,?,?)`,
+		taskID, attempt, nodeID, nodeName, store.TaskRunning, store.Now()); err != nil {
+		e.t.Fatalf("seed task attempt %s/%d: %v", taskID, attempt, err)
+	}
+}
+
+// logsNodeEnv 是「节点在线」的 logs 夹具：真 store + 真 Hub + 真 WebSocket 会话。
+type logsNodeEnv struct {
+	*taskResEnv
+	hub  *ws.Hub
+	node *store.Node
+	conn *websocket.Conn
+}
+
+// newNodeLogsEnv 起一条真节点会话（hello → welcome），并把 env 的 taskAPI 指向同一个 Hub。
+func newNodeLogsEnv(t *testing.T) *logsNodeEnv {
+	t.Helper()
+	env := newTaskResEnv(t)
+	ctx := context.Background()
+
+	node := &store.Node{
+		Name: "node-logs", MaxInstances: 4, MaxConcurrency: 2,
+		DeclaredNamespaces: []string{env.nsSlug},
+	}
+	token, err := env.db.CreateNode(ctx, node)
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	stored, err := env.db.GetNodeByName(ctx, node.Name)
+	if err != nil {
+		t.Fatalf("read node: %v", err)
+	}
+
+	hub := ws.NewHub(env.db, route.New(env.db),
+		ws.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		ws.WithHelloTimeout(2*time.Second),
+		ws.WithWriteTimeout(2*time.Second),
+	)
+	// handler 在请求期读 a.d.Hub：换成「这条真会话所在」的 Hub。
+	env.deps.Hub = hub
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.ServeHTTP))
+	t.Cleanup(srv.Close)
+
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/node/stream", nil)
+	if err != nil {
+		t.Fatalf("dial node stream: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+
+	taskResWriteFrame(t, conn, &protocol.HelloFrame{
+		Type: protocol.FrameHello, Name: node.Name, Token: token,
+		Namespaces: []string{env.nsSlug},
+		Instances:  []protocol.HelloInstance{{Slot: taskResIntPtr(0)}},
+	})
+	if frame := taskResReadFrame(t, conn); frame == nil {
+		t.Fatal("hello 之后没有收到任何帧")
+	} else if _, ok := frame.(*protocol.WelcomeFrame); !ok {
+		t.Fatalf("hello 之后应收到 welcome，得到 %T", frame)
+	}
+	// welcome 先于 attach 写出：等注册表可见，避免与 ServeHTTP 的注册步骤竞争。
+	deadline := time.Now().Add(2 * time.Second)
+	for !hub.Online(stored.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("节点 %s 未注册到 hub", node.Name)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return &logsNodeEnv{taskResEnv: env, hub: hub, node: stored, conn: conn}
+}
+
+// taskResWriteFrame 编码一帧写给节点连接。
+func taskResWriteFrame(t *testing.T, conn *websocket.Conn, frame any) {
+	t.Helper()
+	data, err := protocol.Encode(frame)
+	if err != nil {
+		t.Fatalf("encode %T: %v", frame, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write %T: %v", frame, err)
+	}
+}
+
+// taskResReadFrame 读一帧节点连接上的帧（超时即失败）。
+func taskResReadFrame(t *testing.T, conn *websocket.Conn) any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("读节点帧: %v", err)
+	}
+	frame, err := protocol.Decode(data)
+	if err != nil {
+		t.Fatalf("解码节点帧: %v（%s）", err, data)
+	}
+	return frame
+}
+
+// taskResReplyLogs 在节点侧读一帧 logs.request，再用 build 造出的 logs.response 回给中枢。
+//
+// 为什么放在 goroutine 里：HTTP 请求本身在等这一帧回包（真同步链路），所以读/回必须并发。
+// 辅助 goroutine 里不能 t.Fatalf：错误一律经 channel 交回主 goroutine 断言。
+func taskResReplyLogs(conn *websocket.Conn, build func(req *protocol.LogsRequestFrame) *protocol.LogsResponseFrame) <-chan error {
+	ch := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			ch <- fmt.Errorf("读节点帧: %w", err)
+			return
+		}
+		frame, err := protocol.Decode(data)
+		if err != nil {
+			ch <- fmt.Errorf("解码节点帧: %w", err)
+			return
+		}
+		req, ok := frame.(*protocol.LogsRequestFrame)
+		if !ok {
+			ch <- fmt.Errorf("节点应收到 logs.request，得到 %T", frame)
+			return
+		}
+		out, err := protocol.Encode(build(req))
+		if err != nil {
+			ch <- fmt.Errorf("编码 logs.response: %w", err)
+			return
+		}
+		wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer wcancel()
+		ch <- conn.Write(wctx, websocket.MessageText, out)
+	}()
+	return ch
+}
+
+// TestTaskResourceLogsNodeOfflineIs503 钉降级矩阵的第一格：
+// 执行过这次 attempt 的节点不在线 → 503 + reason node_offline（不是 200 空日志）。
+func TestTaskResourceLogsNodeOfflineIs503(t *testing.T) {
+	env := newTaskResEnv(t)
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: "node-gone"})
+	env.insertAttempt(taskID, 1, "nd_offline_fresh_review", "node-gone")
+
+	rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs"), nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("节点离线时期望 503，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	body := trBody(t, rr)
+	if kind := trString(t, body, "kind"); kind != kindStatus {
+		t.Fatalf("离线降级必须是 Status 文档，kind = %q", kind)
+	}
+	if code := trNumber(t, body, "code"); code != http.StatusServiceUnavailable {
+		t.Fatalf("Status.code = %v, want 503", code)
+	}
+	if reason := trString(t, body, "reason"); reason != "node_offline" {
+		t.Fatalf("离线降级的 reason 期望 %q，得到 %q（body=%s）", "node_offline", reason, rr.Body.String())
+	}
+	// 降级不是「真空日志」：不许出现 lines 键（否则客户端会把「节点离线」读成「这次没输出」）。
+	if _, ok := body["lines"]; ok {
+		t.Fatalf("503 响应不该带 lines：%s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"lines"`) {
+		t.Fatalf("503 响应原文不该出现 lines：%s", rr.Body.String())
+	}
+}
+
+// TestTaskResourceLogsNodeErrorIs502 钉降级矩阵的第二格：
+// 节点在线但读不了档案（logs_unreadable）→ 502 + 节点给的封闭码（不伪造空成功）。
+func TestTaskResourceLogsNodeErrorIs502(t *testing.T) {
+	env := newNodeLogsEnv(t)
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: env.node.Name})
+	env.insertAttempt(taskID, 1, env.node.ID, env.node.Name)
+
+	done := taskResReplyLogs(env.conn, func(req *protocol.LogsRequestFrame) *protocol.LogsResponseFrame {
+		// 错误响应不伪造 attempt、不带 lines（封闭码原样回传）。
+		return &protocol.LogsResponseFrame{
+			Type: protocol.FrameLogsResponse, TaskID: req.TaskID, RequestID: req.RequestID,
+			Error: protocol.LogsErrUnreadable,
+		}
+	})
+	rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs"), nil)
+	if err := <-done; err != nil {
+		t.Fatalf("节点侧回包失败: %v", err)
+	}
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("节点读不了档案时期望 502，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	body := trBody(t, rr)
+	if code := trNumber(t, body, "code"); code != http.StatusBadGateway {
+		t.Fatalf("Status.code = %v, want 502", code)
+	}
+	if reason := trString(t, body, "reason"); reason != protocol.LogsErrUnreadable {
+		t.Fatalf("502 的 reason 应原样回传节点的封闭码 %q，得到 %q", protocol.LogsErrUnreadable, reason)
+	}
+	if _, ok := body["lines"]; ok {
+		t.Fatalf("502 不该伪造 lines：%s", rr.Body.String())
+	}
+}
+
+// TestTaskResourceLogsWaitTimeoutIs504 钉降级矩阵的第三格「超时 → 504」。
+//
+// 触发条件是真的：节点在线、真的收到了 logs.request，但**不回包**。中枢等回包的分支
+// （taskLogsTimeout / 请求期限到 / 客户端放弃）统一映射 504 + reason timeout；这里用
+// 可取消的请求上下文把「等不到回包」确定性地造出来（不必真等 10s 的 taskLogsTimeout，
+// Hub 自己的 ErrLogsTimeout 由 internal/ws 的用例覆盖）。
+func TestTaskResourceLogsWaitTimeoutIs504(t *testing.T) {
+	env := newNodeLogsEnv(t)
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: env.node.Name})
+	env.insertAttempt(taskID, 1, env.node.ID, env.node.Name)
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	req := httptest.NewRequest(http.MethodGet, env.taskPath(env.ns, taskID, "/logs"), nil).WithContext(reqCtx)
+	rr := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() {
+		env.mux.ServeHTTP(rr, req)
+		close(served)
+	}()
+
+	// 节点确实收到了 logs.request —— 证明中枢真的向在线节点发了请求（不是提前短路）。
+	frame := taskResReadFrame(t, env.conn)
+	reqFrame, ok := frame.(*protocol.LogsRequestFrame)
+	if !ok {
+		t.Fatalf("节点应收到 logs.request，得到 %T", frame)
+	}
+	if reqFrame.TaskID != taskID || reqFrame.Attempt != 1 {
+		t.Fatalf("logs.request 关联字段不对: %+v", reqFrame)
+	}
+	// 节点故意不回答：等不到回包必须 504，不能伪造 200 空日志。
+	cancelReq()
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("节点不回包时 logs 请求没有结束（缺少有界等待）")
+	}
+
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("等不到回包时期望 504，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	body := trBody(t, rr)
+	if code := trNumber(t, body, "code"); code != http.StatusGatewayTimeout {
+		t.Fatalf("Status.code = %v, want 504", code)
+	}
+	if reason := trString(t, body, "reason"); reason != protocol.ReasonTimeout {
+		t.Fatalf("504 的 reason 期望封闭码 %q，得到 %q", protocol.ReasonTimeout, reason)
+	}
+	if strings.Contains(rr.Body.String(), `"lines"`) {
+		t.Fatalf("504 不该伪造 lines：%s", rr.Body.String())
+	}
+}
+
+// TestTaskResourceLogsNodeReturnsStructuredLines 钉「成功路径是逐条记录」：
+// tailLines/sinceSeconds 原样转发给节点，节点给的真实记录（sequence/stream/text/at）
+// 逐字段投影，attempt 是真实 attempt 的整数，lines 恒为数组。
+func TestTaskResourceLogsNodeReturnsStructuredLines(t *testing.T) {
+	env := newNodeLogsEnv(t)
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: env.node.Name})
+	env.insertAttempt(taskID, 1, env.node.ID, env.node.Name)
+
+	var gotReq *protocol.LogsRequestFrame
+	done := taskResReplyLogs(env.conn, func(req *protocol.LogsRequestFrame) *protocol.LogsResponseFrame {
+		gotReq = req
+		frame := &protocol.LogsResponseFrame{
+			Type: protocol.FrameLogsResponse, TaskID: req.TaskID, RequestID: req.RequestID,
+			Attempt: 1, Truncated: true,
+		}
+		frame.SetLogLines([]protocol.LogLine{
+			{Sequence: 1, Stream: "stdout", Text: "hello", At: "2024-01-02T03:04:05Z"},
+			{Sequence: 2, Stream: "stderr", Text: "warn", At: "2024-01-02T03:04:06Z"},
+		})
+		return frame
+	})
+	rr := env.do(http.MethodGet, env.taskPath(env.ns, taskID, "/logs")+"?tailLines=10&sinceSeconds=60", nil)
+	if err := <-done; err != nil {
+		t.Fatalf("节点侧回包失败: %v", err)
+	}
+
+	// 真实查询参数被原样转发（中枢不自己截断/重排序）。
+	if gotReq.TailLines != 10 || gotReq.SinceSeconds != 60 {
+		t.Fatalf("logs.request 应原样带 tailLines/sinceSeconds，得到 %+v", gotReq)
+	}
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("节点正常回包期望 200，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"lines":[`) {
+		t.Fatalf("lines 必须是 JSON 数组，得到 %s", rr.Body.String())
+	}
+	body := trBody(t, rr)
+	if got := trNumber(t, body, "attempt"); got != 1 {
+		t.Fatalf("attempt 应是真实读到的 attempt=1，得到 %v", got)
+	}
+	if got := trString(t, body, "taskId"); got != taskID {
+		t.Fatalf("taskId = %q, want %q", got, taskID)
+	}
+	if got := body["truncated"]; got != true {
+		t.Fatalf("truncated 应原样回传 true，得到 %v", got)
+	}
+	lines := trArray(t, body, "lines")
+	if len(lines) != 2 {
+		t.Fatalf("lines 应有 2 条，得到 %d：%v", len(lines), lines)
+	}
+	first, ok := lines[0].(map[string]any)
+	if !ok {
+		t.Fatalf("lines[0] 不是对象：%T", lines[0])
+	}
+	if seq := trNumber(t, first, "sequence"); seq != 1 {
+		t.Fatalf("lines[0].sequence = %v, want 1", seq)
+	}
+	if stream := trString(t, first, "stream"); stream != "stdout" {
+		t.Fatalf("lines[0].stream = %q, want stdout", stream)
+	}
+	if text := trString(t, first, "text"); text != "hello" {
+		t.Fatalf("lines[0].text = %q, want hello", text)
+	}
+	if at := trString(t, first, "at"); at != "2024-01-02T03:04:05Z" {
+		t.Fatalf("lines[0].at = %q, want 节点给的原始时间", at)
+	}
+	second, ok := lines[1].(map[string]any)
+	if !ok {
+		t.Fatalf("lines[1] 不是对象：%T", lines[1])
+	}
+	if stream := trString(t, second, "stream"); stream != "stderr" {
+		t.Fatalf("lines[1].stream = %q, want stderr", stream)
+	}
+}

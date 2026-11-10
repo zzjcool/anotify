@@ -660,3 +660,40 @@ func TestAPIIntegrationNodeConfigRevision(t *testing.T) {
 		t.Errorf("PUT config with stale token = %d, want 409; body=%s", stale.Code, stale.Body.String())
 	}
 }
+
+// TestAPIIntegrationMethodNotAllowed 钉「路径已注册但方法不支持」必须是 405：
+// Go 1.22 的 ServeMux 对同路径其它方法给 405 + Allow 头；这跟「路径根本不存在（404）」
+// 是两种不同的客户端语义，混成 404 会让调用方以为资源/集合不存在。
+func TestAPIIntegrationMethodNotAllowed(t *testing.T) {
+	e := newITEnv(t)
+	cases := []struct {
+		name      string
+		method    string
+		path      string
+		wantAllow []string
+	}{
+		{
+			name: "能力集合不支持 DELETE", method: http.MethodDelete,
+			path:      "/v1/namespaces/" + e.slugA + "/capabilities",
+			wantAllow: []string{"GET", "POST"},
+		},
+		{
+			name: "节点对象不支持 POST", method: http.MethodPost,
+			path:      "/v1/nodes/it-405-node",
+			wantAllow: []string{"GET", "PATCH", "DELETE"},
+		},
+	}
+	for _, tc := range cases {
+		rec := e.do(t, tc.method, tc.path, nil)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s：%s %s = %d, want 405（已注册路径 + 不支持的方法）; body=%s",
+				tc.name, tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+		allow := rec.Header().Get("Allow")
+		for _, m := range tc.wantAllow {
+			if !strings.Contains(allow, m) {
+				t.Fatalf("%s：Allow 头应包含 %s，得到 %q", tc.name, m, allow)
+			}
+		}
+	}
+}

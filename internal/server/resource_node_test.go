@@ -725,3 +725,146 @@ func TestNodeResourceRoutesAreSessionWrapped(t *testing.T) {
 		}
 	}
 }
+
+// TestNodeResourceTokenIsRealCredential 钉「节点令牌是真身份凭证，不是随机字符串」：
+// 明文经 store.HashNodeToken 得到的哈希必须能反查到**同一台**节点（Hub 握手正是走
+// 这条查询：internal/ws/hub.go 的 GetNodeByTokenHash），且存的就是这个哈希；
+// 轮换后旧哈希查不到、新哈希查到同一台。
+func TestNodeResourceTokenIsRealCredential(t *testing.T) {
+	env := newNodeTestEnv(t)
+	ctx := context.Background()
+	created := env.createNode("node-cred", nil)
+	uid, _ := nodeObject(t, created, "metadata")["uid"].(string)
+	if uid == "" {
+		t.Fatalf("创建信封缺 metadata.uid: %v", created)
+	}
+
+	// 登记时 store 已生成过一枚哈希（明文由 CreateNode 返回但 HTTP 丢弃）：轮换前记下它。
+	before, err := env.db.GetNodeByName(ctx, "node-cred")
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	if before.TokenHash == "" {
+		t.Fatal("登记后节点必须有 token_hash（否则永远无法握手）")
+	}
+
+	rr := env.do(http.MethodPost, "/v1/nodes/node-cred/tokens", map[string]any{})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST tokens = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	plaintext := nodeString(t, decodeNodeDoc(t, rr), "token")
+	hash := store.HashNodeToken(plaintext)
+
+	// ① 抓到的明文不是随机串：它的哈希就是库里的身份凭据，且指向同一台节点。
+	found, err := env.db.GetNodeByTokenHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("HashNodeToken(明文) 必须能查到节点（握手路径）: %v", err)
+	}
+	if found.ID != uid {
+		t.Fatalf("令牌哈希查到的是 %q，want 同一台节点 %q", found.ID, uid)
+	}
+	if found.TokenHash != hash {
+		t.Fatalf("节点行上的 token_hash = %q, want %q（口令明文绝不能落库）", found.TokenHash, hash)
+	}
+	if found.TokenHash == plaintext {
+		t.Fatal("token_hash 不能等于明文（必须是哈希）")
+	}
+	// ② 轮换之前的哈希立刻失效（旧凭据不能继续握手）。
+	if _, err := env.db.GetNodeByTokenHash(ctx, before.TokenHash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("轮换前那枚哈希应查不到节点，实际 err=%v", err)
+	}
+
+	// ③ 再轮换一次：旧哈希查不到、新哈希查到同一台（令牌是「唯一身份」，不是会话随机数）。
+	rr = env.do(http.MethodPost, "/v1/nodes/node-cred/tokens", map[string]any{})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rotate tokens = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	next := nodeString(t, decodeNodeDoc(t, rr), "token")
+	if next == plaintext {
+		t.Fatalf("轮换后明文未变: %q", next)
+	}
+	if _, err := env.db.GetNodeByTokenHash(ctx, store.HashNodeToken(plaintext)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("旧明文的哈希应立刻失效，实际 err=%v", err)
+	}
+	nextHash := store.HashNodeToken(next)
+	rotated, err := env.db.GetNodeByTokenHash(ctx, nextHash)
+	if err != nil {
+		t.Fatalf("新明文的哈希应能查到节点: %v", err)
+	}
+	if rotated.ID != uid || rotated.TokenHash != nextHash {
+		t.Fatalf("新令牌必须钉回同一台节点: id=%q want %q, hash=%q want %q",
+			rotated.ID, uid, rotated.TokenHash, nextHash)
+	}
+}
+
+// TestNodeResourceConfigBatchMissingTokenIsItemError 钉批量写的逐项语义：
+// 某台缺 metadata.resourceVersion 时**不是整请求 400**，而是该项 ok:false +
+// error.reason=resource_version_required（一次提交里其它项照常成功）。
+func TestNodeResourceConfigBatchMissingTokenIsItemError(t *testing.T) {
+	env := newNodeTestEnv(t)
+	env.createNode("node-batch", nil)
+	rv := env.configRV("node-batch")
+
+	rr := env.do(http.MethodPost, "/v1/nodes/config/batch", map[string]any{"updates": []any{
+		// ① 缺令牌：一项都不许落库，但也不许把整批打回 400。
+		map[string]any{"name": "node-batch", "vars": map[string]string{"NOPE": "1"}},
+		// ② 同批里带令牌的那台照常成功。
+		map[string]any{
+			"name":     "node-batch",
+			"metadata": map[string]any{"resourceVersion": rv},
+			"vars":     map[string]string{"REGION": "cn"},
+		},
+	}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("批量写缺令牌不该是整请求 400/500，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	doc := decodeNodeDoc(t, rr)
+	items := nodeSlice(t, doc, "items")
+	if len(items) != 2 {
+		t.Fatalf("items 长度 = %d, want 2 (body=%s)", len(items), rr.Body.String())
+	}
+
+	bad, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("items[0] 不是对象：%T", items[0])
+	}
+	if bad["ok"] != false {
+		t.Fatalf("缺令牌的那项应 ok:false，得到 %v", bad)
+	}
+	if _, has := bad["config"]; has {
+		t.Fatalf("失败项不该带 config：%v", bad)
+	}
+	errDoc, ok := bad["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("失败项必须带 Status 文档：%v", bad)
+	}
+	if kind := errDoc["kind"]; kind != kindStatus {
+		t.Fatalf("错误文档 kind = %v, want %v", kind, kindStatus)
+	}
+	if code, _ := errDoc["code"].(float64); int(code) != http.StatusBadRequest {
+		t.Fatalf("缺令牌的错误码 = %v, want 400", errDoc["code"])
+	}
+	if reason := errDoc["reason"]; reason != reasonResourceVersionRequired {
+		t.Fatalf("缺令牌的 reason = %v, want %q", reason, reasonResourceVersionRequired)
+	}
+
+	good, ok := items[1].(map[string]any)
+	if !ok {
+		t.Fatalf("items[1] 不是对象：%T", items[1])
+	}
+	if good["ok"] != true {
+		t.Fatalf("同批里带令牌的那项应成功，得到 %v（整批不该被一项拖垮）", good)
+	}
+	cfg, ok := good["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("成功项必须带 config wrapper：%v", good)
+	}
+	if got := nodeString(t, cfg, "vars", "REGION"); got != "cn" {
+		t.Fatalf("成功项应写入 REGION=cn，得到 %q", got)
+	}
+	// 缺令牌那项的 vars 绝不能旁路落库。
+	cfgNow := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/node-batch/config", nil))
+	if raw := cfgNow["vars"].(map[string]any); raw["NOPE"] != nil {
+		t.Fatalf("缺令牌的更新不得写入，config.vars = %v", raw)
+	}
+}

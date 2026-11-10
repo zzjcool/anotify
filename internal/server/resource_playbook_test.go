@@ -921,3 +921,92 @@ func TestPlaybookResourceAuthRequired(t *testing.T) {
 		t.Fatalf("未登录应 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestPlaybookResourceNamespaceIsolation 钉「包是命名空间内对象」：
+// 同名包在 ns A 存在时，ns B 的列表为空、单读 404、拿 A 的 CAS 令牌在 B 下 DELETE
+// 也删不掉 A 的那一份（A 里读回 200 且令牌未前进）。
+func TestPlaybookResourceNamespaceIsolation(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	ctx := context.Background()
+
+	nsB, err := env.db.CreateNamespace(ctx, "pb-b", "包命名空间 B")
+	if err != nil {
+		t.Fatalf("create namespace pb-b: %v", err)
+	}
+
+	slug := "cross-ns-pkg"
+	created := env.create(t, slug, pbTestBundle(slug))
+	rvA := created.Metadata.ResourceVersion
+	if rvA == "" {
+		t.Fatalf("创建信封缺 metadata.resourceVersion: %+v", created.Metadata)
+	}
+	if created.Metadata.Namespace != env.nsSlug {
+		t.Fatalf("metadata.namespace = %q, want %q", created.Metadata.Namespace, env.nsSlug)
+	}
+
+	pathB := "/v1/namespaces/" + nsB.Slug + "/playbooks"
+
+	// ① B 的列表 0 项（items 是数组，不是 null）。
+	rec := env.do(t, http.MethodGet, pathB, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ns B 列表期望 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listB map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listB); err != nil {
+		t.Fatalf("decode 列表: %v (%s)", err, rec.Body.String())
+	}
+	itemsB, ok := listB["items"].([]any)
+	if !ok {
+		t.Fatalf("ns B 列表 items 必须是数组，得到 %T（%s）", listB["items"], rec.Body.String())
+	}
+	if len(itemsB) != 0 {
+		t.Fatalf("ns B 列表不应看见 ns A 的包，实际 %d 条: %s", len(itemsB), rec.Body.String())
+	}
+
+	// ② B 的单包读 → 404（不泄露存在性）。
+	rec = env.do(t, http.MethodGet, pathB+"/"+slug, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("ns B 读同名包期望 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var status pbTestStatusDoc
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode 404: %v (%s)", err, rec.Body.String())
+	}
+	if status.Kind != kindStatus || status.Reason != reasonNotFound {
+		t.Fatalf("跨 ns 单读应为 Status/%s，得到 kind=%q reason=%q", reasonNotFound, status.Kind, status.Reason)
+	}
+
+	// ③ 拿 A 的 CAS 令牌在 B 下 DELETE → 404，A 的包不能被删。
+	rec = env.do(t, http.MethodDelete, pathB+"/"+slug+"?resourceVersion="+rvA, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("ns B DELETE（带 A 的令牌）期望 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// ④ A 里读回：200、同一个包、令牌未前进（§③ 的删除一次都没落地）。
+	rec = env.do(t, http.MethodGet, env.path("/"+slug), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("跨 ns 删除之后 A 的包必须还在（期望 200）, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var after pbTestEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
+		t.Fatalf("decode A 的包: %v (%s)", err, rec.Body.String())
+	}
+	if after.Kind != "Playbook" || after.Metadata.Name != slug {
+		t.Fatalf("A 的包标识异常: kind=%q name=%q", after.Kind, after.Metadata.Name)
+	}
+	if after.Metadata.ResourceVersion != rvA {
+		t.Fatalf("跨 ns 删除不该推进 A 的 resourceVersion：%q → %q", rvA, after.Metadata.ResourceVersion)
+	}
+	// 清单里 A 仍有且只有 1 条。
+	rec = env.do(t, http.MethodGet, env.path(""), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("A 列表期望 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listA pbTestList
+	if err := json.Unmarshal(rec.Body.Bytes(), &listA); err != nil {
+		t.Fatalf("decode A 列表: %v (%s)", err, rec.Body.String())
+	}
+	if len(listA.Items) != 1 || listA.Items[0].Metadata.Name != slug {
+		t.Fatalf("A 的清单应仍有 %q，实际 %+v", slug, listA.Items)
+	}
+}

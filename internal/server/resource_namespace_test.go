@@ -672,3 +672,77 @@ func TestNamespaceResourceRequiresSession(t *testing.T) {
 		}
 	}
 }
+
+// TestNamespaceResourceDeleteBlockedAndForce 钉「删非空命名空间」的两档语义：
+// 默认删除被阻塞 → 409 Conflict + details.causes 里给出 blocking 判据，且**一行都不许删**；
+// ?force=true 才是显式级联（204，随后 404，里面的对象随级联消失）。
+func TestNamespaceResourceDeleteBlockedAndForce(t *testing.T) {
+	env := newNamespaceTestEnv(t)
+	ctx := context.Background()
+
+	slug, uid, rv := nsrCreateNamespace(t, env, "has-content", "有依赖的命名空间")
+	// 放一个真实能力行：命名空间里「有对象」是阻塞删除的唯一判据来源（不是 UI 状态）。
+	if err := env.db.CreateCapability(ctx, &store.CapabilityVersion{
+		NamespaceID: uid,
+		Name:        "review",
+		Version:     1,
+		Spec: artifact.Spec{
+			Params: []byte(`{"type":"object"}`),
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	path := "/v1/namespaces/" + slug
+
+	// ① 默认删除：非空 → 409 Conflict（不是 400 也不是 500），并给出阻塞判据。
+	rec := env.authed(http.MethodDelete, path+"?resourceVersion="+rv, nil)
+	obj := nsrReason(t, rec, http.StatusConflict, reasonConflict)
+	details := nsrObj(t, obj, "details")
+	causes := nsrArr(t, details, "causes")
+	if len(causes) == 0 {
+		t.Fatalf("409 必须在 details.causes 里给出阻塞判据: %s", rec.Body.String())
+	}
+	cause, ok := causes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("causes[0] 不是对象: %T", causes[0])
+	}
+	if field := nsrStr(t, cause, "field"); field != "blocking" {
+		t.Fatalf("causes[0].field = %q, want blocking（客户端靠它分支）", field)
+	}
+	if msg := nsrStr(t, cause, "message"); !strings.Contains(msg, "dependent") {
+		t.Fatalf("causes[0].message 应说明有依赖对象，得到 %q", msg)
+	}
+	// 人话（Status.message）也必须说清「非空」，不能只是一个 409 码。
+	if msg := nsrStr(t, obj, "message"); !strings.Contains(msg, "not empty") {
+		t.Fatalf("Status.message = %q, want 说明命名空间非空", msg)
+	}
+
+	// ② 被阻塞的删除是零写：ns 还在（拿得到新令牌）、能力行也还在。
+	kept := nsrJSON(t, env.authed(http.MethodGet, path, nil), http.StatusOK)
+	rvNow := nsrResourceVersion(t, kept)
+	caps, err := env.db.ListCapabilities(ctx, uid)
+	if err != nil {
+		t.Fatalf("list capabilities: %v", err)
+	}
+	if len(caps) != 1 {
+		t.Fatalf("被阻塞的删除不该动命名空间里的对象，能力行数 = %d, want 1", len(caps))
+	}
+
+	// ③ ?force=true 是显式级联：204 → 之后 404，能力行随级联消失。
+	rec = env.authed(http.MethodDelete, path+"?force=true&resourceVersion="+rvNow, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("force 删除期望 204，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	nsrReason(t, env.authed(http.MethodGet, path, nil), http.StatusNotFound, reasonNotFound)
+	caps, err = env.db.ListCapabilities(ctx, uid)
+	if err != nil {
+		t.Fatalf("list capabilities after force: %v", err)
+	}
+	if len(caps) != 0 {
+		t.Fatalf("force 删除应级联清掉能力行，实际还剩 %d 条", len(caps))
+	}
+}
