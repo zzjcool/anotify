@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -548,5 +549,48 @@ func TestSourceEventStrictLayoutAndReopen(t *testing.T) {
 	}
 	if events != 1 {
 		t.Fatalf("拒绝路径改动了事件数据: %d", events)
+	}
+}
+
+// TestAcceptSourceEventPruneReasonClosedSet 钉住源接收入口的剪枝闭集
+// （source_event.go:260-264 的**既有防线**，本条补覆盖 + 变异靶点）：
+//
+//   - downstream_missing 是失败 Task 的观察码，不是剪枝，不能落成 prune 事件；
+//   - 任意失败码（script_failed）同样在写之前拒；
+//   - 拒绝路径 0 写、且**不占用投递窗**：同一个 deliveryId 用合法 reason 重试必须成功。
+func TestAcceptSourceEventPruneReasonClosedSet(t *testing.T) {
+	e := newIngressEnv(t)
+	ctx := context.Background()
+	const deliveryID = "deliver-prune-closed"
+	const traceID = "trace-prune-closed"
+
+	for _, reason := range []string{protocol.ReasonDownstreamMissing, "script_failed"} {
+		t.Run("reason="+reason, func(t *testing.T) {
+			in := e.inputs(deliveryID, traceID, "entry", 1000)
+			in.Prunes = []PruneInputs{{Capability: e.cap.Name, Reason: reason, Detail: "非法剪枝码"}}
+			if _, _, err := e.db.AcceptSourceEvent(ctx, in); err == nil {
+				t.Fatalf("剪枝码 %q 被接收了", reason)
+			} else if !strings.Contains(err.Error(), "不是剪枝码") {
+				t.Fatalf("错误没点名剪枝闭集: %v", err)
+			}
+			if c := countIngressRows(t, e.db, e.nsID, traceID, e.source.ID, deliveryID); c != (rowCounts{}) {
+				t.Fatalf("非法剪枝码 %q 留下了写: %+v", reason, c)
+			}
+		})
+	}
+
+	// 合法 reason 用同一个 deliveryId 重试：窗口没被非法请求吃掉。
+	in := e.inputs(deliveryID, traceID, "entry", 1000)
+	in.Prunes = []PruneInputs{{Capability: e.cap.Name, Reason: protocol.ReasonParamMissing, Detail: "需要 needs"}}
+	raw, first, err := e.db.AcceptSourceEvent(ctx, in)
+	if err != nil || !first {
+		t.Fatalf("合法剪枝码重试失败: first=%v err=%v", first, err)
+	}
+	var receipt SourceEventReceipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if len(receipt.Pruned) != 1 || receipt.Pruned[0].Reason != protocol.ReasonParamMissing {
+		t.Fatalf("合法剪枝回执 = %+v", receipt.Pruned)
 	}
 }

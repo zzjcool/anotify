@@ -52,11 +52,63 @@ func newProductionAppForTest(t *testing.T) *App {
 		cancel()
 		t.Fatal("NewApp 返回的装配不完整")
 	}
+	// 关停顺序是**硬要求**（#259 / #340 r3）：
+	//
+	//  ① cancel()：NewApp 起的四个后台写者（背压采样 + 派发 / cron / 租约）收到退出信号；
+	//  ② app.WaitBackground()：等它们真的返回。cancel 只是信号 —— 采样可能正好在
+	//     `OldestPendingCreatedAt` 的查询里，此时立刻 db.Close() 就会拿到
+	//     `oldest pending: sql: database is closed`（postclose 护栏捕获的就是这一条）；
+	//  ③ closeDBForTempDir：关库 + 三条确定性判据（InUse==0 / OpenConnections==0 /
+	//     无 -wal|-shm 残留），命中即把「收尾竞态」上报成确定性失败。
 	t.Cleanup(func() {
 		cancel()
-		_ = app.DB.Close()
+		app.WaitBackground()
+		closeDBForTempDir(t, app.DB, dir)
 	})
 	return app
+}
+
+// TestAppWaitBackgroundWaitsForTrackedGoroutines 钉住关停契约的那一半：
+// WaitBackground 必须等所有 trackBackground 的 goroutine 返回，不能提前放行。
+//
+// 为什么是确定性单测而不是整机用例：整机里「后台写者是否还在跑」只能在竞态窗口里
+// 观测（偶发红）；而 App 的 seam 本身可以被确定性地钉住 —— 夹具 newProductionAppForTest
+// 的关停顺序（cancel → WaitBackground → closeDBForTempDir）就是靠它把 db.Close()
+// 排在背压采样之后（#259 / #340 r3）。
+func TestAppWaitBackgroundWaitsForTrackedGoroutines(t *testing.T) {
+	app := &App{}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := app.trackBackground()
+	go func() {
+		defer done()
+		close(started)
+		<-release // 模拟「采样正卡在一次库查询里」
+	}()
+	<-started
+
+	waited := make(chan struct{})
+	go func() {
+		app.WaitBackground()
+		close(waited)
+	}()
+
+	select {
+	case <-waited:
+		t.Fatal("WaitBackground 在后台 goroutine 返回前就返回了：db.Close() 会与后台写者并发（#259）")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("后台 goroutine 返回后 WaitBackground 没有返回")
+	}
+
+	// nil 接收者必须是安全的：NewApp 之前的失败路径不该被一个空 App 再炸一次。
+	var nilApp *App
+	nilApp.WaitBackground()
 }
 
 // appDo 发一次请求（可选会话 cookie）。

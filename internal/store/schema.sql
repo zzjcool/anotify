@@ -408,6 +408,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     result_accepted_at INTEGER,
     -- 未解析派发失败（downstream_missing）的唯一合法形状：failed、attempt=0、
     -- 没有解析出的 digest、没有 Node/租约/token/候选/结果事实。
+    -- 末尾几列是**伪事实面**：它们只可能来自 Node 过程或结果接受，而未解析失败行
+    -- 从没执行过——放行它们等于允许「从没跑过却有结果」的行：
+    --   summary/artifacts：Node 过程产出的摘要/产物，这条路径不可能有；
+    --   result_accepted_at：从来没有结果被接受过（retention 还拿它当可信保留时间）；
+    --   finished_at：终态失败行必须有**真实 server 完成时刻**，否则 retention 的
+    --     COALESCE(result_accepted_at, finished_at) 为 NULL，这条行永远不被回收；
+    --   version：S1-D1 只允许 0（请求未声明版本）或明确声明的正版本。
     CONSTRAINT tasks_unresolved_failure_shape CHECK (
         capability_id IS NOT NULL OR (
             phase = 'failed' AND attempt = 0
@@ -419,6 +426,8 @@ CREATE TABLE IF NOT EXISTS tasks (
             AND waiting_reason = '' AND next_attempt_at IS NULL
             AND cancel_reason = '' AND cancel_requested_at IS NULL
             AND reported = 0 AND started_at IS NULL AND result_json = ''
+            AND summary = '' AND artifacts = '[]' AND result_accepted_at IS NULL
+            AND finished_at IS NOT NULL AND version >= 0
         )
     ),
     -- 已解析任务必须钉住真实版本 + digest（不允许「有 UID 但没有解析事实」的行）。

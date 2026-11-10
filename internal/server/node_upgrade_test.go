@@ -54,6 +54,10 @@ type upgradeFixture struct {
 	target string
 	// hub 是真 WS hub：在线/离线由**有没有真实会话**表达（不是假 publisher）。
 	hub *ws.Hub
+	// srv 是本 fixture **唯一**的真 hub HTTP server（收尾屏障也挂在它上面）。
+	// 一个 fixture 一个 server：屏障的 cleanup 因此在 db.Close 之后注册（LIFO 先跑），
+	// 与「拨了几次号」无关——见 hub_fixture_test.go 的使用纪律。
+	srv *hubServer
 }
 
 // newUpgradeFixture 建库 / 会话 / 节点 + 一个内容已知的 agent 二进制文件。
@@ -126,6 +130,10 @@ func newUpgradeFixture(t *testing.T, binEnabled bool) *upgradeFixture {
 	api := newNodeAPI(deps)
 	api.setUpgradeSource(newAgentUpgradeSource(f.bin))
 	api.register(f.mux)
+
+	// 真 hub server 在**夹具构造期**建好（不是每次拨号建一个）：屏障的 cleanup 因此在
+	// db.Close 的 cleanup 之后注册，LIFO 下先于它跑 —— 见 hub_fixture_test.go 文件头。
+	f.srv = newHubServer(t, hub)
 	return f
 }
 
@@ -361,17 +369,9 @@ func TestAgentUpgradeSourceUnwrappedWhenDisabled(t *testing.T) {
 // 节点行（走 hello 自报这一真实路径），并等到 hub 注册可见。
 func (f *upgradeFixture) connectNode(t *testing.T, agentVersion string) *websocket.Conn {
 	t.Helper()
-	// 收尾屏障：srv.Close 只关 HTTP 层（hijack 连接它不等），必须再等 hub.ServeHTTP
-	// 返回才允许 db.Close —— 见 ws_settle_test.go 的 serveHubWithSettle（#259 / #340 r2 M-2）。
-	srv := serveHubWithSettle(t, f.hub)
-
-	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/node/stream", nil)
-	if err != nil {
-		t.Fatalf("dial node stream: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	// 收尾屏障在 fixture 里（hub_fixture_test.go）：srv.Close 只关 HTTP 层（hijack 连接
+	// 它不等），必须再等 hub.ServeHTTP 返回才允许 db.Close —— #259 / #340 r2 M-2。
+	conn := f.srv.dial(t)
 
 	hello := &protocol.HelloFrame{
 		Type: protocol.FrameHello, Name: f.node.Name, Token: f.token,
