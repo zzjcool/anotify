@@ -91,27 +91,9 @@ func resolveNamespaceForUser(ctx context.Context, db *store.DB, userID, raw stri
 	if raw == store.AllNamespaces {
 		return nil, store.ErrNamespaceRequired
 	}
-	all, err := db.ListNamespaces(ctx)
+	ns, err := namespaceBySlugOrIDOn(ctx, db, raw)
 	if err != nil {
 		return nil, err
-	}
-	var ns *store.Namespace
-	for _, cand := range all {
-		if cand.Slug == raw {
-			ns = cand
-			break
-		}
-	}
-	if ns == nil {
-		for _, cand := range all {
-			if cand.ID == raw {
-				ns = cand
-				break
-			}
-		}
-	}
-	if ns == nil {
-		return nil, store.ErrNamespaceNotFound
 	}
 	if err := db.AuthorizeNamespace(ctx, userID, ns.ID); err != nil {
 		return nil, err
@@ -147,14 +129,13 @@ func (d *serverDeps) scopeFor(ctx context.Context, raw string) (*store.Namespace
 	return ns, nil
 }
 
-// namespaceBySlugOrID 按 slug（优先）或 id 查命名空间行。
+// namespaceBySlugOrIDOn 是「slug 优先、兼容 id」的**唯一**解析实现。
 //
-// store 没有导出的 by-slug 读入口（D0.9：本 issue 不新增 store 接口），而
-// ListNamespaces 已经带了列表页需要的计数、且命名空间数量是「部署级」量级
-// （个位数到几十），所以这里用一次列表查询解析，不做缓存：命名空间增删是低频操作，
-// 缓存只会引入「新建的 ns 立刻 404」这类难查的时序 bug。
-func (d *serverDeps) namespaceBySlugOrID(ctx context.Context, raw string) (*store.Namespace, error) {
-	all, err := d.DB.ListNamespaces(ctx)
+// 两个入口（会话域 scopeFor 与 API-key 投递 resolveNamespaceForUser）都走它：
+// 解析顺序只允许有一份，否则改动兼容规则时只改一半，症状就是「同一路径在投递入口
+// 404、在资源域 200」（review N1/终审 minor#1 的同源风险）。
+func namespaceBySlugOrIDOn(ctx context.Context, db *store.DB, raw string) (*store.Namespace, error) {
+	all, err := db.ListNamespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +150,16 @@ func (d *serverDeps) namespaceBySlugOrID(ctx context.Context, raw string) (*stor
 		}
 	}
 	return nil, store.ErrNamespaceNotFound
+}
+
+// namespaceBySlugOrID 按 slug（优先）或 id 查命名空间行。
+//
+// store 没有导出的 by-slug 读入口（D0.9：本 issue 不新增 store 接口），而
+// ListNamespaces 已经带了列表页需要的计数、且命名空间数量是「部署级」量级
+// （个位数到几十），所以这里用一次列表查询解析，不做缓存：命名空间增删是低频操作，
+// 缓存只会引入「新建的 ns 立刻 404」这类难查的时序 bug。
+func (d *serverDeps) namespaceBySlugOrID(ctx context.Context, raw string) (*store.Namespace, error) {
+	return namespaceBySlugOrIDOn(ctx, d.DB, raw)
 }
 
 // nsDisplay 是 namespace id → slug 的一次性缓存（见 serverDeps.display 的注释）。
