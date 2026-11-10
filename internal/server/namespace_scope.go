@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
@@ -93,6 +94,9 @@ func (d *serverDeps) scopeFor(ctx context.Context, raw string) (*store.Namespace
 	if err := d.DB.AuthorizeNamespace(ctx, userID, ns.ID); err != nil {
 		return nil, err
 	}
+	if d.display != nil {
+		d.display.put(ns.ID, ns.Slug)
+	}
 	return ns, nil
 }
 
@@ -118,6 +122,58 @@ func (d *serverDeps) namespaceBySlugOrID(ctx context.Context, raw string) (*stor
 		}
 	}
 	return nil, store.ErrNamespaceNotFound
+}
+
+// nsDisplay 是 namespace id → slug 的一次性缓存（见 serverDeps.display 的注释）。
+type nsDisplay struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func (c *nsDisplay) get(id string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.m[id]
+	return v, ok
+}
+
+func (c *nsDisplay) put(id, slug string) {
+	if id == "" || slug == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[string]string, 8)
+	}
+	c.m[id] = slug
+}
+
+// namespaceDisplay 返回命名空间的对外名字（slug）。
+//
+// **响应 metadata.namespace 必须是它**，不是 store 的 `ns_` id：契约 §3.2 的
+// metadata.namespace 是命名空间的名字，客户端拿它跟路径/自己的配置对齐；回一个
+// 内部 id 会让「同一资源在列表里和在 URL 里叫两个名字」。
+func (d *serverDeps) namespaceDisplay(ctx context.Context, id string) string {
+	if id == "" {
+		return ""
+	}
+	if id == store.AllNamespaces {
+		return store.AllNamespaces
+	}
+	if d != nil && d.display != nil {
+		if slug, ok := d.display.get(id); ok {
+			return slug
+		}
+	}
+	ns, err := d.namespaceBySlugOrID(ctx, id)
+	if err != nil || ns == nil {
+		return id
+	}
+	if d != nil && d.display != nil {
+		d.display.put(id, ns.Slug)
+	}
+	return ns.Slug
 }
 
 // requireUser 返回当前登录用户 id；未登录给 401。

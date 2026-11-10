@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -136,6 +137,16 @@ func (e *itEnv) obj(t *testing.T, rec *httptest.ResponseRecorder) map[string]any
 }
 
 // capObject 取自 map 的对象字段（nil/缺失时返回空 map，便于统一断言）。
+// itRaw 发一次 GET 并返回原始 body（用于「键必须不存在」这类原文字符串断言）。
+func itRaw(t *testing.T, e *itEnv, path string) string {
+	t.Helper()
+	rec := e.do(t, http.MethodGet, path, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d; body=%s", path, rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
 func itObject(t *testing.T, v any, path string) map[string]any {
 	t.Helper()
 	if v == nil {
@@ -245,6 +256,9 @@ func TestAPIIntegrationEnvelopeDiscipline(t *testing.T) {
 		t.Errorf("kind = %v, want Capability", created["kind"])
 	}
 	meta := itObject(t, created["metadata"], "metadata")
+	if got, _ := meta["namespace"].(string); got != e.slugA {
+		t.Errorf("metadata.namespace = %q, want path slug %q（路径即身份）", got, e.slugA)
+	}
 	rv, _ := meta["resourceVersion"].(string)
 	if !strings.HasPrefix(rv, "rv1:") {
 		t.Errorf("metadata.resourceVersion = %q, want rv1: token", rv)
@@ -403,14 +417,37 @@ func TestAPIIntegrationNamespaceIsolation(t *testing.T) {
 	}
 
 	// cursor 绑定 ns + 筛选条件：A 的 cursor 拿到 B 用必须 400。
+	//
+	// 必须**真的播种**事件：早先这里用 t.Skip 兜「没有事件可翻页」，那会让这条最关键的
+	// 越权断言永久静默（skip 永远是绿的）。现在先写 3 条真实事件，cursor 一定存在。
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		ev := &store.Event{
+			ID:          store.NewEventID(),
+			NamespaceID: e.nsA,
+			TraceID:     "trace-cursor-" + strconv.Itoa(i),
+			Source:      "it-source",
+			Type:        "it.cursor",
+			Payload:     json.RawMessage(`{"i":` + strconv.Itoa(i) + `}`),
+			CreatedAt:   store.Now() + int64(i),
+		}
+		if _, err := e.db.InsertEvent(ctx, ev, store.Now(), store.DefaultRetentionEventTTLSec); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
 	page := e.obj(t, e.do(t, http.MethodGet, "/v1/console/events?namespace="+e.slugA+"&limit=1", nil))
 	cur, _ := itObject(t, page["metadata"], "metadata")["continue"].(string)
 	if cur == "" {
-		t.Skip("A 没有足够事件产生 continue 令牌，跳过 cursor 绑定断言")
+		t.Fatalf("A 有 3 条事件但首页 limit=1 没有 continue 令牌: %v", page)
 	}
 	bad := e.do(t, http.MethodGet, "/v1/console/events?namespace="+e.slugB+"&limit=1&continue="+cur, nil)
 	if bad.Code != http.StatusBadRequest {
 		t.Errorf("reuse A's continue on B = %d, want 400; body=%s", bad.Code, bad.Body.String())
+	}
+	// 同一 ns 用同一令牌必须能正常翻页（否则「绑定」退化成「一律拒绝」）。
+	okPage := e.do(t, http.MethodGet, "/v1/console/events?namespace="+e.slugA+"&limit=1&continue="+cur, nil)
+	if okPage.Code != http.StatusOK {
+		t.Errorf("A's own continue on A = %d, want 200; body=%s", okPage.Code, okPage.Body.String())
 	}
 }
 
@@ -504,11 +541,16 @@ func TestAPIIntegrationFailedAttemptZeroTask(t *testing.T) {
 	if capi["name"] != "it-absent-cap" {
 		t.Errorf("spec.capability.name = %v, want request basename it-absent-cap", capi["name"])
 	}
-	if d, ok := capi["digest"]; ok && d != "" && d != nil {
-		t.Errorf("unresolved capability must omit digest, got %v", d)
+	// S1/E1 要的是**省略**，不是 `"version": null`：后者会让客户端以为「字段存在但无值」，
+	// 而事实是「这次请求没有声明版本」。所以直接断键不存在。
+	if _, ok := capi["digest"]; ok {
+		t.Errorf("unresolved capability must omit digest key entirely, got %v", capi["digest"])
 	}
-	if v, ok := capi["version"]; ok && v != nil {
-		t.Errorf("undeclared version must be omitted, got %v", v)
+	if _, ok := capi["version"]; ok {
+		t.Errorf("undeclared version must omit version key entirely, got %v", capi["version"])
+	}
+	if raw := itRaw(t, e, "/v1/namespaces/"+e.slugA+"/tasks/"+taskID); strings.Contains(raw, `"digest":null`) || strings.Contains(raw, `"version":null`) {
+		t.Errorf("wire must not carry version/digest null for unresolved capability: %s", raw)
 	}
 }
 

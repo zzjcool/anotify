@@ -27,9 +27,11 @@ import (
 // 用独立的 ServeMux 而不是整机 NewApp：本域只对自己的路由与投影负责，
 // 整机装配是 W-asm 的 mux.go（并行开发期它可能还在迁移中）。
 type playbookTestEnv struct {
-	mux    http.Handler
-	db     *store.DB
-	nsID   string
+	mux  http.Handler
+	db   *store.DB
+	nsID string
+	// nsSlug 是路径与 metadata.namespace 上的对外名字（store 事实表引用 nsID）。
+	nsSlug string
 	cookie *http.Cookie
 }
 
@@ -62,6 +64,7 @@ func newPlaybookTestEnv(t *testing.T) *playbookTestEnv {
 		mux:    mux,
 		db:     db,
 		nsID:   ns.ID,
+		nsSlug: ns.Slug,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 	}
 }
@@ -330,7 +333,7 @@ func TestPlaybookResourceCreateListGet(t *testing.T) {
 	if created.APIVersion != "anotify/v1" || created.Kind != "Playbook" {
 		t.Fatalf("信封头不对: %+v", created)
 	}
-	if created.Metadata.Name != slug || created.Metadata.Namespace != env.nsID {
+	if created.Metadata.Name != slug || created.Metadata.Namespace != env.nsSlug {
 		t.Fatalf("metadata 不对: %+v", created.Metadata)
 	}
 	if created.Metadata.UID == "" {

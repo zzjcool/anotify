@@ -119,7 +119,7 @@ func (a *taskAPI) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, t := range rows {
-		items = append(items, taskEnvelope(t))
+		items = append(items, taskEnvelope(t, a.d.namespaceDisplay(r.Context(), ns)))
 	}
 	writeList(w, http.StatusOK, "TaskList", listMeta{}, items)
 }
@@ -145,7 +145,7 @@ func (a *taskAPI) get(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeEnvelope(w, http.StatusOK, taskEnvelope(task))
+	writeEnvelope(w, http.StatusOK, taskEnvelope(task, a.d.namespaceDisplay(r.Context(), ns)))
 }
 
 // ---------- POST …/tasks/{taskId}/cancel · /abandon ----------
@@ -216,7 +216,7 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, defaultRea
 	if gerr != nil {
 		updated = task
 	}
-	writeEnvelope(w, http.StatusOK, taskEnvelope(updated))
+	writeEnvelope(w, http.StatusOK, taskEnvelope(updated, a.d.namespaceDisplay(r.Context(), ns)))
 }
 
 // ---------- GET …/tasks/{taskId}/logs ----------
@@ -432,9 +432,10 @@ func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, e := range rows {
-		items = append(items, eventEnvelope(e))
+		items = append(items, eventEnvelope(e, nsDisplay))
 	}
 	writeList(w, http.StatusOK, "EventList", listMeta{}, items)
 }
@@ -487,14 +488,14 @@ func (a *taskAPI) trace(w http.ResponseWriter, r *http.Request) {
 		Pruned: make([]apiEnvelope, 0, len(rows)),
 	}
 	for _, e := range rows {
-		env := eventEnvelope(e)
+		env := eventEnvelope(e, a.d.namespaceDisplay(r.Context(), ns))
 		view.Events = append(view.Events, env)
 		if e.Source == store.EventPruneSource {
 			view.Pruned = append(view.Pruned, env)
 		}
 	}
 	for _, t := range tasks {
-		view.Tasks = append(view.Tasks, taskEnvelope(t))
+		view.Tasks = append(view.Tasks, taskEnvelope(t, a.d.namespaceDisplay(r.Context(), ns)))
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -583,9 +584,10 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 		last := merged[len(merged)-1]
 		meta.Continue = encodeCursor(binding, last.ID, last.CreatedAt)
 	}
+	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(merged))
 	for _, e := range merged {
-		items = append(items, eventEnvelope(e))
+		items = append(items, eventEnvelope(e, nsDisplay))
 	}
 	writeList(w, http.StatusOK, "EventList", meta, items)
 }
@@ -682,13 +684,16 @@ type taskResultErrorDoc struct {
 }
 
 // taskEnvelope 组装 Task 信封。
-func taskEnvelope(t *store.Task) apiEnvelope {
+func taskEnvelope(t *store.Task, nsDisplay string) apiEnvelope {
 	if t == nil {
 		return newEnvelope("Task", objectMeta{}, nil, nil)
 	}
+	if nsDisplay == "" {
+		nsDisplay = t.NamespaceID
+	}
 	meta := objectMeta{
 		Name:      t.ID,
-		Namespace: t.NamespaceID,
+		Namespace: nsDisplay,
 		UID:       t.ID,
 		// 刻意不给 ResourceVersion：tasks 没有 resource_version 列、Task 无 CAS。
 		CreationTimestamp: taskTimestamp(t.CreatedAt),
@@ -871,13 +876,16 @@ type pruneFactDoc struct {
 }
 
 // eventEnvelope 组装 Event 信封。
-func eventEnvelope(e *store.Event) apiEnvelope {
+func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
 	if e == nil {
 		return newEnvelope("Event", objectMeta{}, nil, nil)
 	}
+	if nsDisplay == "" {
+		nsDisplay = e.NamespaceID
+	}
 	meta := objectMeta{
 		Name:              e.ID,
-		Namespace:         e.NamespaceID,
+		Namespace:         nsDisplay,
 		UID:               e.ID,
 		CreationTimestamp: taskTimestamp(e.CreatedAt),
 	}

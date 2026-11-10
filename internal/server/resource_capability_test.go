@@ -32,9 +32,12 @@ type capTestEnv struct {
 	db     *store.DB
 	mux    http.Handler
 	cookie *http.Cookie
-	// nsA / nsB 是真实命名空间 id（v4 路径段用的是 id）。
-	nsA string
-	nsB string
+	// nsA / nsB 是 store 里的真实命名空间 id（事实表引用它）；
+	// slugA / slugB 是 URL 与 metadata.namespace 上的对外名字（v4 路径用 slug）。
+	nsA   string
+	nsB   string
+	slugA string
+	slugB string
 }
 
 func newCapTestEnv(t *testing.T) *capTestEnv {
@@ -87,6 +90,8 @@ func newCapTestEnv(t *testing.T) *capTestEnv {
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 		nsA:    defaultNS.ID,
 		nsB:    secondNS.ID,
+		slugA:  defaultNS.Slug,
+		slugB:  secondNS.Slug,
 	}
 }
 
@@ -292,8 +297,8 @@ func TestCapabilityResourceCreateAndGet(t *testing.T) {
 	if got := capNumber(t, meta, "version"); got != 1 {
 		t.Fatalf("首个版本应是 1，实际 %d", got)
 	}
-	if got := capString(t, meta, "namespace"); got != env.nsA {
-		t.Fatalf("metadata.namespace = %q, want %q", got, env.nsA)
+	if got := capString(t, meta, "namespace"); got != env.slugA {
+		t.Fatalf("metadata.namespace = %q, want 路径身份（slug）%q", got, env.slugA)
 	}
 
 	// 默认可读面不含脚本正文（spec.run.files 是空 map，不是 null）。
@@ -578,8 +583,8 @@ func TestCapabilityResourceNamespaceIsolation(t *testing.T) {
 	if got := capString(t, meta, "name"); got != "only-in-a" {
 		t.Fatalf("nsA 列表里出现了别 ns 的能力: %q", got)
 	}
-	if got := capString(t, meta, "namespace"); got != env.nsA {
-		t.Fatalf("metadata.namespace = %q, want %q", got, env.nsA)
+	if got := capString(t, meta, "namespace"); got != env.slugA {
+		t.Fatalf("metadata.namespace = %q, want 路径身份（slug）%q", got, env.slugA)
 	}
 
 	// 从 nsB 看不到 nsA 的能力（404，不泄露存在性）。

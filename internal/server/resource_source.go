@@ -111,9 +111,10 @@ func (a *sourceAPI) list(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, srcEnvelopeOf(row))
+		items = append(items, srcEnvelopeOf(row, nsDisplay))
 	}
 	writeList(w, http.StatusOK, kindSourceDoc+"List", listMeta{}, items)
 }
@@ -130,7 +131,7 @@ func (a *sourceAPI) get(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(src))
+	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(src, a.d.namespaceDisplay(r.Context(), src.NamespaceID)))
 }
 
 // create 处理 POST …/sources。
@@ -189,7 +190,7 @@ func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeEnvelope(w, http.StatusCreated, srcEnvelopeOf(fresh))
+	writeEnvelope(w, http.StatusCreated, srcEnvelopeOf(fresh, a.d.namespaceDisplay(r.Context(), fresh.NamespaceID)))
 }
 
 // patch 处理 PATCH …/sources/{name}（merge-patch 语义）。
@@ -267,7 +268,7 @@ func (a *sourceAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(updated))
+	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(updated, a.d.namespaceDisplay(r.Context(), updated.NamespaceID)))
 }
 
 // remove 处理 DELETE …/sources/{name}?resourceVersion=（无请求体）。
@@ -507,7 +508,10 @@ type srcStatusView struct {
 }
 
 // srcEnvelopeOf 把一行源投影成 v4 信封（四键 + 脱敏 spec + 派生 status）。
-func srcEnvelopeOf(s *store.Source) apiEnvelope {
+//
+// nsDisplay 是命名空间的对外名字（slug）；传空串时回落到 store id（只可能出现在
+// 测试直接构造 deps 的场景，正常请求路径由 authorizePathNamespace 填好缓存）。
+func srcEnvelopeOf(s *store.Source, nsDisplay string) apiEnvelope {
 	cfg, hookURL := srcReadConfig(s.Kind, s.Config)
 	spec := srcSpecView{
 		Kind:    s.Kind,
@@ -530,9 +534,12 @@ func srcEnvelopeOf(s *store.Source) apiEnvelope {
 	if s.NextFireAt != nil {
 		status.NextFireAt = srcTimestamp(*s.NextFireAt)
 	}
+	if nsDisplay == "" {
+		nsDisplay = s.NamespaceID
+	}
 	meta := objectMeta{
 		Name:              s.Name,
-		Namespace:         s.NamespaceID,
+		Namespace:         nsDisplay,
 		UID:               s.ID,
 		ResourceVersion:   store.ResourceVersion(s.ID, s.ResourceVersion),
 		CreationTimestamp: srcTimestamp(s.CreatedAt),

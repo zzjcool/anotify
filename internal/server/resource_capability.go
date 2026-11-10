@@ -485,7 +485,7 @@ func (a *capabilityAPI) envelope(ctx context.Context, row *store.CapabilityVersi
 	}
 	meta := objectMeta{
 		Name:            row.Name,
-		Namespace:       row.NamespaceID,
+		Namespace:       a.d.namespaceDisplay(ctx, row.NamespaceID),
 		UID:             row.ID,
 		Version:         metaVersion(row.Version),
 		ResourceVersion: store.ResourceVersion(row.ID, row.ResourceVersion),

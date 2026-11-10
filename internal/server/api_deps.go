@@ -31,6 +31,14 @@ type serverDeps struct {
 	Session func(http.Handler) http.Handler
 	// Backpressure 是事件/触发入口的背压中间件（只包写入口，读端点不受影响）。
 	Backpressure func(http.Handler) http.Handler
+
+	// display 是 namespace id → slug 的缓存。
+	//
+	// 为什么可以缓存而不失效：store.RenameNamespace 只改展示名，slug 是稳定标识
+	// （contract: 「slug 是稳定标识（出现在 URL 与令牌作用域里），不可改」）。
+	// 缓存容量 = 命名空间数量（部署级个位数到几十），换来的是列表投影里不需要
+	// 每行一次查询。nil 时自动退化为每次查询（测试里直接构造 deps 也不会崩）。
+	display *nsDisplay
 }
 
 // session 用会话中间件包住 handler；未注入时直接透传（仅测试构造可能为 nil）。

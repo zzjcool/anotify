@@ -39,9 +39,11 @@ type taskResEnv struct {
 	t   *testing.T
 	db  *store.DB
 	mux *http.ServeMux
-	ns  string // 主命名空间 id
-	ns2 string // 第二个命名空间（隔离 / 跨 ns 汇总用例）
-	cap string // 主命名空间里的能力行 id（tasks.capability_id 有外键）
+	ns  string // 主命名空间 id（store 事实表引用）
+	ns2 string // 第二个命名空间 id（隔离 / 跨 ns 汇总用例）
+	// nsSlug 是主命名空间的对外名字（URL 与 metadata.namespace）。
+	nsSlug string
+	cap    string // 主命名空间里的能力行 id（tasks.capability_id 有外键）
 }
 
 // newTaskResEnv 建库 / 用户 / 两个命名空间 + 一条能力行 + 挂好路由。
@@ -65,7 +67,7 @@ func newTaskResEnv(t *testing.T) *taskResEnv {
 	if err != nil {
 		t.Fatalf("create second namespace: %v", err)
 	}
-	env := &taskResEnv{t: t, db: db, ns: primary.ID, ns2: second.ID}
+	env := &taskResEnv{t: t, db: db, ns: primary.ID, ns2: second.ID, nsSlug: primary.Slug}
 	env.cap = env.seedCapability(primary.ID, "review", 1, "sha256:taskres")
 
 	deps := &serverDeps{
@@ -398,8 +400,8 @@ func TestTaskResourceGetEnvelopeFacts(t *testing.T) {
 	if got := trString(t, meta, "name"); got != taskID {
 		t.Fatalf("metadata.name = %q, want %q", got, taskID)
 	}
-	if got := trString(t, meta, "namespace"); got != env.ns {
-		t.Fatalf("metadata.namespace = %q, want %q", got, env.ns)
+	if got := trString(t, meta, "namespace"); got != env.nsSlug {
+		t.Fatalf("metadata.namespace = %q, want 路径身份（slug）%q", got, env.nsSlug)
 	}
 	if got := trString(t, meta, "uid"); got != taskID {
 		t.Fatalf("metadata.uid = %q, want %q", got, taskID)

@@ -43,6 +43,8 @@ type sourceResEnv struct {
 	db   *store.DB
 	mux  http.Handler
 	nsID string
+	// nsSlug 是路径与 metadata.namespace 上的对外名字（store 事实表引用 nsID）。
+	nsSlug string
 }
 
 // newSourceResEnv 建库 + 用户 + 命名空间 + 一个可解析的出口能力，并挂上与生产一致的
@@ -102,7 +104,7 @@ func newSourceResEnv(t *testing.T) *sourceResEnv {
 	mux := http.NewServeMux()
 	newSourceAPI(deps).register(mux)
 
-	return &sourceResEnv{t: t, db: db, mux: mux, nsID: ns.ID}
+	return &sourceResEnv{t: t, db: db, mux: mux, nsID: ns.ID, nsSlug: ns.Slug}
 }
 
 // sourcesPath 是 List/创建路径；sourcePath 是单对象路径。
@@ -297,7 +299,7 @@ func TestSourceResourceCreateGetMasksSecrets(t *testing.T) {
 		},
 		map[string]any{"name": "deploy-hook", "displayName": "部署成功"},
 	)
-	sourceResAssertDoc(t, created, "deploy-hook", env.nsID)
+	sourceResAssertDoc(t, created, "deploy-hook", env.nsSlug)
 
 	spec := sourceResObj(t, created["spec"])
 	if spec["kind"] != "webhook" || spec["enabled"] != true {

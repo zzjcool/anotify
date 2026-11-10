@@ -510,7 +510,7 @@ func (a *playbookAPI) envelope(ctx context.Context, ns string, row *store.Playbo
 	}
 	meta := objectMeta{
 		Name:      row.Slug,
-		Namespace: ns,
+		Namespace: a.d.namespaceDisplay(ctx, ns),
 		UID:       row.ID,
 		Version:   metaVersion(row.Version),
 		// resourceVersion = rv1:<uid>:<rev>（store 已有实现；HTTP 只透传与比较）。
