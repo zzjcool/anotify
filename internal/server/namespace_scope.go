@@ -82,11 +82,14 @@ func resolveNamespaceForUser(ctx context.Context, db *store.DB, userID, raw stri
 	if userID == "" {
 		return nil, store.ErrAuthRequired
 	}
+	// 这里必须用 store 的 sentinel 而不是 server 私有的 *apiError：调用方
+	// （internal/api 的投递入口）只能映射 store 错误，否则一个「跨 ns 读 URL 被
+	// 复用到投递」的调用会拿到 500 并污染服务端错误率（review N1 的回归）。
 	if raw == "" {
-		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, "namespace is required（不回退默认命名空间）")
+		return nil, store.ErrNamespaceRequired
 	}
 	if raw == store.AllNamespaces {
-		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, "namespace * is only allowed for cross-namespace reads")
+		return nil, store.ErrNamespaceRequired
 	}
 	all, err := db.ListNamespaces(ctx)
 	if err != nil {

@@ -332,7 +332,7 @@ func (a *nodeAPI) get(w http.ResponseWriter, r *http.Request) {
 // 避免"节点建好了但配置被拒"留下半个对象。
 func (a *nodeAPI) create(w http.ResponseWriter, r *http.Request) {
 	var in nodeSpecPatch
-	meta, err := decodeWriteEnvelope(r, kindNode, &in, "resourceVersion")
+	meta, err := decodeWriteEnvelope(r, kindNode, &in)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -389,7 +389,7 @@ func (a *nodeAPI) create(w http.ResponseWriter, r *http.Request) {
 func (a *nodeAPI) patch(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
 	var in nodeSpecPatch
-	meta, err := decodeWriteEnvelope(r, kindNode, &in, "resourceVersion")
+	meta, err := decodeWriteEnvelope(r, kindNode, &in)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -782,7 +782,9 @@ func (a *nodeAPI) readEnvelope(ctx context.Context, n *store.Node, nsID string) 
 		status.NamespaceVars = nodeNonNilStringMap(nsCfg.Vars)
 		status.EffectiveVars = effVars
 		env.Status = status
-		env.Context = &nodeReadContext{Namespace: nsID}
+		// context.namespace 是**对外名字**（slug）：客户端在 query 里写的就是它，
+		// 回显 store 的 ns_ id 会让「同一个命名空间在 URL 与响应里叫两个名字」。
+		env.Context = &nodeReadContext{Namespace: a.d.namespaceDisplay(ctx, nsID)}
 	}
 	return env, nil
 }

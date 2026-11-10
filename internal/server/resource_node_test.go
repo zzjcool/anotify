@@ -606,8 +606,10 @@ func TestNodeResourceGetNamespaceContext(t *testing.T) {
 		t.Fatalf("GET ?namespace= = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
 	doc := decodeNodeDoc(t, rr)
-	if got := nodeString(t, doc, "context", "namespace"); got != env.ns.ID {
-		t.Fatalf("context.namespace = %q, want %q", got, env.ns.ID)
+	// context.namespace 是对外名字（slug）：客户端在 query 里写的是它，
+	// 回显 store 的 ns_ id 会让同一个命名空间在 URL 与响应里叫两个名字。
+	if got := nodeString(t, doc, "context", "namespace"); got != env.ns.Slug {
+		t.Fatalf("context.namespace = %q, want %q", got, env.ns.Slug)
 	}
 	if got := nodeString(t, doc, "status", "namespaceVars", "REGION"); got != "us" {
 		t.Fatalf("status.namespaceVars.REGION = %q, want us", got)

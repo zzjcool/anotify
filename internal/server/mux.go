@@ -226,6 +226,8 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	deps := &serverDeps{
 		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
 		Log: slog.Default(), Now: store.Now, Session: sessMW, Backpressure: bp.Wrap,
+		// namespace id → slug 缓存（slug 不可变，见 serverDeps.display 的注释）。
+		display: &nsDisplay{},
 	}
 
 	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。

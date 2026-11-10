@@ -193,6 +193,7 @@ internal/api/events_test.go                   7  TestEventIngress*
 | exact-five `api/*.yaml` + `check_openapi.py` + `check_envelope.py` + parity | #333（G3b） | 331 卡文件所有权禁止改 `api/**`、`scripts/**` |
 | Artifact 上传/下载（A1/A2 通道）与 `internal/resultspool/**` | #332 | 331 卡明确划归 #332 |
 | `cmd/devseed` / `cmd/` 旧接口静态断裂 | #334 | `go build ./...` 仅 devseed 失败，已如实列错误 |
+| Playbook `spec.source`（OCI）**不实现服务端拉取** | 后续交付（W3 的 OCI 部分，owner 待 root 指派） | W3 要求「服务端拉取一次后以解析的完整 files 包存储」，涉及网络、凭据、媒体类型与 provenance（playbook.md §11）。本 issue 只实现**互斥校验**：`files` 与 `source` 同时给 → 400 `invalid_playbook`；只给 `source` → 400 `oci_unsupported`（明确拒绝，不静默接受、不 500）。已有表驱动用例 `resource_playbook_test.go` 的 `CreateBodyRules` 覆盖三条分支 |
 | `internal/push.CentralNotifier` 已成死代码 | 后续清理（无 owner） | 它原由中央执行器调用；v4 保留 VAPID 装载与公钥下发（`GET /v1/vapid-public-key`）、devices 域不动，但 Sender 构造路径不再被 server 引用。**未删除**：删除它属于 `internal/push`（只读）且不在本 issue 功能范围 |
 
 ## 8. 补充用例（fresh review 覆盖缺口，追加至 §5 清单）

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,7 @@ type itEnv struct {
 	nsA    string // 真实命名空间 id
 	nsB    string
 	slugA  string // 路径上用的 slug（v4 URL 用 slug；store 事实表引用 ns_ id）
+	userID string // 会话所属用户（namespace 判据的 user 主体）
 	slugB  string
 	hub    *ws.Hub
 }
@@ -103,6 +105,7 @@ func newITEnv(t *testing.T) *itEnv {
 		nsB:    second.ID,
 		slugA:  defaultNS.Slug,
 		slugB:  second.Slug,
+		userID: user.ID,
 		hub:    hub,
 	}
 }
@@ -234,6 +237,59 @@ func TestAPIIntegrationRouteTableIsV4Only(t *testing.T) {
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
 			t.Errorf("GET %s = %d, want a registered v4 route", path, rec.Code)
 		}
+	}
+}
+
+// TestNamespaceResolveForUser 钉住 ingress 与资源域共用的那**一份**命名空间判据。
+//
+// 为什么要单独测这个内部函数：`internal/api` 的投递入口只能映射 store 的 sentinel
+// （它不 import server 包），所以判据返回的错误类型就是 HTTP 状态码的一部分。
+// review 抓到过一个真实回归：判据返回 server 私有的 *apiError 时，ingress 把它当
+// 未知错误 → **500**（而资源域是 400）。这里把三条映射钉死，避免再次分叉。
+func TestNamespaceResolveForUser(t *testing.T) {
+	e := newITEnv(t)
+	ctx := context.Background()
+	// 从会话里拿 user id（环境里只有一个用户）。
+	uid := e.userID
+
+	cases := []struct {
+		name    string
+		raw     string
+		wantID  string
+		wantErr error
+	}{
+		// slug（canonical）与 store id（兼容）都必须解析到同一行。
+		{"slug", e.slugA, e.nsA, nil},
+		{"store id", e.nsA, e.nsA, nil},
+		// `*` 在投递入口是 400（跨 ns 只允许读端点）——必须是 store sentinel，
+		// 否则 internal/api 映射不到 400（回归：曾返回 500）。
+		{"all namespaces", "*", "", store.ErrNamespaceRequired},
+		{"empty", "", "", store.ErrNamespaceRequired},
+		{"unknown", "nope-331", "", store.ErrNamespaceNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, err := resolveNamespaceForUser(ctx, e.db, uid, tc.raw)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve %q: %v", tc.raw, err)
+			}
+			if ns.ID != tc.wantID {
+				t.Fatalf("resolved id = %q, want %q", ns.ID, tc.wantID)
+			}
+			if ns.Slug == "" {
+				t.Fatalf("resolved namespace must carry slug")
+			}
+		})
+	}
+	// 未登录（无 userID）→ ErrAuthRequired（401），不是「namespace not found」。
+	if _, err := resolveNamespaceForUser(ctx, e.db, "", e.slugA); !errors.Is(err, store.ErrAuthRequired) {
+		t.Fatalf("anonymous resolve err = %v, want ErrAuthRequired", err)
 	}
 }
 
