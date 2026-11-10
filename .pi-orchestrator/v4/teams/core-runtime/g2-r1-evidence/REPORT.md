@@ -2,6 +2,7 @@
 
 - 分支：`pi-subagent/core-g2-resume-52fc54d4`
 - 入场 HEAD：`80eb523c9dd79819244a2320a7dff90c31ae2a30`（clean）
+- 本报告/INTERFACES/CHECKPOINT 所在 docs commit：由父 `git log -1` 取（repo HEAD）。
 - **runtime code commit**：`9a2b95c218cc780a4aed74862bea161a8d634d93`
   `fix(v4-runtime): G2-R1 配置版本同源/稳定提案/原子回执/受权部署/有界日志`
   （12 files changed, +1905/−268；含 `internal/ws/g2r1_test.go` 790 行新用例）
