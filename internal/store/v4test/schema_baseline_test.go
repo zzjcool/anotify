@@ -217,41 +217,77 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 	}
 }
 
-// TestSchemaBaselineIndexes 关键索引（查询形状是契约的一部分）。
+// TestSchemaBaselineIndexes 固定当前 v4 查询索引的名字、表、有序列和 unique/partial。
+// 期望独立写死，不从 schemaSQL 或 validateV4Layout 的同源期望中推导。
 func TestSchemaBaselineIndexes(t *testing.T) {
 	db := openTestDB(t)
-
-	if cols := indexColumnsOn(t, db, "capability_versions", "idx_cap_name_ver"); len(cols) != 3 ||
-		cols[0] != "namespace_id" || cols[1] != "name" || cols[2] != "version" {
-		t.Fatalf("idx_cap_name_ver = %v", cols)
+	indexes := []struct {
+		name, table string
+		cols        []string
+		unique      bool
+		predicate   string
+	}{
+		{name: "idx_users_role", table: "users", cols: []string{"role"}},
+		{name: "idx_sessions_user", table: "sessions", cols: []string{"user_id"}},
+		{name: "idx_apikeys_user", table: "api_keys", cols: []string{"user_id"}},
+		{name: "idx_devices_user", table: "devices", cols: []string{"user_id"}},
+		{name: "idx_cli_auth_expires", table: "cli_auth_sessions", cols: []string{"expires_at"}},
+		{name: "idx_recovery_codes_user", table: "recovery_codes", cols: []string{"user_id"}},
+		{name: "idx_recovery_codes_prefix", table: "recovery_codes", cols: []string{"prefix"}},
+		{name: "idx_namespaces_created", table: "namespaces", cols: []string{"created_at"}},
+		{name: "idx_cap_live_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}, unique: true, predicate: "deleted_at is null"},
+		{name: "idx_cap_live_digest", table: "capability_versions", cols: []string{"namespace_id", "digest"}, unique: true, predicate: "deleted_at is null"},
+		{name: "idx_cap_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}},
+		{name: "idx_cap_fold_key", table: "capability_versions", cols: []string{"namespace_id", "name", "fold_key"}},
+		{name: "idx_edges_from", table: "edges", cols: []string{"namespace_id", "from_is_source", "from_ref"}},
+		{name: "idx_events_trace", table: "events", cols: []string{"namespace_id", "trace_id"}},
+		{name: "idx_events_retention", table: "events", cols: []string{"namespace_id", "created_at"}},
+		{name: "idx_event_deliveries_expiry", table: "event_deliveries", cols: []string{"expires_at"}},
+		{name: "idx_tasks_trace", table: "tasks", cols: []string{"namespace_id", "trace_id"}},
+		{name: "idx_tasks_parent", table: "tasks", cols: []string{"namespace_id", "parent_task_id"}},
+		{name: "idx_tasks_lease", table: "tasks", cols: []string{"phase", "lease_until"}},
+		{name: "idx_tasks_node", table: "tasks", cols: []string{"node_id", "phase"}},
+		{name: "idx_tasks_retention", table: "tasks", cols: []string{"namespace_id", "phase", "finished_at"}},
+		{name: "idx_tasks_ns_created", table: "tasks", cols: []string{"namespace_id", "created_at", "id"}},
+		{name: "idx_tasks_pending_created_at", table: "tasks", cols: []string{"created_at"}, predicate: "phase = 'pending'"},
+		{name: "idx_task_attempts_node", table: "task_attempts", cols: []string{"node_id", "attempt"}},
+		{name: "idx_task_attempts_unreaped", table: "task_attempts", cols: []string{"task_id"}, predicate: "reaped_at is null"},
+		{name: "idx_emits_task_emit", table: "emits", cols: []string{"task_id", "emit_id"}, unique: true, predicate: "emit_id is not null"},
+		{name: "idx_emits_task", table: "emits", cols: []string{"task_id"}},
+		{name: "idx_deploy_node", table: "deployments", cols: []string{"node_id"}},
+		{name: "idx_deploy_capability", table: "deployments", cols: []string{"capability_id"}},
+		{name: "idx_playbooks_ns", table: "playbooks", cols: []string{"namespace_id", "created_at"}},
+		{name: "idx_playbook_installs_lookup", table: "playbook_installs", cols: []string{"namespace_id", "playbook_id", "values_digest", "created_at"}},
+		{name: "idx_sources_ns", table: "sources", cols: []string{"namespace_id", "created_at"}},
+		{name: "idx_sources_due", table: "sources", cols: []string{"enabled", "next_fire_at"}},
+		{name: "idx_task_artifact_objects", table: "task_artifact_manifests", cols: []string{"object_id"}},
+		{name: "idx_task_artifact_upload_expiry", table: "task_artifact_uploads", cols: []string{"expires_at"}},
 	}
-	if cols := indexColumnsOn(t, db, "capability_versions", "idx_cap_fold_key"); len(cols) != 3 ||
-		cols[2] != "fold_key" {
-		t.Fatalf("idx_cap_fold_key = %v", cols)
-	}
-	if cols := indexColumnsOn(t, db, "task_artifact_manifests", "idx_task_artifact_objects"); len(cols) != 1 || cols[0] != "object_id" {
-		t.Fatalf("artifact object reference index=%v", cols)
-	}
-	if cols := indexColumnsOn(t, db, "task_artifact_uploads", "idx_task_artifact_upload_expiry"); len(cols) != 1 || cols[0] != "expires_at" {
-		t.Fatalf("active upload expiry index=%v", cols)
-	}
-	// 边：前缀查下游。
-	if cols := indexColumnsOn(t, db, "edges", "idx_edges_from"); len(cols) != 3 ||
-		cols[0] != "namespace_id" || cols[1] != "from_is_source" || cols[2] != "from_ref" {
-		t.Fatalf("idx_edges_from = %v", cols)
-	}
-	for _, idx := range []string{"idx_events_trace", "idx_events_retention"} {
-		if len(indexColumnsOn(t, db, "events", idx)) != 2 {
-			t.Fatalf("%s 列数不对", idx)
-		}
-	}
-	for _, idx := range []string{
-		"idx_tasks_retention", "idx_tasks_ns_created", "idx_tasks_lease",
-		"idx_tasks_parent", "idx_tasks_trace",
-	} {
-		if len(indexColumnsOn(t, db, "tasks", idx)) < 2 {
-			t.Fatalf("%s 列数不对", idx)
-		}
+	for _, want := range indexes {
+		t.Run(want.name, func(t *testing.T) {
+			var unique, partial bool
+			if err := db.QueryRow(
+				`SELECT "unique", partial FROM pragma_index_list(?) WHERE name=?`,
+				want.table, want.name).Scan(&unique, &partial); err != nil {
+				t.Fatalf("index %s on %s: %v", want.name, want.table, err)
+			}
+			if unique != want.unique || partial != (want.predicate != "") {
+				t.Fatalf("%s unique/partial = %v/%v, want %v/%v", want.name, unique, partial, want.unique, want.predicate != "")
+			}
+			if got := indexColumnsOn(t, db, want.table, want.name); strings.Join(got, "\x00") != strings.Join(want.cols, "\x00") {
+				t.Fatalf("%s ordered columns = %v, want %v", want.name, got, want.cols)
+			}
+			if want.predicate != "" {
+				var ddl string
+				if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, want.name).Scan(&ddl); err != nil {
+					t.Fatal(err)
+				}
+				compact := strings.ToLower(strings.Join(strings.Fields(ddl), " "))
+				if !strings.HasSuffix(compact, " where "+want.predicate) {
+					t.Fatalf("%s partial predicate: %s, want %s", want.name, ddl, want.predicate)
+				}
+			}
+		})
 	}
 }
 

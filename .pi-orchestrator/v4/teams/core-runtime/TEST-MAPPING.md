@@ -98,7 +98,7 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 4. `TestV4MigrationLedgerWriteFailurePreservesCheckpoint`
 5. `TestV4ParseMigrationsContinuousLedger`
 6. `TestV4MigrationClosedConnectionFailsWithoutSuccess`
-7. `TestV4MigrationCancelledContextDoesNotChangeLedger`
+7. `TestV4MigrationCancelledContextDoesNotChangeLedger`（历史草案名；现 `TestWhiteboxCancelledBeginTxPreservesBaselineCheckpoint` 只验驱动取消+完整 ledger 不变，迁移入口不接收 context，不宣称迁移取消）
 
 ### 实际固定 3 commands（store 草案回滚前；不是最终提交绿灯）
 
@@ -186,16 +186,16 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | `TestCentralCapabilitiesAreSpecDriven` | retired（纯 v3 handler 分发） | 正文=脚本，校验 `internal/store/capability_spec_test.go:93 TestCapabilitySpecInvalidRejected` |
 | `TestNotifyPhoneParamsSchemaRequiresTo` | retired（纯 builtin schema） | 独立 device/push/tag/VAPID 测试保留 |
 | `TestClaimCentralTasksRunsStateMachine` | retired（纯 v3 central claim） | 真实派发 `internal/store/task_test.go:316 TestGrantMovesToRunning` |
-| `TestFinishTaskWritesOutcome` | migrated | 正/负结果事实 `internal/store/task_test.go:410 TestCompleteRecordsResultAndFinishedAt`；失败空 Error 投影（原始 ResultJSON 不改写）`internal/store/task_test.go:873 TestCompleteErrorProjectionKeepsRawResultFacts`；后继成功清旧投影/保留 submitted Error `internal/store/task_test.go:920 TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError` |
-| `TestFinishTaskRejectsInvalidStatus` | migrated | 非法 result.phase 有效授权零写 `internal/store/task_test.go:818 TestCompleteRejectsInvalidResultPhaseWithZeroWrites`；终态不可变 `internal/store/task_test.go:507 TestTerminalPhaseIsImmutable` |
+| `TestFinishTaskWritesOutcome` | migrated | 正/负结果事实 `internal/store/task_test.go:410 TestCompleteRecordsResultAndFinishedAt`；失败空 Error 投影（原始 ResultJSON 不改写）`internal/store/task_test.go:923 TestCompleteErrorProjectionKeepsRawResultFacts`；失败 Error/Reason/Summary 全空 → 字面 failed、raw Error 仍空 `internal/store/task_test.go:1081 TestCompleteEmptyFailureProjectsPhaseAndKeepsRawResultFacts`；后继成功清旧投影/保留 submitted Error `internal/store/task_test.go:970 TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError` |
+| `TestFinishTaskRejectsInvalidStatus` | migrated | 非法 result.phase 有效授权零写 `internal/store/task_test.go:819 TestCompleteRejectsInvalidResultPhaseWithZeroWrites`；终态不可变 `internal/store/task_test.go:507 TestTerminalPhaseIsImmutable` |
 | `TestNoOriginShellCapabilities` | retired（壳能力随播种删除） | 来源身份由源行定义 `internal/store/source_test.go:216 TestSourceValidation` |
 | `TestEntryEdgeAcceptsAnyPort` | retired（v4 无端口） | 入口边投影 `internal/store/v4test/edges_test.go:72 TestSourceEdgesProjection` |
-| `TestBuiltinDisplayNames` | migrated | displayName 往返/CAS `internal/store/capability_test.go:344 TestCapabilityDisplayName`；foldKey 不含 displayName `internal/store/v4test/capability_test.go:119 TestCapabilityFoldKeyIgnoresNextAndDisplayName` |
+| `TestBuiltinDisplayNames` | migrated | displayName 往返/CAS `internal/store/capability_test.go:346 TestCapabilityDisplayName`；foldKey 不含 displayName `internal/store/v4test/capability_test.go:119 TestCapabilityFoldKeyIgnoresNextAndDisplayName` |
 | `TestBuiltinDisplayNameBackfill` | retired（历史回填迁移删除） |  |
 | `TestBackfillBuiltinCapabilitiesCoversEveryNamespace` | retired（v3 builtin 回填） |  |
 | `TestBackfillBuiltinCapabilitiesEmptyDeployment` | retired（v3 builtin 回填） |  |
 | `TestExampleBuiltinScriptEmitsDeclaredPort` | retired（示例内置能力删除） | 出口仅 emits，缺 to=missing_target（protocol） |
-| `TestExampleBuiltinIsUsable` | migrated | 内容寻址/幂等 `internal/store/capability_test.go:88 TestCapabilityIdempotentCreate`；部署投递 `internal/store/v4test/deployment_test.go:169 TestDeployDeliveryForNode` |
+| `TestExampleBuiltinIsUsable` | migrated | 内容寻址/幂等 `internal/store/capability_test.go:90 TestCapabilityIdempotentCreate`；部署投递 `internal/store/v4test/deployment_test.go:169 TestDeployDeliveryForNode` |
 | `TestExampleBuiltinArtifactUpdateRepointsDeployment` | retired（v4 同版内容不可变） | 部署 reconcile `internal/store/v4test/deployment_test.go:66 TestDeployReconcile` |
 | `TestExampleBuiltinContentDerivedNotBackfilled` | migrated | 产物=正文派生 `internal/store/deployment_test.go:21 TestCurrentArtifactIsCapabilityContent` |
 
@@ -203,10 +203,10 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 
 | old case | outcome | new case / reason / pending |
 |---|---|---|
-| `TestCreateCapabilitiesBatchRejectsEmptyAndDuplicate` | retired（CreateCapabilitiesBatch 删除） | 单行幂等/同版冲突 `internal/store/capability_test.go:88 TestCapabilityIdempotentCreate` / `internal/store/capability_test.go:115 TestCapabilitySameVersionDifferentContentRejected` |
+| `TestCreateCapabilitiesBatchRejectsEmptyAndDuplicate` | retired（CreateCapabilitiesBatch 删除） | 单行幂等/同版冲突 `internal/store/capability_test.go:90 TestCapabilityIdempotentCreate` / `internal/store/capability_test.go:117 TestCapabilitySameVersionDifferentContentRejected` |
 | `TestCreateCapabilitiesBatchRejectsMisalignedBuilders` | retired（builder 双输入随 artifact.Spec 删除） | 正文校验前置 `internal/store/capability_spec_test.go:93 TestCapabilitySpecInvalidRejected` |
 | `TestCreateCapabilitiesBatchLinksAcrossBatch` | retired（无批量 API） | 出口=next 引用，跨行解析 `internal/store/v4test/edges_test.go:118 TestRefResolution` |
-| `TestCreateCapabilitiesBatchRollsBackOnBadLink` | migrated | 单行=单事务，坏引用写前拒 `internal/store/v4test/edges_test.go:118 TestRefResolution` |
+| `TestCreateCapabilitiesBatchRollsBackOnBadLink` | narrow-retired（ROOT 裁定：仅旧 CreateCapabilitiesBatch / BatchLinkSpec API 与 CREATE ghost-reference 前置拒绝退役；保留当前多对象原子性） | 当前多资源失败 0 写由 `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` 承接：能力/源/边/回执行计数不变、a-extra 无行、既有入口边保留，不恢复旧 endpoint。正向 ghost-next 声明与边落库、读取时缺失分类由 `internal/store/capability_test.go:536 TestCapabilityGhostNextIsPreservedAndResolvedMissing` 承接：CREATE 成功、GetCapability.next 与 EdgesFrom 原始引用精确往返、ResolveRef 返回 ErrNotFound 而非 ErrRefUnresolved；ResolveRef 读取不是写回滚证明 |
 | `TestCreateCapabilitiesBatchArtifactBuildFailureRollsBack` | retired（无独立 artifact 构建） | 产物派生 `internal/store/capability_spec_test.go:121 TestCapabilityArtifactDerivedNotPersisted` |
 | `TestCreateCapabilitiesBatchMergesBreakingImpact` | retired（批量影响合并属展示层） | 单版本影响 `internal/store/upgrade_gate_test.go:134 TestUpgradeGateListsAffectedLinks` |
 | `TestMergeUpgradeImpactDedupAndSort` | retired（去重排序属 console） | 参数类型破坏 `internal/store/upgrade_gate_test.go:206 TestUpgradeGateParamTypeChanged` |
@@ -216,11 +216,11 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | old case | outcome | new case / reason / pending |
 |---|---|---|
 | `TestCreateCapabilityWithLinksCreatesAll` | migrated | next→edges 投影 `internal/store/v4test/capability_test.go:403 TestCapabilityCreateProjectsEdges` |
-| `TestCreateCapabilityWithLinksRollsBackOnBadLink` | migrated | 单事务 + 引用校验 `internal/store/capability_test.go:276 TestCapabilityValidation` |
+| `TestCreateCapabilityWithLinksRollsBackOnBadLink` | narrow-retired（ROOT 裁定：仅旧 CREATE ghost-reference 前置拒绝退役；保留当前能力正文+边写原子性） | 当前原子性由 `internal/store/capability_test.go:485 TestCapabilityCreateEdgeWriteFailureRollsBack` 承接：触发器确认新能力+第一条边已在事务内可见后，真实 edge INSERT 失败；能力全文/digest 与全部边前后逐项不变、失败能力不可读，不以非法脚本前置拒绝代替回滚。允许 ghost-next 的正向事实由 `internal/store/capability_test.go:536 TestCapabilityGhostNextIsPreservedAndResolvedMissing` 承接：声明/边原样持久化、实际 ResolveRef 缺失为 ErrNotFound；不添加 ghost ban 或新 status 字段 |
 | `TestCreateCapabilityWithLinksArtifactBuildFailureRollsBack` | retired（产物派生，无构建步骤） | `internal/store/capability_spec_test.go:121 TestCapabilityArtifactDerivedNotPersisted` |
-| `TestCreateCapabilityWithLinksArtifactInTx` | retired（artifacts 表删除） | 正文/digest 同事务落 capability_versions `internal/store/capability_test.go:394 TestCapabilityDigestMatchesArtifactContent` |
-| `TestCreateCapabilityWithLinksIdempotent` | migrated | `internal/store/capability_test.go:88 TestCapabilityIdempotentCreate` |
-| `TestCreateCapabilityWithLinksConcurrent` | migrated | 内容寻址分配 + fold_key 普通索引 `internal/store/capability_spec_test.go:177 TestCapabilityCreateContentAddressed` |
+| `TestCreateCapabilityWithLinksArtifactInTx` | retired（artifacts 表删除） | 正文/digest 同事务落 capability_versions `internal/store/capability_test.go:396 TestCapabilityDigestMatchesArtifactContent` |
+| `TestCreateCapabilityWithLinksIdempotent` | migrated | `internal/store/capability_test.go:90 TestCapabilityIdempotentCreate` |
+| `TestCreateCapabilityWithLinksConcurrent` | migrated | `internal/store/v4test/resource_cas_test.go:673 TestResourceCASConcurrentCreateAndDeleteRecreate`：681-689 两 goroutine 同时 CreateCapability，两个成功、同 UID、仅一条 live 行；后续 create/delete 竞态同时验证 live identity 与边投影，不以顺序 Create 代替并发 |
 | `TestCreateCapabilityWithLinksUpgradeGateStillGate` | retired（父裁定#1：CreateCapabilityForce 删除） | 保留闸门断言 `internal/store/upgrade_gate_test.go:76 TestUpgradeGateRemovedPort` |
 
 #### `internal/store/capability_spec_test.go`
@@ -242,28 +242,28 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 
 | old case | outcome | new case / reason / pending |
 |---|---|---|
-| `TestCapabilityCreateAndGet` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:35 TestCapabilityCreateAndGet` |
-| `TestCapabilityIdempotentCreate` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:88 TestCapabilityIdempotentCreate` |
-| `TestCapabilitySameVersionDifferentContentRejected` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:115 TestCapabilitySameVersionDifferentContentRejected` |
+| `TestCapabilityCreateAndGet` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:37 TestCapabilityCreateAndGet` |
+| `TestCapabilityIdempotentCreate` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:90 TestCapabilityIdempotentCreate` |
+| `TestCapabilitySameVersionDifferentContentRejected` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:117 TestCapabilitySameVersionDifferentContentRejected` |
 | `TestCapabilityOutputsOrderChangesHash` | retired（outputs 列删除） | `internal/store/v4test/capability_test.go:119 TestCapabilityFoldKeyIgnoresNextAndDisplayName` / `internal/store/v4test/capability_test.go:369 TestCapabilityDigestIncludesVersion` |
-| `TestCapabilitySchemaKeyOrderInsensitive` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:132 TestCapabilitySchemaKeyOrderInsensitive` |
-| `TestCapabilityDifferentContentDifferentHash` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:153 TestCapabilityDifferentContentDifferentHash` |
-| `TestCapabilityNormalizeIncludesName` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:173 TestCapabilityNormalizeIncludesName` |
-| `TestCapabilityVersionAppendOnly` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:192 TestCapabilityVersionAppendOnly` |
-| `TestCapabilityNamespaceIsolation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:229 TestCapabilityNamespaceIsolation` |
-| `TestCapabilityEmptyListIsArray` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:259 TestCapabilityEmptyListIsArray` |
-| `TestCapabilityEmptyOutputs` | retired（outputs 列删除） | `internal/store/capability_test.go:259 TestCapabilityEmptyListIsArray` |
-| `TestCapabilityValidation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:276 TestCapabilityValidation` |
-| `TestLifecycleIdempotentDefault` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:313 TestLifecycleIdempotentDefault` |
+| `TestCapabilitySchemaKeyOrderInsensitive` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:134 TestCapabilitySchemaKeyOrderInsensitive` |
+| `TestCapabilityDifferentContentDifferentHash` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:155 TestCapabilityDifferentContentDifferentHash` |
+| `TestCapabilityNormalizeIncludesName` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:175 TestCapabilityNormalizeIncludesName` |
+| `TestCapabilityVersionAppendOnly` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:194 TestCapabilityVersionAppendOnly` |
+| `TestCapabilityNamespaceIsolation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:231 TestCapabilityNamespaceIsolation` |
+| `TestCapabilityEmptyListIsArray` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:261 TestCapabilityEmptyListIsArray` |
+| `TestCapabilityEmptyOutputs` | retired（outputs 列删除） | `internal/store/capability_test.go:261 TestCapabilityEmptyListIsArray` |
+| `TestCapabilityValidation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:278 TestCapabilityValidation` |
+| `TestLifecycleIdempotentDefault` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:315 TestLifecycleIdempotentDefault` |
 | `TestGraphVersionOnDemand` | retired（graph_versions 删除） | `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` |
 | `TestGraphVersionChangesWithEdges` | retired（图=edges 投影） | `internal/store/v4test/edges_test.go:30 TestCapabilityEdgesProjection` |
 | `TestGraphVersionEmptyGraph` | retired（graph_versions 删除） | `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` |
-| `TestEdgeRejectsPortNotInOutputs` | retired（无端口） | `internal/store/capability_test.go:276 TestCapabilityValidation` |
+| `TestEdgeRejectsPortNotInOutputs` | retired（无端口） | `internal/store/capability_test.go:278 TestCapabilityValidation` |
 | `TestEdgeRejectsCrossNamespace` | migrated | `internal/store/namespace_test.go:92 TestCrossNamespaceReferencesRejected` |
 | `TestEdgesFromLookup` | migrated | `internal/store/v4test/edges_test.go:30 TestCapabilityEdgesProjection` |
 | `TestListEdgesEmptyIsArray` | migrated | `internal/store/v4test/edges_test.go:72 TestSourceEdgesProjection` |
-| `TestCapabilityDisplayName` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:344 TestCapabilityDisplayName` |
-| `TestContentHashEqualsDigest` | migrated | `internal/store/capability_test.go:394 TestCapabilityDigestMatchesArtifactContent` |
+| `TestCapabilityDisplayName` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/capability_test.go:346 TestCapabilityDisplayName` |
+| `TestContentHashEqualsDigest` | migrated | `internal/store/capability_test.go:396 TestCapabilityDigestMatchesArtifactContent` |
 
 #### `internal/store/cliauth_test.go`
 
@@ -352,17 +352,17 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | `TestLinkRefFollowsLatest` | migrated | 裸名→latest `internal/store/v4test/edges_test.go:118 TestRefResolution` |
 | `TestLinkRefPinned` | migrated | name@version `internal/store/v4test/edges_test.go:118 TestRefResolution` |
 | `TestLinkRefAcceptsLegacyID` | retired（v4 只接受 name/name@version） | `internal/store/v4test/edges_test.go:118 TestRefResolution` |
-| `TestCreateEdgeRejectsUnresolvableRef` | migrated | `internal/store/v4test/edges_test.go:118 TestRefResolution` / `internal/store/capability_test.go:276 TestCapabilityValidation` |
+| `TestCreateEdgeRejectsUnresolvableRef` | migrated | `internal/store/v4test/edges_test.go:118 TestRefResolution` / `internal/store/capability_test.go:278 TestCapabilityValidation` |
 | `TestEdgeRefCycleByNameAllowed` | migrated | `internal/store/v4test/edges_test.go:118 TestRefResolution` |
-| `TestEdgeRefValidationUsesResolvedVersion` | migrated | `internal/store/capability_test.go:192 TestCapabilityVersionAppendOnly` / `internal/store/v4test/edges_test.go:118 TestRefResolution` |
-| `TestGraphHashStableAcrossUpgrade` | retired（无图 hash） | `internal/store/capability_test.go:192 TestCapabilityVersionAppendOnly` |
+| `TestEdgeRefValidationUsesResolvedVersion` | migrated | `internal/store/capability_test.go:194 TestCapabilityVersionAppendOnly` / `internal/store/v4test/edges_test.go:118 TestRefResolution` |
+| `TestGraphHashStableAcrossUpgrade` | retired（无图 hash） | `internal/store/capability_test.go:194 TestCapabilityVersionAppendOnly` |
 
 #### `internal/store/edge_shape_test.go`
 
 | old case | outcome | new case / reason / pending |
 |---|---|---|
 | `TestCapabilityEdgeShapeReadsPortsAndInbound` | migrated | 出边投影（无端口）`internal/store/v4test/edges_test.go:30 TestCapabilityEdgesProjection` |
-| `TestCapabilityEdgeShapeIsolatesNamespaces` | migrated | `internal/store/capability_test.go:229 TestCapabilityNamespaceIsolation` |
+| `TestCapabilityEdgeShapeIsolatesNamespaces` | migrated | `internal/store/capability_test.go:231 TestCapabilityNamespaceIsolation` |
 | `TestCapabilityEdgeShapeRejectsWildcardNamespace` | migrated | `internal/store/namespace_test.go:70 TestNamespaceRequirementEnforced` |
 
 #### `internal/store/emission_test.go`
@@ -567,33 +567,33 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 
 | old case | outcome | new case / reason / pending |
 |---|---|---|
-| `TestPlaybookManifestRoundTrip` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:170 TestPlaybookManifestRoundTrip` |
-| `TestPlaybookCreateGetListDelete` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:203 TestPlaybookCreateGetListDelete` |
-| `TestPlaybookEmptyManifestNormalized` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:265 TestPlaybookEmptyManifestNormalized` |
-| `TestPlaybookSlugValidation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:282 TestPlaybookSlugValidation` |
-| `TestInstallPlaybookIdempotent` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:386 TestInstallPlaybookIdempotent` |
-| `TestInstallPlaybookSkipsEdgeWithMissingEndpoint` | retired（无端/边条目） | 引用必须可解析 `internal/store/playbook_test.go:321 TestRenderPlaybookReadOnly` |
-| `TestInstallPlaybookSkipsEdgeWithUnknownPort` | retired（无端口） | `internal/store/playbook_test.go:321 TestRenderPlaybookReadOnly` |
-| `TestInstallPlaybookWebhookSourceIsUsable` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:504 TestInstallPlaybookWebhookSourceIsUsable` |
-| `TestInstallPlaybookCronSource` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:548 TestInstallPlaybookCronSource` |
-| `TestPlaybookChecksNodePresence` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
-| `TestPlaybookChecksPartialAndEntryCapabilities` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
-| `TestInstallPlaybookDoesNotOverwriteExistingDefinition` | migrated | `internal/store/playbook_test.go:386 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
+| `TestPlaybookManifestRoundTrip` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:171 TestPlaybookManifestRoundTrip` |
+| `TestPlaybookCreateGetListDelete` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:204 TestPlaybookCreateGetListDelete` |
+| `TestPlaybookEmptyManifestNormalized` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:266 TestPlaybookEmptyManifestNormalized` |
+| `TestPlaybookSlugValidation` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:283 TestPlaybookSlugValidation` |
+| `TestInstallPlaybookIdempotent` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:387 TestInstallPlaybookIdempotent` |
+| `TestInstallPlaybookSkipsEdgeWithMissingEndpoint` | retired（无端/边条目） | 引用必须可解析 `internal/store/playbook_test.go:322 TestRenderPlaybookReadOnly` |
+| `TestInstallPlaybookSkipsEdgeWithUnknownPort` | retired（无端口） | `internal/store/playbook_test.go:322 TestRenderPlaybookReadOnly` |
+| `TestInstallPlaybookWebhookSourceIsUsable` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:505 TestInstallPlaybookWebhookSourceIsUsable` |
+| `TestInstallPlaybookCronSource` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:549 TestInstallPlaybookCronSource` |
+| `TestPlaybookChecksNodePresence` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:433 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
+| `TestPlaybookChecksPartialAndEntryCapabilities` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:433 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
+| `TestInstallPlaybookDoesNotOverwriteExistingDefinition` | migrated | `internal/store/playbook_test.go:387 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
 | `TestPlaybookManifestReservedOriginNames` | migrated（父裁定#2 拆成两条；Source-name ROOT rework 实测通过） | 能力名 github/cron/http/manual 合法 allowlist `internal/store/playbook_test.go:767 TestPlaybookInstallAllowsV4CapabilityNamesThatWereReservedInV3`；源名 route 与直写同规则拒绝并整装 0 写 `internal/store/playbook_test.go:699 TestPlaybookInstallReservedSourceNameRejectedLikeDirectCreate`；定向红→绿及固定五树完整 vet/test 证据见末尾 Source-name report（不代表 G1 DONE） |
-| `TestPlaybookInstallEmptyManifest` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:584 TestPlaybookInstallEmptyManifest` |
-| `TestPlaybookChecksResolvesDeclaredVersion` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
-| `TestInstallPlaybookNewVersionSameSchema` | migrated | `internal/store/playbook_test.go:386 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
+| `TestPlaybookInstallEmptyManifest` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:585 TestPlaybookInstallEmptyManifest` |
+| `TestPlaybookChecksResolvesDeclaredVersion` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:433 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
+| `TestInstallPlaybookNewVersionSameSchema` | migrated | `internal/store/playbook_test.go:387 TestInstallPlaybookIdempotent` / `internal/store/v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow` |
 | `TestInstallPlaybookSkipsSourcePointingAtSameEntry` | retired（v3 manifest 条目模型删除） | v4 入口边只由 source targets 投影（无“指向同一入口”的边条目）：`internal/store/v4test/edges_test.go:72 TestSourceEdgesProjection` |
-| `TestListPlaybooksCreatedAtOrder` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:665 TestListPlaybooksCreatedAtOrder` |
-| `TestInstallPlaybookInlineSpecStoresScriptBody` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:468 TestInstallPlaybookInlineSpecStoresScriptBody` |
-| `TestInstallPlaybookRefDoesNotCreateCapability` | retired（引用只解析、不建行） | `internal/store/playbook_test.go:321 TestRenderPlaybookReadOnly` |
-| `TestInstallPlaybookRejectsForeignHandler` | retired（无 handler） | `internal/store/playbook_test.go:282 TestPlaybookSlugValidation` |
-| `TestInstallPlaybookRefAndSpecBothGiven` | retired（v3 manifest 双写形状） | `internal/store/playbook_test.go:321 TestRenderPlaybookReadOnly` |
+| `TestListPlaybooksCreatedAtOrder` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:666 TestListPlaybooksCreatedAtOrder` |
+| `TestInstallPlaybookInlineSpecStoresScriptBody` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/playbook_test.go:469 TestInstallPlaybookInlineSpecStoresScriptBody` |
+| `TestInstallPlaybookRefDoesNotCreateCapability` | retired（引用只解析、不建行） | `internal/store/playbook_test.go:322 TestRenderPlaybookReadOnly` |
+| `TestInstallPlaybookRejectsForeignHandler` | retired（无 handler） | `internal/store/playbook_test.go:283 TestPlaybookSlugValidation` |
+| `TestInstallPlaybookRefAndSpecBothGiven` | retired（v3 manifest 双写形状） | `internal/store/playbook_test.go:322 TestRenderPlaybookReadOnly` |
 | `TestInstallPlaybookEdgeCarriesLiteralsAndPriority` | retired（无 literals/priority） | `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` |
-| `TestInstallPlaybookTriggerNameAndMapping` | retired（无触发器映射） | `internal/store/playbook_test.go:504 TestInstallPlaybookWebhookSourceIsUsable` |
-| `TestInstallPlaybookLegacyManifestStillInstalls` | retired（v3 manifest 不兼容） | `internal/store/playbook_test.go:282 TestPlaybookSlugValidation` |
-| `TestPlaybookChecksHubHandlerRefIsReady` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:432 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
-| `TestInstallPlaybookRejectsUnresolvableRef` | migrated | Parse/Render 统一拒绝 `internal/store/playbook_test.go:321 TestRenderPlaybookReadOnly` |
+| `TestInstallPlaybookTriggerNameAndMapping` | retired（无触发器映射） | `internal/store/playbook_test.go:505 TestInstallPlaybookWebhookSourceIsUsable` |
+| `TestInstallPlaybookLegacyManifestStillInstalls` | retired（v3 manifest 不兼容） | `internal/store/playbook_test.go:283 TestPlaybookSlugValidation` |
+| `TestPlaybookChecksHubHandlerRefIsReady` | retired（v4 无 checks 读模型） | 安装全有或全无 `internal/store/playbook_test.go:433 TestInstallPlaybookDryRunWritesNothing` / `internal/store/v4test/playbook_test.go:892 TestInstallConflictRollsBackWholePackage` |
+| `TestInstallPlaybookRejectsUnresolvableRef` | migrated | Parse/Render 统一拒绝 `internal/store/playbook_test.go:322 TestRenderPlaybookReadOnly` |
 
 #### `internal/store/pool_test.go`
 
@@ -631,7 +631,7 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 |---|---|---|
 | `TestReportResultAndCreateTasksSuccess` | migrated | 结果事实 `internal/store/task_test.go:410 TestCompleteRecordsResultAndFinishedAt`；子任务原子 `internal/store/emission_test.go:257 TestEmitCreatesChildTasksAtomically` |
 | `TestReportResultAndCreateTasksRollsBackOnChildFailure` | migrated | `internal/store/v4test/emit_test.go:472 TestEmitChildFailureRollsBackAll` |
-| `TestReportResultAndCreateTasksRollsBackOnReportFailure` | migrated | 结果/绑定零写：`internal/store/task_test.go:818 TestCompleteRejectsInvalidResultPhaseWithZeroWrites` + `internal/store/v4test/task_test.go:1124 TestTaskCompleteRejectsOldAttemptLeaseAndExpiry` |
+| `TestReportResultAndCreateTasksRollsBackOnReportFailure` | migrated | 结果/绑定零写：`internal/store/task_test.go:819 TestCompleteRejectsInvalidResultPhaseWithZeroWrites` + `internal/store/v4test/task_test.go:1124 TestTaskCompleteRejectsOldAttemptLeaseAndExpiry` |
 | `TestReportResultCompatWithoutNext` | retired（无兼容入口） | 出口仅 emits；缺 to=missing_target |
 | `TestReportResultAndCreateTasksChildIsRedispatchable` | migrated | `internal/store/emission_test.go:257 TestEmitCreatesChildTasksAtomically` / `internal/store/task_test.go:289 TestAssignRecordsCandidateWithoutAttempt` |
 
@@ -656,18 +656,18 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | `TestRetentionPartialReportOnCancel` | retired（v4 一次性 stats） | `internal/store/retention_test.go:279 TestRetentionPrimitiveLimits` |
 | `TestRetentionEventsNamespaceIsolation` | migrated | `internal/store/retention_test.go:60 TestRetentionDeletesExpiredEvents` |
 | `TestRetentionBadLifecycleDoesNotPoisonSweep` | retired（生命周期来自钉住正文） | `internal/store/retention_test.go:115 TestRetentionKeepsActiveTasks` |
-| `TestRetentionIndexesUsed` | migrated | `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` |
+| `TestRetentionIndexesUsed` | migrated | `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` |
 
 #### `internal/store/schema_baseline_test.go`
 
 | old case | outcome | new case / reason / pending |
 |---|---|---|
-| `TestBaselineTableSet` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
-| `TestBaselineNoHistoricalBaggage` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
-| `TestBaselineForeignKeys` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
-| `TestBaselineIndexes` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
-| `TestBaselineUniqueConstraints` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
-| `TestBaselinePrimaryKeys` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:221 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:259 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:378 TestSchemaBaselinePrimaryKeyIdentity` |
+| `TestBaselineTableSet` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:295 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:414 TestSchemaBaselinePrimaryKeyIdentity` |
+| `TestBaselineNoHistoricalBaggage` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:295 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:414 TestSchemaBaselinePrimaryKeyIdentity` |
+| `TestBaselineForeignKeys` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:295 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:414 TestSchemaBaselinePrimaryKeyIdentity` |
+| `TestBaselineIndexes` | migrated（当前 v4 查询索引不变量保留；非 v3 表/status 兼容） | `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes`：独立硬编码名字/表/完整列序/unique/partial 与真实 PRAGMA 比对；包括 tasks(namespace_id,created_at,id)、events trace/retention、tasks retention/lease/node/parent/trace/pending 及 partial predicate，不从同份 SQL 推导期望 |
+| `TestBaselineUniqueConstraints` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:295 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:414 TestSchemaBaselinePrimaryKeyIdentity` |
+| `TestBaselinePrimaryKeys` | retired（v3 baseline 期望） | v4 结构门禁 `internal/store/v4test/schema_baseline_test.go:62 TestSchemaBaselineTableSet` / `internal/store/v4test/schema_baseline_test.go:90 TestSchemaBaselineNoHistoricalBaggage` / `internal/store/v4test/schema_baseline_test.go:222 TestSchemaBaselineIndexes` / `internal/store/v4test/schema_baseline_test.go:295 TestSchemaBaselineUniqueConstraints` / `internal/store/v4test/schema_baseline_test.go:414 TestSchemaBaselinePrimaryKeyIdentity` |
 | `TestBaselineIntegrity` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/schema_baseline_test.go:100 TestBaselineIntegrity` |
 | `TestBaselineReopenIsIdempotent` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/schema_baseline_test.go:122 TestBaselineReopenIsIdempotent` |
 | `TestLegacyDatabaseRejected` | kept（同名源码保留；B 原包实际执行绿） | `internal/store/schema_baseline_test.go:168 TestLegacyDatabaseRejected` |
@@ -710,7 +710,7 @@ Frozen launch HEAD `0ed7bfc1153673f6a64cd36b14c623191f9be389`.
 | old case | outcome | new case / reason / pending |
 |---|---|---|
 | `TestSourceTargetsRoundTripFromEdges` | migrated | `internal/store/v4test/edges_test.go:72 TestSourceEdgesProjection` |
-| `TestUpdateSourceRebuildsEntryEdges` | migrated | `internal/store/v4test/edges_test.go:72 TestSourceEdgesProjection` / `internal/store/source_test.go:144 TestSourceCRUD` |
+| `TestUpdateSourceRebuildsEntryEdges` | migrated | `internal/store/v4test/source_test.go:209 TestSourceTargetsRebuildEdges`：235-253 真实 UpdateSource 将 analyze 换成 notify，旧边消失、新边唯一、GetSource.targets 往返一致；不是直接改投影或只验 CRUD |
 | `TestRenameSourceMovesEntryEdges` | retired（v4 源名不可变） | `internal/store/source_test.go:484 TestUpdateSourceRejectsReservedName` |
 | `TestDeleteSourceClearsEntryEdges` | migrated | `internal/store/source_test.go:144 TestSourceCRUD` |
 | `TestCreateSourceRejectsBadMapping` | retired（无 mapping） | `internal/store/source_test.go:740 TestSourceTargetsParamsValidation` |
@@ -1032,11 +1032,11 @@ cwd `/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery
 `TestWhiteboxParseMigrationsContinuousLedger` / `...MalformedHeaderIsNotABlock` /
 `TestWhiteboxBaselineDDLFailureRollsBackMarkerAndLedger` / `...BaselineLedgerWriteFailureRollsBackAllDDL` /
 `...BaselineHookFailureRollsBackMarkerAndData`（事务中途 marker=4、失败后归零）/ `...LaterMigrationFailurePreservesCheckpoint` /
-`...MigrationClosedConnectionFailsWithoutSuccess` / `...MigrationCancelledContextDoesNotChangeLedger` /
+`...MigrationClosedConnectionFailsWithoutSuccess` / `TestWhiteboxCancelledBeginTxPreservesBaselineCheckpoint`（只验 driver BeginTx + 全 ledger；`internal/store/migrate.go:799-801` 没有 context 参数）/
 `...OpenWritesMarkerAndLedgerAtomically` / `...StrictMalformedLayoutRefusedWithoutRepair` /
 `...UnsupportedLayoutRefusedWithoutRepair` / `...WriteTransactionCommitRollbackClosed` / `...NoStubRemains`（静态恢复 v3 名）。
 
-全部调用**真实** `applyBaselineMigration/applyMigration/migrate/probeDatabaseFormat/validateV4Layout/userSchemaObjects`；
+迁移/布局用例调用**真实** `applyBaselineMigration/applyMigration/migrate/probeDatabaseFormat/validateV4Layout/userSchemaObjects`；取消用例仅调用真实驱动 BeginTx，通用写事务取消由 `internal/store/v4_whitebox_test.go:403 TestWhiteboxWriteTransactionCommitRollbackClosed` 覆盖，不伪称存在 withWriteTxn 或取消迁移 API。
 没有生产测试钩子、没有 skip/noop。preOpen 拒绝（坏布局）与事务中回滚是两组不同用例。
 
 ## 4. 唯一产品红历史（本轮 ROOT Source-name 修复；原始证据保留）
@@ -1074,9 +1074,9 @@ EXIT 1   fails=1（仅 §4 产品红；store 其余/v4test/auth/push 全绿：ok
 ## 6. 未决 / 不声明
 
 - 原 gate3 的 Source-name 产品红现按 ROOT 批准修复，末尾固定五树三项门禁均实际 0；仍须父 fresh G1 审查，不能把本 leaf 的机械通过当作 G1 DONE。
-- `legacy central failed-empty-error / success-error-clear`：按冻结投影文档保留现 C3 语义，未做任何 normalization。
+- `legacy central failed-empty-error / success-error-clear`：失败无 Error/Reason/Summary 的字面 `failed` 分支由 `internal/store/task_test.go:1081 TestCompleteEmptyFailureProjectsPhaseAndKeepsRawResultFacts` 验证；保留现成功 submitted Error 语义，未做 normalization。
 - 旧 `TestFinishTaskWritesOutcome` 的正/负结果原意保留：正结果 → `TestCompleteRecordsResultAndFinishedAt`；
-  失败空 Error 投影 → `TestCompleteErrorProjectionKeepsRawResultFacts`；成功清旧投影/保留 submitted →
+  失败空 Error + 有 Reason 投影 → `TestCompleteErrorProjectionKeepsRawResultFacts`；全空失败 → `TestCompleteEmptyFailureProjectsPhaseAndKeepsRawResultFacts`；成功清旧投影/保留 submitted →
   `TestCompleteSuccessorAttemptClearsProjectionAndKeepsSubmittedError`；非法相位零写 →
   `TestCompleteRejectsInvalidResultPhaseWithZeroWrites`。
 - G2 runtime / G3 HTTP5 / G4 tools+Node quick / 最终 `go test ./...`+contract+e2e 仍不在本 leaf。

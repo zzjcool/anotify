@@ -814,7 +814,8 @@ func TestCreateTasksMixedBatchOversizedParamsWritesNothing(t *testing.T) {
 // TestCompleteRejectsInvalidResultPhaseWithZeroWrites invalid result.phase 必须在
 // **相位闸门**（execution_auth 的终态集合检查）被拒——用当前有效认证身份 + 正确
 // lease/attempt 走到那一步，而不是靠坏 token/slot 在更早的绑定核对里被挡掉。
-// 拒绝后整行任务、attempt 账本、结果事实全部零写。
+// 拒绝后整行任务、attempt 账本、结果、完整槽位绑定与 artifact registry 全部零写。
+// 相位检查发生在 BeginTx 之前；本测试证明前置拒绝不写事实，不冒充事务回滚。
 func TestCompleteRejectsInvalidResultPhaseWithZeroWrites(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -832,7 +833,56 @@ func TestCompleteRejectsInvalidResultPhaseWithZeroWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get attempt before: %v", err)
 	}
-	beforeBusy := v4BusySlots(t, db, node.ID)
+	// SELECT * 保留所有列（含 NULL），同数量下覆盖 lease/attempt 也必须被发现。
+	snapshot := func() map[string][][]any {
+		t.Helper()
+		queries := map[string]string{
+			"tasks":     `SELECT * FROM tasks ORDER BY id`,
+			"attempts":  `SELECT * FROM task_attempts ORDER BY task_id, attempt`,
+			"slots":     `SELECT * FROM node_instances ORDER BY id`,
+			"manifests": `SELECT * FROM task_artifact_manifests ORDER BY task_id, attempt, path`,
+			"uploads":   `SELECT * FROM task_artifact_uploads ORDER BY id`,
+			"objects":   `SELECT * FROM task_artifact_objects ORDER BY id`,
+		}
+		facts := make(map[string][][]any, len(queries))
+		for name, query := range queries {
+			rows, err := db.QueryContext(ctx, query)
+			if err != nil {
+				t.Fatalf("snapshot %s: %v", name, err)
+			}
+			columns, err := rows.Columns()
+			if err != nil {
+				_ = rows.Close()
+				t.Fatalf("snapshot %s columns: %v", name, err)
+			}
+			facts[name] = [][]any{}
+			for rows.Next() {
+				values, dest := make([]any, len(columns)), make([]any, len(columns))
+				for i := range values {
+					dest[i] = &values[i]
+				}
+				if err := rows.Scan(dest...); err != nil {
+					_ = rows.Close()
+					t.Fatalf("snapshot %s row: %v", name, err)
+				}
+				for i, value := range values {
+					if b, ok := value.([]byte); ok {
+						values[i] = string(b)
+					}
+				}
+				facts[name] = append(facts[name], values)
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				t.Fatalf("snapshot %s iterate: %v", name, err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatalf("snapshot %s close: %v", name, err)
+			}
+		}
+		return facts
+	}
+	beforeFacts := snapshot()
 
 	exit := 0
 	invalid := TaskResult{Phase: TaskRunning, ExitCode: &exit}
@@ -862,8 +912,8 @@ func TestCompleteRejectsInvalidResultPhaseWithZeroWrites(t *testing.T) {
 	if n := len(v4Attempts(t, db, task.ID)); n != 1 {
 		t.Fatalf("被拒结果新增了 attempt 行，现 %d", n)
 	}
-	if got := v4BusySlots(t, db, node.ID); got != beforeBusy {
-		t.Fatalf("被拒结果改动了槽位占用: %d → %d", beforeBusy, got)
+	if afterFacts := snapshot(); !reflect.DeepEqual(beforeFacts, afterFacts) {
+		t.Fatalf("被拒结果改动了完整执行/槽位/registry 事实:\nbefore %v\nafter %v", beforeFacts, afterFacts)
 	}
 }
 
@@ -1024,4 +1074,30 @@ func decodeRawResult(t *testing.T, raw []byte) map[string]any {
 		t.Fatalf("decode ResultJSON %s: %v", raw, err)
 	}
 	return out
+}
+
+// TestCompleteEmptyFailureProjectsPhaseAndKeepsRawResultFacts 精确承接旧失败空原因分支：
+// Task.error 回落到字面 failed，raw result 的 Error/Reason/Summary 仍然全空。
+func TestCompleteEmptyFailureProjectsPhaseAndKeepsRawResultFacts(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "empty-failure", 1)
+	node := v4Node(t, db, "node-empty-failure", 1)
+	task := v4Task(t, db, nsID, c, "tr_empty_failure", "")
+	leaseID, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-empty-failure")
+	if disp := v4Complete(t, db, node.ID, task.ID, leaseID, attempt, TaskResult{Phase: TaskFailed}); disp != TaskResultRecorded {
+		t.Fatalf("complete empty failure: %q", disp)
+	}
+	got, err := db.GetTask(ctx, nsID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != TaskFailed || got.Error != "failed" {
+		t.Fatalf("phase/error = %q/%q, want failed/failed", got.Phase, got.Error)
+	}
+	raw := decodeRawResult(t, got.ResultJSON)
+	if raw["phase"] != TaskFailed || raw["error"] != "" || raw["reason"] != "" || raw["summary"] != "" {
+		t.Fatalf("projection changed raw empty failure facts: %+v", raw)
+	}
 }

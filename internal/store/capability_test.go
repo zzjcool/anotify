@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/artifact"
@@ -474,5 +476,90 @@ func TestCapabilitySameSpecExplicitNewVersionCreatesNewRow(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("应有 2 行（同 name 两个版本），得到 %d: %+v", len(all), all)
+	}
+}
+
+// TestCapabilityCreateEdgeWriteFailureRollsBack 拒绝真实 edge INSERT 时，已写下的
+// 能力正文/digest 与第一条边必须整体回滚。两个 target 都存在：这不是输入校验，
+// 也不把 store 允许保存未解析 next 的行为假扮成 v3 的 ErrEdgeRejected guard。
+func TestCapabilityCreateEdgeWriteFailureRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	v4Cap(t, db, nsID, "a-target", 1)
+	v4Cap(t, db, nsID, "z-target", 1)
+	if err := db.CreateCapability(ctx, mkCap(nsID, "seed", 1, []string{"a-target"})); err != nil {
+		t.Fatal(err)
+	}
+	beforeCaps, err := db.ListCapabilities(ctx, nsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEdges, err := db.ListEdges(ctx, nsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sentinel 仅在新能力与第一条边已在当前事务内可见时返回，证明失败点在写入之后。
+	mustExec(t, db, `CREATE TRIGGER reject_create_edge BEFORE INSERT ON edges
+		WHEN NEW.from_ref = 'edge-failure' AND NEW.to_ref = 'z-target'
+		BEGIN
+			SELECT CASE WHEN
+				EXISTS(SELECT 1 FROM capability_versions WHERE namespace_id=NEW.namespace_id AND name=NEW.from_ref)
+				AND EXISTS(SELECT 1 FROM edges WHERE namespace_id=NEW.namespace_id AND from_ref=NEW.from_ref AND to_ref='a-target')
+			THEN RAISE(ABORT, 'injected edge write failure after capability and first edge')
+			ELSE RAISE(ABORT, 'failure fixture did not reach prior writes') END;
+		END`)
+	c := mkCap(nsID, "edge-failure", 1, []string{"a-target", "z-target"})
+	err = db.CreateCapability(ctx, c)
+	if err == nil || !strings.Contains(err.Error(), "insert capability edge") ||
+		!strings.Contains(err.Error(), "injected edge write failure after capability and first edge") {
+		t.Fatalf("expected actual edge INSERT failure after prior writes, got %v", err)
+	}
+	afterCaps, err := db.ListCapabilities(ctx, nsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEdges, err := db.ListEdges(ctx, nsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeCaps, afterCaps) || !reflect.DeepEqual(beforeEdges, afterEdges) {
+		t.Fatalf("failed edge write left partial capability/edges: caps %v -> %v; edges %v -> %v", beforeCaps, afterCaps, beforeEdges, afterEdges)
+	}
+	if _, err := db.GetCapability(ctx, nsID, c.Name, c.Version); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("failed capability remained readable: %v", err)
+	}
+}
+
+// TestCapabilityGhostNextIsPreservedAndResolvedMissing 未存在目标允许声明并落边；
+// 缺失是 ResolveRef 的数据事实（ErrNotFound），不是 CREATE 错误或坏引用格式。
+func TestCapabilityGhostNextIsPreservedAndResolvedMissing(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	const missingRef = "ghost-target@7"
+	c := mkCap(nsID, "ghost-next", 1, []string{missingRef})
+	if err := db.CreateCapability(ctx, c); err != nil {
+		t.Fatalf("legal ghost next CREATE: %v", err)
+	}
+	got, err := db.GetCapability(ctx, nsID, c.Name, c.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != c.ID || !reflect.DeepEqual(got.Spec.Next, []string{missingRef}) {
+		t.Fatalf("ghost next declaration lost on roundtrip: %+v", got)
+	}
+	edges, err := db.EdgesFrom(ctx, nsID, false, c.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(edges, []EdgeTarget{{ToRef: missingRef}}) {
+		t.Fatalf("ghost next edge ref not preserved: %+v", edges)
+	}
+	if target, err := db.ResolveRef(ctx, nsID, missingRef); target != nil || !errors.Is(err, ErrNotFound) || errors.Is(err, ErrRefUnresolved) {
+		t.Fatalf("ghost next must resolve as missing data: target=%+v err=%v", target, err)
+	}
+	if owner, err := db.ResolveRef(ctx, nsID, c.Name); err != nil || owner == nil || owner.ID != c.ID {
+		t.Fatalf("existing capability must still resolve: owner=%+v err=%v", owner, err)
 	}
 }

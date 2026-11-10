@@ -232,14 +232,37 @@ func TestWhiteboxMigrationClosedConnectionFailsWithoutSuccess(t *testing.T) {
 	}
 }
 
-// TestWhiteboxMigrationCancelledContextDoesNotChangeLedger 取消的 context 不许改动库：
-// BeginTx 立刻返回 context.Canceled，检查点保持不变。
-func TestWhiteboxMigrationCancelledContextDoesNotChangeLedger(t *testing.T) {
+// TestWhiteboxCancelledBeginTxPreservesBaselineCheckpoint 只验已初始化库上的驱动 BeginTx：
+// 取消 context 不开始事务，布局与完整 ledger 内容不变。migrate/applyMigrationTx
+// 不接收 context（实际用 db.Begin），因此本测试不声称调用了“取消的迁移”。
+// 通用写事务取消另由 TestWhiteboxWriteTransactionCommitRollbackClosed 承接。
+func TestWhiteboxCancelledBeginTxPreservesBaselineCheckpoint(t *testing.T) {
 	db := rawMigrationDB(t)
 	if _, err := migrate(db, nil); err != nil {
 		t.Fatalf("baseline migrate: %v", err)
 	}
 	marker, objects := migrationState(t, db)
+	ledger := func() [][2]int64 {
+		t.Helper()
+		rows, err := db.Query(`SELECT version, applied_at FROM schema_version ORDER BY version`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var facts [][2]int64
+		for rows.Next() {
+			var row [2]int64
+			if err := rows.Scan(&row[0], &row[1]); err != nil {
+				t.Fatal(err)
+			}
+			facts = append(facts, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return facts
+	}
+	beforeLedger := ledger()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if tx, err := db.BeginTx(ctx, nil); !errors.Is(err, context.Canceled) {
@@ -249,8 +272,8 @@ func TestWhiteboxMigrationCancelledContextDoesNotChangeLedger(t *testing.T) {
 		t.Fatalf("取消的 BeginTx err = %v, want context.Canceled", err)
 	}
 	afterMarker, afterObjects := migrationState(t, db)
-	if marker != afterMarker || !reflect.DeepEqual(objects, afterObjects) {
-		t.Fatal("被取消的事务改动了 baseline")
+	if marker != afterMarker || !reflect.DeepEqual(objects, afterObjects) || !reflect.DeepEqual(beforeLedger, ledger()) {
+		t.Fatal("被取消的 BeginTx 改动了 baseline 布局或 ledger 内容")
 	}
 }
 
