@@ -3,9 +3,12 @@ package source
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
@@ -150,8 +153,12 @@ func TestIngestDuplicateDeliveryReturnsOriginal(t *testing.T) {
 	if !again.Duplicate || again.EventID != first.EventID || again.TraceID != first.TraceID {
 		t.Fatalf("窗口内重复投递应回原 event/trace: first=%+v again=%+v", first, again)
 	}
-	if len(again.Tasks) != 0 {
-		t.Fatalf("重复投递不得重复派发: %+v", again.Tasks)
+	// 冻结语义：duplicate 返回第一次的完整 receipt（含同一批 task），不是空回执、不重算。
+	if len(again.Tasks) != len(first.Tasks) || len(again.Pruned) != len(first.Pruned) {
+		t.Fatalf("重复投递必须返回第一次的完整回执: first=%+v again=%+v", first, again)
+	}
+	if len(first.Tasks) != 1 || again.Tasks[0].TaskID != first.Tasks[0].TaskID {
+		t.Fatalf("重复投递不得换 task id: first=%+v again=%+v", first.Tasks, again.Tasks)
 	}
 	if got := countRows(t, db, "tasks"); got != 1 {
 		t.Fatalf("任务行数 = %d，want 1", got)
@@ -318,5 +325,204 @@ func TestIngestDeliveryIDScopeAndAbsence(t *testing.T) {
 	}
 	if again.EventID != other.EventID {
 		t.Fatalf("去重必须回原 event: %s != %s", again.EventID, other.EventID)
+	}
+}
+
+// testCapabilityVersion 建一个指定 version 的能力（source 用例需要“两个版本”场景）。
+func testCapabilityVersion(t *testing.T, db *store.DB, namespaceID, name string, version int, params string) *store.CapabilityVersion {
+	t.Helper()
+	if params == "" {
+		params = `{"type":"object"}`
+	}
+	capability := &store.CapabilityVersion{
+		NamespaceID: namespaceID, Name: name, Version: version,
+		Spec: artifact.Spec{
+			Params: json.RawMessage(params),
+			Run: artifact.Run{
+				Entrypoint: "run.sh",
+				Files:      map[string]string{"run.sh": "#!/bin/sh\nexit 0\n"},
+			},
+		},
+	}
+	if err := db.CreateCapability(testCtx(), capability); err != nil {
+		t.Fatalf("建能力 %s@%d: %v", name, version, err)
+	}
+	got, err := db.GetCapability(testCtx(), namespaceID, name, version)
+	if err != nil {
+		t.Fatalf("回读能力: %v", err)
+	}
+	return got
+}
+
+// TestIngestMissingTargetCreatesFailedTaskNotPrune 钉住 R1-C3：已保存源里指向后来被
+// 删除能力的 target 解析不到时，事件接收成功、落**失败 Task（attempt 0）+ 错误事件**，
+// 回执把它列在 tasks（真实请求 ref/声明 version），不是剪枝。
+func TestIngestMissingTargetCreatesFailedTaskNotPrune(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	consumer := testCapabilityVersion(t, db, ns.ID, "consumer", 2, "")
+	src := testSource(t, db, ns.ID, "manual-missing", sourceOpts{
+		Kind: sourcespec.KindManual, Config: `{}`,
+		Targets: []sourcespec.Target{{Capability: "consumer@2"}}, Enabled: true,
+	})
+	if err := db.DeleteCapability(testCtx(), ns.ID, "consumer",
+		store.ResourceVersion(consumer.ID, consumer.ResourceVersion)); err != nil {
+		t.Fatalf("删除能力制造 missing: %v", err)
+	}
+	receipt, err := newService(t, db).Ingest(testCtx(), Input{Source: src})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if len(receipt.Pruned) != 0 {
+		t.Fatalf("downstream_missing 不得进入 pruned: %+v", receipt.Pruned)
+	}
+	if len(receipt.Tasks) != 1 {
+		t.Fatalf("回执 tasks 必须列出真实建立的 failed Task: %+v", receipt.Tasks)
+	}
+	ref := receipt.Tasks[0]
+	if ref.TaskID == "" || ref.Capability != "consumer@2" || ref.Version != 2 {
+		t.Fatalf("failed Task 回执必须是真实请求 ref/声明 version: %+v", ref)
+	}
+	task, err := db.GetTask(testCtx(), ns.ID, ref.TaskID)
+	if err != nil {
+		t.Fatalf("读 failed task: %v", err)
+	}
+	if task.Phase != store.TaskFailed || task.Attempt != 0 || task.CapabilityID != "" ||
+		task.Capability != "consumer@2" || task.Version != 2 || task.Digest != "" ||
+		task.Error != protocol.ReasonDownstreamMissing || task.ParentTaskID != nil ||
+		task.StartedAt != nil || task.ExitCode != nil {
+		t.Fatalf("failed Task 形状不对（无 Node/过程事实）: %+v", task)
+	}
+	// 错误事件：真实请求 ref + taskId。
+	events, err := db.ListEvents(testCtx(), ns.ID, receipt.TraceID, "", 50)
+	if err != nil {
+		t.Fatalf("列事件: %v", err)
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Type == protocol.ReasonDownstreamMissing && strings.Contains(string(ev.Payload), ref.TaskID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("downstream_missing 错误事件缺真实 taskId: %+v", events)
+	}
+}
+
+// TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes duplicate 必须返回第一次
+// 的完整回执（含 failed Task 与纯剪枝），不新建任务/事件。
+func TestIngestDuplicateReturnsFirstReceiptWithFailuresAndPrunes(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	testCapability(t, db, ns.ID, "good", "")
+	testCapability(t, db, ns.ID, "needs-env", `{"type":"object","properties":{"env":{"type":"string"}},"required":["env"]}`)
+	consumer := testCapabilityVersion(t, db, ns.ID, "consumer", 2, "")
+	src := testSource(t, db, ns.ID, "hook-mixed", sourceOpts{
+		Kind: sourcespec.KindWebhook, Config: `{}`,
+		Targets: []sourcespec.Target{
+			{Capability: "good"},
+			{Capability: "needs-env", Params: map[string]any{"env": "$(payload.env)"}},
+			{Capability: "consumer@2"},
+		},
+		Enabled: true,
+	})
+	if err := db.DeleteCapability(testCtx(), ns.ID, "consumer",
+		store.ResourceVersion(consumer.ID, consumer.ResourceVersion)); err != nil {
+		t.Fatalf("删除能力制造 missing: %v", err)
+	}
+	service := newService(t, db)
+	first, err := service.Ingest(testCtx(), Input{
+		Source: src, DeliveryID: "delivery-mixed", Payload: json.RawMessage(`{"a":1}`),
+	})
+	if err != nil {
+		t.Fatalf("首次投递: %v", err)
+	}
+	if len(first.Tasks) != 2 || len(first.Pruned) != 1 ||
+		first.Pruned[0].Reason != protocol.ReasonParamMissing {
+		t.Fatalf("首次回执投影不对（正常 + failed + 纯剪枝）: %+v", first)
+	}
+	tasksBefore := countRows(t, db, "tasks")
+	eventsBefore := countRows(t, db, "events")
+	again, err := service.Ingest(testCtx(), Input{
+		Source: src, DeliveryID: "delivery-mixed", Payload: json.RawMessage(`{"a":1}`),
+	})
+	if err != nil {
+		t.Fatalf("重复投递: %v", err)
+	}
+	if !again.Duplicate || again.EventID != first.EventID || again.TraceID != first.TraceID {
+		t.Fatalf("duplicate 必须回第一次 event/trace: first=%+v again=%+v", first, again)
+	}
+	if len(again.Tasks) != len(first.Tasks) || again.Tasks[0].TaskID != first.Tasks[0].TaskID ||
+		again.Tasks[1].TaskID != first.Tasks[1].TaskID {
+		t.Fatalf("duplicate 必须回第一次的同一批 task（含 failed）: first=%+v again=%+v", first.Tasks, again.Tasks)
+	}
+	if len(again.Pruned) != 1 || again.Pruned[0].Reason != protocol.ReasonParamMissing {
+		t.Fatalf("duplicate 必须回第一次的剪枝回执: %+v", again.Pruned)
+	}
+	if countRows(t, db, "tasks") != tasksBefore || countRows(t, db, "events") != eventsBefore {
+		t.Fatalf("duplicate 产生了新写: tasks %d→%d events %d→%d",
+			tasksBefore, countRows(t, db, "tasks"), eventsBefore, countRows(t, db, "events"))
+	}
+}
+
+// TestIngestSourceRevisionMismatchWritesNothing 源在计划与接收之间变了 → 明确错误 +
+// 0 写（不吞错、不用陈旧参数接收）。
+func TestIngestSourceRevisionMismatchWritesNothing(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	testCapability(t, db, ns.ID, "analyze", "")
+	src := testSource(t, db, ns.ID, "manual-cas", sourceOpts{
+		Kind: sourcespec.KindManual, Config: `{}`,
+		Targets: []sourcespec.Target{{Capability: "analyze"}}, Enabled: true,
+	})
+	stale := *src
+	updated := *src
+	updated.DisplayName = "renamed"
+	if err := db.UpdateSource(testCtx(), &updated); err != nil {
+		t.Fatalf("更新源: %v", err)
+	}
+	eventsBefore := countRows(t, db, "events")
+	tasksBefore := countRows(t, db, "tasks")
+	_, err := newService(t, db).Ingest(testCtx(), Input{Source: &stale})
+	if err == nil {
+		t.Fatal("源 resource_version 失配必须报错（不能吞掉用陈旧源接收）")
+	}
+	if countRows(t, db, "events") != eventsBefore || countRows(t, db, "tasks") != tasksBefore {
+		t.Fatalf("失配路径必须 0 写: events %d→%d tasks %d→%d",
+			eventsBefore, countRows(t, db, "events"), tasksBefore, countRows(t, db, "tasks"))
+	}
+}
+
+// TestPreviewPerTargetReasons dry-run 每个 target 必须带自身 Reason/Detail，
+// 不能用 Pruned[0] 兜给所有 target（R1-C3）。
+func TestPreviewPerTargetReasons(t *testing.T) {
+	db := testDB(t)
+	ns := testNamespace(t, db)
+	testCapability(t, db, ns.ID, "needs-env", `{"type":"object","properties":{"env":{"type":"string"}},"required":["env"]}`)
+	testCapability(t, db, ns.ID, "needs-count", `{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]}`)
+	src := &store.Source{
+		NamespaceID: ns.ID, Name: "manual-preview", Kind: sourcespec.KindManual,
+		Targets: []sourcespec.Target{
+			{Capability: "needs-env", Params: map[string]any{"env": "$(payload.env)"}},
+			{Capability: "needs-count", Params: map[string]any{"count": "$(payload.text)"}},
+		},
+		Enabled: true,
+	}
+	preview, err := newService(t, db).PreviewSource(testCtx(), src, json.RawMessage(`{"text":"abc"}`))
+	if err != nil {
+		t.Fatalf("PreviewSource: %v", err)
+	}
+	if len(preview.Targets) != 2 {
+		t.Fatalf("预览应逐条列出 target: %+v", preview.Targets)
+	}
+	if preview.Targets[0].State != route.StatePruned || preview.Targets[0].Reason != protocol.ReasonParamMissing {
+		t.Fatalf("target[0] 原因 = %+v，want param_missing", preview.Targets[0])
+	}
+	if preview.Targets[1].State != route.StatePruned || preview.Targets[1].Reason != protocol.ReasonParamType {
+		t.Fatalf("target[1] 原因 = %+v，want param_type（不能用 Pruned[0] 兜）", preview.Targets[1])
+	}
+	if len(preview.Pruned) != 2 || preview.Pruned[0].Reason != protocol.ReasonParamMissing ||
+		preview.Pruned[1].Reason != protocol.ReasonParamType {
+		t.Fatalf("aggregate pruned 与逐目标原因必须一致: %+v", preview.Pruned)
 	}
 }

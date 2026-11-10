@@ -78,23 +78,34 @@ func TestValidatePayloadSchema(t *testing.T) {
 	}
 }
 
-func TestDeclaresTarget(t *testing.T) {
-	next := []string{"fixer", "review@2"}
+func TestDeclaredRef(t *testing.T) {
 	cases := []struct {
+		name string
+		next []string
 		to   string
-		want bool
+		want string
+		ok   bool
 	}{
-		{"fixer", true},
-		{"fixer@3", true}, // 裸名跟随 latest：任何版本都算声明
-		{"review", true},  // 裸 to 命中钉版条目
-		{"review@2", true},
-		{"review@1", false}, // 钉版不符
-		{"other", false},
+		{name: "bare declared follows latest", next: []string{"fixer"}, to: "fixer", want: "fixer", ok: true},
+		{name: "explicit pinned needs exact declaration", next: []string{"fixer"}, to: "fixer@3", ok: false},
+		{name: "bare to hits unique pinned declaration", next: []string{"review@2"}, to: "review", want: "review@2", ok: true},
+		{name: "explicit pinned exact match", next: []string{"review@2"}, to: "review@2", want: "review@2", ok: true},
+		{name: "explicit pinned other version", next: []string{"review@2"}, to: "review@1", ok: false},
+		{name: "other name", next: []string{"fixer"}, to: "other", ok: false},
+		{name: "empty target", next: []string{"fixer"}, to: "", ok: false},
+		{name: "ambiguous multiple pinned versions", next: []string{"review@2", "review@3"}, to: "review", ok: false},
+		{name: "ambiguous explicit still exact", next: []string{"review@2", "review@3"}, to: "review@3", want: "review@3", ok: true},
+		{name: "ambiguous bare plus pinned", next: []string{"review", "review@2"}, to: "review", ok: false},
+		{name: "duplicate identical declaration is unique", next: []string{"review@2", "review@2"}, to: "review", want: "review@2", ok: true},
+		{name: "bad pinned never matches", next: []string{"review@nope"}, to: "review", ok: false},
 	}
 	for _, tc := range cases {
-		if got := declaresTarget(next, tc.to); got != tc.want {
-			t.Errorf("declaresTarget(%q) = %v，want %v", tc.to, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := declaredRef(tc.next, tc.to)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("declaredRef(%v, %q) = %q,%v，want %q,%v", tc.next, tc.to, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 

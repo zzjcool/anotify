@@ -73,6 +73,10 @@ func (h *Hub) handleAccept(ctx context.Context, sess *Session, f *protocol.TaskA
 }
 
 // handleReject 处理 task.reject：只接受封闭集合的两个 pre-grant 理由。
+//
+// 授权判定全在 store.RejectAssignmentAuthorized 同一事务：当前 credential hash /
+// namespace 仍可用 / 目标 Node + assignment + proposedAttempt 精确匹配 / 提案未过期。
+// 会话层只做形状与 wire node 名校验，不 Get-precheck 后裸 Reject。
 func (h *Hub) handleReject(ctx context.Context, sess *Session, f *protocol.TaskRejectFrame) error {
 	if !protocol.IsTaskRejectReason(f.Reason) {
 		return fmt.Errorf("%w: 未知 reject reason %q", errProtocolViolation, f.Reason)
@@ -83,8 +87,23 @@ func (h *Hub) handleReject(ctx context.Context, sess *Session, f *protocol.TaskR
 	if f.Node != sess.nodeName {
 		return fmt.Errorf("%w: reject.node %q 不是本会话节点 %q", errProtocolViolation, f.Node, sess.nodeName)
 	}
-	if err := h.db.RejectAssignment(ctx, f.TaskID, f.AssignmentID, f.Reason, h.Now()); err != nil {
-		h.log.Warn("reject assignment failed", "node_id", sess.nodeID, "task_id", f.TaskID, "err", err)
+	err := h.db.RejectAssignmentAuthorized(ctx, sess.auth, store.AssignmentRejectionInputs{
+		TaskID:          f.TaskID,
+		NodeID:          sess.nodeID,
+		AssignmentID:    f.AssignmentID,
+		ProposedAttempt: f.ProposedAttempt,
+		Reason:          f.Reason,
+		Now:             h.Now(),
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNodeIdentityMismatch) {
+			// 令牌已轮换：这条会话的身份不再是当前事实，断开而不是继续服务。
+			sess.close(websocket.StatusPolicyViolation, "node identity changed")
+			return nil
+		}
+		// 错/旧/撤销/过期：0 写、不伤新提案；没有 ack 帧可回。
+		h.log.Warn("reject assignment refused", "node_id", sess.nodeID, "task_id", f.TaskID,
+			"assignment", f.AssignmentID, "err", err)
 	}
 	return nil
 }
@@ -204,8 +223,10 @@ func (h *Hub) handleCancelAck(ctx context.Context, sess *Session, f *protocol.Ca
 
 // handleDeployed 处理 capability.deployed：按 requestId + refs 四元组配回部署意图。
 //
-// 只接受**已经明确请求过**的那次部署（deployments 行存在且 digest 相同），
-// 不因为节点报了一个未知 refs 就新建部署事实。
+// 共享帧的形状/状态校验后，全部权威判定交给 store.MarkDeployResultAuthorized 的
+// 同一事务（当前 credential hash / ns 仍可用 / intent 归属该 Node / requestId 与
+// capability UID/name/version/digest 绑定 / 未 superseded）。未知 request/错 digest/
+// 未知 ns/轮换 token 一律 0 写，不 Get-precheck 后裸 Mark。
 func (h *Hub) handleDeployed(ctx context.Context, sess *Session, f *protocol.CapabilityDeployedFrame) error {
 	if !f.Status.Valid() {
 		return fmt.Errorf("%w: capability.deployed.status %q 不在封闭集合", errProtocolViolation, f.Status)
@@ -213,17 +234,14 @@ func (h *Hub) handleDeployed(ctx context.Context, sess *Session, f *protocol.Cap
 	if f.Namespace == "" || f.Name == "" || f.Version <= 0 || f.Digest == "" {
 		return fmt.Errorf("%w: capability.deployed 缺 refs", errProtocolViolation)
 	}
+	deploymentID, ok := strings.CutPrefix(f.RequestID, "dep_")
+	if !ok || deploymentID == "" {
+		h.log.Warn("deploy ack with foreign request id", "node_id", sess.nodeID, "request_id", f.RequestID)
+		return nil
+	}
 	namespaceID, err := h.namespaceIDBySlug(ctx, f.Namespace)
 	if err != nil {
 		h.log.Warn("deploy ack for unknown namespace", "node_id", sess.nodeID, "namespace", f.Namespace)
-		return nil
-	}
-	authorized, err := h.db.AuthorizedNamespaces(ctx, sess.nodeID)
-	if err != nil {
-		return err
-	}
-	if !namespaceAllowed(authorized, f.Namespace) {
-		h.log.Warn("deploy ack for unauthorized namespace", "node_id", sess.nodeID, "namespace", f.Namespace)
 		return nil
 	}
 	capability, err := h.db.GetCapability(ctx, namespaceID, f.Name, f.Version)
@@ -232,25 +250,31 @@ func (h *Hub) handleDeployed(ctx context.Context, sess *Session, f *protocol.Cap
 			"namespace", f.Namespace, "name", f.Name, "version", f.Version, "err", err)
 		return nil
 	}
-	deployment, err := h.db.GetDeploymentByNodeCapability(ctx, namespaceID, sess.nodeID, capability.ID)
-	if err != nil {
-		h.log.Warn("deploy ack without deployment intent", "node_id", sess.nodeID,
-			"name", f.Name, "version", f.Version, "err", err)
-		return nil
-	}
-	if deployment.Digest != f.Digest || deployRequestID(deployment.ID) != f.RequestID {
-		h.log.Warn("deploy ack refs do not match the intent", "node_id", sess.nodeID,
-			"deployment", deployment.ID, "request_id", f.RequestID)
-		return nil
-	}
 	state := store.DeploymentApplied
 	reason := ""
 	if f.Status == protocol.DeployStatusFailed {
 		state = store.DeploymentFailed
 		reason = f.Error
 	}
-	if err := h.db.MarkDeployResult(ctx, namespaceID, deployment.ID, state, reason); err != nil {
-		return err
+	err = h.db.MarkDeployResultAuthorized(ctx, sess.auth, store.DeploymentResultInputs{
+		DeploymentID: deploymentID,
+		RequestID:    f.RequestID,
+		NamespaceID:  namespaceID,
+		CapabilityID: capability.ID,
+		Capability:   capability.Name,
+		Version:      capability.Version,
+		Digest:       f.Digest,
+		State:        state,
+		Reason:       reason,
+		Now:          h.Now(),
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNodeIdentityMismatch) {
+			sess.close(websocket.StatusPolicyViolation, "node identity changed")
+			return nil
+		}
+		h.log.Warn("deploy ack rejected", "node_id", sess.nodeID, "request_id", f.RequestID,
+			"deployment", deploymentID, "err", err)
 	}
 	return nil
 }

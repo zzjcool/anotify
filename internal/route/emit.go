@@ -100,43 +100,63 @@ func (r *Router) Emit(ctx context.Context, in EmitInput) (EmitResult, error) {
 		return EmitResult{}, err
 	}
 	tasks := plan.Tasks(parent.ID)
-	response := protocol.EmitResponse{To: in.To}
-	if len(tasks) > 0 {
-		taskID := tasks[0].ID
-		response.TaskID = &taskID
-		response.To = tasks[0].Capability
-		response.Version = tasks[0].Version
-	} else {
-		// 剪枝回执：eventId 来自真实留痕行（source='route'），不是编造的 id。
-		if len(plan.Pruned) > 0 {
-			prune := plan.Pruned[0]
-			response.Pruned = &protocol.EmitPruned{Reason: prune.Reason, Detail: prune.Detail}
-			if eventID, perr := r.recordPrune(ctx, parent.NamespaceID, parent.TraceID, parent.Capability, in.To, prune); perr == nil {
-				response.EventID = eventID
-			}
-		}
-		if len(plan.Targets) > 0 {
-			response.Version = plan.Targets[0].Version
-			if plan.Targets[0].Capability != "" {
-				response.To = plan.Targets[0].Capability
-			}
-		}
-	}
-	body, err := json.Marshal(response)
-	if err != nil {
-		return EmitResult{}, fmt.Errorf("emit: 编码回执: %w", err)
-	}
+	failures := plan.FailureInputs()
+	// 回执的 eventId 是本次 emit **接受事实**（emits 行）的稳定 id。store 没有公开
+	// 的 emt_ 生成器，但 rec.ID 是写入的权威 id：预生成它并同时用于回执与落库，
+	// 同 id 回放返回的也是同一份 body（不会重算）。
 	record := &store.EmitRecord{
+		ID:        store.NewEventID(),
 		TaskID:    parent.ID,
 		ToRef:     in.To,
 		Data:      emitData(in.Data),
-		Result:    body,
 		CreatedAt: r.Now(),
 	}
 	if in.EmitID != "" {
 		emitID := in.EmitID
 		record.EmitID = &emitID
 	}
+	response := protocol.EmitResponse{To: in.To}
+	switch {
+	case len(tasks) > 0:
+		taskID := tasks[0].ID
+		response.TaskID = &taskID
+		response.To = tasks[0].Capability
+		response.Version = tasks[0].Version
+	case len(plan.Pruned) > 0:
+		// 剪枝回执：eventId 是真实持久事实的 id，不是编造的。
+		prune := plan.Pruned[0]
+		response.Pruned = &protocol.EmitPruned{Reason: prune.Reason, Detail: prune.Detail}
+		response.EventID = record.ID
+		if len(plan.Targets) > 0 {
+			response.Version = plan.Targets[0].Version
+			if plan.Targets[0].Capability != "" {
+				response.To = plan.Targets[0].Capability
+			}
+		}
+	case len(failures) > 0:
+		// StateMissing：真实事实是 failed Task + 错误事件（与 emit 行同事务写入），
+		// 不是剪枝、也不伪装成剪枝回执。回执保留真实请求 ref 与明确声明的 version。
+		response.EventID = record.ID
+		response.To = plan.Targets[0].Capability
+		response.Version = plan.Targets[0].Version
+	}
+	// 计划事实只进 store 的同事务参数（非 wire）：不提前 recordPrune、不吞错误。
+	for _, prune := range plan.Pruned {
+		record.PlannedPrunes = append(record.PlannedPrunes, store.EmitPruneFact{
+			Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
+		})
+	}
+	for _, failure := range failures {
+		record.PlannedFailures = append(record.PlannedFailures, store.EmitFailureFact{
+			Capability: failure.Capability, Version: failure.Version,
+			Reason: failure.Reason, Detail: failure.Detail,
+		})
+	}
+	body, err := json.Marshal(response)
+	if err != nil {
+		return EmitResult{}, fmt.Errorf("emit: 编码回执: %w", err)
+	}
+	record.Result = body
 	stored, first, err := r.db.EmitAuthorized(ctx, in.Auth, record, tasks)
 	if err != nil {
 		return EmitResult{}, mapEmitStoreError(err)
@@ -154,27 +174,6 @@ func emitData(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return raw
-}
-
-// recordPrune 写一条剪枝留痕（source='route'），返回真实事件 id。
-//
-// 剪枝永远留痕、且**不做幂等**（store.InsertPruneEvent 的既定语义）：同 id 的
-// emit 重放会再留一条观察痕，但它不影响回执（回执来自已存的 emit 结果）。
-func (r *Router) recordPrune(ctx context.Context, namespaceID, traceID, parentCapability, to string, prune Prune) (string, error) {
-	payload, err := json.Marshal(map[string]string{"to": to, "detail": prune.Detail})
-	if err != nil {
-		payload = json.RawMessage(`{}`)
-	}
-	event := &store.Event{
-		NamespaceID: namespaceID,
-		TraceID:     traceID,
-		Type:        prune.Reason,
-		Payload:     payload,
-	}
-	if err := r.db.InsertPruneEvent(ctx, event); err != nil {
-		return "", err
-	}
-	return event.ID, nil
 }
 
 // mapEmitStoreError 把 store 的授权/幂等哨兵翻成 emit 的封闭原因码。

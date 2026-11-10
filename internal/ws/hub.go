@@ -98,11 +98,19 @@ func WithWriteTimeout(d time.Duration) Option {
 }
 
 // logRequest 是一条在飞的 logs 请求（按 requestId 配对）。
+//
+// ch 容量 1 + 「交给 waiter 前先从 map 移除」保证每个请求最多被交付一次：
+// 重复/晚到的回包只能命中「没有登记」分支，不会在 cap1 通道上阻塞读循环。
+type logResponse struct {
+	frame *protocol.LogsResponseFrame
+	err   error
+}
+
 type logRequest struct {
 	taskID  string
 	attempt int
 	nodeID  string
-	ch      chan *protocol.LogsResponseFrame
+	ch      chan logResponse
 }
 
 // Hub 是节点会话的注册表与运行期编排入口。
@@ -198,12 +206,18 @@ func (h *Hub) detach(sess *Session) {
 	h.mu.Unlock()
 	sess.closedFlag()
 	if current != sess {
+		// 被新连接顶掉的旧读循环：不唤醒日志 waiter（它们属于当前会话），
+		// 也不把刚上线的新会话标 offline。
 		return
 	}
-	if err := h.db.MarkNodeOffline(context.Background(), sess.nodeID, h.Now()); err != nil {
+	// 断开即唤醒该节点上所有在飞的日志请求（真实错误，不是等超时）。
+	h.wakeLogsForNode(sess.nodeID, ErrNodeOffline)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.db.MarkNodeOffline(ctx, sess.nodeID, h.Now()); err != nil {
 		h.log.Warn("mark node offline failed", "node_id", sess.nodeID, "err", err)
 	}
-	if err := h.db.MarkInstancesDead(context.Background(), sess.nodeID); err != nil {
+	if err := h.db.MarkInstancesDead(ctx, sess.nodeID); err != nil {
 		h.log.Warn("mark instances dead failed", "node_id", sess.nodeID, "err", err)
 	}
 	h.log.Info("node disconnected", "node_id", sess.nodeID, "node", sess.nodeName)
@@ -364,11 +378,16 @@ func (h *Hub) sendWelcome(ctx context.Context, sess *Session) error {
 	})
 }
 
-// DispatchOnce 扫描一批可派发任务，为每条任务记录一个候选（assignment）并把
-// task.dispatch 推给在线节点。
+// DispatchOnce 扫描一批可派发任务，为每条任务**稳定**记录一个候选（assignment）
+// 并把 task.dispatch 推给在线节点。
 //
-// 安全性：assign 只写候选/窗口，不授执行权；节点 accept 之后才走
-// GrantLeaseAuthorized。没有在线/可用节点的任务保持 pending（等下一轮）。
+// 安全性/稳定性（R1-C2）：
+//   - 候选写入走 store.ProposeTaskAssignment：未到期的同 Task 提案原样返回（多
+//     sweep 不 churn）；只有到期才换绑定。派发**不授执行权**：没有 lease / attempt /
+//     token / slot，节点 accept 之后才走 GrantLeaseAuthorized。
+//   - ConfigRevision 与 welcome 同源 —— 真实 node_configs.revision（不是
+//     nodes.resource_version）：真实 anode 用它做 stale_config 判定，取错会让所有
+//     派发永远 stale。
 func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 	now := h.Now()
 	tasks, err := h.db.ListDispatchableTasks(ctx, now, limit)
@@ -376,6 +395,7 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 		return 0, err
 	}
 	dispatched := 0
+	configRevisions := map[string]string{}
 	for _, task := range tasks {
 		if task.CancelRequestedAt != nil {
 			continue
@@ -394,6 +414,7 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 			continue
 		}
 		nsVars := h.namespaceVarsFor(ctx, task)
+		proposed := task.Attempt + 1
 		for _, node := range nodes {
 			if free[node.ID] <= 0 {
 				continue
@@ -402,17 +423,34 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 			if sess == nil {
 				continue
 			}
-			assignmentID := newAssignmentID()
-			proposed := task.Attempt + 1
-			if err := h.db.AssignTaskAt(ctx, task.ID, node.ID, assignmentID, proposed, now); err != nil {
-				h.log.Warn("assign task failed", "task_id", task.ID, "node_id", node.ID, "err", err)
+			proposal, perr := h.db.ProposeTaskAssignment(ctx, store.AssignmentProposalInputs{
+				TaskID: task.ID, NodeID: node.ID, ProposedAttempt: proposed, Now: now,
+			})
+			if perr != nil {
+				h.log.Warn("propose assignment failed", "task_id", task.ID, "node_id", node.ID, "err", perr)
 				continue
+			}
+			if proposal.NodeID != node.ID {
+				// 未到期提案属于另一节点：本轮不换绑定（等它到期或对方报事实）。
+				h.log.Debug("task already proposed to another node",
+					"task_id", task.ID, "held_by", proposal.NodeID, "candidate", node.ID)
+				continue
+			}
+			revision, ok := configRevisions[node.ID]
+			if !ok {
+				cfg, cerr := h.db.GetNodeConfig(ctx, node.ID)
+				if cerr != nil {
+					h.log.Warn("read node config failed", "node_id", node.ID, "err", cerr)
+					continue
+				}
+				revision = strconv.FormatInt(cfg.Revision, 10)
+				configRevisions[node.ID] = revision
 			}
 			frame := &protocol.TaskDispatchFrame{
 				Type:            protocol.FrameTaskDispatch,
 				TaskID:          task.ID,
-				AssignmentID:    assignmentID,
-				ProposedAttempt: proposed,
+				AssignmentID:    proposal.AssignmentID,
+				ProposedAttempt: proposal.ProposedAttempt,
 				Namespace:       h.namespaceSlug(ctx, task.NamespaceID),
 				Capability: protocol.CapabilityRef{
 					Name: task.Capability, Version: task.Version, Digest: task.Digest,
@@ -420,8 +458,8 @@ func (h *Hub) DispatchOnce(ctx context.Context, limit int) (int, error) {
 				Params:                task.Params,
 				NamespaceVars:         nsVars,
 				NamespaceVarsRevision: strconv.FormatInt(task.NamespaceVarsRevision, 10),
-				ConfigRevision:        strconv.FormatInt(node.ResourceVersion, 10),
-				AssignmentExpiresAt:   time.Unix(now+store.AssignmentWindowSec, 0).UTC(),
+				ConfigRevision:        revision,
+				AssignmentExpiresAt:   timeUnix(proposal.ExpiresAt),
 			}
 			if err := sess.Send(ctx, frame); err != nil {
 				h.log.Warn("send dispatch failed", "task_id", task.ID, "node_id", node.ID, "err", err)
@@ -630,9 +668,8 @@ type LogsResult struct {
 	// Empty 表示「没有可定位的历史 attempt」（previous 且没有上一次执行）：
 	// 这是真空结果，不是「离线/档案过期」的错误成功。
 	Empty bool
-	// Structured 恒为 false：当前共享 LogsResponseFrame 只有 stdout/stderr/字节数/
-	// attempt，没有 W6/A1 要求的逐条 sequence/stream/text/at。父已确认这是受保护的
-	// 协议接缝 pending，本层不编造时间戳/跨流顺序、也不建私有 DTO。
+	// Structured 表示这是一条真实的逐条记录响应（success + lines 非 null）：
+	// sequence/stream/text/at 来自节点真实采集，中枢不重编号/不补时间。
 	Structured bool
 }
 
@@ -641,7 +678,10 @@ type LogsResult struct {
 // attempt>0 = 指定历史 attempt；attempt==0 = 任务当前 attempt；previous=true 时忽略
 // attempt 并取「上一次执行」（没有上一次 → Empty=true 的真空结果）。节点按
 // task_attempts 的历史 node 定位，不拿当前节点冒充另一次执行。
-func (h *Hub) RequestLogs(ctx context.Context, namespaceID, taskID string, attempt int, previous bool, timeout time.Duration) (*LogsResult, error) {
+//
+// tailLines/sinceSeconds 是**节点侧**的真实查询参数（共享 LogsRequestFrame 字段）：
+// 中枢只转发，不拼 raw、不重编号、不按 server 时钟二次过滤。
+func (h *Hub) RequestLogs(ctx context.Context, namespaceID, taskID string, attempt int, previous bool, tailLines, sinceSeconds int, timeout time.Duration) (*LogsResult, error) {
 	task, err := h.db.GetTask(ctx, namespaceID, taskID)
 	if err != nil {
 		return nil, err
@@ -679,18 +719,21 @@ func (h *Hub) RequestLogs(ctx context.Context, namespaceID, taskID string, attem
 	requestID := newRequestID("lreq")
 	waiter := &logRequest{
 		taskID: taskID, attempt: attempt, nodeID: historical.NodeID,
-		ch: make(chan *protocol.LogsResponseFrame, 1),
+		ch: make(chan logResponse, 1),
 	}
 	h.mu.Lock()
 	h.logs[requestID] = waiter
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
-		delete(h.logs, requestID)
+		if h.logs[requestID] == waiter {
+			delete(h.logs, requestID)
+		}
 		h.mu.Unlock()
 	}()
 	if err := sess.Send(ctx, &protocol.LogsRequestFrame{
 		Type: protocol.FrameLogsRequest, TaskID: taskID, RequestID: requestID, Attempt: attempt,
+		TailLines: tailLines, SinceSeconds: sinceSeconds,
 	}); err != nil {
 		h.detachSessionOnWriteFailure(sess, err)
 		return nil, err
@@ -705,21 +748,32 @@ func (h *Hub) RequestLogs(ctx context.Context, namespaceID, taskID string, attem
 		return nil, ctx.Err()
 	case <-timer.C:
 		return nil, ErrLogsTimeout
-	case frame := <-waiter.ch:
-		if frame == nil {
+	case res := <-waiter.ch:
+		if res.err != nil {
+			return nil, res.err
+		}
+		if res.frame == nil {
 			return nil, ErrLogsCorrelation
 		}
-		return &LogsResult{Frame: frame}, nil
+		return &LogsResult{
+			Frame:      res.frame,
+			Structured: res.frame.Error == "" && res.frame.Lines != nil,
+		}, nil
 	}
 }
 
-// deliverLogs 把一条 logs_response 交给对应 waiter（严格按 requestId/taskId/attempt 配对）。
+// deliverLogs 把一条 logs_response 交给对应 waiter。
 //
-// 对不上就丢弃（晚到的回包、串到另一个请求的回包）：A 的日志被安到 B 头上是
-// 静默事故，必须靠精确配对挡住。
+// 有界交付（R1-C5）：命中 waiter 时**先把它从登记表移除**再非阻塞投递（cap 1），
+// 所以同一请求最多被交付一次；重复/晚到的回包只能走「没有登记」分支，绝不能在
+// 读循环上阻塞一个 send。配对失败（requestId/taskId/attempt）交付一个明确错误，
+// 不把 A 的日志安到 B 头上。
 func (h *Hub) deliverLogs(sess *Session, frame *protocol.LogsResponseFrame) {
 	h.mu.Lock()
 	waiter := h.logs[frame.RequestID]
+	if waiter != nil {
+		delete(h.logs, frame.RequestID)
+	}
 	h.mu.Unlock()
 	if waiter == nil {
 		h.log.Warn("logs response without request", "request_id", frame.RequestID, "task_id", frame.TaskID)
@@ -728,18 +782,90 @@ func (h *Hub) deliverLogs(sess *Session, frame *protocol.LogsResponseFrame) {
 	if waiter.nodeID != sess.nodeID || waiter.taskID != frame.TaskID {
 		h.log.Warn("logs response correlation mismatch",
 			"request_id", frame.RequestID, "want_task", waiter.taskID, "got_task", frame.TaskID)
-		if frame.Error == "" {
-			waiter.ch <- nil
+		h.deliverLogsOnce(waiter, logResponse{err: ErrLogsCorrelation})
+		return
+	}
+	if err := validateLogsResponse(frame, waiter.attempt); err != nil {
+		h.log.Warn("logs response invalid", "request_id", frame.RequestID,
+			"want_attempt", waiter.attempt, "got_attempt", frame.Attempt, "err", err)
+		h.deliverLogsOnce(waiter, logResponse{err: ErrLogsCorrelation})
+		return
+	}
+	h.deliverLogsOnce(waiter, logResponse{frame: frame})
+}
+
+// deliverLogsOnce 向已从登记表移除的 waiter 做一次非阻塞交付。
+//
+// ch 容量 1 且 waiter 只可能被移除一次：这里永不阻塞；即使极端情况下通道已满，
+// 也只是丢弃一条已经无主的回包，不会卡住读循环。
+func (h *Hub) deliverLogsOnce(waiter *logRequest, res logResponse) {
+	select {
+	case waiter.ch <- res:
+	default:
+	}
+}
+
+// wakeLogsForNode 在会话断开时唤醒该节点所有在飞的日志请求（真实错误，不是等超时）。
+func (h *Hub) wakeLogsForNode(nodeID string, err error) {
+	h.mu.Lock()
+	waiters := make([]*logRequest, 0)
+	for requestID, waiter := range h.logs {
+		if waiter.nodeID != nodeID {
+			continue
 		}
-		return
+		delete(h.logs, requestID)
+		waiters = append(waiters, waiter)
 	}
-	if frame.Error == "" && frame.Attempt != waiter.attempt {
-		h.log.Warn("logs response attempt mismatch",
-			"request_id", frame.RequestID, "want_attempt", waiter.attempt, "got_attempt", frame.Attempt)
-		waiter.ch <- nil
-		return
+	h.mu.Unlock()
+	for _, waiter := range waiters {
+		h.deliverLogsOnce(waiter, logResponse{err: err})
 	}
-	waiter.ch <- frame
+}
+
+// validateLogsResponse 严格校验一条 logs_response 的真实性与关联（R1-C5）。
+//
+//   - 成功：Attempt 必须是**实际**请求的 attempt；lines 必须是非 null 数组；每条
+//     sequence ≥1 且严格递增、stream ∈ stdout/stderr、at 是 RFC3339Nano。
+//   - 错误：错误码 ∈ 封闭集合；不得携带成功 lines；不得用一个错误声称别的
+//     attempt（Attempt 为空或等于请求的 attempt，不伪造 latest）。
+func validateLogsResponse(frame *protocol.LogsResponseFrame, wantAttempt int) error {
+	if frame == nil {
+		return ErrLogsCorrelation
+	}
+	if frame.Error != "" {
+		if frame.Lines != nil {
+			return ErrLogsCorrelation
+		}
+		if frame.Attempt != 0 && frame.Attempt != wantAttempt {
+			return ErrLogsCorrelation
+		}
+		switch frame.Error {
+		case protocol.LogsErrNoLocalArchive, protocol.LogsErrUnreadable, protocol.LogsErrIllegalRequest:
+			return nil
+		default:
+			return ErrLogsCorrelation
+		}
+	}
+	if frame.Attempt != wantAttempt {
+		return ErrLogsCorrelation
+	}
+	if frame.Lines == nil {
+		return ErrLogsCorrelation
+	}
+	last := 0
+	for _, line := range *frame.Lines {
+		if line.Sequence < 1 || line.Sequence <= last {
+			return ErrLogsCorrelation
+		}
+		if line.Stream != protocol.LogStreamStdout && line.Stream != protocol.LogStreamStderr {
+			return ErrLogsCorrelation
+		}
+		if _, terr := time.Parse(time.RFC3339Nano, line.At); terr != nil {
+			return ErrLogsCorrelation
+		}
+		last = line.Sequence
+	}
+	return nil
 }
 
 // detachSessionOnWriteFailure 在写失败时立刻下线该会话（读循环随后也会退出）。
@@ -818,9 +944,6 @@ func namespaceAllowed(authorized []string, slug string) bool {
 
 // deployRequestID 是部署请求的稳定 id：同一次重放保持同一个值（部署行 id 派生）。
 func deployRequestID(deploymentID string) string { return "dep_" + deploymentID }
-
-// newAssignmentID 生成一次派发候选的关联 id（不是执行授权）。
-func newAssignmentID() string { return newRequestID("asg") }
 
 // newRequestID 生成 `<prefix>_<base64url(12B)>` 形式的关联 id。
 func newRequestID(prefix string) string {

@@ -450,7 +450,7 @@ func TestLogsRequestCorrelatesHistoryAndEmptyPrevious(t *testing.T) {
 	_, _ = e.directGrant(t, task)
 
 	// previous 且没有更早 attempt：真空结果，且**不**给节点发请求。
-	result, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 0, true, 2*time.Second)
+	result, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 0, true, 0, 0, 2*time.Second)
 	if err != nil {
 		t.Fatalf("previous 无历史应返回空结果而不是错误: %v", err)
 	}
@@ -470,12 +470,15 @@ func TestLogsRequestCorrelatesHistoryAndEmptyPrevious(t *testing.T) {
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		res, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, 3*time.Second)
+		res, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, 100, 30, 3*time.Second)
 		ch <- outcome{result: res, err: err}
 	}()
 	req, ok := e.read(t, conn).(*protocol.LogsRequestFrame)
 	if !ok || req.TaskID != task.ID || req.Attempt != 1 || req.RequestID == "" {
 		t.Fatalf("logs_request 关联字段不对: %+v", req)
+	}
+	if req.TailLines != 100 || req.SinceSeconds != 30 {
+		t.Fatalf("tailLines/sinceSeconds 必须原样转发（节点侧过滤）: %+v", req)
 	}
 	// 错 taskId 的回包不得被当成结果。
 	e.send(t, conn, &protocol.LogsResponseFrame{
@@ -489,23 +492,30 @@ func TestLogsRequestCorrelatesHistoryAndEmptyPrevious(t *testing.T) {
 	// 正确回包。
 	ch2 := make(chan outcome, 1)
 	go func() {
-		res, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, 3*time.Second)
+		res, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, 100, 30, 3*time.Second)
 		ch2 <- outcome{result: res, err: err}
 	}()
 	req2, ok := e.read(t, conn).(*protocol.LogsRequestFrame)
 	if !ok || req2.RequestID == req.RequestID {
 		t.Fatalf("每次请求必须有新的 requestId: %+v", req2)
 	}
-	e.send(t, conn, &protocol.LogsResponseFrame{
+	response := &protocol.LogsResponseFrame{
 		Type: protocol.FrameLogsResponse, TaskID: task.ID, RequestID: req2.RequestID,
 		Attempt: 1, Stdout: "hello", Stderr: "", Bytes: 5,
-	})
+	}
+	response.SetLogLines([]protocol.LogLine{{
+		Sequence: 1, Stream: protocol.LogStreamStdout, Text: "hello", At: "2024-01-02T03:04:05.123456789Z",
+	}})
+	e.send(t, conn, response)
 	got := <-ch2
 	if got.err != nil || got.result.Frame == nil || got.result.Frame.Stdout != "hello" {
 		t.Fatalf("正确回包未交付: %v/%+v", got.err, got.result)
 	}
-	if got.result.Structured {
-		t.Fatal("当前共享帧没有逐条结构化记录，Structured 必须为 false（受保护协议 gap）")
+	if !got.result.Structured {
+		t.Fatal("成功 logs_response 带真实 lines 时必须标记 Structured")
+	}
+	if lines := got.result.Frame.LogLines(); len(lines) != 1 || lines[0].Text != "hello" {
+		t.Fatalf("真实 lines 未原样转发: %+v", lines)
 	}
 
 	// 节点离线：真实错误，不是空成功。
@@ -513,12 +523,12 @@ func TestLogsRequestCorrelatesHistoryAndEmptyPrevious(t *testing.T) {
 	if !waitFor(t, 2*time.Second, func() bool { return !e.hub.Online(e.node.ID) }) {
 		t.Fatal("节点应已离线")
 	}
-	if _, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, time.Second); !errors.Is(err, ErrNodeOffline) {
+	if _, err := e.hub.RequestLogs(context.Background(), e.ns.ID, task.ID, 1, false, 0, 0, time.Second); !errors.Is(err, ErrNodeOffline) {
 		t.Fatalf("离线节点必须 ErrNodeOffline，得到 %v", err)
 	}
 	// 没有 attempt 的任务：真实错误，不是空成功。
 	pending := e.pendingTask(t, capability)
-	if _, err := e.hub.RequestLogs(context.Background(), e.ns.ID, pending.ID, 0, false, time.Second); !errors.Is(err, ErrNoAttempt) {
+	if _, err := e.hub.RequestLogs(context.Background(), e.ns.ID, pending.ID, 0, false, 0, 0, time.Second); !errors.Is(err, ErrNoAttempt) {
 		t.Fatalf("无 attempt 必须 ErrNoAttempt，得到 %v", err)
 	}
 	// 跨 namespace：任务不可见（404 语义），不是空日志。
@@ -526,7 +536,7 @@ func TestLogsRequestCorrelatesHistoryAndEmptyPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建第二个 ns: %v", err)
 	}
-	if _, err := e.hub.RequestLogs(context.Background(), otherNS.ID, task.ID, 1, false, time.Second); !errors.Is(err, store.ErrNotFound) {
+	if _, err := e.hub.RequestLogs(context.Background(), otherNS.ID, task.ID, 1, false, 0, 0, time.Second); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("跨 ns 日志请求必须 NotFound，得到 %v", err)
 	}
 }

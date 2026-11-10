@@ -1226,7 +1226,7 @@ FULL_GATE3_EXIT=0
 | `R:PURE_V3_TRACE` | v3 显式/确定性 trace id 删除（v4 trace 由接收动作生成；外部幂等键是 `deliveryId`，capability.md §8.4）。 |
 | `R:PURE_V3_INGEST` | v3 trigger 包特有的事件入库/kind/未知源语义删除；v4 统一在 `internal/source`（三入口共用一份回执）。 |
 | `R:PURE_V3_SWEEPER` | v3 sweeper 的 redispatch/nudge/可注入 options 删除；v4 调度循环在 `ws.DispatchOnce`，巡检只做 store 的真实回收/保留/统计。 |
-| `R:V3_CENTRAL` | v4 明确不留中枢内置执行器（capability.md §7：只有脚本 + 节点执行），`internal/executor` 整体删除。 |
+| `R:V3_CENTRAL` | v4 明确不留中枢内置执行器（capability.md §7：只有脚本 + 节点执行），`internal/executor` 整体删除。其中旧 `notify.phone` 中央 Task 成功/失败/缺 to 等专属断言**刻意退役**（CONTRACT 已裁决，不恢复、不要求替代的中央任务通知能力）；独立 POST notify / device / broker / push / auth 域不退役，由现有测试与后 G3/G4 独立域回归守。 |
 | `R:V3_NODE_BINARY` | v4 唯一 Node 产品是 `cmd/anode`（Node 队实现）；旧 `cmd/agent` 二进制整体删除，任何 CLI/apply/cache/emit 语义都不进 G2。 |
 | `R:V4_STORE` | 语义保留，但权威覆盖在 G1 的 store authorized 事务 / artifact / 并发测试；G2 不另造假 store 断言。 |
 | `R:V4_PROTOCOL` | 语义保留，但权威覆盖在 T3 protocol 帧/方向/严格解码/限额测试（共享 wire 只能有一份）。 |
@@ -1288,7 +1288,7 @@ FULL_GATE3_EXIT=0
 | `TestDispatchParamTemplateMissing` | `TestPlanFromSourceParamMissing` |
 | `TestDispatchParamTemplateTypeError` | `TestPrepareParamsTypeMismatch` |
 | `TestDispatchParamTemplateMixed` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
-| `TestDispatchRecursiveDoesNotResolve` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestDispatchRecursiveDoesNotResolve` | `TestPlanFromSourceTemplatesSinglePassAndKeepTypes` |
 | `TestDispatchParamMissingDetailSources` | `TestPlanFromSourceParamMissing` |
 | `TestParamPruneDetailExact` | `TestPlanFromSourceParamMissing` |
 | `TestDispatchDryRunPreviewUsesResolvedParams` | `TestPreviewWritesNothing` |
@@ -1340,8 +1340,8 @@ FULL_GATE3_EXIT=0
 | `TestDispatchExecutableHandlerWithoutNodeIsCentral` | `R:V3_CENTRAL` |
 | `TestRenderTemplate` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
 | `TestRenderTemplateSinglePass` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
-| `TestResolveParamsNoRecursion` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
-| `TestResolveParamsWholeRefKeepsType` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
+| `TestResolveParamsNoRecursion` | `TestPlanFromSourceTemplatesSinglePassAndKeepTypes` |
+| `TestResolveParamsWholeRefKeepsType` | `TestPlanFromSourceTemplatesSinglePassAndKeepTypes` |
 | `TestGetPath` | `TestPlanFromSourceMapsTemplatesAndKeepsOrder` |
 | `TestResolveParamsMissingRefs` | `TestPlanFromSourceParamMissing` |
 | `TestValidateParamTemplatesPlaceholderForms` | `R:PURE_V3_LITERAL` |
@@ -1373,7 +1373,7 @@ FULL_GATE3_EXIT=0
 | `TestDispatchPruneNotDuplicated` | `TestEmitPruneReceiptAndTrace` |
 | `TestDispatchDryRunWritesNoPruneEvent` | `TestPreviewWritesNothing` |
 | `TestDispatchNoOutWritesNoPruneEvent` | `R:PURE_V3_PORT` |
-| `TestDispatchPruneRecordFailureDoesNotBreakDispatch` | `R:V4_POLICY` |
+| `TestDispatchPruneRecordFailureDoesNotBreakDispatch` | `R:V4_POLICY`（v4：剪枝留痕与 emit 同事务，留痕失败必须报错不假成功；对应 `TestEmitPruneFailureIsNotSwallowed`/store S1 事务回滚用例） |
 | `TestPruneEventTypeMapping` | `R:V4_PROTOCOL` |
 | `TestPruneReasons` | `R:V4_PROTOCOL` |
 | `TestPruneMaxHopsCycle` | `R:PURE_V3_PIN` |
@@ -1389,7 +1389,7 @@ FULL_GATE3_EXIT=0
 | `TestApplyFrameLandsInStore` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
 | `TestApplyFrameFailureIsVisible` | `R:V4_STORE` |
 | `TestApplyFrameRejectsBadInput` | `R:V4_PROTOCOL` |
-| `TestApplyFrameUnknownDeploymentIgnored` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestApplyFrameUnknownDeploymentIgnored` | `TestDeployedReceiptAuthorizedNegatives` |
 | `TestApplyFrameJSONShape` | `R:V4_PROTOCOL` |
 | `TestAssignFrameForCarriesDigest` | `R:PURE_V3_ASSIGN` |
 | `TestAssignFrameForOmitsEmptyDigest` | `R:PURE_V3_ASSIGN` |
@@ -1408,7 +1408,7 @@ FULL_GATE3_EXIT=0
 | `TestFrameDirectionTable` | `R:V4_PROTOCOL` |
 | `TestAssignFrameCarriesDigestAndTraceID` | `R:PURE_V3_ASSIGN` |
 | `TestPublishDeployOfflineNode` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
-| `TestPublishDeployCrossNamespaceRejected` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
+| `TestPublishDeployCrossNamespaceRejected` | `TestDeployRejectsUnauthorizedExplicitTargetAtomically` |
 | `TestPublishDeployDeliversFrame` | `TestDeployNotifiesOnlineAndReplaysOnReconnect` |
 | `TestEmitFrameRoutesAndAcks` | `TestEmitRoundTripAndErrors` |
 | `TestEmitFrameRejectedKeepsConnectionOpen` | `TestEmitRoundTripAndErrors` |
@@ -1439,12 +1439,12 @@ FULL_GATE3_EXIT=0
 | `TestLogsFrameWire` | `R:V4_PROTOCOL` |
 | `TestDecodeUpstreamLogsResponse` | `R:V4_PROTOCOL` |
 | `TestFetchLogsDeliversResponse` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
-| `TestFetchLogsNoLocalArchive` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsNoLocalArchive` | `TestLogsWaiterBoundedCorrelationAndWake` |
 | `TestFetchLogsOffline` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
 | `TestFetchLogsCrossNamespace` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
-| `TestFetchLogsTimeout` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
-| `TestFetchLogsDropsUnpairedResponse` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
-| `TestFetchLogsWakesOnDisconnect` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
+| `TestFetchLogsTimeout` | `TestLogsWaiterBoundedCorrelationAndWake` |
+| `TestFetchLogsDropsUnpairedResponse` | `TestLogsWaiterBoundedCorrelationAndWake` |
+| `TestFetchLogsWakesOnDisconnect` | `TestLogsWaiterBoundedCorrelationAndWake` |
 | `TestLogsRequestIDUniqueAndSafe` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
 | `TestCrossNamespaceTaskNotVisible` | `TestLogsRequestCorrelatesHistoryAndEmptyPrevious` |
 | `TestPublishAssignRoutesByNamespace` | `R:V4_STORE` |
@@ -1457,17 +1457,17 @@ FULL_GATE3_EXIT=0
 | `TestResultLegacyOutCreatesNoDownstream` | `TestAcceptGrantsSameSlotAndResultAcks` |
 | `TestResultRecordsTerminalStateWithoutRouting` | `TestAcceptGrantsSameSlotAndResultAcks` |
 | `TestEmitBeforeFailedResultStillRoutes` | `TestEmitRoundTripAndErrors` |
-| `TestUnauthorizedNoUpgrade` | `TestRotatedCredentialGrantsNothing` |
+| `TestUnauthorizedNoUpgrade` | `TestHandshakeRejectsBadTokenAndName` |
 | `TestHandshake` | `TestDispatchFrameCarriesNoExecutionAuthority` |
 | `TestHelloStaleCacheIsPruned` | `R:PURE_V3_WS` |
-| `TestHelloWrongNodeID` | `TestAcceptRejectsInvalidSlotAndIdentity` |
+| `TestHelloWrongNodeID` | `TestHandshakeRejectsBadTokenAndName` |
 | `TestHelloInstances` | `TestRehelloUnknownBusyDoesNotRelease` |
 | `TestHelloAppliedPersists` | `TestConfigAppliedAndAgentFactsPersist` |
 | `TestHelloAppliedIsFullReplacement` | `R:PURE_V3_WS` |
 | `TestHelloAppliedUnknownListsAll` | `R:PURE_V3_WS` |
 | `TestHelloAppliedDigestMismatchResendsDesiredArtifact` | `R:PURE_V3_WS` |
 | `TestHelloProtocolVersion1Rejected` | `R:PURE_V3_WS` |
-| `TestFramesBeforeHelloRejected` | `TestRotatedCredentialGrantsNothing` |
+| `TestFramesBeforeHelloRejected` | `TestHandshakeRejectsPreHelloFrames` |
 | `TestBearerTokenParsing` | `R:PURE_V3_WS` |
 | `TestAuthErrorStatusMapping` | `R:V4_G3` |
 | `TestFrameCodec` | `R:V4_PROTOCOL` |

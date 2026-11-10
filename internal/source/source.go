@@ -77,11 +77,13 @@ type Input struct {
 	Payload json.RawMessage
 }
 
-// TaskRef 是回执里的一条已建任务。
+// TaskRef 是回执里的一条已建任务（含未解析失败任务：真实请求名 + 明确声明的
+// version；没有 digest 事实就不携带 digest 字段）。
 type TaskRef struct {
 	TaskID     string `json:"taskId"`
 	Capability string `json:"capability"`
-	Version    int    `json:"version"`
+	// Version 只在真实解析/明确声明时出现（0 省略，不公开“没有事实”的 0）。
+	Version int `json:"version,omitempty"`
 }
 
 // Receipt 是三个入口共用的接收回执（source.md §5.1，不是资源信封）。
@@ -96,13 +98,16 @@ type Receipt struct {
 	Pruned    []route.Prune `json:"pruned"`
 }
 
-// Ingest 接收一次事件：落事件 → 剪枝留痕 → 建任务，返回统一回执。
+// Ingest 接收一次事件：单次 store.AcceptSourceEvent 原子落「事件 + 投递窗 + 正常
+// 任务 + 未解析失败 Task/错误事件 + 纯剪枝留痕 + 完整回执」，返回统一回执。
 //
-// 顺序与原子性说明：投递窗口与事件行由 `store.InsertEvent` 在**一个事务**里
-// 判定/写入；任务扇出由 `store.CreateTasks` 在**另一个事务**里整批写入。store 当前
-// 没有「事件 + 任务」同一事务的入口（见 G2-WRITER-VERDICT 的精确 gap 记录），所以
-// 事件先落、任务后建：任务批失败时事件仍在（返回错误给调用方重试，重复投递由
-// deliveryId 窗口吸收）。这里不伪造原子性，也不在失败时编造成功回执。
+// 关键边界：
+//   - 预编译的任务/失败/剪枝事实与「源 resource_version CAS + namespaceVarsRevision
+//     pin」同事务校验：源被改/ns 输入被改 → 明确错误 + 0 写（不是重试同一批陈旧参数）。
+//   - 窗口内重复投递返回第一次持久化的**同一份** receipt 字节（first=false），
+//     不建任务、不重算可变资源。
+//   - downstream_missing 是失败 Task + 错误事件（不是剪枝）；`taskId:null` 不用于它。
+//   - 无 deliveryId 同样原子（只是不去重）；dry-run 不调本入口。
 func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	if in.Source == nil {
 		return nil, fmt.Errorf("source: 缺少源行")
@@ -121,63 +126,83 @@ func (s *Service) Ingest(ctx context.Context, in Input) (*Receipt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source: 编码载荷: %w", err)
 	}
-	event := &store.Event{
-		ID:          store.NewEventID(),
-		NamespaceID: src.NamespaceID,
-		TraceID:     traceID,
-		Source:      src.Name,
-		Type:        eventType,
-		Payload:     rawPayload,
-		Reason:      store.EventReasonIngested,
+
+	// 计划先于接收：store 需要 typed 事实与事件同事务写；计划阶段的读失败不落任何行。
+	var (
+		tasks    []*store.Task
+		failures []store.DispatchFailureInputs
+		prunes   []store.PruneInputs
+	)
+	if prune := route.ValidatePayload(s.payloadSchema(src), payload); prune != nil {
+		prunes = append(prunes, store.PruneInputs{
+			Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
+		})
+	} else {
+		plan, err := s.router.PlanFromSource(ctx, src, traceID, payload)
+		if err != nil {
+			return nil, err
+		}
+		tasks = plan.Tasks("")
+		failures = plan.FailureInputs()
+		prunes = plan.PruneInputs()
 	}
-	if in.DeliveryID != "" {
-		deliveryID := in.DeliveryID
-		event.DeliveryID = &deliveryID
-	}
-	window := s.eventWindow(ctx)
-	inserted, err := s.db.InsertEvent(ctx, event, s.Now(), window)
+
+	nsCfg, err := s.db.GetNamespaceConfig(ctx, src.NamespaceID)
 	if err != nil {
-		return nil, fmt.Errorf("source: 落事件: %w", err)
+		return nil, fmt.Errorf("source: 读命名空间输入版本: %w", err)
 	}
-	if !inserted {
-		// 窗口内重复投递：回原 event/trace，不重复派发（source.md §5.1）。
-		return &Receipt{
-			EventID: event.ID, TraceID: event.TraceID, Duplicate: true,
-			Tasks: []TaskRef{}, Pruned: []route.Prune{},
-		}, nil
+	receiptJSON, first, err := s.db.AcceptSourceEvent(ctx, store.SourceEventInputs{
+		NamespaceID:                   src.NamespaceID,
+		SourceID:                      src.ID,
+		ExpectedSourceResourceVersion: src.ResourceVersion,
+		ExpectedNamespaceVarsRevision: nsCfg.Revision,
+		TraceID:                       traceID,
+		Type:                          eventType,
+		Payload:                       rawPayload,
+		DeliveryID:                    in.DeliveryID,
+		WindowSec:                     s.eventWindow(ctx),
+		Now:                           s.Now(),
+		Tasks:                         tasks,
+		Failures:                      failures,
+		Prunes:                        prunes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("source: 接收事件: %w", err)
+	}
+	return receiptFromStore(receiptJSON, first)
+}
+
+// receiptFromStore 把 store 的持久 receipt 投影为公共回执（W6 原字段）。
+//
+// tasks 列**全部真实建立的 task**：正常任务 + 未解析失败任务（真实请求名/明确声明
+// version；没有 digest 事实就不提 digest）。pruned 只含真实纯剪枝；store 内部的
+// failure 事实不新增独立 Resource，也不被当成剪枝。
+func receiptFromStore(raw json.RawMessage, first bool) (*Receipt, error) {
+	var stored store.SourceEventReceipt
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return nil, fmt.Errorf("source: 解码接收回执: %w", err)
 	}
 	receipt := &Receipt{
-		EventID: event.ID, TraceID: event.TraceID,
-		Tasks: []TaskRef{}, Pruned: []route.Prune{},
+		EventID:   stored.EventID,
+		TraceID:   stored.TraceID,
+		Duplicate: !first,
+		Tasks:     []TaskRef{},
+		Pruned:    []route.Prune{},
 	}
-	// 载荷契约：不符合 payloadSchema → event_schema 剪枝，不派发。
-	if prune := route.ValidatePayload(s.payloadSchema(src), payload); prune != nil {
-		if _, perr := s.recordPrune(ctx, src.NamespaceID, traceID, *prune); perr != nil {
-			return nil, perr
-		}
-		receipt.Pruned = append(receipt.Pruned, *prune)
-		return receipt, nil
+	for _, task := range stored.Tasks {
+		receipt.Tasks = append(receipt.Tasks, TaskRef{
+			TaskID: task.TaskID, Capability: task.Capability, Version: task.Version,
+		})
 	}
-	plan, err := s.router.PlanFromSource(ctx, src, traceID, payload)
-	if err != nil {
-		return nil, err
+	for _, failure := range stored.FailedTasks {
+		receipt.Tasks = append(receipt.Tasks, TaskRef{
+			TaskID: failure.TaskID, Capability: failure.Capability, Version: failure.Version,
+		})
 	}
-	for _, prune := range plan.Pruned {
-		if _, perr := s.recordPrune(ctx, src.NamespaceID, traceID, prune); perr != nil {
-			return nil, perr
-		}
-		receipt.Pruned = append(receipt.Pruned, prune)
-	}
-	tasks := plan.Tasks("")
-	if len(tasks) > 0 {
-		if err := s.db.CreateTasks(ctx, tasks); err != nil {
-			return nil, fmt.Errorf("source: 建任务: %w", err)
-		}
-		for _, task := range tasks {
-			receipt.Tasks = append(receipt.Tasks, TaskRef{
-				TaskID: task.ID, Capability: task.Capability, Version: task.Version,
-			})
-		}
+	for _, prune := range stored.Pruned {
+		receipt.Pruned = append(receipt.Pruned, route.Prune{
+			Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
+		})
 	}
 	return receipt, nil
 }
@@ -264,15 +289,11 @@ func (s *Service) PreviewSource(ctx context.Context, src *store.Source, payload 
 		return nil, err
 	}
 	for _, target := range plan.Targets {
-		item := PreviewTarget{
+		preview.Targets = append(preview.Targets, PreviewTarget{
 			Capability: target.Capability, Version: target.Version,
 			Params: target.Params, State: target.State,
 			Reason: target.Reason, Detail: target.Detail,
-		}
-		if item.State == route.StatePruned && item.Reason == "" && len(plan.Pruned) > 0 {
-			item.Reason = plan.Pruned[0].Reason
-		}
-		preview.Targets = append(preview.Targets, item)
+		})
 	}
 	preview.Pruned = append(preview.Pruned, plan.Pruned...)
 	return preview, nil
@@ -313,26 +334,6 @@ func (s *Service) eventWindow(ctx context.Context) int64 {
 		return store.DefaultRetentionEventTTLSec
 	}
 	return cfg.RetentionEventTTLSec
-}
-
-// recordPrune 写一条剪枝留痕并返回真实事件 id。
-func (s *Service) recordPrune(ctx context.Context, namespaceID, traceID string, prune route.Prune) (string, error) {
-	payload, err := json.Marshal(map[string]string{
-		"capability": prune.Capability, "detail": prune.Detail,
-	})
-	if err != nil {
-		payload = json.RawMessage(`{}`)
-	}
-	event := &store.Event{
-		NamespaceID: namespaceID,
-		TraceID:     traceID,
-		Type:        prune.Reason,
-		Payload:     payload,
-	}
-	if err := s.db.InsertPruneEvent(ctx, event); err != nil {
-		return "", fmt.Errorf("source: 写剪枝留痕: %w", err)
-	}
-	return event.ID, nil
 }
 
 // 编译期断言：回执 reason 必须是封闭剪枝词表（防止有人在这里新造一个词）。

@@ -137,10 +137,45 @@ func (p *Plan) Tasks(parentTaskID string) []*store.Task {
 	return out
 }
 
+// PruneInputs 把计划里的**纯剪枝**观察转成 store 的同事务事实（S1-D2/D3）。
+//
+// 只包含 param_* / no_target / event_schema 这一类「事件收到了但没派发」的原因；
+// downstream_missing 是失败 Task（见 FailureInputs），不在这个集合里。
+func (p *Plan) PruneInputs() []store.PruneInputs {
+	out := make([]store.PruneInputs, 0, len(p.Pruned))
+	for _, prune := range p.Pruned {
+		out = append(out, store.PruneInputs{
+			Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
+		})
+	}
+	return out
+}
+
+// FailureInputs 把计划里的未解析目标转成 store 的失败 Task 事实（S1-D1/D2/D3）。
+//
+// Capability 保留**请求里写的引用/名字**（不是解析结果）；Version 只在请求/声明
+// 明确给出时非 0。它建的是 phase=failed、attempt=0 的真实任务 + 错误事件，
+// 不是剪枝。
+func (p *Plan) FailureInputs() []store.DispatchFailureInputs {
+	out := make([]store.DispatchFailureInputs, 0)
+	for _, target := range p.Targets {
+		if target.State != StateMissing {
+			continue
+		}
+		out = append(out, store.DispatchFailureInputs{
+			Capability: target.Capability,
+			Version:    target.Version,
+			Reason:     protocol.ReasonDownstreamMissing,
+			Detail:     target.Detail,
+		})
+	}
+	return out
+}
+
 // resolveCapability 解析一个能力引用（`name` / `name@version`）。
 //
-// 解析不到时返回 (nil, nil)：调用方把这条边记成 `downstream_missing` 观察，
-// 而不是整次触发失败（source.md §4.2：一行失败只剪那一条）。
+// 解析不到时返回 (nil, nil)：调用方把这条边记成 downstream_missing 的**失败 Task +
+// 错误事件**（不是剪枝），而不是整次触发失败（source.md §4.2：一行失败不拖垮其它行）。
 func (r *Router) resolveCapability(ctx context.Context, namespaceID, ref string) (*store.CapabilityVersion, error) {
 	capability, err := r.db.ResolveRef(ctx, namespaceID, ref)
 	if errors.Is(err, store.ErrNotFound) {
@@ -179,20 +214,19 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 			return nil, err
 		}
 		if capability == nil {
+			// 解析不到 = 未解析派发失败（failed Task + 错误事件），不是剪枝：
+			// 只在 plan.Targets 里留 StateMissing，plan.Pruned 不带 downstream_missing。
 			detail := fmt.Sprintf("下游 %q 解析不到", ref)
 			plan.Targets = append(plan.Targets, Target{
-				Ref: ref, Capability: ref, State: StateMissing,
+				Ref: ref, Capability: ref, Version: declaredVersion(ref), State: StateMissing,
 				Reason: protocol.ReasonDownstreamMissing, Detail: detail,
-			})
-			plan.Pruned = append(plan.Pruned, Prune{
-				Capability: ref, Reason: protocol.ReasonDownstreamMissing, Detail: detail,
 			})
 			continue
 		}
 		rendered, missing := sourcespec.RenderParams(declared, payload)
 		if len(missing) > 0 {
 			detail := "需要 " + strings.Join(missing, ", ")
-			plan.Targets = append(plan.Targets, prunedTarget(capability, ref, detail))
+			plan.Targets = append(plan.Targets, prunedTarget(capability, ref, protocol.ReasonParamMissing, detail))
 			plan.Pruned = append(plan.Pruned, Prune{
 				Capability: capability.Name, Reason: protocol.ReasonParamMissing, Detail: detail,
 			})
@@ -201,7 +235,7 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 		params, prune := PrepareParams(capability.Spec.Params, rendered)
 		if prune != nil {
 			prune.Capability = capability.Name
-			plan.Targets = append(plan.Targets, prunedTarget(capability, ref, prune.Detail))
+			plan.Targets = append(plan.Targets, prunedTarget(capability, ref, prune.Reason, prune.Detail))
 			plan.Pruned = append(plan.Pruned, *prune)
 			continue
 		}
@@ -215,16 +249,15 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 }
 
 // prunedTarget 把一条已解析但被剪枝的目标写成 Target（保留解析出的身份便于预览）。
-func prunedTarget(capability *store.CapabilityVersion, ref, detail string) Target {
-	t := Target{
+//
+// reason 必须由调用方逐条给出：目标是逐行求值的，不能拿 plan.Pruned[0] 的
+// 原因兜给所有 target（多条不同原因时那会把预览/诊断说错）。
+func prunedTarget(capability *store.CapabilityVersion, ref, reason, detail string) Target {
+	return Target{
 		Ref: ref, Capability: capability.Name, Version: capability.Version,
 		Digest: capability.Digest, CapabilityID: capability.ID,
-		State: StatePruned, Detail: detail,
+		State: StatePruned, Reason: reason, Detail: detail,
 	}
-	if capability != nil {
-		t.Reason = ""
-	}
-	return t
 }
 
 // ErrNotDeclared 是 emit 目标不在父能力 `spec.next` 里的拒绝（400 target_not_declared）。
@@ -250,32 +283,32 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	if err != nil {
 		return nil, fmt.Errorf("读取父能力 %s: %w", parent.Capability, err)
 	}
-	if !declaresTarget(parentCap.Spec.Next, to) {
-		return nil, fmt.Errorf("%w: %q 不在 %s 的 next (%v) 里",
+	// 父 next 是**当前声明**（同 version 可变图配置）：每次 emit 重读声明，
+	// 已建子任务/重试仍按建行时钉住的 version/digest 走。
+	effective, declared := declaredRef(parentCap.Spec.Next, to)
+	if !declared {
+		return nil, fmt.Errorf("%w: %q 不在 %s 的 next (%v) 里（或同名钉版无法唯一选择）",
 			ErrNotDeclared, to, parentCap.Name, parentCap.Spec.Next)
 	}
 	plan := &Plan{NamespaceID: parent.NamespaceID, TraceID: parent.TraceID}
-	capability, rerr := r.resolveCapability(ctx, parent.NamespaceID, to)
+	// effective 是声明侧的引用（裸 name 跟随 latest / name@v 用 v）；
+	// ResolveRef 的全局 latest 规则不改，选择在 route 本地完成。
+	capability, rerr := r.resolveCapability(ctx, parent.NamespaceID, effective)
 	if rerr != nil {
 		return nil, rerr
 	}
 	if capability == nil {
 		detail := fmt.Sprintf("下游 %q 解析不到", to)
 		plan.Targets = append(plan.Targets, Target{
-			Ref: to, Capability: to, State: StateMissing,
+			Ref: to, Capability: to, Version: declaredVersion(effective), State: StateMissing,
 			Reason: protocol.ReasonDownstreamMissing, Detail: detail,
-		})
-		plan.Pruned = append(plan.Pruned, Prune{
-			Capability: to, Reason: protocol.ReasonDownstreamMissing, Detail: detail,
 		})
 		return plan, nil
 	}
 	input, ok := DecodePayload(data)
 	if !ok {
 		detail := "emit data 必须是 JSON 对象"
-		t := prunedTarget(capability, to, detail)
-		t.Reason = protocol.ReasonParamSchema
-		plan.Targets = append(plan.Targets, t)
+		plan.Targets = append(plan.Targets, prunedTarget(capability, to, protocol.ReasonParamSchema, detail))
 		plan.Pruned = append(plan.Pruned, Prune{
 			Capability: capability.Name, Reason: protocol.ReasonParamSchema, Detail: detail,
 		})
@@ -284,9 +317,7 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	params, prune := PrepareParams(capability.Spec.Params, input)
 	if prune != nil {
 		prune.Capability = capability.Name
-		t := prunedTarget(capability, to, prune.Detail)
-		t.Reason = prune.Reason
-		plan.Targets = append(plan.Targets, t)
+		plan.Targets = append(plan.Targets, prunedTarget(capability, to, prune.Reason, prune.Detail))
 		plan.Pruned = append(plan.Pruned, *prune)
 		return plan, nil
 	}
@@ -298,26 +329,59 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 	return plan, nil
 }
 
-// declaresTarget 判断 emit 目标是否落在 next 的声明范围内。
+// declaredRef 把一次 emit 的 `to` 解析到父 next 的**声明引用**上。
 //
-// 规则（capability.md §2.1「next 的三种写法」）：
-//   - next 里的裸名表示「跟随该名字」：任何同名的 to（含 name@version）都算声明；
-//   - next 里的 `name@version` 是钉死某版：to 必须同名；to 带版本时必须同版本，
-//     to 不带版本时仍算声明（由 ResolveRef 解析到 latest，钉版语义仍由父能力的
-//     next 表达，不在这一层另造一套版本选择）。
-func declaresTarget(next []string, to string) bool {
+// 父已裁决的语义（R1-C6）：
+//   - 裸 `to=name`：必须在同 basename 的声明里**唯一**命中；命中裸声明 = 跟随
+//     latest（返回 "name"），命中唯一 `name@v` 钉版 = 用 v（返回 "name@v"）。
+//     同名多条不同钉版（或裸名 + 钉版混写）→ 无法唯一选择 → 未声明（不偷偷 latest）。
+//   - 显式 `to=name@v`：只能匹配**已声明的精确引用** `name@v`；不能仅因 next 里
+//     有裸 `name` 就允许任意指定旧/新版。
+//
+// 不扩大错误码：唯一失败结论仍是 target_not_declared（ErrNotDeclared）。
+func declaredRef(next []string, to string) (string, bool) {
 	toName, toVer, toPinned := splitRef(to)
+	if toName == "" {
+		return "", false
+	}
+	unique := make(map[string]bool)
 	for _, ref := range next {
 		name, ver, pinned := splitRef(ref)
 		if name != toName {
 			continue
 		}
-		if pinned && toPinned && ver != toVer {
+		if toPinned {
+			// 显式钉版只认精确声明；坏版本写法（ver<0）永不匹配。
+			if pinned && ver == toVer {
+				return fmt.Sprintf("%s@%d", name, ver), true
+			}
 			continue
 		}
-		return true
+		if pinned {
+			if ver < 0 {
+				continue // 坏的钉版写法永不匹配（fail closed）
+			}
+			unique[fmt.Sprintf("%s@%d", name, ver)] = true
+		} else {
+			unique[name] = true
+		}
 	}
-	return false
+	if len(unique) != 1 {
+		return "", false
+	}
+	for ref := range unique {
+		return ref, true
+	}
+	return "", false
+}
+
+// declaredVersion 取引用里明确声明的版本（裸名 = 0 = 没有声明事实）。
+func declaredVersion(ref string) int {
+	_, ver, pinned := splitRef(ref)
+	if !pinned || ver < 0 {
+		return 0
+	}
+	return ver
 }
 
 // splitRef 把 `name` / `name@version` 拆成 (name, version, pinned)。
