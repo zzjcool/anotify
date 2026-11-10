@@ -112,7 +112,7 @@ func artifactContentDisposition(logicalPath string) string {
 	return value
 }
 
-// artifactSpoolOrNil 返回 deps 里的托管池（nil = 未配置）。
+// artifactSpool 返回 deps 里的托管池（nil = 未配置）。
 func (d *serverDeps) artifactSpool() *resultspool.Store {
 	if d == nil {
 		return nil

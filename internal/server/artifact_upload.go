@@ -276,9 +276,12 @@ func (h *artifactUploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		retry, beginErr := h.db.BeginArtifactUpload(ctx, auth, in)
 		if beginErr != nil {
 			h.compensate(ctx, log, lc, tickets, finalID)
+			// 只记错误**类别**：store 的 ErrLeaseMismatch 文本里带 leaseId/attempt
+			// （授权事实），与本文件「授权类失败不落凭证」的纪律保持一致。
 			log.Warn("artifact upload ticket refresh failed",
 				append([]any{"event", "artifact.upload.retry_failed", "reason", "ticket_refresh",
-					"ticket_error", err.Error(), "error", beginErr.Error()}, lc.attrs()...)...)
+					"ticket_error_class", uploadAuthFailureClass(err),
+					"error_class", uploadAuthFailureClass(beginErr)}, lc.attrs()...)...)
 			h.rejectError(w, log, lc, beginErr)
 			return
 		}

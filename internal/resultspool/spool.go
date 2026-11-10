@@ -94,15 +94,18 @@ func ensurePrivateDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("resultspool: 创建目录 %s: %w", dir, err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("resultspool: 收紧目录权限 %s: %w", dir, err)
-	}
+	// 先 Lstat **再** Chmod：Chmod 会跟随符号链接，若顺序反过来，把 root 配成一个
+	// 指向别处的符号链接会先去改**链接目标**的权限、然后再拒绝使用这个目录
+	// （「改了权限却不用它」）。先拒绝，就永远不会碰 root 之外的 inode。
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("resultspool: 检查目录 %s: %w", dir, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("resultspool: %s 不是普通目录（拒绝符号链接/特殊文件）", dir)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("resultspool: 收紧目录权限 %s: %w", dir, err)
 	}
 	return nil
 }

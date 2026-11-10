@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -164,6 +165,15 @@ func TestArtifactUploadUnavailableWhenSpoolMissing(t *testing.T) {
 		nil, env.uploadHeaders("reports/x.md"))
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (body=%s)", rr.Code, rr.Body.String())
+	}
+	// 错误体必须是 A1 的动作文档形状（节点客户端只解析 {"error":…}）；只断言状态码
+	// 会让「部署未配置」在节点侧退化成不可诊断的 transport。
+	var body map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("503 body 不是 JSON 对象: %v (body=%s)", err, rr.Body.String())
+	}
+	if len(body) != 1 || body["error"] != artifactErrUnavailable {
+		t.Fatalf("503 body = %v, want exactly {\"error\":%q}", body, artifactErrUnavailable)
 	}
 	env.assertNoArtifactWrites(t)
 }

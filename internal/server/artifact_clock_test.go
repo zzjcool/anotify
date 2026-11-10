@@ -19,14 +19,6 @@ import (
 // 所以这里用**毫秒**注入，并且做成双向判据：同一份 live 副本在毫秒时钟下必须 200，
 // 推到 8 天后必须 410。少了任何一边，单位错了都不会红。
 
-// downloadMuxFor 建一个与生产接线一致的下载 mux（会话中间件 + no-store）。
-func downloadMuxFor(env *artifactEnv) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.Handle("GET /v1/namespaces/{ns}/tasks/{taskId}/artifacts/{sha256}",
-		noStore(env.deps.session(http.HandlerFunc(newArtifactDownloadAPI(env.deps).get))))
-	return mux
-}
-
 // TestArtifactDownloadMillisecondClockKeepsLiveCopyLive：毫秒时钟下 live 副本必须 200。
 //
 // 若 handler 把毫秒直接当秒传给 store，`expires_at`（≈ now+7d 的秒）会远小于
@@ -47,7 +39,7 @@ func TestArtifactDownloadMillisecondClockKeepsLiveCopyLive(t *testing.T) {
 	}
 
 	env.deps.Now = nowMilli // 生产口径：毫秒
-	rr := env.do(downloadMuxFor(env), http.MethodGet,
+	rr := env.do(downloadMux(env), http.MethodGet,
 		env.downloadURL(env.ns.Slug, env.task.ID, ref.SHA256), nil, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200（毫秒时钟被当成秒 = 所有 live 副本误判过期）body=%s",
@@ -64,7 +56,7 @@ func TestArtifactDownloadMillisecondClockExpiresPastTTL(t *testing.T) {
 
 	future := time.Now().Add(8 * 24 * time.Hour).UnixMilli()
 	env.deps.Now = func() int64 { return future }
-	rr := env.do(downloadMuxFor(env), http.MethodGet,
+	rr := env.do(downloadMux(env), http.MethodGet,
 		env.downloadURL(env.ns.Slug, env.task.ID, ref.SHA256), nil, nil)
 	if rr.Code != http.StatusGone {
 		t.Fatalf("status = %d, want 410（8 天 > 7 天 TTL；body=%s）", rr.Code, rr.Body.String())
@@ -79,7 +71,7 @@ func TestArtifactDownloadMissingClockFallsBackToStoreNow(t *testing.T) {
 	ref := env.seed(t, "reports/fallback.md", []byte("clock-fallback"))
 	env.complete(t, ref)
 	env.deps.Now = nil
-	rr := env.do(downloadMuxFor(env), http.MethodGet,
+	rr := env.do(downloadMux(env), http.MethodGet,
 		env.downloadURL(env.ns.Slug, env.task.ID, ref.SHA256), nil, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with store.Now fallback (body=%s)", rr.Code, rr.Body.String())

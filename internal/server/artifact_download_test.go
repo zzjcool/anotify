@@ -325,6 +325,17 @@ func TestArtifactDownloadNoHostFileFallback(t *testing.T) {
 	if err := os.WriteFile(decoy, content, 0o600); err != nil {
 		t.Fatalf("写 decoy: %v", err)
 	}
+	// 再放一个**按逻辑 path 拼在托管根内**的 decoy：能判别「用 root+entry.Path 拼路径」
+	// 这类实现（它们会读到根内这份非对象文件并 200）。没有这条，阴性只证明
+	// 「那个无关 decoy 没被读到」。
+	pathDecoy := filepath.Join(env.spool.Root(), "reports", "fallback.md")
+	if err := os.MkdirAll(filepath.Dir(pathDecoy), 0o700); err != nil {
+		t.Fatalf("建 path decoy 目录: %v", err)
+	}
+	pathDecoyContent := []byte("must never be served: root+logical-path is not an object id")
+	if err := os.WriteFile(pathDecoy, pathDecoyContent, 0o600); err != nil {
+		t.Fatalf("写 path decoy: %v", err)
+	}
 	// 删掉托管副本：元数据仍在（manifest 行还在），字节没了。
 	if err := os.Remove(objectPath(t, env)); err != nil {
 		t.Fatalf("移除托管对象: %v", err)
@@ -337,6 +348,7 @@ func TestArtifactDownloadNoHostFileFallback(t *testing.T) {
 	rr := env.do(mux, http.MethodGet, env.downloadURL(env.ns.Slug, env.task.ID, tk.SHA256), nil, nil)
 	downloadAssertStatus(t, rr, http.StatusGone, reasonArtifactExpired, "副本已清理")
 	downloadAssertNoArtifactBytes(t, rr, content, "副本已清理")
+	downloadAssertNoArtifactBytes(t, rr, pathDecoyContent, "副本已清理（root+逻辑 path 的 decoy）")
 
 	// decoy 仍在且内容未变：错误路径绝不读/删托管根之外的文件。
 	stillThere, err := os.ReadFile(decoy)
