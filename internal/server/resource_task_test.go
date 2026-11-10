@@ -488,8 +488,17 @@ func TestTaskResourceDownstreamMissingShape(t *testing.T) {
 
 	doc := trWant(t, env.do(http.MethodGet, env.taskPath(env.ns, taskID, ""), nil), http.StatusOK)
 	spec := trObject(t, doc, "spec")
-	if got := spec["capability"]; got != nil {
-		t.Fatalf("未解析任务的 spec.capability 必须是 null（没有能力行 / 没有 digest 事实），得到 %v", got)
+	// S1/E1：失败 Task 必须保留**请求 basename**（否则「想调什么」这个事实就丢了），
+	// 但没有解析出能力行 → version / digest 必须省略，不能公开哨兵 0 或编一个 hash。
+	capi := trObject(t, spec, "capability")
+	if got := trString(t, capi, "name"); got != "fixer" {
+		t.Fatalf("spec.capability.name = %q, want 请求 basename fixer", got)
+	}
+	if got, ok := capi["version"]; ok && got != nil {
+		t.Fatalf("未声明版本必须省略 version，得到 %v", got)
+	}
+	if got, ok := capi["digest"]; ok && got != nil && got != "" {
+		t.Fatalf("未解析能力必须省略 digest，得到 %v", got)
 	}
 	status := trObject(t, doc, "status")
 	if got := trString(t, status, "phase"); got != store.TaskFailed {
@@ -891,9 +900,11 @@ func TestTaskResourceEventsAndTrace(t *testing.T) {
 // TestTaskResourceListFilters 列表过滤走 store.TaskFilter（显式白名单，不引 selector）。
 func TestTaskResourceListFilters(t *testing.T) {
 	env := newTaskResEnv(t)
-	pendingA := env.insertTask(seededTask{trace: "trace_a", capName: "review"})
-	runningB := env.insertTask(seededTask{trace: "trace_b", capName: "notify", phase: store.TaskRunning, attempt: 1})
-	_ = env.insertTask(seededTask{trace: "trace_a", capName: "notify"})
+	// created_at 显式错开：同一秒的三行靠 id 破平局，顺序不可断言（store 的序是 created_at desc, id desc）。
+	base := store.Now() - 10
+	pendingA := env.insertTask(seededTask{trace: "trace_a", capName: "review", createdAt: base})
+	runningB := env.insertTask(seededTask{trace: "trace_b", capName: "notify", phase: store.TaskRunning, attempt: 1, createdAt: base + 1})
+	newest := env.insertTask(seededTask{trace: "trace_a", capName: "notify", createdAt: base + 2})
 
 	ids := func(doc map[string]any) []string {
 		out := []string{}
@@ -913,8 +924,11 @@ func TestTaskResourceListFilters(t *testing.T) {
 		t.Fatalf("capability=notify 过滤得到 %v, want 2 条", got)
 	}
 	got := ids(trWant(t, env.do(http.MethodGet, env.tasksPath()+"?limit=1", nil), http.StatusOK))
-	if len(got) != 1 || got[0] != pendingA {
-		t.Fatalf("limit=1 应回最新一条 %s，得到 %v", pendingA, got)
+	if len(got) != 1 || got[0] != newest {
+		t.Fatalf("limit=1 应回最新一条 %s，得到 %v", newest, got)
+	}
+	if pendingA == runningB || pendingA == newest || runningB == newest {
+		t.Fatal("夹具 id 撞了")
 	}
 	// 非整数 limit 是调用方错误（不静默落回默认值）。
 	trReason(t, env.do(http.MethodGet, env.tasksPath()+"?limit=abc", nil), http.StatusBadRequest, reasonBadRequest)

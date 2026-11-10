@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -22,7 +23,7 @@ import (
 //
 // 两个维度都要摆：token 维给一个足够大的额度，否则它会先于 IP 维把既有断言打乱
 // （perMin 在这些老用例里只代表 IP 维的额度）。
-func newHookRateLimitEnv(t *testing.T, perMin int) *nsTestEnv {
+func newHookRateLimitEnv(t *testing.T, perMin int) *hookTestEnv {
 	t.Helper()
 	return newHookRateLimitEnvTuned(t, perMin, testHookTokenPerMinUnlimited)
 }
@@ -31,9 +32,9 @@ func newHookRateLimitEnv(t *testing.T, perMin int) *nsTestEnv {
 const testHookTokenPerMinUnlimited = 1_000_000
 
 // newHookRateLimitEnvTuned 分别指定 IP 维与 token 维的额度。
-func newHookRateLimitEnvTuned(t *testing.T, ipPerMin, tokenPerMin int) *nsTestEnv {
+func newHookRateLimitEnvTuned(t *testing.T, ipPerMin, tokenPerMin int) *hookTestEnv {
 	t.Helper()
-	env := newNSTestEnv(t)
+	env := newHookTestEnv(t)
 	createWebhookSource(t, env, "rl-src", "tok-rl")
 
 	oldIP, oldToken := rlHookIP, rlHookToken
@@ -44,13 +45,15 @@ func newHookRateLimitEnvTuned(t *testing.T, ipPerMin, tokenPerMin int) *nsTestEn
 }
 
 // createWebhookSource 直接走 store 建一个 webhook 源（token 就是它的 URL 段）。
-func createWebhookSource(t *testing.T, env *nsTestEnv, name, token string) *store.Source {
+func createWebhookSource(t *testing.T, env *hookTestEnv, name, token string) *store.Source {
 	t.Helper()
 	src := &store.Source{
 		NamespaceID: env.nsID, Name: name, Kind: store.SourceKindWebhook,
 		Config:  json.RawMessage(`{"token":"` + token + `"}`),
 		Enabled: true,
-		Targets: []store.SourceTarget{{CapabilityID: env.builtinCapID(t, env.nsID, "notify.phone")}},
+		// v4 的出口声明是 sourcespec.Target（能力**引用**：名字 = 跟随 latest），
+		// 不再是 v3 的 CapabilityID。夹具的能力由 newHookTestEnv 建出。
+		Targets: []sourcespec.Target{{Capability: env.capability}},
 	}
 	if err := env.db.CreateSource(context.Background(), src); err != nil {
 		t.Fatalf("create webhook source %s: %v", name, err)
@@ -98,7 +101,7 @@ func TestHookRateLimitedNotByToken(t *testing.T) {
 		NamespaceID: env.nsID, Name: "rl-src-2", Kind: store.SourceKindWebhook,
 		Config:  json.RawMessage(`{"token":"tok-rl-2"}`),
 		Enabled: true,
-		Targets: []store.SourceTarget{{CapabilityID: env.builtinCapID(t, env.nsID, "notify.phone")}},
+		Targets: []sourcespec.Target{{Capability: env.capability}},
 	}
 	if err := env.db.CreateSource(context.Background(), src); err != nil {
 		t.Fatalf("create webhook source 2: %v", err)

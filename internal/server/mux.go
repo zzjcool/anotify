@@ -41,8 +41,8 @@ func NewMux(cfg Config) http.Handler {
 //	背压 → 会话中间件 → 限流 → route.Router / ws.Hub / source.Service / trigger / lease.Sweeper
 //	→ 资源域 register(mux) → 节点协议 → 健康检查 / pprof / 静态兜底
 //
-// 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：`internal/executor`（中枢
-// 执行器，连带 notify.phone / push.CentralNotifier 的接线）、`ws.NewNodeHandler`（hub 自己
+// 刻意**不**再装配的东西（v4 退役，见 331 卡 D0.2 / D0.3）：旧中枢执行器包（连带
+// notify.phone / push.CentralNotifier 的接线）、`ws.NewNodeHandler`（hub 自己
 // 就是 /v1/node/stream 的 handler）、`db.BackfillBuiltinCapabilities`（内置能力播种随
 // 中央执行域一起退役）、`source.Trigger` / `source.Scheduler`（换成 source.Service +
 // trigger.Scheduler）、`lease.New` + Redispatch/Nudge/SetNotBefore 那一套重派回调
@@ -128,7 +128,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 
 	// 4. Web Push（P-256 VAPID 密钥）
 	//
-	// v4 只保留**密钥的装载与公钥下发**（GET /v1/vapid-public-key）：随 `internal/executor`
+	// v4 只保留**密钥的装载与公钥下发**（GET /v1/vapid-public-key）：随旧中枢执行器包
 	// 退役的 `push.CentralNotifier`（notify.phone 的内置执行者）带走了「谁发推送」这件事，
 	// v4 里推送由节点的能力进程自己发（能力正文带它需要的密钥材料），中枢不再构造 Sender。
 	// VAPID 缺失仍然只 WARN：绝大多数开发/裸机部署本来就没配推送，那不是启动错误。

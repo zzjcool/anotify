@@ -463,16 +463,17 @@ func TestPlaybookResourceCreateBodyRules(t *testing.T) {
 			wantReason: "BadRequest",
 		},
 		{
-			// namespace 是路径段，不是可写 metadata（W3 / decodeWriteEnvelope 白名单）：
-			// body 里带它必须明确拒绝，不能静默忽略。
-			name: "metadata.namespace 不可写",
+			// namespace 的身份由路径段决定：body 里的 metadata.namespace 可以与 path
+			// 相同（省略也行），但**不同**必须明确拒绝——静默以 path 为准会让调用方
+			// 以为自己写到了另一个命名空间（api-conventions §3.2 namespace_mismatch）。
+			name: "metadata.namespace 与路径冲突",
 			body: map[string]any{
 				"apiVersion": "anotify/v1", "kind": "Playbook",
 				"metadata": map[string]any{"name": slug, "namespace": "another-ns"},
 				"spec":     map[string]any{"files": files},
 			},
 			wantCode:   http.StatusBadRequest,
-			wantReason: "unknown_field",
+			wantReason: "namespace_mismatch",
 		},
 	}
 	for _, tc := range cases {

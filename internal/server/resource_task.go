@@ -708,13 +708,24 @@ func taskSpecOf(t *store.Task) taskSpecDoc {
 		doc.ParentTaskID = &parent
 		doc.ParentRef = &taskRefDoc{Kind: "Task", Name: parent}
 	}
-	// capability_id 为空 = 未解析派发失败（唯一允许没有能力行的形状）：spec.capability 给 null。
+	// capability_id 为空 = 未解析派发失败（唯一允许没有能力行的形状）。
+	//
+	// 但 **name 必须保留**：S1/E1 要求失败 Task 保「真实请求 basename」，否则控制台与
+	// CLI 只能看到一条「不知道想调什么」的失败任务。version / digest 才是没有事实的
+	// 部分——未声明版本时省略（不公开哨兵 0），没有解析出 digest 时省略字符串。
+	ref := &taskCapabilityRef{Name: t.Capability}
 	if t.CapabilityID != "" {
-		ref := &taskCapabilityRef{Name: t.Capability, Digest: t.Digest}
+		ref.Digest = t.Digest
 		if t.Version > 0 {
 			version := t.Version
 			ref.Version = &version
 		}
+	} else if t.Version > 0 {
+		// 请求显式声明了正版本（但未解析出能力行）：保留声明值，不造 digest。
+		version := t.Version
+		ref.Version = &version
+	}
+	if ref.Name != "" {
 		doc.Capability = ref
 	}
 	return doc
