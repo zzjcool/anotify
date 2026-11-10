@@ -472,6 +472,12 @@ func validateV4Layout(db *sql.DB, f databaseFormat) error {
 				problems = append(problems, "缺唯一约束 "+table+" ("+strings.Join(cols, ", ")+")")
 			}
 		}
+		// CHECK 约束是 PRAGMA 看不见的业务不变量（未解析失败行的形状、单行配置表的 id）。
+		// 参照侧与实测侧走同一个 reader（baselineLayout 从内嵌 schema.sql 自动派生），
+		// 所以「换名字、改表达式、加约束、删约束」都会被抓到——逐条等价，不是「包含」。
+		for _, problem := range compareChecks(table, want[table].checks, got.checks) {
+			problems = append(problems, problem)
+		}
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
@@ -552,7 +558,8 @@ type uniqueIndex struct {
 type tableLayout struct {
 	columns              map[string]columnLayout
 	unique               []uniqueIndex
-	foreignKeys          []string // 每条 FK 一组，按 seq 保留复合键顺序，忽略 SQLite 分配的 id。
+	foreignKeys          []string          // 每条 FK 一组，按 seq 保留复合键顺序，忽略 SQLite 分配的 id。
+	checks               []checkConstraint // 按 name 排序；PRAGMA 不暴露 CHECK，只能从 DDL 取。
 	withoutRowID, strict int
 }
 
@@ -587,6 +594,12 @@ func readTableLayout(db *sql.DB, table string) (tableLayout, error) {
 		return out, err
 	}
 	out.unique, err = uniqueIndexesDB(db, table)
+	if err != nil {
+		return out, err
+	}
+	// CHECK 只能从建表 DDL 取。DDL 读不出/解析不了时返回 error 由调用方包装成
+	// ErrSchemaInvalid：fail closed，不许把「无法判定」当成「没有 CHECK」放行。
+	out.checks, err = checksFromDDL(db, table)
 	return out, err
 }
 
@@ -692,6 +705,273 @@ func primaryKeys(layout tableLayout) [][]indexColumn {
 		}
 	}
 	return keys
+}
+
+// checkConstraint 是表上的一条 CHECK 约束。
+//
+// 为什么不用 PRAGMA：SQLite 的 pragma_table_xinfo / index_list / foreign_key_list 都
+// 不暴露 CHECK，它只存在于 sqlite_master.sql 的 DDL 文本里——所以必须从 DDL 取，
+// 走与 validNullPredicate 同一套 token 词法（注释/引号不能拿来伪造）。
+//
+// name：显式 CONSTRAINT 名原样保留；列级 CHECK 用列名本身；无名表级 CHECK 用 "check#<n>"
+// （n = 该表无名表级约束的 1-based 序号）。展示名由 compareChecks 统一加 "<表>." 前缀，
+// 所以错误文案里表名只出现一次（tasks.tasks_unresolved_failure_shape / system_config.id /
+// tasks.check#1）。参照侧与实测侧走同一个 reader，所以「换名 + 换表达式」会同时表现为缺一条/多一条。
+type checkConstraint struct {
+	name   string
+	tokens string
+}
+
+// ddlToken 是 DDL 分词结果中的一项。
+//
+// bare 只对「裸词/裸标点」为真：引号标识符（"CHECK"）与字符串字面量（'CHECK'）
+// 永远不会被当成 CREATE/CHECK 这类关键字，否则一个列名就能伪造一条约束。
+type ddlToken struct {
+	text string // 去引号后的原样文本（保留大小写）：具名约束/表名/列名用它
+	norm string // 比较用的规范形式：标识符与裸词转大写，字符串字面量原样
+	bare bool
+}
+
+// isBare 报告 token 是不是「裸 token 且规范形式等于 want」。
+func isBare(tok ddlToken, want string) bool { return tok.bare && tok.norm == want }
+
+// tokenizeSchemaDDL 用与 validNullPredicate 同一套 SQL 词法切 DDL，并丢弃注释。
+//
+// 先丢注释是必须的：baseline 的 tasks DDL 里就有一行注释提「两条 CHECK」，
+// 不丢注释的话「写注释」就能凭空造出一条约束（反之也能把一条真约束注释掉）。
+func tokenizeSchemaDDL(ddl string) []ddlToken {
+	var out []ddlToken
+	for _, raw := range schemaSQLToken.FindAllString(ddl, -1) {
+		if strings.HasPrefix(raw, "--") || strings.HasPrefix(raw, "/*") {
+			continue
+		}
+		switch {
+		case raw[0] == '\'':
+			// 字符串字面量原样保留：'failed' 与 'FAILED' 是不同的值，不能一起大写化。
+			out = append(out, ddlToken{text: raw, norm: raw})
+		case len(raw) >= 2 && (raw[0] == '"' || raw[0] == '`' || raw[0] == '['):
+			quote := string(raw[0])
+			text := strings.ReplaceAll(raw[1:len(raw)-1], quote+quote, quote)
+			out = append(out, ddlToken{text: text, norm: strings.ToUpper(text)})
+		default:
+			out = append(out, ddlToken{text: raw, norm: strings.ToUpper(raw), bare: true})
+		}
+	}
+	return out
+}
+
+// checksFromDDL 从 sqlite_master 的建表 DDL 里读出该表的全部 CHECK 约束。
+//
+// fail closed：DDL 取不到（空/NULL/查不到表）或不符合 CREATE TABLE 的语法形状，
+// 一律返回 error 由调用方包成 ErrSchemaInvalid——「读不出 CHECK」绝不能被当成
+// 「没有 CHECK」放行，那正是「掏空 CHECK 的库能过门禁」这个 bug 的根。
+func checksFromDDL(db *sql.DB, table string) ([]checkConstraint, error) {
+	var ddl sql.NullString
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&ddl); err != nil {
+		return nil, fmt.Errorf("读取 %s 的建表 DDL：%w", table, err)
+	}
+	if !ddl.Valid || strings.TrimSpace(ddl.String) == "" {
+		return nil, fmt.Errorf("%s 没有可读的建表 DDL（无法判定 CHECK 约束）", table)
+	}
+	return parseChecksFromDDL(table, ddl.String)
+}
+
+// parseChecksFromDDL 按 CREATE TABLE 的括弧结构把 DDL 切成「定义项」，逐项取 CHECK。
+// 任何不符合这个形状的 DDL（缺括号、括号不平衡、CHECK 后不是括号）都返回 error。
+func parseChecksFromDDL(table, ddl string) ([]checkConstraint, error) {
+	malformed := func(reason string) error {
+		return fmt.Errorf("%s 的建表 DDL 无法解析：%s", table, reason)
+	}
+	tokens := tokenizeSchemaDDL(ddl)
+	i := 0
+	if i >= len(tokens) || !isBare(tokens[i], "CREATE") {
+		return nil, malformed("不是 CREATE 语句")
+	}
+	i++
+	if i < len(tokens) && (isBare(tokens[i], "TEMP") || isBare(tokens[i], "TEMPORARY")) {
+		i++
+	}
+	if i >= len(tokens) || !isBare(tokens[i], "TABLE") {
+		return nil, malformed("CREATE 后不是 TABLE")
+	}
+	i++
+	if i < len(tokens) && isBare(tokens[i], "IF") {
+		if i+2 >= len(tokens) || !isBare(tokens[i+1], "NOT") || !isBare(tokens[i+2], "EXISTS") {
+			return nil, malformed("IF 后不是 NOT EXISTS")
+		}
+		i += 3
+	}
+	if i >= len(tokens) {
+		return nil, malformed("缺表名")
+	}
+	if tokens[i].text != table {
+		return nil, malformed("DDL 的表名不是 " + table)
+	}
+	i++
+	if i >= len(tokens) || !isBare(tokens[i], "(") {
+		return nil, malformed("表名后不是括号")
+	}
+	// 看表级括号的整体范围。
+	end, depth := -1, 0
+	for j := i; j < len(tokens); j++ {
+		switch {
+		case isBare(tokens[j], "("):
+			depth++
+		case isBare(tokens[j], ")"):
+			depth--
+			if depth == 0 {
+				end = j
+			}
+		}
+		if depth < 0 {
+			break
+		}
+		if end >= 0 {
+			break
+		}
+	}
+	if end < 0 {
+		return nil, malformed("表定义括号不平衡")
+	}
+	// 深度 0 的逗号切分定义项（列定义/表级约束）。
+	var items [][]ddlToken
+	var item []ddlToken
+	level := 0
+	for j := i + 1; j < end; j++ {
+		tok := tokens[j]
+		switch {
+		case isBare(tok, "("):
+			level++
+		case isBare(tok, ")"):
+			level--
+			if level < 0 {
+				return nil, malformed("定义项内括号不平衡")
+			}
+		}
+		if level == 0 && isBare(tok, ",") {
+			items = append(items, item)
+			item = nil
+			continue
+		}
+		item = append(item, tok)
+	}
+	if level != 0 {
+		return nil, malformed("定义项内括号不平衡")
+	}
+	if len(item) > 0 {
+		items = append(items, item)
+	}
+
+	var checks []checkConstraint
+	unnamedTableLevel := 0
+	for _, item := range items {
+		if len(item) == 0 {
+			continue
+		}
+		var base string
+		scan := 0
+		switch {
+		case isBare(item[0], "CONSTRAINT"):
+			if len(item) < 2 {
+				return nil, malformed("CONSTRAINT 后缺约束名")
+			}
+			base = item[1].text // 具名约束：名字原样保留
+			scan = 2
+		case isBare(item[0], "CHECK") || isBare(item[0], "PRIMARY") || isBare(item[0], "UNIQUE") || isBare(item[0], "FOREIGN"):
+			// 无名表级约束：序号按无名表级约束的出现顺序（两侧同源，序号必然一致）。
+			unnamedTableLevel++
+			base = fmt.Sprintf("check#%d", unnamedTableLevel)
+		default:
+			// 列定义：只取列名；表名前缀由 compareChecks 统一加（文案里表名只出现一次）。
+			// 列名本身不是 CHECK，从第二个 token 起扫。
+			base = item[0].text
+			scan = 1
+		}
+		seen := 0
+		for j := scan; j < len(item); j++ {
+			if !isBare(item[j], "CHECK") {
+				continue
+			}
+			if j+1 >= len(item) || !isBare(item[j+1], "(") {
+				return nil, malformed("CHECK 后不是括号")
+			}
+			level, closeIdx := 0, -1
+			for k := j + 1; k < len(item); k++ {
+				switch {
+				case isBare(item[k], "("):
+					level++
+				case isBare(item[k], ")"):
+					level--
+					if level == 0 {
+						closeIdx = k
+					}
+				}
+				if closeIdx >= 0 {
+					break
+				}
+			}
+			if closeIdx < 0 {
+				return nil, malformed("CHECK 表达式括号不平衡")
+			}
+			var parts []string
+			for k := j + 2; k < closeIdx; k++ {
+				parts = append(parts, item[k].norm)
+			}
+			if len(parts) == 0 {
+				return nil, malformed("CHECK 表达式为空")
+			}
+			seen++
+			name := base
+			if seen > 1 {
+				name = fmt.Sprintf("%s#%d", base, seen)
+			}
+			checks = append(checks, checkConstraint{name: name, tokens: strings.Join(parts, " ")})
+			j = closeIdx
+		}
+	}
+	sort.Slice(checks, func(a, b int) bool { return checks[a].name < checks[b].name })
+	// 同名 CHECK 出现 ≥2 次直接拒绝（fail closed），绝不折叠。
+	//
+	// SQLite 允许重名约束，而“逐条等价”靠名字配对：一旦用 map[name]tokens 折叠，
+	// 胜出的是谁就取决于声明顺序——重名恒真约束插在真约束**之前**就能骗过门禁
+	// （实测 Open 返回 nil）。重名本身就是结构漂移，先拒它，比对才谈得上逐条等价。
+	for i := 1; i < len(checks); i++ {
+		if checks[i].name == checks[i-1].name {
+			return nil, malformed("CHECK 约束名重复 " + checks[i].name)
+		}
+	}
+	return checks, nil
+}
+
+// compareChecks 逐条比对参照与实测的 CHECK：缺失、表达式被改、多余都算缺陷。
+// 与「多余列」对称——只查「包含」等于允许偷偷加一条更严的 CHECK（同样是结构漂移）。
+// 展示名统一是 "<表>.<name>"：表名只在这里加一次，name 内不带表名前缀。
+func compareChecks(table string, want, got []checkConstraint) []string {
+	wantTokens := make(map[string]string, len(want))
+	for _, c := range want {
+		wantTokens[c.name] = c.tokens
+	}
+	gotTokens := make(map[string]string, len(got))
+	for _, c := range got {
+		gotTokens[c.name] = c.tokens
+	}
+	var problems []string
+	for _, c := range want {
+		actual, ok := gotTokens[c.name]
+		if !ok {
+			problems = append(problems, "缺 CHECK 约束 "+table+"."+c.name)
+			continue
+		}
+		if actual != c.tokens {
+			problems = append(problems, "CHECK 约束与 baseline 不一致 "+table+"."+c.name)
+		}
+	}
+	for _, c := range got {
+		if _, ok := wantTokens[c.name]; !ok {
+			problems = append(problems, "多余 CHECK 约束 "+table+"."+c.name)
+		}
+	}
+	return problems
 }
 
 // PRAGMA 不暴露部分索引谓词；只放行实际 SQL 中 baseline 的非 NULL emit 谓词。

@@ -226,6 +226,28 @@ func (e *env) readRaw(t *testing.T, conn *websocket.Conn, d time.Duration) (any,
 	return frame, data, nil
 }
 
+// handled 用一次 config.get → welcome 往返做**有序屏障**：serveSession 单 goroutine
+// 串行处理帧，welcome 回到客户端即证明此前所有上行帧的 handler 已返回（含不回 ack
+// 的拒绝路径）与它们的 DB 写已完成。用于替代固定 sleep 的「读 DB 看没变」断言。
+//
+// 时序依据（session.go 的 serveSession）：Read → 方向过滤 → Decode → dispatchFrame
+// （同步调用 handler）→ TouchNode 全在同一个读循环 goroutine 里；config.get 的 handler
+// 是 h.sendWelcome，必然排在此前每一帧的 handler 返回之后才执行。因此欢迎帧到达 ⇒
+// 之前那些帧要么已处理完、要么已经让会话关闭（此时这里直接 Fatal，而不是静默通过）。
+// 若前面的 handler 回了任何帧（ack/grant 之类），它会先于 welcome 到达——本 helper
+// 顺带就是「没有收到 ack」的判别性断言。
+func (e *env) handled(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	e.send(t, conn, &protocol.ConfigGetFrame{Type: protocol.FrameConfigGet})
+	frame, _, err := e.readRaw(t, conn, 3*time.Second)
+	if err != nil {
+		t.Fatalf("有序屏障的 config.get 没换回帧（连接可能已断）: %v", err)
+	}
+	if _, ok := frame.(*protocol.WelcomeFrame); !ok {
+		t.Fatalf("有序屏障期望 welcome，得到 %T（此前的帧不得回 ack）", frame)
+	}
+}
+
 func (e *env) task(t *testing.T, taskID string) *store.Task {
 	t.Helper()
 	task, err := e.db.GetTask(context.Background(), e.ns.ID, taskID)
