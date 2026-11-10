@@ -2,8 +2,11 @@
 
 - 时间边界：父提示「临近上限前必须落真实 checkpoint」，本文件为**事实快照**，不是完成声明。
 - 分支：`pi-subagent/core-g2-resume-52fc54d4`（canonical G2 worktree）。
-- **code HEAD：`5dc3f27`**（S1/D7 store 实现 + tests + 接口卡，本地 owner-only commit，未 push/MR）；
-  基线 docs HEAD 为 `323c969`。本 checkout 唯一 dirty 文件 = 本 checkpoint（随后单独 docs commit）。
+ - **code commit：`5dc3f27`**（S1/D7 store 实现 + tests + 接口卡）；docs：`e815e06`（checkpoint）/ `d6fa733`（verdict）。
+- **当前 tree HEAD：`d6fa733`**，工作区 clean；均本地 owner-only commit，未 push/MR/merge/rebase/squash。
+- 基线 docs HEAD `323c969` / source `cba97d4`；分支 `pi-subagent/core-g2-resume-52fc54d4`。
+- D5 是文件所有权/顺序（只 store、唯一 writer），D6 是测试门禁清单——二者**不是**新 API 章；
+  INTERFACES.md 只列实际新增 Go 面（D1 无新 public API）。
 - 父提示已收到：只收口 S1+D7，不扩 runtime/协议/Node/650 映射；源码 freeze 后由父接有限 fresh review。
 - 接口卡已落：`.pi-orchestrator/v4/teams/core-runtime/s1-store-evidence/INTERFACES.md`（D1–D7 typed 字段/错误/schema 决策）。
 
@@ -39,6 +42,26 @@
 - `v4test/schema_baseline_test.go` C3b 用例由 DROP COLUMN 改 RENAME COLUMN（tasks CHECK 引用 result_json，SQLite 不许 DROP；「缺列严格拒绝」断言不变）。
 - `v4test/resource_cas_test.go`、`internal/store/node_test.go` 两处：显式部署改为「先在授权内下发、再撤销授权」/补 declared namespace（S1-D7 真实时序）。
 - `v4test/cluster_node_test.go` 直插 running task 补 digest（真实 pin）。
+
+## 交付面汇总（21 files，+2866/−23，见 `git show --stat 5dc3f27`）
+
+- 新增源码：`source_event.go`、`dispatch_failure.go`、`assignment_authority.go`（另有 6 个新 test 文件）。
+- 修改源码：`schema.sql`（tasks nullable + 2 CHECK；events.receipt）、`task.go`、`event.go`、`emission.go`、
+  `execution_auth.go`、`deployment.go`；fixture 补正 4 处（具名原因，见 verdict）。
+- 实际新增 public API：
+  - `AcceptSourceEvent(ctx, SourceEventInputs) (json.RawMessage, bool, error)` + `SourceEventReceipt` 家族；
+  - `ProposeTaskAssignment(ctx, AssignmentProposalInputs) (AssignmentProposal, error)`；
+  - `RejectAssignmentAuthorized(ctx, NodeAuthorization, AssignmentRejectionInputs) error`；
+  - `MarkDeployResultAuthorized(ctx, NodeAuthorization, DeploymentResultInputs) error` + `DeploymentRequestID`；
+  - `EmitRecord.PlannedPrunes []EmitPruneFact` / `PlannedFailures []EmitFailureFact`（`json:"-"`，非 wire）。
+- 新错误哨兵：`ErrSourceEventReceiptMissing`、`ErrNamespaceInputsChanged`、`ErrDeploymentReceiptConflict`。
+- D7 已收：`CreateDeployments` 同 tx 全目标 ns 授权（未授权/混合 0 写、不 supersede、offline 已授权 pending）；
+  `MarkDeployResultAuthorized` 同 tx credential/ns/Node/intent/requestId/digest，重复精确幂等、changed body 冲突。
+
+## 风险 / 待父序列化（不含新 prod 问题上报）
+- G2 runtime 尚未消费新入口；旧 `AssignTask/RejectAssignment/MarkDeployResult/InsertEvent` 仍服务旧调用方。
+- G3 负责失败 Task wire 省略 version/digest；旧 v4 布局库被严格 Open 明确拒绝（不删数据，本轮 baseline 例外）。
+- 未发现需要上报父的新 prod 问题；未新增 scope、未改 runtime/protocol/Node/650 映射。
 
 ## 5 门禁真实状态（最终版，全绿）
 
