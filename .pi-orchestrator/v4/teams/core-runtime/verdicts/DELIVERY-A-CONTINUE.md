@@ -1,0 +1,11 @@
+# A-continue actual mechanical closure (compile only)
+
+Child delivery-a-continue settled; wait returned execution success, acceptance accepted(verified). Actual fixed format/diff and timeout180 direct/sum/auto go test ./internal/store/... -run '^$' exit0. Original in-package and original external benchmark tests compile; no test-body execution implied. Child final own JSON ok:true for this A compilation subtask, not whole G1/T1. Full output /root/code/anotify/.pi-subagents/runs/r-be47a9bd/delivery-a-continue.output.md, session /root/code/anotify/.pi-subagents/runs/r-07b036ca/delivery-a-continue.jsonl retained.
+
+Changed paths: playbook_test/node_test/source_test/orphan_test/upgrade_gate_test/stmt_wiring_test/bench_test/pool_test/migrate_test/capability_spec_test under internal/store, restored tx_merge_test.go two real safety cases; TEST-MAPPING appendix. No production source changed in continuation, no new test deletion.
+
+Actual self safety + authored-family scoped tests rc0; whole store count1 rc1,31 red. Log /tmp/anotify-v4-delivery-a-continue-storeall-final-061412.log includes CAS-token fixture omissions, old prune reason/schema/migration expectations, registered Node grant/budget/retention/result-facts calls. They require B actual test closure, not 'informational' exemption from final gates.
+
+Manager does NOT approve all mapping semantics merely from compile acceptance. A appendix maps some safety targets to still-red original tests; B must execute/fix real fixtures and finish original460 rows. In particular retiring TestPlaybookManifestReservedOriginNames BECAUSE current install path has no guard is not an approved v3 retirement rationale. Root asked precise ruling; B restores named real rawfixture scenario and supplies product lines/red output if actual discrepancy. Child four product claims unconfirmed; removed CreateCapabilityForce is deliberate C2, pending legacy server compile belongs T1 G3. Claims nil Source targets / explicitsamecontentnewversion need actual v4 policy+named evidence; don't add oldports/production compat.
+
+B means original store/auth/push test and real whitebox closure; G2 runtime and G3 server/API remain T1, not B/T2 as child erroneously labelled. No full G1/T1/whitebox/review success. NoPush/Merge/MR, local branch checkpoint only.

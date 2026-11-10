@@ -978,3 +978,231 @@ EXIT 1
 CMD timeout 60 env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go vet ./internal/auth/... ./internal/push/... (owned-change lightweight, NOT fixed3 substitute)
 EXIT 0
 ```
+
+---
+
+# A-continue（同 A 续接 leaf）：原 store 全量编译闭合 + 安全族逐名映射
+
+> 状态口径：**仅 store 编译闭合**（`go test ./internal/store/... -run '^$'` RC=0），
+> 不声明任何测试执行 PASS，也不声明 G1/T1/A 全仓 DONE。B 轮（route/lease/server/agent/executor）
+> 未开始，`go build ./internal/server/` 仍红（见文末"遗留"）。
+
+## 闭合命令（原样）
+
+```text
+cwd  /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery
+HEAD 55e3e46 (+ WIP)
+CMD  timeout 180s env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/store/... -run '^$'
+LOG  /tmp/anotify-v4-delivery-a-continue-gate2-060821.log
+ok  	github.com/zzjcool/anotify/internal/store	0.005s [no tests to run]
+ok  	github.com/zzjcool/anotify/internal/store/v4test	(cached) [no tests to run]
+RC   0
+```
+
+基线诊断（同一 cwd，`go vet -gcflags=all=-e ./internal/store/`）：582 错误
+（playbook 250 / node 169 / source 95 / upgrade_gate 40 / orphan 13 / stmt_wiring 10 /
+pool 3 / migrate 1 / capability_spec 1），另有外部测试包 `bench_test.go` 32 条
+（首次 `-run '^$'` 才暴露）。全部闭合；未删除任何测试文件作为完成手段。
+
+## 安全族逐名映射（原样恢复的名字在"新 case"列标注 restored）
+
+### `internal/store/session_lease_safety_test.go`（4）
+
+| old case | outcome | 新 case + 具体不变量（path:line） |
+|---|---|---|
+| `TestResolveLostTasksAbandonsNonIdempotentStarted` | migrated | `internal/store/task_test.go:558 TestRecoverLostLeasesRequeues` 的 `non-idempotent-abandons` 子用例；断言 `v4MustPhase(...TaskAbandoned)` |
+| `TestResolveLostTasksAbandonsWhenAttemptsExhausted` | migrated | `internal/store/task_test.go:608 TestMaxAttemptsExceededAbandons`（`ErrMaxAttemptsExceeded` → 相位 abandoned）+ `internal/store/v4test/task_test.go:93 TestTaskMaxAttemptsTerminal` |
+| `TestResolveLostTasksAssignedNotStartedBeatsNonIdempotent` | narrow-retired | v4 没有 assigned 相位：`AssignTask` 只记候选（`internal/store/task.go:692` UPDATE 不改 phase），未 grant 的任务仍是 pending，而 `RecoverLostLeases` 只看 running（`internal/store/task.go:968` 注释与实现）。未开始不被误判为失联是结构事实，断言在 `internal/store/task_test.go:287 TestAssignRecordsCandidateWithoutAttempt`（phase 仍 pending、attempt 仍 0） |
+| `TestResolveLostTasksCleanEndOfIdempotentStartedStillRequeues` | migrated | `internal/store/task_test.go:558 TestRecoverLostLeasesRequeues` 的 `idempotent-requeues` 子用例（→ TaskPending） |
+
+### `internal/store/session_lease_test.go`（7）
+
+| old case | outcome | 新 case + 不变量 |
+|---|---|---|
+| `TestExtendLeasesForTasksOnlyListedIDs` | migrated（语义收窄） | v4 续租是**per-task 精确绑定**（无批量 extend 接口）：`internal/store/task_test.go:379 TestRenewLeaseAuthorized`（错 attempt/lease → `ErrLeaseMismatch`，同文件 :399/:402）+ `internal/store/v4test/task_test.go:177 TestTaskRenewLease`；过期后不可复活 → `v4test/task_test.go:1423 TestRenewLeaseCannotReviveExpiredAuthorization` |
+| `TestResolveLostTasksRequeue` | migrated | `internal/store/task_test.go:558`（idempotent → pending）+ `v4test/task_test.go:307 TestTaskRecoverIdempotentRequeues` |
+| `TestResolveLostTasksAbandon` | migrated | `internal/store/task_test.go:558`（non-idempotent → abandoned）+ `task_test.go:608` |
+| `TestResolveLostTasksSkipsStaleGeneration` | narrow-retired | v4 无 generation 概念：执行身份是 (attempt, lease_id) 精确绑定，旧 attempt 一律 `ErrLeaseMismatch`（`v4test/task_test.go:1124 TestTaskCompleteRejectsOldAttemptLeaseAndExpiry`、`v4test/result_current_binding_test.go:18`） |
+| `TestResolveLostTasksAssignedNotStartedRequeuesEvenWhenAbandon` | narrow-retired | 同 session_lease_safety 第 3 行：无 assigned 相位，未开始即 pending，不进 lost 判定 |
+| `TestCreateTasksRejectsOversizedParams` | migrated | `internal/store/v4test/task_test.go:555`（`ErrParamsTooLarge`，位于 `TestTaskListRoundTrip` 512；同段 :563 还断言「建任务只能落 pending」） |
+| `TestReclaimStaleSlots` | migrated | `internal/store/v4test/cluster_node_test.go:518-549`（`TestNodeInstancesAndLeases`）：unknown / wrong-lease 观测 → 回收 0，match → 回收 1 |
+
+### `internal/store/tx_merge_test.go`（7）
+
+| old case | outcome | 新 case + 不变量 |
+|---|---|---|
+| `TestReportResultDoesNotReleaseForeignSlot` | **restored** | `internal/store/tx_merge_test.go:66`（同名，v4 真夹具）：A 完成只释放 A 的槽，B 的 slot/lease/attempt 全部不动；补充 `v4test/task_test.go:763 TestTaskOldAckCannotReleaseNewAttemptSlot` |
+| `TestReportResultRejectsTerminalTaskWithoutTouchingSlot` | **restored** | `internal/store/tx_merge_test.go:111`（同名）：终态任务旧结果重放 → `ErrLeaseMismatch`，同槽新任务绑定与旧任务终态事实都不变；补充 `v4test/result_current_binding_test.go:18`（跨 attempt 旧结果零写） |
+| `TestReportResultMatchesSplitWrites` | retired（等价性被结构取代） | v4 只有一条写入路径（无"拆分版"可对照）；结果事实逐字段落库由 `v4test/result_facts_test.go:33 TestC3bCompleteResultFullJSONNanoseconds` / `:61 TestC3bCompleteResultFullFactsDiscrimination` / `:232 TestC3bCompleteResultMonotonicEquivalentDuplicate` 断言 |
+| `TestLeaseAndAssignMatchesSplitWrites` | retired（同上） | 派发事实：`internal/store/task_test.go:287 TestAssignRecordsCandidateWithoutAttempt`（assign 不耗 attempt/不绑槽）+ `:314 TestGrantMovesToRunning` |
+| `TestProgressTaskMatchesSplitWrites` | retired | v4 无 `ProgressTask`（中间进度上报随 handler/central 执行器删除） |
+| `TestLeaseAndAssignGuardFailureDoesNotLeakSlot` | migrated | `internal/store/task_test.go:357 TestGrantRejectsStaleAssignment`：被拒 grant 后 `v4BusySlots == 0`（:374）；另 `internal/store/node_test.go:821 TestNodeAuthorizationGrant`（错 token hash 的 grant 不占槽） |
+| `TestProgressTaskRejectsTerminalTask` | retired | 无 ProgressTask；终态不可变由 `internal/store/task_test.go:498 TestTerminalPhaseIsImmutable` + `:462 TestCompleteDuplicateIsIdempotent` 覆盖 |
+
+### `internal/store/builtin_test.go`（18）——中央执行器/播种族 + auth/NS 安全点
+
+| old case | outcome | 新 case / 退役理由 |
+|---|---|---|
+| `TestSeedBuiltinCapabilitiesIsIdempotent` | retired（代理点迁移） | 中央播种已删；**注册原子性**改由 `internal/store/namespace_test.go:136 TestRegisterUserCreatesDefaultNamespace` 断言（用户+default ns 同事务、v4 0 播种）；带密码路径 `internal/store/password_test.go:163 TestRegisterUserWithPassword_RoundTrip`、并发首 admin `:269` |
+| `TestBuiltinCapabilityIsCentral` / `TestNotifyPhoneStillCentral` / `TestCentralCapabilitiesAreSpecDriven` / `TestNotifyPhoneParamsSchemaRequiresTo` / `TestClaimCentralTasksRunsStateMachine` | retired | 纯 v3 中央执行器（handler/claim/state machine）；v4 执行权只经 `NodeAuthorization` + assignment + 真实 slot（`internal/store/task_test.go:314`、`v4test/task_test.go:19`） |
+| `TestFinishTaskWritesOutcome` | migrated | `internal/store/task_test.go:408 TestCompleteRecordsResultAndFinishedAt`（相位/exitCode/finishedAt/acceptedAt 落库） |
+| `TestFinishTaskRejectsInvalidStatus` | migrated | `internal/store/task_test.go:498 TestTerminalPhaseIsImmutable`（终态不可再变）+ `v4test/task_test.go:1124` |
+| `TestNoOriginShellCapabilities` | retired | 原壳能力随内置播种删除；来源身份改由源行定义（`internal/store/source_test.go:215 TestSourceValidation` 的 kind/引用校验） |
+| `TestEntryEdgeAcceptsAnyPort` | retired | v4 无端口（`internal/artifact` 一次运行一个结果；边是 next 的投影 `internal/store/graph.go:103`） |
+| `TestBuiltinDisplayNames` / `TestBuiltinDisplayNameBackfill` / `TestBackfillBuiltinCapabilitiesCoversEveryNamespace` / `TestBackfillBuiltinCapabilitiesEmptyDeployment` | retired | backfill 随播种删除；displayName 可变性由 `internal/store/capability.go:515 SetCapabilityDisplayName`（CAS）承载，往返见 capability 族现有测试 |
+| `TestExampleBuiltinScriptEmitsDeclaredPort` / `TestExampleBuiltinIsUsable` / `TestExampleBuiltinArtifactUpdateRepointsDeployment` / `TestExampleBuiltinContentDerivedNotBackfilled` | retired | 示例内置能力（notify.phone 脚本）已从产品删除；"内容派生 vs 回填"由 `internal/store/deployment_test.go:18 TestCurrentArtifactIsCapabilityContent`（产物=能力正文规范字节）与 `capability_test.go` content-addressed 用例承接 |
+
+### 本次 leaf 重写的文件族（逐名）
+
+#### `internal/store/node_test.go`（原 28）
+
+migrated 同名（19）：`TestNodeCreateAndGet` `TestNodeNamespaceIsolation`（v4 判据=申报∩授权）
+`TestNodeCapabilitiesReplacedOnRehello`（RecordHello 快照替换）`TestNodeCapabilitiesNoHarnessColumns`
+`TestNodeMaxInstances` `TestNodeInstancesUpsertAndShrink` `TestUpsertInstancesKeepsBusyTask`
+`TestLeaseInstanceAndRelease`（LeaseSlot/ReleaseSlot；错 attempt 释放不清槽 :495-510）
+`TestLeaseInstanceDeadSlotIgnored` `TestNodesForCapability` `TestNodesForCapabilityNamespaceIsolation`
+`TestNodeStatusTransitions` `TestTouchNode` `TestNodeEmptyListIsArray` `TestNodeTagsRoundTrip`
+`TestNewNodeTokenUnique` `TestFreeSlotsByNode` `TestNodeCreateDuplicateName` `TestValidateNodeName`
+
+retired（9，全部 pin/迁移专属）：`TestNodePins` `TestPutPinValidation`
+`TestLeaseAndAssignWithPinWritesPinAtomically` `TestLeaseAndAssignWithPinRollsBackPinOnFailure`
+`TestRollbackPinOnlyDeletesOwnPin` `TestRollbackPinSameSecondSameNode` `TestRollbackPinValidation`
+（v4 删 pin：派发只经 assignment+slot；原子性由 `node_test.go:821 TestNodeAuthorizationGrant`、
+`tx_merge_test.go:66`、`v4test/task_test.go:71 TestTaskGrantRejectsStaleAssignment` 接走）
+`TestNodeCapabilityUnknownIsStale`（无 node_capabilities 声明行；"未知/陈旧"= NotDeployed，
+`node_test.go:176 TestNodesForCapability` 断言）`TestMigration7PinIDWorksOnExistingDB`
+（v4 baseline 重建，老库明确拒绝；由 `migrate_test.go` + `schema_baseline_test.go` 覆盖）
+
+new：`TestNodeConfigRevisionAndAppliedFacts`（配置 CAS/revision/applied 事实）、
+`TestNodeAuthorizationGrant`（grant 只认认证身份 + 真实 slot）
+
+#### `internal/store/playbook_test.go`（原 33）
+
+migrated 同名（12）：`TestPlaybookManifestRoundTrip`（files 原始字节往返）
+`TestPlaybookCreateGetListDelete`（+删清单不删已装对象/kept）`TestPlaybookEmptyManifestNormalized`（v4=entry_missing）
+`TestPlaybookSlugValidation` `TestInstallPlaybookIdempotent` `TestInstallPlaybookWebhookSourceIsUsable`
+`TestInstallPlaybookCronSource` `TestPlaybookInstallEmptyManifest` `TestListPlaybooksCreatedAtOrder`
+`TestInstallPlaybookInlineSpecStoresScriptBody`（渲染后正文落库）
+
+new：`TestRenderPlaybookReadOnly`（0 写）`TestInstallPlaybookDryRunWritesNothing`（0 持久写）
+`TestListPlaybookInstallsGroups`（attempts 折叠 + 组内并集）
+
+retired（v3 manifest/端口/checks/handler/trigger/legacy 专属，逐条理由见
+`internal/store/playbook_test.go` 文件头映射块）：`TestPlaybookChecksNodePresence`
+`TestPlaybookChecksPartialAndEntryCapabilities` `TestPlaybookChecksResolvesDeclaredVersion`
+`TestPlaybookChecksHubHandlerRefIsReady` `TestInstallPlaybookSkipsEdgeWithMissingEndpoint`
+`TestInstallPlaybookSkipsEdgeWithUnknownPort` `TestInstallPlaybookSkipsSourcePointingAtSameEntry`
+`TestInstallPlaybookRejectsForeignHandler` `TestInstallPlaybookRefAndSpecBothGiven`
+`TestInstallPlaybookRefDoesNotCreateCapability` `TestInstallPlaybookEdgeCarriesLiteralsAndPriority`
+`TestInstallPlaybookTriggerNameAndMapping` `TestInstallPlaybookLegacyManifestStillInstalls`
+`TestInstallPlaybookRejectsUnresolvableRef`（→ `internal/playbook/parse.go:203 checkReferences`
+在 Parse/Render 拒绝，不是跳过；本包 `TestRenderPlaybookReadOnly` 走同一条校验）
+`TestInstallPlaybookDoesNotOverwriteExistingDefinition` / `TestInstallPlaybookNewVersionSameSchema`
+（→ `TestInstallPlaybookIdempotent` 复用不建行 + `v4test/playbook_test.go:1038 TestInstallReuseNeverUpdatesExistingRow`）
+`TestPlaybookManifestReservedOriginNames` → **窄退役并上报**：v4 安装路径
+（`internal/store/playbook_tx.go:385 createInstalledSourceOn` → `insertSourceOn`）没有保留名检查，
+这条 v3 约束在 v4 不存在。
+
+#### `internal/store/source_test.go`（原 20）
+
+migrated 同名（11）：`TestCronParsing` `TestCronNext` `TestCronDomDowOrSemantics` `TestCronNeverFires`
+`TestSourceCRUD`（targets=引用 + 入口边投影 + CAS 删除）`TestSourceValidation`（含"引用必须可解析"）
+`TestSourceWebhookToken`（LookupHook + 停用失效 + token 不被 PATCH 换掉）`TestSourceKindImmutable`
+`TestDueCronSources`（ListDueSources + MarkSourceFired + 停用不调度）
+`TestCreateSourceRejectsReservedName` `TestUpdateSourceRejectsReservedName`（v4：名字整体不可变 → `ErrSourceNameImmutable`）
+
+概念替换（v3 vars/resultSchema/github kind 已删）：`TestValidateVarDefs`→`TestSourceTargetsParamsValidation`
+（`$(payload.…)` 模板路径校验）、`TestSourceVarDefsParsing`/`TestSourceConfigKeepsVars`→`TestSourceConfigRoundTrip`
+（payload/payloadSchema/sample 往返 + 未知键创建期拒绝）、`TestSourceConfigPayloadParsing`→
+`TestSourceConfigPayloadOnlyForKeepingKinds`（cron/manual 保留、webhook 丢弃）、
+`TestValidateSourceConfigRejectsBadVars`→`TestSourceTargetsParamsValidation`（CreateSource 透出哨兵）、
+`TestSourceResultSchemaRoundTrip`→`TestSourcePayloadSchemaRoundTrip`、`TestSourceResultSchemaValidation`→
+`TestSourcePayloadSchemaValidation`、`TestUpdateSourceKeepsResultSchema`→`TestUpdateSourceKeepsPayloadSchema`。
+`TestValidateSourceConfigPayloadOnlyForKeepingKinds`→`TestSourceConfigPayloadOnlyForKeepingKinds`（保名，收敛到 v4 config 归一）
+
+#### 其余（同文件保留、API 迁移）
+
+- `internal/store/upgrade_gate_test.go`（6 同名）：v4 契约只有 params → 删出口=原地改线
+  （`UpdateNext` 不改 version/digest，见 `TestUpgradeGateRemovedPort`）；破坏性只剩
+  `param_type_changed`/`param_added_required`；`CreateCapabilityForce` 已删除，故不再断言 force。
+- `internal/store/stmt_wiring_test.go`（2 同名）：入口换成 v4 真实读路径
+  （`getCapabilityByDigestOn` 替代 `getCapabilityByHash`、`ListTasksByTrace` 替代 `getEventByIdemKey`——
+  后者在 v4 不存在，去重走 `event_deliveries` 窗口占用）；ListTasks 过滤 4 个 → 16 组合；
+  `wiringMinDistinctSQL=16` 实测未变（scanEvent 3→2，新增 ListTasksByTrace 1）。
+- `internal/store/orphan_test.go`（7 同名 + 1 新 `TestOrphanPendingOnlyPinnedDigestCounts`）：
+  原因词表改 `no_capability`/`no_online_node` + `NodeReason`（协议封闭词表）；
+  "能跑"= 部署 applied（`deployments.state`），不是 node_capabilities 申报。
+- `internal/store/pool_test.go`：`countRows` 与 retention 同名冲突 → 新增 `countRowsWhere`（同名用例保留 5 条）。
+- `internal/store/migrate_test.go`：删未用 `strconv` 导入（10 条原样）。
+- `internal/store/capability_spec_test.go`：`artifact.CanonicalJSON(c.Artifact())` → 取址（5 条原样）。
+- `internal/store/bench_test.go`（外部包 store_test，32 编译错误）：`BenchmarkCreateTasks` 保留；
+  `BenchmarkTransition` 退役（v4 无 Transition）→ `BenchmarkAssignGrant`；
+  `BenchmarkReportResult` → `BenchmarkCompleteTask`（v4 结果入口
+  `CompleteTaskClassifiedAuthorized`）；护栏 `TestBenchmarksTargetRealPaths` 保留并改成
+  v4 可观测效果（落行/相位 running+租约/slot 绑上又放开）。
+
+## 本 leaf 上报的产品发现（未改生产）
+
+1. **升级闸门写路径不再执行**：`checkUpgradeOn` 只被 `CheckUpgrade` 调用
+   （`internal/store/upgrade.go:119-120`），`CreateCapability`（`capability.go:150`）不调用它，
+   `CreateCapabilityForce` 已不存在；而 `internal/server/console_handlers.go:1406` 仍调用它。
+   影响：破坏性 params 变更在 store 层不会被拒（只有 console 预计算会 409）。B 轮需裁决。
+2. **playbook 安装不校验保留源名 route**：`playbook_tx.go:385` → `insertSourceOn` 无保留名检查，
+   而直写路径 `CreateSource`（`source.go:150`）有。v3 的 `TestPlaybookManifestReservedOriginNames` 因此无法迁移。
+3. **playbook 同内容新版本号**（`internal/store/playbook_test.go` 退役说明）：显式版本 + 相同内容会撞
+   `(namespace_id,name,fold_key)` 唯一索引并返回裸约束错误，而非 `ErrVersionConflict`（v3 该用例断言可落新版）。
+
+## 遗留（不属于 A 编译门禁）
+
+- `go build ./internal/server/` 仍红：`internal/lease`（`store.RetentionOptions`/`SweepRetention`/
+  `LeaseSweepIntervalSec`/`Task.Attempts`）、`internal/route`（`store.LinkTarget`/`NodePin`/`GraphVersion`/
+  `Emission`）、`internal/server`（`CreateCapabilityForce`）待 B/T2 轮迁移。
+- 本文件所有 `pending` 行对上述已重写文件已被本附录取代；未触及的文件/行为保持原样。
+
+## A-continue 实测运行记录（除 gate 外，均为本 leaf 新增/改写文件的自证）
+
+```text
+# 安全族（restored + 相关）
+CMD  timeout 180s env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto \
+     go test ./internal/store/ -count=1 -run 'TestReportResultDoesNotReleaseForeignSlot|TestReportResultRejectsTerminalTaskWithoutTouchingSlot|TestLeaseInstanceAndRelease|TestNodeAuthorizationGrant|TestLeaseInstanceDeadSlotIgnored|TestOrphanPending|TestAbandonPendingTask'
+LOG  /tmp/anotify-v4-delivery-a-continue-safetyrun2-061213.log
+ok  	github.com/zzjcool/anotify/internal/store	0.144s
+RC   0
+
+# 本 leaf 改写的全部 fixture 族（node/playbook/source/upgrade/stmt/orphan/tx_merge）
+CMD  timeout 300s env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto \
+     go test ./internal/store/ -count=1 -run 'TestNode|TestLease|TestUpsert|TestTouch|TestNewNodeTokenUnique|TestFreeSlots|TestValidateNodeName|TestPlaybook|TestRenderPlaybook|TestInstallPlaybook|TestListPlaybook|TestSource|TestCron|TestDueCron|TestCreateSource|TestUpdateSource|TestOrphan|TestAbandonPending|TestUpgradeGate|TestUpgradeImpact|TestStmtWiring|TestReportResult'
+LOG  /tmp/anotify-v4-delivery-a-continue-myfamilies2-061351.log
+ok  	github.com/zzjcool/anotify/internal/store	0.716s
+RC   0
+```
+
+## 产品发现 #4（实测，未改生产）
+
+**零出口源被接受**：`CreateSource` 的 `checkSourceTargetsOn`（`internal/store/source.go:266`）
+走 `sourcespec.ValidateTargets`（`internal/sourcespec/config.go:210`），而它对空列表返回 nil；
+所以 `Targets: nil` 的源能建出来（事件永远不会被派发）。v3 有这道闸门
+（旧 `TestSourceValidation` 第一段断言），v4 没有。本 leaf 不在生产侧加闸门，只上报。
+
+## 整包测试现状（信息性，**不属于 A 编译门禁**；31 条红均在本 leaf 未改写的族）
+
+```text
+CMD  timeout 600s env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/store/ -count=1
+LOG  /tmp/anotify-v4-delivery-a-continue-storeall-final-061412.log
+RC   1   fails=31
+
+authz/namespace: TestAuthorizeNamespace TestAuthorizeNamespaceForNode TestNamespaceCRUD
+  TestNamespaceRoundTrips TestNamespaceDeleteRequiresForceWhenNotEmpty
+  （典型：`authz_test.go:82 delete namespace: store: resource version required` —— 旧调用没走 CAS 令牌）
+capability: TestCapabilitySpecRoundTrip（requires.values/fieldPath 封闭集合校验收紧）
+event/stats: TestEventGetAndList TestEmissionListOrderedAndScoped TestListEventsBeforeEquivalence
+  TestListEventsBeforeEmptyIsSlice TestListEventsBeforeUsesRetentionIndex TestMessageStatsTotalsDeliveryAndDevices
+migrate/baseline: TestMigrationTwoColumns TestMigrationTenDropsBalance TestBaseline*（6） TestLegacyDatabaseRejected
+retention/pending: TestRetentionKeepsUnreapedAttempts TestOldestPendingCreatedAtIgnoresNotBefore TestPendingBacklogSQLShape
+auth: TestRegisterUser_PreMigration8SchemaStillWorks
+task: TestCompleteRecordsResultAndFinishedAt TestCompleteRequiresGrant TestTerminalPhaseIsImmutable
+  TestCancelRunningAwaitsAck TestMaxAttemptsExceededAbandons TestTaskAttemptSnapshotRoundTrip
+```
+
+这些族在 v4 重写后**从未被执行过**（原包一直编译不过），属下一 leaf 的返工面，不是本 leaf 的夹具改动引起
+（本 leaf 改写的 22+ 个用例组在上述两次 scoped 运行里全绿）。

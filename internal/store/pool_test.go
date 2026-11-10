@@ -89,7 +89,7 @@ func TestPoolMaxOpenConnsConfig(t *testing.T) {
 		}
 		mustExec(t, db, `CREATE TABLE pool_mem_probe (a INTEGER)`)
 		mustExec(t, db, `INSERT INTO pool_mem_probe (a) VALUES (1)`)
-		if got := countRows(t, db, "pool_mem_probe", "1 = 1"); got != 1 {
+		if got := countRowsWhere(t, db, "pool_mem_probe", "1 = 1"); got != 1 {
 			t.Fatalf("内存库行数 = %d, want 1", got)
 		}
 	})
@@ -330,7 +330,7 @@ func TestPoolConcurrentWritesNoLockErrors(t *testing.T) {
 	if lockErrs > 0 {
 		t.Fatalf("%d 个 database is locked / SQLITE_BUSY 错误（busy_timeout 没能兜住）", lockErrs)
 	}
-	if got, want := countRows(t, db, "events", "source = 'pooltest'"), writers*perWriter; got != want {
+	if got, want := countRowsWhere(t, db, "events", "source = 'pooltest'"), writers*perWriter; got != int64(want) {
 		t.Fatalf("落库行数 = %d, want %d（有写入丢失）", got, want)
 	}
 }
@@ -360,4 +360,15 @@ func TestMaxConnsFromEnv(t *testing.T) {
 	if defaultMaxOpenConns < 1 {
 		t.Fatalf("defaultMaxOpenConns = %d，0 会让 database/sql 变成「不限制连接数」", defaultMaxOpenConns)
 	}
+}
+
+// countRowsWhere 数一张表在 where 条件下的行数（pool_test 需要按维度过滤；
+// retention_test 的 countRows 只数全表，两者签名不冲突）。
+func countRowsWhere(t *testing.T, db *DB, table, where string) int64 {
+	t.Helper()
+	var n int64
+	if err := db.QueryRow(`SELECT count(*) FROM ` + table + ` WHERE ` + where).Scan(&n); err != nil {
+		t.Fatalf("count %s where %s: %v", table, where, err)
+	}
+	return n
 }

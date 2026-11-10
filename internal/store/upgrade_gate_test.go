@@ -2,256 +2,272 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
 
-// 升级闸门的验收（P2.2，设计 typed-pipeline §3.6）。
+// 升级闸门的验收（P2.2，设计 typed-pipeline §3.6）—— v4 迁移。
 //
-// 判据（§3.6 那张表）：
+// v4 的契约面收窄成 **params（JSON Schema）**：
+//   - 出口不再是契约：next 是**原地**可改的路由（UpdateNext / ReplaceCapabilityEdges），
+//     不进版本、不改 digest，所以「删出口」不是破坏性变更，闸门也没有 removed_port 这一类。
+//   - 剩下的破坏性变更只有两类：改入参类型（ChangeParamTypeChanged）、
+//     新增必填入参（ChangeParamAddedRequired）。
 //
-//	加可选入参 / 加 port        → 直接通过
-//	删 port / 改入参类型 / 加必填 → 拒绝，并列出受影响的 link；除非显式 force
+// 闸门在 v4 是**预计算**接口：console 先拿 impact（前端要能先看到哪几条 link 会断）
+// 再决定要不要提交。v3 的 `CreateCapabilityForce(force)` 逃生口随端口模型一起删除，
+// 本文件因此只钉住 store 今天真实提供的事实（不再断言一个不存在的写入口）。
 //
-// 为什么必须先有闸门再有引用语义（§7「P2.2 施工计划」第 1 条）：一旦 link 能跟随
-// latest，把一个破坏性版本推上去就等于**静默改线**——没人点过任何东西，线上那条链
-// 却换了契约。闸门把这一步变成一次显式决定。
+// 为什么闸门必须先于「跟随 latest」的引用语义——这条理由在 v4 里仍然成立：
+// 把一个破坏性 params 版本推成 latest 等于**静默改线**，没人点过任何东西，
+// 已有那条链却换了入参契约。
 
-// gateFixture 造一个「review --fix--> fixer（裸名字）」的图，返回三个能力。
+// gateFixture 造一个「review --> fixer」的图（review 的 next 是裸名字 fixer）。
 //
 // 关键点：`to_ref` 是**裸名字**（跟随 latest）——只有这种 link 会被闸门影响；
 // 钉死的 `fixer@1` 不受任何升级影响（它钉的就是旧版）。
-func gateFixture(t *testing.T) (db *DB, nsID string, review, fixer *CapabilityVersion) {
+func gateFixture(t *testing.T) (db *DB, nsID string, fixer, review *CapabilityVersion) {
 	t.Helper()
 	ctx := context.Background()
 	db = newTestDB(t)
 	nsID, _ = newTestNS(t, db)
 
-	review = mkCap(nsID, "review", 1, []string{"fix"})
-	fixer = &CapabilityVersion{
+	// fixer 自己也有一条出线（fixer --> notify）：用来证明「改 next 只重建**这个能力**的边」。
+	v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: "notify", Version: 1,
+		Spec: v4Spec("", nil, ""),
+	})
+	fixer = v4CapWith(t, db, &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 1,
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"string"}}}`),
-		Outputs:      []string{"done", "failed"},
-		Source:       CapSourceCustom,
+		Spec: v4Spec(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"string"}}}`, []string{"notify"}, ""),
+	})
+	// review 的 next 就是 v4 的「出线」：建行时投影成 edges（review --> fixer）。
+	review = v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: "review", Version: 1,
+		Spec: v4Spec("", []string{"fixer"}, ""),
+	})
+	edges, err := db.ListEdges(ctx, nsID)
+	if err != nil {
+		t.Fatalf("list edges: %v", err)
 	}
-	mustCreateCap(t, db, review, fixer)
-	if err := db.CreateEdge(ctx, &Edge{
-		NamespaceID: nsID, FromRef: "review", FromPort: "fix", ToRef: "fixer",
-	}); err != nil {
-		t.Fatalf("create link review --fix--> fixer: %v", err)
+	have := map[string]bool{}
+	for _, e := range edges {
+		have[e.FromRef+"-->"+e.ToRef] = true
 	}
-	return db, nsID, review, fixer
+	if !have["review-->fixer"] || !have["fixer-->notify"] {
+		t.Fatalf("夹具前置：edges = %+v, want review-->fixer 与 fixer-->notify", edges)
+	}
+	return db, nsID, fixer, review
 }
 
-// TestUpgradeGateRemovedPort 删 port → 拒绝，且错误里列出受影响的 link。
+// fixerParams 是 fixer 的入参契约（required issue: string）。
+func fixerParams() string {
+	return `{"type":"object","required":["issue"],"properties":{"issue":{"type":"string"}}}`
+}
+
+// TestUpgradeGateRemovedPort：删掉出口在 v4 **不是**破坏性变更（它是原地改线，不是升级）。
+//
+// v3 这条用例断言「删 port → 拒绝 + 列受影响 link + force 能越过」；v4 把出口从契约里
+// 移走之后三件事都不再成立，改成钉住真正的新事实：
+//   - CheckUpgrade 对「只少一个 next」的候选返回空影响面（不是 breaking）；
+//   - UpdateNext 原地改线：版本号与 digest 不变，edges 投影跟着重建；
+//   - 没有 force 逃生口（CreateCapabilityForce 已删除）——所以也不再断言它。
 func TestUpgradeGateRemovedPort(t *testing.T) {
-	db, nsID, _, fixer := gateFixture(t)
+	db, nsID, fixer, _ := gateFixture(t)
 	ctx := context.Background()
 
-	// 新版删掉 failed 出口
-	next := withSpec(&CapabilityVersion{
+	// 候选版本：params 一模一样，只是不再有出口。
+	candidate := &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"string"}}}`),
-		Outputs:      []string{"done"},
-		Source:       CapSourceCustom,
+		Spec: v4Spec(fixerParams(), nil, ""),
+	}
+	impact, err := db.CheckUpgrade(ctx, nsID, candidate)
+	if err != nil {
+		t.Fatalf("check upgrade: %v", err)
+	}
+	if impact.Breaking || len(impact.Changes) != 0 {
+		t.Fatalf("删出口不该再算破坏性变更: %+v", impact)
+	}
+	if impact.Changes == nil || impact.Links == nil {
+		t.Fatalf("空影响面也必须是 [] 而不是 null（I9）: %+v", impact)
+	}
+
+	// 真正删出口的路径是原地改线：不产生新版本、不改部署身份，只重建 edges。
+	// name 路径是 CAS：必须带当前 resourceVersion 令牌
+	token := ResourceVersion(fixer.ID, fixer.ResourceVersion)
+	updated, err := db.UpdateNext(ctx, nsID, "fixer", 0, nil, token)
+	if err != nil {
+		t.Fatalf("update next: %v", err)
+	}
+	if updated.Version != fixer.Version {
+		t.Fatalf("改 next 不该产生新版本：%d → %d", fixer.Version, updated.Version)
+	}
+	if updated.Digest != fixer.Digest {
+		t.Fatalf("改 next 不该改 digest：%s → %s", fixer.Digest, updated.Digest)
+	}
+	if len(updated.Spec.Next) != 0 {
+		t.Fatalf("next 应被清空，实际 %v", updated.Spec.Next)
+	}
+	if _, gerr := db.GetCapability(ctx, nsID, "fixer", 2); !errors.Is(gerr, ErrNotFound) {
+		t.Fatalf("原地改线不该落出 fixer@2（err=%v）", gerr)
+	}
+	// 只重建 fixer 自己的出边：review --> fixer 是 **review 的** next 投影，必须原样留着。
+	edges, eerr := db.ListEdges(ctx, nsID)
+	if eerr != nil {
+		t.Fatalf("list edges: %v", eerr)
+	}
+	for _, e := range edges {
+		if e.FromRef == "fixer" {
+			t.Fatalf("fixer 的出口清空后不该还有 %s --> %s", e.FromRef, e.ToRef)
+		}
+	}
+	if len(edges) != 1 || edges[0].FromRef != "review" || edges[0].ToRef != "fixer" {
+		t.Fatalf("清 fixer 出口误伤了别人的边: %+v", edges)
+	}
+}
+
+// TestUpgradeGateListsAffectedLinks 受影响 link 必须按 `from_ref --> to_ref` 列出来。
+//
+// 判据落在「这条 link 会不会解析到新版」上：只有**裸名字**右端（跟随 latest）受影响，
+// 钉死的 `fixer@1` 不受影响。
+func TestUpgradeGateListsAffectedLinks(t *testing.T) {
+	db, nsID, _, _ := gateFixture(t)
+	ctx := context.Background()
+
+	// 再挂一条钉死的边：cleanup --> fixer@1（两端都不跟随 latest）。
+	v4CapWith(t, db, &CapabilityVersion{
+		NamespaceID: nsID, Name: "cleanup", Version: 1,
+		Spec: v4Spec("", []string{"fixer@1"}, ""),
 	})
 
-	// CheckUpgrade 先算影响面（handler 用它给前端展示）
-	impact, err := db.CheckUpgrade(ctx, nsID, next)
+	// 候选：新增必填 note（破坏）——出口的增减与闸门无关，所以这里不放 next。
+	candidate := &CapabilityVersion{
+		NamespaceID: nsID, Name: "fixer", Version: 2,
+		Spec: v4Spec(`{"type":"object","required":["issue","note"],"properties":{
+			"issue":{"type":"string"},"note":{"type":"string"}}}`, nil, ""),
+	}
+	impact, err := db.CheckUpgrade(ctx, nsID, candidate)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)
 	}
 	if !impact.Breaking || impact.FromVersion != 1 || impact.ToVersion != 2 {
 		t.Fatalf("impact = %+v, want breaking (1 → 2)", impact)
 	}
-	if len(impact.Changes) != 1 || impact.Changes[0].Kind != ChangeRemovedPort {
-		t.Fatalf("changes = %+v, want 一条 removed_port", impact.Changes)
+	if len(impact.Changes) != 1 || impact.Changes[0].Kind != ChangeParamAddedRequired {
+		t.Fatalf("changes = %+v, want 一条 param_added_required", impact.Changes)
 	}
-	// 受影响的是「左端跟随 latest 且端口正好被删」的边（review --failed--> …）。
-	// 夹具里没有这种边，所以 links 是**空数组**（不是 null）。
-	if impact.Links == nil || len(impact.Links) != 0 {
-		t.Fatalf("links = %v, want 空数组（没有 link 挂在这个出口上）", impact.Links)
-	}
-
-	// 写入被拒，且是**结构化拒绝**
-	err = db.CreateCapability(ctx, withSpec(next))
-	if !errors.Is(err, ErrUpgradeBreaking) {
-		t.Fatalf("err = %v (%T), want ErrUpgradeBreaking", err, err)
-	}
-	var breaking *UpgradeBreakingError
-	if !errors.As(err, &breaking) {
-		t.Fatalf("err 里没有结构化的 impact: %v (%T)", err, err)
-	}
-	if len(breaking.Impact.Changes) != 1 || breaking.Impact.Changes[0].Kind != ChangeRemovedPort {
-		t.Fatalf("拒绝里没说清变了什么: %+v", breaking.Impact.Changes)
-	}
-	// 版本没被写进去（append-only 撤不回，所以必须拒在写入之前）
-	if _, gerr := db.GetCapability(ctx, nsID, "fixer", 2); !errors.Is(gerr, ErrNotFound) {
-		t.Fatalf("fixer@2 竟然写进去了（err=%v）", gerr)
-	}
-	_ = fixer
-
-	// force 能越过闸门（用户的显式决定）
-	if err := db.CreateCapabilityForce(ctx, withSpec(next), true); err != nil {
-		t.Fatalf("force create fixer@2: %v", err)
-	}
-	if _, err := db.GetCapability(ctx, nsID, "fixer", 2); err != nil {
-		t.Fatalf("force 之后 fixer@2 应该存在: %v", err)
-	}
-}
-
-// TestUpgradeGateListsAffectedLinks 受影响 link 必须按 `from_ref --port--> to_ref` 列出来。
-func TestUpgradeGateListsAffectedLinks(t *testing.T) {
-	db, nsID, _, _ := gateFixture(t)
-	ctx := context.Background()
-
-	// 再挂两条边到 failed 出口上（跟随 latest 的 fixer）与一条钉死的 fixer@1
-	if err := db.CreateEdge(ctx, &Edge{NamespaceID: nsID, FromRef: "review@1", FromPort: "fix", ToRef: "fixer@1"}); err != nil {
-		t.Fatalf("create pinned link: %v", err)
-	}
-
-	next := withSpec(&CapabilityVersion{
-		NamespaceID: nsID, Name: "fixer", Version: 2,
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue","note"],"properties":{
-			"issue":{"type":"string"},"note":{"type":"string"}}}`),
-		Outputs: []string{"done"}, // 删 failed + 新增必填 note
-		Source:  CapSourceCustom,
-	})
-	impact, err := db.CheckUpgrade(ctx, nsID, next)
-	if err != nil {
-		t.Fatalf("check upgrade: %v", err)
-	}
-	if !impact.Breaking {
-		t.Fatalf("impact 应该 breaking: %+v", impact)
-	}
-	// 两类变化都算出来了：removed_port + param_added_required
-	kinds := map[UpgradeChangeKind]bool{}
-	for _, c := range impact.Changes {
-		kinds[c.Kind] = true
-	}
-	if !kinds[ChangeRemovedPort] || !kinds[ChangeParamAddedRequired] {
-		t.Fatalf("changes = %+v, want removed_port + param_added_required", impact.Changes)
-	}
-	// 受影响 link：只有**裸名字**那条（review --fix--> fixer）。
-	// 钉死的 review@1 --fix--> fixer@1 两端都钉死 → 不受影响。
 	if len(impact.Links) != 1 {
 		t.Fatalf("links = %+v, want 恰好 1 条（只有跟随 latest 的那条受影响）", impact.Links)
 	}
 	got := impact.Links[0]
-	if got.FromRef != "review" || got.Port != "fix" || got.ToRef != "fixer" {
-		t.Fatalf("link = %s, want `review --fix--> fixer`", got)
+	if got.FromRef != "review" || got.ToRef != "fixer" {
+		t.Fatalf("link = %s, want `review --> fixer`", got)
 	}
-	if !strings.Contains(got.Reason, "跟随 latest") && !strings.Contains(got.Reason, "删掉") {
+	if !strings.Contains(got.Reason, "跟随 latest") {
 		t.Fatalf("link 的 reason 没说清为什么受影响: %q", got.Reason)
 	}
-	// 错误文案里带着这条 link（纯文本客户端也看得见）
-	err = db.CreateCapability(ctx, withSpec(next))
-	var breaking *UpgradeBreakingError
-	if !errors.As(err, &breaking) {
-		t.Fatalf("err = %v, want *UpgradeBreakingError", err)
+	// 结构化拒绝的文案里带着这条 link（纯文本客户端也看得见）。
+	breaking := &UpgradeBreakingError{Impact: impact}
+	if !errors.Is(breaking, ErrUpgradeBreaking) {
+		t.Fatalf("UpgradeBreakingError 必须能被 errors.Is 认出来")
 	}
-	if !strings.Contains(err.Error(), "review --fix--> fixer") {
-		t.Fatalf("错误文案里没有受影响 link: %v", err)
+	if !strings.Contains(breaking.Error(), "review --> fixer") {
+		t.Fatalf("错误文案里没有受影响 link: %v", breaking.Error())
 	}
 }
 
-// TestUpgradeGateAllowsAdditiveChanges 加可选入参 / 加 port → 直接通过（不需要 force）。
+// TestUpgradeGateAllowsAdditiveChanges 加可选入参 / 加出口 → 直接通过（不需要任何逃生口）。
 func TestUpgradeGateAllowsAdditiveChanges(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
 
-	next := withSpec(&CapabilityVersion{
+	candidate := &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
-		// 只加：一个可选入参 + 一个新 port
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{
-			"issue":{"type":"string"},"note":{"type":"string"}}}`),
-		Outputs: []string{"done", "failed", "skipped"},
-		Source:  CapSourceCustom,
-	})
-	impact, err := db.CheckUpgrade(ctx, nsID, next)
+		Spec: v4Spec(`{"type":"object","required":["issue"],"properties":{
+			"issue":{"type":"string"},"note":{"type":"string"}}}`, []string{"done"}, ""),
+	}
+	impact, err := db.CheckUpgrade(ctx, nsID, candidate)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)
 	}
 	if impact.Breaking || len(impact.Changes) != 0 {
 		t.Fatalf("impact = %+v, want 空影响面（只增不减）", impact)
 	}
-	if err := db.CreateCapability(ctx, withSpec(next)); err != nil {
-		t.Fatalf("加可选入参/加 port 应该直接通过: %v", err)
+	if err := db.CreateCapability(ctx, candidate); err != nil {
+		t.Fatalf("加可选入参/加出口应该直接通过: %v", err)
+	}
+	if candidate.Version != 2 {
+		t.Fatalf("落库版本 = %d, want 2", candidate.Version)
 	}
 }
 
-// TestUpgradeGateParamTypeChanged 改入参类型 → 拒绝。
+// TestUpgradeGateParamTypeChanged 改入参类型 → 闸门报破坏，并指出右端跟随 latest 的 link。
 func TestUpgradeGateParamTypeChanged(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
 
-	next := withSpec(&CapabilityVersion{
+	candidate := &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{
-			"issue":{"type":"integer"}}}`), // string → integer
-		Outputs: []string{"done", "failed"},
-		Source:  CapSourceCustom,
-	})
-	err := db.CreateCapability(ctx, withSpec(next))
-	if !errors.Is(err, ErrUpgradeBreaking) {
-		t.Fatalf("err = %v (%T), want ErrUpgradeBreaking", err, err)
+		// issue: string → integer
+		Spec: v4Spec(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"integer"}}}`, nil, ""),
 	}
-	var breaking *UpgradeBreakingError
-	if !errors.As(err, &breaking) {
-		t.Fatalf("err 里没有结构化 impact: %T", err)
+	impact, err := db.CheckUpgrade(ctx, nsID, candidate)
+	if err != nil {
+		t.Fatalf("check upgrade: %v", err)
 	}
-	if len(breaking.Impact.Changes) != 1 || breaking.Impact.Changes[0].Kind != ChangeParamTypeChanged {
-		t.Fatalf("changes = %+v, want param_type_changed", breaking.Impact.Changes)
+	if !impact.Breaking {
+		t.Fatalf("改入参类型必须 breaking: %+v", impact)
+	}
+	if len(impact.Changes) != 1 || impact.Changes[0].Kind != ChangeParamTypeChanged {
+		t.Fatalf("changes = %+v, want param_type_changed", impact.Changes)
 	}
 	// 受影响的是**右端**跟随 latest 的 link
-	if len(breaking.Impact.Links) != 1 || breaking.Impact.Links[0].ToRef != "fixer" {
-		t.Fatalf("links = %+v, want 一条 to_ref=fixer", breaking.Impact.Links)
+	if len(impact.Links) != 1 || impact.Links[0].ToRef != "fixer" {
+		t.Fatalf("links = %+v, want 一条 to_ref=fixer", impact.Links)
 	}
 }
 
 // TestUpgradeGateOnlyForLatest 不会成为 latest 的版本不过闸门（它不是「升级」）。
 //
-// 场景：先有 fixer@1、fixer@2；再创建 fixer@3（破坏性）会被拦。
-// 而「与 @2 同 schema 的 @3」在 v3 里是另一份内容（digest 吃 version），它会成为
-// latest —— 但它相对 @2 没有任何破坏性变更，所以闸门同样放行，且照常落成 @3。
+// 场景：fixer@1 已在；候选 @2 加可选入参（放行）成为 latest；此后
+//   - 拿一个**同样 @2** 的破坏性内容去问 → 它不会成为 latest，闸门给空影响面；
+//   - 拿 @3 的破坏性内容去问 → 会顶掉 latest，闸门照常报破坏。
 func TestUpgradeGateOnlyForLatest(t *testing.T) {
 	db, nsID, _, _ := gateFixture(t)
 	ctx := context.Background()
 
-	v2 := &CapabilityVersion{
+	optional := v4Spec(`{"type":"object","required":["issue"],"properties":{
+		"issue":{"type":"string"},"note":{"type":"string"}}}`, nil, "")
+	v2 := v4CapWith(t, db, &CapabilityVersion{NamespaceID: nsID, Name: "fixer", Version: 2, Spec: optional})
+	if v2.Version != 2 {
+		t.Fatalf("fixer@2 落库版本 = %d, want 2", v2.Version)
+	}
+
+	// 同一个版本号（2）+ 破坏性内容：不会成为 latest → 闸门不管。
+	notLatest := &CapabilityVersion{
 		NamespaceID: nsID, Name: "fixer", Version: 2,
-		ParamsSchema: json.RawMessage(`{"type":"object","required":["issue"],"properties":{
-			"issue":{"type":"string"},"extra":{"type":"string"}}}`),
-		Outputs: []string{"done", "failed"},
-		Source:  CapSourceCustom,
+		Spec: v4Spec(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"integer"}}}`, nil, ""),
 	}
-	if err := db.CreateCapability(ctx, withSpec(v2)); err != nil {
-		t.Fatalf("create fixer@2（加可选入参）: %v", err)
-	}
-	// 再把 v2 的内容当 v3 提交：相对 @2 无破坏性变更 → 闸门放行，落成 @3。
-	// （v3 不再把「同 schema 换版本号」折叠回旧行：digest 吃 version。）
-	//
-	// 构造点就套 withSpec：闸门读的是**正文**（P4 起 HTTP 只交正文，派生列的唯一写者
-	// 是 store 写入路径），先 withSpec 才能让 CheckUpgrade 与 CreateCapability 看到
-	// 同一份契约。不是“为了测试通过”——沿用旧字段的夹具表达的是已经不存在的模型。
-	same := withSpec(&CapabilityVersion{
-		NamespaceID: nsID, Name: "fixer", Version: 3,
-		ParamsSchema: v2.ParamsSchema, Outputs: v2.Outputs, Source: CapSourceCustom,
-	})
-	impact, err := db.CheckUpgrade(ctx, nsID, same)
+	impact, err := db.CheckUpgrade(ctx, nsID, notLatest)
 	if err != nil {
-		t.Fatalf("check upgrade: %v", err)
+		t.Fatalf("check upgrade (not latest): %v", err)
 	}
-	if impact.Breaking {
-		t.Fatalf("同内容的不同版本号不该被闸门拦: %+v", impact)
+	if impact.Breaking || len(impact.Changes) != 0 {
+		t.Fatalf("不会成为 latest 的版本不该被闸门拦: %+v", impact)
 	}
-	if err := db.CreateCapability(ctx, withSpec(same)); err != nil {
-		t.Fatalf("无破坏性变更的 @3 应该通过: %v", err)
+
+	// @3 的破坏性内容会顶掉 latest → 报破坏。
+	willBeLatest := &CapabilityVersion{
+		NamespaceID: nsID, Name: "fixer", Version: 3,
+		Spec: v4Spec(`{"type":"object","required":["issue"],"properties":{"issue":{"type":"integer"}}}`, nil, ""),
 	}
-	if same.Version != 3 {
-		t.Fatalf("落库版本 = %d, want 3（同 schema 也是新版本，不再折叠回 @2）", same.Version)
+	impact, err = db.CheckUpgrade(ctx, nsID, willBeLatest)
+	if err != nil {
+		t.Fatalf("check upgrade (latest): %v", err)
+	}
+	if !impact.Breaking || impact.FromVersion != 2 || impact.ToVersion != 3 {
+		t.Fatalf("impact = %+v, want breaking (2 → 3)", impact)
 	}
 }
 

@@ -36,3 +36,14 @@ NoPush/Merge/MR/remote deletion/oldWT deletion/T2/T3 writes. Local branch commit
 - Safe checkpoint committed 658d05fcf0847cb6e08b6ae29459fca644a37f8d with restored support+actual partial tests/evidence, NOT acceptance. Ownership whitelist included patch rename source paths (store/cron.go -> sourcespec/cron.go); initial whitelist omission corrected, not a product edit finding.
 - Draft /tmp/a-safety-mapping has generic family targets and builtin-all retirement, not accepted exact460/security coverage.
 - DELIVERY-A-CONTINUE.md concrete fresh leaf card freezes canonical cwd+git-root guard at EVERY bash, relative write/edit paths, unchanged test-only ownership/gates/history. Launch after old writer truly settled per parent explicit authorization; no new team/no A->B jump.
+
+## Actual canonical A compile checkpoint (not full A/B acceptance)
+- Fresh A canonical initial package identity fixed; real fixture rewrites progressed from old Playbook/node/source/upgrade/orphan/stmt errors to external benchmark DB.Transition block (06:00 compile2), then 32 benchmark call errors (compile3).
+- 06:03 /tmp/anotify-v4-delivery-a-continue-gate-060318.log contains successful internal/store and internal/store/v4test compilation, both [no tests to run]. No whitebox test execution PASS implied.
+- Worker still live completing exact safety-case mapping; final current-file fixed array not collected yet. A full acceptance pending, B not launched, G2G3G4/final gates not done.
+
+## A actual final receipt / limited mapping review before B
+- A-continue truly settled; wait returned execution success + acceptance accepted(verified), original fixed format/diff and timeout180 internal/store/... compile-run^$ commands exit0. No functional/whitebox/fullT1 PASS inferred.
+- Exact two tx_merge safety cases restored and self-scoped0; whole-store runtime count1 remains31 red, raw log persisted verify/delivery-a/original-store-runtime-red.log.
+- Child four product claims unconfirmed. Removed force/legacy server is intendedC2/pendingT1G3. Retiring reserved-route Playbook scenario because current implementation lacks guard is NOT an approved contract rationale; root asked precise policy, B keeps actual named regression pending.
+- Parent requested finite safety mapping gate; three fresh independent readonly scout jobs lease/txn, builtin-auth/NS, remaining deleted-case completeness dispatched. No writer/no baseline/no full460/C3 re-open. B exact full whitebox+store/auth/push fixed3 card prepared, not launched before limited findings settled.

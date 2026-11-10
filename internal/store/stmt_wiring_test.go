@@ -70,25 +70,31 @@ import (
 // 逐项（与下面 wiringSteps 一一对应；交付报告里的「12 个函数 → SQL 条数」映射表
 // 就是照抄这里，两边不一致说明有一边漂了）：
 //
-//	auth.go:263        GetSession            1  （sessions WHERE id）
-//	auth.go:295        ListSessionsByUser    1  （sessions WHERE user_id）
-//	authz.go:38        AuthorizeNamespace    1  （EXISTS namespaces + EXISTS users，一次往返）
-//	authz.go:87        namespaceExists       1  （EXISTS namespaces）
-//	capability.go:309  scanCapability        3  （GetCapability / GetCapabilityByID / getCapabilityByHash 各一种文本）
-//	capability.go:386  ListCapabilities      1
-//	event.go:192       scanEvent             3  （GetEvent / GetEventByTrace / getEventByIdemKey 各一种文本）
-//	event.go:252       ListEvents            1  ← 无过滤时的那一种（其余组合见第二条用例）
-//	namespace.go:129   GetNamespace          1
-//	namespace.go:144   ListNamespaces        1
-//	task.go:377        GetTask               1
-//	task.go:420        ListTasks             1  ← 同上
+//	auth.go:320        GetSession            1  （sessions WHERE id）
+//	auth.go:353        ListSessionsByUser    1  （sessions WHERE user_id）
+//	authz.go:27        AuthorizeNamespace    1  （EXISTS namespaces + EXISTS users，一次往返）
+//	authz.go:69        namespaceExists       1  （EXISTS namespaces，入口 AuthorizeNamespaceForNode）
+//	capability.go:439  scanCapabilityOn      3  （GetCapability / GetCapabilityByID / getCapabilityByDigestOn 各一种文本）
+//	capability.go:551  ListCapabilities      1
+//	event.go:321       scanEventRow          2  （GetEvent / GetEventByTrace 各一种文本）
+//	event.go:391       ListEvents            1  ← 无过滤时的那一种（其余组合见第二条用例）
+//	namespace.go:127   GetNamespace          1
+//	namespace.go:146   ListNamespaces        1
+//	task.go:482        GetTask               1
+//	task.go:514        ListTasks             1  ← 同上
+//	task.go:563        ListTasksByTrace      1
 //
-//	1+1+1+1+3+1+3+1+1+1+1+1 = 16
+//	1+1+1+1+3+1+2+1+1+1+1+1+1 = 16
 //
-// 也就是说：**这 12 个只读函数在这条用例的参数下共用 16 条不同的 SQL 文本**
-// （12 个调用点，但 scanCapability / scanEvent 是「一个调用点、三种文本」的共用实现）。
+// 也就是说：**这些只读入口在这条用例的参数下共用 16 条不同的 SQL 文本**
+// （scanCapability / scanEvent 是「一个入口、多种文本」的共用实现）。
 // 新增读函数后这个数字**不需要**跟着改（断言是 `>=`）；只有「已有调用点的文本集合变了」
 // 才需要同步本表（那时逐入口断言会先告诉你哪一处变了）。
+//
+// v4 起 event 的幂等判据从「按 idem_key 回查」改成 event_deliveries 的窗口占用
+// （InsertEvent 内部条件 upsert + getEventByIDOn），**不存在**独立的「按幂等键读一行」
+// 入口，所以那一步换成 v4 真实存在的 ListTasksByTrace；能力侧的 getCapabilityByHash
+// 对应 v4 的 getCapabilityByDigestOn（部署 identity 由 digest 表达）。
 const wiringMinDistinctSQL = 16
 
 // wiringEnv 是把 12 条读路径都喂饱的最小夹具：内存库 + 一个用户（含默认命名空间）
@@ -104,13 +110,13 @@ type wiringEnv struct {
 	nsID   string
 	sessID string
 
-	capID   string
-	capName string
-	capHash string
+	capID     string
+	capName   string
+	capDigest string
 
-	eventID string
-	traceID string
-	idemKey string
+	eventID    string
+	traceID    string
+	deliveryID string
 
 	taskID string
 }
@@ -145,35 +151,34 @@ func newWiringEnv(t *testing.T) *wiringEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
-	// 自定义能力（内置名是保留的，必须换一个；内容由 CreateCapability 算 hash 并回填）。
-	capDef := &CapabilityVersion{
-		NamespaceID: ns.ID, Name: "wiring.probe", Version: 1,
-		ParamsSchema: json.RawMessage(`{}`), Outputs: []string{"ok"}, CreatedAt: Now(),
-	}
-	if err := db.CreateCapability(ctx, withSpec(capDef)); err != nil {
+	// 自定义能力（内置名是保留的，必须换一个；内容由 CreateCapability 算 digest 并回填）。
+	capDef := withSpec(&CapabilityVersion{
+		NamespaceID: ns.ID, Name: "wiring.probe", Version: 1, CreatedAt: Now(),
+	})
+	if err := db.CreateCapability(ctx, capDef); err != nil {
 		t.Fatalf("create capability: %v", err)
 	}
-	if capDef.ContentHash == "" {
-		t.Fatalf("CreateCapability 没回填 ContentHash（getCapabilityByHash 的入参就没了）")
+	if capDef.Digest == "" {
+		t.Fatalf("CreateCapability 没回填 Digest（getCapabilityByDigestOn 的入参就没了）")
 	}
 
-	idemKey := "idem-" + NewUserID()
+	deliveryID := "dlv-" + NewUserID()
 	ev := &Event{
 		NamespaceID: ns.ID, TraceID: "tr_" + NewUserID(), Source: "github",
 		Type: "pull_request.opened", Payload: json.RawMessage(`{"number":1}`),
-		IdemKey: &idemKey, CreatedAt: Now(),
+		DeliveryID: &deliveryID, CreatedAt: Now(),
 	}
-	inserted, err := db.InsertEvent(ctx, ev)
+	inserted, err := db.InsertEvent(ctx, ev, Now(), 3600)
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
 	if !inserted {
-		t.Fatalf("事件没有真的插进去（幂等键撞了？）")
+		t.Fatalf("事件没有真的插进去（投递 id 撞了？）")
 	}
 
 	task := &Task{
 		NamespaceID: ns.ID, TraceID: ev.TraceID,
-		CapabilityID: capDef.ID, Capability: capDef.Name, Version: 1, CreatedAt: Now(),
+		CapabilityID: capDef.ID, Capability: capDef.Name, Version: 1, Digest: capDef.Digest, CreatedAt: Now(),
 	}
 	if err := db.CreateTasks(ctx, []*Task{task}); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -189,8 +194,8 @@ func newWiringEnv(t *testing.T) *wiringEnv {
 
 	return &wiringEnv{
 		db: db, userID: u.ID, nsID: ns.ID, sessID: sess.ID,
-		capID: capDef.ID, capName: capDef.Name, capHash: capDef.ContentHash,
-		eventID: ev.ID, traceID: ev.TraceID, idemKey: idemKey,
+		capID: capDef.ID, capName: capDef.Name, capDigest: capDef.Digest,
+		eventID: ev.ID, traceID: ev.TraceID, deliveryID: deliveryID,
 		taskID: task.ID,
 	}
 }
@@ -265,13 +270,13 @@ func wiringSteps() []wiringStep {
 			}
 			return nil
 		}},
-		{"capability.go:309 scanCapability ← getCapabilityByHash", func(ctx context.Context, e *wiringEnv) error {
-			c, err := e.db.getCapabilityByHash(ctx, e.nsID, e.capHash)
+		{"capability.go:426 getCapabilityByDigestOn", func(ctx context.Context, e *wiringEnv) error {
+			c, err := getCapabilityByDigestOn(ctx, e.db, e.nsID, e.capDigest)
 			if err != nil {
 				return err
 			}
 			if c.ID != e.capID {
-				return fmt.Errorf("按 hash 拿到能力 %q, want %q", c.ID, e.capID)
+				return fmt.Errorf("按 digest 拿到能力 %q, want %q", c.ID, e.capID)
 			}
 			return nil
 		}},
@@ -309,13 +314,13 @@ func wiringSteps() []wiringStep {
 			}
 			return nil
 		}},
-		{"event.go:192 scanEvent ← getEventByIdemKey", func(ctx context.Context, e *wiringEnv) error {
-			got, err := e.db.getEventByIdemKey(ctx, e.nsID, "github", e.idemKey)
+		{"task.go:563 ListTasksByTrace", func(ctx context.Context, e *wiringEnv) error {
+			ts, err := e.db.ListTasksByTrace(ctx, e.nsID, e.traceID)
 			if err != nil {
 				return err
 			}
-			if got.ID != e.eventID {
-				return fmt.Errorf("按幂等键拿到事件 %q, want %q", got.ID, e.eventID)
+			if len(ts) != 1 || ts[0].ID != e.taskID {
+				return fmt.Errorf("按 trace 列出 %d 条任务, want 1（%s）", len(ts), e.taskID)
 			}
 			return nil
 		}},
@@ -361,8 +366,8 @@ func wiringSteps() []wiringStep {
 			}
 			return nil
 		}},
-		{"task.go:420 ListTasks（无过滤）", func(ctx context.Context, e *wiringEnv) error {
-			ts, err := e.db.ListTasks(ctx, e.nsID, "", "", "", 50)
+		{"task.go:514 ListTasks（无过滤）", func(ctx context.Context, e *wiringEnv) error {
+			ts, err := e.db.ListTasks(ctx, e.nsID, TaskFilter{Limit: 50})
 			if err != nil {
 				return err
 			}
@@ -382,8 +387,9 @@ func TestStmtWiringAllReadPathsCached(t *testing.T) {
 	env := newWiringEnv(t)
 	steps := wiringSteps()
 
-	// 前置：入口清单至少要盖住现有的 12 个 `d.cached*` 调用点。
-	// 这是**下限**断言，和上面总量一样故意宽松：将来新增读路径、往 wiringSteps 里加入口，
+	// 前置：入口清单至少要盖住本门禁最初覆盖的 12 个 `d.cached*` 调用点（v4 新增的
+	// 读路径——playbook/source/event page——由各自的包测试盖，不在此重复）。
+	// 这是**下限**断言：将来新增读路径、往 wiringSteps 里加入口，
 	// 不需要改这个数字（那不是回归）；只有「入口被删/合并到不足 12」——真丢了覆盖面——才该红。
 	const wiringMinCallSites = 12
 	if got := len(steps); got < wiringMinCallSites {
@@ -438,8 +444,8 @@ func TestStmtWiringAllReadPathsCached(t *testing.T) {
 
 // TestStmtWiringOptionalFiltersAreDistinctSQLs 钉住「可选过滤 → 多条 SQL 文本」这半边事实。
 //
-// ListTasks 的 3 个可选过滤（trace/node/status）拼在**列名**上、值走占位符，
-// 所以文本种类数 = 2^3；ListEvents 的 2 个（trace/source）同理 = 2^2
+// ListTasks 的 4 个可选过滤（trace/node/phase/capability）拼在**列名**上、值走占位符，
+// 所以文本种类数 = 2^4；ListEvents 的 2 个（trace/source）同理 = 2^2
 // （注意 source 还有一条「非空且没有 trace 时排除 route」的隐藏分支，
 // 它让 (trace="", source="") 与 (trace!="", source="") 也各是一种文本，
 // 于是组合数正好还是 4，见 event.go:ListEvents 的拼串逻辑）。
@@ -452,15 +458,16 @@ func TestStmtWiringOptionalFiltersAreDistinctSQLs(t *testing.T) {
 	env := newWiringEnv(t)
 
 	type combo struct {
-		name  string
-		trace string
-		other string // ListTasks 用 nodeID，ListEvents 用 source
-		third string // ListTasks 用 status
+		name   string
+		trace  string
+		other  string // ListTasks 用 NodeID，ListEvents 用 source
+		third  string // ListTasks 用 Phase
+		fourth string // ListTasks 用 Capability（v4 新增的可选过滤，同样拼列名）
 	}
 
 	var listTasks []combo
-	for i := 0; i < 8; i++ {
-		c := combo{name: fmt.Sprintf("combo=%03b", i)}
+	for i := 0; i < 16; i++ {
+		c := combo{name: fmt.Sprintf("combo=%04b", i)}
 		if i&1 != 0 {
 			c.trace = "tr_x"
 		}
@@ -469,6 +476,9 @@ func TestStmtWiringOptionalFiltersAreDistinctSQLs(t *testing.T) {
 		}
 		if i&4 != 0 {
 			c.third = TaskPending
+		}
+		if i&8 != 0 {
+			c.fourth = "cap_x"
 		}
 		listTasks = append(listTasks, c)
 	}
@@ -511,7 +521,9 @@ func TestStmtWiringOptionalFiltersAreDistinctSQLs(t *testing.T) {
 	}
 
 	run("ListTasks", listTasks, func(c combo) error {
-		_, err := env.db.ListTasks(ctx, env.nsID, c.trace, c.other, c.third, 50)
+		_, err := env.db.ListTasks(ctx, env.nsID, TaskFilter{
+			TraceID: c.trace, NodeID: c.other, Phase: c.third, Capability: c.fourth, Limit: 50,
+		})
 		return err
 	})
 	if got, want := env.db.stmts.len(), len(listTasks); got != want {

@@ -128,7 +128,8 @@ func TestCapabilityArtifactDerivedNotPersisted(t *testing.T) {
 	if art.Digest != c.Digest {
 		t.Fatalf("artifact digest = %q, want 能力行 %q", art.Digest, c.Digest)
 	}
-	want, err := artifact.CanonicalJSON(c.Artifact())
+	parsed := c.Artifact()
+	want, err := artifact.CanonicalJSON(&parsed)
 	if err != nil {
 		t.Fatalf("canonical json: %v", err)
 	}
