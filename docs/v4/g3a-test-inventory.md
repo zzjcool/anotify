@@ -138,7 +138,7 @@
 | `deploy_test.go`（9） | `TestCreateCapabilityWithRunCompilesArtifact`、`TestCreateCapabilityWithInvalidRunRejected`、`TestDeployHandlerCapability400BuiltinNotDeployable`、`TestDeployUnknownDigest404ArtifactNotFound`、`TestDeployToOfflineNodeCreatesRow`、`TestDeleteDeploymentRemovesRow`、`TestDeployRequestValidation`、`TestCapabilityTemplates` | v4：部署只经 `POST …/capabilities/{name}/deploy`（写 `deployments` 事实），**没有** `POST/DELETE /v1/deployments`、`GET /v1/artifacts`。映射：部署到离线节点仍建行 → `TestCapabilityResourceDeployToOfflineNode`；未知节点 404 → `TestCapabilityResourceDeployUnknownNode`；模板 → `TestCapabilityResourceEdgesAndTemplates`（含 `/v1/capability-templates`）；「按 run 编译 artifact / 非法 run 拒绝」→ `TestCapabilityResourceWriteValidation` + store 层 artifact 编译测试 |
 | （同一文件）`TestListDeploymentsFilters` | **恢复，不是退役** | §9 明确「deployments 只保留 `GET /v1/namespaces/{namespace}/deployments`（事实）」。返修轮补回 ns 路径的读端点真用例 `TestRetainedDeploymentsListAndFilters`（列表/`nodeId`/`capabilityId` 过滤/跨 ns 隔离/空 `[]`/未知 ns 404），首轮把它随写入口一起删掉是误删 |
 
-### 4.5 v3 中央执行域与派发预算（3 个用例）
+### 4.5 v3 中央执行域与派发预算（退役 4 + 恢复 3）
 
 | 文件 | 退役 Test 名 | 理由 + 替代 |
 |---|---|---|
@@ -166,7 +166,7 @@
 | `node_create_test.go`（11） | `TestCreateNodeRequiresNamespace`、`TestCreateNodeRejectsAllNamespaces`、`TestCreateNodeNamespaceScope`、`TestCreateNodeDuplicateNameConflict`、`TestCreateNodeTokenWorksForWSHandshake`、`TestCreateNodeNameValidation`、`TestCreateNodeDoesNotCreateInstances`、`TestCreateNodeRequiresSession`、`TestCreateNodeNamespaceQueryWins`、`TestCreateNodeNamespaceInBody`（+`TestCreateNodeReturnsTokenOnce` 迁移） | v4 Node 是 **cluster-scoped**（W4）：登记不再带 namespace（`spec.namespaces` 是授权，不是创建作用域），登记端点也**不发 token**。映射：登记不回 token / 重复名 409 / 需登录 → `TestNodeResourceCreateReturnsEnvelopeWithoutToken`、`…RoutesAreSessionWrapped`；token 只在 `POST /v1/nodes/{name}/tokens` 且 one-shot → `…TokenRotatesAndPlaintextAppearsOnce`；「不建 instances」→ `…ConfigDefaults`（新节点无实例占用断言在 `…ListEmptyIsArray` 的真实快照里） |
 | `nodes_batch_test.go`（5） | `TestViewsForBatchEquivalence`、`TestViewsForBatchEmptyInput`、`TestBatchStoreQueriesEdgeCases`、`TestBatchListCapabilitiesByNodeOrdering`、`TestViewsForBadJSONDegradesOnlyThatNode` | 被测的 `db.NodesDeclaringCapability` / `db.ListCapabilitiesByNode` / `consoleHandler.viewsForBatch` 在 v4 不存在（能力归属不再由节点自报）。v4 的批量语义是**节点配置批量写**（`POST /v1/nodes/config/batch`，逐节点原子可部分成功）→ `TestNodeResourceConfigBatchPartialSuccess` |
 
-### 4.9 v3 命名空间 CRUD 的遗留口径（3 个用例）
+### 4.9 v3 命名空间 CRUD 的遗留口径（旧文件 12 条 = 9 迁移 + 2 恢复 + 1 退役）
 
 | 旧用例（`namespace_handlers_test.go`，12→9；返修后 11，见 §9.5） | 处理 |
 |---|---|
@@ -319,8 +319,9 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 
 ### 9.5 r2 返修（#340 第二轮 review 后的提交，计数全部实测）
 
-`f0016b8` 之后又落了 4 个提交。下表每一行的增量都用
-`git show <commit>:<file> | grep -c '^func Test'` 逐文件相减得到（复算命令见本节末）。
+`f0016b8` 之后本轮 r2 返修做了 4 个批次的工作，交付时 squash 成**一个**提交
+（`git rev-list --count f0016b8..HEAD` = 1；PR #340 的 head 就是这个 squash 提交）。
+下表每一行的增量都用逐文件 `grep -c '^func Test'` 在工作树上实测相减得到（复算命令见本节末）。
 
 | 批次 | 内容 | `internal/server` 用例增量 | 累计后总数 |
 |---|---|---|---|

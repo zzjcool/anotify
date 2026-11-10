@@ -100,6 +100,10 @@ func (s *hubSettle) exit() {
 
 // wait 等所有已进入的 handler 返回（超时即 t.Errorf，不 Fatalf：让其它 cleanup 照常跑完，
 // 现场更完整）。没有会话进入过则立即返回——那时用例本身已经失败，空等只会拖慢失败。
+//
+// 边界（复用这个屏障时注意）：done 在 inFlight 归零时封盘，所以「封盘之后再拨一条连接」
+// 不会被等。当前两个调用点都是「一个 srv 一条连接、拨号成功后才进 cleanup」，不触发该边界；
+// 若将来在同一个 srv 上反复拨号，需要改成 ws 包 settleGroup 那样的 seal + 计数语义。
 func (s *hubSettle) wait(t *testing.T) {
 	t.Helper()
 	if s.entered.Load() == 0 {
