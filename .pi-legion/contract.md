@@ -26,3 +26,30 @@ Final mandatory real verify: GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=a
 
 ## Deliverable
 Persist every worker session/verdict/review/raw verify log, precise changed files/new tests/460 mapping/unresolved issues. Commit local branch and report HEAD. Parent user forbids MR/push/merge: branch only for parent integration, no remote cleanup. Final only when fully delivered or truly cannot safely continue; final JSON ok boolean/reason with branch SHA and blocking evidence as applicable.
+
+---
+
+# G2 resume · active frozen local contract
+
+The preceding V4-CORE-DELIVERY contract is preserved historical evidence. Current parent recovery authorizes ONLY G2 on HEAD50fb9ac7 / branch pi-subagent/core-g2-resume-52fc54d4. Current actual Legion node has four phases planning/implementing/reviewing/verifying (observed by legion_tree); historical 'no machine/tools' statements above describe the previous session, not this one. No new WT, no model/preset overrides, no baseline rediscovery. Parent logs-gap clarification explicitly allows remaining G2 to proceed with structured log seam pending, no invented records or private protocol.
+
+Complete G2 interface/wire/ownership/acceptance/sequence freeze is .pi-orchestrator/v4/teams/core-runtime/task-cards/G2-RESUME-FROZEN.md, nonempty and read before dispatch; original G2.md/NEXT-G2-NOTES and frozen root CONTRACT/D1-D6/A1/A3/W1-W6 remain authoritative. ACTUAL C2/C3a/C3b supersede historical PENDING signatures.
+
+Sole source worker owns internal/{route,ws,lease,source,trigger}/**; internal/logging/** protocol/log routing ONLY retaining independent logger; internal/executor/** DELETE retired central capability executor ONLY; cmd/agent/** DELETE old Node product ONLY; TEST-MAPPING.md G2 rows ONLY; exact new g2-resume-evidence/G2-WRITER-{INTERFACES,VERDICT}.md. Store/protocol/artifact/server/api/tools/Node/T2/T3 read-only. Centurion owns this contract, G2-RESUME-FROZEN/PROGRESS/VERDICT and other G2-only review/verify evidence; no manager writes while source worker is live. No ownership overlap/shared file concurrent writers. Worktree:false only, one writer, no nested writers.
+
+Mandatory interfaces: actual authenticated GrantLeaseAuthorized/RenewLeaseAuthorized/CompleteTaskClassifiedAuthorized/AckCancelAuthorized/EmitAuthorized store transactions; shared DTO/Decode/direction/presence; captured Node credential hash; current DB identity for all inbound authority; no Get-precheck+unguarded execution write. Actual Source/current next/targets mapping/receipt/0-write preview; proposal-only dispatch/accept slot0/30s/TTL60/renew20/reap5; exact binding/idempotence/expiry/cancel/history; auth-first emit replay vs independent correlation; explicit manualdeploy/offline intent replay; real lease/retention/stats; independent notification domains retained. Public runtime internal adapters stay owned and final exact signatures exported for G3; no shared wire mirrors/compat aliases.
+
+W6/A1 structured log gap: current LogsResponseFrame raw stdout/stderr/bytes/attempt lacks per-record sequence/stream/text/at. Parent limit-scope adjudication pending. Historical Node/attempt/request correlation may proceed using actual facts; no fake timestamps/cross-stream order/offline-empty-success. This remains explicit pending, so no full G2 DONE until truly resolved, no self-expansion into protocol/Node.
+
+Acceptance: all original G2 test names individually retained/migrated/intentional pure-v3 retirement in TEST-MAPPING; real httptest WS/shared decoder + current credential/ns revocation/slot/expiry/disconnect/rehello/busy/cancel historical CAS/result full duplicate facts/emit IDs/offline deployment/Source preview and actual maintenance tests. Exact four gates below plus independent fresh three-angle scout review strict ok:true. Collect every worker/review session/verdict and managed task before transition; major -> precise same-owner repair/re-review or protected-gap report. Two same-root-cause failed retries max. Supervisor actual verification logs/exits, not phase/self-report, determine completion. G3/G4 and original final go-all/contract/e2e-quick remain upstream mandatory, not run/claimed here. No push/MR/merge/rebase/reset/squash/settings/env/node_modules/user-data/evidence cleanup; local owner-only commit allowed, final branch/HEAD/epoch/verdict only.
+
+## legion-verify
+
+Canonical cwd for every command: /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume. Before command assert pwd -P == git root and GOMOD == pwd/go.mod. Preserve full unique logs in /tmp/anotify-core-recovery-g2-*.log and exact actual exit. These four G2 commands are unchanged target sets from original parent G2.md, not substitutes for final three.
+
+```legion-verify
+cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && gofmt -w internal/route internal/ws internal/lease internal/source internal/trigger internal/logging && git diff --check
+cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go vet ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/...
+cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/route/... ./internal/ws/... ./internal/lease/... ./internal/source/... ./internal/trigger/... ./internal/logging/... -count=1
+cd /root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume && env GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go test ./internal/store/... ./internal/artifact/... ./internal/protocol/... -count=1
+```
