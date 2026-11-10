@@ -72,6 +72,50 @@ func (d *serverDeps) authorizeQueryNamespace(r *http.Request, allowAll bool) (st
 	return ns.ID, nil
 }
 
+// resolveNamespaceForUser 是 ingress 入口用的「显式 userID」版本。
+//
+// 为什么要单独一个：API-key 投递入口的调用方身份是 key 的 owner（authn 解出来），
+// 不经过会话中间件，所以 context 里没有 auth.UserIDFromContext 的值。判据仍然是
+// 同一份（见 scopeFor），只是 userID 由调用方给。
+func resolveNamespaceForUser(ctx context.Context, db *store.DB, userID, raw string) (*store.Namespace, error) {
+	raw = strings.TrimSpace(raw)
+	if userID == "" {
+		return nil, store.ErrAuthRequired
+	}
+	if raw == "" {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, "namespace is required（不回退默认命名空间）")
+	}
+	if raw == store.AllNamespaces {
+		return nil, errStatus(http.StatusBadRequest, reasonBadRequest, "namespace * is only allowed for cross-namespace reads")
+	}
+	all, err := db.ListNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var ns *store.Namespace
+	for _, cand := range all {
+		if cand.Slug == raw {
+			ns = cand
+			break
+		}
+	}
+	if ns == nil {
+		for _, cand := range all {
+			if cand.ID == raw {
+				ns = cand
+				break
+			}
+		}
+	}
+	if ns == nil {
+		return nil, store.ErrNamespaceNotFound
+	}
+	if err := db.AuthorizeNamespace(ctx, userID, ns.ID); err != nil {
+		return nil, err
+	}
+	return ns, nil
+}
+
 // scopeFor 是全文件唯一的判据实现。
 func (d *serverDeps) scopeFor(ctx context.Context, raw string) (*store.Namespace, error) {
 	raw = strings.TrimSpace(raw)

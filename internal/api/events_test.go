@@ -40,11 +40,14 @@ import (
 type eventIngressFixture struct {
 	db      *store.DB
 	nsID    string
+	nsSlug  string
 	otherNS string
-	userID  string
-	apiKey  string
-	handler *EventHandler
-	server  *httptest.Server
+
+	otherSlug string
+	userID    string
+	apiKey    string
+	handler   *EventHandler
+	server    *httptest.Server
 }
 
 // newEventIngressFixture 建两个命名空间、一个能力、两个同名源（用于证明 ns 隔离）。
@@ -104,6 +107,27 @@ func newEventIngressFixture(t *testing.T) *eventIngressFixture {
 	})
 
 	handler := NewEventHandler(source.New(db, route.New(db)), keys)
+	// 生产装配里这个解析器由 server 包注入（namespace_scope.go 的唯一判据）：
+	// 路径段可能是 slug（canonical）或 store id（CLI/手写）。
+	handler.ResolveNamespace = func(ctx context.Context, uid, raw string) (string, error) {
+		// 与生产实现逐条对齐：`*` 只允许出现在跨 ns 读端点，投递入口一律 400。
+		if strings.TrimSpace(raw) == store.AllNamespaces {
+			return "", store.ErrNamespaceRequired
+		}
+		all, lerr := db.ListNamespaces(ctx)
+		if lerr != nil {
+			return "", lerr
+		}
+		for _, cand := range all {
+			if cand.Slug == raw || cand.ID == raw {
+				if aerr := db.AuthorizeNamespace(ctx, uid, cand.ID); aerr != nil {
+					return "", aerr
+				}
+				return cand.ID, nil
+			}
+		}
+		return "", store.ErrNamespaceNotFound
+	}
 	mux := http.NewServeMux()
 	// 路径参数名与 mux.go 的注册逐字一致（{namespace}）。
 	mux.Handle("POST /v1/namespaces/{namespace}/events", handler)
@@ -111,7 +135,7 @@ func newEventIngressFixture(t *testing.T) *eventIngressFixture {
 	t.Cleanup(server.Close)
 
 	return &eventIngressFixture{
-		db: db, nsID: ns.ID, otherNS: other.ID, userID: userID,
+		db: db, nsID: ns.ID, nsSlug: ns.Slug, otherNS: other.ID, otherSlug: other.Slug, userID: userID,
 		apiKey: apiKey, handler: handler, server: server,
 	}
 }
@@ -417,5 +441,65 @@ func TestEventIngressDisabledSource(t *testing.T) {
 	})
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404（停用的源不接收投递；body=%s）", code, raw)
+	}
+}
+
+// TestEventIngressSlugPath 钉住「路径段是 slug」这条身份口径。
+//
+// 回归的是一个真实缺陷：ingress 曾把路径段直接当 store 的 namespace_id 用，于是
+// canonical 路径 POST /v1/namespaces/default/events → 404，而用内部 id
+// POST /v1/namespaces/ns_xxx/events → 200。两种路径必须都指向**同一条**命名空间行。
+func TestEventIngressSlugPath(t *testing.T) {
+	f := newEventIngressFixture(t)
+	createIngressSource(t, f.db, f.nsID, "slug-src")
+
+	// 1) slug 路径（canonical）：必须 200，且事件真的落在 ns_ id 上。
+	code, body := f.post(t, f.nsSlug, f.apiKey, map[string]any{
+		"source": "slug-src", "id": "slug-1", "payload": map[string]any{"env": "prod"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("slug 路径投递 = %d, want 200; body=%s", code, body)
+	}
+	var receipt struct {
+		EventID string `json:"eventId"`
+		Tasks   []struct {
+			TaskID string `json:"taskId"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(body, &receipt); err != nil {
+		t.Fatalf("decode receipt: %v (%s)", err, body)
+	}
+	if receipt.EventID == "" || len(receipt.Tasks) != 1 {
+		t.Fatalf("slug 路径回执不完整: %s", body)
+	}
+	var eventNS string
+	if err := f.db.QueryRowContext(context.Background(),
+		`SELECT namespace_id FROM events WHERE id = ?`, receipt.EventID).Scan(&eventNS); err != nil {
+		t.Fatalf("query event namespace: %v", err)
+	}
+	if eventNS != f.nsID {
+		t.Fatalf("事件的 namespace_id = %q，want store id %q（不是路径 slug）", eventNS, f.nsID)
+	}
+
+	// 2) 同一个源的 id 路径（兼容）必须与 slug 路径等价：同一条事件被判重复。
+	code, body = f.post(t, f.nsID, f.apiKey, map[string]any{
+		"source": "slug-src", "id": "slug-1", "payload": map[string]any{"env": "prod"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("id 路径投递 = %d, want 200; body=%s", code, body)
+	}
+	var dup struct {
+		Duplicate bool `json:"duplicate"`
+	}
+	if err := json.Unmarshal(body, &dup); err != nil {
+		t.Fatalf("decode duplicate: %v (%s)", err, body)
+	}
+	if !dup.Duplicate {
+		t.Fatalf("同一 id 用 slug/id 两条路径投递必须去重（duplicate=true），body=%s", body)
+	}
+
+	// 3) 另一个 ns 的 slug 看不到本 ns 的源 → 404（不泄露存在性）。
+	if code, body := f.post(t, f.otherSlug, f.apiKey, map[string]any{"source": "slug-src"}); code != http.StatusNotFound {
+		t.Fatalf("跨 ns 投递 = %d, want 404; body=%s", code, body)
 	}
 }

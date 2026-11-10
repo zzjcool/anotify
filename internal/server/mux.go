@@ -234,6 +234,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 鉴权在 handler 内**。这不违反「背压在会话中间件内侧」那条纪律（那条说的是带
 	// sessMW 的控制台端点：先 401 再谈积压），投递入口本来就不走会话中间件。
 	eventH := api.NewEventHandler(sources, keyValidator)
+	// ingress 的路径段是 slug，store 引用 ns_ id：解析收口复用 server 包同一份判据
+	// （否则「事件能投递、资源列表 404」这类分叉又要付一次账）。
+	eventH.ResolveNamespace = func(ctx context.Context, userID, raw string) (string, error) {
+		ns, err := resolveNamespaceForUser(ctx, db, userID, raw)
+		if err != nil {
+			return "", err
+		}
+		return ns.ID, nil
+	}
 
 	// 后台循环（各自 go，单轮失败只记日志不停摆）：
 	//

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 )
 
 // 轻量资源信封（api-conventions §3.1–§3.3 / V4-D1）。
@@ -141,14 +142,17 @@ func decodeWriteEnvelope(r *http.Request, wantKind string, specDst any, metaKeys
 			fmt.Sprintf("apiVersion %q is not supported", *top.APIVersion))
 	}
 
-	allowed := map[string]bool{
-		"name": true, "displayName": true,
-		// CAS 令牌与作用域声明是每一个写请求都可能携带的合法键：
-		// PUT/PATCH 的令牌只能放 metadata.resourceVersion（W1），
-		// metadata.namespace 由 §3.2 定义（可省略，显式值与 path 不同 → namespace_mismatch）。
-		// 这两个键对每个 kind 都成立，因此不再让每个调用点自己往白名单里补：
-		// 补漏的症状是「PATCH 永远 400 resourceVersion is not writable」这种死路。
-		"resourceVersion": true, "namespace": true,
+	allowed := map[string]bool{"name": true, "displayName": true}
+	// 两个「按位置生效」的键（§3.4 / §3.2）：
+	//   - metadata.resourceVersion：只在 PUT/PATCH 是合法令牌；POST 创建时带了它是
+	//     调用方误解了协议（创建不套 CAS），必须 400 而不是静默丢弃。
+	//   - metadata.namespace：只在 namespaced 路径下有意义（可省略；显式值与 path
+	//     不同 → namespace_mismatch）。cluster 级资源（Node/Namespace）带它就是写错。
+	if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+		allowed["resourceVersion"] = true
+	}
+	if strings.TrimSpace(r.PathValue("ns")) != "" {
+		allowed["namespace"] = true
 	}
 	for _, k := range metaKeys {
 		allowed[k] = true

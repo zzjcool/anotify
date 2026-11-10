@@ -151,7 +151,7 @@ func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -212,7 +212,7 @@ func (a *sourceAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -380,7 +380,7 @@ func (a *sourceAPI) previewInline(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writeAPIError(w, err)
 		return
 	}

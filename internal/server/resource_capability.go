@@ -292,7 +292,7 @@ func (a *capabilityAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -358,7 +358,7 @@ func (a *capabilityAPI) patch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writeAPIError(w, err)
 		return
 	}

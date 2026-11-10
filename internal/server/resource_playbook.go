@@ -61,7 +61,7 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 		{"GET " + base + "/{slug}/installs/{installId}", a.getInstall},
 	}
 	for _, rt := range routes {
-		mux.Handle(rt.pattern, a.d.session(rt.h))
+		mux.Handle(rt.pattern, noStore(a.d.session(rt.h)))
 	}
 }
 
@@ -184,7 +184,7 @@ func (a *playbookAPI) create(w http.ResponseWriter, r *http.Request) {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writePlaybookAPIError(w, err)
 		return
 	}
@@ -234,7 +234,7 @@ func (a *playbookAPI) replace(w http.ResponseWriter, r *http.Request) {
 	}
 	// namespace 由路径给出（写请求的 metadata 白名单不含它）；这里仍走共享校验，
 	// 一旦骨架允许 metadata.namespace，冲突会就地报 namespace_mismatch 而不是被忽略。
-	if err := checkMetaNamespace(meta, ns); err != nil {
+	if err := checkMetaNamespace(meta, r.PathValue("ns")); err != nil {
 		writePlaybookAPIError(w, err)
 		return
 	}

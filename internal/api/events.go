@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -36,6 +37,14 @@ import (
 type EventHandler struct {
 	Sources *source.Service
 	Keys    authn.KeyValidator
+
+	// ResolveNamespace 把路径里的命名空间标识（对外是 slug，兼容 store id）解析成
+	// store 事实表用的 namespace_id，并顺带完成「该 user 能否访问这个 ns」的收口。
+	//
+	// 为什么不在 api 包里自己查：slug→id 的解析判据必须只有一份（在 server 包的
+	// namespace_scope.go 里）。若这里再抄一遍，两个入口对「default」与「ns_xxx」
+	// 的接受度迟早分叉——症状是「同一个 ns，事件能投递但资源列表 404」。
+	ResolveNamespace func(ctx context.Context, userID, raw string) (string, error)
 }
 
 // NewEventHandler 装配投递入口。
@@ -86,6 +95,16 @@ func (h *EventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAPIStatus(w, http.StatusBadRequest, reasonBadRequest, "namespace is required")
 		return
 	}
+	// 路径里是 slug，store 事实表引用 ns_ id：这一步是**必须**的换算，不是可选优化
+	// （直接把 slug 当 namespace_id 会查不到命名空间/查不到源，或用错命名空间）。
+	if h.ResolveNamespace != nil {
+		resolved, rerr := h.ResolveNamespace(r.Context(), userID, namespace)
+		if rerr != nil {
+			writeAPIError(w, rerr)
+			return
+		}
+		namespace = resolved
+	}
 
 	db := h.db()
 	if db == nil {
@@ -95,10 +114,13 @@ func (h *EventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAPIStatus(w, http.StatusInternalServerError, reasonInternal, "event ingress is not configured")
 		return
 	}
-	// 唯一收口：已登录（key 的 owner）+ 命名空间存在。将来按 ns 分权只改 store。
-	if err := db.AuthorizeNamespace(r.Context(), userID, namespace); err != nil {
-		writeAPIError(w, err)
-		return
+	// 唯一收口：已登录（key 的 owner）+ 命名空间存在。注入了解析器时它已做过这一步
+	// （同一个 store.AuthorizeNamespace），没注入时（单测直接构造 handler）在这里补。
+	if h.ResolveNamespace == nil {
+		if err := db.AuthorizeNamespace(r.Context(), userID, namespace); err != nil {
+			writeAPIError(w, err)
+			return
+		}
 	}
 
 	var req eventIngestRequest
