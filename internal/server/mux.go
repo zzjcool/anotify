@@ -443,6 +443,15 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/node/stream", noStore(hub))
 	// 二进制下载走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
 	mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: agentBin, db: db}))
+	// 能力包体下行（api-conventions §8.2 内容通道）：同样是 **node token**（不是会话），
+	// 所以也挂在资源域之外——域内 register 一律包 session 中间件（节点请求会被 401）。
+	// 授权在 handler 自己手里：生效命名空间（申报 ∩ 授权）+ 该内容的部署行必须存在；
+	// 响应是 artifact JSON 原文（不套信封、不带 status），见 node_capability.go 的文件头。
+	//
+	// 两条 pattern（GET 本体 + 非 GET 的显式 405）由 registerNodeCapabilityContent 一起注册：
+	// 405 兜底不能写在 mux.go 里（会让 parity 的裸挂载判据把 /v1/vapid-public-key 也判红），
+	// 理由写在那个函数上。
+	registerNodeCapabilityContent(mux, db, slog.Default())
 	// 运行产物上行（#332 / A1）：同样是 **node token**（不是会话），所以刻意挂在
 	// 资源域之外——域内 register 一律包 session 中间件（节点请求会被 401）。
 	// 授权不走中间件：handler 自己用 Bearer → token hash 定位节点，再由
