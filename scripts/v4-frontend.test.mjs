@@ -3292,7 +3292,7 @@ test("TRACE-STARTUP loaded path: already interactive/complete documents render w
 test("TRACE-STARTUP native: delayed defer graph library, missing-script retry recovery and loaded page", { timeout: 55000 }, () => {
   let rejected, output;
   try {
-    output = execFileSync(process.execPath, [path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-trace-startup.mjs')], {
+    output = execFileSync(process.execPath, [path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-trace-startup.mjs')], {
       cwd: ROOT, timeout: 52000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, E2E_MOCK_ONLY: '1', F3_RUN_ID: 'trace-startup-native-' + globalThis.crypto.randomUUID(), F3_ATTEMPT_ID: '' },
     });
@@ -4694,7 +4694,7 @@ test('M0 restored mock snapshot retains identity/revision allocation across same
 });
 
 test('F3 report persistence retains real failure across explicit-mock and same-mode later attempts', async () => {
-  const { persistReport } = await import('../.pi-orchestrator/v4/teams/frontend/f3-driver.mjs');
+  const { persistReport } = await import('./e2e/fixtures/f3/f3-driver.mjs');
   const H = await import('./e2e/lib/harness.mjs');
   const { readFile } = await import('node:fs/promises');
   const directory = H.mkdtempTmp('anotify-f3-evidence-');
@@ -4890,8 +4890,8 @@ test('G1 M3 condition provenance masks a private versioned-next derived name wit
 
 // F3b2a locale registrations and aggregate anti-degeneration (original 141 retained).
 test('F3b2a both locale suites register all nineteen pages in each of four languages and retained interactions', async () => {
-  const { casesFor, pageBatches } = await import('../.pi-orchestrator/v4/teams/frontend/f3-i18n-cases.mjs');
-  const { PAGES, LANGS } = await import('../.pi-orchestrator/v4/teams/frontend/f3-driver.mjs');
+  const { casesFor, pageBatches } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
+  const { PAGES, LANGS } = await import('./e2e/fixtures/f3/f3-driver.mjs');
   assert.equal(pageBatches.flat().length, 19);
   for (const suite of ['i18n', 'i18n_coverage']) {
     const cases = casesFor(suite); assert.equal(new Set(cases.map(x => x.id)).size, cases.length);
@@ -4903,14 +4903,14 @@ test('F3b2a both locale suites register all nineteen pages in each of four langu
   }
 });
 test('F3b2a locale residue gate rejects nonempty Chinese leaks and Chinese-only Japanese wording', async () => {
-  const { residue } = await import('../.pi-orchestrator/v4/teams/frontend/f3-i18n-cases.mjs');
+  const { residue } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
   assert.deepEqual(residue('Overview\n已停用', 'en'), ['已停用']);
   assert.deepEqual(residue('Resumen\n通知接收', 'es'), ['通知接收']);
   assert.deepEqual(residue('概要 セキュリティ 已停用', 'ja'), ['已停用']);
   assert.deepEqual(residue('概要 セキュリティ', 'ja'), []);
 });
 test('F3b2a locale aggregate rejects missing pages, no-op checks, wrong mode/source/attempt/cwd and actual nonzero exits', async () => {
-  const { validateLocaleEvidence: validate } = await import('../.pi-orchestrator/v4/teams/frontend/f3-i18n-runner.mjs');
+  const { validateLocaleEvidence: validate } = await import('./e2e/fixtures/f3/f3-i18n-runner.mjs');
   const expected = { suite:'i18n', id:'pages-en-1', runId:'test', attemptId:'a', cwd:process.cwd(), sourceHash:'hash', mode:'explicit-mock', authority:'explicit-mock', pages:['admin','keys'], lang:'en' };
   const meta = Object.fromEntries(Object.entries(expected).filter(([k]) => !['pages','lang'].includes(k)));
   const result = {...meta, ok:true, checks:2, report:{errors:[], pages:expected.pages.map(page => ({page,lang:'en',attempted:true,ok:true}))}};
@@ -5081,8 +5081,8 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
 // F3b2b: last two suites — truthful 304-view registry, retained UX19–23 and
 // aggregate rules that cannot be satisfied by a partial or retried run.
 test('F3b2b ui_shift registers every one of the 304 page views exactly once with an anonymous login view', async () => {
-  const { casesFor, registeredViews } = await import('../.pi-orchestrator/v4/teams/frontend/f3-ui-cases.mjs');
-  const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('../.pi-orchestrator/v4/teams/frontend/f3-ui-helper.mjs');
+  const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
+  const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
   assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
@@ -5111,7 +5111,7 @@ test('F3b2b ui_shift registers every one of the 304 page views exactly once with
   assert.ok(cases.some(c => c.id === 'interact-namespace-switch') && cases.some(c => c.id === 'interact-dialogs') && cases.some(c => c.id === 'guards-guest'));
 });
 test('F3b2b ux_regression_19_23 retains all five behaviours plus device PATCH, guards and the exact password form', async () => {
-  const { casesFor, registeredViews } = await import('../.pi-orchestrator/v4/teams/frontend/f3-ui-cases.mjs');
+  const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const cases = casesFor('ux_regression_19_23');
   const ids = cases.map(c => c.id);
   assert.equal(new Set(ids).size, ids.length);
@@ -5119,15 +5119,15 @@ test('F3b2b ux_regression_19_23 retains all five behaviours plus device PATCH, g
     assert.ok(ids.includes(id), 'registered retained case ' + id);
   assert.ok(cases.filter(c => c.id.startsWith('ux19') || c.id.startsWith('ux2')).every(c => c.views === 1));
   assert.ok(registeredViews('ux_regression_19_23').views >= 12);
-  const source = readFileSync(path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-ui-cases.mjs'), 'utf8')
-    + readFileSync(path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-ui-helper.mjs'), 'utf8');
+  const source = readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-cases.mjs'), 'utf8')
+    + readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-helper.mjs'), 'utf8');
   // Genuine wire/DOM facts, not "element exists" theatre.
   for (const needle of ['role, "member"', '/v1/devices/', 'enabled, false', 'f3-guest', 'login-panel', 'Notification.permission', 'auth/me'])
     assert.ok(source.includes(needle), 'case body keeps genuine fact: ' + needle);
   assert.equal(/"skip"|skipped:|test\.skip/.test(source), false, 'no skip path in the retained UX cases');
 });
 test('F3b2b aggregate rejects wrong authority/epoch/cwd/attempt, duplicate cells, missing views, deadlines and no-op greens', async () => {
-  const { validateUiEvidence: validate } = await import('../.pi-orchestrator/v4/teams/frontend/f3-ui-runner.mjs');
+  const { validateUiEvidence: validate } = await import('./e2e/fixtures/f3/f3-ui-runner.mjs');
   const expected = { suite:'ui_shift', id:'grid-en-dark-mobile-1', runId:'test', attemptId:'a', cwd:process.cwd(), sourceHash:'hash', mode:'explicit-mock', authority:'explicit-mock', views:2, pages:['admin','capabilities'], lang:'en', theme:'dark', viewport:'mobile' };
   const meta = Object.fromEntries(Object.entries(expected).filter(([k]) => !['views','pages','lang','theme','viewport'].includes(k)));
   const pages = expected.pages.map(page => ({ page, lang:'en', theme:'dark', viewport:'mobile', attempted:true, ok:true }));
@@ -5293,8 +5293,8 @@ for (const page of ['message', 'trace']) test('E1b raw leaf controller preserves
   }
 });
 
-const e1bEpoch = await import('../.pi-orchestrator/v4/teams/frontend/f3-epoch.mjs');
-const e1bRaw = await import('../.pi-orchestrator/v4/teams/frontend/f3-raw-content.mjs');
+const e1bEpoch = await import('./e2e/fixtures/f3/f3-epoch.mjs');
+const e1bRaw = await import('./e2e/fixtures/f3/f3-raw-content.mjs');
 test('E1b finite raw checker retains exact leaf and rejects adjacent Chinese chrome/nested widgets', () => {
   const root=fakeNode('div'), raw=fakeNode('span');raw.setAttribute('data-raw-content','');
   raw.textContent='E1b 中文 <img> & 原文';root.append(raw);
@@ -5311,7 +5311,7 @@ test('E1b finite raw checker retains exact leaf and rejects adjacent Chinese chr
 test('E1b full closure hashes actual HTML CSS locale generated/dist mutations, excludes logs/results (UNIT ONLY)', async () => {
   const fs=await import('node:fs/promises');const {randomUUID}=await import('node:crypto');
   const base=await e1bEpoch.captureEpoch(ROOT);
-  const temp=path.join(ROOT,'.pi-orchestrator/v4/teams/frontend/E1B-logs/unit-'+randomUUID());
+  const temp=path.join(ROOT,'scripts/e2e/fixtures/f3/E1B-logs/unit-'+randomUUID());
   await fs.mkdir(temp,{recursive:true});
   try {
     for(const file of base.files) {const dst=path.join(temp,file.path);await fs.mkdir(path.dirname(dst),{recursive:true});await fs.copyFile(path.join(ROOT,file.path),dst);}
@@ -5322,7 +5322,7 @@ test('E1b full closure hashes actual HTML CSS locale generated/dist mutations, e
       const mutated=await e1bEpoch.captureEpoch(temp);assert.notEqual(mutated.fullSourceArtifactSHA,initial.fullSourceArtifactSHA,file);
       assert.throws(()=>e1bEpoch.assertFrozen(initial,mutated));await fs.writeFile(path.join(temp,file),original);
     }
-    for(const file of ['web/results/unit.json','web/unit.log','.pi-orchestrator/v4/teams/frontend/E1B-logs/unit.log']) {const dst=path.join(temp,file);await fs.mkdir(path.dirname(dst),{recursive:true});await fs.writeFile(dst,'UNIT record, not browser PASS');}
+    for(const file of ['web/results/unit.json','web/unit.log','scripts/e2e/fixtures/f3/E1B-logs/unit.log']) {const dst=path.join(temp,file);await fs.mkdir(path.dirname(dst),{recursive:true});await fs.writeFile(dst,'UNIT record, not browser PASS');}
     assert.equal((await e1bEpoch.captureEpoch(temp)).fullSourceArtifactSHA,initial.fullSourceArtifactSHA);
     assert.equal(base.files.filter(x=>/^scripts\/e2e\/suites\/(frontend|i18n|i18n_coverage|ui_shift|ux_regression_19_23)\.mjs$/.test(x.path)).length,5);
     assert.deepEqual(base.presentSpecs.concat(base.missingSpecs).sort(),['agent','auth','events','ingress','resource'].map(x=>'api/'+x+'.yaml').sort());
@@ -5333,12 +5333,12 @@ for (const helper of ['parent-geometry-probe.mjs', 'parent-repair-evidence.mjs']
   test('PARENT-EPOCH UNIT: runtime helper changes both hashes: ' + helper, async () => {
     const fs = await import('node:fs/promises');
     const base = await e1bEpoch.captureEpoch(ROOT);
-    const temp = path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/PARENT-EPOCH-logs/unit-' + globalThis.crypto.randomUUID());
-    const relative = '.pi-orchestrator/v4/teams/frontend/' + helper;
+    const temp = path.join(ROOT, 'scripts/e2e/fixtures/f3/PARENT-EPOCH-logs/unit-' + globalThis.crypto.randomUUID());
+    const relative = 'scripts/e2e/fixtures/f3/' + helper;
     await fs.mkdir(temp, { recursive: true });
     try {
       // Include both real helpers even on the old collector, to expose omissions.
-      for (const file of new Set([...base.files.map(x => x.path), ...['parent-geometry-probe.mjs', 'parent-repair-evidence.mjs'].map(x => '.pi-orchestrator/v4/teams/frontend/' + x)])) {
+      for (const file of new Set([...base.files.map(x => x.path), ...['parent-geometry-probe.mjs', 'parent-repair-evidence.mjs'].map(x => 'scripts/e2e/fixtures/f3/' + x)])) {
         const dst = path.join(temp, file);
         await fs.mkdir(path.dirname(dst), { recursive: true });
         await fs.copyFile(path.join(ROOT, file), dst);
@@ -5356,7 +5356,7 @@ for (const helper of ['parent-geometry-probe.mjs', 'parent-repair-evidence.mjs']
         assert.deepEqual(after[collection].filter(x => x.path !== relative), before[collection].filter(x => x.path !== relative), 'Every other real input remains covered and unchanged');
         assert.notDeepEqual(after[collection].find(x => x.path === relative), before[collection].find(x => x.path === relative));
       }
-      const report = path.join(temp, '.pi-orchestrator/v4/teams/frontend/PARENT-EPOCH-CLOSURE.md');
+      const report = path.join(temp, 'scripts/e2e/fixtures/f3/PARENT-EPOCH-CLOSURE.md');
       await fs.writeFile(report, 'UNIT ONLY Markdown evidence is not source');
       const withReport = await e1bEpoch.captureEpoch(temp);
       assert.equal(withReport.sourceCodeSHA, after.sourceCodeSHA);
@@ -5382,7 +5382,7 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
 test('E1b all 35 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
-  const {CASES}=await import('../.pi-orchestrator/v4/teams/frontend/f3-cases.mjs');
+  const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
   assert.equal(CASES.length,35);
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all35',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
@@ -5547,7 +5547,7 @@ test('FINALR1 P2 reused Source keeps original private identity despite new liter
 function finalR1CaseBody(name, next, sandbox) {
   const src = process.env.FINALR1_CASE_BASELINE === '9022863'
     ? execFileSync('git', ['show','9022863:.pi-orchestrator/v4/teams/frontend/f3-ui-cases.mjs'], { cwd:ROOT, encoding:'utf8', timeout:5000 })
-    : readFileSync(path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-ui-cases.mjs'), 'utf8');
+    : readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-cases.mjs'), 'utf8');
   const body = src.slice(src.indexOf('async function ' + name + '('), src.indexOf('async function ' + next + '('));
   const ctx = vm.createContext({ assert: { ...assert, deepEqual: (a, b, message) => assert.deepEqual(plain(a), plain(b), message) }, ...sandbox });
   return vm.runInContext(body + '\n' + name, ctx);
@@ -5582,7 +5582,7 @@ test('FINALR1 m1 registered UX22 rejects a no-op button despite the preexisting 
 });
 
 test('FINALR1 m2 actual frontend aggregate retains completed nonzero red without calling collection a pass', async () => {
-  const epoch = await import('../.pi-orchestrator/v4/teams/frontend/f3-epoch.mjs');
+  const epoch = await import('./e2e/fixtures/f3/f3-epoch.mjs');
   const source = readFileSync(path.join(ROOT, 'scripts/e2e/suites/frontend.mjs'), 'utf8');
   const meta = { suite: 'frontend', id: 'unit-completed-red', cwd: ROOT, runId: 'unit-finalr1-red', mode: 'explicit-mock', authority: 'explicit-mock', attemptId: 'actual-red-attempt', sourceHash: 'unit-hash', sourceCodeSHA: 'unit-code', fullSourceArtifactSHA: 'unit-hash', artifactEpoch: 'unit-artifact' };
   const evidence = { ...meta, ok: false, checks: 0, error: 'real child behavior failure', report: { errors: ['mock 未实现'] }, reportPath: '/UNIT/report.json' };
@@ -5608,7 +5608,7 @@ test('FINALR1 U1 actual auth provider returns guest401 then restores original au
   const run = loadMock(); const original = (await run.req('/v1/auth/me')).body;
   run.sandbox.assert = assert;
   const storage = new Map(); run.sandbox.sessionStorage = { getItem: k => storage.get(k) ?? null, setItem: (k,v) => storage.set(k,String(v)), removeItem: k => storage.delete(k) };
-  const source = readFileSync(path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-ui-helper.mjs'), 'utf8');
+  const source = readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-helper.mjs'), 'utf8');
   vm.runInContext(source.slice(source.indexOf('const requireOrigin'), source.indexOf('// One real navigation')).replaceAll('export ', '') + '\nglobalThis.authFlagUnderTest = authFlag;', run.ctx);
   const d = { mock: true, page: { url: () => 'http://fixture/index.html', evaluate: async (fn,arg) => vm.runInContext('(' + fn + ')(' + JSON.stringify(arg) + ')', run.ctx) } };
   await run.sandbox.greetGuest(d);
@@ -5620,7 +5620,7 @@ test('FINALR1 U1 actual auth provider returns guest401 then restores original au
   assert.equal((await run.req('/v1/nodes')).body.items[0].metadata.uid, nodeUid, 'identity restore must not reset protected resource facts');
 });
 test('FINALR1 U2 actual helper fixture creates canonical Playbook and GET content for all sixteen URLs', async () => {
-  const run = loadMock(); const source = readFileSync(path.join(ROOT, '.pi-orchestrator/v4/teams/frontend/f3-ui-helper.mjs'), 'utf8');
+  const run = loadMock(); const source = readFileSync(path.join(ROOT, 'scripts/e2e/fixtures/f3/f3-ui-helper.mjs'), 'utf8');
   const ctx = vm.createContext({ assert, URLSearchParams });
   const code = source.slice(source.indexOf('export async function fixtures'), source.indexOf('export function viewUrl')).replaceAll('export ', '');
   vm.runInContext(code + '\nglobalThis.fixtureUnderTest = fixtures; globalThis.queryUnderTest = query;', ctx);
@@ -5651,8 +5651,8 @@ for (const mutation of [false, true]) {
   test('PARENT-EPOCH native: deleted installs group ' + (mutation ? 'rejects exact GET 200 mutant' : '404 keeps exact receipt 200'), { timeout: 55000 }, () => {
     const code = `
       import assert from 'node:assert/strict';
-      import { openDriver, withPreviewResources } from './.pi-orchestrator/v4/teams/frontend/f3-driver.mjs';
-      import { playbook } from './.pi-orchestrator/v4/teams/frontend/f3-playbook.mjs';
+      import { openDriver, withPreviewResources } from './scripts/e2e/fixtures/f3/f3-driver.mjs';
+      import { playbook } from './scripts/e2e/fixtures/f3/f3-playbook.mjs';
       const controller = new AbortController();
       const deadline = setTimeout(() => controller.abort(), 50000);
       try {
@@ -5712,7 +5712,7 @@ for (const [mode, claim] of [
 ]) {
   test("PARENT-GATE: " + claim, { timeout: 55000 }, () => {
     const output = execFileSync(process.execPath, [
-      path.join(ROOT, ".pi-orchestrator/v4/teams/frontend/parent-repair-evidence.mjs"), mode,
+      path.join(ROOT, "scripts/e2e/fixtures/f3/parent-repair-evidence.mjs"), mode,
     ], {
       cwd: ROOT, timeout: 52000, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, E2E_MOCK_ONLY: "1", PARENT_REPAIR_LANG: "", F3_RUN_ID: "parent-node-" + mode + "-" + globalThis.crypto.randomUUID() },
@@ -5724,7 +5724,7 @@ for (const [mode, claim] of [
 for (const id of ["shift-prelayout-expanded", "shift-prelayout-collapsed", "interact-namespace-switch"]) {
   test("PARENT-GEOMETRY: native " + id, { timeout: 55000 }, () => {
     const output = execFileSync(process.execPath, [
-      path.join(ROOT, ".pi-orchestrator/v4/teams/frontend/parent-repair-evidence.mjs"), "geometry",
+      path.join(ROOT, "scripts/e2e/fixtures/f3/parent-repair-evidence.mjs"), "geometry",
     ], {
       cwd: ROOT, timeout: 52000, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, E2E_MOCK_ONLY: "1", PARENT_GEOMETRY_CASE: id, PARENT_GEOMETRY_MUTATION: "", F3_RUN_ID: "parent-geometry-node-" + id + "-" + globalThis.crypto.randomUUID() },
@@ -5744,7 +5744,7 @@ for (const [mutation, id, rejection] of [
     let rejected;
     try {
       execFileSync(process.execPath, [
-        path.join(ROOT, ".pi-orchestrator/v4/teams/frontend/parent-repair-evidence.mjs"), "geometry",
+        path.join(ROOT, "scripts/e2e/fixtures/f3/parent-repair-evidence.mjs"), "geometry",
       ], {
         cwd: ROOT, timeout: 52000, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, E2E_MOCK_ONLY: "1", PARENT_GEOMETRY_CASE: id, PARENT_GEOMETRY_MUTATION: mutation, F3_RUN_ID: "parent-geometry-mutant-" + mutation + "-" + globalThis.crypto.randomUUID() },
@@ -5765,8 +5765,8 @@ for (const synthetic of [true, false]) {
   test('TRACE-ARCHIVE: native ' + (synthetic ? 'caught render failure' : 'seven-task contrast'), { timeout: 55000 }, () => {
     const code = `
       import assert from 'node:assert/strict';
-      import { openDriver } from './.pi-orchestrator/v4/teams/frontend/f3-driver.mjs';
-      import { fixtures, gotoPage, auditPage, ANCHORS } from './.pi-orchestrator/v4/teams/frontend/f3-ui-helper.mjs';
+      import { openDriver } from './scripts/e2e/fixtures/f3/f3-driver.mjs';
+      import { fixtures, gotoPage, auditPage, ANCHORS } from './scripts/e2e/fixtures/f3/f3-ui-helper.mjs';
       const d = await openDriver('trace-archive-${synthetic ? 'synthetic' : 'contrast'}', { lang: 'es', theme: 'light' });
       try {
         ${synthetic ? `await d.context.route(/\\/graphs(?:\\.[^/]+)?\\.js(?:\\?.*)?$/, async route => {
@@ -5855,7 +5855,7 @@ for (const synthetic of [true, false]) {
 }
 
 test('TRACE-ARCHIVE: selected response structure excludes all private payloads', async () => {
-  const { traceEvidenceTools } = await import('../.pi-orchestrator/v4/teams/frontend/f3-trace-evidence.mjs');
+  const { traceEvidenceTools } = await import('./e2e/fixtures/f3/f3-trace-evidence.mjs');
   const T = traceEvidenceTools(), sentinel = 'TRACE_PRIVATE_SENTINEL_728f';
   const task = { kind: 'Task', metadata: { uid: 'public-uid', name: 'public-task', namespace: 'default', resourceVersion: 1 }, spec: { traceUID: 'public-trace', parentTaskId: 'parent-task', capability: { name: sentinel, version: 2 }, env: { X: sentinel }, vars: { X: sentinel }, params: { X: sentinel }, payload: sentinel, token: sentinel }, status: { phase: 'failed', result: { summary: sentinel, error: { code: sentinel, message: sentinel } } } };
   const selected = T.shape({ kind: 'Trace', traceUID: 'public-trace', tasks: [task], events: [], edges: [], pruned: [{ detail: sentinel }], env: sentinel, vars: sentinel, token: sentinel, password: sentinel, hmac: sentinel, payload: sentinel });
@@ -5871,7 +5871,7 @@ test('TRACE-ARCHIVE: selected response structure excludes all private payloads',
 });
 
 test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments and thrown error', async () => {
-  const { traceEvidenceTools, installTraceEvidence } = await import('../.pi-orchestrator/v4/teams/frontend/f3-trace-evidence.mjs');
+  const { traceEvidenceTools, installTraceEvidence } = await import('./e2e/fixtures/f3/f3-trace-evidence.mjs');
   const promise = Promise.resolve('native-return'), originalError = new TypeError('safeSyntheticRenderError');
   const args = [{ kind: 'Task' }, { tasks: [] }];
   let receiver, received;

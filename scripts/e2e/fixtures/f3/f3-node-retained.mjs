@@ -1,0 +1,167 @@
+// Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
+import assert from 'node:assert/strict';
+export async function nodeRetained(d,mode){
+ const {page,check,shot,clean}=d;
+ const goto=(file,lang='en',query='?namespace=default')=>d.goto(file,query.replace(/^\?/,''),lang);
+ const req=d.response,calls=d.calls;
+ const waitState=(id,text)=>page.waitForFunction(([id,text])=>document.getElementById(id).textContent.includes(text),[id,text]);
+ const nodePath='/v1/nodes/anode-1',configPath=nodePath+'/config';
+ const noLeaks=async()=>{ const ui=await page.locator('#page-main').innerText();const gets=await page.evaluate(()=>JSON.stringify(__f3Calls.filter(c=>c.method==='GET'&&c.url.startsWith('/v1/nodes')).map(c=>c.result)));for(const v of ['C2_EXACT_HOST_VALUE_NOT_PUBLIC_728f','COMPLETE_PRIVATE_WHITELIST_NAME','/private/export/absolute/c2-not-public']) {assert.ok(!ui.includes(v));assert.ok(!gets.includes(v));}};
+ if(mode==='retained') await d.context.addInitScript(()=>Object.defineProperty(Notification,'permission',{configurable:true,get:()=> 'denied'}));
+  if (mode === 'create') {
+    await goto('nodes', 'en', '?namespace=default');
+    assert.equal((await req('/v1/nodes')).body.kind, 'NodeList');
+    await page.locator('#node-register-btn').click(); await page.locator('#reg-name').fill('browser-new-node'); await page.locator('#reg-submit').click();
+    await page.waitForFunction(() => document.getElementById('reg-token').textContent.length > 0);
+    const token = await page.locator('#reg-token').innerText();
+    const post = (await calls()).find(c => c.method === 'POST' && c.url === '/v1/nodes');
+    assert.deepEqual(post.body, { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name: 'browser-new-node' }, spec: {} });
+    assert.equal(post.result.status.online, false); assert.deepEqual(post.result.spec.namespaces, ['*']);
+    const issued = (await calls()).find(c => c.url.endsWith('/browser-new-node/tokens'));
+    assert.deepEqual(issued.body, {}); assert.equal(issued.result.kind, 'NodeToken'); assert.deepEqual(Object.keys(issued.result).sort(), ['apiVersion','kind','node','token']);
+    assert.ok((await page.locator('#reg-yaml').innerText()).includes('server: "ws://127.0.0.1:'));
+    assert.ok(!(await page.locator('#reg-yaml').innerText()).includes('instances:'));
+    assert.equal(await page.locator('#reg-install').innerText(), 'anode install'); assert.equal(await page.locator('#reg-serve').innerText(), 'anode serve');
+    const read = await req('/v1/nodes/browser-new-node'); assert.ok(!JSON.stringify(read.body).includes(token));
+    assert.ok(!JSON.stringify((await req('/v1/nodes/browser-new-node/config')).body).includes(token));
+    await page.locator('#reg-close').click(); assert.equal(await page.locator('#reg-token').innerText(), '');
+    const rotate = page.locator('[data-node="browser-new-node"] button');
+    const before = (await calls()).filter(c => c.url.endsWith('/tokens')).length;
+    page.once('dialog', dialog => dialog.dismiss()); await rotate.click();
+    assert.equal((await calls()).filter(c => c.url.endsWith('/tokens')).length, before);
+    page.once('dialog', dialog => dialog.accept()); await rotate.click();
+    await page.waitForFunction(() => document.getElementById('reg-token').textContent.length > 0);
+    const rotated = await page.locator('#reg-token').innerText(); assert.notEqual(rotated, token);
+    assert.equal((await calls()).findLast(c => c.url.endsWith('/browser-new-node/tokens')).result.token, rotated);
+    await page.locator('#reg-close').click(); await page.locator('#node-register-btn').click(); await page.locator('#reg-name').fill('browser-new-node'); await page.locator('#reg-submit').click();
+    await waitState('reg-error', 'AlreadyExists'); assert.equal(await page.locator('#reg-name').inputValue(), 'browser-new-node');
+    assert.equal(await page.locator('#reg-token').innerText(), ''); assert.ok((await calls()).every(c => !(c.method === 'GET' && c.url.endsWith('/tokens'))));
+    await shot('create409-draft-no-token'); await noLeaks(); await clean('create and rotation');
+    check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
+  }
+  if (mode === 'config') {
+    await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();
+    assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(1).innerText(), '/local-src');
+    assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
+    assert.equal(await page.locator('#node-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');
+    assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(2).innerText(), 'namespace');
+    assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), '4');
+    assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(2).innerText(), 'local');
+    assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.*"] td').nth(2).innerText(), 'node');
+    assert.equal(await page.locator('#node-machine-vars [data-key="NS_ONLY"]').count(), 0);
+    const config = (await req(configPath)).body;
+    const concurrent = await req(configPath, { metadata: config.metadata, vars: { SOURCE_ROOT: '/new-node-default', NODE_ONLY: 'remote-default' } }, 'PUT'); assert.equal(concurrent.status, 200);
+    const draft = '{\n  "NODE_ONLY": "browser-draft-kept",\n  "SOURCE_ROOT": "/new-node-default"\n}';
+    await page.locator('#node-vars').fill(draft); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'draft retained exactly');
+    assert.equal(await page.locator('#node-vars').inputValue(), draft); await shot('config409-draft');
+    page.once('dialog', dialog => dialog.dismiss()); await page.locator('#node-config-reload').click(); assert.equal(await page.locator('#node-vars').inputValue(), draft);
+    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-config-reload').click(); await waitState('node-config-state', 'Current configuration loaded');
+    assert.deepEqual(JSON.parse(await page.locator('#node-vars').inputValue()), concurrent.body.vars);
+    await page.locator('#node-vars').fill('{"NODE_ONLY":"ui-saved", "SOURCE_ROOT":"/new-node-default"}'); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'Saved.');
+    const saved = (await req(configPath)).body; assert.equal(saved.vars.NODE_ONLY, 'ui-saved'); assert.equal(saved.appliedRevision, config.appliedRevision); assert.notEqual(saved.configRevision, config.configRevision);
+    const uiPut = (await calls()).filter(c => c.method === 'PUT' && c.url === configPath).at(-1); assert.deepEqual(Object.keys(uiPut.body).sort(), ['limits','metadata','namespaces','vars']);
+    assert.ok(await page.locator('#node-applied').innerText().then(t => t.includes('ConfigPending')));
+    await page.locator('#node-namespace').selectOption('prod'); await waitState('node-context-revision', 'namespace=prod');
+    assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
+    await noLeaks(); await shot('ns-context-limits-revisions'); await clean('Node config and namespace context');
+    check('GET W5 config, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied/ns revisions, local>node>ns sources, per-leaf two-layer limits and machine applied excludes ns');
+  }
+  if (mode === 'namespace-system') {
+    await goto('nodes', 'en', '?namespace=default'); await page.locator('#system-save:not([disabled])').waitFor();
+    const get = (await calls()).find(c => c.url === '/v1/system/config' && c.method === 'GET');
+    assert.deepEqual(get.result.retention, { resultTtlSec: 3600, eventTtlSec: 7000, taskTtlSec: 9000 });
+    assert.equal(await page.locator('#result-ttl').inputValue(), '3600'); assert.equal(await page.locator('#event-ttl').inputValue(), '7000'); assert.equal(await page.locator('#task-ttl').inputValue(), '9000');
+    await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitState('system-state', 'Saved.');
+    const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, 7000);
+    const systemPut = (await calls()).filter(c => c.method === 'PUT' && c.url === '/v1/system/config').at(-1); assert.deepEqual(Object.keys(systemPut.body).sort(), ['metadata','retention']);
+    const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: 8000 } }, 'PUT'); assert.equal(remote.status, 200);
+    await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitState('system-state', 'draft retained exactly'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
+    await shot('system0-permanent-stale409-draft'); page.once('dialog', dialog => dialog.accept()); await page.locator('#system-reload').click(); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), '8000');
+    const namespacePath = '/v1/namespaces/default/config'; const ns = (await req(namespacePath)).body;
+    const nsRemote = await req(namespacePath, { metadata: ns.metadata, vars: { NS_ONLY: 'remote-ns' } }, 'PUT'); assert.equal(nsRemote.status, 200);
+    await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
+    page.once('dialog', dialog => dialog.accept()); await page.locator('#namespace-reload').click(); await waitState('namespace-state', 'Current configuration loaded');
+    await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'Saved.');
+    const nsPut = (await calls()).filter(c => c.url === namespacePath && c.method === 'PUT').at(-1); assert.deepEqual(Object.keys(nsPut.body).sort(), ['metadata','vars']); assert.notEqual(nsPut.result.namespaceVarsRevision, ns.namespaceVarsRevision);
+    const first = (await req(configPath)).body, secondBefore = (await req('/v1/nodes/anode-2/config')).body;
+    const batch = await req('/v1/nodes/config/batch', { updates: [{ name: 'anode-1', metadata: first.metadata, vars: { BATCH: 'ok' } }, { name: 'anode-2', metadata: { resourceVersion: 'stale' }, vars: { BATCH: 'bad' } }] }, 'POST');
+    assert.deepEqual(batch.body.items.map(x => x.ok), [true,false]); assert.equal(batch.body.items[1].error.code, 409); assert.deepEqual((await req('/v1/nodes/anode-2/config')).body, secondBefore);
+    for (const [url,field] of [[namespacePath,'vars'],['/v1/system/config','retention']]) assert.equal((await req(url, { [field]: {} }, 'PUT')).status, 400);
+    await noLeaks(); await clean('namespace and system configuration');
+    check('Actual nondefault GET current retention (not guessed defaults), CAS edit0 permanent, stale409 draft+explicit reload, namespace vars-only CAS/double revision; real batch partial node success, other node unchanged and missing CAS400. No new batch product UI invented.');
+  }
+  if (mode === 'actions-slots') {
+    await goto('node', 'en', '?id=anode-1&namespace=default');
+    assert.equal(await page.locator('[data-slot="0"]').getAttribute('data-occupancy'), 'occupied');
+    assert.equal(await page.locator('[data-slot="1"]').getAttribute('data-occupancy'), 'unknown'); assert.equal(await page.locator('[data-slot="2"]').getAttribute('data-occupancy'), 'idle');
+    assert.equal(await page.locator('[data-slot="3"]').getAttribute('data-occupancy'), 'occupied');
+    const task = (await req('/v1/namespaces/default/tasks/tsk_mock_4')).body; assert.equal(task.status.phase, 'failed');
+    if(d.mock){
+    await page.evaluate(() => { MockApi.noAgentBinary(); });
+    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-upgrade').click(); await waitState('node-action-state', 'agent_binary_unavailable');
+    await page.evaluate(() => { MockApi.noAgentBinary(false); MockApi.failUpgrade('checksum_mismatch'); });
+    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-upgrade').click(); await waitState('node-action-state', 'checksum_mismatch'); await shot('actual-checksum-upgrade-failure');
+    }
+    const before = JSON.stringify((await req(nodePath)).body.status.instances);
+    page.once('dialog', dialog => dialog.dismiss()); await page.locator('#node-drain').click();
+    assert.ok(!(await calls()).some(c => c.url.endsWith('/drain')));
+    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-drain').click(); await waitState('node-action-state', 'Hub accepted action');
+    assert.equal(JSON.stringify((await req(nodePath)).body.status.instances), before); await noLeaks(); await shot('real-upgrade-failure-and-physical-occupancy');
+    if(d.mock){
+    await page.evaluate(() => { delete MockApi.state.nodes[0].facts.instances; }); await page.locator('#node-refresh').click();
+    await page.waitForFunction(() => document.getElementById('node-slots').textContent.includes('Unknown') && !document.querySelector('#node-slots [data-occupancy]'));
+    }
+    await shot('missing-instances-unknown'); check('A3 slot0 presence; missing busy/instances are unknown, explicit false idle, terminal Task and pending reservation still occupied; real unavailable/checksum failure, confirmed drain does not reap');
+  }
+  if (mode === 'retained') {
+    await goto('security'); await page.locator('#password-edit-btn:not([disabled])').waitFor();
+    assert.ok((await page.locator('#passkey-list').innerText()).includes('No Passkeys'));
+    await page.locator('#password-remove-btn').click(); await page.locator('#pwd-current').fill('wrong-current'); await page.locator('#password-modal-submit').click();
+    await page.waitForFunction(() => document.getElementById('password-modal').textContent.includes('Current password is incorrect'));
+    await shot('security-current-password-actual400');
+    await goto('keys'); await page.locator('#keys-body tr').first().waitFor();
+    assert.equal(await page.locator('a[href="cli-auth.html"]').count(), 1); assert.equal(await page.locator('a[href="docs.html#api"]').count(), 1);
+    if(d.mock) await page.evaluate(() => window.__f3Reject = '/v1/keys'); else await page.evaluate(() => window.__f3Fault='/v1/keys');
+    await page.locator('#btn-create').click(); await page.locator('#new-key-name').fill('retained-form-draft');
+    await page.locator('#create-submit').click();
+    await page.waitForFunction(message => document.getElementById('create-error').textContent.includes(message), d.mock?'Actual retained rejection sentinel':'F3 deliberate disconnected transport');
+    assert.equal(await page.locator('#new-key-name').inputValue(),'retained-form-draft');
+    await shot('keys-actual-error-draft-anchors');
+    await goto('receivers'); await page.locator('#current-device-card button').waitFor();
+    assert.equal(await page.evaluate(() => Notification.permission), 'denied');
+    assert.equal(await page.locator('#push-count').innerText(), '0'); await page.locator('#current-device-card button').click();
+    await page.waitForFunction(() => document.body.textContent.includes(Anotify.t('receivers.local.perm_denied_toast')));
+    assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices')); await shot('receivers-denied-visible-feedback-zero');
+    await goto('admin'); await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0'); assert.equal(await page.locator('#kpi-rate').innerText(), '0%'); assert.equal(await page.locator('#kpi-rate-sub').innerText(), '0 / 0');
+    await shot('admin-actual-zero-device-delivery');
+    if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-member','1')); else { assert.ok(process.env.E2E_V4_MEMBER_SESSION,'T1 seam: retained member session required, never fake real role'); await d.context.addCookies([{name:'anotify_session',value:process.env.E2E_V4_MEMBER_SESSION,url:d.base}]); }
+    await goto('admin');
+    assert.equal(await page.locator('#kpi-devices').count(), 0, 'member has no misleading admin KPI shell');
+    assert.ok((await page.locator('#page-main').innerText()).includes(await page.evaluate(() => Anotify.t('admin.forbidden.title'))));
+    await shot('admin-member-real-permission-anchor');
+    if(d.mock) await page.evaluate(() => sessionStorage.removeItem('f3-member')); else await d.context.clearCookies();
+    await goto('cli-auth'); assert.equal(await page.locator('#code-input').count(), 1); assert.equal(await page.locator('#entry-continue').count(), 1); assert.equal(await page.locator('#state-confirm').count(), 1);
+    await goto('passkey-enroll'); assert.equal(await page.locator('#code-input').count(), 1); assert.equal(await page.locator('#overview-continue').count(), 1); assert.equal(await page.locator('#state-overview').count(), 1);
+    // Login uses raw fetch. A declared guest fixture precedes controller boot;
+    // rejection uses an actual Status body and never fakes authentication success.
+    if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-guest','1')); else await d.context.clearCookies();
+    await goto('login');
+    await page.locator('#password-login-toggle').click(); await page.locator('#password-username').fill('retained-user'); await page.locator('#password-password').fill('wrong-password');
+    await page.evaluate(() => { window.__f3Guest = true; window.__f3Reject = '/v1/auth/password/login'; });
+    await page.locator('#password-login-btn').click();
+    if(d.mock) await waitState('status-box', 'Actual retained rejection sentinel');
+    else { await page.waitForFunction(()=>__f3Calls.some(c=>c.url==='/v1/auth/password/login'&&c.httpStatus>=400)); const rejected=(await calls()).findLast(c=>c.url==='/v1/auth/password/login'); assert.deepEqual(Object.keys(rejected.result),['error']); await waitState('status-box',rejected.result.error); }
+    await shot('login-actual400-status-message');
+    check('Retained password/passkey empty anchor + real400; API-key error preserves draft and CLI/docs anchors; receivers denied gives visible feedback/no subscribe; actual zero-device0/0 admin; CLI/passkey-enroll DOM retained; login AUTH1 identity.error is not swallowed');
+  }
+  if (mode === 'errors') {
+    await goto('nodes'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#nodes-refresh').click();
+    await page.waitForFunction(() => document.getElementById('nodes-list').textContent.includes('F3 deliberate disconnected transport')); await shot('nodes-disconnected');
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#nodes-list button').click(); await page.locator('[data-node="anode-1"]').waitFor();
+    await goto('node','en','?id=anode-1&namespace=default'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#node-refresh').click();
+    await page.waitForFunction(() => document.getElementById('node-load-state').textContent.includes('F3 deliberate disconnected transport')); await shot('node-disconnected');
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
+    check('Both Node pages genuine disconnected error + working explicit retry; no automatic mock switch or false empty success');
+  }
+
+}
