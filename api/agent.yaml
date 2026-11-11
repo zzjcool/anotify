@@ -1,0 +1,1506 @@
+# anotify v4 · 节点通道（agent）API + 已冻结协议帧/DTO 的 schema 文档
+# （exact-five 之一；归属见 docs/v4/g3c-spec-inventory.md §4.3）
+#
+# 本文件只写**节点身份鉴权**的出站/中枢节点通道：
+#
+#     GET  /v1/node/stream                                   WS 长连接（帧协议）
+#     GET  /v1/node/binary                                   agent 二进制下发（升级源）
+#     PUT  /v1/node/tasks/{taskId}/artifacts/{sha256}        产物上行（原始字节）
+#
+# 三条都用 `nodeToken`（`Authorization: Bearer <node token>`）——不是控制台会话 Cookie：
+# 调用方是节点上的 anode / CLI，它们手里只有节点令牌。Node 身份的**签发/管理**（`POST
+# /v1/nodes/{name}/tokens`）属用户权限，在 resource.yaml；本文件只写「拿令牌怎么用」。
+#
+# ---------------------------------------------------------------- 已知缺口（必读）
+#
+# 契约要求但**实现缺失**：`GET /v1/node/capabilities/{digest}`（下行能力包体的内容通道）。
+#
+#   - 契约：docs/design/v4/api-conventions.md §8.2、.pi-orchestrator/v4/API-SPEC-HANDOFF.md
+#     的 agent.yaml 行、internal/protocol/deploy_frames.go:8；
+#   - 节点侧**已经在调**：cmd/anode/internal/capability/fetch.go:30（`GET /v1/node/capabilities/`）；
+#   - 中枢侧**没有这条路由**：internal/server/mux.go 只注册了 stream / binary /
+#     tasks/{taskId}/artifacts/{sha256} 三条 `/v1/node/*`；`grep node/capabilities internal/server`
+#     为空（没有任何 handler）。
+#
+# 因此本文件**不写**这条 path（规则：spec 只描述真实实现，parity 禁止「spec 有、handler 无」；
+# 造一条假 path 会让节点以为能取到包体）。→ 状态 SAFE_BLOCKED，**owner 另派**（「节点上行内容
+# 通道」实现 issue）。已冻结的 `capability.deploy` / `capability.deployed` 两帧仍在本文件
+# `components.schemas` 里如实记录（它们是**协议事实**，只是节点回执所依赖的那条 HTTP 还没实现）。
+#
+# ---------------------------------------------------------------- 门禁说明（已知冲突）
+#
+# `/v1/node/stream` 的唯一**真实**成功码是 `101`（WS 升级），不是 2xx：鉴权在首帧 `hello`
+# 内完成，升级前不存在 401/403，也就没有任何 2xx。`scripts/check_openapi.py` 的「每个
+# operation 至少一个 2xx 响应」断言对 WS 升级端点需要例外（`code_str == "101"`）；
+# `scripts/**` 不在本文件的文件所有权内，所以这里**不**造假一个 200/204 去迎合门禁
+# （spec 撒谎比门禁红更贵）。这一条是与 checker 的唯一已知冲突。
+#
+# ---------------------------------------------------------------- 组件归属
+#
+# 共享资源域组件（`Status` / `Status401` / `NodeUploadError*` …）**只定义在 resource.yaml**，
+# 本文件用相对 `$ref` 引用；本文件的 `components.schemas` 只放**协议帧与动作 DTO**（它们不进
+# 任何 HTTP 资源信封）。安全方案不能跨文件引用，故四套 scheme 在本文件逐字重写。
+#
+# `required` 的判据：语义上必填（缺则该帧无法被正确解释——以 internal/protocol 的
+# `Validate*` / 中枢握手校验为准）；带 `omitempty` 的字段可省略，省略语义写在各字段描述里。
+openapi: 3.1.0
+info:
+  title: anotify v4 节点通道（agent）API
+  version: v4-g3c
+  description: |
+    节点（anode）与中枢之间的**唯一**三条通道，全部用节点身份令牌鉴权：
+
+    - `GET /v1/node/stream`：WebSocket 长连接，配置/执行/emit/logs/部署帧都在这条连接上；
+    - `GET /v1/node/binary`：中枢自带 agent 的二进制（升级源），普通 HTTP 下载；
+    - `PUT /v1/node/tasks/{taskId}/artifacts/{sha256}`：一次执行的托管产物上行（原始字节）。
+
+    三条通道的共同纪律：
+
+    1. **鉴权是节点身份**，不是用户会话：`Authorization: Bearer <node token>`，服务端只存
+       `sha256(token)`（`nodes.token_hash`）。会话 Cookie / API key 在这三条上无效。
+    2. **二进制与产物内容不套资源信封**：`binary` 的 200 是二进制原文、上传的 200/201 是
+       动作回执，都没有 `apiVersion/kind/metadata/spec/status` 五键。
+    3. **错误体只有两类**：`binary` 的 4xx/5xx 用 `Status`（api-conventions §4.1）；产物上行用
+       A1 的封闭动作文档 `{"error":"<code>"}`（`ArtifactUploadErrorBody`），**故意不是** Status。
+       `stream` 没有任何 HTTP 错误响应：鉴权/握手失败是升级之后的 close 帧。
+    4. **已冻结的 WS 帧/DTO 的权威是 Go**（`internal/protocol`，T3 唯一作者）。本文件的
+       `components.schemas` 是它们的**文档投影**，字段名逐一对应 Go struct 的 `json` tag；
+       不在这里新增帧、不改字段、不做第二个 wire 真源。
+
+    `GET /v1/node/capabilities/{digest}`（能力包体下行）**未实现**，故不在 paths 里 —— 见文件顶
+    注释的缺口说明。
+servers:
+  - url: /
+    description: 路径自身已含 `/v1`，此处不再加前缀（否则会拼出 `/v1/v1/…`）
+tags:
+  - name: node
+    description: 节点身份鉴权的通道（WS 长连接 / 二进制下发 / 产物上行）
+  - name: protocol
+    description: 已冻结协议帧与动作 DTO 的 schema 文档（无 HTTP operation，不进资源信封）
+x-protocol-frames:
+  # 帧名 → schema 名。方向由 schema 描述与 NodeStream 的帧表给出；
+  # 上行 = 节点 → 中枢，下行 = 中枢 → 节点（internal/protocol/codec.go 的 upstream/downstream）。
+  hello: HelloFrame
+  welcome: WelcomeFrame
+  config.changed: ConfigChangedFrame
+  config.get: ConfigGetFrame
+  config.applied: ConfigAppliedFrame
+  task.dispatch: TaskDispatchFrame
+  task.accept: TaskAcceptFrame
+  task.reject: TaskRejectFrame
+  lease.grant: LeaseGrantFrame
+  lease.renew: LeaseRenewFrame
+  lease.ack: LeaseAckFrame
+  task.result: TaskResultFrame
+  result.ack: ResultAckFrame
+  task.cancel: TaskCancelFrame
+  cancel.ack: CancelAckFrame
+  task.emit: TaskEmitFrame
+  task.emit.ack: TaskEmitAckFrame
+  capability.deploy: CapabilityDeployFrame
+  capability.deployed: CapabilityDeployedFrame
+  upgrade: UpgradeFrame
+  upgrade_ack: UpgradeAckFrame
+  logs_request: LogsRequestFrame
+  logs_response: LogsResponseFrame
+paths:
+  /v1/node/stream:
+    $ref: '#/components/pathItems/NodeStream'
+  /v1/node/binary:
+    $ref: '#/components/pathItems/NodeBinary'
+  /v1/node/tasks/{taskId}/artifacts/{sha256}:
+    $ref: '#/components/pathItems/NodeArtifactUpload'
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 控制台登录会话 Cookie（7 天 TTL；`HttpOnly`+`SameSite`）
+    consoleKey:
+      type: http
+      scheme: bearer
+      description: '控制台 API key（`Authorization: Bearer <key>`；scope 在后端判定）'
+    nodeToken:
+      type: http
+      scheme: bearer
+      description: '节点身份令牌（`Authorization: Bearer <node token>`；库里只存 sha256）'
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 登录会话 + 超管权限（两层中间件：先 401 再 403）
+  pathItems:
+    # ======================================================================
+    # GET /v1/node/stream —— WS 长连接
+    # ======================================================================
+    NodeStream:
+      get:
+        tags: [node]
+        operationId: nodeStream
+        summary: 节点 WebSocket 长连接（配置 / 执行 / emit / logs / 部署帧）
+        description: |
+          中枢 ↔ 节点的**唯一**长连接（`internal/ws/hub.go` 的 `Hub` 就是这条路由的 handler）。
+
+          ### 鉴权在首帧 `hello`，不在 HTTP 头
+
+          升级请求本身**不做 HTTP 鉴权**：token 放在升级成功后的**首帧 `hello` 的 `token`
+          字段**里（`internal/ws/hub.go` 的 `handshake`/`authenticate`）。因此
+
+          - **没有** `Authorization` 头参与这条连接的身份判定（`security: nodeToken` 描述的是
+            「凭据是节点令牌」这一事实，实体在帧里）；
+          - 鉴权失败**不会**产生 401/403：连接先 101 升级成功，随后中枢以 WebSocket close
+            `1008 policy violation`（reason `handshake failed`）断开。这条 operation 因此只有
+            `101` 一个 HTTP 响应，没有建模 4xx —— 这是有意的，不是漏写。
+          - 首帧必须是 `hello`；等待上限 10s（`helloTimeout`）。`hello.name` 必须与令牌所属
+            节点同名（不允许「拿 A 的 token 报 B 的名字」），否则同样 1008 断开。
+          - 认证之后会话身份 `{nodeID, tokenHash}` **固定**：之后每个授权写入口（accept /
+            reject / renew / result / cancel.ack / emit）都把它交给 store 重新比对库里当前的
+            token_hash 与 ns 授权（不信任帧里自报的 nodeId，也不做一次预检就长期写库）。
+
+          ### 帧表
+
+          上行（节点 → 中枢）：
+
+          | type | 说明 |
+          |---|---|
+          | `hello` | 必须第一帧；注册 + 上报事实 + 拉默认值（重连 = 全量重报） |
+          | `config.get` | 主动拉节点默认值（应答复用 `welcome`） |
+          | `config.applied` | 配置合并落盘后的回报（含 drift 哈希） |
+          | `task.accept` / `task.reject` | 派发应答：预留真实 slot / `stale_config`、`slot_unavailable` |
+          | `lease.renew` | 按同一个中枢 leaseId 续租 |
+          | `task.result` | 终态上报（退出码、summary、托管产物、失败原因） |
+          | `cancel.ack` | 取消回收回执（`processGroupReaped` 才等于槽位真的释放） |
+          | `task.emit` | 把本机 `POST /emit` 的请求原样转给中枢（权威判定在中枢） |
+          | `capability.deployed` | 人工部署回执（`applied` / `failed`） |
+          | `upgrade_ack` | 升级回执（`need_root` / `bad_sha` / `download_failed` / `not_supported`） |
+          | `logs_response` | 按 `requestId` 配对的历史日志回包 |
+
+          下行（中枢 → 节点）：
+
+          | type | 说明 |
+          |---|---|
+          | `welcome` | `hello` / `config.get` 的应答（同一形状，D-I2） |
+          | `config.changed` | 只带 revision 的提示（不是命令，丢了下一次 hello 自会对齐） |
+          | `task.dispatch` | 派发（**不授执行权**：没有 lease / attempt / token / slot） |
+          | `lease.grant` | 执行授权（leaseId + attemptToken 由中枢生成，attempt 从这里才计数） |
+          | `lease.ack` | 续租确认（节点以「最后一次 ACK + 本地 deadline」判失联） |
+          | `result.ack` | 结果上报的权威确认（`accepted=false` 只用于诊断，不改本地事实） |
+          | `task.cancel` | 抢占（TERM → 5s → KILL 进程组） |
+          | `capability.deploy` | 人工部署通知（只带 refs，**不带包体**） |
+          | `upgrade` | 去升级（`targetVersion` / `sha256` / `urlPath`；二进制走 HTTP 下载） |
+          | `logs_request` | 要一次历史日志（中枢发起，按 `requestId` 配对，默认 15s 超时） |
+          | `task.emit.ack` | emit 结论（`response` 与 `error` 严格互斥，无 Status 信封） |
+
+          ### 连接级边界
+
+          - 逐帧软上限 **1 MiB**（`FrameSoftLimit`）：超限上行帧由传输层以 close `1009` 断开。
+            `logs_response` 编码后必须由节点先截断到同一上限（否则一条「日志太大」会打断连接）。
+          - 未知帧类型**不断连接**（记录后忽略）；方向错误的帧（节点发下行帧）是协议违例 →
+            close `1008 unexpected frame direction`；无法解码的帧 → close `1003 bad_frame`。
+          - 同一节点的新连接**顶掉**旧连接（旧连接 close `1008 superseded by a newer connection`）。
+          - 断连即把节点标 offline 并把实例标 dead，但**不**假释放 busy 槽位：物理回收只认
+            `cancel.ack.processGroupReaped` 或明确的 `slot` 观测。
+          - 单帧写上限 10s（`writeTimeout`）；写失败即下线该会话（读循环随后退出）。
+          - 升级成功后的 `welcome` 之后，中枢还会重放「已明确请求但未完成」的部署（`pending` 行），
+            这不是通用 reconciler。
+        security:
+          - nodeToken: []
+        responses:
+          "101":
+            description: |
+              协议切换成功（`101 Switching Protocols`），此后走 WebSocket 帧（上表）。
+
+              身份判定在首帧 `hello` 内完成，因此本 operation **没有 4xx 响应**：鉴权/握手失败
+              一律是升级后的 close 帧（`1008 handshake failed`），不是 HTTP 状态码。
+              非 WebSocket 握手请求由传输层自行以纯文本 400 拒绝（不套 `Status` 信封，故不建模）。
+    # ======================================================================
+    # GET /v1/node/binary —— agent 二进制下发（升级源）
+    # ======================================================================
+    NodeBinary:
+      get:
+        tags: [node]
+        operationId: getNodeBinary
+        summary: 下载中枢自带的 agent 二进制（升级源，节点令牌鉴权）
+        description: |
+          升级源（`internal/server/agent_binary.go`）。调用方是节点上的 anode / CLI，用**自己的
+          节点令牌**鉴权（`Authorization: Bearer <node token>`），不是控制台会话 Cookie。
+
+          两个响应头是升级承诺：
+
+          - `X-Agent-Version`：中枢版本（= 升级目标版本）；
+          - `X-Agent-Sha256`：body 的 sha256（64 位十六进制，**不带** `sha256:` 前缀）。
+            校验不符必须拒绝替换（`upgrade_ack.error = bad_sha`）——这是「中枢二进制被改动/
+            传输被截断」的唯一证据。
+
+          中枢**先鉴权再探测配置**（不能把「这台中枢带没带二进制」当成匿名可读信息），所以：
+
+          - 令牌缺失/无效 → `401`（不区分「令牌不存在」与「库出错」；细节只进服务端日志）。
+            不用 403：403 会让调用方以为「令牌有效但没权限」去申请权限，而真实原因是令牌不对。
+          - 鉴权通过但中枢没带二进制（`ANOTIFY_AGENT_BIN` 指向的文件不存在/不可读）→ `501`
+            `agent_binary_unavailable`：**明确**说「这里没有升级源」，调用方据此退出（CLI 退出码 2），
+            而不是当成网络错误重试。
+          - 排空中的节点（`status=draining`）**仍然可以**下载：升级是维护动作，不是接新任务。
+
+          二进制**不走** WebSocket：agent 是 15 MB 量级，塞进一帧会阻塞同一条连接上的心跳与
+          派发（节点读超时 = 掉线）。`upgrade` 帧里只有版本 + sha256 + 路径，字节走这条 HTTP。
+        security:
+          - nodeToken: []
+        responses:
+          "200":
+            description: agent 二进制原文（`application/octet-stream`，长度已知，非 chunked）
+            headers:
+              X-Agent-Version:
+                description: 中枢版本（= 升级目标版本）
+                schema:
+                  type: string
+              X-Agent-Sha256:
+                description: body 的 sha256（64 位小写十六进制，无前缀）
+                schema:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+            content:
+              application/octet-stream:
+                schema:
+                  type: string
+                  format: binary
+          "401":
+            $ref: './resource.yaml#/components/responses/Status401'
+          "501":
+            $ref: './resource.yaml#/components/responses/Status501'
+    # ======================================================================
+    # PUT /v1/node/tasks/{taskId}/artifacts/{sha256} —— 产物上行
+    # ======================================================================
+    NodeArtifactUpload:
+      put:
+        tags: [node]
+        operationId: uploadTaskArtifact
+        summary: 上传一次执行的托管产物（原始字节，不是 JSON/base64）
+        description: |
+          A1（父批准）· 运行产物上行：**节点 → 中枢的唯一产物传输通道**（`internal/server/artifact_upload.go`、
+          `internal/protocol/artifact_transfer.go`）。不是新凭证模型：节点用**自己的节点身份 Bearer**
+          加上**当前 attempt 的授权三件套**（`X-Anotify-Attempt` / `X-Anotify-Lease-Id` /
+          `X-Anotify-Task-Token`），向中枢已有的 HTTP 服务 PUT 原始字节。
+
+          ### 形状
+
+          - `{sha256}` 是**文件字节**的 SHA-256（64 位小写 hex，**不带** `sha256:` 前缀），
+            **不是**包体 spec digest；形状不合法 → `400 artifact_path_invalid`。
+          - body 是**原始字节**（`application/octet-stream`）：不 JSON 包一层、不 base64、
+            不 multipart。
+          - `X-Anotify-Artifact-Path` 是**URL 编码**（`url.PathEscape`）的托管逻辑相对路径；
+            解码后必须复核：非绝对、`/` 分隔、无空段 / `.` / `..`、无反斜杠 / NUL / 其它控制字符、
+            ≤ 255 字节。它只是**逻辑名**，永远不拿去拼宿主路径。
+          - 逻辑路径只允许系统托管副本（相对结果目录）；用户 workDir 里的原文件永不进这条通道。
+
+          ### 幂等与结论
+
+          - `201`：首次接受（本次字节成为该 (task, attempt, path, sha) 的唯一副本）。
+          - `200`：同 `task+attempt+path+hash` 的**幂等重传**（早先那次赢了；本次副本按幂等契约删掉，
+            `objects` 里不会长第二份）。
+          - `409 artifact_conflict`：同 attempt 同逻辑 path 但**不同 hash**（是契约冲突，不是重试）。
+          - `413 artifact_too_large`：超限额（声明长度或实际字节）。
+          - `400 artifact_path_invalid | artifact_hash_mismatch`：路径/哈希形状不对，或实际字节与
+            路径里的 sha256 不符（body 被截断/超发、读中断同样归这里）。
+          - `401 unauthorized`：节点身份令牌缺失/无效，或授权三件套（`X-Anotify-Attempt` /
+            `X-Anotify-Lease-Id` / `X-Anotify-Task-Token`）没带全（含 attempt 头不是 ≥ 1 的整数）。
+          - `403 forbidden`：三件套带齐但与当前授权事实不符（lease 不匹配 / attemptToken 作废 /
+            任务不在 running / 命名空间未授权）。节点对 401/403 **终止不重试**。
+          - `503 artifact_upload_unavailable`：中枢没配置托管目录（部署配置错误，可重试的运维事实；
+            刻意**不**用 A1 的四个封闭码，免得节点把整批产物误判成 `artifact_upload_failed`）。
+
+          错误体是 `{"error":"<code>"}`（`ArtifactUploadErrorBody`），**不是** `Status` 信封：
+          节点客户端（`cmd/anode/internal/upload`）只解析这个形状且只接受四个 A1 码，套信封会让
+          所有拒绝在节点侧降级成不可诊断的 transport。未归类的内部错误回 `500 {"error":"internal"}`
+          （不在 resource.yaml 冻结的 `NodeUploadError` 六码响应集内，故不单独建模）。
+
+          ### 授权时机（硬语义）
+
+          授权在**收完 bytes、发布登记时**重做一遍（同一事务/CAS），迟到文件不能凭先前验证过：
+          传输途中发生的租约到期/撤销/相位变化会让这次上传失败。登记用的 30s ticket 过期时，
+          中枢**不重传字节**，而是换一张新 ticket 并把已发布的副本原地改名过去、再登记一次
+          （有界：只重试一次）。任何失败都补偿：删本次已发布对象 + 撤销 ticket（零写）。
+
+          ### 限额（声明与实际都查，不截断）
+
+          - 单文件 **16 MiB**（16777216 B）；
+          - 单 attempt 合计 **64 MiB**（67108864 B）；
+          - 单 attempt 最多 **32 项**。
+
+          声明长度已超单件上限时直接 `413` 且**不读 body**（大文件不该先被读一遍再拒绝，
+          也不留 ticket/object 行）。
+
+          ### 执行顺序（不可换）
+
+          节点身份 → `{sha256}` 形状 → 授权三件套 + 逻辑路径头 → 声明长度 → 流式收流到托管草稿
+          → 校验实际 sha/大小 → 先原子发布字节、再用同一批授权事实登记。
+
+          上传成功后节点才发 `task.result`；失败且仍有授权 → 任务终态原因 `artifact_upload_failed`
+          （已成功的托管 manifest 保留在结果里，不是可自动重试的 infra 事实）。
+        security:
+          - nodeToken: []
+        parameters:
+          - name: taskId
+            in: path
+            required: true
+            description: 任务 id（`tsk_…`；中枢用会话身份 + 授权三件套复核，不信任路径里的 id 自证）
+            schema:
+              type: string
+          - name: sha256
+            in: path
+            required: true
+            description: |
+              上传字节的 SHA-256（64 位小写十六进制，**不带** `sha256:` 前缀）。
+              不是包体 spec digest；形状不合法 → `400 artifact_path_invalid`。
+            schema:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+          - name: Authorization
+            in: header
+            required: true
+            description: |
+              节点身份令牌：`Bearer <node token>`。这是 `security: nodeToken` 在 HTTP 层的实体
+              （handler 自己解析 Bearer，不走会话中间件——节点没有用户 Cookie）。缺头/令牌无效 →
+              `401 unauthorized`。
+            schema:
+              type: string
+          - name: X-Anotify-Attempt
+            in: header
+            required: true
+            description: 当前 attempt 号（十进制整数，必须 ≥ 1）。缺失/非整数/小于 1 → `401 unauthorized`。
+            schema:
+              type: integer
+              minimum: 1
+          - name: X-Anotify-Lease-Id
+            in: header
+            required: true
+            description: 本次授权的 leaseId（`lease.grant` 下发）。缺失 → `401`，对不上 → `403`。
+            schema:
+              type: string
+          - name: X-Anotify-Task-Token
+            in: header
+            required: true
+            description: |
+              本次 attempt 的一次性令牌（`lease.grant` 的 `attemptToken`，即脚本里的
+              `ANOTIFY_TASK_TOKEN`）。**不进 query、不进日志**。缺失 → `401`，作废/不匹配 → `403`。
+            schema:
+              type: string
+          - name: X-Anotify-Artifact-Path
+            in: header
+            required: true
+            description: |
+              URL 编码（`url.PathEscape`）的托管逻辑相对路径；解码后复核为非绝对、`/` 分隔、
+              无空段 / `.` / `..`、无反斜杠 / NUL / 控制字符、≤ 255 字节。
+              不合法 → `400 artifact_path_invalid`。
+            schema:
+              type: string
+        requestBody:
+          required: true
+          description: |
+            产物文件**原始字节**（不是 JSON、不是 base64、不是 multipart）。声明长度与实际字节
+            都必须 ≤ 16 MiB；超限 → `413 artifact_too_large`。
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        responses:
+          "201":
+            description: |
+              首次接受：本次字节成为该 `(taskId, attempt, path, sha256)` 的唯一托管副本。
+              响应体是这次上传动作的确认（没有 wrapper、没有资源信封）。
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ArtifactUploadResponse'
+          "200":
+            description: |
+              幂等重传：同 `task+attempt+path+hash` 早先已登记（**不是**错误，也不产生第二份字节；
+              本次多出来的副本被删除）。响应体与 201 同形，`path`/`sha256`/`size` 是登记事实。
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ArtifactUploadResponse'
+          "400":
+            $ref: './resource.yaml#/components/responses/NodeUploadError400'
+          "401":
+            $ref: './resource.yaml#/components/responses/NodeUploadError401'
+          "403":
+            $ref: './resource.yaml#/components/responses/NodeUploadError403'
+          "409":
+            $ref: './resource.yaml#/components/responses/NodeUploadError409'
+          "413":
+            $ref: './resource.yaml#/components/responses/NodeUploadError413'
+          "503":
+            $ref: './resource.yaml#/components/responses/NodeUploadError503'
+  schemas:
+    # ==================================================================
+    # 配置子协议（internal/protocol/config_frames.go）
+    # ==================================================================
+    Limits:
+      type: object
+      description: |
+        节点的并发预算（`internal/protocol/limits.go`，anode.md §2 / config.md §4.1）。
+        只有本机 + 节点默认两层，没有 ns 级配额；逐叶合并（本机同名键覆盖节点，未写继承）。
+        有效并发 = min(空闲槽位, perCapability[NAME] ?? perCapability["*"] ?? ∞, 能力自己的
+        `spec.concurrency.maxPerNode`)——节点只能收紧，不能突破能力声明的预算。
+      required: [total]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: 这台机器同时最多跑几个任务（缺省 1）
+        perCapability:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+          description: |
+            按能力名收紧；键是能力名或 `"*"`（未单列的能力）。
+            wire 上带 `omitempty`：省略 = 未单列（不是「0」）。
+    NodeFacts:
+      type: object
+      description: |
+        节点内置事实（anode.md §3.6 的 `status.*` 那一组）：机器说了算的值，不进 vars、
+        不进配置 revision、不上报值来源，每台节点都有。字段名是 wire 名（camelCase）。
+      required: [hostIP, hostname, os, arch, cpu, workRoot, homeDir]
+      properties:
+        hostIP:
+          type: string
+        hostname:
+          type: string
+        os:
+          type: string
+        arch:
+          type: string
+        cpu:
+          type: integer
+          description: 逻辑核数（注入任务环境时是字符串，wire 上是数字）
+        workRoot:
+          type: string
+          description: 任务目录的父目录
+        homeDir:
+          type: string
+          description: anode 用户家目录
+    HelloCommand:
+      type: object
+      description: 一条 `requires.commands` 的探测结果（LookPath）：查到了给路径，没查到 `path` 为空串。
+      required: [name, found, path]
+      properties:
+        name:
+          type: string
+          description: 命令名（`requires.commands` 的原样值）
+        found:
+          type: boolean
+          description: LookPath 是否命中
+        path:
+          type: string
+          description: 命中的绝对路径（`found=false` 时为空串）
+    HelloCapability:
+      type: object
+      description: |
+        `hello.capabilities[]` 的一条：能力名 + 它的命令探测结果。中枢据此回答
+        `NodesAvailable` 的 `CommandMissing`，不需要再问节点。
+      required: [name, version, digest, commands]
+      properties:
+        name:
+          type: string
+          description: 能力名（与 `spec.metadata.name` 同一套正则）
+        version:
+          type: integer
+          description: 这台机器上持有的那份版本（0 = 未知或未部署）
+        digest:
+          type: string
+          description: 这台机器上持有的那份包体身份（空串 = 未知或未部署）
+        commands:
+          type: array
+          description: '`requires.commands` 的逐条探测结果'
+          items:
+            $ref: '#/components/schemas/HelloCommand'
+    HelloInstance:
+      type: object
+      description: |
+        `hello.instances[]` / `config.applied.instances[]` 的一条**物理槽位**事实（A3）。
+
+        `slot` 与 `busy` 的 presence 是硬要求：`slot` 必须存在且 ≥ 0（**0 是合法槽号**）；
+        `busy` **缺失 = 未知，绝不能当成空闲**——缺字段表示「没有新断言」，中枢不能据此把旧绑定
+        当作已退出。`busy=false` 才是「本机明确空闲」。
+      required: [slot]
+      properties:
+        slot:
+          type: integer
+          minimum: 0
+          description: 槽号（0..N-1；0 合法，缺失无效）
+        busy:
+          type: boolean
+          description: |
+            物理占用断言：true = 有进程/预留；false = 本机明确空闲；**省略 = 未知**（不能当 idle）。
+        taskId:
+          type: string
+          description: 已执行/预留占用的任务（未占用时省略）
+        attempt:
+          type: integer
+          description: 已执行的 attempt（未 grant 的 reservation 省略）
+        leaseId:
+          type: string
+          description: 已授权的 leaseId（尚未 grant 的 reservation **不伪造**它）
+        assignmentId:
+          type: string
+          description: 尚未 grant 的 reservation 的派发关联 id
+        proposedAttempt:
+          type: integer
+          description: 尚未 grant 的 reservation 的拟定 attempt
+    HelloFrame:
+      type: object
+      description: |
+        **上行** · 节点每次连上的第一帧：注册 + 上报 + 拉默认值（一个动作）。中枢从不主动问
+        节点，所以一次握手就把状态对齐，重连即全量重报。
+
+        帧里**不带 namespace**：节点令牌是集群身份、不绑 ns；带的是 `namespaces`（本机**申报**
+        列表），与中枢授权取交集生效（welcome.namespaces）。它不是配置，不走 revision。
+
+        必填判据 = 中枢 `authenticate` 的硬校验（`token` 非空、`name` 与令牌所属节点同名）。
+        其余字段由 anode 每次全量上报（nil 数组在 wire 上是 `null`，按「未申报」处理）。
+      required: [type, name, token]
+      properties:
+        type:
+          type: string
+          enum: [hello]
+        name:
+          type: string
+          description: 节点名（集群内唯一；换名字 = 换一台机器），必须与令牌所属节点同名
+        token:
+          type: string
+          description: |
+            节点身份凭据（**这条连接唯一的鉴权实体**，不绑 ns）。服务端只按 `sha256(token)`
+            查 `nodes.token_hash`；帧里不得出现任何别的身份自证。
+          writeOnly: true
+        namespaces:
+          type: array
+          description: |
+            本机**申报**的 ns 列表（缺省 `["default"]`，`["*"]` = 全部）。
+            生效 = 申报 ∩ 中枢授权（welcome.namespaces）；只能收紧，不能扩大。
+          items:
+            type: string
+        localVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: anode.yaml 里的本机值（跨 ns 共用，同键压住节点默认值）
+        localLimits:
+          $ref: '#/components/schemas/Limits'
+        appliedRevision:
+          type: string
+          description: anode.applied.yaml 里的机器级配置 revision（空串 = 还没有 applied 文件）
+        appliedHash:
+          type: string
+          description: applied 文件的归一化哈希（中枢据此判定 drift）
+        agentVersion:
+          type: string
+          description: 节点自报的 agent 版本（空串 = 未知；不进 digest、不进配置 revision）
+        agentCommit:
+          type: string
+          description: 节点自报的 agent 提交（空串 = 未知）
+        facts:
+          $ref: '#/components/schemas/NodeFacts'
+        capabilities:
+          type: array
+          description: 本机能力探测结果（每条带 `requires.commands` 的命中情况）
+          items:
+            $ref: '#/components/schemas/HelloCapability'
+        instances:
+          type: array
+          description: |
+            本机申报的并发槽位（slot / busy，A3）。槽位事实只在 hello 上报；
+            派发授槽仍由 lease 协议决定。
+          items:
+            $ref: '#/components/schemas/HelloInstance'
+    WelcomeFrame:
+      type: object
+      description: |
+        **下行** · 中枢对 `hello` 的应答；`config.get` 的应答**复用同形**（D-I2）——文档只给了
+        `config.get` 帧名，没有第二个应答形状，节点因此只有一条「合并 → 落盘 → config.applied」路径。
+      required: [type, configRevision, nodeVars, nodeLimits, namespaces]
+      properties:
+        type:
+          type: string
+          enum: [welcome]
+        configRevision:
+          type: string
+          description: 中枢侧节点默认值的 revision（节点据此判 `stale_config`）
+        nodeVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: 中枢给这台机器存的默认值（本机没写的键才用它；无默认值时为空对象）
+        nodeLimits:
+          $ref: '#/components/schemas/Limits'
+        namespaces:
+          type: array
+          description: 中枢**授权**列表（与本机申报取交集，只能收紧）
+          items:
+            type: string
+    ConfigChangedFrame:
+      type: object
+      description: |
+        **下行** · 「这台的默认值变了」的提示，不带值也不带命令。节点丢了这条提示也不会漂移：
+        下次 hello 会自己对齐（中枢不做「下推配置」）。
+      required: [type, revision]
+      properties:
+        type:
+          type: string
+          enum: [config.changed]
+        revision:
+          type: string
+          description: 新的节点默认值 revision
+    ConfigGetFrame:
+      type: object
+      description: |
+        **上行** · 节点主动拉取当前节点默认值（D-I2）。应答是 `WelcomeFrame`。
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [config.get]
+        appliedRevision:
+          type: string
+          description: 本机当前生效的 revision（空串 = 还没有 applied 文件）
+        appliedHash:
+          type: string
+          description: 本机当前 applied 文件的哈希（空串 = 还没有 applied 文件）
+    ConfigAppliedFrame:
+      type: object
+      description: |
+        **上行** · 节点合并落盘并生效后的回报。
+
+        `machineVars` = 本机值 ⊕ 节点默认值（**不含** ns 默认值：它按任务所属 ns 解析、随任务
+        内存下发；也不含 limits：中枢从 hello 的 localLimits + welcome 的 nodeLimits 就能算出
+        机器级预算，再传一份就是第三份真相）。
+      required: [type, revision, hash, machineVars]
+      properties:
+        type:
+          type: string
+          enum: [config.applied]
+        revision:
+          type: string
+          description: 本次生效的节点默认值 revision
+        hash:
+          type: string
+          description: applied 文件内容的归一化哈希（中枢用它判 drift）
+        machineVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: 机器级生效值（local / node 合并结果，不含值来源标记）
+        instances:
+          type: array
+          description: 本机真实槽位快照（A3）；省略 = 不更新实例账本
+          items:
+            $ref: '#/components/schemas/HelloInstance'
+    # ==================================================================
+    # 执行子协议（internal/protocol/exec_frames.go）
+    # ==================================================================
+    CapabilityRef:
+      type: object
+      description: 任务钉住的目标能力 `{name,version,digest}`（没有 port：v4 的产出只有一个通道 emit）。
+      required: [name, version, digest]
+      properties:
+        name:
+          type: string
+          description: 能力名（谱系，不是某个版本）
+        version:
+          type: integer
+          description: 解析到的版本号（省略 version 的能力由内容寻址分配）
+        digest:
+          type: string
+          description: 部署身份（`artifact.Digest`，`sha256:<hex>`）：version 之外再钉一次内容
+    TaskDispatchFrame:
+      type: object
+      description: |
+        **下行** · 中枢 → 节点的派发。**派发不是授权**：只带 `assignmentId` / `proposedAttempt`
+        与 30s 派发窗口，不授 lease、不带 attemptToken、不带 slot；执行权只来自 `lease.grant`。
+
+        节点先校验 `digest` 与 `configRevision == applied`，再决定 accept / reject。
+        `namespaceVars` 只含该能力 `requires.values` 点名的名字（随任务内存下发，不落盘、
+        不进 applied）；`namespaceVarsRevision` 只描述这组值是哪一版。
+      required:
+        - type
+        - taskId
+        - assignmentId
+        - proposedAttempt
+        - namespace
+        - capability
+        - namespaceVars
+        - namespaceVarsRevision
+        - configRevision
+        - assignmentExpiresAt
+      properties:
+        type:
+          type: string
+          enum: [task.dispatch]
+        taskId:
+          type: string
+          description: 逻辑任务 id（一个逻辑 task 一行，attempt 是计数器）
+        assignmentId:
+          type: string
+          description: 本次派发的关联 id（诊断用，**不是**执行授权）
+        proposedAttempt:
+          type: integer
+          minimum: 1
+          description: 拟定的 attempt 序号（grant 生效时才算数）
+        namespace:
+          type: string
+          description: 任务所属 ns（决定 ns 默认值与授权判定）
+        capability:
+          $ref: '#/components/schemas/CapabilityRef'
+        params:
+          type: object
+          additionalProperties: true
+          description: 任务输入（`json.RawMessage`；同名直取对齐过，capability.md §4.2）。省略 = 无入参。
+        namespaceVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: 本次任务可用的 ns 默认值（只含被引用的名字）
+        namespaceVarsRevision:
+          type: string
+          description: 这组 ns 默认值的版本
+        configRevision:
+          type: string
+          description: 本派发期望的机器级配置版本；与节点 applied 不一致 → `stale_config`
+        assignmentExpiresAt:
+          type: string
+          format: date-time
+          description: |
+            中枢给出的**派发窗口**（初值 30s，A3，UTC）。中枢与节点用同一个窗口判 pending
+            reservation 的有效期：Node 从 accept 到 grant 的有界期限就是它。
+            它**不含**执行 lease/token/slot 授权。
+    TaskAcceptFrame:
+      type: object
+      description: |
+        **上行** · 节点在配置校验通过后的接受。发出它之前节点必须已完成：digest 校验、
+        `configRevision == applied`、ns ∈ 申报 ∩ 授权，并**原子预留真实空闲 slot**。
+
+        accept 之前 `task.reject` 只允许 `stale_config` / `slot_unavailable`；requires.commands /
+        HOME / workDir / export 的确定性错误在 `lease.grant` 后报告 failed（计入已授权 attempt）。
+      required: [type, taskId, assignmentId, proposedAttempt, node, slot]
+      properties:
+        type:
+          type: string
+          enum: [task.accept]
+        taskId:
+          type: string
+        assignmentId:
+          type: string
+        proposedAttempt:
+          type: integer
+          minimum: 1
+        node:
+          type: string
+          description: |
+            已登记的 `Node.metadata.name`（= anode.yaml.name），**不是** DB 内部 UID。
+            服务端用已认证 session 映射 DB id，不能用帧里的 node 选择另一个身份。
+        slot:
+          type: integer
+          minimum: 0
+          description: |
+            节点**原子预留的真实空闲槽号**（0..N-1，0 合法）。presence 必填：中枢只在自己
+            预留的同一个 slot 上发 grant，节点也只在这个 slot 上启动进程。
+    TaskRejectFrame:
+      type: object
+      description: |
+        **上行** · 节点对派发的拒绝。`reason` 是 A3 封闭集合：`stale_config`（机器级配置未
+        applied）| `slot_unavailable`（真实 slot/预算不可用）。两者均**不计 attempt、不授 lease**。
+
+        缺命令、HOME、workDir、export 等执行准备错误**不能**伪装成 pre-grant reject
+        （它们是 grant 之后的确定性失败）。
+      required: [type, taskId, assignmentId, proposedAttempt, node, reason]
+      properties:
+        type:
+          type: string
+          enum: [task.reject]
+        taskId:
+          type: string
+        assignmentId:
+          type: string
+        proposedAttempt:
+          type: integer
+          minimum: 1
+        node:
+          type: string
+          description: 已登记的节点名（同 `task.accept.node`，不能用来冒充另一台机器）
+        reason:
+          type: string
+          enum: [stale_config, slot_unavailable]
+          description: |
+            `slot_unavailable` = 本机没有真实空槽/预算吃满/已有占用：不执行、不授 lease、
+            不计 attempt，中枢回 pending(`waiting_for_slot`)。未知 reason fail-closed。
+    LeaseGrantFrame:
+      type: object
+      description: |
+        **下行** · 中枢 → 节点的**执行授权**。`leaseId` / `attemptToken` 由中枢生成（节点不得
+        自生成 lease）；grant 生效时 attempt 才计数，节点收到后才启动子进程。
+
+        `attemptToken` 就是任务脚本里的 `ANOTIFY_TASK_TOKEN`：emit 网关按它把请求归属到
+        task/attempt，产物上行也用它做授权三件套之一。
+      required: [type, taskId, attempt, node, leaseId, attemptToken, expiresAt, assignmentId, slot]
+      properties:
+        type:
+          type: string
+          enum: [lease.grant]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        node:
+          type: string
+          description: 已登记的节点名（同 `task.accept.node`）
+        leaseId:
+          type: string
+          description: 本次授权的租约 id（renew / ack / result / cancel.ack 都必须回带同一个）
+        attemptToken:
+          type: string
+          description: |
+            本次 attempt 的一次性高熵令牌（重试后旧 token 立即作废）。它是凭据：
+            帧里可回带、日志/响应/错误消息里永不出现。
+          writeOnly: true
+        expiresAt:
+          type: string
+          format: date-time
+          description: 本授权到期的绝对时间（中枢时钟，UTC）
+        assignmentId:
+          type: string
+          description: |
+            本次派发的 assignment id。节点必须找到完全匹配的 pending reservation
+            （taskId+assignmentId+proposedAttempt+slot）才允许启动，不能收到任意 grant 就执行。
+        slot:
+          type: integer
+          minimum: 0
+          description: 回带节点在 accept 时预留的槽号（0 合法；必须与 reservation 完全相同）
+    LeaseRenewFrame:
+      type: object
+      description: |
+        **上行** · 节点绕**同一个中枢 leaseId** 的续租请求。中枢的应答是 `lease.ack`。
+      required: [type, taskId, attempt, leaseId]
+      properties:
+        type:
+          type: string
+          enum: [lease.renew]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        leaseId:
+          type: string
+          description: 要续的租约（必须是中枢此前签发、且仍是当前 attempt 的那一个）
+    LeaseAckFrame:
+      type: object
+      description: |
+        **下行** · 中枢对续租的确认。节点以「最后一次 ACK + 本地 deadline」判定失联：
+        到期自行 TERM，5s 后 KILL 整个进程组。
+      required: [type, taskId, attempt, leaseId, expiresAt]
+      properties:
+        type:
+          type: string
+          enum: [lease.ack]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        leaseId:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+          description: 续租后的到期时间（中枢时钟，UTC）
+    TaskArtifact:
+      type: object
+      description: |
+        节点**托管**到系统结果目录的产物副本（不是用户 workDir 原文件）。
+        它同时是产物上行（`uploadTaskArtifact`）的登记事实来源。
+      required: [path, sha256]
+      properties:
+        path:
+          type: string
+          description: 系统托管副本的相对路径（相对结果目录；同 `X-Anotify-Artifact-Path` 的逻辑路径）
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 副本内容的摘要（64 位小写十六进制，**不带** `sha256:` 前缀）
+    TaskResultBody:
+      type: object
+      description: |
+        「脚本跑完了」的结果正文（`protocol.TaskResult`）。脚本没有隐式返回值路由（没有 out/port），
+        但**节点有执行结果通道**：退出码、summary、托管产物、失败原因都由节点显式上报。
+      required: [summary, artifacts]
+      properties:
+        summary:
+          type: string
+          description: 唯一的结论句：成功 = 做了什么，失败 = 为什么（失败时必填）
+        artifacts:
+          type: array
+          description: 系统托管的结果副本（用户 workDir 里的原文件永不进这里）；空时是 `[]`，不是 `null`
+          items:
+            $ref: '#/components/schemas/TaskArtifact'
+        error:
+          $ref: './resource.yaml#/components/schemas/TaskResultError'
+    TaskResultFrame:
+      type: object
+      description: |
+        **上行** · 节点 → 中枢的终态上报。中枢权威校验 attempt/lease/token（旧 attempt、对不上的
+        lease、作废的 token 一律不接受），并以 `result.ack` 给出结论。
+
+        前提：受权产物必须**先**经 `PUT /v1/node/tasks/{taskId}/artifacts/{sha256}` 上传成功，
+        再发本帧；上传失败且仍有授权 → 终态原因 `artifact_upload_failed`。
+      required: [type, taskId, attempt, node, leaseId, phase, result, startedAt, finishedAt]
+      properties:
+        type:
+          type: string
+          enum: [task.result]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        node:
+          type: string
+          description: 已登记的节点名（同 `task.accept.node`）
+        leaseId:
+          type: string
+          description: 本次执行的租约（必须与中枢当前 attempt 的授权一致）
+        phase:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled, abandoned]
+          description: |
+            终态（`succeeded` / `failed` / `cancelled` / `abandoned`）。`pending`/`running`
+            是调度相位，不会出现在终态上报里。
+        exitCode:
+          type: integer
+          description: 子进程退出码；被信号杀死 / 未启动时省略
+        result:
+          $ref: '#/components/schemas/TaskResultBody'
+        startedAt:
+          type: string
+          format: date-time
+          description: 子进程启动时间（`timeoutSec` 从这里起算，UTC）
+        finishedAt:
+          type: string
+          format: date-time
+          description: 子进程结束 / 判定终态的时间（UTC）
+    ResultAckFrame:
+      type: object
+      description: |
+        **下行** · 中枢对结果上报的权威确认。`accepted=false` 表示中枢拒绝了这次结果
+        （旧 attempt / lease 对不上 / token 作废）；节点收到后**不得**据此改本地已结束的事实，
+        只用于诊断与本地清理。
+      required: [type, taskId, attempt, accepted]
+      properties:
+        type:
+          type: string
+          enum: [result.ack]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        accepted:
+          type: boolean
+          description: 中枢是否接受这条结果
+    TaskCancelFrame:
+      type: object
+      description: |
+        **下行** · 要求节点停止某任务（可随时抢占）。节点先 TERM，`LeaseTermGrace`（5s）后
+        KILL 整个进程组；槽位在**进程组真正回收后**才释放（中枢不能只改 DB 状态就当节点空闲）。
+
+        取消必须按**完整历史绑定**（taskId+attempt+leaseId，slot 有 presence 时也要匹配）定位：
+        同一逻辑 task 的新 attempt 不能被旧 attempt 的取消误停。
+      required: [type, taskId, attempt, leaseId, slot, reason, graceSec]
+      properties:
+        type:
+          type: string
+          enum: [task.cancel]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        leaseId:
+          type: string
+          description: 要定位的历史租约（presence 必填）
+        slot:
+          type: integer
+          minimum: 0
+          description: 要定位的历史槽号（0 合法；presence 必填）
+        reason:
+          type: string
+          enum: [cancelled_by_user, abandoned_by_user, abandoned]
+          description: |
+            `cancelled_by_user`（用户取消）/ `abandoned_by_user`（用户放弃）/
+            `abandoned`（中枢侧放弃：节点失联、租约丢失、重试顶替旧 attempt）。
+            节点对三者动作一样（TERM → 5s → KILL），区别只在任务终态与谁被通知。
+        graceSec:
+          type: integer
+          minimum: 0
+          description: TERM 到 KILL 的宽限期（秒）；缺省用 `LeaseTermGrace`（5s）
+    CancelAckFrame:
+      type: object
+      description: |
+        **上行** · 节点对取消的回报。只有 `processGroupReaped=true` 才算槽位回收；`false`
+        表示还没收干净（进程不保证停得住），中枢必须继续等而**不是**释放槽位。
+      required: [type, taskId, attempt, leaseId, slot, processGroupReaped]
+      properties:
+        type:
+          type: string
+          enum: [cancel.ack]
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        leaseId:
+          type: string
+          description: 回带本次回收的历史租约（中枢按历史 task_attempts 的绑定核验）
+        slot:
+          type: integer
+          minimum: 0
+          description: 回带本次回收的历史槽号（0 合法）
+        processGroupReaped:
+          type: boolean
+          description: 进程组是否**已经真正回收**（false ≠ 空闲）
+    # ==================================================================
+    # emit 中转（internal/protocol/emit_frames.go + emit.go）
+    # ==================================================================
+    TaskEmitFrame:
+      type: object
+      description: |
+        **上行** · 把本机 `POST /emit` 的请求原样转给中枢（父 E1 批准）。节点上的 HTTP emit 网关
+        是本地入口（loopback / unix socket，`Authorization: Bearer <attemptToken>`），只做本地预检；
+        **权威判定在中枢**：先验连接节点身份、任务当前 running、所属授权 namespace、
+        attempt/leaseId/attemptToken 与租约未过期，再在同一事务/CAS 边界里接受、判 id 幂等并派发下游。
+
+        `to`/`id`/`data` 的语义**逐字等于** HTTP `EmitRequest`（`internal/protocol/emit.go`）。
+        `namespace` **不在帧里**：由中枢按任务的 namespace 与「节点申报 ∩ 授权」推导。
+        本帧是**严格解码**的（未知字段拒绝），不能塞 namespace、也不能注入回显字段。
+      required: [type, requestId, taskId, attempt, leaseId, attemptToken]
+      properties:
+        type:
+          type: string
+          enum: [task.emit]
+        requestId:
+          type: string
+          description: |
+            关联本次 RPC 与 ack 的 id（节点为每次 HTTP emit 新生成，不持久化）。
+            它**不是**业务幂等键、也不是调用序号。
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+          description: 身份四元组之一（旧 attempt / 过期租约 / 旧令牌一律拒绝）
+        leaseId:
+          type: string
+        attemptToken:
+          type: string
+          description: 本次 attempt 的令牌（凭据；中枢不复述进 ack，也不进日志）
+          writeOnly: true
+        to:
+          type: string
+          description: |
+            目标（本能力 `spec.next` 里的名字或 `name@version`）。**故意不在 required 里**：
+            缺 `to` 仍是合法帧，由中枢按 HTTP 语义回 `missing_target`（400 / CLI 2），
+            在解码阶段拒绝等于把可回答的请求变成断连。
+        id:
+          type: string
+          description: |
+            可选显式幂等键（同一逻辑 task + 同一 id 只派发一次，重复请求返回旧结果；
+            同 id 但 to/data 不同 → 409 `emit_id_conflict`）。不带 = 每次都是新派发。
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            下游入参：省略 = 空对象语义；给了就必须是 JSON **对象**（数组/标量/null 是参数错误，
+            不会被默默当成另一个对象接受）。
+    TaskEmitAckFrame:
+      type: object
+      description: |
+        **下行** · 中枢对一次 `task.emit` 的结论。
+
+        `response` 与 `error` **严格互斥**：成功只 `response`（`httpStatus=200`，含剪枝回执），
+        错误只 `error`（`httpStatus` 必须等于 `EmitHTTPStatus(error.error)`）。
+        本帧不回显 `attemptToken` / `leaseId`，也没有 `namespace` 与业务 seq：迟到或不匹配的 ack
+        由节点网关按 `requestId + taskId + attempt` 丢弃。没有 `Status` 信封——本地 emit 不是资源 API。
+      required: [type, requestId, taskId, attempt, httpStatus]
+      properties:
+        type:
+          type: string
+          enum: [task.emit.ack]
+        requestId:
+          type: string
+          description: 必须与对应 `task.emit.requestId` 相同（节点据此找 waiter）
+        taskId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 1
+        httpStatus:
+          type: integer
+          description: |
+            这次结论在本地 emit 网关上的 HTTP 状态码：成功 200；错误 400/401/409/500。
+            必须与 `error.error` 的映射一致。
+        response:
+          $ref: '#/components/schemas/EmitResponse'
+        error:
+          $ref: '#/components/schemas/EmitError'
+    EmitPruned:
+      type: object
+      description: |
+        「事件已接收、下游没建 task」的剪枝回执。剪枝**不是** 4xx：回执 `taskId` 为 `null`、
+        CLI 退出码 0。
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: |
+            剪枝原因（封闭集合，`internal/protocol/enums.go` 的 pruneReasons）：
+            `param_missing` / `param_schema` / `param_type`（emit 路径）或
+            `no_target` / `event_schema`（源投递路径）。
+        detail:
+          type: string
+          description: 人话补充（可以变，不参与任何判断）
+    EmitResponse:
+      type: object
+      description: |
+        emit 的成功回执（含剪枝）。`taskId` 用 `null` 显式表达剪枝（**不是**省略、不是空串）：
+        前端与脚本据此区分「已建任务」和「接收了但没派发」。非 null 时它是**本次 emit 真实创建**
+        的任务 id：正常派发是子任务；下游缺失（`downstream_missing`）是 `phase=failed` 的
+        **派发失败 Task**（已建行、无执行事实，不是「已成功执行」）。
+      required: [taskId, to]
+      properties:
+        taskId:
+          type: string
+          nullable: true
+          description: 本次 emit 创建的任务 id；剪枝回执为 `null`
+        eventId:
+          type: string
+          description: 这次投递的事件 id（省略 = 该路径没有事件事实）
+        to:
+          type: string
+          description: 回执目标（`spec.next` 里的名字）
+        version:
+          type: integer
+          description: |
+            回执目标的版本：已解析成功或明确声明了正版本时恒返回；未声明且未解析（裸 ref 的
+            下游缺失）没有版本事实，字段省略而不是公开哨兵 0。
+        pruned:
+          $ref: '#/components/schemas/EmitPruned'
+    EmitError:
+      type: object
+      description: |
+        本地 emit 网关的错误体（`{error, message}` + CLI 退出码）。它**不是**公共 API 的
+        `Status`：不要拿它当 HTTP 资源的错误信封。
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - target_not_declared
+            - missing_target
+            - token_invalid
+            - task_not_running
+            - emit_id_conflict
+            - emit_unreachable
+          description: |
+            封闭码（`internal/protocol/emit_frames.go` 的 `emitErrorCodes`）。
+            `emit_unreachable` = 结果未知（可能已派发）：CLI 退出码 5，不能据此推断 infra 失败
+            并整任务重跑（要安全重发就带同一个 `id`）。
+        message:
+          type: string
+          description: 人话（可以变，不参与任何判断）
+    # ==================================================================
+    # 部署接缝（internal/protocol/deploy_frames.go）
+    # ==================================================================
+    CapabilityDeployFrame:
+      type: object
+      description: |
+        **下行** · 中枢 → 节点的部署通知（在线节点上的一次**显式人工部署**）。只带 refs，
+        **不带包体**（也没有 files 字段）：包体本应走 `GET /v1/node/capabilities/{digest}`
+        ——那条 HTTP **尚未实现**（见文件顶部的缺口说明）；离线节点不靠这一帧，重连后由中枢
+        重放已请求的未完成部署。
+
+        `namespace` / `name` / `version` / `digest` 在 Go 侧由 `DeployRefs` **匿名嵌入**后
+        平铺成四个顶层键（wire 只有这一份定义）。
+      required: [type, requestId, namespace, name, version, digest]
+      properties:
+        type:
+          type: string
+          enum: [capability.deploy]
+        requestId:
+          type: string
+          description: 部署请求 id（中枢生成；回执按它配对，同一次重放保持同一个）
+        namespace:
+          type: string
+          description: 能力所属命名空间（中枢只能部署该节点被授权且明确指向的 ns）
+        name:
+          type: string
+          description: 能力名（谱系，不是某个版本）
+        version:
+          type: integer
+          description: 解析到的版本号
+        digest:
+          type: string
+          description: 部署身份（`artifact.Digest`，`sha256:<hex>`）：节点按它取包体并自己重算比对
+    CapabilityDeployedFrame:
+      type: object
+      description: |
+        **上行** · 节点 → 中枢的部署回执。refs 必须与请求**完全相同**（namespace/name/version/digest
+        四元组）；中枢按 `requestId` 配对并用 refs 校验没有被篡改的部署目标。
+      required: [type, requestId, namespace, name, version, digest, status]
+      properties:
+        type:
+          type: string
+          enum: [capability.deployed]
+        requestId:
+          type: string
+          description: 对应 `capability.deploy.requestId`
+        namespace:
+          type: string
+        name:
+          type: string
+        version:
+          type: integer
+        digest:
+          type: string
+        status:
+          type: string
+          enum: [applied, failed]
+          description: '`applied` = 已获取、校验并缓存该 digest；`failed` = 获取/校验/缓存失败'
+        error:
+          type: string
+          description: 失败的人话原因（`status=failed` 时非空；成功时省略，不进任何判断）
+    # ==================================================================
+    # 运维帧：升级与历史日志（internal/protocol/ops_frames.go）
+    # ==================================================================
+    UpgradeFrame:
+      type: object
+      description: |
+        **下行** · 让节点把自己的二进制升级到目标版本。帧里**不带二进制**（15 MB 的帧会撑爆
+        心跳与背压）：节点收到后用自己的节点 token 走 `GET /v1/node/binary` 下载，校验 sha256
+        后原子替换。
+      required: [type, targetVersion, sha256, urlPath]
+      properties:
+        type:
+          type: string
+          enum: [upgrade]
+        targetVersion:
+          type: string
+          description: 中枢自己的版本（控制台展示的「已是最新」也按它比较）
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 下载后必须逐字节对上的摘要（64 位小写十六进制，**不带** `sha256:` 前缀）
+        urlPath:
+          type: string
+          description: 中枢上的下载路径（相对 server 根；节点自己拼），当前恒为 `/v1/node/binary`
+    UpgradeAckFrame:
+      type: object
+      description: |
+        **上行** · 节点对 `upgrade` 的回报。成功写版本列；失败只写升级状态（节点上的二进制没换，
+        版本列保持旧值才诚实）。
+      required: [type, ok, error]
+      properties:
+        type:
+          type: string
+          enum: [upgrade_ack]
+        ok:
+          type: boolean
+        version:
+          type: string
+          description: 升级后**实际生效**的版本（`ok=false` 时省略）
+        commit:
+          type: string
+          description: 升级后**实际生效**的提交（`ok=false` 时省略）
+        error:
+          type: string
+          description: |
+            失败短码（`internal/protocol/ops_frames.go` 的封闭集合；成功时为空串）：
+            `need_root` / `bad_sha` / `download_failed` / `not_supported`。
+            未知码落库前会被收敛成空串（原始值只进 WARN 日志）。
+    LogsRequestFrame:
+      type: object
+      description: |
+        **下行** · 让节点把本机某次执行的日志尾巴回给中枢（帧里只有「问的是哪条任务的哪一次
+        请求」：任务入参属于内部输入快照，不为了一次排障把可能敏感的入参搬过网络）。
+
+        `requestId` 由中枢生成（同一条连接上可能同时有多条请求在飞），节点原样回带——中枢只做
+        字符串相等比较，「A 的日志被安到 B 头上」这种错会静默发生，必须靠配对。
+      required: [type, taskId, requestId]
+      properties:
+        type:
+          type: string
+          enum: [logs_request]
+        taskId:
+          type: string
+        requestId:
+          type: string
+          description: 中枢生成的关联 id（`lreq_…`）；节点必须原样回带
+        attempt:
+          type: integer
+          minimum: 0
+          description: |
+            可选的目标 attempt（≥1）。省略/0 = 该逻辑 task 最近一次有档案的 attempt。
+            节点收到后先跑 `ValidateLogsRequest`：负数的 `attempt` / `sinceSeconds` 或超过 5000 的
+            `tailLines` 一律回 `logs_response.error = illegal_log_request`（不归一化成「0 = 最新」：
+            中枢看到的成功必须能与它发出的请求一一对应）。
+        tailLines:
+          type: integer
+          minimum: 0
+          maximum: 5000
+          description: 记录条数上限（0/省略 = 不限）；节点先按 sinceSeconds 过滤、再取最新 N 条
+        sinceSeconds:
+          type: integer
+          minimum: 0
+          description: |
+            时间窗（0/省略 = 不限）。节点用自己的当前时间算阈值，只回采集时间不早于阈值的记录；
+            中枢不按服务器时钟二次过滤。
+    LogLine:
+      type: object
+      description: |
+        一条**真实采集**到的日志记录（恰有四个 wire 字段，不增不减）。它描述节点实际观察并
+        串行记录的顺序，不是脚本跨流的因果先后，也不承诺两个 pipe 的写入顺序。
+      required: [sequence, stream, text, at]
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+          description: |
+            attempt 内跨 stdout/stderr **严格递增**、从 1 开始。
+        stream:
+          type: string
+          enum: [stdout, stderr]
+          description: 记录的来源流（封闭取值）
+        text:
+          type: string
+          description: |
+            实际采集文字（LF 分行，EOF 残片是真实记录；单段 ≤ 64 KiB，超长行按实际片段拆成多条）。
+            无效 UTF-8 按标准 JSON 文字投影（替换字符），raw 档案保持逐字节不变。
+        at:
+          type: string
+          format: date-time
+          description: |
+            节点采集该记录时的真实时间（RFC3339Nano）；不是 finishedAt，也不校正成中枢时钟。
+    LogsResponseFrame:
+      type: object
+      description: |
+        **上行** · 节点对一次 `logs_request` 的回答。四条纪律：
+
+        - 配对靠 `requestId`：中枢看不到的 `requestId` 一律丢弃（晚到的回包、过期请求）；
+        - `error` 非空 = 没取到（封闭集合）；**空 error + 零条记录**是「这次执行什么都没打印」，
+          两者语义不同，不能合并；
+        - 编码后 ≤ 1 MiB（`LogsResponseMaxBytes`）：`truncated=true` 表示档案里还有更多
+          （档案本身完整，被截的是这次回包）。节点必须自己先截断，否则超限帧会被 1009 断开；
+        - `lines` 只在成功响应里出现：成功必须是数组（零条 = `[]`），错误响应不能伪造成功记录。
+      required: [type, taskId, requestId, stdout, stderr, truncated, bytes]
+      properties:
+        type:
+          type: string
+          enum: [logs_response]
+        taskId:
+          type: string
+        requestId:
+          type: string
+        attempt:
+          type: integer
+          minimum: 0
+          description: |
+            **实际**读到的 attempt：成功时必填（≥1），错误/无档案时省略。
+            错误响应不能伪造一个 latest 冒充请求的历史 attempt。
+        stdout:
+          type: string
+          description: 采集到的 stdout 原文（截断后）
+        stderr:
+          type: string
+          description: 采集到的 stderr 原文（截断后）
+        truncated:
+          type: boolean
+          description: 档案里还有更多（本次回包被截断），不是档案缺失
+        bytes:
+          type: integer
+          description: 本次回包携带的原始字节数
+        error:
+          type: string
+          description: |
+            错误码（封闭集合）：`no_local_archive`（这台节点上没有那次执行的档案，被 GC / 老任务 /
+            不是这台跑的）/ `logs_unreadable`（档案在但结构化索引缺失/损坏/版本不支持/写失败锁存，
+            无法证明记录完整性，绝不能退化成空成功）/ `illegal_log_request`（请求本身不合法）。
+            省略/空串 = 成功。
+        lines:
+          type: array
+          description: 逐条记录（仅成功响应；成功时恒存在，零条 = `[]`）
+          items:
+            $ref: '#/components/schemas/LogLine'
+    # ==================================================================
+    # 产物上行（A1）的动作 DTO（internal/protocol/artifact_transfer.go）
+    # ==================================================================
+    ArtifactUploadResponse:
+      type: object
+      description: |
+        产物上行成功（201 首次 / 200 幂等重传）的响应文档。没有新资源 kind、没有 wrapper：
+        它只是这次上传动作的确认，字段必须与请求对齐（节点侧用 `Validate` 复核，不信任中枢回包里
+        的不一致值）。
+      required: [taskId, attempt, path, sha256, size]
+      properties:
+        taskId:
+          type: string
+          description: 本次上传的任务 id（与路径里的 taskId 一致）
+        attempt:
+          type: integer
+          minimum: 1
+          description: 本次上传的 attempt（与 `X-Anotify-Attempt` 一致）
+        path:
+          type: string
+          description: 登记的逻辑路径（`X-Anotify-Artifact-Path` 解码后的值）
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 字节摘要（与路径里的 sha256 一致，64 位小写十六进制）
+        size:
+          type: integer
+          minimum: 0
+          maximum: 16777216
+          description: 实际接收的字节数（≤ 单文件上限 16 MiB）
+    ArtifactUploadErrorBody:
+      type: object
+      description: |
+        A1 产物上行的错误体：`{"error":"<code>"}`。**故意不是** `Status` 信封（节点客户端
+        `cmd/anode/internal/upload` 只解析这个形状，且只接受四个 A1 业务码；套信封会让所有
+        拒绝在节点侧降级成不可诊断的 transport）。
+
+        与 `./resource.yaml#/components/schemas/NodeUploadError` 同形；这里保留一份是为了让
+        「协议动作 DTO」这一节自包含（HTTP 响应仍 `$ref` resource.yaml 的 `NodeUploadError<code>`）。
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - artifact_path_invalid
+            - artifact_hash_mismatch
+            - artifact_too_large
+            - artifact_conflict
+            - unauthorized
+            - forbidden
+            - artifact_upload_unavailable
+            - internal
+          description: |
+            封闭码集（`internal/protocol/artifact_transfer.go` 的 A1 四码 +
+            `internal/server/artifact_upload.go`/`artifact_support.go` 的授权/运维/内部码）：
+
+            - `artifact_path_invalid`（400）：逻辑路径或 `{sha256}` 形状不合法；
+            - `artifact_hash_mismatch`（400）：实际字节的 sha256 与路径里的不一致（含读中断/长度不符）；
+            - `artifact_too_large`（413）：超单文件 / 单 attempt 上限；
+            - `artifact_conflict`（409）：同 attempt 同逻辑 path 但不同 hash；
+            - `unauthorized`（401）/ `forbidden`（403）：节点身份或 attempt 授权不成立（终止不重试）；
+            - `artifact_upload_unavailable`（503）：中枢没配置托管目录（可重试的运维事实）；
+            - `internal`（500）：未被 A1 封闭集合覆盖的内部错误。

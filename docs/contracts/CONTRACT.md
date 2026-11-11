@@ -541,7 +541,7 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
 **列名是 `descr` 而不是 `description`**：A2 的禁词正则是**子串**匹配
 （`argv|shell|script`），而 `description` 这个单词里恰好含有被禁子串 —— 写进
 `schema.sql` 会让 `make contract` 失败。列名只活在 store 层，**API/JSON 字段仍是
-`description`**（camelCase，见 `api/openapi.yaml`）。
+`description`**（camelCase，见 `api/resource.yaml`）。
 
 五条口径：
 
@@ -565,8 +565,8 @@ CREATE INDEX IF NOT EXISTS idx_playbooks_ns ON playbooks(namespace_id, created_a
    边、源全部锁在**本次请求命中的那一个命名空间**内（跨命名空间引用 → `400`）。
    预案也**不提供跨命名空间汇总**：体检结论只能按单个命名空间算（见 §6.2）。
 
-端点、状态码与字段形状见 §6.2 与 `api/openapi.yaml`（后者与 `web/mock.js` 的
-`pbChecks` / `pbView` 逐字段一致，是验收基准）。
+端点、状态码与字段形状见 §6.2 与 `api/{resource,events,agent,ingress,auth}.yaml`
+（v4 的 exact-five 真源；旧单文件 `api/openapi.yaml` 已删除，见 §9.1 A9）。
 
 ---
 
@@ -1323,7 +1323,8 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | `internal/auth` | **改**：注册走 `store.RegisterUser`（建用户 + 默认命名空间，同事务） |
 | `internal/api/notify.go` | **改**：`POST /v1/notify` → 产 `events` 行 |
 | `internal/server/mux.go` | **改**：按 §6.2 重新注册 |
-| `api/openapi.yaml` | **重写**：现有 50 个 operation 收缩到本模型 |
+| `api/openapi.yaml` | **已删除**：拆成 exact-five 的 `api/{resource,events,agent,ingress,auth}.yaml`
+（v4，见 §9.1 A9；归属键 = method + canonical path） |
 
 ---
 
@@ -1344,6 +1345,40 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 | A10 | 组织隔离 | A 组织的 token 查不到 B 组织的事件 |
 | A11 | 版本并存 | `review@1` 和 `review@2` 同时存在，互不影响 |
 | A12 | 空列表 `[]` | 所有 list 接口返回 `[]` 不是 `null` |
+
+### 9.1 v4 静态门禁口径（#333 同步）
+
+> 本节只同步**已冻结**规则在 v4 的机械落地，不新增产品语义。
+> **注意两套 A 编号**：上面的 A1–A12 是**运行期**断言（e2e 侧守）；下表是 `make contract`
+> 实际执行的**静态**断言，用 `scripts/check_contract.py` 自己的 A 编号——**同号不同义**，
+> 别把两张表混读（历史教训：按 §9 的 A5「出口封闭」去改静态 A5 会把 os/exec 禁令删掉）。
+
+| # | 断言（静态） | 判据 | 落地 |
+|---|---|---|---|
+| A2 | 中枢不存「怎么执行」 | schema.sql 不出现 argv/shell/script | `scripts/check_contract.py` |
+| A4 | `kind` 不落库 | `capability_versions` / `nodes` / `edges` 三表不得有 `kind` 列（`sources.kind` 是合法一等字段，按表名限定） | 同上 |
+| A5 | 中枢不执行 | `internal/` 下**每个包**（动态枚举，不再是手写清单）的产品文件不得 import `os/exec` | 同上 |
+| A6 | 内容寻址 | `capability_versions.digest`、`deployments.digest`、`task_artifact_{uploads,manifests}.sha256` 必须存在 | 同上 |
+| A7 | 节点不持归属 | `cmd/anode/**` 不得出现 `capability_versions` / `deployments`（归属只由中枢部署派生） | 同上 |
+| A8 | 上传授权 / registry 边界 | 上传路由不得被会话中间件包裹且必须接 `artifactUploadHandler`；中枢 handler 不得直接 `INSERT task_artifact_*`（registry 只经 store 的授权事务登记） | 同上 |
+| A9 | exact-five | `api/` 下恰好五份 spec，旧 `api/openapi.yaml` 必须不存在 | 同上 |
+| A10 | 信封字段级 | 五键齐备 / `status` 形状 / camelCase / 数组不 null / cursor 只有 `continue` / `resourceVersion` 是字符串 + DELETE 走 query / 错误响应族→schema 绑定 | `scripts/check_envelope.py`（由 `check_contract.py` 串接） |
+
+**v4 已退役的 §9 行**（机制本身不存在了，不在门禁里假装守住）：
+
+| 行 | v3 机制 | v4 事实 |
+|---|---|---|
+| A1（内置能力已播种） | 注册时播种内置能力 | 内置能力播种随中枢执行器一起退役（api-conventions §9「明确移除」`spec.seedBuiltinCapabilities`）；注册仍建 `default` 命名空间 |
+| A3（`node_capabilities`） | 节点申报写 `node_capabilities` | 该表在 v4 baseline **不存在**（store 侧测试把它列进 `removedTables`）；归属只由部署派生 |
+| A5（出口封闭） | `edges.from_port` 必须 ∈ `outputs` | Edge 是 `spec.next` / `source.targets` 的**派生投影**，没有 port / mapping / priority |
+| A6（候选选择轮盘） | 按 priority 组内轮盘派 1 个 | 同一份退役：emit 只按真实解析目标派发；`no_target` 只表示 `Source.targets` 为空 |
+| A7（hop 预算） | `pruned/max_hops`、`pruned/budget` | 配置项仍解析与校验（启动日志写出生效值），但**中枢侧派发不再消费**这两个预算 |
+| A8（emit port 派发） | emit 的 port 决定下一跳 | 下游由 `spec.next` 决定；result 帧里没有 `out` 字段（v4 同样忽略它） |
+| A9（30s 回 pending） | 租约超时置回 pending | 由 attempt / lease / TTL 事实取代（`lease_expired` / `max_attempts_exceeded`）；30s 只是巡检周期 |
+| A10（组织隔离） | `org_id` 隔离 | 组织层已删（见本文头部修订）；命名空间是唯一隔离边界 |
+
+A2 / A4 / A11 / A12 的**意图**在 v4 仍然成立（A11 = 同名多版本各占一行且互不影响，
+A12 = `writeList`/`nonNilSlice` 收口空集合），只是判定方式变了。
 
 ---
 

@@ -1,0 +1,716 @@
+# anotify v4 · 事件 / trace / 控制台读模型与聚合读模型（exact-five 之一）
+#
+# 本文件是五份 OpenAPI 真源中的 **events.yaml**：#333 冻结归属表
+# （docs/v4/g3c-spec-inventory.md §4.2）里的 5 个 operation 在这里，全部是**只读**：
+#
+#     GET /v1/namespaces/{namespace}/events                 事件流（EventList 资源列表）
+#     GET /v1/namespaces/{namespace}/traces/{traceId}       一条 trace 的全景（{events,tasks,pruned}）
+#     GET /v1/console/events                                控制台事件流（跨 ns 汇总 + 不透明游标）
+#     GET /v1/stats                                         工作台统计（集群路径 + ?namespace=）
+#     GET /v1/orphans                                       派不出去的 pending 任务（背压的唯一观测出口）
+#
+# 三条纪律（与 check_openapi.py 的机械断言一一对应）：
+#
+#   1. `POST /v1/namespaces/{namespace}/events`（投递入口，Bearer key）**不在这里**，
+#      它在 `ingress.yaml` 的 `components.pathItems.NamespaceEventIngest` 里。同 path 不同
+#      method 不互相覆盖：本文件只写 GET，绝不可把 POST 抄过来（归属键是 method+path）。
+#   2. 共享组件（ObjectMeta / ListMeta / Status 族 / PruneFact / Task）只在
+#      `resource.yaml` 里定义，这里用**相对 `$ref`** 引用：`./resource.yaml#/components/...`。
+#      securitySchemes 不可跨文件，本文件用到的方案必须自己定义且逐字一致。
+#   3. 每个 operation 显式声明 `security`（本文件 5 条全是 `session`），每个 4xx/5xx 都
+#      `$ref` 具名错误组件：会话中间件先于 handler 生效 → 401 是 `AuthError401`
+#      （`{"error": "…"}`），handler 内部产生的错误是 `Status<code>`。
+#
+# 代码是权威（基线 issue/333-five-openapi @ 289896f）：
+#   - internal/server/resource_task.go（events / trace / consoleEvents + eventEnvelope）
+#   - internal/server/retained_reads.go（stats / orphans）
+#   - internal/store/{stats,orphan,task,event}.go（wire 字段名 = Go json tag）
+openapi: 3.1.0
+info:
+  title: anotify v4 事件 / trace / 聚合读模型 API
+  version: v4-g3c
+  description: |
+    事件（Event）是**只读资源**：`spec` 由投递/派发产生，没有写方法；唯一的写入路径是
+    `POST /v1/namespaces/{namespace}/events`（`ingress.yaml`）与 `POST /v1/hooks/{token}`。
+
+    列表形状沿用资源域（api-conventions §3）：`EventList` = `apiVersion` / `kind` /
+    `metadata` / `items[]`，空列表恒 `[]`（不是 `null`）。`metadata` 只有 `continue`
+    一个键，且**只有** `/v1/console/events` 会填它——其余读模型用 `limit` 截断，
+    不返回游标（§167 的封闭清单：只有 console events 与 task emissions 用游标）。
+
+    两条"保留域"读模型 `GET /v1/stats` 与 `GET /v1/orphans` 是 v4 **冻结保留**的
+    v3 形状（`store.Stats` / `{orphans,count,olderThan,namespace,allScopes,hint}`）：
+    它们不是资源、不套信封，本轮只把错误体统一成 `Status`（§4 / §8.4）。
+servers:
+  - url: /
+    description: 路径自身已含 `/v1`，此处不再加前缀（否则会拼出 `/v1/v1/…`）
+tags:
+  - name: events
+    description: 命名空间内的事件流（只读，剪枝留痕也在里面）
+  - name: traces
+    description: 一条 trace 的全景视图（事件 / 任务 / 纯剪枝三份事实）
+  - name: console
+    description: 控制台事件流（`?namespace=NAME` 或 `*` 跨 ns 汇总 + 不透明游标）
+  - name: aggregates
+    description: 聚合/诊断读模型（工作台统计、派不出去的 pending 任务）
+paths:
+  # 同 path 不同 method 的冻结案例：GET 在本文件、POST 在 ingress.yaml。
+  # path item 走 components.pathItems，这样「两个文件各持有同一 path 的一个 method」
+  # 是显式结构而不是靠命名约定；parameters 也只有一处定义。
+  /v1/namespaces/{namespace}/events:
+    $ref: '#/components/pathItems/NamespaceEvents'
+
+  /v1/namespaces/{namespace}/traces/{traceId}:
+    get:
+      operationId: getTrace
+      tags: [traces]
+      security: [{session: []}]
+      summary: 取一条 trace 的全景（events / tasks / pruned）
+      description: |
+        `traceId` 是 `Event.spec.traceUID` 与 `Task.spec.traceUID` 共用的事件级标识
+        （投递入口每次接收生成一个）。三份事实各自的真相来源：
+
+          - `events`：该 trace 的**全部**事件行，**含**剪枝留痕（`source=route`）。
+            "为什么没跑"就在这里面，所以它不被过滤掉。
+          - `tasks`：按建行顺序（时间线按它走）的任务信封。
+          - `pruned`：`events` 里**纯剪枝**的那些行（事件收到了但没派发）。
+            未解析派发失败（`downstream_missing`）是 failed Task + 观察事件，
+            不是剪枝，因此不出现在 `pruned` 里（capability.md §6.2）。
+
+        两个信号都空（没有事件、也没有任务）→ 404：trace_id 只由事件/任务产生，
+        两者都没有就是"这条 trace 在本命名空间不存在"，不区分"没事件"与"不存在"。
+
+        三个数组恒存在且恒为 `[]`（无剪枝时 `pruned: []`，不是 `null`）。
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+        - name: traceId
+          in: path
+          required: true
+          description: 事件级 trace 标识（`Event.spec.traceUID`）
+          schema:
+            type: string
+      responses:
+        '200':
+          description: trace 全景（`events` 含剪枝留痕，`pruned` 只含纯剪枝）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceView'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+
+  /v1/console/events:
+    get:
+      operationId: listConsoleEvents
+      tags: [console]
+      security: [{session: []}]
+      summary: 控制台事件流（cluster 路径，跨 ns 汇总时 `?namespace=*`）
+      description: |
+        cluster 级读模型：命名空间**必须显式给**（`?namespace=NAME`，或 `*` 表示跨 ns
+        汇总读）；缺参数是 400，绝不回退默认命名空间。
+
+        分页是 **keyset**（不是 OFFSET）：`continue` 是不透明游标，绑定
+        `namespace + source + traceId`——拿另一个 ns/另一组筛选条件的游标来读会 400，
+        而不是被当成"第一页"静默回退（那会让翻页莫名跳回最新）。
+
+        响应是 `EventList`：`metadata.continue` 只在还有更旧的行时出现；`items[]` 每项是
+        `Event` 信封。`?namespace=*` 时逐行回显事件**自己**的 `metadata.namespace`，
+        否则回显请求的命名空间。
+      parameters:
+        - $ref: '#/components/parameters/NamespaceQuery'
+        - name: source
+          in: query
+          required: false
+          description: |
+            按事件来源名过滤（`Event.spec.involvedObject.name`）。省略 = 不过滤。
+            剪枝留痕的来源是保留名 `route`，所以 `?source=route` 能只看剪枝。
+          schema:
+            type: string
+        - name: traceId
+          in: query
+          required: false
+          description: 只看某条 trace 的事件（游标同样绑定它）
+          schema:
+            type: string
+        - $ref: './resource.yaml#/components/parameters/LimitQuery'
+        - $ref: './resource.yaml#/components/parameters/ContinueQuery'
+      responses:
+        '200':
+          description: 一页事件（`metadata.continue` 是下一页游标，末页省略）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventList'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+
+  /v1/stats:
+    get:
+      operationId: getStats
+      tags: [aggregates]
+      security: [{session: []}]
+      summary: 命名空间工作台统计（事件数 / 任务数 / 设备数 / 近 371 天日桶）
+      description: |
+        形状沿用 v3（`store.Stats`，§8.4「请求/响应形状本轮不改，只统一错误体」）：
+        `total` / `today` / `delivered` / `deliveryTotal` / `deviceCount` / `daily[]`。
+
+          - `total`：该命名空间的事件总数（含剪枝留痕）。
+          - `today`：今日事件数，日界取**服务端进程本地时区**的 00:00。
+          - `delivered` / `deliveryTotal`：终态任务里成功数 / 终态任务数
+            （终态 = succeeded|failed|cancelled|abandoned；pending/running 不计）。
+          - `deviceCount`：调用方**自己**的已启用推送设备数（设备按用户维度，不按 ns）。
+          - `daily[]`：近 371 天（≈53 周）的每日事件数热力图数据，`day` 是本地时区
+            `YYYY-MM-DD`；无数据时是 `[]`（不是 `null`）。
+
+        `?namespace=*` 在这里是 **400**：跨 ns 把事件数加成一个数字没有语义
+        （store 口径直接拒绝 `*`）。
+      parameters:
+        - $ref: '#/components/parameters/NamespaceQuery'
+      responses:
+        '200':
+          description: 工作台统计（`daily` 恒为数组）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stats'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+
+  /v1/orphans:
+    get:
+      operationId: listOrphans
+      tags: [aggregates]
+      security: [{session: []}]
+      summary: 派不出去的 pending 任务（背压的唯一可观测出口）
+      description: |
+        列出"pending 且当前没有任何节点能跑"的任务，两类原因：
+
+          - `no_capability`：任务钉住的能力行已不存在（被删/换版），等再久也不会自己好；
+          - `no_online_node`：能力行在，但没有一台节点满足派发前提。具体原因在
+            `nodeReason`（`NodeOffline` / `NamespaceUnauthorized` / `ConfigPending` /
+            `NotDeployed` / `CommandMissing` / `ValueMissing` / `NoMatchingNode`）。
+
+        为什么必须保留（§8.4）：一条永远派不出去的 pending 会让"最老 pending 年龄"
+        只增不减，最终把整个事件入口钉在 503；没有这个视图，运维只能等一条迟到的
+        ERROR 日志。`hint` 字段给出处置提示（确认后用
+        `POST /v1/namespaces/{namespace}/tasks/{taskId}/abandon` 显式处置）。
+
+        `?namespace=*` 允许（诊断恰恰需要一次看全），但**逐 ns 过授权收口**；
+        缺 `namespace` 是 400（绝不跨 ns 默认全量）。`*` 汇总时 `orphans[]` 的每个元素都
+        自带 `namespaceId`，`count` 是汇总后的总条数。
+
+        ⚠️ 元素形状是**扁平的 `store.Task` + `idleSec`/`reason`/`nodeReason`**（v3 冻结
+        形状），**不是** v4 的 `Task` 资源信封——见 `OrphanTask` 的描述。
+      parameters:
+        - $ref: '#/components/parameters/NamespaceQuery'
+        - name: olderThan
+          in: query
+          required: false
+          description: |
+            "创建至今至少多久"才算孤儿（安全阀：刚派发的任务在派发瞬间也可能暂时
+            没有在线节点）。支持 `1h` / `30m` / `90s` 与纯数字（秒）；缺省 1h，
+            下限 1m，上限 30d（超过按 30d 截断）。`no_capability` 那一类不受它约束。
+          schema:
+            type: string
+            default: 1h
+        - name: limit
+          in: query
+          required: false
+          description: |
+            每个命名空间最多返回多少条（缺省 200，上限 1000）。显式给非正数 → 400
+            （诊断接口不接"给我 0 条"这种无意义请求）。
+          schema:
+            type: integer
+            default: 200
+            maximum: 1000
+      responses:
+        '200':
+          description: 孤儿任务清单 + 计数 + 生效口径回显
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Orphans'
+        '400':
+          $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/AuthError401'
+        '404':
+          $ref: './resource.yaml#/components/responses/Status404'
+        '500':
+          $ref: './resource.yaml#/components/responses/Status500'
+components:
+  securitySchemes:
+    # 逐字与 resource.yaml / ingress.yaml / auth.yaml 一致（cookie 名不能有两种语义）：
+    # `description` 也是定义的一部分——门禁比对的是整个对象。
+    session:
+      type: apiKey
+      in: cookie
+      name: anotify_session
+      description: 控制台登录会话 Cookie（7 天 TTL；`HttpOnly`+`SameSite`）
+  parameters:
+    # cluster 路径上的命名空间选择器（`in: query`，与 path 版 NamespacePath 不同）。
+    NamespaceQuery:
+      name: namespace
+      in: query
+      required: true
+      description: |
+        命名空间 slug（也接受 `ns_…` 内部 id；slug 优先）。这里**必须显式给**，
+        没有"默认命名空间"的隐式回退。`*` 只在允许跨 ns 汇总读的端点上合法
+        （`/v1/console/events`、`/v1/orphans`），`/v1/stats` 给 `*` → 400。
+      schema:
+        type: string
+  pathItems:
+    # `GET /v1/namespaces/{namespace}/events` 的 path item。
+    #
+    # 冻结案例：`POST` 同 path 在 ingress.yaml 的 NamespaceEventIngest 里——两份文件
+    # 各自只持有自己那个 method。把两边合并到一处会破坏"归属键 = (METHOD, path)"。
+    NamespaceEvents:
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/NamespacePath'
+      get:
+        operationId: listEvents
+        tags: [events]
+        security: [{session: []}]
+        summary: 列出命名空间内的事件流（最新在前，limit 截断，无游标）
+        description: |
+          资源列表口径：`EventList` 信封 + `items[]`，**不返回 `continue`**
+          （§167：只有 `/v1/console/events` 与 task emissions 用游标；这里要更旧的数据
+          就走 console events）。
+
+          `limit` 缺省 50、上限 500：超过 500 会**钳到 500**（要 501 条给你 500 条），
+          而不是静默折回 50 那个不同的窗口。
+
+          过滤规则**不在 handler 里重写**（store.ListEvents 已经收口）：
+
+            - `?trace=`：含剪枝留痕——那条 trace 的"为什么没跑"就在里面；
+            - 无 `trace`、无 `source`（事件流）：不含剪枝（剪枝留痕的 `source=route`）；
+            - 显式给 `?source=`（包括 `route`）：听调用方的。
+
+          每条的 `metadata.namespace` 是**事件自己**的命名空间（逐条解析），
+          不是请求路径的字符串回填。
+        parameters:
+          - name: trace
+            in: query
+            required: false
+            description: 只看某条 trace 的事件（**含**该 trace 的剪枝留痕）
+            schema:
+              type: string
+          - name: source
+            in: query
+            required: false
+            description: |
+              按来源名过滤。显式给 `route` 时**包含**剪枝留痕（省略则事件流不含它）。
+            schema:
+              type: string
+          - $ref: './resource.yaml#/components/parameters/LimitQuery'
+        responses:
+          '200':
+            description: 事件列表（`items[]` 是 `Event` 信封，空为 `[]`）
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/EventList'
+          '400':
+            $ref: './resource.yaml#/components/responses/Status400'
+          '401':
+            $ref: './resource.yaml#/components/responses/AuthError401'
+          '404':
+            $ref: './resource.yaml#/components/responses/Status404'
+          '500':
+            $ref: './resource.yaml#/components/responses/Status500'
+  schemas:
+    # ------------------------------------------------------------------ Event
+    #
+    # `spec` 与 `status` 逐字对应 internal/server/resource_task.go 的 eventSpecDoc /
+    # eventStatusDoc（字段名 = Go json tag）。
+    Event:
+      type: object
+      description: |
+        事件（只读、不可变，没有写方法）。`apiVersion` 恒 `anotify/v1`、`kind` 恒 `Event`。
+
+        刻意**没有** `spec.type`（Normal/Warning 严重度）与 `spec.signature`：
+        events 表没有这两列事实，编一个默认值等于把"没验证"说成"已验证"。
+      required: [apiVersion, kind, metadata, spec, status]
+      properties:
+        apiVersion:
+          type: string
+          enum: [anotify/v1]
+        kind:
+          type: string
+          enum: [Event]
+        metadata:
+          $ref: './resource.yaml#/components/schemas/ObjectMeta'
+        spec:
+          $ref: '#/components/schemas/EventSpec'
+        status:
+          $ref: '#/components/schemas/EventStatus'
+      additionalProperties: false
+    EventSpec:
+      type: object
+      required: [eventType, involvedObject, traceUID, deliveryId, payload]
+      properties:
+        reason:
+          type: string
+          description: |
+            观察原因码（与剪枝原因同词表）。**省略**的两种情况：
+            ① 普通事件没有 reason 事实；② 未解析派发失败（`downstream_missing`）的观察行
+            ——store 把它统一写成 `Pruned`，照抄会把"任务失败"报告成"剪枝"，所以宁可不给。
+        eventType:
+          type: string
+          description: |
+            事件类型。投递体省略 `type` 时回落成源名（source.md §5，免得调用方重复一遍）。
+        involvedObject:
+          $ref: '#/components/schemas/EventObjectRef'
+        traceUID:
+          type: string
+          description: 事件级 trace 标识（`GET …/traces/{traceId}` 用它查全景）
+        deliveryId:
+          type: string
+          nullable: true
+          description: |
+            外部投递幂等键（投递体的 `id`）。恒存在：没有就是 `null`。
+            窗口内同 `deliveryId` 只算一条事件（重复投递返回原 event/trace）。
+        payload:
+          type: object
+          additionalProperties: true
+          description: 事件载荷（恒为 JSON 对象；投递体省略时为 `{}` 或源配置的打底值）
+      additionalProperties: false
+    EventObjectRef:
+      type: object
+      description: 事件涉及的资源引用（只有名字，没有 UID 事实）
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+          description: 恒 `Source`（事件由某个源触发）
+        name:
+          type: string
+          description: 源名；剪枝留痕是保留来源名 `route`
+      additionalProperties: false
+    EventStatus:
+      type: object
+      description: 事件的派生状态。只有剪枝留痕行有 `pruned`，其余是 `null`。
+      required: [pruned]
+      properties:
+        pruned:
+          allOf:
+            - $ref: '#/components/schemas/EventPruneFact'
+          nullable: true
+          description: |
+            剪枝观察（事件收到了但没派发）。`null` 表示这条事件不是纯剪枝：
+            普通事件、以及未解析派发失败（`downstream_missing`，它是 failed Task +
+            观察事件，不是剪枝）都是 `null`。
+      additionalProperties: false
+    EventPruneFact:
+      type: object
+      description: |
+        剪枝观察事实：`reason`（封闭集合）+ `detail`（人话补充）。
+
+        与 resource.yaml 的 `PruneFact`（`route.Prune`，多一个可选的 `capability`）
+        是**两个** DTO：事件行只投影 reason/detail（其它字段属于内部链路身份）。
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: |
+            封闭原因码：`no_target` / `event_schema` / `param_schema` / `param_type` /
+            `param_missing` / `downstream_missing`。
+        detail:
+          type: string
+          description: 给人看的补充（缺哪个参数、哪个字段类型不对），不参与任何判定
+      additionalProperties: false
+    EventList:
+      type: object
+      description: 事件列表（资源列表口径）。`items` 空时是 `[]`，不是 `null`。
+      required: [apiVersion, kind, metadata, items]
+      properties:
+        apiVersion:
+          type: string
+          enum: [anotify/v1]
+        kind:
+          type: string
+          enum: [EventList]
+        metadata:
+          $ref: './resource.yaml#/components/schemas/ListMeta'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+      additionalProperties: false
+    # ------------------------------------------------------------------ trace
+    TraceView:
+      type: object
+      description: |
+        一条 trace 的全景读模型。**不是**资源、没有 `apiVersion`/`kind`/`metadata`，
+        也不能 apply：它只是三份既有事实的汇编。三个数组恒存在、恒 `[]`。
+      required: [events, tasks, pruned]
+      properties:
+        events:
+          type: array
+          description: |
+            该 trace 的全部事件（按 store 的序），**含**剪枝留痕——"为什么没跑"就在里面。
+          items:
+            $ref: '#/components/schemas/Event'
+        tasks:
+          type: array
+          description: 该 trace 建出的任务（含未解析派发失败的任务），按建行顺序
+          items:
+            $ref: './resource.yaml#/components/schemas/Task'
+        pruned:
+          type: array
+          description: |
+            `events` 里的**纯剪枝**子集（原样给事件信封）。未解析派发失败
+            （`downstream_missing`）不算剪枝，所以不会出现在这里。
+          items:
+            $ref: '#/components/schemas/Event'
+      additionalProperties: false
+    # ------------------------------------------------- 聚合读模型（v3 冻结形状）
+    Stats:
+      type: object
+      description: |
+        工作台统计（形状沿用 v3 `store.Stats`，§8.4 §"请求/响应形状本轮不改"）。
+        所有计数都是**该命名空间**的口径，唯一例外是 `deviceCount`（设备按用户维度）。
+      required: [total, today, delivered, deliveryTotal, deviceCount, daily]
+      properties:
+        total:
+          type: integer
+          description: 事件总数（含剪枝留痕）
+        today:
+          type: integer
+          description: 今日事件数（日界 = 服务端进程本地时区的 00:00）
+        delivered:
+          type: integer
+          description: 终态任务里的成功数
+        deliveryTotal:
+          type: integer
+          description: 终态任务数（succeeded|failed|cancelled|abandoned；pending/running 不计）
+        deviceCount:
+          type: integer
+          description: 调用方自己的已启用推送设备数（用户维度，不是 ns 维度）
+        daily:
+          type: array
+          description: 近 371 天（≈53 周）的每日事件数；无数据时 `[]`
+          items:
+            $ref: '#/components/schemas/DayCount'
+      additionalProperties: false
+    DayCount:
+      type: object
+      description: 热力图的日桶
+      required: [day, count]
+      properties:
+        day:
+          type: string
+          description: 本地时区日期 `YYYY-MM-DD`
+        count:
+          type: integer
+      additionalProperties: false
+    Orphans:
+      type: object
+      description: |
+        孤儿任务清单（v3 冻结形状，本轮不改字段，只统一错误体）。
+        `?namespace=*` 汇总时 `orphans[]` 覆盖多个命名空间，每个元素自带 `namespaceId`。
+      required: [orphans, count, olderThan, namespace, allScopes, hint]
+      properties:
+        orphans:
+          type: array
+          description: 孤儿任务（按 ns 逐个查询后拼接；无孤儿时 `[]`）
+          items:
+            $ref: '#/components/schemas/OrphanTask'
+        count:
+          type: integer
+          description: "`orphans` 的总条数（汇总后的长度，不是每个 ns 的上限）"
+        olderThan:
+          type: integer
+          description: 实际生效的 `olderThan`（秒；未给时 3600，超过 30d 时 2592000）
+        namespace:
+          type: string
+          description: |
+            解析后的命名空间**内部 id**（`ns_…`）或 `*`。
+            ⚠️ 这是 v3 遗留回显：契约其它位置一律用 slug，这里回的是 store id
+            （见文件末尾"已知分歧"）。
+        allScopes:
+          type: boolean
+          description: 是否为跨 ns 汇总（`?namespace=*`）
+        hint:
+          type: string
+          description: 处置提示（自然语言；指向 `POST …/tasks/{taskId}/abandon`）
+      additionalProperties: false
+    OrphanTask:
+      type: object
+      description: |
+        ⚠️ **不是** v4 的 `Task` 信封：`store.OrphanPendingTask` 内嵌 `store.Task` 后
+        直接序列化，所以形状是**扁平的 camelCase 字段** + `idleSec` / `reason` /
+        `nodeReason`（v3 冻结形状，§8.4 明确本轮不重设计）。
+
+        它因此带出了一些资源信封里刻意不公开的内部诊断字段（`assignmentId` /
+        `leaseId` / `proposedAttempt` / `nextAttemptAt` / `cancelRequestedAt` 等）。
+        要按信封读任务用 `GET /v1/namespaces/{namespace}/tasks/{taskId}`（resource.yaml）。
+      required:
+        - id
+        - namespaceId
+        - traceId
+        - parentTaskId
+        - capabilityId
+        - capability
+        - version
+        - digest
+        - params
+        - phase
+        - nodeId
+        - nodeName
+        - configRevision
+        - attempt
+        - maxAttempts
+        - assignmentId
+        - proposedAttempt
+        - assignmentExpiresAt
+        - idempotent
+        - namespaceVarsRevision
+        - leaseId
+        - leaseUntil
+        - waitingReason
+        - nextAttemptAt
+        - cancelReason
+        - cancelRequestedAt
+        - reported
+        - summary
+        - artifacts
+        - error
+        - exitCode
+        - createdAt
+        - startedAt
+        - finishedAt
+        - idleSec
+        - reason
+      properties:
+        # ---- 内嵌的 store.Task（扁平） ----
+        id:
+          type: string
+        namespaceId:
+          type: string
+        traceId:
+          type: string
+        parentTaskId:
+          type: string
+          nullable: true
+        capabilityId:
+          type: string
+        capability:
+          type: string
+        version:
+          type: integer
+        digest:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        phase:
+          type: string
+          description: 恒 `pending`（孤儿只从 pending 里挑）
+        nodeId:
+          type: string
+          nullable: true
+        nodeName:
+          type: string
+        configRevision:
+          type: integer
+          description: 派发时节点配置的生效版本（诊断用）
+        attempt:
+          type: integer
+          description: 已授予的租约数（孤儿任务通常是 0：连第一次派发都没发生）
+        maxAttempts:
+          type: integer
+        assignmentId:
+          type: string
+        proposedAttempt:
+          type: integer
+        assignmentExpiresAt:
+          type: integer
+          nullable: true
+        idempotent:
+          type: boolean
+        namespaceVarsRevision:
+          type: integer
+          description: 任务被接受时钉住的命名空间输入快照版本（值本身不公开）
+        leaseId:
+          type: string
+        leaseUntil:
+          type: integer
+          nullable: true
+        waitingReason:
+          type: string
+        nextAttemptAt:
+          type: integer
+          nullable: true
+        cancelReason:
+          type: string
+        cancelRequestedAt:
+          type: integer
+          nullable: true
+        reported:
+          type: boolean
+        summary:
+          type: string
+        artifacts:
+          type: array
+          items:
+            $ref: './resource.yaml#/components/schemas/TaskArtifactRef'
+        error:
+          type: string
+        exitCode:
+          type: integer
+          nullable: true
+        # 时间戳是 **Unix 秒整数**（store 行事实），不是信封里的 RFC3339 字符串。
+        createdAt:
+          type: integer
+        startedAt:
+          type: integer
+          nullable: true
+        finishedAt:
+          type: integer
+          nullable: true
+        # ---- store.OrphanPendingTask 追加的两个判断字段 ----
+        idleSec:
+          type: integer
+          description: 「创建至今」的秒数（用 created_at 算，孤儿通常 attempt=0）
+        reason:
+          type: string
+          description: 孤儿类别 `no_capability` / `no_online_node`（处置方式按它分）
+        nodeReason:
+          type: string
+          description: |
+            `no_online_node` 的**具体**原因（`NodeOffline` / `NamespaceUnauthorized` /
+            `ConfigPending` / `NotDeployed` / `CommandMissing` / `ValueMissing` /
+            `NoMatchingNode`）。`no_capability` 时省略。
+      additionalProperties: false
+
+# ---------------------------------------------------------------------------------------
+# 已知分歧（契约 vs 代码，本文件**如实描述代码**，不改产品代码）
+#
+# 1. `/v1/orphans` 的元素是扁平 `store.Task` + `idleSec`/`reason`/`nodeReason`，不是
+#    v4 的 `Task` 信封；回显的 `namespace` 是 store 内部 id（`ns_…`），而契约其它位置
+#    一律用 slug。两者都是 §8.4「保留域形状本轮不改」的直接后果，属显式裁决点。
+# 2. `/v1/stats`、`/v1/orphans` 的时间戳/`olderThan` 用**Unix 秒整数**，而资源信封的
+#    `metadata.creationTimestamp` 是 RFC3339 字符串（同一个域两套时间表示）。
+# 3. `GET …/events` 不返回 `continue`（`limit` 超 500 钳到 500，而不是 store 内部对
+#    >500 折回 50 的那个窗口）；只有 `/v1/console/events` 用不透明游标。
+# 4. 会话中间件的 401 body 是 `{"error": "…"}`（`AuthError401`），不是 `Status`
+#    ——中间件在 handler 之前返回；handler 内部的 401/400/404/500 才是 `Status`。
