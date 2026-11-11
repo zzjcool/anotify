@@ -281,33 +281,37 @@ func splitValuePath(ref string) []string {
 // 「回执 `values` 里 token 是 `***`、`unapplied` 里同一 token 是明文」的裂缝。
 // 于是两个分支都作为候选并查：任一分支命中 writeOnly 即敏感（只许多打码）。
 //
+// 下钻优先级（非歧义优先）：**先 `properties`，再「纯数字下标 + `prefixItems`/`items`」**。
+// 同一个节点可能同时带 `properties` 与 `items`（`type: ["object","array"]`，或对象节点上
+// 多写了一个 `items`）。真实值的形态由 `properties` 决定（`maskValue` 对 map 也走 properties），
+// 所以键名命中 properties 时必须走对象分支；只有 properties 里没有这个键、**且段是纯数字**、
+// 且 `items`/`prefixItems` 存在时，才按数组元素下钻（`{{values.list.0}}`）。
+// 反过来（items 抢在 properties 前）会让 `{{values.dual.pin}}` 被判「路径不在 schema」→
+// 非敏感 → 明文漏进回执 `unapplied[]`。
+//
 // 其它规则：
 //   - 带 `items` 的数组节点上，非下标段没有对象字段可下钻（既有口径，返回空）；
 //   - `prefixItems[idx]` 不是对象 schema（布尔 `true` / `null`）→ 不产生候选，但**不阻断**
-//     `items` 候选（否则相对「下标段一律走 items」的旧行为是 fail-open 回归）；
-//   - 都不是数组特征时按 `properties` 下钻对象字段。
+//     `items` 候选（否则相对「下标段一律走 items」的旧行为是 fail-open 回归）。
 func descendSchemaCandidates(sch map[string]any, seg string) []map[string]any {
 	if sch == nil {
 		return nil
 	}
-	var out []map[string]any
+	if child, ok := schema.Properties(sch)[seg].(map[string]any); ok {
+		return []map[string]any{child}
+	}
 	idx, isIndex := toIntFromString(seg)
-	if prefix, ok := sch["prefixItems"].([]any); ok && isIndex && idx < len(prefix) {
+	if !isIndex {
+		return nil
+	}
+	var out []map[string]any
+	if prefix, ok := sch["prefixItems"].([]any); ok && idx < len(prefix) {
 		if node, ok := prefix[idx].(map[string]any); ok {
 			out = append(out, node)
 		}
 	}
 	if items, ok := sch["items"].(map[string]any); ok {
-		if !isIndex {
-			return out
-		}
 		out = append(out, items)
-	}
-	if len(out) > 0 {
-		return out
-	}
-	if child, ok := schema.Properties(sch)[seg].(map[string]any); ok {
-		out = append(out, child)
 	}
 	return out
 }
