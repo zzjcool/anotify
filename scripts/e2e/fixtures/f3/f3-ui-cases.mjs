@@ -379,6 +379,28 @@ async function retainedGraph(c) {
 }
 
 const GUARDED = ["index", "keys", "security", "receivers", "capabilities", "nodes"];
+// 匿名视图的**真实就绪条件**（#338 flake：全量 3/3 假失败于 guest index/keys/receivers）。
+// 旧写法 `waitForFunction(login 路径匹配 || login-panel 存在)` + `.catch(()=>{})` 有两处错：
+//   ① 条件里有 `||`，URL 一变到 login.html 就立刻返回，而页面控制器还没把密码表单挂上来
+//      —— 紧接着 evaluate 读到 {panel:false,fields:0}，断言假失败（报文恒 panel:false,fields:0）；
+//   ② 未登录页会连发好几个 401，每个都执行一次 `location.href = login.html?next=...`，
+//      前一次导航被中止时页面执行上下文会被销毁，waitForFunction 整条抛错；
+//      `.catch(()=>{})` 把它吞掉后照样读到空 DOM —— 失败被吞，假绿/假红都不受控。
+// 所以改成 Node 侧轮询「路径 + 密码表单字段数」两个事实都成立；超时抛**真实断言错误**
+// （带最后一次观测到的状态），不 catch 后继续。轮询本身也天然容忍上下文销毁。
+const GUEST_FORM_TIMEOUT = 15000; // 单 case 外层预算是 52s，这里留足余量
+async function waitGuestPasswordForm(page, label) {
+  const deadline = Date.now() + GUEST_FORM_TIMEOUT;
+  let last = { path: "(unobserved)", panel: false, fields: 0, error: "" };
+  while (Date.now() < deadline) {
+    try {
+      last = await page.evaluate(() => ({ path: location.pathname + location.search, panel: !!document.getElementById("login-panel"), fields: document.querySelectorAll("#login-panel input").length }));
+      if (/login\.html/.test(last.path) && last.panel && last.fields >= 2) return last;
+    } catch (error) { last = { ...last, error: String(error).split("\n")[0] }; }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  assert.fail("guest " + label + " never reached the real password form within " + GUEST_FORM_TIMEOUT + "ms: " + JSON.stringify(last));
+}
 async function guardsGuest(c, pages = GUARDED) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     await d.goto("index");
@@ -387,7 +409,7 @@ async function guardsGuest(c, pages = GUARDED) {
       const errorsFrom = d.report.errors.length;
       await greetGuest(d);
       await d.page.goto(viewUrl(d, page, {}, "zh-CN", true), { waitUntil: "domcontentloaded" });
-      await d.page.waitForFunction(() => /login\.html/.test(location.pathname) || !!document.getElementById("login-panel"), null, { timeout: 9000 }).catch(() => {});
+      await waitGuestPasswordForm(d.page, page);
       const state = await d.page.evaluate(() => ({ path: location.pathname + location.search, panel: !!document.getElementById("login-panel"), fields: document.querySelectorAll("#login-panel input").length, sidebar: !!document.getElementById("sidebar") }));
       assert.match(state.path, /login\.html/, "guest " + page + " redirected to the password login, not a blank shell: " + state.path);
       assert.ok(state.panel && state.fields >= 2, "guest " + page + " lands on the real password form: " + JSON.stringify(state));
@@ -504,17 +526,39 @@ async function ux21(c) {
   return withDriver(c.id, { lang: "zh-CN", theme: "light" }, async (d, count) => {
     await d.archive();
     await d.page.goto(d.base + "/index.html?namespace=default&u=zheng", { waitUntil: "domcontentloaded" });
-    await d.page.waitForFunction(() => { const g = document.getElementById("greeting"), s = document.getElementById("sidebar-username"); return !!g && !!s && (s.textContent || "").trim().length > 0 && (g.textContent || "").trim().length > 0; }, null, { timeout: 9000 }).catch(() => {});
-    const meCalls = (await d.calls()).filter(x => x.method === "GET" && /\/v1\/auth\/me$/.test(x.url));
+    // 就绪条件必须是**真实事实**（#338 flake，全量第 1 轮复现 ["usr_mock_demo|demo","|"]）：
+    //   ① `#greeting` / `#sidebar-username` 的模板占位文本本身就非空（sidebar 默认 "…"），
+    //      旧的就绪条件等于什么都没等；
+    //   ② window.__f3Calls 里**在飞的请求**也占一行（只有 url/method，没有 result/httpStatus），
+    //      index 页有两处 /auth/me（layout 的 loadMe + 页面控制器的 loadMe），并发下读到
+    //      「A 已落定、B 还在飞」的中间态，身份集合里就多出一个空条目。
+    // 所以先等**所有 /auth/me 都落定**（在飞的请求不是 response，不参与身份比对），
+    // 再等同一个身份真的渲染进 DOM（不是模板占位），最后照旧断言。
+    const pendingOf = calls => calls.filter(x => x.httpStatus === undefined && x.error === undefined);
+    const deadline = Date.now() + 9000;
+    let meCalls = [];
+    for (;;) {
+      meCalls = (await d.calls()).filter(x => x.method === "GET" && /\/v1\/auth\/me$/.test(x.url));
+      if (meCalls.length >= 1 && pendingOf(meCalls).length === 0) break;
+      if (Date.now() > deadline) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    assert.deepEqual(pendingOf(meCalls).map(x => x.url), [], "#21 every recorded /auth/me call settled (in-flight is not a response), no blank identity: " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, keys: Object.keys(x).join(",") }))).slice(0, 300));
     const me = meCalls[0]?.result || {};
     assert.ok(me.displayName, "#21 the identity comes from the recorded /auth/me response: " + JSON.stringify(me).slice(0, 160));
-    const names = await d.page.evaluate(() => ({ greeting: (document.getElementById("greeting")?.textContent || "").trim(), sidebar: (document.getElementById("sidebar-username")?.textContent || "").trim() }));
+    let names = { greeting: "", sidebar: "" };
+    for (;;) {
+      names = await d.page.evaluate(() => ({ greeting: (document.getElementById("greeting")?.textContent || "").trim(), sidebar: (document.getElementById("sidebar-username")?.textContent || "").trim() }));
+      if (names.greeting.includes(me.displayName) && names.sidebar.includes(me.displayName)) break;
+      if (Date.now() > deadline) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
     assert.ok(names.greeting.includes(me.displayName), "#21 greeting matches the /auth/me identity: " + JSON.stringify({ ...names, expect: me.displayName }));
     assert.ok(names.sidebar.includes(me.displayName), "#21 sidebar identity matches the same /auth/me response");
     assert.ok(!/zheng/.test(names.greeting) || me.displayName.includes("zheng"), "#21 the query-string fake user cannot replace the identity: " + names.greeting);
     assert.ok(meCalls.length >= 1, "#21 the identity is backed by GET /auth/me: " + meCalls.length + " call(s)");
     const identities = new Set(meCalls.map(x => (x.result?.id || "") + "|" + (x.result?.username || "")));
-    assert.equal(identities.size, 1, "#21 every /auth/me response is the same identity, no divergent/fake user: " + JSON.stringify([...identities]));
+    assert.equal(identities.size, 1, "#21 every /auth/me response is the same identity, no divergent/fake user: " + JSON.stringify([...identities]) + " " + JSON.stringify(meCalls.map(x => ({ hs: x.httpStatus, err: x.error, id: x.result?.id, user: x.result?.username, code: x.result?.code }))).slice(0, 300));
     await d.finish(); count.inc();
     return ok(count.n, [{ page: "index", lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, authMe: meCalls.length }]);
   });

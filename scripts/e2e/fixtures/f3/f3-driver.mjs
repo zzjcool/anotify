@@ -823,23 +823,48 @@ export async function openDriver(id, options = {}) {
       for(const sel of ['#reg-token','#node-token','#new-key-value']) if(await page.locator(sel).count()) assert.equal((await page.locator(sel).textContent()).trim(),'','Never screenshot once-only secret');
       const file=path.join(reportDir,name+'.png');await page.screenshot({path:file});report.screenshots.push(file);
     };
-    const clean=async(label)=>{
-      const g=await page.evaluate(()=>{
-        const overflow=[],clips=[];
-        for(const e of document.querySelectorAll('#page-main *')){
-          const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-          if(s.display==='none'||!r.width||(r.left>=-2&&r.right<=innerWidth+2))continue;
-          let bounded=false;
-          for(let p=e.parentElement;p&&p!==document.body;p=p.parentElement){
-            const ps=getComputedStyle(p),pr=p.getBoundingClientRect();
-            if(!['auto','scroll','hidden','clip'].includes(ps.overflowX)||!p.clientWidth||pr.left<-2||pr.right>innerWidth+2)continue;
-            if(['auto','scroll'].includes(ps.overflowX)&&p.scrollWidth>p.clientWidth){const before=p.scrollLeft;p.scrollLeft=before?0:Math.min(32,p.scrollWidth-p.clientWidth);const moved=p.scrollLeft!==before;p.scrollLeft=before;if(!moved)continue;}
-            bounded=true;clips.push({tag:e.tagName,id:e.id,clip:p.tagName});break;
-          }
-          if(!bounded)overflow.push({tag:e.tagName,id:e.id,left:r.left,right:r.right});
+    // 布局收敛（#338 flake）：切语言/切视口/切主题后，字体加载与排版会再收敛一阵；
+    // 旧实现拿**单次读数**当几何事实，取样落在收敛中途就报“文档溢出”
+    // （全量 2/3 假失败于 es/zh-CN，单跑 3/3 绿）。
+    //   · 先等 document.fonts.ready + 两帧 rAF（等字体换行结束、新布局落帧）；
+    //   · 再要求**连续两次读到的 scrollWidth 相等**才采用该读数（最多 5s）；
+    //   · 5s 仍未收敛不静默放行：文档宽度持续被改写本身就是真实缺陷，直接点名。
+    // 阈值 `scrollWidth<=width+2` 不变 —— 这里只保证读数是稳定值，不是放宽标准。
+    const frame=()=>page.evaluate(()=>new Promise(r=>{setTimeout(r,50);requestAnimationFrame(r);}));
+    const settleLayout=async()=>page.evaluate(()=>new Promise(done=>{
+      setTimeout(done,600); // 页面/字体卡住也不能把 case 拖死（读数判据兜底）
+      Promise.resolve(document.fonts&&document.fonts.ready).then(()=>requestAnimationFrame(()=>requestAnimationFrame(done)));
+    }));
+    const geometry=()=>page.evaluate(()=>{
+      const overflow=[],clips=[];
+      for(const e of document.querySelectorAll('#page-main *')){
+        const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+        if(s.display==='none'||!r.width||(r.left>=-2&&r.right<=innerWidth+2))continue;
+        let bounded=false;
+        for(let p=e.parentElement;p&&p!==document.body;p=p.parentElement){
+          const ps=getComputedStyle(p),pr=p.getBoundingClientRect();
+          if(!['auto','scroll','hidden','clip'].includes(ps.overflowX)||!p.clientWidth||pr.left<-2||pr.right>innerWidth+2)continue;
+          if(['auto','scroll'].includes(ps.overflowX)&&p.scrollWidth>p.clientWidth){const before=p.scrollLeft;p.scrollLeft=before?0:Math.min(32,p.scrollWidth-p.clientWidth);const moved=p.scrollLeft!==before;p.scrollLeft=before;if(!moved)continue;}
+          bounded=true;clips.push({tag:e.tagName,id:e.id,clip:p.tagName});break;
         }
-        return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth,height:innerHeight,scrollHeight:document.documentElement.scrollHeight,overflow,clips};
-      });
+        if(!bounded)overflow.push({tag:e.tagName,id:e.id,left:r.left,right:r.right});
+      }
+      return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth,height:innerHeight,scrollHeight:document.documentElement.scrollHeight,overflow,clips};
+    });
+    const stableGeometry=async(label)=>{
+      await settleLayout();
+      const deadline=Date.now()+5000, seen=[];
+      let g=await geometry();
+      for(;;){
+        if(Date.now()>deadline)assert.fail(label+': document scrollWidth never settled within 5s, observed '+seen.concat(g.scrollWidth).slice(-8).join('→'));
+        await frame();
+        const next=await geometry();
+        if(next.scrollWidth===g.scrollWidth)return next;
+        seen.push(g.scrollWidth);g=next;
+      }
+    };
+    const clean=async(label)=>{
+      const g=await stableGeometry(label);
       report.geometry.push({label,...g});
       assert.ok(g.scrollWidth<=g.width+2,label+': document overflow');assert.deepEqual(g.overflow,[],label+': bounded component overflow');
       await page.evaluate(()=>scrollTo(0,0));await page.mouse.wheel(0,650);
