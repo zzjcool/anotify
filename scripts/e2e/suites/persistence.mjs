@@ -1,60 +1,48 @@
 #!/usr/bin/env node
-/* SUITE: persistence — 重启后事件中心的状态存活（契约 §2.5 / §3）
+/* SUITE: persistence — 重启后 v4 资源与执行事实仍然存活
  *
- * 覆盖：
- *  1. 事件 + 任务落库后重启进程，数据仍在
- *  2. 任务状态机（assigned / running / succeeded）跨重启保持，不会"复活"
- *  3. 任务行跨重启保持（reported / summary / 终态时间），且**响应里没有 out 字段**
- *     （`tasks.out` 列已在迁移 28 删掉，出口只存在于 emissions.port）
- *  4. trace 关联跨重启可查（GET /v1/events?traceId=）
- *  5. 拒收已进入终态的任务再被改状态（终态不可变）
+ * v4 的持久化面比 v3 宽：除了事件/任务，还有**资源文档**（Capability / Source /
+ * Namespace）与它们的 CAS 令牌。重启一次会同时验证三件互不相同的事：
  *
- * 与旧版的区别：旧版测 messages 表与 seq 连续性（已下线模型）；
- * 现在测 events/tasks 的存活与状态机恢复。
+ *   ① **资源身份稳定**：metadata.uid / version / resourceVersion 都是落库事实。
+ *      重启后 uid 变了 = "同一个能力被当成两个"（引用它的源、任务、部署全断）；
+ *      resourceVersion 被重置 = 所有客户端手里的 CAS 令牌永久失效（467 冲突风暴）。
+ *   ② **执行事实不复活**：终态任务重启后仍是终态（不能因为内存里的状态机丢了就
+ *      回到 pending 再跑一遍），pending 任务仍是 pending（不伪造执行）。
+ *   ③ **凭据不丢**：会话与 API Key 跨重启仍可用（否则所有机器入口都要重新发 key）。
+ *
+ * 与 v3 版的区别：v3 测 messages 表与 seq 连续性（模型已下线）、`tasks.out` 列
+ * （v4 没有出端口的概念，出口只存在于 emissions）；现在测的是信封身份、CAS 令牌、
+ * 任务相位与事件 trace 的存活。
+ *
+ * 断言的「强度」约定：每条都要求**具体值相等**（uid / version / resourceVersion /
+ * phase / reason），不用「字段存在」这种弱判据替代。
  */
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+
 import * as H from "../lib/harness.mjs";
-import { seedNodeRows } from "../lib/nodes.mjs";
+import * as V from "../lib/v4.mjs";
 
-// seedNodeRows 直接用共享的造节点辅助（lib/nodes.mjs）。
-//
-// 本文件原来自己拷了一份，插 nodes 时写 `org_id` 列 —— #204 / 迁移 14 删掉组织层后
-// nodes 已经没有这一列（节点只属于命名空间），那份拷贝必然插不进去。与其两边各维护
-// 一份 DDL，不如直接用共享实现（签名：seedNodeRows(dbPath, namespaceId, name, capIds, slots)，
-// namespaceId 用 H.defaultNamespaceId() 查出来的 id，不硬编码 ns_xxx）。
-
-// queryTasks 直接读库断言（跨重启后核对落盘状态最可靠）。
-//
-// #204 / 迁移 14：tasks 表上没有 org_id 了，隔离边界是 namespace_id —— 过滤条件改为
-// `namespace_id = ?`（参数是默认命名空间 id，不再是 orgId）。
-function queryTasks(dbPath, namespaceId) {
-	const db = new DatabaseSync(dbPath);
-	try {
-		return db
-			.prepare(
-				`SELECT id, status, reported, summary, attempts FROM tasks WHERE namespace_id = ? ORDER BY created_at`,
-			)
-			.all(namespaceId);
-	} finally {
-		db.close();
-	}
-}
+// 能力脚本内容（重启前后比 digest 时要一模一样，所以抽成常量）。
+const RUN = {
+	entrypoint: "run.sh",
+	files: { "run.sh": "#!/bin/sh\nset -eu\necho persist\n" },
+};
 
 async function main() {
-	console.log("=== SUITE: persistence（事件中心状态存活）===");
+	console.log("=== SUITE: persistence（v4 资源与执行事实跨重启存活）===");
 	H.startTimer();
 
-	// 临时库目录必须走 H.mkdtempTmp 登记（#326）：/tmp 是 tmpfs，泄漏吃内存。
+	// 临时库目录走 H.mkdtempTmp 登记（#326）：/tmp 是 tmpfs，泄漏吃内存。
 	// 正常路径 finally 里 removeTmpDir；崩溃/提前退出时 harness 的 exit hook 兜底。
 	const tmp = H.mkdtempTmp("anotify-persist-");
 	const dbPath = path.join(tmp, "persist.db");
 	const extraEnv = { ANOTIFY_DB: dbPath };
 
+	// 跨阶段要记住的事实（第二阶段逐条比回来）。
 	let phase1 = null;
-	let traceId = null;
-	let session = null;
-	let sendKey = null;
+	let session = "";
+	let sendKey = "";
 
 	try {
 		// ================= 第一次启动：造数据 =================
@@ -64,99 +52,111 @@ async function main() {
 			rpId: "localhost",
 			extraEnv,
 		});
-
 		const seeded = H.seed(dbPath, "persist");
 		session = seeded.session;
 		sendKey = seeded.sendKey;
 
-		// #204 / 迁移 14：组织层删除（orgs / org_members 没了），devseed 也不再输出 org
-		// （改成 stderr 的「命名空间就绪: ns_xxx」）。所以：
-		//   ① 原来的 `H.check("建库拿到 orgId", ...)` 换成**命名空间口径**的等价断言；
-		//   ② 原来为了拿 orgId 而单独 spawn 一次 devseed 的代码删掉 —— 它唯一的产物就是
-		//      orgId，H.seed() 已经在同一个库上用同一个用户名跑过 devseed。
-		//
-		// #162：节点直插库要写 namespace_id（迁移 12 起 NOT NULL）。
-		// 取本部署默认命名空间（slug=default）的 id，不硬编码 ns_xxx。
-		const nsId = await H.defaultNamespaceId(server.base, session);
-		H.check("拿到默认命名空间 id", !!nsId, String(nsId));
-		if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
+		// 默认命名空间的对外名（拼路径）与内部 id（直查库）都要。
+		const ns = await H.defaultNamespace(server.base, session);
+		H.check("解析默认命名空间（slug + id）", !!(ns && ns.slug && ns.id), JSON.stringify(ns));
+		if (!ns) throw new Error("无法解析默认命名空间（GET /v1/namespaces 列表信封）");
+		const NS = ns.slug;
 
-		// 定义能力与出口
-		const origin = (
-			await H.req(server.base, "/v1/capabilities", {
-				session,
-				body: {
-					name: "persist.demo",
-					// P4：请求体是 spec 形状（Capability Spec v3 §5）。
-					spec: {
-						outputs: ["go"],
-						params: { type: "object" },
-						// P1-b2：建能力必须有实现（缺 run → 400 impl_missing）。
-						run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
-					},
-				},
-			})
-		).json.capability;
-		const target = (
-			await H.req(server.base, "/v1/capabilities", {
-				session,
-				body: {
-					name: "persist.work",
-					spec: {
-						outputs: [],
-						params: { type: "object" },
-						run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n" } },
-					},
-				},
-			})
-		).json.capability;
-		H.eq(
-			"建边 persist.demo→persist.work",
-			(await H.req(server.base, "/v1/edges", {
-				session,
-				body: {
-					// #110：入口边（左端是来源名），不再需要"起点能力"
-					fromIsSource: true,
-					fromCapability: "persist.demo",
-					fromPort: "go",
-					toCapability: target.id,
-				},
-			})).status,
-			200,
+		// ---------- 造资源：两个能力 + 一个源 ----------
+		const target = await V.createCapability(
+			server.base,
+			session,
+			NS,
+			V.capabilityBody({ name: "persist.work", params: { type: "object" }, run: RUN }),
 		);
-		seedNodeRows(dbPath, nsId, "persist-node", [target.id], 2);
+		V.expectStatus("建目标能力 persist.work → 201", target, 201);
+		const targetDoc = target.json;
 
-		// 发事件 → 应该有 1 个任务
-		const ev = await H.req(server.base, "/v1/events", {
-			key: sendKey,
-			body: { source: "persist.demo", type: "go", payload: {} },
+		const demo = await V.createCapability(
+			server.base,
+			session,
+			NS,
+			V.capabilityBody({ name: "persist.demo", params: { type: "object" }, next: ["persist.work"], run: RUN }),
+		);
+		V.expectStatus("建上游能力 persist.demo → 201", demo, 201);
+
+		const src = await V.createSource(
+			server.base,
+			session,
+			NS,
+			V.sourceBody({
+				name: "persist.src",
+				kind: "manual",
+				config: {},
+				targets: [{ capability: "persist.work" }],
+			}),
+		);
+		V.expectStatus("建源 persist.src → 201", src, 201);
+		const srcDoc = src.json;
+
+		// ---------- 事件 → 任务（源 targets + 无节点 = 留 pending）----------
+		const ev = await V.ingestEvent(server.base, sendKey, NS, {
+			source: "persist.src",
+			type: "persist.run",
+			id: "persist-one",
+			payload: {},
 		});
-		H.eq("事件入队", ev.status, 200);
-		traceId = ev.json.traceId;
-		H.check("拿到 traceId", !!traceId);
+		V.expectStatus("事件入队 → 200（Bearer API Key）", ev, 200);
+		H.check("回执带 eventId", !!ev.json?.eventId, V.brief(ev));
+		H.check("回执带 traceId", !!ev.json?.traceId, V.brief(ev));
+		H.eq("回执建出 1 个任务", (ev.json?.tasks || []).length, 1);
+		H.eq("任务能力是 persist.work", ev.json?.tasks?.[0]?.capability, "persist.work");
+		H.eq("回执的能力版本是 1", ev.json?.tasks?.[0]?.version, 1);
+		H.eq("没有剪枝", (ev.json?.pruned || []).length, 0);
+		const pendingId = ev.json?.tasks?.[0]?.taskId;
+		H.check("拿到任务 id", !!pendingId, V.brief(ev));
 
-		// 节点不在线（只播种了 DB 行，没走 WS），所以任务应留 pending
-		const before = queryTasks(dbPath, nsId);
-		H.eq("重启前有 1 个任务", before.length, 1);
-		H.eq("任务状态 pending（节点未上线）", before[0].status, "pending");
-		phase1 = { taskId: before[0].id };
+		// 第二个任务：用一个新 deliveryId 造，随后用 API 取消 → 终态。
+		const ev2 = await V.ingestEvent(server.base, sendKey, NS, {
+			source: "persist.src",
+			type: "persist.run",
+			id: "persist-two",
+			payload: {},
+		});
+		V.expectStatus("第二个事件入队 → 200", ev2, 200);
+		const cancelledId = ev2.json?.tasks?.[0]?.taskId;
+		H.check("拿到第二个任务 id", !!cancelledId, V.brief(ev2));
 
-		// 手工把任务推到终态，验证跨重启保持。
-		// （没有 out 列可写：迁移 28 删掉了它，出口只存在于 emissions.port。）
-		const db = new DatabaseSync(dbPath);
-		try {
-			db.prepare(
-				`UPDATE tasks SET status='succeeded', reported=1, summary='ok',
-				 started_at=?, finished_at=? WHERE id=?`,
-			).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), phase1.taskId);
-		} finally {
-			db.close();
-		}
+		const cancel = await H.req(server.base, V.P.taskCancel(NS, cancelledId), {
+			session,
+			method: "POST",
+		});
+		V.expectStatus("pending 任务取消 → 200", cancel, 200);
+		H.eq("取消后相位 = cancelled", cancel.json?.status?.phase, "cancelled");
+		H.check("终态写了 finishedAt", !!cancel.json?.status?.finishedAt, JSON.stringify(cancel.json?.status));
+		H.eq("取消原因 = cancelled_by_user", cancel.json?.status?.result?.error?.reason, "cancelled_by_user");
+
+		// 直查库核对落盘（API 是派生投影，落盘才是「跨进程」的判据）。
+		const rowBefore = V.readTaskRow(dbPath, cancelledId);
+		H.eq("库里相位 = cancelled", rowBefore?.phase, "cancelled");
+		H.check("库里 finished_at 非空", !!rowBefore?.finished_at, String(rowBefore?.finished_at));
+
+		phase1 = {
+			nsId: ns.id,
+			NS,
+			targetUid: targetDoc?.metadata?.uid,
+			targetRv: targetDoc?.metadata?.resourceVersion,
+			targetDigest: targetDoc?.status?.digest,
+			srcUid: srcDoc?.metadata?.uid,
+			srcRv: srcDoc?.metadata?.resourceVersion,
+			evTrace: ev.json?.traceId,
+			evId: ev.json?.eventId,
+			pendingId,
+			cancelledId,
+		};
+		H.check("阶段一：能力 uid 是 rv1 之外的真身份", !!phase1.targetUid, String(phase1.targetUid));
+		H.check("阶段一：能力有 CAS 令牌", V.isResourceVersion(phase1.targetRv), String(phase1.targetRv));
+		H.check("阶段一：能力 status.digest 是 sha256", String(phase1.targetDigest).startsWith("sha256:"), String(phase1.targetDigest));
 
 		server.stop();
 		await new Promise((r) => setTimeout(r, 300)); // 等进程真退出、释放 DB
 
-		// ================= 第二次启动：验证存活 =================
+		// ================= 第二次启动：逐条验存活 =================
 		server = await H.startServer({
 			suiteName: "persistence",
 			portOffset: 1,
@@ -164,58 +164,108 @@ async function main() {
 			extraEnv,
 		});
 
-		// 1. 事件仍在，且能按 trace 查回
-		// /v1/events 是机器入口，GET 与 POST 一样走 Bearer Key（不是会话）
-		const evList = await H.req(server.base, `/v1/events?traceId=${encodeURIComponent(traceId)}`, { key: sendKey });
-		H.eq("重启后 GET /v1/events 200", evList.status, 200);
-		H.eq("重启后同一 trace 仍有 1 条事件", evList.json?.events?.length, 1);
-		H.eq("重启后事件 traceId 一致", evList.json?.events?.[0]?.traceId, traceId);
+		// 1. 资源身份：uid / resourceVersion / version / digest 全部逐字相等
+		const capAfter = await H.req(server.base, V.P.capability(NS, "persist.work"), { session });
+		V.expectStatus("重启后 GET 能力 → 200", capAfter, 200);
+		V.assertEnvelope("重启后的能力", capAfter.json, "Capability");
+		H.eq("重启后 metadata.uid 不变（资源身份稳定）", capAfter.json?.metadata?.uid, phase1.targetUid);
+		H.eq("重启后 resourceVersion 不变（旧 CAS 令牌仍然有效）", capAfter.json?.metadata?.resourceVersion, phase1.targetRv);
+		H.eq("重启后 metadata.version 不变", capAfter.json?.metadata?.version, 1);
+		H.eq("重启后 status.digest 不变（内容没被重算）", capAfter.json?.status?.digest, phase1.targetDigest);
 
-		// 2. 任务仍在，状态机结果保持
-		const after = queryTasks(dbPath, nsId);
-		H.eq("重启后任务数量不变", after.length, 1);
-		H.eq("重启后任务状态仍是 succeeded", after[0].status, "succeeded");
-
-		// 3. 结果字段跨重启保持
-		H.eq("重启后 reported 仍是 1", after[0].reported, 1);
-		H.eq("重启后 summary 保留", after[0].summary, "ok");
-
-		// 4. 通过 API 读任务
-		const taskList = await H.req(server.base, `/v1/tasks?traceId=${encodeURIComponent(traceId)}`, { session });
-		H.eq("重启后 GET /v1/tasks 200", taskList.status, 200);
-		H.eq("重启后 API 也能看到该任务", taskList.json?.tasks?.length, 1);
-		H.eq("API 读到的状态正确", taskList.json?.tasks?.[0]?.status, "succeeded");
-		// 迁移 28：`tasks.out` 整列已删，所以正确判据是**键不存在**
-		// （不是「值为 null」——那样读者仍会以为它有意义）。
+		// 2. 列表与版本族仍在
+		const capsAfter = await H.req(server.base, V.P.capabilities(NS), { session });
+		const capNames = V.itemNames(capsAfter);
+		H.check("重启后能力列表可读", Array.isArray(capNames), V.brief(capsAfter));
 		H.check(
-			"API 读到的任务没有 out 字段（迁移 28 删列）",
-			!!taskList.json?.tasks?.[0] && !("out" in taskList.json.tasks[0]),
-			JSON.stringify(Object.keys(taskList.json?.tasks?.[0] || {})),
+			"重启后两个能力都还在",
+			(capNames || []).includes("persist.work") && (capNames || []).includes("persist.demo"),
+			JSON.stringify(capNames),
+		);
+		const versions = await H.req(server.base, V.P.capabilityVersions(NS, "persist.work"), { session });
+		const vItems = V.assertListEnvelope("重启后的版本族", versions, "CapabilityList");
+		H.eq("重启后版本族仍有 1 条", vItems.length, 1);
+		H.eq("版本族里的 uid 与单对象一致", vItems[0]?.metadata?.uid, phase1.targetUid);
+
+		// 3. 源：uid / resourceVersion / targets 保留
+		const srcAfter = await H.req(server.base, V.P.source(NS, "persist.src"), { session });
+		V.expectStatus("重启后 GET 源 → 200", srcAfter, 200);
+		H.eq("重启后源 uid 不变", srcAfter.json?.metadata?.uid, phase1.srcUid);
+		H.eq("重启后源 resourceVersion 不变", srcAfter.json?.metadata?.resourceVersion, phase1.srcRv);
+		H.eq("重启后源的 targets 保留", srcAfter.json?.spec?.targets?.[0]?.capability, "persist.work");
+
+		// 4. 任务：终态不复活、pending 仍是 pending
+		const cancelledAfter = await H.req(server.base, V.P.task(NS, phase1.cancelledId), { session });
+		V.expectStatus("重启后 GET 终态任务 → 200", cancelledAfter, 200);
+		V.assertEnvelope("重启后的任务", cancelledAfter.json, "Task");
+		H.eq("重启后终态仍是 cancelled（状态机不复活）", cancelledAfter.json?.status?.phase, "cancelled");
+		H.eq("重启后终态原因仍在", cancelledAfter.json?.status?.result?.error?.reason, "cancelled_by_user");
+		H.check("重启后终态 finishedAt 仍在", !!cancelledAfter.json?.status?.finishedAt, JSON.stringify(cancelledAfter.json?.status));
+
+		const pendingAfter = await H.req(server.base, V.P.task(NS, phase1.pendingId), { session });
+		V.expectStatus("重启后 GET pending 任务 → 200", pendingAfter, 200);
+		H.eq("重启后 pending 仍 pending（不伪造执行）", pendingAfter.json?.status?.phase, "pending");
+		H.eq("重启后 attempt 仍是 0（没有授予过执行权）", pendingAfter.json?.status?.attempt, 0);
+
+		// 5. 任务 spec 形状：钉住能力版本 + digest，且**没有** v3 的 out 字段
+		H.eq("任务 spec 钉住能力名", pendingAfter.json?.spec?.capability?.name, "persist.work");
+		H.eq("任务 spec 钉住版本", pendingAfter.json?.spec?.capability?.version, 1);
+		H.check(
+			"任务 spec 钉住 digest（double pin）",
+			String(pendingAfter.json?.spec?.capability?.digest || "").startsWith("sha256:"),
+			JSON.stringify(pendingAfter.json?.spec?.capability),
+		);
+		H.check(
+			"任务 spec 没有 out 字段（v4 出口只在 emissions）",
+			!!pendingAfter.json?.spec && !("out" in pendingAfter.json.spec),
+			JSON.stringify(Object.keys(pendingAfter.json?.spec || {})),
 		);
 
-		// 5. 终态不可变：取消一个已成功的任务应 409
-		const cancel = await H.req(server.base, `/v1/tasks/${phase1.taskId}/cancel`, {
-			method: "POST",
+		// 6. 事件跨重启可按 trace 查回（资源列表 + 会话 + ns 路径）
+		const evList = await H.req(server.base, V.P.events(NS) + `?trace=${encodeURIComponent(phase1.evTrace)}`, {
 			session,
 		});
-		H.eq("已终态任务取消 → 409", cancel.status, 409);
+		const evItems = V.assertListEnvelope("重启后的事件列表", evList, "EventList");
+		H.eq("重启后同一 trace 仍有 1 条事件", evItems.length, 1);
+		H.eq("重启后事件 id 一致", evItems[0]?.metadata?.uid, phase1.evId);
+		H.eq("重启后事件 traceUID 一致", evItems[0]?.spec?.traceUID, phase1.evTrace);
+
+		// 7. 任务列表按 trace 过滤仍然工作（不是「全量返回碰巧包含」）
+		const taskList = await H.req(server.base, V.P.tasks(NS) + `?traceId=${encodeURIComponent(phase1.evTrace)}`, {
+			session,
+		});
+		const taskItems = V.assertListEnvelope("重启后的任务列表", taskList, "TaskList");
+		H.eq("重启后按 trace 过滤任务 → 1 条", taskItems.length, 1);
+		H.eq("过滤到的是那条 pending 任务", taskItems[0]?.metadata?.name, phase1.pendingId);
+
+		// 8. 凭据跨重启：会话与 API Key 都还在
+		const me = await H.req(server.base, "/v1/auth/me", { session });
+		V.expectStatus("重启后会话仍有效", me, 200);
+		const ev3 = await V.ingestEvent(server.base, sendKey, NS, {
+			source: "persist.src",
+			type: "persist.after-restart",
+			id: "persist-three",
+			payload: {},
+		});
+		V.expectStatus("重启后 API Key 仍能投递事件", ev3, 200);
+		H.check("重启后的新事件有新 traceId", ev3.json?.traceId !== phase1.evTrace, String(ev3.json?.traceId));
+		H.eq("重启后新事件同样建出 1 个任务", (ev3.json?.tasks || []).length, 1);
+
+		// 9. 终态不可再停：409（不是 5xx，也不假装成功）
+		const recancel = await H.req(server.base, V.P.taskCancel(NS, phase1.cancelledId), {
+			session,
+			method: "POST",
+		});
+		V.expectReason("重启后取消已终态任务 → 409", recancel, 409, "Conflict");
 		H.check(
-			"409 带 invalid_transition 码",
-			String(cancel.text || "").includes("invalid_transition"),
-			String(cancel.text).slice(0, 120),
+			"409 的 message 点名当前相位",
+			String(recancel.json?.message || "").includes("cancelled"),
+			String(recancel.json?.message || recancel.text).slice(0, 160),
 		);
 
-		// 6. 会话跨重启仍有效（同一个 server 进程内已重建）
-		const me = await H.req(server.base, "/v1/auth/me", { session });
-		H.eq("重启后会话仍有效", me.status, 200);
-
-		// 7. API Key 跨重启仍可用（发一个新事件）
-		const ev2 = await H.req(server.base, "/v1/events", {
-			key: sendKey,
-			body: { source: "persist.demo", type: "go", payload: {} },
-		});
-		H.eq("重启后 API Key 仍能发事件", ev2.status, 200);
-		H.check("重启后新事件有新 traceId", ev2.json?.traceId !== traceId);
+		// 10. 不存在的任务 → 404（与「不属于本 ns」同一个回答）
+		const missing = await H.req(server.base, V.P.task(NS, "tsk_does_not_exist"), { session });
+		V.expectStatus("不存在的任务 → 404", missing, 404);
 
 		server.stop();
 	} finally {
