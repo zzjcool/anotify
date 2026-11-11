@@ -14,13 +14,21 @@ node_modules/
 
 # === 构建产物 ===
 anotify
+/anode
 /anotify-agent
 /devseed
+/sitegen
+/server
+/agent
 /fe-preview
 dist/
 web/dist/
 internal/server/dist/
 .e2e-bin/
+# 本机节点开发数据（anode.yaml + 能力缓存/执行档案，不入库）
+/.dev-anode/
+# Python 脚本的字节码缓存（check_*.py）
+__pycache__/
 
 # === 前端生成产物（源在 web-src/，sitegen 生成）===
 # 顶层 *.html、i18n js、各语言子目录全部由 sitegen 从 web-src 生成，不入库

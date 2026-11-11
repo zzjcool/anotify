@@ -34,6 +34,13 @@ case "$SHA" in *[!a-fA-F0-9]*|'') echo 'invalid checksum' >&2; exit 2;; esac
 printf '%s  %s\n' "$SHA" "$TMP/anode" | sha256sum --check --status
 chmod 0700 "$TMP/anode"
 INFO=$("$TMP/anode" --version)
-printf '%s\n' "$INFO" | grep -F '"version":"'"$VERSION"'"' >/dev/null || { echo 'downloaded binary version mismatch' >&2; exit 2; }
+# 版本核对用**前缀**匹配：构建标签的形状是 `<release>+<commit>`（与中枢
+# internal/version.String() 同一个串，节点 hello 上报的也是它）。所以接受
+# `"version":"<release>"` 与 `"version":"<release>+…"` 两种；标不相关的版本
+# （包括坏二进制/被换过的包）仍然拒装。
+case $INFO in
+ *'"version":"'"$VERSION"'"'*|*'"version":"'"$VERSION"'+'*) ;;
+ *) echo 'downloaded binary version mismatch' >&2; exit 2 ;;
+esac
 # No YAML, units, systemctl, sudo, token generation or automatic deployment here.
 "$TMP/anode" install "$@"
