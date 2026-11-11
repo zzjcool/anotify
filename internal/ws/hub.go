@@ -54,6 +54,9 @@ var (
 	ErrLogsCorrelation = errors.New("ws: 日志回包与请求不匹配")
 	// ErrSessionClosed 表示连接已经关闭（写失败的直接原因）。
 	ErrSessionClosed = errors.New("ws: 会话已关闭")
+	// ErrSendCanceled 表示调用方在写帧**之前**就已取消/超时：帧没写出去，会话本身
+	// 毫发无损。它与真实写失败必须可判别——调用方的取消不拥有拆会话的权力。
+	ErrSendCanceled = errors.New("ws: 调用方在写帧前已取消")
 	// errProtocolViolation 表示对端发了方向错误的帧（断开连接）。
 	errProtocolViolation = errors.New("ws: 协议违例")
 )
@@ -869,8 +872,15 @@ func validateLogsResponse(frame *protocol.LogsResponseFrame, wantAttempt int) er
 }
 
 // detachSessionOnWriteFailure 在写失败时立刻下线该会话（读循环随后也会退出）。
+//
+// 两类「不是写失败」的错误必须放过，否则调用方就间接拥有了拆会话的权力：
+//   - ErrSessionClosed：连接本来就关了，没有可拆的东西；
+//   - ErrSendCanceled：调用方在写之前就取消/超时，**一帧都没写出去**（session.go 的
+//     入口 guard），节点连接本身完好——把这种错误当写失败会误关一条健康会话。
+//
+// 真实写失败（含写超时、EPIPE、协议层关闭）仍然关会话：那才是「这条连接已经不可用」。
 func (h *Hub) detachSessionOnWriteFailure(sess *Session, err error) {
-	if errors.Is(err, ErrSessionClosed) {
+	if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSendCanceled) {
 		return
 	}
 	sess.close(websocket.StatusInternalError, "write failed")

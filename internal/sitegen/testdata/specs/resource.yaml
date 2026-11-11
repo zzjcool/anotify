@@ -1,0 +1,134 @@
+# F3a/R2 TEST FIXTURE — 不是真实的 T1 spec。
+#
+# 本目录五份 yaml 是 internal/sitegen 的具名测试 fixture，用来让**真实 parser**
+# 覆盖 v4 五 spec 的合并语义（绝对 /v1 路径、servers[/]、tag 分组顺序、
+# deprecated 过滤、method+path 唯一、operationId 全局唯一、五文件内 $ref）。
+# 真实 T1 spec 未落地前不伪造集成，也绝不从旧 api/openapi.yaml 生成兜底数据。
+#
+# R2 在 resource 里提供 API2 具名 fixture 的公共组件：
+#   components.parameters.Namespace / schemas.SourceEventInput /
+#   schemas.EventReceipt / schemas.Event（合法自递归）以及跨文件 pathItem
+#   components.pathItems.EventDetail（被 events.yaml 两跳引用）。
+openapi: 3.0.3
+info:
+  title: Anotify resource API (sitegen fixture)
+  version: "4.0.0-fixture"
+servers:
+  - url: /
+tags:
+  - name: capabilities
+  - name: sources
+  - name: playbooks
+  - name: nodes
+  - name: namespaces
+  - name: tasks
+paths:
+  /v1/namespaces/{namespace}/capabilities:
+    get:
+      tags: [capabilities]
+      operationId: fixtureListCapabilities
+    post:
+      tags: [capabilities]
+  /v1/namespaces/{namespace}/capabilities/{name}:
+    get:
+      tags: [capabilities]
+    patch:
+      tags: [capabilities]
+    delete:
+      tags: [capabilities]
+  /v1/namespaces/{namespace}/sources:
+    get:
+      tags: [sources]
+    post:
+      tags: [sources]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Source'
+  /v1/namespaces/{namespace}/playbooks:
+    get:
+      tags: [playbooks]
+    post:
+      tags: [playbooks]
+  /v1/nodes:
+    get:
+      tags: [nodes]
+    post:
+      tags: [nodes]
+  /v1/namespaces:
+    get:
+      tags: [namespaces]
+    post:
+      tags: [namespaces]
+  /v1/namespaces/{namespace}/tasks:
+    get:
+      tags: [tasks]
+  /v1/namespaces/{namespace}/tasks/{name}:
+    get:
+      tags: [tasks]
+    delete:
+      tags: [tasks]
+      deprecated: true
+components:
+  schemas:
+    Source:
+      type: object
+      properties:
+        apiVersion: { type: string }
+        kind: { type: string }
+    SourceEventInput:
+      type: object
+      properties:
+        source: { type: string }
+        type: { type: string }
+        payload: { type: object }
+    Event:
+      type: object
+      properties:
+        kind: { type: string }
+        # 合法自递归 schema：parser 只保留引用、不展开，operation 不许因此消失。
+        related:
+          $ref: '#/components/schemas/Event'
+    EventReceipt:
+      type: object
+      properties:
+        eventUID: { type: string }
+    Trace:
+      type: object
+      properties:
+        traceId: { type: string }
+  parameters:
+    Namespace:
+      name: namespace
+      in: path
+      required: true
+      schema: { type: string }
+  requestBodies:
+    # 跨文件 requestBody $ref 目标（ingress.yaml 引用）。
+    SourceEvent:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SourceEventInput'
+  pathItems:
+    # 跨文件 pathItem 目标：events.yaml 的 /events/{id} 经本地链再引用到这里。
+    EventDetail:
+      get:
+        tags: [events]
+        operationId: fixtureGetEvent
+        summary: Event detail (fixture)
+        parameters:
+          - $ref: '#/components/parameters/Namespace'
+          - name: id
+            in: path
+            required: true
+            schema: { type: string }
+        responses:
+          "200":
+            description: Event
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Event'
