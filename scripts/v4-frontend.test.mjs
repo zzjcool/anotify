@@ -278,7 +278,10 @@ function loadMock(opts = {}) {
 			p,
 			Object.assign({ credentials: "include" }, init || {}),
 		);
-		const body = await res.json();
+		// 204/205 无响应体（v4 的 DELETE 一律如此）：真 fetch 上 `res.json()` 会抛
+		// SyntaxError，页面 `api()` 也是先看状态码再解析 —— 这里同样按状态码短路，
+		// 而不是让一次**成功**的删除变成解析失败。
+		const body = res.status === 204 || res.status === 205 ? null : await res.json();
 		return { status: res.status, body: plain(body) };
 	};
 	return {
@@ -1638,22 +1641,24 @@ function byNameOrFail(items, name) {
 	return hit;
 }
 
-test("mock: capability 创建同名 409；PATCH 缺 rv 400、旧 rv 409 带 current、成功换 rv；写 status 400；DELETE 缺 rv 400", async () => {
+test("mock: capability POST 内容寻址（同内容复用同一版本行）；PATCH 只接 displayName/next，改内容 400 immutable_field；DELETE 204", async () => {
 	const { req } = loadMock();
 	const list = await req(CAP_LIST);
 	const fixer = byNameOrFail(list.body.items, "fixer");
 	const rv = fixer.metadata.resourceVersion;
 	const one = CAP_LIST + "/fixer";
 
-	const dup = await req(CAP_LIST, jsonInit("POST", {
+	// POST 同名**不再是** 409 AlreadyExists：v4 的 POST 是内容寻址
+	// （store.createCapabilityTx）——同内容复用那一行，新内容分配 max+1。
+	const reuse = await req(CAP_LIST, jsonInit("POST", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "fixer" },
-		spec: {},
+		spec: plain(fixer.spec),
 	}));
-	assert.equal(dup.status, 409);
-	assert.equal(dup.body.kind, "Status");
-	assert.equal(dup.body.reason, "AlreadyExists");
+	assert.equal(reuse.status, 201);
+	assert.equal(reuse.body.kind, "Capability");
+	assert.equal(reuse.body.metadata.version, fixer.metadata.version, "同内容 POST 复用同一版本行");
 
 	const noRv = await req(one, jsonInit("PATCH", {
 		apiVersion: "anotify/v1",
@@ -1674,16 +1679,34 @@ test("mock: capability 创建同名 409；PATCH 缺 rv 400、旧 rv 409 带 curr
 	assert.equal(stale.body.reason, "resource_version_conflict");
 	assert.equal(stale.body.details.current.resourceVersion, rv, "409 必须带回当前 resourceVersion");
 
+	// PATCH 的**合法面**只有 metadata.displayName 与 spec.next。
 	const ok = await req(one, jsonInit("PATCH", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "fixer", resourceVersion: rv },
-		spec: { params: {}, next: ["notify"], run: { entrypoint: "run.sh", files: {} } },
+		spec: { next: ["notify"] },
 	}));
 	assert.equal(ok.status, 200);
 	assert.deepEqual(ok.body.spec.next, ["notify"]);
+	assert.equal(ok.body.metadata.version, fixer.metadata.version, "next 不是内容：不换版本，也不换 digest");
+	assert.equal(ok.body.status.digest, fixer.status.digest, "digest 不含 next");
 	assert.notEqual(ok.body.metadata.resourceVersion, rv, "写成功必须换新的 resourceVersion");
 	const rv2 = ok.body.metadata.resourceVersion;
+
+	// 内容面不可变（resource_capability.go·immutableCapabilitySpecPatch）：
+	// 写 run/params 一律 400 immutable_field —— 静默忽略会让人以为改生效了。
+	const immutable = await req(one, jsonInit("PATCH", {
+		apiVersion: "anotify/v1",
+		kind: "Capability",
+		metadata: { name: "fixer", resourceVersion: rv2 },
+		spec: Object.assign({}, plain(ok.body.spec), {
+			run: { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\necho v2\n" } },
+		}),
+	}));
+	assert.equal(immutable.status, 400);
+	assert.equal(immutable.body.reason, "immutable_field");
+	assert.match(immutable.body.message, /spec\.run/);
+	assert.deepEqual((await req(one)).body, ok.body, "immutable_field 拒绝必须零写");
 
 	const withStatus = await req(one, jsonInit("PATCH", {
 		apiVersion: "anotify/v1",
@@ -1708,10 +1731,12 @@ test("mock: capability 创建同名 409；PATCH 缺 rv 400、旧 rv 409 带 curr
 	assert.equal(del.status, 400);
 	assert.equal(del.body.reason, "resource_version_required");
 
+	// DELETE 成功是 204 无响应体（resource_capability.go），不是 200+Status
 	const delOk = await req(one + "?resourceVersion=" + encodeURIComponent(rv2), {
 		method: "DELETE",
 	});
-	assert.equal(delOk.status, 200);
+	assert.equal(delOk.status, 204);
+	assert.equal(delOk.body, null, "204 不得带回响应体");
 	const after = await req(CAP_LIST);
 	assert.equal(itemByName(after.body.items, "fixer"), undefined, "删掉之后列表里就没有了");
 });
@@ -2509,38 +2534,46 @@ test("mock: 单建能力严格校验（entrypoint ∈ files / unknown_target / u
 	assert.equal(ok.body.status.conditions.length, 4, "status 仍是读时派生");
 });
 
-test("mock: 能力版本规则（只改 next 不换版本/digest；改 run 出新版本；显式同版本正文改动 400）", async () => {
+test("mock: 能力版本规则（只改 next 不换版本/digest；改 run 只能 POST 出新版本；显式同版本正文改动 400）", async () => {
 	const { req } = loadMock();
 	const list = await req(CAP_LIST);
 	const cap = byNameOrFail(list.body.items, "analyze-pr");
 	const rv = cap.metadata.resourceVersion;
 	const one = CAP_LIST + "/analyze-pr";
 
-	// ① 只改 next：版本与 digest 都不变（路由属于图，不属于内容）
+	// ① 只改 next：版本与 digest 都不变（路由属于图，不属于内容）。
+	// PATCH 的合法面只有 next：把整份 spec 塞进去会被 400 immutable_field 拒掉。
 	const nextOnly = await req(one, jsonInit("PATCH", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "analyze-pr", resourceVersion: rv },
-		spec: Object.assign({}, plain(cap.spec), { next: ["lint-fix"] }),
+		spec: { next: ["lint-fix"] },
 	}));
 	assert.equal(nextOnly.status, 200);
 	assert.equal(nextOnly.body.metadata.version, cap.metadata.version);
 	assert.equal(nextOnly.body.status.digest, cap.status.digest, "digest 不含 next");
 	assert.deepEqual(nextOnly.body.spec.next, ["lint-fix"]);
 
-	// ② 改 run：省略 version = 内容寻址 → 自动分配下一个版本，旧版进历史
-	const runChange = await req(one, jsonInit("PATCH", {
+	// 2 改内容：PATCH 不接（immutable_field），**POST 省略 version** = 内容寻址
+	// 自动分配 max+1，旧版进历史。
+	const runBody = Object.assign(plain(nextOnly.body.spec), {
+		run: { entrypoint: "main.sh", files: { "main.sh": "#!/bin/sh\necho v3\n" } },
+	});
+	const patchedRun = await req(one, jsonInit("PATCH", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "analyze-pr", resourceVersion: nextOnly.body.metadata.resourceVersion },
-		spec: Object.assign({}, plain(nextOnly.body.spec), {
-			run: {
-				entrypoint: "main.sh",
-				files: { "main.sh": "#!/bin/sh\necho v3\n" },
-			},
-		}),
+		spec: runBody,
 	}));
-	assert.equal(runChange.status, 200);
+	assert.equal(patchedRun.status, 400);
+	assert.equal(patchedRun.body.reason, "immutable_field");
+	const runChange = await req(CAP_LIST, jsonInit("POST", {
+		apiVersion: "anotify/v1",
+		kind: "Capability",
+		metadata: { name: "analyze-pr" },
+		spec: runBody,
+	}));
+	assert.equal(runChange.status, 201, JSON.stringify(runChange.body));
 	assert.equal(runChange.body.metadata.version, cap.metadata.version + 1, "改正文必须出新版本");
 	assert.notEqual(runChange.body.status.digest, cap.status.digest);
 	const versions = await req(one + "/versions");
@@ -2569,18 +2602,24 @@ test("mock: 能力版本规则（只改 next 不换版本/digest；改 run 出�
 	const v2body = await req(one + "/versions/2?includeBody=true");
 	assert.ok(v2body.body.spec && v2body.body.spec.run, "includeBody=true 必须带正文（spec.run）");
 
-	// ③ 显式写“已存在的那个版本号”+ 正文不同 → 400 version_content_immutable
-	const immutable = await req(one, jsonInit("PATCH", {
+	// ③ 显式写“已存在的那个版本号”+ 正文不同 → POST 400 version_content_immutable
+	// （content-addressed 单建的拒绝面；PATCH 干脆不接内容，回 immutable_field）
+	const otherBody = (version) => ({
 		apiVersion: "anotify/v1",
 		kind: "Capability",
-		metadata: { name: "analyze-pr", version: 3, resourceVersion: runChange.body.metadata.resourceVersion },
+		metadata: Object.assign({ name: "analyze-pr" }, version == null ? {} : { version }),
 		spec: Object.assign({}, plain(runChange.body.spec), {
 			run: { entrypoint: "main.sh", files: { "main.sh": "#!/bin/sh\necho other\n" } },
 		}),
-	}));
+	});
+	const immutable = await req(CAP_LIST, jsonInit("POST", otherBody(3)));
 	assert.equal(immutable.status, 400);
 	assert.equal(immutable.body.reason, "version_content_immutable");
 	assert.equal(immutable.body.kind, "Status");
+	// 同版本号同内容 → 内容寻址复用，不报错也不新开版本
+	const sameContent = await req(CAP_LIST, jsonInit("POST", { ...otherBody(3), spec: plain(runChange.body.spec) }));
+	assert.equal(sameContent.status, 201);
+	assert.equal(sameContent.body.metadata.version, 3, "同版本同内容复用那一行");
 
 	// ④ name@旧版本 仍然解析得到（钉死版本不回退成“缺失”）
 	const pinned = await req(CAP_LIST);
@@ -2819,7 +2858,7 @@ test("Source CAS CRUD: missing400/stale409, immutable identity, atomic target ed
  const prod=sourceDoc("source-cas");prod.metadata.namespace="prod";
  assert.equal((await req("/v1/namespaces/prod/sources",jsonInit("POST",prod))).status,201);
  assert.equal((await req(path+"?resourceVersion="+rv,{method:"DELETE"})).status,409);
- assert.equal((await req(path+"?resourceVersion="+saved.body.metadata.resourceVersion,{method:"DELETE"})).status,200);
+ assert.equal((await req(path+"?resourceVersion="+saved.body.metadata.resourceVersion,{method:"DELETE"})).status,204,'v4 的 DELETE 成功是 204 无体');
  assert.equal((await req(path)).status,404);
  assert.equal((await req("/v1/namespaces/prod/sources/source-cas")).status,200);
 });
@@ -2912,7 +2951,10 @@ test("F2b2 W6 EventList: opaque pagination bound to namespace/source/traceId, UI
   for (const suffix of ['namespace=prod', 'namespace=default&source=deploy-hook', 'namespace=default&traceId=trace_mock_t1']) {
     const foreign = await req('/v1/console/events?' + suffix + '&continue=' + encodeURIComponent(first.metadata.continue));
     assert.equal(foreign.status, 400);
-    assert.equal(foreign.body.reason, 'invalid_continue');
+    // 真服务（api_cas.go·decodeCursor）的 reason 是 BadRequest，message 点名 continue token：
+    // cursor 绑 ns+筛选条件，“它就是不属于这次查询”。
+    assert.equal(foreign.body.reason, 'BadRequest');
+    assert.match(String(foreign.body.message), /continue token/);
   }
   assert.equal((await req(base + '&continue=forged')).status, 400);
   const filtered = (await req('/v1/console/events?namespace=default&source=deploy-hook&traceId=trace_mock_t1')).body;
@@ -3576,10 +3618,12 @@ test("F2c1 render: defaults, typed tree interpolation, literal roots and no conf
 	} });
 	await pbCreate(req, files); const before = allFacts(Mock);
 	const result = await pbAction(req, "render", { project: "a" }); assert.equal(result.status, 200);
-	assert.equal(result.body.values.env, "prod"); assert.equal(result.body.documents.capabilities[0].spec.concurrency.maxPerNode, 3);
+	assert.equal(result.body.values.env, "prod"); assert.equal(result.body.capabilities[0].spec.concurrency.maxPerNode, 3);
 	assert.match(result.body.files["capabilities/review.yaml"], /\{\{payload.x\}\}/);
 	assert.match(result.body.files["sources/on-push.yaml"], /\$\(payload.repo\)/);
-	assert.equal(result.body.files["playbook.yaml"], files["playbook.yaml"]);
+	// 平铺 RenderResult 的 files 只含被引用的能力/源文件：playbook.yaml 不渲染、
+	// 也不出现在 render 响应里（要看原文走 GET playbook?includeBody=true）。
+	assert.equal("playbook.yaml" in result.body.files, false, "playbook.yaml 不渲染，故不在 render.files 里");
 	assert.ok(result.body.valuesDigest.startsWith("sha256:")); assert.equal(allFacts(Mock), before);
 	const original = Mock.state.sources;
 	Mock.state.sources = new Proxy([], { get() { throw new Error("render read conflict DB"); } });
@@ -3632,7 +3676,11 @@ test("F2c1 matrix: foldKey reuses ANY matching version, allocates max+1, explici
 	assert.ok((await pbAction(req, "install")).body.created.capabilities.includes("a-review@7"));
 	const clash = pbRawEdit(explicit, d => d["capabilities/review.yaml"].spec.run.files["run.sh"] += "echo forbidden\n");
 	pb = (await pbReplace(req, pb, clash)).body; const before = allFacts(Mock);
-	const rejected = await pbAction(req, "install"); assert.equal(rejected.status, 400); assert.equal(rejected.body.reason, "playbook_conflict");
+	const rejected = await pbAction(req, "install"); assert.equal(rejected.status, 400);
+	// 纯能力冲突的**顶层** reason 是 version_content_immutable（playbook.conflictError）；
+	// 只有出现源冲突才是 playbook_conflict。逐条明细在 details.conflicts[].reason。
+	assert.equal(rejected.body.reason, "version_content_immutable");
+	assert.equal(rejected.body.details.conflicts[0].reason, "version_conflict");
 	assert.equal(rejected.body.details.conflicts[0].kind, "capability"); assert.ok(rejected.body.details.conflicts[0].declaredDigest); assert.ok(rejected.body.details.conflicts[0].actualDigest);
 	assert.ok(rejected.body.details.hint); assert.equal(allFacts(Mock), before);
 	assert.ok(first.install.id);
@@ -3705,7 +3753,9 @@ test("F2c1 references/notes: pending and external facts, six-code vocabulary, no
 		d["capabilities/fixer.yaml"].spec.requires = { commands: ["not-installed"] };
 	} }); await pbCreate(req, files); const deployments = JSON.stringify(Mock.state.deployments);
 	const result = (await pbAction(req, "install")).body;
-	assert.ok(result.pending.includes("absent-cap")); assert.ok(result.external.some(r => r.startsWith("notify@")));
+	assert.ok(result.pending.includes("absent-cap"));
+	// external 里是**包里写的那一串**（plan.go·resolveRefs 原样收集），不补 `@版本`。
+	assert.ok(result.external.includes("notify"));
 	assert.ok(result.notes.some(n => n.code === "pending_ref")); assert.ok(result.notes.some(n => n.code === "source_disabled"));
 	assert.ok(result.notes.some(n => n.code === "unreachable")); assert.ok(result.notes.some(n => n.code === "no_node"));
 	assert.ok(result.notes.every(n => ["routing_unapplied", "targets_unapplied", "unreachable", "pending_ref", "source_disabled", "no_node"].includes(n.code)));
@@ -3741,8 +3791,8 @@ test("F2c1 parser: frozen authored block/flow/quoted/literal package uses ONE sh
 	const raw = (await req("/v1/namespaces/default/playbooks/yaml-chain?includeBody=true")).body;
 	assert.deepEqual(raw.spec.files, files); assert.deepEqual(plain(A.model.playbook(raw)).valuesSchema, parsed.spec.values);
 	const rendered = await pbAction(req, "render", { project: "a" }, {}, "yaml-chain"); assert.equal(rendered.status, 200);
-	assert.equal(rendered.body.documents.capabilities[0].metadata.name, "a-review");
-	assert.equal(rendered.body.files["playbook.yaml"], root);
+	assert.equal(rendered.body.capabilities[0].metadata.name, "a-review");
+	assert.equal("playbook.yaml" in rendered.body.files, false, "playbook.yaml 不渲染，故不在 render.files 里");
 	assert.throws(() => A.model.playbook.parseDocument("spec: &anchor {}"), /anchors/);
 	assert.throws(() => A.model.playbook.parseDocument("spec: [unterminated"), /unterminated/);
 	assert.throws(() => A.model.playbook.parseDocument("metadata:\n  name: a\n  name: b"), /duplicate/);
@@ -4100,7 +4150,7 @@ test("R1 cross-page links: Source receipts/recent emit traceUID, Playbook source
   assert.equal(b2Text(detail.get('src-body')).includes('sources.v4.no_name'), false);
 });
 
-test("R1 mock versions: archived explicit-version overwrite rejected with byte-identical spec/digest and latest=max", async () => {
+test("R1 mock versions: archived content immutable (PATCH 400 immutable_field, POST 同版本 400 version_content_immutable) and latest=max", async () => {
   const { req, Mock } = loadMock();
   const base = '/v1/namespaces/default/capabilities';
   const one = base + '/r1-versioned';
@@ -4113,15 +4163,24 @@ test("R1 mock versions: archived explicit-version overwrite rejected with byte-i
   const patch = (spec, rv, version) => req(one, jsonInit('PATCH', Object.assign(
     { apiVersion: 'anotify/v1', kind: 'Capability', metadata: Object.assign({ name: 'r1-versioned', resourceVersion: rv }, version == null ? {} : { version }), spec },
   )));
-  const v2 = await patch({ next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho v2\n' } } }, created.body.metadata.resourceVersion);
-  assert.equal(v2.status, 200, JSON.stringify(v2.body));
-  assert.equal(v2.status, 200); assert.equal(v2.body.metadata.version, 2);
   const row = () => Mock.state.capabilities.find(c => c.ns === 'default' && c.name === 'r1-versioned');
+
+  // 改正文的路只有 POST（内容寻址）：PATCH 带 run 直接 400 immutable_field，
+  // 且 whole-state 一个字节都不动。
+  const wholeBeforePatch = allFacts(Mock);
+  const rejectedPatch = await patch({ next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho v2\n' } } }, created.body.metadata.resourceVersion);
+  assert.equal(rejectedPatch.status, 400);
+  assert.equal(rejectedPatch.body.reason, 'immutable_field');
+  assert.equal(allFacts(Mock), wholeBeforePatch, 'immutable_field rejection must preserve the complete Mock.state');
+
+  const v2 = await req(base, jsonInit('POST', body(undefined, '#!/bin/sh\necho v2\n')));
+  assert.equal(v2.status, 201, JSON.stringify(v2.body));
+  assert.equal(v2.body.metadata.version, 2);
   const before = JSON.stringify(row());
   const wholeBefore = allFacts(Mock);
 
-  // 归档版本 v1：改正文 → 拒绝，whole-state 不变
-  const overwrite = await patch({ next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho overwritten\n' } } }, row().rv, 1);
+  // 归档版本 v1：显式同版本 + 异正文 → POST 400 version_content_immutable，whole-state 不变
+  const overwrite = await req(base, jsonInit('POST', body(1, '#!/bin/sh\necho overwritten\n')));
   assert.equal(overwrite.status, 400);
   assert.equal(overwrite.body.reason, 'version_content_immutable');
   assert.equal(JSON.stringify(row()), before, 'rejection must not mutate any fact');
@@ -4135,22 +4194,24 @@ test("R1 mock versions: archived explicit-version overwrite rejected with byte-i
   assert.deepEqual(versions.map(v => v.metadata.version), [2, 1]);
   assert.equal(Math.max(...versions.map(v => v.metadata.version)), (await req(one)).body.metadata.version);
 
-  // 未改正文 + 显式旧版本：按 W2 接受，但历史/当前都不动
-  const noop = await patch(plain(row().spec), row().rv, 1);
-  assert.equal(noop.status, 200);
-  assert.equal(noop.body.metadata.version, 2);
+  // 显式旧版本 + 同内容：内容寻址复用（不新开版本、不降当前版本）
+  const noop = await req(base, jsonInit('POST', body(1, '#!/bin/sh\necho v1\n')));
+  assert.equal(noop.status, 201);
+  assert.equal(noop.body.metadata.version, 1, '同内容复用那一行');
+  assert.equal((await req(one)).body.metadata.version, 2, '当前版本仍是 max');
   assert.deepEqual((await req(one + '/versions')).body.items.map(v => v.metadata.version), [2, 1]);
 
-  // 比历史最大值小的“空洞”显式版本也不能把当前版本降下去
-  assert.equal((await patch({ next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho v5\n' } } }, row().rv, 5)).status, 200);
+  // 显式更大的版本号：插入该版本，当前 = max
+  assert.equal((await req(base, jsonInit('POST', body(5, '#!/bin/sh\necho v5\n')))).status, 201);
   assert.equal((await req(one)).body.metadata.version, 5);
+  // 比历史最大值小的“空洞”显式版本也允许落库（真服务不禁止），但当前版本不会因此降低
   const holeBefore = JSON.stringify(row());
-  const holeWholeBefore = allFacts(Mock);
-  const hole = await patch({ next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho v3\n' } } }, row().rv, 3);
-  assert.equal(hole.status, 400);
-  assert.equal(hole.body.reason, 'version_not_increasing');
-  assert.equal(JSON.stringify(row()), holeBefore);
-  assert.equal(allFacts(Mock), holeWholeBefore);
+  const hole = await req(base, jsonInit('POST', body(3, '#!/bin/sh\necho v3\n')));
+  assert.equal(hole.status, 201, JSON.stringify(hole.body));
+  assert.equal(hole.body.metadata.version, 3);
+  assert.notEqual(JSON.stringify(row()), holeBefore, '显式版本 3 真的落库');
+  assert.equal((await req(one)).body.metadata.version, 5, '当前版本 = max(metadata.version)，不被空洞版本拉低');
+  assert.deepEqual((await req(one + '/versions')).body.items.map(v => v.metadata.version), [5, 3, 2, 1]);
 });
 
 test("R1 writeOnly masking: integer/boolean/object/array leaves stay secret in receipt/history/Status; render+digest keep raw", async () => {
@@ -4435,8 +4496,8 @@ test('R1b writeOnly provenance: two installs mask declared/actual/mixed/notes/hi
     assert.equal(u[branch][0].capability, 'a-review', 'nonsecret navigation/action identity remains');
   }
   assert.equal(JSON.stringify(Mock.state.sources.find(s => s.name === 'a-push')), appBefore, 'unapplied did not overwrite actual resources');
-  assert.equal(renderOld.body.documents.sources[0].spec.targets[0].params.pin, old.pin);
-  assert.equal(renderFresh.body.documents.sources[0].spec.targets[0].params.pin, fresh.pin);
+  assert.equal(renderOld.body.sources[0].spec.targets[0].params.pin, old.pin);
+  assert.equal(renderFresh.body.sources[0].spec.targets[0].params.pin, fresh.pin);
   assert.equal(first.body.valuesDigest, renderOld.body.valuesDigest);
   assert.equal(second.body.valuesDigest, renderFresh.body.valuesDigest);
   const base = '/v1/namespaces/default/playbooks/project-chain';
@@ -4632,7 +4693,7 @@ test('F3 public API ABA: same-name Capability recreation has new UID and rejects
   assert.equal(first.status, 201);
   const old = first.body.metadata;
   assert.equal(typeof old.resourceVersion, 'string');
-  assert.equal((await req(url + '/f3-public-aba?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 200);
+  assert.equal((await req(url + '/f3-public-aba?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 204, 'v4 的 DELETE 成功是 204 无体');
   const recreated = await req(url, jsonInit('POST', body));
   assert.equal(recreated.status, 201);
   assert.notEqual(recreated.body.metadata.uid, old.uid, 'new object must have a different UID after same-name recreation');
@@ -4682,7 +4743,10 @@ for (const kind of ['Source', 'Playbook']) {
       : pbWrite(playbookFiles({ slug: name }));
     const first = await req(base, jsonInit('POST', body)); assert.equal(first.status, 201);
     const old = first.body.metadata;
-    assert.equal((await req(base + '/' + name + '?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 200);
+    // Source 删除 = 204 无体；Playbook 删除 = 200 + kept 回执（v4 只有清单删除有回执）。
+    const removed = await req(base + '/' + name + '?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' });
+    assert.equal(removed.status, kind === 'Source' ? 204 : 200);
+    if (kind === 'Source') assert.equal(removed.body, null, '204 不得带回响应体');
     const rebuilt = await req(base, jsonInit('POST', body)); assert.equal(rebuilt.status, 201);
     assert.notEqual(rebuilt.body.metadata.uid, old.uid);
     assert.equal(typeof rebuilt.body.metadata.resourceVersion, 'string');
@@ -4714,7 +4778,7 @@ test('M0 Playbook commit recreates Capability/Source identities but retains live
   const old = [];
   for (const path of paths) {
     const res = await req(path); old.push(res.body);
-    assert.equal((await req(path + '?resourceVersion=' + encodeURIComponent(res.body.metadata.resourceVersion), { method: 'DELETE' })).status, 200);
+    assert.equal((await req(path + '?resourceVersion=' + encodeURIComponent(res.body.metadata.resourceVersion), { method: 'DELETE' })).status, 204, 'v4 的 DELETE 成功是 204 无体');
   }
   assert.equal((await pbAction(req, 'install', { project: 'm0' })).status, 200);
   const fresh = [];
@@ -4752,7 +4816,9 @@ test('M0 UID/revision allocation occurs only on successful creation/commit, neve
   const committed = allFacts(exercised.Mock);
   const conflict = await pbAction(exercised.req, 'install', { project: 'a', env: 'other' });
   assert.equal(conflict.status, 400, 'explicit same-version different content rejects the entire plan');
-  assert.equal(conflict.body.reason, 'playbook_conflict');
+  // 只有能力冲突（源 config 没变、targets 差异走 unapplied）→ version_content_immutable。
+  assert.equal(conflict.body.reason, 'version_content_immutable');
+  assert.equal(conflict.body.details.conflicts[0].kind, 'capability');
   assert.equal(allFacts(exercised.Mock), committed);
   for (const path of ['/v1/namespaces/default/capabilities/a-review', '/v1/namespaces/default/capabilities/a-fixer', '/v1/namespaces/default/sources/a-push']) {
     const a = (await control.req(path)).body.metadata, b = (await exercised.req(path)).body.metadata;
@@ -4771,17 +4837,18 @@ test('M0 restored mock snapshot retains identity/revision allocation across same
   const restored = loadMock();
   Object.assign(restored.Mock.state, JSON.parse(allFacts(initial.Mock)), { latencyMs: 0 });
   const old = first.body.metadata; const path = base + '/m0-snapshot-aba';
-  assert.equal((await restored.req(path + '?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 200);
+  assert.equal((await restored.req(path + '?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 204, 'v4 的 DELETE 成功是 204 无体');
   const fresh = await restored.req(base, jsonInit('POST', body)); assert.equal(fresh.status, 201);
   assert.notEqual(fresh.body.metadata.uid, old.uid);
   assert.notEqual(fresh.body.metadata.resourceVersion, old.resourceVersion);
-  const updated = await restored.req(path, jsonInit('PATCH', { ...body, metadata: { ...body.metadata, resourceVersion: fresh.body.metadata.resourceVersion, displayName: 'updated new object' } }));
+  // PATCH 只改 metadata.displayName（内容面不可变：写 spec 会被 400 immutable_field 拒掉）
+  const updated = await restored.req(path, jsonInit('PATCH', { apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name: 'm0-snapshot-aba', resourceVersion: fresh.body.metadata.resourceVersion, displayName: 'updated new object' } }));
   assert.equal(updated.status, 200); assert.equal(updated.body.metadata.uid, fresh.body.metadata.uid);
   assert.notEqual(updated.body.metadata.resourceVersion, fresh.body.metadata.resourceVersion);
   assert.notEqual(updated.body.metadata.resourceVersion, old.resourceVersion);
   const before = allFacts(restored.Mock);
   assert.equal((await restored.req(path + '?resourceVersion=' + encodeURIComponent(old.resourceVersion), { method: 'DELETE' })).status, 409);
-  assert.equal((await restored.req(path, jsonInit('PATCH', { ...body, metadata: { ...body.metadata, resourceVersion: old.resourceVersion } }))).status, 409);
+  assert.equal((await restored.req(path, jsonInit('PATCH', { apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name: 'm0-snapshot-aba', resourceVersion: old.resourceVersion, displayName: 'stale' } }))).status, 409);
   assert.equal(allFacts(restored.Mock), before);
   assert.deepEqual((await restored.req(path)).body, updated.body);
 });
@@ -4839,7 +4906,7 @@ test('G1 M1 sensitive version upgrade/from/to and implicit reuse refs stay maske
   assert.equal(upgraded.to, '***', 'new writeOnly version is masked in derived to');
   assert.equal(upgraded.affects.sources, 1, 'unrelated integer fact is intact');
   assert.equal(second.body.valuesDigest, raw.body.valuesDigest);
-  assert.equal(raw.body.documents.capabilities[0].metadata.version, 23);
+  assert.equal(raw.body.capabilities[0].metadata.version, 23);
   const applied = Mock.state.capabilities.find(c => c.name === 'a-review');
   assert.equal(applied.version, 23); assert.equal(applied.spec.run.files['fixed.txt'], '17');
   const digest = applied.digest;
@@ -5045,7 +5112,7 @@ test('G2 external archived private-version provenance masks separate consumer re
     const history = (await req(base + '/installs')).body;
     for (const receipt of [stored, detail]) assert.deepEqual(plain(receipt.external), expected);
     if (privateVersion) assert.equal(JSON.stringify([install.body, stored, detail, history]).includes('a-review@17'), false);
-    assert.equal(raw.body.documents.capabilities[0].spec.next[0], 'a-review@17');
+    assert.equal(raw.body.capabilities[0].spec.next[0], 'a-review@17');
     assert.equal(Mock.state.capabilities.find(c => c.name === 'b-review').spec.next[0], 'a-review@17');
     assert.deepEqual(plain({ version: cap.version, digest: archive.digest, spec: archive.spec }), execution);
   }
@@ -5070,7 +5137,7 @@ test('G2 Source whole-array/object and mixed target ancestor policies mask only 
     const raw = await pbAction(req, 'render', values);
     const install = await pbAction(req, 'install', values); assert.equal(install.status, 200);
     const applied = plain(Mock.state.sources.find(s => s.name === 'a-push').targets);
-    assert.deepEqual(applied, raw.body.documents.sources[0].spec.targets);
+    assert.deepEqual(applied, raw.body.sources[0].spec.targets);
     const status = (await req(G1_PB)).body.status;
     assert.deepEqual(status.items.find(i => i.kind === 'source').targets, shape === 'mixed' ? ['***', 'a-review'] : ['***']);
     assert.ok(status.items.some(i => i.kind === 'capability' && i.name === 'a-review'));
@@ -5595,9 +5662,15 @@ test('FINALR1 P1 ordinary PATCH archives original per-version privacy and immuta
   const installed = await pbAction(req, 'install', { project: 'a', version: 17 }); assert.equal(installed.status, 200);
   const old = plain(Mock.state.capabilities.find(c => c.name === 'a-review'));
   const current = (await req('/v1/namespaces/default/capabilities/a-review')).body;
-  const upgraded = await req('/v1/namespaces/default/capabilities/a-review', { method: 'PATCH', body: JSON.stringify({
+  // 内容变更的合法路径是 POST 新版本（省略 metadata.version = 内容寻址）；
+  // PATCH 带 spec 会被 400 immutable_field 拒掉，永远不会换版本。
+  const patched = await req('/v1/namespaces/default/capabilities/a-review', { method: 'PATCH', body: JSON.stringify({
     metadata: { resourceVersion: current.metadata.resourceVersion }, spec: { run: { ...current.spec.run, files: { ...current.spec.run.files, 'run.sh': '#!/bin/sh\necho upgraded\n' } } }
-  }) }); assert.equal(upgraded.status, 200);
+  }) }); assert.equal(patched.status, 400); assert.equal(patched.body.reason, 'immutable_field');
+  const upgraded = await req('/v1/namespaces/default/capabilities', { method: 'POST', body: JSON.stringify({
+    apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name: 'a-review' },
+    spec: { ...current.spec, run: { ...current.spec.run, files: { ...current.spec.run.files, 'run.sh': '#!/bin/sh\necho upgraded\n' } } }
+  }) }); assert.equal(upgraded.status, 201);
   const live = Mock.state.capabilities.find(c => c.name === 'a-review'), archived = live.versions.find(v => v.version === 17);
   assert.equal(live.uid, old.uid); assert.equal(live.version, 18); assert.notEqual(live.digest, old.digest);
   assert.deepEqual(plain(archived.spec), old.spec); assert.equal(archived.digest, old.digest);

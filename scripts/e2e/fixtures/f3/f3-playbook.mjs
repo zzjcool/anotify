@@ -97,14 +97,11 @@ export async function playbook(d,mode){
     assert.equal(await facts(), before); await shot('pure-render');
     const dry = await clickAction('#btn-dry-run', '/install'); assert.equal(dry.response.install.dryRun, true); assert.equal(await facts(), before);
     assert.equal(dry.response.values.credential, '***');
-    if (d.mock) assert.equal(dry.response.install.id, null);
-    else {
-      // 契约里 install.id **required: string**（PlaybookInstallRef）：dryRun 也带一个
-      // ins_ 身份（那是"这一次"的身份），区别只在"不进库"。所以真实断言是
-      // 「id 是真实身份 + 库里一条实例都没有」。
-      assert.match(String(dry.response.install.id), /^ins_/);
-      assert.equal((await req(basePath + '/installs')).total, 0, 'dryRun 不得落任何实例');
-    }
+    // 契约里 install.id **required: string**（PlaybookInstallRef）：dryRun 也带一个
+    // ins_ 身份（那是“这一次”的身份），区别只在“不进库”。所以断言是
+    // 「id 是真实身份 + 库里一条实例都没有」——mock 与真实服务同一条路径。
+    assert.match(String(dry.response.install.id), /^ins_/);
+    assert.equal((await req(basePath + '/installs')).total, 0, 'dryRun 不得落任何实例');
     await shot('dry-run-zero-writes');
     const first = await clickAction('#btn-install', '/install'); const second = await clickAction('#btn-install', '/install');
     assert.notEqual(first.response.install.id, second.response.install.id); assert.deepEqual(second.response.skipped, first.response.created);

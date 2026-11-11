@@ -326,15 +326,32 @@ export async function capability(d){
 			const row = await openCap(page, "lint-fix");
 			await row.locator('[data-act="delete"]').click();
 			await page.waitForSelector("#del-modal:not(.hidden)");
+			// 并发写先验一次“内容面不可变”：把整份 spec 塞进 PATCH 必须被 400 immutable_field
+			// 拒掉（这就是 f3-cases 里 f2a-demo 那条预期 400 的被测行为），且 rv 不动。
+			await page.evaluate(async () => {
+				const res = await (await fetch("/v1/namespaces/default/capabilities/f2a-demo")).json();
+				const rejected = await fetch("/v1/namespaces/default/capabilities/f2a-demo", {
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Capability", metadata: { name: "f2a-demo", resourceVersion: res.metadata.resourceVersion }, spec: res.spec }),
+				});
+				if (rejected.status !== 400) throw new Error("immutable spec PATCH must be 400, got " + rejected.status + " " + (await rejected.text()));
+				if ((await rejected.json()).reason !== "immutable_field") throw new Error("immutable spec PATCH reason must be immutable_field");
+				const after = await (await fetch("/v1/namespaces/default/capabilities/f2a-demo")).json();
+				if (after.metadata.resourceVersion !== res.metadata.resourceVersion) throw new Error("rejected PATCH must not move resourceVersion");
+			});
 			const freshRv = await page.evaluate(async () => {
 				const g = await fetch("/v1/namespaces/default/capabilities/lint-fix");
 				const res = await g.json();
 				const rv = res.metadata.resourceVersion;
-				await fetch("/v1/namespaces/default/capabilities/lint-fix", {
+				// 并发写只走 PATCH 的合法面（displayName）：带 spec 会被 400 immutable_field
+				// 拒掉，那就不再是“并发写”而是“写失败”。
+				const concurrent = await fetch("/v1/namespaces/default/capabilities/lint-fix", {
 					method: "PATCH",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Capability", metadata: { name: "lint-fix", resourceVersion: rv, displayName: "并发改动" }, spec: res.spec }),
+					body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Capability", metadata: { name: "lint-fix", resourceVersion: rv, displayName: "并发改动" } }),
 				});
+				if (!concurrent.ok) throw new Error("concurrent PATCH failed: " + concurrent.status + " " + (await concurrent.text()));
 				const again = await (await fetch("/v1/namespaces/default/capabilities/lint-fix")).json();
 				return again.metadata.resourceVersion;
 			});

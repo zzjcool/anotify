@@ -106,12 +106,11 @@ add('opaque-cas-aba',async d=>{
   const first=await d.response(p,body,'POST');assert.equal(first.status,201);
   const old=first.body.metadata;
   // DELETE 的成功码：契约是 **204 无响应体**（api/resource.yaml · deleteCapability）。
-  // 真实服务就是 204；mock 预览的旧实现仍回 200+Status（mock→204 的对齐连同
-  // v4-frontend 的 req() 一起留到下一轮），所以这里断言"成功码属于契约集合"，
-  // 而"确实删掉了"由后面的 recreate-uid / stale-409 断言证明。
+  // mock 之前回 200+Status 是预览期的旧实现，现在与真实服务一致：
+  // 既验状态码也验“没有响应体”，而“确实删掉了”由后面的 recreate-uid / stale-409 证明。
   const removed=await d.response(p+'/f3-cas-recreated?resourceVersion='+encodeURIComponent(old.resourceVersion),null,'DELETE');
-  assert.ok([200,204].includes(removed.status),'DELETE 成功码必须是 204（真实）/200（mock 旧实现），实际 '+removed.status);
-  if(removed.status===204) assert.equal(removed.body,null,'204 不得带回响应体');
+  assert.equal(removed.status,204,'DELETE 成功码必须是 204，实际 '+removed.status);
+  assert.equal(removed.body,null,'204 不得带回响应体');
   const second=await d.response(p,body,'POST');assert.equal(second.status,201);
   // Finish both independent assertions even if UID is already known wrong.
   const stale=await d.response(p+'/f3-cas-recreated?resourceVersion='+encodeURIComponent(old.resourceVersion),null,'DELETE');

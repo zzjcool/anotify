@@ -1419,6 +1419,22 @@
 		);
 	}
 
+	// 204 无响应体（v4 的 DELETE 一律如此：resource_capability.go / resource_source.go /
+	// resource_node.go 都是 `w.WriteHeader(http.StatusNoContent)`）。没有内容就没有
+	// Content-Type，`res.json()` 在真 fetch 上会抛 —— 页面 `api()` 见到 204 直接给 null。
+	function noContent() {
+		if (typeof Response === "function") return new Response(null, { status: 204 });
+		return {
+			ok: true,
+			status: 204,
+			headers: { get: () => null },
+			json: async () => {
+				throw new SyntaxError("Unexpected end of JSON input");
+			},
+			text: async () => "",
+		};
+	}
+
 	const notFound = (what) => statusErr(404, "NotFound", what + "不存在");
 	const badRequest = (reason, message) => statusErr(400, reason || "BadRequest", message);
 	const conflict = (message, row) =>
@@ -1848,47 +1864,26 @@
 		return token ? "/v1/hooks/" + token : null;
 	}
 
-	function sourceResolvedTargets(row) {
-		return (row.targets || []).map((t) => {
-			const cap = resolveCapRef(t.capability, row.ns);
-			const parsed = splitRef(t.capability);
-			if (!cap) {
-				return {
-					capability: t.capability,
-					name: parsed.name,
-					version: parsed.version,
-					missing: true,
-					reason: "NotFound",
-					params: clone(t.params || {}),
-				};
-			}
-			return {
-				capability: t.capability,
-				name: cap.name,
-				version: cap.version,
-				digest: cap.digest,
-				missing: false,
-				params: clone(t.params || {}),
-			};
-		});
-	}
+	// v4 的源读模型**没有**“解析后的 targets”投影（那是 v3 的派生字段）：
+	// 引用在不在库里由派发（pending[]/pruned）与任务事实回答。
 
 	function deriveSourceStatus(row) {
-		const targets = sourceResolvedTargets(row);
+		const declared = row.targets || [];
+		// 与真实读模型逐字对齐（resource_source.go·srcEnvelopeOf / srcHealth）：
+		//   · health 只看 enabled 与“**声明**了出口没有”（ok / blocked / disabled）；
+		//     引用解析不到**不降级**——“哪个引用不存在”是派发事实（pending[]/任务
+		//     剪枝留痕）说的，不是读模型猜的；
+		//   · targetsResolved 是「声明了至少一个出口」（boolean），不是“全部能解析”。
 		let health = "ok";
 		if (!row.enabled) health = "disabled";
-		else if (!targets.length) health = "blocked";
-		else if (targets.some((t) => t.missing)) health = "blocked";
-		else if (row.unapplied) health = "unapplied";
+		else if (!declared.length) health = "blocked";
 		return {
 			hookUrl: sourceHookUrl(row),
 			lastFiredAt: row.lastFiredAt || null,
 			nextFireAt: row.nextFireAt || null,
 			enabled: !!row.enabled,
 			health: health,
-			// 契约 api-conventions §7.2 定的是 **boolean**：所有 target 都解析到才 true。
-			// 没有任何 target 不算“解析完成”（这种源是 health=blocked），明细不在这里。
-			targetsResolved: targets.length > 0 && targets.every((t) => !t.missing),
+			targetsResolved: declared.length > 0,
 			lastError: row.lastError || null,
 			installedFrom: row.installedFrom || null,
 		};
@@ -2832,6 +2827,13 @@
 		const saved = updateNodeConfig(row, { metadata: { resourceVersion: ctx.body.metadata?.resourceVersion }, ...(ctx.body.spec || {}) });
 		return saved.status === 200 ? json(nodeResource(row)) : saved;
 	});
+	// 删节点 = 204 无体（resource_node.go），CAS 令牌在 query（?resourceVersion=）。
+	on("DELETE", /^\/v1\/nodes\/([^/]+)$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		const cas = checkCasQuery(ctx.query, row); if (cas) return cas;
+		state.nodes.splice(state.nodes.indexOf(row), 1);
+		return noContent();
+	});
 	on("POST", /^\/v1\/nodes\/([^/]+)\/tokens$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
 		if (ctx.body != null && (!configObject(ctx.body) || Object.keys(ctx.body).length)) return badRequest("unknown_field", "tokens accepts an empty body");
@@ -2899,6 +2901,8 @@
 	// ===== Playbook: raw package -> pure render -> atomic additive plan =====
 	const PB_LIST = /^\/v1\/namespaces\/([^/]+)\/playbooks$/;
 	const PB_ONE = /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)$/;
+	// dryRun 回执的 `ins_…` 预览序号（不进库，也不占真实安装的序号）。
+	let previewInstalls = 0;
 	const pbObject = v => !!v && typeof v === "object" && !Array.isArray(v);
 	const pbFail = (reason, message) => { throw Object.assign(new Error(message), { reason }); };
 	const pbParse = (text, path) => {
@@ -3047,7 +3051,10 @@
 		if (input != null && !pbObject(input)) pbFail("values_invalid", "values must be an object");
 		const values = pbDefaults(pkg.root.spec.values || {}, input || {});
 		pbValidateValues(pkg.root.spec.values, values);
-		const documents = { capabilities: [], sources: [] }; const files = clone(row.files);
+		// `files` 只含**被引用的**能力/源文件（playbook.yaml 不渲染、未被引用的文件不进结果），
+		// 与 playbook.Render 的 RenderResult.Files 同键集。mock 没有 YAML 序列化器，
+		// 正文用 JSON 文本（真服务端是渲染后的 YAML 文本）：页面只展示不解包。
+		const documents = { capabilities: [], sources: [] }; const files = {};
 		const errorSecrets = pbSecrets(pkg.root.spec.values, values);
 		try {
 		for (const [slot, entries] of Object.entries(pkg.documents)) {
@@ -3086,6 +3093,23 @@
 		for (const name of byName.keys()) visit(name);
 		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents };
 		} catch (error) { if (error.reason) error.message = pbMask(error.message, errorSecrets); throw error; }
+	}
+	// `/render` 的响应体是**平铺**的 RenderResult（api/resource.yaml·PlaybookRenderResult）：
+	// {values, valuesDigest, files, capabilities, sources}。`documents` 只是本文件内部给 plan
+	// 用的一份索引，不上 wire。能力是归一化后的能力文档；源是 `{name, displayName?, spec}`
+	// （playbook.Source：名字在顶层，没有 metadata 包装）。
+	function pbRenderResult(rendered) {
+		return {
+			values: rendered.values,
+			valuesDigest: rendered.valuesDigest,
+			files: rendered.files,
+			capabilities: rendered.documents.capabilities,
+			sources: rendered.documents.sources.map((d) => ({
+				name: d.metadata.name,
+				...(d.metadata.displayName ? { displayName: d.metadata.displayName } : {}),
+				spec: d.spec,
+			})),
+		};
 	}
 	function pbVersions(row) {
 		return row ? [row].concat((row.versions || []).map(v => Object.assign({}, row, v, { receiptPolicy: clone(v.receiptPolicy || {}), receiptRef: v.receiptRef, versions: [] }))) : [];
@@ -3158,7 +3182,10 @@
 		return [path];
 	}
 	function pbPlan(row, rendered, dryRun) {
-		const id = dryRun ? null : "ins_mock_" + (state.playbookInstalls.length + 1);
+		// install 身份每一**次**尝试都有一个 `ins_…`（playbook.InstallRef.id 是 required），
+		// dryRun 也不例外：区别只在“不进库”（store 整事务回滚），所以预览用独立序号，
+		// 不吃真实安装的序号。
+		const id = dryRun ? "ins_mock_preview_" + (++previewInstalls) : "ins_mock_" + (state.playbookInstalls.length + 1);
 		const receipt = { apiVersion: API_VERSION, kind: "InstallReceipt", playbook: { name: row.name, version: row.root.metadata.version || null }, ...(row.source ? { source: row.source } : {}), install: { id, at: isoNow(), dryRun }, namespace: row.ns,
 			values: rendered.values, valuesDigest: rendered.valuesDigest, created: { capabilities: [], sources: [] }, skipped: { capabilities: [], sources: [] }, upgraded: [], unapplied: [], external: [], pending: [], notes: [] };
 		const additions = { capabilities: [], sources: [] }; const conflicts = [];
@@ -3180,7 +3207,7 @@
 			const explicit = d.metadata.version; const key = capabilityContentKey(d.spec);
 			const existing = explicit == null ? versions.find(v => capabilityContentKey(v.spec) === key) : versions.find(v => v.version === explicit);
 			if (existing && capabilityContentKey(existing.spec) !== key) {
-				conflicts.push({ kind: "capability", ref: name + "@" + explicit, reason: "version_content_immutable", declaredDigest: capabilityDigest(name, explicit, d.spec), actualDigest: existing.digest, fields: pbDiff(capabilityContent(d.spec), capabilityContent(existing.spec), "spec") });
+				conflicts.push({ kind: "capability", ref: name + "@" + explicit, reason: "version_conflict", declaredDigest: capabilityDigest(name, explicit, d.spec), actualDigest: existing.digest, fields: pbDiff(capabilityContent(d.spec), capabilityContent(existing.spec), "spec") });
 				continue;
 			}
 			if (existing) {
@@ -3225,7 +3252,10 @@
 			}
 			if (d.spec.enabled === false) note("source_disabled", name, "Source is disabled.");
 		}
-		if (conflicts.length) return { error: statusErr(400, "playbook_conflict", "Whole package rejected; no resources or receipt written", pbMask({ valuesDigest: rendered.valuesDigest, conflicts, hint: "Choose a new explicit capability version or edit the existing source separately; install never overwrites existing definitions." }, secrets)) };
+		// 400 的**顶层** reason 是封闭码（playbook.conflictError）：只要有源冲突就是
+		// `playbook_conflict`，纯能力冲突是 `version_content_immutable`。逐条明细（conflicts[]）
+		// 才是 `version_conflict` / `config_differs`。
+		if (conflicts.length) return { error: statusErr(400, conflicts.some(c => c.kind === "source") ? "playbook_conflict" : "version_content_immutable", "Whole package rejected; no resources or receipt written", pbMask({ valuesDigest: rendered.valuesDigest, conflicts, hint: "Choose a new explicit capability version or edit the existing source separately; install never overwrites existing definitions." }, secrets)) };
 		const inPackage = new Set(rendered.documents.capabilities.map(d => d.metadata.name));
 		const refs = rendered.documents.capabilities.flatMap(d => d.spec.next || []).concat(rendered.documents.sources.flatMap(d => (d.spec.targets || []).map(t => t.capability)));
 		for (const ref of [...new Set(refs)]) {
@@ -3240,7 +3270,9 @@
 				const identity = pbVersions(findCap(row.ns, existing.name)).find(c => c.version === existing.version);
 				display({ metadata: { name: existing.name, version: existing.version } }, identity?.receiptPolicy);
 				if (identity?.receiptRef && identity.receiptRef !== actualRef || identity?.receiptPolicy?.properties?.metadata?.properties?.version?.writeOnly) secrets.push(actualRef);
-				receipt.external.push(actualRef);
+				// external 里的 ref 是**包里写的那一串**（plan.go·resolveRefs 原样收集），
+				// 不补 `@版本`：回执说的是“包里写了什么”，版本由那条能力自己决定。
+				receipt.external.push(ref);
 			}
 		}
 		// Reachability uses ACTUAL reused routes, not the unapplied declaration.
@@ -3313,7 +3345,7 @@
 		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
 		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", "Only values and install.dryRun are accepted");
 		const rendered = pbRender(row, ctx.body?.values);
-		if (action === "render") return json(rendered);
+		if (action === "render") return json(pbRenderResult(rendered));
 		const dryRun = ctx.body?.dryRun === true;
 		const plan = pbPlan(row, rendered, dryRun); if (plan.error) return plan.error;
 		if (!dryRun) pbCommit(row, plan);
@@ -3506,15 +3538,45 @@
 		if (!NAME_RE.test(name)) {
 			return badRequest("BadRequest", "metadata.name 只允许小写字母/数字/._-，且以字母或数字开头");
 		}
-		if (findCap(ns, name)) {
-			return statusErr(409, "AlreadyExists", "能力 " + name + " 已存在（升级请用 PATCH）");
+		const requested =
+			body.metadata && body.metadata.version != null && body.metadata.version !== ""
+				? Number(body.metadata.version)
+				: null;
+		if (requested != null && (!Number.isInteger(requested) || requested < 1)) {
+			return badRequest("BadRequest", "metadata.version 必须是 ≥1 的整数");
 		}
 		const spec = clone(body.spec || {});
 		// 单建严格（capability.md §6.3）：next 解析不到 / env 用了没声明的值都拒。
 		const verr = validateNewCapability(spec, ns);
 		if (verr) return verr;
-		const version = Number((body.metadata && body.metadata.version) || 1) || 1;
-		const row = {
+		// v4 的 POST 是**内容寻址**（store.createCapabilityTx，不是“同名就 409”）：
+		// 显式版本按 (name, version) 找行、省略版本按 foldKey（不含 version/next）找同内容行，
+		// 找到就复用那一行；**同版本异正文**才是 400 version_content_immutable。
+		// 因此“改正文”的合法路径永远是 POST（省略 version 自动分配 max+1）。
+		const current = findCap(ns, name);
+		const versions = pbVersions(current);
+		const hit =
+			requested != null
+				? versions.find((v) => v.version === requested)
+				: versions.find((v) => capabilityContentKey(v.spec) === capabilityContentKey(spec));
+		if (hit) {
+			if (capabilityContentKey(hit.spec) !== capabilityContentKey(spec)) {
+				return badRequest(
+					"version_content_immutable",
+					name + "@" + requested + "（版本行不可变；改内容请开新版本）",
+				);
+			}
+			// 复用哪一行就回哪一行的信封（真服务返回被复用的那个版本行，
+			// 不是“当前版本”）。
+			return json(
+				hit.version === current.version
+					? capabilityResource(current)
+					: archivedVersionResource(current, hit, ctx.query.get("includeBody") === "true"),
+				201,
+			);
+		}
+		const version = requested != null ? requested : Math.max(0, ...versions.map((v) => v.version)) + 1;
+		const fresh = {
 			ns: ns,
 			name: name,
 			displayName: (body.metadata && body.metadata.displayName) || "",
@@ -3526,9 +3588,54 @@
 			versionAt: isoNow(),
 			versions: [],
 			installedFrom: null,
+			receiptPolicy: {},
 			uid: nextUID("cap"),
 		};
-		state.capabilities.push(row);
+		if (!current) {
+			state.capabilities.push(fresh);
+			return json(capabilityResource(fresh), 201);
+		}
+		// 资源级事实（uid / 创建时刻 / 安装来源 / 隐私策略）跟着**名字**走：mock 用一行
+		// 代表一个名字的当前版本（真服务是每版本一行），所以手动新版本不能把这些
+		// 事实清成空——否则历史上 `name@版本` 的脱敏与安装归属会丢。
+		const inherited = {
+			uid: current.uid,
+			createdAt: current.createdAt,
+			displayName: (body.metadata && body.metadata.displayName) || current.displayName || "",
+			installedFrom: current.installedFrom,
+			receiptPolicy: clone(current.receiptPolicy || {}),
+			receiptRef: current.receiptRef,
+		};
+		//   · 更大的版本号 → 旧当前版进历史，新行成为“当前”；
+		//   · 更小的显式版本号（“空洞”）→ 直接进历史，**不把当前版本降下去**
+		//     （真服务也是每版本一行，当前 = max）。
+		if (version < current.version) {
+			const entry = {
+				version: version,
+				digest: fresh.digest,
+				at: fresh.createdAt,
+				spec: clone(spec),
+				installedFrom: inherited.installedFrom,
+				receiptPolicy: clone(inherited.receiptPolicy),
+				receiptRef: inherited.receiptRef,
+			};
+			current.versions = (current.versions || []).concat([entry]);
+			current.rv = nextRV();
+			return json(archivedVersionResource(current, entry, ctx.query.get("includeBody") === "true"), 201);
+		}
+		const archived = (current.versions || []).concat([
+			{
+				version: current.version,
+				digest: current.digest,
+				at: current.versionAt || current.createdAt,
+				spec: clone(current.spec || {}),
+				installedFrom: current.installedFrom,
+				receiptPolicy: clone(current.receiptPolicy || {}),
+				receiptRef: current.receiptRef,
+			},
+		]);
+		const row = Object.assign(fresh, inherited, { versions: archived });
+		state.capabilities.splice(state.capabilities.indexOf(current), 1, row);
 		return json(capabilityResource(row), 201);
 	});
 
@@ -3557,56 +3664,43 @@
 		if (body.metadata && body.metadata.name && body.metadata.name !== row.name) {
 			return badRequest("name_immutable", "metadata.name 不可变");
 		}
-		// 版本规则（capability.md §3）：改 next/displayName 原地生效；改正文出新版本。
-		const nextSpec = body.spec ? clone(body.spec) : clone(row.spec);
-		const contentChanged = capabilityContentKey(nextSpec) !== capabilityContentKey(row.spec);
-		const explicitVersion =
+		// 内容面不可变（capability.md §3 / resource_capability.go·immutableCapabilitySpecPatch）：
+		// PATCH 只接 `spec.next` 与 `metadata.displayName`；写了别的 spec 键一律 400
+		// immutable_field —— 静默忽略会让人以为改生效了，而部署 digest 根本没变。
+		// 改正文的合法路径是 **POST 新版本**（省略 metadata.version = 内容寻址）。
+		const rejected = Object.keys(pbObject(body.spec) ? body.spec : {})
+			.filter((k) => k !== "next")
+			.sort();
+		if (rejected.length) {
+			return badRequest(
+				"immutable_field",
+				"PATCH 只接受 spec.next 与 metadata.displayName；内容不可变，改内容请提交新版本（POST）: spec." +
+					rejected.join(", spec."),
+			);
+		}
+		// 显式 metadata.version 只是定位（version 并非 PATCH 的写入面）：对不上任何已存在
+		// 版本就是 404，版本号本身永远不会被 PATCH 改掉。
+		const targeted =
 			body.metadata && body.metadata.version != null && body.metadata.version !== ""
 				? Number(body.metadata.version)
 				: null;
-		if (explicitVersion != null && (!Number.isInteger(explicitVersion) || explicitVersion < 1)) {
+		if (targeted != null && (!Number.isInteger(targeted) || targeted < 1)) {
 			return badRequest("BadRequest", "metadata.version 必须是 ≥1 的整数");
 		}
-		if (contentChanged) {
-			// 版本号唯一 + 正文不可变：显式版本只要**已存在**（当前行或归档行）
-			// 就不能换正文。只比 `row.version` 会让归档版本被覆盖，历史与
-			// “当前 = max(metadata.version)”两个不变式一起被打破。
-			const archived = (row.versions || []).slice();
-			const known = [row.version].concat(archived.map((v) => v.version));
-			const maxVersion = Math.max.apply(null, known);
-			if (explicitVersion != null && (explicitVersion === row.version || archived.some((v) => v.version === explicitVersion))) {
-				return badRequest(
-					"version_content_immutable",
-					"显式版本 " + explicitVersion +
-						" 的执行正文不可变：改 run/params/requires/lifecycle/concurrency 必须换一个 version（next/displayName 例外）",
-				);
+		const includeBody = ctx.query.get("includeBody") === "true";
+		if (targeted != null && targeted !== row.version) {
+			const archived = (row.versions || []).find((v) => v.version === targeted);
+			if (!archived) return notFound("能力 ");
+			if (pbObject(body.spec) && "next" in body.spec) {
+				archived.spec = Object.assign({}, clone(archived.spec || {}), { next: clone(body.spec.next) });
 			}
-			// 显式版本必须比所有已知版本更新：否则“当前版本”会低于历史最大值，
-			// 页面的 latest=max 投影会指向一个旧正文。
-			if (explicitVersion != null && explicitVersion < maxVersion) {
-				return badRequest(
-					"version_not_increasing",
-					"显式版本 " + explicitVersion + " 小于已存在的最大版本 " + maxVersion + "：当前版本必须 = max(metadata.version)",
-				);
-			}
-			// 归档旧版（digest/正文留着：节点可能还拿着旧 digest）。
-			row.versions = archived.concat([
-				{
-					version: row.version,
-					digest: row.digest,
-					at: row.versionAt || row.createdAt,
-					spec: clone(row.spec || {}),
-					installedFrom: row.installedFrom,
-					receiptPolicy: clone(row.receiptPolicy || {}),
-					receiptRef: row.receiptRef,
-				},
-			]);
-			// 省略 version = 内容寻址：没有可复用的同一正文行，分配下一个版本号。
-			row.version = explicitVersion != null ? explicitVersion : maxVersion + 1;
-			row.versionAt = isoNow();
-			row.digest = capabilityDigest(row.name, row.version, nextSpec);
+			if (body.metadata && "displayName" in body.metadata) row.displayName = body.metadata.displayName || "";
+			row.rv = nextRV();
+			return json(archivedVersionResource(row, archived, includeBody));
 		}
-		row.spec = nextSpec;
+		if (pbObject(body.spec) && "next" in body.spec) {
+			row.spec = Object.assign({}, clone(row.spec || {}), { next: clone(body.spec.next) });
+		}
 		if (body.metadata && "displayName" in body.metadata) {
 			row.displayName = body.metadata.displayName || "";
 		}
@@ -3627,7 +3721,8 @@
 		state.deployments = state.deployments.filter(
 			(d) => !(d.ns === ns && d.capability === row.name),
 		);
-		return json({ apiVersion: API_VERSION, kind: "Status", status: "Success", code: 200 });
+		// 删除成功 = 204 无体（真实服务没有需要回给客户端的对象状态）。
+		return noContent();
 	});
 
 	// 人工部署：把目标版本的 digest 写成 deployments 事实（install 不会自动调用它）。
@@ -3878,7 +3973,8 @@
 		const cas = checkCasQuery(ctx.query, row);
 		if (cas) return cas;
 		state.sources.splice(state.sources.indexOf(row), 1);
-		return json({ apiVersion: API_VERSION, kind: "Status", status: "Success", code: 200 });
+		// 204 无体（resource_source.go·remove）：删除没有回执对象。
+		return noContent();
 	});
 
 	// 事件入库 + 派发：fire 与 ingress 共用（去重、剪枝留痕、建任务）。
@@ -4096,7 +4192,9 @@
 		if (token) {
 			const cursor = continuations.get(token);
 			if (!cursor || cursor.binding !== binding) {
-				return { err: badRequest("invalid_continue", "Continuation does not match this namespace/filter") };
+				// 与真服务同文（api_cas.go·decodeCursor）：cursor 绑 ns+筛选条件，
+				// “它就是不属于这次查询” —— 不静默回第一页。
+				return { err: badRequest("BadRequest", "continue token does not belong to this query") };
 			}
 			offset = cursor.offset;
 		}
