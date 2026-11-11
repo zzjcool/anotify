@@ -959,10 +959,11 @@ func (d *DB) AckCancelAuthorized(ctx context.Context, auth NodeAuthorization,
 		rowAttempt   int
 		cancelReason sql.NullString
 		cancelReq    sql.NullInt64
+		stopIntent   string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, attempt, cancel_reason, cancel_requested_at FROM tasks WHERE id = ?`, in.TaskID).
-		Scan(&phase, &rowAttempt, &cancelReason, &cancelReq)
+		`SELECT phase, attempt, cancel_reason, cancel_requested_at, stop_intent FROM tasks WHERE id = ?`, in.TaskID).
+		Scan(&phase, &rowAttempt, &cancelReason, &cancelReq, &stopIntent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -984,7 +985,7 @@ func (d *DB) AckCancelAuthorized(ctx context.Context, auth NodeAuthorization,
 		if reason == "" {
 			reason = protocol.ReasonAbandonedByUser
 		}
-		finalPhase := cancelPhase(reason)
+		finalPhase := cancelPhase(stopIntent, reason)
 		ok, ferr := d.finishTxGuarded(ctx, tx, in.TaskID, TaskRunning, finalPhase, "", nil, now)
 		if ferr != nil {
 			return ferr
