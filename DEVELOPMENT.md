@@ -2,44 +2,32 @@
 
 > 新 Agent / 贡献者上手必读。本文档把架构决策、开发流程、测试方法、踩过的坑全部固化，确保任何人（或 AI Agent）接手都能快速进入开发状态。
 
-## 0.5 能力是怎么定义和部署的（console-declares，v2）
+## 0.5 v4 的形状（先读这一节，否则会拿 v3 的心智读代码）
 
-一句话：**控制台是唯一的创作面，节点是纯执行面。**
+v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agent`、`internal/broker`、
+中央执行域（`internal/executor` / `internal/ws` 的 NodeHandler）已删除，不保留兼容层。
 
-```
-控制台「新建能力」→ 选模板（9 个）→ 填表单 → 编译成一份【能力产物】
-     产物 = 参数契约 + 入口文件 + 全部文件内容 + 超时 + env + 依赖命令
-     digest = sha256(canonical JSON)          ← 内容寻址，永远答得出「跑的是哪一版」
-        ↓ 点「部署」，选机器
-中枢 → deploy 帧 → 节点：校验 → 探 requires → 原子落盘 → 回 apply 帧 → 重发 hello
-        ↓ 派发
-assign 帧 = {capability, version, params, digest, trace_id, 租约}   ← 仍然不含命令
-节点按 digest 找缓存 → 在 <data-dir>/work/<task_id>/ 里直接 exec 入口（不经 shell）
-```
+| 进程 | 入口 | 职责 |
+| --- | --- | --- |
+| 中枢 `anotify` | `cmd/server` | HTTP/WS 资源面 + 派发 + 推送；**不执行任何能力** |
+| 节点 `anode` | `cmd/anode` | `serve`（连中枢、跑能力）/ `install`（落盘）/ `emit`（出口） |
+| 播种 `devseed` | `cmd/devseed` | 开发/测试辅助：真实资源 + 真实事件链（见 `make dev-demo`） |
 
-几条必须记住的：
+四条必须记住的：
 
-- **`node.yaml` 只剩四件**：`name / server / token / instances`。多一个键就是未知字段，
-  agent 直接启动失败（`cmd/agent/config.go`）。
-- **能力归属只有一个写者**：控制台的部署。节点在 hello 里只能陈述「我缓存了什么」
-  （`applied[]`），不能给自己发能力。
-- **产出只有一个通道：emit**：能力脚本调 `anotify-agent emit --data <json>`
-  （`ANOTIFY_EMIT_SOCK` / `ANOTIFY_TASK_ID` / `ANOTIFY_TASK_TOKEN` 由 agent 注入，
-  `ANOTIFY_AGENT_BIN` 是 agent 自己的路径）。**`--port` 可选**：能力只有一个出口时
-  agent 自动采用它；0 个出口（终端能力）报错；≥2 个出口（历史多出口数据）才必须显式给
-  `--port`，省略会报错并列出可用名字。`--data` 就是下游的 params。0 次 emit = 到此为止（合法）。
-  **`.anotify-out` / `$ANOTIFY_OUT_FILE` / `result.out` 已退役**（P1.5，无兼容层）：
-  写了也没人读，`tasks.out` 新写入恒为 NULL，出口的位置是 `emissions.port`。
-  见 `CONTRACT.md` §2.5 / §6.1 与 `docs/design/emit-protocol.md`。
-- **路由只看 emit 的 `port`，不看 `status`**（I4）：失败**之前** emit 过就继续，
-  没 emit 就终止。`status` 只做展示与重试策略。
-- **I1 是「执行边界」不是「字节级无命令」**：中枢不得 `os/exec`，节点执行的一切必须
-  内容寻址 + 不可变 + 可审计 + 受**节点启动参数**（并发/资源/网络，中枢推不动）约束。
-  `make contract` 的 A5/A6/A7 三条机检它。
-- **产物可以脱离中枢单跑**：`anotify-agent run ./capability.yaml -p k=v`。
-  这是「拷到别的机器直接能跑」的落地，也是不信任中枢时的逃生舱。
+- **四个资源对象**：`Namespace` / `Capability` / `Source` / `Node`。权威语义在
+  `docs/design/v4/{capability,source,anode,playbook}.md`；API 从它们派生（`api/` 五份 spec）。
+- **中枢不持有「怎么执行」**：`internal/*` 与 `cmd/server` 不得 import `os/exec`
+  （`make contract` 的 A5 机检），执行只发生在节点（`cmd/anode/internal/runner`）。
+- **产出只有一个通道：emit**：能力脚本调 `anode emit --to <name> --data <json>`；
+  节点注入 `ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN`（v3 的 `ANOTIFY_EMIT_SOCK`
+  与 `result.out` 已退役，无兼容层）。0 次 emit = 到此为止（合法）；路由只看出口，不看 status。
+- **版本必须同源**：中枢的 `internal/version.String()`（`<version>+<commit>`）就是节点的
+  升级目标版本，`anode` 的 `main.version` 由 Makefile 注入**同一个串**（`VERSION_LABEL`）；
+  两处不等 → 「已是最新」永远判不出来，节点会被反复升级。
 
-权威契约：`.pi-orchestrator/console-declares/`。
+CLI 手册：`docs/v4/anode-cli.md`（被 `make check-anode-skill` 机检）。
+v3 的 `skill.md` / `--skill` / `anotify-agent <sub>` 命令全部退役。
 
 ## 1. 项目是什么
 
@@ -52,20 +40,27 @@ Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件
 | 层 | 选型 | 决策理由 |
 | --- | --- | --- |
 | 后端 | **Go 单二进制** + `go:embed` 内嵌前端 | 自托管首要价值是「单文件分发」，不引入运行时依赖 |
-| 存储 | **SQLite**（纯 Go `modernc.org/sqlite`，无 CGO） | 数据库先行；Broker 接口抽象，未来可换 NATS/Redis/Kafka 零业务改动 |
+| 存储 | **SQLite**（纯 Go `modernc.org/sqlite`，无 CGO） | 单库自托管；v4 的派发/结果由 store + lease + resultspool 表达（v3 的 Broker 抽象已退役） |
 | 认证 | **Passkey (WebAuthn)** + 密码登录（可选） + API Key (argon2id) | Passkey 为主路径；密码是第二套模型（可移除）；Key 仅存哈希带 scope |
 | 推送 | **Web Push (VAPID)**，FCM + APNs 双链路 | 标准 Web Push，按 endpoint 自动路由 |
 | 前端 | **纯静态 HTML + Tailwind CDN + tokens.css** | 无构建框架；用指纹脚本实现 content-hash（不引入 Vite 等重型链） |
 | 测试 | Go 单测 + Node E2E（Playwright 虚拟认证器） | Passkey 全流程无头自动化；除 iOS 真机外全自动 |
 
-### 核心架构（必须理解）
+### 核心架构（v4：中枢 / 节点两个产品）
 
 ```
-Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS 派发器(消费者1) ─▶ WebSocket 客户端
- (Bearer Key)        单二进制      队列+历史       └─▶ Push 派发器(消费者2) ─▶ Web Push(APNs/FCM)
+外部系统 ─HTTP/WS─▶ 中枢 anotify（cmd/server）─▶ SQLite（namespace/capability/source/node/event/task/lease）
+                         │
+                         ├─ 派发（lease + resultspool）──WS──▶ 节点 anode（cmd/anode）──▶ 执行能力脚本
+                         └─ Web Push ──▶ 设备
+
+能力脚本出口：anode emit（ANOTIFY_EMIT_ENDPOINT + ANOTIFY_TASK_TOKEN）→ 中枢生成下游任务
 ```
 
-**两条接收通道 = Broker 的两个消费者**（WS + WebPush）。Broker 接口（`internal/broker/broker.go`）是核心抽象边界，划在 Publish/Subscribe/Ack/Replay 上，不在 HTTP/WS 处理器上——换 MQ 时业务代码零改动。
+**中枢不执行，节点才是执行面**：中枢侧任何包不得 `os/exec`（`make contract` A5 机检），
+执行器只在 `cmd/anode/internal/runner`；节点用同一条 WS 长连接上报 hello/心跳/结果，
+中枢通过 `logical / config / upgrade / logs` 运维帧反向发起动作。v3 的 `internal/broker`
+（SQLite 队列 + WS/Push 两个消费者）与 NodeHandler 已删除，不保留兼容层。
 
 ### 投递规则（投递给设备 ⟺ 三条件全满足）
 
@@ -156,8 +151,8 @@ make fe       # sitegen + hash（指纹化到 internal/server/dist）
 
 ```bash
 make mock   # 纯前端预览（mock 数据，不连后端），:7788
-make dev    # 先跑 sitegen 生成 web/*.html，再用 web/ 本地目录起服务（改完即生效），:8080
-make build  # 产出单二进制 anotify（sitegen + 指纹 + embed）
+make dev    # sitegen 生成 web/*.html → 起 server + tunnel + devseed（anode 二进制也会编好）
+make build  # 产出两个产品二进制：anotify（sitegen + 指纹 + embed）与 anode（节点）
 ```
 
 #### 只想看前端？`make mock`
@@ -400,123 +395,79 @@ INPUT 链，ufw 的 `DEFAULT_INPUT_POLICY=DROP` 拦不到它。所以那个测�
 ### 改前端后必须重新指纹 + 重建
 
 ```bash
-make build  # 自动跑指纹 + go build
+make build  # 自动跑指纹 + go build（anotify + anode）
 ```
 
-### 升级机器上的 agent（自升级）
+### 升级节点上的 anode（自升级）
 
-中枢自己带 agent 二进制（`ANOTIFY_AGENT_BIN`，默认 `/app/agent`，镜像里已有），
-所以升级不再依赖 GitHub raw + sudo：
+中枢镜像自带节点二进制（`ANOTIFY_AGENT_BIN`，v4 指向镜像里的 `/app/anode`；环境变量名是
+server 侧的历史命名，见 `internal/server/config.go`），所以升级不依赖 GitHub raw + sudo：
 
 ```bash
-anotify-agent upgrade --check     # 只看：当前 → 目标（退出码 0 有更新 / 1 已最新 / 2 服务端未启用）
-anotify-agent upgrade --restart   # 换二进制并重启服务
+# 控制台「节点」页点「升级」（二次确认），或直接调 API（会话鉴权）：
+curl -X POST -b "$SESSION" https://<中枢>/v1/nodes/node-a/upgrade
+# 已是最新 → {"status":"up_to_date"}；脏构建（dev / 含 dirty）永不判最新
 ```
 
-也可以在控制台「节点」页点「升级」（二次确认；会替换节点上的二进制并重启 agent，
-正在跑的任务会被等完，grace 20s）。服务端没带二进制时接口回 `501` `agent_binary_unavailable`，
-按钮会提示「服务端没带 agent 二进制」。
+节点收到 `upgrade` 帧后用自己的 **node token** 走 `GET /v1/node/binary` 下载、校验 sha256、
+原子替换并重启自己（`cmd/anode/internal/ops`）。正在跑的任务会被等完（grace 20s）。
+服务端没带二进制时接口回 `501 agent_binary_unavailable`，控制台按钮会提示「服务端没带二进制」。
 
-**兜底**：以上都不行时仍可重跑 `scripts/install-agent.sh` —— 首次安装、镜像不通、
-容器只读 FS 的 `not_supported` 都走这条。细节见 `docs/agent-install.md`；
-设计 / 退出码 / 排查表见 `docs/design/agent-upgrade.md`。
+> v3 的 `anotify-agent upgrade --check/--restart` 已随节点产品退役：v4 的节点没有 CLI 升级
+> 子命令，升级是**中枢发起**的运维动作。首次安装见 `docs/v4/anode-cli.md` 的
+> `anode install`（下载/校验在 `scripts/install-anode.sh`）。
 
-### 节点本地的执行档案（runs/）：输入与完整输出
+### 节点本地的执行档案（resultstore）：只在跑它的那台机器上
 
-**每次执行都落在跑它的那台机器上**，不传中枢（params 是用户的真实输入，用户要求
-「这个只存在节点上」）：
+v4 的节点把每次执行落在 `<data-dir>/results/<hex(taskId)>/<attempt>/`
+（`cmd/anode/internal/resultstore`；目录 0700、文件 0600）：双流日志（stdout / stderr）、
+`meta.json`（相位/退出码/摘要/字节数）、以及本 attempt 的托管产物副本
+（脚本写到 `ANOTIFY_ARTIFACT_DIR` 的文件）。
 
-```
-<data-dir>/runs/<trace_id>/<capability>@<version>/<seqInTrace>-a<attempts>/
-    input.json    {traceId, taskId, capability, version, attempt, seqInTrace, params, workdir}
-    stdout.log    完整 stdout（单流上限 8 MiB，超限截尾 + 一行标记）
-    stderr.log    完整 stderr（同上）
-    meta.json     开始/结束时间、exitCode、status、summary、emit 次数、真实字节数
-```
+- **params 与输出不传中枢**（用户输入只存在节点上）。中枢要历史日志时发 WebSocket 运维帧
+  `logs_request` / `logs_response`（`api/agent.yaml`，按 `requestId` 配对、默认 15s 超时），
+  不是整份档案同步。
+- 保留：默认 7 天 + 最多 2000 个 attempt 目录；只清系统自有的 export/staging 副本，
+  **用户 `workDir` 里的原文件不动**。
+- v3 的 `anotify-agent runs` / `show` 子命令已退役：v4 没有「在节点上用 CLI 翻执行历史」
+  这条路径，排障走中枢的日志运维帧 + 节点数据目录。
 
-- 目录名里的两个号由**中枢**下发（assign 帧的 `seq_in_trace` / `attempts`）：
-  `seqInTrace` = 同一 trace、同一能力里的第几次执行（1 起，重派不变），
-  `attempts` = 派发世代（每次派发 +1）。旧中枢不带时退回 `attempts`。
-- 盘上是**完整**输出（8 MiB/流），与上传中枢的 `task_logs`（每流最后 32 KiB 窗口）是两回事。
-- **写盘失败不影响任务成败**（磁盘满 / `runs` 被同名文件占着 → 只 WARN，任务照旧 succeeded）。
-- 权限：目录 `0700`、文件 `0600`。保留策略：默认 7 天 + 最多 2000 个 run 目录
-  （`ANOTIFY_RUNS_RETENTION_DAYS` / `ANOTIFY_RUNS_MAX_COUNT` 覆盖），启动时跑一次 GC + 每小时一次。
-- 回看：
+### 节点 CLI 的可发现面：`-h` / `--version` / `docs/v4/anode-cli.md`
+
+`anode` 是**用户机器上**的二进制：拿到它的人可能没有仓库、没有文档、也没有网络，
+所以「它有什么命令」必须自己答得出来：
 
 ```bash
-anotify-agent runs                                    # 最近 20 条（时间倒序）
-anotify-agent runs --trace trc_xxx                    # 这条 trace 的全部执行（按执行顺序）
-anotify-agent runs --capability review@2              # 这个能力的历次执行
-anotify-agent show trc_xxx/review@2/3-a1              # 那一次的 input + stdout + stderr + meta
+anode -h          # Usage: anode {serve|install|emit} [flags]
+anode serve -h    # 子命令的 flag（install / emit 同理）
+anode --version   # 单行 JSON：{"version":"<version>+<commit>","commit":"<sha>"}
 ```
 
-退出码：找到 = 0，没找到 = 1（空结果也是 1，脚本据此判断「到底跑没跑过」）。
+三道纪律（#334）：
 
-- **机器可读面（#318）**：两种读者、两种形状——TTY 上打表格，stdout 不是终端时自动
-  `--json`（显式开也一样）。TRACE 列只打前 8 位，`show` / `--trace` 接受唯一前缀
-  （最少 8 字符；歧义退 1 + `kind=ambiguous_ref`，不输出任何日志正文），
-  `show --tail N` / `--no-stdout` / `--no-stderr` 控制读输出窗口。
+- `-h` 与 `--version` **不读 anode.yaml、不连网、不落盘**：空目录、没有令牌、断网都退 0。
+- 手册在 `docs/v4/anode-cli.md`（v4 没有内嵌 skill.md），flag 的**事实源**是子命令的 `-h`。
+  改子命令或 flag 必须同步手册与 `scripts/install-anode.sh`：`make ci` 跑
+  `scripts/check_anode_skill.py`，拿真二进制的 `-h` / `--version` 对账手册代码块里的每个
+  `anode <sub>` 与 `-flag`（写错一个 flag 就红），并守住边界（anode 只依赖
+  `internal/protocol` + `internal/artifact`，不 import 中枢包、不直连数据库）。
+- `--version` 的第一行 JSON 不能改形状：`scripts/install-anode.sh` 靠
+  `"version":"<release>"` **前缀**核对下载到的二进制（允许 `+<commit>` 后缀，与中枢的
+  `internal/version.String()` 同一个串）。
 
-```bash
-anotify-agent runs --json | jq '.runs[0].ref'   # {ref + meta.json 全字段}；空结果 {"runs":[]} 且退 1
-anotify-agent show <8 位前缀>/review@2/3-a1 --json --tail 50
-anotify-agent upgrade --check --json            # {current,latest,updated,restarted,reason}
-anotify-agent emit --to notify.phone --data '{}'    # 管道上默认 {"ok":true,"port","routed","note"}
-```
+单独跑这道门禁：`make check-anode-skill`。
 
-失败时 stderr 是**单行** `{"error":{"kind","message","hint"}}`，`kind` 与退出码对应：
-`emit` → `bad_request` / `port_not_allowed` / `schema_mismatch` / `task_gone` /
-`comm_failed` / `ack_timeout`；`upgrade` → `unavailable` / `need_root` / `bad_sha` /
-`failed`；`runs`/`show` 的 1 → `not_found` / `ambiguous_ref` / `usage`。TTY 上仍然是
-那句中文（不牺牲人的体验）。
+### 能力定义写在哪（v3 的 `check` / `schema` 已退役）
 
-### agent 的可发现面：`-h` 命令表 / `--skill` 手册 / `--version`
+v4 的能力是**中枢资源**（`POST/PUT /v1/namespaces/{ns}/capabilities`，见
+`docs/design/v4/capability.md`）：校验发生在**写入期**，错误是带 `code` 的 400
+（`invalid_name` / `entrypoint_missing` / `invalid_output` …），不再是节点上的离线子命令。
+节点只消费中枢下发的产物（内容寻址，按 digest 缓存）。
 
-`anotify-agent` 是**用户机器上**的二进制：拿到它的人可能没有仓库、没有文档、也没有网络，
-所以「它有什么命令」必须是二进制自己答得出来的：
-
-```bash
-anotify-agent -h          # 命令表：节点模式（不带子命令 = 常驻进程）+ 7 个子命令（名字/人话/示例）
-anotify-agent --skill     # 内嵌手册：起节点 / 写能力与上报 / 排障 / 退出码表 / 不要做
-anotify-agent --version   # 一行：anotify-agent <version> (<commit>, <builtAt>)
-```
-
-两条纪律（#317）：
-
-- `--skill` 与 `--version` **不读 node.yaml、不连网、不落盘**：空目录、没有
-  `ANOTIFY_TOKEN`、断网都照样退 0。它们因此在「机器刚起来、配置还没修好」时也可用。
-- 手册正文在 `cmd/agent/skill.md`（`//go:embed` 编进二进制），命令表在
-  `cmd/agent/usage.go`。**改子命令或 flag 必须同步这两处**：`make ci` 会跑
-  `scripts/check_agent_skill.py`，它拿真二进制的 `-h` / `--version` / `--skill` 对账
-  手册里的每个 `anotify-agent <sub>` 与 `-flag`（写错一个 flag 就红）。
-
-单独跑这道门禁：`make check-agent-skill`。
-
-### agent 的书写面：`check` 校验 / `schema` 出 JSON Schema（#319）
-
-写能力 yaml 的人（现在越来越多是 coding agent）此前只有两条验错的路：`run ./x.yaml`
-（**会真的执行**入口文件）或者等中枢下发失败。两条命令把校验器搬到命令行：
-
-```bash
-anotify-agent check ./capability.yaml          # 只 Parse + Validate：一次列出全部问题
-anotify-agent check ./capability.yaml --json   # {"ok":false,"problems":[{"code","message"}]}
-anotify-agent schema capability                  # 能力 yaml 的 JSON Schema（缺省）
-anotify-agent schema node                      # node.yaml 的四个键
-anotify-agent schema emit                      # 出口契约（$ANOTIFY_EMIT_PORTS / emit.json）
-```
-
-- `check` 的三条边界：**不执行、不连中枢、不落盘**（`run` 三条全反）。问题打在 stdout
-  （那是这条命令的答案），退出码 0 全过 / 1 有问题；命令自己出错（文件读不到、参数错）
-  才走 stderr 的 `{"error":{kind,…}}`。`problems[].code` 与 `artifact.Code()` 同一套词表
-  （`invalid_name` / `entrypoint_missing` / `invalid_output` …），脚本不必正则中文。
-- `schema` 输出**恰好一份** JSON Schema（`jq` / `ajv` / `python3 -m json.tool` 直接吃），
-  两次输出逐字节相同。三份文档是手写的（`cmd/agent/schema_doc.go`），**不引 schema 生成库**。
-- 两份真理（schema ↔ `artifact.Validate` / `nodeConfig.validate` / `emitContractJSON`）
-  由 `cmd/agent/schema_consistency_test.go` 钉住：对 `required` / `enum` / `pattern` 三类
-  约束，schema 判合法而 Validate 拒绝（或反之）都会让 `make test` 红。改 schema 或改
-  Validate 必须同时跑它。
-- 不做：服务端 `/v1/schema`（版本漂移：节点该信自己这版二进制）、`check --fix`
-  （改 yaml 是写操作）。
+- v3 的 `anotify-agent check` / `schema` / `run` 随节点产品退役；v4 的 `anode` 只有
+  `serve` / `install` / `emit`（`docs/v4/anode-cli.md`）。
+- 「拷到别的机器直接跑」的逃生舱在 v4 由 `anode install --prefix` + 产物缓存承担：
+  校验器只有中枢一份，不在节点上再造第二份真相。
 
 ## 5. 测试体系（固化门禁）
 
@@ -569,9 +520,9 @@ make ci
 1. `gofmt -l`：有未格式化的 `.go` 文件即失败（跳过 `vendor/`）
 2. `make fe`：sitegen + 指纹，供下一步 `-tags embeddist` 内嵌。默认 `go build` / `go test` / `go run` 不嵌入 dist（开发期设 `ANOTIFY_STATIC` 即可编译）
 3. `go vet ./...`
-4. `go build ./...`，以及 `go build -tags embeddist`（生产单二进制；dist 由第 2 步生成）
-5. `make check-agent-skill`：`cmd/agent/skill.md` 里的子命令 / flag 与真二进制
-   `-h` 对账，手册首行版本与 `--version` 对齐（#317 的防漂移门禁）
+4. `go build ./...`，以及两个带版本注入的生产二进制（`anotify` 带 `-tags embeddist`；`anode` 走 `cmd/anode`）
+5. `make check-anode-skill`：`docs/v4/anode-cli.md` 里的子命令 / flag 与真 `anode`
+   `-h` 对账，`--version` 的 JSON 与注入值对齐（#334 的防漂移门禁，承接 v3 #317）
 6. `go test ./... -count=1`（与 `make test` 相同）
 
 不跑 `make e2e`、`make integration`、`scripts/e2e/`（要浏览器或已启动的服务）。`make e2e` 仍是合并前的固化门禁；这条 CI 只守构建、格式和包内单测。名为 `*_e2e_test.go` 的 Go 测试走 `httptest`，不连外部服务，留在 `go test` 里。
@@ -580,7 +531,7 @@ make ci
 
 | 层 | 位置 | 覆盖 |
 | --- | --- | --- |
-| Go 单测 | `internal/*_test.go` | broker/auth/api/push/ws/store/server 包级逻辑 |
+| Go 单测 | `internal/*_test.go` + `cmd/anode/**/*_test.go` | store/auth/api/push/ws/server/lease/source + 节点侧 runner/ops/resultstore 包级逻辑 |
 | API 契约 | `scripts/e2e/suites/api_contract.mjs` | 全端点状态码/鉴权/校验 |
 | Passkey 认证 | `scripts/e2e/suites/auth_flow.mjs` | **虚拟认证器无头跑注册/登录/登出/会话** |
 | 密码登录 | `scripts/e2e/suites/password_login.mjs` | 用密码注册、设置/修改/移除密码、密码登录、两套模型并存、最后一种登录方式护栏 |
@@ -621,18 +572,21 @@ iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全�
 ## 6. 目录结构
 
 ```
-cmd/server/        单二进制入口
-cmd/devseed/       测试播种工具（建用户+Key+会话，绕过 WebAuthn）
+cmd/server/        单二进制入口（中枢）
+cmd/anode/         节点二进制：serve / install / emit（含 internal/{runner,ops,resultstore,config,app}）
+cmd/devseed/       测试播种工具（真实 v4 资源 + 真实事件链）
 cmd/sitegen/       前端站点生成器 CLI（web-src → web 静态 HTML）
 internal/
   sitegen/         站点生成核心（模板缓存/layout+content/i18n 合成）
-  store/           SQLite 数据访问 + schema.sql（baseline）+ 迁移 runner
-  broker/          消息队列抽象 + SQLiteBroker
+  store/           SQLite 数据访问 + schema.sql（v4 baseline）+ 迁移 runner
   auth/            Passkey(WebAuthn)/密码注册 + 密码登录(argon2id) + API Key(argon2id) + 会话
   authn/           Key 校验接口（解耦 auth 与 api/ws）
-  api/             /v1/notify 上报处理器
-  ws/              WebSocket 派发器（消费者1）
-  push/            Web Push 派发器（消费者2，VAPID）
+  api/             HTTP handler（资源面 / 事件 / 认证 / 推送）
+  ws/              WebSocket hub（节点长连接 / 派发帧）
+  push/            Web Push 派发器（VAPID）
+  lease/           任务租约（派发/回收的原子性）
+  resultspool/     结果池（节点回报的产物/日志登记）
+  source/          源（webhook / cron / manual）与触发
   route/           标签/status 投递过滤（共享纯逻辑）
   server/          路由装配 + 静态资源(CDN缓存) + embed
 web-src/           前端页面源（layouts/pages/locales，人工编辑处）
@@ -649,9 +603,9 @@ design/            设计稿 + 技术方案（参考用）
 
 1. **改代码前**：读 `AGENTS.md`（子 Agent 约定）+ 相关包的 `*_test.go`
 2. **改完必须**：`make e2e` 全绿才算完成
-3. **提交信息**：`type(scope): 中文描述`，如 `feat(broker): 实现 Replay` / `fix(push): 修双重 mailto 前缀`
+3. **提交信息**：`type(scope): 中文描述`，如 `feat(server): 资源面接入 lease` / `fix(push): 修双重 mailto 前缀`
 4. **发现 bug**：先加能复现的测试，再修产品代码（测试驱动回归防护）
-5. **新增 API**：同步更新 `api/openapi.yaml` + 给 `broker.Message`/`store.*` 加 json tag（统一 camelCase）
+5. **新增 API**：同步更新 `api/` 下的对应 spec（五份 exact-five）+ 给响应 DTO 加 `json` tag（统一 camelCase）
 
 ## 8. 踩过的坑（避免重蹈）
 
@@ -671,9 +625,9 @@ go-webauthn 登录校验"注册存的 BackupEligible"与"登录返回的"必须�
 
 Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → 误判"后端未连接"显示演示数据。修复：空列表返回 `[]`。**教训**：API 契约统一返回数组（哪怕空），别让前端据类型判断连接状态。
 
-### store import 循环
+### store import 循环（v3 历史，文件已删除；教训保留）
 
-`store/messages.go` 引用 `broker.Message`，而 `broker/sqlite.go` 引用 `store.DB` → 循环。修复：store 定义本地 `MessageRow`，broker 做适配。**教训**：store 是底层，不应依赖上层 broker 的类型。
+`store/messages.go` 引用 `broker.Message`，而 `broker/sqlite.go` 引用 `store.DB` → 循环。修复：store 定义本地 `MessageRow`，broker 做适配。**教训**：store 是底层，不应依赖上层包的类型（v4 里 `internal/broker` 已删除，但「store 不反向依赖上层」仍是硬边界）。
 
 ### schema 变更：baseline 往后追加块（不再有增量迁移链）
 
@@ -746,21 +700,28 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 ## 9. 常用命令速查
 
 ```bash
-make build           # 构建单二进制（指纹 + embed）
-make dev             # 开发模式（web/ 本地目录）
+make build           # 构建两个产品二进制（anotify 指纹+embed；anode 节点）
+make manifest        # 构建 + 打印对账信息（二进制 sha256 / git sha / spec hash / 前端指纹）
+make anode           # 只编节点二进制（./anode）
+make dev             # 开发模式：server + devseed +（有 .dev-anode/anode.yaml 时的）本机节点
 make test            # Go 单测（go test ./...；默认不嵌入 dist）
-make ci              # PR 门禁：gofmt + fe + vet + build + 单测（不含 e2e）
+make ci              # PR 门禁：gofmt + fe + vet + build + check-anode-skill + 单测（不含 e2e）
+make contract        # 契约静态断言 + 五 spec 一致性 + anode 可编译
 make e2e             # 全量端到端（固化门禁）
 make e2e-one S=routing  # 单套件
-make docker          # 构建 Docker 镜像
+make docker          # 构建中枢镜像（server + 内置 anode 升级源）
+make docker-anode    # 构建节点镜像（anode）
+make check-anode-skill  # 节点 CLI 防漂移门禁（手册/安装脚本 ↔ 真二进制）
 make up              # compose 部署（先 cp .env.compose.example .env 填好密钥/域名）
 make down            # compose 停止（数据卷保留）
 make keys            # 生成 VAPID 密钥
 make tunnel          # Cloudflare 临时隧道（公网暴露，iOS 验证用）
 
 go run ./cmd/devseed -db ./anotify.db -username demo  # 播种测试用户
-go build -o anotify-agent ./cmd/agent && ./anotify-agent check ./capability.yaml  # 离线校验一份能力 yaml
-./anotify-agent schema capability | jq '.properties.spec'                            # 能力 yaml 的 JSON Schema
+go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://localhost:8080  # 播种 + 真事件链
+./anode install --name node-a --server wss://<中枢> --token-file /root/anode.token  # 装一台节点
+./anode serve --config /etc/anode/anode.yaml --data /var/lib/anode                  # 起节点守护
+./anode -h && ./anode --version                                                     # CLI 事实源
 ```
 
 ## 10. 环境变量

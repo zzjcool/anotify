@@ -1,550 +1,976 @@
-// demo.go —— `devseed -demo`：给开发环境造一份**真跑过**的示例数据。
+// demo.go —— `devseed -demo`：为开发环境播种 v4 真实资源，并跑一条**真实**事件链。
 //
-// 为什么不是直接往库里 INSERT 任务行："能派发、能执行、能扇出"才是 Anotify
-// 的核心，硬塞的假数据看不出这些。所以这里真的起一个节点（走真实 WS 握手），
-// 让它接单、ack、回报结果，整条链自然长出来。
+// v4 的资源形状与 v3 完全不同（`docs/design/v4/{capability,source}.md` 是唯一权威）：
 //
-// 数据形状：
+//   - 能力 = `params` + `next` + `run`：没有 ports / outputs / 边。**边是 `next` 的
+//     派生投影**（由 store 在同一事务里重建），不是用户实体，也没有写它的 API；
+//   - 源   = `kind`(cron|webhook|manual) + `config` + `targets`：入口边同样是
+//     `targets` 的派生投影；
+//   - 出口 = 脚本里的 `anode emit <name>`（`ANOTIFY_EMIT_ENDPOINT` +
+//     `ANOTIFY_TASK_TOKEN`，capability.md §4.0）。
 //
-//	内置起点                用户能力
-//	github -opened--------> analyze-pr ─needs-fix─> apply-fix ─ok─> deploy-preview
-//	cron   -nightly------->               └─approved──────────────────────┘
-//	http   -webhook-------> deploy-preview
-//	manual -manual.run----> deploy-preview
+// 所以这里只做三件事，一件也不越界：
 //
-// analyze-pr 按 payload.changedLines 决定走哪个出口，所以同一个图能演
-// 「小改直接过」和「大改要返工」两种真实走向。
+//  1. 用 store 的真实写入方法播种能力 / 源 / 节点（**不写 edges、不写 deployments、
+//     不写 tasks** —— 前两个本来就是派生投影 / 人工动作）；
+//  2. 用真实 WS hello 把一台节点挂上线（身份来自节点 token，本机事实一并上报）；
+//  3. 通过真实 HTTP `POST /v1/namespaces/{ns}/events`（Bearer API Key）投递事件，
+//     让中枢自己完成「事件 → 路由 → 任务 / 剪枝留痕」，然后**有界地**观察真实事实。
+//
+// # 「不造假」这条线画在哪
+//
+// v3 的 devseed 在进程内跑了一个假执行器：编出 `succeeded` + 出口，往库里灌没有
+// 发生过的成功。v4 不这么干：
+//
+//   - **不**插 Task 行、**不**写 result、**不**写 deployments、**不**代替节点 ack/result；
+//   - 示例任务一定是中枢按 `spec.next` / `source.targets` 自己建出来的（pending）；
+//   - 这里连的是一台**没有任何执行器、也没有并发槽位**的节点（`capabilities: []` /
+//     `instances: []`），因此不会被派到任务，也不会抢走真实 `anode` 的活。
+//
+// 于是 `-demo` 的产出是：真实资源 + 真在线节点 + 真事件 / 真任务 / 真剪枝留痕。
+// 任务相位由中枢按事实给出（没有部署时就是 `pending`，`EligibleNodesForTask` 报
+// `NotDeployed`），devseed 不催熟它——要看到真执行，得让一台装了 `anode` 的节点把
+// 这些能力部署上去（`POST …/capabilities/{name}/deploy`，capability.md §5）。
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"bytes"
-
 	"github.com/coder/websocket"
+
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/source"
+	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
-	"github.com/zzjcool/anotify/internal/ws"
 )
 
-// demoCapability 是一条示例能力定义。
+// demoNodeName 是示例节点的名字（集群内唯一；重开 devseed 复用同一行，只轮换 token）。
+const demoNodeName = "demo-node"
+
+// ---------- 能力 ----------
+
+// demoCapability 是一条示例能力定义（v4：params / next / run 三件事）。
 type demoCapability struct {
-	Name    string
-	Outputs []string
-	Desc    string
-	// Script 是能力的**实现**（run.sh 的正文）。
+	// Name 是能力名（谱系：`next` 引用它、任务记它）。改名 = 另一个能力。
+	Name string
+	// DisplayName 纯展示，不进 digest（capability.md §2.2）。
+	DisplayName string
+	// Next 是下游引用（`name` 或 `name@version`）。空 = **终端能力**（跑完就结束）。
+	Next []string
+	// Params 是输入契约（JSON Schema 对象；省略 = 怎么传都过）。
+	Params json.RawMessage
+	// Script 是能力的**实现**（`run.sh` 正文）。
 	//
-	// 它必须是真东西：v3 起能力的正文里同时有契约和实现，「缺实现」在 store 层
-	// 直接拒（artifact.Validate 的 impl_missing）。以前这三个能力是零实现的空壳，
-	// 全靠下面的假执行器编出一个结果——那种「能跑但什么都没跑」的示例最误导人。
-	//
-	// 脚本口径与内置的 script.echo 一致：零依赖（bash 内建 + echo），产物只从
-	// emit 走（ANOTIFY_EMIT_SOCK 没有 = 本地 standalone，跳过 emit）。
+	// v4 只有这一种实现形式（capability.md §7）：没有 handler、没有中枢内置执行器。
+	// 正文是真脚本——真节点上的 anode 会把它展开成 0700 的入口文件直接执行。
 	Script string
 }
 
-// demoCapabilities 是示例图里的用户能力（内置起点由 store 自动播种）。
+// demoCapabilityRequires 是示例能力共同声明「节点要提供什么」。
+//
+// 两条都是脚本正文里真的会用到的东西：`bash` 跑 shebang 与 `[ ]`，`anode` 发 emit。
+// 声明了它，节点匹配（`NodesAvailable` 的 `CommandMissing`）才是在回答真问题。
+// devseed 自己也会对它们做一次真实 `LookPath` 探测并打印结果。
+var demoCapabilityRequires = []string{"bash", "anode"}
+
+// demoCapabilities 是示例能力，**按依赖顺序**排列：终端在前，上游在后。
+//
+// 顺序不是为了 store（`next` 的名字在 store 层不查存在性），而是让「先建出来的
+// 被谁引用」这件事在日志里读起来是一条链，也避免将来加 `unknown_target` 校验时返工。
+//
+// 链条（v4 里没有「端口」，分支是脚本自己的 `if`）：
+//
+//	分析改动 analyze-pr ──┬─(改动 >200 行)──> 按意见修 apply-fix ─┐
+//	                      └─(改动 ≤200 行)──────────────────────┴─> 部署预览 deploy-preview
+//
+// apply-fix / deploy-preview 都是**先**建好的：它们是 analyze-pr 的 next。
 var demoCapabilities = []demoCapability{
-	{"analyze-pr", []string{"needs-fix", "approved"}, "分析 PR 改动，判断是否需要返工", `#!/usr/bin/env bash
-# 示例能力：改动超过 200 行走 needs-fix，否则 approved。
-# 分支依据来自事件 payload（ANOTIFY_PARAMS 是 agent 注入的合法 JSON 对象）——
-# 这里用 bash 正则取数，不引 jq：示例能力必须零依赖才在任何节点上都跑得起来。
+	{
+		Name:        "deploy-preview",
+		DisplayName: "部署预览环境",
+		Params:      json.RawMessage(`{"type":"object","properties":{"repo":{"type":"string"}}}`),
+		Script: `#!/usr/bin/env bash
+# 示例能力：链条终点（next: []），所以不发 emit。
+# 参数从 ANOTIFY_PARAM_<NAME> 进来（capability.md §2.3），不是单个 JSON 变量。
 set -euo pipefail
-params="${ANOTIFY_PARAMS:-}"
-[ -n "$params" ] || params='{}'
-lines=0
-# 正则先存变量再匹配：直接写 [[ "$x" =~ "lit"[[:space:]]* ]] 这种「半个模式加引号」
-# 的形式在 bash 里不命中（实测）。模式里的 "? 是为了容纳 JSON 的引号。
-re='changedLines"?[[:space:]]*:[[:space:]]*([0-9]+)'
-if [[ "$params" =~ $re ]]; then
-  lines="${BASH_REMATCH[1]}"
-fi
-if [ "$lines" -gt 200 ]; then port=needs-fix; else port=approved; fi
-echo "changedLines=$lines → $port"
-if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
-  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port "$port" --data "$params"
-fi
-`},
-	{"apply-fix", []string{"ok"}, "按评审意见改代码", `#!/usr/bin/env bash
-# 示例能力：走固定出口 ok（下游是 deploy-preview）。
+repo="${ANOTIFY_PARAM_REPO:-unknown}"
+echo "deploy-preview · repo=${repo}（示例：这里本该真的部署预览环境）"
+`,
+	},
+	{
+		Name:        "apply-fix",
+		DisplayName: "按评审意见改代码",
+		Next:        []string{"deploy-preview"},
+		Params:      json.RawMessage(`{"type":"object","properties":{"repo":{"type":"string"}}}`),
+		Script: `#!/usr/bin/env bash
+# 示例能力：修完交给 deploy-preview。出口只有 anode emit（capability.md §4.0）。
 set -euo pipefail
-params="${ANOTIFY_PARAMS:-}"
-[ -n "$params" ] || params='{}'
-echo "按评审意见改代码（示例）：$params"
-if [ -n "${ANOTIFY_EMIT_SOCK:-}" ]; then
-  "${ANOTIFY_AGENT_BIN:-anotify-agent}" emit --port ok --data "$params"
-fi
-`},
-	{"deploy-preview", nil, "部署预览环境", `#!/usr/bin/env bash
-# 示例能力：终点，没有出口，所以不发 emit。
+repo="${ANOTIFY_PARAM_REPO:-unknown}"
+echo "apply-fix · repo=${repo}（示例：这里本该真的改代码）"
+anode emit deploy-preview --data "{\"repo\":\"${repo}\"}"
+`,
+	},
+	{
+		Name:        "analyze-pr",
+		DisplayName: "分析 PR 改动",
+		Next:        []string{"apply-fix", "deploy-preview"},
+		// changedLines 必填且**没有 default**：少传就是一次真实剪枝（param_missing），
+		// 不是让能力自己猜个数。repo / title 是可选，只用来展示「同名直取」。
+		Params: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "changedLines": {"type": "integer"},
+    "repo": {"type": "string"},
+    "title": {"type": "string"}
+  },
+  "required": ["changedLines"]
+}`),
+		Script: `#!/usr/bin/env bash
+# 示例能力：改动超过 200 行就交给 apply-fix，否则直接去 deploy-preview。
+# 分支是脚本自己的 if —— v4 没有「能力多出口」这种概念（capability.md §1）。
 set -euo pipefail
-params="${ANOTIFY_PARAMS:-}"
-[ -n "$params" ] || params='{}'
-echo "预览环境已部署（示例）：$params"
-`},
+lines="${ANOTIFY_PARAM_CHANGEDLINES:-0}"
+repo="${ANOTIFY_PARAM_REPO:-unknown}"
+title="${ANOTIFY_PARAM_TITLE:-}"
+echo "analyze-pr · repo=${repo} changedLines=${lines} title=${title}"
+if [ "${lines}" -gt 200 ]; then
+  echo "→ ${lines} 行改动：需要返工，交给 apply-fix"
+  anode emit apply-fix --data "{\"repo\":\"${repo}\"}"
+else
+  echo "→ ${lines} 行改动：直接通过，交给 deploy-preview"
+  anode emit deploy-preview --data "{\"repo\":\"${repo}\"}"
+fi
+`,
+	},
 }
 
-// demoSourceNames 是入口边左端允许的来源名（不是能力）。
-// 来源不对应 capability 行：它只是事件流的起点标识，路由靠 edges.from_is_source 匹配。
-var demoSourceNames = map[string]bool{"github": true, "cron": true, "http": true, "manual": true}
+// ---------- 源 ----------
 
-// demoEdge 是一条边。from 用名字，运行时解析成能力 id（入口边则原样当来源名）。
-type demoEdge struct{ from, port, to string }
-
-var demoEdges = []demoEdge{
-	{"github", "pull_request.opened", "analyze-pr"},
-	{"github", "pull_request.synchronize", "analyze-pr"},
-	{"cron", "nightly.healthcheck", "analyze-pr"},
-	{"http", "webhook.incoming", "deploy-preview"},
-	{"manual", "manual.run", "deploy-preview"},
-	{"analyze-pr", "needs-fix", "apply-fix"},
-	{"analyze-pr", "approved", "deploy-preview"},
-	{"apply-fix", "ok", "deploy-preview"},
+// demoSource 是一条示例源定义（v4：kind / config / targets）。
+type demoSource struct {
+	// Name 是命名空间内唯一的源名，也是事件投递体里的 `source`。
+	Name        string
+	DisplayName string
+	// Kind ∈ cron / webhook / manual（注册表里的内置项）。
+	Kind string
+	// Config 是 kind 专属配置。webhook 的 token 留空 = store 创建时随机生成。
+	Config json.RawMessage
+	// Targets 是出口声明：能力引用 + 参数模板（`$(payload.点号路径)`）。
+	Targets []sourcespec.Target
 }
 
-// demoEvent 是一次要发的示例事件。
+// demoSources 覆盖三个内置 kind，各自接一条链路：
+//
+//	github（webhook）  → analyze-pr        （外部系统 POST /v1/hooks/<token> 或本文件的 events 入口）
+//	nightly（cron）    → analyze-pr        （中枢按表达式到点触发；这里只播种，不等它到点）
+//	release-preview（manual）→ deploy-preview（人在页面上点一下）
+var demoSources = []demoSource{
+	{
+		Name:        "github",
+		DisplayName: "GitHub PR",
+		Kind:        store.SourceKindWebhook,
+		Config: json.RawMessage(`{
+  "payloadSchema": {
+    "type": "object",
+    "required": ["number"],
+    "properties": {
+      "number": {"type": "integer"},
+      "title": {"type": "string"},
+      "repository": {"type": "object", "properties": {"full_name": {"type": "string"}}},
+      "changedLines": {"type": "integer"}
+    }
+  },
+  "sample": {
+    "number": 1284,
+    "title": "修复登录超时后无限重试",
+    "repository": {"full_name": "acme/api"},
+    "changedLines": 42
+  }
+}`),
+		Targets: []sourcespec.Target{{
+			Capability: "analyze-pr",
+			Params: map[string]any{
+				"changedLines": "$(payload.changedLines)",
+				"repo":         "$(payload.repository.full_name)",
+				"title":        "$(payload.title)",
+			},
+		}},
+	},
+	{
+		Name:        "nightly",
+		DisplayName: "夜间体检",
+		Kind:        store.SourceKindCron,
+		Config: json.RawMessage(`{
+  "expr": "0 3 * * *",
+  "tz": "Local",
+  "payload": {"changedLines": 12, "note": "nightly 定时体检"}
+}`),
+		Targets: []sourcespec.Target{{
+			Capability: "analyze-pr",
+			Params:     map[string]any{"changedLines": "$(payload.changedLines)"},
+		}},
+	},
+	{
+		Name:        "release-preview",
+		DisplayName: "手动预览",
+		Kind:        store.SourceKindManual,
+		Config:      json.RawMessage(`{"payload": {"repo": "acme/api"}}`),
+		Targets: []sourcespec.Target{{
+			Capability: "deploy-preview",
+			Params:     map[string]any{"repo": "$(payload.repo)"},
+		}},
+	},
+}
+
+// ---------- 事件 ----------
+
+// demoEvent 是一次要投递给中枢的事件（走真实 HTTP ingress）。
 type demoEvent struct {
-	Source, Type, IdemKey string
-	Payload               map[string]any
+	// Source 是**源名**（不是 id、不是 token）：它决定哪份 targets 模板生效。
+	Source string
+	// Type 是事件类型；空 = 回落源名（source.md §5）。
+	Type string
+	// DeliveryID 是外部投递幂等键（source.md §3.3 D7）。
+	//
+	// 用**稳定**的值是 devseed 重开幂等的关键：窗口内同一条再投一次只算一条事件、
+	// 不重复派发，回执里给的是原来那条 event/trace。
+	DeliveryID string
+	// Payload 是投递体里的载荷；nil = 只用源配置的打底载荷（cron / manual）。
+	Payload map[string]any
 }
 
-// demoEvents 覆盖四种起点与两条分支。
+// demoEvents 覆盖「小改 / 大改 / 缺必填字段 / cron / manual」五种真实走向。
 //
-// changedLines 是 analyze-pr 的分支依据（>200 走 needs-fix）。
+// 第三条**故意**不带 changedLines：analyze-pr 的 params 里它是必填且没有 default，
+// 所以这条事件会真的被剪枝（`param_missing`），并在 events 表里留下 `source='route'`
+// 的痕——剪枝不是错误，是这个系统应有的可观测性（source.md §6）。
 var demoEvents = []demoEvent{
-	{"github", "pull_request.opened", "demo-pr-1284",
-		map[string]any{"number": 1284, "title": "修复登录超时后无限重试", "author": "alice", "changedLines": 42}},
-	{"github", "pull_request.opened", "demo-pr-1285",
-		map[string]any{"number": 1285, "title": "重构事件派发器（大改）", "author": "bob", "changedLines": 612}},
-	{"github", "pull_request.opened", "demo-pr-1286",
-		map[string]any{"number": 1286, "title": "补充日语文案", "author": "carol", "changedLines": 8}},
-	{"github", "pull_request.synchronize", "demo-pr-1285-sync",
-		map[string]any{"number": 1285, "title": "重构事件派发器（已修）", "author": "bob", "changedLines": 640}},
-	{"cron", "nightly.healthcheck", "",
-		map[string]any{"window": "nightly", "changedLines": 0, "note": "定时体检"}},
-	{"http", "webhook.incoming", "",
-		map[string]any{"from": "grafana", "alert": "disk_usage_high", "host": "db-primary", "value": "91%"}},
-	{"manual", "manual.run", "",
-		map[string]any{"by": "demo", "reason": "手动验证预览环境"}},
+	{
+		Source: "github", Type: "pull_request.opened", DeliveryID: "devseed-gh-1284",
+		Payload: map[string]any{
+			"number": 1284, "title": "修复登录超时后无限重试",
+			"repository": map[string]any{"full_name": "acme/api"}, "changedLines": 42,
+		},
+	},
+	{
+		Source: "github", Type: "pull_request.opened", DeliveryID: "devseed-gh-1285",
+		Payload: map[string]any{
+			"number": 1285, "title": "重构事件派发器（大改）",
+			"repository": map[string]any{"full_name": "acme/api"}, "changedLines": 612,
+		},
+	},
+	{
+		Source: "github", Type: "pull_request.opened", DeliveryID: "devseed-gh-1287",
+		Payload: map[string]any{
+			"number": 1287, "title": "缺 changedLines 的投递（演示剪枝）",
+			"repository": map[string]any{"full_name": "acme/api"},
+		},
+	},
+	{Source: "nightly", Type: "nightly.healthcheck", DeliveryID: "devseed-nightly-1"},
+	{Source: "release-preview", Type: "manual.run", DeliveryID: "devseed-manual-1"},
 }
 
-// seedDemo 建图 + 注册节点，返回节点明文 token（worker 要用）。
-//
-// 全部资源落在 namespaceID 里（devseed 不选命名空间，永远用组织的默认命名空间）：
-// 能力 / 边 / 节点 / 节点声明都是命名空间资源，没有任何一个能"隐式默认"。
-//
-// 幂等：能力「同内容已存在」直接复用；边重复视为已建；节点同名复用并轮换 token。
-func seedDemo(ctx context.Context, db *store.DB, namespaceID, nodeName string) (nodeID, token string, err error) {
-	ids := make(map[string]string, len(demoCapabilities)+8)
+// ---------- 播种（全部走 store 的真实写入路径） ----------
 
-	// 内置起点（建组织/建命名空间时已播种，这里只查 id）
-	existing, err := db.ListCapabilities(ctx, namespaceID)
-	if err != nil {
-		return "", "", fmt.Errorf("list capabilities: %w", err)
-	}
-	latest := make(map[string]*store.CapabilityVersion)
-	for _, c := range existing {
-		if cur, ok := latest[c.Name]; !ok || c.Version > cur.Version {
-			latest[c.Name] = c
-		}
-	}
-	// 来源（github/cron/http/manual）不是能力行，见 demoSourceNames —— 不在这里查 id。
-
-	// 用户能力：已存在就复用（devseed 可能重复跑）
+// seedCapabilities 播种示例能力，返回按创建顺序排列的行。
+//
+// Version 留 **0 = 内容寻址**（capability.md §2.2）：同一份正文重跑会复用同一行
+// （foldKey 命中 → reuse，不新建版本），所以 `devseed -demo` 可以反复跑。
+func seedCapabilities(ctx context.Context, db *store.DB, namespaceID string) ([]*store.CapabilityVersion, error) {
+	out := make([]*store.CapabilityVersion, 0, len(demoCapabilities))
 	for _, d := range demoCapabilities {
-		if c, ok := latest[d.Name]; ok {
-			ids[d.Name] = c.ID
-			continue
-		}
-		// 正文（spec）里既有契约也有实现：派生列（params_schema/outputs/…）由 store
-		// 写入时从它算出，这里不再手填——两份来源必然分叉。
 		c := &store.CapabilityVersion{
-			NamespaceID: namespaceID, // 作用域参数就是命名空间（I10：唯一隔离维度）
+			NamespaceID: namespaceID,
 			Name:        d.Name,
-			Version:     1,
-			Source:      store.CapSourceCustom,
+			DisplayName: d.DisplayName,
 			Spec: artifact.Spec{
-				Params:  json.RawMessage(`{"type":"object"}`),
-				Outputs: append([]string{}, d.Outputs...),
+				Params: d.Params,
+				Next:   append([]string(nil), d.Next...),
 				Run: artifact.Run{
 					Entrypoint: "run.sh",
 					Files:      map[string]string{"run.sh": d.Script},
-					TimeoutSec: 30,
 				},
+				Requires: artifact.Requires{Commands: append([]string(nil), demoCapabilityRequires...)},
+				// 示例能力给一个本地执行超时：真节点上跑飞了也不会永远挂着。
+				Lifecycle: artifact.Lifecycle{TimeoutSec: 120},
 			},
 		}
 		if err := db.CreateCapability(ctx, c); err != nil {
-			return "", "", fmt.Errorf("create capability %s: %w", d.Name, err)
+			return nil, fmt.Errorf("建能力 %s: %w", d.Name, err)
 		}
-		ids[d.Name] = c.ID
+		out = append(out, c)
 	}
-
-	// 边
-	//
-	// 两类边形状不同（见 store.CreateEdge）：
-	//   - 入口边（来源 → 能力）：FromIsSource=true，FromCapability 存**来源名**（github/cron/http/manual），
-	//     出口是事件类型，不校验（契约 §5.2：事件类型由外部系统决定，无法预先枚举）
-	//   - 能力边（能力 → 能力）：FromCapability 存能力 **id**，出口必须在该能力的 outputs 里（I2）
-	//
-	// 早先这里一律按能力 id 解析，于是「来源」也被当成能力查表 —— 内置目录不含
-	// github/cron/http/manual 之后，`-demo` 在全新库上必然失败（#271）。
-	for _, e := range demoEdges {
-		to, okT := ids[e.to]
-		if !okT {
-			return "", "", fmt.Errorf("edge %s->%s: 目标能力缺失", e.from, e.to)
-		}
-		from, okF := ids[e.from]
-		isSource := false
-		if !okF {
-			if !demoSourceNames[e.from] {
-				return "", "", fmt.Errorf("edge %s->%s: 既不是已建能力、也不是已知来源名", e.from, e.to)
-			}
-			from, isSource = e.from, true // 入口边：左端是来源名，不是 id
-		}
-		if err := db.CreateEdge(ctx, &store.Edge{
-			NamespaceID:    namespaceID,
-			FromCapability: from,
-			FromPort:       e.port,
-			ToCapability:   to,
-			FromIsSource:   isSource,
-		}); err != nil {
-			return "", "", fmt.Errorf("create edge %s -%s-> %s: %w", e.from, e.port, e.to, err)
-		}
-	}
-
-	// 节点：同名已存在就**复用同一行**（只换 token），不要每次多造一个。
-	//
-	// 早先的实现是"撞名就加序号新建"，结果每跑一次 devseed 库里就多一个
-	// 永远离线、永远连不上的死节点，节点页很快就没法看了。
-	// 明文 token 只在创建时返回一次，但这里可以自己生成 token 再写 hash
-	// （CreateNode 支持预置 TokenHash），所以复用行完全可行。
-	if n, err := db.GetNodeByName(ctx, namespaceID, nodeName); err == nil && n != nil {
-		t, hash, err := store.NewNodeToken()
-		if err != nil {
-			return "", "", err
-		}
-		if err := db.SetNodeTokenHash(ctx, n.NamespaceID, n.ID, hash); err != nil {
-			return "", "", fmt.Errorf("refresh node token: %w", err)
-		}
-		nodeID, token = n.ID, t
-	} else {
-		n := &store.Node{NamespaceID: namespaceID, Name: nodeName}
-		t, err := db.CreateNode(ctx, n)
-		if err != nil {
-			return "", "", fmt.Errorf("create node: %w", err)
-		}
-		nodeID, token = n.ID, t
-	}
-
-	// 节点声明能力。必须走 ConfirmCapabilities（全量替换）——
-	// 它顺带校验能力存在性（不变量 I2：节点不能声明不存在的 @版本）。
-	if _, err := db.ConfirmCapabilities(ctx, namespaceID, nodeID, []store.CapabilityRef{
-		{Name: "analyze-pr", Version: 1},
-		{Name: "apply-fix", Version: 1},
-		{Name: "deploy-preview", Version: 1},
-	}); err != nil {
-		return "", "", fmt.Errorf("declare capabilities: %w", err)
-	}
-	return nodeID, token, nil
+	return out, nil
 }
 
-// demoWorker 是一个跑在进程内的真节点：连 WS、握手、接单、回报、心跳。
+// seedSources 播种示例源；已存在就**收敛**（targets / config 变了才写）。
 //
-// 它存在的唯一原因是「让示例数据真的走一遍派发与执行」——不然前端看到的
-// 全是手工塞进去的状态，看不出扇出、看不出 out 三态。
-type demoWorker struct {
-	conn     *websocket.Conn
-	nodeID   string
-	nsID     string
-	done     chan struct{}
-	assigns  int
-	onAssign func(capability, taskID string, out *string)
-}
-
-// dialWorker 连上 /v1/node/stream 并完成 hello。
-func dialWorker(ctx context.Context, base, token, nodeID, nsID string) (*demoWorker, []store.CapabilityRef, error) {
-	url := strings.Replace(base, "http://", "ws://", 1)
-	url = strings.Replace(url, "https://", "wss://", 1)
-	url = strings.TrimSuffix(url, "/") + "/v1/node/stream"
-
-	hdr := http.Header{}
-	hdr.Set("Authorization", "Bearer "+token)
-	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
-	if err != nil {
-		return nil, nil, fmt.Errorf("ws dial: %w", err)
-	}
-
-	caps := []store.CapabilityRef{
-		{Name: "analyze-pr", Version: 1},
-		{Name: "apply-fix", Version: 1},
-		{Name: "deploy-preview", Version: 1},
-	}
-	// hello 是**协议 v2 形状**（console-declares，契约 D4 / internal/ws.HelloFrame）：
-	//
-	//   - protocol 取 ws.ProtocolVersion（=2）。写死 1 会被中枢 protocol_mismatch 拒掉，
-	//     节点永远 online 不了（N3 修的就是这一条）。
-	//   - **没有 capabilities 键**：v2 里节点不再自报「我会跑什么」，只陈述
-	//     「我缓存了哪些产物」（applied）。中枢据 applied 全量重建 node_capabilities；
-	//     发老键不会报错，但会被忽略 —— 于是中枢这边一行声明都没有，任务是派不下来的。
-	//   - instances[].concurrency 恒 1：v2 一个槽位只放一个任务，并发上限只由
-	//     instances（槽位数）决定（cmd/agent/config.go 的 slotConcurrency()）。
-	//
-	// applied 里的能力必须已在中枢定义（seedDemo 已经建了），否则中枢只把它当成
-	// 「陈旧缓存」回进 welcome.prune，不会给归属。
-	//
-	// TODO(N3)：本 worker 的 result 帧仍带已退役的 `out`（v2 路由只认 emit 帧），
-	// 所以示例链的**下游扇出**现在是断的：任务会 succeeded，但不会自动长出下一跳。
-	// 改成 emit 需要在 devseed 里接一个本地 emit socket，超出「修过时字段」的范围。
-	hello := map[string]any{
-		"type":     "hello",
-		"node_id":  nodeID,
-		"protocol": ws.ProtocolVersion,
-		"applied": func() []map[string]any {
-			out := make([]map[string]any, 0, len(caps))
-			for _, c := range caps {
-				out = append(out, map[string]any{"capability": c.Name, "version": c.Version})
+// 入口边由 store 在同一个事务里按 targets 重建（graph.go 的 ReplaceSourceEdges），
+// 所以这里不需要（也不能）自己写 edges。
+func seedSources(ctx context.Context, db *store.DB, namespaceID string) ([]*store.Source, error) {
+	out := make([]*store.Source, 0, len(demoSources))
+	for _, d := range demoSources {
+		existing, err := db.GetSourceByName(ctx, namespaceID, d.Name)
+		switch {
+		case err == nil:
+			// webhook 的 token 是凭据：合并时省略 = 保留已有（sourcespec.MergeConfig
+			// 的既定语义），否则每跑一次 devseed 都会把 hook URL 换掉。
+			merged, merr := sourcespec.MergeConfig(d.Kind, existing.Config, d.Config)
+			if merr != nil {
+				return nil, fmt.Errorf("合并源 %s 的 config: %w", d.Name, merr)
 			}
-			return out
-		}(),
-		"instances": []map[string]any{{"slot": 0, "concurrency": 1}},
-	}
-	b, _ := json.Marshal(hello)
-	if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
-		conn.Close(websocket.StatusInternalError, "hello write failed")
-		return nil, nil, fmt.Errorf("send hello: %w", err)
-	}
-	return &demoWorker{conn: conn, nodeID: nodeID, nsID: nsID, done: make(chan struct{})}, caps, nil
-}
-
-// run 读帧直到 ctx 结束。assign 帧会 ack + 回报 result。
-func (w *demoWorker) run(ctx context.Context) {
-	defer close(w.done)
-	// 心跳：服务端 20s 没收到任何上行帧就判超时断连，所以 8s 一次
-	hb := time.NewTicker(8 * time.Second)
-	defer hb.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-hb.C:
-				b, _ := json.Marshal(map[string]any{"type": "heartbeat", "ts": time.Now().Unix()})
-				if err := w.conn.Write(ctx, websocket.MessageText, b); err != nil {
-					return
-				}
+			if sourcespec.SameConfig(d.Kind, existing.Config, merged) &&
+				sourcespec.SameTargets(existing.Targets, d.Targets) && existing.Enabled {
+				out = append(out, existing)
+				continue
 			}
+			updated := *existing
+			updated.DisplayName = d.DisplayName
+			updated.Config = merged
+			updated.Targets = d.Targets
+			updated.Enabled = true
+			if uerr := db.UpdateSource(ctx, &updated); uerr != nil {
+				return nil, fmt.Errorf("更新源 %s: %w", d.Name, uerr)
+			}
+			out = append(out, &updated)
+		case errors.Is(err, store.ErrSourceNotFound):
+			s := &store.Source{
+				NamespaceID: namespaceID,
+				Name:        d.Name,
+				DisplayName: d.DisplayName,
+				Kind:        d.Kind,
+				Config:      d.Config,
+				Targets:     d.Targets,
+				Enabled:     true,
+			}
+			if cerr := db.CreateSource(ctx, s); cerr != nil {
+				return nil, fmt.Errorf("建源 %s: %w", d.Name, cerr)
+			}
+			out = append(out, s)
+		default:
+			return nil, fmt.Errorf("读源 %s: %w", d.Name, err)
 		}
-	}()
+	}
+	return out, nil
+}
 
+// seedNode 建/复用示例节点，返回节点 id 与新生成的明文 token。
+//
+// 复用时**只轮换 token**（`SetNodeTokenHash`），不新建行：早先的实现「撞名就加序号
+// 新建」会让库里堆出一台台永远离线、永远连不上的死节点。
+func seedNode(ctx context.Context, db *store.DB, name string) (nodeID, token string, err error) {
+	existing, gerr := db.GetNodeByName(ctx, name)
+	switch {
+	case gerr == nil:
+		fresh, hash, terr := store.NewNodeToken()
+		if terr != nil {
+			return "", "", terr
+		}
+		if serr := db.SetNodeTokenHash(ctx, existing.ID, hash); serr != nil {
+			return "", "", fmt.Errorf("轮换节点 %s 的 token: %w", name, serr)
+		}
+		return existing.ID, fresh, nil
+	case errors.Is(gerr, store.ErrNotFound):
+		n := &store.Node{Name: name}
+		created, cerr := db.CreateNode(ctx, n)
+		if cerr != nil {
+			return "", "", fmt.Errorf("建节点 %s: %w", name, cerr)
+		}
+		return n.ID, created, nil
+	default:
+		return "", "", fmt.Errorf("读节点 %s: %w", name, gerr)
+	}
+}
+
+// ---------- 节点（真实 WS 握手） ----------
+
+// demoNode 是进程内的**真节点连接**：连 /v1/node/stream、发 hello、读帧。
+//
+// 它没有任何执行器：不接单、不 ack、不回报。这不是偷懒，是 v4 的边界——能力只在
+// 装了 anode 的节点上跑（capability.md §0/§7），devseed 再造一个执行器就是第二份真相。
+type demoNode struct {
+	conn *websocket.Conn
+	name string
+	once sync.Once
+}
+
+// dialDemoNode 建立 WS 连接并完成 v4 hello 握手（读到 welcome 才算上线）。
+//
+// hello 的形状是 v4 的（config.md §4.2 / anode.md §3.3）：身份在**帧里**（token），
+// namespaces 是**申报**的 ns 名列表，facts 是本机内置事实，capabilities / instances
+// 是能力探测与物理槽位。
+func dialDemoNode(ctx context.Context, baseURL, nodeName, token, namespaceSlug string) (*demoNode, error) {
+	url := nodeStreamURL(baseURL)
+
+	hello := protocol.HelloFrame{
+		Type:  "hello",
+		Name:  nodeName,
+		Token: token,
+		Namespaces: []string{
+			namespaceSlug,
+		},
+		LocalVars: map[string]string{},
+		Facts:     demoNodeFacts(),
+		// 两个空数组是**声明**，不是省略：
+		//   - capabilities: 这台"节点"上没有部署任何能力（devseed 不持有产物字节）；
+		//   - instances:    它没有并发槽位（没有执行器）。
+		// 中枢据此不会把任务派给它 —— 这正是我们要的事实，别为了好看谎报。
+		Capabilities: []protocol.HelloCapability{},
+		Instances:    []protocol.HelloInstance{},
+	}
+	raw, err := json.Marshal(hello)
+	if err != nil {
+		return nil, fmt.Errorf("编码 hello: %w", err)
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	conn, _, derr := websocket.Dial(dialCtx, url, nil)
+	if derr != nil {
+		return nil, fmt.Errorf("WS 连不上 %s（server 没在跑？）: %w", url, derr)
+	}
+
+	writeCtx, writeCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer writeCancel()
+	if werr := conn.Write(writeCtx, websocket.MessageText, raw); werr != nil {
+		_ = conn.Close(websocket.StatusInternalError, "hello write failed")
+		return nil, fmt.Errorf("发 hello: %w", werr)
+	}
+	// 读到 welcome 才算真的上线：中枢在 welcome **之前**已写完 node 状态与配置对齐，
+	// 所以「收到 welcome」是「库里已经是 online」的证据，不需要 sleep 猜。
+	readCtx, readCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer readCancel()
 	for {
-		typ, raw, err := w.conn.Read(ctx)
+		_, data, rerr := conn.Read(readCtx)
+		if rerr != nil {
+			_ = conn.Close(websocket.StatusNormalClosure, "")
+			return nil, fmt.Errorf("等 welcome 失败（hello 被拒？）: %w", rerr)
+		}
+		frameType, perr := protocol.FrameTypeOf(data)
+		if perr != nil {
+			continue
+		}
+		if frameType == protocol.FrameWelcome {
+			break
+		}
+	}
+	return &demoNode{conn: conn, name: nodeName}, nil
+}
+
+// watch 读帧直到连接结束。任务派发帧只记录：这台节点没有执行器，接了就是伪执行。
+func (n *demoNode) watch(ctx context.Context) {
+	for {
+		_, data, err := n.conn.Read(ctx)
 		if err != nil {
 			return
 		}
-		if typ != websocket.MessageText {
+		frameType, ferr := protocol.FrameTypeOf(data)
+		if ferr != nil {
 			continue
 		}
-		var f struct {
-			Type       string         `json:"type"`
-			TaskID     string         `json:"task_id"`
-			Capability string         `json:"capability"`
-			Params     map[string]any `json:"params"`
+		if frameType == protocol.FrameTaskDispatch {
+			log.Printf("  ℹ️  收到 task.dispatch（节点没有执行器，不接单；部署是人工动作）")
 		}
-		if err := json.Unmarshal(raw, &f); err != nil {
-			continue
-		}
-		if f.Type != "assign" {
-			continue
-		}
-		go w.handle(ctx, f.TaskID, f.Capability, f.Params)
 	}
 }
 
-// handle 执行一个任务：ack → 模拟耗时 → result。
-//
-// **这是一个假执行器，标注在此**：devseed 起的节点是「进程内的 WS 客户端」，
-// 它不部署产物、也不跑 d.Script 里的正文，出口与 summary 由 demoResult 编出来。
-// 留着的理由：它让 `devseed -demo` 不依赖真的 anotify-agent 就能造出「派发 →
-// 接单 → 回报 → 扇出」的可见链路；删掉它得先让 devseed 拉起真 agent（不在本轮
-// 范围内）。能力本身的实现已经换成真脚本（见 demoCapability.Script）——真节点
-// 上线、部署这些能力时跑的就是它们，而不是这张开关表。
-func (w *demoWorker) handle(ctx context.Context, taskID, capability string, params map[string]any) {
-	send := func(v any) {
-		b, _ := json.Marshal(v)
-		_ = w.conn.Write(ctx, websocket.MessageText, b)
-	}
-	send(map[string]any{"type": "ack", "task_id": taskID})
-	time.Sleep(600 * time.Millisecond) // 让「运行中」这个状态看得见
-
-	out, summary := demoResult(capability, params)
-	// out 三态：nil → 明确到头（JSON null）；否则给出口名
-	// `out` 在 v2 已退役（路由只看 emit 帧）。留着它不报错（服务端忽略未知字段），
-	// 但也不再有任何效果 —— 见 dialWorker 里的 TODO(N3)。
-	send(map[string]any{
-		"type": "result", "task_id": taskID,
-		"status": "succeeded", "out": out, "summary": summary,
+// close 断开连接（幂等）。断开后中枢会把节点标 offline —— 这是真实事实，不是清理噪音。
+func (n *demoNode) close() {
+	n.once.Do(func() {
+		_ = n.conn.Close(websocket.StatusNormalClosure, "devseed demo done")
+		log.Printf("  节点 %s 已断开（中枢把它标 offline）", n.name)
 	})
-	w.assigns++
-	if w.onAssign != nil {
-		w.onAssign(capability, taskID, out)
+}
+
+// nodeStreamURL 把 HTTP base URL 换成 WS 的节点入口。
+func nodeStreamURL(baseURL string) string {
+	u := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	u = strings.Replace(u, "https://", "wss://", 1)
+	u = strings.Replace(u, "http://", "ws://", 1)
+	return u + "/v1/node/stream"
+}
+
+// demoNodeFacts 是本机内置事实（status.* 那一组）。值全部来自真实探测。
+func demoNodeFacts() protocol.NodeFacts {
+	host, _ := os.Hostname()
+	home, _ := os.UserHomeDir()
+	return protocol.NodeFacts{
+		HostIP:   localIP(),
+		Hostname: host,
+		OS:       runtime.GOOS,
+		Arch:     runtime.GOARCH,
+		CPU:      runtime.NumCPU(),
+		WorkRoot: os.TempDir(),
+		HomeDir:  home,
 	}
 }
 
-// demoResult 按能力算出口，模拟真实的「按输入走不同分支」。
-func demoResult(capability string, params map[string]any) (*string, string) {
-	str := func(p *string) *string { return p }
-	switch capability {
-	case "analyze-pr":
-		lines := 0
-		if v, ok := params["changedLines"].(float64); ok {
-			lines = int(v)
-		}
-		if lines > 200 {
-			return str(ptr("needs-fix")), fmt.Sprintf("改动 %d 行，需要返工", lines)
-		}
-		return str(ptr("approved")), fmt.Sprintf("改动 %d 行，直接通过", lines)
-	case "apply-fix":
-		return str(ptr("ok")), "已按评审意见修改"
-	case "deploy-preview":
-		return nil, "预览环境已部署"
+// localIP 取本机第一个非回环 IPv4；拿不到就回 127.0.0.1。
+//
+// 不发起 UDP "拨号"探测：devseed 不该为了让 hello 好看而要求外网可达。
+func localIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "127.0.0.1"
 	}
-	return nil, "完成"
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, aerr := iface.Addrs()
+		if aerr != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+			return ip.String()
+		}
+	}
+	return "127.0.0.1"
 }
 
-func ptr(s string) *string { return &s }
+// ---------- 事件投递（真实 HTTP ingress） ----------
 
-// ingestDemo 逐条发事件——**走 HTTP `/v1/events`**，不是直接调 trigger。
+// preflight 确认目标服务器真的在跑。
 //
-// 为什么不能同进程调 trigger.Ingest：派发器需要一个 Publisher（ws.NodeHub）
-// 才能把 assign 帧真的推给节点，而那个 hub 活在 server 进程的内存里。
-// devseed 是独立进程，自己 new 一个 hub 只会把帧推给空气。
-// 走 HTTP 就是"像个真实的 webhook 发送方"——这也正是示例数据的意义。
+// 为什么要有这一步：`-demo` 的价值全在「真投递、真握手」，服务器不在时唯一正确的
+// 行为是**立刻把原因说清楚并退出**，而不是连写三次 connection refused 或者挂在那里。
+func preflight(ctx context.Context, baseURL string) error {
+	c, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(c, http.MethodGet, baseURL+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("-demo 需要一台真实服务器，但连不上 %s/health（先起 ./cmd/server）：%w", baseURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("-demo 需要一台真实服务器，%s/health 返回 %d", baseURL, resp.StatusCode)
+	}
+	return nil
+}
+
+// ingestDemo 逐条投递示例事件——走真实 `POST /v1/namespaces/{ns}/events`。
 //
-// body 必须带 namespaceId：POST /v1/events 缺它就是 400（契约 §6.2，
-// 不回退默认命名空间），事件会一条都进不去。
-func ingestDemo(ctx context.Context, baseURL, apiKey, namespaceID string) (int, error) {
-	n := 0
+// 为什么不能同进程直接调 source.Service.Ingest：那等于自己扮演中枢，节点、事件、
+// 任务全在这一侧的内存里自娱自乐。走 HTTP 就是"像一个真实的 webhook 发送方"，
+// 中枢用它自己的路由/剪枝/幂等逻辑处理这批事件——这才叫真实事件链。
+func ingestDemo(ctx context.Context, baseURL, namespaceSlug, apiKey string) ([]*source.Receipt, error) {
+	endpoint := strings.TrimSuffix(baseURL, "/") + "/v1/namespaces/" + namespaceSlug + "/events"
+	out := make([]*source.Receipt, 0, len(demoEvents))
 	for _, e := range demoEvents {
-		body := map[string]any{
-			"namespaceId": namespaceID,
-			"source":      e.Source,
-			"type":        e.Type,
-			"payload":     e.Payload,
+		body := map[string]any{"source": e.Source}
+		if e.Type != "" {
+			body["type"] = e.Type
 		}
-		if e.IdemKey != "" {
-			body["idemKey"] = e.IdemKey
+		if e.DeliveryID != "" {
+			body["id"] = e.DeliveryID
 		}
-		b, _ := json.Marshal(body)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			strings.TrimSuffix(baseURL, "/")+"/v1/events", bytes.NewReader(b))
+		if e.Payload != nil {
+			body["payload"] = e.Payload
+		}
+		raw, err := json.Marshal(body)
 		if err != nil {
-			return n, err
+			return nil, fmt.Errorf("编码事件 %s: %w", e.DeliveryID, err)
+		}
+		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		req, rerr := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(raw))
+		if rerr != nil {
+			cancel()
+			return nil, rerr
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			log.Printf("⚠️  事件 %s/%s 失败: %v", e.Source, e.Type, err)
-			continue
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			cancel()
+			return nil, fmt.Errorf("投递事件 %s: %w", e.DeliveryID, derr)
 		}
-		resp.Body.Close()
+		// 回执是外部输入：读取一律设上限，不信任对端长度。
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		cancel()
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("⚠️  事件 %s/%s 返回 %d", e.Source, e.Type, resp.StatusCode)
-			continue
+			return nil, fmt.Errorf("投递事件 %s（source=%s）返回 %d: %s",
+				e.DeliveryID, e.Source, resp.StatusCode, strings.TrimSpace(string(respBody)))
 		}
-		n++
-		time.Sleep(350 * time.Millisecond) // 别把一批事件挤在同一毫秒
+		var receipt source.Receipt
+		if jerr := json.Unmarshal(respBody, &receipt); jerr != nil {
+			return nil, fmt.Errorf("解析事件回执 %s: %w", e.DeliveryID, jerr)
+		}
+		out = append(out, &receipt)
+		// 别把一批事件挤在同一毫秒：列表面板按时间排序，同一刻会看不出先后。
+		time.Sleep(120 * time.Millisecond)
 	}
-	return n, nil
+	return out, nil
 }
 
-// idemOrNil 把空串当作「没有幂等键」（没有稳定投递 ID 的来源就是这种情况）。
-func idemOrNil(s string) *string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	return &s
+// ---------- 观察（只读真实事实） ----------
+
+// taskObservation 是一条示例任务的观测结果。
+type taskObservation struct {
+	task   *store.Task
+	reason string // 不可推进的真实 reason（空 = 有候选节点）
 }
 
-func mustJSON(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
-	return b
-}
-
-// runDemo 是 -demo 的入口：建图 → 起节点 → 发事件 → 等链跑完 → 断开。
-//
-// 全程走真实路径（trigger.Ingest + 真 WS 握手），所以数据是真跑出来的。
-func runDemo(ctx context.Context, db *store.DB, nsID, baseURL, apiKey string, followSec int) error {
-	// 示例数据全部落在调用方给的命名空间（命名空间资源没有隐式默认，所以调用方显式取一次）。
-	log.Printf("▶ 造示例数据：建图 + 注册节点（namespace %s）…", nsID)
-	nodeID, token, err := seedDemo(ctx, db, nsID, "demo-worker")
-	if err != nil {
-		return err
-	}
-	log.Printf("  节点已注册: %s", nodeID)
-
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(followSec+30)*time.Second)
-	defer cancel()
-
-	w, caps, err := dialWorker(ctx, baseURL, token, nodeID, nsID)
-	if err != nil {
-		return fmt.Errorf("节点上线失败（%s 是否在跑？）: %w", baseURL, err)
-	}
-	defer w.conn.Close(websocket.StatusNormalClosure, "demo done")
-
-	done := make(chan struct{})
-	go func() {
-		w.run(ctx)
-		close(done)
-	}()
-	log.Printf("  节点已上线（%d 个能力，真实 WS 握手）", len(caps))
-
-	// 等 welcome 后立刻发事件；节点在跑，链路会自己长出来
-	time.Sleep(400 * time.Millisecond)
-
-	// 只关心**本次投递产生**的任务：库里可能还有以前遗留的未终态行
-	// （比如上次 devseed 提前断开留下的 pending），那些不该让这里一直等。
-	since := store.Now()
-	n, err := ingestDemo(ctx, baseURL, apiKey, nsID)
-	if err != nil {
-		return err
-	}
-	log.Printf("  已投递 %d 条事件，等待任务链执行…", n)
-
-	// 等**链真的跑完**再断开，而不是睡固定秒数就拔线。
-	//
-	// 睡固定时长的后果很脏：断连时还有任务在途，它们会回到 pending（租约巡检
-	// 再重派），库里于是留下永远不动的 pending 行——看起来像 bug，其实是
-	// devseed 自己走得太早。
-	deadline := time.After(time.Duration(followSec) * time.Second)
-	tick := time.NewTicker(800 * time.Millisecond)
-	defer tick.Stop()
-	started := time.Now()
+// waitTasks 有界地等任务行可见（事件与任务是同一事务写的，正常情况下立即命中）。
+func waitTasks(ctx context.Context, db *store.DB, namespaceID string, ids []string, limit time.Duration) ([]*store.Task, error) {
+	deadline := time.Now().Add(limit)
 	for {
+		tasks := make([]*store.Task, 0, len(ids))
+		missing := 0
+		for _, id := range ids {
+			t, err := db.GetTask(ctx, namespaceID, id)
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					missing++
+					continue
+				}
+				return nil, fmt.Errorf("读任务 %s: %w", id, err)
+			}
+			tasks = append(tasks, t)
+		}
+		if missing == 0 {
+			return tasks, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("有 %d 条任务在 %s 内没有落库（事件回执与 tasks 表不一致）", missing, limit)
+		}
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-deadline:
-			log.Printf("  节点执行了 %d 个任务（等待超时），断开", w.assigns)
-			return nil
-		case <-tick.C:
-			open, err := db.CountOpenTasksSince(ctx, nsID, since)
-			if err != nil {
-				continue
-			}
-			if open == 0 && time.Since(started) > 2*time.Second {
-				log.Printf("  节点执行了 %d 个任务，链路已全部跑完，断开", w.assigns)
-				return nil
-			}
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// observeTasks 给每条任务贴一个真实的可推进判定。
+//
+// 判定用的是**中枢自己的调度逻辑**（`EligibleNodesForTask` → `nodeIneligibilityReason`），
+// 所以「为什么没跑」这个答案是系统给的，不是 devseed 猜的。没有 deployments 行时它
+// 会如实回答 `NotDeployed`——那不是缺陷，是「还没人把这份能力部署到某台节点上」。
+func observeTasks(ctx context.Context, db *store.DB, tasks []*store.Task) ([]taskObservation, error) {
+	// 节点名只在日志里用，但 `nd_xxx` 对人不友好：先把 id → name 读一次。
+	names, err := nodeNameIndex(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]taskObservation, 0, len(tasks))
+	for _, t := range tasks {
+		obs := taskObservation{task: t}
+		if !store.IsTerminalPhase(t.Phase) {
+			eligible, reasons, err := db.EligibleNodesForTask(ctx, t)
+			if err != nil {
+				return nil, fmt.Errorf("判定任务 %s 的候选节点: %w", t.ID, err)
+			}
+			if len(eligible) == 0 {
+				obs.reason = formatReasons(reasons, names)
+			}
+		}
+		out = append(out, obs)
+	}
+	return out, nil
+}
+
+// nodeNameIndex 读一次节点表，给日志里的 reason 用名字而不是 `nd_…` id。
+func nodeNameIndex(ctx context.Context, db *store.DB) (map[string]string, error) {
+	nodes, err := db.ListNodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("列出节点: %w", err)
+	}
+	out := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		out[n.ID] = n.Name
+	}
+	return out, nil
+}
+
+// formatReasons 把 nodeID → reason 压成一段稳定可读的文本（优先用节点名）。
+func formatReasons(reasons map[string]string, names map[string]string) string {
+	if len(reasons) == 0 {
+		return "no_eligible_node"
+	}
+	parts := make([]string, 0, len(reasons))
+	for node, reason := range reasons {
+		label := node
+		if name, ok := names[node]; ok && name != "" {
+			label = name
+		}
+		if reason == "" {
+			reason = "eligible"
+		}
+		parts = append(parts, label+"="+reason)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+// waitTerminal 有界地等这批任务进终态；返回是否全部终态。
+func waitTerminal(ctx context.Context, db *store.DB, namespaceID string, ids []string, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		all := true
+		for _, id := range ids {
+			t, err := db.GetTask(ctx, namespaceID, id)
+			if err != nil || !store.IsTerminalPhase(t.Phase) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
+// probeCommands 对示例能力的 requires.commands 做一次真实 LookPath 探测。
+//
+// 这不是"装饰"：真节点在 hello 里报的就是这份事实，中枢靠它回答 `CommandMissing`。
+// devseed 在本机探一次，等于提前告诉开发者「这台机器就算跑 anode 也缺什么」。
+func probeCommands(commands []string) []protocol.HelloCommand {
+	out := make([]protocol.HelloCommand, 0, len(commands))
+	for _, name := range commands {
+		path, err := exec.LookPath(name)
+		out = append(out, protocol.HelloCommand{Name: name, Found: err == nil, Path: path})
+	}
+	return out
+}
+
+// ---------- 主流程 ----------
+
+// runDemo 是 `-demo` 的入口：播种资源 → 真节点上线 → 真事件投递 → 有界观察事实。
+func runDemo(ctx context.Context, db *store.DB, nsID, baseURL, apiKey string, followSec int) error {
+	ns, err := db.GetNamespace(ctx, nsID)
+	if err != nil {
+		return fmt.Errorf("读命名空间 %s: %w", nsID, err)
+	}
+	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+
+	// 先确认服务器在跑：这一步失败要**立刻**说清楚原因，不留下半套资源。
+	if err := preflight(ctx, base); err != nil {
+		return err
+	}
+
+	log.Printf("▶ 播种 v4 示例资源（namespace %s / %s）…", ns.Slug, ns.ID)
+
+	caps, err := seedCapabilities(ctx, db, nsID)
+	if err != nil {
+		return err
+	}
+	for _, c := range caps {
+		log.Printf("  能力 %s@%d digest=%s（next=%v）", c.Name, c.Version, shortDigest(c.Digest), c.Spec.Next)
+	}
+
+	srcs, err := seedSources(ctx, db, nsID)
+	if err != nil {
+		return err
+	}
+	for _, s := range srcs {
+		log.Printf("  源 %s（kind=%s）%s", s.Name, s.Kind, hookHint(s))
+	}
+
+	nodeID, token, err := seedNode(ctx, db, demoNodeName)
+	if err != nil {
+		return err
+	}
+	log.Printf("  节点已注册: %s（%s）", demoNodeName, nodeID)
+	for _, probe := range probeCommands(demoCapabilityRequires) {
+		if probe.Found {
+			log.Printf("  本机命令探测 %s → %s", probe.Name, probe.Path)
+		} else {
+			log.Printf("  本机命令探测 %s → 未找到（真节点上会判 CommandMissing）", probe.Name)
+		}
+	}
+
+	node, err := dialDemoNode(ctx, base, demoNodeName, token, ns.Slug)
+	if err != nil {
+		return err
+	}
+	defer node.close()
+	go node.watch(ctx)
+	log.Printf("  节点已上线（真实 WS 握手；capabilities=0 / slots=0）")
+
+	receipts, err := ingestDemo(ctx, base, ns.Slug, apiKey)
+	if err != nil {
+		return err
+	}
+	log.Printf("  已投递 %d 条事件（POST /v1/namespaces/%s/events）", len(receipts), ns.Slug)
+	taskIDs := make([]string, 0, len(receipts))
+	for i, r := range receipts {
+		duplicate := ""
+		if r.Duplicate {
+			duplicate = " · duplicate"
+		}
+		log.Printf("  回执 %s/%s → event=%s tasks=%d pruned=%d%s",
+			demoEvents[i].Source, demoEvents[i].Type, shortID(r.EventID),
+			len(r.Tasks), len(r.Pruned), duplicate)
+		for _, p := range r.Pruned {
+			log.Printf("    ✂ 剪枝 %s：%s（%s）", p.Capability, p.Reason, p.Detail)
+		}
+		for _, t := range r.Tasks {
+			taskIDs = append(taskIDs, t.TaskID)
+		}
+	}
+	if len(taskIDs) == 0 {
+		return fmt.Errorf("一条事件都没有建出任务：源 targets 与事件载荷对不上，检查上面回执里的剪枝原因")
+	}
+
+	tasks, err := waitTasks(ctx, db, nsID, taskIDs, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	observations, err := observeTasks(ctx, db, tasks)
+	if err != nil {
+		return err
+	}
+	canProgress := false
+	for _, obs := range observations {
+		phase := obs.task.Phase
+		if obs.reason == "" {
+			canProgress = true
+			log.Printf("  任务 %s → %s（有候选节点）", taskLabel(obs.task), phase)
+			continue
+		}
+		log.Printf("  任务 %s → %s（无候选节点：%s）", taskLabel(obs.task), phase, obs.reason)
+	}
+
+	if canProgress {
+		// 真的有节点能跑才等：这时"等"是在等真实执行，不是空转。
+		limit := time.Duration(followSec) * time.Second
+		if limit <= 0 {
+			limit = 25 * time.Second
+		}
+		if waitTerminal(ctx, db, nsID, taskIDs, limit) {
+			log.Printf("  链路已全部跑完")
+			if final, ferr := reloadTasks(ctx, db, nsID, taskIDs); ferr == nil {
+				for _, t := range final {
+					log.Printf("  任务 %s → %s", taskLabel(t), t.Phase)
+				}
+			}
+		} else {
+			log.Printf("  %s 内任务未收尾（节点在线但没跑完），先断开", limit)
+		}
+	} else {
+		// 没有候选节点 = 这批任务**不会**自己动。说清下一步，别让开发者以为卡住了。
+		log.Printf("  任务停在 pending 是真实状态：示例能力还没部署到任何节点")
+		log.Printf("    → 部署是人工动作：POST /v1/namespaces/%s/capabilities/{name}/deploy", ns.Slug)
+		log.Printf("    → 真执行需要一台装了 anode 的节点（它自己注册、拉包、跑脚本）")
+	}
+
+	return summarize(ctx, db, nsID)
+}
+
+// reloadTasks 重新读一遍任务（收尾打印用）。
+func reloadTasks(ctx context.Context, db *store.DB, namespaceID string, ids []string) ([]*store.Task, error) {
+	out := make([]*store.Task, 0, len(ids))
+	for _, id := range ids {
+		t, err := db.GetTask(ctx, namespaceID, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// summarize 打印库里**真实行数**，让"到底种进去了什么"可对账。
+func summarize(ctx context.Context, db *store.DB, namespaceID string) error {
+	caps, err := db.ListCapabilities(ctx, namespaceID)
+	if err != nil {
+		return fmt.Errorf("统计能力: %w", err)
+	}
+	srcs, err := db.ListSources(ctx, namespaceID)
+	if err != nil {
+		return fmt.Errorf("统计源: %w", err)
+	}
+	// 事件列表（无 trace / source）默认**不含**剪枝留痕（store.ListEvents 的既定语义：
+	// 一次扇出里被剪的边不该把「外部世界发生了什么」淹成两倍长度），所以剪枝单独查一遍。
+	events, err := db.ListEvents(ctx, namespaceID, "", "", 500)
+	if err != nil {
+		return fmt.Errorf("统计事件: %w", err)
+	}
+	prunes, err := db.ListEvents(ctx, namespaceID, "", store.EventPruneSource, 500)
+	if err != nil {
+		return fmt.Errorf("统计剪枝留痕: %w", err)
+	}
+	tasks, err := db.ListTasks(ctx, namespaceID, store.TaskFilter{Limit: 500})
+	if err != nil {
+		return fmt.Errorf("统计任务: %w", err)
+	}
+	log.Printf("  数据库事实：能力 %d 行 / 源 %d 行 / 事件 %d 行（其中剪枝留痕 %d 行，合计 %d）/ 任务 %d 行",
+		len(caps), len(srcs), len(events), len(prunes), len(events)+len(prunes), len(tasks))
+	return nil
+}
+
+// taskLabel 是任务的一行标识（`能力@版本`）。
+func taskLabel(t *store.Task) string {
+	if t == nil {
+		return "?"
+	}
+	return fmt.Sprintf("%s@%d", t.Capability, t.Version)
+}
+
+// hookHint 给 webhook 源拼一条可手工调用的提示（token 只在库里，不回显给前端）。
+func hookHint(s *store.Source) string {
+	if s == nil || s.Kind != store.SourceKindWebhook {
+		return ""
+	}
+	token := sourcespec.ParseConfig(s.Kind, s.Config).Token
+	if token == "" {
+		return ""
+	}
+	return "hook=/v1/hooks/" + token
+}
+
+// shortDigest / shortID 只用于日志可读性。
+func shortDigest(digest string) string {
+	if len(digest) <= 19 {
+		return digest
+	}
+	return digest[:19] + "…"
+}
+
+func shortID(id string) string {
+	if len(id) <= 14 {
+		return id
+	}
+	return id[:14]
 }

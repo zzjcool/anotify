@@ -7,17 +7,17 @@
 
 | 层 | 技术 | 覆盖 |
 | --- | --- | --- |
-| 单元 | `go test ./...` | broker/auth/api/push/ws/store/server 包级逻辑 |
+| 单元 | `go test ./...` | store/auth/api/push/ws/server/lease/source + 节点 runner/ops/resultstore 包级逻辑 |
 | API 契约 | Node fetch（`scripts/e2e/suites/api_contract.mjs`） | 全端点的状态码/鉴权/参数校验 |
 | **Passkey 认证** | **Playwright CDP 虚拟认证器** | 真实 WebAuthn 注册/登录/登出/会话（无头，无需真人） |
-| WS 协议 | Node WebSocket 客户端 | hello/subscribe/ack/resume/heartbeat/标签过滤 |
+| WS 协议 | Node WebSocket 客户端 | v4 帧：hello/welcome、config.get/applied/changed、task.dispatch/accept/reject、lease.grant/renew/ack、task.result/result.ack、task.emit/ack、task.cancel/cancel.ack、upgrade/logs |
 | 路由过滤 | Node fetch | 标签路由 + event_scope 过滤全矩阵（notify.matched 断言） |
 | 桌面推送 | Playwright 持久化 Chrome | 真实 FCM 订阅 → 投递记录 |
 | 持久化 | 重启服务验证 | 消息/设备/Key 重启后仍在 |
 | 安全 | Node fetch + DB 检查 | scope 越权/Key 篡改/哈希格式/会话属性 |
 | 前端 | Playwright | 6 页渲染 + 未登录跳登录 + 已登录真实数据 |
 | 边界 | Node fetch | 畸形输入/超大体/并发/Unicode |
-| Docker | docker build/run | 单二进制镜像端到端 |
+| Docker | docker build/run | 单二进制镜像端到端（中枢 + 节点镜像） |
 
 ## 唯一人工环节
 
@@ -33,7 +33,7 @@ scripts/e2e/
   suites/
     api_contract.mjs    # API 契约矩阵
     auth_flow.mjs       # Passkey 全流程（虚拟认证器）
-    ws_protocol.mjs     # 节点协议九帧（事件中心）
+    ws_protocol.mjs     # 节点协议（v4 帧集：config / dispatch / lease / result / emit / cancel）
     routing.mjs         # 派发四步 + 六种剪枝
     persistence.mjs     # 重启后 events/tasks 存活
     security.mjs        # 安全矩阵
@@ -54,8 +54,9 @@ scripts/e2e/
 ## 临时目录与 /tmp 卫生（#326）
 
 **本机 `/tmp` 是 tmpfs（7.5G）——测试漏下的临时目录吃的是内存，不是磁盘。**
-2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（`go test ./cmd/agent`
-每次编一份真二进制）、1424 个 `anotify-e2e-*`（端口重试失败的那些尝试从不删）、
+2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（v3 时代 `go test ./cmd/agent`
+每次编一份真二进制；v4 的等价物是 `cmd/anode` 的 `anode-n3-binaries-*`，已由 `TestMain` 自清）、
+1424 个 `anotify-e2e-*`（端口重试失败的那些尝试从不删）、
 214 个 `anotify-script-*`（cli_auth 的假 HOME）。泄漏还会放大并行 e2e 的
 "环境型失败"：tmpfs 余量越小 → Chrome 越容易崩；端口越抢不到 → 漏得越多。
 
@@ -82,11 +83,12 @@ try {
 - 端口重试循环（`startServer`）里每次尝试的临时目录必须在 `continue` 之前删掉 ——
   失败尝试最容易被忘掉，而它正是历史上泄漏的大头。
 
-### Go 侧（`cmd/agent`）
+### Go 侧（`cmd/anode`）
 
-跨用例共享、不属于任何单个用例的目录（例如 `buildAgentBinary` 编出来的真 agent 二进制）
-用 `mkTestTempDir(prefix)` 登记，由包级 `TestMain` 在 `m.Run()` 之后统一 `os.RemoveAll`。
-单个用例自己的目录继续用 `t.TempDir()`（testing 会删，且 `-run` 子集下也能工作）。
+跨用例共享、不属于任何单个用例的目录（例如 `TestMain` 编出来的两个真 anode 二进制，
+`anode-n3-binaries-*`）在 `TestMain` 里用 `os.MkdirTemp` 创建、`m.Run()` 之后统一
+`os.RemoveAll`（`cmd/anode/main_test.go`）。单个用例自己的目录继续用 `t.TempDir()`
+（testing 会删，且 `-run` 子集下也能工作）。
 
 覆盖「没有 `--data-dir` → 工作目录/数据目录兜底到系统临时目录」的用例（standalone
 的 `run`、真进程 `emit` 等）用 `isolateSystemTemp(t)`：`t.Setenv("TMPDIR", t.TempDir())`
@@ -97,7 +99,7 @@ try {
 
 ```bash
 # 包住一条命令：给被包命令一个私有 TMPDIR，跑完只断言「本次运行自己的新增 = 0」
-node scripts/check-tmp-leaks.mjs -- go test ./cmd/agent -count=3
+node scripts/check-tmp-leaks.mjs -- go test ./cmd/anode -count=3
 
 node scripts/check-tmp-leaks.mjs --lint        # 静态：e2e 里不许有裸 mkdtempSync
 node scripts/check-tmp-leaks.mjs --self-test   # 守卫自己的红/绿/不误报/透传自测
@@ -122,8 +124,8 @@ node scripts/check-tmp-leaks.mjs --self-test   # 守卫自己的红/绿/不误�
   Node `H.mkdtempTmp()` 都满足）。**不要在测试里硬编码 `/tmp`** —— 那会绕过归因，
   而且不可移植。
 - 已接线：`make ci` 跑 `--lint` + `--self-test`，并用它包住 `make test`（含
-  `go test ./cmd/agent`）；`./scripts/e2e/run_all.sh` 在收尾前 `--lint` 并包住
-  并行执行器。因此 `go test ./cmd/agent` 与全部 e2e 都受守卫覆盖，新增套件不用单独登记。
+  `go test ./cmd/anode`）；`./scripts/e2e/run_all.sh` 在收尾前 `--lint` 并包住
+  并行执行器。因此 `go test ./cmd/anode` 与全部 e2e 都受守卫覆盖，新增套件不用单独登记。
 
 ### 主机兜底（可选，不在仓库里跑）
 
@@ -159,6 +161,8 @@ make e2e-one S=auth_flow   # 只跑某个套件
   证明 Inter/Fraunces/JetBrains Mono 真的生效；390 视口抽屉的 role=dialog /
   aria-modal / Esc 关闭 / 焦点回归；reduce 下 `--dur`、`--dur-modal-out` 归零；
   跨文档 View Transitions 的 head 内联 opt-in + pagereveal 触发 + 导航 0 pageerror
-- **真 agent 端到端**（`live_agent`，4s）：真起 `cmd/agent` 进程 → 真部署 → 真跑任务，
+- **真节点端到端**（`live_agent`，4s）：真起节点进程 → 真部署 → 真跑任务，
   最后到**文件系统**上验收（产物 digest 两端对得上账、能力声明的 `run.workDir` 真的生效、
   用户目录里不残留产物文件）。专门抓「每层单独看都对、连起来才错」的一类 bug。
+  > #336 迁移中：`scripts/e2e/suites/live_agent.mjs` 与 `run_all.sh` 仍在构建 v3 的
+  > `cmd/agent`，v4 的节点入口是 `./anode`（`go build -o .e2e-bin/anode ./cmd/anode`）。
