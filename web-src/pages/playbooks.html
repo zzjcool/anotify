@@ -1,336 +1,187 @@
 {{define "title"}}{{t "pb.title"}}{{end}}
 
 {{define "style"}}
-    <style>
-      /* 预案列表页（UI v2）
-         ------------------------------------------------------------
-         组件（页头 / 卡片 / 按钮 / 徽章 / 空态 / 骨架）一律用 web/ui.css 的
-         共享类，这里只补三件事：
-         ① 窄屏栅格：ui.css 的 .pb-grid 最小轨道 320px，390 宽会横向裁切；
-         ② .pb-card 的视觉对齐 .card（它是 e2e 硬锚点类名，不能换名）；
-         ③ 首帧骨架的形状。
-         颜色只走 tokens.css 的 token，本页不出现任何硬编码色值。 */
-
-      /* ① 窄屏单列：minmax(min(280px, 100%), 1fr) —— 视口不足 280px 时轨道
-         退化为 100%。否则 auto-fill 的最小轨道会把栅格撑到 320px，
-         再被 body 的 overflow-x-hidden 直接裁掉右侧内容。 */
-      #pb-grid,
-      .pb-grid-skel {
-        grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-      }
-
-      /* ② 卡片语言对齐 .card：surface-1 + 1px line + 16px 圆角 + shadow-1，
-         hover 提升到 --line-strong + --shadow-2（契约 §8）。
-         .pb-card 自带 display:flex / column / gap（ui.css），这里只改视觉。 */
-      .pb-card {
-        min-width: 0;
-        padding: 20px;
-        background: var(--surface-1);
-        border: 1px solid var(--line);
-        border-radius: var(--r-lg);
-        box-shadow: var(--shadow-1);
-        transition:
-          border-color var(--dur) var(--ease),
-          box-shadow var(--dur) var(--ease),
-          transform var(--dur) var(--ease);
-      }
-      .pb-card:hover {
-        background: var(--surface-1);
-        border-color: var(--line-strong);
-        box-shadow: var(--shadow-2);
-        transform: translateY(-1px);
-      }
-      /* 长 slug / 长描述不能把卡顶宽（280px 轨道下尤其明显） */
-      .pb-card-titles {
-        min-width: 0;
-      }
-      .pb-card .pb-name,
-      .pb-card .pb-desc,
-      .pb-card .pb-next {
-        overflow-wrap: anywhere;
-      }
-      /* 就绪的卡不该用警告色念一句"全都好了"：.pb-next 的基色是 --warn
-         （未就绪时提醒"下一步做什么"），就绪时降级为中性文字。 */
-      .pb-next-ok {
-        color: var(--muted);
-      }
-
-      /* ③ 首帧骨架：形状对齐真实卡片（标题 + 徽标 + 两行 meta + 进度条）。
-         **必须**是 #pb-grid 之外的独立容器 —— #pb-grid 有子元素是 e2e 的
-         「数据已就绪」信号（real_backend.mjs），骨架混进去会让信号提前成立。 */
-      .pb-grid-skel {
-        display: grid;
-        gap: 12px;
-      }
-      .pb-skel-card {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        padding: 20px;
-        background: var(--surface-1);
-        border: 1px solid var(--line);
-        border-radius: var(--r-lg);
-        box-shadow: var(--shadow-1);
-      }
-      .pb-skel-row {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .pb-skel-title {
-        width: 46%;
-        height: 16px;
-      }
-      .pb-skel-badge {
-        width: 60px;
-        height: 20px;
-        flex: none;
-      }
-      .pb-skel-line {
-        width: 100%;
-        height: 10px;
-      }
-      .pb-skel-line-s {
-        width: 64%;
-        height: 10px;
-      }
-      .pb-skel-bar {
-        width: 100%;
-        height: 4px;
-      }
-    </style>
+<style>
+  .pb-grid { grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
+  .pb-card { min-width: 0; overflow-wrap: anywhere; }
+  .pb-upload { display: grid; gap: 16px; }
+  .pb-wrap { overflow-wrap: anywhere; min-width: 0; }
+  .pb-card-head { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
+  .pb-card-facts { display: grid; gap: 8px; margin-top: 12px; }
+  .pb-result { margin-top: 12px; }
+  .pb-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
   <div class="page">
-    <!-- 页头：标题 + 一句说明 + 页级动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §10-C1/C2）。
-         `.page-sub` 全页只出现一次，mountLayout 检测到它就不再画顶栏副标题。 -->
     <div class="page-head">
       <div class="min-w-0">
         <h2 class="page-title">{{t "pb.title"}}</h2>
-        <p class="page-sub">{{t "pb.subtitle"}}</p>
+        <p class="page-sub">{{t "pb.v4.subtitle"}}</p>
       </div>
       <div class="page-actions">
         <button id="btn-refresh" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
+        <a href="#pb-import" class="btn btn-primary">{{t "pb.v4.import"}}</a>
       </div>
     </div>
-
-    <!-- 首帧骨架：独立容器，数据到达后整体移除。
-         e2e 的「数据已就绪」信号是 `#pb-grid` 有子元素，所以骨架绝不能进格。 -->
-    <div id="pb-grid-skel" class="pb-grid-skel" aria-hidden="true">
-      <div class="pb-skel-card">
-        <div class="pb-skel-row">
-          <div class="skeleton pb-skel-title"></div>
-          <div class="skeleton pb-skel-badge"></div>
-        </div>
-        <div class="skeleton pb-skel-line"></div>
-        <div class="skeleton pb-skel-line-s"></div>
-        <div class="skeleton pb-skel-bar"></div>
-      </div>
-      <div class="pb-skel-card">
-        <div class="pb-skel-row">
-          <div class="skeleton pb-skel-title"></div>
-          <div class="skeleton pb-skel-badge"></div>
-        </div>
-        <div class="skeleton pb-skel-line"></div>
-        <div class="skeleton pb-skel-line-s"></div>
-        <div class="skeleton pb-skel-bar"></div>
-      </div>
-      <div class="pb-skel-card">
-        <div class="pb-skel-row">
-          <div class="skeleton pb-skel-title"></div>
-          <div class="skeleton pb-skel-badge"></div>
-        </div>
-        <div class="skeleton pb-skel-line"></div>
-        <div class="skeleton pb-skel-line-s"></div>
-        <div class="skeleton pb-skel-bar"></div>
-      </div>
-    </div>
-
-    <!-- 真实列表：只有数据落地后才有子元素（e2e 的就绪信号）。 -->
+    <p id="pb-scope" class="field-hint"></p>
+    <div id="pb-state" aria-live="polite"></div>
     <div id="pb-grid" class="pb-grid"></div>
-
-    <!-- 空态 / 失败态容器。
-         `hidden` 挂在**裸 div** 上：.empty 是 display:flex，会盖掉
-         .hidden{display:none}（ui.css 在 tailwind.css 之后加载）——
-         两者不能同元素，否则空态永远可见。
-         成功加载后这个 div 必须保持 `hidden`（real_backend.mjs:375-385）。 -->
     <div id="pb-empty" class="hidden"></div>
+
+    <section id="pb-import" class="card card-pad">
+      <h3 class="card-title">{{t "pb.v4.import"}}</h3>
+      <p class="card-sub">{{t "pb.v4.package_hint"}}</p>
+      <form id="pb-import-form" class="pb-upload">
+        <div class="field">
+          <label for="pb-input-kind" class="field-label">{{t "pb.v4.input_kind"}}</label>
+          <select id="pb-input-kind" class="select">
+            <option value="files">{{t "pb.v4.files"}}</option>
+            <option value="source">{{t "pb.v4.oci"}}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="pb-input-name" class="field-label">{{t "pb.v4.slug"}}</label>
+          <input id="pb-input-name" class="input mono" required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxlength="64" autocomplete="off" />
+        </div>
+        <div id="pb-files-input" class="pb-upload">
+          <div class="field">
+            <label for="pb-upload-files" class="field-label">{{t "pb.v4.upload_files"}}</label>
+            <input id="pb-upload-files" type="file" multiple class="input" />
+            <label for="pb-upload-directory" class="field-label">{{t "pb.v4.upload_directory"}}</label>
+            <input id="pb-upload-directory" type="file" multiple webkitdirectory class="input" />
+            <p class="field-hint">{{t "pb.v4.upload_hint"}}</p>
+          </div>
+          <div class="field">
+            <label for="pb-input-files" class="field-label">{{t "pb.v4.file_map"}}</label>
+            <textarea id="pb-input-files" class="textarea mono" rows="10" spellcheck="false">{}</textarea>
+          </div>
+        </div>
+        <div id="pb-source-input" class="field" hidden>
+          <label for="pb-input-source" class="field-label">{{t "pb.v4.oci"}}</label>
+          <input id="pb-input-source" class="input mono" placeholder="oci://registry/repository:tag" />
+          <p class="field-hint">{{t "pb.v4.oci_hint"}}</p>
+        </div>
+        <div class="page-actions">
+          <button id="pb-create" type="submit" class="btn btn-primary">{{t "pb.v4.store"}}</button>
+        </div>
+      </form>
+      <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
+    </section>
   </div>
 </div>
 {{end}}
 
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-      const API = "/v1";
+<script>
+  (() => {
+    const { api, apiList, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode } = Anotify;
+    const t = (key, vars = {}) => {
+      let value = window.AnotifyI18n[key] || key;
+      for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
+      return value;
+    };
+    const $ = id => document.getElementById(id);
+    const el = (tag, cls, text) => dom(tag, { class: cls }, text);
+    const link = name => "playbook.html?namespace=" + encodeURIComponent(getScope().namespace) + "&id=" + encodeURIComponent(name);
+    Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.subtitle") });
+    let loading = false;
 
-      Anotify.mountLayout({
-        active: "playbooks",
-        title: t("pb.title", "预案"),
-        subtitle: t("pb.subtitle", "把能力、下游、源组成一份能体检、能补齐的预案"),
-      });
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
-      // 页面里不再自己维护一份 toast 容器 —— 每页一份的 z-index / 位置各不相同。
-      const toast = (msg, kind) => Anotify.toast(msg, kind);
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = text;
-        return n;
+    function card(resource) {
+      const pb = model.playbook(resource);
+      const section = el("article", "card card-pad pb-card");
+      section.dataset.slug = pb.slug;
+      const head = el("div", "pb-card-head");
+      const name = el("a", "card-title", pb.displayName || pb.slug);
+      name.href = link(pb.slug);
+      head.append(name, el("span", "badge " + (pb.status.ready ? "badge-success" : "badge-warn"), t(pb.status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
+      section.append(head, el("p", "mono field-hint", pb.slug));
+      const facts = el("div", "pb-card-facts");
+      for (const condition of pb.status.conditions) {
+        facts.append(el("p", "field-hint", condition.type + " · " + condition.status + (condition.reason ? " · " + condition.reason : "")));
       }
-
-      // 四种总体状态：文案 + 徽标色类。颜色靠 CSS（.pb-badge.is-*），
-      // 这里只决定语义，不写死颜色。
-      const STATUS_KEY = {
-        ready: "pb.status.ready",
-        "needs-node": "pb.status.needs_node",
-        blocked: "pb.status.blocked",
-        partial: "pb.status.partial",
-      };
-      const STATUS_FALLBACK = {
-        ready: "就绪",
-        "needs-node": "缺节点",
-        blocked: "缺定义",
-        partial: "不完整",
-      };
-
-      // 「最该先做的一件事」：体检结论里第一个没过的项。
-      // 这是全页最有价值的一行 —— 它把"哪里不对"变成"下一步做什么"。
-      function nextLine(pb) {
-        const n = pb.next;
-        if (!n) return t("pb.next.ready", "全部就绪，可以开始跑了");
-        const key = "pb.next." + n.kind + "." + n.status;
-        const fb = {
-          "pb.next.capability.missing": "缺能力定义：{ref}",
-          "pb.next.capability.no-node": "「{ref}」没有节点实现",
-          "pb.next.capability.offline": "「{ref}」的节点都离线",
-          "pb.next.edge.missing": "缺出口：{label}",
-          "pb.next.trigger.missing": "缺触发器：{label}",
-        }[key] || "{label}";
-        return t(key, fb).replace("{ref}", n.ref || n.label || "").replace("{label}", n.label || "");
+      for (const item of pb.status.items) {
+        facts.append(el("p", "field-hint", item.kind + " · " + item.name + (item.version ? "@" + item.version : "") + " · " + item.state));
       }
-
-      function card(pb) {
-        // `.card` 是 ui.css 的共享卡片类；页级 `.pb-card` 只补栅格内的
-        // min-width/内边距/可点击焦点环。两个类叠用，形状只由 .card 决定。
-        const c = el("div", "pb-card card");
-        c.tabIndex = 0;
-        c.setAttribute("role", "link");
-        const open = () => {
-          location.href = "playbook.html?id=" + encodeURIComponent(pb.slug);
-        };
-        c.addEventListener("click", open);
-        c.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter" || ev.key === " ") {
-            ev.preventDefault();
-            open();
+      if (!pb.status.items.length) facts.append(el("p", "field-hint", t("pb.v4.not_installed")));
+      if (pb.status.unapplied.length) facts.append(el("p", "badge badge-warn", t("pb.v4.unapplied_count", { n: pb.status.unapplied.length })));
+      if (pb.status.blocker) facts.append(el("p", "field-hint", t("pb.v4.blocker") + ": " + pb.status.blocker.type + " · " + (pb.status.blocker.capability || "") + " · " + pb.status.blocker.action));
+      if (pb.status.lastInstallId) facts.append(el("p", "mono field-hint", t("pb.v4.last_install") + ": " + pb.status.lastInstallId));
+      section.append(facts);
+      return section;
+    }
+    async function load() {
+      if (loading) return;
+      loading = true; $("btn-refresh").disabled = true;
+      $("pb-state").textContent = t("pb.v4.loading"); $("pb-state").setAttribute("aria-busy", "true");
+      $("pb-grid").replaceChildren(); $("pb-empty").classList.add("hidden");
+      try {
+        await ready();
+        $("pb-scope").textContent = t("pb.v4.namespace") + ": " + getScope().namespace;
+        const { items: rows } = await apiList(nsPath("playbooks"));
+        for (const row of rows) $("pb-grid").append(card(row));
+        if (!rows.length) {
+          $("pb-empty").replaceChildren(el("div", "empty", t("pb.empty")));
+          $("pb-empty").classList.remove("hidden");
+        }
+        $("pb-state").replaceChildren();
+      } catch (error) {
+        $("pb-state").replaceChildren(loadErrorNode(error, load));
+      } finally {
+        loading = false; $("btn-refresh").disabled = false; $("pb-state").removeAttribute("aria-busy");
+      }
+    }
+    async function upload(input, directory) {
+      try {
+        const entries = [];
+        for (const file of input.files) {
+          let path = directory ? file.webkitRelativePath.split("/").slice(1).join("/") : file.name;
+          // A whole exported map is also a self-contained import, not a second manifest.
+          if (!directory && input.files.length === 1 && file.name.endsWith(".json")) {
+            $("pb-input-files").value = JSON.stringify(JSON.parse(await file.text()), null, 2);
+            const files = JSON.parse($("pb-input-files").value);
+            $("pb-input-name").value = model.playbook.parseDocument(files["playbook.yaml"]).metadata.name;
+            return;
           }
-        });
-
-        const top = el("div", "pb-card-top");
-        const left = el("div", "pb-card-titles");
-        left.appendChild(el("div", "pb-name", pb.name));
-        left.appendChild(el("div", "pb-slug", pb.slug));
-        top.appendChild(left);
-        top.appendChild(
-          el("span", "pb-badge is-" + pb.status, t(STATUS_KEY[pb.status], STATUS_FALLBACK[pb.status])),
-        );
-        c.appendChild(top);
-
-        if (pb.description) c.appendChild(el("div", "pb-desc", pb.description));
-
-        c.appendChild(
-          el(
-            "div",
-            "pb-meta",
-            t("pb.meta", "能力 {c} · 下游 {e} · 源 {tr}")
-              .replace("{c}", pb.counts.capabilities)
-              .replace("{e}", pb.counts.edges)
-              .replace("{tr}", pb.counts.triggers),
-          ),
-        );
-
-        const bar = el("div", "pb-bar");
-        const fill = el("i", "is-" + pb.status);
-        // 0/0 的预案（只有出口的）不要让进度条看起来像 100% 坏掉
-        fill.style.width = (pb.total ? Math.round((pb.ready / pb.total) * 100) : 100) + "%";
-        bar.appendChild(fill);
-        c.appendChild(bar);
-        c.appendChild(
-          el("div", "pb-meta", t("pb.ready_n", "{n}/{m} 项就绪").replace("{n}", pb.ready).replace("{m}", pb.total)),
-        );
-
-        const next = el("div", 'pb-next' + (pb.status === "ready" ? " pb-next-ok" : ""));
-        next.appendChild(el("span", "", "→"));
-        next.appendChild(el("span", "", nextLine(pb)));
-        c.appendChild(next);
-        return c;
-      }
-
-      let PKGS = [];
-
-      // 数据（或空态 / 失败态）落地后骨架整体撤掉，不留"永远加载中"的假象。
-      function dropSkeleton() {
-        const skel = document.getElementById("pb-grid-skel");
-        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
-      }
-
-      // 空态：标题 + 一句说明 + 一个真能用的动作（重新体检 = load()）。
-      // 不伪造数据、不写成"载入失败"，两者是不同的状态。
-      function renderEmpty() {
-        const box = document.getElementById("pb-empty");
-        const inner = el("div", "empty");
-        inner.appendChild(el("div", "card-title", t("pb.empty_title", "还没有预案")));
-        inner.appendChild(el("p", "card-sub", t("pb.empty", "这个命名空间里还没有预案。")));
-        const act = el("button", "btn btn-primary btn-sm", t("pb.rescan", "重新体检"));
-        act.type = "button";
-        act.addEventListener("click", () => load());
-        inner.appendChild(act);
-        box.replaceChildren(inner);
-        box.classList.remove("hidden");
-      }
-
-      // 失败态：一句"载入失败"加一个重试按钮，就地说清是怎么回事。
-      function renderLoadError(err) {
-        const box = document.getElementById("pb-empty");
-        box.replaceChildren(Anotify.loadErrorNode(err, () => load()));
-        box.classList.remove("hidden");
-        toast(t("pb.load_failed", "载入失败，请刷新重试。"));
-      }
-
-      // 返回 true 表示这一轮真的拿到了数据（刷新按钮据此决定要不要报"已重新体检"）。
-      async function load() {
-        const grid = document.getElementById("pb-grid");
-        grid.textContent = "";
-        try {
-          // Anotify.api 直接返回解析好的 JSON，非 2xx 会 throw（不是 Response）
-          const j = await Anotify.api(API + "/playbooks");
-          PKGS = j.playbooks || [];
-        } catch (e) {
-          dropSkeleton();
-          renderLoadError(e);
-          return false;
+          entries.push([path, await file.text()]);
         }
-        dropSkeleton();
-        if (!PKGS.length) {
-          renderEmpty();
-          return true;
+        if (new Set(entries.map(([p]) => p)).size !== entries.length) throw new Error(t("pb.v4.duplicate_files"));
+        const files = Object.fromEntries(entries);
+        $("pb-input-files").value = JSON.stringify(files, null, 2);
+        if (files["playbook.yaml"]) $("pb-input-name").value = model.playbook.parseDocument(files["playbook.yaml"]).metadata.name;
+      } catch (error) { $("pb-import-result").replaceChildren(loadErrorNode(error)); }
+    }
+    $("pb-upload-files").addEventListener("change", () => upload($("pb-upload-files"), false));
+    $("pb-upload-directory").addEventListener("change", () => upload($("pb-upload-directory"), true));
+    $("pb-input-kind").addEventListener("change", () => {
+      const files = $("pb-input-kind").value === "files";
+      $("pb-files-input").hidden = !files; $("pb-source-input").hidden = files;
+    });
+    $("pb-import-form").addEventListener("submit", async event => {
+      event.preventDefault(); $("pb-create").disabled = true;
+      $("pb-import-result").textContent = t("pb.v4.saving");
+      try {
+        await ready();
+        const name = $("pb-input-name").value.trim();
+        const spec = $("pb-input-kind").value === "files" ? { files: JSON.parse($("pb-input-files").value) } : { source: $("pb-input-source").value.trim() };
+        const response = await api(nsPath("playbooks"), { method: "POST", body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Playbook", metadata: { name, namespace: getScope().namespace }, spec }) });
+        const open = el("a", "btn btn-primary btn-sm", t("pb.v4.open")); open.href = link(response.metadata.name);
+        $("pb-import-result").replaceChildren(el("p", "field-hint", t("pb.v4.stored")), open);
+        await load();
+      } catch (error) {
+        $("pb-import-result").replaceChildren(loadErrorNode(error));
+        if (error.status === 409 && error.reason === "slug_taken") {
+          const guidance = el("a", "btn btn-ghost btn-sm", t("pb.v4.slug_taken"));
+          guidance.href = link($("pb-input-name").value.trim());
+          $("pb-import-result").append(guidance);
         }
-        document.getElementById("pb-empty").classList.add("hidden");
-        for (const p of PKGS) grid.appendChild(card(p));
-        return true;
-      }
-
-      document.getElementById("btn-refresh").addEventListener("click", async () => {
-        const ok = await load();
-        if (ok) toast(t("pb.rescanned", "已重新体检"));
-      });
-      document.addEventListener("DOMContentLoaded", load);
-    </script>
+      } finally { $("pb-create").disabled = false; }
+    });
+    $("btn-refresh").addEventListener("click", load);
+    document.addEventListener("DOMContentLoaded", load);
+  })();
+</script>
 {{end}}

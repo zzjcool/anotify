@@ -1,1322 +1,147 @@
 {{define "title"}}{{t "trace.title"}}{{end}}
-
-{{define "style"}}
-    <style>
-      /* 链路页：一条 trace 的全貌。
-         URL 形如 trace.html?traceId=trace_xxx（事件流里「查看链路」跳过来）。
-
-         样式纪律（UI v2）：页头 / 卡片 / 按钮 / 空态 / 骨架一律用 ui.css 的组件类；
-         这里只留本页独有的排版，颜色全部走 tokens.css 的 token —— 亮主题下也要读得清。
-         容器用 .page（1200px）而不是 .page-narrow（760px）：这页的主体是拓扑图，
-         760px 会把图挤成一条竖线。 */
-
-      /* 正文纵向堆叠（.page 的 gap 只管页头与正文之间） */
-      .trace-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        min-width: 0;
-      }
-
-      /* 首屏骨架：形状对齐真实正文（id 行 + 概览 4 格 + 图块）。
-         静态写在 HTML 里，JS 首次渲染时 replaceChildren 掉；
-         刷新/重试时 JS 复用同一个形状，避免整块内容闪空。 */
-      .trace-sk-title {
-        height: 22px;
-        width: 220px;
-        max-width: 60%;
-      }
-      .trace-sk-stats {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 12px;
-        margin-top: 20px;
-      }
-      .trace-sk-cell {
-        height: 34px;
-      }
-      /* 图块骨架：图是这页的主体（实测占首屏 22.9% 面积、内容态图区 238px）。
-         以前只摆一个 240px 空块，看不出“这里将出现一张拓扑图”；现在用
-         「节点块 + 连线」三排铺出图的形状，高度对齐内容态的图区 → 数据到达时
-         正文不下移。 */
-      .trace-sk-graph {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        gap: 20px;
-        height: 236px;
-        margin-top: 20px;
-      }
-      .trace-sk-lane {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      .is-indent.trace-sk-lane {
-        padding-left: 48px;
-      }
-      .trace-sk-node {
-        width: 150px;
-        height: 42px;
-        border-radius: var(--r-md);
-      }
-      .trace-sk-edge {
-        height: 2px;
-        flex: 1 1 auto;
-        border-radius: var(--r-full);
-      }
-
-      /* 头部卡内部节奏：id 行 / 概览 / 触发事件之间 16px */
-      .trace-head-card {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        min-width: 0;
-      }
-
-      /* trace_id 是这页的主键：显眼、可复制，长 id 不顶宽 */
-      .trace-id {
-        min-width: 0;
-        font-family: var(--font-mono);
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--accent);
-        background: var(--accent-soft);
-        border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-        border-radius: var(--r-sm);
-        padding: 3px 8px;
-        word-break: break-all;
-      }
-
-      /* 概览数字：任务数 / 总耗时 / 最慢一步（有失败时才多一格） */
-      .trace-stats {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 28px;
-      }
-      .trace-stat-label {
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-      .trace-stat-value {
-        font-size: 13.5px;
-        line-height: 1.45;
-        color: var(--text);
-        font-variant-numeric: tabular-nums;
-      }
-      .trace-stat-value.is-bad {
-        color: var(--error);
-      }
-
-      /* 触发事件那一行：源 → 类型 + 时间（回答"谁触发的"） */
-      .trace-event {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-        font-size: 12px;
-        color: var(--muted);
-      }
-      .trace-event-label {
-        font-size: 11px;
-        color: var(--faint);
-      }
-      .trace-event-src {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        padding: 1px 6px;
-        border-radius: var(--r-xs);
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        color: var(--accent);
-        word-break: break-all;
-      }
-      .trace-event-type {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--text);
-      }
-      .trace-event-arrow {
-        color: var(--faint);
-      }
-      .trace-event-time {
-        font-size: 11px;
-        color: var(--faint);
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* 空态图标（.empty 的第一段：icon + 标题 + 说明 + 动作） */
-      .trace-empty-icon {
-        width: 22px;
-        height: 22px;
-        color: var(--faint);
-      }
-      .trace-empty-desc {
-        max-width: 46ch;
-      }
-
-      /* ---- 产出（emits，P1.6）----
-
-         一次运行可以 emit 0..N 次（design/typed-pipeline.md §2），每一条都是一个
-         独立的路由结果。这一区就是「这次运行到底发了什么」的答案：按 seq 升序，
-         端口徽章 + 时间 + routed/pruned + 可折叠的原始 data。
-
-         样式纪律：卡片/标题/徽章复用 ui.css；下面只定义本页独有的行排版，
-         颜色全部走 tokens.css 的 token（亮主题下也要读得清）。
-         没有放进 ui.css 是因为它只服务这一页（wave 3 纪律：缺组件先页内定义，
-         确需复用再提升）。 */
-      .emit-groups {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        margin-top: 16px;
-        min-width: 0;
-      }
-      .emit-group {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-      }
-      /* 分组头：能力@版本 + task id（哪一个任务的产出） */
-      .emit-group-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 8px;
-        padding: 0 2px 8px;
-        min-width: 0;
-      }
-      .emit-task-cap {
-        font-size: 13px;
-        font-weight: 600;
-        line-height: 1.4;
-        color: var(--text);
-      }
-      .emit-task-id {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-        word-break: break-all;
-      }
-      /* 行容器：一条 emit 一行，竖线由 border-bottom 画（最后一行去掉） */
-      .emit-rows {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-        border: 1px solid var(--line);
-        border-radius: var(--r-md);
-        background: var(--surface-1);
-      }
-      .emit-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        min-width: 0;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--line);
-      }
-      .emit-row:last-child {
-        border-bottom: 0;
-      }
-      .emit-row:hover {
-        background: var(--surface-2);
-      }
-      /* seq 是「第几次 emit」，也是幂等键的一半——固定宽度对齐，读起来像列 */
-      .emit-seq {
-        flex: none;
-        min-width: 34px;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-        font-variant-numeric: tabular-nums;
-      }
-      .emit-time {
-        flex: none;
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-        font-variant-numeric: tabular-nums;
-      }
-      /* routed / pruned：剪枝不为 0 时用 warn 色（“这次有东西没走下去”） */
-      .emit-counters {
-        flex: none;
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--muted);
-        font-variant-numeric: tabular-nums;
-      }
-      .emit-counters.is-warn {
-        color: var(--warn);
-      }
-      .emit-note {
-        min-width: 0;
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--muted);
-        word-break: break-word;
-      }
-      /* data 折叠：默认收起（一次运行可能有几十条，全展开就没法扫） */
-      .emit-data {
-        flex: 1 1 240px;
-        min-width: 0;
-      }
-      .emit-data > summary {
-        cursor: pointer;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--accent);
-        list-style: none;
-      }
-      .emit-data > summary::-webkit-details-marker {
-        display: none;
-      }
-      .emit-data > summary::before {
-        content: "▸";
-        display: inline-block;
-        width: 12px;
-        color: var(--faint);
-        transition: transform var(--dur-fast) var(--ease);
-      }
-      .emit-data[open] > summary::before {
-        content: "▾";
-      }
-      .emit-json {
-        margin: 8px 0 0;
-        padding: 10px 12px;
-        background: var(--code-bg);
-        color: var(--code-text);
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        font-family: var(--font-mono);
-        font-size: 11.5px;
-        line-height: 1.6;
-        white-space: pre;
-        overflow-x: auto;
-      }
-
-      /* 视图切换器（瀑布图 / 图 / 树）。
-         三个 <button> 由 web/traceview.js 的 mount() 运行时生成 —— 那个文件本轮冻结，
-         DOM 结构 / 文案 / `.on` 类名 / 默认视图一个都不能动。所以这里**只用 CSS**
-         把 ui.css 的 .wf-switch 家族画成 .tabs / .tab / .tab.active 的视觉。
-         注意：traceview.js 还给容器挂了 Tailwind 的 `mb-3`（12px 下外边距），
-         这里不写 margin —— 写了就会把它覆盖掉。 */
-      .wf-switch {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        padding: 3px;
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        border-radius: var(--r-md);
-      }
-      .wf-switch button {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 12px;
-        border: 1px solid transparent;
-        border-radius: var(--r-sm);
-        background: transparent;
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 500;
-        line-height: 1.2;
-        cursor: pointer;
-        transition:
-          color var(--dur-fast) var(--ease),
-          background var(--dur-fast) var(--ease);
-      }
-      .wf-switch button:hover {
-        color: var(--text);
-      }
-      .wf-switch button.on {
-        background: var(--accent-soft);
-        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-        color: var(--accent-strong);
-      }
-
-      /* ---- 任务日志（CONTRACT-task-logs §5）----
-
-         每个任务一条折叠条：展开后分 stdout / stderr 两块。
-         两块都是**等宽 + 限高 + 双向滚动**（纵向 ~24 行、超长行横向滚），
-         因为一次构建日志动辄上千行，全铺开会把页面撑成一条竖井。
-
-         颜色纪律：stderr 走 danger 色系（错误几乎总在 stderr 里），stdout 用
-         正文色，截断提示用 warn 色 —— 它是「你没看全」的信号，不是装饰。
-         全部来自 tokens.css，亮/暗两套主题都不另配一套色值。*/
-      .task-log-list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        margin-top: 12px;
-        min-width: 0;
-      }
-      .task-log {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-        border: 1px solid var(--line);
-        border-radius: var(--r-md);
-        background: var(--surface-1);
-        overflow: hidden;
-      }
-      /* 失败任务的折叠条描边偏红：扫一眼就知道该先点哪一条 */
-      .task-log[data-failed="1"] {
-        border-color: color-mix(in srgb, var(--error) 32%, var(--line));
-      }
-      .task-log-toggle {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        min-width: 0;
-        padding: 8px 12px;
-        background: transparent;
-        border: 0;
-        color: var(--text);
-        font-size: 12.5px;
-        line-height: 1.5;
-        text-align: left;
-        cursor: pointer;
-      }
-      .task-log-toggle:hover {
-        background: var(--surface-2);
-      }
-      .task-log-toggle:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: -2px;
-      }
-      .task-log-chev {
-        flex: none;
-        width: 12px;
-        color: var(--faint);
-        font-size: 11px;
-      }
-      .task-log-cap {
-        font-weight: 600;
-        color: var(--text);
-      }
-      .task-log-taskid {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--faint);
-        word-break: break-all;
-      }
-      /* 折叠态也要露出失败原因：不展开就能看到一句「为什么」 */
-      .task-log-err {
-        flex: 1 1 220px;
-        min-width: 0;
-        font-size: 11.5px;
-        color: var(--muted);
-        word-break: break-word;
-      }
-      .task-log-action {
-        flex: none;
-        margin-left: auto;
-        font-size: 11.5px;
-        color: var(--accent);
-      }
-      .task-log-body {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        min-width: 0;
-        padding: 0 12px 12px;
-      }
-      /* [hidden] 必须显式压回 display: none —— 上面的 display:flex 会盖掉它 */
-      .task-log-body[hidden] {
-        display: none;
-      }
-      .task-log-state {
-        margin: 0;
-        font-size: 11.5px;
-        line-height: 1.5;
-        color: var(--muted);
-      }
-      .task-log-block {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        min-width: 0;
-      }
-      .task-log-stream {
-        font-family: var(--font-mono);
-        font-size: 10.5px;
-        line-height: 1.5;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--faint);
-      }
-      .task-log-pre {
-        margin: 0;
-        padding: 8px 10px;
-        /* 24 行封顶：纵向自己滚；white-space: pre 不折行 → 超长行横向滚 */
-        max-height: calc(24 * 1.55em);
-        overflow: auto;
-        background: var(--code-bg);
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        font-family: var(--font-mono);
-        font-size: 11.5px;
-        line-height: 1.55;
-        white-space: pre;
-        tab-size: 2;
-      }
-      .task-log-stdout {
-        color: var(--code-text);
-      }
-      .task-log-stderr {
-        color: var(--error-300);
-        border-color: color-mix(in srgb, var(--error) 28%, var(--line));
-      }
-      .task-log-trunc {
-        margin: 0;
-        padding: 6px 10px;
-        border-radius: var(--r-xs);
-        background: var(--warn-soft);
-        color: var(--warn-300);
-        font-size: 11.5px;
-        line-height: 1.5;
-      }
-    </style>
+{{define "graph-libs"}}
+<script defer src="/flograph.js"></script>
+<script defer src="/graphs.js"></script>
 {{end}}
-
 {{define "content"}}
 <div id="page-main">
   <div class="page">
-    <!-- 页头：标题 + 一句说明 + 两个动作（返回事件流 / 刷新）。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1。 -->
     <div class="page-head">
-      <div class="min-w-0">
-        <h2 class="page-title">{{t "trace.title"}}</h2>
-        <p class="page-sub">{{t "trace.subtitle"}}</p>
+      <div>
+        <h2 class="page-title font-display">{{t "trace.title"}}</h2>
+        <p id="trace-sub" class="page-sub b2-wrap"></p>
       </div>
-      <div class="page-actions">
-        <a href="events.html" class="btn btn-ghost">{{t "trace.back"}}</a>
-        <button id="btn-refresh" type="button" class="btn btn-primary">
-          {{t "trace.refresh"}}
-        </button>
-      </div>
+      <button id="trace-refresh" class="btn btn-ghost" type="button">{{t "events.v4.refresh"}}</button>
     </div>
-
-    <!-- 主体：首屏是骨架，不是一张"加载中"的空卡。
-         #trace-body 必须有子元素（e2e 断言），骨架就放在里面；
-         JS 首次渲染时 replaceChildren 掉，同一个同步块里把 aria-busy 摘掉。 -->
-    <div id="trace-body" class="trace-stack" aria-busy="true">
-      <div class="card card-pad" aria-hidden="true">
-        <div class="skeleton trace-sk-title"></div>
-        <div class="trace-sk-stats">
-          <div class="skeleton trace-sk-cell"></div>
-          <div class="skeleton trace-sk-cell"></div>
-          <div class="skeleton trace-sk-cell"></div>
-          <div class="skeleton trace-sk-cell"></div>
-        </div>
-        <div class="trace-sk-graph">
-          <div class="trace-sk-lane">
-            <div class="skeleton trace-sk-node"></div>
-            <div class="skeleton trace-sk-edge"></div>
-            <div class="skeleton trace-sk-node"></div>
-          </div>
-          <div class="trace-sk-lane is-indent">
-            <div class="skeleton trace-sk-node"></div>
-            <div class="skeleton trace-sk-edge"></div>
-            <div class="skeleton trace-sk-node"></div>
-          </div>
-          <div class="trace-sk-lane">
-            <div class="skeleton trace-sk-node"></div>
-            <div class="skeleton trace-sk-edge"></div>
-            <div class="skeleton trace-sk-node"></div>
-          </div>
-        </div>
-      </div>
+    <div id="trace-error" role="status"></div>
+    <div id="trace-content" class="grid gap-4" aria-busy="true">
+      <div class="empty">{{t "events.v4.loading"}}</div>
     </div>
   </div>
 </div>
 {{end}}
-
-{{define "graph-libs"}}
-    <!-- 图渲染四件套：只在本页与 source.html 加载（base.html 里这个槽位默认是空的）。
-         全部 defer —— 本页的绘图入口是下面的 DOMContentLoaded 监听器，defer 脚本在
-         解析完成后、DOMContentLoaded 之前按序执行完，所以 load() 里 TraceView 一定已就绪。
-         顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView。 -->
-    <script defer src="/vendor/dagre.min.js"></script>
-    <script defer src="/flograph.js"></script>
-    <script defer src="/graphs.js"></script>
-    <script defer src="/traceview.js"></script>
-{{end}}
-
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+<script>
+  (function () {
+    "use strict";
+    const A = window.Anotify;
+    const { el, api, ready, nsPath, readScope, saveScope, model, t, loadErrorNode } = A;
+    const query = new URLSearchParams(location.search);
+    const uid = query.get("traceUID") || "";
+    if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
+    A.mountLayout({ active: "events", title: t("trace.title") });
+    const content = document.getElementById("trace-content");
+    const errorBox = document.getElementById("trace-error");
+    let graph = null;
+    /* 启动依赖屏障（TRACE-STARTUP）：图库是 defer 引入的（base.html 的 graph-libs
+       槽位）——defer 脚本在文档解析完成后、DOMContentLoaded **之前**按文档顺序执行；
+       而本内联脚本在解析期就跑。Trace GET 可能比解析完成更快（真实现场
+       final-28bbef29：响应 132ms 解析返回、138ms 抛 TypeError reading 'taskChain'、
+       DOMContentLoaded 152ms 才到），那时 window.AnotifyGraphs 还不存在。
 
-      // 各页面各自声明，无全局常量（与 events.html / sources.html 一致）
-      const API = "/v1";
-
-      Anotify.mountLayout({
-        active: "events",
-        title: t("trace.title", "链路"),
-        subtitle: t("trace.subtitle", "一条 trace 的全貌：谁触发的、走了哪条路、每个任务多久"),
-      });
-
-      // el / code 是本页的小工具，不依赖 events.html。
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = String(text);
-        return n;
-      }
-      function code(text, cls) {
-        const n = el("code", cls || "", text);
-        return n;
-      }
-
-      const qs = new URLSearchParams(location.search);
-      const TRACE_ID = qs.get("traceId") || "";
-
-      // 首屏骨架的原型：直接取自 HTML（JS 未执行前就要有形状）。
-      // 刷新 / 重试时 clone 一份放回去，避免整块内容闪空。
-      const SKELETON = document.querySelector("#trace-body > .card");
-      // aria-busy 与骨架同进同出：骨架在 = 还在等；骨架一撤就必须是 false，
-      // 否则读屏用户会一直听到「载入中」。
-      function setBusy(body, on) {
-        if (!body) return;
-        if (on) body.setAttribute("aria-busy", "true");
-        else body.removeAttribute("aria-busy");
-      }
-      function showSkeleton(body) {
-        setBusy(body, true);
-        if (!SKELETON) {
-          body.replaceChildren();
-          return;
-        }
-        body.replaceChildren(SKELETON.cloneNode(true));
-      }
-
-      /**
-       * 空态：ui.css 的 .empty（图标 + 标题 + 说明 + 动作）。
-       * 动作统一是「回事件流」—— 空态不该是个死胡同。
-       */
-      function emptyCard(title, desc) {
-        const card = el("div", "card card-pad");
-        const box = el("div", "empty");
-        // 图标的路径与侧栏「源」同一套线条；颜色走 currentColor，不写死色值。
-        box.appendChild(Anotify.icon(["M13 2L3 14h8l-1 8 10-12h-8z"], "trace-empty-icon"));
-        box.appendChild(el("div", "card-title", title));
-        box.appendChild(el("p", "card-sub trace-empty-desc", desc));
-        const back = el("a", "btn btn-ghost btn-sm", t("trace.back", "返回事件流"));
-        back.href = "events.html";
-        box.appendChild(back);
-        card.appendChild(box);
-        return card;
-      }
-
-      /**
-       * 失败态：内容容器内渲染「载入失败 + 重试」，同时给一个 toast。
-       *
-       * 为什么必须有：Anotify.api 在非 2xx 时**会 throw**（见 partials.js 的 api()）。
-       * 以前 load() 没有 try/catch —— 后端一挂，页面就永远停在"加载中"，
-       * 只剩一条 unhandled rejection 在控制台里。失败必须画出来，且带重试。
-       * 也绝不把失败画成演示数据（#273）。
-       */
-      function renderLoadError(body, err) {
-        const card = el("div", "card card-pad");
-        card.appendChild(Anotify.loadErrorNode(err, () => load()));
-        setBusy(body, false);
-        body.replaceChildren(card);
-
-        const status = (err && err.status) || 0;
-        const reason = status
-          ? status >= 500
-            ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-            : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-          : t("common.backend_offline", "连不上服务端");
-        Anotify.toast(t("common.load_failed_prefix", "载入失败：") + reason, "error");
-      }
-
-      function fmtTime(sec) {
-        if (!sec) return "—";
-        const d = new Date(sec * 1000);
-        const p = (n) => String(n).padStart(2, "0");
-        return (
-          d.getFullYear() +
-          "-" +
-          p(d.getMonth() + 1) +
-          "-" +
-          p(d.getDate()) +
-          " " +
-          p(d.getHours()) +
-          ":" +
-          p(d.getMinutes()) +
-          ":" +
-          p(d.getSeconds())
-        );
-      }
-
-      function fmtDur(ms) {
-        if (!Number.isFinite(ms) || ms < 0) return "—";
-        if (ms < 1000) return Math.round(ms) + "ms";
-        if (ms < 60000) return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + "s";
-        const m = Math.floor(ms / 60000);
-        const s = Math.round((ms % 60000) / 1000);
-        return m + "m" + (s ? s + "s" : "");
-      }
-
-      async function fetchApi(url) {
-        return Anotify.api(url);
-      }
-
-      // ---- 产出（emits，P1.6）----
-      //
-      // 一次运行可以 emit 0..N 次（docs/design/typed-pipeline.md §2），每次独立
-      // 路由、独立剪枝。这一区就是“这次运行到底发了什么”的答案。
-      //
-      // 请求形状：GET /v1/namespaces/{ns}/tasks/{taskId}/emissions
-      // · emissions 是任务的**子资源**，命名空间长在路径上 —— 所以这里不走
-      //   withScope 的 namespaceId 自动补参（那套只认 query 形式的端点）。
-      // · 命名空间取**任务行自己的** namespaceId：跨命名空间汇总视图下也不会
-      //   拿错作用域去查（查错了后端会回 404，而不是默默给你别的命名空间的数据）。
-      //
-      // 失败降级：某条任务的 emit 没取到只丢这一组；全都没取到才画一行说明。
-      // 绝不因此把整页判成失败——上半部分的链路照样有用。
-      async function loadEmits(traceNs, tasks) {
-        return Promise.all(
-          tasks.map(async (tk) => {
-            const nsId = tk.namespaceId || traceNs;
-            if (!nsId) return { task: tk, rows: [] };
-            try {
-              const j = await fetchApi(
-                API +
-                  "/namespaces/" +
-                  encodeURIComponent(nsId) +
-                  "/tasks/" +
-                  encodeURIComponent(tk.id) +
-                  "/emissions",
-              );
-              const rows = (j && j.emissions) || [];
-              return { task: tk, rows: Array.isArray(rows) ? rows : [] };
-            } catch (_e) {
-              return { task: tk, rows: [], failed: true };
-            }
-          }),
-        );
-      }
-
-      // emitsCard 把结果画成一张卡片：组 = 任务，行 = 一次 emit（按 seq 升序）。
-      async function emitsCard(promise) {
-        const groups = await promise;
-        const card = el("div", "card card-pad");
-        // 稳定钩子（id）：拉这页的人/套件不必靠“第 N 张卡”去定位产出区。
-        card.id = "trace-emits";
-        const head = el("div", "card-head");
-        const titles = el("div", "min-w-0");
-        titles.appendChild(el("h3", "card-title", t("trace.emits.title", "产出（emits）")));
-        titles.appendChild(
-          el(
-            "p",
-            "card-sub",
-            t("trace.emits.subtitle", "这次任务里每一次 emit：出口、时间、派发结果与原始 data"),
-          ),
-        );
-        head.appendChild(titles);
-        card.appendChild(head);
-
-        // 只画有产出的任务，并按**执行顺序**（createdAt 升序）排：
-        // 产出列表的时间感应该跟瀑布图一致，而不是跟任务的倒序列表一致。
-        const shown = groups
-          .filter((g) => g.rows.length)
-          .sort((a, b) => (a.task.createdAt || 0) - (b.task.createdAt || 0));
-        const total = shown.reduce((n, g) => n + g.rows.length, 0);
-
-        if (!total) {
-          const failed = groups.some((g) => g.failed);
-          card.appendChild(
-            el(
-              "p",
-              "card-sub",
-              failed
-                ? t("trace.emits.failed", "产出列表没能加载（不影响上面的链路）")
-                : t(
-                    "trace.emits.empty",
-                    "这次任务还没有 emit。emit 是唯一的产出通道——没有就说明还没产出任何东西（或进程还在跑）。",
-                  ),
-            ),
-          );
-          return card;
-        }
-
-        const box = el("div", "emit-groups");
-        for (const g of shown) {
-          const group = el("div", "emit-group");
-          group.dataset.taskId = g.task.id;
-          const gh = el("div", "emit-group-head");
-          gh.appendChild(
-            el("span", "emit-task-cap", (g.task.capability || "") + "@" + (g.task.version || 1)),
-          );
-          gh.appendChild(el("code", "emit-task-id", g.task.id));
-          group.appendChild(gh);
-
-          const rows = el("div", "emit-rows");
-          // 后端已经 ORDER BY seq，这里再排一次：读端不该假设传输/中介保持顺序。
-          const sorted = g.rows.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
-          for (const em of sorted) {
-            const row = el("div", "emit-row");
-            row.dataset.seq = String(em.seq == null ? "" : em.seq);
-            row.appendChild(el("span", "emit-seq", "#" + (em.seq == null ? "?" : em.seq)));
-            // 端口（隐式那个叫 out）**不展示**（CONTRACT-hide-ports.md §1/§4）：
-            // 它是 emit 的路由键，不是用户要认的东西。多出口能力才把它标出来 ——
-            // 那种情况端口是作者真写下的名字，能帮人认出"这一路是哪个"。
-            if (em.port && em.port !== "out") {
-              row.appendChild(el("span", "badge badge-accent", em.port));
-            }
-            row.appendChild(el("span", "emit-time", fmtTime(em.createdAt)));
-            // routed/pruned 是首次处理的结果（emit-protocol §3.2）：
-            // routed=0 是合法值（这个出口没接下游），不是错误；
-            // pruned>0 才是“这次有东西没走下去”，用 warn 色提醒。
-            row.appendChild(
-              el(
-                "span",
-                "emit-counters" + ((em.pruned || 0) > 0 ? " is-warn" : ""),
-                t("trace.emits.routed", "派发") +
-                  " " +
-                  (em.routed || 0) +
-                  " · " +
-                  t("trace.emits.pruned", "剪枝") +
-                  " " +
-                  (em.pruned || 0),
-              ),
-            );
-            if (em.note) row.appendChild(el("span", "emit-note", em.note));
-
-            // data 默认折叠：一次运行可能有几十条，全展开就没法扫。
-            // 内容是**原样 JSON 对象**（后端不重新编码），所以直接 pretty-print。
-            const det = el("details", "emit-data");
-            det.appendChild(el("summary", "", t("trace.emits.data", "data")));
-            det.appendChild(
-              el("pre", "emit-json", JSON.stringify(em.data == null ? {} : em.data, null, 2)),
-            );
-            row.appendChild(det);
-            rows.appendChild(row);
-          }
-          group.appendChild(rows);
-          box.appendChild(group);
-        }
-        card.appendChild(box);
-        return card;
-      }
-
-      // ---- 任务日志（CONTRACT-task-logs §5）----
-      //
-      // 为什么在这页：任务跑失败了，控制台以前只显示 "exit status 2"，真正的
-      // 原因在**子进程的 stderr** 里。日志面板就是「不用登录机器翻 journald」
-      // 的那条路。
-      //
-      // 三条纪律：
-      //  · **失败任务默认展开**（最需要它的时候），其余默认折叠；
-      //  · **懒加载**：折叠的任务一个请求都不发 —— 一条 trace 可能有 20+ 个任务，
-      //    全量预取等于把日志接口当列表接口用；
-      //  · **纯文本渲染**：日志里可能出现 HTML / ANSI，一律走 textContent
-      //    （el() 就是这么写的），绝不用任何 HTML 注入 API —— 否则日志里一段
-      //    `<img onerror=…>` 就是一条 XSS。
-      const FAILED_STATUSES = ["failed", "abandoned", "lease_expired"];
-      const TERMINAL_STATUSES = [
-        "succeeded",
-        "failed",
-        "canceled",
-        "abandoned",
-        "lease_expired",
-      ];
-      const isFailedTask = (task) =>
-        FAILED_STATUSES.indexOf(String((task && task.status) || "")) >= 0;
-      const isTerminalTask = (task) =>
-        TERMINAL_STATUSES.indexOf(String((task && task.status) || "")) >= 0;
-
-      /**
-       * stripAnsi —— 日志里常带 ANSI 转义序列（颜色、光标移动）。它们不是给人
-       * 看的字节，原样塞进 <pre> 就是满屏 "^[[31m" 噪声；这里剥掉 CSI/OSC，
-       * 并把 \r 归一成 \n（进度条那种原地覆盖行）。
-       * 只去控制字符，**不改正文**：日志内容一个字都不改。
-       */
-      function stripAnsi(s) {
-        return String(s == null ? "" : s)
-          .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "") // OSC … BEL/ST
-          .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI
-          .replace(/\u001b[@-_]/g, "") // 其它 ESC 单字节
-          .replace(/\r\n?/g, "\n");
-      }
-
-      // 日志取一次就缓存：折叠再展开不该重复请求（刷新页面才重取）。
-      const logCache = new Map();
-
-      // 请求形状：GET /v1/tasks/{taskId}/logs?namespaceId=…（契约 §4）
-      //
-      // 命名空间取**任务行自己的**：跨命名空间汇总视图下也不会拿错作用域去查
-      // （跟上面 emissions 同一条理由）。接口不存在 / 任务已过期 / 网络抖动
-      // 一律降级成 {ok:false} → 「日志不可用」，不 toast、不抛错：日志是补充
-      // 信息，不该把整页判成失败。
-      function fetchTaskLogs(task) {
-        const key = String(task.id);
-        if (logCache.has(key)) return logCache.get(key);
-        const nsId = task.namespaceId || "";
-        const url =
-          API +
-          "/tasks/" +
-          encodeURIComponent(task.id) +
-          "/logs" +
-          (nsId ? "?namespaceId=" + encodeURIComponent(nsId) : "");
-        const p = fetchApi(url).then(
-          (j) => ({ ok: true, data: j || {} }),
-          () => ({ ok: false, data: null }),
-        );
-        logCache.set(key, p);
-        return p;
-      }
-
-      function statusBadgeClass(status) {
-        switch (String(status || "")) {
-          case "succeeded":
-            return "badge-success";
-          case "failed":
-            return "badge-error";
-          case "abandoned":
-          case "lease_expired":
-            return "badge-warn";
-          case "running":
-          case "acked":
-          case "assigned":
-            return "badge-accent";
-          default:
-            return "badge-neutral";
-        }
-      }
-
-      // 一块输出：标题（stdout / stderr）+ 等宽 <pre>。内容走 textContent。
-      function logStreamBlock(stream, text) {
-        const box = el("div", "task-log-block");
-        box.appendChild(el("span", "task-log-stream", t("trace.logs." + stream, stream)));
-        box.appendChild(el("pre", "task-log-pre task-log-" + stream, text));
-        return box;
-      }
-
-      // 降级文案：日志现在只在节点上（CONTRACT-logs-on-node §2），中枢按需向节点取。
-      // 取不到时后端仍回 200，但带 available:false + reason —— 这是「没取到」，
-      // **不是**「取到了但确实没输出」，两者必须有不同的话。
-      const LOGS_REASON_KEYS = {
-        node_offline: "trace.logs.reason.node_offline",
-        no_local_archive: "trace.logs.reason.no_local_archive",
-        timeout: "trace.logs.reason.timeout",
-      };
-      const LOGS_REASON_FALLBACK = {
-        node_offline: "节点离线：日志留在节点上，节点连上后可再看",
-        no_local_archive: "节点上没有这次执行的档案（可能已过保留期）",
-        timeout: "节点没在超时前回复，日志暂时取不到",
-      };
-
-      function renderLogBody(body, task, res) {
-        body.replaceChildren();
-        if (!res || !res.ok) {
-          body.appendChild(
-            el("p", "task-log-state", t("trace.logs.unavailable", "日志不可用")),
-          );
-          return;
-        }
-        const d = res.data || {};
-        // 显式 available:false → 降级文案，并在 data-logs-unavailable 上留下原因。
-        // 缺字段（老后端）或 true 一律走下面的老行为：老后端只会给空内容，
-        // 那时的「没有输出」才是真话。
-        if (d.available === false) {
-          const reason = d.reason == null ? "" : String(d.reason);
-          const key = LOGS_REASON_KEYS[reason];
-          // 未知 reason 不乱编一句话：套 unknown 模板把原始值填进去，原文不丢。
-          const txt = (
-            key
-              ? t(key, LOGS_REASON_FALLBACK[reason])
-              : t("trace.logs.reason.unknown", "日志暂时取不到（{reason}）")
-          ).replace("{reason}", reason || "unknown");
-          const p = el("p", "task-log-state", txt);
-          p.dataset.logsUnavailable = reason || "unknown";
-          body.appendChild(p);
-          return;
-        }
-        const stdout = stripAnsi(d.stdout);
-        const stderr = stripAnsi(d.stderr);
-        // 截断提示**先于内容**：不能让人读到末尾才发现自己没看全。
-        if (d.truncated) {
-          const bytes = Number(d.bytes);
-          // bytes 是契约里的必填字段；万一没给，宁可少一个数字，也不能凭空
-          // 编一个「共 ? 字节」—— 这行提示存在的意义就是让人相信它。
-          const txt =
-            Number.isFinite(bytes) && bytes > 0
-              ? t(
-                  "trace.logs.truncated",
-                  "日志已截断（共 {n} 字节，只保留最后 32 KiB）",
-                ).replace("{n}", String(bytes))
-              : t("trace.logs.truncated_unknown", "日志已截断（只保留最后 32 KiB）");
-          body.appendChild(el("p", "task-log-trunc", txt));
-        }
-        // 空的块不渲染；两块都空才说一句「没有输出」（还在跑的任务另说，
-        // 否则「没有输出」会被误读成「跑完了但什么都没打印」）。
-        if (!stdout && !stderr) {
-          body.appendChild(
-            el(
-              "p",
-              "task-log-state",
-              isTerminalTask(task)
-                ? t("trace.logs.empty", "没有输出")
-                : t("trace.logs.not_finished", "任务还没跑完，暂无输出"),
-            ),
-          );
-          return;
-        }
-        // stderr 在前：失败时它是第一现场；成功的任务 stderr 多半是空的，不渲染。
-        if (stderr) body.appendChild(logStreamBlock("stderr", stderr));
-        if (stdout) body.appendChild(logStreamBlock("stdout", stdout));
-      }
-
-      function taskLogRow(task) {
-        const failed = isFailedTask(task);
-        const row = el("div", "task-log");
-        row.dataset.taskId = String(task.id || "");
-        // capability / status 落成 data-*：e2e 与读屏都能定位到「哪一条是哪个任务」
-        row.dataset.capability = String(task.capability || "");
-        row.dataset.status = String(task.status || "");
-        row.dataset.failed = failed ? "1" : "0";
-        row.dataset.open = "0";
-
-        const body = el("div", "task-log-body");
-        body.id = "task-log-body-" + String(task.id || "x");
-        body.hidden = true;
-
-        const chev = el("span", "task-log-chev", "▸");
-        const action = el("span", "task-log-action", t("trace.logs.show", "日志"));
-        const btn = el("button", "task-log-toggle");
-        btn.type = "button";
-        btn.setAttribute("aria-expanded", "false");
-        btn.setAttribute("aria-controls", body.id);
-        btn.appendChild(chev);
-        btn.appendChild(
-          el("span", "task-log-cap", (task.capability || "") + "@" + (task.version || 1)),
-        );
-        btn.appendChild(el("code", "task-log-taskid", String(task.id || "")));
-        btn.appendChild(
-          el(
-            "span",
-            "badge " + statusBadgeClass(task.status),
-            t(
-              "message.task_state." + String(task.status || "pending"),
-              String(task.status || ""),
-            ),
-          ),
-        );
-        if (task.error) btn.appendChild(el("span", "task-log-err", String(task.error)));
-        btn.appendChild(action);
-
-        let loaded = false;
-        const open = () => {
-          row.dataset.open = "1";
-          btn.setAttribute("aria-expanded", "true");
-          chev.textContent = "▾";
-          action.textContent = t("trace.logs.hide", "收起");
-          body.hidden = false;
-          if (loaded) return;
-          loaded = true;
-          body.replaceChildren(
-            el("p", "task-log-state", t("trace.logs.loading", "正在加载日志…")),
-          );
-          // 请求回来时可能已经被折叠：body 还在（折叠只是 hidden），
-          // 直接重画是安全的；缓存也顺手填好了，再展开不用重取。
-          fetchTaskLogs(task).then((res) => {
-            renderLogBody(body, task, res);
-            // 「不可用」不进缓存：可能只是这一下抖了（或日志接口刚上线），
-            // 再展开一次就重试 —— 不让一个瞬时 404 把面板钉死到刷新为止。
-            if (!res.ok) {
-              logCache.delete(String(task.id));
-              loaded = false;
-            }
-          });
-        };
-        const close = () => {
-          row.dataset.open = "0";
-          btn.setAttribute("aria-expanded", "false");
-          chev.textContent = "▸";
-          action.textContent = t("trace.logs.show", "日志");
-          body.hidden = true;
-        };
-        btn.addEventListener("click", () => {
-          if (row.dataset.open === "1") close();
-          else open();
+       屏障必须**在这里**（解析期）就挂上：此刻 document.readyState 一定是 "loading"，
+       这个一次性 DOMContentLoaded 监听碰不上“事件已经发过”的情况，也不会错过。
+       不能等到 load() 里才看 readyState：解析完成到 defer 脚本执行之间 readyState
+       已经是 "interactive"（HTML 规范顺序就是 interactive → defer → DOMContentLoaded），
+       那时再等事件可能挂死，而不等就是本 bug。若本脚本被动态注入、进来时已不是
+       loading（事件可能已发过），不注册监听，直接按实际能力判断（缺库→可见错误+原重试）。
+       不轮询、不用 setTimeout、不新增全局 ready 协议。 */
+    const deferredGraphics = document.readyState === "loading"
+      ? new Promise(resolve => document.addEventListener("DOMContentLoaded", () => resolve(), { once: true }))
+      : Promise.resolve();
+    /* 图库能力必须真检查：脚本加载失败/缺库要变成可见错误（loadErrorNode 带原重试），
+       不静默删图、不画假图。 */
+    function graphLib() {
+      const lib = window.AnotifyGraphs;
+      if (!lib || typeof lib.taskChain !== "function") throw new Error(t("trace.nolib"));
+      return lib;
+    }
+    function taskLink(name) {
+      return "message.html?namespace=" + encodeURIComponent(readScope().namespace) + "&id=" + encodeURIComponent(name);
+    }
+    function section(title, id) {
+      const body = el("div", { id, class: "grid gap-4" });
+      const card = el("section", { class: "card card-pad grid gap-4" },
+        el("h3", { class: "card-title", text: title }), body);
+      return { card, body };
+    }
+    function taskRow(resource) {
+      const task = model.task(resource);
+      const row = el("div", { class: "grid gap-2", "data-task": task.name, "data-parent": task.parentTaskId || "" });
+      row.append(el("a", { class: "mono b2-wrap", href: taskLink(task.name),
+        text: task.capability.name + "@" + task.capability.version + " · " + task.name }),
+        el("p", { class: "card-sub", text: t("message.v4.phase." + task.phase) +
+          " · " + t("message.v4.attempt") + " " + task.attempt + "/" + task.maxAttempts +
+          (task.waitingReason ? " · " + task.waitingReason : "") }),
+        el("p", { class: "card-sub b2-wrap", text: "parentTaskId: " + (task.parentTaskId || "—") +
+          " · nextAttemptAt: " + (task.nextAttemptAt || "—") }),
+        el("p", { class: "card-sub b2-wrap" },
+          el("span", { "data-raw-content": "", text: task.result.summary || task.result.error?.message || "—" })));
+      return row;
+    }
+    function render(doc, graphs) {
+      if (graph?.destroy) graph.destroy();
+      graph = null;
+      content.replaceChildren();
+      const flow = section(t("trace.v4.graph"), "trace-graph");
+      flow.body.classList.add("overflow-x-auto");
+      const tasks = section(t("trace.v4.tasks"), "trace-tasks");
+      const events = section(t("trace.v4.events"), "trace-events");
+      const pruned = section(t("trace.v4.pruned"), "trace-pruned");
+      content.append(flow.card, tasks.card, events.card, pruned.card);
+      if (doc.tasks.length) {
+        const result = graphs.taskChain(flow.body, {
+          tasks: doc.tasks, sourceLabel: doc.events[0]?.spec.involvedObject?.name || "",
+          animate: false, t,
+          onNodeClick(task) { location.href = taskLink(task.name); },
         });
-
-        row.appendChild(btn);
-        row.appendChild(body);
-        // 失败任务默认展开 = 打开这条 trace 就能看到「为什么炸了」。
-        // 这也是唯一会主动请求日志的分支（成功任务要等点击）。
-        if (failed) open();
-        return row;
+        graph = result?.graph;
+        tasks.body.append(...doc.tasks.map(taskRow));
+      } else {
+        flow.body.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
+        tasks.body.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
       }
-
-      // logsCard 画「任务日志」区：一个任务一条折叠条。
-      function logsCard(tasks) {
-        const card = el("div", "card card-pad");
-        // 稳定钩子（id）：拉这页的人/套件不必靠「第 N 张卡」去定位日志区。
-        card.id = "trace-logs";
-        const head = el("div", "card-head");
-        const titles = el("div", "min-w-0");
-        titles.appendChild(el("h3", "card-title", t("trace.logs.title", "任务日志")));
-        titles.appendChild(
-          el(
-            "p",
-            "card-sub",
-            t(
-              "trace.logs.subtitle",
-              "每个任务的 stdout / stderr；失败的任务默认展开",
-            ),
-          ),
-        );
-        head.appendChild(titles);
-        card.appendChild(head);
-
-        const list = el("div", "task-log-list");
-        // 按执行顺序（createdAt 升序）排：与瀑布图同一条时间线。
-        const sorted = tasks.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-        for (const task of sorted) list.appendChild(taskLogRow(task));
-        card.appendChild(list);
-        return card;
+      for (const resource of doc.events) {
+        const event = model.event(resource);
+        events.body.append(el("div", { class: "grid gap-2", "data-uid": event.uid },
+          el("code", { class: "mono b2-wrap", text: event.eventType + " · " + event.type + " · " + event.reason }),
+          el("p", { class: "card-sub b2-wrap", text: event.uid + " · deliveryId: " + (event.deliveryId || "—") }),
+          el("pre", { class: "code-body overflow-x-auto" },
+            el("span", { "data-raw-content": "", text: JSON.stringify({ dispatched: event.dispatched, pruned: event.pruned }, null, 2) }))));
       }
-
-      // 渲染整页
-      async function load() {
-        const body = document.getElementById("trace-body");
-        if (!body) return;
-
-        // 没有 traceId 不是错误：从事件流点进来才有 id，手输地址的人需要一句引导。
-        if (!TRACE_ID) {
-          setBusy(body, false);
-          body.replaceChildren(
-            emptyCard(
-              t("trace.no_id_title", "缺少 traceId"),
-              t(
-                "trace.no_id",
-                "URL 里没有 traceId。从事件流点「查看链路」进来，或手动填 ?traceId=trace_xxx。",
-              ),
-            ),
-          );
-          return;
-        }
-
-        showSkeleton(body);
-
-        try {
-          // 任务链：这是本页的主体
-          const data = await fetchApi(API + "/tasks?traceId=" + encodeURIComponent(TRACE_ID));
-          const tasks = (data && data.tasks) || [];
-
-          // 产出（emits，P1.6）：与事件/底图**并行**取。它是这页的“结果”半部分（
-          // 图/瀑布图回答的是“怎么跑的”，这一块回答“到底发出了什么”）。
-          // 先起一个 promise，失败只降级这一块，不妨碍上面的链路图。
-          const emitsPromise = loadEmits((data && data.namespaceId) || "", tasks);
-
-          // 事件：用来回答"谁触发的"。按 traceId 过滤（后端支持）。
-          let event = null;
-          try {
-            const evData = await fetchApi(
-              API + "/console/events?traceId=" + encodeURIComponent(TRACE_ID),
-            );
-            const evs = (evData && (evData.events || evData)) || [];
-            if (Array.isArray(evs) && evs.length) event = evs[0];
-          } catch (_e) {
-            // 事件查不到不影响链路展示（trace 可能从别处发起）
-          }
-
-          // 底图：这个 trace 所属源在「源」页配好的静态拓扑。
-          //
-          // 图视图要拿它当底、执行状态当覆盖层 —— 只画执行链的话，
-          // 被剪枝的分支压根不出现，用户看到的永远是一条顺畅直线，
-          // "为什么这条分支没走"在图上根本问不出来。
-          //
-          // 推导只有一份（graphs.js 的 sourceTopology）：这里不自己摊平底图。
-          // 拿不到就退回"只画执行链"（源已删、trace 来自未知源）。
-          // 取数与推导都在 graphs.js 的 loadBaseGraph 里（首页共用同一份）：
-          // 两处各写一遍，同一份配置就会在两页长出不同的节点/图标/文案。
-          let baseGraph = null;
-          if (event && event.source && window.AnotifyGraphs && window.AnotifyGraphs.loadBaseGraph) {
-            try {
-              baseGraph = await window.AnotifyGraphs.loadBaseGraph({
-                api: API,
-                source: event.source,
-                fetchJson: fetchApi,
-              });
-            } catch (_e) {
-              // 拿不到源配置不算错：图视图会退回只画执行链
-            }
-          }
-
-          // 骨架与 aria-busy 在**同一个同步块**里撤掉：中间不留一帧「骨架还在、
-          // 内容已上屏」，也不留「内容已上屏、读屏还在说载入中」。
-          setBusy(body, false);
-          body.replaceChildren();
-
-          // ---- 头部卡：traceId + 概览 ----
-          const head = el("div", "card card-pad trace-head-card");
-
-          const idRow = el("div", "flex flex-wrap items-center gap-3");
-          idRow.appendChild(el("span", "trace-id", TRACE_ID));
-          const copyBtn = el("button", "btn btn-ghost btn-sm", t("trace.copy", "复制"));
-          copyBtn.type = "button";
-          copyBtn.addEventListener("click", async () => {
-            // 反馈走全站统一的 toast（trace.copied / trace.copy_failed 已有），
-            // 页内不再自己维护一套提示节点。
-            try {
-              await navigator.clipboard.writeText(TRACE_ID);
-              Anotify.toast(t("trace.copied", "已复制"));
-            } catch (_e) {
-              Anotify.toast(t("trace.copy_failed", "复制失败"), "error");
-            }
-          });
-          idRow.appendChild(copyBtn);
-          head.appendChild(idRow);
-
-          // 概览数字：先算出来再渲染，避免各处重复计算
-          let spanStart = Infinity;
-          let spanEnd = -Infinity;
-          let slowest = null;
-          const statusCount = {};
-          for (const tk of tasks) {
-            const st = tk.status || "pending";
-            statusCount[st] = (statusCount[st] || 0) + 1;
-
-            const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
-            const now = Math.floor(Date.now() / 1000);
-            const e =
-              tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
-            if (s != null && s < spanStart) spanStart = s;
-            if (e != null && e > spanEnd) spanEnd = e;
-
-            if (tk.startedAt != null && tk.finishedAt != null) {
-              const d = tk.finishedAt - tk.startedAt;
-              if (!slowest || d > slowest.d) slowest = { d, name: tk.capability };
-            }
-          }
-          const totalMs =
-            Number.isFinite(spanStart) && Number.isFinite(spanEnd)
-              ? (spanEnd - spanStart) * 1000
-              : null;
-
-          const stats = el("div", "trace-stats");
-          const stat = (label, value) => {
-            const b = el("div", "");
-            b.appendChild(el("div", "trace-stat-label", label));
-            b.appendChild(el("div", "trace-stat-value", value));
-            return b;
-          };
-          stats.appendChild(stat(t("trace.stat.spans", "任务"), String(tasks.length)));
-          stats.appendChild(stat(t("trace.stat.duration", "总耗时"), fmtDur(totalMs)));
-          stats.appendChild(
-            stat(
-              t("trace.stat.slowest", "最慢任务"),
-              slowest ? slowest.name + " · " + fmtDur(slowest.d * 1000) : "—",
-            ),
-          );
-          // 失败数：不为 0 才显示，避免"0 失败"这种噪音
-          const failed = (statusCount.failed || 0) + (statusCount.abandoned || 0);
-          if (failed) {
-            const failBox = stat(t("trace.stat.failed", "失败"), String(failed));
-            failBox.querySelector(".trace-stat-value").classList.add("is-bad");
-            stats.appendChild(failBox);
-          }
-          head.appendChild(stats);
-
-          // 触发事件那一行：回答"谁触发的"
-          if (event) {
-            const evRow = el("div", "trace-event");
-            evRow.appendChild(el("span", "trace-event-label", t("trace.triggered_by", "触发于")));
-            evRow.appendChild(code(event.source, "trace-event-src"));
-            evRow.appendChild(el("span", "trace-event-arrow", "→"));
-            evRow.appendChild(code(event.type, "trace-event-type"));
-            evRow.appendChild(el("span", "trace-event-time", fmtTime(event.createdAt)));
-            head.appendChild(evRow);
-          }
-
-          body.appendChild(head);
-
-          // ---- 主体：三种视图（瀑布图 / 图 / 树）----
-          if (!tasks.length) {
-            setBusy(body, false);
-            body.appendChild(
-              emptyCard(
-                t("trace.empty_title", "没有任务"),
-                t(
-                  "trace.empty",
-                  "这条 trace 下没有任务。通常意味着在第一步就被剪枝了（没有匹配的目标能力、参数不合 schema、或没有节点声明目标能力）。",
-                ),
-              ),
-            );
-            return;
-          }
-
-          if (!window.TraceView) {
-            setBusy(body, false);
-            body.appendChild(
-              emptyCard(t("trace.title", "链路"), t("trace.nolib", "渲染脚本未能加载。")),
-            );
-            return;
-          }
-
-          const viewBox = el("div", "card card-pad");
-          body.appendChild(viewBox);
-
-          // 视图选择记在 URL 上：刷新/分享时保留。
-          //
-          // **默认是「图」**：图是这套产品唯一能把「谁派生了谁、走了哪个出口、
-          // 哪条分支没走」一次说清的地方；瀑布图只有时间，树只有层级。
-          // 打开一条 trace 最先要回答的是"它怎么跑的"，所以默认给图。
-          const initView = qs.get("view") || "graph";
-          window.TraceView.mount(viewBox, {
-            tasks: tasks,
-            baseGraph: baseGraph,
-            // 源节点信息（图视图左上角那个触发器）
-            sourceLabel: event ? event.source : "",
-            sourceSub: event ? event.type : "",
-            sourcePort: event ? event.type : "",
-            el: el,
-            code: code,
-            t: t,
-            view: initView,
-            // 视图选择记在 URL 上：刷新/分享时保留。
-            //
-            // 用 URLSearchParams 改 location.search 再拼回去，而不是
-            // new URL(location.href) —— 后者在异常输入上会抛 TypeError，
-            // 这里没有任何理由为一个"改个 query 参数"的动作承担抛错风险。
-            onViewChange: (v) => {
-              const params = new URLSearchParams(location.search);
-              params.set("view", v);
-              history.replaceState(null, "", "?" + params.toString());
-            },
-          });
-
-          // 任务日志：任务级细节，但“为什么炸了”就在这里 —— 失败任务默认展开，
-          // 所以放在视图卡后面（上半部分是“怎么跑的”，这一块是“为什么”）。
-          body.appendChild(logsCard(tasks));
-
-          // 产出（emits）：追在视图卡后面。它不参与 traceview.js 的视图切换
-          // （那个文件本轮冻结），所以是一张独立卡片——最小侵入的位置。
-          body.appendChild(await emitsCard(emitsPromise));
-        } catch (err) {
-          // 任何一步失败（后端不可达、5xx、响应不是 JSON…）都落到这里：
-          // 内容容器内画"载入失败 + 重试"，外加一条 toast。
-          renderLoadError(body, err);
-        }
+      if (!doc.events.length) events.body.append(el("div", { class: "empty", text: t("events.v4.empty") }));
+      doc.pruned.forEach(fact => pruned.body.append(el("div", { class: "grid gap-2" },
+        el("code", { class: "mono b2-wrap", text: fact.to || "—" }),
+        el("p", { class: "card-sub b2-wrap", text: fact.reason + ": " },
+          el("span", { "data-raw-content": "", text: fact.detail })))));
+      if (!doc.pruned.length) pruned.body.append(el("p", { class: "card-sub", text: t("trace.v4.no_pruned") }));
+    }
+    async function load() {
+      const button = document.getElementById("trace-refresh");
+      button.disabled = true;
+      errorBox.replaceChildren();
+      content.setAttribute("aria-busy", "true");
+      try {
+        await ready();
+        document.getElementById("trace-sub").textContent = readScope().namespace + " · " + uid;
+        if (!uid) throw new Error(t("trace.v4.missing"));
+        const doc = await api(nsPath("traces", uid));
+        if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
+        // 解析期挂上的 defer 图库屏障：首次 render 必须等它（重试用同一入口，已 resolved）。
+        await deferredGraphics;
+        render(doc, graphLib());
+      } catch (error) {
+        if (graph?.destroy) graph.destroy();
+        content.replaceChildren();
+        errorBox.replaceChildren(loadErrorNode(error, load));
+      } finally {
+        content.removeAttribute("aria-busy");
+        button.disabled = false;
       }
-
-      document.getElementById("btn-refresh").addEventListener("click", load);
-      document.addEventListener("DOMContentLoaded", load);
-    </script>
+    }
+    document.getElementById("trace-refresh").addEventListener("click", load);
+    A.mountPullRefresh(load);
+    load();
+  })();
+</script>
 {{end}}

@@ -1,663 +1,425 @@
 {{define "title"}}{{t "pb.detail_title"}}{{end}}
 
 {{define "style"}}
-    <style>
-      /* 预案详情页（UI v2）
-         ------------------------------------------------------------
-         体检四件事：定义 → 节点 → 出口 → 触发器。
-         每节是一张 .card：标题行（.card-head：标题 + 状态徽章 + 缺失时的动作）
-         → 一行结论（.card-sub：第一件该动手的事）→ .chk 行清单。
-         组件一律用 web/ui.css 的共享类，这里只补页头标题行 / 节内节奏 /
-         首帧骨架；颜色只走 tokens.css 的 token，本页不出现任何硬编码色值。 */
-
-      /* 标题行：页标题 + 状态徽章同行，窄屏自动换行 */
-      .pb-title-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        min-width: 0;
-      }
-      .pb-title-row .page-title {
-        min-width: 0;
-        overflow-wrap: anywhere;
-      }
-      /* 首帧：标题与状态徽章也先给骨架，别让用户读到两个「—」 */
-      .pb-sk-title {
-        display: block;
-        width: 180px;
-        max-width: 100%;
-        /* 内容态的 .page-title 实测 34px：骨架矮 10px 会让页头在数据落地时长高，
-           而页头下面就是整页正文，一长就全页下移。 */
-        height: 34px;
-      }
-      .pb-sk-badge {
-        display: block;
-        width: 40px;
-        height: 24px;
-      }
-      .pb-slug {
-        margin-top: 4px;
-        overflow-wrap: anywhere;
-      }
-      /* 页头槽位预占：#pb-desc / #pb-slug 在骨架态是空 <p>（0px），数据一到才长成
-         一行字（实测 20.8 / 16.5px）—— 页头一长，下面整页正文就整体下移 41px。
-         两行先占住，数据落地时页头一寸不动。 */
-      #pb-desc {
-        min-height: 21px;
-      }
-      #pb-slug {
-        min-height: 17px;
-      }
-      /* 体检结论：整页最要紧的一句话 */
-      .pb-sum {
-        font-size: 14px;
-        line-height: 1.6;
-        color: var(--text);
-      }
-      /* 节内节奏：标题行 → 结论 6px → 清单 10px（卡内 20px 由 .card-pad 给） */
-      .pb-sec-sum {
-        margin-top: 6px;
-        min-height: 18px;
-      }
-      .pb-sec-list {
-        margin-top: 10px;
-      }
-      /* 首帧骨架：形状对齐一行检查项（点 + 标题 + 说明）。
-         **必须是四个 *-list 容器之外的独立块** —— `#cap-list` 等有子元素是
-         e2e 的「数据已就绪」信号，骨架混进去会让信号提前成立。 */
-      .pb-sk {
-        display: grid;
-        gap: 8px;
-      }
-      /* 汇总卡：内容态是一行结论（+ 一行计数）≈ 82px。骨架先占住这个高度，
-         否则数据一到它就往下长，把后面四张卡全部推下去。 */
-      #pb-summary {
-        min-height: 82px;
-      }
-      /* 四张检查卡的等高骨架：最小高度 = 内容态实测高度
-         （能力 255 / 节点 263 / 出口 206 / 触发器 129）。
-         数据落地时 render() 会把这四个类摘掉 —— 它们只是加载期的占位。 */
-      .pb-sec-caps {
-        min-height: 255px;
-      }
-      .pb-sec-nodes {
-        min-height: 263px;
-      }
-      .pb-sec-edges {
-        min-height: 206px;
-      }
-      .pb-sec-trigs {
-        min-height: 129px;
-      }
-      .pb-sk-line {
-        width: 72%;
-        height: 11px;
-      }
-      .pb-sk-line-wide {
-        width: 100%;
-        height: 11px;
-      }
-    </style>
+<style>
+  .pb-wrap { min-width: 0; overflow-wrap: anywhere; }
+  .pb-title-row, .pb-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .pb-stack { display: grid; gap: 14px; }
+  .pb-checks { display: grid; gap: 10px; margin-top: 14px; }
+  .pb-check { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
+  .pb-warning { border: 1px solid var(--warn); border-radius: var(--r-md); padding: 14px; }
+  .pb-warning h4 { color: var(--warn); }
+  .pb-code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--surface-2); border-radius: var(--r-md); font-size: 12px; }
+  .pb-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 14px; }
+  .pb-receipt-grid { display: grid; gap: 12px; }
+  .pb-template { display: grid; gap: 14px; margin-top: 14px; }
+  .pb-template textarea { min-height: 280px; }
+  .pb-group { border-top: 1px solid var(--line); padding: 14px 0; }
+  .pb-section { margin-top: 16px; }
+  #pb-summary { min-height: 80px; }
+  [hidden] { display: none !important; }
+</style>
 {{end}}
 
 {{define "content"}}
 <div id="page-main">
-  <div class="page">
-    <!-- 页头：标题 + 状态徽章 + 动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §10-C1/C2）。
-         #pb-desc 走 .page-sub（mountLayout 见到 .page-sub 就不再画顶栏副标题）。
-         移动端也保留完整动作区：#btn-install 是这一页唯一的"提交"入口。 -->
+  <div class="page pb-wrap">
     <div class="page-head">
       <div class="min-w-0">
         <div class="pb-title-row">
-          <h2 id="pb-name" class="page-title">
-            <span class="skeleton pb-sk-title" aria-hidden="true"></span>
-          </h2>
-          <span id="pb-badge" class="pb-badge">
-            <span class="skeleton pb-sk-badge" aria-hidden="true"></span>
-          </span>
+          <h2 id="pb-name" class="page-title">{{t "pb.detail_title"}}</h2>
+          <span id="pb-badge" class="badge badge-neutral">{{t "pb.v4.loading"}}</span>
         </div>
-        <p id="pb-desc" class="page-sub"></p>
-        <p id="pb-slug" class="pb-slug"></p>
+        <p id="pb-slug" class="mono field-hint"></p>
+        <p class="page-sub">{{t "pb.v4.detail_hint"}}</p>
       </div>
       <div class="page-actions">
-        <a href="playbooks.html" class="btn btn-ghost">{{t "pb.back"}}</a>
+        <a id="pb-back" href="playbooks.html" class="btn btn-ghost">{{t "pb.back"}}</a>
         <button id="btn-rescan" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
-        <button id="btn-install" type="button" class="btn btn-primary">{{t "pb.install"}}</button>
       </div>
     </div>
+    <div id="pb-load-state" aria-live="polite"></div>
+    <section id="pb-summary" class="card card-pad" aria-busy="true"></section>
+    <div id="pb-content" hidden>
+      <section class="card card-pad">
+        <h3 class="card-title">{{t "pb.v4.checkup"}}</h3>
+        <div id="pb-conditions" class="pb-checks"></div>
+        <div id="pb-items" class="pb-checks"></div>
+        <div id="pb-unapplied" class="pb-section"></div>
+      </section>
 
-    <!-- 汇总：一句"最该先做的一件事"。数据没回来之前是骨架，不是一张空卡。 -->
-    <div id="pb-summary" class="card card-pad" aria-busy="true">
-      <div class="pb-sk" aria-hidden="true">
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-      </div>
-    </div>
-
-    <!-- ① 能力定义 -->
-    <div class="card card-pad pb-sec pb-sec-caps" aria-busy="true">
-      <div class="card-head">
-        <h3 class="card-title">{{t "pb.sec.capabilities"}}</h3>
-        <div class="card-actions">
-          <span id="cap-count" class="badge badge-neutral">—</span>
-          <button id="cap-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+      <section id="pb-values-section" class="card card-pad">
+        <h3 class="card-title">{{t "pb.v4.values"}}</h3>
+        <p class="card-sub">{{t "pb.v4.values_hint"}}</p>
+        <div id="pb-schema-state" aria-live="polite"></div>
+        <div id="pb-values" class="pb-values pb-section"></div>
+        <details class="pb-section">
+          <summary>{{t "pb.v4.values_json"}}</summary>
+          <label class="field-label" for="pb-values-json">{{t "pb.v4.values_json_hint"}}</label>
+          <textarea id="pb-values-json" class="textarea mono" rows="5" spellcheck="false"></textarea>
+          <button id="pb-use-json" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.use_json"}}</button>
+        </details>
+        <div class="page-actions pb-section">
+          <button id="btn-render" type="button" class="btn btn-ghost">{{t "pb.v4.render"}}</button>
+          <button id="btn-dry-run" type="button" class="btn btn-ghost">{{t "pb.v4.dry_run"}}</button>
+          <button id="btn-install" type="button" class="btn btn-primary">{{t "pb.v4.install"}}</button>
         </div>
-      </div>
-      <p id="cap-sum" class="card-sub pb-sec-sum"></p>
-      <div id="cap-skel" class="pb-sk" aria-hidden="true">
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-      </div>
-      <div id="cap-list" class="pb-sec-list"></div>
-    </div>
+        <p class="field-hint pb-section">{{t "pb.v4.actions_hint"}}</p>
+        <div id="pb-action-state" aria-live="polite" class="pb-section"></div>
+        <div id="pb-preview" class="pb-section"></div>
+        <div id="pb-receipt" class="pb-section"></div>
+      </section>
 
-    <!-- ② 节点实现（最常见的「跑不起来」） -->
-    <div class="card card-pad pb-sec pb-sec-nodes" aria-busy="true">
-      <div class="card-head">
-        <h3 class="card-title">{{t "pb.sec.nodes"}}</h3>
-        <div class="card-actions">
-          <span id="node-count" class="badge badge-neutral">—</span>
-          <button id="node-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+      <section class="card card-pad">
+        <div class="card-head">
+          <h3 class="card-title">{{t "pb.v4.instances"}}</h3>
+          <button id="pb-refresh-installs" type="button" class="btn btn-ghost btn-sm">{{t "pb.rescan"}}</button>
         </div>
-      </div>
-      <p id="node-sum" class="card-sub pb-sec-sum"></p>
-      <div id="node-skel" class="pb-sk" aria-hidden="true">
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-      </div>
-      <div id="node-list" class="pb-sec-list"></div>
-    </div>
+        <p class="card-sub">{{t "pb.v4.instances_hint"}}</p>
+        <div id="pb-installs" aria-live="polite"></div>
+      </section>
 
-    <!-- ③ 出口 -->
-    <div class="card card-pad pb-sec pb-sec-edges" aria-busy="true">
-      <div class="card-head">
-        <h3 class="card-title">{{t "pb.sec.edges"}}</h3>
-        <div class="card-actions">
-          <span id="edge-count" class="badge badge-neutral">—</span>
-          <button id="edge-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
+      <section id="pb-template-section" class="card card-pad">
+        <h3 class="card-title">{{t "pb.v4.template"}}</h3>
+        <p class="card-sub">{{t "pb.v4.template_hint"}}</p>
+        <div class="pb-template">
+          <div class="field">
+            <label for="pb-file-path" class="field-label">{{t "pb.v4.file_path"}}</label>
+            <select id="pb-file-path" class="select mono"></select>
+          </div>
+          <div class="field">
+            <label for="pb-file-content" class="field-label">{{t "pb.v4.raw_content"}}</label>
+            <textarea id="pb-file-content" class="textarea mono" spellcheck="false"></textarea>
+          </div>
+          <div class="field">
+            <label for="pb-new-path" class="field-label">{{t "pb.v4.new_path"}}</label>
+            <input id="pb-new-path" class="input mono" placeholder="capabilities/extra.yaml" />
+          </div>
+          <div class="page-actions">
+            <button id="pb-add-file" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.add_file"}}</button>
+            <button id="pb-remove-file" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.remove_file"}}</button>
+            <button id="pb-export" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.export"}}</button>
+          </div>
+          <div class="field">
+            <label for="pb-import-map" class="field-label">{{t "pb.v4.import_map"}}</label>
+            <input id="pb-import-map" type="file" accept=".json,application/json" class="input" />
+          </div>
+          <div class="page-actions">
+            <button id="pb-save-template" type="button" class="btn btn-primary">{{t "pb.v4.save_template"}}</button>
+            <button id="pb-reload-template" type="button" class="btn btn-ghost">{{t "pb.v4.reload_template"}}</button>
+          </div>
         </div>
-      </div>
-      <p id="edge-sum" class="card-sub pb-sec-sum"></p>
-      <div id="edge-skel" class="pb-sk" aria-hidden="true">
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-      </div>
-      <div id="edge-list" class="pb-sec-list"></div>
-    </div>
+        <p id="pb-template-rv" class="mono field-hint"></p>
+        <div id="pb-template-state" aria-live="polite"></div>
+      </section>
 
-    <!-- ④ 触发器 -->
-    <div class="card card-pad pb-sec pb-sec-trigs" aria-busy="true">
-      <div class="card-head">
-        <h3 class="card-title">{{t "pb.sec.triggers"}}</h3>
-        <div class="card-actions">
-          <span id="trg-count" class="badge badge-neutral">—</span>
-          <button id="trg-act" type="button" class="btn btn-ghost btn-sm" style="display: none"></button>
-        </div>
-      </div>
-      <p id="trg-sum" class="card-sub pb-sec-sum"></p>
-      <div id="trg-skel" class="pb-sk" aria-hidden="true">
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-        <div class="skeleton pb-sk-line-wide"></div>
-        <div class="skeleton pb-sk-line"></div>
-      </div>
-      <div id="trg-list" class="pb-sec-list"></div>
+      <section class="card card-pad">
+        <h3 class="card-title">{{t "pb.v4.delete_manifest"}}</h3>
+        <p class="card-sub">{{t "pb.v4.delete_hint"}}</p>
+        <button id="pb-delete" type="button" class="btn btn-danger pb-section">{{t "pb.v4.delete_manifest"}}</button>
+        <div id="pb-delete-state" class="pb-section" aria-live="polite"></div>
+      </section>
     </div>
   </div>
 </div>
 {{end}}
 
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-      const API = "/v1";
-      const pbKey = new URLSearchParams(location.search).get("id") || "";
-
-      Anotify.mountLayout({
-        active: "playbooks",
-        title: t("pb.title", "预案"),
-        subtitle: t("pb.detail_subtitle", "体检：能力 → 下游 → 节点 → 源"),
-      });
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 host）。
-      const toast = (msg, kind) => Anotify.toast(msg, kind);
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = text;
-        return n;
+<script>
+  (() => {
+    const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode } = Anotify;
+    const t = (key, vars = {}) => {
+      let value = window.AnotifyI18n[key] || key;
+      for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
+      return value;
+    };
+    const $ = id => document.getElementById(id);
+    const el = (tag, cls, text) => dom(tag, { class: cls }, text);
+    const name = new URLSearchParams(location.search).get("id") || "";
+    Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.detail_hint") });
+    let resource, schema, draft, filePath, templateRV;
+    let fields = [], jsonValues = null, loading = false;
+    const path = suffix => nsPath("playbooks", name) + (suffix || "");
+    const code = data => el("pre", "pb-code mono", typeof data === "string" ? data : JSON.stringify(data, null, 2));
+    const scoped = (page, key, value) => page + ".html?namespace=" + encodeURIComponent(getScope().namespace) + (key ? "&" + key + "=" + encodeURIComponent(value) : "");
+    function resourceLink(kind, ref) {
+      const identifier = kind === "source" ? ref : ref.split("@")[0];
+      if (identifier === "***") return el("span", "btn btn-ghost btn-sm", ref);
+      const a = el("a", "btn btn-ghost btn-sm", ref);
+      a.href = kind === "source" ? scoped("source", "name", identifier) : scoped("capabilities", "name", identifier);
+      return a;
+    }
+    function manualAction(blocker) {
+      const identifier = blocker.action === "edit_source" ? blocker.capability || "" : (blocker.capability || "").split("@")[0];
+      const label = t("pb.v4.manual_action") + " · " + blocker.action;
+      if (blocker.action !== "open_node_page" && identifier === "***") return el("span", "btn btn-ghost btn-sm", label);
+      const target = el("a", "btn btn-ghost btn-sm", label);
+      target.href = blocker.action === "open_node_page" ? scoped("nodes") : blocker.action === "edit_source" ? scoped("source", "name", identifier) : scoped("capabilities", "name", identifier);
+      return target;
+    }
+    function showUnapplied(host, rows) {
+      host.replaceChildren();
+      if (!rows.length) return;
+      const box = el("div", "pb-warning");
+      box.append(el("h4", "card-title", t("pb.v4.unapplied")), el("p", "field-hint", t("pb.v4.unapplied_hint")));
+      for (const row of rows) {
+        const item = el("div", "pb-check");
+        item.dataset.unapplied = row.reason;
+        item.append(el("p", "mono", row.kind + " · " + row.ref + " · " + row.reason), el("p", "field-label", t("pb.v4.declared")), code(row.declared), el("p", "field-label", t("pb.v4.actual")), code(row.actual), resourceLink(row.kind, row.ref));
+        box.append(item);
       }
-
-      function drop(id) {
-        const n = document.getElementById(id);
-        if (n && n.parentNode) n.parentNode.removeChild(n);
+      host.append(box);
+    }
+    function checkup() {
+      const pb = model.playbook(resource), status = pb.status;
+      $("pb-name").textContent = pb.displayName || pb.slug;
+      $("pb-slug").textContent = pb.namespace + " / " + pb.slug + " · resourceVersion " + pb.resourceVersion;
+      $("pb-badge").textContent = t(status.ready ? "pb.status.ready" : "pb.v4.not_ready");
+      $("pb-badge").className = "badge " + (status.ready ? "badge-success" : "badge-warn");
+      $("pb-summary").replaceChildren(el("p", "card-title", t(status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
+      if (status.blocker) {
+        $("pb-summary").append(el("p", "field-hint", t("pb.v4.blocker") + ": " + status.blocker.type + " · " + (status.blocker.capability || "")), manualAction(status.blocker));
       }
-
-      const STATUS_KEY = {
-        ready: "pb.status.ready",
-        "needs-node": "pb.status.needs_node",
-        blocked: "pb.status.blocked",
-        partial: "pb.status.partial",
+      if (status.lastInstallId) {
+        const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + status.lastInstallId);
+        button.addEventListener("click", () => singleReceipt(status.lastInstallId));
+        $("pb-summary").append(button);
+      }
+      if (resource.status.source) $("pb-summary").append(el("p", "mono field-hint", resource.status.source));
+      $("pb-conditions").replaceChildren();
+      for (const condition of status.conditions) {
+        const item = el("div", "pb-check"); item.dataset.condition = condition.type;
+        item.append(el("span", "badge " + (condition.status === "True" ? "badge-success" : "badge-warn"), condition.type + " · " + condition.status), el("p", "field-hint", [condition.reason, condition.message, (condition.members || []).join(", ")].filter(Boolean).join(" · ")));
+        $("pb-conditions").append(item);
+      }
+      $("pb-items").replaceChildren();
+      for (const row of status.items) {
+        const item = el("div", "pb-check"); item.dataset.kind = row.kind; item.dataset.state = row.state;
+        item.append(resourceLink(row.kind, row.name + (row.version ? "@" + row.version : "")), el("span", "badge " + (row.state === "ok" ? "badge-neutral" : "badge-warn"), row.state));
+        if (row.targets) item.append(code(row.targets));
+        $("pb-items").append(item);
+      }
+      if (!status.items.length) $("pb-items").append(el("p", "field-hint", t("pb.v4.not_installed")));
+      $("pb-items").append(code(status.sources));
+      showUnapplied($("pb-unapplied"), status.unapplied);
+    }
+    function valuesForm(nextSchema) {
+      schema = nextSchema || { type: "object", properties: {} };
+      fields = []; jsonValues = null;
+      $("pb-values").replaceChildren(); $("pb-values-json").value = "";
+      const walk = (sub, parts, required) => {
+        if (sub.type === "object" && sub.properties) {
+          for (const [key, child] of Object.entries(sub.properties)) walk(child, [...parts, key], (sub.required || []).includes(key));
+          return;
+        }
+        const key = parts.join("."); const id = "pb-value-" + key;
+        const wrap = el("div", "field");
+        const label = el("label", "field-label", key + (required ? " *" : "")); label.htmlFor = id;
+        const input = el(sub.enum || sub.type === "boolean" ? "select" : sub.type === "object" || sub.type === "array" ? "textarea" : "input", sub.enum || sub.type === "boolean" ? "select" : sub.type === "object" || sub.type === "array" ? "textarea mono" : "input");
+        input.id = id; input.dataset.valuePath = key;
+        if (input.tagName === "INPUT") { input.type = sub.writeOnly ? "password" : sub.type === "number" || sub.type === "integer" ? "number" : "text"; input.autocomplete = "off"; }
+        if (input.tagName === "SELECT") {
+          const values = sub.enum || [true, false]; input.append(new Option(t("pb.v4.omitted"), ""));
+          for (const v of values) input.append(new Option(String(v), JSON.stringify(v)));
+        }
+        if ("default" in sub && !sub.writeOnly) input.value = input.tagName === "SELECT" ? JSON.stringify(sub.default) : typeof sub.default === "object" ? JSON.stringify(sub.default) : String(sub.default);
+        if (input.tagName === "INPUT" && sub.pattern) input.pattern = sub.pattern;
+        if (input.tagName === "INPUT" && sub.type === "integer") input.step = "1";
+        wrap.append(label, input, el("p", "field-hint", sub.description || sub.type || ""));
+        $("pb-values").append(wrap); fields.push({ parts, sub, input });
+        input.addEventListener("input", () => { jsonValues = null; });
       };
-      const STATUS_FALLBACK = {
-        ready: "就绪",
-        "needs-node": "缺节点",
-        blocked: "缺定义",
-        partial: "不完整",
-      };
-      // 每种状态一个点：ok 绿 / 需要动手 黄 / 阻塞 红。
-      // 字形用字体里一定有的符号：U+2715「✕」在 Inter / 常见回退字体里缺失，
-      // 会渲染成一个空豆腐块（实测 Chrome + Inter 即如此）—— 用 U+00D7「×」。
-      const DOT_TEXT = { "is-ok": "●", "is-bad": "×", "is-warn": "!" };
-
-      let PB = null;
-
-      // 一行检查项：点 + 标题 + 说明 + 右侧动作
-      function row(dotCls, title, sub, action) {
-        const r = el("div", "chk");
-        r.appendChild(el("span", "chk-dot " + dotCls, DOT_TEXT[dotCls] || "·"));
-        const main = el("div", "chk-main");
-        main.appendChild(el("div", "chk-title", title));
-        if (sub) main.appendChild(el("div", "chk-sub", sub));
-        r.appendChild(main);
-        if (action) {
-          const box = el("div", "chk-act");
-          box.appendChild(action);
-          r.appendChild(box);
+      if (schema.properties) for (const [key, sub] of Object.entries(schema.properties)) walk(sub, [key], (schema.required || []).includes(key));
+      $("pb-schema-state").replaceChildren(el("p", "field-hint", t("pb.v4.schema_loaded")));
+    }
+    function values() {
+      if (jsonValues) return jsonValues;
+      const result = {};
+      for (const { parts, sub, input } of fields) {
+        if (input.value === "") continue; // Omitted values let the server apply schema defaults.
+        const value = input.tagName === "SELECT" || ["object", "array"].includes(sub.type) ? JSON.parse(input.value) : ["integer", "number"].includes(sub.type) ? Number(input.value) : input.value;
+        let parent = result;
+        for (const part of parts.slice(0, -1)) parent = parent[part] ||= {};
+        parent[parts.at(-1)] = value;
+      }
+      return result;
+    }
+    function valueSecrets(sub, value, result = []) {
+      if (sub?.writeOnly && value != null) result.push(String(value));
+      if (value && typeof value === "object" && !Array.isArray(value)) for (const [key, child] of Object.entries(value)) valueSecrets(sub?.properties?.[key], child, result);
+      if (Array.isArray(value)) value.forEach(child => valueSecrets(sub?.items, child, result));
+      return result.filter(Boolean);
+    }
+    function previewMask(value, secrets) {
+      if (Array.isArray(value)) return value.map(v => previewMask(v, secrets));
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /^(token|secret)$/i.test(k) ? "***" : previewMask(v, secrets)]));
+      if (typeof value === "string") for (const secret of secrets) if (secret && value.includes(secret)) return "***";
+      return value;
+    }
+    function receiptView(receipt) {
+      const r = model.receipt(receipt); const host = $("pb-receipt");
+      host.replaceChildren(el("h4", "card-title", t(r.install.dryRun ? "pb.v4.dry_receipt" : "pb.v4.receipt")), code({ playbook: r.playbook, source: r.source, namespace: r.namespace, install: r.install, values: r.values, valuesDigest: r.valuesDigest }));
+      showUnapplied($("pb-preview"), r.unapplied);
+      const grid = el("div", "pb-receipt-grid");
+      for (const axis of ["created", "skipped"]) {
+        const section = el("div", "pb-check"); section.dataset.receiptAxis = axis;
+        section.append(el("h4", "field-label", t("pb.v4." + axis)));
+        for (const kind of ["capabilities", "sources"]) {
+          section.append(el("p", "field-hint", kind));
+          if (!r[axis][kind].length) section.append(el("p", "field-hint", t("pb.v4.none")));
+          for (const ref of r[axis][kind]) section.append(resourceLink(kind === "sources" ? "source" : "capability", ref));
         }
-        return r;
+        grid.append(section);
       }
-
-      // 行内动作（只有「由谁执行」这一节需要：按能力给复制 YAML / 打开节点页）
-      function actBtn(label, fn) {
-        const b = el("button", "btn btn-ghost btn-sm", label);
-        b.type = "button";
-        b.addEventListener("click", fn);
-        return b;
+      for (const axis of ["upgraded", "external", "pending", "notes"]) {
+        const section = el("div", "pb-check"); section.dataset.receiptAxis = axis;
+        section.append(el("h4", "field-label", t("pb.v4." + axis)), code(r[axis])); grid.append(section);
       }
-
-      // 声明形态 → 人话（manifest v2，Capability Spec v3 §12.1）。
-      //
-      // 两种形态的**安装行为完全不同**：「内联 spec」会装出一份新实现，
-      // 「引用 x」不建任何行、只连到已有的那份定义。装不出来的时候，
-      // 用户第一件要知道的就是「这条到底想装一份实现，还是只想引用一份已有的」。
-      function declaredLabel(c) {
-        if (c.declared === "ref")
-          return t("pb.cap.declared.ref", "引用 {r}").replace("{r}", c.ref || "");
-        if (c.declared === "inline") return t("pb.cap.declared.inline", "内联能力");
-        if (c.declared === "legacy") return t("pb.cap.declared.legacy", "旧形态声明");
-        return "";
-      }
-
-      // 实现形式 → 人话：脚本跑在节点上；noop 是合法占位（中枢不执行）；
-      // handler 是编译进中枢的内置执行器（如推送）。
-      function implLabel(c) {
-        if (c.impl === "script") return t("pb.cap.impl.script", "脚本");
-        if (c.impl === "noop") return t("pb.cap.impl.noop", "noop 占位");
-        if (c.impl === "handler") return t("pb.cap.impl.handler", "中枢内置执行器");
-        return "";
-      }
-
-      // 能力行的一行说明：声明形态 · 实现形式 · 出口。
-      // 三段都是可选（ref 引用不到定义时只有前两段），空段直接不出现。
-      function capSub(c, ok) {
-        const parts = [declaredLabel(c), implLabel(c)].filter(Boolean);
-        if (!ok) {
-          parts.push(t("pb.cap.missing", "当前命名空间里还没有这个能力"));
-          return parts.join(" · ");
-        }
-        parts.push(
-          t("pb.cap.outputs", "出口：{o}").replace("{o}", (c.outputs || []).join(", ") || "—"),
-        );
-        return parts.join(" · ");
-      }
-
-      function count(n, m) {
-        return t("pb.n_of_m", "{n}/{m} 就绪").replace("{n}", n).replace("{m}", m);
-      }
-
-      // 节标题右侧的状态徽章：全绿 / 部分 / 全红（颜色只表示"要不要动手"）
-      function setBadge(id, ok, total) {
-        const b = document.getElementById(id);
-        if (!b) return;
-        b.textContent = count(ok, total);
-        b.className =
-          "badge " +
-          (total === 0
-            ? "badge-neutral"
-            : ok === total
-              ? "badge-success"
-              : ok === 0
-                ? "badge-error"
-                : "badge-warn");
-      }
-
-      function setSum(id, text) {
-        const n = document.getElementById(id);
-        if (n) n.textContent = text || "";
-      }
-
-      // 骨架退出时的两件收尾：撤掉 aria-busy（否则读屏一直说「载入中」），
-      // 以及摘掉加载期专用的等高类（它们比真实内容高时会留白）。
-      function clearBusy() {
-        const s = document.getElementById("pb-summary");
-        if (s) s.removeAttribute("aria-busy");
-        for (const n of document.querySelectorAll(".pb-sec")) n.removeAttribute("aria-busy");
-      }
-      function clearSkelHeights() {
-        const CLS = ["pb-sec-caps", "pb-sec-nodes", "pb-sec-edges", "pb-sec-trigs"];
-        for (const n of document.querySelectorAll(".pb-sec")) n.classList.remove(...CLS);
-      }
-
-      // 节的动作按钮：没有动作就整个收起来（不留一个点了没反应的死按钮）。
-      // 不能用 .hidden —— .btn 的 display:inline-flex 与 .hidden{display:none}
-      // 同优先级且 ui.css 后加载，会把 hidden 盖掉。
-      function setAct(id, label, fn) {
-        const b = document.getElementById(id);
-        if (!b) return;
-        b.textContent = label || "";
-        b.onclick =
-          label && fn
-            ? (ev) => {
-                ev.stopPropagation();
-                fn();
-              }
-            : null;
-        b.style.display = label ? "" : "none";
-      }
-
-      // 失败态：四张检查卡整体收起，只留 #pb-summary 里的错误说明 + 重试按钮。
-      // .card 没有 display 规则，所以 .hidden 在这一层有效。
-      function setSectionsHidden(hidden) {
-        for (const n of document.querySelectorAll(".pb-sec")) n.classList.toggle("hidden", hidden);
-      }
-
-      // ---- 每节的一行结论：全部就绪说"全好了"，否则说第一件该动手的事 ----
-      // 全部复用已有 key（pb.fix.* / pb.node.* / pb.edge.* / pb.trg.* / pb.next.ready）
-      // —— 结论行不引入新文案，四种语言就不会出现"某一种语言还是中文兜底"。
-      const CAP_MISSING = ["pb.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"];
-      const ALL_READY = ["pb.next.ready", "全部就绪，可以开始跑了"];
-      function capLead(caps) {
-        if (caps.length && !caps.some((c) => c.status === "missing")) return t(...ALL_READY);
-        return t(...CAP_MISSING);
-      }
-      function nodeLead(caps) {
-        if (caps.some((c) => c.status === "no-node"))
-          return t(
-            "pb.fix.capability.no-node",
-            "能力齐了，但还没有节点在跑它 —— 去节点页接入一个节点，再把它部署到那个节点",
-          );
-        if (caps.some((c) => c.status === "offline"))
-          return t("pb.fix.capability.offline", "有节点声明了，但那个节点离线 —— 把它连上就行");
-        if (caps.some((c) => c.status === "missing")) return t("pb.node.blocked", "先补能力");
-        if (!caps.length) return t(...CAP_MISSING);
-        return t(...ALL_READY);
-      }
-      function edgeLead(edges) {
-        if (!edges.length) return t("pb.edges.none", "这份预案不声明下游");
-        const bad = edges.find((e) => e.status !== "ok");
-        if (!bad) return t(...ALL_READY);
-        if (bad.blockedByCap)
-          return t("pb.edge.blocked", "端点「{c}」还没有能力，先补能力再补下游").replace(
-            "{c}",
-            bad.blockedByCap,
-          );
-        return t("pb.edge.missing", "这条下游还不在路由表里");
-      }
-      function trgLead(trgs) {
-        // 一条触发器都没声明时，"还差触发器"这句本身就是结论 —— 不需要新 key。
-        if (!trgs.length) return t("pb.fix.trigger.missing", "预案齐了，但还没有事件把它叫起来");
-        const bad = trgs.find((g) => g.status !== "ok");
-        if (!bad) return t(...ALL_READY);
-        return t("pb.trg.missing", "没有把事件送进能力 {c} 的源").replace(
-          "{c}",
-          (bad.entryCaps || []).join(", "),
-        );
-      }
-
-      function render() {
-        const p = PB;
-        document.getElementById("pb-name").textContent = p.name;
-        document.getElementById("pb-desc").textContent = p.description || "";
-        document.getElementById("pb-slug").textContent = p.slug;
-        const badge = document.getElementById("pb-badge");
-        badge.className = "pb-badge is-" + p.status;
-        badge.textContent = t(STATUS_KEY[p.status], STATUS_FALLBACK[p.status]);
-
-        // 数据到了：撤掉骨架、把可能因失败态收起的卡片放回来。
-        for (const id of ["cap-skel", "node-skel", "edge-skel", "trg-skel"]) drop(id);
-        setSectionsHidden(false);
-        clearBusy();
-        clearSkelHeights();
-
-        const items = p.items || [];
-        const caps = items.filter((i) => i.kind === "capability");
-        const edges = items.filter((i) => i.kind === "edge");
-        const trgs = items.filter((i) => i.kind === "trigger");
-
-        // ---- 汇总：先说要紧的一句 ----
-        const sum = document.getElementById("pb-summary");
-        sum.replaceChildren();
-        const bad = items.filter((i) => i.status !== "ok");
-        if (p.status === "ready" || !bad.length) {
-          sum.appendChild(el("div", "pb-sum", t("pb.next.ready", "全部就绪，可以开始跑了")));
+      host.append(grid, el("p", "field-hint", t("pb.v4.manual_deploy_hint")));
+      const manual = el("a", "btn btn-ghost", t("pb.v4.manual_deploy")); manual.href = scoped("capabilities"); host.append(manual);
+    }
+    async function action(mode) {
+      const buttons = ["btn-render", "btn-dry-run", "btn-install"].map($);
+      buttons.forEach(b => b.disabled = true);
+      $("pb-action-state").textContent = t("pb.v4.loading"); $("pb-preview").replaceChildren(); $("pb-receipt").replaceChildren();
+      try {
+        const input = values();
+        const body = mode === "render" ? { values: input } : { values: input, dryRun: mode === "dry" };
+        const result = await api(path(mode === "render" ? "/render" : "/install"), { method: "POST", body: JSON.stringify(body) });
+        if (mode === "render") {
+          const secrets = valueSecrets(schema, input);
+          $("pb-preview").replaceChildren(el("h4", "card-title", t("pb.v4.rendered")), code(previewMask(result, secrets)));
         } else {
-          const first = bad[0];
-          const map = {
-            "capability.missing": ["pb.fix.capability.missing", "还缺能力定义，先把它补进当前命名空间"],
-            "capability.no-node": [
-              "pb.fix.capability.no-node",
-              "定义齐了，但还没有节点在跑它 —— 去节点页把机器连上，再把它部署到那台机器",
-            ],
-            "capability.offline": ["pb.fix.capability.offline", "有节点声明了，但机器离线 —— 把它连上就行"],
-            "edge.missing": ["pb.fix.edge.missing", "能力齐了，出口还没连上"],
-            "trigger.missing": ["pb.fix.trigger.missing", "图能跑了，但还没有事件把它叫起来"],
-          };
-          const k = first.kind + "." + first.status;
-          const pair = map[k] || ["pb.remaining", "还差 {n} 项"];
-          sum.appendChild(el("div", "pb-sum", t(pair[0], pair[1])));
-          sum.appendChild(
-            el("div", "card-sub", t("pb.remaining", "还差 {n} 项").replace("{n}", bad.length)),
-          );
+          receiptView(result);
+          if (mode === "install") { await refreshSummary(); await installs(); }
         }
-
-        // ---- ① 能力定义 ----
-        const capList = document.getElementById("cap-list");
-        capList.textContent = "";
-        // 行内不再放动作按钮：install() 是**整份预案**幂等的补齐，不认单项，
-        // 行内按钮会假装它是「只补这一条」。动作统一放节标题右侧（见 setAct）。
-        for (const c of caps) {
-          const ok = c.status !== "missing";
-          capList.appendChild(
-            row(
-              ok ? "is-ok" : "is-bad",
-              c.ref,
-              capSub(c, ok),
-              null,
-            ),
-          );
+        $("pb-action-state").textContent = t(mode === "render" ? "pb.v4.rendered_hint" : mode === "dry" ? "pb.v4.dry_hint" : "pb.v4.installed_hint");
+      } catch (error) {
+        $("pb-action-state").replaceChildren(loadErrorNode(error));
+        if (error.reason === "playbook_conflict") {
+          const details = error.details || {};
+          $("pb-preview").replaceChildren(el("div", "pb-warning", t("pb.v4.atomic_conflict")), code({ valuesDigest: details.valuesDigest, conflicts: details.conflicts, hint: details.hint }));
         }
-        const capOk = caps.filter((c) => c.status !== "missing").length;
-        setBadge("cap-count", capOk, caps.length);
-        setSum("cap-sum", capLead(caps));
-        setAct(
-          "cap-act",
-          caps.some((c) => c.status === "missing") ? t("pb.act.install_cap", "安装能力") : "",
-          install,
-        );
-
-        // ---- ② 节点实现 ----
-        const nodeList = document.getElementById("node-list");
-        nodeList.textContent = "";
-        for (const c of caps) {
-          let dot = "is-ok";
-          let sub = "";
-          if (c.status === "missing") {
-            dot = "is-warn";
-            sub = t("pb.node.blocked", "先补能力");
-          } else if (c.impl === "handler") {
-            // handler 形式由中枢进程内的内置执行器跑：它本来就不需要节点，
-            // 这一行要看得出「不是缺机器，而是压根不用机器」。
-            sub = t("pb.node.hub", "中枢进程内执行（不需要节点）");
-          } else if (c.status === "no-node") {
-            dot = "is-bad";
-            sub = t(
-              "pb.node.none",
-              "还没有节点在跑它 —— 部署到一个在线节点就会有",
-            );
-          } else if (c.status === "offline") {
-            dot = "is-warn";
-            sub =
-              t("pb.node.offline", "有节点，但离线：") +
-              (c.nodes || []).map((n) => n.name).join(", ");
-          } else {
-            sub = (c.nodes || []).map((n) => n.name).join(", ");
-          }
-          // 行内动作只剩「打开节点页」：「缺节点」是机器侧的事（连上 + 部署），
-          // 控制台能给的唯一帮助就是把人送到那个页面去。
-          const action =
-            c.status === "offline" || c.status === "no-node"
-              ? actBtn(t("pb.act.open_nodes", "打开节点页"), () => (location.href = "nodes.html"))
-              : null;
-          nodeList.appendChild(row(dot, c.ref, sub, action));
+      } finally { buttons.forEach(b => b.disabled = false); }
+    }
+    async function installs() {
+      $("pb-installs").textContent = t("pb.v4.loading");
+      try {
+        const data = await api(path("/installs"));
+        if (!Array.isArray(data.installs) || typeof data.total !== "number") throw new Error(t("pb.v4.invalid_installs"));
+        $("pb-installs").replaceChildren(el("p", "field-hint", t("pb.v4.group_count", { n: data.total })));
+        for (const group of data.installs) {
+          const item = el("div", "pb-group"); item.dataset.digest = group.valuesDigest;
+          item.append(code(group));
+          const open = el("button", "btn btn-ghost btn-sm", t("pb.v4.single_receipt") + " · " + group.lastInstallId);
+          open.addEventListener("click", () => singleReceipt(group.lastInstallId)); item.append(open); $("pb-installs").append(item);
         }
-        setBadge("node-count", caps.filter((c) => c.status === "ok").length, caps.length);
-        setSum("node-sum", nodeLead(caps));
-
-        // 节点这一节的动作只给一件事：去节点页（令牌在那里发、agent 在那里连，
-        // 能力在那里被部署到机器上）。
-        if (caps.some((c) => c.status === "no-node" || c.status === "offline")) {
-          setAct("node-act", t("pb.act.open_nodes", "打开节点页"), () => {
-            location.href = "nodes.html";
-          });
-        } else {
-          setAct("node-act", "", null);
-        }
-
-        // ---- ③ 出口 ----
-        const edgeList = document.getElementById("edge-list");
-        edgeList.textContent = "";
-        if (!edges.length) {
-          edgeList.appendChild(row("is-ok", t("pb.edges.none", "这份预案不声明下游"), "", null));
-        }
-        for (const e of edges) {
-          const ok = e.status === "ok";
-          edgeList.appendChild(
-            row(
-              ok ? "is-ok" : "is-bad",
-              e.label,
-              ok
-                ? ""
-                : e.blockedByCap
-                  ? t("pb.edge.blocked", "端点「{c}」还没有能力，先补能力再补下游").replace("{c}", e.blockedByCap)
-                  : t("pb.edge.missing", "这条下游还不在路由表里"),
-              null,
-            ),
-          );
-        }
-        setBadge("edge-count", edges.filter((e) => e.status === "ok").length, edges.length);
-        setSum("edge-sum", edgeLead(edges));
-        setAct(
-          "edge-act",
-          edges.some((e) => e.status !== "ok") ? t("pb.act.install_edge", "补齐这条下游") : "",
-          install,
-        );
-
-        // ---- ④ 触发器 ----
-        const trgList = document.getElementById("trg-list");
-        trgList.textContent = "";
-        for (const g of trgs) {
-          const ok = g.status === "ok";
-          trgList.appendChild(
-            row(
-              ok ? "is-ok" : "is-bad",
-              g.label,
-              ok
-                ? ""
-                : t("pb.trg.missing", "没有把事件送进能力 {c} 的源").replace(
-                    "{c}",
-                    (g.entryCaps || []).join(", "),
-                  ),
-              null,
-            ),
-          );
-        }
-        setBadge("trg-count", trgs.filter((g) => g.status === "ok").length, trgs.length);
-        setSum("trg-sum", trgLead(trgs));
-        setAct(
-          "trg-act",
-          trgs.some((g) => g.status !== "ok") ? t("pb.act.create_source", "创建源") : "",
-          install,
-        );
-
-        document.getElementById("btn-install").style.display = p.status === "ready" ? "none" : "";
+        if (!data.installs.length) $("pb-installs").append(el("p", "field-hint", t("pb.v4.no_installs")));
+      } catch (error) { $("pb-installs").replaceChildren(loadErrorNode(error, installs)); }
+    }
+    async function singleReceipt(id) {
+      try {
+        const receipt = await api(path("/installs/" + encodeURIComponent(id)));
+        receiptView(receipt); $("pb-receipt").scrollIntoView({ behavior: "smooth" });
+      } catch (error) { $("pb-receipt").replaceChildren(loadErrorNode(error)); }
+    }
+    async function refreshSummary() {
+      resource = await api(path()); checkup();
+    }
+    function rememberFile() { if (draft && filePath) draft[filePath] = $("pb-file-content").value; }
+    function filePicker(nextPath) {
+      $("pb-file-path").replaceChildren();
+      for (const key of Object.keys(draft).sort()) $("pb-file-path").append(new Option(key, key));
+      filePath = nextPath && nextPath in draft ? nextPath : Object.keys(draft).sort()[0];
+      $("pb-file-path").value = filePath || ""; $("pb-file-content").value = draft[filePath] || "";
+      $("pb-template-rv").textContent = "resourceVersion " + templateRV;
+    }
+    async function rawTemplate(resetValues) {
+      const raw = await api(path("?includeBody=true"));
+      const pb = model.playbook(raw);
+      if (!pb.files || !pb.files["playbook.yaml"]) throw new Error(t("pb.v4.raw_missing"));
+      draft = pb.files; templateRV = pb.resourceVersion; filePicker("playbook.yaml");
+      if (resetValues) valuesForm(pb.valuesSchema);
+    }
+    async function load() {
+      if (loading) return; loading = true; $("btn-rescan").disabled = true;
+      $("pb-load-state").textContent = t("pb.v4.loading"); $("pb-summary").setAttribute("aria-busy", "true");
+      try {
+        await ready(); if (!name) throw new Error(t("pb.v4.missing_id"));
+        $("pb-back").href = scoped("playbooks"); await refreshSummary();
+        // Re-check never destroys a user's unsaved whole-map draft.
+        if (!draft) await rawTemplate(true);
+        $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await installs();
+      } catch (error) { $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
+      finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
+    }
+    $("pb-file-path").addEventListener("change", () => { const next = $("pb-file-path").value; rememberFile(); filePicker(next); });
+    $("pb-add-file").addEventListener("click", () => {
+      rememberFile(); const key = $("pb-new-path").value.trim();
+      if (!key || key.startsWith("/") || key.split("/").some(p => p === ".." || !p) || key in draft) { $("pb-template-state").textContent = t("pb.v4.invalid_path"); return; }
+      draft[key] = ""; filePicker(key); $("pb-new-path").value = "";
+    });
+    $("pb-remove-file").addEventListener("click", () => {
+      if (filePath === "playbook.yaml") { $("pb-template-state").textContent = t("pb.v4.entry_required"); return; }
+      if (confirm(t("pb.v4.remove_confirm", { path: filePath }))) { delete draft[filePath]; filePicker(); }
+    });
+    $("pb-export").addEventListener("click", () => {
+      rememberFile(); const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = name + "-files.json"; a.click(); URL.revokeObjectURL(url);
+    });
+    $("pb-import-map").addEventListener("change", async event => {
+      try {
+        const files = JSON.parse(await event.target.files[0].text());
+        if (!files || Array.isArray(files) || Object.values(files).some(v => typeof v !== "string") || !files["playbook.yaml"]) throw new Error(t("pb.v4.raw_missing"));
+        if (!confirm(t("pb.v4.replace_draft"))) return;
+        draft = files; filePicker("playbook.yaml");
+      } catch (error) { $("pb-template-state").replaceChildren(loadErrorNode(error)); }
+    });
+    $("pb-save-template").addEventListener("click", async () => {
+      rememberFile(); $("pb-save-template").disabled = true;
+      try {
+        const body = { apiVersion: "anotify/v1", kind: "Playbook", metadata: { name, namespace: getScope().namespace, resourceVersion: templateRV }, spec: { files: draft } };
+        resource = await api(path(), { method: "PUT", body: JSON.stringify(body) });
+        templateRV = resource.metadata.resourceVersion; checkup(); filePicker(filePath);
+        // Form schema is from the newly stored manifest, never a duplicate spec.values.
+        valuesForm(model.playbook({ ...resource, spec: { files: draft } }).valuesSchema);
+        $("pb-template-state").textContent = t("pb.v4.template_saved");
+      } catch (error) {
+        $("pb-template-state").replaceChildren(loadErrorNode(error));
+        if (error.status === 400 || error.status === 409) $("pb-template-state").append(el("p", "field-hint", t("pb.v4.draft_kept")));
+      } finally { $("pb-save-template").disabled = false; }
+    });
+    $("pb-reload-template").addEventListener("click", async () => {
+      if (!confirm(t("pb.v4.reload_confirm"))) return;
+      try { await rawTemplate(true); await refreshSummary(); $("pb-template-state").textContent = t("pb.v4.reloaded"); }
+      catch (error) { $("pb-template-state").replaceChildren(loadErrorNode(error)); }
+    });
+    $("pb-use-json").addEventListener("click", () => {
+      try {
+        const value = JSON.parse($("pb-values-json").value);
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(t("pb.v4.values_object"));
+        jsonValues = value; $("pb-schema-state").textContent = t("pb.v4.json_selected");
+      } catch (error) { $("pb-schema-state").replaceChildren(loadErrorNode(error)); }
+    });
+    $("pb-delete").addEventListener("click", async () => {
+      if (!confirm(t("pb.v4.delete_confirm"))) return;
+      $("pb-delete").disabled = true;
+      try {
+        const response = await api(path("?resourceVersion=" + encodeURIComponent(resource.metadata.resourceVersion)), { method: "DELETE" });
+        $("pb-delete-state").replaceChildren(el("h4", "card-title", t("pb.v4.deleted")), code(response));
+        for (const id of ["pb-save-template", "btn-render", "btn-dry-run", "btn-install", "btn-rescan"]) $(id).disabled = true;
+      } catch (error) {
+        $("pb-delete-state").replaceChildren(loadErrorNode(error));
+        if (error.status === 409) $("pb-delete-state").append(el("p", "field-hint", t("pb.v4.delete_stale")));
+        $("pb-delete").disabled = false;
       }
-
-      // 返回 true 表示这一轮真的拿到了数据（重新体检按钮据此决定要不要报"已重新体检"）。
-      async function load() {
-        try {
-          const j = await Anotify.api(API + "/playbooks/" + encodeURIComponent(pbKey));
-          PB = j.playbook;
-        } catch (e) {
-          // 失败态：错误说明 + 重试按钮就地渲染在内容容器里，不伪造一份"空预案"。
-          const sum = document.getElementById("pb-summary");
-          sum.replaceChildren(Anotify.loadErrorNode(e, () => load()));
-          setSectionsHidden(true);
-          // 四个分区被收起了，里面的骨架也没人管 —— 它们留在 DOM 里只是 16 条
-          // 看不见的 shimmer，清掉才能保证「失败态 = 一张错误卡，零骨架」。
-          for (const id of ["cap-skel", "node-skel", "edge-skel", "trg-skel"]) drop(id);
-          clearBusy();
-          // 页头那两条骨架（标题 / 状态徽章）也必须一起撕掉 —— 以前它们没有人管，
-          // 失败态下就成了两个永远在闪的占位，看着像页面还在加载。
-          const nameEl = document.getElementById("pb-name");
-          if (nameEl) nameEl.textContent = t("pb.detail_title", "预案详情");
-          const badge = document.getElementById("pb-badge");
-          if (badge) {
-            badge.className = "pb-badge";
-            badge.textContent = "—";
-          }
-          toast(t("pb.load_failed", "载入失败，请刷新重试。"));
-          return false;
-        }
-        render();
-        return true;
-      }
-
-      // 补齐 = 幂等：能补的定义/边/源都补，补不了的（节点）留给 YAML。
-      async function install() {
-        try {
-          const j = await Anotify.api(API + "/playbooks/" + encodeURIComponent(pbKey) + "/install", {
-            method: "POST",
-          });
-          PB = j.playbook;
-          render();
-          const c = j.created || {};
-          const n =
-            (c.capabilities || []).length + (c.edges || []).length + (c.sources || []).length;
-          toast(
-            n
-              ? t("pb.installed_n", "补齐了 {n} 项").replace("{n}", n)
-              : t("pb.installed_none", "没有可自动补齐的项了"),
-          );
-        } catch (e) {
-          toast(t("pb.install_failed", "补齐失败：" ) + e.message);
-        }
-      }
-
-      document.getElementById("btn-rescan").addEventListener("click", async () => {
-        const ok = await load();
-        if (ok) toast(t("pb.rescanned", "已重新体检"));
-      });
-      document.getElementById("btn-install").addEventListener("click", install);
-      document.addEventListener("DOMContentLoaded", load);
-    </script>
+    });
+    $("btn-render").addEventListener("click", () => action("render"));
+    $("btn-dry-run").addEventListener("click", () => action("dry"));
+    $("btn-install").addEventListener("click", () => action("install"));
+    $("btn-rescan").addEventListener("click", load);
+    $("pb-refresh-installs").addEventListener("click", installs);
+    document.addEventListener("DOMContentLoaded", load);
+  })();
+</script>
 {{end}}

@@ -1,1150 +1,165 @@
-{{define "title"}}{{t "nodepage.title"}}{{end}}
-
+{{define "title"}}{{t "nodes.v4.config"}}{{end}}
 {{define "style"}}
-    <style>
-      /* 节点详情页：一台机器的全貌。
-         URL 形如 node.html?id=nd_xxx（节点列表点进来）。
-
-         为什么单独一页：节点列表要能扫（"有几台、活着吗、能跑什么"），
-         而"这台机器现在的并发槽卡在哪个任务上、最近跑了什么"是点进去才
-         关心的事。塞进列表卡片会让列表没法读。
-
-         样式纪律（UI v2）：卡片 / 按钮 / 徽章 / 空态 / 骨架一律用 ui.css 的
-         组件类，这里只留本页独有的排版；颜色只走 tokens.css 的 token
-         （--text/--muted/--faint/--surface-*/--line/--accent/--st-*），
-         硬编码色值零容忍。类名一律 .np-* 前缀，不新增 Tailwind 工具类。 */
-
-      /* 正文纵向堆叠：卡与卡之间 16px（.page 的 gap 只管页头与正文之间） */
-      .np-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        min-width: 0;
-      }
-
-      .np-back {
-        display: inline-block;
-        margin-bottom: 6px;
-        font-size: 12px;
-        color: var(--muted);
-        text-decoration: none;
-      }
-      .np-back:hover {
-        color: var(--accent);
-      }
-
-      /* 节点 id：等宽 + 极弱色。要和 agent 日志、中枢日志逐字符对照，
-         所以允许折行但不断词、不做 10px 灰（对比度低于 3:1 看不见）。 */
-      .np-id {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--faint);
-        word-break: break-all;
-      }
-
-      .np-badges {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        margin-top: 8px;
-      }
-      .np-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      /* 分区头：标题 + 右侧计数。列表行要贴着卡片边缘（行分隔线通栏），
-         所以 padding 只给在头上和体上，不给在卡上。 */
-      .np-sec-head {
-        padding: 16px 20px 10px;
-      }
-      /* 行贴着卡片底边：裁掉圆角外的 hover 底色（.card 自己没有 overflow） */
-      .np-list-card {
-        overflow: hidden;
-      }
-      .np-sec-body {
-        padding: 0 20px 16px;
-      }
-
-      /* 键值对：grid 保证多行之间标签列对齐（flex 做不到） */
-      .np-kv {
-        display: grid;
-        grid-template-columns: 7.5rem 1fr;
-        gap: 8px 16px;
-        align-items: baseline;
-        margin-top: 12px;
-      }
-      .np-kv dt {
-        font-size: 11.5px;
-        color: var(--faint);
-      }
-      .np-kv dd {
-        font-size: 13px;
-        color: var(--text);
-        min-width: 0;
-        word-break: break-word;
-      }
-
-      .np-chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-top: 12px;
-      }
-
-      /* agent 版本 / 升级（契约 §5.1 + §6）：版本值等宽（要和 agent 日志逐字对），
-         未上报的老 agent 用 sans + 极弱色，不报警。 */
-      .np-ver {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-      }
-      .np-ver-val {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--text);
-        overflow-wrap: anywhere;
-      }
-      .np-ver-val.is-unknown {
-        font-family: var(--font-sans);
-        color: var(--faint);
-      }
-      /* ack 失败（真问题，error 色）/ 节点没回话（告警，warn 色） */
-      .np-upg-err {
-        margin-top: 10px;
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--error-300);
-        overflow-wrap: anywhere;
-      }
-      .np-upg-note {
-        margin-top: 10px;
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--warn-300);
-        overflow-wrap: anywhere;
-      }
-
-      /* 列表行的两段式：上行「名字 + 状态」，下行 digest / reason。
-         行本身用 ui.css 的 .list-row，这里只补内部排版。 */
-      .np-row-head {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-      }
-      .np-row-sub {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        margin-top: 2px;
-      }
-      .np-digest {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--faint);
-        letter-spacing: 0.02em;
-      }
-      /* reason 是后端给的机器串（如 missing_requirement:claude），原样展示、不翻译 */
-      .np-art-reason {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--warn-300);
-        overflow-wrap: anywhere;
-      }
-
-      /* 任务状态：状态文字用 ui.css 的 .st-text.<state>（九态映射 tokens.css 的 --st-*），
-         和链路图 / 事件流是同一套色板；本页只控制字号，不再重复定义九条配色。 */
-      .np-state {
-        font-size: 11px;
-      }
-
-      /* 任务行右侧：耗时 / 时间 / 链路入口。等宽数字避免相邻行抖动。 */
-      .np-task-meta {
-        font-family: var(--font-mono);
-        font-variant-numeric: tabular-nums;
-      }
-      .np-link {
-        color: var(--accent);
-        text-decoration: none;
-      }
-      .np-link:hover {
-        color: var(--accent-strong);
-        text-decoration: underline;
-      }
-
-      /* 槽位占用条：一格一个槽，busy 用品牌色（与节点列表页同一套编码） */
-      .np-slot-bar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 2px;
-        margin-bottom: 12px;
-      }
-      .np-slot-dot {
-        width: 0.55rem;
-        height: 0.55rem;
-        border-radius: var(--r-xs);
-        background: var(--surface-3);
-      }
-      .np-slot-dot.is-busy {
-        background: var(--accent);
-      }
-
-      /* 单个槽位一行：紧凑列表，不套卡片 */
-      .np-slot {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        padding: 7px 0;
-        border-bottom: 1px solid var(--line);
-        font-size: 12px;
-        color: var(--muted);
-      }
-      .np-slot:last-child {
-        border-bottom: 0;
-      }
-      .np-slot.is-busy {
-        color: var(--text);
-      }
-      .np-slot-num {
-        min-width: 3.2rem;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--faint);
-      }
-      .np-slot-link {
-        color: var(--st-assigned);
-        text-decoration: none;
-      }
-      .np-slot-link:hover {
-        text-decoration: underline;
-      }
-      .np-slot-idle {
-        color: var(--faint);
-      }
-
-      /* 页头槽位预占：骨架态与内容态同高。
-         实测（loading → done）里 #node-body 的 y 从 190 掉到 233 —— 43px 全部来自
-         页头三个槽位「空 → 有内容」：副标题（空 p）、徽章行、动作区。
-         正文再高也不会把上面的元素往下推，但页头一长，整个正文（含页脚）就整体下移，
-         而正文是个 1000+px 的大块，下移 43px 就是 0.2+ 的 CLS。
-         这里把三个槽位钉死高度，数据落地时页头一寸都不动。 */
-      #head-sub {
-        min-height: 18px;
-      }
-      #head-badges {
-        min-height: 18px;
-      }
-      #head-actions {
-        min-height: 30px;
-      }
-
-      /* 首屏骨架只定义尺寸，闪动/底色来自 ui.css 的 .skeleton */
-      .np-sk-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      /* 等高骨架：每张骨架卡的最小高度 = 内容态同一张卡实测高度
-         （基本信息 204 / 声明的能力 94 / 已缓存产物 275 / 并发槽位 117 /
-          最近执行 4 行 ≈ 275）。误差只体现在「最近执行」的行数上 ——
-         那一块的最终高度由任务条数决定，骨架不该假装知道有 20 条任务。 */
-      .np-sk-card {
-        min-height: 204px;
-      }
-      /* 修饰类写在行首：死类守卫按「行首类名」收集，复合选择器里的 is-* 会被误报 */
-      .is-caps.np-sk-card {
-        min-height: 94px;
-      }
-      .is-deps.np-sk-card {
-        min-height: 275px;
-      }
-      .is-slots.np-sk-card {
-        min-height: 117px;
-      }
-      .is-tasks.np-sk-card {
-        min-height: 275px;
-      }
-      /* 列表卡骨架的「行」：贴 .list-row（56px 高）的形状 */
-      .np-sk-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-height: 56px;
-        padding: 8px 20px;
-        border-bottom: 1px solid var(--line);
-      }
-      .np-sk-row:last-child {
-        border-bottom: 0;
-      }
-      .np-sk-row > * + * {
-        flex: none;
-      }
-      .np-sk-grow {
-        flex: 1 1 auto;
-      }
-      .np-sk-title {
-        display: inline-block;
-        width: 180px;
-        max-width: 60vw;
-        height: 22px;
-        vertical-align: middle;
-      }
-      .np-sk-line {
-        width: 100%;
-        height: 12px;
-      }
-      .np-sk-line-sm {
-        width: 46%;
-        height: 12px;
-      }
-      .np-sk-line-lg {
-        width: 32%;
-        height: 18px;
-      }
-
-      .np-empty-icon {
-        width: 22px;
-        height: 22px;
-      }
-    </style>
+<style>
+  .c2-stack { display: grid; gap: 16px; min-width: 0; }
+  .c2-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
+  .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .c2-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .c2-json { min-height: 110px; font-family: var(--font-mono); }
+  .c2-state { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .c2-state.is-error { color: var(--error-300); }
+  .c2-row { padding: 10px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .c2-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+  .c2-table th, .c2-table td { padding: 8px; text-align: left; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+  .c2-table th { color: var(--muted); }
+  .c2-stack [hidden] { display: none; }
+  @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
+</style>
 {{end}}
-
 {{define "content"}}
-<div id="page-main">
-  <div class="page page-narrow">
-    <!-- 页头：返回链接 + 名字（JS 填）+ 状态徽章 + 页级动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
-         `.page-sub` 全页只出现一次：centurion 的顶栏检测到它就不再重复画副标题。 -->
-    <div class="page-head">
-      <div class="min-w-0">
-        <a href="nodes.html" class="np-back">← {{t "nodepage.back"}}</a>
-        <h2 id="head-name" class="page-title">
-          <span class="skeleton np-sk-title" aria-label="{{t "nodepage.loading"}}"></span>
-        </h2>
-        <p id="head-sub" class="page-sub np-id"></p>
-        <div id="head-badges" class="np-badges"></div>
-      </div>
-      <div id="head-actions" class="page-actions"></div>
-    </div>
-
-    <!-- 正文 100% 由 JS 生成（renderBody）：首屏这里只是骨架。
-         骨架里刻意**不含** .np-slot / .np-task / .out-chip 这些「数据已就绪」
-         锚点，也不含任何文案 —— e2e 等的是 #head-name 有真实名字（骨架里的
-         span 没有 textContent），随后才读正文断言，不能被骨架骗成已就绪。
-         数据到（或失败、或要重试）时整块 replaceChildren。 -->
-    <div id="node-body" class="np-stack" aria-busy="true">
-      <!-- 5 张骨架卡 = 内容态的 5 张卡（基本信息 / 能力 / 产物 / 槽位 / 最近执行），
-           每张卡的最小高度按内容态实测值钉死，形状只到「一眼看出是哪一块」为止。 -->
-      <div class="card card-pad np-sk-card" aria-hidden="true">
-        <div class="np-sk-stack">
-          <div class="skeleton np-sk-line-lg"></div>
-          <div class="skeleton np-sk-line"></div>
-          <div class="skeleton np-sk-line"></div>
-          <div class="skeleton np-sk-line"></div>
-          <div class="skeleton np-sk-line-sm"></div>
-        </div>
-      </div>
-      <div class="card card-pad np-sk-card is-caps" aria-hidden="true">
-        <div class="np-sk-stack">
-          <div class="skeleton np-sk-line-lg"></div>
-          <div class="skeleton np-sk-line"></div>
-        </div>
-      </div>
-      <div class="card np-sk-card is-deps" aria-hidden="true">
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
-        </div>
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
-        </div>
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 64px"></div>
-        </div>
-      </div>
-      <div class="card np-sk-card is-slots" aria-hidden="true">
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-        </div>
-      </div>
-      <div class="card np-sk-card is-tasks" aria-hidden="true">
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
-        </div>
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
-        </div>
-        <div class="np-sk-row">
-          <div class="skeleton np-sk-line np-sk-grow"></div>
-          <div class="skeleton np-sk-line-sm" style="width: 76px"></div>
-        </div>
-      </div>
-    </div>
+<div id="page-main"><div class="page c2-stack">
+  <div class="page-head"><div class="min-w-0"><h2 class="page-title" id="head-name">{{t "nodes.v4.config"}}</h2><p id="head-sub" class="page-sub">{{t "nodes.v4.subtitle"}}</p></div>
+    <div class="page-actions"><a class="btn btn-ghost" href="nodes.html">{{t "nodes.v4.back"}}</a><button id="node-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
   </div>
-</div>
+  <div id="node-load-state" role="status"></div>
+  <div id="node-body" class="c2-stack" hidden>
+    <section class="card card-pad"><div id="node-facts" class="c2-note"></div><div id="head-actions" class="c2-actions"><button id="node-drain" class="btn btn-ghost" type="button">{{t "nodes.v4.drain"}}</button><button id="node-upgrade" class="btn btn-ghost" type="button">{{t "nodes.v4.upgrade"}}</button><button id="node-rotate" class="btn btn-ghost" type="button">{{t "nodes.v4.rotate"}}</button></div><div id="node-action-state" class="c2-state" role="status"></div>
+      <div id="node-token-result" hidden><p class="c2-note">{{t "nodes.v4.token_warning"}}</p><div class="code-block"><div class="code-head">{{t "nodes.v4.token"}}</div><div class="code-body"><code id="node-token"></code></div></div><button id="node-token-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
+    </section>
+    <div class="c2-grid">
+      <section id="node-config" class="card card-pad">
+        <div class="card-title">{{t "nodes.v4.config"}}</div><p class="c2-note">{{t "nodes.v4.batch_hint"}}</p><div id="node-revisions" class="c2-note"></div>
+        <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
+        <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
+        <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
+        <div class="c2-actions"><button id="node-config-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="node-config-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div><div id="node-config-state" class="c2-state" role="status"></div>
+      </section>
+      <section class="card card-pad c2-stack">
+        <div class="card-title">{{t "nodes.v4.revision"}}</div><div id="node-applied" class="c2-note"></div>
+        <div class="card-title">{{t "nodes.v4.machine_vars"}}</div><div id="node-machine-vars"></div>
+        <div class="card-title">{{t "nodes.v4.limits"}}</div><div id="node-machine-limits"></div>
+      </section>
+    </div>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.effective_vars"}}</div><div class="field"><label class="field-label" for="node-namespace">{{t "nodes.v4.context"}}</label><select id="node-namespace" class="select"></select></div><div id="node-context-revision" class="c2-note"></div><div id="node-effective-vars"></div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p></section>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><p class="c2-note">{{t "nodes.v4.slot_note"}}</p><div id="node-slots"></div></section>
+    <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.local_setup"}}</div><pre class="code-body">anode install
+anode serve
+anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
+  </div>
+</div></div>
 {{end}}
-
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-
-      const API = "/v1";
-
-      Anotify.mountLayout({
-        active: "nodes",
-        title: t("nodepage.layout_title", "节点详情"),
-        subtitle: t(
-          "nodepage.layout_subtitle",
-          "一台节点的声明能力、并发槽位和最近的任务",
-        ),
-      });
-
-      const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
-
-      // 九态白名单：后端加了新状态也别拼出个没有样式的类名
-      const TASK_STATES = [
-        "pending",
-        "assigned",
-        "acked",
-        "running",
-        "succeeded",
-        "failed",
-        "canceled",
-        "abandoned",
-        "lease_expired",
-      ];
-
-      const QS = new URLSearchParams(location.search);
-      const NODE_ID = QS.get("id") || "";
-
-      let NODE = null;
-      let INSTS = [];
-      // TASKS / DEPS 用 null 专指「接口失败」，和空数组的「一行都没有」
-      // 是两种不同的结论 —— 混在一起就会把故障说成「还没有」。
-      let TASKS = null;
-      let CAPS = new Map();
-      let DEPS = null;
-      // 本页里服务端回过 up_to_date 的标记：up_to_date **不落库**（契约 §5.1 只落
-      // sent/ok/failed），详情接口也不带 targetAgentVersion，所以只能在本页记一下，
-      // 否则按钮会继续停在「升级」上，看起来像刚才什么都没发生。
-      let NODE_UP_TO_DATE = false;
-
-      const bodyEl = () => document.getElementById("node-body");
-      // 首屏骨架的 HTML 快照：重试时把它放回去，别把「重试中」画成「没有数据」
-      const BODY_SKELETON = bodyEl().innerHTML;
-
-      // aria-busy 跟着骨架一起进出：骨架在就是「还在等」，骨架一撤就必须是 false，
-      // 否则读屏用户会一直听到「载入中」。
-      function setBusy(on) {
-        const n = bodyEl();
-        if (!n) return;
-        if (on) n.setAttribute("aria-busy", "true");
-        else n.removeAttribute("aria-busy");
+<script>
+(() => {
+  const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
+  const name = new URLSearchParams(location.search).get('id') || '', path = '/v1/nodes/' + encodeURIComponent(name);
+  let n, config, namespace = '', original = '', loaded = false;
+  A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('subtitle') });
+  const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
+  const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
+  const request = (url, body, method = 'PUT') => A.api(url, { method, body: JSON.stringify(body) });
+  const configInputs = ['namespaces', 'vars', 'limits'];
+  const draft = () => JSON.stringify(configInputs.map(k => $('node-' + k).value));
+  const table = (id, values, source) => {
+    const rows = Object.entries(values || {}); $(id).replaceChildren();
+    if (!rows.length) { $(id).appendChild(make('div', 'c2-note', t('none'))); return; }
+    const table = make('table', 'c2-table'), head = make('tr');
+    for (const title of [t('key'), t('value'), t('source')]) head.appendChild(make('th', null, title));
+    const thead = make('thead'); thead.appendChild(head); table.appendChild(thead); const body = make('tbody');
+    for (const [key, value] of rows) { const row = make('tr'); row.dataset.key = key; for (const text of [key, String(value), source(key)]) row.appendChild(make('td', null, text)); body.appendChild(row); }
+    table.appendChild(body); $(id).appendChild(table);
+  };
+  function renderFacts() {
+    $('head-name').textContent = n.name; document.title = n.name + ' · Anotify';
+    $('node-facts').textContent = (typeof n.status.online === 'boolean' ? t(n.status.online ? 'online' : 'offline') : t('unknown')) + ' · ' + (n.status.hostname || '?') + ' · ' + (n.status.os || '?') + '/' + (n.status.arch || '?') + '\n' + t('effective_namespaces') + ': ' + (n.effectiveNamespaces.join(', ') || t('none'));
+    const knownRevision = n.configRevision != null && n.appliedRevision != null && n.appliedRevision !== '';
+    $('node-applied').textContent = (knownRevision ? t(n.pending ? 'pending' : 'applied') : t('unknown')) + '\nconfigRevision=' + (n.configRevision ?? '?') + ' · appliedRevision=' + (n.appliedRevision ?? '?') + '\nappliedHash=' + (n.appliedHash ?? '?') + (n.overrideStale === true ? '\n' + t('override_stale') : '');
+    table('node-machine-vars', n.machineVars, key => Object.hasOwn(n.localVars, key) ? 'local' : 'node');
+    const limits = { ...(n.machineLimits.total == null ? {} : { total: n.machineLimits.total }), ...Object.fromEntries(Object.entries(n.machineLimits.perCapability || {}).map(([k,v]) => ['perCapability.' + k, v])) };
+    table('node-machine-limits', limits, key => key === 'total' ? (n.localLimits.total != null ? 'local' : 'node') : (Object.hasOwn(n.localLimits.perCapability || {}, key.slice(14)) ? 'local' : 'node'));
+    $('node-context-revision').textContent = 'namespace=' + (n.context?.namespace || '?') + ' · namespaceVarsRevision=' + (n.namespaceVarsRevision ?? '?') + ' · configRevision=' + (n.configRevision ?? '?');
+    if (n.context) table('node-effective-vars', n.effectiveVars, key => Object.hasOwn(n.localVars, key) ? 'local' : Object.hasOwn(n.nodeVars, key) ? 'node' : 'namespace');
+    else $('node-effective-vars').replaceChildren(make('div', 'c2-note', t('unknown')));
+    $('node-slots').replaceChildren();
+    if (!n.instances?.length) $('node-slots').appendChild(make('div', 'c2-note', t('unknown')));
+    for (const x of n.instances || []) {
+      const row = make('div', 'c2-row', 'slot=' + (x.slot ?? '?') + ' · ' + t(x.occupancy) + (x.taskId ? ' · taskId=' + x.taskId : '') + (x.assignmentId ? ' · assignmentId=' + x.assignmentId : '') + (x.attempt != null ? ' · attempt=' + x.attempt : ''));
+      row.dataset.occupancy = x.occupancy; row.dataset.slot = x.slot ?? ''; $('node-slots').appendChild(row);
+    }
+  }
+  async function loadFacts() {
+    const resource = await A.api(path + (namespace ? '?namespace=' + encodeURIComponent(namespace) : ''));
+    if (resource.kind !== 'Node') throw new Error('Invalid Node resource'); n = A.model.node(resource); renderFacts();
+  }
+  async function loadRelated() {
+    if (!namespace) return;
+    const base = '/v1/namespaces/' + encodeURIComponent(namespace);
+    const results = await Promise.allSettled([A.apiList(base + '/deployments'), A.apiList(base + '/tasks?node=' + encodeURIComponent(name) + '&limit=20')]);
+    for (const [i, id] of ['node-deployments', 'node-tasks'].entries()) {
+      $(id).replaceChildren(); const result = results[i];
+      if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }
+      const rows = result.value.items.filter(x => i === 0 ? x.node === name : x.status.nodeName === name);
+      if (!rows.length) $(id).appendChild(make('div', 'c2-note', t('none')));
+      for (const x of rows) {
+        const row = make('div', 'c2-row');
+        if (i === 0) row.textContent = (x.spec?.capability?.name || x.capability) + ' · ' + x.state + ' · ' + (x.reason || '') + ' · ' + x.digest;
+        else { const link = make('a', null, x.metadata.name + ' · ' + x.status.phase); link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(x.metadata.name); row.appendChild(link); }
+        $(id).appendChild(row);
       }
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
-      // 页内不再自己维护 #toast 节点 —— 那份副本在 #page-main 里，
-      // z-index / 位置各页一套，还挡点击。
-      const toast = (msg, kind) => Anotify.toast(msg, kind);
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = String(text);
-        return n;
-      }
-
-      // 容错读取：接口失败返回 null（次要区块不该拖垮整页），主请求走 try/catch
-      async function apiGet(path) {
-        try {
-          return await Anotify.api(path);
-        } catch (e) {
-          return null;
-        }
-      }
-
-      function fmtTime(ts) {
-        if (!ts) return t("nodes.never", "从未");
-        const d = new Date(ts * 1000);
-        if (isNaN(d.getTime())) return String(ts);
-        const diff = Date.now() - d.getTime();
-        if (diff < 60e3) return t("common.time.just_now", "刚刚");
-        if (diff < 3600e3)
-          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
-        if (diff < 86400e3)
-          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
-        return d.toISOString().slice(0, 16).replace("T", " ");
-      }
-
-      // 耗时：秒级给一位小数，分钟级给 m/s（和链路图上的一致性）
-      function fmtDur(a, b) {
-        if (!a || !b || b < a) return "";
-        const s = b - a;
-        if (s < 60) return (Math.round(s * 10) / 10).toFixed(1) + "s";
-        return Math.floor(s / 60) + "m" + Math.round(s % 60) + "s";
-      }
-
-      // 数字字段兜底：缺字段时给「—」，绝不让 undefined 出现在页面上
-      function num(v) {
-        return v == null || v === "" || Number.isNaN(Number(v)) ? "—" : String(v);
-      }
-
-      function capLabel(id, fallbackName, fallbackVersion) {
-        const c = CAPS.get(id);
-        if (c) return c.displayName || c.name + "@" + c.version;
-        if (fallbackName) return fallbackName + "@" + fallbackVersion;
-        return id || "?";
-      }
-
-      // 部署行字段容错：后端可能给 camelCase，也可能给 snake_case（契约 §2.3），
-      // 少一个字段不能让整块白屏。
-      function depField(d, camel, snake) {
-        if (!d) return undefined;
-        const v = d[camel];
-        if (v !== undefined && v !== null) return v;
-        return d[snake];
-      }
-
-      // digest 只显示 sha256: 之后的 12 个十六进制：够人眼对照，又不会把行撑断。
-      function shortDigest(digest) {
-        const s = String(digest || "");
-        if (!s) return "";
-        return (s.indexOf("sha256:") === 0 ? s.slice(7) : s).slice(0, 12);
-      }
-
-      // 能力名@版本：CAPS 里查得到就用用户取的显示名（capLabel 的行为），
-      // 查不到退回部署行自带的 capabilityName / capability / capabilityId。
-      function depLabel(d) {
-        const id = depField(d, "capabilityId", "capability_id") || "";
-        if (id && CAPS.has(id)) return capLabel(id, null, null);
-        // version 没有 snake_case 变体（部署行里就叫 version），直接读；
-        // 保留 null 保护：行可能是形状不对的空对象。
-        const ver = d && d.version;
-        const named =
-          depField(d, "capabilityName", "capability_name") ||
-          (d && typeof d.capability === "string" ? d.capability : "");
-        const name = named || id || "?";
-        // version 可能缺（老数据）：别拼成 "name@undefined"
-        return ver == null ? String(name) : String(name) + "@" + ver;
-      }
-
-      // 部署状态 → 徽章 class + 文案 key（契约 §4.4 那张表，四条一一对应）。
-      // status-off 给 pending 是刻意的：pending 不是错误、也不该抢眼。
-      const ART_STATE = {
-        applied: {
-          cls: "status-badge status-success",
-          key: "node.artifacts.state_applied",
-          fb: "已应用",
-        },
-        pending: {
-          cls: "status-badge status-off",
-          key: "node.artifacts.state_pending",
-          fb: "下发中",
-        },
-        failed: {
-          cls: "status-badge status-error",
-          key: "node.artifacts.state_failed",
-          fb: "失败",
-        },
-        local: {
-          cls: "status-badge status-warn",
-          key: "node.artifacts.state_local",
-          fb: "本地变体",
-        },
-      };
-
-      // 部署列表形状容错：数组直接当行；带 deployments 的对象取那个键；
-      // 其余形状当「读不到」—— 宁可说读取失败，也不能说成「还没有部署」。
-      function depRows(res) {
-        if (Array.isArray(res)) return res;
-        if (res && Array.isArray(res.deployments)) return res.deployments;
-        return null;
-      }
-
-      // /v1/deployments 不在 partials.js 的 NS_PATHS 里，命名空间要自己补
-      // （契约 §2.3）；读不到 scope 就省略 —— 后端对缺参数的容错比猜错好。
-      function scopeQuery() {
-        try {
-          const s = JSON.parse(localStorage.getItem("anotify.scope") || "{}") || {};
-          return s.namespaceId ? "&namespaceId=" + encodeURIComponent(s.namespaceId) : "";
-        } catch (e) {
-          return "";
-        }
-      }
-
-      function statusText(st) {
-        return t("nodes.status." + st, st || "—");
-      }
-      function taskStateText(st) {
-        // 任务状态文案复用 message 页那份（message.task_state.*）：
-        // 同一个概念不该有两套翻译，四语言都已就绪。
-        return t("message.task_state." + st, st || "—");
-      }
-
-      // ---------- 卡片骨架（只用 ui.css 的组件类 + 本页排版类） ----------
-
-      function secHead(title, sub) {
-        const head = el("div", "card-head np-sec-head");
-        head.appendChild(el("div", "card-title", title));
-        if (sub) head.appendChild(el("div", "card-sub", sub));
-        return head;
-      }
-
-      // 区块内的空态：.empty 兜底（只有一句说明时不给假动作按钮）
-      function emptyNote(text) {
-        const box = el("div", "empty");
-        box.appendChild(el("p", "card-sub", text));
-        return box;
-      }
-
-      // ---------- 渲染 ----------
-
-      // 页级空态 / 未找到：.empty（图标 + 标题 + 说明 + 回列表动作）
-      function renderEmpty(head, title, desc) {
-        setBusy(false);
-        const nameEl = document.getElementById("head-name");
-        nameEl.textContent = head;
-        document.getElementById("head-sub").textContent = "";
-        document.getElementById("head-badges").replaceChildren();
-        document.getElementById("head-actions").replaceChildren();
-
-        const box = el("div", "empty");
-        box.appendChild(
-          Anotify.icon(
-            [
-              "M12 9v4",
-              "M12 17h.01",
-              "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
-            ],
-            "np-empty-icon",
-          ),
-        );
-        box.appendChild(el("div", "card-title", title));
-        if (desc) box.appendChild(el("p", "card-sub", desc));
-        const cta = el("a", "btn btn-ghost btn-sm", t("nodepage.back", "返回节点列表"));
-        cta.href = "nodes.html";
-        box.appendChild(cta);
-
-        const card = el("div", "card");
-        card.appendChild(box);
-        bodyEl().replaceChildren(card);
-      }
-
-      // 加载失败：一律用 partials.js 的 loadErrorNode（它自己翻译、自己带重试），
-      // 页面不拼错误文案，也不会把 [object Object] 印到屏幕上。
-      function renderLoadError(err) {
-        setBusy(false);
-        // 页头的标题/徽章骨架也要一起撤：不然错误卡下面还挂着两条永远在闪的骨架，
-        // 用户会以为页面还在加载（这正是审计里那「1 个残留骨架」）。
-        const nameEl = document.getElementById("head-name");
-        if (nameEl) nameEl.textContent = t("nodepage.title", "节点详情");
-        document.getElementById("head-sub").textContent = NODE_ID || "";
-        document.getElementById("head-badges").replaceChildren();
-        const acts = document.getElementById("head-actions");
-        acts.replaceChildren();
-        const retry = el("button", "btn btn-ghost btn-sm", t("common.retry", "重试"));
-        retry.type = "button";
-        retry.addEventListener("click", () => load());
-        acts.appendChild(retry);
-
-        const card = el("div", "card");
-        card.appendChild(Anotify.loadErrorNode(err, () => load()));
-        bodyEl().replaceChildren(card);
-      }
-
-      // 404 / 响应里没有 node：这不是「加载失败」，是「这台机器没了」，
-      // 所以不给重试，只给一条回列表的路。
-      function renderNotFound() {
-        renderEmpty(
-          t("nodepage.not_found", "节点不存在"),
-          t("nodepage.not_found", "节点不存在"),
-          t("nodepage.not_found_hint", "这个 id 没有对应的节点，可能已被删除。"),
-        );
-      }
-
-      function renderHead() {
-        const nameEl = document.getElementById("head-name");
-        nameEl.textContent = NODE.name || t("nodepage.title", "节点详情");
-        document.title = nameEl.textContent + " · Anotify";
-        document.getElementById("head-sub").textContent = NODE.id || "";
-
-        const badges = document.getElementById("head-badges");
-        badges.replaceChildren();
-        const st = el("span", "np-status");
-        st.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[NODE.status] || "offline")));
-        st.appendChild(el("span", null, statusText(NODE.status)));
-        badges.appendChild(st);
-
-        const acts = document.getElementById("head-actions");
-        acts.replaceChildren();
-
-        const refresh = el("button", "btn btn-ghost btn-sm", t("nodes.refresh", "刷新"));
-        refresh.type = "button";
-        refresh.addEventListener("click", () => load());
-        acts.appendChild(refresh);
-
-        const ev = el("button", "btn btn-ghost btn-sm", t("nodes.view_events", "查看事件"));
-        ev.type = "button";
-        ev.addEventListener("click", () => {
-          location.href = "events.html?node=" + encodeURIComponent(NODE.id);
-        });
-        acts.appendChild(ev);
-
-        if (NODE.status !== "draining") {
-          const drain = el("button", "btn btn-ghost btn-sm", t("nodes.drain", "排空"));
-          drain.type = "button";
-          drain.addEventListener("click", () => drainNode(NODE));
-          acts.appendChild(drain);
-        } else {
-          acts.appendChild(el("span", "badge badge-warn", t("nodes.draining_hint", "排空中")));
-        }
-
-        // 升级（契约 §5.1 + §6）：只发指令，下载/校验/替换全在节点侧。
-        // ack 结果落库在 nodes.agent_upgrade，刷新页面后仍然看得到（见 basicCard）。
-        const up = upgradeControl();
-        if (up) acts.appendChild(up);
-      }
-
-      // upgradeControl 详情页的升级按钮：三种态
-      //   已是最新（本页回过 up_to_date / ack ok）→ 禁用
-      //   ack=sent 且未超时 → 「升级中…」禁用（防连点；超时后允许重试）
-      //   其余 → 「升级」
-      // 老后端（B 组 §5.1 未实现）：详情响应里连 agentUpgrade 字段都没有 ——
-      // 那就不画按钮（点了必然 404），返回 null 由调用方跳过。
-      function upgradeControl() {
-        if (!NODE || !Object.prototype.hasOwnProperty.call(NODE, "agentUpgrade")) return null;
-        const rec = NODE.agentUpgrade || {};
-        const latest = NODE_UP_TO_DATE || rec.status === "ok";
-        if (latest) {
-          const btn = el("button", "btn btn-ghost btn-sm", t("nodes.upgrade.latest", "已是最新"));
-          btn.type = "button";
-          btn.disabled = true;
-          btn.dataset.upgradeState = "latest";
-          return btn;
-        }
-        const sending = rec.status === "sent" && !Anotify.upgradeAckStale(rec);
-        const btn = el(
-          "button",
-          "btn btn-ghost btn-sm",
-          sending ? t("nodes.upgrade.sending", "升级中…") : t("nodes.upgrade.btn", "升级"),
-        );
-        btn.type = "button";
-        btn.disabled = sending;
-        if (sending) {
-          btn.dataset.upgradeState = "sending";
-        } else {
-          btn.dataset.upgradeState = "ready";
-          btn.dataset.action = "upgrade";
-          btn.addEventListener("click", () => upgradeNode(NODE));
-        }
-        return btn;
-      }
-
-      // ---- 基本信息 ----
-      function basicCard() {
-        const card = el("div", "card card-pad");
-        card.appendChild(el("div", "card-title", t("nodepage.basic", "基本信息")));
-
-        const dl = el("dl", "np-kv");
-        const row = (k, v) => {
-          dl.appendChild(el("dt", null, k));
-          dl.appendChild(el("dd", null, v));
-        };
-        row(t("nodepage.status", "状态"), statusText(NODE.status));
-        row(t("nodepage.last_seen", "最近心跳"), fmtTime(NODE.lastSeenAt));
-        row(t("nodepage.created", "创建时间"), fmtTime(NODE.createdAt));
-
-        // agent 版本（契约 §5.1）：空 = 老 agent 在 hello 里根本没上报，
-        // 显示「未知（老版本）」而不是空白，也不要编一个版本号出来。
-        dl.appendChild(el("dt", null, t("nodes.upgrade.version_label", "agent 版本")));
-        const verDd = el("dd");
-        const ver = String(NODE.agentVersion || "");
-        const verWrap = el("div", "np-ver");
-        const verVal = el(
-          "span",
-          "np-ver-val" + (ver ? "" : " is-unknown"),
-          ver || t("nodes.upgrade.version_unknown", "未知（老版本）"),
-        );
-        if (ver) verVal.title = ver;
-        verWrap.appendChild(verVal);
-        const upg = NODE.agentUpgrade || {};
-        if (NODE_UP_TO_DATE || upg.status === "ok") {
-          verWrap.appendChild(
-            el("span", "badge badge-neutral", t("nodes.upgrade.latest", "已是最新")),
-          );
-        }
-        verDd.appendChild(verWrap);
-        dl.appendChild(verDd);
-        row(
-          t("nodepage.limits", "上限"),
-          t("nodepage.limits_val", "实例 {i} · 并发 {c}")
-            .replace("{i}", num(NODE.maxInstances))
-            .replace("{c}", num(NODE.maxConcurrency)),
-        );
-        const tags = (NODE.tags || []).filter(Boolean);
-        row(t("nodepage.tags", "标签"), tags.length ? tags.join(" · ") : t("nodepage.no_tags", "无"));
-
-        card.appendChild(dl);
-
-        // 上一次升级的结果：中枢把它落库了（nodes.agent_upgrade，§5.1），
-        // 所以刷新页面 / 隔天回来都看得到「为什么没成」——这不是一次性的 toast。
-        if (upg.status === "failed" && upg.error) {
-          card.appendChild(
-            el(
-              "div",
-              "np-upg-err",
-              t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
-                Anotify.upgradeErrorText(upg.error),
-            ),
-          );
-        } else if (Anotify.upgradeAckStale(upg)) {
-          card.appendChild(
-            el("div", "np-upg-note", t("nodes.upgrade.ack_stale", "节点未回复（可能已断线）")),
-          );
-        }
-        return card;
-      }
-
-      // ---- 声明的能力 ----
-      //
-      // 节点**只声明**能力名 + 版本，命令与 argv 留在本机不上传 ——
-      // 所以这一块就是"这台机器能干什么"的全部。
-      function capsCard() {
-        const card = el("div", "card card-pad");
-        card.appendChild(el("div", "card-title", t("nodepage.caps", "声明的能力")));
-
-        const caps = NODE.capabilities || [];
-        if (!caps.length) {
-          card.appendChild(emptyNote(t("nodes.no_caps", "未声明能力")));
-          return card;
-        }
-
-        const wrap = el("div", "np-chips");
-        for (const c of caps) {
-          const exact = c.name + "@" + c.version;
-          const chip = el("span", "out-chip is-link", c.displayName || exact);
-          chip.title = exact;
-          chip.addEventListener("click", () => {
-            location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
-          });
-          wrap.appendChild(chip);
-        }
-        card.appendChild(wrap);
-        return card;
-      }
-
-      // ---- 已缓存的产物 ----
-      //
-      // 上一块说的是「这台机器**声明**能干什么」，这一块说的是「它手上**真的有**
-      // 哪几份产物」。部署是三段式的（定义能力 → 构建产物 → 下发到机器），任何
-      // 一段没走完都表现为这里少一行或状态不对，所以状态与 reason 都原样展示。
-      function artifactRow(d) {
-        const row = el("div", "list-row");
-
-        const main = el("div", "list-main");
-        main.appendChild(el("span", "list-title", depLabel(d)));
-        const sub = el("div", "np-row-sub");
-        const fullDigest = String(depField(d, "digest", "digest") || "");
-        const short = shortDigest(fullDigest);
-        if (short) {
-          const dig = el("span", "np-digest", short);
-          // 页面上只给前 12 位；完整值挂 title，对照日志时不用另查接口。
-          dig.title = t("node.artifacts.digest", "内容指纹") + " " + fullDigest;
-          sub.appendChild(dig);
-        }
-        const reason = depField(d, "reason", "reason");
-        if (reason) sub.appendChild(el("span", "np-art-reason", reason));
-        if (sub.childNodes.length) main.appendChild(sub);
-        row.appendChild(main);
-
-        const side = el("div", "list-side");
-        const state = String(depField(d, "state", "state") || "");
-        const def = ART_STATE[state];
-        if (def) {
-          side.appendChild(el("span", def.cls, t(def.key, def.fb)));
-        } else {
-          // 未识别的状态原样给出，不假装它是那四种之一
-          side.appendChild(el("span", "status-badge status-off", state || "—"));
-        }
-        row.appendChild(side);
-        return row;
-      }
-
-      function artifactsCard() {
-        const card = el("div", "card np-list-card");
-        card.appendChild(secHead(t("node.artifacts.title", "已缓存的产物")));
-
-        if (DEPS === null) {
-          // 接口失败 ≠ 没有部署：写成「还没有部署」会骗用户去重新部署一遍。
-          card.appendChild(emptyNote(t("node.artifacts.load_failed", "产物列表载入失败")));
-          return card;
-        }
-        if (!DEPS.length) {
-          card.appendChild(emptyNote(t("node.artifacts.empty", "这个节点还没有部署任何能力")));
-          return card;
-        }
-
-        const list = el("div", "list");
-        for (const d of DEPS) list.appendChild(artifactRow(d));
-        card.appendChild(list);
-        return card;
-      }
-
-      // ---- 并发槽位 ----
-      //
-      // 列表页只给"几个在用/共几个"，这里给每个槽的实际情况：
-      // 这台机器到底卡在哪个槽上。
-      function slotRow(x) {
-        const row = el("div", "np-slot" + (x.busyTask ? " is-busy" : ""));
-        row.appendChild(
-          el("span", "np-slot-num", t("nodepage.slot_n", "#{n}").replace("{n}", num(x.slot))),
-        );
-        row.appendChild(
-          el("span", null, t("nodepage.concurrency", "并发 {n}").replace("{n}", num(x.concurrency))),
-        );
-
-        if (x.busyTask) {
-          const link = el(
-            "a",
-            "np-slot-link",
-            t("nodepage.busy_task", "正在跑 {id}").replace("{id}", x.busyTask),
-          );
-          link.href = "#";
-          link.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            const hit = (TASKS || []).find((tk) => tk.id === x.busyTask);
-            if (hit && hit.traceId)
-              location.href = "trace.html?traceId=" + encodeURIComponent(hit.traceId);
-          });
-          row.appendChild(link);
-        } else {
-          row.appendChild(el("span", "np-slot-idle", t("nodepage.idle", "空闲")));
-        }
-        return row;
-      }
-
-      function slotsCard() {
-        const busy = INSTS.filter((x) => x.busyTask).length;
-        const card = el("div", "card");
-        card.appendChild(
-          secHead(
-            t("nodepage.slots", "并发槽位"),
-            t("nodes.slots", "槽位 {busy}/{total}")
-              .replace("{busy}", String(busy))
-              .replace("{total}", String(INSTS.length)),
-          ),
-        );
-
-        const wrap = el("div", "np-sec-body");
-        if (!INSTS.length) {
-          wrap.appendChild(
-            emptyNote(t("nodepage.no_slots", "还没有申报槽位（节点上线握手时申报）")),
-          );
-          card.appendChild(wrap);
-          return card;
-        }
-
-        const bar = el("div", "np-slot-bar");
-        for (const x of INSTS) {
-          bar.appendChild(el("span", "np-slot-dot" + (x.busyTask ? " is-busy" : "")));
-        }
-        wrap.appendChild(bar);
-
-        for (const x of [...INSTS].sort((a, b) => a.slot - b.slot)) {
-          wrap.appendChild(slotRow(x));
-        }
-        card.appendChild(wrap);
-        return card;
-      }
-
-      // ---- 最近执行 ----
-      function taskRow(tk) {
-        const row = el("div", "list-row np-task");
-
-        const main = el("div", "list-main");
-        const head = el("div", "np-row-head");
-        head.appendChild(el("span", "list-title", capLabel(tk.capabilityId, tk.capability, tk.version)));
-        // 九态先过白名单，再拼 ui.css 的 .st-text + .st-<state>（同一套 --st-* 色板）
-        const st = String(tk.status || "pending");
-        const stateCls =
-          TASK_STATES.indexOf(st) >= 0 ? " st-text st-" + st : "";
-        head.appendChild(el("span", "np-state" + stateCls, taskStateText(st)));
-        main.appendChild(head);
-        row.appendChild(main);
-
-        const side = el("div", "list-side np-task-meta");
-        const dur = fmtDur(tk.startedAt, tk.finishedAt);
-        if (dur) side.appendChild(el("span", null, dur));
-        side.appendChild(el("span", null, fmtTime(tk.createdAt)));
-        const trace = el("a", "np-link", t("nodepage.open_trace", "查看链路"));
-        trace.href = "trace.html?traceId=" + encodeURIComponent(tk.traceId || "");
-        side.appendChild(trace);
-        row.appendChild(side);
-
-        return row;
-      }
-
-      function tasksCard() {
-        const card = el("div", "card np-list-card");
-        card.appendChild(secHead(t("nodepage.recent", "最近任务")));
-
-        if (TASKS === null) {
-          // 读不到 ≠ 没跑过：别让故障显示成「这机器很闲」
-          card.appendChild(emptyNote(t("nodepage.tasks_load_failed", "任务列表载入失败")));
-          return card;
-        }
-        if (!TASKS.length) {
-          card.appendChild(emptyNote(t("nodepage.no_tasks", "还没有在这个节点上执行过的任务")));
-          return card;
-        }
-
-        const list = el("div", "list");
-        for (const tk of TASKS) list.appendChild(taskRow(tk));
-        card.appendChild(list);
-        return card;
-      }
-
-      function renderBody() {
-        setBusy(false);
-        bodyEl().replaceChildren(basicCard(), capsCard(), artifactsCard(), slotsCard(), tasksCard());
-      }
-
-      // ---------- 动作 ----------
-
-      async function drainNode(n) {
-        const msg = t("nodes.drain_confirm", "排空 {name}？它跑完手上的任务后不再接新任务。").replace(
-          "{name}",
-          n.name || "",
-        );
-        if (!confirm(msg)) return;
-        try {
-          await Anotify.api(API + "/nodes/" + encodeURIComponent(n.id) + "/drain", {
-            method: "POST",
-          });
-          toast(t("nodes.drain_done", "已排空"));
-          load();
-        } catch (err) {
-          toast(t("nodes.drain_failed", "排空失败：") + err.message, "error");
-        }
-      }
-
-      // upgradeNode 与列表页同一个语义（二次确认 + 只发指令 + 映射失败原因），
-      // 差别只在结果靠 load() 重拉详情来体现（agent_upgrade 已落库）。
-      async function upgradeNode(n) {
-        const msg = t(
-          "nodes.upgrade.confirm",
-          "升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。",
-        ).replace("{name}", (n && n.name) || "");
-        if (!confirm(msg)) return;
-        try {
-          const res = await Anotify.api(
-            API + "/nodes/" + encodeURIComponent(n.id) + "/upgrade",
-            { method: "POST" },
-          );
-          const status = String((res && res.status) || "");
-          if (status === "up_to_date") {
-            NODE_UP_TO_DATE = true;
-            toast(t("nodes.upgrade.latest", "已是最新"));
-            renderHead();
-            return;
-          }
-          toast(t("nodes.upgrade.sent", "已发出升级，节点重启后生效（稍后刷新可看到新版本）"));
-          // 主动补两次重拉：ack 通常一两秒内到，用户不用手点刷新。
-          setTimeout(() => load(), 900);
-          setTimeout(() => load(), 3000);
-        } catch (err) {
-          const code = Anotify.upgradeErrorCode(err);
-          toast(
-            t("nodes.upgrade.failed", "升级失败：") +
-              (code
-                ? Anotify.upgradeErrorText(code)
-                : (err && (err.detail || err.message)) || ""),
-            "error",
-          );
-        }
-      }
-
-      // ---------- 载入 ----------
-
-      async function load() {
-        if (!NODE_ID) {
-          const pageTitle = t("nodepage.title", "节点详情");
-          renderEmpty(
-            pageTitle,
-            pageTitle,
-            t("nodepage.missing_id", "缺少节点 id（URL 应该有 ?id=nd_…）"),
-          );
-          return;
-        }
-
-        // 重试路径也先回到骨架：上一次的旧数据不该继续显示
-        bodyEl().innerHTML = BODY_SKELETON;
-        setBusy(true);
-
-        let detail;
-        try {
-          detail = await Anotify.api(API + "/nodes/" + encodeURIComponent(NODE_ID));
-        } catch (err) {
-          if (err && err.status === 404) {
-            renderNotFound();
-            return;
-          }
-          // 网络 / 5xx：交给 loadErrorNode，它带「重试」（onRetry = load）
-          renderLoadError(err);
-          return;
-        }
-
-        if (!detail || !detail.node) {
-          renderNotFound();
-          return;
-        }
-
-        // 次要区块（任务 / 能力表）容错：它们挂了不该把整页变成错误页。
-        // 能力表单独拉一份：任务的 capabilityId 未必在"这台节点现在声明的
-        // 能力"里（换过机器、或能力已从节点上撤掉），只查 NODE.capabilities
-        // 会退化成 run-tests@1 这种技术名。
-        const [tasksRes, capsRes] = await Promise.all([
-          apiGet(API + "/tasks?nodeId=" + encodeURIComponent(NODE_ID) + "&limit=20"),
-          apiGet(API + "/capabilities"),
-        ]);
-
-        NODE = detail.node;
-        INSTS = Array.isArray(detail.instances) ? detail.instances : [];
-        TASKS = tasksRes && Array.isArray(tasksRes.tasks) ? tasksRes.tasks : null;
-        CAPS = new Map((NODE.capabilities || []).map((c) => [c.id, c]));
-        for (const c of (capsRes && capsRes.capabilities) || []) {
-          if (!CAPS.has(c.id)) CAPS.set(c.id, c);
-        }
-
-        // 部署列表**单独一轮请求**，顺序是刻意的，别改回四路并行：
-        // /v1/deployments 不在 partials.js 的 NS_PATHS 里，namespaceId 得自己拼；
-        // 而 scope 要等 Anotify.api() 内部的 ensureScope() 才落盘（web/partials.js:1050
-        // 一带）。上面那轮里 /v1/nodes/<id> 在 NS_PATHS 内，api() 会顺手把 scope 落盘；
-        // 现在这里再读 scopeQuery() 就能拿到 namespaceId。若并回并行，全新会话首帧
-        // 四路同时发出、scopeQuery() 同步读到空 → 请求缺 namespaceId → 真后端严格校验
-        // 会 400 → 这一块永久「读取失败」。
-        const deployRes = await apiGet(
-          API + "/deployments?nodeId=" + encodeURIComponent(NODE_ID) + scopeQuery(),
-        );
-        DEPS = deployRes == null ? null : depRows(deployRes);
-
-        renderHead();
-        renderBody();
-      }
-
-      load();
-    </script>
+    }
+  }
+  async function loadConfig() {
+    $('node-config-save').disabled = true; msg('node-config-state', t('loading'));
+    try {
+      const value = await A.api(path + '/config');
+      if (!value.metadata?.resourceVersion || !Array.isArray(value.namespaces) || !value.vars || !value.limits) throw new Error('Invalid Node config wrapper');
+      config = value;
+      for (const key of configInputs) { $('node-' + key).value = JSON.stringify(value[key], null, 2); $('node-' + key).disabled = false; }
+      original = draft(); $('node-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion + ' · configRevision=' + value.configRevision + ' · appliedRevision=' + value.appliedRevision;
+      msg('node-config-state', t('loaded')); $('node-config-save').disabled = false;
+    } catch (e) { msg('node-config-state', errorText(e), true); }
+  }
+  $('node-config-reload').onclick = async () => { if (draft() !== original && !confirm(t('reload_confirm'))) return; await loadConfig(); try { await loadFacts(); } catch (e) { msg('node-config-state', errorText(e), true); } };
+  $('node-config-save').onclick = async () => {
+    if (!config) return; $('node-config-save').disabled = true;
+    try {
+      const body = { metadata: { resourceVersion: config.metadata.resourceVersion } };
+      for (const key of configInputs) body[key] = JSON.parse($('node-' + key).value);
+      config = await request(path + '/config', body); original = draft();
+      $('node-revisions').textContent = 'resourceVersion=' + config.metadata.resourceVersion + ' · configRevision=' + config.configRevision + ' · appliedRevision=' + config.appliedRevision;
+      msg('node-config-state', t('saved')); await loadFacts();
+    } catch (e) { msg('node-config-state', errorText(e), true); } finally { $('node-config-save').disabled = false; }
+  };
+  $('node-namespace').onchange = async () => { namespace = $('node-namespace').value; try { await loadFacts(); await loadRelated(); } catch (e) { $('node-effective-vars').replaceChildren(A.loadErrorNode(e, loadFacts)); } };
+  for (const action of ['drain', 'upgrade']) $('node-' + action).onclick = async () => {
+    if (!confirm(t(action + '_confirm').replace('{name}', name))) return;
+    const btn = $('node-' + action); btn.disabled = true; msg('node-action-state', t('loading'));
+    try { const value = await request(path + '/' + action, {}, 'POST'); msg('node-action-state', t('action_done') + JSON.stringify(value)); await loadFacts(); }
+    catch (e) { msg('node-action-state', errorText(e), true); } finally { btn.disabled = false; }
+  };
+  $('node-rotate').onclick = async () => {
+    if (!confirm(t('rotate_confirm').replace('{name}', name))) return;
+    $('node-token').textContent = ''; $('node-token-result').hidden = true; $('node-rotate').disabled = true;
+    try { const response = await request(path + '/tokens', {}, 'POST'); if (response.kind !== 'NodeToken' || response.node?.name !== name || typeof response.token !== 'string') throw new Error('Invalid NodeToken response'); $('node-token').textContent = response.token; $('node-token-result').hidden = false; await loadFacts(); }
+    catch (e) { msg('node-action-state', errorText(e), true); } finally { $('node-rotate').disabled = false; }
+  };
+  $('node-token-close').onclick = () => { $('node-token').textContent = ''; $('node-token-result').hidden = true; };
+  async function boot() {
+    if (!name) { $('node-load-state').textContent = t('not_found'); return; }
+    $('node-load-state').textContent = t('loading'); $('node-load-state').setAttribute('aria-busy', 'true');
+    try {
+      await A.ready(); const { items: namespaces } = await A.apiList('/v1/namespaces');
+      if (!loaded) namespace = new URLSearchParams(location.search).get('namespace') || A.readScope()?.namespace || '';
+      $('node-namespace').replaceChildren(...namespaces.map(x => { const o = make('option', null, x.metadata.name); o.value = x.metadata.name; return o; })); $('node-namespace').value = namespace;
+      await loadFacts(); $('node-body').hidden = false; $('node-load-state').replaceChildren(); await loadRelated();
+      // Refresh facts never silently replaces a user's configuration draft.
+      if (!loaded) await loadConfig(); loaded = true;
+    } catch (e) { $('node-body').hidden = true; if (e.status === 404) $('node-load-state').textContent = t('not_found'); else $('node-load-state').replaceChildren(A.loadErrorNode(e, boot)); }
+    finally { $('node-load-state').removeAttribute('aria-busy'); }
+  }
+  $('node-refresh').onclick = boot; boot();
+})();
+</script>
 {{end}}

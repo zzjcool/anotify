@@ -1,5 +1,5 @@
 /**
- * mock.js —— 纯前端预览用的 API 拦截层。
+ * mock.js —— 纯前端预览用的 API 拦截层（**v4 形状**）。
  *
  * 为什么需要它：
  *   看前端效果不该先把 server、tunnel、devseed 示例数据、WS worker 全跑起来。
@@ -16,6 +16,21 @@
  *   打开就能用。代价是不能拦截 <img>/<link> 这类不走 fetch 的请求——
  *   而我们只需要拦 API。
  *
+ * v4 口径（`docs/design/v4/api-conventions.md`）：
+ *   · 资源端点一律 `{apiVersion,kind,metadata,spec,status}` 信封，列表是 `KindList.items`；
+ *   · 命名空间私有资源走 `/v1/namespaces/{namespace}/{plural}[/{name}]`；
+ *   · 写已有资源必须带 `metadata.resourceVersion`（CAS），`status` 只读；
+ *   · 错误体统一 `Status`（`reason` 用封闭词表）；
+ *   · **status 不落库**：能力/源/节点的 status 全部在**读时**从 mock 的事实
+ *     （capabilities / sources / deployments / tasks / events / nodes）现算 —— 与真后端
+ *     「status 从事实派生、不落库」同一口径。所以这份文件里没有一个 `row.status`
+ *     被写过。
+ *
+ * **不做 v3 兼容**：v3 的扁平资源路径（`/v1/capabilities`）、`PUT .../downstreams`、
+ * `POST/DELETE /v1/edges`、`POST/DELETE /v1/deployments`、`namespaceId` query 全部
+ * 走 REMOVED 表回 404 `Status`。没实现的**新**接口才回 501（并保持既有的
+ * `console.warn("mock 未实现：…")` 文案 —— 那是 e2e 门禁的一部分）。
+ *
  * 数据是**内存里的可变状态**：新建/删除/触发都会真的改变它，
  * 所以能点着试完整流程。刷新页面回到初始状态。
  */
@@ -24,27 +39,13 @@
 
 	// ---------- 基础工具 ----------
 	const now = () => Math.floor(Date.now() / 1000);
-	const uid = (p) => p + "_mock" + Math.random().toString(36).slice(2, 10);
+	/** Unix 秒 → RFC3339（v4 wire 用字符串时间戳，不是数字）。 */
+	const iso = (sec) =>
+		new Date((sec == null ? now() : sec) * 1000)
+			.toISOString()
+			.replace(/\.\d{3}Z$/, "Z");
+	const isoNow = () => iso(now());
 
-	// traceSeq 给 trace id 用确定性的序号，不用随机。
-	//
-	// 为什么：mock 每次刷新都重新生成数据，随机 id 会让"分享/刷新 trace 页"
-	// 永远 404（真实后端不会——trace_id 落库后就不变了）。
-	// 用序号后，demo 里 trace_mock_t1 / t2 … 在刷新之间是稳定的，
-	// trace.html?traceId=trace_mock_t5 可以反复打开。
-	let traceSeq = 0;
-	const nextTraceId = () => "trace_mock_t" + ++traceSeq;
-
-	// taskSeq 同理：任务 id 也必须确定，否则「从 index 点开任务 → 刷新」必然 404。
-	//
-	// 任务详情页是 message.html?id=tsk_xxx（GET /v1/tasks/{id}）。种子任务的
-	// 创建顺序在每次加载里是固定的，用递增序号就能得到跨刷新稳定的 id
-	// （tsk_mock_1 / tsk_mock_2 …），深链可以反复打开。
-	//
-	// 运行期新建的任务（手动触发事件）排在种子之后，仍然唯一；它们本来
-	// 就不在刷新后的数据里，序号是否延续不重要。
-	let taskSeq = 0;
-	const nextTaskId = () => "tsk_mock_" + ++taskSeq;
 	// clone 深拷贝演示数据，避免调用方改到 state 里的原对象。
 	//
 	// JSON.parse 会抛（带 undefined/循环引用时），而这个函数在每个 mock
@@ -58,360 +59,2371 @@
 			return v;
 		}
 	};
-	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-	// 演示用的固定组织/用户
-	const ORG = "org_mock_demo";
-	// 命名空间（设计见 docs/design/namespaces.md）：组织之下的隔离单位。
-	// 既有演示数据默认落在 prod；staging / sandbox 由 initNamespaces 造。
-	const NS = "ns_mock_prod";
+	// mock 的 digest：从正文算一个**稳定**的假 sha256。
+	//
+	// 同一份输入永远同一个值 —— 这样「改脚本 → digest 变了 → 节点上是旧 digest」
+	// 这条派生链在演示里也讲得通；用随机值会让每次刷新都变成另一个 digest。
+	function mockDigest(seed) {
+		const s = String(seed || "");
+		let h1 = 0x811c9dc5 >>> 0;
+		let h2 = 0x1000193 >>> 0;
+		for (let i = 0; i < s.length; i++) {
+			const c = s.charCodeAt(i);
+			h1 = ((h1 ^ c) * 0x01000193) >>> 0;
+			h2 = (h2 + c * 31 + i * 7) >>> 0;
+		}
+		const hex = (n) => (n >>> 0).toString(16).padStart(8, "0");
+		const parts = [
+			h1,
+			h2,
+			h1 ^ h2,
+			h1 + h2,
+			h1 * 3,
+			h2 * 7,
+			h1 ^ 0x5bf03635,
+			h2 ^ 0x9e3779b9,
+		];
+		return "sha256:" + parts.map(hex).join("");
+	}
+
+	// 资源 id / 资源名也要**确定性**：种子顺序在每次加载里固定，深链
+	// （trace.html?traceUID=… / message.html?id=…）刷新后必须还能打开。
+	// 运行期新建的资源用递增序号，不参与随机。
+	const API_VERSION = "anotify/v1";
 	const ME = {
 		id: "usr_mock_demo",
 		username: "demo",
 		displayName: "demo",
+		role: "admin",
+		disabled: false,
 		createdAt: now() - 86400 * 30,
 	};
+	const ORG = "org_mock_demo";
 
-	// ===== agent 自升级（CONTRACT-agent-upgrade.md §5.1）=====
-	//
-	// 中枢自己带的 agent 二进制版本。真实环境里来自 internal/version.String()
-	// （`1.5.0+3fd5a59`）；演示数据里三台节点分别覆盖三种形态：
-	//   laptop-worker 陈旧（1.3.0）/ old-laptop 从未上报（空）/ ops-box 已是最新。
-	// 页面上的「目标版本」= 常量 AGENT_VERSION（GET /v1/nodes 顶层 targetAgentVersion）。
+	// resourceVersion 是**写并发令牌**（不是 metadata.version，也不是 configRevision）。
+	// 种子给固定值，运行期每次写 +1；seed 从 100 起，避免和种子的 "1".."20" 撞。
+	const nextRV = () => String(++state.allocationCounters[0].rvSeq);
+	// 独立的创建序号在删除/快照恢复后仍保留；只在成功创建/commit 时分配。
+	const nextUID = (kind) => kind + "_mock_created_" + (++state.allocationCounters[0].uidSeq);
+
+	// 命名空间（cluster-scoped）。三个：默认 / 生产 / 团队 A。
+	const NS_DEFAULT = "default";
+
+	// agent 自升级：中枢自己带的 agent 二进制版本（真环境来自 internal/version.String()）。
 	const AGENT_VERSION = "1.5.0+3fd5a59";
-	const AGENT_COMMIT = "3fd5a59";
 
 	// ---------- 演示数据 ----------
 	//
-	// 刻意做得像真的：有扇出、有分叉的 out、有失败与剪枝，
+	// 刻意做得像真的：能力有扇出/终端/缺节点/旧 digest，源三种 kind 各一，
+	// 任务覆盖六个 phase 与三个 waitingReason，事件四种 reason。
 	// 这样看页面时能看出各种状态长什么样，而不是一排"成功"。
 
-	// 单出口：一个能力只有一个出口，内部名固定 "out"。
-	//
-	// 它是**路由键**，不是用户要表达的概念 —— 界面上只说「下游能力（候选）」。
-	// 从来没配下游的能力就是终端能力：outputs 为 []。
-	const SINGLE_OUT = "out";
-
-	// normalizeOutputs 归一一次提交里的 outputs（只归一形状，不改语义）：
-	//
-	//   ["out"] / []     —— 表单提交的两种形状，原样收下（[] = 终端能力，不覆盖）
-	//   逗号分隔的字符串  —— 手敲 curl 时最常见的写法
-	//   **没给**但带了下游 —— 视为单出口（否则 links 一定过不了「出口必须在
-	//                       outputs 里」这道校验，而用户其实已经表达了「有下游」）
-	//
-	// 多出口（历史数据 / 真需要第二种产出的能力）**原样保留**，不替用户合并成一个 ——
-	// 那是破坏性改写。去重保序，空串丢掉。
-	function normalizeOutputs(raw, hasLinks) {
-		const given = raw !== undefined && raw !== null;
-		const list = Array.isArray(raw)
-			? raw.map((x) => String(x == null ? "" : x).trim())
-			: typeof raw === "string"
-				? raw.split(",").map((x) => x.trim())
-				: [];
-		const out = [];
-		for (const name of list) {
-			if (!name || out.includes(name)) continue;
-			out.push(name);
-		}
-		if (!given && hasLinks) out.push(SINGLE_OUT);
-		return out;
-	}
-
-	function cap(name, version, outputs, paramsSchema, source, displayName) {
-		// sticky 是「同一条能力尽量落到同一台机器」的提示，值是 params 里的**键名**
-		// （internal/route/dispatch.go:stickySelectorValue）。演示数据里给两个能力开上，
-		// 能力详情区才能同时看到「有值」和「空」两种形态。
-		const STICKY = { "deploy-preview": "env", "analyze-pr": "worktree" };
-		return {
-			id: "cap_mock_" + name.replace(/\./g, "_") + "_v" + version,
-			orgId: ORG,
-			// 能力属于命名空间（I11）：同名能力在不同命名空间是两个不同定义
-			namespaceId: NS,
-			name: name,
-			// 纯展示标签，空串 = 没取（前端回落到 name@version）
-			displayName: displayName || "",
-			version: version,
-			outputs: outputs,
-			// balance 字段本身已经不存在了（P3 删除：语义上只有一个合法值 priority）。
-			// 能力详情要读的一切都在下面的 paramsSchema / lifecycle / sticky / run 里，
-			// 而它们在列表响应里由 specOf() 汇成 spec（Capability Spec v3 §3）。
-			paramsSchema: paramsSchema || { type: "object" },
-			// lifecycle / sticky 是**能力定义的一部分**（参与 contentHash）。
-			// 真实后端每条能力都有（未声明的时候是零值），所以 mock 也得给：
-			// 不给的话详情区的「生命周期」永远是空的，看起来像功能没做。
-			lifecycle: { expiresInSec: 3600, retryable: true, maxAttempts: 3 },
-			sticky: STICKY[name] || "",
-			source: source || "custom",
-			contentHash: "hash" + Math.random().toString(16).slice(2, 10),
-			createdAt: now() - 86400,
-			kind: "pipe", // 会被 listCapabilities 重新推导
-		};
-	}
-
+	/**
+	 * state —— mock 的唯一事实源。
+	 *
+	 * 这里只存**事实**（能力定义的 spec、源的真实 token、任务行、事件行、
+	 * 部署事实、节点上报），status 一概不存：读的时候按 v4 规则现算
+	 * （见 deriveCapabilityStatus / deriveNodeStatus / edgeList …）。
+	 */
 	const state = {
-		// displayName 是纯展示标签（用户自己取的名字）。
-		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
-		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: [
-			// #110：github/cron/http/manual **不再是能力**。
-			// 它们原来是不执行代码、不产生任务、也没地方存配置的空壳，
-			// 唯一作用是给入口边当左端锚点。现在入口边左端直接是来源名
-			// （fromIsSource: true），所以这里不该再有它们。
-			//
-			// 真实来源（GitHub webhook / 定时触发…）在「源」页面配置。
-			// 中枢执行的终端能力：没有下游（outputs 空 = 终端能力，跑完就结束）。
-			// notify.phone 是中枢执行的内置能力（handler 形式，契约 §3.1）：它**没有**脚本，
-			// 也没有可部署的产物 —— 名字 + handler 一起表达「谁跑它」。
-			Object.assign(cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知"), {
-				handler: "notify-phone",
-			}),
-			// handler 形式的内置能力（契约 §3.1）：实现在中枢进程里，节点上没有文件。
-			// 为什么种一个**可见**的：notify.phone 被 filterCaps 隐起来了，页面看不到它，
-			// 「部署按钮按实现形式分叉」这条就没有可测的样本。
-			Object.assign(cap("notify.demo", 1, [], { type: "object" }, "builtin", "推送通知（内置执行器）"), {
-				handler: "notify-phone",
-			}),
-			// 示例能力（新建表单的占位符里写的就是它）：一个出口 + 一段脚本。
-			// 刻意**不接下游**：它同时是「跑完就结束」这条空态演示的样本。
-			cap(
-				"script.echo",
-				1,
-				["out"],
-				{
-					type: "object",
-					properties: { message: { type: "string" } },
-				},
-				"custom",
-				"回声（示例）",
-			),
-			// 用户能力：有参数、有下游（候选）
-			cap(
-				"analyze-pr",
-				1,
-				["out"],
-				{
-				type: "object",
-				required: ["changedLines"],
-				properties: {
-					changedLines: { type: "integer", minimum: 0 },
-					repo: { type: "string" },
-				},
-			}, "custom", "分析 PR"),
-			cap(
-				"apply-fix",
-				1,
-				["out"],
-				{
-					type: "object",
-					properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
-				},
-				"custom",
-				"应用修复",
-			),
-			// 一个出口、三条候选（运行期按 priority 选一条走）。
-			cap(
-				"deploy-preview",
-				1,
-				["out"],
-				{
-				type: "object",
-				required: ["env"],
-				properties: { env: { type: "string", enum: ["staging", "prod"] } },
-			}, "custom", "部署预发"),
-			cap(
-				"report.send",
-				1,
-				["out"],
-				{
-				type: "object",
-				required: ["channel", "title"],
-				properties: {
-					channel: { type: "string", enum: ["slack", "email"] },
-					title: { type: "string" },
-					urgent: { type: "boolean" },
-					retries: { type: "integer", minimum: 0, maximum: 5 },
-				},
-			}, "custom", "发告警"),
-			// 下面几个能力是为了让流向图有真实的"深度 + 分叉 + 汇聚"：
-			// 一条链只有 3 个节点看不出布局和信息密度，太简单了。
-			cap(
-				"run-tests",
-				1,
-				["out"],
-				{
-				type: "object",
-				properties: {
-					suite: { type: "string", enum: ["unit", "integration", "e2e"] },
-					shard: { type: "integer", minimum: 1 },
-				},
-			}, "custom", "跑测试"),
-			cap(
-				"lint-fix",
-				1,
-				["out"],
-				{
-				type: "object",
-				properties: { scope: { type: "string" } },
-			}, "custom", "清理构建缓存"),
-			// 终端能力：没有下游（outputs 空），演示「跑完就结束」那一种形态。
-			cap(
-				"gen-changelog",
-				1,
-				[],
-				{
-				type: "object",
-				properties: { since: { type: "string" } },
-			}, "custom", "生成变更日志"),
-			cap(
-				"rollback",
-				1,
-				["out"],
-				{
-				type: "object",
-				properties: { reason: { type: "string" } },
-			}, "custom", "回滚"),
-			// 出口声明了、但一条出边都没有 → 流向图上是个「没有下游」的灰点。
-			// 这是最容易被忽略的配置遗漏，演示数据里必须留一个。
-			cap(
-				"alert.oncall",
-				1,
-				["out"],
-				{
-				type: "object",
-				required: ["level"],
-				properties: {
-					level: { type: "string", enum: ["warn", "critical"] },
-					page: { type: "boolean" },
-				},
-			}, "custom", "告警升级"),
-			// 故意**没有任何节点声明**它（initNodes 里不引用）。
-			//
-			// 能力页要能演示最重要的那个运维信号：「这个能力定义好了，
-			// 但没有任何机器能跑它」—— 没有这条演示数据，那个警告分支
-			// 永远看不到，也就没人会去修。
-			cap(
-				"archive-logs",
-				1,
-				["out"],
-				{
-					type: "object",
-					properties: { days: { type: "integer", minimum: 1 } },
-				},
-				"custom",
-				"归档日志",
-			),
-		],
-		edges: [],
-		nodes: [],
+		// Cluster-scoped 分配事实随整个快照恢复，不属于任何 namespace 的资源事实。
+		// 两个内部 counter 都不从公共 resourceVersion 反算。
+		allocationCounters: [{ ns: null, rvSeq: 100, uidSeq: 0 }],
+		namespaces: [],
+		// ns 默认值（`GET/PUT /v1/namespaces/{name}/config` 的事实）：F2c 用。
+		nsVars: {},
+		nsConfig: {},
+		systemConfig: { rv: "system-1", retention: { resultTtlSec: 604800, eventTtlSec: 2592000, taskTtlSec: 2592000 } },
+		capabilities: [],
 		sources: [],
-		events: [],
+		playbooks: [],
+		playbookInstalls: [],
 		tasks: [],
-		// 每次 emit 的落库行（P1.6）：真后端是 emissions 表（迁移 22），
-		// 按 (task_id, seq) 唯一。mock 里就是一个平表，由 seedEmissions() 播种。
-		//
-		// 一定要有种子数据：否则 trace 页的「产出（emits）」区永远只能看到
-		// 空态，而空态看不出这个区该长什么样（产出徽章 / routed-pruned /
-		// 可折叠的 data 一个都验不了）。
+		events: [],
+		nodes: [],
+		// 部署事实：{ns, capability, version, digest, node, updatedAt}
+		deployments: [],
+		// 派发事实：任务派出了什么 / 剪掉了什么
 		emissions: [],
-		// 任务日志（CONTRACT-task-logs §4）：真后端是 task_logs 表（迁移 4，
-		// task_id 主键 + ON DELETE CASCADE），一个任务一行。mock 里也是一个平表，
-		// 由 seedTaskLogs() 播种。
-		//
-		// 必须种：否则 trace 页的日志面板只能看到「没有输出」/「日志不可用」，
-		// 折叠条、截断提示、stderr 块一个都验不了。
-		//
-		// 行形状（mock 内部是 camelCase）：{ taskId, namespaceId, stdout, stderr,
-		// truncated, bytes }；HTTP 层才是契约面，响应恰好是 §4 那四个字段
-		// stdout / stderr / truncated / bytes。
+		prunes: [],
 		taskLogs: [],
 		keys: [],
 		devices: [],
-		// 产物与部署（CONTRACT-protocol §9）：真后端是两张表，mock 里
-		// 只要够页面用。deployments 的行由 initDeployments() 造假数据。
-		artifacts: [],
-		deployments: [],
-		// 运行期预算（契约 §2）：配置期不再判环，靠这两个兜底。
-		//
-		// 演示时可以原地改：window.MockApi.state.limits.maxHops = 0
-		// → 下一次触发全部剪枝成 max_hops（budget 同理）。
-		limits: { maxHops: 16, budget: 512 },
-		// 中枢是否“带了 agent 二进制”。false = 服务端没带：
-		//   · GET /v1/nodes 顶层 targetAgentVersion 为**空串**（控制台据此不给可点按钮）；
-		//   · POST /v1/nodes/{id}/upgrade 回 501 agent_binary_unavailable。
-		// 演示：window.MockApi.noAgentBinary() → 刷新节点页。
+		// passkey 设备注册会话（保留域；F2c 的 passkey-enroll 页消费）
+		passkeyEnroll: [],
+		auth: { passwordHash: mockDigest("mock-only-password"), passwordUpdatedAt: now() - 86400, loggedOut: typeof sessionStorage !== "undefined" && sessionStorage.getItem("anotify.mock.loggedOut") === "1" },
+		// 中枢是否"带了 agent 二进制"（noAgentBinary() 演示开关；F2c 节点页消费）
 		agentBinary: true,
-		// 让下一次 upgrade_ack 失败（need_root / bad_sha / download_failed / not_supported）。
-		// 空串 = 正常成功（agentVersion 前进到目标版本）。演示：MockApi.failUpgrade("bad_sha")。
+		// 让下一次 upgrade_ack 失败（F2c 节点页消费）
 		upgradeFailCode: "",
+		// mock 响应延迟（毫秒）。120 ~ 300 让人看得见 loading 态；
+		// 批量断言/截图时可 `MockApi.latency(0)` 关掉。
+		latencyMs: 120,
 	};
 
-	// 辅助：按名字取能力（返回最高版本）
-	function capByName(name) {
-		const list = state.capabilities.filter((c) => c.name === name);
+	// 辅助：按名字取能力（最高版本）—— MockApi.capByName 用它。
+	function capByName(name, ns) {
+		const list = state.capabilities.filter(
+			(c) => c.name === name && (ns == null || c.ns === ns),
+		);
 		if (!list.length) return null;
 		return list.reduce((a, b) => (b.version > a.version ? b : a));
 	}
 
-	// ---------- 边的引用（P2.2）----------
-	//
-	// 与真后端**同形状**：边里只存**引用**（`name` 跟随 latest / `name@version` 钉死），
-	// 入口边的左端是**来源名**。
-	//
-	// 为什么不能存能力 id：id 每一版都不一样，存了 id 之后能力发新版，
-	// 原来那条边还指着旧 id —— 升级永远不生效。而「此刻解析到哪一版」是**派生量**，
-	// 由 edgeView 现场算（和真后端一样，不落库），否则升级之后它对不上。
-	//
-	// 从**最后一个** '@' 拆：能力名里允许出现 '@'，而版本号一定是纯数字 ——
-	// 与 Go 侧 store.SplitRef 同口径。
+	// 从**最后一个** '@' 拆 `name@version`（与后端 SplitRef 同口径）：
+	// 能力名里允许出现 '@'，而版本号一定是纯整数。
 	function splitRef(ref) {
 		const s = String(ref == null ? "" : ref).trim();
 		const at = s.lastIndexOf("@");
-		if (at <= 0 || at === s.length - 1) return { name: s, version: 0, pinned: false };
+		if (at <= 0 || at === s.length - 1) return { name: s, version: null };
 		const v = Number(s.slice(at + 1));
-		if (!Number.isInteger(v) || v <= 0) return { name: s, version: 0, pinned: false };
-		return { name: s.slice(0, at), version: v, pinned: true };
+		if (!Number.isInteger(v) || v <= 0) return { name: s, version: null };
+		return { name: s.slice(0, at), version: v };
 	}
 
-	// resolveCapRef 把引用解析成能力定义；解析不到返回 null。
+	// 把引用解析成能力行；解析不到返回 null。
 	//
-	//   `name`     → 该名字的**最高版本**（= latest，升级自动生效）
+	//   `name`     → 该名字的最高版本（= latest，升级自动生效）
 	//   `name@ver` → 那一版（钉死）
-	function resolveCapRef(ref, nsId) {
-		const { name, version, pinned } = splitRef(ref);
-		if (!name) return null;
-		const pool = nsId
-			? state.capabilities.filter((c) => !c.namespaceId || c.namespaceId === nsId)
-			: state.capabilities;
-		const list = pool.filter((c) => c.name === name);
-		if (!list.length) return null;
-		if (pinned) return list.find((c) => c.version === version) || null;
-		return list.reduce((a, b) => (b.version > a.version ? b : a));
-	}
-
-	// capRef 是能力定义的引用写法（写边时用它，而不是 id）
-	function capRef(c) {
-		return c ? c.name + "@" + c.version : "";
-	}
-
-	// edgeView 是 GET /v1/edges 的一行：边本身 + 两端引用**此刻**解析到的能力 id。
 	//
-	// 入口边的 fromCapabilityId 恒为空串（左端是来源名，没有「哪一版」）；
-	// 解析不到（能力被删）时也是空串 —— 一条坏边不该让整张表变成错误页。
-	function edgeView(e) {
-		const fromCap = e.fromIsSource ? null : resolveCapRef(e.fromRef, e.namespaceId);
-		const toCap = resolveCapRef(e.toRef, e.namespaceId);
-		return Object.assign(clone(e), {
-			fromCapabilityId: fromCap ? fromCap.id : "",
-			toCapabilityId: toCap ? toCap.id : "",
+	// 版本历史在 mock 里存于 `row.versions`（归档行），所以钉死旧版本也要能解析：
+	// 归档行返回一个只含 `{ns,name,version,digest,archived}` 的视图 —— 它有
+	// 部署身份（digest），但没有当前版本才有的 spec/status。
+	function resolveCapRef(ref, ns) {
+		const r = splitRef(ref);
+		const list = state.capabilities.filter((c) => c.ns === ns && c.name === r.name);
+		if (!list.length) return null;
+		if (r.version == null) return list.reduce((a, b) => (b.version > a.version ? b : a));
+		const row = list[0];
+		if (row.version === r.version) return row;
+		const old = (row.versions || []).find((v) => v.version === r.version);
+		if (!old) return null;
+		return {
+			ns: row.ns,
+			name: row.name,
+			version: old.version,
+			digest: old.digest,
+			archived: true,
+		};
+	}
+
+	// ---------- 种子：命名空间 ----------
+	(function initNamespaces() {
+		const seed = [
+			{ name: "default", displayName: "默认命名空间" },
+			{ name: "prod", displayName: "生产" },
+			{ name: "team-a", displayName: "团队 A" },
+		];
+		state.namespaces = seed.map((n, i) => ({
+			name: n.name,
+			displayName: n.displayName,
+			uid: "ns_mock_" + n.name,
+			rv: String(i + 1),
+			createdAt: iso(now() - 86400 * 60),
+		}));
+		state.nsVars = {
+			default: { NOTIFY_URL: "https://hooks.example/notify/default", SLACK_CHANNEL: "#general" },
+			prod: { NOTIFY_URL: "https://hooks.example/notify/prod", SLACK_CHANNEL: "#prod" },
+			"team-a": { NOTIFY_URL: "https://hooks.example/notify/team-a" },
+		};
+	})();
+
+	for (const n of state.namespaces) state.nsConfig[n.name] = { rv: "ns-config-" + n.name, revision: "1" };
+
+	// ---------- 种子：节点（cluster-scoped）----------
+	//
+	// `reports` 是**节点上报**的 mock 内部表示（真后端是 anode 的注册帧）：
+	//   声明了哪些命令、能解析哪些值。它们不直接上 wire —— Node.status 只有
+	//   契约里那些字段（见 deriveNodeStatus）。
+	(function initNodes() {
+		state.nodes = [
+			{
+				name: "anode-1",
+				displayName: "构建机 1",
+				spec: {
+					// 中枢**授权**（管理员的意愿）
+					namespaces: ["default", "prod"],
+					vars: { TOOLCHAIN: "/opt/go1.25" },
+					limits: { total: 4, perCapability: { "*": 2, fixer: 1 } },
+					tags: ["build", "prod"],
+				},
+				// 本机申报（anode.yaml.namespaces）；生效 = 与 spec.namespaces 取交集
+				declared: ["default", "prod"],
+				facts: {
+					hostIP: "10.0.0.7",
+					hostname: "anode-1",
+					os: "linux",
+					arch: "amd64",
+					capacity: { cpu: "8" },
+					workRoot: "/var/lib/anode/work",
+					homeDir: "/home/anode",
+					localVars: { SOURCE_ROOT: "/srv/src" },
+					agentVersion: AGENT_VERSION,
+					instances: [{ slot: 0, taskId: "tsk_mock_2", attempt: 1, leaseId: "lease_mock_2", busy: true }],
+					lastSeenAt: iso(now() - 15),
+				},
+				configRevision: "7",
+				appliedRevision: "7",
+				rv: "1",
+				reports: {
+					commands: ["git", "bash", "curl"],
+					values: ["vars.SOURCE_ROOT", "vars.TOOLCHAIN"],
+				},
+			},
+			{
+				name: "anode-2",
+				displayName: "构建机 2",
+				spec: {
+					namespaces: ["default"],
+					vars: { TOOLCHAIN: "/opt/go1.25" },
+					limits: { total: 2, perCapability: { "*": 1 } },
+					tags: ["build"],
+				},
+				declared: ["default"],
+				facts: {
+					hostIP: "10.0.0.8",
+					hostname: "anode-2",
+					os: "linux",
+					arch: "amd64",
+					capacity: { cpu: "4" },
+					workRoot: "/var/lib/anode/work",
+					homeDir: "/home/anode2",
+					localVars: { SOURCE_ROOT: "/srv/src" },
+					agentVersion: "1.4.9",
+					instances: [],
+					lastSeenAt: iso(now() - 40),
+				},
+				// ConfigPending 的来源：configRevision 已经 +1，节点还没回报 applied
+				configRevision: "8",
+				appliedRevision: "7",
+				rv: "2",
+				reports: { commands: ["bash", "jq"], values: ["vars.SOURCE_ROOT"] },
+			},
+			{
+				name: "anode-3",
+				displayName: "团队 A 的机器",
+				spec: {
+					// 授权 team-a，但本机只申报了 default → 生效命名空间为空
+					namespaces: ["team-a"],
+					vars: {},
+					limits: { total: 2, perCapability: { "*": 1 } },
+					tags: ["team-a"],
+				},
+				declared: ["default"],
+				facts: {
+					hostIP: "10.0.0.9",
+					hostname: "anode-3",
+					os: "linux",
+					arch: "arm64",
+					capacity: { cpu: "4" },
+					workRoot: "/var/lib/anode/work",
+					homeDir: "/home/anode3",
+					localVars: { SOURCE_ROOT: "/srv/src" },
+					agentVersion: "1.4.9",
+					instances: [],
+					lastSeenAt: iso(now() - 90),
+				},
+				configRevision: "5",
+				appliedRevision: "5",
+				rv: "3",
+				reports: { commands: ["git", "bash"], values: ["vars.SOURCE_ROOT"] },
+			},
+			{
+				name: "anode-laptop",
+				displayName: "笔记本（旧配置机）",
+				spec: {
+					namespaces: ["default"],
+					vars: {},
+					limits: { total: 1, perCapability: { "*": 1 } },
+					tags: ["dev"],
+				},
+				declared: ["default"],
+				facts: {
+					hostIP: "10.0.0.10",
+					hostname: "anode-laptop",
+					os: "linux",
+					arch: "amd64",
+					capacity: { cpu: "4" },
+					workRoot: "/home/anode/work",
+					homeDir: "/home/anode",
+					localVars: {},
+					agentVersion: "1.4.9",
+					instances: [],
+					lastSeenAt: iso(now() - 120),
+				},
+				configRevision: "6",
+				appliedRevision: "6",
+				rv: "4",
+				reports: { commands: ["git", "bash", "rsync"], values: ["vars.SOURCE_ROOT"] },
+			},
+			{
+				name: "anode-offline",
+				displayName: "生产机（离线）",
+				spec: {
+					namespaces: ["prod"],
+					vars: {},
+					limits: { total: 4, perCapability: { "*": 2 } },
+					tags: ["prod"],
+				},
+				declared: ["prod"],
+				facts: {
+					hostIP: "10.0.0.11",
+					hostname: "anode-offline",
+					os: "linux",
+					arch: "amd64",
+					capacity: { cpu: "8" },
+					workRoot: "/var/lib/anode/work",
+					homeDir: "/home/anode",
+					localVars: { SOURCE_ROOT: "/srv/src" },
+					agentVersion: "1.4.9",
+					instances: [],
+					// 3 小时没心跳 → NodeOffline
+					lastSeenAt: iso(now() - 10800),
+				},
+				configRevision: "4",
+				appliedRevision: "4",
+				rv: "5",
+				reports: { commands: ["git", "bash", "docker"], values: ["vars.SOURCE_ROOT"] },
+			},
+		];
+	})();
+
+	// ---------- 种子：能力 ----------
+	//
+	// 内部行只存**定义**（spec + 展示字段 + digest）；status 读时派生。
+	// `spec` 就是 v4 Capability Spec（params / next / run / requires / lifecycle / concurrency）。
+	(function initCapabilities() {
+		const run = (entrypoint, files, extra) =>
+			Object.assign(
+				{
+					entrypoint: entrypoint,
+					files: files || {},
+				},
+				extra || {},
+			);
+		const sh = (body) =>
+			[
+				"#!/usr/bin/env bash",
+				"set -euo pipefail",
+				"",
+				'echo "capability: $ANOTIFY_CAPABILITY"',
+			]
+				.concat(body)
+				.join("\n");
+
+		const seeds = [
+			{
+				ns: "default",
+				name: "fixer",
+				version: 1,
+				displayName: "修复入口",
+				spec: {
+					params: {
+						type: "object",
+						required: ["repo"],
+						properties: {
+							repo: { type: "string" },
+							environment: { type: "string", default: "prod" },
+						},
+					},
+					// 多下游（扇出）：一次 emit 只交给一个下游，两条下游就 emit 两次
+					next: ["analyze-pr", "lint-fix@1"],
+					run: run("run.sh", {
+						"run.sh": sh(['anode emit analyze-pr --data \'{"repo":"x"}\'']),
+					}),
+					requires: { commands: ["git"], values: [] },
+					lifecycle: { idempotent: false, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 900 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "11",
+			},
+			{
+				ns: "default",
+				name: "analyze-pr",
+				version: 2,
+				displayName: "分析 PR",
+				spec: {
+					params: {
+						type: "object",
+						required: ["repo"],
+						properties: {
+							repo: { type: "string" },
+							changedLines: { type: "integer", minimum: 0 },
+						},
+					},
+					next: ["lint-fix", "run-tests"],
+					run: run(
+						"main.sh",
+						{ "main.sh": sh(["./analyze --repo \"$ANOTIFY_PARAM_REPO\""]) },
+						{
+							env: {
+								GIT_TERMINAL_PROMPT: "0",
+								SOURCE_ROOT: { valueFrom: { fieldRef: { fieldPath: "vars.SOURCE_ROOT" } } },
+							},
+							workDir: "$(vars.SOURCE_ROOT)",
+						},
+					),
+					requires: { commands: ["git"], values: ["vars.SOURCE_ROOT"] },
+					lifecycle: { idempotent: false, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 1800 },
+					concurrency: { maxPerNode: 2 },
+				},
+				rv: "12",
+				// 安装来源：只记初次来源（复用/升级不覆写）；页面必须显示它
+				installedFrom: "ins_mock_7f3a",
+				// 版本历史：v1 的正文留在 versions 里（旧 digest 在节点上）
+				versions: [
+					{
+						version: 1,
+						digest: mockDigest("analyze-pr@1"),
+						at: iso(now() - 86400 * 9),
+						spec: { run: run("main.sh", { "main.sh": "#!/usr/bin/env bash\necho v1\n" }) },
+					},
+				],
+			},
+			{
+				ns: "default",
+				name: "lint-fix",
+				version: 1,
+				displayName: "应用修复",
+				spec: {
+					params: {
+						type: "object",
+						properties: { scope: { type: "string", enum: ["lint", "test", "all"] } },
+					},
+					next: ["run-tests"],
+					run: run("main.sh", { "main.sh": sh(["./fix --scope \"${ANOTIFY_PARAM_SCOPE:-lint}\""]) }),
+					// 只有 anode-2 装了 jq，而它配置待生效 → NodesAvailable=ConfigPending
+					requires: { commands: ["jq"], values: [] },
+					lifecycle: { idempotent: true, maxAttempts: 2, resultTtlSec: 604800, timeoutSec: 900 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "13",
+			},
+			{
+				ns: "default",
+				name: "run-tests",
+				version: 3,
+				displayName: "跑测试",
+				spec: {
+					params: {
+						type: "object",
+						properties: {
+							suite: { type: "string", enum: ["unit", "integration", "e2e"], default: "unit" },
+							shard: { type: "integer", minimum: 1 },
+						},
+					},
+					next: ["deploy-preview"],
+					run: run("main.sh", { "main.sh": sh(["make test"]) }),
+					requires: { commands: ["curl"], values: [] },
+					lifecycle: { idempotent: true, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 1800 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "14",
+			},
+			{
+				ns: "default",
+				name: "deploy-preview",
+				version: 1,
+				displayName: "部署预发",
+				spec: {
+					params: {
+						type: "object",
+						required: ["env"],
+						properties: { env: { type: "string", enum: ["staging", "prod"] } },
+					},
+					// 终端能力：next 为空 = 跑完就结束
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["./deploy \"$ANOTIFY_PARAM_ENV\""]) }),
+					// ns 默认值里没有 SLACK_WEBHOOK → NodesAvailable=ValueMissing
+					requires: { commands: [], values: ["vars.SLACK_WEBHOOK"] },
+					lifecycle: { idempotent: false, maxAttempts: 1, resultTtlSec: 604800, timeoutSec: 600 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "15",
+			},
+			{
+				ns: "default",
+				name: "notify",
+				version: 1,
+				displayName: "通知",
+				spec: {
+					params: {
+						type: "object",
+						required: ["text"],
+						properties: { text: { type: "string" }, channel: { type: "string" } },
+					},
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["curl -fsS -X POST --data '{}' \"$NOTIFY_URL\""]) }),
+					requires: { commands: ["curl"], values: [] },
+					lifecycle: { idempotent: true, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 120 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "16",
+			},
+			{
+				ns: "default",
+				name: "archive",
+				version: 2,
+				displayName: "归档产物",
+				spec: {
+					params: { type: "object", properties: {} },
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["7z a out.7z artifacts/"]) }),
+					// 没有节点同时装 rsync 与 7z → NodesAvailable=CommandMissing
+					requires: { commands: ["rsync", "7z"], values: [] },
+					lifecycle: { idempotent: true, maxAttempts: 1, resultTtlSec: 0, timeoutSec: 0 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "17",
+			},
+			{
+				ns: "default",
+				name: "sketch",
+				version: 1,
+				displayName: "草稿（还没写脚本）",
+				spec: {
+					params: {},
+					next: [],
+					// 没有 entrypoint → Implemented=False / Invalid
+					run: {},
+					requires: {},
+					lifecycle: {},
+					concurrency: {},
+				},
+				rv: "18",
+			},
+			{
+				ns: "prod",
+				name: "report.send",
+				version: 1,
+				displayName: "发告警",
+				spec: {
+					params: {
+						type: "object",
+						required: ["channel", "title"],
+						properties: {
+							channel: { type: "string", enum: ["slack", "email"] },
+							title: { type: "string" },
+						},
+					},
+					// 指向一个不存在的能力 → DownstreamResolved=False / NotFound
+					next: ["ghost-cap"],
+					run: run("main.sh", { "main.sh": sh(["./report"]) }),
+					requires: { commands: [], values: [] },
+					lifecycle: { idempotent: true, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 120 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "19",
+			},
+			{
+				ns: "prod",
+				name: "prod-deploy",
+				version: 2,
+				displayName: "生产部署",
+				spec: {
+					params: { type: "object", properties: { tag: { type: "string" } } },
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["docker compose up -d"]) }),
+					// prod 只有一台装了 docker 的节点，而它离线 → NodesAvailable=NodeOffline
+					requires: { commands: ["docker"], values: [] },
+					lifecycle: { idempotent: false, maxAttempts: 2, resultTtlSec: 604800, timeoutSec: 1800 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "20",
+			},
+			{
+				ns: "team-a",
+				name: "team-task",
+				version: 1,
+				displayName: "团队任务",
+				spec: {
+					params: { type: "object", properties: {} },
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["echo team"]) }),
+					requires: { commands: ["git"], values: [] },
+					lifecycle: { idempotent: false, maxAttempts: 3, resultTtlSec: 604800, timeoutSec: 900 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "21",
+			},
+			{
+				ns: "team-a",
+				name: "team-missing",
+				version: 1,
+				displayName: "要一个没装的命令",
+				spec: {
+					params: { type: "object", properties: {} },
+					next: [],
+					run: run("main.sh", { "main.sh": sh(["terraform apply"]) }),
+					// 没有任何节点装 terraform → NodesAvailable=NoMatchingNode
+					requires: { commands: ["terraform"], values: [] },
+					lifecycle: { idempotent: false, maxAttempts: 1, resultTtlSec: 604800, timeoutSec: 900 },
+					concurrency: { maxPerNode: 1 },
+				},
+				rv: "22",
+			},
+		];
+
+		const createdAt = iso(now() - 86400 * 30);
+		state.capabilities = seeds.map((s) => ({
+			ns: s.ns,
+			name: s.name,
+			displayName: s.displayName || "",
+			version: s.version,
+			spec: s.spec,
+			digest: mockDigest(s.name + "@" + s.version),
+			rv: s.rv,
+			createdAt: createdAt,
+			// versionAt = **当前版本**的创建时间（归档时写进行版本历史）
+			versionAt: createdAt,
+			versions: s.versions || [],
+			installedFrom: s.installedFrom || null,
+			uid: "cap_mock_" + s.ns + "_" + s.name,
+		}));
+	})();
+
+	// ---------- 种子：部署事实 ----------
+	//
+	// 「某节点持有某 digest」—— 能力的 nodes[].state 与 Deployed 条件都从这里派生。
+	// 刻意造三种：当前 digest（deployed）、旧 digest（stale）、没有行（missing）。
+	(function initDeployments() {
+		const dep = (ns, name, version, node, digestOverride) => {
+			const cap = byVersion(ns, name, version);
+			if (!cap) return;
+			state.deployments.push({
+				ns: ns,
+				capability: name,
+				version: version,
+				digest: digestOverride || cap.digest,
+				node: node,
+				updatedAt: iso(now() - 3600),
+			});
+		};
+		function byVersion(ns, name, version) {
+			return state.capabilities.find(
+				(c) => c.ns === ns && c.name === name && c.version === version,
+			);
+		}
+
+		// fixer：anode-1 / anode-2 是当前 digest，anode-laptop 是旧 digest → Stale
+		dep("default", "fixer", 1, "anode-1");
+		dep("default", "fixer", 1, "anode-2");
+		dep("default", "fixer", 1, "anode-laptop", mockDigest("fixer@1-old"));
+		// analyze-pr：只有 anode-1 是当前版，anode-laptop 上还是 v1 → Stale
+		dep("default", "analyze-pr", 2, "anode-1");
+		const analyzeV1 = (byVersion("default", "analyze-pr", 2).versions || [])[0];
+		dep(
+			"default",
+			"analyze-pr",
+			2,
+			"anode-laptop",
+			analyzeV1 ? analyzeV1.digest : mockDigest("analyze-pr@1"),
+		);
+		// run-tests：三台候选节点都是当前 digest → Deployed=Valid
+		dep("default", "run-tests", 3, "anode-1");
+		dep("default", "run-tests", 3, "anode-2");
+		dep("default", "run-tests", 3, "anode-laptop");
+		// lint-fix / notify / archive / deploy-preview：只有部分节点
+		dep("default", "lint-fix", 1, "anode-1");
+		dep("default", "notify", 1, "anode-laptop");
+		dep("default", "archive", 2, "anode-laptop", mockDigest("archive@1"));
+		dep("default", "deploy-preview", 1, "anode-1");
+		// prod
+		dep("prod", "report.send", 1, "anode-1");
+		dep("prod", "prod-deploy", 2, "anode-offline", mockDigest("prod-deploy@1"));
+	})();
+
+	// ---------- 种子：源 ----------
+	//
+	// 三种 kind 各一个（webhook 带 hookUrl/secretSet + targets 模板、cron 带表达式、
+	// manual 带静态载荷）+ 一个停用的 + 一个没有 target 的（剪枝 no_target）。
+	// token / secret 只在 mock 内部存：GET 投影只给 hookUrl + secretSet。
+	(function initSources() {
+		const src = (o) =>
+			Object.assign(
+				{
+					ns: NS_DEFAULT,
+					enabled: true,
+					installedFrom: null,
+					lastFiredAt: null,
+					lastError: null,
+					unapplied: false,
+					createdAt: iso(now() - 86400 * 20),
+				},
+				o,
+			);
+
+		state.sources = [
+			src({
+				ns: "default",
+				name: "deploy-hook",
+				displayName: "部署成功回调",
+				kind: "webhook",
+				rv: "31",
+				config: {
+					token: "src_mock_deploy_hook",
+					secret: "hmac_mock_secret_deploy_hook",
+					payloadSchema: {
+						type: "object",
+						required: ["repo"],
+						properties: {
+							repo: { type: "string" },
+							environment: { type: "string", enum: ["staging", "prod"] },
+							commit: { type: "string" },
+						},
+					},
+					sample: { repo: "acme/api", environment: "prod", commit: "9f2a1b3" },
+				},
+				targets: [
+					{
+						capability: "fixer",
+						params: {
+							repo: "$(payload.repo)",
+							environment: "$(payload.environment)",
+						},
+					},
+				],
+				lastFiredAt: iso(now() - 600),
+			}),
+			src({
+				ns: "default",
+				name: "nightly",
+				displayName: "每晚回归",
+				kind: "cron",
+				rv: "32",
+				config: {
+					expr: "0 3 * * *",
+					tz: "UTC",
+					payloadSchema: { type: "object", properties: { suite: { type: "string" } } },
+					payload: { suite: "e2e" },
+				},
+				targets: [{ capability: "run-tests", params: { suite: "$(payload.suite)" } }],
+				nextFireAt: iso(now() + 3600),
+				lastFiredAt: iso(now() - 86400),
+			}),
+			src({
+				ns: "default",
+				name: "manual-smoke",
+				displayName: "手动冒烟",
+				kind: "manual",
+				rv: "33",
+				config: { payload: { repo: "acme/api" } },
+				targets: [{ capability: "analyze-pr", params: { repo: "$(payload.repo)" } }],
+				lastFiredAt: iso(now() - 1800),
+			}),
+			src({
+				ns: "default",
+				name: "paused-hook",
+				displayName: "已停用的入口",
+				kind: "webhook",
+				enabled: false,
+				rv: "34",
+				config: { token: "src_mock_paused_hook", payloadSchema: null, sample: null },
+				targets: [{ capability: "notify", params: { text: "$(payload.text)" } }],
+			}),
+			src({
+				ns: "prod",
+				name: "prod-hook",
+				displayName: "生产告警入口",
+				kind: "manual",
+				rv: "36",
+				config: { payload: { channel: "slack", title: "生产告警" } },
+				// 目标能力存在，而它的 next 指向一个不存在的能力 ——
+				// 图上会多一个 unknown 节点（DownstreamResolved=False 的可视化）
+				targets: [
+					{ capability: "report.send", params: { channel: "$(payload.channel)", title: "$(payload.title)" } },
+				],
+				lastFiredAt: iso(now() - 3000),
+			}),
+			src({
+				ns: "prod",
+				name: "prod-noop",
+				displayName: "占位入口（还没接能力）",
+				kind: "manual",
+				rv: "35",
+				config: { payload: {} },
+				// 没有 target：事件照常入库，留一条 no_target 的剪枝痕
+				targets: [],
+			}),
+		];
+	})();
+
+	// ---------- 种子：任务 ----------
+	//
+	// 六个 phase 全覆盖（pending / running / succeeded / failed / cancelled / abandoned）
+	// + 三个 waitingReason（waiting_for_slot / retry_backoff / waiting_for_config）
+	// + attempt>1 与 attempts[] 历史 + envDiagnostics 五种来源（只有名字，没有值）。
+	// 时间戳一律 RFC3339 字符串（v4 wire）。
+	(function initTasks() {
+		const T1 = "trace_mock_t1";
+		const T2 = "trace_mock_t2";
+		const t = (sec) => iso(now() - sec);
+
+		const add = (tk) =>
+			state.tasks.push(
+				Object.assign(
+					{
+						ns: "default",
+						traceUID: T1,
+						sequence: 1,
+						sourceRef: null,
+						parentRef: null,
+						parentTaskId: null,
+						attempt: 1,
+						maxAttempts: 3,
+						waitingReason: null,
+						nextAttemptAt: null,
+						nodeName: null,
+						instanceId: null,
+						leaseExpiresAt: null,
+						configRevision: "7",
+						namespaceVarsRevision: "12",
+						envDiagnostics: [],
+						result: { summary: null, artifacts: [], error: null },
+						startedAt: null,
+						finishedAt: null,
+						attempts: [],
+					},
+					tk,
+				),
+			);
+
+		// ---- trace 1：webhook → fixer 扇出 → analyze-pr / lint-fix → run-tests → deploy-preview ----
+		add({
+			name: "tsk_mock_1",
+			sequence: 1,
+			sourceRef: "deploy-hook",
+			capability: "fixer",
+			capabilityVersion: 1,
+			params: { repo: "acme/api", environment: "prod" },
+			phase: "succeeded",
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(620),
+			finishedAt: t(600),
+			createdAt: t(630),
+			// envDiagnostics：只记名字 + 来源（local / node / namespace / passthrough / builtin）
+			envDiagnostics: [
+				{ name: "SOURCE_ROOT", source: "local" },
+				{ name: "TOOLCHAIN", source: "node" },
+				{ name: "NOTIFY_URL", source: "namespace" },
+				{ name: "GIT_SSH_KEY", source: "passthrough" },
+				{ name: "PATH", source: "builtin" },
+			],
+			result: { summary: "已派发 2 条下游", artifacts: [], error: null },
+		});
+		add({
+			name: "tsk_mock_2",
+			sequence: 2,
+			sourceRef: "deploy-hook",
+			parentRef: "fixer",
+			parentTaskId: "tsk_mock_1",
+			capability: "analyze-pr",
+			capabilityVersion: 2,
+			params: { repo: "acme/api" },
+			phase: "succeeded",
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(598),
+			finishedAt: t(560),
+			createdAt: t(599),
+			envDiagnostics: [
+				{ name: "SOURCE_ROOT", source: "local" },
+				{ name: "GIT_TERMINAL_PROMPT", source: "node" },
+			],
+			result: {
+				summary: "发现 3 处问题",
+				artifacts: [{ path: "artifacts/report.md", sha256: "fca851ec8492b3d9385bbc0b0c0ebc7583f456ae247b3a572a1c102dd16f2199" }],
+				error: null,
+			},
+		});
+		add({
+			name: "tsk_mock_3",
+			sequence: 2,
+			sourceRef: "deploy-hook",
+			parentRef: "fixer",
+			parentTaskId: "tsk_mock_1",
+			capability: "lint-fix",
+			capabilityVersion: 1,
+			params: { scope: "lint" },
+			phase: "succeeded",
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(598),
+			finishedAt: t(570),
+			createdAt: t(599),
+			envDiagnostics: [{ name: "SOURCE_ROOT", source: "local" }],
+			result: { summary: "已修 3 处", artifacts: [], error: null },
+		});
+		add({
+			name: "tsk_mock_4",
+			sequence: 3,
+			sourceRef: "deploy-hook",
+			parentRef: "analyze-pr@2",
+			parentTaskId: "tsk_mock_2",
+			capability: "run-tests",
+			capabilityVersion: 3,
+			params: { suite: "unit" },
+			phase: "failed",
+			attempt: 3,
+			maxAttempts: 3,
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(556),
+			finishedAt: t(520),
+			createdAt: t(558),
+			envDiagnostics: [{ name: "SOURCE_ROOT", source: "local" }],
+			result: {
+				summary: "3 次尝试都失败",
+				artifacts: [{ path: "artifacts/tests.txt", sha256: "c8fb72b784c34532bd3addcc67a6a78c0d6d47280ee3e9d23b70f40aa72635a6" }],
+				error: { reason: "max_attempts_exceeded", message: "script_failed ×3" },
+			},
+			attempts: [
+				{
+					attempt: 1,
+					nodeName: "anode-1",
+					configRevision: "7",
+					phase: "failed",
+					startedAt: t(556),
+					finishedAt: t(548),
+					reason: "script_failed",
+				},
+				{
+					attempt: 2,
+					nodeName: "anode-1",
+					configRevision: "7",
+					phase: "failed",
+					startedAt: t(540),
+					finishedAt: t(530),
+					reason: "script_failed",
+				},
+				{
+					attempt: 3,
+					nodeName: "anode-1",
+					configRevision: "7",
+					phase: "failed",
+					startedAt: t(526),
+					finishedAt: t(520),
+					reason: "script_failed",
+				},
+			],
+		});
+		add({
+			name: "tsk_mock_5",
+			sequence: 3,
+			sourceRef: "deploy-hook",
+			parentRef: "analyze-pr@2",
+			parentTaskId: "tsk_mock_2",
+			capability: "run-tests",
+			capabilityVersion: 3,
+			params: { suite: "integration" },
+			phase: "pending",
+			attempt: 2,
+			maxAttempts: 3,
+			waitingReason: "retry_backoff",
+			nextAttemptAt: iso(now() + 45),
+			createdAt: t(500),
+			envDiagnostics: [],
+			attempts: [
+				{
+					attempt: 1,
+					nodeName: "anode-1",
+					configRevision: "7",
+					phase: "failed",
+					startedAt: t(498),
+					finishedAt: t(490),
+					reason: "infra_transient",
+				},
+			],
+		});
+		add({
+			name: "tsk_mock_6",
+			sequence: 4,
+			sourceRef: "deploy-hook",
+			parentRef: "lint-fix@1",
+			parentTaskId: "tsk_mock_3",
+			capability: "deploy-preview",
+			capabilityVersion: 1,
+			params: { env: "staging" },
+			phase: "running",
+			nodeName: "anode-1",
+			instanceId: 1,
+			leaseExpiresAt: iso(now() + 90),
+			startedAt: t(480),
+			createdAt: t(482),
+			envDiagnostics: [{ name: "NOTIFY_URL", source: "namespace" }],
+		});
+		add({
+			name: "tsk_mock_7",
+			sequence: 5,
+			sourceRef: "deploy-hook",
+			parentRef: "deploy-preview@1",
+			parentTaskId: "tsk_mock_6",
+			capability: "notify",
+			capabilityVersion: 1,
+			params: { text: "部署完成", channel: "slack" },
+			phase: "pending",
+			waitingReason: "waiting_for_slot",
+			nextAttemptAt: iso(now() + 10),
+			createdAt: t(478),
+			envDiagnostics: [],
+		});
+
+		// ---- trace 2：prod 夜间回归（succeeded / waiting_for_config / cancelled / abandoned）----
+		add({
+			name: "tsk_mock_8",
+			ns: "prod",
+			traceUID: T2,
+			sequence: 1,
+			sourceRef: "nightly",
+			capability: "report.send",
+			capabilityVersion: 1,
+			params: { channel: "slack", title: "夜间回归" },
+			phase: "succeeded",
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(3600),
+			finishedAt: t(3590),
+			createdAt: t(3601),
+			envDiagnostics: [{ name: "SLACK_CHANNEL", source: "namespace" }],
+			result: { summary: "已发送", artifacts: [], error: null },
+		});
+		add({
+			name: "tsk_mock_9",
+			ns: "prod",
+			traceUID: T2,
+			sequence: 2,
+			sourceRef: "nightly",
+			parentRef: "report.send@1",
+			parentTaskId: "tsk_mock_8",
+			capability: "prod-deploy",
+			capabilityVersion: 2,
+			params: { tag: "v1.4.0" },
+			phase: "pending",
+			waitingReason: "waiting_for_config",
+			nextAttemptAt: iso(now() + 120),
+			configRevision: "8",
+			createdAt: t(3588),
+			envDiagnostics: [{ name: "SOURCE_ROOT", source: "local" }],
+		});
+		add({
+			name: "tsk_mock_10",
+			ns: "prod",
+			traceUID: T2,
+			sequence: 2,
+			sourceRef: "nightly",
+			parentRef: "report.send@1",
+			parentTaskId: "tsk_mock_8",
+			capability: "prod-deploy",
+			capabilityVersion: 2,
+			params: { tag: "v1.4.1" },
+			phase: "cancelled",
+			nodeName: "anode-offline",
+			instanceId: 1,
+			startedAt: t(3580),
+			finishedAt: t(3560),
+			createdAt: t(3581),
+			envDiagnostics: [],
+			result: {
+				summary: "被用户取消",
+				artifacts: [],
+				error: { reason: "cancelled_by_user", message: "用户取消" },
+			},
+		});
+		add({
+			name: "tsk_mock_11",
+			ns: "prod",
+			traceUID: T2,
+			sequence: 2,
+			sourceRef: "nightly",
+			parentRef: "report.send@1",
+			parentTaskId: "tsk_mock_8",
+			capability: "report.send",
+			capabilityVersion: 1,
+			params: { channel: "email", title: "补充说明" },
+			phase: "abandoned",
+			nodeName: "anode-1",
+			instanceId: 1,
+			startedAt: t(3550),
+			finishedAt: t(3540),
+			createdAt: t(3551),
+			envDiagnostics: [],
+			result: {
+				summary: "已被放弃",
+				artifacts: [],
+				error: { reason: "abandoned_by_user", message: "用户放弃" },
+			},
+			attempts: [
+				{
+					attempt: 1,
+					nodeName: "anode-1",
+					configRevision: "7",
+					phase: "abandoned",
+					startedAt: t(3550),
+					finishedAt: t(3540),
+					reason: "abandoned_by_user",
+				},
+			],
+		});
+
+		// Task result bytes are managed copies, not node/user workDir URLs.
+		state.taskArtifacts = [
+			{ ns: "default", task: "tsk_mock_2", sha256: "fca851ec8492b3d9385bbc0b0c0ebc7583f456ae247b3a572a1c102dd16f2199", content: "Report: 3 issues found\n", expired: false },
+			{ ns: "default", task: "tsk_mock_4", sha256: "c8fb72b784c34532bd3addcc67a6a78c0d6d47280ee3e9d23b70f40aa72635a6", content: "Expired unit test report\n", expired: true },
+		];
+
+		// W6 logs retain separate attempt archives. Waiting is not a new log run.
+		state.taskLogs = [
+			{
+				task: "tsk_mock_2", attempt: 1, truncated: true,
+				lines: [
+					{ sequence: 1, stream: "stdout", text: "$ ./analyze --repo acme/api", at: t(598) },
+					{ sequence: 2, stream: "stderr", text: "warning: shallow clone", at: t(590) },
+					{ sequence: 3, stream: "stdout", text: "3 issues found", at: t(560) },
+				],
+			},
+			{
+				task: "tsk_mock_5", attempt: 1, truncated: true,
+				lines: [
+					{ sequence: 1, stream: "stdout", text: "integration attempt 1", at: t(498) },
+					{ sequence: 2, stream: "stderr", text: "infra_transient: runner disconnected", at: t(490) },
+				],
+			},
+			{ task: "tsk_mock_4", attempt: 2, truncated: false, lines: [
+				{ sequence: 1, stream: "stderr", text: "attempt 2: script_failed", at: t(530) },
+			] },
+			{ task: "tsk_mock_4", attempt: 3, truncated: false, lines: [
+				{ sequence: 1, stream: "stderr", text: "attempt 3: max_attempts_exceeded", at: t(520) },
+			] },
+			{ task: "tsk_mock_10", attempt: 1, unavailable: "node_offline" },
+		];
+
+		// Accepted emit facts: eventId identifies an independent call. fields
+		// stays internal for Capability observed, never in W6 summary responses.
+		state.emissions = [
+			{ ns: "default", task: "tsk_mock_1", eventId: "evt_mock_2", to: "analyze-pr", version: 2, taskId: "tsk_mock_2", id: "review", pruned: null, fields: ["repo"], at: t(599) },
+			{ ns: "default", task: "tsk_mock_1", eventId: "evt_emit_lint", to: "lint-fix", version: 1, taskId: "tsk_mock_3", pruned: null, fields: ["scope"], at: t(599) },
+			{ ns: "default", task: "tsk_mock_2", eventId: "evt_emit_tests", to: "run-tests", version: 3, taskId: "tsk_mock_4", pruned: null, fields: ["suite"], at: t(558) },
+			{ ns: "default", task: "tsk_mock_2", eventId: "evt_emit_integration", to: "run-tests", version: 3, taskId: "tsk_mock_5", id: "integration", pruned: null, fields: ["suite"], at: t(500) },
+			{ ns: "default", task: "tsk_mock_2", eventId: "evt_mock_3", to: "run-tests", version: 3, taskId: null, pruned: { reason: "param_schema", detail: "run-tests@3 params.suite: expected unit|integration|e2e" }, fields: ["suite"], at: t(480) },
+		];
+		state.prunes = [
+			{
+				ns: "default",
+				traceUID: T1,
+				task: "tsk_mock_2",
+				event: "evt_mock_3",
+				to: "run-tests",
+				reason: "param_schema",
+				detail: "run-tests@3 params.suite: 期望 unit|integration|e2e",
+			},
+			{
+				ns: "prod",
+				traceUID: T2,
+				// 挂在 prod-deploy 的**最新**任务上，这样 capability.status.observed.pruned
+				// 也能看到它（observed 只看最近一个逻辑 task）
+				task: "tsk_mock_10",
+				event: "evt_mock_6",
+				to: "prod-deploy",
+				reason: "param_missing",
+				detail: "需要 tag（payload 里没有这个字段）",
+			},
+		];
+	})();
+
+	// ---------- 种子：事件 ----------
+	//
+	// 四种 reason 全覆盖：Ingested / Emitted / Pruned / RoutingChanged（+ ConfigApplied）。
+	// 事件是**只读事实**：spec 不可变，status 也是从派发事实汇总的。
+	(function initEvents() {
+		const T1 = "trace_mock_t1";
+		const T2 = "trace_mock_t2";
+		const t = (sec) => iso(now() - sec);
+
+		const ev = (o) =>
+			Object.assign(
+				{
+					ns: "default",
+					type: "Normal",
+					involvedObject: { kind: "Source", name: "deploy-hook", uid: "src_mock_deploy_hook" },
+					traceUID: T1,
+					deliveryId: null,
+					payload: {},
+					signature: null,
+					dispatched: [],
+					prunedCount: 0,
+					deliveredAt: null,
+				},
+				o,
+			);
+
+		state.events = [
+			ev({
+				name: "evt_mock_1",
+				reason: "Ingested",
+				eventType: "deploy.succeeded",
+				deliveryId: "evt-9f2a1b3c",
+				involvedObject: { kind: "Source", name: "deploy-hook", uid: "src_mock_deploy_hook" },
+				payload: { repo: "acme/api", environment: "prod", commit: "9f2a1b3" },
+				signature: { algorithm: "hmac-sha256", verified: true },
+				dispatched: [{ task: "tsk_mock_1", capability: "fixer" }],
+				deliveredAt: t(630),
+				createdAt: t(630),
+			}),
+			ev({
+				name: "evt_mock_2",
+				reason: "Emitted",
+				eventType: "capability.run",
+				deliveryId: "emit-tsk_mock_1-1",
+				involvedObject: { kind: "Task", name: "tsk_mock_1", uid: "tsk_mock_1" },
+				payload: { to: "analyze-pr", fields: ["repo"] },
+				dispatched: [
+					{ task: "tsk_mock_2", capability: "analyze-pr" },
+					{ task: "tsk_mock_3", capability: "lint-fix" },
+				],
+				deliveredAt: t(599),
+				createdAt: t(599),
+			}),
+			ev({
+				name: "evt_mock_3",
+				reason: "Pruned",
+				type: "Warning",
+				eventType: "capability.emit",
+				deliveryId: "emit-tsk_mock_2-3",
+				involvedObject: { kind: "Task", name: "tsk_mock_2", uid: "tsk_mock_2" },
+				payload: { to: "run-tests", suite: "smoke" },
+				prunedCount: 1,
+				deliveredAt: t(560),
+				createdAt: t(560),
+			}),
+			ev({
+				name: "evt_mock_4",
+				reason: "RoutingChanged",
+				eventType: "source.targets",
+				involvedObject: { kind: "Source", name: "deploy-hook", uid: "src_mock_deploy_hook" },
+				traceUID: null,
+				payload: { from: 1, to: 1, detail: "targets 重建入口边" },
+				deliveredAt: t(4000),
+				createdAt: t(4000),
+			}),
+			ev({
+				name: "evt_mock_5",
+				ns: "prod",
+				reason: "Ingested",
+				eventType: "nightly",
+				traceUID: T2,
+				deliveryId: "cron-nightly-1",
+				involvedObject: { kind: "Source", name: "nightly", uid: "src_mock_nightly" },
+				payload: { suite: "e2e" },
+				dispatched: [{ task: "tsk_mock_8", capability: "report.send" }],
+				deliveredAt: t(3601),
+				createdAt: t(3601),
+			}),
+			ev({
+				name: "evt_mock_6",
+				ns: "prod",
+				reason: "Pruned",
+				type: "Warning",
+				eventType: "capability.emit",
+				traceUID: T2,
+				deliveryId: "emit-tsk_mock_10-1",
+				involvedObject: { kind: "Task", name: "tsk_mock_10", uid: "tsk_mock_10" },
+				payload: { to: "prod-deploy" },
+				prunedCount: 1,
+				deliveredAt: t(3588),
+				createdAt: t(3588),
+			}),
+			ev({
+				name: "evt_mock_7",
+				ns: "prod",
+				reason: "ConfigApplied",
+				eventType: "namespace.config",
+				involvedObject: { kind: "Namespace", name: "prod", uid: "ns_mock_prod" },
+				traceUID: null,
+				payload: { namespaceVarsRevision: "12" },
+				deliveredAt: t(7200),
+				createdAt: t(7200),
+			}),
+		];
+	})();
+
+	// ---------- 种子：API Keys / 设备（保留域，形状不动）----------
+	//
+	// 每条记录都必须带 `enabled: boolean`：真后端 keyPublic **总是**回这个字段，
+	// 种子漏掉就是形状漂移（页面靠 `k.enabled !== false` 兜底会与缺失态混淆）。
+	(function initKeys() {
+		state.keys = [
+			{
+				id: "key_mock_send",
+				orgId: ORG,
+				name: "webhook 发送",
+				scopes: ["send"],
+				prefix: "ant_send_mock",
+				createdAt: now() - 86400,
+				lastUsedAt: now() - 300,
+				enabled: true,
+				revoked: false,
+			},
+			{
+				id: "key_mock_recv",
+				orgId: ORG,
+				name: "节点接收",
+				scopes: ["recv"],
+				prefix: "ant_recv_mock",
+				createdAt: now() - 86400 * 2,
+				lastUsedAt: null,
+				enabled: true,
+				revoked: false,
+			},
+		];
+	})();
+
+	// ---------- 响应构造 ----------
+	//
+	// Response 在浏览器里恒有，但 node:vm 单测环境可能没有 —— 没有时降级成
+	// 一个形状相同的最小对象（ok/status/headers/json/text）。页面只读这些。
+	function json(body, status) {
+		const code = status || 200;
+		if (typeof Response === "function") {
+			return new Response(JSON.stringify(body), {
+				status: code,
+				headers: { "Content-Type": "application/json; charset=utf-8" },
+			});
+		}
+		return {
+			ok: code >= 200 && code < 300,
+			status: code,
+			headers: { get: () => "application/json; charset=utf-8" },
+			json: async () => body,
+			text: async () => JSON.stringify(body),
+		};
+	}
+
+	// 错误体统一 `Status`（api-conventions §4）。`details.current.resourceVersion`
+	// 只在 409 冲突里出现 —— 前端 `api()` 靠它提示「别人改过了」。
+	function statusErr(code, reason, message, details) {
+		return json(
+			{
+				apiVersion: API_VERSION,
+				kind: "Status",
+				status: "Failure",
+				code: code,
+				reason: reason,
+				message: message,
+				details: Object.assign({ causes: [] }, details || {}),
+			},
+			code,
+		);
+	}
+
+	const notFound = (what) => statusErr(404, "NotFound", what + "不存在");
+	const badRequest = (reason, message) => statusErr(400, reason || "BadRequest", message);
+	const conflict = (message, row) =>
+		statusErr(409, "resource_version_conflict", message || "resourceVersion 已过期，请刷新后重试", {
+			current: { resourceVersion: row && row.rv != null ? String(row.rv) : null },
+		});
+
+	// 列表信封：`KindList.items` + 可选顶层 `warnings[]`（与四键并列）。
+	function listOf(kind, items, warnings) {
+		const out = { apiVersion: API_VERSION, kind: kind, metadata: {}, items: items };
+		if (warnings && warnings.length) out.warnings = warnings;
+		return out;
+	}
+
+	// 写请求的公共校验（v4 纪律）：
+	//   ① 顶层只认四个键（+ warnings），未知字段 → 400 unknown_field；
+	//   ② `status` 只读 → 400 status_not_writable；
+	//   ③ kind 必须匹配 → 400 kind_mismatch；
+	//   ④ metadata.namespace 与路径不符 → 400 namespace_mismatch。
+	const ENVELOPE_KEYS = ["apiVersion", "kind", "metadata", "spec", "status"];
+	function validateWriteBody(body, kind, ns) {
+		if (!body || typeof body !== "object") return badRequest("BadRequest", "请求体必须是 JSON 对象");
+		for (const k of Object.keys(body)) {
+			if (ENVELOPE_KEYS.indexOf(k) < 0 && k !== "warnings") {
+				return badRequest("unknown_field", "未知顶层字段 " + k);
+			}
+		}
+		if (body.status != null) {
+			return badRequest(
+				"status_not_writable",
+				"status 只读：它由服务端从事实派生，写请求必须省略",
+			);
+		}
+		if (body.kind != null && body.kind !== kind) {
+			return badRequest("kind_mismatch", "kind 必须是 " + kind + "（收到 " + body.kind + "）");
+		}
+		if (ns && body.metadata && body.metadata.namespace && body.metadata.namespace !== ns) {
+			return badRequest(
+				"namespace_mismatch",
+				"metadata.namespace 与路径里的命名空间不一致",
+			);
+		}
+		return null;
+	}
+
+	// PATCH/PUT 的 CAS：缺失 400 resource_version_required，旧值 409 + details.current。
+	function checkCas(body, row) {
+		const rv = body && body.metadata ? body.metadata.resourceVersion : null;
+		if (rv == null || rv === "") {
+			return badRequest(
+				"resource_version_required",
+				"写已有资源必须带 metadata.resourceVersion（先刷新再改）",
+			);
+		}
+		if (String(rv) !== String(row.rv)) return conflict("resourceVersion 已过期，请刷新后重试", row);
+		return null;
+	}
+
+	// DELETE 的 CAS 传输走 `?resourceVersion=`（契约 §2.8.2 假设）。
+	function checkCasQuery(query, row) {
+		const rv = query.get("resourceVersion");
+		if (rv == null || rv === "") {
+			return badRequest(
+				"resource_version_required",
+				"删除必须带 ?resourceVersion=（先刷新再删）",
+			);
+		}
+		if (String(rv) !== String(row.rv)) return conflict("resourceVersion 已过期，请刷新后重试", row);
+		return null;
+	}
+
+	// ---------- 派生：节点 ----------
+	//
+	// 生效命名空间 = 「本机申报」（anode.yaml）∩「中枢授权」（Node.spec.namespaces）；
+	// 任一侧 `"*"` = 全部。授权只能收紧，不能放宽 —— 所以交集为空是**合法**结果
+	// （这台机器对该 ns 就是不可用），不是数据错误。
+	function nodeEffectiveNamespaces(row) {
+		const all = state.namespaces.map((n) => n.name);
+		const expand = (list) =>
+			!Array.isArray(list) || !list.length
+				? []
+				: list.indexOf("*") >= 0
+					? all.slice()
+					: list.slice();
+		const declared = expand(row.declared || []);
+		const authorized = expand((row.spec && row.spec.namespaces) || ["*"]);
+		return declared.filter((ns) => authorized.indexOf(ns) >= 0);
+	}
+
+	// 心跳 5 分钟内算在线（与真后端的离线判定同一量级）。
+	function nodeOnline(row) {
+		const seen = row.facts && row.facts.lastSeenAt ? Date.parse(row.facts.lastSeenAt) : NaN;
+		if (!Number.isFinite(seen)) return false;
+		return Date.now() - seen <= 5 * 60 * 1000;
+	}
+
+	// 配置是否已生效：appliedRevision 落后 configRevision 就是 ConfigPending。
+	function nodeSynced(row) {
+		return String(row.appliedRevision) === String(row.configRevision);
+	}
+
+	function deriveNodeStatus(row, nsContext) {
+		const f = row.facts || {};
+		const localVars = clone(f.localVars || {});
+		const nodeVars = clone((row.spec && row.spec.vars) || {});
+		const machineVars = clone(f.machineVars || Object.assign({}, nodeVars, localVars));
+		const st = {
+			hostIP: f.hostIP || "",
+			hostname: f.hostname || row.name,
+			os: f.os || "",
+			arch: f.arch || "",
+			capacity: clone(f.capacity || {}),
+			workRoot: f.workRoot || "",
+			homeDir: f.homeDir || "",
+			online: nodeOnline(row),
+			draining: row.draining === true,
+			localLimits: clone(f.localLimits || {}),
+			machineLimits: clone(f.machineLimits || { total: f.localLimits?.total ?? row.spec?.limits?.total ?? 1, perCapability: { ...(row.spec?.limits?.perCapability || {}), ...(f.localLimits?.perCapability || {}) } }),
+			overrideStale: row.overrideStale === true,
+			localVars: localVars,
+			nodeVars: nodeVars,
+			// 机器级合并结果：**没有**一份扁平 effectiveVars 假装覆盖全部 ns
+			machineVars: machineVars,
+			configRevision: String(row.configRevision),
+			appliedRevision: String(row.appliedRevision),
+			appliedHash: mockDigest("applied-" + row.name + "-" + row.appliedRevision),
+			effectiveNamespaces: nodeEffectiveNamespaces(row),
+			agentVersion: f.agentVersion || "",
+			...(Array.isArray(f.instances) ? { instances: clone(f.instances) } : {}),
+			lastSeenAt: f.lastSeenAt || null,
+		};
+		// `?namespace=` 才给 ns 上下文：三层配置的第三层与合并结果。
+		if (nsContext) {
+			const nsVars = clone(state.nsVars[nsContext] || {});
+			st.namespaceVars = nsVars;
+			st.effectiveVars = Object.assign({}, nsVars, nodeVars, localVars);
+			st.namespaceVarsRevision = state.nsConfig[nsContext]?.revision ?? null;
+			st.context = { namespace: nsContext };
+		}
+		return st;
+	}
+
+	function nodeResource(row, nsContext) {
+		return {
+			apiVersion: API_VERSION,
+			kind: "Node",
+			metadata: {
+				name: row.name,
+				uid: row.uid || "node_mock_" + row.name,
+				resourceVersion: String(row.rv),
+				creationTimestamp: row.createdAt || iso(now() - 86400 * 45),
+				displayName: row.displayName || "",
+			},
+			spec: {
+				namespaces: clone((row.spec && row.spec.namespaces) || []),
+				vars: clone((row.spec && row.spec.vars) || {}),
+				limits: clone((row.spec && row.spec.limits) || {}),
+				tags: clone((row.spec && row.spec.tags) || []),
+			},
+			status: deriveNodeStatus(row, nsContext),
+		};
+	}
+
+	function namespaceResource(row) {
+		const count = (list) => list.filter((x) => x.ns === row.name).length;
+		return {
+			apiVersion: API_VERSION,
+			kind: "Namespace",
+			metadata: {
+				name: row.name,
+				uid: row.uid,
+				resourceVersion: String(row.rv),
+				creationTimestamp: row.createdAt,
+				displayName: row.displayName || "",
+			},
+			spec: {},
+			status: {
+				counts: {
+					capabilities: count(state.capabilities),
+					sources: count(state.sources),
+					tasks: count(state.tasks),
+					nodes: state.nodes.filter((n) => nodeEffectiveNamespaces(n).indexOf(row.name) >= 0)
+						.length,
+				},
+			},
+		};
+	}
+
+	// ---------- 派生：能力 status ----------
+	//
+	// 四个 condition 的 reason 用 api-conventions §4.3 的封闭词表：
+	//   Implemented        Valid | Invalid
+	//   NodesAvailable     Valid | NoMatchingNode | CommandMissing | ValueMissing | ConfigPending | NodeOffline | NamespaceUnauthorized
+	//   DownstreamResolved Valid | NotFound
+	//   Deployed           Valid | NotDeployed | Stale
+	//
+	// 全部在**读时**从事实算：capabilities.spec / nodes 上报 / deployments / tasks / events。
+	function capCandidates(ns) {
+		return state.nodes.filter((n) => nodeEffectiveNamespaces(n).indexOf(ns) >= 0);
+	}
+
+	function nodeHas(node, required) {
+		const have = (node.reports && node.reports.commands) || [];
+		return required.every((c) => have.indexOf(c) >= 0);
+	}
+	function nodeHasValues(node, required) {
+		const have = (node.reports && node.reports.values) || [];
+		return required.every((v) => have.indexOf(v) >= 0);
+	}
+	function requiredParams(cap) {
+		const params = (cap.spec && cap.spec.params) || {};
+		return Array.isArray(params.required) ? params.required.slice() : [];
+	}
+
+	function deriveCapabilityStatus(row) {
+		const ns = row.ns;
+		const candidates = capCandidates(ns);
+		const req = (row.spec && row.spec.requires) || {};
+		const needCmds = Array.isArray(req.commands) ? req.commands : [];
+		const needVals = Array.isArray(req.values) ? req.values : [];
+
+		const conditions = [];
+
+		// ① Implemented：有没有可执行入口（v4 的能力声明 spec.run.entrypoint）
+		const entry = row.spec && row.spec.run ? row.spec.run.entrypoint : "";
+		const implemented = !!(entry && String(entry).trim());
+		conditions.push({
+			type: "Implemented",
+			status: implemented ? "True" : "False",
+			reason: implemented ? "Valid" : "Invalid",
+			message: implemented ? "" : "spec.run.entrypoint 未声明，节点上跑不起来",
+		});
+
+		// ② NodesAvailable：能不能找到**现在就能跑**的节点
+		const missingCmds = (n) => needCmds.filter((c) => !nodeHas(n, [c]));
+		const missingVals = (n) => needVals.filter((v) => !nodeHasValues(n, [v]));
+		const usable = candidates.filter(
+			(n) => missingCmds(n).length === 0 && missingVals(n).length === 0,
+		);
+		const ready = usable.filter((n) => nodeOnline(n) && nodeSynced(n));
+		let nodesCond;
+		if (ready.length) {
+			nodesCond = { status: "True", reason: "Valid", message: "" };
+		} else if (usable.length) {
+			if (usable.every((n) => !nodeOnline(n))) {
+				nodesCond = {
+					status: "False",
+					reason: "NodeOffline",
+					message: "候选节点全部离线：" + usable.map((n) => n.name).join("、"),
+				};
+			} else {
+				const pendingNodes = usable.filter((n) => !nodeSynced(n)).map((n) => n.name);
+				nodesCond = {
+					status: "False",
+					reason: "ConfigPending",
+					message: "配置还没生效（appliedRevision 落后）：" + pendingNodes.join("、"),
+				};
+			}
+		} else if (!candidates.length) {
+			const anyNodeFits = state.nodes.some(
+				(n) => missingCmds(n).length === 0 && missingVals(n).length === 0,
+			);
+			nodesCond = anyNodeFits
+				? {
+						status: "False",
+						reason: "NamespaceUnauthorized",
+						message: "有节点能满足要求，但都没有授权到命名空间 " + ns,
+					}
+				: {
+						status: "False",
+						reason: "NoMatchingNode",
+						message: "没有节点声明这些要求：" + needCmds.concat(needVals).join("、"),
+					};
+		} else if (candidates.some((n) => missingCmds(n).length)) {
+			const miss = [];
+			for (const n of candidates) for (const c of missingCmds(n)) if (miss.indexOf(c) < 0) miss.push(c);
+			nodesCond = {
+				status: "False",
+				reason: "CommandMissing",
+				message: "没有节点同时装了这些命令：" + miss.join("、"),
+			};
+		} else {
+			const miss = [];
+			for (const n of candidates) for (const v of missingVals(n)) if (miss.indexOf(v) < 0) miss.push(v);
+			nodesCond = {
+				status: "False",
+				reason: "ValueMissing",
+				message: "没有节点能解析这些值：" + miss.join("、"),
+			};
+		}
+		conditions.push(
+			Object.assign({ type: "NodesAvailable" }, nodesCond),
+		);
+
+		// ③ DownstreamResolved：spec.next 的每个引用能不能解析
+		const next = Array.isArray(row.spec && row.spec.next) ? row.spec.next : [];
+		const resolvedNext = next.map((ref) => {
+			const cap = resolveCapRef(ref, ns);
+			const parsed = splitRef(ref);
+			if (!cap) {
+				return {
+					name: parsed.name,
+					version: parsed.version,
+					missing: true,
+					reason: "NotFound",
+					ref: ref,
+				};
+			}
+			return {
+				name: cap.name,
+				version: cap.version,
+				digest: cap.digest,
+				ready: true,
+				missing: false,
+				params: { required: requiredParams(cap) },
+				ref: ref,
+			};
+		});
+		const missingNext = resolvedNext.filter((r) => r.missing);
+		conditions.push({
+			type: "DownstreamResolved",
+			status: missingNext.length ? "False" : "True",
+			reason: missingNext.length ? "NotFound" : "Valid",
+			message: missingNext.length
+				? "下游解析不到：" + missingNext.map((r) => r.name).join("、")
+				: "",
+		});
+
+		// ④ Deployed：候选节点手上是不是**当前 digest**
+		const deps = state.deployments.filter(
+			(d) => d.ns === ns && d.capability === row.name,
+		);
+		const nodeStates = candidates.map((n) => {
+			const d = deps.find((x) => x.node === n.name);
+			const state = !d ? "missing" : d.digest === row.digest ? "deployed" : "stale";
+			return { name: n.name, state: state };
+		});
+		const stale = nodeStates.filter((s) => s.state === "stale");
+		const deployedN = nodeStates.filter((s) => s.state === "deployed").length;
+		let depCond;
+		if (!nodeStates.length) {
+			depCond = { status: "False", reason: "NotDeployed", message: "没有候选节点" };
+		} else if (stale.length) {
+			depCond = {
+				status: "False",
+				reason: "Stale",
+				message: stale.length + " 台节点持有旧 digest（" + stale.map((s) => s.name).join("、") + "）",
+			};
+		} else if (deployedN === nodeStates.length) {
+			depCond = { status: "True", reason: "Valid", message: "" };
+		} else {
+			depCond = {
+				status: "False",
+				reason: "NotDeployed",
+				message: nodeStates.length - deployedN + " 台节点还没有这个版本",
+			};
+		}
+		conditions.push(Object.assign({ type: "Deployed" }, depCond));
+
+		// observed：最近一个逻辑 task 的 emits / pruned + 任务计数（明细数组保留，不只给计数）
+		const tasks = state.tasks.filter((t) => t.ns === ns && t.capability === row.name);
+		const latest = tasks
+			.slice()
+			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+		const emits = latest ? state.emissions.filter((e) => e.task === latest.name) : [];
+		const prunes = latest ? state.prunes.filter((p) => p.task === latest.name) : [];
+
+		return {
+			ready: conditions.every((c) => c.status === "True"),
+			version: row.version,
+			digest: row.digest,
+			conditions: conditions,
+			nodes: nodeStates,
+			// resolved 的每条都是「解析结果」，不是原始引用：`ref` 只是内部拼装字段
+			resolved: {
+				next: resolvedNext.map((r) => {
+					const out = Object.assign({}, r);
+					delete out.ref;
+					return out;
+				}),
+			},
+			observed: {
+				taskId: latest ? latest.name : null,
+				emits: emits.map((e) => ({ to: e.to, fields: clone(e.fields || []), ok: true })),
+				pruned: prunes.map((p) => ({ to: p.to, reason: p.reason, detail: p.detail })),
+				tasks: {
+					total: tasks.length,
+					failed: tasks.filter((t) => t.phase === "failed").length,
+				},
+			},
+			installedFrom: row.installedFrom || null,
+		};
+	}
+
+	function capabilityResource(row) {
+		return {
+			apiVersion: API_VERSION,
+			kind: "Capability",
+			metadata: {
+				name: row.name,
+				namespace: row.ns,
+				uid: row.uid,
+				version: row.version,
+				resourceVersion: String(row.rv),
+				creationTimestamp: row.createdAt,
+				displayName: row.displayName || "",
+			},
+			spec: clone(row.spec || {}),
+			status: deriveCapabilityStatus(row),
+		};
+	}
+
+	// ---------- 派生：源 status ----------
+	//
+	// **GET 绝不回显 token / secret**：只给 `config.hookUrl`（授权读）与
+	// `config.secretSet`（布尔）。投影是白名单式的（逐字段复制），不是
+	// "删掉敏感字段" —— 后者漏一个键就泄漏。
+	function sourceHookUrl(row) {
+		if (row.kind !== "webhook") return null;
+		const token = row.config && row.config.token;
+		return token ? "/v1/hooks/" + token : null;
+	}
+
+	function sourceResolvedTargets(row) {
+		return (row.targets || []).map((t) => {
+			const cap = resolveCapRef(t.capability, row.ns);
+			const parsed = splitRef(t.capability);
+			if (!cap) {
+				return {
+					capability: t.capability,
+					name: parsed.name,
+					version: parsed.version,
+					missing: true,
+					reason: "NotFound",
+					params: clone(t.params || {}),
+				};
+			}
+			return {
+				capability: t.capability,
+				name: cap.name,
+				version: cap.version,
+				digest: cap.digest,
+				missing: false,
+				params: clone(t.params || {}),
+			};
 		});
 	}
 
-	// 配置期不再判环（契约 §2：靠 hop 预算 + trace 任务预算兜底）。
-	//
-	// 这里原来有个配置期环检测函数（与 store 那边同口径）：保存边时
-	// 只要会成环就 400。契约 §2 明确删掉了静态环检测 —— `review → fix → review`
-	// 是合法编排，真正的护栏是运行期的 max_hops / budget 两种剪枝（见 planDispatch）。
+	function deriveSourceStatus(row) {
+		const targets = sourceResolvedTargets(row);
+		let health = "ok";
+		if (!row.enabled) health = "disabled";
+		else if (!targets.length) health = "blocked";
+		else if (targets.some((t) => t.missing)) health = "blocked";
+		else if (row.unapplied) health = "unapplied";
+		return {
+			hookUrl: sourceHookUrl(row),
+			lastFiredAt: row.lastFiredAt || null,
+			nextFireAt: row.nextFireAt || null,
+			enabled: !!row.enabled,
+			health: health,
+			// 契约 api-conventions §7.2 定的是 **boolean**：所有 target 都解析到才 true。
+			// 没有任何 target 不算“解析完成”（这种源是 health=blocked），明细不在这里。
+			targetsResolved: targets.length > 0 && targets.every((t) => !t.missing),
+			lastError: row.lastError || null,
+			installedFrom: row.installedFrom || null,
+		};
+	}
 
+	function sourceResource(row) {
+		const c = row.config || {};
+		const cfg = {};
+		if (row.kind === "webhook") {
+			cfg.hookUrl = sourceHookUrl(row);
+			cfg.secretSet = !!(c.secret && String(c.secret).length);
+		}
+		if (row.kind === "cron") {
+			cfg.expr = c.expr || "";
+			cfg.tz = c.tz || "UTC";
+		}
+		if (c.payloadSchema != null) cfg.payloadSchema = clone(c.payloadSchema);
+		if (c.sample != null) cfg.sample = clone(c.sample);
+		if (c.payload != null) cfg.payload = clone(c.payload);
+		return {
+			apiVersion: API_VERSION,
+			kind: "Source",
+			metadata: {
+				name: row.name,
+				namespace: row.ns,
+				uid: row.uid || "src_mock_" + row.name,
+				resourceVersion: String(row.rv),
+				creationTimestamp: row.createdAt,
+				displayName: row.displayName || "",
+			},
+			spec: {
+				kind: row.kind,
+				enabled: !!row.enabled,
+				config: cfg,
+				targets: clone(row.targets || []),
+			},
+			status: deriveSourceStatus(row),
+		};
+	}
+
+	// ---------- 派生：任务 / 事件 / trace / edges / deployments ----------
+	function capDigestOf(row) {
+		const cap = state.capabilities.find(
+			(c) => c.ns === row.ns && c.name === row.capability,
+		);
+		return cap ? cap.digest : null;
+	}
+
+	function taskStatus(row) {
+		return {
+			phase: String(row.phase || "pending").toLowerCase(),
+			waitingReason: row.waitingReason || null,
+			nextAttemptAt: row.nextAttemptAt || null,
+			nodeName: row.nodeName || null,
+			instanceId: row.instanceId == null ? null : row.instanceId,
+			attempt: row.attempt == null ? 1 : row.attempt,
+			maxAttempts: row.maxAttempts == null ? 3 : row.maxAttempts,
+			leaseExpiresAt: row.leaseExpiresAt || null,
+			startedAt: row.startedAt || null,
+			finishedAt: row.finishedAt || null,
+			configRevision: row.configRevision == null ? null : String(row.configRevision),
+			namespaceVarsRevision:
+				row.namespaceVarsRevision == null ? null : String(row.namespaceVarsRevision),
+			// 只记名字 + 来源：值只在本机，中枢拿不到（也不需要）
+			envDiagnostics: (row.envDiagnostics || []).map((e) => ({
+				name: e.name,
+				source: e.source,
+			})),
+			result: {
+				summary:
+					row.result && row.result.summary != null ? row.result.summary : null,
+				artifacts: clone((row.result && row.result.artifacts) || []),
+				error: row.result && row.result.error ? clone(row.result.error) : null,
+			},
+			attempts: clone(row.attempts || []),
+		};
+	}
+
+	function taskResource(row) {
+		return {
+			apiVersion: API_VERSION,
+			kind: "Task",
+			metadata: {
+				name: row.name,
+				namespace: row.ns,
+				uid: "tsk_mock_uid_" + row.name,
+				resourceVersion: String(row.rv || "1"),
+				creationTimestamp: row.createdAt,
+			},
+			spec: {
+				traceUID: row.traceUID || null,
+				sequence: row.sequence == null ? 1 : row.sequence,
+				sourceRef: row.sourceRef || null,
+				parentRef: row.parentRef || null,
+				parentTaskId: row.parentTaskId || null,
+				capability: {
+					name: row.capability,
+					version: row.capabilityVersion,
+					digest: capDigestOf(row),
+				},
+				params: clone(row.params || {}),
+			},
+			status: taskStatus(row),
+		};
+	}
+
+	function eventResource(ev) {
+		return {
+			apiVersion: API_VERSION,
+			kind: "Event",
+			metadata: {
+				name: ev.name,
+				namespace: ev.ns,
+				uid: "evt_mock_uid_" + ev.name,
+				resourceVersion: "1",
+				creationTimestamp: ev.createdAt,
+			},
+			spec: {
+				reason: ev.reason,
+				type: ev.type || "Normal",
+				involvedObject: clone(ev.involvedObject || {}),
+				traceUID: ev.traceUID || null,
+				eventType: ev.eventType || null,
+				deliveryId: ev.deliveryId || null,
+				payload: clone(ev.payload || {}),
+				signature: ev.signature ? clone(ev.signature) : null,
+			},
+			status: {
+				dispatched: clone(ev.dispatched || []),
+				pruned: ev.prunedCount ? (() => {
+					const facts = state.prunes.filter(p => p.ns === ev.ns && p.event === ev.name);
+					return facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null;
+				})() : null,
+				deliveredAt: ev.deliveredAt || null,
+			},
+		};
+	}
+
+	function traceDoc(uid, ns) {
+		const tasks = state.tasks.filter((t) => t.traceUID === uid && t.ns === ns);
+		const events = state.events.filter((e) => e.traceUID === uid && e.ns === ns);
+		if (!tasks.length && !events.length) return null;
+		const pruned = state.prunes
+			.filter((p) => p.traceUID === uid && p.ns === ns)
+			.map((p) => ({
+				to: p.to,
+				reason: p.reason,
+				detail: p.detail,
+				event: p.event,
+				task: p.task,
+			}));
+		return {
+			apiVersion: API_VERSION,
+			kind: "Trace",
+			traceUID: uid,
+			namespace: ns,
+			events: events.map(eventResource),
+			tasks: tasks.map(taskResource),
+			pruned: pruned,
+		};
+	}
+
+	// edges 只读投影：能力边来自 `spec.next`，源入口边来自 `source.spec.targets`。
+	// **没有 port / priority / mapping**：v4 没有端口，也没有候选排序。
+	function edgeItems(ns) {
+		const items = [];
+		for (const cap of state.capabilities.filter((c) => c.ns === ns)) {
+			const next = Array.isArray(cap.spec && cap.spec.next) ? cap.spec.next : [];
+			next.forEach((ref, i) => {
+				items.push({
+					fromIsSource: false,
+					fromRef: cap.name,
+					toRef: ref,
+					position: i + 1,
+				});
+			});
+		}
+		for (const src of state.sources.filter((s) => s.ns === ns)) {
+			(src.targets || []).forEach((t, i) => {
+				items.push({
+					fromIsSource: true,
+					fromRef: src.name,
+					toRef: t.capability,
+					position: i + 1,
+				});
+			});
+		}
+		return items;
+	}
+
+	// deployments 只读事实：一行 = 「某节点持有某 digest」。
+	// 页面要读的 `capability / capabilityId / name / version / digest / node / state`
+	// 都是 v4 可用字段（没有 v3 的 port / status 九态）。
+	function deploymentItems(ns) {
+		return state.deployments
+			.filter((d) => d.ns === ns)
+			.map((d) => {
+				const cap = state.capabilities.find(
+					(c) => c.ns === ns && c.name === d.capability && c.version === d.version,
+				);
+				const stateStr = !cap ? "missing" : cap.digest === d.digest ? "deployed" : "stale";
+				return {
+					apiVersion: API_VERSION,
+					kind: "Deployment",
+					metadata: {
+						name: "dep_mock_" + d.capability + "_" + d.node,
+						namespace: ns,
+						creationTimestamp: d.updatedAt,
+					},
+					spec: {
+						capability: { name: d.capability, version: d.version, digest: d.digest },
+						node: d.node,
+					},
+					status: { updatedAt: d.updatedAt, current: stateStr === "deployed" },
+					// 展平读数（页面按行读；都是 v4 事实，不是 v3 别名）
+					capability: d.capability,
+					capabilityId: d.capability,
+					name: d.capability + "/" + d.node,
+					version: d.version,
+					digest: d.digest,
+					node: d.node,
+					updatedAt: d.updatedAt,
+					state: stateStr,
+				};
+			});
+	}
+
+	// ---------- Stats（现有读模型形状，namespace 显式过滤）----------
+	function statsDoc(ns) {
+		const inNs = (list) => list.filter((x) => ns === "*" || x.ns === ns);
+		const evs = inNs(state.events);
+		const tks = inNs(state.tasks);
+		const dayKey = (d) => {
+			const m = String(d.getMonth() + 1).padStart(2, "0");
+			const dd = String(d.getDate()).padStart(2, "0");
+			return d.getFullYear() + "-" + m + "-" + dd;
+		};
+		const today = dayKey(new Date());
+		const byPhase = (p) => tks.filter((t) => t.phase === p).length;
+		const daily = (() => {
+			const counts = new Map();
+			for (const e of evs) {
+				const d = new Date(e.createdAt);
+				if (Number.isNaN(d.getTime())) continue;
+				const k = dayKey(d);
+				counts.set(k, (counts.get(k) || 0) + 1);
+			}
+			const out = [];
+			for (let i = 0; i < 7; i++) {
+				const d = new Date();
+				d.setDate(d.getDate() - (6 - i));
+				const key = dayKey(d);
+				const real = counts.get(key) || 0;
+				out.push({
+					day: key,
+					count: real,
+				});
+			}
+			return out;
+		})();
+		const nodesInScope =
+			ns === "*"
+				? state.nodes.slice()
+				: state.nodes.filter((n) => nodeEffectiveNamespaces(n).indexOf(ns) >= 0);
+		return {
+			total: evs.length,
+			today: evs.filter((e) => {
+				const d = new Date(e.createdAt);
+				return !Number.isNaN(d.getTime()) && dayKey(d) === today;
+			}).length,
+			// No device delivery facts in this preview, never count terminal tasks as push success.
+			delivered: 0,
+			deliveryTotal: 0,
+			deviceCount: (state.devices || []).filter((d) => d.enabled !== false).length,
+			totalEvents: evs.length,
+			succeeded: byPhase("succeeded"),
+			failed: byPhase("failed"),
+			running: byPhase("running"),
+			pending: byPhase("pending"),
+			nodesOnline: nodesInScope.filter((n) => nodeOnline(n)).length,
+			nodesTotal: nodesInScope.length,
+			daily: daily,
+		};
+	}
+
+	// ---------- 源的模板求值 / 派发计划 ----------
+	//
+	// `targets[].params` 只认 `$(payload)` / `$(payload.a.b)`（source.md §4.1）：
+	//   · 整个值**恰好**是一个引用 → 保留原类型；
+	//   · 掺了任何常量（哪怕只是一个空格）→ 字符串拼接；
+	//   · 取不到 → 剪枝 `param_missing`（不静默给空）；
+	//   · `$(vars.…)` / `$(params.…)` 在源参数里是**配置错误**（400 invalid_source_config）。
+	const REF_RE = /\$\(([^)]*)\)/g;
+
+	function templateRefs(value) {
+		const src = String(value == null ? "" : value);
+		const out = [];
+		REF_RE.lastIndex = 0;
+		let m;
+		while ((m = REF_RE.exec(src))) out.push(m[1]);
+		return out;
+	}
+
+	// 配置期校验：引用写成什么样才算合法（§4.1 / §6）。
+	function templateError(value) {
+		if (value && typeof value === "object") {
+			for (const v of Object.values(value)) { const err = templateError(v); if (err) return err; }
+			return null;
+		}
+		if (typeof value !== "string") return null;
+		if (/\$\((?:vars|params)(?:\.|\))/.test(value)) return "vars/params references are invalid in source params";
+		for (const match of value.matchAll(/\$\(payload[^)]*(?:\)|$)/g)) {
+			if (!/^\$\(payload(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+))*\)$/.test(match[0])) return "Invalid payload reference: " + match[0];
+		}
+		return null;
+	}
+
+	function lookupPayload(payload, path) {
+		const segs = path.split(".").slice(1); // 去掉根名 payload
+		let cur = payload;
+		for (const s of segs) {
+			if (cur == null || typeof cur !== "object" || !(s in cur)) {
+				return { found: false };
+			}
+			cur = cur[s];
+		}
+		return { found: true, value: cur };
+	}
+
+	// 求值一个模板值 → {value} 或 {missing:"payload.xxx"}。
+	function evalTemplate(value, payload) {
+		if (value && typeof value === "object") {
+			const result = Array.isArray(value) ? [] : {};
+			for (const key of Object.keys(value)) {
+				const out = evalTemplate(value[key], payload);
+				if (out.missing) return out;
+				result[key] = out.value;
+			}
+			return {value: result};
+		}
+		if (typeof value !== "string") return {value};
+		const pattern = /\$\((payload(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+))*)\)/g;
+		const refs = [...value.matchAll(pattern)];
+		if (!refs.length) return {value};
+		if (refs.length === 1 && refs[0][0] === value) {
+			const hit = lookupPayload(payload, refs[0][1]);
+			return hit.found ? {value: clone(hit.value)} : {missing: refs[0][1]};
+		}
+		let missing;
+		const result = value.replace(pattern, (_, path) => {
+			const hit = lookupPayload(payload, path);
+			if (!hit.found) {missing = path; return "";}
+			return hit.value && typeof hit.value === "object" ? JSON.stringify(hit.value) : String(hit.value);
+		});
+		return missing ? {missing} : {value: result};
+	}
+
+	// 极简 JSON Schema 校验（只覆盖 payloadSchema / params 的常用子集：
+	// type / required / properties / items / enum）。返回错误消息或 null。
+	function validateSchema(schema, value, path) {
+		if (!schema || typeof schema !== "object") return null;
+		const p = path || "payload";
+		if (schema.type) {
+			const t = schema.type;
+			const ok =
+				(t === "object" && value && typeof value === "object" && !Array.isArray(value)) ||
+				(t === "array" && Array.isArray(value)) ||
+				(t === "string" && typeof value === "string") ||
+				(t === "integer" && Number.isInteger(value)) ||
+				(t === "number" && typeof value === "number") ||
+				(t === "boolean" && typeof value === "boolean") ||
+				(t === "null" && value === null);
+			if (!ok) return p + " 期望 " + t;
+		}
+		if (Array.isArray(schema.enum) && schema.enum.indexOf(value) < 0) {
+			return p + " 只允许 " + schema.enum.join("|");
+		}
+		if (schema.type === "object" || (schema.properties && typeof value === "object" && value)) {
+			for (const key of schema.required || []) {
+				if (value == null || !(key in value)) return p + " 缺少必填字段 " + key;
+			}
+			const props = schema.properties || {};
+			for (const key of Object.keys(value || {})) {
+				if (props[key]) {
+					const msg = validateSchema(props[key], value[key], p + "." + key);
+					if (msg) return msg;
+				}
+			}
+		}
+		return null;
+	}
+
+	function schemaPropType(cap, field) {
+		const props = (cap.spec && cap.spec.params && cap.spec.params.properties) || {};
+		return props[field] && props[field].type ? props[field].type : null;
+	}
+
+	function coerceTo(v, type) {
+		if (!type) return { ok: true, value: v };
+		if (type === "integer") {
+			const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+			if (Number.isInteger(n)) return { ok: true, value: n };
+			return { ok: false };
+		}
+		if (type === "number") {
+			const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+			if (typeof n === "number" && Number.isFinite(n)) return { ok: true, value: n };
+			return { ok: false };
+		}
+		if (type === "string") {
+			return { ok: true, value: v == null ? "" : String(v) };
+		}
+		if (type === "boolean") {
+			if (typeof v === "boolean") return { ok: true, value: v };
+			if (v === "true" || v === "false") return { ok: true, value: v === "true" };
+			return { ok: false };
+		}
+		return { ok: true, value: v };
+	}
+
+	/**
+	 * planDispatch —— 算出「这条配置会派发什么、会剪什么」，**不产生副作用**。
+	 *
+	 * fire 与 dry-run（集合 / 单源）共用它：两边必须给出**一致**的判定，
+	 * 否则用户会看到"试运行说能跑、一点真跑却剪枝了"这种最伤信任的差异。
+	 *
+	 * 剪枝词表（source.md §6，封闭集合）：`no_target` / `event_schema` /
+	 * `param_missing` / `param_schema` / `param_type`。
+	 */
+	function planDispatch(source, payload) {
+		const tasks = [];
+		const pruned = [];
+		const targets = source.targets || [];
+
+		// 没有 target：事件照常入库，留一条 no_target（合法状态，不是错误）
+		if (!targets.length) {
+			return {
+				tasks: [],
+				pruned: [{ to: null, reason: "no_target", detail: "源没有配置 targets" }],
+			};
+		}
+
+		// 入口级：载荷不符合 payloadSchema 就一条都不派（不是逐 target 的事）
+		const schema = source.config && source.config.payloadSchema;
+		if (schema) {
+			const msg = validateSchema(schema, payload || {}, "payload");
+			if (msg) {
+				return {
+					tasks: [],
+					pruned: [{ to: null, reason: "event_schema", detail: msg }],
+				};
+			}
+		}
+
+		for (const t of targets) {
+			const cap = resolveCapRef(t.capability, source.ns);
+			if (!cap) {
+				// 目标解析不到 = 这条入口到不了任何地方；剪枝词表里没有专门的码，
+				// 用 no_target 记录并把人话放进 detail（源体检同时会报 blocked）。
+				pruned.push({
+					to: t.capability,
+					reason: "no_target",
+					detail: "目标能力 " + t.capability + " 不存在（配置未生效）",
+				});
+				continue;
+			}
+			const params = {};
+			let dropped = false;
+			for (const key of Object.keys(t.params || {})) {
+				const raw = t.params[key];
+				const out = evalTemplate(raw, payload || {});
+				if (out.missing) {
+					pruned.push({
+						to: t.capability,
+						reason: "param_missing",
+						field: key,
+						detail: "参数 " + key + " 取不到 " + out.missing,
+					});
+					dropped = true;
+					break;
+				}
+				const want = typeof raw === "string" && /\$\(payload/.test(raw) ? schemaPropType(cap, key) : null;
+				const conv = coerceTo(out.value, want);
+				if (!conv.ok) {
+					pruned.push({
+						to: t.capability,
+						reason: "param_type",
+						field: key,
+						detail: "参数 " + key + " 期望 " + want + "，求值得到 " + JSON.stringify(out.value),
+					});
+					dropped = true;
+					break;
+				}
+				params[key] = conv.value;
+			}
+			if (dropped) continue;
+
+			for (const [key, prop] of Object.entries((cap.spec.params && cap.spec.params.properties) || {})) {
+				if (!(key in params) && prop.default !== undefined) params[key] = clone(prop.default);
+			}
+			const msg = validateParams(cap, params);
+			if (msg) {
+				pruned.push({
+					to: t.capability,
+					reason: "param_schema",
+					detail: cap.name + "@" + cap.version + " " + msg,
+				});
+				continue;
+			}
+			tasks.push({
+				capability: cap.name,
+				version: cap.version,
+				digest: cap.digest,
+				params: params,
+			});
+		}
+		return { tasks: tasks, pruned: pruned };
+	}
+
+	function validateParams(cap, params) {
+		const schema = (cap.spec && cap.spec.params) || {};
+		for (const key of schema.required || []) {
+			if (!(key in (params || {}))) return "params." + key + " 必填";
+		}
+		const props = schema.properties || {};
+		for (const key of Object.keys(params || {})) {
+			if (!props[key]) continue;
+			const msg = validateSchema(props[key], params[key], "params." + key);
+			if (msg) return msg;
+		}
+		return null;
+	}
+
+	// ===== 能力模板（保留域：`GET /v1/capability-templates` 的 cluster 读模型）=====
+	//
+	// 9 个内置模板：5 个 script + 4 个 agent。字段（key/label/type/required/
+	// options/help）必须和真后端 `internal/artifact/templates.go` 一字不差 ——
+	// 控制台要按字段**推导 paramsSchema**，字段错了演示出来的参数契约就是假的。
+	//
+	// v4 起模板不再有 `outputs`（没有端口这个概念），只剩 script / requires。
+	// script 正文这里做了精简（真后端给的是完整正文）：模板脚本在控制台里
+	// 是原样展示 + 允许改的东西，精简不影响页面行为，但保留 shebang 和
+	// ANOTIFY_PARAM_* 的用法，好让「改脚本」演示出来的东西仍然像真的。
 	// ===== 能力模板（CONTRACT-artifact §8）=====
 	//
 	// 9 个内置模板：5 个 script + 4 个 agent。字段（key/label/type/required/
@@ -448,7 +2460,6 @@
 					'echo "params:     $ANOTIFY_PARAMS"',
 				]),
 				requires: [],
-				outputs: [],
 				timeoutSec: 900,
 			},
 			{
@@ -476,7 +2487,6 @@
 					'  "$ANOTIFY_PARAM_URL"',
 				]),
 				requires: ["curl"],
-				outputs: [],
 				timeoutSec: 120,
 			},
 			{
@@ -498,7 +2508,6 @@
 					"git log -1 --stat",
 				]),
 				requires: ["git"],
-				outputs: [],
 				timeoutSec: 900,
 			},
 			{
@@ -511,7 +2520,6 @@
 				],
 				script: sh(['bash -c "$ANOTIFY_PARAM_COMMAND"']),
 				requires: [],
-				outputs: [],
 				timeoutSec: 1800,
 			},
 			{
@@ -533,7 +2541,6 @@
 					'  "$ANOTIFY_PARAM_WEBHOOK_URL"',
 				]),
 				requires: ["curl", "jq"],
-				outputs: [],
 				timeoutSec: 120,
 			},
 			{
@@ -562,7 +2569,6 @@
 					'  --cwd "$PWD" -- "${ANOTIFY_PARAM_AGENT:-pi}" "$ANOTIFY_PARAM_PROMPT"',
 				]),
 				requires: ["hc", "git"],
-				outputs: [],
 				timeoutSec: 3600,
 			},
 			{
@@ -586,7 +2592,6 @@
 					'claude "${args[@]}" "$ANOTIFY_PARAM_PROMPT"',
 				]),
 				requires: ["claude"],
-				outputs: [],
 				timeoutSec: 3600,
 			},
 			{
@@ -597,7 +2602,6 @@
 				fields: [agentPrompt()],
 				script: sh(['codex exec "$ANOTIFY_PARAM_PROMPT"']),
 				requires: ["codex"],
-				outputs: [],
 				timeoutSec: 3600,
 			},
 			{
@@ -617,7 +2621,6 @@
 					"fi",
 				]),
 				requires: ["pi"],
-				outputs: [],
 				timeoutSec: 3600,
 			},
 			{
@@ -638,4912 +2641,1717 @@
 				],
 				script: sh(['"$ANOTIFY_PARAM_AGENT_COMMAND" "$ANOTIFY_PARAM_PROMPT"']),
 				requires: [],
-				outputs: [],
 				timeoutSec: 3600,
 			},
 		];
 	}
 
-	// mock 的 digest：从正文算一个**稳定**的假 sha256。
-	//
-	// 同一份输入永远同一个值 —— 这样「改脚本 → digest 变了 → 节点上是本地变体」
-	// 这条链路在演示里也讲得通；用随机值会让每次刷新都变成另一个 digest。
-	function mockDigest(seed) {
-		const s = String(seed || "");
-		let h1 = 0x811c9dc5 >>> 0;
-		let h2 = 0x1000193 >>> 0;
-		for (let i = 0; i < s.length; i++) {
-			const c = s.charCodeAt(i);
-			h1 = ((h1 ^ c) * 0x01000193) >>> 0;
-			h2 = (h2 + c * 31 + i * 7) >>> 0;
-		}
-		const hex = (n) => n.toString(16).padStart(8, "0");
-		const parts = [
-			h1,
-			h2,
-			(h1 ^ h2) >>> 0,
-			(h1 + h2) >>> 0,
-			(h1 * 3) >>> 0,
-			(h2 * 7) >>> 0,
-			(h1 ^ 0x5bf03635) >>> 0,
-			(h2 ^ 0x9e3779b9) >>> 0,
-		];
-		return "sha256:" + parts.map(hex).join("");
-	}
-
-	// ===== kind 推导 =====
-	//
-	// 必须和后端 route.KindForCapability 一字不差，否则 mock 里看到的
-	// 标签和真实产品对不上，等于在演示里撒谎。
-	//
-	// 后端真身（internal/route/kind.go:52 KindForCapability ⇄ :25 DeriveKind）：
-	//
-	//	if 是内置能力:
-	//	    Central(notify.phone)  → end      // 中枢执行，没有节点
-	//	    Origin(github/cron/...) → origin   // 起点，不产生任务行
-	//	return DeriveKind(hasOutEdges, hasInEdges)   // 其余一律按**边**推导
-	//
-	// 关键：`origin` 只给那 4 个内置起点（OriginCapability 的调用只有
-	// github / cron / http / manual），**不是**"所有 builtin 都算起点"。
-	// 之前这里写成 `c.source === "builtin" → origin`，导致 report.send
-	// 这种用户能力因为 source 标记而被误标成 origin —— 它有一条出边
-	// （→ alert.oncall），按规则该是 pipe。
-	//
-	// 另一个已修的错误口径：这里曾经按 `outputs` 推导（有出口 → pipe）。
-	// 后端 #383 已经把拓扑真相改成**边**（outputs 只是产物里声明的端口，
-	// 建能力时写 [] 之后又加下游的能力不该一直显示「链到这里结束」），
-	// mock 没跟上，于是「声明了出口但没接下游」的能力在演示里被画成管道。
-
-	// 内置起点的名字（后端 store.BuiltinCapabilities 里 OriginCapability 的四个）
-	const ORIGIN_NAMES = ["github", "cron", "http", "manual"];
-	// 中枢执行的终端能力（BuiltinCapability.Central）
-	const CENTRAL_NAMES = ["notify.phone"];
-	// EXECUTABLE_HANDLERS 与 internal/artifact 的 executableHandlers 同口径：
-	// 白名单不等于可执行（`noop` 合法但中枢不执行它，见 IsExecutableHandler）。
-	const EXECUTABLE_HANDLERS = ["notify-phone"];
-
-	// 引用 → 能力名：`x@1` 与 `x` 指向同一个名字。
-	// 版本不参与拓扑推导 —— 后端读的是**按名字**的边形状（store.EdgeShape）。
-	const refName = (ref) => String(ref || "").replace(/@\d+$/, "");
-
-	function kindOf(c) {
-		if (!c) return "origin";
-		if (CENTRAL_NAMES.includes(c.name)) return "end";
-		if (ORIGIN_NAMES.includes(c.name)) return "origin";
-		// 其余按 DeriveKind —— **只看边**（后端 #383 之后就是这条口径）：
-		//   没有出边            → end     链到这里结束
-		//   有出边、没有入边    → origin  链的起点
-		//   两者都有            → pipe    链的中间段
-		//
-		// 这里曾经按 `outputs` + 「有没有节点声明」推导，于是 alert.oncall
-		// （声明了 out、但一条出边都没接）被画成「管道 ◆」—— 正是 #383
-		// 修掉的那个 bug，mock 却还留着：演示里教的和线上不一样。
-		const hasOut = state.edges.some((e) => !e.fromIsSource && refName(e.fromRef) === c.name);
-		const hasIn = state.edges.some((e) => refName(e.toRef) === c.name);
-		if (!hasOut) return "end";
-		if (!hasIn) return "origin";
-		return "pipe";
-	}
-
-	// ---------- 初始边 ----------
-	(function initEdges() {
-		// fromSource: 左端是**来源名**（入口边，#110），不是能力 id。
-		// 旧模型靠一个叫 github@1 的空壳能力当锚点，那个空壳已经不存在了。
-		// 右端是**引用**（P2.2）：演示数据一律钉死 `name@version`，
-		// 让「同一张图、不同版本」在升级演示里看得见。
-		// literals 是这条边的**常量覆盖**（P0-c，设计 §3.3）：默认 {}（= 没有覆盖）。
-		// 两种引用形态（设计 §3.2），演示数据里**两种都要有**：
-		//   PIN("x")    → `x@1` 钉死那一版（升级不动线）
-		//   FOLLOW("x") → `x`   跟随 latest（升级自动生效）
-		// 只有钉死引用的话，`name` / `name@version` 两种写法在界面上长得一样，
-		// 就看不出“跟随最新”和“钉死”的区别（能力页的下游行直接显示 toRef 原文）。
-		const PIN = (name) => capRef(capByName(name));
-		const FOLLOW = (name) => name;
-		// 工厂收的是**引用**（已经算好的字符串），不是能力名：
-		// 这样调用点能自己决定这一端钉死还是跟随。
-		const fromSource = (source, eventType, toRef, literals) => ({
-			id: uid("edg"),
-			orgId: ORG,
-			fromIsSource: true,
-			fromRef: source,
-			// 入口边的 fromPort 是**事件类型**（外部系统决定，后端允许 '*'），
-			// 与能力的出口无关 —— 所以它不参与「单出口」归一。
-			fromPort: eventType,
-			toRef,
-			literals: literals || {},
-			priority: 0,
-			createdAt: now() - 3600,
-		});
-		const from = (fromRef, output, toRef, literals) => ({
-			id: uid("edg"),
-			orgId: ORG,
-			fromRef,
-			fromPort: output,
-			toRef,
-			literals: literals || {},
-			priority: 0,
-			createdAt: now() - 3600,
-		});
-		state.edges = [
-			// 源也可以扇出：一个 PR 事件同时派发分析和通知两条链。
-			// 这两条链互不等待（不做 join），各走各的。
-			fromSource("github", "pull_request.opened", PIN("analyze-pr")),
-			// 带常量覆盖的一条：告警一律标 urgent（常量在配置里，脚本不用管）。
-			fromSource("github", "pull_request.opened", PIN("report.send"), { urgent: true }),
-			fromSource("github", "pull_request.synchronize", PIN("analyze-pr")),
-			fromSource("cron", "nightly", PIN("analyze-pr")),
-			fromSource("http", "webhook.incoming", PIN("deploy-preview")),
-			fromSource("manual", "manual.run", PIN("deploy-preview")),
-			from(PIN("analyze-pr"), "out", PIN("lint-fix")),
-			from(PIN("analyze-pr"), "out", PIN("run-tests")),
-
-			// 两个分支各自往下走一步，然后在 deploy-preview 汇聚 ——
-			// 汇聚是布局最容易画歪的形状（菱形），值得在演示数据里出现。
-			from(PIN("lint-fix"), "out", PIN("run-tests")),
-			from(PIN("lint-fix"), "out", PIN("report.send")),
-			from(PIN("run-tests"), "out", PIN("deploy-preview")),
-
-			// ===== 同一个出口、多条下游 = 候选 =====
-			//
-			// 单出口模型（内部名 "out"，对用户不可见）：拿 (能力, "out") 查表返回 N 行，
-			// 运行期按 priority 升序取最小的一组、组内轮盘选**一条**（契约 §1）。
-			// 界面上只说「下游能力（候选）」，候选集合正是这个形状。
-			//
-			// analyze-pr 的两条候选（lint-fix / run-tests）在上面已经建了；这里不能再写一遍
-			// `analyze-pr → run-tests` —— 真库对 (from_ref,from_port,to_ref) 有唯一约束，
-			// 重复的边只会让「在能力编辑里保存下游」永远撞 400 duplicate_target。
-			from(PIN("apply-fix"), "out", PIN("deploy-preview")),
-
-			// 测试挂了先尝试自动修，修完再测一次 —— 这是本仓库真实存在的
-			// 环（run-tests → apply-fix → run-tests）。流向图必须画出环路，
-			// 而"全是 DAG"的演示数据会让人以为这功能只能处理简单情况。
-			from(PIN("run-tests"), "out", PIN("apply-fix")),
-
-			// 部署之后：生成变更日志 / 回滚（同一出口的两条候选）
-			//
-			// 到 gen-changelog 这条路故意写成**跟随 latest**（FOLLOW）：
-			// 能力发新版后它会自动走新版。能力页的下游行里它显示成裸名 `gen-changelog`，
-			// 而钉死的那些显示成 `name@version` —— 两种引用形态必须在界面上看得见。
-			from(PIN("deploy-preview"), "out", FOLLOW("gen-changelog")),
-			from(PIN("deploy-preview"), "out", PIN("rollback")),
-
-			// 一条真实存在的环：改了再测，测完再改。
-			// 留着它是刻意的：流向图必须能画出环路，而"全是 DAG"的演示数据
-			// 会让人以为这功能只能处理简单情况。
-			from(PIN("apply-fix"), "out", PIN("run-tests")),
-
-			// 兜底告警：report.send 和 rollback 都能触发值班
-			from(PIN("rollback"), "out", PIN("alert.oncall")),
-			from(PIN("report.send"), "out", PIN("alert.oncall")),
-		];
-	})();
-
-	// ---------- 初始节点 ----------
-	//
-	// 三台机器按"谁干什么"分工，而不是随便挂几个能力。
-	// 这件事不只是好看：**kind 是由"有没有节点声明"推导出来的**，一个能力
-	// 没有节点声明就是 origin（表示"没人实现它，只有出边"）。如果 mock 里
-	// 中间能力都没人声明，整张图会显示成一堆孤立的起点 —— 看起来像配置错误，
-	// 其实只是演示数据没铺完。
-	//
-	// 所以这里让每个"应该有实现"的能力都被某台机器声明。
-	(function initNodes() {
-		const capRef = (n) => {
-			const c = capByName(n);
-			// 执行方式（run_spec）：节点侧 node.yaml 里声明的东西。
-			// 中枢**只存不执行**（I1：中枢不是执行者），这里造数据也一样：
-			// 只是给页面显示"这台机器上这个能力跑的什么命令"。
-			const run = {
-				runner: "bash",
-				command: "./runners/" + n.replace(/\./g, "-") + ".sh",
-				timeoutSec: 600,
-				concurrency: 1,
-				env: {},
-			};
-			// displayName 也带上：节点页要显示用户取的中文名。
-			// kind 不在这里算 —— 它依赖"有没有节点声明"，而这段代码正在
-			// 构造 state.nodes，算出来会是半成品。放到请求时算（nodeView）。
-			return {
-				id: c.id,
-				name: c.name,
-				version: c.version,
-				run: run,
-				displayName: c.displayName || "",
-			};
-		};
-
-		state.nodes = [
-			{
-				// 主工作站：分析、修复、告警
-				id: "nd_mock_laptop",
-				orgId: ORG,
-				name: "laptop-worker",
-				status: "online",
-				lastSeenAt: now() - 3,
-				createdAt: now() - 86400,
-				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
-				maxInstances: 20,
-				maxConcurrency: 8,
-				tags: ["local", "workstation"],
-				// displayName 是纯展示标签（用户自己取的名字）。
-		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
-		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: [
-					"analyze-pr",
-					"lint-fix",
-					"apply-fix",
-					"script.echo",
-					"report.send",
-					"alert.oncall",
-					// 部署预发也放这台：源「GitHub PR」用它演示变量，
-					// 挂在离线节点上会让那条示例每次都 pruned/no_node，
-					// 用户点"立即运行"只能看到失败。
-					"deploy-preview",
-				].map(capRef),
-				instances: [
-					{ id: "nins_mock_0", index: 0, concurrency: 4, busy: 1 },
-				],
-				// agent 自升级（契约 §5.1）：陈旧的已知版本 + 从未尝试过升级。
-				agentVersion: "1.3.0+9c1f2ab",
-				agentCommit: "9c1f2ab",
-				agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
-			},
-			{
-				// CI 机器：测试、部署、生成变更日志。离线是故意的（演示"节点掉线
-				// 时任务保持 pending"这条路径）。
-				id: "nd_mock_ci",
-				orgId: ORG,
-				name: "ci-runner",
-				status: "offline",
-				lastSeenAt: now() - 7200,
-				createdAt: now() - 86400 * 3,
-				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
-				maxInstances: 10,
-				maxConcurrency: 4,
-				tags: ["ci"],
-				// displayName 是纯展示标签（用户自己取的名字）。
-		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
-		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: ["run-tests", "gen-changelog"].map(capRef),
-				instances: [{ id: "nins_mock_1", index: 0, concurrency: 2, busy: 0 }],
-				// 离线 + 从未上报过版本：点升级会拿到 409 node_offline。
-				agentVersion: "",
-				agentCommit: "",
-				agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
-			},
-			{
-				// 运维机：回滚。单独一台，方便演示"能力分散在不同机器上"，
-				// 也让"按节点筛选"有东西可筛。
-				id: "nd_mock_ops",
-				orgId: ORG,
-				name: "ops-box",
-				status: "online",
-				lastSeenAt: now() - 12,
-				createdAt: now() - 86400 * 7,
-				// 契约里 Node 一定有这两个硬顶；缺了页面会显示 undefined
-				maxInstances: 5,
-				maxConcurrency: 2,
-				tags: ["ops"],
-				// displayName 是纯展示标签（用户自己取的名字）。
-		// 这里给几个能力填上，好让 demo 能看到"同名不同读法"的效果；
-		// 留几个空的，用来验证没有显示名时回落到 name@version。
-		capabilities: ["rollback"].map(capRef),
-				instances: [{ id: "nins_mock_2", index: 0, concurrency: 1, busy: 0 }],
-				// 已是最新：版本 == 目标版本 → 按钮直接显示「已是最新」（契约 §6）。
-				agentVersion: AGENT_VERSION,
-				agentCommit: AGENT_COMMIT,
-				// ok 是上一次升级的结果：它会随刷新一起回来（已落库），
-				// 所以刷新后仍然是「已是最新」而不是又变回「升级」。
-				agentUpgrade: {
-					status: "ok",
-					targetVersion: AGENT_VERSION,
-					error: "",
-					at: now() - 3600,
-				},
-			},
-			{
-				// 老 agent：从来没在 hello 里上报过 agent_version（契约 §3）——
-				// 页面显示「未知（老版本）」。它的升级永远失败在 need_root：
-				// 演示「ack 失败落库、刷新后还能看到为什么没成」这条最关键的回路。
-				id: "nd_mock_legacy",
-				orgId: ORG,
-				name: "old-laptop",
-				status: "online",
-				lastSeenAt: now() - 40,
-				createdAt: now() - 86400 * 14,
-				maxInstances: 4,
-				maxConcurrency: 2,
-				tags: ["legacy"],
-				// 没声明任何能力：老 agent 还没部署过产物，这是真实形态。
-				capabilities: [],
-				instances: [{ id: "nins_mock_3", index: 0, concurrency: 1, busy: 0 }],
-				agentVersion: "",
-				agentCommit: "",
-				agentUpgrade: {
-					status: "failed",
-					targetVersion: AGENT_VERSION,
-					error: "need_root",
-					at: now() - 1800,
-				},
-			},
-		];
-	})();
-
-	// ---------- 初始产物（脚本）----------
-	//
-	// 用户的原话是「touchnow 我看不到具体什么脚本啊」——能力详情区现在会展示
-	// 产物里的文件正文，那演示数据里就必须真的有脚本，否则每个能力都写
-	// 「还没有产物」，那个功能在预览里等于不存在。
-	//
-	// 只给两条：
-	//   analyze-pr    有脚本 + 有下游（完整形态：能看出它会 emit 什么）
-	//   gen-changelog 有脚本 + **没有下游**（terminal 的那个形态，
-	//                 正好演示详情里的「跑完就结束」空态）
-	//   script.echo   有脚本 + 一个 message 参数（新建表单占位符里的那个例子）
-	(function initArtifactScripts() {
-		const scripts = {
-			"analyze-pr": {
-				requires: ["jq"],
-				run: {
-					entrypoint: "run.sh",
-					timeoutSec: 600,
-					workDir: "",
-					env: {},
-					files: {
-						"run.sh": [
-							"#!/bin/bash",
-							"set -euo pipefail",
-							'cd "$ANOTIFY_WORKDIR"',
-							"",
-							'lines="${ANOTIFY_PARAM_CHANGEDLINES:-0}"',
-							'echo "changed lines: $lines"',
-							"if [ \"$lines\" -gt 200 ]; then",
-								"anotify-agent emit --data '{\"scope\":\"all\"}'",
-							"else",
-								'anotify-agent emit --data "{}"',
-							"fi",
-							"",
-						].join("\n"),
-						"lib/emit.sh": [
-							"#!/bin/bash",
-							"# emit 的薄封装：一个能力只有一个出口，--port 不用写（agent 自己填 out）",
-							"set -euo pipefail",
-							'exec "$ANOTIFY_AGENT_BIN" emit --data "${1:-{}}"',
-						].join("\n"),
-					},
-				},
-			},
-			"gen-changelog": {
-				requires: [],
-				run: {
-					entrypoint: "run.sh",
-					timeoutSec: 300,
-					workDir: "",
-					env: {},
-					files: {
-						"run.sh": [
-							"#!/bin/bash",
-							"set -euo pipefail",
-							'cd "$ANOTIFY_WORKDIR"',
-							"",
-							"# 没有下游 = 不发 emit（终端能力，合法）",
-							'git log --oneline -20 > CHANGELOG.txt',
-							'echo "已写入 CHANGELOG.txt"',
-						].join("\n"),
-					},
-				},
-			},
-			// 示例能力的产物：读 message 参数、打印一份，不发 emit（没有下游）。
-			"script.echo": {
-				requires: [],
-				run: {
-					entrypoint: "run.sh",
-					timeoutSec: 60,
-					workDir: "",
-					env: {},
-					files: {
-						"run.sh": [
-							"#!/bin/bash",
-							"set -euo pipefail",
-							'cd "$ANOTIFY_WORKDIR"',
-							"",
-							'msg="${ANOTIFY_PARAM_MESSAGE:-hello}"',
-							'echo "$msg" | tee echo.txt',
-						].join("\n"),
-					},
-				},
-			},
-		};
-		const addArtifact = (c) => {
-			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
-			state.artifacts.push({
-				id: uid("art"),
-				namespaceId: c.namespaceId,
-				capabilityId: c.id,
-				digest: c.digest,
-				createdAt: now() - 3600,
-			});
-		};
-		for (const [name, spec] of Object.entries(scripts)) {
-			const c = state.capabilities.find((x) => x.name === name);
-			if (!c) continue;
-			c.requires = spec.requires.slice();
-			c.run = spec.run;
-			addArtifact(c);
-		}
-		// 其余演示能力也要有实现（P1-b1 起**不存在**「还没有产物」的能力，契约 R2）：
-		// 没有实现的能力在真后端里根本建不出来，预览里留一批「脚本载入失败」只会
-		// 让人以为功能坏了。handler 形式的（内置执行器）没有脚本，跳过。
-		for (const c of state.capabilities) {
-			if (c.run || c.handler) continue;
-			c.run = {
-				entrypoint: "run.sh",
-				files: { "run.sh": "#!/bin/sh\nset -eu\nexit 0\n" },
-				timeoutSec: 0,
-				workDir: "",
-				env: {},
-			};
-			addArtifact(c);
-		}
-	})();
-
-	// ---------- 初始部署 ----------
-	//
-	// 造出四种状态各来几行，好让「能力页的部署列」与「节点页的已缓存产物」
-	// 在演示里能看到真形态（而不是一排「未部署」）：
-	//   applied 绿 / pending 黄 / failed 红（带 reason）/ local 黄（本地变体）
-	(function initDeployments() {
-		state.deployments = [];
-		const byId = (id) => state.nodes.find((n) => n.id === id) || null;
-		const seed = (nodeId, name, depState, reason) => {
-			const node = byId(nodeId);
-			const c = capByName(name);
-			if (!node || !c) return;
-			const digest = mockDigest(name + "@" + c.version);
-			state.deployments.push({
-				id: uid("dep"),
-				namespaceId: NS,
-				nodeId: node.id,
-				artifactId: "art_" + digest.slice(7, 15),
-				capabilityId: c.id,
-				digest,
-				state: depState,
-				reason: reason || "",
-				createdAt: now() - 3600,
-				updatedAt: now() - 600,
-			});
-		};
-		seed("nd_mock_laptop", "analyze-pr", "applied");
-		seed("nd_mock_laptop", "lint-fix", "applied");
-		// 手改过产物 → 中枢永不覆盖，只能标黄
-		seed("nd_mock_laptop", "apply-fix", "local");
-		// 常见失败：机器上没装 curl（reason 是机器可读短码 + 说明）
-		seed("nd_mock_laptop", "report.send", "failed", "missing_requirement:curl");
-		// ci-runner 离线 → 行照样创建，等它上线再由重连对账补推
-		seed("nd_mock_ci", "run-tests", "pending");
-		seed("nd_mock_ops", "rollback", "applied");
-	})();
-
-	// ---------- 初始源 ----------
-	(function initSources() {
-		const analyze = capByName("analyze-pr");
-		const deploy = capByName("deploy-preview");
-		const report = capByName("report.send");
-		// 三个源刻意覆盖**变量用法的三种典型形态**，让变量功能打开就能看到：
-		//
-		//   每晚体检（cron）    变量全是固定值 —— 定时任务没有外部 payload
-		//   GitHub PR（webhook）变量从请求体取 —— 真实场景的主力
-		//   发布审批（webhook）一条边用变量、另一条边用字面量 —— 混用也很常见
-		//
-		// 如果这里全写成字面量，用户点开任何一个源都看不到变量长什么样，
-		// 新功能等于没演示。
-		state.sources = [
-			{
-				id: "src_mock_nightly",
-				orgId: ORG,
-				name: "每晚体检",
-				kind: "cron",
-				config: {
-					expr: "0 3 * * *",
-					tz: "Local",
-				},
-				enabled: true,
-				lastFiredAt: now() - 3600 * 9,
-				nextFireAt: now() + 3600 * 7,
-				createdAt: now() - 86400 * 2,
-				targets: [
-					{
-						capabilityId: analyze.id,
-						params: { changedLines: 120, repo: "anotify" },
-					},
-				],
-			},
-			{
-				id: "src_mock_hook",
-				orgId: ORG,
-				name: "GitHub PR",
-				kind: "webhook",
-				config: {
-					token: "src_mocktoken_abc123",
-					// 变量把 GitHub 那套深层路径收敛成几个短名字。
-				},
-				enabled: true,
-				lastFiredAt: now() - 600,
-				nextFireAt: null,
-				createdAt: now() - 86400,
-				targets: [
-					{
-						capabilityId: analyze.id,
-						// 别名表已删除：参数直接写完整 payload 路径
-						params: { changedLines: "{{pull_request.additions}}", repo: "{{repository.name}}" },
-					},
-					{ capabilityId: deploy.id, params: { env: "staging" } },
-				],
-			},
-			{
-				id: "src_mock_report",
-				orgId: ORG,
-				name: "发布审批",
-				kind: "manual",
-				config: {
-					// 手动触发没有外部 payload，全用字面量。
-				},
-				enabled: false,
-				lastFiredAt: null,
-				nextFireAt: null,
-				createdAt: now() - 3600 * 5,
-				// 一条边用变量、一条边用字面量：混用是允许的，
-				// 也正是真实配置最常见的样子（有些值随事件变，有些写死）。
-				targets: [
-					{
-						capabilityId: report.id,
-						params: {
-							channel: "slack",
-							title: "v1.4.0 发布",
-							urgent: false,
-							retries: 2,
-						},
-					},
-				],
-			},
-		];
-	})();
-
-	// ---------- 初始事件与任务 ----------
-	(function initEventsTasks() {
-		// 演示数据刻意做得"有形状"，而不是一串整齐的 3 秒成功：
-		//
-		//   - 并行扇出：analyze-pr 之后同时跑 apply-fix 和 deploy-preview
-		//   - 耗时差异：有 0.4s 的快任务，也有 12s 的慢任务
-		//   - 三种终态：succeeded / failed / running（进行中，宽度算到"现在"）
-		//   - 一个 pending（还没开始，只能画左边界细线）
-		//
-		// 全是"3 秒成功"的链会让瀑布图看起来像一堆等长方块，
-		// 既看不出时序也验证不了 5 种边界情况。
-
-		const mkTask = (o) => ({
-			id: nextTaskId(),
-			orgId: ORG,
-			traceId: o.traceId,
-			parentTaskId: o.parent || null,
-			path: o.path || [],
-			capabilityId: o.cap.id,
-			capability: o.cap.name,
-			version: o.cap.version,
-			params: o.params || { mock: true },
-			status: o.status || "succeeded",
-			nodeId: o.nodeId !== undefined ? o.nodeId : state.nodes[0].id,
-			instanceId: o.nodeId === null ? null : "nins_mock_0",
-			leaseUntil: o.finishedAt ? null : o.createdAt + 30,
-			attempts: o.attempts || 1,
-			out: o.out || null,
-			reported: o.status === "succeeded" || o.status === "failed",
-			summary: o.summary || "",
-			artifacts: [],
-			error: o.error || "",
-			contentHash: o.cap.contentHash,
-			capHash: o.cap.contentHash,
-			graphId: "grf_mock",
-			createdAt: o.createdAt,
-			startedAt: o.startedAt !== undefined ? o.startedAt : o.createdAt,
-			finishedAt: o.finishedAt !== undefined ? o.finishedAt : null,
-			notBefore: null,
-		});
-
-		// t 是这几条 demo 的**时间游标**，各段末尾用 `t += N` 往后推。
-		//
-		// 注意累加总量不能超过起点：曾经从 -180 起步、累加 210，
-		// 结果最后一条落在 **+30s（未来）**，事件流里显示成"刚刚"，
-		// 而且把真正想让人第一眼看到的那条挤到了下面。留着这个注释
-		// 免得下次又往上加步长。
-		let t = now() - 420;
-
-		// ---- 1) 一条完整的修复链：analyze → lint-fix → run-tests → 部署 ----
-		//
-		// 这里**必须**符合真实派发语义：每个任务只回报一个 out
-		// （store.Task.Out 是单值，不变量 I5），所以每个父任务
-		// **最多只有一个子任务**。真实的执行路径永远是一条链，不是树。
-		//
-		// 想表现"并行"不能靠让一个父任务扇出 —— 那在模型里不存在。
-		// 并行要靠两条独立的 trace 各自在跑（见下面第 3 条）。
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "GitHub PR", type: "pull_request.opened",
-				payload: {
-					pull_request: {
-						number: 842, title: "修个错字", additions: 12, deletions: 3,
-						user: { login: "alice" }, head: { ref: "fix/typo" }, base: { ref: "main" },
-					},
-					repository: { name: "anotify", full_name: "zzjcool/anotify" },
-					action: "opened",
-				}, createdAt: t,
-			});
-			const analyze = capByName("analyze-pr");
-			const lintFix = capByName("lint-fix");
-			const tests = capByName("run-tests");
-			const deploy = capByName("deploy-preview");
-			const report = capByName("report.send");
-
-			// 逐跳串起来：每一跳走的都是同一个出口，下一跳由候选决定
-			let prev = mkTask({
-				traceId, cap: analyze, createdAt: t,
-				startedAt: t + 1, finishedAt: t + 5,
-				out: "out", summary: "发现 3 处 lint 问题",
-			});
-			state.tasks.push(prev);
-
-			const steps = [
-				{
-					cap: lintFix, out: "out", summary: "自动修复 2 处，1 处需人工",
-					start: t + 5, end: t + 6.4, node: state.nodes[0].id,
-				},
-				{
-					cap: tests, out: "out", summary: "12 个用例全部通过",
-					// 测试常跑在 CI 机器上，顺便让"按节点筛选"在演示数据里看得出差异
-					start: t + 6.4, end: t + 18.6, node: state.nodes[1].id,
-				},
-				{
-					cap: deploy, out: "out", summary: "预览环境已部署",
-					start: t + 18.6, end: t + 21.2, node: state.nodes[1].id,
-					params: { env: "staging" },
-				},
-			];
-
-			for (const st of steps) {
-				const child = mkTask({
-					traceId, cap: st.cap, parent: prev.id,
-					path: [analyze.id, st.cap.id],
-					nodeId: st.node,
-					createdAt: st.start, startedAt: st.start, finishedAt: st.end,
-					out: st.out, summary: st.summary, params: st.params,
-				});
-				state.tasks.push(child);
-				prev = child;
-			}
-
-			// 最后一跳失败，带 error —— 让链尾出现一个红节点
-			state.tasks.push(mkTask({
-				traceId, cap: report, parent: prev.id,
-				path: [analyze.id, deploy.id, report.id],
-				createdAt: t + 21.2,
-				startedAt: t + 21.3, finishedAt: t + 21.7,
-				params: { channel: "slack", title: "部署通知" },
-				status: "failed", error: "slack: 403 invalid token",
-			}));
-			t += 40;
-		}
-
-		// ---- 1b) 主线：一条真正复杂的 trace（森林，不是单链）----
-		//
-		// 按 wiki 06「森林，不是树」的形状造：
-		//
-		//   根事件 pull_request.opened
-		//     ├─ analyze-pr ─┬─ lint-fix ── run-tests(failed) ── apply-fix ── run-tests
-		//     │              └─ run-tests(passed) ──────────────┐（analyze 的同一出口有 2 条候选，这次都走了）
-		//     │                            └→ deploy-preview ─┬─ gen-changelog
-		//     │                                                └─ alert.oncall
-		//     └─ report.send（源扇出：同一个事件同时派发通知链）
-		//
-		// 同时含三种真实形状，一张图能验证完：
-		//   ① 源扇出     —— 一个事件派两条互不等待的链
-		//   ② 候选       —— analyze-pr 的出口有 2 条候选 → 这次建出 2 个子任务
-		//   ③ 环         —— run-tests(failed) → apply-fix → run-tests(passed)
-		//
-		// 这是演示数据的核心：只有 3 个节点的链根本暴露不出布局问题、
-		// 也验证不了"扇出的边怎么画"。
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "GitHub PR", type: "pull_request.reopened",
-				payload: {
-					pull_request: {
-						number: 913, title: "重构参数映射", additions: 240, deletions: 88,
-						user: { login: "bob" }, head: { ref: "refactor/params" }, base: { ref: "main" },
-					},
-					repository: { name: "anotify", full_name: "zzjcool/anotify" },
-					action: "reopened",
-				}, createdAt: t,
-			});
-
-			const analyze = capByName("analyze-pr");
-			// 用「名字 + 起始偏移」建任务，方便表达扇出后的时间重叠
-			const add = (name, parent, offset, dur, opts) => {
-				const cap = capByName(name);
-				const nodeIdx = opts.node != null ? opts.node : 0;
-				const task = mkTask(Object.assign({
-					traceId, cap,
-					parent: parent ? parent.id : null,
-					path: [analyze.id, cap.id],
-					nodeId: state.nodes[nodeIdx].id,
-					createdAt: t + offset,
-					startedAt: t + offset,
-					finishedAt: t + offset + dur,
-					attempts: 1,
-				}, opts));
-				state.tasks.push(task);
-				return task;
-			};
-
-			// ---- 根：analyze-pr（出口上有 2 条候选）----
-			const a = add("analyze-pr", null, 0, 3.8, {
-				out: "out", summary: "27 个文件，发现 6 处问题",
-			});
-
-			// ---- 候选第 1 支：lint-fix → run-tests(失败) ----
-			const lintFix = add("lint-fix", a, 3.9, 2.1, {
-				out: "out", summary: "自动修复 4 处，2 处需人工",
-			});
-			const testFail = add("run-tests", lintFix, 6.1, 34.2, {
-				out: "out", status: "failed", node: 1,
-				error: "e2e: 3 specs timed out (30s)",
-			});
-			// 失败后走环：改 → 再测（第二次带重试标记）
-			const fix = add("apply-fix", testFail, 40.4, 12.6, {
-				out: "out", node: 1, summary: "人工修复完成",
-			});
-			const testPass = add("run-tests", fix, 53.1, 41.3, {
-				out: "out", node: 1, attempts: 2, summary: "全部 218 个用例通过",
-			});
-
-			// ---- 候选第 2 支：analyze-pr 的出口还直接连了 run-tests ----
-			// （和上面那支同时开始 —— 演示数据里两条候选都走了，好把候选的形状画出来）
-			const testDirect = add("run-tests", a, 3.9, 96.0, {
-				out: "out", node: 1, summary: "全量回归通过",
-			});
-
-			// ---- 汇聚（不是 join，只是两条分支都指向同一个下游能力）----
-			const deploy = add("deploy-preview", testPass, 94.5, 18.4, {
-				out: "out", node: 1, params: { env: "staging" },
-				summary: "staging 已就绪",
-			});
-			add("gen-changelog", deploy, 113, 1.2, { summary: "生成 14 条变更" });
-			add("alert.oncall", deploy, 113, 0.3, { summary: "值班已确认" });
-
-			// ---- 源扇出的另一支：通知链，与上面完全并行 ----
-			add("report.send", null, 0.2, 0.9, {
-				out: "out", params: { level: "warn", page: true },
-				summary: "已通知 #ci-alerts",
-			});
-
-			t += 140;
-		}
-
-		// ---- 1c) 并行：两条独立的 trace 同时在跑 ----
-		//
-		// 想表现并行**不能**让一个父任务扇出（模型不存在那个状态，
-		// Task.Out 是单值）。真实并行 = 两条 trace 各自在跑。
-		// 事件流按源分组时，这两条会落在同一个源下面，瀑布图/图视图
-		// 可以对比它们的耗时差异。
-		{
-			const branch = [
-				{ src: "GitHub PR", type: "pull_request.opened", plan: [
-					["analyze-pr", "out", "succeeded", 5.1, 0, "无问题"],
-					["run-tests", "out", "succeeded", 22.7, 1, "218 用例通过"],
-					["deploy-preview", "out", "succeeded", 15.2, 1, "staging 就绪"],
-				]},
-				{ src: "每晚体检", type: "nightly", plan: [
-					["analyze-pr", "out", "succeeded", 2.2, 0, "基线正常"],
-					["run-tests", "out", "succeeded", 9.4, 0, "冒烟通过"],
-				]},
-			];
-			// 两条 **必须从完全相同的 createdAt 开始**，否则"并行"看不出来。
-			// 取整到秒是刻意的：浮点毫秒会有微小差异，图上就有个错位。
-			const baseClock = Math.floor(now() - 45);
-			for (const br of branch) {
-				const traceId = nextTraceId();
-				state.events.push({
-					id: uid("evt"), orgId: ORG, traceId,
-					source: br.src, type: br.type, payload: {}, createdAt: baseClock,
-				});
-				let clock = baseClock;
-				let prev = null;
-				const rootId = capByName("analyze-pr").id;
-				for (const [name, out, status, dur, nodeIdx, note] of br.plan) {
-					const cap = capByName(name);
-					const task = mkTask({
-						traceId, cap,
-						parent: prev ? prev.id : null,
-						path: [rootId, cap.id],
-						nodeId: state.nodes[nodeIdx].id,
-						createdAt: clock, startedAt: clock, finishedAt: clock + dur,
-						out: out || null, status, summary: note,
-					});
-					state.tasks.push(task);
-					prev = task;
-					clock += dur;
-				}
-			}
-		}
-
-		// ---- 2) 进行中：有一条任务还没结束（瀑布图宽度算到"现在"）----
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "每晚体检", type: "nightly",
-				payload: {}, createdAt: now() - 6,
-			});
-			const analyze = capByName("analyze-pr");
-			const a = mkTask({
-				traceId, cap: analyze, createdAt: now() - 6,
-				startedAt: now() - 5, finishedAt: null,
-				status: "running", summary: "",
-			});
-			state.tasks.push(a);
-		}
-
-		// ---- 3) 待派发：还没被节点认领（只能画左边界细线）----
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "每日汇总", type: "manual.run",
-				payload: {}, createdAt: now() - 30,
-			});
-			state.tasks.push(mkTask({
-				traceId, cap: capByName("report.send"),
-				createdAt: now() - 30, startedAt: null, finishedAt: null,
-				status: "pending", nodeId: null,
-				params: { channel: "email", title: "周报" },
-			}));
-		}
-
-		// ---- 4) 快任务：0.4 秒，验证"零耗时也看得见" ----
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "GitHub PR", type: "pull_request.synchronize",
-				payload: {
-					pull_request: {
-						number: 843, title: "加个测试", additions: 31, deletions: 0,
-						user: { login: "carol" }, head: { ref: "test/more" }, base: { ref: "main" },
-					},
-					repository: { name: "anotify", full_name: "zzjcool/anotify" },
-					action: "synchronize",
-				}, createdAt: t,
-			});
-			state.tasks.push(mkTask({
-				traceId, cap: capByName("deploy-preview"),
-				nodeId: state.nodes[1].id,
-				createdAt: t, startedAt: t + 1, finishedAt: t + 1.4,
-				params: { env: "staging" }, summary: "已部署",
-			}));
-			t += 30;
-		}
-
-		// ---- 5) 重试过的任务：attempts=3，瀑布图要标出 ×3 ----
-		{
-			const traceId = nextTraceId();
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "cron", type: "nightly",
-				payload: {}, createdAt: t,
-			});
-			state.tasks.push(mkTask({
-				traceId, cap: capByName("apply-fix"),
-				createdAt: t, startedAt: t + 2, finishedAt: t + 9,
-				attempts: 3, summary: "第 3 次尝试成功",
-			}));
-		}
-
-		// ---- 6) 复杂链路：失败 → 重试 → 分支 → 汇聚 → 剪枝 全都占上 ----
-		//
-		// 前面每一条都只演示**一种**状态（纯成功链、并行对比、进行中、待派发、
-		// 零耗时、重试过）。真实一次事故里这些是同时出现的：
-		//
-		//   analyze-pr ─→ lint-fix ─→ report.send ─→ alert.oncall
-		//        │              └─→ （剪枝：run-tests 不被派发）
-		//        └─→ run-tests ─→ apply-fix ─→ run-tests（×2 重试）
-		//                          └────→ deploy-preview ─→ rollback ─→ alert.oncall
-		//                                            （→gen-changelog 那条候选被剪枝）
-		//
-		// 这一条特意做了几件别的 trace 没做的事：
-		//   · 同一个能力在一个 trace 里出现**多次**（run-tests 跑了 3 次、
-		//     apply-fix 跑了 2 次）——瀑布图要能分清这是多次执行，不是重复渲染
-		//   · 失败任务的 error 字段非空（UI 要展示错误文本）
-		//   · 有 attempts=2 的重试标记
-		//   · 有剪枝（另一条候选的 run-tests 没被派发，所以它不在任务里）
-		//   · 时间跨度是前几条的两倍多（4 分半），瀑布图的刻度会换单位
-		//
-		// 注意仍然遵守 I5：每个任务只回报一个 out，所以是**一条链**在
-		// 不同位置分叉，不是一棵同时展开的树。
-		{
-			const traceId = nextTraceId();
-			// 刻意让这条**最新**：事件流按时间倒序，最近的一条排最上面。
-			// 比"进行中"（-6s）和"零耗时"（t≈-120s）都新，这样打开 demo
-			// 一眼就能看到"复杂链路"长什么样，不用往下翻找。
-			const base = Math.floor(now() - 2);
-			state.events.push({
-				id: uid("evt"), orgId: ORG, traceId,
-				source: "GitHub PR", type: "pull_request.synchronize",
-				payload: {
-					action: "synchronize",
-					number: 844,
-					pull_request: {
-						number: 844,
-						title: "重构参数解析（第 3 次推送）",
-						additions: 486, deletions: 213, changed_files: 27,
-						commits: 11, draft: false, merged: false,
-						user: { login: "dave" },
-						head: { ref: "refactor/param-parse", sha: "a1b2c3d4e5f6a7b8" },
-						base: { ref: "main", sha: "9a8b7c6d5e4f3021" },
-					},
-					repository: {
-						name: "anotify", full_name: "zzjcool/anotify",
-						default_branch: "main", private: false,
-					},
-					sender: { login: "dave" },
-				},
-				createdAt: base,
-			});
-
-			const analyze = capByName("analyze-pr");
-			const lintFix = capByName("lint-fix");
-			const report = capByName("report.send");
-			const alert = capByName("alert.oncall");
-			const tests = capByName("run-tests");
-			const fix = capByName("apply-fix");
-			const deploy = capByName("deploy-preview");
-			const rollback = capByName("rollback");
-			const rootId = analyze.id;
-
-			// 每跳的 [能力, 起点, 终点, out, 状态, 备注, nodeIdx, attempts]
-			// nodeIdx 让瀑布图和节点页的"哪个实例跑的"对得上。
-			// 重试**两轮**（而不是一轮）是刻意的：
-			//
-			// 环只绕一圈时，环上每条边都只被走了 1 次 —— "边上标注走过
-			// 几次"这个功能就永远没有内容可显示。绕两圈才能看到
-			// `failed ×2` / `fixed ×2`，也才像真实的重试。
-			//
-			// 时间跨度保持原来的 4m11s（把各段压缩），不把任务时间戳
-			// 往未来推得更远。
-			// 最后一列是**父任务在本数组里的下标**（null = 根任务）。
-			//
-			// 必须显式写，不能用"上一个元素"当父任务 —— 原来就是那么写的，
-			// 结果算出 analyze→lint-fix→report→alert→**run-tests** 这种
-			// 底图里根本不存在的父子对：alert 是终点，它没有出口能派发到
-			// run-tests。连锁反应是"走过几次"全错位，
-			// 真正走过的 analyze → run-tests 反而统计成 0 次，
-			// 图上那条线就永远不动（issue #157）。
-			const plan = [
-				// [能力, 起点, 终点, 出口, 状态, 备注, nodeIdx, attempts, 父下标]
-				[analyze, 0.0, 4.8, "out", "succeeded", "发现 1 个高危 + 27 处 lint", 0, 1, null],
-				// 候选是 lint-fix 和 run-tests：演示数据里两条都走了，
-				// 它们是兄弟，不是一条链上的前后。
-				[lintFix, 4.8, 96.2, "out", "succeeded", "自动修了 26 处，1 处需人工", 0, 1, 0],
-				[report, 96.2, 97.4, "out", "succeeded", "已通知值班人", 2, 1, 1],
-				[alert, 97.4, 98.1, null, "succeeded", "电话已拨出", 2, 1, 2],
-				[tests, 4.8, 48.3, "out", "failed", "3 个用例失败（parse_test.go）", 1, 1, 0],
-				[fix, 48.3, 88.0, "out", "succeeded", "自动补了边界判断", 1, 2, 4],
-				// 第二轮：修完还是不绿，再修一次才过
-				[tests, 88.0, 125.0, "out", "failed", "还剩 1 个用例超时（TestParseTimeout）", 1, 1, 5],
-				[fix, 125.0, 165.0, "out", "succeeded", "把超时阈值从 2s 提到 5s", 1, 2, 6],
-				[tests, 165.0, 190.0, "out", "succeeded", "278 用例全部通过", 1, 1, 7],
-				[deploy, 190.0, 231.5, "out", "failed", "健康检查 5 分钟未通过", 1, 1, 8],
-				[rollback, 231.5, 250.8, "out", "succeeded", "已回滚到上一版", 1, 1, 9],
-				[alert, 250.8, 251.4, null, "succeeded", "值班已收到升级", 2, 1, 10],
-				// 注意这里**没有** gen-changelog：
-				//
-				// 配置里有 `deploy-preview → gen-changelog` 这条候选，
-				// 而这次部署走的是另一条（→ rollback）。所以它根本没被派发，
-				// 图视图上会以"剪枝"形式留在原地 —— 这正是底图的意义：
-				// 让"配置里有这条路、但这次没走"变得可见。
-				//
-				// （之前让它"执行了"是错的：部署失败了哪来的预览地址去生成变更日志。）
-			];
-
-			const made = [];
-			for (const [cap, t0, t1, out, status, note, nodeIdx, attempts, parentIdx] of plan) {
-				const parent = parentIdx == null ? null : made[parentIdx];
-				const clock = base + t0;
-				const task = mkTask({
-					traceId,
-					cap,
-					parent: parent ? parent.id : null,
-					path: [rootId, cap.id],
-					nodeId: state.nodes[nodeIdx].id,
-					createdAt: clock,
-					startedAt: clock,
-					finishedAt: base + t1,
-					out: out || null,
-					status,
-					summary: note,
-					attempts,
-					params:
-						cap.name === "deploy-preview"
-							? { env: "production", version: "v1.4.0-rc3" }
-							: cap.name === "report.send"
-								? { channel: "slack", title: "PR #844 需要人工确认" }
-								: { mock: true },
-					// 失败任务必须带错误文本：UI 上要能展开看原因，
-					// 只有 status=failed 而没有 error 是"假装失败"。
-					error:
-						status === "failed"
-							? cap.name === "run-tests"
-								? "3 failures: TestParseNested / TestParseEmpty / TestParseLoop"
-								: "healthcheck timed out after 300s (GET /health → 503)"
-							: "",
-				});
-				state.tasks.push(task);
-				made.push(task);
-			}
-		}
-	})();
-
-	// ---------- emit 种子数据（P1.6）----------
-	//
-	// 真后端的 emissions 是「每次 emit 一行」（迁移 22，PRIMARY KEY(task_id, seq)），
-	// trace 页的「产出（emits）」区就是读它。这里给**主线 trace 的根任务**种三条，
-	// 形状刻意覆盖三种结果：
-	//
-	//   #1 routed=1 pruned=1 —— 候选里派出去一条、另一条被剪
-	//   #2 routed=0 pruned=1 —— 全被剪（routed=0 是合法结果）
-	//   #3 routed=1 pruned=0 —— 正常派出
-	//
-	// 出口名一律是 "out"（单出口的内部名，对用户不可见）：emit 的出口必须在
-	// 这个能力的 outputs 里（I2），mock 造一个不存在的出口就是在演示一个真后端
-	// 会拒收的形状。同一个任务可以 emit 多次（seq 区分），出口不变。
-	//
-	// 为什么选主线 trace（trace_mock_t2）的 analyze-pr：它是事件流里点「查看链路」
-	// 最常落到的那条（复杂、有扇出、有失败），打开就能看到产出区长什么样。
-	// traceSeq 是确定性的（见 nextTraceId 的注释），所以 trace_mock_t2 跨刷新稳定。
-	(function seedEmissions() {
-		const host =
-			state.tasks.find((t) => t.traceId === "trace_mock_t2" && t.capability === "analyze-pr") ||
-			state.tasks[0];
-		if (!host) return;
-		// 时间贴着任务自身的时间轴：emit 发生在任务跑的过程中（startedAt..finishedAt），
-		// 不是"任务结束后才冒出来"的一条。
-		const base = host.startedAt != null ? host.startedAt : host.createdAt;
-		const row = (seq, port, data, routed, pruned, offset, note) => ({
-			taskId: host.id,
-			seq,
-			port,
-			data,
-			// 真后端的 emissions 表还没有 note 列（中枢收到帧后只记日志），
-			// 所以这里也留空 —— mock 不能比真后端"多出"一个会误导人的字段值。
-			note: note || "",
-			routed,
-			pruned,
-			createdAt: Math.round(base + offset),
-		});
-		state.emissions.push(
-			row(1, "out", { issue: "#913", files: 27, findings: 6, patch: "a1b2c3d" }, 1, 1, 0.4),
-			row(2, "out", { issue: "#913", files: 3, findings: 2, patch: "a1b2c3d" }, 0, 1, 1.7),
-			row(3, "out", { issue: "#913", files: 27, approved: false }, 1, 0, 3.1),
-		);
-	})();
-
-	// ---------- 任务日志种子数据（CONTRACT-task-logs §4/§5）----------
-	//
-	// trace 页的日志面板要演示**六种**形状，各对应一条数据（前四条挂在
-	// trace_mock_t9 = 12 任务的复杂链路上，打开一次就能全看到）：
-	//
-	//   ① deploy-preview（failed，唯一能力）—— stderr + truncated + ANSI + 一段
-	//      长得像 HTML 的文本 → 失败默认展开 / 截断提示 / stderr 块 / 纯文本渲染
-	//   ② run-tests（failed，第一次）—— 只有 stderr，**没截断**
-	//      → 截断提示不能“无条件出现”
-	//   ③ analyze-pr（succeeded）—— 只有 stdout
-	//      → 成功默认折叠 + 展开才请求（懒加载）+ stdout 块
-	//   ④ rollback（succeeded，唯一能力）—— 两块都空
-	//      → 展开后显示「没有输出」
-	//   ⑤ lint-fix（succeeded）—— available:false / reason:"node_offline"
-	//      → 降级文案要说「日志在节点上」，**不能**说「没有输出」
-	//   ⑥ alert.oncall（succeeded，trace 里最后一条）—— available:false /
-	//      reason:"no_local_archive" → 降级文案要说「档案/保留期」
-	//
-	// ⑤⑥ 是 `available:false` 的靶子：只说“日志取不到”而不说是哪条任务、哪种原因，
-	// 页面就会把它当成“任务真的什么都没打印”渲染——那是错的（日志存在，只是中枢取不到）。
-	// 它们**必须**与非降级的那几条同时在种子里：一个只有正常态的演示看不出区别。
-	//
-	// 其余任务故意**没有日志行**：真后端对“任务存在但没上传日志”也回 200 + 空串
-	// （契约 §4 的合法状态），页面应当显示「没有输出」而不是报错。
-	//
-	// 为什么把 HTML / ANSI 写进日志：真实日志里就是会有（CI 的彩色输出、命令自己
-	// 打印的片段）。页面必须当**文本** 渲染 —— 这两段就是那条守卫的靶子。
-	(function seedTaskLogs() {
-		const inTrace = state.tasks.filter((t) => t.traceId === "trace_mock_t9");
-		const pick = (capName) => inTrace.find((t) => t.capability === capName) || null;
-		// 同一个能力在这条 trace 里可能跑了多次（比如 run-tests 失败→修→再跑）。
-		// 目标指向“最后那次”时用这个，别用 pick()。
-		const pickLast = (capName) => {
-			const hits = inTrace.filter((t) => t.capability === capName);
-			return hits.length ? hits[hits.length - 1] : null;
-		};
-		const push = (task, row) => {
-			if (!task) return;
-			state.taskLogs.push(
-				Object.assign(
-					{
-						taskId: task.id,
-						namespaceId: task.namespaceId || NS,
-						stdout: "",
-						stderr: "",
-						truncated: false,
-						bytes: 0,
-						// 正常态：日志取到了（内容可能为空 = 真没输出）。
-						// 取不到的几条在下面显式覆盖成 false + reason。
-						available: true,
-						createdAt: (task.finishedAt || task.createdAt || 0) + 1,
-					},
-					row,
-				),
-			);
-		};
-
-		// ① 失败：健康检查没过。ANSI 颜色 + 像 HTML 的文本都在里面。
-		push(pick("deploy-preview"), {
-			stderr:
-				"\u001b[31mhealthcheck: GET /health -> 503\u001b[0m\n" +
-				"  attempt 1/6 ... 503 after 60s\n" +
-				"  attempt 2/6 ... 503 after 60s\n" +
-				"  attempt 3/6 ... timeout after 60s\n" +
-				"  attempt 4/6 ... timeout after 60s\n" +
-				"  attempt 5/6 ... timeout after 60s\n" +
-				"deploy.sh: line 42: curl: (7) Failed to connect to 127.0.0.1:8080\n" +
-				"hint: <b>NOT_HTML</b> must stay plain text, never a tag\n" +
-				"…（日志已截断：共 1048576 字节，只保留最后 32768 字节）\n",
-			truncated: true,
-			bytes: 1048576,
-		});
-
-		// ② 失败但不截断：三个用例挂了（与任务行 error 字段里那三个
-		// TestParse* 对得上）。
-		push(pick("run-tests"), {
-			stderr:
-				"--- FAIL: TestParseNested (0.02s)\n" +
-				"    parse_test.go:118: got <nil>, want error\n" +
-				"--- FAIL: TestParseEmpty (0.00s)\n" +
-				"    parse_test.go:64: unexpected panic: index out of range\n" +
-				"--- FAIL: TestParseLoop (0.01s)\n" +
-				"    parse_test.go:203: exceeded max depth 16\n" +
-				"FAIL\tgithub.com/anotify/anotify/internal/route\t1.284s\n",
-			bytes: 412,
-		});
-
-		// ③ 成功：只有 stdout（stderr 块应当不存在）。
-		push(pick("analyze-pr"), {
-			stdout:
-				"analyzing PR #844 (27 files, +486/-213)\n" +
-				"  read diff .................... ok\n" +
-				"  parse nested params .......... ok\n" +
-				"  scan risky patterns .......... 1 high, 27 lint\n" +
-				"summary: 1 high-severity finding (param parse loop), 27 lint issues\n",
-			bytes: 286,
-		});
-
-		// ④ 成功但没任何输出：两块都空 → 「没有输出」。
-		push(pick("rollback"), { stdout: "", stderr: "", bytes: 0 });
-
-		// ⑤ 取不到：节点离线。日志留在节点本地，中枢拿不到——**不是**“没有输出”。
-		push(pick("lint-fix"), {
-			available: false,
-			reason: "node_offline",
-			stdout: "",
-			stderr: "",
-			bytes: 0,
-		});
-
-		// ⑥ 取不到：节点上没有这次执行的档案（已过保留期 / 节点重建过）。
-		// 用 pickLast：同一条 trace 里 alert.oncall 可能被多个上游触发过，
-		// 落量的应当是**最后**那条（与演示里“展开最后一条能看到降级”对得上）。
-		push(pickLast("alert.oncall"), {
-			available: false,
-			reason: "no_local_archive",
-			stdout: "",
-			stderr: "",
-			bytes: 0,
-		});
-	})();
-
-	// ---------- 组织与命名空间 ----------
-	//
-	// 组织是身份边界；命名空间是**配置 + 运行面**的隔离边界：
-	// sources / edges / events / tasks 属于命名空间，
-	// capabilities / nodes 属于组织（能力和节点是共享资源池，见设计文档 §2）。
-	//
-	// 演示要求：切命名空间得能看出差别，否则这功能等于没有。所以
-	//   prod    = 整套 t1~t12 演示数据（原来那些）
-	//   staging = 一条独立的 cron 链（源 / 边 / trace 都和 prod 不同）
-	//   sandbox = 故意留空（用来看空状态，也用来演示"非空不能删"）
-	//   外加第二个组织 Acme，证明"换组织 = 换一整套命名空间"。
-	(function initNamespaces() {
-		const STAGING = "ns_mock_staging";
-		const SANDBOX = "ns_mock_sandbox";
-		const ACME = "org_mock_acme";
-		const ACME_NS = "ns_mock_acme_default";
-
-		state.orgs = [
-			{ id: ORG, name: "演示组织", slug: "demo", createdAt: now() - 86400 * 40 },
-			{ id: ACME, name: "Acme", slug: "acme", createdAt: now() - 86400 * 12 },
-		];
-		state.namespaces = [
-			{ id: NS, orgId: ORG, slug: "prod", name: "生产", createdAt: now() - 86400 * 40 },
-			{
-				id: STAGING,
-				orgId: ORG,
-				slug: "staging",
-				name: "预发",
-				createdAt: now() - 86400 * 30,
-			},
-			{
-				id: SANDBOX,
-				orgId: ORG,
-				slug: "sandbox",
-				name: "沙箱",
-				createdAt: now() - 86400 * 3,
-			},
-			{
-				id: ACME_NS,
-				orgId: ACME,
-				slug: "default",
-				name: "默认",
-				createdAt: now() - 86400 * 12,
-			},
-		];
-
-		// 已有演示数据统一归到 prod（不逐个改写种子，省得以后加种子又漏）
-		for (const x of state.sources) x.namespaceId = NS;
-		for (const x of state.edges) x.namespaceId = NS;
-		for (const x of state.events) x.namespaceId = NS;
-		for (const x of state.tasks) x.namespaceId = NS;
-		for (const x of state.capabilities) x.namespaceId = NS;
-		for (const x of state.nodes) x.namespaceId = NS;
-
-		// ---- 内置能力：每个命名空间各有一份 ----
-		//
-		// 这是实现里最容易漏的一步：内置能力（notify.phone）是随项目发布的，
-		// 不属于任何用户操作，所以新建命名空间时**必须同事务播种**，
-		// 否则新命名空间里连一个 end 节点都声明不出来，推送直接失效。
-		// demo 里 staging / sandbox 各有一份，用来验证这条规则。
-		const builtinFor = (nsId) => {
-			const c = cap("notify.phone", 1, [], { type: "object" }, "builtin", "推送通知");
-			return Object.assign(c, {
-				id: "cap_mock_" + nsId + "_notify_phone_v1",
-				namespaceId: nsId,
-				// 内容相同 → hash 相同（同一份二进制播种的），跨命名空间重复不算冲突
-				contentHash: "hash_builtin_notify_phone_v1",
-			});
-		};
-		state.capabilities.push(builtinFor(STAGING), builtinFor(SANDBOX));
-
-		// ---- staging：一条和 prod 完全无关的链 ----
-		//
-		// 注意这里**故意不用 prod 的能力 id**：能力按命名空间隔离，
-		// staging 的 analyze-pr@1 是另一个定义（另一个 id）。
-		// 拿 prod 的 id 建边就是跨命名空间引用，I11 会拒。
-		const stgCap = (name, version, outputs, display) => {
-			const c = cap(name, version, outputs, { type: "object" }, "custom", display);
-			return Object.assign(c, {
-				id: "cap_mock_staging_" + name.replace(/\./g, "_") + "_v" + version,
-				namespaceId: STAGING,
-			});
-		};
-		const analyze = stgCap("analyze-pr", 1, ["out"], "分析 PR（预发）");
-		const tests = stgCap("run-tests", 1, ["out"], "跑测试（预发）");
-		const deploy = stgCap("deploy-preview", 1, ["out"], "部署预发（预发）");
-		state.capabilities.push(analyze, tests, deploy);
-
-		// staging 的机器：一台，只声明 staging 的三个能力
-		state.nodes.push({
-			id: "nd_mock_staging_runner",
-			orgId: ORG,
-			namespaceId: STAGING,
-			name: "staging-runner",
-			status: "online",
-			lastSeenAt: now() - 12,
-			createdAt: now() - 86400 * 20,
-			maxInstances: 4,
-			maxConcurrency: 2,
-			tags: ["staging", "ci"],
-			capabilities: [analyze, tests, deploy].map((c) => ({
-				id: c.id,
-				name: c.name,
-				version: c.version,
-				displayName: c.displayName,
-			})),
-			instances: [{ id: "nins_mock_stg_0", index: 0, concurrency: 2, busy: 0 }],
-		});
-
-		// 让"全就绪"的包真的存在：需要一个源把事件送进 lint-fix。
-		// 否则每个包的触发器都是缺的，"就绪"这个状态在演示里永远看不到。
-		const lintCap = state.capabilities.find(
-			(c) => c.name === "lint-fix" && c.namespaceId === NS,
-		);
-		if (lintCap) {
-			state.sources.push({
-				id: "src_mock_lint",
-				orgId: ORG,
-				namespaceId: NS,
-				name: "Lint 钩子",
-				kind: "webhook",
-				config: { token: "lint-demo" },
-				enabled: true,
-				lastFiredAt: now() - 3600 * 5,
-				createdAt: now() - 86400 * 6,
-				targets: [{ capabilityId: lintCap.id, params: { changedLines: 30 } }],
-			});
-		}
-
-		const traceId = "trace_mock_staging_daily";
-		const t0 = now() - 3600 * 6;
-
-		state.sources.push({
-			id: "src_mock_staging_cron",
-			orgId: ORG,
-			namespaceId: STAGING,
-			name: "预发每日体检",
-			kind: "cron",
-			config: { expr: "0 4 * * *", tz: "Local" },
-			enabled: true,
-			lastFiredAt: t0,
-			nextFireAt: t0 + 86400,
-			createdAt: t0 - 86400 * 10,
-			targets: [{ capabilityId: analyze.id, params: { changedLines: 12, repo: "anotify" } }],
-		});
-
-		const stgByName = { "analyze-pr": analyze, "run-tests": tests, "deploy-preview": deploy };
-		const edge = (from, to, literals) => ({
-			id: uid("edg"),
-			orgId: ORG,
-			namespaceId: STAGING,
-			fromRef: capRef(stgByName[from]),
-			fromPort: "out",
-			toRef: capRef(stgByName[to]),
-			literals: literals || {},
-			priority: 0,
-			createdAt: t0 - 86400 * 10,
-		});
-		state.edges.push(edge("analyze-pr", "run-tests"));
-		state.edges.push(edge("run-tests", "deploy-preview"));
-
-		state.events.push({
-			id: uid("evt"),
-			orgId: ORG,
-			namespaceId: STAGING,
-			traceId,
-			source: "每晚体检",
-			type: "nightly",
-			payload: { env: "staging", repo: "anotify", commit: "9f3c1ab" },
-			createdAt: t0,
-		});
-
-		const mkNsTask = (o) => ({
-			id: nextTaskId(),
-			orgId: ORG,
-			namespaceId: STAGING,
-			traceId,
-			parentTaskId: o.parent || null,
-			path: o.path || [],
-			capabilityId: o.cap.id,
-			capability: o.cap.name,
-			version: o.cap.version,
-			params: { mock: true },
-			status: "succeeded",
-			nodeId: state.nodes[1] ? state.nodes[1].id : null,
-			instanceId: state.nodes[1] ? "nins_mock_0" : null,
-			leaseUntil: null,
-			attempts: 1,
-			out: o.out !== undefined ? o.out : null,
-			reported: true,
-			summary: o.summary || "",
-			artifacts: [],
-			error: "",
-			contentHash: o.cap.contentHash,
-			capHash: o.cap.contentHash,
-			graphId: "grf_mock",
-			createdAt: o.at,
-			startedAt: o.at,
-			finishedAt: o.at + (o.secs || 20),
-			notBefore: null,
-		});
-		const a = mkNsTask({ cap: analyze, at: t0 + 0.4, out: "out", secs: 18 });
-		const t = mkNsTask({
-			cap: tests,
-			parent: a.id,
-			path: [analyze.id, tests.id],
-			at: t0 + 19,
-			out: "out",
-			secs: 63,
-		});
-		const d = mkNsTask({
-			cap: deploy,
-			parent: t.id,
-			path: [analyze.id, tests.id, deploy.id],
-			at: t0 + 83,
-			out: null,
-			secs: 41,
-			summary: "预发部署完成",
-		});
-		state.tasks.push(a, t, d);
-
-		// ---- Acme 组织：另一套完全独立的数据 ----
-		//
-		// 为什么要给第二个组织造全量数据：切过去如果整个产品是空的，
-		// 看起来就像"mock 挂了 / 这功能坏了"，而不是"这是另一个组织"。
-		// 换组织应该看到**同样完整、但内容完全不同**的东西。
-		const acmeBuiltin = builtinFor(ACME_NS);
-		state.capabilities.push(acmeBuiltin);
-
-		const acmeCap = (name, version, outputs, display) => {
-			const c = cap(name, version, outputs, { type: "object" }, "custom", display);
-			return Object.assign(c, {
-				id: "cap_mock_acme_" + name.replace(/\./g, "_") + "_v" + version,
-				orgId: ACME,
-				namespaceId: ACME_NS,
-			});
-		};
-		const build = acmeCap("build-image", 1, ["out"], "构建镜像");
-		const scan = acmeCap("scan-deps", 1, ["out"], "依赖扫描");
-		const release = acmeCap("release", 1, ["out"], "发布");
-		state.capabilities.push(build, scan, release);
-
-		state.nodes.push({
-			id: "nd_mock_acme_builder",
-			orgId: ACME,
-			namespaceId: ACME_NS,
-			name: "acme-builder",
-			status: "online",
-			lastSeenAt: now() - 5,
-			createdAt: now() - 86400 * 11,
-			maxInstances: 8,
-			maxConcurrency: 4,
-			tags: ["acme", "builder"],
-			capabilities: [build, scan, release, acmeBuiltin].map((c) => ({
-				id: c.id,
-				name: c.name,
-				version: c.version,
-				displayName: c.displayName,
-			})),
-			instances: [{ id: "nins_mock_acme_0", index: 0, concurrency: 4, busy: 0 }],
-		});
-
-		const acmeTrace = "trace_mock_acme_release";
-		const at = now() - 3600 * 2;
-		state.sources.push({
-			id: "src_mock_acme_pr",
-			orgId: ACME,
-			namespaceId: ACME_NS,
-			name: "Acme PR",
-			kind: "webhook",
-			config: { token: "acme-demo" },
-			enabled: true,
-			lastFiredAt: at,
-			createdAt: now() - 86400 * 11,
-			targets: [{ capabilityId: build.id, params: { repo: "acme/web", branch: "main" } }],
-		});
-
-		const acmeEdge = (from, to, caps) => ({
-			id: uid("edg"),
-			orgId: ACME,
-			namespaceId: ACME_NS,
-			fromRef: capRef(caps[from]),
-			fromPort: "out",
-			toRef: capRef(caps[to]),
-			priority: 0,
-			createdAt: now() - 86400 * 11,
-		});
-		const acmeCaps = { "build-image": build, "scan-deps": scan, release: release };
-		state.edges.push(
-			acmeEdge("build-image", "scan-deps", acmeCaps),
-			acmeEdge("scan-deps", "release", acmeCaps),
-		);
-
-		state.events.push({
-			id: uid("evt"),
-			orgId: ACME,
-			namespaceId: ACME_NS,
-			traceId: acmeTrace,
-			source: "Acme PR",
-			type: "pull_request.opened",
-			payload: { repository: { name: "acme/web" }, pull_request: { number: 17 } },
-			createdAt: at,
-		});
-
-		const acmeTask = (o) => ({
-			id: nextTaskId(),
-			orgId: ACME,
-			namespaceId: ACME_NS,
-			traceId: acmeTrace,
-			parentTaskId: o.parent || null,
-			path: o.path || [],
-			capabilityId: o.cap.id,
-			capability: o.cap.name,
-			version: o.cap.version,
-			params: { mock: true },
-			status: "succeeded",
-			nodeId: "nd_mock_acme_builder",
-			instanceId: "nins_mock_acme_0",
-			leaseUntil: null,
-			attempts: 1,
-			out: o.out !== undefined ? o.out : null,
-			reported: true,
-			summary: o.summary || "",
-			artifacts: [],
-			error: "",
-			contentHash: o.cap.contentHash,
-			capHash: o.cap.contentHash,
-			graphId: "grf_mock",
-			createdAt: o.at,
-			startedAt: o.at,
-			finishedAt: o.at + (o.secs || 20),
-			notBefore: null,
-		});
-		const ab = acmeTask({ cap: build, at: at + 0.3, out: "out", secs: 42 });
-		const as = acmeTask({
-			cap: scan,
-			parent: ab.id,
-			path: [build.id, scan.id],
-			at: at + 43,
-			out: "out",
-			secs: 21,
-		});
-		const ar = acmeTask({
-			cap: release,
-			parent: as.id,
-			path: [build.id, scan.id, release.id],
-			at: at + 65,
-			out: null,
-			secs: 15,
-			summary: "已发布 v1.4.0",
-		});
-		state.tasks.push(ab, as, ar);
-	})();
-
-	// ---------- 源的入口边（「源 → 出口能力」的唯一真相）----------
-	//
-	// 「这个源配了哪些出口能力」在模型里只有一份真相：**入口边**
-	// （from_is_source=1、from_ref=源名、to_ref=能力引用）。后端建源/改源就是
-	// 重建这批边，源详情的 targetCaps 也是从边读回来的。
-	//
-	// mock 之前缺了这一步：state.sources 里写着 targets，state.edges 里却只有几条
-	// 左端写着 "github" / "cron" / "http" / "manual" 的装饰边 —— 和任何一个**源名**
-	// 都对不上。后果是两个页面同时缺图：source.html 的下游流向图拿不到自己的
-	// 入口边（图是空的），trace.html 的底图也找不到这个源的拓扑
-	// （退化成"只画执行链"，看不出哪条分支被剪掉）。
-	//
-	// 这里按真实后端的口径补一遍：每个 target 一条入口边，出口是 '*'
-	// （外部系统的事件类型不可能预先枚举），右端钉死当前版本
-	// （源的目标在控制台上就是"选一个能力的某一版"）。
-	(function initSourceEntryEdges() {
-		for (const s of state.sources) {
-			for (const t of s.targets || []) {
-				// 能力 id 是命名空间内的定义 id，所以按 id 查不会拿错别人家的版本
-				const c = state.capabilities.find((x) => x.id === t.capabilityId);
-				// 能力被删了就不造边：真实后端里那种边解不出 toCapabilityId，
-				// 图上会多一个"已删除"的假节点，而 mock 没必要演示坏数据
-				if (!c) continue;
-				state.edges.push({
-					id: uid("edg"),
-					orgId: ORG,
-					namespaceId: s.namespaceId,
-					fromIsSource: true,
-					// 左端是**源名**（不是能力引用，也不是 kind）
-					fromRef: s.name,
-					fromPort: "*",
-					toRef: capRef(c),
-					// mapping 是入口边的参数模板；mock 的触发路径直接读 sources[].targets，
-					// 这里留空不影响演示（两边的"参数"仍然指的是同一份 targets）。
-					literals: {},
-					mapping: {},
-					priority: 0,
-					createdAt: now() - 3600,
-				});
-			}
-		}
-	})();
-
-	// ---------- 包（可安装的流程零件）----------
-	//
-	// 包本身不持有自己的图：`manifest` 是"期望长什么样"，
-	// 真实状态永远从 capabilities / edges / sources / node_capabilities 里读。
-	// 所以"装完之后手工改了一条边"，体检会如实反映 —— 两边不会各说各话。
-	//
-	// 五个包刻意覆盖三种总体状态 + manifest v2 的三种声明形态，让人一眼看到
-	// 每个状态、每种声明长什么样：
-	//   pr-review      needs-node（能力都有，但 run-tests 的机器离线了）· 旧形态声明
-	//   nightly-audit  needs-node（archive-logs 定义了，没有任何节点声明它）· 内联 spec
-	//   release-train  blocked（notify.sms 连定义都没有）· 旧形态声明
-	//   lint-guard     ready（能力 + 触发器都齐）· 旧形态声明
-	//   notify-sink    needs-node · ref 引用内置推送 + 内联 spec（链尾推送的标准写法）
-	const RUN = (name, extra) =>
-		Object.assign(
-			{
-				runner: "bash",
-				command: "./runners/" + name + ".sh",
-				timeoutSec: 600,
-				concurrency: 1,
-				env: {},
-			},
-			extra || {},
-		);
-
-	state.playbooks = [
-		{
-			id: "pb_mock_pr_review",
-			orgId: ORG,
-			namespaceId: NS,
-			slug: "pr-review",
-			name: "PR 审查",
-			description: "PR 一开就分析改动：要修先修，再跑测试。",
-			createdAt: now() - 86400 * 9,
-			manifest: {
-				capabilities: [
-					{
-						name: "analyze-pr",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("analyze-pr", { timeoutSec: 900, concurrency: 2 }),
-					},
-					{
-						name: "lint-fix",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("lint-fix"),
-					},
-					{
-						name: "run-tests",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("run-tests", { timeoutSec: 1800 }),
-					},
-				],
-				edges: [
-					{ from: "analyze-pr", fromPort: "out", to: "lint-fix" },
-					{ from: "analyze-pr", fromPort: "out", to: "run-tests" },
-					{ from: "lint-fix", fromPort: "out", to: "run-tests" },
-				],
-				triggers: [
-					{
-						kind: "webhook",
-						types: ["pull_request.opened", "pull_request.synchronize"],
-					},
-				],
-			},
-		},
-		{
-			id: "pb_mock_nightly_audit",
-			orgId: ORG,
-			namespaceId: NS,
-			slug: "nightly-audit",
-			name: "夜间审计",
-			description: "每晚归档日志，然后把结果发出来。",
-			createdAt: now() - 86400 * 4,
-			manifest: {
-				capabilities: [
-					{
-						name: "archive-logs",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("archive-logs", { timeoutSec: 3600 }),
-					},
-					{
-						// manifest v2 的内联**完整 spec**：装出来就是一份真能跑的能力
-						// （脚本形式）。mock 不执行它，但体检 / 安装走与后端同一条归一
-						// 函数（pbDecl），所以界面上的「内联 spec · 脚本」是真的。
-						spec: {
-							apiVersion: "anotify/v1",
-							kind: "Capability",
-							metadata: { name: "report.send", version: 1, displayName: "发送报告" },
-							spec: {
-								params: { type: "object" },
-								outputs: ["out"],
-								run: {
-									entrypoint: "run.sh",
-									files: { "run.sh": "#!/usr/bin/env bash\necho report\n" },
-									timeoutSec: 600,
-								},
-							},
-						},
-					},
-				],
-				edges: [{ from: "archive-logs", fromPort: "out", to: "report.send" }],
-				// cron 的 types 就是 5 段表达式本身：安装源时要原样写进 config.expr
-				triggers: [{ kind: "cron", types: ["0 3 * * *"] }],
-			},
-		},
-		{
-			id: "pb_mock_release_train",
-			orgId: ORG,
-			namespaceId: NS,
-			slug: "release-train",
-			name: "发布列车",
-			description: "预先部署，失败就回滚，成功推一条短信。",
-			createdAt: now() - 86400 * 2,
-			manifest: {
-				capabilities: [
-					{
-						name: "deploy-preview",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("deploy-preview"),
-					},
-					{
-						name: "rollback",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("rollback"),
-					},
-					{
-						// 故意没定义：演示 blocked（连契约都不全）
-						name: "notify.sms",
-						version: 1,
-						outputs: [],
-						runner: RUN("notify.sms"),
-					},
-				],
-				edges: [
-					{ from: "deploy-preview", fromPort: "out", to: "rollback" },
-					{ from: "deploy-preview", fromPort: "out", to: "notify.sms" },
-				],
-				triggers: [{ kind: "webhook", types: ["release.published"] }],
-			},
-		},
-		{
-			id: "pb_mock_lint_guard",
-			orgId: ORG,
-			namespaceId: NS,
-			slug: "lint-guard",
-			name: "静态检查",
-			description: "只有一条：改动进来就自动清理。",
-			createdAt: now() - 86400,
-			manifest: {
-				capabilities: [
-					{
-						name: "lint-fix",
-						version: 1,
-						outputs: ["out"],
-						runner: RUN("lint-fix"),
-					},
-				],
-				edges: [],
-				triggers: [{ kind: "webhook", types: ["push"] }],
-			},
-		},
-	];
-
-	// ---------- manifest v2：一条能力声明的归一形态 ----------
-	//
-	// 与 internal/store 的 capDecl 同构（Capability Spec v3 §12.1）：三种声明形态
-	// **互斥** —— ref（引用已有定义，安装不建任何行）/ spec（内联完整产物）/
-	// 旧形态（name+version，等价于 handler: noop 的占位）。
-	//
-	// 界面要能分辨它们：装不出来的时候，用户第一件要知道的就是「这条到底想装一份
-	// 实现，还是只想引用一份已有的」。
-	function pbDecl(c) {
-		const ref = String(c.ref || "").trim();
-		if (ref) {
-			const { name, version, pinned } = splitRef(ref);
-			return { kind: "ref", ref, name, version: pinned ? version : null, outputs: [] };
-		}
-		if (c.spec && typeof c.spec === "object") {
-			const meta = c.spec.metadata || {};
-			const body = c.spec.spec || {};
-			const handler = String(body.handler || "");
-			return {
-				kind: "inline",
-				name: String(meta.name || ""),
-				version: Number(meta.version || 0),
-				outputs: Array.isArray(body.outputs) ? body.outputs : [],
-				impl: handler ? (handler === "noop" ? "noop" : "handler") : "script",
-			};
-		}
-		return {
-			kind: "legacy",
-			name: String(c.name || ""),
-			version: Number(c.version || 0),
-			outputs: Array.isArray(c.outputs) ? c.outputs : [],
-			impl: "noop", // 旧形态一律装成占位（与后端回填口径一致）
-			runner: c.runner || null,
-		};
-	}
-
-	// 声明的人读标签：ref 原样（`notify.phone` / `review@2`），其余是 `name@version`。
-	function pbDeclLabel(d) {
-		return d.kind === "ref" ? d.ref : d.name + "@" + d.version;
-	}
-
-	// 解析一条声明该用哪条定义：ref 钉版本就精确找，裸名字跟随 latest；其余按 name+version。
-	function pbResolveDecl(d, ns, caps) {
-		const pool = caps.filter((c) => c.namespaceId === ns);
-		if (d.kind === "ref") {
-			return d.version == null
-				? pool.find((c) => c.name === d.name) || null
-				: pool.find((c) => c.name === d.name && c.version === d.version) || null;
-		}
-		return pool.find((c) => c.name === d.name && c.version === d.version) || null;
-	}
-
-	// 实现形式：内联 / 旧形态的正文自己就说明了；ref 只能看被引用的那份定义
-	// （mock 没有 spec 列，用的是它自己那张「谁在中枢执行」的名字表）。
-	function pbImplOf(d) {
-		if (d.impl) return d.impl;
-		return CENTRAL_NAMES.includes(d.name) ? "handler" : "script";
-	}
-
-	state.playbooks.push({
-		id: "pb_mock_notify_sink",
-		orgId: ORG,
-		namespaceId: NS,
-		slug: "notify-sink",
-		name: "跑完就推送",
-		description: "审查完把结论推到手机：链尾**引用**内置推送，不自己造实现。",
-		createdAt: now() - 3600,
-		manifest: {
-			capabilities: [
-				{
-					spec: {
-						apiVersion: "anotify/v1",
-						kind: "Capability",
-						metadata: { name: "collect-review", version: 1, displayName: "汇总结论" },
-						spec: {
-							params: {
-								type: "object",
-								properties: { repo: { type: "string" } },
-							},
-							outputs: ["out"],
-							run: {
-								entrypoint: "run.sh",
-								files: { "run.sh": "#!/usr/bin/env bash\necho done\n" },
-								timeoutSec: 300,
-							},
-						},
-					},
-				},
-				// 引用**内置**能力：不建任何行，中枢执行（Capability Spec v3 §12.1 ①）
-				{ ref: "notify.phone" },
-			],
-			edges: [
-				{
-					from: "collect-review",
-					fromPort: "out",
-					to: "notify.phone",
-					literals: { title: "审查完成" },
-					priority: 0,
-				},
-			],
-			triggers: [
-				{
-					name: "notify-sink-github",
-					kind: "github",
-					config: { event: "pull_request" },
-					enabled: true,
-					targets: [
-						{ to: "collect-review", mapping: { repo: "{{repository.full_name}}" } },
-					],
-				},
-			],
-		},
-	});
-
-	// 就绪体检：全部是查询时算出来的（推导量不落库，I3 同源）
-	//
-	// 四类检查按依赖顺序：能力定义 → 节点实现 → 出口 → 触发器。
-	// no-node 和 offline **必须分开**：前者要去写 YAML 装机器，
-	// 后者只需要把机器连上。合成一个"未就绪"会让人做错事。
-	function pbChecks(pb) {
-		const ns = pb.namespaceId;
-		const caps = state.capabilities.filter((c) => c.namespaceId === ns);
-		const nodes = state.nodes.filter((n) => n.namespaceId === ns);
-		const edges = state.edges.filter((e) => e.namespaceId === ns);
-		const sources = state.sources.filter((x) => x.namespaceId === ns);
-		const m = pb.manifest;
-		const findCap = (name, version) =>
-			caps.find((c) => c.name === name && (version == null || c.version === version));
-
-		// ① 能力定义 + ② 节点实现（绑在同一行上，因为第二项依赖第一项）
-		//
-		// manifest v2：能力声明可以是 ref / 内联 spec / 旧形态（见 pbDecl）。
-		// `declared` 与 `impl` 上到界面上——两者安装行为完全不同（一个建行、一个不建行），
-		// 用户得能分辨自己在看哪一种。
-		const capItems = (m.capabilities || []).map((c) => {
-			const d = pbDecl(c);
-			const ref = pbDeclLabel(d);
-			const impl = pbImplOf(d);
-			const def = pbResolveDecl(d, ns, caps);
-			// ref 的出口就是被引用那份定义的出口（那才是边能用的端口集合）。
-			const outputs = d.kind === "ref" ? (def ? def.outputs : []) : d.outputs;
-			if (!def) {
-				return { kind: "capability", ref, status: "missing", outputs, runner: d.runner || null, declared: d.kind, impl };
-			}
-			// handler 形式由**中枢**执行（如 notify.phone）：不需要任何节点声明。
-			// 占位（noop）不在此列——中枢不执行它，那条链并不真的能跑。
-			if (impl === "handler") {
-				return {
-					kind: "capability",
-					ref,
-					status: "ok",
-					outputs: def.outputs,
-					capId: def.id,
-					runner: d.runner || null,
-					declared: d.kind,
-					impl,
-				};
-			}
-			const owners = nodes.filter((n) =>
-				(n.capabilities || []).some((x) => x.id === def.id),
-			);
-			if (!owners.length) {
-				return {
-					kind: "capability",
-					ref,
-					status: "no-node",
-					outputs: def.outputs,
-					capId: def.id,
-					runner: d.runner || null,
-					declared: d.kind,
-					impl,
-				};
-			}
-			const online = owners.filter((n) => n.status === "online");
-			return {
-				kind: "capability",
-				ref,
-				status: online.length ? "ok" : "offline",
-				outputs: def.outputs,
-				capId: def.id,
-				runner: d.runner || null,
-				nodes: owners.map((n) => ({ name: n.name, status: n.status })),
-				declared: d.kind,
-				impl,
-			};
-		});
-
-		// 名字 → 声明（同名多版本取第一条，与后端 declaredDecls 同口径）
-		const declared = new Map();
-		for (const c of m.capabilities || []) {
-			const d = pbDecl(c);
-			if (d.name && !declared.has(d.name)) declared.set(d.name, d);
-		}
-		const resolveName = (name) => {
-			const d = declared.get(name);
-			return d ? pbResolveDecl(d, ns, caps) : findCap(name);
-		};
-
-		// ③ 出口：两端能力都要有定义才能谈"这条边在不在"
-		const edgeItems = (m.edges || []).map((e) => {
-			const from = resolveName(e.from);
-			const to = resolveName(e.to);
-			const label = e.from + " --" + e.fromPort + "--> " + e.to;
-			if (!from || !to) {
-				return {
-					kind: "edge",
-					label: label,
-					status: "missing",
-					// 端点缺定义 → 这条边现在补不了，先补能力
-					blockedByCap: !from ? e.from : e.to,
-				};
-			}
-			// 「这条边在不在」比的是**两端解析到的能力**（引用 → 当前版本），
-			// 不是引用字符串相等：预案声明的是「名字」，而库里可能是 `name@1`。
-			const hit = edges.some(
-				(x) =>
-					!x.fromIsSource &&
-					(resolveCapRef(x.fromRef, ns) || {}).id === from.id &&
-					x.fromPort === e.fromPort &&
-					(resolveCapRef(x.toRef, ns) || {}).id === to.id,
-			);
-			return {
-				kind: "edge",
-				label: label,
-				status: hit ? "ok" : "missing",
-				from: e.from,
-				fromPort: e.fromPort,
-				to: e.to,
-				fromId: from.id,
-				toId: to.id,
-			};
-		});
-
-		// ④ 触发器：kind 匹配**且**这个源的目标里有本触发器要的入口能力
-		//
-		// 只匹配 kind 会把"你有一个 webhook 源"当成"这条流程有触发器了"，
-		// 而那个源可能指向完全无关的能力。
-		const toSet = new Set((m.edges || []).map((e) => e.to));
-		const entries = Array.from(declared.values()).filter(
-			(d) => d.name && !toSet.has(d.name),
-		);
-		const entryIds = entries
-			.map((d) => pbResolveDecl(d, ns, caps))
-			.filter(Boolean)
-			.map((c) => c.id);
-		const triggerItems = (m.triggers || []).map((t) => {
-			// v2 的 targets 是**显式**的入口边：命中判据就是它（不再回落到入口能力全集）。
-			let wantIds = entryIds;
-			let wantNames = entries.map((d) => d.name);
-			if (Array.isArray(t.targets) && t.targets.length) {
-				wantIds = [];
-				wantNames = [];
-				for (const tg of t.targets) {
-					wantNames.push(tg.to);
-					const def = resolveName(tg.to);
-					if (def) wantIds.push(def.id);
-				}
-			}
-			const hit = sources.some(
-				(x) =>
-					x.kind === t.kind &&
-					(x.targets || []).some((g) => wantIds.includes(g.capabilityId)),
-			);
-			let label = t.kind;
-			if (t.name) label = t.name + " · " + label;
-			if (t.types && t.types.length) label += " · " + t.types.join(" / ");
-			return {
-				kind: "trigger",
-				label: label,
-				status: hit ? "ok" : "missing",
-				entryCaps: wantNames,
-				declaredKind: t.kind,
-			};
-		});
-
-		const items = capItems.concat(edgeItems, triggerItems);
-		const capMissing = capItems.some((i) => i.status === "missing");
-		const capNoNode = capItems.some((i) => i.status === "no-node" || i.status === "offline");
-		const restBad =
-			edgeItems.some((i) => i.status !== "ok") ||
-			triggerItems.some((i) => i.status !== "ok");
-
-		let status = "ready";
-		if (capMissing) status = "blocked";
-		else if (capNoNode) status = "needs-node";
-		else if (restBad) status = "partial";
-
-		return {
-			status: status,
-			// 「最该先做的一件事」= 按依赖顺序第一个没过的项
-			next: items.find((i) => i.status !== "ok") || null,
-			ready: items.filter((i) => i.status === "ok").length,
-			total: items.length,
-			counts: {
-				capabilities: capItems.length,
-				edges: edgeItems.length,
-				triggers: triggerItems.length,
-			},
-			items: items,
-		};
-	}
-
-	function pbView(pb, withItems) {
-		const checks = pbChecks(pb);
-		const view = {
-			id: pb.id,
-			orgId: pb.orgId,
-			namespaceId: pb.namespaceId,
-			slug: pb.slug,
-			name: pb.name,
-			description: pb.description,
-			createdAt: pb.createdAt,
-			status: checks.status,
-			next: checks.next,
-			ready: checks.ready,
-			total: checks.total,
-			counts: checks.counts,
-			manifest: pb.manifest,
-		};
-		if (withItems) view.items = checks.items;
-		return view;
-	}
-
-	// 幂等补齐。顺序必须是 能力 → 出口 → 源：
-	// 出口两端没有定义就建不了，源没有入口能力就没人可派。
-	//
-	// manifest v2 的三类声明语义不同（与 internal/store 的 InstallPlaybook 对齐）：
-	//   ref    **不建任何行**，只解析成落库引用
-	//   spec   内联完整产物，装出来就是一份新定义（mock 只记名字与出口）
-	//   旧形态 等价于 handler: noop 的占位
-	function installPlaybook(pb) {
-		const ns = pb.namespaceId;
-		const m = pb.manifest || {};
-		const created = { capabilities: [], edges: [], sources: [] };
-		const skipped = { capabilities: [], edges: [], sources: [] };
-		const notes = [];
-		const find = (name) =>
-			state.capabilities.find((c) => c.namespaceId === ns && c.name === name);
-
-		// 名字 → 声明（同名多版本取第一条，与后端同一口径）
-		const declared = new Map();
-		for (const c of m.capabilities || []) {
-			const d = pbDecl(c);
-			if (d.name && !declared.has(d.name)) declared.set(d.name, d);
-		}
-		const resolveName = (name) => {
-			const d = declared.get(name);
-			if (!d) return find(name);
-			if (d.kind === "ref") {
-				return d.version == null
-					? find(d.name)
-					: state.capabilities.find(
-							(x) => x.namespaceId === ns && x.name === d.name && x.version === d.version,
-						);
-			}
-			return state.capabilities.find(
-				(x) => x.namespaceId === ns && x.name === d.name && x.version === d.version,
-			);
-		};
-
-		for (const c of m.capabilities || []) {
-			const d = pbDecl(c);
-			const ref = pbDeclLabel(d);
-			// 引用形态不建任何行（§12.1）：它指的是命名空间里已有的定义。
-			if (d.kind === "ref") continue;
-			if (
-				state.capabilities.some(
-					(x) =>
-						x.namespaceId === ns && x.name === d.name && x.version === d.version,
-				)
-			) {
-				skipped.capabilities.push(ref);
-				continue;
-			}
-			state.capabilities.push({
-				id: "cap_" + ns + "_" + d.name.replace(/\./g, "_") + "_v" + d.version,
-				orgId: pb.orgId,
-				namespaceId: ns,
-				name: d.name,
-				displayName: "",
-				version: d.version,
-				outputs: d.outputs || [],
-				paramsSchema: (c.spec && c.spec.spec && c.spec.spec.params) || c.paramsSchema || {
-					type: "object",
-				},
-				// 与真后端 P1-b1 的回填口径一致：没有实现的声明装成 `handler: noop`
-				// （平台认领的占位，不假装是用户脚本）。前端据此把它标成「由中枢执行」。
-				handler: "noop",
-				source: "custom",
-				contentHash: "hash" + Math.random().toString(16).slice(2, 10),
-				createdAt: now(),
-			});
-			created.capabilities.push(ref);
-			if (d.kind === "legacy") {
-				notes.push(ref + ": 该能力尚无实现，已装为 noop 占位（旧形态声明不解释成实现）");
-			}
-		}
-
-		for (const e of m.edges || []) {
-			const from = resolveName(e.from);
-			const to = resolveName(e.to);
-			const label = e.from + " --" + e.fromPort + "--> " + e.to;
-			// 端点还缺定义：这一轮补不了，等能力补完再点一次（幂等所以无害）
-			if (!from || !to) continue;
-			if (
-				state.edges.some(
-					(x) =>
-						x.namespaceId === ns &&
-						(resolveCapRef(x.fromRef, ns) || {}).id === from.id &&
-						x.fromPort === e.fromPort &&
-						(resolveCapRef(x.toRef, ns) || {}).id === to.id,
-				)
-			) {
-				skipped.edges.push(label);
-				continue;
-			}
-			state.edges.push({
-				id: uid("edg"),
-				orgId: pb.orgId,
-				namespaceId: ns,
-				// 预案里写的是 `name@version`（与同一预案声明的能力定义对应）
-				fromRef: capRef(from),
-				fromPort: e.fromPort,
-				toRef: capRef(to),
-				// literals / priority 与后端同语义：常量覆盖 + 同端口候选优先级
-				literals: e.literals || {},
-				priority: e.priority || 0,
-				createdAt: now(),
-			});
-			created.edges.push(label);
-		}
-
-		// 入口边：v2 的 triggers[].targets 显式给出（带 mapping）；旧形态回落到入口能力全集。
-		const toSet = new Set((m.edges || []).map((e) => e.to));
-		const entryDecls = Array.from(declared.values()).filter(
-			(d) => d.name && !toSet.has(d.name),
-		);
-		const entryCaps = entryDecls
-			.map((d) => resolveName(d.name))
-			.filter(Boolean)
-			.map((c) => ({ id: c.id, params: {} }));
-		for (const [i, t] of (m.triggers || []).entries()) {
-			const wantName =
-				(t.name && String(t.name).trim()) || pb.slug + "-" + t.kind + "-" + i;
-			let targets = entryCaps;
-			if (Array.isArray(t.targets) && t.targets.length) {
-				targets = t.targets
-					.map((tg) => {
-						const c = resolveName(tg.to);
-						return c ? { capabilityId: c.id, params: tg.mapping || {} } : null;
-					})
-					.filter(Boolean);
-			}
-			if (!targets.length) continue;
-			const hit = state.sources.some(
-				(x) =>
-					x.namespaceId === ns &&
-					x.kind === t.kind &&
-					(x.targets || []).some((g) =>
-						targets.some((c) => c.id === g.capabilityId),
-					),
-			);
-			if (hit) {
-				skipped.sources.push(t.kind);
-				continue;
-			}
-			// config：v2 的显式 config 优先，省略时按旧形态的 types 翻译。
-			let config = t.config || null;
-			if (!config) {
-				config =
-					t.kind === "cron"
-						? { expr: (t.types && t.types[0]) || "0 3 * * *", tz: "Local" }
-						: t.kind === "webhook" || t.kind === "github"
-							? { token: "mock-" + Math.random().toString(36).slice(2, 8) }
-							: {};
-			} else if ((t.kind === "webhook" || t.kind === "github") && !config.token) {
-				config = Object.assign({}, config, {
-					token: "mock-" + Math.random().toString(36).slice(2, 8),
-				});
-			}
-			const src = {
-				id: uid("src"),
-				orgId: pb.orgId,
-				namespaceId: ns,
-				name: wantName,
-				kind: t.kind,
-				config: config,
-				enabled: t.enabled !== false,
-				lastFiredAt: null,
-				createdAt: now(),
-				targets: targets,
-			};
-			state.sources.push(src);
-			created.sources.push(src.name);
-		}
-
-		return { created, skipped, notes };
-	}
-
-	// ---------- 初始 keys ----------
-	//
-	// 每条记录都必须带 `enabled: boolean`：真后端的 keyPublic（internal/server/handlers.go）
-	// **总是**回这个字段，mock 种子漏掉就是形状漂移。前端 keys.html:756 的归一化是
-	// `k.enabled !== false && k.enabled !== 0` —— 字段缺失时只能靠这个兜底当「启用」，
-	// 一旦某条被停用（enabled:false）就会与缺失态混淆，所以源数据要把语义写全。
-	(function initKeys() {
-		state.keys = [
-			{
-				id: "key_mock_send",
-				orgId: ORG,
-				name: "webhook 发送",
-				scopes: ["send"],
-				prefix: "ant_send_mock",
-				createdAt: now() - 86400,
-				lastUsedAt: now() - 300,
-				enabled: true,
-				revoked: false,
-			},
-			{
-				id: "key_mock_recv",
-				orgId: ORG,
-				name: "节点接收",
-				scopes: ["recv"],
-				prefix: "ant_recv_mock",
-				createdAt: now() - 86400 * 2,
-				lastUsedAt: null,
-				enabled: true,
-				revoked: false,
-			},
-		];
-	})();
-
-	// ---------- 响应构造 ----------
-	function json(body, status) {
-		return new Response(JSON.stringify(body), {
-			status: status || 200,
-			headers: { "Content-Type": "application/json; charset=utf-8" },
-		});
-	}
-	function err(status, message, extra) {
-		return json(Object.assign({ error: message }, extra || {}), status);
-	}
-
-	// 视图：能力列表带推导出的 kind
-	// capView 与真实 handler（consoleHandler.capabilities）同形状：
-	// HANDLER_NOT_ALLOWED_MSG 与 Go 侧 handlerNotAllowedMessage 同一句话。
-	//
-	// 为什么 mock 也要拦：前端套件钉的是**契约**，而「API 永不接受 handler」是 I1
-	// 红线（契约 §3.1）。mock 放行会让前端在预览里能建出一个真后端必拒的能力，
-	// 于是那条红线在前端侧永远测不到。
-	const HANDLER_NOT_ALLOWED_MSG =
-		"handler 只能由内置播种 / 回填 / 预案产生；自定义能力请给 run（spec.run：files + entrypoint，由节点执行）";
-
-	// specOf 把一个 mock 能力对象还原成**完整正文**（Capability Spec v3 §3）。
-	//
-	// mock 内部仍然按扁平字段（paramsSchema / outputs / run / …）存：那是最省事的
-	// 表示，而 spec 是**线上形状**。所以只在出口处汇一次 —— 不要在写入路径上也存一份
-	// spec，否则两份数据迟早分叉（真后端那套「spec 是输入、派生列是缓存」的坑就会
-	// 以另一个形式在 mock 里重演）。
-	function specOf(c) {
-		if (!c) return null;
-		const sp = {};
-		if (c.paramsSchema) sp.params = clone(c.paramsSchema);
-		sp.outputs = Array.isArray(c.outputs) ? c.outputs.slice() : [];
-		if (Array.isArray(c.requires) && c.requires.length) sp.requires = c.requires.slice();
-		if (c.lifecycle && typeof c.lifecycle === "object") sp.lifecycle = clone(c.lifecycle);
-		if (c.sticky) sp.sticky = c.sticky;
-		if (c.run) sp.run = clone(c.run);
-		// handler 形式（内置执行器）：只有平台侧的能力才有，控制台永远建不出来。
-		if (c.handler) sp.handler = c.handler;
-		return sp;
-	}
-
-	// specSummaryOf 是列表用的投影：`run.files` 换成 {count, bytes}（正文不进列表）。
-	//
-	// 细节与 Go 侧 capabilityRunSpecView **逐键对齐**：entrypoint 恒在；
-	// timeoutSec / env / workDir 空就省略（omitempty）—— 否则「没声明」与
-	// 「声明成 0 / 空」在前端看起来是两回事，而它们语义上是同一件事。
-	function specSummaryOf(c) {
-		const sp = specOf(c);
-		if (!sp) return null;
-		if (sp.run) {
-			const files = sp.run.files || {};
-			const summary = { entrypoint: sp.run.entrypoint, files: { count: 0, bytes: 0 } };
-			for (const name of Object.keys(files)) {
-				summary.files.count += 1;
-				summary.files.bytes += String(files[name] == null ? "" : files[name]).length;
-			}
-			if (sp.run.timeoutSec) summary.timeoutSec = sp.run.timeoutSec;
-			if (sp.run.env && Object.keys(sp.run.env).length) summary.env = clone(sp.run.env);
-			if (sp.run.workDir) summary.workDir = sp.run.workDir;
-			sp.run = summary;
-		}
-		return sp;
-	}
-
-	// 除了推导的 kind，还带"谁声明了它"。
-	//
-	// declaredBy 是**关键信息**：能力定义只是"能干什么"的白名单，真正让它
-	// 跑得起来的是有机器声明它。空数组 = 这个能力永远跑不起来。
-	function capView(c) {
-		const declaredBy = state.nodes
-			.filter((n) => (n.capabilities || []).some((x) => x.id === c.id))
-			// 与后端排序一致：在线优先，然后按名字
-			.sort((a, b) => {
-				const rank = (st) => (st === "online" ? 0 : st === "draining" ? 1 : 2);
-				return rank(a.status) - rank(b.status) || (a.name < b.name ? -1 : 1);
-			})
-			.map((n) => ({ id: n.id, name: n.name, status: n.status }));
-		// 谁执行它：判据是**实现形式**（P2 起不再是一张名字表，契约 §11.3）：
-		// handler ∈ 可执行白名单 → 中枢；否则起点能力 → 不执行；其余 → 节点。
-		// mock 用名字表兜 CENTRAL_NAMES 只是演示数据的历史惯性（notify.phone 没有 handler 字段）。
-		const handler = c.handler ? String(c.handler) : "";
-		const executedBy =
-			EXECUTABLE_HANDLERS.includes(handler) || CENTRAL_NAMES.includes(c.name)
-				? "hub"
-				: ORIGIN_NAMES.includes(c.name)
-					? "none"
-					: "node";
-		// 出口形状 = 真后端的列表行：`spec` 是**列表投影**（files 只有 {count,bytes}），
-		// 旧的 `run` 投影 P4 已删（它是 spec.run 的子集，留着就是第二份形状）。
-		const v = Object.assign(clone(c), {
-			kind: kindOf(c),
-			declaredBy,
-			executedBy,
-			spec: specSummaryOf(c),
-		});
-		delete v.run;
-		return v;
-	}
-
-	// 视图：源带出口能力信息 + hookUrl
-	function sourceView(s) {
-		const byID = new Map(state.capabilities.map((c) => [c.id, c]));
-		const targetCaps = (s.targets || []).map((t) => {
-			const c = byID.get(t.capabilityId);
-			if (!c) return { id: t.capabilityId, missing: true, params: t.params || {} };
-			return {
-				id: c.id,
-				name: c.name,
-				displayName: c.displayName || "",
-				version: c.version,
-				params: t.params || {},
-				paramsSchema: c.paramsSchema,
-			};
-		});
-		const v = Object.assign(clone(s), { targetCaps });
-		if ((s.kind === "webhook" || s.kind === "github") && s.config && s.config.token) {
-			v.hookUrl = "/v1/hooks/" + s.config.token;
-		}
-		return v;
-	}
-
 	// ---------- 路由表 ----------
 	//
 	// 每个条目：(method, 正则) → handler(ctx) → Response
-	// ctx 里有 json body、params、路径捕获。
-
-	// 命名空间解析。
-	//
-	// 契约（CONTRACT §6.2）要求命名空间资源**必须显式**带 namespaceId，
-	// 缺了返回 400。mock 这里故意宽松：缺省 = 默认命名空间。
-	// 理由：mock 是给人点着看的，深链（trace.html?traceId=...）和
-	// 手敲 curl 都不该因为少一个参数就白屏；而"UI 到底有没有带"
-	// 由 E2E 断言盯（它检查页面请求的 query）。
-	// `namespaceId=*` = 跨命名空间汇总（管理员视图）。
-	function nsScope(q) {
-		const v = q && q.get("namespaceId");
-		if (v === "*") return null; // null = 不按命名空间过滤
-		return v && v !== "" ? v : NS;
-	}
-	const inNs = (list, scope) =>
-		scope === null ? list.slice() : list.filter((x) => x.namespaceId === scope);
-
+	// ctx 里：m（正则捕获）、query（.get）、body（JSON）、path。
 	const routes = [];
 	function on(method, pattern, handler) {
-		routes.push({ method, pattern, handler });
+		routes.push({ method: method, pattern: pattern, handler: handler });
 	}
 
-	// ===== 认证 =====
-	on("GET", /^\/v1\/auth\/me$/, () => json(ME));
-	on("POST", /^\/v1\/auth\/logout$/, () => json({ ok: true }));
+	// 命名空间存在性：v4 的 ns 私有资源路径里 ns 是**定位器**，不存在就 404。
+	function nsRow(name) {
+		return state.namespaces.find((n) => n.name === name) || null;
+	}
+	function nsMissing(name) {
+		return name === "*" ? null : nsRow(name) ? null : notFound("命名空间 ");
+	}
+
+	// `namespace` query 必填（stats / console.events 不再默认全 ns）。
+	function requireNamespace(query) {
+		const ns = query.get("namespace");
+		if (ns == null || ns === "") {
+			return {
+				err: badRequest(
+					"BadRequest",
+					"namespace query 必填：v4 没有默认的全命名空间返回",
+				),
+			};
+		}
+		if (ns !== "*" && !nsRow(ns)) return { err: notFound("命名空间 ") };
+		return { ns: ns };
+	}
+
+	const findCap = (ns, name) =>
+		state.capabilities.find((c) => c.ns === ns && c.name === name) || null;
+	const findSource = (ns, name) =>
+		state.sources.find((s) => s.ns === ns && s.name === name) || null;
+	const findTask = (ns, name) =>
+		state.tasks.find((t) => t.ns === ns && t.name === name) || null;
+
+	// 名称规则与 capability.md §2 的 metadata.name 一致（源/能力共用）。
+	const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+	// AUTH1: retained identity errors are {error}, never resource Status.
+	// This is a private, known-user preview fixture, NOT backend authentication.
+	const mockSession = "mock-preview-demo-session";
+	const loginAttempts = new Map();
+	function authResponse(body, code = 200, plainText = false) {
+		const text = JSON.stringify(body) + (plainText ? "\n" : "");
+		const type = (plainText ? "text/plain" : "application/json") + "; charset=utf-8";
+		if (typeof Response === "function") return new Response(text, { status: code, headers: { "Content-Type": type } });
+		const headers = new Map([["content-type", type]]);
+		return { status: code, ok: code >= 200 && code < 300, headers: { get: k => headers.get(k.toLowerCase()) || null, set: (k, v) => headers.set(k.toLowerCase(), v) }, json: async () => body, text: async () => text };
+	}
+	const identityError = (code, error) => authResponse({ error }, code);
+	const anonymous = () => authResponse({ error: "未登录" }, 401, true);
+	const hasSession = () => !state.auth.loggedOut && String(document.cookie || "").split(";").some(c => c.trim() === "anotify_session=" + mockSession);
+	function sessionCookie(clear = false) {
+		const expires = new Date(clear ? 0 : Date.now() + 7 * 86400000).toUTCString();
+		const cookie = "anotify_session=" + (clear ? "" : mockSession) + "; Path=/; SameSite=Lax; Expires=" + expires;
+		document.cookie = cookie; // JS cookie only in explicit preview; real server owns HttpOnly.
+		return cookie.replace("; SameSite", "; HttpOnly; SameSite");
+	}
+	if (!state.auth.loggedOut) sessionCookie();
+	function loginLimited(key) {
+		const time = Date.now(), old = loginAttempts.get(key);
+		const bucket = old && old.until > time ? old : { count: 0, until: time + 60000 };
+		loginAttempts.set(key, bucket);
+		if (++bucket.count <= 10) return null;
+		const res = identityError(429, "请求过于频繁，请稍后再试");
+		res.headers.set("Retry-After", String(Math.max(1, Math.ceil((bucket.until - time) / 1000))));
+		return res;
+	}
+	on("GET", /^\/v1\/auth\/me$/, () => hasSession() ? json(ME) : anonymous());
+	on("POST", /^\/v1\/auth\/password\/login$/, ctx => {
+		const ipLimit = loginLimited("preview-ip"); if (ipLimit) return ipLimit;
+		const { username, password } = ctx.body || {};
+		if (typeof username !== "string" || !username.trim() || typeof password !== "string" || !password) return identityError(400, "缺少 username 或 password");
+		const userLimit = loginLimited("user:" + username.trim().toLowerCase()); if (userLimit) return userLimit;
+		if (username.trim() !== ME.username || !state.auth.passwordHash || mockDigest(password) !== state.auth.passwordHash) return identityError(401, "Username or password is incorrect");
+		state.auth.loggedOut = false;
+		if (typeof sessionStorage !== "undefined") sessionStorage.removeItem("anotify.mock.loggedOut");
+		const res = authResponse({ ok: true }); res.headers.set("Set-Cookie", sessionCookie()); return res;
+	});
+	on("POST", /^\/v1\/auth\/logout$/, () => {
+		state.auth.loggedOut = true;
+		if (typeof sessionStorage !== "undefined") sessionStorage.setItem("anotify.mock.loggedOut", "1");
+		const res = authResponse({ ok: true }); res.headers.set("Set-Cookie", sessionCookie(true)); return res;
+	});
 	on("GET", /^\/v1\/vapid-public-key$/, () =>
 		json({ publicKey: "BMockPublicKeyForPreviewOnly_NotARealVapidKey" }),
 	);
 
-	// ===== 组织 / 命名空间 =====
+	// ===== 命名空间（cluster，读 + 建）=====
 	//
-	// 这两个端点在真实后端还没实现（设计先行，见 docs/design/namespaces.md），
-	// 所以**故意不写进 api/openapi.yaml** —— check_openapi.py 要求 spec 与
-	// mux.go 双向一致，先写 spec 没有 handler 会直接让 make contract 失败。
-	on("GET", /^\/v1\/orgs$/, () => json({ orgs: clone(state.orgs) }));
-
-	on("GET", /^\/v1\/namespaces$/, (ctx) => {
-		const orgId = ctx.query.get("orgId") || ORG;
-		return json({
-			namespaces: clone(state.namespaces.filter((n) => n.orgId === orgId)),
-		});
-	});
-
-	on("POST", /^\/v1\/namespaces$/, (ctx) => {
-		const b = ctx.body || {};
-		const slug = String(b.slug || "").trim();
-		// slug 出现在 URL 里，只允许安全的字符集（和前端的校验一致）
-		if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(slug)) {
-			return err(400, "slug 只允许小写字母、数字、连字符，且以字母或数字开头");
-		}
-		const orgId = b.orgId || ORG;
-		if (state.namespaces.some((n) => n.orgId === orgId && n.slug === slug)) {
-			return err(409, "这个组织里已经有同名 slug 了");
-		}
-		const ns = {
-			id: uid("ns"),
-			orgId,
-			slug,
-			name: String(b.name || slug).trim() || slug,
-			createdAt: now(),
-		};
-		state.namespaces.push(ns);
-		return json({ namespace: clone(ns) });
-	});
-
-	// ===== 包 =====
-	on("GET", /^\/v1\/playbooks$/, (ctx) => {
-		const sc = nsScope(ctx.query);
-		return json({
-			playbooks: inNs(state.playbooks, sc).map((p) => pbView(p, false)),
-		});
-	});
-
-	on("GET", /^\/v1\/playbooks\/([^/]+)$/, (ctx) => {
-		const key = ctx.m[1];
-		const pb = state.playbooks.find((p) => p.id === key || p.slug === key);
-		if (!pb) return err(404, "包不存在");
-		return json({ playbook: pbView(pb, true) });
-	});
-
-	// 幂等补齐：能力定义 → 出口 → 触发器，能补什么补什么。
-	//
-	// "缺节点"补不了：那是机器侧的事（连机器 + 部署），所以这个接口不碰节点。
-	// notes 与后端同形状（人话说明，只在"跳过有原因可讲"时出现）。
-	on("POST", /^\/v1\/playbooks\/([^/]+)\/install$/, (ctx) => {
-		const key = ctx.m[1];
-		const pb = state.playbooks.find((p) => p.id === key || p.slug === key);
-		if (!pb) return err(404, "包不存在");
-		const res = installPlaybook(pb);
-		return json({
-			created: res.created,
-			skipped: res.skipped,
-			notes: res.notes,
-			playbook: pbView(pb, true),
-		});
-	});
-
-	// ===== 统计 =====
-	on("GET", /^\/v1\/stats$/, (ctx) => {
-		const sc = nsScope(ctx.query);
-		const evs = inNs(state.events, sc);
-		const tks = inNs(state.tasks, sc);
-		const ok = tks.filter((t) => t.status === "succeeded").length;
-		// 形状与口径都必须与真实 API 对齐（internal/store/stats.go）：
-		//   total / today / daily 统计的是**事件**；delivered / deliveryTotal 是终态任务。
-		// 早先是任务口径 —— 首页把 KPI 明确成「事件总数/今日事件」后，这里不改就会
-		// 出现「总览说事件数、数字却是任务数」的静默漂移（#273 同类问题）。
-		const today = new Date().toISOString().slice(0, 10);
-		const devices = state.devices || [];
-		return json({
-			total: evs.length,
-			today: evs.filter((e) => {
-				const d =
-					typeof e.createdAt === "number"
-						? new Date(e.createdAt * 1000)
-						: new Date(e.createdAt || 0);
-				return d.toISOString().slice(0, 10) === today;
-			}).length,
-			delivered: tks.filter((t) => t.reported).length,
-			deliveryTotal: tks.length,
-			deviceCount: devices.filter((d) => d.enabled !== false).length,
-			// 汇总字段（页面暂未用，但别丢：调试时有用）
-			totalEvents: evs.length,
-			succeeded: ok,
-			failed: tks.filter((t) => t.status === "failed").length,
-			running: tks.filter((t) =>
-				["assigned", "acked", "running"].includes(t.status),
-			).length,
-			pending: tks.filter((t) => t.status === "pending").length,
-			nodesOnline: state.nodes.filter((n) => n.status === "online").length,
-			nodesTotal: state.nodes.length,
-			// 热力图 / 趋势药丸：最近 7 天（**本地日历日**）每天的任务数。
-			//
-			// day 必须与前端同口径：index.html:775-780 的 dayKeyOf 用
-			// getFullYear/getMonth/getDate 拼 `YYYY-MM-DD`（本地日），所以这里也用本地日。
-			// 早先这里用 `toISOString().slice(0,10)` 取的是 **UTC 日**，UTC+8 下前端算出的
-			// today/yesterday 根本查不到 → 趋势药丸退化成「无基线」或拿总数冒充增量。
-			//
-			// dev-only：今天取**真实**任务数；前 6 天取 max(真实, 按 SHAPE 比例回推)。
-			// 为什么要回推：mock 的任务种子几乎全落在「今天」，按真实计数回推的话昨天=0，
-			// 首页趋势药丸就会显示「↑ <今日总数>」——那个数字和 KPI 总数一模一样，
-			// 看起来像拿总数冒充增量（#KPI 语义）。按比例回推后差值恒小于今日总量，
-			// 既保留「7 天有差异」的形状，也不会出现「增量 > 总数」这种假象。
-			// 真后端没有这层回推（internal/store/stats.go 只回真实计数）。
-			daily: (() => {
-				// i 为旧→新下标：0 = 6 天前，6 = 今天。今天固定 1（= 真实数）。
-				const SHAPE = [0.4, 0.55, 0.5, 0.7, 0.6, 0.8, 1];
-				const dayKeyOf = (d) => {
-					const m = String(d.getMonth() + 1).padStart(2, "0");
-					const dd = String(d.getDate()).padStart(2, "0");
-					return d.getFullYear() + "-" + m + "-" + dd;
-				};
-				// 真实事件数按本地日聚合（numeric createdAt 是 unix 秒）
-				const byDay = new Map();
-				for (const e of evs) {
-					const d =
-						typeof e.createdAt === "number"
-							? new Date(e.createdAt * 1000)
-							: new Date(e.createdAt || 0);
-					if (Number.isNaN(d.getTime())) continue;
-					const k = dayKeyOf(d);
-					byDay.set(k, (byDay.get(k) || 0) + 1);
-				}
-				const todayCount = byDay.get(dayKeyOf(new Date())) || 0;
-				return Array.from({ length: 7 }, (_, i) => {
-					// 按日历日回退（setDate 而不是减 86400e3：后者跨夏令时会漂一天）
-					const d = new Date();
-					d.setDate(d.getDate() - (6 - i));
-					const day = dayKeyOf(d);
-					const real = byDay.get(day) || 0;
-					const count =
-						i === 6
-							? real
-							: Math.max(real, Math.round(todayCount * SHAPE[i]));
-					return { day, count };
-				});
-			})(),
-		});
-	});
-
-	// ===== 任务 =====
-	on("GET", /^\/v1\/tasks$/, (ctx) => {
-		let list = inNs(state.tasks, nsScope(ctx.query));
-		if (ctx.query.get("traceId")) {
-			list = list.filter((t) => t.traceId === ctx.query.get("traceId"));
-		}
-		if (ctx.query.get("status")) {
-			list = list.filter((t) => t.status === ctx.query.get("status"));
-		}
-		// nodeId 过滤：真实后端支持（console_handlers.go:96），
-		// mock 之前漏了 —— 事件流"按节点筛选"于是永远筛不出东西。
-		if (ctx.query.get("nodeId")) {
-			const nid = ctx.query.get("nodeId");
-			list = list.filter((t) => t.nodeId === nid);
-		}
-		const limit = Number(ctx.query.get("limit") || 50);
-		list.sort((a, b) => b.createdAt - a.createdAt);
-		return json({ tasks: clone(list.slice(0, limit)) });
-	});
-
-	on("GET", /^\/v1\/tasks\/([^/]+)$/, (ctx) => {
-		const id = ctx.m[1];
-		const task = state.tasks.find((t) => t.id === id);
-		if (!task) return err(404, "任务不存在");
-		const chain = state.tasks
-			.filter((t) => t.traceId === task.traceId)
-			.sort((a, b) => a.createdAt - b.createdAt);
-		return json({ task: clone(task), chain: clone(chain) });
-	});
-
-	// ===== 产出（emits，P1.6）=====
-	//
-	// 真后端：`GET /v1/namespaces/{ns}/tasks/{taskId}/emissions`——emissions 是
-	// 任务的**子资源**，命名空间长在路径上（不读 namespaceId query）。
-	//
-	// 三条口径与真后端逐条对齐，mock 才能当契约用：
-	//   · 按 seq 升序（页面就是按这个顺序画的）
-	//   · 空列表是 `[]` 不是 null（否则前端分不清「还没 emit」与「查不到」）
-	//   · 跨命名空间一律 404，文案与「任务不存在」相同（不泄露存在性）
-	on("GET", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/emissions$/, (ctx) => {
-		const nsId = decodeURIComponent(ctx.m[1]);
-		const taskId = decodeURIComponent(ctx.m[2]);
-		const task = state.tasks.find((t) => t.id === taskId);
-		if (!task || (nsId !== "*" && task.namespaceId !== nsId)) {
-			return err(404, "任务不存在");
-		}
-		const rows = state.emissions
-			.filter((e) => e.taskId === taskId)
-			.sort((a, b) => a.seq - b.seq);
-		return json({ taskId: taskId, namespaceId: nsId, emissions: clone(rows) });
-	});
-
-	// ===== 任务日志（CONTRACT-task-logs §4）=====
-	//
-	// 真后端：`GET /v1/tasks/{taskId}/logs?namespaceId=…`（会话鉴权 + 命名空间
-	// 隔离）。三条口径必须与 Go 侧逐条对齐，mock 才能当契约用：
-	//
-	//   · **任务存在但没有日志 → 200 + 空串**，不是 404。没有日志是合法状态
-	//     （老任务 / agent 没上传），做成 404 会让前端在正常路径上处理错误。
-	//   · 任务不存在 / 不在这个命名空间 → 404，文案与 emissions 同一句
-	//     （不泄露存在性）。
-	//   · 字段：stdout / stderr / truncated / bytes + `available`（**恒出现**）；
-	//     `reason` 只在 available:false 时出现。
-	//
-	// `available:false`（CONTRACT-task-logs 的降级态）不是"没有输出"：日志在节点
-	// 上，中枢取不到（node_offline / no_local_archive / timeout）。页面对这两种情况
-	// 的文案必须不同 —— 混成一句会让人以为任务真的什么都没打印，去查错方向。
-	// 种子数据里刻意各造一条，否则降级分支在预览里永远没人走。
-	//
-	// 注意：mock 不实现 agent 侧的上传（POST /v1/node/tasks/{id}/logs），
-	// 那是节点凭 node token 才做的事，浏览器里永远不会出现。
-	on("GET", /^\/v1\/tasks\/([^/]+)\/logs$/, (ctx) => {
-		const taskId = decodeURIComponent(ctx.m[1]);
-		const task = state.tasks.find((t) => t.id === taskId);
-		const scope = nsScope(ctx.query);
-		if (!task || (scope !== null && task.namespaceId !== scope)) {
-			return err(404, "任务不存在");
-		}
-		const row = state.taskLogs.find((l) => l.taskId === taskId);
-		// 没有日志行 = 取到了但没输出（available:true + 空内容），不是"取不到"。
-		if (!row) {
-			return json({ stdout: "", stderr: "", truncated: false, bytes: 0, available: true });
-		}
-		if (row.available === false) {
-			// 取不到：三个内容字段一律空，原因在 reason 里（页面按它选文案）。
-			return json({
-				stdout: "",
-				stderr: "",
-				truncated: false,
-				bytes: 0,
-				available: false,
-				reason: row.reason || "unknown",
-			});
-		}
-		return json({
-			stdout: row.stdout || "",
-			stderr: row.stderr || "",
-			truncated: !!row.truncated,
-			bytes: row.bytes || 0,
-			available: true,
-		});
-	});
-
-	on("POST", /^\/v1\/tasks\/([^/]+)\/cancel$/, (ctx) => {
-		const task = state.tasks.find((t) => t.id === ctx.m[1]);
-		if (!task) return err(404, "任务不存在");
-		if (!["pending", "assigned", "acked", "running"].includes(task.status)) {
-			return err(409, "任务已到终态，不能取消");
-		}
-		task.status = "canceled";
-		task.finishedAt = now();
-		return json({ task: clone(task) });
-	});
-
-	// ===== 能力模板（CONTRACT-artifact §8 / CONTRACT-protocol §11） =====
-	//
-	// 只读清单，没有副作用。控制台拿它渲染「选模板」那一步，再按字段
-	// 推导 paramsSchema —— 所以这个接口必须和真后端同形状。
-	on("GET", /^\/v1\/capability-templates$/, () => json({ templates: mockTemplates() }));
-
-	// ===== 能力与边 =====
-	on("GET", /^\/v1\/capabilities$/, (ctx) =>
-		json({
-			capabilities: inNs(state.capabilities, nsScope(ctx.query)).map(capView),
-		}),
+	// 读要 `NamespaceList` 信封（`ensureScope` 靠 items[].metadata.name 选默认范围），
+	// 建也是信封进、信封出。v3 的 `{namespaces:[{id,slug,name}]}` 已删除。
+	on("GET", /^\/v1\/namespaces$/, () =>
+		json(listOf("NamespaceList", state.namespaces.map(namespaceResource))),
 	);
 
-	// 最新产物的**解析后**内容（详情页展示脚本 / 编辑弹层回填用）。
-	//
-	// 真后端从能力行的正文里解出来；mock 的产物就是能力对象上的 run
-	// （POST 时写进去的），所以直接投影即可 —— 但**形状必须一致**，否则控制台
-	// 在预览里能跑、在真后端会拿不到脚本。P4 起还多给 `env` 与**完整 spec**
-	// （多文件编辑器与 env 列表都靠它们回填，缺一个键就是一次静默的数据丢失）。
-	//
-	// 404 语义与真后端一样：“不属于本命名空间”与“没有产物”同一个回答。
-	on("GET", /^\/v1\/capabilities\/([^/]+)\/artifact$/, (ctx) => {
-		const scope = nsScope(ctx.query);
-		const c = state.capabilities.find((x) => x.id === ctx.m[1]);
-		if (!c || (scope !== null && c.namespaceId !== scope) || !c.run || !c.run.entrypoint) {
-			return json({ error: "capability not found", code: "not_found" }, 404);
+	on("POST", /^\/v1\/namespaces$/, (ctx) => {
+		const body = ctx.body;
+		const derr = validateWriteBody(body, "Namespace", null);
+		if (derr) return derr;
+		const name = String((body.metadata && body.metadata.name) || "").trim();
+		if (!NAME_RE.test(name)) {
+			return badRequest("BadRequest", "metadata.name 只允许小写字母/数字/._-，且以字母或数字开头");
 		}
-		return json({
-			digest:
-				c.digest ||
-				mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run })),
-			entrypoint: c.run.entrypoint,
-			files: c.run.files || {},
-			timeoutSec: c.run.timeoutSec || 0,
-			workDir: c.run.workDir || "",
-			requires: Array.isArray(c.requires) ? c.requires : [],
-			// 空 env 给 `{}` 而不是 null（不变量 I9：前端不必为一个 null 判空）
-			env: Object.assign({}, c.run.env || {}),
-			// 完整正文（含 files 正文）：与上面几个扁平字段同一份数据，
-			// 详情端点的语义就是「这就是正文」。
-			spec: specOf(c),
-		});
+		if (nsRow(name)) return statusErr(409, "AlreadyExists", "命名空间 " + name + " 已存在");
+		const row = {
+			name: name,
+			displayName: (body.metadata && body.metadata.displayName) || name,
+			uid: "ns_mock_" + name,
+			rv: nextRV(),
+			createdAt: isoNow(),
+		};
+		state.namespaces.push(row);
+		state.nsVars[name] = clone((body.spec && body.spec.vars) || {});
+		return json(namespaceResource(row), 201);
 	});
 
-	// upgradeBlock 是升级闸门（P2.2）的**唯一**判定处：新版本成为 latest 且删了出口
-	// → 返回要 409 出去的 body（带 upgradeImpact），否则返回 null = 放行。
-	//
-	// 影响面必须真的算出来（变了什么 + 哪几条 link 会断）：控制台的「仍然发布」
-	// 按钮就是靠它让人做决定的，只给一句“冲突”等于没给。
-	//
-	// 只实现 removed_port 一类（删出口）：这是用户实际会踩到的那一条
-	// （「出口清空 → 下游全断」），mock 不需要把整套契约比较重写一遍。
-	//
-	// 单建与批量（POST /v1/capabilities/batch）共用它：两份实现分开写，
-	// 迟早会出现“单建拦住、批量却放过去”的不一致。
-	function upgradeBlock(c, prev, force) {
-		if (force === true) return null;
-		if (!prev || c.version <= prev.version) return null;
-		const nextPorts = new Set(c.outputs || []);
-		const removed = (prev.outputs || []).filter((p) => !nextPorts.has(p));
-		if (!removed.length) return null;
-		const links = [];
-		for (const e of state.edges) {
-			if (e.fromIsSource) continue;
-			if (!removed.includes(e.fromPort)) continue;
-			const from = splitRef(e.fromRef);
-			if (from.pinned || from.name !== c.name) continue;
-			links.push({
-				fromRef: e.fromRef,
-				port: e.fromPort,
-				toRef: e.toRef,
-				reason: '出口 "' + e.fromPort + '" 在新版里被删掉了，这条 link 会断',
-			});
+	on("GET", /^\/v1\/namespaces\/([^/]+)$/, (ctx) => {
+		const name = decodeURIComponent(ctx.m[1]);
+		const row = nsRow(name);
+		if (!row) return notFound("命名空间 ");
+		return json(namespaceResource(row));
+	});
+
+	// ===== Node/config (W4/W5/A3): one fact and CAS per node =====
+	const configObject = v => !!v && typeof v === "object" && !Array.isArray(v);
+	const findNode = name => state.nodes.find(n => n.name === name);
+	function configFields(body, allowed) {
+		if (!configObject(body)) return badRequest("BadRequest", "Expected configuration object");
+		if (Object.keys(body).some(k => !allowed.includes(k))) return badRequest("unknown_field", "Only writable configuration fields are accepted");
+		if (body.metadata && (!configObject(body.metadata) || Object.keys(body.metadata).some(k => k !== "resourceVersion"))) return badRequest("unknown_field", "Only metadata.resourceVersion is writable");
+		return null;
+	}
+	function validateNodeConfig(body) {
+		if (body.namespaces != null && (!Array.isArray(body.namespaces) || !body.namespaces.length || new Set(body.namespaces).size !== body.namespaces.length || body.namespaces.some(n => n !== "*" && (typeof n !== "string" || !NAME_RE.test(n))))) return badRequest("namespace_invalid", "Nonempty unique namespace names or * required");
+		if (body.vars != null && (!configObject(body.vars) || Object.entries(body.vars).some(([k,v]) => !/^[A-Z][A-Z0-9_]{0,63}$/.test(k) || typeof v !== "string" || !v || v.includes("\0") || unescape(encodeURIComponent(v)).length > 4096))) return badRequest("vars_invalid", "vars must contain nonempty, nonsecret strings with uppercase names");
+		const limits = body.limits;
+		if (limits != null && (!configObject(limits) || Object.keys(limits).some(k => !["total", "perCapability"].includes(k)) || (limits.total != null && (!Number.isInteger(limits.total) || limits.total < 1)) || (limits.perCapability != null && (!configObject(limits.perCapability) || Object.entries(limits.perCapability).some(([k,v]) => (k !== "*" && !NAME_RE.test(k)) || !Number.isInteger(v) || v < 1))))) return badRequest("limits_invalid", "limits.total/perCapability leaves must be positive integers; no namespace limits");
+		return null;
+	}
+	function nodeConfig(row) {
+		return { metadata: { resourceVersion: String(row.rv) }, namespaces: clone(row.spec.namespaces), vars: clone(row.spec.vars), limits: clone(row.spec.limits), configRevision: String(row.configRevision), appliedRevision: String(row.appliedRevision), appliedHash: mockDigest("applied-" + row.name + "-" + row.appliedRevision) };
+	}
+	function updateNodeConfig(row, body) {
+		const invalid = configFields(body, ["metadata", "namespaces", "vars", "limits"]) || checkCas(body, row) || validateNodeConfig(body);
+		if (invalid) return invalid;
+		// Keep the last machine-applied report honest while defaults are pending.
+		const old = deriveNodeStatus(row);
+		row.facts.machineVars = clone(old.machineVars); row.facts.machineLimits = clone(old.machineLimits);
+		if (body.vars) row.overrideStale = Object.keys(row.facts.localVars || {}).some(k => body.vars[k] !== row.spec.vars[k]);
+		for (const k of ["namespaces", "vars", "limits"]) if (body[k] != null) row.spec[k] = clone(body[k]);
+		row.rv = nextRV(); if (row.rv === body.metadata.resourceVersion) row.rv = nextRV();
+		row.configRevision = String(Number(row.configRevision) + 1);
+		return json(nodeConfig(row));
+	}
+	on("GET", /^\/v1\/nodes$/, ctx => {
+		const ns = ctx.query.get("namespace"); if (ns && nsMissing(ns)) return nsMissing(ns);
+		return json(listOf("NodeList", state.nodes.map(n => nodeResource(n, ns || null))));
+	});
+	on("POST", /^\/v1\/nodes$/, ctx => {
+		const body = ctx.body; const invalid = validateWriteBody(body, "Node", null);
+		if (invalid) return invalid;
+		if (body.apiVersion !== API_VERSION || body.kind !== "Node") return badRequest("kind_mismatch", "Node envelope required");
+		const name = body.metadata?.name;
+		if (!NAME_RE.test(name || "")) return badRequest("name_invalid", "metadata.name required");
+		if (body.metadata.namespace != null) return badRequest("namespace_mismatch", "Node is cluster scoped");
+		if (findNode(name)) return statusErr(409, "AlreadyExists", "Cluster node name already exists");
+		const spec = { namespaces: ["*"], vars: {}, limits: { total: 1, perCapability: {} }, tags: [], ...(body.spec || {}) };
+		if (Object.keys(spec).some(k => !["namespaces", "vars", "limits", "tags"].includes(k))) return badRequest("unknown_field", "Node spec contains an unknown field");
+		const err = validateNodeConfig(spec); if (err) return err;
+		const row = { name, uid: nextUID("node"), displayName: body.metadata.displayName || "", spec, declared: [], facts: {}, rv: nextRV(), configRevision: "1", appliedRevision: "", createdAt: isoNow() };
+		state.nodes.push(row); return json(nodeResource(row), 201);
+	});
+	on("GET", /^\/v1\/nodes\/([^/]+)$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		const ns = ctx.query.get("namespace"); if (ns && nsMissing(ns)) return nsMissing(ns);
+		return json(nodeResource(row, ns || null));
+	});
+	on("PUT", /^\/v1\/nodes\/([^/]+)$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		const invalid = validateWriteBody(ctx.body, "Node", null); if (invalid) return invalid;
+		const saved = updateNodeConfig(row, { metadata: { resourceVersion: ctx.body.metadata?.resourceVersion }, ...(ctx.body.spec || {}) });
+		return saved.status === 200 ? json(nodeResource(row)) : saved;
+	});
+	on("POST", /^\/v1\/nodes\/([^/]+)\/tokens$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		if (ctx.body != null && (!configObject(ctx.body) || Object.keys(ctx.body).length)) return badRequest("unknown_field", "tokens accepts an empty body");
+		row.identityToken = "ant_node_mock_" + row.name + "_" + nextRV();
+		// Identity rotation invalidates existing connected authorization; no auto hello.
+		row.facts.lastSeenAt = null;
+		return json({ apiVersion: API_VERSION, kind: "NodeToken", node: { name: row.name }, token: row.identityToken });
+	});
+	on("GET", /^\/v1\/nodes\/([^/]+)\/config$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); return row ? json(nodeConfig(row)) : notFound("Node ");
+	});
+	on("PUT", /^\/v1\/nodes\/([^/]+)\/config$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); return row ? updateNodeConfig(row, ctx.body) : notFound("Node ");
+	});
+	on("POST", /^\/v1\/nodes\/config\/batch$/, async ctx => {
+		if (!configObject(ctx.body) || !Array.isArray(ctx.body.updates) || Object.keys(ctx.body).some(k => k !== "updates")) return badRequest("BadRequest", "updates array required");
+		const items = [];
+		for (const update of ctx.body.updates) {
+			const { name, ...body } = configObject(update) ? update : {};
+			const row = findNode(name); const response = row ? updateNodeConfig(row, body) : notFound("Node ");
+			const value = await response.json();
+			items.push(response.status === 200 ? { name, ok: true, config: value } : { name: name || "", ok: false, error: value });
 		}
-		return {
-			error: "升级 " + c.name + "@" + c.version + " 会破坏已有的 name 型 link",
-			code: "upgrade_breaking",
-			upgradeImpact: {
-				capability: c.name,
-				fromVersion: prev.version,
-				toVersion: c.version,
-				breaking: true,
-				changes: removed.map((p) => ({
-					kind: "removed_port",
-					detail: '出口 "' + p + '" 在新版里被删掉了',
-				})),
-				links: links,
-			},
+		return json({ items });
+	});
+	function namespaceConfig(name) {
+		const row = state.nsConfig[name] ||= { rv: "ns-config-" + name, revision: "1" };
+		return { metadata: { resourceVersion: row.rv }, vars: clone(state.nsVars[name] || {}), namespaceVarsRevision: row.revision };
+	}
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/config$/, ctx => {
+		const name = decodeURIComponent(ctx.m[1]); return nsMissing(name) || json(namespaceConfig(name));
+	});
+	on("PUT", /^\/v1\/namespaces\/([^/]+)\/config$/, ctx => {
+		const name = decodeURIComponent(ctx.m[1]); if (nsMissing(name)) return nsMissing(name);
+		namespaceConfig(name); const row = state.nsConfig[name];
+		const invalid = configFields(ctx.body, ["metadata", "vars"]) || checkCas(ctx.body, row) || validateNodeConfig(ctx.body);
+		if (invalid) return invalid;
+		if (ctx.body.vars != null) state.nsVars[name] = clone(ctx.body.vars);
+		row.rv = nextRV(); if (row.rv === ctx.body.metadata.resourceVersion) row.rv = nextRV(); row.revision = String(Number(row.revision) + 1);
+		return json(namespaceConfig(name));
+	});
+	const systemConfig = () => ({ metadata: { resourceVersion: state.systemConfig.rv }, retention: clone(state.systemConfig.retention) });
+	on("GET", /^\/v1\/system\/config$/, () => ME.role === "admin" ? json(systemConfig()) : statusErr(403, "Forbidden", "Administrator required"));
+	on("PUT", /^\/v1\/system\/config$/, ctx => {
+		if (ME.role !== "admin") return statusErr(403, "Forbidden", "Administrator required");
+		const invalid = configFields(ctx.body, ["metadata", "retention"]) || checkCas(ctx.body, state.systemConfig); if (invalid) return invalid;
+		if (!configObject(ctx.body.retention) || Object.keys(ctx.body.retention).some(k => !["resultTtlSec", "eventTtlSec", "taskTtlSec"].includes(k)) || Object.values(ctx.body.retention).some(v => !Number.isInteger(v) || v < 0)) return badRequest("retention_invalid", "TTL must be nonnegative integer seconds; 0 means permanent");
+		state.systemConfig.retention = { ...state.systemConfig.retention, ...clone(ctx.body.retention) };
+		state.systemConfig.rv = nextRV(); if (state.systemConfig.rv === ctx.body.metadata.resourceVersion) state.systemConfig.rv = nextRV();
+		return json(systemConfig());
+	});
+	on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		if (!nodeOnline(row)) return statusErr(409, "node_offline", "Node is offline");
+		row.draining = true; return json({ status: "draining" });
+	});
+	on("POST", /^\/v1\/nodes\/([^/]+)\/upgrade$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		if (!state.agentBinary) return statusErr(501, "agent_binary_unavailable", "Server has no node binary; install locally");
+		if (!nodeOnline(row)) return statusErr(409, "node_offline", "Node is offline");
+		if (state.upgradeFailCode) return statusErr(500, state.upgradeFailCode, "Node upgrade failed");
+		return statusErr(501, "agent_binary_unavailable", "Preview has no downloadable verified binary; no upgrade was sent");
+	});
+
+	// ===== Playbook: raw package -> pure render -> atomic additive plan =====
+	const PB_LIST = /^\/v1\/namespaces\/([^/]+)\/playbooks$/;
+	const PB_ONE = /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)$/;
+	const pbObject = v => !!v && typeof v === "object" && !Array.isArray(v);
+	const pbFail = (reason, message) => { throw Object.assign(new Error(message), { reason }); };
+	const pbParse = (text, path) => {
+		try { return window.Anotify.model.playbook.parseDocument(text); }
+		catch (error) { return pbFail("invalid_playbook", path + ": " + error.message); }
+	};
+	function pbPackage(files, slug) {
+		if (!pbObject(files)) pbFail("invalid_playbook", "spec.files must be a relative-path -> string map");
+		if (!("playbook.yaml" in files)) pbFail("entry_missing", "playbook.yaml is required");
+		const keys = Object.keys(files);
+		if (keys.length > 64) pbFail("too_many_items", "At most 64 files");
+		let bytes = 0;
+		for (const path of keys) {
+			if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some(s => s === ".." || s === "." || !s) || path.length > 255 || path.includes("\0") || path.includes("{{")) {
+				pbFail("file_path_invalid", "Invalid package path: " + path);
+			}
+			if (typeof files[path] !== "string") pbFail("invalid_playbook", path + ": expected string content");
+			const size = unescape(encodeURIComponent(files[path])).length;
+			if (size > 2 * 1024 * 1024) pbFail("invalid_playbook", path + ": file exceeds 2 MiB");
+			if (/\.ya?ml$/i.test(path)) bytes += size;
+		}
+		if (bytes > 8 * 1024 * 1024) pbFail("invalid_playbook", "YAML package exceeds 8 MiB");
+		const root = pbParse(files["playbook.yaml"], "playbook.yaml");
+		if (!pbObject(root) || !pbObject(root.metadata) || !pbObject(root.spec)) pbFail("invalid_playbook", "playbook.yaml needs metadata and spec");
+		if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(root.metadata.name || "") || root.metadata.name.length > 64) pbFail("slug_invalid", "Invalid package slug");
+		if (root.metadata.name !== slug) pbFail("invalid_playbook", "metadata.name must match playbook.yaml slug");
+		if (root.metadata.namespace != null) pbFail("namespace_in_package", "playbook.yaml: namespace is installation context");
+		if (root.metadata.version != null && (!Number.isInteger(root.metadata.version) || root.metadata.version < 1)) pbFail("invalid_playbook", "Package version must be a positive integer");
+		if (root.spec.values != null && !pbObject(root.spec.values)) pbFail("invalid_playbook", "spec.values must be JSON Schema");
+		if (["edges", "triggers"].some(k => k in root.spec)) pbFail("invalid_playbook", "v3 package shape is not supported");
+		const seen = new Set(["playbook.yaml"]);
+		const documents = { capabilities: [], sources: [] };
+		for (const slot of Object.keys(documents)) {
+			const refs = root.spec[slot] || [];
+			if (!Array.isArray(refs)) pbFail("invalid_playbook", "spec." + slot + " must be relative path references");
+			if (refs.length > 32) pbFail("too_many_items", slot + ": at most 32 items");
+			for (const path of refs) {
+				if (typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..") || path.length > 255 || path.includes("\0") || path.includes("{{")) pbFail("file_path_invalid", "Invalid reference path");
+				if (seen.has(path)) pbFail("file_duplicate", path + ": repeated reference");
+				if (!(path in files)) pbFail("file_missing", path + ": referenced file missing");
+				seen.add(path);
+				const doc = pbParse(files[path], path);
+				if (!pbObject(doc) || !pbObject(doc.metadata) || typeof doc.metadata.name !== "string" || !pbObject(doc.spec)) pbFail("invalid_playbook", path + ": metadata.name and spec required");
+				if (doc.metadata.namespace != null) pbFail("namespace_in_package", path + ": namespace forbidden");
+				delete doc.status;
+				if (slot === "capabilities" && (!pbObject(doc.spec.run) || !pbObject(doc.spec.run.files) || typeof doc.spec.run.entrypoint !== "string")) pbFail("invalid_playbook", path + ": Capability requires run/files/entrypoint");
+				if (slot === "sources" && !["manual", "webhook", "cron"].includes(doc.spec.kind)) pbFail("invalid_playbook", path + ": Source kind required");
+				documents[slot].push({ path, doc });
+			}
+		}
+		for (const path of keys) if (/\.ya?ml$/i.test(path) && !seen.has(path)) pbFail("file_unreferenced", path + ": unreferenced YAML");
+		return { root, documents };
+	}
+	function pbDefaults(schema, value) {
+		if (value === undefined && schema && "default" in schema) value = clone(schema.default);
+		if (pbObject(value)) {
+			value = clone(value);
+			for (const [key, sub] of Object.entries(schema?.properties || {})) {
+				const result = pbDefaults(sub, value[key]);
+				if (result !== undefined) value[key] = result;
+			}
+		}
+		return value;
+	}
+	function pbValidateValues(schema, value, path = "values") {
+		if (!schema || typeof schema !== "object") return;
+		const message = validateSchema(schema, value, path);
+		if (message) pbFail(message.includes("缺少必填") ? "values_missing" : "values_invalid", path + ": schema validation failed");
+		if (typeof value === "string") {
+			if (schema.pattern && !new RegExp(schema.pattern).test(value)) pbFail("values_invalid", path + ": pattern does not match");
+			if (schema.minLength != null && value.length < schema.minLength || schema.maxLength != null && value.length > schema.maxLength) pbFail("values_invalid", path + ": invalid length");
+		}
+		if (typeof value === "number" && (schema.minimum != null && value < schema.minimum || schema.maximum != null && value > schema.maximum)) pbFail("values_invalid", path + ": out of bounds");
+		if (pbObject(value)) for (const [key, v] of Object.entries(value)) {
+			if (!schema.properties?.[key] && schema.additionalProperties === false) pbFail("values_invalid", path + "." + key + ": unknown field");
+			pbValidateValues(schema.properties?.[key], v, path + "." + key);
+		}
+		if (Array.isArray(value)) value.forEach((v, i) => pbValidateValues(schema.items, v, path + "." + i));
+	}
+	function pbInterpolate(value, values, path) {
+		if (Array.isArray(value)) return value.map((v, i) => pbInterpolate(v, values, path + "." + i));
+		if (pbObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, pbInterpolate(v, values, path + "." + k)]));
+		if (typeof value !== "string") return value;
+		const get = key => {
+			let result = values;
+			for (const part of key.split(".")) {
+				if (result == null || !Object.prototype.hasOwnProperty.call(result, part)) pbFail("values_missing", path + ": values." + key + " missing; supply a value or schema default");
+				result = result[part];
+			}
+			return clone(result);
+		};
+		const whole = /^\{\{values\.([\w.-]+)\}\}$/.exec(value);
+		if (whole) return get(whole[1]);
+		return value.replace(/\{\{values\.([\w.-]+)\}\}/g, (_, key) => {
+			const v = get(key); return typeof v === "string" ? v : JSON.stringify(v);
+		});
+	}
+	function pbSecrets(schema, value, list = [], inherited = false) {
+		const secret = inherited || schema?.writeOnly;
+		if (secret && typeof value === "string" && value) list.push(value);
+		if (pbObject(value)) for (const [k, v] of Object.entries(value)) pbSecrets(schema?.properties?.[k], v, list, secret);
+		if (Array.isArray(value)) value.forEach(v => pbSecrets(schema?.items, v, list, secret));
+		return list;
+	}
+	function pbMask(value, secrets = [], schema) {
+		if (schema?.writeOnly) return "***";
+		if (Array.isArray(value)) return value.map((v, i) => pbMask(v, secrets, schema?.prefixItems?.[i] || schema?.items));
+		if (pbObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /^(token|secret)$/i.test(k) ? "***" : pbMask(v, secrets, schema?.properties?.[k])]));
+		if (typeof value === "string" && secrets.some(s => s && value.includes(s))) return "***";
+		return value;
+	}
+	// A policy contains only schema/template provenance, never submitted values.
+	// It travels with an applied mock resource so an older actual route is masked
+	// by its OWN template even after a package update changes reference locations.
+	function pbSchemaPolicy(schema) {
+		if (schema?.writeOnly) return { writeOnly: true };
+		return { ...(schema?.properties ? { properties: Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, pbSchemaPolicy(v)])) } : {}),
+			...(schema?.items ? { items: pbSchemaPolicy(schema.items) } : {}) };
+	}
+	function pbReferencePolicy(schema, key) {
+		for (const part of key.split(".")) {
+			if (schema?.writeOnly) return { writeOnly: true };
+			schema = /^\d+$/.test(part) ? schema?.items : schema?.properties?.[part];
+		}
+		return pbSchemaPolicy(schema);
+	}
+	function pbPolicySecret(policy) {
+		if (!policy) return false;
+		return !!policy.writeOnly || Object.values(policy?.properties || {}).some(pbPolicySecret) || pbPolicySecret(policy?.items);
+	}
+	function pbTemplatePolicy(template, schema) {
+		if (Array.isArray(template)) return { prefixItems: template.map(v => pbTemplatePolicy(v, schema)) };
+		if (pbObject(template)) return { properties: Object.fromEntries(Object.entries(template).map(([k, v]) => [k, pbTemplatePolicy(v, schema)])) };
+		if (typeof template !== "string") return {};
+		const whole = /^\{\{values\.([\w.-]+)\}\}$/.exec(template);
+		if (whole) return pbReferencePolicy(schema, whole[1]);
+		return [...template.matchAll(/\{\{values\.([\w.-]+)\}\}/g)].some(m => pbPolicySecret(pbReferencePolicy(schema, m[1]))) ? { writeOnly: true } : {};
+	}
+	function pbDisplaySecrets(raw, masked, secrets = []) {
+		if (typeof raw === "string" && raw !== masked && raw) secrets.push(raw);
+		if (raw && typeof raw === "object") for (const [k, v] of Object.entries(raw)) pbDisplaySecrets(v, masked?.[k], secrets);
+		return secrets;
+	}
+	function pbRender(row, input) {
+		const pkg = pbPackage(row.files, row.name);
+		if (input != null && !pbObject(input)) pbFail("values_invalid", "values must be an object");
+		const values = pbDefaults(pkg.root.spec.values || {}, input || {});
+		pbValidateValues(pkg.root.spec.values, values);
+		const documents = { capabilities: [], sources: [] }; const files = clone(row.files);
+		const errorSecrets = pbSecrets(pkg.root.spec.values, values);
+		try {
+		for (const [slot, entries] of Object.entries(pkg.documents)) {
+			const names = new Set();
+			for (const { path, doc } of entries) {
+				const rendered = pbInterpolate(doc, values, path);
+				pbDisplaySecrets(rendered, pbMask(rendered, [], pbTemplatePolicy(doc, pkg.root.spec.values)), errorSecrets);
+				if (typeof rendered.metadata.name !== "string") pbFail("render_type_mismatch", path + ": metadata.name must render to string");
+				if (!NAME_RE.test(rendered.metadata.name)) pbFail("render_name_invalid", path + ": " + doc.metadata.name + " rendered to " + rendered.metadata.name + "; tighten values schema pattern");
+				if (names.has(rendered.metadata.name)) pbFail(slot === "capabilities" ? "duplicate_capability" : "duplicate_source", path + ": duplicate rendered name");
+				names.add(rendered.metadata.name);
+				if (slot === "capabilities") {
+					const spec = rendered.spec; const run = spec.run;
+					if (typeof run.entrypoint !== "string" || !pbObject(run.files) || typeof run.files[run.entrypoint] !== "string" || !run.files[run.entrypoint].startsWith("#!")) pbFail("entrypoint_no_shebang", path + ": entrypoint must start with #!");
+					for (const [file, content] of Object.entries(run.files)) if (typeof content !== "string") pbFail("render_type_mismatch", path + ": run.files." + file + " requires string");
+					if (!Array.isArray(spec.next || []) || (spec.next || []).some(ref => typeof ref !== "string" || !NAME_RE.test(splitRef(ref).name))) pbFail("invalid_playbook", path + ": invalid next reference");
+					if (rendered.metadata.version != null && (!Number.isInteger(rendered.metadata.version) || rendered.metadata.version < 1)) pbFail("invalid_playbook", path + ": version must be a positive integer");
+					// Shared single-create semantic checks, without database next lookup.
+					const basic = validateNewCapability(Object.assign({}, spec, { next: [] }), row.ns);
+					if (basic) pbFail("invalid_playbook", path + ": invalid capability contract");
+				} else {
+					const err = validateSourceSpec(rendered.spec); if (err) pbFail(err.reason, path + ": " + err.message);
+				}
+				documents[slot].push(rendered); files[path] = JSON.stringify(rendered, null, 2);
+			}
+		}
+		const byName = new Map(documents.capabilities.map(d => [d.metadata.name, d]));
+		const visiting = new Set(); const done = new Set();
+		const visit = name => {
+			if (visiting.has(name)) pbFail("cycle", "Package next cycle at " + name);
+			if (done.has(name)) return;
+			visiting.add(name);
+			for (const ref of byName.get(name)?.spec.next || []) if (byName.has(splitRef(ref).name)) visit(splitRef(ref).name);
+			visiting.delete(name); done.add(name);
+		};
+		for (const name of byName.keys()) visit(name);
+		return { values, valuesDigest: mockDigest(stableStringify(values)), files, documents };
+		} catch (error) { if (error.reason) error.message = pbMask(error.message, errorSecrets); throw error; }
+	}
+	function pbVersions(row) {
+		return row ? [row].concat((row.versions || []).map(v => Object.assign({}, row, v, { receiptPolicy: clone(v.receiptPolicy || {}), receiptRef: v.receiptRef, versions: [] }))) : [];
+	}
+	function pbOwned(row) {
+		const installs = state.playbookInstalls.filter(i => i.ns === row.ns && i.playbookUid === row.uid);
+		const ids = new Set(installs.map(i => i.id));
+		return { installs, capabilities: state.capabilities.filter(c => c.ns === row.ns).flatMap(pbVersions).filter(c => ids.has(c.installedFrom)), sources: state.sources.filter(s => s.ns === row.ns && ids.has(s.installedFrom)) };
+	}
+	function pbStatus(row) {
+		const owned = pbOwned(row); const last = owned.installs.at(-1)?.receipt;
+		const unapplied = clone(last?.unapplied || []);
+		const caps = owned.capabilities.map(c => ({ row: c, status: deriveCapabilityStatus(c) }));
+		const metadataPolicy = c => c.receiptPolicy?.properties?.metadata?.properties;
+		const conditionMessage = (c, condition) => {
+			if (!condition?.message) return "";
+			const policy = c.receiptPolicy?.properties?.spec?.properties;
+			if (condition.type === "DownstreamResolved") {
+				const next = c.spec.next || [], masked = pbMask(next, [], policy?.next);
+				// This message derives missing ref NAMES, not the whole name@version.
+				if (next.some((ref, i) => !resolveCapRef(ref, c.ns) && (masked === "***" || masked[i] !== ref))) return "***";
+			} else if (condition.type === "NodesAvailable" && ["CommandMissing", "ValueMissing", "NoMatchingNode"].includes(condition.reason)) {
+				const fields = condition.reason === "CommandMissing" ? ["commands"] : condition.reason === "ValueMissing" ? ["values"] : ["commands", "values"];
+				const raw = Object.fromEntries(fields.map(k => [k, c.spec.requires?.[k] || []]));
+				return pbMask(condition.message, pbDisplaySecrets(raw, pbMask(raw, [], policy?.requires)));
+			}
+			return condition.message;
+		};
+		const conditions = ["Implemented", "NodesAvailable", "DownstreamResolved", "Deployed"].map(type => {
+			const bad = caps.filter(c => c.status.conditions.find(x => x.type === type)?.status !== "True");
+			return { type, status: caps.length && !bad.length ? "True" : "False", reason: !caps.length ? "NotInstalled" : bad[0]?.status.conditions.find(x => x.type === type)?.reason || "Valid",
+				members: bad.map(c => pbMask(c.row.name, [], metadataPolicy(c.row)?.name)), message: bad.map(c => conditionMessage(c.row, c.status.conditions.find(x => x.type === type))).filter(Boolean).join("; ") };
+		});
+		const items = caps.map(c => ({ kind: "capability", name: pbMask(c.row.name, [], metadataPolicy(c.row)?.name), version: pbMask(c.row.version, [], metadataPolicy(c.row)?.version), state: c.status.conditions.find(x => x.type === "NodesAvailable")?.status === "True" ? "ok" : "no_node" }));
+		for (const s of owned.sources) {
+			const differing = unapplied.some(u => u.kind === "source" && u.ref === s.name);
+			const state = differing ? "unapplied" : deriveSourceStatus(s).health;
+			const targetsPolicy = s.receiptPolicy?.properties?.spec?.properties?.targets;
+			// Mask the display copy before selecting leaves, retaining array/object ancestors.
+			const displayTargets = pbMask(s.targets || [], [], targetsPolicy);
+			items.push({ kind: "source", name: pbMask(s.name, [], metadataPolicy(s)?.name), state, targets: (s.targets || []).map((t, i) => displayTargets === "***" || displayTargets[i] === "***" ? "***" : displayTargets[i].capability) });
+		}
+		const sources = { total: owned.sources.length, enabled: owned.sources.filter(s => s.enabled).length, blocked: 0, disabled: 0, unapplied: 0 };
+		for (const i of items.filter(i => i.kind === "source")) if (i.state in sources) sources[i.state]++;
+		const bad = conditions.find(c => c.status !== "True");
+		const blocker = unapplied.length ? { type: unapplied[0].reason, capability: unapplied[0].ref, action: unapplied[0].kind === "source" ? "edit_source" : "edit_capability" }
+			: bad ? { type: bad.type, capability: bad.members[0] || null, action: { Implemented: "edit_capability", NodesAvailable: "open_node_page", DownstreamResolved: "create_capability", Deployed: "deploy" }[bad.type] } : null;
+		// Mask only provenance-bearing display leaves above, not fixed action/type
+		// identities by a substring sweep of the entire status object.
+		return pbMask({ ready: caps.length > 0 && !bad && !unapplied.length, unapplied, total: items.length, conditions, blocker, items, sources, lastInstallId: last?.install.id || null, ...(row.source ? { source: row.source } : {}) });
+	}
+	function pbResource(row, body = false) {
+		return { apiVersion: API_VERSION, kind: "Playbook", metadata: { name: row.name, namespace: row.ns, uid: row.uid, resourceVersion: row.rv, creationTimestamp: row.createdAt, displayName: row.root.metadata.displayName || row.name, description: row.root.metadata.description || "", ...(row.root.metadata.version ? { version: row.root.metadata.version } : {}) },
+			spec: body ? { files: clone(row.files) } : {}, status: pbStatus(row) };
+	}
+	function pbSourceComparable(spec, existing) {
+		const cfg = sourceWriteConfig(spec.config, spec.kind);
+		if (spec.kind === "webhook") {
+			if (!("token" in cfg) && existing?.config.token) cfg.token = existing.config.token;
+			if (!("secret" in cfg)) cfg.secret = "";
+		} else {
+			if (!("payload" in cfg)) cfg.payload = {};
+			if (spec.kind === "cron" && !cfg.tz) cfg.tz = "UTC";
+		}
+		return { kind: spec.kind, enabled: spec.enabled !== false, config: cfg };
+	}
+	function pbDiff(a, b, path = "") {
+		if (stableStringify(a) === stableStringify(b)) return [];
+		if (pbObject(a) && pbObject(b)) return [...new Set([...Object.keys(a), ...Object.keys(b)])].flatMap(k => pbDiff(a[k], b[k], path ? path + "." + k : k));
+		return [path];
+	}
+	function pbPlan(row, rendered, dryRun) {
+		const id = dryRun ? null : "ins_mock_" + (state.playbookInstalls.length + 1);
+		const receipt = { apiVersion: API_VERSION, kind: "InstallReceipt", playbook: { name: row.name, version: row.root.metadata.version || null }, ...(row.source ? { source: row.source } : {}), install: { id, at: isoNow(), dryRun }, namespace: row.ns,
+			values: rendered.values, valuesDigest: rendered.valuesDigest, created: { capabilities: [], sources: [] }, skipped: { capabilities: [], sources: [] }, upgraded: [], unapplied: [], external: [], pending: [], notes: [] };
+		const additions = { capabilities: [], sources: [] }; const conflicts = [];
+		const templates = pbPackage(row.files, row.name).documents;
+		const policies = new Map();
+		const secrets = pbSecrets(row.root.spec.values, rendered.values);
+		const display = (value, policy) => {
+			const masked = pbMask(value, [], policy); pbDisplaySecrets(value, masked, secrets); return masked;
+		};
+		for (const slot of ["capabilities", "sources"]) rendered.documents[slot].forEach((d, i) => {
+			const policy = pbTemplatePolicy(templates[slot][i].doc, row.root.spec.values);
+			policies.set(d, policy);
+			const masked = display(d, policy);
+			if (d.metadata.version != null && masked.metadata.version !== d.metadata.version) secrets.push(d.metadata.name + "@" + d.metadata.version);
+		});
+		const note = (code, ref, message) => receipt.notes.push({ code, ...(ref ? { ref } : {}), message });
+		for (const d of rendered.documents.capabilities) {
+			const name = d.metadata.name; const current = findCap(row.ns, name); const versions = pbVersions(current);
+			const explicit = d.metadata.version; const key = capabilityContentKey(d.spec);
+			const existing = explicit == null ? versions.find(v => capabilityContentKey(v.spec) === key) : versions.find(v => v.version === explicit);
+			if (existing && capabilityContentKey(existing.spec) !== key) {
+				conflicts.push({ kind: "capability", ref: name + "@" + explicit, reason: "version_content_immutable", declaredDigest: capabilityDigest(name, explicit, d.spec), actualDigest: existing.digest, fields: pbDiff(capabilityContent(d.spec), capabilityContent(existing.spec), "spec") });
+				continue;
+			}
+			if (existing) {
+				const ref = name + "@" + existing.version;
+				display({ metadata: { name, version: existing.version } }, existing.receiptPolicy);
+				if (existing.receiptRef && existing.receiptRef !== ref || existing.receiptPolicy?.properties?.metadata?.properties?.version?.writeOnly) secrets.push(ref);
+				receipt.skipped.capabilities.push(ref);
+				if (stableStringify([...(d.spec.next || [])].sort()) !== stableStringify([...(existing.spec.next || [])].sort())) {
+					receipt.unapplied.push({ kind: "capability", ref, field: "next", reason: "routing_unapplied", declared: display(d.spec.next || [], policies.get(d).properties?.spec?.properties?.next), actual: display(existing.spec.next || [], (existing.receiptPolicy || policies.get(d)).properties?.spec?.properties?.next) });
+					note("routing_unapplied", ref, "Declared next was not applied; edit the existing capability explicitly.");
+				}
+			} else {
+				const version = explicit == null ? Math.max(0, ...versions.map(v => v.version)) + 1 : explicit;
+				additions.capabilities.push({ ns: row.ns, name, version, receiptPolicy: policies.get(d), displayName: d.metadata.displayName || "", spec: clone(d.spec), digest: capabilityDigest(name, version, d.spec), installedFrom: id });
+				receipt.created.capabilities.push(name + "@" + version);
+				if (current && version > current.version) receipt.upgraded.push({ capability: name, from: display(current.version, current.receiptPolicy?.properties?.metadata?.properties?.version), to: display(version, policies.get(d).properties?.metadata?.properties?.version), affects: {
+					edges: state.capabilities.filter(c => c.ns === row.ns).flatMap(pbVersions).reduce((n, c) => n + (c.spec.next || []).filter(ref => ref === name).length, 0),
+					sources: state.sources.filter(s => s.ns === row.ns && (s.targets || []).some(t => t.capability === name)).length,
+				} });
+			}
+		}
+		for (const d of rendered.documents.sources) {
+			const name = d.metadata.name; const existing = findSource(row.ns, name);
+			const declared = pbSourceComparable(d.spec, existing);
+			if (existing) {
+				const actual = pbSourceComparable(existing);
+				const fields = pbDiff(declared, actual);
+				if (fields.length) { conflicts.push({ kind: "source", ref: name, reason: "config_differs", declaredDigest: mockDigest(stableStringify(declared)), actualDigest: mockDigest(stableStringify(actual)), fields }); continue; }
+				display({ metadata: { name } }, existing.receiptPolicy);
+				if (existing.receiptRef && existing.receiptRef !== name) secrets.push(name);
+				receipt.skipped.sources.push(name);
+				const targets = ts => (ts || []).map(t => Object.assign({}, t, { params: t.params || {} })).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+				if (stableStringify(targets(d.spec.targets)) !== stableStringify(targets(existing.targets))) {
+					receipt.unapplied.push({ kind: "source", ref: name, field: "targets", reason: "targets_unapplied", declared: display(d.spec.targets || [], policies.get(d).properties?.spec?.properties?.targets), actual: display(existing.targets || [], (existing.receiptPolicy || policies.get(d)).properties?.spec?.properties?.targets) });
+					note("targets_unapplied", name, "Declared targets/params were not applied; edit the existing source explicitly.");
+				}
+			} else {
+				const config = sourceWriteConfig(d.spec.config, d.spec.kind);
+				if (d.spec.kind === "webhook" && !config.token) config.token = "src_mock_" + row.ns + "_" + name;
+				additions.sources.push({ ns: row.ns, name, displayName: d.metadata.displayName || "", kind: d.spec.kind, enabled: d.spec.enabled !== false, config, receiptPolicy: policies.get(d), targets: clone(d.spec.targets || []), installedFrom: id, lastFiredAt: null, nextFireAt: null, lastError: null, unapplied: false });
+				receipt.created.sources.push(name);
+			}
+			if (d.spec.enabled === false) note("source_disabled", name, "Source is disabled.");
+		}
+		if (conflicts.length) return { error: statusErr(400, "playbook_conflict", "Whole package rejected; no resources or receipt written", pbMask({ valuesDigest: rendered.valuesDigest, conflicts, hint: "Choose a new explicit capability version or edit the existing source separately; install never overwrites existing definitions." }, secrets)) };
+		const inPackage = new Set(rendered.documents.capabilities.map(d => d.metadata.name));
+		const refs = rendered.documents.capabilities.flatMap(d => d.spec.next || []).concat(rendered.documents.sources.flatMap(d => (d.spec.targets || []).map(t => t.capability)));
+		for (const ref of [...new Set(refs)]) {
+			const parsed = splitRef(ref);
+			const added = additions.capabilities.find(c => c.name === parsed.name && (parsed.version == null || c.version === parsed.version));
+			const existing = resolveCapRef(ref, row.ns);
+			if (!added && !existing) { receipt.pending.push(ref); note("pending_ref", ref, "Reference does not resolve; add the missing capability."); }
+			else if (!inPackage.has(parsed.name) && existing) {
+				const actualRef = existing.name + "@" + existing.version;
+				// The execution resolver deliberately returns a minimal archived deployment view.
+				// Read ONLY the selected version's original display provenance separately.
+				const identity = pbVersions(findCap(row.ns, existing.name)).find(c => c.version === existing.version);
+				display({ metadata: { name: existing.name, version: existing.version } }, identity?.receiptPolicy);
+				if (identity?.receiptRef && identity.receiptRef !== actualRef || identity?.receiptPolicy?.properties?.metadata?.properties?.version?.writeOnly) secrets.push(actualRef);
+				receipt.external.push(actualRef);
+			}
+		}
+		// Reachability uses ACTUAL reused routes, not the unapplied declaration.
+		const actualCaps = rendered.documents.capabilities.map(d => additions.capabilities.find(c => c.name === d.metadata.name) || pbVersions(findCap(row.ns, d.metadata.name)).find(c => receipt.skipped.capabilities.includes(c.name + "@" + c.version)));
+		const actualSources = rendered.documents.sources.map(d => additions.sources.find(s => s.name === d.metadata.name) || findSource(row.ns, d.metadata.name));
+		const incoming = new Set(actualCaps.flatMap(c => c?.spec.next || []).concat(actualSources.flatMap(s => (s?.targets || []).map(t => t.capability))).map(ref => splitRef(ref).name));
+		for (const c of actualCaps) if (c && !incoming.has(c.name)) note("unreachable", c.name + "@" + c.version, "No package upstream/source points to this capability.");
+		if (actualCaps.length && !actualCaps.some(c => deriveCapabilityStatus(c).conditions.find(x => x.type === "NodesAvailable")?.status === "True")) note("no_node", null, "No package capability can run on the current node pool.");
+		secrets.push(...rendered.documents.sources.flatMap(d => [d.spec.config?.token, d.spec.config?.secret]).filter(v => typeof v === "string" && v));
+		// 脱敏分两层：schema 的 writeOnly 路径按**字段身份**遮（数字/布尔/对象/数组
+		// 同样遮得住，不依赖“secret 是不是字符串”），字符串包含匹配只用于 schema
+		// 之外的值（source token/secret 等）。应用值（写进资源的 config）与
+		// valuesDigest 都不受影响 —— 脱敏只改回执/历史的展示副本。
+		receipt.values = pbMask(receipt.values, secrets, row.root.spec.values);
+		return { receipt: pbMask(receipt, secrets), additions };
+	}
+	function pbCommit(row, plan) {
+		for (const [index, added] of plan.additions.capabilities.entries()) {
+			const old = findCap(row.ns, added.name);
+			const time = isoNow(); const fresh = Object.assign({}, added, { uid: old ? old.uid : nextUID("cap"), receiptRef: plan.receipt.created.capabilities[index], rv: nextRV(), createdAt: time, versionAt: time, versions: [] });
+			if (!old) state.capabilities.push(fresh);
+			else {
+				const all = pbVersions(old).concat(fresh).sort((a, b) => b.version - a.version);
+				const latest = Object.assign({}, all[0], { versions: all.slice(1).map(v => ({ version: v.version, spec: clone(v.spec), digest: v.digest, at: v.versionAt || v.createdAt, installedFrom: v.installedFrom, receiptPolicy: clone(v.receiptPolicy || {}), receiptRef: v.receiptRef })) });
+				state.capabilities.splice(state.capabilities.indexOf(old), 1, latest);
+			}
+		}
+		for (const [index, added] of plan.additions.sources.entries()) state.sources.push(Object.assign({}, added, { uid: nextUID("src"), receiptRef: plan.receipt.created.sources[index], rv: nextRV(), createdAt: isoNow() }));
+		const receipt = plan.receipt;
+		state.playbookInstalls.push({ id: receipt.install.id, ns: row.ns, playbookName: row.name, playbookUid: row.uid, valuesDigest: receipt.valuesDigest, values: clone(receipt.values), source: row.source || null, receipt: clone(receipt) });
+	}
+	function pbRequest(handler) {
+		return ctx => {
+			try { return handler(ctx); }
+			catch (error) { if (error.reason) return statusErr(400, error.reason, error.message); throw error; }
 		};
 	}
-
-	on("POST", /^\/v1\/capabilities$/, (ctx) => {
-		const b = ctx.body || {};
-		if (!b.name) return err(400, "name is required");
-		// 名字规则与 internal/artifact/artifact.go 的 namePattern 一致：
-		// 前后端都要拦，不然演示里能建出真后端拒收的名字。
-		if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(b.name)) {
-			return err(400, "invalid_name: 只能包含小写字母、数字、点、下划线、短横线，1–63 字符");
+	const pbFind = (ns, name) => state.playbooks.find(p => p.ns === ns && p.name === name);
+	function pbSave(ctx, updating) {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const body = ctx.body; const invalid = validateWriteBody(body, "Playbook", ns); if (invalid) return invalid;
+		const name = body.metadata?.name;
+		if (typeof name !== "string" || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name) || name.length > 64) return badRequest("slug_invalid", "metadata.name must be a package slug");
+		const existing = pbFind(ns, updating ? decodeURIComponent(ctx.m[2]) : name);
+		if (updating && !existing) return notFound("Playbook ");
+		if (updating && existing.name !== name) return badRequest("name_immutable", "metadata.name is immutable");
+		if (!updating && existing) return statusErr(409, "slug_taken", "Package exists; use PUT with its current resourceVersion to replace the template");
+		if (updating) { const cas = checkCas(body, existing); if (cas) return cas; }
+		const spec = body.spec;
+		if (!pbObject(spec) || Object.keys(spec).some(k => !["files", "source"].includes(k)) || ("files" in spec) === ("source" in spec)) return badRequest("invalid_playbook", "spec.files OR spec.source, never a second root manifest");
+		// No fake OCI success: the in-browser mock has no registry credentials/network.
+		if ("source" in spec) return badRequest(typeof spec.source === "string" && spec.source.startsWith("oci://") ? "oci_pull_failed" : "oci_unsupported", "Mock cannot pull an OCI registry; upload a self-contained file map or use the real server");
+		const pkg = pbPackage(spec.files, name);
+		const row = Object.assign({}, existing || {}, { ns, name, root: pkg.root, files: clone(spec.files), source: null, rv: nextRV(), uid: existing?.uid || nextUID("pb"), createdAt: existing?.createdAt || isoNow() });
+		if (existing) state.playbooks.splice(state.playbooks.indexOf(existing), 1, row); else state.playbooks.push(row);
+		return json(pbResource(row), updating ? 200 : 201);
+	}
+	on("POST", PB_LIST, pbRequest(ctx => pbSave(ctx, false)));
+	on("PUT", PB_ONE, pbRequest(ctx => pbSave(ctx, true)));
+	on("GET", PB_LIST, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		return json(listOf("PlaybookList", state.playbooks.filter(p => p.ns === ns).map(p => pbResource(p))));
+	});
+	on("GET", PB_ONE, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); return row ? json(pbResource(row, ctx.query.get("includeBody") === "true")) : notFound("Playbook ");
+	});
+	for (const action of ["render", "install"]) on("POST", new RegExp("^/v1/namespaces/([^/]+)/playbooks/([^/]+)/" + action + "$"), pbRequest(ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
+		if (!pbObject(ctx.body || {}) || Object.keys(ctx.body || {}).some(k => !["values", ...(action === "install" ? ["dryRun"] : [])].includes(k))) return badRequest("unknown_field", "Only values and install.dryRun are accepted");
+		const rendered = pbRender(row, ctx.body?.values);
+		if (action === "render") return json(rendered);
+		const dryRun = ctx.body?.dryRun === true;
+		const plan = pbPlan(row, rendered, dryRun); if (plan.error) return plan.error;
+		if (!dryRun) pbCommit(row, plan);
+		return json(plan.receipt);
+	}));
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/playbooks\/([^/]+)\/installs(?:\/([^/]+))?$/, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const name = decodeURIComponent(ctx.m[2]); const row = pbFind(ns, name);
+		const records = state.playbookInstalls.filter(i => i.ns === ns && i.playbookName === name && (!row || i.playbookUid === row.uid));
+		if (ctx.m[3]) {
+			const record = records.find(i => i.id === decodeURIComponent(ctx.m[3])); return record ? json(clone(record.receipt)) : notFound("InstallReceipt ");
 		}
-		// 能力归属命名空间（缺省 = 当前范围）。真实后端这里必须是必填，
-		// mock 宽松的理由见 nsScope 的注释。
-		b.namespaceId = b.namespaceId || nsScope(ctx.query) || NS;
-		// P4：请求体是 spec 形状（Capability Spec v3 §5）。扁平字段（paramsSchema /
-		// outputs / run / requires / sticky / lifecycle / balance）已经删除 ——
-		// mock 与真后端**同一口径**：扁平字段不解释、不兜底，发了也只会因为没有
-		// spec.run 得到 400 impl_missing。
-		const reqSpec = b.spec && typeof b.spec === "object" && !Array.isArray(b.spec) ? b.spec : null;
-		// I1 红线与真后端逐字一致：handler 只能由平台侧产生，HTTP 一律拒。
-		if (reqSpec && reqSpec.handler) {
-			return err(400, HANDLER_NOT_ALLOWED_MSG, { code: "handler_not_allowed" });
+		if (!row) return notFound("Playbook ");
+		const groups = new Map();
+		for (const i of records) {
+			let g = groups.get(i.valuesDigest);
+			if (!g) { g = { valuesDigest: i.valuesDigest, values: clone(i.values), firstAt: i.receipt.install.at, lastAt: i.receipt.install.at, attempts: 0, lastInstallId: i.id, capabilities: [], sources: [] }; groups.set(i.valuesDigest, g); }
+			g.attempts++; g.lastAt = i.receipt.install.at; g.lastInstallId = i.id;
+			const ids = new Set(records.filter(r => r.valuesDigest === i.valuesDigest).map(r => r.id));
+			g.capabilities = [...new Set(state.capabilities.filter(c => c.ns === ns).flatMap(pbVersions).filter(c => ids.has(c.installedFrom)).map(c => c.receiptRef || c.name + "@" + c.version))];
+			g.sources = state.sources.filter(s => s.ns === ns && ids.has(s.installedFrom)).map(s => s.receiptRef || s.name);
 		}
-		if (!reqSpec || !reqSpec.run || !reqSpec.run.entrypoint) {
-			return err(
-				400,
-				"能力必须有实现：给 spec.run（脚本：files + entrypoint）；handler 只能由内置播种 / 回填 / 预案产生",
-				{ code: "impl_missing" },
-			);
-		}
-		const existing = state.capabilities.filter((c) => c.name === b.name);
-		const nextVer = existing.length
-			? Math.max(...existing.map((c) => c.version)) + 1
-			: 1;
-		// links 先算出来：outputs 的归一要看「这次有没有下游」
-		// （没给 outputs 但带了 links = 单出口形态）。
-		const links = Array.isArray(b.links) ? b.links : [];
-		const c = cap(
-			b.name,
-			b.version || nextVer,
-			normalizeOutputs(reqSpec.outputs, links.length > 0),
-			reqSpec.params,
-		);
-		if (b.displayName) c.displayName = String(b.displayName).trim();
-		// sticky / lifecycle 是能力定义的一部分（参与 contentHash）。
-		// 控制台发新版本时会把当前值原样带过来，预览里也得真的接住 ——
-		// 否则「发一版就把粘性路由弄丢了」在预览里永远复现不了。
-		if (typeof reqSpec.sticky === "string") c.sticky = reqSpec.sticky;
-		if (reqSpec.lifecycle && typeof reqSpec.lifecycle === "object") c.lifecycle = reqSpec.lifecycle;
-		c.requires = Array.isArray(reqSpec.requires) ? reqSpec.requires.slice() : [];
-
-		// 升级闸门（P2.2）：新版本成为 latest 且删了出口 → 409 upgrade_breaking，
-		// 除非显式传 force:true。判定与影响面计算在 upgradeBlock（单建/批量共用）。
-		const prev = existing.length
-			? existing.reduce((a, x) => (x.version > a.version ? x : a))
-			: null;
-		const blocked = upgradeBlock(c, prev, b.force);
-		if (blocked) return json(blocked, 409);
-
-		// links：能力 + 下游边**一次提交**（与真后端同语义：要么全成，要么全不成）。
-		//
-		// mock 没有事务，所以做法是**先全量校验、再统一写入**（见下面的 push 处）：
-		// 任何一条不合法就 400，且能力/产物/边一样都不 push —— 真后端回滚的是整个事务，
-		// mock 只能靠这个顺序模拟同一个不变量。
-		//
-		// 错误文案与 Go 侧同形（`links[i]: edge_rejected: …`）：控制台靠下标把错误
-		// 映射回「第几条下游 → 哪个目标」，两份实现不能跑偏。
-		const preparedLinks = [];
-		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
-		// （控制台按 code 区分「边不合法」与其它 400，比如 invalid_name）
-		const errCode = { code: "edge_rejected" };
-		for (let i = 0; i < links.length; i++) {
-			const spec = links[i] || {};
-			if (!spec.toRef) {
-				return err(400, `links[${i}]: edge_rejected: toRef is required`, errCode);
-			}
-			// 出口：界面上不出现，客户端可以不写（默认就是这个能力唯一的出口 "out"）。
-			// 写了就照原样校验 —— 左端恒为**新能力的裸名字**（跟随 latest），
-			// 出口必须在这个能力的 outputs 里（不变量 I2）。
-			const fromOutput =
-				spec.fromPort == null || spec.fromPort === ""
-					? SINGLE_OUT
-					: String(spec.fromPort).trim();
-			if (!(c.outputs || []).includes(fromOutput)) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: 出口 "${fromOutput}" 不在 ${c.name}@${c.version} 的 outputs ${JSON.stringify(c.outputs || [])} 里`,
-					errCode,
-				);
-			}
-			// 自连（出口接自己）：与 Go 侧同一个判据（**按名字**），而且必须在解析**之前**判 ——
-			// 此刻这个能力还没进 state，裸名字解析不到，会被误报成「下游不存在」。
-			if (splitRef(String(spec.toRef)).name === c.name) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: self loop ${c.name} --${fromOutput}--> itself`,
-					errCode,
-				);
-			}
-			const to = resolveCapRef(spec.toRef, c.namespaceId);
-			if (!to) {
-				return err(400, `links[${i}]: edge_rejected: to link ref "${spec.toRef}": 下游能力不存在`, errCode);
-			}
-			const litRes = checkEdgeLiterals(to, spec.literals);
-			if (litRes.error) {
-				return err(400, `links[${i}]: edge_rejected: ${litRes.error}`, errCode);
-			}
-			// 配置期不再判环（契约 §2：靠 hop 预算 + trace 任务预算兜底）。
-			// 自连上面已经拒了 —— 自己连自己是误操作，不是编排。
-			const prioRes = edgePriority(spec.priority);
-			if (prioRes.error) {
-				return err(400, `links[${i}].priority: ${prioRes.error}`, errCode);
-			}
-			preparedLinks.push({
-				id: uid("edg"),
-				namespaceId: c.namespaceId,
-				fromIsSource: false,
-				// 裸名字 = 跟随 latest（设计 §3.2 默认形态）
-				fromRef: c.name,
-				fromPort: fromOutput,
-				// 右端原样透传：裸名字跟随 latest / name@v 钉死
-				toRef: String(spec.toRef).trim(),
-				literals: litRes.literals || {},
-				// priority：同一 (能力, 出口) 的候选按它**升序**选（小的先选，契约 §3）
-				priority: prioRes.priority,
-				createdAt: now(),
-			});
-		}
-
-		// run 来自 spec.run（P4）：入口文件 + **全部**文件正文 + 超时 + env + workDir。
-		//
-		// 这里必须逐个字段接住（而不是只抄 entrypoint + 入口正文）：
-		// 控制台的多文件编辑器 / env 列表就是靠这段数据回填的，漏一个键 = 预览里
-		// 「我加的文件/环境变量发一版就没了」，而真后端其实是存下来的。
-		{
-			const run = reqSpec.run;
-			const entry = run.entrypoint;
-			const body = String((run.files || {})[entry] || "");
-			if (!body.startsWith("#!")) {
-				return err(400, "entrypoint_no_shebang: 入口文件必须以 #! 开头（节点直接 exec，不经 shell）");
-			}
-			c.run = {
-				entrypoint: entry,
-				// files 原样整份拷贝（多文件是正文的一部分，不是「只有入口」）
-				files: Object.assign({}, run.files || {}),
-				timeoutSec: run.timeoutSec || 0,
-				// workDir 属于能力定义（run.workDir，不是部署参数）。
-				// 这里以前把它丢了 —— 于是「填了工作目录 → 详情里看不到」在预览里永远复现不了。
-				workDir: run.workDir || "",
-				// env 原样接住（空值合法：`GH_TOKEN: ""` = 由节点环境提供）
-				env: Object.assign({}, run.env || {}),
-			};
-			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
-			c.digest = mockDigest(JSON.stringify({ name: c.name, version: c.version, run: c.run }));
-			state.artifacts.push({
-				id: uid("art"),
-				namespaceId: c.namespaceId,
-				capabilityId: c.id,
-				digest: c.digest,
-				createdAt: now(),
-			});
-		}
-		state.capabilities.push(c);
-		// 边统一在这一刻写入（见上面「先全量校验、再统一写入」）
-		for (const e of preparedLinks) state.edges.push(e);
-
-		const resp = { capability: capView(c), kind: kindOf(c), digest: c.digest || "" };
-		if (links.length) {
-			// 建成的边（现有 edge 视图）—— 只有带 links 的请求才有这个键
-			resp.links = preparedLinks.map(edgeView);
-		}
-		return json(resp, 201);
+		return json({ total: groups.size, installs: [...groups.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, 200) });
+	});
+	on("DELETE", PB_ONE, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]); const miss = nsMissing(ns); if (miss) return miss;
+		const row = pbFind(ns, decodeURIComponent(ctx.m[2])); if (!row) return notFound("Playbook ");
+		const cas = checkCasQuery(ctx.query, row); if (cas) return cas;
+		const owned = pbOwned(row);
+		state.playbooks.splice(state.playbooks.indexOf(row), 1);
+		return json({ deleted: true, kept: { capabilities: [...new Set(owned.capabilities.map(c => c.name + "@" + c.version))], sources: owned.sources.map(s => s.name) }, values: [...new Map(owned.installs.map(i => [i.valuesDigest, clone(i.values)])).values()], note: "Only the manifest was removed. Resources and receipts remain; remove capabilities/sources separately if needed." });
 	});
 
-	// 批量创建（契约 §4）：一次建多个能力 + 多条边，**要么全成、要么全不成**。
+	// ===== 能力（ns 私有）=====
 	//
-	// mock 没有事务，做法与单建 links 完全一致：先把每个能力、每条边都算清楚、
-	// 校验干净，最后才一起 push —— 任一 400/409 时 state.capabilities /
-	// state.edges / state.artifacts **一个字节都不变**（真后端回滚的是同一个事务）。
-	//
-	// 与单建的差别只有三条（契约 §4）：
-	//   ① capabilities[].name 批内不可重复；
-	//   ② links[].fromRef/toRef 可以引用**本批**名字（它们还没进 state）；
-	//   ③ 允许成环（§2：配置期不判环，靠 max_hops / budget 兜底）。
-	on("POST", /^\/v1\/capabilities\/batch$/, (ctx) => {
-		const b = ctx.body || {};
-		const specs = b.capabilities;
-		if (!Array.isArray(specs) || !specs.length) {
-			return err(400, "capabilities is required");
-		}
-		// 命名空间规则与单建一致（契约 §4）
-		const nsId = b.namespaceId || nsScope(ctx.query) || NS;
-		const links = Array.isArray(b.links) ? b.links : [];
+	// 写入期的版本规则按 capability.md §3：
+	//   foldKey/digest 都**不含** `spec.next` 与 `metadata.displayName` —— 改路由不产生
+	//   新版本、digest 也不变；改 params/requires/lifecycle/concurrency/run 一定产生
+	//   新版本；显式版本的内容不可变（同版本正文不同 → 400 version_content_immutable）。
+	// mock 里同样实现，页面才能演示“改 run 出新版本 / 只改 next 不换版本”。
+	function stableStringify(v) {
+		if (v === null || typeof v !== "object") return JSON.stringify(v);
+		if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+		const keys = Object.keys(v).sort();
+		return (
+			"{" +
+			keys.map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") +
+			"}"
+		);
+	}
 
-		// ① 逐条算新版本 + 校验（顺序与单建对齐：name 规则 → I1/缺实现 → 版本自增）。
-		//
-		// 元素形状与单建**同一个**（P4：`{name, version?, displayName?, spec, ...}`），
-		// 所以这里对 `item.spec` 做与单建逐字一致的形状检查（I1 红线 + 缺实现）。
-		const prepared = [];
-		const byName = new Map();
-		for (let i = 0; i < specs.length; i++) {
-			const item = specs[i] || {};
-			const name = String(item.name == null ? "" : item.name).trim();
-			if (!name) return err(400, `capabilities[${i}].name: is required`);
-			// 名字规则与 internal/artifact/artifact.go 的 namePattern 一致
-			if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) {
-				return err(
-					400,
-					`capabilities[${i}].name: invalid_name: 只能包含小写字母、数字、点、下划线、短横线，1–63 字符`,
-				);
-			}
-			if (byName.has(name)) {
-				return err(400, `capabilities[${i}].name: duplicate name in batch`, {
-					code: "duplicate_name",
-				});
-			}
-			const itemSpec =
-				item.spec && typeof item.spec === "object" && !Array.isArray(item.spec) ? item.spec : null;
-			// 与单建逐字一致的两条形状检查（错误文案带 capabilities[i] 下标，控制台据此定位卡片）
-			if (itemSpec && itemSpec.handler) {
-				return err(400, `capabilities[${i}]: ${HANDLER_NOT_ALLOWED_MSG}`, {
-					code: "handler_not_allowed",
-				});
-			}
-			if (!itemSpec || !itemSpec.run || !itemSpec.run.entrypoint) {
-				return err(
-					400,
-					`capabilities[${i}]: 能力必须有实现：给 spec.run（脚本：files + entrypoint）；handler 只能由内置播种 / 回填 / 预案产生`,
-					{ code: "impl_missing" },
-				);
-			}
-			const spec = item;
-			// 版本在同一个命名空间内自增（契约 §4.1；与单建一样按名字找上一版）
-			const existing = state.capabilities.filter(
-				(x) => x.name === name && (!x.namespaceId || x.namespaceId === nsId),
-			);
-			const prev = existing.length
-				? existing.reduce((a, x) => (x.version > a.version ? x : a))
-				: null;
-			const nextVer = prev ? prev.version + 1 : 1;
-			const c = cap(
-				name,
-				spec.version || nextVer,
-				// 「这次提交里有没有从它出发的 link」按能力名判断（不能整批一概而论：
-				// 同一批里另一个能力可能就是终端能力，它的 outputs [] 是用户明说的）。
-				normalizeOutputs(
-					itemSpec.outputs,
-					links.some((l) => splitRef(String((l || {}).fromRef || "")).name === name),
-				),
-				itemSpec.params,
-			);
-			// cap() 的演示默认落在 NS；批量按请求的命名空间落库
-			c.namespaceId = nsId;
-			if (spec.displayName) c.displayName = String(spec.displayName).trim();
-			if (typeof itemSpec.sticky === "string") c.sticky = itemSpec.sticky;
-			if (itemSpec.lifecycle && typeof itemSpec.lifecycle === "object") {
-				c.lifecycle = itemSpec.lifecycle;
-			}
-			c.requires = Array.isArray(itemSpec.requires) ? itemSpec.requires.slice() : [];
-			// builders 侧的 `spec` 保留**元素本身**（下面 ③ 读 p.spec.spec.run）
-			prepared.push({ c: c, spec: item, prev: prev, artifact: null });
-			byName.set(name, c);
-		}
-
-		// ② 升级闸门：任一条触发就把**整批**拦下（409 + upgradeImpact），
-		//    force: true 越过。判定与影响面计算和单建共用 upgradeBlock。
-		for (const p of prepared) {
-			const blocked = upgradeBlock(p.c, p.prev, b.force);
-			if (blocked) return json(blocked, 409);
-		}
-
-		// ③ run（来自元素自己的 spec.run，P4）：与单建同一套校验与派生 ——
-		//    入口文件必须以 #! 开头，digest 由内容算出来，命中就多一条产物行。
-		for (let i = 0; i < prepared.length; i++) {
-			const p = prepared[i];
-			const run = p.spec.spec.run;
-			const entry = run.entrypoint;
-			const body = String((run.files || {})[entry] || "");
-			if (!body.startsWith("#!")) {
-				return err(
-					400,
-					`capabilities[${i}].run: entrypoint_no_shebang: 入口文件必须以 #! 开头（节点直接 exec，不经 shell）`,
-				);
-			}
-			p.c.run = {
-				entrypoint: entry,
-				// 多文件整份拷贝（与单建同一口径）
-				files: Object.assign({}, run.files || {}),
-				timeoutSec: run.timeoutSec || 0,
-				workDir: run.workDir || "",
-				env: Object.assign({}, run.env || {}),
-			};
-			// digest 不存进文件，始终由内容算出来（CONTRACT-artifact §3）
-			p.c.digest = mockDigest(
-				JSON.stringify({ name: p.c.name, version: p.c.version, run: p.c.run }),
-			);
-			p.artifact = {
-				id: uid("art"),
-				namespaceId: p.c.namespaceId,
-				capabilityId: p.c.id,
-				digest: p.c.digest,
-				createdAt: now(),
-			};
-		}
-
-		// ④ links：与单建 links 同一套判据，只多了「可以引用本批名字」。
-		//    错误文案带 links[i] 下标（控制台靠它把错映射回卡片/下游/目标）。
-		const preparedLinks = [];
-		// 边不合法的 400 body 与真后端同形：{ error, code: "edge_rejected" }
-		const errCode = { code: "edge_rejected" };
-		// 本批解析：裸名字 / name@version 都可以指向本批刚定义的能力
-		const resolveBatchRef = (raw) => {
-			const s = String(raw == null ? "" : raw).trim();
-			if (!s) return null;
-			if (byName.has(s)) return byName.get(s);
-			const { name, version, pinned } = splitRef(s);
-			const c = byName.get(name);
-			if (!c) return null;
-			return !pinned || c.version === version ? c : null;
+	// 参与「是不是同一版内容」的部分：next/displayName 刻意排除。
+	function capabilityContent(spec) {
+		const s = spec && typeof spec === "object" ? spec : {};
+		return {
+			params: s.params === undefined ? {} : s.params,
+			requires: s.requires === undefined ? {} : s.requires,
+			lifecycle: s.lifecycle === undefined ? {} : s.lifecycle,
+			concurrency: s.concurrency === undefined ? {} : s.concurrency,
+			run: s.run === undefined ? {} : s.run,
 		};
-		for (let i = 0; i < links.length; i++) {
-			const spec = links[i] || {};
-			if (!spec.fromRef || !spec.toRef) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: fromRef and toRef are both required`,
-					errCode,
-				);
-			}
-			// 出口默认就是单出口 "out"（界面上不出现，客户端通常不写）；
-			// 写了就照原样校验，必须在上游的 outputs 里（不变量 I2）。
-			const fromOutput =
-				spec.fromPort == null || spec.fromPort === ""
-					? SINGLE_OUT
-					: String(spec.fromPort).trim();
-			const fromCap = resolveBatchRef(spec.fromRef) || resolveCapRef(spec.fromRef, nsId);
-			if (!fromCap) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: fromRef "${spec.fromRef}": 上游能力不存在`,
-					errCode,
-				);
-			}
-			if (!(fromCap.outputs || []).includes(fromOutput)) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: 出口 "${fromOutput}" 不在 ${fromCap.name}@${fromCap.version} 的 outputs ${JSON.stringify(fromCap.outputs || [])} 里`,
-					errCode,
-				);
-			}
-			const to = resolveBatchRef(spec.toRef) || resolveCapRef(spec.toRef, nsId);
-			if (!to) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: to link ref "${spec.toRef}": 下游能力不存在`,
-					errCode,
-				);
-			}
-			// 自连仍然拒绝（契约 §4.4）：那是误操作，不是编排；成环则放行。
-			if (to.name === fromCap.name) {
-				return err(
-					400,
-					`links[${i}]: edge_rejected: self loop ${fromCap.name} --${fromOutput}--> itself`,
-					errCode,
-				);
-			}
-			const prioRes = edgePriority(spec.priority);
-			if (prioRes.error) {
-				return err(400, `links[${i}].priority: ${prioRes.error}`, errCode);
-			}
-			const litRes = checkEdgeLiterals(to, spec.literals);
-			if (litRes.error) {
-				return err(400, `links[${i}]: edge_rejected: ${litRes.error}`, errCode);
-			}
-			preparedLinks.push({
-				id: uid("edg"),
-				namespaceId: nsId,
-				fromIsSource: false,
-				// 左端原样保存（裸名字 = 跟随 latest，name@v = 钉死）：意图由调用方决定
-				fromRef: String(spec.fromRef).trim(),
-				fromPort: fromOutput,
-				toRef: String(spec.toRef).trim(),
-				literals: litRes.literals || {},
-				priority: prioRes.priority,
-				createdAt: now(),
-			});
-		}
+	}
+	function capabilityContentKey(spec) {
+		return stableStringify(capabilityContent(spec));
+	}
+	function capabilityDigest(name, version, spec) {
+		return mockDigest("cap:" + name + "@" + version + ":" + capabilityContentKey(spec));
+	}
 
-		// ⑤ 落库：能力行 → 产物行 → 边行（契约 §4「单事务」的形状）。
-		//    走到这里不再有任何校验，所以这三段之间不会留下半成品。
-		for (const p of prepared) {
-			state.capabilities.push(p.c);
-			if (p.artifact) state.artifacts.push(p.artifact);
+	// 单建（POST）的写入期校验（capability.md §6.1 的常用项）。
+	// 只做能在 mock 里确定性回答的几条；执行期才知道的事不在此列。
+	function validateNewCapability(spec, ns) {
+		const s = spec && typeof spec === "object" ? spec : {};
+		const run = s.run && typeof s.run === "object" ? s.run : {};
+		if (!run.entrypoint) {
+			return badRequest("impl_missing", "没有 run.entrypoint：能力的实现只有脚本一种");
 		}
-		for (const e of preparedLinks) state.edges.push(e);
+		if (!run.files || !Object.prototype.hasOwnProperty.call(run.files, run.entrypoint)) {
+			return badRequest(
+				"entrypoint_no_shebang",
+				"entrypoint " + run.entrypoint + " 不在 run.files 里（入口必须是文件里的一个路径）",
+			);
+		}
+		const next = Array.isArray(s.next) ? s.next : [];
+		const unknown = next.filter((ref) => !resolveCapRef(ref, ns)).map((ref) => splitRef(ref).name);
+		if (unknown.length) {
+			return badRequest(
+				"unknown_target",
+				"next 里的能力在当前命名空间解析不到：" + unknown.join("、") +
+					"（单建严格；先建下游，或用安装包补齐）",
+			);
+		}
+		const requires = s.requires && typeof s.requires === "object" ? s.requires : {};
+		const declaredValues = Array.isArray(requires.values) ? requires.values : [];
+		const env = run.env && typeof run.env === "object" ? run.env : {};
+		const missing = [];
+		for (const key of Object.keys(env)) {
+			const val = env[key];
+			const path =
+				val && typeof val === "object" && val.valueFrom && val.valueFrom.fieldRef
+					? String(val.valueFrom.fieldRef.fieldPath || "")
+					: "";
+			if (path.indexOf("vars.") === 0 && declaredValues.indexOf(path) < 0) missing.push(path);
+		}
+		if (missing.length) {
+			return badRequest(
+				"undeclared_need",
+				"run.env 引用了没声明进 spec.requires.values 的值：" + missing.join("、"),
+			);
+		}
+		const conc = s.concurrency && typeof s.concurrency === "object" ? s.concurrency : {};
+		if (conc.maxPerNode != null) {
+			const n = Number(conc.maxPerNode);
+			if (!Number.isInteger(n) || n < 1) {
+				return badRequest("concurrency_invalid", "spec.concurrency.maxPerNode 必须是 ≥1 的整数");
+			}
+		}
+		return null;
+	}
 
-		// 空列表给 []（不是 null），契约 §4
-		return json(
-			{
-				capabilities: prepared.map((p) => capView(p.c)),
-				edges: preparedLinks.map(edgeView),
-				upgradeImpact: null,
+	// 版本历史的有序视图（新→旧）：当前版本在最前，归档版本按版本号倒序。
+	// 版本历史 = `CapabilityList.items`，每项都是**同一种 Capability 信封**
+	// （api-conventions §5.3：versions 不是独立 kind，也没有自造 item.current）。
+	// “当前版本”由调用方按 max(metadata.version) 判定，不写进 wire。
+	function versionSpec(spec, includeBody) {
+		const out = clone(spec || {});
+		if (!includeBody && out.run && typeof out.run === "object") delete out.run.files;
+		return out;
+	}
+	function archivedVersionResource(row, v, includeBody) {
+		return {
+			apiVersion: API_VERSION,
+			kind: "Capability",
+			metadata: {
+				name: row.name,
+				namespace: row.ns,
+				uid: row.uid,
+				version: v.version,
+				displayName: row.displayName || "",
+				creationTimestamp: v.at,
 			},
+			spec: versionSpec(v.spec, includeBody),
+			// 历史版本只给身份/摘要字段：conditions/nodes 是“当前事实”的派生，
+			// 不能伪造到旧版本上（版本化 status 语义未冻结）。
+			status: { version: v.version, digest: v.digest },
+		};
+	}
+	function currentVersionResource(row, includeBody) {
+		const res = capabilityResource(row);
+		if (!includeBody) {
+			const copy = clone(res);
+			if (copy.spec && copy.spec.run && typeof copy.spec.run === "object") delete copy.spec.run.files;
+			return copy;
+		}
+		return res;
+	}
+	// 列表只带摘要（`?includeBody=true` 才把 run.files 正文带上）。
+	function capabilityVersionList(row) {
+		return [currentVersionResource(row, false)].concat(
+			(row.versions || [])
+				.slice()
+				.sort((a, b) => b.version - a.version)
+				.map((v) => archivedVersionResource(row, v, false)),
+		);
+	}
+
+	const CAPS = /^\/v1\/namespaces\/([^/]+)\/capabilities$/;
+	const CAP_ONE = /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)$/;
+
+	on("GET", CAPS, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		return json(
+			listOf(
+				"CapabilityList",
+				state.capabilities.filter((c) => c.ns === ns).map(capabilityResource),
+			),
+		);
+	});
+
+	on("POST", CAPS, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const body = ctx.body;
+		const derr = validateWriteBody(body, "Capability", ns);
+		if (derr) return derr;
+		const name = String((body.metadata && body.metadata.name) || "").trim();
+		if (!NAME_RE.test(name)) {
+			return badRequest("BadRequest", "metadata.name 只允许小写字母/数字/._-，且以字母或数字开头");
+		}
+		if (findCap(ns, name)) {
+			return statusErr(409, "AlreadyExists", "能力 " + name + " 已存在（升级请用 PATCH）");
+		}
+		const spec = clone(body.spec || {});
+		// 单建严格（capability.md §6.3）：next 解析不到 / env 用了没声明的值都拒。
+		const verr = validateNewCapability(spec, ns);
+		if (verr) return verr;
+		const version = Number((body.metadata && body.metadata.version) || 1) || 1;
+		const row = {
+			ns: ns,
+			name: name,
+			displayName: (body.metadata && body.metadata.displayName) || "",
+			version: version,
+			spec: spec,
+			digest: capabilityDigest(name, version, spec),
+			rv: nextRV(),
+			createdAt: isoNow(),
+			versionAt: isoNow(),
+			versions: [],
+			installedFrom: null,
+			uid: nextUID("cap"),
+		};
+		state.capabilities.push(row);
+		return json(capabilityResource(row), 201);
+	});
+
+	on("GET", CAP_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		return json(capabilityResource(row));
+	});
+
+	on("PATCH", CAP_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const body = ctx.body;
+		const derr = validateWriteBody(body, "Capability", ns);
+		if (derr) return derr;
+		const cas = checkCas(body, row);
+		if (cas) return cas;
+
+		// name / namespace 不可变（改名 = 另建一个）
+		if (body.metadata && body.metadata.name && body.metadata.name !== row.name) {
+			return badRequest("name_immutable", "metadata.name 不可变");
+		}
+		// 版本规则（capability.md §3）：改 next/displayName 原地生效；改正文出新版本。
+		const nextSpec = body.spec ? clone(body.spec) : clone(row.spec);
+		const contentChanged = capabilityContentKey(nextSpec) !== capabilityContentKey(row.spec);
+		const explicitVersion =
+			body.metadata && body.metadata.version != null && body.metadata.version !== ""
+				? Number(body.metadata.version)
+				: null;
+		if (explicitVersion != null && (!Number.isInteger(explicitVersion) || explicitVersion < 1)) {
+			return badRequest("BadRequest", "metadata.version 必须是 ≥1 的整数");
+		}
+		if (contentChanged) {
+			// 版本号唯一 + 正文不可变：显式版本只要**已存在**（当前行或归档行）
+			// 就不能换正文。只比 `row.version` 会让归档版本被覆盖，历史与
+			// “当前 = max(metadata.version)”两个不变式一起被打破。
+			const archived = (row.versions || []).slice();
+			const known = [row.version].concat(archived.map((v) => v.version));
+			const maxVersion = Math.max.apply(null, known);
+			if (explicitVersion != null && (explicitVersion === row.version || archived.some((v) => v.version === explicitVersion))) {
+				return badRequest(
+					"version_content_immutable",
+					"显式版本 " + explicitVersion +
+						" 的执行正文不可变：改 run/params/requires/lifecycle/concurrency 必须换一个 version（next/displayName 例外）",
+				);
+			}
+			// 显式版本必须比所有已知版本更新：否则“当前版本”会低于历史最大值，
+			// 页面的 latest=max 投影会指向一个旧正文。
+			if (explicitVersion != null && explicitVersion < maxVersion) {
+				return badRequest(
+					"version_not_increasing",
+					"显式版本 " + explicitVersion + " 小于已存在的最大版本 " + maxVersion + "：当前版本必须 = max(metadata.version)",
+				);
+			}
+			// 归档旧版（digest/正文留着：节点可能还拿着旧 digest）。
+			row.versions = archived.concat([
+				{
+					version: row.version,
+					digest: row.digest,
+					at: row.versionAt || row.createdAt,
+					spec: clone(row.spec || {}),
+					installedFrom: row.installedFrom,
+					receiptPolicy: clone(row.receiptPolicy || {}),
+					receiptRef: row.receiptRef,
+				},
+			]);
+			// 省略 version = 内容寻址：没有可复用的同一正文行，分配下一个版本号。
+			row.version = explicitVersion != null ? explicitVersion : maxVersion + 1;
+			row.versionAt = isoNow();
+			row.digest = capabilityDigest(row.name, row.version, nextSpec);
+		}
+		row.spec = nextSpec;
+		if (body.metadata && "displayName" in body.metadata) {
+			row.displayName = body.metadata.displayName || "";
+		}
+		row.rv = nextRV();
+		return json(capabilityResource(row));
+	});
+
+	on("DELETE", CAP_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const cas = checkCasQuery(ctx.query, row);
+		if (cas) return cas;
+		// 允许直接删：不因 next / targets 阻塞（引用方由 status 报缺失）
+		state.capabilities.splice(state.capabilities.indexOf(row), 1);
+		state.deployments = state.deployments.filter(
+			(d) => !(d.ns === ns && d.capability === row.name),
+		);
+		return json({ apiVersion: API_VERSION, kind: "Status", status: "Success", code: 200 });
+	});
+
+	// 人工部署：把目标版本的 digest 写成 deployments 事实（install 不会自动调用它）。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/deploy$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const body = ctx.body || {};
+		if (body.status != null) return badRequest("status_not_writable", "deploy 不接受 status");
+		const version = body.version == null ? row.version : Number(body.version);
+		if (!Number.isInteger(version) || version < 1) {
+			return badRequest("BadRequest", "version 必须是 ≥1 的整数");
+		}
+		// 目标版本可以比当前版本旧（节点上还拿着旧 digest 时手动回滚）；只在历史里查到也算。
+		const target = resolveCapRef(row.name + "@" + version, ns);
+		if (!target) {
+			return badRequest("BadRequest", "能力 " + row.name + " 没有版本 " + version);
+		}
+		const nodes =
+			Array.isArray(body.nodes) && body.nodes.length
+				? body.nodes.map(String)
+				: capCandidates(ns).map((n) => n.name);
+		for (const node of nodes) {
+			const hit = state.deployments.find(
+				(d) => d.ns === ns && d.capability === row.name && d.node === node,
+			);
+			const fact = {
+				ns: ns,
+				capability: row.name,
+				version: target.version,
+				digest: target.digest,
+				node: node,
+				updatedAt: isoNow(),
+			};
+			if (hit) Object.assign(hit, fact);
+			else state.deployments.push(fact);
+		}
+		return json(
+			listOf(
+				"DeploymentList",
+				deploymentItems(ns).filter((d) => d.capability === row.name),
+			),
 			201,
 		);
 	});
 
-	// PATCH 只改 display_name（装饰字段），不产生新版本。
-	// 真实后端同样如此：它不参与 contentHash（见 store.capHashInput 注释）。
-	on("PATCH", /^\/v1\/capabilities$/, (ctx) => {
-		const b = ctx.body || {};
-		if (!b.id) return err(400, "id is required");
-		const c = state.capabilities.find((x) => x.id === b.id);
-		if (!c) return err(404, "capability not found");
-		c.displayName = String(b.displayName || "").trim();
-		return json({ capability: capView(c) });
+	// 版本历史（只读列表：CapabilityList.items，每项同 Capability 信封）。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/versions$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		return json(listOf("CapabilityList", capabilityVersionList(row)));
 	});
 
-	// ===== 能力的下游：整体替换（CONTRACT-downstream-edit §2）=====
-	//
-	// `PUT /v1/capabilities/{name}/downstreams` 是能力边**唯一**的写入口：
-	// 请求里的 links 就是这组下游的全部（replace，不是增量）；空数组 = 清空
-	// （= 终端能力，合法状态）。语义与 Go 侧 store.ReplaceCapabilityDownstreams
-	// 逐条对齐，预览里才能当契约用：
-	//
-	//   · 左端是**能力名**（一个能力的全部版本共用同一组出边），出口恒为隐式 out；
-	//   · 全部校验先跑完再动数据（任一失败一个字节都不写）；
-	//   · 机器码与后端一致：unknown_target / self_link / too_many_links /
-	//     priority_out_of_range / duplicate_target / edge_rejected；
-	//   · 回执带 toCapabilityId / resolvedVersion（前端回显不自己算 name→latest）；
-	//   · 只动这个能力在 out 上的出边：入口边、别人的边、多出口的其它出口一条不碰。
-	//
-	// mock 的自觉简化：边行的 fromRef 允许是手写的 `name@v`（批量/高级客户端会
-	// 这么写），判归属时按**名字**比较；写回时统一落成裸能力名（与 Go 同口径）。
-	on("PUT", /^\/v1\/capabilities\/([^/]+)\/downstreams$/, (ctx) => {
-		const pathName = decodeURIComponent(ctx.m[1] || "").trim();
-		const b = ctx.body || {};
-		// 写端点：query 优先（与 Go 的 resolveNamespace 同口径：query 覆盖 body）
-		const nsId = nsScope(ctx.query) || b.namespaceId || NS;
-		// 左端能力必须存在：名字打错给 404，而不是「悄悄建了一组没人能走的边」。
-		const names = state.capabilities.filter((c) => c.name === pathName);
-		if (!names.length) {
-			return json({ error: "capability not found", code: "not_found" }, 404);
-		}
-		// links 缺字段 ≠ links: []：前者是请求写错了，混成一种会静默清掉拓扑。
-		if (!Object.prototype.hasOwnProperty.call(b, "links") || b.links === null) {
-			return json(
-				{ error: "links is required（空数组 = 清空下游）", code: "links_required" },
-				400,
-			);
-		}
-		if (!Array.isArray(b.links)) {
-			return json({ error: "links must be an array", code: "links_required" }, 400);
-		}
-		if (b.links.length > 100) {
-			return json(
-				{ error: "too_many_links: at most 100 downstreams", code: "too_many_links" },
-				400,
-			);
-		}
-		// ① 全量校验（一条都不写）
-		const seen = new Set();
-		const prepared = [];
-		for (let i = 0; i < b.links.length; i++) {
-			const spec = b.links[i] && typeof b.links[i] === "object" ? b.links[i] : {};
-			const raw = String(spec.toRef == null ? "" : spec.toRef).trim();
-			if (!raw) {
-				return json(
-					{ error: `links[${i}].toRef: unknown_target`, code: "unknown_target" },
-					400,
-				);
-			}
-			// 能力 id 也接受（老客户端），但落库永远是引用（P2.2）。
-			const toRef = edgeRefInput(raw, false, nsId);
-			const toCap = resolveCapRef(toRef, nsId);
-			if (!toCap) {
-				return json(
-					{ error: `unknown_target: ${raw}`, code: "unknown_target" },
-					400,
-				);
-			}
-			if (splitRef(toRef).name === pathName) {
-				return json(
-					{ error: `self_link: ${pathName} cannot link to itself`, code: "self_link" },
-					400,
-				);
-			}
-			if (seen.has(toRef)) {
-				return json(
-					{ error: `duplicate_target: ${toRef}`, code: "duplicate_target" },
-					400,
-				);
-			}
-			seen.add(toRef);
-			const prioRes = edgePriority(spec.priority);
-			if (prioRes.error) {
-				return json(
-					{
-						error: `links[${i}].priority: ${prioRes.error}`,
-						code: "priority_out_of_range",
-					},
-					400,
-				);
-			}
-			if (prioRes.priority > 1000) {
-				return json(
-					{
-						error: `links[${i}].priority: must be within 0..1000, got ${prioRes.priority}`,
-						code: "priority_out_of_range",
-					},
-					400,
-				);
-			}
-			const litRes = checkEdgeLiterals(toCap, spec.literals);
-			if (litRes.error) {
-				return json(
-					{ error: `links[${i}]: ${litRes.error}`, code: "edge_rejected" },
-					400,
-				);
-			}
-			prepared.push({
-				toRef: toRef,
-				priority: prioRes.priority,
-				literals: litRes.literals || {},
-				toCap: toCap,
-			});
-		}
-		// ② 落库：只删这个能力 out 上「这次没提交」的出边，其余 upsert。
-		//
-		// 同 toRef 的历史重复行在这里收敛成一条（seenKeep）：真库有
-		// (from_ref,from_port,to_ref) 唯一约束 + ON CONFLICT DO UPDATE，不可能有两行；
-		// mock 的种子数据里曾经有过重复（analyze-pr → run-tests ×2），照原样留着会让
-		// 「保存下游」在预览里显示出和后端不一样的形状。
-		const keep = new Set(prepared.map((p) => p.toRef));
-		const seenKeep = new Set();
-		state.edges = state.edges.filter((e) => {
-			if (e.fromIsSource) return true;
-			if (splitRef(e.fromRef).name !== pathName) return true;
-			if (e.fromPort !== SINGLE_OUT) return true;
-			const key = String(e.toRef);
-			if (!keep.has(key)) return false;
-			if (seenKeep.has(key)) return false;
-			seenKeep.add(key);
-			return true;
-		});
-		for (const p of prepared) {
-			const hit = state.edges.find(
-				(e) =>
-					!e.fromIsSource &&
-					splitRef(e.fromRef).name === pathName &&
-					e.fromPort === SINGLE_OUT &&
-					String(e.toRef) === p.toRef,
-			);
-			if (hit) {
-				hit.fromRef = pathName;
-				hit.priority = p.priority;
-				hit.literals = p.literals;
-				continue;
-			}
-			state.edges.push({
-				id: uid("edg"),
-				orgId: ORG,
-				namespaceId: nsId,
-				fromIsSource: false,
-				fromRef: pathName,
-				fromPort: SINGLE_OUT,
-				toRef: p.toRef,
-				literals: p.literals,
-				priority: p.priority,
-				createdAt: now(),
-			});
-		}
-		// ③ 回执：与请求同序，空时是 [] 而不是 null（I9）
-		return json({
-			name: pathName,
-			links: prepared.map((p) => ({
-				toRef: p.toRef,
-				priority: p.priority,
-				literals: p.literals,
-				toCapabilityId: p.toCap.id,
-				resolvedVersion: p.toCap.version,
-			})),
-		});
-	});
+	// 单版本 = 同一个 Capability 信封；`?includeBody=true` 才把 run.files 正文带上。
+	on(
+		"GET",
+		/^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/versions\/([^/]+)$/,
+		(ctx) => {
+			const ns = decodeURIComponent(ctx.m[1]);
+			const miss = nsMissing(ns);
+			if (miss) return miss;
+			const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+			if (!row) return notFound("能力 ");
+			const want = Number(decodeURIComponent(ctx.m[3]));
+			const includeBody = ctx.query.get("includeBody") === "true";
+			if (want === row.version) return json(currentVersionResource(row, includeBody));
+			const v = (row.versions || []).find((x) => x.version === want);
+			if (!v) return notFound("版本 ");
+			return json(archivedVersionResource(row, v, includeBody));
+		},
+	);
 
-	// ===== 部署（CONTRACT-protocol §7 / §11） =====
-	//
-	// depView 按 **store.Deployment 的真实 JSON tag** 输出
-	//（internal/store/deployment.go:47）：
-	//   id / namespaceId / nodeId / artifactId / capabilityId / capability(名字) /
-	//   version / digest / state / reason / createdAt / updatedAt
-	//
-	// 刻意**不**带 nodeName / capabilityName：真后端只给 id 与 capability 名，
-	// 节点名要前端自己用 /v1/nodes 映射。mock 里多给这两个字段会让页面走一条
-	// 生产环境不存在的好走的路，等真跑起来才发现名字全是 id。
-	const depView = (d) => {
-		const c = state.capabilities.find((x) => x.id === d.capabilityId);
+	// ===== 源（ns 私有）=====
+	const SRC = /^\/v1\/namespaces\/([^/]+)\/sources$/;
+	const SRC_ONE = /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)$/;
+	const SOURCE_KINDS = ["cron", "webhook", "manual"];
+
+	// 配置期校验（source.md §6）：cron 五段、payloadSchema 形状、模板引用合法性。
+	function validateSourceSpec(spec) {
+		if (!["cron", "webhook", "manual"].includes(spec && spec.kind)) return {reason:"invalid_source_kind",message:"kind: cron | webhook | manual"};
+		const invalid = message => ({reason:"invalid_source_config",message});
+		const obj = v => v && typeof v === "object" && !Array.isArray(v);
+		const cfg = spec.config || {};
+		if (!obj(cfg)) return invalid("config must be an object");
+		if (cfg.payloadSchema != null && !obj(cfg.payloadSchema)) return invalid("config.payloadSchema must be an object or null");
+		if (cfg.sample != null && !obj(cfg.sample)) return invalid("config.sample must be an object");
+		if (cfg.payload != null && !obj(cfg.payload)) return invalid("config.payload must be an object");
+		if (spec.kind === "cron") {
+			const fields = String(cfg.expr || "").trim().split(/\s+/);
+			const bounds = [[0,59],[0,23],[1,31],[1,12],[0,6]];
+			if (fields.length !== 5 || fields.some((f,i) => f.split(",").some(part => {
+				const m = /^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/.exec(part);
+				if (!m || (m[2] && Number(m[2]) < 1)) return true;
+				if (m[1] === "*") return false;
+				const nums = m[1].split("-").map(Number);
+				return nums.some(n=>n<bounds[i][0] || n>bounds[i][1]) || (nums.length===2 && nums[0]>nums[1]);
+			}))) return invalid("config.expr: invalid five-field cron expression");
+			if (cfg.tz && cfg.tz !== "Local") { try { new Intl.DateTimeFormat("en",{timeZone:cfg.tz}); } catch { return invalid("config.tz: invalid IANA timezone"); } }
+		}
+		if (!Array.isArray(spec.targets || [])) return invalid("spec.targets must be an array");
+		for (const target of spec.targets || []) {
+			if (!target || typeof target.capability !== "string" || !target.capability) return invalid("targets[].capability required");
+			if (target.params != null && !obj(target.params)) return invalid("targets[].params must be an object");
+			const err = templateError(target.params || {}); if (err) return invalid(err);
+		}
+		return null;
+	}
+
+	// Read-only config projections never become stored credentials/default webhook payload.
+	function sourceWriteConfig(config, kind) {
+		const cfg = clone(config || {});
+		delete cfg.hookUrl; delete cfg.secretSet;
+		if (kind === "webhook") delete cfg.payload;
+		else { delete cfg.token; delete cfg.secret; delete cfg.sample; }
+		return cfg;
+	}
+	function sourcePayload(row, body) {
+		return Object.assign({}, row.kind === "webhook" ? {} : row.config.payload || {}, body.payload || {});
+	}
+	function previewSource(row, payload) {
+		const plan = planDispatch(row, payload);
 		return {
-			id: d.id,
-			namespaceId: d.namespaceId,
-			nodeId: d.nodeId,
-			artifactId: d.artifactId || "art_" + String(d.digest || "").slice(7, 15),
-			capabilityId: d.capabilityId,
-			capability: c ? c.name : d.capabilityId,
-			version: c ? c.version : 0,
-			digest: d.digest,
-			state: d.state,
-			reason: d.reason || "",
-			createdAt: d.createdAt || d.updatedAt || now(),
-			updatedAt: d.updatedAt || now(),
+			targets: (row.targets || []).map(t => {
+				const cap = resolveCapRef(t.capability, row.ns);
+				const single = planDispatch(Object.assign({},row,{targets:[t]}), payload);
+				const ready = single.tasks[0]; const prune = single.pruned[0];
+				return Object.assign({capability:t.capability,params:ready ? ready.params : {},state:!cap ? "missing" : ready ? "ready" : "pruned"},
+					cap ? {version:cap.version} : {}, prune ? {reason:prune.reason,detail:prune.detail} : {});
+			}),
+			pruned: plan.pruned.map(p=>Object.assign(p.to ? {capability:p.to} : {},{reason:p.reason,detail:p.detail}))
 		};
-	};
+	}
 
-	on("GET", /^\/v1\/deployments$/, (ctx) => {
-		const sc = nsScope(ctx.query);
-		const capId = ctx.query.get("capabilityId") || "";
-		const nodeId = ctx.query.get("nodeId") || "";
-		let list = inNs(state.deployments, sc);
-		if (capId) list = list.filter((d) => d.capabilityId === capId);
-		if (nodeId) list = list.filter((d) => d.nodeId === nodeId);
-		// 与后端同样按「最近更新优先」排：面板上刚推的那条应该在最上面
-		list = list.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-		return json({ deployments: list.map(depView) });
-	});
-
-	on("POST", /^\/v1\/deployments$/, (ctx) => {
-		const b = ctx.body || {};
-		const nsId = b.namespaceId || nsScope(ctx.query) || NS;
-		const c = state.capabilities.find((x) => x.id === b.capabilityId);
-		if (!c) return err(400, "capability not found");
-		const nodeIds = Array.isArray(b.nodeIds) ? b.nodeIds.map(String) : [];
-		// 真后端两个选择器取并集（nodeIds ∪ tags）；UI 只发 nodeIds，这里也留 tags 支持，
-		// 免得以后后端改了、mock 却没跟上。
-		const wantTags = Array.isArray(b.tags) ? b.tags.map(String) : [];
-		const picked = state.nodes.filter(
-			(n) => nodeIds.includes(n.id) || (wantTags.length && (n.tags || []).some((tg) => wantTags.includes(tg))),
-		);
-		// 一台都没匹配上 → 400 no_target_node（真后端同款）
-		if (!picked.length) {
-			return json(
-				{ error: "no node matched the selector", code: "no_target_node" },
-				400,
-			);
-		}
-		// digest 缺省取该能力最新产物（契约 §11）。没有产物就是「还没编译」——
-		// 真后端也会拒；这里给一个确定性假值，好让演示能走完整个面板。
-		const digest = b.digest || c.digest || mockDigest(c.name + "@" + c.version);
-
-		const results = [];
-		for (const node of picked) {
-			const nodeId = node.id;
-			// UNIQUE(node_id, artifact_id)：同一台机器再部署同一能力是**更新那一行**
-			// （重新排队等节点确认），不是插一条新行 —— 否则列表里会出现重复。
-			let row = state.deployments.find(
-				(d) => d.nodeId === nodeId && d.capabilityId === c.id,
-			);
-			if (row) {
-				row.digest = digest;
-				row.state = "pending";
-				row.reason = "";
-				row.updatedAt = now();
-			} else {
-				row = {
-					id: uid("dep"),
-					namespaceId: nsId,
-					nodeId,
-					artifactId: "art_" + String(digest).slice(7, 15),
-					capabilityId: c.id,
-					digest,
-					state: "pending",
-					reason: "",
-					createdAt: now(),
-					updatedAt: now(),
-				};
-				state.deployments.push(row);
-			}
-			// 节点离线 → **行照样创建**（等它上线由重连对账补推），
-			// 但 pushed=false：契约 §11 要求逐台如实回报，不能假装成功。
-			// error 文案用后端原词 "node is offline"（internal/ws/node_hub.go:164 的
-			// ErrNodeOffline），前端按 /offline/i 判定，别在这里改成 snake_case。
-			const online = node.status === "online";
-			results.push({
-				nodeId,
-				nodeName: node.name,
-				deployId: row.id,
-				pushed: online,
-				error: online ? "" : "node is offline",
-			});
-		}
-		// 响应形状对齐真后端：{artifact, deployments:[…]}（不是 {results}）
+	on("GET", SRC, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
 		return json(
-			{
-				artifact: {
-					id: "art_" + String(digest).slice(7, 15),
-					namespaceId: nsId,
-					capabilityId: c.id,
-					digest,
-					spec: { name: c.name, version: c.version },
-					createdAt: now(),
-				},
-				deployments: results,
-			},
-			200,
-		);
-	});
-
-	// 撤销：真后端推 remove 帧后**直接删行**（不留 removed 态，契约 §7）
-	//
-	// 回 **204 空 body**（不是 200+JSON）：契约 §11 没规定状态码，而前端
-	// `Anotify.api()` 对 ok 但空 body 的响应会抛 SyntaxError（`res.json()` 解析失败，
-	// 且**没有** `.status`）。故意让演示走这条更难的路径 —— 否则「204 也算成功」
-	// 那段判据在 mock/预览里永远没人执行，等真后端回 204 才发现是坏的。
-	on("DELETE", /^\/v1\/deployments$/, (ctx) => {
-		const id = ctx.query.get("id") || "";
-		const before = state.deployments.length;
-		state.deployments = state.deployments.filter((d) => d.id !== id);
-		if (state.deployments.length === before) return err(404, "deployment not found");
-		return new Response(null, { status: 204 });
-	});
-
-	on("GET", /^\/v1\/edges$/, (ctx) =>
-		json({ edges: clone(inNs(state.edges, nsScope(ctx.query))).map(edgeView) }),
-	);
-
-	// edgeRefInput 把「用户给的字符串」归一成要存的**引用**（P2.2）。
-	//
-	// 与 Go 侧 store.resolveLinkRef 同口径：
-	//   `name`         → 原样保存（跟随 latest）
-	//   `name@version` → 原样保存（钉死）
-	//   能力 id         → 转成 `name@version`（老客户端输入兼容，**绝不把 id 存进边**）
-	function edgeRefInput(raw, isSource, nsId) {
-		const s = String(raw == null ? "" : raw).trim();
-		if (!s) return "";
-		if (isSource) return s;
-		if (resolveCapRef(s, nsId)) return s;
-		const byId = state.capabilities.find((c) => c.id === s);
-		return byId ? capRef(byId) : s;
-	}
-
-	on("POST", /^\/v1\/edges$/, (ctx) => {
-		const b = ctx.body || {};
-		const nsId = b.namespaceId || NS;
-		// 能力边（fromIsSource=false）的写入口已经收掉（CONTRACT-downstream-edit §3）：
-		// 能力的下游只能在能力编辑里整体替换（PUT /v1/capabilities/{name}/downstreams）。
-		// 与 Go 侧 createEdge 同口径：405 放在**目标解析之前** —— 405 表示“这个
-		// 方法不再提供那个语义”，不该因为目标名写错就退化成 400；迁移指引放 error
-		// 里，老客户端能直接把这句话显示给用户。
-		// 入口边（fromIsSource=true）不受影响：源页面 / e2e 还要靠它接边。
-		if (!b.fromIsSource) {
-			return json(
-				{
-					code: "edge_write_removed",
-					error: "能力的下游请在能力里改（PUT /v1/capabilities/{name}/downstreams）",
-				},
-				405,
-			);
-		}
-		// 新字段名优先、旧字段名兜底（与 Go 侧 edgeRequest.linkRefs 同口径）
-		const fromRaw = b.fromRef || b.fromCapability;
-		const toRaw = b.toRef || b.toCapability;
-
-		const toRef = edgeRefInput(toRaw, false, nsId);
-		const to = resolveCapRef(toRef, nsId);
-		if (!to) return err(400, "下游能力不存在");
-
-		// 常量覆盖（P0-c）：与 Go 侧 store.checkEdgeLiterals 同口径 —— 必须是对象、
-		// 键必须在目标的 paramsSchema.properties 里、类型必须精确相等。
-		// 配置期就拒掉，别让「拼错的键」等到派发时才静默失效。
-		const litRes = checkEdgeLiterals(to, b.literals);
-		if (litRes.error) return err(400, "edge_rejected: " + litRes.error);
-		const literals = litRes.literals;
-
-		// priority（契约 §1）：同一 (能力, 出口) 的候选按它**升序**选；缺省 0。
-		const prioRes = edgePriority(b.priority);
-		if (prioRes.error) return err(400, "priority: " + prioRes.error);
-
-		// 入口边（#110）：左端是来源名，出口是事件类型，任意值。
-		// （走到这里的一定是入口边 —— 能力边在上面就 405 了，所以这里不再分叉。）
-		const fromRef = edgeRefInput(fromRaw, true, nsId);
-		if (!fromRef) return err(400, "来源名不能为空");
-		const e = {
-			id: uid("edg"),
-			orgId: ORG,
-			namespaceId: nsId,
-			fromIsSource: true,
-			fromRef,
-			fromPort: b.fromPort,
-			toRef,
-			literals,
-			priority: prioRes.priority,
-			createdAt: now(),
-		};
-		state.edges.push(e);
-		return json({ edge: edgeView(e) }, 201);
-	});
-
-	// DELETE /v1/edges 在 mock 里**不实现**了（CONTRACT-downstream-edit §3）：
-	// 控制台已经没有删边的入口 —— 能力的下游在能力编辑里整体替换
-	// （PUT /v1/capabilities/{name}/downstreams），入口边在源页面里改。
-	// 真后端仍然保留 DELETE（运维纠正用），但那是脚本的事，不是页面。
-	// 留这个说明是为了下次看到“mock 少了 DELETE”时不至于以为是漏写。
-
-	// ===== 节点 =====
-	// nodeView 与真实 handler（internal/server/console_handlers.go 的
-	// consoleHandler.nodes）保持同形状：
-	//
-	//   capabilities  对象数组，带 displayName + 推导的 kind
-	//   instances     申报的槽位**数量**（整数），不是槽位对象数组
-	//   busy          正在占用的槽位数
-	//
-	// 之前这里直接 clone(state.nodes)，把内部的槽位数组原样吐出去，页面
-	// 拿 instances 当数字用就渲染成「槽位 0/[object Object]」。
-	function nodeView(n) {
-		const slots = n.instances || [];
-		return Object.assign(clone(n), {
-			capabilities: (n.capabilities || []).map((ref) => Object.assign({}, ref)),
-			instances: slots.length,
-			busy: slots.filter((x) => (x.busy || 0) > 0).length,
-			// agent 自升级（契约 §5.1）：这两个字段**恒存在**。
-			// agentVersion 空串 = 老 agent 没在 hello 里上报（页面显示「未知（老版本）」）；
-			// agentUpgrade 恒为对象（status 空串 = 从未尝试），别让页面四处判 undefined。
-			agentVersion: String(n.agentVersion || ""),
-			agentCommit: String(n.agentCommit || ""),
-			agentUpgrade: Object.assign(
-				{ status: "", targetVersion: "", error: "", at: 0 },
-				clone(n.agentUpgrade) || {},
+			listOf(
+				"SourceList",
+				state.sources.filter((s) => s.ns === ns).map(sourceResource),
 			),
-		});
-	}
+		);
+	});
 
-	// 一次性明文令牌（注册节点时下发）。
-	//
-	// 真后端只把 sha256 存进 nodes.token_hash，明文**只在 201 响应体里出现这一次**，
-	// 之后从任何接口都取不回来（契约 §10.3 / D3）。所以 mock 也每次现随机生成、
-	// 绝不写进 state —— 否则前端「关掉令牌块就再也拿不到」这件事在预览里是假的。
-	// 前缀 n_mock_ 让「这是 mock 造的」一眼可见，不会被误贴进真机的 node.yaml。
-	function mockNodeToken() {
-		const chunk = () =>
-			Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-		return ("n_mock_" + chunk() + chunk()).slice(0, 46);
-	}
-
-	on("GET", /^\/v1\/nodes$/, (ctx) =>
-		json({
-			nodes: inNs(state.nodes, nsScope(ctx.query)).map(nodeView),
-			// 契约 §5.1：**顶层**目标版本（中枢当前带的 agent 二进制版本）。
-			// 空串 = 服务端没带二进制 —— 控制台据此不给可点按钮（而不是点出一个 501）。
-			targetAgentVersion: state.agentBinary ? AGENT_VERSION : "",
-		}),
-	);
-
-	// 注册节点：POST /v1/nodes。
-	//
-	// 为什么 mock 要和真 handler（internal/server/console_handlers.go 的 createNode）
-	// 同形状，而不是「随便回个 200」：前端注册成功后，令牌块与可直接粘的 node.yaml
-	// 全靠这个 201 响应体里的 { node, token }。形状对不上就会出现「mock 里跑得通、
-	// 接上真后端白屏」——#198 要的正是「纯 UI 把节点跑起来」，预览分支必须可信。
-	//
-	// 照着真后端抄的三条语义：
-	//   1) 令牌只出现一次（见 mockNodeToken）；
-	//   2) 名字规则与 store.ValidateNodeName 一致：/^[a-z0-9][a-z0-9._-]{0,62}$/，
-	//      空/非法都归 400 invalid_name；**不 trim**（真后端也不 trim，" mbp" 这种
-	//      带空白的名字必须当场拒绝，而不是静默改对后落库）；
-	//   3) 同命名空间重名 → 409 name_taken（真后端靠 UNIQUE(namespace_id, name)）。
-	//
-	// instances 是要点：真后端只校验非负、**不落库**，槽位是节点在 hello 帧里申报的。
-	// 所以新节点 instances 是空数组，不预创建 N 个槽位——否则页面会显示「这台机器
-	// 已经有 2 个槽位」，而实际上根本没有进程连上来。
-	on("POST", /^\/v1\/nodes$/, (ctx) => {
-		const b = ctx.body || {};
-		// 非字符串（数字/对象/缺省）一律当空名：真后端会把这类 JSON body 直接拒掉。
-		const name = typeof b.name === "string" ? b.name : "";
-		if (name.trim() === "") {
-			return err(400, "name 必填（节点名不能为空或全为空白字符）", {
-				code: "invalid_name",
-			});
+	on("POST", SRC, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const body = ctx.body;
+		const derr = validateWriteBody(body, "Source", ns);
+		if (derr) return derr;
+		const name = String((body.metadata && body.metadata.name) || "").trim();
+		if (!NAME_RE.test(name)) {
+			return badRequest("BadRequest", "metadata.name 只允许小写字母/数字/._-，且以字母或数字开头");
 		}
-		if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) {
-			return err(
-				400,
-				"name「" +
-					name +
-					"」不合法：只能包含小写字母、数字、点（.）、下划线（_）、短横线（-），长度 1..63，且必须以字母或数字开头",
-				{ code: "invalid_name" },
-			);
+		const spec = clone(body.spec || {});
+		const verr = validateSourceSpec(spec);
+		if (verr) return statusErr(400, verr.reason, verr.message);
+		if (findSource(ns, name)) {
+			return statusErr(409, "source_name_used", "源 " + name + " 已存在");
 		}
-		// instances 负数在真 handler 里是 400（不落库但仍校验非负）。
-		// 既然上面写了"与真 handler 同形状"，这一条也不能漏。
-		if (typeof b.instances === "number" && b.instances < 0) {
-			return err(400, "instances must be >= 0");
-		}
-		// 命名空间：与 mock 其它接口一样宽松，缺省 = 默认命名空间（`namespaceId=*`
-		// 是只读汇总语义，写端点落回默认命名空间）。
-		const namespaceId = nsScope(ctx.query) || NS;
-		if (
-			state.nodes.some((n) => n.namespaceId === namespaceId && n.name === name)
-		) {
-			return err(409, "同名节点已存在", { code: "name_taken" });
-		}
-		const node = {
-			id: uid("nd"),
-			orgId: ORG,
-			namespaceId: namespaceId,
+		const cfg = sourceWriteConfig(spec.config, spec.kind);
+		// webhook：没给 token 就服务端生成（GET 只回 hookUrl，不回 token 本身）
+		if (spec.kind === "webhook" && !cfg.token) cfg.token = "src_mock_" + name + (ns === "default" ? "" : "_" + ns);
+		const row = {
+			ns: ns,
 			name: name,
-			// 刚注册还没连上来：offline、没见过、没有槽位。
-			status: "offline",
-			lastSeenAt: null,
-			createdAt: now(),
-			// 与既有演示节点同值的硬顶（真后端由 store 的 DefaultMax* 兜底）。
-			maxInstances: 20,
-			maxConcurrency: 8,
-			tags: [],
-			capabilities: [],
-			instances: [],
-			// 刚注册的节点还没连上来，自然也没上报过 agent 版本（契约 §5.1）。
-			agentVersion: "",
-			agentCommit: "",
-			agentUpgrade: { status: "", targetVersion: "", error: "", at: 0 },
-		};
-		state.nodes.push(node);
-		return json({ node: nodeView(node), token: mockNodeToken() }, 201);
-	});
-
-	// 节点详情：比列表多给每个槽位的具体情况（哪个槽在跑哪个任务）。
-	// 与真实 handler（consoleHandler.nodeByID）同形状。
-	on("GET", /^\/v1\/nodes\/([^/]+)$/, (ctx) => {
-		const n = state.nodes.find((x) => x.id === ctx.m[1]);
-		if (!n) return err(404, "节点不存在");
-		// 让"正在跑"有东西可看：把该节点上 running 的任务挂到空闲槽位上。
-		// 真实环境里是节点上报的，mock 只能自己推。
-		const running = state.tasks.filter(
-			(t) => t.nodeId === n.id && t.status === "running" && t.instanceId,
-		);
-		const instances = (n.instances || []).map((slot, i) => ({
-			id: slot.id,
-			nodeId: n.id,
-			slot: i,
-			concurrency: slot.concurrency,
-			busyTask: running[i] ? running[i].id : null,
-			alive: n.status !== "offline",
-			updatedAt: n.lastSeenAt || n.createdAt,
-		}));
-		return json({ node: nodeView(n), instances });
-	});
-
-		on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, (ctx) => {
-		const n = state.nodes.find((x) => x.id === ctx.m[1]);
-		if (!n) return err(404, "节点不存在");
-		n.status = "draining";
-		return json({ node: nodeView(n) });
-	});
-
-	// 控制台下发升级：POST /v1/nodes/{id}/upgrade（契约 §5.1）。
-	//
-	// 四种回包都要能在预览里点到，否则 UI 的失败文案在 demo 里等于不存在：
-	//   · 200 up_to_date                  —— 当前版本 == 目标版本（ops-box）
-	//   · 409 node_offline                —— 离线节点（ci-runner）
-	//   · 501 agent_binary_unavailable    —— 服务端没带二进制（MockApi.noAgentBinary()）
-	//   · 200 sent + 延迟 ack             —— 正常下发；ack 成功把 agentVersion 推到目标版本，
-	//                                        失败（need_root 等）落成 agentUpgrade.status=failed
-	//
-	// 端点自己只写 sent；ok/failed 由 upgrade_ack 覆盖（契约 §5.1）。mock 用 setTimeout
-	// 演这条回程：600ms 足够页面把「升级中…」画出来，也不至于让 demo 卡着等。
-	on("POST", /^\/v1\/nodes\/([^/]+)\/upgrade$/, (ctx) => {
-		const n = state.nodes.find((x) => x.id === ctx.m[1]);
-		if (!n) return err(404, "节点不存在");
-		if (!state.agentBinary) return err(501, "agent_binary_unavailable");
-		if (n.status === "offline") return err(409, "node_offline");
-		const force = !!(ctx.body && ctx.body.force);
-		if (!force && n.agentVersion === AGENT_VERSION) {
-			// 同版本不推帧，直接告诉控制台「已是最新」（契约 §5）。
-			return json({ status: "up_to_date", targetVersion: AGENT_VERSION });
-		}
-		n.agentUpgrade = { status: "sent", targetVersion: AGENT_VERSION, error: "", at: now() };
-		// old-laptop 固定失败在 need_root（演示“落库后的失败”刷新后仍可见）；
-		// 其它节点要演练失败分支就用 MockApi.failUpgrade("bad_sha")。
-		const failCode =
-			state.upgradeFailCode || (n.id === "nd_mock_legacy" ? "need_root" : "");
-		setTimeout(() => {
-			if (failCode) {
-				n.agentUpgrade = {
-					status: "failed",
-					targetVersion: AGENT_VERSION,
-					error: failCode,
-					at: now(),
-				};
-				return;
-			}
-			n.agentUpgrade = { status: "ok", targetVersion: AGENT_VERSION, error: "", at: now() };
-			n.agentVersion = AGENT_VERSION;
-			n.agentCommit = AGENT_COMMIT;
-			n.lastSeenAt = now(); // 重启后重新握手，心跳跟着刷新
-		}, 600);
-		return json({ status: "sent", targetVersion: AGENT_VERSION });
-	});
-
-	// ===== 源 =====
-	on("GET", /^\/v1\/sources$/, (ctx) =>
-		json({
-			sources: inNs(state.sources, nsScope(ctx.query)).map(sourceView),
-		}),
-	);
-
-	// 入口校验：事件 payload 对源声明的 resultSchema（设计 §4.2 / §7 P0.2）。
-	//
-	// 与后端 route.ValidateEventPayload 同口径（同一个受控子集：required + type
-	// 逐层下渗）。mock 是 e2e 的参考实现，两边判定不一致的话 e2e 会直接报到
-	// "试运行/真跑的剪枝原因不一样"。
-	//
-	// 返回 "" = 合规；否则是带字段路径的原因（哪个字段/期望什么/实得什么）。
-	function validateEventPayload(schema, payload) {
-		if (!schema || typeof schema !== "object" || Array.isArray(schema)) return "";
-		const data = payload && typeof payload === "object" ? payload : {};
-		return validateValueAt(schema, data, "payload");
-	}
-
-	// validateValueAt 是上面那个函数递归用的引擎：type / required / properties / items。
-	function validateValueAt(schema, v, path) {
-		if (!schema || typeof schema !== "object") return "";
-		if (schema.type !== undefined) {
-			const wanted = Array.isArray(schema.type) ? schema.type : [schema.type];
-			if (!wanted.some((w) => typeMatches(w, v))) {
-				return `${path}: want type ${wanted.join("|")}, got ${jsonTypeName(v)}`;
-			}
-		}
-		if (v && typeof v === "object" && !Array.isArray(v)) {
-			for (const k of schema.required || []) {
-				if (v[k] === undefined) return `${path}: missing required field "${k}"`;
-			}
-			const props = schema.properties || {};
-			for (const k of Object.keys(props)) {
-				if (v[k] === undefined) continue;
-				const msg = validateValueAt(props[k], v[k], path + "." + k);
-				if (msg) return msg;
-			}
-		}
-		if (Array.isArray(v) && schema.items) {
-			for (let i = 0; i < v.length; i++) {
-				const msg = validateValueAt(schema.items, v[i], `${path}[${i}]`);
-				if (msg) return msg;
-			}
-		}
-		return "";
-	}
-
-	function jsonTypeName(v) {
-		if (v === null || v === undefined) return "null";
-		if (Array.isArray(v)) return "array";
-		if (typeof v === "number") return "number";
-		return typeof v;
-	}
-
-	// typeMatches 与后端 typeMatches 对齐（integer 看"是不是整数"，不是看类型名）。
-	function typeMatches(want, v) {
-		switch (want) {
-			case "object":
-				return v !== null && typeof v === "object" && !Array.isArray(v);
-			case "array":
-				return Array.isArray(v);
-			case "string":
-				return typeof v === "string";
-			case "boolean":
-				return typeof v === "boolean";
-			case "null":
-				return v === null || v === undefined;
-			case "number":
-				return typeof v === "number";
-			case "integer":
-				return typeof v === "number" && Number.isInteger(v);
-			default:
-				return false; // 未知 type = 不匹配（与后端一致：声明错了就看得见）
-		}
-	}
-
-	// resultSchemaError 是配置期校验：与后端 store.ResultSchemaError 同口径。
-	//
-	// 返回 "" = 合法。规则两条：
-	//   1. 必须是 JSON 对象（数组/标量不是 schema）；
-	//   2. 显式 null 合法 = "没有契约"（PATCH 用它清空）。
-	function resultSchemaError(cfg) {
-		if (!cfg || typeof cfg !== "object" || !("resultSchema" in cfg)) return "";
-		const v = cfg.resultSchema;
-		if (v === null || v === undefined) return "";
-		if (typeof v !== "object" || Array.isArray(v)) {
-			return 'config.resultSchema 必须是 JSON 对象（如 {"type":"object","required":["title"]}）';
-		}
-		return "";
-	}
-
-	// mergeResultSchema 是 PATCH 语义下的合并：
-	//   没带这个键 → 继承旧值（否则控制台改个 cron 表达式就把用户写的契约抹掉了）；
-	//   显式 null → 清除；
-	//   对象 → 覆盖。
-	// 与 Go 侧 store/server 的 inheritedConfigKeys 是同一套语义。
-	function mergeResultSchema(oldSchema, bodyCfg) {
-		const cfg = bodyCfg || {};
-		if (!Object.prototype.hasOwnProperty.call(cfg, "resultSchema")) return oldSchema;
-		const v = cfg.resultSchema;
-		return v === null || v === undefined ? undefined : v;
-	}
-
-	// 参数校验：与后端 route.ValidateParams 同语义（mock 也要拦住，
-	// 否则前端会因为"怎么填都能过"而看不出真实约束）
-	function validateParams(schema, params) {
-		if (!schema) return "";
-		const props = schema.properties || {};
-		const required = schema.required || [];
-		for (const k of required) {
-			if (params[k] === undefined || params[k] === null || params[k] === "") {
-				return 'params: missing required field "' + k + '"';
-			}
-		}
-		for (const [k, spec] of Object.entries(props)) {
-			const v = params[k];
-			if (v === undefined) continue;
-			if (Array.isArray(spec.enum) && spec.enum.length && !spec.enum.includes(v)) {
-				return `params.${k}: value ${v} not in enum [${spec.enum.join(" ")}]`;
-			}
-			if (spec.type === "integer" && !Number.isInteger(v)) {
-				return `params.${k}: expected integer`;
-			}
-			if (spec.type === "number" && typeof v !== "number") {
-				return `params.${k}: expected number`;
-			}
-			if (spec.type === "boolean" && typeof v !== "boolean") {
-				return `params.${k}: expected boolean`;
-			}
-			if (spec.type === "string" && typeof v !== "string") {
-				return `params.${k}: expected string`;
-			}
-			if (spec.minimum !== undefined && typeof v === "number" && v < spec.minimum) {
-				return `params.${k}: ${v} < minimum ${spec.minimum}`;
-			}
-			if (spec.maximum !== undefined && typeof v === "number" && v > spec.maximum) {
-				return `params.${k}: ${v} > maximum ${spec.maximum}`;
-			}
-		}
-		return "";
-	}
-
-	// ---------- 边的常量覆盖（P0-c，设计 §3.3）----------
-	//
-	// 语义：进入下游的 params = data ⊎ literals，**字面量优先**，不做任何类型转换。
-	// 与 Go 侧 store.checkEdgeLiterals / route.applyLiterals 同口径：
-	//   ① 必须是 JSON 对象（null / undefined = 没有覆盖）
-	//   ② 每个键必须出现在目标能力 paramsSchema.properties 里（拼错当场拒）
-	//   ③ 值类型必须与声明精确相等（integer 不收 string，反之亦然）
-
-	// jsonTypeName 给人看的类型名（错误文案与 Go 侧同形）。
-	function jsonTypeName(v) {
-		if (v === null) return "null";
-		if (Array.isArray(v)) return "array";
-		if (typeof v === "number") return "number";
-		if (typeof v === "object") return "object";
-		return typeof v;
-	}
-
-	// jsonTypeMatches 判定值是否属于某个 JSON Schema type（受控子集）。
-	function jsonTypeMatches(want, v) {
-		switch (want) {
-			case "object":
-				return v !== null && typeof v === "object" && !Array.isArray(v);
-			case "array":
-				return Array.isArray(v);
-			case "string":
-				return typeof v === "string";
-			case "boolean":
-				return typeof v === "boolean";
-			case "null":
-				return v === null;
-			case "number":
-				return typeof v === "number";
-			case "integer":
-				return typeof v === "number" && Number.isInteger(v);
-		}
-		return false;
-	}
-
-	// checkEdgeLiterals 校验并归一化一条边的常量覆盖。
-	// 返回 { literals } 或 { error }（error 文案与后端一致，便于对照排查）。
-	function checkEdgeLiterals(cap, literals) {
-		if (literals === undefined || literals === null) return { literals: {} };
-		if (typeof literals !== "object" || Array.isArray(literals)) {
-			return { error: "literals must be a JSON object, got " + jsonTypeName(literals) };
-		}
-		const keys = Object.keys(literals);
-		if (!keys.length) return { literals: {} };
-		const props = (cap.paramsSchema && cap.paramsSchema.properties) || {};
-		for (const k of keys.sort()) {
-			if (!Object.prototype.hasOwnProperty.call(props, k)) {
-				const declared = Object.keys(props).sort().join(" ");
-				return {
-					error:
-						"literals." + k + ": " + cap.name + "@" + cap.version +
-						" params_schema has no such field (declared: " + declared + ")",
-				};
-			}
-			const spec = props[k];
-			if (!spec || typeof spec !== "object" || spec.type === undefined) continue;
-			const wanted = Array.isArray(spec.type) ? spec.type : [spec.type];
-			if (wanted.some((w) => jsonTypeMatches(w, literals[k]))) continue;
-			return {
-				error:
-					"literals." + k + ": want type " + wanted.join("|") +
-					", got " + jsonTypeName(literals[k]),
-			};
-		}
-		return { literals };
-	}
-
-	// edgePriority 归一化一条边的 priority（契约 §1）：缺省 0，必须是非负整数。
-	//
-	// 数值**小的先选**（与 Go 侧 edges.priority 升序同口径）；负数 / 小数 / 非数字
-	// 一律 400 —— 默默当 0 会让“我把它调成 -5 想插队”变成一个看不出来的谎言。
-	function edgePriority(raw) {
-		if (raw === undefined || raw === null || raw === "") return { priority: 0 };
-		const n = typeof raw === "number" ? raw : Number(String(raw).trim());
-		if (!Number.isInteger(n) || n < 0) {
-			return {
-				error: "must be a non-negative integer, got " + JSON.stringify(raw),
-			};
-		}
-		return { priority: n };
-	}
-
-	// edgeSourceLiterals 取「这条 link 上挂的常量」（mock 的源路径用它）。
-	//
-	// **mock 的自觉简化**：Go 里 link 是 edges 行，源走自己的 targets（source_targets，
-	// 常量写在 target.params 里）、入口边是另一条派发路径（POST /v1/events）。
-	// mock 只有「源 → 目标」这一条派发路径，所以这里把**入口边**
-	// （fromIsSource + 来源名）上的常量也叠进来——否则「给入口边加了常量」
-	// 这件事在演示里完全看不见。多条匹配时按 edges 顺序合并（后者覆盖前者）。
-	function edgeSourceLiterals(ns, sourceName, toCapabilityId) {
-		const out = {};
-		for (const e of state.edges) {
-			if (e.namespaceId !== ns || !e.fromIsSource) continue;
-			if (e.fromRef !== sourceName) continue;
-			// 右端是**引用**：比的是它此刻解析到的能力（带名字或 @版本 都行）
-			const toCap = resolveCapRef(e.toRef, ns);
-			if (!toCap || toCap.id !== toCapabilityId) continue;
-			const lit = e.literals;
-			if (!lit || typeof lit !== "object" || Array.isArray(lit)) continue;
-			Object.assign(out, lit);
-		}
-		return out;
-	}
-
-	// 归一化 targets：后端同时接受 ["cap_a"] 与 [{capabilityId,params}]
-	function normTargets(list) {
-		return (list || [])
-			.map((x) => (typeof x === "string" ? { capabilityId: x } : x))
-			.filter((x) => x && x.capabilityId);
-	}
-
-	// ---------- 字段映射（params 模板）----------
-	//
-	// 一个出口的 params 里，每个值可以是两种形态：
-	//
-	//   字面量       "env": "prod"                     → 直接就是 prod
-	//   映射         "title": { "from": "pr.title" }   → 从 payload 按路径取值
-	//
-	// **I6：这里不做表达式求值。**
-	// 规则只有一条：按点号路径取一个已存在的值。没有拼接、没有运算、
-	// 没有条件、没有函数调用。取不到时用 default（没有 default 就整字段不传）。
-	//
-	// 为什么坚持不引入表达式：中枢一旦求值用户提供的字符串，就多出
-	// 模板注入 / 无限递归 / 超大表达式 DoS 三类攻击面，而收益只是"少一次
-	// 节点侧拼装"。节点本来就能自己取数据（它才是知道数据形状的那一方）。
-
-	// ---------- 模板引用 ----------
-	//
-	//   "{{pull_request.title}}"   → 取 payload.pull_request.title
-	//   "PR #{{number}}: {{title}}" → 模板拼接
-	//   "prod"                     → 字面量，原样传
-	//
-	// 支持**混写**（模板拼接）：文本里可以出现多个引用。
-	//
-	// 为什么这是安全的（I6「中枢不解释用户提供的逻辑」的边界）：
-	//
-	//   单趟扫描  → 逐个 {{x}} 替换 → **不再把替换结果当模板扫描**
-	//
-	// 危险的是"替换后再解析"（模板引擎的递归展开），那才能：
-	//   - 嵌套/无限展开（{{a}} 展开出 {{b}} 展开出 ...）
-	//   - 调用函数（{{toUpper(x)}}）
-	//   - 访问外部资源
-	// 单趟替换没有其中任何一条：它本质上是 `strings.Replace`，
-	// 用户提供的是"文本 + 几个取值点"，不是"一段要被执行的程序"。
-	//
-	// 仍然**不做**的（这些才需要真正的解释器）：
-	//   条件 {{#if x}}、循环 {{#each}}、函数调用、运算 {{a + b}}
-	//
-	// 占位符正则只允许「标识符 + 点号」，不允许括号、运算符、空格分隔的
-	// 表达式 —— 这样即使有人写了 {{a + b}}，也不会被当成表达式求值，
-	// 而是当成"查一个叫 `a + b` 的路径"（查不到 → param_missing）。
-	// **语法上就没有运算的位置**，这是 I6 的结构性保证，不靠运行时检查。
-	const PLACEHOLDER_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g;
-
-	// hasPlaceholder 字符串里是否含至少一个 {{x}}。
-	function hasPlaceholder(v) {
-		if (typeof v !== "string") return false;
-		PLACEHOLDER_RE.lastIndex = 0;
-		const found = PLACEHOLDER_RE.test(v);
-		PLACEHOLDER_RE.lastIndex = 0;
-		return found;
-	}
-
-	// wholeRef 取出"整个值就是一个引用"里的那个引用；不是则返回 null。
-	function wholeRef(v) {
-		if (typeof v !== "string") return null;
-		const m = v.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/);
-		return m ? m[1] : null;
-	}
-
-	// renderTemplate 单趟替换。
-	//
-	// lookup(ref) 返回 {found, val}。任何取不到值的占位符都记进 missing，
-	// **并且原样保留 {{x}} 文本**（让用户在报错里看到自己写了什么）。
-	//
-	// 关键：替换进去的值**不会被再次扫描**。用一次性遍历 + 拼接实现，
-	// 而不是"替换后再 match 一遍"。
-	function renderTemplate(str, lookup) {
-		const missing = [];
-		const out = str.replace(PLACEHOLDER_RE, (whole, ref) => {
-			const r = lookup(ref);
-			if (!r || !r.found) {
-				missing.push(ref);
-				return whole; // 原样留着，不丢信息
-			}
-			// 字符串化：对象/数组用 JSON，其它用 String。
-			// 这里刻意不做 HTML/JSON 转义——值是要喂给能力的原始数据，
-			// 中转擅自转义会让「路径里本来就有引号」变两次。
-			if (r.val === null) return "";
-			if (typeof r.val === "object") return JSON.stringify(r.val);
-			return String(r.val);
-		});
-		PLACEHOLDER_RE.lastIndex = 0;
-		return { text: out, missing };
-	}
-	// coerceValue 按目标类型转换一个求值结果；转不了返回 undefined（上层剪枝）。
-	//
-	// 为什么需要：整值引用保留原类型（数字还是数字），但混写模板
-	// 一定是字符串。如果目标字段声明 integer，字符串 "31" 应该能转成
-	// 31（模板拼出来的数字很正常），而 "abc" 转不了 —— 那种情况必须
-	// 剪枝报错，不能静默传一个类型不对的值下去。
-	function coerceValue(v, wantAs) {
-		if (!wantAs) return v;
-		if (wantAs === "integer" || wantAs === "number") {
-			if (typeof v === "number") return v;
-			if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
-				return Number(v);
-			}
-			// boolean/object 转数字没有意义，但也别一律拒绝：
-			// true/false 在 JSON 里等价 1/0，是常见写法
-			if (typeof v === "boolean") return v ? 1 : 0;
-			return undefined;
-		}
-		if (wantAs === "boolean") {
-			if (typeof v === "boolean") return v;
-			if (v === "true" || v === 1) return true;
-			if (v === "false" || v === 0) return false;
-			return undefined;
-		}
-		if (wantAs === "string") {
-			if (typeof v === "string") return v;
-			if (v === null || v === undefined) return undefined;
-			if (typeof v === "object") return JSON.stringify(v);
-			return String(v);
-		}
-		// array / object：只能接受已经是该形状的值
-		if (wantAs === "array") return Array.isArray(v) ? v : undefined;
-		if (wantAs === "object") {
-			return v && typeof v === "object" && !Array.isArray(v) ? v : undefined;
-		}
-		return v;
-	}
-
-	// schemaPropType 取某个字段在 params_schema 里声明的类型（取不到返回 undefined）。
-	//
-	// 参数值可能来自模板求值，类型是"求出来才知道"的：同一个
-	// {{pull_request.additions}} 既可能是数字也可能被拼进字符串。
-	// 目标字段需要什么类型，只能问 schema。
-	function schemaPropType(cap, field) {
-		const sc = cap && cap.paramsSchema;
-		if (!sc || typeof sc !== "object") return undefined;
-		const props = sc.properties;
-		if (!props || typeof props !== "object") return undefined;
-		const p = props[field];
-		return p && typeof p === "object" ? p.type : undefined;
-	}
-
-	// getPath 按点号路径从对象取值（"a.b.0.c"），取不到返回 undefined。
-	//
-	// 只用 hasOwnProperty 判断存在性：`payload.constructor` / `__proto__`
-	// 这类键不能从原型链上取到值（否则一个精心构造的 payload 能读到
-	// Object.prototype 上的东西）。
-	function getPath(obj, path) {
-		if (!obj || typeof obj !== "object") return undefined;
-		let cur = obj;
-		for (const seg of String(path).split(".")) {
-			if (cur == null) return undefined;
-			if (Array.isArray(cur)) {
-				const i = Number(seg);
-				if (!Number.isInteger(i) || i < 0 || i >= cur.length) return undefined;
-				cur = cur[i];
-			} else if (typeof cur === "object") {
-				if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
-				cur = cur[seg];
-			} else {
-				return undefined;
-			}
-		}
-		return cur;
-	}
-
-	// resolveParams 把一份带映射的 params 按 payload 求值成实际参数。
-	//
-	// 返回 {params, used, missing}：missing 是"声明了映射但 payload 里没有、
-	// 也没有 default"的字段名。上游（触发响应）会把它报出去，让用户知道
-	// 哪个字段没取到值——静默丢掉是最难查的一种失败。
-	function resolveParams(template, payload) {
-		const out = {};
-		const used = [];
-		const missing = [];
-		if (!template) return { params: out, used, missing };
-
-		// lookup 解析一个引用：只有一种语法 —— 按点号路径从 payload 取。
-		const lookup = (ref) => {
-			const got = getPath(payload, String(ref).trim());
-			return got === undefined ? { found: false } : { found: true, val: got };
-		};
-
-		for (const [k, v] of Object.entries(template)) {
-			// ① 整个值就是一个引用 —— **保留原始类型**。
-			//    "{{pull_request.additions}}" 拿到的是数字 77，不是 "77"。
-			//    这对 integer/number 参数很重要：字符串 "77" 会被 schema 判错。
-			const whole = wholeRef(v);
-			if (whole) {
-				const r = lookup(whole);
-				if (r.found) {
-					out[k] = clone(r.val);
-					used.push({ field: k, from: "{{" + whole + "}}" });
-				} else {
-					missing.push({ field: k, from: "{{" + whole + "}}" });
-				}
-				continue;
-			}
-
-			// ② 含占位符的字符串 —— 单趟替换，结果一律是字符串。
-			if (hasPlaceholder(v)) {
-				const r = renderTemplate(v, lookup);
-				out[k] = r.text;
-				if (r.missing.length) {
-					for (const m of r.missing) {
-						missing.push({ field: k, from: "{{" + m + "}}" });
-					}
-				} else {
-					used.push({ field: k, from: v });
-				}
-				continue;
-			}
-
-			// ③ 其余都是字面量（数字、布尔、对象…）—— 原样传。
-			//
-			// 已经没有 {from}/{var} 这种对象形态了：引用统一写成 {}
-			// 里的路径文本。少一套语法，也少一处"两种写法怎么选"的困惑。
-			out[k] = clone(v);
-		}
-		return { params: out, used, missing };
-	}
-
-	// validateMappingPaths 校验映射声明本身（配置期，不是触发期）。
-	// 只查形式：from 必须是点号路径字符串，as 只能是 string/number/boolean/json。
-	// validatePlaceholders 校验参数里的占位符**形式**（配置期）。
-	//
-	// 只查形式不查可达性：{{pull_request.title}} 无需任何声明就合法，
-	// 拼错会在触发时以 param_missing 报出来（并原样回显用户写的引用）。
-	function validatePlaceholders(template) {
-		if (!template) return "";
-		for (const [k, v] of Object.entries(template)) {
-			if (typeof v !== "string") continue;
-			// 闭合检查要**先于** hasPlaceholder：写了 "PR {{title" 这种
-			// 半截占位符时，正则匹配不到任何完整占位符，hasPlaceholder
-			// 返回 false，那个分支根本进不来 —— 用户会以为设置生效了。
-			const opens = (v.match(/\{\{/g) || []).length;
-			const closes = (v.match(/\}\}/g) || []).length;
-			if (opens !== closes) {
-				return `参数 ${k}：占位符没有闭合（{{ 与 }} 数量不一致）`;
-			}
-			if (!hasPlaceholder(v)) continue;
-			PLACEHOLDER_RE.lastIndex = 0;
-			let m;
-			while ((m = PLACEHOLDER_RE.exec(v)) !== null) {
-				const ref = m[1].trim();
-				if (ref.includes("..") || ref.startsWith(".") || ref.endsWith(".")) {
-					return `参数 ${k} 的路径不合法：「${ref}」`;
-				}
-			}
-			PLACEHOLDER_RE.lastIndex = 0;
-		}
-		return "";
-	}
-
-	function validateTargets(targets) {
-		const byID = new Map(state.capabilities.map((c) => [c.id, c]));
-		for (const t of targets) {
-			const c = byID.get(t.capabilityId);
-			if (!c) return "出口能力 " + t.capabilityId + " 不存在";
-			if (t.params && Object.keys(t.params).length) {
-				// 先校验映射声明本身（形式对不对），再校验字面量的 schema。
-				// 映射的值要触发时才有，这里不能拿它去做 schema 校验。
-				const mmsg = validatePlaceholders(t.params);
-				if (mmsg) return `${c.name}@${c.version}：${mmsg}`;
-				const literals = {};
-				for (const [k, v] of Object.entries(t.params)) {
-					// 含占位符的值（无论是整值引用还是混写）都不是字面量：
-					// 它的实际值要等触发时才知道，配置期不能拿字符串去校验
-					// "expected integer"。混写一定产出字符串，所以它的类型
-					// 由 "这个参数能不能收字符串" 决定 —— 那个判断在触发时
-					// 由 coerceValue 做（转不了就 param_type 剪枝）。
-					if (hasPlaceholder(v)) continue;
-					literals[k] = v;
-				}
-				if (Object.keys(literals).length) {
-					const msg = validateParams(c.paramsSchema, literals);
-					if (msg) return `${c.name}@${c.version} 的参数不合法：${msg}`;
-				}
-			}
-		}
-		return "";
-	}
-
-	on("POST", /^\/v1\/sources$/, (ctx) => {
-		const b = ctx.body || {};
-		if (!b.name || !b.name.trim()) return err(400, "name is required");
-		if (!["cron", "webhook", "github", "manual"].includes(b.kind)) {
-			return err(400, "kind 必须是 cron / webhook / github / manual", {
-				available: ["cron", "webhook", "github", "manual"],
-			});
-		}
-		const targets = normTargets(b.targets);
-		if (!targets.length) {
-			return err(400, "targets 至少要选一个出口能力（否则这个源产生的事件永远派不出去）");
-		}
-		if (state.sources.some((s) => s.name === b.name.trim())) {
-			return err(409, "同名源已存在，换个名字");
-		}
-		let cfg = b.config || {};
-
-		const bad = validateTargets(targets);
-		if (bad) return err(400, bad);
-
-		// 事件 payload 契约的形式校验：必须是 JSON 对象（显式 null = 没有契约）。
-		// 与后端 store.ResultSchemaError 同口径——mock 放过非对象的话，e2e 会
-		// 以为"这能在真环境保存"，而真实后端会 400。
-		const schemaErr = resultSchemaError(b.config);
-		if (schemaErr) return err(400, schemaErr);
-
-		if (b.kind === "cron") {
-			const expr = (cfg.expr || "").trim();
-			if (!expr) return err(400, "cron 需要 expr（五段表达式，如 0 3 * * *）");
-			if (expr.split(/\s+/).length !== 5) {
-				return err(400, "cron 表达式需要 5 段，得到 " + expr.split(/\s+/).length + " 段");
-			}
-			// 不再有 config.payload：它是"cron 也能带数据"的历史补丁，
-			// 和常量直写参数重复。cron 的常量写在参数里就行。
-			cfg = { expr: expr, tz: cfg.tz || "Local" };
-		} else if (b.kind === "webhook" || b.kind === "github") {
-			// github 就是"知道载荷长什么样"的 webhook：token/投递路径完全相同
-			cfg = {
-				token: cfg.token || "src_mock" + Math.random().toString(36).slice(2, 12),
-			};
-		} else {
-			cfg = {};
-		}
-
-		// resultSchema 与 kind 无关（入口校验对每种源都生效）：上面按 kind 重建 cfg
-		// 时会把用户刚写的契约丢掉，这里单独放回（显式 null = 不存这个键）。
-		const rs = mergeResultSchema(undefined, b.config);
-		if (rs !== undefined) cfg.resultSchema = rs;
-
-		const s = {
-			id: uid("src"),
-			orgId: ORG,
-			name: b.name.trim(),
-			kind: b.kind,
+			displayName: (body.metadata && body.metadata.displayName) || "",
+			kind: spec.kind,
+			enabled: spec.enabled !== false,
 			config: cfg,
-			enabled: b.enabled !== false,
+			targets: clone(spec.targets || []),
+			rv: nextRV(),
+			createdAt: isoNow(),
 			lastFiredAt: null,
-			nextFireAt: b.kind === "cron" ? now() + 3600 : null,
-			createdAt: now(),
-			targets: targets,
+			nextFireAt: null,
+			lastError: null,
+			installedFrom: null,
+			unapplied: false,
+			uid: nextUID("src"),
 		};
-		state.sources.push(s);
-		return json({ source: sourceView(s) }, 201);
+		state.sources.push(row);
+		return json(sourceResource(row), 201);
 	});
 
-	on("GET", /^\/v1\/sources\/([^/]+)$/, (ctx) => {
-		const s = state.sources.find((x) => x.id === ctx.m[1]);
-		if (!s) return err(404, "源不存在");
-		return json({ source: sourceView(s) });
+	on("GET", SRC_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		return json(sourceResource(row));
 	});
 
-	on("PATCH", /^\/v1\/sources\/([^/]+)$/, (ctx) => {
-		const s = state.sources.find((x) => x.id === ctx.m[1]);
-		if (!s) return err(404, "源不存在");
-		const b = ctx.body || {};
-		if (b.kind && b.kind !== s.kind) {
-			return err(400, "update source: kind 不可修改（当前 " + s.kind + "）");
+	on("PATCH", SRC_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		const body = ctx.body;
+		const derr = validateWriteBody(body, "Source", ns);
+		if (derr) return derr;
+		const cas = checkCas(body, row);
+		if (cas) return cas;
+		if (body.metadata && body.metadata.name && body.metadata.name !== row.name) {
+			return badRequest("name_immutable", "metadata.name 不可变");
 		}
-		if (b.name !== undefined && b.name.trim()) {
-			if (state.sources.some((x) => x.id !== s.id && x.name === b.name.trim())) {
-				return err(409, "同名源已存在，换个名字");
-			}
-			s.name = b.name.trim();
+		const spec = clone(body.spec || {});
+		if (spec.kind && spec.kind !== row.kind) {
+			return statusErr(400, "source_kind_immutable", "spec.kind 不可变（换 kind 请删了重建）");
 		}
-		if (b.targets && b.targets.length) {
-			const targets = normTargets(b.targets);
-			const bad = validateTargets(targets);
-			if (bad) return err(400, bad);
-			s.targets = targets;
+		const merged = {
+			kind: row.kind,
+			enabled: spec.enabled === undefined ? row.enabled : spec.enabled !== false,
+			config: Object.assign({}, row.config, sourceWriteConfig(spec.config, row.kind)),
+			targets: spec.targets === undefined ? row.targets : spec.targets,
+		};
+		const verr = validateSourceSpec(merged);
+		if (verr) return statusErr(400, verr.reason, verr.message);
+		// 写请求省略 token / secret = **保留已有**（前端用空串表示"没改"）
+		const cfg = merged.config;
+		if (!cfg.token) cfg.token = row.config.token;
+		if (!cfg.secret) cfg.secret = row.config.secret;
+		if (merged.kind === "webhook" && !cfg.token) cfg.token = "src_mock_" + row.name;
+		row.enabled = merged.enabled;
+		row.config = cfg;
+		row.targets = clone(merged.targets || []);
+		if (body.metadata && "displayName" in body.metadata) {
+			row.displayName = body.metadata.displayName || "";
 		}
-		if (b.config !== undefined) {
-			const schemaErr = resultSchemaError(b.config);
-			if (schemaErr) return err(400, schemaErr);
-			// resultSchema 的合并语义：没带 → 继承旧值，显式 null → 清空。
-			// 与 Go 侧 inheritedConfigKeys 一套口径（改个 cron 表达式不该把契约抹掉）。
-			const rs = mergeResultSchema(s.config && s.config.resultSchema, b.config);
-			if (s.kind === "cron") {
-				const expr = (b.config.expr || "").trim();
-				if (expr.split(/\s+/).length !== 5) {
-					return err(400, "cron 表达式需要 5 段");
-				}
-				s.config = {
-					expr: expr,
-					tz: b.config.tz || "Local",
-				};
-			} else {
-				// webhook / github / manual：config 整体替换（token 由服务端补）
-				s.config = Object.assign({}, b.config);
-			}
-			if (rs !== undefined) s.config.resultSchema = rs;
-			else delete s.config.resultSchema;
-		}
-		if (b.enabled !== undefined) s.enabled = !!b.enabled;
-		return json({ source: sourceView(s) });
+		row.rv = nextRV();
+		return json(sourceResource(row));
 	});
 
-	on("DELETE", /^\/v1\/sources\/([^/]+)$/, (ctx) => {
-		const i = state.sources.findIndex((x) => x.id === ctx.m[1]);
-		if (i < 0) return err(404, "源不存在");
-		state.sources.splice(i, 1);
-		return json({ deleted: ctx.m[1] });
+	on("DELETE", SRC_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		const cas = checkCasQuery(ctx.query, row);
+		if (cas) return cas;
+		state.sources.splice(state.sources.indexOf(row), 1);
+		return json({ apiVersion: API_VERSION, kind: "Status", status: "Success", code: 200 });
 	});
 
-	// recordEventSchemaPrune 把入口剪枝写进 mock 的事件流。
-	//
-	// 与 Go 侧 source.Trigger.recordEventSchemaPrune 同形状：source='route'、
-	// type='pruned.<reason>'、payload=PruneEventPayload（fromCapability/port/detail）、
-	// 与事件同一个 traceId。否则"收到了但没派"在事件流/trace 里完全看不到，
-	// 用户只能猜——而那正是 #142 与设计 §4.2 要消灭的东西。
-	//
-	// 只在**真触发**的两条路（webhook 投递 / 手动 fire）里调：试运行不落库，
-	// 用户每试一次都多一条假历史是不能接受的（与 Go 侧 DryRun 不写剪枝同理）。
-	function recordEventSchemaPrune(source, traceId, eventType, pruned) {
-		for (const p of pruned || []) {
-			if (p.reason !== "event_schema") continue;
-			state.events.push({
-				id: uid("evt"),
-				orgId: ORG,
-				namespaceId: source.namespaceId || NS,
-				traceId: traceId,
-				source: "route",
-				type: "pruned.event_schema",
-				payload: {
-					fromCapability: source.name,
-					port: eventType,
-					detail: p.detail,
-				},
-				createdAt: now(),
-			});
-		}
+	// 事件入库 + 派发：fire 与 ingress 共用（去重、剪枝留痕、建任务）。
+	let taskSeq = 12;
+	function nextTaskName() {
+		return "tsk_mock_" + ++taskSeq;
 	}
-
-	// 手动触发：真的往 state 里加事件 + 任务，页面上能看到链长出来
-	// planDispatch 算出"这条配置会不会真的跑起来"——**不产生任何副作用**。
-	//
-	// fire 和「试运行」共用它：fire 拿结果去建任务，试运行只展示。
-	// 抽出来是因为两边必须给出**一致**的判定，否则用户会看到
-	// "试运行说能跑，一点真的跑却剪枝了"这种最伤信任的差异。
-	//
-	// 返回 {tasks, pruned}：
-	//   tasks  —— 会派发的出口（含求值后的参数）
-	//   pruned —— 被跳过的出口及原因（event_schema / no_capability / max_hops /
-	//             budget / param_missing / param_schema / param_type / no_node）
-	//
-	// event_schema 是**入口级**的：与逐出口的那几种不同，它一旦命中就一条都不派
-	// （事件形状不对，不存在"这条出口能过"），所以直接返回空 tasks + 单条剪枝
-	// ——与 Go 侧 source.Trigger.Fire 在调 Dispatch 之前拦下是同一形状。
-	//
-	// traceId：只给 budget 预算用（契约 §2「同一 trace_id 已建任务数 >= budget」）。
-	// 试运行没有 trace 可算，传空即可（已建任务数为 0 → 不剪；想验预算就改
-	// window.MockApi.state.limits.budget）。
-	function planDispatch(source, payload, traceId) {
-		const tasks = [];
-		const pruned = [];
-
-		const schema = source && source.config ? source.config.resultSchema : undefined;
-		if (schema !== undefined && schema !== null) {
-			const msg = validateEventPayload(schema, payload);
-			if (msg) {
-				return {
-					tasks: [],
-					pruned: [
-						{
-							reason: "event_schema",
-							capabilityId: null,
-							capability: null,
-							detail: `payload 不符合源「${source.name}」的 resultSchema：${msg}`,
-						},
-					],
-				};
-			}
-		}
-
-		for (const t of source.targets) {
-			const c = state.capabilities.find((x) => x.id === t.capabilityId);
-			if (!c) {
-				pruned.push({
-					reason: "no_capability",
-					capabilityId: t.capabilityId,
-					capability: null,
-					detail: "能力不存在（可能已被删除）",
-				});
-				continue;
-			}
-
-			// ① hop 预算（契约 §2）：配置期不再判环，深度就是这个预算兜的。
-			//    口径与真后端一致：depth = len(入参 path)（子任务 path = 父 path + 本能力名，
-			//    形状不变，所以入口第一跳的 depth 是 0），depth >= maxHops 就剪。
-			const depth = payload && Array.isArray(payload.path) ? payload.path.length : 0;
-			if (depth >= state.limits.maxHops) {
-				pruned.push({
-					reason: "max_hops",
-					capabilityId: c.id,
-					capability: null,
-					detail: `depth ${depth} >= maxHops ${state.limits.maxHops}`,
-				});
-				continue;
-			}
-
-			// ② 本次 trace 的任务预算（契约 §2）：同一 traceId 已建任务数达到预算，
-			//    后续出口一律剪掉 —— 环上无法收敛的编排就是在这里停下来的。
-			const used = traceId ? state.tasks.filter((t2) => t2.traceId === traceId).length : 0;
-			if (used >= state.limits.budget) {
-				pruned.push({
-					reason: "budget",
-					capabilityId: c.id,
-					capability: null,
-					detail: `trace 任务数 ${used} >= budget ${state.limits.budget}`,
-				});
-				continue;
-			}
-
-			const resolved = resolveParams(t.params, payload);
-
-			// 类型推断：含占位符的值按 schema 转（整值引用保留原类型，
-			// 混写一定是字符串但目标字段可能是 integer）
-			for (const [k, v] of Object.entries(resolved.params)) {
-				const decl = (t.params || {})[k];
-				const wantAs = hasPlaceholder(decl) ? schemaPropType(c, k) : undefined;
-				const converted = coerceValue(v, wantAs);
-				if (converted === undefined) {
-					pruned.push({
-						reason: "param_type",
-						capabilityId: c.id,
-						capability: c.name,
-						field: k,
-						detail: `参数 ${k} 期望 ${wantAs}，但求值得到 ${JSON.stringify(v)}，转不了`,
-					});
-					resolved.params = null;
-					break;
-				}
-				resolved.params[k] = converted;
-			}
-			if (resolved.params === null) continue;
-
-			for (const m of resolved.missing) {
-				pruned.push({
-					reason: "param_missing",
-					capabilityId: c.id,
-					capability: c.name,
-					field: m.field,
-					detail: `参数 ${m.field} 取不到 ${m.from}（payload 里没有这个字段）`,
-				});
-			}
-			if (resolved.missing.length) continue;
-
-			// 常量覆盖（P0-c）：字面量优先（同名键覆盖求值结果），**不做类型转换**。
-			// 位置很关键：覆盖必须发生在 validateParams **之前**，这样类型写错的常量
-			// 照样被 params_schema 挡住（配置期已拒过一道，这是第二道）。
-			const lits = edgeSourceLiterals(source.namespaceId || NS, source.name, c.id);
-			if (Object.keys(lits).length) Object.assign(resolved.params, lits);
-
-			const msg = validateParams(c.paramsSchema, resolved.params);
-			if (msg) {
-				pruned.push({
-					reason: "param_schema",
-					capabilityId: c.id,
-					capability: c.name,
-					detail: `${c.name}@${c.version} params_schema: ${msg}`,
-				});
-				continue;
-			}
-			const node = state.nodes.find(
-				(n) => n.status === "online" && (n.capabilities || []).some((x) => x.id === c.id),
-			);
-			if (!node) {
-				pruned.push({
-					reason: "no_node",
-					capabilityId: c.id,
-					capability: c.name,
-					detail: `没有在线节点声明 ${c.name}@${c.version}`,
-				});
-				continue;
-			}
-			tasks.push({
-				capabilityId: c.id,
-				capability: c.name,
-				version: c.version,
-				params: resolved.params,
-				node: node.name,
-			});
-		}
-		return { tasks, pruned };
+	function recordEvent(ev) {
+		state.events.push(ev);
+		return ev;
 	}
-
-	// Webhook 投递：外部系统 POST 到 /v1/hooks/{token}。
-	//
-	// 与 Go 侧同构，两种格式靠 kind 区分：
-	//   github  —— GitHub 原生格式：body 就是 payload，事件名在
-	//              X-GitHub-Event 头里（mock 用 body.__event 模拟，因为
-	//              浏览器里没法设自定义头）
-	//   webhook —— 本系统包装体 {"type","payload"}
-	on("POST", /^\/v1\/hooks\/([^/]+)$/, (ctx) => {
-		const token = ctx.m[1];
-		const s = state.sources.find(
-			(x) => (x.kind === "webhook" || x.kind === "github") && x.config && x.config.token === token,
-		);
-		if (!s) return err(404, "not found");
-		if (!s.enabled) return err(404, "not found");
-
-		const b = ctx.body || {};
-		let payload;
-		let eventType;
-		if (s.kind === "github") {
-			// 原生格式：整个 body 就是 payload
-			eventType = b.__event || (s.config && s.config.event) || "pull_request";
-			payload = Object.assign({}, b);
-			delete payload.__event;
-		} else {
-			eventType = b.type || s.name;
-			payload = b.payload && typeof b.payload === "object" ? b.payload : {};
-		}
-
-		const traceId = nextTraceId();
-		const ev = {
-			id: uid("evt"),
-			orgId: ORG,
-			traceId: traceId,
-			source: s.name,
-			type: eventType,
-			payload: payload,
-			createdAt: now(),
-		};
-		state.events.push(ev);
-
-		// traceId 传下去是为了 budget 预算（同一 trace 已建任务数）
-		const plan = planDispatch(s, payload, traceId);
-		// 入口剪枝也留痕（与后端 InsertPruneEvent 对齐）：事件已入库，
-		// 这里只多一条 pruned.event_schema 说明"为什么没派"。
-		recordEventSchemaPrune(s, traceId, eventType, plan.pruned);
-		const tasks = [];
+	// 派发计划落地：建 pending 任务 + 剪枝事件（剪枝**永远留痕**）。
+	function applyPlan(row, ev, plan, payload) {
+		const created = [];
 		for (const p of plan.tasks) {
-			const c = state.capabilities.find((x) => x.id === p.capabilityId);
 			const tk = {
-				id: nextTaskId(), orgId: ORG, traceId: traceId,
-				parentTaskId: null, path: [p.capabilityId],
-				capabilityId: p.capabilityId, capability: p.capability,
-				params: p.params, version: p.version,
-				status: "pending", nodeId: null, instanceId: null,
-				leaseUntil: null, attempts: 0, out: null, reported: false,
-				summary: "", artifacts: [], error: "",
-				contentHash: c.contentHash, capHash: c.contentHash,
-				graphId: "grf_mock", createdAt: now(),
-				startedAt: null, finishedAt: null, notBefore: null,
-			};
-			state.tasks.push(tk);
-			tasks.push(tk);
-		}
-		s.lastFiredAt = now();
-		return json({ event: clone(ev), inserted: true, dispatch: { tasks: clone(tasks), pruned: plan.pruned } });
-	});
-
-	// 试运行：用给定 payload 算出"会派发什么、会剪枝什么"，**不落库**。
-	//
-	// 和 fire 共用 planDispatch，所以两边判定一定一致 —— 用户不会遇到
-	// "试运行说能跑，真点却剪枝"这种最伤信任的差异。
-	// 草稿试运行：弹窗里还没保存的配置也能先验一遍。
-	// 请求体带 { source: {...}, payload: {...} }，与 /{id}/dry-run 共用 planDispatch。
-	on("POST", /^\/v1\/sources\/dry-run$/, (ctx) => {
-		const b = ctx.body || {};
-		const draft = b.source;
-		if (!draft || !Array.isArray(draft.targets)) return err(400, "source is required");
-		// 草稿的 payload 契约也先过形式校验：与保存路径同一口径
-		// （否则又会出现"试运行说能跑、点保存却 400"）。
-		const schemaErr = resultSchemaError(draft.config);
-		if (schemaErr) return err(400, schemaErr);
-		const payload = b.payload && typeof b.payload === "object" ? b.payload : {};
-		const plan = planDispatch(draft, payload);
-		return json({ enabled: true, dispatch: plan });
-	});
-
-	on("POST", /^\/v1\/sources\/([^/]+)\/dry-run$/, (ctx) => {
-		const s = state.sources.find((x) => x.id === ctx.m[1]);
-		if (!s) return err(404, "源不存在");
-		const b = ctx.body || {};
-		const payload = b.payload && typeof b.payload === "object" ? b.payload : {};
-		const plan = planDispatch(s, payload);
-		return json({
-			payload: clone(payload),
-			enabled: !!s.enabled,
-			dispatch: plan,
-		});
-	});
-
-	on("POST", /^\/v1\/sources\/([^/]+)\/fire$/, (ctx) => {
-		const s = state.sources.find((x) => x.id === ctx.m[1]);
-		if (!s) return err(404, "源不存在");
-		if (!s.enabled) return err(400, "source: " + s.name + " 已停用");
-
-		const b = ctx.body || {};
-		const traceId = nextTraceId();
-		const ev = {
-			id: uid("evt"),
-			orgId: ORG,
-			traceId: traceId,
-			source: s.name,
-			type: b.type || s.name,
-			payload: b.payload || {},
-			createdAt: now(),
-		};
-		state.events.push(ev);
-
-		// 判定逻辑与「试运行」同一份实现
-		const plan = planDispatch(s, ev.payload, traceId);
-		recordEventSchemaPrune(s, traceId, ev.type, plan.pruned);
-		const tasks = [];
-		for (const p of plan.tasks) {
-			const c = state.capabilities.find((x) => x.id === p.capabilityId);
-			const tk = {
-				id: nextTaskId(),
-				orgId: ORG,
-				traceId: traceId,
+				ns: row.ns,
+				name: nextTaskName(),
+				traceUID: ev.traceUID,
+				sequence: created.length + 2,
+				sourceRef: row.name,
+				parentRef: null,
 				parentTaskId: null,
-				path: [p.capabilityId],
-				capabilityId: p.capabilityId,
 				capability: p.capability,
-				params: p.params,
-				version: p.version,
-				status: "pending",
-				nodeId: null,
-				instanceId: null,
-				leaseUntil: null,
-				attempts: 0,
-				out: null,
-				reported: false,
-				summary: "",
-				artifacts: [],
-				error: "",
-				contentHash: c.contentHash,
-				capHash: c.contentHash,
-				graphId: "grf_mock",
-				createdAt: now(),
-				startedAt: null,
-				finishedAt: null,
-				notBefore: null,
+				capabilityVersion: p.version,
+				params: clone(p.params),
+				phase: "pending",
+				attempt: 0,
+				maxAttempts: 3,
+				waitingReason: "waiting_for_slot",
+				nextAttemptAt: iso(now() + 5),
+				createdAt: isoNow(),
+				envDiagnostics: [],
+				result: { summary: null, artifacts: [], error: null },
+				attempts: [],
 			};
 			state.tasks.push(tk);
-			tasks.push(tk);
+			created.push({ name: tk.name, capability: tk.capability, version: tk.capabilityVersion });
 		}
-		s.lastFiredAt = now();
-
-		if (tasks.length) {
-			setTimeout(() => {
-				for (const tk of tasks) {
-					tk.status = "succeeded";
-					tk.nodeId = state.nodes[0].id;
-					tk.instanceId = "nins_mock_0";
-					tk.startedAt = now();
-					tk.finishedAt = now() + 1;
-					tk.reported = true;
-					tk.attempts = 1;
-					tk.summary = "已完成（mock）";
-				}
-			}, 1200);
+		if (plan.pruned.length) {
+			const pruneEv = {
+				ns: row.ns,
+				name: "evt_mock_" + (state.events.length + 1) + "_prune",
+				reason: "Pruned",
+				type: "Warning",
+				involvedObject: { kind: "Source", name: row.name, uid: "src_mock_" + row.name },
+				traceUID: ev.traceUID,
+				eventType: ev.eventType,
+				deliveryId: null,
+				payload: clone(payload || {}),
+				signature: null,
+				dispatched: [],
+				prunedCount: plan.pruned.length,
+				deliveredAt: isoNow(),
+				createdAt: isoNow(),
+			};
+			recordEvent(pruneEv);
+			for (const p of plan.pruned) {
+				state.prunes.push({
+					ns: row.ns,
+					traceUID: ev.traceUID,
+					task: created.length ? created[0].name : null,
+					event: pruneEv.name,
+					to: p.to || null,
+					reason: p.reason,
+					detail: p.detail,
+				});
+			}
 		}
+		return created;
+	}
 
-		return json({
-			event: clone(ev),
-			inserted: true,
-			idempotent: false,
-			dispatch: { tasks: clone(tasks), pruned: plan.pruned },
-		});
-	});
-
-	// ===== 事件流 =====
-	on("GET", /^\/v1\/console\/events$/, (ctx) => {
-		const limit = Number(ctx.query.get("limit") || 50);
-		const trace = ctx.query.get("traceId");
-		// source 过滤：参数编辑器用它拿"这个源最近一条真实事件"当预览样本，
-		// 让用户能看到 {{pull_request.title}} 到底会取到什么，而不是盲写路径。
-		const source = ctx.query.get("source");
-		let list = inNs(state.events, nsScope(ctx.query));
-		if (trace) list = list.filter((e) => e.traceId === trace);
-		if (source) list = list.filter((e) => e.source === source);
-		list.sort((a, b) => b.createdAt - a.createdAt);
-		return json({ events: clone(list.slice(0, limit)) });
-	});
-
-	on("POST", /^\/v1\/events$/, (ctx) => {
-		const b = ctx.body || {};
+	// 一次投递的公共路径（fire / ingress 共用）：入库 → 去重 → 派发 → 回执。
+	function deliver(row, opts) {
+		const o = opts || {};
+		const payload = clone(o.payload || {});
+		const deliveryId = o.deliveryId || null;
+		// (namespace, source, deliveryId) 去重30天；接受不是任务成功。
+		if (deliveryId) {
+			const dup = state.events.find(
+				(e) => e.ns === row.ns && e.involvedObject.name === row.name && e.deliveryId === deliveryId && e.reason === "Ingested" && Date.parse(e.createdAt) >= Date.now() - 2592000000,
+			);
+			if (dup) return Object.assign({}, clone(dup.receipt || {eventId:dup.name,traceId:dup.traceUID,tasks:[],pruned:[]}), {duplicate:true});
+		}
 		const ev = {
-			id: uid("evt"),
-			orgId: ORG,
-			namespaceId: b.namespaceId || NS,
-			traceId: nextTraceId(),
-			source: b.source || "manual",
-			type: b.type || "manual.run",
-			payload: b.payload || {},
-			createdAt: now(),
+			ns: row.ns,
+			name: "evt_mock_" + (state.events.length + 1),
+			reason: "Ingested",
+			type: "Normal",
+			involvedObject: { kind: "Source", name: row.name, uid: "src_mock_" + row.name },
+			traceUID: "trace_mock_run" + (state.events.length + 1),
+			eventType: o.eventType || row.name,
+			deliveryId: deliveryId,
+			payload: payload,
+			signature: o.signature || null,
+			dispatched: [],
+			prunedCount: 0,
+			deliveredAt: isoNow(),
+			createdAt: isoNow(),
 		};
-		state.events.push(ev);
-		return json({ event: clone(ev), inserted: true, dispatch: { tasks: [], pruned: [] } });
+		recordEvent(ev);
+		const plan = planDispatch(row, payload);
+		const created = applyPlan(row, ev, plan, payload);
+		ev.dispatched = created.map((c) => ({ task: c.name, capability: c.capability }));
+		ev.prunedCount = plan.pruned.length;
+		row.lastFiredAt = isoNow();
+		const receipt = {
+			eventId: ev.name, traceId: ev.traceUID, duplicate: false,
+			tasks: created.map(c=>({taskId:c.name,capability:c.capability,version:c.version})),
+			pruned: plan.pruned.map(p=>Object.assign(p.to ? {capability:p.to} : {}, {reason:p.reason,detail:p.detail}))
+		};
+		ev.receipt = clone(receipt);
+		return receipt;
+	}
+
+	// 手动触发：真的往 state 里加事件 + 任务，页面上能看到链长出来。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/fire$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		if (!row.enabled) {
+			return badRequest("BadRequest", "源 " + row.name + " 已停用，不能触发");
+		}
+		const body = ctx.body || {};
+		// cron / manual：config.payload 打底，本次输入一层覆盖（深合并不做）
+		const base = row.kind === "webhook" ? {} : clone(row.config.payload || {});
+		const out = deliver(row, {
+			payload: Object.assign(base, body.payload || {}),
+			eventType: row.name,
+		});
+		return json(out);
 	});
 
-	// ===== API Keys =====
+	// 试运行：算出「会派发什么、会剪什么」，**不落库**（草稿也能先验一遍）。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/dry-run$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const body = ctx.body || {};
+		const draft = body.source;
+		if (!draft || typeof draft !== "object") {
+			return badRequest("BadRequest", "body.source 必填（草稿源）");
+		}
+		const derr = validateWriteBody(draft, "Source", ns);
+		if (derr) return derr;
+		const spec = draft.spec || {};
+		if (!Array.isArray(spec.targets)) {
+			return badRequest("BadRequest", "source.spec.targets 必须是数组");
+		}
+		const verr = validateSourceSpec(spec);
+		if (verr) return statusErr(400, verr.reason, verr.message);
+		const row = {
+			ns: ns,
+			name: (draft.metadata && draft.metadata.name) || "draft",
+			kind: spec.kind,
+			enabled: spec.enabled !== false,
+			config: clone(spec.config || {}),
+			targets: clone(spec.targets || []),
+		};
+		return json(previewSource(row, sourcePayload(row, body)));
+	});
+
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/dry-run$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		const body = ctx.body || {};
+		return json(previewSource(row, sourcePayload(row, body)));
+	});
+
+	// 外部投递入口（webhook 免登录；token 定位 ns）。停用的源一律 404 ——
+	// 不区分"token 不存在"与"源已停用"，免得用状态码差异探测 token。
+	on("POST", /^\/v1\/hooks\/([^/]+)$/, async (ctx) => {
+		const token = decodeURIComponent(ctx.m[1]);
+		const row = state.sources.find(
+			(s) => s.kind === "webhook" && s.config && s.config.token === token,
+		);
+		if (!row || !row.enabled) return notFound("源 ");
+		if (row.config.secret) {
+			const headers = ctx.headers || {};
+			const signature = typeof headers.get === "function" ? headers.get("X-Anotify-Signature") : Object.entries(headers).find(([k])=>k.toLowerCase()==="x-anotify-signature")?.[1];
+			if (!/^sha256=[0-9a-f]{64}$/.test(signature || "") || !window.crypto?.subtle) return statusErr(401,"Unauthorized","Invalid HMAC signature");
+			const key = await window.crypto.subtle.importKey("raw",new TextEncoder().encode(row.config.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+			const signed = await window.crypto.subtle.sign("HMAC",key,new TextEncoder().encode(ctx.rawBody || ""));
+			const expected = "sha256=" + [...new Uint8Array(signed)].map(x=>x.toString(16).padStart(2,"0")).join("");
+			if (signature !== expected) return statusErr(401,"Unauthorized","Invalid HMAC signature");
+		}
+		if (ctx.rawBody && ctx.body === null) return badRequest("BadRequest","Invalid JSON");
+		const body = ctx.body || {};
+		const out = deliver(row, {
+			payload: body.payload && typeof body.payload === "object" ? body.payload : {},
+			eventType: body.type || row.name,
+			deliveryId: body.id || null,
+			signature: row.config.secret
+				? { algorithm: "hmac-sha256", verified: true }
+				: null,
+		});
+		return json(out);
+	});
+
+	const continuations = new Map();
+	let continuationId = 0;
+	function pageFacts(list, query, binding) {
+		const raw = query.get("limit");
+		const limit = raw == null ? 50 : Number(raw);
+		if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+			return { err: badRequest("invalid_limit", "limit must be 1..100") };
+		}
+		let offset = 0;
+		const token = query.get("continue");
+		if (token) {
+			const cursor = continuations.get(token);
+			if (!cursor || cursor.binding !== binding) {
+				return { err: badRequest("invalid_continue", "Continuation does not match this namespace/filter") };
+			}
+			offset = cursor.offset;
+		}
+		const items = list.slice(offset, offset + limit);
+		let next = "";
+		if (offset + limit < list.length) {
+			next = "page_" + (++continuationId).toString(36) + "_" + mockDigest(binding).slice(-12);
+			continuations.set(next, { binding, offset: offset + limit });
+		}
+		return { items, metadata: { continue: next } };
+	}
+
+	// ===== 任务（ns 私有，只读 + 动作）=====
+	const TASKS = /^\/v1\/namespaces\/([^/]+)\/tasks$/;
+	const TASK_ONE = /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)$/;
+
+	on("GET", TASKS, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		let list = state.tasks.filter((t) => t.ns === ns);
+		const trace = ctx.query.get("traceUID");
+		if (trace) list = list.filter((t) => t.traceUID === trace);
+		const phase = ctx.query.get("phase");
+		if (phase) list = list.filter((t) => t.phase === phase);
+		const cap = ctx.query.get("capability");
+		if (cap) list = list.filter((t) => t.capability === cap);
+		const node = ctx.query.get("nodeName");
+		if (node) list = list.filter((t) => t.nodeName === node);
+		const limit = Number(ctx.query.get("limit") || 100);
+		list = list
+			.slice()
+			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+			.slice(0, limit);
+		return json(listOf("TaskList", list.map(taskResource)));
+	});
+
+	// Task 只读：不能 POST / DELETE（只由派发器 / ingress 产生）。
+	on("POST", TASKS, () => statusErr(405, "BadRequest", "Task 只读：只能由派发器/投递入口产生"));
+
+	on("GET", TASK_ONE, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("任务 ");
+		return json(taskResource(row));
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/logs$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("任务 ");
+		const previous = ctx.query.get("previous") === "true";
+		const history = (row.attempts || []).filter(a => a.attempt < row.attempt).sort((a, b) => b.attempt - a.attempt);
+		const archives = state.taskLogs.filter(l => l.task === row.name).sort((a, b) => b.attempt - a.attempt);
+		const attempt = previous ? (history[0]?.attempt || 0) : (archives[0]?.attempt || row.attempt);
+		if (previous && !attempt) return json({ taskId: row.name, attempt: 0, lines: [], truncated: false });
+		const log = archives.find(l => l.attempt === attempt);
+		if (log && log.unavailable) return statusErr(503, log.unavailable, "Node archive is unavailable");
+		if (!log) return statusErr(410, "logs_expired", "Task log archive is unavailable or expired");
+		let lines = log ? clone(log.lines || []) : [];
+		const since = ctx.query.get("sinceSeconds");
+		if (since != null) {
+			if (!Number.isFinite(Number(since)) || Number(since) < 0) return badRequest("invalid_since_seconds", "sinceSeconds must be nonnegative");
+			lines = lines.filter(l => Date.parse(l.at) >= Date.now() - Number(since) * 1000);
+		}
+		const tail = ctx.query.get("tailLines");
+		let truncated = !!(log && log.truncated);
+		if (tail != null) {
+			if (!Number.isInteger(Number(tail)) || Number(tail) < 0) return badRequest("invalid_tail_lines", "tailLines must be nonnegative");
+			truncated = truncated || lines.length > Number(tail);
+			lines = Number(tail) === 0 ? [] : lines.slice(-Number(tail));
+		}
+		return json({ taskId: row.name, attempt, lines, truncated });
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/emissions$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("任务 ");
+		const unique = new Map();
+		state.emissions.filter(e => e.ns === ns && e.task === row.name)
+			.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+			.forEach(e => { if (!unique.has(e.eventId)) unique.set(e.eventId, e); });
+		const paged = pageFacts([...unique.values()], ctx.query, JSON.stringify(["emissions", ns, row.name]));
+		if (paged.err) return paged.err;
+		return json({ metadata: paged.metadata, items: paged.items.map(e => {
+			const fact = { eventId: e.eventId, to: e.to, version: e.version, taskId: e.taskId, pruned: clone(e.pruned) };
+			if (e.id != null) fact.id = e.id;
+			return fact;
+		}) });
+	});
+
+	// A1: task manifest authorization comes before looking up managed bytes.
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/tasks\/([^/]+)\/artifacts\/([a-f0-9]{64})$/, ctx => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+		const hash = ctx.m[3];
+		const artifact = row?.result?.artifacts?.find(a => a.sha256 === hash);
+		if (!artifact) return notFound("artifact reference ");
+		const bytes = state.taskArtifacts.find(a => a.ns === ns && a.task === row.name && a.sha256 === hash);
+		if (!bytes || bytes.expired) return statusErr(410, "artifact_expired", "Managed artifact expired; task manifest retained");
+		const basename = artifact.path.split("/").pop().replace(/[\r\n]/g, "");
+		const headers = { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="' + basename + '"' };
+		if (typeof Response === "function") return new Response(bytes.content, { status: 200, headers });
+		return { ok: true, status: 200, headers: { get: key => headers[key] || null }, text: async () => bytes.content };
+	});
+
+	// 取消 / 放弃：终态任务不能再动（409 Conflict）。
+	const TASK_ACTIONS = {
+		cancel: { phase: "cancelled", reason: "cancelled_by_user", message: "用户取消" },
+		abandon: { phase: "abandoned", reason: "abandoned_by_user", message: "用户放弃" },
+	};
+	const TERMINAL = ["succeeded", "failed", "cancelled", "abandoned"];
+	for (const action of Object.keys(TASK_ACTIONS)) {
+		on(
+			"POST",
+			new RegExp("^/v1/namespaces/([^/]+)/tasks/([^/]+)/" + action + "$"),
+			(ctx) => {
+				const ns = decodeURIComponent(ctx.m[1]);
+				const miss = nsMissing(ns);
+				if (miss) return miss;
+				const row = findTask(ns, decodeURIComponent(ctx.m[2]));
+				if (!row) return notFound("任务 ");
+				if (TERMINAL.indexOf(row.phase) >= 0) {
+					return statusErr(409, "Conflict", "任务已到终态（" + row.phase + "），不能再" + action);
+				}
+				const spec = TASK_ACTIONS[action];
+				row.phase = spec.phase;
+				row.waitingReason = null;
+				row.nextAttemptAt = null;
+				row.finishedAt = isoNow();
+				row.result = {
+					summary: spec.message,
+					artifacts: [],
+					error: { reason: spec.reason, message: spec.message },
+				};
+				return json(taskResource(row));
+			},
+		);
+	}
+
+	// ===== 事件（ns 私有，只读资源 + 投递入口）=====
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/events$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const limit = Number(ctx.query.get("limit") || 100);
+		const list = state.events
+			.filter((e) => e.ns === ns)
+			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+			.slice(0, limit);
+		return json(listOf("EventList", list.map(eventResource)));
+	});
+
+	// 投递入口：body `{source, type?, id?, payload}`（Bearer key 鉴权，mock 不校验）。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/events$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const body = ctx.body || {};
+		const row = findSource(ns, String(body.source || ""));
+		if (!row) return notFound("源 ");
+		const out = deliver(row, {
+			payload: body.payload && typeof body.payload === "object" ? body.payload : {},
+			eventType: body.type || row.name,
+			deliveryId: body.id || null,
+		});
+		return json(out);
+	});
+
+	// ===== Trace（只读虚拟 kind：`{events,tasks,pruned}`）=====
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/traces\/([^/]+)$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const doc = traceDoc(decodeURIComponent(ctx.m[2]), ns);
+		if (!doc) return notFound("trace ");
+		return json(doc);
+	});
+
+	// ===== edges / deployments（只读投影）=====
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/edges$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		return json(listOf("EdgeList", edgeItems(ns)));
+	});
+
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/deployments$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		return json(listOf("DeploymentList", deploymentItems(ns)));
+	});
+
+	// ===== 统计 / 事件流读模型（保留形状；namespace 必填）=====
+	on("GET", /^\/v1\/stats$/, (ctx) => {
+		const want = requireNamespace(ctx.query);
+		if (want.err) return want.err;
+		return json(statsDoc(want.ns));
+	});
+
+	on("GET", /^\/v1\/console\/events$/, (ctx) => {
+		const want = requireNamespace(ctx.query);
+		if (want.err) return want.err;
+		if (!nsRow(want.ns)) return badRequest("namespace_required", "Select one namespace");
+		const trace = ctx.query.get("traceId") || "";
+		const source = ctx.query.get("source") || "";
+		let list = state.events.filter(e => e.ns === want.ns);
+		if (trace) list = list.filter(e => e.traceUID === trace);
+		if (source) list = list.filter(e => e.involvedObject && e.involvedObject.name === source);
+		list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || b.name.localeCompare(a.name));
+		const page = pageFacts(list, ctx.query, JSON.stringify(["events", want.ns, source, trace]));
+		if (page.err) return page.err;
+		return json(Object.assign(listOf("EventList", page.items.map(eventResource)), { metadata: page.metadata }));
+	});
+
+	// 能力模板（cluster 读模型，公共模板不承载 ns 私有数据）
+	on("GET", /^\/v1\/capability-templates$/, () => json({ templates: mockTemplates() }));
+
+	// ===== API Keys（保留域）=====
 	on("GET", /^\/v1\/keys$/, () => json({ keys: clone(state.keys) }));
 
 	on("POST", /^\/v1\/keys$/, (ctx) => {
 		const b = ctx.body || {};
 		const k = {
-			id: uid("key"),
+			id: "key_mock_" + (state.keys.length + 1),
 			orgId: ORG,
 			name: b.name || "未命名",
 			scopes: b.scopes || ["send"],
-			prefix: "ant_mock_" + Math.random().toString(36).slice(2, 10),
+			prefix: "ant_mock_" + (state.keys.length + 1),
 			createdAt: now(),
 			lastUsedAt: null,
-			// keys.html:756 归一化 `k.enabled !== false && k.enabled !== 0`；真后端 keyPublic
-			// 必带 enabled:boolean，新建记录同样要把语义写全（缺字段只能靠前端兜底）。
 			enabled: true,
-			// revoked / orgId 保留：其它 mock 分支（revoke、nsScope）还在按这两个字段过滤
 			revoked: false,
 		};
 		state.keys.push(k);
-		// 对齐真后端 internal/server/handlers.go:295（HTTP 200）：
-		//   { ok: true, key: "<明文串>", record: {…} } —— key 是**明文字符串**，record 是记录本体。
-		// 前端 keys.html:1047 直接读 data.key 当字符串用（NEW_KEY_PLAIN = data.key || data.plaintext），
-		// 早先 mock 把记录对象塞进 key、明文放 plaintext，页面上「明文」就成了一坨对象。
-		// 明文只返回一次（与真实后端一致），沿用既有构造：prefix + "_" + 28 个 x。
+		// 与真后端一致：`key` 是**明文字符串**（只返回一次），record 是记录本体。
 		const plaintext = k.prefix + "_" + "x".repeat(28);
 		return json({ ok: true, key: plaintext, record: clone(k) }, 200);
 	});
 
 	on("POST", /^\/v1\/keys\/([^/]+)\/revoke$/, (ctx) => {
 		const k = state.keys.find((x) => x.id === ctx.m[1]);
-		if (!k) return err(404, "key 不存在");
-		// 真后端 RevokeKey 把 enabled 置 0（store/auth.go:396），列表里的 keyPublic
-		// 于是回 enabled:false。只改 revoked 的话，刷新后这枚 Key 又变回「启用」。
+		if (!k) return notFound("key ");
 		k.revoked = true;
 		k.enabled = false;
 		return json({ ok: true });
@@ -5551,25 +4359,48 @@
 
 	on("DELETE", /^\/v1\/keys\/([^/]+)$/, (ctx) => {
 		const i = state.keys.findIndex((x) => x.id === ctx.m[1]);
-		if (i < 0) return err(404, "key 不存在");
+		if (i < 0) return notFound("key ");
 		state.keys.splice(i, 1);
 		return json({ deleted: ctx.m[1] });
 	});
 
-	// ===== 设备（推送订阅）=====
+	// ===== 设备（推送订阅，保留域）=====
 	on("GET", /^\/v1\/devices$/, () => json({ devices: clone(state.devices) }));
+	on("PATCH", /^\/v1\/devices\/([^/]+)$/, ctx => {
+		if (!hasSession()) return anonymous();
+		const device = state.devices.find(d => d.id === decodeURIComponent(ctx.m[1]) && d.userId === ME.id);
+		if (!device) return identityError(404, "Device not found");
+		const patch = ctx.body;
+		if (!pbObject(patch) || Object.keys(patch).some(k => !["enabled", "name", "eventScope", "tags"].includes(k)) ||
+			(patch.enabled != null && typeof patch.enabled !== "boolean") ||
+			(patch.name != null && typeof patch.name !== "string") ||
+			(patch.eventScope != null && typeof patch.eventScope !== "string") ||
+			(patch.tags != null && (!Array.isArray(patch.tags) || patch.tags.some(t => typeof t !== "string")))) return identityError(400, "Invalid device update");
+		for (const key of ["enabled", "name", "eventScope", "tags"]) if (patch[key] != null) device[key] = clone(patch[key]);
+		return json({ ok: true, device: clone(device) });
+	});
 
-	// 说明：/v1/test-notify 端点已删除（服务端有负断言要求 404），mock 不再桩它。
-
-	// ===== 安全 / passkey / 会话 =====
+	// ===== 安全 / passkey / 会话（保留域）=====
 	on("GET", /^\/v1\/auth\/passkeys$/, () => json({ passkeys: [] }));
+	on("GET", /^\/v1\/auth\/password$/, () => json({ hasPassword: !!state.auth.passwordHash, updatedAt: state.auth.passwordUpdatedAt }));
+	on("POST", /^\/v1\/auth\/password$/, ctx => {
+		if (state.auth.passwordHash && mockDigest(ctx.body?.currentPassword || "") !== state.auth.passwordHash) return badRequest("current_password_invalid", "Current password is incorrect");
+		const value = ctx.body?.newPassword;
+		if (typeof value !== "string" || value.length < 8 || value.length > 256 || !value.trim()) return badRequest("password_invalid", "New password must be 8–256 characters");
+		state.auth.passwordHash = mockDigest(value); state.auth.passwordUpdatedAt = now(); return json({ ok: true });
+	});
+	on("DELETE", /^\/v1\/auth\/password$/, ctx => {
+		if (mockDigest(ctx.body?.currentPassword || "") !== state.auth.passwordHash) return badRequest("current_password_invalid", "Current password is incorrect");
+		return statusErr(409, "last_login_method", "Keep at least one login method: add a Passkey before removing the password");
+	});
+
 	on("GET", /^\/v1\/auth\/sessions$/, () =>
 		json({
 			sessions: [
 				{
 					id: "sess_mock_current",
 					deviceName: "Chrome on Linux",
-					username: "demo",
+					username: ME.username,
 					createdAt: now() - 3600,
 					expiresAt: now() + 86400 * 7,
 					lastSeen: now() - 60,
@@ -5579,25 +4410,15 @@
 		}),
 	);
 	on("DELETE", /^\/v1\/auth\/sessions\/([^/]+)$/, () => json({ ok: true }));
-	// 对齐真后端 internal/server/auth_handlers.go:546：返回 { unusedCount, hasCodes }。
-	// security 页（web-src/pages/security.html:1833-1843）只读 data.unusedCount（number）
-	// 来显示剩余数量；早先 mock 给的是 {enabled, remaining, total} → 读不到 → 页面只能
-	// 走 recoveryDemo 分支显示「无法加载恢复码状态」。
-	on("GET", /^\/v1\/auth\/recovery\/status$/, () =>
-		json({ unusedCount: 8, hasCodes: true }),
-	);
-	// 对齐真后端 internal/server/auth_handlers.go:527（HTTP 200）：
-	//   { ok: true, recoveryCodes: [...] } —— 明文字串数组只在这一次返回。
-	// security 页（web-src/pages/security.html:1966）读的就是 `data.recoveryCodes`；
-	// 早先 mock 回的是 `{ codes: [...] }` → 页面拿到空数组，重新生成后列表空白。
+	on("GET", /^\/v1\/auth\/recovery\/status$/, () => json({ unusedCount: 8, hasCodes: true }));
 	on("POST", /^\/v1\/auth\/recovery\/regenerate$/, () =>
 		json({
 			ok: true,
-			recoveryCodes: Array.from({ length: 10 }, () => "MOCK-CODE-" + Math.random().toString(36).slice(2, 8)),
+			recoveryCodes: Array.from({ length: 10 }, (_, i) => "MOCK-CODE-" + (i + 1)),
 		}),
 	);
 
-	// ===== 管理后台 =====
+	// ===== 管理后台（保留域）=====
 	on("GET", /^\/v1\/admin\/stats$/, () =>
 		json({
 			users: 3,
@@ -5605,6 +4426,10 @@
 			nodes: state.nodes.length,
 			events: state.events.length,
 			tasks: state.tasks.length,
+			userCount: 3, adminCount: 1, disabledUsers: 0,
+			messageCount: 0, todayMessages: 0,
+			deviceCount: state.devices.length, enabledDevices: state.devices.filter(d => d.enabled).length,
+			keyCount: state.keys.length, deliveredCount: 0, deliveryTotal: 0, topUsers: [],
 		}),
 	);
 	on("GET", /^\/v1\/admin\/users$/, () =>
@@ -5627,7 +4452,7 @@
 			sessions: [
 				{
 					id: "sess_mock_current",
-					username: "demo",
+					username: ME.username,
 					deviceName: "Chrome on Linux",
 					createdAt: now() - 3600,
 					expiresAt: now() + 86400 * 7,
@@ -5638,7 +4463,7 @@
 	);
 	on("GET", /^\/v1\/admin\/messages$/, () => json({ messages: [] }));
 
-	// ===== CLI 设备授权 =====
+	// ===== CLI 设备授权（保留域）=====
 	on("POST", /^\/v1\/cli-auth\/sessions$/, () =>
 		json(
 			{
@@ -5662,73 +4487,269 @@
 		}),
 	);
 
-	// ===== passkey 注册流程 =====
-	on("POST", /^\/v1\/auth\/register\/options$/, () => err(400, "mock 模式不支持真实 passkey 注册"));
-	on("POST", /^\/v1\/auth\/login\/options$/, () => err(400, "mock 模式不支持真实 passkey 登录"));
+	// ===== Passkey 设备注册会话（保留域）=====
+	//
+	// 状态机与真后端一致：pending → requested → approved / denied / expired。
+	//
+	// **刻意不伪造 WebAuthn**：mock 永远不返回 attestationOptions，所以页面会停在
+	// "等待批准"而不是假装完成了一次真实的 passkey 创建 —— 预览里那一步（平台
+	// 认证器）本来就跑不了，假装成功反而会让人以为绑定成功了。
+	const ENROLL = "/v1/passkey-enroll/sessions";
+
+	function enrollView(row) {
+		const out = { sessionId: row.id, status: row.status, expiresAt: row.expiresAt };
+		if (row.initiatorName) out.initiatorName = row.initiatorName;
+		if (row.deviceHint) out.deviceHint = row.deviceHint;
+		return out;
+	}
+
+	const findEnroll = (id) =>
+		state.passkeyEnroll.find((x) => x.id === decodeURIComponent(id)) || null;
+
+	on("POST", /^\/v1\/passkey-enroll\/sessions$/, (ctx) => {
+		const b = ctx.body || {};
+		const n = state.passkeyEnroll.length + 1;
+		const row = {
+			id: "pes_mock_" + n,
+			secret: "pes_secret_mock_" + n,
+			userCode: "MOCK-" + String(1000 + n),
+			status: "pending",
+			deviceName: b.deviceName || "anotify-cli",
+			deviceHint: "",
+			initiatorName: "anotify-cli (mock)",
+			expiresAt: now() + 600,
+		};
+		state.passkeyEnroll.push(row);
+		return json(
+			{
+				sessionId: row.id,
+				secret: row.secret,
+				userCode: row.userCode,
+				authUrl: "/passkey-enroll.html?s=" + row.id,
+				pollInterval: 2,
+				expiresAt: row.expiresAt,
+				kind: "passkey",
+			},
+			201,
+		);
+	});
+
+	// 按 code 查（CLI 显示的四位码）—— 必须比 `{id}` 先注册，否则 "by-code" 会被当成 id
+	on("GET", /^\/v1\/passkey-enroll\/sessions\/by-code$/, (ctx) => {
+		const code = String(ctx.query.get("code") || "").toUpperCase();
+		const row = state.passkeyEnroll.find((x) => String(x.userCode).toUpperCase() === code);
+		if (!row) return notFound("注册会话 ");
+		return json(enrollView(row));
+	});
+
+	on("GET", /^\/v1\/passkey-enroll\/sessions\/([^/]+)$/, (ctx) => {
+		const row = findEnroll(ctx.m[1]);
+		if (!row) return notFound("注册会话 ");
+		return json(enrollView(row));
+	});
+
+	on("POST", /^\/v1\/passkey-enroll\/sessions\/([^/]+)\/request$/, (ctx) => {
+		const row = findEnroll(ctx.m[1]);
+		if (!row) return notFound("注册会话 ");
+		if (row.status !== "pending") {
+			return statusErr(409, "Conflict", "会话已经是 " + row.status + "，不能再请求");
+		}
+		const b = ctx.body || {};
+		row.status = "requested";
+		row.deviceHint = b.deviceHint || "未知设备";
+		// secret 只发给**发起请求的设备**（真后端同此口径）
+		return json(Object.assign(enrollView(row), { secret: row.secret }));
+	});
+
+	on("GET", /^\/v1\/passkey-enroll\/sessions\/([^/]+)\/poll$/, (ctx) => {
+		const row = findEnroll(ctx.m[1]);
+		const secret = ctx.query.get("secret");
+		if (!row || !secret || secret !== row.secret) return notFound("注册会话 ");
+		return json({ status: row.status, expiresAt: row.expiresAt });
+	});
+
+	on("POST", /^\/v1\/passkey-enroll\/sessions\/([^/]+)\/approve$/, (ctx) => {
+		const row = findEnroll(ctx.m[1]);
+		if (!row) return notFound("注册会话 ");
+		if (row.status === "consumed" || row.status === "denied") {
+			return statusErr(409, "Conflict", "会话已经是 " + row.status);
+		}
+		row.status = "approved";
+		return json(enrollView(row));
+	});
+
+	on("POST", /^\/v1\/passkey-enroll\/sessions\/([^/]+)\/complete$/, (ctx) => {
+		const row = findEnroll(ctx.m[1]);
+		if (!row) return notFound("注册会话 ");
+		row.status = "consumed";
+		return json({ ok: true, status: row.status, name: ctx.query.get("name") || null });
+	});
+
+	// ===== passkey 注册流程（mock 模式不支持真实 WebAuthn）=====
+	on("POST", /^\/v1\/auth\/register\/options$/, () =>
+		badRequest("BadRequest", "mock 模式不支持真实 passkey 注册"),
+	);
+	on("POST", /^\/v1\/auth\/login\/options$/, () =>
+		badRequest("BadRequest", "mock 模式不支持真实 passkey 登录"),
+	);
+
+	// ---------- 已删除的 v3 端点 ----------
+	//
+	// v4 明确移除：扁平资源路径、`PUT .../downstreams`、Edge / Deployment 写端点。
+	// 这些必须回 **404 Status**（不是 501）：501 留给"mock 还没实现的新接口"，
+	// 混在一起会让"这个端点已经不存在了"和"这个端点我还没写"看起来一样。
+	//
+	// 只在**没有路由命中**时才查这张表（所以 GET /v1/namespaces/x/edges 正常返回，
+	// 而 POST 同一个路径落到这里 → 404）。
+	const REMOVED = [
+		{
+			re: /^\/v1\/capabilities(\/.*)?$/,
+			msg: "v3 扁平能力路径已删除：用 /v1/namespaces/{namespace}/capabilities",
+		},
+		{
+			re: /^\/v1\/sources(\/.*)?$/,
+			msg: "v3 扁平源路径已删除：用 /v1/namespaces/{namespace}/sources",
+		},
+		{
+			re: /^\/v1\/tasks(\/.*)?$/,
+			msg: "v3 扁平任务路径已删除：用 /v1/namespaces/{namespace}/tasks",
+		},
+		{
+			re: /^\/v1\/events$/,
+			msg: "v3 投递入口已删除：用 POST /v1/namespaces/{namespace}/events",
+		},
+		{
+			re: /^\/v1\/playbooks(\/.*)?$/,
+			msg: "v3 扁平安装包路径已删除：用 /v1/namespaces/{namespace}/playbooks",
+		},
+		{
+			re: /^\/v1\/edges(\/.*)?$/,
+			msg: "Edge 没有写端点；读走 GET /v1/namespaces/{namespace}/edges",
+		},
+		{
+			re: /^\/v1\/deployments(\/.*)?$/,
+			msg: "Deployment 只读；部署走 POST .../capabilities/{name}/deploy",
+		},
+		{
+			re: /^\/v1\/traces(\/.*)?$/,
+			msg: "trace 挂在命名空间下：GET /v1/namespaces/{namespace}/traces/{traceUID}",
+		},
+		{ re: /^\/v1\/orgs(\/.*)?$/, msg: "v3 组织端点已删除（v4 用 /v1/namespaces）" },
+		{
+			re: /^\/v1\/(namespaces\/[^/]+\/)?capabilities\/[^/]+\/downstreams$/,
+			msg: "PUT .../downstreams 已删除：下游写在 spec.next 里（PATCH 能力）",
+		},
+		{
+			re: /^\/v1\/namespaces\/[^/]+\/capabilities\/[^/]+\/artifact$/,
+			msg: "artifact 已删除：脚本全文走 GET .../versions/{version}?includeBody=true",
+		},
+		{
+			re: /^\/v1\/namespaces\/[^/]+\/capabilities\/[^/]+\/revisions(\/.*)?$/,
+			msg: "revisions 已删除（v4 没有 CapabilityRevision）：用 .../versions",
+		},
+		{
+			re: /^\/v1\/namespaces\/[^/]+\/edges$/,
+			msg: "Edge 没有写端点（POST/DELETE 已删除）：边是 spec.next / spec.targets 的投影",
+		},
+		{
+			re: /^\/v1\/namespaces\/[^/]+\/deployments(\/.*)?$/,
+			msg: "Deployment 只读（POST/DELETE 已删除）：部署走 POST .../capabilities/{name}/deploy",
+		},
+	];
 
 	// ---------- fetch 拦截 ----------
-	const origFetch = window.fetch.bind(window);
+	//
+	// 自己解析 URL（不用 `new URL`）：mock 也会在 node:vm 单测里加载，
+	// 那里没有 URL / URLSearchParams 这两个全局。手写解析足够——
+	// 我们只关心 pathname 与 query。
+	const origFetch =
+		typeof window.fetch === "function" ? window.fetch.bind(window) : null;
+
+	function makeQuery(search) {
+		const map = new Map();
+		const s = String(search == null ? "" : search).replace(/^\?/, "");
+		if (!s) return { get: () => null, has: () => false };
+		for (const part of s.split("&")) {
+			if (!part) continue;
+			const i = part.indexOf("=");
+			const k = decodeURIComponent((i < 0 ? part : part.slice(0, i)).replace(/\+/g, " "));
+			const v = i < 0 ? "" : decodeURIComponent(part.slice(i + 1).replace(/\+/g, " "));
+			if (!map.has(k)) map.set(k, v);
+		}
+		return {
+			get: (k) => (map.has(k) ? map.get(k) : null),
+			has: (k) => map.has(k),
+		};
+	}
+
+	function parseTarget(input) {
+		let href =
+			typeof input === "string"
+				? input
+				: input && input.url
+					? String(input.url)
+					: String(input);
+		// 绝对 URL → 只留 pathname + search（预览场景就是同源，不需要 origin）
+		const abs = /^[a-z][a-z0-9+.-]*:\/\/[^/]*(\/.*)?$/i.exec(href);
+		if (abs) href = abs[1] || "/";
+		const qi = href.indexOf("?");
+		return {
+			pathname: qi >= 0 ? href.slice(0, qi) : href,
+			query: makeQuery(qi >= 0 ? href.slice(qi + 1) : ""),
+		};
+	}
+
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 	window.fetch = async function (input, init) {
-		let url;
-		let method = (init && init.method) || "GET";
-		if (typeof input === "string") {
-			url = input;
-		} else if (input instanceof Request) {
-			url = input.url;
-			method = input.method || method;
-		} else {
-			url = String(input);
-		}
-
-		// 绝对 URL 只取 pathname + search 判断（同源才拦）
-		let path = url;
-		let query = new URLSearchParams();
-		try {
-			const u = new URL(url, location.href);
-			if (u.origin !== location.origin && !/^https?:/.test(url)) {
-				// 相对路径：已由 base 解析，继续
-			}
-			path = u.pathname + u.search;
-			query = u.searchParams;
-		} catch (e) {
-			/* 保持原样 */
-		}
-
-		const pathOnly = path.split("?")[0];
-		if (!pathOnly.startsWith("/v1/")) {
+		const opts = init || {};
+		const target = parseTarget(input);
+		const pathOnly = target.pathname;
+		if (pathOnly.indexOf("/v1/") !== 0) {
+			if (!origFetch) throw new Error("mock: 没有可用的网络层（非 /v1/ 请求）");
 			return origFetch(input, init);
 		}
 
-		// 解析 body
+		const method = String(
+			(opts.method || (input && input.method) || "GET").toUpperCase(),
+		);
+
+		// 解析 body（只认 JSON 字符串；其它形态在 mock 里用不到）
 		let body = null;
-		if (init && init.body) {
-			try {
-				body = typeof init.body === "string" ? JSON.parse(init.body) : null;
-			} catch (e) {
-				body = null;
+		if (opts.body != null) {
+			if (typeof opts.body === "string") {
+				try {
+					body = JSON.parse(opts.body);
+				} catch (e) {
+					body = null;
+				}
 			}
 		}
 
-		// 300ms 左右的延迟：让 loading 态能被看到，也避免请求瞬间返回
-		// 导致页面闪烁得"不像真的"
-		await sleep(120 + Math.random() * 180);
+		// 延迟：让 loading 态能被看到，也避免请求瞬间返回让页面闪烁得"不像真的"
+		if (state.latencyMs > 0) await sleep(state.latencyMs + Math.random() * 180);
 
-		// ?mockFail=1 可以强制看错误态（调试用）
-		if (query.get("mockFail") === "1") {
-			return err(500, "mock 强制失败（?mockFail=1）");
+		// ?mockFail=1 强制看错误态（调试用；所有 /v1/ 请求一致）
+		if (target.query.get("mockFail") === "1") {
+			return statusErr(500, "BadRequest", "mock 强制失败（?mockFail=1）");
 		}
 
 		for (const r of routes) {
-			if (r.method !== method.toUpperCase()) continue;
+			if (r.method !== method) continue;
 			const m = r.pattern.exec(pathOnly);
 			if (!m) continue;
 			try {
-				return r.handler({ m, query, body, path: pathOnly });
+				return r.handler({ m: m, query: target.query, body: body, path: pathOnly, rawBody: opts.body, headers: opts.headers });
 			} catch (e) {
 				console.error("[mock] handler 抛错", r.pattern, e);
-				return err(500, "mock handler error: " + e.message);
+				return statusErr(500, "BadRequest", "mock handler error: " + e.message);
 			}
+		}
+
+		// 已删除的 v3 端点：404（不是 501 —— 见 REMOVED 的注释）
+		for (const gone of REMOVED) {
+			if (!gone.re.test(pathOnly)) continue;
+			return statusErr(404, "NotFound", gone.msg);
 		}
 
 		// 没实现的接口：明确说出来，而不是静默返回 {} 让页面莫名其妙地空。
@@ -5736,20 +4757,16 @@
 		// 这条 warn 的**措辞是门禁契约的一部分**：scripts/e2e 的 fe-preview 套件只在
 		// console **文本**里搜 "mock 未实现" 这个子串，用它判定「页面调的接口 mock 有没有实现」。
 		// 所以这里**不能加 "[mock] " 前缀** —— `"[mock] 未实现：…".includes("mock 未实现")` 是 false
-		//（`] ` 卡在中间），断言会永远绿。旧文案 "[mock] 未实现的接口:" 也是同一个毛病；
-		// 501 响应体里的那行是对的，但响应体从不进 console（Anotify.api 只 throw，页面也不打日志）。
+		//（`] ` 卡在中间），断言会永远绿。
 		console.warn("mock 未实现：" + method + " " + pathOnly);
-		return err(501, "mock 未实现：" + method + " " + pathOnly);
+		return statusErr(501, "BadRequest", "mock 未实现：" + method + " " + pathOnly);
 	};
 
 	// ---------- 预览提示条 ----------
 	//
 	// 让人一眼知道"这是假数据"，否则很容易误以为后端坏了。
-	//
-	// 位置改为**左下角**小卡片（早先是底部居中的黑影胶囊，会压在页面底部内容上）。
-	// 颜色全走 web/tokens.css 的主题 token，不再硬编码 rgba/hex：
-	// 旧的 #fbbf24 在亮色主题（--surface-1 接近白）上对比不足，且切主题时不变。
-	// ≤639px 时左右贴边（8px），贴底占满一行，不居中遮挡内容。
+	// 位置是**左下角**小卡片（早先是底部居中的黑影胶囊，会压在页面底部内容上）。
+	// 颜色全走 web/tokens.css 的主题 token，不硬编码 rgba/hex。
 	const BANNER_DISMISSED_KEY = "anotify-mock-banner";
 
 	// localStorage 在隐私模式 / 被禁 / 部分 iframe 沙箱里读会抛异常：
@@ -5763,8 +4780,8 @@
 	}
 
 	function mountBanner() {
-		// 关过一次就永不再挂（刷新也不再复现）
 		if (bannerDismissed()) return;
+		if (!document || !document.createElement) return;
 		const css = document.createElement("style");
 		css.textContent = `
 			#mock-banner {
@@ -5834,35 +4851,34 @@
 		}
 	}
 
-	// 挂到 window 上方便调试：MockApi.state / MockApi.reset()
+	// 挂到 window 上方便调试与演示：MockApi.state / MockApi.reset()
 	window.MockApi = {
-		state,
-		reset: () => location.reload(),
-		capByName,
-		// 升级演示控制（契约 §5.1）——两个都只改内存，刷 F5 就回初始值。
-		//
-		// noAgentBinary()：服务端没带 agent 二进制（传 false 恢复）。节点页版本照旧，
-		//   但升级控件变成「服务端没带 agent 二进制」（不给可点按钮）。
-		//   ⚠️ 生效时机是**下一次拉列表**（点页头「刷新」），不需要也不需要 F5——
-		//   F5 会重建整个 mock state，这个开关就被丢掉了。
+		state: state,
+		reset: () => window.location.reload(),
+		// 按名字取能力（最高版本；可带命名空间）
+		capByName: capByName,
+		// 升级演示控制（F2c 节点页消费）——两个都只改内存，刷 F5 就回初始值。
 		noAgentBinary: (on) => {
 			state.agentBinary = !(on === undefined ? true : on);
 			return state.agentBinary;
 		},
-		// failUpgrade("need_root"|"bad_sha"|"download_failed"|"not_supported")：
-		//   让下一次 upgrade_ack 失败；传空串恢复正常。
 		failUpgrade: (code) => {
 			state.upgradeFailCode = code || "";
 			return state.upgradeFailCode;
+		},
+		// mock 响应延迟（毫秒）。0 = 立即返回（截图 / 批量断言用）。
+		latency: (ms) => {
+			state.latencyMs = Math.max(0, Number(ms) || 0);
+			return state.latencyMs;
 		},
 	};
 	mountBanner();
 
 	console.info(
-		"[mock] 前端预览模式：所有 /v1/* 请求由本地 mock 应答。\n" +
+		"[mock] 前端预览模式（v4）：所有 /v1/* 请求由本地 mock 应答。\n" +
 			"  - 数据存在 window.MockApi.state，可改\n" +
 			"  - 任意接口加 ?mockFail=1 可看错误态\n" +
-			"  - 升级失败演练：MockApi.failUpgrade('bad_sha') / 无二进制：MockApi.noAgentBinary()\n" +
+			"  - 去掉响应延迟：MockApi.latency(0)\n" +
 			"  - 刷新页面恢复初始数据",
 	);
 })();

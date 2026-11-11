@@ -9,6 +9,7 @@ common:
   server_error: 'server error HTTP {code}'
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
+  resource_version_required: 'missing resourceVersion; refresh and try again'
   brand:
     name: Anotify
     tagline: Get notified when your agents finish
@@ -143,9 +144,9 @@ index:
     rate_na: No receivers yet — delivery rate unavailable
     trend_live: Live
     running: In progress
-    running_sub: Last 50 tasks
+    running_sub: "All tasks in this namespace"
     failed: Failed tasks
-    failed_sub: Last 50 tasks
+    failed_sub: "All tasks in this namespace"
   heatmap:
     title: Event activity
     subtitle: Past year · daily volume
@@ -210,6 +211,7 @@ scope:
   section_ns: "Namespace"
   ns: "Namespace"
   none: "(no namespace yet)"
+  missing: "No namespace selected yet"
   empty_hint: "No namespaces yet. Create one to get started."
   new_ns: "New namespace"
   new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
@@ -273,6 +275,44 @@ message:
     count: '{n} tasks'
     empty: No other tasks on this trace
     current: Current
+  v4:
+    diagnostics: "Execution diagnostics"
+    attempt: "Attempt / maximum"
+    wait_hint: "Waiting does not consume execution attempts. Non-idempotent tasks do not retry automatically; an unknown acceptance is not safe rerun evidence."
+    lease_hint: "A lease bounds execution authorization, not exactly-once business effects. Old attempts and expired leases cannot submit further results."
+    cancel: "Cancel task"
+    abandon: "Abandon task"
+    confirm_cancel: "Cancel this task? Execution authorization will be revoked and the current execution stopped."
+    confirm_abandon: "Abandon this task? Execution stops without an automatic retry."
+    params: "Task input parameters"
+    env: "Environment diagnostics (names and sources only)"
+    env_hint: "Only variable names and sources used by this task; no host values or full passthrough allowlist."
+    env_empty: "No retained environment diagnostics."
+    result: "Result summary / error / artifacts"
+    attempts: "Retained execution attempt facts"
+    attempts_empty: "No retained execution attempt facts."
+    logs: "Task logs"
+    current: "Latest archived logs"
+    previous: "Previous execution attempt"
+    truncated: "Truncated"
+    complete: "Not truncated"
+    logs_empty: "No lines for this attempt (or no previous attempt)."
+    emissions: "Accepted emit facts"
+    emissions_empty: "No retained emit facts."
+    missing: "URL is missing task id."
+    not_found: "Task not found, cleaned up, or outside this namespace."
+    artifact_download: "Download managed artifact"
+    artifact_expired: "Managed artifact expired (410 artifact_expired). The task manifest remains; no node fallback."
+    artifact_missing: "Artifact is not referenced by this task (404)."
+    artifact_invalid: "Invalid manifest path or SHA256; no download URL is created."
+    phase:
+      pending: "Pending / waiting"
+      running: "Running"
+      succeeded: "Succeeded"
+      failed: "Failed"
+      cancelled: "Cancelled"
+      abandoned: "Abandoned"
+
 login:
   title: Sign in
   welcome: Welcome back to
@@ -727,6 +767,12 @@ docs:
       cli-auth: CLI auth
       admin: Admin
       devices: Web Push
+      resource: "Resources"
+      agent: "Node protocol"
+      ingress: "Ingress"
+      traces: "Traces"
+      system: "System configuration"
+
   events:
     core: Core
     intro: 'Events are where everything begins. Every external change enters here; the hub dispatches it into task chains along the downstream table.'
@@ -878,6 +924,15 @@ docs:
     reconnect:
       title: Reconnect and resume
       desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
+  v4:
+    five_specs: "Endpoints come from five v4 specs: resource / events / agent / ingress / auth. Until integrated, the list is truly empty, not legacy endpoints."
+    missing: "Five v4 specs not loaded yet"
+    ingress: "Namespaced event ingress (not resource creation)"
+    node: "anode: local execution & configuration"
+    node_note: "Register a Node, then issue a long-lived identity token. Declared namespaces intersect central authorization; install never auto-registers. No legacy agent commands, port routing or priority."
+    resource: "Namespaced resources & write CAS"
+    resource_note: "Read KindList.items. Create with apiVersion/kind/metadata/spec. Edits send writable fields plus metadata.resourceVersion; missing is 400, stale is 409 with draft retained. DELETE uses query resourceVersion."
+
 cliauth:
   title: CLI Device Authorization
   back_home: Back to dashboard
@@ -1145,296 +1200,233 @@ events:
     end: Oldest reached
     no_match: No matches on this page — page older or jump back to latest
     invalid_cursor: 'Cursor expired — back to latest'
+  v4:
+    dedup: "deliveryId deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
+    refresh: "Refresh"
+    namespace: "Namespace"
+    source: "Involved object / source"
+    limit: "Page size"
+    filter: "Apply filters"
+    loading: "Loading data…"
+    more: "Load more"
+    trace: "Open trace"
+    event_uid: "Event UID (not deliveryId)"
+    received: "Received at"
+    dispatched: "Dispatched tasks"
+    details: "Dispatch / pruning / payload details"
+    empty: "No events in this namespace and filter."
+    count: "Showing {n} unique events"
+
 caps:
-  title: Capabilities
-  step_pick: Pick a template
-  step_fill: Fill in & create
+  title: 'Capabilities'
   sidebar: 'Created here, run on nodes'
-  subtitle: 'A capability is "what to do" (not "how"). Create and deploy them here, and point them downstream.'
+  subtitle: 'A capability declares three things: what it takes (params), who it hands off to (next) and how it runs (run). Everything runs on nodes.'
   new: 'New capability'
-  loading: Loading capabilities…
-  load_failed: 'Failed to load capabilities, please refresh'
-  empty: 'No capabilities yet. Create one so nodes can declare it.'
+  refresh: 'Refresh'
+  search: 'Search'
+  search_ph: 'name / display name / downstream'
+  filter_label: 'Filter'
   count: '{n} capabilities'
-  source_builtin: 'Built-in'
-  declared_by: Declared by
-  no_node: No node declares it
-  no_node_hint: This capability can never run until a node declares it
-  by_hub: Runs on the hub, no node needed
-  by_none: Event origin, runs no code
-  any_event_type: Any event type (origin)
-  rename: Rename
-  name_it: Name it
-  save: Save
-  cancel: Cancel
-  rename_ph: Give it a name, e.g. "Analyze PR"
-  rename_failed: Rename failed
-  renamed: Name updated
-  tpl:
-    title: 'New capability'
-    intro: 'Pick a template first. A template is just a canned script — both its fields and the script body stay editable.'
-    cat_script: 'Script'
-    cat_agent: 'Agent'
-    requires: 'Requires: {list}'
-    no_requires: 'No external commands required'
-    timeout_default: 'default {n}s'
-    back: 'Change template'
-    params: 'Parameters'
-    no_params: 'This template has no parameters'
-    required: 'required'
-    files: Files
-    files_hint: 'Every file is part of the capability. The entry file is executed directly (no shell), so its first line must be a #! shebang.'
-    file_ph: 'e.g. lib/helper.sh'
-    file_add: Add file
-    file_pick_hint: Click to edit this file
-    file_set_entry: Set as entry
-    file_del: Delete this file
-    file_err_empty: File name cannot be empty
-    file_err_long: File name is too long
-    file_err_slash: 'Use a relative path with / separators (no backslashes)'
-    file_err_abs: 'Must be a relative path (cannot start with /)'
-    file_err_empty_seg: 'Path contains an empty segment (//)'
-    file_err_dotdot: 'Path cannot contain . or .. segments'
-    file_err_dup: 'A file with that name already exists: {name}'
-    file_err_none: 'At least one file is required — it is the implementation'
-    file_err_no_entry: The entry file is not in the file list
-    script_view: 'Read-only'
-    script_edit: 'Edit script'
-    schema_advanced: "Parameter contract"
-    schema_toggle: "Edit JSON"
-    schema_visual: "Visual"
-    schema_add_row: "+ Add a parameter"
-    schema_rows_empty: "No parameters yet. A capability without parameters accepts any input (empty contract)."
-    schema_more: "More"
-    schema_less: "Less"
-    schema_required: "Required"
-    field_default: "default {v}"
-    schema_key: "Parameter name"
-    schema_type: "Type"
-    schema_type_any: "Any type"
-    schema_type_enum: "Enum (string)"
-    schema_enum: "Enum values (comma separated)"
-    schema_del: "Remove this parameter"
-    schema_extra_note: "{keys} cannot be expressed by these rows and are preserved as-is (visible in the JSON view)"
-    schema_json_only: "This contract contains shapes the visual editor cannot express (array type / nested items / numeric enum), so it can only be edited as JSON"
-    schema_err_key_empty: "Parameter name must not be empty"
-    schema_err_key_blank: "Parameter name must not contain whitespace: {name}"
-    schema_err_key_env: "Parameter names {a} and {b} both normalize to the same environment variable {env}"
-    schema_err_key_dupe: "Duplicate parameter name: {name}"
-    schema_err_num: "{field} must be a number"
-    schema_err_range: "{a} must not be greater than {b}"
-    schema_err_pattern: "Invalid regex: {msg}"
-    schema_err_enum: "Pick \"Enum\" and you must give at least one value"
-    schema_err_many: "{n} fields in the parameter contract are incomplete (see the rows marked in red)"
-    schema_err_switch: "This contract contains shapes the visual editor cannot express (array type / nested items / numeric enum); keep editing it as JSON"
-    schema_hint: "The visual rows cover the most common constraints; switch to \"Edit JSON\" for anything more complex. Until you touch it, the contract follows the template fields (leaving the JSON empty means the same). A controlled subset of JSON Schema is supported (type/properties/required/enum/minLength/pattern…, no $ref / if-then-else)."
-    script_shebang_err: 'The script must start with #!'
-    loading: 'Loading templates…'
-    load_failed: 'Failed to load templates: '
-    empty: 'The backend returned no templates'
-    created: 'Capability created'
-    created_digest: 'Created · content fingerprint {digest}'
+  load_failed: 'Failed to load the capability list'
+  empty_title: 'No capabilities yet'
+  empty: 'This namespace has no capabilities yet. Create one so nodes can declare it.'
+  no_match: 'No capability matches'
+  ready: 'Ready'
+  not_ready: 'Not ready'
+  ready_unknown: 'Status unknown'
+  terminal_short: 'Terminal capability (ends when done)'
+  cond:
+    Deployed: 'Deployed'
+    DownstreamResolved: 'Downstream resolved'
+    Implemented: 'Implemented'
+    NodesAvailable: 'Nodes available'
+    none: 'The server returned no conditions'
+    title: 'Four conditions (derived on read)'
+  conflict:
+    body: 'The server''s current resourceVersion is {rv}; your local input is still here. Reloading the latest discards local changes.'
+    reload: 'Reload latest (discard local changes)'
+    reloaded: 'Loaded the latest version'
+    title: 'This resource changed elsewhere (409 resource_version_conflict)'
+  delete:
+    body: 'Delete "{name}"? Only this capability is removed and nothing is cascaded: other capabilities or sources that reference it will fail to resolve (reported by status).'
+    conflict: 'This capability was just changed elsewhere (409). Reloaded the latest resourceVersion {rv}; confirm and click delete again. No automatic retry.'
+    deleting: 'Deleting…'
+    rv: 'Current resourceVersion: {rv}'
+    submit: 'Delete'
+    title: 'Delete capability'
   deploy:
     col: 'Deployment'
-    status_applied: 'Deployed to {n}'
-    status_pending: 'Deploying to {n}'
-    status_failed: '{n} failed'
-    status_local: '{n} local variant(s)'
-    status_none: 'Not deployed'
-    status_unknown: '—'
-    btn: 'Deploy'
-    title: 'Deploy “{name}”'
-    subtitle: 'Tick nodes or pick them by tag, then hit Deploy.'
-    pick_hint: 'Nodes'
-    tag_pick: 'Pick by tag'
-    node_digest: 'Deployed {digest}'
-    node_none: 'Not deployed'
-    push: 'Deploy'
-    pushing: 'Deploying…'
-    close: 'Close'
-    undo: 'Remove'
-    undone: 'Deployment removed'
-    undo_failed: 'Remove failed: '
+    hint: 'Saving or installing a package never deploys; deployment only happens with this button.'
+    nodes: 'Target nodes'
+    nodes_empty: 'No candidate nodes; you can submit without selecting (the server decides).'
+    nodes_hint: 'No selection = the server picks candidates with the current policy.'
     pushed: 'Deployed'
-    queued: 'Queued (node offline)'
-    queued_other: 'Queued'
-    nodes_failed: 'Could not load the node list, try again later'
     result_title: 'Deployment result'
-    none_selected: 'Select at least one node'
-    no_nodes: 'This namespace has no nodes yet'
-    err: 'Deploy failed: '
-    builtin: Executed by the hub — no deployment needed
-    builtin_hint: 'The built-in executor {name} runs inside the hub process; it neither needs nor accepts node deployment'
-  list:
-    title: Capabilities
-  form:
-    display_name: Display name
-    display_name_ph: "e.g. \"Analyze PR\", \"Deploy to staging\""
-    display_name_hint: Shown in the UI. Leave blank to use the technical name below.
-    name: Capability name
-    name_hint: 'Technical name — nodes, downstream and logs use it. Cannot be changed after creation.'
-    outputs: 'Outputs'
-    outputs_optional: '(optional)'
-    outputs_ph: 'approved, needs-fix (empty = a single internal output)'
-    outputs_hint: 'Output names this capability declares, comma separated — downstream can only target these. Empty = a single internal output (hand off to the downstream directly). They are part of the capability contract, so changing them needs a new version.'
-    outputs_bad: 'Invalid output name: {name} (letters, digits, dot, underscore and hyphen only, 1–32 chars)'
-    downstream: Downstream capabilities (candidates)
-    downstream_optional: optional
-    downstream_ph: script.echo, notify.phone
-    downstream_hint: Who runs after this one. Several = candidates, one is picked at run time by priority; leave empty = terminal capability (it ends when it finishes).
-    downstream_missing: 'No such capability: {names}'
-    downstream_cands_hint: 'Click to add:'
-    downstream_cands_empty: 'No target capability to pick yet (create one, or name another card above).'
-    cand_add: Add as downstream
-    cand_picked: Selected
-    cards_title: Capabilities in this batch
-    cards_hint: 'Create several capabilities at once — each card has its own downstream, params and script; they are written in one transaction (all succeed or nothing is created).'
-    card_add: + Add another capability
-    card_remove: Remove this capability
-    card_n: 'Capability {n}'
-    card_unnamed: Untitled
-    card_editor: 'Editing: capability {n} of {total}'
-    card_down: 'Downstream: {names}'
-    card_name_dupe: 'Duplicate capability name in this batch: {name}'
-    card_err_field: 'Capability {n} / {field}: {reason}'
-    card_err_generic: 'Capability {n}: {reason}'
-    cand_hint: At runtime exactly one candidate is picked by priority; ties rotate (lower number wins).
-    cand_batch_tag: (this batch)
-    batch_created: 'Created {caps} capabilities · {m} downstream'
-    batch_failed: 'Batch create failed (nothing was saved): '
-    created_with_edges: 'linked {n} downstream'
-    link_rejected: 'Downstream #{n} → {to} is invalid; nothing was created: {reason}'
-    schema: Param validation (JSON Schema)
-    schema_hint: Controlled subset only (no $ref / if-then-else); the hub never evaluates expressions.
-    cancel: Cancel
-    submit: Create
-    created: Capability created
-    create_failed: 'Create failed: '
-    err_name: Please enter a capability name
-    err_schema: paramsSchema is not valid JSON
-    schema_mode_form: Form
-    schema_mode_json: JSON
-    schema_add_field: Add field
-    schema_no_extra: Disallow undeclared fields
-    schema_field_name: Field name
-    schema_required: Required
-    schema_enum: Enum values, comma separated (optional)
-    schema_no_fields: No fields yet. Add one below.
-    schema_dup: Duplicate field name
-    schema_preserved: 'These cannot be edited visually and will be kept as-is:'
-    schema_form_hint: Only uses keywords the backend supports (type / properties / required / enum / ranges). Switch to JSON for nested objects and arrays.
-    err_schema_obj: paramsSchema must be a JSON object
-    timeout: 'Timeout (seconds)'
-    timeout_hint: '0 = no local timeout, rely on the hub lease'
-    err_invalid_name: 'Name must be 1–63 chars of lowercase letters, digits, dot, underscore or hyphen, starting with a letter or digit'
-    err_timeout: 'Timeout must be an integer between 0 and 86400'
-    workdir: Work dir
-    workdir_hint: 'An absolute path starting with /, or a path starting with ~/ (the ~ is expanded on the node to the agent user''s home directory); if it does not exist the task fails outright (no fallback to a default directory). Empty = a fresh directory per task.'
-    env: Environment variables
-    env_hint: 'An empty value means the node environment provides it (e.g. GH_TOKEN). The ANOTIFY_ prefix is reserved.'
-    env_add: + Add a variable
-    env_value_ph: Value (empty = provided by the node environment)
-    env_del: Remove this variable
-    env_err_key: Variable name cannot be empty
-    env_err_name: 'Variable names may only contain letters, digits and underscores, and cannot start with a digit'
-    env_err_reserved: The ANOTIFY_ prefix is reserved by the contract and cannot be overridden
-    env_err_dupe: 'Duplicate environment variable: {key}'
+    submit: 'Confirm deploy'
+    submitting: 'Deploying…'
+    title: 'Manual deploy of {name}'
+    version: 'Target version'
   detail:
-    btn: Details
-    params: Parameter contract
+    btn: 'Details'
+    delete: 'Delete'
+    deploy: 'Deploy'
+    edit: 'Edit'
+    hide: 'Hide'
     outputs: 'Outputs (what it can emit)'
-    no_outputs: 'No outputs — it just finishes and triggers nothing downstream.'
-    implicit_output: 'A single internal output (not named here)'
-    no_params: No parameters
-    downstream: Downstream (candidates)
-    no_downstream: It ends when it finishes — nothing downstream is triggered.
-    cand_prio_hint: 'Priority {n} · edit to change'
-    edges_failed: 'Downstream unavailable, downstream state unknown'
-    inbound: Who feeds me
-    no_inbound: 'No upstream — events never enter here'
-    me: me
-    source_prefix: Source
-    follow: Follows latest
-    pinned: Pinned version
-    unresolved: 'Unresolved: {ref}'
-    literals: 'Literals {json}'
-    runtime: Runtime
-    timeout: Timeout
-    workdir: Working directory
-    workdir_default: A fresh directory per task
-    lifecycle: Lifecycle
-    lifecycle_default: Default (not declared)
-    sticky: Sticky routing
-    source: Capability source
-    source_builtin: Built-in
-    source_custom: Custom
-    hash: Content hash
-    copy: Copy
-    unknown: '—'
-    script: Script
-    script_entrypoint: entrypoint
-    script_failed: Failed to load the script
-    retry: Retry
-    executor: Executor
-    executor_builtin: 'Built-in {name} (executed by the hub)'
-    script_builtin: 'Built-in executor {name}: the implementation is compiled into the hub process, so there are no script files'
-  edit:
-    btn: Edit
-    title: 'New version: {name}'
-    banner: 'Will create {ref}'
-    from_version: 'Copied from {ref}'
-    sticky_carried: 'Sticky routing {v}'
-    lifecycle_carried: 'Lifecycle {v}'
-    name_locked: 'Name is locked: this version keeps the same name. Renaming means a different capability.'
-    multi_output_note: 'This capability fans out along more than one downstream path (legacy data): the structure is preserved as-is and is not edited here.'
-    submit: Publish new version
-    publishing: Publishing…
-    failed: 'Publish failed: '
-    created: 'Published {ref}'
-    impact_title: 'This version breaks existing downstream'
-    impact_changes: What changed
-    impact_links: 'Downstream that will break (they bind to the name, so the new version is what they point to)'
-    impact_no_links: 'No downstream that follows latest is affected'
-    force: Publish anyway
-    artifact_failed: Could not load the implementation — publishing is blocked (it would drop files)
-    builtin_locked: 'Built-in capability executed by the hub: the implementation lives in the hub and cannot be edited here'
-  add:
-    btn: downstream
-    title: 'Add downstream'
-    target_ph: Pick a target capability (searchable)
-    literals_ph: 'Literal overrides (optional), e.g. {"urgent":true}'
-    save: Save
-    cancel: Cancel
-    created: 'Downstream created'
-    failed: 'Failed to create downstream: '
-    err_target: Pick a target capability
-    err_self: A capability cannot link to itself
-    err_literals: Literals must be a JSON object
-  down:
-    # Downstream row editor in the edit modal: each row = target + priority + delete.
-    # The copy only ever talks about "downstream" — ports are an internal routing key.
-    add_ph: Type a capability name and press Enter (searchable)
-    name_ph: Capability name
-    prio: Priority
-    prio_hint: Lower fires first; empty = 0
-    del: Remove this downstream
-    empty: 'No downstream yet: this capability ends after it runs (terminal).'
-    save: Save downstreams
-    saving: Saving…
-    saved: Downstreams saved (no new version)
-    save_failed: 'Failed to save downstreams: '
-    dirty: Unsaved downstream changes
-    hint_edit: Editing downstreams does not create a new version — only the target and the priority change here.
-    hint_keep_ref: Write a reference as name (follow latest) or name@2 (pinned version).
-    err_unknown: 'Target capability not found: {ref}'
-    err_self: A capability cannot link to itself
-    err_duplicate: That downstream is already in the list
-    err_too_many: At most 100 downstreams
-    err_priority: Priority must be an integer within 0..1000
-    err_notfound: Capability not found (it may have been deleted)
-    err_removed: 'The old endpoint is closed: edit downstreams under Edit capability → downstream'
-    need_target: Pick a target capability first
-    current_version_note: These downstreams are shared by every version — publishing a new version leaves them alone.
+    rv: 'resourceVersion'
+    script: 'Script (run.files)'
+    script_empty: 'This capability has no script files'
+    script_entry: 'Entrypoint'
+    versions: 'Version history'
+    versions_hide: 'Hide versions'
+  error:
+    immutable: 'This explicit version already exists with a different body: changing run/params/requires/lifecycle/concurrency requires a new version (next/displayName excepted).'
+    title: 'Save failed: {reason}'
+  filter:
+    all: 'All'
+    not_ready: 'Not ready'
+    ready: 'Ready'
+  form:
+    batch_created: 'Created {caps} capabilities · {m} downstream'
+    cancel: 'Cancel'
+    concurrency: 'Concurrency per node'
+    concurrency_hint: 'spec.concurrency.maxPerNode, default 1.'
+    create_title: 'New capability'
+    current_version: 'Current version: v{v}'
+    display_name: 'Display name'
+    display_name_hint: 'Presentation only; not part of the content fingerprint.'
+    display_name_ph: 'e.g. Analyze PR'
+    downstream: 'Downstream capabilities (candidates)'
+    edit_title: 'Edit capability {name}'
+    entrypoint: 'Entrypoint'
+    entrypoint_hint: 'Must be one of the paths in files.'
+    entrypoint_none: 'Add a file first'
+    env: 'Environment'
+    env_add: 'Add row'
+    env_del: 'Delete'
+    env_empty: 'No environment variables'
+    env_hint: 'vars.* must also be declared in requires.values; values stay on the node, the hub does not store them.'
+    env_key: 'Name'
+    env_literal: 'Literal'
+    env_value: 'Value (empty string is empty string)'
+    env_valuefrom: 'From field'
+    err_concurrency: 'Concurrency per node must be an integer >= 1'
+    err_entrypoint: 'Entrypoint must be one of the paths in files'
+    err_env_dupe: 'Duplicate environment variable: {k}'
+    err_env_key: 'Invalid environment variable name: {k}'
+    err_env_path: '{k} needs a fieldPath'
+    err_env_reserved: '{k} uses the reserved ANOTIFY_ prefix'
+    err_files: 'files needs at least one file'
+    err_json: 'Params contract is not valid JSON: {msg}'
+    err_json_type: 'Params contract must be a JSON object (JSON Schema)'
+    err_max_attempts: 'Max attempts must be an integer >= 1'
+    err_name: 'Invalid name: lowercase letters/digits/dot/underscore/hyphen, 1-63 chars, must start with a letter or digit'
+    err_next: 'Invalid downstream reference: {ref}'
+    err_next_many: 'At most 32 downstream entries'
+    err_requires_value: 'requires.values only accepts vars.NAME: {v}'
+    err_result_ttl: 'Result retention must be an integer >= 0'
+    err_timeout: 'Run timeout must be an integer >= 0'
+    err_version: 'Version must be an integer >= 1'
+    file_add: 'Add file'
+    file_del: 'Delete file'
+    file_path: 'Relative path, e.g. run.sh'
+    files: 'Files'
+    files_hint: 'The entrypoint must start with a #! shebang; every file is part of the capability.'
+    idempotent: 'Allow automatic retries (idempotent)'
+    idempotent_hint: 'Enable only when clearly idempotent; otherwise a failure is terminal.'
+    lifecycle: 'Lifecycle'
+    max_attempts: 'Max attempts'
+    name: 'Capability name'
+    name_hint: 'Lowercase letters, digits, dot, underscore, hyphen; must start with a letter or digit. Cannot change later.'
+    name_ph: 'review'
+    name_readonly: 'Name is immutable (renaming means creating another capability)'
+    next: 'Downstream (one per line, bare name or name@version)'
+    next_bad: 'Invalid reference: {ref}'
+    next_hint: 'Empty = terminal capability (ends when done); changing downstream does not create a new version.'
+    next_missing: 'Does not resolve (single create is rejected by the server)'
+    next_ph: 'One per line: fixer or notify@2'
+    next_pinned: 'pinned to v{v} (current v{cur})'
+    next_terminal: 'Empty = terminal capability: ends when done'
+    params: 'Params contract (JSON Schema)'
+    params_hint: 'JSON Schema object; it is part of the content fingerprint, so changing it creates a new version.'
+    requires_commands: 'Node commands (one per line)'
+    requires_hint: 'Nodes must have these commands installed (checked with LookPath).'
+    requires_values: 'Node values (vars.NAME per line)'
+    requires_values_hint: 'Nodes must resolve these values (local -> node default -> namespace default).'
+    result_ttl: 'Result retention (s)'
+    result_ttl_hint: '0 = never cleaned up.'
+    save: 'Save'
+    saving: 'Saving…'
+    submit: 'Create'
+    timeout: 'Run timeout (s)'
+    timeout_hint: '0 = no local run timeout.'
+    version: 'Version'
+    version_edit_hint: 'Empty = content-addressed (changing the body creates a new version); an explicit version is immutable.'
+    version_hint: 'Empty = content-addressed (auto-assign/reuse); an explicit version is immutable.'
+    workdir: 'Work dir'
+    workdir_hint: 'May contain $(vars.X) or $(params.X); empty = one directory per task.'
+  meta:
+    installed_from: 'Installed from'
+    next: 'Downstream'
+    nodes: 'Nodes {total} (current {deployed} · old {stale} · not deployed {missing})'
+  nodes:
+    deployed: 'current digest'
+    empty: 'No candidate nodes (no node is authorized in this namespace)'
+    missing: 'not deployed'
+    stale: 'old digest'
+    title: 'State on nodes'
+  observed:
+    emits: 'Emits'
+    emits_empty: 'This run emitted nothing'
+    empty: 'No retained history (observed is empty after cleanup; no timestamps are invented)'
+    fields: 'Fields: {f}'
+    no_fields: 'No fields'
+    pruned: 'Pruned'
+    pruned_empty: 'This run pruned nothing'
+    task: 'Latest task'
+    tasks: 'Tasks total'
+    tasks_failed: 'Failed'
+    title: 'Trace of the latest run (observed)'
+  resolved:
+    empty: 'Terminal capability: it ends when done and hands off to nothing'
+    missing: 'Does not resolve'
+    no_params: 'No params required'
+    not_ready: 'Not runnable'
+    params_required: 'Required params: {p}'
+    ready: 'Runnable'
+    title: 'Downstream resolution (resolved.next)'
+  spec:
+    commands: 'Commands'
+    concurrency: 'Concurrency per node'
+    digest: 'content fingerprint'
+    entrypoint: 'Entrypoint'
+    env: 'Environment (env)'
+    files: 'Files'
+    idempotent: 'Idempotent'
+    installed_from: 'Installed from'
+    max_attempts: 'Max attempts'
+    next: 'Downstream (next)'
+    params: 'Params contract (JSON Schema)'
+    result_ttl: 'Result retention (s)'
+    timeout: 'Run timeout (s)'
+    title: 'Definition (spec)'
+    valuefrom: 'from'
+    values: 'Values'
+    version: 'Version'
+    workdir: 'Work dir'
+    workdir_default: 'Not set (one directory per task)'
+  toast:
+    created: 'Created capability {name}'
+    deleted: 'Deleted capability {name}'
+    deployed: 'Deployed ({n} nodes)'
+    saved: 'Saved capability {name}'
+  versions:
+    load: 'Load version history'
+    body_empty: 'This version has no script to show'
+    close: 'Hide body'
+    current: 'Current'
+    empty: 'The server returned no version history'
+    open: 'View body'
 prune:
   no_edge: no candidate connected
   no_capability: target capability does not exist
@@ -1550,7 +1542,149 @@ nodes:
     copy_install: Copy command
     yaml_workdir_note: 'The work dir is set on the capability itself in the Capabilities page (run.workDir) and ships with the deployment; this yaml does not need it.'
   emptyTitle: 'No nodes yet'
+  v4:
+    copy: "Copy"
+    title: "Nodes & configuration"
+    subtitle: "Cluster identity · declared ∩ allowed · reported configuration"
+    register: "Register Node"
+    name: "Cluster-unique name"
+    create: "Create, then issue identity token"
+    cancel: "Close and clear plaintext"
+    refresh: "Refresh facts"
+    loading: "Loading…"
+    empty: "No cluster Nodes. Register, issue a token, then install locally."
+    token: "Node identity token"
+    token_warning: "Plaintext is returned only this time. This is a long-lived identity, not one-use bootstrap; no expiresAt. Explicit rotation invalidates old tokens and sessions. Keep it out of URLs, logs and vars."
+    rotate: "Rotate identity token"
+    rotate_confirm: "Rotate identity for {name}? The old token immediately becomes invalid, including new authorization on old sessions. Update local configuration."
+    local_setup: "Local setup & three public commands"
+    setup_hint: "Save anode.yaml before install or serve. Installation uses an issued token; it never auto-registers. vars are not secrets. envPassthrough names stay local; PATH, HOME and ANOTIFY_ are forbidden. No full whitelist or values are uploaded. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics expose names/sources, not absolute export paths."
+    online: "Online"
+    offline: "Offline"
+    unknown: "Unknown (no explicit local assertion)"
+    occupied: "Occupied (running, reserved or reaping)"
+    idle: "Idle (busy=false)"
+    slots: "Physical slot facts"
+    slot_note: "Only busy=false on a valid slot means idle; slot 0 is valid. A terminal Task is not evidence of physical reaping. Missing busy/instances never implies idle."
+    effective_namespaces: "Effective namespaces (declared ∩ allowed)"
+    authorized: "Allowed namespaces"
+    none: "None"
+    config: "Node defaults"
+    vars: "vars (nonsecret JSON name → string)"
+    limits: "limits (local + node only)"
+    save: "Save with current CAS"
+    reload: "Reload latest explicitly"
+    reload_confirm: "Reload replaces your current draft. Continue?"
+    saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
+    stale: "409: Stale CAS; draft retained exactly. Reload explicitly before retrying; no automatic overwrite."
+    error: "Request failed"
+    loaded: "Current configuration loaded; resourceVersion is only a CAS token."
+    pending: "ConfigPending: node defaults not yet applied"
+    applied: "Node revisions match (not the namespace input revision)"
+    revision: "Configuration & applied facts"
+    override_stale: "overrideStale: lower default changed; local override still wins"
+    context: "Namespace context for effective values"
+    effective_vars: "Effective vars (local > node > namespace, per-key source)"
+    machine_vars: "Node-applied vars (excludes namespace defaults)"
+    source: "Source"
+    key: "Name / leaf field"
+    value: "Value"
+    ns_config: "Namespace vars configuration (no limits)"
+    ns_hint: "Resolved for the next task in this namespace; never written to node applied."
+    retention: "System retention (administrator)"
+    retention_hint: "Current values must come from GET, never assumed defaults. Seconds; 0 means permanent. Defaults: logs/artifacts 604800, events/terminal tasks 2592000. Active tasks/references remain protected; user workDir is never deleted."
+    admin_only: "Only administrators may read or edit system retention."
+    drain: "Drain Node"
+    drain_confirm: "Drain {name}? Stop new tasks; existing physical occupancy waits for real reaping."
+    upgrade: "Request upgrade"
+    upgrade_confirm: "Request upgrade of {name}? It may replace and restart the node binary. Only actual hub/node results are shown."
+    action_done: "Hub accepted action: "
+    not_found: "Node not found; return to the cluster list."
+    back: "Back to Nodes"
+    tasks: "Recent tasks in this namespace"
+    artifacts: "Reported capability deployments"
+    batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
+
 sources:
+  v4:
+    new: "New source"
+    edit: "Edit source"
+    close: "Close"
+    save: "Save"
+    reload: "Reload latest resource"
+    detail: "Source details"
+    back: "Back to sources"
+    intro: "Sources produce events; target capabilities receive params. A configuration graph is not proof of execution success."
+    loading: "Loading…"
+    empty: "No sources yet. An entry without targets is legal."
+    name: "Resource name · metadata.name"
+    display: "Display name (optional)"
+    kind: "Source kind · spec.kind"
+    immutable: "Name and kind are immutable after creation; delete and recreate to change them."
+    expr: "Cron expression (five fields)"
+    tz: "IANA timezone (default Local)"
+    token: "New token (write-only)"
+    secret: "New HMAC secret (write-only)"
+    sample: "Hint sample · config.sample (not dispatched)"
+    blank_credentials: "Blank token/secret are omitted on edit, preserving credentials. Reads expose only hookUrl/secretSet."
+    hmac: "External POST uses {type?, id?, payload?}. With a secret, sign the raw body bytes using HMAC-SHA256 and X-Anotify-Signature: sha256=<hex>. Missing/invalid signatures return 401 without events."
+    payload: "Static payload · config.payload (JSON object)"
+    schema: "Payload contract · config.payloadSchema (optional)"
+    schema_hint: "Every delivery checks payloadSchema. Invalid payloads are stored with an event_schema prune, without dispatch."
+    targets: "Target capabilities · targets"
+    add_target: "Add target row"
+    remove_target: "Remove target row"
+    capability: "Capability reference (name or name@version)"
+    params: "Params object · targets[].params"
+    params_hint: "Use constants, $(payload.x), $(payload.items.0.x), or concatenation. Whole references preserve types; missing paths prune. Defaults belong to capability schemas. Empty targets are legal."
+    enabled: "Enabled"
+    disabled: "Disabled"
+    enable: "Enable"
+    disable: "Disable"
+    override: "Payload override (JSON object, optional)"
+    omitted: "Blank omits payload. Cron/manual use configured payload with shallow overrides. Webhook defaults to {}; sample is hints only."
+    suggestions: "Payload suggestions (click to copy reference)"
+    suggest_dry: "From this preview payload"
+    suggest_event: "From the latest real event"
+    suggest_sample: "From config.sample (hints only)"
+    suggest_schema: "From payloadSchema.properties"
+    suggest_payload: "From config.payload"
+    preview: "Preview results (zero persistent writes)"
+    receipt: "Acceptance receipt"
+    accepted: "Event accepted; this does not mean tasks succeeded."
+    duplicate: "Duplicate deliveryId: original event/trace, no redispatch or guarantee of task success."
+    dedup: "deliveryId deduplicates for 30 days by default. The same source/id means accepted, not downstream success. Use a new id for changed payload/type or reruns. After expiry, the same id can be accepted again. No replay API."
+    no_target: "No targets is legal: keep event/trace with no_target prune and no tasks."
+    event_id: "Event ID"
+    fire: "Fire now"
+    saved_dry: "Saved source preview"
+    draft_dry: "Draft preview (no save needed)"
+    namespace: "Namespace"
+    rv: "resourceVersion (CAS token)"
+    health: "Health"
+    resolved: "targetsResolved (boolean)"
+    last_fire: "Last fired"
+    next_fire: "Next fire"
+    last_error: "Last error"
+    installed: "Installed from · installedFrom"
+    config: "Config and status"
+    edges: "Read-only v4 target projection"
+    graph: "Downstream configuration"
+    graph_hint: "The graph shows v4 references, not ports, priority, independent mappings, or execution state."
+    graph_error: "Graph component failed to load; reload."
+    recent: "Recent events and fires"
+    no_events: "No events yet."
+    no_name: "Link is missing metadata.name. Open details from the sources list."
+    notfound: "Source not found; it may have been deleted."
+    object_required: "A JSON object is required."
+    name_required: "Resource name is required."
+    capability_required: "Each target needs a capability reference."
+    delete: "Delete source"
+    delete_confirm: "Delete source “{name}”? Existing events and tasks are retained."
+    confirm_again: "Reloaded. Check the latest state; deleting requires another confirmation."
+    reload_draft: "Discard draft and reload latest"
+    draft_preserved: "CAS conflict: draft preserved; no automatic retry with a new token. Explicitly reload the latest resource."
+    reload_confirm: "Discard current input and reload from the server?"
   empty_title: No sources yet
   detail: "Details"
   open_detail: "Open details"
@@ -1756,6 +1890,15 @@ trace:
     slowest: 'Slowest task'
     failed: Failed
 
+  v4:
+    graph: "Actual business task chain"
+    tasks: "Tasks / attempts / waiting diagnostics"
+    events: "Event facts"
+    pruned: "Pruning reasons"
+    empty: "This trace dispatched no tasks."
+    no_pruned: "No retained pruning facts."
+    missing: "URL is missing traceUID."
+
 srcpage:
   vars: "Variables"
   title: "Source"
@@ -1894,6 +2037,101 @@ pb:
     open_nodes: Open nodes
     install_edge: 'Add this downstream'
     create_source: Create source
+
+  v4:
+    subtitle: "Self-contained file packages: store, render, dry-run, then install. No automatic deployment."
+    import: "Import package"
+    package_hint: "playbook.yaml is the only root manifest. All referenced capability/source files must be included. This stores the package, not an install."
+    input_kind: "Package input"
+    files: "Raw files"
+    oci: "OCI source"
+    slug: "Package name (slug)"
+    upload_files: "Choose files / exported JSON file map"
+    upload_directory: "Choose self-contained package directory"
+    upload_hint: "Use a directory for nested capabilities/ and sources/ paths, or paste the complete file-map JSON."
+    file_map: "Complete file-map JSON (path → unrendered text)"
+    oci_hint: "The hub pulls once and stores the digest. Choose OCI OR files; private registry credentials stay on the hub."
+    store: "Store package"
+    saving: "Saving…"
+    open: "Open package"
+    stored: "Template stored; no resources have been installed."
+    slug_taken: "Slug exists: open details and use PUT to replace the template (your input is retained)."
+    namespace: "Namespace"
+    loading: "Loading…"
+    not_ready: "Not ready (see checkup)"
+    not_installed: "No installed resources yet. A stored template is not an install."
+    unapplied_count: "{n} unapplied differences"
+    blocker: "First blocker"
+    last_install: "Last install receipt"
+    duplicate_files: "Duplicate paths; choose a directory that preserves relative paths."
+    detail_hint: "Additive only: install does not edit existing routes/sources or delete resources. Deploy to nodes manually."
+    checkup: "Checkup: conditions / items / blocker"
+    values: "Install values"
+    values_hint: "Fields come from playbook.yaml JSON Schema. The server fills recursive defaults; writeOnly values are only entered for this request."
+    values_json: "Complete values JSON input"
+    values_json_hint: "Sends the same values object as the form (not a second protocol); used only after selecting Apply."
+    use_json: "Apply JSON values"
+    render: "Render (pure preview)"
+    dry_run: "Dry-run (conflict check, zero writes)"
+    install: "Install (add only)"
+    actions_hint: "Render does not read conflict state. Dry-run stores no receipt. Every normal install creates a new receipt. None auto-deploys."
+    instances: "Installs grouped by valuesDigest"
+    instances_hint: "Read-only derived view: attempts counts tries. Provenance records the first creation receipt, not ownership."
+    template: "Edit / export the original package"
+    template_hint: "Raw text comes from GET includeBody=true spec.files. CAS-protected PUT replaces the entire template without installing."
+    file_path: "Relative package path"
+    raw_content: "Unrendered original content"
+    new_path: "New file relative path"
+    add_file: "Add file"
+    remove_file: "Remove file from template"
+    export: "Export complete raw file map"
+    import_map: "Import complete file-map JSON (draft only)"
+    save_template: "PUT whole template"
+    reload_template: "Reload template (discard draft)"
+    delete_manifest: "Delete manifest only"
+    delete_hint: "Not an uninstall: capabilities, sources and receipts remain. Deletion requires current resourceVersion and confirmation."
+    manual_action: "Manual action"
+    unapplied: "Unapplied differences — NOT ready"
+    unapplied_hint: "Existing definitions are reused, not edited. Compare declared vs actual next / targets.params, then edit manually."
+    declared: "Declared by package"
+    actual: "Actual stored value"
+    omitted: "Omitted (schema default)"
+    schema_loaded: "Values schema loaded from the raw root manifest."
+    dry_receipt: "Dry-run receipt (not persisted)"
+    receipt: "Single install receipt"
+    created: "Created"
+    skipped: "Reused (skipped)"
+    none: "None"
+    upgraded: "Content upgrades and impact"
+    external: "Existing external references"
+    pending: "Pending references"
+    notes: "Notes (stable codes)"
+    manual_deploy_hint: "Install does not deploy. Choose versions/nodes on the capabilities page and deploy manually."
+    manual_deploy: "Open capabilities for manual deployment"
+    rendered: "Rendered package (not dry-run)"
+    rendered_hint: "Package + values only; no conflict checks, resource writes or receipt."
+    dry_hint: "Dry-run complete: zero persistent writes, no stored install record."
+    installed_hint: "Resources added/reused and a new receipt stored; not auto-deployed. Review unapplied and pending details."
+    atomic_conflict: "Atomic package conflict: zero resource or receipt writes."
+    invalid_installs: "Server did not return a valid grouped installs view."
+    group_count: "{n} valuesDigest groups"
+    single_receipt: "Read full single receipt"
+    no_installs: "No normal installs (dry-runs are not recorded)."
+    raw_missing: "Raw spec.files / playbook.yaml missing; a summary cannot be saved as a template."
+    missing_id: "Missing package slug."
+    invalid_path: "Invalid or duplicate file path; use a relative package path."
+    entry_required: "playbook.yaml is the required entry and cannot be removed."
+    remove_confirm: "Remove {path} from the draft? Update references manually; installed resources stay."
+    replace_draft: "Replace the unsaved draft with the imported whole file map?"
+    template_saved: "Whole template saved; existing resources unchanged and no install triggered."
+    draft_kept: "400 / 409: draft retained exactly. Inspect the error or explicitly reload; no automatic overwrite retry."
+    reload_confirm: "Reloading discards unsaved files and values input. Continue?"
+    reloaded: "Latest raw package and CAS token loaded."
+    values_object: "values must be a JSON object."
+    json_selected: "The next action uses this complete values JSON."
+    delete_confirm: "Delete only the manifest? Capabilities, sources, receipts and provenance remain. This is not an uninstall."
+    deleted: "Manifest deleted; retained contents below."
+    delete_stale: "Stale CAS. Re-check for the current version; a second delete still requires confirmation."
 
 node:
   artifacts:

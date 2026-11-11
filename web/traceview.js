@@ -13,38 +13,42 @@
  *   图     graph     → 拓扑（谁派生自谁，扇出的形状）
  *   树     tree      → 紧凑（扫一眼层级，占地方最少）
  *
- * 数据全在 `/v1/tasks?traceId=` 的响应里，不需要新接口：
- *   createdAt    trace 的起点候选
- *   startedAt    span 起点（节点 ack 之后才填）
- *   finishedAt   span 终点（未完成的任务为 null）
- *   parentTaskId 层级
- *   status       九态着色
+ * **数据源（v4）**：`GET /v1/namespaces/{namespace}/traces/{traceUID}` →
+ * `{events, tasks, pruned}`。任务字段一律走 v4：
  *
- * 依赖：web/graphs.js（AnotifyGraphs.taskChain）+ 全局 el()/code()/t() 的约定。
+ *   metadata.name    任务名（= 深链 `?id=`）
+ *   status.phase     小写六态（pending/running/succeeded/failed/cancelled/abandoned）
+ *   status.startedAt / finishedAt   RFC3339 字符串（本模块统一折算成 Unix 秒）
+ *   status.attempt / nodeName / result.error
+ *   spec.parentTaskId / spec.capability{name,version}
+ *
+ * v3 的九态、`out`、`capabilityId` 不再存在，这里也不再读。
+ *
+ * 依赖：web/graphs.js（AnotifyGraphs.taskChain / taskOf）+ 全局 el()/code()/t() 的约定。
  * 本模块不假设那些全局存在，都通过 opts 传入。
  */
 (function () {
 	"use strict";
 
-	// 九态 → CSS 类后缀。与 ui.css 的 .st-* / .b-* 对应。
-	const STATUS_CLASS = {
+	// v4 phase → CSS 类名后缀。**映射只有一份**（graphs.js 的 STATUS_CLASS，
+	// 因为 v4 的 `cancelled` 与 tokens/ui.css 里的历史拼写 `canceled` 不同）。
+	// 这里保留一份同值兜底：图库脚本没加载时状态点也得有颜色。
+	const STATUS_CLASS_FALLBACK = {
 		pending: "pending",
-		assigned: "assigned",
-		acked: "acked",
 		running: "running",
 		succeeded: "succeeded",
 		failed: "failed",
-		canceled: "canceled",
+		cancelled: "canceled",
 		abandoned: "abandoned",
-		lease_expired: "lease_expired",
 	};
+	function statusClass(st) {
+		const G = window.AnotifyGraphs;
+		const map = (G && G.STATUS_CLASS) || STATUS_CLASS_FALLBACK;
+		return map[st] || "pending";
+	}
 
-	// 九态 → 显示名。**不写死中文**：文案走 `message.task_state.*`
-	//
-	// 为什么删掉原来的 STATUS_LABEL 常量：它是一张硬编码中文表，于是同一个
-	// 任务状态在 message/node 页读「已派发」、在这张树视图里读「已分配」——
-	// 两套词在同一页并存（capability-spec-v3 §13.4 点名的那个 bug）。
-	// 现在只留一个兜底：locale 里查不到就把状态码原样显示，不猜。
+	// 状态显示名：**不写死中文**，文案走 `message.task_state.*`；
+	// locale 里查不到就把状态码原样显示，不猜。
 	function statusLabel(t, st) {
 		const key = "message.task_state." + st;
 		return t ? t(key, st) : st;
@@ -61,6 +65,44 @@
 	}
 
 	/**
+	 * normalizeTask —— 把任务摊平成渲染用的行（v4 字段）。
+	 *
+	 * 走 `AnotifyGraphs.taskOf`（图库与这里共用同一套字段解析）：页面可能传
+	 * trace 的 `tasks[]`（资源信封），也可能传已摊平的 `model.task()` 行。
+	 * 时间统一折算成 Unix 秒 —— 瀑布图算宽度要数字，而 v4 wire 是 RFC3339。
+	 */
+	function normalizeTask(tk) {
+		const G = window.AnotifyGraphs;
+		if (G && typeof G.taskOf === "function") return G.taskOf(tk);
+		// 兜底（图库脚本没加载）：只读 v4 字段，缺了就是缺了，不猜
+		const r = tk || {};
+		const meta = r.metadata || {};
+		const spec = r.spec || {};
+		const st = r.status || {};
+		const cap = spec.capability || null;
+		const toSec = (v) => {
+			if (v == null) return null;
+			if (typeof v === "number") return v;
+			const ms = Date.parse(String(v));
+			return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+		};
+		const result = st.result || {};
+		return {
+			name: meta.name || null,
+			phase: st.phase == null ? null : String(st.phase).toLowerCase(),
+			attempt: st.attempt,
+			parentTaskId: spec.parentTaskId || null,
+			capability: cap ? { name: cap.name, version: cap.version } : null,
+			nodeName: st.nodeName || null,
+			startedSec: toSec(st.startedAt),
+			finishedSec: toSec(st.finishedAt),
+			sortAt: toSec(st.startedAt) != null ? toSec(st.startedAt) : toSec(st.finishedAt) || 0,
+			errorReason: result.error ? result.error.reason : null,
+			summary: result.summary || "",
+		};
+	}
+
+	/**
 	 * buildSpans 把任务列表整理成带时间与层级的 span 数组。
 	 *
 	 * 顺序按 DFS（父在前、子紧随）：瀑布图从上到下就是调用顺序。
@@ -74,7 +116,7 @@
 			(byParent[p] = byParent[p] || []).push(tk);
 		}
 		for (const k of Object.keys(byParent)) {
-			byParent[k].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+			byParent[k].sort((a, b) => (a.sortAt || 0) - (b.sortAt || 0));
 		}
 
 		const out = [];
@@ -84,24 +126,31 @@
 		const start = roots.length
 			? roots
 			: tasks.filter(
-					(t) => !t.parentTaskId || !tasks.some((x) => x.id === t.parentTaskId),
+					(t) => !t.parentTaskId || !tasks.some((x) => x.name === t.parentTaskId),
 				);
 
 		const seen = new Set();
 		(function walk(list, depth) {
 			for (const tk of list) {
-				if (seen.has(tk.id)) continue; // 防御：数据异常时不成环
-				seen.add(tk.id);
+				if (seen.has(tk.name)) continue; // 防御：数据异常时不成环
+				seen.add(tk.name);
 				out.push({ task: tk, depth });
-				walk(byParent[tk.id] || [], depth + 1);
+				walk(byParent[tk.name] || [], depth + 1);
 			}
 		})(start, 0);
 
 		// 孤儿也补上，宁可多画也不要丢
 		for (const tk of tasks) {
-			if (!seen.has(tk.id)) out.push({ task: tk, depth: 0 });
+			if (!seen.has(tk.name)) out.push({ task: tk, depth: 0 });
 		}
 		return out;
+	}
+
+	/** 「能力@版本」：v4 的 spec.capability 是钉住的版本，缺的用 ? 兜底。 */
+	function capLabelOf(tk) {
+		if (!tk.capability || !tk.capability.name) return "?";
+		const v = tk.capability.version == null ? "?" : tk.capability.version;
+		return tk.capability.name + "@" + v;
 	}
 
 	/**
@@ -127,9 +176,13 @@
 		let traceEnd = -Infinity;
 		for (const sp of spans) {
 			const tk = sp.task;
-			const s = tk.startedAt != null ? tk.startedAt : tk.createdAt;
+			const s = tk.startedSec != null ? tk.startedSec : tk.sortAt;
 			const e =
-				tk.finishedAt != null ? tk.finishedAt : tk.startedAt != null ? now : tk.createdAt;
+				tk.finishedSec != null
+					? tk.finishedSec
+					: tk.startedSec != null
+						? now
+						: tk.sortAt;
 			if (s != null && s < traceStart) traceStart = s;
 			if (e != null && e > traceEnd) traceEnd = e;
 		}
@@ -137,9 +190,8 @@
 		if (!Number.isFinite(traceEnd)) traceEnd = traceStart;
 		const total = Math.max(traceEnd - traceStart, 0);
 
-		// 刻度单位：createdAt/startedAt/finishedAt 全是 **Unix 秒**，
-		// 而 fmtDur 收**毫秒**。直接把秒喂进去会差 1000 倍
-		// （2 秒的跨度显示成 "2ms"）。这里统一乘 1000。
+		// 刻度单位：这里的 startedSec/finishedSec 全是 **Unix 秒**，
+		// 而 fmtDur 收**毫秒**。直接把秒喂进去会差 1000 倍。这里统一乘 1000。
 		const TICK_N = 4;
 		const ticks = [];
 		for (let i = 0; i <= TICK_N; i++) {
@@ -164,26 +216,20 @@
 
 		for (const sp of spans) {
 			const tk = sp.task;
-			const st = tk.status || "pending";
+			const st = tk.phase || "pending";
 			const row = el("div", "wf-row");
 
 			// 左：缩进 + 状态点 + 能力名@版本
 			const name = el("div", "wf-name");
 			name.style.paddingLeft = sp.depth * 0.9 + "rem";
-			name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
-			name.appendChild(
-				el(
-					"span",
-					"cap",
-					(tk.capability || "?") + "@" + (tk.version != null ? tk.version : "?"),
-				),
-			);
-			if (tk.attempts > 1) name.appendChild(el("span", "meta", "×" + tk.attempts));
+			name.appendChild(el("span", "st-dot st-" + statusClass(st)));
+			name.appendChild(el("span", "cap", capLabelOf(tk)));
+			if (tk.attempt > 1) name.appendChild(el("span", "meta", "×" + tk.attempt));
 			name.title = [
-				tk.capability + "@" + tk.version,
-				"status: " + st,
-				tk.nodeId ? "node: " + tk.nodeId : "",
-				tk.error ? "error: " + tk.error : "",
+				capLabelOf(tk),
+				"phase: " + st,
+				tk.nodeName ? "node: " + tk.nodeName : "",
+				tk.errorReason ? "error: " + tk.errorReason : "",
 				tk.summary ? "summary: " + tk.summary : "",
 			]
 				.filter(Boolean)
@@ -191,11 +237,11 @@
 			row.appendChild(name);
 
 			const track = el("div", "wf-track");
-			const started = tk.startedAt;
-			const finished = tk.finishedAt;
+			const started = tk.startedSec;
+			const finished = tk.finishedSec;
 
 			if (started == null) {
-				const leftPct = total > 0 ? ((tk.createdAt - traceStart) / total) * 100 : 0;
+				const leftPct = total > 0 ? ((tk.sortAt - traceStart) / total) * 100 : 0;
 				const wait = el("div", "wf-wait");
 				wait.style.left = Math.max(0, Math.min(100, leftPct)) + "%";
 				wait.title = t("events.wf.not_started", "还没开始执行");
@@ -204,14 +250,14 @@
 				const end = finished != null ? finished : now;
 				const leftPct = total > 0 ? ((started - traceStart) / total) * 100 : 0;
 				const widthPct = total > 0 ? ((end - started) / total) * 100 : 100;
-				const bar = el("div", "wf-bar b-" + (STATUS_CLASS[st] || "pending"));
+				const bar = el("div", "wf-bar b-" + statusClass(st));
 				bar.style.left = Math.max(0, Math.min(100, leftPct)) + "%";
 				bar.style.width = Math.max(0, Math.min(100 - leftPct, widthPct)) + "%";
 
 				const dur = fmtDur((end - started) * 1000);
 				const tip = [dur, st];
 				if (finished == null) tip.push(t("events.wf.running", "进行中"));
-				if (tk.error) tip.push(tk.error);
+				if (tk.errorReason) tip.push(tk.errorReason);
 				bar.title = tip.join(" · ");
 				track.appendChild(bar);
 
@@ -234,42 +280,42 @@
 	/** renderTree 递归渲染一个任务及其子任务（紧凑视图）。 */
 	function renderTree(ctx, tk, byParent) {
 		const { el, code, t } = ctx;
-		const kids = byParent[tk.id] || [];
-		const st = tk.status || "pending";
+		const kids = byParent[tk.name] || [];
+		const st = tk.phase || "pending";
 
 		const box = el("div", "chain-node py-2");
 		const line = el("div", "flex flex-wrap items-center gap-2");
 
 		const name = el("span", "text-[13px] tx-name");
-		name.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[st] || "pending")));
-		name.appendChild(document.createTextNode(tk.capability || "?"));
+		name.appendChild(el("span", "st-dot st-" + statusClass(st)));
+		name.appendChild(document.createTextNode(tk.capability && tk.capability.name ? tk.capability.name : "?"));
 		line.appendChild(name);
 
-		line.appendChild(code("v" + tk.version, "text-[10px] tx-faint"));
+		line.appendChild(
+			code("v" + (tk.capability && tk.capability.version != null ? tk.capability.version : "?"), "text-[10px] tx-faint"),
+		);
 		line.appendChild(el("span", "text-[11px] tx-meta", statusLabel(t, st)));
 
-		if (tk.startedAt && tk.finishedAt) {
+		if (tk.startedSec != null && tk.finishedSec != null) {
 			line.appendChild(
-				el("span", "text-[11px] tx-faint", "· " + (tk.finishedAt - tk.startedAt) + "s"),
+				el(
+					"span",
+					"text-[11px] tx-faint",
+					"· " + (tk.finishedSec - tk.startedSec) + "s",
+				),
 			);
 		}
 
-		// 出口已退役（P1.5 硬切 .anotify-out）：路由由 emit 决定，`tasks.out` 列本身
-		// 也已在迁移 28 删掉（API 响应里连这个键都没有）。
-		//
-		// 所以「到头了」只看一件事：**有没有下游任务**。有下游 → 什么都不显示
-		// （产出在「产出」区里，这里再提一句是噪音）；没下游 → 到头了。
-		//
-		// 为什么不能按 out 判（这是这段代码曾经的样子）：每个任务的那一列都是 NULL，
-		// 于是每条跑完的链都会显示「到头了」，包括那些明明 emit 出了三条下游的。
+		// 「到头了」只看一件事：**有没有下游任务**（v4 没有 out 列，也不该按它判）。
+		// 有下游 → 什么都不显示（产出在「产出」区里，这里再提一句是噪音）。
 		if (kids.length === 0) {
 			line.appendChild(
 				el("span", "text-[11px] tx-meta", "· " + t("events.chain.out_end", "到头了")),
 			);
 		}
 
-		if (tk.error) {
-			line.appendChild(el("span", "text-[11px] tx-err", "· " + tk.error));
+		if (tk.errorReason) {
+			line.appendChild(el("span", "text-[11px] tx-err", "· " + tk.errorReason));
 		}
 		box.appendChild(line);
 
@@ -286,7 +332,7 @@
 	 *
 	 * @param {HTMLElement} container  已挂载到文档的容器
 	 * @param {Object} opts
-	 * @param {Array}  opts.tasks      任务列表
+	 * @param {Array}  opts.tasks      任务列表（trace 的 tasks[] 或 model.task 行）
 	 * @param {Function} opts.el       el(tag, className, text)
 	 * @param {Function} [opts.code]   code(text, className)，树视图用
 	 * @param {Function} opts.t        i18n
@@ -296,9 +342,11 @@
 	function mount(container, opts) {
 		const { el, t } = opts;
 		// 兜底与 trace 页保持一致：默认「图」。两处不一致的话，
-	// 任何忘记传 view 的调用方都会静默退回瀑布图，很难发现。
-	let view = opts.view || "graph";
-		const tasks = opts.tasks || [];
+		// 任何忘记传 view 的调用方都会静默退回瀑布图，很难发现。
+		let view = opts.view || "graph";
+		// 摊平一次，三个视图共用（同一份字段解析，不各读各的）
+		const tasks = (opts.tasks || []).map(normalizeTask);
+		const ctx = Object.assign({}, opts, { tasks: tasks });
 
 		const byParent = {};
 		for (const tk of tasks) {
@@ -327,7 +375,7 @@
 			container.appendChild(sw);
 
 			if (view === "waterfall") {
-				container.appendChild(renderWaterfall(opts, tasks));
+				container.appendChild(renderWaterfall(ctx, tasks));
 			} else if (view === "graph") {
 				const box = el("div", "");
 				container.appendChild(box);
@@ -335,7 +383,13 @@
 				// 脱离文档量出来是 0，dagre 会把节点全排在原点。
 				mountGraph(box, tasks, opts);
 			} else {
-				for (const r of roots) container.appendChild(renderTree(opts, r, byParent));
+				for (const r of roots) container.appendChild(renderTree(ctx, r, byParent));
+				// 孤儿也要画（部分任务缺父时不能让它们消失）
+				for (const tk of tasks) {
+					if (tk.parentTaskId && !tasks.some((x) => x.name === tk.parentTaskId)) {
+						container.appendChild(renderTree(ctx, tk, byParent));
+					}
+				}
 			}
 		}
 
@@ -371,23 +425,21 @@
 
 		const res = window.AnotifyGraphs.taskChain(host, {
 			tasks: tasks,
-			// 底图：这个 trace 所属源的静态配置拓扑。
+			// 底图：这个 trace 所属源的静态配置拓扑（sourceTopology 的产物）。
 			// 有它时图视图画"配置拓扑 + 执行染色"，被剪枝的分支留成灰色；
-			// 没有时退回"只画执行链"。见 graphs.js 里 taskChain 的注释。
+			// 没有时退回"只画执行链"。
 			baseGraph: opts.baseGraph || null,
 			// 源节点：图左上角那个 ⚡ —— 回答"这条 trace 谁触发的"。
-			// 没有它，图只是一堆能力怎么连，看不出起点。
 			sourceLabel: opts.sourceLabel || "",
 			sourceSub: opts.sourceSub || "",
-			sourcePort: opts.sourcePort || "",
 			t: t,
 			// 这一页没有标题栏的「全屏」入口（源详情页有），所以保留
 			// 工具栏里的全屏按钮 —— 否则链路图就没法全屏看了。
 			showFullscreen: true,
 			onNodeClick: (n) => {
-				const tk = tasks.find((x) => x.id === n.id);
-				if (tk && tk.nodeId) {
-					window.open("nodes.html?focus=" + encodeURIComponent(tk.nodeId), "_blank");
+				const tk = tasks.find((x) => x.name === n.id);
+				if (tk && tk.nodeName) {
+					window.open("nodes.html?focus=" + encodeURIComponent(tk.nodeName), "_blank");
 				}
 			},
 		});
@@ -396,5 +448,13 @@
 		if (res && res.graph) requestAnimationFrame(() => res.graph.fit());
 	}
 
-	window.TraceView = { mount, buildSpans, renderWaterfall, renderTree, fmtDur, STATUS_CLASS };
+	window.TraceView = {
+		mount,
+		buildSpans,
+		renderWaterfall,
+		renderTree,
+		fmtDur,
+		normalizeTask,
+		STATUS_CLASS: STATUS_CLASS_FALLBACK,
+	};
 })();

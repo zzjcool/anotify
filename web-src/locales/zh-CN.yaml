@@ -9,6 +9,7 @@ common:
   server_error: '服务端错误 HTTP {code}'
   request_rejected: '请求被拒绝 HTTP {code}'
   request_failed: '请求失败'
+  resource_version_required: '写入缺少 resourceVersion，请刷新后重试'
   brand:
     name: Anotify
     tagline: Agent 完成即通知
@@ -143,9 +144,9 @@ index:
     rate_na: 暂无接收设备，送达率不可用
     trend_live: 实时
     running: 进行中
-    running_sub: 近 50 条任务
+    running_sub: "当前命名空间所有任务"
     failed: 异常任务
-    failed_sub: 近 50 条任务
+    failed_sub: "当前命名空间所有任务"
   heatmap:
     title: 事件活动
     subtitle: 近一年 · 每天的事件量
@@ -210,6 +211,7 @@ scope:
   section_ns: "命名空间"
   ns: "命名空间"
   none: "（还没有命名空间）"
+  missing: "还没有确定命名空间"
   empty_hint: "还没有命名空间，先建一个再开始。"
   new_ns: "新建命名空间"
   new_ns_prompt: "新命名空间 slug（小写字母 / 数字 / 连字符）"
@@ -273,6 +275,44 @@ message:
     count: '共 {n} 个任务'
     empty: 这条 trace 上没有其它任务
     current: 当前
+  v4:
+    diagnostics: "执行诊断"
+    attempt: "尝试 / 上限"
+    wait_hint: "等待不消耗执行尝试。非幂等任务不会自动重试；未知接收结果不是安全重跑的依据。"
+    lease_hint: "租约是执行授权边界，不保证业务副作用恰好一次；旧尝试与过期租约不能继续提交。"
+    cancel: "取消任务"
+    abandon: "放弃任务"
+    confirm_cancel: "确认取消此任务？将撤销执行授权并停止当前执行。"
+    confirm_abandon: "确认放弃此任务？停止执行且不自动重试。"
+    params: "任务输入参数"
+    env: "环境诊断（只有名字与来源）"
+    env_hint: "只展示此任务实际使用的变量名与来源，不读取本机变量值或完整透传白名单。"
+    env_empty: "没有保留的环境诊断。"
+    result: "结果摘要 / 错误 / 产物"
+    attempts: "已保留的执行尝试事实"
+    attempts_empty: "没有保留的执行尝试事实。"
+    logs: "任务日志"
+    current: "最近日志档案"
+    previous: "上一次执行尝试"
+    truncated: "已截断"
+    complete: "未截断"
+    logs_empty: "此尝试没有日志（或没有上一次尝试）。"
+    emissions: "已接受的 emit 事实"
+    emissions_empty: "没有保留的 emit 事实。"
+    missing: "URL 缺少任务 id。"
+    not_found: "任务不存在、已清理或不属于此命名空间。"
+    artifact_download: "下载托管产物"
+    artifact_expired: "托管产物已过期（410 artifact_expired）；任务清单仍保留，不从节点回源。"
+    artifact_missing: "此产物未在该任务中引用（404）。"
+    artifact_invalid: "清单路径或 SHA256 不合法；不创建下载地址。"
+    phase:
+      pending: "待执行 / 等待"
+      running: "执行中"
+      succeeded: "成功"
+      failed: "失败"
+      cancelled: "已取消"
+      abandoned: "已放弃"
+
 login:
   title: 登录
   welcome: 欢迎回到
@@ -727,6 +767,12 @@ docs:
       cli-auth: CLI 授权
       admin: 管理后台
       devices: Web Push
+      resource: "资源"
+      agent: "节点协议"
+      ingress: "事件入口"
+      traces: "链路"
+      system: "系统配置"
+
   events:
     core: 核心
     intro: '事件是图里一切的起点。任何外部变化都从这里进入，中枢按下游表把它派发成任务链。'
@@ -878,6 +924,15 @@ docs:
     reconnect:
       title: 重连与续传
       desc: 断线后重连时携带 <code class="doc-code">Last-Event-Id</code> 头（或首帧发 <code class="doc-code">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class="doc-code">resume_expired</code> 错误，客户端应拉取全量历史。
+  v4:
+    five_specs: "端点来自 resource / events / agent / ingress / auth 五份 v4 spec；未接入时真实空态，不展示旧 spec 端点。"
+    missing: "尚未加载五份 v4 spec"
+    ingress: "命名空间事件入口（不是资源创建）"
+    node: "anode：本机执行与配置"
+    node_note: "先登记 Node，再签发长期身份令牌。本机申报与授权取交集；install 不自动注册。没有旧 agent 命令、端口路由或 priority。"
+    resource: "命名空间资源与写入 CAS"
+    resource_note: "读取 KindList.items；创建资源用 apiVersion/kind/metadata/spec。编辑仅提交可写字段与 metadata.resourceVersion；缺令牌 400、过期 409 保留草稿，DELETE 使用 query resourceVersion。"
+
 cliauth:
   title: CLI 设备授权
   back_home: 返回工作台
@@ -1145,296 +1200,233 @@ events:
     end: 已到最旧
     no_match: 当前页没有匹配项，可继续向更旧翻页或回到最新
     invalid_cursor: 游标已失效，已回到最新
+  v4:
+    dedup: "deliveryId 在 30 天保留窗内去重；接收成功不保证下游任务成功。"
+    refresh: "刷新"
+    namespace: "命名空间"
+    source: "涉及对象 / 源"
+    limit: "每页数量"
+    filter: "应用筛选"
+    loading: "正在读取真实数据…"
+    more: "加载更多"
+    trace: "查看链路"
+    event_uid: "事件 UID（非 deliveryId）"
+    received: "接收时间"
+    dispatched: "已派发任务数"
+    details: "派发 / 剪枝 / 载荷明细"
+    empty: "此命名空间与筛选条件下没有事件。"
+    count: "已显示 {n} 条唯一事件"
+
 caps:
-  title: 能力
-  step_pick: 选模板
-  step_fill: 填写并创建
+  title: '能力'
   sidebar: '控制台新建，节点执行'
-  subtitle: '能力是"做什么"（不含"怎么做"）。在这里新建、部署，并指定它的下游。'
+  subtitle: '能力声明三件事：我要什么（params）、交给谁（next）、怎么跑（run）。全部在节点上执行。'
   new: '新建能力'
-  loading: 正在加载能力…
-  load_failed: '能力列表载入失败，请刷新重试'
-  empty: '还没有能力。新建一个，节点才能声明它。'
+  refresh: '刷新'
+  search: '搜索'
+  search_ph: 'name / 显示名 / 下游'
+  filter_label: '筛选'
   count: '{n} 个能力'
-  source_builtin: '内置'
-  declared_by: 声明节点
-  no_node: 没有节点声明
-  no_node_hint: 这个能力跑不起来 —— 得先在节点上声明它
-  by_hub: 中枢执行，不需要节点
-  by_none: 事件起点，不执行代码
-  any_event_type: 任意事件类型（起点）
-  rename: 改名
-  name_it: 取个名字
-  save: 保存
-  cancel: 取消
-  rename_ph: 给它取个名字，例如「分析 PR」
-  rename_failed: 改名失败
-  renamed: 已更新名字
-  tpl:
-    title: '新建能力'
-    intro: '先选一个模板。模板只是一段预置脚本，字段和脚本正文选中后都能改。'
-    cat_script: '脚本'
-    cat_agent: 'Agent'
-    requires: '需要预装：{list}'
-    no_requires: '无预装依赖'
-    timeout_default: '默认 {n} 秒'
-    back: '换模板'
-    params: '参数'
-    no_params: '这个模板没有参数'
-    required: '必填'
-    files: 文件
-    files_hint: '每个文件都是能力的一部分：入口文件由节点直接 exec（不经 shell），第一行必须是 #! shebang。'
-    file_ph: '例如 lib/helper.sh'
-    file_add: 加文件
-    file_pick_hint: 点一下编辑这个文件
-    file_set_entry: 设为入口
-    file_del: 删除这个文件
-    file_err_empty: 文件名不能为空
-    file_err_long: 文件名太长
-    file_err_slash: 只能用 / 分隔的相对路径（不接受反斜杠）
-    file_err_abs: 必须是相对路径（不能以 / 开头）
-    file_err_empty_seg: 路径里出现了空段（//）
-    file_err_dotdot: 路径不能含 . 或 .. 段
-    file_err_dup: '已经有同名文件：{name}'
-    file_err_none: 至少要有一个文件（能力的实现就是它）
-    file_err_no_entry: 入口文件名不在文件列表里
-    script_view: '只读'
-    script_edit: '改脚本'
-    schema_advanced: "参数契约"
-    schema_toggle: "手写 JSON"
-    schema_visual: "可视化"
-    schema_add_row: "+ 加一个参数"
-    schema_rows_empty: "还没有参数。没有参数的能力接受任意入参（= 空契约）。"
-    schema_more: "更多"
-    schema_less: "收起"
-    schema_required: "必填"
-    field_default: "默认 {v}"
-    schema_key: "参数名"
-    schema_type: "类型"
-    schema_type_any: "任意类型"
-    schema_type_enum: "枚举（string）"
-    schema_enum: "枚举值（逗号分隔）"
-    schema_del: "删除这个参数"
-    schema_extra_note: "另有 {keys} 是这几行表达不了的声明，原样保留（JSON 视图里可见）"
-    schema_json_only: "这份契约里有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），只能用 JSON 编辑"
-    schema_err_key_empty: "参数名不能为空"
-    schema_err_key_blank: "参数名不能包含空白字符：{name}"
-    schema_err_key_env: "参数名 {a} 与 {b} 会归一成同一个环境变量 {env}"
-    schema_err_key_dupe: "参数名重复：{name}"
-    schema_err_num: "{field} 必须是数字"
-    schema_err_range: "{a} 不能大于 {b}"
-    schema_err_pattern: "正则写错了：{msg}"
-    schema_err_enum: "选了「枚举」就至少填一个值"
-    schema_err_many: "参数契约有 {n} 处没填好（见标红的行）"
-    schema_err_switch: "这份契约有可视化编辑器表达不了的形状（type 数组 / items 嵌套 / 数字枚举等），请继续用 JSON 编辑"
-    schema_hint: "可视化里填的是最常用的约束；更复杂的形状切「手写 JSON」。没动过契约时它跟着模板字段走（手写里留空也是这个意思）。支持 JSON Schema 的受控子集（type/properties/required/enum/minLength/pattern…，不支持 $ref / if-then-else）。"
-    script_shebang_err: '脚本第一行必须以 #! 开头'
-    loading: '正在载入模板…'
-    load_failed: '模板载入失败：'
-    empty: '后端没有返回任何模板'
-    created: '能力已创建'
-    created_digest: '已创建 · 内容指纹 {digest}'
+  load_failed: '能力列表载入失败'
+  empty_title: '还没有能力'
+  empty: '这个命名空间里还没有能力。新建一个，节点才能声明它。'
+  no_match: '没有匹配的能力'
+  ready: '就绪'
+  not_ready: '未就绪'
+  ready_unknown: '状态未知'
+  terminal_short: '终端能力（跑完就结束）'
+  cond:
+    Deployed: '已部署'
+    DownstreamResolved: '下游可解析'
+    Implemented: '实现'
+    NodesAvailable: '节点可用'
+    none: '服务端没有返回条件'
+    title: '四条条件（读时派生）'
+  conflict:
+    body: '服务端当前的 resourceVersion 是 {rv}；你本地的输入都还在。重新载入最新会丢弃本地修改。'
+    reload: '重新载入最新（丢弃本地修改）'
+    reloaded: '已载入最新版本'
+    title: '资源已被别人改动（409 resource_version_conflict）'
+  delete:
+    body: '确认删除「{name}」？删除只删这个能力本身，不级联改引用方：其它能力或源引用它会解析不到（由 status 报缺失）。'
+    conflict: '这个能力刚被别人改过（409）。已重新载入最新 resourceVersion {rv}；请确认后再点一次删除，不会自动重试。'
+    deleting: '删除中…'
+    rv: '当前 resourceVersion：{rv}'
+    submit: '删除'
+    title: '删除能力'
   deploy:
     col: '部署'
-    status_applied: '已部署 {n} 台'
-    status_pending: '部署中 {n}'
-    status_failed: '{n} 台失败'
-    status_local: '{n} 台本地变体'
-    status_none: '未部署'
-    status_unknown: '—'
-    btn: '部署'
-    title: '部署「{name}」'
-    subtitle: '勾节点或按 tag 批量选，然后点部署。'
-    pick_hint: '选节点'
-    tag_pick: '按 tag 选'
-    node_digest: '已部署 {digest}'
-    node_none: '未部署'
-    push: '部署'
-    pushing: '部署中…'
-    close: '关闭'
-    undo: '撤销'
-    undone: '已撤销'
-    undo_failed: '撤销失败：'
+    hint: '安装包保存或 install 都不会自动部署；部署只在这个按钮里发生。'
+    nodes: '目标节点'
+    nodes_empty: '没有候选节点；不选也能提交（由服务端决定）。'
+    nodes_hint: '不选 = 由服务端按现有部署策略选候选节点。'
     pushed: '已部署'
-    queued: '已排队（节点离线）'
-    queued_other: '已排队'
-    nodes_failed: '节点列表读不到，稍后重试'
     result_title: '部署结果'
-    none_selected: '至少选一个节点'
-    no_nodes: '这个命名空间还没有节点'
-    err: '部署失败：'
-    builtin: 由中枢执行，无需部署
-    builtin_hint: '内置执行器 {name} 跑在中枢进程里，不需要也不可以部署到节点'
-  list:
-    title: 能力列表
-  form:
-    display_name: 名字（给人看）
-    display_name_ph: "例如「分析 PR」「部署预发」"
-    display_name_hint: 界面上显示这个。留空就用下面的技术名。
-    name: 能力名
-    name_hint: '技术名：节点声明、下游、日志都用它，建好后不能改。'
-    outputs: '出口'
-    outputs_optional: '（可留空）'
-    outputs_ph: 'approved, needs-fix（留空 = 只有一个内部出口）'
-    outputs_hint: '能力自己声明、下游可以接的出口名，逗号分隔。留空 = 只有一个内部出口（跑完直接交给下游）。这些名字会写进能力契约，建好后改要发新版本。'
-    outputs_bad: '出口名不合法：{name}（只能包含字母、数字、点、下划线、短横线，1–32 个字符）'
-    downstream: 下游能力（候选）
-    downstream_optional: 可留空
-    downstream_ph: script.echo, notify.phone
-    downstream_hint: 跑完之后交给谁。多个 = 候选，运行期按优先级选一个；留空 = 终端能力（跑完就结束）。
-    downstream_missing: '找不到这些能力：{names}'
-    downstream_cands_hint: 点一下加入：
-    downstream_cands_empty: '还没有可选的目标能力（先新建能力，或在上面给另一张卡起个名字）。'
-    cand_add: 加入下游
-    cand_picked: 已选
-    cards_title: 本批能力
-    cards_hint: '一次可以新建多个能力：每张卡有自己的下游、参数与脚本；提交时一次写库，要么全成，要么全不成。'
-    card_add: ＋ 再加一个能力
-    card_remove: 删除这个能力
-    card_n: '能力 {n}'
-    card_unnamed: 未命名
-    card_editor: '正在编辑：能力 {n} / {total}'
-    card_down: '下游：{names}'
-    card_name_dupe: '批内能力名重复：{name}'
-    card_err_field: '能力 {n} / {field}：{reason}'
-    card_err_generic: '能力 {n}：{reason}'
-    cand_hint: 运行期按优先级选一个；同级轮盘（数值小的先选）。
-    cand_batch_tag: （本批）
-    batch_created: '已创建 {caps} 个能力 · {m} 条下游'
-    batch_failed: '批量创建失败（整批未落库）：'
-    created_with_edges: '已连 {n} 条下游'
-    link_rejected: '第 {n} 条下游 → {to} 不合法，本次提交什么都没创建：{reason}'
-    schema: 参数校验（JSON Schema）
-    schema_hint: 只支持受控子集（不支持 $ref / if-then-else），中枢不做表达式求值。
-    cancel: 取消
-    submit: 创建
-    created: 能力已创建
-    create_failed: 创建失败：
-    err_name: 请填写能力名
-    err_schema: paramsSchema 不是合法 JSON
-    schema_mode_form: 可视化
-    schema_mode_json: JSON
-    schema_add_field: 添加字段
-    schema_no_extra: 禁止未声明的字段
-    schema_field_name: 字段名
-    schema_required: 必填
-    schema_enum: 枚举值，逗号分隔（可留空）
-    schema_no_fields: 还没有字段。点下面的按钮添加。
-    schema_dup: 字段名重复
-    schema_preserved: 以下内容可视化编辑不了，会原样保留：
-    schema_form_hint: 只使用后端支持的关键字（type / properties / required / enum / 范围）。嵌套对象和数组请切到 JSON 模式。
-    err_schema_obj: paramsSchema 必须是一个 JSON 对象
-    timeout: '超时（秒）'
-    timeout_hint: '0 = 不设本地超时，交给中枢租约'
-    err_invalid_name: '能力名只能用小写字母、数字、点、下划线、短横线，1–63 个字符，且以字母或数字开头'
-    err_timeout: '超时必须是 0–86400 的整数'
-    workdir: 工作目录
-    workdir_hint: '以 / 开头的绝对路径，或 ~/ 开头（~ 在节点上展开为 agent 用户的家目录）；不存在会直接失败（不会退回默认目录）。留空 = 每次任务一个独立目录。'
-    env: 环境变量
-    env_hint: '值留空 = 由节点环境提供（例如 GH_TOKEN）。ANOTIFY_ 前缀是契约保留的。'
-    env_add: + 加一个变量
-    env_value_ph: 值（留空 = 由节点环境提供）
-    env_del: 删除这个变量
-    env_err_key: 变量名不能为空
-    env_err_name: 变量名只能用字母、数字、下划线，且不能以数字开头
-    env_err_reserved: ANOTIFY_ 是契约保留前缀，不能覆盖
-    env_err_dupe: '环境变量重复：{key}'
+    submit: '确认部署'
+    submitting: '部署中…'
+    title: '人工部署 {name}'
+    version: '目标版本'
   detail:
-    btn: 详情
-    params: 参数契约
+    btn: '详情'
+    delete: '删除'
+    deploy: '部署'
+    edit: '编辑'
+    hide: '收起'
     outputs: '出口（能发什么）'
-    no_outputs: '没有出口：跑完就结束，不触发任何下游。'
-    implicit_output: '只有一个内部出口（不在这里为它起名）'
-    no_params: 无参数
-    downstream: 下游（候选）
-    no_downstream: 跑完就结束，不会触发任何下游。
-    cand_prio_hint: '优先级 {n} · 点「编辑」可调'
-    edges_failed: '下游列表读不到，下游状态未知'
-    inbound: 谁接到我
-    no_inbound: '没有上游：事件不会从这里进来'
-    me: 我
-    source_prefix: 来源
-    follow: 跟随最新
-    pinned: 钉死该版本
-    unresolved: '解析不到：{ref}'
-    literals: '常量 {json}'
-    runtime: 运行参数
-    timeout: 超时
-    workdir: 工作目录
-    workdir_default: 每次任务一个独立目录
-    lifecycle: 生命周期
-    lifecycle_default: 默认（未声明）
-    sticky: 粘性路由
-    source: 能力来源
-    source_builtin: 内置
-    source_custom: 自定义
-    hash: 内容指纹
-    copy: 复制
-    unknown: '—'
-    script: 脚本
-    script_entrypoint: 入口
-    script_failed: 脚本载入失败
-    retry: 重试
-    executor: 执行器
-    executor_builtin: '内置 {name}（由中枢执行）'
-    script_builtin: '内置执行器 {name}：实现编译在中枢进程里，没有脚本文件'
-  edit:
-    btn: 编辑
-    title: '新版本：{name}'
-    banner: '将创建 {ref}'
-    from_version: '从 {ref} 复制'
-    sticky_carried: '粘性路由 {v}'
-    lifecycle_carried: '生命周期 {v}'
-    name_locked: '名字锁定：这一版就叫这个名字，改名字请另建一个能力。'
-    multi_output_note: '这个能力有多条下游路径（历史数据）：结构原样保留，不在这里改。'
-    submit: 发布新版本
-    publishing: 发布中…
-    failed: '发布失败：'
-    created: '已发布 {ref}'
-    impact_title: '这一版会破坏已有的下游'
-    impact_changes: 变了什么
-    impact_links: '会断的下游（它们接的是名字，新版本就是它们指向的版本）'
-    impact_no_links: '没有跟随最新的下游受这一版影响'
-    force: 仍然发布
-    artifact_failed: 实现载入失败 —— 现在不能发布（否则会丢文件）
-    builtin_locked: '由中枢执行的内置能力：实现在中枢里，不能在控制台改'
-  add:
-    btn: 下游
-    title: '加下游'
-    target_ph: 选一个目标能力（可搜索）
-    literals_ph: '常量覆盖（可选），形如 {"urgent":true}'
-    save: 保存
-    cancel: 取消
-    created: '下游已创建'
-    failed: '创建下游失败：'
-    err_target: 请选择一个目标能力
-    err_self: 不能让能力连到自己
-    err_literals: 常量覆盖必须是一个 JSON 对象
-  down:
-    # 编辑弹层里的「下游」行编辑器：每行 = 目标能力 + 优先级 + 删除。
-    # 这些文案只谈「下游」，不谈端口（端口是内部路由键，界面不表达它）。
-    add_ph: 输入能力名后回车添加（可搜索）
-    name_ph: 能力名
-    prio: 优先级
-    prio_hint: 数字越小越先派发；留空 = 0
-    del: 删除这条下游
-    empty: '还没有下游：这个能力跑完就结束（终端能力）。'
-    save: 保存下游
-    saving: 保存中…
-    saved: 下游已保存（不产生新版本）
-    save_failed: '保存下游失败：'
-    dirty: 有未保存的下游改动
-    hint_edit: 改下游不产生新版本：这里只改「接到谁、优先级多少」。
-    hint_keep_ref: 引用写成 name（跟随最新）或 name@2（钉死版本）。
-    err_unknown: '找不到目标能力：{ref}'
-    err_self: 不能让能力连到自己
-    err_duplicate: 这条下游已经在列表里
-    err_too_many: 下游最多 100 条
-    err_priority: 优先级必须是 0~1000 的整数
-    err_notfound: 能力不存在（可能已被删除）
-    err_removed: 旧接口已关闭：能力的下游请在「编辑能力 → 下游」里改
-    need_target: 请先填一个目标能力
-    current_version_note: 这些下游所有版本共用：发新版本不会改动它们。
+    rv: 'resourceVersion'
+    script: '脚本（run.files）'
+    script_empty: '这个能力没有脚本文件'
+    script_entry: '入口文件'
+    versions: '版本历史'
+    versions_hide: '收起版本'
+  error:
+    immutable: '这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。'
+    title: '保存失败：{reason}'
+  filter:
+    all: '全部'
+    not_ready: '未就绪'
+    ready: '就绪'
+  form:
+    batch_created: '已创建 {caps} 个能力 · {m} 条下游'
+    cancel: '取消'
+    concurrency: '单节点并发上限'
+    concurrency_hint: 'spec.concurrency.maxPerNode，默认 1。'
+    create_title: '新建能力'
+    current_version: '当前版本：v{v}'
+    display_name: '显示名'
+    display_name_hint: '纯展示，不进内容指纹。'
+    display_name_ph: '例如「分析 PR」'
+    downstream: '下游能力（候选）'
+    edit_title: '编辑能力 {name}'
+    entrypoint: '入口文件'
+    entrypoint_hint: '必须是 files 里的一个路径。'
+    entrypoint_none: '先加一个文件'
+    env: '环境变量'
+    env_add: '加一行'
+    env_del: '删除'
+    env_empty: '没有环境变量'
+    env_hint: 'vars.* 必须同时写进 requires.values；值只在本机，中枢不保存。'
+    env_key: '名字'
+    env_literal: '字面量'
+    env_value: '值（空串就是空串）'
+    env_valuefrom: '取自字段'
+    err_concurrency: '单节点并发上限必须是 ≥1 的整数'
+    err_entrypoint: '入口必须是 files 里的一个路径'
+    err_env_dupe: '环境变量重复：{k}'
+    err_env_key: '环境变量名不合法：{k}'
+    err_env_path: '{k} 需要填 fieldPath'
+    err_env_reserved: '{k} 是契约保留前缀（ANOTIFY_）'
+    err_files: 'files 至少要有一个文件'
+    err_json: '参数契约不是合法 JSON：{msg}'
+    err_json_type: '参数契约必须是 JSON 对象（JSON Schema）'
+    err_max_attempts: '最大尝试次数必须是 ≥1 的整数'
+    err_name: '名字不合法：小写字母/数字/点/下划线/短横线，1–63 个字符，且以字母或数字开头'
+    err_next: '下游引用不合法：{ref}'
+    err_next_many: '下游最多 32 个'
+    err_requires_value: 'requires.values 只接受 vars.NAME 形状：{v}'
+    err_result_ttl: '结果保留必须是 ≥0 的整数'
+    err_timeout: '执行超时必须是 ≥0 的整数'
+    err_version: '版本必须是 ≥1 的整数'
+    file_add: '加文件'
+    file_del: '删除文件'
+    file_path: '相对路径，例如 run.sh'
+    files: '文件'
+    files_hint: '入口文件第一行必须是 #! shebang；每个文件都是能力的一部分。'
+    idempotent: '允许自动重试（幂等）'
+    idempotent_hint: '只有明确幂等才打开；否则失败即终态。'
+    lifecycle: '生命周期（lifecycle）'
+    max_attempts: '最大尝试次数'
+    name: '能力名'
+    name_hint: '小写字母、数字、点、下划线、短横线，以字母或数字开头；建好后不能改。'
+    name_ph: 'review'
+    name_readonly: '名字不可变（改名 = 另建一个能力）'
+    next: '下游（每行一个，裸名或 name@version）'
+    next_bad: '引用不合法：{ref}'
+    next_hint: '留空 = 终端能力（跑完就结束）；改下游不产生新版本。'
+    next_missing: '解析不到（单建时服务端会拒绝）'
+    next_ph: '每行一个：fixer 或 notify@2'
+    next_pinned: '钉死 v{v}（当前 v{cur}）'
+    next_terminal: '留空 = 终端能力：跑完就结束'
+    params: '参数契约（JSON Schema）'
+    params_hint: 'JSON Schema 对象；它参与内容指纹，改它会产生新版本。'
+    requires_commands: '节点命令（每行一个）'
+    requires_hint: '节点必须装好这些命令（LookPath 探测）。'
+    requires_values: '节点值（每行一个 vars.NAME）'
+    requires_values_hint: '节点要能解析出这些值（本机 → 节点默认 → 命名空间默认）。'
+    result_ttl: '结果保留（秒）'
+    result_ttl_hint: '0 = 永不清理。'
+    save: '保存'
+    saving: '保存中…'
+    submit: '创建'
+    timeout: '执行超时（秒）'
+    timeout_hint: '0 = 不设本地执行超时。'
+    version: '版本'
+    version_edit_hint: '留空 = 内容寻址（改正文自动分配新版本）；显式版本的内容不可变。'
+    version_hint: '留空 = 内容寻址（自动分配/复用）；显式版本的内容不可变。'
+    workdir: '工作目录'
+    workdir_hint: '可含 $(vars.X) 或 $(params.X)；留空 = 每次任务一个独立目录。'
+  meta:
+    installed_from: '安装来源'
+    next: '下游'
+    nodes: '节点 {total}（当前 {deployed} · 旧 {stale} · 未部署 {missing}）'
+  nodes:
+    deployed: '当前 digest'
+    empty: '没有候选节点（没有节点授权到本命名空间）'
+    missing: '未部署'
+    stale: '旧 digest'
+    title: '节点上的状态'
+  observed:
+    emits: '派出记录'
+    emits_empty: '这次运行没有派出去'
+    empty: '没有保留历史（清理后 observed 为空，不杜撰时间）'
+    fields: '字段：{f}'
+    no_fields: '无字段'
+    pruned: '剪枝留痕'
+    pruned_empty: '这次运行没有剪枝'
+    task: '最近任务'
+    tasks: '任务总数'
+    tasks_failed: '失败'
+    title: '最近一次运行的留痕（observed）'
+  resolved:
+    empty: '终端能力：跑完就结束，不再交给下游'
+    missing: '解析不到'
+    no_params: '不需要参数'
+    not_ready: '不可执行'
+    params_required: '需要的参数：{p}'
+    ready: '可执行'
+    title: '下游解析（resolved.next）'
+  spec:
+    commands: '命令'
+    concurrency: '单节点并发上限'
+    digest: '内容指纹'
+    entrypoint: '入口'
+    env: '环境变量（env）'
+    files: '文件'
+    idempotent: '幂等'
+    installed_from: '安装来源'
+    max_attempts: '最大尝试'
+    next: '下游（next）'
+    params: '参数契约（JSON Schema）'
+    result_ttl: '结果保留（秒）'
+    timeout: '执行超时（秒）'
+    title: '定义（spec）'
+    valuefrom: '取自'
+    values: '值'
+    version: '版本'
+    workdir: '工作目录'
+    workdir_default: '未设置（每次任务独立目录）'
+  toast:
+    created: '已创建能力 {name}'
+    deleted: '已删除能力 {name}'
+    deployed: '已部署（{n} 台）'
+    saved: '已保存能力 {name}'
+  versions:
+    load: '加载版本历史'
+    body_empty: '这个版本没有可显示的脚本'
+    close: '收起正文'
+    current: '当前'
+    empty: '服务端没有返回版本历史'
+    open: '查看正文'
 prune:
   no_edge: 没有接候选
   no_capability: 目标能力不存在
@@ -1552,7 +1544,149 @@ nodes:
     copy_install: 复制命令
     yaml_workdir_note: '工作目录在「能力」页的能力里配（run.workDir），随部署一起发到节点；这份 yaml 不需要写。'
   emptyTitle: '还没有节点'
+  v4:
+    copy: "复制"
+    title: "节点与配置"
+    subtitle: "集群身份 · 本机申报 ∩ 中枢授权 · 真实配置状态"
+    register: "登记节点"
+    name: "集群唯一名称"
+    create: "登记并签发身份令牌"
+    cancel: "关闭并清除明文"
+    refresh: "刷新事实"
+    loading: "正在读取…"
+    empty: "尚无集群节点；先登记，签发令牌，再在本机安装。"
+    token: "节点身份令牌"
+    token_warning: "明文只返回本次；这是长期身份凭证，不是一次性 bootstrap，无 expiresAt。丢失请显式轮换；旧令牌及旧会话失去授权。勿放入 URL、日志或 vars。"
+    rotate: "轮换身份令牌"
+    rotate_confirm: "轮换 {name} 的身份令牌？旧令牌立即失效，旧会话也失去新授权。须在本机更新配置。"
+    local_setup: "本机配置与三个公开命令"
+    setup_hint: "先保存 anode.yaml，再运行 install 或 serve；安装使用已签发的令牌，不会自动登记。vars 非秘密；envPassthrough 仅本机名字名单，禁 PATH、HOME、ANOTIFY_；完整名单和值不上传。ANOTIFY_ARTIFACT_DIR 由节点提供，诊断只展示名字/来源，不展示导出绝对路径。"
+    online: "在线"
+    offline: "离线"
+    unknown: "未知（没有明确本机断言）"
+    occupied: "占用（运行、预留或回收中）"
+    idle: "空闲（busy=false）"
+    slots: "物理槽位事实"
+    slot_note: "只有有效 slot 上的 busy=false 是空闲；slot 0 有效。Task 终态不表示进程组已回收；缺 busy/instances 不推断空闲。"
+    effective_namespaces: "生效授权（申报 ∩ 中枢授权）"
+    authorized: "中枢授权 namespaces"
+    none: "无"
+    config: "节点默认配置"
+    vars: "vars（非敏感值，JSON 名字→字符串）"
+    limits: "limits（仅本机与节点两层）"
+    save: "以当前 CAS 保存"
+    reload: "明确重载最新配置"
+    reload_confirm: "重载会替换当前草稿，继续？"
+    saved: "已保存；节点配置须等待节点 apply，命名空间值仅影响下一个任务。"
+    stale: "409：CAS 已过期，草稿完整保留。请明确重载后重试，不自动覆盖。"
+    error: "请求失败"
+    loaded: "已读取当前配置；resourceVersion 只是 CAS 令牌。"
+    pending: "ConfigPending：节点配置尚未应用"
+    applied: "节点 revision 已一致（不代表 ns 输入版本）"
+    revision: "配置与应用事实"
+    override_stale: "overrideStale：下层默认值更新，但本机覆盖仍生效"
+    context: "有效值的 namespace 上下文"
+    effective_vars: "有效 vars（local > node > namespace，每键来源）"
+    machine_vars: "节点 applied vars（不含 namespace 默认）"
+    source: "来源"
+    key: "名字 / 叶字段"
+    value: "值"
+    ns_config: "命名空间 vars 配置（无 limits）"
+    ns_hint: "仅按该 namespace 的下一任务解析；不写进节点 applied。"
+    retention: "系统保留配置（管理员）"
+    retention_hint: "下列值必须来自真实 GET，不以默认值冒充当前配置。单位为秒；0 永久。默认日志/产物 604800、事件与终态任务 2592000；活动任务及引用保护仍保留，用户 workDir 不清理。"
+    admin_only: "仅管理员可读取或编辑系统保留配置。"
+    drain: "排空节点"
+    drain_confirm: "排空 {name}？停止接收新任务；已有物理占用仍等真实回收。"
+    upgrade: "请求升级"
+    upgrade_confirm: "请求升级 {name}？可能替换并重启节点二进制；仅显示中枢与节点实际结果。"
+    action_done: "中枢已接受动作："
+    not_found: "节点不存在；返回集群列表。"
+    back: "返回节点列表"
+    tasks: "当前 namespace 的最近任务"
+    artifacts: "已部署能力的实际状态"
+    batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
+
 sources:
+  v4:
+    new: "新建源"
+    edit: "编辑源"
+    close: "关闭"
+    save: "保存"
+    reload: "重新加载最新资源"
+    detail: "源详情"
+    back: "返回源列表"
+    intro: "源产生事件；目标能力接收参数。配置图不是执行成功的证明。"
+    loading: "加载中…"
+    empty: "还没有源。可以先创建无目标的入口。"
+    name: "资源名 metadata.name"
+    display: "显示名（可选）"
+    kind: "源种类 spec.kind"
+    immutable: "资源名和 kind 创建后不可修改；请删除后重建。"
+    expr: "Cron 表达式（五段）"
+    tz: "IANA 时区（默认 Local）"
+    token: "新 token（写入，不回显）"
+    secret: "新 HMAC secret（写入，不回显）"
+    sample: "提示样例 config.sample（不参与派发）"
+    blank_credentials: "编辑时 token/secret 留空不提交，保留已有凭据；读取只有 hookUrl/secretSet。"
+    hmac: "外部 POST 使用 {type?, id?, payload?} 包装体。已设置 secret 时必须对原始 body 字节计算 HMAC-SHA256，头名 X-Anotify-Signature: sha256=<hex>；缺失/错误为401，不产生事件。"
+    payload: "静态载荷 config.payload（JSON 对象）"
+    schema: "载荷契约 config.payloadSchema（可选）"
+    schema_hint: "每次投递先检查 payloadSchema；不合规事件仍入库并留下 event_schema 剪枝，不派发。"
+    targets: "目标能力 targets"
+    add_target: "添加目标行"
+    remove_target: "删除目标行"
+    capability: "能力引用（名称或名称@版本）"
+    params: "参数对象 targets[].params"
+    params_hint: "支持常量、$(payload.x)、$(payload.items.0.x) 与字符串拼接。整值引用保留原类型；路径缺失会剪枝。默认值属于能力 schema；空 targets 合法。"
+    enabled: "已启用"
+    disabled: "已停用"
+    enable: "启用"
+    disable: "停用"
+    override: "本次载荷覆盖（JSON 对象，可选）"
+    omitted: "留空不提交 payload。cron/manual 使用配置载荷并一层覆盖；webhook 缺省为 {}，sample 只提示。"
+    suggestions: "载荷字段提示（点击复制引用）"
+    suggest_dry: "来自本次试运行输入"
+    suggest_event: "来自最近一条真实事件"
+    suggest_sample: "来自 config.sample（仅提示）"
+    suggest_schema: "来自 payloadSchema.properties"
+    suggest_payload: "来自 config.payload"
+    preview: "试运行结果（零持久写入）"
+    receipt: "接收回执"
+    accepted: "事件已接收，不代表任务执行成功。"
+    duplicate: "重复 deliveryId：返回原事件/trace，不重新派发，也不保证任务成功。"
+    dedup: "deliveryId 默认去重30天：同源同 id 只表示已接收，不保证下游成功；修改 payload/type 或需要重新执行，请用新 id。窗口过期后同 id 可再次接收。无 replay API。"
+    no_target: "无目标合法：事件/trace 保留，no_target 剪枝，不派发任务。"
+    event_id: "事件 ID"
+    fire: "立即运行"
+    saved_dry: "已保存源试运行"
+    draft_dry: "草稿试运行（无需保存）"
+    namespace: "命名空间"
+    rv: "resourceVersion（CAS 令牌）"
+    health: "健康状态"
+    resolved: "targetsResolved（布尔）"
+    last_fire: "最近触发时间"
+    next_fire: "下次触发时间"
+    last_error: "最近错误"
+    installed: "安装来源 installedFrom"
+    config: "配置与状态"
+    edges: "只读 v4 目标能力投影"
+    graph: "下游配置图"
+    graph_hint: "图只展示 v4 引用，不包含端口、优先级或独立接线；不是执行状态。"
+    graph_error: "图组件未加载，请重新加载。"
+    recent: "最近事件与触发"
+    no_events: "还没有事件。"
+    no_name: "链接缺少 metadata.name。请从源列表打开详情。"
+    notfound: "源不存在，可能已被删除。"
+    object_required: "必须填写 JSON 对象。"
+    name_required: "资源名必填。"
+    capability_required: "每行能力引用必填。"
+    delete: "删除源"
+    delete_confirm: "删除源「{name}」？已有事件与任务保留。"
+    confirm_again: "资源已刷新；请检查最新状态，删除必须再次确认。"
+    reload_draft: "丢弃草稿并加载最新资源"
+    draft_preserved: "CAS 冲突：草稿未改动，不自动使用新令牌重试。请显式加载最新资源。"
+    reload_confirm: "丢弃当前输入，加载服务器最新资源？"
   empty_title: 还没有源
   detail: "详情"
   open_detail: "打开详情"
@@ -1758,6 +1892,15 @@ trace:
     slowest: '最慢任务'
     failed: 失败
 
+  v4:
+    graph: "真实业务任务链"
+    tasks: "任务 / 尝试 / 等待诊断"
+    events: "事件事实"
+    pruned: "剪枝原因"
+    empty: "这条链路没有派发任务。"
+    no_pruned: "没有保留的剪枝记录。"
+    missing: "URL 缺少 traceUID。"
+
 srcpage:
   vars: "变量"
   title: "源详情"
@@ -1896,6 +2039,101 @@ pb:
     open_nodes: 打开节点页
     install_edge: '补齐这条下游'
     create_source: 创建源
+
+  v4:
+    subtitle: "自包含文件包：保存模板、预览、试装，再安装；不会自动部署。"
+    import: "导入安装包"
+    package_hint: "playbook.yaml 是唯一根清单，引用的能力/源文件必须在包内；这里只保存，不安装。"
+    input_kind: "包输入"
+    files: "原始文件"
+    oci: "OCI 来源"
+    slug: "包名（slug）"
+    upload_files: "选择文件 / 导出的 JSON 文件集"
+    upload_directory: "选择自包含包目录"
+    upload_hint: "多文件请选目录以保留 capabilities/、sources/ 相对路径；或粘贴完整文件集 JSON。"
+    file_map: "完整文件集 JSON（路径 → 未渲染原文）"
+    oci_hint: "中枢只拉取一次并保存 digest。OCI 与文件集二选一；私有仓库凭据只在中枢配置。"
+    store: "保存安装包"
+    saving: "正在保存…"
+    open: "打开安装包"
+    stored: "模板已保存；尚未安装任何资源。"
+    slug_taken: "包名已存在：打开详情，用 PUT 整体更新模板（保留当前输入）。"
+    namespace: "命名空间"
+    loading: "正在读取…"
+    not_ready: "未就绪（查看体检）"
+    not_installed: "尚无安装产生的资源。模板不代表已安装。"
+    unapplied_count: "{n} 项差异未生效"
+    blocker: "优先处理"
+    last_install: "最近安装回执"
+    duplicate_files: "路径重复，请使用保留相对路径的目录输入。"
+    detail_hint: "只做加法：安装不改已有路由/源、不删除资源；节点部署需人工操作。"
+    checkup: "体检：conditions / items / blocker"
+    values: "安装参数（values）"
+    values_hint: "表单由包内 playbook.yaml 的 JSON Schema 生成。缺省值由服务端递归补齐；writeOnly 仅用于本次输入。"
+    values_json: "完整 values JSON 输入"
+    values_json_hint: "与表单发送同一个 values 对象（不是另一个协议）；仅在点击采用后使用。"
+    use_json: "采用 JSON 值"
+    render: "渲染（纯预览）"
+    dry_run: "试装（冲突检查，零写入）"
+    install: "安装（只新增）"
+    actions_hint: "渲染不读冲突库；试装不保存回执；每次普通安装都产生新回执。以上操作均不会自动部署。"
+    instances: "按 valuesDigest 折叠的安装记录"
+    instances_hint: "只读派生视图：attempts 是尝试次数；来源只记录最初创建的回执，不是所有权。"
+    template: "编辑 / 导出原始整包"
+    template_hint: "原文来自 GET includeBody=true 的 spec.files。保存通过带 CAS 的 PUT 整体替换模板，不自动安装。"
+    file_path: "包内相对路径"
+    raw_content: "未渲染原始内容"
+    new_path: "新文件相对路径"
+    add_file: "添加文件"
+    remove_file: "从模板删除此文件"
+    export: "导出完整原始文件集"
+    import_map: "导入完整文件集 JSON（只替换草稿）"
+    save_template: "PUT 整体保存模板"
+    reload_template: "重新读取模板（丢弃草稿）"
+    delete_manifest: "仅删除清单"
+    delete_hint: "不是卸载：能力、源、安装回执都会保留。删除需要当前 resourceVersion 和确认。"
+    manual_action: "人工处理"
+    unapplied: "未生效的差异 — 未就绪"
+    unapplied_hint: "已有定义只复用，不会改 next / targets.params。请比较声明与实际值，再人工编辑。"
+    declared: "包中声明（declared）"
+    actual: "库中实际（actual）"
+    omitted: "省略（使用 schema 默认值）"
+    schema_loaded: "已从原始包根清单读取参数契约。"
+    dry_receipt: "试装回执（未持久化）"
+    receipt: "单次安装回执"
+    created: "新建（created）"
+    skipped: "复用（skipped）"
+    none: "无"
+    upgraded: "内容升级与影响面"
+    external: "包外已有引用"
+    pending: "尚未解析的引用"
+    notes: "提示（稳定代码）"
+    manual_deploy_hint: "安装不部署；请到能力页选版本与节点，人工部署。"
+    manual_deploy: "前往能力页人工部署"
+    rendered: "渲染结果（不是试装）"
+    rendered_hint: "只读取包与 values；没有冲突判定、资源写入或回执。"
+    dry_hint: "试装完成：所有持久状态零写入，没有保存安装记录。"
+    installed_hint: "已新增 / 复用资源并保存新回执；尚未自动部署。请查看未生效与 pending 明细。"
+    atomic_conflict: "整包冲突：所有资源与回执零写入。"
+    invalid_installs: "服务端未返回有效的 installs 折叠视图。"
+    group_count: "{n} 组 valuesDigest"
+    single_receipt: "读取完整单次回执"
+    no_installs: "没有普通安装记录（试装不计入）。"
+    raw_missing: "缺少原始 spec.files / playbook.yaml；不能用摘要保存模板。"
+    missing_id: "缺少安装包 slug。"
+    invalid_path: "文件路径无效或已存在；请使用包内相对路径。"
+    entry_required: "playbook.yaml 是唯一入口，不能移除。"
+    remove_confirm: "仅从模板草稿删除 {path}？引用也需手动更新，不删除已安装资源。"
+    replace_draft: "用导入的完整文件集替换当前未保存草稿？"
+    template_saved: "模板整体已保存；已有资源未变更，未触发安装。"
+    draft_kept: "400 / 409：草稿原样保留。检查错误或显式重读，再决定保存；不会自动重试覆盖。"
+    reload_confirm: "重新读取整包会丢弃未保存文件与 values 输入，确定？"
+    reloaded: "已读取最新原始包与 CAS 令牌。"
+    values_object: "values 必须是 JSON 对象。"
+    json_selected: "本次动作将使用该完整 values JSON。"
+    delete_confirm: "仅删除清单？能力、源、回执和来源记录全部保留，不是卸载。"
+    deleted: "清单已删除；保留内容如下。"
+    delete_stale: "CAS 已过期。先重新体检获取当前版本；再次点击删除仍需重新确认。"
 
 node:
   artifacts:

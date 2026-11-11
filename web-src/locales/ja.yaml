@@ -9,6 +9,7 @@ common:
   server_error: 'サーバーエラー HTTP {code}'
   request_rejected: 'リクエスト拒否 HTTP {code}'
   request_failed: 'リクエスト失敗'
+  resource_version_required: 'resourceVersion がありません。再読み込みしてからやり直してください'
   brand:
     name: Anotify
     tagline: エージェント完了通知
@@ -143,9 +144,9 @@ index:
     rate_na: 受信デバイスがまだないため、配信率は表示できません
     trend_live: ライブ
     running: 実行中
-    running_sub: 直近50件のタスク
+    running_sub: "この名前空間の全タスク"
     failed: 異常タスク
-    failed_sub: 直近50件のタスク
+    failed_sub: "この名前空間の全タスク"
   heatmap:
     title: イベントアクティビティ
     subtitle: 過去1年 · 1日あたりのイベント数
@@ -210,6 +211,7 @@ scope:
   section_ns: "ネームスペース"
   ns: "ネームスペース"
   none: "（ネームスペースがありません）"
+  missing: "ネームスペースがまだ決まっていません"
   empty_hint: "ネームスペースがありません。まず 1 つ作成してください。"
   new_ns: "ネームスペースを作成"
   new_ns_prompt: "新しいネームスペースの slug（小文字・数字・ハイフン）"
@@ -273,6 +275,44 @@ message:
     count: '{n} 個のタスク'
     empty: このトレースに他のタスクはありません
     current: 現在
+  v4:
+    diagnostics: "実行診断"
+    attempt: "試行 / 上限"
+    wait_hint: "待機中は実行試行を消費しません。非冪等タスクは自動再試行せず、受理不明は再実行の根拠になりません。"
+    lease_hint: "リースは実行権限の境界であり、副作用の一度だけの実行を保証しません。古い試行や期限切れリースは結果を送信できません。"
+    cancel: "タスクを取消"
+    abandon: "タスクを放棄"
+    confirm_cancel: "タスクを取り消しますか？実行権限を失効し、現在の実行を停止します。"
+    confirm_abandon: "タスクを放棄しますか？自動再試行せずに停止します。"
+    params: "タスク入力パラメータ"
+    env: "環境診断（名前と取得元のみ）"
+    env_hint: "このタスクが使用した変数の名前と取得元のみ。ホスト値や透過の許可リスト全体は読み取りません。"
+    env_empty: "保持されている環境診断はありません。"
+    result: "結果概要 / エラー / 成果物"
+    attempts: "保持されている実行試行記録"
+    attempts_empty: "保持されている実行試行記録はありません。"
+    logs: "タスクログ"
+    current: "最新ログ記録"
+    previous: "前の実行試行"
+    truncated: "切り詰め済み"
+    complete: "切り詰めなし"
+    logs_empty: "この試行のログがない、または前の試行がありません。"
+    emissions: "受理された emit 記録"
+    emissions_empty: "保持されている emit 記録はありません。"
+    missing: "URL にタスク id がありません。"
+    not_found: "タスクがない、削除済み、または別の名前空間です。"
+    artifact_download: "保管成果物をダウンロード"
+    artifact_expired: "保管成果物は期限切れです（410 artifact_expired）。タスクの記録は残ります。ノードから再取得しません。"
+    artifact_missing: "このタスクは成果物を参照していません（404）。"
+    artifact_invalid: "記録のパスまたは SHA256 が無効です。ダウンロード URL は作成しません。"
+    phase:
+      pending: "実行待ち / 待機"
+      running: "実行中"
+      succeeded: "成功"
+      failed: "失敗"
+      cancelled: "取消済み"
+      abandoned: "放棄済み"
+
 login:
   title: ログイン
   welcome: おかえりなさい
@@ -727,6 +767,12 @@ docs:
       cli-auth: CLI 認証
       admin: 管理
       devices: Web Push
+      resource: "リソース"
+      agent: "ノードプロトコル"
+      ingress: "イベント入力"
+      traces: "トレース"
+      system: "システム設定"
+
   events:
     core: 中核
     intro: 'イベントはすべての起点です。外部の変化はここから入り、ハブが下流表に従ってタスクチェーンへ派発します。'
@@ -878,6 +924,15 @@ docs:
     reconnect:
       title: 再接続とレジュム
       desc: 再接続時に <code class="doc-code">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="doc-code">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="doc-code">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
+  v4:
+    five_specs: "エンドポイントは resource / events / agent / ingress / auth の5つの v4 spec 由来です。未連携時は実際の空状態で旧 spec を表示しません。"
+    missing: "5つの v4 spec が未読込です"
+    ingress: "名前空間イベント入力（リソース作成ではありません）"
+    node: "anode: 本機実行と設定"
+    node_note: "Node を登録し長期識別トークンを発行します。申告と認可は積集合、install は自動登録しません。旧 agent コマンド、ポートルート、priority はありません。"
+    resource: "名前空間リソースと書込 CAS"
+    resource_note: "KindList.items を読みます。作成は apiVersion/kind/metadata/spec。編集は書込可能項目と metadata.resourceVersion のみ。欠落400、古い値409では下書きを保持。DELETE は query resourceVersion を使用します。"
+
 cliauth:
   title: CLI デバイス認証
   back_home: ダッシュボードに戻る
@@ -1145,294 +1200,233 @@ events:
     end: 最古に到達
     no_match: このページに一致なし。古いページへ進むか最新へ戻れます
     invalid_cursor: カーソルが無効です。最新へ戻りました
+  v4:
+    dedup: "deliveryId は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
+    refresh: "更新"
+    namespace: "名前空間"
+    source: "関連オブジェクト / ソース"
+    limit: "ページ件数"
+    filter: "絞り込み"
+    loading: "データ読み込み中…"
+    more: "さらに読み込む"
+    trace: "トレースを開く"
+    event_uid: "イベント UID（deliveryId とは別）"
+    received: "受信時刻"
+    dispatched: "送出されたタスク"
+    details: "送出 / 枝刈り / ペイロード詳細"
+    empty: "この名前空間と条件に一致するイベントはありません。"
+    count: "{n} 件の一意なイベント"
+
 caps:
-  title: 能力
-  step_pick: テンプレートを選ぶ
-  step_fill: 入力して作成
-  sidebar: 'コンソールで作成、ノードが実行'
-  subtitle: '能力は「何をするか」（「どうやるか」ではない）。ここで作成・デプロイし、下流を指定します。'
+  title: '能力'
+  sidebar: 'コンソールで作成、ノードで実行'
+  subtitle: '能力は 3 つを宣言します：何を受け取るか（params）、誰に渡すか（next）、どう実行するか（run）。実行はすべてノード上です。'
   new: '能力を作成'
-  loading: 能力を読み込み中…
-  load_failed: 'capabilities 一覧の読み込みに失敗しました。再読み込みしてください'
-  empty: '能力がまだありません。作成するとノードが宣言できます。'
+  refresh: '更新'
+  search: '検索'
+  search_ph: 'name / 表示名 / 下流'
+  filter_label: '絞り込み'
   count: '{n} 個の能力'
-  source_builtin: '組み込み'
-  declared_by: 宣言ノード
-  no_node: 宣言ノードなし
-  no_node_hint: ノードが宣言するまでこの能力は実行できません
-  by_hub: 中枢で実行、ノード不要
-  by_none: イベント起点、コードは実行しません
-  any_event_type: 任意のイベント種別（起点）
-  rename: 名前を変更
-  name_it: 名前を付ける
-  save: 保存
-  cancel: キャンセル
-  rename_ph: 名前を付けてください（例：「PR を分析」）
-  rename_failed: 名前の変更に失敗しました
-  renamed: 名前を更新しました
-  tpl:
-    title: '能力を作成'
-    intro: 'まずテンプレートを選びます。テンプレートは定型スクリプトで、フィールドもスクリプト本文も後から編集できます。'
-    cat_script: 'スクリプト'
-    cat_agent: 'Agent'
-    requires: '必要なコマンド: {list}'
-    no_requires: '外部コマンド不要'
-    timeout_default: '既定 {n} 秒'
-    back: 'テンプレートを変更'
-    params: 'パラメータ'
-    no_params: 'このテンプレートにパラメータはありません'
-    required: '必須'
-    files: ファイル
-    files_hint: 'どのファイルも能力の一部です。エントリファイルは（シェルを介さず）直接 exec されるため、1 行目は #! で始める必要があります。'
-    file_ph: '例: lib/helper.sh'
-    file_add: ファイルを追加
-    file_pick_hint: クリックしてこのファイルを編集
-    file_set_entry: エントリに指定
-    file_del: このファイルを削除
-    file_err_empty: ファイル名は必須です
-    file_err_long: ファイル名が長すぎます
-    file_err_slash: '相対パスを / 区切りで指定してください（バックスラッシュ不可）'
-    file_err_abs: '相対パスである必要があります（/ で始められません）'
-    file_err_empty_seg: 'パスに空のセグメント（//）があります'
-    file_err_dotdot: 'パスに . や .. のセグメントは使えません'
-    file_err_dup: '同名のファイルが既にあります: {name}'
-    file_err_none: 'ファイルが最低 1 つ必要です（それが実装そのものです）'
-    file_err_no_entry: エントリファイルがファイル一覧にありません
-    script_view: '読み取り専用'
-    script_edit: 'スクリプトを編集'
-    schema_advanced: "パラメータ契約"
-    schema_toggle: "JSON を編集"
-    schema_visual: "ビジュアル"
-    schema_add_row: "+ パラメータを追加"
-    schema_rows_empty: "パラメータはまだありません。パラメータのない能力は任意の入力をそのまま受け取ります（空の契約）。"
-    schema_more: "詳細"
-    schema_less: "閉じる"
-    schema_required: "必須"
-    field_default: "既定 {v}"
-    schema_key: "パラメータ名"
-    schema_type: "型"
-    schema_type_any: "任意の型"
-    schema_type_enum: "列挙（string）"
-    schema_enum: "列挙値（カンマ区切り）"
-    schema_del: "このパラメータを削除"
-    schema_extra_note: "{keys} はこの行では表現できない宣言です。そのまま保持されます（JSON ビューで確認できます）"
-    schema_json_only: "この契約にはビジュアルエディタで表現できない形（type 配列 / items のネスト / 数値の列挙など）が含まれるため、JSON でのみ編集できます"
-    schema_err_key_empty: "パラメータ名を入力してください"
-    schema_err_key_blank: "パラメータ名に空白は使えません：{name}"
-    schema_err_key_env: "パラメータ名 {a} と {b} は同じ環境変数 {env} に正規化されます"
-    schema_err_key_dupe: "パラメータ名が重複しています：{name}"
-    schema_err_num: "{field} は数値で入力してください"
-    schema_err_range: "{a} は {b} より大きくできません"
-    schema_err_pattern: "正規表現が不正です：{msg}"
-    schema_err_enum: "「列挙」を選んだら値を 1 つ以上入力してください"
-    schema_err_many: "パラメータ契約に {n} 件の未入力があります（赤い行を確認してください）"
-    schema_err_switch: "この契約にはビジュアルエディタで表現できない形（type 配列 / items のネスト / 数値の列挙など）が含まれます。JSON のまま編集してください"
-    schema_hint: "ビジュアルの行はよく使う制約だけを扱います。それ以上は「JSON を編集」に切り替えてください。触っていない間は契約はテンプレート項目に従います（JSON を空にするのも同じ意味）。JSON Schema のサブセットに対応（type/properties/required/enum/minLength/pattern…、$ref / if-then-else は非対応）。"
-    script_shebang_err: 'スクリプトの 1 行目は #! で始めてください'
-    loading: 'テンプレートを読み込み中…'
-    load_failed: 'テンプレートの読み込みに失敗しました: '
-    empty: 'テンプレートが返されませんでした'
-    created: '能力を作成しました'
-    created_digest: '作成しました · 内容フィンガープリント {digest}'
+  load_failed: '能力一覧を読み込めませんでした'
+  empty_title: 'まだ能力がありません'
+  empty: 'この名前空間にはまだ能力がありません。作成するとノードが宣言できます。'
+  no_match: '一致する能力がありません'
+  ready: '準備完了'
+  not_ready: '未完了'
+  ready_unknown: '状態不明'
+  terminal_short: '終端能力（実行後は終了）'
+  cond:
+    Deployed: '配備済み'
+    DownstreamResolved: '下流解決'
+    Implemented: '実装'
+    NodesAvailable: 'ノード可用'
+    none: 'サーバーが条件を返していません'
+    title: '4 つの条件（読み取り時に派生）'
+  conflict:
+    body: 'サーバー側の resourceVersion は {rv} です。入力内容は保持されています。最新を読み込むとローカルの変更は破棄されます。'
+    reload: '最新を読み込む（ローカル変更を破棄）'
+    reloaded: '最新を読み込みました'
+    title: '他の人により変更されています（409 resource_version_conflict）'
+  delete:
+    body: '「{name}」を削除しますか？削除はこの能力だけを対象とし、参照側は変更しません。参照している能力やソースは解決できなくなり、status で欠落として報告されます。'
+    conflict: 'この能力は直前に他の人により変更されました（409）。最新の resourceVersion {rv} を読み込みました。確認してからもう一度削除を押してください（自動再試行はしません）。'
+    deleting: '削除中…'
+    rv: '現在の resourceVersion：{rv}'
+    submit: '削除'
+    title: '能力を削除'
   deploy:
     col: 'デプロイ'
-    status_applied: '{n} 台にデプロイ済み'
-    status_pending: '{n} 台にデプロイ中'
-    status_failed: '{n} 台失敗'
-    status_local: '{n} 台がローカル変種'
-    status_none: '未デプロイ'
-    status_unknown: '—'
-    btn: 'デプロイ'
-    title: '「{name}」をデプロイ'
-    subtitle: 'ノードを選択するか tag でまとめて選び、デプロイを押してください。'
-    pick_hint: 'ノードを選択'
-    tag_pick: 'tag で選択'
-    node_digest: 'デプロイ済み {digest}'
-    node_none: '未デプロイ'
-    push: 'デプロイ'
-    pushing: 'デプロイ中…'
-    close: '閉じる'
-    undo: '取り消す'
-    undone: '取り消しました'
-    undo_failed: '取り消しに失敗しました: '
+    hint: 'インストールパッケージの保存や install では自動デプロイされません。デプロイはこのボタンでのみ行われます。'
+    nodes: '対象ノード'
+    nodes_empty: '候補ノードがありません。未選択のままでも送信できます（サーバーが決定します）。'
+    nodes_hint: '未選択 = サーバーが既存の配備方針で候補ノードを選びます。'
     pushed: 'デプロイ済み'
-    queued: '待機中（ノードがオフライン）'
-    queued_other: '待機中'
-    nodes_failed: 'ノード一覧を取得できませんでした。しばらくしてから再試行してください'
     result_title: 'デプロイ結果'
-    none_selected: 'ノードを 1 台以上選んでください'
-    no_nodes: 'この名前空間にはまだノードがありません'
-    err: 'デプロイに失敗しました: '
-    builtin: 中枢が実行するためデプロイ不要
-    builtin_hint: '組み込みエグゼキュータ {name} は中枢プロセスで動くため、ノードへのデプロイは不要かつ不可です'
-  list:
-    title: 能力一覧
-  form:
-    display_name: 表示名
-    display_name_ph: "例：「PR を分析」「ステージングへデプロイ」"
-    display_name_hint: 画面にはこれが表示されます。空欄なら下の技術名を使います。
-    name: 能力名
-    name_hint: '技術名：ノード宣言・下流・ログで使います。作成後は変更できません。'
-    outputs: '出口'
-    outputs_optional: '（省略可）'
-    outputs_ph: 'approved, needs-fix（空 = 内部出口が 1 つだけ）'
-    outputs_hint: '能力が宣言する出口名（カンマ区切り）。下流はこの中の名前しか指せません。空 = 内部出口が 1 つだけ（そのまま下流へ渡す）。能力の契約の一部なので、変更には新バージョンが必要です。'
-    outputs_bad: '出口名が不正です：{name}（英数字・ドット・アンダースコア・ハイフンのみ、1〜32 文字）'
-    downstream: 下流能力（候補）
-    downstream_optional: 空でも可
-    downstream_ph: script.echo, notify.phone
-    downstream_hint: 実行後に誰へ渡すか。複数 = 候補で、実行時に優先度で 1 つ選ばれます。空 = 終端能力（実行したら終わり）。
-    downstream_missing: '次の能力が見つかりません：{names}'
-    downstream_cands_hint: クリックで追加：
-    downstream_cands_empty: '選択できるターゲット能力がまだありません（能力を作成するか、上の別カードに名前を付けてください）。'
-    cand_add: 下流に追加
-    cand_picked: 選択済み
-    cards_title: このバッチの能力
-    cards_hint: '複数の能力を一度に作成できます。各カードは独自の下流・パラメータ・スクリプトを持ち、送信時に 1 つのトランザクションで書き込みます（全部成功するか、何も作成されません）。'
-    card_add: ＋ 能力を追加
-    card_remove: この能力を削除
-    card_n: '能力 {n}'
-    card_unnamed: 無名
-    card_editor: '編集中: 能力 {n} / {total}'
-    card_down: '下流：{names}'
-    card_name_dupe: 'バッチ内で能力名が重複しています: {name}'
-    card_err_field: '能力 {n} / {field}: {reason}'
-    card_err_generic: '能力 {n}: {reason}'
-    cand_hint: 実行時は優先度で 1 つだけ選ばれます。同順位はラウンドロビン（数値が小さいほど優先）。
-    cand_batch_tag: （このバッチ）
-    batch_created: '{caps} 個の能力を作成 · {m} 本の下流'
-    batch_failed: '一括作成に失敗しました（何も保存されていません）: '
-    created_with_edges: '{n} 本の下流を接続しました'
-    link_rejected: '{n} 番目の下流 → {to} が不正なため、何も作成されませんでした：{reason}'
-    schema: パラメータ検証（JSON Schema）
-    schema_hint: 制御されたサブセットのみ（$ref / if-then-else 非対応）。ハブは式を評価しません。
-    cancel: キャンセル
-    submit: 作成
-    created: 能力を作成しました
-    create_failed: '作成に失敗: '
-    err_name: 能力名を入力してください
-    err_schema: paramsSchema が正しい JSON ではありません
-    schema_mode_form: フォーム
-    schema_mode_json: JSON
-    schema_add_field: フィールド追加
-    schema_no_extra: 未宣言のフィールドを禁止
-    schema_field_name: フィールド名
-    schema_required: 必須
-    schema_enum: 列挙値（カンマ区切り・空可）
-    schema_no_fields: まだフィールドがありません。下のボタンで追加してください。
-    schema_dup: フィールド名が重複しています
-    schema_preserved: 以下はビジュアル編集できません。そのまま保持されます：
-    schema_form_hint: バックエンドが対応するキーワードのみ使用します（type / properties / required / enum / 範囲）。ネストしたオブジェクトや配列は JSON モードに切り替えてください。
-    err_schema_obj: paramsSchema は JSON オブジェクトである必要があります
-    timeout: 'タイムアウト（秒）'
-    timeout_hint: '0 = ローカルタイムアウトなし（中枢のリースに任せる）'
-    err_invalid_name: '能力名は小文字英数字・ドット・アンダースコア・ハイフンの 1〜63 文字で、英数字で始めてください'
-    err_timeout: 'タイムアウトは 0〜86400 の整数で指定してください'
-    workdir: 作業ディレクトリ
-    workdir_hint: '/ で始まる絶対パス、または ~/ で始まるパス（~ はノード上で agent ユーザーのホームディレクトリに展開されます）。存在しない場合はそのまま失敗します（既定のディレクトリへは戻りません）。空 = タスクごとに独立したディレクトリ。'
-    env: 環境変数
-    env_hint: '値が空 = ノードの環境から提供されます（例: GH_TOKEN）。ANOTIFY_ 接頭辞は契約用に予約されています。'
-    env_add: + 変数を追加
-    env_value_ph: 値（空 = ノードの環境から提供）
-    env_del: この変数を削除
-    env_err_key: 変数名は必須です
-    env_err_name: '変数名は英字・数字・アンダースコアのみ、先頭に数字は使えません'
-    env_err_reserved: ANOTIFY_ は契約予約の接頭辞のため上書きできません
-    env_err_dupe: '環境変数が重複しています: {key}'
+    submit: 'デプロイ実行'
+    submitting: 'デプロイ中…'
+    title: '手動デプロイ {name}'
+    version: '対象バージョン'
   detail:
-    btn: 詳細
-    params: パラメータ契約
+    btn: '詳細'
+    delete: '削除'
+    deploy: 'デプロイ'
+    edit: '編集'
+    hide: '閉じる'
     outputs: '出口（何を出せるか）'
-    no_outputs: '出口はありません — 終わったら終わりで、下流は何も起動しません。'
-    implicit_output: '内部出口が 1 つだけ（ここでは名前を付けません）'
-    no_params: パラメータなし
-    downstream: 下流（候補）
-    no_downstream: 実行したら終わり。下流は呼び出されません。
-    cand_prio_hint: '優先度 {n} · 編集で変更'
-    edges_failed: '下流一覧を取得できず、下流の状態は不明です'
-    inbound: どこから呼ばれるか
-    no_inbound: '上流はありません — ここにイベントは来ません'
-    me: 自分
-    source_prefix: ソース
-    follow: 最新に追従
-    pinned: バージョン固定
-    unresolved: '解決できません：{ref}'
-    literals: '定数 {json}'
-    runtime: 実行パラメータ
-    timeout: タイムアウト
-    workdir: 作業ディレクトリ
-    workdir_default: タスクごとに独立したディレクトリ
-    lifecycle: ライフサイクル
-    lifecycle_default: 既定（未宣言）
-    sticky: スティッキー・ルーティング
-    source: 能力の種別
-    source_builtin: 組み込み
-    source_custom: カスタム
-    hash: 内容ハッシュ
-    copy: コピー
-    unknown: '—'
-    script: スクリプト
-    script_entrypoint: エントリ
-    script_failed: スクリプトを読み込めませんでした
-    retry: 再試行
-    executor: 実行主体
-    executor_builtin: '組み込み {name}（中枢が実行）'
-    script_builtin: '組み込みエグゼキュータ {name}: 実装は中枢プロセスに組み込まれており、スクリプトファイルはありません'
-  edit:
-    btn: 編集
-    title: '新バージョン：{name}'
-    banner: '{ref} を作成します'
-    from_version: '{ref} からコピー'
-    sticky_carried: 'スティッキー・ルーティング {v}'
-    lifecycle_carried: 'ライフサイクル {v}'
-    name_locked: '名前は固定です：このバージョンは同じ名前のままです。名前を変えるなら別の能力になります。'
-    multi_output_note: 'この能力は複数の下流経路を持っています（旧データ）。構成はそのまま保持され、ここでは変更できません。'
-    submit: 新バージョンを公開
-    publishing: 公開中…
-    failed: '公開に失敗：'
-    created: '{ref} を公開しました'
-    impact_title: 'このバージョンは既存の下流を壊します'
-    impact_changes: 変わったこと
-    impact_links: '切れる下流（名前で繋がっているため、新バージョンがその参照先になります）'
-    impact_no_links: '最新を追う下流はこのバージョンの影響を受けません'
-    force: それでも公開
-    artifact_failed: 実装を読み込めませんでした — この状態では公開できません（ファイルが失われます）
-    builtin_locked: '中枢が実行する組み込み能力です。実装は中枢側にあり、ここでは変更できません'
-  add:
-    btn: 下流
-    title: '下流を追加'
-    target_ph: 対象の能力を選択（検索可）
-    literals_ph: '定数の上書き（任意）例: {"urgent":true}'
-    save: 保存
-    cancel: キャンセル
-    created: '下流を作成しました'
-    failed: '下流の作成に失敗：'
-    err_target: 対象の能力を選択してください
-    err_self: 自分自身にはリンクできません
-    err_literals: 定数の上書きは JSON オブジェクトである必要があります
-  down:
-    add_ph: 能力名を入力して Enter（検索可）
-    name_ph: 能力名
-    prio: 優先度
-    prio_hint: 数値が小さいほど先にディスパッチされます。空 = 0
-    del: この下流を削除
-    empty: '下流はまだありません。この能力は実行後に終了します（終端）。'
-    save: 下流を保存
-    saving: 保存中…
-    saved: 下流を保存しました（新しいバージョンは作りません）
-    save_failed: '下流の保存に失敗しました: '
-    dirty: 未保存の下流変更があります
-    hint_edit: 下流の編集は新しいバージョンを作りません（接続先と優先度だけが変わります）。
-    hint_keep_ref: 参照は name（最新に追従）または name@2（バージョン固定）で書きます。
-    err_unknown: '対象の能力が見つかりません: {ref}'
-    err_self: 自分自身には接続できません
-    err_duplicate: その下流はすでに一覧にあります
-    err_too_many: 下流は最大 100 件です
-    err_priority: 優先度は 0〜1000 の整数で指定してください
-    err_notfound: 能力が見つかりません（削除された可能性）
-    err_removed: '旧エンドポイントは閉じました。下流は「能力を編集 → 下流」で保存してください'
-    need_target: 先に対象の能力を選んでください
-    current_version_note: これらの下流は全バージョンで共有されます。新しいバージョンを出しても変わりません。
+    rv: 'resourceVersion'
+    script: 'スクリプト（run.files）'
+    script_empty: 'この能力にはスクリプトファイルがありません'
+    script_entry: 'エントリファイル'
+    versions: 'バージョン履歴'
+    versions_hide: 'バージョンを閉じる'
+  error:
+    immutable: 'この明示バージョンの内容は既に存在し変更できません。run/params/requires/lifecycle/concurrency を変えるには別バージョンが必要です（next/displayName は例外）。'
+    title: '保存に失敗：{reason}'
+  filter:
+    all: 'すべて'
+    not_ready: '未完了'
+    ready: '準備完了'
+  form:
+    batch_created: '{caps} 個の能力を作成 · {m} 本の下流'
+    cancel: 'キャンセル'
+    concurrency: 'ノードあたり同時実行上限'
+    concurrency_hint: 'spec.concurrency.maxPerNode（既定 1）。'
+    create_title: '能力を作成'
+    current_version: '現在のバージョン：v{v}'
+    display_name: '表示名'
+    display_name_hint: '表示専用。内容フィンガープリントには含まれません。'
+    display_name_ph: '例：「PR を分析」'
+    downstream: '下流能力（候補）'
+    edit_title: '能力を編集 {name}'
+    entrypoint: 'エントリファイル'
+    entrypoint_hint: 'files 内のパスのみ指定できます。'
+    entrypoint_none: '先にファイルを追加'
+    env: '環境変数'
+    env_add: '行を追加'
+    env_del: '削除'
+    env_empty: '環境変数はありません'
+    env_hint: 'vars.* は requires.values にも宣言が必要。値はノード上のみで、中枢は保存しません。'
+    env_key: '名前'
+    env_literal: 'リテラル'
+    env_value: '値（空文字は空文字）'
+    env_valuefrom: 'フィールドから取得'
+    err_concurrency: 'ノードあたり同時実行上限は 1 以上の整数である必要があります'
+    err_entrypoint: 'エントリは files 内のパスである必要があります'
+    err_env_dupe: '環境変数が重複しています：{k}'
+    err_env_key: '環境変数名が不正です：{k}'
+    err_env_path: '{k} には fieldPath が必要です'
+    err_env_reserved: '{k} は予約プレフィックス（ANOTIFY_）です'
+    err_files: 'files には少なくとも 1 つのファイルが必要です'
+    err_json: 'パラメータ契約が正しい JSON ではありません：{msg}'
+    err_json_type: 'パラメータ契約は JSON オブジェクト（JSON Schema）である必要があります'
+    err_max_attempts: '最大試行回数は 1 以上の整数である必要があります'
+    err_name: '名前が不正です：小文字英数字・ドット・アンダースコア・ハイフン、1〜63 文字、先頭は英数字'
+    err_next: '下流の参照が不正です：{ref}'
+    err_next_many: '下流は最大 32 個です'
+    err_requires_value: 'requires.values は vars.NAME 形式のみ受け付けます：{v}'
+    err_result_ttl: '結果保持は 0 以上の整数である必要があります'
+    err_timeout: '実行タイムアウトは 0 以上の整数である必要があります'
+    err_version: 'バージョンは 1 以上の整数である必要があります'
+    file_add: 'ファイルを追加'
+    file_del: 'ファイルを削除'
+    file_path: '相対パス（例：run.sh）'
+    files: 'ファイル'
+    files_hint: 'エントリの 1 行目は #! shebang 必須。すべてのファイルが能力の一部です。'
+    idempotent: '自動再試行を許可（冪等）'
+    idempotent_hint: '明確に冪等な場合のみ有効化。それ以外は失敗で終了。'
+    lifecycle: 'ライフサイクル（lifecycle）'
+    max_attempts: '最大試行回数'
+    name: '能力名'
+    name_hint: '小文字英数字・ドット・アンダースコア・ハイフン。先頭は英数字。作成後は変更できません。'
+    name_ph: 'review'
+    name_readonly: '名前は変更できません（改名は別の能力として作成）'
+    next: '下流（1 行に 1 つ、名前または name@version）'
+    next_bad: '参照が不正です：{ref}'
+    next_hint: '空 = 終端能力（実行後は終了）。下流の変更では新バージョンになりません。'
+    next_missing: '解決できません（単体作成時はサーバーが拒否します）'
+    next_ph: '1 行に 1 つ：fixer または notify@2'
+    next_pinned: 'v{v} に固定（現在 v{cur}）'
+    next_terminal: '空 = 終端能力：実行後は終了'
+    params: 'パラメータ契約（JSON Schema）'
+    params_hint: 'JSON Schema オブジェクト。内容フィンガープリントに含まれ、変更すると新バージョンになります。'
+    requires_commands: 'ノードのコマンド（1 行に 1 つ）'
+    requires_hint: 'ノードにこれらのコマンドが必要です（LookPath で確認）。'
+    requires_values: 'ノードの値（1 行に vars.NAME）'
+    requires_values_hint: 'ノードがこれらの値を解決できる必要があります（ローカル → ノード既定 → 名前空間既定）。'
+    result_ttl: '結果保持（秒）'
+    result_ttl_hint: '0 = 削除しない。'
+    save: '保存'
+    saving: '保存中…'
+    submit: '作成'
+    timeout: '実行タイムアウト（秒）'
+    timeout_hint: '0 = ローカル実行タイムアウトなし。'
+    version: 'バージョン'
+    version_edit_hint: '空 = 内容アドレス（本文を変えると新しいバージョン）。明示バージョンの内容は不変です。'
+    version_hint: '空 = 内容アドレス（自動採番・再利用）。明示バージョンの内容は不変です。'
+    workdir: '作業ディレクトリ'
+    workdir_hint: '$(vars.X) や $(params.X) を含められます。空 = タスクごとに独立ディレクトリ。'
+  meta:
+    installed_from: '導入元'
+    next: '下流'
+    nodes: 'ノード {total}（現行 {deployed} · 旧 {stale} · 未配備 {missing}）'
+  nodes:
+    deployed: '現行 digest'
+    empty: '候補ノードがありません（この名前空間に許可されたノードがありません）'
+    missing: '未配備'
+    stale: '旧 digest'
+    title: 'ノード上の状態'
+  observed:
+    emits: '送出記録'
+    emits_empty: 'この実行では送出していません'
+    empty: '保持された履歴はありません（整理後は observed が空です。日時は推測しません）'
+    fields: 'フィールド：{f}'
+    no_fields: 'フィールドなし'
+    pruned: '剪定の痕跡'
+    pruned_empty: 'この実行では剪定していません'
+    task: '直近のタスク'
+    tasks: 'タスク総数'
+    tasks_failed: '失敗'
+    title: '直近の実行痕跡（observed）'
+  resolved:
+    empty: '終端能力：実行後は終了し、下流に渡しません'
+    missing: '解決できません'
+    no_params: 'パラメータ不要'
+    not_ready: '実行不可'
+    params_required: '必要なパラメータ：{p}'
+    ready: '実行可能'
+    title: '下流の解決（resolved.next）'
+  spec:
+    commands: 'コマンド'
+    concurrency: 'ノードあたり同時実行上限'
+    digest: '内容フィンガープリント'
+    entrypoint: 'エントリ'
+    env: '環境変数（env）'
+    files: 'ファイル'
+    idempotent: '冪等'
+    installed_from: '導入元'
+    max_attempts: '最大試行'
+    next: '下流（next）'
+    params: 'パラメータ契約（JSON Schema）'
+    result_ttl: '結果保持（秒）'
+    timeout: '実行タイムアウト（秒）'
+    title: '定義（spec）'
+    valuefrom: '取得元'
+    values: '値'
+    version: 'バージョン'
+    workdir: '作業ディレクトリ'
+    workdir_default: '未設定（タスクごとに独立ディレクトリ）'
+  toast:
+    created: '能力 {name} を作成しました'
+    deleted: '能力 {name} を削除しました'
+    deployed: 'デプロイしました（{n} 台）'
+    saved: '能力 {name} を保存しました'
+  versions:
+    load: 'バージョン履歴を読み込む'
+    body_empty: 'このバージョンには表示できるスクリプトがありません'
+    close: '本文を閉じる'
+    current: '現行'
+    empty: 'サーバーがバージョン履歴を返していません'
+    open: '本文を表示'
 prune:
   no_edge: 候補が接続されていません
   no_capability: 対象の能力が存在しません
@@ -1548,7 +1542,149 @@ nodes:
     copy_install: コマンドをコピー
     yaml_workdir_note: '作業ディレクトリは「能力」ページの能力（run.workDir）で設定し、デプロイと一緒に配布されます。この yaml には書きません。'
   emptyTitle: 'ノードがありません'
+  v4:
+    copy: "コピー"
+    title: "ノードと設定"
+    subtitle: "クラスタの識別 · 申告 ∩ 許可 · 実際の設定状態"
+    register: "ノードを登録"
+    name: "クラスタ内で一意の名前"
+    create: "登録して識別トークンを発行"
+    cancel: "閉じて平文を消去"
+    refresh: "状態を更新"
+    loading: "読み込み中…"
+    empty: "ノードがありません。登録、トークン発行後に本機へインストールしてください。"
+    token: "ノード識別トークン"
+    token_warning: "平文は今回のみ返されます。長期識別用で一回限りの bootstrap ではなく、expiresAt はありません。再発行で旧トークンとセッションは無効になります。URL、ログ、vars に記載しないでください。"
+    rotate: "識別トークンを再発行"
+    rotate_confirm: "{name} の識別トークンを再発行しますか？旧トークンとセッションの新規認可は直ちに無効になります。本機の設定を更新してください。"
+    local_setup: "本機の設定と3つの公開コマンド"
+    setup_hint: "anode.yaml を保存して install または serve を実行します。発行済みトークンを使用し、自動登録しません。vars は秘密ではありません。envPassthrough の一覧と値は本機のみ。PATH、HOME、ANOTIFY_ は禁止です。ANOTIFY_ARTIFACT_DIR の診断は名前と出所のみで絶対パスは表示しません。"
+    online: "オンライン"
+    offline: "オフライン"
+    unknown: "不明（本機の明示的報告なし）"
+    occupied: "使用中（実行・予約・回収中）"
+    idle: "空き（busy=false）"
+    slots: "物理スロットの状態"
+    slot_note: "有効な slot の busy=false のみ空きです。slot 0 は有効です。Task の終端状態はプロセス回収の証拠ではなく、busy/instances の欠落は空きとみなしません。"
+    effective_namespaces: "有効な名前空間（申告 ∩ 許可）"
+    authorized: "許可された namespaces"
+    none: "なし"
+    config: "ノードの既定設定"
+    vars: "vars（非秘密の JSON 名前→文字列）"
+    limits: "limits（本機とノードの2層のみ）"
+    save: "現在の CAS で保存"
+    reload: "最新設定を明示的に再読込"
+    reload_confirm: "再読込で現在の下書きを置き換えます。続行しますか？"
+    saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
+    stale: "409: CAS が古いため下書きをそのまま保持しました。明示的に再読込して再試行してください。"
+    error: "リクエスト失敗"
+    loaded: "現在の設定を読み込みました。resourceVersion は CAS トークンのみです。"
+    pending: "ConfigPending: ノードの設定は未適用"
+    applied: "ノード revision は一致（名前空間入力の版とは別）"
+    revision: "設定と適用の状態"
+    override_stale: "overrideStale: 下位の既定値は更新されましたが本機の値が優先です"
+    context: "有効な値の名前空間"
+    effective_vars: "有効な vars（local > node > namespace、キー別出所）"
+    machine_vars: "ノードに適用済みの vars（名前空間既定値なし）"
+    source: "出所"
+    key: "名前 / リーフフィールド"
+    value: "値"
+    ns_config: "名前空間 vars 設定（limits なし）"
+    ns_hint: "この名前空間の次のタスク用に解決し、ノードの applied には保存しません。"
+    retention: "システム保持期間（管理者）"
+    retention_hint: "現在の値は GET の結果のみです。単位は秒、0 は永久。既定値はログ・成果物604800、イベント・終端タスク2592000。活動中タスクと参照は保護し、ユーザー workDir は削除しません。"
+    admin_only: "管理者のみシステム保持期間を閲覧・編集できます。"
+    drain: "ノードを排出"
+    drain_confirm: "{name} を排出しますか？新規タスクを停止し、既存の占有は実際の回収を待ちます。"
+    upgrade: "更新を要求"
+    upgrade_confirm: "{name} の更新を要求しますか？バイナリの置換・再起動があり得ます。実際の結果のみ表示します。"
+    action_done: "中枢が操作を受け付けました："
+    not_found: "ノードがありません。クラスタ一覧へ戻ってください。"
+    back: "ノード一覧へ"
+    tasks: "この名前空間の最近のタスク"
+    artifacts: "能力デプロイの実際の状態"
+    batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
+
 sources:
+  v4:
+    new: "ソースを作成"
+    edit: "ソースを編集"
+    close: "閉じる"
+    save: "保存"
+    reload: "最新のリソースを再読込"
+    detail: "ソース詳細"
+    back: "ソース一覧へ"
+    intro: "ソースはイベントを生成し、対象の能力にパラメータを渡します。構成図は実行成功の証明ではありません。"
+    loading: "読み込み中…"
+    empty: "ソースがありません。対象のない入口も作成できます。"
+    name: "リソース名 · metadata.name"
+    display: "表示名（任意）"
+    kind: "ソース種別 · spec.kind"
+    immutable: "作成後は名前と種別を変更できません。削除して再作成してください。"
+    expr: "Cron 式（5項目）"
+    tz: "IANA タイムゾーン（既定 Local）"
+    token: "新しい token（書き込み専用）"
+    secret: "新しい HMAC secret（書き込み専用）"
+    sample: "ヒント用 config.sample（配信には使用しない）"
+    blank_credentials: "編集時に空の token/secret は送信せず既存の資格情報を保持します。読み取りは hookUrl/secretSet のみ。"
+    hmac: "外部 POST は {type?, id?, payload?}。secret 設定時は本文の生バイトを HMAC-SHA256 で署名し X-Anotify-Signature: sha256=<hex> を付けます。不正な署名は401、イベントは生成されません。"
+    payload: "静的ペイロード · config.payload（JSON オブジェクト）"
+    schema: "ペイロード契約 · config.payloadSchema（任意）"
+    schema_hint: "配信時に payloadSchema を検証します。不適合なイベントも保存し event_schema で枝刈りし、配信しません。"
+    targets: "対象の能力 · targets"
+    add_target: "対象の行を追加"
+    remove_target: "対象の行を削除"
+    capability: "能力の参照（名前または名前@版）"
+    params: "パラメータ · targets[].params"
+    params_hint: "定数、$(payload.x)、$(payload.items.0.x)、文字列連結を使用できます。単独参照は型を保持し、欠落パスは枝刈りします。既定値は能力の schema に属し、対象が空でも有効です。"
+    enabled: "有効"
+    disabled: "無効"
+    enable: "有効にする"
+    disable: "無効にする"
+    override: "今回のペイロード上書き（JSON、任意）"
+    omitted: "空なら payload を省略します。cron/manual は設定値に浅い上書きを適用し、webhook の既定値は {}、sample はヒントのみです。"
+    suggestions: "ペイロード候補（クリックで参照をコピー）"
+    suggest_dry: "今回のプレビュー入力から"
+    suggest_event: "最新の実イベントから"
+    suggest_sample: "config.sample から（ヒントのみ）"
+    suggest_schema: "payloadSchema.properties から"
+    suggest_payload: "config.payload から"
+    preview: "プレビュー結果（永続書き込みなし）"
+    receipt: "受付結果"
+    accepted: "イベントを受け付けました。タスク成功を意味しません。"
+    duplicate: "重複 deliveryId：元のイベント/trace を返し、再配信せずタスク成功も保証しません。"
+    dedup: "deliveryId の既定重複排除期間は30日。同じソース/id は受付済みを示すだけです。変更や再実行には新しい id を使ってください。期限後は同じ id も再受付でき、replay API はありません。"
+    no_target: "対象なしも有効：イベント/trace を保持し no_target で枝刈り、タスクはなし。"
+    event_id: "イベント ID"
+    fire: "今すぐ実行"
+    saved_dry: "保存済みソースをプレビュー"
+    draft_dry: "下書きをプレビュー（保存不要）"
+    namespace: "名前空間"
+    rv: "resourceVersion（CAS トークン）"
+    health: "健全性"
+    resolved: "targetsResolved（真偽値）"
+    last_fire: "最終実行"
+    next_fire: "次回実行"
+    last_error: "最終エラー"
+    installed: "インストール元 · installedFrom"
+    config: "設定と状態"
+    edges: "読み取り専用 v4 対象投影"
+    graph: "下流の構成図"
+    graph_hint: "図は v4 参照のみで、ポート、優先順位、独立マッピング、実行状態ではありません。"
+    graph_error: "グラフを読み込めません。再読込してください。"
+    recent: "最近のイベントと実行"
+    no_events: "イベントがありません。"
+    no_name: "リンクに metadata.name がありません。一覧から開いてください。"
+    notfound: "ソースが見つかりません。削除された可能性があります。"
+    object_required: "JSON オブジェクトが必要です。"
+    name_required: "リソース名は必須です。"
+    capability_required: "各行に能力参照が必要です。"
+    delete: "ソースを削除"
+    delete_confirm: "ソース「{name}」を削除しますか？イベントとタスクは保持されます。"
+    confirm_again: "再読込しました。最新状態を確認してください。削除は再確認が必要です。"
+    reload_draft: "下書きを破棄して最新を再読込"
+    draft_preserved: "CAS 競合：下書きは保持し、新トークンで自動再試行しません。明示的に最新を再読込してください。"
+    reload_confirm: "現在の入力を破棄して最新を読み込みますか？"
   empty_title: ソースがまだありません
   detail: "詳細"
   open_detail: "詳細を開く"
@@ -1754,6 +1890,15 @@ trace:
     slowest: '最遅タスク'
     failed: 失敗
 
+  v4:
+    graph: "実際の業務タスク連鎖"
+    tasks: "タスク / 試行 / 待機診断"
+    events: "イベントの記録"
+    pruned: "枝刈りの理由"
+    empty: "このトレースから送出されたタスクはありません。"
+    no_pruned: "保持されている枝刈り記録はありません。"
+    missing: "URL に traceUID がありません。"
+
 srcpage:
   vars: "変数"
   title: "ソース詳細"
@@ -1892,6 +2037,101 @@ pb:
     open_nodes: ノードページを開く
     install_edge: 'この下流を補完'
     create_source: 源を作成
+
+  v4:
+    subtitle: "自己完結ファイルパッケージ：保存、レンダー、試行、インストール。自動デプロイはしません。"
+    import: "パッケージをインポート"
+    package_hint: "playbook.yaml が唯一のルートです。参照する能力・ソースのファイルを含めます。保存のみでインストールはしません。"
+    input_kind: "パッケージ入力"
+    files: "元ファイル"
+    oci: "OCI ソース"
+    slug: "パッケージ名（slug）"
+    upload_files: "ファイル／エクスポートした JSON マップを選択"
+    upload_directory: "自己完結パッケージのディレクトリを選択"
+    upload_hint: "複数ファイルはディレクトリで相対パスを保持するか、完全なファイルマップ JSON を貼り付けます。"
+    file_map: "完全なファイルマップ JSON（パス → 未展開の原文）"
+    oci_hint: "中枢が一度だけ取得して digest を保存します。OCI とファイルは択一。認証情報は中枢に置きます。"
+    store: "パッケージを保存"
+    saving: "保存中…"
+    open: "パッケージを開く"
+    stored: "テンプレートを保存しました。リソースは未インストールです。"
+    slug_taken: "同名パッケージがあります。詳細で PUT 更新してください（入力は保持）。"
+    namespace: "名前空間"
+    loading: "読み込み中…"
+    not_ready: "未準備（診断を確認）"
+    not_installed: "インストール済みリソースはありません。保存済みテンプレートはインストールではありません。"
+    unapplied_count: "未適用の差分 {n} 件"
+    blocker: "最初の阻害要因"
+    last_install: "最新インストール記録"
+    duplicate_files: "パスが重複しています。相対パスを保持するディレクトリを選択してください。"
+    detail_hint: "追加のみ：既存ルート・ソースの変更や削除はしません。ノードへのデプロイは手動です。"
+    checkup: "診断：conditions / items / blocker"
+    values: "インストール値（values）"
+    values_hint: "フォームは playbook.yaml の JSON Schema に基づきます。既定値はサーバーが補完し、writeOnly は今回のみ入力します。"
+    values_json: "完全な values JSON 入力"
+    values_json_hint: "フォームと同じ values オブジェクトです（別プロトコルではありません）。採用後のみ使用します。"
+    use_json: "JSON 値を採用"
+    render: "レンダー（純粋プレビュー）"
+    dry_run: "試行（競合確認、書き込みゼロ）"
+    install: "インストール（追加のみ）"
+    actions_hint: "レンダーは競合状態を読みません。試行は記録を保存せず、通常インストールは毎回新しい記録を作ります。自動デプロイはありません。"
+    instances: "valuesDigest ごとのインストール記録"
+    instances_hint: "読み取り専用ビュー：attempts は試行回数。由来は初回作成の記録であり、所有権ではありません。"
+    template: "元パッケージの編集／エクスポート"
+    template_hint: "原文は GET includeBody=true の spec.files。CAS 付き PUT で全体を置換し、インストールはしません。"
+    file_path: "パッケージ内の相対パス"
+    raw_content: "未展開の元の内容"
+    new_path: "新規ファイルの相対パス"
+    add_file: "ファイルを追加"
+    remove_file: "テンプレートからファイルを削除"
+    export: "元ファイルマップ全体をエクスポート"
+    import_map: "完全なファイルマップ JSON をインポート（下書きのみ）"
+    save_template: "PUT でテンプレート全体を保存"
+    reload_template: "テンプレートを再読込（下書きを破棄）"
+    delete_manifest: "マニフェストのみ削除"
+    delete_hint: "アンインストールではありません。能力・ソース・記録は残ります。最新 resourceVersion と確認が必要です。"
+    manual_action: "手動操作"
+    unapplied: "未適用の差分 — 未準備"
+    unapplied_hint: "既存定義を再利用し、next / targets.params は変更しません。宣言と実際を比較して手動編集してください。"
+    declared: "パッケージの宣言（declared）"
+    actual: "保存された実際の値（actual）"
+    omitted: "省略（schema の既定値）"
+    schema_loaded: "元ルートマニフェストから値 schema を読み込みました。"
+    dry_receipt: "試行記録（未保存）"
+    receipt: "単一インストール記録"
+    created: "作成（created）"
+    skipped: "再利用（skipped）"
+    none: "なし"
+    upgraded: "内容更新と影響範囲"
+    external: "既存の外部参照"
+    pending: "未解決の参照"
+    notes: "注記（固定コード）"
+    manual_deploy_hint: "インストールはデプロイしません。能力ページで版とノードを選び手動デプロイします。"
+    manual_deploy: "能力ページで手動デプロイ"
+    rendered: "レンダー結果（試行ではありません）"
+    rendered_hint: "パッケージと値のみ。競合判定・書き込み・記録はありません。"
+    dry_hint: "試行完了：永続書き込みゼロ、インストール記録は保存していません。"
+    installed_hint: "リソースを追加／再利用し新しい記録を保存しました。自動デプロイはしません。未適用・未解決を確認してください。"
+    atomic_conflict: "パッケージ全体の競合：リソース・記録の書き込みゼロ。"
+    invalid_installs: "サーバーの installs ビューが不正です。"
+    group_count: "valuesDigest {n} グループ"
+    single_receipt: "完全な単一記録を読む"
+    no_installs: "通常インストール記録なし（試行は記録しません）。"
+    raw_missing: "元の spec.files / playbook.yaml がありません。要約をテンプレートとして保存できません。"
+    missing_id: "パッケージ slug がありません。"
+    invalid_path: "無効または重複したパス。パッケージ内の相対パスを使用してください。"
+    entry_required: "playbook.yaml は必須入口で削除できません。"
+    remove_confirm: "下書きから {path} を削除しますか？参照も手動で更新してください。インストール済みリソースは残ります。"
+    replace_draft: "未保存下書きをインポートしたファイル全体で置換しますか？"
+    template_saved: "テンプレート全体を保存。既存リソースは未変更、インストールも未実行です。"
+    draft_kept: "400 / 409：下書きを保持。エラー確認または明示的再読込をしてください。自動上書き再試行はしません。"
+    reload_confirm: "再読込で未保存ファイルと値入力を破棄します。続行しますか？"
+    reloaded: "最新元パッケージと CAS トークンを読み込みました。"
+    values_object: "values は JSON オブジェクトである必要があります。"
+    json_selected: "次の操作ではこの完全な values JSON を使用します。"
+    delete_confirm: "マニフェストのみ削除しますか？能力・ソース・記録・由来は残ります。アンインストールではありません。"
+    deleted: "マニフェストを削除。以下の内容は保持。"
+    delete_stale: "CAS が古いです。再診断で最新を取得し、再削除時も確認が必要です。"
 
 node:
   artifacts:

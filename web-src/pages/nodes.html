@@ -1,1526 +1,220 @@
-{{define "title"}}{{t "nodes.title"}}{{end}}
-
+{{define "title"}}{{t "nodes.v4.title"}}{{end}}
 {{define "style"}}
-    <style>
-      /* ---------- 节点列表行 ----------
-         叠加在 ui.css 的 .list-row 上：只调纵向对齐/间距，边框、圆角、hover
-         全部沿用 .card + .list-row。颜色一律 var(--*)，零硬编码色值。 */
-      .nd-row {
-        align-items: flex-start;
-        gap: 14px;
-        padding: 12px 16px;
-      }
-      .nd-row-main {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .nd-row-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-      }
-      /* 名字就是进详情页的入口：列表负责扫，详情负责看。 */
-      .nd-name {
-        display: inline-flex;
-        align-items: center;
-        min-width: 0;
-        max-width: 100%;
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--text);
-        text-decoration: none;
-        /* 节点名是 1–63 个 [a-z0-9._-] 字符，可能没有空格可断：390 宽下
-           必须允许任意位置换行，否则横向溢出（e2e 双视口检查会红）。 */
-        overflow-wrap: anywhere;
-      }
-      .nd-name:hover {
-        color: var(--accent-strong);
-      }
-      .nd-status {
-        font-size: 11px;
-        color: var(--muted);
-      }
-      /* 节点自报的标签（后端 tags）。节点契约里没有 platform 字段，
-         所以「平台」这一格显示的就是它自己的标签，不编造数据。 */
-      .nd-tags {
-        display: inline-flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      .nd-tag {
-        font-size: 10.5px;
-        padding: 0.05rem 0.4rem;
-        border-radius: var(--r-full);
-        border: 1px solid var(--line);
-        background: var(--surface-2);
-        color: var(--muted);
-      }
-      .nd-caps {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-      }
-      /* 「声明能力」标签：e2e 锁定这是一个 span 且文本恰为 nodes.caps_label 的译文。 */
-      .nd-caps-label {
-        font-size: 11px;
-        color: var(--muted);
-      }
-      /* 能力 chip。e2e 锁 span.out-chip（数量 / 有底色 / title=name@version），
-         所以类名保留 out-chip；视觉按设计系统的标签口径（accent-soft 底 +
-         accent 描边 + 全圆角），不再吃 .out-chip 的 mono 灰。 */
-      .nd-cap {
-        font-family: var(--font-sans);
-        font-size: 0.7rem;
-        padding: 0.1rem 0.5rem;
-        border-radius: var(--r-full);
-        border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
-        background: var(--accent-soft);
-        color: var(--accent-strong);
-      }
-      .nd-cap.is-link:hover {
-        background: var(--surface-3);
-        color: var(--accent-strong);
-      }
-      .nd-meta {
-        font-size: 11px;
-        color: var(--faint);
-      }
-      /* ---------- agent 版本 / 升级（契约 §5.1 读侧 + §6 UI） ----------
-         版本陈旧是**信息**不是故障：徽章走 .badge-neutral（surface-2 + muted），
-         不用 --error-soft / --error-300 —— 那会让「可以升级」看起来像「坏了」。
-         只有 ack 失败（.nd-upg-err）与「节点没回话」（.nd-upg-note）才用语义色。 */
-      .nd-ver {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        min-width: 0;
-      }
-      .nd-ver-label {
-        font-size: 11px;
-        color: var(--muted);
-      }
-      .nd-ver-val {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--text);
-        /* 版本串没有空格可断（1.5.0+3fd5a59 也就 12 字符，但 commit 可以更长）：
-           390 宽下必须允许任意位置换行，否则卡片横向溢出。 */
-        overflow-wrap: anywhere;
-      }
-      /* 从不上报版本的老 agent：值本身就是「未知（老版本）」，弱化即可，不报警。 */
-      .nd-ver-val.is-unknown {
-        font-family: var(--font-sans);
-        color: var(--faint);
-      }
-      .nd-upg-err {
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--error-300);
-        overflow-wrap: anywhere;
-      }
-      .nd-upg-note {
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--warn-300);
-        overflow-wrap: anywhere;
-      }
-      .nd-slots {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-      }
-      .nd-slot-bar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 2px;
-      }
-      .nd-slot {
-        width: 0.55rem;
-        height: 0.55rem;
-        border-radius: 2px;
-        background: var(--surface-3);
-      }
-      /* 忙的槽位：原来写死了一个不在 token 表里的紫色，现在改 token。 */
-      .nd-slot.busy {
-        background: var(--accent);
-      }
-      .nd-side {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 6px;
-        flex: none;
-      }
-      .nd-acts {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        justify-content: flex-end;
-      }
-      /* 窄屏：右侧那列（心跳 + 动作）掉到名字下面，否则 390 宽会挤成一团。 */
-      @media (max-width: 640px) {
-        .nd-row {
-          flex-direction: column;
-          align-items: stretch;
-        }
-        .nd-side {
-          align-items: flex-start;
-        }
-        .nd-acts {
-          justify-content: flex-start;
-        }
-      }
-      .nd-list-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 8px;
-      }
-
-      /* ---------- 首屏骨架（独立容器，数据到后整体移除） ---------- */
-      .nd-skel-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--line);
-      }
-      .nd-skel-row:last-child {
-        border-bottom: 0;
-      }
-      .nd-skel-lines {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .nd-skel-name {
-        height: 12px;
-        width: 34%;
-      }
-      .nd-skel-meta {
-        height: 10px;
-        width: 62%;
-      }
-      .nd-skel-act {
-        width: 96px;
-        height: 24px;
-      }
-
-      /* ---------- 注册面板 / 结果块 ---------- */
-      .nd-sub {
-        margin-top: 6px;
-      }
-      .nd-form {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 14px;
-        margin-top: 14px;
-      }
-      .nd-actions {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-      }
-      .nd-actions-end {
-        justify-content: flex-end;
-        margin-top: 16px;
-      }
-      /* 两条提示：令牌只出现一次的警告 / 错误行。只用 token 变量。 */
-      .nd-warn {
-        margin-top: 12px;
-        border: 1px solid var(--line-strong);
-        border-radius: 10px;
-        padding: 0.6rem 0.85rem;
-        background: var(--warn-soft);
-        color: var(--warn-300);
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .nd-err {
-        border: 1px solid var(--line-strong);
-        border-radius: 10px;
-        padding: 0.55rem 0.85rem;
-        background: var(--error-soft);
-        color: var(--error-300);
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .nd-block-stack {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 16px;
-        margin-top: 16px;
-      }
-      .nd-block {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-        min-width: 0;
-      }
-      .nd-block-desc {
-        font-size: 11px;
-        line-height: 1.6;
-        color: var(--muted);
-      }
-      .nd-howto-acts {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        margin-top: 14px;
-      }
-      .nd-empty-icon {
-        display: flex;
-        color: var(--faint);
-      }
-
-      /* 屏读专用（#toast 的 aria-live 文本镜像：视觉 toast 由 Anotify.toast 负责）。 */
-      .nd-sr {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip-path: inset(50%);
-        white-space: nowrap;
-        border: 0;
-      }
-    </style>
+<style>
+  .c2-stack { display: grid; gap: 16px; min-width: 0; }
+  .c2-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
+  .c2-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .c2-state { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 10px; }
+  .c2-state.is-error { color: var(--error-300); }
+  .c2-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line); }
+  .c2-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .c2-name { color: var(--text); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+  .c2-name:hover { color: var(--accent); }
+  .c2-json { min-height: 100px; font-family: var(--font-mono); }
+  .c2-kv { overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+  .c2-stack [hidden] { display: none; }
+  @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
+</style>
 {{end}}
-
 {{define "content"}}
-<div id="page-main">
-  <div class="page">
-    <!-- 页头：标题 + 一句说明 + 页级动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §1）。
-         `.page-sub` 全页只出现一次：mountLayout 检测到它就不再重复画副标题。 -->
-    <div class="page-head">
-      <div class="min-w-0">
-        <h2 class="page-title">{{t "nodes.title"}}</h2>
-        <p class="page-sub">{{t "nodes.subtitle"}}</p>
-      </div>
-      <div class="page-actions">
-        <button id="nodes-refresh" type="button" class="btn btn-ghost">
-          {{t "nodes.refresh"}}
-        </button>
-        <!-- 全页唯一的注册入口：空态里的 CTA 通过 data-action 委托到这里，
-             不另造一个同名按钮（e2e 直接点 #node-register-btn）。 -->
-        <button id="node-register-btn" type="button" class="btn btn-primary">
-          {{t "nodes.register.btn"}}
-        </button>
-      </div>
-    </div>
-
-    <!-- 注册表单：初始 hidden（e2e 首帧断言「表单与结果都藏着」）。
-         与 #reg-result 是**同一个状态机**的两个状态，任何时刻只显示一个，
-         见 JS 的 regShow()。hidden 挂在裸 div 上（.card 不设 display，不冲突）。 -->
-    <div id="register-panel" class="card card-pad hidden" hidden>
-      <div class="card-title">{{t "nodes.register.title"}}</div>
-      <p class="card-sub nd-sub">{{t "nodes.register.desc"}}</p>
-      <div class="nd-form">
-        <div class="field">
-          <label class="field-label" for="reg-name">{{t "nodes.register.name"}}</label>
-          <input
-            id="reg-name"
-            class="input"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="{{t "nodes.register.name_ph"}}"
-          />
-          <p class="field-hint">{{t "nodes.register.name_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="reg-instances">{{t "nodes.register.instances"}}</label>
-          <!-- max=20 是中枢单节点硬顶（store.DefaultMaxInstances）：超了握手会被
-               too_many_instances 拒，节点永远上不了线，而页面早已显示"注册成功"。 -->
-          <input id="reg-instances" class="input" type="number" min="1" max="20" value="1" />
-          <p class="field-hint">{{t "nodes.register.instances_hint"}}</p>
-        </div>
-        <!-- 错误行：与表单同屏（面板不收起），用户的输入原样保留 ——
-             重名时改个名字再提交就行，不必重填。 -->
-        <div id="reg-error" class="nd-err hidden" hidden role="alert"></div>
-        <div class="nd-actions">
-          <button id="reg-submit" type="button" class="btn btn-primary">
-            {{t "nodes.register.submit"}}
-          </button>
-          <button id="reg-cancel" type="button" class="btn btn-ghost">
-            {{t "nodes.register.cancel"}}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 注册结果：令牌只在 201 响应体里出现一次（中枢只存 sha256），
-         所以是独立一块而不是 toast。四段产物（令牌 / docker / yaml / 原生装）
-         统一 .code-block + .code-head（标题 + 复制）+ .code-body。 -->
-    <div id="reg-result" class="card card-pad hidden" hidden>
-      <div id="reg-result-title" class="card-title"></div>
-      <div id="reg-warning" class="nd-warn"></div>
-
-      <div class="nd-block-stack">
-        <div class="nd-block">
-          <div class="code-block">
-            <div class="code-head">
-              <span>{{t "nodes.register.token_title"}}</span>
-              <button id="reg-token-copy" type="button" class="copy-btn">
-                {{t "nodes.register.copy_token"}}
-              </button>
-            </div>
-            <div class="code-body"><code id="reg-token" class="mono"></code></div>
-          </div>
-        </div>
-
-        <div class="nd-block">
-          <!-- 首选：一条能直接粘的 docker 命令。节点侧不需要任何配置文件，
-               令牌只以 -e ANOTIFY_TOKEN 的形式出现。 -->
-          <p class="nd-block-desc">{{t "nodes.register.cmd_intro"}}</p>
-          <div class="code-block">
-            <div class="code-head">
-              <span>{{t "nodes.register.cmd_title"}}</span>
-              <button id="reg-cmd-copy" type="button" class="copy-btn">
-                {{t "nodes.register.copy_cmd"}}
-              </button>
-            </div>
-            <pre class="code-body"><code id="reg-cmd" class="mono"></code></pre>
-          </div>
-          <p class="nd-block-desc">{{t "nodes.register.cmd_after"}}</p>
-        </div>
-
-        <div class="nd-block">
-          <!-- 备选：直接把 agent 二进制装在机器上。四件 bootstrap（name/server/
-               token/instances）是 v2 **唯一**保留的本地配置 —— 能力和它们的实现
-               都已经不在机器上了，由控制台部署。 -->
-          <p class="nd-block-desc">{{t "nodes.register.yaml_intro"}}</p>
-          <div class="code-block">
-            <div class="code-head">
-              <span>{{t "nodes.register.yaml_title"}}</span>
-              <button id="reg-yaml-copy" type="button" class="copy-btn">
-                {{t "nodes.register.copy_yaml"}}
-              </button>
-            </div>
-            <pre class="code-body"><code id="reg-yaml" class="mono"></code></pre>
-          </div>
-        </div>
-
-        <div class="nd-block">
-          <!-- 原生装（#281）：docker 那条路看不到宿主机文件 —— 想在**自己的项目
-               目录**里跑能力（make test / git status / 就地改文件）就只能在宿主机上跑。 -->
-          <p class="nd-block-desc">{{t "nodes.register.install_intro"}}</p>
-          <div class="code-block">
-            <div class="code-head">
-              <span>{{t "nodes.register.install_title"}}</span>
-              <button id="reg-install-copy" type="button" class="copy-btn">
-                {{t "nodes.register.copy_install"}}
-              </button>
-            </div>
-            <pre class="code-body"><code id="reg-install" class="mono"></code></pre>
-          </div>
-          <p class="nd-block-desc">{{t "nodes.register.install_after"}}</p>
-        </div>
-      </div>
-
-      <div class="nd-actions nd-actions-end">
-        <button id="reg-close" type="button" class="btn btn-ghost">
-          {{t "nodes.register.close"}}
-        </button>
-      </div>
-    </div>
-
-    <!-- 节点列表。
-         三态：骨架（首屏） / 行 / 空态或失败态，都由 JS 收敛到 #nodes-list 里。
-         **骨架不能放进 #nodes-list**：e2e 用 `#nodes-list` 子元素数 > 0 判「数据就绪」
-         （real_backend.mjs:416），骨架算子元素会让就绪信号提前成立。
-         #nodes-list 的每个直接子元素都是 div（e2e 用 `#nodes-list > div` 取行）。 -->
-    <div class="nd-list-head">
-      <div class="card-title">{{t "nodes.list.title"}}</div>
-      <span id="nodes-summary" class="nd-meta"></span>
-    </div>
-
-    <div id="nodes-skel" class="list card" aria-hidden="true">
-      <div class="nd-skel-row">
-        <div class="nd-skel-lines">
-          <div class="skeleton nd-skel-name"></div>
-          <div class="skeleton nd-skel-meta"></div>
-        </div>
-        <div class="skeleton nd-skel-act"></div>
-      </div>
-      <div class="nd-skel-row">
-        <div class="nd-skel-lines">
-          <div class="skeleton nd-skel-name"></div>
-          <div class="skeleton nd-skel-meta"></div>
-        </div>
-        <div class="skeleton nd-skel-act"></div>
-      </div>
-      <div class="nd-skel-row">
-        <div class="nd-skel-lines">
-          <div class="skeleton nd-skel-name"></div>
-          <div class="skeleton nd-skel-meta"></div>
-        </div>
-        <div class="skeleton nd-skel-act"></div>
-      </div>
-    </div>
-
-    <!-- 真实列表：数据到之前整块 hidden。hidden 挂在裸 div 上 —— .list 的
-         display:flex 会盖掉 .hidden，两者不能同元素。 -->
-    <div id="nodes-list-wrap" class="hidden">
-      <div id="nodes-list" class="list card"></div>
-    </div>
-
-    <!-- 如何接入：中枢地址与令牌都由页面就地生成。
-         示例命令全部由 JS 渲染（renderHowto），HTML 里不写死 —— 写死就必须留一个
-         「中枢地址」占位符让人手抄，而人抄的那份十有八九和地址栏不一致。
-         这一块必须保持 `div.card`（e2e 用 `div.card:has(#howto-blocks)` 找它）。 -->
-    <div class="card card-pad">
-      <div class="card-title">{{t "nodes.howto.title"}}</div>
-      <p class="card-sub nd-sub">{{t "nodes.howto.desc"}}</p>
-      <div class="nd-howto-acts">
-        <button id="howto-token-btn" type="button" class="btn btn-primary">
-          {{t "nodes.howto.gen_token"}}
-        </button>
-        <span class="nd-meta">{{t "nodes.howto.gen_hint"}}</span>
-      </div>
-      <!-- 四块命令/配置 + 令牌：JS 渲染，见 renderHowto()。 -->
-      <div id="howto-blocks" class="nd-block-stack"></div>
-    </div>
+<div id="page-main"><div class="page c2-stack">
+  <div class="page-head">
+    <div class="min-w-0"><h2 class="page-title">{{t "nodes.v4.title"}}</h2><p class="page-sub">{{t "nodes.v4.subtitle"}}</p></div>
+    <div class="page-actions"><button id="nodes-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button><button id="node-register-btn" class="btn btn-primary" type="button">{{t "nodes.v4.register"}}</button></div>
   </div>
-
-  <!-- 屏读镜像：视觉 toast 走 Anotify.toast（全站一个 #anotify-toast-host），
-       这里只把同一句话写进 aria-live 区域 —— 读屏用户也能听到错误，
-       同时也保住 frontend.mjs ⑩b 对 #toast 文本的断言。不是自绘浮层。 -->
-  <div id="toast" class="nd-sr" role="status" aria-live="polite"></div>
-</div>
+  <section id="register-panel" class="card card-pad" hidden>
+    <div class="card-title">{{t "nodes.v4.register"}}</div>
+    <div class="field"><label class="field-label" for="reg-name">{{t "nodes.v4.name"}}</label><input id="reg-name" class="input" autocomplete="off" pattern="[a-z0-9][a-z0-9._-]{0,62}" placeholder="node-a" /></div>
+    <div class="c2-actions"><button id="reg-submit" class="btn btn-primary" type="button">{{t "nodes.v4.create"}}</button><button id="reg-cancel" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
+    <div id="reg-error" class="c2-state" role="alert"></div>
+  </section>
+  <section id="reg-result" class="card card-pad c2-stack" hidden>
+    <div class="card-title">{{t "nodes.v4.token"}}</div><p class="c2-note">{{t "nodes.v4.token_warning"}}</p>
+    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.token"}}</span><button id="reg-token-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><div class="code-body"><code id="reg-token"></code></div></div>
+    <div class="code-block"><div class="code-head"><span>anode.yaml</span><button id="reg-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body"><code id="reg-yaml"></code></pre></div>
+    <div class="code-block"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body"><code id="reg-install">anode install</code>
+<code id="reg-serve">anode serve</code>
+<code id="reg-emit">anode emit fixer --id review-a.go --data '{"file":"a.go"}'</code></pre></div>
+    <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
+  </section>
+  <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><div id="nodes-list" aria-live="polite"></div></section>
+  <p class="c2-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>
+  <div class="c2-grid">
+    <section id="namespace-config" class="card card-pad">
+      <div class="card-title">{{t "nodes.v4.ns_config"}}</div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
+      <div class="field"><label for="config-namespace" class="field-label">namespace</label><select id="config-namespace" class="select"></select></div>
+      <div id="namespace-revisions" class="c2-kv"></div>
+      <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
+      <div class="c2-actions"><button id="namespace-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+      <div id="namespace-state" class="c2-state" role="status"></div>
+    </section>
+    <section id="system-config" class="card card-pad">
+      <div class="card-title">{{t "nodes.v4.retention"}}</div><p class="c2-note">{{t "nodes.v4.retention_hint"}}</p>
+      <div id="system-fields" hidden>
+        <div id="system-revisions" class="c2-kv"></div>
+        <div class="field"><label for="result-ttl" class="field-label">retention.resultTtlSec</label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /></div>
+        <div class="field"><label for="event-ttl" class="field-label">retention.eventTtlSec</label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /></div>
+        <div class="field"><label for="task-ttl" class="field-label">retention.taskTtlSec</label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /></div>
+        <div class="c2-actions"><button id="system-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+      </div>
+      <div id="system-state" class="c2-state" role="status"></div>
+    </section>
+  </div>
+</div></div>
 {{end}}
-
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-      const API = "/v1";
-
-      // 挂载「侧栏 + 顶栏」布局。
-      //
-      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
-      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
-      // item.id 对齐（"nodes"），侧栏才会高亮当前项。
-      Anotify.mountLayout({
-        active: "nodes",
-        title: t("nodes.title", "节点"),
-        subtitle: t("nodes.subtitle", "节点自己知道怎么跑某个能力，中枢只告诉它\"做什么\"。"),
-      });
-
-      let NODES = [];
-
-      /* ---------- agent 自升级的页面态（契约 CONTRACT-agent-upgrade.md §5.1） ----------
-       *
-       * 目标版本来自 `GET /v1/nodes` 的**顶层** `targetAgentVersion`（空串 = 服务端没带
-       * agent 二进制）。TARGET_KNOWN 区分两件事：
-       *   · 字段存在但为空 → 自升级不可用，给一句原因（点下去必然 501，不给可点按钮）；
-       *   · 字段根本不存在 → B 组接口尚未合并的老后端，**不画升级按钮**（点了必然 404）。
-       */
-      let HUB_TARGET = "";
-      let TARGET_KNOWN = false;
-      const PAGE_LOADED_AT = Math.floor(Date.now() / 1000);
-      // 本页里服务端回过 up_to_date 的节点：up_to_date 不落库（§5.1 只落 sent/ok/failed），
-      // 刷新列表会把它抹掉，所以在本页记住，避免按钮又跳回「升级」。
-      const UP_TO_DATE = new Set();
-      // 正在发 POST 的节点：防双击连发第二条 upgrade 帧。
-      const UPGRADING = new Set();
-      // 已经弹过 toast 的 ack 失败（key = id:at）：轮询会多次渲染同一份状态，只提示一次。
-      const TOASTED_ACK = new Set();
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = String(text);
-        return n;
+<script>
+(() => {
+  const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
+  A.mountLayout({ active: 'nodes', title: t('title'), subtitle: t('subtitle') });
+  const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const button = (text, fn) => { const x = make('button', 'btn btn-ghost btn-sm', text); x.type = 'button'; x.addEventListener('click', fn); return x; };
+  const message = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
+  const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
+  const write = (path, body, method = 'PUT') => A.api(path, { method, body: JSON.stringify(body) });
+  const showToken = (name, token) => {
+    if (typeof token !== 'string' || !token) throw new Error('Invalid NodeToken response');
+    $('register-panel').hidden = true; $('reg-result').hidden = false;
+    $('reg-token').textContent = token;
+    const server = location.origin.replace(/^http/, 'ws');
+    $('reg-yaml').textContent = 'name: ' + JSON.stringify(name) + '\nserver: ' + JSON.stringify(server) + '\ntoken: ' + JSON.stringify(token) + '\nnamespaces: [default]\nlisten: tcp://127.0.0.1:0\nvars: {}\nlimits:\n  total: 1\n  perCapability: {}\n';
+  };
+  const clearToken = () => { $('reg-token').textContent = ''; $('reg-yaml').textContent = ''; $('reg-result').hidden = true; };
+  let createdName = '';
+  $('node-register-btn').onclick = () => { clearToken(); createdName = ''; $('register-panel').hidden = false; message('reg-error', ''); $('reg-name').focus(); };
+  $('reg-cancel').onclick = $('reg-close').onclick = () => { clearToken(); $('register-panel').hidden = true; };
+  for (const id of ['token', 'yaml']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
+  $('reg-submit').onclick = async () => {
+    const name = $('reg-name').value.trim(); if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) { message('reg-error', t('name') + ': ^[a-z0-9][a-z0-9._-]{0,62}$', true); return; }
+    $('reg-submit').disabled = true; clearToken(); message('reg-error', t('loading'));
+    try {
+      if (createdName !== name) {
+        await write('/v1/nodes', { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name }, spec: {} }, 'POST'); createdName = name;
       }
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）：
-      // 页内不再自己维护 .toast 浮层。#toast 只是 aria-live 文本镜像（见 HTML 注释）。
-      function toast(msg, kind) {
-        Anotify.toast(msg, kind);
-        const live = document.getElementById("toast");
-        if (live) live.textContent = msg;
+      const response = await write('/v1/nodes/' + encodeURIComponent(name) + '/tokens', {}, 'POST');
+      if (response.kind !== 'NodeToken' || response.node?.name !== name) throw new Error('Invalid NodeToken response');
+      showToken(name, response.token); await loadNodes();
+    } catch (e) { message('reg-error', errorText(e), true); } finally { $('reg-submit').disabled = false; }
+  };
+  async function rotate(name) {
+    if (!confirm(t('rotate_confirm').replace('{name}', name))) return;
+    clearToken();
+    try { const response = await write('/v1/nodes/' + encodeURIComponent(name) + '/tokens', {}, 'POST'); showToken(name, response.token); await loadNodes(); }
+    catch (e) { A.toast(errorText(e), 'error'); }
+  }
+  async function loadNodes() {
+    $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');
+    try {
+      const { items: rows } = await A.apiList('/v1/nodes'); $('nodes-list').replaceChildren();
+      for (const resource of rows) {
+        const n = A.model.node(resource), row = make('div', 'c2-row'); row.dataset.node = n.name;
+        const main = make('div', 'c2-main'), link = make('a', 'c2-name', n.name);
+        link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default'); main.appendChild(link);
+        main.appendChild(make('div', 'c2-note', n.status.draining ? t('drain') : typeof n.status.online === 'boolean' ? t(n.status.online ? 'online' : 'offline') : t('unknown')));
+        main.appendChild(make('div', 'c2-kv', t('effective_namespaces') + ': ' + (n.effectiveNamespaces.join(', ') || t('none'))));
+        main.appendChild(make('div', 'c2-kv', 'configRevision=' + (n.configRevision ?? '?') + ' · appliedRevision=' + (n.appliedRevision ?? '?')));
+        const occupied = (n.instances || []).filter(x => x.occupancy === 'occupied').length, idle = (n.instances || []).filter(x => x.occupancy === 'idle').length;
+        main.appendChild(make('div', 'c2-note', t('slots') + ': ' + t('occupied') + ' ' + occupied + ' · ' + t('idle') + ' ' + idle + ' · ' + t('unknown') + ' ' + (n.instances?.length ? n.instances.filter(x => x.occupancy === 'unknown').length : '?')));
+        row.append(main, button(t('rotate'), () => rotate(n.name))); $('nodes-list').appendChild(row);
       }
-
-      function fmtTime(ts) {
-        if (!ts) return t("nodes.never", "从未");
-        const d = new Date(ts * 1000);
-        if (isNaN(d.getTime())) return String(ts);
-        const diff = Date.now() - d.getTime();
-        if (diff < 60e3) return t("common.time.just_now", "刚刚");
-        if (diff < 3600e3)
-          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
-        if (diff < 86400e3)
-          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
-        return d.toISOString().slice(0, 16).replace("T", " ");
-      }
-
-      // 状态点类：线上/离线/排空中。e2e 用 `#nodes-list .st-online` 判在线
-      // （real_backend.mjs:424），而类名是 `"st-dot st-" + STATUS_CLASS[...]` 拼出来的 ——
-      // 页面源码里搜不到字面量 st-online 不代表它不在渲染结果里。
-      const STATUS_CLASS = { online: "online", offline: "offline", draining: "draining" };
-
-      /* ---------- 加载 / 渲染 ---------- */
-      //
-      // 骨架只在第一次数据落地前存在：拿到结果（行 / 空态 / 失败）就整体撤掉，
-      // 同时把装着真实列表的容器显示出来。
-      function revealList() {
-        const skel = document.getElementById("nodes-skel");
-        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
-        const wrap = document.getElementById("nodes-list-wrap");
-        if (wrap) wrap.classList.remove("hidden");
-      }
-
-      async function loadAll() {
-        try {
-          // 失败必须走失败态（loadErrorNode + 重试），绝不画成"还没有节点" ——
-          // 那会让用户以为数据被清空了。演示数据由 mock.js 在 fetch 层应答。
-          const data = await Anotify.api(API + "/nodes");
-          NODES = (data && data.nodes) || [];
-          // 目标版本 = 中枢当前带的 agent 二进制版本（契约 §5.1，顶层字段）。
-          // hasOwnProperty 而不是真值判断：空串与「字段缺失」是两种不同的降级。
-          TARGET_KNOWN = !!data && Object.prototype.hasOwnProperty.call(data, "targetAgentVersion");
-          HUB_TARGET = String((data && data.targetAgentVersion) || "");
-          render();
-        } catch (err) {
-          renderLoadError(err);
-        }
-      }
-
-      function render() {
-        revealList();
-        const list = document.getElementById("nodes-list");
-        if (!list) return;
-        list.replaceChildren();
-
-        toastFreshAckFailures();
-
-        const online = NODES.filter((n) => n.status === "online").length;
-        const summary = document.getElementById("nodes-summary");
-        if (summary) {
-          summary.textContent = t("nodes.count", "{online}/{total} 在线")
-            .replace("{online}", online)
-            .replace("{total}", NODES.length);
-        }
-
-        if (!NODES.length) {
-          list.appendChild(emptyState());
-          return;
-        }
-        for (const n of NODES) list.appendChild(nodeRow(n));
-      }
-
-      function renderLoadError(err) {
-        revealList();
-        const list = document.getElementById("nodes-list");
-        if (!list) return;
-        list.replaceChildren();
-        list.appendChild(Anotify.loadErrorNode(err, () => loadAll()));
-      }
-
-      /* ---------- agent 版本 / 升级（契约 §5.1 读侧 + §6 UI） ---------- */
-
-      // upgradeTarget 目标版本：顶层字段是主路径；per-node 别名只作兼容兜底。
-      function upgradeTarget(n) {
-        return String((n && n.targetAgentVersion) || "") || HUB_TARGET;
-      }
-
-      // agentVersionText：空版本不写成空白，也不编一个版本号 ——
-      // 老 agent 不上报，就是「未知（老版本）」（契约 §3）。
-      function agentVersionText(n) {
-        const v = String((n && n.agentVersion) || "");
-        return v || t("nodes.upgrade.version_unknown", "未知（老版本）");
-      }
-
-      // versionLine：一行「agent 版本 X」+ 中性提示徽章。
-      // 陈旧/最新都走 .badge-neutral：这是状态信息，不是错误（红线：不用错误色）。
-      function versionLine(n) {
-        const line = el("div", "nd-ver");
-        line.appendChild(
-          el("span", "nd-ver-label", t("nodes.upgrade.version_label", "agent 版本")),
-        );
-        const ver = String((n && n.agentVersion) || "");
-        const val = el(
-          "span",
-          "nd-ver-val" + (ver ? "" : " is-unknown"),
-          agentVersionText(n),
-        );
-        if (ver) val.title = ver; // 卡片只给一眼能对上的一串；完整串挂 title
-        line.appendChild(val);
-
-        const target = upgradeTarget(n);
-        const rec = (n && n.agentUpgrade) || {};
-        let badge = "";
-        if ((ver && target && ver === target) || rec.status === "ok") {
-          badge = t("nodes.upgrade.latest", "已是最新");
-        } else if (ver && target) {
-          badge = t("nodes.upgrade.stale_hint", "有新版本可用");
-        }
-        // 版本为空（未知）时不加「陈旧」徽章：值本身已经写了「未知（老版本）」，
-        // 同一句话说两遍只会让人以为有两件事。
-        if (badge) line.appendChild(el("span", "badge badge-neutral", badge));
-        return line;
-      }
-
-      // upgradeNote：ack 失败 / 节点没回话的行内提示。
-      // 这条必须落在行里而不是只弹 toast：中枢把 agent_upgrade 落库了（§5.1），
-      // 用户刷新页面、隔天回来看，也得能看到「上次升级为什么没成」。
-      function upgradeNote(n) {
-        const rec = (n && n.agentUpgrade) || {};
-        if (rec.status === "failed" && rec.error) {
-          return el(
-            "div",
-            "nd-upg-err",
-            t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
-              Anotify.upgradeErrorText(rec.error),
-          );
-        }
-        if (Anotify.upgradeAckStale(rec)) {
-          return el("div", "nd-upg-note", t("nodes.upgrade.ack_stale", "节点未回复（可能已断线）"));
-        }
-        return null;
-      }
-
-      // upgradeControl 决定这一行右侧显示什么。四种态：
-      //   服务端没带二进制 → 一句说明（不给可点按钮：点下去必然 501）
-      //   已是最新（版本相同 / 本页回过 up_to_date / ack ok）→ 禁用的「已是最新」
-      //   ack= sent 且未超时 → 「升级中…」禁用
-      //   其余 → 「升级」可点（离线节点也允许点：409 node_offline 会映射成人话）
-      function upgradeControl(n) {
-        const rec = (n && n.agentUpgrade) || {};
-        const ver = String((n && n.agentVersion) || "");
-        const target = upgradeTarget(n);
-
-        // 老后端（B 组接口未合并）：响应里没有 targetAgentVersion。
-        // 此时**不画升级按钮** —— 点了必然 404，给一个注定失败的按钮比不给更糟。
-        // 对比：字段存在但为空串 = 服务端没带二进制（下面那一支），要明说原因。
-        if (!TARGET_KNOWN) return null;
-
-        if (!HUB_TARGET) {
-          const off = el(
-            "span",
-            "badge badge-neutral",
-            t("nodes.upgrade.err.agent_binary_unavailable", "服务端没带 agent 二进制"),
-          );
-          off.title = t(
-            "nodes.upgrade.no_binary_hint",
-            "中枢没有配置 ANOTIFY_AGENT_BIN，自升级不可用；请在节点上跑 anotify-agent upgrade，或重跑安装脚本",
-          );
-          // data-upgrade-state 是给 e2e / 调试看的稳定钩子：文案随语言变，状态不变。
-          off.dataset.upgradeState = "unavailable";
-          return off;
-        }
-
-        const upToDate =
-          UP_TO_DATE.has(n.id) || rec.status === "ok" || (ver && target && ver === target);
-        if (upToDate) {
-          const latest = el("button", "btn btn-quiet btn-sm", t("nodes.upgrade.latest", "已是最新"));
-          latest.type = "button";
-          latest.disabled = true;
-          latest.dataset.upgradeState = "latest";
-          return latest;
-        }
-
-        const sending = UPGRADING.has(n.id) || (rec.status === "sent" && !Anotify.upgradeAckStale(rec));
-        const btn = el(
-          "button",
-          "btn btn-quiet btn-sm",
-          sending ? t("nodes.upgrade.sending", "升级中…") : t("nodes.upgrade.btn", "升级"),
-        );
-        btn.type = "button";
-        btn.disabled = sending;
-        if (sending) {
-          btn.dataset.upgradeState = "sending";
-        } else {
-          btn.dataset.upgradeState = "ready";
-          btn.dataset.action = "upgrade";
-          btn.addEventListener("click", () => upgrade(n));
-        }
-        return btn;
-      }
-
-      // toastFreshAckFailures：轮询会把同一份 ack 状态重复渲染，所以：
-      //   · 只在失败是**本页加载之后**发生的才弹 toast（at > PAGE_LOADED_AT）；
-      //   · 刷新页面时已有的历史失败只留行内提示（不该每次进页面都报警）。
-      function toastFreshAckFailures() {
-        for (const n of NODES) {
-          const rec = (n && n.agentUpgrade) || {};
-          if (rec.status !== "failed" || !rec.error) continue;
-          const at = Number(rec.at) || 0;
-          if (at <= PAGE_LOADED_AT) continue;
-          const key = n.id + ":" + at;
-          if (TOASTED_ACK.has(key)) continue;
-          TOASTED_ACK.add(key);
-          toast(
-            t("nodes.upgrade.ack_failed", "节点上的升级没成功：") +
-              Anotify.upgradeErrorText(rec.error),
-            "error",
-          );
-        }
-      }
-
-      // upgrade 控制台下发的唯一动作：**只发指令 + 展示结果**。
-      // 下载 / 校验 / 替换 / 重启全在节点侧（契约 §0 与 §5）—— 控制台不碰二进制，
-      // 也不实现任何升级逻辑。二次确认不可省：这会重启 agent（在跑的任务等完后才退）。
-      async function upgrade(n) {
-        const msg = t(
-          "nodes.upgrade.confirm",
-          "升级 {name} 上的 agent？会替换节点上的二进制并重启 agent；正在跑的任务会等完（grace 20s）。",
-        ).replace("{name}", n.name || "");
-        if (!confirm(msg)) return;
-        if (UPGRADING.has(n.id)) return;
-        UPGRADING.add(n.id);
-        render(); // 立刻变「升级中…」：否则用户以为没点上，会再点一次
-        try {
-          const res = await Anotify.api(
-            API + "/nodes/" + encodeURIComponent(n.id) + "/upgrade",
-            { method: "POST" },
-          );
-          const status = String((res && res.status) || "");
-          if (status === "up_to_date") {
-            UP_TO_DATE.add(n.id);
-            toast(t("nodes.upgrade.latest", "已是最新"));
-          } else {
-            // sent：upgrade 帧已推给节点，结果靠 upgrade_ack 回写 nodes.agent_upgrade。
-            // 主动补两次刷新（ack 通常一两秒内到），用户不用手点刷新。
-            toast(
-              t("nodes.upgrade.sent", "已发出升级，节点重启后生效（稍后刷新可看到新版本）"),
-            );
-            setTimeout(() => loadAll(), 900);
-            setTimeout(() => loadAll(), 3000);
-          }
-        } catch (err) {
-          const code = Anotify.upgradeErrorCode(err);
-          toast(
-            t("nodes.upgrade.failed", "升级失败：") +
-              (code
-                ? Anotify.upgradeErrorText(code)
-                : (err && (err.detail || err.message)) || ""),
-            "error",
-          );
-        } finally {
-          UPGRADING.delete(n.id);
-          loadAll();
-        }
-      }
-
-      // 空态：图标 + 标题 + 说明 + 动作（契约 §2 的 .empty 口径）。
-      const EMPTY_ICON =
-        '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor"' +
-        ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<rect x="3" y="4" width="18" height="7" rx="1.5"></rect>' +
-        '<rect x="3" y="13" width="18" height="7" rx="1.5"></rect>' +
-        '<path d="M7 7.5h.01M7 16.5h.01"></path></svg>';
-
-      function emptyState() {
-        const box = el("div", "empty");
-        const icon = el("div", "nd-empty-icon");
-        icon.innerHTML = EMPTY_ICON;
-        box.appendChild(icon);
-        box.appendChild(el("div", "card-title", t("nodes.emptyTitle", "还没有节点")));
-        box.appendChild(
-          el(
-            "p",
-            "card-sub",
-            t("nodes.empty", "这个命名空间里还没有节点。按下面的步骤注册第一台，它上线后才会接活。"),
-          ),
-        );
-        // 不另造 id：#node-register-btn 必须全页唯一，CTA 用 data-action 委托到同一处理。
-        const act = el("button", "btn btn-primary btn-sm", t("nodes.register.btn", "注册节点"));
-        act.type = "button";
-        act.setAttribute("data-action", "register");
-        box.appendChild(act);
-        return box;
-      }
-
-      // 一行一台节点：状态点 + 名字 + 标签 + 能力 + 槽位 + 心跳 + 操作。
-      function nodeRow(n) {
-        const row = el("div", "list-row nd-row");
-        const main = el("div", "nd-row-main");
-
-        // ---- 名字（详情页入口）+ 状态 + 标签 ----
-        const head = el("div", "nd-row-head");
-        // 名字就是进详情页的入口（e2e 从 `a[href^="node.html?id="]` 点进去）。
-        const nameLink = el("a", "nd-name");
-        nameLink.href = "node.html?id=" + encodeURIComponent(n.id);
-        nameLink.appendChild(el("span", "st-dot st-" + (STATUS_CLASS[n.status] || "offline")));
-        nameLink.appendChild(document.createTextNode(n.name || "?"));
-        head.appendChild(nameLink);
-        head.appendChild(el("span", "nd-status", t("nodes.status." + n.status, n.status)));
-
-        // 节点自报的 tags。节点契约里没有 platform 字段（store.Node），
-        // 所以这里显示它真正的标签，而不是编一个"平台"出来。
-        const tags = n.tags || [];
-        if (tags.length) {
-          const tagWrap = el("div", "nd-tags");
-          for (const tag of tags) tagWrap.appendChild(el("span", "nd-tag", tag));
-          head.appendChild(tagWrap);
-        }
-        main.appendChild(head);
-
-        // ---- agent 版本 + 上次升级的结果（契约 §5.1） ----
-        // 放在能力之前：版本是「这台机器能不能自升级」的第一眼信息，
-        // 而 ack 失败是**行级**结果，必须和版本贴在一起看。
-        main.appendChild(versionLine(n));
-        const upgNote = upgradeNote(n);
-        if (upgNote) main.appendChild(upgNote);
-
-        // ---- 声明的能力 ----
-        //
-        // 节点**只声明**「我会哪些能力」（能力名 + 版本），命令与 argv 留在本机、
-        // 不上传 —— 这是整套设计的安全边界。所以这一块展示的就是"这台机器能干什么"。
-        // 标签优先用用户取的显示名（「分析 PR」比 analyze-pr@1 好读），悬停给出
-        // 精确身份 name@version，点了去能力详情。超过 8 个折叠成 "+N"。
-        const CAP_COLLAPSE = 8;
-        const capList = n.capabilities || [];
-        const caps = el("div", "nd-caps");
-        caps.appendChild(el("span", "nd-caps-label", t("nodes.caps_label", "声明能力")));
-        if (!capList.length) {
-          caps.appendChild(el("span", "nd-meta", t("nodes.no_caps", "未声明能力")));
-        } else {
-          const chipFor = (c) => {
-            const exact = c.name + "@" + c.version;
-            const chip = el("span", "out-chip is-link nd-cap", c.displayName || exact);
-            chip.title = exact;
-            if (c.id) {
-              chip.addEventListener("click", () => {
-                location.href = "capabilities.html?focus=" + encodeURIComponent(c.id);
-              });
-            }
-            return chip;
-          };
-          const shown = Math.min(capList.length, CAP_COLLAPSE);
-          for (let i = 0; i < shown; i++) caps.appendChild(chipFor(capList[i]));
-          if (capList.length > shown) {
-            const more = el(
-              "button",
-              "out-chip is-link nd-cap",
-              t("nodes.caps_more", "+{n} 个").replace("{n}", capList.length - shown),
-            );
-            more.type = "button";
-            more.addEventListener("click", () => {
-              for (let i = shown; i < capList.length; i++) {
-                caps.insertBefore(chipFor(capList[i]), more);
-              }
-              more.remove();
-            });
-            caps.appendChild(more);
-          }
-        }
-        main.appendChild(caps);
-
-        // ---- 槽位占用 ----
-        const slots = n.instances || 0;
-        const busy = n.busy || 0;
-        const slotLine = el("div", "nd-slots");
-        slotLine.appendChild(
-          el(
-            "span",
-            "nd-meta",
-            t("nodes.slots", "槽位 {busy}/{total}")
-              .replace("{busy}", busy)
-              .replace("{total}", slots),
-          ),
-        );
-        if (slots > 0) {
-          const bar = el("div", "nd-slot-bar");
-          for (let i = 0; i < slots; i++) {
-            bar.appendChild(el("span", "nd-slot" + (i < busy ? " busy" : "")));
-          }
-          slotLine.appendChild(bar);
-        }
-        main.appendChild(slotLine);
-
-        // ---- 右侧：心跳 + 操作 ----
-        const side = el("div", "nd-side");
-        side.appendChild(
-          el(
-            "div",
-            "nd-meta",
-            t("nodes.last_seen", "心跳") + " " + fmtTime(n.lastSeenAt),
-          ),
-        );
-        const acts = el("div", "nd-acts");
-        // 跳到事件流，只看这个节点处理过的事件。传的是节点 **id**（不是名字）：
-        // 事件流那边会拿它去查 GET /v1/tasks?nodeId=，再按 traceId 反查事件。
-        const evBtn = el("button", "btn btn-quiet btn-sm", t("nodes.view_events", "查看事件"));
-        evBtn.type = "button";
-        evBtn.addEventListener("click", () => {
-          location.href = "events.html?node=" + encodeURIComponent(n.id);
-        });
-        acts.appendChild(evBtn);
-
-        if (n.status !== "draining") {
-          const drainBtn = el("button", "btn btn-quiet btn-sm", t("nodes.drain", "排空"));
-          drainBtn.type = "button";
-          drainBtn.addEventListener("click", () => drain(n));
-          acts.appendChild(drainBtn);
-        } else {
-          acts.appendChild(
-            el("span", "status-badge status-warn", t("nodes.draining_hint", "排空中")),
-          );
-        }
-        // 升级按钮放在这一行动作的最后：它是「换二进制 + 重启」这类重操作，
-        // 不该抢「查看事件」（日常最常用的那个）的位置。
-        // upgradeControl 在老后端上返回 null（没有 targetAgentVersion = 接口未合并），
-        // 别 append 一个 null 进去（appendChild(null) 会抛 TypeError）。
-        const upgradeBtn = upgradeControl(n);
-        if (upgradeBtn) acts.appendChild(upgradeBtn);
-        side.appendChild(acts);
-
-        row.appendChild(main);
-        row.appendChild(side);
-        return row;
-      }
-
-      // drain 排空节点：只改 status，**不取消**在跑的任务。
-      // 排空是渐进退役（跑完手上这单就不再接新活），取消是破坏性操作。
-      async function drain(n) {
-        const msg = t(
-          "nodes.drain_confirm",
-          "排空 {name}？它跑完手上的任务后不再接新任务。",
-        ).replace("{name}", n.name || "");
-        if (!confirm(msg)) return;
-        try {
-          await Anotify.api(API + "/nodes/" + encodeURIComponent(n.id) + "/drain", {
-            method: "POST",
-          });
-          toast(t("nodes.drain_done", "已排空"));
-          loadAll();
-        } catch (err) {
-          toast(t("nodes.drain_failed", "排空失败：") + ((err && err.message) || ""), "error");
-        }
-      }
-
-      /* ---------- 注册节点（issue #198） ---------- */
-      //
-      // 令牌只在 POST /v1/nodes 的 201 响应体里出现一次（中枢只存 sha256），
-      // 所以这块有三条纪律：
-      //   1) 令牌绝不写 localStorage / 日志，只活在 #reg-token 与 #reg-yaml 里；
-      //   2) 关掉结果块、或再点一次「注册节点」，都要把 textContent 真的清空——
-      //      只做 CSS 隐藏等于把凭证留在页面上；
-      //   3) 提交失败（尤其 409 重名）时结果块保持隐藏，绝不能把上一个令牌露出来。
-      const REG_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
-      // 中枢单节点实例硬顶：store.DefaultMaxInstances = 20。
-      // 超过它 hello 会被 too_many_instances 拒（internal/ws/node_handshake.go），
-      // 节点永远上不了线——所以 UI 必须跟这个上限，不能只当"建议值"。
-      const REG_MAX_INSTANCES = 20;
-      // JS 侧的中文兜底文案；权威文案在四语 locale 的 nodes.register.err.invalid_name。
-      const REG_NAME_RULE =
-        "名字不合法：只能用小写字母、数字、点（.）、下划线（_）、短横线（-），1–63 个字符，且以字母或数字开头";
-
-      function regEl(id) {
-        return document.getElementById(id);
-      }
-
-      // hidden 属性与 .hidden 类同步切：两者都真的不渲染，
-      // 同步是为了不留「看着没了、其实还在」的中间态。
-      function regHide(id, on) {
-        const node = regEl(id);
-        if (!node) return;
-        node.hidden = !!on;
-        node.classList.toggle("hidden", !!on);
-      }
-
-      /* 面板状态机：一次只显示一个。
-       *
-       * e2e 首帧断言 #register-panel 与 #reg-result 都藏着（frontend.mjs
-       * checkNodeRegister ①），所以可见性收敛到 regShow 一处：
-       *   panel  → 表单（点「注册节点」/ 提交出错后回到这里）
-       *   result → 令牌与四段产物（提交成功后）
-       *   none   → 都收起（取消 / 关闭）
-       * 三块各自的 hidden 仍然写在元素上，regShow 是唯一写它的地方。 */
-      function regShow(state) {
-        regHide("register-panel", state !== "panel");
-        regHide("reg-result", state !== "result");
-      }
-
-      function regError(msg) {
-        const box = regEl("reg-error");
-        if (!box) return;
-        box.textContent = msg || "";
-        regHide("reg-error", !msg);
-      }
-
-      // 清空结果块。令牌是从 DOM 里**删掉**的（textContent = ""），不是藏起来。
-      // 可见性不在这里管（regShow 负责），这里只负责"内容不留痕"。
-      function regClearResult() {
-        const ids = ["reg-token", "reg-cmd", "reg-yaml", "reg-install", "reg-result-title", "reg-warning"];
-        for (const id of ids) {
-          const node = regEl(id);
-          if (node) node.textContent = "";
-        }
-      }
-
-      function regResetInputs() {
-        regEl("reg-name").value = "";
-        regEl("reg-instances").value = "1";
-      }
-
-      // 节点侧镜像：与 cmd/agent 的官方跑法一致，agent 从 ANOTIFY_TOKEN 环境变量读令牌。
-      const AGENT_IMAGE = "ghcr.io/zzjcool/anotify-agent:latest";
-
-      // 成功面板给的是**一行能直接粘的 docker 命令**：容器里没有 node.yaml 可指，
-      // 四件 bootstrap 全部走 -e（cmd/agent/config.go:configFromEnv 认这几个名字）。
-      //
-      // 工作目录**不在命令行上**：它属于能力定义（run.workDir），部署时随产物下发。
-      // 节点侧不再有白名单要授权，所以既没有 -e ANOTIFY_WORK_DIRS 也没有 -v 挂载
-      // （容器里真要看到宿主目录，仍然得部署者自己加 -v —— 那是他的显式选择）。
-      //
-      // 注意返回值里内联的是**真实令牌**，所以它只能写进 #reg-cmd 的 textContent，
-      // 不许落到 localStorage / console / 日志（见上面那三条纪律）。
-      function agentDockerCmd(token, server, name, instances) {
-        // ANOTIFY_SERVER 必带：容器里 agent 猜不到中枢地址，猜错的表现是
-        // 「启动成功但一直连不上」，比启动失败难查十倍。
-        let cmd =
-          "docker run -d --restart=always " +
-          "-e ANOTIFY_SERVER=" + (server || "") + " " +
-          "-e ANOTIFY_TOKEN=" + (token || "") + " ";
-        // 名字与槽位数只在用户真的填了「非缺省」时才带：命令越短越不容易贴错，
-        // 而缺省值（主机名 / 1 个槽位）由 agent 自己兜。
-        if (name) cmd += "-e ANOTIFY_NAME=" + name + " ";
-        // 槽位数是**节点自己的资源声明**（契约 D5）：中枢只能少用、不能多用。
-        // 不带这一项 = 用 agent 的缺省（1 个槽位），用户填了 4 却只跑 1 个
-        // 会表现成「机器闲着但任务排队」，所以填了就必须带上。
-        if (instances && Number(instances) > 1) {
-          cmd += "-e ANOTIFY_INSTANCES=" + instances + " ";
-        }
-        return cmd + AGENT_IMAGE;
-      }
-
-      // node.yaml 是**直接装 agent 二进制**那条路的配置：v2 只剩 bootstrap 四项
-      // （name / server / token / instances）。
-      //
-      // 为什么两条路都给：docker 一行命令门槛最低，但「机器上已经有 Go/Python 生态、
-      // 不想装 docker」也完全合理；而且这份 YAML 是**可审计**的（能进 git、能 diff），
-      // 只给 docker 命令会让这类用户没有出口。
-      //
-      // 键名与 cmd/agent/config.go 的 yaml tag 一一对应（name/server/token/instances），
-      // 多一个键就是未知字段 → agent 启动直接失败（KnownFields(true)）。
-      // 工作目录**不在这里**：它属于能力定义（「能力」页新建表单里的 run.workDir），
-      // 随部署下发；写进 node.yaml 反而会因为未知字段让 agent 起不来。
-      function agentNodeYaml(token, name, instances, server) {
-        let y =
-          "name: " + (name || "") + "\n" +
-          "server: " + (server || "") + "\n" +
-          "token: " + (token || "") + "\n" +
-          "instances: " + (instances || 1) + "\n";
-        // 一行注释提醒：用户会在这份 yaml 里找「工作目录在哪配」，找不到时
-        // 很容易以为节点页少给了一项。注释不参与解析（agent 只看四个键）。
-        y += "# " + t(
-          "nodes.register.yaml_workdir_note",
-          "工作目录在「能力」页的能力里配（run.workDir），随部署一起发到节点；这份 yaml 不需要写。",
-        ) + "\n";
-        return y;
-      }
-
-      // agentInstallCmd 是**原生装**那条路（scripts/install-agent.sh）。
-      //
-      // 与 docker 的区别是本质的：容器里看不到宿主机文件，想在项目目录里跑能力
-      // 就只能在宿主机上跑。代价是 agent 以**这个用户**的身份执行脚本 —— 所以
-      // 脚本默认拒绝 root。
-      //
-      // 安装命令上不传任何目录白名单：工作目录是**能力定义**的一部分（run.workDir），
-      // 随部署下发。那种全局白名单只能表达「这些目录全给所有能力」，恰好是最危险的
-      // 授权方式；脚本仍旧兼容旧参数（脚本自己的事），但页面不传。
-      function agentInstallCmd(token, server, name, instances) {
-        let cmd =
-          "curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh -s --" +
-          " --token=" + (token || "") +
-          " --server=" + (server || "");
-        if (name) cmd += " --name=" + name;
-        if (instances && Number(instances) > 1) cmd += " --instances=" + instances;
-        return cmd;
-      }
-
-      // 错误映射：先说人话，状态码只是细分。
-      // 401 不在这里分支：Anotify.api() 已自行跳登录页，走到这里落兜底就行。
-      function regErrorText(err, name) {
-        const status = err && err.status;
-        if (status === 409) {
-          return t(
-            "nodes.register.err.name_taken",
-            "这个命名空间里已经有叫 {name} 的节点",
-          ).replace("{name}", name);
-        }
-        if (status === 400) {
-          return t("nodes.register.err.invalid_name", REG_NAME_RULE);
-        }
-        if (status === 404) {
-          return t(
-            "nodes.register.err.not_found",
-            "当前命名空间不存在（可能已被删除），刷新后重试",
-          );
-        }
-        if (status === 403) {
-          return t("nodes.register.err.forbidden", "没有权限在这个命名空间注册节点");
-        }
-        return (
-          t("nodes.register.err.failed", "注册失败：") +
-          ((err && (err.detail || err.message)) || "")
-        );
-      }
-
-      // instancesFromPanel 读注册面板上用户填的槽位数（提交后面板会被隐藏，
-      // 所以值必须从输入框读，而不是从"当前值"重新推）。
-      function instancesFromPanel() {
-        const parsed = parseInt(regEl("reg-instances").value, 10);
-        if (isNaN(parsed)) return 1;
-        return Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES);
-      }
-
-      function showRegisterResult(node, token, name) {
-        const finalName = (node && node.name) || name;
-        regEl("reg-result-title").textContent = t(
-          "nodes.register.done",
-          "节点「{name}」已注册",
-        ).replace("{name}", finalName);
-        regEl("reg-warning").textContent = t(
-          "nodes.register.warn_once",
-          "令牌只显示这一次：关闭后无法再取。丢了就删掉节点重新注册。",
-        );
-        regEl("reg-token").textContent = token;
-        // 两个块都用 201 响应体里的真令牌填：用户复制就能跑
-        regEl("reg-cmd").textContent = agentDockerCmd(
-          token,
-          window.location.origin,
-          finalName,
-          instancesFromPanel(),
-        );
-        // node.yaml 只剩 bootstrap 四项（工作目录在能力定义里配，见 agentNodeYaml）。
-        regEl("reg-yaml").textContent = agentNodeYaml(
-          token,
-          finalName,
-          instancesFromPanel(),
-          window.location.origin,
-        );
-        // 原生装命令不带目录白名单：工作目录属于能力定义，随部署下发。
-        regEl("reg-install").textContent = agentInstallCmd(
-          token,
-          window.location.origin,
-          finalName,
-          instancesFromPanel(),
-        );
-        regShow("result");
-      }
-
-      async function submitRegister() {
-        const btn = regEl("reg-submit");
-        // 双击 / 回车连发的第二下直接忽略：否则第一下刚拿到令牌，
-        // 第二下拿 409 回来又把结果块洗掉。
-        if (btn.disabled) return;
-        const name = (regEl("reg-name").value || "").trim();
-        const parsed = parseInt(regEl("reg-instances").value, 10);
-        // instances 是注册时的**建议值**：中枢只做非负校验、不落库（真槽位数由 agent
-        // hello 时申报，见 cmd/agent 的 slots()）。仍然夹到 [1,20]：超了中枢硬顶
-        // （store.DefaultMaxInstances = 20）的节点握手会被 too_many_instances 拒，
-        // 永远上不了线，而那时页面早已显示"注册成功"，用户完全没有线索。
-        // 下限取 1 对齐 slots()（<=0 一律记 1 个槽位）。
-        const instances = !isNaN(parsed)
-          ? Math.min(Math.max(parsed, 1), REG_MAX_INSTANCES)
-          : 1;
-
-        regError("");
-        // 名字空 / 不合规则：本地就拦住，不发请求。
-        // 这一支**不动**面板可见性，也不动用户已填的内容（改一个字符就能重提）。
-        if (!name) {
-          regShow("panel");
-          regError(t("nodes.register.err.empty_name", "先填节点名"));
-          return;
-        }
-        if (!REG_NAME_RE.test(name)) {
-          regShow("panel");
-          regError(t("nodes.register.err.invalid_name", REG_NAME_RULE));
-          return;
-        }
-
-        const label = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = t("nodes.register.submitting", "注册中…");
-        try {
-          // namespaceId 由 Anotify.api() 自动注入（/v1/nodes 在 NS_PATHS 里），
-          // 手写 query 只会让后端读到重复参数。
-          const res = await Anotify.api(API + "/nodes", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, instances }),
-          });
-          showRegisterResult(res && res.node, (res && res.token) || "", name);
-          // 注册成功后面板收起：输入归位，下次打开是干净的。
-          regResetInputs();
-          // 列表里要出现刚注册的那台（offline）：注册成功 ≠ 已上线。
-          loadAll();
-        } catch (err) {
-          // 失败时结果块必须保持隐藏：重名（409）绝不能顺带露出上一个令牌。
-          // 用户的输入**原样保留** —— 422/409 都是「改个名字再提交」，重填一遍
-          // 只会让人以为页面把他的输入丢了。
-          regClearResult();
-          regShow("panel");
-          regError(regErrorText(err, name));
-        } finally {
-          btn.disabled = false;
-          btn.textContent = label;
-        }
-      }
-
-      function openRegister() {
-        // 顺序有讲究：先把上一个结果块（含令牌）从 DOM 里清掉，再展开表单——
-        // 「再点一次注册节点 → 上一个令牌块消失」靠的就是这里。
-        regClearResult();
-        regShow("panel");
-        regError("");
-        const nameInput = regEl("reg-name");
-        if (nameInput) nameInput.focus();
-      }
-
-      function closeRegister() {
-        regShow("none");
-        regClearResult();
-        regError("");
-      }
-
-      // 复制按钮统一走 window.Anotify.copyText(btn, getTextFn)：
-      // 它自己把按钮文字临时改成「已复制 ✓」，令牌只在内存里过一手。
-      function regWireCopy(btnId, textId) {
-        const btn = regEl(btnId);
-        if (!btn) return;
-        btn.addEventListener("click", () => {
-          const text = regEl(textId).textContent;
-          if (!text) return;
-          window.Anotify.copyText(btn, () => text);
-        });
-      }
-
-      function initRegister() {
-        regEl("node-register-btn").addEventListener("click", openRegister);
-        regEl("nodes-refresh").addEventListener("click", () => loadAll());
-        regEl("reg-submit").addEventListener("click", submitRegister);
-        regEl("reg-cancel").addEventListener("click", closeRegister);
-        regEl("reg-close").addEventListener("click", closeRegister);
-        regWireCopy("reg-token-copy", "reg-token");
-        regWireCopy("reg-cmd-copy", "reg-cmd");
-        regWireCopy("reg-yaml-copy", "reg-yaml");
-        regWireCopy("reg-install-copy", "reg-install");
-        // 回车提交（没有 <form>，避免默认 submit 把页面刷掉）。
-        regEl("reg-name").addEventListener("keydown", (e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            submitRegister();
-          }
-        });
-      }
-
-      // 列表里的空态 CTA：委托到 openRegister，不另造一个 #node-register-btn。
-      function initListActions() {
-        const list = document.getElementById("nodes-list");
-        if (!list) return;
-        list.addEventListener("click", (e) => {
-          const hit = e.target.closest && e.target.closest('[data-action="register"]');
-          if (hit) openRegister();
-        });
-      }
-
-      /* ---------- 「如何接入」卡片（令牌与中枢地址就地生成） ---------- */
-      //
-      // 用户反馈的三条都在这一块里落地：
-      //   ① 中枢地址不让用户填：页面自己知道 window.location.origin；
-      //   ③ 工作目录归能力定义（run.workDir），节点侧不再有白名单要配。
-      //
-      // 安全纪律（与注册面板同一条）：令牌**只能**写进 DOM 的 textContent，
-      // 绝不进 localStorage / console / URL —— 那三个地方会留下持久痕迹
-      // （历史记录、前端监控、Referer、截图工具），而令牌等于这台机器的身份。
-      let HOWTO_TOKEN = "";
-      let HOWTO_NAME = "";
-
-      // howtoBlock 造一块「说明 + 代码块（标题 + 复制按钮）」，返回节点与 code 元素。
-      // 为什么复制按钮与代码块绑在一起：用户要复制的粒度是**一条命令**，
-      // 一块一个按钮才能一下复制对。
-      function howtoBlock(codeId, title, copyLabel, intro) {
-        const wrap = el("div", "nd-block");
-        if (intro) wrap.appendChild(el("p", "nd-block-desc", intro));
-        const block = el("div", "code-block");
-        const head = el("div", "code-head");
-        head.appendChild(el("span", null, title));
-        const copy = el("button", "copy-btn", copyLabel);
-        copy.type = "button";
-        copy.id = codeId + "-copy";
-        head.appendChild(copy);
-        block.appendChild(head);
-        const body = el("pre", "code-body");
-        const code = el("code", "mono");
-        code.id = codeId;
-        body.appendChild(code);
-        block.appendChild(body);
-        wrap.appendChild(block);
-        copy.addEventListener("click", () => {
-          const text = code.textContent;
-          if (!text) return;
-          window.Anotify.copyText(copy, () => text);
-        });
-        return { wrap, code };
-      }
-
-      // renderHowto 重画整块卡片内容。
-      //
-      // 为什么整块重建（replaceChildren）而不是改文字：令牌是凭证，重建会把
-      // 上一份的文本节点直接从 DOM 里丢掉（而不是留在某个隐藏元素里），
-      // 「再生成一次」就等于把旧令牌清干净了。
-      function renderHowto() {
-        const host = regEl("howto-blocks");
-        if (!host) return;
-        host.replaceChildren();
-
-        const origin = window.location.origin;
-        // 没生成时会显示占位符 —— 让用户一眼看出"还要点上面那个按钮"。
-        // 注意：占位符是**字符串**，真令牌也是字符串，走的是同一条 textContent 路径
-        // （生成后重画一次卡片，占位符就从 DOM 里彻底消失）。
-        const name = HOWTO_NAME || t("nodes.howto.name_ph", "host-xxxxxx");
-        const token = HOWTO_TOKEN || t("nodes.howto.token_ph", "<令牌>");
-
-        const tok = howtoBlock(
-          "howto-token",
-          t("nodes.howto.token_title", "一次性令牌"),
-          t("nodes.howto.copy_token", "复制令牌"),
-          t(
-            "nodes.howto.token_intro",
-            "令牌只显示这一次（中枢只存 sha256）。丢了就删掉节点重新注册。",
-          ),
-        );
-        // 令牌只进 textContent（见上面的安全纪律）。
-        tok.code.textContent = token;
-        host.appendChild(tok.wrap);
-
-        const cmd = howtoBlock(
-          "howto-cmd",
-          t("nodes.howto.cmd_title", "docker 一行命令（推荐）"),
-          t("nodes.register.copy_cmd", "复制命令"),
-          t("nodes.howto.docker", "容器：看不到宿主机文件，能力只能在容器里跑"),
-        );
-        // 注释行保留原来的接入步骤：只给 docker 会让人以为"原生装不存在"（#283）。
-        cmd.code.textContent =
-          "# " + t("nodes.howto.step1", "点上方「生成令牌」拿一次性令牌") + "\n" +
-          "# " + t("nodes.howto.step2", "二选一：容器（看不到宿主机文件）或原生装") + "\n\n" +
-          agentDockerCmd(token, origin, name, 1) + "\n\n" +
-          "# " + t("nodes.howto.step3", "节点上线后到「能力」页点部署，它就有活了");
-        host.appendChild(cmd.wrap);
-
-        const yaml = howtoBlock(
-          "howto-yaml",
-          t("nodes.howto.yaml_title", "node.yaml（原生装用）"),
-          t("nodes.register.copy_yaml", "复制命令"),
-          t(
-            "nodes.howto.yaml_intro",
-            "直接装 agent 二进制时用这份配置。只有四项 bootstrap —— 能力及其工作目录都在控制台定义：",
-          ),
-        );
-        yaml.code.textContent = agentNodeYaml(token, name, 1, origin);
-        host.appendChild(yaml.wrap);
-
-        const install = howtoBlock(
-          "howto-install",
-          t("nodes.howto.install_title", "原生安装命令"),
-          t("nodes.register.copy_install", "复制命令"),
-          t(
-            "nodes.howto.native",
-            "原生装：以你的用户身份在宿主机上跑；能力在哪个目录里跑由能力自己的工作目录决定",
-          ),
-        );
-        install.code.textContent = agentInstallCmd(token, origin, name, 1);
-        host.appendChild(install.wrap);
-      }
-
-      // randomNodeName 生成 host-xxxxxx。
-      // 前缀 host- 已满足 REG_NAME_RE（小写字母开头）与中枢的 ValidateNodeName，
-      // 后面取 base36 的 6 位 —— 用户根本不需要为一个「我先试试」的节点想名字。
-      function randomNodeName() {
-        const rnd = Math.random().toString(36).slice(2);
-        return "host-" + (rnd + "000000").slice(0, 6);
-      }
-
-      // createNodeWithGeneratedName 用自动生成的名字注册一台节点。
-      //
-      // 409（重名）自动换名字重试：名字是页面自己随机取的，给用户看
-      // 「这个命名空间里已经有叫 host-a1b2c3 的节点」完全无法处理（那名字不是他取的）。
-      async function createNodeWithGeneratedName() {
-        let lastErr = null;
-        for (let i = 0; i < 3; i++) {
-          const name = randomNodeName();
-          try {
-            // instances 固定 1：这里只是「先拿个令牌把命令跑起来」，槽位数之后
-            // 由 agent hello 时申报（真槽位数不落库，见 submitRegister 的注释）。
-            const res = await Anotify.api(API + "/nodes", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, instances: 1 }),
-            });
-            return {
-              name: (res && res.node && res.node.name) || name,
-              token: (res && res.token) || "",
-            };
-          } catch (err) {
-            lastErr = err;
-            if (!err || err.status !== 409) throw err;
-          }
-        }
-        throw lastErr;
-      }
-
-      async function generateHowtoToken() {
-        const btn = regEl("howto-token-btn");
-        if (!btn || btn.disabled) return;
-        const label = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = t("nodes.howto.gen_running", "生成中…");
-        // 先把上一份令牌从 DOM 里清掉：这一次如果失败，页面上不能还留着旧凭证
-        // （用户会以为它就是这次生成的，粘进机器后发现连不上/连错节点）。
-        HOWTO_TOKEN = "";
-        HOWTO_NAME = "";
-        renderHowto();
-        try {
-          const created = await createNodeWithGeneratedName();
-          HOWTO_TOKEN = created.token;
-          HOWTO_NAME = created.name;
-          renderHowto();
-          // 列表里要出现刚注册的那台（offline）：注册成功 ≠ 已上线。
-          loadAll();
-        } catch (err) {
-          // 失败只说人话（复用注册面板那套错误映射），令牌继续显示占位符。
-          renderHowto();
-          toast(regErrorText(err, HOWTO_NAME), "error");
-        } finally {
-          btn.disabled = false;
-          btn.textContent = label;
-        }
-      }
-
-      function initHowto() {
-        const btn = regEl("howto-token-btn");
-        if (btn) btn.addEventListener("click", generateHowtoToken);
-        // 首帧就把四块命令画出来（中枢地址已经是真值，只是令牌还是占位符）：
-        // 空卡片会让用户以为这页坏了。
-        renderHowto();
-      }
-
-      document.addEventListener("DOMContentLoaded", () => {
-        initRegister();
-        initHowto();
-        initListActions();
-        loadAll();
-      });
-    </script>
+      if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
+    } catch (e) { $('nodes-list').replaceChildren(A.loadErrorNode(e, loadNodes)); }
+    finally { $('nodes-skel').hidden = true; $('nodes-list').removeAttribute('aria-busy'); }
+  }
+  $('nodes-refresh').onclick = loadNodes;
+  // Configuration wrappers deliberately do not pass through resource adapters.
+  let nsConfig, systemConfig, selectedNamespace = '', nsOriginal = '', systemOriginal = '';
+  // 命名空间配置的“当前编辑器身份”：请求代号 + 真正加载进来的范围。
+  // 并发读（切 namespace 很快）不能靠“最后返回的响应”决定显示，也不能拿
+  // 当前选择去拼保存路径 —— 那会把 A 范围的正文写进 B 范围的 CAS。
+  let nsLoadSeq = 0, nsEditEpoch = 0, nsLoaded = '';
+  $('namespace-vars').addEventListener('input', () => {
+    nsEditEpoch++;
+    if (nsConfig && nsLoaded === selectedNamespace) $('namespace-save').disabled = false;
+  });
+  const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
+  async function loadNamespace(scope = selectedNamespace) {
+    const seq = ++nsLoadSeq, editEpoch = nsEditEpoch;
+    $('namespace-save').disabled = true; message('namespace-state', t('loading'));
+    try {
+      const value = await A.api(nsPath(scope));
+      // 过期响应（更新的请求或用户已切走）：它属于另一个范围，不落编辑器、不报错。
+      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
+      if (!value.metadata?.resourceVersion || !value.vars || value.namespaceVarsRevision == null) throw new Error('Invalid namespace config wrapper');
+      nsConfig = value; nsLoaded = scope; nsOriginal = JSON.stringify(value.vars, null, 2); $('namespace-vars').value = nsOriginal; $('namespace-vars').disabled = false;
+      $('namespace-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion + ' · namespaceVarsRevision=' + value.namespaceVarsRevision;
+      message('namespace-state', t('loaded')); $('namespace-save').disabled = false;
+      return { ok: true };
+    } catch (e) {
+      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
+      nsConfig = null; nsLoaded = '';
+      message('namespace-state', errorText(e), true);
+      return { ok: false, error: e };
+    }
+  }
+  $('namespace-reload').onclick = () => { if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) return; loadNamespace(); };
+  $('namespace-save').onclick = async () => {
+    // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
+    if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
+    const saveScope = nsLoaded, saveEpoch = nsEditEpoch, saveRV = nsConfig.metadata.resourceVersion;
+    const saveDraft = $('namespace-vars').value;
+    let saveSeq = nsLoadSeq;
+    const current = () => saveScope === selectedNamespace && saveSeq === nsLoadSeq && saveEpoch === nsEditEpoch;
+    $('namespace-save').disabled = true;
+    try {
+      const vars = JSON.parse(saveDraft); const value = await write(nsPath(saveScope), { metadata: { resourceVersion: saveRV }, vars });
+      // 同名 namespace 的新加载（ABA）或新草稿不是这次提交的编辑器。
+      if (!current() || $('namespace-vars').value !== saveDraft) return;
+      nsConfig = value;
+      // 保存成功 ≠ 刷新成功；刷新本身也必须隔离其间的新输入。
+      const refresh = loadNamespace(saveScope); saveSeq = nsLoadSeq;
+      const refreshed = await refresh;
+      if (!current()) return;
+      if (refreshed.ok) message('namespace-state', t('saved'));
+      else if (!refreshed.stale) message('namespace-state', t('saved') + ' · ' + errorText(refreshed.error), true);
+    }
+    catch (e) { if (current()) message('namespace-state', errorText(e), true); }
+    finally { if (current()) $('namespace-save').disabled = false; }
+  };
+  $('config-namespace').onchange = () => {
+    if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) { $('config-namespace').value = selectedNamespace; return; }
+    selectedNamespace = $('config-namespace').value; nsConfig = null; nsLoaded = ''; loadNamespace();
+  };
+  const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
+  const currentTtls = () => JSON.stringify(ttlFields.map(([id]) => $(id + '-ttl').value));
+  async function loadSystem() {
+    $('system-save').disabled = true; message('system-state', t('loading'));
+    try {
+      const value = await A.api('/v1/system/config');
+      if (!value.metadata?.resourceVersion || ttlFields.some(([, k]) => !Number.isInteger(value.retention?.[k]) || value.retention[k] < 0)) throw new Error('Invalid system config wrapper');
+      systemConfig = value; for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; }
+      systemOriginal = currentTtls(); $('system-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion;
+      $('system-fields').hidden = false; message('system-state', t('loaded')); $('system-save').disabled = false;
+    } catch (e) { message('system-state', errorText(e), true); }
+  }
+  $('system-reload').onclick = () => { if (currentTtls() !== systemOriginal && !confirm(t('reload_confirm'))) return; loadSystem(); };
+  $('system-save').onclick = async () => {
+    if (!systemConfig) return; $('system-save').disabled = true;
+    try {
+      const retention = Object.fromEntries(ttlFields.map(([id, key]) => { const raw = $(id + '-ttl').value; if (!/^\d+$/.test(raw)) throw new Error('TTL requires integer seconds >= 0'); return [key, Number(raw)]; }));
+      const value = await write('/v1/system/config', { metadata: { resourceVersion: systemConfig.metadata.resourceVersion }, retention }); systemConfig = value;
+      await loadSystem(); message('system-state', t('saved'));
+    } catch (e) { message('system-state', errorText(e), true); } finally { $('system-save').disabled = false; }
+  };
+  async function boot() {
+    await loadNodes();
+    try {
+      await A.ready(); const { items: namespaces } = await A.apiList('/v1/namespaces');
+      $('config-namespace').replaceChildren(...namespaces.map(n => { const o = make('option', null, n.metadata.name); o.value = n.metadata.name; return o; }));
+      const requested = new URLSearchParams(location.search).get('namespace') || A.readScope()?.namespace;
+      selectedNamespace = namespaces.some(n => n.metadata.name === requested) ? requested : namespaces[0]?.metadata.name || '';
+      $('config-namespace').value = selectedNamespace; if (selectedNamespace) await loadNamespace();
+    } catch (e) { message('namespace-state', errorText(e), true); }
+    try { const me = await A.api('/v1/auth/me'); if (me.role === 'admin') await loadSystem(); else message('system-state', t('admin_only')); }
+    catch (e) { message('system-state', errorText(e), true); }
+  }
+  boot();
+})();
+</script>
 {{end}}
