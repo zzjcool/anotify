@@ -1,5 +1,11 @@
 // Attributed F2a fill/open and ten actual action chains with exact recorder.
 import assert from 'node:assert/strict';
+import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
+
+// 真实权威下「人工部署」用例落到的节点名。它同时是页面候选 checkbox 的 value，
+// 所以断言直接拿这个名字对账（不是随便哪个在线节点）。
+const DEPLOY_TARGET = "f3-deploy-target";
+
 async function waitHidden(page, sel) {
 	await page.waitForFunction(
 		(s) => {
@@ -251,7 +257,52 @@ export async function capability(d){
 
 		/* ---------- 6) 人工部署：选历史版本 + 选节点 ---------- */
 		await check("人工部署：选 v1 + 节点 → POST /deploy（body version/nodes），部署后该节点 stale", async () => {
+			// 候选节点不是随意列的在线节点，而是**被渲染行**的只读 status.nodes（capability.md §5：
+			// deployments 事实的投影）。真实权威下 analyze-pr 从没部署到任何节点 → status.nodes=[]
+			// → 模态框里没有候选 checkbox（mock 种子直接给了候选节点，所以只有 real 需要这份造数）。
+			//
+			// 造数只走产品自己的入口：真实节点（POST /v1/nodes → 签发令牌 → WS hello → welcome
+			// → config.applied）+ 真实部署 API 把 **v2** 部署上去并等 applied。当前行是 v3，所以
+			// v3 的 status.nodes 会把这台节点标成 stale（applied 但 digest ≠ 当前行）—— 候选就
+			// 出现了，而且它出现的原因正是下面要验的那条语义（节点拿着别的版本）。
+			if (!d.mock) {
+				const session = d.fixtures.adminSession;
+				const node = await bringUpFixtureNode({ base, session, name: DEPLOY_TARGET, namespaces: ["default"] });
+				// 关闭交给驱动 stop()（现有 helper）：下面的 UI 部署要这台节点在线回 capability.deployed，
+				// 提前 close 会让部署行停在 pending（那是另一种事实，不是本用例要验的）。
+				(d.fixtures.__holdNodes ??= []).push(node);
+				const v2 = await d.api("/v1/namespaces/default/capabilities/analyze-pr/versions/2");
+				assert.equal(v2.status, 200, "T1 seam: analyze-pr v2 必须读得到，实际 " + v2.status + " " + JSON.stringify(v2.body));
+				assert.equal(v2.body.metadata.version, 2, "T1 seam: analyze-pr 必须真的有 v2（用例 4 把当前行改成了 v3）");
+				const applied = await deployApplied(base, session, node, capRef(v2.body));
+				assert.equal(applied.state, "applied", "T1 seam: v2 部署行必须 applied，实际 " + JSON.stringify(applied));
+				// 页面模型是上一次加载的快照（节点是这条用例里现起的）→ 用页面自己的刷新动作重读
+				// 列表，让读模型里出现这台节点（用户点「刷新」也是同一回事）。
+				const listed = page.waitForResponse(
+					(r) => {
+						try {
+							return new URL(r.url()).pathname === "/v1/namespaces/default/capabilities" && r.status() === 200;
+						} catch (e) {
+							return false;
+						}
+					},
+					{ timeout: 15000 },
+				);
+				await page.click("#caps-refresh");
+				await listed;
+			}
 			const row = await openCap(page, "analyze-pr");
+			if (!d.mock) {
+				// 刷新后的读模型：v3 行的 nodes 小节里必须列出这台真实节点（否则候选 checkbox 无从出现）
+				await page.waitForFunction(
+					(n) => {
+						const sec = document.querySelector('[data-cap="analyze-pr"] [data-sec="nodes"]');
+						return !!sec && sec.textContent.includes(n);
+					},
+					DEPLOY_TARGET,
+					{ timeout: 15000 },
+				);
+			}
 			await row.locator('[data-act="deploy"]').click();
 			await page.waitForSelector("#deploy-modal:not(.hidden)");
 			await page.waitForFunction(() => {
@@ -271,6 +322,9 @@ export async function capability(d){
 			await page.selectOption("#deploy-version", "1");
 			const firstNode = page.locator("#deploy-nodes input[type=checkbox]").first();
 			const nodeName = await firstNode.getAttribute("value");
+			if (!d.mock) {
+				assert.equal(nodeName, DEPLOY_TARGET, "候选节点必须是真实部署事实里的那台节点，实际 " + nodeName);
+			}
 			await firstNode.check();
 			await shot(page, "06-deploy-modal");
 			await takeRec(page);
@@ -403,7 +457,13 @@ export async function capability(d){
 				} catch (e) {}
 			});
 			for (const lang of ["zh-CN", "en", "ja", "es"]) {
-				await page.goto(base + "/capabilities.html?lang=" + lang, { waitUntil: "domcontentloaded", timeout: 20000 });
+				// 真实权威的语种是**服务端按路径前缀**渲染（`/en/capabilities.html`：layout 的
+				// `<html lang>` 与 hreflang 都是它）；`?lang=` 只有预览 mock 认。两种权威各走
+				// 自己那条真实入口，断言（标题已翻译、无裸 key）一个字都不动。
+				const url = d.mock
+					? base + "/capabilities.html?lang=" + lang
+					: base + (lang === "zh-CN" ? "/" : "/" + lang + "/") + "capabilities.html";
+				await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
 				await page.waitForSelector('.page-title', { timeout: 15000 });
 				await page.waitForSelector('[data-cap="fixer"]', { timeout: 15000 });
 				const title = (await page.textContent(".page-title")).trim();

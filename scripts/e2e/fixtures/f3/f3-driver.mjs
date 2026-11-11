@@ -284,6 +284,9 @@ async function fireMany(server, key, ns, source, times) {
 // trace 节点数来自 tasks 行。
 // capability-actions：用例 4 要验「显式版本 2 的正文不可变 → 400 version_content_immutable」，
 // 前提是 analyze-pr **真的有 v2**（mock 种子给了两版；真实权威下得多建一版）。
+// 用例 7/8 还依赖 mock 种子能力图的另一头：**lint-fix@1**（fixer.next 里钉死版本的那个下游，
+// 用例 8 删的也是它）。两件都是真实入口造得出来的事实，所以就在本用例的服务器上就地造；
+// 不动全局夹具（其它用例不依赖 lint-fix，把它们拖进来只会扩大变更面）。
 SCENARIOS.set('capability-actions', async (server, fixtures) => {
   const s = fixtures.adminSession;
   const created = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities`, {
@@ -298,7 +301,46 @@ SCENARIOS.set('capability-actions', async (server, fixtures) => {
     }),
   });
   assert.equal(created.status, 201, 'T1 seam: analyze-pr v2 必须建得出来，实际 ' + created.status + ' ' + JSON.stringify(created.body));
-  return { analyzePrV2: created.body.metadata.version };
+  // lint-fix v1：用例 7 断言 fixer 的 resolved 里能看到**钉死版本**的那个下游（名字 + v1），
+  // 用例 8 的 DELETE CAS 对象也是它。真实权威下它只能是真的存在过。
+  const lintFix = await ensureCapability(server, s, DEFAULT_NS, 'lint-fix');
+  // fixer.next 补成 mock 种子的那两支（PATCH 的合法面只有 metadata.displayName 与 spec.next，
+  // 内容面不可变），否则 resolved 里只有一个裸名下游，钉死版本的那一路永远测不到。
+  const fixer = await ensureCapability(server, s, DEFAULT_NS, MOCK_FIXTURES.capability);
+  const fixerNext = Array.isArray(fixer.spec && fixer.spec.next) ? fixer.spec.next : [];
+  if (!fixerNext.includes('lint-fix@1')) {
+    const patched = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities/${MOCK_FIXTURES.capability}`, {
+      method: 'PATCH',
+      headers: jsonHeaders(s),
+      body: JSON.stringify({
+        apiVersion: 'anotify/v1', kind: 'Capability',
+        metadata: { name: MOCK_FIXTURES.capability, resourceVersion: fixer.metadata.resourceVersion },
+        spec: { next: ['analyze-pr', 'lint-fix@1'] },
+      }),
+    });
+    assert.equal(patched.status, 200, 'T1 seam: fixer.next 必须能 PATCH（displayName/next 是唯一可改面），实际 ' + patched.status + ' ' + JSON.stringify(patched.body));
+    assert.deepEqual(patched.body.spec.next, ['analyze-pr', 'lint-fix@1'], 'T1 seam: fixer.next 必须真的改成了带钉死版本的两支');
+  }
+  // 用例 9 切到 prod 后要看的也是两件 mock 种子同名的真实事实：
+  //   · report.send：`next` 里有一个解析不到的 ghost-cap（DownstreamResolved = NotFound）；
+  //   · prod-deploy：NodesAvailable = NodeOffline（仓里登记的节点不在线，离线优先于其它原因）。
+  await ensureCapability(server, s, PROD, 'report.send', ['ghost-cap']);
+  await ensureCapability(server, s, PROD, 'prod-deploy');
+  // report.send 的「最近一次运行」：经真实源投一条 prod 事件，让中枢自己长出 report.send 的
+  // Task 行（prod 没有能跑它的在线节点，任务就停在 pending —— 那也是真实运行过的一行）。
+  await ensureSource(server, s, PROD, 'f3-report-hook', 'report.send');
+  const reportFire = await fireFixture(server, fixtures.sendKey, PROD, 'f3-report-hook');
+  // 用例 7 的 deploy-preview：mock 种子里是「终端能力 + requires.values 解析不到」。
+  // `next: []` 是它真正的测点（终端能力空态）；requires 按种子同样给它一份解析不到的值。
+  const deployPreview = await ensureCapability(server, s, DEFAULT_NS, 'deploy-preview', [], {
+    requires: { values: ['vars.F3_UNDECLARED_VALUE'] },
+  });
+  return {
+    analyzePrV2: created.body.metadata.version,
+    lintFix: lintFix.metadata.version,
+    reportTask: reportFire.taskId,
+    deployPreview: deployPreview.metadata.version,
+  };
 });
 
 SCENARIOS.set('observe-events', async (server, fixtures) => {

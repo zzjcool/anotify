@@ -321,12 +321,18 @@ export function capRef(body) {
 
 // deployApplied 让节点真的持有能力正文：部署动作 → capability.deploy → deployed(applied)
 // → 读模型收敛。**(pending 不是候选)**：回执不到位的部署不会派发。
+//
+// capability 是 capRef 折出来的那三件真实事实（name/version/digest），部署 body 因此
+// 显式带 version（契约 CapabilityDeployRequest.version）：省略 version 时服务端按「当前
+// 版本」解析，**历史版本**（人工回滚、升级后仍持有旧 digest 的节点）就部署不出来 ——
+// 而 status.nodes 的 stale 恰恰由「节点持有非当前版本」派生。等的是这一版自己的 digest
+// 收敛到 applied，别按当前版本判（那是另一行事实）。
 export async function deployApplied(base, session, node, capability, namespace = 'default') {
   const headers = { Cookie: 'anotify_session=' + session, 'Content-Type': 'application/json' };
   const response = await fetch(`${base}/v1/namespaces/${namespace}/capabilities/${capability.name}/deploy`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ nodes: [node.name] }),
+    body: JSON.stringify({ ...(capability.version ? { version: capability.version } : {}), nodes: [node.name] }),
   });
   const doc = await response.json();
   assert.equal(response.status, 200, `部署 ${capability.name} → ${node.name} 必须 200，实际 ${response.status} ${JSON.stringify(doc)}`);

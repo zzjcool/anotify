@@ -23,7 +23,17 @@ const add=(id,run,options={})=>definitions.push({id,run,options});
  *   · immutable_field —— PATCH 改不可变字段（400）。 */
 const LOGS_410=[{status:410,path:'/v1/namespaces/',pathSuffix:'/logs',note:'no_local_archive：任务没有本地日志归档时 GET …/logs 是 410，页面按“无归档”显示'}];
 add('scope-bootstrap',bootstrap,{scope:''});
-add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[{status:400,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'immutable_field：用例故意 PATCH 不可变字段验证拒绝'}]});
+// capability-actions 故意触发三类真实拒绝（每条都断言页面把原因显示出来）：
+//   · CAS 409（用例 3 并发写后旧 rv 保存 / 用例 8 并发写后删旧 rv）—— PATCH、DELETE 各一次；
+//   · version_content_immutable 400（用例 4 显式同版本改正文）—— POST …/capabilities；
+//   · immutable_field 400（用例 8 把整份 spec 塞进 PATCH）—— 精确到 f2a-demo 那一条。
+// 声明越窄越好：只放行这个状态 + 这个请求，别的 4xx/5xx 仍然红。
+add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[
+  {status:400,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'immutable_field：用例故意 PATCH 不可变字段验证拒绝'},
+  {status:400,path:'/v1/namespaces/default/capabilities',exact:true,note:'version_content_immutable：显式同版本改正文必须 400 并给出“换一个版本”的指引'},
+  {status:409,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'resource_version_conflict：用例 3 并发写后旧 rv 保存必须 409'},
+  {status:409,path:'/v1/namespaces/default/capabilities/lint-fix',exact:true,note:'resource_version_conflict：用例 8 并发写后按旧 rv 删除必须 409'},
+]});
 add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
 // observe-events 故意用「默认 ns 的游标读 prod」验证 cursor 绑定：真实服务回 400
 // （continue token 不属于这次查询），Chrome 记一条 console error，必须声明范围。
