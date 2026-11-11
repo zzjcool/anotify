@@ -147,18 +147,20 @@ add('source-auth-dedup',async d=>{
   /* 真实 ingress 的鉴权面（#355 起强制验签）：配了 `config.secret` 的源，投递必须带
      `X-Anotify-Signature: sha256=<64 位小写 hex>`，值是 HMAC-SHA256(secret, 原始 body 字节)
      —— 对**实际发出的那个字符串**算（payload 首尾各有一个空格，JSON.stringify 之后再算必假失败）。
-     入口顺序：限流 429 → token 定源 404 → 读 raw 413 → **验签 401** → 解 JSON 400 → 接收 200；
+     入口顺序：限流 429 → 读 raw 413 → token 定源 404 → 验签 401 → 解 JSON 400 → 接收 200；
      未签名 / 格式错 / 不匹配一律 401（同码同文案、错误体不含 secret），且**不产生任何写入**。
      真实现场能断言的真事：
        ① 未签名 → 401、错签名 → 401，且两次的 Status 逐字段相同（同码 / 同 reason / 同文案，
-          服务端不区分缺失与不匹配）；未签名的**非法 JSON** 也是 401（验签在解 JSON 之前，
-          先解析会得 400），这三发之后快照逐字节相等（0 写）；
+          服务端不区分缺失与不匹配）；**非法 JSON** 无论未签名还是签名错也都是 401（验签在解 JSON
+          之前，先解析会得 400）——未签名/错签名/签名错的非法 JSON 三发都 0 写（连同未签名的
+          非法 JSON 共四发，之后快照逐字节相等）；
        ② 正确签名 → 200 + 一个任务；
        ③ 幂等按 delivery id：同一 id 换内容重投 → duplicate:true + 同一 eventId/traceId/taskId，
           生效的仍是**第一次**的字节（任务 params.message 还是 real，changed 没覆盖）；
-       ④ 事件投影记下 deliveryId；轮换 token 之后旧 hook 地址 404（LookupHook 在验签之前），
+       ④ 事件投影记下 deliveryId；轮换 token 之后旧 hook 地址 404（LookupHook 在验签之前）——
+          旧 token **未签名**也必须 404（先验签会得 401），所以这一发才判得出「定源早于验签」；
           且这次 404 同样 0 写（轮换后的快照逐字节相等）；
-       ⑤ 重新加载 sources 页之后仍然看不到 secret 明文。 */
+       ⑤ 重新加载 sources 页之后仍然看不到 secret 明文（先等列表真的渲染出来再查）。 */
   // 本用例的 0 写断言依赖「整命名空间快照逐字节相等」：**不得**给这条用例挂真实节点夹具
   // （节点心跳会刷新 last_seen_at，快照窗口内就变了 → 0 写断言会 flaky）。
   const before=await d.snapshot();
@@ -170,13 +172,15 @@ add('source-auth-dedup',async d=>{
   assert.ok(!JSON.stringify(wrongSig.body).includes(secret),'401 错误体不得回显 secret');
   // 「同码同文案」只比状态码是判不出来的：把两次 401 的**响应体**互相比较
   // （不硬编码任何文案字面量），才真正校验「服务端不区分缺失与不匹配」。
+  assert.ok(unsigned.body && wrongSig.body && unsigned.body.kind==='Status','两次拒绝都必须返回 Status 对象（空体不许靠 undefined 相等混过去）');
   assert.equal(wrongSig.body.code,unsigned.body.code,'缺失与不匹配必须同状态码');
   assert.equal(wrongSig.body.reason,unsigned.body.reason,'缺失与不匹配必须同 reason（不区分）');
   assert.equal(wrongSig.body.message,unsigned.body.message,'缺失与不匹配必须同文案（不区分）');
-  // 验签在解 JSON **之前**的判别性探针：body 本身非法（不是 JSON）且不带签名 → 先验签得 401，
-  // 先解析得 400。payload 是合法 JSON，光看它判不出这个顺序。
+  // 验签在解 JSON **之前**的判别性探针：body 本身非法（不是 JSON）→ 先验签得 401，
+  // 先解析得 400。payload 是合法 JSON，光看它判不出这个顺序。两半都要：不带签名、签名错。
   const notJson=await send('not-json');assert.equal(notJson.status,401,'未签名的非法 JSON 必须 401：验签在解 JSON 之前（先解析会得 400）');
-  assert.equal(await d.snapshot(),before,'未签名/错签名/未签名的非法 JSON 必须 0 写（快照逐字节相等）');
+  assert.equal((await send('not-json','sha256='+'0'.repeat(64))).status,401,'签名错误 + 非法 JSON 也必须 401：先验签（先解析会得 400）');
+  assert.equal(await d.snapshot(),before,'未签名/错签名/签名错的非法 JSON 必须 0 写（快照逐字节相等）');
   const first=await send(payload,signed(payload));assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
   const modified=payload.replace('real','changed');const duplicate=await send(modified,signed(modified));
   assert.equal(duplicate.status,200);assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.eventId,first.body.eventId);assert.equal(duplicate.body.traceId,first.body.traceId);
@@ -191,17 +195,26 @@ add('source-auth-dedup',async d=>{
   // 必须在轮换**之后**取。拿顶部投递前的 `before` 比，等于把轮换成功本身判成「404 写了东西」（实测红），
   // 也把中间真正接收的那一发（event/task）算进去——那样只是把断言写死成永远过不了。
   const afterRotation=await d.snapshot();
+  // 判别性：旧 token 即使**不带签名**也必须 404（若服务端先验签，未签名会得 401）。这是旧 real 分支
+  // 「不存在的 token → 404」那条判别探针的等价物，对象换成「曾经有效、轮换后失效」的 token（更强）。
+  assert.equal((await send(payload)).status,404,'轮换后旧 token 未签名也必须 404：token 定源在验签之前（先验签会得 401）');
   const stale=await send(payload,signed(payload));
   assert.equal(stale.status,404,'轮换后旧 token 必须 404（LookupHook 在验签之前）');
-  assert.equal(await d.snapshot(),afterRotation,'轮换后旧 token 的 404 也必须 0 写（token 定源在验签之前，未命中源不得产生写入）');
+  assert.equal(await d.snapshot(),afterRotation,'轮换后旧 token 的两次 404 也必须 0 写（快照逐字节相等）');
   // 页面文本检查必须落在**源创建之后重新加载**的页面上：源创建前 goto 过的 innerText 里
   // 根本不可能出现这个 secret，那种检查是空转。
   await d.goto('sources');
-  assert.ok(!(await d.page.locator('body').innerText()).includes(secret),'sources 页渲染后仍不得出现 secret 明文');
+  // goto 只等 domcontentloaded，不等列表渲染（sources 页的 load() 要 initScope + 两次 fetch 之后才 render()），
+  // 直接读 innerText 会读到骨架屏 —— 那样的泄漏检查是空转。先等这一行真的渲染出来，再查泄漏。
+  await d.page.locator('#src-list .list-row[data-name="f3-signed-hook"]').first().waitFor({state:'visible',timeout:15000});
+  assert.ok(await d.page.locator('#src-list .list-row').count()>0,'sources 页必须真的渲染出行（否则下面的泄漏检查是空转）');
+  const rendered=await d.page.locator('body').innerText();
+  assert.ok(rendered.includes('f3-signed-hook'),'渲染后的页面必须含源名，证明列表不是骨架屏');
+  assert.ok(!rendered.includes(secret),'sources 页渲染出该源之后仍不得出现 secret 明文');
   d.check('F3-SRC-AUTH real ingress: HMAC-SHA256 over raw bytes verified before JSON decode (unsigned/wrong sig 401 and zero writes); duplicate delivery keeps first bytes/event/trace identity; rotation invalidates old hook');
 },{expectHttpStatus:[
-  // 配了 secret 的源：未签名 / 错签名 / 未签名的非法 JSON 一律 401（#355 强制验签），都不许留下任何写入。
-  {status:401,path:'/v1/hooks/',note:'带 secret 的源：未签名/错签名/未签名的非法 JSON 401 且 0 写'},
+  // 配了 secret 的源：未签名 / 错签名 / 非法 JSON（无论带哪种签名）一律 401（#355 强制验签），都不许留下任何写入。
+  {status:401,path:'/v1/hooks/',note:'带 secret 的源：未签名/错签名/非法 JSON 401 且 0 写'},
   // token 定源在验签**之前**：轮换 token 之后旧 hook token 必须 404（这条必须真实命中）。
   {status:404,path:'/v1/hooks/',note:'rotation：轮换 token 之后旧 hook token 必须 404，0 写'},
 ]});
