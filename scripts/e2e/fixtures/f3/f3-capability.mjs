@@ -362,13 +362,32 @@ export async function capability(d){
 			assert.match(resolved, /lint-fix/);
 			assert.match(resolved, /v1/, "钉死 lint-fix@1 必须显示版本");
 			const observed = await fx.textContent('[data-sec="observed"]');
-			assert.match(observed, /tsk_mock_1|最近任务/);
-			assert.match(observed, /字段|emit|派出/, "observed 必须显示 emits 明细，不只计数");
+			// observed 的两种权威说两种话：
+			//   · 预览 mock 种子**造了**留痕事实（tsk_mock_1 的 emits/pruned），页面必须给明细；
+			//   · 真实权威的 CapabilityStatus.observed 按契约（api/resource.yaml·
+			//     CapabilityStatus.observed「当前恒 {}」）就是空对象 —— internal/server 与之一致。
+			//     所以这里断言页面**如实空态**（"observed 为空"，不杜撰时间/计数），
+			//     而不是拿 mock 的固定事实去要求一个契约上恒空的字段。
+			if (d.mock) {
+				assert.match(observed, /tsk_mock_1|最近任务/);
+				assert.match(observed, /字段|emit|派出/, "observed 必须显示 emits 明细，不只计数");
+			} else {
+				assert.match(observed, /没有保留历史|observed 为空/, "真实权威下 observed 恒 {}：页面必须如实空态，不编造留痕");
+			}
 			await shot(page, "08-detail-diagnostics-fixer");
 
 			const dp = await openCap(page, "deploy-preview");
 			const dpConds = await dp.textContent('[data-sec="conditions"]');
-			assert.match(dpConds, /ValueMissing/, "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因");
+			// 原因优先级是全局的（internal/store/node.go·nodeIneligibilityReason：离线 >
+			// 授权 > 配置未 apply > 未部署 > 缺命令 > 缺值）。真实权威下仓里登记着**离线**的
+			// anode-1/anode-2，任何命名空间的能力都会先报 NodeOffline；而下面 prod-deploy 又
+			// 要求 NodeOffline —— 两条在真实派生下不可能同时成立（有离线节点就压过 ValueMissing，
+			// 没有离线节点就出不了 NodeOffline）。所以值这一路的原因只在 mock 种子里可验。
+			assert.match(
+				dpConds,
+				d.mock ? /ValueMissing/ : /NodeOffline/,
+				d.mock ? "deploy-preview 的 NodesAvailable 必须给 ValueMissing 原因" : "真实权威下 deploy-preview 的原因是 NodeOffline（离线优先）",
+			);
 			const dpResolved = await dp.textContent('[data-sec="resolved"]');
 			assert.match(dpResolved, /终端能力/, "next=[] 必须显示终端能力空态");
 
@@ -440,7 +459,9 @@ export async function capability(d){
 			assert.match(rsResolved, /ghost-cap/);
 			assert.match(rsResolved, /NotFound|解析不到/);
 			const rsObserved = await rs.textContent('[data-sec="observed"]');
-			assert.match(rsObserved, /param_missing|剪枝/);
+			// 同 check 7 的 observed：mock 种子里有 pruned（param_missing）留痕，真实权威恒 {}。
+			if (d.mock) assert.match(rsObserved, /param_missing|剪枝/);
+			else assert.match(rsObserved, /没有保留历史|observed 为空/, "真实权威下 observed 恒 {}：页面必须如实空态");
 			await shot(page, "09-detail-diagnostics-prod-missing");
 			const pd = await openCap(page, "prod-deploy");
 			const pdConds = await pd.textContent('[data-sec="conditions"]');
