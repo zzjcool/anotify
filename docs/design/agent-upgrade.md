@@ -1,5 +1,11 @@
 # agent 自升级（中枢当升级源）
 
+> **v3 历史文档**（#338）：v4 的节点产品叫 **anode**（`cmd/anode`，CLI 见 `docs/v4/anode-cli.md`），
+> 镜像里的升级源二进制是 `/app/anode`（Dockerfile `COPY --from=build /anode /app/anode` +
+> `ENV ANOTIFY_AGENT_BIN=/app/anode`）。下文里的 `agent` / `cmd/agent` / `/app/agent` /
+> `anotify-agent upgrade` 都是 v3 名词；接口形状（`GET /v1/node/binary`、
+> `X-Agent-Sha256`、退出码词表）仍成立，但具体二进制/路径按 anode 读。
+>
 > 状态：**设计已定**，实现契约见 `docs/contracts/CONTRACT.md` §2.3 / §6.1 / §6.2 / §7。
 > 唯一事实源：`.pi-orchestrator/CONTRACT-agent-upgrade.md`（冻结）。
 > 相关：`docs/agent-install.md`（首次安装 + 兜底）、`DEVELOPMENT.md` §4（日常怎么升）。
@@ -48,12 +54,12 @@ Makefile 用同一条 `-X` 同时注入 **server 与 agent 两个二进制**（`
 | 项 | 值 |
 |---|---|
 | 环境变量 | `ANOTIFY_AGENT_BIN` |
-| 默认路径 | `/app/agent`（镜像里已有） |
+| 默认路径 | `/app/anode`（镜像里已有；v3 为 `/app/agent`） |
 | 文件不存在 | 该功能**未启用**，**不是错误**（不 panic、不阻止启动） |
 | 启动时 | 读进内存并算 `sha256`，打一行 `agent.binary.ready {version, sha256, bytes}` |
 
-`Dockerfile` 在构建阶段 `go build ./cmd/agent`，产物放到镜像 `/app/agent`，
-dev 与生产同一份 —— 不会出现「线上跑的 agent 和仓库里的不是同一版」。
+`Dockerfile` 在构建阶段 `go build ./cmd/anode`，产物放到镜像 `/app/anode`，
+dev 与生产同一份 —— 不会出现「线上跑的节点二进制和仓库里的不是同一版」。
 
 **为什么先读进内存**：升级请求可能同时来（多节点 / 重试），每次读盘既慢又可能读到
 半写状态；启动时一次读定 + 一次算哈希，之后 `sha256` 与字节天然一致，
@@ -266,7 +272,7 @@ agent 以**普通用户**跑（systemd 单元里 `User=<你>`；「装成系统�
 | `download_failed`（CLI 退出码 `5`） | 节点网络 | 节点拿不到 `url_path`（TLS 不认、DNS、token 失效、中枢重启） | 先 `curl -I -H "Authorization: Bearer <node token>" <server>/v1/node/binary` 复现；令牌丢就删节点重建 |
 | `not_supported` | 节点平台 | 容器只读 FS / 平台不支持自替换 | 走兜底：重跑 `install-agent.sh`（换镜像 / 换单元） |
 | `node_offline`（HTTP `409`） | 中枢下发 | 节点不在线（掉线 / 排空中） | 先把节点连上（`systemctl status` / `journalctl -u anotify-agent`）再点升级 |
-| `agent_binary_unavailable`（HTTP `501` / CLI 退出码 `2`） | 中枢未启用 | 中枢没带 agent 二进制（`ANOTIFY_AGENT_BIN` 指向的文件不存在） | 用带 `/app/agent` 的镜像，或给服务端设对 `ANOTIFY_AGENT_BIN`；查启动日志 `agent.binary.ready` 有没有出现 |
+| `agent_binary_unavailable`（HTTP `501` / CLI 退出码 `2`） | 中枢未启用 | 中枢没带节点二进制（`ANOTIFY_AGENT_BIN` 指向的文件不存在） | 用带 `/app/anode` 的镜像，或给服务端设对 `ANOTIFY_AGENT_BIN`；查启动日志 `agent.binary.ready` 有没有出现 |
 | CLI 退出码 `5` | CLI | 连不上 `server` / 读不出 `node.yaml` / 其他非权限非校验错误 | 先 `anotify-agent upgrade --check` 定位是网络还是配置 |
 | 回 `up_to_date` 但版本没变 | 中枢判定 | 中枢拿的是**库里的** `agent_version`，它只在 `hello` 时更新；节点重启后还没重连（或老 agent 的 `hello` 不带版本 = 空串） | 等节点重连 / 重启 agent；确认 `hello` 里带 `agent_version`（老 agent 需要先升一次） |
 | 控制台显示「未知（老版本）」 | 展示 | `agent_version` 是空串（老 agent 未上报） | 正常状态，不是错误；升一次就自然有了 |

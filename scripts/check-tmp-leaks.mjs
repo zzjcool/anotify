@@ -41,15 +41,16 @@
  *
  * 用法：
  *   node scripts/check-tmp-leaks.mjs -- <command...>
+ *   node scripts/check-tmp-leaks.mjs -- go test ./cmd/anode -count=3   # 例：包住一条会建临时目录的命令
  *   node scripts/check-tmp-leaks.mjs --lint
  *   node scripts/check-tmp-leaks.mjs --self-test
  *   node scripts/check-tmp-leaks.mjs --prefix=anotify- -- <command...>   # 换前缀
  *
- * 接线：`make ci` 用它包住 `make test`（含 go test ./cmd/agent），
+ * 接线：`make ci` 用它包住 `make test`（含 go test ./cmd/anode），
  *       `scripts/e2e/run_all.sh` 用它包住并行执行器。见 E2E_TESTING.md。
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,6 +85,12 @@ function snapshotTmp(prefix = DEFAULT_PREFIX) {
 // stdio=pipe 只给自测用（正常模式必须 inherit，否则套件输出会被吞掉）。
 function runWrapped(argv, { prefix = DEFAULT_PREFIX, stdio = "inherit" } = {}) {
 	const guardRoot = mkdtempSync(path.join(tmpdir(), GUARD_TMP_PREFIX));
+	// mkdtempSync 建出来是 **0700**：root 下跑的降权用例（cmd/anode 把夹具子进程降到
+	// nobody 执行）需要**穿越** TMPDIR 才能 exec —— 否则报
+	// `fork/exec …/install-test-helper: permission denied`（#334/#338）。
+	// 0711 = 所有者 rwx、其他 x：可穿越、不可列举，夹具仍然只看得到自己点名的路径，
+	// 而 nobody 能穿过 TMPDIR。非 root 完全不变（owner 位不受影响）。
+	chmodSync(guardRoot, 0o711);
 	const beforeOutside = snapshotTmp(prefix);
 	const startedAt = Date.now();
 
@@ -163,7 +170,7 @@ function report(r, prefix) {
 	for (const item of r.leaked) console.error(`   - ${item.path}`);
 	console.error("   守卫已把隔离目录连同残留一并清掉；请修代码，别靠清理。");
 	console.error(
-		"   修法：Go 侧用 cmd/agent 的 mkTestTempDir + TestMain 统一删；" +
+		"   修法：Go 侧用 t.TempDir()（测试结束自动删）或 t.Cleanup 注册删除；" +
 			"e2e 侧用 H.mkdtempTmp() 创建、finally 里 H.removeTmpDir()。",
 	);
 	console.error("   约定与兜底见 E2E_TESTING.md「临时目录与 /tmp 卫生」。");

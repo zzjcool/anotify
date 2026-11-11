@@ -32,8 +32,8 @@ import (
 // 这里**编译不过**；否则基准会静默跑空（Go 的 benchmark 对「什么都没测」毫无抵抗，
 // 仍然会打印出一组看起来正常的 ns/op）。
 //
-// dispatch 链路（要 import internal/route）在 bench_dispatch_test.go，
-// 由 build tag 隔离，原因见那个文件的顶部说明。
+// dispatch 全链（要 import internal/route + internal/source）在 bench_dispatch_test.go，
+// v4 已去掉 v3 那个 `dispatchbench` build tag（#338）：它和本文件一样在 `go test ./internal/store` 里编译。
 var (
 	_ = (*store.DB).CreateTasks
 	_ = (*store.DB).AssignTask

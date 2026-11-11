@@ -78,6 +78,10 @@ EOF
 done
 
 p3b_say "分批拉起 agent（hello → 部署补推 → apply → 重发 hello）写真实 node_capabilities / node_instances"
+# 节点侧未迁移（#338）：v3 的 cmd/agent 已被 anode 取代，而下面这条命令用的是 v3 专属的
+# `-f` / `-grace`（v4 的 anode 是 `anode serve --config …`，配置形状也不同）。
+# 显式失败，而不是拉起一只形态不对的进程然后在“节点一直不上线”里挖半天。
+p3b_die "nodes.sh 的节点侧仍是 v3 形状（agent -f yaml -grace），节点产品已换成 anode（v4）：见 docs/v4/anode-cli.md / make dev-node"
 AGENT_PIDS=""
 BATCH=20
 for start in $(seq 1 $BATCH "$N"); do

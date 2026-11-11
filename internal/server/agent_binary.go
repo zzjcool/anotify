@@ -41,7 +41,7 @@ type agentBinary struct {
 
 // loadAgentBinary 读取并摘要 agent 二进制；文件不存在 = 功能未启用（**不是错误**）。
 //
-// 契约 §2：服务端启动时读 ANOTIFY_AGENT_BIN（默认 /app/agent）；文件不存在 = 该功能
+// 契约 §2：服务端启动时读 ANOTIFY_AGENT_BIN（默认 /app/anode，v4 的节点二进制就是 anode）；文件不存在 = 该功能
 // 未启用，日志 WARN 一句即可。绝大多数开发/裸机部署本来就不带 agent 二进制，
 // 把它当启动失败等于让「不升级」这个合法选择变成部署故障。
 func loadAgentBinary(path, version string) *agentBinary {

@@ -7,6 +7,13 @@
 #   - 数据库用 mktemp -d，跑完删
 #   - 不改产品代码：这里只调 cmd/* 的二进制与 HTTP API
 #
+# 节点二进制（#338）：v3 的 cmd/agent 已随节点产品换代为 **anode**（v4，./cmd/anode）。
+# 本目录的节点侧场景（pb_node / pb_node_start / s1,s2,s5,s6）仍按 v3 CLI 形状写
+# （`agent -f node.yaml -data-dir … -grace`），而 v4 的 anode 是子命令 CLI
+# （`anode serve --config …`）且配置文件形状不同 —— 这些场景**未迁移**，
+# 所以 pb_build 不再构建节点二进制，pb_node* 会当场报 pb_die（不静默用错二进制）。
+# v4 的节点入口：docs/v4/anode-cli.md / make dev-node。
+#
 # 用法：场景脚本里 `. "$(dirname "$0")/lib.sh"`，然后 pb_init → 各 pb_* 函数 → pb_cleanup。
 set -uo pipefail
 
@@ -71,14 +78,16 @@ pb_cleanup() {
 pb_build() {
 	# 注意：这里只按「二进制存在」判断，换 commit 复现时会静默用旧二进制。
 	# 换版本复现请先 `rm -rf $PB_BIN` 或设 PB_REBUILD=1。
-	if [ "${PB_REBUILD:-0}" != "1" ] && [ -x "$PB_BIN/anotify" ] && [ -x "$PB_BIN/agent" ] \
+	if [ "${PB_REBUILD:-0}" != "1" ] && [ -x "$PB_BIN/anotify" ] \
 		&& [ -x "$PB_BIN/loadgen" ] && [ -x "$PB_BIN/devseed" ]; then return 0; fi
-	pb_say "构建 server/agent/loadgen/devseed"
+	pb_say "构建 server/loadgen/devseed"
 	(
 		cd "$PB_ROOT" || exit 1
 		export GOPROXY=${GOPROXY:-direct} GOSUMDB=${GOSUMDB:-sum.golang.org} GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 		taskset -c "$PB_CORES" go build -o "$PB_BIN/anotify" ./cmd/server || exit 1
-		taskset -c "$PB_CORES" go build -o "$PB_BIN/agent" ./cmd/agent || exit 1
+		# 节点二进制（v3 的 cmd/agent）已随节点产品换代为 anode（v4，./cmd/anode）：本目录的
+		# 节点侧场景还是 v3 CLI 形状（见文件头），所以这里不再构建它 —— 别把 anode 改名成
+		# agent 假装能跑（flag/配置形状都不同）。
 		taskset -c "$PB_CORES" go build -o "$PB_BIN/loadgen" ./scripts/perf/loadgen || exit 1
 		taskset -c "$PB_CORES" go build -o "$PB_BIN/devseed" ./cmd/devseed || exit 1
 	) || pb_die "构建失败"
@@ -288,12 +297,11 @@ pb_node() {
 	# -data-dir 每台独立（e2e 配方同款）：默认 ~/.anotify 会让上一轮跑剩的产物
 	# 留在缓存里，hello.applied 先报旧 digest，新产物晚一步才落盘 → 首批任务可能
 	# 拿到上一轮那份脚本。
-	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$OUT/$name.yaml" \
-		-data-dir "$WORK/agent-data/$name" -grace 1 >"$OUT/$name.log" 2>&1 &
-	local apid=$!
-	PIDS+=("$apid")
-	eval "AGENT_PID_${name//-/_}=$apid"
-	pb_log "node $name（$NODE_ID）instances=$instances agent=$apid（concurrency=$conc 已忽略：#220 每槽恒 1 个任务）"
+	#
+	# 节点侧未迁移（#338）：v3 的 cmd/agent 已被 anode 取代，而下面这条命令用的是
+	# v3 专属的 `-f` / `-data-dir` / `-grace`。显式失败，而不是拉起一只形态不对的
+	# 进程然后在“节点一直不上线”里挖半天。
+	pb_die "本场景的节点侧仍是 v3 形状（agent -f node.yaml -grace），节点产品已换成 anode（v4）：见 docs/v4/anode-cli.md / make dev-node"
 }
 
 # pb_node_create <name> <instances> <conc> <cmd> [timeoutSec]：只建节点 + 部署 + 写 yaml，不起 agent
@@ -313,14 +321,11 @@ pb_node_create() {
 }
 
 # pb_node_start <name>：按已写好的 yaml 起 agent（用于「一次性拉起 N 个」的握手测试）
+#
+# 节点侧未迁移（#338）：同 pb_node —— v3 的 `-f`/`-data-dir`/`-grace` 在 v4 的 anode 上不存在。
 pb_node_start() {
 	local name=$1
-	taskset -c "$PB_CORES" "$PB_BIN/agent" -f "$OUT/$name.yaml" \
-		-data-dir "$WORK/agent-data/$name" -grace 1 >"$OUT/$name.log" 2>&1 &
-	local apid=$!
-	PIDS+=("$apid")
-	eval "AGENT_PID_${name//-/_}=$apid"
-	echo "$apid"
+	pb_die "pb_node_start $name：本场景的节点侧仍是 v3 形状，节点产品已换成 anode（v4）；见 docs/v4/anode-cli.md"
 }
 
 # pb_event <payload-json>：POST /v1/events（API Key，无限流）→ 原样返回响应
