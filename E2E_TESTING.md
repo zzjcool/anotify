@@ -43,10 +43,14 @@ scripts/e2e/
     p2_guards.mjs       # P2 工程守卫：字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions
 ```
 
-新增套件要**同时**登记两处，否则会被静默丢弃/抢端口：
+新增套件要在下面几处登记，否则会被静默丢弃 / 抢端口 / 跑错 authority：
 
 1. `scripts/e2e/parallel_runner.mjs` 的 `CHROME_SUITES`（或 `HTTP_SUITES`）
 2. `scripts/e2e/lib/harness.mjs` 的 `SUITE_PORTS`（每套件独占 50 个端口段）
+3. 只有需要跑在 **explicit-mock** 验收下的套件才进 `EXPLICIT_MOCK_SUITES`（默认 real）。
+   `E2E_MOCK_ONLY` 是执行器**注入**的，不从外部环境继承：清单外的套件（含 `frontend`）
+   会被剥掉。authority 裁决与分工见 `docs/v4/e2e-inventory.md`，离线核对用
+   `node scripts/e2e/parallel_runner.mjs --authority-plan`。
 
 另外：**临时目录一律用 `H.mkdtempTmp()` 创建、`finally` 里 `H.removeTmpDir()` 删除**，
 不要裸写 `mkdtempSync(tmpdir(), ...)`（见下节；`make ci` 的静态守卫会拦）。
@@ -150,7 +154,9 @@ make e2e-one S=auth_flow   # 只跑某个套件
 
 ## 测试矩阵（全 case 清单）
 
-见各 suite 文件顶部注释。总计 **1866 断言 / 29 套件**，覆盖：
+见各 suite 文件顶部注释。当前注册 **28 套件**（13 HTTP + 15 Chrome），断言总数以执行器
+汇总行为准（每次运行现算；逐套件 kept/migrated/retired 台账与历史口径见
+`docs/v4/e2e-inventory.md`），覆盖：
 
 - 每个 API 端点的 成功/401/403/400/404 路径
 - Passkey 注册→登录→登出→会话失效 全生命周期
@@ -161,8 +167,15 @@ make e2e-one S=auth_flow   # 只跑某个套件
   证明 Inter/Fraunces/JetBrains Mono 真的生效；390 视口抽屉的 role=dialog /
   aria-modal / Esc 关闭 / 焦点回归；reduce 下 `--dur`、`--dur-modal-out` 归零；
   跨文档 View Transitions 的 head 内联 opt-in + pagereveal 触发 + 导航 0 pageerror
-- **真节点端到端**（`live_agent`，4s）：真起节点进程 → 真部署 → 真跑任务，
-  最后到**文件系统**上验收（产物 digest 两端对得上账、能力声明的 `run.workDir` 真的生效、
-  用户目录里不残留产物文件）。专门抓「每层单独看都对、连起来才错」的一类 bug。
-  > #336 迁移中：`scripts/e2e/suites/live_agent.mjs` 与 `run_all.sh` 仍在构建 v3 的
-  > `cmd/agent`，v4 的节点入口是 `./anode`（`go build -o .e2e-bin/anode ./cmd/anode`）。
+- **真节点**：两个套件刻意分工，不重复 ——
+  - `node_v4`（数据面）：真 `anode` 二进制 + 真后端，真 hello/配置对齐 → 真部署拉取 →
+    真跑任务（事件 → task → `lease.grant` → 真执行 → `task.result`）→ 日志 / 产物上传与
+    私有下载 / 两种取消。
+  - `live_agent`（机器面 + 生命周期）：`anode` 的 CLI 契约（`--version` 形状 /
+    `emit` 退出码映射）、`anode install --prefix` 的落盘权限与幂等、安装产物 → `serve`
+    往返、SIGTERM 干净退出后中枢承认离线。验收读**进程退出码 / 文件权限 / 文件内容**，
+    专抓「每层单独看都对、连起来才错」的一类 bug。
+  > 构建事实（#336/#338）：`run_all.sh` 只构建三个真实产物 —— `anotify`（`cmd/server`，带
+  > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent` / `AGENT_BIN` 已随协议 v4
+  > 退役，已不存在「迁移中」的构建路径。
+  > `real_backend` 已具名退役并删文件（理由见 `docs/v4/e2e-inventory.md` §4）。
