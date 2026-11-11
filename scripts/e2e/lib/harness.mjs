@@ -23,6 +23,10 @@ export const BIN =
 	process.env.ANOTIFY_BIN || path.join(ROOT, ".e2e-bin/anotify");
 export const DEVSEED_BIN =
 	process.env.DEVSEED_BIN || path.join(ROOT, ".e2e-bin/devseed");
+// ANODE_BIN 是 v4 节点二进制（cmd/anode）；v3 的 AGENT_BIN / cmd/agent 已退役。
+// 只在需要**真执行**的套件里用（node_v4）；缺文件时套件必须报错而不是跳过。
+export const ANODE_BIN =
+	process.env.ANODE_BIN || path.join(ROOT, ".e2e-bin/anode");
 export const ROOT_DIR = ROOT;
 
 /* E2E 默认浏览器语言 = 站点默认语言（zh-CN）。
@@ -598,6 +602,8 @@ export const SUITE_PORTS = {
 	p2_guards: 7200,
 	// 密码登录（password_login）：Chrome 类，接在 p2_guards 段之后（7200 段到 7249 止）。
 	password_login: 7250,
+	// node_v4：真 anode 二进制 + 真后端（HTTP 类，无 Chrome）。接在 password_login 段之后。
+	node_v4: 7300,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。

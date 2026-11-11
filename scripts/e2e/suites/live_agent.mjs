@@ -31,8 +31,20 @@ import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
 
 const SUITE = "live_agent";
-// run_all.sh 会预构建 .e2e-bin/agent 并导出 AGENT_BIN。
-const AGENT_BIN = process.env.AGENT_BIN || path.join(H.ROOT_DIR, ".e2e-bin", "agent");
+// v4：节点侧只有一个二进制 —— `cmd/anode`（serve / install / emit）。
+// run_all.sh 会预构建 .e2e-bin/anode 并导出 ANODE_BIN。
+const ANODE_BIN = process.env.ANODE_BIN || path.join(H.ROOT_DIR, ".e2e-bin", "anode");
+
+// LEGACY_CLI 是本套件与 v4 的**真实差距**：它驱动的是已退役的 cmd/agent CLI
+// （`-f node.yaml` / `-data-dir` / `-grace`，以及能力脚本里的 `emit --port`），
+// 而 v4 的节点是 `anode serve --config <anode.yaml> --data <dir>`、出口只有
+// `anode emit <能力名>`（没有 port 概念）。v4 不提供兼容层，所以本套件在迁移前
+// **必须红**——不是环境问题，也不是可以 skip 的用例。
+// 真 v4 节点核心链（真二进制 + 真部署 + 真执行 + 真产物）的等价覆盖在
+// suites/node_v4.mjs；本文件的迁移属于阶段 B。
+const LEGACY_CLI =
+	"【阶段 B 待迁移】live_agent 驱动已退役的 cmd/agent CLI（-f/-data-dir/-grace、emit --port）；" +
+	"v4 节点只有 `anode serve --config <anode.yaml> --data <dir>`，等价覆盖见 suites/node_v4.mjs"
 
 let server;
 let session;
@@ -116,14 +128,12 @@ let nodeId;
 async function main() {
 	H.startTimer();
 
-	if (!existsSync(AGENT_BIN)) {
-		H.check(
-			"需要先构建 .e2e-bin/agent（run_all.sh 会做；单独跑请 go build -o .e2e-bin/agent ./cmd/agent）",
-			false,
-			AGENT_BIN,
-		);
-		return;
-	}
+	// 显式红：不 spawn 一个 CLI 语义已经不存在的进程去等超时（那样错误信息只剩
+	// "node 没上线"，把「CLI 已退役」伪装成产品 bug）。
+	H.check(LEGACY_CLI, false, `anode 二进制: ${ANODE_BIN}（存在=${existsSync(ANODE_BIN)}）`);
+	// 这里的 return 是刻意的：剩下的用例全部建立在「旧 CLI 能起进程」这个前提上。
+	// 保留它们的代码（阶段 B 迁移时按 v4 语义重写），但不在失效前提上继续跑。
+	return;
 
 	server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
 	const seeded = H.seed(server.dbPath, SUITE);
@@ -158,7 +168,7 @@ async function main() {
 	writeFileSync(yamlPath, yaml);
 
 	agentProc = spawn(
-		AGENT_BIN,
+		ANODE_BIN,
 		["-f", yamlPath, "-data-dir", path.join(tmpDir, "agent-data"), "-grace", "2"],
 		{ stdio: ["ignore", "pipe", "pipe"] },
 	);
@@ -482,7 +492,7 @@ async function main() {
 		// 真正的调用：--wait-routed = 等中枢 ack 再返回（默认只等本地 outbox 落盘，
 		// 那证明不了「已经派发出去」——而这正是本节要断言的那一半）。
 		`rc=0`,
-		`${JSON.stringify(AGENT_BIN)} emit --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
+		`${JSON.stringify(ANODE_BIN)} emit --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
 		'printf \'exit=%s\\n\' "$rc" >> "$PROBE"',
 		// 第二次独立产出（契约 §3）：一次 emit 只派**一个**候选，所以要看全两个目标
 		// 就得 emit 两次 —— 同级轮盘各落一个。这也是「两次 emit = 两个独立任务」的
@@ -492,12 +502,12 @@ async function main() {
 		// agent 从 ANOTIFY_EMIT_PORTS 自动取。跑通了才说明「脚本作者不需要知道
 		// 端口叫什么」在真进程里成立，而不只是单测里成立。
 		`rc2=0`,
-		`${JSON.stringify(AGENT_BIN)} emit --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
+		`${JSON.stringify(ANODE_BIN)} emit --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
 		'printf \'exit2=%s\\n\' "$rc2" >> "$PROBE"',
 		// 第三次：脚本**点名**下游（--to）。这是"脚本知道该给谁"的用法：
 		// 中枢按它钉住那个候选，而不是按轮盘挑（钉不住要报错，不能悄悄改投）。
 		`rc3=0`,
-		`${JSON.stringify(AGENT_BIN)} emit --to ${t1.name} --data '{"issue":"#44","title":"钉住"}' --wait-routed --note '第 3 项' >> "$PROBE" 2>&1 || rc3=$?`,
+		`${JSON.stringify(ANODE_BIN)} emit --to ${t1.name} --data '{"issue":"#44","title":"钉住"}' --wait-routed --note '第 3 项' >> "$PROBE" 2>&1 || rc3=$?`,
 		'printf \'exit3=%s\\n\' "$rc3" >> "$PROBE"',
 		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
 		"exit 0",

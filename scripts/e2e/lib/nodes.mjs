@@ -1,12 +1,44 @@
-/* 节点播种 + 上线的共享辅助（routing / ws_protocol 共用）。
+/* 节点播种 + 上线的共享辅助（routing / ws_protocol / node_v4 共用）。
  *
- * 为什么节点要直接写库：直接写库才能**指定明文 token**（`CreateNode` 只在
- * 201/返回时给一次明文，库里只有 sha256），而这里需要在握手时用同一个 token。
- * 注：`POST /v1/nodes` 自 #185 起已存在（节点页 #198 起也能从 UI 注册），
- * 但那条路拿到的 token 要跨进程传，不适合当作 e2e 的播种手段。
+ * ============================ v4 口径（必读） ============================
  *
- * 但**上线**必须走真实 WS 握手（hello → welcome）：只有握手成功，
- * 服务端的 NodeHub 才会注册这条连接，派发器才推得到 assign 帧。
+ * 帧契约唯一来源是 `internal/protocol`（Go 侧）。本文件是它在 e2e 里的**唯一**镜像，
+ * 严禁在套件里手写第二种 hello 形状。
+ *
+ * v4 hello（domain：config.md §4.2 / anode.md §3.3）：
+ *
+ *   {type:"hello", name, token, namespaces[], localVars{}, localLimits{},
+ *    appliedRevision, appliedHash, agentVersion, agentCommit, facts{}, capabilities[], instances[]}
+ *
+ * 与已退役的 v2 hello（`{type:"hello", node_id, protocol:2, applied[], instances[{slot,concurrency}]}`）
+ * 的三处根本差别，也是本文件被改写的原因：
+ *
+ *   1. **身份在帧里**：`token` 是节点身份（库里只有 sha256），`name` 必须与 token 所属
+ *      节点一致。v2 的 `node_id` 不是凭据 —— 服务端 v4 见到它只会当成未知字段忽略，
+ *      然后在 `authenticate` 里因为「hello 缺少 token」把连接关掉。
+ *   2. **ns 是申报不是参数**：`namespaces` 是本机申报列表（生效 = 申报 ∩ 中枢授权），
+ *      v4 不再有 `?namespace=` 那种握手参数。
+ *   3. **能力是探测结果不是缓存清单**：`capabilities[]` 带每个能力的
+ *      `requires.commands` 探测结果；`instances[]` 是**物理槽位事实**（`busy` 有
+ *      presence：缺字段 = 未知，不能当空闲）。
+ *
+ * 没有 v2 fallback：留一个「形状不对就退回老帧」的分支，正是让迁移永远做不完的原因
+ * （两边都通过，谁都发现不了中枢其实只认一边）。
+ *
+ * ---------------------------- 造数与真实性的边界 ----------------------------
+ *
+ * `seedNodeRows` 直接写库，只为**指定明文 token**（`POST /v1/nodes/{name}/tokens` 只在
+ * 响应里给一次明文，跨进程传不了）。它**不伪造执行事实**：不写 tasks、不写 result、
+ * 不写 deployments。
+ *
+ * **v4 的 nodes 是 cluster 对象**：表里没有 namespace_id，能力归属由 `deployments`
+ * 派生（v3 的 `node_capabilities` 表已随 v4 重建删除）。所以本文件的 seed 只写
+ * `nodes` 一行 + 申报的 `node_instances` 槽位——「这台机器装着哪个能力」是部署动作，
+ * 由 `POST …/capabilities/{name}/deploy` 产生，e2e 不能替产品记这条账。
+ *
+ * 需要**真节点**的套件（node_v4）走真实产品路径：
+ * `POST /v1/nodes` → `POST /v1/nodes/{name}/tokens` → 起 `cmd/anode` 二进制。
+ * 本文件的 mock 节点只用于「中枢侧的握手/派发语义」这类不需要执行器的断言。
  */
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,11 +61,10 @@ export function sha256(s) {
 //
 // 所以在入口把「调用方拿了个 undefined id」变成一句能直接定位的话，例如：
 //
-//   seedNodeRows: capabilityIds[2] 是 undefined（上游建能力失败？）
+//   bringUpNode: namespaces[1] 是 undefined
 //
 // 铁律：**不跳过**无效项、也不做静默兜底。自动跳过会把调用方的 bug 变成静默丢
 // 数据 —— 用例照样绿，但测的已经不是它声称的东西了。
-const HINT_UPSTREAM = "上游建能力失败？";
 
 // show 把值渲染成短且可区分的形式：undefined / null / "" / "undefined" 必须一眼
 // 分得开（"undefined" 这种字符串是最坑的一种，它不是 bug）。
@@ -62,7 +93,7 @@ function needText(fn, label, value, hint) {
 	return value;
 }
 
-// needCount 校验「非负整数」（slots / protocol 这类计数与版本号）。
+// needCount 校验「非负整数」（slots 这类计数）。
 // 不校验的话，slots=undefined 会让 node_instances 一行都不插 —— 静默少造数据。
 function needCount(fn, label, value, hint, { min = 0 } = {}) {
 	if (!Number.isInteger(value) || value < min) {
@@ -71,54 +102,62 @@ function needCount(fn, label, value, hint, { min = 0 } = {}) {
 	return value;
 }
 
-// needIdList 校验「元素全是非空字符串的数组」，报错**带下标与实际值**。
-// 这是 #210 的元凶入口：capabilityIds 里混进 undefined → 绑库崩在深处。
-function needIdList(fn, label, value, hint) {
+// needNameList 校验「元素全是非空字符串的数组」（hello.namespaces）。
+//
+// v4 的 namespaces 是**申报**列表：元素是 ns 的 slug（人读名），不是 `ns_…` id。
+// 传 id 进来不会报错，只会让「申报 ∩ 授权」永远为空 —— 症状是节点在线但不接活，
+// 所以这里顺手把明显是 id 的形状点名出来。
+function needNameList(fn, label, value, hint) {
 	if (!Array.isArray(value)) {
-		fail(fn, `${label} 必须是数组，实际是 ${show(value)}`, "应传入能力 id 数组，不要传单个 id");
+		fail(fn, `${label} 必须是数组，实际是 ${show(value)}`, hint || "应传入 ns 的 slug 数组，如 [\"default\"]");
 	}
 	for (let i = 0; i < value.length; i++) {
 		const item = value[i];
 		if (typeof item !== "string" || item === "") {
 			fail(fn, `${label}[${i}] 是 ${show(item)}`, hint);
 		}
+		if (item.startsWith("ns_")) {
+			fail(fn, `${label}[${i}] 是 ${show(item)}，看起来是命名空间 id`, "hello.namespaces 要的是 slug（如 default），id 会让「申报 ∩ 授权」为空");
+		}
 	}
 	return value;
 }
 
-// needCapList 校验能力声明数组（hello 帧与 bringUpNode 的 caps）。
-// requireId：bringUpNode 要把 id 落进 node_capabilities，缺 id 就是 #210 那种
-// 「undefined 绑库」；nodeHello 只发 name@version，不需要 id。
-function needCapList(fn, label, value, { requireId, hint = HINT_UPSTREAM }) {
+// needCapList 校验能力声明数组（hello.capabilities 的来源）。
+//
+// v4 的一条是 `{name, version, digest?, commands?[]}`：中枢用它在
+// `requires.commands` 匹配里回答 CommandMissing。不再校验 `id`：v4 没有
+// node_capabilities 表，「这台机器装着哪个能力」由 deployments 表达（部署动作）。
+function needCapList(fn, label, value, { hint } = {}) {
 	if (!Array.isArray(value)) {
-		fail(fn, `${label} 必须是数组，实际是 ${show(value)}`, "应传入 [{id?, name, version}] 数组");
+		fail(fn, `${label} 必须是数组，实际是 ${show(value)}`, "应传入 [{name, version}] 数组");
 	}
 	for (let i = 0; i < value.length; i++) {
 		const cap = value[i];
 		if (cap === null || typeof cap !== "object") {
-			fail(fn, `${label}[${i}] 必须是 {id?, name, version} 对象，实际是 ${show(cap)}`, hint);
-		}
-		if (requireId && (typeof cap.id !== "string" || cap.id === "")) {
-			fail(fn, `${label}[${i}].id 是 ${show(cap.id)}`, hint);
+			fail(fn, `${label}[${i}] 必须是 {name, version} 对象，实际是 ${show(cap)}`, hint);
 		}
 		if (typeof cap.name !== "string" || cap.name === "") {
-			fail(fn, `${label}[${i}].name 是 ${show(cap.name)}`, "上游建能力失败？能力名应为非空字符串");
+			fail(fn, `${label}[${i}].name 是 ${show(cap.name)}`, "能力名应为非空字符串（同 spec.metadata.name 正则）");
 		}
 		if (!Number.isInteger(cap.version) || cap.version < 1) {
-			fail(fn, `${label}[${i}].version 是 ${show(cap.version)}`, "能力版本应是正整数（契约 §6.1）");
+			fail(fn, `${label}[${i}].version 是 ${show(cap.version)}`, "能力版本应是正整数（capability.md §2.2）");
 		}
 	}
 	return value;
 }
 
-// seedNodeRows 往库里插一行节点（token 已知），可选声明能力与实例。
+// seedNodeRows 往库里插一行节点（token 已知），可选申报实例槽位。
 //
-// namespaceId 必传：nodes / node_capabilities / node_instances 都是命名空间资源
-// （namespace_id TEXT NOT NULL，唯一键 UNIQUE(namespace_id, name)）。节点属于哪个
-// 命名空间必须由调用方给**查出来的** id（`await H.defaultNamespaceId(base, session)`）
-// ——用例里写死 ns_xxx 等换库全红。
+// **v4 形状**：`nodes` 是 cluster 对象（无 namespace_id；唯一键是 name），
+// `node_instances` 是物理槽位（slot 0..N-1，每槽最多一个能力进程）。
+// v3 的 `node_capabilities` 表已删除 —— 能力归属是 `deployments` 的事实，不在这里造。
 //
-// **#204 / 迁移 14**：组织层删除，nodes 表不再有 org_id 列，所以这里没有 orgId 参数。
+// 形参 `namespaceId` / `capabilityIds` **保留只为调用点兼容**：
+//   - namespaceId：仍要求传真值（`H.defaultNamespaceId(...)` 的结果）。v4 里 ns 归属
+//     由 hello.namespaces（申报）与 node_configs.namespaces（授权）表达，不在 nodes 行上；
+//     保留形参是为了让「还按 v3 调用的套件」在这里**当场**报错，而不是静默少造数据。
+//   - capabilityIds：v4 已无对应表。非空会被显式拒绝（见下），不做静默丢弃。
 //
 // 返回 { id, token }。token 是明文，DB 里只存 sha256。
 export function seedNodeRows(
@@ -128,44 +167,39 @@ export function seedNodeRows(
 	capabilityIds = [],
 	slots = 1,
 ) {
+	const FN = "seedNodeRows";
 	// #210：入口校验。参数不对就在**这里**炸，别让它变成「0通过/0失败」。
-	needText("seedNodeRows", "dbPath", dbPath);
-	needText(
-		"seedNodeRows",
-		"namespaceId",
-		namespaceId,
-		"用 H.defaultNamespaceId(base, session) 取，不要硬编码",
-	);
-	needText("seedNodeRows", "name", name);
-	needIdList("seedNodeRows", "capabilityIds", capabilityIds, HINT_UPSTREAM);
-	needCount("seedNodeRows", "slots", slots);
-	const token = "{{SECRET_dg3rvnxb}}" + randomUUID().replace(/-/g, "");
+	needText(FN, "dbPath", dbPath);
+	needText(FN, "namespaceId", namespaceId, "用 H.defaultNamespaceId(base, session) 取，不要硬编码");
+	needText(FN, "name", name);
+	needCount(FN, "slots", slots);
+	if (!Array.isArray(capabilityIds)) {
+		fail(FN, `capabilityIds 必须是数组，实际是 ${show(capabilityIds)}`);
+	}
+	if (capabilityIds.length > 0) {
+		// 静默忽略 = 套件以为「这台节点装着某能力」，实际库上什么都没有，断言随后
+		// 在派发处失败，看起来像产品 bug。v4 的答案是部署动作，不是插表。
+		fail(
+			FN,
+			`capabilityIds 非空（${capabilityIds.length} 项），但 v4 没有 node_capabilities 表`,
+			"能力归属由 deployments 派生：要声明「这台机器装着某能力」，请走 POST /v1/namespaces/{ns}/capabilities/{name}/deploy 并让节点回 capability.deployed",
+		);
+	}
+	const token = "e2eNodeToken" + randomUUID().replace(/-/g, "");
 	const nodeId = "nd_e2e_" + randomUUID().replace(/-/g, "").slice(0, 20);
 	const now = Math.floor(Date.now() / 1000);
 
 	const db = new DatabaseSync(dbPath);
 	try {
 		db.prepare(
-			`INSERT INTO nodes (id, namespace_id, name, tags, status, token_hash, max_instances, max_concurrency, created_at)
-			 VALUES (?, ?, ?, '[]', 'offline', ?, 20, 8, ?)`,
-		).run(nodeId, namespaceId, name, sha256(token), now);
-		for (const capId of capabilityIds) {
-			// 上面 needIdList 已经把 undefined/"" 挡在入口了，这里再断言一次成本为零，
-			// 但能挡住「以后有人绕过入口改直插」——#210 崩的就是这一行。
-			if (typeof capId !== "string" || capId === "") {
-				throw new Error(
-					`seedNodeRows: capability_id 准备落库时是 ${show(capId)}（上游建能力失败？）`,
-				);
-			}
+			`INSERT INTO nodes (id, name, tags, status, token_hash, created_at)
+			 VALUES (?, ?, '[]', 'offline', ?, ?)`,
+		).run(nodeId, name, sha256(token), now);
+		for (let slot = 0; slot < slots; slot++) {
 			db.prepare(
-				`INSERT INTO node_capabilities (node_id, capability_id, namespace_id) VALUES (?, ?, ?)`,
-			).run(nodeId, capId, namespaceId);
-		}
-		for (let i = 0; i < slots; i++) {
-			db.prepare(
-				`INSERT INTO node_instances (id, node_id, slot, concurrency, alive, updated_at, namespace_id)
-				 VALUES (?, ?, ?, 1, 1, ?, ?)`,
-			).run(`nins_e2e_${nodeId}_${i}`, nodeId, i, now, namespaceId);
+				`INSERT INTO node_instances (id, node_id, slot, alive, updated_at)
+				 VALUES (?, ?, ?, 1, ?)`,
+			).run(`nins_e2e_${nodeId}_${slot}`, nodeId, slot, now);
 		}
 	} finally {
 		db.close();
@@ -175,47 +209,108 @@ export function seedNodeRows(
 
 // PLACEHOLDER_DIGEST 是 e2e 用的占位 digest。
 //
-// 协议 v2（console-declares）里 hello 不再自报能力，只陈述「我缓存了哪些产物」，
-// 而产物由 digest 标识。e2e 的大部分套件并不真的部署产物（它们只关心「这个节点
-// 参不参与派发」），所以用一个固定的占位 digest 就够：中枢侧对账时找不到对应的
-// deployment 行 → 只写 node_capabilities，不改任何部署状态。
+// 中枢对 hello.capabilities[].digest 的对账只对**已请求的部署行**生效（deployments
+// 表里没有这个 digest 的行时，它只是「节点缓存了什么」的陈述）。所以不关心产物内容
+// 的套件给一个固定的占位 digest 就够。
 export const PLACEHOLDER_DIGEST = "sha256:" + "0".repeat(64);
 
-// nodeHello 构造 hello 帧（协议 v2）。
+// nodeHello 构造 v4 hello 帧（**对象参数**）。
 //
-// #210：同样在入口校验 —— hello 里 cap.name/cap.version 是 undefined 时服务端只会
-// 回一个语义模糊的 error 帧，看起来像「能力没注册」，实际是造数时就没拿到 id/name。
+//   nodeHello({ name, token, namespaces?, capabilities?, slots?, ... })
 //
-// **v2 语义**：`caps` 现在表达的是 applied[]（「我缓存了哪些产物」），
-// 不再是「我会跑什么」。能力归属只由控制台的部署派生（契约 D4），
-// 所以这些名字必须本来就已在服务端定义过，否则整帧被 unknown_capability 拒绝。
-export function nodeHello(nodeId, caps = [], slots = 1, protocol = 2) {
-	needText("nodeHello", "nodeId", nodeId);
-	needCapList("nodeHello", "caps", caps, { requireId: false });
-	needCount("nodeHello", "slots", slots);
-	needCount("nodeHello", "protocol", protocol, "hello 的协议版本", { min: 1 });
+// 为什么改成对象参数：v4 hello 有 12 个字段，位置参数已经读不懂谁是谁，而
+// `(nodeId, caps, slots, protocol)` 这种形状本身就是 v2 的（nodeId 不是凭据、
+// protocol 字段 v4 根本没有）。传旧形状会得到一句明确的迁移提示，而不是「服务端
+// 静默关了连接，理由是 hello 缺 token」这种要读服务端日志才知道的失败。
+export function nodeHello(opts) {
+	const FN = "nodeHello";
+	if (typeof opts === "string") {
+		// 旧调用点（(nodeId, caps, slots, protocol)）：直接点名，不做形状猜测。
+		fail(
+			FN,
+			"收到位置参数，v4 要求对象参数 nodeHello({ name, token, namespaces, slots, ... })",
+			"旧形状 (nodeId, caps, slots, protocol) 是协议 v2 的；v4 身份是 hello.token，没有 protocol 字段",
+		);
+	}
+	if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
+		fail(FN, `参数必须是对象，实际是 ${show(opts)}`);
+	}
+	needText(FN, "name", opts.name);
+	needText(FN, "token", opts.token, "token 是节点身份（明文只在签发响应里出现一次）");
+	const namespaces = needNameList(
+		FN,
+		"namespaces",
+		opts.namespaces === undefined ? ["default"] : opts.namespaces,
+	);
+	const capabilities = needCapList(
+		FN,
+		"capabilities",
+		opts.capabilities === undefined ? [] : opts.capabilities,
+	);
+	const slots = needCount(FN, "slots", opts.slots === undefined ? 1 : opts.slots);
+	const localVars = opts.localVars === undefined ? {} : opts.localVars;
+	if (localVars === null || typeof localVars !== "object" || Array.isArray(localVars)) {
+		fail(FN, `localVars 必须是对象，实际是 ${show(localVars)}`);
+	}
+	// localLimits 是**本机**预算（逐叶压住中枢节点默认值）。total 缺省按 slots 报，
+	// 否则中枢算出来的机器级预算会是 0，派发永远批不下来（症状：任务一直 pending）。
+	const localLimits = {
+		total: slots,
+		...(opts.localLimits || {}),
+	};
+
 	return {
 		type: "hello",
-		node_id: nodeId,
-		protocol,
-		applied: caps.map((c) => ({
-			capability: c.name,
+		name: opts.name,
+		token: opts.token,
+		namespaces: [...namespaces],
+		localVars: { ...localVars },
+		localLimits,
+		appliedRevision: opts.appliedRevision || "",
+		appliedHash: opts.appliedHash || "",
+		agentVersion: opts.agentVersion === undefined ? "e2e-mock" : opts.agentVersion,
+		agentCommit: opts.agentCommit === undefined ? "e2e-mock-commit" : opts.agentCommit,
+		// 本机内置事实（anode.md §3.6）。mock 没有真探测能力，但字段必须**在**：
+		// 「节点没报」与「节点报了空」在中枢是两个不同的事实。
+		facts:
+			opts.facts ||
+			{
+				hostIP: "127.0.0.1",
+				hostname: "e2e-mock",
+				os: process.platform,
+				arch: process.arch,
+				cpu: 1,
+				workRoot: "/tmp",
+				homeDir: "/tmp",
+			},
+		// 能力条目的 commands 缺省是空数组（= 没有 requires.commands 的探测结果）。
+		capabilities: capabilities.map((c) => ({
+			name: c.name,
 			version: c.version,
 			digest: c.digest || PLACEHOLDER_DIGEST,
+			commands: c.commands || [],
 		})),
-		instances: Array.from({ length: slots }, (_, i) => ({ slot: i, concurrency: 1 })),
+		// 槽位：slot 用数字（presence 由「有没有这个字段」表达），busy=false 是**明确**
+		// 的「本机空闲」断言。缺 busy 是「未知」，中枢不能据此把槽当空闲。
+		instances: Array.from({ length: slots }, (_, i) => ({ slot: i, busy: false })),
 	};
 }
 
 // bringUpNode 播种节点 + 真实 WS 握手 + 等 welcome。
 //
-// namespaceId 决定节点归属于哪个命名空间（hello 帧里的能力名只在这个命名空间内解析，
-// 见契约 §2.1）；必须与建能力/边时用的命名空间一致，否则派发会找不到节点。
+// 位置参数保持与既有调用点一致（(serverBase, dbPath, namespaceId, name, caps, slots)），
+// 尾部可选的 opts 用于 v4 的新事实：
 //
-// 签名里**没有 orgId**（#204 / 迁移 14：组织层删除，令牌只绑命名空间）。
+//   opts.namespaceSlug  hello.namespaces 里申报的 slug（默认 "default"）
+//   opts.agentVersion   hello.agentVersion（默认 "e2e-mock"）
+//   opts.localVars      hello.localVars
+//
+// 注意 `caps` 在 v4 只是 **hello 申报**（中枢据此回答 CommandMissing），不再落
+// node_capabilities（表已删除）；因此 mock 节点不会被 `deployments` 认作「已部署」。
+// 需要「真的能接活」的套件必须走真实部署（见 suites/node_v4.mjs）。
 //
 // 返回 { id, token, conn, frames }。frames 是已收到的所有帧（含 welcome）。
-// 握手失败时抛出，带上服务端下发的 error 帧便于定位。
+// 握手失败时抛出，带上服务端下发的帧与关闭原因便于定位。
 export async function bringUpNode(
 	serverBase,
 	dbPath,
@@ -223,45 +318,55 @@ export async function bringUpNode(
 	name,
 	caps = [],
 	slots = 1,
+	opts = {},
 ) {
-	// #210：caps 里的 {id,name,version} 都来自「上一步建能力」。建能力失败时
-	// cap.id 就是 undefined —— 先在这里报出来（带下标），再谈握手。
-	needText("bringUpNode", "serverBase", serverBase);
-	needText(
-		"bringUpNode",
-		"namespaceId",
-		namespaceId,
-		"用 H.defaultNamespaceId(base, session) 取，不要硬编码",
-	);
-	needText("bringUpNode", "name", name);
-	needCapList("bringUpNode", "caps", caps, { requireId: true });
-	needCount("bringUpNode", "slots", slots);
+	const FN = "bringUpNode";
+	// #210：caps 里的 {name,version} 都来自「上一步建能力」。建能力失败时
+	// cap.name 就是 undefined —— 先在这里报出来（带下标），再谈握手。
+	needText(FN, "serverBase", serverBase);
+	needText(FN, "namespaceId", namespaceId, "用 H.defaultNamespaceId(base, session) 取，不要硬编码");
+	needText(FN, "name", name);
+	needCapList(FN, "caps", caps);
+	needCount(FN, "slots", slots);
+	const namespaceSlug = opts.namespaceSlug === undefined ? "default" : opts.namespaceSlug;
+	needText(FN, "opts.namespaceSlug", namespaceSlug);
 
-	const node = seedNodeRows(
-		dbPath,
-		namespaceId,
-		name,
-		caps.map((c) => c.id),
-		slots,
-	);
+	// caps 不落库（v4 没有那张表），seed 只写节点行 + 槽位。
+	const node = seedNodeRows(dbPath, namespaceId, name, [], slots);
 	const conn = await wsConnect(serverBase, node.token);
 
 	const frames = [];
+	let closed = null;
 	conn.onFrame((f) => frames.push(f));
+	conn.onClose((info) => {
+		closed = info;
+	});
 
-	conn.send(nodeHello(node.id, caps, slots));
+	conn.send(
+		nodeHello({
+			name,
+			token: node.token,
+			namespaces: [namespaceSlug],
+			capabilities: caps,
+			slots,
+			agentVersion: opts.agentVersion,
+			localVars: opts.localVars,
+		}),
+	);
 
-	// 等 welcome（最多 3s）
+	// 等 welcome（最多 3s）。到点还没来就把「收到的帧 + 关闭原因」一起报出去：
+	// 只有 "握手失败" 四个字的报错在 v4 里没有任何定位价值（可能是 token 错、
+	// name 与 token 不匹配、或者首帧不是 hello）。
 	const deadline = Date.now() + 3000;
 	while (Date.now() < deadline) {
 		if (frames.some((f) => f.type === "welcome")) break;
+		if (closed) break;
 		await new Promise((r) => setTimeout(r, 25));
 	}
 	if (!frames.some((f) => f.type === "welcome")) {
-		const err = frames.find((f) => f.type === "error");
 		conn.close();
 		throw new Error(
-			`节点 ${name} 握手失败: ${JSON.stringify(err || frames)}`,
+			`节点 ${name} 握手失败（v4 hello → welcome）: frames=${JSON.stringify(frames).slice(0, 400)} close=${JSON.stringify(closed)}`,
 		);
 	}
 	return { ...node, conn, frames };

@@ -16,7 +16,7 @@
  * 环境变量：
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
- *   ANOTIFY_BIN / DEVSEED_BIN  二进制路径（由 run_all.sh 设置）
+ *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
  */
 import { spawn } from "node:child_process";
@@ -46,11 +46,16 @@ const HTTP_SUITES = [
 	// console-declares（T6）：部署模型的纯 HTTP 面
 	// （templates / 产物 digest / deployments 状态机 / 本地变体）
 	"deploy",
-	// #291：真 cmd/agent 进程 + 真部署 + 真任务，最后到文件系统上验收
+	// #291：真节点进程 + 真部署 + 真任务，最后到文件系统上验收
 	// （专门抓"每层都对、连起来才错"的 bug：两端 digest 不一致、
 	//  能力声明的 run.workDir 没生效）
+	// v4 现状：本套件驱动的是已退役的 cmd/agent CLI，迁移属于阶段 B（现在显式红）；
+	// 真 anode 的核心链覆盖由 node_v4 接管。
 	"live_agent",
-
+	// #336：v4 真实节点核心链 —— 真 `cmd/anode` 二进制（不是 mock）+ 真后端：
+	// v4 hello/配置对齐 → 人工部署 + 节点真拉产物 → 事件→task→lease.grant→真执行
+	// → task.result → 日志 / 产物上传与私有下载 / 两种取消。
+	"node_v4",
 ];
 const CHROME_SUITES = [
 	"i18n",
@@ -92,6 +97,11 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// 咬死默认 120s 的话，真回归会先被 SIGKILL 变成「超时」，断言文本全丢、
 	// 只剩"这个套件挂了"，等于把诊断信息扔了。240s 覆盖最坏路径又不拖累绿路径。
 	real_backend: 240_000,
+	// node_v4（#336）：绿的时候 ~2s，但它串了 5 个真实进程间阶段（握手 / 部署 / 执行 /
+	// 取消 / 离线），每个阶段都有**自己的**有界轮询。真回归时要让那些有界等待把
+	// 「卡在哪一步」原样打出来，而不是先被 SIGKILL 成「超时」。套件自己也断言总时长
+	// < 300s，所以这里给同一量级的预算。
+	node_v4: 300_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");

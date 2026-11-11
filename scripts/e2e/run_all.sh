@@ -5,6 +5,7 @@
 #   ./scripts/e2e/run_all.sh --serial        # 全量（串行模式）
 #   ./scripts/e2e/run_all.sh auth_flow        # 只跑指定套件（串行）
 #   ./scripts/e2e/run_all.sh --serial auth_flow  # 同上（显式串行）
+#   ./scripts/e2e/run_all.sh --serial node_v4    # v4 真实节点核心链（真 anode 二进制）
 # 环境变量：
 #   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
 set -uo pipefail
@@ -43,6 +44,15 @@ if [ "$NEED_FE" = "1" ]; then
 fi
 
 # 2. 构建测试二进制
+#
+# 三个真实产物，没有 mock：
+#   anotify  中枢（cmd/server，带 embeddist 的前端产物）
+#   devseed  播种用户/API Key/会话（+ -demo 的 v4 真实资源）
+#   anode    v4 节点（cmd/anode：serve / install / emit 三个子命令）
+#
+# v4 已退役 cmd/agent 与旧协议（#331/#332/#333）：节点侧**只有** cmd/anode，
+# 帧契约唯一来源是 internal/protocol。e2e 因此不再构建 agent，也不再有
+# 第二套节点 CLI（旧 AGENT_BIN 环境变量随之改名为 ANODE_BIN）。
 echo "▶ 构建二进制…"
 mkdir -p .e2e-bin
 go build -tags embeddist -o .e2e-bin/anotify ./cmd/server || {
@@ -53,12 +63,12 @@ go build -o .e2e-bin/devseed ./cmd/devseed || {
 	echo "❌ devseed 构建失败"
 	exit 1
 }
-# real_backend 套件（#201）要真起 cmd/agent：UI 生成的 node.yaml 交给真消费者解析。
-go build -o .e2e-bin/agent ./cmd/agent || {
-	echo "❌ agent 构建失败"
+# node_v4 套件要真起 anode：真 hello/配置对齐/真部署拉取/真执行/真结果上报。
+go build -o .e2e-bin/anode ./cmd/anode || {
+	echo "❌ anode 构建失败"
 	exit 1
 }
-export ANOTIFY_BIN="$ROOT/.e2e-bin/anotify" DEVSEED_BIN="$ROOT/.e2e-bin/devseed" AGENT_BIN="$ROOT/.e2e-bin/agent"
+export ANOTIFY_BIN="$ROOT/.e2e-bin/anotify" DEVSEED_BIN="$ROOT/.e2e-bin/devseed" ANODE_BIN="$ROOT/.e2e-bin/anode"
 echo "  ✅ 二进制就绪"
 
 # 3. 委托 Node 并行执行器
