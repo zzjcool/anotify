@@ -793,23 +793,25 @@ func TestSourceResourceDryRunSideEffectFree(t *testing.T) {
 
 // TestSourceResourceHookResolvesNamespaceByToken 验外部投递入口：token 定位源 → 源行自带
 // namespace，事件落进那个命名空间；未知/停用 token 一律 404（不区分，防探测）。
+//
+// 源配了 `secret`，所以投递必须带合法签名（source.md §3.3）：这里用**同一份原始字节**
+// 签名，既满足验签，也顺手证明「带 secret 的源仍能正常投递」。
 func TestSourceResourceHookResolvesNamespaceByToken(t *testing.T) {
 	env := newSourceResEnv(t)
 	const token = "tok-ns-locate"
+	const secret = "hook-secret"
 	env.createSource(
 		map[string]any{
 			"kind":    "webhook",
-			"config":  map[string]any{"token": token, "secret": "hook-secret"},
+			"config":  map[string]any{"token": token, "secret": secret},
 			"targets": []any{map[string]any{"capability": "notify"}},
 		},
 		map[string]any{"name": "inbound"},
 	)
 
-	rr := env.request(http.MethodPost, srcHookPathPrefix+token, map[string]any{
-		"type":    "ping",
-		"id":      "delivery-1",
-		"payload": map[string]any{"environment": "prod"},
-	})
+	// 投递体按原始字节构造：签名必须盖在同一份字节上（不是解析后的 JSON）。
+	raw := []byte(`{"type":"ping","id":"delivery-1","payload":{"environment":"prod"}}`)
+	rr := hookPost(t, env, token, raw, hookSign(secret, raw))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("hook 期望 200，得到 %d：%s", rr.Code, rr.Body.String())
 	}
@@ -840,9 +842,7 @@ func TestSourceResourceHookResolvesNamespaceByToken(t *testing.T) {
 	}
 
 	// 同一 id 在去重窗口内重复投递 → duplicate=true 返回原 event/trace，不重复派发。
-	rr = env.request(http.MethodPost, srcHookPathPrefix+token, map[string]any{
-		"type": "ping", "id": "delivery-1", "payload": map[string]any{"environment": "prod"},
-	})
+	rr = hookPost(t, env, token, raw, hookSign(secret, raw))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("重复投递期望 200，得到 %d：%s", rr.Code, rr.Body.String())
 	}
