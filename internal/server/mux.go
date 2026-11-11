@@ -33,11 +33,12 @@ type App struct {
 	// Spool 是中枢自有的产物字节池（#332）：nil = 托管根不可用（产物端点回 503）。
 	Spool *resultspool.Store
 	// ArtifactGC 是产物字节回收驱动（nil = 未配置周期，或 spool 不可用）。
-	// 它由 NewApp 用装配期的 ctx 启动（`go ArtifactGC.Run(ctx)`）；测试可直接
+	// 它是后台写者（Expire / Ack 都打库），所以由 NewApp 用 runBackgroundLoop 起，
+	// 与背压采样 / 派发 / cron / 租约同受 WaitBackground 的收尾约束；测试可直接
 	// 调 RunOnce 做**真实**回收验证，不需要等 ticker。
 	ArtifactGC *resultspool.GC
 
-	// background 追踪 NewApp 起的后台循环（背压采样 + 派发 / cron / 租约三条）。
+	// background 追踪 NewApp 起的后台循环（背压采样 + 派发 / cron / 租约三条 + 产物 GC）。
 	//
 	// 它只为一件事存在：让「关停」有确定的 happens-before。取消 ctx 只是**信号**，
 	// 循环可能正卡在一次库查询里；调用方若紧接着 db.Close()，那条查询就会拿到
@@ -323,13 +324,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 			)
 		} else {
 			artifactGC = gc
-			go func() { _ = gc.Run(ctx) }()
+			// 走 runBackgroundLoop 而不是裸 go：GC 的 Expire / Ack 都是库写者，
+			// 不登记进 background 就等于绕过了 #340 r3 的关停屏障（cancel 之后
+			// WaitBackground 会提前返回，db.Close() 仍可能与一轮回收并发）。
+			app.runBackgroundLoop(ctx, "artifact-gc", gc.Run)
 		}
 	}
-
-	// 产物字节池与 GC 驱动挂到 App 上（#332）：测试直接取用做真实回收验证。
-	app.Spool = spool
-	app.ArtifactGC = artifactGC
 
 	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。
 	//
@@ -559,14 +559,20 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// （回归用例：gzip_test.go 的 TestGzipJSONKeepsStatusWriter）。
 	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
 	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
+	// 产物域的读写依赖装配期建好的 spool / GC，必须挂在**同一个** app 上：
+	// 后台循环的 WaitGroup 已经落在 app 里（#340 r3 的关停契约），另造一个 App 会
+	// 丢掉那条 happens-before，让 db.Close() 与派发 / GC 并发。
+	app.Spool = spool
+	app.ArtifactGC = artifactGC
 	app.Handler = gzipJSON(accessLog(mux))
 	return app
 }
 
 // runBackgroundLoop 启动一条后台循环，并把「非取消」的退出记成 WARN。
 //
-// 三条循环（派发 / cron / 租约）都遵循同一份纪律：单轮失败只记日志、继续下一轮；
-// 整个 Run 只在 ctx 结束时返回 ctx.Err()。所以这里把 ctx.Err() 当正常关闭处理——
+// 派发 / cron / 租约三条循环，以及同为库写者的产物字节 GC，都走这里：纪律一致——
+// 单轮失败只记日志、继续下一轮；整个 Run 只在 ctx 结束时返回（成对地返回 ctx.Err()
+// 或 nil，GC.Run 属后者）。所以这里把 ctx.Err() 当正常关闭处理——
 // 否则每次优雅停机都会在日志里留下三条像故障的 WARN。
 func (a *App) runBackgroundLoop(ctx context.Context, name string, run func(context.Context) error) {
 	done := a.trackBackground()
