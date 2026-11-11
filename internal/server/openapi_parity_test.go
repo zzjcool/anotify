@@ -120,9 +120,9 @@ const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
 	parityPairsFloor = 191
 	// bareMountFloor 是 bareMountSpec() 的条目数。
-	bareMountFloor = 26
+	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
-	muxPatternCount = 112
+	muxPatternCount = 114
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
@@ -158,10 +158,14 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	fatalIfProblems(t, "解析 $ref（含跨文件）", refIntegrityProblems(docs))
 
 	ops, _ := collectSpecOps(docs)
-	if len(ops) != 124 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，契约（docs/v4/g3c-spec-inventory.md）冻结的是 124", len(ops))
+	// 快照 124 → 125：#333 的 SAFE_BLOCKED 缺口 `GET /v1/node/capabilities/{digest}`
+	// 已经实现（internal/server/node_capability.go + mux 接线），agent.yaml 因此多一条
+	// operation。这是**实现追上契约**的方向（契约 §8.2 一直要求这条通道），不是新增端点：
+	// docs/v4/g3c-spec-inventory.md §1 的 124/3 与 §5.1 的缺口条目待文档 owner 同步。
+	if len(ops) != 125 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 125（124 + Node 能力包体下行）", len(ops))
 	}
-	// 至少一条来自 components.pathItems（agent.yaml 三条 + events/ingress 的共享 pathItem）。
+	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
 	for _, op := range ops {
 		if op.FromPathItem {
@@ -2201,6 +2205,13 @@ func bareMountSpec() []bareMountEntry {
 			},
 		},
 		{
+			// 只读内容通道（api-conventions §8.2）：非 GET 走显式 405 兜底
+			// （methodNotAllowedAllowGet），没有别的 spec operation。
+			Pattern:     "/v1/node/capabilities/{digest}",
+			HandlerFile: "node_capability.go",
+			Reason:      "只读内容通道：GET 由更具体的 `GET /v1/node/capabilities/{digest}` 接住，这条裸 pattern 只回 405（methodNotAllowedAllowGet），不承载任何 spec operation",
+		},
+		{
 			// 只读投影：非 GET 走显式 405 兜底（methodNotAllowedAllowGet），没有别的 spec operation。
 			Pattern:     "/v1/namespaces/{ns}/edges",
 			HandlerFile: "resource_capability.go",
@@ -2549,6 +2560,11 @@ var nodeTokenRegistration = map[string]struct {
 		Handler:  "newArtifactUploadHandler",
 		AuthFile: "internal/server/artifact_upload.go",
 		Witness:  "internal/server/artifact_upload.go:GetNodeByTokenHash",
+	},
+	"GET /v1/node/capabilities/{digest}": {
+		Handler:  "newNodeCapabilityContentHandler",
+		AuthFile: "internal/server/node_capability.go",
+		Witness:  "internal/server/node_capability.go:GetNodeByTokenHash",
 	},
 }
 

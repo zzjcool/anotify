@@ -1,4 +1,4 @@
-# G3a · #331 测试 inventory（server 345 + api 18 → server 265 + api 8）
+# G3a · #331 测试 inventory（server 345 + api 18 → server 267 + api 8）
 
 > G3-D6 要求：先逐名 inventory，再按当前安全事实迁移；**禁止整文件清空**认证/权限/CAS/
 > delete/secret/digest/FK/backpressure 断言；退役项必须**具名**并给出**替代用例**。
@@ -9,7 +9,7 @@
 >
 > | | 旧（`b30e998`） | 首轮交付（`2c3b2d3`） | 返修后（本轮） |
 > |---|---|---|---|
-> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 245（244 + 1） | **265（264 + 1）** |
+> | `internal/server` | 345（344 用例 + 1 `TestMain`） | 245（244 + 1） | **267（266 + 1）** |
 > | `internal/api` | 18 | 8 | 8（本轮未改） |
 >
 > 差异全部是「v3 扁平资源面不存在了」的直接后果 + 返修轮补回被误删的覆盖；
@@ -179,8 +179,8 @@
 ## 5. 新增用例清单
 
 首轮交付：**server 新增 84（实测 `2c3b2d3`；旧文写 83 已修正）+ api 8**。
-返修轮（§9）：server **+20**（其中首轮回修 `f0016b8` +17、M-1 +2、minor-2 +1、M-2 ±0，见 §9.5）；
-当前 `internal/server` = **265** 个 `func Test`（**264 个用例 + 1 个 `TestMain`**），`internal/api` = 8。
+返修轮（§9）：server **+22**（其中首轮回修 `f0016b8` +17、M-1 +2、minor-2 +1、M-2 ±0、r3 +2，见 §9.5）；
+当前 `internal/server` = **267** 个 `func Test`（**266 个用例 + 1 个 `TestMain`**），`internal/api` = 8。
 
 ```
 # ---- 首轮交付（84 + 8；文件后数字为 `3243ef8` 的首轮初版计数）----
@@ -196,7 +196,7 @@ internal/server/task_out_retired_test.go      2  TestTaskEndpointsExposeNoOut / 
 internal/api/events_test.go                   8  TestEventIngress*（含 TestEventIngressSlugPath）
 # ---- 返修轮 +17（=`f0016b8`，§9.1–§9.2）----
 internal/server/retained_reads_test.go        4  TestRetained*                # 冻结保留读模型恢复
-internal/server/production_mux_test.go        1  TestProductionMux*          # 生产 mux 整机冒烟（§9.5 再 +1 → 2）
+internal/server/production_mux_test.go        1  TestProductionMux*          # 生产 mux 整机冒烟（§9.5 再 +2 → 3）
 internal/server/dispatch_budget_test.go       3  TestDispatchBudget*/TestValidateRejectsBadDispatchBudgets
 internal/server/resource_task_test.go        +4  previous-none / no-attempt410 / events-limit 钳位 / downstream_missing 投影
 internal/server/node_upgrade_test.go         +2  up_to_date+force+dirty / isUniqueVersion
@@ -206,7 +206,9 @@ internal/server/resource_source_test.go      +1  TestSourceResourceReservedNameI
 # ---- r2 再 +3（§9.5）----
 internal/server/production_clock_test.go      2  TestProductionMuxStatsWindowUsesMillisecondClock / …CancelRequestedAtIsRealTime
 internal/server/production_mux_test.go       +1  TestProductionMuxRetiredWritesAre405
-internal/server/ws_settle_test.go             0  serveHubWithSettle（真 WS 收尾屏障夹具，无 func Test）
+# ---- r3 再 +2（§9.5）----
+internal/server/hub_fixture_test.go           1  newHubServer/settleGroup（真 WS 收尾屏障）+ TestSettleGroupSealRejectsLateEnterAndWaitsPending
+internal/server/production_mux_test.go       +1  TestAppWaitBackgroundWaitsForTrackedGoroutines（后台写者的关停顺序）
 ```
 
 ## 6. 断言强度自查（未放宽）
@@ -317,10 +319,19 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 `gofmt -l` 空 / `git diff --check` 0 / `go vet` 0 / `go test ./internal/server/... ./internal/api/... ./internal/auth/... ./internal/authn/...` 0 /
 `go test ./internal/store/...` 0 / `go build ./internal/...` 0 / `go build ./cmd/server` 0 / 生产代码无 `internal/executor` 引用。
 
-### 9.5 r2 返修（#340 第二轮 review 后的提交，计数全部实测）
+### 9.5 r2+r3 返修（#340 第二/三轮 review 后的提交，计数全部实测）
 
-`f0016b8` 之后本轮 r2 返修做了 4 个批次的工作，交付时 squash 成**一个**提交
-（`git rev-list --count f0016b8..HEAD` = 1；PR #340 的 head 就是这个 squash 提交）。
+`f0016b8` 之后本轮返修分两批：r2（`1e94a58`、`5fcb95a`）+ r3（`9e8c919`、`85ffa4a`），
+合起来在 PR 分支上共 **4 个提交**（`git rev-list --count f0016b8..85ffa4a` = 4；`85ffa4a` 是
+PR #340 的分支 tip，也就是 merge commit `f309977` 的第二父）。r2 时该区间是 1 ——
+当时还是一条 squash 提交；r3 之后才攒到 4。
+
+两个**不能**用这种写法的口径（都是实测踩过的坑）：
+
+- `f0016b8..HEAD`：合入后 `HEAD` 落在 `v4/integration` 上，这个区间会把同期合进来的
+  别的 PR 一起数进去（在 `f309977` 上实测 11）；
+- `f0016b8..HEAD^2`：只在「当前 HEAD 正好是 merge commit」时成立，在本轮的交付分支上
+  直接 `fatal: ambiguous argument`。口径得钉到显式 sha（`85ffa4a`）。
 下表每一行的增量都用逐文件 `grep -c '^func Test'` 在工作树上实测相减得到（复算命令见本节末）。
 
 | 批次 | 内容 | `internal/server` 用例增量 | 累计后总数 |
@@ -328,9 +339,10 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 | `f0016b8` | §9.1/§9.2 的 major/minor 关闭（保留读模型、upgrade 判等、logs 410、events 投影、reserved source 400、limit 钳位等） | **+17** | 262（261 + 1 `TestMain`） |
 | 返修 · **M-1** | 新增 `production_clock_test.go` 2 个用例 `TestProductionMuxStatsWindowUsesMillisecondClock`、`TestProductionMuxCancelRequestedAtIsRealTime`，用真实 `NewApp` 装配钉住 `serverDeps.Now` 的毫秒契约 | **+2** | 264（263 + 1） |
 | 返修 · **minor-2** | deployments/edges 退役写在生产 mux 显式 405，`production_mux_test.go` 加 `TestProductionMuxRetiredWritesAre405` | **+1** | 265（264 + 1） |
-| 返修 · **M-2** | 新增 `ws_settle_test.go`（**0 个 `func Test`**，提供本包真 WS 收尾屏障 `serveHubWithSettle`，等价于被删 `wsfixture_test.go` 的 `nodeStreamFixture.settle`）；`node_upgrade_test.go`/`resource_task_test.go`/`postclose_guard_test.go` 改用该屏障 | **±0** | 265（264 + 1） |
+| 返修 · **M-2** | 新增 `ws_settle_test.go`（**0 个 `func Test`**，提供本包真 WS 收尾屏障 `serveHubWithSettle`）；`node_upgrade_test.go`/`resource_task_test.go`/`postclose_guard_test.go` 改用该屏障（r3 又把它换成 `hub_fixture_test.go` 的 `newHubServer`，见下行） | **±0** | 265（264 + 1） |
+| 返修 · **r3** | 真 WS 收尾屏障从 `ws_settle_test.go` 的 `serveHubWithSettle` 改为 `hub_fixture_test.go` 的 `newHubServer`（seal + 计数，一个 fixture 一个 server；原文件删除），并把该屏障自身的语义单测 `TestSettleGroupSealRejectsLateEnterAndWaitsPending` 钉住（**+1**）；`production_mux_test.go` 加 `TestAppWaitBackgroundWaitsForTrackedGoroutines` 钉住后台写者的关停顺序（**+1**） | **+2** | 267（266 + 1） |
 
-返修轮合计 = **+20**（`2c3b2d3` 的 245 → 返修终态的 265）；`internal/api` 返修轮未改，仍 8。
+返修轮合计 = **+22**（`2c3b2d3` 的 245 → 返修终态的 267）；`internal/api` 返修轮未改，仍 8。
 
 同轮「改断言但不改用例数」的两处（因此不在上表增量里）：
 
@@ -344,13 +356,17 @@ review 指出 8 处覆盖缺口（跨 ns 隔离、失败 0 写、logs 降级矩�
 for f in internal/server/*_test.go internal/api/*_test.go; do
   printf "%-46s %s\n" "$f" "$(grep -c '^func Test' "$f")"
 done
-grep -rh '^func Test' internal/server/*_test.go | wc -l   # 265
+grep -rh '^func Test' internal/server/*_test.go | wc -l   # 267
 grep -rh '^func Test' internal/api/*_test.go   | wc -l   # 8
 grep -rc '^func TestMain' internal/server/*_test.go | grep -v ':0'   # postclose_guard_test.go:1
 # 删除口径（base=b30e998）
 git diff --name-status b30e998..HEAD -- internal/server internal/api | awk '$1=="D"' | wc -l               # 34
 git diff --name-status b30e998..HEAD -- internal/server internal/api | awk '$1=="D"&&$2~/_test\.go$/' | wc -l  # 27
+# 退役用例数（= 被删的那 27 个 _test.go 在 b30e998 上的 func Test 之和）
+for f in $(git diff --name-status b30e998..HEAD -- internal/server internal/api | awk '$1=="D"&&$2~/_test\.go$/{print $2}'); do
+  git show b30e998:"$f" | grep -c '^func Test'
+done | awk '{s+=$1} END {print s}'                                   # 178
 ```
 
-结果：`internal/server` = **265** 个 `func Test` = 264 个用例 + 1 个 `TestMain`（`postclose_guard_test.go`）；
+结果：`internal/server` = **267** 个 `func Test` = 266 个用例 + 1 个 `TestMain`（`postclose_guard_test.go`）；
 `internal/api` = 8 个（`events_test.go`，无 `TestMain`）。

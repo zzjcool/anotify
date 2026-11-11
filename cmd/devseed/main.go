@@ -7,13 +7,18 @@
 //
 // 输出：SEND_KEY / RECV_KEY / SESSION（可直接作为 Cookie 注入做 Web Push E2E）
 //
-// 加 -demo 时额外造一份「真跑过」的示例数据（见 demo.go）：
+// 加 -demo 时额外播种一份 v4 示例数据（见 demo.go）：
 //
-//	go run ./cmd/devseed -db ./anotify.db -username demo -demo
+//	go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://localhost:8080
 //
-// 它会建能力图、注册一个节点、用真实 WS 握手把它挂上线，然后发一批事件，
-// 让节点接单、ack、回报——所以前端看到的是走完整条派发链路的数据，
-// 而不是手工塞进库里的状态行。
+// 它建的是**真实**资源：能力（`params` + `next` + `run` 脚本）、源（webhook / cron /
+// manual，targets 是入口边的唯一事实）、一个节点（真 WS hello 上线），然后通过真实
+// HTTP `/v1/namespaces/{ns}/events`（Bearer API Key）投递事件，让中枢自己长出
+// 事件 / 任务 / 剪枝留痕。
+//
+// 它**不**造假：不插 Task 行、不写 result、不写 deployments、不代替节点接单回报。
+// 所以 `-demo` 需要一台在跑的服务器（`./cmd/server`），且任务要真被跑完还得有一台
+// 装了 `anode` 的节点把能力部署上去——devseed 不替它做这件事。
 //
 // 加 -autologin-file 时额外写一个自动登录页（见 scripts/dev.sh）：
 //
@@ -43,9 +48,9 @@ func main() {
 	username := flag.String("username", "demo", "用户名")
 	admin := flag.Bool("admin", false, "设为超管角色")
 	autoLoginFile := flag.String("autologin-file", "", "写一个自动登录页到指定路径（开发用；空=不写）")
-	demo := flag.Bool("demo", false, "造一份示例数据：能力图 + 节点 + 真跑过的事件链（幂等，可重复跑）")
-	demoURL := flag.String("demo-url", "http://localhost:8080", "-demo 时节点要连的服务地址（走真实 WS 握手）")
-	demoFollow := flag.Int("demo-follow-sec", 25, "-demo 时保持节点在线多少秒（期间事件链会真的跑完）")
+	demo := flag.Bool("demo", false, "播种 v4 示例资源并用真实 HTTP 投递事件（需要 -demo-url 的服务器在跑；幂等）")
+	demoURL := flag.String("demo-url", "http://localhost:8080", "-demo 要连的服务器地址（事件走 HTTP、节点走 WS，都靠它）")
+	demoFollow := flag.Int("demo-follow-sec", 25, "-demo 有候选节点时等任务进终态的上限秒数")
 	flag.Parse()
 
 	db, err := store.Open(*dbPath)

@@ -13,11 +13,16 @@
 # 行为：
 #   1. 加载 .env.local（不覆盖已 export 的环境变量，便于临时覆盖）
 #   2. 确保 web/*.html 存在（否则 make sitegen）
-#   3. 后台起 cloudflared tunnel run anotify（固定 dev.openaaas.org → :8080）
-#   4. 播种开发账号并生成自动登录页（web/__dev_login.html，退出时删除）
-#   5. 前台起 go run ./cmd/server
-#   6. server 就绪后造示例数据（能力图 + 真跑过的节点 + 事件链）
-#   6. 捕获 SIGINT/SIGTERM，退出时一并停掉 tunnel 和 server
+#   3. 端口检查 + 构建节点二进制 ./anode（能力脚本的出口是 `anode emit`，见 docs/v4/anode-cli.md）
+#   4. 后台起 cloudflared tunnel run anotify（固定 dev.openaaas.org → :8080）
+#   5. 播种开发账号并生成自动登录页（web/__dev_login.html，退出时删除）
+#   6. 前台起 go run ./cmd/server
+#   7. server 就绪后造示例数据（能力图 + 真跑过的节点 + 事件链）
+#   8. ANODE_CONFIG 指向 anode.yaml 时，再起一台**真节点**（否则只打印最短路径）
+#   9. 捕获 SIGINT/SIGTERM，退出时一并停掉 tunnel / server / anode
+#
+# v4 的真实入口只有三个：cmd/server（中枢）、cmd/devseed（播种）、cmd/anode（节点）。
+# cmd/agent 已随 v3 退役；本脚本不得再引用它。
 #
 # 可选环境变量：
 #   NO_TUNNEL=1      只起 server，不起 tunnel
@@ -25,6 +30,8 @@
 #   NO_DEMO_DATA=1   不造示例数据（能力图/节点/事件链），起一个**完全空**的实例
 #   ANOTIFY_DEV_USER 开发账号用户名（默认 demo）
 #   ANOTIFY_DEMO_SEC 示例节点保持在线的秒数（默认 30；期间事件链真的跑完）
+#   ANODE_CONFIG     本机节点的 anode.yaml（默认 .dev-anode/anode.yaml；文件存在才起节点）
+#   ANODE_DATA_DIR   本机节点的数据目录（默认 .dev-anode/data）
 #
 # 输出的访问地址有三种：本地(localhost) / 内网(局域网 IP，手机可用) / 公网(trycloudflare)。
 # 内网地址取默认路由的出口 IP——不用 `hostname -I`，那个在有 docker 网桥的机器上
@@ -78,6 +85,21 @@ if lsof -nP -iTCP:"${PORT_NUM}" -sTCP:LISTEN >/dev/null 2>&1; then
 	exit 1
 fi
 
+# ---------- 3.2 节点二进制 ----------
+#
+# 示例能力脚本的出口是 `anode emit`（cmd/devseed 的 demoCapabilityRequires = bash + anode），
+# 真节点在执行前会探 `requires.commands`：PATH 里没有 `anode` 就报 CommandMissing。
+# 所以这里把节点二进制编出来放进 PATH——不管这次起不起真节点，dev 环境都是「装得上」的。
+# 走 `make anode`（不是裸 go build）：版本注入只有 Makefile 一份，dev 节点的
+# --version / hello 必须与中枢的升级目标版本用同一个串（见 Makefile 的 VERSION_LABEL）。
+ANODE_BIN="$ROOT/anode"
+echo "▶ 构建节点二进制 anode…"
+make -C "$ROOT" --no-print-directory anode || {
+	echo "❌ anode 构建失败"
+	exit 1
+}
+export PATH="$ROOT:$PATH"
+
 # ---------- 3.5 探测内网地址（手机/别的机器访问用）----------
 #
 # 为什么要单独探：开发时最常见的需求是"用手机看看效果"。localhost 不行，
@@ -115,6 +137,7 @@ fi
 # ---------- 4. 起 cloudflared tunnel ----------
 TUNNEL_PID=""
 SERVER_PID=""
+ANODE_PID=""
 TAIL_PID=""
 
 # 自动登录页（开发专用，见下方 ---------- 5 ----------）
@@ -129,6 +152,16 @@ cleanup() {
 	echo "▶ 停止服务…"
 	[ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null
 	[ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+
+	# anode 和 server 一样用 setsid 自成进程组：它还会 fork 能力进程，
+	# 只杀 parent 会把正在跑的任务子进程留成孤儿。
+	if [ -n "$ANODE_PID" ]; then
+		kill -TERM -- "-$ANODE_PID" 2>/dev/null || kill "$ANODE_PID" 2>/dev/null
+		sleep 1
+		kill -KILL -- "-$ANODE_PID" 2>/dev/null
+		pkill -P "$ANODE_PID" 2>/dev/null
+		kill "$ANODE_PID" 2>/dev/null
+	fi
 
 	# 为什么不能只 kill $SERVER_PID：
 	# `go run ./cmd/server` 自己是个编译器进程，真正的 server 是它 fork 出来的
@@ -271,6 +304,37 @@ SERVER_PID=$!
 # 顺手把日志回显到终端，保留原来 `| tee` 的观感
 tail -n +1 -f /tmp/anotify-dev.log 2>/dev/null &
 TAIL_PID=$!
+
+# ---------- 6.5 可选：本机节点（真执行能力的那台机器）----------
+#
+# devseed -demo 只把「能力/源/节点/事件链」做成真实资源，并用 WS hello 把节点挂上线；
+# 任务真要跑完，需要一台真的 anode 去拉能力、执行脚本、回报结果。中枢没有
+# 「自动注册节点」后门（anode.md §0：先 POST /v1/nodes，再 POST /v1/nodes/{name}/tokens），
+# 所以这里**不猜**令牌：ANODE_CONFIG 指向一份真实 anode.yaml 才启动，否则只打印路径。
+ANODE_DEV_CONFIG="${ANODE_CONFIG:-$ROOT/.dev-anode/anode.yaml}"
+if [ -f "$ANODE_DEV_CONFIG" ]; then
+	echo "▶ 启动本机节点（$ANODE_DEV_CONFIG）…"
+	ANODE_DATA_DIR="${ANODE_DATA_DIR:-$ROOT/.dev-anode/data}"
+	mkdir -p "$ANODE_DATA_DIR"
+	setsid "$ANODE_BIN" serve --config "$ANODE_DEV_CONFIG" --data "$ANODE_DATA_DIR" \
+		>/tmp/anotify-anode.log 2>&1 &
+	ANODE_PID=$!
+	sleep 1
+	if kill -0 "$ANODE_PID" 2>/dev/null; then
+		echo "  ✅ anode 已启动（日志 /tmp/anotify-anode.log）"
+	else
+		echo "  ⚠️  anode 启动失败（配置/令牌/中枢地址），日志：/tmp/anotify-anode.log"
+		tail -5 /tmp/anotify-anode.log 2>/dev/null | sed 's/^/     /'
+		ANODE_PID=""
+	fi
+else
+	echo "▶ 未启动本机节点（没有 $ANODE_DEV_CONFIG）"
+	echo "   要看到任务被真执行："
+	echo "     1) 建节点 + 签 token：POST /v1/nodes → POST /v1/nodes/<name>/tokens"
+	echo "     2) 写 .dev-anode/anode.yaml（name / server: ws://localhost:${PORT_NUM} / token）"
+	echo "     3) 重跑 make dev（或直接用已编好的 $ANODE_BIN serve --config …）"
+	echo "   CLI 手册：docs/v4/anode-cli.md"
+fi
 
 # ---------- 7. 公网可达性探测 ----------
 #
