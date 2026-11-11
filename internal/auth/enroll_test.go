@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -327,5 +330,128 @@ func TestEnroll_Poll_DeniedStatus(t *testing.T) {
 	}
 	if res.Status != store.CliAuthDenied {
 		t.Errorf("status got %q want denied", res.Status)
+	}
+}
+
+// ---- issue #338 / F7：会话与 registrationToken 的**一次性**语义 ----
+//
+// 语义确认（enroll.go:330-370 + webauthn.go storeEnrollToken）：
+//   - approved 态 poll **不** consume 会话，只下发 attestationOptions + registrationToken，
+//     且**每轮 poll 重新生成** token 并覆盖库里那份 hash（旧 token 立刻失效）；
+//   - consume（approved→consumed）发生在 Complete 成功路径的最后一步，是原子的；
+//   - 已 consumed 的会话再 Complete → ErrAlreadyConsumed（不会建第二个凭证）。
+// 下面两条把这两层一次性都钉死，不再靠「名字声称重放被拒、实际断言仍 approved」的空壳用例。
+
+// TestEnroll_CompleteRejectedAfterConsumed 钉死会话一次性：approved→consumed 只成功一次，
+// 同一个 registrationToken + 已 consumed 的会话再调 Complete 必须 ErrAlreadyConsumed。
+func TestEnroll_CompleteRejectedAfterConsumed(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Unix(1000000, 0)}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, err := m.CreateSession(uid, "old-mac")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := m.RequestKnock(created.SessionID, "Chrome"); err != nil {
+		t.Fatalf("request knock: %v", err)
+	}
+	if err := m.Approve(created.SessionID, uid); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	// 与 poll 下发同形的 registrationToken（明文只给调用方，库里只放 sha256）。
+	token, tokenHash, err := generateSecret()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	svc.storeEnrollToken(created.SessionID, tokenHash)
+
+	// 第一次消费成功（complete 成功路径的最后一步就是这句）。
+	already, err := db.ConsumeCliAuthSessionPasskey(created.SessionID, clock.now().Unix())
+	if err != nil {
+		t.Fatalf("第一次消费报错: %v", err)
+	}
+	if already {
+		t.Fatalf("第一次消费不该是 alreadyConsumed（会话应在 approved 态）")
+	}
+
+	// 第二次：同一个 token 打同一个已 consumed 的会话 → ErrAlreadyConsumed。
+	if _, err := m.Complete(created.SessionID, token, "new-device",
+		httptest.NewRequest(http.MethodPost, "/", nil)); !errors.Is(err, ErrAlreadyConsumed) {
+		t.Fatalf("已 consumed 的会话再 complete 应 ErrAlreadyConsumed, got %v", err)
+	}
+
+	// 终态保持 consumed，consumed_at 不被二次写入覆盖。
+	got, err := db.GetCliAuthSession(created.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.Status != store.CliAuthConsumed {
+		t.Errorf("status got %q want consumed", got.Status)
+	}
+	if !got.ConsumedAt.Valid || got.ConsumedAt.Int64 != clock.now().Unix() {
+		t.Errorf("consumed_at got %+v want %d", got.ConsumedAt, clock.now().Unix())
+	}
+}
+
+// TestEnroll_RegistrationTokenSupersededByNextPoll 钉死 registrationToken 一次性：每轮
+// approved 态 poll 都重新生成 token（覆盖旧 hash），旧 token 立刻失效（Complete → 401），
+// 且这个失败不消耗会话（仍 approved，可用最新 token 重试）。
+func TestEnroll_RegistrationTokenSupersededByNextPoll(t *testing.T) {
+	db, svc, uid := newEnrollTestDB(t)
+	clock := &fakeClock{t: time.Unix(1000000, 0)}
+	m := newEnrollMgrWithClock(db, svc, clock)
+
+	created, err := m.CreateSession(uid, "old-mac")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	knockSecret, err := m.RequestKnock(created.SessionID, "Chrome")
+	if err != nil {
+		t.Fatalf("request knock: %v", err)
+	}
+	if err := m.Approve(created.SessionID, uid); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	first, err := m.Poll(created.SessionID, knockSecret)
+	if err != nil {
+		t.Fatalf("第一次 poll: %v", err)
+	}
+	if first.Status != store.CliAuthApproved || first.RegistrationToken == "" {
+		t.Fatalf("第一次 poll 应 approved + 带 registrationToken: %+v", first)
+	}
+
+	second, err := m.Poll(created.SessionID, knockSecret)
+	if err != nil {
+		t.Fatalf("第二次 poll: %v", err)
+	}
+	if second.RegistrationToken == "" {
+		t.Fatal("第二次 poll 也应下发 registrationToken")
+	}
+	if second.RegistrationToken == first.RegistrationToken {
+		t.Fatal("第二次 poll 应重新生成 registrationToken（否则 token 永远可重放）")
+	}
+
+	// 旧 token 失效：Complete 在 token 校验这一步就拒（ErrUnauthorized）。
+	if _, err := m.Complete(created.SessionID, first.RegistrationToken, "new-device",
+		httptest.NewRequest(http.MethodPost, "/", nil)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("被覆盖的旧 registrationToken 应 ErrUnauthorized, got %v", err)
+	}
+	// 失败不消耗会话。
+	if got, err := db.GetCliAuthSession(created.SessionID); err != nil || got.Status != store.CliAuthApproved {
+		t.Fatalf("token 校验失败不应消耗会话: status=%v err=%v", got, err)
+	}
+
+	// 最新 token 能过 token 校验（继续走到 WebAuthn attestation 校验才失败）：
+	// 空 body 必然解析失败，但错误**不再是** ErrUnauthorized——一次性只对旧 token 生效。
+	_, err = m.Complete(created.SessionID, second.RegistrationToken, "new-device",
+		httptest.NewRequest(http.MethodPost, "/", nil))
+	if errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("最新 registrationToken 不该被判 unauthorized: %v", err)
+	}
+	if err == nil {
+		t.Fatal("伪造/缺失 attestation 不应 complete 成功")
 	}
 }

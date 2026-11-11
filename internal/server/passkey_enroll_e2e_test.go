@@ -245,8 +245,10 @@ func e2eCreateAndApprove(t *testing.T, env *enrollE2EEnv) (sessionID, knockSecre
 // 旧设备建会话 → 新设备 lookup → 敲门 → 旧设备 watch → 批准 →
 // poll 拿 attestationOptions + registrationToken。
 //
-// 由于产品 bug（poll 过早 consume），complete 在 poll 之后返回 409 而非建凭证。
-// 此测试验证 poll 之前的全链路正确，complete 的 409 是 bug 表现而非预期行为。
+// 语义（enroll.go:330-370，issue #338 复核）：approved 态 poll **不** consume 会话，
+// consume 留给 Complete（approved→consumed）。伪造 attestation 被 WebAuthn 校验拒掉，
+// 会话保持 approved 可重试——所以这里断言的是「既不是 401（token 有效）也不是 200
+// （伪造凭证不通过）」，具体状态码由 attestation 校验层决定。
 func TestEnrollE2E_HappyPath(t *testing.T) {
 	env := newEnrollE2EEnv(t)
 	sessionID, knockSecret, regToken, attestOpts := e2eCreateAndApprove(t, env)
@@ -268,22 +270,20 @@ func TestEnrollE2E_HappyPath(t *testing.T) {
 	}
 
 	// complete 需要真实 WebAuthn attestation（浏览器认证器生成）。
-	// 但由于产品 bug（poll 过早 consume），即使有有效 registrationToken，
-	// complete 也因会话已 consumed 而返回 409。
-	// 这不是测试问题，是产品 bug——上报。
+	// 这里给伪造 attestation：registrationToken 有效（不得 401），但凭证创建必须被拒
+	// （不得 200），且失败不 consume 会话（会话一次性由 auth 层
+	// TestEnroll_CompleteRejectedAfterConsumed 钉死）。
 	fakeAttestation := `{"id":"fake-id","rawId":"ZmFrZS1pZA","type":"public-key","response":{"clientDataJSON":"eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiZmFrZSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QifQ","attestationObject":"v2NhdGVnb3J5"}}`
 	rr := e2eDoReq(t, env, "POST",
 		"/v1/passkey-enroll/sessions/"+sessionID+"/complete?registrationToken="+regToken+"&name=new-device",
 		json.RawMessage(fakeAttestation), false)
-	// 产品 bug：complete 返回 409（会话已 consumed），而非 400（attestation 校验失败）
-	// 如果 bug 修复（poll 不 consume），此处应返回 400（伪造 attestation 被拒）
 	if rr.Code == 401 {
 		t.Errorf("complete 不应 401（registrationToken 有效）: body=%s", rr.Body.String())
 	}
 	if rr.Code == 200 {
 		t.Error("complete 不应 200（伪造 attestation 不应通过校验）")
 	}
-	t.Logf("complete 伪造 attestation status=%d（409=产品 bug poll 过早 consume; 400=attestation 校验正常拒绝）", rr.Code)
+	t.Logf("complete 伪造 attestation status=%d（attestation 校验拒绝的 4xx）", rr.Code)
 
 	_ = knockSecret
 }
@@ -393,17 +393,23 @@ func TestEnrollE2E_CompleteNotApproved(t *testing.T) {
 	}
 }
 
-// TestEnrollE2E_CompleteReplay D-C-4: complete 成功后会话 consumed，第二次 complete 返回 409。
-// poll 不 consume 会话（修复后正确行为），保持 approved 直至 complete 完成 approved→consumed。
-func TestEnrollE2E_CompleteReplay(t *testing.T) {
+// TestEnrollE2E_PollDoesNotConsumeSession D-C-4：approved 态 poll **不** consume 会话——
+// 它只下发 attestationOptions + registrationToken，状态保持 approved；complete 失败（无效
+// attestation）同样不 consume，会话可重试。
+//
+// 名字改自 `TestEnrollE2E_CompleteReplay`（issue #338 / F7）：旧名字声称“complete 重放被
+// 拒”，但用例从未进入 consumed 态（反而断言“仍 approved”），名实相反。真正的
+// approved→consumed 一次性由 auth 层 `TestEnroll_CompleteRejectedAfterConsumed` 与
+// store 层 `TestConsumeCliAuthSessionPasskey_SecondConsumeRejected` 钉死。
+func TestEnrollE2E_PollDoesNotConsumeSession(t *testing.T) {
 	env := newEnrollE2EEnv(t)
-	sid, knockSecret, regToken, _ := e2eCreateAndApprove(t, env)
+	sid, knockSecret, firstToken, _ := e2eCreateAndApprove(t, env)
 
-	// poll 后会话仍为 approved（poll 只下发 options+token，不 consume）
+	// 再次 poll（approved 态）：会话仍 approved，且**重新生成** registrationToken。
 	time.Sleep(2200 * time.Millisecond) // 避开 pollGuard
 	rr2 := e2eDoReq(t, env, "GET", "/v1/passkey-enroll/sessions/"+sid+"/poll?secret="+knockSecret, nil, false)
 	if rr2.Code != 200 {
-		t.Fatalf("首次 poll status=%d body=%s", rr2.Code, rr2.Body.String())
+		t.Fatalf("再次 poll status=%d body=%s", rr2.Code, rr2.Body.String())
 	}
 	m2 := e2eDecodeBody(t, rr2)
 	if m2["status"] != "approved" {
@@ -412,28 +418,41 @@ func TestEnrollE2E_CompleteReplay(t *testing.T) {
 	if m2["attestationOptions"] == nil {
 		t.Error("approved 态 poll 应返回 attestationOptions")
 	}
-	if m2["registrationToken"] == nil {
-		t.Error("approved 态 poll 应返回 registrationToken")
+	freshToken, _ := m2["registrationToken"].(string)
+	if freshToken == "" {
+		t.Fatal("approved 态 poll 应返回 registrationToken")
+	}
+	if freshToken == firstToken {
+		t.Error("第二次 poll 应重新生成 registrationToken（旧的一次性失效）")
 	}
 
-	// complete 成功（需合法 attestation；这里测的是防重放，用虚拟 body 预期 4xx 但会话状态不变）
-	// 用虚拟 attestation body 调 complete：合法 token 但 attestation 无效 → 4xx，会话仍 approved
+	// ① 被覆盖的旧 token → 401（poll 即轮换；一次性只对最新 token 生效）。
 	rr3 := e2eDoReq(t, env, "POST",
-		"/v1/passkey-enroll/sessions/"+sid+"/complete?registrationToken="+regToken+"&name=test",
+		"/v1/passkey-enroll/sessions/"+sid+"/complete?registrationToken="+firstToken+"&name=test",
 		json.RawMessage(`{}`), false)
-	// complete 失败（attestation 无效）不会 consume：会话仍 approved，可重试
-	if rr3.Code == 200 {
-		t.Errorf("无效 attestation 不应成功")
+	if rr3.Code != 401 {
+		t.Errorf("被覆盖的旧 registrationToken 应 401, got %d body=%s", rr3.Code, rr3.Body.String())
 	}
 
-	// 会话仍 approved（complete 失败不 consume，可重试）
-	rr4 := e2eDoReq(t, env, "GET", "/v1/passkey-enroll/sessions/"+sid, nil, true)
-	if rr4.Code != 200 {
-		t.Fatalf("lookup status=%d", rr4.Code)
+	// ② 最新 token + 伪造 attestation → 4xx（既不是 200 也不是 401），会话仍 approved。
+	rr4 := e2eDoReq(t, env, "POST",
+		"/v1/passkey-enroll/sessions/"+sid+"/complete?registrationToken="+freshToken+"&name=test",
+		json.RawMessage(`{}`), false)
+	if rr4.Code == 200 {
+		t.Errorf("无效 attestation 不应成功: body=%s", rr4.Body.String())
 	}
-	m4 := e2eDecodeBody(t, rr4)
-	if m4["status"] != "approved" {
-		t.Errorf("complete 失败后会话应为 approved（可重试），got %v", m4["status"])
+	if rr4.Code == 401 {
+		t.Errorf("最新 registrationToken 不应被判 invalid: body=%s", rr4.Body.String())
+	}
+
+	// ③ 会话仍 approved（poll 与失败的 complete 都不 consume，可重试）。
+	rr5 := e2eDoReq(t, env, "GET", "/v1/passkey-enroll/sessions/"+sid, nil, true)
+	if rr5.Code != 200 {
+		t.Fatalf("lookup status=%d", rr5.Code)
+	}
+	m5 := e2eDecodeBody(t, rr5)
+	if m5["status"] != "approved" {
+		t.Errorf("complete 失败后会话应为 approved（可重试），got %v", m5["status"])
 	}
 }
 
@@ -953,12 +972,90 @@ func TestEnrollE2E_DeviceHintPersisted(t *testing.T) {
 	}
 }
 
-// TestEnrollE2E_DebugOpts debug: dump attestationOptions structure.
-func TestEnrollE2E_DebugOpts(t *testing.T) {
+// TestEnrollE2E_AttestationOptionsShape 钉住 approved 态 poll 下发的 attestationOptions
+// **形状**（原 `TestEnrollE2E_DebugOpts` 只 t.Logf、零断言，issue #338 / F7 收口）：
+//   - 顶层 `publicKey`（protocol.CredentialCreation 的包装字段）；
+//   - `challenge` 非空 base64url、`rp.{id,name}`、`user.{id,name,displayName}`；
+//   - `pubKeyCredParams` 非空且每项是 `{type: public-key, alg: 数字}`；
+//   - `timeout` 正数；`authenticatorSelection` 是 **begin 时写死的产品决定**：
+//     常驻凭证 required + userVerification preferred；
+//   - 用户还没有 passkey → 不带 `excludeCredentials`（omitempty）。
+func TestEnrollE2E_AttestationOptionsShape(t *testing.T) {
 	env := newEnrollE2EEnv(t)
 	_, _, _, attestOpts := e2eCreateAndApprove(t, env)
-	b, _ := json.MarshalIndent(attestOpts, "", "  ")
-	t.Logf("attestationOptions:\n%s", string(b))
-	pk := attestOpts["publicKey"].(map[string]any)
-	t.Logf("publicKey keys: %v", keysOf(pk))
+
+	pk, ok := attestOpts["publicKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("attestationOptions 应含 publicKey 对象, got keys=%v", keysOf(attestOpts))
+	}
+
+	if challenge, ok := pk["challenge"].(string); !ok || challenge == "" {
+		t.Fatalf("publicKey.challenge 应是非空字符串: %#v", pk["challenge"])
+	}
+
+	rp, ok := pk["rp"].(map[string]any)
+	if !ok {
+		t.Fatalf("publicKey.rp 应是对象: %#v", pk["rp"])
+	}
+	if rp["id"] != "localhost" {
+		t.Errorf("publicKey.rp.id = %#v want localhost（测试环境 RPID）", rp["id"])
+	}
+	if name, _ := rp["name"].(string); name == "" {
+		t.Errorf("publicKey.rp.name 不应为空: %#v", rp["name"])
+	}
+
+	user, ok := pk["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("publicKey.user 应是对象: %#v", pk["user"])
+	}
+	if id, _ := user["id"].(string); id == "" {
+		t.Errorf("publicKey.user.id（user handle）不应为空: %#v", user["id"])
+	}
+	if user["name"] != "enrolluser" {
+		t.Errorf("publicKey.user.name = %#v want enrolluser", user["name"])
+	}
+	if user["displayName"] != "Enroll User" {
+		t.Errorf("publicKey.user.displayName = %#v want Enroll User", user["displayName"])
+	}
+
+	params, ok := pk["pubKeyCredParams"].([]any)
+	if !ok || len(params) == 0 {
+		t.Fatalf("publicKey.pubKeyCredParams 应是非空数组: %#v", pk["pubKeyCredParams"])
+	}
+	for i, raw := range params {
+		param, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("pubKeyCredParams[%d] 应是对象: %#v", i, raw)
+		}
+		if param["type"] != "public-key" {
+			t.Errorf("pubKeyCredParams[%d].type = %#v want public-key", i, param["type"])
+		}
+		if alg, ok := param["alg"].(float64); !ok || alg == 0 {
+			t.Errorf("pubKeyCredParams[%d].alg 应是非零数字: %#v", i, param["alg"])
+		}
+	}
+
+	if timeout, ok := pk["timeout"].(float64); !ok || timeout <= 0 {
+		t.Errorf("publicKey.timeout 应是正数: %#v", pk["timeout"])
+	}
+
+	selection, ok := pk["authenticatorSelection"].(map[string]any)
+	if !ok {
+		t.Fatalf("publicKey.authenticatorSelection 应是对象: %#v", pk["authenticatorSelection"])
+	}
+	// begin 时显式要求的 ResidentKey=required / UserVerification=preferred。
+	if selection["residentKey"] != "required" {
+		t.Errorf("authenticatorSelection.residentKey = %#v want required", selection["residentKey"])
+	}
+	if selection["userVerification"] != "preferred" {
+		t.Errorf("authenticatorSelection.userVerification = %#v want preferred", selection["userVerification"])
+	}
+
+	// 用户尚无 passkey → excludeCredentials 走 omitempty，不应出现空数组/空值字段。
+	if v, present := pk["excludeCredentials"]; present {
+		list, ok := v.([]any)
+		if !ok || len(list) != 0 {
+			t.Errorf("首台设备 excludeCredentials 应为空或缺省: %#v", v)
+		}
+	}
 }
