@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const files = {
   'playbook.yaml': `apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: project-chain\n  displayName: Project chain\n  version: 1\nspec:\n  values:\n    type: object\n    additionalProperties: false\n    required: [project]\n    properties:\n      project: { type: string, pattern: '^[a-z][a-z0-9-]*$' }\n      env: { type: string, enum: [dev, prod], default: prod }\n      credential: { type: string, writeOnly: true }\n  capabilities:\n    - capabilities/review.yaml\n    - capabilities/fixer.yaml\n  sources:\n    - sources/on-push.yaml\n`,
-  'capabilities/review.yaml': `metadata:\n  name: '{{values.project}}-review'\nspec:\n  next: ['{{values.project}}-fixer']\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo 'project={{values.project}} env={{values.env}}'\n`,
-  'capabilities/fixer.yaml': `metadata:\n  name: '{{values.project}}-fixer'\nspec:\n  next: []\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo 'fix {{values.project}}'\n`,
-  'sources/on-push.yaml': `metadata:\n  name: '{{values.project}}-push'\nspec:\n  kind: webhook\n  config: {}\n  targets:\n    - capability: '{{values.project}}-review'\n      params: { repo: '$(payload.repo)', env: '{{values.env}}' }\n`,
+  'capabilities/review.yaml': `apiVersion: anotify/v1
+kind: Capability
+metadata:\n  name: '{{values.project}}-review'\nspec:\n  next: ['{{values.project}}-fixer']\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo 'project={{values.project}} env={{values.env}}'\n`,
+  'capabilities/fixer.yaml': `apiVersion: anotify/v1
+kind: Capability
+metadata:\n  name: '{{values.project}}-fixer'\nspec:\n  next: []\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo 'fix {{values.project}}'\n`,
+  'sources/on-push.yaml': `apiVersion: anotify/v1
+kind: Source
+metadata:\n  name: '{{values.project}}-push'\nspec:\n  kind: webhook\n  config: {}\n  targets:\n    - capability: '{{values.project}}-review'\n      params: { repo: '$(payload.repo)', env: '{{values.env}}' }\n`,
   'README.md': 'A self-contained package; deploy manually after install.\n',
 };
 const envelope = (map, rv) => ({ apiVersion: 'anotify/v1', kind: 'Playbook',

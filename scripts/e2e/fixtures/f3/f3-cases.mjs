@@ -86,18 +86,20 @@ add('auth-route-guards',async d=>{
   assert.ok(d.page.url().includes('login.html'));assert.equal(await d.page.inputValue('#password-username'),'nonexistent-f3');
   d.check('F3-AUTH public password reject preserves form, no fabricated authenticated success');
 });
-const queryFor=file=>file==='message'?'namespace=default&id=tsk_mock_2':file==='trace'?'namespace=default&traceUID=trace_mock_t1':file==='node'?'namespace=default&id=anode-1':file==='source'?'namespace=default&name=deploy-hook':file==='playbook'?'namespace=default&id=f3-page-package':'namespace=default';
+// 深链里的对象身份来自当前权威：mock 是固定事实，real 是 bootstrap 用真实 API 造出来的同一角色。
+// 名字类（source/playbook）两边一致，只有中枢生成的 id（任务/追踪/节点）需要经 d.fx 取。
+const queryFor=(file,d)=>file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':'namespace=default';
 const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',node:'#node-effective-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
 async function seedPagePackage(d){
   await d.goto('playbooks');
-  const files={'playbook.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',version:1},spec:{values:{type:'object'},capabilities:['cap.yaml'],sources:[]}}),'cap.yaml':JSON.stringify({metadata:{name:'f3-page-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho page'}}}})};
+  const files={'playbook.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',version:1},spec:{values:{type:'object'},capabilities:['cap.yaml'],sources:[]}}),'cap.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-page-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho page'}}}})};
   await d.req('/v1/namespaces/default/playbooks',{method:'POST',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',namespace:'default'},spec:{files}})});
 }
 for(const lang of LANGS)add('pages-19-'+lang,async d=>{
   await seedPagePackage(d);
   for(const file of PAGES){
     try {
-    await d.goto(file,queryFor(file),lang);
+    await d.goto(file,queryFor(file,d),lang);
     if(file==='login') {await d.page.waitForURL('**/index.html**',{waitUntil:'domcontentloaded'});await d.page.locator('#kpi-total').waitFor();d.check('F3-PAGE '+lang+' login authenticated redirect -> index');continue;}
     await d.page.locator(pageAnchors[file]).first().waitFor();
     assert.equal(await d.page.evaluate(()=>document.documentElement.lang),lang);
@@ -118,13 +120,15 @@ for(const lang of LANGS)add('pages-19-'+lang,async d=>{
 },{lang});
 for(const file of ['capabilities','sources','nodes','message'])add('views-'+file,async d=>{
   for(const size of [{name:'desktop',width:1440,height:900},{name:'mobile',width:390,height:844}])for(const theme of ['dark','light']){
-    await d.page.setViewportSize(size);await d.goto(file,queryFor(file));await d.page.evaluate(t=>Anotify.theme.set(t),theme);
+    await d.page.setViewportSize(size);await d.goto(file,queryFor(file,d));await d.page.evaluate(t=>Anotify.theme.set(t),theme);
     await d.page.locator(pageAnchors[file]).first().waitFor();await d.clean(file+' '+size.name+' '+theme);await d.shot(size.name+'-'+theme);
   }
 });
 add('graph-prod-node-click',async d=>{
-  await d.goto('trace','namespace=prod&traceUID=trace_mock_t2');
-  const node=d.page.locator('#trace-graph [data-node-id="tsk_mock_8"]');await node.waitFor();assert.equal(await node.count(),1);
+  const traceUID=d.fx('prodTrace'),taskId=d.fx('prodTask');
+  assert.ok(taskId,'Graph click requires a real prod Task identity (bootstrap fires a prod event, never a fabricated node)');
+  await d.goto('trace','namespace=prod&traceUID='+traceUID);
+  const node=d.page.locator('#trace-graph [data-node-id="'+taskId+'"]');await node.waitFor();assert.equal(await node.count(),1);
   const id=await node.getAttribute('data-node-id');assert.ok(id);
   await node.click();await d.page.waitForURL('**/message.html?namespace=prod&id='+id,{waitUntil:'domcontentloaded'});
   await d.page.waitForFunction(id=>__f3Calls.some(c=>c.url==='/v1/namespaces/prod/tasks/'+id&&c.result?.metadata?.name===id),id);

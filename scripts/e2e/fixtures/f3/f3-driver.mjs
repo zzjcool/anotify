@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -32,6 +33,170 @@ export async function rawReq(base, url, opts = {}) {
   assert.ok(url.startsWith('/v1/'), 'raw v4 URL required');
   const r = await fetch(base + url, { ...opts, signal: AbortSignal.timeout(5000) });
   return { status: r.status, body: await r.json() };
+}
+// ---------------------------------------------------------------------------
+// Real-mode fixture bootstrap (#335 B2). Genuine HTTP only, idempotent, and it
+// never writes product tables or papers over a product gap: every fixture below
+// goes through the same public handler the browser controller talks to.
+// devseed supplies *auth/namespace authority* only (a session cookie per role),
+// which is what it exists for — no capability/source/event/task rows from it.
+// ---------------------------------------------------------------------------
+export const PROD = 'prod';
+export const DEFAULT_NS = 'default';
+const sessionCookie = (session) => ({ Cookie: 'anotify_session=' + session });
+const jsonHeaders = (session) => ({ ...sessionCookie(session), 'Content-Type': 'application/json' });
+
+// ensureSession 用 devseed 建一个真实账号 + 会话（幂等：用户名已存在则复用并提权/降权）。
+function ensureSession(server, username, extraArgs = []) {
+  assert.ok(existsSync(H.DEVSEED_BIN), `T1 seam: DEVSEED_BIN missing: ${H.DEVSEED_BIN}`);
+  const out = execFileSync(H.DEVSEED_BIN, ['-db', server.dbPath, '-username', username, ...extraArgs], { encoding: 'utf8' });
+  const get = (k) => (out.match(new RegExp(`^${k}=(.*)$`, 'm')) || [])[1];
+  assert.ok(get('SESSION'), `T1 seam: devseed must return SESSION for ${username}`);
+  return { session: get('SESSION'), uid: get('UID'), role: get('ROLE'), sendKey: get('SEND_KEY'), recvKey: get('RECV_KEY') };
+}
+
+// ensureNamespace 保证 default/prod 两个命名空间存在（契约 resource.yaml ·
+// NamespaceWrite：创建只需 metadata.name，spec 恒 {}）。已存在就复用，绝不复写。
+export async function ensureNamespace(server, session, name) {
+  const read = async () => {
+    const list = await rawReq(server.base, '/v1/namespaces', { headers: sessionCookie(session) });
+    assert.equal(list.status, 200, 'T1 seam: genuine namespaced API bootstrap must respond 200');
+    assert.equal(list.body.kind, 'NamespaceList', 'T1 seam: legacy namespace adapter is forbidden');
+    return list.body.items || [];
+  };
+  const items = await read();
+  const found = items.find((n) => n.metadata.name === name);
+  if (found) return { namespace: found, created: false };
+  const created = await rawReq(server.base, '/v1/namespaces', {
+    method: 'POST',
+    headers: jsonHeaders(session),
+    body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Namespace', metadata: { name }, spec: {} }),
+  });
+  // 409 AlreadyExists 只可能来自并发建同名 ns：重读一次即可，不是失败。
+  assert.ok([201, 409].includes(created.status), `T1 seam: create ${name} Namespace must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
+  const after = await read();
+  const ns = after.find((n) => n.metadata.name === name);
+  assert.ok(ns, `T1 seam: ${name} Namespace fixture required after create`);
+  return { namespace: ns, created: created.status === 201 };
+}
+
+// realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod
+// 命名空间。返回给 driver 的 fixtures，后续造数（capability/source/event/task…）
+// 也走真实 API 叠在它上面。
+async function realBootstrap(server) {
+  const member = ensureSession(server, 'f3');
+  // 管理员会话：admin.html 的数据面是 /v1/admin/*（adminSession 中间件），
+  // member 会话保持独立给「角色降级」用例用——从不伪造 role 字段。
+  const admin = ensureSession(server, 'f3-admin', ['-admin']);
+  assert.equal(admin.role, 'admin', 'T1 seam: devseed -admin must produce an admin session');
+  for (const name of [DEFAULT_NS, PROD]) await ensureNamespace(server, admin.session, name);
+  const fixtures = { adminSession: admin.session, memberSession: member.session, sendKey: admin.sendKey || member.sendKey };
+  // retained 角色用例要求「真实 member 会话」：它必须来自真实账号，不是改前端状态。
+  if (!process.env.E2E_V4_MEMBER_SESSION) process.env.E2E_V4_MEMBER_SESSION = fixtures.memberSession;
+  return fixtures;
+}
+
+// ensureCapability 幂等地建一个能力（真实 POST；同内容重发只会折叠到已有版本）。
+async function ensureCapability(server, session, ns, name) {
+  const list = await rawReq(server.base, `/v1/namespaces/${ns}/capabilities`, { headers: sessionCookie(session) });
+  assert.equal(list.status, 200, `T1 seam: GET ${ns} capabilities must be 200`);
+  const found = (list.body.items || []).find((c) => c.metadata.name === name);
+  if (found) return found;
+  const created = await rawReq(server.base, `/v1/namespaces/${ns}/capabilities`, {
+    method: 'POST',
+    headers: jsonHeaders(session),
+    body: JSON.stringify({
+      apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name },
+      spec: { next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho f3 fixture ' + name + '\n' } } },
+    }),
+  });
+  assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} capability must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
+  return created.body;
+}
+
+// ensureSource 幂等地建一个源（真实 POST）。manual 源带固定 payload，投递不需要额外入参。
+async function ensureSource(server, session, ns, name, target) {
+  const list = await rawReq(server.base, `/v1/namespaces/${ns}/sources`, { headers: sessionCookie(session) });
+  assert.equal(list.status, 200, `T1 seam: GET ${ns} sources must be 200`);
+  const found = (list.body.items || []).find((s) => s.metadata.name === name);
+  if (found) return found;
+  const created = await rawReq(server.base, `/v1/namespaces/${ns}/sources`, {
+    method: 'POST',
+    headers: jsonHeaders(session),
+    body: JSON.stringify({
+      apiVersion: 'anotify/v1', kind: 'Source', metadata: { name },
+      spec: { kind: 'manual', config: { payload: { fixed: true } }, targets: [{ capability: target, params: {} }] },
+    }),
+  });
+  assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} source must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
+  return created.body;
+}
+
+// ensureNode 幂等地登记节点（真实 POST /v1/nodes；不返回任何令牌明文）。
+async function ensureNode(server, session, name) {
+  const list = await rawReq(server.base, '/v1/nodes', { headers: sessionCookie(session) });
+  assert.equal(list.status, 200, 'T1 seam: GET nodes must be 200');
+  const found = (list.body.items || []).find((n) => n.metadata.name === name);
+  if (found) return found;
+  const created = await rawReq(server.base, '/v1/nodes', {
+    method: 'POST',
+    headers: jsonHeaders(session),
+    // vars 是页面的有效值锚点（#node-effective-vars [data-key]）：没有变量时该区块
+    // 正常渲染为空，用例的锚点就永远等不到——所以 fixture 里给一条真实生效的变量。
+    body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Node', metadata: { name }, spec: { namespaces: [DEFAULT_NS], vars: { F3_FIXTURE: '1' } } }),
+  });
+  assert.equal(created.status, 201, `T1 seam: create node ${name} must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
+  return created.body;
+}
+
+// fireFixture 用真实入口（POST /v1/namespaces/{ns}/events + 会话）投递一条事件，
+// 让中枢自己长出事件/追踪/任务——不插事件、任务行。
+async function fireFixture(server, key, ns, source) {
+  // 事件入口是**机器入口**（Bearer API Key，没有会话 Cookie）：这是契约 §6.2 的
+  // 唯一投递路径，所以 fixture 也走它，不带 Cookie。
+  const receipt = await rawReq(server.base, `/v1/namespaces/${ns}/events`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, payload: { f3: 'fixture' } }),
+  });
+  assert.equal(receipt.status, 200, `T1 seam: ingest ${ns}/${source} must be 200, got ${receipt.status} ${JSON.stringify(receipt.body)}`);
+  const tasks = receipt.body.tasks || [];
+  assert.ok(tasks.length > 0, `T1 seam: ingest ${ns}/${source} must produce a Task`);
+  return { eventId: receipt.body.eventId, traceId: receipt.body.traceId, taskId: tasks[0].taskId };
+}
+
+// MOCK_FIXTURES 是 mock 权威下的固定事实（web/mock.js 的种子数据）。real 权威下
+// 同名角色由真实创建的对象承担：capability/source/node 的**名字**是我们自己选的，
+// 只有中枢生成的 id（任务/追踪/节点 id）不可预知，所以经 d.fx(key) 注入。
+export const MOCK_FIXTURES = Object.freeze({
+  msgTask: 'tsk_mock_2',
+  node: 'anode-1',
+  defaultTrace: 'trace_mock_t1',
+  prodTrace: 'trace_mock_t2',
+  prodTask: 'tsk_mock_8',
+  capability: 'fixer',
+  source: 'deploy-hook',
+});
+
+async function realFixtures(server, fixtures) {
+  const s = fixtures.adminSession;
+  await ensureNode(server, s, MOCK_FIXTURES.node);
+  await ensureCapability(server, s, DEFAULT_NS, MOCK_FIXTURES.capability);
+  await ensureSource(server, s, DEFAULT_NS, MOCK_FIXTURES.source, MOCK_FIXTURES.capability);
+  const key = fixtures.sendKey;
+  assert.ok(key, 'T1 seam: devseed SEND_KEY required for the machine event ingress');
+  const def = await fireFixture(server, key, DEFAULT_NS, MOCK_FIXTURES.source);
+  await ensureCapability(server, s, PROD, MOCK_FIXTURES.capability);
+  await ensureSource(server, s, PROD, MOCK_FIXTURES.source, MOCK_FIXTURES.capability);
+  const prod = await fireFixture(server, key, PROD, MOCK_FIXTURES.source);
+  // node.html 的 ?id= 是节点**名字**（nodes.html:113 就是这么生成链接的），
+  // 服务端 GET /v1/nodes/{name} 也按名字（resource.yaml:868 NodeNamePath），
+  // 所以这里不取 nd_ id——否则真服务一律 404（mock 里 id==name 把差异藏住了）。
+  const nodes = await rawReq(server.base, '/v1/nodes', { headers: sessionCookie(s) });
+  const node = (nodes.body.items || []).find((n) => n.metadata.name === MOCK_FIXTURES.node);
+  assert.ok(node, 'T1 seam: node fixture required');
+  assert.equal(node.metadata.name, MOCK_FIXTURES.node);
+  return { ...fixtures, msgTask: def.taskId, defaultTrace: def.traceId, prodTrace: prod.traceId, prodTask: prod.taskId, node: node.metadata.name };
 }
 async function preview() {
   assert.equal(isMock(), true, 'Static preview is admitted only by E2E_MOCK_ONLY=1');
@@ -114,14 +279,14 @@ export async function openDriver(id, options = {}) {
       assert.ok(existsSync(H.BIN), `T1 seam: ANOTIFY_BIN missing: ${H.BIN}; build genuine v4 server, no preview fallback`);
       assert.ok(existsSync(H.DEVSEED_BIN), `T1 seam: DEVSEED_BIN missing: ${H.DEVSEED_BIN}; generic retained auth seed required`);
       server = await H.startServer({ suiteName:'frontend' });
-      const seed = H.seed(server.dbPath, 'f3');
-      assert.ok(seed.session, 'T1 seam: devseed must return SESSION');
-      server.session = seed.session;
-      const ns = await rawReq(server.base,'/v1/namespaces',{headers:{Cookie:'anotify_session='+seed.session}});
+      const fixtures = await realFixtures(server, await realBootstrap(server));
+      server.session = fixtures.adminSession;
+      const ns = await rawReq(server.base,'/v1/namespaces',{headers:sessionCookie(server.session)});
       assert.equal(ns.status,200,'T1 seam: genuine namespaced API bootstrap must respond 200');
       assert.equal(ns.body.kind,'NamespaceList','T1 seam: legacy namespace adapter is forbidden');
       assert.ok(ns.body.items.some(n=>n.metadata.name==='default'),'T1 seam: default Namespace fixture required');
       assert.ok(ns.body.items.some(n=>n.metadata.name==='prod'),'T1 seam: prod Namespace fixture required');
+      server.fixtures = fixtures;
     }
     browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox'] });
     context = await browser.newContext({viewport:{width:1440,height:900},locale:options.lang||'en',reducedMotion:'reduce',acceptDownloads:true});
@@ -273,6 +438,9 @@ export async function openDriver(id, options = {}) {
       await page.evaluate(()=>scrollTo(0,0));check(label+': actual geometry and unlocked scroll');
     };
     const finish=async()=>{await archive();assert.deepEqual(report.errors,[],'JS/console/network/unimplemented501 must fail');};
-    return {id,mock,base:server.base,page,context,browser,report,stop,finish,goto,req,response,snapshot,calls,check,shot,clean,archive};
+    return {id,mock,base:server.base,page,context,browser,report,stop,finish,goto,req,response,snapshot,calls,check,shot,clean,archive,fixtures:server.fixtures,
+      // fx 把「用例需要的 fixture 角色」映射到当前权威下的真实身份：mock 固定事实 or
+      // 真实创建对象的 id。用例不得再硬编码 tsk_/trace_ 常量走 real 路径。
+      fx:(key)=>{const f=server.fixtures||{};return mock?MOCK_FIXTURES[key]:(f[key]??MOCK_FIXTURES[key]);}};
   } catch(error){report.errors.push(error.stack||String(error));await stop();throw error;}
 }

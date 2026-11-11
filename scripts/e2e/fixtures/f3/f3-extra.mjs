@@ -55,7 +55,9 @@ export async function aba(d) {
 }
 const matrixFile=(name,{version,body='echo v1',next=[],source=false,kind='manual',target='fixer',param='one'}={})=>{
   const root={apiVersion:'anotify/v1',kind:'Playbook',metadata:{name,version:1},spec:{values:{type:'object'},capabilities:source?[]:['cap.yaml'],sources:source?['source.yaml']:[]}};
-  return {'playbook.yaml':JSON.stringify(root),...(source?{'source.yaml':JSON.stringify({metadata:{name:name+'-source'},spec:{kind,config:kind==='manual'?{payload:{fixed:true}}:{},targets:[{capability:target,params:{value:param}}]}})}:{'cap.yaml':JSON.stringify({metadata:{name:name+'-cap',...(version==null?{}:{version})},spec:{next,run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\n'+body}}}})})};
+  // 渲染后的能力/源文档必须是**契约合法**的资源文档（apiVersion+kind+metadata+spec）：
+  // 真服务端在 install 时会重新校验渲染结果，缺 apiVersion/kind 一律 400 invalid_playbook。
+  return {'playbook.yaml':JSON.stringify(root),...(source?{'source.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Source',metadata:{name:name+'-source'},spec:{kind,config:kind==='manual'?{payload:{fixed:true}}:{},targets:[{capability:target,params:{value:param}}]}})}:{'cap.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Capability',metadata:{name:name+'-cap',...(version==null?{}:{version})},spec:{next,run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\n'+body}}}})})};
 };
 export async function matrix(d) {
   const {page,goto,req,response,calls,check}=d;
@@ -111,8 +113,8 @@ export async function historyMask(d) {
   const name='f3-secret-history';
   const files=Object.fromEntries(Object.entries({
     'playbook.yaml':{apiVersion:'anotify/v1',kind:'Playbook',metadata:{name,version:1},spec:{values:{type:'object',properties:{blob:{type:'object',writeOnly:true},list:{type:'array',writeOnly:true},pin:{type:'integer',writeOnly:true},flag:{type:'boolean',writeOnly:true}}},capabilities:['cap.yaml'],sources:['source.yaml']}},
-    'cap.yaml':{metadata:{name:name+'-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho unchanged'}}}},
-    'source.yaml':{metadata:{name:name+'-source'},spec:{kind:'webhook',config:{},targets:[{capability:name+'-cap',params:{blob:'{{values.blob}}',list:'{{values.list}}',pin:'{{values.pin}}',flag:'{{values.flag}}',mixed:'secret={{values.pin}}',fixedNumber:77,fixedBoolean:true}}]}},
+    'cap.yaml':{apiVersion:'anotify/v1',kind:'Capability',metadata:{name:name+'-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho unchanged'}}}},
+    'source.yaml':{apiVersion:'anotify/v1',kind:'Source',metadata:{name:name+'-source'},spec:{kind:'webhook',config:{},targets:[{capability:name+'-cap',params:{blob:'{{values.blob}}',list:'{{values.list}}',pin:'{{values.pin}}',flag:'{{values.flag}}',mixed:'secret={{values.pin}}',fixedNumber:77,fixedBoolean:true}}]}},
   }).map(([p,v])=>[p,JSON.stringify(v)]));
   await goto('playbooks');await req('/v1/namespaces/prod/playbooks',{method:'POST',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name,namespace:'prod'},spec:{files}})});
   await goto('playbook','namespace=prod&id='+name);
