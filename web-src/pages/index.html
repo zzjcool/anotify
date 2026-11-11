@@ -105,14 +105,6 @@
   .flow-body {
     padding: 0 20px 20px;
   }
-  /* 手机上不画链路图。silk 舞台是**像素 1:1 的横向画布**：390 宽时一屏
-     只能站下一张卡，而舞台高 ~536px，大半是空的 —— 看着像一张坏掉的图。
-     CSS 藏卡片 + JS 提前返回（连任务都不拉），两边同一断点。 */
-  @media (max-width: 639px) {
-    #latest-flow {
-      display: none;
-    }
-  }
   /* 事件流：加载期骨架与数据期同高（实测 8 行 × 62px + 容器 py-1 的 8px
      = 504px），避免数据到达时把后面的内容顶高（首页 CLS 的主要残差）。 */
   #index-events[aria-busy="true"] {
@@ -307,9 +299,9 @@
         <div class="stat-foot"><span>{{t "index.kpi.all_time"}}</span></div>
         <div
           class="stat-spark"
+          data-spark-scope="events"
           role="img"
           aria-label="{{t "ui.kpi.spark"}}"
-          data-spark="0.42,0.58,0.33,0.75,0.54,0.88,0.67"
         ></div>
       </div>
 
@@ -340,7 +332,6 @@
           class="stat-spark"
           role="img"
           aria-label="{{t "ui.kpi.spark"}}"
-          data-spark="0.50,0.63,0.42,0.71,0.58,0.79,0.54"
         ></div>
         </div>
       </div>
@@ -369,9 +360,9 @@
         <div class="stat-foot"><span>{{t "index.kpi.today_sub"}}</span></div>
         <div
           class="stat-spark"
+          data-spark-scope="events"
           role="img"
           aria-label="{{t "ui.kpi.spark"}}"
-          data-spark="0.33,0.46,0.63,0.50,0.75,0.63,0.83"
         ></div>
       </div>
 
@@ -404,13 +395,12 @@
           class="stat-spark"
           role="img"
           aria-label="{{t "ui.kpi.spark"}}"
-          data-spark="0.58,0.42,0.67,0.50,0.75,0.46,0.63"
         ></div>
         </div>
       </div>
 
       <!-- ===== 非推送口径的两张卡（PUSH_UI_ENABLED=false 时补满四格）=====
-           数据与上面两张卡同源（/v1/tasks 的已请求结果），不新增 API。
+           数据与上面两张卡同源（显式 namespace 的统计），不新增 API。
            推送开放时由 JS 给 [data-nonpush-tile] 加 hidden，网格剩下的
            正好是上面两张推送卡 —— 两种开关状态下都是 4 张真卡，没有空格。 -->
       <div class="min-w-0" data-nonpush-tile>
@@ -442,7 +432,6 @@
             class="stat-spark"
             role="img"
             aria-label="{{t "ui.kpi.spark"}}"
-            data-spark="0.38,0.52,0.44,0.61,0.47,0.56,0.41"
           ></div>
         </div>
       </div>
@@ -474,7 +463,6 @@
             class="stat-spark"
             role="img"
             aria-label="{{t "ui.kpi.spark"}}"
-            data-spark="0.62,0.48,0.55,0.40,0.51,0.36,0.44"
           ></div>
         </div>
       </div>
@@ -584,8 +572,8 @@
       </div>
     </section>
 
-    <!-- ===== 最新事件链路（复用 trace 页那套 silk 图，数据源 /v1/tasks?traceId=）=====
-         放首页的理由：事件的“为什么”全在这张图里——走了哪个能力、哪个出口、
+    <!-- ===== 最新事件链路（复用 trace 页那套 silk 图，数据源 namespace Trace readmodel: ）=====
+         放首页的理由：事件的“为什么”全在这张图里——走了哪个能力、哪个下游、
          哪一步失败了。以前要先点进事件流才知道，现在抬眼看得到。
          未挂图前先占一块同等高度的骨架，数据到达时下面的事件流不会往下跳。 -->
     <section id="latest-flow" class="card">
@@ -603,7 +591,7 @@
         </div>
       </div>
       <div class="flow-body">
-        <div id="flow-host" aria-busy="true">
+        <div id="flow-host" class="overflow-x-auto" aria-busy="true">
           <div class="skeleton flow-skel" aria-hidden="true"></div>
         </div>
       </div>
@@ -834,6 +822,8 @@
       });
     }
 
+    if (qs.get("namespace")) window.Anotify.saveScope({ namespace: qs.get("namespace") });
+
     mountLayout({
       active: "overview",
       title: t("index.title", "总览"),
@@ -841,385 +831,162 @@
       username: username || "…",
     });
 
-    /* ================= 数据层 ================= */
-    // 首页的数据源只有两个，都是**事件**口径：
-    //   /v1/stats            事件总数 / 今日 / 热力图（store.MessageStats 统计的是 events）
-    //   /v1/console/events   最近事件流（会话 Cookie 鉴权；机器入口 GET /v1/events 要 Bearer Key）
-    // 任务不再渲染成列表：/v1/tasks 只用来给两张「执行状态」KPI 计数。
+    /* V4 statistics and Event envelopes share the explicit active namespace.
+     * Trace is a single readmodel request; attempts never become graph nodes. */
     let STATS = null;
-    let TASK_COUNTS = null; // /v1/tasks 取不到时保持 null：KPI 显示 – 而不是谎报 0
-    let loadError = null; // 最近一次首屏加载失败的原因（有值就渲染错误态，不伪造数据）
-    let LATEST_EVENTS = []; // loadEvents() 的成品（已倒序），给链路图取最新一条
+    let TASK_COUNTS = null;
+    let loadError = null;
+    let LATEST_EVENTS = [];
+    let EVENT_ERROR = null;
+    const { ready, readScope, nsPath, model, itemsOf } = window.Anotify;
 
-    const TASK_WORKING = ["pending", "assigned", "acked", "running"];
-    const TASK_FAILED = ["failed", "canceled", "abandoned", "lease_expired"];
+    /* 两张执行状态卡的口径必须是**真实 Task 事实**，不是 stats 的臆造字段：
+     * GET /v1/stats 只给 total/today/delivered/deliveryTotal/deviceCount/daily
+     * （api/events.yaml · getStats），v4 里没有 pending/running/failed —— 读它们
+     * 得到的是 undefined，跟着 `.toLocaleString()` 就把整页炸掉。所以这两个数从
+     * 真实 TaskList 数相位：pending+running = 在途，failed = 失败。取不到就返回
+     * null（卡片显示 –），绝不写 0 冒充「没有」。
+     * 单页上限 500（>500 会被折回 50，且 TaskList 没有 continue 游标）：命中上限
+     * 时按「至少这么多」显示 N+，不把截断的一页冒充全量。 */
+    const TASK_PAGE_LIMIT = 500;
+
+    async function loadTaskCounts(namespace) {
+      const doc = await api(
+        "/v1/namespaces/" + encodeURIComponent(namespace) +
+          "/tasks?limit=" + TASK_PAGE_LIMIT,
+      );
+      if (doc.kind !== "TaskList" || !Array.isArray(doc.items)) {
+        throw new Error("malformed TaskList");
+      }
+      const items = itemsOf(doc);
+      const counts = { working: 0, failed: 0, truncated: items.length >= TASK_PAGE_LIMIT };
+      for (const item of items) {
+        const phase = model.task(item).phase;
+        if (phase === "pending" || phase === "running") counts.working += 1;
+        else if (phase === "failed") counts.failed += 1;
+      }
+      return counts;
+    }
+
+    // 截断时补一个 +：既报出数到的量，也不假装它是全量。
+    function taskCountText(counts, key) {
+      if (!counts) return "–";
+      return counts[key].toLocaleString() + (counts.truncated ? "+" : "");
+    }
 
     async function load() {
       loadError = null;
-      // 统计（KPI + 热力图）。失败不降级成假数据（#273）：KPI 显示 –，
-      // 事件列表位置渲染「载入失败 + 重试」。
+      document.getElementById("index-events").setAttribute("aria-busy", "true");
       try {
-        STATS = await api("/v1/stats");
-      } catch (e) {
-        // 401 已由 api() 跳登录；其余都是真失败。
+        await ready();
+        STATS = await api("/v1/stats?namespace=" + encodeURIComponent(readScope().namespace));
+      } catch (error) {
         STATS = null;
-        loadError = e;
+        loadError = error;
       }
-      // 两张执行状态卡只要计数；任务列表本身已从首页下线。
       try {
-        const data = await api("/v1/tasks?limit=50");
-        const items = data && Array.isArray(data.tasks) ? data.tasks : [];
-        TASK_COUNTS = {
-          working: items.filter((n) => TASK_WORKING.includes(n.status)).length,
-          failed: items.filter((n) => TASK_FAILED.includes(n.status)).length,
-        };
+        TASK_COUNTS = await loadTaskCounts(readScope().namespace);
       } catch {
+        // 任务列表取不到时只让这两张卡显示 –（其余 KPI 照常有真数据）。
         TASK_COUNTS = null;
       }
-      // 问候语跟当前登录用户对齐（#21）
       try {
         const me = await window.Anotify.loadMe();
-        if (me) {
-          username = me.displayName || me.username || username || "";
-        }
-      } catch {
-        /* 忽略，保留已有 username */
-      }
-      if (!username) username = t("index.greeting.fallback_name", "你");
+        if (me) username = me.displayName || me.username || username;
+      } catch { /* Keep the authenticated shell's existing name, not fake data. */ }
+      if (!username) username = t("index.greeting.fallback_name");
       renderKpis();
       renderSummary();
       renderHeatmap();
       await loadEvents();
-      await loadLatestFlow(LATEST_EVENTS);
+      await loadLatestFlow();
     }
 
-    /* ================= 事件流（首页主列表） ================= */
-    // 走控制台端点 /v1/console/events（会话 Cookie 鉴权）——机器入口的
-    // GET /v1/events 要 Bearer API Key，浏览器页面拿不到那种凭据。
-    // 8 行紧凑事件行：源 → 类型 / traceId / 相对时间；点整行走 trace.html。
-    const EVENTS_LIMIT = 8;
+    function traceLink(uid) {
+      return "trace.html?namespace=" + encodeURIComponent(readScope().namespace) +
+        "&traceUID=" + encodeURIComponent(uid);
+    }
 
     async function loadEvents() {
       const box = document.getElementById("index-events");
-      const countEl = document.getElementById("ev-count");
+      const count = document.getElementById("ev-count");
       LATEST_EVENTS = [];
-      if (!box) return;
-      let events = [];
-      let evErr = null;
+      EVENT_ERROR = null;
       try {
-        const data = await api("/v1/console/events?limit=" + EVENTS_LIMIT);
-        events = data && Array.isArray(data.events) ? data.events : [];
-      } catch (e) {
-        evErr = e || new Error("events fetch failed");
+        await ready();
+        const doc = await api("/v1/console/events?namespace=" +
+          encodeURIComponent(readScope().namespace) + "&limit=8");
+        if (doc.kind !== "EventList" || !Array.isArray(doc.items)) throw new Error("malformed EventList");
+        LATEST_EVENTS = [...new Map(itemsOf(doc).map(e => [e.metadata.uid, e])).values()];
+        box.replaceChildren(...LATEST_EVENTS.map(eventRow));
+        count.textContent = t("index.events.count").replace("{n}", LATEST_EVENTS.length);
+        if (!LATEST_EVENTS.length) box.append(el("div", { class: "empty", text: t("index.events.empty") }));
+      } catch (error) {
+        EVENT_ERROR = error;
+        box.replaceChildren(window.Anotify.loadErrorNode(error, load));
+        count.textContent = "";
+      } finally {
+        box.removeAttribute("aria-busy");
       }
-      // 后端按插入顺序返回，事件时间不一定同序（补录 / 幂等重投）→ 显式倒序
-      events.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      // 倒序后的第一条就是「最新事件」，链路图取它（不另外再请求一次列表）
-      LATEST_EVENTS = events;
-      box.removeAttribute("aria-busy");
-      box.replaceChildren();
-
-      /* F14：接口挂了 ≠ 零条事件。错误态只说「取不到」，不画「还没有事件…」。 */
-      if (evErr) {
-        box.appendChild(window.Anotify.loadErrorNode(evErr, () => loadEvents()));
-        if (countEl) countEl.textContent = "";
-        return;
-      }
-
-      if (countEl) {
-        countEl.textContent = t("index.events.count", "最近 {n} 条").replace(
-          "{n}",
-          events.length,
-        );
-      }
-
-      if (!events.length) {
-        box.appendChild(
-          el("div", {
-            class: "empty",
-            text: t(
-              "index.events.empty",
-              "还没有事件。接上 webhook 或定时源后，这里会显示事件流。",
-            ),
-          }),
-        );
-        return;
-      }
-
-      box.append(...events.map(eventRow));
     }
 
-    // 整行是 <a>：键盘可达、右键能新标签打开、读屏有可访问名。
-    function eventRow(e) {
-      const row = el("a", {
-        class: "ev-feed-row",
-        href: "trace.html?traceId=" + encodeURIComponent(e.traceId || ""),
+    function eventRow(resource) {
+      const event = model.event(resource);
+      const row = el(event.traceUID ? "a" : "div", {
+        class: "ev-feed-row", "data-uid": event.uid,
       });
-      const head = el("div", { class: "ev-feed-head" });
-      head.append(
-        el("code", { class: "mono tag-chip", text: e.source || "—" }),
-        el("span", { class: "card-sub", text: "→" }),
-        el("code", { class: "mono truncate", text: e.type || "—" }),
+      if (event.traceUID) row.href = traceLink(event.traceUID);
+      const head = el("div", { class: "ev-feed-head" },
+        el("code", { class: "mono tag-chip", text: event.involvedObject?.name || "—" }),
+        el("code", { class: "mono", text: event.eventType || "—" }),
+        el("span", { class: "badge badge-neutral", text: event.type }),
       );
-      const main = el("div", { class: "ev-feed-main" });
-      main.append(
-        head,
-        el("code", {
-          class: "mono card-sub ev-feed-trace",
-          text: e.traceId || "—",
-        }),
-      );
-      row.append(
-        main,
-        el("span", {
-          class: "card-sub ev-feed-time",
-          text: timeAgo(e.createdAt),
-        }),
-      );
+      row.append(el("div", { class: "ev-feed-main" }, head,
+        el("code", { class: "mono card-sub ev-feed-trace", text: event.traceUID || event.name })),
+        el("span", { class: "card-sub ev-feed-time", text: timeAgo(Date.parse(event.creationTimestamp) / 1000) }));
       return row;
     }
 
-    /* ================= 最新事件链路（复用 trace 页那套 silk 图） =================
-     * 三个取舍，每条都是为了避免把首页变成第二个 trace 页：
-     *
-     * 1) **不建底图**。trace 页会用 /v1/sources + /v1/capabilities + /v1/edges
-     *    拼出这个源的静态拓扑当底图（被剪枝的分支也会画成灰线）。那是 trace
-     *    页该回答的问题（“本来还有哪条路”），首页只为回答“这次到底跑了什么”，
-     *    为此多打三四个请求不值。
-     * 2) **只取一条 trace**：/v1/tasks?traceId=<最新事件> —— 列表已经在
-     *    loadEvents() 里拿到了，不重复请求。
-     * 3) **图库是页面级的**（layout 的 graph-libs 槽位）：只有真画图的页面才
-     *    加载 flograph.js + graphs.js。这里不需要 dagre —— silk 舞台是自定
-     *    义布局，dagre 只有老渲染路径才用。
-     */
-    const FLOW_TASK_LIMIT = 14;
-
-    /* 入场动画只在**用户真的在看的时候**放。
-     *
-     * taskChain 的 silk 一挂载就开始按真实执行顺序逐拍点亮，但首页这张卡排在
-     * 折叠线以下（1440×900 下从 y≈883 开始）。自动播 = 在没人看的时候放完，
-     * 用户滚下来只剩一张静态图。
-     *
-     * 所以**挂载时不播**（taskChain 传 animate:false，先给终态），等它第一次
-     * 真的被看见再 replay()（就是 HUD 上那个重播钮走的路）。
-     *
-     * 判据用**轮询几何**，不用 IntersectionObserver，也不只监听 scroll：
-     *   · IO 的回调只在交集变化那一帧触发，用户一路滚过来时回调都发生在还没
-     *     滚到位的时候，等他停住就不再回调了（实测：慢慢滚一次都不触发）；
-     *   · 只监听 window.scroll 则绑死"页面由 window 滚动"这个前提。
-     * 200ms 读一次 rect 最笨也最稳：谁把它滚进来的都能发现。连续两次满足
-     * （≈400ms 没变）才算"停稳"。
-     *
-     * 两个条件（宁可不播，也不要又在屏幕外放一遍）：
-     *   ① 卡片至少 60% 露在视口里；
-     *   ② 卡片顶部落在视口上牛区（top < 60% 视口高）—— "挂在屏底、人还在看
-     *      KPI" 不算看到。
-     *
-     * 系统开了「减少动态效果」就一律不播：那是用户的明确选择。
-     * 排障：F12 里 document.getElementById("flow-host").dataset.intro
-     *   的值就是结论 —— waiting / played / skipped / muted / nograph。
-     */
-    let stopFlowIntro = null; // 上一张图的收尾（刷新时先解掉，别叠）
-
-    function playIntroWhenSeen(graph, host) {
-      if (typeof stopFlowIntro === "function") stopFlowIntro();
-      stopFlowIntro = null;
-      if (!host) return;
-      if (!graph || typeof graph.replay !== "function") {
-        host.dataset.intro = "nograph";
-        return;
-      }
-      if (
-        window.matchMedia &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ) {
-        host.dataset.intro = "muted";
-        return;
-      }
-      host.dataset.intro = "waiting";
-
-      let done = false;
-      let stable = 0;
-      let timer = 0;
-      let giveUp = 0;
-
-      function cleanup() {
-        clearInterval(timer);
-        clearTimeout(giveUp);
-        if (stopFlowIntro === cleanup) stopFlowIntro = null;
-      }
-      const play = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        host.dataset.intro = "played";
-        try {
-          graph.replay();
-        } catch (e) {
-          console.warn("[index] 链路回放失败", e);
-        }
-      };
-      const visibleEnough = () => {
-        const rect = host.getBoundingClientRect();
-        const vh = window.innerHeight || 0;
-        if (!(rect.height > 0)) return false;
-        const shown = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
-        return shown / rect.height >= 0.6 && rect.top < vh * 0.6;
-      };
-
-      timer = setInterval(() => {
-        if (done) return;
-        if (!host.isConnected) {
-          cleanup();
-          host.dataset.intro = "skipped";
-          return;
-        }
-        if (!visibleEnough()) {
-          stable = 0;
-          return;
-        }
-        if (++stable < 2) return;
-        play();
-      }, 200);
-      // 一分钟都没滚下来就不惦记了（用户可能一直在看别的）
-      giveUp = setTimeout(() => {
-        if (done) return;
-        cleanup();
-        host.dataset.intro = "skipped";
-      }, 60000);
-      stopFlowIntro = cleanup;
-    }
-
-    async function loadLatestFlow(events) {
+    async function loadLatestFlow() {
       const host = document.getElementById("flow-host");
-      if (!host) return;
-      // 手机不画（CSS 已藏卡片）：silk 舞台不能塞进 390 宽，理由见页内 <style>。
-      if (window.matchMedia("(max-width: 639px)").matches) return;
-      const sub = document.getElementById("flow-sub");
-      const open = document.getElementById("flow-open");
-      const latest = events && events[0];
-
-      function emptyState(msg) {
-        host.removeAttribute("aria-busy");
-        host.replaceChildren(el("div", { class: "empty", text: msg }));
-      }
-
-      if (!latest) {
-        emptyState(
-          t(
-            "index.flow.empty",
-            "还没有事件。接上触发器后，这里会画出最新一条事件的链路。",
-          ),
-        );
-        return;
-      }
-
-      const traceId = latest.traceId || "";
-      // 卡头两个元素始终指向“最新的这一条”：标题下写清是哪条事件，
-      // 右上角按钮直达它的 trace 页（而不是笼统的事件列表）。
-      if (sub) {
-        sub.textContent = t(
-          "index.flow.subtitle_of",
-          "最近一条：{src} · {type}",
-        )
-          .replace("{src}", latest.source || "—")
-          .replace("{type}", latest.type || "—");
-      }
-      if (open) {
-        open.href = "trace.html?traceId=" + encodeURIComponent(traceId);
-      }
-
-      let tasks = [];
-      try {
-        const data = await api("/v1/tasks?traceId=" + encodeURIComponent(traceId));
-        tasks = data && Array.isArray(data.tasks) ? data.tasks : [];
-      } catch (e) {
-        host.removeAttribute("aria-busy");
-        host.replaceChildren(
-          window.Anotify.loadErrorNode(e, () => loadLatestFlow(events)),
-        );
-        return;
-      }
-
-      if (!tasks.length) {
-        // 剪枝不是错误：事件入库了，但没有一个出口接住它。
-        emptyState(
-          t(
-            "index.flow.pruned",
-            "这条事件没有派发任何任务（在第一步就被剪枝）。点右上角看完整链路的原因。",
-          ),
-        );
-        return;
-      }
-      if (!window.AnotifyGraphs || !window.FlowGraph) {
-        emptyState(
-          t(
-            "index.flow.nolib",
-            "链路渲染脚本没能加载，点右上角看完整链路。",
-          ),
-        );
-        return;
-      }
-
-      host.removeAttribute("aria-busy");
-      // 刷新时先拆上一次的图：mountSilk 在 window 上挂了 resize / keydown 监听，
-      // 只 replaceChildren 会把它们留在那儿（每刷一次多一套）。
-      if (host._graph && typeof host._graph.destroy === "function") {
-        host._graph.destroy();
-      }
+      const latest = LATEST_EVENTS.find(e => e.spec.traceUID);
+      if (host._graph?.destroy) host._graph.destroy();
       host.replaceChildren();
-
-      // 底图：这个事件所属源的静态拓扑（能力的显示名、结构图标、「终点」标注、
-      // 被剪枝的分支都在里面）。
-      //
-      // 取数和推导都走 graphs.js 的 loadBaseGraph —— trace 页用的是**同一个
-      // 函数**。曾经这里传 baseGraph:null 想省掉那几次请求，代价是首页只能拿
-      // 任务记录里的能力 slug 拼 `haha@1`、图标按状态猜，同一份配置在两页长
-      // 得不一样（用户报的「首页节点显示不对，以完整链路为准」）。
-      let baseGraph = null;
-      if (latest.source && window.AnotifyGraphs.loadBaseGraph) {
-        try {
-          baseGraph = await window.AnotifyGraphs.loadBaseGraph({
-            api: "/v1",
-            source: latest.source,
-            fetchJson: api,
-          });
-        } catch (e) {
-          // 拿不到底图不算错（源已删/未知源）：退回只画执行链
-          baseGraph = null;
-        }
+      host.removeAttribute("aria-busy");
+      if (EVENT_ERROR) {
+        host.append(window.Anotify.loadErrorNode(EVENT_ERROR, load));
+        return;
       }
+      if (!latest) {
+        host.append(el("div", { class: "empty", text: t("index.flow.empty") }));
+        return;
+      }
+      const event = model.event(latest);
+      document.getElementById("flow-open").href = traceLink(event.traceUID);
+      document.getElementById("flow-sub").textContent = event.eventType + " · " + event.traceUID;
       try {
-        const out = window.AnotifyGraphs.taskChain(host, {
-          tasks: tasks,
-          baseGraph: baseGraph,
-          // 没有底图时这些只是回退信息：sourceLabel 决定要不要画触发器节点
-          sourceLabel: latest.source || "",
-          sourceSub: latest.type || "",
-          sourcePort: latest.type || "",
-          // 挂载时先定格在"第 0 拍"（卡片压暗、连线还没画），等它真被看见
-          // 再 replay（见 playIntroWhenSeen）。
-          //
-          // 注意不能只关 animate：关掉等于直接给终态 —— 用户先看到一张
-          // **已经连好线**的图，然后才被清空重播，第一眼就是错的。
-          animate: false,
-          idle: true,
-          t: t,
-          limit: FLOW_TASK_LIMIT,
+        const doc = await api(nsPath("traces", event.traceUID));
+        if (!Array.isArray(doc.tasks) || !Array.isArray(doc.events) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
+        if (!doc.tasks.length) {
+          host.append(el("div", { class: "empty", text: t("index.flow.pruned") }));
+          /* pruned[] 的条目是事件信封（events.yaml·TraceView）：原因码在 spec.eventType，
+           * 诊断在 status.pruned.detail；读 p.reason/p.detail 只是 mock 时代的形状。 */
+          doc.pruned.forEach(p => host.append(el("p", { class: "card-sub",
+            text: (p.spec?.eventType || p.status?.pruned?.reason || p.reason || "—") + ": " + (p.status?.pruned?.detail || p.detail || "") })));
+          return;
+        }
+        if (!window.AnotifyGraphs) throw new Error(t("index.flow.nolib"));
+        const source = doc.events.find(resource => resource.spec.involvedObject?.kind === "Source");
+        window.AnotifyGraphs.taskChain(host, {
+          tasks: doc.tasks, sourceLabel: source?.spec.involvedObject.name || "",
+          sourceSub: source?.spec.eventType || "", animate: false, t,
+          onNodeClick(task) {
+            location.href = "message.html?namespace=" + encodeURIComponent(readScope().namespace) +
+              "&id=" + encodeURIComponent(task.name);
+          },
         });
-        playIntroWhenSeen(out && out.graph, host);
-      } catch (e) {
-        // 图崩了不能把首屏一起带走：退化成一句可读的话 + 直链。
-        host.replaceChildren(
-          el("div", {
-            class: "empty",
-            text: t(
-              "index.flow.failed",
-              "这条链路画不出来，点右上角看完整链路。",
-            ),
-          }),
-        );
-        console.warn("[index] 链路图渲染失败", e);
+      } catch (error) {
+        host.replaceChildren(window.Anotify.loadErrorNode(error, loadLatestFlow));
       }
     }
 
@@ -1341,7 +1108,7 @@
       } else {
         rateEl.replaceChildren(
           document.createTextNode(rate),
-          el("span", { class: "text-2xl text-zinc-500", text: "%" }),
+          el("span", { class: "text-2xl card-sub", text: "%" }),
         );
       }
       bumpStat(rateEl);
@@ -1359,23 +1126,24 @@
         "推送订阅 + 长连接",
       );
 
-      /* 两张执行状态卡：只数「事件派出去的任务」有没有卡住/失败，
-       * 数据是 /v1/tasks?limit=50 的计数（样本量写在卡片副标题），首页不渲染任务行。 */
+      /* 两张执行状态卡：数当前命名空间里真实 Task 的相位（pending+running /
+       * failed），见 loadTaskCounts 的口径说明；取不到就是 –，不写 0。 */
       const runningEl = document.getElementById("kpi-running");
       const failedEl = document.getElementById("kpi-failed");
-      if (runningEl) {
-        setStatValue(
-          runningEl,
-          TASK_COUNTS ? TASK_COUNTS.working.toLocaleString() : "–",
-        );
-      }
-      if (failedEl) {
-        setStatValue(
-          failedEl,
-          TASK_COUNTS ? TASK_COUNTS.failed.toLocaleString() : "–",
-        );
-      }
-      sparks.forEach((el) => el.classList.add("is-ready"));
+      if (runningEl) setStatValue(runningEl, taskCountText(TASK_COUNTS, "working"));
+      if (failedEl) setStatValue(failedEl, taskCountText(TASK_COUNTS, "failed"));
+      const values = STATS.daily.map(day => day.count);
+      const max = Math.max(1, ...values);
+      sparks.forEach(node => {
+        if (node.dataset.sparkScope !== "events") {
+          node.removeAttribute("data-spark");
+          node.replaceChildren();
+          return; // No daily execution/device facts: do not imply an invented trend.
+        }
+        node.dataset.spark = values.map(value => value / max).join(",");
+        node.classList.add("is-ready");
+      });
+      renderSparks();
     }
 
     function renderSummary() {
@@ -1524,7 +1292,13 @@
       const hm = document.getElementById("hm");
       if (!hm) return;
       hm.removeAttribute("aria-busy");
-      hm.replaceChildren(); // 重渲染前清空
+      hm.replaceChildren();
+      document.querySelectorAll(".hm-tip").forEach(node => node.remove());
+      if (!STATS) {
+        hm.append(window.Anotify.loadErrorNode(loadError, load));
+        document.getElementById("hm-foot").textContent = t("index.heatmap.foot_na");
+        return;
+      }
       const LEVELS = [
         "var(--hm-empty)",
         "var(--accent-1)",

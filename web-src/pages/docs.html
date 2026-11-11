@@ -723,17 +723,13 @@
               </button>
             </div>
             <div class="code-body">
-              curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
+              curl -X POST https://{{t "docs.your_domain"}}/v1/namespaces/{namespace}/events \ -H
               <span class="tk-str"
                 >"Authorization: Bearer ant_live_9f3a2c8e…"</span
               >
               \ -H
               <span class="tk-str">"Content-Type: application/json"</span> \ -d
-              <span class="tk-str"
-                >'{"title":"{{t
-                "docs.notify.curl.title_val"}}","agentState":"done","body":"{{t
-                "docs.notify.curl.body_val"}}"}'</span
-              >
+              <span class="tk-str">'{"source":"on-push","type":"push","id":"delivery-1","payload":{"repo":"a/b"}}'</span>
             </div>
           </div>
 
@@ -747,7 +743,7 @@
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
-    │ ② POST /v1/events ────▶│ ③ verify Key → route by edges                    │
+    │ ② POST /v1/namespaces/{namespace}/events ────▶│ ③ verify Key → route by next / targets                    │
     │                        │ ④ filter by tag/level   │                        │
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification
@@ -792,12 +788,12 @@
                   <tbody>
                     <tr>
                       <td><span class="method m-post">POST</span></td>
-                      <td class="mono">/v1/events</td>
+                      <td class="mono">/v1/namespaces/{namespace}/events</td>
                       <td>{{t "docs.api.map.notify"}}</td>
                     </tr>
                     <tr>
                       <td><span class="method m-get">GET</span></td>
-                      <td class="mono">/v1/tasks</td>
+                      <td class="mono">/v1/namespaces/{namespace}/tasks</td>
                       <td>{{t "docs.api.map.tasks"}}</td>
                     </tr>
                     <tr>
@@ -852,22 +848,14 @@
           </details>
         </section>
 
-        <!-- ===== 全部端点（构建期从 api/openapi.yaml 生成，不手维护） =====
-
-             为什么放在页面里而不是只给个 spec 链接：API 文档页的全部价值就是
-             「我现在能调什么」。手写表格没人维护，历史上就已经漏过 9 个事件中心
-             端点；这里直接把 spec 按 tag 铺成静态 HTML，spec 改了重跑 sitegen
-             就同步，而且不引入任何运行时 JS / 渲染库。
-
-             已弃用的旧「通知终端」端点（devices）在解析时就过滤掉，不展示。
-
-             版式：93 行按 tag 分成 17 张 .card，桌面两栏 CSS columns 流动
-             （columns 只动版式，不动 DOM —— e2e 的 tbody tr ≥80 与 .card ≥10
-             两个计数都还在；这一节**不折进 <details>**，因为 e2e 断言读的是
-             #endpoints 的 innerText，折叠后 innerText 会丢掉隐藏行）。 -->
+        <!-- F3 owns the five-spec parser: the generator only loads the five v4
+             specs (no legacy single-spec fallback), so a nonempty .OpenAPI is
+             v4 by construction. Gate on that list, not on one literal path: a
+             valid spec set whose namespaced paths differ must still render. The
+             empty state means all five files are absent, never "legacy spec". -->
         <section id="endpoints" class="doc-anchor doc-sec reveal visible">
           <h2 class="doc-h2">{{t "docs.endpoints.title"}}</h2>
-          <p class="doc-lede">{{t "docs.endpoints.intro"}}</p>
+          <p class="doc-lede">{{t "docs.v4.five_specs"}}</p>
           {{if .OpenAPI}}
           <div class="doc-ep-grid">
             {{range .OpenAPI}}
@@ -896,8 +884,6 @@
             {{end}}
           </div>
           {{else}}
-          <!-- 真实空态：sitegen 没加载到 api/openapi.yaml（例如镜像漏 COPY api/）
-               时这一节会只剩标题。不能静默留白 —— 读者会以为「没有任何端点」。 -->
           <div class="empty">
             <svg
               class="doc-empty-icon"
@@ -915,8 +901,8 @@
                 stroke-linecap="round"
               />
             </svg>
-            <b class="doc-empty-title">{{t "docs.endpoints.empty_title"}}</b>
-            <span>{{t "docs.endpoints.empty_desc"}}</span>
+            <b class="doc-empty-title">{{t "docs.v4.missing"}}</b>
+            <span>{{t "docs.v4.five_specs"}}</span>
           </div>
           {{end}}
         </section>
@@ -953,11 +939,11 @@
           </div>
         </section>
 
-        <!-- ===== POST /v1/events（事件入口）===== -->
+        <!-- ===== POST /v1/namespaces/{namespace}/events（事件入口）===== -->
         <section id="events" class="doc-anchor doc-sec reveal visible">
           <h2 class="doc-h2">
             <span class="method m-post">POST</span>
-            <code class="doc-h2-code">/v1/events</code>
+            <code class="doc-h2-code">/v1/namespaces/{namespace}/events</code>
             <span class="badge badge-accent">{{t "docs.events.core"}}</span>
           </h2>
           <p class="doc-lede">{{t "docs.events.intro"}}</p>
@@ -1030,7 +1016,7 @@
                   </button>
                 </div>
                 <div class="code-body">
-                  curl -X POST https://{{t "docs.your_domain"}}/v1/events \ -H
+                  curl -X POST https://{{t "docs.your_domain"}}/v1/namespaces/{namespace}/events \ -H
                   <span class="tk-str"
                     >"Authorization: Bearer ant_live_9f3a2c8e…"</span
                   >
@@ -1137,66 +1123,35 @@
           </div>
         </section>
 
-        <!-- ===== 节点 WS 协议 ===== -->
         <section id="node" class="doc-anchor doc-sec reveal visible">
-          <h2 class="doc-h2">
-            <span class="method m-ws">WS</span>
-            <code class="doc-h2-code">/v1/node/stream</code>
-            <span class="badge badge-success">nodeToken</span>
-          </h2>
-          <p class="doc-lede">{{t "docs.node.intro"}}</p>
-
-          <div class="code-block mt-4">
-            <div class="code-head">
-              <span>{{t "docs.node.connect.title"}}</span
-              ><button class="copy-btn" onclick="copyBlock(this)">
-                {{t "docs.copy"}}
-              </button>
-            </div>
-            <div class="code-body">
-              GET wss://{{t "docs.your_domain"}}/v1/node/stream
-              <span class="tk-key">Authorization:</span> Bearer
-              ant_node_9f3a2c8e…
-            </div>
-          </div>
-
-          <div class="doc-grid-2">
-            <div class="code-block">
-              <div class="code-head">
-                <span>{{t "docs.node.up.title"}}</span
-                ><button class="copy-btn" onclick="copyBlock(this)">
-                  {{t "docs.copy"}}
-                </button>
-              </div>
-              <div class="code-body">
-                <span class="tk-comment">{{t "docs.node.up.comment"}}</span>
-                { "type": "hello", "capabilities": ["review@1"], "instance": 2 }
-                { "type": "ack", "taskId": "tsk_01J8" }
-                { "type": "progress", "taskId": "tsk_01J8", "percent": 40 }
-                { "type": "emit", "taskId": "tsk_01J8", "seq": 1,
-                "port": "fix", "data": { } }
-                { "type": "result", "taskId": "tsk_01J8", "status": "succeeded" }
-              </div>
-            </div>
-            <div class="code-block">
-              <div class="code-head">
-                <span>{{t "docs.node.down.title"}}</span
-                ><button class="copy-btn" onclick="copyBlock(this)">
-                  {{t "docs.copy"}}
-                </button>
-              </div>
-              <div class="code-body">
-                <span class="tk-comment">{{t "docs.node.down.comment"}}</span>
-                { "type": "welcome", "heartbeatSec": 10 }
-                { "type": "assign", "taskId": "tsk_01J8", "capability":
-                "review@1", "params": { } }
-                { "type": "cancel", "taskId": "tsk_01J8" }
-                { "type": "error", "code": "unknown_capability" }
-              </div>
-            </div>
-          </div>
-
-          <div class="doc-note">{{t "docs.node.note"}}</div>
+          <h2 class="doc-h2">{{t "docs.v4.node"}}</h2>
+          <p class="doc-lede">{{t "docs.v4.node_note"}}</p>
+          <div class="code-block"><div class="code-head">anode.yaml</div><pre class="code-body">name: node-a
+server: wss://{{t "docs.your_domain"}}
+token: &lt;issued-node-identity-token&gt;
+namespaces: [default]
+listen: tcp://127.0.0.1:0
+vars:
+  SOURCE_ROOT: /srv/src
+limits:
+  total: 1
+  perCapability: {}</pre></div>
+          <div class="code-block mt-4"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body">anode install
+anode serve
+anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre></div>
+          <p class="doc-note">{{t "nodes.v4.setup_hint"}}</p>
+          <p class="doc-note">{{t "nodes.v4.slot_note"}}</p>
+          <h3 class="doc-h2">{{t "docs.v4.resource"}}</h3>
+          <p class="doc-lede">{{t "docs.v4.resource_note"}}</p>
+          <pre class="code-body">GET /v1/namespaces/{namespace}/capabilities
+GET /v1/namespaces/{namespace}/sources
+GET /v1/namespaces/{namespace}/playbooks
+GET /v1/namespaces/{namespace}/tasks
+GET /v1/nodes
+GET /v1/nodes/{name}/config
+PUT /v1/nodes/{name}/config
+GET /v1/namespaces/{namespace}/config
+GET /v1/system/config</pre>
         </section>
       </div>
 

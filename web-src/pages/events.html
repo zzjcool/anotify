@@ -1,1044 +1,179 @@
 {{define "title"}}{{t "events.title"}}{{end}}
-
-{{define "style"}}
-    <style>
-      /* 本页特有样式（共享样式见 ui.css / tokens.css）。
-         颜色一律走 token：亮主题下这些类也要读得清。 */
-      .ev-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 1rem;
-        align-items: center;
-      }
-      /* 行尾：时间 + hover/聚焦才出现的 chevron。
-         原来每行都挂一个「查看链路」药丸：100 行就是 100 个重复的动作标签，
-         而整张卡本来就是入口 —— 重复的标签只制造噪声（REVIEW §2 #6 P2）。 */
-      .ev-side {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 8px;
-        white-space: nowrap;
-      }
-      .ev-chev {
-        width: 16px;
-        height: 16px;
-        flex: none;
-        color: var(--faint);
-        opacity: 0;
-        transform: translateX(-2px);
-        transition:
-          opacity var(--dur-fast) var(--ease),
-          transform var(--dur-fast) var(--ease);
-      }
-      .card:hover .ev-chev,
-      .card:focus-visible .ev-chev {
-        opacity: 1;
-        transform: none;
-      }
-      /* 触屏没有 hover 态：直接常显，否则用户看不出这行能点进去 */
-      @media (hover: none) {
-        .ev-chev {
-          opacity: 1;
-          transform: none;
-        }
-      }
-      /* 剪枝记录：不是错误，是"这条分支在这里断了"，所以用中性/提示色而不是红 */
-      .prune-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.15rem 0.5rem;
-        border-radius: var(--r-full, 9999px);
-        font-size: 0.7rem;
-        font-family: var(--font-mono, monospace);
-        background: var(--surface-2);
-        border: 1px solid var(--line-strong);
-        color: var(--muted);
-      }
-      .prune-chip.no_edge {
-        color: var(--muted);
-      }
-      .prune-chip.param_schema {
-        color: var(--warn);
-      }
-      .prune-chip.no_node {
-        color: var(--info);
-      }
-      .prune-chip.foreign_user {
-        color: var(--accent);
-      }
-      /* max_hops = 跳数超预算（撑到顶了）；budget = 本次 trace 任务数超预算（踩了上限）
-         两者都是“主动止损”，但不是错误 —— max_hops 用 warn、budget 用 error 分级 */
-      .prune-chip.max_hops {
-        color: var(--warn);
-      }
-      .prune-chip.budget {
-        color: var(--error);
-      }
-      /* 事件按源分组：组头是源名 + 类型 + 计数，组内是事件卡 */
-      .ev-group {
-        margin-bottom: 0.75rem;
-      }
-      .ev-group:last-child {
-        margin-bottom: 0;
-      }
-      .ev-group-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        padding: 0 0.15rem 0.4rem;
-        margin-bottom: 0.5rem;
-        border-bottom: 1px solid var(--line);
-      }
-
-      /* 首屏骨架卡：与内容态的 .card.card-hover.p-4 同形同高（实测 80px）。
-         **不能用 .card 类** —— e2e 用 `#ev-list .card` 数事件条数，骨架混进去
-         会被当成一条事件。所以这里把卡片的外观在页级复刻一遍（只读 token）。 */
-      .ev-skel {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        gap: 10px;
-        height: 80px;
-        padding: 16px;
-        background: var(--surface-1);
-        border: 1px solid var(--line);
-        border-radius: var(--r-lg);
-        box-shadow: var(--shadow-1);
-      }
-      .ev-sk-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .ev-sk-chip {
-        width: 86px;
-        height: 18px;
-      }
-      .ev-sk-line {
-        width: 148px;
-        height: 14px;
-      }
-      .ev-sk-id {
-        width: 44%;
-        height: 12px;
-      }
-
-      /* 页面私有 toast（与共享 Anotify.toast 无关，行为不变）。
-         重复定义是有意的：本页的 toast 位置/时长与共享实现不同，
-         且页内脚本只操作 #toast 这一个节点。 */
-      .toast {
-        position: fixed;
-        bottom: 1.5rem;
-        left: 50%;
-        transform: translateX(-50%) translateY(20px);
-        background: var(--panel-overlay);
-        border: 1px solid var(--line-strong);
-        color: var(--text);
-        font-size: 0.82rem;
-        padding: 0.6rem 1rem;
-        border-radius: var(--r-md, 10px);
-        opacity: 0;
-        pointer-events: none;
-        transition:
-          opacity var(--dur, 0.3s) var(--ease, ease),
-          transform var(--dur, 0.3s) var(--ease, ease);
-        z-index: var(--z-toast, 100);
-      }
-      .toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .toast {
-          transition: none;
-        }
-      }
-    </style>
-{{end}}
-
 {{define "content"}}
 <div id="page-main">
-      <div class="page">
-        <!-- 页头 -->
-        <div class="page-head">
-          <div>
-            <h2 class="page-title">{{t "events.title"}}</h2>
-            <p class="page-sub">{{t "events.subtitle"}}</p>
-          </div>
-          <div class="page-actions">
-            <button
-              id="ev-refresh"
-              type="button"
-              onclick="requestReload()"
-              class="btn btn-ghost"
-            >
-              {{t "events.refresh"}}
-            </button>
-          </div>
-        </div>
-
-        <!-- 筛选工具栏。
-             每个 label + 控件包一层 .field：窄屏时控件跟着标签换行，
-             不会出现「标签在第一行、控件跑到第二行末尾」的错位。
-             控件的 id / onchange / onkeydown 全是不变量（e2e 与页内 JS 都读它们）。 -->
-        <div class="card card-pad" role="search" aria-label="{{t "ui.events.filters"}}">
-          <div class="flex flex-wrap items-end gap-3">
-            <div class="field">
-              <label class="field-label" for="ev-kind">{{t "events.filter.kind"}}</label>
-              <select id="ev-kind" class="select w-48" onchange="requestReload()">
-                <option value="">{{t "events.filter.all_kinds"}}</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="ev-source">{{t "events.filter.source"}}</label>
-              <select id="ev-source" class="select w-48" onchange="requestReload()">
-                <option value="">{{t "events.filter.all_sources"}}</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="ev-node">{{t "events.filter.node"}}</label>
-              <select id="ev-node" class="select w-48" onchange="requestReload()">
-                <option value="">{{t "events.filter.all_nodes"}}</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="field-label" for="ev-trace">{{t "events.filter.trace"}}</label>
-              <input
-                id="ev-trace"
-                class="input mono w-48"
-                placeholder="trace_..."
-                onkeydown="if(event.key==='Enter')requestReload()"
-              />
-            </div>
-
-            <button onclick="requestReload()" class="btn btn-primary btn-sm">
-              {{t "events.filter.apply"}}
-            </button>
-            <span id="ev-summary" class="ml-auto card-sub"></span>
-          </div>
-          <div class="card-sub mt-1">{{t "ui.events.toolbar_hint"}}</div>
-          <!-- 生效中的过滤条件（来自 URL 参数时尤其需要提示，否则用户不知道
-               自己为什么只看到一部分事件）。
-               #ev-active 的 hidden/flex 切换由 renderActiveFilters() 负责，别动类名顺序。 -->
-          <div id="ev-active" class="mt-2 hidden flex-wrap items-center gap-2"></div>
-        </div>
-
-        <!-- 事件列表。首屏是 5 张等高骨架卡（行数 = 首屏常见行数），
-             与内容态的 80px 高卡片同高；数据/错误/空态在 renderList() 的
-             同一个同步块里整块 replaceChildren 掉骨架，并把 aria-busy 拿掉。 -->
-        <section>
-          <h3 class="card-title mb-3">{{t "events.recent"}}</h3>
-          <div id="ev-list" class="anim-stagger flex flex-col gap-2" aria-busy="true">
-            <div class="ev-skel" aria-hidden="true">
-              <div class="ev-sk-row">
-                <div class="skeleton ev-sk-chip"></div>
-                <div class="skeleton ev-sk-line"></div>
-              </div>
-              <div class="skeleton ev-sk-id"></div>
-            </div>
-            <div class="ev-skel" aria-hidden="true">
-              <div class="ev-sk-row">
-                <div class="skeleton ev-sk-chip"></div>
-                <div class="skeleton ev-sk-line"></div>
-              </div>
-              <div class="skeleton ev-sk-id"></div>
-            </div>
-            <div class="ev-skel" aria-hidden="true">
-              <div class="ev-sk-row">
-                <div class="skeleton ev-sk-chip"></div>
-                <div class="skeleton ev-sk-line"></div>
-              </div>
-              <div class="skeleton ev-sk-id"></div>
-            </div>
-            <div class="ev-skel" aria-hidden="true">
-              <div class="ev-sk-row">
-                <div class="skeleton ev-sk-chip"></div>
-                <div class="skeleton ev-sk-line"></div>
-              </div>
-              <div class="skeleton ev-sk-id"></div>
-            </div>
-            <div class="ev-skel" aria-hidden="true">
-              <div class="ev-sk-row">
-                <div class="skeleton ev-sk-chip"></div>
-                <div class="skeleton ev-sk-line"></div>
-              </div>
-              <div class="skeleton ev-sk-id"></div>
-            </div>
-          </div>
-          <!-- 分页导航：按钮由 renderNav() 按状态生成。
-               放在 #ev-list **之外**——列表容器会被 replaceChildren() 整体重建，
-               而且 e2e 用 #ev-list .card 数事件条数，导航混进去会被算成事件。 -->
-          <div id="ev-nav" class="mt-3 flex flex-wrap items-center gap-2"></div>
-        </section>
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h2 class="page-title font-display">{{t "events.title"}}</h2>
+        <p class="page-sub">{{t "events.v4.dedup"}}</p>
       </div>
-      <div id="toast" class="toast"></div>
+      <button id="ev-refresh" class="btn btn-ghost" type="button">{{t "events.v4.refresh"}}</button>
+    </div>
+    <form id="ev-filters" class="card card-pad flex flex-wrap items-end gap-4">
+      <label class="field-label">{{t "events.v4.namespace"}}
+        <select id="ev-namespace" class="input"></select>
+      </label>
+      <label class="field-label">{{t "events.v4.source"}}
+        <input id="ev-source" class="input" autocomplete="off" />
+      </label>
+      <label class="field-label">Trace UID
+        <input id="ev-trace" class="input" autocomplete="off" />
+      </label>
+      <label class="field-label">{{t "events.v4.limit"}}
+        <select id="ev-limit" class="input">
+          <option value="2">2</option>
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+      <button id="ev-filter" class="btn btn-primary" type="submit">{{t "events.v4.filter"}}</button>
+    </form>
+    <div id="ev-error" role="status"></div>
+    <div id="ev-list" class="grid gap-4" aria-live="polite" aria-busy="true">
+      <div class="empty">{{t "events.v4.loading"}}</div>
+    </div>
+    <div class="flex items-center justify-between gap-4">
+      <span id="ev-count" class="card-sub"></span>
+      <button id="ev-more" class="btn btn-ghost" type="button" disabled>{{t "events.v4.more"}}</button>
+    </div>
+  </div>
 </div>
 {{end}}
-
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
+<script>
+  (function () {
+    "use strict";
+    const A = window.Anotify;
+    const { el, api, ready, readScope, saveScope, model, t, loadErrorNode } = A;
+    const query = new URLSearchParams(location.search);
+    if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
+    A.mountLayout({ active: "events", title: t("events.title") });
+    const node = id => document.getElementById(id);
+    const list = node("ev-list");
+    let rows = new Map();
+    let continuation = "";
+    let generation = 0;
+    let filters = { source: "", traceId: "", limit: "20" };
+    let busy = false;
 
-      const API = "/v1"; // 各页面各自声明（与 keys.html 一致，无全局常量）
+    function requestPath(token) {
+      const params = new URLSearchParams({ namespace: readScope().namespace, limit: filters.limit });
+      if (filters.source) params.set("source", filters.source);
+      if (filters.traceId) params.set("traceId", filters.traceId);
+      if (token) params.set("continue", token);
+      return "/v1/console/events?" + params;
+    }
 
-      // 挂载「侧栏 + 顶栏」布局。
-      //
-      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
-      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
-      // item.id 对齐（"events"），侧栏才会高亮当前项。
-      Anotify.mountLayout({
-        active: "events",
-        title: t("events.title", "事件流"),
-        subtitle: t("events.subtitle", "外部世界的变化 → 任务链 → 结果"),
-      });
-      let EVENTS = [];
+    function field(label, value) {
+      return el("div", {}, el("dt", { class: "card-sub", text: label }),
+        el("dd", { class: "mono b2-wrap", text: value == null ? "—" : String(value) }));
+    }
 
-      // ==================== 分页状态 ====================
-      //
-      // 服务端一次只回一页，而本页历史上一律只请求首页 → 1000 条事件里
-      // 最多 100 条可达（#235）。现在按游标翻页，四份状态必须分清：
-      //   PAGE_SIZE  —— 页大小，必须显式当 limit 发给服务端
-      //   pageCursor —— 本页锚点（= URL 里的 ?before=），请求用它
-      //   nextCursor —— 服务端回的「更旧」游标（"" ⇔ 没有更旧的行）
-      //   cursorStack—— 本会话内的回退栈，「← 较新」弹它（刷新后必然为空）
-      const PAGE_SIZE = 100;
-      let pageCursor = "";
-      let nextCursor = "";
-      let cursorStack = [];
+    function eventRow(resource) {
+      const event = model.event(resource);
+      const card = el("article", { class: "card card-pad grid gap-4", "data-uid": event.uid });
+      const head = el("div", { class: "flex flex-wrap items-center gap-2" },
+        el("code", { class: "mono", text: event.eventType || "—" }),
+        el("span", { class: event.type === "Warning" ? "badge badge-warn" : "badge badge-neutral", text: event.type }),
+        el("span", { class: "card-sub", text: event.reason }));
+      if (event.traceUID) head.append(el("a", { class: "btn btn-ghost btn-sm",
+        href: "trace.html?namespace=" + encodeURIComponent(event.namespace) + "&traceUID=" + encodeURIComponent(event.traceUID),
+        text: t("events.v4.trace") }));
+      const facts = el("dl", { class: "grid b2-facts gap-4" },
+        field(t("events.v4.event_uid"), event.uid), field("deliveryId", event.deliveryId),
+        field("Trace UID", event.traceUID), field(t("events.v4.source"), event.involvedObject?.name),
+        field(t("events.v4.received"), event.creationTimestamp), field(t("events.v4.dispatched"), event.dispatched.length));
+      const details = el("details", {}, el("summary", { class: "card-sub", text: t("events.v4.details") }));
+      const dispatched = el("div", { class: "grid gap-2" });
+      event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono b2-wrap", text: JSON.stringify(task) })));
+      details.append(dispatched, el("pre", {
+        class: "code-body overflow-x-auto",
+      }, el("span", {
+        "data-raw-content": "",
+        text: JSON.stringify({ pruned: event.pruned, signature: event.signature, payload: event.payload }, null, 2),
+      })));
+      card.append(head, facts, details);
+      return card;
+    }
 
-      // loading 是**请求中的闸门**（in-flight 守卫）。
-      //
-      // 为什么需要：上面四份状态是页级共享的，而 loadAll() 被刷新、筛选、
-      // 三个翻页按钮、清筛选多处调用。没有闸门时快速双击「更旧 →」会这样：
-      //   ① 两次点击读到同一对 (pageCursor, nextCursor)
-      //   ② 各自 push(pageCursor) → **同一个游标被压栈两次**
-      //   ③ 之后第一次点「← 较新」只是原地重载同一页（看起来“点了没反应”）
-      // 栈是会话内回退的**唯一**来源，压重了就凭空多出一层假历史。
-      let loading = false;
+    function render() {
+      const ordered = [...rows.values()].sort((a, b) => String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)));
+      list.replaceChildren(...ordered.map(eventRow));
+      if (!ordered.length) list.append(el("div", { class: "empty", text: t("events.v4.empty") }));
+      node("ev-count").textContent = t("events.v4.count").replace("{n}", ordered.length);
+      node("ev-more").disabled = busy || !continuation;
+    }
 
-      // pendingReload 是「被闸门拦下的**筛选 / 刷新**意图」，等这一轮落地后补一次。
-      //
-      // 为什么要区分来源：闸门挡下的两类操作性质完全不同，不能一把吞掉。
-      //   ① 翻页三入口（goOlder/goNewer/goLatest）与「清除筛选」改的是**共享游标状态**
-      //      （pageCursor / cursorStack）。它们各自先查闸门、被拦就整下丢弃 ——
-      //      补发会把一个已经过期的游标压进栈，凭空多一层假历史。
-      //   ② 筛选 / 刷新只读 DOM 控件值，请求在飞时被吞掉会留下
-      //      「控件值变了、列表还是旧筛选结果」的撕裂状态（用户以为筛选坏了）。
-      //      所以这一类改走 requestReload：被拦时记下「落地后再来一次」，
-      //      由 loadAll 的 finally 补发 —— 补发读的是**那一刻**的控件值，正是用户想要的。
-      let pendingReload = false;
-
-      // requestReload 是「筛选 / 刷新」类入口的统一入口：下拉 onchange、
-      // Trace 输入框回车、「筛选」按钮、「刷新」按钮。
-      // 翻页入口**不走这里**（它们要的是丢弃，见上）。
-      function requestReload() {
-        if (loading) {
-          pendingReload = true;
-          return;
+    async function load(mode = "refresh") {
+      const current = generation;
+      const namespace = readScope().namespace;
+      busy = true;
+      list.setAttribute("aria-busy", "true");
+      node("ev-refresh").disabled = true;
+      node("ev-more").disabled = true;
+      node("ev-error").replaceChildren();
+      try {
+        await ready();
+        const doc = await api(requestPath(mode === "more" ? continuation : ""));
+        if (current !== generation || namespace !== readScope().namespace) return;
+        // `metadata.continue` 是**可选**的（api/events.yaml：只在还有更旧一页时出现，
+        // 末页直接省略）。缺省 = 没有下一页，不是畸形响应。
+        if (doc.kind !== "EventList" || !Array.isArray(doc.items) || !doc.metadata) throw new Error("malformed EventList");
+        if (doc.metadata.continue != null && typeof doc.metadata.continue !== "string") throw new Error("malformed EventList continue");
+        for (const event of doc.items) {
+          if (!event.metadata?.uid || event.metadata.namespace !== namespace) throw new Error("invalid Event identity/scope");
+          rows.set(event.metadata.uid, event);
         }
-        loadAll();
-      }
-
-      let loadFailed = false; // 最近一次载入是否失败（失败就渲染错误态，不伪造数据）
-      let loadErrorStatus = 0; // 失败时的 HTTP 状态（0 = 网络不可达）
-
-      function toast(msg) {
-        const el = document.getElementById("toast");
-        el.textContent = msg;
-        el.classList.add("show");
-        clearTimeout(el._timer);
-        el._timer = setTimeout(() => el.classList.remove("show"), 2400);
-      }
-
-      function fmtTime(ts) {
-        if (!ts) return "—";
-        const d = new Date(ts * 1000);
-        if (isNaN(d.getTime())) return String(ts);
-        const diff = Date.now() - d.getTime();
-        if (diff < 60e3) return t("common.time.just_now", "刚刚");
-        if (diff < 3600e3)
-          return t("common.time.minutes_ago", "{n} 分钟前").replace("{n}", Math.floor(diff / 60e3));
-        if (diff < 86400e3)
-          return t("common.time.hours_ago", "{n} 小时前").replace("{n}", Math.floor(diff / 3600e3));
-        return d.toISOString().slice(0, 16).replace("T", " ");
-      }
-
-      // fetchApi：全部走 Anotify.api —— 它内置了 401 → 跳登录的守卫。
-      // 直接裸 fetch 会绕过守卫：401 时页面只是空白，用户不知道自己被登出了。
-      // 失败就返回 null，由调用方渲染「载入失败 + 重试」——**不伪造数据**（#273）。
-      // 演示数据只在 make mock 那条路（/mock.js 在 fetch 层应答）。
-      async function fetchApi(path) {
-        try {
-          return await Anotify.api(path);
-        } catch (e) {
-          return null;
+        if (mode !== "refresh" || !continuation) continuation = doc.metadata.continue || "";
+        render();
+      } catch (error) {
+        if (current === generation) {
+          node("ev-error").replaceChildren(loadErrorNode(error, () => load(mode)));
+          if (!rows.size) list.replaceChildren();
         }
-      }
-
-      // fetchApiResult：同 fetchApi，但把 HTTP 状态码一起带回来。
-      //
-      // 为什么需要：游标失效时服务端回 400（契约 §3.3「不静默降级」），
-      // 页面要提示并回到最新；而网络错误 / 后端未连接则渲染错误态。
-      // fetchApi 把两者都吞成 null 就分不出来了（Anotify.api 抛的 err 上带 status）。
-      async function fetchApiResult(path) {
-        try {
-          return { data: await Anotify.api(path), status: 200 };
-        } catch (e) {
-          return { data: null, status: (e && e.status) || 0 };
+      } finally {
+        if (current === generation) {
+          busy = false;
+          list.removeAttribute("aria-busy");
+          node("ev-refresh").disabled = false;
+          node("ev-more").disabled = !continuation;
         }
       }
+    }
 
-      // ==================== DOM 构建工具 ====================
-      //
-      // 全程用 createElement + textContent，**不用 innerHTML**。
-      //
-      // 为什么：本页的数据全部来自服务端（source/type/traceId/capability/summary…），
-      // 而 payload 是外部 webhook 的原始 JSON，可能含任意字符串。
-      // esc()+innerHTML 只要漏一处就是 XSS；createElement 结构上不可能注入，
-      // 因为 textContent 永远只当文本，不会被解析成标签。
-      function el(tag, className, text) {
-        const n = document.createElement(tag);
-        if (className) n.className = className;
-        if (text != null) n.textContent = String(text);
-        return n;
-      }
-
-      // 第一个 code 元素必须是**源名**（e2e 用 `#ev-list .card code` 取它验 ?source= 过滤），
-      // mono 由 code() 统一加，className 只传额外样式。
-      function code(text, className) {
-        const n = el("code", "mono " + (className || ""));
-        n.textContent = String(text == null ? "" : text);
-        return n;
-      }
-
-      // init 先拉源和节点（用于筛选下拉和分组），再拉事件。
-      //
-      // 顺序有依赖：分组要知道"哪些 source 是已知的源"，
-      // 否则所有事件都会落到「未归类」。
-      async function init() {
-        const f = readUrlFilters();
-
-        // URL 带 ?before= 时**直接**按该游标加载：刷新 / 分享必须落在同一窗口。
-        // 不能先加载首页再跳过去 —— 那会多打一次请求，还会闪一下最新的事件。
-        pageCursor = f.before;
-
-        const [srcData, nodeData] = await Promise.all([
-          fetchApi(API + "/sources").catch(() => null),
-          fetchApi(API + "/nodes").catch(() => null),
-        ]);
-        SOURCES = (srcData && srcData.sources) || [];
-        NODES = (nodeData && nodeData.nodes) || [];
-
-        fillSelects();
-        if (f.source) document.getElementById("ev-source").value = f.source;
-        if (f.node) document.getElementById("ev-node").value = f.node;
-        if (f.trace) document.getElementById("ev-trace").value = f.trace;
-        // URL 里指定的源可能已不存在（被删了），此时 select.value 设不上，
-        // 会回落成"全部源"——不报错，但记住这一点免得以后困惑。
-
-        await loadAll();
-      }
-
-      // ==================== 渲染 ====================
-
-      // ==================== 源 / 节点 筛选 ====================
-      //
-      // 事件本身只有 `source`（字符串）和 `traceId`，**没有** sourceId / nodeId：
-      //
-      //   event ──派发──▶ task ──分配给──▶ node
-      //
-      // 所以按源筛选 = 用源的名字匹配 event.source
-      //   （Trigger.Fire 写的是源名，见 internal/source/source.go:99；
-      //     源名在 org 内 UNIQUE，够用）
-      // 按节点筛选 = 先查该节点的任务拿 traceId 集合，再用集合过滤事件。
-      //   后端已支持 /v1/tasks?nodeId=（console_handlers.go:96）。
-
-      let SOURCES = [];
-      let NODES = [];
-      let nodeTraceIds = null; // null = 未按节点筛选；Set = 该节点相关的 trace
-
-      // readUrlFilters 从 URL 读初始筛选条件。
-      //
-      // 从「源」页 / 「节点」页跳过来时带 ?source= / ?node=，
-      // 用 URL 承载的好处是可分享、刷新不丢。
-      function readUrlFilters() {
-        const q = new URLSearchParams(location.search);
-        return {
-          source: q.get("source") || "",
-          node: q.get("node") || "",
-          trace: q.get("traceId") || "",
-          // before = 当前窗口的锚点。首页不带它（刷新 / 分享靠它落回同一页）。
-          before: q.get("before") || "",
-        };
-      }
-
-      // fillSelects 填两个下拉：源（按名字）和节点（按名字）
-      // kindLabel 把 kind 翻成用户能读的标签。
-      // 类型名本身（cron/webhook/manual）是协议的词汇，展示时给个中文，
-      // 但在筛选值里仍然用原名（URL 可读、和 API 一致）。
-      function kindLabel(k) {
-        const map = {
-          cron: t("sources.kind.cron", "定时器"),
-          webhook: t("sources.kind.webhook", "Webhook"),
-          manual: t("sources.kind.manual", "手动"),
-        };
-        return map[k] || k;
-      }
-
-      // sourceKind 取某个源名对应的类型（cron / webhook / manual）。
-      //
-      // 事件行自己不存 kind —— 它只记 source 名字。kind 属于源的定义，
-      // 所以要回查 SOURCES。源被删掉后事件还在（事件是事实），
-      // 这时回查不到，返回空串（归到"未归类"）。
-      function sourceKind(name) {
-        const s = SOURCES.find((x) => x.name === name);
-        return (s && s.kind) || "";
-      }
-
-      function fillSelects() {
-        const kindSel = document.getElementById("ev-kind");
-        const srcSel = document.getElementById("ev-source");
-
-        // 源类型下拉：只列实际存在的类型，不写死三种
-        const curKind = kindSel.value;
-        kindSel.replaceChildren(new Option(t("events.filter.all_kinds", "全部类型"), ""));
-        const kinds = [...new Set(SOURCES.map((x) => x.kind).filter(Boolean))].sort();
-        for (const k of kinds) {
-          kindSel.appendChild(new Option(kindLabel(k), k));
-        }
-        if (curKind) kindSel.value = curKind;
-
-        const nodeSel = document.getElementById("ev-node");
-
-        const curSrc = srcSel.value;
-        srcSel.replaceChildren(new Option(t("events.filter.all_sources", "全部源"), ""));
-        // 选了源类型时，"源"下拉只列该类型下的源 ——
-        // 否则用户可以选出"类型=cron + 源=GitHub PR"这种必然为空的组合。
-        const kindNow = kindSel.value;
-        const srcPool = kindNow ? SOURCES.filter((x) => x.kind === kindNow) : SOURCES;
-        for (const s of srcPool) {
-          srcSel.appendChild(new Option(s.name, s.name));
-        }
-        if (curSrc && srcPool.some((x) => x.name === curSrc)) srcSel.value = curSrc;
-
-        const curNode = nodeSel.value;
-        nodeSel.replaceChildren(new Option(t("events.filter.all_nodes", "全部节点"), ""));
-        for (const n of NODES) {
-          nodeSel.appendChild(new Option(n.name, n.id));
-        }
-        if (curNode) nodeSel.value = curNode;
-      }
-
-      // renderActiveFilters 显示当前生效的过滤条件 + 一键清除。
-      //
-      // 为什么需要：从别处带参数跳进来时，用户看到"只有 3 条事件"会以为
-      // 数据丢了。把过滤条件显式摆出来，并提供清除按钮。
-      function renderActiveFilters() {
-        const box = document.getElementById("ev-active");
-        const src = document.getElementById("ev-source").value;
-        const nodeSel = document.getElementById("ev-node");
-        const nodeId = nodeSel.value;
-        const trace = document.getElementById("ev-trace").value.trim();
-
-        const chips = [];
-        if (src) chips.push([t("events.filter.source", "源") + ": " + src, "source"]);
-        if (nodeId) {
-          const n = NODES.find((x) => x.id === nodeId);
-          chips.push([t("events.filter.node", "节点") + ": " + (n ? n.name : nodeId), "node"]);
-        }
-        if (trace) chips.push(["trace: " + trace, "trace"]);
-
-        box.replaceChildren();
-        if (!chips.length) {
-          box.classList.add("hidden");
-          box.classList.remove("flex");
-          return;
-        }
-        box.classList.remove("hidden");
-        box.classList.add("flex");
-        box.appendChild(el("span", "card-sub", t("events.filter.active", "生效中") + ":"));
-
-        for (const [label] of chips) {
-          box.appendChild(el("span", "tag-chip", label));
-        }
-        const clear = el(
-          "button",
-          "btn btn-ghost btn-sm",
-          t("events.filter.clear", "清除筛选"),
-        );
-        clear.addEventListener("click", () => {
-          // 同样要查闸门：下面几行会先改 pageCursor/cursorStack 再调 loadAll()，
-          // 若请求在飞就会被吞掉 —— 结果是“窗口没重载、锚点却已清空”，
-          // 下一次点「更旧」会从首页锚点跳着翻，跳过一整页。宁可整下忽略。
-          // 所以这里**刻意不走** requestReload：筛选可以补一次，游标操作不行
-          // （补发时游标已被清掉，等于替用户选了一个他没要的窗口）。
-          if (loading) return;
-          document.getElementById("ev-source").value = "";
-          nodeSel.value = "";
-          document.getElementById("ev-trace").value = "";
-          nodeTraceIds = null;
-          // 清掉 URL 参数，否则刷新又回来了。before 也要一起清：
-          // 筛选全清了就该回到最新一页，否则会停在一个不再有筛选语义的旧窗口上。
-          pageCursor = "";
-          cursorStack = [];
-          history.replaceState(null, "", location.pathname);
-          // 只刷新事件列表：源/节点列表没变，没必要重拉
-          loadAll();
-        });
-        box.appendChild(clear);
-      }
-
-      // ensureNodeTraces 按节点查任务，拿到该节点处理过的 trace 集合。
-      //
-      // 一次点击要打两个请求（tasks 再 events），所以结果缓存到 nodeTraceIds，
-      // 同一个节点连续操作不重复拉。
-      async function ensureNodeTraces(nodeId) {
-        if (!nodeId) {
-          nodeTraceIds = null;
-          return;
-        }
-        const data = await fetchApi(
-          API + "/tasks?nodeId=" + encodeURIComponent(nodeId) + "&limit=200",
-        );
-        const tasks = (data && data.tasks) || [];
-        nodeTraceIds = new Set(tasks.map((x) => x.traceId).filter(Boolean));
-      }
-
-      // ==================== 分页导航 ====================
-      //
-      // 请求形态（契约 §3.4）：
-      //   GET /v1/console/events?limit=100[&before=<opaque>][&traceId=<...>]
-      // 游标虽然是不透明的 base64url（不含 + / =），拼 URL 前仍然 encodeURIComponent。
-
-      // writeUrlBefore 把本页锚点写回 URL。
-      //
-      // 用 replaceState 而不是 pushState：翻页不应该产生浏览器历史 ——
-      // 否则后退键会被页码吃掉，用户得按十几次才退得出去。
-      // 只动 before 一个参数：source / node / traceId / group 语义必须保持不变。
-      function writeUrlBefore(cursor) {
-        const q = new URLSearchParams(location.search);
-        if (cursor) q.set("before", cursor);
-        else q.delete("before");
-        const qs = q.toString();
-        history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
-      }
-
-      // 三个翻页入口都要自己查一次闸门：它们改的是**共享分页状态**，
-      // 而改动发生在 loadAll() 之前。只守 loadAll() 的话，双击时
-      // push/pop 还是会各跑两遍（正是上面注释里说的“同一游标压栈两次”）。
-      // 被拦时它们是**整下丢弃**（不置 pendingReload）：补发会拿过期游标压栈。
-      // 而「刷新」按钮和筛选下拉走 requestReload()，被拦时置 pendingReload、落地后补一次。
-
-      // 「更旧 →」：把当前锚点压栈（首页压空串，代表“回首页”），再以
-      // nextCursor 为新锚点写 URL 并加载。nextCursor == "" 时按钮本来就不渲染。
-      function goOlder() {
-        if (loading) return;
-        if (!nextCursor) return;
-        cursorStack.push(pageCursor);
-        pageCursor = nextCursor;
-        writeUrlBefore(pageCursor);
-        loadAll();
-      }
-
-      // 「← 较新」：弹栈回退。栈空时按钮不渲染，这里再兜一层防意外调用。
-      // 刷新后栈必然为空 → 按钮隐藏，不报错（契约 §3.4）。
-      function goNewer() {
-        if (loading) return;
-        if (!cursorStack.length) return;
-        pageCursor = cursorStack.pop();
-        writeUrlBefore(pageCursor);
-        loadAll();
-      }
-
-      // 「回到最新」：清掉 before 回首页，同时清空回退栈
-      //（栈里全是“更旧”方向的锚点，留着会让「← 较新」指向不存在的历史）。
-      function goLatest() {
-        if (loading) return;
-        pageCursor = "";
-        cursorStack = [];
-        writeUrlBefore("");
-        loadAll();
-      }
-
-      // renderNav 重建分页导航行：三个按钮各自按状态显隐。
-      function renderNav() {
-        const nav = document.getElementById("ev-nav");
-        nav.replaceChildren();
-        // 没有任何按钮时整块隐藏，不留一条空白的 12px 间距。
-        nav.classList.toggle("hidden", true);
-        if (loadFailed) return; // 载入失败时没有真实分页，不显示翻页按钮
-
-        const btns = [];
-        // 有回退栈才能往回走（刷新后为空 → 隐藏）
-        if (cursorStack.length) btns.push(["ev-newer", t("events.page.newer", "← 较新"), goNewer]);
-        // 服务端说还有更旧的行
-        if (nextCursor) btns.push(["ev-older", t("events.page.older", "更旧 →"), goOlder]);
-        // URL 里有 before 才有“不在最新一页”这回事
-        if (pageCursor) btns.push(["ev-latest", t("events.page.latest", "回到最新"), goLatest]);
-
-        if (!btns.length) return;
-        nav.classList.remove("hidden");
-        for (const [id, label, fn] of btns) {
-          const b = el("button", "btn btn-ghost btn-sm", label);
-          b.id = id;
-          // 请求在飞时按钮置灰。注意：真正的防线是 goOlder/goNewer/goLatest
-          // 里的闸门 —— 翻页按钮是上一轮加载时就渲染好的，此刻已经在页面上，
-          // 置灰只在这轮重绘到 finally 重绘之间那一瞬生效（外加给测试一个
-          // 可断言的信号：disabled 与 loading 同源）。
-          b.disabled = loading;
-          b.addEventListener("click", fn);
-          nav.appendChild(b);
-        }
-      }
-
-      async function loadAll() {
-        // 闸门：同一时刻只允许一个加载在飞。
-        //
-        // 挡住的是所有入口（requestReload 类的筛选 / 刷新、清筛选、三个翻页按钮）
-        // —— 它们都会改共享游标状态，并发跑就会出现“两个请求抢着写
-        // pageCursor/nextCursor，栈里多一层”。
-        // 被挡下的意图怎么处理由**入口**决定：筛选 / 刷新在 requestReload 里
-        // 置 pendingReload（由 finally 补一次），翻页 / 清筛选整下丢弃。
-        if (loading) return;
-        loading = true;
-        try {
-          // 每次加载前重填下拉：「源类型」变了以后，「源」下拉必须跟着只列
-          // 该类型下的源。只调一次 init 的话，用户切类型后源下拉还是旧的
-          // 全集，能选出「类型=cron + 源=GitHub PR」这种必然为空的组合。
-          fillSelects();
-
-          const trace = document.getElementById("ev-trace").value.trim();
-          const nodeId = document.getElementById("ev-node").value;
-          try {
-            await ensureNodeTraces(nodeId);
-          } catch (e) {
-            nodeTraceIds = null;
-          }
-          // limit 必须显式带上：不传时页大小由服务端默认值决定，页面就不可控。
-          // 抽成小函数是因为下面「游标失效」那条分支要按清空后的状态再拼一次。
-          const buildQuery = () => {
-            let qs = "?limit=" + PAGE_SIZE;
-            if (pageCursor) qs += "&before=" + encodeURIComponent(pageCursor);
-            if (trace) qs += "&traceId=" + encodeURIComponent(trace);
-            return qs;
-          };
-          // 走**控制台**端点（会话 Cookie 鉴权）。
-          // 机器入口的 GET /v1/events 要 Bearer API Key + notify:send scope，
-          // 浏览器页面拿不到也拿不对这个凭据。
-          let r = await fetchApiResult(API + "/console/events" + buildQuery());
-
-          // 游标失效（400 “invalid before cursor”）：提示 + 清掉 before 回最新，
-          // 并且**在这一轮里**直接补一次首页请求。
-          //
-          // 不能像原来那样调 goLatest()：它内部的 loadAll() 会被上面的闸门吞掉
-          // （此刻 loading 还是 true），页面就停在失效的旧窗口上，只剩一个 toast。
-          // 也不会死循环：补发的这次不带 before，服务端不可能再判游标失效。
-          if (r.status === 400 && pageCursor) {
-            toast(t("events.page.invalid_cursor", "游标已失效，已回到最新"));
-            pageCursor = "";
-            cursorStack = [];
-            writeUrlBefore("");
-            r = await fetchApiResult(API + "/console/events" + buildQuery());
-          }
-
-          if (r.data) {
-            // 一页一次：**替换** EVENTS 而不是累加 —— 累加会让每页条数失控，
-            // 也会让「本页 N 条」的语义变成“已加载 N 条”。
-            EVENTS = r.data.events || [];
-            nextCursor = r.data.nextCursor || "";
-            loadFailed = false;
-          } else {
-            // 后端未连接 / 其它 HTTP 失败：渲染错误态 + 重试，**不伪造数据**（#273）。
-            EVENTS = [];
-            nextCursor = "";
-            loadFailed = true;
-            loadErrorStatus = r.status || 0;
-          }
-          // 重绘必须发生在 loading = false **之前**（都在 try 内）：
-          // renderNav() 是按 loading 决定按钮 disabled 的，顺序反了就会
-          // 画出“永远禁用”的导航。
-          renderList();
-          renderNav();
-        } finally {
-          // 正常结束 / 提前 return / 抛异常，三条路径都必须放开闸门，
-          // 否则一次失败就把整个页面的加载永久卡死。
-          loading = false;
-
-          // 补发被闸门拦下的「筛选 / 刷新」。
-          //
-          // 单次语义：这里**只消费一次**标志（先清再补），补发的那一轮若又攒到新的
-          // 筛选意图，它的 finally 会再补一次 —— 于是「连改三次筛选」最终一定收敛到
-          // **最后一次**的控件值，而不会无限重发（没有新意图就不会再补）。
-          // 必须在 loading = false 之后调：否则补发的这一次会被自己的闸门吃掉。
-          const catchUp = pendingReload;
-          pendingReload = false;
-          if (catchUp) loadAll();
-          // 重绘放最后：补发时 loading 已经又被置真，按钮该显示为禁用态。
-          renderNav();
-        }
-      }
-
-      // renderSummary 写摘要行：本页条数 + 是否已到最旧（失败时说明失败原因）。
-      //
-      // 用「本页 N 条」而不是原来的「N 条事件」：翻页后 EVENTS 只是一页，
-      // 说“共 N 条”会误导（1000 条事件的第 3 页也只会显示 100 条）。
-      function renderSummary() {
-        const summary = document.getElementById("ev-summary");
-        if (loadFailed) {
-          // 后端不可用 ≠ 零条事件：如实说明，不画示例数据（#273）
-          summary.textContent = t(
-            "events.load_failed",
-            "载入失败：连不上服务端，请重试",
-          );
-          return;
-        }
-        let text = t("events.page.window", "本页 {n} 条").replace("{n}", EVENTS.length);
-        // nextCursor == "" ⇔ 服务端说没有更旧的行了
-        if (!nextCursor) text += " · " + t("events.page.end", "已到最旧");
-        summary.textContent = text;
-      }
-
-      // renderList 用纯 DOM 重建事件列表。
-      function renderList() {
-        const list = document.getElementById("ev-list");
-        renderSummary();
-        // 骨架与 aria-busy 在这一行之后就不存在了：下面每个分支都是整块
-        // replaceChildren（骨架一起被换掉），aria-busy 必须在这里就摘 ——
-        // 否则数据已经上屏、读屏还在说「载入中」。
+    function reset() {
+      generation++;
+      rows = new Map();
+      continuation = "";
+      filters = { source: node("ev-source").value.trim(), traceId: node("ev-trace").value.trim(), limit: node("ev-limit").value };
+      list.replaceChildren(el("div", { class: "empty", text: t("events.v4.loading") }));
+      return load("reset");
+    }
+    node("ev-filters").addEventListener("submit", event => { event.preventDefault(); reset(); });
+    node("ev-namespace").addEventListener("change", () => {
+      saveScope({ namespace: node("ev-namespace").value });
+      reset();
+    });
+    node("ev-more").addEventListener("click", () => { if (!busy) load("more"); });
+    node("ev-refresh").addEventListener("click", () => { if (!busy) load(); });
+    A.mountPullRefresh(() => load());
+    async function start() {
+      try {
+        await ready();
+        const doc = await api("/v1/namespaces");
+        if (!Array.isArray(doc.items)) throw new Error("malformed NamespaceList");
+        node("ev-namespace").replaceChildren(...doc.items.map(resource => el("option", {
+          value: resource.metadata.name, text: resource.metadata.name,
+        })));
+        node("ev-namespace").value = readScope().namespace;
+        await reset();
+      } catch (error) {
         list.removeAttribute("aria-busy");
-        if (loadFailed) {
-          list.replaceChildren(
-            window.Anotify.loadErrorNode(
-              /* F2：只传 {status} 时页面会印出「载入失败：[object Object]」。
-               * 有 status 就交给 loadErrorNode 走 HTTP 文案；没有（网络断）就
-               * 显式给 message，让文案是「连不上服务端」。 */
-              {
-                status: loadErrorStatus,
-                message: loadErrorStatus
-                  ? ""
-                  : t("common.backend_offline", "连不上服务端"),
-              },
-              () => loadAll(),
-            ),
-          );
-          return;
-        }
-
-        list.replaceChildren();
-
-        if (!EVENTS.length) {
-          const empty = el(
-            "div",
-            "card card-pad text-center card-sub",
-            loadFailed
-              ? t("events.load_failed_hint", "载入失败：连不上服务端，请重试。")
-              : t("events.empty", "还没有事件。用 POST /v1/events 提交第一个。"),
-          );
-          list.appendChild(empty);
-          return;
-        }
-
-        // 过滤：源类型 → 源 → 节点
-        const kindFilter = document.getElementById("ev-kind").value;
-        const srcFilter = document.getElementById("ev-source").value;
-
-        let visible = EVENTS;
-        if (nodeTraceIds) {
-          visible = visible.filter((e) => nodeTraceIds.has(e.traceId));
-        }
-        if (kindFilter) {
-          visible = visible.filter((e) => sourceKind(e.source) === kindFilter);
-        }
-        if (srcFilter) {
-          visible = visible.filter((e) => e.source === srcFilter);
-        }
-
-        if (!visible.length) {
-          // 已翻页窗外 + 有客户端筛选 → 提示还能继续向更旧翻页或回最新；
-          // 首页（无 before）时保持原文案不变。
-          const pagedAway = !!pageCursor;
-          const filtered = !!(nodeTraceIds || kindFilter || srcFilter);
-          list.appendChild(
-            el(
-              "div",
-              "card card-pad text-center card-sub",
-              pagedAway && filtered
-                ? t("events.page.no_match", "当前页没有匹配项，可继续向更旧翻页或回到最新")
-                : t("events.filter.empty", "当前筛选条件下没有事件。"),
-            ),
-          );
-          renderActiveFilters();
-          return;
-        }
-
-        // ===== 默认视图：按时间倒序平铺 =====
-        //
-        // 事件流的第一性问题是"刚刚发生了什么"，所以默认必须是最新的在最上面。
-        // 之前默认按源分组，代价是：一个刚触发的事件可能被压在某组第 6 条后面
-        // （展开才看得见），用户以为没收到。
-        //
-        // 分组仍然有用（"今晚定时任务跑了吗"），所以留成可选项，
-        // 通过 URL ?group=1 切过来。
-        const grouped = new URLSearchParams(location.search).get("group") === "1";
-
-        // 统一按 createdAt 倒序。**必须显式排序**：后端按 id/插入顺序返回，
-        // 和事件时间不一定同序（补录、幂等重投都会打乱）。
-        const ordered = [...visible].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-        if (!grouped) {
-          for (const e of ordered) list.appendChild(eventCard(e));
-          renderActiveFilters();
-          return;
-        }
-
-        // ===== 可选视图：按源分组 =====
-        const bySource = new Map();
-        const knownNames = new Set(SOURCES.map((x) => x.name));
-        for (const e of ordered) {
-          const key = knownNames.has(e.source) ? e.source : "__other__";
-          if (!bySource.has(key)) bySource.set(key, []);
-          bySource.get(key).push(e);
-        }
-
-        // 已知源按"最近一次触发"倒序，未归类永远排最后
-        const groups = [...bySource.keys()]
-          .filter((k) => k !== "__other__")
-          .sort((a, b) => {
-            const ta = Math.max(...bySource.get(a).map((e) => e.createdAt || 0));
-            const tb = Math.max(...bySource.get(b).map((e) => e.createdAt || 0));
-            return tb - ta;
-          });
-        if (bySource.has("__other__")) groups.push("__other__");
-
-        for (const key of groups) {
-          const evs = bySource.get(key);
-          const isOther = key === "__other__";
-          const srcObj = isOther ? null : SOURCES.find((x) => x.name === key);
-
-          const group = el("div", "ev-group");
-
-          // 组头
-          const head = el("div", "ev-group-head");
-          const title = el("div", "flex flex-wrap items-center gap-2 min-w-0");
-          title.appendChild(
-            el("span", "card-title", isOther ? t("events.group.other", "未归类") : key),
-          );
-          if (srcObj) {
-            title.appendChild(el("span", "src-badge", srcObj.kind));
-            if (srcObj.enabled === false) {
-              title.appendChild(el("span", "prune-chip", t("sources.disabled", "已停用")));
-            }
-          }
-          head.appendChild(title);
-
-          const meta = el("div", "card-sub whitespace-nowrap");
-          const latest = Math.max(...evs.map((e) => e.createdAt || 0));
-          meta.textContent =
-            t("events.group.count", "{n} 条").replace("{n}", evs.length) +
-            " · " +
-            fmtTime(latest);
-          head.appendChild(meta);
-          group.appendChild(head);
-
-          // 组内事件（默认最多 5 条，多的折叠）
-          const PAGE = 5;
-          const shown = evs.slice(0, PAGE);
-          for (const e of shown) group.appendChild(eventCard(e));
-
-          if (evs.length > PAGE) {
-            const more = el(
-              "button",
-              "btn btn-ghost btn-sm mt-1",
-              t("events.group.more", "展开其余 {n} 条").replace("{n}", evs.length - PAGE),
-            );
-            more.addEventListener("click", () => {
-              // 插在 more 按钮**之前**（也就是 group 内的末尾），
-              // 不能插到 group 后面——那会让这些卡片跑到分组外面去，
-              // 视觉上脱离所属的源。
-              for (let i = PAGE; i < evs.length; i++) {
-                group.insertBefore(eventCard(evs[i]), more);
-              }
-              more.remove();
-            });
-            group.appendChild(more);
-          }
-
-          list.appendChild(group);
-        }
-
-        renderActiveFilters();
+        node("ev-error").replaceChildren(loadErrorNode(error, start));
       }
-
-      // eventCard 渲染一条事件。
-      //
-      // 结构不变量（e2e 依赖）：
-      //   · 卡片本身必须有 `card` 类（e2e 用 `#ev-list .card` 数条数）
-      //   · 必须有一个 `div.mono.truncate`，内容是 traceId —— 它是行身份
-      //     （events_paging.mjs 的 FIRST_TRACE_SEL）
-      //   · 第一个 <code> 是源名（?source= 断言用）
-      function eventCard(e) {
-        // 整张卡就是「打开这条链路」的入口，所以它是 <a>，不是可点击的 div：
-        // 键盘 Tab / Enter 能打开、读屏有可访问名、右键能新标签打开，
-        // 而且少一层 JS 监听。href 与原来 location.href 完全一致。
-        //
-        // 原来是"在同一页下面展开链路"，问题有三个：
-        //   ① 链路很长时，展开后要滚很远，事件列表就看不到了
-        //   ② URL 不变，没法把"这条链路"发给别人
-        //   ③ 刷新就丢了
-        // 拆成独立页后 traceId 在 URL 里，可以收藏、分享、后退。
-        const card = el("a", "card card-hover cursor-pointer block p-4");
-        card.setAttribute(
-          "href",
-          "trace.html?traceId=" + encodeURIComponent(e.traceId),
-        );
-
-        const row = el("div", "ev-row");
-        const left = el("div", "min-w-0");
-
-        const head = el("div", "flex flex-wrap items-center gap-2");
-        head.appendChild(code(e.source, "tag-chip"));
-        head.appendChild(el("span", "card-sub", "→"));
-        head.appendChild(code(e.type));
-        left.appendChild(head);
-
-        left.appendChild(el("div", "mt-1 mono truncate card-sub", e.traceId));
-
-        const right = el("div", "ev-side");
-        right.appendChild(el("div", "card-sub", fmtTime(e.createdAt)));
-        // 行尾 chevron：纯装饰（整张卡是 <a>，可访问名不依赖它）
-        (() => {
-          const NS = "http://www.w3.org/2000/svg";
-          const svg = document.createElementNS(NS, "svg");
-          svg.setAttribute("class", "ev-chev");
-          svg.setAttribute("viewBox", "0 0 24 24");
-          svg.setAttribute("fill", "none");
-          svg.setAttribute("stroke", "currentColor");
-          svg.setAttribute("stroke-width", "2");
-          svg.setAttribute("stroke-linecap", "round");
-          svg.setAttribute("stroke-linejoin", "round");
-          svg.setAttribute("aria-hidden", "true");
-          const path = document.createElementNS(NS, "path");
-          path.setAttribute("d", "M9 6l6 6-6 6");
-          svg.appendChild(path);
-          right.appendChild(svg);
-        })();
-
-        row.appendChild(left);
-        row.appendChild(right);
-        card.appendChild(row);
-        return card;
-      }
-
-
-      // 不需要显式 requireAuth：fetchApi 走 Anotify.api，
-      // 未登录时它自己会把用户送到 login.html?next=events.html。
-      document.addEventListener("DOMContentLoaded", init);
-    </script>
+    }
+    start();
+  })();
+</script>
 {{end}}

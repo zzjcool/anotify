@@ -2647,31 +2647,35 @@
 		function onPointerDown(ev) {
 			followOff = true;
 			dragMoved = false;
-			if (ev.pointerType !== "mouse") return;
-			scroll.classList.add("is-dragging");
+			if (ev.pointerType !== "mouse" || ev.button !== 0) return;
 			const startX = ev.clientX;
+			const startY = ev.clientY;
 			const startLeft = scroll.scrollLeft;
 			const move = (e2) => {
+				if (e2.pointerId !== ev.pointerId) return;
 				const dx = e2.clientX - startX;
-				if (Math.abs(dx) > 3) dragMoved = true;
+				if (!dragMoved) {
+					if (Math.abs(dx) <= 3 && Math.abs(e2.clientY - startY) <= 3) return;
+					dragMoved = true;
+					scroll.classList.add("is-dragging");
+					// Capture only a real drag: capturing down retargets a native
+					// node click to scroll even when the pointer never moved.
+					try { scroll.setPointerCapture?.(ev.pointerId); } catch (err) { /* unsupported / released */ }
+				}
 				scroll.scrollLeft = startLeft - dx;
 			};
-			const up = () => {
+			const up = (e2) => {
+				if (e2.pointerId !== ev.pointerId) return;
 				scroll.classList.remove("is-dragging");
-				scroll.removeEventListener("pointermove", move);
-				scroll.removeEventListener("pointerup", up);
-				scroll.removeEventListener("pointercancel", up);
+				window.removeEventListener("pointermove", move);
+				window.removeEventListener("pointerup", up);
+				window.removeEventListener("pointercancel", up);
+				if (scroll.hasPointerCapture?.(ev.pointerId)) scroll.releasePointerCapture(ev.pointerId);
 			};
-			if (scroll.setPointerCapture) {
-				try {
-					scroll.setPointerCapture(ev.pointerId);
-				} catch (err) {
-					/* 指针已经抬起 / 不支持的实现：忽略 */
-				}
-			}
-			scroll.addEventListener("pointermove", move);
-			scroll.addEventListener("pointerup", up);
-			scroll.addEventListener("pointercancel", up);
+			// Observe release even if an uncaptured pointer leaves the graph.
+			window.addEventListener("pointermove", move);
+			window.addEventListener("pointerup", up);
+			window.addEventListener("pointercancel", up);
 			ev.preventDefault();
 		}
 		const onStopFollow = () => {

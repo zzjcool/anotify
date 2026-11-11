@@ -1,899 +1,350 @@
-{{define "title"}}{{t "srcpage.title"}}{{end}}
-
+{{define "title"}}{{t "sources.v4.detail"}}{{end}}
 {{define "style"}}
-    <style>
-      /* 源详情页：一个源的全貌。
-         URL 形如 source.html?id=src_xxx（源列表点进来）。
-
-         为什么单独一页：源的细节（触发配置、出口参数、流向图、最近事件）
-         塞在列表卡片里会让列表变得没法扫。列表只该回答"有哪些源、活着吗"，
-         细节是点进去才关心的事。
-
-         容器用 .page（1200px）而不是 .page-narrow（760px）：这页的主体是
-         下游流向图，与 trace.html 的链路图是同一个 Silk 舞台。760px 只能
-         露出两张卡片，源→首层都看不全（trace 页同一条理由，见 trace.html
-         的样式注释）。
-
-         样式纪律（UI v2）：卡片 / 按钮 / 徽章 / 弹层 / 空态 / 骨架一律用
-         ui.css 的组件类，这里只留本页独有的排版；颜色只走 tokens.css 的
-         token（亮主题下也要读得清，硬编码色值一律不写）。 */
-
-      /* 单列栅格必须显式写 minmax(0, 1fr)：默认的 auto 轨道不会缩到
-         min-content 以下（D6 的硬要求，ui.css 的 .page 目前没写；
-         这里按页兜一层，等共享规则补上可删）。 */
-      #page-main > .page {
-        grid-template-columns: minmax(0, 1fr);
-      }
-
-      /* 正文纵向堆叠：3 张卡之间的间距（.page 的 gap 只管页头与正文之间） */
-      .src-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        min-width: 0;
-      }
-
-      .src-back {
-        display: inline-block;
-        margin-bottom: 6px;
-        font-size: 12px;
-        color: var(--muted);
-        text-decoration: none;
-      }
-      .src-back:hover {
-        color: var(--accent);
-      }
-
-      .src-id {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--faint);
-        word-break: break-all;
-      }
-      /* 页内语义文字：替代 Tailwind 色板类（text-zinc-* / text-red-*） */
-      .src-meta {
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-      }
-      .src-err {
-        font-size: 12px;
-        color: var(--error);
-      }
-
-      /* 键值对：左边固定宽度标签，右边内容。
-         用 grid 而不是 flex，保证多行之间标签列对齐。
-         420 以下塌成单列（390 宽实测：7.5rem 标签列 + 长参数值会横向溢出）。 */
-      .kv {
-        display: grid;
-        grid-template-columns: 7.5rem minmax(0, 1fr);
-        gap: 8px 16px;
-        align-items: baseline;
-      }
-      .kv dt {
-        font-size: 12px;
-        color: var(--faint);
-      }
-      .kv dd {
-        margin: 0;
-        font-size: 13px;
-        color: var(--text);
-        min-width: 0;
-        word-break: break-word;
-      }
-      @media (max-width: 420px) {
-        .kv {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 2px 0;
-        }
-        .kv dd {
-          margin-bottom: 8px;
-        }
-      }
-
-      .src-section-title {
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--faint);
-        margin-bottom: 10px;
-      }
-
-      /* 出口参数表：参数可能带映射，用等宽字体看起来更像"配置"而不是散文 */
-      .param-table {
-        display: grid;
-        gap: 4px;
-        min-width: 0;
-      }
-      .param-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 6px;
-        min-width: 0;
-        font-size: 12px;
-        padding: 4px 8px;
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-      }
-      .param-key {
-        font-family: var(--font-mono);
-        color: var(--accent);
-      }
-      .param-val {
-        font-family: var(--font-mono);
-        color: var(--text);
-        word-break: break-all;
-      }
-      /* 映射态单独着色：它填的不是值，是"取值规则" */
-      .param-map-badge {
-        font-size: 10px;
-        padding: 1px 5px;
-        border-radius: var(--r-xs);
-        border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-        color: var(--accent);
-      }
-      .hook-url {
-        font-family: var(--font-mono);
-        font-size: 12px;
-        color: var(--accent);
-        word-break: break-all;
-      }
-
-      /* 页头槽位预占：骨架态与内容态同高。
-         正文（含页脚）整块下移的幅度 = 页头长高的幅度，而正文是一千多像素的大块，
-         页头长 40px 就是 0.1+ 的 CLS。三个槽位的最终高度都是确定的，先钉住。 */
-      #head-sub {
-        min-height: 18px;
-      }
-      #head-badges {
-        min-height: 22px;
-      }
-      #head-actions {
-        min-height: 30px;
-      }
-
-      /* 首屏骨架：形状对齐真实正文（配置卡 / 参数卡 / 图卡） */
-      .sk-line {
-        display: block;
-        height: 12px;
-        width: 100%;
-      }
-      .sk-line-sm {
-        display: block;
-        height: 12px;
-        width: 45%;
-      }
-      .sk-line-lg {
-        display: block;
-        height: 22px;
-        width: 32%;
-      }
-      .sk-title {
-        display: inline-block;
-        width: 180px;
-        max-width: 60vw;
-        height: 22px;
-        vertical-align: middle;
-      }
-      /* 等高骨架：最小高度 = 内容态三张卡的实际高度
-         （触发配置 217 / 出口能力 166 / 下游流向 ~420 —— 图区占了大头）。
-         流向图现在与 trace 页用同一个 Silk 舞台（39px 回放条 + 图 + 35px HUD）：
-         5 个节点的源大约 400px 高，不再是旧 dagre 那张 640px 的固定大图。 */
-      .sk-card {
-        min-height: 217px;
-      }
-      /* 修饰类写在行首：死类守卫按「行首类名」收集，复合选择器里的 is-* 会被误报 */
-      .is-targets.sk-card {
-        min-height: 166px;
-      }
-      .is-flow.sk-card {
-        min-height: 420px;
-      }
-      /* 图区骨架：图卡里用几块矩形把节点/连线的分布位置占住，别只摆一个空盒 */
-      .sk-graph {
-        display: flex;
-        flex-direction: column;
-        gap: 18px;
-        margin-top: 20px;
-      }
-      .sk-graph-row {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-      }
-      .sk-node {
-        height: 54px;
-        width: 168px;
-        border-radius: var(--r-md);
-      }
-      .sk-edge {
-        display: block;
-        height: 2px;
-        flex: 1 1 auto;
-        border-radius: var(--r-full);
-      }
-      .is-far.sk-node {
-        margin-left: auto;
-      }
-    </style>
+<style>
+#page-main > .page{grid-template-columns:minmax(0,1fr)}
+.source-wrap{overflow-wrap:anywhere;min-width:0}
+.source-status{font-size:12px;color:var(--muted)}
+.source-target{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+.source-form{display:grid;gap:16px}
+.source-params{width:100%;min-height:80px}
+.source-json{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:var(--text)}
+.source-error{color:var(--error)}
+.source-hints{display:flex;flex-wrap:wrap;gap:6px}
+.source-actions{display:flex;flex-wrap:wrap;gap:8px}
+.source-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.source-facts dt{color:var(--muted);font-size:12px}
+.source-facts dd{margin:4px 0;overflow-wrap:anywhere}
+#src-list .list-row{flex-wrap:wrap}
+#src-list .list-main{flex:1 1 220px;min-width:0}
+#src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
+#fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
+.source-graph{min-height:320px;width:100%;min-width:0}
+.source-loading{padding:24px;color:var(--muted)}
+</style>
 {{end}}
-
 {{define "content"}}
 <div id="page-main">
-  <div class="page">
-    <!-- 页头：名字（JS 填）+ 状态徽章 + 操作。页面内容里不出现 h1（顶栏那个才是 h1）。 -->
-    <div class="page-head">
-      <div class="min-w-0">
-        <a href="sources.html" class="src-back">← {{t "srcpage.back"}}</a>
-        <h2 id="head-name" class="page-title">
-          <span class="skeleton sk-title" aria-label="{{t "srcpage.loading"}}"></span>
-        </h2>
-        <p id="head-sub" class="page-sub src-id"></p>
-        <div id="head-badges" class="mt-2 flex flex-wrap items-center gap-2"></div>
-      </div>
-      <div id="head-actions" class="page-actions"></div>
-    </div>
-
-    <!-- 主体：三张卡由 JS 填充。首屏是骨架而不是一张"加载中"的空卡。 -->
-    <div id="src-body" class="src-stack" aria-busy="true">
-      <div class="card card-pad sk-card" aria-hidden="true">
-        <div class="skeleton sk-line-lg"></div>
-        <div class="skeleton sk-line mt-2"></div>
-        <div class="skeleton sk-line mt-2"></div>
-        <div class="skeleton sk-line-sm mt-2"></div>
-      </div>
-      <div class="card card-pad sk-card is-targets" aria-hidden="true">
-        <div class="skeleton sk-line-lg"></div>
-        <div class="skeleton sk-line mt-2"></div>
-        <div class="skeleton sk-line-sm mt-2"></div>
-      </div>
-      <div class="card card-pad sk-card is-flow" aria-hidden="true">
-        <div class="skeleton sk-line-lg"></div>
-        <!-- 图区：三排「节点块 + 连线」的骨架。空盒看不出这里将出现一张拓扑图，
-             图块形状能，而且它和数据到齐后的高度差不多（图区 = 卡高的大头）。 -->
-        <div class="sk-graph">
-          <div class="sk-graph-row">
-            <div class="skeleton sk-node"></div>
-            <div class="skeleton sk-edge"></div>
-            <div class="skeleton sk-node is-far"></div>
-          </div>
-          <div class="sk-graph-row">
-            <div class="skeleton sk-node"></div>
-            <div class="skeleton sk-edge"></div>
-            <div class="skeleton sk-node is-far"></div>
-          </div>
-          <div class="sk-graph-row">
-            <div class="skeleton sk-node"></div>
-            <div class="skeleton sk-edge"></div>
-            <div class="skeleton sk-node is-far"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+<div class="page">
+<div class="page-head">
+<div>
+<a id="source-back" class="btn btn-ghost" href="sources.html">
+{{t "sources.v4.back"}}
+</a>
+<h2 id="src-name" class="page-title source-wrap">
+{{t "sources.v4.detail"}}
+</h2>
+<p class="page-sub">
+{{t "sources.v4.intro"}}
+</p>
 </div>
-
-<!-- 触发弹层（#273 决策 2：可选 payload）。
-     和列表页同一个弹层、同一套校验；差别只在预填：详情页没有
-     sources.html 那份内置 GitHub 结构样例（不在本页脚本里），拿不到样本
-     就预填 {}，用户自己写 JSON。开关状态是本元素上的 `hidden` 类。 -->
-<div
-  id="fire-modal"
-  class="modal-backdrop hidden"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="fire-title"
->
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 id="fire-title">{{t "sources.fire_payload_title"}}</h3>
-      <div class="card-actions">
-        <button
-          type="button"
-          id="fire-close"
-          class="btn btn-ghost btn-icon"
-          aria-label="{{t "common.action.close"}}"
-        >
-          ✕
-        </button>
-      </div>
-    </div>
-
-    <div class="modal-body">
-      <div class="field">
-        <label class="field-label" for="fire-payload">{{t "sources.fire_payload_label"}}</label>
-        <textarea id="fire-payload" class="textarea mono" rows="10" spellcheck="false"></textarea>
-        <p class="field-hint">{{t "sources.fire_payload_hint"}}</p>
-        <p id="fire-error" class="src-err mt-2 hidden"></p>
-      </div>
-    </div>
-
-    <div class="modal-foot">
-      <button id="fire-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
-      <button id="fire-submit" class="btn btn-primary">{{t "sources.fire_submit"}}</button>
-    </div>
-  </div>
+<button id="btn-refresh" class="btn btn-ghost">
+{{t "sources.v4.reload"}}
+</button>
+</div>
+<div id="src-actions" class="source-actions">
+</div>
+<div id="action-error" aria-live="polite">
+</div>
+<div id="src-body" class="source-form">
+<div class="source-loading">
+{{t "sources.v4.loading"}}
+</div>
+</div>
+</div>
+</div>
+<div id="fire-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="fire-title">
+<div class="modal-panel">
+<div class="modal-head">
+<h3 id="fire-title">
+{{t "sources.v4.fire"}}
+</h3>
+<button id="fire-close" class="btn btn-ghost">
+{{t "sources.v4.close"}}
+</button>
+</div>
+<div class="modal-body">
+<div class="field">
+<label class="field-label" for="fire-payload">
+{{t "sources.v4.override"}}
+</label>
+<textarea id="fire-payload" class="textarea mono" rows="6">
+</textarea>
+</div>
+<p class="field-hint">
+{{t "sources.v4.omitted"}}
+</p>
+<div id="fire-result" class="source-wrap" aria-live="polite">
+</div>
+</div>
+<div class="modal-foot">
+<button id="fire-dry" class="btn btn-ghost">
+{{t "sources.v4.saved_dry"}}
+</button>
+<button id="fire-submit" class="btn btn-primary">
+{{t "sources.v4.fire"}}
+</button>
+</div>
+</div>
 </div>
 {{end}}
-
 {{define "graph-libs"}}
     <!-- 图渲染四件套：只在本页与 trace.html 加载（base.html 里这个槽位默认是空的）。
          全部 defer —— 本页的绘图调用在 load() 里 await 完 fetch 后的 requestAnimationFrame 中
          （renderFlowCard），远晚于 defer 的执行时机，所以库一定已就绪。
          顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView（e2e 有断言）。 -->
-    <script defer src="/vendor/dagre.min.js"></script>
-    <script defer src="/flograph.js"></script>
-    <script defer src="/graphs.js"></script>
-    <script defer src="/traceview.js"></script>
+    <script defer src="/vendor/dagre.min.js">
+</script>
+    <script defer src="/flograph.js">
+</script>
+    <script defer src="/graphs.js">
+</script>
+    <script defer src="/traceview.js">
+</script>
 {{end}}
 
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-
-      // 各页面各自声明，无全局常量（与 sources.html / trace.html 一致）
-      const API = "/v1";
-
-      Anotify.mountLayout({
-        active: "sources",
-        title: t("srcpage.layout_title", "源详情"),
-        subtitle: t("srcpage.layout_subtitle", "一个源的目标能力、参数和下游流向"),
-      });
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个宿主）。
-      // 页内不再自己维护 #toast 节点：那份副本位于 #page-main 里，
-      // 且 z-index / 位置各页一套。
-      const toast = (msg, kind) => Anotify.toast(msg, kind);
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = String(text);
-        return n;
-      }
-      function code(text, cls) {
-        return el("code", cls || "", text);
-      }
-
-      function fmtTime(sec) {
-        if (!sec) return "—";
-        const d = new Date(sec * 1000);
-        const p = (n) => String(n).padStart(2, "0");
-        return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-      }
-      function relTime(sec) {
-        if (!sec) return "";
-        const diff = sec - Math.floor(Date.now() / 1000);
-        const abs = Math.abs(diff);
-        const unit =
-          abs < 60
-            ? [Math.round(abs), t("srcpage.u_sec", "秒")]
-            : abs < 3600
-              ? [Math.round(abs / 60), t("srcpage.u_min", "分")]
-              : abs < 86400
-                ? [Math.round(abs / 3600), t("srcpage.u_hour", "时")]
-                : [Math.round(abs / 86400), t("srcpage.u_day", "天")];
-        return diff >= 0
-          ? t("srcpage.in", "{n}{u}后").replace("{n}", unit[0]).replace("{u}", unit[1])
-          : t("srcpage.ago", "{n}{u}前").replace("{n}", unit[0]).replace("{u}", unit[1]);
-      }
-
-      const KIND_LABEL = {
-        cron: () => t("sources.kind.cron", "定时器"),
-        github: () => t("sources.kind.github", "GitHub"),
-        webhook: () => t("sources.kind.webhook", "Webhook"),
-        manual: () => t("sources.kind.manual", "手动"),
+<script>
+const A = window.Anotify;
+const t = (key) => A.t("sources.v4." + key);
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n=document.createElement(tag);
+  n.className=cls||"";
+  if(text!=null)n.textContent=String(text);
+  return n;
+};
+const link = (page, params={
+}) => page + "?" + new URLSearchParams(Object.assign({
+  namespace:A.readScope().namespace
+},params));
+const action = (key, fn) => {
+  const b=el("button","btn btn-ghost btn-sm",t(key));
+  b.type="button";
+  b.onclick=()=>fn(b);
+  return b;
+};
+const fmt = value => value ? new Date(value).toLocaleString() : "—";
+const json = (box, optional=false) => {
+  const raw=box.value.trim();
+  if(!raw)return optional ? undefined : {
+  };
+  const value=A.parseJSON(raw,box.id);
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error(t("object_required"));
+  return value;
+};
+const initScope = async () => {
+  const ns=new URLSearchParams(location.search).get("namespace");
+  if(ns)A.saveScope({
+    namespace:ns
+  });
+  await A.ready();
+};
+const path = name => A.nsPath("sources",name);
+const request = (name, body, suffix="", method="POST") => A.api(path(name)+suffix,{
+  method,body:JSON.stringify(body)
+});
+function error(box, err){
+  box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
+}
+function facts(src){
+  const dl=el("dl","source-facts");
+  const m=A.model.source(src);
+  for(const [label,value] of [["namespace",m.namespace],["rv",m.resourceVersion],["health",m.health],["resolved",String(m.targetsResolved)],["last_fire",fmt(m.lastFiredAt)],["next_fire",fmt(m.nextFireAt)],["last_error",src.status?.lastError ? JSON.stringify(src.status.lastError) : "—"],["installed",m.installedFrom||"—"]]){
+    const pair=el("div");
+    pair.append(el("dt","",t(label)),el("dd","",value));
+    dl.append(pair);
+  }return dl;
+}
+function preview(box, res){
+  box.replaceChildren(el("h4","card-title",t("preview")));
+  if(!res.targets.length)box.append(el("p","card-sub",t("no_target")));
+  for(const row of res.targets){
+    const p=el("div","source-target");
+    p.append(el("strong","source-wrap",row.capability+(row.version ? "@"+row.version : "")+" · "+row.state),el("pre","source-json mono",JSON.stringify(row.params,null,2)));
+    if(row.reason)p.append(el("p","source-error",row.reason+": "+row.detail));
+    box.append(p);
+  }for(const row of res.pruned)box.append(el("p","source-error",[row.capability,row.reason,row.detail].filter(Boolean).join(" · ")));
+}
+function receipt(box, res){
+  box.replaceChildren(el("h4","card-title",t("receipt")));
+  const a=el("a","btn btn-ghost",res.traceId);
+  a.href=link("trace.html",{
+    traceUID:res.traceId
+  });
+  box.append(el("p","source-wrap",t("event_id")+": "+res.eventId),a,el("p","card-sub",t(res.duplicate ? "duplicate" : "accepted")),el("pre","source-json mono",JSON.stringify({
+    tasks:res.tasks,pruned:res.pruned
+  },null,2)),el("p","field-hint",t("dedup")));
+}
+let FIRING = null;
+function openFire(src){
+  FIRING=src;
+  $("fire-payload").value="";
+  $("fire-result").replaceChildren();
+  A.openModal($("fire-modal"));
+}
+for(const id of ["fire-submit","fire-dry"]){
+  $(id).onclick=async()=>{
+    const btn=$(id);
+    btn.disabled=true;
+    try{
+      const payload=json($("fire-payload"),true);
+      const body=payload===undefined ? {
+      } : {
+        payload
       };
-      // 兜底：后端加了新 kind 而这里没跟上时，别抛 TypeError 把整页搞崩
-      const kindLabel = (k) => (KIND_LABEL[k] ? KIND_LABEL[k]() : String(k || "—"));
-      // 类名来自 web/ui.css（.src-badge + .src-<kind>），不要另起一套名字
-      const KIND_CLASS = {
-        cron: "src-cron",
-        github: "src-github",
-        webhook: "src-webhook",
-        manual: "src-manual",
-      };
-
-      const srcId = new URLSearchParams(location.search).get("id");
-      let SRC = null;
-      let CAPS = [];
-      let EDGES = [];
-
-      const bodyEl = () => document.getElementById("src-body");
-      // 首屏骨架快照：重试时放回去（不能把「重试中」画成「没有数据」）
-      const BODY_SKELETON = bodyEl() ? bodyEl().innerHTML : "";
-
-      // aria-busy 与骨架同进同出（骨架撤掉就必须是 false，否则读屏会一直说「载入中」）
-      function setBusy(on) {
-        const n = bodyEl();
-        if (!n) return;
-        if (on) n.setAttribute("aria-busy", "true");
-        else n.removeAttribute("aria-busy");
+      const dry=id==="fire-dry";
+      const res=await request(FIRING.metadata.name,body,dry ? "/dry-run" : "/fire");
+      (dry?preview:receipt)($("fire-result"),res);
+      if(!dry)await load();
+    }catch(err){
+      error($("fire-result"),err);
+    }finally{
+      btn.disabled=false;
+    }
+  };
+}
+$("fire-close").onclick=()=>{
+  A.closeModal($("fire-modal"));
+  FIRING=null;
+};
+async function toggle(src,btn){
+  btn.disabled=true;
+  try{
+    await request(src.metadata.name,A.withResourceVersion({
+      apiVersion:"anotify/v1",kind:"Source",metadata:{
+        name:src.metadata.name,namespace:src.metadata.namespace
+      },spec:{
+        enabled:!src.spec.enabled
       }
-
-      function showSkeleton() {
-        const n = bodyEl();
-        if (!n) return;
-        n.innerHTML = BODY_SKELETON;
-        setBusy(true);
-      }
-
-      // ---------- 加载 ----------
-      async function load() {
-        if (!srcId) {
-          renderEmpty(t("srcpage.no_id", "地址里缺少 ?id=，无法确定是哪个源"));
-          return;
-        }
-        try {
-          const [srcData, capData, edgeData] = await Promise.all([
-            Anotify.api(API + "/sources/" + encodeURIComponent(srcId)),
-            Anotify.api(API + "/capabilities").catch(() => ({ capabilities: [] })),
-            Anotify.api(API + "/edges").catch(() => ({ edges: [] })),
-          ]);
-          SRC = (srcData && srcData.source) || null;
-          // CAPS 保留**全量**：已有目标可能引用暂未开放的能力（要拿它的 paramsSchema
-          // 渲染参数表单）。隐藏只发生在"发现/选择"的地方（能力页、源/边的选择器）。
-          CAPS = (capData && capData.capabilities) || [];
-          EDGES = (edgeData && edgeData.edges) || [];
-        } catch (e) {
-          // 失败就是失败：给出原因 + 重试按钮（原来只有一行红字，用户只能自己刷页）
-          renderLoadFailed(e);
-          return;
-        }
-        if (!SRC) {
-          renderEmpty(t("srcpage.notfound", "这个源不存在，可能已被删除"));
-          return;
-        }
-        renderHead();
-        renderBody();
-      }
-
-      // 空态 / 错误态：`.empty` + 明确的下一步（回列表），而不是一张写着字的卡片。
-      function renderEmpty(msg) {
-        setBusy(false);
-        document.getElementById("head-name").textContent = t("srcpage.title", "源详情");
-        document.getElementById("head-sub").textContent = "";
-        document.getElementById("head-badges").replaceChildren();
-        const box = el("div", "empty");
-        box.appendChild(el("div", "card-title", t("srcpage.title", "源详情")));
-        box.appendChild(el("p", "card-sub", msg));
-        const back = el("a", "btn btn-ghost btn-sm", t("srcpage.back", "返回源列表"));
-        back.href = "sources.html";
-        box.appendChild(back);
-        document.getElementById("src-body").replaceChildren(box);
-      }
-
-      // 加载失败：Anotify.loadErrorNode（它自己翻译、自己带重试）+ 一条回列表的路。
-      // 错误不能画成空态 ——「连接不上服务端」和「这个源不存在」是两种结论。
-      function renderLoadFailed(err) {
-        setBusy(false);
-        const nameEl = document.getElementById("head-name");
-        nameEl.textContent = t("srcpage.title", "源详情");
-        document.getElementById("head-sub").textContent = srcId || "";
-        document.getElementById("head-badges").replaceChildren();
-
-        const box = el("div", "card card-pad");
-        box.appendChild(Anotify.loadErrorNode(err, () => load()));
-        const back = el("a", "btn btn-ghost btn-sm mt-2", t("srcpage.back", "返回源列表"));
-        back.href = "sources.html";
-        box.appendChild(back);
-        document.getElementById("src-body").replaceChildren(box);
-      }
-
-      // ---------- 头部 ----------
-      function renderHead() {
-        document.getElementById("head-name").textContent = SRC.name;
-        document.getElementById("head-sub").textContent = SRC.id;
-        document.title = SRC.name + " · Anotify";
-
-        const badges = document.getElementById("head-badges");
-        badges.replaceChildren();
-        badges.appendChild(
-          el("span", "src-badge " + (KIND_CLASS[SRC.kind] || ""), kindLabel(SRC.kind)),
-        );
-        if (SRC.enabled) {
-          badges.appendChild(el("span", "status-badge status-on", t("sources.on", "运行中")));
-        } else {
-          badges.appendChild(el("span", "status-badge status-warn", t("sources.disabled", "已停用")));
-        }
-
-        // 操作：与列表页一致，只是搬到这里
-        const acts = document.getElementById("head-actions");
-        acts.replaceChildren();
-
-        // 「编辑」必须在这里：列表页为了少放按钮把它挪走了，但详情页
-        // 之前也没放 —— 结果源建好之后根本没有入口能改参数。
-        const editBtn = el("a", "btn btn-ghost btn-sm", t("sources.edit", "编辑"));
-        editBtn.href = "sources.html?edit=" + encodeURIComponent(SRC.id);
-        acts.appendChild(editBtn);
-
-        if (SRC.enabled) {
-          const fireBtn = el("button", "btn btn-ghost btn-sm", t("sources.fire", "立即运行"));
-          fireBtn.addEventListener("click", () => fireSource());
-          acts.appendChild(fireBtn);
-        }
-        const toggleBtn = el(
-          "button",
-          "btn btn-ghost btn-sm",
-          SRC.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
-        );
-        toggleBtn.addEventListener("click", () => toggleSource(toggleBtn));
-        acts.appendChild(toggleBtn);
-
-        const evBtn = el("button", "btn btn-ghost btn-sm", t("sources.view_events", "查看事件"));
-        evBtn.addEventListener("click", () => {
-          location.href = "events.html?source=" + encodeURIComponent(SRC.name);
-        });
-        acts.appendChild(evBtn);
-
-        const delBtn = el("button", "btn btn-danger btn-sm", t("sources.delete", "删除"));
-        delBtn.addEventListener("click", () => deleteSource(delBtn));
-        acts.appendChild(delBtn);
-      }
-
-      // ---------- 主体 ----------
-      function renderBody() {
-        setBusy(false);
-        const body = document.getElementById("src-body");
-        body.replaceChildren();
-        body.appendChild(renderConfigCard());
-        body.appendChild(renderTargetsCard());
-        body.appendChild(renderFlowCard());
-      }
-
-      function card(titleKey, titleDefault) {
-        const c = el("div", "card card-pad");
-        c.appendChild(el("div", "src-section-title", t(titleKey, titleDefault)));
-        return c;
-      }
-
-      // 触发配置：cron 的表达式/时区/自定义字段，webhook 的 URL
-      function renderConfigCard() {
-        const c = card("srcpage.config", "触发配置");
-        const dl = el("dl", "kv");
-        const cfg = SRC.config || {};
-
-        const add = (label, valueNode) => {
-          dl.appendChild(el("dt", "", label));
-          const dd = el("dd", "");
-          if (typeof valueNode === "string") dd.textContent = valueNode;
-          else dd.appendChild(valueNode);
-          dl.appendChild(dd);
-        };
-
-        if (SRC.kind === "cron") {
-          add(t("sources.form.expr", "Cron 表达式"), code(cfg.expr || "?", "param-val"));
-          add(t("srcpage.tz", "时区"), cfg.tz || "Local");
-          if (SRC.nextFireAt) {
-            add(
-              t("srcpage.next_fire", "下次触发"),
-              fmtTime(SRC.nextFireAt) + "（" + relTime(SRC.nextFireAt) + "）",
-            );
-          }
-          if (SRC.lastFiredAt) {
-            add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
-          }
-        } else if (SRC.kind === "webhook") {
-          if (SRC.hookUrl) {
-            const url = location.origin + SRC.hookUrl;
-            const wrap = el("div", "flex flex-wrap items-center gap-2");
-            wrap.appendChild(el("span", "hook-url", url));
-            const cp = el("button", "btn btn-ghost btn-sm", t("srcpage.copy", "复制"));
-            cp.addEventListener("click", async () => {
-              try {
-                await navigator.clipboard.writeText(url);
-                toast(t("srcpage.copied", "已复制"));
-              } catch (e) {
-                toast(t("srcpage.copy_failed", "复制失败"), "error");
-              }
-            });
-            wrap.appendChild(cp);
-            add(t("srcpage.hook_url", "Webhook URL"), wrap);
-          }
-          if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
-        } else {
-          add(
-            t("srcpage.manual_hint", "种类"),
-            t("sources.manual_hint", "页面上点「立即运行」时触发"),
-          );
-          if (SRC.lastFiredAt) add(t("srcpage.last_fire", "上次触发"), fmtTime(SRC.lastFiredAt));
-        }
-        add(t("srcpage.created", "创建时间"), fmtTime(SRC.createdAt));
-
-        c.appendChild(dl);
-        return c;
-      }
-
-      // 出口能力 + 各自的参数（含映射）
-      function renderTargetsCard() {
-        const c = card("srcpage.targets", "出口能力");
-        const caps = SRC.targetCaps || [];
-        if (!caps.length) {
-          c.appendChild(el("div", "src-err", t("sources.no_target", "未配置")));
-          return c;
-        }
-
-        for (const tc of caps) {
-          const box = el("div", "mb-3");
-          const head = el("div", "flex flex-wrap items-center gap-2");
-          if (tc.missing) {
-            head.appendChild(
-              el(
-                "span",
-                "target-pill missing",
-                t("sources.target_missing", "已删除") + " " + tc.id,
-              ),
-            );
-          } else {
-            head.appendChild(el("span", "target-pill", Anotify.capLabel(tc, { withRaw: false })));
-          }
-          box.appendChild(head);
-
-          // 参数：值 or 映射
-          const params = tc.params || {};
-          const keys = Object.keys(params);
-          if (!keys.length) {
-            box.appendChild(el("div", "src-meta mt-1", t("srcpage.no_params", "没有配置参数")));
-          } else {
-            const table = el("div", "param-table mt-1.5");
-            for (const k of keys) {
-              const v = params[k];
-              const row = el("div", "param-row");
-              row.appendChild(el("span", "param-key", k));
-
-              // 判断是不是引用声明：必须与 sources.html 的 isMappingDecl 一致。
-              // 两种形态：{from:"payload.path"} 或 {var:"变量名"}。
-              const isMap =
-                v &&
-                typeof v === "object" &&
-                !Array.isArray(v) &&
-                (Object.prototype.hasOwnProperty.call(v, "from") ||
-                  Object.prototype.hasOwnProperty.call(v, "var")) &&
-                !(Object.prototype.hasOwnProperty.call(v, "from") &&
-                  Object.prototype.hasOwnProperty.call(v, "var")) &&
-                Object.keys(v).every(
-                  (x) => x === "from" || x === "var" || x === "default" || x === "as",
-                );
-
-              if (isMap) {
-                row.appendChild(el("span", "param-map-badge", t("srcpage.mapped", "映射")));
-                // 变量引用比 payload 路径好读：显示 $name 而不是 {"var":"name"}
-                row.appendChild(
-                  el("span", "param-val", v.var ? "← $" + v.var : "← payload." + v.from),
-                );
-                if (Object.prototype.hasOwnProperty.call(v, "default")) {
-                  row.appendChild(
-                    el(
-                      "span",
-                      "src-meta",
-                      t("srcpage.default_is", "默认 {v}").replace(
-                        "{v}",
-                        JSON.stringify(v.default),
-                      ),
-                    ),
-                  );
-                }
-                if (v.as) {
-                  row.appendChild(el("span", "src-meta", "as " + v.as));
-                }
-              } else {
-                row.appendChild(el("span", "param-val", JSON.stringify(v)));
-              }
-              table.appendChild(row);
-            }
-            box.appendChild(table);
-          }
-          c.appendChild(box);
-        }
-        return c;
-      }
-
-      // 下游流向图：交给 graphs.js 的 **capabilityFlow**（与 trace 页同一套渲染）。
-      //
-      // **拓扑推导只有一份，在 graphs.js 的 sourceTopology**；
-      // **渲染也只有一份，在 flograph.js 的 Silk 舞台**（trace 链路图那张）。
-      // 本页只负责：取数据（SRC/CAPS/EDGES）→ 调渲染入口 → 点节点时跳能力页。
-      //
-      // 历史：曾经这里有一份 buildFlowTree（建树）+ graphs.js 的 capabilityFlow（树 → 图），
-      // 而 trace 页又有一份 buildBaseGraph —— 同一份配置两份推导，结果是同一个源
-      // 在两个页面画出不同的图（源 1:N 的那条线就是这么丢的）。后来推导合并了，
-      // 但渲染还是两套（本页旧 FlowGraph / trace 页 Silk），同一份数据在两页长得
-      // 不一样。现在两页连渲染器都一样，差别只剩「节拍从哪来」：
-      // trace 用任务时间，这里用拓扑顺序（graphs.js 的 previewBeats）。
-      function renderFlowCard() {
-        const c = card("srcpage.flow", "下游流向");
-        const topology = window.AnotifyGraphs
-          ? window.AnotifyGraphs.sourceTopology({ src: SRC, caps: CAPS, edges: EDGES })
-          : { nodes: [], edges: [] };
-        if (!topology.nodes.length) {
-          c.appendChild(
-            el("div", "src-meta", t("srcpage.flow_empty", "这个源还没有可展开的下游")),
-          );
-          return c;
-        }
-
-        const host = el("div", "flow-host");
-        c.appendChild(host);
-
-        // 展开后才建图：折叠时 offsetWidth 是 0，fit() 会算出错误的缩放
-        requestAnimationFrame(() => {
-          if (!window.AnotifyGraphs) return;
-          window.AnotifyGraphs.capabilityFlow(host, {
-            src: SRC,
-            topology,
-            t,
-            limit: 200,
-            // 工具栏画全屏按钮（和 trace 页一致）
-            showFullscreen: true,
-            // 回调收到的是**节点对象**（flograph 的形状），能力 id 在 .id 上。
-            // 早期这里把对象当 id 拼进 URL，点了会跳到 focus=[object Object]。
-            onNodeClick: (node) => {
-              if (node && node.id) {
-                location.href = "capabilities.html?focus=" + encodeURIComponent(node.id);
-              }
-            },
-          });
-          // 容器尺寸稳定后 fit 一次：host 自己就是 .flograph 容器（graphs.js 的
-          // render() 把 FlowGraph.mount 挂在它上面），所以看 host._graph。
-          requestAnimationFrame(() => {
-            if (host._graph) host._graph.fit();
-          });
-        });
-        return c;
-      }
-
-      // ---------- 操作 ----------
-      //
-      // 触发（#273 决策 2）：点「立即运行」先开弹层让用户带一份 payload。
-      // 兼容底线：空文本仍按 `{}` 发、不带 type（服务端用源名当事件类型）。
-      function fireSource() {
-        const box = document.getElementById("fire-payload");
-        const err = document.getElementById("fire-error");
-        err.textContent = "";
-        err.classList.add("hidden");
-        // 详情页没有列表页那份内置样本（GITHUB_EVENTS 不在本页脚本里），
-        // 拿不到就预填 `{}` —— 与加弹层之前的请求体一致，用户可自己改成带字段的。
-        box.value = "{}";
-        Anotify.openModal(document.getElementById("fire-modal"));
-        box.focus({ preventScroll: true });
-      }
-
-      function closeFireModal() {
-        Anotify.closeModal(document.getElementById("fire-modal"));
-      }
-
-      /** showFireError 把校验错误写回弹层（当场说清楚，不静默吞掉）。 */
-      function showFireError(msg) {
-        const err = document.getElementById("fire-error");
-        err.textContent = msg;
-        err.classList.remove("hidden");
-        const box = document.getElementById("fire-payload");
-        if (box) box.focus({ preventScroll: true });
-      }
-
-      /** readFirePayload 读弹层里的 payload：空文本 = {}，非法/非对象 = 报错返回 null。 */
-      function readFirePayload() {
-        const raw = String(document.getElementById("fire-payload").value || "").trim();
-        if (!raw) return {};
-        let parsed;
-        try {
-          parsed = JSON.parse(raw);
-        } catch (e) {
-          showFireError(
-            t("sources.fire_bad_json", "payload 不是合法 JSON：{e}").replace(
-              "{e}",
-              (e && e.message) || String(e),
-            ),
-          );
-          return null;
-        }
-        // 只收 JSON 对象：null / 数组 / 裸标量下去会被当成「没带 payload」
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          showFireError(t("sources.form.bad_payload", "事件字段必须是 JSON 对象"));
-          return null;
-        }
-        return parsed;
-      }
-
-      async function submitFire() {
-        const payload = readFirePayload();
-        if (payload === null) return; // 校验没过：一个请求也不发
-        const btn = document.getElementById("fire-submit");
-        btn.disabled = true;
-        try {
-          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id) + "/fire", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ payload: payload }),
-          });
-          const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
-          const pruned = (res && res.dispatch && res.dispatch.pruned) || [];
-          if (n > 0) {
-            toast(
-              t("sources.fired", "已触发：派发 {n} 个任务").replace("{n}", n) +
-                (pruned.length
-                  ? t("sources.fired_pruned", "，剪枝 {n}").replace("{n}", pruned.length)
-                  : ""),
-            );
-          } else if (pruned.length) {
-            // 派不出去要说清楚原因，别让用户以为"点了没反应"
-            // 去重按原值（机器串）做，再翻成人话；否则两个原因翻译成同一句会被误合并
-            const reasons = [...new Set(pruned.map((p) => p.reason))].map((r) =>
-              Anotify.pruneReason(r),
-            );
-            const detail = pruned[0] && pruned[0].detail ? "：" + pruned[0].detail : "";
-            toast(
-              t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
-                "{r}",
-                reasons.join(", ") + detail,
-              ),
-              "warn",
-            );
-          } else {
-            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"), "warn");
-          }
-          closeFireModal();
-          await load();
-        } catch (e) {
-          toast(t("sources.fire_failed", "触发失败") + ": " + (e.detail || e.message || e), "error");
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      async function toggleSource(btn) {
-        btn.disabled = true;
-        try {
-          await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id), {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled: !SRC.enabled }),
-          });
-          toast(SRC.enabled ? t("sources.disabled_ok", "已停用") : t("sources.enabled_ok", "已启用"));
-          await load();
-        } catch (e) {
-          toast(t("sources.toggle_failed", "操作失败") + ": " + (e.detail || e.message || e), "error");
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      async function deleteSource(btn) {
-        if (!confirm(t("sources.confirm_delete", "删除后不能恢复，确认删除？").replace("{n}", SRC.name))) {
-          return;
-        }
-        btn.disabled = true;
-        try {
-          await Anotify.api(API + "/sources/" + encodeURIComponent(SRC.id), {
-            method: "DELETE",
-          });
-          toast(t("sources.deleted", "已删除"));
-          location.href = "sources.html";
-        } catch (e) {
-          toast(t("sources.delete_failed", "删除失败") + ": " + (e.detail || e.message || e), "error");
-          btn.disabled = false;
-        }
-      }
-
-      // ---------- 触发弹层绑定（#273 决策 2）----------
-      const FIRE_MODAL_EL = document.getElementById("fire-modal");
-      document.getElementById("fire-close").addEventListener("click", closeFireModal);
-      document.getElementById("fire-cancel").addEventListener("click", closeFireModal);
-      document.getElementById("fire-submit").addEventListener("click", submitFire);
-      FIRE_MODAL_EL.addEventListener("click", (ev) => {
-        if (ev.target.id === "fire-modal") closeFireModal();
+    },src.metadata.resourceVersion),"","PATCH");
+    await load();
+  }catch(err){
+    showActionError(src,err);
+  }finally{
+    btn.disabled=false;
+  }
+}
+async function removeSource(src,btn){
+  if(!confirm(t("delete_confirm").replace("{name}",src.metadata.name)))return;
+  btn.disabled=true;
+  try{
+    await A.api(A.deletePath(path(src.metadata.name),src.metadata.resourceVersion),{
+      method:"DELETE"
+    });
+    await load();
+  }catch(err){
+    showActionError(src,err);
+  }finally{
+    btn.disabled=false;
+  }
+}
+function showActionError(src,err){
+  const box=$("action-error");
+  error(box,err);
+  if(A.isConflict(err)||err.reason==="resource_version_required")box.append(action("reload",async()=>{
+    await load();box.replaceChildren(el("p","field-hint",t("confirm_again")));
+  }));
+}
+let SRC=null;
+A.mountLayout({
+  active:"sources",title:t("detail")
+});
+async function load(){
+  try{
+    await initScope();
+    const name=new URLSearchParams(location.search).get("name");
+    $("source-back").href=link("sources.html");
+    if(!name){
+      $("src-body").replaceChildren(el("div","empty",t("no_name")));
+      return;
+    }// `/edges` 是**只读投影**，不是资源列表：契约（api/resource.yaml · listEdges）明说
+    // 响应是 `{items:[...]}` 文档、没有 apiVersion/kind —— 所以不能走要求 `*List`
+    // 信封的 nsList/apiList，只做 items 的数组校验。
+    const [src,caps,edgeDoc]=await Promise.all([A.nsApi("sources",name),A.nsList("capabilities"),A.api(A.nsPath("edges"))]);
+    const edges={items:A.itemsOf(edgeDoc)};
+    SRC=src;
+    render(src,caps.items,edges.items);
+    await recent(name);
+  }catch(err){
+    $("src-body").replaceChildren(A.loadErrorNode(err,load));
+  }
+}
+function section(key){
+  const c=el("section","card card-pad source-wrap");
+  c.append(el("h3","card-title",t(key)));
+  $("src-body").append(c);
+  return c;
+}
+function render(src,caps,edges){
+  const m=A.model.source(src);
+  const name=el("span",null,m.displayName ? m.displayName+" · "+m.name : m.name);
+  name.setAttribute("data-raw-content","");
+  $("src-name").replaceChildren(name);
+  $("src-body").replaceChildren();
+  $("src-actions").replaceChildren();
+  const edit=el("a","btn btn-ghost",t("edit"));
+  edit.href=link("sources.html",{
+    edit:m.name
+  });
+  $("src-actions").append(edit,action(m.enabled?"disable":"enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
+  if(m.enabled)$("src-actions").append(action("fire",()=>openFire(src)));
+  const config=section("config");
+  config.append(el("p","source-status",m.kind+" · "+t(m.enabled?"enabled":"disabled")),facts(src));
+  const safe={
+  };
+  for(const key of ["expr","tz","payload","payloadSchema","sample"])if(m.config[key]!=null)safe[key]=m.config[key];
+  config.append(el("pre","source-json mono",JSON.stringify(safe,null,2)));
+  if(m.kind==="webhook"){
+    config.append(el("code","source-wrap",m.config.hookUrl||"—"),el("p","source-status","secretSet: "+String(m.config.secretSet)),el("p","field-hint",t("hmac")),el("p","field-hint",t("dedup")));
+  }const targets=section("targets");
+  if(!m.targets.length)targets.append(el("p","card-sub",t("no_target")));
+  for(const target of m.targets){
+    const row=el("div","source-target");
+    row.append(el("strong","source-wrap",target.capability),el("pre","source-json mono",JSON.stringify(target.params,null,2)));
+    targets.append(row);
+  }const projection=section("edges");
+  // v4 的边投影是 `{from,to,kind}`：入口边 = kind==="source" 且 from 是这个源名。
+  projection.append(el("pre","source-json mono",JSON.stringify(edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge),null,2)));
+  const flow=section("graph");
+  const host=el("div","source-graph");
+  host.id="src-flow";
+  flow.append(host,el("p","field-hint",t("graph_hint")));
+  if(!window.AnotifyGraphs)host.append(el("p","source-error",t("graph_error")));
+  else AnotifyGraphs.capabilityFlow(host,{
+    src:{
+      name:m.name,kind:m.kind
+    },topology:AnotifyGraphs.sourceTopology({
+      source:src,capabilities:caps,edges
+    }),t:(k,d)=>A.t(k,d),showFullscreen:true,onNodeClick:n=>{
+      if(n.id!=="__source__" && !n.unknown)location.href=link("capabilities.html",{
+        name:n.name||n.id
       });
-      document.addEventListener("keydown", (ev) => {
-        if (ev.key !== "Escape") return;
-        if (FIRE_MODAL_EL.classList.contains("hidden")) return;
-        ev.preventDefault();
-        closeFireModal();
+    }
+  });
+  const events=section("recent");
+  const box=el("div");
+  box.id="source-events";
+  events.append(box);
+}
+async function recent(name){
+  const box=$("source-events");
+  try{
+    const events=await A.nsList("events");
+    const rows=events.items.filter(e=>e.spec.involvedObject?.name===name).sort((a,b)=>b.metadata.creationTimestamp.localeCompare(a.metadata.creationTimestamp)).slice(0,10);
+    if(!rows.length)box.append(el("p","card-sub",t("no_events")));
+    for(const event of rows){
+      const m=A.model.event(event);
+      const a=el("a","btn btn-ghost source-wrap",event.metadata.name+" · "+m.reason+" · "+fmt(event.metadata.creationTimestamp));
+      a.href=link("trace.html",{
+        traceUID:m.traceUID
       });
-      // 与列表页同理：弹层要挂在 body 上（.reveal 的 transform 会裁 position:fixed）
-      if (FIRE_MODAL_EL.parentNode !== document.body) document.body.appendChild(FIRE_MODAL_EL);
-
-      document.addEventListener("DOMContentLoaded", load);
-    </script>
+      box.append(a);
+    }
+  }catch(err){
+    box.replaceChildren(A.loadErrorNode(err,()=>recent(name)));
+  }
+}
+$("btn-refresh").onclick=load;
+load();
+</script>
 {{end}}

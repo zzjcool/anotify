@@ -814,6 +814,10 @@
 	// 锁死在 `default`。现在只认 `GET /v1/namespaces`（不带组织参数）；拿不到
 	// （未登录 / 老后端没有该端点）就保持隐藏，页面行为一点不变 —— 不需要为
 	// mock 和真后端分叉代码路径。
+	//
+	// v4 起列表是 `NamespaceList` 信封：条目读 `metadata.name`（slug，也是路径
+	// 里的 {namespace}）与 `metadata.displayName`（人读名）。`data-ns-id` 属性
+	// 保留给 e2e 定位，值就是 namespace name。
 	async function mountNamespaceSwitcher(box, slot) {
 		/* 失败路径：骨架让位（不再预留 53px）。侧栏一次性上移，用户看到的就是
 		 * 「没有切换器」—— 与今天「加载失败就不渲染」的行为一致（已知遗留）。 */
@@ -829,28 +833,39 @@
 				giveUp();
 				return;
 			}
-			/* 畸形响应兜底：200 但 namespaces 不是数组（如 {"namespaces":{}}）时，
-			 * 旧代码会在下面的 list.some 里抛未捕获异常 —— try 已经过了，giveUp() 不执行，
-			 * 骨架就会永久脉动、#scope-switcher 永远 hidden。这里当成加载失败处理。
-			 * 注意：`{}`（根本没有 namespaces 字段）仍是合法的空列表 → 走 .scope-empty
-			 * 空态，不能当成失败。 */
+			/* v4 严格：200 但 `items` 不是数组（裸数组 / {namespaces:[]} / 缺字段）
+			 * 一律当成加载失败。以前这里会静默回退，结果骨架永久脉动、
+			 * #scope-switcher 永远 hidden —— 比直接不渲染更难排查。
+			 * 空 `items:[]` 仍是合法列表 → 走 .scope-empty 空态。 */
 			const j = await r.json().catch(() => null);
-			if (j && j.namespaces !== undefined && !Array.isArray(j.namespaces)) {
+			if (!j || !Array.isArray(j.items)) {
 				giveUp();
 				return;
 			}
-			list = j && Array.isArray(j.namespaces) ? j.namespaces : [];
+			list = j.items
+				.map((it) => {
+					const meta = it && it.metadata;
+					if (!meta || typeof meta.name !== "string" || !meta.name) return null;
+					return {
+						name: meta.name,
+						displayName:
+							typeof meta.displayName === "string" && meta.displayName
+								? meta.displayName
+								: meta.name,
+					};
+				})
+				.filter(Boolean);
 		} catch (e) {
 			giveUp();
 			return;
 		}
 
 		// 存着的选择可能已经失效（换了账号、删了这个命名空间），回落到第一个
-		const nsId = list.some((n) => n.id === scope.namespaceId)
-			? scope.namespaceId
-			: (list[0] || {}).id || "";
+		const nsId = list.some((n) => n.name === scopeNamespace())
+			? scopeNamespace()
+			: (list[0] || {}).name || "";
 
-		const nsOf = () => list.find((n) => n.id === nsId) || list[0] || null;
+		const nsOf = () => list.find((n) => n.name === nsId) || list[0] || null;
 
 		/* ---- 触发器：# + 命名空间 + 箭头（没有第二个维度了） ---- */
 		const nsText = el("span", { class: "scope-ns" });
@@ -877,7 +892,7 @@
 		// 一条可选项。lead 固定是 #：侧栏只有命名空间这一个维度，
 		// 不再有组织头像那种第二种 lead。
 		const item = (ns) => {
-			const checked = ns.id === nsId;
+			const checked = ns.name === nsId;
 			const b = el(
 				"button",
 				{
@@ -885,23 +900,20 @@
 					class: "scope-item",
 					role: "menuitemradio",
 					"aria-checked": checked ? "true" : "false",
-					// e2e 靠它定位条目（比中文名稳），别删
-					"data-ns-id": ns.id,
+					// e2e 靠它定位条目（比人读名稳），别删。v4 起值 = namespace name
+					"data-ns-id": ns.name,
 				},
 				el("span", { class: "scope-hash", text: "#" }),
-				el("span", { class: "scope-item-name", text: ns.name }),
-				el("span", { class: "scope-item-sub", text: ns.slug }),
+				el("span", { class: "scope-item-name", "data-raw-content": "", text: ns.displayName }),
+				el("span", { class: "scope-item-sub", "data-raw-content": "", text: ns.name }),
 				checked ? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check") : null,
 			);
-			b.addEventListener("click", () => {
-				saveScope({ namespaceId: ns.id });
-				location.reload();
-			});
+			b.addEventListener("click", () => switchScope(ns.name));
 			return b;
 		};
 
-		// 新建：body 只发 { slug, name }。组织已经不是前端概念，多带一个组织字段
-		// 只是后端读不到的无效值（org 由 query / X-Org-Id / 主组织决定）。
+		// 新建：v4 信封 `{apiVersion,kind,metadata:{name,displayName},spec:{}}`。
+		// name 就是路径里的 {namespace}（slug 语义）；组织已经不是前端概念。
 		async function createNamespace() {
 			const slug = String(
 				window.prompt(
@@ -915,15 +927,33 @@
 					method: "POST",
 					credentials: "include",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ slug, name: slug }),
+					body: JSON.stringify({
+						apiVersion: "anotify/v1",
+						kind: "Namespace",
+						metadata: { name: slug, displayName: slug },
+						spec: {},
+					}),
 				});
-				const j = await r.json().catch(() => ({}));
+				const j = await r.json().catch(() => null);
 				if (!r.ok) {
-					window.alert(j.error || t("scope.new_ns_failed", "创建失败"));
+					// 失败原因在 Status.message（不再是 {error}）
+					window.alert(
+						(j && (j.message || j.error)) ||
+							t("scope.new_ns_failed", "创建失败"),
+					);
 					return;
 				}
-				saveScope({ namespaceId: j.namespace.id });
-				location.reload();
+				const created = j && j.metadata && j.metadata.name;
+				if (!created) {
+					// 2xx 但回包里没有 metadata.name：不是“建好了”。报错、不 reload，
+					// 否则用户会看到一个空刷新，以为成功但什么也没变。
+					window.alert(
+						(j && (j.message || j.error)) ||
+							t("scope.new_ns_failed", "创建失败"),
+					);
+					return;
+				}
+				switchScope(created);
 			} catch (e) {
 				window.alert(t("scope.new_ns_failed", "创建失败"));
 			}
@@ -958,9 +988,11 @@
 
 		const paint = () => {
 			const n = nsOf();
+			nsText.removeAttribute("data-raw-content");
 			nsText.textContent = n
-				? `${n.name} · ${n.slug}`
+				? `${n.displayName} · ${n.name}`
 				: t("scope.none", "（还没有命名空间）");
+			if (n) nsText.setAttribute("data-raw-content", "");
 
 			menu.textContent = "";
 			menu.append(
@@ -1032,12 +1064,14 @@
 		if (skel) skel.remove();
 		box.classList.remove("hidden");
 		paint();
-		// 纠正落盘的选择：存着的那条可能已不存在，写回真正生效的 id
-		// （空列表时写空串，语义 = "确实没有命名空间"，别留一个不存在的 id）。
-		saveScope({ namespaceId: nsId });
+		// 纠正落盘的选择：存着的那条可能已不存在，写回真正生效的 namespace name
+		// （空列表时写空串，语义 = "确实没有命名空间"，别留一个不存在的值）。
+		saveScope({ namespace: nsId });
 	}
 
 	function mountLayout(opts) {
+		// 侧栏、首帧与之后的读写必须看到同一个显式范围：先 adopt，再挂任何 DOM。
+		adoptUrlNamespace();
 		const o = Object.assign(
 			{
 				active: "",
@@ -1289,8 +1323,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				{ class: "flex h-full flex-col" },
 				brandRow,
 				scopeSlot,
-				adminNav,
 				nav,
+				adminNav,
 				el(
 					"div",
 					{ class: "app-sidebar-foot" },
@@ -1658,26 +1692,14 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	//
 	// 命名空间是隔离单位（docs/design/namespaces.md）：sources / edges / events /
 	// tasks / stats / capabilities / nodes / playbooks 全都属于命名空间。
-	// 组织那一层在 UI 上已经不存在了（#203），前端手里只有 namespaceId。
+	// 组织那一层在 UI 上已经不存在了（#203），前端手里只有命名空间。
+	//
+	// v4：命名空间资源全部走显式路径 /v1/namespaces/{namespace}/...，scope 里
+	// 只存 `{ namespace }`（= Namespace 的 metadata.name）。v3 的命名空间 query
+	// 补参与扁平路径兼容层已彻底删除（不保留旧库/旧字段兜底）。
 	//
 	// 选择记在 localStorage：刷新、切页面、深链都保持同一个范围。
 	const SCOPE_KEY = "anotify.scope";
-	// 这些端点前缀需要 namespaceId（其余端点与命名空间无关，带了反而误导）
-	const NS_PATHS = [
-		"/v1/edges",
-		"/v1/sources",
-		"/v1/events",
-		"/v1/console/events",
-		"/v1/tasks",
-		"/v1/stats",
-		// 能力与节点也属于命名空间（I11）：加进这里之前它们是组织级的，
-		// 漏加的症状是"切了命名空间但能力/节点列表不变"，而且不报错。
-		"/v1/capabilities",
-		"/v1/nodes",
-		// 预案也是命名空间资源（#193）：漏加的症状是列表页永远"载入失败"，
-		// 因为请求不带 namespaceId → 后端 400（故意的严格校验）。
-		"/v1/playbooks",
-	];
 	let scope = readScope();
 
 	function readScope() {
@@ -1689,6 +1711,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	}
 	function saveScope(v) {
 		scope = Object.assign({}, scope, v || {});
+		// v3 的 scope 里还有一个 `namespaceId`（旧扁平接口的 query 参数）。它已经
+		// 没有任何消费方了，留着只会在 localStorage 里冒充“当前范围”，写回前清掉。
+		delete scope.namespaceId;
 		try {
 			localStorage.setItem(SCOPE_KEY, JSON.stringify(scope));
 		} catch (e) {
@@ -1696,27 +1721,109 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		}
 	}
 
+	// 深链的显式命名空间（列表/详情链接都带 `?namespace=`）是权威范围。
+	//
+	// 没有这个参数时一律不动持久化 scope（默认行为不变）；带了就在**任何**读取、
+	// 侧栏挂载或写入之前把 scope 对齐到 URL。用持久化的 default 去读/写 prod 的
+	// 资源不会触发 CAS —— 那是另一个 namespace 里的合法资源 —— 只能靠这条前置。
+	//
+	// 只在**页面初始化**时采纳一次（`urlNamespaceAdopted`）：页内切换器 / 页内选择框
+	// （事件页的 namespace filter 等）会把新范围写进 scope，之后每次请求都重新读 URL
+	// 会把它顶回去 —— 深链优先只属于“进场”，不属于“每一条请求”。
+	let urlNamespaceAdopted = false;
+	function adoptUrlNamespace() {
+		if (urlNamespaceAdopted) return scope;
+		let explicit = "";
+		try {
+			explicit = (new URLSearchParams(location.search).get("namespace") || "").trim();
+			urlNamespaceAdopted = true;
+		} catch (e) {
+			return scope; // 畸形 query 不是深链：保持持久化范围（下次还能重试）
+		}
+		if (explicit && explicit !== scopeNamespace()) saveScope({ namespace: explicit });
+		return scope;
+	}
+
+	// 切换范围：持久化 scope 与 URL 的 `?namespace=` 一起改，再整页重载。
+	// 只改 localStorage 的话，深链页 reload 时 adoptUrlNamespace() 会把用户刚选的
+	// 范围顶回 URL 里那个旧值 —— 切换器会变成摆设。
+	function switchScope(namespace) {
+		saveScope({ namespace: namespace });
+		try {
+			const url = new URL(location.href);
+			if (url.searchParams.has("namespace")) {
+				url.searchParams.set("namespace", namespace);
+				history.replaceState(null, "", url.pathname + url.search + url.hash);
+			}
+		} catch (e) {
+			/* 没有 URL/history 的环境（file://、旧浏览器）退化为仅持久化 */
+		}
+		location.reload();
+	}
+
+	// scope 里的命名空间 name（= Namespace.metadata.name，路径里的 {namespace}）。
+	function scopeNamespace() {
+		const ns = scope && typeof scope.namespace === "string" ? scope.namespace : "";
+		return ns.trim();
+	}
+
+	function scopeMissingError() {
+		const err = new Error(t("scope.missing", "还没有确定命名空间"));
+		err.reason = "namespace_required";
+		return err;
+	}
+
+	/**
+	 * v4 命名空间私有资源路径：`/v1/namespaces/{ns}/{plural}[/{name}]`。
+	 *
+	 * 拿不到 scope 就直接抛（`reason = namespace_required`）：宁可显示错误，
+	 * 也不能静默请求 `/v1/namespaces//capabilities` 这种畸形 URL。
+	 */
+	function nsPath(plural, name) {
+		const ns = scopeNamespace();
+		if (!ns) throw scopeMissingError();
+		const base = "/v1/namespaces/" + encodeURIComponent(ns) + "/" + String(plural);
+		return name == null || name === "" ? base : base + "/" + encodeURIComponent(name);
+	}
+
+	/** cluster-scoped 资源路径：`/v1/{plural}[/{name}]`（nodes/namespaces/...）。 */
+	function clusterPath(plural, name) {
+		const base = "/v1/" + String(plural);
+		return name == null || name === "" ? base : base + "/" + encodeURIComponent(name);
+	}
+
 	// 默认命名空间引导（#162）。
 	//
-	// 后端对命名空间资源端点**严格要求** namespaceId（缺 → 400，绝不回退默认），
-	// 而 scope 只存在 localStorage 里。于是全新浏览器（或清过缓存、换了设备）
-	// 第一次打开页面时 scope 是空的：每个请求都不带 namespaceId，页面直接空白；
-	// 切过一次命名空间之后就"自己好了"——这种"第二次打开就正常"的 bug 最难排查。
+	// 全新浏览器（清过缓存 / 换了设备）第一次打开页面时 scope 是空的；没有
+	// scope 就拼不出 v4 路径，页面直接空白。这里在缺省时拉一次
+	// `GET /v1/namespaces`，从 `items[].metadata.name` 里取 `default`（没有就取
+	// 第一项）存进 scope。
 	//
-	// 这里在缺省时拉一次 /v1/namespaces 取 slug=default 存进 scope。
-	// 失败（老后端没有这个端点 / 未登录 / 网络问题）保持原样，不阻塞页面：
-	// 没这层引导时页面本来就是这个行为，不能因为引导反而更糟。
+	// v4 严格：`items` 非数组（裸数组 / `{namespaces:[]}`）视为失败，不静默回退
+	// 旧形状；失败不缓存（后端刚起来时下一次请求还能再试）。失败不阻塞页面，
+	// 但也**不会**让已有请求变通：`nsApi`/`nsList`/`ready` 先 await 本函数再拼
+	// ns 路径；引导失败时由 `nsPath()` 把“没有 scope”报成可显示错误。
 	let scopeReady = null;
 	function ensureScope() {
-		if (scope.namespaceId) return Promise.resolve(scope);
+		// 所有 ns 路径/请求的唯一入口：先对齐 URL 的显式 namespace，再判断要不要引导。
+		adoptUrlNamespace();
+		if (scopeNamespace()) return Promise.resolve(scope);
 		if (scopeReady) return scopeReady;
 		scopeReady = fetch("/v1/namespaces", { credentials: "include" })
 			.then((r) => (r.ok ? r.json() : null))
 			.then((j) => {
-				const list = (j && (j.namespaces || j)) || [];
-				if (!Array.isArray(list) || !list.length) return scope;
-				const def = list.find((n) => n && n.slug === "default") || list[0];
-				if (def && def.id) saveScope({ namespaceId: def.id });
+				if (!j || !Array.isArray(j.items)) {
+					// 畸形列表：不能当成空列表，也不能缓存这次结果
+					scopeReady = null;
+					return scope;
+				}
+				const names = j.items
+					.map((it) => (it && it.metadata ? it.metadata.name : null))
+					.filter((n) => typeof n === "string" && n);
+				if (!names.length) return scope;
+				saveScope({
+					namespace: names.indexOf("default") >= 0 ? "default" : names[0],
+				});
 				return scope;
 			})
 			.catch(() => {
@@ -1727,92 +1834,132 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return scopeReady;
 	}
 
-	/**
-	 * 给命名空间资源自动带上当前 namespaceId。
-	 *
-	 * 只在**确实选过命名空间**时才加：解析不到范围时保持原样，
-	 * 页面行为完全不变（不需要分叉代码路径）。
-	 */
-	function withScope(path) {
-		if (!scope.namespaceId) return path;
-		const str = String(path);
-		const qi = str.indexOf("?");
-		const base = qi < 0 ? str : str.slice(0, qi);
-		if (!NS_PATHS.some((p) => base === p || base.startsWith(p + "/"))) return path;
-		const params = new URLSearchParams(qi < 0 ? "" : str.slice(qi + 1));
-		if (params.has("namespaceId")) return path;
-		params.set("namespaceId", scope.namespaceId);
-		return base + "?" + params.toString();
+	/** `ready()`：页面在拼 ns 路径、渲染 ns 相关数据前先 `await ready()`。 */
+	function ready() {
+		return ensureScope();
 	}
+
+	/**
+	 * 页面数据入口（ns 私有资源）：**先**引导 scope，**再**拼路径发请求。
+	 *
+	 * 直接写 `api(nsPath("capabilities"))` 是错的：参数先于 `api()` 求值，
+	 * scope 还没引导就已经抛 `namespace_required`。这里把顺序固定住；
+	 * 引导失败不兜底 —— 拿不到命名空间时 `nsPath()` 照常抛可显示错误。
+	 */
+	async function nsApi(plural, name, opts) {
+		await ensureScope();
+		return api(nsPath(plural, name), opts);
+	}
+
+	/** 列表版 `nsApi`：先引导 scope，再 GET `KindList`（严格 `items[]` 校验）。 */
+	async function nsList(plural) {
+		await ensureScope();
+		return apiList(nsPath(plural));
+	}
+
+	// apiError 把 v4 的 `Status` 错误体摊平成 Error 上的字段：
+	//	 err.status / code / reason / message / details / currentResourceVersion。
+	// `err.message` 同时保留在 `err.detail`（老页面/保留域仍在读 detail）。
+	// 非 Status 的响应体（网关错误页、旧式 `{error}`）不伪造 reason，只留原文。
+	function apiError(status, body) {
+		const st = body && typeof body === "object" ? body : null;
+		const isStatus = !!st && (st.kind === "Status" || typeof st.reason === "string");
+		const message = st ? String(st.message || st.error || "") : "";
+		const err = new Error(message || "HTTP " + status);
+		err.status = status;
+		err.detail = message;
+		if (isStatus) {
+			err.code = st.code != null ? st.code : status;
+			err.reason = st.reason || "";
+			err.details = st.details || null;
+			const cur = st.details && st.details.current;
+			err.currentResourceVersion = (cur && cur.resourceVersion) || null;
+		}
+		if (st && Array.isArray(st.warnings)) err.warnings = st.warnings;
+		return err;
+	}
+
+	/**
+	 * redirectToLogin 跳登录页：页名走白名单、查询串只允许安全字符，防 open redirect。
+	 * 只由 api() 在**首个** 401 时调用一次（并发请求不会互相打断同一个导航）。
+	 */
+	function redirectToLogin() {
+		const PAGES = [
+			"index.html",
+			"message.html",
+			"receivers.html",
+			"keys.html",
+			"events.html",
+			// trace 页 (#107)：同样是带查询串的深层链接
+			"trace.html",
+			"sources.html",
+			// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
+			// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
+			"source.html",
+			"capabilities.html",
+			"nodes.html",
+			"security.html",
+			"admin.html",
+			"docs.html",
+			"cli-auth.html",
+			"passkey-enroll.html",
+		];
+		const name = location.pathname.split("/").pop();
+		const page = PAGES.includes(name) ? name : "index.html";
+		// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
+		const qs = /^[?][\w\-=&%.]*$/.test(location.search) ? location.search : "";
+		location.href = "login.html?next=" + encodeURIComponent(page + qs);
+	}
+
+	// 一次 401 只跳一次登录页：页面上多个并发请求（me / namespaces / 列表）会各自
+	// 拿到 401，重复写 location.href 会让浏览器反复取消/重启同一个导航（表现为
+	// net::ERR_ABORTED，登录页反而可能没加载完）。首个 401 负责跳转，其余只抛错。
+	let loginRedirecting = false;
 
 	async function api(path, opts) {
 		const o = opts || {};
-		// 先确保 scope 有命名空间（全新会话首次加载时为空，见 ensureScope）。
-		// 解析不到时它自己降级成"不带参数"，不在这里抛错。
-		try {
-			await ensureScope();
-		} catch (e) {
-			/* 引导失败不影响请求本身 */
+		// scope 引导顺手做一次（cluster 路径、保留域页面也受益；ensureScope 内部
+		// 已 catch，不会 reject）。但它**改不了已经求值过的 path** —— ns 私有资源
+		// 必须走 `nsApi`/`nsList`，先引导再拼路径。
+		await ensureScope();
+		const res = await fetch(path, Object.assign({ credentials: "include" }, o));
+		// 401 = 未登录/会话过期：**首个** 401 负责跳登录页（见 loginRedirecting），
+		// 不是“后端未连接”：如实跳转，不伪造数据。
+		if (res.status === 401) {
+			if (isAuthedPage && !loginRedirecting) {
+				loginRedirecting = true;
+				redirectToLogin();
+			}
+			throw new Error("HTTP 401");
 		}
+		if (!res.ok) {
+			// 服务端的校验信息（"cron 表达式需要 5 段"、"metadata.resourceVersion
+			// 缺失"）比 "HTTP 400" 有用得多；v4 统一是 Status 信封。
+			let body = null;
+			try {
+				body = await res.json();
+			} catch (e) {
+				/* 响应不是 JSON（网关错误页等）：保持 body=null */
+			}
+			throw apiError(res.status, body);
+		}
+		// 204 No Content / 205 Reset Content 没有响应体（v4 的 DELETE 一律 204，见
+		// internal/server/resource_*.go 的 `WriteHeader(http.StatusNoContent)`）。
+		// 无条件 `res.json()` 会抛 SyntaxError，把一次**成功**的删除变成页面报错、
+		// 列表不刷新（source-actions 的删除分支就是这么红的）。
+		if (res.status === 204 || res.status === 205) return null;
+		// 其它成功状态也允许「无内容」：先读原文，空体给 null 而不是解析失败；
+		// 有体但不是 JSON（网关的 text/plain 200）同样按无内容处理，不伪造资源。
+		const text = typeof res.text === "function" ? await res.text() : "";
+		if (text.trim() === "") return null;
 		try {
-			const res = await fetch(
-				withScope(path),
-				Object.assign({ credentials: "include" }, o),
-			);
-			// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”：如实跳转，不伪造数据）
-			if (res.status === 401) {
-				if (isAuthedPage) {
-					// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
-					// 页名走白名单、查询串只允许安全字符，防 open redirect。
-					const PAGES = [
-						"index.html",
-						"message.html",
-						"receivers.html",
-						"keys.html",
-						"events.html",
-						// trace 页 (#107)：同样是带查询串的深层链接
-						"trace.html",
-						"sources.html",
-						// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
-						// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
-						"source.html",
-						"capabilities.html",
-						"nodes.html",
-						"security.html",
-						"admin.html",
-						"docs.html",
-						"cli-auth.html",
-						"passkey-enroll.html",
-					];
-					const name = location.pathname.split("/").pop();
-					const page = PAGES.includes(name) ? name : "index.html";
-					const qs = /^[?][\w\-=&%.]*$/.test(location.search)
-						? location.search
-						: "";
-					const back = encodeURIComponent(page + qs);
-					location.href = "login.html?next=" + back;
-				}
-				throw new Error("HTTP 401");
-			}
-			if (!res.ok) {
-				// 服务端的校验信息（"cron 表达式需要 5 段"、"channel 必须是
-				// slack/email"）比 "HTTP 400" 有用得多。以前直接丢掉了，
-				// 于是页面只能显示笼统的失败，用户不知道哪填错了。
-				let detail = "";
-				try {
-					const j = await res.json();
-					detail = (j && (j.error || j.message)) || "";
-				} catch (e) {
-					/* 响应不是 JSON（网关错误页等），保持空 */
-				}
-				const err = new Error(detail || "HTTP " + res.status);
-				err.status = res.status;
-				err.detail = detail;
-				throw err;
-			}
-			return await res.json();
+			return JSON.parse(text);
 		} catch (e) {
-			throw e;
+			const err = new Error("HTTP " + res.status + " 响应不是合法 JSON");
+			err.status = res.status;
+			err.detail = text;
+			err.cause = e;
+			throw err;
 		}
 	}
 
@@ -2204,21 +2351,27 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 					? err.message
 					: "";
 		const status = (err && err.status) || 0;
-		// 文案全部走 t()：错误态也得翻译，否则 es/ja 页面上会漏出中文
-		// （i18n_coverage 的 "no CJK residue" 就是抓这个的）。
+		// UI 标题走 t()；上游解码后的 message 是数据，单独以纯文本叶子展示。
 		const reason = status
 			? status >= 500
 				? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
 				: t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
 			: /Failed to fetch|NetworkError|load failed/i.test(msg)
 				? t("common.backend_offline", "连不上服务端")
-				: msg || t("common.request_failed", "请求失败");
+				: t("common.request_failed", "请求失败");
 		const box = document.createElement("div");
 		box.className = "flex flex-col items-center gap-3 px-6 py-10 text-center";
 		const p = document.createElement("p");
 		p.className = "text-sm tx-meta";
 		p.textContent = t("common.load_failed_prefix", "载入失败：") + reason;
 		box.appendChild(p);
+		if (msg) {
+			const detail = document.createElement("span");
+			detail.className = "text-sm tx-meta";
+			detail.setAttribute("data-raw-content", "");
+			detail.textContent = msg;
+			box.appendChild(detail);
+		}
 		if (typeof onRetry === "function") {
 			const btn = document.createElement("button");
 			btn.type = "button";
@@ -2335,6 +2488,664 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return Date.now() / 1000 - at > UPGRADE_ACK_TIMEOUT_SEC;
 	}
 
+	/* ---------- v4 信封 / 列表 / 错误工具 ----------
+	 *
+	 * 页面不再直接摸 `res.items` / `res.status`：一律走这里的函数。
+	 * “严格”是这个层的核心：旧形状（裸数组、`{namespaces:[]}`、扁平对象）一律报
+	 * 错，不静默回退 —— 回退会把“后端/URL 错了”伪装成“数据是空的”，比报错难查。 */
+	function deepCopy(v) {
+		if (v === undefined) return undefined;
+		return JSON.parse(JSON.stringify(v));
+	}
+	function isObj(v) {
+		return !!v && typeof v === "object" && !Array.isArray(v);
+	}
+	function arr(v) {
+		return Array.isArray(v) ? deepCopy(v) : [];
+	}
+	function obj(v) {
+		return isObj(v) ? deepCopy(v) : {};
+	}
+	function metaOf(res) {
+		return isObj(res && res.metadata) ? res.metadata : {};
+	}
+	function specOf(res) {
+		return isObj(res && res.spec) ? res.spec : {};
+	}
+
+	function malformedListError(path, why) {
+		const detail = why || "列表响应格式错误";
+		const err = new Error(path ? detail + "：" + path : detail);
+		err.reason = "malformed_list";
+		return err;
+	}
+
+	/** 严格列表：返回 `items`（非数组直接抛 `malformed_list`）。 */
+	function itemsOf(res) {
+		if (!res || !Array.isArray(res.items)) {
+			throw malformedListError("", "响应缺少 items 数组");
+		}
+		return res.items;
+	}
+
+	/** 顶层 `warnings[]`（与资源四键并列）；无 → `[]`。 */
+	function warningsOf(res) {
+		return res && Array.isArray(res.warnings) ? res.warnings : [];
+	}
+
+	/**
+	 * `apiList(path)`：GET 一个 `*List` 并严格校验信封。
+	 * 返回 `{items, warnings}`；`kind` 缺失或不是 `*List`、`items` 非数组都抛错。
+	 */
+	async function apiList(path) {
+		const res = await api(path);
+		if (!res || typeof res.kind !== "string" || !/List$/.test(res.kind)) {
+			throw malformedListError(path, "响应不是 *List 信封");
+		}
+		return { items: itemsOf(res), warnings: warningsOf(res) };
+	}
+
+	function statusOf(o) {
+		return isObj(o && o.status) ? o.status : {};
+	}
+	function readyOf(o) {
+		return statusOf(o).ready === true;
+	}
+	function conditionOf(o, type) {
+		const list = statusOf(o).conditions;
+		if (!Array.isArray(list)) return null;
+		return list.find((c) => c && c.type === type) || null;
+	}
+	function nodesOf(o) {
+		const list = statusOf(o).nodes;
+		if (!Array.isArray(list)) return [];
+		return list.map((n) => ({
+			name: n && n.name != null ? n.name : null,
+			state: n && n.state != null ? n.state : null,
+		}));
+	}
+	function resolvedNext(o) {
+		const resolved = statusOf(o).resolved;
+		const list = isObj(resolved) && Array.isArray(resolved.next) ? resolved.next : [];
+		return list.map((e) => {
+			if (typeof e === "string") {
+				// `name@version` 写法（契约允许裸名或 name@version）
+				const at = e.lastIndexOf("@");
+				return at > 0
+					? { name: e.slice(0, at), version: e.slice(at + 1), missing: false }
+					: { name: e, version: null, missing: false };
+			}
+			if (!isObj(e)) return { name: null, version: null, missing: true };
+			// 明细原样保留：`capability.md §2` 定的是
+			// `{name, version, digest, ready, params, missing?}`（解析不到时还有
+			// `reason`）。只留 name/version/missing 会把“为什么解析不到”丢掉。
+			return deepCopy(e);
+		});
+	}
+	function observedOf(o) {
+		const st = statusOf(o);
+		const ob = isObj(st.observed) ? st.observed : {};
+		return {
+			taskId: ob.taskId == null ? null : ob.taskId,
+			emits: arr(ob.emits),
+			pruned: arr(ob.pruned),
+			tasks: obj(ob.tasks),
+		};
+	}
+
+	/**
+	 * 写请求体：深拷贝并剥离服务端字段。
+	 * - 总是剔 `status`（写 status → 400 `status_not_writable`）；
+	 * - `{create:true}` 再剔 uid/resourceVersion/creationTimestamp（服务端生成）；
+	 * - name/namespace/version/displayName/spec 原样保留。
+	 */
+	function writable(res, opts) {
+		const create = !!(opts && opts.create);
+		const body = deepCopy(isObj(res) ? res : {});
+		delete body.status;
+		if (isObj(body.metadata)) {
+			if (create) {
+				delete body.metadata.uid;
+				delete body.metadata.resourceVersion;
+				delete body.metadata.creationTimestamp;
+			}
+		}
+		return body;
+	}
+
+	function resourceVersionError() {
+		const err = new Error(
+			t(
+				"common.resource_version_required",
+				"写入缺少 resourceVersion，请刷新后重试",
+			),
+		);
+		err.reason = "resource_version_required";
+		return err;
+	}
+
+	/** PATCH/PUT body 注入 `metadata.resourceVersion`（CAS 不可选）。 */
+	function withResourceVersion(body, rv) {
+		if (rv == null || rv === "") throw resourceVersionError();
+		const out = deepCopy(isObj(body) ? body : {});
+		if (!isObj(out.metadata)) out.metadata = {};
+		out.metadata.resourceVersion = String(rv);
+		return out;
+	}
+
+	/** DELETE 的 CAS 传输：`?resourceVersion=<encoded>`（契约 §2.8.2 假设）。 */
+	function deletePath(path, rv) {
+		if (rv == null || rv === "") throw resourceVersionError();
+		const str = String(path);
+		return (
+			str +
+			(str.indexOf("?") >= 0 ? "&" : "?") +
+			"resourceVersion=" +
+			encodeURIComponent(String(rv))
+		);
+	}
+
+	function isConflict(err) {
+		return !!err && err.status === 409 && err.reason === "resource_version_conflict";
+	}
+
+	/** 编辑 JSON 字段的统一入口；失败抛可显示错误（原文由页面留着，不清空输入）。 */
+	function parseJSON(text, label) {
+		const src = text == null ? "" : String(text);
+		try {
+			return JSON.parse(src);
+		} catch (e) {
+			const err = new Error(
+				(label ? label + " " : "") + "不是合法 JSON：" + e.message,
+			);
+			err.reason = "invalid_json";
+			err.text = src;
+			err.cause = e;
+			throw err;
+		}
+	}
+
+	/* ---------- v4 资源模型（纯投影，不做旧字段兜底） ----------
+	 * 页面只消费这里的形状；缺字段给 null / []，不抛。
+	 * 注意：这些函数只读已知 v4 字段 —— 不认识的字段（例如 v3 残留）不会
+	 * 被“魔术重命名”成新字段，宁可显示空也不能把旧语义偷渡进来。 */
+	function modelCapability(res) {
+		const meta = metaOf(res);
+		const st = statusOf(res);
+		return {
+			name: meta.name == null ? null : meta.name,
+			namespace: meta.namespace == null ? null : meta.namespace,
+			version: meta.version == null ? null : meta.version,
+			displayName: meta.displayName == null ? null : meta.displayName,
+			resourceVersion: meta.resourceVersion == null ? null : meta.resourceVersion,
+			spec: obj(specOf(res)),
+			status: obj(st),
+			conditions: arr(st.conditions),
+			ready: st.ready === true,
+			nodes: nodesOf(res),
+			resolvedNext: resolvedNext(res),
+			observed: observedOf(res),
+			installedFrom: st.installedFrom == null ? null : st.installedFrom,
+		};
+	}
+
+	/**
+	 * Source 读投影。
+	 *
+	 * **绝不包含 token / secret**：GET 响应本来就不回显它们，这里再用白名单
+	 * 逐字段投影一次（而不是整体展开 config），防止后端误发/页面误用。
+	 */
+	function modelSource(res) {
+		const meta = metaOf(res);
+		const spec = specOf(res);
+		const st = statusOf(res);
+		const cfg = isObj(spec.config) ? spec.config : {};
+		return {
+			name: meta.name == null ? null : meta.name,
+			namespace: meta.namespace == null ? null : meta.namespace,
+			resourceVersion: meta.resourceVersion == null ? null : meta.resourceVersion,
+			displayName: meta.displayName == null ? null : meta.displayName,
+			kind: spec.kind == null ? null : spec.kind,
+			enabled: spec.enabled === true,
+			config: {
+				hookUrl: cfg.hookUrl != null ? cfg.hookUrl : st.hookUrl != null ? st.hookUrl : null,
+				secretSet: cfg.secretSet === true,
+				payloadSchema: cfg.payloadSchema == null ? null : deepCopy(cfg.payloadSchema),
+				sample: cfg.sample == null ? null : deepCopy(cfg.sample),
+				payload: cfg.payload == null ? null : deepCopy(cfg.payload),
+				expr: cfg.expr == null ? null : cfg.expr,
+				tz: cfg.tz == null ? null : cfg.tz,
+			},
+			targets: arr(spec.targets),
+			health: st.health == null ? null : st.health,
+			lastFiredAt: st.lastFiredAt == null ? null : st.lastFiredAt,
+			nextFireAt: st.nextFireAt == null ? null : st.nextFireAt,
+			// 契约 api-conventions §7.2：boolean（所有 target 可解析才是 true）。
+			// 明细在 trace/events 的 dispatched/pruned 里，不在这里再存一份数组。
+			targetsResolved: !!st.targetsResolved,
+			installedFrom: st.installedFrom == null ? null : st.installedFrom,
+		};
+	}
+
+	/** Package YAML reader shared ONLY by Playbook normalization and its mock.
+	 * JSON is YAML too. Block/flow collections, quoted scalars and literal/folded
+	 * blocks cover authored packages; unsupported YAML is an explicit error, never {}.
+	 * The original spec.files map is not serialized by this reader or changed.
+	 */
+	function parsePlaybookDocument(source) {
+		if (typeof source !== "string") throw new Error("Package document must be text");
+		try { return JSON.parse(source); } catch (_) { /* Read authored YAML below. */ }
+		const lines = source.replace(/\r\n?/g, "\n").split("\n");
+		const fail = message => { throw new Error("YAML: " + message); };
+		const clean = text => {
+			let quote = "";
+			for (let i = 0; i < text.length; i++) {
+				const char = text[i];
+				if (quote) {
+					if (char === "\\" && quote === '"') { i++; continue; }
+					if (char === quote) {
+						if (quote === "'" && text[i + 1] === "'") { i++; continue; }
+						quote = "";
+					}
+				} else if (char === "'" || char === '"') quote = char;
+				else if (char === "#" && (i === 0 || /\s/.test(text[i - 1]))) return text.slice(0, i).trimEnd();
+			}
+			return text.trimEnd();
+		};
+		const scalar = text => {
+			text = clean(text).trim();
+			if (!text) return null;
+			if (/^[!&*]|^<<:/.test(text)) fail("tags, anchors and aliases are not supported by this package reader");
+			if (text.startsWith('"')) { try { return JSON.parse(text); } catch (_) { fail("invalid double-quoted scalar"); } }
+			if (text.startsWith("'")) {
+				if (!text.endsWith("'")) fail("unterminated single-quoted scalar");
+				return text.slice(1, -1).replaceAll("''", "'");
+			}
+			if (text === "true") return true;
+			if (text === "false") return false;
+			if (text === "null" || text === "~") return null;
+			if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(text)) return Number(text);
+			return text;
+		};
+		function flow(text) {
+			let pos = 0;
+			const ws = () => { while (/\s/.test(text[pos] || "") && pos < text.length) pos++; };
+			function token(key = false) {
+				ws(); const start = pos;
+				if (text[pos] === "'" || text[pos] === '"') {
+					const quote = text[pos++]; let closed = false;
+					while (pos < text.length) {
+						if (text[pos] === "\\" && quote === '"') { pos += 2; continue; }
+						if (text[pos++] === quote) {
+							if (quote === "'" && text[pos] === "'") { pos++; continue; }
+							closed = true; break;
+						}
+					}
+					if (!closed) fail("unterminated flow scalar");
+				} else while (pos < text.length && !",]}".includes(text[pos]) && !(key && text[pos] === ":")) pos++;
+				return scalar(text.slice(start, pos));
+			}
+			function value() {
+				ws(); const char = text[pos];
+				if (char !== "[" && char !== "{") return token();
+				pos++; const end = char === "[" ? "]" : "}"; const result = char === "[" ? [] : {};
+				ws(); if (text[pos] === end) { pos++; return result; }
+				while (pos < text.length) {
+					if (char === "[") result.push(value());
+					else {
+						const key = token(true); ws(); if (text[pos++] !== ":") fail("flow mapping requires colon");
+						if (typeof key !== "string" || Object.prototype.hasOwnProperty.call(result, key) || ["__proto__", "constructor", "prototype"].includes(key)) fail("invalid or duplicate mapping key");
+						result[key] = value();
+					}
+					ws(); if (pos >= text.length) fail("unterminated flow collection");
+					const separator = text[pos++];
+					if (separator === end) return result;
+					if (separator !== ",") fail("invalid flow delimiter");
+					ws(); if (text[pos] === end) { pos++; return result; }
+				}
+				fail("unterminated flow collection");
+			}
+			const result = value(); ws(); if (pos !== text.length) fail("trailing flow content"); return result;
+		}
+		const inline = text => /^[\[{]/.test(text.trim()) ? flow(clean(text).trim()) : scalar(text);
+		const indent = line => { if (/^\s*\t/.test(line)) fail("tab indentation is not supported"); return /^ */.exec(line)[0].length; };
+		const blank = line => !clean(line).trim() || ["---", "..."].includes(clean(line).trim());
+		let index = 0;
+		const skip = () => { while (index < lines.length && blank(lines[index])) index++; };
+		const pair = text => {
+			let quote = "";
+			for (let i = 0; i < text.length; i++) {
+				const ch = text[i];
+				if (quote) { if (ch === "\\" && quote === '"') i++; else if (ch === quote) quote = ""; }
+				else if (ch === "'" || ch === '"') quote = ch;
+				else if (ch === ":" && (i + 1 === text.length || /\s/.test(text[i + 1]))) return [scalar(text.slice(0, i)), text.slice(i + 1).trim()];
+			}
+			return null;
+		};
+		function blockValue(text, parentIndent) {
+			if (/^[|>][+-]?$/.test(text)) {
+				const chunk = []; let contentIndent = null;
+				while (index < lines.length) {
+					const line = lines[index];
+					if (line.trim() && indent(line) <= parentIndent) break;
+					if (line.trim() && contentIndent == null) contentIndent = indent(line);
+					if (line.trim() && indent(line) < contentIndent) fail("invalid indentation in block scalar.");
+					chunk.push(line.trim() ? line.slice(contentIndent) : ""); index++;
+				}
+				let result = chunk.join("\n");
+				if (text[0] === ">") result = result.replace(/([^\n])\n(?=[^\n])/g, "$1 ");
+				if (text.endsWith("-")) return result.replace(/\n+$/, "");
+				if (text.endsWith("+")) return result + "\n";
+				return result.replace(/\n+$/, "") + "\n";
+			}
+			if (text) return inline(text);
+			skip(); return index < lines.length && indent(lines[index]) > parentIndent ? block(indent(lines[index])) : null;
+		}
+		function assign(out, entry, level) {
+			const [key, text] = entry;
+			if (typeof key !== "string" || !key || Object.prototype.hasOwnProperty.call(out, key) || ["__proto__", "constructor", "prototype", "<<"].includes(key)) fail("invalid or duplicate mapping key");
+			out[key] = blockValue(text, level);
+		}
+		function block(level) {
+			skip(); const sequence = /^-(?:\s|$)/.test(lines[index].slice(level)); const out = sequence ? [] : {};
+			while (index < lines.length) {
+				skip(); if (index >= lines.length || indent(lines[index]) < level) break;
+				if (indent(lines[index]) !== level) fail("unexpected indentation at line " + (index + 1));
+				const text = clean(lines[index].slice(level)); index++;
+				if (sequence) {
+					if (!/^-(?:\s|$)/.test(text)) fail("mixed sequence and mapping");
+					const rest = text.slice(1).trim(); const entry = pair(rest);
+					if (!entry) out.push(blockValue(rest, level));
+					else {
+						const item = {}; assign(item, entry, level + 2);
+						skip();
+						if (index < lines.length && indent(lines[index]) > level) {
+							const continuation = block(indent(lines[index]));
+							if (Array.isArray(continuation)) fail("sequence item continuation must be a mapping");
+							for (const [k, v] of Object.entries(continuation)) { if (k in item) fail("duplicate sequence mapping key"); item[k] = v; }
+						}
+						out.push(item);
+					}
+				} else {
+					const entry = pair(text); if (!entry) fail("expected mapping at line " + index); assign(out, entry, level);
+				}
+			}
+			return out;
+		}
+		skip(); if (index === lines.length) fail("empty document");
+		const result = block(indent(lines[index])); skip(); if (index !== lines.length) fail("trailing document"); return result;
+	}
+
+	function modelPlaybook(res) {
+		const meta = metaOf(res);
+		const spec = specOf(res);
+		const st = statusOf(res);
+		const manifest = isObj(spec.files) && typeof spec.files["playbook.yaml"] === "string"
+			? parsePlaybookDocument(spec.files["playbook.yaml"]) : null;
+		const packageSpec = manifest && isObj(manifest.spec) ? manifest.spec : {};
+		const out = {
+			slug: meta.name == null ? null : meta.name,
+			namespace: meta.namespace == null ? null : meta.namespace,
+			version: meta.version == null ? null : meta.version,
+			displayName: meta.displayName == null ? null : meta.displayName,
+			resourceVersion: meta.resourceVersion == null ? null : meta.resourceVersion,
+			valuesSchema: packageSpec.values == null ? null : deepCopy(packageSpec.values),
+			capabilities: arr(packageSpec.capabilities),
+			sources: arr(packageSpec.sources),
+			status: {
+				ready: st.ready === true,
+				unapplied: arr(st.unapplied),
+				total: st.total == null ? null : st.total,
+				conditions: arr(st.conditions),
+				blocker: st.blocker == null ? null : deepCopy(st.blocker),
+				items: arr(st.items),
+				sources: obj(st.sources),
+				lastInstallId: st.lastInstallId == null ? null : st.lastInstallId,
+			},
+		};
+		// 只有 ?includeBody=true 的响应才带 files（原始未渲染模板）
+		if (isObj(spec.files)) out.files = deepCopy(spec.files);
+		return out;
+	}
+
+	modelPlaybook.parseDocument = parsePlaybookDocument;
+
+	/** 回执里 created / skipped 的统一形状：`{capabilities:[], sources:[]}`。 */
+	function createdBucket(v) {
+		return {
+			capabilities: arr(isObj(v) ? v.capabilities : null),
+			sources: arr(isObj(v) ? v.sources : null),
+		};
+	}
+
+	function modelReceipt(res) {
+		const r = isObj(res) ? res : {};
+		const install = isObj(r.install) ? r.install : {};
+		const pb = isObj(r.playbook) ? r.playbook : {};
+		return {
+			playbook: isObj(r.playbook)
+				? { name: pb.name == null ? null : pb.name, version: pb.version == null ? null : pb.version }
+				: null,
+			// 顶层 source 是安装来源（inline / oci:…），不是资源的 spec.source。
+			source: r.source == null ? null : r.source,
+			namespace: r.namespace == null ? null : r.namespace,
+			install: {
+				id: install.id == null ? null : install.id,
+				at: install.at == null ? null : install.at,
+				dryRun: install.dryRun === true,
+			},
+			values: r.values == null ? null : deepCopy(r.values),
+			valuesDigest: r.valuesDigest == null ? null : r.valuesDigest,
+			// playbook.md §4.5：created / skipped 是**对象**（能力、源两条轴各自一组），
+			// 不是数组 —— 用 arr() 强转会把它变成 []，回执 12 格就少两格。
+			created: createdBucket(r.created),
+			skipped: createdBucket(r.skipped),
+			upgraded: arr(r.upgraded),
+			unapplied: arr(r.unapplied),
+			external: arr(r.external),
+			pending: arr(r.pending),
+			notes: arr(r.notes),
+			conflicts: arr(r.conflicts),
+		};
+	}
+
+	function modelInstallGroup(group) {
+		const g = isObj(group) ? group : {};
+		return {
+			valuesDigest: g.valuesDigest == null ? null : g.valuesDigest,
+			values: g.values == null ? null : deepCopy(g.values),
+			firstAt: g.firstAt == null ? null : g.firstAt,
+			lastAt: g.lastAt == null ? null : g.lastAt,
+			attempts: typeof g.attempts === "number" ? g.attempts : 0,
+			lastInstallId: g.lastInstallId == null ? null : g.lastInstallId,
+			capabilities: arr(g.capabilities),
+			sources: arr(g.sources),
+		};
+	}
+
+	/**
+	 * Task 模型。
+	 * `phase` 小写成小写（六态）；`envDiagnostics` **只保留 name/source**，
+	 * 不显示值（契约：环境变量值只在本机）。
+	 */
+	function modelTask(res) {
+		const meta = metaOf(res);
+		const spec = specOf(res);
+		const st = statusOf(res);
+		const cap = isObj(spec.capability) ? spec.capability : null;
+		const result = isObj(st.result) ? st.result : {};
+		const attemptPhase = (p) => (p == null ? null : String(p).toLowerCase());
+		return {
+			name: meta.name == null ? null : meta.name,
+			namespace: meta.namespace == null ? null : meta.namespace,
+			resourceVersion: meta.resourceVersion == null ? null : meta.resourceVersion,
+			creationTimestamp:
+				meta.creationTimestamp == null ? null : meta.creationTimestamp,
+			traceUID: spec.traceUID == null ? null : spec.traceUID,
+			sequence: spec.sequence == null ? null : spec.sequence,
+			sourceRef: spec.sourceRef == null ? null : spec.sourceRef,
+			parentRef: spec.parentRef == null ? null : spec.parentRef,
+			parentTaskId: spec.parentTaskId == null ? null : spec.parentTaskId,
+			capability: cap
+				? {
+						name: cap.name == null ? null : cap.name,
+						version: cap.version == null ? null : cap.version,
+						digest: cap.digest == null ? null : cap.digest,
+					}
+				: null,
+			params: spec.params == null ? null : deepCopy(spec.params),
+			phase: attemptPhase(st.phase),
+			waitingReason: st.waitingReason == null ? null : st.waitingReason,
+			nextAttemptAt: st.nextAttemptAt == null ? null : st.nextAttemptAt,
+			nodeName: st.nodeName == null ? null : st.nodeName,
+			instanceId: st.instanceId == null ? null : st.instanceId,
+			attempt: st.attempt == null ? null : st.attempt,
+			maxAttempts: st.maxAttempts == null ? null : st.maxAttempts,
+			leaseExpiresAt: st.leaseExpiresAt == null ? null : st.leaseExpiresAt,
+			startedAt: st.startedAt == null ? null : st.startedAt,
+			finishedAt: st.finishedAt == null ? null : st.finishedAt,
+			configRevision: st.configRevision == null ? null : st.configRevision,
+			namespaceVarsRevision:
+				st.namespaceVarsRevision == null ? null : st.namespaceVarsRevision,
+			envDiagnostics: (Array.isArray(st.envDiagnostics) ? st.envDiagnostics : [])
+				.filter((e) => isObj(e))
+				.map((e) => ({
+					name: e.name == null ? null : e.name,
+					source: e.source == null ? null : e.source,
+				})),
+			result: {
+				summary: result.summary == null ? null : result.summary,
+				artifacts: arr(result.artifacts),
+				error: isObj(result.error) ? deepCopy(result.error) : null,
+			},
+			attempts: (Array.isArray(st.attempts) ? st.attempts : [])
+				.filter((a) => isObj(a))
+				.map((a) => ({
+					attempt: a.attempt == null ? null : a.attempt,
+					nodeName: a.nodeName == null ? null : a.nodeName,
+					instanceId: a.instanceId == null ? null : a.instanceId,
+					namespaceVarsRevision: a.namespaceVarsRevision == null ? null : a.namespaceVarsRevision,
+					leaseExpiresAt: a.leaseExpiresAt == null ? null : a.leaseExpiresAt,
+					envDiagnostics: arr(a.envDiagnostics).filter(isObj).map(e => ({ name: e.name, source: e.source })),
+					configRevision: a.configRevision == null ? null : a.configRevision,
+					phase: attemptPhase(a.phase),
+					startedAt: a.startedAt == null ? null : a.startedAt,
+					finishedAt: a.finishedAt == null ? null : a.finishedAt,
+					reason: a.reason == null ? null : a.reason,
+				})),
+		};
+	}
+
+	/**
+	 * Node 模型（cluster-scoped）。
+	 * 三层配置：machineVars（机器）/ nodeVars（节点默认）/ namespaceVars（ns 上下文）；
+	 * 双 revision：configRevision（机器级）≠ appliedRevision（节点回报）。
+	 * `pending` = appliedRevision !== configRevision。
+	 */
+	function modelNode(res) {
+		const meta = metaOf(res), spec = specOf(res), st = statusOf(res);
+		// v4：`?namespace=` 的读上下文在**信封顶层**（resource.yaml · Node.context），
+		// 不在 status 里 —— 把「读的是哪个 ns」塞进 status，会让它和「这个 ns 的
+		// 值」混在一起（resource_node.go · nodeReadEnvelope）。
+		const readContext = isObj(res && res.context) ? res.context : {};
+		const context = readContext.namespace ? { namespace: readContext.namespace } : null;
+		const configRevision = st.configRevision ?? null, appliedRevision = st.appliedRevision ?? null;
+		const localLimits = obj(st.localLimits), nodeLimits = obj(spec.limits);
+		// 实例槽位（v4）：`NodeInstanceRef` 只有 `{id, task, busy}`（api/resource.yaml）。
+		// `id` 是实例身份（`nins_…`），**没有** v3 的 slot / taskId / assignmentId /
+		// attempt / leaseId —— 那些字段在这里一律不读，也不“等价映射”成旧名，否则
+		// 页面会显示一份服务端从未说过的事实。空位身份由调用方的下标提供。
+		const instances = Array.isArray(st.instances) ? st.instances.filter(isObj).map(x => {
+			// busy 缺失 = 未知；显式 false 才是 idle（终态 Task 不证明物理回收）
+			const busy = typeof x.busy === "boolean" ? x.busy : null;
+			return {
+				id: x.id == null ? null : String(x.id),
+				task: x.task == null ? null : String(x.task),
+				busy,
+				occupancy: busy === null ? "unknown" : busy ? "occupied" : "idle",
+			};
+		}) : null;
+		return {
+			name: meta.name ?? null, resourceVersion: meta.resourceVersion ?? null,
+			spec: { namespaces: arr(spec.namespaces), vars: obj(spec.vars), limits: nodeLimits, tags: arr(spec.tags) },
+			status: obj(st), machineVars: obj(st.machineVars), localVars: obj(st.localVars), nodeVars: obj(st.nodeVars),
+			localLimits, machineLimits: isObj(st.machineLimits) ? obj(st.machineLimits) : {
+				total: localLimits.total ?? nodeLimits.total ?? null,
+				perCapability: { ...obj(nodeLimits.perCapability), ...obj(localLimits.perCapability) },
+			},
+			configRevision, appliedRevision, appliedHash: st.appliedHash ?? null,
+			pending: String(appliedRevision ?? "") !== String(configRevision ?? ""),
+			overrideStale: typeof st.overrideStale === "boolean" ? st.overrideStale : null,
+			instances, effectiveNamespaces: arr(st.effectiveNamespaces), context,
+			namespaceVars: context ? obj(st.namespaceVars) : null,
+			effectiveVars: context ? obj(st.effectiveVars) : null,
+		};
+	}
+
+	/**
+	 * Edge 只读投影：v4 的 wire 是 `{from, to, kind}`（api/resource.yaml ·
+	 * CapabilityEdge，`kind` ∈ `capability|source`），**没有** fromIsSource /
+	 * fromRef / toRef / position / port / priority —— 那些是 v3 的边记录形状，
+	 * 这里一律不读，也不改名映射（否则页面会显示服务端从未给出的字段）。
+	 */
+	function modelEdge(item) {
+		const e = isObj(item) ? item : {};
+		return {
+			from: e.from == null ? null : String(e.from),
+			to: e.to == null ? null : String(e.to),
+			kind: e.kind === "source" || e.kind === "capability" ? e.kind : null,
+		};
+	}
+
+	/** Event uses the W6 resource envelope only, never the obsolete flat row. */
+	function modelEvent(row) {
+		const r = isObj(row) ? row : {};
+		const meta = metaOf(r);
+		const spec = specOf(r);
+		const st = statusOf(r);
+		return {
+			name: meta.name == null ? null : meta.name,
+			uid: meta.uid == null ? null : meta.uid,
+			creationTimestamp: meta.creationTimestamp == null ? null : meta.creationTimestamp,
+			namespace: meta.namespace == null ? null : meta.namespace,
+			reason: spec.reason == null ? null : spec.reason,
+			type: spec.type == null ? null : spec.type,
+			involvedObject: isObj(spec.involvedObject) ? deepCopy(spec.involvedObject) : null,
+			traceUID: spec.traceUID == null ? null : spec.traceUID,
+			eventType: spec.eventType == null ? null : spec.eventType,
+			deliveryId: spec.deliveryId == null ? null : spec.deliveryId,
+			payload: spec.payload == null ? null : deepCopy(spec.payload),
+			signature: isObj(spec.signature) ? deepCopy(spec.signature) : null,
+			dispatched: arr(st.dispatched),
+			// pruned 原样透传（对象 `{reason,detail}` 或 null）：不转计数、不转数组。
+			pruned: st.pruned == null ? null : deepCopy(st.pruned),
+			deliveredAt: st.deliveredAt == null ? null : st.deliveredAt,
+		};
+	}
+
+	function modelTrace(res) {
+		const r = isObj(res) ? res : {};
+		return {
+			traceUID: r.traceUID == null ? null : r.traceUID,
+			events: arr(r.events),
+			tasks: arr(r.tasks),
+			pruned: arr(r.pruned),
+		};
+	}
+
+	const model = {
+		capability: modelCapability,
+		source: modelSource,
+		playbook: modelPlaybook,
+		receipt: modelReceipt,
+		installGroup: modelInstallGroup,
+		task: modelTask,
+		node: modelNode,
+		edge: modelEdge,
+		event: modelEvent,
+		trace: modelTrace,
+	};
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
@@ -2366,6 +3177,33 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		logout,
 		mountLoginLangSwitcher,
 		mountLangHint,
+		/* v4 canonical scope / API / 模型层（页面与 scripts/v4-frontend.test.mjs 统一用） */
+		SCOPE_KEY,
+		readScope,
+		saveScope,
+		adoptUrlNamespace,
+		switchScope,
+		ensureScope,
+		ready,
+		nsApi,
+		nsList,
+		nsPath,
+		clusterPath,
+		apiList,
+		itemsOf,
+		warningsOf,
+		statusOf,
+		readyOf,
+		conditionOf,
+		nodesOf,
+		resolvedNext,
+		observedOf,
+		writable,
+		withResourceVersion,
+		deletePath,
+		isConflict,
+		parseJSON,
+		model,
 	};
 
 	/* Auto-mount login page language switcher on load. */

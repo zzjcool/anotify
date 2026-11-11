@@ -1,0 +1,4 @@
+# F3 runner 运行期证据（screenshots/runs、E1B-logs、PARENT-EPOCH-logs）不入库
+screenshots/
+E1B-logs/
+PARENT-EPOCH-logs/

@@ -9,6 +9,7 @@ common:
   server_error: 'error del servidor HTTP {code}'
   request_rejected: 'solicitud rechazada HTTP {code}'
   request_failed: 'la solicitud falló'
+  resource_version_required: 'falta resourceVersion; actualiza la página e inténtalo de nuevo'
   brand:
     name: Anotify
     tagline: Notifica cuando tu agente termina
@@ -143,9 +144,9 @@ index:
     rate_na: Sin receptores — tasa de entrega no disponible
     trend_live: En vivo
     running: En curso
-    running_sub: Últimas 50 tareas
+    running_sub: "Todas las tareas del espacio"
     failed: Tareas con error
-    failed_sub: Últimas 50 tareas
+    failed_sub: "Todas las tareas del espacio"
   heatmap:
     title: Actividad de eventos
     subtitle: Último año · volumen diario
@@ -210,6 +211,7 @@ scope:
   section_ns: "Espacio de nombres"
   ns: "Espacio de nombres"
   none: "(sin espacios de nombres)"
+  missing: "Todavía no hay un espacio de nombres definido"
   empty_hint: "Aún no hay espacios de nombres. Crea uno para empezar."
   new_ns: "Nuevo espacio de nombres"
   new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
@@ -273,6 +275,44 @@ message:
     count: '{n} tareas'
     empty: No hay otras tareas en esta traza
     current: Actual
+  v4:
+    diagnostics: "Diagnóstico de ejecución"
+    attempt: "Intento / máximo"
+    wait_hint: "Esperar no consume intentos. Las tareas no idempotentes no se reintentan automáticamente; aceptación desconocida no permite repetir con seguridad."
+    lease_hint: "La concesión limita la autorización, no garantiza efectos únicos. Los intentos antiguos o concesiones vencidas no pueden enviar más resultados."
+    cancel: "Cancelar tarea"
+    abandon: "Abandonar tarea"
+    confirm_cancel: "¿Cancelar esta tarea? Se revoca la autorización y se detiene la ejecución."
+    confirm_abandon: "¿Abandonar esta tarea? Se detiene sin reintento automático."
+    params: "Parámetros de entrada"
+    env: "Entorno (solo nombres y fuentes)"
+    env_hint: "Solo nombres y fuentes usados por esta tarea; no valores del equipo ni lista completa de variables permitidas."
+    env_empty: "No hay diagnóstico de entorno retenido."
+    result: "Resumen / error / artefactos"
+    attempts: "Intentos de ejecución retenidos"
+    attempts_empty: "No hay intentos retenidos."
+    logs: "Registros de tarea"
+    current: "Último registro archivado"
+    previous: "Intento de ejecución anterior"
+    truncated: "Truncado"
+    complete: "Sin truncar"
+    logs_empty: "No hay líneas para este intento (o no hay intento anterior)."
+    emissions: "Hechos emit aceptados"
+    emissions_empty: "No hay hechos emit retenidos."
+    missing: "Falta el id de tarea en la URL."
+    not_found: "Tarea inexistente, eliminada o de otro espacio."
+    artifact_download: "Descargar artefacto administrado"
+    artifact_expired: "Artefacto vencido (410 artifact_expired). Se conserva el manifiesto; no se recupera del nodo."
+    artifact_missing: "Artefacto no referido por esta tarea (404)."
+    artifact_invalid: "Ruta o SHA256 inválido; no se crea enlace de descarga."
+    phase:
+      pending: "Pendiente / espera"
+      running: "En ejecución"
+      succeeded: "Éxito"
+      failed: "Fallo"
+      cancelled: "Cancelada"
+      abandoned: "Abandonada"
+
 login:
   title: Iniciar sesión
   welcome: Bienvenido de nuevo a
@@ -727,6 +767,12 @@ docs:
       cli-auth: Autorización CLI
       admin: Administración
       devices: Web Push
+      resource: "Recursos"
+      agent: "Protocolo del nodo"
+      ingress: "Entrada"
+      traces: "Trazas"
+      system: "Configuración del sistema"
+
   events:
     core: Núcleo
     intro: 'Los eventos son el origen de todo. Cada cambio externo entra aquí y el hub lo despacha en cadenas de tareas según la tabla de destinos.'
@@ -878,6 +924,15 @@ docs:
     reconnect:
       title: Reconectar y reanudar
       desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
+  v4:
+    five_specs: "Los endpoints vienen de cinco specs v4: resource / events / agent / ingress / auth. Sin integración, la lista está realmente vacía, no muestra endpoints antiguos."
+    missing: "Cinco specs v4 aún no cargadas"
+    ingress: "Entrada de eventos por namespace (no crea recurso)"
+    node: "anode: ejecución y configuración local"
+    node_note: "Registre Node y emita identidad duradera. Se intersectan namespaces declarados y autorizados; install nunca registra. No hay comandos antiguos, rutas por puerto ni priority."
+    resource: "Recursos por namespace y CAS"
+    resource_note: "Lea KindList.items. Cree con apiVersion/kind/metadata/spec. Edite campos escribibles y metadata.resourceVersion; ausencia400, obsoleto409 conserva borrador. DELETE usa query resourceVersion."
+
 cliauth:
   title: Autorización de dispositivo CLI
   back_home: Volver al panel
@@ -1145,294 +1200,233 @@ events:
     end: Se alcanzó lo más antiguo
     no_match: 'Sin coincidencias en esta página: avanza a más antiguos o vuelve a lo más reciente'
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
+  v4:
+    dedup: "deliveryId deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
+    refresh: "Actualizar"
+    namespace: "Espacio de nombres"
+    source: "Objeto / fuente"
+    limit: "Tamaño de página"
+    filter: "Aplicar filtros"
+    loading: "Cargando datos…"
+    more: "Cargar más"
+    trace: "Abrir traza"
+    event_uid: "UID del evento (no deliveryId)"
+    received: "Recibido"
+    dispatched: "Tareas enviadas"
+    details: "Detalles de envío / poda / carga"
+    empty: "No hay eventos en este espacio con estos filtros."
+    count: "Mostrando {n} eventos únicos"
+
 caps:
-  title: Capacidades
-  step_pick: Elegir plantilla
-  step_fill: Rellenar y crear
-  sidebar: 'Se crea aquí, se ejecuta en los nodos'
-  subtitle: 'Una capacidad es "qué hacer" (no "cómo"). Créalas y despliégalas aquí, y define sus destinos.'
+  title: 'Capacidades'
+  sidebar: 'Se crean aquí, se ejecutan en los nodos'
+  subtitle: 'Una capacidad declara tres cosas: qué recibe (params), a quién se lo entrega (next) y cómo se ejecuta (run). Todo se ejecuta en los nodos.'
   new: 'Nueva capacidad'
-  loading: Cargando capacidades…
-  load_failed: 'No se pudo cargar la lista de capacidades, actualiza la página'
-  empty: 'Aún no hay capacidades. Crea una para que los nodos puedan declararla.'
+  refresh: 'Actualizar'
+  search: 'Buscar'
+  search_ph: 'name / nombre visible / destino'
+  filter_label: 'Filtrar'
   count: '{n} capacidades'
-  source_builtin: 'Integrado'
-  declared_by: Declarada por
-  no_node: Ningún nodo la declara
-  no_node_hint: Esta capacidad no puede ejecutarse hasta que un nodo la declare
-  by_hub: Se ejecuta en el hub, sin nodo
-  by_none: Origen de eventos, no ejecuta código
-  any_event_type: Cualquier tipo de evento (origen)
-  rename: Renombrar
-  name_it: Ponerle nombre
-  save: Guardar
-  cancel: Cancelar
-  rename_ph: Ponle un nombre, por ejemplo "Analizar PR"
-  rename_failed: No se pudo renombrar
-  renamed: Nombre actualizado
-  tpl:
-    title: 'Nueva capacidad'
-    intro: 'Primero elige una plantilla. Es solo un script predefinido: tanto los campos como el cuerpo del script se pueden editar después.'
-    cat_script: 'Script'
-    cat_agent: 'Agente'
-    requires: 'Requiere: {list}'
-    no_requires: 'Sin dependencias externas'
-    timeout_default: 'por defecto {n} s'
-    back: 'Cambiar plantilla'
-    params: 'Parámetros'
-    no_params: 'Esta plantilla no tiene parámetros'
-    required: 'obligatorio'
-    files: Archivos
-    files_hint: 'Cada archivo forma parte de la capacidad. El archivo de entrada se ejecuta directamente (sin shell), así que su primera línea debe ser un shebang #!.'
-    file_ph: 'p. ej. lib/helper.sh'
-    file_add: Añadir archivo
-    file_pick_hint: Haz clic para editar este archivo
-    file_set_entry: Marcar como entrada
-    file_del: Eliminar este archivo
-    file_err_empty: El nombre del archivo no puede estar vacío
-    file_err_long: El nombre del archivo es demasiado largo
-    file_err_slash: 'Usa una ruta relativa separada por / (sin barras invertidas)'
-    file_err_abs: 'Debe ser una ruta relativa (no puede empezar por /)'
-    file_err_empty_seg: 'La ruta contiene un segmento vacío (//)'
-    file_err_dotdot: 'La ruta no puede contener segmentos . ni ..'
-    file_err_dup: 'Ya existe un archivo con ese nombre: {name}'
-    file_err_none: 'Se requiere al menos un archivo: es la implementación'
-    file_err_no_entry: El archivo de entrada no está en la lista
-    script_view: 'Solo lectura'
-    script_edit: 'Editar script'
-    schema_advanced: "Contrato de parámetros"
-    schema_toggle: "Editar JSON"
-    schema_visual: "Visual"
-    schema_add_row: "+ Añadir un parámetro"
-    schema_rows_empty: "Aún no hay parámetros. Una capacidad sin parámetros acepta cualquier entrada (contrato vacío)."
-    schema_more: "Más"
-    schema_less: "Menos"
-    schema_required: "Obligatorio"
-    field_default: "por defecto {v}"
-    schema_key: "Nombre del parámetro"
-    schema_type: "Tipo"
-    schema_type_any: "Cualquier tipo"
-    schema_type_enum: "Enum (string)"
-    schema_enum: "Valores del enum (separados por comas)"
-    schema_del: "Eliminar este parámetro"
-    schema_extra_note: "{keys} no se puede expresar con estas filas y se conserva tal cual (visible en la vista JSON)"
-    schema_json_only: "Este contrato tiene formas que el editor visual no puede expresar (tipo array / items anidados / enum numérico), así que solo se puede editar como JSON"
-    schema_err_key_empty: "El nombre del parámetro no puede estar vacío"
-    schema_err_key_blank: "El nombre del parámetro no puede contener espacios: {name}"
-    schema_err_key_env: "Los nombres {a} y {b} se normalizan a la misma variable de entorno {env}"
-    schema_err_key_dupe: "Nombre de parámetro duplicado: {name}"
-    schema_err_num: "{field} debe ser un número"
-    schema_err_range: "{a} no puede ser mayor que {b}"
-    schema_err_pattern: "Regex inválida: {msg}"
-    schema_err_enum: "Si eliges \"Enum\" debes dar al menos un valor"
-    schema_err_many: "Hay {n} campos incompletos en el contrato de parámetros (ver las filas marcadas en rojo)"
-    schema_err_switch: "Este contrato tiene formas que el editor visual no puede expresar (tipo array / items anidados / enum numérico); sigue editándolo como JSON"
-    schema_hint: "Las filas visuales cubren las restricciones más comunes; cambia a \"Editar JSON\" para lo demás. Mientras no lo toques, el contrato sigue los campos de la plantilla (dejar el JSON vacío significa lo mismo). Se admite un subconjunto controlado de JSON Schema (type/properties/required/enum/minLength/pattern…, sin $ref / if-then-else)."
-    script_shebang_err: 'El script debe empezar por #!'
-    loading: 'Cargando plantillas…'
-    load_failed: 'No se pudieron cargar las plantillas: '
-    empty: 'El backend no devolvió ninguna plantilla'
-    created: 'Capacidad creada'
-    created_digest: 'Creada · huella de contenido {digest}'
+  load_failed: 'No se pudo cargar la lista de capacidades'
+  empty_title: 'Aún no hay capacidades'
+  empty: 'Este espacio de nombres no tiene capacidades. Crea una para que los nodos puedan declararla.'
+  no_match: 'Ninguna capacidad coincide'
+  ready: 'Lista'
+  not_ready: 'No lista'
+  ready_unknown: 'Estado desconocido'
+  terminal_short: 'Capacidad terminal (termina al ejecutarse)'
+  cond:
+    Deployed: 'Desplegado'
+    DownstreamResolved: 'Destinos resueltos'
+    Implemented: 'Implementación'
+    NodesAvailable: 'Nodos disponibles'
+    none: 'El servidor no devolvió condiciones'
+    title: 'Cuatro condiciones (derivadas al leer)'
+  conflict:
+    body: 'El resourceVersion actual del servidor es {rv}; tus datos locales siguen aquí. Recargar lo último descarta los cambios locales.'
+    reload: 'Recargar lo último (descartar cambios locales)'
+    reloaded: 'Se cargó la última versión'
+    title: 'Este recurso cambió en otro sitio (409 resource_version_conflict)'
+  delete:
+    body: '¿Eliminar «{name}»? Solo se elimina esta capacidad y no se propaga nada: otras capacidades u orígenes que la referencien dejarán de resolverse (se informa en status).'
+    conflict: 'Esta capacidad acaba de cambiar en otro sitio (409). Se recargó el resourceVersion {rv}; confirma y pulsa eliminar otra vez. Sin reintento automático.'
+    deleting: 'Eliminando…'
+    rv: 'resourceVersion actual: {rv}'
+    submit: 'Eliminar'
+    title: 'Eliminar capacidad'
   deploy:
     col: 'Despliegue'
-    status_applied: 'Desplegada en {n}'
-    status_pending: 'Desplegando en {n}'
-    status_failed: '{n} con fallo'
-    status_local: '{n} variante(s) local(es)'
-    status_none: 'Sin desplegar'
-    status_unknown: '—'
-    btn: 'Desplegar'
-    title: 'Desplegar «{name}»'
-    subtitle: 'Marca nodos o elige por tag y pulsa Desplegar.'
-    pick_hint: 'Nodos'
-    tag_pick: 'Elegir por tag'
-    node_digest: 'Desplegada {digest}'
-    node_none: 'Sin desplegar'
-    push: 'Desplegar'
-    pushing: 'Desplegando…'
-    close: 'Cerrar'
-    undo: 'Quitar'
-    undone: 'Despliegue quitado'
-    undo_failed: 'No se pudo quitar: '
+    hint: 'Guardar o instalar un paquete no despliega nada; el despliegue solo ocurre con este botón.'
+    nodes: 'Nodos objetivo'
+    nodes_empty: 'No hay nodos candidatos; puedes enviar sin seleccionar (lo decide el servidor).'
+    nodes_hint: 'Sin selección = el servidor elige candidatos con la política actual.'
     pushed: 'Desplegado'
-    queued: 'En cola (nodo desconectado)'
-    queued_other: 'En cola'
-    nodes_failed: 'No se pudo cargar la lista de nodos, inténtalo más tarde'
     result_title: 'Resultado del despliegue'
-    none_selected: 'Selecciona al menos un nodo'
-    no_nodes: 'Este espacio de nombres aún no tiene nodos'
-    err: 'Fallo al desplegar: '
-    builtin: Lo ejecuta el hub — no requiere despliegue
-    builtin_hint: 'El ejecutor integrado {name} corre dentro del proceso del hub; no necesita ni admite despliegue en nodos'
-  list:
-    title: Capacidades
-  form:
-    display_name: Nombre visible
-    display_name_ph: "p. ej. «Analizar PR», «Desplegar a staging»"
-    display_name_hint: Se muestra en la interfaz. Si lo dejas vacío se usa el nombre técnico.
-    name: Nombre de la capacidad
-    name_hint: 'Nombre técnico: lo usan nodos, destinos y logs. No se puede cambiar después.'
-    outputs: 'Salidas'
-    outputs_optional: '(opcional)'
-    outputs_ph: 'approved, needs-fix (vacío = una sola salida interna)'
-    outputs_hint: 'Nombres de salida que declara esta capacidad, separados por comas; los destinos solo pueden apuntar a ellos. Vacío = una sola salida interna (se entrega directamente al destino). Forman parte del contrato de la capacidad: cambiarlos requiere una versión nueva.'
-    outputs_bad: 'Nombre de salida no válido: {name} (solo letras, dígitos, punto, guion bajo y guion, 1–32 caracteres)'
-    downstream: Capacidades destino (candidatas)
-    downstream_optional: opcional
-    downstream_ph: script.echo, notify.phone
-    downstream_hint: A quién se entrega al terminar. Varias = candidatas, en ejecución se elige una por prioridad; vacío = capacidad terminal (termina y ya).
-    downstream_missing: 'No existe la capacidad: {names}'
-    downstream_cands_hint: 'Haz clic para añadir:'
-    downstream_cands_empty: 'Aún no hay capacidades destino para elegir (crea una, o ponle nombre a otra tarjeta arriba).'
-    cand_add: Añadir como destino
-    cand_picked: Seleccionada
-    cards_title: Capacidades de este lote
-    cards_hint: 'Crea varias capacidades a la vez: cada tarjeta tiene su propio destino, parámetros y script; se escriben en una sola transacción (todo se crea o no se crea nada).'
-    card_add: ＋ Añadir otra capacidad
-    card_remove: Eliminar esta capacidad
-    card_n: 'Capacidad {n}'
-    card_unnamed: Sin nombre
-    card_editor: 'Editando: capacidad {n} de {total}'
-    card_down: 'Posterior: {names}'
-    card_name_dupe: 'Nombre de capacidad duplicado en el lote: {name}'
-    card_err_field: 'Capacidad {n} / {field}: {reason}'
-    card_err_generic: 'Capacidad {n}: {reason}'
-    cand_hint: En ejecución se elige un solo candidato por prioridad; los empates rotan (el número menor gana).
-    cand_batch_tag: (este lote)
-    batch_created: 'Se crearon {caps} capacidades · {m} destinos'
-    batch_failed: 'Error al crear el lote (no se guardó nada): '
-    created_with_edges: 'conectados {n} destinos'
-    link_rejected: 'El destino n.º {n} → {to} no es válido; no se creó nada: {reason}'
-    schema: Validación de parámetros (JSON Schema)
-    schema_hint: Solo un subconjunto controlado (sin $ref / if-then-else); el hub nunca evalúa expresiones.
-    cancel: Cancelar
-    submit: Crear
-    created: Capacidad creada
-    create_failed: 'Error al crear: '
-    err_name: Introduce un nombre de capacidad
-    err_schema: paramsSchema no es JSON válido
-    schema_mode_form: Formulario
-    schema_mode_json: JSON
-    schema_add_field: Añadir campo
-    schema_no_extra: Prohibir campos no declarados
-    schema_field_name: Nombre del campo
-    schema_required: Obligatorio
-    schema_enum: Valores enum, separados por comas (opcional)
-    schema_no_fields: Aún no hay campos. Añade uno abajo.
-    schema_dup: Nombre de campo duplicado
-    schema_preserved: 'Esto no se puede editar visualmente y se conservará tal cual:'
-    schema_form_hint: Solo usa palabras clave que el backend admite (type / properties / required / enum / rangos). Cambia a JSON para objetos anidados y arreglos.
-    err_schema_obj: paramsSchema debe ser un objeto JSON
-    timeout: 'Tiempo límite (segundos)'
-    timeout_hint: '0 = sin límite local, lo controla el lease del hub'
-    err_invalid_name: 'El nombre debe tener 1–63 caracteres en minúsculas, dígitos, punto, guion bajo o guion, empezando por letra o dígito'
-    err_timeout: 'El tiempo límite debe ser un entero entre 0 y 86400'
-    workdir: Directorio de trabajo
-    workdir_hint: 'Ruta absoluta que empieza por /, o una ruta que empieza por ~/ (la ~ se expande en el nodo al directorio home del usuario del agent); si no existe, la tarea falla directamente (no se vuelve a un directorio por defecto). Vacío = un directorio nuevo por tarea.'
-    env: Variables de entorno
-    env_hint: 'Un valor vacío significa que lo aporta el entorno del nodo (p. ej. GH_TOKEN). El prefijo ANOTIFY_ está reservado.'
-    env_add: + Añadir variable
-    env_value_ph: Valor (vacío = lo aporta el entorno del nodo)
-    env_del: Eliminar esta variable
-    env_err_key: El nombre de la variable no puede estar vacío
-    env_err_name: 'Los nombres solo admiten letras, dígitos y guiones bajos, y no pueden empezar por dígito'
-    env_err_reserved: El prefijo ANOTIFY_ está reservado por el contrato y no se puede sobrescribir
-    env_err_dupe: 'Variable de entorno duplicada: {key}'
+    submit: 'Confirmar despliegue'
+    submitting: 'Desplegando…'
+    title: 'Despliegue manual de {name}'
+    version: 'Versión objetivo'
   detail:
-    btn: Detalles
-    params: Contrato de parámetros
+    btn: 'Detalles'
+    delete: 'Eliminar'
+    deploy: 'Desplegar'
+    edit: 'Editar'
+    hide: 'Ocultar'
     outputs: 'Salidas (qué puede emitir)'
-    no_outputs: 'Sin salidas — termina y no activa ningún destino.'
-    implicit_output: 'Una sola salida interna (no se le pone nombre aquí)'
-    no_params: Sin parámetros
-    downstream: Posteriores (candidatas)
-    no_downstream: 'Termina al acabar: no se dispara ninguna capacidad destino.'
-    cand_prio_hint: 'Prioridad {n} · editar para cambiar'
-    edges_failed: 'No se pudo cargar la lista de destinos, estado del destino desconocido'
-    inbound: Quién me alimenta
-    no_inbound: 'Sin entradas — los eventos no llegan aquí'
-    me: yo
-    source_prefix: Origen
-    follow: Sigue la última
-    pinned: Versión fijada
-    unresolved: 'Sin resolver: {ref}'
-    literals: 'Constantes {json}'
-    runtime: Ejecución
-    timeout: Tiempo límite
-    workdir: Directorio de trabajo
-    workdir_default: Un directorio por tarea
-    lifecycle: Ciclo de vida
-    lifecycle_default: Por defecto (sin declarar)
-    sticky: Enrutado fijo
-    source: Tipo de capacidad
-    source_builtin: Integrada
-    source_custom: Personalizada
-    hash: Hash de contenido
-    copy: Copiar
-    unknown: '—'
-    script: Script
-    script_entrypoint: entrada
-    script_failed: No se pudo cargar el script
-    retry: Reintentar
-    executor: Ejecutor
-    executor_builtin: 'Integrado {name} (lo ejecuta el hub)'
-    script_builtin: 'Ejecutor integrado {name}: la implementación está compilada en el proceso del hub, así que no hay archivos de script'
-  edit:
-    btn: Editar
-    title: 'Nueva versión: {name}'
-    banner: 'Se creará {ref}'
-    from_version: 'Copiado de {ref}'
-    sticky_carried: 'Enrutado fijo {v}'
-    lifecycle_carried: 'Ciclo de vida {v}'
-    name_locked: 'Nombre bloqueado: esta versión mantiene el mismo nombre. Renombrar significa otra capacidad.'
-    multi_output_note: 'Esta capacidad se ramifica por más de un camino de destino (datos antiguos): la estructura se conserva tal cual y no se edita aquí.'
-    submit: Publicar nueva versión
-    publishing: Publicando…
-    failed: 'Error al publicar: '
-    created: 'Publicado {ref}'
-    impact_title: 'Esta versión rompe destinos existentes'
-    impact_changes: Qué cambió
-    impact_links: 'Destinos que se romperán (apuntan al nombre, así que la nueva versión es su destino)'
-    impact_no_links: 'Ningún destino que sigue la última se ve afectado'
-    force: Publicar igualmente
-    artifact_failed: No se pudo cargar la implementación; no se puede publicar (se perderían archivos)
-    builtin_locked: 'Capacidad integrada ejecutada por el hub: la implementación vive en el hub y no se puede editar aquí'
-  add:
-    btn: destino
-    title: 'Añadir destino'
-    target_ph: Elige una capacidad destino (con búsqueda)
-    literals_ph: 'Sobrescritura de constantes (opcional), p. ej. {"urgent":true}'
-    save: Guardar
-    cancel: Cancelar
-    created: 'Destino creado'
-    failed: 'No se pudo crear el destino: '
-    err_target: Elige una capacidad destino
-    err_self: Una capacidad no puede enlazarse consigo misma
-    err_literals: Las constantes deben ser un objeto JSON
-  down:
-    add_ph: Escribe el nombre de una capacidad y pulsa Enter (con búsqueda)
-    name_ph: Nombre de la capacidad
-    prio: Prioridad
-    prio_hint: Menor se despacha antes; vacío = 0
-    del: Quitar este destino
-    empty: 'Aún no hay destinos: esta capacidad termina al ejecutarse (terminal).'
-    save: Guardar destinos
-    saving: Guardando…
-    saved: Destinos guardados (sin nueva versión)
-    save_failed: 'No se pudieron guardar los destinos: '
-    dirty: Hay cambios de destinos sin guardar
-    hint_edit: Editar los destinos no crea una versión nueva — solo cambia el destino y la prioridad.
-    hint_keep_ref: Escribe la referencia como name (sigue la última) o name@2 (versión fijada).
-    err_unknown: 'No se encontró la capacidad destino: {ref}'
-    err_self: Una capacidad no puede enlazarse a sí misma
-    err_duplicate: Ese destino ya está en la lista
-    err_too_many: Como máximo 100 destinos
-    err_priority: La prioridad debe ser un entero entre 0 y 1000
-    err_notfound: No se encontró la capacidad (puede haberse eliminado)
-    err_removed: 'El endpoint antiguo está cerrado: edita los destinos en Editar capacidad → destinos'
-    need_target: Elige primero una capacidad destino
-    current_version_note: Todas las versiones comparten estos destinos — publicar una nueva versión no los toca.
+    rv: 'resourceVersion'
+    script: 'Script (run.files)'
+    script_empty: 'Esta capacidad no tiene archivos de script'
+    script_entry: 'Archivo de entrada'
+    versions: 'Historial de versiones'
+    versions_hide: 'Ocultar versiones'
+  error:
+    immutable: 'Esta versión explícita ya existe con otro cuerpo: cambiar run/params/requires/lifecycle/concurrency requiere una versión nueva (next/displayName son la excepción).'
+    title: 'Error al guardar: {reason}'
+  filter:
+    all: 'Todas'
+    not_ready: 'No listas'
+    ready: 'Listas'
+  form:
+    batch_created: 'Se crearon {caps} capacidades · {m} destinos'
+    cancel: 'Cancelar'
+    concurrency: 'Concurrencia por nodo'
+    concurrency_hint: 'spec.concurrency.maxPerNode (por defecto 1).'
+    create_title: 'Nueva capacidad'
+    current_version: 'Versión actual: v{v}'
+    display_name: 'Nombre visible'
+    display_name_hint: 'Solo presentación; no entra en la huella de contenido.'
+    display_name_ph: 'p. ej. «Analizar PR»'
+    downstream: 'Capacidades destino (candidatas)'
+    edit_title: 'Editar capacidad {name}'
+    entrypoint: 'Archivo de entrada'
+    entrypoint_hint: 'Debe ser una ruta de files.'
+    entrypoint_none: 'Añade primero un archivo'
+    env: 'Variables de entorno'
+    env_add: 'Añadir fila'
+    env_del: 'Eliminar'
+    env_empty: 'Sin variables de entorno'
+    env_hint: 'vars.* también debe declararse en requires.values; los valores solo están en el nodo, el hub no los guarda.'
+    env_key: 'Nombre'
+    env_literal: 'Literal'
+    env_value: 'Valor (cadena vacía es cadena vacía)'
+    env_valuefrom: 'Tomar de un campo'
+    err_concurrency: 'La concurrencia por nodo debe ser un entero >= 1'
+    err_entrypoint: 'La entrada debe ser una ruta de files'
+    err_env_dupe: 'Variable de entorno duplicada: {k}'
+    err_env_key: 'Nombre de variable de entorno no válido: {k}'
+    err_env_path: '{k} necesita un fieldPath'
+    err_env_reserved: '{k} usa el prefijo reservado ANOTIFY_'
+    err_files: 'files necesita al menos un archivo'
+    err_json: 'El contrato de parámetros no es JSON válido: {msg}'
+    err_json_type: 'El contrato de parámetros debe ser un objeto JSON (JSON Schema)'
+    err_max_attempts: 'Los intentos máximos deben ser un entero >= 1'
+    err_name: 'Nombre no válido: minúsculas/dígitos/punto/guion bajo/guion, 1-63 caracteres, empieza por letra o dígito'
+    err_next: 'Referencia de destino no válida: {ref}'
+    err_next_many: 'Como máximo 32 destinos'
+    err_requires_value: 'requires.values solo acepta vars.NAME: {v}'
+    err_result_ttl: 'La retención del resultado debe ser un entero >= 0'
+    err_timeout: 'El tiempo de ejecución debe ser un entero >= 0'
+    err_version: 'La versión debe ser un entero >= 1'
+    file_add: 'Añadir archivo'
+    file_del: 'Eliminar archivo'
+    file_path: 'Ruta relativa, p. ej. run.sh'
+    files: 'Archivos'
+    files_hint: 'La primera línea de la entrada debe ser #! shebang; cada archivo forma parte de la capacidad.'
+    idempotent: 'Permitir reintentos automáticos (idempotente)'
+    idempotent_hint: 'Actívalo solo si es idempotente; si no, un fallo es terminal.'
+    lifecycle: 'Ciclo de vida (lifecycle)'
+    max_attempts: 'Intentos máximos'
+    name: 'Nombre de la capacidad'
+    name_hint: 'Minúsculas, dígitos, punto, guion bajo y guion; empieza por letra o dígito. No se puede cambiar después.'
+    name_ph: 'review'
+    name_readonly: 'El nombre no se puede cambiar (renombrar = crear otra capacidad)'
+    next: 'Destinos (uno por línea, nombre o name@version)'
+    next_bad: 'Referencia no válida: {ref}'
+    next_hint: 'Vacío = capacidad terminal (termina al ejecutarse); cambiar destinos no crea versión nueva.'
+    next_missing: 'No se resuelve (al crear, el servidor lo rechaza)'
+    next_ph: 'Uno por línea: fixer o notify@2'
+    next_pinned: 'Fijado a v{v} (actual v{cur})'
+    next_terminal: 'Vacío = capacidad terminal: termina al ejecutarse'
+    params: 'Contrato de parámetros (JSON Schema)'
+    params_hint: 'Objeto JSON Schema; entra en la huella de contenido y cambiarlo crea una versión nueva.'
+    requires_commands: 'Comandos del nodo (uno por línea)'
+    requires_hint: 'Los nodos deben tener estos comandos instalados (se comprueba con LookPath).'
+    requires_values: 'Valores del nodo (vars.NAME por línea)'
+    requires_values_hint: 'Los nodos deben resolver estos valores (local -> nodo -> espacio de nombres).'
+    result_ttl: 'Retención del resultado (s)'
+    result_ttl_hint: '0 = no se limpia nunca.'
+    save: 'Guardar'
+    saving: 'Guardando…'
+    submit: 'Crear'
+    timeout: 'Tiempo de ejecución (s)'
+    timeout_hint: '0 = sin límite de ejecución local.'
+    version: 'Versión'
+    version_edit_hint: 'Vacío = direccionamiento por contenido (cambiar el cuerpo crea versión nueva); una versión explícita es inmutable.'
+    version_hint: 'Vacío = direccionamiento por contenido (asigna/reutiliza); una versión explícita es inmutable.'
+    workdir: 'Directorio de trabajo'
+    workdir_hint: 'Puede incluir $(vars.X) o $(params.X); vacío = un directorio por tarea.'
+  meta:
+    installed_from: 'Origen de instalación'
+    next: 'Destinos'
+    nodes: 'Nodos {total} (actual {deployed} · antiguo {stale} · sin desplegar {missing})'
+  nodes:
+    deployed: 'digest actual'
+    empty: 'No hay nodos candidatos (ningún nodo está autorizado en este espacio de nombres)'
+    missing: 'sin desplegar'
+    stale: 'digest antiguo'
+    title: 'Estado en los nodos'
+  observed:
+    emits: 'Registro de envíos'
+    emits_empty: 'Esta ejecución no envió nada'
+    empty: 'No hay historial conservado (tras la limpieza observed queda vacío; no se inventan fechas)'
+    fields: 'Campos: {f}'
+    no_fields: 'Sin campos'
+    pruned: 'Rastro de poda'
+    pruned_empty: 'Esta ejecución no podó nada'
+    task: 'Última tarea'
+    tasks: 'Tareas totales'
+    tasks_failed: 'Fallidas'
+    title: 'Rastro de la última ejecución (observed)'
+  resolved:
+    empty: 'Capacidad terminal: termina al ejecutarse y no entrega a ningún destino'
+    missing: 'No se resuelve'
+    no_params: 'Sin parámetros'
+    not_ready: 'No ejecutable'
+    params_required: 'Parámetros necesarios: {p}'
+    ready: 'Ejecutable'
+    title: 'Resolución de destinos (resolved.next)'
+  spec:
+    commands: 'Comandos'
+    concurrency: 'Concurrencia por nodo'
+    digest: 'huella de contenido'
+    entrypoint: 'Entrada'
+    env: 'Variables de entorno (env)'
+    files: 'Archivos'
+    idempotent: 'Idempotente'
+    installed_from: 'Origen de instalación'
+    max_attempts: 'Intentos máximos'
+    next: 'Destinos (next)'
+    params: 'Contrato de parámetros (JSON Schema)'
+    result_ttl: 'Retención del resultado (s)'
+    timeout: 'Tiempo de ejecución (s)'
+    title: 'Definición (spec)'
+    valuefrom: 'Tomado de'
+    values: 'Valores'
+    version: 'Versión'
+    workdir: 'Directorio de trabajo'
+    workdir_default: 'Sin definir (un directorio por tarea)'
+  toast:
+    created: 'Capacidad {name} creada'
+    deleted: 'Capacidad {name} eliminada'
+    deployed: 'Desplegado ({n} nodos)'
+    saved: 'Capacidad {name} guardada'
+  versions:
+    load: 'Cargar historial de versiones'
+    body_empty: 'Esta versión no tiene scripts que mostrar'
+    close: 'Ocultar contenido'
+    current: 'Actual'
+    empty: 'El servidor no devolvió historial de versiones'
+    open: 'Ver contenido'
 prune:
   no_edge: sin candidato conectado
   no_capability: la capacidad destino no existe
@@ -1548,7 +1542,149 @@ nodes:
     copy_install: Copiar comando
     yaml_workdir_note: 'El directorio de trabajo se define en la propia capacidad (página Capacidades, run.workDir) y baja con el despliegue; este yaml no lo necesita.'
   emptyTitle: 'Aún no hay nodos'
+  v4:
+    copy: "Copiar"
+    title: "Nodos y configuración"
+    subtitle: "Identidad del clúster · declarado ∩ permitido · configuración real"
+    register: "Registrar nodo"
+    name: "Nombre único del clúster"
+    create: "Crear y emitir token de identidad"
+    cancel: "Cerrar y borrar texto plano"
+    refresh: "Actualizar datos"
+    loading: "Cargando…"
+    empty: "No hay nodos. Registre, emita un token e instale localmente."
+    token: "Token de identidad del nodo"
+    token_warning: "El texto plano se devuelve solo ahora. Identidad duradera, no bootstrap de un uso ni expiresAt. La rotación invalida tokens y sesiones anteriores. No lo incluya en URL, registros ni vars."
+    rotate: "Rotar token de identidad"
+    rotate_confirm: "¿Rotar identidad de {name}? El token y la autorización de sesiones antiguas se invalidan inmediatamente. Actualice la configuración local."
+    local_setup: "Configuración local y tres comandos públicos"
+    setup_hint: "Guarde anode.yaml antes de install o serve. Usa un token emitido; nunca registra automáticamente. vars no son secretos. envPassthrough queda local; PATH, HOME y ANOTIFY_ están prohibidos. No se suben listas ni valores. ANOTIFY_ARTIFACT_DIR muestra nombre/origen, no rutas absolutas."
+    online: "En línea"
+    offline: "Sin conexión"
+    unknown: "Desconocido (sin declaración local explícita)"
+    occupied: "Ocupado (ejecución, reserva o recuperación)"
+    idle: "Libre (busy=false)"
+    slots: "Estado físico de ranuras"
+    slot_note: "Solo busy=false en una ranura válida implica libre; slot 0 es válido. Una tarea terminal no prueba recuperación física. La ausencia de busy/instances nunca implica libre."
+    effective_namespaces: "Namespaces efectivos (declarado ∩ permitido)"
+    authorized: "Namespaces permitidos"
+    none: "Ninguno"
+    config: "Valores predeterminados del nodo"
+    vars: "vars (JSON no secreto nombre → texto)"
+    limits: "limits (solo local + nodo)"
+    save: "Guardar con CAS actual"
+    reload: "Recargar última configuración explícitamente"
+    reload_confirm: "Recargar reemplaza su borrador. ¿Continuar?"
+    saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
+    stale: "409: CAS obsoleto; borrador conservado exactamente. Recargue explícitamente antes de reintentar."
+    error: "Solicitud fallida"
+    loaded: "Configuración actual cargada; resourceVersion solo es token CAS."
+    pending: "ConfigPending: configuración de nodo aún no aplicada"
+    applied: "Revisiones de nodo coinciden (no la revisión del namespace)"
+    revision: "Estado de configuración y aplicación"
+    override_stale: "overrideStale: valor inferior cambió; sigue prevaleciendo el local"
+    context: "Contexto namespace para valores efectivos"
+    effective_vars: "vars efectivos (local > node > namespace, origen por clave)"
+    machine_vars: "vars aplicados de nodo (sin valores de namespace)"
+    source: "Origen"
+    key: "Nombre / campo hoja"
+    value: "Valor"
+    ns_config: "Configuración vars del namespace (sin limits)"
+    ns_hint: "Se resuelve para la siguiente tarea del namespace; nunca entra en applied de nodo."
+    retention: "Retención del sistema (administrador)"
+    retention_hint: "Los valores actuales vienen de GET, nunca de supuestos. Segundos; 0 es permanente. Valores iniciales: registros/artefactos 604800, eventos/tareas terminales 2592000. Tareas activas y referencias protegidas; workDir nunca se elimina."
+    admin_only: "Solo administradores pueden leer o editar retención del sistema."
+    drain: "Drenar nodo"
+    drain_confirm: "¿Drenar {name}? Detiene nuevas tareas; la ocupación existente espera recuperación real."
+    upgrade: "Solicitar actualización"
+    upgrade_confirm: "¿Solicitar actualización de {name}? Puede reemplazar y reiniciar el binario. Solo se muestran resultados reales."
+    action_done: "Acción aceptada: "
+    not_found: "Nodo inexistente; vuelva a la lista del clúster."
+    back: "Volver a nodos"
+    tasks: "Tareas recientes del namespace"
+    artifacts: "Estado real de despliegues de capacidades"
+    batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
+
 sources:
+  v4:
+    new: "Nueva fuente"
+    edit: "Editar fuente"
+    close: "Cerrar"
+    save: "Guardar"
+    reload: "Recargar recurso actual"
+    detail: "Detalles de la fuente"
+    back: "Volver a fuentes"
+    intro: "Las fuentes producen eventos; las capacidades reciben parámetros. El gráfico de configuración no demuestra una ejecución correcta."
+    loading: "Cargando…"
+    empty: "No hay fuentes. Una entrada sin destinos es válida."
+    name: "Nombre del recurso · metadata.name"
+    display: "Nombre visible (opcional)"
+    kind: "Tipo de fuente · spec.kind"
+    immutable: "El nombre y tipo no se pueden cambiar; elimina y vuelve a crear."
+    expr: "Expresión cron (cinco campos)"
+    tz: "Zona IANA (por defecto Local)"
+    token: "Nuevo token (solo escritura)"
+    secret: "Nuevo secret HMAC (solo escritura)"
+    sample: "Ejemplo · config.sample (no se despacha)"
+    blank_credentials: "En edición se omiten token/secret vacíos para conservar las credenciales. Solo se leen hookUrl/secretSet."
+    hmac: "El POST externo usa {type?, id?, payload?}. Con secret, firma los bytes originales con HMAC-SHA256 y X-Anotify-Signature: sha256=<hex>. Firma ausente o inválida: 401 sin eventos."
+    payload: "Carga estática · config.payload (objeto JSON)"
+    schema: "Contrato · config.payloadSchema (opcional)"
+    schema_hint: "Cada entrega valida payloadSchema. Si no cumple se almacena con poda event_schema, sin despacho."
+    targets: "Capacidades destino · targets"
+    add_target: "Añadir destino"
+    remove_target: "Quitar destino"
+    capability: "Referencia de capacidad (nombre o nombre@versión)"
+    params: "Objeto de parámetros · targets[].params"
+    params_hint: "Usa constantes, $(payload.x), $(payload.items.0.x) o concatenación. La referencia completa conserva el tipo; las rutas ausentes se podan. Los valores por defecto son del schema de capacidad. Destinos vacíos son válidos."
+    enabled: "Activada"
+    disabled: "Desactivada"
+    enable: "Activar"
+    disable: "Desactivar"
+    override: "Sobrescribir carga (objeto JSON, opcional)"
+    omitted: "Vacío omite payload. Cron/manual usan la carga configurada con sobrescritura superficial. Webhook usa {}; sample solo orienta."
+    suggestions: "Campos sugeridos (clic para copiar referencia)"
+    suggest_dry: "De la carga de vista previa"
+    suggest_event: "Del evento real más reciente"
+    suggest_sample: "De config.sample (solo sugerencia)"
+    suggest_schema: "De payloadSchema.properties"
+    suggest_payload: "De config.payload"
+    preview: "Resultado de vista previa (sin persistencia)"
+    receipt: "Recibo de aceptación"
+    accepted: "Evento aceptado; no significa que las tareas hayan tenido éxito."
+    duplicate: "deliveryId duplicado: evento/trace original, sin volver a despachar ni garantizar éxito."
+    dedup: "deliveryId se deduplica 30 días por defecto. Mismo origen/id significa aceptado, no éxito posterior. Usa otro id para cambios o reejecución. Tras vencer el plazo se acepta otra vez. Sin API replay."
+    no_target: "Sin destinos es válido: evento/trace y poda no_target, sin tareas."
+    event_id: "ID del evento"
+    fire: "Ejecutar ahora"
+    saved_dry: "Vista previa de fuente guardada"
+    draft_dry: "Vista previa de borrador (sin guardar)"
+    namespace: "Espacio de nombres"
+    rv: "resourceVersion (token CAS)"
+    health: "Estado de salud"
+    resolved: "targetsResolved (booleano)"
+    last_fire: "Última ejecución"
+    next_fire: "Próxima ejecución"
+    last_error: "Último error"
+    installed: "Instalado desde · installedFrom"
+    config: "Configuración y estado"
+    edges: "Proyección de destinos v4"
+    graph: "Configuración posterior"
+    graph_hint: "El gráfico muestra referencias v4, no puertos, prioridades, mapeos independientes ni estado de ejecución."
+    graph_error: "No se cargó el gráfico; recarga."
+    recent: "Eventos y ejecuciones recientes"
+    no_events: "Todavía no hay eventos."
+    no_name: "Falta metadata.name en el enlace. Abre los detalles desde la lista."
+    notfound: "Fuente no encontrada; puede haberse eliminado."
+    object_required: "Se requiere un objeto JSON."
+    name_required: "Se requiere el nombre del recurso."
+    capability_required: "Cada destino necesita una referencia."
+    delete: "Eliminar fuente"
+    delete_confirm: "¿Eliminar fuente «{name}»? Se conservan los eventos y tareas."
+    confirm_again: "Recargado. Revisa el estado actual; eliminar exige otra confirmación."
+    reload_draft: "Descartar borrador y recargar"
+    draft_preserved: "Conflicto CAS: se conserva el borrador; no se reintenta con otro token. Recarga explícitamente."
+    reload_confirm: "¿Descartar la entrada y recargar desde el servidor?"
   empty_title: Aún no hay orígenes
   detail: "Detalles"
   open_detail: "Abrir detalles"
@@ -1754,6 +1890,15 @@ trace:
     slowest: 'Tarea más lenta'
     failed: Fallidas
 
+  v4:
+    graph: "Cadena real de tareas"
+    tasks: "Tareas / intentos / espera"
+    events: "Hechos de eventos"
+    pruned: "Motivos de poda"
+    empty: "Esta traza no envió tareas."
+    no_pruned: "No hay registros de poda retenidos."
+    missing: "Falta traceUID en la URL."
+
 srcpage:
   vars: "Variables"
   title: "Detalle del origen"
@@ -1892,6 +2037,101 @@ pb:
     open_nodes: Abrir nodos
     install_edge: 'Añadir este destino'
     create_source: Crear origen
+
+  v4:
+    subtitle: "Paquetes autocontenidos: guardar, renderizar, simular e instalar. Sin despliegue automático."
+    import: "Importar paquete"
+    package_hint: "playbook.yaml es el único manifiesto raíz. Incluya todos los archivos referenciados. Guardar no instala."
+    input_kind: "Entrada del paquete"
+    files: "Archivos originales"
+    oci: "Origen OCI"
+    slug: "Nombre del paquete (slug)"
+    upload_files: "Elegir archivos / mapa JSON exportado"
+    upload_directory: "Elegir directorio autocontenido"
+    upload_hint: "Use un directorio para conservar rutas relativas, o pegue el mapa JSON completo."
+    file_map: "Mapa JSON completo (ruta → texto sin renderizar)"
+    oci_hint: "El servidor descarga una vez y guarda el digest. OCI o archivos; credenciales privadas solo en el servidor."
+    store: "Guardar paquete"
+    saving: "Guardando…"
+    open: "Abrir paquete"
+    stored: "Plantilla guardada; no se ha instalado ningún recurso."
+    slug_taken: "El nombre ya existe: abra el detalle y use PUT para reemplazar la plantilla (entrada conservada)."
+    namespace: "Espacio de nombres"
+    loading: "Cargando…"
+    not_ready: "No listo (ver diagnóstico)"
+    not_installed: "Aún no hay recursos instalados. Una plantilla guardada no es una instalación."
+    unapplied_count: "{n} diferencias sin aplicar"
+    blocker: "Primer bloqueo"
+    last_install: "Último recibo de instalación"
+    duplicate_files: "Rutas duplicadas; elija un directorio que conserve las rutas relativas."
+    detail_hint: "Solo adiciones: instalar no modifica rutas/orígenes ni elimina recursos. Despliegue manualmente."
+    checkup: "Diagnóstico: conditions / items / blocker"
+    values: "Valores de instalación"
+    values_hint: "Campos del JSON Schema de playbook.yaml. El servidor completa valores predeterminados; writeOnly solo para esta solicitud."
+    values_json: "Entrada completa de values JSON"
+    values_json_hint: "Envía el mismo objeto values del formulario; solo se usa después de Aplicar."
+    use_json: "Aplicar valores JSON"
+    render: "Renderizar (vista pura)"
+    dry_run: "Simular (comprobar conflictos, cero escrituras)"
+    install: "Instalar (solo añadir)"
+    actions_hint: "Renderizar no lee conflictos. Simular no guarda recibo. Cada instalación normal crea uno nuevo. Ninguna despliega automáticamente."
+    instances: "Instalaciones agrupadas por valuesDigest"
+    instances_hint: "Vista de lectura: attempts cuenta intentos. La procedencia es el primer recibo de creación, no propiedad."
+    template: "Editar / exportar paquete original"
+    template_hint: "Texto de GET includeBody=true spec.files. PUT con CAS reemplaza toda la plantilla sin instalar."
+    file_path: "Ruta relativa del paquete"
+    raw_content: "Contenido original sin renderizar"
+    new_path: "Ruta relativa del archivo nuevo"
+    add_file: "Añadir archivo"
+    remove_file: "Quitar archivo de la plantilla"
+    export: "Exportar mapa original completo"
+    import_map: "Importar mapa JSON completo (solo borrador)"
+    save_template: "Guardar plantilla completa con PUT"
+    reload_template: "Recargar plantilla (descartar borrador)"
+    delete_manifest: "Eliminar solo manifiesto"
+    delete_hint: "No es desinstalar: capacidades, orígenes y recibos permanecen. Requiere resourceVersion actual y confirmación."
+    manual_action: "Acción manual"
+    unapplied: "Diferencias sin aplicar — NO listo"
+    unapplied_hint: "Se reutilizan definiciones sin modificar next / targets.params. Compare lo declarado y actual, luego edite manualmente."
+    declared: "Declarado por el paquete"
+    actual: "Valor actual almacenado"
+    omitted: "Omitido (predeterminado del schema)"
+    schema_loaded: "Schema de valores leído del manifiesto raíz original."
+    dry_receipt: "Recibo de simulación (no persistido)"
+    receipt: "Recibo de una instalación"
+    created: "Creado"
+    skipped: "Reutilizado (skipped)"
+    none: "Ninguno"
+    upgraded: "Actualizaciones e impacto"
+    external: "Referencias externas existentes"
+    pending: "Referencias pendientes"
+    notes: "Notas (códigos estables)"
+    manual_deploy_hint: "Instalar no despliega. Elija versiones/nodos en capacidades y despliegue manualmente."
+    manual_deploy: "Abrir capacidades para despliegue manual"
+    rendered: "Paquete renderizado (no simulación)"
+    rendered_hint: "Solo paquete y values; sin comprobaciones de conflictos, escrituras ni recibo."
+    dry_hint: "Simulación terminada: cero escrituras persistentes, sin registro guardado."
+    installed_hint: "Recursos añadidos/reutilizados y nuevo recibo guardado; sin despliegue automático. Revise diferencias y pendientes."
+    atomic_conflict: "Conflicto atómico: cero escrituras de recursos o recibos."
+    invalid_installs: "El servidor no devolvió una vista agrupada válida."
+    group_count: "{n} grupos valuesDigest"
+    single_receipt: "Leer recibo individual completo"
+    no_installs: "Sin instalaciones normales (las simulaciones no se registran)."
+    raw_missing: "Falta spec.files / playbook.yaml original; no se puede guardar el resumen como plantilla."
+    missing_id: "Falta el nombre del paquete."
+    invalid_path: "Ruta inválida o duplicada; use una ruta relativa."
+    entry_required: "playbook.yaml es la entrada obligatoria y no se puede quitar."
+    remove_confirm: "¿Quitar {path} del borrador? Actualice referencias manualmente; recursos instalados permanecen."
+    replace_draft: "¿Reemplazar el borrador sin guardar por el mapa importado completo?"
+    template_saved: "Plantilla completa guardada; recursos existentes sin cambios y sin instalar."
+    draft_kept: "400 / 409: borrador conservado. Revise el error o recargue explícitamente; sin reintento automático de sobrescritura."
+    reload_confirm: "Recargar descarta archivos y valores sin guardar. ¿Continuar?"
+    reloaded: "Paquete original y token CAS actuales cargados."
+    values_object: "values debe ser un objeto JSON."
+    json_selected: "La próxima acción usa este JSON values completo."
+    delete_confirm: "¿Eliminar solo el manifiesto? Capacidades, orígenes, recibos y procedencia permanecen. No es desinstalar."
+    deleted: "Manifiesto eliminado; contenido conservado a continuación."
+    delete_stale: "CAS obsoleto. Actualice el diagnóstico; volver a eliminar requiere otra confirmación."
 
 node:
   artifacts:

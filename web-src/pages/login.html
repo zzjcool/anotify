@@ -1195,7 +1195,7 @@
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            const err = new Error(data.error || "HTTP " + res.status);
+            const err = new Error(typeof data.error === "string" ? data.error : "HTTP " + res.status);
             err.status = res.status; // 供 classifyFailure 判断 4xx / 5xx
             throw err;
           }
@@ -1259,6 +1259,37 @@
             go();
           }
         }
+
+        // Probe the retained canonical user directly: no namespace bridge or auth aliases.
+        async function checkExistingSession() {
+          try {
+            const res = await fetch("/v1/auth/me", { credentials: "include" });
+            if (res.status === 401) return;
+            if (res.status !== 200) throw new Error("HTTP " + res.status);
+            const me = await res.json();
+            const fields = ["id", "username", "displayName", "role", "disabled", "createdAt"];
+            if (
+              !me || Array.isArray(me) || Object.keys(me).length !== fields.length ||
+              !fields.every(key => Object.hasOwn(me, key)) ||
+              typeof me.id !== "string" || !me.id.trim() ||
+              typeof me.username !== "string" || !me.username.trim() ||
+              typeof me.displayName !== "string" ||
+              typeof me.role !== "string" || !me.role.trim() ||
+              me.disabled !== false ||
+              typeof me.createdAt !== "number" || !Number.isFinite(me.createdAt)
+            ) throw new Error("Invalid session identity");
+            navigate(nextTarget());
+          } catch (error) {
+            // An unhealthy probe is not an anonymous session; keep methods usable
+            // and show existing localized error/retry guidance without a redirect loop.
+            if (error instanceof SyntaxError || error.message === "Invalid session identity") {
+              showStatus(t("common.request_failed", "请求失败") + " · " + t("common.retry", "重试"), "error");
+            } else {
+              backendUnavailable(error);
+            }
+          }
+        }
+        checkExistingSession();
 
         // 把请求失败分成三类：网络不可达 / 服务端 5xx（都算"后端没连上"）、
         // 客户端 4xx（**是后端明确拒绝**，必须如实报给用户）。

@@ -114,17 +114,24 @@
          defer 的内联脚本是在解析到它时立即执行的。所以「defer 库 + 后面的内联脚本」
          并不冲突：内联脚本先跑，defer 库随后、在 DOMContentLoaded 之前跑完。
 
-         本产品只有 trace.html 和 source.html 画图，且两处绘图调用点都在更晚的阶段：
-           · trace.html —— document.addEventListener("DOMContentLoaded", load)，load() 里才调
-             window.TraceView.mount()；内联脚本解析期并不碰 TraceView。
+         本产品只有 trace.html、source.html、index.html 画图，且三处绘图调用点都在更晚的阶段：
+           · trace.html —— 内联脚本解析期就启动 load()，但首次 render 前先 await 一次
+             DOMContentLoaded（页面里的 deferredGraphics 屏障）。defer 图库一定在
+             DOMContentLoaded 之前执行完，所以 render 里读 AnotifyGraphs.taskChain 时
+             图库已就绪；图库真的加载失败时页面显示真实 error + 原重试，不画假图。
+             （旧注释写的「document.addEventListener("DOMContentLoaded", load) +
+             TraceView.mount()」与实际代码不符，那正是 Trace 首屏 taskChain 缺失的根因。）
            · source.html —— load() 里 await 完 fetch 取到 SRC/CAPS/EDGES 后才 renderBody()，
              renderFlowCard() 再把 AnotifyGraphs.capabilityFlow() 放进 requestAnimationFrame 里画。
-         两处都发生在 DOMContentLoaded 之后，所以这两页用 defer 引入是安全的
-         （顺序仍不能乱：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView）。
+           · index.html —— 只在已取到任务后画一条执行链（AnotifyGraphs.taskChain），同样远晚于
+             defer 的执行时机。
+         三处都发生在 DOMContentLoaded 之后，所以这几页用 defer 引入是安全的
+         （顺序仍不能乱：vendor/dagre 全局 → FlowGraph → AnotifyGraphs；trace 页现在
+         不再加载 traceview.js，source 页仍按 dagre → FlowGraph → AnotifyGraphs → TraceView 排）。
 
-         为什么其余页面不加载它们：这四个文件合计 150.7KB（dagre 49.6 + flograph 57.0 +
-         graphs 30.1 + traceview 14.0）+ 4 个请求，对根本不画图的页面的首屏是纯成本。
-         一个只有 trace/source 用得上的库，不该让全站每个页面为它付首屏预算。 -->
+         为什么其余页面不加载它们：这四个文件合计约 232KB（dagre 48 + flograph 118 +
+         graphs 50 + traceview 16）+ 4 个请求，对根本不画图的页面的首屏是纯成本。
+         一个只有 trace/source/index 用得上的库，不该让全站每个页面为它付首屏预算。 -->
     {{block "graph-libs" .}}{{end}}
     {{block "script" .}}{{end}}
   </body>

@@ -1,2988 +1,662 @@
 {{define "title"}}{{t "sources.title"}}{{end}}
-
 {{define "style"}}
-    <style>
-      /* 源列表页（UI v2）
-         ------------------------------------------------------------
-         组件（卡片 / 列表行 / 按钮 / 徽章 / 弹层 / 空态 / 骨架）一律用
-         web/ui.css 的共享类，这里只留本页独有的三块：
-         ① 列表行在窄屏的换行行为 ② 表单里的能力多选 / 字段清单 / 字段浮层
-         ③ 试运行结果面板。
-         颜色全部走 web/tokens.css 的 token —— 亮主题下这些规则也要读得清，
-         所以不再出现 rgba(255,255,255,*) 与 Tailwind 色板类。 */
-
-      /* 单列栅格必须显式写 minmax(0, 1fr)：默认的 auto 轨道不会缩到
-         min-content 以下，一个长字符串就能把整页顶宽（D6 的硬要求，
-         ui.css 的 .page 目前没写；这里按页兜一层，等共享规则补上可删）。 */
-      #page-main > .page {
-        grid-template-columns: minmax(0, 1fr);
-      }
-
-      /* ---------- 列表行 ----------
-         .list-row 是 flex 不换行；源行右侧最多 3 个操作按钮，390 宽放不下，
-         这里补 wrap：按钮组靠右，放不下时整组掉到第二行。 */
-      #src-list .list-row {
-        flex-wrap: wrap;
-        align-items: flex-start;
-      }
-      #src-list .list-main {
-        flex: 1 1 15rem;
-      }
-      #src-list .src-acts {
-        margin-left: auto;
-      }
-      /* .card 是 16px 圆角但没有 overflow:hidden（有焦点环的按钮会被裁），
-         所以首尾行自己收一下圆角，hover 底色才不会顶出直角。 */
-      #src-list > .list-row:first-child {
-        border-top-left-radius: var(--r-lg);
-        border-top-right-radius: var(--r-lg);
-      }
-      #src-list > .list-row:last-child {
-        border-bottom-left-radius: var(--r-lg);
-        border-bottom-right-radius: var(--r-lg);
-      }
-      .src-name-link {
-        font-size: 14px;
-        font-weight: 500;
-        color: var(--text);
-        text-decoration: none;
-        word-break: break-word;
-      }
-      .src-name-link:hover {
-        color: var(--accent);
-      }
-      /* 页级语义文字：替代 text-zinc-* / text-red-* / text-amber-* 这类色板类
-         （色板类硬编码了暗色值，亮主题下读不清）。 */
-      .src-meta {
-        font-size: 11px;
-        line-height: 1.5;
-        color: var(--faint);
-      }
-      .src-err {
-        font-size: 11px;
-        color: var(--error);
-      }
-      .src-warn {
-        font-size: 10px;
-        color: var(--warn);
-      }
-      .src-accent {
-        color: var(--accent);
-      }
-
-      /* ---------- 首屏骨架：形状对齐真实列表行 ---------- */
-      .src-skel-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-height: 56px;
-        padding: 8px 14px;
-        border-bottom: 1px solid var(--line);
-      }
-      .src-skel-row:last-child {
-        border-bottom: 0;
-      }
-      .src-skel-lines {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .sk-row-title {
-        width: 34%;
-        height: 14px;
-      }
-      .sk-row-meta {
-        width: 56%;
-        height: 10px;
-      }
-      .sk-row-act {
-        width: 92px;
-        height: 28px;
-        flex: none;
-      }
-
-      /* ---------- 表单：出口能力多选 ----------
-         滚动容器，避免长列表把弹窗撑爆。 */
-      .target-picker {
-        max-height: 14rem;
-        overflow-y: auto;
-        border: 1px solid var(--line);
-        border-radius: var(--r-md);
-        background: var(--surface-2);
-        padding: 6px;
-      }
-      .target-opt {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 8px;
-        border-radius: var(--r-sm);
-        cursor: pointer;
-        font-size: 13px;
-        color: var(--text);
-      }
-      .target-opt:hover {
-        background: var(--surface-3);
-      }
-      /* 出口选项的两段式标识：显示名（主）+ 唯一标识（次，等宽）。
-         为什么必须两个都显示：出口写进源里的就是**能力名**，而用户眼里是显示名；
-         显示名允许重名，只给显示名就分不出勾的是哪一个。 */
-      .target-name {
-        font-size: 13px;
-      }
-      .target-capname {
-        font-size: 11px;
-        color: var(--muted);
-      }
-      /* 勾选后展开的参数字段：缩进 + 左侧细线，视觉上从属于该能力 */
-      .target-params {
-        margin: 4px 0 8px 24px;
-        padding-left: 12px;
-        border-left: 1px solid var(--line);
-        display: grid;
-        gap: 6px;
-        min-width: 0;
-      }
-      .target-params label {
-        font-size: 11px;
-        color: var(--muted);
-      }
-      .target-params input,
-      .target-params select {
-        font-size: 12px;
-      }
-      .param-req {
-        color: var(--error);
-        margin-left: 2px;
-      }
-
-      /* ---------- 字段清单（这个触发方式能提供哪些字段）---------- */
-      .avail-vars {
-        margin-top: 2px;
-        font-size: 11px;
-      }
-      .avail-vars summary {
-        cursor: pointer;
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .avail-vars summary:hover {
-        color: var(--text);
-      }
-      .av-src {
-        font-size: 10px;
-        color: var(--faint);
-        padding: 0 0 5px 1px;
-      }
-      .avail-vars-body {
-        margin-top: 6px;
-        padding: 8px 10px;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-        display: grid;
-        gap: 5px;
-        min-width: 0;
-      }
-      .av-row {
-        display: flex;
-        align-items: baseline;
-        gap: 6px;
-        flex-wrap: wrap;
-        min-width: 0;
-      }
-      .av-path {
-        font-family: var(--font-mono);
-        font-size: 10.5px;
-        color: var(--accent);
-        background: transparent;
-        border: 1px solid var(--line);
-        border-radius: var(--r-xs);
-        padding: 1px 5px;
-        cursor: pointer;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-      }
-      .av-path:hover {
-        border-color: var(--accent);
-      }
-      .av-desc {
-        color: var(--faint);
-        font-size: 10px;
-      }
-      .av-empty {
-        color: var(--faint);
-        font-size: 10.5px;
-        line-height: 1.6;
-      }
-      .av-filter {
-        width: 100%;
-        margin: 0 0 6px 0;
-      }
-      .av-group {
-        border-top: 1px solid var(--line);
-        min-width: 0;
-      }
-      .av-group:first-of-type {
-        border-top: 0;
-      }
-      .av-group-head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        width: 100%;
-        padding: 5px 2px;
-        background: transparent;
-        border: 0;
-        cursor: pointer;
-        color: var(--text);
-        font-size: 10.5px;
-        text-align: left;
-      }
-      .av-group-head:hover {
-        color: var(--accent);
-      }
-      .av-caret {
-        color: var(--faint);
-        font-size: 10px;
-        width: 10px;
-        flex: none;
-        transition: transform var(--dur-fast) var(--ease);
-      }
-      .av-group.is-open .av-caret {
-        transform: rotate(90deg);
-      }
-      .av-group-name {
-        font-family: var(--font-mono);
-        color: var(--accent);
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .av-group-n {
-        color: var(--faint);
-        font-size: 10px;
-        flex: none;
-      }
-      .av-group-body {
-        display: none;
-        padding: 0 0 4px 14px;
-        min-width: 0;
-      }
-      .av-group.is-open .av-group-body {
-        display: block;
-      }
-      /* 展开后仍可能很长：给个上限，超出滚动 */
-      .av-group-body.scrollable {
-        max-height: 13rem;
-        overflow-y: auto;
-      }
-      .av-empty-filter {
-        color: var(--faint);
-        font-size: 10.5px;
-        padding: 5px 2px;
-      }
-
-      /* ---------- webhook 接入指引 ---------- */
-      .hook-guide {
-        margin-top: 8px;
-      }
-      .hook-url-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: wrap;
-        min-width: 0;
-      }
-      .hook-url-label {
-        font-size: 10.5px;
-        color: var(--faint);
-      }
-      .hook-url {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--accent);
-        word-break: break-all;
-      }
-      .hook-github {
-        margin-top: 8px;
-        font-size: 11px;
-      }
-      .hook-github summary {
-        cursor: pointer;
-        color: var(--muted);
-        font-size: 11px;
-      }
-      .hook-github summary:hover {
-        color: var(--text);
-      }
-      .hook-github-body {
-        margin-top: 6px;
-        padding: 8px 10px;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-        min-width: 0;
-      }
-      .hook-kv {
-        display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
-        gap: 3px 10px;
-        align-items: baseline;
-      }
-      .hook-kv dt {
-        color: var(--faint);
-        font-size: 10.5px;
-        white-space: nowrap;
-      }
-      .hook-kv dd {
-        margin: 0;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        word-break: break-all;
-      }
-      .hook-note {
-        color: var(--faint);
-        font-size: 10px;
-        line-height: 1.5;
-        display: block;
-      }
-
-      /* 参数输入框下方的引用提示。引用时显示"从事件或变量取值"，
-         不改变值本身——只是让人一眼看出这行不是字面量。 */
-      .param-tip {
-        font-size: 10px;
-        color: var(--faint);
-        line-height: 1.4;
-        min-height: 14px;
-      }
-      .param-tip.is-ref {
-        color: var(--accent);
-      }
-      /* 预览求值结果：取到了绿、取不到红。颜色是唯一能让人不看文字
-         就发现"这条配置有问题"的信号，所以不用中性色。 */
-      .param-tip.is-ok {
-        color: var(--success);
-      }
-      .param-tip.is-bad {
-        color: var(--error);
-      }
-
-      /* ---------- 字段浮层（点选插入）---------- */
-      .pick-pop {
-        position: fixed;
-        z-index: var(--z-menu);
-        min-width: 16rem;
-        /* 390 宽：26rem 会超出视口，所以再夹一道（浮层是 position:fixed，
-           溢出会被 e2e 的横向溢出断言算进去） */
-        max-width: min(26rem, calc(100vw - 24px));
-        max-height: 16rem;
-        overflow-y: auto;
-        padding: 5px;
-        border-radius: var(--r-sm);
-        border: 1px solid var(--line);
-        background: var(--panel-modal);
-        box-shadow: var(--shadow-3);
-        font-size: 11px;
-      }
-      .pick-row {
-        display: flex;
-        align-items: baseline;
-        gap: 6px;
-        width: 100%;
-        padding: 3px 6px;
-        border-radius: var(--r-xs);
-        text-align: left;
-        background: transparent;
-        border: 0;
-        cursor: pointer;
-        color: var(--text);
-      }
-      .pick-row:hover,
-      .pick-row.is-active {
-        background: var(--accent-soft);
-      }
-      .pick-path {
-        font-family: var(--font-mono);
-        color: var(--accent);
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .pick-val {
-        color: var(--muted);
-        font-family: var(--font-mono);
-        font-size: 10px;
-        max-width: 9rem;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .pick-empty {
-        padding: 6px;
-        color: var(--faint);
-      }
-
-      /* ---------- 试运行结果 ---------- */
-      .dry-result {
-        margin: 0 20px 12px;
-        padding: 10px 12px;
-        border-radius: var(--r-sm);
-        border: 1px solid var(--line);
-        background: var(--surface-2);
-        font-size: 11px;
-        line-height: 1.6;
-        max-height: 14rem;
-        overflow-y: auto;
-        min-width: 0;
-      }
-      .dry-head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-weight: 500;
-        margin-bottom: 6px;
-        color: var(--text);
-      }
-      .dry-row {
-        display: flex;
-        align-items: baseline;
-        gap: 6px;
-        padding: 2px 0;
-        min-width: 0;
-        flex-wrap: wrap;
-      }
-      .dry-row.is-ok {
-        color: var(--success);
-      }
-      .dry-row.is-bad {
-        color: var(--error);
-      }
-      .dry-cap {
-        font-family: var(--font-mono);
-        color: var(--text);
-      }
-      .dry-detail {
-        color: var(--faint);
-        font-size: 10px;
-      }
-      .dry-params {
-        margin-left: 14px;
-        color: var(--muted);
-        font-size: 10px;
-        font-family: var(--font-mono);
-        word-break: break-all;
-      }
-
-      /* ---------- 弹层里的表单纵向间距 ---------- */
-      .src-form {
-        display: grid;
-        gap: 14px;
-        min-width: 0;
-      }
-      .src-check {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 13px;
-        color: var(--text);
-      }
-    </style>
+<style>
+#page-main > .page{grid-template-columns:minmax(0,1fr)}
+.source-wrap{overflow-wrap:anywhere;min-width:0}
+.source-status{font-size:12px;color:var(--muted)}
+.source-target{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+.source-form{display:grid;gap:16px}
+.source-params{width:100%;min-height:80px}
+.source-json{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:var(--text)}
+.source-error{color:var(--error)}
+.source-hints{display:flex;flex-wrap:wrap;gap:6px}
+.source-actions{display:flex;flex-wrap:wrap;gap:8px}
+.source-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.source-facts dt{color:var(--muted);font-size:12px}
+.source-facts dd{margin:4px 0;overflow-wrap:anywhere}
+#src-list .list-row{flex-wrap:wrap}
+#src-list .list-main{flex:1 1 220px;min-width:0}
+#src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
+#fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
+.source-graph{min-height:320px;width:100%;min-width:0}
+.source-loading{padding:24px;color:var(--muted)}
+</style>
 {{end}}
-
 {{define "content"}}
 <div id="page-main">
-  <div class="page">
-    <!-- 页头：标题 + 一句说明 + 页级动作。
-         页面内容里不出现 h1 —— 顶栏那个才是全站唯一的 h1（契约 §2/§10-C1）。
-         `.page-sub` 全页只出现一次：centurion 的顶栏检测到它就不再重复画副标题。 -->
-    <div class="page-head">
-      <div class="min-w-0">
-        <h2 class="page-title">{{t "sources.title"}}</h2>
-        <p class="page-sub">{{t "sources.subtitle"}}</p>
-      </div>
-      <div class="page-actions">
-        <button id="btn-refresh" class="btn btn-ghost">{{t "sources.refresh"}}</button>
-        <button id="btn-new" class="btn btn-primary">{{t "sources.new"}}</button>
-      </div>
-    </div>
-
-    <!-- 源与能力的分工：一屏能读完的一段说明，不占首屏主位 -->
-    <div class="card card-pad">
-      <div class="card-title">{{t "sources.explain.title"}}</div>
-      <p class="card-sub mt-1">{{t "sources.explain.body"}}</p>
-    </div>
-
-    <!-- 首屏骨架：**单独一个容器**，数据到后整体移除。
-         为什么不直接铺在 #src-list 里：`#src-list` 有子元素是 e2e 的「数据已就绪」
-         信号（real_backend.mjs:462 ready = #src-list 子元素数 > 0，随后立刻读
-         innerText 断言真实源名）。骨架算子元素会让就绪信号提前成立、断言读到空白。 -->
-    <div id="src-list-skel" class="list card" aria-hidden="true">
-      <div class="src-skel-row" aria-hidden="true">
-        <div class="src-skel-lines">
-          <div class="skeleton sk-row-title"></div>
-          <div class="skeleton sk-row-meta"></div>
-        </div>
-        <div class="skeleton sk-row-act"></div>
-      </div>
-      <div class="src-skel-row" aria-hidden="true">
-        <div class="src-skel-lines">
-          <div class="skeleton sk-row-title"></div>
-          <div class="skeleton sk-row-meta"></div>
-        </div>
-        <div class="skeleton sk-row-act"></div>
-      </div>
-      <div class="src-skel-row" aria-hidden="true">
-        <div class="src-skel-lines">
-          <div class="skeleton sk-row-title"></div>
-          <div class="skeleton sk-row-meta"></div>
-        </div>
-        <div class="skeleton sk-row-act"></div>
-      </div>
-      <div class="src-skel-row">
-        <div class="src-skel-lines">
-          <div class="skeleton sk-row-title"></div>
-          <div class="skeleton sk-row-meta"></div>
-        </div>
-        <div class="skeleton sk-row-act"></div>
-      </div>
-    </div>
-
-    <!-- 真实列表：数据到之前整块 hidden（hidden 挂在裸 div 上 —— .list 的
-         display:flex 会盖掉 .hidden，所以两者不能同元素）。
-         #src-list 的**每个直接子元素必须是 div**（e2e 用 `#src-list > div` 取行）。 -->
-    <div id="src-list-wrap" class="hidden">
-      <div id="src-list" class="list card"></div>
-    </div>
-  </div>
+<div class="page">
+<div class="page-head">
+<div>
+<h2 class="page-title">
+{{t "sources.title"}}
+</h2>
+<p class="page-sub">
+{{t "sources.v4.intro"}}
+</p>
 </div>
-
-<!-- 新建 / 编辑弹层。
-     必须挂在 document.body 上（脚本启动时再兜一次 appendChild）：页面内容外层
-     带 .reveal 的 transform，position:fixed 的子元素会被裁在那层容器里。
-     开关状态仍然是 #src-modal 上的 `hidden` 类（e2e 直接读它）。 -->
-<div
-  id="src-modal"
-  class="modal-backdrop hidden"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="modal-title"
->
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 id="modal-title"></h3>
-      <div class="card-actions">
-        <!-- 演示按钮：一键把"变量 + 参数引用变量"整套配置铺好。
-             只看文档很难体会"变量到底省了什么"，点一下看得最快。 -->
-        <button
-          type="button"
-          id="btn-demo"
-          class="btn btn-ghost btn-sm"
-          title="{{t "sources.form.demo_hint"}}"
-        >
-          {{t "sources.form.demo"}}
-        </button>
-        <button
-          type="button"
-          id="modal-close"
-          class="btn btn-ghost btn-icon"
-          aria-label="{{t "common.action.close"}}"
-        >
-          ✕
-        </button>
-      </div>
-    </div>
-
-    <div class="modal-body">
-      <div class="src-form">
-        <div class="field">
-          <label class="field-label" for="f-name">{{t "sources.form.name"}}</label>
-          <input
-            id="f-name"
-            class="input"
-            placeholder="{{t "sources.form.name_ph"}}"
-          />
-        </div>
-
-        <div class="field">
-          <label class="field-label" for="f-kind">{{t "sources.form.kind"}}</label>
-          <select id="f-kind" class="select">
-            <option value="cron">{{t "sources.kind.cron"}}</option>
-            <option value="github">{{t "sources.kind.github"}}</option>
-            <option value="webhook">{{t "sources.kind.webhook"}}</option>
-            <option value="manual">{{t "sources.kind.manual"}}</option>
-          </select>
-          <p class="field-hint" id="f-kind-hint">{{t "sources.form.kind_hint"}}</p>
-        </div>
-
-        <!-- cron 专属。
-             hidden 只挂在这层裸 div 上：ui.css 在 tailwind.css **之后**加载，
-             .field{display:flex} 会盖掉 .hidden{display:none}，所以两者不能同元素。 -->
-        <div id="f-cron-wrap" class="hidden">
-          <div class="field">
-            <label class="field-label" for="f-expr">{{t "sources.form.expr"}}</label>
-            <input id="f-expr" class="input mono" placeholder="0 3 * * *" />
-            <p class="field-hint">{{t "sources.form.expr_hint"}}</p>
-            <div class="flex flex-wrap gap-2">
-              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 * * * *">
-                {{t "sources.preset.hourly"}}
-              </button>
-              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 3 * * *">
-                {{t "sources.preset.daily3"}}
-              </button>
-              <button type="button" class="btn btn-ghost btn-sm" data-expr="0 9 * * 1-5">
-                {{t "sources.preset.weekdays9"}}
-              </button>
-              <button type="button" class="btn btn-ghost btn-sm" data-expr="*/15 * * * *">
-                {{t "sources.preset.every15"}}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- GitHub 事件类型：决定 payload 结构，所以必须选。
-             pull_request 和 push 的载荷没有任何共同字段，给一份"通用样例"
-             等于两份都不对。 -->
-        <div id="f-gh-event-wrap" class="hidden">
-          <div class="field">
-            <label class="field-label" for="f-gh-event">{{t "sources.form.gh_event"}}</label>
-            <select id="f-gh-event" class="select"></select>
-            <p class="field-hint">{{t "sources.form.gh_event_hint"}}</p>
-          </div>
-        </div>
-
-        <!-- 这个触发方式能提供哪些字段 —— **只读展示**。
-             以前这里是一张可编辑的"变量表"（给路径起短名字），但那件事
-             参数框里的点选补全已经做了：打双大括号就能选字段，不需要先
-             声明再引用。用户少一层心智模型，也少一个会填错的地方。 -->
-        <details class="avail-vars" id="avail-vars" open>
-          <summary>{{t "sources.form.avail_vars"}}</summary>
-          <div id="avail-src" class="av-src"></div>
-          <div id="avail-vars-body" class="avail-vars-body"></div>
-        </details>
-
-        <!-- 事件 payload 契约（resultSchema）：**可选**。
-             它是外部边界的声明——源收到的 payload 长什么样只能人声明，中枢推导
-             不出来（外部世界不归中枢管）。填了之后每次投递都先判：不合规的事件
-             照常入库、但不派发，trace 里留一条 event_schema 剪枝（不直接 400：
-             外部系统不重试，丢了就真没了）。
-             留空 = 不校验（与加这个字段之前完全一致）。不做 schema 生成器、
-             不做采样草稿：P0.2 只上"声明 + 入口校验"这一步。 -->
-        <details class="avail-vars" id="result-schema-wrap">
-          <summary>{{t "sources.form.result_schema"}}</summary>
-          <div class="mt-2">
-            <textarea
-              id="f-result-schema"
-              class="textarea mono"
-              rows="6"
-            ></textarea>
-            <p class="field-hint">{{t "sources.form.result_schema_hint"}}</p>
-          </div>
-        </details>
-
-        <!-- webhook 专属：外部系统那边怎么配 -->
-        <div id="f-hook-wrap" class="hidden">
-          <p class="field-hint">{{t "sources.form.hook_hint"}}</p>
-
-          <!-- 回调地址：编辑已有源时能直接看到；新建时说明"保存后生成" -->
-          <div class="hook-guide" id="hook-url-box">
-            <div class="hook-url-row">
-              <span class="hook-url-label">{{t "sources.form.hook_url"}}</span>
-              <code id="hook-url-val" class="hook-url"></code>
-              <button type="button" id="btn-copy-hook" class="btn btn-ghost btn-sm">
-                {{t "srcpage.copy"}}
-              </button>
-            </div>
-          </div>
-
-          <!-- GitHub 具体怎么填。四个字段照抄即可，不用去翻文档。 -->
-          <details class="hook-github" id="hook-github">
-            <summary>{{t "sources.form.hook_github"}}</summary>
-            <div class="hook-github-body">
-              <dl class="hook-kv">
-                <dt>Payload URL</dt>
-                <dd><code id="hook-gh-url">—</code></dd>
-                <dt>Content type</dt>
-                <dd><code>application/json</code></dd>
-                <dt>Which events?</dt>
-                <dd>
-                  <code id="hook-gh-events">Pull requests</code>
-                  <span class="hook-note">{{t "sources.form.hook_github_events"}}</span>
-                </dd>
-                <dt>Secret</dt>
-                <dd>
-                  <span class="hook-note">{{t "sources.form.hook_github_secret"}}</span>
-                </dd>
-              </dl>
-              <p class="hook-note">{{t "sources.form.hook_github_why"}}</p>
-            </div>
-          </details>
-        </div>
-
-        <!-- 出口能力（多选） -->
-        <div class="field">
-          <span class="field-label">{{t "sources.form.targets"}}</span>
-          <div id="f-targets" class="target-picker"></div>
-          <p class="field-hint">{{t "sources.form.targets_hint"}}</p>
-        </div>
-
-        <label class="src-check">
-          <input id="f-enabled" type="checkbox" checked />
-          {{t "sources.form.enabled"}}
-        </label>
-
-        <!-- 试运行结果：保存前先看"这条配置会不会真的跑起来"。
-             和真实触发的判定共用 planDispatch，所以不会出现
-             "试运行说能跑、真点却剪枝"的差异。 -->
-        <div id="dry-result" class="dry-result hidden"></div>
-      </div>
-    </div>
-
-    <div class="modal-foot">
-      <button id="btn-dry" class="btn btn-ghost">{{t "sources.form.dry_run"}}</button>
-      <button id="modal-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
-      <button id="modal-save" class="btn btn-primary">{{t "sources.form.save"}}</button>
-    </div>
-  </div>
+<div class="page-actions">
+<button id="btn-refresh" class="btn btn-ghost">
+{{t "sources.v4.reload"}}
+</button>
+<button id="btn-new" class="btn btn-primary">
+{{t "sources.v4.new"}}
+</button>
 </div>
-
-<!-- 触发弹层（#273 决策 2：可选 payload）。
-     以前点「立即运行」直接 POST {}，payload 只能靠外部系统投递才有内容；
-     手动触发一条带字段的事件因此做不到。现在先开这一层，预填一份示例
-     payload（来源与「试运行」同一个 loadSample），用户看一眼或改一改。
-     兼容底线：空文本仍按 {} 发、不带 type（服务端用源名当事件类型）。
-     与 #src-modal 一样挂在 document.body 上，开关状态是本元素上的 `hidden` 类。 -->
-<div
-  id="fire-modal"
-  class="modal-backdrop hidden"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="fire-title"
->
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 id="fire-title">{{t "sources.fire_payload_title"}}</h3>
-      <div class="card-actions">
-        <button
-          type="button"
-          id="fire-close"
-          class="btn btn-ghost btn-icon"
-          aria-label="{{t "common.action.close"}}"
-        >
-          ✕
-        </button>
-      </div>
-    </div>
-
-    <div class="modal-body">
-      <div class="field">
-        <label class="field-label" for="fire-payload">{{t "sources.fire_payload_label"}}</label>
-        <textarea id="fire-payload" class="textarea mono" rows="10" spellcheck="false"></textarea>
-        <p class="field-hint">{{t "sources.fire_payload_hint"}}</p>
-        <p id="fire-error" class="src-err mt-2 hidden"></p>
-      </div>
-    </div>
-
-    <div class="modal-foot">
-      <button id="fire-cancel" class="btn btn-ghost">{{t "sources.form.cancel"}}</button>
-      <button id="fire-submit" class="btn btn-primary">{{t "sources.fire_submit"}}</button>
-    </div>
-  </div>
+</div>
+<p class="card card-pad field-hint">
+{{t "sources.v4.dedup"}}
+</p>
+<div id="action-error" aria-live="polite">
+</div>
+<div id="src-list-skel" class="source-loading">
+{{t "sources.v4.loading"}}
+</div>
+<div id="src-list" class="list card">
+</div>
+</div>
+</div>
+<div id="src-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+<div class="modal-panel">
+<div class="modal-head">
+<h3 id="modal-title">
+</h3>
+<button id="modal-close" class="btn btn-ghost">
+{{t "sources.v4.close"}}
+</button>
+</div>
+<div class="modal-body">
+<div class="source-form">
+<div class="field">
+<label class="field-label" for="f-name">
+{{t "sources.v4.name"}}
+</label>
+<input id="f-name" class="input"  />
+</div>
+<div class="field">
+<label class="field-label" for="f-kind">
+{{t "sources.v4.kind"}}
+</label>
+<select id="f-kind" class="select">
+<option value="cron">cron</option>
+<option value="webhook">webhook</option>
+<option value="manual">manual</option>
+</select>
+<p class="field-hint">
+{{t "sources.v4.immutable"}}
+</p>
+</div>
+<div class="field">
+<label class="field-label" for="f-display">
+{{t "sources.v4.display"}}
+</label>
+<input id="f-display" class="input"  />
+</div>
+<div id="f-cron-wrap">
+<div class="source-form">
+<div class="field">
+<label class="field-label" for="f-expr">
+{{t "sources.v4.expr"}}
+</label>
+<input id="f-expr" class="input"  />
+</div>
+<div class="field">
+<label class="field-label" for="f-tz">
+{{t "sources.v4.tz"}}
+</label>
+<input id="f-tz" class="input"  />
+</div>
+</div>
+</div>
+<div id="f-hook-wrap" class="hidden">
+<div class="source-form">
+<div class="field">
+<label class="field-label" for="f-token">
+{{t "sources.v4.token"}}
+</label>
+<input id="f-token" class="input" type="password" autocomplete="new-password" />
+</div>
+<div class="field">
+<label class="field-label" for="f-secret">
+{{t "sources.v4.secret"}}
+</label>
+<input id="f-secret" class="input" type="password" autocomplete="new-password" />
+</div>
+<div class="field">
+<label class="field-label" for="f-sample">
+{{t "sources.v4.sample"}}
+</label>
+<textarea id="f-sample" class="textarea mono" rows="4">
+</textarea>
+</div>
+<p class="field-hint">
+{{t "sources.v4.blank_credentials"}}
+</p>
+<div id="hook-read" class="source-wrap">
+</div>
+<p class="field-hint">
+{{t "sources.v4.hmac"}}
+</p>
+</div>
+</div>
+<div id="f-payload-wrap">
+<div class="field">
+<label class="field-label" for="f-payload">
+{{t "sources.v4.payload"}}
+</label>
+<textarea id="f-payload" class="textarea mono" rows="4">
+</textarea>
+</div>
+</div>
+<div class="field">
+<label class="field-label" for="f-payload-schema">
+{{t "sources.v4.schema"}}
+</label>
+<textarea id="f-payload-schema" class="textarea mono" rows="4">
+</textarea>
+</div>
+<p class="field-hint">
+{{t "sources.v4.schema_hint"}}
+</p>
+<div class="field">
+<span class="field-label">
+{{t "sources.v4.targets"}}
+</span>
+<div id="f-targets" class="source-form">
+</div>
+<button id="add-target" type="button" class="btn btn-ghost">
+{{t "sources.v4.add_target"}}
+</button>
+<datalist id="source-capabilities">
+</datalist>
+<p class="field-hint">
+{{t "sources.v4.params_hint"}}
+</p>
+</div>
+<label class="field-label">
+<input id="f-enabled" type="checkbox" /> {{t "sources.v4.enabled"}}
+</label>
+<div class="field">
+<label class="field-label" for="dry-payload">
+{{t "sources.v4.override"}}
+</label>
+<textarea id="dry-payload" class="textarea mono" rows="4">
+</textarea>
+</div>
+<p class="field-hint">
+{{t "sources.v4.omitted"}}
+</p>
+<div>
+<div class="field-label">
+{{t "sources.v4.suggestions"}}
+</div>
+<p id="avail-src" class="field-hint">
+</p>
+<div id="avail-vars-body" class="source-hints">
+</div>
+</div>
+<div id="form-result" aria-live="polite" class="source-wrap">
+</div>
+<button id="reload-draft" class="btn btn-ghost hidden" type="button">
+{{t "sources.v4.reload_draft"}}
+</button>
+</div>
+</div>
+<div class="modal-foot">
+<button id="btn-dry" class="btn btn-ghost">
+{{t "sources.v4.draft_dry"}}
+</button>
+<button id="modal-save" class="btn btn-primary">
+{{t "sources.v4.save"}}
+</button>
+</div>
+</div>
+</div>
+<div id="fire-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="fire-title">
+<div class="modal-panel">
+<div class="modal-head">
+<h3 id="fire-title">
+{{t "sources.v4.fire"}}
+</h3>
+<button id="fire-close" class="btn btn-ghost">
+{{t "sources.v4.close"}}
+</button>
+</div>
+<div class="modal-body">
+<div class="field">
+<label class="field-label" for="fire-payload">
+{{t "sources.v4.override"}}
+</label>
+<textarea id="fire-payload" class="textarea mono" rows="6">
+</textarea>
+</div>
+<p class="field-hint">
+{{t "sources.v4.omitted"}}
+</p>
+<div id="fire-result" class="source-wrap" aria-live="polite">
+</div>
+</div>
+<div class="modal-foot">
+<button id="fire-dry" class="btn btn-ghost">
+{{t "sources.v4.saved_dry"}}
+</button>
+<button id="fire-submit" class="btn btn-primary">
+{{t "sources.v4.fire"}}
+</button>
+</div>
+</div>
 </div>
 {{end}}
-
 {{define "script"}}
-    <script>
-      const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
-      const API = "/v1";
-
-      // 模板引用用「双大括号」包住路径。这两个常量代替字面量：
-      // Go template 会渲染 web-src/pages/*.html，脚本里直接写双大括号
-      // 会被当成模板语法（报 `function "pull_request" not defined`）。
-      // 拼出来的字符串不经过模板解析，也顺带让正则好读一点。
-      const TPL_OPEN = "{" + "{";
-      const TPL_CLOSE = "}" + "}";
-      const TPL = (ref) => TPL_OPEN + ref + TPL_CLOSE;
-      // 含至少一个占位符就算"引用"（不再要求占满整个值）。
-      // 支持混写：带前后缀的模板拼接
-      // 安全前提是**单趟替换** —— 见 web/mock.js 里 renderTemplate 的注释。
-      // 正则用字符类拼出花括号，避免 Go template 把源码里的双花括号当语法
-      const BRACE_OPEN = "[" + "{" + "]" + "[" + "{" + "]";
-      const BRACE_CLOSE = "[" + "}" + "]" + "[" + "}" + "]";
-      const REF_BODY = "[A-Za-z_][A-Za-z0-9_.]*";
-      // 必须带**捕获组**：混写替换时 `String.replace(re, (m, ref) => ...)`
-      // 的第二个参数是第一个捕获组。没有捕获组时它是**匹配位置**，
-      // 于是"哪个字段取不到"会报成一串数字（曾经显示「样本里没有：0、27」）。
-      const TPL_RE = new RegExp(
-        BRACE_OPEN + "\\s*(" + REF_BODY + ")\\s*" + BRACE_CLOSE,
-      );
-      const TPL_WHOLE_RE = new RegExp(
-        "^" + BRACE_OPEN + "\\s*(" + REF_BODY + ")\\s*" + BRACE_CLOSE + "$",
-      );
-
-      // 挂载「侧栏 + 顶栏」布局。
-      //
-      // 这一步不是可选的：不调 mountLayout 的话 #page-main 不会被装进布局，
-      // 页面能渲染内容但没有侧边栏，用户点不到别的页。active 要和 NAV 里的
-      // item.id 对齐（"sources"），侧栏才会高亮当前项。
-      Anotify.mountLayout({
-        active: "sources",
-        title: t("sources.title", "源"),
-        subtitle: t("sources.subtitle", "事件的入口"),
-      });
-
-      let SOURCES = [];
-      let CAPS = [];
-      let USABLE_CAPS = []; // 可选目标（已过滤暂未开放的能力）
-      let editingID = null;
-      // 正在编辑的源对象（新建时为 null）。列表页没有详情页那个 SRC，
-      // 但 webhook 回调指引需要 hookUrl，所以留一份。
-      let EDITING_SRC = null;
-
-      // toast 统一走 partials.js 的 Anotify.toast（全站一个实现、一个 #anotify-toast-host）：
-      // 页内不再自己维护 #toast 副本 —— 每页一份的 z-index / 位置各不相同。
-      const toast = (msg, kind) => Anotify.toast(msg, kind);
-
-      function el(tag, cls, text) {
-        const n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (text != null) n.textContent = String(text);
-        return n;
-      }
-      function code(text, cls) {
-        const n = el("code", "mono " + (cls || ""));
-        n.textContent = String(text == null ? "" : text);
-        return n;
-      }
-
-      async function apiGet(path) {
-        try {
-          return await Anotify.api(path);
-        } catch (e) {
-          return null;
-        }
-      }
-
-      // ---------- 时间格式化 ----------
-      function fmtTime(ts) {
-        if (!ts) return "—";
-        const d = new Date(ts * 1000);
-        const pad = (n) => String(n).padStart(2, "0");
-        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      }
-      // 相对时间：cron 的"下次 3 小时后"比绝对时刻更好读
-      function relTime(ts) {
-        if (!ts) return "";
-        const diff = ts - Math.floor(Date.now() / 1000);
-        // 选最大合适的单位。用顺序 if 而不是嵌套三元 —— 三元套四层读不动。
-        const abs = Math.abs(diff);
-        let unit;
-        if (abs < 60) {
-          unit = [Math.round(abs), t("sources.unit.sec", "秒")];
-        } else if (abs < 3600) {
-          unit = [Math.round(abs / 60), t("sources.unit.min", "分钟")];
-        } else if (abs < 86400) {
-          unit = [Math.round(abs / 3600), t("sources.unit.hour", "小时")];
-        } else {
-          unit = [Math.round(abs / 86400), t("sources.unit.day", "天")];
-        }
-        return diff >= 0
-          ? t("sources.in", "{n} 后").replace("{n}", unit[0] + " " + unit[1])
-          : t("sources.ago", "{n} 前").replace("{n}", unit[0] + " " + unit[1]);
-      }
-
-      const KIND_LABEL = {
-        cron: () => t("sources.kind.cron", "定时器"),
-        github: () => t("sources.kind.github", "GitHub"),
-        webhook: () => t("sources.kind.webhook", "Webhook"),
-        manual: () => t("sources.kind.manual", "手动"),
+<script>
+const A = window.Anotify;
+const t = (key) => A.t("sources.v4." + key);
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n=document.createElement(tag);
+  n.className=cls||"";
+  if(text!=null)n.textContent=String(text);
+  return n;
+};
+const link = (page, params={
+}) => page + "?" + new URLSearchParams(Object.assign({
+  namespace:A.readScope().namespace
+},params));
+const action = (key, fn) => {
+  const b=el("button","btn btn-ghost btn-sm",t(key));
+  b.type="button";
+  b.onclick=()=>fn(b);
+  return b;
+};
+const fmt = value => value ? new Date(value).toLocaleString() : "—";
+const json = (box, optional=false) => {
+  const raw=box.value.trim();
+  if(!raw)return optional ? undefined : {
+  };
+  const value=A.parseJSON(raw,box.id);
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error(t("object_required"));
+  return value;
+};
+const initScope = async () => {
+  const ns=new URLSearchParams(location.search).get("namespace");
+  if(ns)A.saveScope({
+    namespace:ns
+  });
+  await A.ready();
+};
+const path = name => A.nsPath("sources",name);
+const request = (name, body, suffix="", method="POST") => A.api(path(name)+suffix,{
+  method,body:JSON.stringify(body)
+});
+function error(box, err){
+  box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
+}
+function facts(src){
+  const dl=el("dl","source-facts");
+  const m=A.model.source(src);
+  for(const [label,value] of [["namespace",m.namespace],["rv",m.resourceVersion],["health",m.health],["resolved",String(m.targetsResolved)],["last_fire",fmt(m.lastFiredAt)],["next_fire",fmt(m.nextFireAt)],["last_error",src.status?.lastError ? JSON.stringify(src.status.lastError) : "—"],["installed",m.installedFrom||"—"]]){
+    const pair=el("div");
+    pair.append(el("dt","",t(label)),el("dd","",value));
+    dl.append(pair);
+  }return dl;
+}
+function preview(box, res){
+  box.replaceChildren(el("h4","card-title",t("preview")));
+  if(!res.targets.length)box.append(el("p","card-sub",t("no_target")));
+  for(const row of res.targets){
+    const p=el("div","source-target");
+    p.append(el("strong","source-wrap",row.capability+(row.version ? "@"+row.version : "")+" · "+row.state),el("pre","source-json mono",JSON.stringify(row.params,null,2)));
+    if(row.reason)p.append(el("p","source-error",row.reason+": "+row.detail));
+    box.append(p);
+  }for(const row of res.pruned)box.append(el("p","source-error",[row.capability,row.reason,row.detail].filter(Boolean).join(" · ")));
+}
+function receipt(box, res){
+  box.replaceChildren(el("h4","card-title",t("receipt")));
+  const a=el("a","btn btn-ghost",res.traceId);
+  a.href=link("trace.html",{
+    traceUID:res.traceId
+  });
+  box.append(el("p","source-wrap",t("event_id")+": "+res.eventId),a,el("p","card-sub",t(res.duplicate ? "duplicate" : "accepted")),el("pre","source-json mono",JSON.stringify({
+    tasks:res.tasks,pruned:res.pruned
+  },null,2)),el("p","field-hint",t("dedup")));
+}
+let FIRING = null;
+function openFire(src){
+  FIRING=src;
+  $("fire-payload").value="";
+  $("fire-result").replaceChildren();
+  A.openModal($("fire-modal"));
+}
+for(const id of ["fire-submit","fire-dry"]){
+  $(id).onclick=async()=>{
+    const btn=$(id);
+    btn.disabled=true;
+    try{
+      const payload=json($("fire-payload"),true);
+      const body=payload===undefined ? {
+      } : {
+        payload
       };
-      const KIND_CLASS = {
-        cron: "src-cron",
-        github: "src-github",
-        webhook: "src-webhook",
-        manual: "src-manual",
+      const dry=id==="fire-dry";
+      const res=await request(FIRING.metadata.name,body,dry ? "/dry-run" : "/fire");
+      (dry?preview:receipt)($("fire-result"),res);
+      if(!dry)await load();
+    }catch(err){
+      error($("fire-result"),err);
+    }finally{
+      btn.disabled=false;
+    }
+  };
+}
+$("fire-close").onclick=()=>{
+  A.closeModal($("fire-modal"));
+  FIRING=null;
+};
+async function toggle(src,btn){
+  btn.disabled=true;
+  try{
+    await request(src.metadata.name,A.withResourceVersion({
+      apiVersion:"anotify/v1",kind:"Source",metadata:{
+        name:src.metadata.name,namespace:src.metadata.namespace
+      },spec:{
+        enabled:!src.spec.enabled
+      }
+    },src.metadata.resourceVersion),"","PATCH");
+    await load();
+  }catch(err){
+    showActionError(src,err);
+  }finally{
+    btn.disabled=false;
+  }
+}
+async function removeSource(src,btn){
+  if(!confirm(t("delete_confirm").replace("{name}",src.metadata.name)))return;
+  btn.disabled=true;
+  try{
+    await A.api(A.deletePath(path(src.metadata.name),src.metadata.resourceVersion),{
+      method:"DELETE"
+    });
+    await load();
+  }catch(err){
+    showActionError(src,err);
+  }finally{
+    btn.disabled=false;
+  }
+}
+function showActionError(src,err){
+  const box=$("action-error");
+  error(box,err);
+  if(A.isConflict(err)||err.reason==="resource_version_required")box.append(action("reload",async()=>{
+    await load();box.replaceChildren(el("p","field-hint",t("confirm_again")));
+  }));
+}
+let SOURCES=[], CAPS=[], EVENTS=[], EDITING=null;
+let loaded=false, editHandled=false, editorSeq=0;
+A.mountLayout({
+  active:"sources",title:A.t("sources.title")
+});
+async function load(){
+  try{
+    await initScope();
+    const [sources,caps]=await Promise.all([A.nsList("sources"),A.nsList("capabilities")]);
+    SOURCES=sources.items;
+    CAPS=caps.items;
+    loaded=true;
+    render();
+    const edit=new URLSearchParams(location.search).get("edit");
+    if(edit && !editHandled){
+      editHandled=true;
+      const src=SOURCES.find(s=>s.metadata.name===edit);
+      if(src)await openEditor(src);
+      else throw new Error(t("notfound"));
+    }
+  }catch(err){
+    $("src-list").replaceChildren(A.loadErrorNode(err,load));
+  }finally{
+    $("src-list-skel").classList.add("hidden");
+  }
+}
+function render(){
+  $("src-list").replaceChildren();
+  if(!SOURCES.length){
+    const box=el("div","empty",t("empty"));
+    box.append(action("new",()=>openEditor(null)));
+    $("src-list").append(box);
+  }for(const src of SOURCES){
+    const m=A.model.source(src);
+    const row=el("div","list-row");
+    row.dataset.name=m.name;
+    const main=el("div","list-main");
+    const a=el("a","card-title source-wrap");
+    const name=el("span",null,m.displayName ? m.displayName+" · "+m.name : m.name);
+    name.setAttribute("data-raw-content","");
+    a.append(name);
+    a.href=link("source.html",{
+      name:m.name
+    });
+    main.append(a,el("p","source-status",m.kind+" · "+t(m.enabled?"enabled":"disabled")),facts(src));
+    const targets=el("p","source-wrap source-status",t("targets")+": "+(m.targets.map(x=>x.capability).join(", ")||t("no_target")));
+    main.append(targets);
+    const acts=el("div","source-actions");
+    acts.append(action("edit",()=>openEditor(src)),action(m.enabled?"disable":"enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)));
+    if(m.enabled)acts.append(action("fire",()=>openFire(src)));
+    acts.append(action("saved_dry",()=>openFire(src)));
+    row.append(main,acts);
+    $("src-list").append(row);
+  }
+}
+function targetRow(target={
+  capability:"",params:{
+  }
+}){
+  const row=el("div","source-target");
+  const label=el("label","field-label",t("capability"));
+  const cap=el("input","input");
+  cap.setAttribute("aria-label",t("capability"));
+  cap.setAttribute("list","source-capabilities");
+  cap.value=target.capability;
+  label.append(cap);
+  const paramLabel=el("label","field-label",t("params"));
+  const params=el("textarea","textarea mono source-params");
+  params.setAttribute("aria-label",t("params"));
+  params.value=JSON.stringify(target.params||{
+  },null,2);
+  paramLabel.append(params);
+  row.append(label,paramLabel,action("remove_target",()=>row.remove()));
+  return row;
+}
+async function openEditor(src){
+  if(!loaded)return;
+  const seq=++editorSeq;
+  EDITING=src;
+  EVENTS=[];
+  const m=src ? A.model.source(src) : null;
+  const cfg=m?.config||{
+  };
+  $("modal-title").textContent=t(src?"edit":"new");
+  $("f-name").value=m?.name||"";
+  $("f-name").disabled=!!src;
+  $("f-display").value=m?.displayName||"";
+  $("f-kind").value=m?.kind||"manual";
+  $("f-kind").disabled=!!src;
+  $("f-enabled").checked=m ? m.enabled : true;
+  $("f-expr").value=cfg.expr||"0 3 * * *";
+  $("f-tz").value=cfg.tz||"Local";
+  for(const [id,value] of [["f-payload",cfg.payload],["f-sample",cfg.sample],["f-payload-schema",cfg.payloadSchema]])$(id).value=value ? JSON.stringify(value,null,2) : "";
+  $("f-token").value="";
+  $("f-secret").value="";
+  $("dry-payload").value="";
+  $("f-targets").replaceChildren(...(m?.targets||[]).map(targetRow));
+  $("source-capabilities").replaceChildren(...CAPS.map(cap=>{
+    const opt=el("option");opt.value=cap.metadata.name;return opt;
+  }));
+  $("form-result").replaceChildren();
+  $("reload-draft").classList.add("hidden");
+  $("hook-read").replaceChildren();
+  if(cfg.hookUrl)$("hook-read").append(el("code","source-wrap",cfg.hookUrl),el("p","source-status","secretSet: "+String(cfg.secretSet)));
+  syncKind();
+  A.openModal($("src-modal"));
+  suggest();
+  try{
+    const events=await A.nsList("events");
+    if(seq!==editorSeq)return;
+    EVENTS=events.items.filter(e=>e.spec.involvedObject?.name===m?.name && e.spec.reason==="Ingested").sort((a,b)=>b.metadata.creationTimestamp.localeCompare(a.metadata.creationTimestamp));
+    suggest();
+  }catch(err){
+    error($("avail-src"),err);
+  }
+}
+function syncKind(){
+  const kind=$("f-kind").value;
+  $("f-cron-wrap").classList.toggle("hidden",kind!=="cron");
+  $("f-hook-wrap").classList.toggle("hidden",kind!=="webhook");
+  $("f-payload-wrap").classList.toggle("hidden",kind==="webhook");
+  suggest();
+}
+function schemaPaths(schema,root="payload"){
+  return Object.entries(schema?.properties||{
+  }).flatMap(([k,v])=>{
+    const p=root+"."+k;return [p,...schemaPaths(v,p),...(v.items ? schemaPaths(v.items,p+".0") : [])];
+  });
+}
+function dataPaths(value,root="payload"){
+  if(!value||typeof value!=="object")return [];
+  return Object.keys(value).flatMap(k=>{
+    const p=root+"."+k;return [p,...dataPaths(value[k],p)];
+  });
+}
+function suggest(){
+  try{
+    const dry=json($("dry-payload"),true);
+    const sample=json($("f-sample"),true);
+    const schema=json($("f-payload-schema"),true);
+    const payload=json($("f-payload"),true);
+    let value,source,paths;
+    if(dry){
+      value=dry;
+      source="suggest_dry";
+    }else if(EDITING && EVENTS.length){
+      value=EVENTS[0].spec.payload;
+      source="suggest_event";
+    }else if($("f-kind").value==="webhook" && sample){
+      value=sample;
+      source="suggest_sample";
+    }else if(schema){
+      paths=schemaPaths(schema);
+      source="suggest_schema";
+    }else{
+      value=payload||{
       };
-      // 取标签必须兜底：后端将来加了新 kind 而前端还没跟上时，
-      // `KIND_LABEL[k]()` 会抛 TypeError，**整页渲染中断**（不是少个徽章，
-      // 是一个源都看不见）。所以退化到显示原始 kind 字符串。
-      const kindLabel = (k) => (KIND_LABEL[k] ? KIND_LABEL[k]() : String(k || "—"));
-
-      // ---------- 加载 ----------
-      async function loadAll() {
-        // 流向图搬到详情页了，列表不再需要 edges —— 少一次请求。
-        //
-        // 这里必须区分「请求失败」与「真的没有源」：以前用 apiGet（吞异常返回 null），
-        // 后端挂了会显示成"还没有源"，用户会以为数据被清空了。
-        let srcData = null;
-        let capData = null;
-        try {
-          [srcData, capData] = await Promise.all([
-            Anotify.api(API + "/sources"),
-            Anotify.api(API + "/capabilities"),
-          ]);
-        } catch (e) {
-          renderLoadError(e);
-          return;
-        }
-        SOURCES = (srcData && srcData.sources) || [];
-        // CAPS 全量（已有目标要渲染）；「可选目标」过滤掉暂未开放的能力。
-        CAPS = (capData && capData.capabilities) || [];
-        USABLE_CAPS = window.Anotify.filterCaps(CAPS);
-        render();
-      }
-
-      // ---------- 渲染 ----------
-      //
-      // 三态都在这里定：有数据 → .list 的行；空数据 → .empty + 下一步动作；
-      // 请求失败 → Anotify.loadErrorNode（带重试）。
-      // 「数据还没到」这一态由 HTML 直接铺的骨架行负责，不进 render()——
-      // 否则每次刷新都会闪一下骨架。
-      // 骨架只在第一次数据落地前存在：拿到结果（行 / 空态 / 失败）就整体撤掉，
-      // 同时把装着真实列表的容器显示出来。
-      function revealList() {
-        const skel = document.getElementById("src-list-skel");
-        if (skel && skel.parentNode) skel.parentNode.removeChild(skel);
-        const wrap = document.getElementById("src-list-wrap");
-        if (wrap) wrap.classList.remove("hidden");
-      }
-
-      function render() {
-        revealList();
-        const list = document.getElementById("src-list");
-        list.replaceChildren();
-
-        if (!SOURCES.length) {
-          const box = el("div", "empty");
-          box.appendChild(el("div", "card-title", t("sources.empty_title", "还没有源")));
-          box.appendChild(
-            el("p", "card-sub", t("sources.empty", "还没有源。点右上角「新建源」开始。")),
-          );
-          const act = el("button", "btn btn-primary btn-sm", t("sources.new", "新建源"));
-          act.addEventListener("click", () => openModal(null));
-          box.appendChild(act);
-          list.appendChild(box);
-          return;
-        }
-
-        for (const s of SOURCES) {
-          list.appendChild(sourceRow(s));
-        }
-      }
-
-      // 加载失败：不伪造数据，也不显示"还没有源"（那会让人以为数据被清空了）
-      function renderLoadError(err) {
-        revealList();
-        const list = document.getElementById("src-list");
-        list.replaceChildren();
-        list.appendChild(Anotify.loadErrorNode(err, () => loadAll()));
-      }
-
-      // 一行一个源：左边"什么时候触发 + 派给谁"，右边动作。
-      // 结构是 .list-row > (.list-main, .src-acts)，每个行元素都是 div
-      // （e2e 用 `#src-list > div` 取行）。
-      function sourceRow(s) {
-        const row = el("div", "list-row");
-        const main = el("div", "list-main");
-
-        // ---- 左：名字 + 触发方式 + 状态 ----
-        const head = el("div", "flex flex-wrap items-center gap-2 min-w-0");
-        // 名字就是详情页入口：列表只回答"有哪些源、活着吗"，
-        // 细节（触发配置 / 出口参数 / 流向图）点进去看。
-        const nameLink = el("a", "src-name-link", s.name);
-        nameLink.href = "source.html?id=" + encodeURIComponent(s.id);
-        nameLink.title = t("sources.open_detail", "打开详情");
-        head.appendChild(nameLink);
-        head.appendChild(
-          el("span", "src-badge " + (KIND_CLASS[s.kind] || ""), kindLabel(s.kind)),
-        );
-        if (!s.enabled) {
-          head.appendChild(
-            el("span", "status-badge status-warn shrink-0", t("sources.disabled", "已停用")),
-          );
-        }
-        main.appendChild(head);
-
-        // 触发配置摘要
-        const cfgLine = el("div", "src-meta flex flex-wrap items-center gap-2");
-        if (s.kind === "cron") {
-          let expr = "";
-          try {
-            expr = (JSON.parse(s.configRaw || "{}").expr) || "";
-          } catch (e) {
-            /* 忽略 */
-          }
-          // config 走的是 JSON 对象（store 已解析），这里直接用
-          const cfg = s.config || {};
-          expr = cfg.expr || expr;
-          cfgLine.appendChild(code(expr || "?", "src-accent"));
-          if (cfg.tz && cfg.tz !== "Local") {
-            cfgLine.appendChild(el("span", "", "· " + cfg.tz));
-          }
-          if (s.nextFireAt) {
-            cfgLine.appendChild(
-              el(
-                "span",
-                "",
-                "· " +
-                  t("sources.next_fire", "下次 {t}")
-                    .replace("{t}", fmtTime(s.nextFireAt))
-                    .replace("}", "") +
-                  "（" + relTime(s.nextFireAt) + "）",
-              ),
-            );
-          }
-        } else if (s.kind === "webhook") {
-          if (s.hookUrl) {
-            const urlLine = el("div", "hook-url");
-            urlLine.textContent = location.origin + s.hookUrl;
-            main.appendChild(urlLine);
-          }
-        } else {
-          cfgLine.appendChild(el("span", "", t("sources.manual_hint", "页面上点「立即运行」时触发")));
-        }
-        main.appendChild(cfgLine);
-
-        // 出口能力
-        const tgtWrap = el("div", "src-meta mt-1 flex flex-wrap items-center gap-1.5");
-        tgtWrap.appendChild(
-          el("span", "", t("sources.targets_label", "目标能力") + " →"),
-        );
-        const caps = s.targetCaps || [];
-        if (!caps.length) {
-          tgtWrap.appendChild(el("span", "src-err", t("sources.no_target", "未配置")));
-        }
-        for (const c of caps) {
-          const pill = el(
-            "span",
-            "target-pill" + (c.missing ? " missing" : ""),
-            c.missing
-              ? t("sources.target_missing", "已删除") + " " + c.id
-              : Anotify.capLabel(c, { withRaw: false }),
-          );
-          tgtWrap.appendChild(pill);
-        }
-        main.appendChild(tgtWrap);
-
-        // ---- 右：操作按钮 ----
-        const acts = el("div", "src-acts card-actions");
-        if (s.enabled) {
-          const fireBtn = el("button", "btn btn-ghost btn-sm", t("sources.fire", "立即运行"));
-          fireBtn.addEventListener("click", () => fireSource(s, fireBtn));
-          acts.appendChild(fireBtn);
-        }
-        const toggleBtn = el(
-          "button",
-          "btn btn-ghost btn-sm",
-          s.enabled ? t("sources.disable", "停用") : t("sources.enable", "启用"),
-        );
-        toggleBtn.addEventListener("click", () => toggleSource(s, toggleBtn));
-        acts.appendChild(toggleBtn);
-
-        // 跳到事件流，只看这个源的事件。
-        //
-        // 用源的**名字**当参数：事件表里存的是 event.source 字符串，
-        // 而 Trigger.Fire 写的正是源名（internal/source/source.go:99）。
-        // 用 id 的话对不上。
-        const evBtn = el("button", "btn btn-ghost btn-sm", t("sources.view_events", "查看事件"));
-        evBtn.addEventListener("click", () => {
-          location.href = "events.html?source=" + encodeURIComponent(s.name);
-        });
-        acts.appendChild(evBtn);
-
-        // 编辑 / 删除 / 流向图 都在详情页：列表上放五六个按钮会让人
-        // 每次都要读完按钮才能找到目标源。
-        const detailBtn = el("a", "btn btn-ghost btn-sm", t("sources.detail", "详情"));
-        detailBtn.href = "source.html?id=" + encodeURIComponent(s.id);
-        acts.appendChild(detailBtn);
-
-        row.appendChild(main);
-        row.appendChild(acts);
-        // 流向图**不在列表里展开**：它体积大、要 fit 尺寸、还得懒渲染，
-        // 放进列表会让一屏只放得下两三个源。搬到详情页了（source.html）。
-        return row;
-      }
-
-      // ---------- 触发（#273 决策 2：可选 payload）----------
-      //
-      // 点「立即运行」不再直接 POST：先开弹层让用户看一眼、改一份 payload
-      // （带字段的手动事件只有这样才造得出来）。两条兼容底线不能破：
-      //   ① 空文本仍按 `{}` 发 —— 与弹层之前发出的请求体一模一样；
-      //   ② 不带 type —— 服务端用源名当事件类型（internal/server 的默认口径）。
-      let FIRING = null; // {src, btn}：当前为哪个源触发
-
-      async function fireSource(s, btn) {
-        FIRING = { src: s, btn: btn };
-        const box = document.getElementById("fire-payload");
-        const err = document.getElementById("fire-error");
-        err.textContent = "";
-        err.classList.add("hidden");
-        // 预填的样本与「试运行」同源（loadSample）：
-        //   github → 内置官方结构；webhook → 这个源最近一条真实事件；cron/manual → 没有。
-        // 先填 `{}`：样本是异步的（webhook 要拉事件），拉不到就停在这里，
-        // 用户仍可自己写——不能因为预填失败就不让触发。
-        box.value = "{}";
-        Anotify.openModal(document.getElementById("fire-modal"));
-        box.focus({ preventScroll: true });
-        try {
-          await loadSample({
-            kind: s.kind,
-            name: s.name,
-            event: (s.config && s.config.event) || "pull_request",
-          });
-          if (
-            SAMPLE_PAYLOAD &&
-            typeof SAMPLE_PAYLOAD === "object" &&
-            !Array.isArray(SAMPLE_PAYLOAD) &&
-            Object.keys(SAMPLE_PAYLOAD).length
-          ) {
-            // 格式化后填进去：压成一行的 JSON 既不好读也不好改
-            box.value = JSON.stringify(SAMPLE_PAYLOAD, null, 2);
-          }
-        } catch (e) {
-          /* 样本只是预填，拉不到就维持 {} */
-        }
-      }
-
-      function closeFireModal() {
-        Anotify.closeModal(document.getElementById("fire-modal"));
-        FIRING = null;
-      }
-
-      /** showFireError 把校验错误写回弹层（当场说清楚，不静默吞掉）。 */
-      function showFireError(msg) {
-        const err = document.getElementById("fire-error");
-        err.textContent = msg;
-        err.classList.remove("hidden");
-        const box = document.getElementById("fire-payload");
-        if (box) box.focus({ preventScroll: true });
-      }
-
-      /** readFirePayload 读弹层里的 payload：空文本 = {}，非法/非对象 = 报错返回 null。 */
-      function readFirePayload() {
-        const raw = String(document.getElementById("fire-payload").value || "").trim();
-        if (!raw) return {};
-        let parsed;
-        try {
-          parsed = JSON.parse(raw);
-        } catch (e) {
-          showFireError(
-            t("sources.fire_bad_json", "payload 不是合法 JSON：{e}").replace(
-              "{e}",
-              (e && e.message) || String(e),
-            ),
-          );
-          return null;
-        }
-        // 只收 JSON 对象：null / 数组 / 裸标量下去会被当成「没带 payload」，
-        // 用户改的字段静默消失——不如当场拦住。
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          showFireError(t("sources.form.bad_payload", "事件字段必须是 JSON 对象"));
-          return null;
-        }
-        return parsed;
-      }
-
-      async function submitFire() {
-        const cur = FIRING;
-        if (!cur) return;
-        const payload = readFirePayload();
-        if (payload === null) return; // 校验没过：一个请求也不发
-        const btn = document.getElementById("fire-submit");
-        btn.disabled = true;
-        try {
-          const res = await Anotify.api(API + "/sources/" + encodeURIComponent(cur.src.id) + "/fire", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ payload: payload }),
-          });
-          const n = (res && res.dispatch && res.dispatch.tasks && res.dispatch.tasks.length) || 0;
-          const pruned =
-            (res && res.dispatch && res.dispatch.pruned && res.dispatch.pruned.length) || 0;
-          if (n > 0) {
-            toast(
-              t("sources.fired", "已触发：派发 {n} 个任务").replace("{n}", n) +
-                (pruned ? t("sources.fired_pruned", "，剪枝 {n}").replace("{n}", pruned) : ""),
-            );
-          } else if (pruned > 0) {
-            // 派不出去要说清楚原因，别让用户以为"点了没反应"
-            // 去重按原值（机器串）做，再翻成人话
-            const reasons = (res.dispatch.pruned || [])
-              .map((p) => p.reason)
-              .filter((v, i, a) => a.indexOf(v) === i)
-              .map((r) => Anotify.pruneReason(r));
-            toast(
-              t("sources.fired_none", "事件已入库，但没派出去（{r}）").replace(
-                "{r}",
-                reasons.join(", "),
-              ),
-            );
-          } else {
-            toast(t("sources.fired_empty", "事件已入库，但没有可派发的任务"));
-          }
-          closeFireModal();
-          setTimeout(loadAll, 800);
-        } catch (e) {
-          toast(t("sources.fire_failed", "触发失败：{e}").replace("{e}", e.message));
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      async function toggleSource(s, btn) {
-        btn.disabled = true;
-        try {
-          await Anotify.api(API + "/sources/" + encodeURIComponent(s.id), {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled: !s.enabled }),
-          });
-          await loadAll();
-        } catch (e) {
-          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      async function deleteSource(s, btn) {
-        if (!confirm(t("sources.delete_confirm", "删除源「{n}」？已产生的事件与任务会保留。").replace("{n}", s.name))) {
-          return;
-        }
-        btn.disabled = true;
-        try {
-          await Anotify.api(API + "/sources/" + encodeURIComponent(s.id), { method: "DELETE" });
-          toast(t("sources.deleted", "已删除"));
-          await loadAll();
-        } catch (e) {
-          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      // ---------- 弹窗 ----------
-      async function openModal(src) {
-        // 每次打开都刷新能力列表：用户可能刚在「能力与出口」页建了新能力，
-        // 或者刚才保存了带新能力的源。用缓存会让新能力在选择器里缺席，
-        // 用户以为"建了却选不到"。
-        try {
-          const capData = await apiGet(API + "/capabilities");
-          if (capData && Array.isArray(capData.capabilities)) {
-            CAPS = capData.capabilities;
-            USABLE_CAPS = window.Anotify.filterCaps(CAPS);
-          }
-        } catch (e) {
-          /* 拉不到就用缓存，不阻塞打开弹窗 */
-        }
-
-        editingID = src ? src.id : null;
-        EDITING_SRC = src || null;
-        document.getElementById("modal-title").textContent = src
-          ? t("sources.modal.edit", "编辑源")
-          : t("sources.modal.new", "新建源");
-        document.getElementById("f-name").value = src ? src.name : "";
-        document.getElementById("f-kind").value = src ? src.kind : "cron";
-        document.getElementById("f-kind").disabled = !!src; // kind 不可改
-        document.getElementById("f-enabled").checked = src ? src.enabled : true;
-
-        const cfg = (src && src.config) || {};
-        // 变量表要在渲染出口参数**之前**恢复：参数里的"选变量"下拉依赖它
-        document.getElementById("f-expr").value = cfg.expr || "0 3 * * *";
-
-        // 事件 payload 契约（resultSchema）：回填成**格式化过的** JSON。
-        // 库里存的可能是压缩过的一行，直接回填进去用户没法编辑。
-        // 没有契约就清空——它确实是"没有"，而不是"继承上次"。
-        const rsBox = document.getElementById("f-result-schema");
-        if (rsBox) {
-          rsBox.value =
-            cfg.resultSchema && typeof cfg.resultSchema === "object"
-              ? JSON.stringify(cfg.resultSchema, null, 2)
-              : "";
-          // 已经有契约就把这一区展开：折叠着看不出来"这个源在管 payload 形状"，
-          // 而那正是最容易忘掉的一种配置。
-          const wrap = document.getElementById("result-schema-wrap");
-          if (wrap) wrap.open = !!rsBox.value;
-        }
-
-        // GitHub 事件类型要**先**回填：样本按它选，晚填就会用错样例
-        const evSel = document.getElementById("f-gh-event");
-        if (evSel) evSel.value = cfg.event || "pull_request";
-
-        // 已保存的出口参数：从 targetCaps 里取（后端并入视图了）
-        const existing = {};
-        for (const tc of (src && src.targetCaps) || []) {
-          if (tc.params && Object.keys(tc.params).length) existing[tc.id] = tc.params;
-        }
-        // 预览样本必须在渲染参数**之前**加载：参数框下方的预览要用它
-        // 求值。没有样本时预览显示"还没有事件"，不影响编辑。
-        //
-        // kind 决定样本来源：github 用内置官方结构（新建就能配），
-        // webhook 用真实事件，cron/manual 没有。
-        await loadSample({
-          kind: document.getElementById("f-kind").value,
-          name: src ? src.name : "",
-          event: document.getElementById("f-gh-event")?.value || "pull_request",
-        });
-        renderTargetPicker(src ? src.targets || [] : [], existing);
-        syncKindFields();
-
-        openOverlay();
-      }
-
-      // 弹层开关三件套：显示/隐藏、Esc、关闭后焦点归还。
-      //
-      // 为什么记 lastFocus：弹层是从「新建源」按钮（或详情页的 ?edit= 链接）打开的，
-      // 关掉之后焦点如果掉回 <body>，键盘用户得从头 Tab 一遍。
-      let OVERLAY_LAST_FOCUS = null;
-
-      function openOverlay() {
-        const modal = document.getElementById("src-modal");
-        OVERLAY_LAST_FOCUS = document.activeElement;
-        Anotify.openModal(modal);
-        // 焦点进到弹层里（首个字段），否则 Tab 会绕到背后的列表上
-        const first = modal.querySelector("#f-name") || modal.querySelector(".modal-body input, .modal-body select");
-        if (first) first.focus({ preventScroll: true });
-      }
-
-      function closeModal() {
-        const modal = document.getElementById("src-modal");
-        Anotify.closeModal(modal);
-        editingID = null;
-        EDITING_SRC = null;
-        const back = OVERLAY_LAST_FOCUS;
-        OVERLAY_LAST_FOCUS = null;
-        if (back && document.contains(back) && typeof back.focus === "function") {
-          back.focus({ preventScroll: true });
-        }
-      }
-
-      // syncKindFields 按当前 kind 显示对应的配置块。
-      function syncKindFields() {
-        const kind = document.getElementById("f-kind").value;
-        document.getElementById("f-cron-wrap").classList.toggle("hidden", kind !== "cron");
-        // github 是"知道载荷长什么样"的 webhook：投递配置同一套，只是
-        // 额外给现成的 GitHub 侧填法 + 已知字段清单。
-        const isHook = kind === "webhook" || kind === "github";
-        document.getElementById("f-hook-wrap").classList.toggle("hidden", !isHook);
-        const gh = document.getElementById("hook-github");
-        if (gh) gh.classList.toggle("hidden", kind !== "github");
-        const ghEv = document.getElementById("f-gh-event-wrap");
-        if (ghEv) ghEv.classList.toggle("hidden", kind !== "github");
-
-        // 提示语跟着 kind 变：github 是"知道载荷长什么样"的那种 webhook，
-        // 值得单独说明一句，否则用户分不清它和普通 webhook 的差别。
-        const hint = document.getElementById("f-kind-hint");
-        if (hint) {
-          hint.textContent =
-            kind === "github"
-              ? t("sources.form.kind_github_hint", "GitHub 的 PR/推送事件。已内置字段清单与 GitHub 侧填法。")
-              : t("sources.form.kind_hint", "创建后不可修改（换种类等于换语义，请删除后重建）。");
-        }
-        // 切 kind 时样本和清单都要跟着换：
-        //   github  → 内置官方结构（立刻有字段）
-        //   webhook → 这个源最近一条真实事件（可能还没有）
-        //   cron/manual → 没有样本
-        // 用当前正在编辑的源名去拉（新建时为 null，webhook 会拿不到事件）。
-        loadSample({
-          kind: kind,
-          name: EDITING_SRC ? EDITING_SRC.name : "",
-          event: document.getElementById("f-gh-event")?.value || "pull_request",
-        })
-          .then(() => {
-            renderAvailVars();
-            // 参数框下方的预览也要重算：换了样本，之前写的引用结果就变了
-            refreshParamTips();
-          })
-          .catch(() => renderAvailVars());
-        updateHookGuide();
-      }
-
-      // updateHookGuide 填 webhook 回调地址。
-      //
-      // 新建源时还没有 id/token，所以只能显示"保存后生成"；
-      // 编辑已有源时后端已经算好了 hookUrl，直接展示并可复制。
-      function updateHookGuide() {
-        const box = document.getElementById("hook-url-box");
-        const val = document.getElementById("hook-url-val");
-        if (!box || !val) return;
-        const kind = document.getElementById("f-kind").value;
-        // github 也是要投递 URL 的（与 webhook 同一套）——写成
-        // `kind !== "webhook"` 会让 github 源的回调地址永远显示不出来。
-        if (kind !== "webhook" && kind !== "github") return;
-
-        // GitHub 的 "Which events?" 要跟事件类型下拉一致，
-        // 否则用户照抄一段 pull_request 的说明去配 push。
-        const evEl = document.getElementById("hook-gh-events");
-        if (evEl && kind === "github") {
-          const ev = document.getElementById("f-gh-event")?.value || "pull_request";
-          evEl.textContent = GITHUB_EVENTS[ev] ? GITHUB_EVENTS[ev].label : ev;
-        }
-
-        const url = EDITING_SRC && EDITING_SRC.hookUrl ? location.origin + EDITING_SRC.hookUrl : "";
-        if (url) {
-          val.textContent = url;
-          const gh = document.getElementById("hook-gh-url");
-          if (gh) gh.textContent = url;
-          box.dataset.ready = "1";
-        } else {
-          val.textContent = t(
-            "sources.form.hook_url_pending",
-            "保存后生成（形如 /v1/hooks/src_xxx）",
-          );
-          const gh = document.getElementById("hook-gh-url");
-          if (gh) gh.textContent = t("sources.form.hook_url_pending", "保存后生成");
-          delete box.dataset.ready;
-        }
-      }
-
-      // renderTargetPicker 渲染出口能力多选。
-      //
-      // 只列"能被派发"的能力：
-      //   - 排除内置起点（github/cron/http/manual 这些是老模型的产物，
-      //     在新的源模型里它们已被源取代，选它们没有意义）
-      //   - 排除没有节点声明的 origin（派出去也会 pruned/no_node）
-      function renderTargetPicker(selected, existingParams) {
-        const box = document.getElementById("f-targets");
-        box.replaceChildren();
-        // 重建参数框 → 旧的预览刷新闭包全部失效，清空重登记
-        PARAM_TIP_UPDATERS.length = 0;
-        existingParams = existingParams || {};
-        // 兼容两种入参：只有 ID 的字符串数组，或 {capabilityId, params} 对象数组
-        const sel = new Set(
-          (selected || []).map((x) => (typeof x === "string" ? x : x && x.capabilityId)).filter(Boolean),
-        );
-
-        // 出口不能是**内置起点**（github / cron / http / manual）。
-        //
-        // 这类能力是"事件的入口"，不是"干活的执行者"：它们没有节点声明、
-        // 没有 outputs，选成出口的话派过去的任务永远找不到执行者。
-        //
-        // 注意**不能**用 `kind !== "origin"` 一刀切：kind 是从"有没有节点
-        // 声明"推导的（不落库，见不变量 I3），所以一个刚建好、节点还没上线
-        // 声明的自定义能力，kind 同样是 origin。把它排除掉的话，用户
-        // 建完能力就选不到了 —— 那正是这里要避免的。
-        //
-        // 判据回到 source：内置起点是唯一的"真正的入口"。
-        const usable = USABLE_CAPS.filter(
-          (c) => !(c.source === "builtin" && c.kind === "origin"),
-        );
-
-        if (!usable.length) {
-          box.appendChild(
-            el(
-              "div",
-              "src-meta p-2",
-              t("sources.form.no_caps", "还没有可用能力。先到「能力」页新建能力。"),
-            ),
-          );
-          return;
-        }
-
-        for (const c of usable) {
-          const checked = sel.has(c.id);
-          const label = el("label", "target-opt");
-          const cb = document.createElement("input");
-          cb.type = "checkbox";
-          // 专属类：参数面板里有 boolean 参数时也会产生 checkbox，
-          // 只用 input[type=checkbox] 选择会把它们一起选中，
-          // 导致 collectTargets 收集出 value="on" 的假出口。
-          cb.className = "target-cap";
-          cb.value = c.id;
-          cb.checked = checked;
-          label.appendChild(cb);
-          // 显示名 + **唯一标识**两个都要（用户原话「既显示名字，也显示能力的唯一标志」）：
-          // 只给显示名的话，显示名重名 / 同名不同版的两个能力在列表里长得一模一样，
-          // 而日志、边、节点声明里用的都是能力名（script.echo）—— 选错了很难回头发现。
-          const dn = (c.displayName || "").trim();
-          if (dn) label.appendChild(el("span", "target-name", dn));
-          // 没有显示名时回落 capLabel（带 @版本）：此时它就是人能看到的唯一标识。
-          label.appendChild(el("span", "target-capname mono", dn ? c.name : Anotify.capLabel(c)));
-          // 标出这个能力是什么角色，避免误选终端能力当入口
-          if (c.kind) {
-            label.appendChild(el("span", "src-meta", "· " + c.kind));
-          }
-          // 有必填参数时提示，让人知道勾了还得填
-          const req = requiredFields(c.paramsSchema);
-          if (req.length) {
-            label.appendChild(
-              el("span", "src-warn", req.length + " 个参数"),
-            );
-          }
-          box.appendChild(label);
-
-          // 勾选后才展开参数表单：不勾的能力不该占版面
-          const paramWrap = el("div", "target-params");
-          paramWrap.dataset.for = c.id;
-          paramWrap.style.display = checked ? "grid" : "none";
-          renderParamFields(paramWrap, c, existingParams[c.id] || {});
-          box.appendChild(paramWrap);
-
-          cb.addEventListener("change", () => {
-            paramWrap.style.display = cb.checked ? "grid" : "none";
-          });
-        }
-      }
-
-      // requiredFields 从 params_schema 取必填字段名。
-      //
-      // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
-      // 遇到不认识的忽略——和中枢的校验口径保持一致，避免前端说"必填"
-      // 而后端其实不校验（那种不一致比不提示更糟）。
-      function requiredFields(schema) {
-        if (!schema || typeof schema !== "object") return [];
-        const req = schema.required;
-        return Array.isArray(req) ? req.filter((x) => typeof x === "string") : [];
-      }
-
-      // schemaProps 取出 properties（保证是对象）。
-      function schemaProps(schema) {
-        if (!schema || typeof schema !== "object") return {};
-        const p = schema.properties;
-        return p && typeof p === "object" ? p : {};
-      }
-
-      /**
-       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
-       *
-       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
-       * 在那一行里已经很难看出这三种情况分别对应什么。
-       */
-      function placeholderForType(type) {
-        if (type === "object") return '{"k":"v"}';
-        if (type === "array") return "[1,2]";
-        return "";
-      }
-
-      // renderParamFields 按 schema 生成参数输入控件。
-      //
-      // 支持的类型映射（够覆盖实际用法，且都是声明式的）：
-      //   string  → text（有 enum 则 select；有 format=uri 用 url）
-      //   number/integer → number
-      //   boolean → checkbox
-      //   其它（object/array）→ 文本框，按 JSON 解析后提交
-      //
-      // 空 schema 或没有 properties 时不渲染任何字段（该能力不要参数）。
-      // ---------- 预览样本 ----------
-      //
-      // 参数是**盲写**的：用户写下某个 payload 路径时，系统不告诉他
-      // 这个路径存不存在、会取到什么、取不到会怎样。
-      //
-      // 样本从哪来，按触发方式分三种：
-      //
-      //   1. GitHub 触发器 → **内置 GitHub 官方 payload 样例**。
-      //      GitHub 的 webhook 结构是公开契约（不是"猜"），新建源就能配参数，
-      //      不必先触发一次。这也是它的价值：用户不该被要求"先发个事件来看看"。
-      //   2. 通用 webhook → 这个源**最近一条真实事件**（外部系统形状未知，
-      //      只能等真的有事件）。
-      //   3. cron / manual → 没有外部 payload，样本为空。
-      // PARAM_TIP_UPDATERS 收集每个参数框的预览刷新函数。
-      // 样本变了（换 kind、拉到新事件）要把所有预览重算一遍，
-      // 否则用户看到的是"用旧样本算出来的结果"。
-      const PARAM_TIP_UPDATERS = [];
-
-      let SAMPLE_PAYLOAD = null; // 当前的预览样本（null = 还没有可用样本）
-      let SAMPLE_META = null; // {at, type, builtin}
-
-      // GITHUB_EVENTS 是 GitHub 各事件类型的**结构样例**，按事件分类。
-      //
-      // 为什么必须分类：pull_request 和 push 的 payload 结构没有任何共同字段
-      // （前者有 pull_request.title，后者是 commits[] + ref + before/after）。
-      // 给一份"通用 GitHub 样例"等于两份都不对。
-      //
-      // 键名与嵌套层级严格照 GitHub 官方文档；值是我编的示意值——
-      // 用户配参数依赖的是**结构**，不是值。
-      //
-      // 只预置常用事件（不代表白名单：GitHub 的事件类型是开放的，
-      // 后端接受任意 X-GitHub-Event 值，这里只是给用户一个起点）。
-      const GITHUB_REPO = {
-        name: "repo",
-        full_name: "owner/repo",
-        private: false,
-        html_url: "https://github.com/owner/repo",
-        default_branch: "main",
-        owner: { login: "owner", type: "Organization" },
-      };
-      const GITHUB_SENDER = { login: "alice", id: 1234567, type: "User" };
-
-      const GITHUB_EVENTS = {
-        pull_request: {
-          label: "Pull request",
-          sample: {
-            action: "opened",
-            number: 42,
-            pull_request: {
-              number: 42,
-              title: "修个错字",
-              body: "把 README 里的拼写错误改掉。",
-              state: "open",
-              draft: false,
-              merged: false,
-              additions: 12,
-              deletions: 3,
-              changed_files: 2,
-              commits: 1,
-              comments: 0,
-              created_at: "2026-01-02T03:04:05Z",
-              html_url: "https://github.com/owner/repo/pull/42",
-              user: { login: "alice", id: 1234567, type: "User" },
-              head: { ref: "fix/typo", sha: "0f1e2d3c4b5a6978" },
-              base: { ref: "main", sha: "9a8b7c6d5e4f3021" },
-              labels: [{ name: "docs" }],
-              requested_reviewers: [{ login: "bob" }],
-            },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-            installation: { id: 987654 },
-          },
-        },
-
-        push: {
-          label: "Push",
-          sample: {
-            ref: "refs/heads/main",
-            before: "9a8b7c6d5e4f30211203f4e5d6c7b8a9",
-            after: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-            created: false,
-            deleted: false,
-            forced: false,
-            compare: "https://github.com/owner/repo/compare/9a8b7c6d...0f1e2d3c",
-            head_commit: {
-              id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-              message: "修个错字",
-              timestamp: "2026-01-02T03:04:05Z",
-              author: { name: "Alice", email: "alice@example.com", username: "alice" },
-              committer: { name: "Alice", email: "alice@example.com", username: "alice" },
-              added: ["docs/a.md"],
-              removed: [],
-              modified: ["README.md"],
-            },
-            // GitHub 把 commits 限制在最近 20 条
-            commits: [
-              {
-                id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-                message: "修个错字",
-                timestamp: "2026-01-02T03:04:05Z",
-                author: { name: "Alice", username: "alice" },
-                added: ["docs/a.md"],
-                removed: [],
-                modified: ["README.md"],
-              },
-            ],
-            repository: GITHUB_REPO,
-            pusher: { name: "alice", email: "alice@example.com" },
-            sender: GITHUB_SENDER,
-          },
-        },
-
-        issues: {
-          label: "Issues",
-          sample: {
-            action: "opened",
-            issue: {
-              number: 7,
-              title: "参数说明不清楚",
-              body: "希望能看到每个字段的示例值。",
-              state: "open",
-              html_url: "https://github.com/owner/repo/issues/7",
-              user: { login: "carol", id: 7654321, type: "User" },
-              labels: [{ name: "question" }],
-              assignees: [],
-              comments: 0,
-              created_at: "2026-01-02T03:04:05Z",
-            },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-          },
-        },
-
-        issue_comment: {
-          label: "Issue comment",
-          sample: {
-            action: "created",
-            issue: {
-              number: 7,
-              title: "参数说明不清楚",
-              state: "open",
-              html_url: "https://github.com/owner/repo/issues/7",
-              user: { login: "carol", type: "User" },
-            },
-            comment: {
-              id: 987654321,
-              body: "同意，示例值很有帮助。",
-              html_url: "https://github.com/owner/repo/issues/7#issuecomment-987654321",
-              user: { login: "bob", type: "User" },
-              created_at: "2026-01-02T04:00:00Z",
-            },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-          },
-        },
-
-        pull_request_review: {
-          label: "Pull request review",
-          sample: {
-            action: "submitted",
-            review: {
-              id: 555000111,
-              state: "approved",
-              body: "LGTM",
-              html_url: "https://github.com/owner/repo/pull/42#pullrequestreview-555000111",
-              user: { login: "bob", type: "User" },
-              submitted_at: "2026-01-02T05:00:00Z",
-            },
-            pull_request: {
-              number: 42,
-              title: "修个错字",
-              state: "open",
-              html_url: "https://github.com/owner/repo/pull/42",
-              user: { login: "alice", type: "User" },
-            },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-          },
-        },
-
-        release: {
-          label: "Release",
-          sample: {
-            action: "published",
-            release: {
-              id: 11223344,
-              tag_name: "v1.4.0",
-              name: "v1.4.0 发布",
-              body: "### 变更\n- 参数支持点选插入",
-              draft: false,
-              prerelease: false,
-              html_url: "https://github.com/owner/repo/releases/tag/v1.4.0",
-              author: { login: "alice", type: "User" },
-              published_at: "2026-01-02T06:00:00Z",
-            },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-          },
-        },
-
-        workflow_run: {
-          label: "Workflow run",
-          sample: {
-            action: "completed",
-            workflow_run: {
-              id: 44778899,
-              name: "CI",
-              event: "push",
-              status: "completed",
-              conclusion: "success",
-              head_branch: "main",
-              head_sha: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-              html_url: "https://github.com/owner/repo/actions/runs/44778899",
-              run_number: 128,
-              created_at: "2026-01-02T07:00:00Z",
-              updated_at: "2026-01-02T07:03:21Z",
-            },
-            workflow: { id: 3322110, name: "CI", path: ".github/workflows/ci.yml" },
-            repository: GITHUB_REPO,
-            sender: GITHUB_SENDER,
-          },
-        },
-      };
-
-      /** renderGhEventOptions 填事件类型下拉（只填一次）。 */
-      function renderGhEventOptions() {
-        const sel = document.getElementById("f-gh-event");
-        if (!sel || sel.options.length) return;
-        for (const ev of GITHUB_EVENT_ORDER) {
-          const o = document.createElement("option");
-          o.value = ev;
-          o.textContent = GITHUB_EVENTS[ev].label + "  (" + ev + ")";
-          sel.appendChild(o);
-        }
-        sel.addEventListener("change", () => {
-          loadSample({
-            kind: "github",
-            name: EDITING_SRC ? EDITING_SRC.name : "",
-            event: sel.value,
-          }).then(() => {
-            renderAvailVars();
-            refreshParamTips();
-            updateHookGuide();
-          });
-        });
-      }
-
-      // GITHUB_EVENT_ORDER 是下拉里的展示顺序（常用在前）
-      const GITHUB_EVENT_ORDER = [
-        "pull_request",
-        "push",
-        "issues",
-        "issue_comment",
-        "pull_request_review",
-        "release",
-        "workflow_run",
-      ];
-
-      /** loadSample 按触发方式决定用哪份预览样本。 */
-      async function loadSample(spec) {
-        SAMPLE_PAYLOAD = null;
-        SAMPLE_META = null;
-        const kind = spec && spec.kind;
-        const sourceName = spec && spec.name;
-
-        // GitHub：按**事件类型**取内置官方结构样例
-        if (kind === "github") {
-          const ev = (spec && spec.event) || "pull_request";
-          const def = GITHUB_EVENTS[ev];
-          if (def) {
-            SAMPLE_PAYLOAD = def.sample;
-            SAMPLE_META = { builtin: true, type: ev };
-          } else {
-            // 未知事件类型：不猜结构，如实说"没有内置样例"，
-            // 用户仍可手写路径（收到真实事件后预览会生效）
-            SAMPLE_PAYLOAD = null;
-            SAMPLE_META = { builtin: true, type: ev, unknown: true };
-          }
-          return;
-        }
-
-        // 其它触发方式没有外部 payload
-        if (kind !== "webhook") return;
-
-        // 通用 webhook：只能拿这个源最近一条真实事件
-        if (!sourceName) return;
-        try {
-          const r = await apiGet(
-            API + "/console/events?limit=1&source=" + encodeURIComponent(sourceName),
-          );
-          if (!r) return;
-          const ev = (r.events || [])[0];
-          if (!ev) return;
-          SAMPLE_PAYLOAD = ev.payload && typeof ev.payload === "object" ? ev.payload : {};
-          SAMPLE_META = { at: ev.createdAt, type: ev.type };
-        } catch (e) {
-          SAMPLE_PAYLOAD = null;
-        }
-      }
-
-      /** refreshParamTips 让所有参数框按当前样本重算预览。 */
-      function refreshParamTips() {
-        for (const f of PARAM_TIP_UPDATERS) {
-          try {
-            f();
-          } catch (e) {
-            /* 单个框算不出来不影响其它 */
-          }
-        }
-      }
-
-      /** getPathOf 按点号路径从样本里取值（与 mock 的 getPath 同口径）。 */
-      function getPathOf(obj, path) {
-        let cur = obj;
-        for (const seg of String(path).split(".")) {
-          if (seg === "") return undefined;
-          if (Array.isArray(cur)) {
-            const i = Number(seg);
-            if (!Number.isInteger(i) || i < 0 || i >= cur.length) return undefined;
-            cur = cur[i];
-          } else if (cur && typeof cur === "object") {
-            if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
-            cur = cur[seg];
-          } else {
-            return undefined;
-          }
-        }
-        return cur;
-      }
-
-      /**
-       * previewValue 用样本求值一个参数，返回给用户看的诊断。
-       *
-       * 返回 {kind, text}：
-       *   kind = "ok"      取到了，text 是结果预览
-       *   kind = "literal" 字面量，无需预览
-       *   kind = "missing" 引用没命中（拼错/事件里没有）
-       *   kind = "broken"  占位符没闭合
-       *   kind = "nosample" 还没有事件可当样本
-       */
-      function previewValue(raw) {
-        const val = String(raw == null ? "" : raw).trim();
-        if (!val) return { kind: "literal", text: "" };
-
-        const opens = (val.match(new RegExp(BRACE_OPEN, "g")) || []).length;
-        const closes = (val.match(new RegExp(BRACE_CLOSE, "g")) || []).length;
-        if (opens !== closes) {
-          return { kind: "broken", text: t("sources.form.pv_broken", "占位符没闭合") };
-        }
-        if (!TPL_RE.test(val)) return { kind: "literal", text: "" };
-        if (SAMPLE_PAYLOAD === null) {
-          return {
-            kind: "nosample",
-            text: t("sources.form.pv_nosample", "还没有事件可当样本，触发一次后才能预览"),
-          };
-        }
-
-        // 整值引用：保留原类型（和中枢行为一致）
-        const whole = val.match(TPL_WHOLE_RE);
-        const lookup = (ref) => getPathOf(SAMPLE_PAYLOAD, String(ref).trim());
-
-        if (whole) {
-          const got = lookup(whole[1]);
-          if (got === undefined) {
-            return {
-              kind: "missing",
-              text: t("sources.form.pv_missing", "样本里没有「{p}」").replace("{p}", whole[1]),
-            };
-          }
-          return { kind: "ok", text: previewText(got) };
-        }
-
-        // 混写：逐个替换，任何一处取不到都报出来
-        const missed = [];
-        const text = val.replace(new RegExp(TPL_RE.source, "g"), (m, ref) => {
-          const got = lookup(ref);
-          if (got === undefined) {
-            missed.push(ref);
-            return m;
-          }
-          if (got === null) return "";
-          return typeof got === "object" ? JSON.stringify(got) : String(got);
-        });
-        if (missed.length) {
-          return {
-            kind: "missing",
-            text: t("sources.form.pv_missing_multi", "样本里没有：{p}").replace(
-              "{p}",
-              missed.map((x) => "「" + x + "」").join(""),
-            ),
-          };
-        }
-        return { kind: "ok", text: '"' + text + '"  (string)' };
-      }
-
-      /** previewText 把取到的值渲染成"值 + 类型"，让人一眼看出类型对不对。 */
-      function previewText(v) {
-        if (v === null) return "null  (null)";
-        if (Array.isArray(v)) return JSON.stringify(v) + "  (array)";
-        if (typeof v === "object") return JSON.stringify(v) + "  (object)";
-        const str = String(v);
-        return str + "  (" + typeof v + ")";
-      }
-
-      function renderParamFields(wrap, cap, current) {
-        const props = schemaProps(cap.paramsSchema);
-        const keys = Object.keys(props);
-        if (!keys.length) {
-          wrap.appendChild(
-            el("div", "src-meta", t("sources.form.no_params", "该能力不需要参数")),
-          );
-          return;
-        }
-        const required = new Set(requiredFields(cap.paramsSchema));
-
-        for (const k of keys) {
-          const spec = props[k] && typeof props[k] === "object" ? props[k] : {};
-          const field = el("div", "");
-          field.dataset.paramField = k;
-          const lab = el("label", "", k);
-          if (required.has(k)) lab.appendChild(el("span", "param-req", "*"));
-          field.appendChild(lab);
-
-          const cur = current[k];
-          // 该参数现在是"映射"（{from,default}）还是字面量？
-          // 参数只有一个输入框：值里写「双大括号 + 路径」就是引用，否则是字面量。
-          //
-          // 以前这里是「固定值 / 从事件取值」两个按钮切两套控件 —— 用户要
-          // 先判断"我这次算哪种"，而实际上他脑子里想的只是"这个值从哪来"。
-          // 现在按内容自动识别：含双大括号就是取值/模板，否则是字面量。
-          // 少一次选择，也少一类"选错了"的错误。
-          //
-          // 参数值统一是文本：要么字面量，要么含双大括号的引用/模板。
-          //
-          // 兜底：早期数据的参数是 {from:"..."} / {var:"..."} 对象形态
-          // （该形态已删除）。遇到时转成文本，否则会显示成 [object Object]。
-          const rawVal = (() => {
-            if (!cur || typeof cur !== "object" || Array.isArray(cur)) return cur;
-            if (typeof cur.var === "string" && cur.var) return TPL(cur.var);
-            if (typeof cur.from === "string" && cur.from) return TPL(cur.from);
-            return JSON.stringify(cur);
-          })();
-
-          let input;
-          if (Array.isArray(spec.enum) && spec.enum.length) {
-            input = document.createElement("select");
-            if (!required.has(k)) {
-              const empty = document.createElement("option");
-              empty.value = "";
-              empty.textContent = "—";
-              input.appendChild(empty);
-            }
-            for (const opt of spec.enum) {
-              input.appendChild(new Option(String(opt), String(opt)));
-            }
-            if (rawVal != null) input.value = String(rawVal);
-          } else if (spec.type === "boolean") {
-            input = document.createElement("input");
-            input.type = "checkbox";
-            input.checked = rawVal === true || rawVal === "true";
-          } else if (spec.type === "number" || spec.type === "integer") {
-            input = document.createElement("input");
-            // type=number 会**拒绝**非数字内容：写进去的引用表达式
-            // 被静默清空（表现为"填了但保存后没有"）。引用是字符串，所以
-            // 只要当前值是引用就用 text，让用户能把它写进去并在提交时原样交给中枢。
-            const isRefVal = typeof rawVal === "string" && TPL_RE.test(rawVal.trim());
-            input.type = isRefVal ? "text" : "number";
-            if (isRefVal) {
-              input.inputMode = "numeric";
-              input.placeholder = "120 或 " + TPL("pull_request.additions");
-            }
-            if (rawVal != null && rawVal !== "") input.value = String(rawVal);
-          } else if (spec.type === "object" || spec.type === "array") {
-            input = document.createElement("input");
-            input.type = "text";
-            input.dataset.json = "1";
-            input.placeholder = placeholderForType(spec.type);
-            if (rawVal != null) {
-              input.value = typeof rawVal === "string" ? rawVal : JSON.stringify(rawVal);
-            }
-          } else {
-            input = document.createElement("input");
-            input.type = spec.format === "uri" ? "url" : "text";
-            if (rawVal != null) input.value = String(rawVal);
-            if (spec.pattern) input.placeholder = spec.pattern;
-          }
-
-          input.className = "input mono w-full";
-          input.dataset.param = k;
-          input.dataset.ptype = input.dataset.json ? "json" : spec.type || "string";
-
-          // 引用模式时给个视觉提示（不改变值，只是让用户知道这行是引用）
-          const tip = el("p", "param-tip", "");
-          const updateTip = () => {
-            const val = input.value.trim();
-            const isRef = TPL_RE.test(val);
-
-            // 用样本直接求值给用户看。这比任何文字说明都管用：
-            //   ✅ 42  (integer)          —— 取到了，类型也对
-            //   ⚠️ 样本里没有「pull_request.titel」 —— 拼错了，现在就看得见
-            // 之前只写"从事件取值"，用户得等触发才知道对不对。
-            const pv = previewValue(val);
-            tip.dataset.pv = pv.kind;
-            tip.textContent = pv.text;
-            tip.classList.toggle("is-ref", isRef);
-            tip.classList.toggle("is-ok", pv.kind === "ok");
-            tip.classList.toggle("is-bad", pv.kind === "missing" || pv.kind === "broken");
-
-            // 数字字段要能在"填数字"和"填引用"之间自由切换。
-            // type=number 的框里根本敲不进 `{`，所以一旦用户开始写引用
-            // （或以 `{` 开头），就把类型换成 text；清空后又换回 number
-            // 以便拿到数字键盘和上下微调。
-            if (input.dataset.ptype === "number" || input.dataset.ptype === "integer") {
-              const looksLikeRef = isRef || input.value.trim().startsWith("{");
-              const want = looksLikeRef ? "text" : "number";
-              if (input.type !== want) input.type = want;
-            }
-          };
-          input.addEventListener("input", updateTip);
-          PARAM_TIP_UPDATERS.push(updateTip);
-          // 打「双大括号」时弹出真实字段清单，点一下插入 —— 不用手打
-          // pull_request.user.login 这种路径。只在文本类输入框上装
-          // （select / checkbox 没有可插入的文本）。
-          if (input.tagName === "INPUT" && input.type !== "checkbox") {
-            hookPick(input);
-          }
-          updateTip();
-
-          field.appendChild(input);
-          field.appendChild(tip);
-          wrap.appendChild(field);
-        }
-      }
-
-      // requiredFields 从 params_schema 取必填字段名。
-      //
-      // 只用受控子集里最稳的那几个关键字（route.validate.go 支持的集合），
-      // 遇到不认识的忽略——和中枢的校验口径保持一致，避免前端说"必填"
-      // 而后端其实不校验（那种不一致比不提示更糟）。
-      function requiredFields(schema) {
-        if (!schema || typeof schema !== "object") return [];
-        const req = schema.required;
-        return Array.isArray(req) ? req.filter((x) => typeof x === "string") : [];
-      }
-
-      // schemaProps 取出 properties（保证是对象）。
-      function schemaProps(schema) {
-        if (!schema || typeof schema !== "object") return {};
-        const p = schema.properties;
-        return p && typeof p === "object" ? p : {};
-      }
-
-      /**
-       * placeholderForType 给"复杂类型走 JSON 手输"的输入框一个示例。
-       *
-       * 抽成函数是因为原来写成三层嵌套三元（object ? ... : array ? ... : ""），
-       * 在那一行里已经很难看出这三种情况分别对应什么。
-       */
-      function placeholderForType(type) {
-        if (type === "object") return '{"k":"v"}';
-        if (type === "array") return "[1,2]";
-        return "";
-      }
-
-      // collectTargets 收集 {capabilityId, params} 列表。
-      //
-      // 每个出口带自己那份参数：各能力的 params_schema 不同，
-      // 一份公共参数必然对不上至少一边（会被静默剪枝）。
-      function collectTargets() {
-        const box = document.getElementById("f-targets");
-        const out = [];
-        for (const cb of box.querySelectorAll("input.target-cap:checked")) {
-          const capId = cb.value;
-          const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(capId) + '"]');
-          const params = {};
-          if (wrap) {
-            for (const field of wrap.querySelectorAll("[data-param-field]")) {
-              const k = field.dataset.paramField;
-              const input = field.querySelector("[data-param]");
-              if (!input) continue;
-              const type = input.dataset.ptype;
-
-              if (type === "boolean" && input.type === "checkbox") {
-                if (!input.checked) continue; // 未勾选 = 不传
-                params[k] = true;
-                continue;
-              }
-
-              const raw = String(input.value).trim();
-              if (raw === "") continue; // 空 = 不传（交给 schema 默认/必填校验）
-
-              // 含占位符 → 原样存成字符串交给中枢做单趟替换。
-              //
-              // 支持两种：
-              //   双大括号 + pull_request.title    直接写 payload 路径
-              //   带前后缀的模板拼接（模板里可放多个引用）
-              //
-              // 不在这里展开成 {from:...}：展开会丢掉"用户拼的文本"，
-              // 出错时只能报"某字段取不到"，用户看不到自己写了什么。
-              // 占位符必须成对。这一步**先于** TPL_RE 判断：
-              // 写了半截占位符时正则匹配不到完整引用，TPL_RE 为 false，
-              // 会被当字面量存下去 —— 用户以为生效了，实际什么都不发生。
-              {
-                const opens = (raw.match(new RegExp(BRACE_OPEN, "g")) || []).length;
-                const closes = (raw.match(new RegExp(BRACE_CLOSE, "g")) || []).length;
-                if (opens !== closes) {
-                  throw new Error(
-                    t("sources.form.bad_placeholder", "参数 {k}：占位符没闭合").replace("{k}", k),
-                  );
-                }
-              }
-
-              if (TPL_RE.test(raw)) {
-                params[k] = raw;
-                continue;
-              }
-
-              let v;
-              if (type === "json") {
-                try {
-                  v = JSON.parse(raw);
-                } catch (e) {
-                  throw new Error(
-                    t("sources.form.bad_json", "参数 {k} 不是合法 JSON").replace("{k}", k),
-                  );
-                }
-              } else if (type === "number" || type === "integer") {
-                v = Number(raw);
-                if (Number.isNaN(v)) {
-                  throw new Error(t("sources.form.bad_num", "参数 {k} 不是数字").replace("{k}", k));
-                }
-              } else {
-                v = raw;
-              }
-              params[k] = v;
-            }
-          }
-          out.push(Object.keys(params).length ? { capabilityId: capId, params } : { capabilityId: capId });
-        }
-        return out;
-      }
-
-      /**
-       * readResultSchema 读弹窗里的"事件 payload 契约"文本框（resultSchema）。
-       *
-       * 返回 undefined = 没填（不声明：不校验，与加这个字段之前完全一致）；
-       * 返回对象 = 声明了一份契约。抛异常 = 输入问题（非法 JSON / 不是对象），
-       * 调用方把 message 直接展示出来。
-       *
-       * 为什么要在这里判"必须是对象"：后端保存时会 400（store.ResultSchemaError），
-       * 但试运行用的是草稿、后端只做宽容读取——不在这里拦就会出现
-       * "试运行说能跑、点保存却 400"这种最伤信任的差异。
-       */
-      function readResultSchema() {
-        const box = document.getElementById("f-result-schema");
-        const text = (box ? box.value : "").trim();
-        if (!text) return undefined;
-        let v;
-        try {
-          v = JSON.parse(text);
-        } catch (e) {
-          throw new Error(
-            t("sources.form.bad_schema", "payload 契约不是合法 JSON：{e}").replace(
-              "{e}",
-              e.message,
-            ),
-          );
-        }
-        if (!v || typeof v !== "object" || Array.isArray(v)) {
-          throw new Error(
-            t(
-              "sources.form.schema_not_object",
-              "payload 契约必须是 JSON 对象（数组/标量都不是 schema）",
-            ),
-          );
-        }
-        return v;
-      }
-
-      async function save() {
-        const name = document.getElementById("f-name").value.trim();
-        const kind = document.getElementById("f-kind").value;
-        const enabled = document.getElementById("f-enabled").checked;
-
-        let targets;
-        try {
-          targets = collectTargets();
-        } catch (e) {
-          toast(e.message);
-          return;
-        }
-
-        if (!name) {
-          toast(t("sources.form.name_required", "请填名字"));
-          return;
-        }
-        if (!targets.length) {
-          toast(t("sources.form.targets_required", "至少要选一个目标能力"));
-          return;
-        }
-
-        let config = {};
-        if (kind === "cron") {
-          const expr = document.getElementById("f-expr").value.trim();
-          if (!expr) {
-            toast(t("sources.form.expr_required", "请填 cron 表达式"));
-            return;
-          }
-          config = { expr: expr };
-        } else if (kind === "github") {
-          // 事件类型存在 config.event：它决定收到投递时用什么事件名
-          //（真实 GitHub 把它放在 X-GitHub-Event 头里，这里只是订阅声明
-          // 和"手动 curl 测试"时的兜底）。
-          config = { event: document.getElementById("f-gh-event").value || "pull_request" };
-        }
-        // webhook / manual 的 config 由后端补 token，前端不填。
-        // 也不再写 config.vars：别名表整个删除了。
-
-        // 事件 payload 契约：**总是带上这个键**。
-        //   undefined（留空）→ 发 null = "没有契约"（PATCH 由此清空一份已存契约）；
-        //   对象 → 原样提交。
-        // 不"省略键"的原因：省略在 PATCH 语义下是"继承旧值"（mergeSourceConfig
-        // 的 inheritedConfigKeys），那样用户把文本框清空后会发现契约还在——
-        // 界面上看到的就是假的。
-        let resultSchema;
-        try {
-          resultSchema = readResultSchema();
-        } catch (e) {
-          toast(e.message);
-          return;
-        }
-        config.resultSchema = resultSchema === undefined ? null : resultSchema;
-
-        const body = { name: name, kind: kind, config: config, enabled: enabled, targets: targets };
-        const btn = document.getElementById("modal-save");
-        btn.disabled = true;
-        try {
-          if (editingID) {
-            await Anotify.api(API + "/sources/" + encodeURIComponent(editingID), {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-            toast(t("sources.saved", "已保存"));
-          } else {
-            await Anotify.api(API + "/sources", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-            toast(t("sources.created", "已创建"));
-          }
-          closeModal();
-          await loadAll();
-        } catch (e) {
-          // 服务端的校验信息（如 cron 表达式非法）原样展示，不要笼统说"失败"
-          toast(t("sources.save_failed", "保存失败：{e}").replace("{e}", e.message));
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-
-
-      // ---------- 可用变量清单 ----------
-      //
-      // "这个触发方式能给我哪些变量" —— 用**真实事件**回答，不维护固定清单：
-      // payload 形状由外部系统决定，中枢不解释也不该猜（I6）。硬编码一份
-      // GitHub 的字段，接 GitLab / 自定义系统时就是错的。
-      //
-      function renderAvailVars() {
-        const body = document.getElementById("avail-vars-body");
-        if (!body) return;
-        body.replaceChildren();
-
-        const kind = document.getElementById("f-kind").value;
-        const paths = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
-
-        // 说明这份清单是哪来的 —— 内置样例和真实事件的"可信度"不同，
-        // 用户需要知道自己在看哪一种（前者结构准、值是我编的示意）。
-        const srcEl = document.getElementById("avail-src");
-        if (srcEl) {
-          srcEl.textContent = "";
-          if (SAMPLE_META && SAMPLE_META.builtin) {
-            if (SAMPLE_META.unknown) {
-              srcEl.textContent = t(
-                "sources.form.av_src_unknown",
-                "没有「{ty}」的内置结构样例；收到真实事件后会列出实际字段。",
-              ).replace("{ty}", SAMPLE_META.type || "—");
-            } else {
-              // 事件类型要出现在文案里：换了 event 却还写 pull_request，
-              // 用户会以为这份清单对不上自己选的事件。
-              srcEl.textContent = t(
-                "sources.form.av_src_builtin",
-                "来自 GitHub 官方 {ty} 事件结构（示例值）",
-              ).replace("{ty}", SAMPLE_META.type || "pull_request");
-            }
-          } else if (SAMPLE_META && SAMPLE_META.at) {
-            srcEl.textContent = t(
-              "sources.form.av_src_event",
-              "来自这个源最近一条真实事件：{ty}",
-            ).replace("{ty}", SAMPLE_META.type || "—");
-          }
-        }
-
-        if (!paths.length) {
-          // github / webhook 是有外部事件的：如实说"还没收到过"。
-          // cron / manual 确实没有事件，说清"只能写字面量"。
-          const isHook = kind === "github" || kind === "webhook";
-          const hint = isHook
-            ? t(
-                "sources.form.av_no_event_hook",
-                "还没有收到过事件。配好回调地址后让外部系统发一次，这里会列出真实字段。",
-              )
-            : t(
-                "sources.form.av_no_event",
-                "这个源没有外部事件，没有可引用的字段；值直接写在参数里即可。",
-              );
-          body.appendChild(el("div", "av-empty", hint));
-          return;
-        }
-
-        renderAvailGroups(body, paths);
-      }
-
-      /**
-       * renderAvailGroups 把字段按**顶层键**分组显示（默认全折叠）。
-       *
-       * 为什么不再平铺：pull_request 一个事件就有 35 个字段，平铺下来
-       * 面板吃掉整屏（截图里就是这个样子），用户既扫不完也找不到东西。
-       * 分组之后一眼能看到"有 pull_request / repository / sender 三组"，
-       * 想深入再展开——信息层级回来了。
-       *
-       * 默认折叠而不是展开：这份面板是**参考清单**，不是主操作路径。
-       * 真正的取字段动作在参数框里打双大括号点选，那里有搜索和键盘导航。
-       */
-      function renderAvailGroups(body, paths) {
-        // 按第一段路径分组；没有点的（如 action / number）归到"顶层"
-        const groups = new Map();
-        for (const it of paths) {
-          const dot = it.path.indexOf(".");
-          const key = dot < 0 ? "" : it.path.slice(0, dot);
-          if (!groups.has(key)) groups.set(key, []);
-          groups.get(key).push(it);
-        }
-
-        // 搜索框：字段多时唯一实用的定位方式
-        const filter = document.createElement("input");
-        filter.className = "input mono av-filter";
-        filter.placeholder = t("sources.form.av_filter", "筛选字段…");
-        filter.addEventListener("input", () => {
-          const q = filter.value.trim().toLowerCase();
-          for (const g of body.querySelectorAll(".av-group")) {
-            let shown = 0;
-            for (const row of g.querySelectorAll(".av-row")) {
-              const hit = !q || row.dataset.path.toLowerCase().includes(q);
-              row.style.display = hit ? "" : "none";
-              if (hit) shown++;
-            }
-            g.style.display = shown ? "" : "none";
-            // 搜索时自动展开命中的组，否则用户还要手点
-            if (q && shown) g.classList.add("is-open");
-          }
-          let any = false;
-          for (const g of body.querySelectorAll(".av-group")) {
-            if (g.style.display !== "none") any = true;
-          }
-          emptyEl.style.display = any ? "none" : "";
-        });
-        body.appendChild(filter);
-
-        const emptyEl = el(
-          "div",
-          "av-empty-filter",
-          t("sources.form.av_filter_none", "没有匹配的字段"),
-        );
-        emptyEl.style.display = "none";
-
-        // 顶层标量（action / number）先展示，它们最常用
-        const keys = [...groups.keys()].sort((a, b) => {
-          if (a === "") return -1;
-          if (b === "") return 1;
-          return a.localeCompare(b);
-        });
-
-        for (const key of keys) {
-          const items = groups.get(key);
-          const g = el("div", "av-group");
-          const head = document.createElement("button");
-          head.type = "button";
-          head.className = "av-group-head";
-          head.appendChild(el("span", "av-caret", "▶"));
-          head.appendChild(
-            el(
-              "span",
-              "av-group-name",
-              key === "" ? t("sources.form.av_group_top", "顶层") : key,
-            ),
-          );
-          head.appendChild(el("span", "av-group-n", String(items.length)));
-          head.addEventListener("click", () => g.classList.toggle("is-open"));
-
-          const bodyEl = el("div", "av-group-body");
-          if (items.length > 12) bodyEl.classList.add("scrollable");
-          for (const it of items) {
-            const row = el("div", "av-row");
-            row.dataset.path = it.path;
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "av-path";
-            // 组内只显示去掉前缀的短名，省宽度；完整路径放 title
-            btn.textContent =
-              key === "" ? it.path : it.path.slice(key.length + 1);
-            btn.title = TPL(it.path);
-            btn.addEventListener("click", () => {
-              if (navigator.clipboard) {
-                navigator.clipboard.writeText(TPL(it.path)).catch(() => {});
-                toast(
-                  t("sources.form.av_copied2", "已复制 {p}").replace("{p}", TPL(it.path)),
-                );
-              }
-            });
-            row.appendChild(btn);
-            row.appendChild(el("span", "av-desc", pickValueText(it.value)));
-            bodyEl.appendChild(row);
-          }
-
-          g.appendChild(head);
-          g.appendChild(bodyEl);
-          body.appendChild(g);
-        }
-        body.appendChild(emptyEl);
-      }
-
-      // fillDemo 一键铺好一套"变量 + 参数引用变量"的完整配置。
-      //
-      // 为什么需要这个：变量这个功能看文档很难体会到底省了什么 ——
-      // "记录名字然后在下拉里选"听起来和"直接填路径"差不多，
-      // 只有真的看到「3 个参数全部 ← $xxx」才明白它把路径收敛了。
-      //
-      // 铺出来的这套是**可用的**（不是纯占位）：保存后点「立即运行」就能
-      // 在 mock 里跑通，因为 webhook 的 payload 结构就是 GitHub 的 PR 事件。
-      // ---------- 字段浮层：在参数框里点选插入 ----------
-      //
-      // 用户不该手打 pull_request.user.login。在参数框里打「双大括号」时
-      // 弹出**真实样本里的字段清单**（来自最近一条事件），点一下插入。
-      //
-      // 为什么用真实样本而不是固定清单：payload 形状由外部系统决定，
-      // 硬编码一份 GitHub 的字段在接 GitLab / 自定义系统时就是错的。
-      //
-      // 这一条让「别名表」失去主要价值：别名原本的意义是"不用记深层路径"，
-      // 而补全直接解决了。别名现在只用于"改一处生效多处"。
-
-      let PICK = null; // {el, input, items, active}
-
-      /** flattenPaths 把样本 payload 摊平成 [{path, value}]。 */
-      function flattenPaths(obj, prefix) {
-        const out = [];
-        if (!obj || typeof obj !== "object") return out;
-        for (const [k, v] of Object.entries(obj)) {
-          const path = prefix ? prefix + "." + k : k;
-          if (v && typeof v === "object" && !Array.isArray(v)) {
-            const kids = flattenPaths(v, path);
-            if (kids.length) {
-              out.push(...kids);
-              continue;
-            }
-          }
-          out.push({ path, value: v });
-        }
-        return out;
-      }
-
-      /** pickValueText 把值渲染成一小段预览。 */
-      function pickValueText(v) {
-        if (v === null) return "null";
-        if (typeof v === "object") return JSON.stringify(v);
-        return String(v);
-      }
-
-      function closePick() {
-        if (PICK && PICK.el && PICK.el.parentNode) PICK.el.parentNode.removeChild(PICK.el);
-        PICK = null;
-      }
-
-      /** openPick 在输入框下方弹出字段清单，定位到光标附近。 */
-      function openPick(input, filter) {
-        closePick();
-        const all = SAMPLE_PAYLOAD ? flattenPaths(SAMPLE_PAYLOAD, "") : [];
-        const q = String(filter || "").toLowerCase();
-        const items = q ? all.filter((x) => x.path.toLowerCase().includes(q)) : all;
-
-        const pop = el("div", "pick-pop");
-        if (!all.length) {
-          pop.appendChild(
-            el("div", "pick-empty", t("sources.form.pick_no_sample", "还没有事件可当样本")),
-          );
-        } else if (!items.length) {
-          pop.appendChild(
-            el("div", "pick-empty", t("sources.form.pick_none", "没有匹配的字段")),
-          );
-        } else {
-          items.slice(0, 60).forEach((it, i) => {
-            const row = document.createElement("button");
-            row.type = "button";
-            row.className = "pick-row";
-            if (i === 0) row.classList.add("is-active");
-            row.dataset.path = it.path;
-            row.appendChild(el("span", "pick-path", it.path));
-            row.appendChild(el("span", "pick-val", pickValueText(it.value)));
-            row.addEventListener("mousedown", (ev) => {
-              // mousedown 而不是 click：click 前 input 会先失焦
-              ev.preventDefault();
-              insertPick(it.path);
-            });
-            pop.appendChild(row);
-          });
-        }
-
-        document.body.appendChild(pop);
-        const rect = input.getBoundingClientRect();
-        pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
-        pop.style.top = rect.bottom + 4 + "px";
-
-        PICK = { el: pop, input: input, items: items, active: 0 };
-      }
-
-      /** insertPick 用完整引用替换输入端里正在输入的那半截占位符。 */
-      function insertPick(path) {
-        if (!PICK) return;
-        const input = PICK.input;
-        const v = input.value;
-        const caret = input.selectionStart == null ? v.length : input.selectionStart;
-        // 从光标往前找最近一个未闭合的开括号
-        const before = v.slice(0, caret);
-        const idx = before.lastIndexOf(TPL_OPEN);
-        const text = TPL(path);
-        let next;
-        if (idx >= 0) {
-          // 吃掉已输入的部分（含可能存在的结尾 }}
-          const tail = v.slice(caret);
-          const closeAt = tail.indexOf(TPL_CLOSE);
-          const rest = closeAt >= 0 ? tail.slice(closeAt + TPL_CLOSE.length) : tail;
-          next = v.slice(0, idx) + text + rest;
-        } else {
-          next = v + text;
-        }
-        input.value = next;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        closePick();
-        input.focus();
-        const pos = next.length;
-        try {
-          input.setSelectionRange(pos, pos);
-        } catch (e) {
-          /* select 元素不支持 setSelectionRange */
-        }
-      }
-
-      /** hookPick 给一个文本输入框装上"打双大括号就弹清单"的行为。 */
-      function hookPick(input) {
-        input.addEventListener("input", () => {
-          const v = input.value;
-          const caret = input.selectionStart == null ? v.length : input.selectionStart;
-          const before = v.slice(0, caret);
-          const idx = before.lastIndexOf(TPL_OPEN);
-          if (idx < 0) {
-            closePick();
-            return;
-          }
-          const seg = before.slice(idx + TPL_OPEN.length);
-          // 已经写完了（出现了闭括号）就不再弹
-          if (seg.includes(TPL_CLOSE) || seg.includes(" ") || seg.length > 60) {
-            closePick();
-            return;
-          }
-          openPick(input, seg);
-        });
-        input.addEventListener("keydown", (ev) => {
-          if (!PICK || PICK.input !== input) return;
-          if (ev.key === "Escape") {
-            closePick();
-            ev.preventDefault();
-            return;
-          }
-          const rows = [...PICK.el.querySelectorAll(".pick-row")];
-          if (!rows.length) return;
-          if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
-            ev.preventDefault();
-            PICK.active = (PICK.active + (ev.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
-            rows.forEach((r, i) => r.classList.toggle("is-active", i === PICK.active));
-            rows[PICK.active].scrollIntoView({ block: "nearest" });
-          } else if (ev.key === "Enter" || ev.key === "Tab") {
-            ev.preventDefault();
-            const r = rows[PICK.active] || rows[0];
-            insertPick(r.dataset.path);
-          }
-        });
-        input.addEventListener("blur", () => setTimeout(closePick, 120));
-      }
-
-      // ---------- 试运行 ----------
-      //
-      // 保存前先看"这条配置会不会真的跑起来"。用户改完参数最想知道的就是这个，
-      // 而在此之前只能先保存再点"立即运行"，错了再去事件流里找剪枝原因。
-      //
-      // 判定由后端 planDispatch/Dispatch(DryRun) 给，与真实触发同一份实现。
-
-      /** collectDraft 把弹窗当前内容收集成一份"草稿源"（未保存也能试运行）。 */
-      function collectDraft() {
-        const kind = document.getElementById("f-kind").value;
-        const targets = collectTargets();
-        const config =
-          kind === "github"
-            ? { event: document.getElementById("f-gh-event").value || "pull_request" }
-            : { expr: document.getElementById("f-expr").value.trim() };
-        // 事件 payload 契约也进草稿：否则"配完契约试运行"看到的仍是旧判定
-        // （契约没参与），用户会以为契约没生效。
-        const rs = readResultSchema();
-        if (rs !== undefined) config.resultSchema = rs;
-        return {
-          name: document.getElementById("f-name").value.trim(),
-          kind: kind,
-          // 不再有 config.vars：别名表已删除，参数直接写完整 payload 路径。
-          config: config,
-          targets: targets,
-        };
-      }
-
-      /** runDry 执行试运行并把结果渲染进 #dry-result。 */
-      async function runDry() {
-        const box = document.getElementById("dry-result");
-        const btn = document.getElementById("btn-dry");
-        let draft;
-        try {
-          draft = collectDraft();
-        } catch (e) {
-          // collectTargets 抛的是配置错误（占位符没闭合、字段名非法…），
-          // 直接显示在这里比弹 toast 更好：位置就在按钮旁边。
-          renderDryError(box, e.message);
-          return;
-        }
-        if (!draft.targets.length) {
-          renderDryError(box, t("sources.form.dry_no_target", "先勾选至少一个目标能力"));
-          return;
-        }
-
-        btn.disabled = true;
-        const old = btn.textContent;
-        btn.textContent = t("sources.form.dry_running", "试运行中…");
-        try {
-          // 用最近一条真实事件当样本；没有就空 payload（会如实报取不到）
-          const payload = SAMPLE_PAYLOAD || {};
-          // api() 失败即抛：错误必须在本页显式处理，不能静默吞掉（页面渲染时炸在 r.dispatch 上就是历史事故）。
-          const r = await Anotify.api(API + "/sources/dry-run", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ source: draft, payload: payload }),
-          });
-          renderDryResult(box, r, draft);
-        } catch (e) {
-          renderDryError(box, String(e.message || e));
-        } finally {
-          btn.disabled = false;
-          btn.textContent = old;
-        }
-      }
-
-      function renderDryError(box, msg) {
-        box.classList.remove("hidden");
-        box.replaceChildren();
-        const row = el("div", "dry-row is-bad");
-        row.appendChild(el("span", "", "✕"));
-        row.appendChild(el("span", "", msg));
-        box.appendChild(row);
-      }
-
-      function renderDryResult(box, r, draft) {
-        box.classList.remove("hidden");
-        box.replaceChildren();
-        const d = r.dispatch || {};
-        const tasks = d.tasks || [];
-        const pruned = d.pruned || [];
-
-        const head = el("div", "dry-head");
-        if (tasks.length) {
-          head.appendChild(el("span", "", "✓"));
-          head.appendChild(
-            el(
-              "span",
-              "",
-              t("sources.form.dry_will_run", "会派发 {n} 个任务")
-                .replace("{n}", tasks.length)
-                + (pruned.length ? t("sources.form.dry_and_pruned", "，{n} 个被跳过").replace("{n}", pruned.length) : ""),
-            ),
-          );
-        } else {
-          head.appendChild(el("span", "", "⚠"));
-          head.appendChild(
-            el("span", "", t("sources.form.dry_nothing", "没有任务会派发（全部被跳过）")),
-          );
-        }
-        box.appendChild(head);
-
-        for (const tk of tasks) {
-          const row = el("div", "dry-row is-ok");
-          row.appendChild(el("span", "", "✓"));
-          row.appendChild(el("span", "dry-cap", tk.capability + "@" + tk.version));
-          box.appendChild(row);
-          // 求值后的参数：这是"试运行"最有价值的部分 —— 能直接看到
-          // 别名引用最后变成了具体值 31
-          if (tk.params && Object.keys(tk.params).length) {
-            for (const [k, v] of Object.entries(tk.params)) {
-              const p = el("div", "dry-params");
-              p.textContent = k + " = " + JSON.stringify(v);
-              box.appendChild(p);
-            }
-          }
-        }
-
-        for (const pr of pruned) {
-          const row = el("div", "dry-row is-bad");
-          row.appendChild(el("span", "", "⊘"));
-          row.appendChild(
-            el("span", "dry-cap", (pr.capability || pr.capabilityId || "—") + "  "),
-          );
-          row.appendChild(el("span", "dry-detail", pr.detail || Anotify.pruneReason(pr.reason)));
-          box.appendChild(row);
-        }
-      }
-
-      function fillDemo() {
-        // 1) 名字与 kind：webhook 才有"从事件取"的意义
-        document.getElementById("f-name").value = t(
-          "sources.form.demo_name",
-          "演示 · GitHub PR 分析",
-        );
-        const kindEl = document.getElementById("f-kind");
-        kindEl.value = "webhook";
-        kindEl.disabled = false; // 编辑态可能是禁用的，演示要能切
-        syncKindFields();
-
-        // 2) 不再需要声明别名：参数里直接写完整路径（点选补全会给）。
-
-        // 3) 选一个"有参数"的出口能力，把每个参数都接上变量。
-        //
-        // 不强依赖某个具体能力名（用户环境里未必有）：挑第一个有
-        // paramsSchema 属性的能力，按它的字段名依次匹配变量。
-        const usable = USABLE_CAPS.filter(
-          (c) =>
-            c &&
-            !(c.source === "builtin" && c.kind === "origin") &&
-            schemaProps(c.paramsSchema) &&
-            Object.keys(schemaProps(c.paramsSchema)).length,
-        );
-        if (!usable.length) {
-          toast(t("sources.form.demo_no_caps", "没有带参数的目标能力，变量部分已填好"));
-          return;
-        }
-        const cap = usable[0];
-
-        renderTargetPicker([cap.id], {});
-        const box = document.getElementById("f-targets");
-        const cb = box.querySelector('input.target-cap[value="' + CSS.escape(cap.id) + '"]');
-        if (cb) {
-          cb.checked = true;
-          cb.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-
-        // 4) 把参数填成「双大括号 + payload 路径」，不必先声明成变量。
-        //
-        // 这条演示同时说明了两件事：
-        //   - 变量表是可选的（下面把 variables 清空也能跑）
-        //   - 参数里看到什么字段就写什么，直接写那个 payload 路径
-        const wrap = box.querySelector('.target-params[data-for="' + CSS.escape(cap.id) + '"]');
-        if (wrap) {
-          const props = schemaProps(cap.paramsSchema);
-          // 按字段名挑一个合适的路径；命不中就按类型给个通用的
-          // 演示里**刻意混用三种写法**，一次看全：
-          //   数字字段 → 整值引用（保留数字类型）
-          //   文本字段 → 模板拼接（带前后缀）
-          //   枚举字段 → 字面量
-          const guess = (field, spec) => {
-            const t2 = spec && spec.type;
-            const isNum = t2 === "integer" || t2 === "number";
-            if (Array.isArray(spec && spec.enum) && spec.enum.length) return spec.enum[0];
-            if (/env|stage/i.test(field)) return "staging";
-            if (isNum || /line|count|size|additions/i.test(field)) {
-              return TPL("pull_request.additions");
-            }
-            // 文本字段用拼接："PR #42: 修个错字 by alice"
-            if (/title|name|subject|summary/i.test(field)) {
-              return (
-                "PR #" + TPL("pull_request.number") + ": " + TPL("pull_request.title") +
-                " by " + TPL("pull_request.user.login")
-              );
-            }
-            if (/repo|repository/i.test(field)) return TPL("repository.name");
-            if (/author|user|login/i.test(field)) return TPL("pull_request.user.login");
-            return TPL("pull_request.title");
-          };
-          for (const [field, spec] of Object.entries(props)) {
-            const fieldEl = wrap.querySelector(
-              '[data-param-field="' + CSS.escape(field) + '"]',
-            );
-            if (!fieldEl) continue;
-            const input = fieldEl.querySelector("[data-param]");
-            if (!input) continue;
-            const val = guess(field, spec);
-            // 数字字段默认是 type=number，直接写引用会被浏览器**静默清空**。
-            // 先切成 text 再写值 —— 否则演示按钮看起来"填了"实际是空的。
-            if (TPL_RE.test(val) && input.type === "number") input.type = "text";
-            input.value = val;
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-        }
-
-        // 滚回顶部：变量区在名字/触发方式**下面**，小视口下刚打开时
-        // 看不见。不滚的话用户只看到"名字变了"，以为按钮没生效。
-        const scroller = document.querySelector("#src-modal .modal-body");
-        if (scroller) scroller.scrollTop = 0;
-
-        toast(t("sources.form.demo_ok", "已填入演示配置：3 个参数引用 payload 字段"));
-      }
-
-      // ---------- 绑定 ----------
-      document.getElementById("btn-refresh").addEventListener("click", loadAll);
-      document.getElementById("btn-new").addEventListener("click", () => {
-        openModal(null);
-      });
-      document.getElementById("btn-demo").addEventListener("click", fillDemo);
-      document.getElementById("btn-dry").addEventListener("click", runDry);
-      document.getElementById("btn-copy-hook").addEventListener("click", async () => {
-        const url = document.getElementById("hook-url-val").textContent;
-        if (!url || !document.getElementById("hook-url-box").dataset.ready) {
-          toast(t("sources.form.hook_url_pending", "保存后生成"));
-          return;
-        }
-        try {
-          await navigator.clipboard.writeText(url);
-          toast(t("srcpage.copied", "已复制"));
-        } catch (e) {
-          toast(t("srcpage.copy_failed", "复制失败"));
-        }
-      });
-      document.getElementById("modal-close").addEventListener("click", closeModal);
-      document.getElementById("modal-cancel").addEventListener("click", closeModal);
-      document.getElementById("modal-save").addEventListener("click", save);
-      document.getElementById("f-kind").addEventListener("change", syncKindFields);
-      renderGhEventOptions();
-
-      // 预设表达式按钮
-      document.querySelectorAll("[data-expr]").forEach((b) => {
-        b.addEventListener("click", () => {
-          document.getElementById("f-expr").value = b.getAttribute("data-expr");
-        });
-      });
-
-      // 点遮罩关闭（只有点在遮罩本身而不是面板里才算）
-      const MODAL_EL = document.getElementById("src-modal");
-      MODAL_EL.addEventListener("click", (ev) => {
-        if (ev.target.id === "src-modal") closeModal();
-      });
-
-      // Esc 关闭。字段浮层（.pick-pop）开着时先由它自己吃掉 Esc（见 hookPick），
-      // 这里只在没有浮层时关弹层，避免一次 Esc 连关两层。
-      document.addEventListener("keydown", (ev) => {
-        if (ev.key !== "Escape") return;
-        if (MODAL_EL.classList.contains("hidden")) return;
-        if (typeof PICK !== "undefined" && PICK) return;
-        ev.preventDefault();
-        closeModal();
-      });
-
-      // 弹层挂到 document.body 上：页面内容外层带 .reveal 的 transform，
-      // position:fixed 的后代会被裁在那层容器里（真的会裁，不是理论问题）。
-      if (MODAL_EL.parentNode !== document.body) document.body.appendChild(MODAL_EL);
-
-      // ---------- 触发弹层（#273 决策 2）----------
-      const FIRE_MODAL_EL = document.getElementById("fire-modal");
-      document.getElementById("fire-close").addEventListener("click", closeFireModal);
-      document.getElementById("fire-cancel").addEventListener("click", closeFireModal);
-      document.getElementById("fire-submit").addEventListener("click", submitFire);
-      // 点遮罩关闭（只有点在遮罩本身而不是面板里才算）
-      FIRE_MODAL_EL.addEventListener("click", (ev) => {
-        if (ev.target.id === "fire-modal") closeFireModal();
-      });
-      // Esc 关闭。单独一条而不是并进编辑弹层那条：两个弹层互斥，
-      // 并在一起会把「哪个开着」的判断写成嵌套。
-      document.addEventListener("keydown", (ev) => {
-        if (ev.key !== "Escape") return;
-        if (FIRE_MODAL_EL.classList.contains("hidden")) return;
-        ev.preventDefault();
-        closeFireModal();
-      });
-      if (FIRE_MODAL_EL.parentNode !== document.body) document.body.appendChild(FIRE_MODAL_EL);
-
-      // 启动：先拉数据；若 URL 带了 ?edit=<id>（从详情页的「编辑」过来），
-      // 数据到手后直接把那个源打开 —— 否则用户点了编辑只是回到列表。
-      (async () => {
-        try {
-          await loadAll();
-        } catch (e) {
-          // 列表拉失败不影响"打开编辑"这条路径
-        }
-        const editID = new URLSearchParams(location.search).get("edit");
-        if (!editID) return;
-        try {
-          const d = await apiGet(API + "/sources");
-          const src = d && (d.sources || []).find((x) => x.id === editID);
-          if (src) await openModal(src);
-        } catch (e) {
-          /* 打不开就算了，用户还能手动点 */
-        }
-      })();
-    </script>
+      source="suggest_payload";
+    }$("avail-src").textContent=t(source);
+    const values=["payload",...(paths||dataPaths(value))];
+    $("avail-vars-body").replaceChildren(...values.map(p=>{
+      const token="$("+p+")";const b=el("button","btn btn-ghost btn-sm mono",token);b.type="button";b.onclick=()=>A.copyText(b,()=>token);return b;
+    }));
+  }catch(err){
+    error($("avail-src"),err);
+  }
+}
+function writeSource(){
+  const kind=$("f-kind").value;
+  const config={
+    payloadSchema:json($("f-payload-schema"),true)||null
+  };
+  if(kind==="cron"){
+    config.expr=$("f-expr").value.trim();
+    config.tz=$("f-tz").value.trim()||"Local";
+  }if(kind==="webhook"){
+    config.sample=json($("f-sample"));
+    for(const key of ["token","secret"]){
+      const value=$("f-"+key).value.trim();
+      if(value)config[key]=value;
+    }
+  }else config.payload=json($("f-payload"));
+  const targets=[...$("f-targets").children].map(row=>({
+    capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
+  }));
+  const name=$("f-name").value.trim();
+  if(!name)throw new Error(t("name_required"));
+  if(targets.some(x=>!x.capability))throw new Error(t("capability_required"));
+  return {
+    apiVersion:"anotify/v1",kind:"Source",metadata:{
+      name,namespace:A.readScope().namespace,displayName:$("f-display").value.trim()
+    },spec:{
+      kind,enabled:$("f-enabled").checked,config,targets
+    }
+  };
+}
+$("modal-save").onclick=async()=>{
+  const btn=$("modal-save");
+  btn.disabled=true;
+  try{
+    let body=writeSource();
+    if(EDITING)body=A.withResourceVersion(body,EDITING.metadata.resourceVersion);
+    await request(EDITING?.metadata.name,body,"",EDITING?"PATCH":"POST");
+    $("f-token").value="";
+    $("f-secret").value="";
+    A.closeModal($("src-modal"));
+    EDITING=null;
+    await load();
+  }catch(err){
+    error($("form-result"),err);
+    if(A.isConflict(err)||err.reason==="resource_version_required"){
+      $("form-result").append(el("p","field-hint",t("draft_preserved")));
+      $("reload-draft").classList.remove("hidden");
+    }
+  }finally{
+    btn.disabled=false;
+  }
+};
+$("btn-dry").onclick=async()=>{
+  const btn=$("btn-dry");
+  btn.disabled=true;
+  try{
+    /* 未保存源的 dry-run 请求体是 InlinePreviewBody（api/ingress.yaml），它的
+     * `source` 是 InlineSourceDraft：metadata 只认 name/displayName，
+     * additionalProperties:false。草稿的 namespace 由 URL 路径与授权决定，
+     * 把写信封的 metadata.namespace 一起发过去会被严格解码拒掉（400
+     * unknown_field “metadata.namespace is not writable”）。所以这里只挑
+     * 草稿允许的键，spec 原样保留（它就是「这次试运行要预览的源」）。 */
+    const envelope=writeSource();
+    const source={
+      apiVersion:envelope.apiVersion,
+      kind:envelope.kind,
+      metadata:{name:envelope.metadata.name,displayName:envelope.metadata.displayName},
+      spec:envelope.spec
+    };
+    const payload=json($("dry-payload"),true);
+    preview($("form-result"),await request("dry-run",Object.assign({
+      source
+    },payload===undefined?{
+    }:{
+      payload
+    })));
+  }catch(err){
+    error($("form-result"),err);
+  }finally{
+    btn.disabled=false;
+  }
+};
+$("reload-draft").onclick=async()=>{
+  if(!confirm(t("reload_confirm")))return;
+  try{
+    const src=await A.nsApi("sources",EDITING.metadata.name);
+    await openEditor(src);
+  }catch(err){
+    error($("form-result"),err);
+  }
+};
+$("btn-new").onclick=()=>openEditor(null);
+$("btn-refresh").onclick=load;
+$("modal-close").onclick=()=>{
+  A.closeModal($("src-modal"));
+  $("f-token").value="";
+  $("f-secret").value="";
+  EDITING=null;
+};
+$("add-target").onclick=()=>$("f-targets").append(targetRow());
+$("f-kind").onchange=syncKind;
+for(const id of ["dry-payload","f-sample","f-payload-schema","f-payload"])$(id).oninput=suggest;
+load();
+</script>
 {{end}}

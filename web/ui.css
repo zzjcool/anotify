@@ -4871,3 +4871,10 @@ html.theme-switching *::after {
 		transform: none;
 	}
 }
+
+/* F2b2 diagnostic facts: resilient narrow-screen layout, theme tokens inherited. */
+.b2-wrap { overflow-wrap: anywhere; min-width: 0; }
+.b2-facts { display: grid; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) {
+  .b2-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
