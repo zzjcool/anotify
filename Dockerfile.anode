@@ -1,19 +1,43 @@
+# Anotify 节点镜像（anode 单二进制，#334）
+#
+# 用法（容器即一台节点）：
+#   docker run -d --restart=always \
+#     -v $PWD/anode.yaml:/etc/anode/anode.yaml:ro \
+#     -v anode-data:/var/lib/anode \
+#     anotify-anode
+#
+# 三个设计取舍（与中枢镜像 Dockerfile 刻意不同）：
+#
+#  1. **配置只有一个文件**：`anode.yaml`（name/server/token/namespaces/listen/vars/limits/
+#     envPassthrough，见 docs/design/v4/anode.md）。容器里挂只读文件比注入一堆
+#     `ANOTIFY_*` 环境变量更接近真实部署；host env 默认不继承（anode 自己就不读）。
+#  2. **不打包 web/dist**：节点只要一个二进制，不需要中枢的前端产物，镜像小一个量级。
+#  3. **只带执行所需的最小工具**：能力脚本靠 shebang 选解释器，纯 scratch 镜像里连
+#     `#!/bin/sh` 都跑不了，所以给 alpine；用户要 claude/codex 之类再自己 FROM 加。
+#     anode 以 root 跑（容器内），需要降权就 `--user` 并保证 /var/lib/anode 可写。
 FROM golang:1.25-alpine AS build
 WORKDIR /src
-# GOPROXY=direct needs git in the builder (not in the runtime image).
-RUN apk add --no-cache git ca-certificates
+# 与主 Dockerfile 一致：用官方模块代理（不是第三方镜像），alpine 无需 git。
+ENV GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto CGO_ENABLED=0
 COPY go.mod go.sum ./
+# 只拷 anode 真正依赖的包（make check-anode-skill 会守住这条边界：
+# cmd/anode 只允许依赖 internal/protocol + internal/artifact）。
 COPY internal/protocol ./internal/protocol
 COPY internal/artifact ./internal/artifact
 COPY cmd/anode ./cmd/anode
+# 版本注入（与 Makefile 的 ANODE_LDFLAGS 同源）：VERSION 传的是**构建标签**
+# （`<release>+<commit>`，与中枢 internal/version.String() 同一个串），
+# GIT_SHA 单独进 main.commit。
 ARG VERSION=dev
-ARG COMMIT=unknown
-RUN CGO_ENABLED=0 GOPROXY=direct GOSUMDB=sum.golang.org GOTOOLCHAIN=auto go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /anode ./cmd/anode
+ARG GIT_SHA=
+RUN go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_SHA:-unknown}" \
+      -o /anode ./cmd/anode
 
-FROM alpine:3.22
-RUN apk add --no-cache ca-certificates
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates bash
 COPY --from=build /anode /usr/local/bin/anode
-# No host environment import. Config whitelist and explicit docker -e are both required.
+# /etc/anode：anode.yaml（只读挂载）；/var/lib/anode：缓存的能力产物/执行档案/emit 端点。
 VOLUME ["/etc/anode", "/var/lib/anode"]
 ENTRYPOINT ["/usr/local/bin/anode"]
 CMD ["serve", "--config", "/etc/anode/anode.yaml", "--data", "/var/lib/anode"]
