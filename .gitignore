@@ -48,6 +48,12 @@ web/i18n.*.js
 .pi/web-verify-shots/
 .pi/agent-memory/
 *.log
+# 编排产物（#338 仓库卫生）：.pi-orchestrator 下入库的只有契约/状态/issue 等 md 文档，
+# 运行产物（压缩证据、日志、补丁、团队 runtime 快照）一律不入库。
+# teams/ 是团队运行期快照目录（txt/json/log/patch 等），整目录忽略；
+# 该目录里已入库的编排记录 md 是 tracked 文件，ignore 不影响它们（git 只看索引）。
+.pi-orchestrator/**/*.gz
+.pi-orchestrator/v4/teams/
 
 # === 编辑器/系统 ===
 .DS_Store
