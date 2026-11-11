@@ -327,3 +327,114 @@ func TestGetDeploymentByNodeCapability(t *testing.T) {
 		t.Fatalf("反查不存在的能力应 ErrNotFound，得到 %v", err)
 	}
 }
+
+// TestListDeploymentsByCapabilityName 按**能力名**取部署事实（#362）。
+//
+// 部署行钉的是 capability_versions 的**某一行版本**，而 status 要回答的是「这个能力名
+// 在节点上处于什么状态」。按 id 查只能看见当前那一版，升级后的旧部署行彻底不可见 —
+// 那正是「升级后 UI 里旧版本部署消失、stale 永远派生不出来」的根因。
+//
+// 三个判据：
+//   - 同名 v1/v2 各自部署到不同节点 → 两台各一行，且都带得出（version/digest）；
+//   - 不含别的能力的部署行；
+//   - 重复部署不产生第二行（同一 (node, capability_id, digest) 幂等）。
+func TestListDeploymentsByCapabilityName(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	v1 := v4Cap(t, db, nsID, "deploy-by-name", 1)
+	v2 := v4Cap(t, db, nsID, "deploy-by-name", 2)
+	other := v4Cap(t, db, nsID, "unrelated", 1)
+	if v1.ID == v2.ID || v1.Digest == v2.Digest {
+		t.Fatalf("同名两版必须是两行两个 digest：v1=%s/%s v2=%s/%s", v1.ID, v1.Digest, v2.ID, v2.Digest)
+	}
+	nodeA := v4Node(t, db, "dep-name-a", 0)
+	nodeB := v4Node(t, db, "dep-name-b", 0)
+
+	if _, err := db.CreateDeployments(ctx, nsID, v1.ID, v1.Digest, []string{nodeA.ID}); err != nil {
+		t.Fatalf("deploy v1 to node-a: %v", err)
+	}
+	if _, err := db.CreateDeployments(ctx, nsID, v2.ID, v2.Digest, []string{nodeB.ID}); err != nil {
+		t.Fatalf("deploy v2 to node-b: %v", err)
+	}
+	if _, err := db.CreateDeployments(ctx, nsID, other.ID, other.Digest, []string{nodeA.ID}); err != nil {
+		t.Fatalf("deploy unrelated: %v", err)
+	}
+
+	rows, err := db.ListDeploymentsByCapabilityName(ctx, nsID, "deploy-by-name")
+	if err != nil {
+		t.Fatalf("list by capability name: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("同名能力的部署行 = %d, want 2（两台节点各一行）: %+v", len(rows), rows)
+	}
+	byNode := map[string]*Deployment{}
+	for _, dp := range rows {
+		if dp.Capability != "deploy-by-name" {
+			t.Fatalf("带出了别的能力：%+v", dp)
+		}
+		if _, dup := byNode[dp.NodeID]; dup {
+			t.Fatalf("节点 %s 出现两行：%+v", dp.NodeID, rows)
+		}
+		byNode[dp.NodeID] = dp
+	}
+	if got := byNode[nodeA.ID]; got == nil || got.Version != 1 || got.Digest != v1.Digest || got.CapabilityID != v1.ID {
+		t.Fatalf("node-a 的行 = %+v, want 指向 v1（%s/%s）", got, v1.ID, v1.Digest)
+	}
+	if got := byNode[nodeB.ID]; got == nil || got.Version != 2 || got.Digest != v2.Digest || got.CapabilityID != v2.ID {
+		t.Fatalf("node-b 的行 = %+v, want 指向 v2（%s/%s）", got, v2.ID, v2.Digest)
+	}
+	if byNode[nodeA.ID].State != DeploymentPending {
+		t.Fatalf("新部署行应是 pending，实际 %q", byNode[nodeA.ID].State)
+	}
+
+	// 重复部署同一版本：不产生第二行（幂等），digest 仍是这一版的。
+	firstID := byNode[nodeA.ID].ID
+	if _, err := db.CreateDeployments(ctx, nsID, v1.ID, v1.Digest, []string{nodeA.ID}); err != nil {
+		t.Fatalf("redeploy v1 to node-a: %v", err)
+	}
+	again, err := db.ListDeploymentsByCapabilityName(ctx, nsID, "deploy-by-name")
+	if err != nil {
+		t.Fatalf("list after redeploy: %v", err)
+	}
+	if len(again) != 2 {
+		t.Fatalf("重复部署后行数 = %d, want 2（不新增行）: %+v", len(again), again)
+	}
+	for _, dp := range again {
+		if dp.NodeID == nodeA.ID && (dp.ID != firstID || dp.Digest != v1.Digest) {
+			t.Fatalf("重复部署改动了 node-a 的行：%+v（want id=%s digest=%s）", dp, firstID, v1.Digest)
+		}
+	}
+
+	// 同一节点上的跨版本事实**不隐藏**：CreateDeployments 的 supersede 只清同一
+	// capability_id 的行，所以把 v2 也部署到 node-a 会留下两行。折叠成「每节点一行」
+	// 是调用方（server 的 status 派生）的事——只有它知道正确性该按哪个 digest 判。
+	if _, err := db.CreateDeployments(ctx, nsID, v2.ID, v2.Digest, []string{nodeA.ID}); err != nil {
+		t.Fatalf("deploy v2 to node-a: %v", err)
+	}
+	crossVersion, err := db.ListDeploymentsByCapabilityName(ctx, nsID, "deploy-by-name")
+	if err != nil {
+		t.Fatalf("list after cross-version deploy: %v", err)
+	}
+	if len(crossVersion) != 3 {
+		t.Fatalf("跨版本事实 = %d 行, want 3（node-a 两行 + node-b 一行，store 不替调用方折叠）: %+v",
+			len(crossVersion), crossVersion)
+	}
+}
+
+// TestListDeploymentsByCapabilityNameEdgeCases 边界：空名 → 空列表；跨命名空间必须报错。
+func TestListDeploymentsByCapabilityNameEdgeCases(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+
+	if rows, err := db.ListDeploymentsByCapabilityName(ctx, nsID, "  "); err != nil || len(rows) != 0 {
+		t.Fatalf("空名 = %d 行 (err %v), want 0 行且无错", len(rows), err)
+	}
+	if rows, err := db.ListDeploymentsByCapabilityName(ctx, nsID, "nothing-here"); err != nil || len(rows) != 0 {
+		t.Fatalf("不存在的能力名 = %d 行 (err %v), want 0 行且无错", len(rows), err)
+	}
+	if _, err := db.ListDeploymentsByCapabilityName(ctx, AllNamespaces, "x"); !errors.Is(err, ErrNamespaceRequired) {
+		t.Fatalf("跨命名空间应报 ErrNamespaceRequired，得到 %v", err)
+	}
+}

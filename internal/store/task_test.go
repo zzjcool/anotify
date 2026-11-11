@@ -581,6 +581,9 @@ func TestRequestCancelHumanReasonIsCancelled(t *testing.T) {
 	if got.CancelReason != human {
 		t.Fatalf("cancel_reason = %q，want 人话原因原样落库 %q", got.CancelReason, human)
 	}
+	if got.StopIntent != StopIntentCancel {
+		t.Fatalf("pending 取消必须落 stop_intent = %q，得到 %q", StopIntentCancel, got.StopIntent)
+	}
 	if got.CancelRequestedAt == nil {
 		t.Fatal("取消必须留下 cancel_requested_at 事实")
 	}
@@ -604,7 +607,11 @@ func TestRequestCancelRunningHumanReasonAckIsCancelled(t *testing.T) {
 	if err := db.RequestCancel(ctx, task.ID, human, Now()); err != nil {
 		t.Fatalf("request cancel: %v", err)
 	}
-	if running := v4MustPhase(t, db, nsID, task.ID, TaskRunning); running.CancelReason != human {
+	running := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+	if running.StopIntent != StopIntentCancel {
+		t.Fatalf("running 取消必须落 stop_intent = %q，得到 %q", StopIntentCancel, running.StopIntent)
+	}
+	if running.CancelReason != human {
 		t.Fatalf("running 取消只记意图：cancel_reason = %q，want %q", running.CancelReason, human)
 	}
 	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
@@ -613,6 +620,9 @@ func TestRequestCancelRunningHumanReasonAckIsCancelled(t *testing.T) {
 		t.Fatalf("ack cancel: %v", err)
 	}
 	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+	if got.StopIntent != StopIntentCancel {
+		t.Fatalf("终态 stop_intent = %q，want %q", got.StopIntent, StopIntentCancel)
+	}
 	if got.Error != human {
 		t.Fatalf("终态 error = %q，want 人话原因 %q", got.Error, human)
 	}
@@ -635,6 +645,9 @@ func TestRequestAbandonHumanReasonStaysAbandoned(t *testing.T) {
 	if got.CancelReason != human {
 		t.Fatalf("cancel_reason = %q，want %q", got.CancelReason, human)
 	}
+	if got.StopIntent != StopIntentAbandon {
+		t.Fatalf("pending 放弃必须落 stop_intent = %q，得到 %q", StopIntentAbandon, got.StopIntent)
+	}
 }
 
 // TestRequestAbandonRunningDefaultReasonAckIsAbandoned running 任务无 reason 的放弃：
@@ -648,15 +661,105 @@ func TestRequestAbandonRunningDefaultReasonAckIsAbandoned(t *testing.T) {
 	task := v4Task(t, db, nsID, c, "tr_abandon_running", "")
 	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-abandon-running")
 
-	if err := db.RequestAbandon(ctx, task.ID, protocol.ReasonAbandonedByUser, Now()); err != nil {
+	if err := db.RequestAbandon(ctx, task.ID, "", Now()); err != nil {
 		t.Fatalf("request abandon: %v", err)
+	}
+	if running := v4MustPhase(t, db, nsID, task.ID, TaskRunning); running.StopIntent != StopIntentAbandon {
+		t.Fatalf("running 放弃必须落 stop_intent = %q，得到 %q", StopIntentAbandon, running.StopIntent)
 	}
 	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
 	in.Now = Now()
 	if err := db.AckCancelAuthorized(ctx, v4Auth(t, db, node.ID), in, true); err != nil {
 		t.Fatalf("ack cancel: %v", err)
 	}
-	v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	got := v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	if got.Error != protocol.ReasonAbandonedByUser {
+		t.Fatalf("终态 error = %q，want %q", got.Error, protocol.ReasonAbandonedByUser)
+	}
+	if got.StopIntent != StopIntentAbandon {
+		t.Fatalf("终态 stop_intent = %q，want %q", got.StopIntent, StopIntentAbandon)
+	}
+}
+
+// TestRequestAbandonRunningHumanReasonAckIsAbandoned 钉住 #349：#348 文档化的边界
+// （running + /abandon + 人话 reason 在 ack 时被落成 cancelled）已修——终态看落库的
+// stop_intent，不看 reason 是人话还是封闭码。
+func TestRequestAbandonRunningHumanReasonAckIsAbandoned(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	node := v4Node(t, db, "node-abandon-human-running", 1)
+	task := v4Task(t, db, nsID, c, "tr_abandon_human_running", "")
+	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-abandon-human-running")
+
+	const human = "give up"
+	if err := db.RequestAbandon(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	running := v4MustPhase(t, db, nsID, task.ID, TaskRunning)
+	if running.StopIntent != StopIntentAbandon {
+		t.Fatalf("running 放弃必须落 stop_intent = %q，得到 %q", StopIntentAbandon, running.StopIntent)
+	}
+	if running.CancelReason != human {
+		t.Fatalf("cancel_reason = %q，want 人话 reason %q", running.CancelReason, human)
+	}
+	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
+	in.Now = Now()
+	if err := db.AckCancelAuthorized(ctx, v4Auth(t, db, node.ID), in, true); err != nil {
+		t.Fatalf("ack cancel: %v", err)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	if got.Error != human {
+		t.Fatalf("终态 error = %q，want 人话 reason %q", got.Error, human)
+	}
+}
+
+// TestTaskStopIntentSurvivesReopen stop_intent 落在 baseline 里：新库第二次 Open 必须
+// 幂等（validateV4Layout 逐列比对），并且重开后 cancel.ack 仍按落库意图裁终态。
+func TestTaskStopIntentSurvivesReopen(t *testing.T) {
+	db, path := newTestDBFile(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	node := v4Node(t, db, "node-stop-intent-reopen", 1)
+	task := v4Task(t, db, nsID, c, "tr_stop_intent_reopen", "")
+	if fresh := v4MustPhase(t, db, nsID, task.ID, TaskPending); fresh.StopIntent != "" {
+		t.Fatalf("未停止任务的 stop_intent = %q，want 空串（schema 列 DEFAULT ''）", fresh.StopIntent)
+	}
+	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-stop-intent-reopen")
+
+	const human = "give up"
+	if err := db.RequestAbandon(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	if got := v4MustPhase(t, db, nsID, task.ID, TaskRunning); got.StopIntent != StopIntentAbandon {
+		t.Fatalf("重开前 stop_intent = %q，want %q", got.StopIntent, StopIntentAbandon)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("新库重开必须幂等（第二次 Open 不得报错）: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	got := v4MustPhase(t, reopened, nsID, task.ID, TaskRunning)
+	if got.StopIntent != StopIntentAbandon {
+		t.Fatalf("重开后 stop_intent = %q，want %q", got.StopIntent, StopIntentAbandon)
+	}
+	if got.CancelReason != human {
+		t.Fatalf("重开后 cancel_reason = %q，want %q", got.CancelReason, human)
+	}
+	in := v4ReapInput(t, reopened, node.ID, task.ID, attempt)
+	in.Now = Now()
+	if err := reopened.AckCancelAuthorized(ctx, v4Auth(t, reopened, node.ID), in, true); err != nil {
+		t.Fatalf("重开后 ack cancel: %v", err)
+	}
+	final := v4MustPhase(t, reopened, nsID, task.ID, TaskAbandoned)
+	if final.Error != human {
+		t.Fatalf("终态 error = %q，want %q", final.Error, human)
+	}
 }
 
 // TestRecoverLostLeasesCancelIntentHumanReasonIsCancelled 租约丢失 + 已请求取消：
@@ -693,6 +796,86 @@ func TestRecoverLostLeasesCancelIntentHumanReasonIsCancelled(t *testing.T) {
 	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
 	if got.Error != human {
 		t.Fatalf("终态 error = %q，want 人话原因 %q", got.Error, human)
+	}
+	if got.StopIntent != StopIntentCancel {
+		t.Fatalf("终态 stop_intent = %q，want %q", got.StopIntent, StopIntentCancel)
+	}
+}
+
+// TestRecoverLostLeasesAbandonIntentHumanReasonIsAbandoned 租约丢失 + 已请求放弃：
+// 终态按落库的 stop_intent 裁定为 abandoned——人话 reason 不再被当成「用户取消」。
+func TestRecoverLostLeasesAbandonIntentHumanReasonIsAbandoned(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	// 非幂等：没有「重排」分支，租约丢失 + 放弃意图 → 直接终局。
+	c := v4Cap(t, db, nsID, "nonidem", 1)
+	node := v4Node(t, db, "node-lost-abandon", 1)
+	task := v4Task(t, db, nsID, c, "tr_lost_abandon", "")
+	slot := v4FreeSlot(t, db, node.ID)
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-lost-abandon", 1); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	_, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+		task.ID, "asg-lost-abandon", 1, slot, Now())
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	const human = "give up"
+	if err := db.RequestAbandon(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	requeued, abandoned, err := db.RecoverLostLeases(ctx, expiresAt+1)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if requeued != 0 || abandoned != 1 {
+		t.Fatalf("回收数 requeued=%d abandoned=%d, want 0/1（放弃意图不重排）", requeued, abandoned)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	if got.Error != human {
+		t.Fatalf("终态 error = %q，want 人话 reason %q", got.Error, human)
+	}
+	if got.StopIntent != StopIntentAbandon {
+		t.Fatalf("终态 stop_intent = %q，want %q", got.StopIntent, StopIntentAbandon)
+	}
+}
+
+// TestCancelPhasePrefersStopIntentOverReason 钉住 #349 的判据优先级：已落库的意图压过
+// reason 字面；空/未知 stop_intent（只可能来自未带该列的存量行）按 reason 封闭码兜底且不 panic。
+func TestCancelPhasePrefersStopIntentOverReason(t *testing.T) {
+	cases := []struct {
+		name       string
+		stopIntent string
+		reason     string
+		want       string
+	}{
+		{"abandon 意图 + 默认码", StopIntentAbandon, protocol.ReasonAbandonedByUser, TaskAbandoned},
+		{"abandon 意图 + 人话", StopIntentAbandon, "give up", TaskAbandoned},
+		{"cancel 意图 + 默认码", StopIntentCancel, protocol.ReasonCancelledByUser, TaskCancelled},
+		{"cancel 意图 + abandoned 码（意图赢）", StopIntentCancel, protocol.ReasonAbandonedByUser, TaskCancelled},
+		{"空意图 + abandoned 码（兜底）", "", protocol.ReasonAbandonedByUser, TaskAbandoned},
+		{"空意图 + infra 码（兜底）", "", string(protocol.CancelReasonInfra), TaskAbandoned},
+		{"空意图 + 人话（兜底）", "", "e2e 运行中取消", TaskCancelled},
+		{"空意图 + 空 reason", "", "", TaskCancelled},
+		{"未知意图 + abandoned 码（兜底）", "future-intent", protocol.ReasonAbandonedByUser, TaskAbandoned},
+		{"未知意图 + 人话（兜底）", "future-intent", "give up", TaskCancelled},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cancelPhase(c.stopIntent, c.reason); got != c.want {
+				t.Fatalf("cancelPhase(%q, %q) = %q，want %q", c.stopIntent, c.reason, got, c.want)
+			}
+		})
+	}
+}
+
+// TestStopIntentLiterals 钉住落库字面量：stop_intent 的值是 db 里稳定可见的契约
+// （运维查询/排障依赖它），不能只由常量名间接保证。
+func TestStopIntentLiterals(t *testing.T) {
+	if StopIntentCancel != "cancel" || StopIntentAbandon != "abandon" {
+		t.Fatalf("stop_intent 字面量变了：cancel=%q abandon=%q", StopIntentCancel, StopIntentAbandon)
 	}
 }
 

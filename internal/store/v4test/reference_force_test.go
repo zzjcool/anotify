@@ -31,7 +31,7 @@ func TestC3bNamespaceForcePhysicalOccupancyWholeFacts(t *testing.T) {
 			}
 			switch fault {
 			case "terminal-unreaped":
-				if err := db.RequestCancel(ctx, task.ID, protocol.ReasonAbandonedByUser, auth.Now); err != nil {
+				if err := db.RequestAbandon(ctx, task.ID, protocol.ReasonAbandonedByUser, auth.Now); err != nil {
 					t.Fatal(err)
 				}
 				if _, _, err := db.RecoverLostLeases(ctx, auth.Now+60); err != nil {
@@ -87,7 +87,7 @@ func TestC3bNamespaceForceAfterReapAndLatePendingGrant(t *testing.T) {
 	if _, err := db.CreateDeployments(ctx, ns, cap.ID, "", []string{node.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonAbandonedByUser, auth.Now); err != nil {
+	if err := db.RequestAbandon(ctx, task.ID, protocol.ReasonAbandonedByUser, auth.Now); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.AckCancelAuthorized(ctx, store.NodeAuthorization{NodeID: node.ID, NodeTokenHash: node.TokenHash}, store.ReapedInputs{TaskID: task.ID, Attempt: auth.Attempt, LeaseID: auth.LeaseID, Slot: 0, Now: auth.Now}, true); err != nil {

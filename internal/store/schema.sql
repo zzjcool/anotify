@@ -362,8 +362,10 @@ CREATE INDEX IF NOT EXISTS idx_event_deliveries_expiry
 -- namespace_vars / namespace_vars_revision 是**任务被接受时**钉住的命名空间默认输入快照
 -- 与它的 namespaceVarsRevision（D2）：排队期间 ns 配置更新不影响已接受的任务，
 -- 换节点重试沿用同一份快照；值只在内部执行输入里用，不进公共 DTO（json:"-"）。
--- cancel_reason / cancel_requested_at 记录取消意图：running 时要等 cancel.ack 的
--- processGroupReaped 才释放槽位，pending 时直接终态。
+-- cancel_reason / cancel_requested_at / stop_intent 记录停止事实：stop_intent 是**意图**
+-- （cancel | abandon，空 = 无停止意图），cancel_reason 是人话原因或默认封闭码。终态相位
+-- 由 stop_intent 决定（不从 reason 字面反推）；running 时要等 cancel.ack 的
+-- processGroupReaped 才落终态，pending 时直接终态。
 -- reported=1 表示节点已回报终态；summary/artifacts/error 是结果。
 CREATE TABLE IF NOT EXISTS tasks (
     id                 TEXT PRIMARY KEY,
@@ -397,6 +399,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     next_attempt_at    INTEGER,
     cancel_reason      TEXT NOT NULL DEFAULT '',
     cancel_requested_at INTEGER,
+    -- stop_intent 是停止意图（cancel | abandon | 空；内部列，不进公共 DTO）。
+    stop_intent        TEXT NOT NULL DEFAULT '',
     reported           INTEGER NOT NULL DEFAULT 0,
     summary            TEXT NOT NULL DEFAULT '',
     artifacts          TEXT NOT NULL DEFAULT '[]',

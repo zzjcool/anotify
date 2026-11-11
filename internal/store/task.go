@@ -31,6 +31,15 @@ const (
 	TaskAbandoned = string(protocol.TaskPhaseAbandoned)
 )
 
+// 停止意图（tasks.stop_intent）：**内部列**，不进任何公共 DTO。
+//
+// 它是 cancel / abandon 的**唯一判据**：running 任务的终态相位由它决定，不从
+// cancel_reason 的字符串字面（人话还是封闭码）反推。空串 = 没有停止意图。
+const (
+	StopIntentCancel  = "cancel"
+	StopIntentAbandon = "abandon"
+)
+
 // TaskPhases 返回全部相位（封闭集合，供校验与统计复用）。
 func TaskPhases() []string {
 	return []string{TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned}
@@ -168,14 +177,19 @@ type Task struct {
 	// WaitingReason 只有 pending 有意义；NextAttemptAt 是退避后的最早可派时刻（nil = 立刻）。
 	WaitingReason string `json:"waitingReason"`
 	NextAttemptAt *int64 `json:"nextAttemptAt"`
-	// CancelReason / CancelRequestedAt 记录取消意图（running 时要等 cancel.ack 回收进程组）。
-	CancelReason      string                  `json:"cancelReason"`
-	CancelRequestedAt *int64                  `json:"cancelRequestedAt"`
-	Reported          bool                    `json:"reported"`
-	Summary           string                  `json:"summary"`
-	Artifacts         []protocol.TaskArtifact `json:"artifacts"`
-	Error             string                  `json:"error"`
-	ExitCode          *int                    `json:"exitCode"`
+	// CancelReason / CancelRequestedAt 记录停止事实（running 时要等 cancel.ack 回收进程组）；
+	// CancelReason 是**人话原因**或默认封闭码，意图只看 StopIntent。
+	CancelReason      string `json:"cancelReason"`
+	CancelRequestedAt *int64 `json:"cancelRequestedAt"`
+	// StopIntent 是落库的停止**意图**（StopIntentCancel / StopIntentAbandon，空 = 无）。
+	// 内部执行事实：`json:"-"` 保证它不进任何公共 DTO——orphan 视图
+	// （store.OrphanPendingTask）内嵌 store.Task 后直接扁平序列化，加了会污染 v3 冻结形状。
+	StopIntent string                  `json:"-"`
+	Reported   bool                    `json:"reported"`
+	Summary    string                  `json:"summary"`
+	Artifacts  []protocol.TaskArtifact `json:"artifacts"`
+	Error      string                  `json:"error"`
+	ExitCode   *int                    `json:"exitCode"`
 	// ResultJSON retains complete Node facts (including nanoseconds); second columns
 	// below are projections, never the source for result equality or retention.
 	ResultJSON       json.RawMessage `json:"-"`
@@ -190,7 +204,7 @@ const taskColumns = `id, namespace_id, trace_id, parent_task_id, capability_id, 
 	version, digest, params, phase, node_id, node_name, config_revision,
 	attempt, max_attempts, assignment_id, proposed_attempt, assignment_expires_at, idempotent,
 	lease_id, lease_until, lease_instance_id, attempt_token_hash, waiting_reason, next_attempt_at,
-	cancel_reason, cancel_requested_at, reported, summary, artifacts, error,
+	cancel_reason, cancel_requested_at, stop_intent, reported, summary, artifacts, error,
 	created_at, started_at, finished_at, namespace_vars, namespace_vars_revision, result_json, result_accepted_at`
 
 // scanTask 从一行结果解析 Task（三处 JSON 列在这里一次解完）。
@@ -210,7 +224,7 @@ func scanTask(rows *sql.Rows) (*Task, error) {
 		&t.Version, &t.Digest, &params, &t.Phase, &t.NodeID, &t.NodeName, &t.ConfigRevision,
 		&t.Attempt, &t.MaxAttempts, &t.AssignmentID, &t.ProposedAttempt, &t.AssignmentExpiresAt, &idempotent,
 		&t.LeaseID, &t.LeaseUntil, &t.LeaseInstanceID, &t.AttemptTokenHash, &t.WaitingReason, &t.NextAttemptAt,
-		&t.CancelReason, &t.CancelRequestedAt, &reported, &t.Summary, &artifacts, &t.Error,
+		&t.CancelReason, &t.CancelRequestedAt, &t.StopIntent, &reported, &t.Summary, &artifacts, &t.Error,
 		&t.CreatedAt, &t.StartedAt, &t.FinishedAt, &nsVars, &t.NamespaceVarsRevision, &rawResult, &t.ResultAcceptedAt,
 	); err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -887,8 +901,8 @@ func normalizeTaskError(result TaskResult) string {
 // RequestCancel 记录一次**用户取消**意图（取消与 grant 的**唯一线性化点**）。
 //
 //   - pending：没有执行者，直接终态（cancelled），不需要等 ack；
-//   - running：只落 cancel_reason + cancel_requested_at，等节点 cancel.ack 带回
-//     processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
+//   - running：只落 cancel_reason + cancel_requested_at + stop_intent，等节点 cancel.ack
+//     带回 processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
 //
 // 读与写必须在**同一个事务**里（DSN `_txlock=immediate`，写锁在事务起点拿下）：
 // 先读后写的两步之间如果被 grant 插进来，就会把一条**正在跑**的任务无条件改成已取消，
@@ -903,7 +917,7 @@ func normalizeTaskError(result TaskResult) string {
 // 人话原因（TaskActionRequest.reason「人话原因（可选；写进 cancel_requested 事实）」），
 // 拿它当封闭码用会把 `{"reason":"e2e 运行中取消"}` 误判成放弃（#336）。
 func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64) error {
-	return d.requestStop(ctx, taskID, reason, TaskCancelled, now)
+	return d.requestStop(ctx, taskID, reason, TaskCancelled, StopIntentCancel, now)
 }
 
 // RequestAbandon 记录一次**用户放弃**意图（`POST …/tasks/{taskId}/abandon`）。
@@ -915,13 +929,13 @@ func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64
 // `{"reason":"give up"}` 与 `{"reason":"e2e 运行中取消"}` 在字面上没有任何区别，
 // 只有端点知道用户在点「取消」还是「放弃」。
 func (d *DB) RequestAbandon(ctx context.Context, taskID, reason string, now int64) error {
-	return d.requestStop(ctx, taskID, reason, TaskAbandoned, now)
+	return d.requestStop(ctx, taskID, reason, TaskAbandoned, StopIntentAbandon, now)
 }
 
 // requestStop 是 cancel / abandon 的共同实现。finalPhase 是 **pending** 任务直接落
-// 终态时的相位；running 任务只记意图，终态由 cancel.ack / 租约回收按 cancelPhase 裁定
-// （那一层只有落库的 cancel_reason 可用，见 cancelPhase 的边界说明）。
-func (d *DB) requestStop(ctx context.Context, taskID, reason, finalPhase string, now int64) error {
+// 终态时的相位；running 任务只记意图（stop_intent + cancel_reason + cancel_requested_at），
+// 终态由 cancel.ack / 租约回收按落库的 stop_intent 裁定（见 cancelPhase）。
+func (d *DB) requestStop(ctx context.Context, taskID, reason, finalPhase, stopIntent string, now int64) error {
 	if reason == "" {
 		reason = defaultStopReason(finalPhase)
 	}
@@ -958,9 +972,9 @@ func (d *DB) requestStop(ctx context.Context, taskID, reason, finalPhase string,
 			`UPDATE tasks SET phase = ?, finished_at = ?, summary = '', artifacts = '[]',
 			        lease_until = NULL, lease_id = '', waiting_reason = '', next_attempt_at = NULL,
 			        assignment_id = '', proposed_attempt = 0, assignment_expires_at = NULL,
-			        cancel_reason = ?, cancel_requested_at = ?, error = ?
+			        cancel_reason = ?, cancel_requested_at = ?, stop_intent = ?, error = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
-			finalPhase, now, reason, now, reason, taskID, TaskPending)
+			finalPhase, now, reason, now, stopIntent, reason, taskID, TaskPending)
 		if uerr != nil {
 			return fmt.Errorf("request cancel %s: write: %w", taskID, uerr)
 		}
@@ -974,9 +988,9 @@ func (d *DB) requestStop(ctx context.Context, taskID, reason, finalPhase string,
 			return nil // 幂等：第一次的意图与原因不被覆盖
 		}
 		res, uerr := tx.ExecContext(ctx,
-			`UPDATE tasks SET cancel_reason = ?, cancel_requested_at = ?
+			`UPDATE tasks SET cancel_reason = ?, cancel_requested_at = ?, stop_intent = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
-			reason, now, taskID, TaskRunning)
+			reason, now, stopIntent, taskID, TaskRunning)
 		if uerr != nil {
 			return fmt.Errorf("request cancel %s: write: %w", taskID, uerr)
 		}
@@ -1002,20 +1016,23 @@ func defaultStopReason(finalPhase string) string {
 	return protocol.ReasonCancelledByUser
 }
 
-// cancelPhase 把**已落库的取消意图**翻成终态相位（cancel.ack / 租约回收路径）。
+// cancelPhase 把**已落库的停止意图**翻成终态相位（cancel.ack / 租约回收路径）。
 //
-// 判据是意图的**封闭码**，不是「reason 像不像码」：
-//   - 用户取消（cancel 动作）恒为 cancelled——reason 是契约里的人话，
+// 判据是 stop_intent 列（cancel / abandon），**不是** reason 的字符串字面：
+//   - 用户取消（stop_intent=cancel）恒为 cancelled——reason 是契约里的人话，
 //     `{"reason":"e2e 运行中取消"}` 曾被 literal 比较误判成 abandoned（#336 的真 bug）；
-//   - 用户放弃（abandon 动作的默认码 abandoned_by_user）与中枢侧放弃
-//     （CancelReasonInfra）为 abandoned。
+//   - 用户放弃（stop_intent=abandon）恒为 abandoned，与 reason 是不是默认码无关
+//     （#348 文档化的边界：running + /abandon + 人话 reason 曾经落 cancelled，已修）。
 //
-// 为什么这里只能看 reason：running 任务落库的只有 cancel_reason 一列（没有第二列存
-// 意图），所以人话 reason 一律按「用户取消」处理——pending 的取消/放弃走 requestStop
-// 的显式意图，精确；已落地的已知边界是：`/abandon` 带**人话** reason 的 running 任务
-// 在 ack 时会落 cancelled（无 reason 的 abandon 仍是 abandoned）。彻底修需要在 tasks 上
-// 存一列意图，那是 schema 变更，不隶属本包本次修复。
-func cancelPhase(reason string) string {
+// stop_intent 为空/未知只可能来自未带该列的存量行（v4 新库不会出现）：那时按
+// reason 的封闭码兜底，保持旧行为且不 panic。
+func cancelPhase(stopIntent, reason string) string {
+	switch stopIntent {
+	case StopIntentAbandon:
+		return TaskAbandoned
+	case StopIntentCancel:
+		return TaskCancelled
+	}
 	switch reason {
 	case protocol.ReasonAbandonedByUser, string(protocol.CancelReasonInfra):
 		return TaskAbandoned
@@ -1031,7 +1048,7 @@ func cancelPhase(reason string) string {
 //
 // 决策分三条，判据来自任务行上钉住的 idempotent（不回读能力，避免「能力改过一次就换了语义」）：
 //
-//	已请求取消                    → 终局（cancelPhase(原因)），**绝不 retry**
+//	有停止意图                    → 终局（cancelPhase(stop_intent, reason)），**绝不 retry**
 //	幂等 且 attempt < maxAttempts → 回 pending + retry_backoff + 退避（会重跑）
 //	否则                          → abandoned（infra 原因，绝不重跑非幂等能力）
 //
@@ -1106,11 +1123,12 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 		attempt      int
 		cancelReq    sql.NullInt64
 		cancelReason sql.NullString
+		stopIntent   string
 		instanceID   string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT phase, attempt, cancel_requested_at, cancel_reason, lease_instance_id FROM tasks WHERE id = ?`, t.ID).
-		Scan(&phase, &attempt, &cancelReq, &cancelReason, &instanceID)
+		`SELECT phase, attempt, cancel_requested_at, cancel_reason, stop_intent, lease_instance_id FROM tasks WHERE id = ?`, t.ID).
+		Scan(&phase, &attempt, &cancelReq, &cancelReason, &stopIntent, &instanceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1131,7 +1149,8 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 		if reason == "" {
 			reason = protocol.ReasonAbandonedByUser
 		}
-		ok, ferr := d.finishTxGuarded(ctx, tx, t.ID, TaskRunning, cancelPhase(reason), "", nil, now)
+		finalPhase := cancelPhase(stopIntent, reason)
+		ok, ferr := d.finishTxGuarded(ctx, tx, t.ID, TaskRunning, finalPhase, "", nil, now)
 		if ferr != nil {
 			return false, ferr
 		}
@@ -1142,7 +1161,7 @@ func (d *DB) recoverOne(ctx context.Context, t *Task, now int64) (requeued bool,
 			`UPDATE tasks SET error = ? WHERE id = ?`, reason, t.ID); werr != nil {
 			return false, fmt.Errorf("recover lease %s: write reason: %w", t.ID, werr)
 		}
-		if _, aerr := finishAttemptOn(ctx, txExec{tx: tx}, t.ID, attempt, cancelPhase(reason), reason,
+		if _, aerr := finishAttemptOn(ctx, txExec{tx: tx}, t.ID, attempt, finalPhase, reason,
 			now, "", false); aerr != nil {
 			return false, fmt.Errorf("recover lease %s: %w", t.ID, aerr)
 		}

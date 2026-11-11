@@ -63,6 +63,11 @@ type Attempt struct {
 	copiesDone       chan struct{}
 	groupReaped      bool
 	groupMu          sync.Mutex
+	// pipesClosed 是「回收路径自己关掉了读端」的显式状态（受 mu 保护）：
+	// 只有它能区分 intentional close 与真实的日志复制错误（V4-10）。
+	pipesClosed bool
+	// reapWatchOnce 保证「终态未确认回收」的后台复核每个 attempt 只启动一次。
+	reapWatchOnce sync.Once
 
 	resolved  *execenv.Resolved
 	workDir   string
@@ -387,11 +392,13 @@ func (a *Attempt) spawn() error {
 	a.mu.Unlock()
 	if terminating {
 		// grant 与 spawn 之间已经到了 cancel/timeout/lease 失效：立刻终止刚起来的进程组。
-		_ = syscall.Kill(-a.pgid, syscall.SIGTERM)
+		pgid := a.pgid
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		go func() {
-			if !a.waitGone(a.pgid, termGrace) {
-				_ = syscall.Kill(-a.pgid, syscall.SIGKILL)
-				a.waitGone(a.pgid, termGrace)
+			if !a.waitGone(pgid, termGrace) {
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				// SIGKILL 之后只等内核事实（真实时间有界），不再吃注入时钟。
+				waitGroupGone(pgid, reapConfirmWindow, reapConfirmInterval, nil)
 			}
 		}()
 	}
@@ -441,9 +448,36 @@ func (a *Attempt) copyLog(src *os.File, rec *resultstore.Attempt, name, stream s
 		sink = io.MultiWriter(dst, recorder.Writer(stream))
 	}
 	if _, err := io.Copy(sink, src); err != nil {
+		if a.pipesClosedIntentionally() && errors.Is(err, os.ErrClosed) {
+			// 回收路径为了结束残余子孙持有的管道而主动关掉了读端：这是有意
+			// 收尾（进程组已 SIGKILL），不是日志复制失败，不能污染 copyErr /
+			// 把成功任务翻成 failed（V4-10）。
+			return
+		}
 		a.r.logf("runner: 复制 %s 日志失败：%v", name, err)
 		a.noteCopyErr(fmt.Errorf("复制 %s: %w", name, err))
 	}
+}
+
+// closePipes 是回收路径的有意关闭：先置显式状态，再关读端，让正阻塞在
+// io.Copy 上的日志复制能把 read 的 os.ErrClosed 认成「自己关的」。
+func (a *Attempt) closePipes() {
+	a.mu.Lock()
+	a.pipesClosed = true
+	a.mu.Unlock()
+	if a.stdoutR != nil {
+		_ = a.stdoutR.Close()
+	}
+	if a.stderrR != nil {
+		_ = a.stderrR.Close()
+	}
+}
+
+// pipesClosedIntentionally 报告读端是否已被回收路径主动关闭。
+func (a *Attempt) pipesClosedIntentionally() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pipesClosed
 }
 
 // noteCopyErr 记录日志流复制的非预期错误（终态要反映，不静默吞）。
@@ -555,7 +589,8 @@ func (a *Attempt) stop(reason string, grace time.Duration) {
 		go func() {
 			if !a.waitGone(pgid, grace) {
 				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-				a.waitGone(pgid, grace)
+				// SIGKILL 之后只等内核事实（真实时间有界），不再吃注入时钟。
+				waitGroupGone(pgid, reapConfirmWindow, reapConfirmInterval, nil)
 			}
 		}()
 	}
@@ -590,8 +625,7 @@ func (a *Attempt) waitProcess() {
 		if pgid > 0 {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
-		_ = a.stdoutR.Close()
-		_ = a.stderrR.Close()
+		a.closePipes()
 		<-a.copiesDone
 	}
 	close(a.procDone)
@@ -604,12 +638,16 @@ func (a *Attempt) waitProcess() {
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		if !a.waitGone(pgid, a.r.opts.TermGrace) {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			a.waitGone(pgid, a.r.opts.TermGrace)
+			// SIGKILL 不可捕获：组内进程必然死亡，剩下等的是内核/init 回收
+			// 僵尸的时间。这个事实只能用真实时间确认（注入时钟推进不代表
+			// 内核事实，V4-10 的假时钟 2ms 推进 5s 就是在这里撒谎的）。
+			if !waitGroupGone(pgid, reapConfirmWindow, reapConfirmInterval, nil) {
+				a.r.logf("runner: task=%s attempt=%d 进程组 %d 在 %s 内仍未确认回收，保留物理槽位",
+					a.taskID, a.attempt, pgid, reapConfirmWindow)
+			}
 		}
 	}
-	a.groupMu.Lock()
-	a.groupReaped = pgid <= 0 || !groupAlive(pgid)
-	a.groupMu.Unlock()
+	a.setGroupReaped(pgid <= 0 || !groupAlive(pgid))
 }
 
 // finalizeResult 计算终态、导出/上传托管副本并上报 task.result。
@@ -833,6 +871,20 @@ func (a *Attempt) groupReapedNow() bool {
 	return a.groupReaped
 }
 
+// setGroupReaped 记录「进程组是否已确认回收」的物理事实。
+func (a *Attempt) setGroupReaped(reaped bool) {
+	a.groupMu.Lock()
+	a.groupReaped = reaped
+	a.groupMu.Unlock()
+}
+
+// pgidValue 返回持久化的进程组 id（0 = 还没 spawn）。
+func (a *Attempt) pgidValue() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pgid
+}
+
 func isCancelReason(reason string) bool {
 	switch protocol.CancelReason(reason) {
 	case protocol.CancelReasonUser, protocol.CancelReasonAbandonedByUser, protocol.CancelReasonInfra:
@@ -871,6 +923,39 @@ func groupAlive(pgid int) bool {
 		return true
 	}
 	return !errors.Is(err, syscall.ESRCH)
+}
+
+// reapConfirmWindow / reapConfirmInterval 是 SIGKILL 之后确认「进程组真的消失」
+// 的**真实时间**有界窗口。SIGKILL 不可捕获，组内进程必然死亡；剩下的只是内核
+// 回收僵尸的时间，所以这个确认不能吃注入时钟（V4-10）。
+const (
+	reapConfirmWindow   = 2 * time.Second
+	reapConfirmInterval = 5 * time.Millisecond
+)
+
+// waitGroupGone 用真实时间有界轮询进程组是否真的消失（kill(2) == ESRCH）。
+// stop 关闭时提前放弃（返回 false）；nil 表示不提前退出。
+func waitGroupGone(pgid int, window, interval time.Duration, stop <-chan struct{}) bool {
+	if !groupAlive(pgid) {
+		return true
+	}
+	if window <= 0 || interval <= 0 {
+		return false
+	}
+	deadline := time.Now().Add(window)
+	for {
+		select {
+		case <-stop:
+			return false
+		case <-time.After(interval):
+		}
+		if !groupAlive(pgid) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+	}
 }
 
 // waitGone 用**注入时钟**等进程组消失：进程组的存活只能真实轮询观察，但
