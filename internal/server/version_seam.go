@@ -6,7 +6,7 @@ import "github.com/zzjcool/anotify/internal/version"
 // （.pi-orchestrator/CONTRACT-agent-upgrade.md §1）。
 //
 // 为什么单独一个函数而不是到处 import：版本的唯一来源是构建期注入的
-// internal/version，而这台机器的 /app/agent（= 升级源二进制）必须与中枢是
+// internal/version，而这台机器的 /app/anode（= 升级源二进制，v3 的 /app/agent）必须与中枢是
 // **同一份构建**——两边读同一个 version.String()，才不会出现「中枢说 1.5.0、
 // 发出去的 agent 是 dev」这种升级死循环。
 //

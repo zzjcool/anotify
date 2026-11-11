@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 多跳链路 demo（v3）—— 已退役（#334，v4 工具链迁移）
 #
-# 为什么退役：这个脚本整套是 v3 的节点形状——`go build ./cmd/agent`、`node.yaml`
+# 为什么退役：这个脚本整套是 v3 的节点形状——第一步就去编 `cmd/agent` 那个二进制、`node.yaml`
 # 的 bootstrap 四件 + `instances`、v2 的「能力产物 → deploy 帧 → 应用」流程、
 # `"${ANOTIFY_AGENT_BIN:-anotify-agent}" emit`。v4 删除了 `cmd/agent` 与那条部署链，
 # 替换脚本没有意义：留下一个「看起来能跑、其实第一步就红」的脚本比删掉更贵。

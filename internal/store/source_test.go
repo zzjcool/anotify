@@ -263,13 +263,17 @@ func TestSourceValidation(t *testing.T) {
 		t.Errorf("应 ErrInvalidSourceConfig, got %v", err)
 	}
 
-	// 出口引用必须可解析（v4 的 targets 是引用，不是 id）
+	// 出口引用必须可解析（v4 的 targets 是引用，不是 id）。
+	// 错误类型必须**可判别**：server 拿它翻 400，CLI 拿它给「改引用」的修复建议。
 	err = db.CreateSource(ctx, &Source{
 		NamespaceID: nsID, Name: "指向空气", Kind: SourceKindManual,
 		Targets: []sourcespec.Target{{Capability: "does.not.exist"}},
 	})
-	if !errors.Is(err, ErrInvalidSourceConfig) && !strings.Contains(err.Error(), "不存在") {
-		t.Errorf("出口引用不存在应被拒, got %v", err)
+	if !errors.Is(err, ErrSourceTargetInvalid) {
+		t.Errorf("出口引用不存在应 ErrSourceTargetInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "does.not.exist") {
+		t.Errorf("错误文案应点名那个引用, got %q", err.Error())
 	}
 
 	// 重名
@@ -969,5 +973,71 @@ func TestCreateSourceNameRuleNoInputRename(t *testing.T) {
 				t.Fatalf("legal source renamed or empty targets rejected: input=%q source=%q err=%v", name, src.Name, err)
 			}
 		})
+	}
+}
+
+// TestSourceTargetInvalidErrorType 钉「targets 引用不可解析」的错误**可判别**，且不会被
+// 基础设施故障冒充。
+//
+// 两类下游都按类型分支：
+//   - server 的 writeAPIError 用它翻 400（否则落 default 500，「引用写错了」被报成
+//     「服务器坏了」，客户端会重试一个永远不可能成功的写）；
+//   - CLI/控制台按 errors.Is 给「改引用」的修复建议，而不是「稍后重试」。
+//
+// 所以两种引用写法（裸名 / 钉死版本）必须同一个哨兵，而形状错与 DB 故障必须**不是**它。
+func TestSourceTargetInvalidErrorType(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	sourceFixtureCap(t, db, nsID, "notify")
+
+	// ① 裸名（跟随 latest）解析不到。
+	err := db.CreateSource(ctx, &Source{
+		NamespaceID: nsID, Name: "坏名字", Kind: SourceKindManual,
+		Targets: []sourcespec.Target{{Capability: "does.not.exist"}},
+	})
+	if !errors.Is(err, ErrSourceTargetInvalid) {
+		t.Fatalf("不存在的出口引用应 ErrSourceTargetInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "does.not.exist") {
+		t.Errorf("错误文案应点名引用, got %q", err.Error())
+	}
+
+	// ② 名字在、钉死的版本不在：引用同样不成立，不能只修裸名那一条。
+	verErr := db.CreateSource(ctx, &Source{
+		NamespaceID: nsID, Name: "坏版本", Kind: SourceKindManual,
+		Targets: []sourcespec.Target{{Capability: "notify@9"}},
+	})
+	if !errors.Is(verErr, ErrSourceTargetInvalid) {
+		t.Fatalf("不存在的钉死版本应 ErrSourceTargetInvalid, got %v", verErr)
+	}
+
+	// ③ 形状错（空引用）仍走 sourcespec 的 config 错误：那是另一类码，不混用。
+	shapeErr := db.CreateSource(ctx, &Source{
+		NamespaceID: nsID, Name: "空引用", Kind: SourceKindManual,
+		Targets: []sourcespec.Target{{Capability: "  "}},
+	})
+	if !errors.Is(shapeErr, ErrInvalidSourceConfig) || errors.Is(shapeErr, ErrSourceTargetInvalid) {
+		t.Fatalf("空引用应是 ErrInvalidSourceConfig 而非 ErrSourceTargetInvalid, got %v", shapeErr)
+	}
+
+	// ④ 数据库故障不得被归成「引用写错了」：否则 infra 故障会被报成 400 参数错，
+	// 调用方会去改一个本来就写对的引用。关闭的库上查引用 = 真故障。
+	dead, derr := Open(":memory:")
+	if derr != nil {
+		t.Fatalf("open second db: %v", derr)
+	}
+	if derr := dead.Close(); derr != nil {
+		t.Fatalf("close second db: %v", derr)
+	}
+	dbErr := dead.CreateSource(ctx, &Source{
+		NamespaceID: nsID, Name: "库挂了", Kind: SourceKindManual,
+		Targets: []sourcespec.Target{{Capability: "notify"}},
+	})
+	if dbErr == nil {
+		t.Fatal("关闭的库上建源应报错")
+	}
+	if errors.Is(dbErr, ErrSourceTargetInvalid) || errors.Is(dbErr, ErrInvalidSourceConfig) {
+		t.Fatalf("DB 故障不得被归成参数错误, got %v", dbErr)
 	}
 }
