@@ -415,3 +415,62 @@ func TestCliAuthSession_PasskeyEnroll_RoundTrip(t *testing.T) {
 		t.Errorf("delete 后应返回 ErrNotFound, got %v", err)
 	}
 }
+
+// TestConsumeCliAuthSessionPasskey_SecondConsumeRejected 钉死 passkey 会话在 store 层的
+// 一次性（issue #338 / F7）：approved→consumed 的 CAS 只成功一次，第二次同一 id 消费返回
+// alreadyConsumed=true 且不覆盖 consumed_at（auth 层据此报 ErrAlreadyConsumed）。
+func TestConsumeCliAuthSessionPasskey_SecondConsumeRejected(t *testing.T) {
+	db := newTestDB(t)
+
+	s := &CliAuthSession{
+		ID:         "cas_once1",
+		SecretHash: "h",
+		UserCode:   "ONCE0001",
+		DeviceName: "dev",
+		Kind:       CliAuthKindPasskey,
+		Status:     CliAuthApproved,
+		CreatedAt:  1000,
+		ExpiresAt:  1600,
+	}
+	if err := db.CreateCliAuthSession(s); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 第一次：approved→consumed 成功。
+	already, err := db.ConsumeCliAuthSessionPasskey(s.ID, 1200)
+	if err != nil {
+		t.Fatalf("第一次消费报错: %v", err)
+	}
+	if already {
+		t.Fatalf("第一次消费不该是 alreadyConsumed")
+	}
+	got, err := db.GetCliAuthSession(s.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != CliAuthConsumed {
+		t.Fatalf("status got %q want %q", got.Status, CliAuthConsumed)
+	}
+	if !got.ConsumedAt.Valid || got.ConsumedAt.Int64 != 1200 {
+		t.Fatalf("consumed_at got %+v want 1200", got.ConsumedAt)
+	}
+
+	// 第二次：同一个会话再消费 → alreadyConsumed=true，状态与 consumed_at 都不变。
+	already2, err := db.ConsumeCliAuthSessionPasskey(s.ID, 1300)
+	if err != nil {
+		t.Fatalf("第二次消费报错: %v", err)
+	}
+	if !already2 {
+		t.Fatal("第二次消费应返回 alreadyConsumed=true")
+	}
+	got2, err := db.GetCliAuthSession(s.ID)
+	if err != nil {
+		t.Fatalf("get after second consume: %v", err)
+	}
+	if got2.Status != CliAuthConsumed {
+		t.Fatalf("第二次消费不应改状态: %q", got2.Status)
+	}
+	if !got2.ConsumedAt.Valid || got2.ConsumedAt.Int64 != 1200 {
+		t.Fatalf("第二次消费不应覆盖 consumed_at: %+v", got2.ConsumedAt)
+	}
+}

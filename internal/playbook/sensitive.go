@@ -190,8 +190,9 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 // 这种普通引用也会被打码，偏离 mock 语义（对齐前端 mock 的 `pbPolicySecret(pbReferencePolicy(...))`
 // ——只在解析节点上判子树）。
 //
-// 下钻规则：对象按 `properties`、数组按下标 + `items` + `prefixItems`（两分支**并查**，
-// 因为 `MaskValues` 对数组一律按 `items` 打码——只信 `prefixItems` 会留下裂缝）。
+// 下钻规则：对象按 `properties`（未命中回落 `additionalProperties` 的任意键）、
+// 数组按下标 + `items` + `prefixItems`（两分支**并查**，因为引用可能同时被两边约束——
+// 任一分支命中 writeOnly 就敏感，只许多打码）。
 // 路径不在 schema 里 → 非敏感（schema 没说是密文，就不猜）。空路径不是引用，不会走到这里。
 //
 // 逐条语义（与 mock 对齐）：
@@ -232,7 +233,9 @@ func refHitsWriteOnly(ref string, sch map[string]any) bool {
 //   - 节点自身 writeOnly → true；
 //   - `properties` 下任一子节点递归为真 → true（`{{values.auth}}` 因 `auth.properties.token`）；
 //   - `items` 递归为真 → true（`{{values.credList}}` 因 `credList.items.properties.token`）；
-//   - `prefixItems` 任一元素递归为真 → true（元组写法的同一条规则）。
+//   - `prefixItems` 任一元素递归为真 → true（元组写法的同一条规则）；
+//   - `additionalProperties`（对象 schema 形态）递归为真 → true（任意键都可能是密文，
+//     与 `maskValue` 的兜底打码口径对齐）。
 //
 // 不做关键词猜测（`format` / 字段名一律不看）：只有 `writeOnly` 是密文的唯一真相。
 func subtreeHasWriteOnly(sch map[string]any) bool {
@@ -265,6 +268,9 @@ func subtreeHasWriteOnly(sch map[string]any) bool {
 			}
 		}
 	}
+	if addl, ok := additionalPropertiesSchema(sch); ok && subtreeHasWriteOnly(addl) {
+		return true
+	}
 	return false
 }
 
@@ -279,12 +285,13 @@ func splitValuePath(ref string) []string {
 // descendSchemaCandidates 返回「一段路径」在一个 schema 节点上可下钻到的**全部候选**。
 //
 // 为什么是多个候选（而不是一个）：数组元素可能同时被 `prefixItems[i]` 与 `items` 约束
-// （2020-12：`prefixItems` 管前 N 个，`items` 管其余；但 `MaskValues` 对数组**一律按 items**
-// 打码）。若只信 `prefixItems`，`prefixItems: [{}]` + `items.writeOnly` 这种包会出现
-// 「回执 `values` 里 token 是 `***`、`unapplied` 里同一 token 是明文」的裂缝。
+// （2020-12：`prefixItems` 管前 N 个，`items` 管其余；`maskValue` 按位置优先 `prefixItems[i]`
+// 且只在它没有 writeOnly 时回落 `items`）。若只信其中一支，`prefixItems: [{}]` + `items.writeOnly`
+// 这类包会出现「回执 `values` 里是 `***`、`unapplied` 里同一值是明文」的裂缝。
 // 于是两个分支都作为候选并查：任一分支命中 writeOnly 即敏感（只许多打码）。
 //
-// 下钻优先级（非歧义优先）：**先 `properties`，再「纯数字下标 + `prefixItems`/`items`」**。
+// 下钻优先级：**先 `properties`，未命中回落 `additionalProperties`（任意键），
+// 再「纯数字下标 + `prefixItems`/`items`」**。
 // 同一个节点可能同时带 `properties` 与 `items`（`type: ["object","array"]`，或对象节点上
 // 多写了一个 `items`）。真实值的形态由 `properties` 决定（`maskValue` 对 map 也走 properties），
 // 所以键名命中 properties 时必须走对象分支；只有 properties 里没有这个键、**且段是纯数字**、
@@ -293,7 +300,8 @@ func splitValuePath(ref string) []string {
 // 非敏感 → 明文漏进回执 `unapplied[]`。
 //
 // 其它规则：
-//   - 带 `items` 的数组节点上，非下标段没有对象字段可下钻（既有口径，返回空）；
+//   - 带 `items` 的数组节点上，非下标段没有对象字段可下钻（既有口径，`additionalProperties`
+//     也没声明时返回空）；
 //   - `prefixItems[idx]` 不是对象 schema（布尔 `true` / `null`）→ 不产生候选，但**不阻断**
 //     `items` 候选（否则相对「下标段一律走 items」的旧行为是 fail-open 回归）。
 func descendSchemaCandidates(sch map[string]any, seg string) []map[string]any {
@@ -303,11 +311,16 @@ func descendSchemaCandidates(sch map[string]any, seg string) []map[string]any {
 	if child, ok := schema.Properties(sch)[seg].(map[string]any); ok {
 		return []map[string]any{child}
 	}
+	var out []map[string]any
+	// `properties` 未命中：声明了对象形态的 `additionalProperties` 就按「任意键」回落
+	// （`values` 里键名由安装方自己定，schema 只能靠 additionalProperties 说它是密文）。
+	if addl, ok := additionalPropertiesSchema(sch); ok {
+		out = append(out, addl)
+	}
 	idx, isIndex := toIntFromString(seg)
 	if !isIndex {
-		return nil
+		return out
 	}
-	var out []map[string]any
 	if prefix, ok := sch["prefixItems"].([]any); ok && idx < len(prefix) {
 		if node, ok := prefix[idx].(map[string]any); ok {
 			out = append(out, node)
