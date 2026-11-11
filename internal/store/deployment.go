@@ -396,6 +396,50 @@ func (d *DB) ListDeployments(ctx context.Context, namespaceID string, f Deployme
 	return out, rows.Err()
 }
 
+// ListDeploymentsByCapabilityName 返回某命名空间里**同名能力**的全部部署行
+// （每行 = 一个 (node, 版本行) 的期望 + 节点回报；字段同 Deployment）。
+//
+// 为什么按名字而不是按 capability_id（#362）：`deployments.capability_id` 钉的是**某一行
+// 版本**（capability_versions 的一行），而 `status.nodes[]` 要回答的是「这个能力**名字**
+// 在节点上处于什么状态」。按 id 查只能看见「当前这一版」的部署行 —— 能力升级到 v3 之后
+// 指向 v1/v2 的旧部署行完全不可见，于是 stale 永远派生不出来（旧行看着像不存在），
+// 而契约（capability.md §2.4）明确要求 `nodes[].state ∈ deployed/stale/missing`。
+//
+// 一台节点可能有多行：`CreateDeployments` 的 supersede 只清**同一 capability_id** 的旧行
+// （见它那条 DELETE 的作用域），所以同一节点上可以同时存在 v1 的 applied 行与 v3 的
+// pending/applied 行。折叠成「每节点一行」是调用方（status 派生）的职责 —— 只有它知道
+// 读者此刻看的是哪个 digest，能判 deployed 还是 stale。
+//
+// 只看活行：能力版本行被软删（deleted_at）后，指向它的部署不该再出现在状态里。
+func (d *DB) ListDeploymentsByCapabilityName(ctx context.Context, namespaceID, name string) ([]*Deployment, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return []*Deployment{}, nil
+	}
+	rows, err := d.QueryContext(ctx,
+		deploymentSelect+` WHERE d.namespace_id = ? AND c.namespace_id = ? AND c.name = ?
+		      AND c.deleted_at IS NULL
+		    ORDER BY d.node_id, c.version, d.id`,
+		namespaceID, namespaceID, name)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments by capability name: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*Deployment{}
+	for rows.Next() {
+		dp, serr := scanDeploymentRow(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, dp)
+	}
+	return out, rows.Err()
+}
+
 // DeleteDeployment 删一条部署，返回被删的行（供调用方推 remove 帧）。
 func (d *DB) DeleteDeployment(ctx context.Context, namespaceID, id string) (*Deployment, error) {
 	dp, err := d.GetDeployment(ctx, namespaceID, id)

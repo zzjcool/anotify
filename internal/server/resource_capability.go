@@ -715,29 +715,65 @@ func (a *capabilityAPI) downstreamResolved(ctx context.Context, row *store.Capab
 
 // deployedState 派生 Deployed condition 与 `nodes[]`（capability.md §5：来自 deployments 事实）。
 //
-// state 映射：节点确认应用了当前 digest → deployed；其余（pending / failed）→ missing。
-// 「stale」需要一个**独立于当前 digest** 的节点侧快照才能判，本域不查节点上报，
-// 所以不声称 stale（宁可少报，不伪造）。
+// 判据按**能力名**取部署事实（`deployments × capability_versions`），不是按当前版本行：
+// 部署行钉的是「某一版」，而 status 回答的是「这个能力名在节点上处于什么状态」。
+//
+// 逐节点（每台只出一行）：
+//   - 有 applied 且 digest == 当前行 digest → deployed；
+//   - 没有 deployed，但有 applied 且 digest != 当前行 digest → stale
+//     （节点持有别的版本；升级后旧部署行的 digest 与当前行不同，正是这一格）；
+//   - 其余（从没部署过 / pending / failed）→ missing。
+//
+// 同一节点可能同时挂着指向不同版本行的事实（`CreateDeployments` 的 supersede 只清同一
+// capability_id 的行），所以按 deployed > stale > missing 折叠：这三个投影里最强的一条
+// 才是「节点此刻持有什么」的真实回答。
 func (a *capabilityAPI) deployedState(ctx context.Context, row *store.CapabilityVersion) (capabilityCondition, []capabilityNodeState, error) {
 	condition := capabilityCondition{Type: protocol.ConditionDeployed}
-	rows, err := a.d.DB.ListDeployments(ctx, row.NamespaceID, store.DeploymentFilter{CapabilityID: row.ID})
+	rows, err := a.d.DB.ListDeploymentsByCapabilityName(ctx, row.NamespaceID, row.Name)
 	if err != nil {
 		return condition, nil, err
 	}
-	nodes := make([]capabilityNodeState, 0, len(rows))
-	deployedCount := 0
+	// 状态强度：deployed 压 stale 压 missing（同一节点多行时取最强的一条）。
+	const (
+		rankMissing = iota
+		rankStale
+		rankDeployed
+	)
+	nodeState := make(map[string]capabilityNodeState, len(rows))
+	nodeRank := make(map[string]int, len(rows))
 	for _, deployment := range rows {
-		if deployment == nil {
+		if deployment == nil || deployment.NodeID == "" {
 			continue
 		}
-		state := capabilityNodeMissing
-		if deployment.State == store.DeploymentApplied && deployment.Digest == row.Digest {
-			state = capabilityNodeDeployed
-			deployedCount++
+		state, rank := capabilityNodeMissing, rankMissing
+		if deployment.State == store.DeploymentApplied {
+			if deployment.Digest == row.Digest {
+				state, rank = capabilityNodeDeployed, rankDeployed
+			} else {
+				state, rank = capabilityNodeStale, rankStale
+			}
 		}
-		nodes = append(nodes, capabilityNodeState{Name: a.nodeName(ctx, deployment.NodeID), State: state})
+		if current, seen := nodeRank[deployment.NodeID]; seen && current >= rank {
+			continue
+		}
+		nodeRank[deployment.NodeID] = rank
+		nodeState[deployment.NodeID] = capabilityNodeState{
+			Name: a.nodeName(ctx, deployment.NodeID), State: state,
+		}
+	}
+	nodes := make([]capabilityNodeState, 0, len(nodeState))
+	deployedCount, staleCount := 0, 0
+	for _, node := range nodeState {
+		nodes = append(nodes, node)
+		switch node.State {
+		case capabilityNodeDeployed:
+			deployedCount++
+		case capabilityNodeStale:
+			staleCount++
+		}
 	}
 	sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	// Deployed = 「有节点持有**当前** digest」；旧 digest 不算（capability.md §2.4）。
 	if deployedCount > 0 {
 		condition.Status = protocol.ConditionStatusTrue
 		condition.Reason = protocol.ConditionReasonValid
@@ -745,7 +781,11 @@ func (a *capabilityAPI) deployedState(ctx context.Context, row *store.Capability
 	}
 	condition.Status = protocol.ConditionStatusFalse
 	condition.Reason = protocol.ConditionReasonNotDeployed
-	condition.Message = "没有节点持有当前 digest（人工点部署才会下发）"
+	if staleCount > 0 {
+		condition.Message = fmt.Sprintf("%d 台节点持有旧 digest（人工点部署才会下发）", staleCount)
+	} else {
+		condition.Message = "没有节点持有当前 digest（人工点部署才会下发）"
+	}
 	return condition, nodes, nil
 }
 

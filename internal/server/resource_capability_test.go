@@ -1082,3 +1082,199 @@ func TestCapabilityResourceEmptyLists(t *testing.T) {
 		t.Fatalf("空 edges 必须是 []，实际 body=%s", rec.Body.String())
 	}
 }
+
+// ---------- 7d) status.nodes 的三态：deployed / stale / missing（#362） ----------
+//
+// 判据来自 deployments × capability_versions，**按能力名**取（同一能力的每一版都有
+// 自己的部署行）。修前按当前版本行的 id 查，于是：
+//   - 升级到 v3 后，指向 v1/v2 的部署行完全看不见 → nodes[] 里那台节点凭空消失，
+//     stale 永远派生不出来（契约 capability.md §2.4 要求 deployed/stale/missing 三态）；
+//   - 反过来，当前版本只部署在 node-a 时，node-b 的旧部署也不可见。
+
+// createCapabilityVersion 建一个**显式版本**的能力（同名多版共存）。
+func (e *capTestEnv) createCapabilityVersion(t *testing.T, ns, name string, version int, script string) map[string]any {
+	t.Helper()
+	rec := e.do(t, http.MethodPost, e.capPath(ns, "", ""), capabilityBody(name, version, script))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %s@%d: status=%d body=%s", name, version, rec.Code, rec.Body.String())
+	}
+	return decodeCapJSON(t, rec)
+}
+
+// deployVersion 走真 deploy 动作把某版本部署到指定节点（离线也能落 pending 事实）。
+func (e *capTestEnv) deployVersion(t *testing.T, ns, name string, version int, nodeNames ...string) {
+	t.Helper()
+	rec := e.do(t, http.MethodPost, e.capPath(ns, name, "deploy"),
+		map[string]any{"version": version, "nodes": nodeNames})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy %s@%d → %v: status=%d body=%s", name, version, nodeNames, rec.Code, rec.Body.String())
+	}
+}
+
+// markDeploymentApplied 把「某节点 × 某版本」的部署行打成节点已确认（applied）。
+//
+// 测试里没有真实节点会话，applied 只能由这里造；它就是「节点确认应用了这份 digest」
+// 这件事的唯一事实来源，status 派生只读它。
+func (e *capTestEnv) markDeploymentApplied(t *testing.T, ns, name string, version int, nodeNames ...string) {
+	t.Helper()
+	e.markDeploymentResult(t, ns, name, version, store.DeploymentApplied, "", nodeNames...)
+}
+
+// markDeploymentResult 是上面那条的通用版（failed 也走它）。
+func (e *capTestEnv) markDeploymentResult(t *testing.T, ns, name string, version int, state, reason string, nodeNames ...string) {
+	t.Helper()
+	ctx := context.Background()
+	capRow, err := e.db.GetCapability(ctx, ns, name, version)
+	if err != nil {
+		t.Fatalf("get capability %s@%d: %v", name, version, err)
+	}
+	for _, nodeName := range nodeNames {
+		node, err := e.db.GetNodeByName(ctx, nodeName)
+		if err != nil {
+			t.Fatalf("get node %s: %v", nodeName, err)
+		}
+		dp, err := e.db.GetDeploymentByNodeCapability(ctx, ns, node.ID, capRow.ID)
+		if err != nil {
+			t.Fatalf("get deployment %s/%s@%d: %v", nodeName, name, version, err)
+		}
+		if err := e.db.MarkDeployResult(ctx, ns, dp.ID, state, reason); err != nil {
+			t.Fatalf("mark deployment %s/%s@%d %s: %v", nodeName, name, version, state, err)
+		}
+	}
+}
+
+// capabilityStatus 取 GET 单对象（裸 name = 最新版）里的 status。
+func (e *capTestEnv) capabilityStatus(t *testing.T, ns, name string) map[string]any {
+	t.Helper()
+	rec := e.do(t, http.MethodGet, e.capPath(ns, name, ""), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status=%d body=%s", name, rec.Code, rec.Body.String())
+	}
+	return capObject(t, decodeCapJSON(t, rec)["status"], "status")
+}
+
+// capNodeStates 把 status.nodes 折成 name → state（顺序不是语义，节点名才是）。
+func capNodeStates(t *testing.T, status map[string]any) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, item := range capArray(t, status["nodes"], "status.nodes") {
+		node := capObject(t, item, "status.nodes[]")
+		name := capString(t, node, "name")
+		if _, dup := out[name]; dup {
+			t.Fatalf("status.nodes 里节点 %q 出现了不止一行（每台节点只能有一行）", name)
+		}
+		out[name] = capString(t, node, "state")
+	}
+	return out
+}
+
+// capConditionOf 按 type 取一条 condition。
+func capConditionOf(t *testing.T, status map[string]any, typ string) map[string]any {
+	t.Helper()
+	for _, item := range capArray(t, status["conditions"], "status.conditions") {
+		c := capObject(t, item, "condition")
+		if capString(t, c, "type") == typ {
+			return c
+		}
+	}
+	t.Fatalf("conditions 里没有 %s: %#v", typ, status["conditions"])
+	return nil
+}
+
+// TestCapabilityStatusNodesStaleAfterUpgrade 升级后旧版本的部署要如实投影成 stale。
+//
+// 修前：按当前版本行的 id 查部署 → node-a（持有 v1）与 node-b（持有 v2）都不在
+// v3 的 nodes[] 里，两台节点凭空消失，Deployed 也无从说起。
+func TestCapabilityStatusNodesStaleAfterUpgrade(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.deployNode(t, "node-a", "", nil)
+	env.deployNode(t, "node-b", "", nil)
+	env.createCapabilityVersion(t, env.nsA, "upgraded", 1, "#!/bin/sh\necho v1\n")
+	env.createCapabilityVersion(t, env.nsA, "upgraded", 2, "#!/bin/sh\necho v2\n")
+	env.createCapabilityVersion(t, env.nsA, "upgraded", 3, "#!/bin/sh\necho v3\n")
+
+	// node-a 上跑的是 v1、node-b 上是 v2（都已确认 applied）。
+	env.deployVersion(t, env.nsA, "upgraded", 1, "node-a")
+	env.markDeploymentApplied(t, env.nsA, "upgraded", 1, "node-a")
+	env.deployVersion(t, env.nsA, "upgraded", 2, "node-b")
+	env.markDeploymentApplied(t, env.nsA, "upgraded", 2, "node-b")
+
+	// 当前行是 v3：两台都持有旧 digest → 都是 stale，且一台都不能少。
+	status := env.capabilityStatus(t, env.nsA, "upgraded")
+	if got := capNumber(t, status, "version"); got != 3 {
+		t.Fatalf("GET 裸 name 应解析到最新版 3，实际 %d", got)
+	}
+	nodes := capNodeStates(t, status)
+	if len(nodes) != 2 || nodes["node-a"] != "stale" || nodes["node-b"] != "stale" {
+		t.Fatalf("status.nodes = %#v, want {node-a: stale, node-b: stale}", nodes)
+	}
+	deployed := capConditionOf(t, status, "Deployed")
+	if deployed["status"] != "False" || capString(t, deployed, "reason") != "NotDeployed" {
+		t.Fatalf("没有节点持有当前 digest 时 Deployed 必须是 False/NotDeployed: %#v", deployed)
+	}
+	if msg := capString(t, deployed, "message"); !strings.Contains(msg, "2 台节点持有旧 digest") {
+		t.Fatalf("Deployed.message = %q，应说明有两台节点持有旧 digest", msg)
+	}
+
+	// v3 部署到 node-a，但节点还没确认 → 它手里仍是 v1，仍按 stale 报。
+	env.deployVersion(t, env.nsA, "upgraded", 3, "node-a")
+	nodes = capNodeStates(t, env.capabilityStatus(t, env.nsA, "upgraded"))
+	if nodes["node-a"] != "stale" || nodes["node-b"] != "stale" {
+		t.Fatalf("v3 只写了 pending 时 nodes = %#v, want 两台都还是 stale", nodes)
+	}
+
+	// 节点确认应用 v3 → deployed（同一台节点还挂着的 v1 applied 行不能把它压回 stale）。
+	env.markDeploymentApplied(t, env.nsA, "upgraded", 3, "node-a")
+	status = env.capabilityStatus(t, env.nsA, "upgraded")
+	nodes = capNodeStates(t, status)
+	if len(nodes) != 2 || nodes["node-a"] != "deployed" || nodes["node-b"] != "stale" {
+		t.Fatalf("status.nodes = %#v, want {node-a: deployed, node-b: stale}", nodes)
+	}
+	deployed = capConditionOf(t, status, "Deployed")
+	if deployed["status"] != "True" || capString(t, deployed, "reason") != "Valid" {
+		t.Fatalf("有节点持有当前 digest 时 Deployed 必须是 True/Valid: %#v", deployed)
+	}
+}
+
+// TestCapabilityStatusNodesPendingAndFailedAreMissing pending / failed 都不是「持有当前
+// digest」→ missing（Deployed 同步保持 False/NotDeployed，且不谎称有旧 digest）。
+func TestCapabilityStatusNodesPendingAndFailedAreMissing(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapabilityVersion(t, env.nsA, "pending-cap", 1, "#!/bin/sh\necho p\n")
+	env.deployNode(t, "node-pending", "", nil)
+	env.deployNode(t, "node-failed", "", nil)
+
+	env.deployVersion(t, env.nsA, "pending-cap", 1, "node-pending")
+	env.deployVersion(t, env.nsA, "pending-cap", 1, "node-failed")
+	env.markDeploymentResult(t, env.nsA, "pending-cap", 1, store.DeploymentFailed, "script_failed", "node-failed")
+
+	status := env.capabilityStatus(t, env.nsA, "pending-cap")
+	nodes := capNodeStates(t, status)
+	if len(nodes) != 2 || nodes["node-pending"] != "missing" || nodes["node-failed"] != "missing" {
+		t.Fatalf("status.nodes = %#v, want 两台都 missing（pending/failed 都不算持有）", nodes)
+	}
+	deployed := capConditionOf(t, status, "Deployed")
+	if deployed["status"] != "False" || capString(t, deployed, "reason") != "NotDeployed" {
+		t.Fatalf("Deployed = %#v, want False/NotDeployed", deployed)
+	}
+	if msg := capString(t, deployed, "message"); strings.Contains(msg, "旧 digest") {
+		t.Fatalf("Deployed.message = %q，没有旧 digest 事实时不能这么说", msg)
+	}
+}
+
+// TestCapabilityStatusNodesEmptyWhenNeverDeployed 没有任何部署事实时 nodes 是 `[]`
+// （不是 null）+ Deployed False/NotDeployed。
+func TestCapabilityStatusNodesEmptyWhenNeverDeployed(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapabilityVersion(t, env.nsA, "undeployed", 1, "#!/bin/sh\necho u\n")
+	env.deployNode(t, "node-idle", "", nil)
+
+	status := env.capabilityStatus(t, env.nsA, "undeployed")
+	if nodes := capArray(t, status["nodes"], "status.nodes"); len(nodes) != 0 {
+		t.Fatalf("从没部署过时 status.nodes 应是 []，实际 %#v", nodes)
+	}
+	deployed := capConditionOf(t, status, "Deployed")
+	if deployed["status"] != "False" || capString(t, deployed, "reason") != "NotDeployed" {
+		t.Fatalf("Deployed = %#v, want False/NotDeployed", deployed)
+	}
+}
