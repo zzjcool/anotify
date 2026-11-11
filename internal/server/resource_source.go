@@ -414,6 +414,15 @@ func (a *sourceAPI) previewInline(w http.ResponseWriter, r *http.Request) {
 // 建任务全部用它的命名空间，不看任何请求参数（要求外部系统先知道 namespaceId 是没道理的）。
 //
 // 不区分「token 不存在」与「源已停用」：对外同码同文案（source.md §5）。
+//
+// 顺序是**刻意的**（每一格都有契约依据）：
+//
+//	限流（429） → token 定源（404） → 读原始字节（413） → 验签（401） → 解 JSON（400） → 接收（200）
+//
+// 验签必须在解 JSON **之前**、且在落事件之前：契约要的是「缺失 / 不合法 → 401 且不产生
+// 事件」（§3.3 / §5.2），所以先判定、后解析。反过来的顺序会给未签名方留下「用 400 还是
+// 200 探测 body 形状」的旁路，也容易让人把校验写进已落库的路径里。
+// 签名对着**原始字节**算（不是解析后再序列化），见 source.VerifyHookSignature。
 func (a *sourceAPI) hook(w http.ResponseWriter, r *http.Request) {
 	// 限流放在查 token **之前**：这是唯一免登录写入口，先限流能顺带保护 DB 查询，
 	// 也不给「用响应时间探测 token 是否存在」留窗口（见 ratelimit.go 的 rateLimitedHook）。
@@ -428,15 +437,35 @@ func (a *sourceAPI) hook(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, reasonNotFound, "source not found", nil)
 		return
 	}
+	// 原始字节（未解析）：签名口径就是它。上限仍在同一个地方（超限 413，不读进内存再犹豫）。
+	raw, err := srcReadBody(r, srcHookBodyLimit)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// token 定位源：不存在 / 已停用仍是 404（验签不能把这条口径改成 401）。
+	src, err := a.d.Sources.LookupHook(r.Context(), token)
+	if err != nil {
+		a.writeSourceError(w, err)
+		return
+	}
+	// 配了 secret 就必须带合法签名；没有 secret 的源直接放行（契约：空 = 不校验）。
+	// 错误体只有一句固定文案：不带 secret、不区分「缺失 / 格式错 / 不匹配」。
+	if err := source.VerifyHookSignature(source.HookSecret(src), raw, r.Header.Get(source.HookSignatureHeader)); err != nil {
+		writeStatus(w, http.StatusUnauthorized, reasonUnauthorized, "webhook signature missing or invalid", nil)
+		return
+	}
 	// 投递体不做严格白名单：调用方是外部系统，它们会在包装体旁边带自己的字段
 	// （签名头、平台自己的 metadata）。资源写请求的 unknown_field 纪律针对的是
 	// **我们自己发的写请求**，不是外部投递。
 	var body source.HookBody
-	if err := srcDecodeAction(r, &body, srcHookBodyLimit, false); err != nil {
+	if err := srcDecodeJSON(raw, &body, false); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	receipt, err := a.d.Sources.Hook(r.Context(), token, body)
+	// 用**同一次**查表的源接收：token 在验签与落库之间不再查第二次，
+	// 避免「验的是 A 的 secret、写的是 B 的源」这类缝。
+	receipt, err := a.d.Sources.HookSource(r.Context(), src, body)
 	if err != nil {
 		a.writeSourceError(w, err)
 		return
@@ -767,6 +796,14 @@ func srcDecodeAction(r *http.Request, dst any, limit int64, strict bool) error {
 	if err != nil {
 		return err
 	}
+	return srcDecodeJSON(raw, dst, strict)
+}
+
+// srcDecodeJSON 从**已读出的原始字节**解动作体。
+//
+// 单独成函数是因为 hook 入口要先对同一份字节验签（source.VerifyHookSignature），再解析：
+// 验签读一遍 body、解析再读一遍是做不到的（流已耗尽），也容易让两边看到不同的字节。
+func srcDecodeJSON(raw []byte, dst any, strict bool) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}

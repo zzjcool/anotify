@@ -234,13 +234,44 @@ type HookBody struct {
 
 // Hook 处理一次 webhook 投递：token 定位源（停用/不存在一律 404，不区分）。
 func (s *Service) Hook(ctx context.Context, token string, body HookBody) (*Receipt, error) {
-	src, err := s.db.LookupHook(ctx, token)
+	src, err := s.LookupHook(ctx, token)
 	if err != nil {
 		return nil, err
+	}
+	return s.HookSource(ctx, src, body)
+}
+
+// LookupHook 按 token 定位源（停用 / 不存在都是 store.ErrSourceNotFound，不区分）。
+//
+// 单独暴露这一步是因为 handler 必须**先知道 secret 再验签**（source.md §3.3），
+// 而验签要用原始字节、发生在解析与落库之前。定源与接收拆开后，一次投递只查一次表。
+func (s *Service) LookupHook(ctx context.Context, token string) (*store.Source, error) {
+	return s.db.LookupHook(ctx, token)
+}
+
+// HookSource 用**已定位**的源接收一次投递（handler 验签通过后走这里）。
+//
+// 验签不在本函数里：签名要对着原始字节算，而到达这里时 body 已经解成结构体了。
+// 把校验留在传输层（能拿到原始字节的那一层）是有意的分工——这里只负责「接收」
+// 这一件事，两条入口（Hook / HookSource）共用同一份装配与落库逻辑。
+func (s *Service) HookSource(ctx context.Context, src *store.Source, body HookBody) (*Receipt, error) {
+	if src == nil {
+		return nil, fmt.Errorf("source: 缺少源行")
 	}
 	return s.Ingest(ctx, Input{
 		Source: src, Type: body.Type, DeliveryID: body.ID, Payload: body.Payload,
 	})
+}
+
+// HookSecret 返回该 webhook 源的签名 secret（非 webhook / 未配置 → 空 = 不校验）。
+//
+// 「这个源的 secret 是什么」只有一处解释（sourcespec 的归一化形态），handler 不自己
+// 解 config：两处解析迟早分叉，而分叉的后果是「验签看得见 A、接收用得着 B」。
+func HookSecret(src *store.Source) string {
+	if src == nil || src.Kind != sourcespec.KindWebhook {
+		return ""
+	}
+	return sourcespec.ParseConfig(src.Kind, src.Config).Secret
 }
 
 // PreviewTarget 是试运行预览里的一条目标（source.md §5.3）。
