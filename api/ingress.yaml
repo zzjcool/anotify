@@ -83,6 +83,14 @@ paths:
         投递体**不做严格白名单**：调用方是外部系统，它们会在包装体旁边带自己的字段
         （签名头、平台 metadata）。资源写请求的 `unknown_field` 纪律针对我们自己发的
         写请求，不是外部投递。
+
+        **验签**（`source.md` §3.3 / D7）：源配了 `spec.config.secret` 时，投递必须带
+        `X-Anotify-Signature: sha256=<hex>`，值为 `HMAC-SHA256(secret, 原始 body 字节)`
+        的小写十六进制。校验对**原始字节**做（不是解析后的 JSON），所以「签名后再序列化」
+        与「解析后重新序列化」都会因空白/键序差异失败——这是约定的口径，不是缺陷。
+        缺失 / 格式不合法 / 不匹配 → 401 `Unauthorized`，**且不产生事件**（不落事件 /
+        不落去重窗 / 不建任务）。顺序是验签先于解析：401 优先于 400。没配 secret 的源
+        不校验（签名头被忽略）。
       parameters:
         - name: token
           in: path
@@ -90,6 +98,17 @@ paths:
           description: 源的 webhook token（空 token → 404，且不占用 token 维限流额度）
           schema:
             type: string
+        - name: X-Anotify-Signature
+          in: header
+          required: false
+          description: |
+            配了 `spec.config.secret` 时**必填**：`sha256=<hex>`，值 =
+            `HMAC-SHA256(secret, 原始 body 字节)` 的小写十六进制（`source.md` §3.3）。
+            只在源配了 secret 时是判据；没配 secret 的源忽略本头。缺失 / 格式不合法 /
+            不匹配 → 401（不产生事件）。
+          schema:
+            type: string
+            pattern: '^sha256=[0-9a-f]{64}$'
       requestBody:
         required: false
         description: 可省（省略 = 只用源配置的打底载荷；webhook 没有静态打底时为 `{}`）
@@ -106,6 +125,8 @@ paths:
                 $ref: './resource.yaml#/components/schemas/SourceReceipt'
         '400':
           $ref: './resource.yaml#/components/responses/Status400'
+        '401':
+          $ref: './resource.yaml#/components/responses/Status401'
         '404':
           $ref: './resource.yaml#/components/responses/Status404'
         '413':
