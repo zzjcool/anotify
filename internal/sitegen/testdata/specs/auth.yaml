@@ -1,0 +1,91 @@
+# F3a/R2 TEST FIXTURE — 不是真实的 T1 spec（见 resource.yaml 顶部说明）。
+#
+# 覆盖三类 $ref 行为：
+#   · path item 的本地 $ref（#/components/pathItems/...）会被解析成真实 operation；
+#   · 响应组件引用带 JSON Pointer 转义（~1 → /，~0 → ~）；
+#   · 外部 $ref（https://...）不解析、不联网，跳过并 warn，不当成错误。
+openapi: 3.0.3
+info:
+  title: Anotify auth & identity (sitegen fixture)
+  version: "4.0.0-fixture"
+servers:
+  - url: /
+tags:
+  - name: auth
+  - name: keys
+  - name: passkey-enroll
+  - name: cli-auth
+  - name: admin
+  - name: devices
+  - name: system
+paths:
+  /v1/auth/login:
+    post:
+      tags: [auth]
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      responses:
+        "200":
+          description: Me
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+  /v1/auth/session:
+    $ref: '#/components/pathItems/Session'
+  /v1/auth/oidc:
+    $ref: 'https://example.com/oidc.yaml#/paths/~1oidc'
+  /v1/keys:
+    get:
+      tags: [keys]
+    post:
+      tags: [keys]
+  /v1/passkey-enroll/options:
+    post:
+      tags: [passkey-enroll]
+  /v1/cli-auth:
+    post:
+      tags: [cli-auth]
+  /v1/admin/stats:
+    get:
+      tags: [admin]
+  /v1/devices:
+    get:
+      tags: [devices]
+      operationId: fixtureListDevices
+      responses:
+        # ~1 = "/"：目标组件键是 "Device/List"
+        "200":
+          $ref: '#/components/responses/Device~1List'
+  /v1/system/config:
+    get:
+      tags: [system]
+    patch:
+      tags: [system]
+components:
+  schemas:
+    Me:
+      type: object
+    "Device~Key":
+      type: object
+      properties:
+        name: { type: string }
+  responses:
+    "Device/List":
+      description: Device list
+      content:
+        application/json:
+          schema:
+            # ~0 = "~"：目标组件键是 "Device~Key"
+            $ref: '#/components/schemas/Device~0Key'
+  pathItems:
+    Session:
+      get:
+        tags: [auth]
+        responses:
+          "200":
+            description: session

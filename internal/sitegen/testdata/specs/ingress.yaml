@@ -1,0 +1,43 @@
+# F3a/R2 TEST FIXTURE — 不是真实的 T1 spec（见 resource.yaml 顶部说明）。
+#
+# API2 具名 fixture：同 path /v1/namespaces/{namespace}/events 的 POST 在这里，
+# GET 在 events.yaml；合并必须保留两个 method。参数/请求体/响应 schema
+# 都通过五文件内的相对 $ref 引用 resource.yaml。
+openapi: 3.0.3
+info:
+  title: Anotify event ingress (sitegen fixture)
+  version: "4.0.0-fixture"
+servers:
+  - url: /
+tags:
+  - name: ingress
+paths:
+  /v1/namespaces/{namespace}/events:
+    post:
+      tags: [ingress]
+      operationId: fixturePostEvent
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/Namespace'
+      requestBody:
+        $ref: './resource.yaml#/components/requestBodies/SourceEvent'
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/EventReceipt'
+  /v1/namespaces/{namespace}/sources/{name}/dry-run:
+    post:
+      tags: [ingress]
+  /v1/namespaces/{namespace}/sources/{name}/fire:
+    post:
+      tags: [ingress]
+  /v1/hooks/{token}:
+    post:
+      tags: [ingress]
+  # 已弃用的旧入口：必须被过滤，不出现在文档页。
+  /v1/notify:
+    post:
+      tags: [ingress]
+      deprecated: true

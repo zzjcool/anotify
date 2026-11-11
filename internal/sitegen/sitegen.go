@@ -31,7 +31,7 @@ type Generator struct {
 	translations map[string]map[string]string // lang → flattenedKey → value
 	defaultLang  string                       // default language (langs[0]), used for missing-key fallback
 	tmplCache    *templateCache               // template cache
-	openAPI      []OpenAPIGroup               // API 文档页嵌入的端点清单（构建期从 api/openapi.yaml 解析）
+	openAPI      []OpenAPIGroup               // API 文档页嵌入的端点清单（构建期从 api/{resource,events,agent,ingress,auth}.yaml 合并）
 }
 
 // templateCache caches parsed layout+page template combinations to avoid
@@ -122,17 +122,33 @@ func New(srcDir, outDir string, langs []string) (*Generator, error) {
 	return g, nil
 }
 
-// LoadOpenAPI 读入 OpenAPI spec，把端点按 tag 分组后的清单交给模板（{{range .OpenAPI}}）。
+// LoadOpenAPI 读入 API spec 目录，把端点按 tag 分组后的清单交给模板（{{range .OpenAPI}}）。
+//
+// path 是**五文件目录**（默认 api/，含 resource/events/agent/ingress/auth.yaml），
+// 不是旧版单文件 api/openapi.yaml——spec 已在 v4 拆成五份，**没有**单文件 fallback。
+// 缺文件只具名告警（由 LoadSpecDir 返回 Missing），全部缺失走 docs 真实空态。
 //
 // 在**构建期**做这件事有三个好处：运行时零成本（页面里就是静态 HTML）、
 // 页面与 spec 不可能漂移（spec 改了重跑 sitegen 就同步）、不需要额外的 JS 库。
 func (g *Generator) LoadOpenAPI(path string) error {
-	groups, err := LoadOpenAPIGroups(path)
-	if err != nil {
-		return fmt.Errorf("sitegen: load openapi: %w", err)
+	if _, err := g.LoadSpecDir(path); err != nil {
+		return err
 	}
-	g.openAPI = groups
 	return nil
+}
+
+// LoadSpecDir 读入 v4 的五份 canonical spec（resource/events/agent/ingress/auth），
+// 把合并后的端点清单交给模板（{{range .OpenAPI}}）。
+//
+// 返回的 SpecSet 供 CLI 打「缺哪份 spec / 哪条 $ref 无法解析」的具名告警；
+// 同 method+path 重复与 operationId 重复是 error（由 LoadSpecDir 直接返回）。
+func (g *Generator) LoadSpecDir(dir string) (*SpecSet, error) {
+	set, err := LoadSpecDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("sitegen: load api specs: %w", err)
+	}
+	g.openAPI = set.Groups
+	return set, nil
 }
 
 // Generate runs the full generation: render all languages × pages → write HTML + i18n.{lang}.js.
@@ -342,10 +358,44 @@ func (g *Generator) makeTFunc(lang string) func(string) string {
 				}
 			}
 		}
+		// API tag 的兜底：spec 里出现的新 tag 不可能自动出现在 4 份 locale 里，
+		// 直接渲染原始 key 就是页面上一条裸 i18n key（docs 卡片标题）。
+		// 这里给一个语言中立的派生标签（events-flow → Events Flow），并 warn。
+		if tag, ok := strings.CutPrefix(key, apiTagKeyPrefix); ok && tag != "" {
+			label := derivedAPITagLabel(tag)
+			log.Printf("sitegen: WARN no i18n label for api tag %q in any language, derived label %q", tag, label)
+			return label
+		}
 		// Key missing in all languages: return the raw key and warn.
 		log.Printf("sitegen: WARN missing i18n key %q in ALL languages (including default %q), rendered raw key", key, g.defaultLang)
 		return key
 	}
+}
+
+// apiTagKeyPrefix 是 docs 页分组标题的 i18n key 前缀（docs.html 里
+// {{t (printf "docs.openapi.tag.%s" .Tag)}}）。
+const apiTagKeyPrefix = "docs.openapi.tag."
+
+// derivedAPITagLabel 给「spec 里有、locale 里没有」的 tag 生成语言中立标签。
+//
+// 刻意不造翻译：未知 tag 的正确修法是往 4 份 locale 补词条；派生标签只是
+// 保证页面**不出现裸 key**，并保持四语渲染一致（都显示同一个派生名），
+// 一眼能看出「这个词条还没翻译」。
+func derivedAPITagLabel(tag string) string {
+	parts := strings.FieldsFunc(tag, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' '
+	})
+	words := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		words = append(words, strings.ToUpper(p[:1])+p[1:])
+	}
+	if len(words) == 0 {
+		return "API"
+	}
+	return strings.Join(words, " ")
 }
 
 // langPrefix returns the language prefix: "" for the default language, "/{lang}" otherwise.

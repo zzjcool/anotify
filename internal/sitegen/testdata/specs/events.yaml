@@ -1,0 +1,62 @@
+# F3a/R2 TEST FIXTURE — 不是真实的 T1 spec（见 resource.yaml 顶部说明）。
+#
+# API2 具名 fixture：GET /v1/namespaces/{namespace}/events 在 events.yaml，
+# 同 path 的 POST 在 ingress.yaml —— 合并按 (method,path)，不得后文件覆盖整 path。
+# 本文件同时覆盖：本地 pathItem $ref、跨文件两跳 pathItem 链、
+# parameter / response schema / 跨文件 schema 引用。
+openapi: 3.0.3
+info:
+  title: Anotify events API (sitegen fixture)
+  version: "4.0.0-fixture"
+servers:
+  - url: /
+tags:
+  - name: events
+  - name: traces
+paths:
+  /v1/namespaces/{namespace}/events:
+    $ref: '#/components/pathItems/EventRead'
+  # 链式引用：events.yaml#/components/pathItems/EventDetailRef
+  #          → resource.yaml#/components/pathItems/EventDetail
+  /v1/namespaces/{namespace}/events/{id}:
+    $ref: '#/components/pathItems/EventDetailRef'
+  /v1/namespaces/{namespace}/traces:
+    get:
+      tags: [traces]
+      operationId: fixtureListTraces
+      parameters:
+        - $ref: './resource.yaml#/components/parameters/Namespace'
+  /v1/namespaces/{namespace}/traces/{traceId}:
+    get:
+      tags: [traces]
+      responses:
+        "200":
+          description: Trace
+          content:
+            application/json:
+              schema:
+                $ref: './resource.yaml#/components/schemas/Trace'
+components:
+  pathItems:
+    EventRead:
+      get:
+        tags: [events]
+        operationId: fixtureListEvents
+        summary: List namespace events (fixture)
+        parameters:
+          - $ref: './resource.yaml#/components/parameters/Namespace'
+        responses:
+          "200":
+            description: Event list
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/EventList'
+    EventDetailRef:
+      $ref: './resource.yaml#/components/pathItems/EventDetail'
+  schemas:
+    EventList:
+      type: object
+      properties:
+        kind: { const: EventList }
+        items: { type: array, items: { type: object } }
