@@ -87,9 +87,12 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-not
     else $('node-effective-vars').replaceChildren(make('div', 'c2-note', t('unknown')));
     $('node-slots').replaceChildren();
     if (!n.instances?.length) $('node-slots').appendChild(make('div', 'c2-note', t('unknown')));
-    for (const x of n.instances || []) {
-      const row = make('div', 'c2-row', 'slot=' + (x.slot ?? '?') + ' · ' + t(x.occupancy) + (x.taskId ? ' · taskId=' + x.taskId : '') + (x.assignmentId ? ' · assignmentId=' + x.assignmentId : '') + (x.attempt != null ? ' · attempt=' + x.attempt : ''));
-      row.dataset.occupancy = x.occupancy; row.dataset.slot = x.slot ?? ''; $('node-slots').appendChild(row);
+    /* v4 的实例没有 slot 字段（NodeInstanceRef 只有 id/task/busy）：
+     * 「第几个槽」只能是 instances 的下标（0 起），实例身份是 id，占用任务是在跑的 task。
+     * 不拿 v3 的 slot/taskId/assignmentId 拼一份服务端没说过的事实。 */
+    for (const [i, x] of (n.instances || []).entries()) {
+      const row = make('div', 'c2-row', 'slot ' + i + ' · ' + t(x.occupancy) + (x.task ? ' · task=' + x.task : '') + (x.id ? ' · id=' + x.id : ''));
+      row.dataset.slot = String(i); row.dataset.occupancy = x.occupancy; if (x.id) row.dataset.instanceId = x.id; if (x.task) row.dataset.task = x.task; $('node-slots').appendChild(row);
     }
   }
   async function loadFacts() {

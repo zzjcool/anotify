@@ -11,14 +11,49 @@ import { nodeRetained } from './f3-node-retained.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
 const definitions = [];
 const add=(id,run,options={})=>definitions.push({id,run,options});
+/* 预期内的 4xx 声明（#335 #4）：真实服务**故意**拒绝的请求，Chrome 会记成 console
+ * error，driver 一律当 fatal。用例必须自己声明 {status, path[, exact/pathSuffix], note}，
+ * 只放行「这个状态 + 这个请求」；没声明的 4xx/5xx 仍然红。
+ * 五类已知的预期拒绝：
+ *   · no_local_archive —— 任务没有本地日志归档时 GET …/logs 是 410；
+ *   · slug_taken —— playbook 的 slug 已被占用（POST 409）；
+ *   · resource_version_conflict —— CAS 旧 rv（409，PATCH/PUT/DELETE 都会出现）；
+ *   · values_missing —— render 缺 values（400）；
+ *   · version_content_immutable —— install 的版本内容不可变（400）；
+ *   · immutable_field —— PATCH 改不可变字段（400）。 */
+const LOGS_410=[{status:410,path:'/v1/namespaces/',pathSuffix:'/logs',note:'no_local_archive：任务没有本地日志归档时 GET …/logs 是 410，页面按“无归档”显示'}];
 add('scope-bootstrap',bootstrap,{scope:''});
-add('capability-actions',capability,{lang:'zh-CN'});
-add('source-actions',source);
+add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[{status:400,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'immutable_field：用例故意 PATCH 不可变字段验证拒绝'}]});
+add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
 for(const mode of ['events','index','trace','message','errors'])add('observe-'+mode,d=>observability(d,mode));
-for(const mode of ['upload-edit','install','matrix','delete','errors'])add('playbook-'+mode,d=>playbook(d,mode));
-add('playbook-matrix-12',matrix);
+// upload-edit / delete / errors 需要声明预期 4xx（见下面单独的 add），不能在这里重复注册。
+for(const mode of ['install','matrix'])add('playbook-'+mode,d=>playbook(d,mode));
+// upload-edit：slug_taken（POST 409）+ 并发 PUT 的 CAS 409；matrix-12：install 版本内容不可变（400）；
+// errors：render 缺 values（400）。都是用例故意触发的拒绝路径，声明范围到具体请求为止。
+const PB_409_SLUG={status:409,path:'/v1/namespaces/default/playbooks',exact:true,note:'slug_taken：故意用已存在的 slug 创建验证前端冲突提示'};
+const PB_409_CAS={status:409,path:'/v1/namespaces/default/playbooks/project-chain',exact:true,note:'resource_version_conflict：并发写之后的旧 rv 保存/删除必须 409'};
+add('playbook-upload-edit',d=>playbook(d,'upload-edit'),{expectHttpStatus:[PB_409_SLUG,PB_409_CAS]});
+add('playbook-delete',d=>playbook(d,'delete'),{expectHttpStatus:[PB_409_CAS,
+  // 删掉清单之后父资源/installs 组必须真的 404（用例断言"不复活"，这是被测行为）。
+  {status:404,path:'/v1/namespaces/default/playbooks/project-chain',exact:true,note:'删除清单后父资源 GET 必须 404'},
+  {status:404,path:'/v1/namespaces/default/playbooks/project-chain/installs',exact:true,note:'删除父清单后 installs 组 GET 必须 404'},
+]});
+add('playbook-errors',d=>playbook(d,'errors'),{expectHttpStatus:[{status:400,path:'/v1/namespaces/default/playbooks/project-chain/render',exact:true,note:'values_missing：render 缺 values 必须 400，页面显示原因'}]});
+add('playbook-matrix-12',matrix,{expectHttpStatus:[{status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-6/install',exact:true,note:'version_content_immutable：同版本号内容变化必须在 install 被拒'}]});
 add('playbook-secret-history',historyMask);
-for(const mode of ['create','config','namespace-system','actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
+// node-create 的重复登记必须 409 AlreadyExists（页面要保留输入、不再发明 token）。
+add('node-create',d=>nodeRetained(d,'create'),{expectHttpStatus:[
+  {status:409,path:'/v1/nodes',exact:true,note:'AlreadyExists：重复登记同名节点必须 409，页面保留输入且不签发第二个 token'},
+]});
+// namespace-system：保留域两组配置都是 CAS —— 旧 rv 保存必须 409，缺 rv 必须 400
+// （用例断言的就是这两条拒绝路径，前端要原样显示原因并保住草稿）。
+add('node-namespace-system',d=>nodeRetained(d,'namespace-system'),{expectHttpStatus:[
+  {status:409,path:'/v1/system/config',exact:true,note:'resource_version_conflict：旧 rv 保存 retention 必须 409'},
+  {status:409,path:'/v1/namespaces/default/config',exact:true,note:'resource_version_conflict：旧 rv 保存 namespace vars 必须 409'},
+  {status:400,path:'/v1/namespaces/default/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
+  {status:400,path:'/v1/system/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
+]});
+for(const mode of ['config','actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
 add('node-aba',aba);
 add('retained-security-permissions',d=>nodeRetained(d,'retained'));
 add('opaque-cas-aba',async d=>{
@@ -27,11 +62,19 @@ add('opaque-cas-aba',async d=>{
   const url=await d.page.evaluate(token=>Anotify.deletePath('/v1/namespaces/default/capabilities/opaque',token),token);
   assert.equal(url,'/v1/namespaces/default/capabilities/opaque?resourceVersion='+encodeURIComponent(token));
   assert.equal(new URL(url,d.base).searchParams.get('resourceVersion'),token);
-  const body={apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-cas-recreated'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'echo unchanged'}}}};
+  // entrypoint 必须带 shebang：真实服务对没有 `#!` 的入口脚本回 400 entrypoint_no_shebang
+  // （capability.md §3），这条用例测的是 CAS 身份（uid/rv），不是入口校验。
+  const body={apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-cas-recreated'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho unchanged\n'}}}};
   const p='/v1/namespaces/default/capabilities';
   const first=await d.response(p,body,'POST');assert.equal(first.status,201);
   const old=first.body.metadata;
-  assert.equal((await d.response(p+'/f3-cas-recreated?resourceVersion='+encodeURIComponent(old.resourceVersion),null,'DELETE')).status,200);
+  // DELETE 的成功码：契约是 **204 无响应体**（api/resource.yaml · deleteCapability）。
+  // 真实服务就是 204；mock 预览的旧实现仍回 200+Status（mock→204 的对齐连同
+  // v4-frontend 的 req() 一起留到下一轮），所以这里断言"成功码属于契约集合"，
+  // 而"确实删掉了"由后面的 recreate-uid / stale-409 断言证明。
+  const removed=await d.response(p+'/f3-cas-recreated?resourceVersion='+encodeURIComponent(old.resourceVersion),null,'DELETE');
+  assert.ok([200,204].includes(removed.status),'DELETE 成功码必须是 204（真实）/200（mock 旧实现），实际 '+removed.status);
+  if(removed.status===204) assert.equal(removed.body,null,'204 不得带回响应体');
   const second=await d.response(p,body,'POST');assert.equal(second.status,201);
   // Finish both independent assertions even if UID is already known wrong.
   const stale=await d.response(p+'/f3-cas-recreated?resourceVersion='+encodeURIComponent(old.resourceVersion),null,'DELETE');
@@ -39,7 +82,10 @@ add('opaque-cas-aba',async d=>{
   assert.notEqual(second.body.metadata.uid,old.uid,'new UID required after same-name recreation');
   assert.equal(stale.status,409);assert.equal(stale.body.kind,'Status');assert.deepEqual(kept.body,second.body);
   d.check('F3-CAS browser actual public POST/DELETE/recreate rejects former identity and opaque URL token roundtrips');
-});
+},{expectHttpStatus:[
+  // 用**上一个对象身份**的 rv 删同名新对象：409 就是被测行为（防止重创后复用旧身份）。
+  {status:409,path:'/v1/namespaces/default/capabilities/f3-cas-recreated',exact:true,note:'resource_version_conflict：旧 uid/rv 的 DELETE 必须 409'},
+]});
 add('source-auth-dedup',async d=>{
   await d.goto('sources');const secret='F3_PRIVATE_HMAC_SIGNING_KEY',token='f3-signed-hook-token';
   const p='/v1/namespaces/default/sources';
@@ -70,9 +116,16 @@ add('retained-ux21-identity',async d=>{
 });
 add('auth-route-guards',async d=>{
   if(d.mock)await d.context.addInitScript(()=>sessionStorage.setItem('f3-guest','1'));else await d.context.clearCookies();
+  // 真实 401 会在**每个**并发请求上各自触发一次跳转：后一次同名跳转会打断前一次
+  // 导航，Playwright 于是拿到 net::ERR_ABORTED（目标没变）。重试一次即可；断言仍是
+  // 「最终落到 login.html」。
+  const waitLogin=async page=>{
+    try{ await page.waitForURL('**/login.html**',{waitUntil:'domcontentloaded'}); }
+    catch(error){ if(!/ERR_ABORTED/.test(String(error))) throw error; await page.waitForURL('**/login.html**',{waitUntil:'domcontentloaded'}); }
+  };
   for(const file of GUARDED){
     await d.page.goto(d.base+'/'+file+'.html',{waitUntil:'domcontentloaded'});
-    await d.page.waitForURL('**/login.html**',{waitUntil:'domcontentloaded'});
+    await waitLogin(d.page);
     await d.page.locator('#password-login-toggle').waitFor();
     assert.ok(d.page.url().includes('/login.html'));
     d.check('F3-AUTH-GUARD '+file+' genuine 401 -> public login');
@@ -85,11 +138,21 @@ add('auth-route-guards',async d=>{
   assert.ok((await d.page.locator('#status-box').innerText()).includes(rejected.result.error));
   assert.ok(d.page.url().includes('login.html'));assert.equal(await d.page.inputValue('#password-username'),'nonexistent-f3');
   d.check('F3-AUTH public password reject preserves form, no fabricated authenticated success');
-});
+},{expectHttpStatus:[
+  // 顺序有意义：匹配取**第一条**命中的声明，所以窄的写在前面。
+  // 再提交一次错误的用户名/密码：密码登录本来就该 401 并把服务端错误显示出来。
+  {status:401,path:'/v1/auth/password/login',exact:true,note:'错误凭据的密码登录必须 401，页面显示服务端 error 文案'},
+  // 这个用例**故意**用未登录的浏览器访问受保护页面：401 就是被测行为（跳登录页）。
+  {status:401,path:'/v1/',note:'未登录浏览器：受保护页面上的 /v1 请求一律 401 后跳登录页'},
+]});
 // 深链里的对象身份来自当前权威：mock 是固定事实，real 是 bootstrap 用真实 API 造出来的同一角色。
 // 名字类（source/playbook）两边一致，只有中枢生成的 id（任务/追踪/节点）需要经 d.fx 取。
 const queryFor=(file,d)=>file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':'namespace=default';
-const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',node:'#node-effective-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
+// receivers：e2e 真实权威**没有 VAPID 密钥**（run_all.sh 只在有 vapid.json 时注入），
+// 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
+// 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
+// 真实控制器输出 #push-count（mock 权威下同样存在，两个权威都不放水）。
+const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',node:'#node-effective-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
 async function seedPagePackage(d){
   await d.goto('playbooks');
   const files={'playbook.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',version:1},spec:{values:{type:'object'},capabilities:['cap.yaml'],sources:[]}}),'cap.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-page-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho page'}}}})};
@@ -100,7 +163,17 @@ for(const lang of LANGS)add('pages-19-'+lang,async d=>{
   for(const file of PAGES){
     try {
     await d.goto(file,queryFor(file,d),lang);
-    if(file==='login') {await d.page.waitForURL('**/index.html**',{waitUntil:'domcontentloaded'});await d.page.locator('#kpi-total').waitFor();d.check('F3-PAGE '+lang+' login authenticated redirect -> index');continue;}
+    if(file==='login') {
+      // 登录后落到首页：真实静态服务刻意把 `…/index.html` 301 到 `…/`（目录 URL，
+      // internal/server/static.go），mock 预览没有这条重定向。所以断言落点是
+      // **首页本身**（`/<lang>/` 或它的 index.html），而不是某个具体文件名；
+      // 仍然要求首页锚点渲染出来（证明是真登录成功，不是停在登录页）。
+      const indexDir=lang==='zh-CN'?'/':'/'+lang+'/';
+      await d.page.waitForFunction(dir=>location.pathname===dir||location.pathname===dir+'index.html',indexDir);
+      await d.page.locator('#kpi-total').waitFor();
+      d.check('F3-PAGE '+lang+' login authenticated redirect -> index');
+      continue;
+    }
     await d.page.locator(pageAnchors[file]).first().waitFor();
     assert.equal(await d.page.evaluate(()=>document.documentElement.lang),lang);
     const title=(await d.page.title()).trim();assert.ok(title.length>0);
@@ -117,13 +190,14 @@ for(const lang of LANGS)add('pages-19-'+lang,async d=>{
     }
   }
   assert.deepEqual(d.report.errors,[],'All 19 pages must pass; failed pages never suppress later page assertions');
-},{lang});
+},{lang,expectHttpStatus:LOGS_410});
 for(const file of ['capabilities','sources','nodes','message'])add('views-'+file,async d=>{
+  // message 视图会读任务日志：真服务对没有本地归档的任务回 410（no_local_archive）。
   for(const size of [{name:'desktop',width:1440,height:900},{name:'mobile',width:390,height:844}])for(const theme of ['dark','light']){
     await d.page.setViewportSize(size);await d.goto(file,queryFor(file,d));await d.page.evaluate(t=>Anotify.theme.set(t),theme);
     await d.page.locator(pageAnchors[file]).first().waitFor();await d.clean(file+' '+size.name+' '+theme);await d.shot(size.name+'-'+theme);
   }
-});
+},{expectHttpStatus:file==='message'?LOGS_410:[]});
 add('graph-prod-node-click',async d=>{
   const traceUID=d.fx('prodTrace'),taskId=d.fx('prodTask');
   assert.ok(taskId,'Graph click requires a real prod Task identity (bootstrap fires a prod event, never a fabricated node)');
@@ -134,7 +208,7 @@ add('graph-prod-node-click',async d=>{
   await d.page.waitForFunction(id=>__f3Calls.some(c=>c.url==='/v1/namespaces/prod/tasks/'+id&&c.result?.metadata?.name===id),id);
   assert.equal(await d.page.locator('#msg-sub').innerText(),'prod · '+id);
   d.check('F3-GRAPH real physical node click -> exact original-namespace Task GET and displayed Task.name');
-});
+},{expectHttpStatus:LOGS_410});
 export const CASES=Object.freeze(definitions);
 export async function runCase(id){
   const item=CASES.find(c=>c.id===id);assert.ok(item,'Unknown registered F3 case: '+id);

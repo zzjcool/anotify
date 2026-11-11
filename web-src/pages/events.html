@@ -117,12 +117,15 @@
         await ready();
         const doc = await api(requestPath(mode === "more" ? continuation : ""));
         if (current !== generation || namespace !== readScope().namespace) return;
-        if (doc.kind !== "EventList" || !Array.isArray(doc.items) || !doc.metadata || typeof doc.metadata.continue !== "string") throw new Error("malformed EventList");
+        // `metadata.continue` 是**可选**的（api/events.yaml：只在还有更旧一页时出现，
+        // 末页直接省略）。缺省 = 没有下一页，不是畸形响应。
+        if (doc.kind !== "EventList" || !Array.isArray(doc.items) || !doc.metadata) throw new Error("malformed EventList");
+        if (doc.metadata.continue != null && typeof doc.metadata.continue !== "string") throw new Error("malformed EventList continue");
         for (const event of doc.items) {
           if (!event.metadata?.uid || event.metadata.namespace !== namespace) throw new Error("invalid Event identity/scope");
           rows.set(event.metadata.uid, event);
         }
-        if (mode !== "refresh" || !continuation) continuation = doc.metadata.continue;
+        if (mode !== "refresh" || !continuation) continuation = doc.metadata.continue || "";
         render();
       } catch (error) {
         if (current === generation) {

@@ -179,7 +179,11 @@ export async function playbook(d,mode){
     page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-delete').click();
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Manifest deleted'));
     const removed = (await calls()).findLast(c => c.method === 'DELETE'); assert.ok(removed.url.includes('?resourceVersion=')); assert.equal(removed.body, undefined);
-    assert.deepEqual(removed.response.kept, { capabilities: ['a-review@1', 'a-fixer@1'], sources: ['a-push'] }); assert.equal(removed.response.values[0].project, 'a');
+    // `kept` 是删清单后保留的资源引用**集合**（能力钉版本 / 源名）：整体内容相等即可，
+    // 顺序不是契约事实（真实服务按名字排序，mock 保持安装顺序）。
+    assert.deepEqual(removed.response.kept.capabilities.slice().sort(), ['a-review@1', 'a-fixer@1'].sort());
+    assert.deepEqual(removed.response.kept.sources.slice().sort(), ['a-push'].sort());
+    assert.equal(removed.response.values[0].project, 'a');
     assert.equal(await keptResources(receiptId), keptBefore, 'Complete Capability/Source lists, exact single receipt and historical Task/Event references remain byte-for-byte equal');
     const gone = await d.response(basePath);
     assert.equal(gone.status, 404, 'Deleted manifest stays gone; receipt retention never resurrects the parent');

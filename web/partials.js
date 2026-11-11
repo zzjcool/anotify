@@ -1879,6 +1879,43 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return err;
 	}
 
+	/**
+	 * redirectToLogin 跳登录页：页名走白名单、查询串只允许安全字符，防 open redirect。
+	 * 只由 api() 在**首个** 401 时调用一次（并发请求不会互相打断同一个导航）。
+	 */
+	function redirectToLogin() {
+		const PAGES = [
+			"index.html",
+			"message.html",
+			"receivers.html",
+			"keys.html",
+			"events.html",
+			// trace 页 (#107)：同样是带查询串的深层链接
+			"trace.html",
+			"sources.html",
+			// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
+			// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
+			"source.html",
+			"capabilities.html",
+			"nodes.html",
+			"security.html",
+			"admin.html",
+			"docs.html",
+			"cli-auth.html",
+			"passkey-enroll.html",
+		];
+		const name = location.pathname.split("/").pop();
+		const page = PAGES.includes(name) ? name : "index.html";
+		// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
+		const qs = /^[?][\w\-=&%.]*$/.test(location.search) ? location.search : "";
+		location.href = "login.html?next=" + encodeURIComponent(page + qs);
+	}
+
+	// 一次 401 只跳一次登录页：页面上多个并发请求（me / namespaces / 列表）会各自
+	// 拿到 401，重复写 location.href 会让浏览器反复取消/重启同一个导航（表现为
+	// net::ERR_ABORTED，登录页反而可能没加载完）。首个 401 负责跳转，其余只抛错。
+	let loginRedirecting = false;
+
 	async function api(path, opts) {
 		const o = opts || {};
 		// scope 引导顺手做一次（cluster 路径、保留域页面也受益；ensureScope 内部
@@ -1886,38 +1923,12 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		// 必须走 `nsApi`/`nsList`，先引导再拼路径。
 		await ensureScope();
 		const res = await fetch(path, Object.assign({ credentials: "include" }, o));
-		// 401 = 未登录/会话过期：跳登录页（不是“后端未连接”：如实跳转，不伪造数据）
+		// 401 = 未登录/会话过期：**首个** 401 负责跳登录页（见 loginRedirecting），
+		// 不是“后端未连接”：如实跳转，不伪造数据。
 		if (res.status === 401) {
-			if (isAuthedPage) {
-				// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
-				// 页名走白名单、查询串只允许安全字符，防 open redirect。
-				const PAGES = [
-					"index.html",
-					"message.html",
-					"receivers.html",
-					"keys.html",
-					"events.html",
-					// trace 页 (#107)：同样是带查询串的深层链接
-					"trace.html",
-					"sources.html",
-					// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
-					// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
-					"source.html",
-					"capabilities.html",
-					"nodes.html",
-					"security.html",
-					"admin.html",
-					"docs.html",
-					"cli-auth.html",
-					"passkey-enroll.html",
-				];
-				const name = location.pathname.split("/").pop();
-				const page = PAGES.includes(name) ? name : "index.html";
-				const qs = /^[?][\w\-=&%.]*$/.test(location.search)
-					? location.search
-					: "";
-				const back = encodeURIComponent(page + qs);
-				location.href = "login.html?next=" + back;
+			if (isAuthedPage && !loginRedirecting) {
+				loginRedirecting = true;
+				redirectToLogin();
 			}
 			throw new Error("HTTP 401");
 		}
@@ -1932,7 +1943,24 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			}
 			throw apiError(res.status, body);
 		}
-		return await res.json();
+		// 204 No Content / 205 Reset Content 没有响应体（v4 的 DELETE 一律 204，见
+		// internal/server/resource_*.go 的 `WriteHeader(http.StatusNoContent)`）。
+		// 无条件 `res.json()` 会抛 SyntaxError，把一次**成功**的删除变成页面报错、
+		// 列表不刷新（source-actions 的删除分支就是这么红的）。
+		if (res.status === 204 || res.status === 205) return null;
+		// 其它成功状态也允许「无内容」：先读原文，空体给 null 而不是解析失败；
+		// 有体但不是 JSON（网关的 text/plain 200）同样按无内容处理，不伪造资源。
+		const text = typeof res.text === "function" ? await res.text() : "";
+		if (text.trim() === "") return null;
+		try {
+			return JSON.parse(text);
+		} catch (e) {
+			const err = new Error("HTTP " + res.status + " 响应不是合法 JSON");
+			err.status = res.status;
+			err.detail = text;
+			err.cause = e;
+			throw err;
+		}
 	}
 
 	/* ---------- 当前用户 / 登出 ---------- */
@@ -3023,13 +3051,19 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		const context = readContext.namespace ? { namespace: readContext.namespace } : null;
 		const configRevision = st.configRevision ?? null, appliedRevision = st.appliedRevision ?? null;
 		const localLimits = obj(st.localLimits), nodeLimits = obj(spec.limits);
-		const slots = arr(st.instances).map(x => x.slot);
+		// 实例槽位（v4）：`NodeInstanceRef` 只有 `{id, task, busy}`（api/resource.yaml）。
+		// `id` 是实例身份（`nins_…`），**没有** v3 的 slot / taskId / assignmentId /
+		// attempt / leaseId —— 那些字段在这里一律不读，也不“等价映射”成旧名，否则
+		// 页面会显示一份服务端从未说过的事实。空位身份由调用方的下标提供。
 		const instances = Array.isArray(st.instances) ? st.instances.filter(isObj).map(x => {
-			const valid = Number.isInteger(x.slot) && x.slot >= 0 && slots.filter(s => s === x.slot).length === 1;
-			return { slot: valid ? x.slot : null, busy: typeof x.busy === "boolean" ? x.busy : null,
-				occupancy: !valid || typeof x.busy !== "boolean" ? "unknown" : x.busy ? "occupied" : "idle",
-				taskId: x.taskId ?? null, assignmentId: x.assignmentId ?? null,
-				attempt: x.attempt ?? null, leaseId: x.leaseId ?? null };
+			// busy 缺失 = 未知；显式 false 才是 idle（终态 Task 不证明物理回收）
+			const busy = typeof x.busy === "boolean" ? x.busy : null;
+			return {
+				id: x.id == null ? null : String(x.id),
+				task: x.task == null ? null : String(x.task),
+				busy,
+				occupancy: busy === null ? "unknown" : busy ? "occupied" : "idle",
+			};
 		}) : null;
 		return {
 			name: meta.name ?? null, resourceVersion: meta.resourceVersion ?? null,
@@ -3048,14 +3082,18 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 	}
 
-	/** Edge 只读投影：`{fromIsSource,fromRef,toRef,position}`，无 port/priority。 */
+	/**
+	 * Edge 只读投影：v4 的 wire 是 `{from, to, kind}`（api/resource.yaml ·
+	 * CapabilityEdge，`kind` ∈ `capability|source`），**没有** fromIsSource /
+	 * fromRef / toRef / position / port / priority —— 那些是 v3 的边记录形状，
+	 * 这里一律不读，也不改名映射（否则页面会显示服务端从未给出的字段）。
+	 */
 	function modelEdge(item) {
 		const e = isObj(item) ? item : {};
 		return {
-			fromIsSource: e.fromIsSource === true,
-			fromRef: e.fromRef == null ? null : String(e.fromRef),
-			toRef: e.toRef == null ? null : String(e.toRef),
-			position: e.position == null ? null : e.position,
+			from: e.from == null ? null : String(e.from),
+			to: e.to == null ? null : String(e.to),
+			kind: e.kind === "source" || e.kind === "capability" ? e.kind : null,
 		};
 	}
 

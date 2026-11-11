@@ -14,7 +14,8 @@
  *   · 能力只有 `spec.next`（裸名或 `name@version`）：**没有端口、没有优先级、
  *     没有候选、没有下游实体**。终端能力 = 空 next。
  *   · 源入口来自 `source.spec.targets`，能力下游来自 `capability.spec.next`；
- *     `GET .../edges` 是它们的**只读投影** `{fromIsSource, fromRef, toRef, position}`。
+ *     `GET .../edges` 是它们的**只读投影** `{from, to, kind}`（v4 CapabilityEdge；
+ *     kind ∈ capability|source，没有 port/priority/position）。
  *     图上的边因此没有"出口名"要标 —— 那条视觉编码整个删掉了（flograph 的
  *     `port` 允许省略/空串）。
  *   · 任务字段走 v4：`metadata.name` / `status.phase`（小写六态）/ `status.attempt` /
@@ -328,11 +329,8 @@
 		};
 
 		// ---- ① 收集边：能力下游来自 spec.next，源入口来自 spec.targets ----
-		const posOf = new Map();
-		for (const e of edgeList) {
-			if (!e || !e.fromRef || !e.toRef) continue;
-			posOf.set(String(e.fromRef) + "|" + String(e.toRef), e.position);
-		}
+		// 边的 wire 形状是 v4 `{from, to, kind}`：没有 position/port 字段，
+		// 所以布局位置只按推导顺序给（稳定，不读服务端没给的字段）。
 		const pairs = [];
 		for (const cap of caps) {
 			for (const ref of nextOf(cap)) {
@@ -351,21 +349,19 @@
 		// 只拿到边表、没有源资源时（页面可能只查 edges），入口边也认
 		if (!pairs.some((p) => p.fromIsSource)) {
 			for (const e of edgeList) {
-				if (!e || !e.fromIsSource) continue;
-				if (only && String(e.fromRef) !== only) continue;
+				if (!e || e.kind !== "source") continue;
+				if (only && String(e.from) !== only) continue;
 				pairs.push({
 					fromIsSource: true,
-					fromRef: String(e.fromRef),
-					toRef: String(e.toRef),
+					fromRef: String(e.from),
+					toRef: String(e.to),
 					position: e.position,
 				});
 			}
 		}
-		// position：服务端投影给了就用它，否则用推导顺序（稳定）
+		// position：推导顺序（v4 的边投影不携带 position，别假装有）
 		pairs.forEach((p, i) => {
-			const key = p.fromRef + "|" + p.toRef;
-			const pos = posOf.has(key) ? posOf.get(key) : null;
-			p.position = pos == null ? i + 1 : pos;
+			p.position = i + 1;
 		});
 		pairs.sort((a, b) => (a.position || 0) - (b.position || 0));
 

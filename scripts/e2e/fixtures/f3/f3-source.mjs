@@ -151,7 +151,12 @@ export async function source(d){
   assert.ok(topology.edges.some(e => e.from === '__source__' && e.to === 'fixer'));
   assert.ok(topology.edges.some(e => e.from === 'fixer' && e.to === 'analyze-pr'));
   assert.ok(topology.edges.every(e => !e.port && !('priority' in e)));
-  assert.match(await page.locator('#src-body').innerText(), /fromIsSource/);
+  // 边投影段落显示的是 v4 `{from,to,kind}`（CapabilityEdge），以及"这个源的入口边"：
+  // kind="source"、from=源名。旧断言检查 v3 字段名 fromIsSource —— 那在真实服务上
+  // 永远不存在（页面会渲染空数组），等于什么都没验。
+  const edgeText = await page.locator('#src-body').innerText();
+  assert.match(edgeText, /"kind": "source"/);
+  assert.match(edgeText, /"from": "deploy-hook"/);
   check('Source detail real metadata.name deep link/ns, masked config/status/params/projected edges and rendered graph');
   await shot('source-detail-graph');
 

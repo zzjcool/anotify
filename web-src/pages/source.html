@@ -257,7 +257,11 @@ async function load(){
     if(!name){
       $("src-body").replaceChildren(el("div","empty",t("no_name")));
       return;
-    }const [src,caps,edges]=await Promise.all([A.nsApi("sources",name),A.nsList("capabilities"),A.nsList("edges")]);
+    }// `/edges` 是**只读投影**，不是资源列表：契约（api/resource.yaml · listEdges）明说
+    // 响应是 `{items:[...]}` 文档、没有 apiVersion/kind —— 所以不能走要求 `*List`
+    // 信封的 nsList/apiList，只做 items 的数组校验。
+    const [src,caps,edgeDoc]=await Promise.all([A.nsApi("sources",name),A.nsList("capabilities"),A.api(A.nsPath("edges"))]);
+    const edges={items:A.itemsOf(edgeDoc)};
     SRC=src;
     render(src,caps.items,edges.items);
     await recent(name);
@@ -299,7 +303,8 @@ function render(src,caps,edges){
     row.append(el("strong","source-wrap",target.capability),el("pre","source-json mono",JSON.stringify(target.params,null,2)));
     targets.append(row);
   }const projection=section("edges");
-  projection.append(el("pre","source-json mono",JSON.stringify(edges.filter(e=>e.fromIsSource && e.fromRef===m.name).map(A.model.edge),null,2)));
+  // v4 的边投影是 `{from,to,kind}`：入口边 = kind==="source" 且 from 是这个源名。
+  projection.append(el("pre","source-json mono",JSON.stringify(edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge),null,2)));
   const flow=section("graph");
   const host=el("div","source-graph");
   host.id="src-flow";

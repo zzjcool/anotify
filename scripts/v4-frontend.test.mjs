@@ -158,16 +158,26 @@ function makeSandbox(opts = {}) {
 	const store = new Map(Object.entries(opts.storage || {}));
 	const calls = [];
 	const fetchImpl = opts.fetch || (async () => jsonResponse({}));
+	let hrefWrites = 0;
+	let hrefValue = "";
 	const location = {
 		pathname: opts.pathname || "/index.html",
 		search: opts.search || "",
 		hash: "",
-		href: "",
 		reloaded: false,
 		reload() {
 			location.reloaded = true;
 		},
 	};
+	// href 的真实写入次数：并发 401 只允许跳一次，断言需要能数到赋值。
+	Object.defineProperty(location, "href", {
+		get: () => hrefValue,
+		set(value) {
+			hrefWrites += 1;
+			hrefValue = String(value);
+		},
+		enumerable: true,
+	});
 
 	const sandbox = {
 		console,
@@ -216,7 +226,7 @@ function makeSandbox(opts = {}) {
 		},
 	};
 
-	return { sandbox, store, calls, location };
+	return { sandbox, store, calls, location, hrefWrites: () => hrefWrites };
 }
 
 function loadAnotify(opts = {}) {
@@ -232,6 +242,7 @@ function loadAnotify(opts = {}) {
 		store: base.store,
 		calls: base.calls,
 		location: base.location,
+		hrefWrites: base.hrefWrites,
 	};
 }
 
@@ -583,6 +594,24 @@ test("api 401 保留白名单跳转（行为不变）", async () => {
 	assert.equal(location.href, "login.html?next=capabilities.html");
 });
 
+test("api 并发 401 只跳一次登录页（重复赋值会打断同一个导航，登录页反而可能加载不完）", async () => {
+	const { A, hrefWrites, location } = loadAnotify({
+		fetch: async () => jsonResponse({ message: "unauthorized" }, 401),
+		pathname: "/index.html",
+	});
+	A.saveScope({ namespace: "default" });
+	const results = await Promise.allSettled([
+		A.api("/v1/auth/me"),
+		A.api("/v1/namespaces"),
+		A.api("/v1/stats"),
+	]);
+	assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected", "rejected"]);
+	assert.equal(hrefWrites(), 1, "三个并发 401 只允许写一次 location.href");
+	assert.equal(location.href, "login.html?next=index.html");
+	// 每次调用仍然如实失败（不因为“已经跳过了”就把 401 当成功）。
+	for (const r of results) assert.equal(r.reason.message, "HTTP 401");
+});
+
 test("api 409 Status：解析 reason/message/details/currentResourceVersion/warnings", async () => {
 	const status = {
 		apiVersion: "anotify/v1",
@@ -644,6 +673,44 @@ test("api 400 的 Status 不是冲突；非 Status 响应保留原文 detail", a
 	assert.equal(err.detail, "gateway down");
 	assert.equal(err.reason, undefined, "非 Status 响应不得伪造 reason");
 	assert.equal(plainErr.A.isConflict(err), false);
+});
+
+/*
+ * v4 的 DELETE 一律 204（resource_source.go / resource_node.go …：
+ * `w.WriteHeader(http.StatusNoContent)`）。`api()` 若无条件 `res.json()`，
+ * 一次**成功**的删除会抛 SyntaxError → 页面走 catch 把错误显示出来、列表不刷新。
+ * 这条钉住「成功但无响应体」的返回语义，也钉住 304/空体不被误当成 JSON。
+ */
+test("api 204/205 无响应体：成功删除返回 null，不把成功当解析失败", async () => {
+	// 真 Response 在无体时 json() 抛 SyntaxError，这里按同样行为建模。
+	const bodyless = (status) => ({
+		ok: status >= 200 && status < 300,
+		status,
+		headers: { get: () => null },
+		json: async () => {
+			throw new SyntaxError("Unexpected end of JSON input");
+		},
+		text: async () => "",
+	});
+	for (const status of [204, 205]) {
+		const { A, calls } = loadAnotify({ fetch: async () => bodyless(status) });
+		A.saveScope({ namespace: "default" });
+		assert.equal(
+			await A.api(A.deletePath("/v1/namespaces/default/sources/hook", "7"), { method: "DELETE" }),
+			null,
+			`HTTP ${status} 的成功响应必须解析成 null`,
+		);
+		assert.equal(calls.filter((c) => c.path.includes("/sources/hook")).length, 1);
+	}
+	// 200 + 空体（网关型的成功但无内容）同样不能抛。
+	const empty200 = loadAnotify({ fetch: async () => bodyless(200) });
+	empty200.A.saveScope({ namespace: "default" });
+	assert.equal(await empty200.A.api("/v1/namespaces/default/sources/hook", { method: "DELETE" }), null);
+	// 304 不是 2xx：仍走错误分支（不能被 204 的“无体”语义顺手放过）。
+	const notModified = loadAnotify({ fetch: async () => bodyless(304) });
+	notModified.A.saveScope({ namespace: "default" });
+	const err304 = await rejectsWith(notModified.A.api("/v1/namespaces/default/capabilities"), { status: 304 });
+	assert.equal(err304.message, "HTTP 304");
 });
 
 /* ------------------------------------------------------------------ *
@@ -1296,28 +1363,34 @@ test("model.node：三层 vars、双 revision、pending、?namespace 上下文",
 	assert.equal(empty.effectiveVars, null);
 });
 
-test("model.edge：只留 fromIsSource/fromRef/toRef/position，无 port/priority", () => {
+test("model.edge：只留 v4 的 from/to/kind，v3 的 fromIsSource/position/port 一律丢掉", () => {
 	const { A } = loadAnotify();
 	const m = plain(
 		A.model.edge({
+			from: "hook",
+			to: "fixer@3",
+			kind: "source",
+			// v3 残留字段：模型必须丢掉（也不改名映射成 v4 字段）
 			fromIsSource: true,
 			fromRef: "hook",
 			toRef: "fixer@3",
 			position: 2,
-			// v3 残留字段：模型必须丢掉
 			port: "out",
 			priority: 5,
 			mapping: { a: "b" },
 		}),
 	);
-	assert.deepEqual(m, { fromIsSource: true, fromRef: "hook", toRef: "fixer@3", position: 2 });
-	assert.equal("port" in m, false);
-	assert.equal("priority" in m, false);
-	assert.equal("mapping" in m, false);
+	assert.deepEqual(m, { from: "hook", to: "fixer@3", kind: "source" });
+	for (const gone of ["fromIsSource", "fromRef", "toRef", "position", "port", "priority", "mapping"]) {
+		assert.equal(gone in m, false, `v3 字段 ${gone} 不得出现在 edge 模型里`);
+	}
+	// kind 是封闭枚举：不认识的值给 null，不猜成 capability/source。
+	assert.equal(plain(A.model.edge({ from: "a", to: "b", kind: "trigger" })).kind, null);
 
 	const empty = plain(A.model.edge({}));
-	assert.equal(empty.fromIsSource, false);
-	assert.equal(empty.fromRef, null);
+	assert.equal(empty.from, null);
+	assert.equal(empty.to, null);
+	assert.equal(empty.kind, null);
 });
 
 test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console 同信封）", () => {
@@ -1961,15 +2034,17 @@ test("mock: task 只读列表/详情（phase 小写、attempt、waitingReason、
 test("mock: edges / deployments 是只读投影（无 port/priority）；trace 是 {events,tasks,pruned}", async () => {
 	const { req } = loadMock();
 	const edges = await req("/v1/namespaces/default/edges");
-	assert.equal(edges.body.kind, "EdgeList");
+	// 契约：`{items}` 文档，没有 apiVersion/kind（resource.yaml · EdgeList）。
+	assert.deepEqual(Object.keys(edges.body), ["items"]);
 	const e = edges.body.items[0];
-	assert.deepEqual(constKeys(e), ["fromIsSource", "fromRef", "position", "toRef"]);
+	// v4 CapabilityEdge：wire 只有 from/to/kind（enum capability|source）。
+	assert.deepEqual(constKeys(e), ["from", "kind", "to"]);
 	assert.equal("port" in e, false);
 	assert.equal("priority" in e, false);
-	assert.ok(edges.body.items.some((x) => x.fromIsSource === true && x.fromRef === "deploy-hook"));
+	assert.ok(edges.body.items.some((x) => x.kind === "source" && x.from === "deploy-hook"));
 	assert.ok(
 		edges.body.items.some(
-			(x) => x.fromIsSource === false && x.fromRef === "fixer" && x.toRef === "analyze-pr",
+			(x) => x.kind === "capability" && x.from === "fixer" && x.to === "analyze-pr",
 		),
 		"能力边来自 spec.next",
 	);
@@ -2738,8 +2813,8 @@ test("Source CAS CRUD: missing400/stale409, immutable identity, atomic target ed
  assert.deepEqual(saved.body.spec.targets,patch.spec.targets);
  const stale=await req(path,jsonInit("PATCH",patch));assert.equal(stale.status,409);
  assert.equal(stale.body.details.current.resourceVersion,saved.body.metadata.resourceVersion);
- const edges=(await req("/v1/namespaces/default/edges")).body.items.filter(e=>e.fromIsSource && e.fromRef==="source-cas");
- assert.deepEqual(edges,[{fromIsSource:true,fromRef:"source-cas",toRef:"notify",position:1}]);
+ const edges=(await req("/v1/namespaces/default/edges")).body.items.filter(e=>e.kind==="source" && e.from==="source-cas");
+ assert.deepEqual(edges,[{from:"source-cas",to:"notify",kind:"source"}]);
  assert.equal((await req("/v1/namespaces/prod/sources/source-cas")).status,404);
  const prod=sourceDoc("source-cas");prod.metadata.namespace="prod";
  assert.equal((await req("/v1/namespaces/prod/sources",jsonInit("POST",prod))).status,201);
@@ -3718,7 +3793,8 @@ test("F2c2: namespace intersection, per-key vars context, two-layer limits, revi
  row.spec.limits = { total: 8, perCapability: { "*": 3, fixer: 2 } }; row.facts.localLimits = { total: 4, perCapability: { fixer: 1 } };
  Mock.state.nsVars.default = { SOURCE_ROOT: "/ns", ONLY_NODE: "ns-loses", ONLY_NS: "default" };
  Mock.state.nsVars.prod = { ONLY_NS: "prod" };
- row.facts.instances = [{ slot: 0, busy: true, taskId: "terminal-task", attempt: 1, leaseId: "lease" }, { slot: 1 }, { slot: 2, busy: false }];
+ // v4 NodeInstanceRef 只有 {id, task, busy}：槽位身份是 id，busy 缺失 = 未知。
+ row.facts.instances = [{ id: "nins_1", task: "terminal-task", busy: true }, { id: "nins_2", task: null }, { id: "nins_3", task: null, busy: false }];
  const def = (await req("/v1/nodes/" + row.name + "?namespace=default")).body;
  assert.deepEqual(def.status.effectiveNamespaces, ["default", "prod"]);
  assert.equal(def.context.namespace, "default", "v4：读上下文在信封顶层，不在 status 里");
@@ -3731,12 +3807,19 @@ test("F2c2: namespace intersection, per-key vars context, two-layer limits, revi
  assert.equal(def.status.machineVars.ONLY_NS, undefined); assert.equal((await req("/v1/nodes/" + row.name + "?namespace=prod")).body.status.effectiveVars.ONLY_NS.value, "prod");
  const model = plain(A.model.node(def));
  assert.deepEqual(model.machineLimits, { total: 4, perCapability: { "*": 3, fixer: 1 } });
- assert.equal(model.instances[0].slot, 0); assert.equal(model.instances[0].occupancy, "occupied");
- assert.equal(model.instances[1].occupancy, "unknown"); assert.equal(model.instances[2].occupancy, "idle");
+ assert.equal(model.instances[0].id, "nins_1"); assert.equal(model.instances[0].task, "terminal-task"); assert.equal(model.instances[0].busy, true);
+ assert.equal(model.instances[0].occupancy, "occupied");
+ assert.equal(model.instances[1].occupancy, "unknown", "缺 busy 是未知，不是空闲");
+ assert.equal(model.instances[2].occupancy, "idle");
+ // v3 残留字段不读、不映射：旧 slot/taskId/assignmentId 只出现在响应里也不伪造槽位。
+ const v3 = plain(A.model.node({ ...def, status: { ...def.status, instances: [{ slot: 0, taskId: "old", assignmentId: "res", busy: false }] } }));
+ assert.equal(v3.instances.length, 1);
+ assert.deepEqual(Object.keys(v3.instances[0]).sort(), ["busy", "id", "occupancy", "task"]);
+ assert.equal(v3.instances[0].id, null); assert.equal(v3.instances[0].task, null); assert.equal(v3.instances[0].occupancy, "idle");
  assert.equal(plain(A.model.node({ ...def, status: { ...def.status, instances: undefined } })).instances, null);
  row.declared = ["*"]; row.spec.namespaces = ["team-a"];
  assert.deepEqual((await req("/v1/nodes/" + row.name)).body.status.effectiveNamespaces, ["team-a"]);
- row.facts.instances = [{ slot: 0, busy: true, assignmentId: "reserved", taskId: "terminal-task" }];
+ row.facts.instances = [{ id: "nins_res", task: "terminal-task", busy: true }];
  assert.equal(plain(A.model.node((await req("/v1/nodes/" + row.name)).body)).instances[0].occupancy, "occupied", "terminal task/reservation is not a physical reap");
 });
 
@@ -3825,7 +3908,7 @@ test("F2c2: real Node controllers consume apiList.items, bootstrap config, prese
  assert.ok(list.get('reg-token').textContent); assert.ok(list.get('reg-yaml').textContent.includes('wss://controller.example'));
  list.get('reg-close').onclick(); assert.equal(list.get('reg-token').textContent, '');
  const detail = await b2Page('node', '?id=anode-1&namespace=default', ({ Mock }) => {
-  Mock.state.nodes[0].facts.instances = [{ slot: 0, busy: true, taskId: 'tsk_mock_4' }, { slot: 1, busy: false }];
+  Mock.state.nodes[0].facts.instances = [{ id: 'nins_mock_1', task: 'tsk_mock_4', busy: true }, { id: 'nins_mock_2', task: null, busy: false }];
  });
  assert.equal(detail.get('head-name').textContent, 'anode-1'); assert.equal(detail.get('node-config-save').disabled, false);
  assert.ok(detail.calls.some(c => c.url === '/v1/nodes/anode-1?namespace=default'));

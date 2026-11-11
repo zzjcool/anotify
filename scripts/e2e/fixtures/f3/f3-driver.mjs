@@ -80,6 +80,23 @@ export async function ensureNamespace(server, session, name) {
   return { namespace: ns, created: created.status === 201 };
 }
 
+// ensureNamespaceVars 给命名空间写一层真实的 ns 级变量（`PUT …/config`，CAS 必须带
+// 当前 rv）。节点上下文用例要把「切到 prod 读到的有效值」验成真实数据，而不是只验
+// mock 种子里那句 'prod-visible'。
+async function ensureNamespaceVars(server, session, ns, vars) {
+  const path = `/v1/namespaces/${ns}/config`;
+  const current = await rawReq(server.base, path, { headers: sessionCookie(session) });
+  assert.equal(current.status, 200, `T1 seam: GET ${ns} config must be 200`);
+  if (JSON.stringify(current.body.vars || {}) === JSON.stringify(vars)) return current.body;
+  const saved = await rawReq(server.base, path, {
+    method: 'PUT',
+    headers: jsonHeaders(session),
+    body: JSON.stringify({ metadata: current.body.metadata, vars }),
+  });
+  assert.equal(saved.status, 200, `T1 seam: PUT ${ns} vars must be 200, got ${saved.status} ${JSON.stringify(saved.body)}`);
+  return saved.body;
+}
+
 // realBootstrap 是 real 模式唯一的前置：会话（admin + member）与 default/prod
 // 命名空间。返回给 driver 的 fixtures，后续造数（capability/source/event/task…）
 // 也走真实 API 叠在它上面。
@@ -90,6 +107,9 @@ async function realBootstrap(server) {
   const admin = ensureSession(server, 'f3-admin', ['-admin']);
   assert.equal(admin.role, 'admin', 'T1 seam: devseed -admin must produce an admin session');
   for (const name of [DEFAULT_NS, PROD]) await ensureNamespace(server, admin.session, name);
+  // prod 的 ns 级变量（真实 PUT）：节点上下文/A-B-A 用例要把「切到 prod 读到的有效值」
+  // 验成真实数据（mock 种子里的同名值就是这个角色的固定事实）。
+  await ensureNamespaceVars(server, admin.session, PROD, { NS_ONLY: 'prod-visible' });
   const fixtures = { adminSession: admin.session, memberSession: member.session, sendKey: admin.sendKey || member.sendKey };
   // retained 角色用例要求「真实 member 会话」：它必须来自真实账号，不是改前端状态。
   if (!process.env.E2E_V4_MEMBER_SESSION) process.env.E2E_V4_MEMBER_SESSION = fixtures.memberSession;
@@ -97,7 +117,7 @@ async function realBootstrap(server) {
 }
 
 // ensureCapability 幂等地建一个能力（真实 POST；同内容重发只会折叠到已有版本）。
-async function ensureCapability(server, session, ns, name) {
+async function ensureCapability(server, session, ns, name, next = []) {
   const list = await rawReq(server.base, `/v1/namespaces/${ns}/capabilities`, { headers: sessionCookie(session) });
   assert.equal(list.status, 200, `T1 seam: GET ${ns} capabilities must be 200`);
   const found = (list.body.items || []).find((c) => c.metadata.name === name);
@@ -107,14 +127,18 @@ async function ensureCapability(server, session, ns, name) {
     headers: jsonHeaders(session),
     body: JSON.stringify({
       apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name },
-      spec: { next: [], run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho f3 fixture ' + name + '\n' } } },
+      spec: { next: next, run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho f3 fixture ' + name + '\n' } } },
     }),
   });
   assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} capability must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
   return created.body;
 }
 
-// ensureSource 幂等地建一个源（真实 POST）。manual 源带固定 payload，投递不需要额外入参。
+// ensureSource 幂等地建一个 webhook 源（真实 POST）。形状和 mock 的 `deploy-hook`
+// 种子事实一致：kind=webhook + token/secret/sample —— 详情页要验的 hookUrl /
+// secretSet 掩码只有 webhook 源才有（用 manual 源等于把那些断言测空）。
+// 故意不带 payloadSchema：机器入口 POST …/events 会按 payloadSchema 校验载荷，
+// 夹具投递的是固定小载荷，加 schema 只会让 fixture 自己先被 400 拒掉。
 async function ensureSource(server, session, ns, name, target) {
   const list = await rawReq(server.base, `/v1/namespaces/${ns}/sources`, { headers: sessionCookie(session) });
   assert.equal(list.status, 200, `T1 seam: GET ${ns} sources must be 200`);
@@ -125,7 +149,11 @@ async function ensureSource(server, session, ns, name, target) {
     headers: jsonHeaders(session),
     body: JSON.stringify({
       apiVersion: 'anotify/v1', kind: 'Source', metadata: { name },
-      spec: { kind: 'manual', config: { payload: { fixed: true } }, targets: [{ capability: target, params: {} }] },
+      spec: {
+        kind: 'webhook',
+        config: { token: 'f3-hook-token', secret: 'f3-hook-hmac-secret', sample: { f3: 'fixture' } },
+        targets: [{ capability: target, params: {} }],
+      },
     }),
   });
   assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} source must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
@@ -181,12 +209,21 @@ export const MOCK_FIXTURES = Object.freeze({
 async function realFixtures(server, fixtures) {
   const s = fixtures.adminSession;
   await ensureNode(server, s, MOCK_FIXTURES.node);
-  await ensureCapability(server, s, DEFAULT_NS, MOCK_FIXTURES.capability);
+  // 第二个节点：namespace/system 的 per-node 批量更新要验「部分成功 + 另一节点保持不变」，
+  // 真正权威下那个"另一节点"必须是真实存在的节点（否则 404 而不是 409/400）。
+  await ensureNode(server, s, 'anode-2');
+  // 与 mock 种子同构的最小能力图：fixer → analyze-pr（边由 spec.next 派生），
+  // 外加 notify（源 target 必须是本命名空间里真实存在的能力，否则建源直接 400
+  // invalid_source_config）。
+  await ensureCapability(server, s, DEFAULT_NS, 'notify');
+  await ensureCapability(server, s, DEFAULT_NS, 'analyze-pr');
+  await ensureCapability(server, s, DEFAULT_NS, MOCK_FIXTURES.capability, ['analyze-pr']);
   await ensureSource(server, s, DEFAULT_NS, MOCK_FIXTURES.source, MOCK_FIXTURES.capability);
   const key = fixtures.sendKey;
   assert.ok(key, 'T1 seam: devseed SEND_KEY required for the machine event ingress');
   const def = await fireFixture(server, key, DEFAULT_NS, MOCK_FIXTURES.source);
-  await ensureCapability(server, s, PROD, MOCK_FIXTURES.capability);
+  await ensureCapability(server, s, PROD, 'analyze-pr');
+  await ensureCapability(server, s, PROD, MOCK_FIXTURES.capability, ['analyze-pr']);
   await ensureSource(server, s, PROD, MOCK_FIXTURES.source, MOCK_FIXTURES.capability);
   const prod = await fireFixture(server, key, PROD, MOCK_FIXTURES.source);
   // node.html 的 ?id= 是节点**名字**（nodes.html:113 就是这么生成链接的），
@@ -261,6 +298,27 @@ export async function openDriver(id, options = {}) {
   let server, browser, context, page, stopped, archive;
   const shared=mock && previewResources;
   const report = { id, runId:process.env.F3_RUN_ID||'current', attemptId:process.env.F3_ATTEMPT_ID||randomUUID(), cwd:ROOT, sourceHash:process.env.F3_SOURCE_HASH||null, mode:mock?'explicit-mock':'real', checks:[], errors:[], requests:[], screenshots:[], geometry:[] };
+  /* 预期内的 4xx（#335）：真实服务会**故意**拒绝一些请求（slug 冲突、CAS 409、
+   * 没有本地归档的日志 410 …），Chrome 会把这些响应记成 console error。用例必须
+   * 在注册时**显式声明** {{status, path, note}}：只对「这个状态 + 这个请求路径前缀」
+   * 放行，别的 4xx/5xx 仍然 fatal —— 没有全局忽略开关，也不能只按状态码批量忽略。
+   * path 匹配 URL 的 pathname 前缀（忽略查询串：CAS 的 resourceVersion 就在查询串里）。 */
+  const expected4xx = (options.expectHttpStatus || []).map((entry) => {
+    assert.ok(Number.isInteger(entry.status) && entry.status >= 400 && entry.status < 500, 'expectHttpStatus entry must declare a 4xx status: ' + JSON.stringify(entry));
+    assert.ok(typeof entry.path === 'string' && entry.path.startsWith('/'), 'expectHttpStatus entry must declare an absolute request path: ' + JSON.stringify(entry));
+    assert.ok(entry.pathSuffix === undefined || (typeof entry.pathSuffix === 'string' && entry.pathSuffix.startsWith('/')), 'expectHttpStatus.pathSuffix must be an absolute path tail: ' + JSON.stringify(entry));
+    assert.ok(typeof entry.note === 'string' && entry.note.trim().length > 0, 'expectHttpStatus entry must document why (note): ' + JSON.stringify(entry));
+    return { status: entry.status, path: entry.path, pathSuffix: entry.pathSuffix, exact: entry.exact === true, note: entry.note, hits: 0 };
+  });
+  report.expectedHttpStatus = [];
+  const pathnameOf = (u) => { try { return new URL(u).pathname; } catch { return ''; } };
+  // path 默认是前缀（实例 id 无法预知）；exact=true 要求 pathname 完全相同，
+  // pathSuffix 再把前缀锁到尾部 —— 声明越窄越好，别让一条白名单放行整片路径。
+  const matchesExpected = (entry, pathname) => {
+    if (entry.exact) return pathname === entry.path;
+    if (!pathname.startsWith(entry.path)) return false;
+    return entry.pathSuffix === undefined || pathname.endsWith(entry.pathSuffix);
+  };
   const reportDir=evidenceDirectory(report);await mkdir(reportDir,{recursive:true});
   const stop = () => stopped ||= (async () => {
     // Preserve a failed controller's catch/finally scene before closing its doc.
@@ -322,7 +380,8 @@ export async function openDriver(id, options = {}) {
             node.facts.localVars={SOURCE_ROOT:'/local-src'};
             node.spec.limits={total:8,perCapability:{'*':3,fixer:2}};
             node.facts.localLimits={total:4,perCapability:{fixer:1}};
-            node.facts.instances=[{slot:0,busy:true,taskId:'tsk_mock_4',attempt:3,leaseId:'physical-lease'},{slot:1},{slot:2,busy:false},{slot:3,busy:true,taskId:'reserved-task',assignmentId:'reservation-no-lease'}];
+            // v4 NodeInstanceRef 只有 {id,task,busy}：槽位身份是 id，没有 slot/taskId/attempt/leaseId。
+            node.facts.instances=[{id:'nins_mock_1',task:'tsk_mock_4',busy:true},{id:'nins_mock_2',task:null},{id:'nins_mock_3',task:null,busy:false},{id:'nins_mock_4',task:'reserved-task',busy:true}];
             node.facts.envPassthrough=['COMPLETE_PRIVATE_WHITELIST_NAME'];
             node.facts.resolvedEnv={PRIVATE_VALUE:'C2_EXACT_HOST_VALUE_NOT_PUBLIC_728f'};
             node.facts.artifactDir='/private/export/absolute/c2-not-public';
@@ -375,7 +434,15 @@ export async function openDriver(id, options = {}) {
     },{mock,id,scope:options.scope??'default',theme:options.theme||'light'});
     page=await context.newPage(); page.setDefaultTimeout(4500); page.setDefaultNavigationTimeout(7000);
     page.on('pageerror',e=>report.errors.push(e.message));
-    page.on('console',msg=>{if(msg.type()==='error'||msg.text().includes('mock 未实现')) report.errors.push(msg.text());});
+    page.on('console',msg=>{
+      if(msg.type()!=='error'){ if(msg.text().includes('mock 未实现')) report.errors.push(msg.text()); return; }
+      // 网络层的失败响应会以 "Failed to load resource: … status of NNN (…)" 出现在
+      // console：只有用例声明过的（status, path）组合放行，其余照样记成 fatal。
+      const failure=/Failed to load resource: the server responded with a status of (\d+)/.exec(msg.text());
+      const url=msg.location()?.url||'', hit=failure && expected4xx.find(e=>e.status===Number(failure[1])&&matchesExpected(e,pathnameOf(url)));
+      if(hit){ hit.hits++; report.expectedHttpStatus.push({status:hit.status,path:hit.path,url}); return; }
+      report.errors.push(msg.text());
+    });
     page.on('requestfailed',r=>{if(!r.url().startsWith('http')||r.failure()?.errorText==='net::ERR_ABORTED')return;report.errors.push('network '+r.url()+' '+r.failure()?.errorText);});
     const calls=()=>page.evaluate(()=>window.__f3Calls);
     archive=async()=>{
@@ -398,7 +465,15 @@ export async function openDriver(id, options = {}) {
       await page.waitForFunction(()=>!!window.Anotify && !document.querySelector('[aria-busy="true"]'));
     };
     const req=(url,opts)=>page.evaluate(async([url,opts])=>Anotify.api(url,opts),[url,opts]);
-    const response=(url,body,method='GET')=>page.evaluate(async([url,body,method])=>{const r=await fetch(url,{method,...(body==null?{}:{body:JSON.stringify(body),headers:{'Content-Type':'application/json'}})});return {status:r.status,body:await r.json()};},[url,body,method]);
+    // 204/空体是合法成功（v4 的 DELETE 一律 204，契约明文"无响应体"）：无条件 r.json()
+    // 会把这个成功响应抛成 SyntaxError，看起来像产品坏了。
+    const response=(url,body,method='GET')=>page.evaluate(async([url,body,method])=>{
+      const r=await fetch(url,{method,...(body==null?{}:{body:JSON.stringify(body),headers:{'Content-Type':'application/json'}})});
+      const text=await r.text();
+      let parsed=null;
+      if(text.trim()!==''){ try{ parsed=JSON.parse(text); }catch{ parsed={unparsed:text}; } }
+      return {status:r.status,body:parsed};
+    },[url,body,method]);
     const snapshot=async()=>{
       if(mock)return page.evaluate(()=>JSON.stringify(MockApi.state));
       const paths=['/v1/namespaces/default/capabilities','/v1/namespaces/default/sources','/v1/namespaces/default/playbooks','/v1/namespaces/default/tasks','/v1/console/events?namespace=default','/v1/nodes','/v1/system/config','/v1/namespaces/default/config'];
@@ -437,7 +512,11 @@ export async function openDriver(id, options = {}) {
       if(g.scrollHeight>g.height+5)await page.waitForFunction(()=>scrollY>0);
       await page.evaluate(()=>scrollTo(0,0));check(label+': actual geometry and unlocked scroll');
     };
-    const finish=async()=>{await archive();assert.deepEqual(report.errors,[],'JS/console/network/unimplemented501 must fail');};
+    const finish=async()=>{await archive();
+      // 声明了却一次都没发生 = 声明已过期/写错；留着就是一份永远放行的白名单。
+      // （mock 权威下网络被 mock 路由接管，不会产生 Chrome 的网络 console：只在 real 校验。）
+      if(!mock) assert.deepEqual(expected4xx.filter(e=>e.hits===0).map(e=>e.status+' '+(e.exact?'=':'~')+e.path+(e.pathSuffix||'')),[],'每个 expectHttpStatus 声明都必须在真实网络上发生过');
+      assert.deepEqual(report.errors,[],'JS/console/network/unimplemented501 must fail');};
     return {id,mock,base:server.base,page,context,browser,report,stop,finish,goto,req,response,snapshot,calls,check,shot,clean,archive,fixtures:server.fixtures,
       // fx 把「用例需要的 fixture 角色」映射到当前权威下的真实身份：mock 固定事实 or
       // 真实创建对象的 id。用例不得再硬编码 tsk_/trace_ 常量走 real 路径。

@@ -260,7 +260,9 @@
 					homeDir: "/home/anode",
 					localVars: { SOURCE_ROOT: "/srv/src" },
 					agentVersion: AGENT_VERSION,
-					instances: [{ slot: 0, taskId: "tsk_mock_2", attempt: 1, leaseId: "lease_mock_2", busy: true }],
+					// v4 NodeInstanceRef：只有 {id, task, busy}（api/resource.yaml）。
+					// id 是实例身份（nins_…），不是 wire 上的 slot；没有 taskId/attempt/leaseId。
+					instances: [{ id: "nins_mock_1", task: "tsk_mock_2", busy: true }],
 					lastSeenAt: iso(now() - 15),
 				},
 				configRevision: "7",
@@ -2055,23 +2057,13 @@
 		const items = [];
 		for (const cap of state.capabilities.filter((c) => c.ns === ns)) {
 			const next = Array.isArray(cap.spec && cap.spec.next) ? cap.spec.next : [];
-			next.forEach((ref, i) => {
-				items.push({
-					fromIsSource: false,
-					fromRef: cap.name,
-					toRef: ref,
-					position: i + 1,
-				});
+			next.forEach((ref) => {
+				items.push({ from: cap.name, to: ref, kind: "capability" });
 			});
 		}
 		for (const src of state.sources.filter((s) => s.ns === ns)) {
-			(src.targets || []).forEach((t, i) => {
-				items.push({
-					fromIsSource: true,
-					fromRef: src.name,
-					toRef: t.capability,
-					position: i + 1,
-				});
+			(src.targets || []).forEach((t) => {
+				items.push({ from: src.name, to: t.capability, kind: "source" });
 			});
 		}
 		return items;
@@ -4298,7 +4290,10 @@
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
-		return json(listOf("EdgeList", edgeItems(ns)));
+		// 契约（resource.yaml · listEdges / EdgeList）：只读投影是 `{items}` 文档，
+		// **没有** apiVersion/kind。以前这里发 EdgeList 信封，让页面误以为可以走
+		// apiList，真实服务一接就把「不是 *List 信封」变成整页错误。
+		return json({ items: edgeItems(ns) });
 	});
 
 	on("GET", /^\/v1\/namespaces\/([^/]+)\/deployments$/, (ctx) => {

@@ -1,7 +1,7 @@
 // Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
 import assert from 'node:assert/strict';
 export async function nodeRetained(d,mode){
- const {page,check,shot,clean}=d;
+ const {page,check,shot,clean,base}=d;
  const goto=(file,lang='en',query='?namespace=default')=>d.goto(file,query.replace(/^\?/,''),lang);
  const req=d.response,calls=d.calls;
  const waitState=(id,text)=>page.waitForFunction(([id,text])=>document.getElementById(id).textContent.includes(text),[id,text]);
@@ -16,10 +16,16 @@ export async function nodeRetained(d,mode){
     const token = await page.locator('#reg-token').innerText();
     const post = (await calls()).find(c => c.method === 'POST' && c.url === '/v1/nodes');
     assert.deepEqual(post.body, { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name: 'browser-new-node' }, spec: {} });
-    assert.equal(post.result.status.online, false); assert.deepEqual(post.result.spec.namespaces, ['*']);
+    // v4 的 NodeStatus 没有 online 字段（api/resource.yaml·NodeStatus）：mock 夹具给
+    // 一份离线的种子事实，真实权威下连「在线」这个说法都不该出现 —— 页面只能显示 Unknown。
+    if (d.mock) assert.equal(post.result.status.online, false);
+    else assert.ok(!('online' in post.result.status) && !('draining' in post.result.status), 'v4 NodeStatus 不携带 online/draining');
+    assert.deepEqual(post.result.spec.namespaces, ['*']);
     const issued = (await calls()).find(c => c.url.endsWith('/browser-new-node/tokens'));
     assert.deepEqual(issued.body, {}); assert.equal(issued.result.kind, 'NodeToken'); assert.deepEqual(Object.keys(issued.result).sort(), ['apiVersion','kind','node','token']);
-    assert.ok((await page.locator('#reg-yaml').innerText()).includes('server: "ws://127.0.0.1:'));
+    // yaml 的 server 行由页面从**当前 origin** 推导（http→ws / https→wss）：真实权威跑在
+    // http://localhost:<port>（mock 预览是 127.0.0.1），所以断言真实主机名，别写死 IP。
+    assert.ok((await page.locator('#reg-yaml').innerText()).includes('server: "ws://' + new URL(base).host));
     assert.ok(!(await page.locator('#reg-yaml').innerText()).includes('instances:'));
     assert.equal(await page.locator('#reg-install').innerText(), 'anode install'); assert.equal(await page.locator('#reg-serve').innerText(), 'anode serve');
     const read = await req('/v1/nodes/browser-new-node'); assert.ok(!JSON.stringify(read.body).includes(token));
@@ -69,14 +75,21 @@ export async function nodeRetained(d,mode){
   if (mode === 'namespace-system') {
     await goto('nodes', 'en', '?namespace=default'); await page.locator('#system-save:not([disabled])').waitFor();
     const get = (await calls()).find(c => c.url === '/v1/system/config' && c.method === 'GET');
-    assert.deepEqual(get.result.retention, { resultTtlSec: 3600, eventTtlSec: 7000, taskTtlSec: 9000 });
-    assert.equal(await page.locator('#result-ttl').inputValue(), '3600'); assert.equal(await page.locator('#event-ttl').inputValue(), '7000'); assert.equal(await page.locator('#task-ttl').inputValue(), '9000');
+    // retention 的**当前值**来自真实 GET（api/events.yaml · getSystemConfig）：mock 种子是
+    // 3600/7000/9000，真实服务默认是 604800/2592000/2592000。断言「页面显示的就是服务端
+    // 刚给的那三个数」，而不是把某个权威的默认值写死进用例。
+    const initial = get.result.retention;
+    assert.deepEqual(Object.keys(initial).sort(), ['eventTtlSec','resultTtlSec','taskTtlSec']);
+    assert.equal(await page.locator('#result-ttl').inputValue(), String(initial.resultTtlSec));
+    assert.equal(await page.locator('#event-ttl').inputValue(), String(initial.eventTtlSec));
+    assert.equal(await page.locator('#task-ttl').inputValue(), String(initial.taskTtlSec));
     await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitState('system-state', 'Saved.');
-    const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, 7000);
+    const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, initial.eventTtlSec);
     const systemPut = (await calls()).filter(c => c.method === 'PUT' && c.url === '/v1/system/config').at(-1); assert.deepEqual(Object.keys(systemPut.body).sort(), ['metadata','retention']);
-    const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: 8000 } }, 'PUT'); assert.equal(remote.status, 200);
+    const remoteEventTtl = initial.eventTtlSec + 1000;
+    const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: remoteEventTtl } }, 'PUT'); assert.equal(remote.status, 200);
     await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitState('system-state', 'draft retained exactly'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
-    await shot('system0-permanent-stale409-draft'); page.once('dialog', dialog => dialog.accept()); await page.locator('#system-reload').click(); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), '8000');
+    await shot('system0-permanent-stale409-draft'); page.once('dialog', dialog => dialog.accept()); await page.locator('#system-reload').click(); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
     const namespacePath = '/v1/namespaces/default/config'; const ns = (await req(namespacePath)).body;
     const nsRemote = await req(namespacePath, { metadata: ns.metadata, vars: { NS_ONLY: 'remote-ns' } }, 'PUT'); assert.equal(nsRemote.status, 200);
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
@@ -84,18 +97,40 @@ export async function nodeRetained(d,mode){
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'Saved.');
     const nsPut = (await calls()).filter(c => c.url === namespacePath && c.method === 'PUT').at(-1); assert.deepEqual(Object.keys(nsPut.body).sort(), ['metadata','vars']); assert.notEqual(nsPut.result.namespaceVarsRevision, ns.namespaceVarsRevision);
     const first = (await req(configPath)).body, secondBefore = (await req('/v1/nodes/anode-2/config')).body;
-    const batch = await req('/v1/nodes/config/batch', { updates: [{ name: 'anode-1', metadata: first.metadata, vars: { BATCH: 'ok' } }, { name: 'anode-2', metadata: { resourceVersion: 'stale' }, vars: { BATCH: 'bad' } }] }, 'POST');
-    assert.deepEqual(batch.body.items.map(x => x.ok), [true,false]); assert.equal(batch.body.items[1].error.code, 409); assert.deepEqual((await req('/v1/nodes/anode-2/config')).body, secondBefore);
+    // "过期 rv" 必须**格式合法**：真实服务对字面量 'stale' 回 400 resource_version_invalid
+    // （那不是冲突，是畸形）。所以先成功写一次 anode-2 让 rv 前进，再用刚被淘汰的旧 rv
+    // 打批量 —— 这才是 CAS 409。
+    const advanced = await req('/v1/nodes/anode-2/config', { metadata: secondBefore.metadata, vars: secondBefore.vars }, 'PUT');
+    assert.equal(advanced.status, 200);
+    const staleRv = secondBefore.metadata.resourceVersion;
+    const secondAfter = (await req('/v1/nodes/anode-2/config')).body;
+    assert.notEqual(secondAfter.metadata.resourceVersion, staleRv);
+    const batch = await req('/v1/nodes/config/batch', { updates: [{ name: 'anode-1', metadata: first.metadata, vars: { BATCH: 'ok' } }, { name: 'anode-2', metadata: { resourceVersion: staleRv }, vars: { BATCH: 'bad' } }] }, 'POST');
+    assert.deepEqual(batch.body.items.map(x => x.ok), [true,false]); assert.equal(batch.body.items[1].error.code, 409); assert.deepEqual((await req('/v1/nodes/anode-2/config')).body, secondAfter);
     for (const [url,field] of [[namespacePath,'vars'],['/v1/system/config','retention']]) assert.equal((await req(url, { [field]: {} }, 'PUT')).status, 400);
     await noLeaks(); await clean('namespace and system configuration');
     check('Actual nondefault GET current retention (not guessed defaults), CAS edit0 permanent, stale409 draft+explicit reload, namespace vars-only CAS/double revision; real batch partial node success, other node unchanged and missing CAS400. No new batch product UI invented.');
   }
   if (mode === 'actions-slots') {
     await goto('node', 'en', '?id=anode-1&namespace=default');
+    await page.locator('#node-body:not([hidden])').waitFor();
+    if(d.mock){
+    // mock 权威的种子事实：4 个 v4 实例（{id,task,busy}），槽位序号就是下标。
+    // 0 busy=true → occupied；1 缺 busy → unknown；2 busy=false → idle；3 busy=true → occupied。
     assert.equal(await page.locator('[data-slot="0"]').getAttribute('data-occupancy'), 'occupied');
     assert.equal(await page.locator('[data-slot="1"]').getAttribute('data-occupancy'), 'unknown'); assert.equal(await page.locator('[data-slot="2"]').getAttribute('data-occupancy'), 'idle');
     assert.equal(await page.locator('[data-slot="3"]').getAttribute('data-occupancy'), 'occupied');
+    assert.equal(await page.locator('[data-slot="3"]').getAttribute('data-task'), 'reserved-task');
     const task = (await req('/v1/namespaces/default/tasks/tsk_mock_4')).body; assert.equal(task.status.phase, 'failed');
+    } else {
+    // 真实权威下这个 fixture 节点没有 anode 连上来，`status.instances` 合法为空：
+    // 页面必须显示“无槽位”，一条 data-slot 都不许凭空造出来（v4 的槽位身份来自
+    // instances 本身，没有 instances 就没有槽位，更不能从 spec.limits 猜一个）。
+    const status = (await req(nodePath)).body.status;
+    assert.deepEqual(status.instances, [], '真实节点未连上时 instances 必须是空数组');
+    assert.equal(await page.locator('#node-slots [data-occupancy]').count(), 0, '空 instances 不得渲染槽位');
+    assert.match(await page.locator('#node-slots').innerText(), /Unknown/i);
+    }
     if(d.mock){
     await page.evaluate(() => { MockApi.noAgentBinary(); });
     page.once('dialog', dialog => dialog.accept()); await page.locator('#node-upgrade').click(); await waitState('node-action-state', 'agent_binary_unavailable');

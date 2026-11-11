@@ -231,12 +231,13 @@
         if (more && emissionCursor) params.set("continue", emissionCursor);
         const doc = await api(nsPath("tasks", name) + "/emissions?" + params);
         if (current !== revision) return;
-        if (!Array.isArray(doc.items) || typeof doc.metadata?.continue !== "string") throw new Error("malformed Task emissions");
+        // 分页游标可省略（末页不给 metadata.continue）：缺省即"没有更多"，不是畸形。
+        if (!Array.isArray(doc.items) || (doc.metadata?.continue != null && typeof doc.metadata.continue !== "string")) throw new Error("malformed Task emissions");
         for (const fact of doc.items) {
           if (!fact.eventId) throw new Error("missing emission eventId");
           emissions.set(fact.eventId, fact);
         }
-        emissionCursor = doc.metadata.continue;
+        emissionCursor = doc.metadata?.continue || "";
         const list = node("emissions-list");
         list.replaceChildren();
         for (const fact of emissions.values()) {
