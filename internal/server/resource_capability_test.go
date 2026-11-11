@@ -800,6 +800,207 @@ func TestCapabilityResourceDeployToOfflineNode(t *testing.T) {
 	}
 }
 
+// ---------- 7c) deploy 的 nodes 是**节点名**（#336：名字被当 id → 404） ----------
+
+// deployNode 建一台节点（status 空 = 离线零值）并回读权威行。
+func (e *capTestEnv) deployNode(t *testing.T, name, status string, declared []string) *store.Node {
+	t.Helper()
+	ctx := context.Background()
+	if declared == nil {
+		declared = []string{"*"}
+	}
+	if _, err := e.db.CreateNode(ctx, &store.Node{Name: name, Status: status, DeclaredNamespaces: declared}); err != nil {
+		t.Fatalf("create node %q: %v", name, err)
+	}
+	node, err := e.db.GetNodeByName(ctx, name)
+	if err != nil {
+		t.Fatalf("get node %q: %v", name, err)
+	}
+	return node
+}
+
+// deployOutcomeNodes 取 deployed[].node 的集合（store 按 node_id 排序，顺序不是语义）。
+func deployOutcomeNodes(t *testing.T, resp map[string]any) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, item := range capArray(t, resp["deployed"], "deployed") {
+		out[capString(t, capObject(t, item, "deployed[]"), "node")] = true
+	}
+	return out
+}
+
+// TestCapabilityDeployNodesAcceptsName 钉住契约 CapabilityDeployRequest.nodes = 目标节点名。
+//
+// 修前：handler 把 body.Nodes 原样交给 hub，hub 按 **nodeID** 查库 → 传名字必 404
+// （`nodes:["node-v4-real"]` → not_found）。id 也接受（历史调用方/调试直接拿 id）。
+func TestCapabilityDeployNodesAcceptsName(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "deploy-by-name", "#!/bin/sh\necho hi\n")
+	// 离线（零值状态）：授权通过但不可执行 → 部署仍要落 pending 事实。
+	byName := env.deployNode(t, "node-v4-real", "", nil)
+	byID := env.deployNode(t, "node-v4-other", "", nil)
+
+	// ① 名字（契约面）：修前这里 404。
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-by-name", "deploy"),
+		map[string]any{"nodes": []string{"node-v4-real"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 按名字: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp := decodeCapJSON(t, rec)
+	if got := deployOutcomeNodes(t, resp); len(got) != 1 || !got[byName.ID] {
+		t.Fatalf("deploy 按名字落到 %v，want 只 %s（名字必须解析成 id 再落事实）", got, byName.ID)
+	}
+	outcome := capObject(t, capArray(t, resp["deployed"], "deployed")[0], "deployed[0]")
+	if got := capString(t, outcome, "state"); got != store.DeploymentPending {
+		t.Fatalf("deployed[0].state = %q, want pending", got)
+	}
+	if sent, _ := outcome["sent"].(bool); sent {
+		t.Fatalf("离线节点不应 sent=true")
+	}
+
+	// ② id 仍然接受（同一台节点换个写法不该变成第二行）。
+	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-by-name", "deploy"),
+		map[string]any{"nodes": []string{byID.ID}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 按 id: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := deployOutcomeNodes(t, decodeCapJSON(t, rec)); len(got) != 1 || !got[byID.ID] {
+		t.Fatalf("deploy 按 id 落到 %v，want 只 %s", got, byID.ID)
+	}
+
+	// ③ 名字 + id 混合 + 重复（同一台按名字与 id 各给一次）：去重后两台，不多不少。
+	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-by-name", "deploy"),
+		map[string]any{"nodes": []string{"node-v4-real", byID.ID, "node-v4-real", byName.ID}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 名字+id 混合: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := deployOutcomeNodes(t, decodeCapJSON(t, rec))
+	if len(got) != 2 || !got[byName.ID] || !got[byID.ID] {
+		t.Fatalf("名字+id 混合去重后 = %v，want 恰好两台 %s / %s", got, byName.ID, byID.ID)
+	}
+	if rows, err := env.db.ListDeployments(context.Background(), env.nsA, store.DeploymentFilter{}); err != nil {
+		t.Fatalf("list deployments: %v", err)
+	} else if len(rows) != 2 {
+		t.Fatalf("deployments 行数 = %d，want 2（同一台不重复落行）", len(rows))
+	}
+
+	// ④ 省略（空数组）= 不指定目标 = 走候选策略：两台都离线 → 没有候选，不是 404。
+	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-by-name", "deploy"),
+		map[string]any{"nodes": []string{}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 省略 nodes: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := deployOutcomeNodes(t, decodeCapJSON(t, rec)); len(got) != 0 {
+		t.Fatalf("没有可执行候选时 deployed 应是 []，实际 %v", got)
+	}
+}
+
+// TestCapabilityDeployNodesUnknownIs404 未知条目一律 404（`not_found`），且整批 0 写。
+func TestCapabilityDeployNodesUnknownIs404(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "deploy-unknown", "#!/bin/sh\necho u\n")
+	env.deployNode(t, "node-known", "", nil)
+
+	for _, entry := range []string{"node-does-not-exist", "nd_does_not_exist", ""} {
+		rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-unknown", "deploy"),
+			map[string]any{"nodes": []string{entry}})
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("nodes=[%q]: status=%d body=%s，want 404", entry, rec.Code, rec.Body.String())
+		}
+		if reason := capString(t, decodeCapJSON(t, rec), "reason"); reason != reasonNotFound {
+			t.Fatalf("nodes=[%q]: reason=%q，want %q", entry, reason, reasonNotFound)
+		}
+	}
+
+	// 一个合法名字 + 一个未知名字：整批拒绝，不得半批落库（否则调用方分不清哪台生效了）。
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-unknown", "deploy"),
+		map[string]any{"nodes": []string{"node-known", "node-typo"}})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("合法名+未知名: status=%d body=%s，want 404", rec.Code, rec.Body.String())
+	}
+	rows, err := env.db.ListDeployments(context.Background(), env.nsA, store.DeploymentFilter{})
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("整批 404 时不得写任何部署行，实际 %d 行", len(rows))
+	}
+}
+
+// TestCapabilityDeployNodesCrossNamespaceIs403 节点存在但无权访问本 ns：403（不是 404）。
+func TestCapabilityDeployNodesCrossNamespaceIs403(t *testing.T) {
+	env := newCapTestEnv(t)
+	env.createCapability(t, env.nsA, "deploy-foreign", "#!/bin/sh\necho f\n")
+	// 只申报第二个 ns：对本 ns 未授权（申报与授权交叉是权限判据）。
+	env.deployNode(t, "node-foreign", "", []string{env.slugB})
+
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-foreign", "deploy"),
+		map[string]any{"nodes": []string{"node-foreign"}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("跨 ns deploy: status=%d body=%s，want 403", rec.Code, rec.Body.String())
+	}
+	if reason := capString(t, decodeCapJSON(t, rec), "reason"); reason != reasonForbidden {
+		t.Fatalf("跨 ns deploy: reason=%q，want %q", reason, reasonForbidden)
+	}
+	rows, err := env.db.ListDeployments(context.Background(), env.nsA, store.DeploymentFilter{})
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("未授权时不得写部署行，实际 %d 行", len(rows))
+	}
+}
+
+// TestCapabilityDeployNodesOmittedUsesEligibleNodes 省略 nodes = 全部已授权且在线节点
+// （候选判据由 store 的 EligibleNodes 说，handler 不自己挑人）。
+func TestCapabilityDeployNodesOmittedUsesEligibleNodes(t *testing.T) {
+	env := newCapTestEnv(t)
+	ctx := context.Background()
+	env.createCapability(t, env.nsA, "deploy-all", "#!/bin/sh\necho all\n")
+
+	// 可执行节点：在线 + 授权 + 配置已 apply + 该 digest 的部署事实已 applied。
+	eligible := env.deployNode(t, "node-eligible", store.NodeStatusOnline, nil)
+	cfg, err := env.db.GetNodeConfig(ctx, eligible.ID)
+	if err != nil {
+		t.Fatalf("get node config: %v", err)
+	}
+	cfg.Namespaces = []string{"*"}
+	if err := env.db.PutNodeConfig(ctx, cfg); err != nil {
+		t.Fatalf("put node config: %v", err)
+	}
+	if err := env.db.RecordApplied(ctx, eligible.ID, cfg.Revision, "sha256:test"); err != nil {
+		t.Fatalf("record applied: %v", err)
+	}
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-all", "deploy"),
+		map[string]any{"nodes": []string{"node-eligible"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 到可执行节点: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	capRow, err := env.db.GetCapability(ctx, env.nsA, "deploy-all", 1)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	dp, err := env.db.GetDeploymentByNodeCapability(ctx, env.nsA, eligible.ID, capRow.ID)
+	if err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if err := env.db.MarkDeployResult(ctx, env.nsA, dp.ID, store.DeploymentApplied, ""); err != nil {
+		t.Fatalf("mark deployment applied: %v", err)
+	}
+
+	// 另一台已授权但离线：不属于「在线」候选。
+	offline := env.deployNode(t, "node-offline-ext", "", nil)
+
+	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-all", "deploy"), map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy 省略 nodes: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := deployOutcomeNodes(t, decodeCapJSON(t, rec))
+	if len(got) != 1 || !got[eligible.ID] {
+		t.Fatalf("省略 nodes 的候选 = %v，want 只 %s（离线的 %s 不参与）", got, eligible.ID, offline.ID)
+	}
+}
+
 // ---------- 8) edges 投影 与 capability-templates ----------
 
 func TestCapabilityResourceEdgesAndTemplates(t *testing.T) {

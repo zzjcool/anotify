@@ -563,6 +563,139 @@ func TestCancelRunningAwaitsAck(t *testing.T) {
 	v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
 }
 
+// TestRequestCancelHumanReasonIsCancelled 钉住 #336：取消动作的 reason 是**人话**
+// （契约 TaskActionRequest.reason），不是封闭码。pending 取消必须落 cancelled——
+// 修前 cancelPhase 只认字面 cancelled_by_user，其它一律被误判成 abandoned。
+func TestRequestCancelHumanReasonIsCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	task := v4Task(t, db, nsID, c, "tr_cancel_human", "")
+
+	const human = "e2e 运行中取消"
+	if err := db.RequestCancel(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+	if got.CancelReason != human {
+		t.Fatalf("cancel_reason = %q，want 人话原因原样落库 %q", got.CancelReason, human)
+	}
+	if got.CancelRequestedAt == nil {
+		t.Fatal("取消必须留下 cancel_requested_at 事实")
+	}
+	if got.Error != human {
+		t.Fatalf("error = %q，want %q（人话原因可读）", got.Error, human)
+	}
+}
+
+// TestRequestCancelRunningHumanReasonAckIsCancelled running 的终态由 cancel.ack 裁定：
+// 带人话 reason 的用户取消仍必须落 cancelled（修前 cancelPhase(人话) → abandoned）。
+func TestRequestCancelRunningHumanReasonAckIsCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	node := v4Node(t, db, "node-cancel-human", 1)
+	task := v4Task(t, db, nsID, c, "tr_cancel_human_running", "")
+	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-cancel-human")
+
+	const human = "e2e 运行中取消"
+	if err := db.RequestCancel(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
+	if running := v4MustPhase(t, db, nsID, task.ID, TaskRunning); running.CancelReason != human {
+		t.Fatalf("running 取消只记意图：cancel_reason = %q，want %q", running.CancelReason, human)
+	}
+	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
+	in.Now = Now()
+	if err := db.AckCancelAuthorized(ctx, v4Auth(t, db, node.ID), in, true); err != nil {
+		t.Fatalf("ack cancel: %v", err)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+	if got.Error != human {
+		t.Fatalf("终态 error = %q，want 人话原因 %q", got.Error, human)
+	}
+}
+
+// TestRequestAbandonHumanReasonStaysAbandoned 放弃动作的 reason 同样是人话，但意图来自
+// **端点**：pending 直接终态必须是 abandoned（不能因为 reason 不是封闭码而变 cancelled）。
+func TestRequestAbandonHumanReasonStaysAbandoned(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	task := v4Task(t, db, nsID, c, "tr_abandon_human", "")
+
+	const human = "give up"
+	if err := db.RequestAbandon(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+	if got.CancelReason != human {
+		t.Fatalf("cancel_reason = %q，want %q", got.CancelReason, human)
+	}
+}
+
+// TestRequestAbandonRunningDefaultReasonAckIsAbandoned running 任务无 reason 的放弃：
+// 默认码 abandoned_by_user 落到 ack 终态 abandoned（用户放弃路径未被取消语义污染）。
+func TestRequestAbandonRunningDefaultReasonAckIsAbandoned(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	c := v4Cap(t, db, nsID, "review", 1)
+	node := v4Node(t, db, "node-abandon-running", 1)
+	task := v4Task(t, db, nsID, c, "tr_abandon_running", "")
+	_, _, attempt := v4Grant(t, db, task.ID, node.ID, "asg-abandon-running")
+
+	if err := db.RequestAbandon(ctx, task.ID, protocol.ReasonAbandonedByUser, Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
+	}
+	in := v4ReapInput(t, db, node.ID, task.ID, attempt)
+	in.Now = Now()
+	if err := db.AckCancelAuthorized(ctx, v4Auth(t, db, node.ID), in, true); err != nil {
+		t.Fatalf("ack cancel: %v", err)
+	}
+	v4MustPhase(t, db, nsID, task.ID, TaskAbandoned)
+}
+
+// TestRecoverLostLeasesCancelIntentHumanReasonIsCancelled 租约丢失 + 已请求取消：
+// 终态仍按**用户取消**裁定（cancelPhase 的另一个调用方），不因 reason 是人话而落 abandoned。
+func TestRecoverLostLeasesCancelIntentHumanReasonIsCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	nsID, _ := newTestNS(t, db)
+	// 非幂等：没有「重排」分支，租约丢失 + 取消意图 → 直接终局。
+	c := v4Cap(t, db, nsID, "nonidem", 1)
+	node := v4Node(t, db, "node-lost-cancel", 1)
+	task := v4Task(t, db, nsID, c, "tr_lost_cancel", "")
+	slot := v4FreeSlot(t, db, node.ID)
+	if err := db.AssignTask(ctx, task.ID, node.ID, "asg-lost-cancel", 1); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	_, _, _, expiresAt, err := db.GrantLeaseAuthorized(ctx, v4Auth(t, db, node.ID),
+		task.ID, "asg-lost-cancel", 1, slot, Now())
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	const human = "e2e 运行中取消"
+	if err := db.RequestCancel(ctx, task.ID, human, Now()); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
+	requeued, abandoned, err := db.RecoverLostLeases(ctx, expiresAt+1)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if requeued != 0 || abandoned != 1 {
+		t.Fatalf("回收数 requeued=%d abandoned=%d, want 0/1（取消意图不重排）", requeued, abandoned)
+	}
+	got := v4MustPhase(t, db, nsID, task.ID, TaskCancelled)
+	if got.Error != human {
+		t.Fatalf("终态 error = %q，want 人话原因 %q", got.Error, human)
+	}
+}
+
 // TestRecoverLostLeasesRequeues 过期租约按幂等声明分派：可重试 → 回 pending，不可重试 → abandoned。
 func TestRecoverLostLeasesRequeues(t *testing.T) {
 	db := newTestDB(t)
