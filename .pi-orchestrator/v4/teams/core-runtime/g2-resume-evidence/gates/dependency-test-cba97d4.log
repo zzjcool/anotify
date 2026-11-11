@@ -1,5 +1,0 @@
-HEAD=cba97d4f9ae5d4bffa3d9e3f12ef7280a25d8797 ROOT=/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume GOMOD=/root/code/anotify/.pi-subagents/runs/r-57adb51b/worktrees/v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume/go.mod
-ok  	github.com/zzjcool/anotify/internal/store	5.136s
-ok  	github.com/zzjcool/anotify/internal/store/v4test	38.109s
-ok  	github.com/zzjcool/anotify/internal/artifact	2.520s
-ok  	github.com/zzjcool/anotify/internal/protocol	0.079s
