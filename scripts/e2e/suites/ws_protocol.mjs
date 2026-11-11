@@ -122,7 +122,7 @@ async function helloAndWelcome(base, node, { slots = 1, namespaces = [NS] } = {}
 // closeExpect 连一条会话、发一帧、等连接被服务端关掉（返回关闭原因）。
 async function closeExpect(base, node, send) {
 	const mock = await mkMock(base, node.name, node.token);
-	if (send) send(mock);
+	if (send) await send(mock);
 	const deadline = Date.now() + 5000;
 	while (!mock.closed() && Date.now() < deadline) await sleep(30);
 	// 收尾：无论是否已被服务端关掉，都主动断一次（避免残留会话影响后续派发判定）。
@@ -319,8 +319,11 @@ async function partConfig(base, session, node) {
 	mock.conn.send({ type: "config.applied", revision: welcome.configRevision, hash: goodHash });
 
 	// 坏 revision 是**协议违例**：帧结构对了但取值不可能成立 → 关连接（1008）。
-	const closed = await closeExpect(base, node, (m) => {
+	const closed = await closeExpect(base, node, async (m) => {
 		m.conn.send({ type: "hello", name: node.name, token: node.token, namespaces: [NS], localLimits: { total: 1 }, instances: [{ slot: 0, busy: false }] });
+		// 坏 revision 是**握手后**的协议违例：先等 welcome，否则高负载下
+		// config.applied 可能先于会话建立被处理，关闭原因不稳定（假红）。
+		await m.waitFrame("welcome", () => true, 5000);
 		m.conn.send({ type: "config.applied", revision: "not-a-number", hash: goodHash });
 	});
 	H.eq("config.applied.revision 不是非负整数 → 1008", closed?.code, 1008);
