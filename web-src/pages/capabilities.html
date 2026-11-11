@@ -2027,8 +2027,13 @@
           const nodes = Array.from(DEPLOY.selected);
           if (nodes.length) body.nodes = nodes; // 不选 = 服务端按现有策略选候选节点
           await ready();
+          // v4 端点：POST /v1/namespaces/{ns}/capabilities/{name}/deploy（api/resource.yaml
+          // CapabilityDeployRequest：{version?, nodes?: [节点名]}）。响应契约是
+          // CapabilityDeployResponse {deployed, version}；预览 mock 仍回 DeploymentList{items}，
+          // 两种形状都只用来数「已部署几台」，不参与成功判定。
           const out = await api(nsPath("capabilities", m.name) + "/deploy", writeOpts("POST", body));
-          const count = out && Array.isArray(out.items) ? out.items.length : 0;
+          const deployedRows = Array.isArray(out && out.deployed) ? out.deployed : out && Array.isArray(out.items) ? out.items : [];
+          const count = deployedRows.length;
           toast(sub(t("caps.toast.deployed", "已部署（{n} 台）"), { n: count }));
           OPEN.add(m.name);
           DEPLOY = null;
