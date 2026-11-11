@@ -101,6 +101,11 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// 「卡在哪一步」原样打出来，而不是先被 SIGKILL 成「超时」。套件自己也断言总时长
 	// < 300s，所以这里给同一量级的预算。
 	node_v4: 300_000,
+	// capacity（v4 迁移）：保留期清理挂在 30s 的租约巡检 tick 上（lease.DefaultInterval），
+	// 而它要验三件事：默认 30 天真的删、重启后第二轮「删 0 条」（幂等）、系统配置 0 = 永久
+	// （含一次「改成 1s 就必须删」的正向对照）。每件都要等一整轮 tick，串起来 ≈ 150s；
+	// 默认 120s 会把**有界等待**变成 SIGKILL，断言文本全丢（与 real_backend 同一条理由）。
+	capacity: 300_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
