@@ -40,6 +40,13 @@ const ancestorSchemaDoc = `
           properties:
             token: { type: string, writeOnly: true }
             note:  { type: string }
+      prefixList:
+        type: array
+        prefixItems:
+          - type: object
+            additionalProperties: false
+            properties:
+              pin: { type: string, writeOnly: true }
 `
 
 // ancestorSourceName 是测试源名（一个源，一个 target）。
@@ -100,50 +107,15 @@ func ancestorNewValues() map[string]any {
 	}
 }
 
-// ancestorSchema 用 Go 字面量重建 ancestorSchemaDoc（单测直接调敏感性函数，不经 YAML）。
-func ancestorSchema() map[string]any {
-	str := func() map[string]any { return map[string]any{"type": "string"} }
-	writeOnlyStr := func() map[string]any {
-		return map[string]any{"type": "string", "writeOnly": true}
+// ancestorSchema 从 ancestorSchemaDoc 解出 schema（单测直接调敏感性函数，不经 YAML 变量）。
+// 只有一份真相源：改 YAML 不会与 Go 字面量静默漂移。
+func ancestorSchema(t *testing.T) map[string]any {
+	t.Helper()
+	sch, err := decodeDoc(ancestorSchemaDoc, "test-values")
+	if err != nil {
+		t.Fatalf("解码测试 schema: %v", err)
 	}
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"project": map[string]any{"type": "string", "default": "a"},
-			"auth": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"token": writeOnlyStr(),
-					"label": str(),
-				},
-			},
-			"credList": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"token": writeOnlyStr(),
-						"note":  str(),
-					},
-				},
-			},
-			// prefixItems 是元组写法，语义与 items 同一条（子树含 writeOnly 即敏感）。
-			"prefixList": map[string]any{
-				"type": "array",
-				"prefixItems": []any{
-					map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"pin": writeOnlyStr(),
-						},
-					},
-				},
-			},
-		},
-	}
+	return sch
 }
 
 // ancestorBundle 组出与 f3 同形的包（一个能力 + 一个带祖先引用的源）。
@@ -158,7 +130,7 @@ func ancestorBundle(t *testing.T) *Package {
 
 // TestRefHitsWriteOnlyAncestorInheritance 是敏感性推导的语义表（逐条对齐 mock）。
 func TestRefHitsWriteOnlyAncestorInheritance(t *testing.T) {
-	sch := ancestorSchema()
+	sch := ancestorSchema(t)
 
 	cases := []struct {
 		name string
@@ -172,9 +144,13 @@ func TestRefHitsWriteOnlyAncestorInheritance(t *testing.T) {
 		// 既有行为：解析到 writeOnly 叶（下钻途中命中），不得退化。
 		{"writeOnly 叶", "credList.0.token", true},
 		{"writeOnly 叶（对象内）", "auth.token", true},
-		// prefixItems 元组：整数组引用落在数组节点上，其 prefixItems 子树含 writeOnly。
-		// （逐下标 `prefixList.0` 不走：`descendSchema` 只认 `items`，与 `maskValue` 同源。）
+		// prefixItems 元组：整数组引用落在数组节点上，其 prefixItems 子树含 writeOnly；
+		// 逐下标同样要解析到 `prefixItems[i]`（2020-12 语义），否则 `{{values.tuple.0.pin}}`
+		// 命中了 writeOnly 叶却被判非敏感。
 		{"元组数组祖先", "prefixList", true},
+		{"元组元素祖先", "prefixList.0", true},
+		{"元组元素 writeOnly 叶", "prefixList.0.pin", true},
+		{"元组越界下标", "prefixList.9", false},
 		// 不过度打码：普通叶 / 普通字段 / 不存在的路径。
 		{"普通兄弟叶", "auth.label", false},
 		{"数组元素普通叶", "credList.0.note", false},
@@ -205,7 +181,7 @@ func TestRefHitsWriteOnlyAncestorInheritance(t *testing.T) {
 // TestValueReferencesWriteOnlyMixedStringAncestor 覆盖**混合串**里的祖先引用：
 // 渲染阶段本来会 `render_type_mismatch`（对象拼字符串），但推导必须保守为真。
 func TestValueReferencesWriteOnlyMixedStringAncestor(t *testing.T) {
-	sch := ancestorSchema()
+	sch := ancestorSchema(t)
 
 	if !valueReferencesWriteOnly("secret={{values.auth}}", sch) {
 		t.Fatalf("混合串引用 auth 祖先应判敏感（保守为真）")

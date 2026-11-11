@@ -349,9 +349,9 @@ func (p *PlanResult) reuseCapability(a *artifact.Artifact, snap *CapabilitySnaps
 //
 // sens 与 srcs（= pkg.SourcePaths 顺序）下标对齐：`sens[i][j]` 是第 i 个源第 j 个 target
 // 上引用了 writeOnly values 的 param key 集，只用于打码回执的 declared/actual 展示副本。
-func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets map[string][]sourcespec.Target, sens [][]map[string]bool) error {
+func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets map[string][]sourcespec.Target, sens [][]targetSensitivity) error {
 	for i, s := range srcs {
-		var keys []map[string]bool
+		var keys []targetSensitivity
 		if i < len(sens) {
 			keys = sens[i]
 		}

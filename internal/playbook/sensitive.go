@@ -23,44 +23,88 @@ import (
 // 整数组 / 整数 / 布尔 / 混合串（`secret={{values.pin}}`）一律整值替换，不是子串替换。
 //
 // 打码只作用于回执的展示副本：
-//   - `declared` 侧来自包体（精确到 target 下标 + param key）；
-//   - `actual` 侧（库里旧行）没有旧 values 的 provenance，按「同一 target 位置 + 同名能力」
-//     继承 declared 侧的敏感性，对齐不上就退到该源全部敏感 key 的并集（只允许**多**打码）；
+//   - `declared` 侧来自包体（精确到 target 下标 + param key；raw 形状推不出 key 时整组打码）；
+//   - `actual` 侧（库里旧行）没有旧 values 的 provenance，按**同名能力的并集**继承 declared
+//     侧敏感性，名字对不上就退到该源全部敏感集的并集（只允许**多**打码）；
 //   - `PlannedSource.Spec` / `snap.Targets` **一律不原地改**：新建源落库的执行事实读的是
 //     它们，必须继续带明文。
+//
+// 已知盲区（D3 固有，需契约才能动）：actual 侧只认识包里**当前**的 param key 名。若两轮之间
+// 把一个由 writeOnly values 派生的 param **改名**，旧 key 不在任何敏感集里，旧值仍会以明文
+// 出现在 `actual`。要关死它只能把“该 target 整组打码”，那会连带隐去非敏感旧值（展示收益
+// 归零），故本轮如实记为残余限制。
 
-// sourceTargetSensitivity 推导每个源、每个 target 上「引用了 writeOnly values 的 param key」。
+// targetSensitivity 是一个 target 上「哪些 param 值由 writeOnly values 派生」的推导结果。
+//
+// 两档（顺序即优先级）：
+//   - `allParams`：raw 源文档在这里推不出具体 param key（整块 `targets` / 整块 `params` 写成
+//     一条整值模板，key 要到渲染后才存在），只能按**整组打码**——只许多打码，不允许漏；
+//   - `keys`：逐 key 精确命中（`allParams=false` 时生效）。
+//
+// 为什么必须有 allParams 这一档：`targets: '{{values.tlist}}'` / `params: '{{values.pobj}}'`
+// 渲染后是合法的 target 列表 / params 对象（`decodeSourceWire` 只要求渲染后形状合法），
+// 但 raw 侧没有 key 可对。若此处退回“空 key 集”，`unapplied[].declared/actual` 会把整块
+// writeOnly 明文原样带进回执（实测：`params: '{{values.pobj}}'` 的 pin 明文进回执）。
+type targetSensitivity struct {
+	allParams bool
+	keys      map[string]bool
+}
+
+// sourceTargetSensitivity 推导每个源、每个 target 上「引用了 writeOnly values 的 param」。
 //
 // 返回与 `pkg.SourcePaths`（= 渲染后 `RenderResult.Sources`，Render 按同一顺序 append）
-// **下标对齐**的二维表：外层下标 = 源，内层下标 = target，值 = 敏感 param key 集合。
+// **下标对齐**的二维表：外层下标 = 源，内层下标 = target。
 //
 // 防御：raw `spec.targets` 形状不是列表、或长度与渲染后的 targets 不一致（结构错位）→
-// 该源退回“长度 0 的精确表”，绝不按错位的下标套用敏感集；`actual` 侧的并集兜底会接住它
-// （安全性由“多打码”方向保证）。
-func sourceTargetSensitivity(pkg *Package, rendered []Source, sch map[string]any) ([][]map[string]bool, error) {
+// 不按错位的下标套用精确 key，改走 `opaqueTargetSensitivity`（能证明引用了 writeOnly 就
+// 整组打码，推不出引用则不打码——渲染阶段会自行拒绝非法形状）。
+func sourceTargetSensitivity(pkg *Package, rendered []Source, sch map[string]any) ([][]targetSensitivity, error) {
 	if pkg == nil {
 		return nil, nil
 	}
-	out := make([][]map[string]bool, len(pkg.SourcePaths))
+	out := make([][]targetSensitivity, len(pkg.SourcePaths))
 	for i, path := range pkg.SourcePaths {
 		tree, err := decodeDoc(pkg.Files[path], path)
 		if err != nil {
 			return nil, err
 		}
-		keys := rawTargetSensitivity(tree, sch)
-		if i < len(rendered) && len(keys) != len(rendered[i].Spec.Targets) {
-			keys = nil
+		sets := rawTargetSensitivity(tree, sch)
+		if i < len(rendered) && len(sets) != len(rendered[i].Spec.Targets) {
+			sets = opaqueTargetSensitivity(tree, sch, len(rendered[i].Spec.Targets))
 		}
-		out[i] = keys
+		out[i] = sets
 	}
 	return out, nil
 }
 
-// rawTargetSensitivity 从 raw（渲染前）源文档的 `spec.targets` 推每个 target 的敏感 param key。
+// opaqueTargetSensitivity 是 raw `targets` 形状推不出时的保守档。
+//
+// 只有「整块 targets 引用了 writeOnly values」才把每个渲染后的 target 标成整组打码；
+// 引用的是普通 values（或根本没有引用）则保持不敏感——不做“形状不认识就全打码”的猜测，
+// 否则 `targets: '{{values.tlist}}'` 这类普通模板会被无谓抹掉。
+func opaqueTargetSensitivity(tree map[string]any, sch map[string]any, targets int) []targetSensitivity {
+	out := make([]targetSensitivity, targets)
+	spec, ok := tree["spec"].(map[string]any)
+	if !ok || !valueReferencesWriteOnly(spec["targets"], sch) {
+		return out
+	}
+	for i := range out {
+		out[i] = targetSensitivity{allParams: true}
+	}
+	return out
+}
+
+// rawTargetSensitivity 从 raw（渲染前）源文档的 `spec.targets` 推每个 target 的敏感性。
 //
 // 按 YAML 列表下标保序：`interpolateTree` 不改数组长度、`decodeSourceWire` 按同一列表解码，
 // 所以 raw 下标与渲染后 targets 下标一一对应。形状不是列表 → 返回空表（长度 0）。
-func rawTargetSensitivity(tree map[string]any, sch map[string]any) []map[string]bool {
+//
+// 单个 target 的两处“推不出 key”同样走 allParams：
+//   - 列表项本身不是对象（`- '{{values.tobj}}'`）；
+//   - `params` 不是对象（`params: '{{values.pobj}}'`）。
+//
+// 两种写法渲染后都可能合法，raw 侧只有「这一整块引用了 writeOnly」这一个事实可用。
+func rawTargetSensitivity(tree map[string]any, sch map[string]any) []targetSensitivity {
 	spec, ok := tree["spec"].(map[string]any)
 	if !ok {
 		return nil
@@ -69,19 +113,25 @@ func rawTargetSensitivity(tree map[string]any, sch map[string]any) []map[string]
 	if !ok {
 		return nil
 	}
-	out := make([]map[string]bool, len(list))
+	out := make([]targetSensitivity, len(list))
 	for i, item := range list {
 		keys := map[string]bool{}
-		out[i] = keys
+		out[i] = targetSensitivity{keys: keys}
 		target, ok := item.(map[string]any)
 		if !ok {
+			out[i] = targetSensitivity{allParams: valueReferencesWriteOnly(item, sch)}
 			continue
 		}
-		params, ok := target["params"].(map[string]any)
+		params, present := target["params"]
+		if !present || params == nil {
+			continue
+		}
+		values, ok := params.(map[string]any)
 		if !ok {
+			out[i] = targetSensitivity{allParams: valueReferencesWriteOnly(params, sch)}
 			continue
 		}
-		for key, value := range params {
+		for key, value := range values {
 			if valueReferencesWriteOnly(value, sch) {
 				keys[key] = true
 			}
@@ -217,14 +267,32 @@ func splitValuePath(ref string) []string {
 	return strings.Split(ref, ".")
 }
 
-// descendSchema 按一段路径下钻 schema 节点（数组按下标 + `items`，对象按 `properties`）。
+// descendSchema 按一段路径下钻 schema 节点。
+//
+// 三种容器：
+//   - 元组（`prefixItems`）：下标段落在 `prefixItems[i]`（2020-12 语义：先看它）；
+//   - 数组：下标段落在 `items`（`{{values.list.0}}` 与 `{{values.list}}` 两种写法都在上一层
+//     解析到数组节点，这里只在**下标段**上再下钻一层）；
+//   - 对象：普通字段落在 `properties`。
+//
+// `prefixItems` 从 2026-11 起同时被 `subtreeHasWriteOnly` 与这里识别（否则
+// `{{values.tuple.0.pin}}` 命中了 writeOnly 叶却会被判非敏感）。注意这比 `MaskValues`
+// （`values.go`）宽一格：那里的 prefixItems 拆码属既有 D16 口径，不在 #356 范围。
 func descendSchema(sch map[string]any, seg string) (map[string]any, bool) {
 	if sch == nil {
 		return nil, false
 	}
+	idx, isIndex := toIntFromString(seg)
+	if prefix, ok := sch["prefixItems"].([]any); ok && isIndex && idx < len(prefix) {
+		node, ok := prefix[idx].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		return node, true
+	}
 	if itemSchema, ok := sch["items"].(map[string]any); ok {
-		// 数组：段必须是下标。`{{values.list.0}}` 与 `{{values.list}}` 两种写法都落在 items 上。
-		if _, isIndex := toIntFromString(seg); !isIndex {
+		// 数组：段必须是下标。
+		if !isIndex {
 			return nil, false
 		}
 		return itemSchema, true
@@ -237,71 +305,83 @@ func descendSchema(sch map[string]any, seg string) (map[string]any, bool) {
 	return child, true
 }
 
-// maskTargets 是 declared 侧打码：**新建切片 + 新建 params map**，敏感 key 的整值换成
+// maskTargets 是 declared 侧打码：**新建切片 + 新建 params map**，敏感 param 的整值换成
 // `MaskedValue`，其它 key 原样（不做深拷贝）。
 //
 // 绝不原地改入参：`PlannedSource.Spec.Targets` 必须继续带明文（新建源落库读它）。
-func maskTargets(targets []sourcespec.Target, keys []map[string]bool) []sourcespec.Target {
-	union := unionSensitiveKeys(keys)
+func maskTargets(targets []sourcespec.Target, sets []targetSensitivity) []sourcespec.Target {
+	union := unionSensitiveKeys(sets)
 	out := make([]sourcespec.Target, len(targets))
 	for i, t := range targets {
-		out[i] = maskTargetAt(t, keysForIndex(keys, i, union))
+		set := union
+		if i < len(sets) {
+			set = sets[i]
+		}
+		out[i] = maskTargetAt(t, set)
 	}
 	return out
 }
 
 // maskActualTargets 是 actual 侧打码（库里旧行没有旧 values 的 provenance，只能继承）。
 //
-// 对齐算法（唯一的兜底方向是“多打码”，绝不允许漏）：
-//  1. 同下标且能力名相同（`refName` 归一：`a-cap@1` 与 `a-cap` 是同名字段）→ 用该 declared
-//     下标的敏感 key 集；
-//  2. 否则取第一个「未被占用」的同能力名 declared target；
-//  3. 都不成立 → 用该源 declared 侧**全部**敏感 key 的并集。
-func maskActualTargets(declared, actual []sourcespec.Target, keys []map[string]bool) []sourcespec.Target {
-	union := unionSensitiveKeys(keys)
-	used := make([]bool, len(declared))
+// 对齐算法见 `inheritSensitivity`（同名能力的并集）；唯一兜底方向是“多打码”。
+func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensitivity) []sourcespec.Target {
+	union := unionSensitiveKeys(sets)
 	out := make([]sourcespec.Target, len(actual))
 	for i, t := range actual {
-		keySet := inheritSensitiveKeys(declared, keys, used, i, t.Capability, union)
-		out[i] = maskTargetAt(t, keySet)
+		out[i] = maskTargetAt(t, inheritSensitivity(declared, sets, t.Capability, union))
 	}
 	return out
 }
 
-// inheritSensitiveKeys 是 D3 的三步对齐：同下标同名 → 第一个未占用的同名 → 并集。
-func inheritSensitiveKeys(declared []sourcespec.Target, keys []map[string]bool, used []bool,
-	index int, capability string, union map[string]bool) map[string]bool {
+// inheritSensitivity 是 D3 的 actual 侧对齐：取**同名能力的全部 declared target 的并集**。
+//
+// 为什么不用“同下标优先”：`sourcespec.SameTargets` 明确把 target 顺序当**非语义**
+// （config.go：“顺序不同但内容相同 = 等价”，扇出顺序不是语义），所以库里顺序与包里合法地不同。
+// 按位置绑定会把 A target 的敏感集套到 B target 上——B 里其他 key 名的 writeOnly 明文就漏了
+// （实测：两条同名 `a-review`，一条 `token`、一条 `secret`，库顺序相反 → 两侧明文进回执）。
+// 取**同名并集**与顺序无关，且方向只会多打码。
+//
+// 名字对不上（旧包已删该能力）→ 退到该源全部敏感集的并集（保守兜底）。
+func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
+	capability string, union targetSensitivity) targetSensitivity {
 	name := refName(strings.TrimSpace(capability))
-	// ① 同下标 + 同名。
-	if index < len(declared) && index < len(keys) && !used[index] &&
-		refName(strings.TrimSpace(declared[index].Capability)) == name {
-		used[index] = true
-		return keys[index]
-	}
-	// ② 第一个未被占用的同名 declared target。
+	out := targetSensitivity{keys: map[string]bool{}}
+	matched := false
 	for j := range declared {
-		if used[j] || j >= len(keys) {
+		if j >= len(sets) || refName(strings.TrimSpace(declared[j].Capability)) != name {
 			continue
 		}
-		if refName(strings.TrimSpace(declared[j].Capability)) != name {
-			continue
-		}
-		used[j] = true
-		return keys[j]
+		matched = true
+		mergeSensitivity(&out, sets[j])
 	}
-	// ③ 并集（保守多打码）。
-	return union
+	if !matched {
+		return union
+	}
+	return out
 }
 
-// maskTargetAt 打码一个 target 的 params（无 params / 无敏感 key → 原值原样返回）。
-func maskTargetAt(t sourcespec.Target, keySet map[string]bool) sourcespec.Target {
-	if len(t.Params) == 0 || len(keySet) == 0 {
+// mergeSensitivity 把 src 的敏感性并入 dst（allParams 传染，key 取并）。
+func mergeSensitivity(dst *targetSensitivity, src targetSensitivity) {
+	if src.allParams {
+		dst.allParams = true
+	}
+	for k, v := range src.keys {
+		if v {
+			dst.keys[k] = true
+		}
+	}
+}
+
+// maskTargetAt 打码一个 target 的 params（无 params / 无敏感项 → 原值原样返回）。
+func maskTargetAt(t sourcespec.Target, set targetSensitivity) sourcespec.Target {
+	if len(t.Params) == 0 || (!set.allParams && len(set.keys) == 0) {
 		return t
 	}
 	params := make(map[string]any, len(t.Params))
 	masked := false
 	for k, v := range t.Params {
-		if keySet[k] {
+		if set.allParams || set.keys[k] {
 			params[k] = MaskedValue
 			masked = true
 			continue
@@ -315,23 +395,11 @@ func maskTargetAt(t sourcespec.Target, keySet map[string]bool) sourcespec.Target
 	return t
 }
 
-// keysForIndex 取某 target 下标的敏感 key 集；下标越界（结构错位）→ 并集兜底。
-func keysForIndex(keys []map[string]bool, index int, union map[string]bool) map[string]bool {
-	if index < len(keys) {
-		return keys[index]
-	}
-	return union
-}
-
-// unionSensitiveKeys 求一个源 declared 侧全部敏感 param key 的并集（返回新 map）。
-func unionSensitiveKeys(keys []map[string]bool) map[string]bool {
-	out := map[string]bool{}
-	for _, set := range keys {
-		for k, v := range set {
-			if v {
-				out[k] = true
-			}
-		}
+// unionSensitiveKeys 求一个源 declared 侧全部敏感集的并集（allParams 传染，key 取并）。
+func unionSensitiveKeys(sets []targetSensitivity) targetSensitivity {
+	out := targetSensitivity{keys: map[string]bool{}}
+	for _, set := range sets {
+		mergeSensitivity(&out, set)
 	}
 	return out
 }
