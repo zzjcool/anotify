@@ -168,6 +168,15 @@ type Runner struct {
 // maxHistory 是历史回收账本上限（late cancel/ack 的窗口，不是业务状态）。
 const maxHistory = 1024
 
+// reapWatchWindow / reapWatchInterval 是「终态仍未确认回收」时的后台复核参数。
+// 复核只确认内核事实（进程组真的消失）：确认后补发 reaped=true 的 cancel.ack
+// 并按现有规则释放槽位；不重跑任务、不改 attempt、不续租。窗口有界，且
+// 退出/关闭（recoveryStop）会提前结束，持久记录继续保护重启后的占用。
+const (
+	reapWatchWindow   = 30 * time.Second
+	reapWatchInterval = 20 * time.Millisecond
+)
+
 // New 构造运行器。
 func New(opts Options) (*Runner, error) {
 	if strings.TrimSpace(opts.NodeName) == "" {
@@ -952,7 +961,85 @@ func (r *Runner) finishAttemptLocked(att *Attempt) {
 		}
 	} else {
 		r.logf("runner: task=%s attempt=%d 未确认进程组回收，保留物理槽位", att.taskID, att.attempt)
+		r.watchReapLocked(att)
 	}
+}
+
+// watchReapLocked 为「终态未确认回收」起一次有界后台复核（每个 attempt 一次）。
+//
+// 物理事实优先：确认不了就继续占着槽位（不假释放）；一旦内核真的回收了，就把
+// 这个事实补齐（补发 reaped=true 的回执 + 释放槽位），不让中枢永久认为槽位被占。
+func (r *Runner) watchReapLocked(att *Attempt) {
+	if r.closed {
+		return
+	}
+	pgid := att.pgidValue()
+	if pgid <= 0 {
+		return
+	}
+	att.reapWatchOnce.Do(func() {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			if !waitGroupGone(pgid, reapWatchWindow, reapWatchInterval, r.recoveryStop) {
+				select {
+				case <-r.recoveryStop:
+					// 关闭/退出：持久记录（reaped=false + pgid）在重启核查时继续保护占用。
+				default:
+					r.logf("runner: task=%s attempt=%d 进程组 %d 在 %s 复核窗口内仍未确认回收，保持槽位占用",
+						att.taskID, att.attempt, pgid, reapWatchWindow)
+				}
+				return
+			}
+			r.confirmReap(att, pgid)
+		}()
+	})
+}
+
+// confirmReap 是后台复核确认后的收尾：记录回收事实、补发 reaped=true 的
+// cancel.ack，并按现有规则释放仍绑定该 attempt 的物理槽位与历史账本。
+func (r *Runner) confirmReap(att *Attempt, pgid int) {
+	if groupAlive(pgid) {
+		return
+	}
+	att.setGroupReaped(true)
+	if att.record != nil {
+		if err := att.record.MarkReaped(true); err != nil {
+			r.logf("runner: task=%s attempt=%d 补记回收事实失败：%v", att.taskID, att.attempt, err)
+		}
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	key := resultKey(att.taskID, att.attempt)
+	if hist := r.history[key]; hist != nil && hist.taskID == att.taskID &&
+		hist.attempt == att.attempt && hist.leaseID == att.leaseID {
+		hist.reaped = true
+		hist.slot = att.slot
+	} else {
+		r.addHistoryLocked(&slotRecord{taskID: att.taskID, attempt: att.attempt, leaseID: att.leaseID, slot: att.slot, reaped: true})
+	}
+	if att.slot >= 0 && att.slot < len(r.slots) {
+		slot := r.slots[att.slot]
+		// 只有该槽仍绑定这个 attempt 时才释放：后来的租约/执行不能被旧事实冲掉。
+		if slot != nil && slot.running && slot.taskID == att.taskID &&
+			slot.attempt == att.attempt && slot.leaseID == att.leaseID {
+			capability := ""
+			if att.art != nil {
+				capability = att.art.Metadata.Name
+			}
+			r.releaseSlotLocked(att.slot, capability)
+		}
+	}
+	r.mu.Unlock()
+	r.logf("runner: task=%s attempt=%d 后台复核确认进程组 %d 已回收：补发 cancel.ack 并释放槽位 %d",
+		att.taskID, att.attempt, pgid, att.slot)
+	r.sendCancelAck(&protocol.CancelAckFrame{
+		Type: protocol.FrameCancelAck, TaskID: att.taskID, Attempt: att.attempt,
+		LeaseID: att.leaseID, Slot: intPtr(att.slot), ProcessGroupReaped: true,
+	})
 }
 
 func (r *Runner) send(frame any) error {
