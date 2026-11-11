@@ -144,29 +144,40 @@ add('source-auth-dedup',async d=>{
     d.check('F3-SRC-AUTH actual HMAC raw bytes Unauthorized zero writes; exact duplicate receipt/task identity and credential rotation invalidates old hook');
     return;
   }
-  /* 真实 ingress 的鉴权面**只有 URL 里的 token**：v4 不做 HMAC 签名校验
-     （events 表连 signature 列都没有 —— resource_task.go·eventSpecDoc 明写
-     "signature（HMAC 验证结论）刻意省略……编一个默认值等于把没验证说成已验证"）。
-     所以真实现场能断言的是三件真事：
-       ① 唯一拒绝面是 token：不存在的 token → 404，且 0 写；
-       ② 幂等按 delivery id：同一 id 重投 → duplicate:true + 同一 eventId/traceId；
-       ③ 轮换 token 之后旧 hook 地址失效（404）。 */
+  /* 真实 ingress 的鉴权面（#355 起强制验签）：配了 `config.secret` 的源，投递必须带
+     `X-Anotify-Signature: sha256=<64 位小写 hex>`，值是 HMAC-SHA256(secret, 原始 body 字节)
+     —— 对**实际发出的那个字符串**算（payload 首尾各有一个空格，JSON.stringify 之后再算必假失败）。
+     入口顺序：限流 429 → token 定源 404 → 读 raw 413 → **验签 401** → 解 JSON 400 → 接收 200；
+     未签名 / 格式错 / 不匹配一律 401（同码同文案、错误体不含 secret），且**不产生任何写入**。
+     真实现场能断言的真事：
+       ① 未签名 → 401、错签名 → 401，两次之后快照逐字节相等（0 写）；
+       ② 正确签名 → 200 + 一个任务；
+       ③ 幂等按 delivery id：同一 id 换内容重投 → duplicate:true + 同一 eventId/traceId，
+          生效的仍是**第一次**的字节（任务 params.message 还是 real，changed 没覆盖）；
+       ④ 事件投影记下 deliveryId；轮换 token 之后旧 hook 地址 404（LookupHook 在验签之前）；
+       ⑤ 页面文本里永远看不到 secret。 */
   const before=await d.snapshot();
-  const missing=await d.page.evaluate(async()=>{const r=await fetch('/v1/hooks/{{SECRET_sbypwnhk}}',{method:'POST',body:'{"payload":{}}'});const t=await r.text();return {status:r.status,body:t?JSON.parse(t):null};});
-  assert.equal(missing.status,404);
-  assert.equal(await d.snapshot(),before,'不存在的 token 必须 0 写');
-  const first=await send(payload);assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
-  const modified=payload.replace('real','changed');const duplicate=await send(modified);
-  assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.eventId,first.body.eventId);assert.equal(duplicate.body.traceId,first.body.traceId);
+  const unsigned=await send(payload);
+  assert.equal(unsigned.status,401,'配了 secret 的源：未签名必须 401（验签在解 JSON 之前）');
+  assert.ok(!JSON.stringify(unsigned.body).includes(secret),'401 错误体不得回显 secret');
+  const wrongSig=await send(payload,'sha256='+'0'.repeat(64));
+  assert.equal(wrongSig.status,401,'签名不匹配必须 401（与缺失同码同文案）');
+  assert.ok(!JSON.stringify(wrongSig.body).includes(secret),'401 错误体不得回显 secret');
+  assert.equal(await d.snapshot(),before,'未签名/错签名必须 0 写（快照逐字节相等）');
+  const first=await send(payload,signed(payload));assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
+  const modified=payload.replace('real','changed');const duplicate=await send(modified,signed(modified));
+  assert.equal(duplicate.status,200);assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.eventId,first.body.eventId);assert.equal(duplicate.body.traceId,first.body.traceId);
   const task=await d.req('/v1/namespaces/default/tasks/'+first.body.tasks[0].taskId);assert.equal(task.spec.params.message,'real');
   const event=(await d.req('/v1/namespaces/default/events')).items.find(e=>e.metadata.name===first.body.eventId);assert.equal(event.spec.deliveryId,'f3-delivery');
   const rotated=await d.req(p+'/f3-signed-hook',{method:'PATCH',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Source',metadata:{resourceVersion:created.body.metadata.resourceVersion},spec:{config:{token:'f3-rotated-hook'}}})});
-  assert.equal(rotated.spec.config.secretSet,true);assert.equal((await send(payload)).status,404);
+  assert.equal(rotated.spec.config.secretSet,true);assert.equal((await send(payload,signed(payload))).status,404,'轮换后旧 token 必须 404（LookupHook 在验签之前）');
   assert.ok(!(await d.page.locator('body').innerText()).includes(secret));
-  d.check('F3-SRC-AUTH actual token-only ingress (v4 has no HMAC verify): unknown token 404 zero writes, duplicate delivery keeps event/trace identity, rotation invalidates old hook');
+  d.check('F3-SRC-AUTH real ingress: HMAC-SHA256 over raw bytes verified before JSON decode (unsigned/wrong sig 401 and zero writes); duplicate delivery keeps first bytes/event/trace identity; rotation invalidates old hook');
 },{expectHttpStatus:[
-  // 唯一鉴权失败面是 URL token：不存在的 token（含轮换后的旧 token）必须 404。
-  {status:404,path:'/v1/hooks/',note:'unknown hook token：不存在的 token 必须 404，0 写'},
+  // 配了 secret 的源：未签名 / 错签名一律 401（#355 强制验签），两次都不许留下任何写入。
+  {status:401,path:'/v1/hooks/',note:'带 secret 的源：未签名/错签名 401 且 0 写'},
+  // token 定源在验签**之前**：轮换 token 之后旧 hook token 必须 404（这条必须真实命中）。
+  {status:404,path:'/v1/hooks/',note:'rotation：轮换 token 之后旧 hook token 必须 404，0 写'},
 ]});
 add('retained-ux21-identity',async d=>{
   await d.goto('index','namespace=default&u=zheng');
