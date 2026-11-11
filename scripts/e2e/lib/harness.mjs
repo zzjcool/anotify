@@ -338,93 +338,103 @@ export async function waitForAppReady(page, pageType, opts = {}) {
 	}
 }
 
-// ---------- 命名空间（命名空间资源端点必须显式带 namespaceId） ----------
+// ---------- 命名空间（v4：ns 进路径，只有三个保留读模型走 ?namespace=） ----------
 //
-// 契约 §6.2：/v1/capabilities、/v1/nodes、/v1/edges、/v1/sources、/v1/events、
-// /v1/tasks、/v1/traces/*、/v1/stats 的 namespaceId 是**必填**参数，缺了就 400
-// （后端**绝不**回退默认命名空间——回退等于把人写错的地方藏起来）。
-// 组织级端点（/v1/orgs、/v1/admin/*、/v1/auth/* 等）反过来不需要也不该带。
-const NS_REQUIRED_PREFIXES = [
-	"/v1/capabilities",
-	"/v1/nodes",
-	"/v1/edges",
-	"/v1/sources",
-	"/v1/events",
-	// 控制台的事件流是 events 的另一个入口（同一张表、同一套作用域），
-	// 前缀匹配不会覆盖到它，必须单列。
-	"/v1/console/events",
-	"/v1/tasks",
-	"/v1/traces",
+// v4 把命名空间放进了**路径**：`/v1/namespaces/{ns}/capabilities` 等（契约 §5.2）。
+// 所以「出口注入 ns 参数」这件事对资源端点已经**完全不适用**——路径里有了，再补一个
+// query 只会让后端拿到两个可能互相矛盾的来源。
+//
+// 仍然需要 `?namespace=` 的只剩三个**保留域读模型**（api-conventions §8.4，它们不是
+// 资源路径）：
+//
+//   GET /v1/stats?namespace=NAME
+//   GET /v1/orphans?namespace=NAME      （`*`  = 跨 ns 汇总）
+//   GET /v1/console/events?namespace=NAME
+//
+// 三者的参数名是 `namespace`（不是 v3 的 `namespaceId`），缺了就 400 —— 后端**绝不**
+// 回退默认命名空间（回退等于把人写错的地方藏起来）。
+//
+// 为什么还留着这个注入层：这三个端点在十几个套件里被调用，靠人记得加参数必然漏，
+// 而漏掉的表现是「某天 400 了」，排查成本极高。资源端点则必须在路径里显式写 ns
+// ——这正是 v4 想要的显式性，不给它留一条隐式兜底。
+const NS_QUERY_PREFIXES = [
 	"/v1/stats",
-	// 预案（#193 起）也是命名空间资源：5 个端点全部走 resolveNamespaceCreate
-	// （见 internal/server/playbook_handlers.go 的文件头）。这里漏一行的症状是
-	// 「req() 静默少带一个参数 → 真后端一律 400」，而 400 的原因只有后端日志里有。
-	"/v1/playbooks",
-	// 孤儿 pending 任务视图（#270）：命名空间资源，`*` 表示跨命名空间汇总。
 	"/v1/orphans",
-	// console-declares（协议 v2）新增的两个命名空间资源端点：
-	//   /v1/artifacts   ?capabilityId=  缺 namespaceId → 400
-	//   /v1/deployments  GET/POST/DELETE 全部缺了 → 400
-	// 漏登记的后果与 /v1/playbooks 那一次完全一样（那次是 #196）：req() 静默少带参数，
-	// 真后端一律 400，而且只有后端日志里才看得见原因。
-	"/v1/artifacts",
-	"/v1/deployments",
-
+	"/v1/console/events",
 ];
 
-// isNamespaceEndpoint 判断路径是否属于「必填 namespaceId」的命名空间资源端点。
-// 按整段前缀匹配：/v1/nodes 是命名空间资源，而 /v1/node/stream 是 WS 端点
-// （命名空间由节点令牌决定，见契约 §2.1），两者不能混。
+// isNamespaceEndpoint 判断路径是否属于「必须显式带 ?namespace=」的保留读模型。
+//
+// v4 名字保留（调用点很多），语义已经变成「cluster 路径 + 必填 query」，不再是
+// 「命名空间资源端点」。资源端点的 ns 在**路径**里，本函数对它们恒 false。
 export function isNamespaceEndpoint(p) {
 	const pathname = String(p || "").split("?")[0];
-	return NS_REQUIRED_PREFIXES.some(
+	return NS_QUERY_PREFIXES.some(
 		(prefix) => pathname === prefix || pathname.startsWith(prefix + "/"),
 	);
 }
 
 // 默认命名空间解析结果按 base 进程内缓存：一次 suite 只真正取一次。
 // 只缓存**成功**结果——后端还没上线 /v1/namespaces 时下次请求要能重试。
-const nsCache = new Map(); // base → 默认命名空间 id
+const nsCache = new Map(); // base → {id, slug}（默认命名空间）
 const nsInflight = new Map(); // base → 解析中的 Promise（并发请求不重复打）
 const nsSessionByBase = new Map(); // base → 最近一次见到的会话（给只有 API Key 的请求兜底）
 const nsSessionByDb = new Map(); // dbPath → 会话（seed() 登记；服务重启后同一个库还能用同一会话解析）
 const nsDbByBase = new Map(); // base → SQLite 路径（startServer 注册；无会话时按库查）
 const nsWarned = new Set(); // base → 已经提示过「解析不到默认命名空间」
 
-// defaultNamespaceId(base, session) → 本组织默认命名空间（slug=default）的 id。
+// defaultNamespace(base, session) → { id, slug }（默认命名空间）。
 //
-// 用例里**不许**硬编码 ns_xxx：命名空间 id 是建库时生成的，抄进用例就等着换库全红。
-// 需要第二个命名空间做隔离断言时用 POST /v1/namespaces 建，拿响应里的 id。
-export async function defaultNamespaceId(base, session) {
+// 为什么两个都要返回：v4 把 ns 放进了**路径**，而路径里要的是对外的 slug
+// （`/v1/namespaces/default/capabilities`）；直插库要用的是内部 id（`ns_…`）。
+// 两者不能互推（id 是建库时生成的），所以解析一次同时拿回来。
+//
+// 用例里**不许**硬编码 ns_xxx；默认 ns 的 slug 是契约固定的 `default`，但也从 API
+// 读回来 —— 这样「slug 被改」会变成一条可诊断的失败，而不是一片 404。
+export async function defaultNamespace(base, session) {
 	if (session) nsSessionByBase.set(base, session);
 	const hit = nsCache.get(base);
 	if (hit) return hit;
 	let inflight = nsInflight.get(base);
 	if (!inflight) {
 		// 会话来源三选一：本次调用的 → 这个 base 见过的 → seed() 登记过的同一个库的。
-		// 最后一条是为「只有 API Key 的请求」准备的：/v1/events 是机器入口，
+		// 最后一条是为「只有 API Key 的请求」准备的：事件 ingress 是机器入口，
 		// 没有会话 Cookie，但它要的命名空间跟这个库的会话看到的是同一个。
 		const sess =
 			session ||
 			nsSessionByBase.get(base) ||
 			nsSessionByDb.get(nsDbByBase.get(base) || "");
-		inflight = resolveDefaultNamespaceId(base, sess).finally(() =>
+		inflight = resolveDefaultNamespace(base, sess).finally(() =>
 			nsInflight.delete(base),
 		);
 		nsInflight.set(base, inflight);
 	}
-	const id = await inflight;
-	if (id) nsCache.set(base, id);
-	return id;
+	const found = await inflight;
+	if (found && found.id) nsCache.set(base, found);
+	return found;
 }
 
-// resolveDefaultNamespaceId 是 defaultNamespaceId 的实际解析，两条路：
+// defaultNamespaceId(base, session) → 默认命名空间的内部 id（直插库用）。
+export async function defaultNamespaceId(base, session) {
+	const ns = await defaultNamespace(base, session);
+	return ns ? ns.id : null;
+}
+
+// defaultNamespaceSlug(base, session) → 默认命名空间的对外名（拼路径用）。
+export async function defaultNamespaceSlug(base, session) {
+	const ns = await defaultNamespace(base, session);
+	return ns ? ns.slug : null;
+}
+
+// resolveDefaultNamespace 是 defaultNamespace 的实际解析，两条路：
 //
-//   ① GET /v1/namespaces（契约 §6.1）——唯一事实源，默认命名空间是 slug=default。
-//   ② 兜底：/v1/events 是**机器入口**（Bearer API Key，没有会话 Cookie），拿不到
-//      /v1/namespaces。这时按 startServer 注册的库路径查 namespaces 表。仍然只是
-//      「查出来的 id」，不是硬编码；用例侧看不出差别。
-async function resolveDefaultNamespaceId(base, session) {
+//   ① GET /v1/namespaces（契约 §7.5）——唯一事实源。v4 是**列表信封**：
+//      `{apiVersion, kind:"NamespaceList", metadata:{}, items:[{metadata:{name,uid}}]}`；
+//      默认命名空间的对外名是 `default`（`metadata.name` 就是 slug，`uid` 才是 ns_…）。
+//   ② 兜底：事件 ingress 走 Bearer API Key，没有会话 Cookie，拿不到 /v1/namespaces。
+//      这时按 startServer 注册的库路径查 namespaces 表。仍然只是「查出来的 id」，
+//      不是硬编码；用例侧看不出差别。
+async function resolveDefaultNamespace(base, session) {
 	if (session) {
 		try {
 			const res = await fetch(base + "/v1/namespaces", {
@@ -433,12 +443,17 @@ async function resolveDefaultNamespaceId(base, session) {
 			});
 			if (res.ok) {
 				const j = await res.json().catch(() => null);
-				const list = j?.namespaces || (Array.isArray(j) ? j : []);
-				const def = list.find((n) => n?.slug === "default") || list[0];
-				if (def?.id) return def.id;
+				// v4 列表信封 → items[]；v3 的 {namespaces:[…]} 已退役，不做兼容分支
+				// （两种形状都接会让「后端回到了 v3」这种回归静默通过）。
+				const list = Array.isArray(j?.items) ? j.items : [];
+				const def =
+					list.find((it) => it?.metadata?.name === "default") || list[0];
+				const id = def?.metadata?.uid;
+				const slug = def?.metadata?.name;
+				if (id && slug) return { id, slug };
 			}
 		} catch {
-			/* 端点还没上线 / 服务刚重启：落到下面的兜底 */
+			/* 端点异常 / 服务刚重启：落到下面的兜底 */
 		}
 	}
 	const dbPath = nsDbByBase.get(base);
@@ -448,60 +463,48 @@ async function resolveDefaultNamespaceId(base, session) {
 			try {
 				const row = db
 					.prepare(
-						`SELECT id FROM namespaces WHERE slug = 'default' ORDER BY created_at LIMIT 1`,
+						`SELECT id, slug FROM namespaces WHERE slug = 'default' ORDER BY created_at LIMIT 1`,
 					)
 					.get();
-				if (row?.id) return row.id;
+				if (row?.id && row?.slug) return { id: row.id, slug: row.slug };
 			} finally {
 				db.close();
 			}
 		} catch {
-			/* namespaces 表还不存在（后端未升级）：视为解析不到 */
+			/* namespaces 表还不存在（库未初始化）：视为解析不到 */
 		}
 	}
 	return null;
 }
 
-// withNamespaceQuery 给命名空间资源端点补上 namespaceId（契约 §6.2 的必填参数）。
+// withNamespaceQuery 给**保留读模型**补上 ?namespace=（v4 的必填参数）。
 //
-// 为什么在**出口**统一注入，而不是逐个用例手写：套件里这类调用上百处，靠人记得
-// 加参数必然漏，而漏掉的表现是「某天 400 了」，排查成本极高。
+// 只有 /v1/stats、/v1/orphans、/v1/console/events 三条会命中（见 NS_QUERY_PREFIXES）。
+// 资源端点的 ns 在路径里，这里一律不动 —— v4 没有「隐式默认命名空间」这回事。
 //
 // 调用方显式表态时**不覆盖**：
-//   1) 路径里已经带 namespaceId（含 namespaceId=*：跨命名空间汇总用）；
-//   2) body 对象里自带 namespaceId（后端取值顺序 query → body，意图明确就别抢）；
-//   3) opts.namespaceId === null（显式声明「就是不带」，用于断言缺参 400）。
-// 要指向非默认命名空间：opts.namespaceId = "<ns_id>"（id 来自 POST /v1/namespaces）。
+//   1) 路径里已经带 namespace=（含 namespace=*：跨命名空间汇总用）；
+//   2) opts.namespace === null（显式声明「就是不带」，用于断言缺参 400）。
 async function withNamespaceQuery(base, p, opts) {
 	if (!isNamespaceEndpoint(p)) return p;
-	if (opts.namespaceId === null) return p;
-	if (/[?&]namespaceId=/.test(p)) return p;
-	if (
-		opts.body &&
-		typeof opts.body === "object" &&
-		Object.prototype.hasOwnProperty.call(opts.body, "namespaceId")
-	) {
-		return p;
-	}
+	if (opts.namespace === null) return p;
+	if (/[?&]namespace=/.test(p)) return p;
 	const explicit =
-		typeof opts.namespaceId === "string" && opts.namespaceId
-			? opts.namespaceId
-			: null;
-	const id = explicit || (await defaultNamespaceId(base, opts.session));
-	if (!id) {
-		// 解析不到就保持原样（后端还没升级 /v1/namespaces 时不至于把套件提前打红），
+		typeof opts.namespace === "string" && opts.namespace ? opts.namespace : null;
+	const slug =
+		explicit || (await defaultNamespaceSlug(base, opts.session));
+	if (!slug) {
+		// 解析不到就保持原样（服务刚起 / 库未初始化时不至于把套件提前打红），
 		// 但要说一次，否则严格后端下只会看到一片 400 而不知道原因。
 		if (!nsWarned.has(base)) {
 			nsWarned.add(base);
 			console.warn(
-				`  ⚠️ ${base}：解析不到默认命名空间，命名空间资源请求将不带 namespaceId（后端严格后会 400）`,
+				`  ⚠️ ${base}：解析不到默认命名空间，保留读模型将不带 ?namespace=（后端会 400）`,
 			);
 		}
 		return p;
 	}
-	return (
-		p + (p.includes("?") ? "&" : "?") + "namespaceId=" + encodeURIComponent(id)
-	);
+	return p + (p.includes("?") ? "&" : "?") + "namespace=" + encodeURIComponent(slug);
 }
 
 // ---------- HTTP 客户端 ----------
@@ -520,30 +523,17 @@ export async function req(base, p, opts = {}) {
 			headers["Content-Type"] = headers["Content-Type"] || "application/json";
 		}
 	}
-	// 契约 §6.2 的必填参数在这里统一注入（namespaceId 走 query，后端以 query 为准）。
-	let target = await withNamespaceQuery(base, p, opts);
+	// 保留读模型的必填 ?namespace= 在这里统一注入（见 withNamespaceQuery）。	
+	const target = await withNamespaceQuery(base, p, opts);
 
-	// ---------- 造数桥：能力边只能走 PUT /v1/capabilities/{name}/downstreams ----------
+	// v3 的「POST /v1/edges → PUT …/downstreams」造数桥**已删除**。
 	//
-	// CONTRACT-downstream-edit §3 封掉了 POST /v1/edges 的**能力边**（405），因为
-	// 「能力的下游只能在能力里改」。但 e2e 有 12 个套件用 POST /v1/edges 造拓扑，
-	// 逐处改签名既吵又容易改错断言。这里把老形状**翻译**一次，套件一行都不用动：
-	//
-	//	POST /v1/edges {fromCapability|fromRef, fromPort, toCapability|toRef, priority, literals}
-	//	    ↓
-	//	GET  /v1/edges（读这个能力在该端口上的现有下游）
-	//	PUT  /v1/capabilities/{name}/downstreams（整体替换 = 现有 ∪ 新的）
-	//
-	// **入口边（fromIsSource:true）原样直通**：它不属于"能力定义"，仍然走 POST。
-	// 断言不受影响：被拒的用例（端口不在 outputs / 跨命名空间 / 坏 literals）在新端点
-	// 上依然是 4xx，只是机器码从 edge 的换成 downstreams 的（unknown_port 等）。
-	if (
-		target.startsWith("/v1/edges") &&
-		(opts.method || (body ? "POST" : "GET")) === "POST" &&
-		opts.body && typeof opts.body === "object" && opts.body.fromIsSource !== true
-	) {
-		return addDownstreamEdge(base, opts);
-	}
+	// v4 把边变成了**只读派生投影**（api-conventions §9 / A5）：能力边来自
+	// `capability.spec.next`，入口边来自 `source.spec.targets`，POST/DELETE /edges 与
+	// PUT …/downstreams 全部退役。留着旧桥等于对 v4 路径包一层 v3 语义：套件看起来
+	// 在「建边」，实际打的是一个 404，而否定断言（跨命名空间建边 → 4xx）会因为
+	// 404 也属于 4xx 而假绿。造拓扑现在必须改资源本身（PATCH spec.next /
+	// PATCH source spec.targets），因此不存在需要翻译的入口。
 	const res = await fetch(base + target, {
 		method: opts.method || (body ? "POST" : "GET"),
 		headers,
@@ -864,50 +854,4 @@ export function makeDevice(over = {}) {
 		},
 		over,
 	);
-}
-
-// addDownstreamEdge 是 e2e 造数桥（见 req 里的长注释）。
-//
-// 语义：把"加一条能力边"翻译成"整体替换这个能力在该端口上的下游"。
-// 读-改-写之间没有锁，但 e2e 是单线程造数，不存在竞争。
-async function addDownstreamEdge(base, opts) {
-	const b = opts.body;
-	const fromRef = String(b.fromCapability || b.fromRef || "");
-	const toRef = String(b.toCapability || b.toRef || "");
-	const port = String(b.fromPort || "out");
-	if (!fromRef || !toRef) {
-		return { status: 400, json: { error: "e2e 造数桥：from/to 不能为空" }, text: "", headers: {} };
-	}
-
-	// 命名空间必须以**请求体**为准：造数经常在一个套件里同时操作两个空间
-	// （跨命名空间负例就是这么写的），丢掉它会把请求打到套件默认空间，
-	// 于是"跨命名空间"变成"能力不存在"，断言看着像回归、其实是桥自己漏了参数。
-	const nsQuery = b.namespaceId ? `?namespaceId=${encodeURIComponent(b.namespaceId)}` : "";
-
-	// 名字：入参可能是能力 id（老形状）或名字。
-	const caps = await req(base, "/v1/capabilities" + nsQuery, { session: opts.session, key: opts.key });
-	const list = caps.json?.capabilities || [];
-	const byID = new Map(list.map((c) => [c.id, c]));
-	const byName = new Map(list.map((c) => [c.name, c]));
-	const fromName = byID.get(fromRef)?.name || byName.get(fromRef)?.name || fromRef;
-	const toName = byID.get(toRef)?.name || byName.get(toRef)?.name || toRef;
-
-	// 版本钉死：老形状传的是 id，解析出来就是那一版 → 转成 name@version。
-	const toCap = byID.get(toRef);
-	const toRefOut = toCap ? `${toName}@${toCap.version}` : toName;
-
-	// 现有下游（同端口）先读出来，再合并（replace 的语义是"这组就是全部"）。
-	const edges = await req(base, "/v1/edges" + nsQuery, { session: opts.session, key: opts.key });
-	const existing = (edges.json?.edges || [])
-		.filter((e) => !e.fromIsSource && e.fromRef === fromName && (e.fromPort || "out") === port)
-		.map((e) => ({ toRef: e.toRef, priority: e.priority || 0, literals: e.literals || undefined }));
-	const merged = existing.filter((e) => e.toRef !== toRefOut);
-	merged.push({ toRef: toRefOut, priority: b.priority || 0, literals: b.literals || undefined });
-
-	return req(base, `/v1/capabilities/${encodeURIComponent(fromName)}/downstreams${nsQuery}`, {
-		session: opts.session,
-		key: opts.key,
-		method: "PUT",
-		body: { links: merged.map((e) => ({ ...e, fromPort: port })) },
-	});
 }

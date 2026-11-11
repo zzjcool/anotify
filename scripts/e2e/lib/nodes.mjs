@@ -391,4 +391,215 @@ export async function waitForFrame(frames, pred, timeoutMs = 3000) {
 	return null;
 }
 
+// ============================ MockNode（执行子协议） ============================
+//
+// 上面是「握手 + 部署回执」，这是同一条 v4 协议的下半段：
+//
+//   task.dispatch ──▶ task.accept ──▶ lease.grant ──▶ task.emit / task.result
+//                                                        └─▶ task.emit.ack / result.ack
+//
+// 为什么放进本文件而不是套件里：**帧形状只能有一份镜像**（本文件的文件头纪律）。
+// contract 套件要验的是中枢侧语义（emit 只能发给 next / 终态不自动重试 / 环是合法的），
+// 在套件里另写一份 accept/emit/result 的字段就是第三份契约，改一处漏一处。
+//
+// 它与真 anode 的边界（**刻意不做**，避免 e2e 里出现第二个假执行器）：
+//   - 不真的跑脚本、不读产物、不上传 artifact（真链路在 node_v4，用真二进制）；
+//   - 不模拟 runner 的失败分类（script_failed / files_escape …）——套件自己给 phase；
+//   - 不做 lease 续租与 cancel.ack（取消的真实行为同样归 node_v4）。
+// 它只做一件事：把「一个守协议的节点会说什么」按 internal/protocol 的字段表发出去。
+
+function mockFail(fn, msg, hint) {
+	fail(`MockNode.${fn}`, msg, hint);
+}
+
+export class MockNode {
+	// connect 走**两段式**握手：首段只为拿到 welcome.configRevision，第二段带上
+	// appliedRevision 重连 —— 中枢据此把 applied_revision 落成 revision。
+	// 少了第二段，节点永远是 config_pending，永远不是派发候选（dispatch 收不到帧，
+	// 而症状看起来像「中枢没派发」）。
+	static async connect(opts) {
+		const { base, dbPath, namespaceId, name } = opts || {};
+		needText("MockNode.connect", "base", base);
+		needText("MockNode.connect", "dbPath", dbPath);
+		needText("MockNode.connect", "namespaceId", namespaceId, "用 H.defaultNamespace(base, session).id 取，不要硬编码");
+		needText("MockNode.connect", "name", name);
+		const slots = opts.slots === undefined ? 1 : opts.slots;
+		const namespaceSlug = opts.namespaceSlug === undefined ? "default" : opts.namespaceSlug;
+		// 参数名与 bringUpNode 一致（`caps`）：这里是 hello.capabilities[] 的**申报**，
+		// 不是「已部署」——已部署只有 POST …/deploy 能产生。
+		const caps = opts.caps === undefined ? [] : opts.caps;
+
+		const first = await bringUpNode(base, dbPath, namespaceId, name, caps, slots, { namespaceSlug });
+		const welcome = first.frames.find((f) => f.type === "welcome");
+		if (!welcome) throw new Error(`MockNode ${name} 首段没有 welcome: ${JSON.stringify(first.frames).slice(0, 300)}`);
+		first.conn.close();
+		await new Promise((r) => setTimeout(r, 120));
+
+		const conn = await wsConnect(base, first.token);
+		const node = new MockNode({ conn, name, id: first.id, token: first.token, slots, namespaceSlug });
+		conn.send(
+			nodeHello({
+				name,
+				token: first.token,
+				namespaces: [namespaceSlug],
+				capabilities: caps,
+				slots,
+				appliedRevision: welcome.configRevision,
+			}),
+		);
+		const second = await waitForFrame(node.frames, (f) => f.type === "welcome", 3000);
+		if (!second) {
+			node.close();
+			throw new Error(`MockNode ${name} 第二段没有 welcome: ${JSON.stringify(node.frames).slice(0, 300)}`);
+		}
+		node.configRevision = second.configRevision;
+		return node;
+	}
+
+	constructor({ conn, name, id, token, slots, namespaceSlug }) {
+		this.conn = conn;
+		this.name = name;
+		this.id = id;
+		this.token = token;
+		this.slots = slots;
+		this.namespaceSlug = namespaceSlug;
+		this.frames = [];
+		this.closed = false;
+		this.configRevision = "";
+		// 部署回执是**无条件**的：mock 没有真缓存，它只能声明「我拿到了」。
+		// 这条语义与真 anode 的「GET 内容 → 校验 digest → 缓存 → 回执」不同，
+		// 所以依赖「节点真的持有字节」的断言必须去 node_v4（那边是真二进制）。
+		conn.onFrame((f) => {
+			this.frames.push(f);
+			if (f.type === "capability.deploy") {
+				conn.send({
+					type: "capability.deployed",
+					requestId: f.requestId,
+					namespace: f.namespace,
+					name: f.name,
+					version: f.version,
+					digest: f.digest,
+					status: "applied",
+				});
+			}
+		});
+		conn.onClose(() => {
+			this.closed = true;
+		});
+	}
+
+	// wait 等一帧（pred 省略 = 任意帧）。返回 null 表示超时（由调用方断言）。
+	wait(pred, timeoutMs = 5000) {
+		return waitForFrame(this.frames, typeof pred === "function" ? pred : () => true, timeoutMs);
+	}
+
+	// deployFrame 等某个能力的部署帧（部署的 HTTP 动作由套件发起）。
+	deployFrame(name, timeoutMs = 3000) {
+		return this.wait((f) => f.type === "capability.deploy" && (name === undefined || f.name === name), timeoutMs);
+	}
+
+	// waitDispatch 等**还没被消费过**的派发帧。
+	//
+	// 为什么要游标：派发会被 sweep 重复下发（同一 assignment 幂等），直接 find 会永远
+	// 拿到第一条，后续任务就等不到自己的帧。
+	waitDispatch(taskId, timeoutMs = 5000) {
+		const start = this._dispatchCursor || 0;
+		const deadline = Date.now() + timeoutMs;
+		return (async () => {
+			for (;;) {
+				const rest = this.frames.slice(start);
+				const idx = rest.findIndex(
+					(f) => f.type === "task.dispatch" && (taskId === undefined || f.taskId === taskId),
+				);
+				if (idx >= 0) {
+					this._dispatchCursor = start + idx + 1;
+					return rest[idx];
+				}
+				if (Date.now() > deadline) return null;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+		})();
+	}
+
+	// accept 预留一个真实槽位（A3：slot 有 presence，0 合法）。
+	accept(dispatch, slot = 0) {
+		if (!dispatch || dispatch.type !== "task.dispatch") mockFail("accept", `需要 task.dispatch 帧，实际 ${show(dispatch)}`);
+		this.conn.send({
+			type: "task.accept",
+			taskId: dispatch.taskId,
+			assignmentId: dispatch.assignmentId,
+			proposedAttempt: dispatch.proposedAttempt,
+			node: this.name,
+			slot,
+		});
+	}
+
+	// waitGrant 等这条任务的 lease.grant（**执行权只来自这里**）。
+	waitGrant(taskId, timeoutMs = 5000) {
+		return this.wait((f) => f.type === "lease.grant" && f.taskId === taskId, timeoutMs);
+	}
+
+	// emit 发一帧 task.emit 并等对应的 task.emit.ack（按 requestId 配对）。
+	//
+	// 返回 ack 帧；httpStatus !== 200 是**业务结论**（400 target_not_declared / 409 冲突），
+	// 不是传输失败 —— 套件据此断言。
+	async emit(grant, { to, data = {}, id } = {}) {
+		if (!grant || grant.type !== "lease.grant") mockFail("emit", `需要 lease.grant 帧，实际 ${show(grant)}`);
+		if (typeof to !== "string" || to === "") mockFail("emit", `to 必须是非空字符串，实际 ${show(to)}`, "v4 的 emit 必须点名一个下游（∈ 父能力 spec.next）");
+		const requestId = `rq_mock_${randomUUID()}`;
+		const from = this.frames.length;
+		const frame = {
+			type: "task.emit",
+			requestId,
+			taskId: grant.taskId,
+			attempt: grant.attempt,
+			leaseId: grant.leaseId,
+			attemptToken: grant.attemptToken,
+			to,
+			data,
+		};
+		if (id !== undefined) frame.id = id;
+		this.conn.send(frame);
+		const deadline = Date.now() + 5000;
+		while (Date.now() < deadline) {
+			const hit = this.frames
+				.slice(from)
+				.find((f) => f.type === "task.emit.ack" && f.requestId === requestId);
+			if (hit) return hit;
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		return null;
+	}
+
+	// result 上报终态（task.result）。phase ∈ succeeded / failed / cancelled / abandoned。
+	result(grant, { phase = "succeeded", summary = "mock 完成", error, exitCode } = {}) {
+		if (!grant || grant.type !== "lease.grant") mockFail("result", `需要 lease.grant 帧，实际 ${show(grant)}`);
+		const now = new Date().toISOString();
+		const frame = {
+			type: "task.result",
+			taskId: grant.taskId,
+			attempt: grant.attempt,
+			node: this.name,
+			leaseId: grant.leaseId,
+			phase,
+			result: { summary, artifacts: [] },
+			startedAt: now,
+			finishedAt: now,
+		};
+		if (exitCode !== undefined) frame.exitCode = exitCode;
+		if (error !== undefined) frame.result.error = error;
+		this.conn.send(frame);
+	}
+
+	close() {
+		if (this.closed) return;
+		try {
+			this.conn.close();
+		} catch {
+			/* 已关闭 */
+		}
+		this.closed = true;
+	}
+}
+
 export { wsConnect, waitFrame };
