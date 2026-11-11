@@ -606,6 +606,9 @@ func TestTaskResourceCancelPendingBecomesCancelled(t *testing.T) {
 	if stored.CancelReason != "cancelled_by_user" {
 		t.Fatalf("cancel_reason = %q, want cancelled_by_user", stored.CancelReason)
 	}
+	if stored.StopIntent != store.StopIntentCancel {
+		t.Fatalf("stop_intent = %q, want %q", stored.StopIntent, store.StopIntentCancel)
+	}
 	// 终态任务不能再取消：这是调用方可理解的冲突，不是 500。
 	trReason(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/cancel"), nil),
 		http.StatusConflict, reasonConflict)
@@ -629,6 +632,9 @@ func TestTaskResourceAbandonPendingBecomesAbandoned(t *testing.T) {
 	}
 	if stored.CancelReason != "give up" {
 		t.Fatalf("cancel_reason = %q, want 调用方给的 reason（不被覆盖）", stored.CancelReason)
+	}
+	if stored.StopIntent != store.StopIntentAbandon {
+		t.Fatalf("stop_intent = %q, want %q", stored.StopIntent, store.StopIntentAbandon)
 	}
 }
 
@@ -1085,6 +1091,38 @@ func TestTaskResourceCancelRunningRecordsIntent(t *testing.T) {
 	}
 	if stored.CancelReason != "cancelled_by_user" {
 		t.Fatalf("cancel_reason = %q, want cancelled_by_user", stored.CancelReason)
+	}
+	if stored.StopIntent != store.StopIntentCancel {
+		t.Fatalf("stop_intent = %q, want %q", stored.StopIntent, store.StopIntentCancel)
+	}
+}
+
+// TestTaskResourceAbandonRunningRecordsAbandonIntent running 任务只记放弃意图（终态等 cancel.ack），
+// 且落库的 stop_intent 是 abandon——ack 时按意图落 abandoned，与 reason 是不是人话无关（#349）。
+func TestTaskResourceAbandonRunningRecordsAbandonIntent(t *testing.T) {
+	env := newTaskResEnv(t)
+	// attempt=1 但故意不建 task_attempts 行：中枢找不到执行绑定，只能落意图（帧发不出去）。
+	taskID := env.insertTask(seededTask{phase: store.TaskRunning, attempt: 1, nodeName: "anode-1"})
+
+	doc := trWant(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/abandon"), map[string]any{"reason": "give up"}), http.StatusOK)
+	if got := trString(t, doc, "status", "phase"); got != store.TaskRunning {
+		t.Fatalf("running 任务的放弃不该直接终态（进程可能还在跑），status.phase = %q", got)
+	}
+	stored, err := env.db.GetTask(context.Background(), env.ns, taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if stored.Phase != store.TaskRunning {
+		t.Fatalf("库里的 phase = %q, want running（等 cancel.ack 才终态）", stored.Phase)
+	}
+	if stored.StopIntent != store.StopIntentAbandon {
+		t.Fatalf("stop_intent = %q, want %q", stored.StopIntent, store.StopIntentAbandon)
+	}
+	if stored.CancelReason != "give up" {
+		t.Fatalf("cancel_reason = %q, want 调用方给的 reason", stored.CancelReason)
+	}
+	if stored.CancelRequestedAt == nil {
+		t.Fatal("running 任务放弃必须留下 cancel_requested_at 事实")
 	}
 }
 

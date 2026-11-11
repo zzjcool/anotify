@@ -103,8 +103,8 @@ func TestTaskMaxAttemptsTerminal(t *testing.T) {
 		t.Fatalf("第一次 grant attempt = %d", attempt)
 	}
 	// 非幂等能力：租约过期直接 abandoned（不重跑）。
-	if err := db.RequestCancel(ctx, task.ID, protocol.ReasonAbandonedByUser, store.Now()); err != nil {
-		t.Fatalf("request cancel: %v", err)
+	if err := db.RequestAbandon(ctx, task.ID, protocol.ReasonAbandonedByUser, store.Now()); err != nil {
+		t.Fatalf("request abandon: %v", err)
 	}
 	if err := ackCancel(t, db, node.ID, task.ID, attempt, true); err != nil {
 		t.Fatalf("ack cancel: %v", err)
