@@ -1137,3 +1137,90 @@ func TestSourceResourceReservedNameIs400(t *testing.T) {
 	}
 
 }
+
+// TestSourceResourceInvalidTargetIs400 钉「targets 指向不存在的出口能力」是 **400**，不是 500。
+//
+// targets 是用户写的**引用**：指向一个不存在的名字（或钉死的版本）是调用方输入错误，
+// 客户端改一下就好。它落 default 500 会把「参数写错了」报成「服务器坏了」——客户端/
+// 控制台据此分支重试策略，报错方向反了就会无限重试一个永远不可能成功的写。
+//
+// 三条一起钉：
+//   - POST 非法 target → 400 + source 域封闭码 + 消息点名那个能力（0 落行）；
+//   - 同一路径上合法 target 仍然 201（修复不能顺手把所有 target 都拒掉）；
+//   - PATCH 换成非法 target → 同样 400，且**库里的声明不变**（拒绝 = 不改）。
+func TestSourceResourceInvalidTargetIs400(t *testing.T) {
+	env := newSourceResEnv(t)
+	const missing = "does.not.exist"
+
+	// ① POST：非法 target。
+	rr := env.request(http.MethodPost, env.sourcesPath(), map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "broken.demo"},
+		"spec": map[string]any{
+			"kind":    "manual",
+			"targets": []any{map[string]any{"capability": missing}},
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("非法 target 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	doc := env.doc(rr)
+	if got := doc["kind"]; got != kindStatus {
+		t.Fatalf("错误体 kind = %v, want %s", got, kindStatus)
+	}
+	// reason 必须落在 source 域既有封闭集合里（targets 的形状错走同一个码），
+	// 不新造词：客户端是按码分支的。
+	if got := doc["reason"]; got != "invalid_source_config" {
+		t.Fatalf("reason = %v, want invalid_source_config", got)
+	}
+	// 消息要能直接指出写错的是哪一个引用。
+	if msg, _ := doc["message"].(string); !strings.Contains(msg, missing) {
+		t.Fatalf("错误信息应点名 %q，得到 %q", missing, msg)
+	}
+	// 拒绝是**0 写**：不能留下半条 broken.demo 源。
+	if got := env.count("sources"); got != 0 {
+		t.Fatalf("被拒绝的创建不得落行，sources = %d", got)
+	}
+
+	// ② 合法 target 仍然 201（同一 handler 路径，不许被上面那条修复带偏）。
+	env.createSource(
+		map[string]any{
+			"kind":    "manual",
+			"targets": []any{map[string]any{"capability": "notify"}},
+		},
+		map[string]any{"name": "ok.demo"},
+	)
+
+	// ③ PATCH：把已有源的 targets 换成不存在的引用 → 400，且库里的声明保持原样。
+	rv := env.resourceVersion("ok.demo")
+	rr = env.request(http.MethodPatch, env.sourcePath("ok.demo"), map[string]any{
+		"apiVersion": "anotify/v1",
+		"kind":       "Source",
+		"metadata":   map[string]any{"name": "ok.demo", "resourceVersion": rv},
+		"spec": map[string]any{
+			"targets": []any{map[string]any{"capability": missing}},
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH 非法 target 期望 400，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	patchDoc := env.doc(rr)
+	if got := patchDoc["reason"]; got != "invalid_source_config" {
+		t.Fatalf("PATCH reason = %v, want invalid_source_config", got)
+	}
+	if msg, _ := patchDoc["message"].(string); !strings.Contains(msg, missing) {
+		t.Fatalf("PATCH 错误信息应点名 %q，得到 %q", missing, msg)
+	}
+	got := env.request(http.MethodGet, env.sourcePath("ok.demo"), nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("读取被拒改的源期望 200，得到 %d：%s", got.Code, got.Body.String())
+	}
+	targets := sourceResArr(t, sourceResObj(t, env.doc(got)["spec"])["targets"])
+	if len(targets) != 1 {
+		t.Fatalf("被拒绝的 PATCH 不得改动 targets，得到 %v", targets)
+	}
+	if cap := sourceResString(t, sourceResObj(t, targets[0])["capability"]); cap != "notify" {
+		t.Fatalf("被拒绝的 PATCH 把 targets 改成了 %q（应保持 notify）", cap)
+	}
+}

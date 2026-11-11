@@ -48,6 +48,13 @@ var (
 	ErrSourceKindImmutable = errors.New("source_kind_immutable")
 	// ErrSourceNameImmutable 表示试图改名（换名等于断掉入口边，只能删了重建）。
 	ErrSourceNameImmutable = errors.New("source_name_immutable")
+	// ErrSourceTargetInvalid 表示 targets 里的能力引用**不成立**：形状没写错，但指向的
+	// 名字/版本在本命名空间内解析不到。
+	//
+	// 是调用方输入错误（server 翻 400），不是服务端故障。与 ErrInvalidSourceConfig 的分工：
+	// 后者是 targets 的**形状**错（空引用、参数模板语法不对，不查库就能判）；本哨兵要查库
+	// 才知道，所以文案必须点名那个引用（给写的人一条可改的线索）。
+	ErrSourceTargetInvalid = errors.New("invalid source target")
 )
 
 // Source 是一个「源」实例：事件的入口。
@@ -267,8 +274,11 @@ func checkSourceTargetsOn(ctx context.Context, ex queryExec, s *Source) error {
 		ref := strings.TrimSpace(t.Capability)
 		if _, err := resolveRefOn(ctx, ex, s.NamespaceID, ref); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("出口能力 %s 不存在", ref)
+				// 「引用写错了」必须可判别（server 据此翻 400）；裸 error 会落 default 500，
+				// 把调用方的参数问题报成服务端故障。
+				return fmt.Errorf("%w: 出口能力 %s 不存在（targets 引用必须在本命名空间内可解析）", ErrSourceTargetInvalid, ref)
 			}
+			// 查库失败等真故障原样上抛：它不该被当成「引用写错了」。
 			return fmt.Errorf("出口能力 %s: %w", ref, err)
 		}
 	}

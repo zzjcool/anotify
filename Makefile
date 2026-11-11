@@ -166,16 +166,19 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# harness 自测（#215）：/health 的 boot 身份校验是"看不见的"修复——正常跑什么都不打印。
 	@# 而这个缺陷的症状是「套件随机 0通过/0失败」，跟超时/代码 bug 分不开，所以必须有秒级用例钉住它。
 	ANOTIFY_BIN=$(CURDIR)/anotify node scripts/e2e/harness_selftest.mjs
-	@# 安装自测（v4）：scripts/install_agent_selftest.sh（install-agent.sh + cmd/agent）随
-	@# v3 节点产品退役，不再在 CI 里跑——它的被测对象 cmd/agent 已删除。v4 的安装面是
-	@# scripts/install-anode.sh（只下载/校验，安装逻辑在 cmd/anode install），由
+	@# 安装自测（#338）：v3 的 scripts/install_agent_selftest.sh（install-agent.sh + cmd/agent）
+	@# **已删除** —— 它的被测对象 cmd/agent 随 v3 节点产品退役，脚本第一步就要编
+	@# 那个已不存在的二进制（必红），留着只是让 `grep cmd/agent` 多一条假线索。
+	@# v4 的安装面是 scripts/install-anode.sh（只下载/校验，安装逻辑在 cmd/anode install），由
 	@# `go test ./cmd/anode/...` 与 `make check-anode-skill` 覆盖。
 
-# dispatchbench 是本仓唯一覆盖「真 store + 真 Dispatcher 全链」的基准，平时不在任何
-# 必跑路径上（`go test ./...` 不跑 Benchmark，`-bench` 还要手动带 build tag）。
-# 给它一条命令，否则它只会安静地腐烂（#315 ③）。
+# dispatch 全链基准（v4）：真 store + 真 route 投影 + 真 source.Ingest + assign/grant/complete。
+# 平时不在任何必跑路径上（`go test ./...` 不跑 Benchmark），所以给它一条命令，否则它只会
+# 安静地腐烂（#315 ③）。issue #338 里它就是这么烂掉的：v3 形状 + `dispatchbench` build tag，
+# 全仓唯一跑它的地方是这里，而 `go test ./...` 看不见它。现在**没有 build tag** 了——
+# 这个基准与它的护栏用例都在 `go test ./internal/store` 里正常编译/运行。
 bench-dispatch: ## 跑 dispatch 全链基准（1x：只保证编译+能跑出数字；要数字自己加大 -benchtime）
-	go test ./internal/store -tags dispatchbench -run '^$$' -bench BenchmarkDispatchChain -benchtime 1x -benchmem
+	go test ./internal/store -run '^$$' -bench BenchmarkDispatchChain -benchtime 1x -benchmem
 
 bench: ## 运行全部基准测试（吞吐/分配热点；仅基准不跑单测）
 	go test ./... -run=NONE -bench=. -benchmem -benchtime=1s
@@ -296,7 +299,7 @@ DEV_COMPOSE := docker compose --env-file .env.dev -f docker-compose.dev.yml
 
 # 开发镜像的版本注入（CONTRACT-agent-upgrade §1）：compose 的 build.args 读这三个
 # 环境变量。export 让所有 dev 目标（dev-up / dev-reset / dev-docker）都带上，
-# 否则镜像里 /app/agent 报 dev —— 控制台就会一直提示"节点过期"。
+# 否则镜像里 /app/anode 报 dev —— 控制台就会一直提示"节点过期"。
 export ANOTIFY_VERSION := $(or $(VERSION),dev)
 export ANOTIFY_GIT_SHA := $(GIT_SHA)
 export ANOTIFY_BUILT_AT := $(BUILT_AT)

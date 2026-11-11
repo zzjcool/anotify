@@ -37,7 +37,7 @@ func realFixture(t *testing.T, a *artifact.Artifact, newBinary []byte) *binaryFi
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	root := t.TempDir()
-	f := &binaryFixture{t: t, ctx: ctx, cancel: cancel, conns: make(chan *websocket.Conn, 4), binary: filepath.Join(root, "anode"), data: filepath.Join(root, "data"), config: filepath.Join(root, "anode.yaml"), socket: filepath.Join(root, "emit.sock"), done: make(chan error, 1), ackResults: true}
+	f := &binaryFixture{t: t, ctx: ctx, cancel: cancel, conns: make(chan *websocket.Conn, 4), binary: filepath.Join(root, "anode"), data: filepath.Join(root, "data"), config: filepath.Join(root, "anode.yaml"), socket: filepath.Join(shortTmpDir(t), "emit.sock"), done: make(chan error, 1), ackResults: true}
 	b, err := os.ReadFile(builtOld)
 	if err != nil {
 		t.Fatal(err)

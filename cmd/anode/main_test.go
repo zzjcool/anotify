@@ -19,6 +19,24 @@ import (
 
 var builtOld, builtNew string
 
+// shortTmpDir 是给 unix socket 这类受 `sun_path` 上限（Linux 上 108 字节）限制的路径用的**短**临时目录。
+//
+// 为什么不用 t.TempDir()：它把「测试名 + /001 序号」拼进路径。TMPDIR 一长（例如
+// make ci 里 scripts/check-tmp-leaks.mjs 给的隔离 TMPDIR、或开发者自己设的
+// 日志目录），`<tmp>/<测试名>/001/emit.sock` 就顶到上限，bind 直接报
+// `invalid argument` —— 那是夹具对「TMPDIR 很短」的隐式假设，不是产品缺陷。
+// socket 单独放这里（路径只多一个短前缀），其它文件仍用 t.TempDir()。
+// 前缀故意带 anotify-：万一没清掉，check-tmp-leaks 的零残留断言会点名它。
+func shortTmpDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "anotify-s-")
+	if err != nil {
+		t.Fatalf("mkdtemp(socket): %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "anode-n3-binaries-")
 	if err != nil {
@@ -182,7 +200,7 @@ func TestEmitMissingTargetStrictObjectAndNetworkTimeout(t *testing.T) {
 	}
 }
 func TestBinaryEmitUnix(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "emit.sock")
+	socket := filepath.Join(shortTmpDir(t), "emit.sock")
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)

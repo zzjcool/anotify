@@ -1,5 +1,10 @@
 # 接入 Agent：原生安装
 
+> **v3 历史文档**（#338）：v4 的节点产品叫 **anode**（`cmd/anode`，CLI 见 `docs/v4/anode-cli.md`），
+> 安装面是 `scripts/install-anode.sh` + `anode install`。下文里的 `agent` / `anotify-agent` /
+> `install-agent.sh` / `/app/agent` 都是 v3 名词，v4 的等价物是 `anode` / `/app/anode`。
+> 保留本文是因为「原生 vs 容器」「能力工作目录归谁管」这两件事的判断依然成立。
+
 本文回答两件事：
 
 1. **原生装**怎么装（对比 Docker 的取舍）
@@ -80,7 +85,7 @@ anotify-agent upgrade --restart   # 换二进制并重启服务
 curl -fsSL https://raw.githubusercontent.com/zzjcool/anotify/main/scripts/install-agent.sh | sh
 ```
 
-自升级的前提是**服务端带了 agent 二进制**（镜像里的 `/app/agent`，可用 `ANOTIFY_AGENT_BIN` 改）。
+自升级的前提是**服务端带了节点二进制**（镜像里的 `/app/anode`，可用 `ANOTIFY_AGENT_BIN` 改；v3 叫 `/app/agent`）。
 没带时 CLI 退出码 `2`、接口回 `501` `agent_binary_unavailable`。
 
 兜底路径保留的理由：首次安装本来就没有 agent 可以「自升级」，镜像不通的机器拿不到
