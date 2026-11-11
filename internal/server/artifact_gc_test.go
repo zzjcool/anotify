@@ -196,6 +196,9 @@ func TestArtifactSpoolAndGCAreWiredByNewApp(t *testing.T) {
 	app := NewApp(ctx, cfg)
 	t.Cleanup(func() {
 		cancel()
+		// 先等后台 goroutine（GC/心跳等）退出再关库：#259 postclose-guard 会抓
+		// “Close 之后仍用句柄”的竞态；只 cancel 不 Wait 会让测试在 -count=N 下偶发红。
+		app.WaitBackground()
 		_ = app.DB.Close()
 	})
 	if app.Spool == nil {
@@ -223,6 +226,7 @@ func TestArtifactSpoolAndGCAreWiredByNewApp(t *testing.T) {
 	app2 := NewApp(ctx2, cfg)
 	t.Cleanup(func() {
 		cancel2()
+		app2.WaitBackground()
 		_ = app2.DB.Close()
 	})
 	if app2.Spool != nil {
