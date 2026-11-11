@@ -284,11 +284,12 @@ func descendSchema(sch map[string]any, seg string) (map[string]any, bool) {
 	}
 	idx, isIndex := toIntFromString(seg)
 	if prefix, ok := sch["prefixItems"].([]any); ok && isIndex && idx < len(prefix) {
-		node, ok := prefix[idx].(map[string]any)
-		if !ok {
-			return nil, false
+		if node, ok := prefix[idx].(map[string]any); ok {
+			return node, true
 		}
-		return node, true
+		// `prefixItems[idx]` 不是对象 schema（例如布尔 schema `true` = 不约束）：
+		// **不能在这里判死**，继续按 `items` 兜底——否则同一下标在改前会走 items
+		// （`0824c47` 对所有下标段一律走 items），改后反而漏判敏感叶。
 	}
 	if itemSchema, ok := sch["items"].(map[string]any); ok {
 		// 数组：段必须是下标。
@@ -327,9 +328,16 @@ func maskTargets(targets []sourcespec.Target, sets []targetSensitivity) []source
 // 对齐算法见 `inheritSensitivity`（同名能力的并集）；唯一兜底方向是“多打码”。
 func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensitivity) []sourcespec.Target {
 	union := unionSensitiveKeys(sets)
+	// 声明侧一个 target 都没有（包里把出口全删了）→ 没有任何 key 名可继承，而旧行里可能
+	// 正是上一版由 writeOnly values 派生的值。按「只许多打码」整组打码，别让整侧零打码。
+	failClosed := len(declared) == 0
 	out := make([]sourcespec.Target, len(actual))
 	for i, t := range actual {
-		out[i] = maskTargetAt(t, inheritSensitivity(declared, sets, t.Capability, union))
+		set := inheritSensitivity(declared, sets, t.Capability, union)
+		if failClosed {
+			set.allParams = true
+		}
+		out[i] = maskTargetAt(t, set)
 	}
 	return out
 }
@@ -365,6 +373,9 @@ func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
 func mergeSensitivity(dst *targetSensitivity, src targetSensitivity) {
 	if src.allParams {
 		dst.allParams = true
+	}
+	if dst.keys == nil && len(src.keys) > 0 {
+		dst.keys = map[string]bool{}
 	}
 	for k, v := range src.keys {
 		if v {

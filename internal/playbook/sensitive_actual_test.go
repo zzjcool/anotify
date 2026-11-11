@@ -196,3 +196,94 @@ func TestPlanUnappliedActualNameMismatchFallsBackToUnion(t *testing.T) {
 		t.Fatalf("并集兜底不得把非敏感 project 打码: %#v", got)
 	}
 }
+
+// TestDescendSchemaPrefixItemsNonObjectFallsBackToItems 钉住 delta review 发现的回归：
+// `prefixItems[idx]` 是**布尔 schema**（`true` = 不约束）时，不能就此判死；改前（`0824c47`）
+// 同一下标一律走 `items`，改后必须保持一致，否则 `{{values.tuple.0.token}}` 会漏判敏感。
+func TestDescendSchemaPrefixItemsNonObjectFallsBackToItems(t *testing.T) {
+	sch := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tuple": map[string]any{
+				"type":        "array",
+				"prefixItems": []any{true},
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"token": map[string]any{"type": "string", "writeOnly": true},
+					},
+				},
+			},
+		},
+	}
+	for _, ref := range []string{"tuple.0", "tuple.0.token"} {
+		if !refHitsWriteOnly(ref, sch) {
+			t.Fatalf("refHitsWriteOnly(%q) = false：布尔 prefixItems 必须回落 items", ref)
+		}
+	}
+	// 布尔 prefixItems 且没有 items：推不出密文，保持非敏感（不猜）。
+	noItems := map[string]any{"type": "object", "properties": map[string]any{
+		"tuple": map[string]any{"type": "array", "prefixItems": []any{true}},
+	}}
+	if refHitsWriteOnly("tuple.0.token", noItems) {
+		t.Fatalf("没有 items 也没有对象 schema 时不该猜成敏感")
+	}
+}
+
+// TestPlanUnappliedActualMasksWhenDeclaredRemovesAllTargets 钉住「声明侧 0 个 target」：
+// 新包里把源的出口全删了，旧行没有任何 key 名可继承 → 必须整组打码（否则整侧零打码泄漏）。
+func TestPlanUnappliedActualMasksWhenDeclaredRemovesAllTargets(t *testing.T) {
+	const valuesDoc = `
+    type: object
+    additionalProperties: false
+    properties:
+      pin: { type: integer, writeOnly: true }
+`
+	const emptyTargetsDoc = `
+metadata:
+  name: a-on-push
+spec:
+  kind: webhook
+  enabled: true
+  config: {}
+  targets: []
+`
+	pkg := newBundle().setValues(valuesDoc).
+		cap("capabilities/review.yaml", maskCapDoc).
+		source("sources/on-push.yaml", emptyTargetsDoc).
+		pkg(t)
+	const oldPin = 313131
+	ex := newFakeExisting().withSource("a-on-push", sourcespec.KindWebhook, `{}`,
+		sourcespec.Target{Capability: "a-review", Params: map[string]any{"pin": oldPin, "note": "old-note"}},
+	)
+	plan, err := Plan(pkg, map[string]any{"pin": 424243}, ex)
+	if err != nil {
+		t.Fatalf("计划失败: %v", err)
+	}
+	if len(plan.Unapplied) != 1 {
+		t.Fatalf("应有且只有 1 条 unapplied: %+v", plan.Unapplied)
+	}
+	declared, ok := plan.Unapplied[0].Declared.([]sourcespec.Target)
+	if !ok || len(declared) != 0 {
+		t.Fatalf("declared 应为空: %#v", plan.Unapplied[0].Declared)
+	}
+	actual, ok := plan.Unapplied[0].Actual.([]sourcespec.Target)
+	if !ok || len(actual) != 1 {
+		t.Fatalf("actual targets = %#v", plan.Unapplied[0].Actual)
+	}
+	for key := range actual[0].Params {
+		if got := actual[0].Params[key]; got != MaskedValue {
+			t.Fatalf("声明侧清空后 actual.params[%s] 必须整组打码: %#v", key, got)
+		}
+	}
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_empty_declared", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化失败: %v", err)
+	}
+	for _, secret := range []string{"313131", "424243", "old-note"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("回执里泄露了明文 %q: %s", secret, raw)
+		}
+	}
+}
