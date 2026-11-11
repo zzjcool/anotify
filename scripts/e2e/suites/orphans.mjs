@@ -308,7 +308,7 @@ async function main() {
 		V.expectStatus("未登录 → 401", await H.req(server.base, V.P.orphans(NS)), 401);
 		V.expectStatus(
 			"缺 namespace → 400（绝不回退默认 / 不做全量）",
-			await H.req(server.base, V.P.orphans(), { session: s.session, namespaceId: null }),
+			await H.req(server.base, V.P.orphans(), { session: s.session, namespace: null }),
 			400,
 		);
 		V.expectStatus("不存在的命名空间 → 404", await H.req(server.base, V.P.orphans("no-such-ns"), { session: s.session }), 404);
