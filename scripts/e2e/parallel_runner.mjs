@@ -46,11 +46,10 @@ const HTTP_SUITES = [
 	// console-declares（T6）：部署模型的纯 HTTP 面
 	// （templates / 产物 digest / deployments 状态机 / 本地变体）
 	"deploy",
-	// #291：真节点进程 + 真部署 + 真任务，最后到文件系统上验收
-	// （专门抓"每层都对、连起来才错"的 bug：两端 digest 不一致、
-	//  能力声明的 run.workDir 没生效）
-	// v4 现状：本套件驱动的是已退役的 cmd/agent CLI，迁移属于阶段 B（现在显式红）；
-	// 真 anode 的核心链覆盖由 node_v4 接管。
+	// #291 → v4 重写：真 `anode` 的 **CLI 面 + 安装/启动/退出生命周期**
+	// （--version 形状、emit 退出码映射、install 落盘权限/幂等/身份不静默覆盖、
+	//  安装产物 → serve 往返、SIGTERM 干净退出后中枢承认离线）。
+	// 数据面（部署/执行/日志/产物/取消）由 node_v4 覆盖，两者刻意不重复。
 	"live_agent",
 	// #336：v4 真实节点核心链 —— 真 `cmd/anode` 二进制（不是 mock）+ 真后端：
 	// v4 hello/配置对齐 → 人工部署 + 节点真拉产物 → 事件→task→lease.grant→真执行
@@ -117,15 +116,27 @@ for (const a of args) {
 	} else if (a === "--parallel") {
 		serial = false;
 	} else {
-		suiteArgs.push(a);
+		// 逗号分隔也接受（`run_all.sh --serial a,b,c` 是文档里出现过的写法）。
+		// 为什么必须支持：旧实现把 "a,b,c" 当成一个套件名，过滤后**静默变成 0 个套件**，
+		// 然后打印「✅ E2E 全绿」——一次「什么都验证了」的假绿，比红更危险。
+		for (const name of a.split(",").map((x) => x.trim()).filter(Boolean)) {
+			suiteArgs.push(name);
+		}
 	}
 }
 
 // 决定要跑哪些套件
 let suitesToRun;
 if (suiteArgs.length > 0) {
-	// 只跑指定的套件（串行，兼容 e2e-one）
-	suitesToRun = suiteArgs.filter((s) => ALL_SUITES.includes(s));
+	// 只跑指定的套件（串行，兼容 e2e-one）。
+	// 未知套件名是**错误**：静默丢弃会让「指定了 5 个、其实跑了 0 个」也报绿。
+	const unknown = suiteArgs.filter((s) => !ALL_SUITES.includes(s));
+	if (unknown.length > 0) {
+		console.error(`未知套件: ${unknown.join(", ")}`);
+		console.error(`已知套件: ${ALL_SUITES.join(", ")}`);
+		process.exit(2);
+	}
+	suitesToRun = [...suiteArgs];
 	serial = true; // 单/多套件参数默认串行
 } else {
 	suitesToRun = [...ALL_SUITES];

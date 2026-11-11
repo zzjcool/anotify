@@ -548,6 +548,42 @@ func TestTaskResourceCancelUnknownIs404(t *testing.T) {
 	}
 }
 
+// TestTaskResourceCancelHumanReasonIsCancelled 契约：TaskActionRequest.reason 是**人话**，
+// 不是封闭码。取消必须落 cancelled，人话原因作为取消事实/响应说明可读
+// （#336：`{"reason":"e2e 运行中取消"}` 曾被误判成 abandoned）。
+func TestTaskResourceCancelHumanReasonIsCancelled(t *testing.T) {
+	env := newTaskResEnv(t)
+	taskID := env.insertTask(seededTask{})
+
+	const human = "e2e 运行中取消"
+	doc := trWant(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/cancel"),
+		map[string]any{"reason": human}), http.StatusOK)
+	if got := trString(t, doc, "status", "phase"); got != store.TaskCancelled {
+		t.Fatalf("status.phase = %q，want cancelled（人话 reason 不是放弃）", got)
+	}
+	// 人话原因不冒充封闭码：reason 为空，说明段是人话。
+	errDoc := trObject(t, doc, "status", "result", "error")
+	if got := trString(t, errDoc, "reason"); got != "" {
+		t.Fatalf("人话原因不该冒充 reason 码: %q（%#v）", got, errDoc)
+	}
+	if got := trString(t, errDoc, "message"); got != human {
+		t.Fatalf("status.result.error.message = %q，want %q", got, human)
+	}
+	stored, err := env.db.GetTask(context.Background(), env.ns, taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if stored.Phase != store.TaskCancelled {
+		t.Fatalf("库里的 phase = %q，want cancelled", stored.Phase)
+	}
+	if stored.CancelReason != human {
+		t.Fatalf("cancel_reason = %q，want 原样人话 %q", stored.CancelReason, human)
+	}
+	// 终态任务不能再停：仍是调用方可理解的 409。
+	trReason(t, env.do(http.MethodPost, env.taskPath(env.ns, taskID, "/cancel"), nil),
+		http.StatusConflict, reasonConflict)
+}
+
 // TestTaskResourceCancelPendingBecomesCancelled pending 任务：取消直接终态（没有执行者要等 ack）。
 func TestTaskResourceCancelPendingBecomesCancelled(t *testing.T) {
 	env := newTaskResEnv(t)

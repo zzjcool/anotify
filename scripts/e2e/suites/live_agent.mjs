@@ -1,691 +1,407 @@
-/**
- * live_agent —— 「真 agent 跑真任务」的端到端冒烟（#291）。
+#!/usr/bin/env node
+/* SUITE: live_agent — 真 `anode` 的 **CLI 面 + 安装/启动/退出生命周期**（v4）
  *
- * ## 为什么需要它
+ * ## 这个套件为什么还存在（以及它和 node_v4 的分工）
  *
- * 有两类 bug 用别的套件都抓不到，而且**门禁全绿**：
+ * v3 的 live_agent 驱动的是已退役的 `cmd/agent` CLI（`-f node.yaml` / `-data-dir` /
+ * `-grace`，能力脚本里的 `emit --port`）。v4 的节点侧只有 `cmd/anode`
+ * （`serve` / `install` / `emit` + `--version`），**没有兼容层**，所以那个驱动方式
+ * 已经不可能存在，必须重写而不是放宽。
  *
- *   1. 中枢算的产物 digest 与节点重算的不一致（内容寻址失效）——
- *      症状是每次部署都被判成 `local`（"节点上是本地变体"），而 `ws_protocol`
- *      那些套件用的是自己构造的假 digest，两边一起错也发现不了。
- *   2. 能力声明的工作目录没被真正用上 —— 症状是任务在默认临时目录里跑，
- *      文件不出现在用户以为的地方，日志里一个错都没有。
+ * 重写后的分工（刻意不重复）：
  *
- * 这类问题的共同点：**分开看每层都对，连起来才错**。所以这里必须：
- * 真后端 + 真 cmd/agent 进程 + 真部署 + 真任务，最后去**文件系统**上验收。
+ *   node_v4   数据面：真 hello / 真部署拉取 / 真执行 / 真日志 / 真产物 / 真取消。
+ *   live_agent（本套件）**机器面**：
+ *     1. CLI 契约：`--version` 的 JSON 形状、未知命令/缺参数的退出码、
+ *        `emit` 的退出码映射（2 = 请求错、3 = 令牌无效、5 = 端点不可达/结果未知）。
+ *     2. `anode install --prefix`：落盘 anode.yaml(0600)/anode(0755)/anode.service(0644)、
+ *        幂等重跑、**换 token 必须显式 --update-token**（不静默覆盖身份）。
+ *     3. 安装产物 → `serve` 的往返：装出来的配置能直接启动、节点能上线、data 目录成型。
+ *     4. 生命周期：SIGTERM → 进程自己退（退出码 0，不是被 KILL）、中枢随即承认它离线
+ *        （部署结论 sent=false，不伪造发送）。
  *
- * 不碰浏览器，跑完约 10-15s，适合每次合并前跑。
+ * 这四条都是**进程/文件系统**上的事实，任何一层单测都替代不了：
+ *   - 退出码映射错了 → 脚本在真实流水线里无法判别「该不该重试」；
+ *   - install 写了 0644 的配置 → 节点 token 泄露给本机所有用户；
+ *   - serve 不响应 SIGTERM → systemd 每次重启都要等超时再 KILL（子进程可能被留活）。
+ *
+ * 纪律：真二进制、真进程、真文件；断言读**进程退出码/文件权限/文件内容**，
+ * 不用「起了就算对」。缺 ANODE_BIN 时是红（run_all.sh 会构建），不是 skip。
  */
-import { spawn } from "node:child_process";
-import {
-	existsSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import * as H from "../lib/harness.mjs";
-import * as N from "../lib/nodes.mjs";
+import * as V from "../lib/v4.mjs";
 
 const SUITE = "live_agent";
-// v4：节点侧只有一个二进制 —— `cmd/anode`（serve / install / emit）。
-// run_all.sh 会预构建 .e2e-bin/anode 并导出 ANODE_BIN。
-const ANODE_BIN = process.env.ANODE_BIN || path.join(H.ROOT_DIR, ".e2e-bin", "anode");
-
-// LEGACY_CLI 是本套件与 v4 的**真实差距**：它驱动的是已退役的 cmd/agent CLI
-// （`-f node.yaml` / `-data-dir` / `-grace`，以及能力脚本里的 `emit --port`），
-// 而 v4 的节点是 `anode serve --config <anode.yaml> --data <dir>`、出口只有
-// `anode emit <能力名>`（没有 port 概念）。v4 不提供兼容层，所以本套件在迁移前
-// **必须红**——不是环境问题，也不是可以 skip 的用例。
-// 真 v4 节点核心链（真二进制 + 真部署 + 真执行 + 真产物）的等价覆盖在
-// suites/node_v4.mjs；本文件的迁移属于阶段 B。
-const LEGACY_CLI =
-	"【阶段 B 待迁移】live_agent 驱动已退役的 cmd/agent CLI（-f/-data-dir/-grace、emit --port）；" +
-	"v4 节点只有 `anode serve --config <anode.yaml> --data <dir>`，等价覆盖见 suites/node_v4.mjs"
-
-let server;
-let session;
-let nsId;
-let agentProc;
-let agentLog = "";
-let tmpDir;
+const NS = V.DEFAULT_NS;
+const ANODE_BIN = H.ANODE_BIN;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 轮询直到 fn 返回真值；超时返回 null（不抛）。 */
-async function until(fn, { timeoutMs = 15000, intervalMs = 100 } = {}) {
+async function pollUntil(what, fn, { timeoutMs = 15000, intervalMs = 100 } = {}) {
 	const deadline = Date.now() + timeoutMs;
+	let last = null;
 	for (;;) {
-		const v = await fn();
-		if (v) return v;
-		if (Date.now() >= deadline) return null;
+		last = await fn();
+		if (last) return last;
+		if (Date.now() > deadline) throw new Error(`等待超时（${timeoutMs}ms）：${what}\n最后一次观察: ${JSON.stringify(last)}`);
 		await sleep(intervalMs);
 	}
 }
 
-async function getJSON(p) {
-	const r = await H.req(server.base, p, { session });
-	return r.json || {};
+// runCLI 跑一次 CLI 并收集 {status, stdout, stderr}（同步：CLI 都是短命命令）。
+function runCLI(args, env = {}) {
+	const r = spawnSync(ANODE_BIN, args, {
+		encoding: "utf8",
+		env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin", ...env },
+		timeout: 20000,
+	});
+	return { status: r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
 }
 
-async function listDeployments() {
-	return (await getJSON("/v1/deployments?namespaceId=" + encodeURIComponent(nsId))).deployments || [];
-}
-
-async function listNodes() {
-	return (await getJSON("/v1/nodes?namespaceId=" + encodeURIComponent(nsId))).nodes || [];
-}
-
-async function listTasks() {
-	return (await getJSON("/v1/tasks?namespaceId=" + encodeURIComponent(nsId))).tasks || [];
-}
-
-/** 建能力（带 run；workDir 为空表示不声明，走默认每任务目录）。 */
-async function makeCapability(name, script, workDir) {
-	const run = { entrypoint: "run.sh", files: { "run.sh": script }, timeoutSec: 60 };
-	if (workDir) run.workDir = workDir;
-	const r = await H.req(server.base, "/v1/capabilities", {
-		session,
-		body: {
-			namespaceId: nsId,
-			name,
-			// P4：请求体是 spec 形状（Capability Spec v3 §5）。
-			spec: {
-				outputs: [],
-				// 必须带 params，而且 key 顺序要和**页面**发的一样（type 在前）。
-				// 内容寻址的坑就藏在这里：Parse 会把 params 归一成 key 有序，
-				// 而 Digest 当年没归一 → 中枢存一个 digest、节点重算得另一个，
-				// 部署永远判成 local。没有 params 的能力复现不出来，所以不能省。
-				params: { type: "object", properties: { note: { type: "string" } } },
-				run,
-			},
-		},
-	});
-	H.eq(`建能力 ${name} → 200`, r.status, 200);
-	H.check(
-		`${name} 编译出产物 digest（内容寻址）`,
-		/^sha256:[0-9a-f]{64}$/.test(String(r.json?.digest || "")),
-		String(r.json?.digest),
-	);
-	return { id: r.json?.capability?.id, name, version: r.json?.capability?.version };
-}
-
-/** 部署一个能力到那台真节点。 */
-async function deploy(cap) {
-	const r = await H.req(server.base, "/v1/deployments", {
-		session,
-		body: { namespaceId: nsId, capabilityId: cap.id, nodeIds: [nodeId] },
-	});
-	H.eq(`部署 ${cap.name} → 200`, r.status, 200);
-	return (r.json?.deployments || [])[0]?.deployId;
-}
-
-let nodeId;
-
-async function main() {
-	H.startTimer();
-
-	// 显式红：不 spawn 一个 CLI 语义已经不存在的进程去等超时（那样错误信息只剩
-	// "node 没上线"，把「CLI 已退役」伪装成产品 bug）。
-	H.check(LEGACY_CLI, false, `anode 二进制: ${ANODE_BIN}（存在=${existsSync(ANODE_BIN)}）`);
-	// 这里的 return 是刻意的：剩下的用例全部建立在「旧 CLI 能起进程」这个前提上。
-	// 保留它们的代码（阶段 B 迁移时按 v4 语义重写），但不在失效前提上继续跑。
-	return;
-
-	server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
-	const seeded = H.seed(server.dbPath, SUITE);
-	session = seeded.session;
-	nsId = await H.defaultNamespaceId(server.base, session);
-	H.check("拿到默认命名空间", !!nsId, String(nsId));
-	if (!nsId) return;
-
-	tmpDir = H.mkdtempTmp("anotify-live-");
-	// 用例声明的执行目录（真实存在）—— 这就是「用户的项目目录」。
-	// 建在已登记的 tmpDir 下，随 tmpDir 一起收走（也登记一次，双保险）。
-	const projDir = realpathSync(H.mkdtempTmp("proj-", tmpDir));
-
-	// ================= 1. 真 agent 连上来 =================
-	console.log("--- 1. 真 cmd/agent 起进程并上线 ---");
-	// 注意 seedNodeRows 只返回 { id, token }：名字是我们自己起的，别从返回值里取。
-	const nodeName = "live-node";
-	const node = N.seedNodeRows(server.dbPath, nsId, nodeName, [], 1);
-	nodeId = node.id;
-	const yamlPath = path.join(tmpDir, "node.yaml");
-	// v2/v3 的 node.yaml 只有 bootstrap 四件：目录不再出现在节点配置里（#290）。
-	// token 必须加引号：播种用的 token 形如 `{{…}}<hex>`，裸写进 YAML 会被当成
-	// **流式映射**的开头（`{` 是语法），报 "line 1: did not find expected key"。
-	// 页面上生成的那份（服务端 hex token）裸写没事，但这里不能依赖 token 的形态。
-	const yaml = [
-		"server: " + JSON.stringify(server.base),
-		"token: " + JSON.stringify(node.token),
-		"name: " + JSON.stringify(nodeName),
-		"instances: 1",
-		"",
-	].join("\n");
-	writeFileSync(yamlPath, yaml);
-
-	agentProc = spawn(
-		ANODE_BIN,
-		["-f", yamlPath, "-data-dir", path.join(tmpDir, "agent-data"), "-grace", "2"],
-		{ stdio: ["ignore", "pipe", "pipe"] },
-	);
-	agentProc.stdout.on("data", (d) => {
-		agentLog += d;
-	});
-	agentProc.stderr.on("data", (d) => {
-		agentLog += d;
-	});
-
-	const online = await until(
-		async () => (await listNodes()).some((n) => n.id === node.id && n.status === "online"),
-		{ timeoutMs: 20000, intervalMs: 150 },
-	);
-	H.check(
-		"真 cmd/agent 用 bootstrap 四件起来，节点变 online",
-		!!online,
-		online
-			? ""
-			: `agent 日志：\n${agentLog.slice(-1200)}\n喂进去的 node.yaml（JSON 转义，看真实字节）：\n${JSON.stringify(yaml)}`,
-	);
-	if (!online) return;
-
-	// ================= 2. 部署 → applied（digest 必须能对账） =================
-	console.log("--- 2. 部署带 run.workDir 的能力 ---");
-	// 脚本把 pwd 写进 whereami.txt：文件出现在 projDir 里才说明目录真的生效了。
-	const cap = await makeCapability(
-		"live.whereami",
-		'#!/bin/bash\nset -euo pipefail\npwd > whereami.txt\necho "cwd=$(pwd)"\n',
-		projDir,
-	);
-
-	const depId = await deploy(cap);
-	const dep = await until(
-		async () => {
-			const row = (await listDeployments()).find((d) => d.id === depId);
-			return row && row.state === "applied" ? row : null;
-		},
-		{ timeoutMs: 15000 },
-	);
-	// 这条就是 #286 的护栏：中枢与节点各自算 digest，只要有一边没归一，
-	// 状态会停在 `local`（reason 写着 digest mismatch），这里立刻红。
-	H.check(
-		"部署状态变 applied（不是 local：两端 digest 必须对得上账）",
-		!!dep,
-		dep
-			? ""
-			: JSON.stringify((await listDeployments()).find((d) => d.id === depId) || { state: "缺失" }),
-	);
-
-	// ================= 3. 真跑一个任务 =================
-	console.log("--- 3. 触发任务：真 agent 在声明的目录里执行 ---");
-	// 源必须声明 targets（至少一个出口能力）：源 = 触发点，targets 就是它的第一跳。
-	// 少了这一段服务端返回 400，而"触发一个不存在的源"会 404 —— 两种错都很远。
-	const srcRes = await H.req(server.base, "/v1/sources", {
-		session,
-		body: {
-			namespaceId: nsId,
-			name: "live-src",
-			kind: "manual",
-			config: {},
-			targets: [{ capabilityId: cap.id }],
-		},
-	});
-	H.check("建手动源（带 targets）→ 201", srcRes.status === 201, `${srcRes.status} ${srcRes.text}`);
-	const srcId = srcRes.json?.source?.id;
-
-	const fired = await H.req(server.base, `/v1/sources/${srcId}/fire`, {
-		session,
-		body: { namespaceId: nsId, type: "live.run", payload: { note: "live" } },
-	});
-	H.check("触发源 → 200 且建出任务", fired.status === 200, `${fired.status} ${fired.text}`);
-
-	const done = await until(
-		async () => (await listTasks()).find((t) => t.capability === "live.whereami" && t.status === "succeeded"),
-		{ timeoutMs: 20000, intervalMs: 150 },
-	);
-	H.check(
-		"任务成功（真 agent 真的执行了产物）",
-		!!done,
-		done ? "" : JSON.stringify((await listTasks()).map((t) => [t.capability, t.status, (t.error || "").slice(0, 80)])),
-	);
-
-	// ================= 4. 去文件系统验收 =================
-	console.log("--- 4. 文件系统验收（这才是用户看到的结果） ---");
-	const whereami = path.join(projDir, "whereami.txt");
-	H.check("脚本把文件写进了能力声明的目录", existsSync(whereami), projDir);
-	if (existsSync(whereami)) {
-		H.eq("文件内容就是那个目录（cwd 真的切过去了）", readFileSync(whereami, "utf8").trim(), projDir);
+// jsonLine 取 stdout 里的那份 JSON（CLI 的回执/错误都是单行 JSON）。
+function jsonLine(stdout) {
+	const line = String(stdout).trim().split("\n").filter(Boolean).pop() || "";
+	try {
+		return JSON.parse(line);
+	} catch {
+		return null;
 	}
+}
 
-	// 产物文件（run.sh）不应该落进用户目录：它们属于任务目录。
-	const leftovers = existsSync(projDir)
-		? readdirSync(projDir).filter((n) => n !== "whereami.txt")
-		: [];
-	H.check("用户目录里没有残留的产物文件（run.sh 不该出现在项目里）", leftovers.length === 0, leftovers.join(","));
-
-	// 任务行的 stdout 落在 summary 里（output 是产物出口，不是控制台输出）。
-	H.check(
-		"任务 summary 里带着 cwd（排障时最直接的证据）",
-		/cwd=/.test(String(done?.summary || "")),
-		String(done?.summary || "").slice(0, 160),
+// startAnode 写 anode.yaml 并起真 serve 进程（PATH/HOME 由我们给：任务环境是启动基线快照）。
+async function startAnode({ base, token, name, dataDir, listen }) {
+	const configPath = path.join(dataDir, "anode.yaml");
+	writeFileSync(
+		configPath,
+		[`name: ${name}`, `server: ${base.replace(/^http/, "ws")}`, `token: ${token}`, "namespaces:", `  - ${NS}`, `listen: ${listen}`, ""].join("\n"),
+		{ mode: 0o600 },
 	);
-
-	// ================= 5. 没声明 workDir 的能力走默认目录 =================
-	console.log("--- 5. 未声明 workDir 的能力：仍在每次任务的独立目录 ---");
-	const capDefault = await makeCapability(
-		"live.default",
-		'#!/bin/bash\nset -euo pipefail\necho "cwd=$(pwd)"\n',
-		"",
-	);
-	await deploy(capDefault);
-	const depOk = await until(
-		async () =>
-			(await listDeployments()).some((d) => d.capabilityId === capDefault.id && d.state === "applied"),
-		{ timeoutMs: 15000 },
-	);
-	H.check("默认目录能力的部署也是 applied", !!depOk);
-
-	const src2 = await H.req(server.base, "/v1/sources", {
-		session,
-		body: {
-			namespaceId: nsId,
-			name: "live-src-default",
-			kind: "manual",
-			config: {},
-			targets: [{ capabilityId: capDefault.id }],
+	const logPath = path.join(dataDir, "anode.log");
+	const logFd = openSync(logPath, "w");
+	const proc = spawn(ANODE_BIN, ["serve", "--config", configPath, "--data", dataDir], {
+		cwd: dataDir,
+		env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dataDir },
+		stdio: ["ignore", logFd, logFd],
+	});
+	let exited = null;
+	proc.on("exit", (code, sig) => (exited = { code, sig }));
+	const state = {
+		proc,
+		configPath,
+		dataDir,
+		logPath,
+		exited: () => exited,
+		log: (tail = 4000) => {
+			try {
+				const raw = readFileSync(logPath, "utf8");
+				return raw.length > tail ? "…" + raw.slice(-tail) : raw;
+			} catch (e) {
+				return `（读不到 ${logPath}: ${e && e.message}）`;
+			}
 		},
-	});
-	H.eq("建第二个源 → 201", src2.status, 201);
-	await H.req(server.base, `/v1/sources/${src2.json.source.id}/fire`, {
-		session,
-		body: { namespaceId: nsId, type: "live.default.run", payload: {} },
-	});
-	const done2 = await until(
-		async () => (await listTasks()).find((t) => t.capability === "live.default" && t.status === "succeeded"),
-		{ timeoutMs: 20000, intervalMs: 150 },
-	);
-	H.check("第二个任务也成功", !!done2, JSON.stringify((await listTasks()).map((t) => [t.capability, t.status])));
-	if (done2) {
-		const m = /cwd=(\S+)/.exec(String(done2.summary || ""));
-		H.check("没声明就不该进用户目录", !!m && m[1] !== projDir, String(m && m[1]));
-		H.check("默认目录在 data-dir 的 work 下", !!m && m[1].includes("work"), String(m && m[1]));
-	}
-
-	// ================= 5b. 节点本地执行档案（runs/） =================
-	//
-	// 用户的原话：「每一个事件，它不是会去节点上执行吗？那执行的标准输入输出应该得存下来。
-	// 当然，这个只存在节点上。」所以这一节的验收点在**节点的文件系统**上，而不是中枢：
-	//
-	//	<data-dir>/runs/<trace>/<capability>@<version>/<seqInTrace>-a<attempts>/
-	//	    input.json / stdout.log / stderr.log / meta.json
-	//
-	// 上面两条任务都已经真跑完（中枢里 succeeded），这里去盘上核对第 1 条的那份档案。
-	// 断言三件事，缺一条这条腿就等于没落地：
-	//   ① 路径由**中枢下发的** seq_in_trace / attempts 决定（不是节点自己数出来的）；
-	//   ② input.json 里是**原样**的 params（不脱敏）——这正是「只存在节点上」的那份数据；
-	//   ③ stdout.log 是**完整**输出（上传窗口只有尾部 32 KiB，档案才有全部）。
-	console.log("--- 5b. 节点本地执行档案（<data-dir>/runs/） ---");
-	const runsRoot = path.join(tmpDir, "agent-data", "runs");
-	/** 在 runs/ 下找出某个能力（名字前缀 + @version）的全部执行目录。 */
-	const findRunDirs = (capPrefix) => {
-		const found = [];
-		if (!existsSync(runsRoot)) return found;
-		for (const trace of readdirSync(runsRoot)) {
-			const tracePath = path.join(runsRoot, trace);
-			if (!statSync(tracePath).isDirectory()) continue;
-			for (const capDir of readdirSync(tracePath)) {
-				if (!capDir.startsWith(capPrefix + "@")) continue;
-				const capPath = path.join(tracePath, capDir);
-				if (!statSync(capPath).isDirectory()) continue;
-				for (const run of readdirSync(capPath)) {
-					found.push({ trace, capDir, run, dir: path.join(capPath, run) });
+		stop: async () => {
+			if (exited) return exited;
+			try {
+				proc.kill("SIGTERM");
+			} catch {
+				/* 已退出 */
+			}
+			const deadline = Date.now() + 8000;
+			while (!exited && Date.now() < deadline) await sleep(50);
+			if (!exited) {
+				try {
+					proc.kill("SIGKILL");
+				} catch {
+					/* ignore */
 				}
+				await sleep(200);
+			}
+			try {
+				closeSync(logFd);
+			} catch {
+				/* ignore */
+			}
+			return exited;
+		},
+	};
+	return state;
+}
+
+// ---------- 1. CLI 契约 ----------
+function partCLI() {
+	console.log("--- 1. CLI 契约（--version / 未知命令 / emit 退出码）---");
+	{
+		const r = runCLI(["--version"]);
+		H.eq("anode --version → 退出码 0", r.status, 0);
+		const doc = jsonLine(r.stdout);
+		H.check("--version 输出 JSON 回执（version/commit 两个键）", !!doc && typeof doc.version === "string" && typeof doc.commit === "string", r.stdout.slice(0, 200));
+		H.eq("版本来自构建期注入（本次构建是 dev）", doc?.version, "dev");
+	}
+	{
+		const r = runCLI([]);
+		H.eq("无参数 → 退出码 2（用法错误，不是崩溃）", r.status, 2);
+		H.check("无参数 → stderr 给出用法（serve/install/emit）", /Usage: anode \{(serve|serve\|install\|emit)/.test(r.stderr) || /serve/.test(r.stderr), r.stderr.slice(0, 200));
+	}
+	{
+		const r = runCLI(["frobnicate"]);
+		H.eq("未知子命令 → 退出码 2", r.status, 2);
+		H.check("未知子命令 → 文案点名期望的三个子命令", /unknown command/.test(r.stderr) && /serve/.test(r.stderr), r.stderr.slice(0, 200));
+	}
+	{
+		// emit 的**请求面**错误：2（本地参数错，绝不该重试）。
+		const r = runCLI(["emit"]);
+		H.eq("emit 缺 target → 退出码 2", r.status, 2);
+		H.eq("emit 缺 target 的机器码是 missing_target", jsonLine(r.stdout)?.error, "missing_target");
+	}
+	{
+		const r = runCLI(["emit", "some.thing", "--data", "[]"]);
+		H.eq("emit --data 不是对象 → 退出码 2", r.status, 2);
+		H.eq("→ 机器码 target_not_declared", jsonLine(r.stdout)?.error, "target_not_declared");
+	}
+	{
+		// 没有任务令牌：3（令牌无效）。这一层必须在**发请求之前**就拒绝。
+		const r = runCLI(["emit", "some.thing", "--data", "{}"], { ANOTIFY_TASK_TOKEN: "", ANOTIFY_EMIT_ENDPOINT: "" });
+		H.eq("emit 缺 ANOTIFY_TASK_TOKEN → 退出码 3", r.status, 3);
+		H.eq("→ 机器码 token_invalid", jsonLine(r.stdout)?.error, "token_invalid");
+	}
+	{
+		// 端点不可达：5（结果未知，不许盲目重放整条任务）。
+		const r = runCLI(["emit", "some.thing", "--data", "{}"], {
+			ANOTIFY_TASK_TOKEN: "e2eTaskTokenPlaceholder",
+			ANOTIFY_EMIT_ENDPOINT: "unix://" + path.join("/tmp", "no-such-anode-emit-" + process.pid + ".sock"),
+		});
+		H.eq("emit 端点不可达 → 退出码 5（结果未知）", r.status, 5);
+		H.eq("→ 机器码 emit_unreachable", jsonLine(r.stdout)?.error, "emit_unreachable");
+	}
+	{
+		const r = runCLI(["serve", "--config", "/tmp/definitely-not-anode-" + process.pid + ".yaml"]);
+		H.eq("serve 配置文件缺失 → 退出码 2（启动期全有或全无）", r.status, 2);
+		H.check("→ stderr 点名 configuration（可定位）", /configuration/.test(r.stderr), r.stderr.slice(0, 200));
+	}
+}
+
+// ---------- 2. install --prefix ----------
+async function partInstall(base, session) {
+	console.log("--- 2. anode install --prefix（产物/权限/幂等/身份不静默覆盖）---");
+	const name = "live-install-node";
+	const created = await H.req(base, "/v1/nodes", {
+		session,
+		body: V.envelope("Node", { name }, { namespaces: [NS] }),
+	});
+	V.expectStatus("登记节点", created, 201);
+	const tok = await H.req(base, `/v1/nodes/${encodeURIComponent(name)}/tokens`, { session, body: {} });
+	V.expectStatus("签发节点令牌", tok, 200);
+	const token = tok.json?.token || "";
+
+	const prefix = H.mkdtempTmp("anotify-anode-install-");
+	const wsServer = base.replace(/^http/, "ws");
+	const installArgs = ["install", "--prefix", prefix, "--name", name, "--server", wsServer, "--token", token];
+	const first = runCLI(installArgs);
+	H.eq("install --prefix → 退出码 0", first.status, 0);
+	const cfgPath = path.join(prefix, "etc/anode/anode.yaml");
+	const binPath = path.join(prefix, "usr/local/bin/anode");
+	const unitPath = path.join(prefix, "etc/systemd/system/anode.service");
+	const dataPath = path.join(prefix, "var/lib/anode");
+	for (const p of [cfgPath, binPath, unitPath]) {
+		H.check(`install 落盘 ${path.relative(prefix, p)}`, existsSync(p), p);
+	}
+	{
+		// 配置里有节点令牌：必须是 0600（否则本机任何用户都能冒充这台节点）。
+		H.eq("anode.yaml 权限是 0600（含节点令牌）", (statSync(cfgPath).mode & 0o777).toString(8), "600");
+		H.check("anode 二进制可执行（0755 位）", (statSync(binPath).mode & 0o111) !== 0, (statSync(binPath).mode & 0o777).toString(8));
+		H.check("systemd 单元 0644（可读、不可写）", (statSync(unitPath).mode & 0o777).toString(8) === "644", (statSync(unitPath).mode & 0o777).toString(8));
+		const cfg = readFileSync(cfgPath, "utf8");
+		H.check("anode.yaml 带 name/server/token 三个身份字段", cfg.includes(`name: ${name}`) && cfg.includes(wsServer) && cfg.includes(token), cfg.replace(token, "<token>").slice(0, 300));
+		H.check("anode.yaml 带 namespaces: default（缺省申报）", /namespaces:\s*\n\s*- default/.test(cfg), cfg.slice(0, 200));
+		H.check("单元文件指向 install 出来的二进制与配置", readFileSync(unitPath, "utf8").includes(binPath), readFileSync(unitPath, "utf8").slice(0, 300));
+		H.check("install 不启动服务（只落盘 + 打印管理员步骤）", /systemctl enable --now anode\.service/.test(first.stdout), first.stdout.slice(0, 300));
+	}
+	{
+		// 幂等重跑：同一份身份再装一次不该失败、也不该改身份。
+		const again = runCLI(installArgs);
+		H.eq("同参数重跑 install → 退出码 0（幂等）", again.status, 0);
+		H.check("重跑后配置里的 token 不变", readFileSync(cfgPath, "utf8").includes(token), "token 被改动");
+	}
+	{
+		// 换 token 必须**显式** --update-token：否则一次手误就把节点身份换了。
+		const other = runCLI(["install", "--prefix", prefix, "--name", name, "--server", wsServer, "--token", "e2eDifferentToken" + process.pid]);
+		H.check("换 token 但没 --update-token → 非 0 退出", other.status !== 0, `status=${other.status}`);
+		H.check("→ 文案要求显式 --update-token（不静默覆盖身份）", /update-token/.test(other.stderr), other.stderr.slice(0, 300));
+		H.check("被拒的 install 没有改配置", readFileSync(cfgPath, "utf8").includes(token), "配置被改了");
+	}
+	// install 产物本身要能通过 serve 的**严格**配置解析（不启动，只试启动一次看它进入运行态）。
+	return { name, token, prefix, cfgPath, dataPath };
+}
+
+// ---------- 3. 安装产物 → serve 往返 ----------
+async function partServeInstalled(base, session, installed) {
+	console.log("--- 3. 装出来的配置直接 serve：节点上线 / data 目录成型 ---");
+	// 用 install 落盘的 anode.yaml 起真 serve：这是「install 与 serve 对同一份配置的理解」
+	// 的唯一证据（两边各自解析，字段名漂移只有这一层能抓住）。
+	const dataDir = installed.dataPath;
+	const logPath = path.join(installed.prefix, "serve.log");
+	const logFd = openSync(logPath, "w");
+	const proc = spawn(ANODE_BIN, ["serve", "--config", installed.cfgPath, "--data", dataDir], {
+		cwd: installed.prefix,
+		env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin", HOME: installed.prefix },
+		stdio: ["ignore", logFd, logFd],
+	});
+	let exited = null;
+	proc.on("exit", (code, sig) => (exited = { code, sig }));
+	const log = (tail = 3000) => {
+		try {
+			const raw = readFileSync(logPath, "utf8");
+			return raw.length > tail ? "…" + raw.slice(-tail) : raw;
+		} catch {
+			return "";
+		}
+	};
+	try {
+		const doc = await pollUntil(
+			"节点用安装出来的配置上线（agentVersion + appliedRevision + 槽位）",
+			async () => {
+				const r = await H.req(base, `/v1/nodes/${encodeURIComponent(installed.name)}`, { session });
+				const st = r.json?.status || {};
+				return st.agentVersion && st.appliedRevision === st.configRevision && Array.isArray(st.instances) && st.instances.length >= 1 ? r.json : null;
+			},
+			{ timeoutMs: 25000 },
+		).catch((e) => {
+			throw new Error(`${e.message}\nanode 日志:\n${log()}`);
+		});
+		H.check("装出来的配置让节点自报版本（先装后用的往返成立）", !!doc.status?.agentVersion, String(doc.status?.agentVersion));
+		H.eq("配置已对齐（appliedRevision == configRevision）", doc.status?.appliedRevision, doc.status?.configRevision);
+		H.check("生效命名空间含 default（install 写的 namespaces 被解析）", (doc.status?.effectiveNamespaces || []).includes(NS), JSON.stringify(doc.status?.effectiveNamespaces));
+		for (const sub of ["capabilities", "results", "work"]) {
+			H.check(`data 目录成型：${sub}/`, existsSync(path.join(dataDir, sub)), dataDir);
+		}
+		// 文件名是 anode.applied.yaml（app.go 的文件头冻结了这个布局）。
+		H.check("applied 快照落盘（机器级配置已生效）", existsSync(path.join(dataDir, "anode.applied.yaml")), dataDir);
+	} finally {
+		proc.kill("SIGTERM");
+		const deadline = Date.now() + 8000;
+		while (!exited && Date.now() < deadline) await sleep(50);
+		if (!exited) {
+			try {
+				proc.kill("SIGKILL");
+			} catch {
+				/* ignore */
 			}
 		}
-		return found;
-	};
-
-	const runsWhere = findRunDirs(cap.name);
-	H.check(
-		"真 agent 把这次执行落到了 <data-dir>/runs/ 下",
-		runsWhere.length === 1,
-		runsWhere.length === 0
-			? `runs/ 下没找到 ${cap.name}@*（目录：${existsSync(runsRoot) ? readdirSync(runsRoot).join(",") : "runs 不存在"}）`
-			: JSON.stringify(runsWhere.map((d) => path.join(d.trace, d.capDir, d.run))),
-	);
-	const runWhere = runsWhere[0];
-	if (runWhere) {
-		// ① 目录名 = 中枢下发的 <seqInTrace>-a<attempts>（新 trace 的第 1 次执行、第 1 次派发）。
-		H.eq("runs 目录名就是中枢下发的 <seqInTrace>-a<attempts>", runWhere.run, "1-a1");
-		H.check(
-			"runs 目录的第一段就是这条任务的 traceId（按 trace 归档）",
-			runWhere.trace === done?.traceId,
-			`${runWhere.trace} vs ${done?.traceId}`,
-		);
-		H.eq("能力目录是 <capability>@<version>", runWhere.capDir, `${cap.name}@${cap.version}`);
-
-		const inputPath = path.join(runWhere.dir, "input.json");
-		H.check("档案里有 input.json（标准输入）", existsSync(inputPath), runWhere.dir);
-		if (existsSync(inputPath)) {
-			const input = JSON.parse(readFileSync(inputPath, "utf8"));
-			H.eq("input.json 的 traceId", input.traceId, done?.traceId);
-			H.eq("input.json 的 capability", input.capability, cap.name);
-			H.eq("input.json 的 version", input.version, cap.version);
-			H.eq("input.json 的 seqInTrace（中枢下发的）", input.seqInTrace, 1);
-			H.eq("input.json 的 attempt（中枢下发的）", input.attempt, 1);
-			// params 原样：触发时的 payload 里 note=live（源的 fire body）。
-			H.eq("input.json 里是原样的 params（不脱敏）", input.params?.note, "live");
-			H.check("input.json 里带着本次执行的 workdir", typeof input.workdir === "string" && input.workdir.length > 0);
-		}
-
-		const stdoutPath = path.join(runWhere.dir, "stdout.log");
-		H.check("档案里有 stdout.log（标准输出）", existsSync(stdoutPath), runWhere.dir);
-		if (existsSync(stdoutPath)) {
-			// 脚本只打了一行 `cwd=<目录>`：完整落盘 = 这一行逐字都在。
-			const out = readFileSync(stdoutPath, "utf8");
-			H.eq("stdout.log 是这次执行的完整输出", out.trim(), `cwd=${projDir}`);
-		}
-
-		const metaPath = path.join(runWhere.dir, "meta.json");
-		H.check("档案里有 meta.json（执行事实）", existsSync(metaPath), runWhere.dir);
-		if (existsSync(metaPath)) {
-			const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-			H.eq("meta.json 的 status", meta.status, "succeeded");
-			H.eq("meta.json 的 exitCode", meta.exitCode, 0);
-			H.check("meta.json 有开始/结束时间", !!meta.startedAt && !!meta.finishedAt, JSON.stringify([meta.startedAt, meta.finishedAt]));
-			H.check("meta.json 带 emit 次数", typeof meta.emits === "number", String(meta.emits));
-			H.eq("meta.json 的 stdout 没被截断（这么短的输出）", meta.stdoutTruncated, false);
-		}
-
-		// 权限：输入与输出是用户自己的数据，不能被同机其他用户读到。
-		H.eq("runs 目录权限是 0700", (statSync(runWhere.dir).mode & 0o777).toString(8), "700");
-		H.eq("input.json 权限是 0600", (statSync(inputPath).mode & 0o777).toString(8), "600");
-
-		// 第二条任务（未声明 workDir）也必须有自己的一份档案——档案是**每次执行**都有的。
-		H.check(
-			"第二条任务也有自己的执行档案",
-			findRunDirs(capDefault.name).length === 1,
-			JSON.stringify(findRunDirs(capDefault.name).map((d) => d.run)),
-		);
-	}
-
-	// ================= 6. 真进程 emit：能力脚本 → 本机 socket → 中枢派发 =================
-	//
-	// 为什么这一节必须用**真进程**（docs/design/emit-protocol.md §0 的进程树）：
-	//
-	//   中枢 ──WS── agent ──unix socket── anotify-agent emit ← 能力进程
-	//
-	// 这条链上任何一层用假节点 / 假 socket 替掉，下面三件事就都没被验过：
-	//   ① 环境变量真的被注进了**能力进程**（ANOTIFY_EMIT_SOCK 指向一个活的 unix socket）；
-	//   ② 脚本里的 `anotify-agent emit` 真的被 agent 中转、被中枢 ack（acked=routed）；
-	//   ③ socket 与任务同生命周期（§1 / §8）：任务终结后文件必须消失——「socket 不存在」
-	//      正是中枢/agent 用来拒绝「晚到的 emit 改动已终结的任务」的信号。
-	//
-	// 断言分两半：**进程里看到的**（探针文件，脚本自己写）+ **中枢里落下的**
-	// （任务行：父任务 1 条、下游 2 条）。只看一半就能绿的那种实现是错的。
-	console.log("--- 6. 真进程 emit：能力脚本 → 本机 socket → 中枢 ---");
-
-	// 本节自己的建能力辅助（不能复用上面的 makeCapability）：emit 需要一个**声明出口**的
-	// 能力（outputs 即 ports），而 makeCapability 把 paramsSchema 写死成 {note}。
-	const makeEmitCap = async (name, script, outputs, paramsSchema) => {
-		const r = await H.req(server.base, "/v1/capabilities", {
-			session,
-			body: {
-				namespaceId: nsId,
-				name,
-				spec: {
-					outputs,
-					params: paramsSchema || { type: "object" },
-					run: { entrypoint: "run.sh", files: { "run.sh": script }, timeoutSec: 60 },
-				},
-			},
-		});
-		H.eq(`建能力 ${name} → 200`, r.status, 200);
-		H.check(
-			`${name} 编译出产物 digest（内容寻址）`,
-			/^sha256:[0-9a-f]{64}$/.test(String(r.json?.digest || "")),
-			String(r.json?.digest),
-		);
-		return {
-			id: r.json?.capability?.id,
-			name,
-			version: r.json?.capability?.version,
-			digest: r.json?.digest,
-		};
-	};
-
-	const probe = path.join(tmpDir, "emit-probe.txt");
-	// 两个下游都要 issue：这样 emit 时的 expects（下游要什么的并集）真的非空，
-	// 「emit 参数被挡在节点侧」这条链也顺带被覆盖。
-	const targetParams = {
-		type: "object",
-		required: ["issue"],
-		properties: { issue: { type: "string" } },
-	};
-	const t1 = await makeEmitCap(
-		"live.emit.target1",
-		'#!/bin/bash\nset -euo pipefail\necho "t1 got ${ANOTIFY_PARAM_ISSUE:-} "\n',
-		[],
-		targetParams,
-	);
-	const t2 = await makeEmitCap(
-		"live.emit.target2",
-		'#!/bin/bash\nset -euo pipefail\necho "t2 got ${ANOTIFY_PARAM_ISSUE:-} "\n',
-		[],
-		targetParams,
-	);
-	// 能力进程里的 emit：脚本自己把「它看到了什么」写进探针文件（不靠日志格式猜）。
-	// 探针路径是绝对值（tmpDir 下的固定文件），所以不依赖 cwd / workDir。
-	const emitterScript = [
-		"#!/bin/bash",
-		"set -uo pipefail",
-		`PROBE=${JSON.stringify(probe)}`,
-		'sock="${ANOTIFY_EMIT_SOCK:-}"',
-		'if [ -S "$sock" ]; then is=yes; else is=no; fi',
-		'printf \'sock=%s\\n\' "$sock" > "$PROBE"',
-		'printf \'sock_is_socket=%s\\n\' "$is" >> "$PROBE"',
-		'printf \'task_id=%s\\n\' "${ANOTIFY_TASK_ID:-}" >> "$PROBE"',
-		'printf \'token_len=%s\\n\' "${#ANOTIFY_TASK_TOKEN}" >> "$PROBE"',
-		// 真正的调用：--wait-routed = 等中枢 ack 再返回（默认只等本地 outbox 落盘，
-		// 那证明不了「已经派发出去」——而这正是本节要断言的那一半）。
-		`rc=0`,
-		`${JSON.stringify(ANODE_BIN)} emit --data '{"issue":"#42","title":"空指针"}' --wait-routed --note '第 1 项' >> "$PROBE" 2>&1 || rc=$?`,
-		'printf \'exit=%s\\n\' "$rc" >> "$PROBE"',
-		// 第二次独立产出（契约 §3）：一次 emit 只派**一个**候选，所以要看全两个目标
-		// 就得 emit 两次 —— 同级轮盘各落一个。这也是「两次 emit = 两个独立任务」的
-		// 真进程证据。
-		//
-		// 两次都**不写端口**（CONTRACT-hide-ports.md §2）：本能力只有一个出口，
-		// agent 从 ANOTIFY_EMIT_PORTS 自动取。跑通了才说明「脚本作者不需要知道
-		// 端口叫什么」在真进程里成立，而不只是单测里成立。
-		`rc2=0`,
-		`${JSON.stringify(ANODE_BIN)} emit --data '{"issue":"#43","title":"竞态"}' --wait-routed --note '第 2 项' >> "$PROBE" 2>&1 || rc2=$?`,
-		'printf \'exit2=%s\\n\' "$rc2" >> "$PROBE"',
-		// 第三次：脚本**点名**下游（--to）。这是"脚本知道该给谁"的用法：
-		// 中枢按它钉住那个候选，而不是按轮盘挑（钉不住要报错，不能悄悄改投）。
-		`rc3=0`,
-		`${JSON.stringify(ANODE_BIN)} emit --to ${t1.name} --data '{"issue":"#44","title":"钉住"}' --wait-routed --note '第 3 项' >> "$PROBE" 2>&1 || rc3=$?`,
-		'printf \'exit3=%s\\n\' "$rc3" >> "$PROBE"',
-		// 脚本自己总是成功退：这节的断言看探针里的 exit=，而不是把任务先弄成 failed
-		"exit 0",
-		"",
-	].join("\n");
-	const emitter = await makeEmitCap("live.emit", emitterScript, ["emit.fix"]);
-
-	// 三个能力都部署到同一台真节点（下游也要有节点接，否则 no_node 剪枝 → routed=0）
-	for (const c of [emitter, t1, t2]) await deploy(c);
-	const emitApplied = await until(
-		async () => {
-			const rows = await listDeployments();
-			const want = [emitter.id, t1.id, t2.id];
-			const hit = rows.filter((d) => want.includes(d.capabilityId));
-			return hit.length === 3 && hit.every((d) => d.state === "applied") ? hit : null;
-		},
-		{ timeoutMs: 20000 },
-	);
-	H.check(
-		"emit 用例的三个能力都 applied",
-		!!emitApplied,
-		JSON.stringify(
-			(await listDeployments()).map((d) => [d.capability, d.state, (d.reason || "").slice(0, 60)]),
-		),
-	);
-	// 归属只由部署派生（D4）：三个名字必须都在这台节点上，否则 emit 的下游会被
-	// no_node 剪掉，症状是「脚本 exit 0、但下游一条任务都没有」——很难从日志上看出来。
-	const emitDerived = await until(
-		async () => {
-			const n = (await listNodes()).find((x) => x.id === nodeId);
-			const names = (n?.capabilities || []).map((c) => c.name);
-			return [emitter.name, t1.name, t2.name].every((x) => names.includes(x)) ? names : null;
-		},
-		{ timeoutMs: 20000 },
-	);
-	H.check(
-		"三个能力都从部署派生到这台节点（否则下游会被 no_node 剪掉）",
-		!!emitDerived,
-		JSON.stringify((await listNodes()).map((n) => (n.capabilities || []).map((c) => c.name))),
-	);
-
-	// 一个出口两条边（fan-out）：routed 应当 = 2
-	const mkEdge = (fromPort, to, priority = 0) =>
-		H.req(server.base, "/v1/edges", {
-			session,
-			body: {
-				namespaceId: nsId,
-				fromCapability: emitter.id,
-				fromPort,
-				toCapability: to.id,
-				priority,
-			},
-		});
-	// target1 的 priority 故意更大（= 更低的优先级）：于是"自动选"**确定**落在 target2。
-	// 后面那条 `--to target1` 的 emit 因此是「钉住真的生效」的证据 —— 否则它可能只是
-	// 轮盘碰巧转到 target1，测不出任何东西。
-	H.eq("建边 emit.fix → target1", (await mkEdge("emit.fix", t1, 10)).status, 200);
-	H.eq("建边 emit.fix → target2", (await mkEdge("emit.fix", t2)).status, 200);
-
-
-	const emitSrc = await H.req(server.base, "/v1/sources", {
-		session,
-		body: {
-			namespaceId: nsId,
-			name: "live-emit-src",
-			kind: "manual",
-			config: {},
-			targets: [{ capabilityId: emitter.id }],
-		},
-	});
-	H.eq("建 emit 用例的源 → 201", emitSrc.status, 201);
-	const emitFired = await H.req(
-		server.base,
-		`/v1/sources/${emitSrc.json?.source?.id}/fire`,
-		{ session, body: { namespaceId: nsId, type: "live.emit.run", payload: {} } },
-	);
-	H.eq("触发 emit 用例的源 → 200", emitFired.status, 200);
-	const parentId = (emitFired.json?.dispatch?.tasks || [])[0]?.id;
-	H.check("拿到 emit 用例的父任务", !!parentId, JSON.stringify(emitFired.json).slice(0, 300));
-
-	// 父任务跑到终态：脚本退出 → agent 先收 socket 再回 result（顺序有语义，见 client.go）
-	const parentDone = await until(
-		async () => {
-			const t = (await listTasks()).find((x) => x.id === parentId);
-			return t && (t.status === "succeeded" || t.status === "failed") ? t : null;
-		},
-		{ timeoutMs: 30000 },
-	);
-	H.eq("父任务（跑 emit 脚本的那个）succeeded", parentDone?.status, "succeeded");
-
-	// ---------- 真实进程里看到的（探针文件）----------
-	H.check("能力进程写出了探针文件", existsSync(probe), probe);
-	const probeText = existsSync(probe) ? readFileSync(probe, "utf8") : "";
-	const probeField = (k) =>
-		(new RegExp("^" + k + "=(.*)$", "m").exec(probeText) || [])[1] || "";
-	const emitSock = probeField("sock");
-	H.check(
-		"ANOTIFY_EMIT_SOCK 已注入能力进程（是个绝对路径）",
-		!!emitSock && path.isAbsolute(emitSock),
-		`probe:\n${probeText}`,
-	);
-	H.eq(
-		"注入的路径确实是一个活的 unix socket（agent 在起进程之前就监听好了）",
-		probeField("sock_is_socket"),
-		"yes",
-	);
-	H.eq("ANOTIFY_TASK_ID 就是这条任务（身份不串台）", probeField("task_id"), parentId);
-	H.check(
-		"ANOTIFY_TASK_TOKEN 也注入了（本地 socket 的鉴权凭据）",
-		Number(probeField("token_len")) >= 16,
-		`token_len=${probeField("token_len")}`,
-	);
-	H.eq("脚本里 `anotify-agent emit` 的退出码 = 0", probeField("exit"), "0");
-	H.eq("省略 --port 的第二次 emit 也退 0（出口名由 agent 自动取）", probeField("exit2"), "0");
-	// 脚本的 stdout 不是终端 → emit 默认输出 JSON（#318）。所以这里读 JSON 里的 port。
-	H.check(
-		"省略 --port 时自动选中的就是唯一那个出口（JSON 回显 port=emit.fix）",
-		/"port":\s*"emit\.fix"/.test(probeText),
-		probeText,
-	);
-	H.eq("--to 钉住下游的那次 emit 也退 0", probeField("exit3"), "0");
-	H.check(
-		"CLI 报 routed=true（中枢确认已派发，不是只落了本地 outbox）",
-		/"routed":\s*true/.test(probeText),
-		probeText,
-	);
-
-	// ---------- 中枢里落下的（任务行才是 routed 的真凭据）----------
-	const emitKids = (await listTasks()).filter((t) => t.parentTaskId === parentId);
-	// 契约 §3：emit.fix 有 2 个候选，**每次 emit 只派一个**；脚本 emit 了两次，
-	// 同级轮盘把两次落到不同的候选上 —— 所以这里恰好 2 条，且覆盖两个目标。
-	// （以前是「一次 emit 全派 2 条」，那是 fanout，现在是 1:1。）
-	H.eq("三次 emit（各派一个候选）→ 共 3 条下游任务", emitKids.length, 3);
-	// 两次自动 emit：target1 的 priority 更大 → 确定落在 target2（不是轮盘碰运气）。
-	// 一次 `--to target1`：即使 priority 更低，也**必须**落在 target1 —— 这就是
-	// "钉住生效"的证据；如果 --to 被忽略，这一条会落到 target2，两个计数都会变。
-	const byCap = emitKids.reduce((m, t) => ((m[t.capability] = (m[t.capability] || 0) + 1), m), {});
-	H.eq("两次自动 emit 都落在高优先级的 target2", byCap[t2.name], 2);
-	H.eq("--to 点名的那一次落在低优先级的 target1（钉住压过 priority）", byCap[t1.name], 1);
-	// P0：本次执行钉在一个确定的产物上（assign.digest / tasks.digest）
-	H.eq("父任务钉住的 digest 就是中枢编译出来的那份", parentDone?.digest, emitter.digest);
-	H.eq(
-		"下游任务的 digest 也各自钉住了自己的产物（三条 = 两份 t2 + 一份 t1）",
-		emitKids.map((t) => t.digest).sort(),
-		[t2.digest, t2.digest, t1.digest].sort(),
-	);
-
-	// ---------- socket 与任务同生命周期（§1 / §8）----------
-	H.check(
-		"能力进程退出后 emit socket 已被清理（晚到的 emit 只会得到 exit 6）",
-		!!emitSock && !existsSync(emitSock),
-		`sock=${emitSock} exists=${emitSock ? existsSync(emitSock) : "?"}`,
-	);
-}
-
-async function cleanup() {
-	if (agentProc && agentProc.exitCode === null) {
-		agentProc.kill("SIGKILL");
-		await sleep(100);
-	}
-	if (tmpDir) {
 		try {
-			H.removeTmpDir(tmpDir);
+			closeSync(logFd);
 		} catch {
-			/* 清理失败不影响结论 */
+			/* ignore */
 		}
 	}
-	if (server) await server.stop();
+	H.check("SIGTERM 后节点进程自己退了（不是被 KILL）", !!exited && exited.sig !== "SIGKILL", JSON.stringify(exited));
+	H.eq("正常退出码是 0（systemd 不需要重试）", exited?.code, 0);
+	return exited;
 }
 
-main()
-	.catch((e) => {
-		console.error(e);
-		H.bad("套件异常终止", String((e && e.message) || e).slice(0, 300));
-	})
-	.finally(async () => {
-		await cleanup();
-		const allPassed = H.summary(SUITE);
-		process.exitCode = allPassed ? 0 : 1;
-		setTimeout(() => process.exit(process.exitCode), 2000).unref();
+// ---------- 4. serve 生命周期 + emit 打真 socket ----------
+async function partServeLifecycle(base, session) {
+	console.log("--- 4. serve 生命周期：上线 → emit 打真 socket → SIGTERM → 中枢承认离线 ---");
+	const name = "live-serve-node";
+	const created = await H.req(base, "/v1/nodes", {
+		session,
+		body: V.envelope("Node", { name }, { namespaces: [NS] }),
 	});
+	V.expectStatus("登记节点", created, 201);
+	const tok = await H.req(base, `/v1/nodes/${encodeURIComponent(name)}/tokens`, { session, body: {} });
+	const token = tok.json?.token || "";
+
+	// 能力 + 部署：只为在「离线」时拿到 sent=false 的对照（不需要真跑任务）。
+	const cap = await V.createCapability(base, session, NS, V.capabilityBody({ name: "live.smoke" }));
+	V.expectStatus("建能力", cap, 201);
+
+	const dataDir = H.mkdtempTmp("anotify-anode-serve-");
+	const sock = path.join(dataDir, "emit.sock");
+	const node = await startAnode({ base, token, name, dataDir, listen: `unix://${sock}` });
+	try {
+		const doc = await pollUntil(
+			"节点上线（hello → welcome → config.applied）",
+			async () => {
+				const r = await H.req(base, `/v1/nodes/${encodeURIComponent(name)}`, { session });
+				const st = r.json?.status || {};
+				return st.agentVersion && st.appliedRevision === st.configRevision ? r.json : null;
+			},
+			{ timeoutMs: 25000 },
+		).catch((e) => {
+			throw new Error(`${e.message}\nanode 日志:\n${node.log()}`);
+		});
+		H.check("节点自报版本", !!doc.status?.agentVersion, String(doc.status?.agentVersion));
+		H.check("emit socket 已就绪（listen: unix:// 被解析）", existsSync(sock), sock);
+
+		// emit 打**真** socket：令牌是伪造的 → 节点 emit 网关 401 → CLI 退出码 3。
+		// 这条把「CLI 的端点解析 + 鉴权头 + 401→3 的映射」在真进程上串了一遍。
+		{
+			const r = runCLI(["emit", "some.target", "--data", "{}"], {
+				ANOTIFY_TASK_TOKEN: "e2eBogusTaskToken" + process.pid,
+				ANOTIFY_EMIT_ENDPOINT: "unix://" + sock,
+			});
+			H.eq("emit 打真 socket 且令牌无效 → 退出码 3", r.status, 3);
+			H.eq("→ 机器码 token_invalid（不是 emit_unreachable）", jsonLine(r.stdout)?.error, "token_invalid");
+		}
+
+		// 在线时部署：sent=true 是「中枢此刻有活跃会话」的机械证据。
+		const depOnline = await V.deployCapability(base, session, NS, "live.smoke", { nodes: [name] });
+		V.expectStatus("在线时部署 → 200", depOnline, 200);
+		H.eq("在线：sent=true", (depOnline.json?.deployed || [])[0]?.sent, true);
+	} finally {
+		const exited = await node.stop();
+		H.check("SIGTERM 后 node 进程退出（不是 KILL）", !!exited && exited.sig !== "SIGKILL", JSON.stringify(exited));
+		H.eq("正常退出码 0", exited?.code, 0);
+	}
+
+	// 进程退出 = 会话消失：中枢必须承认「发不出去」，不能继续假装在线。
+	const offline = await pollUntil(
+		"节点离线后部署结论 sent=false",
+		async () => {
+			const r = await V.deployCapability(base, session, NS, "live.smoke", { nodes: [name] });
+			const o = (r.json?.deployed || [])[0];
+			return o && o.sent === false ? o : null;
+		},
+		{ timeoutMs: 10000 },
+	).catch((e) => {
+		throw new Error(`${e.message}\nanode 日志:\n${node.log()}`);
+	});
+	H.eq("离线：sent=false（不伪造发送）", offline.sent, false);
+}
+
+// ---------- 主流程 ----------
+async function main() {
+	H.startTimer();
+	console.log("=== SUITE: live_agent（真 anode CLI + 安装/启动/退出生命周期）===");
+	if (!existsSync(ANODE_BIN)) {
+		// 缺二进制是**红**而不是 skip：run_all.sh 会构建它；单独跑请先 go build。
+		throw new Error(`缺少 anode 二进制 ${ANODE_BIN}（run_all.sh 会构建；或设 ANODE_BIN 指过去）`);
+	}
+
+	partCLI();
+
+	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
+	try {
+		const seeded = H.seed(server.dbPath, "liveagent");
+		const installed = await partInstall(server.base, seeded.session);
+		await partServeInstalled(server.base, seeded.session, installed);
+		H.removeTmpDir(installed.prefix);
+		await partServeLifecycle(server.base, seeded.session);
+	} finally {
+		server.stop();
+	}
+
+	const passed = H.summary(SUITE);
+	process.exitCode = passed ? 0 : 1;
+	setTimeout(() => process.exit(process.exitCode), 3000).unref();
+}
+
+main().catch((e) => {
+	console.error(e);
+	H.bad("套件异常终止", String(e && e.stack ? e.stack : e).slice(0, 800));
+	H.summary(SUITE);
+	process.exit(1);
+});

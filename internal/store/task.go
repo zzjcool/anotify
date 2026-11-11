@@ -884,9 +884,9 @@ func normalizeTaskError(result TaskResult) string {
 	return msg
 }
 
-// RequestCancel 记录一次取消意图（取消与 grant 的**唯一线性化点**）。
+// RequestCancel 记录一次**用户取消**意图（取消与 grant 的**唯一线性化点**）。
 //
-//   - pending：没有执行者，直接终态（cancelled / abandoned），不需要等 ack；
+//   - pending：没有执行者，直接终态（cancelled），不需要等 ack；
 //   - running：只落 cancel_reason + cancel_requested_at，等节点 cancel.ack 带回
 //     processGroupReaped=true 才置终态并释放槽位（进程可能还在跑）。
 //
@@ -898,9 +898,32 @@ func normalizeTaskError(result TaskResult) string {
 //
 // 重复取消是幂等的（返回 nil，保留第一次的原因）：网关重试/两个管理员同时点
 // 不该变成 409。已终态 → ErrInvalidTransition（调用方翻 409）。
+//
+// 相位由**意图**决定（取消 → cancelled），不由 reason 字面决定：reason 是契约里的
+// 人话原因（TaskActionRequest.reason「人话原因（可选；写进 cancel_requested 事实）」），
+// 拿它当封闭码用会把 `{"reason":"e2e 运行中取消"}` 误判成放弃（#336）。
 func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64) error {
+	return d.requestStop(ctx, taskID, reason, TaskCancelled, now)
+}
+
+// RequestAbandon 记录一次**用户放弃**意图（`POST …/tasks/{taskId}/abandon`）。
+//
+// 与 RequestCancel 共用同一套状态机/线性化点，唯一区别是 pending 直接落终态时的
+// 相位：放弃是 abandoned（契约：abandon 动作的终态是 abandoned_by_user）。
+//
+// 为什么必须由调用方给意图、而不是从 reason 反推：reason 是人话，
+// `{"reason":"give up"}` 与 `{"reason":"e2e 运行中取消"}` 在字面上没有任何区别，
+// 只有端点知道用户在点「取消」还是「放弃」。
+func (d *DB) RequestAbandon(ctx context.Context, taskID, reason string, now int64) error {
+	return d.requestStop(ctx, taskID, reason, TaskAbandoned, now)
+}
+
+// requestStop 是 cancel / abandon 的共同实现。finalPhase 是 **pending** 任务直接落
+// 终态时的相位；running 任务只记意图，终态由 cancel.ack / 租约回收按 cancelPhase 裁定
+// （那一层只有落库的 cancel_reason 可用，见 cancelPhase 的边界说明）。
+func (d *DB) requestStop(ctx context.Context, taskID, reason, finalPhase string, now int64) error {
 	if reason == "" {
-		reason = protocol.ReasonCancelledByUser
+		reason = defaultStopReason(finalPhase)
 	}
 	if now == 0 {
 		now = Now()
@@ -937,7 +960,7 @@ func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64
 			        assignment_id = '', proposed_attempt = 0, assignment_expires_at = NULL,
 			        cancel_reason = ?, cancel_requested_at = ?, error = ?
 			  WHERE id = ? AND phase = ? AND cancel_requested_at IS NULL`,
-			cancelPhase(reason), now, reason, now, reason, taskID, TaskPending)
+			finalPhase, now, reason, now, reason, taskID, TaskPending)
 		if uerr != nil {
 			return fmt.Errorf("request cancel %s: write: %w", taskID, uerr)
 		}
@@ -971,12 +994,33 @@ func (d *DB) RequestCancel(ctx context.Context, taskID, reason string, now int64
 	return nil
 }
 
-// cancelPhase 把取消原因翻成终态相位（用户取消 → cancelled，其余 → abandoned）。
-func cancelPhase(reason string) string {
-	if reason == protocol.ReasonCancelledByUser {
-		return TaskCancelled
+// defaultStopReason 是没给原因时写进 cancel_reason 的默认码（按意图取，不按相位猜）。
+func defaultStopReason(finalPhase string) string {
+	if finalPhase == TaskAbandoned {
+		return protocol.ReasonAbandonedByUser
 	}
-	return TaskAbandoned
+	return protocol.ReasonCancelledByUser
+}
+
+// cancelPhase 把**已落库的取消意图**翻成终态相位（cancel.ack / 租约回收路径）。
+//
+// 判据是意图的**封闭码**，不是「reason 像不像码」：
+//   - 用户取消（cancel 动作）恒为 cancelled——reason 是契约里的人话，
+//     `{"reason":"e2e 运行中取消"}` 曾被 literal 比较误判成 abandoned（#336 的真 bug）；
+//   - 用户放弃（abandon 动作的默认码 abandoned_by_user）与中枢侧放弃
+//     （CancelReasonInfra）为 abandoned。
+//
+// 为什么这里只能看 reason：running 任务落库的只有 cancel_reason 一列（没有第二列存
+// 意图），所以人话 reason 一律按「用户取消」处理——pending 的取消/放弃走 requestStop
+// 的显式意图，精确；已落地的已知边界是：`/abandon` 带**人话** reason 的 running 任务
+// 在 ack 时会落 cancelled（无 reason 的 abandon 仍是 abandoned）。彻底修需要在 tasks 上
+// 存一列意图，那是 schema 变更，不隶属本包本次修复。
+func cancelPhase(reason string) string {
+	switch reason {
+	case protocol.ReasonAbandonedByUser, string(protocol.CancelReasonInfra):
+		return TaskAbandoned
+	}
+	return TaskCancelled
 }
 
 // RecoverLostLeases 回收**真正失联**的 running 任务（调度巡检的唯一入口）。
