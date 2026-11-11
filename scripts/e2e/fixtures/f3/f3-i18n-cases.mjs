@@ -13,7 +13,7 @@ const pkgFiles = {
 };
 export const pageBatches = Object.freeze(Array.from({length:5},(_,i)=>PAGES.slice(i*4,i*4+4)));
 // 裸 i18n key 扫描：前缀必须是一个独立 token，绝不能在 `-`、`/`、`.` 之后——否则
-// docs 页列出的真实端点 `/agent-login.sh` 会被当成 `login.sh` 裸 key（假阳）。
+// 渲染文本里的真实路径（如 locales 的 `common/login.sh`）会被当成 `login.sh` 裸 key（假阳）。
 const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|caps|receivers|keys|security|login)\.[a-z_]+/;
 const zhOnly = ['总览','通知接收','已停用','确定停用','已删除','已吊销','暂无该状态的通知','最近收录'];
 export function residue(text, lang) {

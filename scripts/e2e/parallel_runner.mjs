@@ -92,6 +92,9 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// 咬死默认 120s 的话，真回归会先被 SIGKILL 变成「超时」，断言文本全丢、
 	// 只剩"这个套件挂了"，等于把诊断信息扔了。240s 覆盖最坏路径又不拖累绿路径。
 	real_backend: 240_000,
+	// ui_shift（#335）：304 视图 × 353 视图面（单跑 148s），默认 120s 在并发下
+	// 必被 SIGKILL 成「0 通过/0 失败」；300s 留出并发余量，不掩盖真回归。
+	ui_shift: 300_000,
 };
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
