@@ -187,7 +187,8 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 // 这种普通引用也会被打码，偏离 mock 语义（对齐前端 mock 的 `pbPolicySecret(pbReferencePolicy(...))`
 // ——只在解析节点上判子树）。
 //
-// 下钻规则与 `maskValue` 同源：对象按 `properties`、数组按下标 + `items`。
+// 下钻规则：对象按 `properties`、数组按下标 + `items` + `prefixItems`（两分支**并查**，
+// 因为 `MaskValues` 对数组一律按 `items` 打码——只信 `prefixItems` 会留下裂缝）。
 // 路径不在 schema 里 → 非敏感（schema 没说是密文，就不猜）。空路径不是引用，不会走到这里。
 //
 // 逐条语义（与 mock 对齐）：
@@ -200,21 +201,26 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 //   - 混合串 `secret={{values.auth}}` 的**敏感性函数**→ true（渲染阶段本来会
 //     `render_type_mismatch`，但推导必须保守为真：先打码，别赌渲染一定失败）
 func refHitsWriteOnly(ref string, sch map[string]any) bool {
-	cur := sch
-	if isWriteOnly(cur) {
-		return true
-	}
+	curs := []map[string]any{sch}
 	for _, seg := range splitValuePath(ref) {
-		next, ok := descendSchema(cur, seg)
-		if !ok {
+		var next []map[string]any
+		for _, cur := range curs {
+			if isWriteOnly(cur) {
+				return true
+			}
+			next = append(next, descendSchemaCandidates(cur, seg)...)
+		}
+		if len(next) == 0 {
 			return false
 		}
-		if isWriteOnly(next) {
+		curs = next
+	}
+	for _, cur := range curs {
+		if subtreeHasWriteOnly(cur) {
 			return true
 		}
-		cur = next
 	}
-	return subtreeHasWriteOnly(cur)
+	return false
 }
 
 // subtreeHasWriteOnly 报告一个 schema 节点**自身或其任意后代**是否声明了 `writeOnly: true`。
@@ -267,43 +273,43 @@ func splitValuePath(ref string) []string {
 	return strings.Split(ref, ".")
 }
 
-// descendSchema 按一段路径下钻 schema 节点。
+// descendSchemaCandidates 返回「一段路径」在一个 schema 节点上可下钻到的**全部候选**。
 //
-// 三种容器：
-//   - 元组（`prefixItems`）：下标段落在 `prefixItems[i]`（2020-12 语义：先看它）；
-//   - 数组：下标段落在 `items`（`{{values.list.0}}` 与 `{{values.list}}` 两种写法都在上一层
-//     解析到数组节点，这里只在**下标段**上再下钻一层）；
-//   - 对象：普通字段落在 `properties`。
+// 为什么是多个候选（而不是一个）：数组元素可能同时被 `prefixItems[i]` 与 `items` 约束
+// （2020-12：`prefixItems` 管前 N 个，`items` 管其余；但 `MaskValues` 对数组**一律按 items**
+// 打码）。若只信 `prefixItems`，`prefixItems: [{}]` + `items.writeOnly` 这种包会出现
+// 「回执 `values` 里 token 是 `***`、`unapplied` 里同一 token 是明文」的裂缝。
+// 于是两个分支都作为候选并查：任一分支命中 writeOnly 即敏感（只许多打码）。
 //
-// `prefixItems` 从 2026-11 起同时被 `subtreeHasWriteOnly` 与这里识别（否则
-// `{{values.tuple.0.pin}}` 命中了 writeOnly 叶却会被判非敏感）。注意这比 `MaskValues`
-// （`values.go`）宽一格：那里的 prefixItems 拆码属既有 D16 口径，不在 #356 范围。
-func descendSchema(sch map[string]any, seg string) (map[string]any, bool) {
+// 其它规则：
+//   - 带 `items` 的数组节点上，非下标段没有对象字段可下钻（既有口径，返回空）；
+//   - `prefixItems[idx]` 不是对象 schema（布尔 `true` / `null`）→ 不产生候选，但**不阻断**
+//     `items` 候选（否则相对「下标段一律走 items」的旧行为是 fail-open 回归）；
+//   - 都不是数组特征时按 `properties` 下钻对象字段。
+func descendSchemaCandidates(sch map[string]any, seg string) []map[string]any {
 	if sch == nil {
-		return nil, false
+		return nil
 	}
+	var out []map[string]any
 	idx, isIndex := toIntFromString(seg)
 	if prefix, ok := sch["prefixItems"].([]any); ok && isIndex && idx < len(prefix) {
 		if node, ok := prefix[idx].(map[string]any); ok {
-			return node, true
+			out = append(out, node)
 		}
-		// `prefixItems[idx]` 不是对象 schema（例如布尔 schema `true` = 不约束）：
-		// **不能在这里判死**，继续按 `items` 兜底——否则同一下标在改前会走 items
-		// （`0824c47` 对所有下标段一律走 items），改后反而漏判敏感叶。
 	}
-	if itemSchema, ok := sch["items"].(map[string]any); ok {
-		// 数组：段必须是下标。
+	if items, ok := sch["items"].(map[string]any); ok {
 		if !isIndex {
-			return nil, false
+			return out
 		}
-		return itemSchema, true
+		out = append(out, items)
 	}
-	props := schema.Properties(sch)
-	child, ok := props[seg].(map[string]any)
-	if !ok {
-		return nil, false
+	if len(out) > 0 {
+		return out
 	}
-	return child, true
+	if child, ok := schema.Properties(sch)[seg].(map[string]any); ok {
+		out = append(out, child)
+	}
+	return out
 }
 
 // maskTargets 是 declared 侧打码：**新建切片 + 新建 params map**，敏感 param 的整值换成

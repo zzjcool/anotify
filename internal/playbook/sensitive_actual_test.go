@@ -287,3 +287,94 @@ spec:
 		}
 	}
 }
+
+// TestRefHitsWriteOnlyPrefixItemsCandidateUnion 钉住「prefixItems 与 items 两分支并查」：
+//
+// `MaskValues` 对数组**一律按 items** 打码，所以同一个数组元素在回执 `values` 里可能已被
+// 打码（items 声明了 writeOnly），而 `unapplied` 若只信 `prefixItems`（`[{}]` 或普通对象）
+// 就会把同一 token 以明文带出来。并查口径保证「values 里是 *** 的，unapplied 里也至少是 ***」。
+func TestRefHitsWriteOnlyPrefixItemsCandidateUnion(t *testing.T) {
+	cases := []struct {
+		name string
+		sch  map[string]any
+		ref  string
+		want bool
+	}{
+		{
+			name: "prefixItems 空对象 + items 有 writeOnly：整元素引用要敏感",
+			sch: map[string]any{"type": "object", "properties": map[string]any{
+				"tuple": map[string]any{
+					"type":        "array",
+					"prefixItems": []any{map[string]any{}},
+					"items": map[string]any{"type": "object", "properties": map[string]any{
+						"token": map[string]any{"type": "string", "writeOnly": true},
+					}},
+				},
+			}},
+			ref: "tuple.0", want: true,
+		},
+		{
+			name: "prefixItems 普通对象 + items 有 writeOnly：整元素引用要敏感",
+			sch: map[string]any{"type": "object", "properties": map[string]any{
+				"tuple": map[string]any{
+					"type": "array",
+					"prefixItems": []any{map[string]any{"type": "object", "properties": map[string]any{
+						"label": map[string]any{"type": "string"},
+					}}},
+					"items": map[string]any{"type": "object", "properties": map[string]any{
+						"token": map[string]any{"type": "string", "writeOnly": true},
+					}},
+				},
+			}},
+			ref: "tuple.0", want: true,
+		},
+		{
+			name: "prefixItems 普通对象 + items 有 writeOnly：prefix 自己的普通叶不传染",
+			sch: map[string]any{"type": "object", "properties": map[string]any{
+				"tuple": map[string]any{
+					"type": "array",
+					"prefixItems": []any{map[string]any{"type": "object", "properties": map[string]any{
+						"label": map[string]any{"type": "string"},
+					}}},
+					"items": map[string]any{"type": "object", "properties": map[string]any{
+						"token": map[string]any{"type": "string", "writeOnly": true},
+					}},
+				},
+			}},
+			ref: "tuple.0.label", want: false,
+		},
+		{
+			name: "prefixItems 之外的下标走 items",
+			sch: map[string]any{"type": "object", "properties": map[string]any{
+				"tuple": map[string]any{
+					"type":        "array",
+					"prefixItems": []any{map[string]any{}},
+					"items": map[string]any{"type": "object", "properties": map[string]any{
+						"token": map[string]any{"type": "string", "writeOnly": true},
+					}},
+				},
+			}},
+			ref: "tuple.3.token", want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := refHitsWriteOnly(tc.ref, tc.sch); got != tc.want {
+				t.Fatalf("refHitsWriteOnly(%q) = %v，期望 %v", tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMergeSensitivityNilMapGuard 钉住防御性初始化：dst 是零值时写 keys 不能 panic。
+func TestMergeSensitivityNilMapGuard(t *testing.T) {
+	var dst targetSensitivity
+	mergeSensitivity(&dst, targetSensitivity{keys: map[string]bool{"pin": true}})
+	if !dst.keys["pin"] {
+		t.Fatalf("mergeSensitivity 后 keys = %#v", dst.keys)
+	}
+	mergeSensitivity(&dst, targetSensitivity{allParams: true})
+	if !dst.allParams {
+		t.Fatalf("mergeSensitivity 没传播 allParams")
+	}
+}
