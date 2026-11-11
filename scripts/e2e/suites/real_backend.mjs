@@ -43,8 +43,8 @@
  *   - 不睡等时间：一律等条件（waitForFunction / 轮询到状态变化）。
  *   - 端口走 `H.SUITE_PORTS.real_backend`（段内独占，不与其它套件重叠）。
  */
-import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
@@ -55,9 +55,9 @@ const MIN_RUN = { entrypoint: "run.sh", files: { "run.sh": "#!/bin/sh\nexit 0\n"
 import * as N from "../lib/nodes.mjs";
 
 const SUITE = "real_backend";
-// agent 二进制：run_all.sh 会预构建 .e2e-bin/agent 并导出 AGENT_BIN；
-// 单独跑本套件时（没走 run_all.sh）现场 go build 一份，不依赖外部步骤。
-const AGENT_BIN = process.env.AGENT_BIN || path.join(H.ROOT_DIR, ".e2e-bin", "agent");
+// v4 节点二进制：run_all.sh 会预构建 .e2e-bin/anode 并导出 ANODE_BIN。
+// v3 的 cmd/agent 与 AGENT_BIN 已随协议 v4 退役（节点侧只剩 cmd/anode）。
+const ANODE_BIN = process.env.ANODE_BIN || path.join(H.ROOT_DIR, ".e2e-bin", "anode");
 
 // ---------- 造数据用的预案（3 能力 + 2 边 + 1 webhook 触发） ----------
 // 形状与 internal/server/playbook_handlers_test.go 的 pbFixtureManifest 一致：
@@ -587,39 +587,30 @@ async function runPageChecks(ctxData, nsId) {
 // 外加一条 standalone：同一份产物 YAML 落到临时文件 → `anotify-agent run`
 // 不连中枢直接跑，断言 stdout 与退出码（「产物可移植」的落地证明）。
 
-// AGENT_SOURCES 是"这个二进制代表哪份代码"的判据（判新旧用）。
-const AGENT_SOURCES = [
-	"cmd/agent/main.go",
-	"cmd/agent/config.go",
-	"cmd/agent/client.go",
-	"cmd/agent/runner.go",
+// ANODE_SOURCES 是"这个二进制代表哪份代码"的判据（判新旧用）。
+//
+// v4 的节点代码在 cmd/anode/**（main.go + internal/*）；cmd/agent/** 已删除。
+const ANODE_SOURCES = [
+	"cmd/anode/main.go",
+	"cmd/anode/internal/app/app.go",
+	"cmd/anode/internal/node/node.go",
+	"cmd/anode/internal/runner/runner.go",
 ];
 
-// ensureAgentBin 返回一个**和当前源码一致**的 agent 二进制。
+// ensureAgentBin 返回一个**和当前源码一致**的节点二进制。
 //
-// run_all.sh 每次都会重新构建并导出 AGENT_BIN，所以 `make e2e` 这条路上永远新鲜。
-// 但单独跑本套件时 `.e2e-bin/agent` 可能是上一次留下的旧二进制 —— 改了 cmd/agent
-// 还拿它去跑就是假绿。所以：不存在、或比任一 agent 源文件旧，就现场构建一份。
+// 【阶段 B 待迁移】本套件的 B 部分驱动的是已退役的 cmd/agent CLI
+// （`-f node.yaml -data-dir … -grace …`，能力脚本里 `emit --port`）。v4 的节点是
+// `anode serve --config <anode.yaml> --data <dir>`、出口只有 `anode emit <能力名>`，
+// 没有兼容层 —— 所以这里**不再现场 go build 一个已不存在的包**（那只会得到
+// `no Go files in …/cmd/agent` 这种与被测行为无关的报错），而是显式报红。
+// 真 v4 节点核心链的等价覆盖见 suites/node_v4.mjs。
 function ensureAgentBin() {
-	if (existsSync(AGENT_BIN)) {
-		const binMs = statSync(AGENT_BIN).mtimeMs;
-		const stale = AGENT_SOURCES.some((rel) => {
-			try {
-				return statSync(path.join(H.ROOT_DIR, rel)).mtimeMs > binMs;
-			} catch {
-				return false;
-			}
-		});
-		if (!stale) return AGENT_BIN;
-		console.log(`  · .e2e-bin/agent 比源码旧，现场重建`);
-	}
-	const out = path.join(tmpDir, "agent");
-	execFileSync("go", ["build", "-o", out, "./cmd/agent"], {
-		cwd: H.ROOT_DIR,
-		env: process.env,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	return out;
+	throw new Error(
+		"【阶段 B 待迁移】real_backend B 部分驱动已退役的 cmd/agent CLI（-f/-data-dir/-grace、emit --port）；" +
+			`v4 节点只有 \`anode serve --config --data\`（二进制: ${ANODE_BIN}，存在=${existsSync(ANODE_BIN)}；` +
+			"源码判据: " + ANODE_SOURCES.join(", ") + "）；等价覆盖见 suites/node_v4.mjs",
+	);
 }
 
 async function waitNodeStatus(session, name, want, opts = {}) {

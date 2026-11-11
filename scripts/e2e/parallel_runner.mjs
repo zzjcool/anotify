@@ -16,7 +16,7 @@
  * 环境变量：
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
- *   ANOTIFY_BIN / DEVSEED_BIN  二进制路径（由 run_all.sh 设置）
+ *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
  */
 import { spawn } from "node:child_process";
@@ -46,11 +46,15 @@ const HTTP_SUITES = [
 	// console-declares（T6）：部署模型的纯 HTTP 面
 	// （templates / 产物 digest / deployments 状态机 / 本地变体）
 	"deploy",
-	// #291：真 cmd/agent 进程 + 真部署 + 真任务，最后到文件系统上验收
-	// （专门抓"每层都对、连起来才错"的 bug：两端 digest 不一致、
-	//  能力声明的 run.workDir 没生效）
+	// #291 → v4 重写：真 `anode` 的 **CLI 面 + 安装/启动/退出生命周期**
+	// （--version 形状、emit 退出码映射、install 落盘权限/幂等/身份不静默覆盖、
+	//  安装产物 → serve 往返、SIGTERM 干净退出后中枢承认离线）。
+	// 数据面（部署/执行/日志/产物/取消）由 node_v4 覆盖，两者刻意不重复。
 	"live_agent",
-
+	// #336：v4 真实节点核心链 —— 真 `cmd/anode` 二进制（不是 mock）+ 真后端：
+	// v4 hello/配置对齐 → 人工部署 + 节点真拉产物 → 事件→task→lease.grant→真执行
+	// → task.result → 日志 / 产物上传与私有下载 / 两种取消。
+	"node_v4",
 ];
 const CHROME_SUITES = [
 	"i18n",
@@ -66,8 +70,8 @@ const CHROME_SUITES = [
 	"recovery_next",
 	// 批次 4B：events 页游标分页 + 资源分层（playwright）
 	"events_paging",
-	// #201：真后端（不用 mock）+ 真浏览器的体检套件
-	"real_backend",
+	// real_backend（#201）已具名退役：它驱动的是已删除的 cmd/agent v3 CLI；
+	// 真节点链由 node_v4（#336）覆盖，真前端后端体检归 #335 real 模式。
 	// 开页抖动回归：语言条 / 命名空间槽位 / 折叠态 / 预排版
 	// （实测几何去重，专抓「功能全对但首帧后元素逐帧滑动」这类回归）
 	"ui_shift",
@@ -86,14 +90,12 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
 	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
 	frontend: 360_000,
-	// real_backend（#201）：绿的时候只要 4~5s（并行实测 4.5s、单跑 7.5s），
-	// 但它是**故意**会红的那种套件 —— 每个页面都有 goto 15s + 就绪 10s 的失败路径，
-	// 真回归时这些超时会串行累加（7 页 × 25s + B 部分 ~55s ≈ 230s）。
-	// 咬死默认 120s 的话，真回归会先被 SIGKILL 变成「超时」，断言文本全丢、
-	// 只剩"这个套件挂了"，等于把诊断信息扔了。240s 覆盖最坏路径又不拖累绿路径。
-	real_backend: 240_000,
-	// ui_shift（#335）：304 视图 × 353 视图面（单跑 148s），默认 120s 在并发下
-	// 必被 SIGKILL 成「0 通过/0 失败」；300s 留出并发余量，不掩盖真回归。
+	// node_v4（#336）：绿的时候 ~2s，但串了 5 个真实进程阶段（握手/部署/执行/取消/离线），
+	// 每阶段都有有界轮询；真回归要看到卡在哪一步，而不是先被 SIGKILL。套件自身断言 <300s。
+	node_v4: 300_000,
+	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
+	capacity: 300_000,
+	// ui_shift（#335）：304 视图（单跑 148s），默认 120s 在并发下必被 SIGKILL；300s 留余量。
 	ui_shift: 300_000,
 };
 const RESULTS_DIR =
@@ -110,15 +112,27 @@ for (const a of args) {
 	} else if (a === "--parallel") {
 		serial = false;
 	} else {
-		suiteArgs.push(a);
+		// 逗号分隔也接受（`run_all.sh --serial a,b,c` 是文档里出现过的写法）。
+		// 为什么必须支持：旧实现把 "a,b,c" 当成一个套件名，过滤后**静默变成 0 个套件**，
+		// 然后打印「✅ E2E 全绿」——一次「什么都验证了」的假绿，比红更危险。
+		for (const name of a.split(",").map((x) => x.trim()).filter(Boolean)) {
+			suiteArgs.push(name);
+		}
 	}
 }
 
 // 决定要跑哪些套件
 let suitesToRun;
 if (suiteArgs.length > 0) {
-	// 只跑指定的套件（串行，兼容 e2e-one）
-	suitesToRun = suiteArgs.filter((s) => ALL_SUITES.includes(s));
+	// 只跑指定的套件（串行，兼容 e2e-one）。
+	// 未知套件名是**错误**：静默丢弃会让「指定了 5 个、其实跑了 0 个」也报绿。
+	const unknown = suiteArgs.filter((s) => !ALL_SUITES.includes(s));
+	if (unknown.length > 0) {
+		console.error(`未知套件: ${unknown.join(", ")}`);
+		console.error(`已知套件: ${ALL_SUITES.join(", ")}`);
+		process.exit(2);
+	}
+	suitesToRun = [...suiteArgs];
 	serial = true; // 单/多套件参数默认串行
 } else {
 	suitesToRun = [...ALL_SUITES];
