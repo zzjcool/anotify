@@ -5,12 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import * as H from '../../lib/harness.mjs';
 import { installTraceEvidence, traceEvidenceTools } from './f3-trace-evidence.mjs';
+import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
 export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
@@ -117,18 +119,31 @@ async function realBootstrap(server) {
 }
 
 // ensureCapability 幂等地建一个能力（真实 POST；同内容重发只会折叠到已有版本）。
-async function ensureCapability(server, session, ns, name, next = []) {
+//
+// extra 是「造真实执行事实」需要的 spec 段：params（参数 schema）、requires.values
+// （run.env 引用 vars.* 时**必须**声明，否则服务端 400 undeclared_need）、lifecycle
+// （重试策略）与 run.env（C11 诊断来源层）。全部走产品校验，没有绕过。
+async function ensureCapability(server, session, ns, name, next = [], extra = {}) {
   const list = await rawReq(server.base, `/v1/namespaces/${ns}/capabilities`, { headers: sessionCookie(session) });
   assert.equal(list.status, 200, `T1 seam: GET ${ns} capabilities must be 200`);
   const found = (list.body.items || []).find((c) => c.metadata.name === name);
   if (found) return found;
+  const spec = {
+    next: next,
+    run: {
+      entrypoint: 'run.sh',
+      files: { 'run.sh': '#!/bin/sh\necho f3 fixture ' + name + '\n' },
+      ...(extra.env ? { env: extra.env } : {}),
+    },
+    ...(extra.params ? { params: extra.params } : {}),
+    ...(extra.requires ? { requires: extra.requires } : {}),
+    ...(extra.lifecycle ? { lifecycle: extra.lifecycle } : {}),
+    ...(extra.concurrency ? { concurrency: extra.concurrency } : {}),
+  };
   const created = await rawReq(server.base, `/v1/namespaces/${ns}/capabilities`, {
     method: 'POST',
     headers: jsonHeaders(session),
-    body: JSON.stringify({
-      apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name },
-      spec: { next: next, run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho f3 fixture ' + name + '\n' } } },
-    }),
+    body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name }, spec }),
   });
   assert.equal(created.status, 201, `T1 seam: create ${ns}/${name} capability must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
   return created.body;
@@ -161,7 +176,7 @@ async function ensureSource(server, session, ns, name, target) {
 }
 
 // ensureNode 幂等地登记节点（真实 POST /v1/nodes；不返回任何令牌明文）。
-async function ensureNode(server, session, name) {
+async function ensureNode(server, session, name, spec) {
   const list = await rawReq(server.base, '/v1/nodes', { headers: sessionCookie(session) });
   assert.equal(list.status, 200, 'T1 seam: GET nodes must be 200');
   const found = (list.body.items || []).find((n) => n.metadata.name === name);
@@ -171,7 +186,7 @@ async function ensureNode(server, session, name) {
     headers: jsonHeaders(session),
     // vars 是页面的有效值锚点（#node-effective-vars [data-key]）：没有变量时该区块
     // 正常渲染为空，用例的锚点就永远等不到——所以 fixture 里给一条真实生效的变量。
-    body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Node', metadata: { name }, spec: { namespaces: [DEFAULT_NS], vars: { F3_FIXTURE: '1' } } }),
+    body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Node', metadata: { name }, spec: spec || { namespaces: [DEFAULT_NS], vars: { F3_FIXTURE: '1' } } }),
   });
   assert.equal(created.status, 201, `T1 seam: create node ${name} must be 201, got ${created.status} ${JSON.stringify(created.body)}`);
   return created.body;
@@ -198,6 +213,10 @@ async function fireFixture(server, key, ns, source) {
 // 只有中枢生成的 id（任务/追踪/节点 id）不可预知，所以经 d.fx(key) 注入。
 export const MOCK_FIXTURES = Object.freeze({
   msgTask: 'tsk_mock_2',
+  // mock 种子里「还没 grant、可以被取消」的那个任务（observe-errors 的 CAS 对象）。
+  pendingTask: 'tsk_mock_5',
+  // 在跑/成功的任务只有 real 分支用（mock 分支直接写死 tsk_mock_5/6/2）。
+  runningTask: 'tsk_mock_6',
   node: 'anode-1',
   defaultTrace: 'trace_mock_t1',
   prodTrace: 'trace_mock_t2',
@@ -206,7 +225,7 @@ export const MOCK_FIXTURES = Object.freeze({
   source: 'deploy-hook',
 });
 
-async function realFixtures(server, fixtures) {
+async function realFixtures(server, fixtures, caseId = '') {
   const s = fixtures.adminSession;
   await ensureNode(server, s, MOCK_FIXTURES.node);
   // 第二个节点：namespace/system 的 per-node 批量更新要验「部分成功 + 另一节点保持不变」，
@@ -233,8 +252,275 @@ async function realFixtures(server, fixtures) {
   const node = (nodes.body.items || []).find((n) => n.metadata.name === MOCK_FIXTURES.node);
   assert.ok(node, 'T1 seam: node fixture required');
   assert.equal(node.metadata.name, MOCK_FIXTURES.node);
-  return { ...fixtures, msgTask: def.taskId, defaultTrace: def.traceId, prodTrace: prod.traceId, prodTask: prod.taskId, node: node.metadata.name };
+  const built = { ...fixtures, msgTask: def.taskId, defaultTrace: def.traceId, prodTrace: prod.traceId, prodTask: prod.taskId, pendingTask: def.taskId, node: node.metadata.name };
+  // 用例专属的真实事实（每条用例一个独立服务器，所以“同一份事实”必须就地造）。
+  if (SCENARIOS.has(caseId)) Object.assign(built, await SCENARIOS.get(caseId)(server, built, key));
+  return built;
 }
+
+// realParams 把 fixture 的"同名事实"集中成一张表：mock 权威给固定种子，real 权威就地造。
+const SCENARIOS = new Map();
+
+// fireMany 连续投递 n 条真实事件（每条都会经中枢长出事件 + 一个根任务）。
+async function fireMany(server, key, ns, source, times) {
+  const out = [];
+  for (let i = 0; i < times; i++) out.push(await fireFixture(server, key, ns, source));
+  return out;
+}
+
+// ============================ 真实执行事实（观测类用例） ============================
+//
+// 观测类用例（events/index/trace/message）原本拿 mock 的固定种子当事实。真实权威下
+// 这些事实**只能由真实入口长出来**：事件入口 → 任务行 → 节点手上的 WS 会话（accept /
+// grant / emit / logs_request / 结果上行）。本段把这些动作按「一个守协议的节点会说什么」
+// 发出去，assert 全部基于产品自己写下的行（不插库、不改相位）。
+
+// chainScenario 造一条**多跳链** + 一个真实失败任务 + 一个真实在跑任务：
+//
+//   chain-hook → chain-root ─emit→ chain-mid ─emit→ chain-leaf
+//                          └─emit→ chain-broken（params schema 非法 → param_schema 剪枝）
+//
+// 三件事实都是产品自己写的：子任务来自 emit 接受事务，剪枝观察来自 route 剪枝行，
+// trace 节点数来自 tasks 行。
+// capability-actions：用例 4 要验「显式版本 2 的正文不可变 → 400 version_content_immutable」，
+// 前提是 analyze-pr **真的有 v2**（mock 种子给了两版；真实权威下得多建一版）。
+SCENARIOS.set('capability-actions', async (server, fixtures) => {
+  const s = fixtures.adminSession;
+  const created = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities`, {
+    method: 'POST',
+    headers: jsonHeaders(s),
+    body: JSON.stringify({
+      apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name: 'analyze-pr', version: 2 },
+      spec: {
+        next: ['notify'],
+        run: { entrypoint: 'run.sh', files: { 'run.sh': '#!/bin/sh\necho analyze-pr v2\n' } },
+      },
+    }),
+  });
+  assert.equal(created.status, 201, 'T1 seam: analyze-pr v2 必须建得出来，实际 ' + created.status + ' ' + JSON.stringify(created.body));
+  return { analyzePrV2: created.body.metadata.version };
+});
+
+SCENARIOS.set('observe-events', async (server, fixtures) => {
+  // 分页要真的有两页：默认 ns 再投 3 条（连同基础夹具的 1 条 = 4），prod 再投 1 条
+  // （连同基础夹具 = 2）。事件/任务全部由真实入口产生，不插行。
+  const extra = await fireMany(server, fixtures.sendKey, DEFAULT_NS, MOCK_FIXTURES.source, 3);
+  await fireMany(server, fixtures.sendKey, PROD, MOCK_FIXTURES.source, 1);
+  return { eventTasks: extra.map((x) => x.taskId) };
+});
+SCENARIOS.set('observe-index', async (server, fx) => chainScenario(server, fx));
+SCENARIOS.set('observe-trace', async (server, fx) => chainScenario(server, fx));
+
+async function chainScenario(server, fixtures) {
+  const s = fixtures.adminSession;
+  const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
+  const leaf = await ensureCapability(server, s, DEFAULT_NS, 'chain-leaf');
+  const mid = await ensureCapability(server, s, DEFAULT_NS, 'chain-mid', ['chain-leaf']);
+  // params schema 非法（type 不是 object）→ 向它的 emit 被 route 以 param_schema 剪枝。
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'chain-broken', [], { params: { type: 'array' } });
+  const root = await ensureCapability(server, s, DEFAULT_NS, 'chain-root', ['chain-mid', 'chain-broken'], {
+    env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
+    requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },
+    // 幂等 + 3 次上限：这样“失联回收”路径才有重排语义（本用例只用它的读模型）。
+    lifecycle: { idempotent: true, maxAttempts: 3, timeoutSec: 60 },
+    concurrency: { maxPerNode: 2 },
+  });
+  await ensureSource(server, s, DEFAULT_NS, 'chain-hook', 'chain-root');
+  const node = await bringUpFixtureNode({
+    base: server.base,
+    session: s,
+    name: 'f3-chain-node',
+    namespaces: [DEFAULT_NS],
+    vars: { SOURCE_ROOT: '/node-default', GIT_TERMINAL_PROMPT: '0' },
+    localVars: { SOURCE_ROOT: '/local-src' },
+    localLimits: { total: 4, perCapability: { 'chain-root': 2 } },
+    slots: 3,
+  });
+  {
+    for (const cap of [root, mid, leaf, broken]) await deployApplied(server.base, s, node, capRef(cap));
+    // 1) 多跳链：root → mid → leaf，外加一条被剪枝的 emit。
+    const chain = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'chain-hook');
+    const rootGrant = await node.lease(chain.taskId);
+    const midEmit = await node.emit(rootGrant, { to: 'chain-mid', data: { hop: 1 } });
+    assert.equal(midEmit?.httpStatus, 200, 'emit 到包内下游必须 200');
+    const pruned = await node.emit(rootGrant, { to: 'chain-broken', data: { hop: 'pruned' } });
+    assert.equal(pruned?.response?.pruned?.reason, 'param_schema', '非法 params schema 的下游 emit 必须被剪枝');
+    assert.equal(await node.result(rootGrant, { summary: '链路起点' }).then(Boolean), true, 'root 结果必须被接受');
+    const midTask = midEmit.response.taskId;
+    const midGrant = await node.lease(midTask);
+    const leafEmit = await node.emit(midGrant, { to: 'chain-leaf', data: { hop: 2 } });
+    await node.result(midGrant, { summary: '中间跳' });
+    const leafGrant = await node.lease(leafEmit.response.taskId);
+    await node.result(leafGrant, { summary: '叶子' });
+    // 2) 真实失败任务（终态 failed，终态就是终态：失败结果不重试）。
+    const failedFire = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'chain-hook');
+    const failedGrant = await node.lease(failedFire.taskId);
+    await node.result(failedGrant, { phase: 'failed', summary: '脚本失败', error: { reason: 'script_failed', message: 'exit 1' }, exitCode: 1 });
+    // 3) 真实在跑任务：拿到 lease 就不回报结果（占住一个真实槽位）。
+    const runningFire = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'chain-hook');
+    await node.lease(runningFire.taskId);
+    const events = await rawReq(server.base, '/v1/console/events?namespace=default&limit=8', { headers: sessionCookie(s) });
+    assert.equal(events.status, 200, 'T1 seam: console events must be 200');
+    const latestWithTrace = (events.body.items || []).find((e) => e.spec.traceUID);
+    assert.ok(latestWithTrace, 'T1 seam: console events must carry traceUID');
+    const latestTrace = await rawReq(server.base, '/v1/namespaces/default/traces/' + latestWithTrace.spec.traceUID, { headers: sessionCookie(s) });
+    assert.equal(latestTrace.status, 200, 'T1 seam: latest trace readmodel must be 200');
+    const chainTrace = await rawReq(server.base, '/v1/namespaces/default/traces/' + chain.traceId, { headers: sessionCookie(s) });
+    assert.equal(chainTrace.status, 200, 'T1 seam: chain trace readmodel must be 200');
+    return {
+      // 节点必须保持在线：trace 详情页点进 message 会向「跑过这次 attempt 的节点」取日志，
+      // 会话一关就是 503 node_offline（那是真的离线，不是页面 bug）。关闭交给 openDriver.stop()。
+      __holdNodes: [node],
+      chainTrace: chain.traceId,
+      chainRootTask: chain.taskId,
+      chainTasks: chainTrace.body.tasks.length,
+      chainPruned: chainTrace.body.pruned.length,
+      failedTask: failedFire.taskId,
+      runningTask: runningFire.taskId,
+      latestEventTrace: latestWithTrace.spec.traceUID,
+      latestTraceTasks: latestTrace.body.tasks.length,
+      // 让用例按“页面会看到的同一份事实”算期望值。
+      indexEvents: (events.body.items || []).length,
+    };
+  }
+}
+
+// messageScenario 造“任务详情页”的全部真实事实：
+//
+//   1. 成功任务：2 条下游 emit + 1 条被剪枝的 emit（共 3 条 emission，分页 2+1）
+//      + 一条**真实上传**的产物（下载字节的 sha256 就是路径里的 sha256）
+//   2. 在跑任务：持有真实 lease（页面显示真 leaseExpiresAt/attempt），日志档案由
+//      节点回答 logs_request（truncated=true）
+//   3. 还未派发的 pending 任务（cancel 的 CAS 对象）
+//   4. 产物被保留期清掉的成功任务（元数据在、副本不在 → 410 artifact_expired）
+SCENARIOS.set('observe-message', async (server, fixtures) => messageScenario(server, fixtures));
+
+async function messageScenario(server, fixtures) {
+  const s = fixtures.adminSession;
+  const envRef = (name) => ({ valueFrom: { fieldRef: { fieldPath: 'vars.' + name } } });
+  const child = await ensureCapability(server, s, DEFAULT_NS, 'msg-child');
+  const broken = await ensureCapability(server, s, DEFAULT_NS, 'msg-broken', [], { params: { type: 'array' } });
+  const root = await ensureCapability(server, s, DEFAULT_NS, 'msg-root', ['msg-child', 'msg-broken'], {
+    env: { SOURCE_ROOT: envRef('SOURCE_ROOT'), GIT_TERMINAL_PROMPT: envRef('GIT_TERMINAL_PROMPT') },
+    requires: { values: ['vars.SOURCE_ROOT', 'vars.GIT_TERMINAL_PROMPT'] },
+    lifecycle: { idempotent: true, maxAttempts: 3, timeoutSec: 60 },
+    // 同一节点上允许 3 个并发执行：夹具要同时持有「在跑」与「产物过期」两个 lease。
+    concurrency: { maxPerNode: 3 },
+  });
+  await ensureSource(server, s, DEFAULT_NS, 'msg-hook', 'msg-root');
+  const node = await bringUpFixtureNode({
+    base: server.base,
+    session: s,
+    name: 'f3-msg-node',
+    namespaces: [DEFAULT_NS],
+    vars: { SOURCE_ROOT: '/node-default', GIT_TERMINAL_PROMPT: '0' },
+    localVars: { SOURCE_ROOT: '/local-src' },
+    localLimits: { total: 4, perCapability: { 'msg-root': 3 } },
+    slots: 4,
+  });
+  {
+    for (const cap of [root, child, broken]) await deployApplied(server.base, s, node, capRef(cap));
+    // ---- 1) 成功任务：2 条下游 + 1 条剪枝 + 真实产物 ----
+    const done = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'msg-hook');
+    const doneGrant = await node.lease(done.taskId);
+    const first = await node.emit(doneGrant, { to: 'msg-child', data: { n: 1 }, id: 'emit-1' });
+    const second = await node.emit(doneGrant, { to: 'msg-child', data: { n: 2 }, id: 'emit-2' });
+    const pruned = await node.emit(doneGrant, { to: 'msg-broken', data: { n: 3 }, id: 'emit-3' });
+    assert.ok(first?.response?.taskId && second?.response?.taskId, '两条下游 emit 都必须建出子任务');
+    assert.equal(pruned?.response?.pruned?.reason, 'param_schema', '第三条 emit 必须被 param_schema 剪枝');
+    const artifactBytes = Buffer.from('# f3 report\n\nreal bytes served by the hub spool\n', 'utf8');
+    const uploaded = await node.uploadArtifact(doneGrant, { path: 'artifacts/report.md', bytes: artifactBytes });
+    assert.ok([200, 201].includes(uploaded.status), '产物上传必须被接受，实际 ' + uploaded.status);
+    assert.equal(await node.result(doneGrant, { summary: '实际完成的报告', artifacts: [{ path: 'artifacts/report.md', sha256: uploaded.sha256 }], exitCode: 0 }).then(Boolean), true, '成功结果必须被 ack');
+    // ---- 2) 产物被保留期清掉：上传 → 结果成功 → 删掉 spool 副本（保留期 GC 的等价删法） ----
+    const expired = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'msg-hook');
+    const expiredGrant = await node.lease(expired.taskId);
+    const expiredBytes = Buffer.from('expired artifact body\n', 'utf8');
+    const expiredUpload = await node.uploadArtifact(expiredGrant, { path: 'artifacts/old.txt', bytes: expiredBytes });
+    assert.ok([200, 201].includes(expiredUpload.status), '过期产物也必须先真实上传');
+    assert.equal(await node.result(expiredGrant, { summary: '产物稍后被保留期清掉', artifacts: [{ path: 'artifacts/old.txt', sha256: expiredUpload.sha256 }] }).then(Boolean), true, '结果必须被 ack');
+    // ---- 3) 在跑任务：lease + 日志档案（truncated） ----
+    const running = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'msg-hook');
+    const runningGrant = await node.lease(running.taskId);
+    const logLines = ['f3 fixture log: attempt 1 started', 'f3 fixture log: infra_transient while fetching toolchain', 'f3 fixture log: retrying'];
+    node.archiveLogs(runningGrant.attempt, logLines, { truncated: true });
+    // ---- 4) pending 任务（不接派发：它是 cancel 的 CAS 对象） ----
+    const pending = await fireFixture(server, fixtures.sendKey, DEFAULT_NS, 'msg-hook');
+    // 产物副本落在中枢自己的 spool 里（resultspool 的 object id 是内部 id，不是 sha256），
+    // 所以按**字节哈希**找到这个对象再删：保留期 GC 删的就是这份副本，元数据行保留
+    // → 下载必须变成 410 artifact_expired（"引用确实存在过、副本没了"）。
+    const spoolObjects = path.join(path.dirname(server.dbPath), 'artifacts', 'objects');
+    assert.ok(existsSync(spoolObjects), '中枢必须真的建出 artifact spool（' + spoolObjects + '）');
+    const expiredObject = readdirSync(spoolObjects)
+      .map((file) => path.join(spoolObjects, file))
+      .find((file) => createHash('sha256').update(readFileSync(file)).digest('hex') === expiredUpload.sha256);
+    assert.ok(expiredObject, '中枢必须真的把产物字节写进 spool（找不到 sha256=' + expiredUpload.sha256 + '）');
+    rmSync(expiredObject);
+    return {
+      __holdNodes: [node],
+      messageTask: done.taskId,
+      messageArtifactSha: uploaded.sha256,
+      messageArtifactBytes: artifactBytes.length,
+      runningTask: running.taskId,
+      runningAttempt: runningGrant.attempt,
+      runningLogLines: logLines,
+      pendingTask: pending.taskId,
+      expiredTask: expired.taskId,
+      expiredArtifactSha: expiredUpload.sha256,
+      childTasks: [first.response.taskId, second.response.taskId],
+    };
+  }
+}
+
+// nodeConfigScenario：node.html 的有效值/预算来源层要验真：
+//   · SOURCE_ROOT 的**值**来自本机（hello.localVars），来源层是 local；
+//   · NODE_ONLY 来自节点 vars（node）；NS_ONLY 来自命名空间 vars（namespace）；
+//   · 两层预算逐叶合并：local.total 压住 node.total，perCapability.fixer 来自 local，
+//     perCapability.* 来自 node。
+// 这些事实只能由「节点真的连上来并报自己的 localVars/localLimits」产生。
+SCENARIOS.set('node-config', async (server, fixtures) => {
+  const s = fixtures.adminSession;
+  await ensureNode(server, s, MOCK_FIXTURES.node);
+  // 节点默认值/预算走**真实写入口**（PUT …/nodes/{name}/config，CAS 带当前 rv）：
+  // 基础夹具已经建过这个节点，直接改 spec 不是产品入口。写完之后再握手 —— welcome
+  // 会带上新的 configRevision 与 nodeVars/nodeLimits，节点据此算 appliedHash。
+  const current = await rawReq(server.base, `/v1/nodes/${MOCK_FIXTURES.node}/config`, { headers: sessionCookie(s) });
+  assert.equal(current.status, 200, 'T1 seam: GET node config must be 200');
+  const saved = await rawReq(server.base, `/v1/nodes/${MOCK_FIXTURES.node}/config`, {
+    method: 'PUT',
+    headers: jsonHeaders(s),
+    body: JSON.stringify({
+      metadata: current.body.metadata,
+      vars: { SOURCE_ROOT: '/node-default', NODE_ONLY: 'node-visible' },
+      limits: { total: 8, perCapability: { '*': 3, fixer: 2 } },
+      namespaces: [DEFAULT_NS],
+    }),
+  });
+  assert.equal(saved.status, 200, 'T1 seam: PUT node config must be 200, got ' + saved.status + ' ' + JSON.stringify(saved.body));
+  // 命名空间级只定义「只属于 ns 的」变量：真实语义里 ns 默认值压过节点值
+  // （任务输入 > 机器配置），所以把 NODE_ONLY 也写进 ns 会让它的来源层变成
+  // namespace —— 那就测不到「node 层」这条来源了。
+  await ensureNamespaceVars(server, s, DEFAULT_NS, { SOURCE_ROOT: '/ns-default', NS_ONLY: 'default-visible' });
+  const node = await bringUpFixtureNode({
+    base: server.base,
+    session: s,
+    name: MOCK_FIXTURES.node,
+    namespaces: [DEFAULT_NS],
+    vars: { SOURCE_ROOT: '/node-default', NODE_ONLY: 'node-visible' },
+    limits: { total: 8, perCapability: { '*': 3, fixer: 2 } },
+    localVars: { SOURCE_ROOT: '/local-src' },
+    localLimits: { total: 4, perCapability: { fixer: 1 } },
+    slots: 1,
+  });
+  return {
+    // 用例在同一个进程里跑完之前必须保持连接（status.localVars 来自会话上报的 hello），
+    // 所以这里把关闭动作挂到 process 退出：openDriver 的 stop() 之后事实已经断言完。
+    __holdNode: node,
+    nodeLocalVars: { SOURCE_ROOT: '/local-src' },
+    nodeLocalLimits: { total: 4, fixer: 1 },
+  };
+});
+
 async function preview() {
   assert.equal(isMock(), true, 'Static preview is admitted only by E2E_MOCK_ONLY=1');
   const root = path.join(ROOT, 'web');
@@ -328,7 +614,7 @@ export async function openDriver(id, options = {}) {
       catch (error) { (report.traceArchiveErrors ||= []).push(traceEvidenceTools().error(error)); }
     }
     if (shared) { if(context) await context.close(); }
-    else { if (browser) await browser.close(); if (server) await server.stop(); }
+    else { if (browser) await browser.close(); if (server) { for (const held of server.fixtures?.__holdNodes || []) held.close(); server.fixtures?.__holdNode?.close(); await server.stop(); } }
     await persistReport(report);
   })();
   try {
@@ -337,7 +623,7 @@ export async function openDriver(id, options = {}) {
       assert.ok(existsSync(H.BIN), `T1 seam: ANOTIFY_BIN missing: ${H.BIN}; build genuine v4 server, no preview fallback`);
       assert.ok(existsSync(H.DEVSEED_BIN), `T1 seam: DEVSEED_BIN missing: ${H.DEVSEED_BIN}; generic retained auth seed required`);
       server = await H.startServer({ suiteName:'frontend' });
-      const fixtures = await realFixtures(server, await realBootstrap(server));
+      const fixtures = await realFixtures(server, await realBootstrap(server), id);
       server.session = fixtures.adminSession;
       const ns = await rawReq(server.base,'/v1/namespaces',{headers:sessionCookie(server.session)});
       assert.equal(ns.status,200,'T1 seam: genuine namespaced API bootstrap must respond 200');
@@ -474,6 +760,12 @@ export async function openDriver(id, options = {}) {
       if(text.trim()!==''){ try{ parsed=JSON.parse(text); }catch{ parsed={unparsed:text}; } }
       return {status:r.status,body:parsed};
     },[url,body,method]);
+    // api 是**宿主侧**的真实 HTTP 读（不经页面、不进 __f3Calls）：用例在打开页面前
+    // 需要先取到真实事实当期望值时用。mock 权威下没有后端，调用即错。
+    const api=(url,opts={})=>{
+      assert.ok(!mock,'api() 只属于真实权威（mock 预览没有后端）');
+      return rawReq(server.base,url,{...opts,headers:{...sessionCookie(server.session),...(opts.headers||{})}});
+    };
     const snapshot=async()=>{
       if(mock)return page.evaluate(()=>JSON.stringify(MockApi.state));
       const paths=['/v1/namespaces/default/capabilities','/v1/namespaces/default/sources','/v1/namespaces/default/playbooks','/v1/namespaces/default/tasks','/v1/console/events?namespace=default','/v1/nodes','/v1/system/config','/v1/namespaces/default/config'];
@@ -517,7 +809,7 @@ export async function openDriver(id, options = {}) {
       // （mock 权威下网络被 mock 路由接管，不会产生 Chrome 的网络 console：只在 real 校验。）
       if(!mock) assert.deepEqual(expected4xx.filter(e=>e.hits===0).map(e=>e.status+' '+(e.exact?'=':'~')+e.path+(e.pathSuffix||'')),[],'每个 expectHttpStatus 声明都必须在真实网络上发生过');
       assert.deepEqual(report.errors,[],'JS/console/network/unimplemented501 must fail');};
-    return {id,mock,base:server.base,page,context,browser,report,stop,finish,goto,req,response,snapshot,calls,check,shot,clean,archive,fixtures:server.fixtures,
+    return {id,mock,base:server.base,page,context,browser,report,stop,finish,goto,req,response,api,snapshot,calls,check,shot,clean,archive,fixtures:server.fixtures,
       // fx 把「用例需要的 fixture 角色」映射到当前权威下的真实身份：mock 固定事实 or
       // 真实创建对象的 id。用例不得再硬编码 tsk_/trace_ 常量走 real 路径。
       fx:(key)=>{const f=server.fixtures||{};return mock?MOCK_FIXTURES[key]:(f[key]??MOCK_FIXTURES[key]);}};

@@ -87,10 +87,25 @@ export async function playbook(d,mode){
   }
   if (mode === 'install') {
     await seed(false); await fill(true); const before = await facts();
-    const rendered = await clickAction('#btn-render', '/render'); assert.ok(rendered.response.documents.capabilities.length === 2); assert.ok(!rendered.response.install);
+    // /render 返回的是平铺 RenderResult（api/playbook.yaml·RenderResult）：能力在
+    // response.capabilities、源在 response.sources，**没有** documents 包装，也从不返回
+    // install（dryRun 才有）。"render 是纯的"因此要断言"响应里根本没有 install 键"。
+    const rendered = await clickAction('#btn-render', '/render');
+    assert.equal(rendered.response.capabilities.length, 2);
+    assert.equal(rendered.response.sources.length, 1);
+    assert.ok(!('install' in rendered.response), 'render 不得返回 install 回执');
     assert.equal(await facts(), before); await shot('pure-render');
     const dry = await clickAction('#btn-dry-run', '/install'); assert.equal(dry.response.install.dryRun, true); assert.equal(await facts(), before);
-    assert.equal(dry.response.values.credential, '***'); assert.equal(dry.response.install.id, null); await shot('dry-run-zero-writes');
+    assert.equal(dry.response.values.credential, '***');
+    if (d.mock) assert.equal(dry.response.install.id, null);
+    else {
+      // 契约里 install.id **required: string**（PlaybookInstallRef）：dryRun 也带一个
+      // ins_ 身份（那是"这一次"的身份），区别只在"不进库"。所以真实断言是
+      // 「id 是真实身份 + 库里一条实例都没有」。
+      assert.match(String(dry.response.install.id), /^ins_/);
+      assert.equal((await req(basePath + '/installs')).total, 0, 'dryRun 不得落任何实例');
+    }
+    await shot('dry-run-zero-writes');
     const first = await clickAction('#btn-install', '/install'); const second = await clickAction('#btn-install', '/install');
     assert.notEqual(first.response.install.id, second.response.install.id); assert.deepEqual(second.response.skipped, first.response.created);
     const groups = await req(basePath + '/installs'); assert.equal(groups.total, 1); assert.equal(groups.installs[0].attempts, 2);
@@ -121,7 +136,17 @@ export async function playbook(d,mode){
     const oldResources = await resources();
     const installed = await clickAction('#btn-install', '/install');
     assert.deepEqual(installed.response.unapplied.map(u => u.reason), ['routing_unapplied', 'targets_unapplied']);
-    assert.ok(installed.response.external.some(ref => ref.startsWith('notify@'))); assert.ok(installed.response.pending.includes('future-cap'));
+    // external / pending 里的 ref 是**包里写的那一串**（plan.go·resolveRefs 原样收集），
+    // 不会补 `@版本`；external 的语义是"包外但库里已有"，pending 是"两边都没有"。
+    // 这里同时验语义：notify 真的在库里存在，future-cap 真的不存在。
+    assert.ok(installed.response.external.includes('notify'), JSON.stringify(installed.response.external));
+    assert.ok(installed.response.pending.includes('future-cap'));
+    // 用宿主侧读（d.api）而不是页面 fetch：这两条是"库里有没有"的事实核对，
+    // 不该在浏览器里造两条无关的网络失败。
+    if (!d.mock) {
+      assert.equal((await d.api('/v1/namespaces/default/capabilities/notify')).status, 200);
+      assert.equal((await d.api('/v1/namespaces/default/capabilities/future-cap')).status, 404);
+    }
     assert.equal(await resources(), oldResources);
     assert.match(await page.locator('#pb-unapplied').innerText(), /NOT ready/); assert.match(await page.locator('#pb-unapplied').innerText(), /Declared|Actual/);
     assert.equal((await req(basePath)).status.ready, false);
@@ -136,7 +161,11 @@ export async function playbook(d,mode){
     }, current.spec.files);
     await req(basePath, { method: 'PUT', body: JSON.stringify(envelope(clash, current.metadata.resourceVersion)) });
     await goto('playbook', 'namespace=default&id=project-chain'); await fill(); const before = await facts();
-    assert.ok((await clickAction('#btn-render', '/render')).response.documents); assert.equal(await facts(), before);
+    // render 是纯的：响应只有 values/valuesDigest/files/capabilities/sources（没有 documents
+    // 包装、也没有 install），且一次写都没发生。
+    const pure = (await clickAction('#btn-render', '/render')).response;
+    assert.deepEqual(Object.keys(pure).sort(), ['capabilities', 'files', 'sources', 'values', 'valuesDigest']);
+    assert.equal(await facts(), before);
     for (const button of ['#btn-dry-run', '#btn-install']) {
       const result = await clickAction(button, '/install'); assert.equal(result.status, 400); assert.equal(result.reason, 'playbook_conflict');
       assert.ok(result.details.valuesDigest && result.details.hint); assert.ok(result.details.conflicts.some(c => c.fields.includes('config.token')));
@@ -210,7 +239,19 @@ export async function playbook(d,mode){
     await shot('actual-values-error');
     for (const lang of ['zh-CN', 'ja', 'es']) {
       await goto('playbook', 'namespace=default&id=project-chain', lang); await page.locator('#pb-value-project').waitFor();
-      assert.equal(await page.locator('#pb-conditions [data-condition]').count(), 4);
+      if (d.mock) assert.equal(await page.locator('#pb-conditions [data-condition]').count(), 4);
+      else {
+        /* 真实读模型的 conditions **恒为空数组**：resource_playbook.go·statusFor 明写
+         * 「四条 condition 需要能力读模型按 installed_from 查询，store 没有导出这个入口
+         * （contract D0.9），所以这里恒为空数组——不编造 True」。所以这里断言页面条件区
+         * 与 API 的 conditions 逐条一致（数量 + type 文本），而不是写死 4。 */
+        const doc = await d.api(basePath);
+        assert.ok(Array.isArray(doc.body.status.conditions));
+        assert.equal(await page.locator('#pb-conditions [data-condition]').count(), doc.body.status.conditions.length);
+        for (const condition of doc.body.status.conditions) {
+          assert.match(await page.locator('#pb-conditions').innerText(), new RegExp(condition.type));
+        }
+      }
       assert.ok(!(await page.locator('#page-main').innerText()).includes('pb.v4.'));
     }
     await goto('playbooks');

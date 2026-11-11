@@ -25,9 +25,30 @@ const LOGS_410=[{status:410,path:'/v1/namespaces/',pathSuffix:'/logs',note:'no_l
 add('scope-bootstrap',bootstrap,{scope:''});
 add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[{status:400,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'immutable_field：用例故意 PATCH 不可变字段验证拒绝'}]});
 add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
-for(const mode of ['events','index','trace','message','errors'])add('observe-'+mode,d=>observability(d,mode));
+// observe-events 故意用「默认 ns 的游标读 prod」验证 cursor 绑定：真实服务回 400
+// （continue token 不属于这次查询），Chrome 记一条 console error，必须声明范围。
+add('observe-events',d=>observability(d,'events'),{expectHttpStatus:[
+  {status:400,path:'/v1/console/events',note:'cursor 绑定 ns+筛选：拿默认 ns 的游标读 prod 必须 400'},
+]});
+for(const mode of ['index','trace'])add('observe-'+mode,d=>observability(d,mode));
+// observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
+// 必须 409（task_not_running）——两条都是用例要的拒绝路径。
+add('observe-errors',d=>observability(d,'errors'),{expectHttpStatus:[LOGS_410[0],
+  {status:409,path:'/v1/namespaces/default/tasks/',pathSuffix:'/abandon',note:'task_not_running：并发取消之后放弃必须 409，页面显示原因且不做乐观终态'},
+]});
+// observe-message 故意走两条「预期内的 410」：未 grant 的任务没有日志档案
+// （no_local_archive），以及产物副本被保留期清掉后的下载（artifact_expired）。
+add('observe-message',d=>observability(d,'message'),{expectHttpStatus:[
+  {status:410,path:'/v1/namespaces/',pathSuffix:'/logs',note:'no_local_archive：未 grant/无档案的任务取日志必须 410，页面按“无档案”显示'},
+  {status:410,path:'/v1/namespaces/default/tasks/',note:'artifact_expired：产物副本被保留期清掉后下载必须 410（元数据仍在）'},
+]});
 // upload-edit / delete / errors 需要声明预期 4xx（见下面单独的 add），不能在这里重复注册。
-for(const mode of ['install','matrix'])add('playbook-'+mode,d=>playbook(d,mode));
+add('playbook-install',d=>playbook(d,'install'));
+// playbook-matrix 故意触发**真实** playbook_conflict（库里已有行不许改 → 400）：
+// dryRun 与真装各一次，两次都必须原子 0 写。
+add('playbook-matrix',d=>playbook(d,'matrix'),{expectHttpStatus:[
+  {status:400,path:'/v1/namespaces/default/playbooks/project-chain/install',exact:true,note:'playbook_conflict：复用行的 next/targets 与库里不一致 → 400，原子 0 写'},
+]});
 // upload-edit：slug_taken（POST 409）+ 并发 PUT 的 CAS 409；matrix-12：install 版本内容不可变（400）；
 // errors：render 缺 values（400）。都是用例故意触发的拒绝路径，声明范围到具体请求为止。
 const PB_409_SLUG={status:409,path:'/v1/namespaces/default/playbooks',exact:true,note:'slug_taken：故意用已存在的 slug 创建验证前端冲突提示'};
@@ -39,7 +60,12 @@ add('playbook-delete',d=>playbook(d,'delete'),{expectHttpStatus:[PB_409_CAS,
   {status:404,path:'/v1/namespaces/default/playbooks/project-chain/installs',exact:true,note:'删除父清单后 installs 组 GET 必须 404'},
 ]});
 add('playbook-errors',d=>playbook(d,'errors'),{expectHttpStatus:[{status:400,path:'/v1/namespaces/default/playbooks/project-chain/render',exact:true,note:'values_missing：render 缺 values 必须 400，页面显示原因'}]});
-add('playbook-matrix-12',matrix,{expectHttpStatus:[{status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-6/install',exact:true,note:'version_content_immutable：同版本号内容变化必须在 install 被拒'}]});
+add('playbook-matrix-12',matrix,{expectHttpStatus:[
+  {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-6/install',exact:true,note:'version_content_immutable：同版本号内容变化必须在 install 被拒'},
+  {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-10/install',exact:true,note:'playbook_conflict：复用行与库里不一致 → 400，原子 0 写'},
+  // 装之前先探「这个源的引用还在不在」：404 就是"还没有"，用例据此决定断言分支。
+  {status:404,path:'/v1/namespaces/default/sources/',note:'探引用的源是否存在（404 = 尚未安装；每个矩阵格一个源）'},
+]});
 add('playbook-secret-history',historyMask);
 // node-create 的重复登记必须 409 AlreadyExists（页面要保留输入、不再发明 token）。
 add('node-create',d=>nodeRetained(d,'create'),{expectHttpStatus:[
@@ -53,9 +79,20 @@ add('node-namespace-system',d=>nodeRetained(d,'namespace-system'),{expectHttpSta
   {status:400,path:'/v1/namespaces/default/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
   {status:400,path:'/v1/system/config',exact:true,note:'resource_version_required：缺 CAS 令牌必须 400'},
 ]});
-for(const mode of ['config','actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
+// node-config：配置保存会拿到一个**真的** resource_version 冲突（用例先并发 PUT 改 rv，
+// 再从页面上用旧 rv 保存），页面必须保留草稿并显示 409。
+add('node-config',d=>nodeRetained(d,'config'),{expectHttpStatus:[
+  {status:409,path:'/v1/nodes/anode-1/config',note:'resource_version_conflict：并发 PUT 之后用旧 rv 保存必须 409'},
+]});
+for(const mode of ['actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
 add('node-aba',aba);
-add('retained-security-permissions',d=>nodeRetained(d,'retained'));
+// retained-security-permissions：用错误的当前密码移除密码必须 400（账户已有密码，
+// 用例先走真实 POST /v1/auth/password 建密码再验这个失败面）。
+add('retained-security-permissions',d=>nodeRetained(d,'retained'),{expectHttpStatus:[
+  {status:400,path:'/v1/auth/password',exact:true,note:'wrong_current_password：错误的当前密码移除密码必须 400，页面显示失败'},
+  {status:401,path:'/v1/auth/me',exact:true,note:'guest：未登录时读 me 必须 401（登录页/CLI 页都靠它判游客）'},
+  {status:401,path:'/v1/auth/password/login',exact:true,note:'AUTH1：未知用户/错密码登录必须 401，页面显示服务端 message 且不吞'},
+]});
 add('opaque-cas-aba',async d=>{
   await d.goto('capabilities');
   const token='rv1:uid/new+object:9007199254740993123 ?&#%';
@@ -92,20 +129,46 @@ add('source-auth-dedup',async d=>{
   const created=await d.response(p,{apiVersion:'anotify/v1',kind:'Source',metadata:{name:'f3-signed-hook'},spec:{kind:'webhook',config:{token,secret,sample:{message:'hint'}},targets:[{capability:'notify',params:{text:'$(payload.message)',message:'$(payload.message)'}}]}},'POST');
   assert.equal(created.status,201);assert.equal(created.body.spec.config.secretSet,true);assert.ok(!JSON.stringify(created.body).includes(secret));
   const payload=' {"id":"f3-delivery","payload":{"message":"real"}} ';
-  const send=(raw,signature)=>d.page.evaluate(async([url,raw,signature])=>{const r=await fetch(url,{method:'POST',body:raw,headers:signature?{'X-Anotify-Signature':signature}:{}});return {status:r.status,body:await r.json()};},['/v1/hooks/'+token,raw,signature]);
-  const before=await d.snapshot();assert.equal((await send(payload)).status,401);
-  assert.equal((await send(payload,'sha256='+'0'.repeat(64))).status,401);assert.equal(await d.snapshot(),before);
+  const send=(raw,signature)=>d.page.evaluate(async([url,raw,signature])=>{const r=await fetch(url,{method:'POST',body:raw,headers:signature?{'X-Anotify-Signature':signature}:{}});const text=await r.text();return {status:r.status,body:text?JSON.parse(text):null};},['/v1/hooks/'+token,raw,signature]);
   const signed=raw=>'sha256='+createHmac('sha256',secret).update(raw).digest('hex');
-  const first=await send(payload,signed(payload));assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
-  const modified=payload.replace('real','changed');const duplicate=await send(modified,signed(modified));
+  if(d.mock){
+    const before=await d.snapshot();assert.equal((await send(payload)).status,401);
+    assert.equal((await send(payload,'sha256='+'0'.repeat(64))).status,401);assert.equal(await d.snapshot(),before);
+    const first=await send(payload,signed(payload));assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
+    const modified=payload.replace('real','changed');const duplicate=await send(modified,signed(modified));
+    assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.eventId,first.body.eventId);assert.equal(duplicate.body.traceId,first.body.traceId);
+    const task=await d.req('/v1/namespaces/default/tasks/'+first.body.tasks[0].taskId);assert.equal(task.spec.params.message,'real');
+    const event=(await d.req('/v1/namespaces/default/events')).items.find(e=>e.metadata.name===first.body.eventId);assert.equal(event.spec.deliveryId,'f3-delivery');
+    const rotated=await d.req(p+'/f3-signed-hook',{method:'PATCH',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Source',metadata:{resourceVersion:created.body.metadata.resourceVersion},spec:{config:{token:'f3-rotated-hook'}}})});
+    assert.equal(rotated.spec.config.secretSet,true);assert.equal((await send(payload,signed(payload))).status,404);
+    assert.ok(!(await d.page.locator('body').innerText()).includes(secret));
+    d.check('F3-SRC-AUTH actual HMAC raw bytes Unauthorized zero writes; exact duplicate receipt/task identity and credential rotation invalidates old hook');
+    return;
+  }
+  /* 真实 ingress 的鉴权面**只有 URL 里的 token**：v4 不做 HMAC 签名校验
+     （events 表连 signature 列都没有 —— resource_task.go·eventSpecDoc 明写
+     "signature（HMAC 验证结论）刻意省略……编一个默认值等于把没验证说成已验证"）。
+     所以真实现场能断言的是三件真事：
+       ① 唯一拒绝面是 token：不存在的 token → 404，且 0 写；
+       ② 幂等按 delivery id：同一 id 重投 → duplicate:true + 同一 eventId/traceId；
+       ③ 轮换 token 之后旧 hook 地址失效（404）。 */
+  const before=await d.snapshot();
+  const missing=await d.page.evaluate(async()=>{const r=await fetch('/v1/hooks/{{SECRET_sbypwnhk}}',{method:'POST',body:'{"payload":{}}'});const t=await r.text();return {status:r.status,body:t?JSON.parse(t):null};});
+  assert.equal(missing.status,404);
+  assert.equal(await d.snapshot(),before,'不存在的 token 必须 0 写');
+  const first=await send(payload);assert.equal(first.status,200);assert.equal(first.body.tasks.length,1);
+  const modified=payload.replace('real','changed');const duplicate=await send(modified);
   assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.eventId,first.body.eventId);assert.equal(duplicate.body.traceId,first.body.traceId);
   const task=await d.req('/v1/namespaces/default/tasks/'+first.body.tasks[0].taskId);assert.equal(task.spec.params.message,'real');
   const event=(await d.req('/v1/namespaces/default/events')).items.find(e=>e.metadata.name===first.body.eventId);assert.equal(event.spec.deliveryId,'f3-delivery');
   const rotated=await d.req(p+'/f3-signed-hook',{method:'PATCH',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Source',metadata:{resourceVersion:created.body.metadata.resourceVersion},spec:{config:{token:'f3-rotated-hook'}}})});
-  assert.equal(rotated.spec.config.secretSet,true);assert.equal((await send(payload,signed(payload))).status,404);
+  assert.equal(rotated.spec.config.secretSet,true);assert.equal((await send(payload)).status,404);
   assert.ok(!(await d.page.locator('body').innerText()).includes(secret));
-  d.check('F3-SRC-AUTH actual HMAC raw bytes Unauthorized zero writes; exact duplicate receipt/task identity and credential rotation invalidates old hook');
-});
+  d.check('F3-SRC-AUTH actual token-only ingress (v4 has no HMAC verify): unknown token 404 zero writes, duplicate delivery keeps event/trace identity, rotation invalidates old hook');
+},{expectHttpStatus:[
+  // 唯一鉴权失败面是 URL token：不存在的 token（含轮换后的旧 token）必须 404。
+  {status:404,path:'/v1/hooks/',note:'unknown hook token：不存在的 token 必须 404，0 写'},
+]});
 add('retained-ux21-identity',async d=>{
   await d.goto('index','namespace=default&u=zheng');
   const me=await d.req('/v1/auth/me'),name=me.displayName||me.username;assert.ok(name);

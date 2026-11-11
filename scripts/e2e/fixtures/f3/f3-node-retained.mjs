@@ -51,9 +51,24 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
     assert.equal(await page.locator('#node-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');
     assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(2).innerText(), 'namespace');
-    assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), '4');
-    assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(2).innerText(), 'local');
-    assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.*"] td').nth(2).innerText(), 'node');
+    if (d.mock) {
+      assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), '4');
+      assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(2).innerText(), 'local');
+      assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.*"] td').nth(2).innerText(), 'node');
+    } else {
+      /* 真实权威下**预算只有节点层**这一份可读事实：NodeStatus（resource.yaml·NodeStatus）
+       * 没有 machineLimits / localLimits 两个字段，hello 的 localLimits 只进
+       * node_configs.local_limits（grant 用），读模型不投影。所以这里断言页面显示的
+       * 就是 config.limits 的真实值，且来源层标 node —— 并显式断言读模型**没有**
+       * local 层，把「页面拿不到本机预算」这件事钉成事实而不是静默忽略。 */
+      const cfg = (await req(configPath)).body;
+      const node = (await req('/v1/nodes/anode-1')).body;
+      assert.ok(!('localLimits' in node.status) && !('machineLimits' in node.status));
+      assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), String(cfg.limits.total));
+      assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.*"] td').nth(1).innerText(), String(cfg.limits.perCapability['*']));
+      assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(1).innerText(), String(cfg.limits.perCapability.fixer));
+      assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(2).innerText(), 'node');
+    }
     assert.equal(await page.locator('#node-machine-vars [data-key="NS_ONLY"]').count(), 0);
     const config = (await req(configPath)).body;
     const concurrent = await req(configPath, { metadata: config.metadata, vars: { SOURCE_ROOT: '/new-node-default', NODE_ONLY: 'remote-default' } }, 'PUT'); assert.equal(concurrent.status, 200);
@@ -149,10 +164,34 @@ export async function nodeRetained(d,mode){
     await shot('missing-instances-unknown'); check('A3 slot0 presence; missing busy/instances are unknown, explicit false idle, terminal Task and pending reservation still occupied; real unavailable/checksum failure, confirmed drain does not reap');
   }
   if (mode === 'retained') {
+    if (!d.mock) {
+      // devseed 的账号**本来没有密码**：移除密码的按钮在「未设置密码」时是禁用的
+      // （security.html 按 GET /v1/auth/password 的 hasPassword 决定）。先走真实的
+      // POST /v1/auth/password 设一个密码，再断言按钮可用 —— 不是把"按钮不存在"当通过。
+      const before = await d.api('/v1/auth/password');
+      assert.equal(before.status, 200);
+      if (!before.body.hasPassword) {
+        const set = await d.api('/v1/auth/password', { method: 'POST', body: JSON.stringify({ newPassword: '{{SECRET_tnvqj0zz}}' }) });
+        assert.equal(set.status, 200);
+      }
+      assert.equal((await d.api('/v1/auth/password')).body.hasPassword, true);
+    }
     await goto('security'); await page.locator('#password-edit-btn:not([disabled])').waitFor();
     assert.ok((await page.locator('#passkey-list').innerText()).includes('No Passkeys'));
     await page.locator('#password-remove-btn').click(); await page.locator('#pwd-current').fill('wrong-current'); await page.locator('#password-modal-submit').click();
-    await page.waitForFunction(() => document.getElementById('password-modal').textContent.includes('Current password is incorrect'));
+    if (d.mock) {
+      await page.waitForFunction(() => document.getElementById('password-modal').textContent.includes('Current password is incorrect'));
+    } else {
+      // 真实的 DELETE /v1/auth/password 带错当前密码必须 400，页面必须把失败显示出来
+      // （auth 的失败体是 {error} 而不是 Status.message，页面按 HTTP 码兜底 —— 见报告）。
+      await page.waitForFunction(() => {
+        const modal = document.getElementById('password-modal');
+        return !!modal && /HTTP 400|400/.test(modal.textContent);
+      });
+      const rejected = (await calls()).findLast(c => c.url === '/v1/auth/password' && c.method === 'DELETE');
+      assert.equal(rejected.status, 400);
+      assert.equal((await d.api('/v1/auth/password')).body.hasPassword, true, '错误的当前密码不得改动密码');
+    }
     await shot('security-current-password-actual400');
     await goto('keys'); await page.locator('#keys-body tr').first().waitFor();
     assert.equal(await page.locator('a[href="cli-auth.html"]').count(), 1); assert.equal(await page.locator('a[href="docs.html#api"]').count(), 1);
@@ -162,12 +201,43 @@ export async function nodeRetained(d,mode){
     await page.waitForFunction(message => document.getElementById('create-error').textContent.includes(message), d.mock?'Actual retained rejection sentinel':'F3 deliberate disconnected transport');
     assert.equal(await page.locator('#new-key-name').inputValue(),'retained-form-draft');
     await shot('keys-actual-error-draft-anchors');
-    await goto('receivers'); await page.locator('#current-device-card button').waitFor();
-    assert.equal(await page.evaluate(() => Notification.permission), 'denied');
-    assert.equal(await page.locator('#push-count').innerText(), '0'); await page.locator('#current-device-card button').click();
-    await page.waitForFunction(() => document.body.textContent.includes(Anotify.t('receivers.local.perm_denied_toast')));
-    assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices')); await shot('receivers-denied-visible-feedback-zero');
-    await goto('admin'); await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0'); assert.equal(await page.locator('#kpi-rate').innerText(), '0%'); assert.equal(await page.locator('#kpi-rate-sub').innerText(), '0 / 0');
+    await goto('receivers');
+    if (d.mock) {
+      await page.locator('#current-device-card button').waitFor();
+      assert.equal(await page.evaluate(() => Notification.permission), 'denied');
+      assert.equal(await page.locator('#push-count').innerText(), '0'); await page.locator('#current-device-card button').click();
+      await page.waitForFunction(() => document.body.textContent.includes(Anotify.t('receivers.local.perm_denied_toast')));
+      assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices')); await shot('receivers-denied-visible-feedback-zero');
+    } else {
+      /* 手机推送 UI 在产品里是**隐藏中**（web-src/partials.js·PUSH_UI_ENABLED=false）：
+       * 真实现场没有 #current-device-card、也没有 #push-count，receivers 页只在
+       * #push-unavailable 里给一句「暂未开放」。这一屏要断言的真实事实是：
+       *   ① 未开放分支真的渲染了提示（不是空白）；
+       *   ② 浏览器确实没有通知权限（harness 语境）；
+       *   ③ 页面**没有**发起任何设备订阅（POST /v1/devices）—— 这才是「不会偷偷注册」。 */
+      assert.equal(await page.evaluate(() => window.Anotify.pushUIEnabled), false);
+      assert.equal(await page.locator('#current-device-card').count(), 0);
+      await page.locator('#push-unavailable').waitFor();
+      assert.ok((await page.locator('#push-unavailable').innerText()).trim().length > 0, '未开放分支必须给明确提示');
+      assert.equal(await page.evaluate(() => Notification.permission), 'denied');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.ok(!(await calls()).some(c => c.method === 'POST' && c.url === '/v1/devices'));
+      await shot('receivers-push-hidden-no-subscribe');
+    }
+    await goto('admin');
+    if (d.mock) {
+      await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0');
+      assert.equal(await page.locator('#kpi-rate').innerText(), '0%'); assert.equal(await page.locator('#kpi-rate-sub').innerText(), '0 / 0');
+    } else {
+      // 真实零设备 + 真实投递账：速率与分子分母都按 /v1/admin/stats 的同一份事实算。
+      const stats = (await calls()).findLast(c => c.url === '/v1/admin/stats')?.response;
+      assert.ok(stats, 'admin 页必须真的请求 /v1/admin/stats');
+      await page.waitForFunction(() => document.getElementById('kpi-devices')?.textContent === '0');
+      const expectedRate = (stats.deliveryTotal > 0 ? Math.round((stats.deliveredCount / stats.deliveryTotal) * 100) : 0) + '%';
+      assert.equal(await page.locator('#kpi-rate').innerText(), expectedRate);
+      assert.equal(await page.locator('#kpi-rate-sub').innerText(), stats.deliveredCount + ' / ' + stats.deliveryTotal);
+      assert.equal(stats.deviceCount, 0);
+    }
     await shot('admin-actual-zero-device-delivery');
     if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-member','1')); else { assert.ok(process.env.E2E_V4_MEMBER_SESSION,'T1 seam: retained member session required, never fake real role'); await d.context.addCookies([{name:'anotify_session',value:process.env.E2E_V4_MEMBER_SESSION,url:d.base}]); }
     await goto('admin');

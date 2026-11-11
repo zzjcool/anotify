@@ -883,7 +883,17 @@
         renderList();
         try {
           const res = await nsList("capabilities");
-          CAPS = res.items;
+          /* CapabilityList 是**同名多版本各一行**（resource.yaml·listCapabilities：
+           * "name 升序、版本降序"）——那是给版本对比用的清单形状，不是列表页的行。
+           * 列表页一行 = 一个能力名，所以这里按 name 归并、只留最高版本；
+           * 每个名字的全部版本仍在行内的「版本历史」里逐个可见。 */
+          const latest = new Map();
+          for (const item of res.items) {
+            const meta = model.capability(item);
+            const current = latest.get(meta.name);
+            if (!current || (meta.version || 0) > (model.capability(current).version || 0)) latest.set(meta.name, item);
+          }
+          CAPS = [...latest.values()];
         } catch (e) {
           LIST_ERR = e;
           CAPS = [];
@@ -1672,8 +1682,24 @@
         }
       }
 
-      function openEditor(mode, cap) {
-        EDIT = { mode: mode, res: cap || null, name: cap ? model.capability(cap).name : "" };
+      /* openEditor 是**异步**的：编辑既有能力时必须先拿 `?includeBody=true` 的全文。
+       * 列表投影按契约**剥离 run.files**（resource.yaml·listCapabilities：默认不带正文），
+       * 直接拿列表行填表单会让编辑器显示一个默认空脚本、保存时把真实正文覆盖掉
+       * ——既是数据丢失，也让"内容有没有变"的判断必然为真。 */
+      async function openEditor(mode, cap) {
+        let source = cap || null;
+        if (mode === "edit" && cap) {
+          const name = model.capability(cap).name;
+          try {
+            source = await api(nsPath("capabilities", name) + "?includeBody=true");
+          } catch (e) {
+            // 取不到全文就不要用半份事实开编辑器：报错而不是让用户把正文存成空。
+            showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason: statusLine(e) }), statusLine(e), []);
+            return;
+          }
+        }
+        EDIT = { mode: mode, res: source, name: source ? model.capability(source).name : "" };
+        cap = source;
         hideBanner();
         clearFieldErrors();
         $("cap-form-msg").textContent = "";
@@ -1827,6 +1853,41 @@
         };
       }
 
+      /* 能力的**内容面**是不可变的（capability.md §3 / resource_capability.go：
+       * PATCH 只接 metadata.displayName 与 spec.next，改 run/params/requires/
+       * lifecycle/concurrency 一律 400 immutable_field）。所以编辑器必须先判断
+       * "这次改的是内容还是元数据"：
+       *   · 内容变了 → POST 一个**新版本**（省略 metadata.version = 内容寻址）；
+       *   · 只改 displayName / next → PATCH + metadata.resourceVersion（CAS）。
+       * 比较用规范化后的键：服务端对空数组/空串是 omitempty，表单却总会填上默认值，
+       * 直接 JSON.stringify 比会把"什么都没改"误判成内容变更。 */
+      function contentKey(spec) {
+        const canon = (value) => {
+          if (Array.isArray(value)) {
+            const list = value.map(canon).filter((item) => item !== null);
+            return list.length ? list : null;
+          }
+          if (value && typeof value === "object") {
+            const out = {};
+            for (const key of Object.keys(value).sort()) {
+              const item = canon(value[key]);
+              if (item !== null) out[key] = item;
+            }
+            return Object.keys(out).length ? out : null;
+          }
+          if (value === "" || value === undefined) return null;
+          return value;
+        };
+        const source = spec && typeof spec === "object" ? spec : {};
+        return JSON.stringify(canon({
+          params: source.params,
+          run: source.run,
+          requires: source.requires,
+          lifecycle: source.lifecycle,
+          concurrency: source.concurrency,
+        }));
+      }
+
       function buildEnvelope(form) {
         const metadata = { name: form.name };
         if (form.displayName) metadata.displayName = form.displayName;
@@ -1929,8 +1990,31 @@
             OPEN.add(form.name);
             closeEditor();
             await loadCaps();
+          } else if (contentKey(form.spec) !== contentKey(model.capability(EDIT.res).spec)) {
+            // 内容变更 = 新版本（不是 PATCH）：省略 metadata.version 让服务端按内容定版本号，
+            // 同一份内容重复保存会折叠到已有版本，不会长出重复行。
+            await ready();
+            // form.version 已经区分了「留空 = 内容寻址（null）」与「显式版本」：
+            // 显式版本照原样发出去，服务端才有机会回 version_content_immutable。
+            const fresh = buildEnvelope(form);
+            await api(nsPath("capabilities"), writeOpts("POST", writable(fresh, { create: true })));
+            toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
+            OPEN.add(form.name);
+            VERS.delete(EDIT.name);
+            closeEditor();
+            await loadCaps();
           } else {
-            const payload = withResourceVersion(writable(body), EDIT.res.metadata.resourceVersion);
+            /* PATCH 的**全部**合法面只有 metadata.displayName 与 spec.next
+             * （resource_capability.go·immutableCapabilitySpecPatch：出现其它 spec 键
+             * 一律 400 immutable_field）。所以这里只发这两个键的**最小补丁** —
+             * 把整份 spec 塞进 PATCH 会让"只改显示名"也被 400 拒掉。 */
+            const patch = {
+              apiVersion: "anotify/v1",
+              kind: "Capability",
+              metadata: { name: form.name, displayName: form.displayName || "" },
+              spec: { next: form.spec.next },
+            };
+            const payload = withResourceVersion(patch, EDIT.res.metadata.resourceVersion);
             await api(nsPath("capabilities", EDIT.name), writeOpts("PATCH", payload));
             toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
             OPEN.add(form.name);

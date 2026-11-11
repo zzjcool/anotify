@@ -110,10 +110,17 @@
             el("span", { "data-raw-content": "", text: JSON.stringify({ dispatched: event.dispatched, pruned: event.pruned }, null, 2) }))));
       }
       if (!doc.events.length) events.body.append(el("div", { class: "empty", text: t("events.v4.empty") }));
-      doc.pruned.forEach(fact => pruned.body.append(el("div", { class: "grid gap-2" },
-        el("code", { class: "mono b2-wrap", text: fact.to || "—" }),
-        el("p", { class: "card-sub b2-wrap", text: fact.reason + ": " },
-          el("span", { "data-raw-content": "", text: fact.detail })))));
+      /* pruned[] 的每个条目是**事件信封**（events.yaml·TraceView：「原样给事件信封」）：
+       * 原因码是 spec.eventType（= 封闭剪枝码），诊断在 status.pruned.detail。
+       * 读 fact.to / fact.reason 是 mock 时代的形状，真实现场只会渲染出 undefined。 */
+      doc.pruned.forEach(fact => {
+        const prune = fact.status?.pruned || {};
+        const code = fact.spec?.eventType || prune.reason || fact.reason || t("trace.v4.no_pruned");
+        pruned.body.append(el("div", { class: "grid gap-2" },
+          el("code", { class: "mono b2-wrap", text: fact.spec?.involvedObject?.name || fact.to || "—" }),
+          el("p", { class: "card-sub b2-wrap", text: code + ": " },
+            el("span", { "data-raw-content": "", text: prune.detail || fact.detail || "" }))));
+      });
       if (!doc.pruned.length) pruned.body.append(el("p", { class: "card-sub", text: t("trace.v4.no_pruned") }));
     }
     async function load() {

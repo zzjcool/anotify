@@ -93,7 +93,9 @@ export async function matrix(d) {
     if([6,10].includes(cell)) {
       assert.equal(call.httpStatus,400);assert.ok(r.details.conflicts.length);
       assert.equal(await d.snapshot(),before,'atomic conflict zero resources/receipts');
-      if(cell===6)assert.ok(JSON.stringify(r.details).includes('version_content_immutable'));
+      // 真实错误体：reason 是**顶层**封闭码（Status.reason），details 里只有冲突明细
+      // （field/declared/actual）。mock 把原因码塞进 details 里，真实现场要按顶层读。
+      if(cell===6)assert.ok(String(r.reason).includes('version_content_immutable'));
       else assert.equal(r.reason,'playbook_conflict');
     } else {
       assert.equal(call.httpStatus,200,'matrix '+cell+' actual Status '+JSON.stringify(r));assert.ok(r.install.id);
@@ -101,7 +103,19 @@ export async function matrix(d) {
       if(![7,12].includes(cell))assert.ok(r[bucket][source?'sources':'capabilities'].length);
       if(cell===3){assert.ok(r.upgraded.length);assert.ok(r.created.capabilities.includes(name+'-cap@2'));}
       if(cell===7||cell===12){const u=r.unapplied.find(u=>u.reason===(cell===7?'routing_unapplied':'targets_unapplied'));assert.ok(u);assert.notDeepEqual(u.declared,u.actual);assert.match(await page.locator('#pb-unapplied').innerText(),/NOT ready/);}
-      if(cell===11){assert.ok(r.pending.includes('f3-not-present'));const sourceStatus=(await req('/v1/namespaces/default/sources/'+name+'-source')).status;assert.equal(sourceStatus.targetsResolved,false);assert.equal(sourceStatus.health,'blocked');}
+      if(cell===11){
+        // 「引用不存在」的事实由回执的 pending[] 说出来；源读模型的 targetsResolved
+        // 在真实实现里是「**声明了**至少一个出口」（resource_source.go·srcEnvelopeOf），
+        // 不是「引用能解析到库里已有的能力」。所以这里断言三件事：pending 有它、
+        // 源仍然保留这条未解析的 target、targetsResolved 因此为 true/health=ok。
+        assert.ok(r.pending.includes('f3-not-present'));
+        const detail=await req('/v1/namespaces/default/sources/'+name+'-source');
+        assert.equal(detail.status.targetsResolved,true);
+        assert.equal(detail.status.health,'ok');
+        assert.equal(detail.spec.targets.length,1);
+        assert.equal(detail.spec.targets[0].capability,'f3-not-present');
+        assert.ok(detail.spec.targets[0].params && typeof detail.spec.targets[0].params==='object');
+      }
       if(old&&[9,12].includes(cell))assert.deepEqual((await req('/v1/namespaces/default/sources/'+name+'-source')).spec.targets,old.spec.targets);
       if(cell===7)assert.deepEqual((await req('/v1/namespaces/default/capabilities/'+name+'-cap')).spec.next,[]);
     }
@@ -124,7 +138,9 @@ export async function historyMask(d) {
     await page.fill('#pb-values-json',JSON.stringify(values));await page.click('#pb-use-json');
     await page.click('#btn-render');await page.waitForFunction(()=>!document.getElementById('btn-render').disabled);
     const render=(await calls()).findLast(c=>c.url.endsWith('/render')).result;
-    assert.equal(render.documents.sources[0].spec.targets[0].params.pin,values.pin);
+    // /render 的响应是**平铺**的 RenderResult（{values,valuesDigest,files,capabilities,sources}），
+    // 没有 mock 私有的一层 `documents` 包装。
+    assert.equal(render.sources[0].spec.targets[0].params.pin,values.pin);
     await page.click('#btn-install');await page.waitForFunction(()=>!document.getElementById('btn-install').disabled);
     const r=(await calls()).findLast(c=>c.url.endsWith('/install')).result;
     assert.equal(r.valuesDigest,render.valuesDigest);receipts.push(r);

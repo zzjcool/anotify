@@ -969,7 +969,10 @@
         if (!Array.isArray(doc.tasks) || !Array.isArray(doc.events) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
         if (!doc.tasks.length) {
           host.append(el("div", { class: "empty", text: t("index.flow.pruned") }));
-          doc.pruned.forEach(p => host.append(el("p", { class: "card-sub", text: p.reason + ": " + p.detail })));
+          /* pruned[] 的条目是事件信封（events.yaml·TraceView）：原因码在 spec.eventType，
+           * 诊断在 status.pruned.detail；读 p.reason/p.detail 只是 mock 时代的形状。 */
+          doc.pruned.forEach(p => host.append(el("p", { class: "card-sub",
+            text: (p.spec?.eventType || p.status?.pruned?.reason || p.reason || "—") + ": " + (p.status?.pruned?.detail || p.detail || "") })));
           return;
         }
         if (!window.AnotifyGraphs) throw new Error(t("index.flow.nolib"));

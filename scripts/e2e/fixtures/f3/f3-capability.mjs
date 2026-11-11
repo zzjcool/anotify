@@ -106,8 +106,13 @@ export async function capability(d){
 			return "POST body 全字段一致，服务端读回 v1";
 		});
 
-		/* ---------- 2) 编辑：省略 version → 内容寻址新版本；CAS 带 rv ---------- */
-		await check("编辑：改 run.files 省略 version → 内容寻址 v2，PATCH 带 metadata.resourceVersion", async () => {
+		/* ---------- 2) 编辑：改内容 → 新版本（POST，内容寻址） ----------
+		 * 真实契约（capability.md §3 / resource_capability.go）：能力的**内容面不可变**，
+		 * PATCH 只接 displayName 与 next；改 run/params/requires/lifecycle/concurrency
+		 * 一律 400 immutable_field。所以"改正文"的唯一合法路径是 **POST 一个新版本**
+		 * （省略 metadata.version = 内容寻址）。CAS 的 resourceVersion 属于 PATCH 那条路
+		 * （只改 displayName/next 时用），在用例 3 里断言。 */
+		await check("编辑：改 run.files 省略 version → POST 内容寻址出 v2（不 PATCH 不可变字段）", async () => {
 			assert.ok(created.ok, "依赖创建成功");
 			const row = await openCap(page, "f2a-demo");
 			await row.locator('[data-act="edit"]').click();
@@ -122,12 +127,15 @@ export async function capability(d){
 			await page.click("#cap-submit");
 			await waitHidden(page, "#cap-modal");
 			const recs = await takeRec(page);
-			const patch = recs.find((r) => r.method === "PATCH" && /f2a-demo$/.test(r.url));
-			assert.ok(patch, "必须发出 PATCH …/capabilities/f2a-demo");
-			assert.ok(patch.body.metadata.resourceVersion, "PATCH 必须带 metadata.resourceVersion");
-			const got = await page.evaluate(async () => (await fetch("/v1/namespaces/default/capabilities/f2a-demo")).json());
+			const newVersion = recs.find((r) => r.method === "POST" && /\/capabilities$/.test(r.url));
+			assert.ok(newVersion, "改正文必须 POST …/capabilities 建新版本");
+			assert.equal(Object.hasOwn(newVersion.body.metadata, "version"), false, "省略 metadata.version = 内容寻址");
+			assert.equal(recs.some((r) => r.method === "PATCH" && /f2a-demo$/.test(r.url)), false, "不得 PATCH 不可变内容");
+			// 默认投影**不含正文**（S1：不泄露 run.files），要看正文必须 ?includeBody=true。
+			const got = await page.evaluate(async () => (await fetch("/v1/namespaces/default/capabilities/f2a-demo?includeBody=true")).json());
 			assert.equal(got.metadata.version, 2, "改正文必须出 v2");
-			return "PATCH rv=" + patch.body.metadata.resourceVersion + "，新版本 v" + got.metadata.version;
+			assert.ok(Object.values(got.spec.run.files).some((body) => String(body).includes("v2")), "v2 的正文必须是这次的输入");
+			return "POST 内容寻址 → v" + got.metadata.version;
 		});
 
 		/* ---------- 3) CAS 409：并发写后旧 rv，输入保留 ---------- */
@@ -137,19 +145,25 @@ export async function capability(d){
 			await row.locator('[data-act="edit"]').click();
 			await page.waitForSelector("#cap-modal:not(.hidden)");
 			await page.fill("#cap-display-name", "用户本地改动");
+			// 并发写只改 displayName（PATCH 的合法面）：内容面不可变，带 spec 重发会被
+			// 400 immutable_field 拒掉，那就不再是"并发写"而是"写失败"。
 			const stale = await page.evaluate(async () => {
 				const g = await fetch("/v1/namespaces/default/capabilities/f2a-demo");
 				const res = await g.json();
 				const rv = res.metadata.resourceVersion;
-				await fetch("/v1/namespaces/default/capabilities/f2a-demo", {
+				const concurrent = await fetch("/v1/namespaces/default/capabilities/f2a-demo", {
 					method: "PATCH",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Capability", metadata: { name: "f2a-demo", resourceVersion: rv, displayName: "别人写的" }, spec: res.spec }),
+					body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Capability", metadata: { name: "f2a-demo", resourceVersion: rv, displayName: "别人写的" } }),
 				});
+				if (!concurrent.ok) throw new Error("concurrent PATCH failed: " + concurrent.status + " " + (await concurrent.text()));
 				return rv;
 			});
 			await page.click("#cap-submit");
-			await page.waitForSelector("#cap-banner:not(.hidden)", { timeout: 15000 });
+			await page.waitForSelector("#cap-banner:not(.hidden)", { timeout: 15000 }).catch(async (error) => {
+				console.log('DEBUG cas', JSON.stringify((await takeRec(page)).map((r) => ({ method: r.method, url: r.url, status: r.status, reason: r.reason }))));
+				throw error;
+			});
 			const banner = await page.textContent("#cap-banner");
 			assert.match(banner, /409/);
 			assert.match(banner, /输入都还在/);
@@ -193,11 +207,12 @@ export async function capability(d){
 			await page.click("#cap-submit");
 			await waitHidden(page, "#cap-modal");
 			const recs = await takeRec(page);
-			const patch = recs.find((r) => r.method === "PATCH" && /analyze-pr$/.test(r.url));
-			assert.ok(patch && patch.body.metadata.version === 3, "PATCH body metadata.version 必须是 3");
-			const got = await page.evaluate(async () => (await fetch("/v1/namespaces/default/capabilities/analyze-pr")).json());
+			// 显式版本号的内容变更同样是 POST（内容面不可变，永远不 PATCH）。
+			const patch = recs.find((r) => r.method === "POST" && /\/capabilities$/.test(r.url) && r.body.metadata.version === 3);
+			assert.ok(patch, "显式版本 3 的内容变更必须 POST 新版本（body metadata.version=3）");
+			const got = await page.evaluate(async () => (await fetch("/v1/namespaces/default/capabilities/analyze-pr?includeBody=true")).json());
 			assert.equal(got.metadata.version, 3);
-			assert.equal(got.spec.run.files["main.sh"].includes("changed-body"), true);
+			assert.ok(Object.values(got.spec.run.files).some((body) => String(body).includes("changed-body")), "v3 的正文必须是本次输入");
 			return "400 指引完整；改 v3 保存成功（正文=本次输入）";
 		});
 
