@@ -1238,9 +1238,11 @@ const NODE_RES = {
 		instances: [],
 		lastSeenAt: "2024-01-01T00:00:00Z",
 		namespaceVars: { NS_VAR: "ns" },
-		effectiveVars: { NS_VAR: "ns" },
-		context: { namespace: "default" },
+		// v4：effectiveVars 每项是 {value,source}（resource.yaml · NodeStatus）
+		effectiveVars: { NS_VAR: { value: "ns", source: "namespace" } },
 	},
+	// v4：`?namespace=` 的读上下文是**信封顶层**键（Node.context），不在 status 里
+	context: { namespace: "default" },
 };
 
 test("model.node：三层 vars、双 revision、pending、?namespace 上下文", () => {
@@ -1260,7 +1262,7 @@ test("model.node：三层 vars、双 revision、pending、?namespace 上下文",
 	assert.deepEqual(m.effectiveNamespaces, ["default"]);
 	assert.deepEqual(m.context, { namespace: "default" });
 	assert.deepEqual(m.namespaceVars, { NS_VAR: "ns" });
-	assert.deepEqual(m.effectiveVars, { NS_VAR: "ns" });
+	assert.deepEqual(m.effectiveVars, { NS_VAR: { value: "ns", source: "namespace" } });
 
 	const synced = plain(
 		A.model.node(
@@ -1271,12 +1273,13 @@ test("model.node：三层 vars、双 revision、pending、?namespace 上下文",
 	);
 	assert.equal(synced.pending, false);
 
-	// 没带 ?namespace= 时，即使响应里混进了 namespaceVars/effectiveVars，也不能
-	// 当成“覆盖全部 ns”展示 —— 那正是 review 指出的假覆盖。
+	// 没带 `?namespace=` 时（信封顶层没有 context），即使 status 里混进了
+	// namespaceVars/effectiveVars，也不能当成“覆盖全部 ns”展示 —— 那正是 review
+	// 指出的假覆盖。
 	const noCtx = plain(
 		A.model.node(
 			Object.assign({}, NODE_RES, {
-				status: Object.assign({}, NODE_RES.status, { context: undefined }),
+				context: undefined,
 			}),
 		),
 	);
@@ -1872,9 +1875,11 @@ test("mock: node 列表/详情是 v4 信封；?namespace= 带 context/namespaceV
 
 	const detail = await req("/v1/nodes/anode-1?namespace=prod");
 	assert.equal(detail.status, 200);
-	assert.equal(detail.body.status.context.namespace, "prod");
+	// v4：读上下文在信封顶层（Node.context），有效值在 status.effectiveVars
+	assert.equal(detail.body.context.namespace, "prod");
 	assert.equal(detail.body.status.namespaceVars.SLACK_CHANNEL, "#prod");
-	assert.equal(detail.body.status.effectiveVars.NOTIFY_URL, "https://hooks.example/notify/prod");
+	assert.equal(detail.body.status.effectiveVars.NOTIFY_URL.value, "https://hooks.example/notify/prod");
+	assert.equal(detail.body.status.effectiveVars.NOTIFY_URL.source, "namespace");
 	assert.equal(detail.body.status.machineVars.TOOLCHAIN, "/opt/go1.25");
 
 	const missingNs = await req("/v1/nodes/anode-1?namespace=nope");
@@ -3716,9 +3721,14 @@ test("F2c2: namespace intersection, per-key vars context, two-layer limits, revi
  row.facts.instances = [{ slot: 0, busy: true, taskId: "terminal-task", attempt: 1, leaseId: "lease" }, { slot: 1 }, { slot: 2, busy: false }];
  const def = (await req("/v1/nodes/" + row.name + "?namespace=default")).body;
  assert.deepEqual(def.status.effectiveNamespaces, ["default", "prod"]);
- assert.deepEqual(def.status.effectiveVars, { SOURCE_ROOT: "/local", ONLY_NODE: "node", ONLY_NS: "default" });
- assert.equal(def.status.namespaceVarsRevision, Mock.state.nsConfig.default.revision);
- assert.equal(def.status.machineVars.ONLY_NS, undefined); assert.equal((await req("/v1/nodes/" + row.name + "?namespace=prod")).body.status.effectiveVars.ONLY_NS, "prod");
+ assert.equal(def.context.namespace, "default", "v4：读上下文在信封顶层，不在 status 里");
+ // v4 的 effectiveVars 每项是 {value,source}：来源由中枢逐键解析（local > node > namespace）
+ assert.deepEqual(def.status.effectiveVars, {
+  SOURCE_ROOT: { value: "/local", source: "local" },
+  ONLY_NODE: { value: "node", source: "node" },
+  ONLY_NS: { value: "default", source: "namespace" },
+ });
+ assert.equal(def.status.machineVars.ONLY_NS, undefined); assert.equal((await req("/v1/nodes/" + row.name + "?namespace=prod")).body.status.effectiveVars.ONLY_NS.value, "prod");
  const model = plain(A.model.node(def));
  assert.deepEqual(model.machineLimits, { total: 4, perCapability: { "*": 3, fixer: 1 } });
  assert.equal(model.instances[0].slot, 0); assert.equal(model.instances[0].occupancy, "occupied");

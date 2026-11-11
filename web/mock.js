@@ -1552,9 +1552,13 @@
 		if (nsContext) {
 			const nsVars = clone(state.nsVars[nsContext] || {});
 			st.namespaceVars = nsVars;
-			st.effectiveVars = Object.assign({}, nsVars, nodeVars, localVars);
-			st.namespaceVarsRevision = state.nsConfig[nsContext]?.revision ?? null;
-			st.context = { namespace: nsContext };
+			// v4 的 effectiveVars 每项是 {value,source}（resource.yaml · NodeStatus）：
+			// 来源由中枢逐键解析（local > node > namespace），不是页面自己猜的。
+			const effectiveVars = {};
+			for (const [key, value] of Object.entries(nsVars)) effectiveVars[key] = { value, source: "namespace" };
+			for (const [key, value] of Object.entries(nodeVars)) effectiveVars[key] = { value, source: "node" };
+			for (const [key, value] of Object.entries(localVars)) effectiveVars[key] = { value, source: "local" };
+			st.effectiveVars = effectiveVars;
 		}
 		return st;
 	}
@@ -1577,6 +1581,8 @@
 				tags: clone((row.spec && row.spec.tags) || []),
 			},
 			status: deriveNodeStatus(row, nsContext),
+			// v4：`?namespace=` 的读上下文是信封**顶层**键（Node.context），不在 status 里。
+			...(nsContext ? { context: { namespace: nsContext } } : {}),
 		};
 	}
 

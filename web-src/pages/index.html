@@ -840,17 +840,55 @@
     let EVENT_ERROR = null;
     const { ready, readScope, nsPath, model, itemsOf } = window.Anotify;
 
+    /* 两张执行状态卡的口径必须是**真实 Task 事实**，不是 stats 的臆造字段：
+     * GET /v1/stats 只给 total/today/delivered/deliveryTotal/deviceCount/daily
+     * （api/events.yaml · getStats），v4 里没有 pending/running/failed —— 读它们
+     * 得到的是 undefined，跟着 `.toLocaleString()` 就把整页炸掉。所以这两个数从
+     * 真实 TaskList 数相位：pending+running = 在途，failed = 失败。取不到就返回
+     * null（卡片显示 –），绝不写 0 冒充「没有」。
+     * 单页上限 500（>500 会被折回 50，且 TaskList 没有 continue 游标）：命中上限
+     * 时按「至少这么多」显示 N+，不把截断的一页冒充全量。 */
+    const TASK_PAGE_LIMIT = 500;
+
+    async function loadTaskCounts(namespace) {
+      const doc = await api(
+        "/v1/namespaces/" + encodeURIComponent(namespace) +
+          "/tasks?limit=" + TASK_PAGE_LIMIT,
+      );
+      if (doc.kind !== "TaskList" || !Array.isArray(doc.items)) {
+        throw new Error("malformed TaskList");
+      }
+      const items = itemsOf(doc);
+      const counts = { working: 0, failed: 0, truncated: items.length >= TASK_PAGE_LIMIT };
+      for (const item of items) {
+        const phase = model.task(item).phase;
+        if (phase === "pending" || phase === "running") counts.working += 1;
+        else if (phase === "failed") counts.failed += 1;
+      }
+      return counts;
+    }
+
+    // 截断时补一个 +：既报出数到的量，也不假装它是全量。
+    function taskCountText(counts, key) {
+      if (!counts) return "–";
+      return counts[key].toLocaleString() + (counts.truncated ? "+" : "");
+    }
+
     async function load() {
       loadError = null;
       document.getElementById("index-events").setAttribute("aria-busy", "true");
       try {
         await ready();
         STATS = await api("/v1/stats?namespace=" + encodeURIComponent(readScope().namespace));
-        TASK_COUNTS = { working: STATS.pending + STATS.running, failed: STATS.failed };
       } catch (error) {
         STATS = null;
-        TASK_COUNTS = null;
         loadError = error;
+      }
+      try {
+        TASK_COUNTS = await loadTaskCounts(readScope().namespace);
+      } catch {
+        // 任务列表取不到时只让这两张卡显示 –（其余 KPI 照常有真数据）。
+        TASK_COUNTS = null;
       }
       try {
         const me = await window.Anotify.loadMe();
@@ -1085,22 +1123,12 @@
         "推送订阅 + 长连接",
       );
 
-      /* 两张执行状态卡：只数「事件派出去的任务」有没有卡住/失败，
-       * 数据是当前命名空间的统计计数，不把截断的任务列表冒充全部。 */
+      /* 两张执行状态卡：数当前命名空间里真实 Task 的相位（pending+running /
+       * failed），见 loadTaskCounts 的口径说明；取不到就是 –，不写 0。 */
       const runningEl = document.getElementById("kpi-running");
       const failedEl = document.getElementById("kpi-failed");
-      if (runningEl) {
-        setStatValue(
-          runningEl,
-          TASK_COUNTS ? TASK_COUNTS.working.toLocaleString() : "–",
-        );
-      }
-      if (failedEl) {
-        setStatValue(
-          failedEl,
-          TASK_COUNTS ? TASK_COUNTS.failed.toLocaleString() : "–",
-        );
-      }
+      if (runningEl) setStatValue(runningEl, taskCountText(TASK_COUNTS, "working"));
+      if (failedEl) setStatValue(failedEl, taskCountText(TASK_COUNTS, "failed"));
       const values = STATS.daily.map(day => day.count);
       const max = Math.max(1, ...values);
       sparks.forEach(node => {

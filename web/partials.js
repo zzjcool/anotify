@@ -3016,7 +3016,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 */
 	function modelNode(res) {
 		const meta = metaOf(res), spec = specOf(res), st = statusOf(res);
-		const context = isObj(st.context) && st.context.namespace ? { namespace: st.context.namespace } : null;
+		// v4：`?namespace=` 的读上下文在**信封顶层**（resource.yaml · Node.context），
+		// 不在 status 里 —— 把「读的是哪个 ns」塞进 status，会让它和「这个 ns 的
+		// 值」混在一起（resource_node.go · nodeReadEnvelope）。
+		const readContext = isObj(res && res.context) ? res.context : {};
+		const context = readContext.namespace ? { namespace: readContext.namespace } : null;
 		const configRevision = st.configRevision ?? null, appliedRevision = st.appliedRevision ?? null;
 		const localLimits = obj(st.localLimits), nodeLimits = obj(spec.limits);
 		const slots = arr(st.instances).map(x => x.slot);
@@ -3039,7 +3043,6 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			pending: String(appliedRevision ?? "") !== String(configRevision ?? ""),
 			overrideStale: typeof st.overrideStale === "boolean" ? st.overrideStale : null,
 			instances, effectiveNamespaces: arr(st.effectiveNamespaces), context,
-			namespaceVarsRevision: context ? st.namespaceVarsRevision ?? null : null,
 			namespaceVars: context ? obj(st.namespaceVars) : null,
 			effectiveVars: context ? obj(st.effectiveVars) : null,
 		};

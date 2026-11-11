@@ -54,7 +54,7 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-not
 (() => {
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
   const name = new URLSearchParams(location.search).get('id') || '', path = '/v1/nodes/' + encodeURIComponent(name);
-  let n, config, namespace = '', original = '', loaded = false;
+  let n, nodeId = '', config, namespace = '', original = '', loaded = false;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
@@ -62,13 +62,13 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-not
   const request = (url, body, method = 'PUT') => A.api(url, { method, body: JSON.stringify(body) });
   const configInputs = ['namespaces', 'vars', 'limits'];
   const draft = () => JSON.stringify(configInputs.map(k => $('node-' + k).value));
-  const table = (id, values, source) => {
+  const table = (id, values, source, valueText = v => String(v)) => {
     const rows = Object.entries(values || {}); $(id).replaceChildren();
     if (!rows.length) { $(id).appendChild(make('div', 'c2-note', t('none'))); return; }
     const table = make('table', 'c2-table'), head = make('tr');
     for (const title of [t('key'), t('value'), t('source')]) head.appendChild(make('th', null, title));
     const thead = make('thead'); thead.appendChild(head); table.appendChild(thead); const body = make('tbody');
-    for (const [key, value] of rows) { const row = make('tr'); row.dataset.key = key; for (const text of [key, String(value), source(key)]) row.appendChild(make('td', null, text)); body.appendChild(row); }
+    for (const [key, value] of rows) { const row = make('tr'); row.dataset.key = key; for (const text of [key, valueText(value, key), source(key)]) row.appendChild(make('td', null, text)); body.appendChild(row); }
     table.appendChild(body); $(id).appendChild(table);
   };
   function renderFacts() {
@@ -79,8 +79,11 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-not
     table('node-machine-vars', n.machineVars, key => Object.hasOwn(n.localVars, key) ? 'local' : 'node');
     const limits = { ...(n.machineLimits.total == null ? {} : { total: n.machineLimits.total }), ...Object.fromEntries(Object.entries(n.machineLimits.perCapability || {}).map(([k,v]) => ['perCapability.' + k, v])) };
     table('node-machine-limits', limits, key => key === 'total' ? (n.localLimits.total != null ? 'local' : 'node') : (Object.hasOwn(n.localLimits.perCapability || {}, key.slice(14)) ? 'local' : 'node'));
-    $('node-context-revision').textContent = 'namespace=' + (n.context?.namespace || '?') + ' · namespaceVarsRevision=' + (n.namespaceVarsRevision ?? '?') + ' · configRevision=' + (n.configRevision ?? '?');
-    if (n.context) table('node-effective-vars', n.effectiveVars, key => Object.hasOwn(n.localVars, key) ? 'local' : Object.hasOwn(n.nodeVars, key) ? 'node' : 'namespace');
+    $('node-context-revision').textContent = 'namespace=' + (n.context?.namespace || '?') + ' · configRevision=' + (n.configRevision ?? '?');
+    /* v4：`?namespace=` 读的有效值在 **status.effectiveVars**（api/resource.yaml ·
+     * NodeStatus.effectiveVars），每一项是 `{value,source}` —— 来源由服务端逐键
+     * 解析（local > node > namespace），页面不再自己拿三层变量表猜。 */
+    if (n.context) table('node-effective-vars', n.effectiveVars, key => String(n.effectiveVars[key]?.source ?? '?'), entry => String(entry?.value ?? ''));
     else $('node-effective-vars').replaceChildren(make('div', 'c2-note', t('unknown')));
     $('node-slots').replaceChildren();
     if (!n.instances?.length) $('node-slots').appendChild(make('div', 'c2-note', t('unknown')));
@@ -91,12 +94,19 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-not
   }
   async function loadFacts() {
     const resource = await A.api(path + (namespace ? '?namespace=' + encodeURIComponent(namespace) : ''));
-    if (resource.kind !== 'Node') throw new Error('Invalid Node resource'); n = A.model.node(resource); renderFacts();
+    if (resource.kind !== 'Node') throw new Error('Invalid Node resource');
+    // GET tasks 的 nodeId 过滤按 nodes.id 匹配（store.ListTasks 的 node_id），而
+    // 节点对外的 id 就是 metadata.uid；名字只在 URL 路径里用（NodeNamePath）。
+    nodeId = resource.metadata?.uid;
+    if (!nodeId) throw new Error('Node metadata.uid missing');
+    n = A.model.node(resource); renderFacts();
   }
   async function loadRelated() {
     if (!namespace) return;
     const base = '/v1/namespaces/' + encodeURIComponent(namespace);
-    const results = await Promise.allSettled([A.apiList(base + '/deployments'), A.apiList(base + '/tasks?node=' + encodeURIComponent(name) + '&limit=20')]);
+    // 查询参数是封闭集合（limit/status/traceId/nodeId）：旧的 `?node=` 会被 400
+    // unknown_field 拒掉，且真服务按 node_id 过滤，所以这里传的是 id 不是名字。
+    const results = await Promise.allSettled([A.apiList(base + '/deployments'), A.apiList(base + '/tasks?nodeId=' + encodeURIComponent(nodeId) + '&limit=20')]);
     for (const [i, id] of ['node-deployments', 'node-tasks'].entries()) {
       $(id).replaceChildren(); const result = results[i];
       if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }

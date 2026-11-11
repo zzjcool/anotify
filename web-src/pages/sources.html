@@ -611,7 +611,19 @@ $("btn-dry").onclick=async()=>{
   const btn=$("btn-dry");
   btn.disabled=true;
   try{
-    const source=writeSource();
+    /* 未保存源的 dry-run 请求体是 InlinePreviewBody（api/ingress.yaml），它的
+     * `source` 是 InlineSourceDraft：metadata 只认 name/displayName，
+     * additionalProperties:false。草稿的 namespace 由 URL 路径与授权决定，
+     * 把写信封的 metadata.namespace 一起发过去会被严格解码拒掉（400
+     * unknown_field “metadata.namespace is not writable”）。所以这里只挑
+     * 草稿允许的键，spec 原样保留（它就是「这次试运行要预览的源」）。 */
+    const envelope=writeSource();
+    const source={
+      apiVersion:envelope.apiVersion,
+      kind:envelope.kind,
+      metadata:{name:envelope.metadata.name,displayName:envelope.metadata.displayName},
+      spec:envelope.spec
+    };
     const payload=json($("dry-payload"),true);
     preview($("form-result"),await request("dry-run",Object.assign({
       source
