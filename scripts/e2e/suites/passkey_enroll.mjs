@@ -19,6 +19,12 @@
  * 2. knock 对不存在的会话返回 500（writeEnrollErr 未处理 store.ErrNotFound），应 404。
  */
 import * as H from "../lib/harness.mjs";
+import * as V from "../lib/v4.mjs";
+
+// D-C-7 要验「cli-auth 领到的 Key 真的能用」——v4 的投递入口是
+// `POST /v1/namespaces/{ns}/events`，且源必须是本 ns 的真实资源（source.md §5），
+// 所以先建一个无 targets 的源（不建任务，只验鉴权/入口）。
+const NS = V.DEFAULT_NS;
 
 async function createEnrollSession(
 	server,
@@ -195,6 +201,8 @@ async function main() {
 	});
 	const seedData = H.seed(server.dbPath, "enrolluser");
 	const { session } = seedData;
+	// 造数：无 targets 的源（只用于 D-C-7 验「Key 能进投递入口」）。
+	await V.mkSource(server.base, session, "github", { namespace: NS });
 
 	// ============================================================
 	// 1. 完整用户旅程（happy path 前半段：到 poll 拿 options+token）
@@ -552,9 +560,8 @@ async function main() {
 		);
 
 		// Key 可用
-		const notify = await H.req(server.base, "/v1/events", {
-			key: p.json.apiKey,
-			body: { source: "github", type: "pr_opened", payload: { title: "regression ok" } },
+		const notify = await V.ingestEvent(server.base, p.json.apiKey, NS, {
+			source: "github", type: "pr_opened", payload: { title: "regression ok" },
 		});
 		H.eq("D-C-7 cli-auth Key 可用 → 200", notify.status, 200);
 	}

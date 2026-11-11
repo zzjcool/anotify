@@ -11,8 +11,11 @@
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
+import * as V from "../lib/v4.mjs";
 
 const RP = "localhost";
+// v4：命名空间进路径（任务/事件都是 ns 内资源）。会话鉴权边界不变，只是路径要带 ns。
+const NS = V.DEFAULT_NS;
 let server, browser, ctx, page, cdp;
 const username = "auth_" + Date.now();
 
@@ -224,9 +227,12 @@ async function main() {
 	H.eq("注册新用户 → 200", regStatus, 200);
 	let sess = await cookieVal();
 	H.check("注册后会话 Cookie 已建立", !!sess);
+	// 造数：v4 的投递入口要求源是本 ns 的真实资源（source.md §5）。
+	// 无 targets = 只入库、不建任务，刚好只验 scope 分界。
+	await V.mkSource(server.base, sess, "github", { namespace: NS });
 	H.eq(
 		"会话可访问受保护 API",
-		(await H.req(server.base, "/v1/tasks", { session: sess })).status,
+		(await H.req(server.base, V.P.tasks(NS), { session: sess })).status,
 		200,
 	);
 
@@ -257,9 +263,8 @@ async function main() {
 	H.eq(
 		"send Key 可上报",
 		(
-			await H.req(server.base, "/v1/events", {
-				key: sendKey,
-				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
+			await V.ingestEvent(server.base, sendKey, NS, {
+				source: "github", type: "pr_opened", payload: { title: "t" },
 			})
 		).status,
 		200,
@@ -267,9 +272,8 @@ async function main() {
 	H.eq(
 		"recv Key 上报被拒(403)",
 		(
-			await H.req(server.base, "/v1/events", {
-				key: recvKey,
-				body: { source: "github", type: "pr_opened", payload: { title: "t" } },
+			await V.ingestEvent(server.base, recvKey, NS, {
+				source: "github", type: "pr_opened", payload: { title: "t" },
 			})
 		).status,
 		403,
@@ -295,7 +299,7 @@ async function main() {
 	);
 	H.eq(
 		"登出后会话失效(401)",
-		(await H.req(server.base, "/v1/tasks", { session: sess })).status,
+		(await H.req(server.base, V.P.tasks(NS), { session: sess })).status,
 		401,
 	);
 
@@ -306,7 +310,7 @@ async function main() {
 	H.check(
 		"重新登录后会话恢复",
 		!!sess &&
-			(await H.req(server.base, "/v1/tasks", { session: sess }))
+			(await H.req(server.base, V.P.tasks(NS), { session: sess }))
 				.status === 200,
 	);
 
@@ -337,9 +341,8 @@ async function main() {
 	H.check("免用户名登录后会话建立", !!sess);
 
 	// 11. /v1/stats 真实统计
-	await H.req(server.base, "/v1/events", {
-		key: sendKey,
-		body: { source: "github", type: "pr_opened", payload: { title: "统计测试" } },
+	await V.ingestEvent(server.base, sendKey, NS, {
+		source: "github", type: "pr_opened", payload: { title: "统计测试" },
 	});
 	const stats = await H.req(server.base, "/v1/stats", { session: sess });
 	H.eq("GET /v1/stats → 200", stats.status, 200);

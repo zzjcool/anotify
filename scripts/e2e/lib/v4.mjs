@@ -311,6 +311,37 @@ export function fireSource(base, session, ns, name, body = {}) {
 	return H.req(base, P.sourceFire(ns, name), { session, method: "POST", body });
 }
 
+// expectNotNodeToken 验证「一个 API Key 不能当节点身份（nodeToken）用」。
+//
+// 为什么不能用普通 HTTP 请求验：v4 的 /v1/node/stream 是**先升级再鉴权**
+// （ws.Hub.ServeHTTP），没有 Upgrade 头的请求连握手都过不了，一律 426
+// Upgrade Required —— 于是「Key 被拒」与「没带凭据」在状态码上完全一样，
+// 断言会变成永远为真的假绿。
+//
+// 所以这里走真握手：升级 → 用 API Key 当 hello.token 发一帧 → 服务端必须关连接
+// （1008 policy violation；socket 直接断开是 1006）。留一条 401/403 分支：若将来
+// 把鉴权前移到 upgrade 阶段，这条断言照样成立，不会因为实现变了就假红。
+export async function expectNotNodeToken(name, base, apiKey, { namespace = DEFAULT_NS } = {}) {
+	let conn;
+	try {
+		conn = await wsConnect(base, apiKey);
+	} catch (err) {
+		H.check(`${name}（握手被拒）`, err.status === 401 || err.status === 403, `status=${err.status} ${err.message}`);
+		return;
+	}
+	const closed = new Promise((resolve) => conn.onClose(resolve));
+	conn.send(nodeHello({ name: "not-a-node", token: apiKey, namespaces: [namespace], slots: 1 }));
+	// 5s 是「冒充被接受」的证据窗口：真节点会收到 welcome 并保持连接，
+	// 于是这里拿不到关闭事件 —— 超时即失败，而不是静默放过。
+	const info = await Promise.race([closed, sleep(5000).then(() => null)]);
+	conn.close();
+	H.check(
+		name,
+		!!info && (info.code === 1008 || info.code === 1006),
+		info ? `关闭码 ${info.code}（期望 1008 policy violation）` : "5s 内连接没被关闭：API Key 冒充节点没有被拒",
+	);
+}
+
 // ---------- 轮询 ----------
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

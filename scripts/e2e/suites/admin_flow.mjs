@@ -12,8 +12,10 @@
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
+import * as V from "../lib/v4.mjs";
 
 const RP = "localhost";
+const NS = V.DEFAULT_NS;
 let server, browser, ctx, page, cdp;
 const firstUser = "admin_" + Date.now();
 
@@ -121,6 +123,9 @@ async function main() {
 	// devseed 默认建 member 角色（不带 -admin）
 	const member = H.seed(server.dbPath, "member_" + Date.now());
 	H.check("devseed 建立 member 用户 + 会话", !!member.session);
+	// 造数：v4 的投递入口要求源是本 ns 的真实资源（source.md §5）。
+	// 这里用无 targets 的源：下面只验「Key 能/不能进投递入口」，不需要建任务。
+	await V.mkSource(server.base, adminSess, "manual", { namespace: NS });
 
 	// member 的 /v1/auth/me → role=member
 	const memberMe = await H.req(server.base, "/v1/auth/me", {
@@ -334,10 +339,10 @@ async function main() {
 	H.eq("禁用前为 member 建 API Key → 200", mkKey.status, 200);
 	const memberKey = mkKey.json && mkKey.json.key;
 	H.check("拿得到 Key 明文（仅此一次）", !!memberKey, String(memberKey).slice(0, 12));
-	const keyBefore = await H.req(server.base, "/v1/events", {
-		key: memberKey,
-		method: "POST",
-		body: { source: "manual", type: "manual.run", payload: { note: "before-disable" } },
+	const keyBefore = await V.ingestEvent(server.base, memberKey, NS, {
+		source: "manual",
+		type: "manual.run",
+		payload: { note: "before-disable" },
 	});
 	H.check(
 		"禁用前 API Key 可用（2xx）",
@@ -363,10 +368,10 @@ async function main() {
 		401,
 	);
 	// #254：同一个 Key 也必须立刻失效（不是等缓存自然过期）
-	const keyAfter = await H.req(server.base, "/v1/events", {
-		key: memberKey,
-		method: "POST",
-		body: { source: "manual", type: "manual.run", payload: { note: "after-disable" } },
+	const keyAfter = await V.ingestEvent(server.base, memberKey, NS, {
+		source: "manual",
+		type: "manual.run",
+		payload: { note: "after-disable" },
 	});
 	H.check(
 		"#254 禁用后 API Key 立刻失效（401）",
@@ -374,10 +379,10 @@ async function main() {
 		`status=${keyAfter.status} body=${String(keyAfter.text || "").slice(0, 80)}`,
 	);
 	// 再打一次：负结果不该被缓存，也不能出现"第一次拒、第二次放行"
-	const keyAfter2 = await H.req(server.base, "/v1/events", {
-		key: memberKey,
-		method: "POST",
-		body: { source: "manual", type: "manual.run", payload: { note: "after-disable-2" } },
+	const keyAfter2 = await V.ingestEvent(server.base, memberKey, NS, {
+		source: "manual",
+		type: "manual.run",
+		payload: { note: "after-disable-2" },
 	});
 	H.eq("#254 禁用后的 Key 不会第二次放行", keyAfter2.status, 401);
 
