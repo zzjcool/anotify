@@ -1,0 +1,16 @@
+# F3a TEST FIXTURE — 不是真实的 T1 spec（见 resource.yaml 顶部说明）。
+#
+# agent 是**协议**文档（binary / WebSocket stream），没有 HTTP paths。
+# 这种 spec 是合法的：0 operations，不是错误，也不许伪造 endpoint 凑数。
+openapi: 3.0.3
+info:
+  title: Anotify node protocol (sitegen fixture)
+  version: "4.0.0-fixture"
+  description: |
+    Node 与中枢之间的长连接协议（binary / WS stream）。
+    本文件只描述帧格式与鉴权，没有 HTTP paths。
+servers:
+  - url: /
+tags:
+  - name: agent
+x-anotify-protocol: binary/websocket
