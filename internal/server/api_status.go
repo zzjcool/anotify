@@ -168,6 +168,11 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusBadRequest, "invalid_source_kind", err.Error(), nil)
 	case errors.Is(err, store.ErrInvalidSourceConfig):
 		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
+	case errors.Is(err, store.ErrSourceTargetInvalid):
+		// targets 指向不存在的出口能力是**调用方输入错误**（改引用就好），不是服务端故障。
+		// 不加这一条就落 default 500：客户端会把它当瞬时故障去重试一个永远不会成功的写。
+		// reason 复用 source 域的既有封闭码（targets 的形状错也走它），不新造词。
+		writeStatus(w, http.StatusBadRequest, "invalid_source_config", err.Error(), nil)
 	case errors.Is(err, store.ErrReservedEventSource):
 		// 保留来源名（`route`）是**调用方输入错误**，不是服务端故障：v3 有专门用例钉它
 		// 必须是 400（§4.2 的 reason 封闭集合里没有 5xx 用户错误码）。不加这一条就会落到
