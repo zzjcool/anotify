@@ -173,7 +173,7 @@ cat .e2e-bin/results/_authority-manifest.json
 
 # real_backend 确实不在了：文件不存在 + 注册表无该项
 ls scripts/e2e/suites/real_backend.mjs   # No such file or directory
-grep -n real_backend scripts/e2e/parallel_runner.mjs   # 2 行，均为注释（退役说明 + capacity 超时理由引用）
+grep -n real_backend scripts/e2e/parallel_runner.mjs   # 1 行（实测，`rg -c` = 1）：只有 :85 那条具名退役注释，没有任何代码引用
 ```
 
 ## 7. 未决 / 已知限制
@@ -183,3 +183,42 @@ grep -n real_backend scripts/e2e/parallel_runner.mjs   # 2 行，均为注释（
 - `frontend` 的 real bootstrap（prod ns / 双会话 / 真实资源）随 `#354` 落地；
   本条基线上的 `frontend` 仍是 v3-era 版本。
 - harness 里 `real_backend: 6900` / `reply_e2e: 6750` 两个号段是死配置（见 §4 残留）。
+
+## 8. 产物身份：二进制 sha256 不是发布身份
+
+验收记录里经常出现「本轮构建 `anotify` = `149228ce…`」这种行。**它不能当发布身份用**：
+
+`make build` / `make manifest` 每次都把**构建实例信息**编进二进制（`Makefile` 顶部）：
+
+- `BUILT_AT := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)` → `internal/version.BuiltAt`，
+  **两次构建之间必然不同**（同一棵树、同一命令，隔一分钟 sha256 就变）；
+- VCS stamp：`GIT_SHA`（`git rev-parse --short HEAD`）→ `internal/version.Commit`，
+  `anode` 还把它拼进 `main.version`（`$(VERSION)+$(GIT_SHA)`）；`VERSION` 缺省是
+  `git describe --tags --always --dirty`，**工作区有未提交改动就带 `-dirty`**；
+- 因此二进制 sha256 的变化只说明「构建事实变了」，不说明「代码变了」——反过来也不成立。
+
+**稳定身份 = 版本串 + spec/fe 指纹**，也就是 `make manifest` 里除两行 sha256 之外的三行：
+
+```bash
+make manifest
+# version:  <VERSION_LABEL>   ← 版本串（干净 tag 时形如 v0.2.0-336-gd5c6a5d+d5c6a5d）
+# git:      <git short sha>
+# built_at: <RFC3339 UTC>     ← 只用于「这是哪一次构建」
+# <sha256>  anotify           ← 构建实例指纹：随 BuiltAt / VCS stamp 变，别当版本
+# <sha256>  anode
+# spec:     <api/*.yaml 拼接的 sha256>          ← 五份 spec 一改必变（exact-five）
+# fe:       <internal/server/dist/manifest.json 的 sha256>  ← 前端资源集合/内容一改必变
+```
+
+判据（写验收记录时的正确姿势）：
+
+| 想回答 | 看哪一行 | 不要看 |
+|---|---|---|
+| 这份产物是**哪个版本 / commit 的源码** | `version` / `git` | 二进制 sha256 |
+| 五份 spec 是否与本轮一致 | `spec` | 二进制 sha256 |
+| 前端产物是否与本轮一致 | `fe` | 二进制 sha256 |
+| 这次构建本身是否一致（同一台机器重跑） | 两行二进制 sha256（**并且** `built_at` 相同才可能相等） | — |
+
+所以验收文档里写二进制 sha256 时必须带限定语「本轮构建（非稳定身份）」，
+并与同轮 `version` / `spec` / `fe` 一起记录才可复核。逐字段来源与「为什么 anode 的
+`main.version` 要带 `+<commit>`」见 `docs/v4/g4a-build-manifest.md` §2–§3。

@@ -474,7 +474,7 @@ v4 的能力是**中枢资源**（`POST/PUT /v1/namespaces/{ns}/capabilities`，
 > **规则：每次开发完成后，必须跑 `make e2e` 全绿才算完成。** 见 `E2E_TESTING.md`。
 
 ```bash
-make e2e              # 全量：构建 + Go 单测 + 9 个 E2E 套件
+make e2e              # 全量：构建三个二进制 + 28 个 E2E 套件（不含 Go 单测，单测是 make test）
 make e2e-quick        # 合并前快检（~25s）：真机执行 + 派发 + 部署 + 契约
 make e2e-one S=auth_flow  # 只跑某个套件
 make ci               # PR 门禁（与 GitHub Actions 相同；不含 e2e / integration）
@@ -565,9 +565,13 @@ iOS 真机 APNs 推送（需真实 iPhone，见 `IOS_TESTING.md`）。其余全�
 2. `make mock-local MOCK_PORT=7799`，Playwright 同视口截 dark/light；或直接看 dev
 3. 若改到 DOM/交互契约，单跑 `./scripts/e2e/run_all.sh --serial frontend`（约 4min）；纯 CSS 可跳过
 4. 预览部署：`make dev-reset`（不要 `WIPE=1`，保留 `anotify-dev-data`）
-5. **push / merge 前**再跑一次全量 `make e2e`（27 套件 / 2270+ 断言）
+5. **push / merge 前**再跑一次全量 `make e2e`（28 套件 = 13 HTTP + 15 Chrome；断言数每轮都在变，以执行器汇总行为准，见 `docs/v4/e2e-inventory.md`）
 
-红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` / `real_backend` 偶发（单跑确认后再全量）。
+`make e2e` 现状（`scripts/e2e/run_all.sh`）：自己构建 `.e2e-bin/anotify` + `devseed` + `anode`
+三个真实二进制，**节点侧只有 `cmd/anode`**（`cmd/agent` / `AGENT_BIN` 已随协议 v4 退役，
+不再有第二套节点 CLI）；不跑 `go test`（单测在 `make test`），也不要求先 `make build`。
+
+红线不变：改 Go/API/schema/DOM 契约或新功能，仍按 §5 跑相关测试 + 全量。常见失败：check-classes 的死类（加到 ui.css 或换 Tailwind）；light 截图出现脏阴影（`sl-under` opacity、卡片 `backdrop-filter`、trigger 光晕）；`i18n_coverage` 偶发（单跑确认后再全量）。`real_backend` 已在 #338 删文件（既不在注册表也没有套件脚本），它「跑不起来」是预期，不是失败（见 `docs/v4/e2e-inventory.md` §4）。
 
 ## 6. 目录结构
 
