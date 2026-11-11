@@ -184,6 +184,12 @@ func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, 
 	if err != nil {
 		return nil, err
 	}
+	// 回执 `unapplied[].declared/actual` 的 writeOnly 打码要的敏感性表（按 SourcePaths 下标对齐）。
+	// 只影响回执的展示副本：PlanResult.Sources[i].Spec 与库快照都保持明文（执行事实）。
+	sens, err := sourceTargetSensitivity(pkg, rendered.Sources, sch)
+	if err != nil {
+		return nil, err
+	}
 	plan := &PlanResult{
 		Playbook:     PlaybookRef{Name: pkg.Name, Version: pkg.Version},
 		Values:       rendered.Values,
@@ -209,7 +215,7 @@ func Plan(pkg *Package, values map[string]any, existing Existing) (*PlanResult, 
 	if err := planCapabilities(plan, rendered.Capabilities, existing, effNext); err != nil {
 		return nil, err
 	}
-	if err := planSources(plan, rendered.Sources, existing, effTargets); err != nil {
+	if err := planSources(plan, rendered.Sources, existing, effTargets, sens); err != nil {
 		return nil, err
 	}
 	plan.resolveRefs(rendered, existing)
@@ -340,8 +346,15 @@ func (p *PlanResult) reuseCapability(a *artifact.Artifact, snap *CapabilitySnaps
 }
 
 // planSources 走 §4.2 的第 8-12 行。
-func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets map[string][]sourcespec.Target) error {
-	for _, s := range srcs {
+//
+// sens 与 srcs（= pkg.SourcePaths 顺序）下标对齐：`sens[i][j]` 是第 i 个源第 j 个 target
+// 上引用了 writeOnly values 的 param key 集，只用于打码回执的 declared/actual 展示副本。
+func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets map[string][]sourcespec.Target, sens [][]targetSensitivity) error {
+	for i, s := range srcs {
+		var keys []targetSensitivity
+		if i < len(sens) {
+			keys = sens[i]
+		}
 		if !s.Spec.Enabled {
 			plan.Notes = append(plan.Notes, Note{
 				Code:    NoteSourceDisabled,
@@ -399,8 +412,9 @@ func planSources(plan *PlanResult, srcs []Source, existing Existing, effTargets 
 		if sourcespec.SameTargets(s.Spec.Targets, snap.Targets) {
 			continue
 		}
-		declared := append([]sourcespec.Target{}, s.Spec.Targets...)
-		actual := append([]sourcespec.Target{}, snap.Targets...)
+		// 打码只做在回执的展示副本上：s.Spec.Targets / snap.Targets 保持明文（执行事实）。
+		declared := maskTargets(s.Spec.Targets, keys)
+		actual := maskActualTargets(s.Spec.Targets, snap.Targets, keys)
 		plan.Unapplied = append(plan.Unapplied, UnappliedEntry{
 			Kind:     "source",
 			Ref:      s.Name,
