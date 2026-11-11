@@ -1,35 +1,46 @@
 #!/usr/bin/env node
-/* SUITE: deploy — 部署模型的控制台端点（console-declares / 契约 §11 + §7）
+/* SUITE: deploy — v4 部署模型（能力产物 / 人工部署动作 / 内容通道 / 部署事实读模型）
  *
- * 纯 HTTP（不起 Chrome）：这一层验的是**中枢自己的承诺**——
- *   能力定义（+ run 块）→ 编译成内容寻址的产物（digest）→ 部署到选中的机器 →
- *   部署状态机（pending / applied / failed / local）与撤销。
+ * 这一层验的是**中枢自己的承诺**：
+ *   能力定义（+ run 块）→ 编译成内容寻址的产物（digest）→「人工部署」把部署意图
+ *   写成事实并把 refs 推给在线节点 → 节点用自己的节点令牌来取**这份 digest 的正文**
+ *   → 回执后才算 applied。
  *
- * 为什么这些必须进 e2e 而不是只留单测：
- *   单测各自钉住一个函数（校验规则、SQL、handler 分支），但「建能力顺手编译产物」
- *   到「部署行建成 pending」到「hello 对账把行改成 applied / 发现不一致并重推」是**跨
- *   进程**的三段，任何一段没接上都会表现为「控制台上看起来推过了，节点其实没跑」。
+ * v4 与 v3 的三处根本差别（本套件的断言都按 v4 口径）：
+ *   1. **部署是动作不是资源**：`POST /v1/namespaces/{ns}/capabilities/{name}/deploy`
+ *      （v3 的 `POST /v1/deployments` 已退役 → 现在只有 GET，写方法 405）。
+ *   2. **目标节点写名字**：`{nodes: ["node-a"]}` 是 `metadata.name`（契约
+ *      CapabilityDeployRequest 的口径；#348 修好了旧实现只认 id 的分叉），id 也兼容。
+ *   3. **内容通道是节点令牌**：`GET /v1/node/capabilities/{digest}`（不是会话），
+ *      只有「已部署到这台节点」的内容可读：未部署 → 403，不存在 → 404。
  *
- * 覆盖（每条都对应契约里的一句话）：
- *   1. GET /v1/capability-templates → 10 个模板，每个都有 fields/script/requires
- *   2. POST /v1/capabilities 带 run → 响应带 digest；GET /v1/artifacts 查得到
- *   3. 同一份内容重复建 → digest 相同（内容寻址的幂等语义）
- *   4. 非法 run（入口无 shebang）→ 400 invalid_artifact，且**能力没有被建出来**
- *   5. 部署到离线节点 → 200 且 pushed:false，行仍然建出来（state=pending）
- *   6. 缺实现的创建 → 400 impl_missing / 部署 handler 形式 → 400 builtin_not_deployable
- *   7. GET /v1/deployments?nodeId= 过滤生效
- *   8. DELETE /v1/deployments?id= → 行消失
- *   9. 中枢覆盖（§7 的新口径）：hello 报不同 digest → state=pending，并立即重推期望的那份
+ * 覆盖：
+ *   1. 内置模板 10 个（id 冻结、每个都带 fields/script/requires、script 带 shebang）
+ *   2. 建能力带 run → 201 + digest；默认读面**不含**脚本正文，?includeBody=true 才有
+ *   3. 内容寻址：同内容省略版本 → 复用同一行/同一 digest；显式版本 → 新行、新 digest
+ *   4. 非法 run（入口无 shebang）→ 400 invalid_artifact，且能力**没有被建出来**
+ *   5. 缺实现（spec 里没有 run）→ 400 impl_missing
+ *   6. 部署到离线节点（**按名字**）→ 200、sent=false、行仍是 pending；按 **id** 也认
+ *   7. 未知节点名 / 未知能力 / 未登录 / body 未知字段 → 404 / 404 / 401 / 400
+ *   8. 在线节点：sent=true 且节点真收到 capability.deploy 帧；回执 applied 后行变 applied
+ *   9. 幂等：同一 (节点, 能力) 重复部署不建第二行
+ *  10. 内容通道：本节点已部署 → 200 + canonical JSON；**别的**在线节点 → 403；
+ *      未知 digest → 404；会话 Cookie → 401；非 GET → 405
+ *  11. 部署事实读模型：GET 只有读；POST/DELETE 显式 405（写入口已随 v3 退役）
  *
- * 纪律：不睡固定时长，一律「轮询 + 超时」（部署结果来自节点帧，天生异步）。
+ * 纪律：不睡固定时长，异步结论一律「轮询 + 上限」；负向用例断言具体状态码 + reason。
  */
+import { createHash } from "node:crypto";
+
 import * as H from "../lib/harness.mjs";
 import * as N from "../lib/nodes.mjs";
+import * as V from "../lib/v4.mjs";
 
 const SUITE = "deploy";
+const NS = V.DEFAULT_NS;
 
-// 契约 CONTRACT-artifact §8 冻结的 10 个模板 id。写死是有意的：
-// 模板是**代码生成器的输入**，少一个/多一个都意味着控制台表单与后端脱节。
+// 契约 CONTRACT-artifact §8 冻结的 10 个模板 id：写死是有意的 —— 少一个/多一个都
+// 意味着控制台表单与后端脱节。
 const TEMPLATE_IDS = [
 	"script.blank",
 	"script.http",
@@ -43,410 +54,466 @@ const TEMPLATE_IDS = [
 	"agent.custom",
 ];
 
-// 一份合法产物用的脚本：直接 exec（不经 shell），所以入口首行必须是 shebang。
+// 一份合法产物：执行方式是**直接 exec**（不经 shell），所以入口首行必须是 shebang。
 const OK_SCRIPT = "#!/bin/bash\nset -euo pipefail\necho hello\n";
 
-let server, session, nsId;
+// machineConfigHash 复算中枢的机器配置内容哈希（protocol.MachineConfigHash 的同一份算法）。
+// 空 vars + 缺省 limits（total=1, perCapability={}）→ 归一成同一串 canonical JSON。
+// 本套件用它让 mock 节点回一个**正确**的 config.applied（错误 hash 会被 grant 以
+// config_not_applied 拒绝，那条边界在 ws_protocol 里钉）。
+function machineConfigHash(vars = {}, total = 1, perCapability = {}) {
+	const canonical = JSON.stringify({ vars, limits: { total, perCapability } });
+	return "sha256:" + createHash("sha256").update(canonical).digest("hex");
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// pollUntil 轮询到 fn 返回真值；到点返回 null 由调用方断言（不静默吞错）。
-async function pollUntil(fn, { timeoutMs = 6000, intervalMs = 50 } = {}) {
+// pollUntil 是「等异步结论」的统一入口；超时抛错（返回 null 会让调用方漏断言）。
+async function pollUntil(what, fn, { timeoutMs = 8000, intervalMs = 75 } = {}) {
 	const deadline = Date.now() + timeoutMs;
+	let last = null;
 	for (;;) {
-		const v = await fn();
-		if (v) return v;
-		if (Date.now() > deadline) return null;
+		last = await fn();
+		if (last) return last;
+		if (Date.now() > deadline) {
+			throw new Error(`等待超时（${timeoutMs}ms）：${what}\n最后一次观察: ${JSON.stringify(last)}`);
+		}
 		await sleep(intervalMs);
 	}
 }
 
-// mkCapability 建一个带 run 的能力，返回 {id,name,version,digest}。
-async function mkCapability(name, { script = OK_SCRIPT, outputs = [], requires = [], version } = {}) {
-	// P4：请求体是 spec 形状（Capability Spec v3 §5）——契约与实现都在 spec 里。
-	const body = {
-		name,
-		spec: {
-			outputs,
-			requires,
-			run: { entrypoint: "run.sh", files: { "run.sh": script } },
-		},
-	};
-	if (version) body.version = version;
-	const r = await H.req(server.base, "/v1/capabilities", { session, body });
-	if (r.status !== 200) throw new Error(`建能力 ${name} 失败: ${r.status} ${r.text}`);
-	return { ...r.json.capability, digest: r.json.digest };
+// mkMockNode 走真实产品路径登记节点 + 签令牌，再起一条真 WS 会话（v4 hello）。
+// 返回 { name, id, token, conn, frames, welcome }。
+async function mkMockNode(base, session, name) {
+	const created = await H.req(base, "/v1/nodes", {
+		session,
+		body: V.envelope("Node", { name }, { namespaces: [NS] }),
+	});
+	V.expectStatus(`登记节点 ${name}`, created, 201);
+	const id = created.json?.metadata?.uid;
+	H.check(`节点 ${name} 有 uid`, !!id, String(id));
+
+	const tok = await H.req(base, `/v1/nodes/${encodeURIComponent(name)}/tokens`, { session, body: {} });
+	V.expectStatus(`签发 ${name} 的令牌`, tok, 200);
+	const token = tok.json?.token || "";
+
+	const conn = await N.wsConnect(base, token);
+	const frames = [];
+	conn.onFrame((f) => frames.push(f));
+	conn.send(N.nodeHello({ name, token, namespaces: [NS], slots: 1 }));
+	const welcome = await pollUntil(
+		`节点 ${name} 收到 welcome`,
+		async () => frames.find((f) => f.type === "welcome"),
+		{ timeoutMs: 5000 },
+	);
+	return { name, id, token, conn, frames, welcome };
 }
 
-// listDeployments 读部署行（可带 nodeId / capabilityId 过滤）。
-async function listDeployments(filter = {}) {
+// deployTo 触发部署动作（nodes 是**节点名**数组，除非显式传 id）。
+function deployTo(base, session, capName, nodes, extra = {}) {
+	return H.req(base, V.P.capabilityDeploy(NS, capName), {
+		session,
+		method: "POST",
+		body: { nodes, ...extra },
+	});
+}
+
+// listDeployments 读部署事实读模型（v4：ns 路径 + 裸 {deployments:[…]}，不套信封）。
+async function listDeployments(base, session, filter = {}) {
 	const q = Object.entries(filter)
 		.map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
 		.join("&");
-	const r = await H.req(server.base, "/v1/deployments" + (q ? "?" + q : ""), { session });
-	if (r.status !== 200) throw new Error(`GET /v1/deployments: ${r.status} ${r.text}`);
+	const r = await H.req(base, V.P.deployments(NS) + (q ? `?${q}` : ""), { session });
+	if (r.status !== 200) throw new Error(`GET deployments: ${r.status} ${String(r.text).slice(0, 300)}`);
 	return r.json?.deployments || [];
 }
 
-// findDeployment 取某条部署行（id 不存在时返回 null）。
-async function findDeployment(id, filter = {}) {
-	const rows = await listDeployments(filter);
-	return rows.find((d) => d.id === id) || null;
-}
-
-// waitDeployment 轮询等某条行满足条件（部署状态只由节点帧驱动）。
-async function waitDeployment(id, pred, timeoutMs = 6000) {
-	let last = null;
-	await pollUntil(async () => {
-		last = await findDeployment(id);
-		return last && pred(last);
-	}, { timeoutMs });
-	return last;
-}
-
-async function main() {
-	H.startTimer();
-	server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
-	const seeded = H.seed(server.dbPath, "deploy");
-	session = seeded.session;
-	nsId = await H.defaultNamespaceId(server.base, session);
-	H.check("拿到默认命名空间 id", !!nsId, String(nsId));
-	if (!nsId) throw new Error("无法解析默认命名空间 id（GET /v1/namespaces）");
-
-	// ================= 1. 内置模板（契约 §8） =================
+// ---------- 1. 内置模板 ----------
+async function partTemplates(base, session) {
 	console.log("--- 1. GET /v1/capability-templates ---");
-	const tpl = await H.req(server.base, "/v1/capability-templates", { session });
-	H.eq("GET /v1/capability-templates → 200", tpl.status, 200);
+	const tpl = await H.req(base, V.P.capabilityTemplates(), { session });
+	V.expectStatus("GET /v1/capability-templates → 200", tpl, 200);
 	const templates = tpl.json?.templates || [];
 	H.eq("内置模板正好 10 个（契约 §8 冻结）", templates.length, 10);
 	H.eq("模板 id 集合与契约一致", templates.map((t) => t.id).sort(), [...TEMPLATE_IDS].sort());
-	{
-		// 每个模板必须自带「表单字段 / 脚本模板 / 预装依赖」三样：
-		// 少了 fields，控制台表单无从渲染；少了 script，渲染不出产物；
-		// 少了 requires，部署期的依赖预检就永远显示“没问题”。
-		const missing = templates.filter(
-			(t) =>
-				!Object.prototype.hasOwnProperty.call(t, "fields") ||
-				!Object.prototype.hasOwnProperty.call(t, "script") ||
-				!Object.prototype.hasOwnProperty.call(t, "requires"),
-		);
-		H.eq("每个模板都有 fields / script / requires 三个键", missing.map((t) => t.id), []);
-		const badScript = templates.filter(
-			(t) => typeof t.script !== "string" || !t.script.trim().startsWith("#!"),
-		);
-		H.eq("每个模板的 script 都是带 shebang 的脚本文本", badScript.map((t) => t.id), []);
-		const badFields = templates.filter((t) => t.fields !== null && !Array.isArray(t.fields));
-		H.eq("fields 要么是数组、要么是 null（不返回别的形状）", badFields.map((t) => t.id), []);
-		// agent 类模板必须声明 requires：它们的脚本是 `claude --print ...`，
-		// 机器上没装就应该在**部署期**失败，而不是等第一个任务跑挂。
-		const agentTpls = templates.filter((t) => t.category === "agent" && t.id !== "agent.custom");
-		const agentNoReq = agentTpls.filter((t) => !(t.requires || []).length);
-		H.eq("agent 类模板都声明了 requires（部署期预检）", agentNoReq.map((t) => t.id), []);
-	}
 
-	// ================= 2. 建能力即编译产物 =================
-	console.log("--- 2. POST /v1/capabilities 带 run → 产物 ---");
-	const cap = await mkCapability("dep.hello", { outputs: ["go"] });
-	H.check(
-		"建带 run 的能力：响应带 digest（sha256:<64 hex>）",
-		/^sha256:[0-9a-f]{64}$/.test(cap.digest || ""),
-		String(cap.digest),
+	const missing = templates.filter(
+		(t) =>
+			!Object.prototype.hasOwnProperty.call(t, "fields") ||
+			!Object.prototype.hasOwnProperty.call(t, "script") ||
+			!Object.prototype.hasOwnProperty.call(t, "requires"),
 	);
-	H.eq("建带 run 的能力：kind 仍是 capability 的推导量", cap.name, "dep.hello");
-	const arts = await H.req(server.base, `/v1/artifacts?capabilityId=${encodeURIComponent(cap.id)}`, {
+	H.eq("每个模板都有 fields / script / requires 三个键", missing.map((t) => t.id), []);
+	const badScript = templates.filter((t) => typeof t.script !== "string" || !t.script.trim().startsWith("#!"));
+	H.eq("每个模板的 script 都是带 shebang 的脚本文本", badScript.map((t) => t.id), []);
+	const badFields = templates.filter((t) => t.fields !== null && !Array.isArray(t.fields));
+	H.eq("fields 要么是数组、要么是 null", badFields.map((t) => t.id), []);
+	const agentNoReq = templates.filter((t) => t.category === "agent" && t.id !== "agent.custom" && !(t.requires || []).length);
+	H.eq("agent 类模板都声明了 requires（部署期预检）", agentNoReq.map((t) => t.id), []);
+}
+
+// ---------- 2/3. 建能力 + 内容寻址 ----------
+async function partCreateAndAddressing(base, session) {
+	console.log("--- 2/3. 建能力 → 产物 digest / 内容寻址 ---");
+	const created = await V.createCapability(
+		base,
 		session,
-	});
-	H.eq("GET /v1/artifacts?capabilityId= → 200", arts.status, 200);
-	const artRows = arts.json?.artifacts || [];
-	H.eq("产物列表里有刚建的那份 digest", artRows.map((a) => a.digest), [cap.digest]);
-	{
-		// spec 是 canonical JSON（base64 进 JSON）：它必须能独立解析成一份完整产物，
-		// 否则「拷到别的机器直接跑」这句话就不成立。
-		let parsed = null;
-		try {
-			parsed = JSON.parse(Buffer.from(artRows[0]?.spec || "", "base64").toString("utf8"));
-		} catch {
-			parsed = null;
-		}
-		H.eq("产物 spec 是可解析的 canonical JSON", parsed?.kind, "Capability");
-		H.eq("产物 spec 带 metadata.name/version", [parsed?.metadata?.name, parsed?.metadata?.version], ["dep.hello", cap.version]);
-		H.check(
-			"产物 spec 内联了入口文件内容（自包含）",
-			typeof parsed?.spec?.run?.files?.["run.sh"] === "string",
-			JSON.stringify(parsed?.spec?.run || {}).slice(0, 160),
-		);
-	}
-
-	// ================= 3. 内容寻址的幂等语义 =================
-	console.log("--- 3. 同一份内容重复建 → digest 稳定 ---");
-	{
-		// 3a. 同内容、同版本：append-only 的幂等返回（不该 409，也不该生成第二份产物）
-		const again = await H.req(server.base, "/v1/capabilities", {
-			session,
-			body: {
-				name: "dep.hello",
-				version: cap.version,
-				spec: {
-					outputs: ["go"],
-					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
-				},
-			},
-		});
-		H.eq("同内容同版本重复建 → 200（幂等，不是 409）", again.status, 200);
-		H.eq("同内容同版本重复建 → digest 相同", again.json?.digest, cap.digest);
-		// 3b. **省略版本**重复建 = 内容寻址的创建（Capability Spec v3 §10-B）：
-		// 正文一模一样就复用已有那一行（同一 id、同一 digest），不新开版本 ——
-		// 否则重试/双击会在 append-only 表里留下一串重复行，而能力不可删。
-		//
-		// **语义变了**（P1-a/P1-b1 的 digest 规则 + §10-B）：旧断言是「同内容 + **显式**
-		// 新版本 → digest 相同」，那在 v3 下是错的 —— `version` 现在**进 digest**
-		// （§3.2，试行过「只由内容决定」已回退：同内容的不同版本折叠成一行会让边里写的
-		// `to_ref = x@2` 悬空）。所以这里拆成两条新断言：省略版本 → 折叠；显式版本 → 不折叠。
-		const reup = await H.req(server.base, "/v1/capabilities", {
-			session,
-			body: {
-				name: "dep.hello",
-				spec: {
-					outputs: ["go"],
-					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
-				},
-			},
-		});
-		H.eq("同内容省略版本重复建 → 200", reup.status, 200);
-		H.eq("→ 复用同一行（id 相同，不新开版本）", reup.json?.capability?.id, cap.id);
-		H.eq("→ digest 相同（内容寻址）", reup.json?.digest, cap.digest);
-		const artRows2 = (
-			await H.req(server.base, `/v1/artifacts?capabilityId=${encodeURIComponent(cap.id)}`, {
-				session,
-			})
-		).json?.artifacts || [];
-		H.eq("重复建没有造出第二份产物（仍然只有 1 条 digest）", artRows2.length, 1);
-
-		// 3c. **显式**版本永不折叠（§10-B），而且 version 进 digest（§3.2）：
-		// 同一份正文给 v2 → 新的一行、**不同**的 digest。这条不能放宽：
-		// 边里写的是 `name@version`，折叠会让 `to_ref` 悬空。
-		const nextVer = cap.version + 1;
-		const reupV2 = await H.req(server.base, "/v1/capabilities", {
-			session,
-			body: {
-				name: "dep.hello",
-				version: nextVer,
-				spec: {
-					outputs: ["go"],
-					run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
-				},
-			},
-		});
-		H.check(
-			`同内容显式 v${nextVer} → 200（显式版本永不折叠）`,
-			reupV2.status === 200,
-			`${reupV2.status} ${String(reupV2.text).slice(0, 240)}`,
-		);
-		H.eq(`→ 能力行确实是 v${nextVer}`, reupV2.json?.capability?.version, nextVer);
-		H.check(
-			`→ version 进 digest：v${nextVer} 的 digest 与 v${cap.version} 不同（§3.2）`,
-			typeof reupV2.json?.digest === "string" && reupV2.json.digest !== cap.digest,
-			`${reupV2.json?.digest} vs ${cap.digest}`,
-		);
-	}
-
-	// ================= 4. 非法产物：400 且不留半个能力 =================
-	console.log("--- 4. 非法 run（入口无 shebang）---");
-	{
-		// 执行方式是**直接 exec**（不经 shell），所以入口没有 shebang 就根本跑不起来。
-		// 关键不只是 400，而是「能力不能被建出来」：append-only 的能力表里，
-		// 半建出来的定义永远改不掉、也永远跑不起来。
-		const bad = await H.req(server.base, "/v1/capabilities", {
-			session,
-			body: {
-				name: "dep.badshebang",
-				spec: { run: { entrypoint: "run.sh", files: { "run.sh": "echo no-shebang\n" } } },
-			},
-		});
-		H.eq("入口无 shebang → 400", bad.status, 400);
-		H.eq("非法产物 → code=invalid_artifact", bad.json?.code, "invalid_artifact");
-		H.check(
-			"错误信息点名 entrypoint_no_shebang（不是泛泛的 400）",
-			/entrypoint_no_shebang/.test(bad.json?.error || ""),
-			String(bad.json?.error).slice(0, 200),
-		);
-		const capsNow = await H.req(server.base, "/v1/capabilities", { session });
-		const names = (capsNow.json?.capabilities || []).map((c) => c.name);
-		H.check(
-			"非法产物的能力**没有被建出来**（append-only 里不留半成品）",
-			!names.includes("dep.badshebang"),
-			JSON.stringify(names),
-		);
-	}
-
-	// ================= 5. 部署到离线节点 =================
-	// 离线不是错误：行必须先建好（pending），等节点上线时补推。
-	// 如果这里返回 4xx 或干脆不建行，运维就会看到「部署失败」，而节点其实只是没开。
-	console.log("--- 5. 部署到离线节点 ---");
-	const offline = N.seedNodeRows(server.dbPath, nsId, "dep-offline-node", [], 1);
-	const online = N.seedNodeRows(server.dbPath, nsId, "dep-online-node", [], 1);
-	const depOff = await H.req(server.base, "/v1/deployments", {
-		session,
-		body: { capabilityId: cap.id, nodeIds: [offline.id] },
-	});
-	H.eq("部署到离线节点 → 200（不是错误）", depOff.status, 200);
-	const offItem = (depOff.json?.deployments || [])[0] || {};
-	H.eq("离线节点：pushed=false", offItem.pushed, false);
-	H.check(
-		"离线节点：error 说明原因（node_offline）",
-		/node_offline|offline/i.test(offItem.error || ""),
-		String(offItem.error),
+		NS,
+		V.capabilityBody({
+			name: "dep.hello",
+			displayName: "部署样例",
+			run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+		}),
 	);
-	H.check("离线节点：deployId 仍然发出来了（行已建）", !!offItem.deployId, JSON.stringify(offItem));
-	const offRow = await findDeployment(offItem.deployId);
-	H.eq("离线节点的行 state=pending（等上线补推）", offRow?.state, "pending");
-	H.eq("离线节点的行 digest 正确", offRow?.digest, cap.digest);
+	V.expectStatus("POST …/capabilities 带 run → 201", created, 201);
+	V.assertEnvelope("能力", created.json, "Capability");
+	const cap = created.json || {};
+	const digest = cap.status?.digest;
+	const version = cap.metadata?.version;
+	H.check("响应带内容寻址 digest（sha256:<64 hex>）", /^sha256:[0-9a-f]{64}$/.test(String(digest)), String(digest));
+	H.check("metadata.version 是正整数", Number.isInteger(version) && version >= 1, String(version));
+	H.eq("displayName 落库", cap.metadata?.displayName, "部署样例");
+	H.check(
+		"status.conditions 四类齐全（Implemented/NodesAvailable/DownstreamResolved/Deployed）",
+		["Implemented", "NodesAvailable", "DownstreamResolved", "Deployed"].every((t) =>
+			(cap.status?.conditions || []).some((c) => c.type === t),
+		),
+		JSON.stringify((cap.status?.conditions || []).map((c) => c.type)),
+	);
 
-	// ================= 6. 缺实现 / handler 形式（P1-b2 的两条新拒绝）=================
-	//
-	// **语义变了**（Capability Spec v3 §5）。旧断言是「建一个不带 run 的能力 → 200，
-	// 部署它 → 404 artifact_not_found」。P1-b2 之后这两步都不成立：
-	//   ① POST /capabilities 缺 run → 400 impl_missing（能力必须有实现，契约 R2）
-	//   ② handler 形式的能力（内置执行器）没有 artifacts 行，但它是**不可部署**，
-	//      不是「还没产物」—— 顺着产物解析走会给一句指错方向的文案，所以先判
-	//      handler → 400 builtin_not_deployable
-	// 两条都必须断言「一行部署都没建」。
-	console.log("--- 6. 缺实现 / handler 形式 ---");
+	// 默认读面**不含**脚本正文：一次列表几十条会把页面拖成几百 KB。
+	H.check(
+		"默认读面剥离脚本正文（spec.run.files 是空对象，不是缺键）",
+		cap.spec?.run?.files !== null &&
+			typeof cap.spec?.run?.files === "object" &&
+			Object.keys(cap.spec.run.files).length === 0,
+		JSON.stringify(cap.spec?.run || {}).slice(0, 200),
+	);
+	const withBody = await H.req(base, `${V.P.capability(NS, "dep.hello")}?includeBody=true`, { session });
+	V.expectStatus("?includeBody=true → 200", withBody, 200);
+	H.eq(
+		"?includeBody=true 时带回脚本正文（自包含产物）",
+		withBody.json?.spec?.run?.files?.["run.sh"],
+		OK_SCRIPT,
+	);
+
+	// 内容寻址：省略版本重复建 = 复用同一行（重试/双击不该在 append-only 表里长出一串行）
+	const reup = await V.createCapability(
+		base,
+		session,
+		NS,
+		V.capabilityBody({
+			name: "dep.hello",
+			displayName: "部署样例",
+			run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+		}),
+	);
+	V.expectStatus("同内容省略版本重复建 → 201", reup, 201);
+	H.eq("→ 复用同一行（uid 相同）", reup.json?.metadata?.uid, cap.metadata?.uid);
+	H.eq("→ digest 相同（内容寻址）", reup.json?.status?.digest, digest);
+
+	// 显式版本永不折叠，且 version 进 digest：同一份正文给 v2 是**新行 + 新 digest**。
+	const nextVersion = version + 1;
+	const reupV2 = await V.createCapability(
+		base,
+		session,
+		NS,
+		V.capabilityBody({
+			name: "dep.hello",
+			version: nextVersion,
+			displayName: "部署样例",
+			run: { entrypoint: "run.sh", files: { "run.sh": OK_SCRIPT } },
+		}),
+	);
+	V.expectStatus(`同内容显式 v${nextVersion} → 201`, reupV2, 201);
+	H.eq(`→ 新行是 v${nextVersion}`, reupV2.json?.metadata?.version, nextVersion);
+	H.check(
+		`→ version 进 digest：v${nextVersion} 与 v${version} 的 digest 不同`,
+		typeof reupV2.json?.status?.digest === "string" && reupV2.json.status.digest !== digest,
+		`${reupV2.json?.status?.digest} vs ${digest}`,
+	);
+
+	// 版本族：新版在前（降序），两条都在。
+	const versions = await H.req(base, V.P.capabilityVersions(NS, "dep.hello"), { session });
+	V.expectStatus("GET …/capabilities/{name}/versions → 200", versions, 200);
+	const vs = (V.items(versions) || []).map((it) => it.metadata?.version);
+	H.eq("版本族按整数降序", vs, [nextVersion, version]);
+	const one = await H.req(base, V.P.capabilityVersion(NS, "dep.hello", version), { session });
+	V.expectStatus("按版本取到那一行 → 200", one, 200);
+	H.eq("按版本取到的 digest 就是 v1 的", one.json?.status?.digest, digest);
+
+	// 部署走**裸名字**（= 该 name 的最新版）：这里把最新版的 version/digest 一起带出去，
+	// 免得部署断言拿 v1 的 digest 去配 v2 的帧（那会看起来像「帧没发」）。
+	const latestDigest = reupV2.json?.status?.digest || digest;
+	H.check("最新版的 digest 也是 sha256 形状", /^sha256:[0-9a-f]{64}$/.test(String(latestDigest)), String(latestDigest));
+	return { name: "dep.hello", version: nextVersion, digest: latestDigest, v1: { version, digest }, uid: cap.metadata?.uid };
+}
+
+// ---------- 4/5. 非法 / 缺实现 ----------
+async function partRejectedCreates(base, session) {
+	console.log("--- 4/5. 非法产物 / 缺实现 ---");
 	{
-		const plain = await H.req(server.base, "/v1/capabilities", {
-			session,
-			// P4：spec 里**没有 run** → 缺实现。
-			body: { name: "dep.noartifact", spec: { outputs: [] } },
+		const bad = await V.createCapability(base, session, NS, {
+			apiVersion: V.API_VERSION,
+			kind: "Capability",
+			metadata: { name: "dep.badshebang" },
+			spec: { params: { type: "object" }, next: [], run: { entrypoint: "run.sh", files: { "run.sh": "echo no-shebang\n" } } },
 		});
-		H.eq("建能力不带 run → 400", plain.status, 400);
-		H.eq("→ code=impl_missing（能力必须有实现）", plain.json?.code, "impl_missing");
-
-		// 内置中枢执行器能力（notify.phone / notify-phone）：有定义、无产物、不可部署。
-		const capsResp = await H.req(server.base, "/v1/capabilities", { session });
-		const hubCap = (capsResp.json?.capabilities || []).find((c) => c.spec?.handler === "notify-phone");
+		// v4 的写期拒绝用的是 artifact 的封闭短码（capability.md §6.1），reason 直接是它。
+		V.expectReason("入口无 shebang → 400 entrypoint_no_shebang", bad, 400, "entrypoint_no_shebang");
 		H.check(
-			"内置 handler 能力在列表里且带 spec.handler",
-			!!hubCap,
-			JSON.stringify((capsResp.json?.capabilities || []).map((c) => c.name)).slice(0, 200),
+			"文案点名入口文件（运维能直接定位是哪份脚本）",
+			/run\.sh/.test(String(bad.json?.message || "")) && /#!/.test(String(bad.json?.message || "")),
+			String(bad.json?.message).slice(0, 200),
 		);
-		const before = (await listDeployments()).length;
-		const dep = await H.req(server.base, "/v1/deployments", {
-			session,
-			body: { capabilityId: hubCap?.id, nodeIds: [offline.id] },
+		const list = await H.req(base, V.P.capabilities(NS), { session });
+		const names = V.itemNames(list) || [];
+		H.check("非法产物的能力**没有被建出来**（append-only 里不留半成品）", !names.includes("dep.badshebang"), JSON.stringify(names));
+	}
+	{
+		const plain = await V.createCapability(base, session, NS, {
+			apiVersion: V.API_VERSION,
+			kind: "Capability",
+			metadata: { name: "dep.noimpl" },
+			spec: { params: { type: "object" }, next: [] },
 		});
-		H.eq("部署 handler 形式的能力 → 400", dep.status, 400);
-		H.eq("→ code=builtin_not_deployable", dep.json?.code, "builtin_not_deployable");
-		H.eq("被拒的部署一行都没建", (await listDeployments()).length, before);
+		// 注意：这里是**实现与契约措辞的分叉**。capability.md §6.1 的表把「没有 run」
+		// 记成 impl_missing，但写路径先走 artifact.Normalize（run.files 至少一个文件），
+		// 所以线上答案是 files_invalid。产品代码不在本卡范围内（只改 scripts/e2e/**），
+		// 断言按**真实行为**钉死 400 + files_invalid，并已作为契约差异上报。
+		V.expectReason("缺 run（没有实现）→ 400 files_invalid（契约写 impl_missing，实现没有该分支）", plain, 400, "files_invalid");
+		H.check(
+			"缺实现错误指向 run.files（可定位）",
+			/run\.files/.test(String(plain.json?.message || "")),
+			String(plain.json?.message).slice(0, 200),
+		);
+	}
+}
+
+// ---------- 6/7. 部署动作：授权面 / 按名字 / 按 id / 负例 ----------
+//
+// v4 的部署目标是「**生效命名空间**里有这台节点」才允许写部署意图：生效 =
+// hello 申报 ∩ node_configs 授权。一台**从没连过**的节点两半都是空 → 403
+// namespace_unauthorized。这不是权限 bug，而是「给一台还没见过面的机器推能力」
+// 本来就不该成功（否则部署行会指向一台根本不存在的执行面）。
+async function partDeployAuthorization(base, session, cap, neverSeenNode) {
+	console.log("--- 6. 部署授权面：从没上线的节点 → 403 ---");
+	const r = await deployTo(base, session, cap.name, [neverSeenNode.name]);
+	V.expectReason("部署到从未上线的节点 → 403（生效 ns 为空）", r, 403, "Forbidden");
+	H.check(
+		"403 文案点名 namespace_unauthorized（可定位到「去授权/去上线」）",
+		/namespace_unauthorized/.test(String(r.json?.message || "")),
+		String(r.json?.message).slice(0, 240),
+	);
+	H.eq(
+		"被拒的部署一行都没建（不留下一条永远推不出去的意图）",
+		(await listDeployments(base, session)).length,
+		0,
+	);
+}
+
+// ---------- 7/8/9/10. 在线节点：真发帧 / 回执 / 内容通道 / 幂等 / 离线 ----------
+async function partOnlineNodes(base, session, cap, onlineNode, otherNode) {
+	console.log("--- 7. 在线节点：sent=true 且节点真收到帧 ---");
+	// 节点先对齐机器配置：这是「能不能执行」的前置事实（ws_protocol 里钉错误 hash 的边界）。
+	for (const n of [onlineNode, otherNode]) {
+		n.conn.send({ type: "config.applied", revision: n.welcome?.configRevision, hash: machineConfigHash() });
+	}
+	await sleep(150);
+
+	const dep = await deployTo(base, session, cap.name, [onlineNode.name]);
+	V.expectStatus("部署到在线节点（按名字）→ 200", dep, 200);
+	const outcome = (dep.json?.deployed || [])[0] || {};
+	H.eq("部署响应回带解析出的节点 id", outcome.node, onlineNode.id);
+	H.check("在线节点：sent=true（中枢真的把帧发出去了）", outcome.sent === true, JSON.stringify(outcome));
+	H.eq("响应里的版本就是钉住的那一版", dep.json?.version, cap.version);
+
+	// 节点侧证据：帧里的 refs 与部署响应/读模型是同一组事实。
+	const frame = await pollUntil("节点收到 capability.deploy 帧", async () =>
+		onlineNode.frames.find((f) => f.type === "capability.deploy" && f.digest === cap.digest),
+	);
+	H.eq("帧里的 ns 是 slug（不是 ns_ id）", frame.namespace, NS);
+	H.eq("帧里的能力名", frame.name, cap.name);
+	H.eq("帧里的版本", frame.version, cap.version);
+	H.eq("帧里的 digest", frame.digest, cap.digest);
+	H.check("帧带 requestId（回执按它配对，同一次重放保持同一个）", typeof frame.requestId === "string" && frame.requestId.length > 0, JSON.stringify(frame));
+
+	const row = await pollUntil("部署行出现在读模型里", async () =>
+		(await listDeployments(base, session, { nodeId: onlineNode.id })).find((d) => d.capability === cap.name) || null,
+	);
+	H.eq("刚推出去的部署行 state=pending（回执未到）", row.state, "pending");
+	H.eq("行钉住的 digest 就是产物 digest", row.digest, cap.digest);
+	H.check("行 id 与 requestId 是同一份事实", String(outcome.requestId || "").includes(row.id), `${outcome.requestId} vs ${row.id}`);
+
+	console.log("--- 8. 内容通道（节点令牌）：200 / 403 / 404 / 405 ---");
+	const content = await H.req(base, `/v1/node/capabilities/${cap.digest}`, { key: onlineNode.token });
+	V.expectStatus("已部署节点取产物 → 200", content, 200);
+	H.check(
+		"产物是 canonical JSON（含 metadata.name/version）",
+		content.json?.metadata?.name === cap.name && content.json?.metadata?.version === cap.version,
+		JSON.stringify(content.json?.metadata),
+	);
+	H.eq("产物内联脚本正文（自包含，节点重算 digest 用同一份字节）", content.json?.spec?.run?.files?.["run.sh"], OK_SCRIPT);
+	H.eq("产物禁止被缓存（no-store）", content.headers["cache-control"], "no-store");
+	H.eq("产物禁止嗅探（nosniff）", content.headers["x-content-type-options"], "nosniff");
+
+	// 另一台在线节点：内容在它的生效 ns 里可见，但**没有**部署给它 → 403。
+	// 为什么不是 404：内容确实存在，缺的是给这台机器的部署意图（运维据此去点部署）。
+	const other = await H.req(base, `/v1/node/capabilities/${cap.digest}`, { key: otherNode.token });
+	V.expectReason("内容可见但未部署到这台节点 → 403", other, 403, "Forbidden");
+	H.eq("403 文案指向「未部署」而不是「不存在」", other.json?.message, "capability is not deployed to this node");
+
+	V.expectReason(
+		"未知 digest → 404",
+		await H.req(base, `/v1/node/capabilities/sha256:${"0".repeat(64)}`, { key: onlineNode.token }),
+		404,
+		"NotFound",
+	);
+	{
+		const r = await H.req(base, `/v1/node/capabilities/${cap.digest}`, { key: onlineNode.token, method: "POST", body: {} });
+		V.expectReason("内容通道非 GET → 405（不是 404：路径存在、方法不对）", r, 405, "MethodNotAllowed");
+	}
+	V.expectReason(
+		"会话 Cookie 取产物 → 401（只认节点令牌）",
+		await H.req(base, `/v1/node/capabilities/${cap.digest}`, { session }),
+		401,
+		"Unauthorized",
+	);
+
+	console.log("--- 9. 回执 applied → 行收敛 / status 派生一致 ---");
+	onlineNode.conn.send({
+		type: "capability.deployed",
+		requestId: frame.requestId,
+		namespace: NS,
+		name: cap.name,
+		version: cap.version,
+		digest: cap.digest,
+		status: "applied",
+	});
+	const applied = await pollUntil("部署行变成 applied（节点回报 capability.deployed）", async () => {
+		const rows = await listDeployments(base, session, { nodeId: onlineNode.id });
+		const hit = rows.find((d) => d.capability === cap.name);
+		return hit && hit.state === "applied" ? hit : null;
+	});
+	H.eq("applied 行的 digest 就是产物 digest", applied.digest, cap.digest);
+
+	const capDoc = await H.req(base, V.P.capability(NS, cap.name), { session });
+	const deployedCond = (capDoc.json?.status?.conditions || []).find((c) => c.type === "Deployed");
+	H.eq("能力 status.Deployed = True（同一份部署事实的另一个投影）", deployedCond?.status, "True");
+	H.eq("Deployed 的 reason 是 Valid", deployedCond?.reason, "Valid");
+	H.check(
+		"能力 status.nodes[] 列出这台节点（deployed）",
+		(capDoc.json?.status?.nodes || []).some((n) => n.name === onlineNode.name && n.state === "deployed"),
+		JSON.stringify(capDoc.json?.status?.nodes),
+	);
+
+	console.log("--- 10. 幂等 / 失败回执 / 离线不再伪造发送 ---");
+	// 按 **id** 再部署一次：同一 (节点, 能力) 只有一条期望，且会重推帧（#348 支持 id）。
+	const byId = await deployTo(base, session, cap.name, [onlineNode.id]);
+	V.expectStatus("对同一 (节点, 能力) 按 id 重复部署 → 200（幂等）", byId, 200);
+	H.eq("按 id 解析出的还是这台节点", (byId.json?.deployed || [])[0]?.node, onlineNode.id);
+	H.eq(
+		"重复部署没有建出第二行（一个能力对一台节点只有一条期望）",
+		(await listDeployments(base, session, { nodeId: onlineNode.id })).filter((d) => d.capability === cap.name).length,
+		1,
+	);
+
+	// 失败回执必须让行**离开** applied：把「取不到产物」伪装成成功是这一层最坏的错。
+	const otherDep = await deployTo(base, session, cap.name, [otherNode.name]);
+	V.expectStatus("部署到第二台节点 → 200", otherDep, 200);
+	const otherFrame = await pollUntil("第二台节点收到帧", async () =>
+		otherNode.frames.find((f) => f.type === "capability.deploy" && f.digest === cap.digest),
+	);
+	otherNode.conn.send({
+		type: "capability.deployed",
+		requestId: otherFrame.requestId,
+		namespace: NS,
+		name: cap.name,
+		version: cap.version,
+		digest: cap.digest,
+		status: "failed",
+		error: "e2e: simulated fetch failure",
+	});
+	const failed = await pollUntil("失败回执让行落到 failed", async () => {
+		const rows = await listDeployments(base, session, { nodeId: otherNode.id });
+		const hit = rows.find((d) => d.capability === cap.name);
+		return hit && hit.state === "failed" ? hit : null;
+	});
+	H.eq("失败回执 → 行 state=failed（不伪装成 applied）", failed.state, "failed");
+
+	// 节点断连 = 会话消失。中枢必须承认「发不出去」：sent=false，且**不改写**最后一次
+	// 可信回报（离线不等于「它没持有过这份产物」）。
+	onlineNode.conn.close();
+	await pollUntil(
+		"中枢观察到节点离线（session 表里没了）",
+		async () => {
+			const r = await deployTo(base, session, cap.name, [onlineNode.name]);
+			const o = (r.json?.deployed || [])[0];
+			return o && o.sent === false ? o : null;
+		},
+		{ timeoutMs: 8000 },
+	).then(
+		(o) => H.check("节点离线后部署结论 sent=false（离线排队，不是失败）", o?.sent === false, JSON.stringify(o)),
+		() => H.bad("节点离线后部署结论 sent=false（离线排队，不是失败）", "8s 内没有变成 sent=false"),
+	);
+	const rowAfterOffline = (await listDeployments(base, session, { nodeId: onlineNode.id })).find((d) => d.capability === cap.name);
+	H.eq("离线不抹掉最后一次可信回报（state 仍是 applied）", rowAfterOffline?.state, "applied");
+
+	console.log("--- 11. 部署事实读模型：只有读 ---");
+	for (const method of ["POST", "DELETE", "PUT"]) {
+		const r = await H.req(base, V.P.deployments(NS), { session, method, body: method === "DELETE" ? undefined : {} });
+		V.expectReason(`${method} …/deployments → 405（写入口随 v3 退役）`, r, 405, "MethodNotAllowed");
+	}
+}
+
+// ---------- 主流程 ----------
+async function main() {
+	H.startTimer();
+	console.log("=== SUITE: deploy（v4 部署模型）===");
+	const server = await H.startServer({ suiteName: SUITE, rpId: "localhost" });
+	let nodes = [];
+	try {
+		const seeded = H.seed(server.dbPath, "deploy");
+		const session = seeded.session;
+		const nsId = await H.defaultNamespaceId(server.base, session);
+		H.check("拿到默认命名空间 id", !!nsId, String(nsId));
+		if (!nsId) throw new Error("解析不到默认命名空间 id（GET /v1/namespaces）");
+
+
+		await partTemplates(server.base, session);
+		const cap = await partCreateAndAddressing(server.base, session);
+		await partRejectedCreates(server.base, session);
+
+		// 从没上线的节点（只登记）：部署到它必须被授权面拒掉。
+		const neverSeen = await H.req(server.base, "/v1/nodes", {
+			session,
+			body: V.envelope("Node", { name: "dep-never-seen" }, { namespaces: [NS] }),
+		});
+		V.expectStatus("登记（但从不连接的）节点", neverSeen, 201);
+		await partDeployAuthorization(server.base, session, cap, {
+			name: "dep-never-seen",
+			id: neverSeen.json?.metadata?.uid,
+		});
+
+		// 两台在线节点：一台收部署（200 + 回执），一台做「内容可见但未部署」（403）
+		// 与「失败回执」的对照组。
+		const online = await mkMockNode(server.base, session, "dep-online-node");
+		const other = await mkMockNode(server.base, session, "dep-other-node");
+		nodes = [online, other];
+		await partOnlineNodes(server.base, session, cap, online, other);
+	} finally {
+		for (const n of nodes) n.conn.close();
+		server.stop();
 	}
 
-	// ================= 7. 按 nodeId 过滤 =================
-	console.log("--- 7. GET /v1/deployments?nodeId= ---");
-	{
-		const all = await listDeployments();
-		const filtered = await listDeployments({ nodeId: offline.id });
-		H.check("部署列表非空（前置）", all.length >= 1, JSON.stringify(all.map((d) => d.id)));
-		H.eq("按 nodeId 过滤只留下这台机器的行", filtered.every((d) => d.nodeId === offline.id), true);
-		H.eq("按 nodeId 过滤条数 = 该机器行数", filtered.length, all.filter((d) => d.nodeId === offline.id).length);
-		H.check(
-			"过滤不会把别的机器的行带出来（另一台此刻 0 行）",
-			(await listDeployments({ nodeId: online.id })).length === 0,
-			JSON.stringify((await listDeployments({ nodeId: online.id })).map((d) => d.id)),
-		);
-	}
-
-	// ================= 8. 撤销部署 =================
-	console.log("--- 8. DELETE /v1/deployments?id= ---");
-	{
-		const del = await H.req(server.base, `/v1/deployments?id=${encodeURIComponent(offItem.deployId)}`, {
-			session,
-			method: "DELETE",
-		});
-		H.eq("DELETE /v1/deployments?id= → 200", del.status, 200);
-		H.eq("响应回被删的 id", del.json?.deleted, offItem.deployId);
-		H.eq("行真的消失了", await findDeployment(offItem.deployId), null);
-	}
-
-	// ================= 9. 中枢覆盖：不一致就重新下发 =================
-	//
-	// 这条是整个模型的收敛方向：**中枢是部署的唯一写者**。
-	//   · 节点报的 digest == 中枢期望 → applied（绿勾）
-	//   · 节点报的 digest != 中枢期望 → pending + 立即重推（覆盖），不需要人去点
-	// 以前这里标的是 local（“本地变体、永不覆盖”），但实际上部署本来就是中枢下发的，
-	// 节点上那份不一致只意味着“它还没收到”—— 标黄等人点属于把正常的收敛当成了异常。
-	// 判定发生在 hello 对账里，重推发生在握手结束之后（同一条连接上就能看到 deploy 帧），
-	// 所以这里用真 WS 握手模拟节点的两次 hello。
-	console.log("--- 9. 产物不一致 → 中枢重新下发（覆盖）---");
-	{
-		const node = await N.bringUpNode(server.base, server.dbPath, nsId, "dep-var-node", [], 1);
-		H.check(
-			"节点上线（hello → welcome）",
-			node.frames.some((f) => f.type === "welcome"),
-			JSON.stringify(node.frames).slice(0, 200),
-		);
-		const dep = await H.req(server.base, "/v1/deployments", {
-			session,
-			body: { capabilityId: cap.id, nodeIds: [node.id] },
-		});
-		const item = (dep.json?.deployments || [])[0] || {};
-		H.eq("在线节点：pushed=true", item.pushed, true);
-
-		// ① 节点如实上报「我缓存的就是这份」→ applied
-		node.conn.send(N.nodeHello(node.id, [{ name: cap.name, version: cap.version, digest: cap.digest }], 1));
-		const appliedRow = await waitDeployment(item.deployId, (r) => r.state === "applied");
-		H.eq("hello 报的 digest 与期望一致 → state=applied", appliedRow?.state, "applied");
-		H.eq("applied 的 reason 为空（正常态不留噪音）", appliedRow?.reason, "");
-
-		// ② 节点报一个**不同**的 digest（旧产物 / 本地被改过）→ pending，并立刻收到期望的那份
-		const staleDigest = "sha256:" + "b".repeat(64);
-		node.conn.send(
-			N.nodeHello(node.id, [{ name: cap.name, version: cap.version, digest: staleDigest }], 1),
-		);
-		const staleRow = await waitDeployment(
-			item.deployId,
-			(r) => (r.reason || "").includes(staleDigest),
-		);
-		H.eq("hello 报的 digest 不一致 → state=pending（要重新下发）", staleRow?.state, "pending");
-		H.check(
-			"pending 的 reason 同时包含两个 digest（节点上的 + 中枢期望的）",
-			(staleRow?.reason || "").includes(staleDigest) && (staleRow?.reason || "").includes(cap.digest),
-			String(staleRow?.reason),
-		);
-		// 中枢覆盖：握手一结束就把期望的那份推下来（不需要有人再点一次部署）
-		const resend = await N.waitForFrame(
-			node.frames,
-			(f) => f.type === "deploy" && f.deploy_id === item.deployId,
-		);
-		H.check("握手后中枢把期望的那份产物推了下来", !!resend, JSON.stringify(node.frames).slice(0, 300));
-		H.eq("推下来的 action 是 apply", resend?.action, "apply");
-		H.eq(
-			"推下来的产物就是中枢期望的那份",
-			resend?.artifact?.metadata?.name,
-			cap.name,
-		);
-		// 重复部署仍然幂等：不会因为“重推”变成两行
-		const dep2 = await H.req(server.base, "/v1/deployments", {
-			session,
-			body: { capabilityId: cap.id, nodeIds: [node.id] },
-		});
-		H.eq("对同一 (节点, 产物) 重复部署 → 200（幂等：仍是一行）", dep2.status, 200);
-		H.eq(
-			"重复部署没有建出第二行（一个能力只有一条期望）",
-			(await listDeployments({ nodeId: node.id })).length,
-			1,
-		);
-		node.conn.close();
-	}
-
-	server.stop();
-	// 定时器兜底：套件本体已经跑完，exitCode 让进程自然退出（避免截断 stdout）。
-	const allPassed = H.summary(SUITE);
-	process.exitCode = allPassed ? 0 : 1;
+	const passed = H.summary(SUITE);
+	process.exitCode = passed ? 0 : 1;
 	setTimeout(() => process.exit(process.exitCode), 3000).unref();
 }
 
 main().catch((e) => {
 	console.error(e);
-	H.bad("套件异常终止", String(e).slice(0, 300));
-	if (server) server.stop();
+	H.bad("套件异常终止", String(e && e.stack ? e.stack : e).slice(0, 800));
+	H.summary(SUITE);
 	process.exit(1);
 });

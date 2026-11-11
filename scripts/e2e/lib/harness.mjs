@@ -604,6 +604,9 @@ export const SUITE_PORTS = {
 	password_login: 7250,
 	// node_v4：真 anode 二进制 + 真后端（HTTP 类，无 Chrome）。接在 password_login 段之后。
 	node_v4: 7300,
+	// live_agent：真 anode CLI/生命周期（HTTP + 子进程，无 Chrome）。固定端口段，
+	// 别再退回随机段（随机段会与其他 worktree 的套件撞端口，表现为随机 401/0通过0失败）。
+	live_agent: 7350,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
