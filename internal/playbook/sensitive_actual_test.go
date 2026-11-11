@@ -8,7 +8,7 @@ package playbook
 //
 // 本文件钉住三件事：
 //  1. 同名多 target + 库顺序相反 → 两侧每个 target 都拿到**该能力名下全部敏感 key 的并集**；
-//  2. 能力名对不上（旧包已删）→ 退到该源全部敏感集的并集（保守兜底）；
+//  2. 能力名对不上（旧包已删 / 出口改名）→ 该 actual target **整组打码**（fail-closed）；
 //  3. 非敏感引用（`{{values.project}}`）端到端保持明文，不被并集打码误伤。
 
 import (
@@ -162,7 +162,10 @@ func TestPlanUnappliedActualUnionByCapabilityName(t *testing.T) {
 	}
 }
 
-// TestPlanUnappliedActualNameMismatchFallsBackToUnion 钉住「能力名对不上 → 全局并集」。
+// TestPlanUnappliedActualNameMismatchFallsBackToUnion 钉住「能力名对不上」这一档。
+//
+// 函数名保留为历史场景名（`-run` 与 issue 记录要对得上），打码口径已随 review major 修订：
+// 不再是「退到该源敏感集并集」（并集为空时会整侧零打码 → fail-open），而是**整组打码**。
 func TestPlanUnappliedActualNameMismatchFallsBackToUnion(t *testing.T) {
 	pkg := newBundle().
 		setValues(actualUnionValuesDoc).
@@ -187,13 +190,146 @@ func TestPlanUnappliedActualNameMismatchFallsBackToUnion(t *testing.T) {
 	if !ok || len(actual) != 1 {
 		t.Fatalf("actual targets = %#v", plan.Unapplied[0].Actual)
 	}
-	for _, key := range []string{"token", "secret"} {
+	if len(actual[0].Params) == 0 {
+		t.Fatalf("actual.params 为空，断言会变成空断言: %#v", actual[0])
+	}
+	// 名字对不上 → 没有 key 名可继承 → 整组打码（含非敏感 project，多打码方向安全）。
+	for key := range actual[0].Params {
 		if got := actual[0].Params[key]; got != MaskedValue {
-			t.Fatalf("名字对不上时 actual.params[%s] 应走并集兜底打码: %#v", key, got)
+			t.Fatalf("名字对不上时 actual.params[%s] 必须整组打码: %#v", key, got)
 		}
 	}
-	if got := actual[0].Params["project"]; got != "a" {
-		t.Fatalf("并集兜底不得把非敏感 project 打码: %#v", got)
+	// 回执全文不得含任何一轮的 writeOnly 明文。
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_actual_mismatch", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化失败: %v", err)
+	}
+	for _, secret := range []string{
+		actualUnionOldTok1, actualUnionOldTok2, actualUnionNewTok1, actualUnionNewTok2,
+	} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("回执里泄露了明文 %q: %s", secret, raw)
+		}
+	}
+	// declared 侧仍有同名能力可对齐：非敏感引用照旧明文（证明不是整侧零渲染）。
+	declared, ok := plan.Unapplied[0].Declared.([]sourcespec.Target)
+	if !ok || len(declared) != 2 {
+		t.Fatalf("declared targets = %#v", plan.Unapplied[0].Declared)
+	}
+	for i := range declared {
+		if got := declared[i].Params["project"]; got != "b" {
+			t.Fatalf("declared[%d].params[project] 被过度打码: %#v", i, got)
+		}
+	}
+}
+
+// TestPlanUnappliedActualMasksWholeGroupWhenDeclaredRenamesExport 是 review major（fail-open）的
+// 具名回归：出口改名后 actual 侧**整组**打码，旧明文零出现。
+//
+// 复现路径（review 实测）：第一轮出口 `a-review{token: '{{values.tok}}'}`（tok 是 writeOnly），
+// 值已明文落库；第二轮把出口换成 `a-fixer`，且新源里已经没有**任何** writeOnly 引用（该源敏感集
+// 并集为空）。修复前 `inheritSensitivity` 在「名字对不上」时回退到 union（= 空集）→ `maskTargetAt`
+// 因 `!allParams && len(keys)==0` 原样返回 ⇒ actual 整侧零打码，旧明文随回执落库，还能被
+// GET/history 读回。
+//
+// 修复口径：没有任何 declared 同名能力可对齐 → 该 actual target 整组 params 打码
+// （`targetSensitivity{allParams:true}`），与 `len(declared)==0` 的兜底同口径。
+//
+// 多打码方向安全：actual 旧行的非敏感字面量（`note`）会被一并抹掉——库里没有旧 values 的
+// provenance，宁可把这一组整个打码，也不允许漏一条 writeOnly 明文。
+func TestPlanUnappliedActualMasksWholeGroupWhenDeclaredRenamesExport(t *testing.T) {
+	const valuesDoc = `
+    type: object
+    additionalProperties: false
+    properties:
+      project: { type: string, default: a }
+      tok: { type: string, writeOnly: true }
+`
+	// 第二轮：出口改名 a-fixer，params 只剩非敏感引用 → 该源敏感集并集为空。
+	const renamedSourceDoc = `
+metadata:
+  name: a-on-push
+spec:
+  kind: webhook
+  enabled: true
+  config: {}
+  targets:
+    - capability: a-fixer
+      params:
+        project: '{{values.project}}'
+`
+	const fixerCapDoc = `
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: a-fixer
+spec:
+  next: []
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: "#!/usr/bin/env bash\ntrue\n"
+`
+	const (
+		renamedOldToken = "actual-renamed-old-token"
+		renamedOldNote  = "actual-renamed-old-note"
+		renamedNewToken = "actual-renamed-new-token"
+	)
+	pkg := newBundle().
+		setValues(valuesDoc).
+		cap("capabilities/fixer.yaml", fixerCapDoc).
+		source("sources/on-push.yaml", renamedSourceDoc).
+		pkg(t)
+	// 库里旧行 = 第一轮渲染结果：a-review 的 token 明文已经落库。
+	ex := newFakeExisting().withSource("a-on-push", sourcespec.KindWebhook, `{}`,
+		sourcespec.Target{Capability: "a-review", Params: map[string]any{
+			"token": renamedOldToken, "note": renamedOldNote,
+		}},
+	)
+	plan, err := Plan(pkg, map[string]any{"tok": renamedNewToken, "project": "b"}, ex)
+	if err != nil {
+		t.Fatalf("计划失败: %v", err)
+	}
+	if len(plan.Unapplied) != 1 || plan.Unapplied[0].Reason != ReasonTargetsUnapplied {
+		t.Fatalf("应有且只有 1 条 targets unapplied: %+v", plan.Unapplied)
+	}
+	declared, ok := plan.Unapplied[0].Declared.([]sourcespec.Target)
+	if !ok || len(declared) != 1 || declared[0].Capability != "a-fixer" {
+		t.Fatalf("declared targets = %#v", plan.Unapplied[0].Declared)
+	}
+	actual, ok := plan.Unapplied[0].Actual.([]sourcespec.Target)
+	if !ok || len(actual) != 1 || actual[0].Capability != "a-review" {
+		t.Fatalf("actual targets = %#v", plan.Unapplied[0].Actual)
+	}
+	// declared 侧没有 writeOnly 引用：保持新值明文（不能把两侧一起抹掉）。
+	if got := declared[0].Params["project"]; got != "b" {
+		t.Fatalf("declared.params[project] 被过度打码: %#v", got)
+	}
+	// actual 侧：没有任何同名能力可对齐 → 整组打码（含非敏感 note，多打码方向安全）。
+	if len(actual[0].Params) == 0 {
+		t.Fatalf("actual.params 为空，断言会变成空断言: %#v", actual[0])
+	}
+	for key := range actual[0].Params {
+		if got := actual[0].Params[key]; got != MaskedValue {
+			t.Fatalf("出口改名后 actual.params[%s] 必须整组打码（修复前是明文 %#v）: %#v",
+				key, got, actual[0].Params)
+		}
+	}
+	// 回执全文：旧明文（token / note）与新 writeOnly 明文都不得出现。
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_actual_renamed", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化失败: %v", err)
+	}
+	for _, secret := range []string{renamedOldToken, renamedOldNote, renamedNewToken} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("回执里泄露了明文 %q: %s", secret, raw)
+		}
+	}
+	// 非敏感引用仍可读（declared 侧的新值），证明不是整侧零渲染。
+	if !strings.Contains(string(raw), `"project":"b"`) {
+		t.Fatalf("declared 侧非敏感引用不该被打码: %s", raw)
 	}
 }
 

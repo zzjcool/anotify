@@ -25,14 +25,17 @@ import (
 // 打码只作用于回执的展示副本：
 //   - `declared` 侧来自包体（精确到 target 下标 + param key；raw 形状推不出 key 时整组打码）；
 //   - `actual` 侧（库里旧行）没有旧 values 的 provenance，按**同名能力的并集**继承 declared
-//     侧敏感性，名字对不上就退到该源全部敏感集的并集（只允许**多**打码）；
+//     侧敏感性；**没有任何同名能力可对齐**（出口改名 / 旧包删了该能力）就整组打码
+//     ——fail-closed，方向只允许**多**打码；
 //   - `PlannedSource.Spec` / `snap.Targets` **一律不原地改**：新建源落库的执行事实读的是
 //     它们，必须继续带明文。
 //
-// 已知盲区（D3 固有，需契约才能动）：actual 侧只认识包里**当前**的 param key 名。若两轮之间
-// 把一个由 writeOnly values 派生的 param **改名**，旧 key 不在任何敏感集里，旧值仍会以明文
-// 出现在 `actual`。要关死它只能把“该 target 整组打码”，那会连带隐去非敏感旧值（展示收益
-// 归零），故本轮如实记为残余限制。
+// 残余盲区（D3 固有，需契约才能动）：actual 侧只认识包里**当前**的 param key 名。若两轮之间
+// 把一个由 writeOnly values 派生的 param **改名**、而该 target 的**能力名没变**，旧 key 不在
+// 任何敏感集里，旧值仍会以明文出现在 `actual`。要关死它只能把“同名能力也一律整组打码”，
+// 那会连带隐去所有复用源的非敏感旧值（展示收益归零，反向红线见
+// `TestPlanUnappliedKeepsPlainTemplatedTargets`），故本轮如实记为残余限制。
+// 能力名对不上的一侧已改为整组打码（见 `inheritSensitivity`），不再是盲区。
 
 // targetSensitivity 是一个 target 上「哪些 param 值由 writeOnly values 派生」的推导结果。
 //
@@ -335,19 +338,12 @@ func maskTargets(targets []sourcespec.Target, sets []targetSensitivity) []source
 
 // maskActualTargets 是 actual 侧打码（库里旧行没有旧 values 的 provenance，只能继承）。
 //
-// 对齐算法见 `inheritSensitivity`（同名能力的并集）；唯一兜底方向是“多打码”。
+// 对齐算法见 `inheritSensitivity`（同名能力的并集）；兜底方向只有“多打码”：没有任何同名能力
+// 可对齐（含包里把出口全删了、`len(declared)==0`）→ 该 target 整组打码。
 func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensitivity) []sourcespec.Target {
-	union := unionSensitiveKeys(sets)
-	// 声明侧一个 target 都没有（包里把出口全删了）→ 没有任何 key 名可继承，而旧行里可能
-	// 正是上一版由 writeOnly values 派生的值。按「只许多打码」整组打码，别让整侧零打码。
-	failClosed := len(declared) == 0
 	out := make([]sourcespec.Target, len(actual))
 	for i, t := range actual {
-		set := inheritSensitivity(declared, sets, t.Capability, union)
-		if failClosed {
-			set.allParams = true
-		}
-		out[i] = maskTargetAt(t, set)
+		out[i] = maskTargetAt(t, inheritSensitivity(declared, sets, t.Capability))
 	}
 	return out
 }
@@ -360,9 +356,16 @@ func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensit
 // （实测：两条同名 `a-review`，一条 `token`、一条 `secret`，库顺序相反 → 两侧明文进回执）。
 // 取**同名并集**与顺序无关，且方向只会多打码。
 //
-// 名字对不上（旧包已删该能力）→ 退到该源全部敏感集的并集（保守兜底）。
+// 名字对不上（出口改名 / 旧包已删该能力 / 包里一个 target 都没有）→ 没有任何 key 名可继承，
+// 而库里旧行可能正是上一版由 writeOnly values 派生的值。此时**整组打码**（`allParams`），
+// 与「`len(declared)==0`」同口径：绝不回退到“空集 = 零打码”。
+//
+// 历史口径是「退到该源全部敏感集的并集」，一旦新包里该源已无任何 writeOnly 引用（并集为空），
+// `maskTargetAt` 因 `!allParams && len(keys)==0` 原样返回 ⇒ actual 整侧零打码（review major，
+// 明文落库并可被 GET/history 读回）。回归见
+// `TestPlanUnappliedActualMasksWholeGroupWhenDeclaredRenamesExport`。
 func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
-	capability string, union targetSensitivity) targetSensitivity {
+	capability string) targetSensitivity {
 	name := refName(strings.TrimSpace(capability))
 	out := targetSensitivity{keys: map[string]bool{}}
 	matched := false
@@ -374,7 +377,7 @@ func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
 		mergeSensitivity(&out, sets[j])
 	}
 	if !matched {
-		return union
+		return targetSensitivity{allParams: true}
 	}
 	return out
 }
