@@ -6,21 +6,33 @@
  *   2. 每套件 spawn node suites/<name>.mjs，传 E2E_RESULTS_DIR 环境变量
  *   3. per-suite 超时 120s（Node 原生 setTimeout+kill，替代 macOS 缺失的 timeout）
  *   4. 读各套件 JSON 结果聚合汇总报告
+ *   5. 按 #338 裁决给四个具名 FE 套件注入 E2E_MOCK_ONLY=1，并把每套件的
+ *      mode/authority 打进汇总 + 落盘 `_authority-manifest.json`
  *
  * 用法：
  *   node scripts/e2e/parallel_runner.mjs              # 全量并行
  *   node scripts/e2e/parallel_runner.mjs --serial     # 全量串行
  *   node scripts/e2e/parallel_runner.mjs auth_flow     # 只跑一个套件
  *   node scripts/e2e/parallel_runner.mjs --serial auth_flow  # 串行跑一个
+ *   node scripts/e2e/parallel_runner.mjs --authority-plan   # 只打印每套件的 mode/authority（不跑）
  *
  * 环境变量：
  *   E2E_CONCURRENCY  Chrome 类套件并发上限（默认 4）
  *   E2E_RESULTS_DIR  JSON 结果输出目录（默认 .e2e-bin/results）
  *   ANOTIFY_BIN / DEVSEED_BIN / ANODE_BIN  二进制路径（由 run_all.sh 设置）
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
+ *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：本执行器只对 EXPLICIT_MOCK_SUITES
+ *                    里的四个具名套件自注入它，其余套件（含 frontend）一律剥掉
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import {
+	mkdirSync,
+	rmSync,
+	readFileSync,
+	readdirSync,
+	existsSync,
+	writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,8 +82,9 @@ const CHROME_SUITES = [
 	"recovery_next",
 	// 批次 4B：events 页游标分页 + 资源分层（playwright）
 	"events_paging",
-	// real_backend（#201）已具名退役：它驱动的是已删除的 cmd/agent v3 CLI；
-	// 真节点链由 node_v4（#336）覆盖，真前端后端体检归 #335 real 模式。
+	// real_backend（#201）已具名退役，且文件已删（#338）：它驱动的是已删除的
+	// cmd/agent v3 CLI（emit/run 两个子命令都不在了）；真节点链由 node_v4（#336）覆盖，
+	// 真前端体检由 frontend（real authority）覆盖。分工与退役理由：docs/v4/e2e-inventory.md
 	// 开页抖动回归：语言条 / 命名空间槽位 / 折叠态 / 预排版
 	// （实测几何去重，专抓「功能全对但首帧后元素逐帧滑动」这类回归）
 	"ui_shift",
@@ -82,6 +95,73 @@ const CHROME_SUITES = [
 	"password_login",
 ];
 const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
+
+// ---------- 验收 authority（#338 冻结裁决，2026-11-11 13:5x） ----------
+//
+// 五个 FE 套件的 authority 是**裁决结果**，不是「跑不动就降级」的产物。原文：
+// `.pi-orchestrator/v4/issues/dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。
+//
+//   frontend                                              → real（真 server/anode/devseed）
+//   i18n / i18n_coverage / ui_shift / ux_regression_19_23 → explicit-mock（E2E_MOCK_ONLY=1）
+//
+// 为什么这四个是显式 mock：它们验收的是 locale / DOM 锚点 / 几何 / 交互契约，不含真实 API 语义；
+// 它们的 real 模式缺 session/seed bootstrap（症状是 `guest index redirected to password login`
+// 这类系统性失败），补那套底座属新底座工作，不在本轮范围。真实 API/节点覆盖由
+// frontend(real) + node_v4 + 13 个 HTTP 套件 + 7 个迁移后的 legacy Chrome 套件承担
+// （分工表：docs/v4/e2e-inventory.md）。
+//
+// 不静默 fallback 的三条硬纪律：
+//   1. 只有下面这份**具名**清单里的套件被注入 E2E_MOCK_ONLY=1；其余套件的 env 一个都不动。
+//   2. frontend 是 real authority：父进程环境里若带了 E2E_MOCK_ONLY，会从它的子进程 env 里
+//      **剥掉**并告警 —— real 静默降级成 mock 会让门禁对着 mock 报「前端 real 绿」。
+//   3. 清单内套件若从父环境继承了别的值（如 `E2E_MOCK_ONLY=0`），按裁决覆盖成 1 并告警，
+//      不靠继承猜 authority。
+const EXPLICIT_MOCK_SUITES = new Set([
+	"i18n",
+	"i18n_coverage",
+	"ui_shift",
+	"ux_regression_19_23",
+]);
+// real authority 里**明确点名**的套件（必须有 mock 剥除 + 告警，不允许被清单泛化吃掉）。
+const REAL_AUTHORITY_SUITES = new Set(["frontend"]);
+const MOCK_ENV = "E2E_MOCK_ONLY";
+// 汇总里落盘的 authority 清单（证据入口；与 results/<suite>.json 同级，不覆盖任何套件结果）。
+const AUTHORITY_MANIFEST = "_authority-manifest.json";
+
+// 套件 → 验收 authority。未列入 mock 清单的一律 real（它们跑真 server/真二进制）。
+function suiteAuthority(name) {
+	return EXPLICIT_MOCK_SUITES.has(name) ? "explicit-mock" : "real";
+}
+
+// 清单自检：写进常量就是契约。frontend 一旦混进 mock 清单，门禁会对着 mock 判
+// 「前端 real 通过」——比红更危险，所以这里直接 exit 2，不给「先跑跑看」。
+function assertAuthorityContract() {
+	const problems = [];
+	if (EXPLICIT_MOCK_SUITES.has("frontend")) {
+		problems.push("frontend 绝不能进 EXPLICIT_MOCK_SUITES（它是 real authority）");
+	}
+	for (const s of EXPLICIT_MOCK_SUITES) {
+		if (REAL_AUTHORITY_SUITES.has(s)) {
+			problems.push(`${s} 同时被判为 real 与 explicit-mock`);
+		}
+		if (!ALL_SUITES.includes(s)) {
+			problems.push(`${s} 不是已注册套件（改名/退役后必须同步本清单）`);
+		}
+	}
+	for (const s of REAL_AUTHORITY_SUITES) {
+		if (!ALL_SUITES.includes(s)) {
+			problems.push(`${s} 不是已注册套件（改名/退役后必须同步本清单）`);
+		}
+	}
+	if (problems.length > 0) {
+		console.error("❌ 验收 authority 契约被破坏：");
+		for (const p of problems) console.error(`   - ${p}`);
+		console.error(
+			"   裁决：.pi-orchestrator/v4/issues/dispatch/TRACKER.md「2026-11-11 13:5x」",
+		);
+		process.exit(2);
+	}
+}
 
 const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
 // frontend 是唯一一个要跑 249 条断言的套件，光 Chrome 交互就要 ~106s，
@@ -108,12 +188,17 @@ const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
 // ---------- 参数解析 ----------
 const args = process.argv.slice(2);
 let serial = false;
+let planOnly = false;
 const suiteArgs = [];
 for (const a of args) {
 	if (a === "--serial") {
 		serial = true;
 	} else if (a === "--parallel") {
 		serial = false;
+	} else if (a === "--authority-plan") {
+		// 只打印每套件的 mode/authority，不跑任何套件：门禁要能**离线**自证
+		// 「frontend 是 real、四个 FE 套件是显式 mock」，而不是靠读代码相信。
+		planOnly = true;
 	} else {
 		// 逗号分隔也接受（`run_all.sh --serial a,b,c` 是文档里出现过的写法）。
 		// 为什么必须支持：旧实现把 "a,b,c" 当成一个套件名，过滤后**静默变成 0 个套件**，
@@ -141,6 +226,13 @@ if (suiteArgs.length > 0) {
 	suitesToRun = [...ALL_SUITES];
 }
 
+assertAuthorityContract();
+
+if (planOnly) {
+	printAuthorityPlan(suitesToRun);
+	process.exit(0);
+}
+
 // ---------- 信号量（Chrome 类并发控制） ----------
 class Semaphore {
 	constructor(max) {
@@ -163,14 +255,58 @@ class Semaphore {
 	}
 }
 
+// ---------- 验收 authority：plan / 子进程 env ----------
+
+// 每个套件的子进程 env：只动 mock 开关，其余 env 原样透传（不改变其他套件的环境）。
+function suiteEnv(name) {
+	const env = { ...process.env, E2E_RESULTS_DIR: RESULTS_DIR };
+	if (EXPLICIT_MOCK_SUITES.has(name)) {
+		env[MOCK_ENV] = "1"; // 具名注入：四个 FE 套件按裁决跑 explicit-mock
+	} else {
+		delete env[MOCK_ENV]; // real authority（含 frontend）：不带 mock 开关
+	}
+	return env;
+}
+
+// mode 由**注入的 env** 推导，不从套件的 stdout / pass 数反推 ——
+// 反推会在「套件其实没读这个开关」时给出假 authority（本轮基线就是这种情况：
+// 66d926a 上四个套件还不读 E2E_MOCK_ONLY，读取它们的 f3 驱动在 338/chrome-v4 上）。
+function authorityRows(suites) {
+	return suites.map((s) => {
+		const authority = suiteAuthority(s);
+		return {
+			suite: s,
+			mode: authority,
+			authority,
+			mockEnv: EXPLICIT_MOCK_SUITES.has(s) ? `${MOCK_ENV}=1` : `${MOCK_ENV}=<unset>`,
+		};
+	});
+}
+
+function printAuthorityPlan(suites) {
+	const rows = authorityRows(suites);
+	console.log("验收 authority（#338 裁决；分工表 docs/v4/e2e-inventory.md）");
+	for (const r of rows) {
+		console.log(
+			`  suite=${r.suite} mode=${r.mode} authority=${r.authority} ${r.mockEnv}`,
+		);
+	}
+	const mockN = rows.filter((r) => r.mode === "explicit-mock").length;
+	console.log(`  合计: real ${rows.length - mockN} / explicit-mock ${mockN}`);
+	if (process.env[MOCK_ENV] !== undefined) {
+		console.log(
+			`  注：父环境带了 ${MOCK_ENV}=${process.env[MOCK_ENV] || "(空)"} → 上表的 real 套件会剥掉它，` +
+				`explicit-mock 套件仍覆盖成 1（不继承父环境）`,
+		);
+	}
+}
+
 // ---------- 跑单个套件 ----------
 function runSuite(name) {
 	return new Promise((resolve) => {
 		const suiteFile = path.join(ROOT, "scripts", "e2e", "suites", `${name}.mjs`);
-		const env = {
-			...process.env,
-			E2E_RESULTS_DIR: RESULTS_DIR,
-		};
+		const env = suiteEnv(name);
+		const mode = suiteAuthority(name);
 		const proc = spawn("node", [suiteFile], {
 			env,
 			cwd: ROOT,
@@ -187,6 +323,7 @@ function runSuite(name) {
 			proc.kill("SIGKILL");
 			resolve({
 				suite: name,
+				mode,
 				status: "timeout",
 				budget,
 				stdout,
@@ -198,6 +335,7 @@ function runSuite(name) {
 			clearTimeout(timer);
 			resolve({
 				suite: name,
+				mode,
 				status: code === 0 ? "pass" : "fail",
 				exitCode: code,
 				stdout,
@@ -209,6 +347,7 @@ function runSuite(name) {
 			clearTimeout(timer);
 			resolve({
 				suite: name,
+				mode,
 				status: "fail",
 				error: err.message,
 				stdout,
@@ -333,6 +472,7 @@ function aggregateResults(rawResults) {
 
 		suiteSummary.push({
 			suite: r.suite,
+			mode: r.mode || suiteAuthority(r.suite),
 			status,
 			passed: passCount,
 			failed: failCount,
@@ -347,6 +487,43 @@ function aggregateResults(rawResults) {
 	return { totalPass, totalFail, suiteSummary, failedSuites, warningSuites };
 }
 
+// 落盘 authority 清单：把「这次运行里每个套件到底跑在什么 authority 下」固化成证据文件，
+// 和 results/<suite>.json 一起留在 .e2e-bin/results/ 里（文件名以 _ 开头，不与套件重名）。
+function writeAuthorityManifest(agg, requested) {
+	const rows = authorityRows(requested);
+	const byName = new Map(agg.suiteSummary.map((s) => [s.suite, s]));
+	const rowsOut = rows.map((r) => {
+		const s = byName.get(r.suite) || {};
+		return {
+			suite: r.suite,
+			mode: r.mode,
+			authority: r.authority,
+			mockEnv: r.mockEnv,
+			status: s.status ?? "unknown",
+			passed: s.passed ?? 0,
+			failed: s.failed ?? 0,
+			durationMs: s.durationMs ?? 0,
+		};
+	});
+	const payload = {
+		issue: "#338",
+		decision:
+			"TRACKER.md「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」",
+		inventoryDoc: "docs/v4/e2e-inventory.md",
+		mockEnvVar: MOCK_ENV,
+		explicitMockSuites: [...EXPLICIT_MOCK_SUITES],
+		realAuthoritySuites: [...REAL_AUTHORITY_SUITES],
+		summary: {
+			real: rowsOut.filter((r) => r.mode === "real").length,
+			explicitMock: rowsOut.filter((r) => r.mode === "explicit-mock").length,
+		},
+		suites: rowsOut,
+	};
+	const file = path.join(RESULTS_DIR, AUTHORITY_MANIFEST);
+	writeFileSync(file, JSON.stringify(payload, null, 2) + "\n");
+	return file;
+}
+
 // ---------- 主入口 ----------
 async function main() {
 	// 准备结果目录
@@ -358,6 +535,21 @@ async function main() {
 			? `模式: 串行（${suitesToRun.length} 个套件）`
 			: `模式: 并行（HTTP 类全并行, Chrome 类并发 ${CONCURRENCY}）`,
 	);
+	// 验收 authority 预告：先声明本轮的 real / explicit-mock 分工（#338 裁决）。
+	const mockList = suitesToRun.filter((s) => EXPLICIT_MOCK_SUITES.has(s));
+	const realCount = suitesToRun.length - mockList.length;
+	console.log(
+		`验收 authority: real ${realCount} 个 / explicit-mock ${mockList.length} 个（#338 裁决）`,
+	);
+	if (mockList.length > 0) {
+		console.log(`  explicit-mock（注入 ${MOCK_ENV}=1）: ${mockList.join(", ")}`);
+	}
+	if (process.env[MOCK_ENV] !== undefined) {
+		console.log(
+			`  ⚠️ 父环境带了 ${MOCK_ENV}=${process.env[MOCK_ENV] || "(空)"}：real 套件会剥掉它` +
+				`（frontend 绝不允许 mock），explicit-mock 套件仍按裁决注入 1`,
+		);
+	}
 	console.log("");
 
 	const startMs = Date.now();
@@ -378,6 +570,13 @@ async function main() {
 	);
 	console.log(`  断言通过: ${agg.totalPass}`);
 	console.log(`  断言失败: ${agg.totalFail}`);
+	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
+	const manifestFile = writeAuthorityManifest(agg, suitesToRun);
+	const mockRan = agg.suiteSummary.filter((s) => s.mode === "explicit-mock").length;
+	console.log(
+		`  验收 authority: real ${agg.suiteSummary.length - mockRan} / explicit-mock ${mockRan}` +
+			`（明细见每行 mode=；清单 ${path.relative(ROOT, manifestFile)}）`,
+	);
 	console.log("");
 
 	// 逐套件明细
@@ -389,7 +588,7 @@ async function main() {
 		const durStr = s.durationMs > 0 ? `${(s.durationMs / 1000).toFixed(1)}s` : "—";
 		const warnTag = s.status === "pass-warning" ? " ⚠️清理异常" : "";
 		console.log(
-			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}${warnTag}`,
+			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}${warnTag}  mode=${s.mode}`,
 		);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
