@@ -24,9 +24,11 @@
  *     由调用方断言 —— 空数组与「读错字段」必须能被区分开）。
  *   - 断言用 harness 的 check/eq，失败信息里带状态码与响应体片段，便于定位。
  */
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import * as H from "./harness.mjs";
+import { nodeHello, wsConnect } from "./nodes.mjs";
 
 export const API_VERSION = "anotify/v1";
 
@@ -68,6 +70,12 @@ export const P = {
 	sourcesDryRun: (ns) => nsPath(ns, "/sources/dry-run"),
 	hook: (token) => `/v1/hooks/${seg(token)}`,
 
+	// 集群级资源（没有 ns 段）：nodes 是 v4 仍存在的一等资源（登记/读/配置/令牌/升级）。
+	nodes: () => "/v1/nodes",
+	node: (name) => `/v1/nodes/${seg(name)}`,
+	nodeTokens: (name) => `/v1/nodes/${seg(name)}/tokens`,
+	nodeConfig: (name) => `/v1/nodes/${seg(name)}/config`,
+
 	playbooks: (ns) => nsPath(ns, "/playbooks"),
 	playbook: (ns, slug) => nsPath(ns, `/playbooks/${seg(slug)}`),
 
@@ -87,9 +95,9 @@ export const P = {
 	consoleEvents: (ns) => `/v1/console/events${ns === undefined ? "" : `?namespace=${seg(ns)}`}`,
 
 	// v3 已退役、v4 明确不做兼容的路径（用于「它必须 404」这类负向断言）。
+	// 注意 /v1/nodes 不在其中：节点是 v4 的**集群级资源**（见上面的 P.nodes）。
 	legacyEvents: () => "/v1/events",
 	legacyCapabilities: () => "/v1/capabilities",
-	legacyNodes: () => "/v1/nodes",
 };
 
 // ---------- 写请求信封 ----------
@@ -358,12 +366,16 @@ export function countRows(dbPath, table, where = "", args = []) {
 }
 
 // readTaskRow 读一条任务的关键列（跨进程核对「还在被推进」「没被删」）。
+//
+// assignment_id / assignment_expires_at 也在里面：v4 的派发**只记候选**（phase 仍是
+// pending、没有租约），所以「派了没」的唯一证据是 assignment 三元组，不是 phase。
 export function readTaskRow(dbPath, id) {
 	return withDB(dbPath, (db) =>
 		db
 			.prepare(
 				`SELECT id, phase, attempt, node_id, node_name, capability, version, digest,
-				        created_at, finished_at, error, summary, cancel_reason
+				        assignment_id, assignment_expires_at, created_at, finished_at, error,
+				        summary, cancel_reason
 				   FROM tasks WHERE id = ?`,
 			)
 			.get(id),
@@ -407,4 +419,157 @@ export function seedEventRow(dbPath, { namespaceId, source = "e2e", type = "e2e.
 // eventExists 判断一条事件行是否还在（保留期清理的正向证据）。
 export function eventExists(dbPath, id) {
 	return withDB(dbPath, (db) => !!db.prepare(`SELECT 1 AS x FROM events WHERE id = ?`).get(id));
+}
+
+// markTaskDone 把一条 pending 任务直接摆成终态（背压自愈用例要「清掉积压」）。
+//
+// 为什么不走 POST …/tasks/{id}/abandon：那条动作是**处置孤儿**的产品入口，会写
+// cancel/abandon 原因；背压用例要的是「积压凭空消失」这个纯状态变化（模拟积压被
+// 消费掉），落在 phase/finished_at 两列上即可。
+export function markTaskDone(dbPath, id, phase = "succeeded") {
+	return withDB(dbPath, (db) =>
+		db
+			.prepare(`UPDATE tasks SET phase = ?, finished_at = ? WHERE id = ?`)
+			.run(phase, Math.floor(Date.now() / 1000), id).changes,
+	);
+}
+
+// ============================================================================
+// v4 节点面：把一台 mock 节点做到「**真的能被派发**」（capacity / orphans 共用）
+// ============================================================================
+//
+// 为什么必须有这一层：v4 的「节点能跑某任务」不是「节点申报了能力名」这一条可比，
+// 派发（以及孤儿视图）用的是同一份 store 判定 `EligibleNodesForTask`，它读三类**真实
+// 事实**：
+//
+//	① nodes.status = online + declared_namespaces（hello 申报 ∩ node_configs 授权）
+//	② node_configs.applied_revision == revision（节点回报 config.applied 之后）
+//	③ deployments.state = applied（节点回报 capability.deployed 之后）
+//
+// 这三件事在 v4 里**都有产品入口**（登记 / 签令牌 / WS 帧 / 部署动作），所以这里一律
+// 走入口，绝不直接插 nodes / node_configs / deployments：自己写那三张表等于伪造
+// 「节点自己报的事实」，断言就变成在测夹具，而这正是 v3 时代 node_capabilities 直接
+// 插库留下的教训（v4 已把那张表删了）。
+
+// machineConfigHash 是 protocol.MachineConfigHash 的同一份算法（hash.go）。
+//
+// config.applied 的 hash 中枢只**记录**不校验（applied_revision 才是派发判据），但造数
+// 仍按节点侧真实算法算：错误的 hash 会让「配置漂移」在 Node.status 上凭空出现。
+export function machineConfigHash(vars = {}, limits = {}) {
+	const total = limits.total || 1; // protocol.DefaultLimitsTotal
+	const perCapability = limits.perCapability || {};
+	const canonical = JSON.stringify({ vars, limits: { total, perCapability } });
+	return "sha256:" + createHash("sha256").update(canonical).digest("hex");
+}
+
+// bringUpEligibleNode 走真实产品路径把 mock 节点变成「在线 + 配置已 apply」：
+//
+//	POST /v1/nodes（登记 + 授权 ns）→ POST /v1/nodes/{name}/tokens →
+//	WS hello → welcome → config.applied（applied_revision 落库）
+//
+// 部署事实（③）由 deployApplied 单独做——它依赖一个已存在的能力，调用节奏也不同。
+//
+// 返回的 waitFrame/close 直接转发到那条 WS 会话上（套件要观察 task.dispatch 时用）。
+export async function bringUpEligibleNode(base, session, { name, namespace = DEFAULT_NS, slots = 1 } = {}) {
+	if (!name) throw new Error("bringUpEligibleNode: name 必填");
+	const created = await H.req(base, P.nodes(), {
+		session,
+		body: envelope("Node", { name }, { namespaces: [namespace] }),
+	});
+	expectStatus(`登记节点 ${name}`, created, 201);
+	const nodeId = created.json?.metadata?.uid;
+	H.check(`登记节点 ${name} 拿到 uid`, typeof nodeId === "string" && nodeId.length > 0, brief(created));
+
+	const tok = await H.req(base, P.nodeTokens(name), { session, body: {} });
+	expectStatus(`签发 ${name} 的令牌`, tok, 200);
+	const token = tok.json?.token || "";
+	H.check(`${name} 的令牌明文只在签发响应里`, token.length >= 20, `len=${token.length}`);
+
+	const conn = await wsConnect(base, token);
+	const frames = [];
+	let closed = null;
+	conn.onFrame((f) => frames.push(f));
+	conn.onClose((info) => {
+		closed = info;
+	});
+	conn.send(nodeHello({ name, token, namespaces: [namespace], slots }));
+	const welcome = await poll(`节点 ${name} 的 welcome`, () => frames.find((f) => f.type === "welcome"), { timeoutMs: 5000 });
+
+	// 节点回报「机器级配置已生效」：applied_revision = welcome.configRevision。
+	// instances 一起报（槽位事实的 presence 语义：缺字段 = 未知，不能当空闲）。
+	conn.send({
+		type: "config.applied",
+		revision: welcome.configRevision,
+		hash: machineConfigHash(welcome.nodeVars || {}, welcome.nodeLimits || {}),
+		instances: Array.from({ length: slots }, (_, slot) => ({ slot, busy: false })),
+	});
+
+	return {
+		name,
+		id: nodeId,
+		token,
+		conn,
+		frames,
+		configRevision: welcome.configRevision,
+		closed: () => closed,
+		waitFrame(type, pred = () => true, timeoutMs = 6000) {
+			return poll(`收到 ${type} 帧`, () => frames.find((f) => f.type === type && pred(f)), { timeoutMs });
+		},
+		close() {
+			conn.close();
+		},
+	};
+}
+
+// deployApplied 让节点**真的持有**某个能力的正文：部署动作 → capability.deploy 帧 →
+// capability.deployed(applied) 回执 → 轮询 deployments 读模型收敛。
+//
+// 不做「直接 UPDATE deployments SET state='applied'」：那会绕过节点回执这一层，而
+// 「pending 不算候选」正是 v4 明确裁定过的语义（G1-4），伪造它会把断言变成自证。
+export async function deployApplied(base, session, node, cap, namespace = DEFAULT_NS) {
+	const dep = await deployCapability(base, session, namespace, cap.name, { nodes: [node.name] });
+	expectStatus(`部署 ${cap.name} → ${node.name}`, dep, 200);
+	const frame = await node.waitFrame("capability.deploy", (f) => f.digest === cap.digest);
+	node.conn.send({
+		type: "capability.deployed",
+		requestId: frame.requestId,
+		namespace,
+		name: cap.name,
+		version: cap.version,
+		digest: cap.digest,
+		status: "applied",
+	});
+	await poll(`部署行 ${cap.name} → applied`, async () => {
+		const r = await H.req(base, P.deployments(namespace), { session });
+		// deployments 是**保留的读模型**（`{deployments:[…]}`），不是列表信封 —— 别拿 items() 解。
+		const rows = Array.isArray(r.json?.deployments) ? r.json.deployments : [];
+		return rows.some((d) => d.capability === cap.name && d.state === "applied" && d.digest === cap.digest);
+	}, { timeoutMs: 8000 });
+}
+
+// mkCapability 建一个能力并返回造数需要的三件事实（uid / name / version / digest）。
+//
+// 失败**抛错**而不是返回 null：造数失败时后面的断言会以「undefined.id」崩溃，
+// 那种报错看不出是哪一步坏的（capacity 套件在 v3 就是这么挂的）。
+export async function mkCapability(base, session, name, { namespace = DEFAULT_NS, body } = {}) {
+	const r = await createCapability(base, session, namespace, body || capabilityBody({ name }));
+	expectStatus(`建能力 ${name}`, r, 201);
+	const doc = r.json || {};
+	const out = {
+		id: doc.metadata?.uid,
+		name: doc.metadata?.name || name,
+		version: doc.metadata?.version,
+		digest: doc.status?.digest,
+	};
+	if (!out.id || !Number.isInteger(out.version) || !/^sha256:[0-9a-f]{64}$/.test(String(out.digest))) {
+		throw new Error(`建能力 ${name} 的响应缺少 uid/version/digest: ${brief(r)}`);
+	}
+	return out;
+}
+
+// mkSource 建一个已启用的源（v4 ingress 必须有真实源行：源名决定路由模板）。
+export async function mkSource(base, session, name, { namespace = DEFAULT_NS, kind = "manual", targets = [], config = {} } = {}) {
+	const r = await createSource(base, session, namespace, sourceBody({ name, kind, targets, config, enabled: true }));
+	expectStatus(`建源 ${name}`, r, 201);
+	return r.json || {};
 }

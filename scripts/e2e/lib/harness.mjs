@@ -594,6 +594,10 @@ export const SUITE_PORTS = {
 	// 批次 5（#229 保留期 / #228 背压）：入口返回码变了，必须进 e2e 门禁。
 	// 端口不能与 events_paging 共用 6950（两边同时加的，撞了）：段起始改成 7000。
 	capacity: 7000,
+	// #270：孤儿 pending 的诊断（/v1/orphans）与处置（abandon）。v4 重写后要起真节点
+	// （登记 / hello / config.applied / 部署回执），所以给它自己的固定段而不是随机段
+	// （随机段会与其他 worktree 的同名套件撞端口，表现为随机 401 / 0通过0失败）。
+	orphans: 7400,
 	// console-declares（T6）：部署模型纯 HTTP 套件（templates/artifacts/deployments）。
 	deploy: 7050,
 	// 开页抖动回归（ui_shift）：Chrome 类，接在 deploy 段之后开新段（7050 段到 7099 止）。
