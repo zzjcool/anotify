@@ -5,6 +5,10 @@
 #   2. docker compose up -d --build
 #
 # 密钥生成：make keys（在仓库根目录跑，把输出填进 .env）
+#
+# 镜像只跑一个服务：中枢（anotify）。镜像里另带 /app/anode —— 它是**节点升级源**
+# （GET /v1/node/binary，节点用自己的 token 下载），不是一个要在这里启动的服务。
+# 节点要单独跑（容器见 Dockerfile.anode / docker-compose.dev.yml 的 anode 服务）。
 
 services:
   anotify:

@@ -11,6 +11,7 @@
 #   make dev-up TUNNEL=1    # 同时启动 cloudflared 命名隧道 → anotify-dev.openaaas.org
 #   make dev-seed           # 播种 demo 用户（幂等）
 #   make dev-demo           # 播种 + 真跑一条完整事件链（能力图/节点/派发）
+#   make dev-node           # 起一台真节点（anode 容器，需 .dev-anode/anode.yaml）
 #   make dev-logs           # 跟踪日志
 #   make dev-down           # 停止（数据卷保留）
 #   make dev-reset          # 停止并删除数据卷（重新开始）
@@ -41,9 +42,10 @@ services:
     environment:
       ANOTIFY_ADDR: :8080
       ANOTIFY_DB: /data/anotify.db
-      # 中枢自带的 agent 二进制（CONTRACT-agent-upgrade §2）：镜像构建阶段已放到该路径。
+      # 中枢自带的**节点二进制**（v4 是 anode）：镜像构建阶段已放到该路径。
       # 节点用 GET /v1/node/binary 从这里下载升级包；文件不存在 = 升级功能未启用。
-      ANOTIFY_AGENT_BIN: /app/agent
+      # 环境变量名是 server 侧历史命名（internal/server/config.go），值现在是 anode。
+      ANOTIFY_AGENT_BIN: /app/anode
       ANOTIFY_LOG_LEVEL: ${ANOTIFY_LOG_LEVEL:-debug}
       # 开发环境开 pprof：性能排查用（生产默认关闭）
       ANOTIFY_PPROF: ${ANOTIFY_PPROF:-1}
@@ -96,6 +98,42 @@ services:
       anotify:
         condition: service_healthy
 
+  # 真节点（anode，可选，profile=node）：真正跑能力的那台机器。
+  #
+  # 与 devseed -demo 的分工：demo 只把“能力/源/节点/事件链”做成真实资源，并用 WS
+  # hello 把节点挂上线；**任务真要跑完，得有一台真 anode 把能力拉下来执行**。
+  #
+  # 先决条件（中枢没有“自动注册节点”后门，必须显式建）：
+  #   1) POST /v1/nodes 登记一个 Node（metadata.name=node-a）
+  #   2) POST /v1/nodes/node-a/tokens 签一个 token（明文只返回一次）
+  #   3) 写 .dev-anode/anode.yaml：
+  #        name: node-a
+  #        server: ws://anotify:8080
+  #        token: <上一步的 token>
+  #        namespaces: [default]
+  #      然后 make dev-node（或 docker compose ... --profile node up -d anode）。
+  anode:
+    build:
+      context: .
+      dockerfile: Dockerfile.anode
+      args:
+        # 版本标签与中枢同形（<release>+<commit>）：中枢拿自己的 version.String()
+        # 当升级目标版本，节点 hello 上报 main.version；两处不等会反复提示升级。
+        VERSION: ${ANOTIFY_ANODE_VERSION:-dev}
+        GIT_SHA: ${ANOTIFY_GIT_SHA:-}
+    image: anotify-dev-anode:local
+    container_name: anotify-dev-node
+    restart: unless-stopped
+    profiles: ["node"]
+    volumes:
+      # 配置只读挂载：容器里不生成、不修改 anode.yaml（身份/令牌属于宿主）。
+      - "${ANODE_CONFIG:-./.dev-anode/anode.yaml}:/etc/anode/anode.yaml:ro"
+      # 缓存的能力产物 / 执行档案 / emit 端点信息
+      - anode-dev-data:/var/lib/anode
+    depends_on:
+      anotify:
+        condition: service_healthy
+
   # Cloudflare 命名隧道：把 anotify-dev.openaaas.org 指到本服务的 8080。
   #
   # 两种模式，按需选一种（都用 --profile tunnel 启动）：
@@ -140,3 +178,5 @@ services:
 volumes:
   anotify-dev-data:
     name: anotify-dev-data
+  anode-dev-data:
+    name: anotify-dev-node-data

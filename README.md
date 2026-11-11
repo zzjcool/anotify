@@ -21,14 +21,18 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 ## 架构
 
 ```
-Agent ─POST /v1/notify─▶ Go 后端 ─▶ Broker(SQLite) ─┬─▶ WS 派发器(消费者1) ─▶ WebSocket 客户端
- (ant_send Key)        单二进制      队列+历史       └─▶ Push 派发器(消费者2) ─▶ Web Push(APNs/FCM)
+外部系统 ─HTTP/WS─▶ 中枢 anotify（单二进制）─┬─▶ WS 派发 ─▶ 节点 anode ─▶ 执行能力脚本
+                             SQLite         └─▶ Web Push ─▶ 设备
 ```
 
+- **两个产品**：中枢 `anotify`（`cmd/server`：资源面 + 派发 + 推送，**不执行能力**）
+  与节点 `anode`（`cmd/anode`：`serve` / `install` / `emit`，真正跑能力的机器）
 - **单二进制**：Go + `go:embed` 内嵌前端 + SQLite（纯 Go，无 CGO）
-- **Broker 抽象**：消息队列接口（Publish/Subscribe/Ack/Replay），前期 SQLite 实现，未来可换 NATS/Redis/Kafka 零业务改动
-- **两条接收通道 = 两个消费者**：WebSocket 长连接 + Web Push
+- **中枢不执行**：执行只发生在节点（契约机检：中枢侧不得 `os/exec`）
 - **路径分离**：`/v1/*` 动态 API（no-store），静态资源走 CDN 缓存分级（哈希文件 immutable）
+
+> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`
+> 与 Broker 抽象已退役（不保留兼容层）。
 
 ## 快速开始
 
@@ -107,7 +111,7 @@ make dev          # 起 server + cloudflared tunnel，Ctrl-C 一起停
 | --- | --- |
 | `make dev` | 开发：server + tunnel（dev.openaaas.org） |
 | `make dev-local` | 开发：只起本地，不起 tunnel |
-| `make build` | 构建单二进制（内嵌指纹前端，生产用） |
+| `make build` | 构建两个产品二进制：`anotify`（内嵌指纹前端）+ `anode`（节点） |
 | `make test` | Go 单元测试 |
 | `make ci` | PR 门禁：gofmt / vet / build / 单元测试（与 GitHub Actions 相同，不含 e2e） |
 | `make e2e` | 全量端到端测试（~57s，968 断言） |
@@ -129,7 +133,7 @@ make down                      # 停止并移除容器（SQLite 数据卷保留�
 方式二：直接 docker run：
 
 ```bash
-make docker                              # 构建镜像（~20MB）
+make docker                              # 构建中枢镜像（自带节点升级源 /app/anode）
 docker run -p 8080:8080 \
   -e ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY \
   -e ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY \
@@ -137,6 +141,23 @@ docker run -p 8080:8080 \
   -e ANOTIFY_RP_ORIGIN=https://你的域名 \
   anotify
 ```
+
+## 节点（anode）
+
+中枢只负责派发，**真正执行能力的是节点** `anode`（独立二进制，跑在你自己的机器上；
+自己不上报假数据——它连中枢、拉能力、执行脚本、回报结果/emit）：
+
+```bash
+make anode                                  # 构建 ./anode（带版本信息）
+./anode install --name node-a --server wss://<中枢域名> --token-file /root/anode.token
+./anode serve --config /etc/anode/anode.yaml --data /var/lib/anode
+./anode --version                           # {"version":"<version>+<commit>","commit":"<sha>"}
+
+make docker-anode                           # 节点镜像（容器即一台节点）
+```
+
+token 在中枢登记节点后签发（`POST /v1/nodes` → `POST /v1/nodes/{name}/tokens`，明文只返回一次）。
+完整的三个子命令与 flag 见 `docs/v4/anode-cli.md`。
 
 ## 公网暴露
 
@@ -157,7 +178,11 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 
 > e2e 体系详见 `E2E_TESTING.md`（17 套件、并行执行器、结构化 JSON 结果）。
 
-## API（/v1，详见 api/openapi.yaml）
+## API（/v1）
+
+> v4 的权威定义是 `api/` 下五份 spec（agent / auth / events / ingress / resource），
+> 文档页由 `make sitegen` 生成（访问 `/docs`）。下表是 v3 的扁平端点，部分已随 v4 资源面
+> 退役（`/v1/notify`、`/v1/stream`、`/v1/notifications`），仅作历史对照。
 
 | 端点 | 说明 |
 | --- | --- |
@@ -173,7 +198,7 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 | `GET /v1/notifications` | 通知历史 |
 | `GET /v1/vapid-public-key` | VAPID 公钥（前端订阅用） |
 
-### Agent 上报示例
+### Agent 上报示例（v3 历史：v4 用 `/v1/namespaces/{ns}/events` + API Key）
 
 ```bash
 curl -X POST https://你的域名/v1/notify \

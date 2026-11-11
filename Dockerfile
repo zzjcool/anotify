@@ -1,6 +1,11 @@
-# Anotify 单二进制镜像
-# 构建：docker build -t anotify .
+# Anotify 中枢镜像（server + 内置节点升级源 anode）
+# 构建：make docker（或 docker build -t anotify .）
 # 运行：docker run -p 8080:8080 -e ANOTIFY_VAPID_PUBLIC_KEY=... -e ANOTIFY_VAPID_PRIVATE_KEY=... anotify
+#
+# v4 只包含两个产品二进制（#334）：
+#   · /usr/local/bin/anotify  中枢（server，内嵌指纹前端）
+#   · /app/anode              节点二进制 —— 升级源（GET /v1/node/binary，api/agent.yaml）
+# v3 的 `/agent`（cmd/agent）已随节点产品换代为 anode 退役，镜像不再构建它。
 
 # ---- 前端生成（web-src → web/*.html）----
 # sitegen 是 Go 程序，在独立阶段生成 web/*.html（避免 fe ↔ build 循环依赖），
@@ -14,7 +19,7 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY web-src/ ./web-src/
 COPY web/ ./web/
-# api/openapi.yaml 是 API 文档页「全部端点」的唯一来源（sitegen 在构建期解析它），
+# api/ 下的五份 v4 spec 是 API 文档页「全部端点」的唯一来源（sitegen 在构建期解析它），
 # 漏拷会让 sitegen 直接报错退出——宁可在构建阶段红，也不要静默出一个空表格。
 COPY api/ ./api/
 RUN go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en
@@ -26,7 +31,7 @@ COPY scripts/hash.mjs ./scripts/hash.mjs
 COPY --from=sitegen /app/web ./web
 RUN node scripts/hash.mjs web internal/server/dist
 
-# ---- Go 构建（单二进制，CGO 关闭，纯 Go sqlite）----
+# ---- Go 构建（server + anode + devseed，CGO 关闭，纯 Go sqlite）----
 FROM golang:1.25-alpine AS build
 WORKDIR /app
 # 容器内用官方模块代理（proxy.golang.org，非第三方镜像）：
@@ -38,19 +43,23 @@ COPY . .
 # 用指纹产物覆盖（go:embed 在编译期读取 internal/server/dist；
 # web/*.html 已由源码 COPY 进来，但 fe 阶段才是权威产物，故用 fe 覆盖）
 COPY --from=fe /app/internal/server/dist ./internal/server/dist
-# 三个二进制用**同一份**版本注入：/agent 是「中枢自带升级源」要发出去的那一份
-# （CONTRACT-agent-upgrade §2），它的版本必须与中枢一致——否则节点升级上来还是
-# dev，控制台永远显示「过期」，然后无限提示升级。参数与 Makefile 的
-# VERSION_LDFLAGS 同源（VERSION 由 build-arg 传入，缺省 dev）。
+# 版本注入（与 Makefile 的 VERSION_LDFLAGS / ANODE_LDFLAGS 同源）：
+#   · server/devseed：internal/version.{Version,Commit,BuiltAt}
+#   · anode：main.version / main.commit（**不同源**的包级变量）
+# 中枢拿 internal/version.String()（= Version+Commit）当升级目标版本，节点在 hello 里
+# 上报 main.version；两者必须**同一个串**，否则「已是最新」永远判不出来。
 ARG VERSION=dev
 ARG GIT_SHA=
 ARG BUILT_AT=
-RUN VERSION_LDFLAGS="-X github.com/zzjcool/anotify/internal/version.Version=${VERSION} \
+RUN SERVER_LDFLAGS="-X github.com/zzjcool/anotify/internal/version.Version=${VERSION} \
       -X github.com/zzjcool/anotify/internal/version.Commit=${GIT_SHA} \
       -X github.com/zzjcool/anotify/internal/version.BuiltAt=${BUILT_AT}" \
-    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -tags embeddist -o /anotify ./cmd/server \
-    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -o /agent ./cmd/agent \
-    && go build -trimpath -ldflags="-s -w $VERSION_LDFLAGS" -o /devseed ./cmd/devseed
+    && ANODE_LABEL="${VERSION}" \
+    && if [ -n "${GIT_SHA}" ]; then ANODE_LABEL="${VERSION}+${GIT_SHA}"; fi \
+    && ANODE_LDFLAGS="-X main.version=${ANODE_LABEL} -X main.commit=${GIT_SHA:-unknown}" \
+    && go build -trimpath -ldflags="-s -w $SERVER_LDFLAGS" -tags embeddist -o /anotify ./cmd/server \
+    && go build -trimpath -ldflags="-s -w $ANODE_LDFLAGS" -o /anode ./cmd/anode \
+    && go build -trimpath -ldflags="-s -w $SERVER_LDFLAGS" -o /devseed ./cmd/devseed
 
 # ---- 运行 ----
 FROM alpine:3.20
@@ -68,23 +77,22 @@ RUN adduser -D -u 10001 anotify \
     && chown anotify:anotify /data
 WORKDIR /data
 COPY --from=build /anotify /usr/local/bin/anotify
-# 中枢同时是节点的**升级源**（CONTRACT-agent-upgrade §2）：把 agent 二进制带进镜像，
-# 节点用 GET /v1/node/binary 下载它（node token 鉴权）。dev 与生产是**同一份**产物：
+# 中枢同时是节点的**升级源**（api/agent.yaml：GET /v1/node/binary）：把节点二进制带进
+# 镜像，节点用**自己的 node token** 下载它并原子替换。dev 与生产是**同一份**构建事实：
 # 构建阶段编译一次，运行阶段只做拷贝。
 #
-# 放 /app/agent 是契约里的默认路径（ANOTIFY_AGENT_BIN 的缺省值），这里再显式写一次
-# ENV，让「镜像里有什么」在 docker inspect 里也看得见。文件必须对运行用户可读
-# （COPY 默认 0644，uid 10001 读得到）；不 chown 也不需要（只读，不替换自己）。
-COPY --from=build /agent /app/agent
+# 环境变量名 `ANOTIFY_AGENT_BIN` 是 server 侧历史命名（internal/server/config.go），
+# v4 它指向的文件就是 `anode`；显式设一次，让 `docker inspect` 里也能看出镜像带了什么。
+COPY --from=build /anode /app/anode
 # 单二进制内嵌前端；仅需挂载数据目录持久化 sqlite
 ENV ANOTIFY_ADDR=:8080 \
     ANOTIFY_STATIC= \
     ANOTIFY_DB=/data/anotify.db \
-    ANOTIFY_AGENT_BIN=/app/agent
+    ANOTIFY_AGENT_BIN=/app/anode
 EXPOSE 8080
 USER anotify
 VOLUME ["/data"]
 ENTRYPOINT ["anotify"]
 # devseed 只在 build 阶段产出（不复制进 runtime）：本地开发用它播种。
-# 生产镜像刻意只带 server（/usr/local/bin/anotify）与 agent（/app/agent）两个二进制。
-# 见 docker-compose.dev.yml 的 seed/demo 服务。
+# 生产镜像刻意只带 server（/usr/local/bin/anotify）与节点升级源（/app/anode）。
+# 见 docker-compose.dev.yml 的 seed/demo 服务与 docs/v4/anode-cli.md。
