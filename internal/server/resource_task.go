@@ -161,14 +161,29 @@ func (a *taskAPI) get(w http.ResponseWriter, r *http.Request) {
 
 // ---------- POST …/tasks/{taskId}/cancel · /abandon ----------
 
+// stopIntent 是 stop 动作的意图：cancel / abandon 共用同一套状态机，但终态相位不同。
+//
+// 意图必须由端点显式给，不能由 body 的 reason 反推：reason 是人话
+// （TaskActionRequest.reason），`{"reason":"give up"}` 与
+// `{"reason":"e2e 运行中取消"}` 在字面上没有任何区别（#336：人话被当封闭码 →
+// 用户取消落成 abandoned）。
+type stopIntent int
+
+const (
+	// stopIntentCancel 是取消（POST …/tasks/{taskId}/cancel）：终态 cancelled。
+	stopIntentCancel stopIntent = iota
+	// stopIntentAbandon 是放弃（POST …/tasks/{taskId}/abandon）：终态 abandoned。
+	stopIntentAbandon
+)
+
 // cancel 记录取消意图（reason 缺省 = cancelled_by_user）。
 func (a *taskAPI) cancel(w http.ResponseWriter, r *http.Request) {
-	a.requestStop(w, r, "")
+	a.requestStop(w, r, stopIntentCancel)
 }
 
 // abandon 记录放弃意图（reason 缺省 = abandoned_by_user；与 cancel 同一套状态机）。
 func (a *taskAPI) abandon(w http.ResponseWriter, r *http.Request) {
-	a.requestStop(w, r, protocol.ReasonAbandonedByUser)
+	a.requestStop(w, r, stopIntentAbandon)
 }
 
 // requestStop 是 cancel / abandon 的唯一实现。
@@ -176,8 +191,10 @@ func (a *taskAPI) abandon(w http.ResponseWriter, r *http.Request) {
 // 顺序与「谁权威」是这里唯一的难点：
 //
 //  1. 先 GetTask(ns, id)：任务 id 全局唯一，但**可见性**必须在本次请求的命名空间里成立。
-//     store.RequestCancel 只按 taskID 写，不带 ns —— 少了这一步就能拿别的 ns 的 id 取消别人的任务。
-//  2. 意图落库走 store.RequestCancel（唯一线性化点：pending 直接终态、running 只记意图等 ack）。
+//     store 的 RequestCancel / RequestAbandon 只按 taskID 写，不带 ns —— 少了这一步就能拿
+//     别的 ns 的 id 取消别人的任务。
+//  2. 意图落库走 store.RequestCancel / RequestAbandon（唯一线性化点：pending 直接终态、
+//     running 只记意图等 ack）。选哪个由**端点**决定（stopIntent），不看 reason 字面。
 //  3. running 的任务才需要「下发」：把 task.cancel 推给执行它的节点。这是**尽力**动作——
 //     意图已经落库，节点重连后会按 cancel_reason 补 ack；推送失败不改变已完成的事实，
 //     所以只记一条 WARN，不把请求判成失败（那会让调用方以为取消没生效而重复点）。
@@ -185,7 +202,7 @@ func (a *taskAPI) abandon(w http.ResponseWriter, r *http.Request) {
 // 不用 hub.CancelTask 作为主路径的原因：它内部已经包了一次 RequestCancel，先写一次再调它
 // 会在 pending 上撞到 ErrInvalidTransition（第一步已把任务推到终态）。running 时它是幂等的
 // （cancel_requested_at 已存在 → 直接返回 nil 并推帧），所以只有 running 才调它。
-func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, defaultReason string) {
+func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, intent stopIntent) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
@@ -195,6 +212,11 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, defaultRea
 	if err != nil {
 		writeAPIError(w, err)
 		return
+	}
+	// 缺省原因按意图取封闭码；body 给了 reason 就原样当人话落库，不改写。
+	defaultReason := ""
+	if intent == stopIntentAbandon {
+		defaultReason = protocol.ReasonAbandonedByUser
 	}
 	reason, err := taskActionReason(r, defaultReason)
 	if err != nil {
@@ -206,7 +228,7 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, defaultRea
 		writeAPIError(w, err)
 		return
 	}
-	if err := a.d.DB.RequestCancel(r.Context(), id, reason, taskNowSeconds(a.d)); err != nil {
+	if err := a.stopStore(r.Context(), intent, id, reason); err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
 			// 终态任务不能再停：这是调用方可理解的冲突，不是服务端错误。
 			writeAPIError(w, errStatus(http.StatusConflict, reasonConflict,
@@ -228,6 +250,15 @@ func (a *taskAPI) requestStop(w http.ResponseWriter, r *http.Request, defaultRea
 		updated = task
 	}
 	writeEnvelope(w, http.StatusOK, taskEnvelope(updated, a.d.namespaceDisplay(r.Context(), ns)))
+}
+
+// stopStore 按意图把取消/放弃意图落库（两路共用同一个线性化点，只差终态相位）。
+func (a *taskAPI) stopStore(ctx context.Context, intent stopIntent, id, reason string) error {
+	now := taskNowSeconds(a.d)
+	if intent == stopIntentAbandon {
+		return a.d.DB.RequestAbandon(ctx, id, reason, now)
+	}
+	return a.d.DB.RequestCancel(ctx, id, reason, now)
 }
 
 // ---------- GET …/tasks/{taskId}/logs ----------

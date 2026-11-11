@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -454,6 +455,13 @@ func (a *capabilityAPI) deploy(w http.ResponseWriter, r *http.Request) {
 			"node transport is not wired: cannot record deployments"))
 		return
 	}
+	// 目标节点：body 里给的是**名字**（契约 CapabilityDeployRequest.nodes），这里解析成
+	// 节点 id 再交给 hub（deployments 事实钉的是 id）。
+	targets, err := a.resolveDeployTargets(r.Context(), body.Nodes)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	version := body.Version
 	if version <= 0 {
 		resolved, rerr := a.d.DB.ResolveRef(r.Context(), ns, name)
@@ -464,7 +472,7 @@ func (a *capabilityAPI) deploy(w http.ResponseWriter, r *http.Request) {
 		version = resolved.Version
 	}
 	var outcomes []ws.DeployOutcome
-	outcomes, err = a.d.Hub.Deploy(r.Context(), ns, name, version, body.Nodes)
+	outcomes, err = a.d.Hub.Deploy(r.Context(), ns, name, version, targets)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -478,6 +486,47 @@ func (a *capabilityAPI) deploy(w http.ResponseWriter, r *http.Request) {
 		resp.Deployed = append(resp.Deployed, view)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveDeployTargets 把动作 body 里的目标节点解析成节点 id。
+//
+// 契约面是**节点名**（CapabilityDeployRequest.nodes「目标节点名；省略 = 全部已授权且在线
+// 节点」）；id 也接受——它是集群内唯一且无歧义的身份，历史调用方/调试都直接拿 id。
+// 先按名查、未命中再按 id 查，每个条目至多两次点查（不引入降解析外的行为变化）。
+//
+// 语义边界三条：
+//   - 空 body / 空数组 = 省略 = 不指定目标 → 返回 nil，交给 hub 的候选策略；
+//   - **显式给了条目却解析不出来 → 404**：静默跳过会把「名字打错」变成「部署成功但一台
+//     都没动」，而把解析失败的条目当成空列表更会把一笔笔误变成「部署到所有节点」；
+//   - 授权（跳 ns / 未授权）**不**在这里判：CreateDeployments 已有唯一一份判据
+//     （declared ∩ authorized 覆盖本 ns），它把未授权翻成 403（ErrEmitNamespaceDenied）。
+//     在这里再拄一份只会在两份凭据刷新时漂移。
+func (a *capabilityAPI) resolveDeployTargets(ctx context.Context, entries []string) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		node, err := a.d.DB.GetNodeByName(ctx, entry)
+		if errors.Is(err, store.ErrNotFound) {
+			node, err = a.d.DB.GetNode(ctx, entry)
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errStatus(http.StatusNotFound, reasonNotFound,
+				fmt.Sprintf("node %q not found", entry))
+		}
+		if err != nil {
+			return nil, err
+		}
+		if node == nil || seen[node.ID] {
+			continue
+		}
+		seen[node.ID] = true
+		ids = append(ids, node.ID)
+	}
+	return ids, nil
 }
 
 // ---------- 信封与 status 派生 ----------
