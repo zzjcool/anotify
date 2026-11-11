@@ -12,10 +12,10 @@
 |---|---|---|
 | `api/resource.yaml` | Capability / Source / Playbook / Namespace / Node / Task 的管理与只读状态、只读 edge/deployment 投影、公共 capability-templates | 53 |
 | `api/events.yaml` | **只读** Event / Trace / 控制台事件流 / 集群聚合读模型（stats、orphans） | 5 |
-| `api/agent.yaml` | 节点身份鉴权的出站/中枢节点通道（binary / stream / 产物上行）+ 已冻结 protocol frame/DTO 文档 | 3 |
+| `api/agent.yaml` | 节点身份鉴权的出站/中枢节点通道（binary / stream / 能力包体下行 / 产物上行）+ 已冻结 protocol frame/DTO 文档 | 4 |
 | `api/ingress.yaml` | 写入或预览触发（events 投递、hook、fire、dry-run） | 5 |
 | `api/auth.yaml` | 独立身份域：auth/passkey/password/recovery、keys、devices、VAPID、CLI 设备授权、passkey 注册、admin、登入脚本 | 58 |
-| | **合计** | **124** |
+| | **合计** | **125** |
 
 - 旧 `api/openapi.yaml`（v3 单文件真源，6192 行）**删除**，任何消费者不得回退（`scripts/check_openapi.py` 的 exact-five 检查会红）。
 - `api/` 下只允许这五个 `.yaml`；第六个文件即失败。
@@ -77,7 +77,7 @@ path item 用 `$ref: '#/components/pathItems/<Name>'`（跨文件 `./x.yaml#/com
 |---|---|---|
 | `events.yaml` | `NamespaceEvents` | `GET /v1/namespaces/{namespace}/events`（读模型） |
 | `ingress.yaml` | `NamespaceEventIngest` | `POST` 同 path（投递入口，Bearer key） |
-| `agent.yaml` | `NodeStream` / `NodeBinary` / `NodeArtifactUpload` | 三条节点通道 |
+| `agent.yaml` | `NodeStream` / `NodeBinary` / `NodeCapabilityContent` / `NodeArtifactUpload` | 四条节点通道 |
 
 ## 4. operation 清单（给 #335 的 inventory）
 
@@ -151,13 +151,14 @@ path item 用 `$ref: '#/components/pathItems/<Name>'`（跨文件 `./x.yaml#/com
 | 4 | GET | `/v1/stats` | S | `getStats` |
 | 5 | GET | `/v1/orphans` | S | `listOrphans` |
 
-### 4.3 `api/agent.yaml`（3）
+### 4.3 `api/agent.yaml`（4）
 
 | # | METHOD | path | security | operationId |
 |---|---|---|---|---|
 | 1 | GET | `/v1/node/stream` | N | `nodeStream` |
 | 2 | GET | `/v1/node/binary` | N | `getNodeBinary` |
-| 3 | PUT | `/v1/node/tasks/{taskId}/artifacts/{sha256}` | N | `uploadTaskArtifact` |
+| 3 | GET | `/v1/node/capabilities/{digest}` | N | `getNodeCapabilityContent` |
+| 4 | PUT | `/v1/node/tasks/{taskId}/artifacts/{sha256}` | N | `uploadTaskArtifact` |
 
 ### 4.4 `api/ingress.yaml`（5）
 
@@ -234,12 +235,15 @@ path item 用 `$ref: '#/components/pathItems/<Name>'`（跨文件 `./x.yaml#/com
 
 ## 5. 已知缺口与裁决（写进 PR，供协调者裁决）
 
-1. **`GET /v1/node/capabilities/{digest}` 实现缺失**（契约要求、节点客户端已在调用）：
-   - 契约：`api-conventions.md:813`、`API-SPEC-HANDOFF.md`（agent.yaml 行）、`internal/protocol/deploy_frames.go:8`；
-   - 节点侧：`cmd/anode/internal/capability/fetch.go:30` 已在 `GET /v1/node/capabilities/`；
-   - 中枢侧：`mux.go` 只有 `stream`/`binary`/`tasks/{taskId}/artifacts/{sha256}` 三条 `/v1/node/*`，**没有任何 handler**（`grep node/capabilities internal/server` 为空）。
-   - 裁决：**不写进 `agent.yaml`**（本 issue 的规则是「以代码真实实现为准生成 spec」+ parity 禁止「spec 有、handler 无」）。
-     → 列为 SAFE_BLOCKED / owner = Node 上行内容通道的实现 issue；`agent.yaml` 里留注释说明缺席原因。
+1. ~~**`GET /v1/node/capabilities/{digest}` 实现缺失**~~ → **已补齐，不再计入 SAFE_BLOCKED**：
+   - **已由 `fix/node-capability-content` 补齐（81e4ce2）**：handler 在 `internal/server/node_capability.go`
+     （`registerNodeCapabilityContent` 注册 GET 本体 + 非 GET 的显式 405 两条 pattern），
+     `mux.go` 单点接线；spec 落 `agent.yaml` 的 `pathItems/NodeCapabilityContent`，
+     operation = `getNodeCapabilityContent`（security = `nodeToken`）。
+   - 原缺口事实（留档）：契约见 `api-conventions.md:813`、`internal/protocol/deploy_frames.go:8`；
+     节点侧 `cmd/anode/internal/capability/fetch.go:30` 早已在调用，中枢侧当时无 handler。
+   - 当时裁决「不写进 `agent.yaml`」的依据是本 issue 的规则（以代码真实实现为准生成 spec + parity 禁止
+     「spec 有、handler 无」），故当时列为 SAFE_BLOCKED；实现落地后该豁免自动失效，现已写入 spec 并由 parity 实测。
 2. **三套非 Status 错误体是保留域的实现事实**（不是遗漏）：`AuthError`（**身份域全部 4xx/5xx**，
    `writeErr` 与中间件都是 `{"error":...}`）、`NodeUploadError`（A1 封闭 4 码）、
    `BackpressureError`（snake_case 503）。已在 spec 里显式建模为具名族，
@@ -257,10 +261,10 @@ path item 用 `$ref: '#/components/pathItems/<Name>'`（跨文件 `./x.yaml#/com
    不是 HTTP 中间件；spec 记 `nodeToken` 并在描述里写明「token 在首帧 hello 校验」，parity 测试对该条走
    例外期望（401 不在升级前产生）。
 5. **`/health`、`/debug/pprof/*`、静态兜底**不在五份 spec（显式排除清单在 `check_openapi.py`）。
-6. **sitegen / 前端**（`internal/sitegen/**`、`cmd/sitegen/**`、`web*/**`）只读，属 #335：
-   当前单文件读取器（`internal/sitegen/openapi.go:122` 单 path + 无 `$ref`）在五文件落地后
-   要么 `log.Fatalf`（`cmd/sitegen/main.go:60-61`）要么**静默丢 operation**。本 issue 交付真实五文件 +
-   本清单作为其输入；`make sitegen` / `make fe` / `make ci` 的修复归 #335。
+6. ~~**sitegen 单文件读取器**~~ → **已由 #345 解决**：`internal/sitegen/openapi.go` 现按五份 canonical
+   spec 读（多 path + 跨文件/链式 `pathItems` `$ref` 解析，第六源/remote/绝对路径一律拒绝），
+   `cmd/sitegen/main.go` 随之改为读 spec 目录。不再有「`log.Fatalf` 或静默丢 operation」的缺口。
+   剩余只读边界不变：本清单仍是 #335 的输入，`make fe` / `make ci` 的产物样式归前端 issue。
 
 ## 6. 门禁（`make contract` 现有入口，无需改 Makefile）
 

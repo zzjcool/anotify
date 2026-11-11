@@ -44,8 +44,12 @@ package server
 //
 // 于是「detach 写库」严格 happens-before「db.Close()」，postclose_guard_test.go 观察的
 // `mark instances dead failed ... database is closed` 不再可能发生。
-//  3. 需要新的节点会话就 `f.dial(t)`：连接登记在 fixture 里，settle 时有界退出；
-//     同一 server 反复拨号、新连接顶掉旧连接（hub.attach 的 supersede 路径）都被覆盖。
+//  3. 需要新的节点会话就 `f.dial(t)`：连接登记在 fixture 里，settle 时有界退出。
+//
+// 覆盖边界（实测，别把这里读多）：本包建真会话的 6 处（`node_upgrade_test.go` 的 5 次
+// `connectNode` + `resource_task_test.go` 的 logs 夹具）都是「一次 `newHubServer` + 一次
+// `dial`」。**同一 server 的第二次拨号**（`hub.attach` 用新连接顶掉旧连接）目前没有用例
+// 走到——`dial` 只是可以反复调用、多次 dial 不会破坏收尾屏障，不代表 supersede 已被覆盖。
 
 import (
 	"context"
