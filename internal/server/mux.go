@@ -14,7 +14,9 @@ import (
 	"github.com/zzjcool/anotify/internal/api"
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/lease"
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/push"
+	"github.com/zzjcool/anotify/internal/resultspool"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
@@ -28,7 +30,15 @@ type App struct {
 	DB      *store.DB
 	AuthSvc *auth.Service
 
-	// background 追踪 NewApp 起的后台循环（背压采样 + 派发 / cron / 租约三条）。
+	// Spool 是中枢自有的产物字节池（#332）：nil = 托管根不可用（产物端点回 503）。
+	Spool *resultspool.Store
+	// ArtifactGC 是产物字节回收驱动（nil = 未配置周期，或 spool 不可用）。
+	// 它是后台写者（Expire / Ack 都打库），所以由 NewApp 用 runBackgroundLoop 起，
+	// 与背压采样 / 派发 / cron / 租约同受 WaitBackground 的收尾约束；测试可直接
+	// 调 RunOnce 做**真实**回收验证，不需要等 ticker。
+	ArtifactGC *resultspool.GC
+
+	// background 追踪 NewApp 起的后台循环（背压采样 + 派发 / cron / 租约三条 + 产物 GC）。
 	//
 	// 它只为一件事存在：让「关停」有确定的 happens-before。取消 ctx 只是**信号**，
 	// 循环可能正卡在一次库查询里；调用方若紧接着 db.Close()，那条查询就会拿到
@@ -261,13 +271,64 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	sources := source.New(db, router)
 	sched := trigger.New(db, sources, slog.Default())
 	sweeper := lease.NewSweeper(db, slog.Default())
+
+	// 产物托管池（#332 / A1）：中枢自有的 0700 目录 + 0600 对象文件。
+	//
+	// 建不出来时**不**让整个进程起不来：/v1 的其余域与该能力无关，产物端点会回
+	// 503 `artifact_upload_unavailable`（诚实的「没配置好」，不是假成功）。
+	// 但日志必须 ERROR 级别——否则产物上传会静默降级成「节点侧 artifact_upload_failed」。
+	spool, spoolErr := resultspool.New(cfg.ArtifactSpoolPath())
+	if spoolErr != nil {
+		slog.Error("artifact spool unavailable: uploads/downloads will return 503",
+			"event", "server.artifact.spool.unavailable",
+			"component", "resultspool",
+			"path", cfg.ArtifactSpoolPath(),
+			"error", spoolErr.Error(),
+		)
+		spool = nil
+	} else {
+		slog.Info("artifact spool configured",
+			"event", "server.artifact.spool.configured",
+			"path", spool.Root(),
+			"gc_interval_sec", int(cfg.ArtifactGCInterval()/time.Second),
+			"note", "副本 0700/0600；保留期 7 天由 store 的 retention_result_ttl_sec 决定（0 = 永久）",
+		)
+	}
+
 	deps := &serverDeps{
 		DB: db, Router: router, Sources: sources, Hub: hub, Sweeper: sweeper,
 		// Now 是**毫秒**时钟（api_deps.go 的契约）：store.Now 是秒，不能直接注入，
 		// 否则 stats 的 371 天窗口与 cancel_requested_at 会按 1970 年算（#340 r2 M-1）。
+		// #332 的产物端点同样按这个契约取值（下载用 taskNowSeconds 折算成 store 的秒）。
 		Log: slog.Default(), Now: nowMilli, Session: sessMW, Backpressure: bp.Wrap,
+		Spool: spool,
 		// namespace id → slug 缓存（slug 不可变，见 serverDeps.display 的注释）。
 		display: &nsDisplay{},
+	}
+
+	// 产物字节 GC（#332）：Expire→删私有文件→Ack 的单一有界驱动。
+	//
+	// 保留期事实全部在 store（expires_at / 0=永久 / 活跃 ticket 保护），这里只负责
+	// 「到点了就把字节删掉并记账」。周期 0 = 不启动（显式运维选择）。
+	var artifactGC *resultspool.GC
+	if spool != nil && cfg.ArtifactGCInterval() > 0 {
+		gc, err := resultspool.NewGC(newArtifactGCStore(db), spool, resultspool.GCOptions{
+			Interval: cfg.ArtifactGCInterval(),
+			Now:      store.Now,
+			Log:      slog.Default(),
+		})
+		if err != nil {
+			slog.Error("artifact gc disabled: invalid configuration",
+				"event", "server.artifact.gc.disabled",
+				"error", err.Error(),
+			)
+		} else {
+			artifactGC = gc
+			// 走 runBackgroundLoop 而不是裸 go：GC 的 Expire / Ack 都是库写者，
+			// 不登记进 background 就等于绕过了 #340 r3 的关停屏障（cancel 之后
+			// WaitBackground 会提前返回，db.Close() 仍可能与一轮回收并发）。
+			app.runBackgroundLoop(ctx, "artifact-gc", gc.Run)
+		}
 	}
 
 	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。
@@ -382,6 +443,12 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	mux.Handle("GET /v1/node/stream", noStore(hub))
 	// 二进制下载走 **node token**（不是会话）：调用方是节点上的 agent / CLI。
 	mux.Handle("GET /v1/node/binary", noStore(&agentBinaryHandler{bin: agentBin, db: db}))
+	// 运行产物上行（#332 / A1）：同样是 **node token**（不是会话），所以刻意挂在
+	// 资源域之外——域内 register 一律包 session 中间件（节点请求会被 401）。
+	// 授权不走中间件：handler 自己用 Bearer → token hash 定位节点，再由
+	// store 的 Begin/Register 在事务内复核 attempt/lease/token/相位/撤销。
+	mux.Handle("PUT "+protocol.NodeTaskArtifactsPathPrefix+"{taskId}"+protocol.NodeTaskArtifactsPathInfix+"{sha256}",
+		noStore(newArtifactUploadHandler(db, spool, slog.Default())))
 
 	// --- 事件投递入口（Bearer key + 背压）---
 	//
@@ -492,14 +559,20 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// （回归用例：gzip_test.go 的 TestGzipJSONKeepsStatusWriter）。
 	// 当前顺序下：handler → *statusWriter → gzipResponseWriter → 底层 conn，
 	// Hijack 逐层透传，WS 升级（/v1/node/stream）与访问日志均不受影响。
+	// 产物域的读写依赖装配期建好的 spool / GC，必须挂在**同一个** app 上：
+	// 后台循环的 WaitGroup 已经落在 app 里（#340 r3 的关停契约），另造一个 App 会
+	// 丢掉那条 happens-before，让 db.Close() 与派发 / GC 并发。
+	app.Spool = spool
+	app.ArtifactGC = artifactGC
 	app.Handler = gzipJSON(accessLog(mux))
 	return app
 }
 
 // runBackgroundLoop 启动一条后台循环，并把「非取消」的退出记成 WARN。
 //
-// 三条循环（派发 / cron / 租约）都遵循同一份纪律：单轮失败只记日志、继续下一轮；
-// 整个 Run 只在 ctx 结束时返回 ctx.Err()。所以这里把 ctx.Err() 当正常关闭处理——
+// 派发 / cron / 租约三条循环，以及同为库写者的产物字节 GC，都走这里：纪律一致——
+// 单轮失败只记日志、继续下一轮；整个 Run 只在 ctx 结束时返回（成对地返回 ctx.Err()
+// 或 nil，GC.Run 属后者）。所以这里把 ctx.Err() 当正常关闭处理——
 // 否则每次优雅停机都会在日志里留下三条像故障的 WARN。
 func (a *App) runBackgroundLoop(ctx context.Context, name string, run func(context.Context) error) {
 	done := a.trackBackground()

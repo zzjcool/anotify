@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,27 @@ type Config struct {
 	// 为什么"0 = 禁用"而"未设置 = 默认"：这两件事语义完全不同，必须能区分。
 	// 用同一个 0 表示两者会让"关掉周期 ANALYZE"变成不可达（运维想关只能改代码）。
 	StatsIntervalSec int
+
+	// ArtifactSpoolDir 是中枢托管运行产物字节的**私有系统目录**（#332 / A1）。
+	//
+	// 语义（解析见 artifactSpoolDirFromEnv）：
+	//   - 未设置 / 空   → 用 DBPath 同目录下的 artifacts/（例如 ./anotify.db → ./artifacts）；
+	//   - 显式路径       → 原值。
+	//
+	// 为什么默认跟着数据库走：产物副本与「引用它的 manifest 行」必须一起备份/一起迁移，
+	// 分开放会让恢复后出现「元数据在、字节在别处」的静默 410。目录由 resultspool 在
+	// 首次需要时创建（0700），不在这里 mkdir：配置文件解析不该有副作用。
+	ArtifactSpoolDir string
+
+	// ArtifactGCIntervalSec 是产物字节 GC（ExpireArtifactObjects + purge + ack）的周期（秒）。
+	//
+	// 语义（解析见 artifactGCIntervalFromEnv，与 StatsIntervalSec 同构）：
+	//   - 未设置 / 手滑 → 300（5 分钟：过期副本的回收延迟上限，足够小且不刷库）；
+	//   - "0"           → **禁用**周期回收（显式运维选择；已过期副本仍会被下次启用时清掉）；
+	//   - 正数           → 原值（上限 7 天）。
+	//
+	// 保留期事实（7 天副本 / 30 天事实 / 0 永久）在 store 侧（expires_at），这里只是驱动器。
+	ArtifactGCIntervalSec int
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -324,6 +346,56 @@ func statsIntervalFromEnv(key string) int {
 	return n
 }
 
+// ArtifactSpoolPath 归一化产物托管根（空 → DBPath 同目录的 artifacts/）。
+//
+// 归一化只在这里做一次：config 的零值必须等同「用默认」（测试与内嵌部署会直接
+// 构造 Config），handler 与 mux 都调这个方法，不各自猜。
+func (c Config) ArtifactSpoolPath() string {
+	if strings.TrimSpace(c.ArtifactSpoolDir) != "" {
+		return strings.TrimSpace(c.ArtifactSpoolDir)
+	}
+	dir := filepath.Dir(strings.TrimSpace(c.DBPath))
+	if dir == "" {
+		dir = "."
+	}
+	return filepath.Join(dir, "artifacts")
+}
+
+// ArtifactGCInterval 把配置换算成 GC 周期：<=0 = 禁用（不启 goroutine）。
+//
+// 与 StatsInterval 的区别：这里 0 与「未设置」都是禁用，因为默认值已经由
+// artifactGCIntervalFromEnv 填成 300 —— 直接构造 Config 的调用方（测试）拿到的是
+// 明确的「不启动」，不会凭空多一条后台循环。
+func (c Config) ArtifactGCInterval() time.Duration {
+	if c.ArtifactGCIntervalSec <= 0 {
+		return 0
+	}
+	return time.Duration(c.ArtifactGCIntervalSec) * time.Second
+}
+
+// artifactGCIntervalFromEnv 读 ANOTIFY_ARTIFACT_GC_INTERVAL_SEC（#332）。
+//
+// 未设置/非法 → 300（默认 5 分钟）；"0"/负数 → 0（禁用）；正数 → 原值（上限 7 天）。
+func artifactGCIntervalFromEnv(key string) int {
+	const defSec = 300
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defSec
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defSec // 手滑不改变默认策略（与 retentionDaysFromEnv 同原则）
+	}
+	if n <= 0 {
+		return 0 // 显式禁用
+	}
+	const maxSec = 7 * 24 * 3600
+	if n > maxSec {
+		return maxSec
+	}
+	return n
+}
+
 // EventRetentionSec 把天数换成 store.RetentionOptions.EventRetentionSec 的口径（秒）。
 //
 // 0 保持 0（= store.EventRetentionDisabled = **永久保留**），**不要**在这里把它变成
@@ -426,6 +498,10 @@ func FromEnv() Config {
 		EventRetentionDays: retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
 		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
 		StatsIntervalSec:   statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
+
+		// 运行产物托管目录与字节 GC 周期（#332）。默认目录 = DBPath 同目录 artifacts/。
+		ArtifactSpoolDir:      get("ANOTIFY_ARTIFACT_SPOOL_DIR", ""),
+		ArtifactGCIntervalSec: artifactGCIntervalFromEnv("ANOTIFY_ARTIFACT_GC_INTERVAL_SEC"),
 
 		// 派发预算（v3 契约 §2）：非法值由 Validate 拦在启动那一刻。
 		//

@@ -85,6 +85,10 @@ func (a *taskAPI) register(mux *http.ServeMux) {
 	route("POST "+tasksPath+"/{taskId}/abandon", a.abandon)
 	route("GET "+tasksPath+"/{taskId}/logs", a.logs)
 	route("GET "+tasksPath+"/{taskId}/emissions", a.emissions)
+	// 运行产物下载（#332 / A1 §4）：Task 子资源，仍走会话鉴权 + no-store；
+	// 授权与引用判定在 handler 内（store.GetTaskArtifactDownload 只认当前
+	// reported result 的 ResultRef），字节只从 deps.Spool 读，绝不 fallback 宿主文件。
+	route("GET "+tasksPath+"/{taskId}/artifacts/{sha256}", newArtifactDownloadAPI(a.d).get)
 	route("GET "+nsEventsPath, a.events)
 	route("GET "+nsTracePath, a.trace)
 	route("GET "+consoleEventsPath, a.consoleEvents)

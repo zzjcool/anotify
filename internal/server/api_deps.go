@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/zzjcool/anotify/internal/lease"
+	"github.com/zzjcool/anotify/internal/resultspool"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
@@ -31,6 +32,13 @@ type serverDeps struct {
 	Session func(http.Handler) http.Handler
 	// Backpressure 是事件/触发入口的背压中间件（只包写入口，读端点不受影响）。
 	Backpressure func(http.Handler) http.Handler
+
+	// Spool 是中枢自有的产物字节池（#332 / A1）。nil = 未配置：上传回 503、
+	// 下载回 503，绝不回退到节点/用户目录（那是 A1 明令禁止的 fallback）。
+	//
+	// 为什么放在 deps 而不是各 handler 自己 new：托管根必须全进程唯一，否则
+	// 「上传写进 A 目录、下载从 B 目录读」会变成一个只在特定启动顺序下复现的 410。
+	Spool *resultspool.Store
 
 	// display 是 namespace id → slug 的缓存。
 	//
