@@ -22,7 +22,7 @@
  *   v3 A3  能力必须先定义
  *     → v4：能力 `spec.next` 的引用是**延迟解析**（DownstreamResolved=False/NotFound，
  *       不阻止创建）；「未定义能力不能当出口目标」的硬边界落到**源**上（建源被拒）。
- *       两条都钉（FINDING：源侧拒绝码当前是 500，见 routing.mjs 文件头，这里不固化 5xx）。
+ *       两条都钉（源侧拒绝码已由 #352 修为 400 `invalid_source_config`，这里按精确码断言）。
  *   v3 A5  出口封闭（from_port ∈ outputs）
  *     → v4 没有 port：闭合性 = `spec.next` 只接受合法引用 + PATCH 只接受 `next`
  *       （其它 spec 键 400 immutable_field）+ 内容不可变（同版本换内容 400）。
@@ -232,14 +232,14 @@ async function main() {
 	// ================= A3 未定义能力：不能当出口目标 / 引用只解析到 NotFound =================
 	{
 		// ① 源把事件指向不存在的能力 → 建源就被拒（客户端可修正，不是运行期静默丢事件）。
-		//    FINDING：当前回 500（见 routing.mjs 文件头），所以这里只钉「被拒 + 点名」。
+		//    #352 已修为 400 invalid_source_config，这里按精确码 + reason 断言（不接受 5xx）。
 		const broken = await V.createSource(
 			server.base,
 			session,
 			NS,
 			V.sourceBody({ name: "c.broken", kind: "manual", targets: [{ capability: "c.ghost" }] }),
 		);
-		A("A3", "源 targets 引用不存在的能力 → 建源被拒", broken.status >= 400, `${broken.status} ${String(broken.text).slice(0, 160)}`);
+		A("A3", "源 targets 引用不存在的能力 → 建源 400 invalid_source_config", broken.status === 400 && broken.json?.reason === "invalid_source_config", `${broken.status} ${String(broken.text).slice(0, 160)}`);
 		A(
 			"A3",
 			"拒绝消息点名那个能力（不是一句 500）",

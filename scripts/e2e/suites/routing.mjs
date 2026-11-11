@@ -38,20 +38,9 @@
  *     真产物的拉取/真脚本执行由 node_v4 覆盖（那边是零 mock 的真 anode）。
  *   - 不断言 sleep 出来的时序：一律「轮询 + 上限」，超时把最后一帧原样带出来。
  *
- * ======================== FINDING（产品 bug，未在本轮修）========================
- * 建源时 target 指向不存在的出口能力 → 500 InternalError（应为 400）。
- *
- *   位置：`internal/store/source.go:266-272`（checkSourceTargetsOn）返回的是**未包装的
- *     普通 error**：`fmt.Errorf("出口能力 %s 不存在", ref)`（:270），既不是
- *     `ErrNotFound` 也不是 `ErrInvalidSourceConfig`；`internal/server/api_status.go:99`
- *     的 writeAPIError 因此走不到任何已知映射，落到末尾的 500 InternalError。
- *   复现：POST /v1/namespaces/default/sources，body 的 spec.targets 写
- *     `[{ "capability": "does.not.exist" }]` → 500
- *     `{"kind":"Status","code":500,"reason":"InternalError","message":"create source: 出口能力 does.not.exist 不存在"}`。
- *   为什么是 bug：这是**客户端可修正**的校验失败（引用必须在本 ns 内可解析），按
- *     api-conventions §4.1 属于 400；`unknown_target` 已在 §4.2 的封闭集合里。
- *   本轮纪律：只钉「被拒（非 2xx）+ 消息点名出口能力」，**不把 5xx 写成契约**。
- *     产品修好后这两条应升级为 400 + reason。
+ *   已修复：#352 把未包装的普通 error 改为 `ErrSourceTargetInvalid` 哨兵，`writeAPIError`
+ *   映射为 400 `invalid_source_config`，message 点名目标能力；POST/PATCH 两条写路径都有单测。
+ *   本套件因此把断言收紧为 **精确 400 + reason**（不接受 5xx 蒙混过关）。
  * ==============================================================================
  */
 import * as H from "../lib/harness.mjs";
@@ -382,8 +371,8 @@ async function main() {
 		V.sourceBody({ name: "broken.demo", kind: "manual", targets: [{ capability: "does.not.exist" }] }),
 	);
 	H.check(
-		"引用了不存在的出口能力 → 建源被拒",
-		brokenSrc.status >= 400,
+		"引用了不存在的出口能力 → 建源 400 invalid_source_config",
+		brokenSrc.status === 400 && brokenSrc.json?.reason === "invalid_source_config",
 		`${brokenSrc.status} ${String(brokenSrc.text).slice(0, 160)}`,
 	);
 	H.check(

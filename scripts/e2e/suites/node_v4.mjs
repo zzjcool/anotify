@@ -460,16 +460,12 @@ async function partAnodeOnline(bin, token) {
 // partDeploy：人工部署 + 真拉取 + 真 apply。
 async function partDeploy(cap) {
 	console.log(`--- 5. 部署 ${cap.name} → anode 真拉产物 → deployments=applied ---`);
-	// 注意：`nodes` 这里传的是节点 **id**（metadata.uid）。
-	// api/resource.yaml 的 CapabilityDeployRequest 把 nodes 描述成「目标节点名」，
-	// 但实现（internal/server/resource_capability.go 直接把 body.Nodes 交给
-	// ws.Hub.Deploy，后者按 nodeID 查 nodes 表）只认 id：传名字会得到 404 not found。
-	// 这是契约与实现的措辞不一致（已作为产品问题上报，不在这里改产品），
-	// 套件按实现的真实口径传 id，否则整条真链根本起不来。
+	// `nodes` 按契约传**节点名**；#348 的 resolveDeployTargets 先名后 id，
+	// 响应里的 node 仍回带 id（部署事实钉的是 id）。按 id 的兼容路径由 deploy 套件覆盖。
 	const dep = await reqJ(
 		`部署 ${cap.name}`,
 		`/v1/namespaces/${NS}/capabilities/${encodeURIComponent(cap.name)}/deploy`,
-		{ session, body: { nodes: [nodeId] } },
+		{ session, body: { nodes: [nodeName] } },
 		200,
 	);
 	const outcomes = dep.json?.deployed || [];
@@ -622,11 +618,9 @@ async function partCancelRunning(sleeperCap) {
 	H.check("取消前该槽位处于占用状态", before.busyCount >= 1, JSON.stringify(before.instances));
 
 	// body 故意留空（→ 缺省原因 cancelled_by_user）。
-	// 为什么不传人话 reason：`TaskActionRequest.reason` 的契约描述是「人话原因（可选；
-	// 写进 cancel_requested 事实）」，但 store 用**同一个值**决定终态相位
-	// （internal/store/task.go:975 cancelPhase：只有字面 `cancelled_by_user` → cancelled，
-	// 其它一律 abandoned）。传人话会让「用户取消」静默变成「放弃」——这是契约与实现的
-	// 语义不一致，已作为产品问题上报，不在这里改产品，也不拿它当断言。
+	// #348 已把「用户取消」与「放弃」由端点意图区分：cancel 恒 cancelled（人话 reason
+	// 也落 cancelled），abandon 才 abandoned。人话 reason 的回归由 store 单测覆盖；
+	// 这里保留无 reason 的主路径，避免把两条语义混在同一个 e2e 断言里。
 	const cancel = await reqJ(
 		"请求取消",
 		`/v1/namespaces/${NS}/tasks/${encodeURIComponent(taskId)}/cancel`,
