@@ -5,27 +5,16 @@
 #
 #     GET  /v1/node/stream                                   WS 长连接（帧协议）
 #     GET  /v1/node/binary                                   agent 二进制下发（升级源）
+#     GET  /v1/node/capabilities/{digest}                    能力包体下行（内容通道）
 #     PUT  /v1/node/tasks/{taskId}/artifacts/{sha256}        产物上行（原始字节）
 #
-# 三条都用 `nodeToken`（`Authorization: Bearer <node token>`）——不是控制台会话 Cookie：
+# 四条都用 `nodeToken`（`Authorization: Bearer <node token>`）——不是控制台会话 Cookie：
 # 调用方是节点上的 anode / CLI，它们手里只有节点令牌。Node 身份的**签发/管理**（`POST
 # /v1/nodes/{name}/tokens`）属用户权限，在 resource.yaml；本文件只写「拿令牌怎么用」。
 #
-# ---------------------------------------------------------------- 已知缺口（必读）
-#
-# 契约要求但**实现缺失**：`GET /v1/node/capabilities/{digest}`（下行能力包体的内容通道）。
-#
-#   - 契约：docs/design/v4/api-conventions.md §8.2、.pi-orchestrator/v4/API-SPEC-HANDOFF.md
-#     的 agent.yaml 行、internal/protocol/deploy_frames.go:8；
-#   - 节点侧**已经在调**：cmd/anode/internal/capability/fetch.go:30（`GET /v1/node/capabilities/`）；
-#   - 中枢侧**没有这条路由**：internal/server/mux.go 只注册了 stream / binary /
-#     tasks/{taskId}/artifacts/{sha256} 三条 `/v1/node/*`；`grep node/capabilities internal/server`
-#     为空（没有任何 handler）。
-#
-# 因此本文件**不写**这条 path（规则：spec 只描述真实实现，parity 禁止「spec 有、handler 无」；
-# 造一条假 path 会让节点以为能取到包体）。→ 状态 SAFE_BLOCKED，**owner 另派**（「节点上行内容
-# 通道」实现 issue）。已冻结的 `capability.deploy` / `capability.deployed` 两帧仍在本文件
-# `components.schemas` 里如实记录（它们是**协议事实**，只是节点回执所依赖的那条 HTTP 还没实现）。
+# `GET /v1/node/capabilities/{digest}` 是 `capability.deploy` 帧的传输另一半（帧里只有
+# refs、不带包体）；它的授权判据（生效 ns + 已明确 deploy 到**这台**节点）与错误码见
+# `NodeCapabilityContent` 的 description。
 #
 # ---------------------------------------------------------------- 门禁说明（已知冲突）
 #
@@ -48,33 +37,33 @@ info:
   title: anotify v4 节点通道（agent）API
   version: v4-g3c
   description: |
-    节点（anode）与中枢之间的**唯一**三条通道，全部用节点身份令牌鉴权：
+    节点（anode）与中枢之间的**唯一**四条通道，全部用节点身份令牌鉴权：
 
     - `GET /v1/node/stream`：WebSocket 长连接，配置/执行/emit/logs/部署帧都在这条连接上；
     - `GET /v1/node/binary`：中枢自带 agent 的二进制（升级源），普通 HTTP 下载；
+    - `GET /v1/node/capabilities/{digest}`：能力包体下行（不可变 Artifact 文档的**原文**）；
     - `PUT /v1/node/tasks/{taskId}/artifacts/{sha256}`：一次执行的托管产物上行（原始字节）。
 
-    三条通道的共同纪律：
+    四条通道的共同纪律：
 
     1. **鉴权是节点身份**，不是用户会话：`Authorization: Bearer <node token>`，服务端只存
-       `sha256(token)`（`nodes.token_hash`）。会话 Cookie / API key 在这三条上无效。
-    2. **二进制与产物内容不套资源信封**：`binary` 的 200 是二进制原文、上传的 200/201 是
-       动作回执，都没有 `apiVersion/kind/metadata/spec/status` 五键。
-    3. **错误体只有两类**：`binary` 的 4xx/5xx 用 `Status`（api-conventions §4.1）；产物上行用
-       A1 的封闭动作文档 `{"error":"<code>"}`（`ArtifactUploadErrorBody`），**故意不是** Status。
-       `stream` 没有任何 HTTP 错误响应：鉴权/握手失败是升级之后的 close 帧。
-    4. **已冻结的 WS 帧/DTO 的权威是 Go**（`internal/protocol`，T3 唯一作者）。本文件的
+       `sha256(token)`（`nodes.token_hash`）。会话 Cookie / API key 在这四条上无效。
+    2. **二进制与内容不套资源信封**：`binary` 的 200 是二进制原文、`capabilities/{digest}` 的
+       200 是 artifact 文档本身（`apiVersion/kind/metadata/spec`，**没有** `status`）、上传的
+       200/201 是动作回执 —— 都不是资源信封。
+    3. **错误体只有两类**：`binary` 与 `capabilities/{digest}` 的 4xx/5xx 用 `Status`
+       （api-conventions §4.1）；产物上行用 A1 的封闭动作文档 `{"error":"<code>"}`
+       （`ArtifactUploadErrorBody`），**故意不是** Status。`stream` 没有任何 HTTP 错误响应：
+       鉴权/握手失败是升级之后的 close 帧。
+    4. **已冻结的 WS 帧/DTO 的权威是 Go**（`internal/protocol`）。本文件的
        `components.schemas` 是它们的**文档投影**，字段名逐一对应 Go struct 的 `json` tag；
        不在这里新增帧、不改字段、不做第二个 wire 真源。
-
-    `GET /v1/node/capabilities/{digest}`（能力包体下行）**未实现**，故不在 paths 里 —— 见文件顶
-    注释的缺口说明。
 servers:
   - url: /
     description: 路径自身已含 `/v1`，此处不再加前缀（否则会拼出 `/v1/v1/…`）
 tags:
   - name: node
-    description: 节点身份鉴权的通道（WS 长连接 / 二进制下发 / 产物上行）
+    description: 节点身份鉴权的通道（WS 长连接 / 二进制下发 / 能力包体下行 / 产物上行）
   - name: protocol
     description: 已冻结协议帧与动作 DTO 的 schema 文档（无 HTTP operation，不进资源信封）
 x-protocol-frames:
@@ -108,6 +97,8 @@ paths:
     $ref: '#/components/pathItems/NodeStream'
   /v1/node/binary:
     $ref: '#/components/pathItems/NodeBinary'
+  /v1/node/capabilities/{digest}:
+    $ref: '#/components/pathItems/NodeCapabilityContent'
   /v1/node/tasks/{taskId}/artifacts/{sha256}:
     $ref: '#/components/pathItems/NodeArtifactUpload'
 components:
@@ -268,6 +259,93 @@ components:
             $ref: './resource.yaml#/components/responses/Status401'
           "501":
             $ref: './resource.yaml#/components/responses/Status501'
+    # ======================================================================
+    # GET /v1/node/capabilities/{digest} —— 能力包体下行（内容通道）
+    # ======================================================================
+    NodeCapabilityContent:
+      get:
+        tags: [node]
+        operationId: getNodeCapabilityContent
+        summary: 拉取一份不可变的能力包体（Artifact JSON 原文，节点令牌鉴权）
+        description: |
+          api-conventions §8.2 的**内容通道**（`internal/server/node_capability.go`）。它是
+          `capability.deploy` 帧的传输另一半：帧里只有 `{namespace, name, version, digest}`
+          （**不带包体**），节点拿到 refs 后用**自己的节点令牌**到这里取那份不可变 Artifact
+          文档，校验 digest / refs 后原子缓存（`cmd/anode/internal/capability` 的 Fetch）。
+
+          ### 响应形状
+
+          `200` 的 body 就是 artifact 文档本身（`apiVersion` / `kind` / `metadata` / `spec`，
+          含**完整** `run.files`），**不套资源信封、不带 `status`**：节点会用收到的同一份字节
+          重算 digest 并与 refs 比对，任何再包装都会让部署永远判 `digest_mismatch`。
+          `Content-Type` 是 `application/json`，带 `Content-Length` 与 `Cache-Control: no-store`。
+
+          ### 授权（两个条件必须同时成立）
+
+          1. 该能力属于这台 Node 的**生效**命名空间（申报 ∩ 中枢授权，`store.AuthorizedNamespaces`）；
+          2. 这份内容**已明确 deploy 到这台 Node**（`deployments` 里有一条指向本节点 + 该能力的行）。
+
+          「节点令牌有效」本身**不**够：否则任意节点都能按 digest 拖走整个集群的能力正文。
+          部署行的状态（pending / applied / failed）不影响可读性——三种都表示中枢对这台机器下达过
+          「持有这份内容」的意图，`failed` 之后运维更需要能重取一次。响应不缓存：唯一缓存层是
+          节点侧的原子缓存，中枢侧任何一级缓存都会让「撤销部署后还能读到旧正文」发生。
+
+          ### 错误（`Status` 信封，api-conventions §4.1）
+
+          - `401`：令牌缺失 / 未知 / **已轮换（撤销）**。不区分三者（区分会变成令牌存在性探测面）。
+          - `403`：内容在这台 Node **看得见**（生效 ns 内确有该 digest），但没有 deploy 到这台 Node。
+            不是 404：能力确实存在，缺的是给这台机器的部署意图，节点回执里的 `forbidden` 能把运维
+            直接指向「去点部署」。
+          - `404`：digest 不存在，或它只存在于这台 Node **未获授权**的命名空间里。跨 ns 与不存在
+            **同码**——否则一次按 digest 的枚举就能问出「别的 ns 里有没有这份内容」。
+          - `405`：非 GET（只读通道）。
+        security:
+          - nodeToken: []
+        parameters:
+          - name: digest
+            in: path
+            required: true
+            description: |
+              能力包体 digest（`sha256:<64 位小写 hex>`），与 `capability.deploy` 帧里的 `digest`
+              同值。线上形态是**字面量**（节点用 `url.PathEscape` 拼 URL，而 path-segment 转义不转
+              `:`，RFC 3986 §3.3）。形状不合法按「这份内容不存在」处理 → `404`。
+            schema:
+              type: string
+              pattern: '^sha256:[0-9a-f]{64}$'
+          - name: Authorization
+            in: header
+            required: true
+            description: |
+              节点身份令牌：`Bearer <node token>`。handler 自己解析 Bearer，不走会话中间件
+              （节点没有用户 Cookie）。缺头 / 令牌无效 → `401 Unauthorized`。
+            schema:
+              type: string
+        responses:
+          "200":
+            description: |
+              完整的 artifact 文档（`artifact.CanonicalJSON` 的规范字节）：`apiVersion` / `kind` /
+              `metadata` / `spec`（含完整 `run.files`），**没有** `status`，不套资源信封。
+            content:
+              application/json:
+                schema:
+                  type: object
+                  description: |
+                    Artifact 文档本体。形状的权威是 `internal/artifact` 的 `Artifact` 类型
+                    （`apiVersion: anotify/v1`、`kind: Capability`、`metadata.{name,version,displayName?}`、
+                    `spec`）；节点侧用 `artifact.Parse` + 重算 digest 校验。刻意不在这里再写一份
+                    字段表（第二份真源迟早与 `internal/artifact` 分叉），也刻意**不** `$ref`
+                    `Capability` 资源 schema —— 内容通道没有派生 `status`，引用资源信封会让 spec 撒谎。
+          "401":
+            $ref: './resource.yaml#/components/responses/Status401'
+          "403":
+            $ref: './resource.yaml#/components/responses/Status403'
+          "404":
+            $ref: './resource.yaml#/components/responses/Status404'
+          "405":
+            $ref: './resource.yaml#/components/responses/Status405'
+          "500":
+            $ref: './resource.yaml#/components/responses/Status500'
+
     # ======================================================================
     # PUT /v1/node/tasks/{taskId}/artifacts/{sha256} —— 产物上行
     # ======================================================================
@@ -1226,9 +1304,9 @@ components:
       type: object
       description: |
         **下行** · 中枢 → 节点的部署通知（在线节点上的一次**显式人工部署**）。只带 refs，
-        **不带包体**（也没有 files 字段）：包体本应走 `GET /v1/node/capabilities/{digest}`
-        ——那条 HTTP **尚未实现**（见文件顶部的缺口说明）；离线节点不靠这一帧，重连后由中枢
-        重放已请求的未完成部署。
+        **不带包体**（也没有 files 字段）：包体走与之配套的
+        `GET /v1/node/capabilities/{digest}`（见 `NodeCapabilityContent`）；离线节点不靠这一帧，
+        重连后由中枢重放已请求的未完成部署。
 
         `namespace` / `name` / `version` / `digest` 在 Go 侧由 `DeployRefs` **匿名嵌入**后
         平铺成四个顶层键（wire 只有这一份定义）。
