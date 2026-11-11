@@ -17,6 +17,11 @@
  */
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
+import * as V from "../lib/v4.mjs";
+
+// v4 把命名空间放进了路径：任务列表是 `/v1/namespaces/{ns}/tasks`。
+// 会话鉴权边界不变（未登出 200 / 登出 401），只是路径要带 ns。
+const NS = V.DEFAULT_NS;
 
 const RP = "localhost";
 const SUITE = "password_login";
@@ -410,8 +415,8 @@ async function main() {
 		200,
 	);
 	H.eq(
-		"登出后 /v1/tasks → 401",
-		(await H.req(server.base, "/v1/tasks", { session: sess })).status,
+		"登出后 …/tasks → 401",
+		(await H.req(server.base, V.P.tasks(NS), { session: sess })).status,
 		401,
 	);
 
@@ -500,7 +505,7 @@ async function main() {
 	H.check(
 		"Passkey 登录后会话可访问受保护 API",
 		!!sess &&
-			(await H.req(server.base, "/v1/tasks", { session: sess })).status === 200,
+			(await H.req(server.base, V.P.tasks(NS), { session: sess })).status === 200,
 	);
 
 	// ---------- 8. UI：安全页改密码（修改态必须填当前密码） ----------
