@@ -83,14 +83,16 @@ fi
 # 每条真正"跑东西"的命令都必须带 taskset。用**正向断言**（固定串必须存在），
 # 而不是"反查没带 taskset 的行"——后者会把 `[ -x "$PB_BIN/anotify" ]`、
 # 多行 env 续行、以及 selfcheck 自己的 grep 模式全抓成假阳性。
+#
+# 节点侧（构建 agent、`"$PB_BIN/agent" -f`）已于 #338 退役：v3 的 cmd/agent 被 anode
+# 取代，本目录的节点侧场景是 v3 CLI 形状、未迁移（pb_node* 会当场 pb_die），
+# 所以这里不再断言那两条。
 need=(
 	'taskset -c \"$PB_CORES\" go build -o \"$PB_BIN/anotify\"'
-	'taskset -c \"$PB_CORES\" go build -o \"$PB_BIN/agent\"'
 	'taskset -c \"$PB_CORES\" go build -o \"$PB_BIN/loadgen\"'
 	'taskset -c \"$PB_CORES\" go build -o \"$PB_BIN/devseed\"'
 	'taskset -c \"$PB_CORES\" \"$PB_BIN/devseed\"'
 	'taskset -c \"$PB_CORES\" env'
-	'taskset -c \"$PB_CORES\" \"$PB_BIN/agent\" -f'
 	'taskset -c \"$PB_CORES\" \"$PB_BIN/loadgen\"'
 	'taskset -c \"$PB_CORES\" go tool pprof'
 )

@@ -23,9 +23,12 @@ const (
 	// defaultPendingMaxAgeSec 是派发背压的默认阈值（#228）：最老 pending 任务的等待秒数。
 	defaultPendingMaxAgeSec = 120
 
-	// defaultAgentBinPath 是中枢自带的 agent 二进制默认路径（CONTRACT-agent-upgrade §2）。
-	// 容器镜像把它放在 /app/agent；文件不存在 = 自升级功能**未启用**（不是错误）。
-	defaultAgentBinPath = "/app/agent"
+	// defaultAgentBinPath 是中枢自带的**节点二进制**（v4 叫 anode）默认路径（CONTRACT-agent-upgrade §2）。
+	// 容器镜像把它放在 /app/anode（Dockerfile 的 COPY --from=build /anode /app/anode）；
+	// 文件不存在 = 自升级功能**未启用**（不是错误）。
+	// v3 的 /app/agent（cmd/agent）已随节点产品换代为 anode 退役：默认路径若留在旧值上，
+	// 只会让裸机/非镜像部署静默“没带二进制”（仅靠镜像里的 ANOTIFY_AGENT_BIN 兜底）。
+	defaultAgentBinPath = "/app/anode"
 
 	// maxEventRetentionDays / maxPendingMaxAgeSec 是**防溢出上限**（不是产品策略）。
 	//

@@ -7,6 +7,12 @@
 #   - 前后对比必须**同场次交替跑**：base → new → (需要时) base，
 #     并把 /proc/loadavg 一并记下来（本机常年有别的路在压，绝对数字会漂）
 #
+# 节点二进制（#338）：v3 的 cmd/agent 已随节点产品换代为 **anode**（v4，./cmd/anode）。
+# nodes.sh 里的节点侧仍是 v3 CLI 形状（`agent -f yaml -grace`），v4 的 anode 是
+# `anode serve --config …` 且配置形状不同 —— 这一路未迁移，所以 p3b_ensure_bins
+# 不再构建节点二进制，nodes.sh 会当场 p3b_die（不会静默用错二进制）。
+# events.sh 只依赖 server + loadgen，不受影响。
+#
 # 用法：
 #   bash scripts/perf/3b/nodes.sh  <server 二进制> <tag>     # #223，GET /v1/nodes
 #   bash scripts/perf/3b/events.sh <server 二进制> <tag>     # #243，GET /v1/console/events
@@ -32,20 +38,22 @@ p3b_port() {
 	[ "$p" -ge 8040 ] && [ "$p" -le 8059 ] || p3b_die "端口 $p 不在本路允许区间 8040-8059"
 }
 
-# p3b_ensure_bins：只构建辅助二进制（devseed/agent/loadgen）；server 由调用方传。
+# p3b_ensure_bins：只构建辅助二进制（devseed/loadgen）；server 由调用方传。
 # 存在即复用（换 commit 复现时请 PB_REBUILD=1 或 rm -rf $P3B_BIN）。
+#
+# 节点二进制（v3 的 cmd/agent）已随节点产品换代为 anode（v4）：本路节点侧未迁移
+# （见文件头），所以这里不再构建它 —— 不把 anode 改名成 agent 假装能跑。
 p3b_ensure_bins() {
 	mkdir -p "$P3B_BIN" "$P3B_OUT"
 	local need=0 b
-	for b in devseed agent loadgen; do [ -x "$P3B_BIN/$b" ] || need=1; done
+	for b in devseed loadgen; do [ -x "$P3B_BIN/$b" ] || need=1; done
 	[ "${PB_REBUILD:-0}" = "1" ] && need=1
 	[ "$need" = "0" ] && return 0
-	p3b_say "构建 devseed/agent/loadgen → $P3B_BIN"
+	p3b_say "构建 devseed/loadgen → $P3B_BIN"
 	(
 		cd "$P3B_ROOT" || exit 1
 		export GOPROXY=${GOPROXY:-direct} GOSUMDB=${GOSUMDB:-sum.golang.org} GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 		taskset -c "$P3B_CORES" go build -o "$P3B_BIN/devseed" ./cmd/devseed || exit 1
-		taskset -c "$P3B_CORES" go build -o "$P3B_BIN/agent" ./cmd/agent || exit 1
 		taskset -c "$P3B_CORES" go build -o "$P3B_BIN/loadgen" ./scripts/perf/loadgen || exit 1
 	) || p3b_die "辅助二进制构建失败"
 }
