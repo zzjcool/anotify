@@ -4,8 +4,11 @@
  * 职责：
  *   1. 按套件类型分组：HTTP 类（无 Chrome）全并行，Chrome 类信号量控制并发
  *   2. 每套件 spawn node suites/<name>.mjs，传 E2E_RESULTS_DIR 环境变量
- *   3. per-suite 超时 120s（Node 原生 setTimeout+kill，替代 macOS 缺失的 timeout）
- *   4. 读各套件 JSON 结果聚合汇总报告
+ *   3. per-suite 预算：默认 120s，重套件按全量实测单独放宽（SUITE_TIMEOUT_OVERRIDE）；
+ *      超时即 SIGKILL 并判 fail（Node 原生 setTimeout+kill，替代 macOS 缺失的 timeout）
+ *   4. 读各套件 JSON 结果聚合汇总报告，并按 #338 判分：exit≠0 一律 fail、
+ *      每个套件必须 passed>0 且 assertions[] 自洽、结果集合 == 请求集合、
+ *      authority 清单必须覆盖请求套件且 mode 与注入计划一致
  *   5. 按 #338 裁决给四个具名 FE 套件注入 E2E_MOCK_ONLY=1，并把每套件的
  *      mode/authority 打进汇总 + 落盘 `_authority-manifest.json`
  *
@@ -137,6 +140,16 @@ function suiteAuthority(name) {
 // 「前端 real 通过」——比红更危险，所以这里直接 exit 2，不给「先跑跑看」。
 function assertAuthorityContract() {
 	const problems = [];
+	// 注册表冻结（#338）：全量 e2e = 28 个套件，是门禁证据的一部分。
+	if (ALL_SUITES.length !== SUITE_REGISTRY_SIZE) {
+		problems.push(
+			`注册套件 ${ALL_SUITES.length} 个，冻结值是 ${SUITE_REGISTRY_SIZE}` +
+				`（增删套件必须同步本清单、authority 裁决与 docs/v4/e2e-inventory.md）`,
+		);
+	}
+	if (new Set(ALL_SUITES).size !== ALL_SUITES.length) {
+		problems.push("ALL_SUITES 里有重名套件（会导致「结果集合 == 请求集合」静默退化）");
+	}
 	if (EXPLICIT_MOCK_SUITES.has("frontend")) {
 		problems.push("frontend 绝不能进 EXPLICIT_MOCK_SUITES（它是 real authority）");
 	}
@@ -164,20 +177,30 @@ function assertAuthorityContract() {
 }
 
 const SUITE_TIMEOUT = 120_000; // 120s per suite（默认）
-// frontend 是唯一一个要跑 249 条断言的套件，光 Chrome 交互就要 ~106s，
-// 默认 120s 只剩十几秒余量 —— 并发跑时必然踩线。给它单独放宽。
+// 重套件的 per-suite 预算按**全量并行实测**定，且不低于 2× 实测（#338 复现记录）：
+//   i18n_coverage 全量 113.1/114.4/115.6s（单跑 39s）→ 120s 预算只剩 4-7s 余量，
+//   并发抖动下直接 SIGKILL，汇总里变成「0通过/0失败 超时」——和后端真回归分不开。
+// 超时仍然判 fail（不因预算调大而降级判分）：加预算只是让「慢但正确」和「卡死」可区分。
 const SUITE_TIMEOUT_OVERRIDE = {
-	// 断言数还会涨（现在 310 条），240s 在并发下只剩十几秒余量，
-	// 加几条动画采样就会被 SIGKILL 掉。留足一倍余量。
+	// frontend：real authority，249+ 条断言，全量实测 ~190s（单跑 ~106s）。
 	frontend: 360_000,
+	// i18n：全量实测 89-104s（单跑 39s）；切语言 + 几何测量的等待在并发下翻倍。
+	i18n: 240_000,
+	// i18n_coverage：全量实测 113-116s（单跑 39s）→ 2× ≈ 232s，留到 300s。
+	i18n_coverage: 300_000,
+	// ui_shift（#335）：304 视图，全量实测 148-169s（单跑 148s）。
+	ui_shift: 300_000,
+	// ux_regression_19_23：全量实测 ~60s，2× = 120s。显式写出来，不靠默认值碰运气。
+	ux_regression_19_23: 120_000,
 	// node_v4（#336）：绿的时候 ~2s，但串了 5 个真实进程阶段（握手/部署/执行/取消/离线），
 	// 每阶段都有有界轮询；真回归要看到卡在哪一步，而不是先被 SIGKILL。套件自身断言 <300s。
 	node_v4: 300_000,
 	// capacity（#336）：保留期清理挂 30s 租约巡检 tick，三轮 ≈150s；默认 120s 会 SIGKILL。
 	capacity: 300_000,
-	// ui_shift（#335）：304 视图（单跑 148s），默认 120s 在并发下必被 SIGKILL；300s 留余量。
-	ui_shift: 300_000,
 };
+// 注册套件数冻结（#338）：门禁证据要求「一次全量 = 28 个套件」。
+// 增删套件必须同时改这里 + AUTHORITY 清单 + docs/v4/e2e-inventory.md，否则启动即 exit 2。
+const SUITE_REGISTRY_SIZE = 28;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
@@ -419,9 +442,21 @@ async function runParallel(suites) {
 	return results;
 }
 
-// ---------- 结果聚合 ----------
-function readJsonResult(suiteName) {
-	const file = path.join(RESULTS_DIR, `${suiteName}.json`);
+// ---------- 结果聚合与判分 ----------
+//
+// #338 判分口子（旧实现在三个地方会把「没验证」判成绿）：
+//   ① `exit≠0 & failed==0 → pass-warning`：进程非 0 退出可能是清理阶段异常，
+//      也可能是套件根本没跑完（信号/崩溃/挂死）。凭一份「断言全过」的 JSON 反推它
+//      “只是清理失败”，等于把进程层失败当 warning 放行 —— 现在 exit≠0 一律 fail。
+//   ② 从不校验断言数：没有 results/<suite>.json、或 0通过/0失败，都照样计入汇总。
+//      现在：必须落盘结果、assertions[] 与 passed+failed 自洽，且 passed>0
+//      （真存在 0 断言套件就进 ZERO_ASSERTION_ALLOW 具名白名单并写理由）。
+//   ③ 不校验集合：请求了 28 个套件，结果里少一个 / 多一个未注册的都不报。
+//      现在：结果集合必须等于请求集合（缺失/多余/未注册全部 fail）。
+const ZERO_ASSERTION_ALLOW = new Map(); // `套件名 → 为什么合法地 0 断言`（现在是空：不允许）
+
+function readJsonResult(suiteName, resultsDir = RESULTS_DIR) {
+	const file = path.join(resultsDir, `${suiteName}.json`);
 	if (!existsSync(file)) return null;
 	try {
 		return JSON.parse(readFileSync(file, "utf8"));
@@ -430,39 +465,62 @@ function readJsonResult(suiteName) {
 	}
 }
 
-function aggregateResults(rawResults) {
+function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 	let totalPass = 0;
 	let totalFail = 0;
 	const suiteSummary = [];
 	const failedSuites = [];
-	const warningSuites = [];
+	const problems = [];
+	const requestedSet = new Set(requested);
+	const seen = new Set();
 
 	for (const r of rawResults) {
-		const json = readJsonResult(r.suite);
+		const json = readJsonResult(r.suite, resultsDir);
 		const passCount = json?.passed ?? 0;
-		// 以 JSON 的 failed 数为断言成败的权威依据，而非进程 exit code。
-		// 原因：套件断言全过（json.failed===0）后，清理阶段（browser.close()/
-		// server.stop()）可能因并行资源争用抛未捕获异常 → 进程 exit≠0。
-		// 这种情况断言实际全绿，不应判为套件失败（会致并行模式 flaky）。
 		const failCount = json?.failed ?? 0;
 		const durationMs = json?.durationMs ?? 0;
 
-		// 套件状态判定：JSON 结果优先；无 JSON（crash/timeout）才退回 exit code。
-		let status;
+		let status = "pass";
+		const why = [];
 		if (r.status === "timeout") {
 			status = "timeout";
-		} else if (json) {
-			// 有 JSON 结果：按断言失败数判定
-			status = failCount === 0 ? "pass" : "fail";
-			// exit≠0 但断言全过 → 清理阶段 error，标记 warning 但不算失败
-			if (r.status !== "pass" && failCount === 0) {
-				status = "pass-warning";
-				warningSuites.push(r.suite);
-			}
-		} else {
-			// 无 JSON（进程 crash 未写结果）：按 exit code
-			status = r.status === "pass" ? "pass" : "fail";
+			why.push(`超过 ${(r.budget || SUITE_TIMEOUT) / 1000}s 预算被 SIGKILL`);
+		} else if (r.status !== "pass") {
+			// ① exit≠0 / spawn error：套件进程没正常收尾，不再当 warning
+			status = "fail";
+			why.push(
+				`进程退出码 ${r.exitCode ?? "?"}${r.error ? ` (${r.error})` : ""}` +
+					`——exit≠0 一律 fail（旧实现会按 JSON 断言全过降级成 pass-warning）`,
+			);
 		}
+		if (!json) {
+			// ② 没落盘结果 = 没证据：0通过/0失败 也是失败
+			if (status !== "timeout") status = "fail";
+			why.push("没有 results/<suite>.json（未跑到 summary / 崩溃前未落盘）");
+		} else {
+			if (failCount > 0) {
+				status = "fail";
+				why.push(`断言失败 ${failCount} 条`);
+			}
+			if (!Array.isArray(json.assertions)) {
+				status = status === "timeout" ? status : "fail";
+				why.push("结果缺少 assertions[]（断言计数无证据）");
+			} else if (passCount + failCount !== json.assertions.length) {
+				status = status === "timeout" ? status : "fail";
+				why.push(
+					`passed(${passCount})+failed(${failCount}) ≠ assertions.length(${json.assertions.length})`,
+				);
+			}
+			if (passCount === 0 && !ZERO_ASSERTION_ALLOW.has(r.suite)) {
+				status = status === "timeout" ? status : "fail";
+				why.push("0 条断言通过（0通过/0失败 判 fail，不是空转绿）");
+			}
+		}
+
+		// ③ 集合断言：结果必须来自本次请求的套件，且不重复
+		if (!requestedSet.has(r.suite)) problems.push(`结果里有本次未请求的套件 ${r.suite}`);
+		if (seen.has(r.suite)) problems.push(`套件 ${r.suite} 被重复执行（结果重复）`);
+		seen.add(r.suite);
 
 		totalPass += passCount;
 		totalFail += failCount;
@@ -474,14 +532,83 @@ function aggregateResults(rawResults) {
 			passed: passCount,
 			failed: failCount,
 			durationMs,
+			why,
 		});
 
-		if (status === "fail" || status === "timeout") {
+		if (status !== "pass") {
 			failedSuites.push(r.suite);
+			problems.push(`${r.suite}: ${why.join("；")}`);
 		}
 	}
 
-	return { totalPass, totalFail, suiteSummary, failedSuites, warningSuites };
+	// 请求了但没有任何结果 = 缺失（静默少跑一个套件也是“什么都没验”）
+	for (const s of requestedSet) {
+		if (seen.has(s)) continue;
+		failedSuites.push(s);
+		problems.push(`${s}: 请求了但没有任何结果（缺失）`);
+	}
+
+	// results/ 里的结果文件集合：未注册 = 注册表漂移；未请求 = 多余结果
+	let resultFiles = [];
+	try {
+		resultFiles = readdirSync(resultsDir);
+	} catch {
+		resultFiles = [];
+	}
+	for (const file of resultFiles) {
+		if (!file.endsWith(".json") || file.startsWith("_")) continue;
+		const name = file.slice(0, -5);
+		if (!ALL_SUITES.includes(name)) {
+			problems.push(`results/${file} 是未注册套件的结果（ALL_SUITES 与套件目录漂移）`);
+		} else if (!requestedSet.has(name)) {
+			problems.push(`results/${file} 属于本次未请求的套件（多余结果）`);
+		}
+	}
+
+	return { totalPass, totalFail, suiteSummary, failedSuites, problems };
+}
+
+// authority 清单校验（#338）：清单是「这次到底验了什么」的证据文件。
+// 它本身不被校验，就只是一张可以随手写的纸：mode 漂了（real 悄悄变 mock）、
+// 覆盖面少一个套件，汇总依旧打印「real 24 / explicit-mock 4」。
+function validateAuthorityManifest(payload, requested) {
+	const problems = [];
+	const rows = Array.isArray(payload?.suites) ? payload.suites : [];
+	const expected = authorityRows(requested);
+	const bySuite = new Map(rows.map((r) => [r.suite, r]));
+	if (rows.length !== expected.length) {
+		problems.push(
+			`manifest 覆盖 ${rows.length} 个套件，请求的是 ${expected.length} 个` +
+				`（全量运行必须覆盖 ${SUITE_REGISTRY_SIZE} 个注册套件）`,
+		);
+	}
+	for (const e of expected) {
+		const row = bySuite.get(e.suite);
+		if (!row) {
+			problems.push(`manifest 缺少套件 ${e.suite}`);
+			continue;
+		}
+		if (row.mode !== e.mode || row.authority !== e.authority) {
+			problems.push(`${e.suite}: manifest mode=${row.mode}/authority=${row.authority}，注入计划是 ${e.mode}`);
+		}
+		if (row.mockEnv !== e.mockEnv) {
+			problems.push(`${e.suite}: manifest mockEnv=${row.mockEnv}，注入计划是 ${e.mockEnv}`);
+		}
+	}
+	for (const row of rows) {
+		if (!expected.some((e) => e.suite === row.suite)) {
+			problems.push(`manifest 里有本次未请求的套件 ${row.suite}`);
+		}
+	}
+	const realRows = rows.filter((r) => r.mode === "real").length;
+	const mockRows = rows.filter((r) => r.mode === "explicit-mock").length;
+	if (payload?.summary?.real !== realRows || payload?.summary?.explicitMock !== mockRows) {
+		problems.push(
+			`manifest summary(real=${payload?.summary?.real}, explicit-mock=${payload?.summary?.explicitMock})` +
+				` 与明细行(real=${realRows}, explicit-mock=${mockRows}) 不一致`,
+		);
+	}
+	return problems;
 }
 
 // 落盘 authority 清单：把「这次运行里每个套件到底跑在什么 authority 下」固化成证据文件，
@@ -555,8 +682,8 @@ async function main() {
 		: await runParallel(suitesToRun);
 	const totalMs = Date.now() - startMs;
 
-	// 聚合
-	const agg = aggregateResults(rawResults);
+	// 聚合（#338：把请求集合一起传进去，结果集合必须等于请求集合）
+	const agg = aggregateResults(rawResults, suitesToRun);
 
 	// 输出汇总
 	console.log("==========================================");
@@ -569,6 +696,16 @@ async function main() {
 	console.log(`  断言失败: ${agg.totalFail}`);
 	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
 	const manifestFile = writeAuthorityManifest(agg, suitesToRun);
+	// 从**磁盘读回**再校验：清单是证据文件，写进去了但内容/覆盖面不对就等于假证据。
+	let manifestProblems = [];
+	try {
+		manifestProblems = validateAuthorityManifest(
+			JSON.parse(readFileSync(manifestFile, "utf8")),
+			suitesToRun,
+		);
+	} catch (err) {
+		manifestProblems = [`authority 清单无法读回/解析：${String(err && err.message ? err.message : err)}`];
+	}
 	const mockRan = agg.suiteSummary.filter((s) => s.mode === "explicit-mock").length;
 	console.log(
 		`  验收 authority: real ${agg.suiteSummary.length - mockRan} / explicit-mock ${mockRan}` +
@@ -580,12 +717,10 @@ async function main() {
 	for (const s of agg.suiteSummary) {
 		const statusIcon =
 			s.status === "pass" ? "✅" :
-			s.status === "pass-warning" ? "✅" :
 			s.status === "timeout" ? "⏱️" : "❌";
 		const durStr = s.durationMs > 0 ? `${(s.durationMs / 1000).toFixed(1)}s` : "—";
-		const warnTag = s.status === "pass-warning" ? " ⚠️清理异常" : "";
 		console.log(
-			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}${warnTag}  mode=${s.mode}`,
+			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}  mode=${s.mode}`,
 		);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
@@ -598,24 +733,29 @@ async function main() {
 		}
 	}
 
-	if (agg.warningSuites.length > 0) {
-		console.log("");
-		console.log(
-			`  ⚠️ 清理阶段异常（断言全过，非失败）: ${agg.warningSuites.join(", ")}`,
-		);
-	}
-
 	if (agg.failedSuites.length > 0) {
 		console.log("");
 		console.log(`  失败套件: ${agg.failedSuites.join(", ")}`);
 	}
 
+	// 判分问题（#338）：这些都不是 warning，是「本次没有验证到什么」。
+	const gateProblems = [...agg.problems, ...manifestProblems];
+	if (gateProblems.length > 0) {
+		console.log("");
+		console.log("  判分失败项（一律判 fail，不再有 pass-warning）：");
+		for (const p of gateProblems) console.log(`   - ${p}`);
+	}
+
 	console.log("==========================================");
-	if (agg.failedSuites.length > 0) {
+	if (agg.failedSuites.length > 0 || gateProblems.length > 0) {
 		console.log("❌ E2E 未全绿");
 		process.exit(1);
 	}
-	console.log("✅ E2E 全绿");
+	// 绿灯也要能自证「验了多少」：全量运行必须 28/28 覆盖。
+	console.log(
+		`✅ E2E 全绿：${agg.suiteSummary.length}/${suitesToRun.length} 个请求套件均达标` +
+			`（断言 ${agg.totalPass} 通过 / ${agg.totalFail} 失败，authority 清单覆盖 ${agg.suiteSummary.length} 个）`,
+	);
 	process.exit(0);
 }
 

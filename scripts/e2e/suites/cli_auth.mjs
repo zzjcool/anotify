@@ -456,6 +456,21 @@ async function webVerify(server, seedSession) {
 		{ path: "es/cli-auth.html", label: "es" },
 	];
 
+	async function waitForBodyText(page, probe, timeout = 8000) {
+		// confirm 态的设备名/scope 是**异步**渲染的（页面先挂 shell，再拉 cli session 详情）。
+		// 全量并发下，`waitForAppReady` 之后立即读 innerText 会读到半渲染的 DOM
+		// （#338 全量复现：`body 未含 verify-host` / 未含 send scope，同时 pageerror 为 0）。
+		// 这里等真实事实出现再断言；超时不吞（返回最后一次读数，调用方的检查照常判红）。
+		const deadline = Date.now() + timeout;
+		let text = "";
+		for (;;) {
+			text = await page.evaluate(() => document.body.innerText);
+			if (probe(text)) return text;
+			if (Date.now() > deadline) return text;
+			await page.waitForTimeout(100);
+		}
+	}
+
 	async function checkPage(ctx, url, vpName, vp) {
 		const page = await ctx.newPage();
 		await page.setViewportSize({ width: vp.width, height: vp.height });
@@ -520,7 +535,7 @@ async function webVerify(server, seedSession) {
 		await page.goto(server.base + "/cli-auth.html?s=" + s.json.sessionId, { waitUntil: "load", timeout: 15000 });
 		await H.waitForAppReady(page, "login");
 		H.check("AC-05/35 已登录 confirm 态无 JS pageerror", errs.length === 0, errs[0]?.slice(0, 100));
-		const bodyText = await page.evaluate(() => document.body.innerText);
+		const bodyText = await waitForBodyText(page, (t) => t.includes("verify-host") && /notify:send|发送/i.test(t));
 		H.check("AC-05 confirm 态显示设备名", bodyText.includes("verify-host"), `body 未含 verify-host`);
 		H.check("AC-05 confirm 态显示 notify:send 勾选项", /notify:send|发送/i.test(bodyText), `body 未含 send scope`);
 		// 移动视口也无溢出
