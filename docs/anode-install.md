@@ -55,7 +55,7 @@ anode 已装好并已启动
 控制台「节点」页应该看到 node-a 在线；没上线先看日志：journalctl -u anode -f
 ```
 
-看到 `状态 active (running)` 之后去控制台「节点」页确认节点在线（没上线先看上面那行日志命令，不要反复重跑安装）。脚本先启服务再**轮询** `is-active`（最多 10 秒），不会像浏览器那样"点一下立刻判定失败"。
+看到 `状态 active/running` 之后去控制台「节点」页确认节点在线（没上线先看上面那行日志命令，不要反复重跑安装）。脚本先启服务再**轮询**，最多 10 秒；但判据不是 `is-active`——`Type=simple` 的 unit 在「进程刚 fork 出来、还没读到配置就退出」的那一瞬间也算 active（`SubState=start`），而 `systemctl restart` 正是等到“started”就返回，紧跟它的第一次轮询几乎必然命中这一刻（真实事故：配置目录 0700 → 读不到 anode.yaml → 422 次重启，摘要却写 `active (running)`）。所以判定用 `ActiveState=active && SubState=running`，并要求 **2 秒后仍然如此**（稳定窗口）；稳定不了就是安装失败（非 0），摘要会把 systemd 的原始 `ActiveState/SubState` 和重启次数如实打出来。
 
 ## 2. 先创建长期节点身份
 
@@ -73,7 +73,7 @@ anode 已装好并已启动
 | 4 | 停旧实例 | 同一个令牌不能有两条连接：先停旧服务（含从 user 服务迁到 system 服务时的旧 user unit） | 警告并继续 |
 | 5 | 预检 | 用**临时**配置（0600，只含 name/server/token）跑 `anode serve --check`，正式配置一个字没动（§6） | 非 0，打印三分诊断；正式配置未改动，升级前停掉的旧实例会被重新启动（原本没在跑就不动，§6） |
 | 6 | 落盘 | `anode install`：把令牌写成临时 0600 文件传给 `--token-file`，安装结束即删除（§9） | 非 0 原文透传（权限/已有配置冲突见 §8） |
-| 7 | 装服务 + 摘要 | `system` / `user` / `none` 三选一（§5），`daemon-reload` → `enable` → `restart`，再轮询 `is-active`，最后打 §1 那段摘要 | 服务起不来 → 非 0，摘要里给出日志命令 |
+| 7 | 装服务 + 摘要 | `system` / `user` / `none` 三选一（§5），`daemon-reload` → `enable` → `restart`，再轮询「`active/running` 且 2 秒不掉」，最后打 §1 那段摘要 | 服务起不来 → 非 0，摘要里给出日志命令与 systemd 原始状态 |
 
 退出码：`0` 成功（含 `--help` / 卸载 / `--dry-run`），`2` 用法/下载/校验/预检/服务失败。脚本在失败处直接打印下一步，不需要照着文档猜。
 
@@ -120,7 +120,7 @@ sh install-anode.sh --no-sudo           # 禁止提权：需要 root 的步骤�
 | 模式 | 什么情况 | 行为 |
 |---|---|---|
 | `auto`（默认） | 有 `systemctl` 且**实测**可提权 → `system`；有 `systemctl` 但提不了权 → `user`；没有 `systemctl`（容器/精简系统）→ `none` | 按探测结果落到下面的具体分支，摘要里写明实际用了哪种 |
-| `system` | 开机自启、没登录也活着 | 装 `/etc/systemd/system/anode.service`（默认落点）；`User=<安装者>`（root 安装时取 `SUDO_USER`），并在 `restart` **之前**把 config/data `chown` 给该用户（否则 0600 配置读不到，服务起来就退）；顺手停用并删除同名旧 **user** unit（两份实例会抢同一个令牌） |
+| `system` | 开机自启、没登录也活着 | 装 `/etc/systemd/system/anode.service`（默认落点）；`User=<安装者>`（root 安装时取 `SUDO_USER`），并在 `restart` **之前**把 config/data `chown` 给该用户、把**配置父目录 `chmod 0755`**（否则 `0600` 配置读不到，服务起来就退：`/etc/anode` 若被建成 `0700 root`，非 root 服务连目录都进不去）；顺手停用并删除同名旧 **user** unit（两份实例会抢同一个令牌） |
 | `user` | 单用户机器、不给 sudo | `systemctl --user` + `$HOME/.config/systemd/user/anode.service`；尽量 `loginctl enable-linger`，失败只 warn（登录态结束后服务会停，脚本会打印手动命令）；不能与 `--prefix` 一起用（unit 会落到 prefix 下，`systemctl --user` 发现不到） |
 | `none` | 容器 / 没有 systemd | 只落盘，打印手工启动与装服务的命令（**仍然预检**，见 §6） |
 
@@ -135,7 +135,7 @@ sh install-anode.sh --no-sudo           # 禁止提权：需要 root 的步骤�
 | 有终端（`/dev/tty` 可打开） | `sudo -v` 读一次密码，后续复用凭据 |
 | 以上都不行 / 显式 `--no-sudo` | 不提权：`system` 模式需要的步骤直接失败并说明下一步；`--user` / `--service none` 仍可完成 |
 
-启停之后脚本**轮询** `is-active --quiet`（最多 10 次、每次 1s），而不是“发完命令立刻判定”；轮询失败或 `anode install` 失败时，脚本会把升级前 stop 的旧服务重新拉起来再退出（不把节点留在停止态）。`--dry-run` 只打印将执行的命令，不碰网络、不写盘、不提权、**不调 `systemctl` / `loginctl`**（也**不实测** sudo，只按“假设能提权”打印，摘要里会注明）——包括 `--service user` 的 `loginctl enable-linger` 也只是一行打印。
+启停之后脚本**轮询**「真的在跑」（`ActiveState=active && SubState=running`，最多 10 次、每次 1s，命中后再观察 2 秒），而不是“发完命令立刻判定”、也不是只问 `is-active`（`active(start)`／`activating(auto-restart)` 都会骗过它）；轮询失败或 `anode install` 失败时，脚本会把升级前 stop 的旧服务重新拉起来再退出（不把节点留在停止态）。`--dry-run` 只打印将执行的命令，不碰网络、不写盘、不提权、**不调 `systemctl` / `loginctl`**（也**不实测** sudo，只按“假设能提权”打印，摘要里会注明）——包括 `--service user` 的 `loginctl enable-linger` 也只是一行打印。
 
 unit 里的 `Environment=PATH` 是**稳定集合**（`$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`），不照抄安装时的 `$PATH`：否则换个终端（direnv/nvm/不同 ssh 会话）重跑就变成“另一个 unit”，`anode install` 会以 `existing unit is unknown/modified` 拒绝覆盖（而那时旧服务已经停了）。“重跑=升级”要求同一串参数在任何 shell 下都是同一个 unit；需要自定义路径时用 `anode install --unit-path`。
 
@@ -220,6 +220,8 @@ systemctl enable --now anode.service
 | strict 配置 | `/etc/anode/anode.yaml`，0600 |
 | systemd unit | `/etc/systemd/system/anode.service`，0644 |
 | 私有数据目录 | `/var/lib/anode`，新建目录 0700 |
+
+配置的**父目录**（默认 `/etc/anode`）新建为 `0755`：秘密边界是文件的 `0600`，而系统的服务以**安装者**（非 root）身份运行，目录不可穿越就等于读不到配置。历史上这里被建成 `0700 root`，导致服务起来就 `exit 2`、`Restart=always` 崩溃重启；重跑安装脚本会把它 `chmod 0755` 修好（幂等）。
 
 unit 用 `serve --config … --data …`，`UMask=0077`，`Restart=always`。它不会导入一个全宿主环境文件。若需要凭证变量，管理员通过自己的受保护 systemd 配置显式注入，并同时在 anode.yaml 白名单声明名字。
 

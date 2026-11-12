@@ -73,6 +73,35 @@ func TestInstallSingleSourceReinstallPreservesLocalConfigAndData(t *testing.T) {
 		}
 	}
 }
+func TestInstallConfigDirectoryIsTraversableByServiceUser(t *testing.T) {
+	// R3 回归：配置目录若建成 0700（root），以安装者身份跑 systemd 服务时连目录都进不去
+	// ——读 0600 配置即 perm denied、exit 2、Restart=always 崩溃循环，而安装器还报成功。
+	// 秘密边界是**文件**的 0600；父目录必须可穿越。数据目录仍是节点私有的 0700（R3）。
+	o := fixture(t)
+	if err := o.defaults(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Apply(o, &out); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Dir(o.ConfigPath)
+	st, err := os.Stat(cfgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o755 {
+		t.Fatalf("配置目录 %s 权限 %#o，期望 0755（非 root 服务要能穿越）", cfgDir, perm)
+	}
+	dst, err := os.Stat(o.DataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dst.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("数据目录 %s 权限 %#o，期望 0700（私有）", o.DataPath, perm)
+	}
+}
+
 func TestInstallRejectsUnknownIdentityConfigurationAndUnit(t *testing.T) {
 	for _, kind := range []string{"config", "unit", "binary", "identity"} {
 		t.Run(kind, func(t *testing.T) {

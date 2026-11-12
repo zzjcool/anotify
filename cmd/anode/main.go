@@ -99,7 +99,7 @@ func serve(args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("configuration: %w", err)
 	}
-	if err := install.EnsureDirectory(*dataDir); err != nil {
+	if err := install.EnsureDirectory(*dataDir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
 	if err := app.EnsureDirs(*dataDir); err != nil {

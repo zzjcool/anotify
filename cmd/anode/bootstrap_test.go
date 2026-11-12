@@ -105,25 +105,71 @@ esac
 
 const fakeSystemctl = `#!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$FIXTURE_LOG"
-case "$*" in
-  *is-active*)
-    # 所有权敏感模式（C1）：忠实模拟 systemd 的权限语义 —— unit 写的是 User=<安装者>，
-    # 而 config 是 0600，属主不是那个用户时服务读不到配置、起不来，is-active 只能是非 active。
-    # 所以这条分支只有在「chown 已经把 config 交给 unit 的 User=」之后才会绿。
-    if [ "${FIXTURE_OWNERSHIP:-0}" = "1" ]; then
-      want=$(sed -n 's/^User=//p' "$FIXTURE_UNIT_FILE" 2>/dev/null | head -n 1)
-      got=$(cat "$FIXTURE_CONFIG_OWNER" 2>/dev/null || :)
-      printf 'systemctl: ownership got=%s want=%s\n' "$got" "$want" >> "$FIXTURE_LOG"
-      [ -n "$want" ] && [ "$got" = "$want" ] || exit 3
-      exit 0
-    fi
-    n=0
-    [ -f "$FIXTURE_COUNTER" ] && n=$(cat "$FIXTURE_COUNTER")
+
+# 拆参数：子命令 + (-p PROP / --value)
+sub=$1
+[ "$#" -gt 0 ] && shift
+prop=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -p) prop=${2:-}; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+    --value) shift ;;
+    *) shift ;;
+  esac
+done
+
+# 所有权敏感模式（C1/R3）：unit 写的是 User=<安装者>，而 config 是 0600；属主不是那个用户时
+# 服务读不到配置、根本起不来。真 systemd 在这种崩溃重启循环里的活跃状态是
+# activating/auto-restart（**不是** active/running）—— 脚本判「真的在跑」就靠这对值。
+ownership_broken() {
+  [ "${FIXTURE_OWNERSHIP:-0}" = "1" ] || return 1
+  want=$(sed -n 's/^User=//p' "$FIXTURE_UNIT_FILE" 2>/dev/null | head -n 1)
+  got=$(cat "$FIXTURE_CONFIG_OWNER" 2>/dev/null || :)
+  printf 'systemctl: ownership got=%s want=%s\n' "$got" "$want" >> "$FIXTURE_LOG"
+  [ -n "$want" ] && [ "$got" = "$want" ] || return 0
+  return 1
+}
+
+# 状态轮询计数：只有 ActiveState 那一问 +1（脚本一次轮询 = ActiveState 然后 SubState）。
+state_poll() {
+  n=0
+  [ -f "$FIXTURE_COUNTER" ] && n=$(cat "$FIXTURE_COUNTER")
+  if [ "$1" = "bump" ]; then
     n=$((n + 1))
     printf '%s' "$n" > "$FIXTURE_COUNTER"
-    [ "$n" -gt "${FIXTURE_ISACTIVE_FAIL:-0}" ] && exit 0
-    exit 3
-    ;;
+  fi
+  printf '%s' "$n"
+}
+
+case "$sub" in
+show)
+  case "$prop" in
+    ActiveState)
+      if ownership_broken; then printf 'activating'; exit 0; fi
+      n=$(state_poll bump)
+      if [ "$n" -gt "${FIXTURE_ISACTIVE_FAIL:-0}" ]; then printf 'active'; else printf 'activating'; fi
+      exit 0
+      ;;
+    SubState)
+      if ownership_broken; then printf 'auto-restart'; exit 0; fi
+      n=$(state_poll peek)
+      if [ "$n" -gt "${FIXTURE_ISACTIVE_FAIL:-0}" ]; then printf 'running'; else printf 'auto-restart'; fi
+      exit 0
+      ;;
+    NRestarts)
+      if ownership_broken; then printf '3'; else printf '0'; fi
+      exit 0
+      ;;
+  esac
+  exit 0
+  ;;
+is-active)
+  # 旧语义保留：改动前的脚本用它轮询；现在脚本只看 show（R3），这条留给还没迁移的断言。
+  if ownership_broken; then exit 3; fi
+  n=$(state_poll bump)
+  [ "$n" -gt "${FIXTURE_ISACTIVE_FAIL:-0}" ] && exit 0
+  exit 3
+  ;;
 esac
 exit 0
 `
@@ -655,11 +701,14 @@ func TestInstallScriptHappyPath(t *testing.T) {
 	if got := lineArg(installLine, "--prefix"); got != f.stage {
 		t.Fatalf("--prefix 没转发给 anode install：got %q want %q", got, f.stage)
 	}
-	// is-active 是**轮询**：假 systemctl 前 2 次返回非 active，第 3 次才成功。
-	// 只问一次就判定的话这里会失败 —— 成功本身就证明它在重试。
-	polls := countLines(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "is-active") })
+	// 状态是**轮询**的：假 systemctl 前 2 次报 activating/auto-restart，第 3 次才 active/running。
+	// 只问一次就判定的话这里会失败 —— 成功本身就证明它在重试（R3：看 SubState=running，
+	// 不再看 is-active，后者在「起来就死」的那一瞬间也是 active）。
+	polls := countLines(lines, func(l string) bool {
+		return isDirectSystemctl(l) && hasArg(l, "show") && hasArg(l, "ActiveState")
+	})
 	if polls < 3 {
-		t.Fatalf("is-active 只问 %d 次（前两次返回非 active，应该轮询到第 3 次）", polls)
+		t.Fatalf("show -p ActiveState 只问 %d 次（前两次是 activating，应该轮询到第 3 次）", polls)
 	}
 
 	// 令牌不出现在任何人类可读输出里。

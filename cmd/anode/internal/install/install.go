@@ -135,11 +135,15 @@ func safePath(path string) error {
 	return nil
 }
 
-func EnsureDirectory(path string) error {
+// EnsureDirectory 确保目录存在，**不存在时**按 mode 新建。
+//
+// 已存在的目录不改权限：那是管理员的选择（脚本侧的 0755 修复是显式的，见
+// scripts/install-anode.sh 的 start_service）。
+func EnsureDirectory(path string, mode os.FileMode) error {
 	if err := safePath(path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, mode); err != nil {
 		return fmt.Errorf("create %s (administrator permissions may be required): %w", path, err)
 	}
 	st, err := os.Lstat(path)
@@ -248,8 +252,22 @@ func Apply(o Options, out io.Writer) (retErr error) {
 			return fmt.Errorf("not a regular file: %s", p)
 		}
 	}
-	for _, p := range []string{filepath.Dir(o.ConfigPath), filepath.Dir(o.UnitPath), filepath.Dir(o.BinPath), o.DataPath} {
-		if err := EnsureDirectory(p); err != nil {
+	// 目录模式分两档（R3）：配置/unit/二进制的父目录必须让**非 root 的服务用户**能穿越
+	// （配置文件的 0600 才是秘密边界）；数据目录是节点私有的，保持 0700。
+	//
+	// 历史上这里一律用 0700：/etc/anode 被 root 建成 0700，而安装器只 chown 了配置文件本身
+	// → 以安装者身份跑的 systemd 服务连目录都进不去，读配置即 perm denied、exit 2，
+	// 于是进入 Restart=always 的崩溃循环。
+	for _, d := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{filepath.Dir(o.ConfigPath), 0o755},
+		{filepath.Dir(o.UnitPath), 0o755},
+		{filepath.Dir(o.BinPath), 0o755},
+		{o.DataPath, 0o700},
+	} {
+		if err := EnsureDirectory(d.path, d.mode); err != nil {
 			return err
 		}
 	}

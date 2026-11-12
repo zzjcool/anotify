@@ -972,7 +972,32 @@ preflight() {
 	exit 2
 }
 
-# 轮询 is-active（最多 10s，每秒一次）：学前端的"立即判定"会误报失败。
+# unit_state <system|user>：输出 "<ActiveState>/<SubState>"（如 active/running、activating/auto-restart）。
+#
+# 为什么不再用 `systemctl is-active`（R3）：Type=simple 的 unit 在「进程刚 fork 出来、还没读到
+# 配置就退出」的那一瞬间也算 active（SubState=start），而 `systemctl restart` 正是等到
+# 「started」就返回 —— 紧跟它的第一次轮询几乎必然命中这一刻。结果是崩溃重启的 unit 被判成
+# 启动成功，结论里写 active (running)（真实事故：配置目录 0700 → 读不到 anode.yaml → 422 次重启）。
+# 判「真的在跑」必须同时看 SubState=running。
+# unit_show <system|user> <property>：向对应的 systemd 实例要一个属性值（--value）。
+unit_show() {
+	if [ "$1" = "system" ]; then
+		"$SYSTEMCTL" show -p "$2" --value "$UNIT_BASENAME" 2>/dev/null
+	else
+		systemctl_user show -p "$2" --value "$UNIT_BASENAME" 2>/dev/null
+	fi
+}
+
+unit_state() {
+	printf '%s/%s' "$(unit_show "$1" ActiveState)" "$(unit_show "$1" SubState)"
+}
+
+# unit_running <system|user>：真的在跑（active/running），不是「刚起来」「正在重启」。
+unit_running() { [ "$(unit_state "$1")" = "active/running" ]; }
+
+# 轮询「真的在跑」（最多 10s，每秒一次）：学前端的"立即判定"会误报失败。
+# 一旦看到 active/running，还要再观察 2 秒（稳定窗口）：只判"这一瞬间活着"会放过
+# 「起来就崩」的 unit（R3）。2 秒里掉了就立刻判失败，不把 10 秒耗完。
 wait_active() { # wait_active system|user
 	# 预演下不能真的去问 systemd（那就不叫预演了）。
 	if [ "$DRY_RUN" = "yes" ]; then
@@ -980,10 +1005,10 @@ wait_active() { # wait_active system|user
 	fi
 	_i=0
 	while [ "$_i" -lt 10 ]; do
-		if [ "$1" = "system" ]; then
-			"$SYSTEMCTL" is-active --quiet "$UNIT_BASENAME" 2>/dev/null && return 0
-		else
-			systemctl_user is-active --quiet "$UNIT_BASENAME" 2>/dev/null && return 0
+		if unit_running "$1"; then
+			sleep 2
+			unit_running "$1" && return 0
+			return 1
 		fi
 		_i=$((_i + 1))
 		[ "$_i" -lt 10 ] || break
@@ -1028,6 +1053,13 @@ start_service() {
 		# 服务以安装者身份跑：config（0600）与 data 必须在**restart 之前**归它（R1/C1）。
 		# 顺序反了就是“先证明服务能跑、再让它能跑”：新进程起来第一件事就是读不到配置而退出，
 		# wait_active 十秒后把安装判失败（unit 已 enable，节点停在停止态）。
+		# 配置目录必须让服务用户能穿越（R3）：`anode install` 历史上把配置父目录建成 0700，
+		# 而 chown 只覆盖配置文件本身 → 非 root 服务连目录都进不去，读配置即 perm denied、
+		# exit 2、Restart=always 崩溃循环。这里显式 chmod（幂等）：老机器重跑同一条安装
+		# 命令即可自愈，新装机器被 install 建成 0755 时这一步是 no-op。
+		_cfg_dir=$(dirname "$CONFIG")
+		run_maybe_root chmod 0755 "$_cfg_dir" ||
+			warn "chmod 0755 $_cfg_dir 失败：服务（$RUN_USER）可能读不到配置（看 $(service_hint system)）"
 		run_maybe_root chown -R "$RUN_USER" "$CONFIG" "$DATA" ||
 			warn "chown $RUN_USER $CONFIG $DATA 失败：服务可能读不到配置（看 $(service_hint system)）"
 		systemctl_system restart "$UNIT_BASENAME" || {
@@ -1037,9 +1069,9 @@ start_service() {
 		}
 		if ! wait_active system; then
 			restore_old_service
-			die "$UNIT_BASENAME 10 秒内没有 active（systemctl is-active 一直是非 active）
+			die "$UNIT_BASENAME 10 秒内没有真正跑起来（当前 $(unit_state system)，安装器判「起得来 + 2 秒不掉」）
   · 看日志：$(service_hint system)
-  · 常见原因：令牌/中枢不对（预检已拦一遍）、数据目录不可写、unit 里的地址写错"
+  · 常见原因：配置/数据目录权限（服务用户读不到 0600 配置）、令牌/中枢不对（预检已拦一遍）、数据目录不可写、unit 里的地址写错"
 		fi
 		;;
 	user)
@@ -1050,7 +1082,7 @@ start_service() {
 			warn "systemctl --user restart $UNIT_BASENAME 失败（见上面原文）"
 		if ! wait_active user; then
 			restore_old_service
-			die "$UNIT_BASENAME 10 秒内没有 active（systemctl --user is-active 一直是非 active）
+			die "$UNIT_BASENAME 10 秒内没有真正跑起来（当前 $(unit_state user)）
   · 看日志：$(service_hint user)
   · 没有登录会话/没有 dbus 的机器上，用户服务起不来：改用 --system（需要 sudo）或 --no-systemd"
 		fi
@@ -1080,12 +1112,26 @@ start_service() {
 }
 
 # ---------- 摘要 ----------
+# report_state <system|user>：给摘要用的一行状态。**不撒谎**（R3）：把 systemd 的原始
+# ActiveState/SubState 原样带上，崩溃重启的 unit 不能显示成 active (running)。
+report_state() {
+	_st=$(unit_state "$1")
+	case "$_st" in
+	active/running) printf 'active/running' ;;
+	active/*) printf '%s（进程刚起来还没稳定）—— 查：%s' "$_st" "$(service_hint "$1")" ;;
+	*)
+		_n=$(unit_show "$1" NRestarts)
+		printf '%s（没有在跑%s）—— 查：%s' "$_st" "${_n:+，已重启 ${_n} 次}" "$(service_hint "$1")"
+		;;
+	esac
+}
+
 report() {
 	state="未检查（dry-run）"
 	if [ "$DRY_RUN" != "yes" ]; then
 		case "$SERVICE" in
-		system) if "$SYSTEMCTL" is-active --quiet "$UNIT_BASENAME" 2>/dev/null; then state="active (running)"; else state="未运行 —— 查：$(service_hint system)"; fi ;;
-		user) if systemctl_user is-active --quiet "$UNIT_BASENAME" 2>/dev/null; then state="active (running)"; else state="未运行 —— 查：$(service_hint user)"; fi ;;
+		system) state=$(report_state system) ;;
+		user) state=$(report_state user) ;;
 		*) state="未安装服务（仅二进制 + 配置）" ;;
 		esac
 	fi

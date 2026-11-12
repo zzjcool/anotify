@@ -37,6 +37,9 @@ func installUnprivileged(t *testing.T, o Options) ([]byte, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 先 unlink 再写：直接 WriteFile 覆盖一个**刚被 exec 过的**文件会 ETXTBSY
+	// （内核还持有旧 inode 的执行引用），换新 inode 就不会碰到。
+	_ = os.Remove(helper)
 	if err := os.WriteFile(helper, executable, 0755); err != nil {
 		t.Fatal(err)
 	}
