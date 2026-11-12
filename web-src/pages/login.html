@@ -236,10 +236,14 @@
       .tab-btn:hover {
         color: var(--text);
       }
+      /* 选中项是「抬起的中性药丸」而不是又一颗品牌色按钮（AU-1）：
+         原来选中 tab 用 --accent-soft + accent 字，与下方 .btn-primary 抢同一档视觉，
+         五个动作读起来同权。品牌色只留给 Passkey 主按钮，tab 用中性抬升表达选中。 */
       .tab-btn.active {
-        background: var(--accent-soft);
-        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-        color: var(--accent-strong);
+        background: var(--surface-1);
+        border-color: var(--line-strong);
+        color: var(--text);
+        box-shadow: var(--shadow-1);
       }
 
       /* 面板之间的纵向节奏（不声明 display：面板靠 JS 切 .hidden） */
@@ -300,6 +304,22 @@
       .auth-recovery-toggle svg {
         width: 14px;
         height: 14px;
+      }
+      /* 次要入口（用密码登录 / 注册密码 / 恢复码）统一走 .btn-quiet：
+         无边框、--muted 文字，hover 才抬起；主次一眼分得开（AU-1），
+         五个入口的 id / 可达性一律不动。 */
+      .auth-submit.btn-quiet {
+        height: 38px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .auth-recovery-toggle.btn-quiet {
+        height: 34px;
+        font-size: 12.5px;
+        color: var(--faint);
+      }
+      .auth-recovery-toggle.btn-quiet:hover {
+        color: var(--text);
       }
 
       /* ---- 内嵌浅底说明（注册页的一次性恢复码提示）---- */
@@ -670,7 +690,7 @@
         <button
           type="button"
           id="password-login-toggle"
-          class="btn btn-ghost auth-submit"
+          class="btn btn-quiet auth-submit"
           aria-expanded="false"
           aria-controls="password-panel"
         >
@@ -773,7 +793,7 @@
         <button
           type="button"
           id="password-signup-toggle"
-          class="btn btn-ghost auth-submit"
+          class="btn btn-quiet auth-submit"
           aria-expanded="false"
           aria-controls="password-signup-panel"
         >
@@ -854,7 +874,7 @@
         <button
           type="button"
           id="recovery-toggle"
-          class="btn btn-ghost auth-recovery-toggle"
+          class="btn btn-quiet auth-recovery-toggle"
         >
           <svg
             viewBox="0 0 24 24"

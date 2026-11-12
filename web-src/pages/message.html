@@ -1,4 +1,100 @@
 {{define "title"}}{{t "message.task_title"}}{{end}}
+{{define "style"}}
+<style>
+  /* ===== 任务详情页（页面内样式；类名 msg- 前缀，共享组件一律用 ui.css）=====
+     两件事：① 空值字段不占位（MSG-1）——真实值进网格，空字段收成一行
+     「未设置」注脚；② 空态/错误态统一骨架（MSG-2 / CP-4）。
+     颜色只取 tokens。 */
+
+  /* ---------- 字段空值注脚 ---------- */
+  .msg-unset {
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+  .msg-unset b {
+    /* 标签与字段名之间只用空格分隔（JS 里 b 的文本自带一个尾随空格）：
+       中文的「：」在 en/es 里会变成全角冒号，ASCII 的「:」在中文里又偏窄。 */
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  /* ---------- 空态 / 错误态（图标 + 标题 + 说明 + 动作）---------- */
+  .msg-state-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    color: var(--muted);
+  }
+  .msg-state-mark svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+  }
+  .msg-state-icon {
+    display: block;
+  }
+  .msg-state.is-error .msg-state-mark {
+    border-color: color-mix(in srgb, var(--error) 30%, transparent);
+    background: var(--error-soft);
+    color: var(--error);
+  }
+  /* 卡片内的小块（日志 / emissions / 动作错误）：图标与内距收一档，
+     不要在一个区块里画一个整页空态 */
+  .msg-state.is-compact {
+    gap: 6px;
+    padding: 18px 12px;
+  }
+  .msg-state.is-compact .msg-state-mark {
+    width: 32px;
+    height: 32px;
+  }
+  .msg-state.is-compact .msg-state-mark svg {
+    width: 16px;
+    height: 16px;
+  }
+  .msg-state.is-compact .msg-state-title {
+    font-size: 13px;
+  }
+  /* 相位徽章是 grid 子项，默认会被拉伸成整行 —— 收回内容宽度（ST-4）*/
+  .msg-phase {
+    justify-self: start;
+  }
+  .msg-state.is-missing .msg-state-mark {
+    border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+  .msg-state-title {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--text);
+  }
+  .msg-state-desc {
+    max-width: 52ch;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .msg-state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+</style>
+{{end}}
 {{define "content"}}
 <div id="page-main">
   <div class="page">
@@ -14,7 +110,22 @@
     </div>
     <div id="msg-error" role="status"></div>
     <div id="msg-content" class="grid gap-4" aria-busy="true">
-      <div class="empty">{{t "events.v4.loading"}}</div>
+      <div class="empty">
+        <span class="msg-state-mark" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+          </svg>
+        </span>
+        <b class="msg-state-title">{{t "message.task_title"}}</b>
+        <p class="msg-state-desc">{{t "events.v4.loading"}}</p>
+      </div>
     </div>
   </div>
 </div>
@@ -24,7 +135,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, nsPath, readScope, saveScope, model, t, loadErrorNode } = A;
+    const { el, api, ready, nsPath, readScope, saveScope, model, t, icon, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     const name = query.get("id") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
@@ -41,7 +152,104 @@
 
     function field(label, value) {
       return el("div", {}, el("dt", { class: "card-sub", text: label }),
-        el("dd", { class: "mono b2-wrap", text: value == null ? "—" : String(value) }));
+        el("dd", { class: "mono b2-wrap", text: String(value) }));
+    }
+    /* ---------- 空态 / 错误态（MSG-2 / CP-4）----------
+       图标 + 标题 + 说明 + 动作；与 trace.html 同一套骨架（各自页内定义）。 */
+    const ICON_ALERT = [
+      "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
+      "M12 9v4",
+      "M12 17h.01",
+    ];
+    const ICON_UNLINK = ["M9 17H7A5 5 0 0 1 7 7h2", "M15 7h2a5 5 0 0 1 0 10h-2", "M8 12h8"];
+    const ICON_SEARCH = ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z", "M21 21l-4.35-4.35"];
+    function stateNode(opts) {
+      const box = el("div", { class: "empty msg-state " + (opts.tone || "") + (opts.compact ? " is-compact" : ""), role: opts.tone === "is-error" ? "alert" : "status" });
+      box.append(el("span", { class: "msg-state-mark", "aria-hidden": "true" }, icon(opts.icon || ICON_ALERT, "msg-state-icon")));
+      if (opts.title) box.append(el("b", { class: "msg-state-title", text: opts.title }));
+      if (opts.desc) box.append(el("p", { class: "msg-state-desc", text: opts.desc }));
+      const actions = el("div", { class: "msg-state-actions" });
+      if (typeof opts.retry === "function") {
+        const btn = el("button", { type: "button", class: "btn btn-primary btn-sm", text: t("common.retry", "重试") });
+        btn.addEventListener("click", opts.retry);
+        actions.append(btn);
+      }
+      if (opts.back) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: opts.back.href, text: opts.back.text }));
+      if (actions.children.length) box.append(actions);
+      return box;
+    }
+    /* 失败原因与 loadErrorNode 同口径（HTTP 档位 → 网络失败 → 兜底）。 */
+    function failureState(error, retry) {
+      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
+      const status = (error && error.status) || 0;
+      const reason = status
+        ? status >= 500
+          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+        : /Failed to fetch|NetworkError|load failed/i.test(msg)
+          ? t("common.backend_offline", "连不上服务端")
+          : t("common.request_failed", "请求失败");
+      return stateNode({
+        tone: "is-error",
+        title: t("common.load_failed_prefix", "载入失败：") + reason,
+        desc: msg,
+        retry,
+        back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+      });
+    }
+    /* 三种「不是载入失败」的打开方式：缺参 / 404 / 其他，各自给正确的下一步。 */
+    function openState(error) {
+      if (error && error.status === 404) {
+        return stateNode({
+          icon: ICON_SEARCH,
+          title: t("uxaudit.doc.msg_notfound_title", "任务不存在"),
+          desc: t("message.v4.not_found", "任务不存在、已清理或不属于此命名空间。"),
+          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+        });
+      }
+      if (error && error.msgMissingId) {
+        return stateNode({
+          tone: "is-missing",
+          icon: ICON_UNLINK,
+          title: t("uxaudit.doc.msg_missing_title", "缺少任务 id"),
+          desc: t("message.missing_id_hint", "深链需要带上任务 id。"),
+          back: { href: "events.html", text: t("message.back_events", "返回事件流") },
+        });
+      }
+      return failureState(error, load);
+    }
+    /* ST-4：相位徽章按语义上色（原来写死 badge-neutral，失败也显示灰）。
+       成功=success / 失败=error / 等待·重试=warn / 执行中=accent / 终止型=neutral。
+       注意：message.v4.phase.* 的文案一个字都不动，只换徽章变体。 */
+    const PHASE_BADGE = {
+      succeeded: "badge-success",
+      failed: "badge-error",
+      running: "badge-accent",
+      pending: "badge-warn",
+      assigned: "badge-warn",
+      acked: "badge-warn",
+      cancelled: "badge-neutral",
+      abandoned: "badge-neutral",
+      lease_expired: "badge-neutral",
+    };
+    /* 卡片内的小失败态：同口径文案，但用紧凑骨架（不带「返回事件流」）。 */
+    function inlineFailure(error, retry) {
+      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
+      const status = (error && error.status) || 0;
+      const reason = status
+        ? status >= 500
+          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+        : /Failed to fetch|NetworkError|load failed/i.test(msg)
+          ? t("common.backend_offline", "连不上服务端")
+          : t("common.request_failed", "请求失败");
+      return stateNode({
+        tone: "is-error",
+        compact: true,
+        title: t("common.load_failed_prefix", "载入失败：") + reason,
+        desc: msg,
+        retry,
+      });
     }
     function section(title, id) {
       const body = el("div", { id, class: "grid gap-4" });
@@ -49,9 +257,13 @@
       content.append(card);
       return body;
     }
-    function json(value) {
-      return el("pre", { class: "code-body overflow-x-auto" },
-        el("span", { "data-raw-content": "", text: JSON.stringify(value, null, 2) }));
+    function json(value, label) {
+      const text = JSON.stringify(value, null, 2);
+      const body = el("pre", { class: "code-body" }, el("span", { "data-raw-content": "", text: text }));
+      const button = el("button", { type: "button", class: "copy-btn", text: t("docs.copy", "复制") });
+      button.addEventListener("click", () => copyText(button, () => text));
+      return el("div", { class: "code-block" },
+        el("div", { class: "code-head" }, el("span", { text: label || "JSON" }), button), body);
     }
     function envRows(facts) {
       if (!facts.length) return el("p", { class: "card-sub", text: t("message.v4.env_empty") });
@@ -71,7 +283,7 @@
         await api(nsPath("tasks", name) + "/" + kind, { method: "POST", body: "{}" });
         await load(); // Read actual terminal state; never paint optimistic success.
       } catch (error) {
-        node("task-action-error").replaceChildren(loadErrorNode(error, () => action(kind)));
+        node("task-action-error").replaceChildren(inlineFailure(error, () => action(kind)));
       } finally {
         loading = false;
         if (node("task-cancel")) node("task-cancel").disabled = terminal.has(task.phase);
@@ -139,17 +351,33 @@
       trace.hidden = !task.traceUID;
       if (task.traceUID) trace.href = "trace.html?namespace=" + encodeURIComponent(task.namespace) + "&traceUID=" + encodeURIComponent(task.traceUID);
       const facts = section(t("message.v4.diagnostics"), "task-facts");
-      facts.append(el("span", { id: "task-phase", class: "badge badge-neutral", "data-phase": task.phase, text: t("message.v4.phase." + task.phase) + " · " + task.phase }),
-        el("dl", { class: "grid b2-facts gap-4" },
-          field("waitingReason", task.waitingReason), field("nextAttemptAt", task.nextAttemptAt),
-          field(t("message.v4.attempt"), task.attempt + "/" + task.maxAttempts),
-          field("nodeName / instanceId", (task.nodeName || "—") + " / " + (task.instanceId ?? "—")),
-          field("leaseExpiresAt", task.leaseExpiresAt), field("parentTaskId", task.parentTaskId),
-          field("configRevision", task.configRevision), field("namespaceVarsRevision", task.namespaceVarsRevision),
-          field("createdAt", task.creationTimestamp), field("startedAt", task.startedAt),
-          field("finishedAt", task.finishedAt),
-          field("digest", task.capability.digest)),
-        el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),
+      /* MSG-1：空值字段不占位。真实值进网格，空字段收成一行 11.5px 注脚
+         （仍留在 #task-facts 的文本里：e2e 按字段名断言，不把「没有值」
+         当成字段不存在）。 */
+      const entries = [
+        ["waitingReason", task.waitingReason],
+        ["nextAttemptAt", task.nextAttemptAt],
+        [t("message.v4.attempt"), task.attempt + "/" + task.maxAttempts],
+        ["nodeName / instanceId", [task.nodeName, task.instanceId].filter(v => v != null && v !== "").join(" / ")],
+        ["leaseExpiresAt", task.leaseExpiresAt],
+        ["parentTaskId", task.parentTaskId],
+        ["configRevision", task.configRevision],
+        ["namespaceVarsRevision", task.namespaceVarsRevision],
+        ["createdAt", task.creationTimestamp],
+        ["startedAt", task.startedAt],
+        ["finishedAt", task.finishedAt],
+        ["digest", task.capability.digest],
+      ];
+      const filled = entries.filter(([, value]) => value != null && value !== "");
+      const unset = entries.filter(([, value]) => value == null || value === "").map(([label]) => label);
+      facts.append(el("span", { id: "task-phase", class: "badge msg-phase " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase, text: t("message.v4.phase." + task.phase) + " · " + task.phase }),
+        el("dl", { class: "grid b2-facts gap-4" }, ...filled.map(([label, value]) => field(label, value))));
+      if (unset.length) {
+        facts.append(el("p", { class: "msg-unset" },
+          el("b", { text: t("uxaudit.doc.msg_unset", "未设置") + " " }),
+          el("span", { text: unset.join(" · ") })));
+      }
+      facts.append(el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),
         el("p", { class: "card-sub", text: t("message.v4.lease_hint") }));
       const actions = el("div", { class: "flex flex-wrap gap-2" });
       for (const kind of ["cancel", "abandon"]) {
@@ -159,18 +387,18 @@
         actions.append(button);
       }
       facts.append(actions, el("div", { id: "task-action-error", role: "status" }));
-      section(t("message.v4.params"), "task-params").append(json(task.params));
+      section(t("message.v4.params"), "task-params").append(json(task.params, t("message.v4.params")));
       const env = section(t("message.v4.env"), "task-env");
       env.append(el("p", { class: "card-sub", text: t("message.v4.env_hint") }), envRows(task.envDiagnostics));
       const result = section(t("message.v4.result"), "task-result");
       result.append(el("p", { class: "b2-wrap" },
         el("span", { "data-raw-content": "", text: task.result.summary || "—" })),
-        json({ error: task.result.error }));
+        json({ error: task.result.error }, "error"));
       task.result.artifacts.forEach(artifact => result.append(artifactRow(artifact)));
       const attempts = section(t("message.v4.attempts"), "task-attempts");
       task.attempts.forEach(fact => {
         const { envDiagnostics, ...safeFacts } = fact;
-        attempts.append(json(safeFacts), envRows(envDiagnostics));
+        attempts.append(json(safeFacts, "JSON"), envRows(envDiagnostics));
       });
       if (!task.attempts.length) attempts.append(el("p", { class: "card-sub", text: t("message.v4.attempts_empty") }));
       renderLogsControls();
@@ -213,11 +441,10 @@
           " · " + t(doc.truncated ? "message.v4.truncated" : "message.v4.complete");
         output.replaceChildren();
         if (!doc.lines.length) output.append(el("p", { class: "card-sub", text: t("message.v4.logs_empty") }));
-        else output.append(el("pre", { class: "code-body overflow-x-auto" },
-          el("span", { "data-raw-content": "", text: doc.lines.map(line =>
-            line.sequence + " " + line.at + " [" + line.stream + "] " + line.text).join("\n") })));
+        else output.append(json(doc.lines.map(line =>
+          line.sequence + " " + line.at + " [" + line.stream + "] " + line.text).join("\n"), t("message.v4.logs")));
       } catch (error) {
-        if (current === revision && request === logRequest) output.replaceChildren(loadErrorNode(error, loadLogs));
+        if (current === revision && request === logRequest) output.replaceChildren(inlineFailure(error, loadLogs));
       }
     }
     async function loadEmissions(more = false) {
@@ -248,8 +475,8 @@
         list.replaceChildren();
         for (const fact of emissions.values()) {
           const row = el("div", { class: "grid gap-2", "data-event-id": fact.eventId || fact.id || fact.taskId || "" },
-            el("code", { class: "mono b2-wrap", text: [fact.eventId, fact.to + "@" + fact.version].filter(Boolean).join(" · ") }),
-            el("p", { class: "card-sub b2-wrap", text: "id: " + (fact.id ?? "—") }));
+            el("code", { class: "mono b2-wrap", text: [fact.eventId, fact.to + "@" + fact.version].filter(Boolean).join(" · ") }));
+          if (fact.id) row.append(el("p", { class: "card-sub b2-wrap", text: "id: " + fact.id }));
           if (fact.taskId) row.append(el("a", {
             class: "mono b2-wrap",
             href: "message.html?namespace=" + encodeURIComponent(task.namespace) + "&id=" + encodeURIComponent(fact.taskId),
@@ -261,7 +488,7 @@
         }
         if (!emissions.size) list.append(el("p", { class: "card-sub", text: t("message.v4.emissions_empty") }));
       } catch (error) {
-        if (current === revision) node("emissions-error").replaceChildren(loadErrorNode(error, () => loadEmissions(more)));
+        if (current === revision) node("emissions-error").replaceChildren(inlineFailure(error, () => loadEmissions(more)));
       } finally {
         if (current === revision) {
           emissionBusy = false;
@@ -276,7 +503,7 @@
       const current = ++revision;
       try {
         await ready();
-        if (!name) throw new Error(t("message.v4.missing"));
+        if (!name) throw Object.assign(new Error(t("message.v4.missing", "URL 缺少任务 id。")), { msgMissingId: true });
         const resource = await api(nsPath("tasks", name));
         if (current !== revision) return;
         if (resource.kind !== "Task" || resource.metadata?.name !== name) throw new Error("malformed Task");
@@ -290,9 +517,7 @@
         if (current === revision) {
           content.replaceChildren();
           node("msg-trace").hidden = true;
-          node("msg-error").replaceChildren(error.status === 404
-            ? el("div", { class: "empty", text: t("message.v4.not_found") })
-            : loadErrorNode(error, load));
+          node("msg-error").replaceChildren(openState(error));
         }
       } finally {
         if (current === revision) {

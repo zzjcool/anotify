@@ -12,7 +12,9 @@
     align-items: center;
     justify-content: center;
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    /* 10.88px → 11.5px：端点表里 140 个方法徽章原本是全页最密的一档（DOC-2）*/
+    font-size: 11.5px;
+    line-height: 1.5;
     font-weight: 600;
     letter-spacing: 0.03em;
     padding: 0.2rem 0.55rem;
@@ -47,7 +49,7 @@
   }
   .param-table th {
     text-align: left;
-    font-size: 0.68rem;
+    font-size: 11.5px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--faint);
@@ -80,7 +82,7 @@
     font-size: 0.72rem;
   }
   .req {
-    font-size: 0.62rem;
+    font-size: 11.5px;
     font-weight: 600;
     padding: 0.1rem 0.4rem;
     border-radius: var(--r-xs);
@@ -89,7 +91,7 @@
     margin-left: 0.4rem;
   }
   .opt {
-    font-size: 0.62rem;
+    font-size: 11.5px;
     font-weight: 500;
     color: var(--faint);
     margin-left: 0.4rem;
@@ -242,7 +244,7 @@
     padding: 12px 14px;
   }
   .doc-kv-label {
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -284,7 +286,7 @@
   .doc-card-count {
     flex: none;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--faint);
   }
   /* 93 行端点分两栏流动：不加 JS、不删 DOM，e2e 的 tbody tr 计数照旧 */
@@ -306,10 +308,30 @@
   .doc-ep-table {
     overflow-x: auto;
   }
+  /* 表格统一走 .table-wrap（保留横向滚动能力），但它们嵌在 .card / .doc-ep 里，
+     外面已经有一层边框，这里不再画第二层。 */
+  .doc-ep .table-wrap,
+  .card > .table-wrap {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  /* 代码块标题栏只有一个复制按钮（旅程图这类没有独立标题的块）：右对齐 */
+  .doc-head-end {
+    justify-content: flex-end;
+  }
   .doc-ep-data td {
-    padding: 4px 12px;
+    padding: 6px 12px;
     font-size: 11.5px;
+    line-height: 1.6;
     border-bottom: 1px solid var(--line);
+  }
+  /* 端点行 hover：本页原本 145 个可交互元素 0 过渡（DOC-2）*/
+  .doc-ep-data tbody tr {
+    transition: background-color var(--dur-fast) var(--ease);
+  }
+  .doc-ep-data tbody tr:hover {
+    background: var(--surface-2);
   }
   .doc-ep-m {
     width: 1%;
@@ -317,7 +339,8 @@
   }
   .doc-ep-path {
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: 12px;
+    line-height: 1.6;
     color: var(--text);
     overflow-wrap: anywhere;
   }
@@ -351,6 +374,9 @@
     color: var(--muted);
     list-style: none;
     cursor: pointer;
+    transition:
+      color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease);
   }
   .doc-fold > summary::-webkit-details-marker {
     display: none;
@@ -461,7 +487,7 @@
     display: none;
   }
   .doc-toc-title {
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -506,6 +532,7 @@
     padding: 9px 12px;
     list-style: none;
     cursor: pointer;
+    transition: color var(--dur-fast) var(--ease);
   }
   .doc-toc-summary::-webkit-details-marker {
     display: none;
@@ -546,6 +573,10 @@
     font-size: 12px;
     color: var(--muted);
     text-decoration: none;
+    transition:
+      color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease);
   }
   .doc-chip:hover {
     color: var(--text);
@@ -557,6 +588,16 @@
     color: var(--text);
     background: var(--accent-soft);
     border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  /* 侧栏 rail 上的当前节：左侧 2px accent 竖条，与正文的层级一眼分开（DOC-3）*/
+  .toc-link.toc-on {
+    border-left-color: var(--accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+    font-weight: 500;
+  }
+  /* 页内文字链的 hover 过渡（ui.css 的 .doc-link 只有颜色变化，没有时长）*/
+  .doc-link {
+    transition: color var(--dur-fast) var(--ease);
   }
 
   /* <details>/<a> 自带 display 会盖掉 Tailwind .hidden，这里给显式兜底 */
@@ -579,6 +620,69 @@
     .doc-toc-m {
       display: none;
     }
+  }
+
+  /* ---------- 代码块横向滚动（DOC-1）----------
+     .code-body 本来就有 overflow-x:auto，但没有任何「右边还有」的可视信号，
+     也没有滚动条样式 —— 1440 下 48px、390 下最多 582px 的代码被静默裁在右缘。
+     这里补三件事，一条都不靠隐藏内容：
+     ① 细滚动条（Firefox/Chromium 两种引擎）+ 悬停加深，滚动条本身就是提示；
+     ② .code-block 右缘渐隐：只在 JS 判定「真的可滚」时出现，滚到头就消失
+        （类名 doc-can-scroll / doc-scrolled-x / doc-at-end 由本页脚本切换）；
+     ③ overscroll-behavior 收在块内，滚到边界不把整页拖着走。 */
+  .docs-main .code-body,
+  .doc-journey {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+    overscroll-behavior-x: contain;
+  }
+  .docs-main .code-body::-webkit-scrollbar,
+  .doc-journey::-webkit-scrollbar {
+    height: 8px;
+  }
+  .docs-main .code-body::-webkit-scrollbar-track,
+  .doc-journey::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .docs-main .code-body::-webkit-scrollbar-thumb,
+  .doc-journey::-webkit-scrollbar-thumb {
+    border-radius: var(--r-full);
+    background: color-mix(in srgb, var(--text) 20%, transparent);
+  }
+  .docs-main .code-body::-webkit-scrollbar-thumb:hover,
+  .doc-journey::-webkit-scrollbar-thumb:hover {
+    background: var(--line-strong);
+  }
+  /* 渐隐叠层：挂在 .code-block（它 overflow:hidden 裁圆角），只盖代码体那一段，
+     不压代码块标题栏 —— top 由脚本按 .code-head 的实际高度写入。 */
+  .doc-scroll {
+    position: relative;
+  }
+  .doc-scroll::after,
+  .doc-scroll::before {
+    content: "";
+    position: absolute;
+    top: var(--doc-fade-top, 0px);
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+  }
+  .doc-scroll::after {
+    right: 0;
+    background: linear-gradient(90deg, transparent, var(--code-bg));
+  }
+  .doc-scroll::before {
+    left: 0;
+    background: linear-gradient(270deg, transparent, var(--code-bg));
+  }
+  .doc-scroll.doc-can-scroll::after,
+  .doc-scroll.doc-scrolled-x::before {
+    opacity: 1;
+  }
+  .doc-scroll.doc-at-end::after {
+    opacity: 0;
   }
 
   /* ---------- 返回顶部 ---------- */
@@ -739,7 +843,13 @@
               {{t "docs.agent.journey.title"}}
             </summary>
             <div class="doc-fold-body">
-<pre class="doc-journey">
+              <div class="code-block">
+                <div class="code-head doc-head-end">
+                  <button class="copy-btn" onclick="copyBlock(this)">
+                    {{t "docs.copy"}}
+                  </button>
+                </div>
+<pre class="code-body doc-journey">
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
@@ -748,6 +858,7 @@
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification
     │                        │                        │     ⑧ system banner       │</pre>
+              </div>
             </div>
           </details>
         </section>
@@ -866,7 +977,7 @@
                 >
                 <span class="doc-card-count">{{.Total}}</span>
               </div>
-              <div class="doc-ep-table">
+              <div class="doc-ep-table table-wrap">
                 <table class="data-table doc-ep-data">
                   <tbody>
                     {{range .Ops}}
@@ -954,7 +1065,7 @@
                 >{{t "docs.events.params.title"}}</span
               >
             </div>
-            <div class="overflow-x-auto">
+            <div class="table-wrap">
               <table class="param-table">
                 <tbody>
                   <tr>
@@ -1141,7 +1252,14 @@ limits:
           <p class="doc-note">{{t "nodes.v4.slot_note"}}</p>
           <h3 class="doc-h2">{{t "docs.v4.resource"}}</h3>
           <p class="doc-lede">{{t "docs.v4.resource_note"}}</p>
-          <pre class="code-body">GET /v1/namespaces/{namespace}/capabilities
+          <div class="code-block mt-4">
+            <div class="code-head">
+              <span>{{t "docs.v4.resource"}}</span
+              ><button class="copy-btn" onclick="copyBlock(this)">
+                {{t "docs.copy"}}
+              </button>
+            </div>
+            <pre class="code-body">GET /v1/namespaces/{namespace}/capabilities
 GET /v1/namespaces/{namespace}/sources
 GET /v1/namespaces/{namespace}/playbooks
 GET /v1/namespaces/{namespace}/tasks
@@ -1150,6 +1268,7 @@ GET /v1/nodes/{name}/config
 PUT /v1/nodes/{name}/config
 GET /v1/namespaces/{namespace}/config
 GET /v1/system/config</pre>
+          </div>
         </section>
       </div>
 
@@ -1229,6 +1348,53 @@ GET /v1/system/config</pre>
     title: Anotify.t("docs.title", "接入文档"),
     subtitle: Anotify.t("docs.subtitle", "Agent 上报 · Web Push · WebSocket"),
   });
+
+  /* 代码块可横向滚动标记（DOC-1）：
+     .code-body 的 overflow-x:auto 一直都在，问题是没有「右边还有」的信号。
+     这里给每个真的溢出的代码块挂 .doc-scroll + 右缘渐隐，滚动位置反过来控制
+     左缘渐隐与「已滚到头」。不隐藏任何内容、不改 DOM 结构（渐隐是伪元素），
+     copyBlock 仍按 .code-block > .code-body 找正文。 */
+  (function mountCodeScroll() {
+    const blocks = Array.from(document.querySelectorAll(".docs-main .code-block"));
+    if (!blocks.length) return;
+    const syncers = [];
+    for (const block of blocks) {
+      const body = block.querySelector(".code-body");
+      if (!body) continue;
+      const head = block.querySelector(".code-head");
+      const sync = () => {
+        const overflow = body.scrollWidth - body.clientWidth;
+        const canScroll = overflow > 2;
+        block.classList.toggle("doc-scroll", canScroll);
+        block.classList.toggle(
+          "doc-scrolled-x",
+          canScroll && body.scrollLeft > 2,
+        );
+        block.classList.toggle(
+          "doc-at-end",
+          !canScroll || body.scrollLeft + body.clientWidth >= body.scrollWidth - 2,
+        );
+        /* 渐隐只盖代码体：top = 标题栏实际高度（没有标题栏就是 0）*/
+        block.style.setProperty(
+          "--doc-fade-top",
+          (head ? head.offsetHeight : 0) + "px",
+        );
+      };
+      body.addEventListener("scroll", sync, { passive: true });
+      syncers.push(sync);
+      sync();
+    }
+    if (!syncers.length) return;
+    let frame = 0;
+    window.addEventListener(
+      "resize",
+      () => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => syncers.forEach((fn) => fn()));
+      },
+      { passive: true },
+    );
+  })();
 
   /* 目录高亮：桌面 rail 与窄屏 chips 共用 data-toc。
      原来写内联 style.color/background（含硬编码紫），改成切 .toc-on 类。 */

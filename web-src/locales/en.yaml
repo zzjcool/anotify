@@ -2189,3 +2189,9 @@ ui:
     filters: Filters
     active: Active filters
     toolbar_hint: Press Enter or Apply
+# ── UI audit v3 · cluster E (docs & auth pages) new strings ──────────
+uxaudit:
+  doc:
+    msg_missing_title: "Missing task id"
+    msg_notfound_title: "Task not found"
+    msg_unset: "Not set"
