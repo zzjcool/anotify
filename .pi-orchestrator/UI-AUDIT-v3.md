@@ -274,3 +274,14 @@ go run ./cmd/fe-preview -dir web -addr 127.0.0.1:<PORT> &   # <PORT> 见任务�
 | ST-8 | C/D | `.empty` 被三页当 loading 占位用（`events:34,150`、`message:17`、`trace:18`），语义已混 |
 | ST-9 | C/D/A | 空态子类四套命名（`ad-*`/`kx-*`/`doc-*`/`cap-detail-empty`），与 `.empty` 各写一份 |
 | ST-10 | 全局 | 运行期缺 i18n key 是**静默中文兜底**（`partials.js:35`），构建期缺 key 只 WARN 不失败（`internal/sitegen/sitegen.go:352-377`），`Makefile` 无 i18n 门禁 → 新增文案必须四语同步，无自动保护 |
+
+## 7. 合并前置事实（侦察，2026-11-13）
+
+- 四支均以 `92062ed` 为基线；文件层面**零重叠**：`ui.css/partials.js/tokens.css/graphs.js/traceview.js` 仅 ui-shell 改；`locales/*.yaml` 仅 ui-doc-auth 改；`layouts/*` 无人改；页面按 C/D/E 分域。
+- 四支初始都处于「工作区未提交」→ 已要求各自先落一个检查点提交，合并走 `git merge`（不然只能打补丁）。
+- 弹层实况（12 个，无 drawer）：6 个「标题+×」、3 个「标题+文字按钮『关闭』」（`sources.html:58/214`、`source.html:55`）、3 个**无关闭按钮**（`admin:505` confirm、`login:923` codes、`security:1218` password，有意为之）。所有 `.modal-body` 都无内联 max-height/overflow；滚动机制本来就对（`.modal-panel{max-height:85dvh}` + `.modal-body{overflow-y:auto}`），缺的只是**滚动提示**。
+- 裸 `<pre>` 4 处：`docs.html:742`(doc-journey ASCII)、`docs.html:1144`(端点清单)、`node.html:46`(安装命令)、`security.html:1014`(二维码)。
+- 缺 `.table-wrap`/`.data-table` 的表 2 处：`docs.html:870`、`docs.html:958`。
+- i18n key 集合四语完全一致（各 1931）；但 `security.html` 有 5 处引用**不存在的 key**（`common.copy`→应为 `common.copy.copied`、`common.copied`、`security.alert.no_webauthn`、`security.prompt.new_name`、`security.default_new_name`）→ en/ja/es 静默显示中文。
+- `docs.openapi.tag.*` 缺 4 个 tag（`aggregates/console/hooks/source-actions`），sitegen 只 WARN 并派生英文名 → 合并时统一补。
+- 约定：**locales 的最终写入由协调者合并时统一做**，避免多支抢同一文件尾部。
