@@ -31,10 +31,11 @@ export async function nodeRetained(d,mode){
     // 中枢、这个节点名、这把真令牌（令牌只进 textContent，不进 URL/localStorage）。
     const bootstrap = await page.locator('#reg-bootstrap').innerText();
     const origin = new URL(base).origin;
-    assert.ok(bootstrap.includes('/install-anode.sh'), bootstrap);
-    assert.ok(bootstrap.includes('--name browser-new-node'), bootstrap);
-    assert.ok(bootstrap.includes('--server ' + origin), bootstrap);
-    assert.ok(bootstrap.includes('--token ' + token), bootstrap);
+    // 令牌必须与中枢真正签发的那把做**值等价**（不能只拿同页 #reg-token 自证），
+    // 下载 host 也必须钉死到当前 origin（否则一条“能跑但装到别处”的命令也能过）。
+    assert.equal(token, issued.result.token);
+    assert.ok(bootstrap.includes('curl -fsSL ' + origin + '/install-anode.sh | sh -s -- --name browser-new-node --server ' + origin + ' --token ' + issued.result.token), bootstrap);
+    assert.ok(!bootstrap.includes('--token-file'), bootstrap);
     // 顺序必须是 `curl -fsSL … | sh -s --`：反了（先 sh 后 curl）根本装不上。
     assert.ok(bootstrap.indexOf('curl -fsSL') >= 0 && bootstrap.indexOf('curl -fsSL') < bootstrap.indexOf('| sh -s --'), bootstrap);
     assert.equal(await page.locator('#reg-bootstrap-copy').count(), 1);

@@ -139,13 +139,17 @@ docker run -p 8080:8080 \
 
 The hub only dispatches — **the node is what actually executes capabilities**. `anode` is a
 separate binary you run on your own machine: it connects to the hub, pulls capabilities,
-runs them, and reports results/emits. The default path is **one command** — the exact line the
-hub's Nodes page hands you after you register a node:
+runs them, and reports results/emits. The default path is **one command** — the line the
+hub's Nodes page hands you after you register a node (it uses `--token`, and the plaintext token
+is shown only once):
 
 ```bash
 curl -fsSL https://<hub-domain>/install-anode.sh | sh -s -- \
-  --name node-a --server https://<hub-domain> --token-file /root/anode.token
+  --name node-a --server https://<hub-domain> --token <node-token>
 ```
+
+`--token` stays in your shell history, so prefer a 0600 file for day-to-day use:
+`--token-file /root/anode.token` (only one of the two; upgrades and token rotation work the same).
 
 It downloads the binary and verifies its sha256, pre-flights the token with
 `anode serve --check`, stages files with `anode install`, installs a systemd service

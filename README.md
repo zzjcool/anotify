@@ -146,12 +146,15 @@ docker run -p 8080:8080 \
 
 中枢只负责派发，**真正执行能力的是节点** `anode`（独立二进制，跑在你自己的机器上；
 它连中枢、拉能力、执行脚本、回报结果/emit）。默认走**一条命令**——中枢「节点」页注册节点后
-给出的就是它：
+给出的就是它（页面给的是 `--token <令牌>`，令牌明文只显示一次）：
 
 ```bash
 curl -fsSL https://<中枢域名>/install-anode.sh | sh -s -- \
-  --name node-a --server https://<中枢域名> --token-file /root/anode.token
+  --name node-a --server https://<中枢域名> --token <节点令牌>
 ```
+
+`--token` 会留在 shell 历史里，长期使用建议换成 0600 文件：`--token-file /root/anode.token`
+（两者只能给一个；升级/轮换令牌时同样会自动生效）。
 
 脚本会下载并校验 sha256、用 `anode serve --check` 预检令牌、`anode install` 落盘、
 装 systemd 服务（`system` / `user` / `none`）、轮询到 `active`，最后打印摘要；

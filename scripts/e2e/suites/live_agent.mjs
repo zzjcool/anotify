@@ -264,7 +264,7 @@ async function partServeCheck(base, installed) {
 		{
 			const r = runCLI(["serve", "--check", "--config", writeCfg("clearly-wrong-token"), "--data", dataDir]);
 			H.eq("serve --check（错令牌）→ 退出码 2（安装脚本据此中止，不是无限重连）", r.status, 2);
-			H.check("→ stderr 是可定位的 anode check: <kind>: <detail>", /anode check: (unauthorized|timeout)/.test(r.stderr), r.stderr.slice(0, 300));
+			H.check("→ stderr 是 anode check: unauthorized: <detail>（错令牌不得被归类成 timeout）", /anode check: unauthorized: /.test(r.stderr) && !/anode check: timeout:/.test(r.stderr), r.stderr.slice(0, 300));
 			H.check("→ 错令牌同样不写盘", !existsSync(dataDir), dataDir);
 		}
 	} finally {

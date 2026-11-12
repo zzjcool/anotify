@@ -68,17 +68,37 @@ const fakeCurl = `#!/bin/sh
 printf 'curl %s\n' "$*" >> "$FIXTURE_LOG"
 out=""
 url=""
+hdrfile=""
+cfg=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output) out=$2; shift 2 ;;
-    --connect-timeout|--max-time|--header|--dump-header|--write-out) shift 2 ;;
+    --dump-header) hdrfile=$2; shift 2 ;;
+    --config) cfg=$2; shift 2 ;;
+    --connect-timeout|--max-time|--write-out|--header) shift 2 ;;
     -*) shift ;;
     *) url=$1; shift ;;
   esac
 done
+# D9：下行令牌只能走 curl --config（不进 argv）。这里只验配置文件真带了 Bearer，
+# 并把结论记成一行“curl-auth ok”——绝不把令牌本身写进调用日志。
+if [ -n "$cfg" ]; then
+  if grep -q "Authorization: Bearer ${FIXTURE_TOKEN:-}" "$cfg" 2>/dev/null; then
+    printf 'curl-auth ok\n' >> "$FIXTURE_LOG"
+  else
+    printf 'curl-auth MISSING\n' >> "$FIXTURE_LOG"
+  fi
+fi
 [ -n "$out" ] || { printf 'fake-curl: 没有 --output\n' >&2; exit 90; }
 case "$url" in
   *sha256) cp "$FIXTURE_SUM" "$out" ;;
+  *"${FIXTURE_BINARY_PATH:-/v1/node/binary}")
+    if [ -n "$hdrfile" ]; then
+      printf 'HTTP/1.1 200 OK\r\nX-Agent-Version: old-v1\r\nX-Agent-Sha256: %s\r\n\r\n' "$(cut -d' ' -f1 "$FIXTURE_SUM")" > "$hdrfile"
+    fi
+    cp "$FIXTURE_PAYLOAD" "$out"
+    printf '200'
+    ;;
   *) cp "$FIXTURE_PAYLOAD" "$out" ;;
 esac
 `
@@ -87,6 +107,16 @@ const fakeSystemctl = `#!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
   *is-active*)
+    # 所有权敏感模式（C1）：忠实模拟 systemd 的权限语义 —— unit 写的是 User=<安装者>，
+    # 而 config 是 0600，属主不是那个用户时服务读不到配置、起不来，is-active 只能是非 active。
+    # 所以这条分支只有在「chown 已经把 config 交给 unit 的 User=」之后才会绿。
+    if [ "${FIXTURE_OWNERSHIP:-0}" = "1" ]; then
+      want=$(sed -n 's/^User=//p' "$FIXTURE_UNIT_FILE" 2>/dev/null | head -n 1)
+      got=$(cat "$FIXTURE_CONFIG_OWNER" 2>/dev/null || :)
+      printf 'systemctl: ownership got=%s want=%s\n' "$got" "$want" >> "$FIXTURE_LOG"
+      [ -n "$want" ] && [ "$got" = "$want" ] || exit 3
+      exit 0
+    fi
     n=0
     [ -f "$FIXTURE_COUNTER" ] && n=$(cat "$FIXTURE_COUNTER")
     n=$((n + 1))
@@ -118,8 +148,19 @@ printf 'loginctl %s\n' "$*" >> "$FIXTURE_LOG"
 exit 0
 `
 
+// 假 chown 记两件事：调用本身（顺序断言用），以及「谁被授权读 config」——后者写进
+// $FIXTURE_CONFIG_OWNER，由假 systemctl 的 is-active 语义消费（见 FIXTURE_OWNERSHIP）。
+// 不真 chown：夹具里的安装者（root 直跑时是 fixtureOwner）在这台机器上并不存在。
 const fakeChown = `#!/bin/sh
 printf 'chown %s\n' "$*" >> "$FIXTURE_LOG"
+owner=""
+for a in "$@"; do
+  case "$a" in -*) continue ;; esac
+  if [ -z "$owner" ]; then owner=$a; continue; fi
+  if [ -n "${FIXTURE_CONFIG_PATH:-}" ] && [ "$a" = "$FIXTURE_CONFIG_PATH" ]; then
+    printf '%s' "$owner" > "$FIXTURE_CONFIG_OWNER"
+  fi
+done
 exit 0
 `
 
@@ -173,6 +214,14 @@ type scriptFixture struct {
 	hubBinary    atomic.Int64 // 假中枢被要二进制的次数（--download-url 下必须是 0）
 	sudoUser     string       // 有值就注入 SUDO_USER（root 直跑时才需要）
 	isActiveFail int          // 假 systemctl 前 N 次 is-active 返回"未 active"
+
+	// ownershipCheck 打开「所有权敏感」夹具：假 systemctl 的 is-active 只在
+	// 「config 属主 == unit 的 User=」时成功（C1 的回归门）。
+	ownershipCheck bool
+	// installExit 非空时，下载到的二进制在 `install` 这一步以这个码退出（失败码传播用例）。
+	installExit string
+	// pathOverride 非空时顶掉子进程的 PATH（模拟「换个终端/换 sudo env 重跑」）。
+	pathOverride string
 }
 
 func newScriptFixture(t *testing.T) *scriptFixture {
@@ -214,7 +263,9 @@ func newScriptFixture(t *testing.T) *scriptFixture {
 		t.Fatalf("读 builtOld: %v", err)
 	}
 	put(t, f.realBin, string(binaryBody), 0755)
-	payload := fmt.Sprintf("#!/bin/sh\nprintf '%%s %%s\\n' \"$0\" \"$*\" >> \"${FIXTURE_LOG:-/dev/null}\" 2>/dev/null || true\nexec %q \"$@\"\n", f.realBin)
+	// FIXTURE_INSTALL_EXIT 让 `install` 这一步失败（exit 码原样带出）：用来验证脚本既不吞掉
+	// 失败，也不让节点停在「服务已 stop」的状态。
+	payload := fmt.Sprintf("#!/bin/sh\nprintf '%%s %%s\\n' \"$0\" \"$*\" >> \"${FIXTURE_LOG:-/dev/null}\" 2>/dev/null || true\nif [ \"${FIXTURE_INSTALL_EXIT:-}\" != \"\" ] && [ \"$1\" = \"install\" ]; then\n  printf 'anode install: fixture failure\\n' >&2\n  exit \"$FIXTURE_INSTALL_EXIT\"\nfi\nexec %q \"$@\"\n", f.realBin)
 	put(t, f.payload, payload, 0755)
 	sum := sha256.Sum256([]byte(payload))
 	f.writeSum(hex.EncodeToString(sum[:]))
@@ -263,8 +314,10 @@ func (f *scriptFixture) newFakeHub() *httptest.Server {
 				return
 			}
 			// 两条鉴权面都要对：握手头（Bearer）与 hello 里的令牌（节点身份）。
-			authOK := r.Header.Get(protocol.EmitAuthHeader) == protocol.EmitAuthScheme+" "+fixtureToken
-			if hello.Token != fixtureToken || !authOK {
+			// 接受集以 fixtureToken 为前缀（令牌轮换用例用 fixtureToken+"A"/"B"），
+			// fixtureWrong（不带这个前缀）仍然被 1008 赶走 —— 预检失败用例靠它。
+			authOK := strings.HasPrefix(r.Header.Get(protocol.EmitAuthHeader), protocol.EmitAuthScheme+" "+fixtureToken)
+			if !strings.HasPrefix(hello.Token, fixtureToken) || !authOK {
 				// 1008 = 中枢拒绝身份；`anode serve --check` 把它翻成 unauthorized。
 				_ = conn.Close(websocket.StatusPolicyViolation, "nope")
 				return
@@ -296,8 +349,12 @@ func (f *scriptFixture) newFakeHub() *httptest.Server {
 // env 是脚本子进程的**完整**环境：不继承 os.Environ()，免得开发机上的 ANODE_* 变量
 // （或 SUDO_USER / TMPDIR）偷偷改变脚本行为。
 func (f *scriptFixture) env() []string {
+	path := f.pathOverride
+	if path == "" {
+		path = f.binDir + ":/usr/local/bin:/usr/bin:/bin"
+	}
 	env := []string{
-		"PATH=" + f.binDir + ":/usr/local/bin:/usr/bin:/bin",
+		"PATH=" + path,
 		"HOME=" + f.homeDir,
 		"TMPDIR=" + f.tmpDir,
 		"TZ=UTC",
@@ -307,6 +364,17 @@ func (f *scriptFixture) env() []string {
 		"FIXTURE_SUM=" + f.sumPath,
 		"FIXTURE_COUNTER=" + f.counter,
 		fmt.Sprintf("FIXTURE_ISACTIVE_FAIL=%d", f.isActiveFail),
+		"FIXTURE_UNIT_FILE=" + filepath.Join(f.stage, "etc/systemd/system/anode.service"),
+		"FIXTURE_CONFIG_PATH=" + filepath.Join(f.stage, "etc/anode/anode.yaml"),
+		"FIXTURE_CONFIG_OWNER=" + filepath.Join(f.root, "config.owner"),
+		"FIXTURE_TOKEN=" + fixtureToken,
+		"FIXTURE_BINARY_PATH=" + protocol.NodeBinaryPath,
+	}
+	if f.ownershipCheck {
+		env = append(env, "FIXTURE_OWNERSHIP=1")
+	}
+	if f.installExit != "" {
+		env = append(env, "FIXTURE_INSTALL_EXIT="+f.installExit)
 	}
 	if f.sudoUser != "" {
 		env = append(env, "SUDO_USER="+f.sudoUser)
@@ -554,6 +622,14 @@ func TestInstallScriptHappyPath(t *testing.T) {
 	if !(versionAt < installAt && installAt < reload) {
 		t.Fatalf("顺序不对：--version(%d) → install(%d) → daemon-reload(%d)\n%v", versionAt, installAt, reload, lines)
 	}
+	// 参数只转发一次、不被脚本改写：--server 归一化后的 ws:// 地址必须原样到 anode install
+	// （旧用例里"--server 真的转发过"的那条覆盖）。
+	if got := lineArg(installLine, "--server"); got != f.hubWS {
+		t.Fatalf("--server 没转发给 anode install：got %q want %q\n%s", got, f.hubWS, installLine)
+	}
+	if got := lineArg(installLine, "--prefix"); got != f.stage {
+		t.Fatalf("--prefix 没转发给 anode install：got %q want %q", got, f.stage)
+	}
 	// is-active 是**轮询**：假 systemctl 前 2 次返回非 active，第 3 次才成功。
 	// 只问一次就判定的话这里会失败 —— 成功本身就证明它在重试。
 	polls := countLines(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "is-active") })
@@ -576,8 +652,8 @@ func TestInstallScriptRejectsBadChecksum(t *testing.T) {
 	f := newScriptFixture(t)
 	f.writeSum(strings.Repeat("0", 64)) // 摘要与真二进制不符（破坏/篡改）
 	code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...)
-	if code == 0 {
-		t.Fatalf("校验和不匹配应该失败\nstdout:\n%s", out)
+	if code != 2 {
+		t.Fatalf("校验和不匹配应该按契约退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 	}
 	if !strings.Contains(out+errOut, "sha256") {
 		t.Fatalf("报错没点名 sha256：stdout=%s stderr=%s", out, errOut)
@@ -606,8 +682,8 @@ func TestInstallScriptRejectsBadChecksum(t *testing.T) {
 func TestInstallScriptRequiresToken(t *testing.T) {
 	f := newScriptFixture(t)
 	code, out, errOut := f.run(f.baseArgs()...)
-	if code == 0 {
-		t.Fatalf("没有令牌却装成功了\nstdout:\n%s", out)
+	if code != 2 {
+		t.Fatalf("没有令牌应该按契约退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 	}
 	if !strings.Contains(errOut, "--token") || !strings.Contains(errOut, "--token-file") {
 		t.Fatalf("报错没点名 --token/--token-file：%s", errOut)
@@ -671,12 +747,12 @@ func TestInstallScriptPreflightRejected(t *testing.T) {
 	if n := countLines(lines, isSystemctlCall); n != 0 {
 		t.Fatalf("预检失败却调用了 systemctl %d 次：%v", n, lines)
 	}
-	if strings.Contains(out+errOut, fixtureWrong+" ") {
+	if strings.Contains(out+errOut, fixtureWrong) {
 		t.Fatalf("令牌泄露到输出")
 	}
 }
 
-// ---- 6. --service none：只落盘，一个 systemctl 都不调 ----
+// ---- 6. --service none：只落盘，一个 systemctl 都不调，但**照样预检**（契约 D5，无例外）----
 
 func TestInstallScriptServiceNone(t *testing.T) {
 	f := newScriptFixture(t)
@@ -690,13 +766,34 @@ func TestInstallScriptServiceNone(t *testing.T) {
 	// 只落盘：二进制 + 配置在，服务没起。
 	f.assertPerm(filepath.Join(f.stage, "usr/local/bin/anode"), 0755)
 	f.assertPerm(filepath.Join(f.stage, "etc/anode/anode.yaml"), 0600)
-	// 没有服务可停/可起，预检也不做（脚本只在装服务时预检）。
-	if hits := f.stream.Load(); hits != 0 {
-		t.Fatalf("--service none 不该连中枢预检（实际 %d 次）", hits)
+	// 预检**不因 --service none 而跳过**（R1/M3）："只落盘"也要先证明这把令牌能用，
+	// 否则错令牌会以 exit 0 “装成功”却永远上不了线。
+	if hits := f.stream.Load(); hits != 1 {
+		t.Fatalf("--service none 也应该预检 1 次（契约 D5），实际 %d", hits)
 	}
 	// 手工命令必须打印出来，否则用户不知道下一步做什么。
 	if !strings.Contains(out, "手工启动") || !strings.Contains(out, "systemctl enable --now anode.service") {
 		t.Fatalf("没有打印手工启动命令：%s", out)
+	}
+}
+
+// ---- 6b. 错令牌 + --service none：必须非 0，而不是“落盘即成功”----
+
+func TestInstallScriptServiceNoneRejectsWrongToken(t *testing.T) {
+	f := newScriptFixture(t)
+	code, out, errOut := f.run(append(f.baseArgs(), "--service", "none", "--token", fixtureWrong)...)
+	if code != 2 {
+		t.Fatalf("错令牌 + --service none 应该按契约退 2（预检拦下），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if hits := f.stream.Load(); hits != 1 {
+		t.Fatalf("预检应该连中枢 1 次，实际 %d", hits)
+	}
+	if !strings.Contains(errOut, "预检失败") {
+		t.Fatalf("预检失败没给出可定位诊断：%s", errOut)
+	}
+	f.mustNotExist(f.stage)
+	if countLines(f.calls(), func(l string) bool { return hasArg(l, "install") }) != 0 {
+		t.Fatalf("预检失败却调用了 anode install：%v", f.calls())
 	}
 }
 
@@ -846,6 +943,292 @@ func TestInstallScriptDryRun(t *testing.T) {
 	}
 	if !strings.Contains(out, "dry-run") {
 		t.Fatalf("预演输出没有标明是 dry-run：%s", out)
+	}
+}
+
+// ---- 9b. --dry-run --service user：preview 不得真改系统（R1/M1）----
+//
+// `loginctl enable-linger` 会写 /var/lib/systemd/linger/<user>（真实的系统状态修改），
+// 与“--dry-run 不碰网络、不写盘、不提权”直接冲突。所以预演下 systemctl/loginctl 一个都不许执行。
+func TestInstallScriptDryRunUserServiceNoSystemChanges(t *testing.T) {
+	f := newScriptFixture(t)
+	// 清掉 SUDO_USER：root 直跑时脚本会 getent 查家目录（只读查询），这里要的是**完全没有**
+	// 任何命令被真的执行——M1 要钉的是“预演不改系统状态”，同时把 getent 也排掉更纯粹。
+	f.sudoUser = ""
+	code, out, errOut := f.run(append(f.baseArgs(), "--service", "user", "--dry-run", "--token", fixtureToken)...)
+	if code != 0 {
+		t.Fatalf("--dry-run --service user 应该退 0，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if lines := f.calls(); len(lines) != 0 {
+		t.Fatalf("--dry-run --service user 不该真的执行任何命令（含 loginctl/systemctl），实际：%v", lines)
+	}
+	f.mustNotExist(f.stage)
+	if entries, err := os.ReadDir(f.tmpDir); err != nil || len(entries) != 0 {
+		t.Fatalf("--dry-run 不该往 TMPDIR 写东西：%v %v", entries, err)
+	}
+	// 预演仍要告诉用户“真跑会开 linger”（否则摘要与实际行为脱节）。
+	if !strings.Contains(out, "enable-linger") {
+		t.Fatalf("预演没有说明会执行 enable-linger：%s", out)
+	}
+}
+
+// ---- 9c. --token-file 轮换：与 --token 同档，自动 --update-token（R1/M2）----
+func TestInstallScriptTokenFileRotation(t *testing.T) {
+	f := newScriptFixture(t)
+	tokA := filepath.Join(f.root, "token-a")
+	tokB := filepath.Join(f.root, "token-b")
+	put(t, tokA, fixtureToken+"A\n", 0600)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token-file", tokA)...); code != 0 {
+		t.Fatalf("首次用 --token-file 安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	cfg := filepath.Join(f.stage, "etc/anode/anode.yaml")
+	first, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("读配置: %v", err)
+	}
+	if !strings.Contains(string(first), "token: "+fixtureToken+"A") {
+		t.Fatalf("首装没有用 --token-file 里的令牌：%s", first)
+	}
+
+	f.resetLog()
+	put(t, tokB, fixtureToken+"B\n", 0600)
+	code, out, errOut := f.run(append(f.baseArgs(), "--token-file", tokB)...)
+	if code != 0 {
+		t.Fatalf("--token-file 轮换令牌应该成功（文档承诺会自动 --update-token），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	after, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("轮换后读配置: %v", err)
+	}
+	if !strings.Contains(string(after), "token: "+fixtureToken+"B") || strings.Contains(string(after), fixtureToken+"A") {
+		t.Fatalf("轮换后配置里的令牌没换成新的：%s", after)
+	}
+	_, installLine := findLine(f.calls(), isAnodeInstallCall)
+	if !hasArg(installLine, "--update-token") {
+		t.Fatalf("轮换没有自动带 --update-token：%s", installLine)
+	}
+	if strings.Contains(strings.Join(f.calls(), "\n"), fixtureToken) {
+		t.Fatalf("令牌泄露到调用日志")
+	}
+}
+
+// ---- 9d. 系统服务的所有权顺序：chown 必须在 restart 之前（R1/C1）----
+//
+// 模拟 systemd 的权限语义：unit 写 User=<安装者>，而 config 是 0600；属主不是那个用户时
+// 服务读不到配置、根本起不来（is-active 永远非 active）。先 restart 再 chown 的旧顺序在这套
+// 夹具下必然 die（修复前：is-active 轮询 10 次全失败）；把 chown 提到 restart 之前才会绿。
+func TestInstallScriptSystemServiceChownBeforeRestart(t *testing.T) {
+	f := newScriptFixture(t)
+	f.ownershipCheck = true
+	code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...)
+	if code != 0 {
+		t.Fatalf("system 服务安装应该成功（config 属主先交给 unit 的 User=），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+
+	unit := filepath.Join(f.stage, "etc/systemd/system/anode.service")
+	unitBody, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("读 unit: %v", err)
+	}
+	user := ""
+	for _, line := range strings.Split(string(unitBody), "\n") {
+		if strings.HasPrefix(line, "User=") {
+			user = strings.TrimPrefix(line, "User=")
+		}
+	}
+	if user == "" {
+		t.Fatalf("系统服务的 unit 没有 User=：%s", unitBody)
+	}
+	ownerRaw, err := os.ReadFile(filepath.Join(f.root, "config.owner"))
+	if err != nil {
+		t.Fatalf("没有任何 chown 把 config 交给服务用户（%v）：%v", err, f.calls())
+	}
+	if got := strings.TrimSpace(string(ownerRaw)); got != user {
+		t.Fatalf("config 的属主 = %q，unit 的 User= = %q（服务读不到 0600 配置）", got, user)
+	}
+
+	lines := f.calls()
+	chownAt, chownLine := findLine(lines, func(l string) bool { return strings.HasPrefix(l, "chown ") })
+	restartAt, _ := findLine(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "restart") })
+	if chownLine == "" || restartAt < 0 {
+		t.Fatalf("没有 chown 或没有 restart：%v", lines)
+	}
+	if chownAt > restartAt {
+		t.Fatalf("chown（第 %d 行）在 restart（第 %d 行）之后：服务会先读到读不了的配置而失败\n%v", chownAt, restartAt, lines)
+	}
+	// chown 必须同时覆盖 config 与 data（data 也是服务要写的）。
+	if !hasArg(chownLine, filepath.Join(f.stage, "etc/anode/anode.yaml")) || !hasArg(chownLine, filepath.Join(f.stage, "var/lib/anode")) {
+		t.Fatalf("chown 没有同时覆盖 config 与 data：%s", chownLine)
+	}
+}
+
+// ---- 9e. 起不来时恢复旧服务：升级不能把节点搞成“停在停止态”（R1/C1 补偿）----
+func TestInstallScriptRestoresOldServiceWhenStartFails(t *testing.T) {
+	f := newScriptFixture(t)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
+		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	f.resetLog()
+	// 升级时新实例永远起不来（is-active 一直非 active）：脚本必须把刚 stop 的旧服务恢复回去。
+	f.isActiveFail = 1000
+	code, out, errOut := f.run([]string{
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--prefix", f.stage,
+	}...)
+	if code != 2 {
+		t.Fatalf("wait_active 失败应该按契约退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	lines := f.calls()
+	stopAt, stopLine := findLine(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "stop") })
+	startAt, startLine := findLine(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "start") })
+	if stopLine == "" || startLine == "" {
+		t.Fatalf("失败后没有恢复旧服务（stop/start 不全）：%v", lines)
+	}
+	if startAt < stopAt {
+		t.Fatalf("恢复顺序不对：start（%d）在 stop（%d）之前\n%v", startAt, stopAt, lines)
+	}
+	if !strings.Contains(out+errOut, "恢复") {
+		t.Fatalf("失败结论没说清旧服务已被恢复：stdout=%s stderr=%s", out, errOut)
+	}
+}
+
+// ---- 9f. anode install 失败：不吞失败、不把节点留在停止态（R1/M4 + 旧用例“失败码传播”）----
+func TestInstallScriptInstallFailureRestoresServiceAndKeepsCode(t *testing.T) {
+	f := newScriptFixture(t)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
+		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	f.resetLog()
+	f.installExit = "7"
+	code, out, errOut := f.run([]string{
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--prefix", f.stage,
+	}...)
+	// 契约 §3：脚本失败一律 2；但子进程的失败不能被吞——它必须出现在诊断里（旧用例的“失败码传播”）。
+	if code != 2 {
+		t.Fatalf("install 失败应该按契约退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "退出码 7") {
+		t.Fatalf("install 的失败码没有传播到诊断里：%s", errOut)
+	}
+	if !strings.Contains(out+errOut, "anode install: fixture failure") {
+		t.Fatalf("install 的原文输出没有透传：stdout=%s stderr=%s", out, errOut)
+	}
+	lines := f.calls()
+	if countLines(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "start") }) != 1 {
+		t.Fatalf("install 失败后没有恢复旧服务：%v", lines)
+	}
+	// 失败发生在起服务之前：没有 restart，也没有把 unit 留在 enable 后死状态的内疚。
+	if countLines(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "restart") }) != 0 {
+		t.Fatalf("install 失败却 restart 了服务：%v", lines)
+	}
+}
+
+// ---- 9g. 不同 caller PATH 重跑 = 同一个 unit（R1/M4）----
+//
+// unit 里的 Environment=PATH 不能照抄安装时的 $PATH：否则换一个终端（direnv/nvm/不同 ssh）
+// 重跑就会被 anode install 判为“unit 被改过”而拒绝，节点停留在“服务已 stop”。
+func TestInstallScriptUpgradeStablePathAcrossCallerPATH(t *testing.T) {
+	f := newScriptFixture(t)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
+		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	unit := filepath.Join(f.stage, "etc/systemd/system/anode.service")
+	before, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("读 unit: %v", err)
+	}
+	if strings.Contains(string(before), f.binDir) {
+		t.Fatalf("unit 的 PATH 照抄了调用者 PATH（含夹具 bin 目录）：%s", before)
+	}
+
+	f.resetLog()
+	// 换一个“终端”：PATH 的目录集合/顺序都变了（但假命令仍在最前面，脚本还能跑）。
+	f.pathOverride = f.binDir + ":/opt/caller-only/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	code, out, errOut := f.run([]string{
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--prefix", f.stage,
+	}...)
+	if code != 0 {
+		t.Fatalf("不同 caller PATH 重跑应该等于同一个 unit（升级成功），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	after, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("升级后读 unit: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("caller PATH 变了就换了 unit（升级会拒绝覆盖）\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	// 稳定集合：$HOME/.local/bin + 固定系统路径，不照抄调用者 PATH。
+	wantPath := ""
+	if f.sudoUser != "" {
+		wantPath = "/home/" + f.sudoUser + "/.local/bin"
+	} else {
+		wantPath = f.homeDir + "/.local/bin"
+	}
+	wantPath += ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	if !strings.Contains(string(after), "Environment=PATH="+wantPath+"\n") {
+		t.Fatalf("unit 的 PATH 不是稳定集合\nwant Environment=PATH=%s\ngot unit:\n%s", wantPath, after)
+	}
+	if !strings.Contains(out, "升级完成") {
+		t.Fatalf("升级结论没写清楚：%s", out)
+	}
+}
+
+// ---- 9h. 显式 --service system + --prefix：unit 不在 systemd 搜索路径里，拦下来（R1/m2）----
+func TestInstallScriptExplicitSystemWithPrefixRejected(t *testing.T) {
+	f := newScriptFixture(t)
+	code, out, errOut := f.run(append(f.baseArgs(), "--service", "system", "--token", fixtureToken)...)
+	if code != 2 {
+		t.Fatalf("--prefix + --service system 应该明确报错退 2（否则 systemctl enable 必失败），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "--prefix") || !strings.Contains(errOut, "--service system") {
+		t.Fatalf("报错没说清是哪两个参数冲突：%s", errOut)
+	}
+	f.mustNotExist(f.stage)
+	if n := countLines(f.calls(), isSystemctlCall); n != 0 {
+		t.Fatalf("参数冲突却已经动了服务：%v", f.calls())
+	}
+}
+
+// ---- 9i. 中枢下载路径（UI 一条命令的主路径）：令牌只走 curl --config，不进 argv（R1/minor）----
+func TestInstallScriptHubDownloadKeepsTokenOutOfArgv(t *testing.T) {
+	f := newScriptFixture(t)
+	// 不给 --download-url/--version：走中枢 GET /v1/node/binary（假 curl 按响应头回放）。
+	code, out, errOut := f.run("--name", fixtureName, "--server", f.hubWS, "--token", fixtureToken, "--prefix", f.stage)
+	if code != 0 {
+		t.Fatalf("从中枢下载的安装应该成功，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	lines := f.calls()
+	if countLines(lines, func(l string) bool { return l == "curl-auth ok" }) != 1 {
+		t.Fatalf("下载令牌没有经 curl --config 交给 curl：%v", lines)
+	}
+	binReq := countLines(lines, func(l string) bool {
+		return strings.HasPrefix(l, "curl ") && strings.Contains(l, protocol.NodeBinaryPath)
+	})
+	if binReq != 1 {
+		t.Fatalf("应该向中枢请求 %s 恰好 1 次，实际 %d：%v", protocol.NodeBinaryPath, binReq, lines)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, fixtureToken) {
+			t.Fatalf("令牌进了 curl 的 argv（同机其他用户可从 /proc/<pid>/cmdline 读到）：%s", l)
+		}
+	}
+	cfg, err := os.ReadFile(filepath.Join(f.stage, "etc/anode/anode.yaml"))
+	if err != nil {
+		t.Fatalf("读配置: %v", err)
+	}
+	if !strings.Contains(string(cfg), "token: "+fixtureToken) {
+		t.Fatalf("配置里没有节点令牌：%s", cfg)
+	}
+	if strings.Contains(out+errOut, fixtureToken) {
+		t.Fatalf("令牌泄露到输出：stdout=%s stderr=%s", out, errOut)
 	}
 }
 

@@ -15,9 +15,11 @@
 #      再核对 `anode --version` 的发布版本（**前缀**匹配，允许 `+<commit>` 后缀）
 #   3. 停旧服务（同一个令牌只能有一条连接，否则预检会被旧实例踢掉）→ 用**临时** config 跑
 #      `anode serve --check` 预检（D5）。令牌错/中枢不通在这里就停，不留一个开机就崩的服务
-#   4. 落盘：`anode install … --token-file <临时文件>`（D9：令牌不进 argv 之外的任何地方）
-#   5. 服务生命周期（D6）：systemd system 或 user；启停后**轮询** is-active 最多 10s；
-#      system 服务写 User=<安装者> 并 chown config/data；user 服务尽力 loginctl enable-linger
+#      （`--service none` 也预检：只落盘同样要先证明这把令牌能用）
+#   4. 落盘：`anode install … --token-file <临时文件>`（D9：令牌不进 argv 之外的任何地方；
+#      从中枢下载时令牌走 curl --config 文件，也不进 curl 的 argv）
+#   5. 服务生命周期（D6）：systemd system 或 user；**先**把 config/data 交给服务用户、**再**
+#      restart，然后轮询 is-active 最多 10s；失败时把停机前的旧服务恢复回来，不把节点留在停止态
 #   6. 结尾打印节点/中枢/二进制/配置/服务/日志/升级/卸载
 #
 # 重跑同一条命令 = 升级（D8）：沿用已有 anode.yaml（令牌/中枢/名字从文件读回），
@@ -57,6 +59,7 @@ OPT_BIN=""
 OPT_UNIT=""
 OPT_DATA=""
 SERVICE="auto" # auto | system | user | none
+SERVICE_EXPLICIT="no" # 用户是否**显式**指定了服务模式（--service/--system/--user/--no-systemd）
 UNINSTALL="no"
 PURGE="no"
 KEEP_CONFIG="no"
@@ -92,6 +95,9 @@ UPDATE_TOKEN="no"
 UNIT_PATH_VALUE=""
 TOKFILE=""
 SERVICE_ASSUMED="no"
+# 升级前停掉的旧实例（system|user）：install/restart 失败时要把它恢复回去，
+# 否则一次失败的升级 = 节点掉线（D8“重跑=升级”不该有这个副作用）。
+STOPPED_UNIT=""
 
 # ---------- 输出 / 退出 ----------
 info() { printf '%s\n' "$*"; }
@@ -131,6 +137,7 @@ usage() {
   --server URL             中枢地址（http(s):// 或 ws(s)://，脚本自行归一化）
   --token TOKEN            节点令牌（控制台注册节点后只显示一次）
   --token-file PATH        从 0600 文件读令牌（推荐：不进 shell 历史）
+                           轮换同样生效：与已保存的不同就自动带上 --update-token
 
 取二进制（三选一，优先级从上到下）：
   --download-url URL       直接指定二进制 URL（内网/镜像/测试；校验和取 <URL>.sha256）
@@ -141,6 +148,8 @@ usage() {
   --prefix DIR             传给 anode install：所有默认路径落在 DIR 之下
                            （<DIR>/usr/local/bin/anode、<DIR>/etc/anode/anode.yaml、
                              <DIR>/etc/systemd/system/anode.service、<DIR>/var/lib/anode）
+                           这是 staging 布局：显式配 --service system 会被拒绝（unit 不在
+                           systemd 搜索路径，enable 必失败），请用 --service none / user
 
 服务怎么装（默认 auto）：
   --service auto|system|user|none
@@ -151,9 +160,11 @@ usage() {
   --no-sudo                禁止提权（需要 root 的步骤直接失败）
 
 行为开关：
-  --no-preflight           跳过「用临时配置连一次中枢」的预检（不推荐）
+  --no-preflight           跳过「用临时配置连一次中枢」的预检（不推荐；这是预检的**唯一**例外，
+                           --service none 也预检）
   --preflight-timeout SEC  预检最长等待秒数（默认 20）
-  --dry-run                只打印将要执行的命令，不碰网络、不写盘、不提权
+  --dry-run                只打印将要执行的命令，不碰网络、不写盘、不提权（也不调
+                           systemctl/loginctl）：只是一份计划
   -h, --help               显示这段帮助
 
 卸载：
@@ -201,7 +212,7 @@ parse_args() {
 		--name) take_value "$1" "$_hasnext" "${2:-}"; NAME=$VALUE; shift 2 ;;
 		--server) take_value "$1" "$_hasnext" "${2:-}"; SERVER=$VALUE; shift 2 ;;
 		--token) take_value "$1" "$_hasnext" "${2:-}"; TOKEN=$VALUE; TOKEN_FROM_CLI="yes"; shift 2 ;;
-		--token-file) take_value "$1" "$_hasnext" "${2:-}"; TOKEN_FILE_SRC=$VALUE; shift 2 ;;
+		--token-file) take_value "$1" "$_hasnext" "${2:-}"; TOKEN_FILE_SRC=$VALUE; TOKEN_FROM_CLI="yes"; shift 2 ;;
 		--version) take_value "$1" "$_hasnext" "${2:-}"; VERSION=$VALUE; shift 2 ;;
 		--download-url) take_value "$1" "$_hasnext" "${2:-}"; DL_URL=$VALUE; shift 2 ;;
 		--checksum-url) take_value "$1" "$_hasnext" "${2:-}"; CHECKSUM_URL=$VALUE; shift 2 ;;
@@ -219,14 +230,14 @@ parse_args() {
 		--service)
 			take_value "$1" "$_hasnext" "${2:-}"
 			case "$VALUE" in
-			auto | system | user | none) SERVICE=$VALUE ;;
+			auto | system | user | none) SERVICE=$VALUE; SERVICE_EXPLICIT="yes" ;;
 			*) die "未知的服务模式：$VALUE（auto|system|user|none）" ;;
 			esac
 			shift 2
 			;;
-		--system) SERVICE="system"; shift ;;
-		--user) SERVICE="user"; shift ;;
-		--no-systemd) SERVICE="none"; shift ;;
+		--system) SERVICE="system"; SERVICE_EXPLICIT="yes"; shift ;;
+		--user) SERVICE="user"; SERVICE_EXPLICIT="yes"; shift ;;
+		--no-systemd) SERVICE="none"; SERVICE_EXPLICIT="yes"; shift ;;
 		--no-sudo) NO_SUDO="yes"; shift ;;
 		--no-preflight) NO_PREFLIGHT="yes"; shift ;;
 		--preflight-timeout)
@@ -329,15 +340,18 @@ require_runner() {
 	fi
 }
 
-# unit 里的 PATH：$HOME/.local/bin 打头（压过同名旧副本）+ 安装时的 $PATH，去重、剔空段。
-# 不写这一行的话 systemd 只给编译期默认值（/usr/local/sbin:/usr/local/bin:/usr/bin），
-# 装在 ~/.local/bin 的工具在能力里就"装了却探不到"。
+# unit 里的 PATH 是**稳定集合**（R1/M4）：`$HOME/.local/bin` 打头（压过同名旧副本）+ 固定系统
+# 目录。**不照抄调用者 `$PATH`**：安装时 PATH 嵌进 unit，换一个终端（direnv/nvm/不同 ssh 会话）
+# 重跑就变成了“另一个 unit”，`anode install` 会以 `existing unit is unknown/modified` 拒绝覆盖，
+# 而那时旧服务已经被 stop —— 节点停在停止态。“重跑=升级”（D8）要求同一串参数在任何 shell 下
+# 都是同一个 unit。要自定义路径时用 `anode install --unit-path`（脚本会把它放在本行的 home 段之后）。
+UNIT_PATH_STABLE="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 unit_path_value() {
 	if [ -n "$RUN_HOME" ]; then
-		printf '%s:%s' "${RUN_HOME}/.local/bin" "${PATH:-}"
+		printf '%s:%s' "${RUN_HOME}/.local/bin" "$UNIT_PATH_STABLE"
 	else
-		printf '%s' "${PATH:-}"
-	fi | awk -v RS=: 'length($0) && !seen[$0]++ { printf "%s%s", (n++ ? ":" : ""), $0 }'
+		printf '%s' "$UNIT_PATH_STABLE"
+	fi
 }
 
 # ---------- sudo ----------
@@ -557,6 +571,22 @@ compute_paths() {
 	UNIT_PATH_VALUE=$(unit_path_value)
 }
 
+# --prefix + 系统服务：`anode install` 把 unit 写进 <prefix>/etc/systemd/system/，那个目录**不在**
+# systemd 的搜索路径里，`systemctl enable` 必然失败（还会在用户目录里造 root 的文件）。
+# 显式要了 --service system 就直接拦；auto 推导出来的只 warn —— 容器/托管环境里 systemctl
+# 可能是调用方提供的（ANODE_SYSTEMCTL 覆盖即“自带 systemd 语义”，unit 落点由那一侧决定）。
+check_prefix_service_combo() {
+	[ -n "$PREFIX" ] || return 0
+	[ "$SERVICE" = "system" ] || return 0
+	if [ "$SERVICE_EXPLICIT" = "yes" ] && [ -z "${ANODE_SYSTEMCTL:-}" ]; then
+		die "--prefix 与 --service system 不能一起用：unit 会落到 $UNIT_FILE，systemd 搜索路径里没有它，systemctl enable 必然失败。
+  · 只落盘（容器/staging）：--prefix DIR --service none（等价 --no-systemd）
+  · 只装当前用户的服：--prefix DIR --service user
+  · 真装系统服务：去掉 --prefix，用系统默认落点（/etc/systemd/system）"
+	fi
+	warn "--prefix + 系统服务：unit 落在 $UNIT_FILE，systemd 搜索路径里没有它；systemctl enable 可能失败（建议 --service none / --service user，或去掉 --prefix）"
+}
+
 # ---------- 已有配置（重跑 = 升级靠它） ----------
 cfg_get() { # cfg_get <file> <key>
 	[ -f "$1" ] || return 0
@@ -713,9 +743,15 @@ download_via_hub() {
 		return 0
 	fi
 	printf '从中枢下载节点二进制：%s/v1/node/binary …\n' "$SERVER_HTTP"
+	ensure_tmp
+	# D9：令牌不进 argv（同机用户可以从 /proc/<pid>/cmdline 读到 curl 的参数）。
+	# curl 用 --config 从 0600 文件读 header；文件在 0700 的 $TMP 里，随临时目录一起删除。
+	_hdr="$TMP/curl-auth.conf"
+	printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" >"$_hdr"
+	chmod 600 "$_hdr"
 	# 不用 -f：501/401 要靠状态码区分并给不同的下一步。
 	_code=$(curl --silent --show-error --location --connect-timeout 10 --max-time 300 \
-		--header "Authorization: Bearer ${TOKEN}" \
+		--config "$_hdr" \
 		--dump-header "$TMP/headers" --output "$DL_BIN" \
 		--write-out '%{http_code}' "$SERVER_HTTP/v1/node/binary") ||
 		die "无法访问中枢：$SERVER_HTTP/v1/node/binary
@@ -814,15 +850,36 @@ stop_old_service() {
 		if [ -f "$UNIT_FILE" ] || [ -f "/etc/systemd/system/${UNIT_BASENAME}" ]; then
 			if systemctl_system stop "$UNIT_BASENAME" 2>/dev/null; then
 				_stopped="yes"
+				STOPPED_UNIT="system"
 			fi
 		fi
 	fi
 	if has_systemctl && [ -f "${RUN_HOME}/.config/systemd/user/${UNIT_BASENAME}" ]; then
 		if systemctl_user stop "$UNIT_BASENAME" 2>/dev/null; then
 			_stopped="yes"
+			[ -n "$STOPPED_UNIT" ] || STOPPED_UNIT="user"
 		fi
 	fi
 	[ "$_stopped" = "no" ] || info "已停下旧的服务实例（同一个令牌不能有两条连接）"
+}
+
+# 失败回滚：升级前把旧实例 stop 了，如果后面的 install/restart 失败，必须把它重新拉起来。
+# 否则一次失败的升级 = 节点掉线（D8 的“重跑=升级”不能有这个副作用）。
+restore_old_service() {
+	[ -n "$STOPPED_UNIT" ] || return 0
+	[ "$DRY_RUN" = "yes" ] && return 0
+	_was=$STOPPED_UNIT
+	STOPPED_UNIT="" # 只补偿一次：后面的 die 不该再 start 一次
+	if [ "$_was" = "system" ]; then
+		if systemctl_system start "$UNIT_BASENAME" >/dev/null 2>&1; then
+			warn "已恢复升级前的服务（$UNIT_BASENAME，system）—— 节点没被这次失败留在停止态"
+			return 0
+		fi
+	elif systemctl_user start "$UNIT_BASENAME" >/dev/null 2>&1; then
+		warn "已恢复升级前的服务（$UNIT_BASENAME，user）—— 节点没被这次失败留在停止态"
+		return 0
+	fi
+	warn "恢复升级前的服务失败：$UNIT_BASENAME 现在是停止态，手动启动：systemctl start $UNIT_BASENAME（或 $(service_hint "$_was"))"
 }
 
 preflight() {
@@ -925,19 +982,25 @@ start_service() {
 		retire_user_unit
 		systemctl_system daemon-reload ||
 			die "systemctl daemon-reload 失败（见上面原文）"
-		# enable 负责开机自启，restart 负责"现在跑的就是刚装的那版"（升级路径同样如此）。
+		# enable 负责开机自启，restart 负责“现在跑的就是刚装的那版”（升级路径同样如此）。
 		systemctl_system enable "$UNIT_BASENAME" ||
 			die "systemctl enable $UNIT_BASENAME 失败（unit 是否真的写进了 $UNIT_FILE？）"
-		systemctl_system restart "$UNIT_BASENAME" ||
-			die "systemctl restart $UNIT_BASENAME 失败（见上面原文；日志：$(service_hint system)）"
+		# 服务以安装者身份跑：config（0600）与 data 必须在**restart 之前**归它（R1/C1）。
+		# 顺序反了就是“先证明服务能跑、再让它能跑”：新进程起来第一件事就是读不到配置而退出，
+		# wait_active 十秒后把安装判失败（unit 已 enable，节点停在停止态）。
+		run_maybe_root chown -R "$RUN_USER" "$CONFIG" "$DATA" ||
+			warn "chown $RUN_USER $CONFIG $DATA 失败：服务可能读不到配置（看 $(service_hint system)）"
+		systemctl_system restart "$UNIT_BASENAME" || {
+			_rc=$?
+			restore_old_service
+			die "systemctl restart $UNIT_BASENAME 失败（退出码 $_rc；见上面原文；日志：$(service_hint system)）"
+		}
 		if ! wait_active system; then
+			restore_old_service
 			die "$UNIT_BASENAME 10 秒内没有 active（systemctl is-active 一直是非 active）
   · 看日志：$(service_hint system)
   · 常见原因：令牌/中枢不对（预检已拦一遍）、数据目录不可写、unit 里的地址写错"
 		fi
-		# 服务以安装者身份跑：config（0600）与 data 必须归它，否则读不到配置。
-		run_maybe_root chown -R "$RUN_USER" "$CONFIG" "$DATA" ||
-			warn "chown $RUN_USER $CONFIG $DATA 失败：服务可能读不到配置（看 $(service_hint system)）"
 		;;
 	user)
 		step "安装 systemd 用户服务"
@@ -946,13 +1009,17 @@ start_service() {
 		systemctl_user restart "$UNIT_BASENAME" 2>/dev/null ||
 			warn "systemctl --user restart $UNIT_BASENAME 失败（见上面原文）"
 		if ! wait_active user; then
+			restore_old_service
 			die "$UNIT_BASENAME 10 秒内没有 active（systemctl --user is-active 一直是非 active）
   · 看日志：$(service_hint user)
   · 没有登录会话/没有 dbus 的机器上，用户服务起不来：改用 --system（需要 sudo）或 --no-systemd"
 		fi
 		# 想在没登录时也活着只有 linger 一条路（这就是用户服务不如系统服务的地方）。
 		# 失败只 warn：不因为 linger 没开成而否掉一次成功的安装。
-		if command -v "$LOGINCTL" >/dev/null 2>&1; then
+		# 预演只打印：enable-linger 会写 /var/lib/systemd/linger/<user>，是真的改系统状态（R1/M1）。
+		if [ "$DRY_RUN" = "yes" ]; then
+			printf '  [dry-run] 若还没开：%s enable-linger %s（失败只 warn）\n' "$LOGINCTL" "$RUN_USER"
+		elif command -v "$LOGINCTL" >/dev/null 2>&1; then
 			if "$LOGINCTL" enable-linger "$RUN_USER" 2>/dev/null; then
 				info "已开启 linger：没登录时服务也在跑"
 			elif [ "$SUDO_MODE" != "none" ] && run_maybe_root "$LOGINCTL" enable-linger "$RUN_USER" 2>/dev/null; then
@@ -1162,6 +1229,7 @@ resolve_sudo
 resolve_service
 require_runner
 compute_paths
+check_prefix_service_combo
 read_existing_config
 load_token_file
 
@@ -1200,15 +1268,14 @@ download_binary
 
 # 顺序很要紧：停旧服务（让出令牌）→ 预检（临时配置，正式配置一个字没动）→ 落盘 → 起服务。
 #
-# `--service none` 不做这两步：没有服务可停，而**在跑着的旧实例**会和预检抢同一个令牌
-# （同一个令牌两次握手，谁被踢都可能），所以"只落盘"这种模式不去碰中枢连接。
-# 想提前验令牌：落盘后自己跑一次 `<bin> serve --check --config <config>`（摘要里也这么写）。
+# `--service none` 也预检（R1/M3）：契约 D5 只给了 `--no-preflight` 一个例外。"只落盘"同样要
+# 先证明这把令牌能用，否则错令牌会以 exit 0 "装成功"却永远上不了线。这种模式**不停**旧服务
+# （停了没人再拉起来），所以若真有一台旧实例在跑，预检会把它的连接顶掉一次，它 1s 内自愈
+# （`--check` 的 hello 会整份覆盖 declared_capabilities，见 docs/anode-install.md §6）。
 if [ "$SERVICE" != "none" ]; then
 	stop_old_service
-	preflight
-else
-	info "跳过预检与服务启停（--service none：只落盘；验身份用 <bin> serve --check）"
 fi
+preflight
 
 step "落盘（anode install）"
 # 安装参数**只有一个来源**（D1）：下面算出来的 flag 原样交给 anode install，脚本不重写
@@ -1252,11 +1319,18 @@ if [ -n "$UNIT_OVERRIDE" ] || [ -n "$OPT_UNIT" ]; then
 fi
 [ "$UPDATE_TOKEN" = "no" ] || set -- "$@" --update-token
 
-anode_install "$@" || die "anode install 失败（见上面原文）
+_install_rc=0
+anode_install "$@" || _install_rc=$?
+if [ "$_install_rc" -ne 0 ]; then
+	# 落盘失败时先把刚 stop 的旧实例拉回来（否则一次失败的升级 = 节点掉线）。
+	# 子进程的退出码写进诊断：不吞失败，也不假装成功（脚本自身按契约退 2）。
+	restore_old_service
+	die "anode install 失败（退出码 $_install_rc；原文见上）
   · 权限：root 拥有的 /etc、/usr/local/bin、/var/lib 需要提权 —— 让脚本自己 sudo，或用 sudo 重跑
   · 只想落到可写目录：--prefix \$HOME/.anode-stage
   · 已有配置/unit 与这次不一致时 anode install 会拒绝覆盖（保护用户数据）：确认后手工迁移或先 --uninstall
-  · 换令牌要显式：--token <新令牌>（脚本会自动带 --update-token）"
+  · 换令牌要显式：--token / --token-file <新令牌>（脚本会自动带 --update-token）"
+fi
 
 if [ "$DRY_RUN" = "yes" ]; then
 	start_service
