@@ -164,6 +164,17 @@ done
 exit 0
 `
 
+// 假 id：让脚本以为自己是普通用户（1000）。`auto` 推导成 `user` 只在「有 systemctl、提不了权」
+// 时发生，而开发机/CI 常常以 root 跑测试（root 一律走 system）。只回答脚本用到的 -u / -un，
+// 其余透传真 id。
+const fakeID = `#!/bin/sh
+case "$1" in
+  -u) echo 1000 ;;
+  -un) echo fixturenode ;;
+  *) for p in /usr/bin/id /bin/id; do [ -x "$p" ] && exec "$p" "$@"; done; exit 1 ;;
+esac
+`
+
 // 假 getent 只回答 passwd（脚本用它查 unit 的 Environment=HOME）；其余退出 2（像真的一样"查不到"）。
 const fakeGetent = `#!/bin/sh
 printf 'getent %s\n' "$*" >> "$FIXTURE_LOG"
@@ -222,6 +233,10 @@ type scriptFixture struct {
 	installExit string
 	// pathOverride 非空时顶掉子进程的 PATH（模拟「换个终端/换 sudo env 重跑」）。
 	pathOverride string
+	// asNonRoot 让脚本以为自己是普通用户（假 id）且没有 sudo（ANODE_SUDO 指向不存在的命令）：
+	// “auto 推导成 user”只在这种情况下发生，而开发机/CI 常常以 root 跑测试（root 一律走 system）。
+	asNonRoot  bool
+	nonRootBin string
 }
 
 func newScriptFixture(t *testing.T) *scriptFixture {
@@ -243,11 +258,13 @@ func newScriptFixture(t *testing.T) *scriptFixture {
 		checksumURL:  "fixture.test/anode.sha256",
 		isActiveFail: 2,
 	}
-	for _, dir := range []string{f.binDir, f.tmpDir, f.homeDir} {
+	f.nonRootBin = filepath.Join(root, "nonroot-bin")
+	for _, dir := range []string{f.binDir, f.tmpDir, f.homeDir, f.nonRootBin} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	put(t, filepath.Join(f.nonRootBin, "id"), fakeID, 0755)
 	// root 直跑时脚本拿不到"安装者"身份（SUDO_USER）就拒绝装系统服务 —— 这不是本测试要验证的
 	// 东西，所以补一个假安装者 + 假 getent 给出的家目录；非 root 下脚本走 id -un，不需要它。
 	if os.Getuid() == 0 {
@@ -353,6 +370,10 @@ func (f *scriptFixture) env() []string {
 	if path == "" {
 		path = f.binDir + ":/usr/local/bin:/usr/bin:/bin"
 	}
+	if f.asNonRoot {
+		// 假 id 放在最前面：脚本的 platform/提权/落盘判定都会看到“普通用户”。
+		path = f.nonRootBin + ":" + path
+	}
 	env := []string{
 		"PATH=" + path,
 		"HOME=" + f.homeDir,
@@ -378,6 +399,10 @@ func (f *scriptFixture) env() []string {
 	}
 	if f.sudoUser != "" {
 		env = append(env, "SUDO_USER="+f.sudoUser)
+	}
+	if f.asNonRoot {
+		// 「这台机器没有 sudo」：ANODE_SUDO 指向不存在的命令（脚本用它探测提权）。
+		env = append(env, "ANODE_SUDO="+filepath.Join(f.root, "no-such-sudo"))
 	}
 	return env
 }
@@ -955,16 +980,31 @@ func TestInstallScriptDryRunUserServiceNoSystemChanges(t *testing.T) {
 	// 清掉 SUDO_USER：root 直跑时脚本会 getent 查家目录（只读查询），这里要的是**完全没有**
 	// 任何命令被真的执行——M1 要钉的是“预演不改系统状态”，同时把 getent 也排掉更纯粹。
 	f.sudoUser = ""
-	code, out, errOut := f.run(append(f.baseArgs(), "--service", "user", "--dry-run", "--token", fixtureToken)...)
+	// 用户服务不能与 --prefix 一起用（unit 会落在 prefix 下，systemctl --user 发现不到；
+	// R2-B 会明确拒绝）。这里换成合法的用户服务布局（$HOME/.anode）——M1 的断言一条不少。
+	args := []string{
+		"--name", fixtureName,
+		"--server", f.hubWS,
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--service", "user", "--dry-run", "--token", fixtureToken,
+	}
+	code, out, errOut := f.run(args...)
 	if code != 0 {
 		t.Fatalf("--dry-run --service user 应该退 0，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 	}
 	if lines := f.calls(); len(lines) != 0 {
 		t.Fatalf("--dry-run --service user 不该真的执行任何命令（含 loginctl/systemctl），实际：%v", lines)
 	}
-	f.mustNotExist(f.stage)
+	f.mustNotExist(filepath.Join(f.homeDir, ".anode"))
 	if entries, err := os.ReadDir(f.tmpDir); err != nil || len(entries) != 0 {
 		t.Fatalf("--dry-run 不该往 TMPDIR 写东西：%v %v", entries, err)
+	}
+	// 预演给出的 unit 落点必须是 systemd 真的会看的地方（$HOME/.config/systemd/user）。
+	wantUnit := filepath.Join(f.homeDir, ".config/systemd/user/anode.service")
+	if !strings.Contains(out, wantUnit) {
+		t.Fatalf("预演没有给出用户 unit 的正确落点 %s：%s", wantUnit, out)
 	}
 	// 预演仍要告诉用户“真跑会开 linger”（否则摘要与实际行为脱节）。
 	if !strings.Contains(out, "enable-linger") {
@@ -1229,6 +1269,148 @@ func TestInstallScriptHubDownloadKeepsTokenOutOfArgv(t *testing.T) {
 	}
 	if strings.Contains(out+errOut, fixtureToken) {
 		t.Fatalf("令牌泄露到输出：stdout=%s stderr=%s", out, errOut)
+	}
+}
+
+// ---- 9j. 预检失败也要恢复旧服务：升级不能把节点留在停止态（R2-A）----
+//
+// 顺序是 stop 旧实例 → 预检。如果预检失败就在那里 die，旧节点就停在停止态；而旧文案还
+// 声称“服务没有被改动”。这里钉两件事：stop 之后必须有 start（恢复），且诊断说真话。
+func TestInstallScriptPreflightFailureRestoresOldService(t *testing.T) {
+	f := newScriptFixture(t)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
+		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	cfg := filepath.Join(f.stage, "etc/anode/anode.yaml")
+	before, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("读配置: %v", err)
+	}
+	f.resetLog()
+
+	// 升级 + 错令牌：stop 已经发生，预检必然失败 —— 脚本必须把旧实例拉回来再退出。
+	code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureWrong)...)
+	if code != 2 {
+		t.Fatalf("错令牌重跑应该按契约退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	lines := f.calls()
+	stopAt, stopLine := findLine(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "stop") })
+	if stopLine == "" {
+		t.Fatalf("升级没有先停旧服务：%v", lines)
+	}
+	startAt, startLine := findLine(lines, func(l string) bool { return isDirectSystemctl(l) && hasArg(l, "start") })
+	if startLine == "" {
+		t.Fatalf("预检失败后旧服务没有被恢复（stop 之后没有 start/restart）：%v", lines)
+	}
+	if startAt < stopAt {
+		t.Fatalf("恢复顺序不对：start（第 %d 行）在 stop（第 %d 行）之前\n%v", startAt, stopAt, lines)
+	}
+	// 诊断必须说真话：正式配置没动 + 旧服务已恢复。
+	if !strings.Contains(errOut, "旧服务已恢复") {
+		t.Fatalf("预检失败没有说明旧服务已恢复：%s", errOut)
+	}
+	if strings.Contains(errOut, "服务都没有被改动") || strings.Contains(errOut, "服务均未改动") {
+		t.Fatalf("预检失败却声称服务没被改动（stop 是改动）：%s", errOut)
+	}
+	// 预检失败仍然不落盘、不 install。
+	if countLines(lines, isAnodeInstallCall) != 0 {
+		t.Fatalf("预检失败却调用了 anode install：%v", lines)
+	}
+	after, err := os.ReadFile(cfg)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("预检失败改动了正式配置（err=%v）\nbefore:\n%s\nafter:\n%s", err, before, after)
+	}
+	if strings.Contains(out+errOut, fixtureWrong) || strings.Contains(out+errOut, fixtureToken) {
+		t.Fatalf("令牌泄露到输出")
+	}
+}
+
+// ---- 9k. 没停过旧服务就不许凭空 start（R2-A 的另一半）----
+func TestInstallScriptPreflightFailureNoPhantomStart(t *testing.T) {
+	f := newScriptFixture(t)
+	// 首装（没有旧 unit）+ 错令牌：预检失败，但没停过任何东西。
+	code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureWrong)...)
+	if code != 2 {
+		t.Fatalf("预检失败的退出码应该是 2（契约），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if n := countLines(f.calls(), isSystemctlCall); n != 0 {
+		t.Fatalf("首次安装预检失败却动了 systemctl %d 次（没停过的东西不该 start）：%v", n, f.calls())
+	}
+	if strings.Contains(errOut, "旧服务已恢复") {
+		t.Fatalf("没有旧服务却声称恢复了旧服务：%s", errOut)
+	}
+	if !strings.Contains(errOut, "无需恢复") {
+		t.Fatalf("预检失败没有说清没有旧服务被停：%s", errOut)
+	}
+	f.mustNotExist(f.stage)
+}
+
+// ---- 9l. 显式 --prefix + --service user：unit 落在 prefix 下，systemctl --user 发现不到（R2-B）----
+func TestInstallScriptExplicitUserWithPrefixRejected(t *testing.T) {
+	f := newScriptFixture(t)
+	code, out, errOut := f.run(append(f.baseArgs(), "--service", "user", "--token", fixtureToken)...)
+	if code != 2 {
+		t.Fatalf("--prefix + --service user 应该明确报错退 2（unit 不在 systemd 的发现路径），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "--prefix") || !strings.Contains(errOut, "--service user") {
+		t.Fatalf("报错没说清是哪两个参数冲突：%s", errOut)
+	}
+	// 出路必须是真的能走通的：只落盘用 none；要用户服务就去掉 --prefix。
+	if !strings.Contains(errOut, "--service none") || !strings.Contains(errOut, "去掉 --prefix") {
+		t.Fatalf("报错没有给出可行出路：%s", errOut)
+	}
+	// 参数冲突在任何副作用之前拦下：不落盘、不调 systemctl、也不连中枢。
+	f.mustNotExist(f.stage)
+	if n := countLines(f.calls(), isSystemctlCall); n != 0 {
+		t.Fatalf("参数冲突却已经动了服务：%v", f.calls())
+	}
+	if hits := f.stream.Load(); hits != 0 {
+		t.Fatalf("参数冲突却已经连了中枢 %d 次", hits)
+	}
+	// 与 system 口径一致：--dry-run 也不假装这条路能走（root 直跑时清掉 SUDO_USER，
+	// 免得 resolve_runner 的只读 getent 混进“没有执行任何命令”的断言）。
+	f.sudoUser = ""
+	f.resetLog()
+	code, out, errOut = f.run(append(f.baseArgs(), "--service", "user", "--dry-run", "--token", fixtureToken)...)
+	if code != 2 {
+		t.Fatalf("--prefix + --service user 在 --dry-run 下也应该退 2，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if lines := f.calls(); len(lines) != 0 {
+		t.Fatalf("参数冲突的预演不该执行任何命令：%v", lines)
+	}
+	f.mustNotExist(f.stage)
+}
+
+// ---- 9m. auto 推导出 user + --prefix：降级为只落盘，不静默装一个起不来的服务（R2-B）----
+//
+// auto → user 只在「有 systemctl、提不了权」时发生，而测试机常常就是 root。夹具用假 `id`
+// 让脚本以为自己是普通用户，并把 ANODE_SUDO 指向不存在的命令（= 这台机器没有 sudo）。
+func TestInstallScriptAutoUserWithPrefixDowngradesToNone(t *testing.T) {
+	f := newScriptFixture(t)
+	f.asNonRoot = true
+	code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...)
+	if code != 0 {
+		t.Fatalf("降级为只落盘后应该装成功（exit 0），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if !strings.Contains(out+errOut, "降级为只落盘") {
+		t.Fatalf("auto 推导出的用户服务在 --prefix 下没有降级/没说明：stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "未安装服务") {
+		t.Fatalf("SERVICE 实际不是 none（摘要没说未安装服务）：%s", out)
+	}
+	if n := countLines(f.calls(), isSystemctlCall); n != 0 {
+		t.Fatalf("降级成 none 却调用了 systemctl %d 次（装了一个 systemctl --user 发现不到的服务）：%v", n, f.calls())
+	}
+	// 只落盘仍然要落：二进制 + 配置在，令牌没泄露。
+	f.assertPerm(filepath.Join(f.stage, "etc/anode/anode.yaml"), 0600)
+	if _, err := os.Stat(filepath.Join(f.stage, "usr/local/bin/anode")); err != nil {
+		t.Fatalf("二进制没落盘: %v", err)
+	}
+	if hits := f.stream.Load(); hits != 1 {
+		t.Fatalf("只落盘也要照样预检 1 次，实际 %d", hits)
+	}
+	if strings.Contains(out+errOut, fixtureToken) {
+		t.Fatalf("令牌泄露到输出")
 	}
 }
 

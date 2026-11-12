@@ -59,7 +59,7 @@ OPT_BIN=""
 OPT_UNIT=""
 OPT_DATA=""
 SERVICE="auto" # auto | system | user | none
-SERVICE_EXPLICIT="no" # 用户是否**显式**指定了服务模式（--service/--system/--user/--no-systemd）
+SERVICE_EXPLICIT="no" # 用户是否**点名**要某种具体服务模式（--service system/user/none、--system/--user/--no-systemd；--service auto 不算）
 UNINSTALL="no"
 PURGE="no"
 KEEP_CONFIG="no"
@@ -95,9 +95,11 @@ UPDATE_TOKEN="no"
 UNIT_PATH_VALUE=""
 TOKFILE=""
 SERVICE_ASSUMED="no"
-# 升级前停掉的旧实例（system|user）：install/restart 失败时要把它恢复回去，
+# 升级前停掉的旧实例（system|user）：install/restart/预检失败时要把它恢复回去，
 # 否则一次失败的升级 = 节点掉线（D8“重跑=升级”不该有这个副作用）。
 STOPPED_UNIT=""
+# restore_old_service 的结果（none = 没停过东西 / ok / failed）：预检失败时的收尾文案按它说真话。
+RESTORE_STATE="none"
 
 # ---------- 输出 / 退出 ----------
 info() { printf '%s\n' "$*"; }
@@ -148,8 +150,10 @@ usage() {
   --prefix DIR             传给 anode install：所有默认路径落在 DIR 之下
                            （<DIR>/usr/local/bin/anode、<DIR>/etc/anode/anode.yaml、
                              <DIR>/etc/systemd/system/anode.service、<DIR>/var/lib/anode）
-                           这是 staging 布局：显式配 --service system 会被拒绝（unit 不在
-                           systemd 搜索路径，enable 必失败），请用 --service none / user
+                           这是 staging 布局：unit 落在 <DIR>/etc/systemd/system/，而 systemd
+                           不在那里找 unit —— 显式配 --service system / user 都会被拒绝
+                           （装出来的服务起不来）。只落盘用 --service none；要真装服务就去掉
+                           --prefix（用户服务用 $HOME/.anode）
 
 服务怎么装（默认 auto）：
   --service auto|system|user|none
@@ -230,7 +234,8 @@ parse_args() {
 		--service)
 			take_value "$1" "$_hasnext" "${2:-}"
 			case "$VALUE" in
-			auto | system | user | none) SERVICE=$VALUE; SERVICE_EXPLICIT="yes" ;;
+			auto) SERVICE="auto"; SERVICE_EXPLICIT="no" ;; # auto 不是"点名要某种服务"：推导结果按 auto 处理
+			system | user | none) SERVICE=$VALUE; SERVICE_EXPLICIT="yes" ;;
 			*) die "未知的服务模式：$VALUE（auto|system|user|none）" ;;
 			esac
 			shift 2
@@ -527,7 +532,11 @@ resolve_service() {
 		SERVICE="system"
 	else
 		SERVICE="user"
-		info "没有可用的 sudo —— 退化成 systemd 用户服务（只在你登录时活着，脚本会尽力开 linger）"
+		# --prefix 下用户 unit 不在 systemd 的发现路径（check_prefix_service_combo 会降级成
+		# none 并说明）——所以这句“退化成用户服务”只在真的会装用户服务时才承诺。
+		if [ -z "$PREFIX" ]; then
+			info "没有可用的 sudo —— 退化成 systemd 用户服务（只在你登录时活着，脚本会尽力开 linger）"
+		fi
 	fi
 }
 
@@ -571,20 +580,41 @@ compute_paths() {
 	UNIT_PATH_VALUE=$(unit_path_value)
 }
 
-# --prefix + 系统服务：`anode install` 把 unit 写进 <prefix>/etc/systemd/system/，那个目录**不在**
-# systemd 的搜索路径里，`systemctl enable` 必然失败（还会在用户目录里造 root 的文件）。
-# 显式要了 --service system 就直接拦；auto 推导出来的只 warn —— 容器/托管环境里 systemctl
-# 可能是调用方提供的（ANODE_SYSTEMCTL 覆盖即“自带 systemd 语义”，unit 落点由那一侧决定）。
+# --prefix + systemd 服务：`anode install` 把 unit 写进 <prefix>/etc/systemd/system/，而
+# systemd **不在那里找 unit** —— `systemctl enable`（system）与 `systemctl --user` 都发现不到它，
+# 装出来的服务起不来。所以：
+#   · 点名要 system/user：直接拒绝，并给出真能走通的出路（只落盘用 none；真要服务就去掉 --prefix）；
+#   · auto 推导出来的：system 只 warn（容器/托管环境里 systemctl 可能是调用方提供的，
+#     ANODE_SYSTEMCTL 覆盖即“自带 systemd 语义”，unit 落点由那一侧决定）；user 降级成 none ——
+#     不静默装一个起不来的服务。
 check_prefix_service_combo() {
 	[ -n "$PREFIX" ] || return 0
-	[ "$SERVICE" = "system" ] || return 0
-	if [ "$SERVICE_EXPLICIT" = "yes" ] && [ -z "${ANODE_SYSTEMCTL:-}" ]; then
-		die "--prefix 与 --service system 不能一起用：unit 会落到 $UNIT_FILE，systemd 搜索路径里没有它，systemctl enable 必然失败。
+	case "$SERVICE" in
+	system)
+		if [ "$SERVICE_EXPLICIT" = "yes" ] && [ -z "${ANODE_SYSTEMCTL:-}" ]; then
+			die "--prefix 与 --service system 不能一起用：unit 会落到 $UNIT_FILE，systemd 搜索路径里没有它，systemctl enable 必然失败。
   · 只落盘（容器/staging）：--prefix DIR --service none（等价 --no-systemd）
-  · 只装当前用户的服：--prefix DIR --service user
+  · 真装系统服务：去掉 --prefix，用系统默认落点（/etc/systemd/system）
+  · 真装当前用户的服务：去掉 --prefix，用 \$HOME/.anode（unit 在 \$HOME/.config/systemd/user）"
+		fi
+		warn "--prefix + 系统服务：unit 落在 $UNIT_FILE，systemd 搜索路径里没有它；systemctl enable 可能失败（建议 --service none，或去掉 --prefix）"
+		;;
+	user)
+		if [ -n "${ANODE_SYSTEMCTL:-}" ] && [ "$SERVICE_EXPLICIT" = "yes" ]; then
+			# 测试钩子/自带 systemd 语义：unit 落点由那一侧决定，只警告不拦。
+			warn "--prefix + 用户服务：unit 落在 $UNIT_FILE；systemctl 由 ANODE_SYSTEMCTL 提供，按自带 systemd 语义继续"
+			return 0
+		fi
+		if [ "$SERVICE_EXPLICIT" = "yes" ]; then
+			die "--prefix 与 --service user 不能一起用：unit 会落到 $UNIT_FILE，systemctl --user 不在那里找 unit（它只从 \$HOME/.config/systemd/user 与系统路径发现 unit），服务起不来。
+  · 只落盘（容器/staging）：--prefix DIR --service none（等价 --no-systemd）
+  · 真装当前用户的服：去掉 --prefix，用 \$HOME/.anode（unit 在 \$HOME/.config/systemd/user）
   · 真装系统服务：去掉 --prefix，用系统默认落点（/etc/systemd/system）"
-	fi
-	warn "--prefix + 系统服务：unit 落在 $UNIT_FILE，systemd 搜索路径里没有它；systemctl enable 可能失败（建议 --service none / --service user，或去掉 --prefix）"
+		fi
+		SERVICE="none"
+		warn "auto 推导出的用户服务在 --prefix 下装不起来（unit 会落在 $UNIT_FILE，systemctl --user 发现不到）—— 降级为只落盘（--service none）；要真装用户服务请去掉 --prefix（用 \$HOME/.anode）"
+		;;
+	esac
 }
 
 # ---------- 已有配置（重跑 = 升级靠它） ----------
@@ -872,13 +902,16 @@ restore_old_service() {
 	STOPPED_UNIT="" # 只补偿一次：后面的 die 不该再 start 一次
 	if [ "$_was" = "system" ]; then
 		if systemctl_system start "$UNIT_BASENAME" >/dev/null 2>&1; then
+			RESTORE_STATE="ok"
 			warn "已恢复升级前的服务（$UNIT_BASENAME，system）—— 节点没被这次失败留在停止态"
 			return 0
 		fi
 	elif systemctl_user start "$UNIT_BASENAME" >/dev/null 2>&1; then
+		RESTORE_STATE="ok"
 		warn "已恢复升级前的服务（$UNIT_BASENAME，user）—— 节点没被这次失败留在停止态"
 		return 0
 	fi
+	RESTORE_STATE="failed"
 	warn "恢复升级前的服务失败：$UNIT_BASENAME 现在是停止态，手动启动：systemctl start $UNIT_BASENAME（或 $(service_hint "$_was"))"
 }
 
@@ -928,7 +961,14 @@ preflight() {
 		printf '  原因见上面的 anode 输出；修好后重跑同一条命令即可。\n' >&2
 	fi
 	printf '  想跳过预检硬装（不推荐）：加 --no-preflight\n' >&2
-	printf '  正式配置与服务都没有被改动。\n' >&2
+	# 预检失败时正式配置确实没动，但**旧服务已经被 stop 了**（升级路径）：不恢复就是把节点
+	# 留在停止态 —— 一次失败的升级不该等于掉线（R2-A）。没停过东西时 restore 什么都不做。
+	restore_old_service
+	case "$RESTORE_STATE" in
+	ok) printf '  正式配置未改动；旧服务已恢复（预检前停掉的实例已重新启动）。\n' >&2 ;;
+	failed) printf '  正式配置未改动；旧服务恢复失败 —— 它现在是停止态，手动启动命令见上一条。\n' >&2 ;;
+	*) printf '  正式配置未改动；没有正在运行的旧服务被停掉（无需恢复）。\n' >&2 ;;
+	esac
 	exit 2
 }
 

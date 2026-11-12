@@ -71,7 +71,7 @@ anode 已装好并已启动
 | 2 | 取二进制 | 三优先级下载（§4） | 非 0 + 下一步建议（`--version` / `--download-url`） |
 | 3 | 校 sha256 | 摘要必须恰好 64 位十六进制；`sha256sum --check` 必须成功；再核对下载二进制的 `--version` | **一律中止**，不落盘、不做"未校验放行"降级 |
 | 4 | 停旧实例 | 同一个令牌不能有两条连接：先停旧服务（含从 user 服务迁到 system 服务时的旧 user unit） | 警告并继续 |
-| 5 | 预检 | 用**临时**配置（0600，只含 name/server/token）跑 `anode serve --check`，正式配置一个字没动（§6） | 非 0，打印三分诊断，正式配置与服务均未改动 |
+| 5 | 预检 | 用**临时**配置（0600，只含 name/server/token）跑 `anode serve --check`，正式配置一个字没动（§6） | 非 0，打印三分诊断；正式配置未改动，升级前停掉的旧实例会被重新启动（原本没在跑就不动，§6） |
 | 6 | 落盘 | `anode install`：把令牌写成临时 0600 文件传给 `--token-file`，安装结束即删除（§9） | 非 0 原文透传（权限/已有配置冲突见 §8） |
 | 7 | 装服务 + 摘要 | `system` / `user` / `none` 三选一（§5），`daemon-reload` → `enable` → `restart`，再轮询 `is-active`，最后打 §1 那段摘要 | 服务起不来 → 非 0，摘要里给出日志命令 |
 
@@ -121,10 +121,10 @@ sh install-anode.sh --no-sudo           # 禁止提权：需要 root 的步骤�
 |---|---|---|
 | `auto`（默认） | 有 `systemctl` 且**实测**可提权 → `system`；有 `systemctl` 但提不了权 → `user`；没有 `systemctl`（容器/精简系统）→ `none` | 按探测结果落到下面的具体分支，摘要里写明实际用了哪种 |
 | `system` | 开机自启、没登录也活着 | 装 `/etc/systemd/system/anode.service`（默认落点）；`User=<安装者>`（root 安装时取 `SUDO_USER`），并在 `restart` **之前**把 config/data `chown` 给该用户（否则 0600 配置读不到，服务起来就退）；顺手停用并删除同名旧 **user** unit（两份实例会抢同一个令牌） |
-| `user` | 单用户机器、不给 sudo | `systemctl --user` + `$HOME/.config/systemd/user/anode.service`；尽量 `loginctl enable-linger`，失败只 warn（登录态结束后服务会停，脚本会打印手动命令） |
+| `user` | 单用户机器、不给 sudo | `systemctl --user` + `$HOME/.config/systemd/user/anode.service`；尽量 `loginctl enable-linger`，失败只 warn（登录态结束后服务会停，脚本会打印手动命令）；不能与 `--prefix` 一起用（unit 会落到 prefix 下，`systemctl --user` 发现不到） |
 | `none` | 容器 / 没有 systemd | 只落盘，打印手工启动与装服务的命令（**仍然预检**，见 §6） |
 
-`--prefix DIR` 是 **staging 布局**：`anode install` 把 unit 写进 `<DIR>/etc/systemd/system/`，那个目录不在 systemd 的搜索路径里，`systemctl enable` 必失败。所以显式写 `--service system` + `--prefix` 会被直接拒绝（报错会给出三条出路）；`auto` 推导成 `system` 时只 warn。要真装系统服务就别加 `--prefix`；只想落到自定义目录就用 `--service none` / `--service user`。
+`--prefix DIR` 是 **staging 布局**：`anode install` 把 unit 写进 `<DIR>/etc/systemd/system/`，而 systemd 不在那里找 unit。所以**点名**要 `--service system` / `--service user` 又同时给 `--prefix` 会被直接拒绝（报错给出能走通的出路）；`auto` 推导成 `system` 时只 warn（`ANODE_SYSTEMCTL` 覆盖的“自带 systemd 语义”除外），推导成 `user` 时**降级为 `none` 并 warn**——不静默装一个起不来的服务。要真装服务就别加 `--prefix`（用户服务用 `$HOME/.anode`）；只想落到自定义目录就用 `--service none`。
 
 提权方式（只对真正需要 root 的那几条命令提权，不整段 `sudo sh` 重跑脚本）：
 
@@ -157,7 +157,7 @@ anode serve --check --config <tmp>/preflight.yaml --data <tmp>/data   # 脚本�
   - `config` → `anode.yaml` 的 name/server 形状不对。
 - 上限**固定 10s**（不新增 flag）；脚本外层还有 `--preflight-timeout SEC`（默认 20）兜底，超时就收掉进程并提示。
 
-预检失败时**正式配置与服务都没有被改动**，修好重跑同一条命令即可。想跳过它硬装：`--no-preflight`（不推荐——这正是把“装完了但在线不了”提前一步暴露的地方）。**这是预检的唯一例外：`--service none` 也预检**（否则错令牌会以 exit 0 “装成功”却永远上不了线）。
+预检失败时**正式配置没有被改动**；升级路径上，预检前为“让出令牌”而 stop 的旧实例会被重新启动再退出（原本没在跑就不会凭空 start）——一次失败的升级不把节点留在停止态。修好重跑同一条命令即可。想跳过它硬装：`--no-preflight`（不推荐——这正是把“装完了但在线不了”提前一步暴露的地方）。**这是预检的唯一例外：`--service none` 也预检**（否则错令牌会以 exit 0 “装成功”却永远上不了线）。
 
 `--service none` 不停旧服务（停了没人再拉起来），所以如果那台机器上真有一台旧实例在跑，这一次预检会把它顶掉一次：同一令牌已经有一条 live 连接，新的 hello 会把旧的以 1008 `superseded` 踢掉，旧进程 1 秒内自愈重连（`--check` 的 hello 还会把 `declared_capabilities` 整份覆盖成空，下一次重连的 hello 会写回）。要避开这段瞬断，就先用 `systemctl stop anode.service` 或用 `--no-preflight`。
 
@@ -356,6 +356,6 @@ Dockerfile 独立 CGO=0 Go 二进制，无 SQLite dependency closure，默认 se
 
 ## 14. 验证映射
 
-具名测试和原始命令/结果见 `teams/anode/N3-TESTS.md`。安装测试全 temp/offline，无宿主 service/binary 修改；脚本测试 fake curl/假 systemctl/假 sudo/假 loginctl + 真 `anode` 二进制，断言下载、sha256、预检、install、`daemon-reload`/`enable`/`restart` 顺序、`is-active` 轮询，并断言 token 不出现在 stdout；另覆盖篡改 sha256 中止（精确 exit 2）、`--token`/`--token-file` 缺失、`--no-preflight`、预检失败不装服务、`--service none` 不调 systemctl 但**照样预检**（错令牌 → exit 2）、`--token-file` 轮换自动 `--update-token`、系统服务的 **chown 早于 restart**（假 `systemctl is-active` 只在「config 属主 == unit 的 `User=`」时为 active）、起不来/装不上时**恢复旧服务**并把子进程失败码带进诊断、不同 caller `PATH` 重跑仍是同一个 unit、`--prefix` + `--service system` 明确拒绝、`--dry-run --service user` 不调 `loginctl`、中枢下载路径的令牌只走 `curl --config`（不进 argv）、重跑=升级、`--uninstall`/`--keep-config`/`--purge`/`--dry-run`，以及下发副本与仓库脚本字节一致（`cmp`）。能力脚本测试执行实际构建 anode emit，含跨 attempt 回原 task/pruned、异 body conflict、旧 token 先拒、无 id 不同投递；升级测试复制真实旧 binary，在 fake hub 下替换当前进程的文件、真实重启并上报新 hello，不用空 Restart 冒充。
+具名测试和原始命令/结果见 `teams/anode/N3-TESTS.md`。安装测试全 temp/offline，无宿主 service/binary 修改；脚本测试 fake curl/假 systemctl/假 sudo/假 loginctl + 真 `anode` 二进制，断言下载、sha256、预检、install、`daemon-reload`/`enable`/`restart` 顺序、`is-active` 轮询，并断言 token 不出现在 stdout；另覆盖篡改 sha256 中止（精确 exit 2）、`--token`/`--token-file` 缺失、`--no-preflight`、预检失败不装服务且**恢复升级前停掉的旧服务**（没停过就不 start）、`--service none` 不调 systemctl 但**照样预检**（错令牌 → exit 2）、`--token-file` 轮换自动 `--update-token`、系统服务的 **chown 早于 restart**（假 `systemctl is-active` 只在「config 属主 == unit 的 `User=`」时为 active）、起不来/装不上时**恢复旧服务**并把子进程失败码带进诊断、不同 caller `PATH` 重跑仍是同一个 unit、`--prefix` + `--service system` / `--service user` 明确拒绝、`auto` 推导出的 `user` 在 `--prefix` 下降级为 `none`（不调 systemctl）、`--dry-run --service user` 不调 `loginctl`、中枢下载路径的令牌只走 `curl --config`（不进 argv）、重跑=升级、`--uninstall`/`--keep-config`/`--purge`/`--dry-run`，以及下发副本与仓库脚本字节一致（`cmp`）。能力脚本测试执行实际构建 anode emit，含跨 attempt 回原 task/pruned、异 body conflict、旧 token 先拒、无 id 不同投递；升级测试复制真实旧 binary，在 fake hub 下替换当前进程的文件、真实重启并上报新 hello，不用空 Restart 冒充。
 
 `make check-anode-skill` 是文档侧的门：`docs/v4/anode-cli.md` 代码块里的每个子命令/flag 都要在真二进制的 `-h` 里存在，`web/install-anode.sh` 必须与 `scripts/install-anode.sh` 字节相同。
