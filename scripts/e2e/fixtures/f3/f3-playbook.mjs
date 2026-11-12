@@ -109,7 +109,9 @@ export async function playbook(d,mode){
     assert.equal(groups.installs[0].lastInstallId, second.response.install.id); assert.equal(groups.installs[0].values.credential, '***');
     assert.ok(!JSON.stringify(groups).includes(credential));
     assert.equal((await req(basePath+'/installs/'+first.response.install.id)).install.id, first.response.install.id);
-    await page.locator('#pb-installs button').click();
+    // 打开「单次回执」的那个按钮。install 组里现在还有 code-block 头部的复制按钮
+    // （.copy-btn），所以这里显式排除它——strict mode 下 `#pb-installs button` 会命中 2 个。
+    await page.locator('#pb-installs button:not(.copy-btn)').click();
     await page.waitForFunction(id => __c1Calls.some(c => c.url.endsWith('/installs/' + id)), second.response.install.id);
     assert.match(await page.locator('#pb-receipt').innerText(), /Install|receipt/i);
     assert.ok(!((await page.locator('#pb-receipt').innerText()).includes(credential)));
