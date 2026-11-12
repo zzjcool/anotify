@@ -75,6 +75,13 @@
 		return svg;
 	}
 
+	/* 侧栏图标：一套 24×24 / stroke 1.75 / round 的线条图标（D4）。
+	 * SH-3 之后每个图标的「形状 = 它代表的页面」都能一眼读出来：
+	 *   总览=四方块、事件流=列表、源=闪电（事件从这进来）、
+	 *   能力=拼图块（可组合的执行单元）、预案=流程图（两块 + 连线）、
+	 *   节点=机器匣（一台机器）、API Keys=钥匙、API 文档=代码括号、安全与登录=锁。
+	 * 原先「能力」用六边形+对勾（读起来像认证徽章）、「预案」是一团认不出的笔画、
+	 * 「节点」是两台叠放的圆角方块（18px 下像信封）—— 三者都已换掉。 */
 	const ICONS = {
 		overview: [
 			"M3 3h7v9H3z",
@@ -82,19 +89,15 @@
 			"M14 12h7v9h-7z",
 			"M3 16h7v5H3z",
 		],
-		/* 节点 = 跑 agent 的机器。原先借的是「接收器」的铃铛（和顶栏通知铃撞脸，
-		 * 语义也不对），换成机架图标：两台叠放的主机 + 各自左上的状态灯。 */
+		/* 节点 = 跑 agent 的机器：一个「机器匣」剖面（上盖斜切 + 一条分隔线 +
+		 * 两颗指示灯）。和「能力/预案」放在一起时轮廓完全不同，不再像信封。 */
 		nodes: [
-			"M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z",
-			"M4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z",
-			"M6 6h.01",
-			"M6 18h.01",
+			"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z",
+			"M2 12h20",
+			"M6 16h.01",
+			"M10 16h.01",
 		],
-		/* 侧栏图标去重：事件流、能力、预案原先分别复用「总览的四方块」「API Keys
-		 * 的钥匙」「源的闪电」——三对图标各自代表完全不同的页面，导航里看起来像
-		 * 复制粘贴。这里补三个同风格（Feather/Lucide，24×24、stroke 2、round）的
-		 * 线条图标：事件流 = 列表、能力 = 徽章（节点声明的「能做这件事」）、
-		 * 预案 = 分支流程（能力 + 下游 + 触发器串起来就是它）。 */
+		/* 事件流 = 带项目符号的列表 */
 		events: [
 			"M8 6h13",
 			"M8 12h13",
@@ -103,15 +106,17 @@
 			"M3 12h.01",
 			"M3 18h.01",
 		],
+		/* 能力 = 拼图块：它是可组合的执行单元（预案就是把几块拼起来），
+		 * 不是「认证通过」——旧图标（六边形+对勾）在任何产品里都表示已认证。 */
 		capabilities: [
-			"M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76z",
-			"M9 12l2 2 4-4",
+			"M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z",
 		],
+		/* 预案 = 流程图：左上「源/触发器」方块 → 连线 → 右下「能力」方块。
+		 * 旧图标是三段碎笔画，18px 下读不出任何形状。 */
 		playbooks: [
-			"M6 3v12",
-			"M18 6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
-			"M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
-			"M18 9a9 9 0 0 1-9 9",
+			"M5 3h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+			"M7 11v2a3 3 0 0 0 3 3h3",
+			"M15 13h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z",
 		],
 		keys: [
 			"M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4",
@@ -241,34 +246,26 @@
 		},
 	];
 
+	/* 品牌标（SH-1/SH-2）。三个元素原先互相打架：黑底方块 + 暗灰手写 “An”
+	 * + 一颗无解释的红点 + 旁边再写一遍 cursive “Anotify”。改成：
+	 *   · 方块：品牌色渐变（tokens.css 的 --brand-tile-*，两套主题都成立，
+	 *     不再是纯黑墨块），白字实测 dark 6.8:1 / light 5.4:1；
+	 *   · 删掉那颗红点：它没有语义（不表示在线/未读，顶栏铃铛才是通知位），
+	 *     却在一屏里最抢眼。
+	 *   · 字标不再重画一遍：方块就是品牌，旁边那句 cursive “Anotify” 保留
+	 *     （与登录页一致），但只在展开态出现；折叠态只剩方块。 */
 	function logo(size) {
 		const s = size || "h-9 w-9";
-		const wrap = el("div", { class: "relative" });
-		wrap.append(
-			el(
-				"div",
-				{
-					class: `brand-tile ${s} rounded-lg`,
-				},
-				el("span", {
-					class: "font-script text-lg leading-none text-white",
-					/* 品牌字标保持 "An"（与旧版/登录页一致）；wave 2 曾为折叠态
-					 * 紧凑改成单字 "A"，用户反馈与旧版不一致，恢复。 */
-					text: "An",
-				}),
-			),
-			el(
-				"span",
-				{
-					class:
-						"absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center",
-				},
-				/* F15：去掉 animate-ping 与那圈常驻的呼吸光环 —— 一直闪的点会抢
-				 * 注意力，折叠态下更是整条侧栏只剩一颗跳动的红点。留一个静态点即可。 */
-				el("span", { class: "absolute h-3 w-3 rounded-full bg-red-500" }),
-			),
+		return el(
+			"div",
+			{ class: `brand-tile ${s} rounded-lg` },
+			el("span", {
+				class: "brand-mark font-script leading-none",
+				/* 品牌字标保持 "An"（与旧版/登录页一致）；wave 2 曾为折叠态
+				 * 紧凑改成单字 "A"，用户反馈与旧版不一致，恢复。 */
+				text: "An",
+			}),
 		);
-		return wrap;
 	}
 
 	/* ---------- 主题（light / dark / auto） ----------
@@ -1069,6 +1066,22 @@
 		saveScope({ namespace: nsId });
 	}
 
+	/* 导航 id → 所属分组标题。顶栏上下文（SH-4）用：一个页面属于“工作台 / 资源 / 管理”，
+	 * 这个信息侧栏只在展开态给得到，顶栏重复它就比重复页面名有用。
+	 * NAV 之外的 active（admin）单独补一条；未知 active 返回 null。 */
+	const NAV_GROUP_OF = (() => {
+		const map = Object.create(null);
+		for (const g of NAV) {
+			for (const it of g.items) {
+				map[it.id] = g.groupLabelKey
+					? { labelKey: g.groupLabelKey, fallback: g.groupFallback }
+					: null;
+			}
+		}
+		map.admin = { labelKey: "common.nav.admin_section", fallback: "管理" };
+		return map;
+	})();
+
 	function mountLayout(opts) {
 		// 侧栏、首帧与之后的读写必须看到同一个显式范围：先 adopt，再挂任何 DOM。
 		adoptUrlNamespace();
@@ -1097,6 +1110,22 @@
 		 * 这里**不重建 DOM、也不删任何文字节点**：e2e 取 a.side-link 的最后一个
 		 * 文本子节点当 label（frontend.mjs:1813），删掉文案就取不到导航名了。 */
 		let collapsedNow = readSidebarCollapsed();
+		/* 顶栏上下文里的命名空间节点（SH-4）：由 header 创建时赋值，
+		 * 命名空间列表回来后再画一次（存本地的选择可能已失效，切换器会回落到第一个）。 */
+		let scopeCrumbEl = null;
+
+		/* 命名空间名直接读 scope；拿不到就写与切换器同一句空态文案，不编一个假 namespace。 */
+		function paintScopeCrumb() {
+			if (!scopeCrumbEl) return;
+			const ns = scopeNamespace();
+			scopeCrumbEl.textContent = ns
+				? "#" + ns
+				: t("scope.none", "（还没有命名空间）");
+			scopeCrumbEl.title = ns
+				? t("uxaudit.shell.scope_hint", "当前命名空间，可在左侧切换")
+				: t("scope.missing", "还没有确定命名空间");
+			scopeCrumbEl.dataset.ns = ns;
+		}
 
 		function paintCollapseBtn() {
 			/* 文案说的是「点一下会发生什么」：展开态按钮的动作是「收起侧栏」。 */
@@ -1223,7 +1252,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			),
 			scopeBox,
 		);
-		mountNamespaceSwitcher(scopeBox, scopeSlot);
+		const nsSwitcherReady = mountNamespaceSwitcher(scopeBox, scopeSlot);
 
 		/* ----- 侧栏品牌行：logo + 品牌字 + 折叠按钮 ----- */
 		const brandRow = el(
@@ -1484,16 +1513,32 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			},
 			el(
 				"div",
-				{ class: "flex items-center gap-3" },
+				{ class: "flex items-center gap-3 min-w-0" },
 				menuBtn,
 				el(
 					"div",
-					{},
-					/* 全站唯一的 h1：页面内容里禁止再出现 <h1>（e2e 取 header h1 当页标题） */
+					{ class: "min-w-0" },
+					/* 全站唯一的 h1。SH-4：它不再重复页面标题（.page-title 已经 28px 写了
+					 * 一遍，16 页里有 15 页两份同文字叠在一屏），改成「上下文」：
+					 *   工作台 · #default    /    资源 · 全部署通用
+					 * 分组来自侧栏 IA（NAV 的 groupLabelKey），命名空间来自当前 scope。
+					 * 页面名一个都没丢：完整标题挂在 h1 的 title 与 <title> 上。 */
 					(() => {
-						const h = el("h1", { class: "text-base font-semibold" });
-						h.append(o.title);
+						const h = el("h1", {
+							class: "app-topbar-title",
+							title: o.title || "",
+						});
+						const grp = NAV_GROUP_OF[o.active] || null;
+						if (grp) {
+							h.append(
+								el("span", {
+									class: "app-topbar-group",
+									text: t(grp.labelKey, grp.fallback),
+								}),
+							);
+						}
 						if (o.scopeLevel === "deployment") {
+							if (grp) h.append(el("span", { class: "app-topbar-sep", text: "·" }));
 							h.append(
 								el("span", {
 									class: "scope-badge",
@@ -1504,6 +1549,14 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 									text: t("scope.deployment_wide", "全部署通用"),
 								}),
 							);
+						} else {
+							const scopeEl = el("span", {
+								class: "app-topbar-scope",
+							});
+							if (grp) h.append(el("span", { class: "app-topbar-sep", text: "·" }));
+							h.append(scopeEl);
+							scopeCrumbEl = scopeEl;
+							paintScopeCrumb();
 						}
 						return h;
 					})(),
@@ -3194,6 +3247,24 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		trace: modelTrace,
 	};
 
+	/* v4 执行相位 → CSS 类名后缀（**唯一一份**，ST-5）。
+	 * v4 的相位叫 `cancelled`（双 l），而 tokens.css / ui.css 里的历史拼写是
+	 * `canceled`（--st-canceled / .st-canceled / .b-canceled）—— 这层归一只允许
+	 * 存在一个地方，否则两处漂移时状态点会静默失去颜色（不是报错，是变成默认灰）。
+	 * graphs.js / traceview.js 都从这里取，不再各拄一份。 */
+	const STATUS_CLASS = {
+		pending: "pending",
+		running: "running",
+		succeeded: "succeeded",
+		failed: "failed",
+		cancelled: "canceled",
+		abandoned: "abandoned",
+	};
+	/** phase → 类名后缀；未知相位原样返回（不要编一个假状态）。 */
+	function statusClass(st) {
+		return STATUS_CLASS[st] || String(st || "pending");
+	}
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
@@ -3253,6 +3324,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		isConflict,
 		parseJSON,
 		model,
+		/* v4 相位 → CSS 类名后缀（唯一一份，graphs.js / traceview.js 共用） */
+		STATUS_CLASS,
+		statusClass,
 	};
 
 	/* Auto-mount login page language switcher on load. */

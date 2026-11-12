@@ -379,7 +379,9 @@ body {
 	font-weight: 500;
 }
 
-/* 状态点 */
+/* 状态点。每个变体同时设 background 与 color：color 只给 .badge-dot 的脉冲
+ * 光晕用 currentColor 取色（ST-2）—— 不设的话 .dot-warn 的光晕只能跟随父级文字色
+ * （以前硬编码 --success-soft，黄点向外扩一圈绿光）。 */
 .dot {
 	width: 8px;
 	height: 8px;
@@ -388,18 +390,22 @@ body {
 }
 .dot-success {
 	background: var(--success);
+	color: var(--success);
 	box-shadow: 0 0 8px color-mix(in srgb, var(--success) 60%, transparent);
 }
 .dot-error {
 	background: var(--error);
+	color: var(--error);
 	box-shadow: 0 0 8px color-mix(in srgb, var(--error) 60%, transparent);
 }
 .dot-warn {
 	background: var(--warn);
+	color: var(--warn);
 	box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 60%, transparent);
 }
 .dot-info {
 	background: var(--info);
+	color: var(--info);
 	box-shadow: 0 0 8px color-mix(in srgb, var(--info) 60%, transparent);
 }
 
@@ -482,13 +488,16 @@ body {
 	border-color: color-mix(in srgb, var(--error) 55%, transparent);
 }
 
+/* 呼吸光晕：颜色跟随点自身的 color（ST-2）。
+ * 原先写死 --success-soft，于是 .dot-warn.badge-dot（全站 8 处「工作中」黄点）
+ * 会向外扩一圈绿光。 */
 .badge-dot {
 	animation: pulse 2.2s ease-in-out infinite;
 }
 @keyframes pulse {
 	0%,
 	100% {
-		box-shadow: 0 0 0 0 var(--success-soft);
+		box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 30%, transparent);
 	}
 	50% {
 		box-shadow: 0 0 0 5px transparent;
@@ -526,6 +535,14 @@ body {
 	background: var(--surface-3);
 	color: var(--muted);
 }
+/* ST-1：admin 页（admin.html:560/567/574）拿 .status-info 当「工作中」与非超管
+ * 角色的默认徽章，但全仓从未定义过 —— 结果是裸 .status-badge（无底色、无边框，
+ * 和旁边的 status-warn / status-success 完全不像同一族）。补一档与家族同形状：
+ * 胶囊底 + --info（= 主色，不引入第二个色相，D9）。 */
+.status-info {
+	background: color-mix(in srgb, var(--info) 14%, transparent);
+	color: var(--info);
+}
 
 /* 输入 / 选择 */
 .input {
@@ -548,9 +565,16 @@ body {
 .input:hover {
 	border-color: var(--line-strong);
 }
+/* W2-1：焦点必须是**一圈**，不是两圈。
+ * 旧写法同时画 1px accent 边框 + 3px accent-soft 光晕，两层不同色阶并排 ——
+ * 在浅底页（capabilities 搜索框 / cli-auth 验证码 / sources 表单）看起来像脏描边。
+ * 改成内侧 2px 实心 ring：边框让位（transparent），只剩一条均匀的焦点圈，
+ * 跟随 border-radius，不改变控件尺寸/布局。 */
 .input:focus {
-	border-color: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-soft);
+	border-color: transparent;
+	box-shadow: none;
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
 }
 .input::placeholder {
 	color: var(--faint);
@@ -580,9 +604,11 @@ body {
 	color: var(--text);
 }
 .select:focus {
-	border-color: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-soft);
-	outline: none;
+	border-color: transparent;
+	box-shadow: none;
+	/* 同 .input：一圈实心 ring（W2-1） */
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
 }
 
 /* 开关 */
@@ -1381,16 +1407,29 @@ html.flograph-fullscreen-open body {
 /* 入场动画：先把整张图压成"未执行"，再一拍一拍点亮。
    is-pre 用灰度 + 低透明度表达"这次还没走到"，不动状态色本身 ——
    这样点和边的主题色不会在动画过程中跳色。 */
+/* IDX-4：「还没走到」不能靠 opacity 压到读不出 —— 暗色下 opacity .2 的文字
+ * 实际对比 ≈1.5:1，整张图看上去像坏了一半。改成「降饱和 + 虚线边 + 中性字」：
+ * 仍然一眼看出没点亮，但标题保持 --muted（在 --surface-2 上 ≈7:1）。 */
 .wf-node.is-pre {
-  opacity: 0.2;
-  filter: grayscale(1);
+  opacity: 1;
+  filter: saturate(0.12);
+  border: 1px dashed color-mix(in srgb, var(--faint) 55%, transparent);
+  box-shadow: none;
   /* 轻微缩一点：点亮时"浮上来"，比单纯改透明度有质感 */
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
+.wf-node.is-pre .wf-node-title {
+  color: var(--muted);
+}
+.wf-node.is-pre .wf-node-sub {
+  color: var(--faint);
+}
+/* 线是纯装饰（没有文字），可以比节点更弱；但 0.16 等于看不见，
+ * 0.42 才读得出「配置里有这条路、这次没走」。 */
 .flograph-svg path.is-pre,
 .flograph-edge-label.is-pre {
-  opacity: 0.16;
-  filter: grayscale(1);
+  opacity: 0.42;
+  filter: saturate(0.3);
 }
 /* 只有节点要缩放；线靠 stroke-dashoffset 自己"长"出来（见 flograph） */
 .flograph.is-playing .wf-node {
@@ -2155,6 +2194,21 @@ html.flograph-fullscreen-open body {
 	outline: 2px solid var(--accent);
 	outline-offset: 2px;
 }
+/* 药丸 / 行状的交互项：焦点环内缩（W2-6）。
+ * 键盘 Tab 第一站是侧栏「总览」：默认 outline-offset:2px 会在已经激活的药丸
+ * 外面再画一圈（active 态还有 accent-soft 底 + 2px 左条），三层叠成「双药丸」，
+ * 并且比导航项本身宽出 2px。内缩 2px 后焦点圈落在药丸内侧：仍然清楚，
+ * 但只有一个形状、不改变任何盒尺寸。 */
+.side-link:focus-visible,
+.menu-item:focus-visible,
+.tab:focus-visible,
+.filter-tab:focus-visible,
+.scope-item:focus-visible,
+.scope-trigger:focus-visible,
+.lang-menu-item:focus-visible,
+.list-row:focus-visible {
+	outline-offset: -2px;
+}
 
 /* ---------- 外壳：侧栏变量 ----------
  * 侧栏宽度只由外壳上的 --shell-sidebar-w 决定：折叠 = 改这一个变量，
@@ -2211,16 +2265,31 @@ html.flograph-fullscreen-open body {
 	}
 }
 
-/* 品牌瓷砖：黑底白字，两套主题共用一张脸。
- * 原先靠 Tailwind 的 bg-black + ring-1 ring-white/15 —— 后者属于亮色兼容层要
- * 重映射的灰度类，这里换成 token 组件类，尺寸与圆角仍由调用方给。 */
+/* 品牌瓷砖（SH-1 / SH-2）：底是品牌色渐变，不是黑块 ——
+ * 暗色下纯黑方块与 --bg-raise 几乎同色（只剩一圈描边），亮色下像一块墨渍；
+ * 两套主题都改用 --brand-tile-bg / -bg-2（tokens.css），字色也是 token，
+ * 不再依赖 .text-white 的亮色兼容层。尺寸与圆角仍由调用方给。 */
 .brand-tile {
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	flex-shrink: 0;
-	background: var(--brand-tile-bg);
-	box-shadow: 0 0 0 1px var(--brand-tile-ring);
+	background: linear-gradient(
+		145deg,
+		var(--brand-tile-bg),
+		var(--brand-tile-bg-2)
+	);
+	color: var(--brand-tile-fg);
+	box-shadow:
+		0 0 0 1px var(--brand-tile-ring),
+		0 6px 16px -10px color-mix(in srgb, var(--brand-tile-bg) 70%, transparent);
+}
+/* 字标：Sacramento 「An」。18px 是 36px 方块里的最大可读档（再大下伸部就切）。 */
+.brand-mark {
+	font-size: 18px;
+	letter-spacing: -0.01em;
+	/* 手写体基线偏上，补 1px 让“An”在方块里视觉居中 */
+	padding-top: 1px;
 }
 
 .app-brand {
@@ -2272,6 +2341,14 @@ html.flograph-fullscreen-open body {
 	/* 桌面不裁切：折叠态的 ::after tooltip 要能伸出侧栏 */
 	overflow: visible;
 }
+/* 侧栏图标：一套 24 网格 / 18px / stroke 1.75（D4）—— 图标形状换了之后，
+ * 描边粗细也必须同一档，否则「能力」比「源」看起来重一档（SH-3）。 */
+a.side-link svg {
+	width: 18px;
+	height: 18px;
+	flex: none;
+	stroke-width: 1.75;
+}
 .side-group {
 	display: flex;
 	flex-direction: column;
@@ -2288,6 +2365,13 @@ html.flograph-fullscreen-open body {
 .app-sidebar-foot {
 	margin-top: auto;
 	padding-top: 8px;
+	/* SH-6 / W2-5：底部安全间距。
+	 * 侧栏贴视口底时，原来用户区底边只比屏幕高 10px（.app-sidebar 的 padding），
+	 * 任何底部浮层（语言提示条 / 预览提示 / 移动端手势区）都会直接盖住它。
+	 * 这里再留一层，且不进入滚动区（flex: 0 0 auto）：抽屉里导航滚动时底部用户区
+	 * 始终完整可见。仅改内边距，不动侧栏宽高（R1：折叠宽必须仍是 76px）。 */
+	padding-bottom: 10px;
+	flex: 0 0 auto;
 	border-top: 1px solid var(--line);
 	display: flex;
 	flex-direction: column;
@@ -2508,6 +2592,64 @@ html.flograph-fullscreen-open body {
 	font-size: 12px;
 	line-height: 1.4;
 	color: var(--muted);
+}
+/* ---------- 顶栏上下文（SH-4）----------
+ * 顶栏 h1 不再重复页面标题，改成「分组 · 命名空间」这对**上下文**：
+ *   .app-topbar-group  工作台 / 资源 / 管理  ← 11px uppercase 弱化
+ *   .app-topbar-scope  #default              ← 12px mono，与侧栏切换器同一个 #
+ * 页面标题仍只出现一次（内容区 28px 的 .page-title）；完整页名留在 h1 的
+ * title 属性上，鼠标悬停可读。行高固定 20px，比旧 16px 标题少 0px → 顶栏高度不变。 */
+.app-topbar-title {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;	min-width: 0;
+	min-height: 20px;
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 1.33;
+	letter-spacing: -0.01em;
+	color: var(--text);
+}
+.app-topbar-group {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.app-topbar-sep {
+	color: var(--line-strong);
+	font-size: 12px;
+	line-height: 1;
+	user-select: none;
+}
+.app-topbar-scope {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	font-weight: 500;
+	letter-spacing: 0;
+	color: var(--muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 22ch;
+}
+/* 徽章在 flex 里不再叠加 margin-left（gap 已给间距） */
+.app-topbar-title .scope-badge {
+	margin-left: 0;
+}
+/* 窄屏：分组名先退（命名空间比“这页属于哪个分组”更关键），
+ * 否则 390 宽下 汉堡 + 分组 + 命名空间 + 三个图标会互相挤（SH-5）。 */
+@media (max-width: 479px) {
+	.app-topbar-group,
+	.app-topbar-sep {
+		display: none;
+	}
+	.app-topbar-scope {
+		max-width: 14ch;
+	}
 }
 .app-icon-btn {
 	display: inline-flex;
@@ -2861,10 +3003,14 @@ html.flograph-fullscreen-open body {
 	color: var(--error);
 }
 
-/* ---------- 表格 ---------- */
+/* ---------- 表格 ----------
+ * CP-7：表头粘顶 + 行 hover 过渡。
+ * 粘顶只有在**容器自己滚**时才看得到（页面级滚动时 th 会被整个容器带走），
+ * 所以 .table-wrap 必须真的有 max-height + overflow:auto —— 这也是 D10 的契约尺寸。 */
 .table-wrap {
 	width: 100%;
-	overflow-x: auto;
+	overflow: auto;
+	max-height: 560px;
 	background: var(--surface-1);
 	border: 1px solid var(--line);
 	border-radius: var(--r-lg);
@@ -2877,21 +3023,31 @@ html.flograph-fullscreen-open body {
 .data-table th {
 	position: sticky;
 	top: 0;
-	z-index: 1;
+	/* z-index 2：盖住下方 td 的 border-bottom，也盖住行内的定位元素；
+	 * 侧栏/顶栏是 20/40，不交叉。 */
+	z-index: 2;
 	padding: 10px 14px;
 	text-align: left;
 	font-size: 12px;
-	font-weight: 500;
+	font-weight: 600;
+	letter-spacing: 0.04em;
 	color: var(--muted);
 	white-space: nowrap;
 	background: var(--surface-2);
 	border-bottom: 1px solid var(--line);
+	/* 粘顶表头得是不透明底（--surface-2 是实色，亮/暗两套都成立） */
+	box-shadow: 0 1px 0 var(--line);
 }
 .data-table td {
 	padding: 10px 14px;
 	color: var(--text);
 	border-bottom: 1px solid var(--line);
 	vertical-align: middle;
+}
+/* 行 hover：背景渐变而不是硬切（AN-4）。
+ * transition 落在 tr 上，背景变化 120ms；td 不单独设背景，避免两套过渡不同步。 */
+.data-table tbody tr {
+	transition: background-color var(--dur-fast) var(--ease);
 }
 .data-table tbody tr:hover {
 	background: var(--surface-2);
@@ -2939,6 +3095,120 @@ html.flograph-fullscreen-open body {
 	line-height: 1.5;
 	color: var(--error);
 }
+
+/* ---------- 文件拖放（CP-6）----------
+ * 原生 <input type=file> 在三个页面里直接上了屏（英文 “Choose Files / No file
+ * chosen”，与全站语言脱节）。用这个组件类把原生控件包起来：
+ *
+ *   <label class="file-drop" data-empty="未选择文件" data-busy="已选 {n} 个文件">
+ *     <input type="file" class="file-drop-input" multiple>
+ *     <span class="file-drop-icon" aria-hidden="true">…SVG…</span>
+ *     <span class="file-drop-text">拖入文件，或点击选择</span>
+ *     <span class="file-drop-hint">支持 .yaml / .json，单个 ≤ 1MB</span>
+ *     <span class="file-drop-name">未选择文件</span>
+ *   </label>
+ *
+ * 单击/键盘操作全由 <label> 转发给内部 input（不需 JS）；选中文件名由页面写进
+ * .file-drop-name（页面侧一行 input.addEventListener("change") 即可），
+ * 所以这里只管样式，不管行为。 */
+.file-drop {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 18px 16px;
+	border: 1px dashed var(--line-strong);
+	border-radius: var(--r-md);
+	background: var(--surface-2);
+	color: var(--muted);
+	text-align: center;
+	cursor: pointer;
+	transition:
+		border-color var(--dur-fast) var(--ease),
+		background-color var(--dur-fast) var(--ease),
+		box-shadow var(--dur-fast) var(--ease);
+}
+.file-drop:hover {
+	border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+	background: color-mix(in srgb, var(--surface-2) 80%, var(--accent-soft));
+}
+/* 拖入悬停：页面在 dragenter/dragleave 上切 .is-dragover（或交给 :focus-within） */
+.file-drop.is-dragover,
+.file-drop:focus-within {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--surface-2) 70%, var(--accent-soft));
+	box-shadow: 0 0 0 3px var(--accent-soft);
+	outline: none;
+}
+/* 原生控件本体：隐形但仍可聚焦/可读屏（不是 display:none），
+ * 点击区域由整个 label 提供，键盘 Tab 也会落到它上面。 */
+.file-drop-input {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	opacity: 0;
+	cursor: pointer;
+	font-size: 0;
+}
+.file-drop-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border-radius: var(--r-sm);
+	background: var(--surface-1);
+	border: 1px solid var(--line);
+	color: var(--accent);
+	margin-bottom: 2px;
+	flex: none;
+}
+.file-drop-icon svg {
+	width: 18px;
+	height: 18px;
+}
+.file-drop-text {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--text);
+}
+.file-drop-hint {
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--faint);
+}
+/* 已选文件名：空态弱、选中后提亮（页面切 .is-set 或直接写文字均可） */
+.file-drop-name {
+	margin-top: 2px;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--faint);
+}
+.file-drop-name.is-set,
+.file-drop.has-files .file-drop-name {
+	color: var(--accent);
+}
+/* 行内紧凑变体：不占一整行高度（详情页按钮行旁边） */
+.file-drop.is-compact {
+	flex-direction: row;
+	justify-content: flex-start;
+	text-align: left;
+	gap: 8px;
+	padding: 8px 12px;
+}
+.file-drop.is-compact .file-drop-icon {
+	width: 28px;
+	height: 28px;
+	margin: 0;
+}
 .textarea {
 	width: 100%;
 	min-height: 88px;
@@ -2959,9 +3229,11 @@ html.flograph-fullscreen-open body {
 	border-color: var(--line-strong);
 }
 .textarea:focus {
-	outline: none;
-	border-color: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-soft);
+	/* 同 .input：一圈实心 ring（W2-1） */
+	border-color: transparent;
+	box-shadow: none;
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
 }
 
 /* ---------- Tabs ---------- */
@@ -3058,6 +3330,56 @@ html.flograph-fullscreen-open body {
 	min-height: 0;
 	overflow-y: auto;
 	padding: 18px 20px;
+	/* CP-2：超长内容必须**看得出来还能滚**。
+	 * 两个手段都不靠 JS（页面只要用 .modal-body 就生效）：
+	 *   ① 细滚动条：颜色比全局 8px 亮一档（--line-strong 在暗底几乎看不见）；
+	 *   ② 上下渐隐 + 内阴影（Lea Verou 的 local/scroll 背景技巧）：
+	 *      内容到底/到顶时渐隐自动消失（local 层盖住它），中间才出现。
+	 * 底必须是实色：渐隐靠“盖住内容”实现，透明底会透出下面的行。 */
+	background-color: var(--panel-modal);
+	background-image:
+		linear-gradient(
+			var(--panel-modal),
+			color-mix(in srgb, var(--panel-modal) 0%, transparent)
+		),
+		linear-gradient(
+			color-mix(in srgb, var(--panel-modal) 0%, transparent),
+			var(--panel-modal)
+		),
+		radial-gradient(
+			farthest-side at 50% 0,
+			color-mix(in srgb, var(--text) 14%, transparent),
+			transparent
+		),
+		radial-gradient(
+			farthest-side at 50% 100%,
+			color-mix(in srgb, var(--text) 16%, transparent),
+			transparent
+		);
+	background-position: center top, center bottom, center top, center bottom;
+	background-repeat: no-repeat;
+	background-size:
+		100% 32px,
+		100% 40px,
+		100% 14px,
+		100% 14px;
+	background-attachment: local, local, scroll, scroll;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+.modal-body::-webkit-scrollbar {
+	width: 7px;
+	height: 7px;
+}
+.modal-body::-webkit-scrollbar-track {
+	background: transparent;
+}
+.modal-body::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--text) 20%, transparent);
+	border-radius: 8px;
+}
+.modal-body::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--text) 32%, transparent);
 }
 .modal-foot {
 	display: flex;
@@ -3067,6 +3389,15 @@ html.flograph-fullscreen-open body {
 	gap: 8px;
 	padding: 12px 20px;
 	border-top: 1px solid var(--line);
+	/* CP-2：底部动作条永远贴底（即使某个页面把 foot 放进 body 里滚动，
+	 * sticky 也能把它钉住），并与滚动区之间画一条向上扩散的分隔阴影 ——
+	 * “下面还有内容”与“这里是动作区”就是这两个信号。 */
+	position: sticky;
+	bottom: 0;
+	z-index: 2;
+	flex: 0 0 auto;
+	background: var(--panel-modal);
+	box-shadow: 0 -1px 0 var(--line), 0 -14px 24px -20px var(--scrim);
 }
 .toast {
 	display: flex;
@@ -3123,18 +3454,78 @@ html.flograph-fullscreen-open body {
 	background: var(--line);
 }
 
-/* ---------- 空态 / 骨架 ---------- */
+/* ---------- 空态 / 骨架 ----------
+ * D16 / CP-4：空态不是一句裸灰字，而是「图标底 + 标题 + 说明 + 下一步动作」。
+ * 页面可以用结构化子元素（.empty-icon / .empty-title / .empty-desc / .empty-actions），
+ * **旧的纯文本写法仍然成立**（只传一行字的页不会变丑：字号/颜色/居中都不变，
+ * 只是终于有了呼吸空间的 padding）。 ---------- */
 .empty {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: 8px;
-	padding: 32px 16px;
+	gap: 6px;
+	padding: 44px 24px;
 	text-align: center;
 	font-size: 13px;
 	line-height: 1.6;
 	color: var(--muted);
+}
+/* 图标底：44×44 / 圆角 / --surface-2，内部 SVG 22px（跟 .stat-icon 同一语言） */
+.empty-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	margin-bottom: 2px;
+	border-radius: var(--r-md);
+	background: var(--surface-2);
+	border: 1px solid var(--line);
+	color: var(--faint);
+	flex: none;
+}
+.empty-icon svg {
+	width: 22px;
+	height: 22px;
+}
+.empty-title {
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 1.35;
+	color: var(--text);
+}
+.empty-desc {
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--muted);
+	max-width: 46ch;
+}
+.empty-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	margin-top: 8px;
+}
+/* 紧凑变体：表格内 / 卡片底部的内联空态，不占 44px padding */
+.empty.is-compact {
+	padding: 20px 16px;
+	gap: 4px;
+}
+.empty.is-compact .empty-icon {
+	width: 34px;
+	height: 34px;
+}
+.empty.is-compact .empty-icon svg {
+	width: 18px;
+	height: 18px;
+}
+@media (max-width: 639px) {
+	.empty {
+		padding: 32px 16px;
+	}
 }
 .skeleton {
 	display: block;
@@ -3439,8 +3830,19 @@ html.theme-switching *::after {
 }
 
 /* ---------- 列表 / 卡片入场（stagger）----------
- * 只挂到 index 的 #notif-list / #index-events / KPI 四卡容器；
- * 不挂 .page / #page-main（红线）。20ms/项，最多前 8 项。 */
+ * AN-1：工具类 —— 任意容器加 `.anim-stagger`，**任意数量**的子元素逐项错峰入场。
+ *
+ * 为什么不再只写到 :nth-child(8)：一个 50 行的列表里，前 8 行一个个出来、
+ * 剩下 42 行同时砸下来 —— 看起来像动画坏了一半。序号有两个来源：
+ *   ① JS（partials.js 的 installStagger）给每个子元素写内联 --stagger-i，
+ *      并且封顶（每项 20ms / 最长 240ms），长列表不会排到几秒之后；
+ *   ② 纯 CSS 兜底：nth-child 到 12（与 JS 的封顶同一个数），JS 未执行时也有节奏。
+ *
+ * fill-mode 用 backwards 而不是 both：both 在动画结束后仍持续钉住
+ * transform（CSS 动画来源优先于 :active 普通声明），会让 #notif-list 的
+ * .notif-row:active 按压反馈失效（reviewer major）。backwards 保留延迟期
+ * 的 from 态（opacity:0 / translateY(8px)），结束后回归元素自身样式，
+ * 入场观感与 both 完全一致；也顺带避免钉死将来挂进来的 hover 位移。 */
 @keyframes stagger-in {
 	from {
 		opacity: 0;
@@ -3451,39 +3853,52 @@ html.theme-switching *::after {
 		transform: none;
 	}
 }
-/* fill-mode 用 backwards 而不是 both：both 在动画结束后仍持续钉住
- * transform（CSS 动画来源优先于 :active 普通声明），会让 #notif-list 的
- * .notif-row:active 按压反馈失效（reviewer major）。backwards 保留延迟期
- * 的 from 态（opacity:0 / translateY(8px)），结束后回归元素自身样式，
- * 入场观感与 both 完全一致；也顺带避免钉死将来挂进来的 hover 位移。 */
 .anim-stagger > * {
 	animation: stagger-in var(--dur-mid) var(--ease-out) backwards;
+	animation-delay: calc(var(--stagger-i, 0) * 20ms);
+}
+.anim-stagger > :nth-child(1) {
+	--stagger-i: 0;
 }
 .anim-stagger > :nth-child(2) {
-	animation-delay: 20ms;
+	--stagger-i: 1;
 }
 .anim-stagger > :nth-child(3) {
-	animation-delay: 40ms;
+	--stagger-i: 2;
 }
 .anim-stagger > :nth-child(4) {
-	animation-delay: 60ms;
+	--stagger-i: 3;
 }
 .anim-stagger > :nth-child(5) {
-	animation-delay: 80ms;
+	--stagger-i: 4;
 }
 .anim-stagger > :nth-child(6) {
-	animation-delay: 100ms;
+	--stagger-i: 5;
 }
 .anim-stagger > :nth-child(7) {
-	animation-delay: 120ms;
+	--stagger-i: 6;
 }
 .anim-stagger > :nth-child(8) {
-	animation-delay: 140ms;
+	--stagger-i: 7;
+}
+.anim-stagger > :nth-child(9) {
+	--stagger-i: 8;
+}
+.anim-stagger > :nth-child(10) {
+	--stagger-i: 9;
+}
+.anim-stagger > :nth-child(11) {
+	--stagger-i: 10;
+}
+.anim-stagger > :nth-child(n + 12) {
+	--stagger-i: 11;
 }
 
-/* ---------- KPI 数值更新 ----------
- * 文本同步写入（e2e 立即断言），只给 .stat-value 叠 160ms 入场动画；
- * reduce 下 partials.js 侧不加类。 */
+/* ---------- KPI 数值更新（AN-2）----------
+ * 文本同步写入（e2e 立即断言），只给对方加了 `.is-updated` 的数值叠 160ms 入场
+ * 动画。`.stat-value.is-updated` 是首页原有的写法，`.anim-value.is-updated` 是
+ * 通用名字（其他页面的 KPI 卡不必先改成 .stat-value 才能用）。
+ * reduce 下：动效时长 token 已归零，页面侧也可按 REDUCE_MOTION 不加类。 */
 @keyframes stat-value-in {
 	from {
 		opacity: 0.35;
@@ -3494,7 +3909,8 @@ html.theme-switching *::after {
 		transform: none;
 	}
 }
-.stat-value.is-updated {
+.stat-value.is-updated,
+.anim-value.is-updated {
 	animation: stat-value-in var(--dur-mid) var(--ease-out) both;
 }
 
@@ -4159,6 +4575,85 @@ html.theme-switching *::after {
 	background: var(--line-strong);
 	border-radius: 8px;
 }
+
+/* ---------- 3b. 横向溢出提示（IDX-3）----------
+ * 内容 1916px 装进 1068px 的卡片时，右侧节点被裁掉却没有任何可见提示，
+ * 看上去像「图只画到这里」。JS（flograph.js 的 syncOverflow）在实测
+ * scrollWidth > clientWidth 时给容器挂 .is-h-overflow，并随滚动更新
+ * .at-start / .at-end。三个信号：
+ *   ① 两端渐隐 —— 到边后消失，等于告诉用户「真的到底了」；
+ *   ② 底部居中的「← 可横向拖动 →」小字 —— 滚过一次就淡出（不再唠叨）；
+ *   ③ 光标 grab（滚动容器本身就有）+ 更亮的细滚动条拖块。
+ * 注意：**不隐藏溢出**。R8 要求带 overflow-x:auto 的容器真的能滚
+ * （scrollLeft 必须有位移），所以这里只加装饰层，不动 overflow。 */
+.flograph--silk .flograph-fade {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 46px;
+	z-index: 2;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity var(--dur) var(--ease);
+}
+/* 渐隐只用卡片底色的 alpha 做（不铺真实色块，亮/暗两套自动跟随）：
+ * 左边缘从 92% 卡片底渐到全透明，右边缘镜像。 */
+.flograph--silk .flograph-fade.is-left {
+	left: 0;
+	background: linear-gradient(
+		to right,
+		color-mix(in srgb, var(--surface-1) 92%, transparent),
+		color-mix(in srgb, var(--surface-1) 0%, transparent)
+	);
+}
+.flograph--silk .flograph-fade.is-right {
+	right: 0;
+	background: linear-gradient(
+		to left,
+		color-mix(in srgb, var(--surface-1) 92%, transparent),
+		color-mix(in srgb, var(--surface-1) 0%, transparent)
+	);
+}
+.flograph--silk.is-h-overflow .flograph-fade.is-left.is-on,
+.flograph--silk.is-h-overflow .flograph-fade.is-right.is-on {
+	opacity: 1;
+}
+/* 可横向拖动提示：不抢注意力，只在真的溢出时出现 */
+.flograph--silk .flograph-pan-hint {
+	position: absolute;
+	left: 50%;
+	bottom: 12px;
+	transform: translateX(-50%);
+	z-index: 3;
+	padding: 3px 10px;
+	border-radius: var(--r-full);
+	border: 1px solid var(--line);
+	background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+	backdrop-filter: blur(6px);
+	-webkit-backdrop-filter: blur(6px);
+	font-size: 10.5px;
+	line-height: 1.5;
+	letter-spacing: 0.02em;
+	color: var(--muted);
+	white-space: nowrap;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity var(--dur) var(--ease);
+}
+.flograph--silk.is-h-overflow .flograph-pan-hint {
+	opacity: 1;
+}
+/* 用户已经横向滚过：提示的使命完成，淡出（再滚回来也不重复出现） */
+.flograph--silk.is-h-scrolled .flograph-pan-hint {
+	opacity: 0;
+}
+/* 可见的细滚动条：--line-strong（白 14%）在暗底几乎看不见，抬到 28% */
+.flograph--silk .flograph-scroll {
+	scrollbar-color: color-mix(in srgb, var(--text) 28%, transparent) transparent;
+}
+.flograph--silk .flograph-scroll::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--text) 28%, transparent);
+}
 .flograph--silk .flograph-canvas {
 	position: relative;
 	flex: 0 0 auto;
@@ -4260,8 +4755,9 @@ html.theme-switching *::after {
 /* "这次还没走到"：既有 .flograph-svg path.is-pre 的同一语义，在作用域内重述
  * 一遍（必须排在上面的层规则之后，否则会被 .sl-core 的 .86 盖掉） */
 .flograph--silk .flograph-svg .is-pre {
-	opacity: 0.16;
-	filter: grayscale(1);
+	/* 与节点同一轮口径：线可以弱，但要看得出“这条路没走” */
+	opacity: 0.4;
+	filter: saturate(0.3);
 }
 @keyframes sl-flow {
 	from {
@@ -4304,7 +4800,11 @@ html.theme-switching *::after {
 		transform 0.6s var(--ease-out),
 		border-color 0.35s var(--ease),
 		box-shadow 0.35s var(--ease),
-		filter 0.35s var(--ease);
+		filter 0.35s var(--ease),
+		/* AN-5：回放里 pending → done 是 --state 换色，卡片底/字色也要跟上，
+		 * 否则状态竖条渐变、卡片底硬切。 */
+		background-color var(--dur-mid) var(--ease),
+		color var(--dur-mid) var(--ease);
 	cursor: default;
 }
 /* 既有 .wf-node:hover 的主色描边 + lift 是 FlowGraph 的观感，silk 不要 */
@@ -4327,6 +4827,8 @@ html.theme-switching *::after {
 	background: var(--state);
 	opacity: 0.85;
 	z-index: 3;
+	/* AN-5：--state 换色时竖条跟着渐变（160ms），不要硬切 */
+	transition: background-color var(--dur-mid) var(--ease);
 }
 .flograph--silk .sl-node::after {
 	content: "";
@@ -4354,6 +4856,10 @@ html.theme-switching *::after {
 	color: color-mix(in srgb, var(--state) 78%, var(--text));
 	font-size: 14px;
 	line-height: 1;
+	/* AN-5：状态色换档时的图标底色/字形色过渡 */
+	transition:
+		background-color var(--dur-mid) var(--ease),
+		color var(--dur-mid) var(--ease);
 }
 .flograph--silk .sl-node .n-icon svg {
 	display: block;
@@ -4430,6 +4936,10 @@ html.theme-switching *::after {
 	flex: 0 0 auto;
 	background: var(--state);
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--state) 12%, transparent);
+	/* AN-5：pending → done 时状态点先变色再扩散，不要瞬变 */
+	transition:
+		background-color var(--dur-mid) var(--ease),
+		box-shadow var(--dur-mid) var(--ease);
 }
 /* 触发器（源）：主色渐变底 + 主色描边 + 主色光晕，是"光从这里进来" */
 .flograph--silk .sl-node.is-trigger {
@@ -4462,9 +4972,22 @@ html.theme-switching *::after {
 /* 入场：is-pre（压暗、去色、微缩）→ is-in（复位）。两者语义与既有
  * .wf-node.is-pre 一致，这里重述是为了让 transition 落在 silk 卡片上。 */
 .flograph--silk .sl-node.is-pre {
-	opacity: 0.2;
-	filter: grayscale(1);
-	transform: scale(0.97);
+	/* 同 .wf-node.is-pre（IDX-4）：不压透明度，改虚线边 + 降饱和；
+	 * 文字用 --muted / --faint，保证 ≥4.5:1。 */
+	opacity: 1;
+	filter: saturate(0.12);
+	border: 1px dashed color-mix(in srgb, var(--faint) 55%, transparent);
+	background: color-mix(in srgb, var(--surface-1) 62%, transparent);
+	box-shadow: none;
+	transform: scale(0.98);
+}
+.flograph--silk .sl-node.is-pre .n-title {
+	color: var(--muted);
+}
+.flograph--silk .sl-node.is-pre .n-sub,
+.flograph--silk .sl-node.is-pre .n-step,
+.flograph--silk .sl-node.is-pre .n-dur {
+	color: var(--faint);
 }
 .flograph--silk .sl-node.is-in {
 	opacity: 1;
@@ -4587,20 +5110,83 @@ html.theme-switching *::after {
 	white-space: nowrap;
 	color: var(--muted);
 }
-/* 图例：既有 .flograph-legend 是左上角绝对浮层（会压住丝带）；silk 把它拽进
- * HUD 尾部做成一排 chip。7 行文本都不许改（E2E 读 textContent），所以靠
- * min-width:0 + ellipsis 让它溢出时"收窄"而不是撑开 HUD。 */
+/* 图例（IDX-3 ②）：原来是「1×1px + overflow:hidden + clip」的视觉隐藏副本 ——
+ * 7 行内容 232px 宽被塞进一个 1×1 的盒子里，任何几何审计读到的都是「塌陷的容器」，
+ * 而且用户永远看不到这 7 行说明（只有读屏能读）。
+ * 现在改成正规的弹出面板：HUD 右侧一个「图例」按钮（.flograph-legend-btn），
+ * 点开在卡片右下角浮出 7 行；默认收起（display:none，不是被裁成 1px）。
+ * 文案一个字没改（E2E 仍可读 textContent），也不压丝带。 */
 .flograph--silk .flograph-legend {
+	display: none;
 	position: absolute;
-	width: 1px;
-	height: 1px;
-	margin: -1px;
-	padding: 0;
-	overflow: hidden;
-	clip: rect(0 0 0 0);
-	clip-path: inset(50%);
-	white-space: nowrap;
-	border: 0;
+	right: 12px;
+	bottom: 44px;
+	z-index: 8;
+	flex-direction: column;
+	gap: 5px;
+	min-width: 208px;
+	max-width: min(320px, calc(100% - 24px));
+	max-height: 46vh;
+	overflow-y: auto;
+	margin: 0;
+	padding: 10px 12px;
+	border-radius: var(--r-md);
+	border: 1px solid var(--line-strong);
+	background: var(--panel-overlay);
+	box-shadow: var(--shadow-3);
+	white-space: normal;
+}
+.flograph--silk .flograph-legend.is-open {
+	display: flex;
+}
+.flograph--silk .flograph-legend .flograph-legend-row {
+	align-items: flex-start;
+	gap: 8px;
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--muted);
+	white-space: normal;
+}
+.flograph--silk .flograph-legend .flograph-legend-icon {
+	width: 14px;
+	text-align: center;
+	flex: none;
+}
+/* HUD 里的「图例」开关：与 hud-legend 的 chip 同一行高，不抢注意力 */
+.flograph--silk .flograph-legend-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 0 auto;
+	height: 20px;
+	padding: 0 8px;
+	border-radius: var(--r-full);
+	border: 1px solid var(--line);
+	background: transparent;
+	color: var(--faint);
+	font-family: var(--font-mono);
+	font-size: 9px;
+	line-height: 1;
+	letter-spacing: 0.04em;
+	cursor: pointer;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background-color var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
+}
+.flograph--silk .flograph-legend-btn:hover {
+	color: var(--text);
+	background: var(--surface-2);
+	border-color: var(--line-strong);
+}
+.flograph--silk .flograph-legend-btn[aria-expanded="true"] {
+	color: var(--accent);
+	border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+	background: var(--accent-soft);
+}
+.flograph--silk .flograph-legend-btn:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
 }
 /* lab 的 HUD 只保留两项：执行路径 / 失败步。7 行完整图例在上面做无障碍副本，
  * 不参与 35px 底栏的宽度竞争。 */
