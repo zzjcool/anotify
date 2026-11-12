@@ -210,3 +210,39 @@ func TestDeployFramesShareRefs(t *testing.T) {
 		t.Fatalf("digest 必须原样出现在 wire 上：%s", reqRaw)
 	}
 }
+
+// TestCapabilityDeployedFrameCommandsWire 成功回执可以带回 requires.commands 的探测结果。
+//
+// 空时不出现这个键（failed 回执与不带 requires.commands 的成功回执都不多加字段），
+// 带上时往返不丢内容 —— 中枢靠它更新节点申报，避免「部署成功却永远 CommandMissing」。
+func TestCapabilityDeployedFrameCommandsWire(t *testing.T) {
+	base := DeployRefs{Namespace: "default", Name: "greeter", Version: 1, Digest: "sha256:ab"}
+	without := &CapabilityDeployedFrame{
+		Type: FrameCapabilityDeployed, RequestID: "dep_1", DeployRefs: base, Status: DeployStatusApplied,
+	}
+	if keys := deployKeys(t, without); containsString(keys, "commands") {
+		t.Fatalf("没有探测结果时不该出现 commands 键：%v", keys)
+	}
+	with := &CapabilityDeployedFrame{
+		Type: FrameCapabilityDeployed, RequestID: "dep_1", DeployRefs: base, Status: DeployStatusApplied,
+		Commands: []HelloCommand{
+			{Name: "bash", Found: true, Path: "/bin/bash"},
+			{Name: "git", Found: false},
+		},
+	}
+	raw, err := Encode(with)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	got, ok := decoded.(*CapabilityDeployedFrame)
+	if !ok {
+		t.Fatalf("Decode 返回 %T", decoded)
+	}
+	if !reflect.DeepEqual(*got, *with) {
+		t.Fatalf("commands 往返丢字段：\n got %+v\nwant %+v", got.Commands, with.Commands)
+	}
+}

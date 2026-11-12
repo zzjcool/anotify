@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 
+	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
@@ -14,6 +15,9 @@ import (
 type Deployer struct {
 	Fetcher *Fetcher
 	Cache   *Cache
+	// LookPath 探测 requires.commands（与 hello.capabilities 同源：启动快照的 PATH）。
+	// nil = 不探测（回执不带 commands，中枢保持旧判断）。
+	LookPath func(name string) (string, error)
 }
 
 // Handle 处理一条部署帧。
@@ -59,7 +63,30 @@ func (d *Deployer) Handle(ctx context.Context, frame *protocol.CapabilityDeployF
 	}
 	ack.Status = protocol.DeployStatusApplied
 	ack.Error = ""
+	ack.Commands = d.probeCommands(a)
 	return ack
+}
+
+// probeCommands 探测能力的 requires.commands（与 capabilitiesLocked 同一口径：
+// 只用启动快照的 PATH，不读 os.Getenv）。
+func (d *Deployer) probeCommands(a *artifact.Artifact) []protocol.HelloCommand {
+	if d.LookPath == nil || a == nil {
+		return nil
+	}
+	required := a.Spec.Requires.Commands
+	if len(required) == 0 {
+		return nil
+	}
+	out := make([]protocol.HelloCommand, 0, len(required))
+	for _, name := range required {
+		cmd := protocol.HelloCommand{Name: name}
+		if path, err := d.LookPath(name); err == nil {
+			cmd.Found = true
+			cmd.Path = path
+		}
+		out = append(out, cmd)
+	}
+	return out
 }
 
 // oneLine 把人话原因压成一行（回执 error 不参与判断，但不能带换行污染日志）。

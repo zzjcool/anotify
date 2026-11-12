@@ -532,6 +532,43 @@ func newDeployFixture(t *testing.T, status int) (*Deployer, *Cache, protocol.Cap
 	return &Deployer{Fetcher: fetcher, Cache: cache}, cache, frame, digest, requests
 }
 
+// TestDeployAckCarriesCommandProbe 回执带上 requires.commands 的探测结果。
+//
+// 中枢据此更新节点申报（NodesAvailable 的 CommandMissing 判据）：部署刚落地时节点不会
+// 重连，不随回执带回去，中枢会一直以为这台机器没有命令 —— 能力部署成功却不可派发。
+func TestDeployAckCarriesCommandProbe(t *testing.T) {
+	deployer, _, frame, _, _ := newDeployFixture(t, http.StatusOK)
+	probed := []string{}
+	deployer.LookPath = func(name string) (string, error) {
+		probed = append(probed, name)
+		if name == "sh" {
+			return "/bin/sh", nil
+		}
+		return "", errors.New("not found")
+	}
+	ack := deployer.Handle(context.Background(), &frame)
+	if ack.Status != protocol.DeployStatusApplied {
+		t.Fatalf("ack = %+v", ack)
+	}
+	if len(probed) == 0 {
+		t.Fatal("应为 requires.commands 逐个探测（LookPath 一次都没被调用）")
+	}
+	if len(ack.Commands) != len(probed) {
+		t.Fatalf("回执 commands = %+v，期望与探测项一一对应（%v）", ack.Commands, probed)
+	}
+	for _, cmd := range ack.Commands {
+		if cmd.Name == "sh" {
+			if !cmd.Found || cmd.Path == "" {
+				t.Fatalf("sh 应 found=true 且带 path，实际 %+v", cmd)
+			}
+			continue
+		}
+		if cmd.Found {
+			t.Fatalf("没找到的命令必须 found=false：%+v", cmd)
+		}
+	}
+}
+
 func TestDeploySuccessCachesAndAcks(t *testing.T) {
 	deployer, cache, frame, digest, _ := newDeployFixture(t, http.StatusOK)
 	ack := deployer.Handle(context.Background(), &frame)

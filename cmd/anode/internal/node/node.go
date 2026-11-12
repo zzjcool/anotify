@@ -116,7 +116,7 @@ func New(opts Options) (*Node, error) {
 		n.fetcher = fetcher
 	}
 	n.fetcher.AllowNamespace = func(namespace string) bool { return n.AllowsNamespace(namespace) }
-	n.deployer = &capability.Deployer{Fetcher: n.fetcher, Cache: n.cache}
+	n.deployer = &capability.Deployer{Fetcher: n.fetcher, Cache: n.cache, LookPath: n.baseline.LookPath}
 	return n, nil
 }
 

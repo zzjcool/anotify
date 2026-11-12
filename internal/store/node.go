@@ -1260,6 +1260,88 @@ func (d *DB) EligibleNodesForTask(ctx context.Context, t *Task) ([]*Node, map[st
 	return d.nodeEligibility(ctx, t.NamespaceID, namespaceName, t.NamespaceVars, capName, capVersion, spec, digest)
 }
 
+// DeployCandidateNodes 返回「可以把能力**部署**到本命名空间」的节点。
+//
+// 契约（api/resource.yaml CapabilityDeployRequest.nodes）写的是「省略 = 全部已授权且在线
+// 节点」—— 所以这里的判据只有两条：ns ∈ 申报 ∩ 授权，且不在 draining（在线由调用方
+// 按连接事实再筛：store 不知道 WS 会话）。
+//
+// **不能**拿 EligibleNodes 当部署候选（真实死结）：它是**派发**判据，其中一条是
+// 「deployments 已有该 digest 且 applied」。于是刚建好的能力谁都不可用 ——
+// 没部署过 ⇒ 没有候选 ⇒ 不选目标时目标为空 ⇒ 什么都不部署 ⇒ 永远没有候选。
+// 现场症状：控制台「没有候选节点；不选也能提交（由服务端决定）」，提交回 200 但
+// deployed: []，能力永远停在 NotDeployed。
+func (d *DB) DeployCandidateNodes(ctx context.Context, namespaceID string) ([]*Node, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	namespaceName, err := d.namespaceSlug(ctx, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("deploy candidates: %w", err)
+	}
+
+	nodes := []*Node{}
+	rows, err := d.queryContext(ctx, `SELECT `+nodeColumns+` FROM nodes ORDER BY name, id`)
+	if err != nil {
+		return nil, fmt.Errorf("deploy candidates: list nodes: %w", err)
+	}
+	for rows.Next() {
+		n, serr := scanNodeRow(rows)
+		if serr != nil {
+			rows.Close()
+			return nil, serr
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("deploy candidates: iterate nodes: %w", err)
+	}
+	rows.Close()
+
+	// 授权列表在 node_configs.namespaces（缺配置行 = 缺省 ["*"]，与授权判定同一默认）。
+	authored := map[string][]string{}
+	crows, err := d.queryContext(ctx, `SELECT node_id, namespaces FROM node_configs`)
+	if err != nil {
+		return nil, fmt.Errorf("deploy candidates: read node configs: %w", err)
+	}
+	for crows.Next() {
+		var nodeID, rawNamespaces string
+		if err := crows.Scan(&nodeID, &rawNamespaces); err != nil {
+			crows.Close()
+			return nil, fmt.Errorf("deploy candidates: scan node config: %w", err)
+		}
+		decoded, derr := decodeStringList(rawNamespaces)
+		if derr != nil {
+			crows.Close()
+			return nil, fmt.Errorf("deploy candidates: %w", derr)
+		}
+		authored[nodeID] = decoded
+	}
+	if err := crows.Err(); err != nil {
+		crows.Close()
+		return nil, fmt.Errorf("deploy candidates: iterate node configs: %w", err)
+	}
+	crows.Close()
+
+	out := []*Node{}
+	for _, n := range nodes {
+		// 排空中 = 跑完手上的任务后不再接新活，不往里推新部署。
+		if n.Status == NodeStatusDraining {
+			continue
+		}
+		authorized, ok := authored[n.ID]
+		if !ok {
+			authorized = []string{NamespaceWildcard}
+		}
+		if !namespacesAllow(intersectNamespaces(authorized, n.DeclaredNamespaces), namespaceName) {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // namespaceSlug 取 ns 名（授权/申报列表存的是名字，不是内部 id）。
 func (d *DB) namespaceSlug(ctx context.Context, namespaceID string) (string, error) {
 	var slug string

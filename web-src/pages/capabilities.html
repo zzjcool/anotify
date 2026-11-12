@@ -1199,7 +1199,7 @@
 
         // 节点上的部署状态（deployed / stale / missing）
         const nsec = section("caps.nodes.title", "nodes");
-        if (!m.nodes.length) nsec.append(txt("p", "cap-detail-empty", t("caps.nodes.empty", "没有候选节点（没有节点授权到本命名空间）")));
+        if (!m.nodes.length) nsec.append(txt("p", "cap-detail-empty", t("caps.nodes.held_empty", "还没有节点持有这份能力（点「部署」下发）")));
         for (const n of m.nodes) {
           const line = el("div", { class: "cap-line" });
           line.append(
@@ -2080,11 +2080,14 @@
         box.replaceChildren();
         if (!DEPLOY) return;
         const m = model.capability(DEPLOY.res);
-        if (!m.nodes.length) {
-          box.append(txt("p", "cap-detail-empty", t("caps.deploy.nodes_empty", "没有候选节点；不选也能提交（由服务端决定）。")));
+        // 候选来自 status.deployCandidates（部署判据），**不是** status.nodes：
+        // 后者是「已经持有这份能力的机器」，首次部署时必然为空 —— 用它列目标就是
+        // 「首次部署永远没有候选节点」那股死结。
+        if (!m.deployCandidates.length) {
+          box.append(txt("p", "cap-detail-empty", t("caps.deploy.nodes_none", "没有可部署的节点：没有节点授权到本命名空间，或它们都在排空中。")));
           return;
         }
-        for (const n of m.nodes) {
+        for (const n of m.deployCandidates) {
           const label = el("label", { class: "cap-inline-check" });
           const cb = el("input", { class: "cap-check", type: "checkbox", value: n.name == null ? "" : n.name });
           cb.checked = DEPLOY.selected.has(n.name);
@@ -2093,7 +2096,12 @@
             if (cb.checked) DEPLOY.selected.add(n.name);
             else DEPLOY.selected.delete(n.name);
           });
-          label.append(cb, txt("span", null, (n.name || "—") + " · " + stateLabel(n.state)));
+          // 只用已定义的组件类 / Tailwind 工具类（不自造 class，见 check-classes）。
+          label.append(
+            cb,
+            txt("span", n.online ? null : "cap-missing",
+              (n.name || "—") + " · " + (n.online ? t("nodes.status.online", "在线") : t("nodes.status.offline", "离线"))),
+          );
           box.append(label);
         }
       }
@@ -2118,6 +2126,14 @@
           const out = await api(nsPath("capabilities", m.name) + "/deploy", writeOpts("POST", body));
           const deployedRows = Array.isArray(out && out.deployed) ? out.deployed : out && Array.isArray(out.items) ? out.items : [];
           const count = deployedRows.length;
+          if (count === 0) {
+            // 0 台不是「成功」：服务端没有任何目标可推（没有授权/不在线）。别让 toast
+            // 把「什么都没发出去」说成部署完成。
+            const msg = $("deploy-msg");
+            msg.textContent = t("caps.deploy.deploy_none", "没有节点可部署（0 台）：先确认节点已授权到本命名空间并在线。");
+            msg.classList.remove("hidden");
+            return;
+          }
           toast(sub(t("caps.toast.deployed", "已部署（{n} 台）"), { n: count }));
           OPEN.add(m.name);
           DEPLOY = null;

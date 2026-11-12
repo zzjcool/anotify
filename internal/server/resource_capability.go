@@ -571,13 +571,14 @@ func capabilitySpecView(spec artifact.Spec, includeBody bool) artifact.Spec {
 // statusFor 从事实派生 status（capability.md §5：全部现算，不落库）。
 func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVersion) (capabilityStatus, error) {
 	status := capabilityStatus{
-		Version:       row.Version,
-		Digest:        row.Digest,
-		Conditions:    make([]capabilityCondition, 0, 4),
-		Nodes:         []capabilityNodeState{},
-		Resolved:      capabilityResolved{Next: []capabilityResolvedNext{}},
-		Observed:      map[string]any{}, // 事件/任务的窗口统计本域不查，给空对象而不是编造 0
-		InstalledFrom: row.InstalledFrom,
+		Version:          row.Version,
+		Digest:           row.Digest,
+		Conditions:       make([]capabilityCondition, 0, 4),
+		Nodes:            []capabilityNodeState{},
+		DeployCandidates: []capabilityDeployCandidate{},
+		Resolved:         capabilityResolved{Next: []capabilityResolvedNext{}},
+		Observed:         map[string]any{}, // 事件/任务的窗口统计本域不查，给空对象而不是编造 0
+		InstalledFrom:    row.InstalledFrom,
 	}
 
 	// ① Implemented：正文能不能过静态校验（正常写入路径写不进 Invalid 的行）。
@@ -608,6 +609,16 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 	}
 	status.Conditions = append(status.Conditions, deployed)
 	status.Nodes = nodes
+
+	// ⑤ DeployCandidates：控制台「人工部署」弹窗的目标列表。与 status.nodes 是**两件事**：
+	// nodes 是「现在已经持有这份能力（或持有旧 digest）的机器」，candidates 是
+	// 「可以把这份能力推过去的机器」（授权覆盖本 ns、不在排空中；online 取自活连接）。
+	// 第一次部署时后者非空、前者必然为空 —— 把两者混用就是「没有候选节点」那股死结。
+	candidates, err := a.deployCandidateStates(ctx, row.NamespaceID)
+	if err != nil {
+		return status, err
+	}
+	status.DeployCandidates = candidates
 
 	status.Ready = true
 	for _, condition := range status.Conditions {
@@ -727,6 +738,26 @@ func (a *capabilityAPI) downstreamResolved(ctx context.Context, row *store.Capab
 // 同一节点可能同时挂着指向不同版本行的事实（`CreateDeployments` 的 supersede 只清同一
 // capability_id 的行），所以按 deployed > stale > missing 折叠：这三个投影里最强的一条
 // 才是「节点此刻持有什么」的真实回答。
+// deployCandidateStates 把「可部署节点」投影成 status.deployCandidates（名字 + 是否在线）。
+//
+// 判据只有 store.DeployCandidateNodes（授权 ∩ 申报覆盖本 ns、不在排空中）+ 活连接事实，
+// 不看「已经部署过没有」—— 否则首次部署时弹窗永远空。
+func (a *capabilityAPI) deployCandidateStates(ctx context.Context, namespaceID string) ([]capabilityDeployCandidate, error) {
+	nodes, err := a.d.DB.DeployCandidateNodes(ctx, namespaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]capabilityDeployCandidate, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, capabilityDeployCandidate{
+			Name:   n.Name,
+			Online: a.d.Hub != nil && a.d.Hub.Online(n.ID),
+		})
+	}
+	return out, nil
+}
+
+// deployedState 派生 Deployed 条件与 `status.nodes`（已持有该能力的机器）。
 func (a *capabilityAPI) deployedState(ctx context.Context, row *store.CapabilityVersion) (capabilityCondition, []capabilityNodeState, error) {
 	condition := capabilityCondition{Type: protocol.ConditionDeployed}
 	rows, err := a.d.DB.ListDeploymentsByCapabilityName(ctx, row.NamespaceID, row.Name)
@@ -854,6 +885,17 @@ type capabilityNodeState struct {
 	State string `json:"state"`
 }
 
+// capabilityDeployCandidate 是「这台能力能部署到哪台机器」的一个目标（**部署**判据，
+// 不是派发前提）。online 是此刻的连接事实：离线节点也能接部署意图（行会落成 pending，
+// 重连时补齐），页面只是要能把两者区分开。
+//
+// **不要**用 capabilityNodeState 代替：那里面的 state 是「已持有这份能力的哪一版」，
+// 首次部署时必然为空。
+type capabilityDeployCandidate struct {
+	Name   string `json:"name"`
+	Online bool   `json:"online"`
+}
+
 type capabilityResolvedNext struct {
 	Name    string `json:"name"`
 	Version int    `json:"version,omitempty"`
@@ -867,14 +909,15 @@ type capabilityResolved struct {
 }
 
 type capabilityStatus struct {
-	Version       int                   `json:"version"`
-	Digest        string                `json:"digest"`
-	Ready         bool                  `json:"ready"`
-	Conditions    []capabilityCondition `json:"conditions"`
-	Nodes         []capabilityNodeState `json:"nodes"`
-	Resolved      capabilityResolved    `json:"resolved"`
-	Observed      map[string]any        `json:"observed"`
-	InstalledFrom string                `json:"installedFrom,omitempty"`
+	Version          int                         `json:"version"`
+	Digest           string                      `json:"digest"`
+	Ready            bool                        `json:"ready"`
+	Conditions       []capabilityCondition       `json:"conditions"`
+	Nodes            []capabilityNodeState       `json:"nodes"`
+	DeployCandidates []capabilityDeployCandidate `json:"deployCandidates"`
+	Resolved         capabilityResolved          `json:"resolved"`
+	Observed         map[string]any              `json:"observed"`
+	InstalledFrom    string                      `json:"installedFrom,omitempty"`
 }
 
 // capabilityNameFromPath 取 `{name}` 路径段。

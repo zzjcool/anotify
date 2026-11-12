@@ -1358,6 +1358,15 @@ components:
         error:
           type: string
           description: 失败的人话原因（`status=failed` 时非空；成功时省略，不进任何判断）
+        commands:
+          type: array
+          description: |
+            `applied` 时带回该能力 `requires.commands` 在本机的探测结果（与 `hello.capabilities[].commands`
+            同形）；空/省略 = 没有 requires.commands 或未探测。
+
+            中枢收到后把这一项并进节点申报：部署刚落地时节点不会重连，只靠握手 hello 的话
+            `NodesAvailable` 会一直停在 `CommandMissing` —— 能力部署成功却永远不可派发。
+          items: {$ref: '#/components/schemas/HelloCommand'}
     # ==================================================================
     # 运维帧：升级与历史日志（internal/protocol/ops_frames.go）
     # ==================================================================

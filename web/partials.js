@@ -2564,6 +2564,18 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			state: n && n.state != null ? n.state : null,
 		}));
 	}
+	/**
+	 * 部署候选（status.deployCandidates）：**部署**判据的投影，与 nodesOf（已持有哪一版）是
+	 * 两件事。首次部署前 nodes 恒空、这里非空 —— 部署弹窗只认这一个列表。
+	 */
+	function deployCandidatesOf(o) {
+		const list = statusOf(o).deployCandidates;
+		if (!Array.isArray(list)) return [];
+		return list.map((n) => ({
+			name: n && n.name != null ? n.name : null,
+			online: !!(n && n.online === true),
+		}));
+	}
 	function resolvedNext(o) {
 		const resolved = statusOf(o).resolved;
 		const list = isObj(resolved) && Array.isArray(resolved.next) ? resolved.next : [];
@@ -2683,6 +2695,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			conditions: arr(st.conditions),
 			ready: st.ready === true,
 			nodes: nodesOf(res),
+			deployCandidates: deployCandidatesOf(res),
 			resolvedNext: resolvedNext(res),
 			observed: observedOf(res),
 			installedFrom: st.installedFrom == null ? null : st.installedFrom,

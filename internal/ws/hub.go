@@ -576,11 +576,19 @@ func (h *Hub) Deploy(ctx context.Context, namespaceID, name string, version int,
 	}
 	targets := append([]string(nil), nodeIDs...)
 	if len(targets) == 0 {
-		nodes, _, err := h.db.EligibleNodes(ctx, namespaceID, capability.Spec, capability.Digest)
+		// 省略目标 = 契约的「全部已授权且在线节点」。
+		//
+		// 必须用**部署**判据 DeployCandidateNodes，不能用派发判据 EligibleNodes：
+		// 后者要求「这台机器已经 applied 过该 digest」，于是**首次**部署的候选恒为空 ——
+		// deploy 回 200 但 deployed: []，能力永远停在 NotDeployed（真实死结）。
+		candidates, err := h.db.DeployCandidateNodes(ctx, namespaceID)
 		if err != nil {
 			return nil, err
 		}
-		for _, node := range nodes {
+		for _, node := range candidates {
+			if h.session(node.ID) == nil {
+				continue // 契约只把**在线**节点当作省略目标的默认集合
+			}
 			targets = append(targets, node.ID)
 		}
 	}

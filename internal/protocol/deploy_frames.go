@@ -84,4 +84,12 @@ type CapabilityDeployedFrame struct {
 	Status DeployStatus `json:"status"`
 	// Error 是失败的人话原因（status=failed 时非空；成功时省略，不进任何判断）。
 	Error string `json:"error,omitempty"`
+	// Commands 是本机对该能力 spec.requires.commands 的**探测结果**（与 hello.capabilities[]
+	// 里的同名列同形）。省略 = 没有 requires.commands 或探测没跑。
+	//
+	// 为什么随回执带：中枢的「哪些节点能跑这个能力」（NodesAvailable）依据的是节点申报，
+	// 而申报历史上只有握手 hello 一份来源。部署刚落地时节点还没重连，中枢就永远看到
+	// "CommandMissing" —— 能力部署成功却永远不可派发（现场：ready 一直是 false）。
+	// 回执把这一次的新事实直接带回中枢，收敛不再依赖重连。
+	Commands []HelloCommand `json:"commands,omitempty"`
 }

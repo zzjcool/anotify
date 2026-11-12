@@ -256,6 +256,13 @@ func (h *Hub) handleDeployed(ctx context.Context, sess *Session, f *protocol.Cap
 		state = store.DeploymentFailed
 		reason = f.Error
 	}
+	// 回执里的命令探测结果是**新事实**：部署落地后节点不会重连，不落账的话中枢会一直
+	// 按旧的 hello 判 CommandMissing（能力部署成功却永远不可派发）。
+	//
+	// 顺序：先落部署事实（权威判定都在那一笔事务里），再合并申报；合并失败只告警 ——
+	// 部署已经成立，下一次 hello 会整份对齐，不该让一条附属事实回滚主结果。
+	mergeDeclared := state == store.DeploymentApplied
+
 	err = h.db.MarkDeployResultAuthorized(ctx, sess.auth, store.DeploymentResultInputs{
 		DeploymentID: deploymentID,
 		RequestID:    f.RequestID,
@@ -275,6 +282,18 @@ func (h *Hub) handleDeployed(ctx context.Context, sess *Session, f *protocol.Cap
 		}
 		h.log.Warn("deploy ack rejected", "node_id", sess.nodeID, "request_id", f.RequestID,
 			"deployment", deploymentID, "err", err)
+		return nil
+	}
+	if mergeDeclared {
+		if err := h.db.MergeDeclaredCapability(ctx, sess.nodeID, store.DeclaredCapability{
+			Name:     capability.Name,
+			Version:  capability.Version,
+			Digest:   capability.Digest,
+			Commands: f.Commands,
+		}); err != nil {
+			h.log.Warn("deploy ack: merge declared capability failed", "node_id", sess.nodeID,
+				"capability", capability.Name, "version", capability.Version, "err", err)
+		}
 	}
 	return nil
 }

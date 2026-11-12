@@ -13,8 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/zzjcool/anotify/internal/auth"
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
@@ -30,6 +34,7 @@ import (
 // 「离线排队不是失败」的真实语义）。
 type capTestEnv struct {
 	db     *store.DB
+	deps   *serverDeps
 	mux    http.Handler
 	cookie *http.Cookie
 	// nsA / nsB 是 store 里的真实命名空间 id（事实表引用它）；
@@ -86,6 +91,7 @@ func newCapTestEnv(t *testing.T) *capTestEnv {
 
 	return &capTestEnv{
 		db:     db,
+		deps:   deps,
 		mux:    mux,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 		nsA:    defaultNS.ID,
@@ -951,53 +957,91 @@ func TestCapabilityDeployNodesCrossNamespaceIs403(t *testing.T) {
 	}
 }
 
-// TestCapabilityDeployNodesOmittedUsesEligibleNodes 省略 nodes = 全部已授权且在线节点
-// （候选判据由 store 的 EligibleNodes 说，handler 不自己挑人）。
-func TestCapabilityDeployNodesOmittedUsesEligibleNodes(t *testing.T) {
+// TestCapabilityDeployNodesOmittedUsesDeployCandidates 省略 nodes = 全部已授权且**在线**节点。
+//
+// 这里钉的是**部署**判据（store.DeployCandidateNodes），不是派发判据（EligibleNodes）：
+// 首次部署时 deployments 还没有这份 digest，拿派发判据当候选 ⇒ 候选恒空 ⇒
+// 控制台「没有候选节点」、deploy 回 200 但 deployed: []（真实故障，能力永远停在 NotDeployed）。
+func TestCapabilityDeployNodesOmittedUsesDeployCandidates(t *testing.T) {
 	env := newCapTestEnv(t)
 	ctx := context.Background()
 	env.createCapability(t, env.nsA, "deploy-all", "#!/bin/sh\necho all\n")
 
-	// 可执行节点：在线 + 授权 + 配置已 apply + 该 digest 的部署事实已 applied。
-	eligible := env.deployNode(t, "node-eligible", store.NodeStatusOnline, nil)
-	cfg, err := env.db.GetNodeConfig(ctx, eligible.ID)
+	// 在线节点：真 WS 会话（「在线」按活连接算；DB 的 status 列只是记账）。
+	node := &store.Node{Name: "node-online", Status: store.NodeStatusOnline, DeclaredNamespaces: []string{"*"}}
+	token, err := env.db.CreateNode(ctx, node)
 	if err != nil {
-		t.Fatalf("get node config: %v", err)
+		t.Fatalf("create node: %v", err)
 	}
-	cfg.Namespaces = []string{"*"}
-	if err := env.db.PutNodeConfig(ctx, cfg); err != nil {
-		t.Fatalf("put node config: %v", err)
-	}
-	if err := env.db.RecordApplied(ctx, eligible.ID, cfg.Revision, "sha256:test"); err != nil {
-		t.Fatalf("record applied: %v", err)
-	}
-	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-all", "deploy"),
-		map[string]any{"nodes": []string{"node-eligible"}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("deploy 到可执行节点: status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	capRow, err := env.db.GetCapability(ctx, env.nsA, "deploy-all", 1)
+	srv := newHubServer(t, env.deps.Hub)
+	conn := srv.dial(t)
+	hello := &protocol.HelloFrame{Type: protocol.FrameHello, Name: node.Name, Token: token, Namespaces: []string{"*"}}
+	data, err := protocol.Encode(hello)
 	if err != nil {
-		t.Fatalf("get capability: %v", err)
+		t.Fatalf("encode hello: %v", err)
 	}
-	dp, err := env.db.GetDeploymentByNodeCapability(ctx, env.nsA, eligible.ID, capRow.ID)
-	if err != nil {
-		t.Fatalf("get deployment: %v", err)
+	wctx, wcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer wcancel()
+	if err := conn.Write(wctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write hello: %v", err)
 	}
-	if err := env.db.MarkDeployResult(ctx, env.nsA, dp.ID, store.DeploymentApplied, ""); err != nil {
-		t.Fatalf("mark deployment applied: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for !env.deps.Hub.Online(node.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("节点会话未注册（Hub.Online=false）")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	// 另一台已授权但离线：不属于「在线」候选。
-	offline := env.deployNode(t, "node-offline-ext", "", nil)
+	// 另一台已授权、但没有任何会话：不属于「在线」默认集合。
+	offline := env.deployNode(t, "node-offline", "", nil)
 
-	rec = env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-all", "deploy"), map[string]any{})
+	// ① 首次部署（这份能力还从没部署过）：省略 nodes 也必须选中在线的那台。
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "deploy-all", "deploy"), map[string]any{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deploy 省略 nodes: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	got := deployOutcomeNodes(t, decodeCapJSON(t, rec))
-	if len(got) != 1 || !got[eligible.ID] {
-		t.Fatalf("省略 nodes 的候选 = %v，want 只 %s（离线的 %s 不参与）", got, eligible.ID, offline.ID)
+	if len(got) != 1 || !got[node.ID] {
+		t.Fatalf("省略 nodes 的候选 = %v，want 只 %s（没有会话的 %s 不参与）", got, node.ID, offline.ID)
+	}
+	// 部署事实真的落了行（pending：等节点 ack）——不是「200 但什么都没干」。
+	capRow, err := env.db.GetCapability(ctx, env.nsA, "deploy-all", 1)
+	if err != nil {
+		t.Fatalf("get capability: %v", err)
+	}
+	dp, err := env.db.GetDeploymentByNodeCapability(ctx, env.nsA, node.ID, capRow.ID)
+	if err != nil {
+		t.Fatalf("首次部署必须写出 deployment 行：%v", err)
+	}
+	if dp.State != store.DeploymentPending {
+		t.Fatalf("新部署行应是 pending，实际 %q", dp.State)
+	}
+
+	// ② status.deployCandidates 是部署弹窗的数据源：在线那台 true，离线那台也列出来但 false。
+	doc := decodeCapJSON(t, env.do(t, http.MethodGet, env.capPath(env.nsA, "deploy-all", ""), nil))
+	status, ok := doc["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("status 不是对象：%#v", doc["status"])
+	}
+	flags := map[string]bool{}
+	for _, raw := range capArray(t, status["deployCandidates"], "status.deployCandidates") {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("candidate 不是对象：%T", raw)
+		}
+		name := capString(t, item, "name")
+		flag, ok := item["online"].(bool)
+		if !ok {
+			t.Fatalf("candidate.online 必须是 boolean：%#v", item)
+		}
+		flags[name] = flag
+	}
+	if flag, ok := flags[node.Name]; !ok || !flag {
+		t.Fatalf("在线节点必须是 online=true 的候选，实际 %v", flags)
+	}
+	if flag, ok := flags[offline.Name]; !ok || flag {
+		t.Fatalf("离线节点也要列在候选里（online=false），实际 %v", flags)
 	}
 }
 

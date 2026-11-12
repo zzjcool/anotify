@@ -121,6 +121,12 @@ status:                           # 全部派生。API 写 400；CLI 导入/appl
     - { name: node-a, state: deployed }
     - { name: node-b, state: stale }
 
+  # “人工部署”弹窗的目标列表（**部署**判据，与 nodes 是两件事）：
+  # 授权覆盖本 ns 且不在排空中；首次部署前 nodes 恒空，但这儿非空。
+  deployCandidates:
+    - { name: node-a, online: true }
+    - { name: node-c, online: false }
+
   resolved:
     next:
       - { name: fixer,    version: 2, digest: sha256:9c1…, ready: true,
@@ -630,13 +636,25 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 | `NodesAvailable` | 在线状态 × `node_capabilities` × `requires.commands` × 节点「applied 配置」快照 × 节点默认值 × 任务 ns 默认值 × `requires.values` × `ns ∈ 申报 ∩ 授权` | 命令缺 → `CommandMissing`；值解析不出来 → `ValueMissing`；配置没 apply → `ConfigPending`；离线 → `NodeOffline`；ns 未授权 → `NamespaceUnauthorized` |
 | `DownstreamResolved` | `next` 每个名字能否解析 | 任一目标不存在 |
 | `Deployed` | `deployments` | 有节点持有旧 digest，或一台都没推 |
-| `nodes[].state` | `deployments` × `node_capabilities` | `deployed` / `stale` / `missing` |
+| `nodes[].state` | `deployments` × `node_capabilities` | `deployed` / `stale` / `missing`（**已经持有**这份能力的机器；首次部署前恒 `[]`） |
+| `deployCandidates[]` | `nodes` × `node_configs`（申报 ∩ 授权）+ 活跃会话 | 部署弹窗的目标列表：`{name, online}`。判据只有“授权覆盖本 ns、不在 draining”，**不看是否已部署** |
 | `resolved.next[]` | `ResolveRef` + 目标的 `params` | 目标缺失 → `missing: true` |
 | `observed.*` | `events` / `tasks` | — |
 
 **人工部署（不是控制器）**：`POST /v1/namespaces/{namespace}/capabilities/{name}/deploy` body `{version?, nodes?}`；
-服务端把目标版本的 digest 写成/更新到 `deployments` 事实（目标节点可指定；不传则按现有候选策略），
+服务端把目标版本的 digest 写成/更新到 `deployments` 事实（目标节点可指定；**不传 = 全部已授权且在线节点**），
 节点在连接/同步时按事实拉取。**install 不会自动部署**，也没有“节点自动收敛”的控制器。
+
+**部署回执也带探测结果**：`capability.deployed`（applied）随帧回 `commands: [{name, found, path?}]`
+（= 该能力 `requires.commands` 在本机的探测，与 `hello.capabilities[]` 同口径）。中枢收到后把这一项
+并进节点申报（`MergeDeclaredCapability`）。**为什么必须**：申报历史上只有握手 `hello` 一份来源，而部署
+落地时节点不会重连 —— 只靠 hello 的话 `NodesAvailable` 会一直停在 `CommandMissing`，能力部署成功却
+永远不可派发（症状：`ready` 永远 false）。`failed` 回执不合并（没拿到字节不等于申报有新事实）。
+
+目标的判据是**部署**判据（`DeployCandidateNodes`）：`ns ∈ 申报 ∩ 授权`、不在 `draining`、省略时还要求在线。
+**不能**用派发判据（`EligibleNodes`，它多一条“这台机器已经 applied 过该 digest”）——那样首次部署的候选恒空，
+`deploy` 会回 200 但 `deployed: []`，能力永远停在 `NotDeployed`。钉住这条的回归用例在
+`internal/store`（候选）与 `internal/server`（省略目标 = 新能力也能部署）两处。
 
 `ready = 前四条 condition 全 "True"`。
 

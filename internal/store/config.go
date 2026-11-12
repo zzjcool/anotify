@@ -951,6 +951,95 @@ func (d *DB) RecordHello(ctx context.Context, nodeID string, facts NodeFacts,
 	return nil
 }
 
+// MergeDeclaredCapability 用一条**最新探测**更新节点申报里的**一项**（同名同版本替换，
+// 其它项保留），并 bump 节点行的 resource_version。
+//
+// 为什么需要：节点申报（nodes.declared_capabilities，来自 hello.capabilities[]）是
+// 「这台机器能不能跑这个能力」的唯一依据（EligibleNodes 的 CommandMissing 就查它），
+// 而它历史上只在握手时上报。部署刚落地时节点不会重连 ⇒ 中枢一直看到 CommandMissing ⇒
+// 能力部署成功却永远不可派发（现场：ready 一直 false）。`capability.deployed` 回执带回
+// 本次探测结果后用它落账，收敛不再依赖重连。
+//
+// 边界：这是**并集式**更新，不是整份替换（整份替换是 hello 的 RecordHello，下一次 hello
+// 会把整份对齐）。节点说它有、就记它有；不认识的条目原样保留。
+func (d *DB) MergeDeclaredCapability(ctx context.Context, nodeID string, cap DeclaredCapability) error {
+	if nodeID == "" {
+		return fmt.Errorf("merge declared capability: empty node_id")
+	}
+	cap.Name = strings.TrimSpace(cap.Name)
+	cap.Digest = strings.TrimSpace(cap.Digest)
+	if cap.Name == "" || cap.Version < 1 {
+		return fmt.Errorf("merge declared capability: name/version 必填")
+	}
+	if cap.Commands == nil {
+		cap.Commands = []protocol.HelloCommand{}
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("merge declared capability: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var raw string
+	if err := tx.QueryRowContext(ctx, `SELECT declared_capabilities FROM nodes WHERE id = ?`, nodeID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("merge declared capability: read node: %w", err)
+	}
+	var list NodeCapabilityReport
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return fmt.Errorf("merge declared capability: decode: %w", err)
+		}
+	}
+
+	merged := make(NodeCapabilityReport, 0, len(list)+1)
+	replaced := false
+	for _, item := range list {
+		if item.Name == cap.Name && item.Version == cap.Version {
+			if !replaced {
+				merged = append(merged, cap)
+				replaced = true
+			}
+			continue
+		}
+		merged = append(merged, item)
+	}
+	if !replaced {
+		merged = append(merged, cap)
+	}
+	// 与 hello 的申报保持同一顺序（name → version → digest），读侧才能稳定比对。
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Name != merged[j].Name {
+			return merged[i].Name < merged[j].Name
+		}
+		if merged[i].Version != merged[j].Version {
+			return merged[i].Version < merged[j].Version
+		}
+		return merged[i].Digest < merged[j].Digest
+	})
+	for i := range merged {
+		if merged[i].Commands == nil {
+			merged[i].Commands = []protocol.HelloCommand{}
+		}
+	}
+	capsJSON, err := json.Marshal(merged)
+	if err != nil {
+		return fmt.Errorf("merge declared capability: marshal: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE nodes SET declared_capabilities = ?, resource_version = resource_version + 1 WHERE id = ?`,
+		string(capsJSON), nodeID); err != nil {
+		return fmt.Errorf("merge declared capability: update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge declared capability: commit: %w", err)
+	}
+	return nil
+}
+
 // EffectiveVars 解析一批名字在 (node, ns) 上下文里的逐键生效值。
 //
 // 优先级 local > node > namespace（config.md §2.1）：每个名字独立判定，

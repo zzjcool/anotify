@@ -560,6 +560,77 @@ func TestDeployedReceiptRoundTripIdempotentAndSuperseded(t *testing.T) {
 	}
 }
 
+// TestDeployedReceiptMergesDeclaredCapability 部署回执带回的命令探测结果要落进节点申报。
+//
+// 为什么：节点申报（hello.capabilities[]）是「这台机器能不能跑这个能力」的唯一依据
+// （EligibleNodes 的 CommandMissing 查它），而它只在握手时上报。部署刚落地时节点不会
+// 重连 ⇒ 中枢永远按旧申报判 CommandMissing ⇒ 部署成功、能力却永远不可派发。
+func TestDeployedReceiptMergesDeclaredCapability(t *testing.T) {
+	e := newEnv(t)
+	e.capability(t, "probe", "", false, nil)
+	conn := e.dial(t)
+	outcomes, err := e.hub.Deploy(context.Background(), e.ns.ID, "probe", 0, []string{e.node.ID})
+	if err != nil || len(outcomes) != 1 {
+		t.Fatalf("Deploy: %v/%+v", err, outcomes)
+	}
+	frame, ok := e.read(t, conn).(*protocol.CapabilityDeployFrame)
+	if !ok {
+		t.Fatal("应收到 capability.deploy")
+	}
+	e.send(t, conn, &protocol.CapabilityDeployedFrame{
+		Type:       protocol.FrameCapabilityDeployed,
+		RequestID:  frame.RequestID,
+		DeployRefs: frame.DeployRefs,
+		Status:     protocol.DeployStatusApplied,
+		Commands:   []protocol.HelloCommand{{Name: "bash", Found: true, Path: "/bin/bash"}},
+	})
+	merged := waitFor(t, time.Second, func() bool {
+		node, gerr := e.db.GetNode(context.Background(), e.node.ID)
+		if gerr != nil {
+			return false
+		}
+		for _, c := range node.DeclaredCapabilities {
+			if c.Name != "probe" || c.Version != 1 {
+				continue
+			}
+			return len(c.Commands) == 1 && c.Commands[0].Name == "bash" && c.Commands[0].Found
+		}
+		return false
+	})
+	if !merged {
+		t.Fatal("回执的 commands 没有落进节点申报（中枢会一直判 CommandMissing）")
+	}
+
+	// failed 回执不合并：那是「没拿到字节」，不是「申报有了新事实」。
+	deploymentID := strings.TrimPrefix(frame.RequestID, "dep_")
+	if _, err := e.db.DeleteDeployment(context.Background(), e.ns.ID, deploymentID); err != nil {
+		t.Fatalf("删除旧 intent: %v", err)
+	}
+	e.send(t, conn, &protocol.CapabilityDeployedFrame{
+		Type:       protocol.FrameCapabilityDeployed,
+		RequestID:  frame.RequestID,
+		DeployRefs: frame.DeployRefs,
+		Status:     protocol.DeployStatusFailed,
+		Error:      "boom",
+		Commands:   []protocol.HelloCommand{{Name: "later", Found: true}},
+	})
+	e.handled(t, conn)
+	node, err := e.db.GetNode(context.Background(), e.node.ID)
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	for _, c := range node.DeclaredCapabilities {
+		if c.Name != "probe" {
+			continue
+		}
+		for _, cmd := range c.Commands {
+			if cmd.Name == "later" {
+				t.Fatalf("failed 回执不得并入申报：%+v", c)
+			}
+		}
+	}
+}
+
 // startLogsRequest 起一次并发日志请求，返回结果通道。
 func startLogsRequest(e *env, taskID string, attempt int, tailLines, sinceSeconds int, timeout time.Duration) <-chan struct {
 	result *LogsResult
