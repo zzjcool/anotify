@@ -9,7 +9,106 @@
   .pb-check { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-md); }
   .pb-warning { border: 1px solid var(--warn); border-radius: var(--r-md); padding: 14px; }
   .pb-warning h4 { color: var(--warn); }
-  .pb-code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--surface-2); border-radius: var(--r-md); font-size: 12px; }
+  /* PB-5：所有 JSON/原始文本都走 .code-block（头部 + 复制），这里是它的内容区
+     修饰：长行折行、限高滚动 —— 不再出现裸 <pre> 与横向被裁的代码块。 */
+  .pb-code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 22rem;
+    overflow: auto;
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+  /* PB-4：卡片里成段的灰字说明收进 <details>（默认收起），summary 只有一枚
+     小三角 + 「说明」，不再让开发者旁白抢占卡片的主视觉。 */
+  .pb-note {
+    margin: 4px 0 0;
+  }
+  .pb-note > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+    font-size: 11.5px;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .pb-note > summary::-webkit-details-marker {
+    display: none;
+  }
+  .pb-note > summary::before {
+    content: "▸";
+    font-size: 9px;
+    line-height: 1;
+  }
+  .pb-note[open] > summary::before {
+    content: "▾";
+  }
+  .pb-note > summary:hover {
+    color: var(--muted);
+  }
+  .pb-note > .card-sub {
+    margin: 6px 0 0;
+  }
+  /* PB-5 / CP-6：原生 <input type=file>（英文「Choose File / No file chosen」、
+     与全站 .input 尺寸不一致）换成自建选择框；input 透明铺满，仍然可聚焦、
+     仍然接收文件。 */
+  .pb-file {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 10px 12px;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    cursor: pointer;
+    transition:
+      border-color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease);
+  }
+  .pb-file:hover {
+    border-color: var(--accent);
+  }
+  .pb-file:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .pb-file-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: none;
+    border-radius: var(--r-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .pb-file-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .pb-file-title {
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .pb-file-name {
+    font-size: 11px;
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+  .pb-file-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
   .pb-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 14px; }
   .pb-receipt-grid { display: grid; gap: 12px; }
   .pb-template { display: grid; gap: 14px; margin-top: 14px; }
@@ -42,7 +141,7 @@
     <section id="pb-summary" class="card card-pad" aria-busy="true"></section>
     <div id="pb-content" hidden>
       <section class="card card-pad">
-        <h3 class="card-title">{{t "pb.v4.checkup"}}</h3>
+        <h3 class="card-title">{{t "uxaudit.work.checkup_title"}}</h3>
         <div id="pb-conditions" class="pb-checks"></div>
         <div id="pb-items" class="pb-checks"></div>
         <div id="pb-unapplied" class="pb-section"></div>
@@ -50,7 +149,10 @@
 
       <section id="pb-values-section" class="card card-pad">
         <h3 class="card-title">{{t "pb.v4.values"}}</h3>
-        <p class="card-sub">{{t "pb.v4.values_hint"}}</p>
+        <details class="pb-note">
+          <summary>{{t "uxaudit.work.note"}}</summary>
+          <p class="card-sub">{{t "pb.v4.values_hint"}}</p>
+        </details>
         <div id="pb-schema-state" aria-live="polite"></div>
         <div id="pb-values" class="pb-values pb-section"></div>
         <details class="pb-section">
@@ -60,9 +162,15 @@
           <button id="pb-use-json" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.use_json"}}</button>
         </details>
         <div class="page-actions pb-section">
-          <button id="btn-render" type="button" class="btn btn-ghost">{{t "pb.v4.render"}}</button>
-          <button id="btn-dry-run" type="button" class="btn btn-ghost">{{t "pb.v4.dry_run"}}</button>
-          <button id="btn-install" type="button" class="btn btn-primary">{{t "pb.v4.install"}}</button>
+          {{/* PB-6：三个按钮原本是「渲染（纯预览）/ 试装（冲突检查，零写入）/ 安装（只新增）」，
+               宽度不齐且一眼读不完；可见文案缩成 2~4 个字，完整语义留在 title/aria-label，
+               id 一个都没动（e2e 按 id 点）。 */}}
+          <button id="btn-render" type="button" class="btn btn-ghost"
+            title="{{t "pb.v4.render"}}" aria-label="{{t "pb.v4.render"}}">{{t "uxaudit.work.render_short"}}</button>
+          <button id="btn-dry-run" type="button" class="btn btn-ghost"
+            title="{{t "pb.v4.dry_run"}}" aria-label="{{t "pb.v4.dry_run"}}">{{t "uxaudit.work.dry_run_short"}}</button>
+          <button id="btn-install" type="button" class="btn btn-primary"
+            title="{{t "pb.v4.install"}}" aria-label="{{t "pb.v4.install"}}">{{t "uxaudit.work.install_short"}}</button>
         </div>
         <p class="field-hint pb-section">{{t "pb.v4.actions_hint"}}</p>
         <div id="pb-action-state" aria-live="polite" class="pb-section"></div>
@@ -75,13 +183,19 @@
           <h3 class="card-title">{{t "pb.v4.instances"}}</h3>
           <button id="pb-refresh-installs" type="button" class="btn btn-ghost btn-sm">{{t "pb.rescan"}}</button>
         </div>
-        <p class="card-sub">{{t "pb.v4.instances_hint"}}</p>
+        <details class="pb-note">
+          <summary>{{t "uxaudit.work.note"}}</summary>
+          <p class="card-sub">{{t "pb.v4.instances_hint"}}</p>
+        </details>
         <div id="pb-installs" aria-live="polite"></div>
       </section>
 
       <section id="pb-template-section" class="card card-pad">
         <h3 class="card-title">{{t "pb.v4.template"}}</h3>
-        <p class="card-sub">{{t "pb.v4.template_hint"}}</p>
+        <details class="pb-note">
+          <summary>{{t "uxaudit.work.note"}}</summary>
+          <p class="card-sub">{{t "pb.v4.template_hint"}}</p>
+        </details>
         <div class="pb-template">
           <div class="field">
             <label for="pb-file-path" class="field-label">{{t "pb.v4.file_path"}}</label>
@@ -101,8 +215,19 @@
             <button id="pb-export" type="button" class="btn btn-ghost btn-sm">{{t "pb.v4.export"}}</button>
           </div>
           <div class="field">
-            <label for="pb-import-map" class="field-label">{{t "pb.v4.import_map"}}</label>
-            <input id="pb-import-map" type="file" accept=".json,application/json" class="input" />
+            <span id="pb-import-map-label" class="field-label">{{t "pb.v4.import_map"}}</span>
+            <div class="pb-file">
+              <span class="pb-file-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" />
+                </svg>
+              </span>
+              <span class="pb-file-body">
+                <span class="pb-file-title">{{t "uxaudit.work.pb_choose_file"}}</span>
+                <span class="pb-file-name" data-pb-file-name>{{t "uxaudit.work.pb_no_file"}}</span>
+              </span>
+              <input id="pb-import-map" type="file" accept=".json,application/json" class="pb-file-input" aria-labelledby="pb-import-map-label" />
+            </div>
           </div>
           <div class="page-actions">
             <button id="pb-save-template" type="button" class="btn btn-primary">{{t "pb.v4.save_template"}}</button>
@@ -127,7 +252,7 @@
 {{define "script"}}
 <script>
   (() => {
-    const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode } = Anotify;
+    const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode, copyText } = Anotify;
     const t = (key, vars = {}) => {
       let value = window.AnotifyI18n[key] || key;
       for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
@@ -140,7 +265,22 @@
     let resource, schema, draft, filePath, templateRV;
     let fields = [], jsonValues = null, loading = false;
     const path = suffix => nsPath("playbooks", name) + (suffix || "");
-    const code = data => el("pre", "pb-code mono", typeof data === "string" ? data : JSON.stringify(data, null, 2));
+    /* PB-5：所有 JSON / 原始文本一律渲染成 .code-block（头部 + 复制），
+     * 不再出现裸 <pre>（审计 CP-5：keys/docs 有头有复制，这里却是裸文本）。
+     * copyText(btn, () => text) 用闭包取文本，避免把整段 JSON 塞进 DOM 属性。 */
+    function code(data, label) {
+      const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      const wrap = el("div", "code-block");
+      const head = el("div", "code-head");
+      const copy = el("button", "copy-btn", t("uxaudit.work.copy"));
+      copy.type = "button";
+      copy.addEventListener("click", () => copyText(copy, () => text));
+      head.append(el("span", null, label || t("uxaudit.work.code_json")), copy);
+      const pre = el("pre", "code-body mono pb-code", null);
+      pre.textContent = text;
+      wrap.append(head, pre);
+      return wrap;
+    }
     const scoped = (page, key, value) => page + ".html?namespace=" + encodeURIComponent(getScope().namespace) + (key ? "&" + key + "=" + encodeURIComponent(value) : "");
     function resourceLink(kind, ref) {
       const identifier = kind === "source" ? ref : ref.split("@")[0];
@@ -178,7 +318,12 @@
       $("pb-badge").className = "badge " + (status.ready ? "badge-success" : "badge-warn");
       $("pb-summary").replaceChildren(el("p", "card-title", t(status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
       if (status.blocker) {
-        $("pb-summary").append(el("p", "field-hint", t("pb.v4.blocker") + ": " + status.blocker.type + " · " + (status.blocker.capability || "")), manualAction(status.blocker));
+        // R7：capability 为空时不印悬挂分隔符（旧实现会出「优先处理: Implemented ·」）
+        $("pb-summary").append(
+          el("p", "field-hint", [t("pb.v4.blocker") + ": " + status.blocker.type, status.blocker.capability]
+            .filter(Boolean).join(" · ")),
+          manualAction(status.blocker),
+        );
       }
       if (status.lastInstallId) {
         const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + status.lastInstallId);
@@ -258,7 +403,7 @@
     }
     function receiptView(receipt) {
       const r = model.receipt(receipt); const host = $("pb-receipt");
-      host.replaceChildren(el("h4", "card-title", t(r.install.dryRun ? "pb.v4.dry_receipt" : "pb.v4.receipt")), code({ playbook: r.playbook, source: r.source, namespace: r.namespace, install: r.install, values: r.values, valuesDigest: r.valuesDigest }));
+      host.replaceChildren(el("h4", "card-title", t(r.install.dryRun ? "pb.v4.dry_receipt" : "pb.v4.receipt")), code({ playbook: r.playbook, source: r.source, namespace: r.namespace, install: r.install, values: r.values, valuesDigest: r.valuesDigest }, t("uxaudit.work.code_receipt")));
       showUnapplied($("pb-preview"), r.unapplied);
       const grid = el("div", "pb-receipt-grid");
       for (const axis of ["created", "skipped"]) {
@@ -288,7 +433,7 @@
         const result = await api(path(mode === "render" ? "/render" : "/install"), { method: "POST", body: JSON.stringify(body) });
         if (mode === "render") {
           const secrets = valueSecrets(schema, input);
-          $("pb-preview").replaceChildren(el("h4", "card-title", t("pb.v4.rendered")), code(previewMask(result, secrets)));
+          $("pb-preview").replaceChildren(el("h4", "card-title", t("pb.v4.rendered")), code(previewMask(result, secrets), t("uxaudit.work.code_rendered")));
         } else {
           receiptView(result);
           if (mode === "install") { await refreshSummary(); await installs(); }
@@ -367,7 +512,17 @@
       rememberFile(); const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = name + "-files.json"; a.click(); URL.revokeObjectURL(url);
     });
+    /* 自建文件选择框的文件名回显（原生控件被 .pb-file-input 透明覆盖）。 */
+    function reflectImport(input) {
+      const target = input.closest(".pb-file")?.querySelector("[data-pb-file-name]");
+      if (!target) return;
+      const files = input.files ? [...input.files] : [];
+      target.textContent = files.length
+        ? t("uxaudit.work.pb_files_n").replace("{n}", String(files.length))
+        : t("uxaudit.work.pb_no_file");
+    }
     $("pb-import-map").addEventListener("change", async event => {
+      reflectImport(event.target);
       try {
         const files = JSON.parse(await event.target.files[0].text());
         if (!files || Array.isArray(files) || Object.values(files).some(v => typeof v !== "string") || !files["playbook.yaml"]) throw new Error(t("pb.v4.raw_missing"));

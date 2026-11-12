@@ -2189,3 +2189,33 @@ ui:
     filters: Filtros
     active: Filtros activos
     toolbar_hint: Pulsa Enter o Aplicar
+
+# Pasada de UI oleada 2 (clúster C: index / events / capabilities / playbooks / playbook).
+uxaudit:
+  work:
+    spark_na: Sin datos de tendencia
+    loading: Cargando…
+    events_loading: Cargando eventos…
+    cap_no_match_hint: Prueba otra palabra clave o borra la búsqueda para ver todas las capacidades.
+    cap_clear_search: Limpiar búsqueda
+    cap_count_filtered: "{shown} de {total} capacidades"
+    pb_empty_cta: Importar ahora
+    pb_cond_implemented: Implementado
+    pb_cond_nodes: Nodos disponibles
+    pb_cond_downstream: Descendientes resueltos
+    pb_cond_deployed: Desplegado
+    pb_kind_capability: Capacidad
+    pb_kind_source: Origen
+    pb_choose_file: Elegir archivos
+    pb_choose_dir: Elegir carpeta
+    pb_no_file: Ningún archivo
+    pb_files_n: "{n} archivos seleccionados"
+    checkup_title: Comprobación
+    note: Detalles
+    copy: Copiar
+    render_short: Previsualizar
+    dry_run_short: Simulación
+    install_short: Instalar
+    code_json: JSON original
+    code_rendered: Resultado renderizado
+    code_receipt: Recibo de instalación

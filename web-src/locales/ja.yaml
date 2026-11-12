@@ -2189,3 +2189,33 @@ ui:
     filters: フィルター
     active: 適用中のフィルター
     toolbar_hint: 選択後、Enter または適用を押す
+
+# ウェーブ2 UI 改修（クラスタ C：index / events / capabilities / playbooks / playbook）。
+uxaudit:
+  work:
+    spark_na: トレンドデータなし
+    loading: 読み込み中…
+    events_loading: イベントを読み込み中…
+    cap_no_match_hint: 別のキーワードを試すか、検索を空にしてすべての能力を表示してください。
+    cap_clear_search: 検索をクリア
+    cap_count_filtered: 全 {total} 件 · 一致 {shown} 件
+    pb_empty_cta: 今すぐインポート
+    pb_cond_implemented: 実装
+    pb_cond_nodes: ノード可用
+    pb_cond_downstream: 下流解決
+    pb_cond_deployed: デプロイ済み
+    pb_kind_capability: ケイパビリティ
+    pb_kind_source: ソース
+    pb_choose_file: ファイルを選択
+    pb_choose_dir: フォルダーを選択
+    pb_no_file: ファイル未選択
+    pb_files_n: "{n} 件選択済み"
+    checkup_title: チェック
+    note: 説明
+    copy: コピー
+    render_short: プレビュー
+    dry_run_short: ドライラン
+    install_short: インストール
+    code_json: JSON 原文
+    code_rendered: レンダー結果
+    code_receipt: インストール受領書

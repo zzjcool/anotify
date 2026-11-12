@@ -2191,3 +2191,34 @@ ui:
     filters: 筛选
     active: 生效过滤
     toolbar_hint: 选好后按回车或点筛选
+
+# 波次二 UI 改造（C 集群：工作台页 index/events/capabilities/playbooks/playbook）。
+# 统一命名空间，避免与本轮之前的键混在一起。
+uxaudit:
+  work:
+    spark_na: 暂无趋势数据
+    loading: 正在载入…
+    events_loading: 正在载入事件…
+    cap_no_match_hint: 换个关键词，或清空搜索看全部能力。
+    cap_clear_search: 清空搜索
+    cap_count_filtered: 共 {total} 个 · 匹配 {shown} 个
+    pb_empty_cta: 立即导入
+    pb_cond_implemented: 实现
+    pb_cond_nodes: 节点可用
+    pb_cond_downstream: 下游可解析
+    pb_cond_deployed: 已部署
+    pb_kind_capability: 能力
+    pb_kind_source: 源
+    pb_choose_file: 选择文件
+    pb_choose_dir: 选择目录
+    pb_no_file: 未选择文件
+    pb_files_n: 已选 {n} 个文件
+    checkup_title: 体检
+    note: 说明
+    copy: 复制
+    render_short: 渲染预览
+    dry_run_short: 试装检查
+    install_short: 安装
+    code_json: JSON 原文
+    code_rendered: 渲染结果
+    code_receipt: 安装回执

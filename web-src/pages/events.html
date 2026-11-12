@@ -1,4 +1,205 @@
 {{define "title"}}{{t "events.title"}}{{end}}
+{{define "style"}}
+<style>
+  /* ---------- 事件流（EV-1/EV-2/EV-3）----------
+     旧实现每条事件一张 .card：5 张卡 4 条事件，卡内 2 列字段 + 右侧一个孤立数字，
+     页面又长又稀。现在是一个 .card 容器 + 紧凑行（每行 = 头部 chips + 字段网格 +
+     可折叠明细），字段一律同权重。
+     注意：行元素必须保留 .card 类与 data-uid —— scripts/e2e/suites/events_paging.mjs
+     用 `#ev-list .card[data-uid]` 数行、f3-observability 用 `#ev-list article` 等分页；
+     所以 .card 只作锚点，视觉外壳由下面这条规则显式清零。 */
+  .ev-list {
+    display: block;
+    overflow: hidden;
+  }
+  .ev-row {
+    display: block;
+    padding: 12px 16px;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .ev-row + .ev-row {
+    border-top: 1px solid var(--line);
+  }
+  /* 头部是两列网格而不是 flex-wrap：不管 chips 多长，「查看链路」永远在同一条
+     头部的右上角（flex + margin-left:auto 时它会按剩余空间时左时右，逐行不齐）。 */
+  .ev-row-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ev-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  /* 类型 chip 与 severity chip 同一枚 chip：同高/同圆角/同字号，只有强调色不同。 */
+  .ev-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* 变体是独立类（见 index.html 同名注释：复合选择器会被死类守卫误判）。 */
+  .ev-mono {
+    font-family: var(--font-mono);
+  }
+  .ev-warn {
+    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+  .ev-reason {
+    min-width: 0;
+    font-size: 11px;
+    color: var(--faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* 字段网格：6 个字段同权重（label 11px faint / value 12.5px text）。
+     列宽按容器断点走，不用 auto-fit —— uid 这类 20+ 字的 mono 值必须整行放得下，
+     否则「事件 UID」列会被拉成两行。窄屏 1 列 / 中屏 2 列 / 宽屏 3 列两行。 */
+  .ev-facts {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px 16px;
+    margin: 10px 0 0;
+  }
+  @media (min-width: 640px) {
+    .ev-facts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (min-width: 900px) {
+    .ev-facts {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+  .ev-fact {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ev-fact-key {
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--faint);
+  }
+  .ev-fact-val {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .ev-details {
+    margin-top: 8px;
+  }
+  .ev-details > summary {
+    font-size: 12px;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .ev-details > summary:hover {
+    color: var(--muted);
+  }
+  .ev-details-body {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .ev-raw {
+    margin: 0;
+    max-height: 18rem;
+    font-size: 11px;
+  }
+
+  /* ---------- 筛选栏（EV-3）：不再固定 w-48 ---------- */
+  .ev-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(10.5rem, 100%), 1fr));
+    align-items: end;
+    gap: 12px;
+  }
+  .ev-filters-actions {
+    display: flex;
+    align-items: end;
+  }
+  .ev-filters-actions > .btn {
+    width: 100%;
+  }
+  @media (min-width: 900px) {
+    /* 宽屏一行排满：4 个控件等分 + 按钮吃自身宽度，右侧不留大片空白 */
+    .ev-filters {
+      grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+    }
+    .ev-filters-actions > .btn {
+      width: auto;
+    }
+  }
+
+  /* ---------- 首屏骨架（AN-3 / ST-8）----------
+     加载中不再复用 .empty（那是「真的没有数据」的语义）：骨架条直接画成
+     数据行的盒子形状，高度一致，数据到达时不跳。 */
+  .ev-skel-row {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px 16px;
+    padding: 12px 16px;
+  }
+  .ev-skel-row + .ev-skel-row {
+    border-top: 1px solid var(--line);
+  }
+  .ev-skel-row > .skeleton:nth-child(1) {
+    height: 20px;
+  }
+  .ev-skel-row > .skeleton:nth-child(2),
+  .ev-skel-row > .skeleton:nth-child(3) {
+    height: 12px;
+  }
+  .ev-skel-row > .skeleton:nth-child(3) {
+    width: 62%;
+  }
+  @media (max-width: 639px) {
+    .ev-skel-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .ev-pager {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+</style>
+{{end}}
 {{define "content"}}
 <div id="page-main">
   <div class="page">
@@ -9,31 +210,49 @@
       </div>
       <button id="ev-refresh" class="btn btn-ghost" type="button">{{t "events.v4.refresh"}}</button>
     </div>
-    <form id="ev-filters" class="card card-pad flex flex-wrap items-end gap-4">
-      <label class="field-label">{{t "events.v4.namespace"}}
-        <select id="ev-namespace" class="input"></select>
-      </label>
-      <label class="field-label">{{t "events.v4.source"}}
+    <form id="ev-filters" class="card card-pad ev-filters">
+      <div class="field">
+        <label class="field-label" for="ev-namespace">{{t "events.v4.namespace"}}</label>
+        <select id="ev-namespace" class="select"></select>
+      </div>
+      <div class="field">
+        <label class="field-label" for="ev-source">{{t "events.v4.source"}}</label>
         <input id="ev-source" class="input" autocomplete="off" />
-      </label>
-      <label class="field-label">Trace UID
+      </div>
+      <div class="field">
+        <label class="field-label" for="ev-trace">Trace UID</label>
         <input id="ev-trace" class="input" autocomplete="off" />
-      </label>
-      <label class="field-label">{{t "events.v4.limit"}}
-        <select id="ev-limit" class="input">
+      </div>
+      <div class="field">
+        <label class="field-label" for="ev-limit">{{t "events.v4.limit"}}</label>
+        <select id="ev-limit" class="select">
           <option value="2">2</option>
           <option value="10">10</option>
           <option value="20" selected>20</option>
           <option value="50">50</option>
         </select>
-      </label>
-      <button id="ev-filter" class="btn btn-primary" type="submit">{{t "events.v4.filter"}}</button>
+      </div>
+      <div class="ev-filters-actions">
+        <button id="ev-filter" class="btn btn-primary" type="submit">{{t "events.v4.filter"}}</button>
+      </div>
     </form>
     <div id="ev-error" role="status"></div>
-    <div id="ev-list" class="grid gap-4" aria-live="polite" aria-busy="true">
-      <div class="empty">{{t "events.v4.loading"}}</div>
+    <div id="ev-list" class="card ev-list" aria-live="polite" aria-busy="true">
+      <!-- 首屏骨架：data 到达前就画出「行」的形状（ST-8：加载中不再复用 .empty） -->
+      <div class="ev-skel-row" aria-hidden="true">
+        <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+      </div>
+      <div class="ev-skel-row" aria-hidden="true">
+        <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+      </div>
+      <div class="ev-skel-row" aria-hidden="true">
+        <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+      </div>
+      <div class="ev-skel-row" aria-hidden="true">
+        <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+      </div>
     </div>
-    <div class="flex items-center justify-between gap-4">
+    <div class="ev-pager">
       <span id="ev-count" class="card-sub"></span>
       <button id="ev-more" class="btn btn-ghost" type="button" disabled>{{t "events.v4.more"}}</button>
     </div>
@@ -65,41 +284,66 @@
       return "/v1/console/events?" + params;
     }
 
-    function field(label, value) {
-      return el("div", {}, el("dt", { class: "card-sub", text: label }),
-        el("dd", { class: "mono b2-wrap", text: value == null ? "—" : String(value) }));
+    /* 一个字段 = label + value，两者同一种盒模型；所有字段（含「已派发任务数」）
+     * 走同一个函数，权重天然一致。 */
+    function fact(label, value) {
+      const box = el("div", { class: "ev-fact" });
+      box.append(
+        el("dt", { class: "ev-fact-key", text: label }),
+        el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) }),
+      );
+      return box;
+    }
+
+    /* 首屏/刷新期的骨架行（与静态首帧同一套盒子：3 条占位，62px 内）。 */
+    function skeletonRows(count) {
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < count; i++) {
+        const row = el("div", { class: "ev-skel-row", "aria-hidden": "true" });
+        row.append(el("span", { class: "skeleton" }), el("span", { class: "skeleton" }), el("span", { class: "skeleton" }));
+        frag.append(row);
+      }
+      return frag;
     }
 
     function eventRow(resource) {
       const event = model.event(resource);
-      const card = el("article", { class: "card card-pad grid gap-4", "data-uid": event.uid });
-      const head = el("div", { class: "flex flex-wrap items-center gap-2" },
-        el("code", { class: "mono", text: event.eventType || "—" }),
-        el("span", { class: event.type === "Warning" ? "badge badge-warn" : "badge badge-neutral", text: event.type }),
-        el("span", { class: "card-sub", text: event.reason }));
-      if (event.traceUID) head.append(el("a", { class: "btn btn-ghost btn-sm",
-        href: "trace.html?namespace=" + encodeURIComponent(event.namespace) + "&traceUID=" + encodeURIComponent(event.traceUID),
-        text: t("events.v4.trace") }));
-      const facts = el("dl", { class: "grid b2-facts gap-4" },
-        field(t("events.v4.event_uid"), event.uid), field("deliveryId", event.deliveryId),
-        field("Trace UID", event.traceUID), field(t("events.v4.source"), event.involvedObject?.name),
-        field(t("events.v4.received"), event.creationTimestamp), field(t("events.v4.dispatched"), event.dispatched.length));
-      const details = el("details", {}, el("summary", { class: "card-sub", text: t("events.v4.details") }));
-      const dispatched = el("div", { class: "grid gap-2" });
-      event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono b2-wrap", text: JSON.stringify(task) })));
-      details.append(dispatched, el("pre", {
-        class: "code-body overflow-x-auto",
-      }, el("span", {
-        "data-raw-content": "",
-        text: JSON.stringify({ pruned: event.pruned, signature: event.signature, payload: event.payload }, null, 2),
-      })));
-      card.append(head, facts, details);
-      return card;
+      const row = el("article", { class: "card ev-row", "data-uid": event.uid });
+      const chips = el("div", { class: "ev-chips" },
+        el("span", { class: "ev-chip ev-mono", text: event.eventType || "—" }),
+        el("span", { class: event.type === "Warning" ? "ev-chip ev-warn" : "ev-chip", text: event.type }),
+        event.reason ? el("span", { class: "ev-reason", text: event.reason }) : null,
+      );
+      const head = el("div", { class: "ev-row-head" }, chips);
+      if (event.traceUID) {
+        const actions = el("div", { class: "ev-row-actions" });
+        actions.append(el("a", { class: "btn btn-ghost btn-sm",
+          href: "trace.html?namespace=" + encodeURIComponent(event.namespace) + "&traceUID=" + encodeURIComponent(event.traceUID),
+          text: t("events.v4.trace") }));
+        head.append(actions);
+      }
+      const facts = el("dl", { class: "ev-facts" },
+        fact(t("events.v4.event_uid"), event.uid), fact("deliveryId", event.deliveryId),
+        fact("Trace UID", event.traceUID), fact(t("events.v4.source"), event.involvedObject?.name),
+        fact(t("events.v4.received"), event.creationTimestamp), fact(t("events.v4.dispatched"), event.dispatched.length));
+      const details = el("details", { class: "ev-details" },
+        el("summary", null, t("events.v4.details")));
+      const dispatched = el("div", { class: "ev-details-body" });
+      event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono ev-fact-val", text: JSON.stringify(task) })));
+      details.append(dispatched, el("div", { class: "code-block" },
+        el("div", { class: "code-head" }, el("span", { text: "JSON" })),
+        el("pre", { class: "code-body mono ev-raw" }, el("span", {
+          "data-raw-content": "",
+          text: JSON.stringify({ pruned: event.pruned, signature: event.signature, payload: event.payload }, null, 2),
+        }))));
+      row.append(head, facts, details);
+      return row;
     }
 
     function render() {
       const ordered = [...rows.values()].sort((a, b) => String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)));
       list.replaceChildren(...ordered.map(eventRow));
+      list.classList.toggle("anim-stagger", ordered.length > 0);
       if (!ordered.length) list.append(el("div", { class: "empty", text: t("events.v4.empty") }));
       node("ev-count").textContent = t("events.v4.count").replace("{n}", ordered.length);
       node("ev-more").disabled = busy || !continuation;
@@ -147,7 +391,8 @@
       rows = new Map();
       continuation = "";
       filters = { source: node("ev-source").value.trim(), traceId: node("ev-trace").value.trim(), limit: node("ev-limit").value };
-      list.replaceChildren(el("div", { class: "empty", text: t("events.v4.loading") }));
+      // 加载中 = 骨架（不是 .empty：那是「真的一条都没有」的语义，ST-8）
+      list.replaceChildren(skeletonRows(4));
       return load("reset");
     }
     node("ev-filters").addEventListener("submit", event => { event.preventDefault(); reset(); });
