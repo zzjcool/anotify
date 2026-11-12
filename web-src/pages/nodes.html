@@ -14,6 +14,52 @@
   .c2-json { min-height: 100px; font-family: var(--font-mono); }
   .c2-kv { overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
   .c2-stack [hidden] { display: none; }
+
+  /* ---------- 节点行（ND-1/ND-2）：标题 + 状态徽章 + 4 列 KV + 行尾次要动作 ---------- */
+  .nd-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 16px; }
+  .nd-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+  /* KV 网格：label/value 成对，四列在宽屏、两列在窄屏；每对是 grid 两行，基线对齐 */
+  .nd-kv {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px 18px;
+    margin: 10px 0 0;
+  }
+  .nd-pair { display: grid; gap: 2px; min-width: 0; }
+  .nd-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .nd-v {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .nd-v.is-unknown { color: var(--muted); }
+  .nd-acts { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+  @media (max-width: 900px) { .nd-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  /* 旁白折叠（ND-3）：原文一字不删，只是默认收起 */
+  .nd-more { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
+  .nd-more > summary {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .nd-more > summary::-webkit-details-marker { display: none; }
+  .nd-more > summary::before { content: "▸"; color: var(--faint); }
+  .nd-more[open] > summary::before { content: "▾"; }
+  .nd-more > summary:hover { color: var(--text); }
+  .nd-more-body { padding: 0 12px 12px; margin: 0; }
+  /* 保留期字段：label 右侧带单位，下面一行给「秒 ≈ 天」的人类可读换算 */
+  .nd-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .nd-label-unit { font-size: 11px; color: var(--faint); font-weight: 400; }
+  .nd-tip { margin-top: 2px; }
+
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
 </style>
 {{end}}
@@ -31,9 +77,9 @@
   </section>
   <section id="reg-result" class="card card-pad c2-stack" hidden>
     <div class="card-title">{{t "nodes.v4.token"}}</div><p class="c2-note">{{t "nodes.v4.token_warning"}}</p>
-    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.token"}}</span><button id="reg-token-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><div class="code-body"><code id="reg-token"></code></div></div>
+    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.token"}}</span><button id="reg-token-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body"><code id="reg-token"></code></pre></div>
     <div class="code-block"><div class="code-head"><span>anode.yaml</span><button id="reg-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body"><code id="reg-yaml"></code></pre></div>
-    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.bootstrap_title"}}</span><button id="reg-bootstrap-copy" class="copy-btn" type="button">{{t "nodes.v4.copy_bootstrap"}}</button></div><div class="code-body"><code id="reg-bootstrap"></code></div></div>
+    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.bootstrap_title"}}</span><button id="reg-bootstrap-copy" class="copy-btn" type="button">{{t "nodes.v4.copy_bootstrap"}}</button></div><pre class="code-body"><code id="reg-bootstrap"></code></pre></div>
     <p class="c2-note">{{t "nodes.v4.bootstrap_hint"}}</p>
     <div class="code-block"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body"><code id="reg-install">anode install</code>
 <code id="reg-serve">anode serve</code>
@@ -41,7 +87,11 @@
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
   <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><div id="nodes-list" aria-live="polite"></div></section>
-  <p class="c2-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>
+  <!-- ND-3：整段开发者旁白默认收起（原文保留，e2e 搜文本仍成立） -->
+  <details class="nd-more">
+    <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
+    <p class="c2-note nd-more-body" id="slot-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>
+  </details>
   <div class="c2-grid">
     <section id="namespace-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.ns_config"}}</div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
@@ -55,9 +105,10 @@
       <div class="card-title">{{t "nodes.v4.retention"}}</div><p class="c2-note">{{t "nodes.v4.retention_hint"}}</p>
       <div id="system-fields" hidden>
         <div id="system-revisions" class="c2-kv"></div>
-        <div class="field"><label for="result-ttl" class="field-label">retention.resultTtlSec</label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /></div>
-        <div class="field"><label for="event-ttl" class="field-label">retention.eventTtlSec</label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /></div>
-        <div class="field"><label for="task-ttl" class="field-label">retention.taskTtlSec</label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /></div>
+        <!-- ND-4：中文 label + 单位提示；原始 JSON key 放 title，不再当 label -->
+        <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
+        <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
+        <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
         <div class="c2-actions"><button id="system-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       </div>
       <div id="system-state" class="c2-state" role="status"></div>
@@ -69,9 +120,13 @@
 <script>
 (() => {
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
+  // 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
+  const x = key => A.t('uxaudit.res.nodes.' + key);
   A.mountLayout({ active: 'nodes', title: t('title'), subtitle: t('subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
-  const button = (text, fn) => { const x = make('button', 'btn btn-ghost btn-sm', text); x.type = 'button'; x.addEventListener('click', fn); return x; };
+  // ND-2：主次分开 —— 行尾动作是次要按钮（.btn-quiet），不再每行挂一个主按钮。
+  // 仍然只有一个 <button>，文案与回调不变（e2e 点 [data-node] button 的语义保留）。
+  const button = (text, fn) => { const x = make('button', 'btn btn-ghost btn-sm btn-quiet', text); x.type = 'button'; x.addEventListener('click', fn); return x; };
   const message = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (path, body, method = 'PUT') => A.api(path, { method, body: JSON.stringify(body) });
@@ -107,20 +162,47 @@
     try { const response = await write('/v1/nodes/' + encodeURIComponent(name) + '/tokens', {}, 'POST'); showToken(name, response.token); await loadNodes(); }
     catch (e) { A.toast(errorText(e), 'error'); }
   }
+  /* ---------- ND-1：状态用徽章，版本号拆成两个 KV，未知值不再显示裸 `?` ---------- */
+  const unk = () => x('unknown');
+  const rev = value => (value == null || value === '') ? unk() : String(value);
+  function statusBadge(n) {
+    if (n.status.draining) return make('span', 'badge badge-warn', t('drain'));
+    if (typeof n.status.online === 'boolean') return make('span', 'badge ' + (n.status.online ? 'badge-success' : 'badge-neutral'), t(n.status.online ? 'online' : 'offline'));
+    return make('span', 'badge badge-neutral', t('unknown'));
+  }
+  function pair(label, value, hint) {
+    const cell = make('div', 'nd-pair'), dt = make('dt', 'nd-k', label), dd = make('dd', 'nd-v', value);
+    if (hint) dt.title = hint;
+    if (value === unk()) dd.classList.add('is-unknown');
+    cell.append(dt, dd); return cell;
+  }
+  function kvGrid(n) {
+    const list = n.instances || [], count = occ => list.filter(x => x.occupancy === occ).length;
+    const slots = list.length
+      ? x('occ_short') + ' ' + count('occupied') + ' · ' + x('idle_short') + ' ' + count('idle') + ' · ' + x('unk_short') + ' ' + count('unknown')
+      : unk();
+    const dl = make('dl', 'nd-kv');
+    dl.append(
+      pair(x('ns_label'), n.effectiveNamespaces.join(', ') || t('none'), t('effective_namespaces')),
+      pair(x('config_rev'), rev(n.configRevision), 'configRevision'),
+      pair(x('applied_rev'), rev(n.appliedRevision), 'appliedRevision'),
+      pair(x('slots_label'), slots, t('slots')),
+    );
+    return dl;
+  }
   async function loadNodes() {
     $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');
     try {
       const { items: rows } = await A.apiList('/v1/nodes'); $('nodes-list').replaceChildren();
       for (const resource of rows) {
-        const n = A.model.node(resource), row = make('div', 'c2-row'); row.dataset.node = n.name;
-        const main = make('div', 'c2-main'), link = make('a', 'c2-name', n.name);
-        link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default'); main.appendChild(link);
-        main.appendChild(make('div', 'c2-note', n.status.draining ? t('drain') : typeof n.status.online === 'boolean' ? t(n.status.online ? 'online' : 'offline') : t('unknown')));
-        main.appendChild(make('div', 'c2-kv', t('effective_namespaces') + ': ' + (n.effectiveNamespaces.join(', ') || t('none'))));
-        main.appendChild(make('div', 'c2-kv', 'configRevision=' + (n.configRevision ?? '?') + ' · appliedRevision=' + (n.appliedRevision ?? '?')));
-        const occupied = (n.instances || []).filter(x => x.occupancy === 'occupied').length, idle = (n.instances || []).filter(x => x.occupancy === 'idle').length;
-        main.appendChild(make('div', 'c2-note', t('slots') + ': ' + t('occupied') + ' ' + occupied + ' · ' + t('idle') + ' ' + idle + ' · ' + t('unknown') + ' ' + (n.instances?.length ? n.instances.filter(x => x.occupancy === 'unknown').length : '?')));
-        row.append(main, button(t('rotate'), () => rotate(n.name))); $('nodes-list').appendChild(row);
+        const n = A.model.node(resource), row = make('div', 'c2-row nd-row'); row.dataset.node = n.name;
+        const main = make('div', 'c2-main'), head = make('div', 'nd-head'), link = make('a', 'c2-name', n.name);
+        link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default');
+        head.append(link, statusBadge(n));
+        main.append(head, kvGrid(n));
+        row.append(main, make('div', 'nd-acts'));
+        row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
+        $('nodes-list').appendChild(row);
       }
       if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
     } catch (e) { $('nodes-list').replaceChildren(A.loadErrorNode(e, loadNodes)); }
@@ -187,12 +269,21 @@
   };
   const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
   const currentTtls = () => JSON.stringify(ttlFields.map(([id]) => $(id + '-ttl').value));
+  /* ND-4：单位提示 —— 裸数字旁边给出「秒 ≈ 天」的换算，0 说清是“永久” */
+  function renderTtlHint(id) {
+    const box = $(id + '-hint'); if (!box) return;
+    const raw = $(id + '-ttl').value.trim(), n = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isFinite(n)) { box.textContent = ''; return; }
+    const days = n % 86400 === 0 ? String(n / 86400) : (n / 86400).toFixed(1);
+    box.textContent = n === 0 ? x('ttl_zero') : x('ttl_hint').replace('{n}', String(n)).replace('{days}', days);
+  }
+  for (const [id] of ttlFields) $(id + '-ttl').addEventListener('input', () => renderTtlHint(id));
   async function loadSystem() {
     $('system-save').disabled = true; message('system-state', t('loading'));
     try {
       const value = await A.api('/v1/system/config');
       if (!value.metadata?.resourceVersion || ttlFields.some(([, k]) => !Number.isInteger(value.retention?.[k]) || value.retention[k] < 0)) throw new Error('Invalid system config wrapper');
-      systemConfig = value; for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; }
+      systemConfig = value; for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; renderTtlHint(id); }
       systemOriginal = currentTtls(); $('system-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion;
       $('system-fields').hidden = false; message('system-state', t('loaded')); $('system-save').disabled = false;
     } catch (e) { message('system-state', errorText(e), true); }

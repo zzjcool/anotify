@@ -13,6 +13,49 @@
   .c2-table th, .c2-table td { padding: 8px; text-align: left; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
   .c2-table th { color: var(--muted); }
   .c2-stack [hidden] { display: none; }
+  /* ---------- ND-5：顶部事实条 chip 化 ---------- */
+  .nd-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .nd-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    max-width: 100%;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--faint);
+  }
+  .nd-chip b { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+  .nd-chip b.is-unknown { color: var(--muted); }
+  /* KV：label/value 成对（两行 grid），左右两栅共用一套字阶 */
+  .nd-kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 0; }
+  .nd-pair { display: grid; gap: 2px; min-width: 0; }
+  .nd-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .nd-v { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .nd-v.is-unknown { color: var(--muted); }
+  /* 安装命令：长 URL/令牌不撑破卡片（可换行，保留等宽） */
+  .nd-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* 统一空态（无参 / 404）：图标 + 标题 + 说明 + 两个动作 */
+  .nd-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 20px; text-align: center; }
+  .nd-empty-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--faint);
+  }
+  .nd-empty-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .nd-empty-desc { max-width: 46ch; font-size: 13px; line-height: 1.6; color: var(--muted); }
+  .nd-empty-acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+  /* 左栅比右栅矮时不要被拉高到等高 */
+  .nd-grid-top { align-items: start; }
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
 </style>
 {{end}}
@@ -23,10 +66,10 @@
   </div>
   <div id="node-load-state" role="status"></div>
   <div id="node-body" class="c2-stack" hidden>
-    <section class="card card-pad"><div id="node-facts" class="c2-note"></div><div id="head-actions" class="c2-actions"><button id="node-drain" class="btn btn-ghost" type="button">{{t "nodes.v4.drain"}}</button><button id="node-upgrade" class="btn btn-ghost" type="button">{{t "nodes.v4.upgrade"}}</button><button id="node-rotate" class="btn btn-ghost" type="button">{{t "nodes.v4.rotate"}}</button></div><div id="node-action-state" class="c2-state" role="status"></div>
+    <section class="card card-pad"><div id="node-facts" class="nd-chips"></div><div id="head-actions" class="c2-actions"><button id="node-drain" class="btn btn-ghost" type="button">{{t "nodes.v4.drain"}}</button><button id="node-upgrade" class="btn btn-ghost" type="button">{{t "nodes.v4.upgrade"}}</button><button id="node-rotate" class="btn btn-ghost" type="button">{{t "nodes.v4.rotate"}}</button></div><div id="node-action-state" class="c2-state" role="status"></div>
       <div id="node-token-result" hidden><p class="c2-note">{{t "nodes.v4.token_warning"}}</p><div class="code-block"><div class="code-head">{{t "nodes.v4.token"}}</div><div class="code-body"><code id="node-token"></code></div></div><button id="node-token-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
     </section>
-    <div class="c2-grid">
+    <div class="c2-grid nd-grid-top">
       <section id="node-config" class="card card-pad">
         <div class="card-title">{{t "nodes.v4.config"}}</div><p class="c2-note">{{t "nodes.v4.batch_hint"}}</p><div id="node-revisions" class="c2-note"></div>
         <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
@@ -43,7 +86,7 @@
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.effective_vars"}}</div><div class="field"><label class="field-label" for="node-namespace">{{t "nodes.v4.context"}}</label><select id="node-namespace" class="select"></select></div><div id="node-context-revision" class="c2-note"></div><div id="node-effective-vars"></div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p></section>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><p class="c2-note">{{t "nodes.v4.slot_note"}}</p><div id="node-slots"></div></section>
     <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
-    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
+    <section class="card card-pad"><div class="code-block"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body nd-code">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
   </div>
 </div></div>
 {{end}}
@@ -51,6 +94,8 @@
 <script>
 (() => {
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
+  // 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
+  const x = key => A.t('uxaudit.res.node.' + key);
   const name = new URLSearchParams(location.search).get('id') || '', path = '/v1/nodes/' + encodeURIComponent(name);
   let n, nodeId = '', config, namespace = '', original = '', loaded = false;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('subtitle') });
@@ -69,15 +114,54 @@
     for (const [key, value] of rows) { const row = make('tr'); row.dataset.key = key; for (const text of [key, valueText(value, key), source(key)]) row.appendChild(make('td', null, text)); body.appendChild(row); }
     table.appendChild(body); $(id).appendChild(table);
   };
+  /* ---------- ND-5：顶部事实条 chip 化 + 键值成对 ---------- */
+  const unk = () => x('unknown');
+  const revText = value => (value == null || value === '') ? unk() : String(value);
+  function statusBadge() {
+    if (n.status.draining) return make('span', 'badge badge-warn', t('drain'));
+    if (typeof n.status.online === 'boolean') return make('span', 'badge ' + (n.status.online ? 'badge-success' : 'badge-neutral'), t(n.status.online ? 'online' : 'offline'));
+    return make('span', 'badge badge-neutral', t('unknown'));
+  }
+  function chip(label, value, title) {
+    const span = make('span', 'nd-chip', label ? label + ' ' : '');
+    if (title) span.title = title;
+    const bold = make('b', null, (value == null || value === '') ? unk() : String(value));
+    if (value == null || value === '') bold.classList.add('is-unknown');
+    span.append(bold);
+    return span;
+  }
+  function pair(label, value, title) {
+    const cell = make('div', 'nd-pair'), dt = make('dt', 'nd-k', label), dd = make('dd', 'nd-v', value);
+    if (title) dt.title = title;
+    if (value === unk()) dd.classList.add('is-unknown');
+    cell.append(dt, dd); return cell;
+  }
   function renderFacts() {
     $('head-name').textContent = n.name; document.title = n.name + ' · Anotify';
-    $('node-facts').textContent = (typeof n.status.online === 'boolean' ? t(n.status.online ? 'online' : 'offline') : t('unknown')) + ' · ' + (n.status.hostname || '?') + ' · ' + (n.status.os || '?') + '/' + (n.status.arch || '?') + '\n' + t('effective_namespaces') + ': ' + (n.effectiveNamespaces.join(', ') || t('none'));
+    const facts = $('node-facts'); facts.replaceChildren();
+    facts.append(statusBadge());
+    facts.append(chip(x('hostname'), n.status.hostname, 'hostname'));
+    facts.append(chip(x('platform'), (n.status.os || n.status.arch) ? (n.status.os || '—') + '/' + (n.status.arch || '—') : '', 'os/arch'));
+    facts.append(chip(x('ns_label'), n.effectiveNamespaces.join(', ') || t('none'), t('effective_namespaces')));
     const knownRevision = n.configRevision != null && n.appliedRevision != null && n.appliedRevision !== '';
-    $('node-applied').textContent = (knownRevision ? t(n.pending ? 'pending' : 'applied') : t('unknown')) + '\nconfigRevision=' + (n.configRevision ?? '?') + ' · appliedRevision=' + (n.appliedRevision ?? '?') + '\nappliedHash=' + (n.appliedHash ?? '?') + (n.overrideStale === true ? '\n' + t('override_stale') : '');
+    const applied = make('dl', 'nd-kv');
+    applied.append(
+      pair(x('apply_state'), knownRevision ? (n.pending ? x('pending_short') : x('applied_short')) : unk(), 'pending'),
+      pair(x('config_rev'), revText(n.configRevision), 'configRevision'),
+      pair(x('applied_rev'), revText(n.appliedRevision), 'appliedRevision'),
+      pair(x('applied_hash'), revText(n.appliedHash), 'appliedHash'),
+    );
+    if (n.overrideStale === true) applied.append(pair(x('override_stale'), t('override_stale'), 'overrideStale'));
+    $('node-applied').replaceChildren(applied);
     table('node-machine-vars', n.machineVars, key => Object.hasOwn(n.localVars, key) ? 'local' : 'node');
     const limits = { ...(n.machineLimits.total == null ? {} : { total: n.machineLimits.total }), ...Object.fromEntries(Object.entries(n.machineLimits.perCapability || {}).map(([k,v]) => ['perCapability.' + k, v])) };
     table('node-machine-limits', limits, key => key === 'total' ? (n.localLimits.total != null ? 'local' : 'node') : (Object.hasOwn(n.localLimits.perCapability || {}, key.slice(14)) ? 'local' : 'node'));
-    $('node-context-revision').textContent = 'namespace=' + (n.context?.namespace || '?') + ' · configRevision=' + (n.configRevision ?? '?');
+    const ctx = make('dl', 'nd-kv');
+    ctx.append(
+      pair(x('ctx_namespace'), n.context?.namespace || '', 'namespace'),
+      pair(x('config_rev'), revText(n.configRevision), 'configRevision'),
+    );
+    $('node-context-revision').replaceChildren(ctx);
     /* v4：`?namespace=` 读的有效值在 **status.effectiveVars**（api/resource.yaml ·
      * NodeStatus.effectiveVars），每一项是 `{value,source}` —— 来源由服务端逐键
      * 解析（local > node > namespace），页面不再自己拿三层变量表猜。 */
@@ -88,10 +172,22 @@
     /* v4 的实例没有 slot 字段（NodeInstanceRef 只有 id/task/busy）：
      * 「第几个槽」只能是 instances 的下标（0 起），实例身份是 id，占用任务是在跑的 task。
      * 不拿 v3 的 slot/taskId/assignmentId 拼一份服务端没说过的事实。 */
-    for (const [i, x] of (n.instances || []).entries()) {
-      const row = make('div', 'c2-row', 'slot ' + i + ' · ' + t(x.occupancy) + (x.task ? ' · task=' + x.task : '') + (x.id ? ' · id=' + x.id : ''));
-      row.dataset.slot = String(i); row.dataset.occupancy = x.occupancy; if (x.id) row.dataset.instanceId = x.id; if (x.task) row.dataset.task = x.task; $('node-slots').appendChild(row);
+    for (const [i, inst] of (n.instances || []).entries()) {
+      const row = make('div', 'c2-row', 'slot ' + i + ' · ' + t(inst.occupancy) + (inst.task ? ' · task=' + inst.task : '') + (inst.id ? ' · id=' + inst.id : ''));
+      row.dataset.slot = String(i); row.dataset.occupancy = inst.occupancy; if (inst.id) row.dataset.instanceId = inst.id; if (inst.task) row.dataset.task = inst.task; $('node-slots').appendChild(row);
     }
+  }
+  /* SRC-5 / CP-4：无参 / 404 都落到同一套空态（图标 + 标题 + 说明 + 返回列表/重试） */
+  const EMPTY_ICON = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/><path d="M9 10h6"/></svg>';
+  function emptyState(title, desc, onRetry) {
+    const box = make('div', 'nd-empty'), ico = make('div', 'nd-empty-ico');
+    ico.innerHTML = EMPTY_ICON;
+    const acts = make('div', 'nd-empty-acts'), back = make('a', 'btn btn-primary', t('back'));
+    back.href = 'nodes.html' + (location.search || '');
+    acts.append(back);
+    if (onRetry) { const retry = make('button', 'btn btn-ghost', A.t('common.retry', '重试')); retry.type = 'button'; retry.onclick = () => onRetry(); acts.append(retry); }
+    box.append(ico, make('div', 'nd-empty-title', title), make('p', 'nd-empty-desc', desc), acts);
+    return box;
   }
   async function loadFacts() {
     const resource = await A.api(path + (namespace ? '?namespace=' + encodeURIComponent(namespace) : ''));
@@ -158,7 +254,7 @@
   };
   $('node-token-close').onclick = () => { $('node-token').textContent = ''; $('node-token-result').hidden = true; };
   async function boot() {
-    if (!name) { $('node-load-state').textContent = t('not_found'); return; }
+    if (!name) { $('node-load-state').replaceChildren(emptyState(x('no_param_title'), x('no_param'))); return; }
     $('node-load-state').textContent = t('loading'); $('node-load-state').setAttribute('aria-busy', 'true');
     try {
       await A.ready(); const { items: namespaces } = await A.apiList('/v1/namespaces');
@@ -167,7 +263,11 @@
       await loadFacts(); $('node-body').hidden = false; $('node-load-state').replaceChildren(); await loadRelated();
       // Refresh facts never silently replaces a user's configuration draft.
       if (!loaded) await loadConfig(); loaded = true;
-    } catch (e) { $('node-body').hidden = true; if (e.status === 404) $('node-load-state').textContent = t('not_found'); else $('node-load-state').replaceChildren(A.loadErrorNode(e, boot)); }
+    } catch (e) {
+      $('node-body').hidden = true;
+      const notFound = e && e.status === 404;
+      $('node-load-state').replaceChildren(emptyState(notFound ? t('not_found') : A.t('common.request_failed'), [e?.reason, e?.message].filter(Boolean).join(': ') || t('not_found'), boot));
+    }
     finally { $('node-load-state').removeAttribute('aria-busy'); }
   }
   $('node-refresh').onclick = boot; boot();

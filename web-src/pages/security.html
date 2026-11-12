@@ -53,7 +53,6 @@
     flex-wrap: wrap;
     justify-content: space-between;
     gap: 10px 12px;
-    padding: 12px 14px;
   }
   .sec-pwd-row:hover {
     /* 这一行不可点：不要给点击反馈（旁边两张列表的行是可点的） */
@@ -62,23 +61,51 @@
   .sec-pwd-status {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
   }
-  .sec-pwd-state {
-    font-size: 13px;
+  /* SEC-1：空态 = 44px 图标 + 标题 + 说明 + 动作（D16；不再是「一行字 + 一个按钮」） */
+  .sec-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 36px 20px;
+    text-align: center;
+  }
+  .sec-empty-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--faint);
+  }
+  .sec-empty-title {
+    font-size: 15px;
     font-weight: 600;
     line-height: 1.4;
     color: var(--text);
   }
-  /* 第二行小字：上次更新时间 / 从未设置 */
-  .sec-pwd-meta {
-    display: block;
-    margin-top: 3px;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--faint);
-    font-variant-numeric: tabular-nums;
+  .sec-empty-desc {
+    max-width: 46ch;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .sec-empty-acts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  /* SEC-3：平台图标改成与全站一致的 SVG（emoji 在不同平台字形不一，且不跟主题变色） */
+  .sec-plat svg {
+    color: var(--muted);
   }
   .sec-pwd-acts {
     display: flex;
@@ -703,8 +730,25 @@
         </div>
       </div>
       <div class="card list mt-3">
+        <!-- SEC-4：与相邻两张列表同一套行结构 —— 40px 图标瓦片 + 主列（标题/副行）+
+             右侧动作，行高、字号、动作位置都对齐（不再是「纯文字一行」）。 -->
         <div class="list-row sec-pwd-row">
-          <div class="min-w-0">
+          <span class="plat-icon sec-plat" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </span>
+          <div class="list-main">
             <!-- 状态文字由 JS 填：已设置 / 未设置（+ 上次更新时间）。
                  初值是纯占位符，不带任何“未设置”字样，避免闪烁时误报状态。 -->
             <div id="password-status" class="sec-pwd-status">—</div>
@@ -1078,7 +1122,7 @@
 
         <!-- 新设备信息 -->
         <div class="enroll-device">
-          <div id="enroll-device-icon" class="plat-icon">🖥️</div>
+          <div id="enroll-device-icon" class="plat-icon sec-plat" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
           <div class="min-w-0">
             <div id="enroll-device-hint" class="enroll-device-name">—</div>
             <div class="enroll-device-meta">
@@ -1323,16 +1367,16 @@
       const btn = document.createElement("button");
       btn.className = "toast-copy";
       btn.type = "button";
-      btn.textContent = t("common.copy", "复制");
+      btn.textContent = t("docs.copy", "复制");
       btn.onclick = (ev) => {
         ev.stopPropagation();
         const text = msg;
         if (navigator.clipboard?.writeText) {
           navigator.clipboard.writeText(text).then(
             () => {
-              btn.textContent = t("common.copied", "已复制");
+              btn.textContent = t("common.copy.copied", "已复制");
               setTimeout(
-                () => (btn.textContent = t("common.copy", "复制")),
+                () => (btn.textContent = t("docs.copy", "复制")),
                 1500,
               );
             },
@@ -1370,26 +1414,42 @@
     return d.toISOString().slice(0, 10);
   }
 
-  function platformIcon(ua) {
+  /* SEC-3：设备图标统一用 SVG（与全站图标同一笔画语言）。emoji 在不同平台
+     字形不一、不跟主题变色，且亮色下对比不足。返回的是「平台种类」，由
+     platTile() 渲染成图标瓦片。 */
+  const PLATFORM_SVG = {
+    mobile:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>',
+    laptop:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 20h20"/></svg>',
+    desktop:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  };
+  function platTile(kind) {
+    const box = document.createElement("span");
+    box.className = "plat-icon sec-plat";
+    box.setAttribute("aria-hidden", "true");
+    box.innerHTML = PLATFORM_SVG[kind] || PLATFORM_SVG.desktop;
+    return box;
+  }
+  function platformKind(ua) {
     ua = (ua || "").toLowerCase();
-    if (ua.includes("iphone") || ua.includes("ipad")) return "📱";
-    if (ua.includes("mac")) return "💻";
-    if (ua.includes("windows")) return "🖥️";
-    if (ua.includes("android")) return "📱";
-    return "🖥️";
+    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("android"))
+      return "mobile";
+    if (ua.includes("mac") || ua.includes("linux")) return "laptop";
+    return "desktop";
   }
 
-  // platformIconFromName 从格式化的设备名（如 "Chrome · macOS"）推断图标。
+  // platformIconFromName 从格式化的设备名（如 "Chrome · macOS"）推断平台种类。
   // 后端 deviceName 是 UA 解析后的 "Browser · OS" 格式，非原始 UA。
-  function platformIconFromName(name) {
+  function platformKindFromName(name) {
     const n = (name || "").toLowerCase();
     if (n.includes("ios") || n.includes("iphone") || n.includes("ipad"))
-      return "📱";
-    if (n.includes("macos") || n.includes("mac")) return "💻";
-    if (n.includes("windows")) return "🖥️";
-    if (n.includes("android")) return "📱";
-    if (n.includes("linux")) return "🖥️";
-    return "🖥️";
+      return "mobile";
+    if (n.includes("android")) return "mobile";
+    if (n.includes("macos") || n.includes("mac") || n.includes("linux"))
+      return "laptop";
+    return "desktop";
   }
 
   // 401 委托给 Anotify.api（其内置路由守卫会跳登录页）；
@@ -1455,7 +1515,7 @@
         id: p.id || String(i),
         name: p.name || t("security.unnamed_passkey", "未命名 Passkey"),
         type: p.type || t("security.credential", "凭证"),
-        icon: platformIcon(p.devices || p.name),
+        icon: platformKind(p.devices || p.name),
         devices: p.devices || "",
         created: p.createdAt
           ? new Date(p.createdAt * 1000).toISOString().slice(0, 10)
@@ -1488,13 +1548,13 @@
           id: s.id || String(i),
           device: deviceName,
           browser: "",
-          icon: platformIconFromName(deviceName),
+          icon: platformKindFromName(deviceName),
           passkey: s.passkey || "",
           location: s.location || "",
           current: !!s.current,
-          lastActive: s.current
-            ? t("security.current_session", "当前会话")
-            : fmtTime(s.lastSeen || s.lastActive),
+          // SEC-2：这里一律是真实时间。当前会话的身份由行首 chip 表达，
+          // 副标题再写一遍「当前会话」就是同一句话说两次。
+          lastActive: fmtTime(s.lastSeen || s.lastActive),
         };
       });
       loadFailed.sessions = false;
@@ -1533,10 +1593,20 @@
     count.textContent = PASSKEYS.length;
 
     if (PASSKEYS.length === 0) {
-      // 空态落在 #passkey-list **内部**（ux_regression #22 读它的 innerText）
-      const box = el("div", { class: "empty" });
+      // 空态落在 #passkey-list **内部**（ux_regression #22 读它的 innerText）。
+      // 硬约束：文案必须指向**本机添加**，且这个动作只能有一个按钮（#22 要求唯一）。
+      const box = el("div", { class: "empty sec-empty" });
+      const ico = el("span", { class: "sec-empty-ico" });
+      ico.innerHTML =
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 10a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M15 15.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/></svg>';
       box.append(
+        ico,
+        el("div", {
+          class: "sec-empty-title",
+          text: t("security.passkey.empty_title", "还没有 Passkey"),
+        }),
         el("p", {
+          class: "sec-empty-desc",
           text: t(
             "security.empty_passkeys",
             "还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。",
@@ -1561,7 +1631,7 @@
         el(
           "div",
           { class: "list-row" },
-          el("div", { class: "plat-icon", text: p.icon }),
+          platTile(p.icon),
           el(
             "div",
             { class: "list-main" },
@@ -1839,9 +1909,22 @@
     count.textContent = SESSIONS.length;
 
     if (SESSIONS.length === 0) {
-      const box = el("div", { class: "empty" });
+      // 与 Passkey 空态同一套语言（图标 + 标题 + 说明）；这条没有任何可执行动作，
+      // 所以不给按钮，而不是放一个点不动的占位。
+      const box = el("div", { class: "empty sec-empty" });
+      const ico = el("span", { class: "sec-empty-ico" });
+      ico.innerHTML =
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
       box.append(
-        el("p", { text: t("security.empty_sessions", "当前没有活跃会话。") }),
+        ico,
+        el("div", {
+          class: "sec-empty-title",
+          text: t("security.session.empty_title", "没有活跃会话"),
+        }),
+        el("p", {
+          class: "sec-empty-desc",
+          text: t("security.empty_sessions", "当前没有活跃会话。"),
+        }),
       );
       list.replaceChildren(box);
       return;
@@ -1860,18 +1943,16 @@
         }
         if (parts.length || s.passkey) meta.append(" · ");
         meta.append(
-          s.current
-            ? s.lastActive
-            : t("security.last_active", "最后活跃 {time}").replace(
-                "{time}",
-                s.lastActive,
-              ),
+          t("security.last_active", "最后活跃 {time}").replace(
+            "{time}",
+            s.lastActive,
+          ),
         );
 
         return el(
           "div",
           { class: "list-row" },
-          el("div", { class: "plat-icon", text: s.icon }),
+          platTile(s.icon),
           el(
             "div",
             { class: "list-main" },
@@ -1888,12 +1969,12 @@
             ),
             meta,
           ),
-          el(
-            "div",
-            { class: "list-meta" },
-            s.current
-              ? el("span", { class: "sec-row-note", text: "—" })
-              : el(
+          s.current
+            ? null
+            : el(
+                "div",
+                { class: "list-meta" },
+                el(
                   "button",
                   {
                     type: "button",
@@ -2192,7 +2273,7 @@
     }
 
     const state = document.createElement("span");
-    state.className = "sec-pwd-state";
+    state.className = "sec-row-title";
     state.textContent = PWD.hasPassword
       ? t("security.password.status_set", "已设置")
       : t("security.password.status_unset", "未设置");
@@ -2201,7 +2282,7 @@
     // 第二行小字：已设时显上次更新时间，未设时显「从未设置」
     const when = passwordUpdatedDate(PWD.updatedAt);
     const meta = document.createElement("span");
-    meta.className = "sec-pwd-meta";
+    meta.className = "sec-row-sub";
     meta.textContent =
       PWD.hasPassword && when
         ? t("security.password.updated_at", "上次更新：{date}").replace(
@@ -2841,14 +2922,9 @@
       // 填充设备信息
       const hint = data.deviceHint || "—";
       document.getElementById("enroll-device-hint").textContent = hint;
-      // 平台图标
-      const ua = hint.toLowerCase();
-      let icon = "🖥️";
-      if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios"))
-        icon = "📱";
-      else if (ua.includes("android")) icon = "📱";
-      else if (ua.includes("mac")) icon = "💻";
-      document.getElementById("enroll-device-icon").textContent = icon;
+      // 平台图标（SEC-3：SVG，不再用 emoji）
+      const iconBox = document.getElementById("enroll-device-icon");
+      if (iconBox) iconBox.innerHTML = PLATFORM_SVG[platformKind(hint)];
       // toast 提示
       toast(t("passkeyenroll.panel.confirm_title", "批准这台新设备？"));
       scheduleEnrollWatch(2000);

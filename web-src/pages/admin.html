@@ -166,6 +166,74 @@
       .ad-tabs {
         justify-self: start;
       }
+
+      /* ---------- ADM-2：口径只说一次 ---------- */
+      .adm-scope {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: -4px 0 -4px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--faint);
+      }
+      .adm-scope-ico {
+        width: 13px;
+        height: 13px;
+        flex: none;
+        color: var(--faint);
+      }
+
+      /* ---------- ADM-3：说明卡（填充表格下方的空白） ---------- */
+      .adm-note {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .adm-note-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        min-width: 0;
+      }
+      .adm-note-ico {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        flex: none;
+        border-radius: var(--r-md);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .adm-note-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 8px 18px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .adm-note-list li {
+        position: relative;
+        padding-left: 14px;
+      }
+      .adm-note-list li::before {
+        content: "";
+        position: absolute;
+        left: 2px;
+        top: 0.62em;
+        width: 5px;
+        height: 5px;
+        border-radius: var(--r-full);
+        background: var(--accent);
+      }
     </style>
 {{end}}
 
@@ -182,9 +250,7 @@
         <p class="page-sub" id="admin-subtitle">{{t "admin.subtitle"}}</p>
       </div>
       <div class="page-actions">
-        <span class="status-badge status-success" id="admin-role-badge"
-          >admin</span
-        >
+        <span class="badge badge-success" id="admin-role-badge">{{t "uxaudit.res.admin.role_admin"}}</span>
       </div>
     </div>
 
@@ -192,6 +258,25 @@
          四个 `#kpi-*` 的 textContent 由页内脚本覆写（e2e 断言它已渲染且不是「–」），
          `#kpi-*-sub` 是同一张卡的次要口径。四个数都是「全部署」口径（不随命名空间
          切换），和顶栏的 scope 徽标一致。 -->
+    <!-- ADM-2：4 张卡右上角原来各挂一个同样的「全部署」灰 pill —— 既不是徽章
+         （没有状态含义）也不是控件（不可点、无 chevron）。口径只说一次，说在网格上方。 -->
+    <div class="adm-scope" id="admin-scope">
+      <svg
+        class="adm-scope-ico"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18" />
+        <path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18" />
+      </svg>
+      <span>{{t "uxaudit.res.admin.scope_note"}}</span>
+    </div>
     <section class="ad-kpi" aria-busy="true">
       <div class="card stat card-pad">
         <div class="ad-stat-head">
@@ -209,7 +294,6 @@
               <path d="M4 21a8 8 0 0 1 16 0" />
             </svg>
           </span>
-          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
         <div class="stat-label">{{t "admin.kpi.users"}}</div>
         <div class="stat-value" id="kpi-users">–</div>
@@ -231,7 +315,6 @@
               <path d="M4 5h16v12H7l-3 3z" />
             </svg>
           </span>
-          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
         <div class="stat-label">{{t "admin.kpi.messages"}}</div>
         <div class="stat-value" id="kpi-messages">–</div>
@@ -254,7 +337,6 @@
               <path d="M11 18h2" />
             </svg>
           </span>
-          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
         <div class="stat-label">{{t "admin.kpi.devices"}}</div>
         <div class="stat-value" id="kpi-devices">–</div>
@@ -277,7 +359,6 @@
               <path d="M8 12.5l2.5 2.5L16 9.5" />
             </svg>
           </span>
-          <span class="stat-delta">{{t "admin.scopeChip"}}</span>
         </div>
         <div class="stat-label">{{t "admin.kpi.delivery_rate"}}</div>
         <div class="stat-value" id="kpi-rate">–</div>
@@ -484,6 +565,36 @@
       </div>
     </section>
 
+    <!-- ===== ADM-3：管理台说明（表格下方的空白改成有信息的版式，而不是一页空） ===== -->
+    <section class="card card-pad adm-note" id="admin-notes">
+      <div class="adm-note-head">
+        <span class="adm-note-ico" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8h.01M11 12h1v5h1" />
+          </svg>
+        </span>
+        <div class="min-w-0">
+          <div class="card-title">{{t "uxaudit.res.admin.notes_title"}}</div>
+          <p class="card-sub">{{t "uxaudit.res.admin.notes_sub"}}</p>
+        </div>
+      </div>
+      <ul class="adm-note-list">
+        <li>{{t "uxaudit.res.admin.note_role"}}</li>
+        <li>{{t "uxaudit.res.admin.note_disable"}}</li>
+        <li>{{t "uxaudit.res.admin.note_session"}}</li>
+      </ul>
+    </section>
+
     <!-- ===== Top 活跃用户 =====
          没有 Top 用户时整块不出现（脚本把它继续留在 hidden 上），不留空标题。 -->
     <section id="admin-top-users" class="hidden">
@@ -555,25 +666,35 @@
       if (node) node.textContent = text;
     }
 
+    /* ST-1：`.status-info` 全仓没有定义（渲染出来是裸 .status-badge，无底色无边框）。
+       这里统一改用有样式的 `.badge badge-*`：语义一致，且两套主题下都可读。 */
     function statusBadgeEl(agentState) {
       const map = {
-        working: "status-info",
-        blocked: "status-warn",
-        done: "status-success",
-        interrupted: "status-warn",
-        error: "status-error",
+        working: "badge-accent",
+        blocked: "badge-warn",
+        done: "badge-success",
+        interrupted: "badge-warn",
+        error: "badge-error",
       };
       const span = el("span", {
-        class: `status-badge ${map[agentState] || "status-info"}`,
+        class: `badge ${map[agentState] || "badge-neutral"}`,
       });
       span.textContent = agentState;
       return span;
     }
 
+    /* ADM-4：角色列不再把 `member` 这种接口枚举值直接印给用户 */
+    function roleLabel(role) {
+      if (role === "admin") return t("uxaudit.res.admin.role_admin", "超管");
+      if (role === "member") return t("uxaudit.res.admin.role_member", "成员");
+      return role;
+    }
+
     function roleBadgeEl(role) {
-      const cls = role === "admin" ? "status-success" : "status-info";
-      const span = el("span", { class: `status-badge ${cls}` });
-      span.textContent = role;
+      const cls = role === "admin" ? "badge-success" : "badge-neutral";
+      const span = el("span", { class: `badge ${cls}` });
+      span.textContent = roleLabel(role);
+      span.title = role;
       return span;
     }
 
@@ -667,12 +788,15 @@
         if (kpi) kpi.removeAttribute("aria-busy");
 
         setText("kpi-users", fmtNum(s.userCount));
-        setText(
-          "kpi-users-sub",
-          t("admin.kpi.users_sub", "{n} 超管").replace("{n}", s.adminCount) +
-            " · " +
-            t("admin.kpi.active", "{n} 7天活跃").replace("{n}", s.activeUserCount),
-        );
+        /* ADM-1（P0）：副标题只拼**真实存在**的字段。
+           `activeUserCount` 已随后端口径下线（#205：组织层删除后无法计算），所以
+           后端与 mock 都可能没有它 —— 缺失时退回同一份 stats 里真实存在的活跃
+           口径（sessionCount），绝不把字面 `undefined` 印到屏幕上。 */
+        const userSub = [];
+        if (Number.isFinite(s.adminCount)) userSub.push(t("admin.kpi.users_sub", "{n} 超管").replace("{n}", s.adminCount));
+        if (Number.isFinite(s.activeUserCount)) userSub.push(t("admin.kpi.active", "{n} 7天活跃").replace("{n}", s.activeUserCount));
+        else if (Number.isFinite(s.sessionCount)) userSub.push(t("uxaudit.res.admin.active_sessions", "{n} 活跃会话").replace("{n}", s.sessionCount));
+        setText("kpi-users-sub", userSub.join(" · ") || "—");
         setText("kpi-messages", fmtNum(s.messageCount));
         setText(
           "kpi-messages-sub",
@@ -788,9 +912,7 @@
         "td",
         {},
         el("span", {
-          class: u.disabled
-            ? "status-badge status-error"
-            : "status-badge status-success",
+          class: u.disabled ? "badge badge-error" : "badge badge-success",
           text: u.disabled
             ? t("admin.users.disabled", "已禁用")
             : t("admin.users.active", "正常"),
@@ -1178,7 +1300,8 @@
           showForbidden();
           return;
         }
-        setText("admin-role-badge", me.role);
+        setText("admin-role-badge", roleLabel(me.role));
+        document.getElementById("admin-role-badge").title = me.role;
       } catch (e) {
         /* 401 会自动跳登录页 —— 这里什么都不画（画了也会被跳转盖掉）。
            其它失败（5xx / 网络断 / 非 JSON）走错误态，绝不留在骨架里。 */

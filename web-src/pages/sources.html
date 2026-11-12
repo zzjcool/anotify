@@ -14,8 +14,50 @@
 .source-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
 .source-facts dt{color:var(--muted);font-size:12px}
 .source-facts dd{margin:4px 0;overflow-wrap:anywhere}
-#src-list .list-row{flex-wrap:wrap}
-#src-list .list-main{flex:1 1 220px;min-width:0}
+/* SRC-1：单条源 = 头部（标题 + 徽章 / 右上动作组）+ 4 列 KV + 折叠的次要字段。
+   label/value 严格成对（每对是两行 grid），动作不再夹在两组字段中间。 */
+#src-list .src-row{display:flex;flex-direction:column;align-items:stretch;gap:10px;padding:14px}
+#src-list .src-row:hover{background:var(--surface-2)}
+.src-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:8px 12px;min-width:0}
+.src-title-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
+.src-title{font-size:14px;font-weight:600;line-height:1.4;color:var(--text);text-decoration:none;overflow-wrap:anywhere}
+.src-title:hover{color:var(--accent)}
+.src-badges{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.src-acts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto}
+.src-kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 18px;margin:0}
+.src-pair{display:grid;gap:2px;min-width:0}
+.src-k{font-size:11px;line-height:1.4;color:var(--faint)}
+.src-v{margin:0;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.src-v.is-muted{color:var(--muted)}
+.src-more{border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+.src-more>summary{font-size:12px;line-height:1.5;color:var(--muted);cursor:pointer;list-style:none}
+.src-more>summary::-webkit-details-marker{display:none}
+.src-more>summary::before{content:"▸";margin-right:6px;color:var(--faint)}
+.src-more[open]>summary::before{content:"▾"}
+.src-more>summary:hover{color:var(--text)}
+.src-more-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 18px;margin-top:10px}
+/* 空态：图标 + 标题 + 说明 + 动作 */
+.src-empty-title{font-size:15px;font-weight:600;color:var(--text)}
+.src-note-p{display:block;margin:10px 0 0}
+@media(max-width:900px){.src-kv{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){
+  .src-acts{width:100%;margin-left:0}
+  /* 窄屏动作按内容宽度换行；不把最后一个按钮拉成整行 */
+  .src-acts .btn{flex:0 1 auto}
+}
+/* SRC-6：弹层分段（基本 / 载荷 / 目标）+ body 可滚 + footer 粘底（.modal-* 已给结构） */
+.src-modal-body{display:flex;flex-direction:column;gap:18px;position:relative}
+/* 内容还能往下滚时，底部留一道渐隐，避免“被切断”而不知道还有 */
+.src-modal-body.is-more{box-shadow:inset 0 -22px 18px -18px var(--panel-modal)}
+.src-group{display:flex;flex-direction:column;gap:12px;min-width:0}
+.src-group-head{display:flex;align-items:baseline;gap:8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.src-group-title{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.src-group-hint{font-size:11px;color:var(--faint)}
+.src-cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media(max-width:640px){.src-cols{grid-template-columns:minmax(0,1fr)}}
+/* 必填校验：字段级红框 + 文案（W2-4：点保存不能静默） */
+.src-modal-body .input.is-invalid{border-color:var(--error);box-shadow:0 0 0 3px var(--error-soft)}
+.is-invalid:focus{border-color:var(--error)}
 #src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
 .source-graph{min-height:320px;width:100%;min-width:0}
@@ -43,9 +85,11 @@
 </button>
 </div>
 </div>
-<p class="card card-pad field-hint">
-{{t "sources.v4.dedup"}}
-</p>
+<!-- SRC-3：整段说明默认收起，不再一条通栏灰字压在列表上方 -->
+<details class="card card-pad src-more" id="dedup-note">
+<summary>{{t "uxaudit.res.sources.dedup_summary"}}</summary>
+<p class="field-hint src-note-p">{{t "sources.v4.dedup"}}</p>
+</details>
 <div id="action-error" aria-live="polite">
 </div>
 <div id="src-list-skel" class="source-loading">
@@ -60,17 +104,31 @@
 <div class="modal-head">
 <h3 id="modal-title">
 </h3>
-<button id="modal-close" class="btn btn-ghost">
-{{t "sources.v4.close"}}
+<button id="modal-close" class="btn btn-ghost btn-icon" type="button" aria-label="{{t "common.action.close"}}">
+✕
 </button>
 </div>
-<div class="modal-body">
+<!-- SRC-6：body 可滚（.modal-body 自带 overflow-y:auto）、footer 粘底（.modal-foot 是
+     面板的固定末行）。内容按「基本 / 载荷 / 目标 / 其它」分段，不再是一列 14 个字段。 -->
+<div id="src-modal-body" class="modal-body src-modal-body">
 <div class="source-form">
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">{{t "uxaudit.res.sources.group_basic"}}</span><span class="src-group-hint">{{t "uxaudit.res.sources.group_basic_hint"}}</span></div>
+<div class="src-cols">
 <div class="field">
 <label class="field-label" for="f-name">
 {{t "sources.v4.name"}}
 </label>
 <input id="f-name" class="input"  />
+<p id="f-name-error" class="field-error hidden" role="alert"></p>
+</div>
+<div class="field">
+<label class="field-label" for="f-display">
+{{t "sources.v4.display"}}
+</label>
+<input id="f-display" class="input"  />
+</div>
 </div>
 <div class="field">
 <label class="field-label" for="f-kind">
@@ -85,14 +143,8 @@
 {{t "sources.v4.immutable"}}
 </p>
 </div>
-<div class="field">
-<label class="field-label" for="f-display">
-{{t "sources.v4.display"}}
-</label>
-<input id="f-display" class="input"  />
-</div>
 <div id="f-cron-wrap">
-<div class="source-form">
+<div class="src-cols">
 <div class="field">
 <label class="field-label" for="f-expr">
 {{t "sources.v4.expr"}}
@@ -108,7 +160,9 @@
 </div>
 </div>
 <div id="f-hook-wrap" class="hidden">
-<div class="source-form">
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">{{t "uxaudit.res.sources.group_credentials"}}</span><span class="src-group-hint">{{t "sources.v4.blank_credentials"}}</span></div>
+<div class="src-cols">
 <div class="field">
 <label class="field-label" for="f-token">
 {{t "sources.v4.token"}}
@@ -121,16 +175,14 @@
 </label>
 <input id="f-secret" class="input" type="password" autocomplete="new-password" />
 </div>
+</div>
 <div class="field">
 <label class="field-label" for="f-sample">
 {{t "sources.v4.sample"}}
 </label>
-<textarea id="f-sample" class="textarea mono" rows="4">
+<textarea id="f-sample" class="textarea mono" rows="3">
 </textarea>
 </div>
-<p class="field-hint">
-{{t "sources.v4.blank_credentials"}}
-</p>
 <div id="hook-read" class="source-wrap">
 </div>
 <p class="field-hint">
@@ -138,12 +190,16 @@
 </p>
 </div>
 </div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">{{t "uxaudit.res.sources.group_payload"}}</span><span class="src-group-hint">{{t "uxaudit.res.sources.group_payload_hint"}}</span></div>
 <div id="f-payload-wrap">
 <div class="field">
 <label class="field-label" for="f-payload">
 {{t "sources.v4.payload"}}
 </label>
-<textarea id="f-payload" class="textarea mono" rows="4">
+<textarea id="f-payload" class="textarea mono" rows="3">
 </textarea>
 </div>
 </div>
@@ -151,16 +207,17 @@
 <label class="field-label" for="f-payload-schema">
 {{t "sources.v4.schema"}}
 </label>
-<textarea id="f-payload-schema" class="textarea mono" rows="4">
+<textarea id="f-payload-schema" class="textarea mono" rows="3">
 </textarea>
-</div>
 <p class="field-hint">
 {{t "sources.v4.schema_hint"}}
 </p>
+</div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">{{t "uxaudit.res.sources.group_targets"}}</span><span class="src-group-hint">{{t "uxaudit.res.sources.group_targets_hint"}}</span></div>
 <div class="field">
-<span class="field-label">
-{{t "sources.v4.targets"}}
-</span>
 <div id="f-targets" class="source-form">
 </div>
 <button id="add-target" type="button" class="btn btn-ghost">
@@ -172,6 +229,10 @@
 {{t "sources.v4.params_hint"}}
 </p>
 </div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">{{t "uxaudit.res.sources.group_other"}}</span><span class="src-group-hint">{{t "uxaudit.res.sources.group_other_hint"}}</span></div>
 <label class="field-label">
 <input id="f-enabled" type="checkbox" /> {{t "sources.v4.enabled"}}
 </label>
@@ -179,12 +240,12 @@
 <label class="field-label" for="dry-payload">
 {{t "sources.v4.override"}}
 </label>
-<textarea id="dry-payload" class="textarea mono" rows="4">
+<textarea id="dry-payload" class="textarea mono" rows="3">
 </textarea>
-</div>
 <p class="field-hint">
 {{t "sources.v4.omitted"}}
 </p>
+</div>
 <div>
 <div class="field-label">
 {{t "sources.v4.suggestions"}}
@@ -200,8 +261,13 @@
 {{t "sources.v4.reload_draft"}}
 </button>
 </div>
+
+</div>
 </div>
 <div class="modal-foot">
+<button id="modal-cancel" class="btn btn-ghost" type="button">
+{{t "uxaudit.res.common.cancel"}}
+</button>
 <button id="btn-dry" class="btn btn-ghost">
 {{t "sources.v4.draft_dry"}}
 </button>
@@ -217,8 +283,8 @@
 <h3 id="fire-title">
 {{t "sources.v4.fire"}}
 </h3>
-<button id="fire-close" class="btn btn-ghost">
-{{t "sources.v4.close"}}
+<button id="fire-close" class="btn btn-ghost btn-icon" type="button" aria-label="{{t "common.action.close"}}">
+✕
 </button>
 </div>
 <div class="modal-body">
@@ -250,6 +316,8 @@
 <script>
 const A = window.Anotify;
 const t = (key) => A.t("sources.v4." + key);
+// 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
+const xt = (key) => A.t("uxaudit.res.sources." + key);
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n=document.createElement(tag);
@@ -290,14 +358,20 @@ const request = (name, body, suffix="", method="POST") => A.api(path(name)+suffi
 function error(box, err){
   box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
 }
-function facts(src){
-  const dl=el("dl","source-facts");
-  const m=A.model.source(src);
-  for(const [label,value] of [["namespace",m.namespace],["rv",m.resourceVersion],["health",m.health],["resolved",String(m.targetsResolved)],["last_fire",fmt(m.lastFiredAt)],["next_fire",fmt(m.nextFireAt)],["last_error",src.status?.lastError ? JSON.stringify(src.status.lastError) : "—"],["installed",m.installedFrom||"—"]]){
-    const pair=el("div");
-    pair.append(el("dt","",t(label)),el("dd","",value));
-    dl.append(pair);
-  }return dl;
+/* SRC-2：状态一律用 .badge 表达（ok / true / disabled 不再当裸 mono 文本） */
+function badge(text,cls){
+  return el("span","badge "+(cls||"badge-neutral"),text);
+}
+function healthTone(health){
+  if(health==="ok")return "badge-success";
+  if(health==="disabled"||!health)return "badge-neutral";
+  return "badge-warn";
+}
+/* SRC-1：label/value 严格成对（每对两行 grid），不再把 8 个字段平铺成一行 mono */
+function pair(label,value,muted){
+  const cell=el("div","src-pair");
+  cell.append(el("dt","src-k",label),el("dd","src-v"+(muted ? " is-muted" : ""),value));
+  return cell;
 }
 function preview(box, res){
   box.replaceChildren(el("h4","card-title",t("preview")));
@@ -418,29 +492,54 @@ async function load(){
 function render(){
   $("src-list").replaceChildren();
   if(!SOURCES.length){
-    const box=el("div","empty",t("empty"));
-    box.append(action("new",()=>openEditor(null)));
+    const box=el("div","empty");
+    box.append(
+      el("div","src-empty-title",A.t("sources.empty_title")),
+      el("p","card-sub",t("empty")),
+      action("new",()=>openEditor(null)));
     $("src-list").append(box);
-  }for(const src of SOURCES){
+  }
+  for(const src of SOURCES){
     const m=A.model.source(src);
-    const row=el("div","list-row");
+    const row=el("div","list-row src-row");
     row.dataset.name=m.name;
-    const main=el("div","list-main");
-    const a=el("a","card-title source-wrap");
+    /* ① 头部：标题 + 状态徽章 / 右上动作组（动作不再夹在两组字段之间） */
+    const head=el("div","src-head");
+    const titleWrap=el("div","src-title-wrap");
+    const a=el("a","src-title");
     const name=el("span",null,m.displayName ? m.displayName+" · "+m.name : m.name);
     name.setAttribute("data-raw-content","");
     a.append(name);
     a.href=link("source.html",{
       name:m.name
     });
-    main.append(a,el("p","source-status",m.kind+" · "+t(m.enabled?"enabled":"disabled")),facts(src));
-    const targets=el("p","source-wrap source-status",t("targets")+": "+(m.targets.map(x=>x.capability).join(", ")||t("no_target")));
-    main.append(targets);
-    const acts=el("div","source-actions");
-    acts.append(action("edit",()=>openEditor(src)),action(m.enabled?"disable":"enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)));
+    const badges=el("div","src-badges");
+    badges.append(badge(m.kind,"badge-neutral"));
+    badges.append(m.enabled ? badge(t("enabled"),"badge-success") : badge(t("disabled"),"badge-neutral"));
+    badges.append(badge(m.health || "—",healthTone(m.health)));
+    badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
+    titleWrap.append(a,badges);
+    const acts=el("div","src-acts");
+    acts.append(action("edit",()=>openEditor(src)),action(m.enabled ? "disable" : "enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
     if(m.enabled)acts.append(action("fire",()=>openFire(src)));
-    acts.append(action("saved_dry",()=>openFire(src)));
-    row.append(main,acts);
+    head.append(titleWrap,acts);
+    /* ② 主字段：4 列 KV 网格 */
+    const kv=el("dl","src-kv");
+    kv.append(
+      pair(t("namespace"),m.namespace),
+      pair(t("rv"),m.resourceVersion),
+      pair(t("last_fire"),fmt(m.lastFiredAt),!m.lastFiredAt),
+      pair(t("next_fire"),fmt(m.nextFireAt),!m.nextFireAt));
+    /* ③ 次要字段：默认折叠（SRC-4：移动端一条源不再 700px 高） */
+    const more=el("details","src-more");
+    const moreBody=el("div","src-more-body");
+    const lastError=src.status?.lastError ? JSON.stringify(src.status.lastError) : "—";
+    moreBody.append(
+      pair(t("last_error"),lastError,!src.status?.lastError),
+      pair(t("installed"),m.installedFrom || "—",!m.installedFrom),
+      pair(t("targets"),m.targets.map(x=>x.capability).join(", ") || t("no_target"),!m.targets.length));
+    more.append(el("summary",null,xt("more")),moreBody);
+    row.append(head,kv,more);
     $("src-list").append(row);
   }
 }
@@ -495,6 +594,7 @@ async function openEditor(src){
   if(cfg.hookUrl)$("hook-read").append(el("code","source-wrap",cfg.hookUrl),el("p","source-status","secretSet: "+String(cfg.secretSet)));
   syncKind();
   A.openModal($("src-modal"));
+  syncScrollHint();
   suggest();
   try{
     const events=await A.nsList("events");
@@ -575,8 +675,18 @@ function writeSource(){
     capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
   }));
   const name=$("f-name").value.trim();
-  if(!name)throw new Error(t("name_required"));
-  if(targets.some(x=>!x.capability))throw new Error(t("capability_required"));
+  /* W2-4：必填失败必须给出**看得见**的反馈（字段红框 + 文案 + toast），
+     不能只把错误写进 body 底部的 #form-result（那在可视区外）。 */
+  if(!name){
+    const err=new Error(t("name_required"));
+    err.field="name";
+    throw err;
+  }
+  if(targets.some(x=>!x.capability)){
+    const err=new Error(t("capability_required"));
+    err.field="targets";
+    throw err;
+  }
   return {
     apiVersion:"anotify/v1",kind:"Source",metadata:{
       name,namespace:A.readScope().namespace,displayName:$("f-display").value.trim()
@@ -585,6 +695,23 @@ function writeSource(){
     }
   };
 }
+/* 字段级错误：红框 + 行内文案 + 滚到可见处；输入即清 */
+function flagField(id,message){
+  const input=$(id),box=$(id+"-error");
+  if(!input)return;
+  input.classList.toggle("is-invalid",!!message);
+  if(box){
+    box.textContent=message||"";
+    box.classList.toggle("hidden",!message);
+  }
+  if(message){
+    input.focus();
+    if(typeof input.scrollIntoView==="function")input.scrollIntoView({
+      block:"center"
+    });
+  }
+}
+$("f-name").addEventListener("input",()=>flagField("f-name",""));
 $("modal-save").onclick=async()=>{
   const btn=$("modal-save");
   btn.disabled=true;
@@ -599,6 +726,10 @@ $("modal-save").onclick=async()=>{
     await load();
   }catch(err){
     error($("form-result"),err);
+    // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
+    if(err.field==="name")flagField("f-name",err.message);
+    if(err.field==="targets")A.toast(err.message,"error");
+    else if(!err.field)A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
     if(A.isConflict(err)||err.reason==="resource_version_required"){
       $("form-result").append(el("p","field-hint",t("draft_preserved")));
       $("reload-draft").classList.remove("hidden");
@@ -633,6 +764,7 @@ $("btn-dry").onclick=async()=>{
     })));
   }catch(err){
     error($("form-result"),err);
+    A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
   }finally{
     btn.disabled=false;
   }
@@ -648,12 +780,24 @@ $("reload-draft").onclick=async()=>{
 };
 $("btn-new").onclick=()=>openEditor(null);
 $("btn-refresh").onclick=load;
-$("modal-close").onclick=()=>{
+function closeEditor(){
   A.closeModal($("src-modal"));
   $("f-token").value="";
   $("f-secret").value="";
+  flagField("f-name","");
   EDITING=null;
-};
+}
+$("modal-close").onclick=closeEditor;
+$("modal-cancel").onclick=closeEditor;
+/* 弹层 body 还能往下滚时给一道底部渐隐（内容被切断的可见提示） */
+function syncScrollHint(){
+  const body=$("src-modal-body");
+  if(!body)return;
+  const more=body.scrollHeight-body.clientHeight-body.scrollTop>8;
+  body.classList.toggle("is-more",more);
+}
+$("src-modal-body").addEventListener("scroll",syncScrollHint);
+window.addEventListener("resize",syncScrollHint);
 $("add-target").onclick=()=>$("f-targets").append(targetRow());
 $("f-kind").onchange=syncKind;
 for(const id of ["dry-payload","f-sample","f-payload-schema","f-payload"])$(id).oninput=suggest;
