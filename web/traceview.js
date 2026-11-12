@@ -30,21 +30,16 @@
 (function () {
 	"use strict";
 
-	// v4 phase → CSS 类名后缀。**映射只有一份**（graphs.js 的 STATUS_CLASS，
-	// 因为 v4 的 `cancelled` 与 tokens/ui.css 里的历史拼写 `canceled` 不同）。
-	// 这里保留一份同值兜底：图库脚本没加载时状态点也得有颜色。
-	const STATUS_CLASS_FALLBACK = {
-		pending: "pending",
-		running: "running",
-		succeeded: "succeeded",
-		failed: "failed",
-		cancelled: "canceled",
-		abandoned: "abandoned",
-	};
+	// v4 phase → CSS 类名后缀。**映射只有一份**（partials.js 的 Anotify.STATUS_CLASS）：
+	// v4 的 `cancelled` 与 tokens/ui.css 里的历史拼写 `canceled` 只在那一个地方归一
+	// （ST-5）。这里不拄第二份表：取不到映射时直接退回 raw phase（同名相位仍有色，
+	// 只有 cancelled 掉回默认样式），而不是维护一份必然漂移的副表。
 	function statusClass(st) {
+		const A = window.Anotify;
 		const G = window.AnotifyGraphs;
-		const map = (G && G.STATUS_CLASS) || STATUS_CLASS_FALLBACK;
-		return map[st] || "pending";
+		const map =
+			(A && A.STATUS_CLASS) || (G && G.STATUS_CLASS) || null;
+		return (map && map[st]) || String(st || "pending");
 	}
 
 	// 状态显示名：**不写死中文**，文案走 `message.task_state.*`；
@@ -455,6 +450,7 @@
 		renderTree,
 		fmtDur,
 		normalizeTask,
-		STATUS_CLASS: STATUS_CLASS_FALLBACK,
+		/* 唯一一份映射在 partials.js；这里导出的只是同一张表的引用。 */
+		STATUS_CLASS: (window.Anotify && window.Anotify.STATUS_CLASS) || {},
 	};
 })();

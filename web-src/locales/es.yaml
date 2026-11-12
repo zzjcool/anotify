@@ -2292,3 +2292,12 @@ uxaudit:
     code_json: JSON original
     code_rendered: Resultado renderizado
     code_receipt: Recibo de instalación
+
+# UI 审计 v3 / A 集群（壳与组件基建）：新增文案统一放这里，合并时整块追加。
+  shell:
+    legend_toggle: Leyenda
+    pan_hint: '← arrastra para desplazar →'
+    scope_hint: Espacio de nombres actual — cámbialo en la barra lateral
+    file_drop_pick: Arrastra un archivo aquí o haz clic para elegirlo
+    file_drop_hint: .yaml / .json, hasta 1 MB cada uno
+    file_drop_empty: Ningún archivo seleccionado

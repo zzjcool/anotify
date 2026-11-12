@@ -2297,3 +2297,12 @@ uxaudit:
     code_json: JSON 原文
     code_rendered: 渲染结果
     code_receipt: 安装回执
+
+# UI 审计 v3 / A 集群（壳与组件基建）：新增文案统一放这里，合并时整块追加。
+  shell:
+    legend_toggle: 图例
+    pan_hint: '← 可横向拖动 →'
+    scope_hint: 当前命名空间，可在左侧切换
+    file_drop_pick: 拖入文件，或点击选择
+    file_drop_hint: 支持 .yaml / .json，单个 ≤ 1MB
+    file_drop_empty: 未选择文件

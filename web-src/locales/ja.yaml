@@ -2292,3 +2292,12 @@ uxaudit:
     code_json: JSON 原文
     code_rendered: レンダー結果
     code_receipt: インストール受領書
+
+# UI 审计 v3 / A 集群（壳与组件基建）：新增文案统一放这里，合并时整块追加。
+  shell:
+    legend_toggle: 凡例
+    pan_hint: '← 横にドラッグ →'
+    scope_hint: 現在のネームスペース（左のサイドバーで切替）
+    file_drop_pick: ファイルをドロップ、またはクリックして選択
+    file_drop_hint: .yaml / .json、1 ファイル 1MB まで
+    file_drop_empty: ファイル未選択

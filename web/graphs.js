@@ -140,15 +140,11 @@
 	};
 
 	// v4 phase → **CSS 类名后缀**（ui.css 的 .st-* / .b-* 用的是历史拼写）。
-	// 与 STATUS_VAR 一一对应；导出给 traceview.js 用，免得两处长成两份。
-	const STATUS_CLASS = {
-		pending: "pending",
-		running: "running",
-		succeeded: "succeeded",
-		failed: "failed",
-		cancelled: "canceled",
-		abandoned: "abandoned",
-	};
+	// 唯一一份映射在 partials.js（window.Anotify.STATUS_CLASS）—— v4 的 `cancelled`
+	// 与 ui.css 的 `canceled` 只在那一个地方归一（ST-5）。这里只留引用，不再拄一份；
+	// partials.js 未加载（file:// 降级）时退化成 raw phase（pending/running/... 同名，
+	// 只有 cancelled 会掉回默认样式，可接受）。
+	const STATUS_CLASS = (window.Anotify && window.Anotify.STATUS_CLASS) || {};
 
 	/** 图太大时截断（防数据异常卡死浏览器）。返回实际使用的节点/边。 */
 	function truncate(nodes, edges, limit) {
