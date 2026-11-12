@@ -610,3 +610,79 @@ spec:
 		}
 	}
 }
+
+// TestPlanUnappliedActualMasksRenamedParamWhenNoSensitiveKeys 钉住「新包同名能力已无任何
+// writeOnly 引用、但旧行仍带着改名前的 writeOnly 派生值」这一档：
+// 第二轮 params 只剩非敏感 project（敏感 key 集为空），旧 key `tokenRef` 既不在 keys、
+// 也不在 knownParams → 仍必须打码。按 `len(keys)==0` 早退会在这里漏明文。
+func TestPlanUnappliedActualMasksRenamedParamWhenNoSensitiveKeys(t *testing.T) {
+	const valuesDoc = `
+    type: object
+    additionalProperties: false
+    properties:
+      project: { type: string, default: a }
+      tok: { type: string, writeOnly: true }
+`
+	const sourceDoc = `
+metadata:
+  name: a-on-push
+spec:
+  kind: webhook
+  enabled: true
+  config: {}
+  targets:
+    - capability: a-review
+      params:
+        project: '{{values.project}}'
+`
+	const reviewCapDoc = `
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: a-review
+spec:
+  next: []
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: "#!/usr/bin/env bash\ntrue\n"
+`
+	const (
+		oldTok  = "rename-empty-keys-old-secret"
+		oldNote = "rename-empty-keys-old-note"
+	)
+	pkg := newBundle().
+		setValues(valuesDoc).
+		cap("capabilities/review.yaml", reviewCapDoc).
+		source("sources/on-push.yaml", sourceDoc).
+		pkg(t)
+	ex := newFakeExisting().withSource("a-on-push", sourcespec.KindWebhook, `{}`,
+		sourcespec.Target{Capability: "a-review", Params: map[string]any{
+			"tokenRef": oldTok, "note": oldNote, "project": "a",
+		}},
+	)
+	plan, err := Plan(pkg, map[string]any{"tok": "unused", "project": "b"}, ex)
+	if err != nil {
+		t.Fatalf("计划失败: %v", err)
+	}
+	actual := plan.Unapplied[0].Actual.([]sourcespec.Target)
+	if got := actual[0].Params["tokenRef"]; got != MaskedValue {
+		t.Fatalf("敏感 key 集为空时，改名前的旧 key tokenRef 仍必须打码（得到 %#v）", got)
+	}
+	if got := actual[0].Params["note"]; got != MaskedValue {
+		t.Fatalf("被删除的旧 key note 必须打码（多打码方向），得到 %#v", got)
+	}
+	if got := actual[0].Params["project"]; got != "a" {
+		t.Fatalf("仍存在的非敏感 key project 应保留旧值 a，得到 %#v", got)
+	}
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_actual_rename_empty_keys", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化失败: %v", err)
+	}
+	for _, secret := range []string{oldTok, oldNote} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("回执里泄露了明文 %q: %s", secret, raw)
+		}
+	}
+}

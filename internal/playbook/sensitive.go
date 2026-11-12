@@ -420,9 +420,17 @@ func mergeSensitivity(dst *targetSensitivity, src targetSensitivity) {
 	}
 }
 
-// maskTargetAt 打码一个 target 的 params（无 params / 无敏感项 → 原值原样返回）。
+// maskTargetAt 打码一个 target 的 params。
+//
+// 早退只在「确实没有可打码的东西」时成立：declared 侧（knownParams==nil）没有敏感 key
+// 就是没有；actual 侧即使没有任何敏感 key，也要逐 key 扫一遍——改名/删除的旧 key 不在
+// `keys` 里，但仍在 `knownParams` 之外，必须打码。把 actual 侧也按 `len(keys)==0` 早退，
+// 会漏掉「新包该能力已无 writeOnly 引用、但旧行还带着改名前的 writeOnly 派生值」这一档。
 func maskTargetAt(t sourcespec.Target, set targetSensitivity) sourcespec.Target {
-	if len(t.Params) == 0 || (!set.allParams && len(set.keys) == 0) {
+	if len(t.Params) == 0 {
+		return t
+	}
+	if !set.allParams && len(set.keys) == 0 && set.knownParams == nil {
 		return t
 	}
 	params := make(map[string]any, len(t.Params))
