@@ -305,3 +305,10 @@ go run ./cmd/fe-preview -dir web -addr 127.0.0.1:<PORT> &   # <PORT> 见任务�
 - **`docs.openapi.tag.*` 缺 4 个 tag**（`aggregates`/`console`/`hooks`/`source-actions`），sitegen 每次构建 WARN 并派生英文名。
 - **login 桌面 hero 卡下半部约 500px 空**（E 改双栏后新引入的失衡）。
 - **`:517` `/sources` 每行两个同色 badge**（`已启用` + `ok`；`已停用` + `disabled`），语义与颜色都重复。
+
+### M6 · 前几轮的 `frontend` 绿是「陈旧 dist 假绿」
+`scripts/e2e/run_all.sh` 只在 `internal/server/dist` 不存在时才重建（`run_all.sh:31-40`），改了 `web/` / `web-src/` 后直接跑 e2e，测的是**上一次构建的 embed**。
+本轮因此出现：合完 E/D/C 后 `frontend` 连报 35/0，`make build` 一重建，同一批用例立刻红 2 条（M2/M3/M4）。
+`DEVELOPMENT.md:660` 已写明此坑（症状原话：“改的逻辑像没生效、新断言莫名挂、旧行为还在”），本轮漏做。
+**门禁纪律**：改任何会被 embed 的前端源后，`make fe`（或 `rm -rf internal/server/dist`）→ 再跑 e2e；确认产物是新的用 `grep -rl <新特征> internal/server/dist | wc -l` > 0。
+Note：`ui_shift` / `i18n_coverage` 是 explicit-mock、直接服务 `web/`，不受此坑影响 —— 所以它们能一直绿，`frontend`（real，走 dist）才会红。
