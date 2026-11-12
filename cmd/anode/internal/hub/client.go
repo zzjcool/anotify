@@ -31,6 +31,21 @@ const defaultReadLimit = 4 << 20
 // writeTimeout 是单帧写超时（慢网络不阻塞其它发送方无限期）。
 const writeTimeout = 10 * time.Second
 
+// 保活参数（keepalive）：**空闲连接必须自己发帧**。
+//
+// 中枢与节点之间在空闲时一个帧都不发，而它们中间通常站着反向代理 / 隧道
+// （cloudflared、nginx、负载均衡）。这些中间层对**无数据**的 WebSocket 有 idle
+// timeout（实测本机经 cloudflared 是 ~126s），到点直接关连接 —— 现场表现是
+// 「每两分钟断一次、1 秒后又连上」：控制台在线状态来回跳，派发偶尔撞上
+// `no_online_node`（任务明明有节点却报没有）。
+//
+// ping 既保活（30s 远小于任何常见 idle timeout），也是最便宜的半开连接探测：
+// 回不了 pong 就主动断开重连，比等 TCP 超时快得多。
+const (
+	pingInterval = 30 * time.Second
+	pingTimeout  = 10 * time.Second
+)
+
 // Handler 是节点对配置/部署帧的处理入口（由 internal/node 实现）。
 //
 // N2B 的执行/运维/emit 帧通过下面的可选接口接线：只实现 Handler 的节点（N2A
@@ -304,6 +319,11 @@ func (c *Client) runSession(ctx context.Context) error {
 	c.setConn(conn)
 	defer c.clearConn(conn)
 
+	// 保活：与本会话同生共死（连接一断，ping 循环也随之结束）。
+	pingCtx, stopPing := context.WithCancel(ctx)
+	defer stopPing()
+	go c.keepalive(pingCtx, conn)
+
 	if err := c.Send(c.Handler.Hello()); err != nil {
 		return err
 	}
@@ -334,6 +354,30 @@ func (c *Client) runSession(ctx context.Context) error {
 			welcomed = true
 		}
 		c.dispatch(ctx, conn, frame)
+	}
+}
+
+// keepalive 定期发 WebSocket ping（见 pingInterval 的注释）。
+//
+// 发不出去 / 收不到 pong 就关掉这条连接：读循环随即报错退出，交给外层退避重连。
+// 不在这里重连，也不吞错——重连策略只有一处（runSession 的调用方）。
+func (c *Client) keepalive(ctx context.Context, conn *websocket.Conn) {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := conn.Ping(pctx)
+			cancel()
+			if err != nil {
+				c.logf("hub: ping 失败（连接已死，重连）: %v", err)
+				_ = conn.Close(websocket.StatusPolicyViolation, "ping timeout")
+				return
+			}
+		}
 	}
 }
 
