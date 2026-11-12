@@ -1039,3 +1039,80 @@ func TestPlaybookResourceNamespaceIsolation(t *testing.T) {
 		t.Fatalf("A 的清单应仍有 %q，实际 %+v", slug, listA.Items)
 	}
 }
+
+// TestPlaybookStatusAggregatesMemberConditions 钉住「体检」的两条判据都在**真实派生**：
+//
+//   - status.conditions 是成员能力四条 condition 的聚合（playbook.md §6.1）。曾经这里是
+//     恒空数组 + `ready` 结构上永远 false —— 不管装没装，体检都不可能过。
+//   - items[].state 用 §6.1 的词表：没有节点能跑它时是该能力的 `no_node`，不是一律 `ok`。
+func TestPlaybookStatusAggregatesMemberConditions(t *testing.T) {
+	env := newPlaybookTestEnv(t)
+	slug := "status-agg"
+	env.create(t, slug, pbTestBundle(slug))
+
+	rec := env.do(t, "POST", env.path("/"+slug+"/install"), map[string]any{"values": pbTestValues("agg")})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install 应 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = env.do(t, "GET", env.path("/"+slug), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get 应 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var doc struct {
+		Status struct {
+			Ready      bool `json:"ready"`
+			Conditions []struct {
+				Type    string   `json:"type"`
+				Status  string   `json:"status"`
+				Reason  string   `json:"reason"`
+				Members []string `json:"members"`
+			} `json:"conditions"`
+			Items []struct {
+				Kind  string `json:"kind"`
+				Name  string `json:"name"`
+				State string `json:"state"`
+			} `json:"items"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+
+	// 四条 condition 必须全部来自成员能力（按 capacity.md §2.4 的固定顺序）。
+	want := []string{"Implemented", "NodesAvailable", "DownstreamResolved", "Deployed"}
+	if len(doc.Status.Conditions) != len(want) {
+		t.Fatalf("conditions 应有四条第 %v，实际 %d 条: %+v",
+			want, len(doc.Status.Conditions), doc.Status.Conditions)
+	}
+	for i, typ := range want {
+		if doc.Status.Conditions[i].Type != typ {
+			t.Fatalf("conditions[%d] = %q, want %q", i, doc.Status.Conditions[i].Type, typ)
+		}
+	}
+	// 这个夹具里没有任何节点：NodesAvailable 必然 False，且 members 指名是哪个能力拖的。
+	na := doc.Status.Conditions[1]
+	if na.Status == "True" {
+		t.Fatalf("没有节点的环境里 NodesAvailable 不能是 True: %+v", na)
+	}
+	if len(na.Members) != 1 || !strings.Contains(na.Members[0], "-review") {
+		t.Fatalf("members 应指名失败成员（* 能力名），实际 %+v", na.Members)
+	}
+	if doc.Status.Ready {
+		t.Fatal("有成员 condition 不为 True 时 ready 必须是 false")
+	}
+	// 能力 item 的 state 随之变成 no_node（不是一律 ok）。
+	found := false
+	for _, item := range doc.Status.Items {
+		if item.Kind != "capability" {
+			continue
+		}
+		found = true
+		if item.State != "no_node" {
+			t.Fatalf("没有节点可跑时 items[].state 应是 no_node，实际 %q（%s）", item.State, item.Name)
+		}
+	}
+	if !found {
+		t.Fatalf("items 里应有能力行: %+v", doc.Status.Items)
+	}
+}

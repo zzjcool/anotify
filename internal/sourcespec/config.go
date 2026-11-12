@@ -307,7 +307,15 @@ func SameTargets(a, b []Target) bool {
 func targetKeySet(targets []Target) ([]string, bool) {
 	keys := make([]string, 0, len(targets))
 	for _, t := range targets {
-		params, err := marshalCanonical(t.Params)
+		// nil 与空 map 都是「没有 params」：JSON 里省略 params 与写 `params: {}` 解出来
+		// 一个是 nil、一个是零长度 map，而规范化后是 "null" / "{}" 两个不同键。
+		// 当成差异的后果很具体：同一份 targets 被判成 `targets_unapplied`，回执里
+		// declared 与 actual 打印出来一模一样，体检却永远不绿（真实故障）。
+		raw := t.Params
+		if len(raw) == 0 {
+			raw = map[string]any{}
+		}
+		params, err := marshalCanonical(raw)
 		if err != nil {
 			return nil, false
 		}

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/zzjcool/anotify/internal/playbook"
+	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
 )
 
@@ -440,11 +441,12 @@ func decodePlaybookAction(r *http.Request) (playbookActionBody, error) {
 //   - items / sources / lastInstallId / unapplied 来自回执历史：`ListPlaybookInstalls` 的
 //     installed_from 反查给出「这个包历史上装出来的行」，最近一组的 lastInstallId 给出
 //     该组最新回执（`unapplied[]` 就从这份回执读，它才是「差异没生效」的原始记录）。
-//   - conditions 是**成员能力的四条 condition** 聚合。它需要能力读模型按 installed_from
-//     查询，store 没有导出这个入口（contract D0.9：331 不新增 store 底层入口，缺签名只
-//     报告），所以这里恒为空数组——不编造 `True`。
-//   - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空），因此当前
-//     恒为 false：四条 condition 一条都拿不到时不能宣称就绪。
+//   - conditions 是**成员能力的四条 condition** 聚合（playbook.md §6.1）：成员行按
+//     installed_from 反查出来（`ListPlaybookInstalls` 的 groups[].capabilities），再逐行
+//     取该能力自己的 status 派生（与 get capability 同一份实现）。任一成员 False ⇒ 该 type
+//     聚合后 False，reason/message 取第一个失败成员，members 列出失败者。
+//     **不编造**：反查不到行（能力被删）就不参与，四种 type 都聚不出来时 conditions 仍是 []。
+//   - ready 由 conditions + unapplied 派生（四条全 True 且 unapplied 为空）。
 //
 // 刻意**没有** `blocker`：它要求「最该先做的一件事」，来源正是成员能力的四条
 // condition；条件拿不到时给一个 blocker 就是纯编造，故省略该键（派生出事实时再加）。
@@ -481,8 +483,12 @@ type playbookItem struct {
 	State   string `json:"state"`
 }
 
-// playbookItemOK 是 items[].state 的唯一已知取值（见 playbookItem 注释）。
-const playbookItemOK = "ok"
+// items[].state 的词表（playbook.md §6.1）：能力取 ok / no_node，源取 ok 等四态。
+const (
+	playbookItemOK             = "ok"
+	playbookItemStateNoNode    = "no_node"
+	playbookItemKindCapability = "capability"
+)
 
 // playbookSourceStatus 是 status.sources（§6.1 的四态计数）。
 //
@@ -531,6 +537,7 @@ func (a *playbookAPI) envelope(ctx context.Context, ns string, row *store.Playbo
 
 // statusFor 从「真实行 + 回执历史」派生 status。
 func (a *playbookAPI) statusFor(ctx context.Context, ns string, row *store.PlaybookRow) (playbookStatus, error) {
+	var capStates map[string]string
 	st := playbookStatus{
 		Unapplied:  []playbook.UnappliedEntry{},
 		Conditions: []playbookCondition{},
@@ -548,6 +555,15 @@ func (a *playbookAPI) statusFor(ctx context.Context, ns string, row *store.Playb
 		// 组按 lastAt 降序（store 保证）：第一组的最新回执 = 全包最近一次安装。
 		st.LastInstall = list.Installs[0].LastInstallID
 		st.Items = playbookItemsFromInstalls(list.Installs)
+		st.Conditions, capStates = a.memberConditions(ctx, ns, list.Installs)
+		for i := range st.Items {
+			if st.Items[i].Kind != playbookItemKindCapability {
+				continue
+			}
+			if state := capStates[st.Items[i].Name]; state != "" {
+				st.Items[i].State = state
+			}
+		}
 	}
 	if st.LastInstall != "" {
 		rcpt, err := a.d.DB.GetPlaybookInstall(ctx, ns, row.Slug, st.LastInstall)
@@ -573,6 +589,83 @@ func (a *playbookAPI) statusFor(ctx context.Context, ns string, row *store.Playb
 	}
 	st.Ready = playbookReady(st.Conditions, st.Unapplied)
 	return st, nil
+}
+
+// playbookConditionOrder 是聚合顺序（capability.md §2.4 的四条，playbook.md §6.1 也按它列）。
+var playbookConditionOrder = []string{
+	protocol.ConditionImplemented,
+	protocol.ConditionNodesAvailable,
+	protocol.ConditionDownstreamResolved,
+	protocol.ConditionDeployed,
+}
+
+// memberConditions 把成员能力的四条 condition 聚合成包级的四条（playbook.md §6.1）。
+//
+// 输入是反查出来的成员行（groups[].capabilities = "name@version"）。逐行调用能力自己的
+// status 派生（与 GET capability 同源，不另写一套判定），再按 type 归并：
+// 任一成员 False ⇒ 该 type False；reason/message 取第一个失败成员；members = 失败成员名。
+//
+// 同时给出 items[].state 需要的 "no_node"（该能力的 NodesAvailable 不为 True）——
+// 词表沿用 playbook.md §6.1（ok / no_node），不新造第三套。
+func (a *playbookAPI) memberConditions(ctx context.Context, ns string,
+	groups []store.PlaybookInstallGroup) ([]playbookCondition, map[string]string) {
+	type tally struct {
+		total, failed   int
+		reason, message string
+		members         []string
+	}
+	tallies := map[string]*tally{}
+	capStates := map[string]string{}
+	caps := newCapabilityAPI(a.d)
+	for _, group := range groups {
+		for _, ref := range group.Capabilities {
+			name, version, _ := store.SplitRef(ref)
+			row, err := a.d.DB.GetCapability(ctx, ns, name, version)
+			if err != nil {
+				// 成员行反查不到（能力被删/改名）：不参与聚合，也不编造一条 condition。
+				continue
+			}
+			view, err := caps.statusFor(ctx, row)
+			if err != nil {
+				continue
+			}
+			for _, c := range view.Conditions {
+				slot := tallies[c.Type]
+				if slot == nil {
+					slot = &tally{}
+					tallies[c.Type] = slot
+				}
+				slot.total++
+				if c.Type == protocol.ConditionNodesAvailable && c.Status != protocol.ConditionStatusTrue {
+					capStates[name] = playbookItemStateNoNode
+				}
+				if c.Status == protocol.ConditionStatusTrue {
+					continue
+				}
+				slot.failed++
+				if slot.failed == 1 {
+					slot.reason, slot.message = c.Reason, c.Message
+				}
+				slot.members = append(slot.members, name)
+			}
+		}
+	}
+	out := make([]playbookCondition, 0, len(playbookConditionOrder))
+	for _, typ := range playbookConditionOrder {
+		slot := tallies[typ]
+		if slot == nil || slot.total == 0 {
+			continue
+		}
+		condition := playbookCondition{Type: typ, Status: protocol.ConditionStatusTrue}
+		if slot.failed > 0 {
+			condition.Status = protocol.ConditionStatusFalse
+			condition.Reason = slot.reason
+			condition.Message = slot.message
+			condition.Members = slot.members
+		}
+		out = append(out, condition)
+	}
+	return out, capStates
 }
 
 // playbookItemsFromInstalls 把折叠组反查出来的能力 / 源名字并成 items（去重 + 稳定排序）。

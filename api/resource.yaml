@@ -1662,7 +1662,7 @@ components:
     CapabilityStatus:
       type: object
       description: "只读派生面（无 reconciler、无 observedGeneration）"
-      required: [version, digest, ready, conditions, nodes, resolved, observed]
+      required: [version, digest, ready, conditions, nodes, deployCandidates, resolved, observed]
       properties:
         version: {type: integer}
         digest: {type: string, description: 内容标识（能力 spec 的 canonical sha256）}
@@ -1674,7 +1674,16 @@ components:
           items: {$ref: '#/components/schemas/CapabilityCondition'}
         nodes:
           type: array
+          description: "**已经持有**这份能力（或持有旧 digest）的机器及其状态；首次部署前恒为 `[]`"
           items: {$ref: '#/components/schemas/CapabilityNodeState'}
+        deployCandidates:
+          type: array
+          description: |
+            “人工部署”可以把这份能力推过去的机器（**部署**判据，与 `nodes` 是两件事）：
+            节点申报 ∩ 授权覆盖本命名空间、不在排空中；`online` 是此刻的连接事实。
+            不看“是否已经部署过”（那是 `nodes` / NodesAvailable 的事）——否则首次部署时这里恒空，
+            弹窗就只能写“没有候选节点”。
+          items: {$ref: '#/components/schemas/CapabilityDeployCandidate'}
         resolved: {$ref: '#/components/schemas/CapabilityResolved'}
         observed:
           type: object
@@ -1683,6 +1692,14 @@ components:
         installedFrom:
           type: string
           description: "初次安装来源（`ins_…`）；手工创建的能力没有这个键"
+    CapabilityDeployCandidate:
+      type: object
+      required: [name, online]
+      properties:
+        name: {type: string}
+        online:
+          type: boolean
+          description: "此刻是否有已认证的节点 WS 会话；离线的候选仍可接部署意图（行落成 pending，重连时补齐）"
     Capability:
       type: object
       description: "能力文档（信封）"
@@ -2040,8 +2057,8 @@ components:
         version: {type: integer}
         state:
           type: string
-          enum: [ok]
-          description: "当前只有「定义在库里」这一个已知事实"
+          enum: [ok, no_node]
+          description: "能力的 `no_node` = 当前节点池里没有能跑它的节点（= 该能力 NodesAvailable 不为 True）；源沿用 ok 等四态"
     PlaybookSourceStatus:
       type: object
       required: [total, unapplied]
@@ -2066,7 +2083,7 @@ components:
       properties:
         ready:
           type: boolean
-          description: "四条 condition 全 True 且 unapplied 为空；当前事实不足时恒 false"
+          description: "四条 condition 全 True 且 unapplied 为空。四个 type 是成员能力的聚合（各成员全 True 才 True）"
         unapplied:
           type: array
           items: {$ref: '#/components/schemas/PlaybookUnappliedEntry'}
@@ -2466,8 +2483,14 @@ components:
         busy: {type: boolean}
     NodeStatus:
       type: object
-      required: [localVars, nodeVars, machineVars, configRevision, appliedRevision, appliedHash, effectiveNamespaces, instances]
+      required: [online, draining, localVars, nodeVars, machineVars, configRevision, appliedRevision, appliedHash, effectiveNamespaces, instances]
       properties:
+        online:
+          type: boolean
+          description: "这一刻有没有一条**已认证**的节点 WebSocket 会话（派生事实，不落库；不是用 lastSeenAt 猜的）。控制台靠它区分在线/离线"
+        draining:
+          type: boolean
+          description: "是否被置为排空中（`POST /v1/nodes/{name}/drain`）：跑完手上的任务后不再接新任务（派生自 nodes.status=draining）"
         hostIP: {type: string}
         hostname: {type: string}
         os: {type: string}

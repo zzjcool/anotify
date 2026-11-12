@@ -238,6 +238,27 @@ func TestSameTargets(t *testing.T) {
 	}
 }
 
+// TestSameTargetsNilAndEmptyParams 钉住「省略 params」与「params: {}」是同一件事。
+//
+// 这不是学术差别：包里写 `params: {}`（YAML 里很自然）、库里的行省略 params，反序列化
+// 一个是空 map、一个是 nil。规范化后成了 "{}" 与 "null" 两个键 → 同一份 targets 被判成
+// targets_unapplied → 回执里 declared 与 actual 打印出来一模一样，体检永远不绿。
+func TestSameTargetsNilAndEmptyParams(t *testing.T) {
+	none := []Target{{Capability: "hello-node"}}
+	empty := []Target{{Capability: "hello-node", Params: map[string]any{}}}
+	if !SameTargets(none, empty) {
+		t.Fatal("省略 params 与 params: {} 必须等价（否则产生假 targets_unapplied）")
+	}
+	if !SameTargets(empty, none) {
+		t.Fatal("比较必须对称")
+	}
+	// 真的有参数时仍然是差异。
+	withParams := []Target{{Capability: "hello-node", Params: map[string]any{"name": "x"}}}
+	if SameTargets(none, withParams) {
+		t.Fatal("带参数与不带参数必须不同")
+	}
+}
+
 // TestValidateParamsTemplate 验模板语法校验（只校形状，不校路径取不取得到）。
 func TestValidateParamsTemplate(t *testing.T) {
 	ok := []map[string]any{
