@@ -2191,3 +2191,11 @@ ui:
     filters: 筛选
     active: 生效过滤
     toolbar_hint: 选好后按回车或点筛选
+# ── UI 审计 v3 · E 集群（文档与认证页）新增文案 ─────────────────────
+uxaudit:
+  doc:
+    # message.html 空态 / 错误态（MSG-2 / CP-4）
+    msg_missing_title: "缺少任务 id"
+    msg_notfound_title: "任务不存在"
+    # 字段网格里「没有值」的那些字段名，收成一行注脚（MSG-1）
+    msg_unset: "未设置"

@@ -3,6 +3,141 @@
 <script defer src="/flograph.js"></script>
 <script defer src="/graphs.js"></script>
 {{end}}
+{{define "style"}}
+<style>
+  /* ===== 链路页（页面内样式；类名 tr- 前缀，共享组件一律用 ui.css）=====
+     只做三件事：① 任务行的信息层级（能力 / 版本 chip / 任务 id / 状态 badge）、
+     ② 事件事实的 .code-block 外壳、③ 空态与错误态的统一骨架。
+     颜色只取 tokens，不出现硬编码色值。 */
+
+  /* ---------- 任务行 ---------- */
+  .tr-task {
+    display: grid;
+    gap: 6px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+    transition:
+      border-color var(--dur) var(--ease),
+      background var(--dur) var(--ease);
+  }
+  .tr-task:hover {
+    border-color: var(--line-strong);
+    background: var(--surface-2);
+  }
+  .tr-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tr-cap {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  /* @序号单独做成 chip：它是「第几版能力」，不是任务 id 的一部分 */
+  .tr-ver {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1;
+    color: var(--muted);
+  }
+  .tr-id {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--accent-strong);
+    overflow-wrap: anywhere;
+    transition: color var(--dur-fast) var(--ease);
+  }
+  .tr-id:hover {
+    color: var(--text);
+  }
+  .tr-meta {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--muted);
+  }
+  .tr-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* ---------- 空态 / 错误态（图标 + 标题 + 说明 + 动作）----------
+     .empty 提供居中堆叠与内距；这里补图标底、标题档位与动作行。
+     e2e（f3-trace-startup）读 #trace-error 的纯文本与 `#trace-error button`，
+     所以标题/说明必须是文本叶子、重试必须是 <button>。 */
+  .tr-state-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    color: var(--muted);
+  }
+  .tr-state-mark svg {
+    width: 20px;
+    height: 20px;
+  }
+  .tr-state-icon {
+    display: block;
+  }
+  .tr-state.is-error .tr-state-mark {
+    border-color: color-mix(in srgb, var(--error) 30%, transparent);
+    background: var(--error-soft);
+    color: var(--error);
+  }
+  .tr-state-title {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--text);
+  }
+  .tr-state-desc {
+    max-width: 52ch;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .tr-state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  /* ---------- 事件事实 / 剪枝：代码块外壳内的行距 ---------- */
+  .tr-fact {
+    display: grid;
+    gap: 8px;
+  }
+  .tr-fact-id {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+</style>
+{{end}}
 {{define "content"}}
 <div id="page-main">
   <div class="page">
@@ -15,7 +150,22 @@
     </div>
     <div id="trace-error" role="status"></div>
     <div id="trace-content" class="grid gap-4" aria-busy="true">
-      <div class="empty">{{t "events.v4.loading"}}</div>
+      <div class="empty">
+        <span class="tr-state-mark" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+          </svg>
+        </span>
+        <b class="tr-state-title">{{t "trace.title"}}</b>
+        <p class="tr-state-desc">{{t "trace.loading"}}</p>
+      </div>
     </div>
   </div>
 </div>
@@ -25,7 +175,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, nsPath, readScope, saveScope, model, t, loadErrorNode } = A;
+    const { el, api, ready, nsPath, readScope, saveScope, model, t, icon, copyText } = A;
     const query = new URLSearchParams(location.search);
     const uid = query.get("traceUID") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
@@ -49,7 +199,7 @@
     const deferredGraphics = document.readyState === "loading"
       ? new Promise(resolve => document.addEventListener("DOMContentLoaded", () => resolve(), { once: true }))
       : Promise.resolve();
-    /* 图库能力必须真检查：脚本加载失败/缺库要变成可见错误（loadErrorNode 带原重试），
+    /* 图库能力必须真检查：脚本加载失败/缺库要变成可见错误（带原重试），
        不静默删图、不画假图。 */
     function graphLib() {
       const lib = window.AnotifyGraphs;
@@ -59,24 +209,105 @@
     function taskLink(name) {
       return "message.html?namespace=" + encodeURIComponent(readScope().namespace) + "&id=" + encodeURIComponent(name);
     }
+
+    /* ---------- 空态 / 错误态（TR-4 / CP-4）----------
+       图标 + 标题 + 说明 + 动作，与 message.html 同一套骨架（各自页内定义）。
+       e2e（f3-trace-startup）从 #trace-error 的纯文本里读图库错误原文，并要求
+       `#trace-error button` 存在且点击重试 —— 所以标题/说明是文本叶子，
+       重试必须是 <button>（不能改成链接）。 */
+    const ICON_ALERT = [
+      "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
+      "M12 9v4",
+      "M12 17h.01",
+    ];
+    const ICON_UNLINK = [
+      "M9 17H7A5 5 0 0 1 7 7h2",
+      "M15 7h2a5 5 0 0 1 0 10h-2",
+      "M8 12h8",
+    ];
+    const ICON_SEARCH = ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z", "M21 21l-4.35-4.35"];
+    function stateNode(opts) {
+      const box = el("div", { class: "empty tr-state" + (opts.kind === "error" ? " is-error" : ""), role: opts.kind === "error" ? "alert" : "status" });
+      box.append(el("span", { class: "tr-state-mark", "aria-hidden": "true" }, icon(opts.icon || ICON_ALERT, "tr-state-icon")));
+      if (opts.title) box.append(el("b", { class: "tr-state-title", text: opts.title }));
+      if (opts.desc) box.append(el("p", { class: "tr-state-desc", text: opts.desc }));
+      const actions = el("div", { class: "tr-state-actions" });
+      if (typeof opts.retry === "function") {
+        const btn = el("button", { type: "button", class: "btn btn-primary btn-sm", text: t("common.retry", "重试") });
+        btn.addEventListener("click", opts.retry);
+        actions.append(btn);
+      }
+      if (opts.back) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: opts.back.href, text: opts.back.text }));
+      if (actions.children.length) box.append(actions);
+      return box;
+    }
+    /* 失败原因与 loadErrorNode 同口径（HTTP 档位 → 网络失败 → 兜底），
+       但成品是统一空态：标题说「载入失败：原因」，说明放上游原始 message。 */
+    function failureState(error, retry) {
+      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
+      const status = (error && error.status) || 0;
+      const reason = status
+        ? status >= 500
+          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
+          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
+        : /Failed to fetch|NetworkError|load failed/i.test(msg)
+          ? t("common.backend_offline", "连不上服务端")
+          : t("common.request_failed", "请求失败");
+      return stateNode({
+        kind: "error",
+        title: t("common.load_failed_prefix", "载入失败：") + reason,
+        desc: msg,
+        retry,
+        back: { href: "events.html", text: t("trace.back", "返回事件流") },
+      });
+    }
+    /* 事件事实 / 剪枝诊断里的 JSON：一律走 .code-block 外壳（头 + 复制按钮），
+       不再用裸 <pre class="code-body">（CP-5）。 */
+    function codeBlock(label, text) {
+      const body = el("pre", { class: "code-body" }, el("span", { "data-raw-content": "", text: text }));
+      const button = el("button", { type: "button", class: "copy-btn", text: t("docs.copy", "复制") });
+      button.addEventListener("click", () => copyText(button, () => text));
+      return el("div", { class: "code-block" },
+        el("div", { class: "code-head" }, el("span", { text: label }), button), body);
+    }
     function section(title, id) {
       const body = el("div", { id, class: "grid gap-4" });
       const card = el("section", { class: "card card-pad grid gap-4" },
         el("h3", { class: "card-title", text: title }), body);
       return { card, body };
     }
+    /* 任务行的状态是 .badge（TR-2）：成功=success / 失败=error / 等待=warn /
+       执行中=accent / 终止型（取消·放弃）=neutral。能力@版本拆成 name + @序号 chip，
+       任务 id 单独成链接 —— 三者不再拼成一串 'fixer@1 · tsk_mock_1'。 */
+    const PHASE_BADGE = {
+      succeeded: "badge-success",
+      failed: "badge-error",
+      running: "badge-accent",
+      pending: "badge-warn",
+      assigned: "badge-warn",
+      acked: "badge-warn",
+      cancelled: "badge-neutral",
+      abandoned: "badge-neutral",
+      lease_expired: "badge-neutral",
+    };
     function taskRow(resource) {
       const task = model.task(resource);
-      const row = el("div", { class: "grid gap-2", "data-task": task.name, "data-parent": task.parentTaskId || "" });
-      row.append(el("a", { class: "mono b2-wrap", href: taskLink(task.name),
-        text: task.capability.name + "@" + task.capability.version + " · " + task.name }),
-        el("p", { class: "card-sub", text: t("message.v4.phase." + task.phase) +
-          " · " + t("message.v4.attempt") + " " + task.attempt + "/" + task.maxAttempts +
-          (task.waitingReason ? " · " + task.waitingReason : "") }),
-        el("p", { class: "card-sub b2-wrap", text: "parentTaskId: " + (task.parentTaskId || "—") +
-          " · nextAttemptAt: " + (task.nextAttemptAt || "—") }),
-        el("p", { class: "card-sub b2-wrap" },
-          el("span", { "data-raw-content": "", text: task.result.summary || task.result.error?.message || "—" })));
+      const row = el("div", { class: "tr-task", "data-task": task.name, "data-parent": task.parentTaskId || "" });
+      row.append(el("div", { class: "tr-head" },
+        el("span", { class: "tr-cap", text: task.capability.name }),
+        el("span", { class: "tr-ver", text: "@" + task.capability.version }),
+        el("a", { class: "tr-id", href: taskLink(task.name), text: task.name }),
+        el("span", { class: "badge " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase,
+          text: t("message.v4.phase." + task.phase, task.phase) })));
+      row.append(el("p", { class: "tr-meta", text: t("message.v4.attempt", "尝试 / 上限") + " " +
+        task.attempt + "/" + task.maxAttempts + (task.waitingReason ? " · " + task.waitingReason : "") }));
+      /* 空值字段不占位（同 MSG-1）：只列真正有值的那几个，不留一屏 '—' */
+      const extras = [];
+      if (task.parentTaskId) extras.push("parentTaskId: " + task.parentTaskId);
+      if (task.nextAttemptAt) extras.push("nextAttemptAt: " + task.nextAttemptAt);
+      if (extras.length) row.append(el("p", { class: "tr-meta tr-mono", text: extras.join(" · ") }));
+      const note = task.result.summary || task.result.error?.message || "";
+      if (note) row.append(el("p", { class: "tr-meta" }, el("span", { "data-raw-content": "", text: note })));
       return row;
     }
     function render(doc, graphs, baseGraph) {
@@ -87,7 +318,10 @@
       // 就是两层框套在一起（"真实业务任务链"那层纯装饰）。直接把图放进内容区。
       // 容器仍叫 #trace-graph：renderFlow 会把 flograph--silk 之类的类挂在它身上，
       // e2e 也按这个 id 找节点。
-      const flow = el("div", { id: "trace-graph", class: "overflow-x-auto" });
+      // 容器**不再**带 overflow-x-auto：flograph 已经在 .flograph-scroll 里自己做横向
+      // 滚动 + 细滚动条，外面再套一层滚动容器就是二次裁剪（滚两下才到边，移动端
+      // 还会吃掉一档可用宽度）。图的裁剪/图例/对比度归 flograph（A 集群）。
+      const flow = el("div", { id: "trace-graph" });
       const tasks = section(t("trace.v4.tasks"), "trace-tasks");
       const events = section(t("trace.v4.events"), "trace-events");
       const pruned = section(t("trace.v4.pruned"), "trace-pruned");
@@ -114,30 +348,34 @@
         graph = result?.graph;
         tasks.body.append(...doc.tasks.map(taskRow));
       } else {
-        flow.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
-        tasks.body.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
+        flow.append(stateNode({
+          icon: ICON_SEARCH,
+          title: t("trace.empty_title", "没有任务"),
+          desc: t("trace.v4.empty"),
+          back: { href: "events.html", text: t("trace.back", "返回事件流") },
+        }));
+        tasks.body.append(el("p", { class: "tr-meta", text: t("trace.v4.empty") }));
       }
       for (const resource of doc.events) {
         const event = model.event(resource);
-        events.body.append(el("div", { class: "grid gap-2", "data-uid": event.uid },
+        events.body.append(el("div", { class: "tr-fact", "data-uid": event.uid },
           el("code", { class: "mono b2-wrap", text: event.eventType + " · " + event.type + " · " + event.reason }),
-          el("p", { class: "card-sub b2-wrap", text: event.uid + " · deliveryId: " + (event.deliveryId || "—") }),
-          el("pre", { class: "code-body overflow-x-auto" },
-            el("span", { "data-raw-content": "", text: JSON.stringify({ dispatched: event.dispatched, pruned: event.pruned }, null, 2) }))));
+          el("p", { class: "tr-fact-id", text: event.uid + " · deliveryId: " + (event.deliveryId || "—") }),
+          codeBlock("JSON", JSON.stringify({ dispatched: event.dispatched, pruned: event.pruned }, null, 2))));
       }
-      if (!doc.events.length) events.body.append(el("div", { class: "empty", text: t("events.v4.empty") }));
+      if (!doc.events.length) events.body.append(el("p", { class: "tr-meta", text: t("events.v4.empty") }));
       /* pruned[] 的每个条目是**事件信封**（events.yaml·TraceView：「原样给事件信封」）：
        * 原因码是 spec.eventType（= 封闭剪枝码），诊断在 status.pruned.detail。
        * 读 fact.to / fact.reason 是 mock 时代的形状，真实现场只会渲染出 undefined。 */
       doc.pruned.forEach(fact => {
         const prune = fact.status?.pruned || {};
         const code = fact.spec?.eventType || prune.reason || fact.reason || t("trace.v4.no_pruned");
-        pruned.body.append(el("div", { class: "grid gap-2" },
+        pruned.body.append(el("div", { class: "tr-fact" },
           el("code", { class: "mono b2-wrap", text: fact.spec?.involvedObject?.name || fact.to || "—" }),
-          el("p", { class: "card-sub b2-wrap", text: code + ": " },
+          el("p", { class: "tr-fact-id", text: code + ": " },
             el("span", { "data-raw-content": "", text: prune.detail || fact.detail || "" }))));
       });
-      if (!doc.pruned.length) pruned.body.append(el("p", { class: "card-sub", text: t("trace.v4.no_pruned") }));
+      if (!doc.pruned.length) pruned.body.append(el("p", { class: "tr-meta", text: t("trace.v4.no_pruned") }));
     }
     /** 这条 trace 的触发事件（spec.involvedObject.kind=Source）。
      *
@@ -162,8 +400,13 @@
       content.setAttribute("aria-busy", "true");
       try {
         await ready();
-        document.getElementById("trace-sub").textContent = readScope().namespace + " · " + uid;
-        if (!uid) throw new Error(t("trace.v4.missing"));
+        /* 副标题 = 命名空间 · traceUID，两边都只拼真实值：
+           空参时只显示命名空间，不留 `default ·` 这种悬挂分隔符（TR-4）。 */
+        document.getElementById("trace-sub").textContent = [readScope().namespace, uid].filter(Boolean).join(" · ");
+        if (!uid) {
+          /* 缺参不是「载入失败」：它没有可重试的东西，给的是「怎么进这一页」的说明 + 返回事件流。 */
+          throw Object.assign(new Error(t("trace.no_id", "URL 里没有 traceId。")), { traceMissingId: true });
+        }
         const doc = await api(nsPath("traces", uid));
         if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
         // 解析期挂上的 defer 图库屏障：首次 render 必须等它（重试用同一入口，已 resolved）。
@@ -173,7 +416,14 @@
       } catch (error) {
         if (graph?.destroy) graph.destroy();
         content.replaceChildren();
-        errorBox.replaceChildren(loadErrorNode(error, load));
+        errorBox.replaceChildren(error && error.traceMissingId
+          ? stateNode({
+            icon: ICON_UNLINK,
+            title: t("trace.no_id_title", "缺少 traceId"),
+            desc: t("trace.no_id", "URL 里没有 traceId。"),
+            back: { href: "events.html", text: t("trace.back", "返回事件流") },
+          })
+          : failureState(error, load));
       } finally {
         content.removeAttribute("aria-busy");
         button.disabled = false;

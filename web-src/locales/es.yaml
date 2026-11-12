@@ -2189,3 +2189,9 @@ ui:
     filters: Filtros
     active: Filtros activos
     toolbar_hint: Pulsa Enter o Aplicar
+# ── Auditoría UI v3 · clúster E (páginas de docs y autenticación) ─────
+uxaudit:
+  doc:
+    msg_missing_title: "Falta el id de tarea"
+    msg_notfound_title: "Tarea no encontrada"
+    msg_unset: "Sin definir"

@@ -2189,3 +2189,9 @@ ui:
     filters: フィルター
     active: 適用中のフィルター
     toolbar_hint: 選択後、Enter または適用を押す
+# ── UI 監査 v3 · E クラスタ（ドキュメント/認証ページ）の追加文言 ──────
+uxaudit:
+  doc:
+    msg_missing_title: "タスク id がありません"
+    msg_notfound_title: "タスクが見つかりません"
+    msg_unset: "未設定"
