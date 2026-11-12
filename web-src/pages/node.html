@@ -43,9 +43,7 @@
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.effective_vars"}}</div><div class="field"><label class="field-label" for="node-namespace">{{t "nodes.v4.context"}}</label><select id="node-namespace" class="select"></select></div><div id="node-context-revision" class="c2-note"></div><div id="node-effective-vars"></div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p></section>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><p class="c2-note">{{t "nodes.v4.slot_note"}}</p><div id="node-slots"></div></section>
     <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
-    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.local_setup"}}</div><pre class="code-body">anode install
-anode serve
-anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
   </div>
 </div></div>
 {{end}}

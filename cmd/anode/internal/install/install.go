@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/zzjcool/anotify/cmd/anode/internal/config"
@@ -19,9 +20,21 @@ type Options struct {
 	Prefix, ConfigPath, BinPath, UnitPath, DataPath string
 	Name, Server, Token, Source                     string
 	UpdateToken                                     bool
+	// UnitUser 是 unit 里的 User=（空 = 不输出，服务以启动者身份运行）。
+	UnitUser string
+	// UnitHome 是 unit 里的 Environment=HOME=（空 = 不输出；有值必须是安全的绝对路径）。
+	UnitHome string
+	// UnitPathEnv 是 unit 里的 Environment=PATH= 的逐项值（空 = 不输出；按给出顺序用 : 连接）。
+	UnitPathEnv []string
 }
 
+// unitUserPattern 是 systemd User= 允许的形状（也是常见 POSIX 用户名）。
+var unitUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
 func (o *Options) defaults() error {
+	if err := o.validateUnitEnv(); err != nil {
+		return err
+	}
 	if o.Prefix != "" {
 		if err := safePath(o.Prefix); err != nil {
 			return fmt.Errorf("prefix: %w", err)
@@ -55,6 +68,40 @@ func (o *Options) defaults() error {
 				return errors.New("installation destinations overlap")
 			}
 		}
+	}
+	return nil
+}
+
+// validateUnitEnv 校验 --unit-user / --unit-home / --unit-path。
+//
+// 这些值原样进 unit 文件（systemd 不做 shell 转义），所以只放行可证明安全的值；
+// 非法值必须在**任何写盘之前**失败（defaults 是 Apply 的第一道门）。
+func (o *Options) validateUnitEnv() error {
+	if o.UnitUser != "" && !unitUserPattern.MatchString(o.UnitUser) {
+		return fmt.Errorf("unit-user %q is not a valid user name (%s)", o.UnitUser, unitUserPattern.String())
+	}
+	if o.UnitHome != "" {
+		if err := unitEnvPath("unit-home", o.UnitHome); err != nil {
+			return err
+		}
+	}
+	for _, entry := range o.UnitPathEnv {
+		if err := unitEnvPath("unit-path", entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unitEnvPath 要求绝对、clean、非 / 且不含会破坏 unit 行的字符。
+//
+// 这里**不**走 safePath：home/PATH 目录允许是符号链接（如 /var/home），也不是本工具创建的。
+func unitEnvPath(flag, value string) error {
+	if !filepath.IsAbs(value) || filepath.Clean(value) != value || value == "/" {
+		return fmt.Errorf("%s %q: absolute clean non-root path required", flag, value)
+	}
+	if strings.ContainsAny(value, "\x00\r\n\"%$`") {
+		return fmt.Errorf("%s %q: contains characters unsafe in a systemd unit (quote, %%, $, backtick, newline)", flag, value)
 	}
 	return nil
 }
@@ -106,7 +153,20 @@ func EnsureDirectory(path string) error {
 }
 
 func unit(o Options) []byte {
-	return []byte(fmt.Sprintf("# Managed by anode install; do not replace with an unrelated service.\n[Unit]\nDescription=Anotify v4 node\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=\"%s\" serve --config \"%s\" --data \"%s\"\nRestart=always\nRestartSec=2\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n", o.BinPath, o.ConfigPath, o.DataPath))
+	var b strings.Builder
+	b.WriteString("# Managed by anode install; do not replace with an unrelated service.\n[Unit]\nDescription=Anotify v4 node\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n")
+	// 只在有值时输出对应行；值的合法性已由 defaults 保证（这里是纯模板）。
+	if o.UnitUser != "" {
+		fmt.Fprintf(&b, "User=%s\n", o.UnitUser)
+	}
+	if o.UnitHome != "" {
+		fmt.Fprintf(&b, "Environment=HOME=%s\n", o.UnitHome)
+	}
+	if len(o.UnitPathEnv) > 0 {
+		fmt.Fprintf(&b, "Environment=PATH=%s\n", strings.Join(o.UnitPathEnv, ":"))
+	}
+	fmt.Fprintf(&b, "ExecStart=\"%s\" serve --config \"%s\" --data \"%s\"\nRestart=always\nRestartSec=2\nUMask=0077\n\n[Install]\nWantedBy=multi-user.target\n", o.BinPath, o.ConfigPath, o.DataPath)
+	return []byte(b.String())
 }
 
 // Apply performs all validation before any writes; each installed file is atomic.

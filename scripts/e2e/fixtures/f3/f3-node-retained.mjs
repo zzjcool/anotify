@@ -27,10 +27,23 @@ export async function nodeRetained(d,mode){
     // http://localhost:<port>（mock 预览是 127.0.0.1），所以断言真实主机名，别写死 IP。
     assert.ok((await page.locator('#reg-yaml').innerText()).includes('server: "ws://' + new URL(base).host));
     assert.ok(!(await page.locator('#reg-yaml').innerText()).includes('instances:'));
+    // 一条命令安装（D3）：命令本身就是“拿去就能跑”的那个事实，所以断言它真的指到这个
+    // 中枢、这个节点名、这把真令牌（令牌只进 textContent，不进 URL/localStorage）。
+    const bootstrap = await page.locator('#reg-bootstrap').innerText();
+    const origin = new URL(base).origin;
+    assert.ok(bootstrap.includes('/install-anode.sh'), bootstrap);
+    assert.ok(bootstrap.includes('--name browser-new-node'), bootstrap);
+    assert.ok(bootstrap.includes('--server ' + origin), bootstrap);
+    assert.ok(bootstrap.includes('--token ' + token), bootstrap);
+    // 顺序必须是 `curl -fsSL … | sh -s --`：反了（先 sh 后 curl）根本装不上。
+    assert.ok(bootstrap.indexOf('curl -fsSL') >= 0 && bootstrap.indexOf('curl -fsSL') < bootstrap.indexOf('| sh -s --'), bootstrap);
+    assert.equal(await page.locator('#reg-bootstrap-copy').count(), 1);
     assert.equal(await page.locator('#reg-install').innerText(), 'anode install'); assert.equal(await page.locator('#reg-serve').innerText(), 'anode serve');
     const read = await req('/v1/nodes/browser-new-node'); assert.ok(!JSON.stringify(read.body).includes(token));
     assert.ok(!JSON.stringify((await req('/v1/nodes/browser-new-node/config')).body).includes(token));
     await page.locator('#reg-close').click(); assert.equal(await page.locator('#reg-token').innerText(), '');
+    // 关闭面板 = 把一次性明文从 DOM 里抹掉（与 #reg-token 同档）：token/yaml/bootstrap 都清空。
+    assert.equal(await page.locator('#reg-bootstrap').textContent(), '');
     const rotate = page.locator('[data-node="browser-new-node"] button');
     const before = (await calls()).filter(c => c.url.endsWith('/tokens')).length;
     page.once('dialog', dialog => dialog.dismiss()); await rotate.click();
@@ -43,7 +56,7 @@ export async function nodeRetained(d,mode){
     await waitState('reg-error', 'AlreadyExists'); assert.equal(await page.locator('#reg-name').inputValue(), 'browser-new-node');
     assert.equal(await page.locator('#reg-token').innerText(), ''); assert.ok((await calls()).every(c => !(c.method === 'GET' && c.url.endsWith('/tokens'))));
     await shot('create409-draft-no-token'); await noLeaks(); await clean('create and rotation');
-    check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
+    check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; one-liner bootstrap (curl -fsSL … | sh -s -- --name/--server/--token) + copy button + close clears plaintext; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
   }
   if (mode === 'config') {
     await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();

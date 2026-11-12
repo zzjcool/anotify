@@ -1136,9 +1136,7 @@ vars:
 limits:
   total: 1
   perCapability: {}</pre></div>
-          <div class="code-block mt-4"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body">anode install
-anode serve
-anode emit fixer --id review-a.go --data '{"file":"a.go"}'</pre></div>
+          <div class="code-block mt-4"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div>
           <p class="doc-note">{{t "nodes.v4.setup_hint"}}</p>
           <p class="doc-note">{{t "nodes.v4.slot_note"}}</p>
           <h3 class="doc-h2">{{t "docs.v4.resource"}}</h3>

@@ -1,12 +1,196 @@
-# anode：v4 独立节点安装与运行
+# anode：v4 节点安装与运行
 
 anode 只有 `serve`、`install`、`emit` 三个公开子命令。没有 `run`、旧节点配置或旧命令别名；不写子命令也不会隐式启动。`anode --version` 输出单行 `{"version":"…","commit":"…"}`，hello 和升级 ACK 使用同一构建事实。
 
-## 1. 先创建长期节点身份
+安装面分成两层，边界是**冻结**的：
+
+| 谁 | 负责 | 明确不做 |
+|---|---|---|
+| `scripts/install-anode.sh`（唯一安装入口，静态站以 `GET <origin>/install-anode.sh` 匿名下发同一份字节） | 下载、校验 sha256、停旧实例、`anode serve --check` 预检、调 `anode install` 落盘、装/启/停 systemd 服务、卸载、升级 | 不重写 YAML/unit（参数原样交给 `anode install`），不跳过校验，不接收 stdin |
+| `anode install`（二进制子命令） | 只**落盘**：二进制 + `anode.yaml` + unit + 数据目录 | 不注册节点、不签 token、不 `sudo`、不调 `systemctl`、不联网下载 |
+
+终端用户正常情况下只跑**一条命令**（§1）。`anode install` 的直接用法见 §8，服务运行与配置见 §10 起。
+
+## 1. 一条命令装好一台节点
+
+在控制台「节点」页注册节点后，页面给出可直接复制的命令：
+
+```sh
+curl -fsSL https://hub.example.com/install-anode.sh | sh -s -- \
+  --name node-a --server https://hub.example.com --token-file /secure/node-token.txt
+```
+
+- 命令里**不写 `sudo`**。脚本自己探测提权（见 §5）：`curl|sh` 下 stdin 是管道，`sudo` 只能从终端 `/dev/tty` 读密码，所以把 `sudo` 放在管道前面反而会卡住。
+- 令牌优先 `--token-file`（0600 文件）：`--token` 会留在 shell 历史里，只适合临时排查；见 §9。
+- 下发的脚本就是仓库里 `scripts/install-anode.sh` 的逐字节副本（`make check-anode-skill` 有 `cmp` 守卫）。想先审再跑就下载它、读完再执行，两种方式语义完全一致：
+
+```sh
+curl -fsSL https://hub.example.com/install-anode.sh -o /tmp/install-anode.sh
+sh /tmp/install-anode.sh --name node-a --server https://hub.example.com \
+  --token-file /secure/node-token.txt
+```
+
+结束时脚本打印一段摘要（这几行就是"装完了"的判据）：
+
+```text
+== 结论
+anode 已装好并已启动
+  节点      node-a
+  中枢      wss://hub.example.com
+  运行身份  nodeadmin（能力的权限 = 这个用户）
+  二进制    /usr/local/bin/anode
+  配置      /etc/anode/anode.yaml（0600：里面有令牌）
+  数据      /var/lib/anode
+  服务      anode.service（system）
+  状态      active (running)
+  日志      journalctl -u anode -f
+  升级      重跑同一条安装命令（沿用现有 anode.yaml，只换二进制 + restart）
+  卸载      sh install-anode.sh --uninstall
+
+控制台「节点」页应该看到 node-a 在线；没上线先看日志：journalctl -u anode -f
+```
+
+看到 `状态 active (running)` 之后去控制台「节点」页确认节点在线（没上线先看上面那行日志命令，不要反复重跑安装）。脚本先启服务再**轮询** `is-active`（最多 10 秒），不会像浏览器那样"点一下立刻判定失败"。
+
+## 2. 先创建长期节点身份
 
 管理员先在中枢调用 **POST Node → POST token**（v4 管理 API），保存返回的 Node 名称、server 地址和长期 Node identity token。明文 token **只返回一次**；后续管理响应不能取回它。身份属于节点，不是某次任务的 attempt token。具体管理资源路径/权限以中枢 API 文档为准。
 
-`install` 必须显式提供这个已有身份：不注册、不生成 token、不安装第二个注册服务、不自动部署能力。不要把长期凭证放进脚本、镜像或公开日志。推荐临时保存为仅安装用户可读的 0600 token 文件，安装后由管理员按自己的凭证管理策略处理；程序不自动删除用户文件。
+`install` 与安装脚本都必须显式拿到这个已有身份：不注册、不生成 token、不安装第二个注册服务、不自动部署能力。**不要把长期凭证放进脚本、镜像或公开日志**。推荐临时保存为仅安装用户可读的 0600 token 文件，安装后由管理员按自己的凭证管理策略处理；程序不自动删除用户文件。
+
+## 3. 这条命令做了什么（七步）
+
+| # | 步骤 | 关键行为 | 失败时 |
+|---|---|---|---|
+| 1 | 解析身份 | `--name`（缺省用主机名，规范成小写 `[a-z0-9._-]`）、`--server` 归一化（`http(s)://` ↔ `ws(s)://`）、校验令牌形状 | 非 0，指出缺哪个参数 |
+| 2 | 取二进制 | 三优先级下载（§4） | 非 0 + 下一步建议（`--version` / `--download-url`） |
+| 3 | 校 sha256 | 摘要必须恰好 64 位十六进制；`sha256sum --check` 必须成功；再核对下载二进制的 `--version` | **一律中止**，不落盘、不做"未校验放行"降级 |
+| 4 | 停旧实例 | 同一个令牌不能有两条连接：先停旧服务（含从 user 服务迁到 system 服务时的旧 user unit） | 警告并继续 |
+| 5 | 预检 | 用**临时**配置（0600，只含 name/server/token）跑 `anode serve --check`，正式配置一个字没动（§6） | 非 0，打印三分诊断，正式配置与服务均未改动 |
+| 6 | 落盘 | `anode install`：把令牌写成临时 0600 文件传给 `--token-file`，安装结束即删除（§9） | 非 0 原文透传（权限/已有配置冲突见 §8） |
+| 7 | 装服务 + 摘要 | `system` / `user` / `none` 三选一（§5），`daemon-reload` → `enable` → `restart`，再轮询 `is-active`，最后打 §1 那段摘要 | 服务起不来 → 非 0，摘要里给出日志命令 |
+
+退出码：`0` 成功（含 `--help` / 卸载 / `--dry-run`），`2` 用法/下载/校验/预检/服务失败。脚本在失败处直接打印下一步，不需要照着文档猜。
+
+## 4. 取二进制：三个优先级，校验失败即停
+
+优先级从上到下，前一个给了就完全覆盖后面的：
+
+| 优先级 | 参数 | 从哪来 | 校验依据 |
+|---|---|---|---|
+| 1 | `--download-url URL`（或 `ANODE_DOWNLOAD_URL`） | 内网 / 镜像 / 测试 | `<URL>.sha256`，或用 `--checksum-url` 覆盖 |
+| 2 | `--version vX.Y.Z`（或 `ANODE_VERSION`） | GitHub Release，资产 `anode_linux_<arch>` | 同目录 `<asset>.sha256` |
+| 3 | 都不给 | 中枢 `GET <server>/v1/node/binary`（Bearer 节点令牌） | 响应头 `X-Agent-Sha256`；版本取 `X-Agent-Version` |
+
+**校验和缺失、或校验工具缺失，一律失败**（不做 v3 那种"假通过"降级）：
+
+- 没有 `.sha256` / 中枢没给 `X-Agent-Sha256` → 中止；
+- 摘要不是单行/不是十六进制/长度不是 64 → 中止（远端 checksum 里的**文件名/路径一律不执行**，只取那一个 digest）；
+- 机器上没有 `curl` 或 `sha256sum` → 中止（脚本会说要装什么）；
+- `sha256sum` 不匹配 → 中止，提示"重试一次，仍不一致就去 release 页手工核对"；
+- 下载的二进制 `--version` 跑不起来或版本不匹配 → 中止（架构不对 / 代理缓存了旧包 / 被换过）。
+
+第三种（中枢）的两种常见拒绝：
+
+- `501`：**这台中枢没带二进制**（`ANOTIFY_AGENT_BIN` 未配置）——改用 `--version vX.Y.Z`；
+- `401`：令牌无效（节点被删了、或令牌属于另一台中枢/命名空间）——回控制台重新注册。
+
+### 4.1 版本发现：v4 未发版 vs 发版后
+
+- **v4 还没发版**（当前状态）：用中枢下载（优先级 3）——中枢自己就是二进制的权威来源，节点二进制随中枢一起构建。这也是控制台一条命令默认走的路。
+- **发版后**：钉版本更可复现，`--version v4.1.0` 走 GitHub Release 的 `anode_linux_amd64` / `anode_linux_arm64` + 同名 `.sha256`（`.github/workflows/release.yml` 的资产名，脚本严格按它拼 URL）。
+- 版本核对是**前缀**匹配：构建标签形状是 `<release>+<commit>`，所以 `--version v4.1.0` 接受 `"version":"v4.1.0"` 与 `"version":"v4.1.0+<sha>"`，不相关的版本仍然拒装。
+- 离线/内网：`--download-url` + `--checksum-url` 兜底；Release 基础地址可用环境变量 `ANODE_DOWNLOAD_BASE` 替换。下载有 10s 连接 / 300s 总超时。
+
+## 5. 服务模式与提权
+
+```sh
+sh install-anode.sh --service auto      # 默认：自动探测
+sh install-anode.sh --service system    # 等价 --system
+sh install-anode.sh --service user      # 等价 --user
+sh install-anode.sh --service none      # 等价 --no-systemd
+sh install-anode.sh --no-sudo           # 禁止提权：需要 root 的步骤直接失败
+```
+
+| 模式 | 什么情况 | 行为 |
+|---|---|---|
+| `auto`（默认） | 有 `systemctl` 且**实测**可提权 → `system`；有 `systemctl` 但提不了权 → `user`；没有 `systemctl`（容器/精简系统）→ `none` | 按探测结果落到下面的具体分支，摘要里写明实际用了哪种 |
+| `system` | 开机自启、没登录也活着 | 装 `/etc/systemd/system/anode.service`，或 `--prefix` 下的对应路径；`User=<安装者>`（root 安装时取 `SUDO_USER`），并 `chown` config/data 给该用户；顺手停用并删除同名旧 **user** unit（两份实例会抢同一个令牌） |
+| `user` | 单用户机器、不给 sudo | `systemctl --user` + `$HOME/.config/systemd/user/anode.service`；尽量 `loginctl enable-linger`，失败只 warn（登录态结束后服务会停，脚本会打印手动命令） |
+| `none` | 容器 / 没有 systemd | 只落盘，打印手工启动与装服务的命令 |
+
+提权方式（只对真正需要 root 的那几条命令提权，不整段 `sudo sh` 重跑脚本）：
+
+| 情况 | 判定 |
+|---|---|
+| 当前是 root | 直接跑 |
+| `sudo -n true` 成功 | 用 `sudo -n` |
+| 有终端（`/dev/tty` 可打开） | `sudo -v` 读一次密码，后续复用凭据 |
+| 以上都不行 / 显式 `--no-sudo` | 不提权：`system` 模式需要的步骤直接失败并说明下一步；`--user` / `--service none` 仍可完成 |
+
+启停之后脚本**轮询** `is-active --quiet`（最多 10 次、每次 1s），而不是"发完命令立刻判定"。`--dry-run` 只打印将执行的命令，不碰网络、不写盘、不提权（也**不实测** sudo，只按"假设能提权"打印，摘要里会注明）。
+
+## 6. 预检：`anode serve --check`
+
+脚本在停掉旧实例之后、落正式配置之前，用临时配置（0600，只含 name/server/token）跑一次：
+
+```sh
+anode serve --check --config <tmp>/preflight.yaml --data <tmp>/data   # 脚本内部构造
+```
+
+语义（`anode` 自己的契约，见 `docs/v4/anode-cli.md` §2）：
+
+- **一次性**：握手走到 `welcome` 就退出；不写盘、不监听、不启动 runner/emit。
+- 成功：stdout 一行 `check ok: node=<name>`（不含 token）→ exit 0。
+- 失败：stderr 一行 `anode check: <kind>: …` → **exit 2**。`kind` 三类，诊断直接对应下一步：
+  - `unauthorized`（`welcome` 之前的 close 1008 / 401）→ 令牌不对 / 节点被删 / 属于另一台中枢，回控制台重新注册；
+  - `timeout` → 网络或 TLS：核对 `--server` 从这台机器能不能通、证书链是否受信；
+  - `config` → `anode.yaml` 的 name/server 形状不对。
+- 上限**固定 10s**（不新增 flag）；脚本外层还有 `--preflight-timeout SEC`（默认 20）兜底，超时就收掉进程并提示。
+
+预检失败时**正式配置与服务都没有被改动**，修好重跑同一条命令即可。想跳过它硬装：`--no-preflight`（不推荐——这正是把"装完了但在线不了"提前一步暴露的地方）。
+
+**`--service none` 不跑预检**（日志会打一行说明）：这种模式没有服务可停，而一台**正在跑的旧实例**会和预检抢同一个令牌（同一令牌两次握手，谁被踢都可能），"只落盘"不该去碰中枢连接。要提前验令牌，落盘后自己跑：
+
+```sh
+<安装出来的二进制> serve --check --config <安装出来的 anode.yaml> --data <数据目录>
+```
+
+## 7. 卸载与升级
+
+**升级 = 重跑同一条安装命令。** 没有单独的 upgrade 子命令：
+
+- 脚本从已有 `anode.yaml` 读回 name / server / token，命令行可以只写 `--name` 或什么都不写；
+- 配置里用户的 namespaces、vars、limits、listen、envPassthrough **原样保留**，只换二进制并 `restart`；摘要会写"升级完成"；
+- 换令牌是显式动作：命令行给了 `--token` / `--token-file` 且与已保存的不同 → 脚本自动带上 `--update-token`（`anode install` 默认拒绝覆盖不同 token）。只想轮换令牌也可以直接 `anode install … --update-token`（§8）。
+
+```sh
+# 升级：重跑（令牌沿用配置里的）
+curl -fsSL https://hub.example.com/install-anode.sh | sh -s
+
+# 轮换令牌：带新令牌重跑
+curl -fsSL https://hub.example.com/install-anode.sh | sh -s -- --token-file /secure/rotated-node-token.txt
+```
+
+**卸载**不需要 token/server（按已知落点逐个清，清不到就跳过；没权限的项如实报告而不是假装删掉）：
+
+| 命令 | 停服务/删 unit | 二进制 | `anode.yaml` | 数据目录 |
+|---|---|---|---|---|
+| `--uninstall` | 是 | 删 | **删**（令牌不该留在机器上） | 保留 |
+| `--uninstall --keep-config` | 是 | 删 | 保留（脚本会提示"令牌还在里面"） | 保留 |
+| `--uninstall --purge` | 是 | 删 | 删 | **删**（产物缓存/工作区） |
+
+```sh
+sh install-anode.sh --uninstall                # 连配置一起删
+sh install-anode.sh --uninstall --keep-config  # 保留配置（想留令牌备份）
+sh install-anode.sh --uninstall --purge        # 连数据目录一起删
+```
+
+卸载结束会提示：节点在控制台里会显示离线；真正不需要了，去「节点」页把节点删掉。
+
+## 8. 不用脚本时：直接 `anode install`
+
+脚本只是把下面这条命令包起来。没有脚本、或想自己控制每一步时：
 
 ```sh
 ./anode --version
@@ -14,7 +198,7 @@ anode 只有 `serve`、`install`、`emit` 三个公开子命令。没有 `run`�
   --token-file /secure/node-token.txt
 ```
 
-无 stdin、无 sudo、无默认 `systemctl` 调用。写文件权限不足会明确失败，需管理员以合适身份重跑原命令。成功输出管理员后续步骤，而不是擅自操作宿主服务：
+`anode install` 的边界**没变**：无 stdin、无 sudo、无任何 `systemctl` 调用。写文件权限不足会明确失败，需管理员以合适身份重跑原命令。成功输出的是管理员后续步骤，而不是擅自操作宿主服务：
 
 ```sh
 systemctl daemon-reload
@@ -32,6 +216,23 @@ systemctl enable --now anode.service
 
 unit 用 `serve --config … --data …`，`UMask=0077`，`Restart=always`。它不会导入一个全宿主环境文件。若需要凭证变量，管理员通过自己的受保护 systemd 配置显式注入，并同时在 anode.yaml 白名单声明名字。
 
+装成**系统**服务时必须给 unit 三个字段（不给就等于以启动者身份跑，root 装就是 root 跑，能力脚本的权限等于整台机器）：
+
+| flag | 写进 unit 的 | 说明 |
+|---|---|---|
+| `--unit-user NAME` | `User=` | 服务以谁的身份跑；脚本装 system 服务时自动填安装者（root 安装取 `SUDO_USER`） |
+| `--unit-home DIR` | `Environment=HOME=` | 必须是存在的绝对路径；能力脚本的 `HOME` 基线 |
+| `--unit-path DIR` | `Environment=PATH=` | **可重复**，按给出顺序用 `:` 拼成一条；不写就继承 systemd 默认 PATH |
+
+```sh
+./anode install --name node-a --server wss://hub.example.com --token-file /secure/node-token.txt \
+  --unit-user nodeadmin --unit-home /home/nodeadmin --unit-path /usr/local/bin --unit-path /usr/bin
+```
+
+`anode install` 只写 unit，**不创建用户**：`--unit-user` 指定的账号必须已存在于本机，否则服务启不来（脚本装 system 服务时自动用的是安装者自己，不存在这个问题）。路径参数同理不会被创建，HOME 必须已经存在。
+
+三者留空就不输出那一行；非绝对路径、`..` 越界、非法用户名由 `anode install` 直接拒绝。
+
 ### 重装与凭证更新
 
 同名/server/token 重装保留用户现有 namespaces、vars、limits、listen、envPassthrough，甚至不改原配置字节。不同 token 默认拒绝；只有显式 `--update-token` 才更新保存的 token，保持所有本机配置值。换 name/server 视为不同身份，拒绝覆盖。已有未知/非法配置、修改过的 unit、非本安装的已有二进制会明确拒绝，不删用户数据目录。单文件采用同目录临时写、fsync、rename，失败不会留下半个 YAML/二进制；安装涉及多个文件，不声称跨文件事务，权限问题处理完可以安全重跑。
@@ -44,26 +245,23 @@ unit 用 `serve --config … --data …`，`UMask=0077`，`Restart=always`。它
 
 `--prefix /absolute/staging` 把默认布局置于 staging 根内；`--config`、`--bin`、`--unit`、`--data` 可显式覆盖路径。prefix 非根、路径必须绝对规范，无 `..`、符号链接、特殊文件或 prefix escape，三个文件名仍必须是 anode.yaml、anode、anode.service。staging 不启动/改动宿主服务；输出如需复制 unit 的管理员步骤。目录应由管理员控制，这是安装安全边界，不是对恶意本机并发 writer 的 sandbox。
 
-## 2. 下载引导：同一个安装器
+## 9. 安全
 
-```sh
-# 建议先下载并检查脚本，而不是执行未审核内容。
-curl -fsSL https://example.com/releases/install-anode.sh -o /tmp/install-anode.sh
-sh /tmp/install-anode.sh --version v4.0.0 -- \
-  --name node-a --server wss://hub.example.com --token-file /secure/node-token.txt
-```
+- **令牌不进日志/报告**：脚本把令牌写进自己的临时 0600 文件再以 `--token-file` 交给 `anode install`（不进程 argv、不 echo、不进摘要），安装结束即 `rm`。摘要与预检诊断都只出现节点名与中枢地址。
+- **优先 `--token-file`**：`--token nt_…` 会留在 shell 历史（和 `ps` 的 argv 里），只适合临时排查。
+- **不静默跳过校验**：缺校验和、缺 `sha256sum`/`curl`、摘要形状不对、不匹配——一律失败。校验和保证完整性，不是签名；下载源与摘要源仍必须可信。
+- **不执行远端内容**：checksum 文件里的文件名/路径一概不用（只取那一个 digest），版本号只允许 `[A-Za-z0-9._-]`。
+- **落盘权限**：`anode.yaml` 0600（里面有令牌），数据目录 0700，unit 0644。
+- **最小权限运行**：能力脚本以 service 用户的宿主权限执行，不是 sandbox。给 `--unit-user` 一个专用低权用户，而不是让系统服务跟着 root 跑。
+- **控制台侧**：命令块里的令牌只进 `textContent`，关闭面板即清空；不进 localStorage / console / URL，也不出现在截图里。
 
-`scripts/install-anode.sh` **只下载、核对 checksum/版本/架构、调用下载二进制的 `anode install`**；不写 YAML/unit，不 sudo，不 stdin，不自动部署。发布侧提供 `anode_linux_amd64` / `anode_linux_arm64` 和对应 `.sha256` 单行摘要，由 T1 管理 release 产物。显式版本必需；架构默认来自 Linux uname，可用 `--arch amd64|arm64` 指定。可用 `--download-url`、`--checksum-url` 或 `ANODE_DOWNLOAD_URL`、`ANODE_CHECKSUM_URL` 指向离线镜像；默认基址可通过 `ANODE_DOWNLOAD_BASE` 替换。`ANODE_VERSION`/`ANODE_ARCH` 也可设置。下载有 10s 连接/60s 总超时，checksum 不符或二进制 `--version` 不符不会调用 install；install 的非零退出码原样传回。
-
-checksum 保证完整性，不是签名/可信分发证明；下载源与摘要源必须可信。引导进程不输出 token，但 install 的 `--token` 本身会出现在进程 argv，优先 `--token-file`。
-
-## 3. serve 与严格配置
+## 10. serve 与严格配置
 
 ```sh
 anode serve --config /etc/anode/anode.yaml --data /var/lib/anode
 ```
 
-`serve` 只支持这两个路径 flags（以及 help）；listen/env 行为来自 **strict anode.yaml**，没有旧 `node.yaml` 接口。未知字段/多文档/重复或非法白名单/空 namespaces/非正 limits 启动失败，不半在线。SIGINT/SIGTERM 触发 drain，终止授权、TERM→grace→KILL 真进程组后关闭网关和连接。缺应用配置时不会假装在线。
+`serve` 只支持这两个路径 flags（以及 `-h` / `--check`，见 §6）；listen/env 行为来自 **strict anode.yaml**，没有旧 `node.yaml` 接口。未知字段/多文档/重复或非法白名单/空 namespaces/非正 limits 启动失败，不半在线。身份被拒（`welcome` 之前的 close 1008 / 401）现在**直接退出**，不再无限重连。SIGINT/SIGTERM 触发 drain，终止授权、TERM→grace→KILL 真进程组后关闭网关和连接。缺应用配置时不会假装在线。
 
 server 空 path 补共享 `/v1/node/stream`；显式反代 path 原样使用。合法示例（不要把真实 token 提交到版本库）：
 
@@ -93,7 +291,7 @@ namespaces 是申报，与中枢授权取交集。机器值 local > node，下�
 
 run.files 普通文件写入 0600，entrypoint 0700，直接按 shebang exec，不包额外 shell。用户 workDir 必须事先存在、绝对规范，禁止越界/符号链接逃逸；节点不创建它。**同名文件会被覆盖且权限改变**，包括用户原有同名文件；明确选择专用 workDir 或接受这个副作用。节点绝不删除用户 workDir/其祖先，TTL 不构成用户目录清理许可。
 
-## 4. 脚本 emit
+## 11. 脚本 emit
 
 ```sh
 anode emit review --id logical-report --data '{"summary":"ready"}'
@@ -113,7 +311,7 @@ anode emit --to review --data '{}'
 
 结果 stdout 一行 JSON；错误另 stderr 一行人话。不自动重发请求，尤其不无 id 重发。相同 logical task+显式 id+同 body 可跨 attempt 返回原 task 或原剪枝 event；异 body 409。旧 token 必须先被拒，不能靠已知 id 取回旧权威授权。无 id 两次是两个不同投递。`emit` 退出 5 是脚本结果未知，**不得**当 whole-task infra 自动重跑的依据；想安全重发，由脚本显式使用同一个 id/body。
 
-## 5. 每 attempt 导出与 A1 上行
+## 12. 每 attempt 导出与 A1 上行
 
 A2 为每 `(taskId, attempt)` 新建系统自有唯一 0700 导出根，注入 `ANOTIFY_ARTIFACT_DIR`。任务重试/并发共享 workDir 不共享导出根；不要依赖固定工作目录或 stdout 魔法：
 
@@ -128,13 +326,15 @@ anode emit review --id report --data '{"summary":"ready"}'
 
 空导出目录合法 `[]`；创建/注入/枚举失败、symlink/特殊文件是明确 artifact_export_invalid failed，不假空成功、不自动重试。用户 workDir 内旧目录不创建、不删除、不因存在拒绝。
 
-完成后安全枚举→托管副本→sha256→A1 出站 PUT raw bytes `/v1/node/tasks/{taskId}/artifacts/{sha256}`，携 Node Bearer 与 attempt/lease/task-token/编码逻辑 path headers。201 首次、200 同 path+hash 幂等，异 hash409；最多32项/单16MiB/attempt64MiB。上传期间继续续租；只有授权仍有效才对同 path/hash 有界重试，不 whole-task replay。确定上传失败为 artifact_upload_failed，保留已经成功上传的清单，不能把未知上传伪成功/空数组。用户下载授权/过期410由中枢负责，节点不开放用户文件回源。
+完成后安全枚举→托管副本→sha256→A1 出站 PUT raw bytes `/v1/node/tasks/{taskId}/artifacts/{sha256}`，携 Node Bearer 与 attempt/lease/task-token/编码逻辑 path headers。201 首次、200 同 path+hash 幂等，异 hash 409；最多 32 项/单 16MiB/attempt 64MiB。上传期间继续续租；只有授权仍有效才对同 path/hash 有界重试，不 whole-task replay。确定上传失败为 artifact_upload_failed，保留已经成功上传的清单，不能把未知上传伪成功/空数组。用户下载授权/过期 410 由中枢负责，节点不开放用户文件回源。
 
-GC 默认7天，grant/冻结 artifact 的 resultTtlSec 可覆盖，**0 永不按时间删**。只清系统创建的 attempt/work/export/日志/托管副本；活动/未确认 reaped 槽位不清；未知 meta 不删；用户原目录、原文件和祖先永不删。
+GC 默认 7 天，grant/冻结 artifact 的 resultTtlSec 可覆盖，**0 永不按时间删**。只清系统创建的 attempt/work/export/日志/托管副本；活动/未确认 reaped 槽位不清；未知 meta 不删；用户原目录、原文件和祖先永不删。
 
-## 6. 自升级与容器
+## 13. 自升级与容器
 
-升级是 drain→确认物理组 reaped（历史 lease/slot ACK）→同源 Node Bearer 下载 raw binary→sha 校验→下载二进制实际 `--version` 自检→同目录 atomic replace→ACK **实际 version+commit**→真实 exec 同 argv/service env 重启→新 hello。自检输出有界/10s超时，环境只有 PATH/HOME，不继承任务 run.env 或宿主凭证。bad_sha/自检失败不替换、不重启；目标目录权限不足明确 `need_root`，不把 Linux 一概伪装成 not_supported。不确认 reaped 不释放真实物理槽位、不升级；缩预算也保留活存量。升级失败时已经进入 drain，不自动恢复派发或重跑旧任务；管理员修复下载摘要/权限后重启 serve 恢复接任务。
+升级是 drain→确认物理组 reaped（历史 lease/slot ACK）→同源 Node Bearer 下载 raw binary→sha 校验→下载二进制实际 `--version` 自检→同目录 atomic replace→ACK **实际 version+commit**→真实 exec 同 argv/service env 重启→新 hello。自检输出有界/10s 超时，环境只有 PATH/HOME，不继承任务 run.env 或宿主凭证。bad_sha/自检失败不替换、不重启；目标目录权限不足明确 `need_root`，不把 Linux 一概伪装成 not_supported。不确认 reaped 不释放真实物理槽位、不升级；缩预算也保留活存量。升级失败时已经进入 drain，不自动恢复派发或重跑旧任务；管理员修复下载摘要/权限后重启 serve 恢复接任务。
+
+这条自升级是**在线**路径；离线机器用 §7 的"重跑安装命令"升级（脚本负责停旧实例/预检/重启），两者不重复执行同一次替换。
 
 ```sh
 docker build -f Dockerfile.anode --build-arg VERSION=v4.0.0 \
@@ -145,8 +345,10 @@ docker run --name anode --restart unless-stopped \
   -e API_KEY=EXPLICIT_VALUE anode:v4.0.0
 ```
 
-Dockerfile 独立 CGO=0 Go 二进制，无 SQLite dependency closure，默认 serve，仅配置默认 local emit，不发布端口、不导入宿主环境。配置/数据卷显式提供；`-e API_KEY` 和 config 白名单需同时具备。镜像默认进程用户权限不是 sandbox，必要时用管理员选择的 `--user` 和正确卷权限。容器内二进制目录只读/无写权限时 self-upgrade 明确失败，应由管理员更新镜像重启，不能伪成功。构建需外部 Go/Alpine/CA 网络；网络失败不是镜像构建 PASS。
+Dockerfile 独立 CGO=0 Go 二进制，无 SQLite dependency closure，默认 serve，仅配置默认 local emit，不发布端口、不导入宿主环境。在容器里装节点时（没有 systemd）用 `--service none`，只落盘再让容器进程直接跑 `serve`：配置/数据卷显式提供；`-e API_KEY` 和 config 白名单需同时具备。镜像默认进程用户权限不是 sandbox，必要时用管理员选择的 `--user` 和正确卷权限。容器内二进制目录只读/无写权限时 self-upgrade 明确失败，应由管理员更新镜像重启，不能伪成功。构建需外部 Go/Alpine/CA 网络；网络失败不是镜像构建 PASS。
 
-## 7. 验证映射
+## 14. 验证映射
 
-具名测试和原始命令/结果见 `teams/anode/N3-TESTS.md`。安装测试全 temp/offline，无宿主 service/binary 修改；脚本测试 fake curl 真复制并 fake binary 真转发/失败；能力脚本测试执行实际构建 anode emit，含跨 attempt 回原 task/pruned、异 body conflict、旧 token 先拒、无 id 不同投递；升级测试复制真实旧 binary，在 fake hub 下替换当前进程的文件、真实重启并上报新 hello，不用空 Restart 冒充。
+具名测试和原始命令/结果见 `teams/anode/N3-TESTS.md`。安装测试全 temp/offline，无宿主 service/binary 修改；脚本测试 fake curl/假 systemctl/假 sudo/假 loginctl + 真 `anode` 二进制，断言下载、sha256、预检、install、`daemon-reload`/`enable`/`restart` 顺序、`is-active` 轮询，并断言 token 不出现在 stdout；另覆盖篡改 sha256 中止、`--token`/`--token-file` 缺失、`--no-preflight`、预检失败不装服务、`--service none` 不调 systemctl、重跑=升级、`--uninstall`/`--keep-config`/`--purge`/`--dry-run`，以及下发副本与仓库脚本字节一致（`cmp`）。能力脚本测试执行实际构建 anode emit，含跨 attempt 回原 task/pruned、异 body conflict、旧 token 先拒、无 id 不同投递；升级测试复制真实旧 binary，在 fake hub 下替换当前进程的文件、真实重启并上报新 hello，不用空 Restart 冒充。
+
+`make check-anode-skill` 是文档侧的门：`docs/v4/anode-cli.md` 代码块里的每个子命令/flag 都要在真二进制的 `-h` 里存在，`web/install-anode.sh` 必须与 `scripts/install-anode.sh` 字节相同。

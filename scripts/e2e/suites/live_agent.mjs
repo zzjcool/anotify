@@ -16,11 +16,12 @@
  *        `emit` 的退出码映射（2 = 请求错、3 = 令牌无效、5 = 端点不可达/结果未知）。
  *     2. `anode install --prefix`：落盘 anode.yaml(0600)/anode(0755)/anode.service(0644)、
  *        幂等重跑、**换 token 必须显式 --update-token**（不静默覆盖身份）。
- *     3. 安装产物 → `serve` 的往返：装出来的配置能直接启动、节点能上线、data 目录成型。
- *     4. 生命周期：SIGTERM → 进程自己退（退出码 0，不是被 KILL）、中枢随即承认它离线
+ *     3. `anode serve --check`：真令牌一次性 hello→welcome 退 0、错令牌退 2，两者都不写盘。
+ *     4. 安装产物 → `serve` 的往返：装出来的配置能直接启动、节点能上线、data 目录成型。
+ *     5. 生命周期：SIGTERM → 进程自己退（退出码 0，不是被 KILL）、中枢随即承认它离线
  *        （部署结论 sent=false，不伪造发送）。
  *
- * 这四条都是**进程/文件系统**上的事实，任何一层单测都替代不了：
+ * 这几条都是**进程/文件系统**上的事实，任何一层单测都替代不了：
  *   - 退出码映射错了 → 脚本在真实流水线里无法判别「该不该重试」；
  *   - install 写了 0644 的配置 → 节点 token 泄露给本机所有用户；
  *   - serve 不响应 SIGTERM → systemd 每次重启都要等超时再 KILL（子进程可能被留活）。
@@ -237,6 +238,40 @@ async function partInstall(base, session) {
 	return { name, token, prefix, cfgPath, dataPath };
 }
 
+// ---------- 2b. serve --check：一次性身份预检（契约 D5）----------
+//
+// 安装脚本在「停旧服务之后、落正式配置之前」跑的就是这条命令：它必须只做一次 hello →
+// welcome 就给出结论（退出码 0/2），**不监听、不写盘、不重连**。这里对着真中枢验三件事：
+// 真令牌能过、错令牌是 2 而不是超时、两种情况都不创建 --data 目录。
+async function partServeCheck(base, installed) {
+	console.log("--- 2b. anode serve --check（一次性 hello→welcome，不写盘）---");
+	const tmp = H.mkdtempTmp("anotify-anode-check-");
+	try {
+		const dataDir = path.join(tmp, "data");
+		const writeCfg = (token) => {
+			const cfgPath = path.join(tmp, "anode.yaml");
+			// 与 install 落盘的 anode.yaml 同一组身份键（server 用 ws://，install 也是这么写的）。
+			writeFileSync(cfgPath, [`name: ${installed.name}`, `server: ${base.replace(/^http/, "ws")}`, `token: ${token}`, ""].join("\n"), { mode: 0o600 });
+			return cfgPath;
+		};
+		{
+			const r = runCLI(["serve", "--check", "--config", writeCfg(installed.token), "--data", dataDir]);
+			H.eq("serve --check（真令牌）→ 退出码 0", r.status, 0);
+			H.check("→ stdout 是 check ok: node=<name>（不含多余回执）", r.stdout.includes(`check ok: node=${installed.name}`), r.stdout.slice(0, 200));
+			H.check("→ stdout/stderr 都不含节点令牌", !(r.stdout + r.stderr).includes(installed.token), (r.stdout + r.stderr).replace(installed.token, "<token>").slice(0, 300));
+			H.check("→ 预检不写盘（--data 目录都没被创建）", !existsSync(dataDir), dataDir);
+		}
+		{
+			const r = runCLI(["serve", "--check", "--config", writeCfg("clearly-wrong-token"), "--data", dataDir]);
+			H.eq("serve --check（错令牌）→ 退出码 2（安装脚本据此中止，不是无限重连）", r.status, 2);
+			H.check("→ stderr 是可定位的 anode check: <kind>: <detail>", /anode check: (unauthorized|timeout)/.test(r.stderr), r.stderr.slice(0, 300));
+			H.check("→ 错令牌同样不写盘", !existsSync(dataDir), dataDir);
+		}
+	} finally {
+		H.removeTmpDir(tmp);
+	}
+}
+
 // ---------- 3. 安装产物 → serve 往返 ----------
 async function partServeInstalled(base, session, installed) {
 	console.log("--- 3. 装出来的配置直接 serve：节点上线 / data 目录成型 ---");
@@ -387,6 +422,7 @@ async function main() {
 	try {
 		const seeded = H.seed(server.dbPath, "liveagent");
 		const installed = await partInstall(server.base, seeded.session);
+		await partServeCheck(server.base, installed);
 		await partServeInstalled(server.base, seeded.session, installed);
 		H.removeTmpDir(installed.prefix);
 		await partServeLifecycle(server.base, seeded.session);

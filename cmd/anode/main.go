@@ -11,11 +11,16 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/zzjcool/anotify/cmd/anode/internal/app"
 	"github.com/zzjcool/anotify/cmd/anode/internal/config"
+	"github.com/zzjcool/anotify/cmd/anode/internal/hub"
 	"github.com/zzjcool/anotify/cmd/anode/internal/install"
+	"github.com/zzjcool/anotify/cmd/anode/internal/node"
+	"github.com/zzjcool/anotify/internal/protocol"
 )
 
 // Set by the release builder; both hello and --version use exactly these facts.
@@ -46,9 +51,15 @@ func run(args []string, out, errOut io.Writer) int {
 	case "emit":
 		return emit(args[1:], out, errOut)
 	case "serve":
-		if err := serve(args[1:], errOut); err != nil {
+		if err := serve(args[1:], out, errOut); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
+			}
+			// --check 走自己的前缀（anode check: <kind>: <detail>），不复用 serve 的。
+			var fault *checkFault
+			if errors.As(err, &fault) {
+				fmt.Fprintf(errOut, "anode check: %s: %s\n", fault.kind, fault.detail)
+				return 2
 			}
 			fmt.Fprintf(errOut, "anode serve: %v\n", err)
 			return 2
@@ -68,16 +79,21 @@ func run(args []string, out, errOut io.Writer) int {
 		return 2
 	}
 }
-func serve(args []string, errOut io.Writer) error {
+func serve(args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	cfgPath := fs.String("config", "/etc/anode/anode.yaml", "strict anode.yaml path")
 	dataDir := fs.String("data", "/var/lib/anode", "private data directory")
+	check := fs.Bool("check", false, "validate node identity against the hub once, then exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("serve accepts flags only")
+	}
+	if *check {
+		// 预检不写盘、不监听、不装配：只用到 config 与 dataDir（后者的工作目录路径作为事实上报）。
+		return checkIdentity(*cfgPath, *dataDir, out)
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -121,6 +137,69 @@ func serve(args []string, errOut io.Writer) error {
 	}
 	return nil
 }
+
+// checkTimeout 是 `serve --check` 的固定上限（契约 §4：不新增 flag，脚本自己有外层 timeout）。
+const checkTimeout = 10 * time.Second
+
+// checkFault 是 `serve --check` 的诊断：kind 三选一 + 给人看的 detail。
+//
+// run() 用 errors.As 分流到自己的前缀（`anode check: <kind>: <detail>`），
+// 不会出现 `anode serve: check: ...` 这种双前缀。
+type checkFault struct {
+	kind   string
+	detail string
+}
+
+func (f *checkFault) Error() string { return f.kind + ": " + f.detail }
+
+// checkIdentity 做一次性身份预检：严格加载 config → hello → welcome → 退出。
+//
+// 绝不写盘：不调用 install.EnsureDirectory / app.EnsureDirs / app.Assemble / app.Serve，
+// 不监听、不启动 runner/emit 网关。stdout 只有一行 `check ok: node=<name>`（不含 token）。
+func checkIdentity(cfgPath, dataDir string, out io.Writer) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return &checkFault{kind: "config", detail: err.Error()}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	// hello 自己构造：事实与 app.Assemble 同源（workRoot = dataDir/work），但**不**读
+	// 磁盘上的 applied/能力缓存（AppliedRevision/AppliedHash 留空 = 本机无 applied，中枢回全量 welcome）。
+	hello := protocol.HelloFrame{
+		Type:         protocol.FrameHello,
+		Name:         cfg.Name,
+		Token:        cfg.Token,
+		Namespaces:   append([]string(nil), cfg.Namespaces...),
+		LocalVars:    checkVars(cfg.Vars),
+		LocalLimits:  cfg.LocalLimits(),
+		AgentVersion: version,
+		AgentCommit:  commit,
+		Facts:        node.RuntimeFacts(filepath.Join(dataDir, "work"), ""),
+		// 预检不探测能力/不申报槽位（那需要读本地缓存/账本）；空列表不是 null。
+		Capabilities: []protocol.HelloCapability{},
+		Instances:    []protocol.HelloInstance{},
+	}
+	if err := hub.Check(ctx, cfg.Server, cfg.Token, hello); err != nil {
+		if errors.Is(err, hub.ErrAuthRejected) {
+			return &checkFault{kind: "unauthorized", detail: err.Error()}
+		}
+		// 到期、连不上、被异常关闭：契约只冻结三种 kind（config/unauthorized/timeout），
+		// 其余归入 timeout 诊断，detail 里带真实原因。
+		return &checkFault{kind: "timeout", detail: err.Error()}
+	}
+	fmt.Fprintf(out, "check ok: node=%s\n", cfg.Name)
+	return nil
+}
+
+// checkVars 拷贝本机 vars（hello 里的 localVars；空也送空对象而不是 null）。
+func checkVars(vars map[string]string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		out[k] = v
+	}
+	return out
+}
+
 func installCLI(args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -134,6 +213,12 @@ func installCLI(args []string, out, errOut io.Writer) error {
 	fs.StringVar(&o.Server, "server", "", "ws(s) hub URL (required)")
 	fs.StringVar(&o.Token, "token", "", "existing Node identity token (required; prefer --token-file)")
 	tokenFile := fs.String("token-file", "", "read existing identity token from a protected file")
+	fs.StringVar(&o.UnitUser, "unit-user", "", "run the service as this user (User= in the unit)")
+	fs.StringVar(&o.UnitHome, "unit-home", "", "absolute HOME for the unit (Environment=HOME=)")
+	fs.Func("unit-path", "absolute PATH entry for the unit (repeatable; joined with ':')", func(v string) error {
+		o.UnitPathEnv = append(o.UnitPathEnv, v)
+		return nil
+	})
 	fs.BoolVar(&o.UpdateToken, "update-token", false, "explicitly replace the saved token; preserve all local configuration")
 	if err := fs.Parse(args); err != nil {
 		return err

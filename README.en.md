@@ -139,7 +139,25 @@ docker run -p 8080:8080 \
 
 The hub only dispatches — **the node is what actually executes capabilities**. `anode` is a
 separate binary you run on your own machine: it connects to the hub, pulls capabilities,
-runs them, and reports results/emits.
+runs them, and reports results/emits. The default path is **one command** — the exact line the
+hub's Nodes page hands you after you register a node:
+
+```bash
+curl -fsSL https://<hub-domain>/install-anode.sh | sh -s -- \
+  --name node-a --server https://<hub-domain> --token-file /root/anode.token
+```
+
+It downloads the binary and verifies its sha256, pre-flights the token with
+`anode serve --check`, stages files with `anode install`, installs a systemd service
+(`system` / `user` / `none`), polls until it is `active`, then prints a summary. Afterwards the
+node should show as online on the hub's Nodes page. **Do not add `sudo` to the command** —
+the script escalates by itself through your terminal.
+
+- upgrade = **re-run the same command** (keeps the existing `anode.yaml`, swaps the binary, restarts)
+- uninstall = `sh install-anode.sh --uninstall` (removes the config too; `--keep-config` keeps it, `--purge` also deletes the data dir)
+- full walkthrough (download priority, service modes and privilege escalation, pre-flight diagnostics, security) lives in `docs/anode-install.md`
+
+Without the script (you drive the binary, unit and service yourself):
 
 ```bash
 make anode                                  # build ./anode (with version metadata)
@@ -152,7 +170,8 @@ make docker-anode                           # node image (a container is a node)
 
 The token is issued after registering the node in the hub
 (`POST /v1/nodes` → `POST /v1/nodes/{name}/tokens`, plaintext returned once).
-See `docs/v4/anode-cli.md` for the full CLI (three subcommands and their flags).
+`anode install` only writes files (no `sudo`, no `systemctl`); see `docs/v4/anode-cli.md` for the
+full CLI (three subcommands and their flags).
 
 ## Public Exposure
 

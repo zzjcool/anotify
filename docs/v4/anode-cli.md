@@ -34,24 +34,46 @@ anode install --prefix /opt/anode --name node-a --server ws://127.0.0.1:8080 --t
 anode install --name node-a --server wss://anotify.example.com --token-file /root/anode.token \
   --config /etc/anode/anode.yaml --bin /usr/local/bin/anode --unit /etc/systemd/system/anode.service --data /var/lib/anode
 
+# 系统服务：unit 里写 User=<安装者>，并显式给出 HOME/PATH
+anode install --name node-a --server wss://anotify.example.com --token-file /root/anode.token \
+  --unit-user anotify --unit-home /var/lib/anotify --unit-path /usr/local/bin --unit-path /usr/bin
+
 # 只轮换令牌：保留本机配置与数据
 anode install --name node-a --server wss://anotify.example.com --token-file /root/anode.token --update-token
 ```
 
 - `--token` 与 `--token-file` **二选一**（前者会落进 shell history，只适合临时排查）。
 - 已存在的配置不会被默认覆盖；换 token 必须显式 `--update-token`。
-- 不做：自动注册节点、自动签 token、`sudo`、联网下载（下载/校验在
-  `scripts/install-anode.sh`，它只验 sha256 与 `--version`，然后把参数交给 `anode install`）。
+- `--unit-user` / `--unit-home` / `--unit-path` 只影响**写出来的 unit**：
+  - `--unit-user` → `User=`（服务以谁的身份跑；不写就是启动者，root 装就是 root 跑，
+    能力脚本的权限等于整台机器）；
+  - `--unit-home` → `Environment=HOME=`（必须是绝对路径；这是能力脚本的 `HOME` 基线）；
+  - `--unit-path` → `Environment=PATH=`，**可重复**，按给出顺序用 `:` 拼成一条。
+  三者留空就不输出那一行（unit 继承 systemd 的默认），形状不合法（相对路径/越界/非法用户名）直接拒绝。
+- **不做**：自动注册节点、自动签 token、`sudo`、`systemctl`、联网下载。
+  这些属于完整安装器 `scripts/install-anode.sh`（下载 → 校 sha256 → 停旧实例 →
+  `anode serve --check` 预检 → 调 `anode install` 落盘 → 装服务 → 轮询 `is-active` → 打摘要）；
+  `anode install` 自己永远只落盘，不碰服务生命周期。
 
 ## 2. 起节点守护：`anode serve`
 
 ```bash
+# 常驻（systemd unit 跑的就是这一行）
 anode serve --config /etc/anode/anode.yaml --data /var/lib/anode
+
+# 预检：只连一次中枢验证身份与可达，然后退出（不写盘、不监听、不跑能力）
+anode serve --check --config /etc/anode/anode.yaml --data /var/lib/anode
 ```
 
 - `--config` 是**严格**的 `anode.yaml`：未知字段启动失败，不热更（改配置就重启）。
 - `--data` 是私有数据目录（缓存的能力产物、执行档案、emit 端点信息）。
 - 启动是**全有或全无**：身份被拒 / 配置不合法就退出，不存在「半在线」。
+- `--check` 是**一次性自检**：握手走到 `welcome` 就退出。成功时 stdout 只有一行
+  `check ok: node=<name>`（不含 token）→ exit 0；失败时 stderr 打
+  `anode check: <unauthorized|timeout|config>: …` → **exit 2**。上限**固定 10s**，
+  不写盘、不监听、不启动 runner/emit，也不改配置——所以可以在落正式配置**之前**用它验令牌。
+- `serve` 本体也认这条判据：`welcome` 之前的 close 1008（或 401）是**身份拒绝**，直接退出，
+  不再无限重连——错误令牌重连只会把中枢日志刷成一片认证失败。
 
 ## 3. 能力脚本的出口：`anode emit`
 
@@ -94,3 +116,17 @@ anode --version   # 单行 JSON：{"version":"<label>","commit":"<sha>"}
 - **不注册自己**：节点是集群级对象，登记与授权都在中枢（`POST /v1/nodes`）。
 - **不猜宿主环境**：`envPassthrough` 只写变量名，值留在本机；`run.env` 里禁止覆盖 `PATH`。
 - **不做插件系统**：三个子命令之外没有第四个入口；新增能力走中枢的能力资源。
+
+## 6. 一条命令装节点（终端用户的入口）
+
+终端用户**不需要**自己拼 `anode install` + `systemctl`：中枢「节点」页注册完给出**一条命令**，
+脚本自己完成下载、校验、预检、落盘、装服务、启停与校验：
+
+`curl -fsSL <中枢 origin>/install-anode.sh | sh -s -- --name <节点名> --server <中枢 origin> --token-file <token 文件>`
+
+- 命令里**不写 `sudo`**：脚本自己探测提权（root 直跑 / `sudo -n` / 从 `/dev/tty` 读一次密码）；
+  `curl|sh` 下 stdin 是管道，`sudo` 只能从终端读密码，所以把 `sudo` 写在管道前面反而会卡住。
+- 下发的 `install-anode.sh` 就是 `scripts/install-anode.sh` 的逐字节副本（`make check-anode-skill` 有 `cmp` 守卫）。
+- 重跑同一条命令 = **升级**（沿用现有 `anode.yaml`，只换二进制并 restart）；
+  `--uninstall` 卸载（默认删配置，`--keep-config` 保留，`--purge` 连数据目录）。
+- 完整走查（下载优先级、服务模式与提权、预检诊断、卸载/升级、安全）见 `docs/anode-install.md`。

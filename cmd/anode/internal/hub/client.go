@@ -20,6 +20,11 @@ var ErrAuthRejected = errors.New("hub: 节点身份被拒绝")
 // ErrOffline 表示当前没有可用连接（帧没发出去；调用方保留事实等重连）。
 var ErrOffline = errors.New("hub: 与中枢的连接不可用")
 
+// ErrCheckTimeout 是一次性预检（Check）在调用方给的期限内没收到 welcome：**终态**，不重试。
+//
+// 预检不新增超时 flag：`anode serve --check` 用固定的 10s ctx deadline，到期即此错误。
+var ErrCheckTimeout = errors.New("hub: 预检未在期限内收到 welcome")
+
 // defaultReadLimit 是下行帧读上限（与协议 1 MiB 软上限留余量）。
 const defaultReadLimit = 4 << 20
 
@@ -101,6 +106,79 @@ func New(serverURL, token string, handler Handler) (*Client, error) {
 		return nil, err
 	}
 	return &Client{ServerURL: serverURL, Token: token, Handler: handler}, nil
+}
+
+// Check 做一次性身份预检：连接 → hello → 等到 welcome → 返回。
+//
+// 它是 `anode serve --check` 的实现（v4.1 契约 §4）：只确认「中枢可达 + 身份被接受」，
+// 不应用配置、不写盘、不上报本地 applied。**不重连、不重试、不 sleep、不 backoff**：
+// 调用方给 ctx 一个 deadline（CLI 固定 10s），那就是整次预检的上限。
+//
+// 诊断约定（CLI 据此分 kind）：
+//   - 401/403、或 welcome 之前的 close 1008 → 包装 ErrAuthRejected（身份被拒）；
+//   - ctx 到期 → 包装 ErrCheckTimeout；ctx 取消 → 返回 ctx.Err()；
+//   - 其它失败原样返回（CLI 归入 timeout 诊断，detail 带真实原因）。
+func Check(ctx context.Context, serverURL, token string, hello protocol.HelloFrame) error {
+	streamURL, err := StreamURL(serverURL)
+	if err != nil {
+		return err
+	}
+	data, err := protocol.Encode(hello)
+	if err != nil {
+		return err
+	}
+	opts := &websocket.DialOptions{HTTPHeader: http.Header{}}
+	if token != "" {
+		opts.HTTPHeader.Set(protocol.EmitAuthHeader, protocol.EmitAuthScheme+" "+token)
+	}
+	conn, resp, err := websocket.Dial(ctx, streamURL, opts)
+	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return fmt.Errorf("%w: HTTP %d", ErrAuthRejected, resp.StatusCode)
+		}
+		return checkContextErr(ctx, fmt.Errorf("hub: 预检连接 %s: %w", streamURL, err))
+	}
+	// 一次性预检：不做优雅关闭（Close 会等对端回 close 帧，最多 5s；预检拿到答案就退出）。
+	defer conn.CloseNow()
+	conn.SetReadLimit(defaultReadLimit)
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return checkContextErr(ctx, fmt.Errorf("hub: 预检写 hello: %w", err))
+	}
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			// welcome 之前收到 close 1008 = 中枢拒绝这次握手（令牌/名字不被接受）。
+			// ctx 已结束时不把 close 语义当结论：到期/取消优先。
+			if ctx.Err() == nil {
+				if status := websocket.CloseStatus(err); status == websocket.StatusPolicyViolation {
+					return fmt.Errorf("%w: 中枢在 welcome 之前以 close %d 断开", ErrAuthRejected, status)
+				}
+			}
+			return checkContextErr(ctx, fmt.Errorf("hub: 预检读帧: %w", err))
+		}
+		frame, err := protocol.Decode(data)
+		if err != nil {
+			return fmt.Errorf("hub: 预检收到坏帧: %w", err)
+		}
+		if _, ok := frame.(*protocol.WelcomeFrame); ok {
+			return nil
+		}
+		// welcome 之前的其它帧与身份无关（未知帧/保留帧）：丢弃继续等。
+	}
+}
+
+// checkContextErr 把「到期/取消」翻译成预检诊断；其它失败原样返回。
+func checkContextErr(ctx context.Context, err error) error {
+	switch ctxErr := ctx.Err(); {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %v", ErrCheckTimeout, ctxErr)
+	case ctxErr != nil:
+		return ctxErr
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %v", ErrCheckTimeout, err)
+	default:
+		return err
+	}
 }
 
 // Run 连接中枢并保持配置同步，直到 ctx 结束或认证被拒。
@@ -232,9 +310,18 @@ func (c *Client) runSession(ctx context.Context) error {
 	if h, ok := c.Handler.(SessionHandler); ok {
 		h.SessionUp()
 	}
+	// welcomed 之前收到 close 1008 = 中枢拒绝这次握手：身份拒绝是终态（重连只会制造
+	// 登录风暴，与 401/403 同一取向）。welcome 之后（含被新连接顶掉的会话）保持
+	// 可重连：那已经不是「身份不被接受」。
+	welcomed := false
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			if !welcomed && ctx.Err() == nil {
+				if status := websocket.CloseStatus(err); status == websocket.StatusPolicyViolation {
+					return fmt.Errorf("%w: welcome 之前被 close %d 断开", ErrAuthRejected, status)
+				}
+			}
 			return fmt.Errorf("hub: 读取帧: %w", err)
 		}
 		frame, err := protocol.Decode(data)
@@ -242,6 +329,9 @@ func (c *Client) runSession(ctx context.Context) error {
 			// 一条坏帧不掀整条连接（与协议包「unknown type 不断连」同一取向）。
 			c.logf("hub: 忽略坏帧: %v", err)
 			continue
+		}
+		if _, ok := frame.(*protocol.WelcomeFrame); ok {
+			welcomed = true
 		}
 		c.dispatch(ctx, conn, frame)
 	}
