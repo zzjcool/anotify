@@ -4525,7 +4525,7 @@
 			nodes: state.nodes.length,
 			events: state.events.length,
 			tasks: state.tasks.length,
-			userCount: 3, adminCount: 1, disabledUsers: 0,
+			userCount: 3, adminCount: 1, activeUserCount: 3, disabledUsers: 0,
 			messageCount: 0, todayMessages: 0,
 			deviceCount: state.devices.length, enabledDevices: state.devices.filter(d => d.enabled).length,
 			keyCount: state.keys.length, deliveredCount: 0, deliveryTotal: 0, topUsers: [],

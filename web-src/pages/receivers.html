@@ -21,6 +21,49 @@
         min-width: 0;
       }
 
+      /* RCV-3：与 admin 的 .tabs 对齐 —— 页栅格是 grid，default 会把 .tabs 拉满整行，
+         justify-self:start 让它回到「组件宽度 = 内容宽度」。 */
+      .rcv-tabs {
+        justify-self: start;
+      }
+
+      /* RCV-2：空态 = 44px 图标 + 标题 + 说明 + 下一步动作（D16 要求空态必须给动作） */
+      .rcv-empty {
+        align-items: center;
+        padding: 36px 20px;
+        gap: 10px;
+      }
+      .rcv-empty-ico {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        color: var(--faint);
+      }
+      .rcv-empty-title {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.4;
+        color: var(--text);
+      }
+      .rcv-empty-desc {
+        max-width: 46ch;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .rcv-empty-acts {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
       /* 通道 tab 里的计数胶囊 */
       .rc-count {
         display: inline-flex;
@@ -326,7 +369,7 @@
     </div>
 
     <!-- ===== 通道 Tab ===== -->
-    <div class="tabs" role="tablist">
+    <div class="tabs rcv-tabs" role="tablist">
       <button
         type="button"
         class="tab rc-tab active"
@@ -750,21 +793,44 @@
           .addEventListener("click", (e) => copyText(e.currentTarget, "#ws-cmd"));
 
         /* ================= 推送未开放：只替换 push 区块 ================= */
+        /* RCV-2（P0）：空态不能只有一行字。「新增设备」在本产品里是隐藏中的能力
+           （PUSH_UI_ENABLED=false），所以下一步动作给的是「另一条真实可用的接收通道」
+           与「接口文档」，而不是一个点不动的按钮。 */
+        const BELL_OFF_ICON =
+          '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.9 17.9 0 0 1 18 8a6 6 0 0 0-9.33-5"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
         function renderPushUnavailable() {
           const box = el("div", { class: "card card-pad" });
-          const empty = el("div", { class: "empty" });
+          const empty = el("div", { class: "empty rcv-empty" });
+          const ico = el("span", { class: "rcv-empty-ico" });
+          ico.innerHTML = BELL_OFF_ICON;
+          const acts = el("div", { class: "rcv-empty-acts" });
+          acts.append(
+            el("button", {
+              type: "button",
+              class: "btn btn-primary",
+              text: t("uxaudit.res.receivers.to_ws", "查看 WebSocket 长连接"),
+              onclick: () => activateChannel("ws"),
+            }),
+            el("a", {
+              class: "btn btn-ghost",
+              href: "docs.html#api",
+              text: t("uxaudit.res.receivers.docs", "查看接口文档"),
+            }),
+          );
           empty.append(
+            ico,
             el("div", {
-              class: "card-title",
+              class: "rcv-empty-title",
               text: t("receivers.unavailableTitle", "推送暂未开放"),
             }),
             el("p", {
-              class: "card-sub",
+              class: "rcv-empty-desc",
               text: t(
                 "receivers.unavailable",
                 "手机推送暂未开放，上线后这里会显示你的接收设备。",
               ),
             }),
+            acts,
           );
           box.append(empty);
           pushUnavailable.replaceChildren(box);

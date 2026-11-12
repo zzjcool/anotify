@@ -69,6 +69,11 @@
       .kx-keys-table {
         min-width: 620px;
       }
+      /* ADM-4：粘顶表头只有在滚动容器有高度上限时才生效（.data-table th 已是
+         position:sticky）。列表长起来/窄屏横滚时表头钉住，行 hover 有过渡。 */
+      .kx-keys-scroll {
+        max-height: min(60vh, 560px);
+      }
       .kx-cell-name {
         font-size: 13px;
         font-weight: 500;
@@ -94,6 +99,16 @@
         display: inline-flex;
         align-items: center;
         gap: 8px;
+      }
+      /* 破坏性行操作用「quiet 底 + error 字」，与 admin 的行操作同一套语言；
+         不再用实心 danger 按钮抢走整行的主次。 */
+      .kx-act-danger {
+        color: var(--error);
+      }
+      .kx-act-danger:hover {
+        color: var(--error);
+        background: var(--error-soft);
+        border-color: color-mix(in srgb, var(--error) 30%, transparent);
       }
       .kx-chip-row {
         display: flex;
@@ -436,7 +451,7 @@
       <!-- 表格：hidden 只挂在这层裸 div 上（.table-wrap/.data-table 有各自的
            display/overflow，和 .hidden 同元素会被盖掉）。 -->
       <div id="keys-table" class="hidden">
-        <div class="table-wrap overflow-x-auto">
+        <div class="table-wrap overflow-x-auto kx-keys-scroll">
           <table class="data-table kx-keys-table">
             <thead>
               <tr>
@@ -857,7 +872,7 @@
                 "button",
                 {
                   type: "button",
-                  class: "btn btn-danger btn-sm",
+                  class: "btn btn-quiet btn-sm kx-act-danger",
                   onclick: () => revokeKey(k),
                 },
                 t("keys.action.revoke", "停用"),
