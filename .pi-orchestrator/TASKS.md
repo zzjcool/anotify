@@ -487,3 +487,12 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 | E 文档与认证页 | `ui-doc-auth` | pages/{docs,trace,message,login,cli-auth,passkey-enroll}.html | DOC-1…3、TR-2…4、MSG-1/2、AU-1…4 |
 
 - **合入门槛**（协调者执行）：`make sitegen` + `make check-classes` + `check-tailwind-css` → 逐页截图对比 → `./scripts/e2e/run_all.sh` 全量 → `make build`。
+
+### 合并计划（UI 审计 v3）
+
+- **基线门禁已取**：`ui_shift` 83/0（304 视图，135s）、`frontend` 35/0（real，118s）。两支都绿 → 合并后任何红都是本轮回归。
+- **合并顺序**：`ui-shell` → `ui-workbench` → `ui-resource` → `ui-doc-auth`（每次合完立即 `make sitegen` + `check-classes` + `check-tailwind`，再进下一个）。
+- **已知必冲突点**：4 份 `web-src/locales/*.yaml` 的**文件尾部** —— shell 加了 `uxaudit.shell.*`(6)、workbench 加了 `uxaudit.work.*`(+29/30)、doc-auth 加了 `uxaudit.doc.*`(3)。解冲突方式：保留一个 `uxaudit:` 顶层键，把 `shell/` `work/` `doc/` 三个子树合并进同一块，四语逐一对齐；**resource 分支 locale 零改动**，若它引用了新 key，由我补。
+- **组件重复交付**：shell 在 ui.css 新增了 `file-drop*`(6)、`empty-icon/title/desc/actions`(4)、`modal-head-main/head-icon/title-wrap/title/sub/close/foot-start`(7)、`status-info`、`anim-value`、`flograph-*`(4) —— 侦察确认这些类**零页面采用**（三支各自造了 `nd-*`/`src-*`/`msg-state-*`/`tr-state-*`）。合并后需要一轮「按视觉挑一套」的收敛，否则空态/弹层仍是三套。
+- **品牌瓷砖改色**：`--brand-tile-bg` 从 `#000000` 改为暗色 `#4a4ac4` / 亮色 `#5b5bd6`（shell），全站生效 → 合并后必须亮/暗都看首页。
+- 侦察提醒：`check-classes` 只解析**行首第一个类名**，复合选择器 `.a > .b` 的 `.b` 不算定义；且 `classList.*` / `className=` 完全不过守卫（`flograph.js` 新加的 `is-h-scroll*` 属此类）。
