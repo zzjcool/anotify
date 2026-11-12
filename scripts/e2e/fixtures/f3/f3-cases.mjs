@@ -324,9 +324,16 @@ add('graph-prod-node-click',async d=>{
   const traceUID=d.fx('prodTrace'),taskId=d.fx('prodTask');
   assert.ok(taskId,'Graph click requires a real prod Task identity (bootstrap fires a prod event, never a fabricated node)');
   await d.goto('trace','namespace=prod&traceUID='+traceUID);
-  const node=d.page.locator('#trace-graph [data-node-id="'+taskId+'"]');await node.waitFor();assert.equal(await node.count(),1);
-  const id=await node.getAttribute('data-node-id');assert.ok(id);
-  await node.click();await d.page.waitForURL('**/message.html?namespace=prod&id='+id,{waitUntil:'domcontentloaded'});
+  // 底图（源的配置拓扑）上线后，trace 图的节点 id 是**能力名**（配置拓扑的身份），
+  // 不再是任务名 —— 图里有触发器节点 __trigger__ + 这次执行的能力节点。这里点那个
+  // 能力节点，并断言它仍然落到这条 trace 的**那个任务**（id 空间变了，链接语义没变）。
+  const ids=await d.page.locator('#trace-graph [data-node-id]').evaluateAll(ns=>ns.map(n=>n.getAttribute('data-node-id')));
+  assert.ok(ids.includes('__trigger__'),'底图应画出触发器节点：'+JSON.stringify(ids));
+  const capId=ids.find(id=>id!=='__trigger__'&&id);
+  assert.ok(capId,'底图应包含这次执行的能力节点：'+JSON.stringify(ids));
+  const node=d.page.locator('#trace-graph [data-node-id="'+capId+'"]');await node.waitFor();assert.equal(await node.count(),1);
+  await node.click();await d.page.waitForURL('**/message.html?namespace=prod&id='+taskId,{waitUntil:'domcontentloaded'});
+  const id=taskId;
   await d.page.waitForFunction(id=>__f3Calls.some(c=>c.url==='/v1/namespaces/prod/tasks/'+id&&c.result?.metadata?.name===id),id);
   assert.equal(await d.page.locator('#msg-sub').innerText(),'prod · '+id);
   d.check('F3-GRAPH real physical node click -> exact original-namespace Task GET and displayed Task.name');

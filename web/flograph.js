@@ -32,12 +32,45 @@
 
 	// SVG 命名空间：createElementNS 才是创建 SVG 元素的正确方式，
 	// createElement("path") 会得到一个 HTMLUnknownElement，什么也不画。
+	/**
+	 * replaySteps —— 回放一共几步 = 执行拍 + 触发器那一拍。
+	 *
+	 * playEnter 的时间表里「第 0 拍：触发器」本来就是一步（`push(0, () => lightNode(ROOT_ID))`），
+	 * 所以「源 → 能力」这种单任务链路是**两步**：可播、也该出现重播/速度按钮。
+	 * 之前两处判据都只数 beats（`beats.length >= 2`），单任务 trace 连按钮都没有 ——
+	 * 而图上明明画着源和它的一次执行，用户看到的是"播放按钮没了"。
+	 *
+	 * 触发器只在**真的画在图上**时才算（nodes 里存在这个 id）：首页那种只有执行链、
+	 * 没有底图的图里 root 是空串或不存在，不能凭空多出一拍。
+	 */
+	function replaySteps(beats, rootId, nodes) {
+		const hasTrigger = !!(rootId && (nodes || []).some((n) => n && n.id === rootId));
+		return (beats || []).length + (hasTrigger ? 1 : 0);
+	}
+
 	const SVG_NS = "http://www.w3.org/2000/svg";
 
 	function svg(tag, attrs) {
 		const n = document.createElementNS(SVG_NS, tag);
 		if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
 		return n;
+	}
+
+	/**
+	 * nodeTitle —— 节点标题：**数据**（能力显示名 / 源名 / 任务 id），不是界面文案。
+	 *
+	 * 内容是资源里的原样文字，所以要标 `data-raw-content`。i18n 的残留扫描只放行
+	 * 「纯文本 SPAN」，拿不到这个标记时会把 mock 里的中文显示名判成 en/es 页的
+	 * 中文泄漏（真实红过：首页/链路页/源页的图）。
+	 * 结构不变：类仍挂在外层 div 上（样式按外层选），里面只有一个文本 span。
+	 */
+	function nodeTitle(cls, text) {
+		const box = div(cls);
+		const label = document.createElement("span");
+		label.setAttribute("data-raw-content", "");
+		label.textContent = String(text == null ? "" : text);
+		box.appendChild(label);
+		return box;
 	}
 
 	function div(cls, text) {
@@ -500,7 +533,7 @@
 			el.appendChild(icon);
 
 			const body = div("wf-node-body");
-			body.appendChild(div("wf-node-title", n.label || n.id));
+			body.appendChild(nodeTitle("wf-node-title", n.label || n.id));
 			if (n.sub) body.appendChild(div("wf-node-sub", n.sub));
 			el.appendChild(body);
 
@@ -952,7 +985,7 @@
 		// 注意 beats 在 options 里，工具栏这行代码**早于**下面的
 		// `const beats = ...` 执行（同一个函数作用域，靠 TDZ 会炸），
 		// 所以这里直接读 options。
-		const canReplay = (options.beats || []).length >= 2;
+		const canReplay = replaySteps(options.beats, options.root, options.nodes) >= 2;
 
 		// 播放速度（1× / 0.5× / 2×）。
 		//
@@ -1331,7 +1364,8 @@
 			) {
 				return;
 			}
-			if (beats.length < 2) return; // 一步都不到，没有可播的顺序
+			// 一步都不到就没有可播的顺序；触发器也算一步（见 replaySteps）。
+			if (beats.length + (ROOT_ID && nodeEls.has(ROOT_ID) ? 1 : 0) < 2) return;
 
 			if (enterTimer) {
 				clearInterval(enterTimer);
@@ -1992,7 +2026,7 @@
 			icon.appendChild(silkIcon(iconName));
 			icon.appendChild(glyph);
 			const main = div("n-main");
-			main.appendChild(div("wf-node-title n-title", n.label || n.id));
+			main.appendChild(nodeTitle("wf-node-title n-title", n.label || n.id));
 			const subText = n.sub == null ? "" : String(n.sub);
 			main.appendChild(div("wf-node-sub n-sub", subText));
 			const side = div("n-side");
@@ -2688,7 +2722,7 @@
 		scroll.addEventListener("keydown", onScrollKey);
 
 		// ---- 控件（契约 §9）：speed / replay / zoom / fit / fullscreen -----
-		const canReplay = beats.length >= 2;
+		const canReplay = replaySteps(beats, ROOT_ID, nodes) >= 2;
 		const SPEEDS = [1, 0.5, 2];
 		function paintSpeed(btn) {
 			const txt = (revealSpeed === 1 ? "1" : String(revealSpeed)) + "\u00d7";
@@ -3091,7 +3125,8 @@
 				showFinal();
 				return;
 			}
-			if (beats.length < 2) {
+			// 触发器那一拍也算：单任务链路（源 → 能力）仍然可播。
+			if (beats.length + (ROOT_ID && nodeById.has(ROOT_ID) ? 1 : 0) < 2) {
 				showFinal();
 				return;
 			}

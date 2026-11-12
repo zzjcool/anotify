@@ -838,7 +838,7 @@
     let loadError = null;
     let LATEST_EVENTS = [];
     let EVENT_ERROR = null;
-    const { ready, readScope, nsPath, model, itemsOf } = window.Anotify;
+    const { ready, readScope, nsPath, loadSourceTopology, model, itemsOf } = window.Anotify;
 
     /* 两张执行状态卡的口径必须是**真实 Task 事实**，不是 stats 的臆造字段：
      * GET /v1/stats 只给 total/today/delivered/deliveryTotal/deviceCount/daily
@@ -977,9 +977,13 @@
         }
         if (!window.AnotifyGraphs) throw new Error(t("index.flow.nolib"));
         const source = doc.events.find(resource => resource.spec.involvedObject?.kind === "Source");
+        const sourceName = source?.spec?.involvedObject?.name || "";
+        // 底图 = 这个源的静态配置拓扑，取数与降级规则在 Anotify.loadSourceTopology
+        // （和链路页 / 源详情页共用一份）。拿不到源就退回只画执行链，不白屏、不编造。
+        const baseGraph = await loadSourceTopology(sourceName);
         window.AnotifyGraphs.taskChain(host, {
-          tasks: doc.tasks, sourceLabel: source?.spec.involvedObject.name || "",
-          sourceSub: source?.spec.eventType || "", animate: false, t,
+          tasks: doc.tasks, baseGraph: baseGraph, sourceLabel: sourceName,
+          sourceSub: source?.spec.eventType || "", t,
           onNodeClick(task) {
             location.href = "message.html?namespace=" + encodeURIComponent(readScope().namespace) +
               "&id=" + encodeURIComponent(task.name);

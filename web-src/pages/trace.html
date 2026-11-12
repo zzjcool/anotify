@@ -79,26 +79,42 @@
           el("span", { "data-raw-content": "", text: task.result.summary || task.result.error?.message || "—" })));
       return row;
     }
-    function render(doc, graphs) {
+    function render(doc, graphs, baseGraph) {
       if (graph?.destroy) graph.destroy();
       graph = null;
       content.replaceChildren();
-      const flow = section(t("trace.v4.graph"), "trace-graph");
-      flow.body.classList.add("overflow-x-auto");
+      // 图**自带**标题栏（源 · 任务数 · 回放）与外框：外面再裹一层 card + 卡片标题
+      // 就是两层框套在一起（"真实业务任务链"那层纯装饰）。直接把图放进内容区。
+      // 容器仍叫 #trace-graph：renderFlow 会把 flograph--silk 之类的类挂在它身上，
+      // e2e 也按这个 id 找节点。
+      const flow = el("div", { id: "trace-graph", class: "overflow-x-auto" });
       const tasks = section(t("trace.v4.tasks"), "trace-tasks");
       const events = section(t("trace.v4.events"), "trace-events");
       const pruned = section(t("trace.v4.pruned"), "trace-pruned");
-      content.append(flow.card, tasks.card, events.card, pruned.card);
+      content.append(flow, tasks.card, events.card, pruned.card);
       if (doc.tasks.length) {
-        const result = graphs.taskChain(flow.body, {
-          tasks: doc.tasks, sourceLabel: doc.events[0]?.spec.involvedObject?.name || "",
-          animate: false, t,
+        const triggeredBy = sourceEventOf(doc);
+        const result = graphs.taskChain(flow, {
+          tasks: doc.tasks,
+          // 底图 = 这个源在「源」页配置的静态拓扑。**没有它就没有触发器节点**，
+          // 也没有"被剪枝的分支"——图上只剩执行过的那一条直线，而这页要回答的
+          // 恰恰是"为什么另一条没走"（taskChain 的源码把 root 节点建在 base 分支里）。
+          baseGraph: baseGraph,
+          sourceLabel: triggeredBy?.spec.involvedObject?.name || "",
+          sourceSub: triggeredBy?.spec.eventType || "",
+          // 入场动画**要播**：不传 animate 时 graphs.js 走 `!enterAnimated`（首次渲染播一遍）。
+          // 传 false 会直接落到最终态 —— 打开这页看到的永远是"已经播完"的图，
+          // 而偏偏这页最该看懂的就是"先谁后谁"。
+          t,
+          // 这一页没有卡片标题上的「全屏」入口（源详情页有），所以必须保留工具栏版本 ——
+          // 否则链路图根本没法全屏看（flograph 的默认是「不放进工具栏」）。
+          showFullscreen: true,
           onNodeClick(task) { location.href = taskLink(task.name); },
         });
         graph = result?.graph;
         tasks.body.append(...doc.tasks.map(taskRow));
       } else {
-        flow.body.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
+        flow.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
         tasks.body.append(el("div", { class: "empty", text: t("trace.v4.empty") }));
       }
       for (const resource of doc.events) {
@@ -123,6 +139,22 @@
       });
       if (!doc.pruned.length) pruned.body.append(el("p", { class: "card-sub", text: t("trace.v4.no_pruned") }));
     }
+    /** 这条 trace 的触发事件（spec.involvedObject.kind=Source）。
+     *
+     * 不能假设 events[0]：剪枝/路由留痕也是事件行，排在前面的可能不是入口事件。
+     */
+    function sourceEventOf(doc) {
+      return (doc.events || []).find(e => e.spec?.involvedObject?.kind === "Source") || null;
+    }
+    /** 拉这个 trace 所属源的配置拓扑。
+     *
+     * 取数 + 降级规则在 `Anotify.loadSourceTopology`（三个页面共用一份）：
+     * 拿不到源（已删 / 未知源）就返回 null，调用方退回只画执行链。
+     */
+    function loadBaseGraph(doc) {
+      const name = sourceEventOf(doc)?.spec?.involvedObject?.name || "";
+      return name ? A.loadSourceTopology(name) : Promise.resolve(null);
+    }
     async function load() {
       const button = document.getElementById("trace-refresh");
       button.disabled = true;
@@ -136,7 +168,8 @@
         if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
         // 解析期挂上的 defer 图库屏障：首次 render 必须等它（重试用同一入口，已 resolved）。
         await deferredGraphics;
-        render(doc, graphLib());
+        const graphs = graphLib();
+        render(doc, graphs, await loadBaseGraph(doc));
       } catch (error) {
         if (graph?.destroy) graph.destroy();
         content.replaceChildren();

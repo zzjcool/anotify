@@ -1857,6 +1857,41 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return apiList(nsPath(plural));
 	}
 
+	/**
+	 * loadSourceTopology —— 「一个源的配置拓扑」的唯一异步入口。
+	 *
+	 * 三个页面（首页「最新事件链路」/ 链路页 / 源详情页）都要把「源 + 能力表」喂给
+	 * `AnotifyGraphs.sourceTopology`。**取数与降级规则只写这一份**，页面不要再各抄一遍：
+	 *   · 取源走**列表**（源已删 / trace 来自未知源时，单条 GET 会打一条 4xx，
+	 *     而"页面不该有失败请求"是观测断言里的硬约束）；
+	 *   · 拿不到源 / 图库未加载 → 返回 null，调用方退回"只画执行链"：
+	 *     不白屏，也不编造一条不存在的拓扑。
+	 *
+	 * @param {string} name 源名（metadata.name）
+	 * @param {{sources?: Array, capabilities?: Array, edges?: Array}} [opts]
+	 *        已经取到的资源（源详情页手上就有），省掉重复请求；缺省时自己拉。
+	 * @returns {Promise<{nodes: Array, edges: Array, truncated: boolean}|null>}
+	 */
+	async function loadSourceTopology(name, opts) {
+		const o = opts || {};
+		const wanted = String(name == null ? "" : name).trim();
+		if (!wanted) return null;
+		const graphs = window.AnotifyGraphs;
+		if (!graphs || typeof graphs.sourceTopology !== "function") return null;
+		const asItems = (res) => (Array.isArray(res) ? res : itemsOf(res));
+		try {
+			const [sources, capabilities] = await Promise.all([
+				o.sources ? asItems(o.sources) : nsList("sources").then(asItems),
+				o.capabilities ? asItems(o.capabilities) : nsList("capabilities").then(asItems),
+			]);
+			const source = sources.find((s) => s && s.metadata && s.metadata.name === wanted) || null;
+			if (!source) return null;
+			return graphs.sourceTopology({ source, capabilities, edges: o.edges || [] });
+		} catch (error) {
+			return null;
+		}
+	}
+
 	// apiError 把 v4 的 `Status` 错误体摊平成 Error 上的字段：
 	//	 err.status / code / reason / message / details / currentResourceVersion。
 	// `err.message` 同时保留在 `err.detail`（老页面/保留域仍在读 detail）。
@@ -3200,6 +3235,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		ready,
 		nsApi,
 		nsList,
+		loadSourceTopology,
 		nsPath,
 		clusterPath,
 		apiList,

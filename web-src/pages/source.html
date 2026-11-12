@@ -263,7 +263,7 @@ async function load(){
     const [src,caps,edgeDoc]=await Promise.all([A.nsApi("sources",name),A.nsList("capabilities"),A.api(A.nsPath("edges"))]);
     const edges={items:A.itemsOf(edgeDoc)};
     SRC=src;
-    render(src,caps.items,edges.items);
+    await render(src,caps.items,edges.items);
     await recent(name);
   }catch(err){
     $("src-body").replaceChildren(A.loadErrorNode(err,load));
@@ -275,7 +275,7 @@ function section(key){
   $("src-body").append(c);
   return c;
 }
-function render(src,caps,edges){
+async function render(src,caps,edges){
   const m=A.model.source(src);
   const name=el("span",null,m.displayName ? m.displayName+" · "+m.name : m.name);
   name.setAttribute("data-raw-content","");
@@ -305,16 +305,18 @@ function render(src,caps,edges){
   }const projection=section("edges");
   // v4 的边投影是 `{from,to,kind}`：入口边 = kind==="source" 且 from 是这个源名。
   projection.append(el("pre","source-json mono",JSON.stringify(edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge),null,2)));
-  const flow=section("graph");
+  // 图自带标题栏（源 · 能力数 · 状态）与外框：外面再裹一层 card + 卡片标题就是两层框，
+  // 和 trace 页同一个毛病。直接插进 src-body（顺序不变：仍在只读投影之后）。
   const host=el("div","source-graph");
   host.id="src-flow";
-  flow.append(host,el("p","field-hint",t("graph_hint")));
+  $("src-body").append(host,el("p","field-hint",t("graph_hint")));
   if(!window.AnotifyGraphs)host.append(el("p","source-error",t("graph_error")));
   else AnotifyGraphs.capabilityFlow(host,{
     src:{
       name:m.name,kind:m.kind
-    },topology:AnotifyGraphs.sourceTopology({
-      source:src,capabilities:caps,edges
+    },topology:await A.loadSourceTopology(m.name,{
+      // 这一页手上已经有源 / 能力 / 边表：走同一个入口但不重复请求。
+      sources:[src],capabilities:caps,edges:edges
     }),t:(k,d)=>A.t(k,d),showFullscreen:true,onNodeClick:n=>{
       if(n.id!=="__source__" && !n.unknown)location.href=link("capabilities.html",{
         name:n.name||n.id

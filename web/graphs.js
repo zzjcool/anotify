@@ -258,6 +258,21 @@
 	}
 
 	/**
+	 * capModel 把**资源信封**转成 Anotify.capLabel 认识的扁平模型。
+	 *
+	 * graphs.js 的入参是 `/v1/.../capabilities` 的 items（信封：metadata/spec/status），
+	 * 而显示名规则只有 `Anotify.capLabel` 一处、它的入参是 `Anotify.model.capability(...)`
+	 * 的产物。少了这一步，信封上 `name` 不存在 → 图上直接写 "undefined"。
+	 * 模型层缺失时退回最小形状（至少显示真名，不显示 undefined）。
+	 */
+	function capModel(res) {
+		const A = window.Anotify;
+		if (A && A.model && typeof A.model.capability === "function") return A.model.capability(res);
+		const meta = (res && res.metadata) || {};
+		return { name: meta.name || "", version: meta.version, displayName: meta.displayName };
+	}
+
+	/**
 	 * sourceTopology —— 唯一一份「源 → 能力 → 下游」拓扑推导（v4）。
 	 *
 	 * 输入是**配置事实**（源 + 能力表 + 可选边表），输出是 FlowGraph 中立的 {nodes, edges}。
@@ -298,7 +313,10 @@
 				const cap = capByName.get(name);
 				n = {
 					id: name,
-					label: cap ? capLabel(cap) : name,
+					// capLabel 吃的是**模型**（Anotify.model.capability 的扁平形状），这里拿到的是
+					// 资源信封。直接喂信封时 cap.name/cap.version/cap.displayName 全 undefined，
+					// 图上就会写死一个 "undefined"（真实故障：源页的下游节点）。
+					label: cap ? capLabel(capModel(cap)) : name,
 					// 结构身份：终端能力（空 next）= end；未解析的引用 = unknown
 					kind: !cap ? "unknown" : nextOf(cap).length ? "pipe" : "end",
 					entry: false,

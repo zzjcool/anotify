@@ -132,8 +132,13 @@ export async function observability(d, mode) {
     assert.equal(await count('#hm .hm-cell'), 371);
     assert.equal(await count('#flow-host.flograph--silk'), 1);
     assert.ok(await count('#flow-host svg'));
-    // 首页没有底图（graphs.js 的 useTaskIds 分支）：节点就是这条 trace 的真实任务。
-    assert.equal(await count('#flow-host .sl-node'), flowTrace.body.tasks.length);
+    // 首页链路卡与 trace / 源页同一套：底图（源的配置拓扑）+ 执行染色。
+    // 所以图里有触发器节点 + 拓扑里的能力，而不是"只画这条 trace 的任务"。
+    assert.equal(await count('#flow-host [data-node-id="__trigger__"]'), 1,
+      '首页必须画出触发器节点（与其他页对齐）');
+    const flowIds = await page.$$eval('#flow-host [data-node-id]', (ns) => ns.map((n) => n.getAttribute('data-node-id')));
+    assert.ok(flowIds.length >= flowTrace.body.tasks.length + 1,
+      '底图节点应包含触发器 + 执行过的能力，实际 ' + JSON.stringify(flowIds));
     const paths = (await calls()).map(c => c.url);
     assert.ok(paths.some(url => url === '/v1/stats?namespace=default'));
     assert.ok(paths.some(url => url === '/v1/namespaces/default/traces/' + latestWithTrace.spec.traceUID));
