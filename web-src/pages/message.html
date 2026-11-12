@@ -14,6 +14,8 @@
     overflow-wrap: anywhere;
   }
   .msg-unset b {
+    /* 标签与字段名之间只用空格分隔（JS 里 b 的文本自带一个尾随空格）：
+       中文的「：」在 en/es 里会变成全角冒号，ASCII 的「:」在中文里又偏窄。 */
     font-weight: 500;
     color: var(--muted);
   }
@@ -372,7 +374,7 @@
         el("dl", { class: "grid b2-facts gap-4" }, ...filled.map(([label, value]) => field(label, value))));
       if (unset.length) {
         facts.append(el("p", { class: "msg-unset" },
-          el("b", { text: t("uxaudit.doc.msg_unset", "未设置") + "：" }),
+          el("b", { text: t("uxaudit.doc.msg_unset", "未设置") + " " }),
           el("span", { text: unset.join(" · ") })));
       }
       facts.append(el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),

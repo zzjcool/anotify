@@ -169,6 +169,14 @@
         letter-spacing: 0.2em;
         text-align: center;
       }
+      /* 输入框焦点只有一层（AU-2）：ui.css 的 .input:focus 已经画了
+         「accent 边框 + 3px accent-soft 环」，全站 :focus-visible 又叠上一圈
+         2px outline —— 三层同时出现，看起来像描边跑偏。这里按页面收掉 outline，
+         保留「边框 accent + 单圈 ring」；键盘焦点指示仍然可见。 */
+      .input:focus,
+      .input:focus-visible {
+        outline: none;
+      }
       .entry-error {
         margin-top: 8px;
       }
@@ -418,7 +426,7 @@
         flex-wrap: wrap;
         align-items: center;
         justify-content: center;
-        gap: 6px 14px;
+        gap: 6px 12px;
         margin-top: 28px;
         font-size: 11px;
         line-height: 1.6;
@@ -429,6 +437,10 @@
         align-items: center;
         gap: 6px;
       }
+      /* 条目之间只用间距分隔，不画「·」（AU-3）：原来「·」是独立 flex 子项，
+         换行时留在行尾成了悬挂分隔符；改成条目内的 ::before 又会在换行处
+         变成行首的孤点 —— 两种都是「拼接痕迹」。这条脚注只有 2~3 项，
+         加大列间距就够分辨，任何换行位置都不会留下半个分隔符。 */
     </style>
 {{end}}
 
@@ -869,10 +881,8 @@
           <span class="dot dot-success"></span>
           {{t "cliauth.trust.local"}}
         </span>
-        <span>·</span>
-        <span>{{t "cliauth.trust.ttl"}}</span>
-        <span>·</span>
-        <span>{{t "cliauth.trust.revoke"}}</span>
+        <span class="trust-item">{{t "cliauth.trust.ttl"}}</span>
+        <span class="trust-item">{{t "cliauth.trust.revoke"}}</span>
       </div>
 
 {{end}}

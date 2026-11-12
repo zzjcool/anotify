@@ -308,6 +308,18 @@
   .doc-ep-table {
     overflow-x: auto;
   }
+  /* 表格统一走 .table-wrap（保留横向滚动能力），但它们嵌在 .card / .doc-ep 里，
+     外面已经有一层边框，这里不再画第二层。 */
+  .doc-ep .table-wrap,
+  .card > .table-wrap {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  /* 代码块标题栏只有一个复制按钮（旅程图这类没有独立标题的块）：右对齐 */
+  .doc-head-end {
+    justify-content: flex-end;
+  }
   .doc-ep-data td {
     padding: 6px 12px;
     font-size: 11.5px;
@@ -475,7 +487,7 @@
     display: none;
   }
   .doc-toc-title {
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -831,7 +843,13 @@
               {{t "docs.agent.journey.title"}}
             </summary>
             <div class="doc-fold-body">
-<pre class="doc-journey">
+              <div class="code-block">
+                <div class="code-head doc-head-end">
+                  <button class="copy-btn" onclick="copyBlock(this)">
+                    {{t "docs.copy"}}
+                  </button>
+                </div>
+<pre class="code-body doc-journey">
  Agent(pi)              Anotify              WebPush svc              Device(iOS/Mac)
     │                        │                        │                        │
     │ ① agent_settled        │                        │                        │
@@ -840,6 +858,7 @@
     │                        │──────── ⑤ encrypt ────▶│── ⑥ APNs/FCM ─────────▶│
     │                        │                        │     ⑦ SW showNotification
     │                        │                        │     ⑧ system banner       │</pre>
+              </div>
             </div>
           </details>
         </section>
@@ -958,7 +977,7 @@
                 >
                 <span class="doc-card-count">{{.Total}}</span>
               </div>
-              <div class="doc-ep-table">
+              <div class="doc-ep-table table-wrap">
                 <table class="data-table doc-ep-data">
                   <tbody>
                     {{range .Ops}}
@@ -1046,7 +1065,7 @@
                 >{{t "docs.events.params.title"}}</span
               >
             </div>
-            <div class="overflow-x-auto">
+            <div class="table-wrap">
               <table class="param-table">
                 <tbody>
                   <tr>
