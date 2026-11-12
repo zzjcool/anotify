@@ -2257,3 +2257,9 @@ uxaudit:
       note_role: 'ロールは 2 種類のみ：スーパー管理者はユーザーとセッションを管理でき、メンバーはワークスペースのリソースのみ使えます。'
       note_disable: 'アカウントの無効化は即時反映され、次のリクエストは 401 で拒否されます。'
       note_session: 'セッションは個別に失効できます。失効するのはその端末のみです。'
+  security:
+    passkey_empty_title: 'Passkey がまだありません'
+    session_empty_title: '有効なセッションがありません'
+    default_new_name: '新しいデバイス'
+    alert_no_webauthn: 'このブラウザは WebAuthn に対応していないため、Passkey を追加できません。最新の Chrome / Safari / Firefox をご利用ください。'
+    prompt_new_name: 'この Passkey の名前を入力してください（例：「メイン端末」）：'

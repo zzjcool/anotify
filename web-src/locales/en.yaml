@@ -2257,3 +2257,9 @@ uxaudit:
       note_role: 'Two roles only: super admins manage users and sessions; members use workspace resources.'
       note_disable: 'Disabling an account takes effect immediately: its next request is rejected (401).'
       note_session: 'Sessions can be revoked individually; only that device is signed out.'
+  security:
+    passkey_empty_title: 'No Passkeys yet'
+    session_empty_title: 'No active sessions'
+    default_new_name: 'New device'
+    alert_no_webauthn: "This browser doesn't support WebAuthn, so a Passkey can't be added. Please use the latest Chrome, Safari or Firefox."
+    prompt_new_name: 'Name this Passkey (for example "Main phone"):'

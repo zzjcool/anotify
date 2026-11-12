@@ -2261,3 +2261,9 @@ uxaudit:
       note_role: '角色只有两种：超管可以管理用户与会话；成员只能用工作台资源。'
       note_disable: '禁用账号立即生效：该用户的下一次请求就会被拒绝（401）。'
       note_session: '登录会话可以单独吊销；吊销的只是那一台设备，不影响其它设备。'
+  security:
+    passkey_empty_title: '还没有 Passkey'
+    session_empty_title: '没有活跃会话'
+    default_new_name: '新设备'
+    alert_no_webauthn: '当前浏览器不支持 WebAuthn，无法添加 Passkey。请使用最新版的 Chrome / Safari / Firefox。'
+    prompt_new_name: '给这个 Passkey 起个名字（如「主力手机」）：'

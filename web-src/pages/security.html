@@ -1603,7 +1603,7 @@
         ico,
         el("div", {
           class: "sec-empty-title",
-          text: t("security.passkey.empty_title", "还没有 Passkey"),
+          text: t("uxaudit.security.passkey_empty_title", "还没有 Passkey"),
         }),
         el("p", {
           class: "sec-empty-desc",
@@ -1798,7 +1798,7 @@
     if (!window.PublicKeyCredential || !navigator.credentials?.create) {
       alert(
         t(
-          "security.alert.no_webauthn",
+          "uxaudit.security.alert_no_webauthn",
           "当前浏览器不支持 WebAuthn，无法添加 Passkey。\n请使用现代浏览器（Chrome/Safari/Firefox 最新版）。",
         ),
       );
@@ -1818,10 +1818,10 @@
     // 让用户给新凭证起个名字
     const name = prompt(
       t(
-        "security.prompt.new_name",
+        "uxaudit.security.prompt_new_name",
         "给这个 Passkey 起个名字（如「主力手机」）：",
       ),
-      t("security.default_new_name", "新设备"),
+      t("uxaudit.security.default_new_name", "新设备"),
     );
     if (name === null) return; // 用户取消
     try {
@@ -1919,7 +1919,7 @@
         ico,
         el("div", {
           class: "sec-empty-title",
-          text: t("security.session.empty_title", "没有活跃会话"),
+          text: t("uxaudit.security.session_empty_title", "没有活跃会话"),
         }),
         el("p", {
           class: "sec-empty-desc",

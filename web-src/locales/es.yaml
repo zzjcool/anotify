@@ -2257,3 +2257,9 @@ uxaudit:
       note_role: 'Solo hay dos roles: los superadmins gestionan usuarios y sesiones; los miembros usan los recursos del espacio de trabajo.'
       note_disable: 'Desactivar una cuenta surte efecto de inmediato: su siguiente petición se rechaza (401).'
       note_session: 'Las sesiones se pueden revocar una a una; solo se cierra esa sesión.'
+  security:
+    passkey_empty_title: 'Aún no hay Passkeys'
+    session_empty_title: 'No hay sesiones activas'
+    default_new_name: 'Dispositivo nuevo'
+    alert_no_webauthn: 'Este navegador no admite WebAuthn, así que no se puede añadir un Passkey. Usa la última versión de Chrome, Safari o Firefox.'
+    prompt_new_name: 'Ponle un nombre a este Passkey (por ejemplo, «Móvil principal»):'
