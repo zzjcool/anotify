@@ -221,3 +221,16 @@ go run ./cmd/fe-preview -dir web -addr 127.0.0.1:<PORT> &   # <PORT> 见任务�
 # 然后用 playwright-core 截图（chromium: ~/.cache/ms-playwright/chromium-1187/chrome-linux/chrome）
 # 亮/暗 × 1440/390，逐张看图，改前改后都要看
 ```
+
+## 4. 波次二（hover / focus / 空结果 / 抽屉，2026-11-13 追加）
+
+证据：`/tmp/ui-scan/shots2/`（hover-cap-row / focus-ring / cap-empty-search / mobile-drawer / toast-error）。
+
+| ID | P | 集群 | 现象 |
+|---|---|---|---|
+| W2-1 | P1 | A | **输入框 focus 双描边是全局问题**（capabilities 搜索框、cli-auth/passkey-enroll 验证码框都复现：border 变色 + ring 同时画一圈）→ 在 ui.css 里统一 `input/textarea/select` 的 focus = 单圈 |
+| W2-2 | P1 | C | 能力搜索「没有匹配的能力」空态：1280px 宽的框里一行字，**无图标、无动作**；且右上角仍显示「8 个能力」（应为 0/8） |
+| W2-3 | P1 | C | 能力列表行 hover **零变化**（截图对比完全一致）→ AN-4 的实例 |
+| W2-4 | P1 | D | 「新建源」空表单点「保存」**无任何反馈**（无 toast、无字段级错误）→ 确认是静默校验还是 mock 未接线 |
+| W2-5 | P1 | A | 移动端抽屉打开后，底部用户区（demo）仍被压在屏幕下沿之外（同 SH-6） |
+| W2-6 | P2 | A | 键盘 Tab 的第一焦点落在侧栏「总览」，focus ring 比导航项宽出 2px 且与 active 态叠加成双层药丸 |
