@@ -30,12 +30,11 @@ import (
 //   - `PlannedSource.Spec` / `snap.Targets` **一律不原地改**：新建源落库的执行事实读的是
 //     它们，必须继续带明文。
 //
-// 残余盲区（D3 固有，需契约才能动）：actual 侧只认识包里**当前**的 param key 名。若两轮之间
-// 把一个由 writeOnly values 派生的 param **改名**、而该 target 的**能力名没变**，旧 key 不在
-// 任何敏感集里，旧值仍会以明文出现在 `actual`。要关死它只能把“同名能力也一律整组打码”，
-// 那会连带隐去所有复用源的非敏感旧值（展示收益归零，反向红线见
-// `TestPlanUnappliedKeepsPlainTemplatedTargets`），故本轮如实记为残余限制。
-// 能力名对不上的一侧已改为整组打码（见 `inheritSensitivity`），不再是盲区。
+// actual 侧的同名对齐还有一条**按 key 的 fail-closed**（见 `inheritSensitivity` 的
+// `knownParams`）：库里的旧 param key 只要不在当前包**同名能力的任一 target** 上出现，
+// 就整值打码——覆盖“把 writeOnly 派生 param 改名/删除”的两轮安装场景（旧 key 不在任何
+// 敏感集里，但也不能因此漏明文）。代价是**被删除的非敏感旧 param 也会被多打码**；方向仍然
+// 只允许“多打码”，不按值匹配，也不往 target 里补键。
 
 // targetSensitivity 是一个 target 上「哪些 param 值由 writeOnly values 派生」的推导结果。
 //
@@ -51,6 +50,10 @@ import (
 type targetSensitivity struct {
 	allParams bool
 	keys      map[string]bool
+	// knownParams 是「当前包里同名能力的全部 param key 并集」，只在 actual 侧继承时由
+	// inheritSensitivity 填充（declared 侧为 nil）。旧行里出现、而当前包里已不存在的 key
+	// 一律打码：改名/删除的 param 旧值没有旧 values provenance，不能靠敏感集归因。
+	knownParams map[string]bool
 }
 
 // sourceTargetSensitivity 推导每个源、每个 target 上「引用了 writeOnly values 的 param」。
@@ -373,6 +376,10 @@ func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensit
 // 而库里旧行可能正是上一版由 writeOnly values 派生的值。此时**整组打码**（`allParams`），
 // 与「`len(declared)==0`」同口径：绝不回退到“空集 = 零打码”。
 //
+// 名字对得上时还返回 `knownParams`（同名 target 的全部 param key 并集）：旧行里出现、而当前
+// 包里已不存在的 key 也一律打码（`maskTargetAt`）。这条覆盖“同名能力内把 writeOnly 派生
+// param 改名/删除”的两轮安装——旧 key 不在任何敏感集里，但旧值仍可能来自 writeOnly。
+//
 // 历史口径是「退到该源全部敏感集的并集」，一旦新包里该源已无任何 writeOnly 引用（并集为空），
 // `maskTargetAt` 因 `!allParams && len(keys)==0` 原样返回 ⇒ actual 整侧零打码（review major，
 // 明文落库并可被 GET/history 读回）。回归见
@@ -380,7 +387,7 @@ func maskActualTargets(declared, actual []sourcespec.Target, sets []targetSensit
 func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
 	capability string) targetSensitivity {
 	name := refName(strings.TrimSpace(capability))
-	out := targetSensitivity{keys: map[string]bool{}}
+	out := targetSensitivity{keys: map[string]bool{}, knownParams: map[string]bool{}}
 	matched := false
 	for j := range declared {
 		if j >= len(sets) || refName(strings.TrimSpace(declared[j].Capability)) != name {
@@ -388,6 +395,9 @@ func inheritSensitivity(declared []sourcespec.Target, sets []targetSensitivity,
 		}
 		matched = true
 		mergeSensitivity(&out, sets[j])
+		for key := range declared[j].Params {
+			out.knownParams[key] = true
+		}
 	}
 	if !matched {
 		return targetSensitivity{allParams: true}
@@ -418,7 +428,9 @@ func maskTargetAt(t sourcespec.Target, set targetSensitivity) sourcespec.Target 
 	params := make(map[string]any, len(t.Params))
 	masked := false
 	for k, v := range t.Params {
-		if set.allParams || set.keys[k] {
+		// knownParams 非 nil 只出现在 actual 侧：旧 key 在当前包同名能力里已不存在
+		// （改名/删除）→ 没有 provenance 可归因，整值打码（多打码方向安全）。
+		if set.allParams || set.keys[k] || (set.knownParams != nil && !set.knownParams[k]) {
 			params[k] = MaskedValue
 			masked = true
 			continue

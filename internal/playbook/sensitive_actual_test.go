@@ -514,3 +514,99 @@ func TestMergeSensitivityNilMapGuard(t *testing.T) {
 		t.Fatalf("mergeSensitivity 没传播 allParams")
 	}
 }
+
+// TestPlanUnappliedActualMasksRenamedParam 钉住「同名能力内 param 改名」的 fail-closed：
+// 第一轮 `a-review{tokenRef:'{{values.tok}}'}`（tok writeOnly，明文落库）；第二轮把 param
+// 改名为 `token`，能力名不变。旧 key `tokenRef` 不在新包的敏感集里——但它同样没有旧 values
+// 的 provenance，所以必须打码（含同组被删掉的非敏感 `note`，多打码方向安全）；
+// 仍存在于新包里的非敏感 `project` 保留旧值。
+func TestPlanUnappliedActualMasksRenamedParam(t *testing.T) {
+	const valuesDoc = `
+    type: object
+    additionalProperties: false
+    properties:
+      project: { type: string, default: a }
+      tok: { type: string, writeOnly: true }
+`
+	const renamedSourceDoc = `
+metadata:
+  name: a-on-push
+spec:
+  kind: webhook
+  enabled: true
+  config: {}
+  targets:
+    - capability: a-review
+      params:
+        token: '{{values.tok}}'
+        project: '{{values.project}}'
+`
+	const reviewCapDoc = `
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: a-review
+spec:
+  next: []
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: "#!/usr/bin/env bash\ntrue\n"
+`
+	const (
+		oldTok  = "rename-old-secret"
+		oldNote = "rename-old-note"
+		newTok  = "rename-new-secret"
+	)
+	pkg := newBundle().
+		setValues(valuesDoc).
+		cap("capabilities/review.yaml", reviewCapDoc).
+		source("sources/on-push.yaml", renamedSourceDoc).
+		pkg(t)
+	ex := newFakeExisting().withSource("a-on-push", sourcespec.KindWebhook, `{}`,
+		sourcespec.Target{Capability: "a-review", Params: map[string]any{
+			"tokenRef": oldTok, "note": oldNote, "project": "a",
+		}},
+	)
+	plan, err := Plan(pkg, map[string]any{"tok": newTok, "project": "b"}, ex)
+	if err != nil {
+		t.Fatalf("计划失败: %v", err)
+	}
+	if len(plan.Unapplied) != 1 {
+		t.Fatalf("应有且只有 1 条 unapplied: %+v", plan.Unapplied)
+	}
+	declared := plan.Unapplied[0].Declared.([]sourcespec.Target)
+	actual := plan.Unapplied[0].Actual.([]sourcespec.Target)
+	if got := declared[0].Params["token"]; got != MaskedValue {
+		t.Fatalf("declared.params[token] 没打码: %#v", got)
+	}
+	if got := declared[0].Params["project"]; got != "b" {
+		t.Fatalf("declared.params[project] 被误伤: %#v", got)
+	}
+	// 旧 key 在当前包里不存在 → 打码；同组被删的非敏感 note 也打码（多打码安全）。
+	if got := actual[0].Params["tokenRef"]; got != MaskedValue {
+		t.Fatalf("改名后的旧 key tokenRef 必须打码（修复前是明文 %#v）", got)
+	}
+	if got := actual[0].Params["note"]; got != MaskedValue {
+		t.Fatalf("被删除的旧 key note 必须打码（多打码方向），得到 %#v", got)
+	}
+	// 仍存在于新包同名 target 的非敏感 key → 保留旧值。
+	if got := actual[0].Params["project"]; got != "a" {
+		t.Fatalf("actual.params[project] 应保留旧值 a，得到 %#v", got)
+	}
+	raw, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "ins_actual_rename", At: ts, Namespace: "ns"}))
+	if err != nil {
+		t.Fatalf("回执序列化失败: %v", err)
+	}
+	for _, secret := range []string{oldTok, oldNote, newTok} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("回执里泄露了明文 %q: %s", secret, raw)
+		}
+	}
+	for _, want := range []string{`"project":"b"`, `"project":"a"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("非敏感 project 不该被打码: %s", raw)
+		}
+	}
+}
