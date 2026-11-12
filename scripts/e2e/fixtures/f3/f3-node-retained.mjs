@@ -97,8 +97,13 @@ export async function nodeRetained(d,mode){
     await page.locator('#node-vars').fill('{"NODE_ONLY":"ui-saved", "SOURCE_ROOT":"/new-node-default"}'); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'Saved.');
     const saved = (await req(configPath)).body; assert.equal(saved.vars.NODE_ONLY, 'ui-saved'); assert.equal(saved.appliedRevision, config.appliedRevision); assert.notEqual(saved.configRevision, config.configRevision);
     const uiPut = (await calls()).filter(c => c.method === 'PUT' && c.url === configPath).at(-1); assert.deepEqual(Object.keys(uiPut.body).sort(), ['limits','metadata','namespaces','vars']);
-    assert.ok(await page.locator('#node-applied').innerText().then(t => t.includes('ConfigPending')));
-    await page.locator('#node-namespace').selectOption('prod'); await waitState('node-context-revision', 'namespace=prod');
+    // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
+    // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
+    assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
+    await page.locator('#node-namespace').selectOption('prod');
+    // 旧版渲染成 "namespace=prod" 的键值串；本轮改成 KV 对（本地化标签 + 值），
+    // 改用 data-key 锚点断言「值本身」——比断言某个译法更稳。
+    await page.waitForFunction(() => (document.querySelector('#node-context-revision [data-key="namespace"] .nd-v')?.textContent || '').trim() === 'prod');
     assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
     await noLeaks(); await shot('ns-context-limits-revisions'); await clean('Node config and namespace context');
     check('GET W5 config, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied/ns revisions, local>node>ns sources, per-leaf two-layer limits and machine applied excludes ns');

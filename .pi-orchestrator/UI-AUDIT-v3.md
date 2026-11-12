@@ -285,3 +285,23 @@ go run ./cmd/fe-preview -dir web -addr 127.0.0.1:<PORT> &   # <PORT> 见任务�
 - i18n key 集合四语完全一致（各 1931）；但 `security.html` 有 5 处引用**不存在的 key**（`common.copy`→应为 `common.copy.copied`、`common.copied`、`security.alert.no_webauthn`、`security.prompt.new_name`、`security.default_new_name`）→ en/ja/es 静默显示中文。
 - `docs.openapi.tag.*` 缺 4 个 tag（`aggregates/console/hooks/source-actions`），sitegen 只 WARN 并派生英文名 → 合并时统一补。
 - 约定：**locales 的最终写入由协调者合并时统一做**，避免多支抢同一文件尾部。
+
+## 8. 合并结果（2026-11-13）
+
+四支全部合入 `v4/integration`，顺序 E → D → C → A（locale 四次冲突，均按 `uxaudit.{doc,res,work,shell}` 合并为同一子树；另补 `uxaudit.security.*` 5 键）。
+最终 locale：**四语各 2026 键，两两差集为 0**。
+
+### 合并中被抓出并修掉的回归
+| # | 现象 | 根因 | 处理 |
+|---|---|---|---|
+| M1 | `i18n_coverage` 在 security 页 en/es 报 CJK 残留「还没有 Passkey」 | D 新空态用了 `security.passkey.empty_title` 等 5 个**不存在的 key**，静默回落中文 | 补 `uxaudit.security.{passkey_empty_title,session_empty_title,default_new_name,alert_no_webauthn,prompt_new_name}` 四语，改 5 处调用点 |
+| M2 | `frontend/playbook-install` strict mode 命中 2 个按钮 | C 的 PB-5 给 installs 代码块加了复制按钮 | 定位器收紧为 `#pb-installs button:not(.copy-btn)` |
+| M3 | `frontend/node-config` 断言 `ConfigPending` 失败 | D 把节点应用状态本地化成「待应用/已应用」，旧断言吃的是英文协议字面量 | 页面加语言中立钩子 `data-apply-state`（pending/applied/unknown），断言改读该属性 |
+| M4 | 同一用例 `namespace=prod` 文本断言失败 | 同上：KV 对不再渲染 `key=value` 串 | `pair()` 增 `data-key`，断言改读 `[data-key="namespace"] .nd-v` 的值 |
+| M5 | `ui_shift` 报 `Source code changed within run` | **协调者**在套件运行中执行了 merge | 纪律：e2e 运行期间不碰源码 |
+
+### 尚未处理（已知，非本轮回归）
+- **组件重复**：A 交付的 `.file-drop*` / `.empty-*` / `.modal-head-*` 等 27 个类**零页面采用**，C/D/E 各自写了 `nd-*`/`src-*`/`msg-state-*`/`pb-*`。视觉已基本一致（都遵循同一套 token 与 11.5px 底线），但代码里仍是多套。
+- **`docs.openapi.tag.*` 缺 4 个 tag**（`aggregates`/`console`/`hooks`/`source-actions`），sitegen 每次构建 WARN 并派生英文名。
+- **login 桌面 hero 卡下半部约 500px 空**（E 改双栏后新引入的失衡）。
+- **`:517` `/sources` 每行两个同色 badge**（`已启用` + `ok`；`已停用` + `disabled`），语义与颜色都重复。

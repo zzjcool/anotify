@@ -132,7 +132,8 @@
   }
   function pair(label, value, title) {
     const cell = make('div', 'nd-pair'), dt = make('dt', 'nd-k', label), dd = make('dd', 'nd-v', value);
-    if (title) dt.title = title;
+    // 语言中立的字段锚点（原始字段名进 data-key/title，界面只显示本地化标签）。
+    if (title) { dt.title = title; cell.dataset.key = title; }
     if (value === unk()) dd.classList.add('is-unknown');
     cell.append(dt, dd); return cell;
   }
@@ -145,8 +146,14 @@
     facts.append(chip(x('ns_label'), n.effectiveNamespaces.join(', ') || t('none'), t('effective_namespaces')));
     const knownRevision = n.configRevision != null && n.appliedRevision != null && n.appliedRevision !== '';
     const applied = make('dl', 'nd-kv');
+    // 语言中立的应用状态钩子：e2e 原先断言的是旧 UI 直接渲染的英文协议字面量
+    // （nodepage.pending = "ConfigPending"）；本轮把它本地化成「待应用/已应用」后，
+    // 复现同一语义需要一个与语言无关的锚点，比断言某个译法更稳。
+    const applyState = knownRevision ? (n.pending ? 'pending' : 'applied') : 'unknown';
+    const statePair = pair(x('apply_state'), knownRevision ? (n.pending ? x('pending_short') : x('applied_short')) : unk(), 'pending');
+    statePair.dataset.applyState = applyState;
     applied.append(
-      pair(x('apply_state'), knownRevision ? (n.pending ? x('pending_short') : x('applied_short')) : unk(), 'pending'),
+      statePair,
       pair(x('config_rev'), revText(n.configRevision), 'configRevision'),
       pair(x('applied_rev'), revText(n.appliedRevision), 'appliedRevision'),
       pair(x('applied_hash'), revText(n.appliedHash), 'appliedHash'),
