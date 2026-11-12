@@ -1610,6 +1610,12 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			appCol,
 		);
 		document.body.prepend(root);
+		/* 顶栏上下文里的命名空间：命名空间列表回来后再画一次 ——
+		 * 首帧时 scope 可能还是空的（全新浏览器 / 深链），mountNamespaceSwitcher
+		 * 会在拿到列表后把真正生效的 name 写进 scope 并 resolve。 */
+		if (nsSwitcherReady && typeof nsSwitcherReady.then === "function") {
+			nsSwitcherReady.then(paintScopeCrumb).catch(() => {});
+		}
 		/* P1：外壳已经挂载 —— 关掉 base.html <head> 里的预排版规则
 		 * （html:not([data-shell-ready]) #page-main 的左/上内距）。必须同步、同一任务，
 		 * 否则正常加载会先按预排版排一帧、再被真正的 .app-main 排一遍（双倍 padding）。 */
@@ -3265,6 +3271,70 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return STATUS_CLASS[st] || String(st || "pending");
 	}
 
+	/* ---------- 入场动画工具类（AN-1）----------
+	 * `.anim-stagger` 的子元素按顺序错峰入场；序号由这里写成内联 --stagger-i。
+	 *
+	 * 为什么不能只靠 CSS：`:nth-child` 只能枚举到写死的那几档（旧实现到第 8 个
+	 * 就没了，第 9 项以后完全没延迟），而列表长度是数据决定的。这里：
+	 *   · 每项 20ms，**封顶 220ms** —— 三百行的事件流不会排到 6 秒后才出来；
+	 *   · 容器自带 MutationObserver：列表整体重渲染（replaceChildren）后自动重排；
+	 *   · reduce 用户：CSS 的 --dur-mid 已经是 0ms，动画自然不跑（不写死 timeout）。
+	 * 页面无需任何调用，给容器加 class 即可。 */
+	const STAGGER_STEP_MS = 20;
+	const STAGGER_CAP = 11; /* 11 × 20ms = 220ms，与 ui.css 的 nth-child 兜底同档 */
+
+	function paintStagger(container) {
+		const kids = container.children;
+		if (!kids) return;
+		for (let i = 0; i < kids.length; i++) {
+			const v = String(Math.min(i, STAGGER_CAP));
+			if (kids[i].style.getPropertyValue("--stagger-i") !== v) {
+				kids[i].style.setProperty("--stagger-i", v);
+			}
+		}
+	}
+
+	const STAGGER_SEEN = new WeakSet();
+	function watchStagger(box) {
+		if (!box || STAGGER_SEEN.has(box)) return;
+		STAGGER_SEEN.add(box);
+		paintStagger(box);
+		if (typeof MutationObserver === "function") {
+			new MutationObserver(() => paintStagger(box)).observe(box, {
+				childList: true,
+			});
+		}
+	}
+	function scanStagger(root) {
+		if (!root || root.nodeType !== 1) return;
+		if (root.classList && root.classList.contains("anim-stagger"))
+			watchStagger(root);
+		if (root.querySelectorAll) {
+			for (const box of root.querySelectorAll(".anim-stagger")) watchStagger(box);
+		}
+	}
+	/* 动态插入的容器（页面用 JS 建列表）也要接上：整棵 body 观察一次 childList，
+	 * 命中判定的开销被 rAF 合并成每帧一次。 */
+	function installStagger() {
+		if (!document.body) return;
+		scanStagger(document.body);
+		if (typeof MutationObserver !== "function") return;
+		let queued = false;
+		const pendingNodes = [];
+		new MutationObserver((records) => {
+			for (const r of records) {
+				for (const n of r.addedNodes) if (n.nodeType === 1) pendingNodes.push(n);
+			}
+			if (queued || !pendingNodes.length) return;
+			queued = true;
+			requestAnimationFrame(() => {
+				queued = false;
+				const batch = pendingNodes.splice(0, pendingNodes.length);
+				for (const n of batch) scanStagger(n);
+			});
+		}).observe(document.body, { childList: true, subtree: true });
+	}
+
 	/* ---------- 导出 ---------- */
 	window.Anotify = {
 		el,
@@ -3327,10 +3397,20 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		/* v4 相位 → CSS 类名后缀（唯一一份，graphs.js / traceview.js 共用） */
 		STATUS_CLASS,
 		statusClass,
+		/* 入场动画工具类（AN-1）：页面重渲染后想手动重排一次时可以用 */
+		stagger: paintStagger,
 	};
 
 	/* Auto-mount login page language switcher on load. */
 	mountLoginLangSwitcher();
+
+	/* 入场动画（AN-1）：.anim-stagger 容器接上错峰序号，动态渲染的也接。
+	 * 放在这里而不是 mountLayout 里：login/focus 布局同样适用。 */
+	try {
+		installStagger();
+	} catch (e) {
+		/* 观察器装不上不影响任何功能（动画退化为同时出现） */
+	}
 
 	/* ---------- Language hint banner (progressive enhancement) ----------
 	 * Shows a dismissible top banner when the visitor's browser language

@@ -1889,6 +1889,56 @@
 		const canvas = div("flograph-canvas");
 		scroll.appendChild(canvas);
 		body.appendChild(scroll);
+
+		/* ---- 横向溢出提示（IDX-3）---------------------------------------
+		 * 内容 1916px 装进 1068px 的卡片时，右侧节点被裁掉、旧实现只靠一层
+		 * 13px 的 mask 渐隐 + 一条几乎看不见的滚动条 —— 看上去像「图只画到这里」。
+		 * 这里补三个**真实可见**的信号（都不改 overflow：R8 要求容器真能滚）：
+		 *   ① 两端渐隐层，到边即消失（scrollLeft 到位后 .is-on 撤掉）；
+		 *   ② 底部「← 可横向拖动 →」小字，滚过一次就淡出（.is-h-scrolled）；
+		 *   ③ 更亮的滚动条拖块（在 ui.css 里给 .flograph-scroll 抬到 text 28%）。
+		 * 全部在 syncOverflow 里按实测 scrollWidth/clientWidth 切换。 */
+		const panHint = div(
+			"flograph-pan-hint",
+			tt("uxaudit.shell.pan_hint", "← 可横向拖动 →"),
+		);
+		body.appendChild(panHint);
+
+		let overflowRaf = 0;
+		function syncOverflow() {
+			if (overflowRaf) return;
+			overflowRaf = requestAnimationFrame(() => {
+				overflowRaf = 0;
+				if (!container.isConnected) return;
+				const max = scroll.scrollWidth - scroll.clientWidth;
+				const over = max > 2;
+				container.classList.toggle("is-h-overflow", over);
+				/* 两端渐隐用 mask（.can-left / .can-right）：到边即撤，
+				 * 让用户看得出「这里真的到底了」。 */
+				scroll.classList.toggle("can-left", over && scroll.scrollLeft > 4);
+				scroll.classList.toggle(
+					"can-right",
+					over && scroll.scrollLeft < max - 4,
+				);
+			});
+		}
+		function onScrollOverflow() {
+			syncOverflow();
+		}
+		scroll.addEventListener("scroll", onScrollOverflow, { passive: true });
+		/* 「已经会拖了」只能由**用户动作**判定：回放时脚本自己会把内容居中
+		 * （scrollLeft 从 0 直接跳到 569），拿 scrollLeft>0 当信号会让提示一出现
+		 * 就消失。所以只认指针/滚轮/方向键。 */
+		const markPanned = () => container.classList.add("is-h-scrolled");
+		scroll.addEventListener("pointerdown", markPanned, { passive: true });
+		scroll.addEventListener("wheel", markPanned, { passive: true });
+		scroll.addEventListener(
+			"keydown",
+			(ev) => {
+				if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") markPanned();
+			},
+			{ passive: true },
+		);
 		container.appendChild(body);
 
 		const hud = div("flograph-hud");
@@ -1930,6 +1980,17 @@
 		hudLegend.appendChild(hudPath);
 		hudLegend.appendChild(hudFail);
 		hud.appendChild(hudLegend);
+
+		/* 图例开关（IDX-3 ②）：7 行图例以前是 1×1px 的视觉隐藏副本，
+		 * 用户永远看不到。这里给 HUD 加一个「图例」按钮，点开就是完整 7 行
+		 * （面板在卡片右下角，不压丝带）；文案一个字没改，E2E 仍读得到。 */
+		const legendBtn = document.createElement("button");
+		legendBtn.type = "button";
+		legendBtn.className = "flograph-legend-btn";
+		legendBtn.setAttribute("aria-haspopup", "true");
+		legendBtn.setAttribute("aria-expanded", "false");
+		legendBtn.textContent = tt("uxaudit.shell.legend_toggle", "图例");
+		hud.appendChild(legendBtn);
 		container.appendChild(hud);
 
 		const legendBox = div("flograph-legend");
@@ -1940,6 +2001,31 @@
 			legendBox.appendChild(row);
 		}
 		container.appendChild(legendBox);
+
+		let legendOpen = false;
+		const onLegendDocClick = (ev) => {
+			if (!legendOpen) return;
+			if (legendBox.contains(ev.target) || legendBtn.contains(ev.target)) return;
+			setLegendOpen(false);
+		};
+		function setLegendOpen(open, focusBtn) {
+			legendOpen = !!open;
+			legendBox.classList.toggle("is-open", legendOpen);
+			legendBtn.setAttribute("aria-expanded", legendOpen ? "true" : "false");
+			if (legendOpen) document.addEventListener("click", onLegendDocClick, true);
+			else document.removeEventListener("click", onLegendDocClick, true);
+			if (!legendOpen && focusBtn) legendBtn.focus();
+		}
+		legendBtn.addEventListener("click", (ev) => {
+			ev.stopPropagation();
+			setLegendOpen(!legendOpen);
+		});
+		const onLegendKey = (ev) => {
+			if (ev.key !== "Escape" || !legendOpen) return;
+			ev.preventDefault();
+			setLegendOpen(false, true);
+		};
+		document.addEventListener("keydown", onLegendKey);
 
 		const fsHint = div(
 			"flograph-fullscreen-hint",
@@ -2455,6 +2541,8 @@
 				canvas.style.transformOrigin = "0 0";
 				canvas.style.transform = "scale(" + zoom + ")";
 			}
+			/* 缩放会改变内容宽：提示的“可横向拖动”是否成立要重新量（IDX-3） */
+			syncOverflow();
 		}
 
 		function overlap2(a, b, pad) {
@@ -2865,6 +2953,7 @@
 				baseH = measureBaseHeight();
 				if (isNarrow() !== geo.narrow) relayout();
 				else updateStageHeight();
+				syncOverflow();
 			});
 		}
 		if (typeof ResizeObserver === "function") {
@@ -3208,6 +3297,10 @@
 		else if (options.idle) armReveal();
 		else showFinal();
 
+		/* 首帧后量一次：命中溢出才显示拖动提示（数据/布局都定下来了才算数） */
+		syncOverflow();
+		requestAnimationFrame(syncOverflow);
+
 		return {
 			fit: fit,
 			zoomBy: zoomBy,
@@ -3225,6 +3318,11 @@
 				scroll.removeEventListener("wheel", onStopFollow);
 				scroll.removeEventListener("touchstart", onStopFollow);
 				scroll.removeEventListener("keydown", onScrollKey);
+				scroll.removeEventListener("scroll", onScrollOverflow);
+				if (overflowRaf) cancelAnimationFrame(overflowRaf);
+				overflowRaf = 0;
+				document.removeEventListener("click", onLegendDocClick, true);
+				document.removeEventListener("keydown", onLegendKey);
 				if (ro) ro.disconnect();
 				container.replaceChildren();
 				container.classList.remove("flograph", "flograph--silk", "is-playing");

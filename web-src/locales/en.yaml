@@ -2189,3 +2189,13 @@ ui:
     filters: Filters
     active: Active filters
     toolbar_hint: Press Enter or Apply
+
+# UI 审计 v3 / A 集群（壳与组件基建）：新增文案统一放这里，合并时整块追加。
+uxaudit:
+  shell:
+    legend_toggle: Legend
+    pan_hint: '← drag to pan →'
+    scope_hint: Current namespace — switch it in the sidebar
+    file_drop_pick: Drop a file here, or click to choose
+    file_drop_hint: .yaml / .json, up to 1 MB each
+    file_drop_empty: No file selected

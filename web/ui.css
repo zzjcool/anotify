@@ -2369,8 +2369,10 @@ a.side-link svg {
 	 * 侧栏贴视口底时，原来用户区底边只比屏幕高 10px（.app-sidebar 的 padding），
 	 * 任何底部浮层（语言提示条 / 预览提示 / 移动端手势区）都会直接盖住它。
 	 * 这里再留一层，且不进入滚动区（flex: 0 0 auto）：抽屉里导航滚动时底部用户区
-	 * 始终完整可见。仅改内边距，不动侧栏宽高（R1：折叠宽必须仍是 76px）。 */
-	padding-bottom: 10px;
+	 * 始终完整可见。用 margin-bottom 而不是 padding-bottom —— 审计量的是这个
+	 * 盒子的 bottom 边（padding 会把内容推上去、但盒底仍贴 890px）。
+	 * 只动外边距，不动侧栏宽高（R1：折叠宽必须仍是 76px）。 */
+	margin-bottom: 10px;
 	flex: 0 0 auto;
 	border-top: 1px solid var(--line);
 	display: flex;
@@ -2626,11 +2628,12 @@ a.side-link svg {
 	user-select: none;
 }
 .app-topbar-scope {
-	font-family: var(--font-mono);
-	font-size: 12px;
-	font-weight: 500;
-	letter-spacing: 0;
-	color: var(--muted);
+	/* 命名空间是这一行里真正要看的「我在哪」：14px / 600 / 主文字色。
+	 * 分组名退到 11px faint，两层信息有明确的主次（否则整行读起来像占位符）。 */
+	font-size: 14px;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	color: var(--text);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -3324,6 +3327,103 @@ a.side-link svg {
 	font-size: 15px;
 	font-weight: 600;
 	color: var(--text);
+	flex: 0 0 auto;
+}
+/* ---------- 弹层头/尾的规范件（CP-1，样式侧）----------
+ * 页面 DOM 由 D/E 集群落地，这里只给**唯一一套**可用的名字，避免四页各写一份：
+ *   <div class="modal-head">
+ *     <div class="modal-head-main">
+ *       <span class="modal-head-icon">…SVG…</span>     ← 可选（风险/敏感操作用）
+ *       <div class="modal-title-wrap">
+ *         <h2 class="modal-title">标题</h2>
+ *         <p class="modal-sub">一句副标题</p>            ← 可选
+ *       </div>
+ *     </div>
+ *     <button class="modal-close" aria-label="关闭">…</button>  ← 可选
+ *   </div>
+ * 无关闭按钮是**合法形态**（确认类弹层刻意不给 ×，只能走底部动作），
+ * 所以 .modal-head 不要求右侧必须有子节点。
+ * 底部同理：<div class="modal-foot"><div class="modal-foot-start">…</div><button>…</button></div>
+ * .modal-foot 默认右对齐；.modal-foot-start 把「次要/危险」动作推到最左。 */
+.modal-head-main {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+.modal-head-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	flex: none;
+	border-radius: var(--r-sm);
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+.modal-head-icon svg {
+	width: 18px;
+	height: 18px;
+}
+.modal-head-icon.is-warn {
+	background: var(--warn-soft);
+	color: var(--warn);
+}
+.modal-head-icon.is-danger {
+	background: var(--error-soft);
+	color: var(--error);
+}
+.modal-title-wrap {
+	min-width: 0;
+}
+.modal-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 1.35;
+	color: var(--text);
+	overflow-wrap: anywhere;
+}
+.modal-sub {
+	margin: 2px 0 0;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--muted);
+}
+.modal-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	flex: none;
+	border-radius: var(--r-sm);
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--faint);
+	font-size: 16px;
+	line-height: 1;
+	cursor: pointer;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background-color var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
+}
+.modal-close:hover {
+	color: var(--text);
+	background: var(--surface-2);
+	border-color: var(--line);
+}
+.modal-close:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
+}
+.modal-foot-start {
+	margin-right: auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
 }
 .modal-body {
 	flex: 1 1 auto;
@@ -4586,37 +4686,34 @@ html.theme-switching *::after {
  *   ③ 光标 grab（滚动容器本身就有）+ 更亮的细滚动条拖块。
  * 注意：**不隐藏溢出**。R8 要求带 overflow-x:auto 的容器真的能滚
  * （scrollLeft 必须有位移），所以这里只加装饰层，不动 overflow。 */
-.flograph--silk .flograph-fade {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	width: 46px;
-	z-index: 2;
-	pointer-events: none;
-	opacity: 0;
-	transition: opacity var(--dur) var(--ease);
+/* 两端渐隐用 mask 做（不是叠一层同色色块）：遮罩真的把内容"吃掉"，
+ * （mask 里的 #000 只是"不透明"的遮罩值，不是主题色，不要换成 token）
+ * 亮/暗两套都成立 —— 叠 surface-1 半透明色块在亮色下是白盖白，完全看不见。
+ * 默认 13px（既有行为，内容贴边时只是柔化），溢出时由 JS 加 .can-left /
+ * .can-right 换成 36px，并随滚动位置到边即撤（= 「真的到底了」）。 */
+.flograph--silk .flograph-scroll.can-right {
+	mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 36px), transparent 100%);
+	-webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 36px), transparent 100%);
 }
-/* 渐隐只用卡片底色的 alpha 做（不铺真实色块，亮/暗两套自动跟随）：
- * 左边缘从 92% 卡片底渐到全透明，右边缘镜像。 */
-.flograph--silk .flograph-fade.is-left {
-	left: 0;
-	background: linear-gradient(
-		to right,
-		color-mix(in srgb, var(--surface-1) 92%, transparent),
-		color-mix(in srgb, var(--surface-1) 0%, transparent)
+.flograph--silk .flograph-scroll.can-left {
+	mask-image: linear-gradient(270deg, #000 0, #000 calc(100% - 36px), transparent 100%);
+	-webkit-mask-image: linear-gradient(270deg, #000 0, #000 calc(100% - 36px), transparent 100%);
+}
+.flograph--silk .flograph-scroll.can-left.can-right {
+	mask-image: linear-gradient(
+		90deg,
+		transparent 0,
+		#000 36px,
+		#000 calc(100% - 36px),
+		transparent 100%
 	);
-}
-.flograph--silk .flograph-fade.is-right {
-	right: 0;
-	background: linear-gradient(
-		to left,
-		color-mix(in srgb, var(--surface-1) 92%, transparent),
-		color-mix(in srgb, var(--surface-1) 0%, transparent)
+	-webkit-mask-image: linear-gradient(
+		90deg,
+		transparent 0,
+		#000 36px,
+		#000 calc(100% - 36px),
+		transparent 100%
 	);
-}
-.flograph--silk.is-h-overflow .flograph-fade.is-left.is-on,
-.flograph--silk.is-h-overflow .flograph-fade.is-right.is-on {
-	opacity: 1;
 }
 /* 可横向拖动提示：不抢注意力，只在真的溢出时出现 */
 .flograph--silk .flograph-pan-hint {
@@ -5119,8 +5216,13 @@ html.theme-switching *::after {
 .flograph--silk .flograph-legend {
 	display: none;
 	position: absolute;
+	/* 必须显式清掉基类 .flograph-legend 的 left/top（左上角浮层定位）：
+	 * 只写 right/bottom 时四个方向同时生效，盒子会被拽回左上角并拉满。 */
+	left: auto;
+	top: auto;
 	right: 12px;
 	bottom: 44px;
+	pointer-events: auto;
 	z-index: 8;
 	flex-direction: column;
 	gap: 5px;
@@ -5188,7 +5290,7 @@ html.theme-switching *::after {
 	outline: 2px solid var(--accent);
 	outline-offset: -2px;
 }
-/* lab 的 HUD 只保留两项：执行路径 / 失败步。7 行完整图例在上面做无障碍副本，
+/* lab 的 HUD 只保留两项：执行路径 / 失败步。7 行完整图例收在「图例」按钮里，
  * 不参与 35px 底栏的宽度竞争。 */
 .flograph--silk .hud-legend {
 	display: flex;
@@ -5197,6 +5299,13 @@ html.theme-switching *::after {
 	flex: 0 0 auto;
 	color: var(--faint);
 	white-space: nowrap;
+}
+/* 窄屏：两个 chip 让位给「图例」按钮（点开就是完整 7 行），
+ * 否则 390 宽下 HUD 会被 clock + track + chip + 按钮挤爆。 */
+@media (max-width: 639px) {
+	.flograph--silk .hud-legend {
+		display: none;
+	}
 }
 .flograph--silk .hud-legend > span {
 	display: inline-flex;
