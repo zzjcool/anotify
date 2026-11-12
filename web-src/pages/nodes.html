@@ -33,6 +33,8 @@
     <div class="card-title">{{t "nodes.v4.token"}}</div><p class="c2-note">{{t "nodes.v4.token_warning"}}</p>
     <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.token"}}</span><button id="reg-token-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><div class="code-body"><code id="reg-token"></code></div></div>
     <div class="code-block"><div class="code-head"><span>anode.yaml</span><button id="reg-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body"><code id="reg-yaml"></code></pre></div>
+    <div class="code-block"><div class="code-head"><span>{{t "nodes.v4.bootstrap_title"}}</span><button id="reg-bootstrap-copy" class="copy-btn" type="button">{{t "nodes.v4.copy_bootstrap"}}</button></div><div class="code-body"><code id="reg-bootstrap"></code></div></div>
+    <p class="c2-note">{{t "nodes.v4.bootstrap_hint"}}</p>
     <div class="code-block"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body"><code id="reg-install">anode install</code>
 <code id="reg-serve">anode serve</code>
 <code id="reg-emit">anode emit fixer --id review-a.go --data '{"file":"a.go"}'</code></pre></div>
@@ -79,12 +81,14 @@
     $('reg-token').textContent = token;
     const server = location.origin.replace(/^http/, 'ws');
     $('reg-yaml').textContent = 'name: ' + JSON.stringify(name) + '\nserver: ' + JSON.stringify(server) + '\ntoken: ' + JSON.stringify(token) + '\nnamespaces: [default]\nlisten: tcp://127.0.0.1:0\nvars: {}\nlimits:\n  total: 1\n  perCapability: {}\n';
+    // 一条命令安装：server 用 location.origin（脚本自己归一化 http(s)→ws(s)）；不让用户加 sudo，脚本自己探测提权。
+    $('reg-bootstrap').textContent = 'curl -fsSL ' + location.origin + '/install-anode.sh | sh -s -- --name ' + name + ' --server ' + location.origin + ' --token ' + token;
   };
-  const clearToken = () => { $('reg-token').textContent = ''; $('reg-yaml').textContent = ''; $('reg-result').hidden = true; };
+  const clearToken = () => { $('reg-token').textContent = ''; $('reg-yaml').textContent = ''; $('reg-bootstrap').textContent = ''; $('reg-result').hidden = true; };
   let createdName = '';
   $('node-register-btn').onclick = () => { clearToken(); createdName = ''; $('register-panel').hidden = false; message('reg-error', ''); $('reg-name').focus(); };
   $('reg-cancel').onclick = $('reg-close').onclick = () => { clearToken(); $('register-panel').hidden = true; };
-  for (const id of ['token', 'yaml']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
+  for (const id of ['token', 'yaml', 'bootstrap']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
   $('reg-submit').onclick = async () => {
     const name = $('reg-name').value.trim(); if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) { message('reg-error', t('name') + ': ^[a-z0-9][a-z0-9._-]{0,62}$', true); return; }
     $('reg-submit').disabled = true; clearToken(); message('reg-error', t('loading'));

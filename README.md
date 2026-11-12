@@ -145,7 +145,26 @@ docker run -p 8080:8080 \
 ## 节点（anode）
 
 中枢只负责派发，**真正执行能力的是节点** `anode`（独立二进制，跑在你自己的机器上；
-自己不上报假数据——它连中枢、拉能力、执行脚本、回报结果/emit）：
+它连中枢、拉能力、执行脚本、回报结果/emit）。默认走**一条命令**——中枢「节点」页注册节点后
+给出的就是它（页面给的是 `--token <令牌>`，令牌明文只显示一次）：
+
+```bash
+curl -fsSL https://<中枢域名>/install-anode.sh | sh -s -- \
+  --name node-a --server https://<中枢域名> --token <节点令牌>
+```
+
+`--token` 会留在 shell 历史里，长期使用建议换成 0600 文件：`--token-file /root/anode.token`
+（两者只能给一个；升级/轮换令牌时同样会自动生效）。
+
+脚本会下载并校验 sha256、用 `anode serve --check` 预检令牌、`anode install` 落盘、
+装 systemd 服务（`system` / `user` / `none`）、轮询到 `active`，最后打印摘要；
+跑完去控制台「节点」页应该看到它在线。**命令里不用写 `sudo`**（脚本自己从终端提权）。
+
+- 升级 = **重跑同一条命令**（沿用现有 `anode.yaml`，只换二进制 + restart）
+- 卸载 = `sh install-anode.sh --uninstall`（默认连配置一起删；`--keep-config` 保留，`--purge` 连数据目录）
+- 完整走查（下载优先级、服务模式与提权、预检诊断、安全）见 `docs/anode-install.md`
+
+不用脚本时（自己控制二进制/unit/服务）：
 
 ```bash
 make anode                                  # 构建 ./anode（带版本信息）
@@ -157,7 +176,7 @@ make docker-anode                           # 节点镜像（容器即一台节�
 ```
 
 token 在中枢登记节点后签发（`POST /v1/nodes` → `POST /v1/nodes/{name}/tokens`，明文只返回一次）。
-完整的三个子命令与 flag 见 `docs/v4/anode-cli.md`。
+`anode install` 只落盘（不 `sudo`、不 `systemctl`）；完整的三个子命令与 flag 见 `docs/v4/anode-cli.md`。
 
 ## 公网暴露
 

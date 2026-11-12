@@ -99,6 +99,10 @@ make -C "$ROOT" --no-print-directory anode || {
 	exit 1
 }
 export PATH="$ROOT:$PATH"
+# 中枢的 GET /v1/node/binary（安装脚本默认的下载源）只在 ANOTIFY_AGENT_BIN 指向真二进制时可用，
+# 否则返回 501，本地「一条命令安装」就走不通。这里把刚编出来的 anode 导给随后的 server
+# （setsid go run ./cmd/server 继承本 shell 环境）；e2e harness 也是这么设的。
+export ANOTIFY_AGENT_BIN="$ANODE_BIN"
 
 # ---------- 3.5 探测内网地址（手机/别的机器访问用）----------
 #

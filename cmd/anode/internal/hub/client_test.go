@@ -1212,3 +1212,175 @@ func TestGuardedAdmittedWriteRetainsDeadlineCapAndConnectionClose(t *testing.T) 
 		})
 	}
 }
+
+// checkHello 是 --check 自己构造的 hello（预检不读 applied/能力缓存）。
+func checkHello() protocol.HelloFrame {
+	return protocol.HelloFrame{
+		Type:       protocol.FrameHello,
+		Name:       "node-a",
+		Token:      "node-secret-token",
+		Namespaces: []string{"default"},
+	}
+}
+
+func TestCheckSucceedsOnWelcome(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get(protocol.EmitAuthHeader); got != "Bearer node-secret-token" {
+			t.Errorf("WS 握手 Authorization = %q", got)
+		}
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		frame, err := readFrame(ctx, conn)
+		if err != nil {
+			t.Logf("read hello: %v", err)
+			return
+		}
+		hello, ok := frame.(*protocol.HelloFrame)
+		if !ok {
+			t.Logf("首帧不是 hello: %T", frame)
+			return
+		}
+		if hello.Name != "node-a" || hello.Token != "node-secret-token" || hello.AppliedRevision != "" || hello.AppliedHash != "" {
+			t.Errorf("预检 hello = %+v", hello)
+		}
+		if err := writeFrame(ctx, conn, welcome("rev-1", nil, protocol.Limits{Total: 1}, []string{"*"})); err != nil {
+			t.Logf("write welcome: %v", err)
+			return
+		}
+		_, _ = readFrame(ctx, conn) // 挂住到客户端断开
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	if err := Check(ctx, wsURL(srv.URL), "node-secret-token", checkHello()); err != nil {
+		t.Fatalf("Check 收到 welcome 应返回 nil，实际 %v", err)
+	}
+}
+
+func TestCheckRejectsPolicyViolationBeforeWelcome(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := readFrame(ctx, conn); err != nil { // hello
+			t.Logf("read hello: %v", err)
+			return
+		}
+		// 中枢拒绝握手：welcome 之前 1008 close。
+		_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	err := Check(ctx, wsURL(srv.URL), "bad-token", checkHello())
+	if !errors.Is(err, ErrAuthRejected) {
+		t.Fatalf("Check = %v, want ErrAuthRejected", err)
+	}
+}
+
+func TestCheckRejectsDial401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	err := Check(ctx, wsURL(srv.URL), "bad-token", checkHello())
+	if !errors.Is(err, ErrAuthRejected) {
+		t.Fatalf("Check = %v, want ErrAuthRejected", err)
+	}
+}
+
+func TestCheckTimesOutOnSilentHub(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		_, _ = readFrame(ctx, conn) // 读 hello 但永不回 welcome
+		_, _ = readFrame(ctx, conn) // 挂住到客户端超时断开
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err := Check(ctx, wsURL(srv.URL), "node-secret-token", checkHello())
+	if !errors.Is(err, ErrCheckTimeout) {
+		t.Fatalf("Check = %v, want ErrCheckTimeout", err)
+	}
+}
+
+func TestRunTreatsPreWelcomePolicyViolationAsTerminal(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != StreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&requests, 1)
+		conn := acceptWS(t, w, r)
+		if conn == nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := readFrame(ctx, conn); err != nil { // hello
+			t.Logf("read hello: %v", err)
+			return
+		}
+		// 与中枢 handshake 失败同形：welcome 之前 1008。
+		_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
+	}))
+	defer srv.Close()
+
+	n := testNode(t, wsURL(srv.URL), "")
+	client, err := New(wsURL(srv.URL), "bad-token", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sleeps int32
+	client.Sleep = func(ctx context.Context, d time.Duration) error {
+		atomic.AddInt32(&sleeps, 1)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	err = client.Run(ctx)
+	if !errors.Is(err, ErrAuthRejected) {
+		t.Fatalf("Run = %v, want ErrAuthRejected", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("welcome 前 1008 是终态，握手请求 %d 次", got)
+	}
+	if got := atomic.LoadInt32(&sleeps); got != 0 {
+		t.Fatalf("welcome 前 1008 不应退避重连，sleep %d 次", got)
+	}
+}

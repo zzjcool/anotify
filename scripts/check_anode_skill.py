@@ -14,6 +14,7 @@ v3 的 `scripts/check_agent_skill.py` 守的是 `cmd/agent/skill.md`（内嵌手
 | 手册必须覆盖全部子命令 | 三个子命令必须都出现在手册代码块里 |
 | `--version` 一行且与注入值一致 | `--version` 恰好一行 JSON，`version`/`commit` = 注入值（label 形状＝Makefile 的 VERSION_LABEL） |
 | `--skill` 首行与 `--version` 同一份版本串 | `scripts/install-anode.sh` 的版本校验必须吃得下真输出（允许 `+<commit>` 后缀） |
+| v3 只有一个安装入口 `scripts/install-agent.sh` | `scripts/install-anode.sh` 是**完整安装器**（下载/校验/预检/systemd 生命周期/卸载/升级），且静态服务下发的 `web/install-anode.sh` 与它**字节相同**（UI 那条 `curl … | sh` 命令跑的就是被这里校验过的那份） |
 | `cmd/agent` 不碰 node_capabilities（归属只由部署派生） | `cmd/anode` 只依赖 `internal/protocol` + `internal/artifact`，不 import 中枢包、不直连数据库；中枢也不 import `cmd/anode` |
 
 动态部分一律跑**真二进制**（`-h` / `--version`），不 grep Go 源码：flag 的注册形状会重构，
@@ -35,6 +36,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANUAL = REPO_ROOT / "docs" / "v4" / "anode-cli.md"
 INSTALLER = REPO_ROOT / "scripts" / "install-anode.sh"
+# `curl -fsSL <origin>/install-anode.sh` 下来喂给 `sh -s --` 的就是这一份（web/ 被静态路由覆盖）。
+# 两份字节不一致 = 用户跑的脚本和仓库里被校验的脚本不是同一个——这类漂移没有任何
+# 运行时错误可依赖，只能在这里当场红。
+WEB_INSTALLER = REPO_ROOT / "web" / "install-anode.sh"
 ANODE_PKG = "./cmd/anode"
 SERVER_PKG = "./cmd/server"
 MODULE = "github.com/zzjcool/anotify"
@@ -51,9 +56,11 @@ RETIRED_SUBS = ["run", "check", "schema", "upgrade", "runs", "show",
 # 子命令的**关键** flag：`-h` 还在但少了这些 = 能力被删了却仍报「正常」，必须红。
 # 其余 flag 由手册逐个对账（手册提到就必须存在），这里只钉住不可缺的那几个。
 REQUIRED_FLAGS = {
-    "serve": {"-config", "-data"},
+    "serve": {"-config", "-data", "-check"},
     "install": {"-prefix", "-config", "-bin", "-unit", "-data", "-name", "-server",
-                "-token", "-token-file", "-update-token"},
+                "-token", "-token-file", "-update-token",
+                # 系统服务以安装者身份跑（unit 的 User=/Environment=HOME=/PATH=）
+                "-unit-user", "-unit-home", "-unit-path"},
     "emit": {"-to", "-id", "-data"},
 }
 
@@ -322,6 +329,30 @@ def check_installer(binary: Path, workdir: Path) -> list[str]:
     return errors
 
 
+def check_installer_copy() -> list[str]:
+    """A6：下发副本必须与仓库里那份**字节相同**（`cmp` 守卫）。
+
+    `web/install-anode.sh` 是静态服务匿名下发的那份（UI 的 `curl|sh` 一条命令），
+    `scripts/install-anode.sh` 是仓库里被 review / 被本文件校验的那份。两份一旦分叉，
+    用户在装的是一个没人校验过的脚本，而且失败现场看起来跟安装器无关。
+    """
+    errors: list[str] = []
+    if not INSTALLER.exists():
+        return [f"找不到 {INSTALLER}（v4 的安装面是 scripts/install-anode.sh）"]
+    if not WEB_INSTALLER.exists():
+        return [
+            f"找不到 {WEB_INSTALLER}（`curl|sh` 一条命令下发的那份安装器，D2）"
+            "——生成它：cp scripts/install-anode.sh web/install-anode.sh"
+        ]
+    if INSTALLER.read_bytes() != WEB_INSTALLER.read_bytes():
+        errors.append(
+            "scripts/install-anode.sh 与 web/install-anode.sh 字节不同"
+            "（下发副本必须与仓库里被校验的那份一致）："
+            "cp scripts/install-anode.sh web/install-anode.sh"
+        )
+    return errors
+
+
 def check_boundary() -> list[str]:
     """A5：节点是独立产品——不 import 中枢包、不直连数据库；中枢也不反 import 节点。"""
     errors: list[str] = []
@@ -374,8 +405,10 @@ def main() -> int:
 
     manual_errors = check_manual(manual_text, sub_flags)
     boundary_errors = check_boundary()
+    copy_errors = check_installer_copy()
 
-    errors = dynamic_errors + installer_errors + manual_errors + boundary_errors
+    errors = (dynamic_errors + installer_errors + manual_errors
+              + boundary_errors + copy_errors)
     if errors:
         return fail(errors, "anode CLI 可发现性校验失败（手册/安装脚本 ↔ 真二进制）")
 
@@ -384,6 +417,7 @@ def main() -> int:
         f"{len(EXPECTED_SUBS)} 个子命令 {EXPECTED_SUBS}、"
         f"{len(sub_flags['install'])} 个 install flag、"
         f"版本 {TEST_LABEL}（--version JSON 与 install-anode.sh 的核对一致）；"
+        "下发副本 web/install-anode.sh 与 scripts/install-anode.sh 字节一致；"
         "边界：仅依赖 internal/protocol + internal/artifact，不直连数据库"
     )
     return 0
