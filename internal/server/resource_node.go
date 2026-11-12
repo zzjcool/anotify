@@ -41,9 +41,11 @@ import (
 //     DeleteNodeByName），本文件不自己算 resourceVersion、不自己开事务。
 //   - **令牌明文只出现在 tokens 动作的响应体里一次**：Node / config / 读端点全部用
 //     显式投影（从不 marshal store.Node），所以 token_hash 结构上就没有出口。
-//   - **status 只放 store 行里真实存在的事实**（nodes / node_configs / node_instances），
-//     拿不到的字段省略，不编造；节点生命周期（online/offline/draining）不在 api-conventions
-//     §7.4 的 status 投影里，这里不发明字段名（已在 #331 交付报告里作为契约缺口上报）。
+//   - **status 只放可以从事实算出来的值**（nodes / node_configs / node_instances / 活连接），
+//     拿不到的字段省略，不编造。生命周期两个字段是**派生事实**，不是新落库的字段：
+//     `online` = 这一刻有没有已认证的 WS 会话（ws.Hub.Online），`draining` = 运维置的排空标记。
+//     控制台「节点」页正是拿这两个 boolean 决定显示在线 / 离线 / 排空中；不投影它们，
+//     页面就只能显示「未知」（真实故障：节点明明在线，控制台说看不到）。
 
 // 本域的三个 kind 字面量（NodeToken 是动作文档，不是资源）。
 const (
@@ -153,6 +155,14 @@ type nodeInstanceRef struct {
 // machineVars/effectiveNamespaces/instances 恒出现（空给 `{}` / `[]`）——它们是
 // 「配置长什么样」的答案，缺省与"没有"必须可区分。
 type nodeStatus struct {
+	// 生命周期（派生量，不落库）：
+	//   online   = 这一刻有没有一条**已认证**的 WebSocket 会话（不是 lastSeenAt 猜的）
+	//   draining = 运维动过 POST /v1/nodes/{name}/drain（跑完手上的任务后不再接新的）
+	// 两个都**总是输出**（不是 omitempty）：页面靠 boolean 区分「在线 / 离线」，
+	// 缺字段就只能显示「未知」。
+	Online   bool `json:"online"`
+	Draining bool `json:"draining"`
+
 	HostIP   string        `json:"hostIP,omitempty"`
 	Hostname string        `json:"hostname,omitempty"`
 	OS       string        `json:"os,omitempty"`
@@ -766,6 +776,8 @@ func (a *nodeAPI) readEnvelope(ctx context.Context, n *store.Node, nsID string) 
 	}
 
 	status := nodeStatus{
+		Online:              a.d.Hub != nil && a.d.Hub.Online(n.ID),
+		Draining:            n.Status == store.NodeStatusDraining,
 		HostIP:              n.Facts.HostIP,
 		Hostname:            n.Facts.Hostname,
 		OS:                  n.Facts.OS,

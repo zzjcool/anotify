@@ -16,10 +16,12 @@ export async function nodeRetained(d,mode){
     const token = await page.locator('#reg-token').innerText();
     const post = (await calls()).find(c => c.method === 'POST' && c.url === '/v1/nodes');
     assert.deepEqual(post.body, { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name: 'browser-new-node' }, spec: {} });
-    // v4 的 NodeStatus 没有 online 字段（api/resource.yaml·NodeStatus）：mock 夹具给
-    // 一份离线的种子事实，真实权威下连「在线」这个说法都不该出现 —— 页面只能显示 Unknown。
-    if (d.mock) assert.equal(post.result.status.online, false);
-    else assert.ok(!('online' in post.result.status) && !('draining' in post.result.status), 'v4 NodeStatus 不携带 online/draining');
+    // v4 的 NodeStatus 必须带 online / draining 两个**派生** boolean（api/resource.yaml·NodeStatus）：
+    // 控制台「节点」页只认 `typeof status.online === 'boolean'` 来区分在线/离线，缺了它页面
+    // 只能显示 Unknown（曾经就是「节点明明在线，控制台说看不到」）。
+    // 刚注册、没有任何会话的节点：online=false、draining=false。
+    assert.equal(post.result.status.online, false, 'v4 NodeStatus 必须携带 online（否则页面只能显示 Unknown）');
+    assert.equal(post.result.status.draining, false, 'v4 NodeStatus 必须携带 draining');
     assert.deepEqual(post.result.spec.namespaces, ['*']);
     const issued = (await calls()).find(c => c.url.endsWith('/browser-new-node/tokens'));
     assert.deepEqual(issued.body, {}); assert.equal(issued.result.kind, 'NodeToken'); assert.deepEqual(Object.keys(issued.result).sort(), ['apiVersion','kind','node','token']);

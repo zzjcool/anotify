@@ -583,6 +583,8 @@ spec:                          # 中枢说的期望 / 授权
     perCapability: { "*": 2, "fixer": 1 }
   tags: [build, prod]          # 沿用现有 tags（不是 labels）
 status:
+  online: true                        # 派生：这一刻有没有已认证的 WS 会话
+  draining: false                     # 派生：被 POST /…/drain 置为排空中
   hostIP: "10.0.0.7"
   hostname: "anode-1"
   os: linux
@@ -613,6 +615,7 @@ status:
 | `spec.vars` / `spec.limits` | 机器级默认值；本机同键优先；`limits` 只有本机 + 节点两层 |
 | `anode.yaml` 私有字段 | `server` / `token` / `listen` / `envPassthrough` **不进 Node spec、不上报快照**；任务用到的名字可在任务 `envDiagnostics` 标 `passthrough`，不回报完整名单/值 |
 | `status.machineVars` | 机器级合并结果；**没有一份扁平 `effectiveVars`**。要看某个 ns 的有效值：`GET /v1/nodes/{name}?namespace=team-a`，响应额外给 `status.namespaceVars` + `status.effectiveVars` 并标 `context.namespace` |
+| `status.online` / `status.draining` | 两个**派生** boolean，总是输出（不是 omitempty）：`online` = 这一刻有没有已认证的节点 WS 会话（调用 `Hub.Online`，不拿 `lastSeenAt` 猜、不落库），`draining` = 被 `POST /v1/nodes/{name}/drain` 置过。控制台「节点」页只能靠它们区分在线 / 离线 / 排空中 |
 | `status.instances` | 沿公开只读诊断字段，不作为用户分配 / 清槽接口。slot presence、reservation、历史 lease 与 reaped 事实属于 Node 协议（capability.md §8.5 / anode.md §6），不新增资源 API 字段 / 动作；缺失快照不是 idle，phase / 重连不证明回收，旧回收只清匹配旧占用 |
 | drain / upgrade | 沿用现有动作端点（`POST /nodes/{name}/drain`、`/upgrade`）；不改成 spec 字段 |
 | 节点配置 | `GET/PUT /v1/nodes/{name}/config`（节点默认值 wrapper，见下方）；批量 `POST /v1/nodes/config/batch`（`config.md §4.4`） |

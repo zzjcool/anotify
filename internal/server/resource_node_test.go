@@ -28,6 +28,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/store"
@@ -915,5 +918,97 @@ func TestNodeResourceConfigWriteStatusIsNotWritable(t *testing.T) {
 	cfg := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/status-writer/config", nil))
 	if vars := nodeObject(t, cfg, "vars"); len(vars) != 0 {
 		t.Fatalf("被拒的写请求不得改配置，vars = %v", vars)
+	}
+}
+
+// TestNodeStatusExposesOnlineAndDraining 钉住控制台「节点」页的判据。
+//
+// 页面（web-src/pages/nodes.html）渲染状态用的是
+// `status.draining ? 排空中 : typeof status.online === 'boolean' ? 在线/离线 : 未知`。
+// 服务端不投影这两个字段时，页面永远显示「未知」——真实故障：节点已连上中枢，
+// 控制台却说看不到它在线。
+func TestNodeStatusExposesOnlineAndDraining(t *testing.T) {
+	env := newNodeTestEnv(t)
+	env.createNode("node-status", nil)
+
+	readBool := func(doc map[string]any, key string) bool {
+		t.Helper()
+		raw, ok := nodeObject(t, doc, "status")[key].(bool)
+		if !ok {
+			t.Fatalf("status.%s 必须是 boolean（页面靠它区分在线/离线/排空中），得到 %#v",
+				key, nodeObject(t, doc, "status")[key])
+		}
+		return raw
+	}
+
+	// ① 单取：没有 WS 会话 → online=false；没被 drain 过 → draining=false。
+	doc := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/node-status", nil))
+	if readBool(doc, "online") {
+		t.Fatal("没有 WS 会话时 status.online 必须是 false")
+	}
+	if readBool(doc, "draining") {
+		t.Fatal("没有 drain 过时 status.draining 必须是 false")
+	}
+
+	// ② 列表：页面读的是 list，每一项都必须带这两个字段。
+	list := decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes", nil))
+	items, ok := list["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %#v, want 恰好 1 项", list["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("items[0] 不是对象：%T", items[0])
+	}
+	for _, key := range []string{"online", "draining"} {
+		if _, ok := nodeObject(t, item, "status")[key].(bool); !ok {
+			t.Fatalf("列表项缺 status.%s（页面渲染状态就靠它）", key)
+		}
+	}
+
+	// ③ drain 动作与 status 投影是同一份事实：动作之后 draining=true。
+	if rr := env.do(http.MethodPost, "/v1/nodes/node-status/drain", map[string]any{}); rr.Code != http.StatusOK {
+		t.Fatalf("drain status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	if !readBool(decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/node-status", nil)), "draining") {
+		t.Fatal("drain 之后 status.draining 必须是 true")
+	}
+}
+
+// TestNodeStatusOnlineFollowsWebSocketSession 钉住 online 的**来源**：
+// 它是「这一刻有没有已认证 WS 会话」，不是拿 lastSeenAt 猜的、也不是落库的旧值。
+// 节点连上必须立刻 true，断开后回 false。
+func TestNodeStatusOnlineFollowsWebSocketSession(t *testing.T) {
+	f := newUpgradeFixture(t, false)
+	online := func() bool {
+		t.Helper()
+		rr := f.do(t, http.MethodGet, "/v1/nodes/"+f.node.Name, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET node status = %d (body=%s)", rr.Code, rr.Body.String())
+		}
+		doc := decodeNodeDoc(t, rr)
+		raw, ok := nodeObject(t, doc, "status")["online"].(bool)
+		if !ok {
+			t.Fatalf("status.online 必须是 boolean，得到 %#v", nodeObject(t, doc, "status")["online"])
+		}
+		return raw
+	}
+
+	if online() {
+		t.Fatal("还没连上时 status.online 必须是 false")
+	}
+	conn := f.connectNode(t, "v9.9.9+status")
+	if !online() {
+		t.Fatal("已认证 WS 会话建立后 status.online 必须是 true")
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, "test done"); err != nil {
+		t.Fatalf("关闭节点连接：%v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for online() {
+		if time.Now().After(deadline) {
+			t.Fatal("连接关闭后 status.online 仍为 true（页面会一直显示在线）")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
