@@ -234,3 +234,43 @@ go run ./cmd/fe-preview -dir web -addr 127.0.0.1:<PORT> &   # <PORT> 见任务�
 | W2-4 | P1 | D | 「新建源」空表单点「保存」**无任何反馈**（无 toast、无字段级错误）→ 确认是静默校验还是 mock 未接线 |
 | W2-5 | P1 | A | 移动端抽屉打开后，底部用户区（demo）仍被压在屏幕下沿之外（同 SH-6） |
 | W2-6 | P2 | A | 键盘 Tab 的第一焦点落在侧栏「总览」，focus ring 比导航项宽出 2px 且与 active 态叠加成双层药丸 |
+
+## 5. 红线（来自 e2e 侦察，改 UI 时不可触碰）
+
+来源：4 个 scout 并行侦察（`scripts/e2e/` 全量）。任何一条被破坏都会让 `make e2e` 红。
+
+| # | 红线 | 断言位置 |
+|---|---|---|
+| R1 | `--pre-sidebar-w` 必须是 `76px`，折叠态 `#sidebar` 宽 === 76 | `f3-ui-cases.mjs:154,159,160` |
+| R2 | `#scope-slot` 高度 ≥ 40px 且**全帧恒定** | `parent-geometry-probe.mjs:106`、`f3-ui-cases.mjs:134-137` |
+| R3 | 预排版居中数学：`page.x` 单值 && === 未来侧栏右边界 && === `content.x + paddingLeft + (content.width-paddings-page.width)/2` → **动 `.page` 的 padding/max-width/margin 即红** | `parent-geometry-probe.mjs:77-90`、`f3-ui-cases.mjs:192-193` |
+| R4 | `--shell-top-offset` 滚过语言条后必须精确 `0px`；侧栏 top/height/bottom 在 ±1 内 | `lang_hint.mjs:1035-1123` |
+| R5 | 语言条类名 `.lang-hint` / `.lang-hint--open` / `.lang-hint-text` / `.lang-hint-action` 即契约 | `f3-ui-cases.mjs:108,112`、`lang_hint.mjs` |
+| R6 | `#kpi-rate` 空态是 **en dash `–`（U+2013）**；`#kpi-rate-sub` 全等 `'0 / 0'`；`#kpi-rate` 全等 `'0%'` | `f3-observability.mjs:79,129`、`f3-node-retained.mjs:246` |
+| R7 | `#msg-sub` **全等** `namespace + ' · ' + taskName`（分隔符/空格/顺序都不能动）；`#msg-title` 全等 `cap@version` | `f3-i18n-cases.mjs:112`、`f3-cases.mjs:338`、`deeplink.mjs:217` |
+| R8 | 装饰性 `overflow:hidden` **不算修好溢出**：带 `overflow-x:auto/scroll` 的容器必须**真的能滚**（`scrollLeft` 有位移） | `f3-ui-helper.mjs:152` |
+| R9 | `scrollWidth <= innerWidth + 2` 是 304 视图总门禁 | `f3-ui-helper.mjs:174` |
+| R10 | `#passkey-list` 空态必须命中 `/本机添加\|Add on this device\|…/`，且**不得**出现「在新设备添加」旧文案 | `f3-ui-cases.mjs:576-577` |
+| R11 | `#reg-install` 逐字 `anode install`、`#reg-serve` 逐字 `anode serve` | `f3-node-retained.mjs:44` |
+| R12 | member 的 `#admin-nav-section` 必须有 `.hidden` 类（不是内联 display） | `admin_flow.mjs:504` |
+| R13 | 字体族名 `Inter` / `Fraunces` / `JetBrains Mono` 被 `document.fonts.check` 断言 | `p2_guards.mjs:98,103,143,171,176` |
+| R14 | reduce 下 `--dur` / `--dur-modal-out` 必须精确 `"0ms"` | `p2_guards.mjs:352,356` |
+| R15 | `#login-panel input` ≥2 且含 ≥1 `type=password`；非 login 页 `#login-panel` count 必须为 0 | `f3-ui-cases.mjs:682,104` |
+| R16 | `trace.html` 错误态 `#trace-error` 必须非空可见文本 | `f3-ui-cases.mjs:295` |
+| R17 | `#ev-list/#ev-count/#ev-more/#ev-limit/#ev-filter`、`#src-*`、`#node-*`、`#pb-*`、`#task-*` 等 id 只增不改 | 见 `f3-ui-helper.mjs:19-26` |
+| R18 | 页面 `<style>` 在 ui.css **之后**加载（同权重会盖掉 ui.css）→ 往 ui.css 加类时注意页面同名覆盖 | `receivers.html:13`、`keys.html:6` 注释 |
+
+## 6. 侦察发现的新问题（本轮追加，未分派）
+
+| ID | 集群建议 | 现象 |
+|---|---|---|
+| ST-1 | A | `.status-info` 被 `admin.html:560,567,574` 引用但**全仓无定义** → 「working」与「非 admin 角色」徽章渲染成裸 `.status-badge`（无底色无边框） |
+| ST-2 | A | `.badge-dot` 的 `@keyframes pulse` **硬编码 `--success-soft` 光晕**（`ui.css:490-495`），挂在 `.dot-warn` 上时绿光往外扩（8 处 `dot dot-warn badge-dot`） |
+| ST-3 | C | `index.html:942` 对 `Warning` 用 `badge-neutral`（丢色），`events.html:78` 用 `badge-warn` → 同语义两色 |
+| ST-4 | E | `message.html:142` 任务相位徽章**写死 `badge-neutral`**，`failed` 也是灰 |
+| ST-5 | A | `STATUS_CLASS` 在 `graphs.js:144-151` 与 `traceview.js:36-43` **两份手抄**（改一处必漂移） |
+| ST-6 | A | `.status-*`（旧，`--*-300` 无边框）与 `.badge-*`（新，本体色+边框）两套徽章并存，暗色观感不同；收敛需一次性视觉验收 |
+| ST-7 | A | `security.html:586` 自带一整套 `.toast`（CSS+DOM+JS，含 hover 暂停/点击关闭/复制错误），**同名覆盖** ui.css 的 `.toast`；共享 toast host 是 `pointer-events:none`，直接替换会丢功能 |
+| ST-8 | C/D | `.empty` 被三页当 loading 占位用（`events:34,150`、`message:17`、`trace:18`），语义已混 |
+| ST-9 | C/D/A | 空态子类四套命名（`ad-*`/`kx-*`/`doc-*`/`cap-detail-empty`），与 `.empty` 各写一份 |
+| ST-10 | 全局 | 运行期缺 i18n key 是**静默中文兜底**（`partials.js:35`），构建期缺 key 只 WARN 不失败（`internal/sitegen/sitegen.go:352-377`），`Makefile` 无 i18n 门禁 → 新增文案必须四语同步，无自动保护 |
