@@ -18,9 +18,13 @@
       .cap-filter-field {
         flex: none;
       }
+      /* CAP-2：「N 个能力」与筛选 select 基线对齐。
+         toolbar 是 align-items:flex-end，两边盒底已对齐；剩余偏差全在行盒里：
+         .card-sub 的 12px 文字在 18px 行盒里居中（下方多 3px），select 的文字离盒底
+         只有 6.4px 内距 —— 所以这里只留 4px 下内距，两行文字的基线才落在同一条线上。 */
       .cap-summary {
         margin-left: auto;
-        padding-bottom: 8px;
+        padding-bottom: 4px;
       }
 
       /* ---------- 列表行 ----------
@@ -31,14 +35,42 @@
         grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 12px;
         align-items: center;
+        transition:
+          background-color var(--dur-fast) var(--ease),
+          box-shadow var(--dur-fast) var(--ease);
+      }
+      /* AN-4 / W2-3：行 hover 必须有可见变化。ui.css 的 .list-row:hover 只把底色
+         抬到 --surface-2，亮色下（#fff → #f4f5fa）几乎读不出来；这里再加一条
+         2px 左侧 accent 描边（inset shadow，不占布局、不位移），两套主题都看得见。 */
+      .cap-row:hover {
+        background: var(--surface-2);
+        box-shadow: inset 2px 0 0 var(--accent);
       }
       @media (max-width: 900px) {
         .cap-row {
           grid-template-columns: minmax(0, 1fr);
+          gap: 8px;
         }
-        .cap-cond-mini,
-        .cap-row-actions {
+        /* CAP-3：窄屏 4 条简态收成一行等分（dot + 文字），不再各占一行把卡片拉高。
+           选择器带 .cap-row 前缀：下面的 .cap-cond-mini 基础规则（4×7rem 定宽列）
+           在文件里更靠后，同特异性会覆盖这条窄屏规则 —— 定宽列在 390 下会横向溢出 105px。 */
+        .cap-row .cap-cond-mini {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          width: 100%;
+        }
+        .cap-row .cap-cond-chip {
           justify-content: flex-start;
+          padding: 1px 5px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .cap-row-actions {
+          justify-content: stretch;
+        }
+        .cap-row-actions > .btn {
+          /* 「详情」占满一行，不再孤零零掉到下一行右端 */
+          flex: 1 1 100%;
         }
       }
       .cap-row-title {
@@ -79,25 +111,32 @@
         justify-content: flex-start;
       }
 
-      /* 4 条 condition 的简态：每条一个 chip，点开详情看 reason/message */
+      /* 4 条 condition 的简态：每条一个 chip，点开详情看 reason/message。
+         CAP-1：固定列宽（不是 flex 自适应）—— 文案长短不再决定 chip 宽度，
+         四列在每一行都落在同一条竖线上，行与行之间不再搓齿。列宽取「英文最长的
+         Downstream resolved 也放得下」，实在放不下就在列内折行（不省略号，保信息）。 */
       .cap-cond-mini {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
+        display: grid;
+        grid-template-columns: repeat(4, 7rem);
+        align-items: stretch;
         gap: 4px;
       }
       .cap-cond-chip {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 4px;
+        min-height: 20px;
         padding: 1px 6px;
         border-radius: var(--r-xs);
         border: 1px solid var(--line);
         background: var(--surface-2);
         color: var(--muted);
         font-size: 10px;
-        line-height: 1.5;
-        white-space: nowrap;
+        line-height: 1.35;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
       }
       .cap-cond-chip.is-ok {
         border-color: color-mix(in srgb, var(--success) 32%, transparent);
@@ -341,6 +380,35 @@
         max-width: 62rem;
         width: 100%;
       }
+      /* CAP-4 / CP-2：编辑器内容比视口长得多（实测 scrollHeight 1327 / clientHeight
+         641），而 overlay 滚动条在 macOS 上默认不显示 —— 用户看不到「下面还有」。
+         结构已经是「head 固定 / body 可滚 / foot 粘底」（.modal-panel 是 flex column，
+         .modal-body flex:1 + overflow-y:auto），这里补三件可见提示：
+         ① 上下两条随滚动出现的渐隐阴影（纯 CSS，滚动到端点自动消失）；
+         ② 一条常驻的细滚动条（Firefox/Chromium 都认）；
+         ③ footer 用不透明底压住，滚到底时内容不会和按钮混在一起。 */
+      .cap-modal-body {
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-strong) transparent;
+        background:
+          linear-gradient(var(--panel-modal) 30%, transparent) top / 100% 22px no-repeat local,
+          linear-gradient(transparent, var(--panel-modal) 70%) bottom / 100% 22px no-repeat local,
+          radial-gradient(
+              farthest-side at 50% 0,
+              color-mix(in srgb, var(--text) 18%, transparent),
+              transparent
+            )
+            top / 100% 12px no-repeat scroll,
+          radial-gradient(
+              farthest-side at 50% 100%,
+              color-mix(in srgb, var(--text) 18%, transparent),
+              transparent
+            )
+            bottom / 100% 12px no-repeat scroll;
+      }
+      .cap-modal-foot {
+        background: var(--panel-modal);
+      }
       .cap-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -440,6 +508,32 @@
         color: var(--muted);
       }
 
+      /* ---------- 搜索无结果（W2-2）----------
+         旧实现：1280px 宽的框里一行「没有匹配的能力」，没有图标也没有下一步。
+         现在与 .empty 一致的纵向节奏，加 44px 图标底 + 一句怎么改筛选 + 一个
+         「清空搜索」按钮（真的清空搜索与筛选，不是装饰）。 */
+      .cap-no-match-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: var(--r-full);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        color: var(--faint);
+      }
+      .cap-no-match-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .cap-no-match-hint {
+        max-width: 34rem;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
       /* 首帧骨架（renderList 会整体替换） */
       .cap-skel {
         display: grid;
@@ -493,7 +587,7 @@
     </div>
 
     <section class="card mt-3">
-      <div id="caps-list" class="list">
+      <div id="caps-list" class="list anim-stagger">
         <div class="cap-skel">
           <span class="skeleton"></span>
           <span class="skeleton"></span>
@@ -507,6 +601,24 @@
           <span class="skeleton"></span>
         </div>
       </div>
+      <!-- 搜索无结果的图标位：静态模板，JS 克隆（本仓约定不用 innerHTML 渲染） -->
+      <template id="cap-no-match-tpl">
+        <span class="cap-no-match-icon" aria-hidden="true">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.6-3.6" />
+          </svg>
+        </span>
+      </template>
       <div id="caps-empty" class="empty hidden">
         <p id="caps-empty-title" class="card-title">{{t "caps.empty_title"}}</p>
         <p id="caps-empty-text">{{t "caps.empty"}}</p>
@@ -528,7 +640,7 @@
       <button id="cap-modal-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
     </div>
 
-    <div class="modal-body">
+    <div class="modal-body cap-modal-body">
       <!-- 冲突 / 400 横幅：输入全部保留，只把服务端结论说清楚 -->
       <div id="cap-banner" class="cap-banner hidden" role="alert">
         <span id="cap-banner-title" class="cap-banner-title"></span>
@@ -655,7 +767,7 @@
       </div>
     </div>
 
-    <div class="modal-foot">
+    <div class="modal-foot cap-modal-foot">
       <span id="cap-form-msg" class="field-hint"></span>
       <button id="cap-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
       <button id="cap-submit" type="button" class="btn btn-primary">{{t "caps.form.submit"}}</button>
@@ -951,7 +1063,17 @@
         }
 
         const rows = visibleCaps();
-        if (summary) summary.textContent = sub(t("caps.count", "{n} 个能力"), { n: CAPS.length });
+        const filtering = SEARCH.trim() !== "" || FILTER !== "all";
+        if (summary) {
+          // W2-2：搜索/筛选生效时显示「共 N · 匹配 M」，不再永远写总数（旧实现
+          // 在「没有匹配的能力」时右上角仍写「8 个能力」）。
+          summary.textContent = filtering
+            ? sub(t("uxaudit.work.cap_count_filtered", "共 {total} 个 · 匹配 {shown} 个"), {
+                total: CAPS.length,
+                shown: rows.length,
+              })
+            : sub(t("caps.count", "{n} 个能力"), { n: CAPS.length });
+        }
 
         if (!CAPS.length) {
           list.classList.add("hidden");
@@ -964,8 +1086,27 @@
         empty.classList.add("hidden");
 
         if (!rows.length) {
+          // W2-2：给图标 + 标题 + 一句怎么办 + 一个真动作（清空搜索/筛选）。
           const box = el("div", { class: "empty" });
-          box.append(txt("p", null, t("caps.no_match", "没有匹配的能力")));
+          const tpl = $("cap-no-match-tpl");
+          const clear = el("button", {
+            type: "button",
+            class: "btn btn-ghost btn-sm",
+            text: t("uxaudit.work.cap_clear_search", "清空搜索"),
+          });
+          clear.addEventListener("click", () => {
+            SEARCH = "";
+            FILTER = "all";
+            $("caps-search").value = "";
+            $("caps-filter").value = "all";
+            renderList();
+          });
+          box.append(
+            ...(tpl ? [tpl.content.cloneNode(true)] : []),
+            txt("p", "cap-no-match-title", t("caps.no_match", "没有匹配的能力")),
+            txt("p", "cap-no-match-hint", t("uxaudit.work.cap_no_match_hint", "换个关键词，或清空搜索看全部能力。")),
+            clear,
+          );
           list.append(box);
           return;
         }
@@ -986,16 +1127,23 @@
       function condChip(m, type) {
         const c = condOf(m, type);
         const ok = !!c && c.status === "True";
-        const chip = txt(
-          "span",
-          "cap-cond-chip" + (c ? (ok ? " is-ok" : " is-bad") : ""),
-          condTypeLabel(type) + (c ? (ok ? " ✓" : " ✗") : " ·"),
+        // CAP-1：chip 里不再写 ✓ / ✗ —— 一枚彩色 dot 表达同一个语义，且不占字宽
+        // （✓/✗ 在中英混排里宽度不一，正是各行 badge 对不齐的一半原因）。
+        // 文案本身一个字都没动：仍是 condTypeLabel(type)。
+        const chip = el("span", {
+          class: "cap-cond-chip" + (c ? (ok ? " is-ok" : " is-bad") : ""),
+        });
+        chip.append(
+          txt("span", "cap-dot " + (c ? (ok ? "is-ok" : "is-bad") : "is-missing")),
+          txt("span", null, condTypeLabel(type)),
         );
         // data-cond 是稳定锚点（type 是封闭集合），文案可以翻译、锚点不变
         chip.setAttribute("data-cond", type);
-        if (c) {
-          chip.title = [c.type, c.status, c.reason || "", c.message || ""].filter(Boolean).join(" · ");
-        }
+        const label = condTypeLabel(type) + (c ? (ok ? " ✓" : " ✗") : " ·");
+        chip.setAttribute("aria-label", label);
+        chip.title = c
+          ? [c.type, c.status, c.reason || "", c.message || ""].filter(Boolean).join(" · ")
+          : label;
         return chip;
       }
 

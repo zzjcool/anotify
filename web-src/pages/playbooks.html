@@ -2,12 +2,239 @@
 
 {{define "style"}}
 <style>
-  .pb-grid { grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
-  .pb-card { min-width: 0; overflow-wrap: anywhere; }
+  /* ---------- 卡片网格（PB-2）----------
+     旧规则 `repeat(auto-fill, minmax(280px, 1fr))` 在 1440 下排出 3 列，单张预案
+     只占 1/3 宽、右边整片空白。预案卡里是一组 condition/条目，横向要得下才读得成，
+     所以固定 1~2 列、卡片吃满列宽。 */
+  .pb-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  @media (min-width: 900px) {
+    /* auto-fit + minmax(min(26rem, 100%), 1fr)：宽屏最多两列，且**空列会被折叠** ——
+       只有一张预案时它吃满整行（PB-2 的「单卡只占 1/3 宽」就是 fixed 列数造成的）。 */
+    .pb-grid {
+      grid-template-columns: repeat(auto-fit, minmax(min(26rem, 100%), 1fr));
+    }
+  }
+  .pb-card {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .pb-card-head {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .pb-card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .pb-card-title:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .pb-card-slug {
+    font-size: 11.5px;
+    color: var(--faint);
+  }
+
+  /* ---------- condition chips（PB-3）----------
+     4 行的 `Implemented · False · NotInstalled`（英文 key + 重复信息）换成一行
+     chip：彩点表示 True/False，文字是本地化短名，原始 `type · status · reason`
+     完整保留在 title / aria-label 里（读屏与悬停都拿得到原始 key）。 */
+  .pb-conds {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .pb-cond {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .pb-cond-ok {
+    border-color: color-mix(in srgb, var(--success) 32%, transparent);
+    background: var(--success-soft);
+    color: var(--success);
+  }
+  .pb-cond-bad {
+    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+  .pb-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--faint);
+  }
+  .pb-dot-ok {
+    background: var(--success);
+  }
+  .pb-dot-bad {
+    background: var(--warn);
+  }
+
+  /* 条目（能力 / 源）一行一个：类型 + ref + 状态 badge */
+  .pb-items {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .pb-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .pb-item-kind {
+    min-width: 3.5rem;
+    color: var(--faint);
+  }
+  .pb-item-ref {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text);
+  }
+
+  /* ---------- 空态（PB-1）----------
+     旧实现只有一行居中灰字，没有图标、没有下一步。现在：44px 图标底 + 标题 +
+     说明（沿用既有 pb.empty 文案，e2e 断言 /No playbooks/ 仍成立）+ 一个真的
+     打开导入表单的按钮。 */
+  .pb-empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--faint);
+  }
+  .pb-empty-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .pb-empty-hint {
+    max-width: 34rem;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* ---------- 首屏骨架（AN-3）---------- */
+  .pb-skel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 148px;
+  }
+  .pb-skel > .skeleton:nth-child(1) {
+    width: 42%;
+    height: 16px;
+  }
+  .pb-skel > .skeleton:nth-child(2) {
+    width: 24%;
+    height: 11px;
+  }
+  .pb-skel > .skeleton:nth-child(3) {
+    width: 88%;
+    height: 22px;
+    border-radius: var(--r-full);
+  }
+  .pb-skel > .skeleton:nth-child(4) {
+    width: 66%;
+    height: 22px;
+    border-radius: var(--r-full);
+  }
+
+  /* ---------- 自建文件选择（PB-5 / CP-6）----------
+     原生 <input type=file> 在中文环境下也显示英文「Choose Files / No file chosen」，
+     且与全站 .input 的尺寸/圆角不一致。这里做成一个可点击的投放框：input 透明铺满
+     （仍可聚焦、仍然接收文件），可见部分由 .pb-file-* 画。 */
+  .pb-file {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 10px 12px;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    cursor: pointer;
+    transition:
+      border-color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease);
+  }
+  .pb-file:hover {
+    border-color: var(--accent);
+  }
+  .pb-file:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .pb-file-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: none;
+    border-radius: var(--r-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .pb-file-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .pb-file-title {
+    font-size: 12.5px;
+    color: var(--text);
+  }
+  .pb-file-name {
+    font-size: 11px;
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+  .pb-file-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+
   .pb-upload { display: grid; gap: 16px; }
   .pb-wrap { overflow-wrap: anywhere; min-width: 0; }
-  .pb-card-head { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
-  .pb-card-facts { display: grid; gap: 8px; margin-top: 12px; }
+  .pb-card-facts { display: grid; gap: 8px; }
   .pb-result { margin-top: 12px; }
   .pb-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   [hidden] { display: none !important; }
@@ -29,8 +256,40 @@
     </div>
     <p id="pb-scope" class="field-hint"></p>
     <div id="pb-state" aria-live="polite"></div>
-    <div id="pb-grid" class="pb-grid"></div>
-    <div id="pb-empty" class="hidden"></div>
+    <div id="pb-grid" class="pb-grid anim-stagger">
+      <!-- 首屏骨架（AN-3）：数据到达前先画出卡片形状，不再是一张空白页 -->
+      <div class="pb-skel" aria-hidden="true">
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+      </div>
+      <div class="pb-skel" aria-hidden="true">
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+        <span class="skeleton"></span>
+      </div>
+    </div>
+    <div id="pb-empty" class="card hidden"></div>
+    <!-- 空态图标位：静态模板，JS 克隆（本仓约定不用 innerHTML 渲染） -->
+    <template id="pb-empty-tpl">
+      <span class="pb-empty-icon" aria-hidden="true">
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5Z" />
+          <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+        </svg>
+      </span>
+    </template>
 
     <section id="pb-import" class="card card-pad">
       <h3 class="card-title">{{t "pb.v4.import"}}</h3>
@@ -49,10 +308,32 @@
         </div>
         <div id="pb-files-input" class="pb-upload">
           <div class="field">
-            <label for="pb-upload-files" class="field-label">{{t "pb.v4.upload_files"}}</label>
-            <input id="pb-upload-files" type="file" multiple class="input" />
-            <label for="pb-upload-directory" class="field-label">{{t "pb.v4.upload_directory"}}</label>
-            <input id="pb-upload-directory" type="file" multiple webkitdirectory class="input" />
+            <span id="pb-upload-files-label" class="field-label">{{t "pb.v4.upload_files"}}</span>
+            <div class="pb-file">
+              <span class="pb-file-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" />
+                </svg>
+              </span>
+              <span class="pb-file-body">
+                <span class="pb-file-title">{{t "uxaudit.work.pb_choose_file"}}</span>
+                <span class="pb-file-name" data-pb-file-name>{{t "uxaudit.work.pb_no_file"}}</span>
+              </span>
+              <input id="pb-upload-files" type="file" multiple class="pb-file-input" aria-labelledby="pb-upload-files-label" />
+            </div>
+            <span id="pb-upload-directory-label" class="field-label">{{t "pb.v4.upload_directory"}}</span>
+            <div class="pb-file">
+              <span class="pb-file-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                </svg>
+              </span>
+              <span class="pb-file-body">
+                <span class="pb-file-title">{{t "uxaudit.work.pb_choose_dir"}}</span>
+                <span class="pb-file-name" data-pb-file-name>{{t "uxaudit.work.pb_no_file"}}</span>
+              </span>
+              <input id="pb-upload-directory" type="file" multiple webkitdirectory class="pb-file-input" aria-labelledby="pb-upload-directory-label" />
+            </div>
             <p class="field-hint">{{t "pb.v4.upload_hint"}}</p>
           </div>
           <div class="field">
@@ -90,29 +371,118 @@
     Anotify.mountLayout({ active: "playbooks", title: t("pb.title"), subtitle: t("pb.v4.subtitle") });
     let loading = false;
 
+    /* condition 的本地化短名：type 是封闭集合（playbook.plan 的四条派生条件），
+     * 未知 type 原样显示，绝不吞掉服务端给的 key。 */
+    function condLabel(type) {
+      const key = {
+        Implemented: "uxaudit.work.pb_cond_implemented",
+        NodesAvailable: "uxaudit.work.pb_cond_nodes",
+        DownstreamResolved: "uxaudit.work.pb_cond_downstream",
+        Deployed: "uxaudit.work.pb_cond_deployed",
+      }[type];
+      return key ? t(key, type) : type;
+    }
+    function kindLabel(kind) {
+      return kind === "source" || kind === "capability"
+        ? t("uxaudit.work.pb_kind_" + kind, kind)
+        : kind;
+    }
+
+    function chips(pb) {
+      const box = el("div", "pb-conds");
+      for (const condition of pb.status.conditions) {
+        const ok = condition.status === "True";
+        // 原始英文 key 不丢：title/aria-label/data-cond 三处都留着
+        const raw = [condition.type, condition.status, condition.reason || "", condition.message || ""]
+          .filter(Boolean).join(" · ");
+        const chip = el("span", "pb-cond " + (ok ? "pb-cond-ok" : "pb-cond-bad"));
+        chip.append(
+          el("span", "pb-dot " + (ok ? "pb-dot-ok" : "pb-dot-bad")),
+          el("span", null, condLabel(condition.type)),
+        );
+        chip.dataset.cond = condition.type;
+        chip.setAttribute("title", raw);
+        chip.setAttribute("aria-label", raw);
+        box.append(chip);
+      }
+      return box;
+    }
+
+    function items(pb) {
+      const box = el("div", "pb-items");
+      for (const item of pb.status.items) {
+        const row = el("div", "pb-item");
+        row.dataset.kind = item.kind;
+        row.dataset.state = item.state;
+        row.append(
+          el("span", "pb-item-kind", kindLabel(item.kind)),
+          el("span", "pb-item-ref", item.name + (item.version ? "@" + item.version : "")),
+          el("span", "badge " + (item.state === "ok" ? "badge-neutral" : "badge-warn"), item.state),
+        );
+        box.append(row);
+      }
+      if (!pb.status.items.length) box.append(el("p", "field-hint", t("pb.v4.not_installed")));
+      return box;
+    }
+
     function card(resource) {
       const pb = model.playbook(resource);
       const section = el("article", "card card-pad pb-card");
       section.dataset.slug = pb.slug;
       const head = el("div", "pb-card-head");
-      const name = el("a", "card-title", pb.displayName || pb.slug);
-      name.href = link(pb.slug);
-      head.append(name, el("span", "badge " + (pb.status.ready ? "badge-success" : "badge-warn"), t(pb.status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
-      section.append(head, el("p", "mono field-hint", pb.slug));
-      const facts = el("div", "pb-card-facts");
-      for (const condition of pb.status.conditions) {
-        facts.append(el("p", "field-hint", condition.type + " · " + condition.status + (condition.reason ? " · " + condition.reason : "")));
+      const title = el("a", "pb-card-title", pb.displayName || pb.slug);
+      title.href = link(pb.slug);
+      head.append(title, el("span", "badge " + (pb.status.ready ? "badge-success" : "badge-warn"), t(pb.status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
+      section.append(head, el("p", "pb-card-slug mono", pb.slug));
+      section.append(chips(pb), items(pb));
+      if (pb.status.unapplied.length) {
+        section.append(el("p", "badge badge-warn", t("pb.v4.unapplied_count", { n: pb.status.unapplied.length })));
       }
-      for (const item of pb.status.items) {
-        facts.append(el("p", "field-hint", item.kind + " · " + item.name + (item.version ? "@" + item.version : "") + " · " + item.state));
+      if (pb.status.blocker) {
+        // 拼接前先滤掉空段：capability 为空时旧实现会印出「Implemented ·  · edit_capability」
+        // 这种悬挂分隔符（审计 R7 的同一类问题）。
+        const parts = [t("pb.v4.blocker") + ": " + pb.status.blocker.type,
+          pb.status.blocker.capability, pb.status.blocker.action].filter(Boolean);
+        section.append(el("p", "field-hint", parts.join(" · ")));
       }
-      if (!pb.status.items.length) facts.append(el("p", "field-hint", t("pb.v4.not_installed")));
-      if (pb.status.unapplied.length) facts.append(el("p", "badge badge-warn", t("pb.v4.unapplied_count", { n: pb.status.unapplied.length })));
-      if (pb.status.blocker) facts.append(el("p", "field-hint", t("pb.v4.blocker") + ": " + pb.status.blocker.type + " · " + (pb.status.blocker.capability || "") + " · " + pb.status.blocker.action));
-      if (pb.status.lastInstallId) facts.append(el("p", "mono field-hint", t("pb.v4.last_install") + ": " + pb.status.lastInstallId));
-      section.append(facts);
+      if (pb.status.lastInstallId) {
+        section.append(el("p", "mono field-hint", t("pb.v4.last_install") + ": " + pb.status.lastInstallId));
+      }
       return section;
     }
+
+    /* PB-1：空态 = 图标 + 标题 + 说明（沿用既有 pb.empty 文案）+ 立即导入。
+     * 按钮真的把同一个导入表单带到眼前（滚到 #pb-import 并聚焦包名输入框）。 */
+    function emptyState() {
+      const box = el("div", "empty");
+      const tpl = $("pb-empty-tpl");
+      // 本地 el(tag, cls, text) 的第二个参数是**类名字符串**（不是 attrs 对象）
+      const cta = el("button", "btn btn-primary", t("uxaudit.work.pb_empty_cta"));
+      cta.type = "button";
+      cta.addEventListener("click", () => {
+        $("pb-import").scrollIntoView({ behavior: "smooth", block: "start" });
+        $("pb-input-name").focus({ preventScroll: true });
+      });
+      box.append(
+        ...(tpl ? [tpl.content.cloneNode(true)] : []),
+        el("p", "pb-empty-title", t("pb.empty_title", "还没有预案")),
+        el("p", "pb-empty-hint", t("pb.empty")),
+        cta,
+      );
+      return box;
+    }
+
+    /* 自建文件选择框的文件名回显（原生控件被 .pb-file-input 透明覆盖）。 */
+    function reflectFiles(input) {
+      const box = input.closest(".pb-file");
+      const target = box && box.querySelector("[data-pb-file-name]");
+      if (!target) return;
+      const files = input.files ? [...input.files] : [];
+      target.textContent = files.length
+        ? t("uxaudit.work.pb_files_n", "{n} 个文件").replace("{n}", String(files.length))
+        : t("uxaudit.work.pb_no_file", "未选择文件");
+    }
+
     async function load() {
       if (loading) return;
       loading = true; $("btn-refresh").disabled = true;
@@ -124,7 +494,7 @@
         const { items: rows } = await apiList(nsPath("playbooks"));
         for (const row of rows) $("pb-grid").append(card(row));
         if (!rows.length) {
-          $("pb-empty").replaceChildren(el("div", "empty", t("pb.empty")));
+          $("pb-empty").replaceChildren(emptyState());
           $("pb-empty").classList.remove("hidden");
         }
         $("pb-state").replaceChildren();
@@ -135,6 +505,7 @@
       }
     }
     async function upload(input, directory) {
+      reflectFiles(input);
       try {
         const entries = [];
         for (const file of input.files) {

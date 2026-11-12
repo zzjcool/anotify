@@ -210,9 +210,51 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* IDX-5：trace id 仍是 .mono，但降到 faint + 11px —— 它是行的第二层信息，
+       不该和类型/严重度同级抢注意力。 */
+    font-size: 11px;
+    color: var(--faint);
+  }
+  /* IDX-5：类型 chip 与 severity chip 用同一枚 chip（同高/同圆角/同字号），
+     只有强调色不同 —— 旧实现是「裸 mono 文本 + .badge」两套语言并排。 */
+  .ix-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* 变体写成独立类（不是 .ix-chip.is-mono 这类复合选择器）：死类守卫生成白名单
+     时只取行首第一个 .class，复合选择器里的第二个类会被判成「死类」。 */
+  .ix-mono {
+    font-family: var(--font-mono);
+  }
+  .ix-source {
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .ix-warn {
+    border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+    background: var(--warn-soft);
+    color: var(--warn);
   }
   .ev-feed-time {
     white-space: nowrap;
+    /* 时间列对齐：右缘对齐 + 等宽数字，几行「9 分钟前 / 10 分钟前」不再搓齿。 */
+    justify-self: end;
+    min-width: 5.5rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
   /* 事件活动骨架：旧实现把 .skeleton 直接放进 .hm 网格，它只是**一个格子项**，
      于是被塞进第 1 列（12px 的星期标签列）—— 页面上只剩左边一根 12×87 的竖条
@@ -247,6 +289,68 @@
         transparent 0 calc(100% / 7 - 2px),
         var(--surface-1) calc(100% / 7 - 2px) calc(100% / 7)
       );
+  }
+  /* ---- IDX-2：热力图可读性 ----
+     ① 行标签从「一/三/五」补成 7 行后，9px/--faint 太小：轴标签是读数的一部分，
+        提到 10px + --muted；
+     ② 空格（level 0）在暗色下 --hm-empty(#1c1c29) 与卡片实底(#101018) 只差 6/255，
+        整片日历几乎读不出来 —— 给空格补 1px 内描边（不占布局、不加格数）；
+        今天格子的 accent 外圈要保留，所以两条 box-shadow 一起写。 */
+  .hm-card .hm-day {
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .hm-card .hm-month {
+    font-size: 10px;
+  }
+  .hm-card .hm-cell[data-level="0"] {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 13%, transparent);
+  }
+  .hm-card .hm-cell.hm-today {
+    box-shadow:
+      0 0 0 1.5px var(--accent),
+      inset 0 0 0 1px color-mix(in srgb, var(--text) 13%, transparent);
+  }
+  /* 卡片内三段（标题 / 图 / 底注）上下留白等值，旧值 32 / 22 忽宽忽窄。 */
+  .hm-card .card-head.card-pad {
+    padding-bottom: 14px;
+  }
+  .hm-card .hm-scroll {
+    padding: 0 20px 14px;
+  }
+  .hm-card .hm-foot {
+    margin: 0 20px;
+    padding: 10px 0 14px;
+  }
+  /* ---- IDX-1：四张 KPI 卡 = 同一种迷你图形态 ----
+     同一槽高（30px）+ 同一条基线：卡 1/2 画真实日趋势（.stat-spark 里是 svg），
+     卡 3/4 没有日序列（e2e 断言 [data-nonpush-tile] .stat-spark svg 恒为 0），
+     只画一条虚线基线 —— 形态统一，且不编造趋势。
+     旧实现里最低值贴着槽底，看起来被卡片圆角裁掉；现在槽底就是基线，
+     曲线永远落在基线之上，读起来是一条「轴」而不是被切掉的色带。 */
+  .stat-spark {
+    height: 30px;
+    position: relative;
+    margin-top: 2px;
+  }
+  .stat-spark::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 1px;
+    background: var(--line-strong);
+  }
+  .stat-spark.is-baseline {
+    /* ui.css 里 .stat-spark 未就绪时 opacity:0（防假折线）—— 基线是真实
+       存在的信息（这里没有序列），不该被一起隐藏。 */
+    opacity: 1;
+  }
+  .stat-spark.is-baseline::after {
+    background: repeating-linear-gradient(
+      to right,
+      var(--line-strong) 0 5px,
+      transparent 5px 10px
+    );
   }
 </style>
 {{end}} {{define "content"}}
@@ -323,7 +427,6 @@
                 <path d="M22 2 15 22l-4-9-9-4Z" />
               </svg>
             </span>
-            <span class="dot dot-success"></span>
           </div>
           <div class="stat-label">{{t "index.kpi.rate"}}</div>
           <div class="stat-value" id="kpi-rate">–</div>
@@ -353,7 +456,6 @@
               <path d="M12 7v5l3 2" />
             </svg>
           </span>
-          <span class="dot dot-success"></span>
         </div>
         <div class="stat-label">{{t "index.kpi.today"}}</div>
         <div class="stat-value" id="kpi-today">–</div>
@@ -421,7 +523,6 @@
                 <path d="M12 10v4l2.5 1.5" />
               </svg>
             </span>
-            <span class="dot dot-warn"></span>
           </div>
           <div class="stat-label">{{t "index.kpi.running"}}</div>
           <div class="stat-value" id="kpi-running">–</div>
@@ -454,7 +555,6 @@
                 <path d="M12 16.5h.01" />
               </svg>
             </span>
-            <span class="dot dot-error"></span>
           </div>
           <div class="stat-label">{{t "index.kpi.failed"}}</div>
           <div class="stat-value" id="kpi-failed">–</div>
@@ -731,7 +831,7 @@
      * 横向拉伸时线宽不变（否则卡变宽线就变粗）。 */
     function renderSparks() {
       const H = 24,
-        PAD = 2;
+        PAD = 3;
       const NS = "http://www.w3.org/2000/svg";
       for (const box of document.querySelectorAll(".stat-spark[data-spark]")) {
         const vals = String(box.dataset.spark || "")
@@ -937,12 +1037,15 @@
       });
       if (event.traceUID) row.href = traceLink(event.traceUID);
       const head = el("div", { class: "ev-feed-head" },
-        el("code", { class: "mono tag-chip", text: event.involvedObject?.name || "—" }),
-        el("code", { class: "mono", text: event.eventType || "—" }),
-        el("span", { class: "badge badge-neutral", text: event.type }),
+        // IDX-5：源 / 类型 / 严重度 三个 chip 同一套盒模型（.ix-chip），
+        // 只靠强调色区分；旧的「裸 mono 文本 + .badge」是两套语言并排。
+        el("span", { class: "ix-chip ix-mono ix-source", text: event.involvedObject?.name || "—" }),
+        el("span", { class: "ix-chip ix-mono", text: event.eventType || "—" }),
+        // ST-3：Warning 用 badge-warn（与事件流页同色），不再丢成中性色。
+        el("span", { class: event.type === "Warning" ? "ix-chip ix-warn" : "ix-chip", text: event.type }),
       );
       row.append(el("div", { class: "ev-feed-main" }, head,
-        el("code", { class: "mono card-sub ev-feed-trace", text: event.traceUID || event.name })),
+        el("span", { class: "mono ev-feed-trace", text: event.traceUID || event.name })),
         el("span", { class: "card-sub ev-feed-time", text: timeAgo(Date.parse(event.creationTimestamp) / 1000) }));
       return row;
     }
@@ -1142,8 +1245,14 @@
         if (node.dataset.sparkScope !== "events") {
           node.removeAttribute("data-spark");
           node.replaceChildren();
+          // IDX-1：没有日序列的卡也只画「基线」——四张卡槽高与基线对齐，
+          // 形态统一，但不发明趋势（e2e 断言这几张卡里 svg 恒为 0）。
+          node.classList.remove("is-ready");
+          node.classList.add("is-baseline");
+          node.setAttribute("aria-label", t("uxaudit.work.spark_na", "暂无趋势数据"));
           return; // No daily execution/device facts: do not imply an invented trend.
         }
+        node.classList.remove("is-baseline");
         node.dataset.spark = values.map(value => value / max).join(",");
         node.classList.add("is-ready");
       });
@@ -1252,19 +1361,30 @@
       return monday;
     }
 
-    /* 轴 = 左侧星期列（一 / 三 / 五）+ 顶部月份行（月份变化处一个标签）。 */
+    /* 轴 = 左侧星期列（日…六 全 7 行）+ 顶部月份行（月份变化处一个标签）。
+     *
+     * IDX-2：旧实现只标一/三/五，左边三枚字面对一片 53×7 的格子等于没有刻度。
+     * 标签与 tooltip 用同一份 WEEK_LABELS，避免两处各翻一次。 */
+    function hmWeekLabels() {
+      return [
+        t("index.heatmap.week.sun", "日"),
+        t("index.heatmap.week.mon", "一"),
+        t("index.heatmap.week.tue", "二"),
+        t("index.heatmap.week.wed", "三"),
+        t("index.heatmap.week.thu", "四"),
+        t("index.heatmap.week.fri", "五"),
+        t("index.heatmap.week.sat", "六"),
+      ];
+    }
+
     function hmAxisFragment(startMonday) {
-      const DAY_LABELS = {
-        0: t("index.heatmap.week.mon", "一"),
-        2: t("index.heatmap.week.wed", "三"),
-        4: t("index.heatmap.week.fri", "五"),
-      };
+      const DAY_LABELS = hmWeekLabels();
       const frag = document.createDocumentFragment();
       for (let d = 0; d < 7; d++) {
         const s = document.createElement("span");
         s.className = "hm-day";
         s.style.gridRow = d + 2;
-        s.textContent = DAY_LABELS[d] || "";
+        s.textContent = DAY_LABELS[d];
         frag.append(s);
       }
       let prevMonth = -1;
@@ -1310,15 +1430,7 @@
         "var(--accent-3)",
         "var(--accent-4)",
       ];
-      const WEEK_LABELS = [
-        t("index.heatmap.week.sun", "日"),
-        t("index.heatmap.week.mon", "一"),
-        t("index.heatmap.week.tue", "二"),
-        t("index.heatmap.week.wed", "三"),
-        t("index.heatmap.week.thu", "四"),
-        t("index.heatmap.week.fri", "五"),
-        t("index.heatmap.week.sat", "六"),
-      ];
+      const WEEK_LABELS = hmWeekLabels();
       const WEEKS = HM_WEEKS;
       // 真实数据：STATS.daily = [{day:"YYYY-MM-DD",count}] → Map 便于查
       const countByDay = new Map();
@@ -1361,7 +1473,11 @@
           if (future) {
             cell.dataset.future = "1";
           } else {
-            cell.style.background = LEVELS[levelOf(count)];
+            // data-level：给页面样式一个稳定锚点给空格补 1px 内描边
+            // （暗色下 --hm-empty 与卡片实底只差 6/255，不加线读不出来）。
+            const level = levelOf(count);
+            cell.dataset.level = String(level);
+            cell.style.background = LEVELS[level];
             if (date.getTime() === today.getTime())
               cell.classList.add("hm-today");
             cell.addEventListener("mouseenter", () => {

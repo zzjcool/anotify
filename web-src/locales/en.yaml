@@ -2263,3 +2263,32 @@ uxaudit:
     default_new_name: 'New device'
     alert_no_webauthn: "This browser doesn't support WebAuthn, so a Passkey can't be added. Please use the latest Chrome, Safari or Firefox."
     prompt_new_name: 'Name this Passkey (for example "Main phone"):'
+
+# Wave-2 UI pass (cluster C: index / events / capabilities / playbooks / playbook).
+  work:
+    spark_na: No trend data
+    loading: Loading…
+    events_loading: Loading events…
+    cap_no_match_hint: Try another keyword, or clear the search to see every capability.
+    cap_clear_search: Clear search
+    cap_count_filtered: "{shown} of {total} capabilities"
+    pb_empty_cta: Import now
+    pb_cond_implemented: Implemented
+    pb_cond_nodes: Nodes available
+    pb_cond_downstream: Downstream resolved
+    pb_cond_deployed: Deployed
+    pb_kind_capability: Capability
+    pb_kind_source: Source
+    pb_choose_file: Choose files
+    pb_choose_dir: Choose folder
+    pb_no_file: No file chosen
+    pb_files_n: "{n} files selected"
+    checkup_title: Checkup
+    note: Details
+    copy: Copy
+    render_short: Render preview
+    dry_run_short: Dry run
+    install_short: Install
+    code_json: Raw JSON
+    code_rendered: Rendered output
+    code_receipt: Install receipt
