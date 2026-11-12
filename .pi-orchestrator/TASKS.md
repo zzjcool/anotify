@@ -471,3 +471,19 @@ reviewer 首次终审也被截断（turn 预算）——终审任务要明确「
 - **#264 合并派发事务**：写提交 `3+2K+S+P` → `2+K+P`（令牌 + pin 并入 `LeaseAndAssign`；pin 推帧失败按三元组条件回滚；`EnsureGraphVersion` 先读后写）。红→绿用外部 `BEGIN IMMEDIATE` 当探针，不测耗时。
 - **验证**：`make e2e` 全量 28 套件全绿；`go test ./...` 15 包 ok（仅 `cmd/agent` root 环境既有失败）；`make fe` 0 WARN；contract/gofmt/vet/build 干净。
 - **合并**：`ce8fd97`（PR #313）。**open issue：0**（11 条全部收口，其中 4 条新开即修）。
+
+---
+
+## WIP · UI 审计 v3 修复（2026-11-13）
+
+- **审计**：`.pi-orchestrator/UI-AUDIT-v3.md`（`92062ed`）。19 页 × 亮/暗 × 1440/390 + 4 弹层 + 4 详情页；截图 `/tmp/ui-scan/shots/`（90 张）、DOM 报告 `/tmp/ui-scan/report.json`、局部放大 `/tmp/ui-scan/crops/`。
+- **并行派发**（legion centurion × 4，各自 worktree/分支，文件域不重叠）：
+
+| 集群 | 分支 | 文件域 | 负责 ID |
+|---|---|---|---|
+| A 壳与组件基建 | `ui-shell` | ui.css/tokens.css/partials.js/layouts/flograph.js/graphs.js/traceview.js | SH-1…6、CP-2/7(样式)、IDX-3/4、AN-1/2/4/5 |
+| C 工作台页 | `ui-workbench` | pages/{index,events,capabilities,playbooks,playbook}.html | IDX-1/2/5/6、EV-1…3、CAP-1…4、PB-1…6 |
+| D 资源与身份页 | `ui-resource` | pages/{nodes,node,keys,sources,source,receivers,security,admin}.html + mock.js(admin stats) | ND-1…5、SEC-1…4、SRC-1…6、RCV-1…3、ADM-1…4 |
+| E 文档与认证页 | `ui-doc-auth` | pages/{docs,trace,message,login,cli-auth,passkey-enroll}.html | DOC-1…3、TR-2…4、MSG-1/2、AU-1…4 |
+
+- **合入门槛**（协调者执行）：`make sitegen` + `make check-classes` + `check-tailwind-css` → 逐页截图对比 → `./scripts/e2e/run_all.sh` 全量 → `make build`。
