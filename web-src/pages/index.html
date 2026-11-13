@@ -893,6 +893,8 @@
 
     const { el, api, mountLayout, mountPullRefresh, copyText, timeAgo, t } =
       window.Anotify;
+    // 解析期声明本页会画图：挂上 defer 图库的就绪门闩（实现只有 partials.js 一份）
+    window.Anotify.expectGraphics();
     const qs = new URLSearchParams(location.search);
     // 旧推送深链 index.html?msg=<taskId>：首页不再有任务弹层，直接转任务详情页。
     // （sw.js 的推送载荷早已是 message.html?id=，这里只是不让历史通知点成空页。）
@@ -1078,13 +1080,14 @@
             text: (p.spec?.eventType || p.status?.pruned?.reason || p.reason || "—") + ": " + (p.status?.pruned?.detail || p.detail || "") })));
           return;
         }
-        if (!window.AnotifyGraphs) throw new Error(t("index.flow.nolib"));
+        // 图库是 defer 加载的：Trace 数据可能比它先到，只准走 graphLib() 取库（会等 DCL）。
+        const G = await window.Anotify.graphLib(t("index.flow.nolib"));
         const source = doc.events.find(resource => resource.spec.involvedObject?.kind === "Source");
         const sourceName = source?.spec?.involvedObject?.name || "";
         // 底图 = 这个源的静态配置拓扑，取数与降级规则在 Anotify.loadSourceTopology
         // （和链路页 / 源详情页共用一份）。拿不到源就退回只画执行链，不白屏、不编造。
         const baseGraph = await loadSourceTopology(sourceName);
-        window.AnotifyGraphs.taskChain(host, {
+        G.taskChain(host, {
           tasks: doc.tasks, baseGraph: baseGraph, sourceLabel: sourceName,
           sourceSub: source?.spec.eventType || "", t,
           onNodeClick(task) {

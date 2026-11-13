@@ -176,6 +176,10 @@
     "use strict";
     const A = window.Anotify;
     const { el, api, ready, nsPath, readScope, saveScope, model, t, icon, copyText } = A;
+    /* 本页会画图：解析期声明，等 defer 图库的门闩在 partials.js 里（TRACE-STARTUP）。
+       取库只走 A.graphLib()，页面不再自己读库全局 —— 页面脚本在解析期就跑，
+       而 Trace GET 可能比 defer 库更快返回（真实现场：响应 132ms、DCL 152ms）。 */
+    A.expectGraphics();
     const query = new URLSearchParams(location.search);
     const uid = query.get("traceUID") || "";
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
@@ -183,29 +187,6 @@
     const content = document.getElementById("trace-content");
     const errorBox = document.getElementById("trace-error");
     let graph = null;
-    /* 启动依赖屏障（TRACE-STARTUP）：图库是 defer 引入的（base.html 的 graph-libs
-       槽位）——defer 脚本在文档解析完成后、DOMContentLoaded **之前**按文档顺序执行；
-       而本内联脚本在解析期就跑。Trace GET 可能比解析完成更快（真实现场
-       final-28bbef29：响应 132ms 解析返回、138ms 抛 TypeError reading 'taskChain'、
-       DOMContentLoaded 152ms 才到），那时 window.AnotifyGraphs 还不存在。
-
-       屏障必须**在这里**（解析期）就挂上：此刻 document.readyState 一定是 "loading"，
-       这个一次性 DOMContentLoaded 监听碰不上“事件已经发过”的情况，也不会错过。
-       不能等到 load() 里才看 readyState：解析完成到 defer 脚本执行之间 readyState
-       已经是 "interactive"（HTML 规范顺序就是 interactive → defer → DOMContentLoaded），
-       那时再等事件可能挂死，而不等就是本 bug。若本脚本被动态注入、进来时已不是
-       loading（事件可能已发过），不注册监听，直接按实际能力判断（缺库→可见错误+原重试）。
-       不轮询、不用 setTimeout、不新增全局 ready 协议。 */
-    const deferredGraphics = document.readyState === "loading"
-      ? new Promise(resolve => document.addEventListener("DOMContentLoaded", () => resolve(), { once: true }))
-      : Promise.resolve();
-    /* 图库能力必须真检查：脚本加载失败/缺库要变成可见错误（带原重试），
-       不静默删图、不画假图。 */
-    function graphLib() {
-      const lib = window.AnotifyGraphs;
-      if (!lib || typeof lib.taskChain !== "function") throw new Error(t("trace.nolib"));
-      return lib;
-    }
     function taskLink(name) {
       return "message.html?namespace=" + encodeURIComponent(readScope().namespace) + "&id=" + encodeURIComponent(name);
     }
@@ -409,9 +390,8 @@
         }
         const doc = await api(nsPath("traces", uid));
         if (!Array.isArray(doc.events) || !Array.isArray(doc.tasks) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
-        // 解析期挂上的 defer 图库屏障：首次 render 必须等它（重试用同一入口，已 resolved）。
-        await deferredGraphics;
-        const graphs = graphLib();
+        // 图库是 defer 加载的：走 partials.js 的统一门闩（重试用同一入口，已 resolved）。
+        const graphs = await A.graphLib(t("trace.nolib"));
         render(doc, graphs, await loadBaseGraph(doc));
       } catch (error) {
         if (graph?.destroy) graph.destroy();

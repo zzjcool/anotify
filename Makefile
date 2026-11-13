@@ -39,16 +39,19 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build anode manifest fe sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-sitegen: check-classes check-tailwind ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
+sitegen: check-classes check-tailwind check-graph-access ## 构建期静态站点生成：web-src/（layouts+pages+locales）→ web/*.html + i18n js
 	go run ./cmd/sitegen -src web-src -out web -langs zh-CN,en,ja,es $(if $(VERSION),-version '$(VERSION)',)
 
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
+
+check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib()（防 defer 加载竞态回归）
+	node scripts/check-graph-access.mjs
 
 check-tailwind: ## 核对已提交的 web/tailwind.css 覆盖源码工具类（stdlib，不跑 Tailwind CLI）
 	node scripts/check-tailwind-css.mjs

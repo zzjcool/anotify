@@ -1898,6 +1898,58 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return ensureScope();
 	}
 
+	/* ---------- 图渲染库就绪（唯一事实源）----------
+	 *
+	 * 图库（dagre → flograph → graphs → traceview）由 layout 的 graph-libs 槽位以
+	 * **defer** 引入：规范上在「文档解析完成之后、DOMContentLoaded 之前」按文档顺序
+	 * 执行。本文件是解析期执行的非 defer 脚本（base.html 里必须如此——页面脚本一被
+	 * 解析就调 t()/mountLayout()），所以**在这里**挂 DCL 监听才是安全的：只有解析期
+	 * 挂上的监听才能区分「readyState 已是 interactive、defer 还没跑完」（该等）和
+	 * 「DCL 已经发过」（才说明库真缺）—— 后者再挂监听会永远等不到。
+	 *
+	 * 事故（TRACE-STARTUP / SOURCE-STARTUP）：页面在 fetch 续体里同步读
+	 * `window.AnotifyGraphs`。Trace 响应 132ms 就回、DCL 152ms 才到，于是画出
+	 * 「图组件未加载」；SOURCE 页同构（API 命中缓存/弱网时 100% 复现）。
+	 *
+	 * 页面唯一需要做的：解析期调一次 `expectGraphics()`（声明「本页会画图」），
+	 * 画图处 `const G = await graphLib(文案)`。页面**不得**直接读 window.AnotifyGraphs
+	 * （scripts/check-graph-access.mjs 会拦）。
+	 */
+	let graphicsGate = null;
+
+	/** 解析期声明本页会画图：把「等 defer 图库执行完」的门闩挂上（幂等）。 */
+	function expectGraphics() {
+		if (graphicsGate) return;
+		graphicsGate =
+			document.readyState === "loading"
+				? new Promise((resolve) =>
+						document.addEventListener("DOMContentLoaded", () => resolve(), { once: true }),
+					)
+				: Promise.resolve();
+	}
+
+	/**
+	 * 取图库：等 defer 库执行完再读，缺库抛**可显示**错误（reason=graph_unavailable）。
+	 *
+	 * 重试天然成立：门闩 resolved 之后再调，只是重新读一次 window.AnotifyGraphs，
+	 * 那时库可能已经在（脚本晚到）——不需要第二个 Promise，也不需要轮询。
+	 */
+	async function graphLib(message) {
+		const err = new Error(message || "图组件未加载，请重新加载。");
+		err.reason = "graph_unavailable";
+		if (!graphicsGate) {
+			/* 页面忘了在解析期声明：不许在这里现挂门闩 —— 此刻可能正处于
+			 * 「interactive 但 defer 未执行」的窗口，现挂会直接判成「已就绪」。
+			 * 宁可显式报错（可见、可重试），也不把竞态放回页面。 */
+			err.code = "graph_barrier_missing";
+			throw err;
+		}
+		await graphicsGate;
+		const lib = window.AnotifyGraphs;
+		if (lib) return lib;
+		throw err;
+	}
+
 	/**
 	 * 页面数据入口（ns 私有资源）：**先**引导 scope，**再**拼路径发请求。
 	 *
@@ -3374,6 +3426,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		switchScope,
 		ensureScope,
 		ready,
+		expectGraphics,
+		graphLib,
 		nsApi,
 		nsList,
 		loadSourceTopology,
