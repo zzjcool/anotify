@@ -5790,6 +5790,11 @@ html.theme-switching *::after {
 		min-height: 44px;
 		justify-content: center;
 	}
+	/* 图例面板要跟着抬起来的 HUD 一起让位：HUD 从 31 涨到 50（44 内容 + 6 留白），
+	 * 面板仍钉在 bottom:44 会压住药丸顶部 6px（rev-392b 实测 41×6 的遮挡带）。 */
+	.flograph--silk .flograph-legend {
+		bottom: 56px;
+	}
 }
 
 /* — epic-369-mobile — 320 档补充（同上段，仍是 #382 的命区下限）
