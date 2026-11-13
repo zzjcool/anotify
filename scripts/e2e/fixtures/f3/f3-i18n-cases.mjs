@@ -227,7 +227,9 @@ async function taskStates(d,lang) {
   await d.goto('message','namespace=default&id='+encodeURIComponent(waiting.metadata.name),lang);
   await hasText(d,'#task-phase','message.v4.phase.'+waiting.status.phase);
   assert.ok((await d.page.locator('#task-facts').innerText()).includes('waitingReason'));
-  await d.page.locator('#logs-previous').selectOption('true');await d.page.locator('#task-logs button').click();
+  // 精确到「刷新」这个提交按钮：#378 在同一个日志区加了「复制」按钮，
+  // `#task-logs button` 会匹配到两个（strict mode 直接报错），语义也从来只是「刷新」。
+  await d.page.locator('#logs-previous').selectOption('true');await d.page.locator('#logs-form button[type=submit]').click();
   await d.page.waitForFunction(()=>__f3Calls.some(c=>c.url.includes('/logs?')&&c.url.includes('previous=true')&&c.result?.lines?.length));
   assert.ok((await d.calls()).some(c=>c.url.includes('/logs?')&&c.url.includes('previous=true')&&c.httpStatus===200&&c.result?.lines?.length),'Actual previous attempt logs nonempty');
   await hasText(d,'#task-logs','message.v4.truncated');
