@@ -322,6 +322,66 @@
     margin: 0 20px;
     padding: 10px 0 14px;
   }
+  /* ---- #384：≤820 热力图折叠成一行摘要 ----
+     53 周 × (格+缝) 在 390 下是 600px = 1.94 屏，手机上默认只看得到「某几个月」，
+     反而把「最近有没有事」这个主问题挡在后面。默认只给一行结论（近 7 天次数 +
+     最活跃一天），想看全图再点开 —— 展开后的横向滚动有两端渐隐 + data-scroll-hint。
+     断点 820 而不是 640：#384 的验收含 768×1024 竖屏平板（ui.css 里的「内容档」，
+     三处内容级改动共用），平板上一屏也只放得下 53 周里的半年，折叠语义相同。
+     桌面（≥820）摘要按钮不出现，图卡与现在逐像素一致。 */
+  .hm-summary {
+    display: none;
+  }
+  @media (max-width: 819.98px) {
+    .hm-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: calc(100% - 40px);
+      margin: 0 20px 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      background: var(--surface-2);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .hm-summary-text {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    /* 折叠箭头：折叠时朝下（点开看更多），展开时朝上（点收起） */
+    .hm-summary-chev {
+      flex: 0 0 auto;
+      margin-left: auto;
+      width: 7px;
+      height: 7px;
+      border-right: 1.5px solid var(--muted);
+      border-bottom: 1.5px solid var(--muted);
+      transform: rotate(45deg);
+      transition: transform var(--dur-fast) var(--ease);
+    }
+    .hm-card.is-open .hm-summary-chev {
+      transform: rotate(-135deg);
+    }
+    .hm-card:not(.is-open) .hm-scroll {
+      display: none;
+    }
+    /* 展开后的 53 周仍比屏宽：两端渐隐告诉用户「右边还有」 */
+    .hm-card.is-open .hm-scroll {
+      mask-image: linear-gradient(90deg, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+      -webkit-mask-image: linear-gradient(
+        90deg,
+        transparent 0,
+        #000 18px,
+        #000 calc(100% - 18px),
+        transparent 100%
+      );
+    }
+  }
   /* ---- IDX-1：四张 KPI 卡 = 同一种迷你图形态 ----
      同一槽高（30px）+ 同一条基线：卡 1/2 画真实日趋势（.stat-spark 里是 svg），
      卡 3/4 没有日序列（e2e 断言 [data-nonpush-tile] .stat-spark svg 恒为 0），
@@ -836,10 +896,26 @@
           </div>
         </div>
       </div>
-      {{/* .hm-scroll 提供语义钩子（D17），.overflow-x-auto 是 e2e 的「合法横滚」标记：
-           frontend.mjs 只在 .overflow-x-auto / .code-body / pre 内豁免横向溢出，
-           两个类必须同时存在。 */}}
-      <div class="hm-scroll overflow-x-auto px-5 py-3">
+      {{/* #384：<640 热力图默认折叠成一行摘要（近 7 天次数 + 最活跃一天），
+           点开才看完整 53 周。摘要按钮在桌面端 display:none（见本页 <style>），
+           桌面端的图卡完全不变；展开后的完整图仍然可横滚，所以带两端渐隐 +
+           data-scroll-hint（白名单内必须给可见提示的机械断言读这两样）。 */}}
+      <button
+        id="hm-summary"
+        class="hm-summary"
+        type="button"
+        aria-expanded="false"
+        aria-controls="hm-scroll"
+        aria-label="{{t "index.heatmap.expand"}}"
+      >
+        <span id="hm-summary-text" class="hm-summary-text">—</span>
+        <span class="hm-summary-chev" aria-hidden="true"></span>
+      </button>
+      <div
+        id="hm-scroll"
+        class="hm-scroll overflow-x-auto px-5 py-3"
+        data-scroll-hint="{{t "index.heatmap.scroll_hint"}}"
+      >
         <!-- 热力图首帧占位：53×7 的格纹只占格子区（月份行 / 星期列首帧就有），
              高度由 .hm-skel 的 aspect-ratio 跟着卡片宽度走，避免 1.3s 的空白卡
              与数据到达时的下推 -->
@@ -1655,6 +1731,37 @@
       hm.append(hmAxisFragment(hmCalendar().startMonday));
     }
 
+    /* ---- #384 · <640 热力图折叠：一行摘要 + 点开看全图 ---------------------
+     * 摘要与格子完全同源（STATS.daily）：近 7 天事件量 + 事件最多的那天。
+     * /v1/stats 只有日粒度 —— 所以**不编造**「峰值 18:00」这种钟点。
+     * 桌面端摘要按钮 display:none，图卡与原来逐像素一致。 */
+    const HM_CARD = document.querySelector(".hm-card");
+    const HM_SUMMARY_BTN = document.getElementById("hm-summary");
+    const HM_SUMMARY_TEXT = document.getElementById("hm-summary-text");
+
+    function setHeatSummary(text) {
+      if (HM_SUMMARY_TEXT) HM_SUMMARY_TEXT.textContent = text || "—";
+    }
+
+    function setHeatOpen(open) {
+      const on = !!open;
+      if (HM_CARD) HM_CARD.classList.toggle("is-open", on);
+      if (!HM_SUMMARY_BTN) return;
+      HM_SUMMARY_BTN.setAttribute("aria-expanded", on ? "true" : "false");
+      HM_SUMMARY_BTN.setAttribute(
+        "aria-label",
+        on
+          ? t("index.heatmap.collapse", "收起热力图")
+          : t("index.heatmap.expand", "展开完整热力图"),
+      );
+    }
+
+    if (HM_SUMMARY_BTN) {
+      HM_SUMMARY_BTN.addEventListener("click", () => {
+        setHeatOpen(!(HM_CARD && HM_CARD.classList.contains("is-open")));
+      });
+    }
+
     function renderHeatmap() {
       const hm = document.getElementById("hm");
       if (!hm) return;
@@ -1664,6 +1771,7 @@
       if (!STATS) {
         hm.append(window.Anotify.loadErrorNode(loadError, load));
         document.getElementById("hm-foot").textContent = t("index.heatmap.foot_na");
+        setHeatSummary("");
         return;
       }
       const LEVELS = [
@@ -1782,6 +1890,35 @@
             .replace("{n}", sum)
             .replace("{d}", activeDays);
         }
+      }
+
+      /* #384：折叠态摘要句（近 7 天事件量 + 最活跃一天） */
+      let week = 0;
+      let weekPeak = 0;
+      let weekPeakDate = null;
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const c = dayCount(d);
+        week += c;
+        if (c > weekPeak) {
+          weekPeak = c;
+          weekPeakDate = d;
+        }
+      }
+      if (!week) {
+        setHeatSummary(t("index.heatmap.summary_none", "近 7 天没有新事件"));
+      } else {
+        const dayLabel = weekPeakDate
+          ? t("index.heatmap.day_label", "{m}月{d}日")
+              .replace("{m}", weekPeakDate.getMonth() + 1)
+              .replace("{d}", weekPeakDate.getDate())
+          : "—";
+        setHeatSummary(
+          t("index.heatmap.summary", "近 7 天 {n} 次 · 最活跃 {d}")
+            .replace("{n}", week)
+            .replace("{d}", dayLabel),
+        );
       }
     }
 

@@ -71,6 +71,13 @@
       .kx-keys-table {
         min-width: 620px;
       }
+      /* #384：<640 表格换成行式卡片（ui.css 的 .data-cards）——桌面写死的
+         620px 最小宽必须归零，否则卡片本身又被撑出横滚。 */
+      @media (max-width: 639px) {
+        .kx-keys-table {
+          min-width: 0;
+        }
+      }
       /* ADM-4：粘顶表头只有在滚动容器有高度上限时才生效（.data-table th 已是
          position:sticky）。列表长起来/窄屏横滚时表头钉住，行 hover 有过渡。 */
       .kx-keys-scroll {
@@ -447,7 +454,7 @@
            display/overflow，和 .hidden 同元素会被盖掉）。 -->
       <div id="keys-table" class="hidden">
         <div class="table-wrap overflow-x-auto kx-keys-scroll">
-          <table class="data-table kx-keys-table">
+          <table class="data-table kx-keys-table data-cards">
             <thead>
               <tr>
                 <th>{{t "keys.col.name"}}</th>
@@ -887,22 +894,22 @@
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.prefix", "Key 前缀") },
             el("code", { class: "kx-cell-mono", text: k.prefix + "••••••••" }),
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.scope", "权限") },
             el("div", { class: "kx-chip-row" }, ...k.scopes.map(scopeChip)),
           ),
           el(
             "td",
-            { class: "num" },
+            { class: "num", "data-label": t("keys.col.last_used", "最近使用") },
             el("span", { class: "kx-cell-time", text: k.lastUsed }),
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.status", "状态") },
             el("span", {
               class: "status-badge " + (k.enabled ? "status-on" : "status-off"),
               text: k.enabled
@@ -912,7 +919,7 @@
           ),
           el(
             "td",
-            { class: "num" },
+            { class: "num", "data-label": t("keys.col.actions", "操作") },
             el(
               "div",
               { class: "kx-cell-actions" },

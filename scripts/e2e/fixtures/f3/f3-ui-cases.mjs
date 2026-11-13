@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import * as H from "../../lib/harness.mjs";
 import {
-  ANCHORS, DATA_PAGES, KEY_PAGES, LANGS, MATRIX_VIEWS, PAGES, STANDALONE, THEMES, VIEWPORTS,
+  ANCHORS, DATA_PAGES, KEY_PAGES, LANGS, MATRIX_VIEWS, PAGES, STANDALONE, TABLET_VIEW, THEMES, VIEWPORTS,
   auditPage, fixtures, gotoPage, matrixCases, openDriver, shoot, viewUrl, greetGuest, greetMember, passiveUiProbe,
 } from "./f3-ui-helper.mjs";
 
@@ -26,6 +26,44 @@ const SUITES = Object.freeze({
     { id: "retained-auth-shell", kind: "retained", lang: "en", views: 1 },
     { id: "retained-graph", kind: "retained", lang: "en", views: 1 },
     { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 6 },
+    /* #384：390 视口下四类主内容（keys/admin 表 / 链路图 / 热力图 / docs 代码块）
+       必须「不用横滚就能读完」——默认态零横向滚动容器。 */
+    {
+      id: "mobile-390-fits",
+      kind: "mobile",
+      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "mobile",
+      views: 6,
+    },
+    /* #384：同一组事实在 768×1024 竖屏平板上必须同样成立 —— issue 的验收口径是
+       390 / 360 / **768** 三档，而「内容档」820 正是为 768 而立（640 档覆盖不到）。
+       没有这条，断点退回 <640 也一样是绿的。 */
+    {
+      id: "mobile-768-fits",
+      kind: "tablet",
+      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "tablet",
+      views: 6,
+    },
+    /* #384 回滚守卫（rev-400 阻塞项）：宽档不能漏出紧凑视图的裸控件。
+       紧凑块/收起按钮由 flograph.js 无条件插进 DOM，样式一写进窄档媒体查询，
+       ≥640 就会退回 UA 按钮：图卡底部多出 24px 的「收起紧凑视图」，同时把
+       .flograph-scroll 压出 24px **纵向**嵌套滚动（吃掉滚轮，f3 clean() 的
+       mouse.wheel 断言因此 4500ms 超时）。一个 case 里量 3 个宽度（1440 记录视图，
+       1024 / 820 额外量），820 是内容档边界外侧 —— JS 与 CSS 的阈值必须同时切。 */
+    {
+      id: "desktop-graph-clean",
+      kind: "desktop",
+      pages: ["index", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "desktop",
+      views: 3,
+    },
     ...shots.map(s => ({ id: s.id, kind: "shots", lang: "zh-CN", page: s.page, views: 4 })),
   ]),
   ux_regression_19_23: Object.freeze([
@@ -85,6 +123,190 @@ async function gridCase(c) {
     await d.finish();
     const failed = pages.filter(p => !p.ok);
     return { ok: failed.length === 0, checks: count.n, error: failed.length ? failed.map(p => p.page + ": " + p.error).join(" | ").slice(0, 900) : null, report: { errors: [], pages } };
+  });
+}
+
+// ---------- #384 · 390 / 768：四类主内容不再需要横滚 ----------
+// 断言的是 issue 的四条验收（keys/admin 行式卡片、链路图 3 节点 + 「还有 N →」、
+// 热力图一行摘要、docs 代码块软换行），全部量真实 DOM 几何；另加两条全局约束：
+//   ① documentElement.scrollWidth == innerWidth（页面级不横滚）；
+//   ② #page-main 里默认态下**没有任何**横向滚动容器 —— 不是「有提示就算过」，
+//      而是主内容根本不该需要滚（保留的横滚只允许是用户主动打开的完整视图，
+//      那条路径由 auditPage 的「白名单 + 可见提示」断言守）。
+async function mobileFitsCase(c) {
+  const viewport = c.viewport === "tablet" ? TABLET_VIEW : VIEWPORTS.mobile;
+  const vpLabel = c.viewport === "tablet" ? "768" : "390";
+  return withDriver(c.id, { lang: c.lang, theme: c.theme }, async (d, count) => {
+    await d.page.setViewportSize(viewport);
+    const f = await fixtures(d);
+    const pages = [];
+    for (const page of c.pages) {
+      const errorsFrom = d.report.errors.length;
+      const view = { page, lang: c.lang, theme: c.theme, viewport: c.viewport, attempted: true, ok: false };
+      try {
+        await gotoPage(d, page, f, c.lang);
+        const facts = await d.page.evaluate(() => {
+          const main = document.getElementById("page-main") || document.body;
+          const scrollers = [];
+          for (const el of main.querySelectorAll("*")) {
+            const cs = getComputedStyle(el);
+            if (cs.overflowX !== "auto" && cs.overflowX !== "scroll") continue;
+            if (el.scrollWidth - el.clientWidth <= 2) continue;
+            const cls = String(el.className || "").trim().split(/\s+/).slice(0, 2).join(".");
+            scrollers.push(el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (cls ? "." + cls : ""));
+          }
+          const visible = (el) => {
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0 ? r : null;
+          };
+          const compact = main.querySelector(".flograph-compact");
+          const more = compact ? compact.querySelector(".flograph-compact-more") : null;
+          const graphScroll = main.querySelector(".flograph-scroll");
+          const hmScroll = main.querySelector(".hm-scroll");
+          const hmSummary = main.querySelector("#hm-summary");
+          const codeOver = Array.from(main.querySelectorAll(".code-body"))
+            .filter((el) => el.getBoundingClientRect().width > 0)
+            .map((el) => el.scrollWidth - el.clientWidth)
+            .filter((n) => n > 1);
+          // 行尾操作按钮：跳过「你自己」这种没有按钮的行（admin 的 demo 行）
+          const lastBtn = main.querySelector("tbody tr td:last-child button");
+          const lastRect = lastBtn ? lastBtn.getBoundingClientRect() : null;
+          return {
+            docW: document.documentElement.scrollWidth,
+            innerW: innerWidth,
+            scrollers,
+            steps: compact ? compact.querySelectorAll(".flograph-compact-step").length : 0,
+            moreText: more ? more.textContent.trim() : "",
+            graphCompactVisible: !!visible(compact),
+            graphScrollVisible: !!visible(graphScroll),
+            hmSummaryVisible: !!visible(hmSummary),
+            hmSummaryText: hmSummary ? hmSummary.textContent.trim() : "",
+            hmScrollVisible: !!visible(hmScroll),
+            codeOver,
+            rowActionRight: lastRect ? Math.round(lastRect.right) : null,
+            rowActionW: lastRect ? Math.round(lastRect.width) : null,
+          };
+        });
+        const label = page + "\u00b7" + vpLabel;
+        assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
+        assert.deepEqual(facts.scrollers, [], label + ": \u9ed8\u8ba4\u6001\u4e3b\u5185\u5bb9\u4e0d\u8be5\u6709\u4efb\u4f55\u6a2a\u5411\u6eda\u52a8\u5bb9\u5668: " + JSON.stringify(facts.scrollers));
+        assert.deepEqual(facts.codeOver, [], label + ": \u4ee3\u7801\u5757\u4e0d\u5e94\u628a\u5185\u5bb9\u85cf\u5230\u53f3\u8fb9\u754c\u5916: " + JSON.stringify(facts.codeOver));
+        if (page === "keys" || page === "admin") {
+          assert.ok(facts.rowActionRight !== null && facts.rowActionW > 0, label + ": \u884c\u5185\u64cd\u4f5c\u6309\u94ae\u5fc5\u987b\u5b58\u5728\u4e14\u53ef\u89c1");
+          assert.ok(facts.rowActionRight <= facts.innerW, label + ": \u64cd\u4f5c\u5217\u4e0d\u8be5\u9700\u8981\u6a2a\u6eda\u624d\u80fd\u770b\u5230\uff08right=" + facts.rowActionRight + " > " + facts.innerW + "\uff09");
+        }
+        if (page === "index" || page === "trace" || page === "source") {
+          assert.equal(facts.graphCompactVisible, true, label + ": \u94fe\u8def\u56fe " + vpLabel + " \u4e0b\u5e94\u662f\u7d27\u51d1\u89c6\u56fe\uff083 \u8282\u70b9 + \u8fd8\u6709 N\uff09");
+          assert.equal(facts.steps, 3, label + ": \u7d27\u51d1\u89c6\u56fe\u53ea\u753b 3 \u4e2a\u8282\u70b9\uff0cgot " + facts.steps);
+          assert.equal(facts.graphScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574\u56fe\uff081102px \u753b\u5e03\uff09");
+          if (facts.moreText) assert.match(facts.moreText, /\d/, label + ": \u300c\u8fd8\u6709 N \u2192\u300d\u5fc5\u987b\u5e26\u6570\u91cf\uff0cgot " + JSON.stringify(facts.moreText));
+        }
+        if (page === "index") {
+          assert.equal(facts.hmSummaryVisible, true, label + ": \u70ed\u529b\u56fe\u6298\u53e0\u6210\u4e00\u884c\u6458\u8981");
+          assert.ok(facts.hmSummaryText.length > 0 && facts.hmSummaryText !== "\u2014", label + ": \u6458\u8981\u8981\u6709\u5185\u5bb9\uff0cgot " + JSON.stringify(facts.hmSummaryText));
+          assert.equal(facts.hmScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574 53 \u5468");
+        }
+        assert.deepEqual(d.report.errors.slice(errorsFrom), [], label + ": pageerror/console/network \u5931\u8d25");
+        view.ok = true;
+        count.inc();
+        pages.push(view);
+      } catch (error) {
+        view.error = String(error.message || error).slice(0, 500);
+        pages.push(view);
+      }
+    }
+    await d.finish();
+    const failed = pages.filter((p) => !p.ok);
+    return {
+      ok: failed.length === 0,
+      checks: count.n,
+      error: failed.length ? failed.map((p) => p.page + ": " + p.error).join(" | ").slice(0, 900) : null,
+      report: { errors: [], views: pages, pages },
+    };
+  });
+}
+
+// ---------- #384 rev-400 回滚守卫：宽档没有紧凑视图的残留 ----------
+// 三个宽度：1440（记录视图）、1024（平板档）、820（内容档**外侧**一格 —— JS 的
+// matchMedia 与 ui.css 的 819.98 必须同时切，差 1px 就会漏出裸按钮）。每个宽度都量
+// 真实几何，任一条不成立即红：
+//   ① 紧凑块与「收起紧凑视图」都不可见（宽档退回 UA 按钮 = 24px 的裸 <button>）；
+//   ② 完整图在（宽档不该被藏），且 .flograph-scroll 没有纵向嵌套滚动
+//      —— 24px 的纵向溢出会把滚轮事件吃掉，f3 clean() 的 mouse.wheel 断言超时；
+//   ③ 页面级不横滚。
+const DESKTOP_WIDTHS = [1440, 1024, 820];
+async function desktopGraphCleanCase(c) {
+  return withDriver(c.id, { lang: c.lang, theme: c.theme }, async (d, count) => {
+    await d.page.setViewportSize(VIEWPORTS.desktop);
+    const f = await fixtures(d);
+    const pages = [];
+    for (const page of c.pages) {
+      const errorsFrom = d.report.errors.length;
+      const view = { page, lang: c.lang, theme: c.theme, viewport: c.viewport, attempted: true, ok: false };
+      try {
+        await gotoPage(d, page, f, c.lang);
+        const widths = [];
+        for (const width of DESKTOP_WIDTHS) {
+          if (width !== VIEWPORTS.desktop.width) await d.page.setViewportSize({ width, height: 900 });
+          // flograph 的 resize 走 rAF + relayout（重新算 geo），量之前在两帧后
+          await d.page.waitForTimeout(400);
+          widths.push(await d.page.evaluate((width) => {
+            const main = document.getElementById("page-main") || document.body;
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const cs = getComputedStyle(el);
+              return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0;
+            };
+            const scroll = main.querySelector(".flograph-scroll");
+            return {
+              width,
+              docW: document.documentElement.scrollWidth,
+              innerW: innerWidth,
+              compactVisible: visible(main.querySelector(".flograph-compact")),
+              collapseVisible: visible(main.querySelector(".flograph-compact-collapse")),
+              collapseText: (main.querySelector(".flograph-compact-collapse") || {}).textContent || "",
+              graphScrollVisible: visible(scroll),
+              graphVertOverflow: scroll ? scroll.scrollHeight - scroll.clientHeight : 0,
+            };
+          }, width));
+        }
+        await d.page.setViewportSize(VIEWPORTS.desktop);
+        for (const facts of widths) {
+          const label = page + "\u00b7" + facts.width;
+          assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
+          assert.equal(facts.compactVisible, false, label + ": \u5bbd\u6863\u4e0d\u8be5\u51fa\u73b0\u7d27\u51d1\u89c6\u56fe");
+          assert.equal(
+            facts.collapseVisible,
+            false,
+            label + ": \u5bbd\u6863\u4e0d\u8be5\u9732\u51fa\u300c" + String(facts.collapseText).trim() + "\u300d\u88f8\u6309\u94ae\uff08ua display \u56de\u9000\u5c31\u662f\u8fd9\u4e2a\uff09",
+          );
+          assert.equal(facts.graphScrollVisible, true, label + ": \u5bbd\u6863\u5fc5\u987b\u663e\u793a\u5b8c\u6574\u56fe");
+          assert.ok(
+            facts.graphVertOverflow <= 1,
+            label + ": .flograph-scroll \u4e0d\u8be5\u6709\u7eb5\u5411\u5d4c\u5957\u6eda\u52a8\uff08scrollHeight-clientHeight=" + facts.graphVertOverflow + "\uff0c\u5403\u6389 wheel \u4e8b\u4ef6\uff09",
+          );
+        }
+        assert.deepEqual(d.report.errors.slice(errorsFrom), [], page + ": pageerror/console/network \u5931\u8d25");
+        view.ok = true;
+        view.widths = widths.map((x) => x.width);
+        count.inc();
+        pages.push(view);
+      } catch (error) {
+        view.error = String(error.message || error).slice(0, 500);
+        pages.push(view);
+      }
+    }
+    await d.finish();
+    const failed = pages.filter((p) => !p.ok);
+    return {
+      ok: failed.length === 0,
+      checks: count.n,
+      error: failed.length ? failed.map((p) => p.page + ": " + p.error).join(" | ").slice(0, 900) : null,
+      report: { errors: [], views: pages, pages },
+    };
   });
 }
 
@@ -861,6 +1083,8 @@ export async function runUiCase(suite, id) {
   const c = casesFor(suite).find(x => x.id === id);
   assert.ok(c, "unknown registered case " + id);
   if (c.kind === "grid") return gridCase(c);
+  if (c.kind === "mobile" || c.kind === "tablet") return mobileFitsCase(c);
+  if (c.kind === "desktop") return desktopGraphCleanCase(c);
   if (c.kind === "shots") return shotsCase(c);
   if (c.kind === "guard") return id === "retained-login-form" ? retainedLoginForm(c) : guardsGuest(c);
   const single = {
