@@ -210,6 +210,12 @@ index:
       date: '{m}月{d}日 周{w}'
     foot: '近 30 天 {n} 条事件 · 活跃 {d}/30 天'
     foot_na: 统计数据暂不可用
+    summary: '近 7 天 {n} 次 · 最活跃 {d}'
+    summary_none: 近 7 天没有新事件
+    day_label: '{m}月{d}日'
+    expand: 展开完整热力图
+    collapse: 收起热力图
+    scroll_hint: 可横向滑动查看全部 53 周
   steps:
     title: "从 0 到第一条事件"
     subtitle: "三步都齐了，节点上就能发出第一条事件。"
@@ -299,6 +305,8 @@ graph:
   silk_meta_failed: '{n} 个失败'
   silk_meta_done: '{n} 个任务完成'
   silk_clock: '回放 {t}'
+  compact_more: '还有 {n} →'
+  compact_collapse: 收起紧凑视图
 
 message:
   title: 通知详情

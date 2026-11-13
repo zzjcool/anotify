@@ -1939,6 +1939,105 @@
 			},
 			{ passive: true },
 		);
+		/* 可横滚的**文案证据**（#384）：e2e 的白名单断言要求「白名单内的滚动容器
+		 * 必须有可见提示」；pan-hint 是视觉提示，这个属性是同一句提示的语义副本
+		 * （读屏 + 机械断言都能读到它）。 */
+		scroll.setAttribute("data-scroll-hint", panHint.textContent || "");
+
+		/* ---- #384 · <640 紧凑视图：3 个节点 + 「还有 N →」-------------------
+		 *
+		 * 390 下整张 silk 图宽 1102px（3.6 屏），「必须横滚才读得完」的正是这条
+		 * 主内容。手机屏上先把链路**怎么走**说清楚：竖向排 3 步 + 剩余数量；
+		 * 「还有 N →」是用户主动动作，点开才回到完整图（这时 flograph-scroll
+		 * 自带的两端渐隐 + 「← 可横向拖动 →」提示才出现）。
+		 *
+		 * 为什么是竖向而不是把 3 个节点横着摊开：3 × 164 + 2 × 26 + 触发器 124
+		 * 仍然 ≥ 640，横排等于把「必须横滚」换个壳，问题没解决。 */
+		const compact = div("flograph-compact");
+		const compactCollapse = document.createElement("button");
+		compactCollapse.type = "button";
+		compactCollapse.className = "flograph-compact-collapse";
+		compactCollapse.textContent = tt("graph.compact_collapse", "收起紧凑视图");
+		body.appendChild(compact);
+		body.appendChild(compactCollapse);
+		const COMPACT_LIMIT = 3;
+		let compactExpanded = false;
+
+		/* 竖向顺序 = 图上的阅读顺序：触发器 → （深度, 行, 执行拍号, id）。
+		 * depth/row 由 computeGeo 写回节点，所以只能在布局之后调用。 */
+		function compactOrder() {
+			const rest = nodes.filter((n) => n.id !== ROOT_ID);
+			rest.sort(
+				(a, b) =>
+					(a.depth || 0) - (b.depth || 0) ||
+					(a.row || 0) - (b.row || 0) ||
+					execKey(a.id) - execKey(b.id) ||
+					String(a.id).localeCompare(String(b.id)),
+			);
+			return trigger ? [trigger].concat(rest) : rest;
+		}
+
+		function compactDotColor(n) {
+			if (n.badge) return String(n.badge);
+			if (n.accent) return String(n.accent);
+			if (n.kind === "pruned" || n.role === "deadport") return "var(--faint)";
+			return silkStatusColor(n.kind);
+		}
+
+		function renderCompact() {
+			const order = compactOrder();
+			const shown = order.slice(0, COMPACT_LIMIT);
+			const restN = order.length - shown.length;
+			compact.replaceChildren();
+			for (const n of shown) {
+				const row = div("flograph-compact-step");
+				const dot = div("flograph-compact-dot");
+				dot.style.background = compactDotColor(n);
+				const main = div("flograph-compact-main");
+				main.appendChild(div("flograph-compact-label", n.label || n.id));
+				const sub = n.sub == null ? "" : String(n.sub);
+				if (sub) main.appendChild(div("flograph-compact-sub", sub));
+				const no = n.id === ROOT_ID
+					? "SRC"
+					: stepNoOf(n.id)
+						? String(stepNoOf(n.id)).padStart(2, "0")
+						: "";
+				row.appendChild(dot);
+				row.appendChild(main);
+				row.appendChild(div("flograph-compact-stepno", no));
+				if (options.onNodeClick) {
+					row.style.cursor = "pointer";
+					row.addEventListener("click", (ev) => options.onNodeClick(n, ev));
+				}
+				compact.appendChild(row);
+			}
+			if (restN > 0) {
+				const more = document.createElement("button");
+				more.type = "button";
+				more.className = "flograph-compact-more";
+				more.textContent = silkFill(tt("graph.compact_more", "还有 {n} →"), { n: restN });
+				more.addEventListener("click", expandCompact);
+				compact.appendChild(more);
+			}
+		}
+
+		function expandCompact() {
+			if (!container.classList.contains("is-compact")) return;
+			compactExpanded = true;
+			container.classList.add("is-expanded");
+			compact.replaceChildren();
+			updateStageHeight();
+			syncOverflow();
+			const st = scroll.querySelector(".sl-node.is-trigger") || scroll.querySelector(".sl-node");
+			if (st && typeof st.scrollIntoView === "function") st.scrollIntoView({ block: "nearest", inline: "start" });
+		}
+
+		compactCollapse.addEventListener("click", () => {
+			compactExpanded = false;
+			container.classList.remove("is-expanded");
+			applyCompact();
+		});
+
 		container.appendChild(body);
 
 		const hud = div("flograph-hud");
@@ -2531,6 +2630,9 @@
 
 		function updateStageHeight() {
 			if (!geo) return;
+			// #384：紧凑视图的高度是内容高度（CSS: .is-compact:not(.is-expanded){height:auto}），
+			// 不能被「完整图 + 外壳」的舞台高度盖回去。
+			if (container.classList.contains("is-compact") && !compactExpanded) return;
 			const need = geo.contentH + chromeHeight();
 			// 顶部弧会让内容比旧舞台高；允许舞台跟着长到 560，
 			// 否则 480 卡片里会出现 12px 纵向滚动条（E2E 纵向完整断言）。
@@ -2681,6 +2783,8 @@
 				e.route = routes[i] || null;
 			});
 			applyGeometry();
+			// #384：布局完成（depth/row 已写回节点）后才知道竖向该排哪 3 个
+			applyCompact();
 		}
 
 		function isNarrow() {
@@ -2688,6 +2792,28 @@
 			if (!w) w = container.clientWidth || 0;
 			if (!w) w = 910;
 			return w < 620;
+		}
+
+		/* ---- #384 · 紧凑视图的开关与重绘 --------------------------------------
+		 * 阈值 640（不是 isNarrow 的 620）：issues #384 的验收口径就是 <640。
+		 * 宽度从 container 量而不是 scroll：紧凑态下 scroll 是 display:none，
+		 * clientWidth 恒为 0；container 不受显隐影响，不会自己振荡。 */
+		function isCompact() {
+			// 用 class 而不是 `fullscreen` 变量：relayout() 在伪全屏那段初始化之前
+			// 就会跑一次（挂载期），读 let 变量会撞 TDZ。class 是同一事实的等价物。
+			if (container.classList.contains("is-fullscreen")) return false;
+			const w = container.clientWidth || scroll.clientWidth || 0;
+			return w > 0 && w < 640;
+		}
+
+		function applyCompact() {
+			if (!geo) return;
+			const compactOn = isCompact();
+			container.classList.toggle("is-compact", compactOn);
+			const expanded = compactOn && compactExpanded;
+			container.classList.toggle("is-expanded", expanded);
+			if (compactOn && !expanded) renderCompact();
+			else compact.replaceChildren();
 		}
 
 		baseH = measureBaseHeight();
@@ -2866,12 +2992,16 @@
 		}
 
 		function zoomBy(factor) {
+			/* #384：紧凑视图里画布不可见，缩放没有意义 —— 把用户的「想看看」
+			 * 接到展开上（否则点了没反应，比没按钮更差）。 */
+			if (isCompact()) return expandCompact();
 			const next = Math.max(1, Math.min(3, zoom * factor));
 			if (Math.abs(next - zoom) < 0.001) return;
 			zoom = next;
 			applyZoom();
 		}
 		function fit() {
+			if (isCompact()) return expandCompact();
 			zoom = 1;
 			applyZoom();
 			resetCamera();
@@ -2961,7 +3091,12 @@
 				if (!container.isConnected) return;
 				baseH = measureBaseHeight();
 				if (isNarrow() !== geo.narrow) relayout();
-				else updateStageHeight();
+				else {
+					updateStageHeight();
+					/* #384：620–639 这段只影响紧凑视图（640 阈值），不动 geo，
+					 * 所以两档都要重新判一次紧凑开关。 */
+					applyCompact();
+				}
 				syncOverflow();
 			});
 		}
@@ -3334,7 +3469,7 @@
 				document.removeEventListener("keydown", onLegendKey);
 				if (ro) ro.disconnect();
 				container.replaceChildren();
-				container.classList.remove("flograph", "flograph--silk", "is-playing");
+				container.classList.remove("flograph", "flograph--silk", "is-playing", "is-compact", "is-expanded");
 				container.style.removeProperty("--silk-h");
 			},
 			_debug: {

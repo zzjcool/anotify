@@ -210,6 +210,12 @@ index:
       date: '{d}/{m} {w}'
     foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
     foot_na: Estadísticas no disponibles
+    summary: 'Últimos 7 días: {n} eventos · más activo {d}'
+    summary_none: Sin eventos en los últimos 7 días
+    day_label: '{d}/{m}'
+    expand: Mostrar el mapa completo
+    collapse: Contraer el mapa
+    scroll_hint: Desliza en horizontal para ver las 53 semanas
   steps:
     title: "De cero a tu primer evento"
     subtitle: "Con los tres en su sitio, un nodo puede emitir el primer evento."
@@ -299,6 +305,8 @@ graph:
   silk_meta_failed: '{n} fallidas'
   silk_meta_done: '{n} tareas completadas'
   silk_clock: 'reproducción {t}'
+  compact_more: '{n} más →'
+  compact_collapse: Volver a la vista compacta
 
 message:
   title: Detalle de notificación
