@@ -2,7 +2,11 @@
 <html lang="{{.Lang}}">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- #385：viewport-fit=cover + env(safe-area-inset-*) 显式让位（见 base.html 同处注释）。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <title>Anotify · {{block "title" .}}{{end}}</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#08080e" />
@@ -126,7 +130,7 @@
       {{block "content" .}}{{end}}
     </main>
 
-    <footer class="relative z-10 py-6 text-center text-[11px] text-zinc-600">
+    <footer class="relative z-10 py-6 auth-footer text-center text-[11px] text-zinc-600">
       {{t "common.footer.copyright"}}
     </footer>
 

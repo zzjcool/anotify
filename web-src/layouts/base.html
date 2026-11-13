@@ -2,7 +2,13 @@
 <html lang="{{.Lang}}">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- #385：viewport-fit=cover 让 iOS PWA（manifest.display=standalone）把内容铺到
+         刘海/手势区，安全区由 ui.css 的 env(safe-area-inset-*) 显式让位（topbar 上边、
+         弹层底栏下边）；不写这句时 iPhone 会自己再缩一圈，底部手势区靠「布局内距碰巧躲开」。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <title>Anotify · {{block "title" .}}{{end}}</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#08080e" />

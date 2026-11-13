@@ -541,6 +541,15 @@
   .fe-done a {
     color: var(--accent-strong);
   }
+  /* #385：三步都齐后手机上整块**收成一行**——模板注释里承诺过「三步都齐时整块
+     收成一行，不占有数据实例的首屏」，但 #381 只留了 done 文案、没真收。
+     桌面（>=640）保留完整清单：那里一屏装得下，且它是「源→能力→节点」的入口。
+     收掉的是重复的清单，不是信息：#fe-done 那行仍指向「去源页面点立即运行」。 */
+  @media (max-width: 639px) {
+    #first-event[data-complete="1"] .fe-steps {
+      display: none;
+    }
+  }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
@@ -809,6 +818,119 @@
       </div>
     </section>
 
+    <!-- ===== 事件流（首页主列表，数据源 /v1/console/events）=====
+         旧「最近任务」列表已下线：产品对象是事件（event → 任务链），
+         任务只作为执行结果出现在 trace 页，不再作为首页的一等列表。
+         行由 renderEvents() 用 DOM API 生成（不用 innerHTML）。
+         #385 首屏优先级（评审 §7.8 M5）：位置从「最新事件链路」之后提到 KPI 之后、
+         热力图之前 —— 390×844 下「已完成的实例」首屏就能看到第一行事件（在此之前
+         要滚 2.5 屏）。上方的三步卡在手机档三步都齐时会收成一行（见页面 <style>
+         里 #first-event[data-complete] 那段 + renderFirstEvent() 的 data-complete）。 -->
+    <section id="events-feed" class="card overflow-hidden">
+      <div class="card-head card-pad">
+        <div>
+          <div class="card-title">{{t "index.events.title"}}</div>
+          <div class="card-sub">{{t "index.events.subtitle"}}</div>
+        </div>
+        <div class="card-actions">
+          <a href="events.html" class="btn btn-ghost btn-sm"
+            >{{t "index.events.open"}}</a
+          >
+        </div>
+      </div>
+      <div id="index-events" class="anim-stagger px-3 py-1" aria-busy="true">
+        <!-- 8 行骨架 = 数据回来后的 8 条事件行（与 .ev-feed-row 同一套盒模型，
+             桌面 62px/行，窄屏随折行变高）。四段条对应真实行的 chip / 类型 /
+             traceId / 相对时间；不再是一条整宽的灰块。 -->
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+        <div class="ev-skel-row" aria-hidden="true">
+          <div class="ev-skel-main">
+            <div class="ev-skel-head">
+              <span class="skeleton ev-skel-chip"></span>
+              <span class="skeleton ev-skel-type"></span>
+            </div>
+            <span class="skeleton ev-skel-trace"></span>
+          </div>
+          <span class="skeleton ev-skel-time"></span>
+        </div>
+      </div>
+      <div class="card-head card-pad">
+        <span id="ev-count" class="card-sub">—</span>
+        <button id="ev-refresh" type="button" class="btn btn-ghost btn-sm">
+          {{t "index.events.refresh"}}
+        </button>
+      </div>
+    </section>
+
     <!-- ===== 接入横幅（一条命令把 Agent 接进来）=====
          它以前是右栏里的一张卡：和左侧热力图并排时，收起态只剩标题 + 一行
          提示，旁边却是 200px+ 的高卡 —— 「右边块那么小」的断崖空白就是它。
@@ -954,114 +1076,6 @@
       </div>
     </section>
 
-    <!-- ===== 事件流（首页主列表，数据源 /v1/console/events）=====
-         旧「最近任务」列表已下线：产品对象是事件（event → 任务链），
-         任务只作为执行结果出现在 trace 页，不再作为首页的一等列表。
-         行由 renderEvents() 用 DOM API 生成（不用 innerHTML）。 -->
-    <section id="events-feed" class="card overflow-hidden">
-      <div class="card-head card-pad">
-        <div>
-          <div class="card-title">{{t "index.events.title"}}</div>
-          <div class="card-sub">{{t "index.events.subtitle"}}</div>
-        </div>
-        <div class="card-actions">
-          <a href="events.html" class="btn btn-ghost btn-sm"
-            >{{t "index.events.open"}}</a
-          >
-        </div>
-      </div>
-      <div id="index-events" class="anim-stagger px-3 py-1" aria-busy="true">
-        <!-- 8 行骨架 = 数据回来后的 8 条事件行（与 .ev-feed-row 同一套盒模型，
-             桌面 62px/行，窄屏随折行变高）。四段条对应真实行的 chip / 类型 /
-             traceId / 相对时间；不再是一条整宽的灰块。 -->
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-        <div class="ev-skel-row" aria-hidden="true">
-          <div class="ev-skel-main">
-            <div class="ev-skel-head">
-              <span class="skeleton ev-skel-chip"></span>
-              <span class="skeleton ev-skel-type"></span>
-            </div>
-            <span class="skeleton ev-skel-trace"></span>
-          </div>
-          <span class="skeleton ev-skel-time"></span>
-        </div>
-      </div>
-      <div class="card-head card-pad">
-        <span id="ev-count" class="card-sub">—</span>
-        <button id="ev-refresh" type="button" class="btn btn-ghost btn-sm">
-          {{t "index.events.refresh"}}
-        </button>
-      </div>
-    </section>
   </div>
 </div>
 
@@ -1286,8 +1300,12 @@
       if (doneLine) doneLine.hidden = !allDone;
       // 三轮状态算完才置的「渲染已落地」标记：模板初始态是 todo，读得太早会把
       // 「还没算」当成「还没做」。e2e 靠它等待，不靠 sleep。
+      // #385：data-complete 是手机档「收成一行」的开关（CSS 在页面 <style> 里）。
       const host = document.getElementById("first-event");
-      if (host) host.dataset.ready = "1";
+      if (host) {
+        host.dataset.ready = "1";
+        host.dataset.complete = allDone ? "1" : "0";
+      }
     }
 
     async function load() {

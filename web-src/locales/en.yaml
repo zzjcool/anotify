@@ -608,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agents use them to report notifications
   desc_prefix: Agents carry a Key to call
-  desc_suffix: to report notifications. The Key is shown in full only once at creation; the server stores only a hash — save it immediately.
+  desc_suffix: to report notifications.
+  desc_tip: The Key is shown in full only once at creation; the server stores only a hash — save it immediately (see "Key security practices" below).
   create_button: New Key
   cli_auth_entry: CLI Device Authorization
   api_endpoint: Reporting endpoint
@@ -1292,6 +1293,8 @@ events:
     source: "Involved object / source"
     limit: "Page size"
     filter: "Apply filters"
+    filters: "Filters"
+    filters_active: "{n} active"
     loading: "Loading data…"
     more: "Load more"
     trace: "Open trace"
@@ -1444,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = never cleaned up.'
     save: 'Save'
     saving: 'Saving…'
+    step_basics: 'Basics'
+    step_script: 'Script'
+    step_advanced: 'Advanced (optional)'
+    next_step: 'Next'
+    prev_step: 'Back'
+    adv_runtime: 'Runtime & concurrency'
+    adv_lifecycle: 'Requirements & lifecycle'
     submit: 'Create'
     timeout: 'Run timeout (s)'
     timeout_hint: '0 = no local run timeout.'
