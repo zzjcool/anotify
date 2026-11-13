@@ -1114,14 +1114,16 @@
             class: "btn btn-danger btn-sm",
             text: t("receivers.device.unbind", "解绑"),
           });
-          unbind.addEventListener("click", () => {
+          unbind.addEventListener("click", async () => {
+            // #378：原生 confirm 下线 —— 弹层由 #anotify-dialog 承载。解绑不可撤销，无撤销条。
             if (
-              confirm(
-                t(
+              await A.confirmDanger({
+                body: t(
                   "receivers.confirm.unbind",
                   "确定解绑「{name}」吗？它将不再接收通知。",
                 ).replace("{name}", d.name),
-              )
+                undo: false,
+              })
             ) {
               removeDevice(d);
             }

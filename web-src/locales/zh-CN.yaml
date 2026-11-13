@@ -9,6 +9,49 @@ common:
   server_error: '服务端错误 HTTP {code}'
   request_rejected: '请求被拒绝 HTTP {code}'
   request_failed: '请求失败'
+  err:
+    title:
+      unauthorized: 登录已过期
+      forbidden: 你没有权限执行这个操作
+      not_found: 找不到这个内容
+      conflict: 内容已被别人改过
+      gone: 内容已过期
+      throttled: 操作太频繁
+      rejected: 请求没有被接受
+      server: 服务端出错
+      offline: 连不上服务端
+      failed: 请求失败
+    hint:
+      unauthorized: 会话已失效。重新登录后会回到这一页。
+      forbidden: 这是权限，不是故障。命名空间内的资源找命名空间所有者，实例级设置找实例管理员。
+      not_found: 可能已被删除，也可能链接里的名字不对。
+      conflict: 别人先改过它。重新加载拿到最新版本，再改一次。
+      gone: 已被清理或超过保留期，不会再恢复。
+      throttled: 等一分钟再试；连续重试只会继续被拒。
+      rejected: 按提示改好输入再试一次。
+      server: 不是你操作的问题。等几秒再重试；一直失败就把详情发给管理员。
+      offline: 检查网络，或服务端进程是否在运行，然后重试。
+      failed: 稍后再试；一直失败就把详情发给管理员。
+    go_login: 去登录
+    back_to_list: 返回列表
+    reload: 重新加载
+    copy: 复制详情
+    request_id: '请求 ID：{id}'
+  dialog:
+    title:
+      confirm: 确认操作
+      danger: 危险操作
+    confirm: 确认
+    cancel: 取消
+    irreversible: 这个操作不可撤销。
+    undoable: 操作后会给你 5 秒撤销。
+  undo:
+    deleted: 已删除「{name}」
+    revoked: 已吊销「{name}」
+    done: 已撤销
+    failed: 撤销失败
+    hint: 5 秒内可撤销
+    action: 撤销
   resource_version_required: '写入缺少 resourceVersion，请刷新后重试'
   brand:
     name: Anotify

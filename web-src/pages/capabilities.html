@@ -870,7 +870,7 @@
       const VERS = new Map(); // 能力名 → 版本历史面板状态（懒加载）
       let EDIT = null; // {mode:"create"|"edit", res, name}
       let DEPLOY = null; // {res, versions, selectedVersion}
-      let DEL = null; // {res}
+      let DEL = null; // {res, snapshot}：res 是当前要删的资源，snapshot 是打开弹层时的原文档（撤销重建用）
       let BUSY = false;
 
       // 四个 condition 的固定顺序（capability.md §2：派生面固定四条）
@@ -2301,7 +2301,8 @@
       /* ============================ 删除 ============================ */
       function openDelete(cap) {
         const m = model.capability(cap);
-        DEL = { res: cap };
+        /* #378：撤销条的快照在 submitDelete 里**删除前一刻**取（要带正文，见那里的注释）。 */
+        DEL = { res: cap, snapshot: null };
         $("del-body").textContent = sub(
           t("caps.delete.body", "确认删除「{name}」？删除只删这个能力本身，不级联改引用方：其它能力或源引用它会解析不到（由 status 报缺失）。"),
           { name: m.name },
@@ -2319,8 +2320,20 @@
         btn.disabled = true;
         btn.textContent = t("caps.delete.deleting", "删除中…");
         $("del-msg").classList.add("hidden");
+        let snapshot = DEL.snapshot;
         try {
           await ready();
+          /* #378：撤销要能真的重建，所以快照必须是**带正文**的完整文档：
+           * 列表行来自 GET …/capabilities（无 includeBody），服务端把 spec.run.files
+           * 剥空；而创建校验要求 run.files 非空 —— 拿列表行重建会被 400 files_invalid。
+           * 取不到就退回列表行：撤销会失败但会弹持久错误条，不静默丢数据。 */
+          if (!snapshot) {
+            try {
+              snapshot = await capApi(m.name, "?includeBody=true");
+            } catch (e) {
+              snapshot = DEL.res;
+            }
+          }
           await api(deletePath(nsPath("capabilities", m.name), m.resourceVersion), { method: "DELETE" });
           toast(sub(t("caps.toast.deleted", "已删除能力 {name}"), { name: m.name }));
           OPEN.delete(m.name);
@@ -2328,6 +2341,26 @@
           DEL = null;
           closeModal($("del-modal"));
           await loadCaps();
+          // #378：删除真删了资源，成功后给 5 秒撤销 —— 用快照 POST 重建（不是延迟提交）。
+          A.undoBar({
+            message: t("common.undo.deleted", "已删除「{name}」").replace("{name}", m.name),
+            onUndo: async () => {
+              try {
+                await api(nsPath("capabilities"), {
+                  method: "POST",
+                  body: JSON.stringify({
+                    apiVersion: snapshot.apiVersion || "anotify/v1",
+                    kind: "Capability",
+                    metadata: { name: snapshot.metadata.name, namespace: snapshot.metadata.namespace },
+                    spec: snapshot.spec,
+                  }),
+                });
+                await loadCaps();
+              } catch (e) {
+                A.errorBar(e);
+              }
+            },
+          });
         } catch (e) {
           const msg = $("del-msg");
           if (isConflict(e)) {

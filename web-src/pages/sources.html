@@ -548,13 +548,37 @@ async function toggle(src,btn){
   }
 }
 async function removeSource(src,btn){
-  if(!confirm(t("delete_confirm").replace("{name}",src.metadata.name)))return;
+  if(!(await A.confirmDanger({
+    body:t("delete_confirm").replace("{name}",src.metadata.name),
+    undo:true
+  })))return;
+  /* 撤销条：快照在删除前拿；删除是真删，撤销 = 用快照 POST 重建（不做延迟提交） */
+  const snapshot=src;
+  const ns=A.readScope().namespace;
   btn.disabled=true;
   try{
     await A.api(A.deletePath(path(src.metadata.name),src.metadata.resourceVersion),{
       method:"DELETE"
     });
     await load();
+    A.undoBar({
+      message:A.t("common.undo.deleted","已删除「{name}」").replace("{name}",snapshot.metadata.name),
+      onUndo:async()=>{
+        try{
+          await A.api("/v1/namespaces/"+ns+"/sources",{
+            method:"POST",
+            body:JSON.stringify({
+              apiVersion:"anotify/v1",kind:"Source",metadata:{
+                name:snapshot.metadata.name,namespace:snapshot.metadata.namespace || ns
+              },spec:snapshot.spec
+            })
+          });
+          await load();
+        }catch(err){
+          A.errorBar(err);
+        }
+      }
+    });
   }catch(err){
     showActionError(src,err);
   }finally{
@@ -952,7 +976,9 @@ $("btn-dry").onclick=async()=>{
   }
 };
 $("reload-draft").onclick=async()=>{
-  if(!confirm(t("reload_confirm")))return;
+  if(!(await A.confirmDanger({
+    body:t("reload_confirm")
+  })))return;
   try{
     const src=await A.nsApi("sources",EDITING.metadata.name);
     await openEditor(src);

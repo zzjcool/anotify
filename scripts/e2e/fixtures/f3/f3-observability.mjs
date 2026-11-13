@@ -12,6 +12,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+// #378：原生 confirm() 已下线，危险操作的确认层由 #anotify-dialog 承载 ——
+// 驱动必须点真实按钮（Playwright 的 dialog 事件不会再触发）。
+import { acceptDialog } from './f3-dialogs.mjs';
 export async function observability(d, mode) {
  const {page,goto,calls,req,check,shot,clean,archive:archiveCalls}=d;
  const count=sel=>page.locator(sel).count();
@@ -231,15 +234,13 @@ export async function observability(d, mode) {
       assert.match(await page.locator('#logs-status').innerText(), /Truncated/);
       await page.locator('#task-logs').scrollIntoViewIfNeeded();
       await shot('actual-prior-attempt-logs');
-      page.once('dialog', dialog => dialog.accept());
-      await page.locator('#task-cancel').click();
+      await acceptDialog(page, () => page.locator('#task-cancel').click());
       await page.waitForFunction(() => document.querySelector('#task-phase').dataset.phase === 'cancelled');
       assert.ok(await page.locator('#task-abandon').isDisabled());
       check('Actual waiting facts/previous archive logs/truncation/confirmed cancel terminal state');
       await shot('waiting-previous-cancelled');
       await goto('message', 'namespace=default&id=tsk_mock_6');
-      page.once('dialog', dialog => dialog.accept());
-      await page.locator('#task-abandon').click();
+      await acceptDialog(page, () => page.locator('#task-abandon').click());
       await page.waitForFunction(() => document.querySelector('#task-phase').dataset.phase === 'abandoned');
       check('Actual running-task confirmed abandon terminal state, real unavailable log state');
       await goto('message', 'namespace=default&id=tsk_mock_2');
@@ -317,8 +318,7 @@ export async function observability(d, mode) {
     // pending 任务：真取消 → cancelled 终态。
     const pendingTask = d.fx('pendingTask');
     await goto('message', 'namespace=default&id=' + pendingTask);
-    page.once('dialog', dialog => dialog.accept());
-    await page.locator('#task-cancel').click();
+    await acceptDialog(page, () => page.locator('#task-cancel').click());
     await page.waitForFunction(() => document.querySelector('#task-phase').dataset.phase === 'cancelled');
     assert.ok(await page.locator('#task-abandon').isDisabled());
     assert.equal((await d.api('/v1/namespaces/default/tasks/' + pendingTask)).body.status.phase, 'cancelled');
@@ -326,8 +326,7 @@ export async function observability(d, mode) {
     await shot('waiting-logs-cancelled');
     // 在跑任务：真放弃 → abandoned 终态（节点回 cancel.ack{reaped:true}）。
     await goto('message', 'namespace=default&id=' + runningTask);
-    page.once('dialog', dialog => dialog.accept());
-    await page.locator('#task-abandon').click();
+    await acceptDialog(page, () => page.locator('#task-abandon').click());
     await page.waitForFunction(() => document.querySelector('#task-phase').dataset.phase === 'abandoned');
     assert.equal((await d.api('/v1/namespaces/default/tasks/' + runningTask)).body.status.phase, 'abandoned');
     check('Actual running-task confirmed abandon terminal state, real unavailable log state');
@@ -372,7 +371,9 @@ export async function observability(d, mode) {
     assert.ok(disconnected.length > 0, 'Actual Event transport requests fail after same-case navigation');
     assert.ok(disconnected.every(c => c.error.includes('deliberate disconnected transport') && c.httpStatus === undefined), 'Transport failure is not a normal HTTP200 or an empty EventList');
     assert.equal(await page.evaluate(() => window.__f3Fault), '/console/events', 'Fault survives navigation until explicit clear');
-    assert.equal(await count('#flow-host button'), 1, 'Graph failure has a real retry action');
+    /* #378：loadErrorNode 现在固定带「复制详情」（报障要机器事实），所以"按钮恰好 1 个"
+       不再是事实；断言改成"恰好 1 个**重试动作**" —— 意图（错误态里有真重试）不变且更准。 */
+    assert.equal(await count('#flow-host [data-err-action="retry"]'), 1, 'Graph failure has a real retry action');
     assert.ok(!(await page.locator('#flow-host').innerText()).includes('No events'));
     assert.ok(await count('#index-events button'));
     // KPI 的 total 是事件口径：真实权威下它等于 /v1/stats 的 total（mock 下是种子里的 4）。
@@ -383,7 +384,7 @@ export async function observability(d, mode) {
     await shot('index-event-error-not-empty');
     await page.evaluate(() => window.__f3Fault = '');
     const beforeRetry = (await calls()).length;
-    await page.locator('#flow-host button').click();
+    await page.locator('#flow-host [data-err-action="retry"]').click();
     await page.waitForFunction(before => window.__f3Calls.slice(before).some(c => c.url.includes('/console/events') && c.httpStatus === 200 && c.result?.kind === 'EventList'), beforeRetry);
     await page.locator('#flow-host svg').first().waitFor();
     assert.ok(!(await page.locator('#flow-host').innerText()).includes('disconnected'), 'Native retry replaces the Graph error with a real graph');
@@ -396,8 +397,7 @@ export async function observability(d, mode) {
     const pendingTask = d.fx('pendingTask');
     await goto('message', 'namespace=default&id=' + pendingTask);
     await req('/v1/namespaces/default/tasks/' + pendingTask + '/cancel', { method: 'POST', body: '{}' });
-    page.once('dialog', dialog => dialog.accept());
-    await page.locator('#task-abandon').click();
+    await acceptDialog(page, () => page.locator('#task-abandon').click());
     await page.waitForFunction(() => document.querySelector('#task-action-error button'));
     const rejected = (await calls()).findLast(call => call.url.endsWith('/abandon'));
     assert.equal(rejected.status, 409);
