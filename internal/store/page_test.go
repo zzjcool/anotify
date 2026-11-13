@@ -5,7 +5,8 @@ package store
 // 守的是三条性质（比「翻两页能跑」更硬）：
 //
 //  1. **不漏不重**：按页拿到的行拼起来，与一次性全量列表在顺序、集合上逐条一致；
-//  2. **并列排序键稳定**：created_at / name 相同的行靠 id 破平局，页边界不抖动
+//  2. **并列排序键稳定**：created_at / name 相同的行靠破平局键（id；admin users 用 rowid
+//     即插入序）稳定排序，页边界不抖动
 //     （同秒批量落库是常态，只按时间比较会在边界丢行或重复行）；
 //  3. **跨页写操作可预期**：翻页途中插入/删除只影响「排序位置在游标之后」的行——
 //     已翻过的行不会重复出现，其余行不会凭空消失。
@@ -407,7 +408,7 @@ func TestListUsersKeysPasskeysSessionsPage(t *testing.T) {
 		afterAt, afterID = last.CreatedAt, last.ID
 	}
 	if !pageTestEqualStrings(gotUsers, wantUsers) {
-		t.Fatalf("用户翻页与全量不一致（同秒并列必须按 id 稳定）\n got=%v\nwant=%v", gotUsers, wantUsers)
+		t.Fatalf("用户翻页与全量不一致（同秒并列必须按插入序稳定）\n got=%v\nwant=%v", gotUsers, wantUsers)
 	}
 
 	// ---- api keys：DESC + 同秒并列 ----

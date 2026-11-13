@@ -6,7 +6,8 @@ package store
 // auth sessions / auth passkeys）共用同一套语义：
 //
 //   - `limit` 缺省 50（HTTP 契约的 50/500 夹取在 internal/server 的 pageLimit）；
-//   - 游标是 **keyset**（排序键 + 破平局的 id），不是 OFFSET：翻页只比较排序键，
+//   - 游标是 **keyset**（排序键 + 破平局键：多数列表是 id，admin users 是 rowid/插入序），
+//     不是 OFFSET：翻页只比较排序键，
 //     所以跨页插入/删除不会让同一行出现两次或被跳过；`after*` 全零值 = 第一页；
 //   - 「还有下一页」由调用方多取一行判定，store 不猜。
 //
