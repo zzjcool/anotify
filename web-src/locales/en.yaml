@@ -2233,6 +2233,7 @@ uxaudit:
       ctx_namespace: 'Context namespace'
       no_param: 'The link has no node name (missing ?id=). Open the detail from the node list.'
       no_param_title: 'No node specified'
+      none: 'None'
     sources:
       dedup_summary: 'Delivery deduplication and its window (deliveryId)'
       group_basic: 'Basics'

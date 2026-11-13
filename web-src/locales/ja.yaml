@@ -2233,6 +2233,7 @@ uxaudit:
       ctx_namespace: 'コンテキスト名前空間'
       no_param: 'リンクにノード名がありません（?id= が無い）。ノード一覧から詳細を開いてください。'
       no_param_title: 'ノードが指定されていません'
+      none: 'なし'
     sources:
       dedup_summary: '配信の重複排除とその期間（deliveryId）'
       group_basic: '基本'

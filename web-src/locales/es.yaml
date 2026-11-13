@@ -2233,6 +2233,7 @@ uxaudit:
       ctx_namespace: 'Namespace de contexto'
       no_param: 'El enlace no trae nombre de nodo (falta ?id=). Abre el detalle desde la lista de nodos.'
       no_param_title: 'No se indicó ningún nodo'
+      none: 'Ninguno'
     sources:
       dedup_summary: 'Deduplicación de entregas y su ventana (deliveryId)'
       group_basic: 'Básico'

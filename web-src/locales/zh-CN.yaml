@@ -2237,6 +2237,7 @@ uxaudit:
       ctx_namespace: '上下文 namespace'
       no_param: '链接里没有节点名（缺 ?id=）。请从节点列表打开详情。'
       no_param_title: '没有指定节点'
+      none: '无'
     sources:
       dedup_summary: '投递去重与窗口（deliveryId）'
       group_basic: '基本'
