@@ -608,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
   desc_prefix: Los agentes llevan una Key para llamar a
-  desc_suffix: y reportar notificaciones. La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato.
+  desc_suffix: y reportar notificaciones.
+  desc_tip: La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato (ver "Buenas prácticas" abajo).
   create_button: Nueva Key
   cli_auth_entry: Autorización de dispositivo CLI
   api_endpoint: Endpoint de reporte
@@ -1292,6 +1293,8 @@ events:
     source: "Objeto / fuente"
     limit: "Tamaño de página"
     filter: "Aplicar filtros"
+    filters: "Filtros"
+    filters_active: "{n} activos"
     loading: "Cargando datos…"
     more: "Cargar más"
     trace: "Abrir traza"
@@ -1444,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = no se limpia nunca.'
     save: 'Guardar'
     saving: 'Guardando…'
+    step_basics: 'Básico'
+    step_script: 'Script'
+    step_advanced: 'Avanzado (opcional)'
+    next_step: 'Siguiente'
+    prev_step: 'Atrás'
+    adv_runtime: 'Entorno y concurrencia'
+    adv_lifecycle: 'Requisitos y ciclo de vida'
     submit: 'Crear'
     timeout: 'Tiempo de ejecución (s)'
     timeout_hint: '0 = sin límite de ejecución local.'

@@ -3264,7 +3264,10 @@ a.side-link svg {
 .modal-backdrop {
 	position: fixed;
 	inset: 0;
-	padding: 16px;
+	/* #385：viewport-fit=cover 之后，横屏刘海 / 底部手势区会压在遮罩上；
+	 * max() 的左边就是原值，无刘海设备（env=0）观感零变化。 */
+	padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+		max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 	align-items: center;
 	justify-content: center;
 	overflow-y: auto;
@@ -3441,6 +3444,18 @@ a.side-link svg {
 	background-attachment: local, local, scroll, scroll;
 	scrollbar-width: thin;
 	scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+	/* #385：滚动体与固定底栏之间必须有“还有内容”的渐隐 + 内距。
+	 *   ① mask-image：内容滚出可视区时是**淡出**，不是被底栏边缘一刀切半
+	 *      （审计 §7.6 的“文字被切一半”就是切在盒边界上）；
+	 *      只掩下边 —— 上边掩掉会把首帧的第一行（冲突横幅/模板区）也淡掉。
+	 *      掩码由元素盒子决定、与页面自定义背景无关，所以 .cap-modal-body
+	 *      那种自己重写 background 的页面同样受益。
+	 *   ② padding-bottom 28px（原 18px）：滚到最底时最后一个字段落在
+	 *      渐隐带（末 22px）之上，不被底栏遮住、也不会被自己的渐隐吃掉。
+	 * 掩码会建立层叠上下文，本元素内没有 fixed 定位子节点，不影响面板定位。 */
+	-webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 22px), transparent 100%);
+	mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 22px), transparent 100%);
+	padding-bottom: 28px;
 }
 .modal-body::-webkit-scrollbar {
 	width: 7px;
@@ -3463,6 +3478,9 @@ a.side-link svg {
 	justify-content: flex-end;
 	gap: 8px;
 	padding: 12px 20px;
+	/* #385：固定底栏/操作区必须给 iOS 手势区让位。无刘海设备 env=0 →
+	 * max(12px, 0px) = 12px，与改动前完全一致；有手势区时才长高。 */
+	padding-bottom: max(12px, env(safe-area-inset-bottom));
 	border-top: 1px solid var(--line);
 	/* CP-2：底部动作条永远贴底（即使某个页面把 foot 放进 body 里滚动，
 	 * sticky 也能把它钉住），并与滚动区之间画一条向上扩散的分隔阴影 ——
@@ -5905,5 +5923,74 @@ html.theme-switching *::after {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		word-break: break-word;
+
+/* — epic-369-mobile — 首屏优先级 · 安全区（#385；接在上面 #384 段之后）
+ *
+ * 一、tap-highlight：iOS / Android 的点按灰闪是浏览器默认高亮，盖在元素上、与
+ *     设计稿无关。关掉之后按压反馈仍在——.btn:active / .list-row:active /
+ *     .tab:active / .menu-item:active 的 transform（见「按钮基类」段）就是反馈本身。
+ * 二、安全区：viewport-fit=cover 之后（三个 layout 的 <meta>），standalone PWA 的
+ *     内容铺到刘海 / 手势区下面，「让位」必须显式写。env(safe-area-inset-*) 在
+ *     没有刘海的设备上等于 0，max()/calc() 里的另一个加数就是原值 —— 桌面与
+ *     360/390 无刘海模拟器的观感与改动前逐像素一致。
+ * 三、首屏：#385 验收「390×844 内看到第一条业务内容」。手机档收紧统计卡
+ *     （去 sparkline / 去重复脚注 / 小一号数字）与页面区块间距，把事件流抬进首屏；
+ *     只动尺寸与间距，label + value 一个都没少。
+ */
+
+/* ---------- 一、点按高亮 ---------- */
+html {
+	-webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- 二、安全区 ---------- */
+/* 顶栏（sticky top-0）让开状态栏 / 刘海。min-height 由 --topbar-h 决定，加的是
+   额外内距，所以顶栏在刘海屏上会变高而不是把内容挤到安全区里。 */
+.app-topbar {
+	padding-top: env(safe-area-inset-top);
+}
+/* 文档底部：app 外壳的 footer 与 focus/login 布局的 footer 都贴视口底边。 */
+.app-footer {
+	padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+body > footer {
+	padding-bottom: max(24px, env(safe-area-inset-bottom));
+}
+/* focus/login 布局没有侧栏，顶栏是 body 的直接子节点（h-16 内层）。 */
+body > header {
+	padding-top: env(safe-area-inset-top);
+}
+/* 全屏链路图是「临时独占」态：右下角控件与底部 HUD 都贴屏幕边，
+   手势区会正好压在它们上面。 */
+.flograph.is-fullscreen .flograph-ctrl {
+	bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.flograph.is-fullscreen .flograph-hud {
+	padding-bottom: calc(6px + env(safe-area-inset-bottom));
+}
+
+/* ---------- 三、手机档首屏 ---------- */
+@media (max-width: 639px) {
+	/* 页面区块间距 24 → 16：一屏能多装半张卡，桌面（>639）不受影响。 */
+	.page {
+		gap: 16px;
+	}
+	/* 统计卡：sparkline 32px + 脚注与 label 语义重复（「事件总数 / 累计」）→
+	   手机档收掉，数字 30 → 24，2×2 从 ~428px 压到 ~232px。
+	   强调密度由 #373 管（btn-primary 数量），这里只改尺寸与间距。 */
+	.stat {
+		gap: 6px;
+		padding: 12px;
+	}
+	.stat-icon {
+		width: 28px;
+		height: 28px;
+	}
+	.stat-value {
+		font-size: 24px;
+	}
+	.stat-spark,
+	.stat-foot {
+		display: none;
 	}
 }

@@ -608,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agent 用它上报通知
   desc_prefix: Agent 携带 Key 调用
-  desc_suffix: 上报通知。 Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存。
+  desc_suffix: 上报通知。
+  desc_tip: Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存（见下方「Key 的安全实践」）。
   create_button: 新建 Key
   cli_auth_entry: CLI 设备授权
   api_endpoint: 上报接口
@@ -1292,6 +1293,8 @@ events:
     source: "涉及对象 / 源"
     limit: "每页数量"
     filter: "应用筛选"
+    filters: "筛选条件"
+    filters_active: "{n} 个生效"
     loading: "正在读取真实数据…"
     more: "加载更多"
     trace: "查看链路"
@@ -1444,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = 永不清理。'
     save: '保存'
     saving: '保存中…'
+    step_basics: '基础'
+    step_script: '脚本'
+    step_advanced: '高级（可选）'
+    next_step: '下一步'
+    prev_step: '上一步'
+    adv_runtime: '运行环境与并发'
+    adv_lifecycle: '依赖与生命周期'
     submit: '创建'
     timeout: '执行超时（秒）'
     timeout_hint: '0 = 不设本地执行超时。'

@@ -409,6 +409,85 @@
       .cap-modal-foot {
         background: var(--panel-modal);
       }
+
+      /* ---------- #385：新建能力的分步向导 ----------
+         步骤条只是「我在第几步」的一行证据（3 枚药丸），不占位、不 sticky：
+         弹层 head 已经有标题与关闭，再 sticky 一条会吃掉手机档的 593px。 */
+      .cap-steps {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      .cap-step {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 26px;
+        padding: 0 9px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-full);
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .cap-step b {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      /* 单独类名而不是 .cap-step.is-current：死类守卫只把规则里行首第一个类
+         记进白名单（见 scripts/check-classes.mjs 的同名说明）。 */
+      .cap-step-current {
+        border-color: var(--accent-strong);
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+      .cap-step-done {
+        border-color: var(--line-strong);
+        color: var(--muted);
+      }
+      .cap-step-body {
+        min-width: 0;
+      }
+      /* 高级步里的可折叠块：原生 <details> 免费拿到键盘与读屏语义。
+         summary 抬到 44px 命中区（#382 的手机档下限），收起时整块只有一行。 */
+      .cap-adv {
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+      }
+      .cap-adv > summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        color: var(--muted);
+        font-size: 12.5px;
+        font-weight: 500;
+        cursor: pointer;
+        list-style: none;
+      }
+      .cap-adv > summary::-webkit-details-marker {
+        display: none;
+      }
+      .cap-adv > summary::after {
+        content: "+";
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--faint);
+      }
+      .cap-adv[open] > summary {
+        color: var(--text);
+      }
+      .cap-adv[open] > summary::after {
+        content: "−";
+      }
+      .cap-adv-body {
+        padding: 4px 0 12px;
+      }
       .cap-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -648,137 +727,181 @@
         <div id="cap-banner-actions" class="cap-banner-actions"></div>
       </div>
 
-      <!-- #379：内置能力模板（GET /v1/capability-templates，cluster 公共读模型）。
-           选模板 → 预填名称/params/next/脚本骨架；params 契约由模板字段推导，
-           不需要手写 JSON Schema。「从空白开始」保留原有手填路径。 -->
-      <div id="cap-template-wrap" class="field hidden">
-        <label class="field-label" for="cap-template">{{t "caps.form.template"}}</label>
-        <select id="cap-template" class="select"></select>
-        <p id="cap-template-hint" class="field-hint">{{t "caps.form.template_hint"}}</p>
-        <div id="cap-template-fields" class="cap-hint-list"></div>
+      <!-- #385：新建能力改「分步向导」（评审 §7.8 M11）。390×844 实测弹层滚动体
+           2415 / 593 = 4.1 屏、15 个字段；现在 ≤3 步、每步只留该步必要的字段：
+             1 基础   模板 / 名称* / 显示名 / 版本
+             2 脚本   入口 / 文件（脚本正文）/ 参数契约
+             3 高级   下游事件（下一步） + 两个可折叠块（运行环境与并发、依赖与生命周期）
+           编辑既有能力**不进向导**（编辑是改一份已存的 spec，逐项对照比逐步更省事）：
+           下面每个 [data-cap-step] 分组在编辑模式下全部展开，步骤条隐藏。 -->
+      <div id="cap-steps" class="cap-steps hidden">
+        <span class="cap-step cap-step-current" data-step-chip="1"><b>1</b>{{t "caps.form.step_basics"}}</span>
+        <span class="cap-step" data-step-chip="2"><b>2</b>{{t "caps.form.step_script"}}</span>
+        <span class="cap-step" data-step-chip="3"><b>3</b>{{t "caps.form.step_advanced"}}</span>
       </div>
 
-      <div class="cap-grid mt-3">
-        <div class="field">
-          <label class="field-label" for="cap-name">{{t "caps.form.name"}}<span class="cap-sep"> *</span></label>
-          <input id="cap-name" class="input mono" autocomplete="off" spellcheck="false" placeholder="{{t "caps.form.name_ph"}}" />
-          <p id="cap-name-hint" class="field-hint">{{t "caps.form.name_hint"}}</p>
+      <!-- ---------- 第 1 步：基础 ---------- -->
+      <div class="cap-step-body" data-cap-step="1">
+        <!-- #379：内置能力模板（GET /v1/capability-templates，cluster 公共读模型）。
+             选模板 → 预填名称/params/next/脚本骨架；params 契约由模板字段推导，
+             不需要手写 JSON Schema。「从空白开始」保留原有手填路径。
+             #385：模板是向导的第 1 步 —— 先选「做什么」，名字与显示名跟着预填。 -->
+        <div id="cap-template-wrap" class="field hidden">
+          <label class="field-label" for="cap-template">{{t "caps.form.template"}}</label>
+          <select id="cap-template" class="select"></select>
+          <p id="cap-template-hint" class="field-hint">{{t "caps.form.template_hint"}}</p>
+          <div id="cap-template-fields" class="cap-hint-list"></div>
         </div>
-        <div class="field">
-          <label class="field-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
-          <input id="cap-display-name" class="input" autocomplete="off" placeholder="{{t "caps.form.display_name_ph"}}" />
-          <p class="field-hint">{{t "caps.form.display_name_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-version">{{t "caps.form.version"}}</label>
-          <input id="cap-version" class="input mono" type="number" min="1" step="1" autocomplete="off" />
-          <p id="cap-version-hint" class="field-hint">{{t "caps.form.version_hint"}}</p>
-          <p id="cap-current-version" class="field-hint"></p>
-        </div>
-      </div>
 
-      <div class="field mt-3">
-        <label class="field-label" for="cap-params">{{t "caps.form.params"}}</label>
-        <textarea id="cap-params" class="textarea mono" rows="8" spellcheck="false"></textarea>
-        <p id="cap-params-err" class="field-error hidden"></p>
-        <p class="field-hint">{{t "caps.form.params_hint"}}</p>
-      </div>
-
-      <div class="field mt-3">
-        <label class="field-label" for="cap-next">{{t "caps.form.next"}}</label>
-        <textarea id="cap-next" class="textarea mono" rows="3" spellcheck="false" placeholder="{{t "caps.form.next_ph"}}"></textarea>
-        <p class="field-hint">{{t "caps.form.next_hint"}}</p>
-        <div id="cap-next-hints" class="cap-hint-list"></div>
-      </div>
-
-      <div class="cap-grid mt-3">
-        <div class="field">
-          <label class="field-label" for="cap-entrypoint">{{t "caps.form.entrypoint"}}</label>
-          <select id="cap-entrypoint" class="select mono"></select>
-          <p class="field-hint">{{t "caps.form.entrypoint_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
-          <input id="cap-workdir" class="input mono" autocomplete="off" spellcheck="false" placeholder="$(vars.SOURCE_ROOT)" />
-          <p class="field-hint">{{t "caps.form.workdir_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-concurrency">{{t "caps.form.concurrency"}}</label>
-          <input id="cap-concurrency" class="input mono" type="number" min="1" step="1" />
-          <p class="field-hint">{{t "caps.form.concurrency_hint"}}</p>
+        <div class="cap-grid mt-3">
+          <div class="field">
+            <label class="field-label" for="cap-name">{{t "caps.form.name"}}<span class="cap-sep"> *</span></label>
+            <input id="cap-name" class="input mono" autocomplete="off" spellcheck="false" placeholder="{{t "caps.form.name_ph"}}" />
+            <p id="cap-name-hint" class="field-hint">{{t "caps.form.name_hint"}}</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cap-display-name">{{t "caps.form.display_name"}}</label>
+            <input id="cap-display-name" class="input" autocomplete="off" placeholder="{{t "caps.form.display_name_ph"}}" />
+            <p class="field-hint">{{t "caps.form.display_name_hint"}}</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cap-version">{{t "caps.form.version"}}</label>
+            <input id="cap-version" class="input mono" type="number" min="1" step="1" autocomplete="off" />
+            <p id="cap-version-hint" class="field-hint">{{t "caps.form.version_hint"}}</p>
+            <p id="cap-current-version" class="field-hint"></p>
+          </div>
         </div>
       </div>
 
-      <div class="mt-4">
-        <div class="card-head mb-2">
-          <h4 class="card-title">{{t "caps.form.files"}}</h4>
-          <span class="field-hint">{{t "caps.form.files_hint"}}</span>
+      <!-- ---------- 第 2 步：脚本 ----------
+           必填的只有「入口」与「至少一个文件」；参数契约模板会预填，手填路径也在这里。 -->
+      <div class="cap-step-body" data-cap-step="2">
+        <div class="cap-grid">
+          <div class="field">
+            <label class="field-label" for="cap-entrypoint">{{t "caps.form.entrypoint"}}</label>
+            <select id="cap-entrypoint" class="select mono"></select>
+            <p class="field-hint">{{t "caps.form.entrypoint_hint"}}</p>
+          </div>
         </div>
-        <div id="cap-files" class="cap-rows"></div>
-        <button id="cap-file-add" type="button" class="btn btn-ghost btn-sm mt-2">+ {{t "caps.form.file_add"}}</button>
-      </div>
 
-      <div class="mt-4">
-        <div class="card-head mb-2">
-          <h4 class="card-title">{{t "caps.form.env"}}</h4>
-          <span class="field-hint">{{t "caps.form.env_hint"}}</span>
+        <div class="mt-4">
+          <div class="card-head mb-2">
+            <h4 class="card-title">{{t "caps.form.files"}}</h4>
+            <span class="field-hint">{{t "caps.form.files_hint"}}</span>
+          </div>
+          <div id="cap-files" class="cap-rows"></div>
+          <button id="cap-file-add" type="button" class="btn btn-ghost btn-sm mt-2">+ {{t "caps.form.file_add"}}</button>
         </div>
-        <div id="cap-env" class="cap-rows"></div>
-        <button id="cap-env-add" type="button" class="btn btn-ghost btn-sm mt-2">+ {{t "caps.form.env_add"}}</button>
-        <!-- fieldPath 的封闭集合提示（内置事实）；vars.NAME 由用户自己命名 -->
-        <datalist id="cap-fieldpaths">
-          <option value="metadata.name"></option>
-          <option value="status.hostIP"></option>
-          <option value="status.hostname"></option>
-          <option value="status.os"></option>
-          <option value="status.arch"></option>
-          <option value="status.capacity.cpu"></option>
-          <option value="status.workRoot"></option>
-          <option value="status.homeDir"></option>
-        </datalist>
-      </div>
 
-      <div class="cap-grid mt-4">
-        <div class="field">
-          <label class="field-label" for="cap-requires-commands">{{t "caps.form.requires_commands"}}</label>
-          <textarea id="cap-requires-commands" class="textarea mono" rows="3" spellcheck="false" placeholder="git&#10;jq"></textarea>
-          <p class="field-hint">{{t "caps.form.requires_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-requires-values">{{t "caps.form.requires_values"}}</label>
-          <textarea id="cap-requires-values" class="textarea mono" rows="3" spellcheck="false" placeholder="vars.SOURCE_ROOT"></textarea>
-          <p class="field-hint">{{t "caps.form.requires_values_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-idempotent">{{t "caps.form.lifecycle"}}</label>
-          <label class="cap-inline-check" for="cap-idempotent">
-            <input id="cap-idempotent" class="cap-check" type="checkbox" />
-            <span>{{t "caps.form.idempotent"}}</span>
-          </label>
-          <p class="field-hint">{{t "caps.form.idempotent_hint"}}</p>
+        <div class="field mt-3">
+          <label class="field-label" for="cap-params">{{t "caps.form.params"}}</label>
+          <textarea id="cap-params" class="textarea mono" rows="8" spellcheck="false"></textarea>
+          <p id="cap-params-err" class="field-error hidden"></p>
+          <p class="field-hint">{{t "caps.form.params_hint"}}</p>
         </div>
       </div>
 
-      <div class="cap-grid mt-3">
+      <!-- ---------- 第 3 步：高级（可选）----------
+           常显的只有「下游交给谁」；运维参数收进两个可折叠块 —— 手机档不展开时
+           整步一屏内装得下，展开才按需变长。折叠块用原生 <details>：键盘与读屏
+           免费可用，不需要 JS 维护 aria-expanded。 -->
+      <div class="cap-step-body" data-cap-step="3">
         <div class="field">
-          <label class="field-label" for="cap-max-attempts">{{t "caps.form.max_attempts"}}</label>
-          <input id="cap-max-attempts" class="input mono" type="number" min="1" step="1" />
+          <label class="field-label" for="cap-next">{{t "caps.form.next"}}</label>
+          <textarea id="cap-next" class="textarea mono" rows="3" spellcheck="false" placeholder="{{t "caps.form.next_ph"}}"></textarea>
+          <p class="field-hint">{{t "caps.form.next_hint"}}</p>
+          <div id="cap-next-hints" class="cap-hint-list"></div>
         </div>
-        <div class="field">
-          <label class="field-label" for="cap-result-ttl">{{t "caps.form.result_ttl"}}</label>
-          <input id="cap-result-ttl" class="input mono" type="number" min="0" step="1" />
-          <p class="field-hint">{{t "caps.form.result_ttl_hint"}}</p>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cap-timeout">{{t "caps.form.timeout"}}</label>
-          <input id="cap-timeout" class="input mono" type="number" min="0" step="1" />
-          <p class="field-hint">{{t "caps.form.timeout_hint"}}</p>
-        </div>
+
+        <details class="cap-adv mt-4">
+          <summary>{{t "caps.form.adv_runtime"}}</summary>
+          <div class="cap-adv-body">
+            <div class="cap-grid">
+              <div class="field">
+                <label class="field-label" for="cap-workdir">{{t "caps.form.workdir"}}</label>
+                <input id="cap-workdir" class="input mono" autocomplete="off" spellcheck="false" placeholder="$(vars.SOURCE_ROOT)" />
+                <p class="field-hint">{{t "caps.form.workdir_hint"}}</p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="cap-concurrency">{{t "caps.form.concurrency"}}</label>
+                <input id="cap-concurrency" class="input mono" type="number" min="1" step="1" />
+                <p class="field-hint">{{t "caps.form.concurrency_hint"}}</p>
+              </div>
+            </div>
+
+            <div class="mt-3">
+              <div class="card-head mb-2">
+                <h4 class="card-title">{{t "caps.form.env"}}</h4>
+                <span class="field-hint">{{t "caps.form.env_hint"}}</span>
+              </div>
+              <div id="cap-env" class="cap-rows"></div>
+              <button id="cap-env-add" type="button" class="btn btn-ghost btn-sm mt-2">+ {{t "caps.form.env_add"}}</button>
+              <!-- fieldPath 的封闭集合提示（内置事实）；vars.NAME 由用户自己命名 -->
+              <datalist id="cap-fieldpaths">
+                <option value="metadata.name"></option>
+                <option value="status.hostIP"></option>
+                <option value="status.hostname"></option>
+                <option value="status.os"></option>
+                <option value="status.arch"></option>
+                <option value="status.capacity.cpu"></option>
+                <option value="status.workRoot"></option>
+                <option value="status.homeDir"></option>
+              </datalist>
+            </div>
+          </div>
+        </details>
+
+        <details class="cap-adv mt-3">
+          <summary>{{t "caps.form.adv_lifecycle"}}</summary>
+          <div class="cap-adv-body">
+            <div class="cap-grid">
+              <div class="field">
+                <label class="field-label" for="cap-requires-commands">{{t "caps.form.requires_commands"}}</label>
+                <textarea id="cap-requires-commands" class="textarea mono" rows="3" spellcheck="false" placeholder="git&#10;jq"></textarea>
+                <p class="field-hint">{{t "caps.form.requires_hint"}}</p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="cap-requires-values">{{t "caps.form.requires_values"}}</label>
+                <textarea id="cap-requires-values" class="textarea mono" rows="3" spellcheck="false" placeholder="vars.SOURCE_ROOT"></textarea>
+                <p class="field-hint">{{t "caps.form.requires_values_hint"}}</p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="cap-idempotent">{{t "caps.form.lifecycle"}}</label>
+                <label class="cap-inline-check" for="cap-idempotent">
+                  <input id="cap-idempotent" class="cap-check" type="checkbox" />
+                  <span>{{t "caps.form.idempotent"}}</span>
+                </label>
+                <p class="field-hint">{{t "caps.form.idempotent_hint"}}</p>
+              </div>
+            </div>
+
+            <div class="cap-grid mt-3">
+              <div class="field">
+                <label class="field-label" for="cap-max-attempts">{{t "caps.form.max_attempts"}}</label>
+                <input id="cap-max-attempts" class="input mono" type="number" min="1" step="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="cap-result-ttl">{{t "caps.form.result_ttl"}}</label>
+                <input id="cap-result-ttl" class="input mono" type="number" min="0" step="1" />
+                <p class="field-hint">{{t "caps.form.result_ttl_hint"}}</p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="cap-timeout">{{t "caps.form.timeout"}}</label>
+                <input id="cap-timeout" class="input mono" type="number" min="0" step="1" />
+                <p class="field-hint">{{t "caps.form.timeout_hint"}}</p>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
     <div class="modal-foot cap-modal-foot">
       <span id="cap-form-msg" class="field-hint"></span>
+      <!-- #385：向导的步间导航在底栏里（固定可见，不随正文滚走）。
+           #cap-back 只在第 2/3 步出现；#cap-submit 在第 1/2 步是「下一步」、
+           第 3 步才是「创建」——都是同一个 id，e2e/页面脚本的锚点不变。 -->
+      <button id="cap-back" type="button" class="btn btn-ghost hidden">{{t "caps.form.prev_step"}}</button>
       <button id="cap-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
       <button id="cap-submit" type="button" class="btn btn-primary">{{t "caps.form.submit"}}</button>
     </div>
@@ -1962,6 +2085,128 @@
         renderNextHints();
       }
 
+      /* ---------- #385：新建能力的分步向导（≤3 步）----------
+       * 390×844 实测：整份表单进弹层 = 2415 / 593 ≈ 4.1 屏、15 个字段，用户看不到
+       * 自己在第几步、也看不到「创建」离自己多远。现在：
+       *   1 基础  模板 / 名称* / 显示名 / 版本
+       *   2 脚本  入口 / 文件正文 / 参数契约
+       *   3 高级  下游事件（常显）+ 两个可折叠块（运行环境与并发、依赖与生命周期）
+       * 编辑既有能力不进向导：编辑是「对照一份已存的 spec 逐项改」，逐步反而更慢；
+       * 此时把三个 step-body 全部展开、步骤条与「上一步」隐藏。
+       *
+       * 状态只有一份（WIZARD.on / WIZARD.step），DOM 侧只做三件事：
+       * 给非当前步的 .cap-step-body 加 hidden、给步骤条上色、改底栏按钮文案。
+       * 输入值全在原来的控件里，换步不重建表单，所以来回切不丢内容。 */
+      const WIZARD_STEPS = 3;
+      const WIZARD = { on: false, step: 1 };
+      /* 校验失败的字段 → 该字段所在的步：提交失败时把用户送回出错的那一步，
+         而不是停在第 3 步对着一个看不见的错误发呆。 */
+      const FIELD_STEP = {
+        name: 1, displayName: 1, version: 1,
+        entrypoint: 2, files: 2, params: 2,
+        next: 3, env: 3, requires: 3, lifecycle: 3, concurrency: 3,
+      };
+      function wizardBodies() {
+        return [...document.querySelectorAll("#cap-modal [data-cap-step]")];
+      }
+      function syncSubmitLabel() {
+        const btn = $("cap-submit");
+        if (!btn) return;
+        const creating = !!(EDIT && EDIT.mode === "create");
+        btn.textContent =
+          WIZARD.on && creating && WIZARD.step < WIZARD_STEPS
+            ? t("caps.form.next_step", "下一步")
+            : creating
+              ? t("caps.form.submit", "创建")
+              : t("caps.form.save", "保存");
+      }
+      function wizardPaint() {
+        const creating = !!(EDIT && EDIT.mode === "create");
+        const steps = $("cap-steps");
+        if (steps) steps.classList.toggle("hidden", !WIZARD.on);
+        const back = $("cap-back");
+        if (back) back.classList.toggle("hidden", !WIZARD.on || WIZARD.step <= 1);
+        for (const chip of document.querySelectorAll("#cap-modal [data-step-chip]")) {
+          const n = Number(chip.getAttribute("data-step-chip"));
+          chip.classList.toggle("cap-step-current", WIZARD.on && n === WIZARD.step);
+          chip.classList.toggle("cap-step-done", WIZARD.on && n < WIZARD.step);
+        }
+        for (const body of wizardBodies()) {
+          const n = Number(body.getAttribute("data-cap-step"));
+          body.classList.toggle("hidden", WIZARD.on && n !== WIZARD.step);
+        }
+        /* 模板区只属于「新建的第 1 步」：它是这一步入场的第一件事，不是独立开关。
+           编辑模式下 applyTemplate 不会跑，这里保持隐藏。 */
+        const tpl = $("cap-template-wrap");
+        if (tpl) tpl.classList.toggle("hidden", !creating || (WIZARD.on && WIZARD.step !== 1));
+        syncSubmitLabel();
+      }
+      function wizardGo(step) {
+        if (!WIZARD.on) return;
+        WIZARD.step = Math.min(WIZARD_STEPS, Math.max(1, Number(step) || 1));
+        wizardPaint();
+        /* 换步必须回滚到顶：否则第 3 步会停在上一步的滚动位置（看起来像空白页）。 */
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        if (body) body.scrollTop = 0;
+        /* 焦点落到该步第一个可输入控件：键盘用户不用重新 Tab 穿过头部的关闭按钮。 */
+        const first = document.querySelector(
+          '#cap-modal [data-cap-step="' + WIZARD.step + '"] input:not([type="checkbox"]),' +
+            ' #cap-modal [data-cap-step="' + WIZARD.step + '"] select,' +
+            ' #cap-modal [data-cap-step="' + WIZARD.step + '"] textarea',
+        );
+        if (first && typeof first.focus === "function") first.focus();
+      }
+      /* 只校验「这一步里填的东西」：第 1 步不因为脚本没写就拦住用户。 */
+      function wizardValidate(step) {
+        if (step === 1) {
+          const name = String($("cap-name").value || "").trim();
+          if (!NAME_RE.test(name)) {
+            return { field: "name", error: t("caps.form.err_name", "名字不合法：小写字母/数字/._-，1–63 个字符，且以字母或数字开头") };
+          }
+          return null;
+        }
+        if (step === 2) {
+          const files = {};
+          for (const row of FILE_ROWS) {
+            const path = String(row.path || "").trim();
+            if (path) files[path] = String(row.body == null ? "" : row.body);
+          }
+          if (!Object.keys(files).length) {
+            return { field: "files", error: t("caps.form.err_files", "files 至少要有一个文件") };
+          }
+          const entrypoint = String($("cap-entrypoint").value || "");
+          if (!entrypoint || !Object.prototype.hasOwnProperty.call(files, entrypoint)) {
+            return { field: "entrypoint", error: t("caps.form.err_entrypoint", "入口必须是 files 里的一个路径") };
+          }
+          let params;
+          try {
+            params = parseJSON($("cap-params").value, t("caps.form.params", "参数契约"));
+          } catch (e) {
+            return { field: "params", error: sub(t("caps.form.err_json", "参数契约不是合法 JSON：{msg}"), { msg: e.message }) };
+          }
+          if (!isObj(params)) {
+            return { field: "params", error: t("caps.form.err_json_type", "参数契约必须是 JSON 对象（JSON Schema）") };
+          }
+          return null;
+        }
+        return null;
+      }
+      /* 底栏主按钮：向导的前两步 = 「下一步」（先校验本步），最后一步 = 真的提交。 */
+      function onSubmitClick() {
+        if (BUSY || !EDIT) return;
+        if (WIZARD.on && WIZARD.step < WIZARD_STEPS) {
+          const bad = wizardValidate(WIZARD.step);
+          if (bad) {
+            showFormError(bad.field, bad.error);
+            return;
+          }
+          clearFieldErrors();
+          wizardGo(WIZARD.step + 1);
+          return;
+        }
+        submitEditor();
+      }
+
       /* openEditor 是**异步**的：编辑既有能力时必须先拿 `?includeBody=true` 的全文。
        * 列表投影按契约**剥离 run.files**（resource.yaml·listCapabilities：默认不带正文），
        * 直接拿列表行填表单会让编辑器显示一个默认空脚本、保存时把真实正文覆盖掉
@@ -2035,7 +2280,10 @@
           TEMPLATE_AUTOFILL = { name: "", displayName: "" };
           applyTemplate("");
         }
-        $("cap-submit").textContent = mode === "create" ? t("caps.form.submit", "创建") : t("caps.form.save", "保存");
+        /* #385：新建 = 3 步向导（第 1 步），编辑 = 整份表单（步骤条与上一步隐藏）。 */
+        WIZARD.on = mode === "create";
+        WIZARD.step = 1;
+        wizardPaint();
         openModal($("cap-modal"));
         nameInput.focus();
       }
@@ -2043,6 +2291,9 @@
       function closeEditor() {
         closeModal($("cap-modal"));
         EDIT = null;
+        /* 关掉时复位向导：下一次 openEditor 会按模式重新决定（新建=第 1 步）。 */
+        WIZARD.on = false;
+        WIZARD.step = 1;
         hideBanner();
       }
 
@@ -2264,6 +2515,9 @@
         hideBanner();
         const form = readForm();
         if (form.error) {
+          /* 向导里先把用户送回出错的那一步，再说哪里不对（消息在底部 #cap-form-msg，
+             底栏常驻可见；第 1/2 步的字段错误不会藏在第 3 步后面）。 */
+          if (WIZARD.on && FIELD_STEP[form.field]) wizardGo(FIELD_STEP[form.field]);
           showFormError(form.field, form.error);
           return;
         }
@@ -2317,8 +2571,7 @@
         } finally {
           BUSY = false;
           btn.disabled = false;
-          btn.textContent =
-            EDIT && EDIT.mode === "create" ? t("caps.form.submit", "创建") : t("caps.form.save", "保存");
+          syncSubmitLabel();
         }
       }
 
@@ -2559,7 +2812,8 @@
           ENV_ROWS.push({ key: "", mode: "literal", value: "", fieldPath: "" });
           renderEnv();
         });
-        $("cap-submit").addEventListener("click", submitEditor);
+        $("cap-submit").addEventListener("click", onSubmitClick);
+        $("cap-back").addEventListener("click", () => wizardGo(WIZARD.step - 1));
         $("cap-template").addEventListener("change", (e) => applyTemplate(e.target.value));
         $("cap-cancel").addEventListener("click", closeEditor);
         $("cap-modal-close").addEventListener("click", closeEditor);

@@ -365,7 +365,11 @@
     <div class="page-head">
       <div class="min-w-0">
         <h2 class="page-title">{{t "keys.title"}}</h2>
-        <p class="page-sub">
+        <!-- #385：副标题在 390 下原本折成 4 行（~168px 页头），把第一行 Key 挤到
+             587px。这里只留「Agent 用哪条接口上报」这一句（≤2 行），
+             安全提示（只展示一次 / 只存哈希）本来就在下方「Key 的安全实践」卡里
+             逐条写着，不是丢失而是去重；悬停仍能看到被收起的整句。 -->
+        <p class="page-sub" title="{{t "keys.desc_tip"}}">
           {{t "keys.desc_prefix"}}<code class="kx-inline-code">POST /v1/namespaces/{namespace}/events</code>{{t "keys.desc_suffix"}}
         </p>
       </div>

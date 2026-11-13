@@ -608,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
   desc_prefix: Agent が Key を携えて呼び出す
-  desc_suffix: で通知を報告。Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください。
+  desc_suffix: で通知を報告。
+  desc_tip: Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください（下の「Key のセキュリティ」を参照）。
   create_button: Key を作成
   cli_auth_entry: CLI デバイス認証
   api_endpoint: 報告エンドポイント
@@ -1292,6 +1293,8 @@ events:
     source: "関連オブジェクト / ソース"
     limit: "ページ件数"
     filter: "絞り込み"
+    filters: "絞り込み条件"
+    filters_active: "{n} 件有効"
     loading: "データ読み込み中…"
     more: "さらに読み込む"
     trace: "トレースを開く"
@@ -1444,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = 削除しない。'
     save: '保存'
     saving: '保存中…'
+    step_basics: '基本'
+    step_script: 'スクリプト'
+    step_advanced: '詳細（任意）'
+    next_step: '次へ'
+    prev_step: '戻る'
+    adv_runtime: '実行環境と同時実行'
+    adv_lifecycle: '依存関係とライフサイクル'
     submit: '作成'
     timeout: '実行タイムアウト（秒）'
     timeout_hint: '0 = ローカル実行タイムアウトなし。'
