@@ -210,6 +210,23 @@ index:
       date: '{d}/{m} {w}'
     foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
     foot_na: Estadísticas no disponibles
+  steps:
+    title: "De cero a tu primer evento"
+    subtitle: "Con los tres en su sitio, un nodo puede emitir el primer evento."
+    source:
+      title: "Crea una fuente"
+      desc: "La entrada de eventos: programación, webhook o disparo manual."
+    capability:
+      title: "Crea una capacidad"
+      desc: "Lo que se ejecuta al llegar un evento (script y parámetros)."
+    node:
+      title: "Registra un nodo"
+      desc: "Donde se ejecutan de verdad las capacidades; al registrarlo obtienes un token para instalar."
+    state_done: "Hecho"
+    state_current: "Hazlo ahora"
+    state_todo: "Espera al paso anterior"
+    all_done: "Los tres están listos: abre una fuente y pulsa «Ejecutar ahora» para escribir tu primer evento."
+    all_done_link: "Ir a fuentes →"
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
@@ -429,6 +446,9 @@ login:
     err_empty: Introduce el usuario y el código de recuperación.
     err_failed: 'Error al entrar con código: {msg}'
     success: Sesión iniciada — añade un Passkey en este dispositivo pronto…
+  first_run:
+    hint: "¿Primera vez en esta instancia? Regístrate primero: si es la primera cuenta de la instancia, pasará a ser administradora automáticamente."
+
   codes:
     title: Guarda tus códigos de recuperación
     subtitle: Cada código sirve una sola vez. No volverás a ver el texto en claro al salir. Cópialos a un gestor de contraseñas.
@@ -437,6 +457,7 @@ login:
     copied: Copiado
     continue: Guardados — entrar al espacio de trabajo
     warn: Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar.
+    ack: He guardado estos códigos de recuperación
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn
@@ -463,6 +484,9 @@ login:
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
 receivers:
+  back_home: "Volver al panel"
+  docs_link: "Guía de integración"
+  unavailable_next: "Cuando se publique, aquí verás tus dispositivos de recepción y la tasa de entrega."
   unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
   title: Destinatarios
   channel:
@@ -923,6 +947,7 @@ docs:
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
+    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles: el servidor no tiene claves VAPID configuradas, así que esta versión no incluye página de suscripción de dispositivos. Los eventos se registran igualmente: consulta la página de eventos."
     title: Suscripción Web Push (recepción en navegador)
     intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
     step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1609,6 +1634,10 @@ nodes:
     copy_bootstrap: "Copiar comando de instalación"
     local_setup: "Configuración local y tres comandos públicos"
     setup_hint: "Guarde anode.yaml antes de install o serve. Usa un token emitido; nunca registra automáticamente. vars no son secretos. envPassthrough queda local; PATH, HOME y ANOTIFY_ están prohibidos. No se suben listas ni valores. ANOTIFY_ARTIFACT_DIR muestra nombre/origen, no rutas absolutas."
+    copy_emit: "Copiar comando emit"
+    emit_hint: "Esta línea usa «{cap}», una capacidad que ya existe en esta instancia. emit se ejecuta dentro de una tarea en el nodo (el token de tarea se añade solo); no lo ejecutes en tu propia terminal."
+    emit_none: "Esta instancia aún no tiene capacidades: crea una primero y el comando será ejecutable."
+    emit_create: "Crear una capacidad →"
     online: "En línea"
     offline: "Sin conexión"
     unknown: "Desconocido (sin declaración local explícita)"

@@ -275,6 +275,10 @@ export async function nodeRetained(d,mode){
     // rejection uses an actual Status body and never fakes authentication success.
     if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-guest','1')); else await d.context.clearCookies();
     await goto('login');
+    // #381：登录页在「本浏览器首次来访 + 无会话」时默认落在「注册」tab（首跑闭环）。
+    // 这里要测的是密码登录拒绝，所以先显式切回登录 tab —— 顺便把切换本身也验一次。
+    await page.locator('#tab-login').click();
+    await page.locator('#login-panel:not(.hidden)').waitFor();
     await page.locator('#password-login-toggle').click(); await page.locator('#password-username').fill('retained-user'); await page.locator('#password-password').fill('wrong-password');
     await page.evaluate(() => { window.__f3Guest = true; window.__f3Reject = '/v1/auth/password/login'; });
     await page.locator('#password-login-btn').click();

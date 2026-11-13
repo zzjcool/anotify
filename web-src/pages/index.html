@@ -352,12 +352,143 @@
       transparent 5px 10px
     );
   }
+
+  /* ===== #381 「第一条事件」三步路径 =====
+     原来这里只有一个 CTA「接入新 Agent → 文档」：文档不是路径。能产生事件的路径是
+     【源 → 能力 → 节点】三件必须先存在的东西，所以每步给真实链接 + 一句「现在做到哪了」。
+     颜色全走 tokens.css；空实例时三步全亮（.is-lit），有数据时只点亮当前那一步。 */
+  .fe-card {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+  }
+  .fe-head {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .fe-steps {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  /* 390px：三步纵向排列，绝不横向溢出（ui_shift 矩阵逐页断言 scrollWidth）。 */
+  @media (max-width: 760px) {
+    .fe-steps {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .fe-step {
+    min-width: 0;
+  }
+  .fe-link {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    color: var(--text);
+    text-decoration: none;
+    transition:
+      border-color var(--dur) var(--ease),
+      background var(--dur) var(--ease);
+  }
+  .fe-link:hover {
+    border-color: var(--line-strong);
+  }
+  .fe-link:focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+  /* data-state 是「语义」（状态文案 / aria），is-lit 是「视觉」（空实例三步全亮）。
+     两者分开：空实例下第 2/3 步的状态仍是「等待上一步」，但也要看得见、点得动。 */
+  .fe-step[data-state="current"] .fe-link,
+  .fe-step.is-lit .fe-link {
+    border-color: var(--accent-strong);
+    background: var(--accent-soft);
+  }
+  .fe-step[data-state="done"] .fe-link {
+    border-color: var(--line-strong);
+    background: var(--surface-1);
+  }
+  .fe-num {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line-strong);
+    background: var(--surface-1);
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .fe-step[data-state="current"] .fe-num,
+  .fe-step.is-lit .fe-num {
+    border-color: var(--accent-strong);
+    color: var(--accent-strong);
+  }
+  .fe-step[data-state="done"] .fe-num {
+    border-color: var(--success);
+    color: var(--success);
+  }
+  .fe-body {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .fe-name {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .fe-desc {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .fe-state {
+    color: var(--faint);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .fe-step[data-state="current"] .fe-state {
+    color: var(--accent-strong);
+  }
+  .fe-step[data-state="done"] .fe-state {
+    color: var(--success);
+  }
+  .fe-done {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .fe-done a {
+    color: var(--accent-strong);
+  }
 </style>
 {{end}} {{define "content"}}
 <div id="page-main">
   <div class="page">
-    <!-- ===== 页头：问候 + 摘要 + 主 CTA =====
-         全站唯一 h1 在外壳顶栏（partials.js），页面内容里只用 h2。 -->
+    <!-- ===== 页头：问候 + 摘要 =====
+         全站唯一 h1 在外壳顶栏（partials.js），页面内容里只用 h2。
+         #381：原来这里的主 CTA 是单点「接入新 Agent → docs.html#agent」——文档不是
+         路径；现在主路径是下面那张三步卡，页头只留一个二级的文档入口。 -->
     <div class="page-head">
       <div>
         <h2 class="page-title font-display" id="greeting">
@@ -366,13 +497,63 @@
         <p class="page-sub" id="summary-line">{{t "index.loading"}}</p>
       </div>
       <div class="page-actions">
-        <a
-          href="docs.html#agent"
-          class="btn btn-primary px-4 py-2 text-sm"
-          >{{t "index.quickstart.cta"}}</a
+        <a href="docs.html#agent" class="btn btn-ghost">{{t "index.quickstart.docs"}}</a
         >
       </div>
     </div>
+
+    <!-- ===== #381 「第一条事件」三步（源 → 能力 → 节点）=====================
+         状态由**真实数据**判定，不在模板里编：renderFirstEvent() 按三个列表接口
+         的首项存在性给出 data-state；三步都齐时整块收成一行，不占有数据实例的首屏。
+         模板里的初始态是中性的（todo + 空状态文案），避免首帧先谎报「已完成」。 -->
+    <section id="first-event" class="card card-pad fe-card" aria-labelledby="fe-title">
+      <div class="fe-head">
+        <div class="card-title" id="fe-title">{{t "index.steps.title"}}</div>
+        <div class="card-sub" id="fe-sub">{{t "index.steps.subtitle"}}</div>
+      </div>
+      <ol class="fe-steps" id="fe-steps">
+        <li class="fe-step" data-step="source" data-state="todo">
+          <a class="fe-link" href="sources.html">
+            <span class="fe-num" aria-hidden="true">1</span>
+            <span class="fe-body">
+              <span class="fe-name">{{t "index.steps.source.title"}}</span>
+              <span class="fe-desc">{{t "index.steps.source.desc"}}</span>
+              <span class="fe-state" id="fe-state-source" data-state-text
+                >{{t "index.steps.state_todo"}}</span
+              >
+            </span>
+          </a>
+        </li>
+        <li class="fe-step" data-step="capability" data-state="todo">
+          <a class="fe-link" href="capabilities.html">
+            <span class="fe-num" aria-hidden="true">2</span>
+            <span class="fe-body">
+              <span class="fe-name">{{t "index.steps.capability.title"}}</span>
+              <span class="fe-desc">{{t "index.steps.capability.desc"}}</span>
+              <span class="fe-state" id="fe-state-capability" data-state-text
+                >{{t "index.steps.state_todo"}}</span
+              >
+            </span>
+          </a>
+        </li>
+        <li class="fe-step" data-step="node" data-state="todo">
+          <a class="fe-link" href="nodes.html">
+            <span class="fe-num" aria-hidden="true">3</span>
+            <span class="fe-body">
+              <span class="fe-name">{{t "index.steps.node.title"}}</span>
+              <span class="fe-desc">{{t "index.steps.node.desc"}}</span>
+              <span class="fe-state" id="fe-state-node" data-state-text
+                >{{t "index.steps.state_todo"}}</span
+              >
+            </span>
+          </a>
+        </li>
+      </ol>
+      <p class="fe-done" id="fe-done" hidden>
+        {{t "index.steps.all_done"}}
+        <a href="sources.html">{{t "index.steps.all_done_link"}}</a>
+      </p>
+    </section>
 
     <!-- ===== KPI 四卡 =====
          `#kpi-*` 这些 id 全部由页内 JS 覆写 textContent，别改 id。
@@ -976,6 +1157,63 @@
       return counts[key].toLocaleString() + (counts.truncated ? "+" : "");
     }
 
+    /* ================= #381 首条事件三步 =================
+     * 三步的存在性只用**真数据**判定：三个列表接口各要 limit=1（只要第一项在不在，
+     * 不把全量拉进首屏）。取不到的那一步记 null（未知）——未知不当作「已完成」，
+     * 也不当作「没有」，按「还不能判断」展示为等待上一步。 */
+    const FIRST_EVENT = { source: null, capability: null, node: null };
+    const FE_STEPS = ["source", "capability", "node"];
+    const FIRST_EVENT_PATHS = {
+      source: ns => "/v1/namespaces/" + encodeURIComponent(ns) + "/sources?limit=1",
+      capability: ns =>
+        "/v1/namespaces/" + encodeURIComponent(ns) + "/capabilities?limit=1",
+      node: () => "/v1/nodes?limit=1",
+    };
+    async function loadFirstEvent() {
+      const ns = readScope().namespace;
+      const results = await Promise.allSettled(
+        FE_STEPS.map(step => api(FIRST_EVENT_PATHS[step](ns))),
+      );
+      FE_STEPS.forEach((step, i) => {
+        const r = results[i];
+        const doc = r.status === "fulfilled" ? r.value : null;
+        FIRST_EVENT[step] =
+          doc && Array.isArray(doc.items) ? doc.items.length > 0 : null;
+      });
+      renderFirstEvent();
+    }
+    function renderFirstEvent() {
+      const known = FE_STEPS.filter(s => FIRST_EVENT[s] !== null);
+      const empty = known.length === FE_STEPS.length && FE_STEPS.every(s => !FIRST_EVENT[s]);
+      // 「现在做到哪了」= 第一个还没做到的步骤；全做到了就没有 current。
+      const current = FE_STEPS.find(s => FIRST_EVENT[s] === false) || null;
+      const allDone = FE_STEPS.every(s => FIRST_EVENT[s] === true);
+      FE_STEPS.forEach(step => {
+        const li = document.querySelector('.fe-step[data-step="' + step + '"]');
+        if (!li) return;
+        const done = FIRST_EVENT[step] === true;
+        const state = done ? "done" : step === current ? "current" : "todo";
+        li.dataset.state = state;
+        // 空实例：三步全亮（都还得到，不让第 2/3 步看起来是「不可用」）。
+        li.classList.toggle("is-lit", empty && state !== "done");
+        if (step === current) li.setAttribute("aria-current", "step");
+        else li.removeAttribute("aria-current");
+        const stateEl = document.getElementById("fe-state-" + step);
+        if (stateEl) {
+          stateEl.textContent = t(
+            "index.steps.state_" + state,
+            state === "done" ? "已完成" : state === "current" ? "现在做这一步" : "等待上一步",
+          );
+        }
+      });
+      const doneLine = document.getElementById("fe-done");
+      if (doneLine) doneLine.hidden = !allDone;
+      // 三轮状态算完才置的「渲染已落地」标记：模板初始态是 todo，读得太早会把
+      // 「还没算」当成「还没做」。e2e 靠它等待，不靠 sleep。
+      const host = document.getElementById("first-event");
+      if (host) host.dataset.ready = "1";
+    }
+
     async function load() {
       loadError = null;
       document.getElementById("index-events").setAttribute("aria-busy", "true");
@@ -1000,6 +1238,8 @@
       renderKpis();
       renderSummary();
       renderHeatmap();
+      // 三步卡不阻塞主数据：它自己 catch 自己的失败，坏了也不拿走首页其余部分。
+      loadFirstEvent().catch(() => {});
       await loadEvents();
       await loadLatestFlow();
     }

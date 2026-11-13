@@ -15,9 +15,12 @@ export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真�
 export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,19]].map(([a,b]) => PAGES.slice(a,b)));
 export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","receivers","events","trace","playbook"]);
 // Per-page structural anchor. Detail pages get their identity from real v4 list rows.
+// #381：登录页的默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），所以 #login-panel
+// 可能真的是 hidden（0×0）。锚点改成**两个 tab 都一定看得见**的容器：仍然证「这一页真的
+// 渲染了」，而不是在默认态上赌一把。
 export const ANCHORS = Object.freeze({
   admin: "#kpi-devices", capabilities: "[data-cap]", "cli-auth": "#code-input", docs: "#endpoints",
-  events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: "#login-panel",
+  events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-file-path", playbooks: "#pb-grid", receivers: "#current-device-card",
   security: "#passkey-list", source: "#src-name", sources: "#src-list [data-name]", trace: "#trace-tasks",

@@ -17,6 +17,8 @@ const RP = "localhost";
 // v4：命名空间进路径（任务/事件都是 ns 内资源）。会话鉴权边界不变，只是路径要带 ns。
 const NS = V.DEFAULT_NS;
 let server, browser, ctx, page, cdp;
+// 虚拟认证器 id（firstRunCase() 收尾要用它清 resident 凭证，所以提到模块作用域）
+let authenticatorId = "";
 const username = "auth_" + Date.now();
 
 async function webauthnRegister(name) {
@@ -196,6 +198,178 @@ async function webauthnDiscoverableLogin() {
 	);
 }
 
+/* #381 首跑闭环（空实例）。每一步都断言真实后果，不是「元素存在」：
+ *  ① 首次访问 + /v1/auth/me 401 → 默认 tab 是**注册**（不是登录），并给出提示；
+ *  ② 走页面自己的注册表单（前端真的做 WebAuthn ceremony）→ 会话 Cookie 建立；
+ *  ③ 恢复码是唯一一次明文 → 未勾「我已保存」时「继续」真的 disabled，勾上才放行；
+ *  ④ 放行后落到首页，三步引导（源 → 能力 → 节点）可见；空实例三步全亮；
+ *  ⑤ 造一个源后第一步**由真数据**变成「已完成」——证明状态不是写死的。
+ *
+ * 必须在 main() 的第 1 步之前跑：那时库里确实没有用户，首注册成为 admin 的路径才是真的。
+ */
+async function firstRunCase() {
+	const firstUser = "first_" + Date.now();
+	await page.goto(server.base + "/login.html", { waitUntil: "domcontentloaded" });
+	await H.waitForAppReady(page, "login");
+	await page
+		.waitForFunction(
+			() =>
+				document
+					.getElementById("tab-signup")
+					?.classList.contains("active"),
+			null,
+			{ timeout: 6000 },
+		)
+		.catch(() => {
+			/* 下面逐项断言会报出真实差异 */
+		});
+	const tabs = await page.evaluate(() => {
+		const el = (id) => document.getElementById(id);
+		return {
+			signupActive: !!el("tab-signup")?.classList.contains("active"),
+			loginActive: !!el("tab-login")?.classList.contains("active"),
+			loginHidden: !!el("login-panel")?.classList.contains("hidden"),
+			signupShown: !el("signup-panel")?.classList.contains("hidden"),
+			hint:
+				!!el("first-run-hint") &&
+				!el("first-run-hint").classList.contains("hidden"),
+		};
+	});
+	H.eq("首跑：首访默认选中「注册」tab", tabs.signupActive, true);
+	H.eq("首跑：此时「登录」tab 不选中", tabs.loginActive, false);
+	H.eq("首跑：登录面板默认收起", tabs.loginHidden, true);
+	H.eq("首跑：注册面板默认展开", tabs.signupShown, true);
+	H.eq("首跑：给出「第一次使用」提示", tabs.hint, true);
+
+	// ② 真实注册表单（虚拟认证器应答 ceremony）
+	await page.fill("#new-username", firstUser);
+	await page.click("#signup-btn");
+	const codesShown = await page
+		.waitForSelector("#codes-modal:not(.hidden)", { timeout: 15000 })
+		.then(() => true)
+		.catch(() => false);
+	H.check("首跑：注册后展示一次性恢复码", codesShown);
+	const codeCount = await page.evaluate(
+		() => document.querySelectorAll("#codes-grid .code-row").length,
+	);
+	H.eq("首跑：恢复码一次展示 8 个", codeCount, 8);
+
+	// ③ 「我已保存」是硬门禁
+	const beforeAck = await page.evaluate(() => ({
+		hasAck: !!document.getElementById("codes-saved-ack"),
+		checked: !!document.getElementById("codes-saved-ack")?.checked,
+		disabled: !!document.getElementById("codes-continue")?.disabled,
+	}));
+	H.check("首跑：恢复码弹窗有「我已保存」勾选", beforeAck.hasAck);
+	H.eq("首跑：勾选默认未选中", beforeAck.checked, false);
+	H.eq("首跑：未勾选时「继续」禁用", beforeAck.disabled, true);
+	await page.click("#codes-saved-ack");
+	H.eq(
+		"首跑：勾选后「继续」可用",
+		await page.evaluate(
+			() => !!document.getElementById("codes-continue")?.disabled,
+		),
+		false,
+	);
+	await page.click("#codes-continue");
+
+	// ④ 落到工作台，三步引导可见（空实例 = 三步全亮）
+	await page.waitForFunction(
+		() =>
+			location.pathname === "/" || location.pathname.endsWith("/index.html"),
+		null,
+		{ timeout: 15000 },
+	);
+	await page.waitForSelector("#fe-steps .fe-step", { timeout: 10000 });
+	// 三步状态是异步算出来的（三个列表接口）：等渲染真的落地，不读模板初始态。
+	await page.waitForFunction(
+		() => document.getElementById("first-event")?.dataset.ready === "1",
+		null,
+		{ timeout: 10000 },
+	);
+	const steps = await page.evaluate(() => {
+		const items = [...document.querySelectorAll("#fe-steps .fe-step")];
+		return {
+			order: items.map((n) => n.dataset.step),
+			links: items.map((n) => n.querySelector("a")?.getAttribute("href")),
+			states: items.map((n) => n.dataset.state),
+			lit: items.map((n) => n.classList.contains("is-lit")),
+			texts: items.map(
+				(n) =>
+					(n.querySelector("[data-state-text]")?.textContent || "").trim(),
+			),
+			doneHidden: !!document.getElementById("fe-done")?.hidden,
+		};
+	});
+	H.eq(
+		"首跑：三步顺序 = 源 → 能力 → 节点",
+		JSON.stringify(steps.order),
+		JSON.stringify(["source", "capability", "node"]),
+	);
+	H.eq(
+		"首跑：每步都链到真实页面",
+		JSON.stringify(steps.links),
+		JSON.stringify(["sources.html", "capabilities.html", "nodes.html"]),
+	);
+	H.check(
+		"首跑：空实例三步全亮",
+		steps.lit.every(Boolean),
+		JSON.stringify(steps.lit),
+	);
+	H.check(
+		"首跑：每步都有「现在做到哪了」的文案",
+		steps.texts.every((s) => s.length > 0),
+		JSON.stringify(steps.texts),
+	);
+	H.eq(
+		"首跑：空实例不谎报「三步已完成」",
+		steps.doneHidden,
+		true,
+	);
+
+	// ⑤ 有源之后第一步由真数据变成已完成
+	const firstSess = await cookieVal();
+	await V.mkSource(server.base, firstSess, "first-run-src", {
+		namespace: NS,
+	});
+	await page.reload({ waitUntil: "domcontentloaded" });
+	await page.waitForSelector("#fe-steps .fe-step", { timeout: 10000 });
+	await page.waitForFunction(
+		() => document.getElementById("first-event")?.dataset.ready === "1",
+		null,
+		{ timeout: 10000 },
+	);
+	await page
+		.waitForFunction(
+			() =>
+				document.querySelector('#fe-steps .fe-step[data-step="source"]')
+					?.dataset.state === "done",
+			null,
+			{ timeout: 10000 },
+		)
+		.catch(() => {
+			/* 下面断言会报出真实值 */
+		});
+	const afterSource = await page.evaluate(() => {
+		const pick = (step) =>
+			document.querySelector(`#fe-steps .fe-step[data-step="${step}"]`);
+		return {
+			source: pick("source")?.dataset.state,
+			capability: pick("capability")?.dataset.state,
+			capabilityLit: !!pick("capability")?.classList.contains("is-lit"),
+		};
+	});
+	H.eq("首跑：有源后第一步变「已完成」", afterSource.source, "done");
+	H.eq("首跑：下一步指向「能力」", afterSource.capability, "current");
+	H.eq("首跑：此时不再三步全亮", afterSource.capabilityLit, false);
+
+	// 收尾：清掉虚拟认证器里的 resident 凭证（首跑那个用户的）。不清的话，后面的
+	// 「免用户名 Passkey 登录」会在多枚可发现凭证里挑一枚，可能挑到它 → 会话串成
+	// 首跑用户，套件末尾的「侧栏显示真实用户名」会拿到别的名字。只清设备侧凭证，
+	// 服务端用户保留（后面的注册/登录断言都不依赖「库里只有一个用户」）。
+	await cdp.send("WebAuthn.clearCredentials", { authenticatorId });
+}
+
 async function main() {
 	H.startTimer();
 	console.log("=== SUITE: auth_flow（Passkey 全流程 · 虚拟认证器）===");
@@ -211,7 +385,7 @@ async function main() {
 	await page.goto(server.base + "/login.html", { waitUntil: "load" });
 	cdp = await ctx.newCDPSession(page);
 	await cdp.send("WebAuthn.enable");
-	await cdp.send("WebAuthn.addVirtualAuthenticator", {
+	({ authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
 		options: {
 			protocol: "ctap2",
 			transport: "internal",
@@ -220,7 +394,12 @@ async function main() {
 			isUserVerified: true,
 			automaticPresenceSimulation: true,
 		},
-	});
+	}));
+
+	// 0. #381 首跑闭环：空实例（无用户）→ 登录页默认落在注册 → 真实 UI 注册
+	//    → 恢复码「我已保存」门禁 → 落到首页 → 三步引导可见。
+	//    必须在 1 之前：这时库里确实没有任何用户，首注册才会是 admin。
+	await firstRunCase();
 
 	// 1. 注册新用户
 	const regStatus = await webauthnRegister(username);

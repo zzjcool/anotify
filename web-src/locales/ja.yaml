@@ -210,6 +210,23 @@ index:
       date: '{m}月{d}日 {w}曜日'
     foot: '直近 30 日 {n} 件 · アクティブ {d}/30 日'
     foot_na: 統計を取得できません
+  steps:
+    title: "ゼロから最初のイベントまで"
+    subtitle: "3 つが揃えば、ノードから最初のイベントを発行できます。"
+    source:
+      title: "ソースを作成"
+      desc: "イベントの入口：スケジュール、Webhook、手動トリガー。"
+    capability:
+      title: "能力を作成"
+      desc: "イベント到着後に実行するもの（スクリプトとパラメータ）。"
+    node:
+      title: "ノードを登録"
+      desc: "能力が実際に動く場所。登録するとインストール用トークンが発行されます。"
+    state_done: "完了"
+    state_current: "今この手順"
+    state_todo: "前の手順待ち"
+    all_done: "3 つが揃いました。ソースページを開いて「今すぐ実行」を押すと、最初のイベントが書き込まれます。"
+    all_done_link: "ソースページへ →"
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
@@ -429,6 +446,9 @@ login:
     err_empty: ユーザー名とリカバリーコードを入力してください。
     err_failed: リカバリーコードログインに失敗：{msg}
     success: ログイン成功。この端末に Passkey を追加してください…
+  first_run:
+    hint: "このインスタンスを初めて使いますか？まず登録してください。このインスタンスの最初のアカウントであれば、自動的に管理者になります。"
+
   codes:
     title: リカバリーコードを保存してください
     subtitle: 各コードは1回限り。この画面を離れると平文は再表示されません。コピーしてパスワードマネージャーへ。
@@ -437,6 +457,7 @@ login:
     copied: コピー済み
     continue: 保存した · ワークスペースへ
     warn: 表示は今回限りです。コードがなく、すべての Passkey 端末を失うとログインできません。
+    ack: リカバリーコードを保存しました
   trust:
     data_local: データはあなたのサーバーにのみ保存
     webauthn: WebAuthn 標準
@@ -463,6 +484,9 @@ login:
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
 receivers:
+  back_home: "ダッシュボードに戻る"
+  docs_link: "連携手順を見る"
+  unavailable_next: "公開後はここに受信デバイスと配信率が表示されます。"
   unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
   title: 通知先
   channel:
@@ -923,6 +947,7 @@ docs:
     rules:
       title: 配信ルール（タグルーティング + レベルフィルタ）
   webpush:
+    off_note: "モバイルプッシュ（Web Push）は未公開です：サーバーに VAPID 鍵が設定されていないため、このバージョンでは端末購読ページを提供しません。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
     title: Web Push 購読（ブラウザ受信）
     intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
     step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1609,6 +1634,10 @@ nodes:
     copy_bootstrap: "インストールコマンドをコピー"
     local_setup: "本機の設定と3つの公開コマンド"
     setup_hint: "anode.yaml を保存して install または serve を実行します。発行済みトークンを使用し、自動登録しません。vars は秘密ではありません。envPassthrough の一覧と値は本機のみ。PATH、HOME、ANOTIFY_ は禁止です。ANOTIFY_ARTIFACT_DIR の診断は名前と出所のみで絶対パスは表示しません。"
+    copy_emit: "emit コマンドをコピー"
+    emit_hint: "この行はこのインスタンスに実在する「{cap}」を使っています。emit はノード上のエージェントがタスク内で実行するもの（タスクトークンは自動で付与されます）で、ご自身のターミナルでは実行しないでください。"
+    emit_none: "このインスタンスにはまだ能力がありません。まず 1 つ作成してください。"
+    emit_create: "能力を作成する →"
     online: "オンライン"
     offline: "オフライン"
     unknown: "不明（本機の明示的報告なし）"

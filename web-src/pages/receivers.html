@@ -358,6 +358,15 @@
         <p class="page-sub">{{t "receivers.subtitle"}}</p>
       </div>
       <div class="page-actions">
+        <!-- #381：这一页不在侧栏 NAV 里（推送未开放，不该给一个「暂未开放」的入口），
+             所以它不能靠侧栏回到有内容的地方 —— 两个真实出口直接写在页头上：
+             回工作台 / 看接入文档。两个 <a> 不会溢出（.page-actions 自带 wrap）。 -->
+        <a href="index.html" class="btn btn-ghost btn-sm">
+          {{t "receivers.back_home"}}
+        </a>
+        <a href="docs.html#agent" class="btn btn-ghost btn-sm">
+          {{t "receivers.docs_link"}}
+        </a>
         <!-- 只有推送订阅有「可重新拉取」的数据；推送未开放时由脚本隐藏 -->
         <button type="button" id="recv-refresh" class="btn btn-ghost hidden">
           {{t "receivers.refresh"}}
@@ -640,7 +649,12 @@
         const username = qs.get("u") || "zheng";
 
         mountLayout({
-          active: "receivers",
+          // #381：receivers **不在**侧栏 NAV 里，没有合法的 active id。原来传
+          // active: "receivers" 是一个死键：侧栏零高亮（对，本来就没它）、
+          // 顶栏拿不到分组名（NAV_GROUP_OF[未知 id] === null）—— 两个副作用都
+          // 不可见地降级。现在显式传 null：侧栏不点亮任何项，顶栏只画范围面包屑，
+          // 页面自己的「返回工作台 / 接入文档」两个出口负责把人带回有内容的地方。
+          active: null,
           title: t("receivers.title", "通知接收"),
           subtitle: t("receivers.subtitle", "按设备控制通知接收"),
           username,
@@ -825,6 +839,15 @@
               text: t(
                 "receivers.unavailable",
                 "手机推送暂未开放，上线后这里会显示你的接收设备。",
+              ),
+            }),
+            // #381：不只说「没开」，还说「开了以后有什么」—— 否则这页读完仍然不知道
+            // 这里将来提供的是什么能力。
+            el("p", {
+              class: "rcv-empty-desc",
+              text: t(
+                "receivers.unavailable_next",
+                "开放后这里会出现接收设备与送达率。",
               ),
             }),
             acts,

@@ -1148,6 +1148,11 @@
         </section>
 
         <!-- ===== Web Push subscription ===== -->
+        <!-- #381：推送未开放期间整段 push 文档隐藏（data-push-doc），但「为什么没有」
+             要留一句真话，否则读者会把缺页当成文档缺陷。这条 note 只在关闭时显示。 -->
+        <div class="doc-note" id="webpush-off-note" hidden>
+          {{t "docs.webpush.off_note"}}
+        </div>
         <section
           id="webpush"
           class="doc-anchor doc-sec reveal visible hidden"
@@ -1463,12 +1468,15 @@ GET /v1/system/config</pre>
   }
 
   // 手机推送（Web Push）文档暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
-  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链。
+  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链；
+  // 同时把「暂未开放」的实话留在原位（#381：隐藏不等于假装没这功能）。
   document.querySelectorAll("[data-push-doc]").forEach((el) => {
     const off = !window.Anotify.pushUIEnabled;
     el.classList.toggle("hidden", off);
     if (off) el.setAttribute("hidden", "");
     else el.removeAttribute("hidden");
   });
+  const webpushOffNote = document.getElementById("webpush-off-note");
+  if (webpushOffNote) webpushOffNote.hidden = !!window.Anotify.pushUIEnabled;
 </script>
 {{end}}

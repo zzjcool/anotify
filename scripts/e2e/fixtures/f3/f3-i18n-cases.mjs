@@ -6,7 +6,9 @@ import path from 'node:path';
 import { openDriver, ROOT, TEAM, PAGES, LANGS } from './f3-driver.mjs';
 export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'#login-panel',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
+// #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
+// 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
 const pkgFiles = {
   'playbook.yaml': 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: f3-locale-package\n  version: 1\nspec:\n  values: { type: object }\n  capabilities:\n    - cap.yaml\n  sources: []\n',
   'cap.yaml': 'metadata:\n  name: f3-locale-cap\nspec:\n  next: [notify, f3-locale-missing]\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo locale\n',

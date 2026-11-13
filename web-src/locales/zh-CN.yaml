@@ -210,6 +210,23 @@ index:
       date: '{m}月{d}日 周{w}'
     foot: '近 30 天 {n} 条事件 · 活跃 {d}/30 天'
     foot_na: 统计数据暂不可用
+  steps:
+    title: "从 0 到第一条事件"
+    subtitle: "三步都齐了，节点上就能发出第一条事件。"
+    source:
+      title: "建一个源"
+      desc: "事件的入口：定时、Webhook 或手动触发。"
+    capability:
+      title: "建一个能力"
+      desc: "事件到达后要跑什么（脚本与参数）。"
+    node:
+      title: "登记一个节点"
+      desc: "真正执行能力的地方，登记后拿令牌安装。"
+    state_done: "已完成"
+    state_current: "现在做这一步"
+    state_todo: "等待上一步"
+    all_done: "三步都齐了 —— 去源页面点「立即运行」，就会写出第一条事件。"
+    all_done_link: "去源页面 →"
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
@@ -429,6 +446,9 @@ login:
     err_empty: 请填写用户名和恢复码。
     err_failed: 恢复码登录失败：{msg}
     success: 登录成功，请尽快为本机补建 Passkey…
+  first_run:
+    hint: "第一次使用这个实例？先注册 —— 如果这是本实例的第一个账号，它会自动成为管理员。"
+
   codes:
     title: 请保存你的恢复码
     subtitle: 每个码只能用一次，关闭后无法再查看明文。请复制并保存到密码管理器。
@@ -437,6 +457,7 @@ login:
     copied: 已复制
     continue: 已保存，进入工作台
     warn: 这是唯一一次展示机会。没有恢复码且丢失全部 Passkey 设备时，将无法登录。
+    ack: 我已保存这些恢复码
   trust:
     data_local: 数据仅存于你的服务器
     webauthn: WebAuthn 标准
@@ -463,6 +484,9 @@ login:
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
 receivers:
+  back_home: "返回工作台"
+  docs_link: "接入文档"
+  unavailable_next: "开放后这里会出现接收设备与送达率。"
   unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
   title: 通知接收
   channel:
@@ -923,6 +947,7 @@ docs:
     rules:
       title: 投递规则（标签路由 + 级别过滤）
   webpush:
+    off_note: "手机推送（Web Push）暂未开放：服务端未启用 VAPID，本版不提供设备订阅页。事件仍会正常产生，可在「事件流」页查看。"
     title: Web Push 订阅（浏览器接收）
     intro: 浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="doc-em">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
     step1: <b class="doc-em">① 取 VAPID 公钥</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1611,6 +1636,10 @@ nodes:
     copy_bootstrap: "复制安装命令"
     local_setup: "本机配置与三个公开命令"
     setup_hint: "先保存 anode.yaml，再运行 install 或 serve；安装使用已签发的令牌，不会自动登记。vars 非秘密；envPassthrough 仅本机名字名单，禁 PATH、HOME、ANOTIFY_；完整名单和值不上传。ANOTIFY_ARTIFACT_DIR 由节点提供，诊断只展示名字/来源，不展示导出绝对路径。"
+    copy_emit: "复制 emit 命令"
+    emit_hint: "这一行用的是本实例已存在的「{cap}」。emit 由节点上的 agent 在任务内执行（会自动带上任务令牌），不要在你的终端直接跑。"
+    emit_none: "这个实例还没有能力 —— 先建一个，这条命令才有意义。"
+    emit_create: "去建一个能力 →"
     online: "在线"
     offline: "离线"
     unknown: "未知（没有明确本机断言）"
