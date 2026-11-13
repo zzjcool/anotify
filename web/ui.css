@@ -1,5 +1,41 @@
 /* Anotify · 共享 UI 样式（依赖 tokens.css 提供色彩变量） */
 
+/* ============================================================================
+   响应式断点契约（#372 收编）
+   ----------------------------------------------------------------------------
+   收敛前全站散落 9 个宽度值：479 / 639 / 640 / 760 / 767 / 900 / 1023 / 1024 / 1279
+   （ui.css 15 条宽度 @media + 页面内联 33 条）。现在只有 **3 档**，写 Media
+   Query 时只用下面三种，不要再引入第四个数字：
+
+     手机档  640px    @media (max-width: 639.98px)   /  @media (min-width: 640px)
+     平板档  1024px   @media (max-width: 1023.98px)  /  @media (min-width: 1024px)
+     宽屏档  1280px   @media (max-width: 1279.98px)  /  @media (min-width: 1280px)
+
+   `max-width` 一律比 `min-width` 少 0.02px：两条方向在 640/1024/1280 三个整数宽度上
+   **严格互补**，不会出现「同时命中两个断点」的叠加（旧代码靠手写 639/640、1023/1024
+   差 1px 维持同一件事；改成小数后语义只由档位决定，不再有 1px 空档）。
+
+   本文件迁移对照（旧值 → 新档）：
+     640 / 639        → 639.98   手机档（4 + 3 条）
+     767              → 639.98   窄平板临时档并入手机档。640~767 之间失去的只是
+                                 .page-title 24px / .modal-panel max-width:100% /
+                                 .card-pad 16px 这类「窄屏保险」，实测无回归；
+                                 保留它等于继续维护第 4 档。
+     1023             → 1023.98  平板档（与既有 min-width:1024 成对）
+     1279             → 1279.98  宽屏档（与页面里的 min-width:1280 成对）
+
+   遗留（本 PR 不动，理由写在这里而不是散在 PR 评论里）：
+     479              → 「极窄手机」档（顶栏动作组直接隐藏），语义上与 640 不同；
+                         且 #382/#385 正在改同一块移动顶栏，改它必然撞车。
+     max-width: 760px → 只用于 silk 链路图的密集 HUD（隐藏 bar-meta、压 35px 条高），
+                         是「图表 HUD」专用档；且 .flograph-* 归 c-mobile（#382/#384/#385）
+                         的写入区，本 PR 不碰。
+     max-height: 760px → 高度查询，不是宽度断点。
+     页面内联 <style>  → 900 / 760 / 720 / 768 / 620 等页面局部断点归各页面车道，
+                         随页面改造一起迁；本 PR 只收敛 ui.css（视觉证据只覆盖 1440
+                         与 390 两档，批量改 19 页的局部断点无法逐档验证）。
+   ============================================================================ */
+
 /* 可见性纪律：`.hidden` 与 `[hidden]` 必须永远赢过组件类的 display。
    ui.css 在 tailwind.css 之后加载，同优先级会覆盖 Tailwind 的 .hidden
    （已踩过：非管理员的 #admin-nav-section 空块、#notif-more 永不消失、
@@ -736,7 +772,7 @@ body {
 	min-width: 0;
 }
 /* 移动端：卡片内横滚容器收缩到视口内，内容在其内部滚动 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.overflow-x-auto {
 		max-width: calc(100vw - 5rem);
 		contain: inline-size;
@@ -798,7 +834,7 @@ body {
 	gap: 2px;
 	min-width: 0;
 }
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.hm {
 		min-width: 560px;
 	}
@@ -1139,7 +1175,7 @@ body {
 }
 /* 窄屏不显示提示：那里没有键盘，Esc 这句对用户是噪音；而且左下角正是
  * mock 预览提示条 / 手势区的位置，摆上去只会互相遮挡。退出靠右下角按钮。 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.flograph-fullscreen-hint,
 	.flograph-fullscreen-hint.is-on {
 		display: none;
@@ -1544,7 +1580,7 @@ html.flograph-fullscreen-open body {
 	color: var(--st-abandoned);
 }
 /* 窄屏隐藏：图本身已经很小，图例会挡住内容 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.flograph-legend {
 		display: none;
 	}
@@ -2788,23 +2824,24 @@ a.side-link svg {
 .tag-add {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
+	gap: var(--sp-1);
 	min-height: 22px;
-	padding: 0 8px;
+	padding: 0 var(--sp-2);
 	border: 1px solid transparent;
 	border-radius: var(--r-full);
-	font-size: 0.75rem; /* = 12px，即旧 `.badge` 的字号（引用量最大的一族） */
+	font-size: var(--fs-sm); /* 12px = 旧 `.badge` 的字号（引用量最大的一族） */
 	font-weight: 500;
 	line-height: 1;
 	white-space: nowrap;
 }
-/* 紧凑档：行内小药丸（表格行 / 代码旁 / 能力标签），对应旧 .out-chip / .src-* 的尺寸 */
+/* 紧凑档：行内小药丸（表格行 / 代码旁 / 能力标签），对应旧 .out-chip / .src-* 的尺寸。
+ * 与常规档的差别只在高度 / 圆角 / 字号：内距共用 `--sp-2`，字号用 `--fs-xs`。 */
 .badge-sm {
 	min-height: 18px;
-	padding: 0 0.4rem;
+	padding: 0 var(--sp-2);
 	border-radius: var(--r-xs);
 	font-family: var(--font-mono);
-	font-size: 0.7rem;
+	font-size: var(--fs-xs);
 	font-weight: 400;
 }
 /* 加标签按钮：几何沿用上面的药丸规则（同一族），差异只有虚线描边与弱字色。 */
@@ -3095,12 +3132,12 @@ a.side-link svg {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	padding: 6px 12px;
+	padding: 6px var(--sp-3);
 	border-radius: var(--r-sm);
 	border: 1px solid transparent;
 	background: transparent;
 	color: var(--muted);
-	font-size: 13px;
+	font-size: var(--fs-base); /* 13px（tokens 刻度，像素等价） */
 	font-weight: 500;
 	line-height: 1.2;
 	cursor: pointer;
@@ -3468,7 +3505,7 @@ a.side-link svg {
 	width: 18px;
 	height: 18px;
 }
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.empty {
 		padding: 32px 16px;
 	}
@@ -3844,14 +3881,14 @@ html.theme-switching *::after {
    断点（1279 / 1023 / 767 / 639）
    ============================================================================ */
 /* 顶栏副标题在 1280 以下隐藏（窄屏位置留给标题与操作） */
-@media (max-width: 1279px) {
+@media (max-width: 1279.98px) {
 	.app-topbar-sub {
 		display: none;
 	}
 }
 
 /* 平板及以下：侧栏改抽屉（宽度仍是展开宽度，不跟折叠变量缩） */
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
 	.app-sidebar {
 		position: fixed;
 		top: 0;
@@ -3960,7 +3997,10 @@ html.theme-switching *::after {
 	}
 }
 
-@media (max-width: 767px) {
+/* #372：这一块原是「窄平板」临时档（767）。按断点契约并入手机档（640）——
+ * 640~767 之间失去的只有 .page-title 24px / .modal-panel max-width:100% /
+ * .card-pad 16px / .page-actions 100% 这几条窄屏保险，实测无回归（见 PR 截图）。 */
+@media (max-width: 639.98px) {
 	.page-title {
 		font-size: 24px;
 	}
@@ -3978,7 +4018,7 @@ html.theme-switching *::after {
 	}
 }
 
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.page-title {
 		font-size: 22px;
 	}
@@ -5128,7 +5168,7 @@ html.theme-switching *::after {
 }
 /* 窄屏：两个 chip 让位给「图例」按钮（点开就是完整 7 行），
  * 否则 390 宽下 HUD 会被 clock + track + chip + 按钮挤爆。 */
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.flograph--silk .hud-legend {
 		display: none;
 	}
