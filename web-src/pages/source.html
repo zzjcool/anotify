@@ -19,9 +19,10 @@
 #src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
 .source-graph{min-height:320px;width:100%;min-width:0}
-/* #384：<640 紧凑视图的高度跟着内容走 —— 桌面那个 320px 最小高会在
-   「3 步 + 还有 N」下方留一块空白（无数据可放）。展开完整图时不受影响。 */
-@media (max-width: 639px){.source-graph.is-compact:not(.is-expanded){min-height:0}}
+/* #384：≤820 紧凑视图的高度跟着内容走 —— 桌面那个 320px 最小高会在
+   「3 步 + 还有 N」下方留一块空白（无数据可放）。展开完整图时不受影响。
+   断点跟 ui.css 的「内容档」820 一致（紧凑视图本身也在那里开启）。 */
+@media (max-width: 819.98px){.source-graph.is-compact:not(.is-expanded){min-height:0}}
 .source-loading{padding:24px;color:var(--muted)}
 /* SRC-5 / CP-4：统一空态（图标 + 标题 + 说明 + 返回列表/重试 两个动作） */
 .src-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 20px;text-align:center}

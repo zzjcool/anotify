@@ -9,6 +9,10 @@ export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
 export const PAGES = Object.freeze(["admin","capabilities","cli-auth","docs","events","index","keys","login","message","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
+// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 19 页 × 4 语言 ×
+// 2 主题 × 2 视口的固定矩阵，加一个键就把 304 视图变成 456。内容档只用于
+// 「#384 主内容不用横滚」的专项用例（tablet / desktop 两种 kind）。
+export const TABLET_VIEW = Object.freeze({ width: 768, height: 1024 });
 export const STANDALONE = Object.freeze(["cli-auth", "passkey-enroll"]);
 export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真正调用）";
 // Batches keep every matrix case inside the fixed 55s outer budget.

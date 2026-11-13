@@ -5,7 +5,8 @@
    ----------------------------------------------------------------------------
    收敛前全站散落 13 个宽度值：479 / 620 / 639 / 640 / 720 / 760 / 767 / 768 / 900 /
    1023 / 1024 / 1279 / 1280（ui.css 15 条宽度 @media + 页面内联 38 条：25 max + 13 min）。现在只有 **3 档**，写 Media
-   Query 时只用下面三种，不要再引入第四个数字：
+   Query 时只用下面三种，不要再引入第四个数字（唯一例外是 #384 的受限内容档 820，
+   只作用于三处内容、不进机型布局，见「遗留」最后一条）：
 
      手机档  640px    @media (max-width: 639.98px)   /  @media (min-width: 640px)
      平板档  1024px   @media (max-width: 1023.98px)  /  @media (min-width: 1024px)
@@ -27,6 +28,12 @@
    遗留（本 PR 不动，理由写在这里而不是散在 PR 评论里）：
      479              → 「极窄手机」档（顶栏动作组直接隐藏），语义上与 640 不同；
                          且 #382/#385 正在改同一块移动顶栏，改它必然撞车。
+     820              → #384 的「内容档」（`max-width: 819.98px`）。它**不是**机型档：
+                        只用在「链路图紧凑视图 / docs 代码块软换行 / 首页热力图摘要」
+                        这三处内容级改动上（768 竖屏平板上链路图仍是 2.7 屏、docs 的
+                        930px 长行仍是 930px，而这批屏没有第二块屏可以横过去）。
+                        640~819 之间的机型布局（表格卡片化、移动顶栏等）不受它影响，
+                        详述见文件末尾 #384 段头。
      max-width: 760px → 只用于 silk 链路图的密集 HUD（隐藏 bar-meta、压 35px 条高），
                          是「图表 HUD」专用档；且 .flograph-* 归 c-mobile（#382/#384/#385）
                          的写入区，本 PR 不碰。
@@ -5671,15 +5678,39 @@ html.theme-switching *::after {
 
 /* — epic-369-mobile · #384 主内容不再必须横滚（本段仍归 c-mobile 独占）
  *
- * 手机断点（<640px）内，四类主内容从「必须横滚才读得完」改成「默认不用滚」：
- *   1) 表格 → 行式卡片：`.data-cards` 隐藏表头，每行一张卡、字段竖排，
- *      每个字段的标签来自 `td[data-label]`（模板/JS 用 t() 写，四语言同步）。
- *   2) 链路图 → 紧凑竖向 3 步 + 「还有 N →」（DOM/交互在 flograph.js，本段只管样式）。
- *   3) 首页热力图 → 一行摘要，点开才是完整 53 周（开关/文案在 index.html）。
- *   4) 代码块 → `pre-wrap` 软换行，不再把内容藏到右边界外。
- * 桌面端（≥640px）一个像素都不动；手机端仍然保留的横滚只可能是用户主动打开的
- * 完整图/完整热力图，两处都带可见提示（渐隐 + 拖动提示 + `data-scroll-hint`）。
+ * 四类主内容从「必须横滚才读得完」改成「默认不用滚」，但**分两个断点**：
+ *
+ *   手机档 640（`max-width: 639px`）—— 表格 → 行式卡片。
+ *     `.data-cards` 隐藏表头，每行一张卡、字段竖排，标签来自 `td[data-label]`
+ *     （模板/JS 用 t() 写，四语言同步）。卡片化改的是阅读形态，只在真手机上做；
+ *     640~819 仍是正常表格（keys 620px / admin 34rem 的最小宽在 700 级卡片里放得下）。
+ *
+ *   内容档 820（`max-width: 819.98px`）—— 链路图紧凑视图 / docs 代码块软换行 /
+ *     首页热力图摘要 三处内容级改动。
+ *     为什么不是 640：#384 的验收口径是 390 / 360 / **768** 三档，而 768×1024
+ *     竖屏平板上链路图内容宽仍是 1916（实测；基准版 1102）/ 卡片 702 = 2.7 屏，
+ *     docs 的 930px 长行也比 702 宽 —— 这块屏没有第二块屏可以横过去。
+ *     为什么不是 1024：≥1024 是桌面档，那里横滚是 D17 的「交互式横滚 + 两端渐隐
+ *     + 拖动提示」契约（白名单 + 可见提示由 e2e 守），不该在桌面窗口里退化成折叠。
+ *     820 因此是本段新增的「内容档」，只用在这三处内容上；机型档仍是
+ *     640 / 1024 / 1280（见文件头断点契约里的例外说明）。
+ *
+ * 默认态（≥820，或内容档里还没挂上 `is-compact` 时）必须**隐藏紧凑块与收起按钮**：
+ * 这两块 DOM 由 flograph.js 无条件插进 body（只有紧凑态才填内容），所以「隐藏」是
+ * 默认态、不是窄档里的覆盖 —— 写在媒体查询里只对窄档生效，宽档会退回 <button> 的
+ * UA display:inline-block：图卡底部多出一个 24px 的「收起紧凑视图」裸按钮，并把
+ * `.flograph-scroll` 从 308 压到 284 —— 一个 24px 的**纵向**嵌套滚动，把滚轮吃掉
+ * （e2e 的 wheel 断言因此 4500ms 超时）。见下面 §0。
+ *
+ * 仍然保留的横滚只可能是用户主动打开的完整图 / 完整热力图，两处都带可见提示
+ * （渐隐 + 拖动提示 + `data-scroll-hint`）。
  */
+
+/* ---------- 0. 默认态：紧凑块与收起按钮只在「内容档 + is-compact」下出现 ---------- */
+.flograph--silk .flograph-compact,
+.flograph--silk .flograph-compact-collapse {
+	display: none;
+}
 
 @media (max-width: 639px) {
 	/* ---------- 1. 表格 → 行式卡片（keys / admin 用户表） ----------
@@ -5754,18 +5785,18 @@ html.theme-switching *::after {
 	.data-cards td:not([data-label])::before {
 		content: none;
 	}
+}
 
-	/* ---------- 2. 链路图紧凑视图（#384） ----------
-	 * 完整图在 390 下是 1102px / 3.6 屏；紧凑态只排 3 步 + 剩余数量，
-	 * 高度跟着内容走（height:auto），点「还有 N →」才回到完整图。 */
+/* ---------- 2. 链路图紧凑视图（#384）：内容档 820 ----------
+ * 完整图在 390 下是 1102px / 3.6 屏；紧凑态只排 3 步 + 剩余数量，
+ * 高度跟着内容走（height:auto），点「还有 N →」才回到完整图。
+ * 两个元素在宽档的默认隐藏见 §0；这里只写「内容档 + is-compact」下的形态。 */
+@media (max-width: 819.98px) {
 	.flograph--silk.is-compact:not(.is-expanded) {
 		height: auto;
 	}
 	.flograph--silk.is-compact:not(.is-expanded) .flograph-scroll,
 	.flograph--silk.is-compact:not(.is-expanded) .flograph-pan-hint {
-		display: none;
-	}
-	.flograph--silk .flograph-compact {
 		display: none;
 	}
 	.flograph--silk.is-compact:not(.is-expanded) .flograph-compact {
@@ -5844,10 +5875,8 @@ html.theme-switching *::after {
 	.flograph--silk .flograph-compact-more:hover {
 		border-color: color-mix(in srgb, var(--text) 30%, transparent);
 	}
-	/* 展开后回到完整图：这一枚是「返回紧凑视图」的唯一入口，浮在舞台右上角 */
-	.flograph--silk .flograph-compact-collapse {
-		display: none;
-	}
+	/* 展开后回到完整图：这一枚是「返回紧凑视图」的唯一入口，浮在舞台右上角。
+	 * 默认（没有 is-compact / 没展开）隐藏 —— 见 §0，别在这里写 display:none。 */
 	.flograph--silk.is-compact.is-expanded .flograph-compact-collapse {
 		display: inline-flex;
 		align-items: center;
@@ -5868,8 +5897,9 @@ html.theme-switching *::after {
 	}
 
 	/* ---------- 3. 代码块软换行 ---------- */
-	/* 代码块软换行：white-space:pre 的 930px 长行在 390 下只能看到 348px，
-	 * 换成 pre-wrap + anywhere 让整段可读（复制按钮复制的仍是同一份 innerText）。
+	/* 代码块软换行：white-space:pre 的 930px 长行在 390 下只能看到 348px、
+	 * 768 下也只看到 702px，换成 pre-wrap + anywhere 让整段可读
+	 * （复制按钮复制的仍是同一份 innerText）。
 	 * 不隐藏、不折叠：docs 的 5 个代码块都靠这一条，比「前 6 行 + 展开」少一次点击。 */
 	.code-body {
 		white-space: pre-wrap;

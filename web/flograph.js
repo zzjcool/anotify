@@ -1944,15 +1944,18 @@
 		 * （读屏 + 机械断言都能读到它）。 */
 		scroll.setAttribute("data-scroll-hint", panHint.textContent || "");
 
-		/* ---- #384 · <640 紧凑视图：3 个节点 + 「还有 N →」-------------------
+		/* ---- #384 · ≤820 紧凑视图：3 个节点 + 「还有 N →」--------------------
 		 *
-		 * 390 下整张 silk 图宽 1102px（3.6 屏），「必须横滚才读得完」的正是这条
-		 * 主内容。手机屏上先把链路**怎么走**说清楚：竖向排 3 步 + 剩余数量；
-		 * 「还有 N →」是用户主动动作，点开才回到完整图（这时 flograph-scroll
-		 * 自带的两端渐隐 + 「← 可横向拖动 →」提示才出现）。
+		 * 390 下整张 silk 图宽 1102px（3.6 屏），768 竖屏平板（卡片 702）上是 2.7 屏，
+		 * 「必须横滚才读得完」的正是这条主内容。窄屏上先把链路**怎么走**说清楚：
+		 * 竖向排 3 步 + 剩余数量；「还有 N →」是用户主动动作，点开才回到完整图
+		 * （这时 flograph-scroll 自带的两端渐隐 + 「← 可横向拖动 →」提示才出现）。
 		 *
 		 * 为什么是竖向而不是把 3 个节点横着摊开：3 × 164 + 2 × 26 + 触发器 124
-		 * 仍然 ≥ 640，横排等于把「必须横滚」换个壳，问题没解决。 */
+		 * 仍然 ≥ 640，横排等于把「必须横滚」换个壳，问题没解决。
+		 *
+		 * 这两块 DOM（compact / compact-collapse）**无条件**插进 body，只有紧凑态
+		 * 才填内容 —— 所以「宽屏隐藏」是 ui.css §0 的默认态，不是本轮询里的 CSS。 */
 		const compact = div("flograph-compact");
 		const compactCollapse = document.createElement("button");
 		compactCollapse.type = "button";
@@ -2795,15 +2798,21 @@
 		}
 
 		/* ---- #384 · 紧凑视图的开关与重绘 --------------------------------------
-		 * 阈值 640（不是 isNarrow 的 620）：issues #384 的验收口径就是 <640。
-		 * 宽度从 container 量而不是 scroll：紧凑态下 scroll 是 display:none，
-		 * clientWidth 恒为 0；container 不受显隐影响，不会自己振荡。 */
+		 * 判定只有一条：**视口** ≤820（= ui.css 里的「内容档」`max-width: 819.98px`）。
+		 * 与宽度相关的 640 旧阈值一起退役：同一份「要不要折叠」的事实如果 CSS 按视口、
+		 * JS 按容器宽，两条线之间（容器 702 而视口 821~880）就会出现「class 在、样式不在」
+		 * 的半开状态 —— 反而把完整图也藏了。
+		 * 为什么是 820 而不是 640：#384 的验收口径是 390 / 360 / 768 三档，768 竖屏
+		 * 平板上完整图仍是 2.7 屏，没有第二块屏可以横过去。改阈值时三处要一起动：
+		 * 本函数、ui.css 的 #384 段、以及页面内联（index 热力图摘要 / docs 表格）。
+		 * （不再量 container.clientWidth：紧凑态下 scroll 是 display:none，
+		 *   clientWidth 恒为 0；改读视口后这条自振荡风险也不存在了。） */
+		const COMPACT_MQ = "(max-width: 819.98px)";
 		function isCompact() {
 			// 用 class 而不是 `fullscreen` 变量：relayout() 在伪全屏那段初始化之前
 			// 就会跑一次（挂载期），读 let 变量会撞 TDZ。class 是同一事实的等价物。
 			if (container.classList.contains("is-fullscreen")) return false;
-			const w = container.clientWidth || scroll.clientWidth || 0;
-			return w > 0 && w < 640;
+			return window.matchMedia(COMPACT_MQ).matches;
 		}
 
 		function applyCompact() {
@@ -3093,7 +3102,7 @@
 				if (isNarrow() !== geo.narrow) relayout();
 				else {
 					updateStageHeight();
-					/* #384：620–639 这段只影响紧凑视图（640 阈值），不动 geo，
+					/* #384：这一档只影响紧凑视图（820 视口阈值），不动 geo，
 					 * 所以两档都要重新判一次紧凑开关。 */
 					applyCompact();
 				}
