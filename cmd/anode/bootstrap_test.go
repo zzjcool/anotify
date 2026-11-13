@@ -271,6 +271,8 @@ type scriptFixture struct {
 	hubBinary    atomic.Int64 // 假中枢被要二进制的次数（--download-url 下必须是 0）
 	sudoUser     string       // 有值就注入 SUDO_USER（root 直跑时才需要）
 	isActiveFail int          // 假 systemctl 前 N 次 is-active 返回"未 active"
+	// loginShell 是抓 PATH 用的假登录 shell（ANODE_LOGIN_SHELL 测试钩子）；空 = 脚本自己探测。
+	loginShell string
 
 	// ownershipCheck 打开「所有权敏感」夹具：假 systemctl 的 is-active 只在
 	// 「config 属主 == unit 的 User=」时成功（C1 的回归门）。
@@ -439,6 +441,9 @@ func (f *scriptFixture) env() []string {
 	}
 	if f.ownershipCheck {
 		env = append(env, "FIXTURE_OWNERSHIP=1")
+	}
+	if f.loginShell != "" {
+		env = append(env, "ANODE_LOGIN_SHELL="+f.loginShell)
 	}
 	if f.installExit != "" {
 		env = append(env, "FIXTURE_INSTALL_EXIT="+f.installExit)
@@ -954,12 +959,17 @@ func TestInstallScriptUninstallModes(t *testing.T) {
 		return out, errOut
 	}
 
-	// (a) 默认卸载：unit/二进制/配置都删，data 保留。
+	// (a) 默认卸载：unit/二进制/配置都删，data 保留；install.json（PATH 记录）跟配置同生共死。
 	install()
+	record := filepath.Join(f.stage, "etc/anode/install.json")
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("装完之后应该有 PATH 记录 %s: %v", record, err)
+	}
 	out, _ := uninstall()
 	f.mustNotExist(unit)
 	f.mustNotExist(bin)
 	f.mustNotExist(cfg)
+	f.mustNotExist(record)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("默认卸载不该删数据目录（%s）: %v", marker, err)
 	}
@@ -1217,12 +1227,16 @@ func TestInstallScriptInstallFailureRestoresServiceAndKeepsCode(t *testing.T) {
 	}
 }
 
-// ---- 9g. 不同 caller PATH 重跑 = 同一个 unit（R1/M4）----
+// ---- 9g. 任务环境 PATH：抓一次登录 shell → 记录 → 重跑复用；--refresh-path 才更新 ----
 //
-// unit 里的 Environment=PATH 不能照抄安装时的 $PATH：否则换一个终端（direnv/nvm/不同 ssh）
-// 重跑就会被 anode install 判为“unit 被改过”而拒绝，节点停留在“服务已 stop”。
-func TestInstallScriptUpgradeStablePathAcrossCallerPATH(t *testing.T) {
+// anode 的任务 PATH 只能是启动基线（execenv 里 PATH 是 builtin，run.env/envPassthrough 都不许
+// 改），基线又只能是 unit 的 Environment=PATH=。守护进程没有 shell 启动过程，所以"和终端对齐"
+// 只能是**安装那一刻服务用户的登录 shell**。抓取必须只发生一次（否则换个 shell 重跑就成了
+// "另一个 unit"→ upgrade 被拒 → 节点停在已 stop 的状态）：install.json 记录就是这个落点。
+func TestInstallScriptPathCapturedFromLoginShellAndReused(t *testing.T) {
 	f := newScriptFixture(t)
+	first := "/opt/login-a/bin:/usr/local/bin:/usr/bin"
+	f.useLoginShell(t, first)
 	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
 		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
 	}
@@ -1231,12 +1245,29 @@ func TestInstallScriptUpgradeStablePathAcrossCallerPATH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 unit: %v", err)
 	}
+	// 抓到的 PATH 前面钉上 $HOME/.local/bin（用户级工具的传统落点，与老行为一致）。
+	home := f.homeDir
+	if f.sudoUser != "" {
+		home = "/home/" + f.sudoUser
+	}
+	wantFirst := home + "/.local/bin:" + first
+	if !strings.Contains(string(before), "Environment=PATH="+wantFirst+"\n") {
+		t.Fatalf("unit 的 PATH 不是登录 shell 抓来的那一条\nwant %s\ngot:\n%s", wantFirst, before)
+	}
 	if strings.Contains(string(before), f.binDir) {
 		t.Fatalf("unit 的 PATH 照抄了调用者 PATH（含夹具 bin 目录）：%s", before)
 	}
+	raw, err := os.ReadFile(filepath.Join(f.stage, "etc/anode/install.json"))
+	if err != nil {
+		t.Fatalf("没写 install.json: %v", err)
+	}
+	if !strings.Contains(string(raw), `"source": "login-shell"`) || !strings.Contains(string(raw), first) {
+		t.Fatalf("install.json 没记录来源/PATH:\n%s", raw)
+	}
 
+	// 换登录 shell 的 PATH + 换 caller PATH，且不 --refresh-path：必须还是同一份 unit（记录复用）。
+	f.useLoginShell(t, "/opt/login-b/bin:/usr/bin")
 	f.resetLog()
-	// 换一个“终端”：PATH 的目录集合/顺序都变了（但假命令仍在最前面，脚本还能跑）。
 	f.pathOverride = f.binDir + ":/opt/caller-only/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	code, out, errOut := f.run([]string{
 		"--version", "old-v1",
@@ -1245,29 +1276,69 @@ func TestInstallScriptUpgradeStablePathAcrossCallerPATH(t *testing.T) {
 		"--prefix", f.stage,
 	}...)
 	if code != 0 {
-		t.Fatalf("不同 caller PATH 重跑应该等于同一个 unit（升级成功），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+		t.Fatalf("不同 caller PATH 重跑应该复用记录（升级成功），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 	}
 	after, err := os.ReadFile(unit)
 	if err != nil {
 		t.Fatalf("升级后读 unit: %v", err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatalf("caller PATH 变了就换了 unit（升级会拒绝覆盖）\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Fatalf("重跑换掉了 unit（升级会拒绝覆盖）\nbefore:\n%s\nafter:\n%s", before, after)
 	}
-	// 稳定集合：$HOME/.local/bin + 固定系统路径，不照抄调用者 PATH。
-	wantPath := ""
+
+	// --refresh-path：显式重抓 → unit 换成新的登录 shell PATH，且不被 unit 守卫挡住。
+	code, out, errOut = f.run(append([]string{
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--prefix", f.stage,
+	}, "--refresh-path")...)
+	if code != 0 {
+		t.Fatalf("--refresh-path 应该成功（守卫放行同一套安装只改 PATH），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	refreshed, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("刷新后读 unit: %v", err)
+	}
+	if !strings.Contains(string(refreshed), "Environment=PATH="+home+"/.local/bin:/opt/login-b/bin:/usr/bin\n") {
+		t.Fatalf("--refresh-path 没换成新的登录 shell PATH：\n%s", refreshed)
+	}
+	if !strings.Contains(out, "login-b/bin") {
+		t.Fatalf("刷新结论没说明 PATH 来源：%s", out)
+	}
+}
+
+// ---- 9g'. --no-capture-path：退回老的固定集合（显式选择才走这条）----
+func TestInstallScriptNoCapturePathKeepsStableSet(t *testing.T) {
+	f := newScriptFixture(t)
+	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken, "--no-capture-path")...); code != 0 {
+		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
+	}
+	unit := filepath.Join(f.stage, "etc/systemd/system/anode.service")
+	after, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("读 unit: %v", err)
+	}
+	wantPath := f.homeDir
 	if f.sudoUser != "" {
-		wantPath = "/home/" + f.sudoUser + "/.local/bin"
-	} else {
-		wantPath = f.homeDir + "/.local/bin"
+		wantPath = "/home/" + f.sudoUser
 	}
-	wantPath += ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	wantPath += "/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	if !strings.Contains(string(after), "Environment=PATH="+wantPath+"\n") {
-		t.Fatalf("unit 的 PATH 不是稳定集合\nwant Environment=PATH=%s\ngot unit:\n%s", wantPath, after)
+		t.Fatalf("unit 的 PATH 不是固定集合\nwant Environment=PATH=%s\ngot unit:\n%s", wantPath, after)
 	}
-	if !strings.Contains(out, "升级完成") {
-		t.Fatalf("升级结论没写清楚：%s", out)
+	if strings.Contains(string(after), f.binDir) {
+		t.Fatalf("unit 的 PATH 照抄了调用者 PATH（含夹具 bin 目录）：%s", after)
 	}
+}
+
+// useLoginShell 装一个"打印固定 PATH"的假登录 shell（ANODE_LOGIN_SHELL 钩子）：抓取逻辑
+// 只认它，测试才可复现（真登录 shell 的 PATH 取决于跑测试的机器）。
+func (f *scriptFixture) useLoginShell(t *testing.T, path string) {
+	t.Helper()
+	shell := filepath.Join(f.binDir, "fixture-login-shell")
+	put(t, shell, fmt.Sprintf("#!/bin/sh\nprintf '\\n__ANODE_PATH__%s\\n'\n", path), 0755)
+	f.loginShell = shell
 }
 
 // ---- 9h. 显式 --service system + --prefix：unit 不在 systemd 搜索路径里，拦下来（R1/m2）----

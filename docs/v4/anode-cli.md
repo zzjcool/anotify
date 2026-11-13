@@ -6,12 +6,13 @@
 > 这与 v3 的 `cmd/agent/skill.md` 是同一个防漂移思路（手册 ↔ 真二进制），
 > 只是 v4 的节点产品换成 `anode`，手册从「内嵌进二进制」改为「随仓库发布」。
 
-`anode` 是**节点**（执行者）唯一的产品二进制，只有三个子命令：
+`anode` 是**节点**（执行者）唯一的产品二进制，只有四个子命令：
 
 | 子命令 | 作用 | 谁在用 |
 | --- | --- | --- |
 | `install` | 把二进制/配置/服务单元**装到本机**（不做注册、不签 token、不 sudo） | 管理员 / 安装脚本 |
 | `serve` | 常驻：连中枢、跑能力、开 emit 端点 | systemd / 容器 |
+| `path` | 看/调**任务环境的 PATH 基线**（`Environment=PATH=` + `install.json`） | 管理员 |
 | `emit` | 能力脚本的**唯一出口**（把产物交给下游能力） | 能力脚本 |
 
 内置事实（配置、身份、变量）见 `docs/design/v4/anode.md`；本文件只讲命令行。
@@ -50,12 +51,41 @@ anode install --name node-a --server wss://anotify.example.com --token-file /roo
   - `--unit-home` → `Environment=HOME=`（必须是绝对路径；这是能力脚本的 `HOME` 基线）；
   - `--unit-path` → `Environment=PATH=`，**可重复**，按给出顺序用 `:` 拼成一条。
   三者留空就不输出那一行（unit 继承 systemd 的默认），形状不合法（相对路径/越界/非法用户名）直接拒绝。
+- `--path-source` / `--path-shell` 只进 `install.json`（记录这条 PATH 是 `login-shell` /
+  `flags` / `fallback` 里的哪一种、由哪个 shell 抓的）：事后回答「为什么任务里没有某个命令」
+  全靠它。`install.json` 与 `anode.yaml` 同目录，`0644`（PATH 不是秘密）。
+- 给了 `--unit-path` 就**写记录**；不给且记录已存在就**沿用记录**（同一套安装重跑 → unit
+  逐字节一致，`existing unit is unknown/modified` 不会挡住升级）；`--refresh-path`
+  （安装脚本的参数）走「重抓登录 shell」。
 - **不做**：自动注册节点、自动签 token、`sudo`、`systemctl`、联网下载。
   这些属于完整安装器 `scripts/install-anode.sh`（下载 → 校 sha256 → 停旧实例 →
   `anode serve --check` 预检 → 调 `anode install` 落盘 → 装服务 → 轮询 `is-active` → 打摘要）；
   `anode install` 自己永远只落盘，不碰服务生命周期。
 
-## 2. 起节点守护：`anode serve`
+## 2. 任务环境的 PATH：`anode path`
+
+任务的环境是**白名单**，`PATH` 固定等于守护进程启动基线（`execenv` 里是 builtin：
+`run.env` / `envPassthrough` 都不允许覆盖 PATH），基线就是 unit 的 `Environment=PATH=`。
+守护进程没有 shell 启动过程，所以基线来自**安装那一刻服务用户的登录 shell**（安装器抓一次，
+写进 `install.json`），之后重跑一律复用。
+
+```bash
+# 看这台节点的任务能看见哪些目录（--raw 只打 PATH 一行，给脚本用）
+anode path show --config /etc/anode/anode.yaml
+anode path show --config /etc/anode/anode.yaml --raw
+
+# 存量节点补一个工具链目录（只改 unit 里的 PATH 行 + 记录，不动其余任何一行）
+anode path add --config /etc/anode/anode.yaml --unit /etc/systemd/system/anode.service /home/node/.local/share/mise/shims
+systemctl daemon-reload && systemctl restart anode.service
+```
+
+- `add` 的守卫：unit 里的 PATH 必须与 `install.json` **完全一致**，不一致（手改过）就拒绝，
+  不会把别人的改动静默覆盖掉。
+- 目录只做形状校验（绝对 / clean / 非 `/` / 不含破坏 unit 行的字符），**不要求此刻存在**。
+- 按目录切换的版本（direnv / `.nvmrc` / `mise.toml`）不会在任务里生效：要锁版本就在能力脚本里
+  写绝对路径或 `mise exec`。
+
+## 3. 起节点守护：`anode serve`
 
 ```bash
 # 常驻（systemd unit 跑的就是这一行）
@@ -75,7 +105,7 @@ anode serve --check --config /etc/anode/anode.yaml --data /var/lib/anode
 - `serve` 本体也认这条判据：`welcome` 之前的 close 1008（或 401）是**身份拒绝**，直接退出，
   不再无限重连——错误令牌重连只会把中枢日志刷成一片认证失败。
 
-## 3. 能力脚本的出口：`anode emit`
+## 4. 能力脚本的出口：`anode emit`
 
 节点在执行能力前注入 `ANOTIFY_EMIT_ENDPOINT` 与 `ANOTIFY_TASK_TOKEN`；
 脚本用 `emit` 把本次产物交给下游能力（`--data` 就是下游的 params）。
@@ -95,7 +125,7 @@ anode emit --to deploy-preview --id apply-fix --data '{"ok":true}'
 - 不在任务里（没有 `ANOTIFY_EMIT_ENDPOINT` / `ANOTIFY_TASK_TOKEN`）会明确报错退出，
   不会静默成功。
 
-## 4. 版本与帮助
+## 5. 版本与帮助
 
 ```bash
 anode -h          # 三个子命令
@@ -108,7 +138,7 @@ anode --version   # 单行 JSON：{"version":"<label>","commit":"<sha>"}
 两处不等 → 「已是最新」永远判不出来，节点会被反复升级。`scripts/install-anode.sh`
 因此按**前缀**核对发布版本（允许 `+<commit>` 后缀）。
 
-## 5. 边界（踩了就错的几条）
+## 6. 边界（踩了就错的几条）
 
 - **不写中枢数据库**：`cmd/anode` 只依赖 `internal/protocol` 与 `internal/artifact`
   两个中枢包（`make check-anode-skill` 会拦），不 import `internal/server` /
@@ -117,7 +147,7 @@ anode --version   # 单行 JSON：{"version":"<label>","commit":"<sha>"}
 - **不猜宿主环境**：`envPassthrough` 只写变量名，值留在本机；`run.env` 里禁止覆盖 `PATH`。
 - **不做插件系统**：三个子命令之外没有第四个入口；新增能力走中枢的能力资源。
 
-## 6. 一条命令装节点（终端用户的入口）
+## 7. 一条命令装节点（终端用户的入口）
 
 终端用户**不需要**自己拼 `anode install` + `systemctl`：中枢「节点」页注册完给出**一条命令**，
 脚本自己完成下载、校验、预检、落盘、装服务、启停与校验：

@@ -321,3 +321,158 @@ func TestInstallUnitEnvRerunByteEqualAndModifiedUnitRefused(t *testing.T) {
 		t.Fatal("被拒绝的安装改了 unit 文件")
 	}
 }
+
+func TestInstallRecordsPathAndReusesItOnRerun(t *testing.T) {
+	o := fixture(t)
+	o.UnitUser, o.UnitHome = "node-runner", "/home/node-runner"
+	o.UnitPathEnv = []string{"/home/node-runner/.local/share/mise/shims", "/usr/local/bin", "/usr/bin"}
+	o.PathSource, o.PathShell = "login-shell", "/bin/bash"
+	if err := Apply(o, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.defaults(); err != nil {
+		t.Fatal(err)
+	}
+	first := readUnit(t, o)
+	record, err := LoadPathRecord(o.ConfigPath)
+	if err != nil || record == nil {
+		t.Fatalf("记录没落盘: record=%v err=%v", record, err)
+	}
+	if record.Path != strings.Join(o.UnitPathEnv, ":") || record.Source != "login-shell" || record.Shell != "/bin/bash" || record.User != "node-runner" {
+		t.Fatalf("记录内容不对: %+v", record)
+	}
+	if st, err := os.Stat(RecordFile(o.ConfigPath)); err != nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("install.json 权限/存在性: %v %v", st, err)
+	}
+
+	// 不带 --unit-path 重跑：沿用记录（unit 逐字节一致，记录也不被重写）。
+	bare := o
+	bare.UnitPathEnv = nil
+	if err := Apply(bare, &bytes.Buffer{}); err != nil {
+		t.Fatalf("复用记录重跑失败: %v", err)
+	}
+	if got := readUnit(t, o); got != first {
+		t.Fatalf("复用记录重跑改了 unit:\nfirst:\n%s\ngot:\n%s", first, got)
+	}
+	again, err := LoadPathRecord(o.ConfigPath)
+	if err != nil || again == nil {
+		t.Fatal(err)
+	}
+	if !again.CapturedAt.Equal(record.CapturedAt) || again.Source != record.Source {
+		t.Fatalf("重跑改写了记录的来源/抓取时间: %+v → %+v", record, again)
+	}
+}
+
+func TestInstallMigratesLegacyStablePathUnitOnce(t *testing.T) {
+	o := fixture(t)
+	o.UnitUser, o.UnitHome = "node-runner", "/home/node-runner"
+	// 复刻老版本安装器的落盘结果：PATH = $HOME/.local/bin + 系统目录，且没有 install.json。
+	o.UnitPathEnv = []string{legacyStablePath(o.UnitHome)}
+	if err := Apply(o, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.defaults(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(RecordFile(o.ConfigPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	o.UnitPathEnv = []string{"/home/node-runner/.local/share/mise/shims", "/usr/local/bin", "/usr/bin"}
+	o.PathSource = "login-shell"
+	if err := Apply(o, &bytes.Buffer{}); err != nil {
+		t.Fatalf("从固定集合迁移到记录制失败: %v", err)
+	}
+	want := "Environment=PATH=" + strings.Join(o.UnitPathEnv, ":") + "\n"
+	if got := readUnit(t, o); !strings.Contains(got, want) {
+		t.Fatalf("迁移后 unit 没写新 PATH:\nwant %q\ngot:\n%s", want, got)
+	}
+	if record, err := LoadPathRecord(o.ConfigPath); err != nil || record == nil {
+		t.Fatalf("迁移没写记录: %v %v", record, err)
+	}
+}
+
+func TestInstallRefusesHandEditedUnitEvenWithRecord(t *testing.T) {
+	o := fixture(t)
+	o.UnitUser = "node-runner"
+	o.UnitPathEnv = []string{"/usr/local/bin", "/usr/bin"}
+	if err := Apply(o, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.defaults(); err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(readUnit(t, o), "Restart=always", "Restart=always\nEnvironment=EXTRA=1", 1)
+	if err := os.WriteFile(o.UnitPath, []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+	o.UnitPathEnv = []string{"/usr/local/bin", "/usr/bin", "/opt/x/bin"}
+	err := Apply(o, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "existing unit is unknown/modified") {
+		t.Fatalf("手改过的 unit 被覆盖了: %v", err)
+	}
+	if got := readUnit(t, o); got != edited {
+		t.Fatal("被拒绝的安装改了 unit 文件")
+	}
+}
+
+func TestAddUnitPathRewritesUnitAndRecord(t *testing.T) {
+	o := fixture(t)
+	o.UnitUser, o.UnitHome = "node-runner", "/home/node-runner"
+	o.UnitPathEnv = []string{"/usr/local/bin", "/usr/bin"}
+	if err := Apply(o, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.defaults(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := AddUnitPath(o, []string{"/opt/toolchain/bin"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "/usr/local/bin:/usr/bin:/opt/toolchain/bin"
+	if got := readUnit(t, o); !strings.Contains(got, "Environment=PATH="+want+"\n") {
+		t.Fatalf("path add 没重写 unit:\n%s", got)
+	}
+	record, err := LoadPathRecord(o.ConfigPath)
+	if err != nil || record == nil || record.Path != want {
+		t.Fatalf("path add 没更新记录: %+v %v", record, err)
+	}
+	// 幂等：同一目录再 add 一次不改任何文件。
+	before := readUnit(t, o)
+	if err := AddUnitPath(o, []string{"/opt/toolchain/bin"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if readUnit(t, o) != before {
+		t.Fatal("重复 add 改了 unit")
+	}
+	// 相对目录：形状校验在写盘之前拒绝。
+	if err := AddUnitPath(o, []string{"opt/bin"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "path add") {
+		t.Fatalf("相对目录被接受: %v", err)
+	}
+	// 手改过的 PATH 行（与记录不一致）：拒绝覆盖。注释/其它行的手工改动不影响（只改 PATH 行）。
+	if err := os.WriteFile(o.UnitPath, []byte(strings.Replace(before, ":"+"/opt/toolchain/bin", ":/opt/hand-edited", 1)+"# hand edit\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddUnitPath(o, []string{"/opt/y/bin"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "differs from the record") {
+		t.Fatalf("手改过的 PATH 行被 path add 覆盖了: %v", err)
+	}
+	// 没有 PATH 行：不猜，拒绝。
+	noPath := "Type=simple\nExecStart=/usr/local/bin/anode serve\n"
+	if err := os.WriteFile(o.UnitPath, []byte(noPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddUnitPath(o, []string{"/opt/y/bin"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "Environment=PATH=") {
+		t.Fatalf("没有 PATH 行的 unit 被改写了: %v", err)
+	}
+	// 没有记录：要求先 install，而不是凭空造一条 PATH。
+	if err := os.WriteFile(o.UnitPath, []byte(before), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(RecordFile(o.ConfigPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddUnitPath(o, []string{"/opt/z/bin"}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no PATH record") {
+		t.Fatalf("没有记录时 path add 没报错: %v", err)
+	}
+}

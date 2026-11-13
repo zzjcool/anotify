@@ -4,14 +4,14 @@
 ## 为什么是「等价迁移」而不是「删掉 guard」
 
 v3 的 `scripts/check_agent_skill.py` 守的是 `cmd/agent/skill.md`（内嵌手册）↔ 真二进制的
-`-h` / `--skill` / `--version`。v4 的节点产品换成 `anode`（`serve|install|emit` 三个子命令，
+`-h` / `--skill` / `--version`。v4 的节点产品换成 `anode`（`serve|install|path|emit` 四个子命令，
 没有内嵌手册），于是同一件事换了载体，守卫的**覆盖面只增不减**：
 
 | v3 断言（check_agent_skill） | v4 等价断言（本文件） |
 | --- | --- |
-| 手册里每个 `anotify-agent <sub>` 是真子命令 | 手册代码块里每个 `anode <sub>` ∈ `{serve,install,emit}`；v3 子命令出现即红 |
+| 手册里每个 `anotify-agent <sub>` 是真子命令 | 手册代码块里每个 `anode <sub>` ∈ `{serve,install,path,emit}`；v3 子命令出现即红 |
 | 手册里每个 `-flag` 在同一子命令的 FlagSet / 全局 pool 里 | 手册代码块里每个 `-flag` ∈ 那个子命令的 `-h` 输出（或全局 `-h/--help/--version`） |
-| 手册必须覆盖全部子命令 | 三个子命令必须都出现在手册代码块里 |
+| 手册必须覆盖全部子命令 | 四个子命令必须都出现在手册代码块里 |
 | `--version` 一行且与注入值一致 | `--version` 恰好一行 JSON，`version`/`commit` = 注入值（label 形状＝Makefile 的 VERSION_LABEL） |
 | `--skill` 首行与 `--version` 同一份版本串 | `scripts/install-anode.sh` 的版本校验必须吃得下真输出（允许 `+<commit>` 后缀） |
 | v3 只有一个安装入口 `scripts/install-agent.sh` | `scripts/install-anode.sh` 是**完整安装器**（下载/校验/预检/systemd 生命周期/卸载/升级），且静态服务下发的 `web/install-anode.sh` 与它**字节相同**（UI 那条 `curl … | sh` 命令跑的就是被这里校验过的那份） |
@@ -44,9 +44,9 @@ ANODE_PKG = "./cmd/anode"
 SERVER_PKG = "./cmd/server"
 MODULE = "github.com/zzjcool/anotify"
 
-# 节点只有这三个子命令（顺序 = `anode -h` 的用法行顺序）。加子命令时这里也要加：
+# 节点的子命令（顺序 = `anode -h` 的用法行顺序）。加子命令时这里也要加：
 # 漏了就等于「手册不提它」，而那正是这类漂移守卫要消灭的状态。
-EXPECTED_SUBS = ["serve", "install", "emit"]
+EXPECTED_SUBS = ["serve", "install", "path", "emit"]
 
 # v3 的 anotify-agent 子命令：出现在 v4 的手册/代码里就是没清干净的旧面
 # （`emit` 两代都有，不算退役）。
@@ -60,7 +60,11 @@ REQUIRED_FLAGS = {
     "install": {"-prefix", "-config", "-bin", "-unit", "-data", "-name", "-server",
                 "-token", "-token-file", "-update-token",
                 # 系统服务以安装者身份跑（unit 的 User=/Environment=HOME=/PATH=）
-                "-unit-user", "-unit-home", "-unit-path"},
+                "-unit-user", "-unit-home", "-unit-path",
+                # PATH 来源只进 install.json（login-shell|flags|fallback）
+                "-path-source", "-path-shell"},
+    # 任务环境的 PATH 基线：show（只看）/ add（补目录并重写 unit 的 PATH 行）
+    "path": {"-config", "-unit", "-prefix", "-raw"},
     "emit": {"-to", "-id", "-data"},
 }
 
@@ -157,7 +161,7 @@ def check_dynamic(binary: Path, workdir: Path) -> tuple[list[str], dict[str, set
     if code != 2:
         errors.append(f"未知子命令应退 2，实际 {code}（stdout={out.strip()!r}）")
     if "serve" not in (out + err):
-        errors.append("未知子命令的报错没说清可用子命令（应列出 serve/install/emit）")
+        errors.append("未知子命令的报错没说清可用子命令（应列出 serve/install/path/emit）")
 
     # ---- `-h` 里没有 v3 的子命令（有就是旧面没清干净）----
     for retired in RETIRED_SUBS:

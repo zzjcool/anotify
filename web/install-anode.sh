@@ -67,6 +67,8 @@ NO_SUDO="no"
 NO_PREFLIGHT="no"
 PREFLIGHT_SEC="${ANODE_PREFLIGHT_SEC:-20}"
 DRY_RUN="no"
+REFRESH_PATH="no"  # --refresh-path：重抓登录 shell 的 PATH（默认复用 install.json 记录）
+CAPTURE_PATH="yes" # --no-capture-path：退回老的固定集合（不探测工具链目录）
 
 # 这四个是**测试钩子**（自测脚本用它把 sudo/systemctl/loginctl/unit 落点换掉）；
 # 正常环境不要设，默认值就是真实系统里的东西。
@@ -74,6 +76,8 @@ SUDO="${ANODE_SUDO:-sudo}"
 SYSTEMCTL="${ANODE_SYSTEMCTL:-systemctl}"
 LOGINCTL="${ANODE_LOGINCTL:-loginctl}"
 UNIT_OVERRIDE="${ANODE_UNIT_PATH:-}"
+# 抓 PATH 用的登录 shell（测试钩子；也给登录 shell 不是 POSIX-ish 的机器一个明确出口）。
+LOGIN_SHELL="${ANODE_LOGIN_SHELL:-}"
 
 # ---- 运行期状态 ----
 TMP=""
@@ -93,6 +97,10 @@ EXIST_CONFIG=""
 EXISTING_TOKEN=""
 UPDATE_TOKEN="no"
 UNIT_PATH_VALUE=""
+UNIT_PATH_SOURCE=""
+UNIT_PATH_SHELL=""
+CAPTURED_SHELL=""
+CAPTURED_PATH=""
 TOKFILE=""
 SERVICE_ASSUMED="no"
 # 升级前停掉的旧实例（system|user）：install/restart/预检失败时要把它恢复回去，
@@ -169,10 +177,13 @@ usage() {
   --preflight-timeout SEC  预检最长等待秒数（默认 20）
   --dry-run                只打印将要执行的命令，不碰网络、不写盘、不提权（也不调
                            systemctl/loginctl）：只是一份计划
+  --refresh-path           重新抓一次服务用户的登录 shell PATH，写进 unit + install.json
+                           （默认：有 install.json 记录就复用——重跑=升级必须同一份 unit）
+  --no-capture-path        不抓登录 shell，退回老的固定集合（$HOME/.local/bin + 系统目录）
   -h, --help               显示这段帮助
 
 卸载：
-  --uninstall              停服务、删 unit 与二进制、删 anode.yaml
+  --uninstall              停服务、删 unit 与二进制、删 anode.yaml（+ install.json）
   --keep-config            配合 --uninstall：保留 anode.yaml（令牌还在，可先备份）
   --purge                  配合 --uninstall：连数据目录（产物缓存/工作区）一起删
 
@@ -181,7 +192,7 @@ usage() {
   --checksum-url URL       覆盖校验和来源（默认 <二进制 URL>.sha256 或中枢头）
 
 环境变量：ANODE_VERSION、ANODE_DOWNLOAD_URL、ANODE_DOWNLOAD_BASE、ANODE_CHECKSUM_URL、
-ANODE_SUDO、ANODE_SYSTEMCTL、ANODE_LOGINCTL、ANODE_UNIT_PATH、ANODE_PREFLIGHT_SEC、ANODE_ARCH。
+ANODE_SUDO、ANODE_SYSTEMCTL、ANODE_LOGINCTL、ANODE_UNIT_PATH、ANODE_LOGIN_SHELL、ANODE_PREFLIGHT_SEC、ANODE_ARCH。
 
 重跑同一条命令 = 升级；退出码 0 成功，2 为用法/下载/校验/预检/服务失败。
 EOF
@@ -253,6 +264,8 @@ parse_args() {
 			shift 2
 			;;
 		--dry-run) DRY_RUN="yes"; shift ;;
+		--refresh-path) REFRESH_PATH="yes"; shift ;;
+		--no-capture-path) CAPTURE_PATH="no"; shift ;;
 		--uninstall) UNINSTALL="yes"; shift ;;
 		--purge) PURGE="yes"; shift ;;
 		--keep-config) KEEP_CONFIG="yes"; shift ;;
@@ -345,18 +358,149 @@ require_runner() {
 	fi
 }
 
-# unit 里的 PATH 是**稳定集合**（R1/M4）：`$HOME/.local/bin` 打头（压过同名旧副本）+ 固定系统
-# 目录。**不照抄调用者 `$PATH`**：安装时 PATH 嵌进 unit，换一个终端（direnv/nvm/不同 ssh 会话）
-# 重跑就变成了“另一个 unit”，`anode install` 会以 `existing unit is unknown/modified` 拒绝覆盖，
-# 而那时旧服务已经被 stop —— 节点停在停止态。“重跑=升级”（D8）要求同一串参数在任何 shell 下
-# 都是同一个 unit。要自定义路径时用 `anode install --unit-path`（脚本会把它放在本行的 home 段之后）。
+# ---------- 任务环境的 PATH（"和终端对齐"） ----------
+#
+# anode 的任务环境是白名单：PATH = 守护进程启动基线（execenv 里是 builtin —— run.env 和
+# envPassthrough 都不允许改 PATH），基线就是 unit 的 Environment=PATH=。守护进程没有 shell
+# 启动过程，所以能对齐、也应该对齐的是**安装那一刻服务用户的登录 shell**：运维在终端里用得
+# 到的命令（mise/nvm/asdf 装的 node、自己装的 CLI），任务里也应该用得到。
+#
+# 但 PATH 不能每次都从"当前终端"重新取：换个 shell / ssh 会话 / CI 重跑，unit 就变 →
+# `anode install` 以 `existing unit is unknown/modified` 拒掉（而那时旧服务已经被 stop）；
+# `curl|sh` 的父进程也不一定有登录 shell 的 PATH。所以抓取只发生在两种情况：
+#
+#   ① 还没有 install.json 记录（首次安装 / 从老版本升级）；② 显式 --refresh-path。
+#
+# 其余一律复用记录值 → unit 逐字节一致，"重跑=升级"不被破坏。记录的读写只在 `anode install`
+# / `anode path` 里（单一源），脚本只负责"抓"。抓不到就退回老的固定集合。
 UNIT_PATH_STABLE="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-unit_path_value() {
+
+stable_path_fallback() {
 	if [ -n "$RUN_HOME" ]; then
 		printf '%s:%s' "${RUN_HOME}/.local/bin" "$UNIT_PATH_STABLE"
 	else
 		printf '%s' "$UNIT_PATH_STABLE"
 	fi
+}
+
+# login_shell_for：从密码库取该用户的登录 shell（取不到就用当前 $SHELL / /bin/sh）。
+login_shell_for() {
+	if [ -n "$LOGIN_SHELL" ]; then
+		printf '%s' "$LOGIN_SHELL"
+		return 0
+	fi
+	_shell=""
+	if command -v getent >/dev/null 2>&1; then
+		_shell=$(getent passwd "$1" 2>/dev/null | cut -d: -f7) || _shell=""
+	fi
+	if [ -z "$_shell" ] && [ -r /etc/passwd ]; then
+		_shell=$(awk -F: -v u="$1" '$1 == u { print $7 }' /etc/passwd | head -n 1)
+	fi
+	if [ -z "$_shell" ] || [ ! -x "$_shell" ]; then
+		_shell=${SHELL:-/bin/sh}
+	fi
+	printf '%s' "$_shell"
+}
+
+# normalize_path：逐项保留、去重，只留绝对路径（`.` / 相对项等于把 cwd 塞进搜索路径，是注入面）。
+# 最后保证 $RUN_HOME/.local/bin 在集合里（用户级工具的传统落点）。
+normalize_path() {
+	_out=""
+	_seen=" "
+	_ifs_save=$IFS
+	IFS=:
+	for _entry in $1; do
+		case "$_entry" in
+		/*) ;;
+		'' | *)
+			warn "忽略 PATH 里的非绝对项：$_entry"
+			continue
+			;;
+		esac
+		case "$_seen" in *" $_entry "*) continue ;; esac
+		_seen="$_seen$_entry "
+		if [ -z "$_out" ]; then _out=$_entry; else _out="$_out:$_entry"; fi
+	done
+	IFS=$_ifs_save
+	if [ -n "$RUN_HOME" ]; then
+		case ":$_out:" in
+		*":${RUN_HOME}/.local/bin:"*) ;;
+		*) if [ -z "$_out" ]; then _out="${RUN_HOME}/.local/bin"; else _out="${RUN_HOME}/.local/bin:$_out"; fi ;;
+		esac
+	fi
+	printf '%s' "$_out"
+}
+
+# capture_login_path：抓服务用户登录 shell 的 PATH。用 -l（登录）而不是 -i：交互式 rc 可能
+# 打横幅 / 等输入，而 mise/nvm 的激活（/etc/profile.d、~/.profile）在 -l 里就生效。
+# root 跑脚本时不能用自己的 shell（那是 root 的 PATH）：用 env -i + HOME=<服务用户> 让子 shell
+# 读该用户的 profile（bash/zsh 按 $HOME 找 rc，不要求 euid 匹配）。
+capture_login_path() {
+	CAPTURED_SHELL=$(login_shell_for "$RUN_USER")
+	[ -x "$CAPTURED_SHELL" ] || return 1
+	_raw=""
+	if command -v timeout >/dev/null 2>&1; then
+		_raw=$(env -i HOME="$RUN_HOME" USER="$RUN_USER" LOGNAME="$RUN_USER" SHELL="$CAPTURED_SHELL" \
+			timeout 5 "$CAPTURED_SHELL" -lc 'printf "\n__ANODE_PATH__%s\n" "$PATH"' 2>/dev/null || true)
+	else
+		_raw=$(env -i HOME="$RUN_HOME" USER="$RUN_USER" LOGNAME="$RUN_USER" SHELL="$CAPTURED_SHELL" \
+			"$CAPTURED_SHELL" -lc 'printf "\n__ANODE_PATH__%s\n" "$PATH"' 2>/dev/null || true)
+	fi
+	_path=$(printf '%s\n' "$_raw" | sed -n 's/^__ANODE_PATH__//p' | tail -n 1)
+	[ -n "$_path" ] || return 1
+	CAPTURED_PATH=$(normalize_path "$_path")
+	[ -n "$CAPTURED_PATH" ] || return 1
+}
+
+# path_value_looks_sane：`anode path show --raw` 的输出只接受"以 / 开头、只有 PATH 合法字符"。
+# 防的是"二进制不是期望的那版（或测试里的 stub）"把垃圾当成 PATH 写进 unit。
+path_value_looks_sane() {
+	case "$1" in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	case "$1" in
+	*[!A-Za-z0-9._/+:-]*) return 1 ;;
+	esac
+	return 0
+}
+
+# resolve_unit_path：算出这次要写进 unit 的 PATH。必须在 download_binary 之后调（要用
+# `"$DL_BIN" path show` 读记录）。
+resolve_unit_path() {
+	UNIT_PATH_VALUE=""
+	UNIT_PATH_SOURCE=""
+	UNIT_PATH_SHELL=""
+	if [ "$CAPTURE_PATH" != "yes" ]; then
+		UNIT_PATH_VALUE=$(stable_path_fallback)
+		UNIT_PATH_SOURCE="fallback"
+		info "  PATH      $UNIT_PATH_VALUE（--no-capture-path：老的固定集合）"
+		return 0
+	fi
+	if [ "$DRY_RUN" = "yes" ]; then
+		info "  PATH      真跑时：有 install.json 记录就复用，否则抓 $RUN_USER 的登录 shell（--refresh-path 强制重抓）"
+		return 0
+	fi
+	if [ "$REFRESH_PATH" != "yes" ]; then
+		_recorded=$("$DL_BIN" path show --config "$CONFIG" --raw 2>/dev/null) || _recorded=""
+		if [ -n "$_recorded" ] && path_value_looks_sane "$_recorded"; then
+			UNIT_PATH_VALUE=$_recorded
+			UNIT_PATH_SOURCE="record"
+			info "  PATH      $UNIT_PATH_VALUE（沿用记录：${CONFIG%/*}/install.json）"
+			return 0
+		fi
+	fi
+	# 直接调用（不是 $(...) 子 shell）：CAPTURED_PATH / CAPTURED_SHELL 要留在当前 shell 里。
+	if capture_login_path; then
+		UNIT_PATH_VALUE=$CAPTURED_PATH
+		UNIT_PATH_SOURCE="login-shell"
+		UNIT_PATH_SHELL=$CAPTURED_SHELL
+		info "  PATH      $UNIT_PATH_VALUE（抓自 $RUN_USER 的登录 shell：$CAPTURED_SHELL）"
+		return 0
+	fi
+	UNIT_PATH_VALUE=$(stable_path_fallback)
+	UNIT_PATH_SOURCE="fallback"
+	warn "没抓到登录 shell 的 PATH，退回固定集合（$RUN_HOME/.local/bin + 系统目录）"
 }
 
 # ---------- sudo ----------
@@ -577,7 +721,6 @@ compute_paths() {
 	[ -z "$OPT_DATA" ] || DATA=$OPT_DATA
 	# ANODE_UNIT_PATH 是测试钩子：覆盖 unit 落点（其余路径不变）。
 	[ -z "$UNIT_OVERRIDE" ] || UNIT_FILE=$UNIT_OVERRIDE
-	UNIT_PATH_VALUE=$(unit_path_value)
 }
 
 # --prefix + systemd 服务：`anode install` 把 unit 写进 <prefix>/etc/systemd/system/，而
@@ -1170,7 +1313,10 @@ report() {
 		info "  跑起来    $BINP serve --config $CONFIG --data $DATA"
 		;;
 	esac
-	info "  升级      重跑同一条安装命令（沿用现有 anode.yaml，只换二进制 + restart）"
+	if [ -n "$UNIT_PATH_VALUE" ]; then
+		info "  PATH      $UNIT_PATH_VALUE（$UNIT_PATH_SOURCE）"
+	fi
+	info "  升级      重跑同一条安装命令（沿用现有 anode.yaml / install.json，只换二进制 + restart）"
 	info "  卸载      sh install-anode.sh --uninstall"
 	info ""
 	case "$SERVICE" in
@@ -1266,6 +1412,24 @@ do_uninstall() {
 		fi
 	done
 
+	# PATH 记录（install.json，与 anode.yaml 同目录）：跟配置同生共死。留着它再装一次会
+	# 复用一个旧 PATH（记录制的本意是“重跑=升级”，不是“换个身份还沿用旧值”）。
+	for _r in "$OPT_CONFIG" "${PREFIX:+$PREFIX/etc/anode/anode.yaml}" "/etc/anode/anode.yaml" "${RUN_HOME}/.anode/anode.yaml"; do
+		[ -n "$_r" ] || continue
+		_r="${_r%/*}/install.json"
+		[ -f "$_r" ] || continue
+		if [ "$KEEP_CONFIG" = "yes" ]; then
+			info "保留 PATH 记录：$_r"
+			continue
+		fi
+		if _gone "$_r"; then
+			REMOVED="${REMOVED}  PATH 记录 $_r
+"
+		else
+			warn "删不掉 $_r（权限？加 sudo 重试）"
+		fi
+	done
+
 	# 数据目录只在 --purge 时删（产物缓存/工作区可能还有用）。
 	if [ "$PURGE" = "yes" ]; then
 		for _d in "$OPT_DATA" "${PREFIX:+$PREFIX/var/lib/anode}" "/var/lib/anode" "${RUN_HOME}/.anode/data"; do
@@ -1351,6 +1515,7 @@ else
 fi
 
 download_binary
+resolve_unit_path
 
 # 顺序很要紧：停旧服务（让出令牌）→ 预检（临时配置，正式配置一个字没动）→ 落盘 → 起服务。
 #
@@ -1379,9 +1544,6 @@ system)
 	if [ -n "$RUN_HOME" ]; then
 		set -- "$@" --unit-home "$RUN_HOME"
 	fi
-	if [ -n "$UNIT_PATH_VALUE" ]; then
-		set -- "$@" --unit-path "$UNIT_PATH_VALUE"
-	fi
 	;;
 user)
 	# 用户服务：unit 本来就是这个用户的，不写 User=；但要给它 HOME/PATH。
@@ -1389,11 +1551,25 @@ user)
 	if [ -n "$RUN_HOME" ]; then
 		set -- "$@" --unit-home "$RUN_HOME"
 	fi
-	if [ -n "$UNIT_PATH_VALUE" ]; then
-		set -- "$@" --unit-path "$UNIT_PATH_VALUE"
-	fi
 	;;
 esac
+# PATH 基线：逐项传（--unit-path 可重复），并告诉 `anode install` 这条 PATH 是怎么来的
+# （只进 install.json，方便以后回答"为什么任务里没有某个命令"）。
+if [ -n "$UNIT_PATH_SOURCE" ]; then
+	set -- "$@" --path-source "$UNIT_PATH_SOURCE"
+fi
+if [ -n "$UNIT_PATH_SHELL" ]; then
+	set -- "$@" --path-shell "$UNIT_PATH_SHELL"
+fi
+if [ -n "$UNIT_PATH_VALUE" ]; then
+	_ifs_save=$IFS
+	IFS=:
+	for _dir in $UNIT_PATH_VALUE; do
+		[ -n "$_dir" ] || continue
+		set -- "$@" --unit-path "$_dir"
+	done
+	IFS=$_ifs_save
+fi
 # 显式覆盖（--config/--bin/--unit/--data/ANODE_UNIT_PATH）要传下去，否则落盘位置会和摘要不一致。
 if [ "$SERVICE" != "user" ]; then
 	[ -z "$OPT_CONFIG" ] || set -- "$@" --config "$CONFIG"

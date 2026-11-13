@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,7 +30,7 @@ var commit = "unknown"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: anode {serve|install|emit} [flags]\nanode --version\nUse anode <command> --help for flags.")
+	fmt.Fprintln(w, "Usage: anode {serve|install|path|emit} [flags]\nanode --version\nUse anode <command> --help for flags.")
 }
 func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
@@ -71,6 +72,15 @@ func run(args []string, out, errOut io.Writer) int {
 				return 0
 			}
 			fmt.Fprintf(errOut, "anode install: %v\n", err)
+			return 2
+		}
+		return 0
+	case "path":
+		if err := pathCLI(args[1:], out, errOut); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			fmt.Fprintf(errOut, "anode path: %v\n", err)
 			return 2
 		}
 		return 0
@@ -220,6 +230,8 @@ func installCLI(args []string, out, errOut io.Writer) error {
 		return nil
 	})
 	fs.BoolVar(&o.UpdateToken, "update-token", false, "explicitly replace the saved token; preserve all local configuration")
+	fs.StringVar(&o.PathSource, "path-source", "", "where the unit PATH came from (login-shell|flags|fallback); recorded in install.json")
+	fs.StringVar(&o.PathShell, "path-shell", "", "shell that produced the unit PATH; recorded in install.json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -246,4 +258,109 @@ func installCLI(args []string, out, errOut io.Writer) error {
 		return fmt.Errorf("%w; have an administrator rerun anode install with these paths (no sudo is executed)", err)
 	}
 	return nil
+}
+
+// pathCLI 是 `anode path show|add`：查看/追加任务环境的 PATH 基线。
+//
+// PATH 的真相在 install.json（与 anode.yaml 同目录）：show 只读，add 追加目录并原子
+// 重写 unit（守卫与 install 同口径）。刻意**不**在这里抓登录 shell：anode 常以 root
+// 运行（写 /etc 需要），root 的登录 shell 不等于 User=<安装者> 的登录 shell —— 抓取由
+// 安装脚本以服务用户身份完成（scripts/install-anode.sh 的 capture_login_path）。
+func pathCLI(args []string, out, errOut io.Writer) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		return pathUsage(out)
+	}
+	switch args[0] {
+	case "show":
+		return pathShow(args[1:], out, errOut)
+	case "add":
+		return pathAdd(args[1:], out, errOut)
+	default:
+		return fmt.Errorf("unknown subcommand %q; expected show or add", args[0])
+	}
+}
+
+// pathUsage 打印 `anode path` 的用法：flag 列表来自**真的 FlagSet**（PrintDefaults），
+// 不是手写文本 —— 手册 ↔ `-h` 的防漂移门禁（scripts/check_anode_skill.py）对账的就是它。
+func pathUsage(out io.Writer) error {
+	fs := flag.NewFlagSet("path", flag.ContinueOnError)
+	fs.SetOutput(out)
+	var o install.Options
+	fs.StringVar(&o.ConfigPath, "config", "/etc/anode/anode.yaml", "strict anode.yaml path (the PATH record lives next to it)")
+	fs.StringVar(&o.UnitPath, "unit", "", "anode.service path (add)")
+	fs.StringVar(&o.Prefix, "prefix", "", "stage all defaults under an absolute non-root directory")
+	fs.Bool("raw", false, "print only the recorded PATH string (show)")
+	fmt.Fprintln(out, "Usage: anode path <show|add> [flags]")
+	fmt.Fprintln(out, "  show          print the recorded PATH (which directories the node's tasks see)")
+	fmt.Fprintln(out, "  add DIR...    append directories to the recorded PATH and rewrite the unit")
+	fs.PrintDefaults()
+	return flag.ErrHelp
+}
+
+func pathShow(args []string, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("path show", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	cfgPath := fs.String("config", "/etc/anode/anode.yaml", "strict anode.yaml path (the PATH record lives next to it)")
+	raw := fs.Bool("raw", false, "print only the recorded PATH string (no labels)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("path show accepts flags only")
+	}
+	record, err := install.LoadPathRecord(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if record == nil {
+		if *raw {
+			return nil // 没有记录 = 空输出（脚本用 -n 判断），不是错误
+		}
+		fmt.Fprintf(out, "no PATH record at %s\n", install.RecordFile(*cfgPath))
+		return nil
+	}
+	if *raw {
+		fmt.Fprintln(out, record.Path)
+		return nil
+	}
+	fmt.Fprintf(out, "record: %s\n", install.RecordFile(*cfgPath))
+	fmt.Fprintf(out, "path: %s\n", record.Path)
+	fmt.Fprintf(out, "source: %s\n", emptyAs(record.Source, "unknown"))
+	fmt.Fprintf(out, "shell: %s\n", emptyAs(record.Shell, "unknown"))
+	fmt.Fprintf(out, "user: %s\n", emptyAs(record.User, "unknown"))
+	fmt.Fprintf(out, "home: %s\n", emptyAs(record.Home, "unknown"))
+	fmt.Fprintf(out, "captured: %s\n", record.CapturedAt.Format(time.RFC3339))
+	return nil
+}
+
+func pathAdd(args []string, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("path add", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	var o install.Options
+	fs.StringVar(&o.Prefix, "prefix", "", "stage all defaults under an absolute non-root directory")
+	fs.StringVar(&o.ConfigPath, "config", "", "anode.yaml path (the PATH record lives next to it)")
+	fs.StringVar(&o.UnitPath, "unit", "", "anode.service path")
+	fs.StringVar(&o.BinPath, "bin", "", "anode binary path")
+	fs.StringVar(&o.DataPath, "data", "", "private data directory")
+	fs.StringVar(&o.UnitUser, "unit-user", "", "run the service as this user (User= in the unit)")
+	fs.StringVar(&o.UnitHome, "unit-home", "", "absolute HOME for the unit (Environment=HOME=)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("path add needs at least one directory")
+	}
+	for _, dir := range fs.Args() {
+		if strings.HasPrefix(dir, "-") {
+			return fmt.Errorf("flags must come before directories (got %q)", dir)
+		}
+	}
+	return install.AddUnitPath(o, fs.Args(), out)
+}
+
+func emptyAs(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }

@@ -2,6 +2,23 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## 未发布
+
+### 节点（anode）
+
+- 任务环境的 `PATH` 改为「**跟着服务用户的登录 shell 走，但只抓一次**」：安装脚本用
+  `env -i HOME=<服务用户> "$SHELL" -lc` 抓一次，写进 `install.json`（与 anode.yaml 同目录），
+  重跑一律复用记录 → 换终端/换 ssh 会话重跑仍然是同一份 unit（`重跑=升级` 不被打断）。
+  新增 `--refresh-path`（重抓）/ `--no-capture-path`（退回老的固定集合）。
+  修复：mise / nvm / asdf 装的 node 在任务里不可见，`pi` 这类 `#!/usr/bin/env node` 的 CLI
+  会以 `env: 'node': No such file or directory` 失败（还被能力脚本误报成"没登录"）。
+- 新增 `anode path show|add`：`show [--raw]` 看任务 PATH 基线（`--raw` 给脚本用），
+  `add DIR...` 往记录里追加目录并只重写 unit 的 `Environment=PATH=` 行 —— 存量节点补工具链
+  目录不再需要 `--uninstall` 重装（升级窗口不掉线）。守卫：unit 的 PATH 与记录不一致
+  （手改过）就拒绝。
+- `anode install` 的 unit 守卫放行"同一套安装只改 PATH"（`--refresh-path` / `anode path add`），
+  身份/落点（`User=`/`HOME=`/`ExecStart`）改动仍然拒绝；老版本固定集合的 unit 可一次性迁移。
+
 ## v0.2.0 — 2026-11-03
 
 UI v2、动效/加载态、字体自托管与时区修复的合并发布节点。
