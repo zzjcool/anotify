@@ -5669,3 +5669,24 @@ html.theme-switching *::after {
 @media (min-width: 640px) {
   .b2-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* — epic-369-mobile — 手机端触控与输入（#383 #382；本段归 c-mobile 独占）
+ *
+ * 手机断点（<640px）的两条硬性修正，桌面端完全不受影响：
+ *
+ * 1) #383 · 输入类字号提到 16px。iOS Safari 在 input/select/textarea 的
+ *    computed font-size < 16px 时，聚焦会自动把整个页面放大，且失焦不缩回 ——
+ *    用户每点一次筛选框，版面就"跳"一下。唯一正解是提字号；`maximum-scale=1`
+ *    / `user-scalable=no` 能"解决"，但那等于禁掉双指缩放，是无障碍倒退，不许用。
+ *
+ * 2) #382 · 可点控件 ≥44×44（iOS HIG / Material 的最小触控参考）。
+ */
+
+@media (max-width: 639px) {
+	/* ---------- #383：输入类 ≥16px，别的什么都不动 ---------- */
+	.input,
+	.select,
+	.textarea {
+		font-size: 16px;
+	}
+}
