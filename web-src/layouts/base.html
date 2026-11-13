@@ -114,20 +114,22 @@
          defer 的内联脚本是在解析到它时立即执行的。所以「defer 库 + 后面的内联脚本」
          并不冲突：内联脚本先跑，defer 库随后、在 DOMContentLoaded 之前跑完。
 
-         本产品只有 trace.html、source.html、index.html 画图，且三处绘图调用点都在更晚的阶段：
-           · trace.html —— 内联脚本解析期就启动 load()，但首次 render 前先 await 一次
-             DOMContentLoaded（页面里的 deferredGraphics 屏障）。defer 图库一定在
-             DOMContentLoaded 之前执行完，所以 render 里读 AnotifyGraphs.taskChain 时
-             图库已就绪；图库真的加载失败时页面显示真实 error + 原重试，不画假图。
-             （旧注释写的「document.addEventListener("DOMContentLoaded", load) +
-             TraceView.mount()」与实际代码不符，那正是 Trace 首屏 taskChain 缺失的根因。）
-           · source.html —— load() 里 await 完 fetch 取到 SRC/CAPS/EDGES 后才 renderBody()，
-             renderFlowCard() 再把 AnotifyGraphs.capabilityFlow() 放进 requestAnimationFrame 里画。
-           · index.html —— 只在已取到任务后画一条执行链（AnotifyGraphs.taskChain），同样远晚于
-             defer 的执行时机。
-         三处都发生在 DOMContentLoaded 之后，所以这几页用 defer 引入是安全的
-         （顺序仍不能乱：vendor/dagre 全局 → FlowGraph → AnotifyGraphs；trace 页现在
-         不再加载 traceview.js，source 页仍按 dagre → FlowGraph → AnotifyGraphs → TraceView 排）。
+         **但「库在 DCL 之前跑完」不等于「页面拿到数据时库已经在了」。** 页面在 fetch
+         的续体里画图时 DCL 可能还没到——Trace 真实现场：响应 132ms 回、138ms 读
+         taskChain 抛 TypeError、DCL 152ms 才到；source 页同构（API 命中缓存或弱网时
+         稳定复现「图组件未加载」）。反过来，等到 readyState 已是 interactive 时再挂
+         DCL 监听还可能永远等不到。唯一安全的点是在**解析期**挂监听，所以这件事收了
+         一份到 partials.js（与 partials 的加载位置绑定）：
+
+           页面解析期：A.expectGraphics();      ← 声明「本页会画图」，挂门闩
+           画图处：    const G = await A.graphLib(文案);   ← 等到 DCL 再读库
+
+         页面**不得**直接读 window.AnotifyGraphs（scripts/check-graph-access.mjs 会拦）：
+         漏写等待在结构上就画不出图，库真缺时是可见错误 + 重试，不画假图、不静默删图。
+
+         本产品只有 trace.html、source.html、index.html 画图（顺序仍不能乱：
+         vendor/dagre 全局 → FlowGraph → AnotifyGraphs；trace 页现在不再加载
+         traceview.js，source 页仍按 dagre → FlowGraph → AnotifyGraphs → TraceView 排）。
 
          为什么其余页面不加载它们：这四个文件合计约 232KB（dagre 48 + flograph 118 +
          graphs 50 + traceview 16）+ 4 个请求，对根本不画图的页面的首屏是纯成本。

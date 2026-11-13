@@ -103,8 +103,9 @@
 {{end}}
 {{define "graph-libs"}}
     <!-- 图渲染四件套：只在本页与 trace.html 加载（base.html 里这个槽位默认是空的）。
-         全部 defer —— 本页的绘图调用在 load() 里 await 完 fetch 后的 requestAnimationFrame 中
-         （renderFlowCard），远晚于 defer 的执行时机，所以库一定已就绪。
+         全部 defer —— 本页画图前会 `await A.graphLib()`（partials.js 里的启动门闩）：
+         它等的是 DOMContentLoaded，而 defer 库一定在 DCL 之前执行完，所以那时库一定就绪。
+         **别在这里用「fetch 回来得比 defer 晚」推安全**：API 命中缓存时它比库还快（SOURCE-STARTUP）。
          顺序不能改：dagre 全局 → FlowGraph → AnotifyGraphs → TraceView（e2e 有断言）。 -->
     <script defer src="/vendor/dagre.min.js">
 </script>
@@ -119,6 +120,8 @@
 {{define "script"}}
 <script>
 const A = window.Anotify;
+// 解析期声明本页会画图：挂上 defer 图库的就绪门闩（实现只有 partials.js 一份）
+A.expectGraphics();
 const t = (key) => A.t("sources.v4." + key);
 // 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
 const xt = (key) => A.t("uxaudit.res.sources." + key);
@@ -385,19 +388,26 @@ async function render(src,caps,edges){
   const host=el("div","source-graph");
   host.id="src-flow";
   $("src-body").append(host,el("p","field-hint",t("graph_hint")));
-  if(!window.AnotifyGraphs)host.append(el("p","source-error",t("graph_error")));
-  else AnotifyGraphs.capabilityFlow(host,{
-    src:{
-      name:m.name,kind:m.kind
-    },topology:await A.loadSourceTopology(m.name,{
-      // 这一页手上已经有源 / 能力 / 边表：走同一个入口但不重复请求。
-      sources:[src],capabilities:caps,edges:edges
-    }),t:(k,d)=>A.t(k,d),showFullscreen:true,onNodeClick:n=>{
-      if(n.id!=="__source__" && !n.unknown)location.href=link("capabilities.html",{
-        name:n.name||n.id
-      });
-    }
-  });
+  // 图库是 defer 加载的：等开始画的时候 API 可能早就回来了，只准走 graphLib() 取库，
+  // 也不许在这里同步探库全局（defer 未执行时会误判「未加载」，这就是 SOURCE-STARTUP）。
+  try{
+    const G=await A.graphLib(t("graph_error"));
+    G.capabilityFlow(host,{
+      src:{
+        name:m.name,kind:m.kind
+      },topology:await A.loadSourceTopology(m.name,{
+        // 这一页手上已经有源 / 能力 / 边表：走同一个入口但不重复请求。
+        sources:[src],capabilities:caps,edges:edges
+      }),t:(k,d)=>A.t(k,d),showFullscreen:true,onNodeClick:n=>{
+        if(n.id!=="__source__" && !n.unknown)location.href=link("capabilities.html",{
+          name:n.name||n.id
+        });
+      }
+    });
+  }catch(err){
+    // 图失败只毁图这一块：其余区块照常可读；重试走整页 load（与其它页一致）。
+    host.replaceChildren(A.loadErrorNode(err,load));
+  }
   const events=section("recent");
   const box=el("div");
   box.id="source-events";

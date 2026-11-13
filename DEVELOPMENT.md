@@ -701,6 +701,28 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 **教训**：任何「长期生效的保护」都要有「保护本身坏掉时怎么退出去」的设计，
 且退出方向要选**保持可用**那一侧（整站写不进来比队列继续涨更糟）。
 
+### defer 图库 vs 页面脚本：别赌「fetch 比脚本慢」（TRACE/SOURCE-STARTUP）
+
+图渲染四件套（dagre → flograph → graphs → traceview）是 layout `graph-libs` 槽位里的
+**defer** 脚本，页面在 fetch 的续体里画图。两者谁也不等谁：
+
+- Trace 真实现场：响应 132ms 解析返回、138ms 读 `taskChain` 抛 TypeError、DCL 152ms 才到；
+- 源详情页同构：API 命中缓存或弱网时，图上直接印「图组件未加载，请重新加载。」
+  （实测：页面 165ms 判「未加载」、图库 192ms 就绪——27ms 的窗口就能稳定复现）。
+
+**不能**用 `document.readyState` 兜底：解析结束到 defer 执行之间 readyState 已是 `interactive`，
+那时现挂 DCL 监听可能永远等不到；而「DCL 已过」才是真缺库。唯一安全的点是在**解析期**
+挂监听（partials.js 在 base.html 里是解析期脚本，天然满足）。所以：
+
+- 实现只有一份：`partials.js` 的 `expectGraphics()` / `graphLib()`；
+- 页面解析期一行 `A.expectGraphics();`，画图处 `const G = await A.graphLib(文案);`；
+- 页面**不得**直接读 `window.AnotifyGraphs` —— `scripts/check-graph-access.mjs`
+  （挂在 `make sitegen` 上）会拦；回归测试是 `scripts/v4-frontend.test.mjs` 的
+  TRACE-STARTUP / SOURCE-STARTUP。
+
+**教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，
+迟早会在页面重构成 await 续体后失效。要么用结构保证（解析期挂门闩），要么用门禁拦住。
+
 ## 9. 常用命令速查
 
 ```bash

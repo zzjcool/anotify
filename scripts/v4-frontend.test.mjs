@@ -3429,6 +3429,152 @@ test("TRACE-STARTUP native: delayed defer graph library, missing-script retry re
   assert.match(output, /TRACE-STARTUP OK /, 'the helper reports its own source epoch and runId');
 });
 
+/* ------------------------------------------------------------------ *
+ * SOURCE-STARTUP：源详情页的图库启动依赖（与 TRACE-STARTUP 同一条规则）
+ *
+ * 现场：source.html 曾在 fetch 续体里同步读 window.AnotifyGraphs。只要 3 个 GET
+ * 比 4 个 defer 图库先回来（API 命中缓存 / 弱网 / 移动端），图上就印「图组件未
+ * 加载，请重新加载。」，而库往往几十毫秒后就绪——页面却不再重画。
+ * 下面的沙箱精确控制 readyState 与 DCL：图库只在「defer 脚本执行」那一刻注入。
+ * ------------------------------------------------------------------ */
+function sourceStartup(options = {}) {
+  const run = loadMock({ graphs: false, ...options, search: options.search || '?namespace=default&name=deploy-hook' });
+  const nodes = new Map();
+  function element(tag) {
+    const node = fakeNode(tag);
+    const listeners = new Map();
+    const set = node.setAttribute;
+    node.setAttribute = (key, value) => {
+      set(key, value);
+      if (key === 'id') nodes.set(String(value), node);
+    };
+    // source.html 里 `host.id = "src-flow"` 是**属性赋值**（不是 setAttribute），
+    // 断言要拿到这个节点，就得让 id 的赋值也进索引。
+    Object.defineProperty(node, 'id', {
+      configurable: true,
+      get: () => node.getAttribute('id') || '',
+      set: value => { set('id', value); nodes.set(String(value), node); },
+    });
+    node.addEventListener = (type, callback) => {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(callback);
+    };
+    node.fire = async type => {
+      for (const callback of listeners.get(type) || []) await callback({ preventDefault() {} });
+    };
+    return node;
+  }
+  run.sandbox.document.createElement = element;
+  run.sandbox.document.createElementNS = (_, tag) => element(tag);
+  run.sandbox.document.createDocumentFragment = () => element('fragment');
+  run.sandbox.document.getElementById = id => {
+    if (!nodes.has(id)) {
+      const node = element('div');
+      node.setAttribute('id', id);
+    }
+    return nodes.get(id);
+  };
+  run.sandbox.URLSearchParams = URLSearchParams;
+  run.sandbox.URL = URL;
+  run.sandbox.AnotifyI18n = {};
+  run.A.mountLayout = () => {};
+  run.A.mountPullRefresh = () => {};
+  const state = { readyState: options.readyState || 'loading' };
+  Object.defineProperty(run.sandbox.document, 'readyState', { configurable: true, get: () => state.readyState });
+  // 只收集 DOMContentLoaded；真实浏览器里 defer 图库恰好在它之前执行完。
+  const domReady = [];
+  run.sandbox.document.addEventListener = (type, callback) => {
+    if (type === 'DOMContentLoaded') domReady.push(callback);
+  };
+  const calls = [];
+  const api = run.A.api;
+  run.A.api = async (url, opts) => {
+    calls.push({ url });
+    return api(url, opts);
+  };
+  const loadGraphs = () => {
+    vm.runInContext(
+      `window.FlowGraph = { mount: function (host, spec) {
+        host._mountSpec = spec;
+        return { fit: function () {}, replay: function () {}, _debug: { animated: function () { return false; } } };
+      } };`,
+      run.ctx,
+    );
+    vm.runInContext(GRAPHS_SRC, run.ctx, { filename: 'web/graphs.js' });
+  };
+  if (options.graphs) loadGraphs();
+  const source = readFileSync(path.join(ROOT, 'web-src/pages/source.html'), 'utf8');
+  for (const script of source.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+    vm.runInContext(script[1], run.ctx, { filename: 'source.html.inline.js' });
+  }
+  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(setImmediate); };
+  const fireDomReady = async () => {
+    state.readyState = 'interactive';
+    const pending = domReady.splice(0);
+    for (const callback of pending) await callback();
+    state.readyState = 'complete';
+  };
+  return { ...run, nodes, calls, state, domReady, settle, fireDomReady, loadGraphs,
+    get: id => run.sandbox.document.getElementById(id) };
+}
+
+test("SOURCE-STARTUP barrier: graph area waits for the deferred library instead of printing the stale error", async () => {
+  const run = sourceStartup({ readyState: 'loading' });
+  await run.settle();
+  // 竞态窗口已经建立：图容器已经进了 DOM（= 3 个 GET 都回来了、render 走到了画图那一行），
+  // 而 defer 图库还没执行。
+  const host = run.get('src-flow');
+  assert.ok(host, 'the graph host is in the document');
+  assert.equal(host.children.length, 0, 'nothing may be drawn before the deferred graph library ran');
+  assert.equal(b2Text(host), '', 'no error while the deferred library is still pending');
+  // defer 图库执行（= 浏览器里 DCL 之前的时刻），再触发 DCL。
+  run.loadGraphs();
+  assert.equal(host.children.length, 0, 'injecting the library alone must not draw');
+  await run.fireDomReady();
+  await run.settle();
+  assert.equal(b2Text(host), '', 'no error after the dependency arrived');
+  assert.ok(host._mountSpec && host._mountSpec.nodes.length >= 2, 'the real capabilityFlow spec is mounted');
+});
+
+test("SOURCE-STARTUP failure: missing library is a visible retryable error and the original retry recovers", async () => {
+  const run = sourceStartup({ readyState: 'loading' });
+  await run.settle();
+  await run.fireDomReady();
+  await run.settle();
+  const host = run.get('src-flow');
+  assert.match(b2Text(host), /graph_error/, 'explicit dependency error is shown');
+  assert.equal(host._mountSpec, undefined, 'no fabricated graph');
+  const retry = b2Find(host, n => n.tagName === 'BUTTON')[0];
+  assert.ok(retry, 'the retry button from loadErrorNode stays available');
+  // 库晚到：点原 retry（= 重新 load 整页），必须真的画出图并清掉错误。
+  run.loadGraphs();
+  await retry.fire('click');
+  await run.settle();
+  const redrawn = run.get('src-flow');
+  assert.ok(redrawn._mountSpec && redrawn._mountSpec.nodes.length >= 2, 'retry draws the real graph');
+  assert.equal(b2Text(redrawn).includes('graph_error'), false, 'error clears after the library is available');
+});
+
+test("SOURCE-STARTUP loaded path: already interactive/complete documents never wait on an event", async () => {
+  for (const readyState of ['interactive', 'complete']) {
+    const run = sourceStartup({ graphs: true, readyState });
+    await run.settle();
+    assert.equal(run.domReady.length, 0, readyState + ': no DOMContentLoaded listener when the document is already past parsing');
+    const host = run.get('src-flow');
+    assert.ok(host._mountSpec && host._mountSpec.nodes.length >= 2, readyState + ': normal loaded page draws immediately');
+    assert.equal(b2Text(host), '', readyState + ': no error on the normal path');
+  }
+});
+
+test("PAGE-GUARD: no page template reads AnotifyGraphs directly or calls graphLib without arming the gate", async () => {
+  const guard = await import(path.join(ROOT, 'scripts/check-graph-access.mjs'));
+  for (const page of ['source', 'trace', 'index']) {
+    const html = readFileSync(path.join(ROOT, 'web-src/pages/' + page + '.html'), 'utf8');
+    const violations = guard.scanTemplate(page + '.html', html);
+    assert.deepEqual(violations, [], page + ' must go through Anotify.graphLib() with expectGraphics() armed');
+  }
+});
+
 test("F2b2 four-page/four-language keys and forbidden old UI guard complement behavior", () => {
   function keys(lang) {
     const source = readFileSync(path.join(ROOT, 'web-src/locales/' + lang + '.yaml'), 'utf8');
