@@ -227,6 +227,14 @@
       return el("div", {}, el("dt", { class: "card-sub", text: label }),
         el("dd", { class: "mono b2-wrap", text: String(value) }));
     }
+    /* #379：参数值是**用户数据**（能力自己的 params），不是界面文案。
+       按仓里既有约定用 data-raw-content 的纯文本 SPAN 标出来，多语言
+       残留扫描就不会把中文参数当成没翻译的界面字（同 #374 的用法：
+       result.summary / pruned.detail 已经这样标）。 */
+    function fieldRaw(label, value) {
+      return el("div", {}, el("dt", { class: "card-sub", text: label }),
+        el("dd", { class: "mono b2-wrap" }, el("span", { "data-raw-content": "", text: String(value) })));
+    }
     /* ---------- 空态 / 错误态（MSG-2 / CP-4）----------
        图标 + 标题 + 说明 + 动作；与 trace.html 同一套骨架（各自页内定义）。 */
     const ICON_ALERT = [
@@ -366,7 +374,7 @@
         return el("p", { class: "card-sub", text: emptyText });
       const dl = el("dl", { class: "grid b2-facts gap-4" });
       for (const [key, item] of Object.entries(value)) {
-        dl.append(field((prefix || "") + key, item == null ? "—" : typeof item === "string" ? item : JSON.stringify(item)));
+        dl.append(fieldRaw((prefix || "") + key, item == null ? "—" : typeof item === "string" ? item : JSON.stringify(item)));
       }
       return dl;
     }
@@ -501,7 +509,13 @@
       ];
       const filled = entries.filter(([, value]) => value != null && value !== "");
       const unset = entries.filter(([, value]) => value == null || value === "").map(([label]) => label);
-      facts.append(el("span", { id: "task-phase", class: "badge msg-phase " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase, text: t("message.v4.phase." + task.phase) + " · " + task.phase }),
+      /* #379：相位徽章只说当前语言的一种话。原始协议 token 不丢：它仍在
+         data-phase（机器读）、title 与 aria-label（读屏/悬停）里。 */
+      const phaseLabel = t("message.v4.phase." + task.phase);
+      const phaseBadge = el("span", { id: "task-phase", class: "badge msg-phase " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase, text: phaseLabel });
+      phaseBadge.setAttribute("title", phaseLabel + " · " + task.phase);
+      phaseBadge.setAttribute("aria-label", phaseLabel + " · " + task.phase);
+      facts.append(phaseBadge,
         el("dl", { class: "grid b2-facts gap-4" }, ...filled.map(([label, value]) => field(label, value))));
       if (unset.length) {
         facts.append(el("p", { class: "msg-unset" },

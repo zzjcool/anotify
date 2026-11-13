@@ -169,6 +169,14 @@
 <input id="f-tz" class="input"  />
 </div>
 </div>
+<!-- #379：cron 预设。i18n 里本来就有 sources.preset.* 四个键但页面 0 引用，
+     用户得手写五段表达式。点一下写进 #f-expr（写进输入框后仍可继续改）。 -->
+<div id="cron-presets" class="source-hints" role="group" aria-label="{{t "sources.preset.label"}}">
+<button type="button" class="btn btn-ghost btn-sm" data-cron="*/15 * * * *">{{t "sources.preset.every15"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 * * * *">{{t "sources.preset.hourly"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 3 * * *">{{t "sources.preset.daily3"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 9 * * 1-5">{{t "sources.preset.weekdays9"}}</button>
+</div>
 </div>
 <div id="f-hook-wrap" class="hidden">
 <div class="src-group">
@@ -982,6 +990,13 @@ $("src-modal-body").addEventListener("scroll",syncScrollHint);
 window.addEventListener("resize",syncScrollHint);
 $("add-target").onclick=()=>$("f-targets").append(targetRow());
 $("f-kind").onchange=syncKind;
+/* #379：cron 预设 —— 点一下把五段表达式写进 #f-expr（不锁输入，写完还能改）。 */
+for(const preset of document.querySelectorAll("#cron-presets [data-cron]")){
+  preset.addEventListener("click",()=>{
+    $("f-expr").value=preset.dataset.cron;
+    $("f-expr").focus();
+  });
+}
 for(const id of ["dry-payload","f-sample","f-payload-schema","f-payload"])$(id).oninput=suggest;
 load();
 </script>

@@ -745,6 +745,13 @@ docs:
     events: POST /v1/events
     node: 节点协议
     endpoints: 全部端点
+    design: "设计取舍说明"
+  design:
+    title: "设计取舍说明：为什么界面这样显示"
+    lede: "下面这些是写给维护者与排障者的说明。控制台首屏只保留「要你做决定」的信息，原理与边界集中在这里。"
+    sources: "源产生事件，目标能力接收参数。源详情页的下游配置图只反映 spec.targets 的引用关系，不是执行成功的证明：事件有没有被接收要看事件流，任务有没有跑成功要看任务详情。deliveryId 默认去重 30 天，同一个 id 只表示「已接收」。"
+    playbooks: "playbook.yaml 是唯一根清单，它引用的能力/源文件必须都在包内。预案页只保存这份包，不安装、不部署——安装是单独的 POST …/install，部署是能力的 POST …/deploy。"
+    nodes: "节点配置可以逐台编辑；批量配置 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。保留期单位为秒，0 表示永久；默认值为日志/产物 604800 秒、事件与终态任务 2592000 秒，活动任务与引用保护仍然生效，用户的 workDir 不会被清理。首屏的配置版本（configRevision）与已应用版本（appliedRevision）都来自真实 GET，缺字段时界面显示「未知」而不以默认值冒充。"
   endpoints:
     title: 全部端点
     intro: 这份清单在构建时从 api/openapi.yaml 生成，与真实路由同源，不会漂移。已弃用的旧「通知终端」端点不在此列。
@@ -1369,6 +1376,13 @@ caps:
     version_hint: '留空 = 内容寻址（自动分配/复用）；显式版本的内容不可变。'
     workdir: '工作目录'
     workdir_hint: '可含 $(vars.X) 或 $(params.X)；留空 = 每次任务一个独立目录。'
+    template: "模板"
+    template_blank: "从空白开始"
+    template_failed: "模板列表载入失败：{msg}"
+    template_fields: "模板参数（运行时以 ANOTIFY_PARAM_* 环境变量传入）"
+    template_hint: "选一个模板，参数契约、下游与脚本骨架会自动填好；也可以从空白开始。"
+    template_none: "该模板不需要参数。"
+    template_required: "必填"
   meta:
     installed_from: '安装来源'
     next: '下游'
@@ -1551,7 +1565,7 @@ nodes:
   v4:
     copy: "复制"
     title: "节点与配置"
-    subtitle: "集群身份 · 本机申报 ∩ 中枢授权 · 真实配置状态"
+    subtitle: "登记节点 · 在线与配置状态 · 逐台改配置"
     register: "登记节点"
     name: "集群唯一名称"
     create: "登记并签发身份令牌"
@@ -1601,7 +1615,7 @@ nodes:
     ns_config: "命名空间 vars 配置（无 limits）"
     ns_hint: "仅按该 namespace 的下一任务解析；不写进节点 applied。"
     retention: "系统保留配置（管理员）"
-    retention_hint: "下列值必须来自真实 GET，不以默认值冒充当前配置。单位为秒；0 永久。默认日志/产物 604800、事件与终态任务 2592000；活动任务及引用保护仍保留，用户 workDir 不清理。"
+    retention_hint: "单位为秒；0 表示永久保留。"
     admin_only: "仅管理员可读取或编辑系统保留配置。"
     drain: "排空节点"
     drain_confirm: "排空 {name}？停止接收新任务；已有物理占用仍等真实回收。"
@@ -1624,7 +1638,7 @@ sources:
     reload: "重新加载最新资源"
     detail: "源详情"
     back: "返回源列表"
-    intro: "源产生事件；目标能力接收参数。配置图不是执行成功的证明。"
+    intro: "源产生事件；目标能力接收参数。"
     loading: "加载中…"
     empty: "还没有源。可以先创建无目标的入口。"
     name: "资源名 metadata.name"
@@ -1828,6 +1842,7 @@ sources:
     daily3: 每天 3:00
     weekdays9: 工作日 9:00
     every15: 每 15 分钟
+    label: "Cron 预设"
   flow:
     title: 下游流向（预览）
     nodes: 个节点
@@ -2054,7 +2069,7 @@ pb:
   v4:
     subtitle: "自包含文件包：保存模板、预览、试装，再安装；不会自动部署。"
     import: "导入安装包"
-    package_hint: "playbook.yaml 是唯一根清单，引用的能力/源文件必须在包内；这里只保存，不安装。"
+    package_hint: "引用的能力/源文件必须都在包内。"
     input_kind: "包输入"
     files: "原始文件"
     oci: "OCI 来源"

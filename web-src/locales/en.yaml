@@ -745,6 +745,13 @@ docs:
     events: POST /v1/events
     node: Node protocol
     endpoints: All endpoints
+    design: "Design notes"
+  design:
+    title: "Design notes: why the UI shows what it shows"
+    lede: "The notes below are for maintainers and anyone debugging. The console keeps only what you need to make a decision on the first screen; rationale and boundaries live here."
+    sources: "Sources produce events; target capabilities receive params. The downstream graph on a source page mirrors the references in spec.targets — it is not proof of execution success: check the event stream for ingestion and the task detail for execution. A deliveryId is de-duplicated for 30 days by default; the same id only means \"already received\"."
+    playbooks: "playbook.yaml is the only root manifest, and every capability/source file it references must be inside the package. The playbooks page only stores that package: installing is a separate POST …/install and deploying is a capability POST …/deploy."
+    nodes: "Node configuration is edited per node. The batch API is atomic per node and permits partial success — it is not the Playbook whole-package zero-write rule. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. On screen, configRevision and appliedRevision both come from a real GET — a missing field shows as unknown rather than an assumed default."
   endpoints:
     title: All endpoints
     intro: Generated at build time from api/openapi.yaml, so it can't drift from the real routes. Deprecated legacy notification endpoints are not listed.
@@ -1369,6 +1376,13 @@ caps:
     version_hint: 'Empty = content-addressed (auto-assign/reuse); an explicit version is immutable.'
     workdir: 'Work dir'
     workdir_hint: 'May contain $(vars.X) or $(params.X); empty = one directory per task.'
+    template: "Template"
+    template_blank: "Start from scratch"
+    template_failed: "Could not load templates: {msg}"
+    template_fields: "Template params (passed at run time as ANOTIFY_PARAM_* env vars)"
+    template_hint: "Pick a template to prefill the params contract, downstream and script skeleton — or start from scratch."
+    template_none: "This template takes no params."
+    template_required: "required"
   meta:
     installed_from: 'Installed from'
     next: 'Downstream'
@@ -1549,7 +1563,7 @@ nodes:
   v4:
     copy: "Copy"
     title: "Nodes & configuration"
-    subtitle: "Cluster identity · declared ∩ allowed · reported configuration"
+    subtitle: "Register nodes · online and configuration state · edit per node"
     register: "Register Node"
     name: "Cluster-unique name"
     create: "Create, then issue identity token"
@@ -1599,7 +1613,7 @@ nodes:
     ns_config: "Namespace vars configuration (no limits)"
     ns_hint: "Resolved for the next task in this namespace; never written to node applied."
     retention: "System retention (administrator)"
-    retention_hint: "Current values must come from GET, never assumed defaults. Seconds; 0 means permanent. Defaults: logs/artifacts 604800, events/terminal tasks 2592000. Active tasks/references remain protected; user workDir is never deleted."
+    retention_hint: "Seconds; 0 means keep forever."
     admin_only: "Only administrators may read or edit system retention."
     drain: "Drain Node"
     drain_confirm: "Drain {name}? Stop new tasks; existing physical occupancy waits for real reaping."
@@ -1622,7 +1636,7 @@ sources:
     reload: "Reload latest resource"
     detail: "Source details"
     back: "Back to sources"
-    intro: "Sources produce events; target capabilities receive params. A configuration graph is not proof of execution success."
+    intro: "Sources produce events; target capabilities receive params."
     loading: "Loading…"
     empty: "No sources yet. An entry without targets is legal."
     name: "Resource name · metadata.name"
@@ -1826,6 +1840,7 @@ sources:
     daily3: Daily 3:00
     weekdays9: Weekdays 9:00
     every15: Every 15 min
+    label: "Cron presets"
   flow:
     title: Downstream flow (preview)
     nodes: nodes
@@ -2052,7 +2067,7 @@ pb:
   v4:
     subtitle: "Self-contained file packages: store, render, dry-run, then install. No automatic deployment."
     import: "Import package"
-    package_hint: "playbook.yaml is the only root manifest. All referenced capability/source files must be included. This stores the package, not an install."
+    package_hint: "Every referenced capability/source file must be inside the package."
     input_kind: "Package input"
     files: "Raw files"
     oci: "OCI source"
