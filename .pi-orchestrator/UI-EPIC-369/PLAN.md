@@ -104,7 +104,7 @@
 | 阻塞 | 修法 | 复核 |
 |---|---|---|
 | 分页缺省 50 在第 51 项静默截断（`nsList` / `admin users` / `security sessions·passkeys`） | 调用点显式 `?limit=500`（恢复 #377 之前「一次取全」的行为；分页仍留给列表页） | 全量 e2e 2274/0 |
-| 单测相对 `main` 新增 5 红（`source.html` 的 `window.addEventListener` 在 vm 沙箱缺失、`CASES.length` 35 vs 36） | 沙箱补 `addEventListener/removeEventListener/dispatchEvent`；pin 35→36 | `node --test v4-frontend` **205 pass / 9 fail，相对 main 新增红 0 条**（main 自身 31 红） |
+| 单测相对 `main` 新增 5 红（`source.html` 的 `window.addEventListener` 在 vm 沙箱缺失、`CASES.length` 35 vs 36） | 沙箱补 `addEventListener/removeEventListener/dispatchEvent`；pin 35→36 | `node --test v4-frontend` **205 pass / 9 fail，相对 main 新增红 0 条**（公平基线：两侧都跑过 `make fe`，main 自身 11 红；本 epic 还顺手修掉 main 的 2 条红） |
 | e2e 精确选择器（`#task-logs button` 因 #378 加「复制」变 2 个；`scope-bootstrap` 与 `R1` 的 URL 断言） | 精确到 `#logs-form button[type=submit]`、按路径比对（忽略查询串） | 全量 e2e 2274/0 |
 
-最终门禁（epic tip `d910474`）：`make fe` PASS ｜ 全量 e2e **28/28 套件、2274 断言 / 0 失败** ｜ 19 页 × 1440/390 巡检 **38 次加载 0 问题** ｜ contrast 48/48 ｜ v4-frontend 相对 main 新增红 **0**。
+最终门禁（epic tip `d910474`）：`make fe` PASS ｜ 全量 e2e **28/28 套件、2274 断言 / 0 失败** ｜ 19 页 × 1440/390 巡检 **38 次加载 0 问题** ｜ contrast 48/48 ｜ v4-frontend 相对 main 新增红 **0**（main 11 红 → epic 9 红，且修掉 main-only 的 R1/R1b 两条）。
