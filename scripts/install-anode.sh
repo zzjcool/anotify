@@ -483,12 +483,21 @@ resolve_unit_path() {
 	fi
 	if [ "$REFRESH_PATH" != "yes" ]; then
 		_recorded=$("$DL_BIN" path show --config "$CONFIG" --raw 2>/dev/null) || _recorded=""
-		if [ -n "$_recorded" ] && path_value_looks_sane "$_recorded"; then
-			UNIT_PATH_VALUE=$_recorded
-			UNIT_PATH_SOURCE="record"
-			info "  PATH      $UNIT_PATH_VALUE（沿用记录：${CONFIG%/*}/install.json）"
-			return 0
-		fi
+		_recorded_source=$("$DL_BIN" path show --config "$CONFIG" --raw-source 2>/dev/null) || _recorded_source=""
+		# 只有"抓自登录 shell"的记录才代表"和终端对齐"。source=flags/fallback 是别的安装
+		# 路径写下的（例如老脚本只传 --unit-path），照用会把旧 PATH 固化下来 → 重新抓。
+		case "$_recorded_source" in
+		login-shell)
+			if [ -n "$_recorded" ] && path_value_looks_sane "$_recorded"; then
+				UNIT_PATH_VALUE=$_recorded
+				UNIT_PATH_SOURCE="record"
+				info "  PATH      $UNIT_PATH_VALUE（沿用记录：${CONFIG%/*}/install.json）"
+				return 0
+			fi
+			;;
+		'') ;;
+		*) info "  PATH      记录来源是 ${_recorded_source}（不是登录 shell），重新抓一次" ;;
+		esac
 	fi
 	# 直接调用（不是 $(...) 子 shell）：CAPTURED_PATH / CAPTURED_SHELL 要留在当前 shell 里。
 	if capture_login_path; then

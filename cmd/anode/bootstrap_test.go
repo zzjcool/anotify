@@ -1319,16 +1319,35 @@ func TestInstallScriptNoCapturePathKeepsStableSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 unit: %v", err)
 	}
-	wantPath := f.homeDir
+	home := f.homeDir
 	if f.sudoUser != "" {
-		wantPath = "/home/" + f.sudoUser
+		home = "/home/" + f.sudoUser
 	}
-	wantPath += "/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	wantPath := home + "/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	if !strings.Contains(string(after), "Environment=PATH="+wantPath+"\n") {
 		t.Fatalf("unit 的 PATH 不是固定集合\nwant Environment=PATH=%s\ngot unit:\n%s", wantPath, after)
 	}
 	if strings.Contains(string(after), f.binDir) {
 		t.Fatalf("unit 的 PATH 照抄了调用者 PATH（含夹具 bin 目录）：%s", after)
+	}
+
+	// 自愈：source=fallback 的记录不代表"和终端对齐"（老安装器只传 --unit-path 也会留下
+	// 这种记录）。下一次不带 --no-capture-path 的重跑必须重抓，而不是继续沿用旧值。
+	f.useLoginShell(t, "/opt/login-c/bin:/usr/bin")
+	if code, out, errOut := f.run([]string{
+		"--version", "old-v1",
+		"--download-url", f.downloadURL,
+		"--checksum-url", f.checksumURL,
+		"--prefix", f.stage,
+	}...); code != 0 {
+		t.Fatalf("从 fallback 记录自愈重跑失败 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	selfHealed, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatalf("自愈后读 unit: %v", err)
+	}
+	if !strings.Contains(string(selfHealed), "Environment=PATH="+home+"/.local/bin:/opt/login-c/bin:/usr/bin\n") {
+		t.Fatalf("fallback 记录没被重抓（自愈失效）：\n%s", selfHealed)
 	}
 }
 

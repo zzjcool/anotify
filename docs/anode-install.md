@@ -149,6 +149,8 @@ shell 启动过程，所以**能对齐、也应该对齐的是安装那一刻服
    （`{"source":"login-shell","shell":"/bin/bash","path":"…"}`，与 anode.yaml 同目录，0644）；
 3. **重跑一律复用记录**（不再看调用者 `$PATH`，`--refresh-path` 才重抓）→ unit 逐字节一致，
    “重跑=升级”不会被 `existing unit is unknown/modified` 打断，也不会把节点停在已 stop 的状态。
+   只有 `source=login-shell` 的记录会被沿用：`flags`/`fallback`（别的安装路径写下的，比如老脚本
+   只传 `--unit-path`）会在下一次默认重跑时**重新抓一次**，避免把旧 PATH 固化下来。
 
 为什么不是“照抄安装时的 `$PATH`”：`curl|sh` 的父进程（CI、另一个 ssh 会话、systemd-run）不一定
 有登录 shell 的 PATH，换个终端重跑就变成“另一个 unit”。记录是这两件事的交点：**抓取只发生一次**。

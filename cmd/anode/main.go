@@ -290,6 +290,7 @@ func pathUsage(out io.Writer) error {
 	fs.StringVar(&o.UnitPath, "unit", "", "anode.service path (add)")
 	fs.StringVar(&o.Prefix, "prefix", "", "stage all defaults under an absolute non-root directory")
 	fs.Bool("raw", false, "print only the recorded PATH string (show)")
+	fs.Bool("raw-source", false, "print only the recorded source (login-shell|flags|fallback) (show)")
 	fmt.Fprintln(out, "Usage: anode path <show|add> [flags]")
 	fmt.Fprintln(out, "  show          print the recorded PATH (which directories the node's tasks see)")
 	fmt.Fprintln(out, "  add DIR...    append directories to the recorded PATH and rewrite the unit")
@@ -302,6 +303,7 @@ func pathShow(args []string, out, errOut io.Writer) error {
 	fs.SetOutput(errOut)
 	cfgPath := fs.String("config", "/etc/anode/anode.yaml", "strict anode.yaml path (the PATH record lives next to it)")
 	raw := fs.Bool("raw", false, "print only the recorded PATH string (no labels)")
+	rawSource := fs.Bool("raw-source", false, "print only the recorded source (login-shell|flags|fallback)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -313,7 +315,7 @@ func pathShow(args []string, out, errOut io.Writer) error {
 		return err
 	}
 	if record == nil {
-		if *raw {
+		if *raw || *rawSource {
 			return nil // 没有记录 = 空输出（脚本用 -n 判断），不是错误
 		}
 		fmt.Fprintf(out, "no PATH record at %s\n", install.RecordFile(*cfgPath))
@@ -321,6 +323,10 @@ func pathShow(args []string, out, errOut io.Writer) error {
 	}
 	if *raw {
 		fmt.Fprintln(out, record.Path)
+		return nil
+	}
+	if *rawSource {
+		fmt.Fprintln(out, record.Source)
 		return nil
 	}
 	fmt.Fprintf(out, "record: %s\n", install.RecordFile(*cfgPath))

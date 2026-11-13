@@ -72,13 +72,16 @@ anode install --name node-a --server wss://anotify.example.com --token-file /roo
 ```bash
 # 看这台节点的任务能看见哪些目录（--raw 只打 PATH 一行，给脚本用）
 anode path show --config /etc/anode/anode.yaml
-anode path show --config /etc/anode/anode.yaml --raw
+anode path show --config /etc/anode/anode.yaml --raw          # 只打 PATH 一行（给脚本用）
+anode path show --config /etc/anode/anode.yaml --raw-source   # 只打来源（login-shell|flags|fallback）
 
 # 存量节点补一个工具链目录（只改 unit 里的 PATH 行 + 记录，不动其余任何一行）
 anode path add --config /etc/anode/anode.yaml --unit /etc/systemd/system/anode.service /home/node/.local/share/mise/shims
 systemctl daemon-reload && systemctl restart anode.service
 ```
 
+- `show` 只读；`--raw` / `--raw-source` 是给安装脚本用的两行机读输出（脚本据此判断记录是不是
+  "抓自登录 shell"，`flags`/`fallback` 的记录会被重抓而不是沿用）。
 - `add` 的守卫：unit 里的 PATH 必须与 `install.json` **完全一致**，不一致（手改过）就拒绝，
   不会把别人的改动静默覆盖掉。
 - 目录只做形状校验（绝对 / clean / 非 `/` / 不含破坏 unit 行的字符），**不要求此刻存在**。
