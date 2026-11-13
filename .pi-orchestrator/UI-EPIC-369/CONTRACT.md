@@ -48,6 +48,17 @@ python3 scripts/check_contract.py        # 改了 api/*.yaml 必跑
 
 判断标准：**你的 PR 不能新增失败**。改了哪个包就跑哪个包；报告里贴命令与结果。
 
+#### 追加（2026-11-14 实测，多轮 review 共同确认）
+
+| 位置 | 现象 | 说明 |
+|---|---|---|
+| `node --test scripts/v4-frontend.test.mjs` | **16~17 fail**（`TRACE-ARCHIVE`、`TRACE-STARTUP ×4`、`SOURCE-STARTUP`、`F2b2 ×2`、`F2c2`、`R1`、`R1b`…） | 这些用例要活 server 或 `playwright-core`；判据是**失败集合与 base 逐条相同**，不是 0 fail |
+| `run_all.sh --serial i18n_coverage` | base 上 **2 fail**（message 页 en/es 出现 zh mock 值 `部署完成`） | #379 已顺手修掉；现在应为 0 |
+| 端口占用 | 并行车道多了以后 7790-7797 会被抢 | 起 mock 前先 `ss -tln`；被占就换，别信 `mock.sh` 的静默失败 |
+
+**判据统一成一句**：`失败集合与 base 逐条相同（diff 为空）`，而不是"全绿"。
+
+
 **端口分配（避免并行车道互相踩）**：`c-vis` 7781 / `c-fecontent` 7782 / `c-feactions` 7783 /
 `c-mobile` 7784 / `c-ia` 7785 / `c-paging` 7786 / `c-copy` 7787 / 审查者 7790-7792 / 协调者 7780。
 
