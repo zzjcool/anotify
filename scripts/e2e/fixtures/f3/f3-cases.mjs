@@ -251,6 +251,7 @@ add('auth-route-guards',async d=>{
   for(const file of GUARDED){
     await d.page.goto(d.base+'/'+file+'.html',{waitUntil:'domcontentloaded'});
     await waitLogin(d.page);
+    await d.page.locator('#tab-login').click();
     await d.page.locator('#password-login-toggle').waitFor();
     assert.ok(d.page.url().includes('/login.html'));
     d.check('F3-AUTH-GUARD '+file+' genuine 401 -> public login');

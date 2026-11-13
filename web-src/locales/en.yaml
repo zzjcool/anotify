@@ -167,6 +167,23 @@ index:
       date: '{m}/{d} {w}'
     foot: '{n} events in the last 30 days · active {d}/30 days'
     foot_na: Stats unavailable
+  steps:
+    title: "From zero to your first event"
+    subtitle: "Get all three in place and a node can emit the first event."
+    source:
+      title: "Create a source"
+      desc: "The entry point for events: schedule, webhook or manual trigger."
+    capability:
+      title: "Create a capability"
+      desc: "What runs when an event arrives (script and parameters)."
+    node:
+      title: "Register a node"
+      desc: "Where capabilities actually run; registering gives you a token to install with."
+    state_done: "Done"
+    state_current: "Do this now"
+    state_todo: "Waiting for the previous step"
+    all_done: "All three are in place — copy the emit command on the nodes page to send your first event."
+    all_done_link: "Go to nodes →"
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
@@ -386,6 +403,9 @@ login:
     err_empty: Enter both username and recovery code.
     err_failed: 'Recovery sign-in failed: {msg}'
     success: Signed in — please add a Passkey on this device soon…
+  first_run:
+    hint: "First time on this instance? Register first — the first account automatically becomes the administrator."
+
   codes:
     title: Save your recovery codes
     subtitle: Each code works once. You will not see the plaintext again after leaving this screen. Copy and store them in a password manager.
@@ -394,6 +414,7 @@ login:
     copied: Copied
     continue: Saved — enter workspace
     warn: This is the only time these codes are shown. Without them, losing every Passkey device means you cannot sign in.
+    ack: I've saved these recovery codes
   trust:
     data_local: Your data stays on your server
     webauthn: WebAuthn standard
@@ -420,6 +441,9 @@ login:
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
+  back_home: "Back to dashboard"
+  docs_link: "Integration docs"
+  unavailable_next: "Once released, your receiving devices and delivery rate will appear here."
   unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
   channel:
@@ -880,6 +904,7 @@ docs:
     rules:
       title: Delivery rules (tag routing + level filtering)
   webpush:
+    off_note: "Mobile push (Web Push) is not available yet: the server has no VAPID keys configured, so this version ships no device-subscription page. Events are still recorded — see the Events page."
     title: Web Push subscription (browser receiving)
     intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
     step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1566,6 +1591,10 @@ nodes:
     copy_bootstrap: "Copy install command"
     local_setup: "Local setup & three public commands"
     setup_hint: "Save anode.yaml before install or serve. Installation uses an issued token; it never auto-registers. vars are not secrets. envPassthrough names stay local; PATH, HOME and ANOTIFY_ are forbidden. No full whitelist or values are uploaded. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics expose names/sources, not absolute export paths."
+    copy_emit: "Copy emit command"
+    emit_hint: "This line uses “{cap}”, a capability that already exists on this instance — copy and run it as-is."
+    emit_none: "This instance has no capability yet — create one first, then this command becomes runnable."
+    emit_create: "Create a capability →"
     online: "Online"
     offline: "Offline"
     unknown: "Unknown (no explicit local assertion)"

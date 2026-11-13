@@ -125,7 +125,11 @@
     <p class="c2-note">{{t "nodes.v4.bootstrap_hint"}}</p>
     <div class="code-block"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body"><code id="reg-install">anode install</code>
 <code id="reg-serve">anode serve</code>
-<code id="reg-emit">anode emit fixer --id review-a.go --data '{"file":"a.go"}'</code></pre></div>
+<code id="reg-emit">anode emit &lt;capability&gt; --data '{}'</code></pre></div>
+    <!-- #381：示例命令必须是**这个实例真的有**的能力（原写死 fixer，新实例跑不通）。
+         有真能力才展示命令；没有就把这行换成「先建一个能力」的入口。 -->
+    <div class="c2-actions"><button id="reg-emit-copy" class="btn btn-ghost btn-sm" type="button">{{t "nodes.v4.copy_emit"}}</button><a id="reg-emit-create" class="btn btn-ghost btn-sm" href="capabilities.html" hidden>{{t "nodes.v4.emit_create"}}</a></div>
+    <p class="c2-note" id="reg-emit-hint"></p>
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
   <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><!-- #377：搜索只过滤已加载的页（不重新请求） --><div class="nd-toolbar"><input id="nodes-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" /><span id="nodes-count" class="nd-toolbar-count" aria-live="polite"></span></div><div id="nodes-list" aria-live="polite"></div><div id="nodes-more-wrap" class="nd-more-wrap" hidden><button id="nodes-load-more" class="btn btn-ghost" type="button">{{t "paging.load_more"}}</button></div></section>
@@ -180,6 +184,40 @@
   const message = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (path, body, method = 'PUT') => A.api(path, { method, body: JSON.stringify(body) });
+  /* #381：节点登记后的示例 emit 命令必须指向**本实例真实存在**的能力。
+   * 节点跑在哪个 namespace 由上方的 anode.yaml 决定（namespaces: [default]），
+   * 所以先按 default 找；default 没有再看用户当前在看的 namespace（他可能把能力
+   * 建在别处）。都没找到就不编一条跑不通的命令，改成「先建一个能力」的入口。
+   * 单页能力上限 500（与 capabilities 页同口径），只取第一个，不把全量拉进内存。 */
+  const emitNames = new Map();
+  async function firstCapability(ns) {
+    if (!emitNames.has(ns)) {
+      let name = '';
+      try {
+        const doc = await A.api('/v1/namespaces/' + encodeURIComponent(ns) + '/capabilities?limit=500');
+        const items = Array.isArray(doc && doc.items) ? doc.items : [];
+        const hit = items.find(c => c && c.metadata && typeof c.metadata.name === 'string' && c.metadata.name);
+        if (hit) name = hit.metadata.name;
+      } catch { name = ''; /* 取不到能力不编造，走「先建一个」分支 */ }
+      emitNames.set(ns, name);
+    }
+    return emitNames.get(ns);
+  }
+  async function renderEmit() {
+    const primary = 'default';
+    let cap = await firstCapability(primary);
+    const current = A.readScope && A.readScope() ? A.readScope().namespace : '';
+    if (!cap && current && current !== primary) cap = await firstCapability(current);
+    const line = $('reg-emit'), copy = $('reg-emit-copy'), create = $('reg-emit-create'), hint = $('reg-emit-hint');
+    if (cap) {
+      line.textContent = "anode emit " + cap + " --data '{}'";
+      line.hidden = false; copy.hidden = false; create.hidden = true;
+      hint.textContent = t('emit_hint').replace('{cap}', cap);
+    } else {
+      line.hidden = true; copy.hidden = true; create.hidden = false;
+      hint.textContent = t('emit_none');
+    }
+  }
   const showToken = (name, token) => {
     if (typeof token !== 'string' || !token) throw new Error('Invalid NodeToken response');
     $('register-panel').hidden = true; $('reg-result').hidden = false;
@@ -188,12 +226,14 @@
     $('reg-yaml').textContent = 'name: ' + JSON.stringify(name) + '\nserver: ' + JSON.stringify(server) + '\ntoken: ' + JSON.stringify(token) + '\nnamespaces: [default]\nlisten: tcp://127.0.0.1:0\nvars: {}\nlimits:\n  total: 1\n  perCapability: {}\n';
     // 一条命令安装：server 用 location.origin（脚本自己归一化 http(s)→ws(s)）；不让用户加 sudo，脚本自己探测提权。
     $('reg-bootstrap').textContent = 'curl -fsSL ' + location.origin + '/install-anode.sh | sh -s -- --name ' + name + ' --server ' + location.origin + ' --token ' + token;
+    // 能力列表可能变了（刚建过），每次打开面板都重算。
+    renderEmit();
   };
   const clearToken = () => { $('reg-token').textContent = ''; $('reg-yaml').textContent = ''; $('reg-bootstrap').textContent = ''; $('reg-result').hidden = true; };
   let createdName = '';
   $('node-register-btn').onclick = () => { clearToken(); createdName = ''; $('register-panel').hidden = false; message('reg-error', ''); $('reg-name').focus(); };
   $('reg-cancel').onclick = $('reg-close').onclick = () => { clearToken(); $('register-panel').hidden = true; };
-  for (const id of ['token', 'yaml', 'bootstrap']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
+  for (const id of ['token', 'yaml', 'bootstrap', 'emit']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
   $('reg-submit').onclick = async () => {
     const name = $('reg-name').value.trim(); if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) { message('reg-error', t('name') + ': ^[a-z0-9][a-z0-9._-]{0,62}$', true); return; }
     $('reg-submit').disabled = true; clearToken(); message('reg-error', t('loading'));

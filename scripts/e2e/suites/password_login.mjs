@@ -422,6 +422,16 @@ async function main() {
 
 	await goto(server.base + "/login.html");
 	await H.waitForAppReady(page, "login");
+	// #381：首次访问（本浏览器没有本站登录记录）+ 401 时，登录页默认落在「注册」
+	// tab（见 web-src/pages/login.html 的 applyFirstRunDefault）。这里要测的是密码
+	// **登录**，所以先显式切回登录 tab —— 顺便把切 tab 本身也真实验证一次
+	// （断言没删，只是补上了新的必经交互）。
+	await page.click("#tab-login");
+	await page.waitForSelector("#login-panel:not(.hidden)", { timeout: 5000 });
+	H.check(
+		"切到登录 tab 后 #login-panel 可见",
+		await page.isVisible("#login-panel"),
+	);
 	await page.click("#password-login-toggle");
 	await page.waitForSelector("#password-panel:not(.hidden)", { timeout: 5000 });
 	H.check(
@@ -722,6 +732,17 @@ async function main() {
 		() => document.querySelectorAll("#codes-grid .code-row").length,
 	);
 	H.eq("恢复码一次展示 8 个", signupCodeCount, 8);
+	// #381：恢复码弹窗加了「我已保存」硬门禁 —— 未勾选时 #codes-continue 真的是 disabled
+	// （置灰 + 点不动），所以这里先勾上。断言不删，只补上新的必经交互。
+	H.check(
+		"恢复码未勾「我已保存」前「继续」禁用",
+		await page.isDisabled("#codes-continue"),
+	);
+	await page.check("#codes-saved-ack");
+	H.check(
+		"勾选“我已保存”后「继续」可用",
+		await page.isEnabled("#codes-continue"),
+	);
 	await page.click("#codes-continue");
 	const signupLanded = await waitForWorkspaceNav();
 	let signupPath = "";

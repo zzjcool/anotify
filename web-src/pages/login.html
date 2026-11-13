@@ -246,6 +246,20 @@
         box-shadow: var(--shadow-1);
       }
 
+      /* #381 首跑提示：只在「/v1/auth/me 401 + 本浏览器从未来过」时显示。
+         用中性表面 + 左描边强调，不跟品牌色主按钮抢（那是真正的动作）。 */
+      .first-run-hint {
+        margin: 10px 0 0;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent-strong);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
       /* 面板之间的纵向节奏（不声明 display：面板靠 JS 切 .hidden） */
       .auth-panel > * + * {
         margin-top: 12px;
@@ -466,6 +480,27 @@
         color: var(--text);
         background: var(--surface-3);
       }
+      /* #381：恢复码是唯一一次明文，离开前要求显式确认（与 API Key 页同一条
+         心智：没有确认就不放行）。未勾选时 #codes-continue 是 disabled 的。 */
+      .codes-ack {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 12px 0 0;
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--text);
+        cursor: pointer;
+        min-width: 0;
+      }
+      .codes-ack input {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        margin: 2px 0 0;
+        accent-color: var(--accent-strong);
+      }
+
       .codes-warn {
         margin: 12px 0 0;
         padding: 10px 12px;
@@ -659,6 +694,12 @@
           {{t "login.tab.signup"}}
         </button>
       </div>
+
+      <!-- #381 首跑：默认 tab 由 JS 决定（实例无会话 + 本浏览器首次来访 → 注册）。
+           这条提示与 tab 切换同步显示，避免用户不知道自己为什么落在注册上。 -->
+      <p id="first-run-hint" class="first-run-hint hidden" role="note">
+        {{t "login.first_run.hint"}}
+      </p>
 
       <!-- 登录面板：Passkey 一键登录（主路径，无需输入用户名）
            + 可收起的「用密码登录」表单（第二套登录模型）。 -->
@@ -949,6 +990,11 @@
       <p class="codes-sub">{{t "login.codes.subtitle"}}</p>
       <div id="codes-grid" class="codes-grid"></div>
       <p class="codes-warn">{{t "login.codes.warn"}}</p>
+      <!-- #381：这组码只明文出现一次，离开前必须显式确认（未勾选「继续」禁用）。 -->
+      <label class="codes-ack" for="codes-saved-ack">
+        <input type="checkbox" id="codes-saved-ack" />
+        <span>{{t "login.codes.ack"}}</span>
+      </label>
     </div>
     <div class="modal-foot">
       <button type="button" id="codes-copy-all" class="btn btn-ghost btn-sm">
@@ -980,6 +1026,9 @@
           tabSignup.classList.toggle("active", !isLogin);
           loginPanel.classList.toggle("hidden", !isLogin);
           signupPanel.classList.toggle("hidden", isLogin);
+          // 用户一旦手动选过 tab，首跑提示就不再需要（否则它会在切回登录后仍挂着）。
+          const firstRunHint = document.getElementById("first-run-hint");
+          if (firstRunHint) firstRunHint.classList.add("hidden");
           // 状态条是两个 tab 共用的。切走时清掉，避免注册错误留在登录页。
           hideStatus();
         }
@@ -1273,6 +1322,8 @@
             /* ast-grep-disable no-open-redirect-js */
             location.href = safeDest;
           };
+          // 走出登录页 = 这个浏览器在本站确实有过一个能用的账号；首跑判定据此收口。
+          rememberVisit();
           if (delayMs > 0) {
             setTimeout(go, delayMs);
           } else {
@@ -1281,10 +1332,12 @@
         }
 
         // Probe the retained canonical user directly: no namespace bridge or auth aliases.
+        // 返回值让首跑分支能区分三种真事实：有会话 / 确实匿名（401） / 探测本身失败。
+        // 只有「确实匿名」才可能去切注册 tab —— 探测失败时保持登录 tab，绝不猜。
         async function checkExistingSession() {
           try {
             const res = await fetch("/v1/auth/me", { credentials: "include" });
-            if (res.status === 401) return;
+            if (res.status === 401) return "anonymous";
             if (res.status !== 200) throw new Error("HTTP " + res.status);
             const me = await res.json();
             const fields = ["id", "username", "displayName", "role", "disabled", "createdAt"];
@@ -1299,6 +1352,7 @@
               typeof me.createdAt !== "number" || !Number.isFinite(me.createdAt)
             ) throw new Error("Invalid session identity");
             navigate(nextTarget());
+            return "session";
           } catch (error) {
             // An unhealthy probe is not an anonymous session; keep methods usable
             // and show existing localized error/retry guidance without a redirect loop.
@@ -1307,9 +1361,51 @@
             } else {
               backendUnavailable(error);
             }
+            return "error";
           }
         }
-        checkExistingSession();
+
+        /* ---------- #381 首跑：无会话 + 本浏览器首次来访 → 默认落在「注册」 ----------
+         *
+         * 服务端**没有**「实例是否已初始化 / 还有没有用户」的接口：/v1/auth 下只有
+         * register·login·me·…，全仓 grep `needsSetup|setup|UserCount` 在 HTTP 层没有任何
+         * 匿名可读的判定位（UserCount 只在 store 内部用于「首用户成为 admin」）。
+         * 所以这里**不发明接口**，只用两条真事实决定默认 tab：
+         *   ① /v1/auth/me 回 401 —— 确实没有会话；
+         *   ② 这个浏览器在本站从未成功登录/注册过（localStorage 标记，由 navigate() 写入）。
+         * 任一不成立就保留「登录」tab。界面也不会声称“实例是空的”——那是没证据的断言。
+         *
+         * 已知局限（写进 REPORT）：换浏览器/清 storage 的回访用户会先看到注册 tab，
+         * 一次点击可切回登录。这比“新用户要自己发现注册”的 7 步死路代价小得多，
+         * 也比编造一个 needsSetup 探针诚实。隐私模式下 localStorage 不可用 → 保持登录 tab。
+         */
+        const FIRST_RUN_KEY = "anotify.login.seen";
+        function firstVisit() {
+          try {
+            return localStorage.getItem(FIRST_RUN_KEY) !== "1";
+          } catch {
+            return false;
+          }
+        }
+        function rememberVisit() {
+          try {
+            localStorage.setItem(FIRST_RUN_KEY, "1");
+          } catch {
+            /* 隐私模式：不持久化，下次仍按首次处理 */
+          }
+        }
+        function applyFirstRunDefault(sessionState) {
+          if (sessionState !== "anonymous") return;
+          // 注意：**不能**用 `?next=` 当“回访用户”信号。partials.js 的 redirectToLogin()
+          // 对所有 401 都拼 `login.html?next=<page>`，所以首跑用户从 `/` 进来时
+          // **一定**带着 next —— 把它当回访依据等于让这个功能永不生效。
+          // 真正能区分“这个浏览器曾经登录过”的只有本机标记。
+          if (!firstVisit()) return;
+          switchTab("signup");
+          const hint = document.getElementById("first-run-hint");
+          if (hint) hint.classList.remove("hidden");
+        }
+        checkExistingSession().then(applyFirstRunDefault);
 
         // 把请求失败分成三类：网络不可达 / 服务端 5xx（都算"后端没连上"）、
         // 客户端 4xx（**是后端明确拒绝**，必须如实报给用户）。
@@ -1945,8 +2041,16 @@
           });
           const copyAll = document.getElementById("codes-copy-all");
           copyAll.onclick = () => copyText(codes.join("\n"), copyAll);
+          const ack = document.getElementById("codes-saved-ack");
           const cont = document.getElementById("codes-continue");
+          // 每次打开都重新问一遍：上一轮的勾选不能代替这一轮（这一组码不同）。
+          ack.checked = false;
+          cont.disabled = true;
+          ack.onchange = () => {
+            cont.disabled = !ack.checked;
+          };
           cont.onclick = () => {
+            if (!ack.checked) return;
             Anotify.closeModal(modal);
             if (typeof onContinue === "function") onContinue();
           };
