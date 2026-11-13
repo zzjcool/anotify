@@ -2519,10 +2519,19 @@
 		 * 舞台高度收敛（契约 §9）：先量旧的 clamp 值，再取 min(需要的高度, 旧值)。
 		 * 图比舞台矮就不留白（silk 的舞台永远是"刚好装下这张图"），
 		 * 比舞台高就保持原高度、由滚动条兜底。
+		 *
+		 * 外壳高度（bar + hud + 上下边框）必须**实测**，不能写死 39 + 35：
+		 * 断点改高度时（#382 手机端把 bar 拆两行、hud 抬到 50px 给 44px 控件
+		 * 让位），写死值会让舞台少算几十像素 —— 图在卡片里冒出纵向滚动条，
+		 * 而"图完整可见"是 silk 的硬约束。实测值对这种改动天然免疫。
 		 */
+		function chromeHeight() {
+			return (bar.offsetHeight || 39) + (hud.offsetHeight || 35) + 2;
+		}
+
 		function updateStageHeight() {
 			if (!geo) return;
-			const need = geo.contentH + 39 + 35 + 2;
+			const need = geo.contentH + chromeHeight();
 			// 顶部弧会让内容比旧舞台高；允许舞台跟着长到 560，
 			// 否则 480 卡片里会出现 12px 纵向滚动条（E2E 纵向完整断言）。
 			const want = Math.round(Math.min(need, Math.max(baseH, 560)));

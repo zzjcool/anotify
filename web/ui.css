@@ -5699,7 +5699,11 @@ html.theme-switching *::after {
 	}
 
 	/* ---------- #382：命中区下限 44×44 ---------- */
+	/* min-width 也是必需的：`.act-more`（⋯ 动作菜单，见 #376）这类纯图标按钮
+	 * 只靠 padding 0 10px 撑宽，桌面 36px 够用，手机上是 36×44 —— 高度达标、
+	 * 宽度不够。文本按钮本来就比 44 宽，min-width 对它们零影响。 */
 	.btn-sm {
+		min-width: 44px;
 		min-height: 44px;
 	}
 	.copy-btn {
@@ -5715,15 +5719,87 @@ html.theme-switching *::after {
 	/* 图控件在 HUD 上是 24×24 的小方块（".fg-speed" 是文字按钮），
 	 * 移动端给到 44×44；silk 变体的 width:auto/min-width:0 靠同等特异性+更靠后覆盖。 */
 	.flograph-ctrl button,
-	.flograph--silk .flograph-ctrl button,
-	.flograph-ctrl button.fg-speed,
-	.flograph--silk .flograph-ctrl button.fg-speed {
+	.flograph-ctrl button.fg-speed {
 		min-width: 44px;
 		min-height: 44px;
 	}
-	.flograph-legend-btn,
+
+	/* ---------- 图外壳给 44px 控件让出真实空间（#382 rework / rev-392）----------
+	 *
+	 * 控件是「真尺寸」到 44×44，但外壳还是 35px 的 bar 与 31px 的 HUD，于是：
+	 *
+	 *   ① bar 内 6 个 44px 按钮上下各溢出 4.5px，上半截越过 .flograph--silk
+	 *      {overflow:hidden} 的卡片顶边被裁 —— 盒 44×44、有效命中只有 44×40；
+	 *   ② HUD 内 44px 的图例药丸下沿同样被卡片底边裁掉 6px —— 44×38
+	 *      （视觉上药丸下半截没有边框）。
+	 *
+	 * 两处都不是控件尺寸的问题，而是**容器没跟着长**，所以这里改外壳：
+	 *
+	 *   · bar 拆成两行：第一行标题（占满整行，不再被 274px 的控件区挤成
+	 *     0px —— rev-392 实测 360 档 deploy-hook 完全消失），第二行控件区
+	 *     平分整行宽度，6 个按钮各自 ≈50px，比 44 的下限还宽一点；
+	 *   · HUD 抬到 50px = 44 内容 + 6 底部留白，药丸完整可见且不贴卡片底边。
+	 *
+	 * 两个高度都是真实布局高度，flograph.js 的 updateStageHeight() 改成读实测
+	 * 外壳高度（原本写死 39 + 35），所以舞台会跟着长，不会冒出纵向滚动条。 */
+	.flograph--silk .flograph-bar {
+		flex: 0 0 auto;
+		height: auto;
+		flex-wrap: wrap;
+		row-gap: 2px;
+		column-gap: 7px;
+		align-content: center;
+		padding: 0 8px;
+	}
+	/* 第一行：状态灯 + 标题。标题拿满剩余宽度，长名字靠自身 ellipsis，
+	 * 不靠"被控件挤掉"来省地方。 */
+	.flograph--silk .flograph-bar-id {
+		flex: 1 1 auto;
+		max-width: 100%;
+		min-width: 0;
+		line-height: 18px;
+	}
+	/* 桌面端用来把控件推到右边的占位块：两行布局里没有它的位置 */
+	.flograph--silk .flograph-bar-spacer {
+		display: none;
+	}
+	.flograph--silk .flograph-ctrl {
+		flex: 1 1 100%;
+		min-height: 44px;
+		gap: 2px;
+	}
+	.flograph--silk .flograph-ctrl button,
+	.flograph--silk .flograph-ctrl button.fg-speed {
+		flex: 1 1 0;
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.flograph--silk .flograph-hud {
+		flex: 0 0 auto;
+		height: auto;
+		min-height: 50px;
+		padding: 0 9px 6px;
+	}
 	.flograph--silk .flograph-legend-btn {
 		min-width: 44px;
 		min-height: 44px;
+		justify-content: center;
+	}
+}
+
+/* — epic-369-mobile — 320 档补充（同上段，仍是 #382 的命区下限）
+ *
+ * 6 个 44px 控件 + 5 个 2px 间距 = 274px，而 bar 的内容宽度 = 视口 − 58
+ * （页面内边距 40 + 卡片边框 2 + bar 内边距 16）—— 所以 332px 以下一行装不下。
+ * 360/390 都在线以上；320px（iPhone SE 一代 / Galaxy Fold 外屏）会溢出 12px，
+ * 把最后一个「全屏」按钮的右边 4px 裁掉（实测有效命中 40×45）。
+ * 这里改成三列两行：每个 ≈86×44，比 44 的下限还宽，也不会有任何裁切。 */
+@media (max-width: 339px) {
+	.flograph--silk .flograph-ctrl {
+		flex-wrap: wrap;
+	}
+	.flograph--silk .flograph-ctrl button,
+	.flograph--silk .flograph-ctrl button.fg-speed {
+		flex: 1 1 calc(33.333% - 2px);
 	}
 }
