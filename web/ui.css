@@ -4140,6 +4140,12 @@ html.theme-switching *::after {
 	}
 	.modal-backdrop {
 		padding: 8px;
+		/* rev-401 阻塞项：上面这行会把默认态里 max(16px, env(...)) 的安全区**覆盖掉**，
+		 * 于是 390 + inset-bottom 34 实测仍然是 8px（注释宣称的让位没发生）。
+		 * 窄档必须自己再让一次位。左右同理（横屏刘海）。 */
+		padding-bottom: max(8px, env(safe-area-inset-bottom));
+		padding-left: max(8px, env(safe-area-inset-left));
+		padding-right: max(8px, env(safe-area-inset-right));
 	}
 }
 
@@ -5953,7 +5959,11 @@ html {
 .app-footer {
 	padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
-body > footer {
+/* focus/login 布局的 footer 在 .app-shell 里，不是 body 的直接子节点，而且带着
+ * Tailwind 的 `.py-6`（0,1,0）。所以：①选择器不能写成 `body > footer`（matched 不到）；
+ * ②必须用**类选择器**才压得住 `.py-6`（同级时 ui.css 在后 → 胜）。
+ * rev-401 实测：改前 inset-bottom=34 下仍是 24px（`.py-6` 赢），本规则后为 34px。 */
+.auth-footer {
 	padding-bottom: max(24px, env(safe-area-inset-bottom));
 }
 /* focus/login 布局没有侧栏，顶栏是 body 的直接子节点（h-16 内层）。 */
