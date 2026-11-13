@@ -4,9 +4,11 @@ export async function bootstrap(d) {
   const {page,goto,calls,req,check}=d;
   await goto('sources','namespace=prod');
   await page.locator('#src-list > div[data-name]').first().waitFor();
-  const list=(await calls()).find(c=>c.url==='/v1/namespaces/prod/sources');
+  // #377 起列表请求带分页参数（?limit=20）；匹配时只剥查询串，命名空间仍逐字比对。
+  const pathOf=u=>String(u).split('?')[0];
+  const list=(await calls()).find(c=>pathOf(c.url)==='/v1/namespaces/prod/sources');
   assert.equal(list.result.kind,'SourceList');assert.ok(Array.isArray(list.result.items));
-  assert.ok(!(await calls()).some(c=>c.url==='/v1/namespaces/default/sources'));
+  assert.ok(!(await calls()).some(c=>pathOf(c.url)==='/v1/namespaces/default/sources'));
   assert.equal(await page.evaluate(()=>Anotify.readScope().namespace),'prod');
   assert.ok((await page.evaluate(()=>localStorage.getItem('anotify.scope'))).includes('prod'));
   check('F3-SCOPE-01 empty-storage prod deep link awaits scope and exact SourceList.items');

@@ -61,6 +61,11 @@
   .nd-tip { margin-top: 2px; }
 
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
+  /* #377：本地搜索 + 「20 条 + 加载更多」 */
+  .nd-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .nd-toolbar .input { max-width: 320px; min-width: 180px; }
+  .nd-toolbar-count { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .nd-more-wrap { display: flex; justify-content: center; padding: 12px 0 2px; }
 </style>
 {{end}}
 {{define "content"}}
@@ -86,7 +91,7 @@
 <code id="reg-emit">anode emit fixer --id review-a.go --data '{"file":"a.go"}'</code></pre></div>
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
-  <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><div id="nodes-list" aria-live="polite"></div></section>
+  <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><!-- #377：搜索只过滤已加载的页（不重新请求） --><div class="nd-toolbar"><input id="nodes-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" /><span id="nodes-count" class="nd-toolbar-count" aria-live="polite"></span></div><div id="nodes-list" aria-live="polite"></div><div id="nodes-more-wrap" class="nd-more-wrap" hidden><button id="nodes-load-more" class="btn btn-ghost" type="button">{{t "paging.load_more"}}</button></div></section>
   <!-- ND-3：整段开发者旁白默认收起（原文保留，e2e 搜文本仍成立） -->
   <details class="nd-more">
     <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
@@ -193,21 +198,67 @@
   async function loadNodes() {
     $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');
     try {
-      const { items: rows } = await A.apiList('/v1/nodes'); $('nodes-list').replaceChildren();
-      for (const resource of rows) {
-        const n = A.model.node(resource), row = make('div', 'c2-row nd-row'); row.dataset.node = n.name;
-        const main = make('div', 'c2-main'), head = make('div', 'nd-head'), link = make('a', 'c2-name', n.name);
-        link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default');
-        head.append(link, statusBadge(n));
-        main.append(head, kvGrid(n));
-        row.append(main, make('div', 'nd-acts'));
-        row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
-        $('nodes-list').appendChild(row);
-      }
-      if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
+      const first = await fetchNodePage('');
+      NODES = first.items; NODES_CURSOR = first.cursor; NODES_MORE = !!first.cursor;
+      renderNodes();
     } catch (e) { $('nodes-list').replaceChildren(A.loadErrorNode(e, loadNodes)); }
     finally { $('nodes-skel').hidden = true; $('nodes-list').removeAttribute('aria-busy'); }
   }
+  /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+  const NODES_PAGE = 20;
+  let NODES = [], NODES_CURSOR = '', NODES_MORE = false, NODES_QUERY = '';
+  async function fetchNodePage(cursor) {
+    const qs = new URLSearchParams({ limit: String(NODES_PAGE) });
+    if (cursor) qs.set('continue', cursor);
+    const res = await A.api('/v1/nodes?' + qs.toString());
+    if (!res || !Array.isArray(res.items)) throw new Error(A.t("common.request_failed"));
+    const cont = res.metadata && typeof res.metadata.continue === 'string' ? res.metadata.continue : '';
+    return { items: res.items, cursor: cont };
+  }
+  function visibleNodes() {
+    const q = NODES_QUERY.trim().toLowerCase();
+    if (!q) return NODES;
+    return NODES.filter((resource) => {
+      const n = A.model.node(resource);
+      const hay = [n.name, ...(n.effectiveNamespaces || []), ...(n.tags || [])].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  function renderNodes() {
+    const rows = visibleNodes();
+    $('nodes-list').replaceChildren();
+    for (const resource of rows) {
+      const n = A.model.node(resource), row = make('div', 'c2-row nd-row'); row.dataset.node = n.name;
+      const main = make('div', 'c2-main'), head = make('div', 'nd-head'), link = make('a', 'c2-name', n.name);
+      link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default');
+      head.append(link, statusBadge(n));
+      main.append(head, kvGrid(n));
+      row.append(main, make('div', 'nd-acts'));
+      row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
+      $('nodes-list').appendChild(row);
+    }
+    if (!NODES.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
+    else if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', A.t("paging.no_match")));
+    /* 用 hidden 属性：.nd-more-wrap 自带 display:flex，.hidden class 会被它盖掉。 */
+    $('nodes-more-wrap').hidden = !NODES_MORE;
+    $('nodes-count').textContent = A.t("paging.showing").replace('{n}', String(rows.length));
+  }
+  async function loadMoreNodes() {
+    if (!NODES_MORE) return;
+    $('nodes-load-more').disabled = true;
+    try {
+      const next = await fetchNodePage(NODES_CURSOR);
+      const seen = new Set(NODES.map((row) => row.metadata.name));
+      for (const item of next.items) {
+        if (seen.has(item.metadata.name)) continue;
+        NODES.push(item); seen.add(item.metadata.name);
+      }
+      NODES_CURSOR = next.cursor; NODES_MORE = !!next.cursor;
+      renderNodes();
+    } catch (e) { $('nodes-load-more').disabled = false; A.toast(errorText(e), 'error'); }
+  }
+  $('nodes-search').addEventListener('input', (event) => { NODES_QUERY = event.target.value; renderNodes(); });
+  $('nodes-load-more').addEventListener('click', loadMoreNodes);
   $('nodes-refresh').onclick = loadNodes;
   // Configuration wrappers deliberately do not pass through resource adapters.
   let nsConfig, systemConfig, selectedNamespace = '', nsOriginal = '', systemOriginal = '';

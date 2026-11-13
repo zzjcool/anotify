@@ -237,6 +237,11 @@
   .pb-card-facts { display: grid; gap: 8px; }
   .pb-result { margin-top: 12px; }
   .pb-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* #377：本地搜索 + 「20 条 + 加载更多」（控件样式走页面内联） */
+  .pb-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+  .pb-toolbar .input { max-width: 320px; min-width: 180px; }
+  .pb-toolbar-count { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .pb-more-wrap { display: flex; justify-content: center; padding: 12px 0 2px; }
   [hidden] { display: none !important; }
 </style>
 {{end}}
@@ -256,6 +261,11 @@
     </div>
     <p id="pb-scope" class="field-hint"></p>
     <div id="pb-state" aria-live="polite"></div>
+    <!-- #377：搜索只过滤已加载的页（不重新请求） -->
+    <div class="pb-toolbar">
+      <input id="pb-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
+      <span id="pb-count" class="pb-toolbar-count" aria-live="polite"></span>
+    </div>
     <div id="pb-grid" class="pb-grid anim-stagger">
       <!-- 首屏骨架（AN-3）：数据到达前先画出卡片形状，不再是一张空白页 -->
       <div class="pb-skel" aria-hidden="true">
@@ -272,6 +282,9 @@
       </div>
     </div>
     <div id="pb-empty" class="card hidden"></div>
+    <div id="pb-more-wrap" class="pb-more-wrap" hidden>
+      <button id="pb-load-more" type="button" class="btn btn-ghost">{{t "paging.load_more"}}</button>
+    </div>
     <!-- 空态图标位：静态模板，JS 克隆（本仓约定不用 innerHTML 渲染） -->
     <template id="pb-empty-tpl">
       <span class="pb-empty-icon" aria-hidden="true">
@@ -491,12 +504,9 @@
       try {
         await ready();
         $("pb-scope").textContent = t("pb.v4.namespace") + ": " + getScope().namespace;
-        const { items: rows } = await apiList(nsPath("playbooks"));
-        for (const row of rows) $("pb-grid").append(card(row));
-        if (!rows.length) {
-          $("pb-empty").replaceChildren(emptyState());
-          $("pb-empty").classList.remove("hidden");
-        }
+        const first = await fetchPlaybookPage("");
+        PB_ROWS = first.items; PB_CURSOR = first.cursor; PB_MORE = !!first.cursor;
+        renderGrid();
         $("pb-state").replaceChildren();
       } catch (error) {
         $("pb-state").replaceChildren(loadErrorNode(error, load));
@@ -504,6 +514,61 @@
         loading = false; $("btn-refresh").disabled = false; $("pb-state").removeAttribute("aria-busy");
       }
     }
+
+    /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+    const PB_PAGE = 20;
+    let PB_ROWS = [], PB_CURSOR = "", PB_MORE = false, PB_QUERY = "";
+    async function fetchPlaybookPage(cursor) {
+      await ready();
+      const qs = new URLSearchParams({ limit: String(PB_PAGE) });
+      if (cursor) qs.set("continue", cursor);
+      const res = await api(nsPath("playbooks") + "?" + qs.toString());
+      if (!res || !Array.isArray(res.items)) throw new Error(t("common.request_failed"));
+      const cont = res.metadata && typeof res.metadata.continue === "string" ? res.metadata.continue : "";
+      return { items: res.items, cursor: cont };
+    }
+    function visibleRows() {
+      const q = PB_QUERY.trim().toLowerCase();
+      if (!q) return PB_ROWS;
+      return PB_ROWS.filter((row) => {
+        const pb = model.playbook(row);
+        const hay = [pb.slug, pb.displayName, row.spec && row.spec.description].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    function renderGrid() {
+      const rows = visibleRows();
+      $("pb-grid").replaceChildren(...rows.map(card));
+      if (!PB_ROWS.length) {
+        $("pb-empty").replaceChildren(emptyState());
+        $("pb-empty").classList.remove("hidden");
+      } else if (!rows.length) {
+        $("pb-grid").append(el("p", "pb-empty-title", t("paging.no_match")));
+      }
+      /* 用 hidden 属性而不是 .hidden class：.pb-more-wrap 自带 display:flex，
+         Tailwind 的 .hidden 与它同特异性，顺序一变就会「按钮明明该藏却显示」。 */
+      $("pb-more-wrap").hidden = !PB_MORE;
+      $("pb-count").textContent = t("paging.showing").replace("{n}", String(rows.length));
+    }
+    async function loadMore() {
+      if (!PB_MORE) return;
+      $("pb-load-more").disabled = true;
+      try {
+        const next = await fetchPlaybookPage(PB_CURSOR);
+        const seen = new Set(PB_ROWS.map((row) => row.metadata.name));
+        for (const item of next.items) {
+          if (seen.has(item.metadata.name)) continue;
+          PB_ROWS.push(item); seen.add(item.metadata.name);
+        }
+        PB_CURSOR = next.cursor; PB_MORE = !!next.cursor;
+        renderGrid();
+      } catch (error) {
+        $("pb-load-more").disabled = false;
+        $("pb-state").replaceChildren(loadErrorNode(error, () => loadMore()));
+      }
+    }
+    $("pb-search").addEventListener("input", (event) => { PB_QUERY = event.target.value; renderGrid(); });
+    $("pb-load-more").addEventListener("click", loadMore);
     async function upload(input, directory) {
       reflectFiles(input);
       try {

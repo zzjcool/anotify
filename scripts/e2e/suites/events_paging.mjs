@@ -30,6 +30,8 @@
  *   C. events 页 UI：连点「加载更多」19 次累积到 1000 行，顺序/去重/到底状态全查。
  *   D. 资源分层（同一 Chrome 会话，events/index/trace 三页的 resource 清单）。
  *   E. #236 的 limit 硬顶（库里 1000 条 > 500，limit=501 刚好能看到钳位到 500）。
+ *   F. #377 列表规模化：sources/nodes 的 limit/continue 翻页（与一次性全量逐条相等、
+ *      末页无游标、非法 limit/跨命名空间游标 400）+ sources 页「首屏 20 行 + 加载更多 + 本地搜索」。
  */
 import { chromium } from "playwright-core";
 import { DatabaseSync } from "node:sqlite";
@@ -766,6 +768,132 @@ async function main() {
 		String(mAbc.json?.message || "").includes("limit"),
 		String(mAbc.json?.message || mAbc.text).slice(0, 120),
 	);
+
+	// ---------- F. #377：列表规模化（8 个列表接口的 limit/continue + 4 页搜索/加载更多）----------
+	//
+	// 本段只钉两件在别处没有的事实：
+	//   ① sources / nodes 两个形状不同的列表（ns 资源 vs cluster 资源）按 limit/continue
+	//      翻页后与「一次性全量」逐条相等，且末页不带游标；
+	//   ② sources 页首屏只渲染一页（DOM 行数 == 已加载条数，不随总条数线性增长），
+	//      「加载更多」累加、本地搜索只过滤已加载的行。
+	console.log("--- F. #377 列表分页：sources / nodes API + sources 页 UI ---");
+	const PAGE = 20;
+	const SOURCE_BULK = 50;
+	const listNames = (res) => (V.items(res) || []).map((it) => it?.metadata?.name).filter(Boolean);
+
+	// 50 条源（kind=manual：不需要能力出口，建源不会派发）。
+	for (let i = 0; i < SOURCE_BULK; i++) {
+		const name = `e2e.paging.many-${String(i).padStart(2, "0")}`;
+		const res = await V.createSource(base, s.session, NS, V.sourceBody({ name, kind: "manual" }));
+		H.eq(`造源 ${name} → 201`, res.status, 201);
+	}
+	// 期望序列来自「一次性全量」（limit=500 在上限内），不猜顺序。
+	const fullRes = await H.req(base, V.P.sources(NS) + "?limit=500", { session: s.session });
+	const fullNames = listNames(fullRes);
+	const TOTAL = fullNames.length;
+	H.check(`sources limit=500 一次拿全（${TOTAL} ≥ ${SOURCE_BULK}）`, TOTAL >= SOURCE_BULK, JSON.stringify({ total: TOTAL }));
+
+	const pagedNames = [];
+	let srcCursor = "";
+	let srcPages = 0;
+	do {
+		const qs = "?limit=" + PAGE + (srcCursor ? "&continue=" + encodeURIComponent(srcCursor) : "");
+		const res = await H.req(base, V.P.sources(NS) + qs, { session: s.session });
+		H.eq(`sources 第 ${srcPages + 1} 页 → 200`, res.status, 200);
+		const names = listNames(res);
+		H.check(`sources 第 ${srcPages + 1} 页不超过 ${PAGE} 条`, names.length <= PAGE, JSON.stringify({ n: names.length }));
+		pagedNames.push(...names);
+		srcCursor = res.json?.metadata?.continue || "";
+		srcPages++;
+		if (srcPages > 10) throw new Error("sources 游标翻页不收敛");
+	} while (srcCursor);
+	H.eq(`sources 翻页页数 = ceil(${TOTAL}/${PAGE})`, srcPages, Math.ceil(TOTAL / PAGE));
+	H.eq("sources 翻页拼接 = 一次性全量（不漏不重、顺序一致）", JSON.stringify(pagedNames), JSON.stringify(fullNames));
+	H.eq("sources 翻页无重复", new Set(pagedNames).size, pagedNames.length);
+	H.eq("sources 末页不带 continue", srcCursor, "");
+
+	// 非法 limit 与跨命名空间游标：400（不静默兜底、不越权读）。
+	V.expectReason("sources limit=abc", await H.req(base, V.P.sources(NS) + "?limit=abc", { session: s.session }), 400, "BadRequest");
+	const otherNS = await V.createNamespace(base, s.session, "paging-other", "分页其它");
+	H.eq("建第二个命名空间 → 201", otherNS.status, 201);
+	for (let i = 0; i < 2; i++) {
+		const res = await V.createSource(base, s.session, "paging-other", V.sourceBody({ name: `other-${i}`, kind: "manual" }));
+		H.eq(`造源 paging-other/other-${i} → 201`, res.status, 201);
+	}
+	const otherFirst = await H.req(base, V.P.sources("paging-other") + "?limit=1", { session: s.session });
+	const foreign = otherFirst.json?.metadata?.continue || "";
+	H.check("第二个命名空间第一页带游标", foreign.length > 0, foreign.slice(0, 24));
+	V.expectReason(
+		"sources 用别的命名空间的游标",
+		await H.req(base, V.P.sources(NS) + "?limit=1&continue=" + encodeURIComponent(foreign), { session: s.session }),
+		400,
+		"BadRequest",
+	);
+
+	// nodes：cluster 列表（无 ns 段），排序键 (name, id)。造 25 台。
+	const NODE_BULK = 25;
+	for (let i = 0; i < NODE_BULK; i++) {
+		const name = `e2e-page-node-${String(i).padStart(2, "0")}`;
+		const res = await H.req(base, V.P.nodes(), {
+			session: s.session,
+			method: "POST",
+			body: { apiVersion: "anotify/v1", kind: "Node", metadata: { name }, spec: {} },
+		});
+		H.eq(`登记节点 ${name} → 201`, res.status, 201);
+	}
+	const nodesFull = await H.req(base, V.P.nodes() + "?limit=500", { session: s.session });
+	const nodesFullNames = listNames(nodesFull);
+	H.check(`nodes limit=500 一次拿全（≥ ${NODE_BULK}）`, nodesFullNames.length >= NODE_BULK, JSON.stringify({ total: nodesFullNames.length }));
+	const nodesPaged = [];
+	let nodeCursor = "";
+	let nodePages = 0;
+	do {
+		const qs = "?limit=" + PAGE + (nodeCursor ? "&continue=" + encodeURIComponent(nodeCursor) : "");
+		const res = await H.req(base, V.P.nodes() + qs, { session: s.session });
+		H.eq(`nodes 第 ${nodePages + 1} 页 → 200`, res.status, 200);
+		nodesPaged.push(...listNames(res));
+		nodeCursor = res.json?.metadata?.continue || "";
+		nodePages++;
+		if (nodePages > 10) throw new Error("nodes 游标翻页不收敛");
+	} while (nodeCursor);
+	H.eq(`nodes 翻页页数 = ceil(${nodesFullNames.length}/${PAGE})`, nodePages, Math.ceil(nodesFullNames.length / PAGE));
+	H.eq("nodes 翻页拼接 = 一次性全量", JSON.stringify(nodesPaged), JSON.stringify(nodesFullNames));
+	H.eq("nodes 末页不带 continue", nodeCursor, "");
+
+	// sources 页 UI：首屏 20 行 → 加载更多到全量；搜索只过滤已加载的行。
+	await page.goto(base + "/sources.html", { waitUntil: "load", timeout: 20000 });
+	await H.waitForAppReady(page, "workspace");
+	await page.waitForFunction(() => document.querySelectorAll("#src-list > div[data-name]").length > 0, null, { timeout: 15000 });
+	const rowCount = () => page.locator("#src-list > div[data-name]").count();
+	const rowNames = () => page.$$eval("#src-list > div[data-name]", (els) => els.map((el) => el.dataset.name));
+	H.eq(`sources 页首屏只渲染 ${PAGE} 行（总 ${TOTAL}，DOM 不随总条数增长）`, await rowCount(), PAGE);
+	H.check("sources 页有「加载更多」且可用", await page.locator("#src-load-more").isVisible() && !(await page.locator("#src-load-more").isDisabled()));
+
+	await page.locator("#src-load-more").click();
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length > n, PAGE, { timeout: 15000 });
+	H.eq(`点一次加载更多 → ${PAGE * 2} 行`, await rowCount(), PAGE * 2);
+
+	let clicks = 1;
+	while ((await page.locator("#src-load-more").count()) > 0 && clicks < 10) {
+		const before = await rowCount();
+		await page.locator("#src-load-more").click();
+		await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length > n, before, { timeout: 15000 });
+		clicks++;
+	}
+	const uiNames = await rowNames();
+	H.eq(`加载到底 → 全部 ${TOTAL} 行`, uiNames.length, TOTAL);
+	H.eq("到底后「加载更多」消失", await page.locator("#src-load-more").count(), 0);
+	H.eq("sources 页渲染无重复", new Set(uiNames).size, uiNames.length);
+
+	await page.fill("#src-search", "many-07");
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length < n, TOTAL, { timeout: 10000 });
+	const filtered = await rowNames();
+	H.eq("本地搜索 many-07 只剩 1 行", filtered.length, 1);
+	H.check("搜索结果就是 many-07", String(filtered[0]).endsWith("many-07"), filtered[0]);
+	await page.fill("#src-search", "");
+	await page.waitForFunction((n) => document.querySelectorAll("#src-list > div[data-name]").length === n, TOTAL, { timeout: 10000 });
+	H.eq("清空搜索恢复全部已加载行", await rowCount(), TOTAL);
+	H.check("sources 页 0 pageerror", errs.length === 0, errs.join(" | "));
 
 	const passed = H.summary("events_paging");
 	await browser.close();

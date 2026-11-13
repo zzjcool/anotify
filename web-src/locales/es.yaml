@@ -2301,3 +2301,9 @@ uxaudit:
     file_drop_pick: Arrastra un archivo aquí o haz clic para elegirlo
     file_drop_hint: .yaml / .json, hasta 1 MB cada uno
     file_drop_empty: Ningún archivo seleccionado
+
+paging:
+  search_ph: 'Buscar nombre / nombre visible'
+  load_more: 'Cargar más'
+  showing: 'Mostrando {n}'
+  no_match: 'Sin coincidencias'

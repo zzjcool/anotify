@@ -2301,3 +2301,9 @@ uxaudit:
     file_drop_pick: ファイルをドロップ、またはクリックして選択
     file_drop_hint: .yaml / .json、1 ファイル 1MB まで
     file_drop_empty: ファイル未選択
+
+paging:
+  search_ph: '名前 / 表示名で検索'
+  load_more: 'さらに読み込む'
+  showing: '表示中 {n} 件'
+  no_match: '一致する項目がありません'

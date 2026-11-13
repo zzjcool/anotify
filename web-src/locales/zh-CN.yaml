@@ -2306,3 +2306,9 @@ uxaudit:
     file_drop_pick: 拖入文件，或点击选择
     file_drop_hint: 支持 .yaml / .json，单个 ≤ 1MB
     file_drop_empty: 未选择文件
+
+paging:
+  search_ph: '搜索名称 / 显示名'
+  load_more: '加载更多'
+  showing: '已显示 {n} 条'
+  no_match: '没有匹配项'

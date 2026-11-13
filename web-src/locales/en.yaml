@@ -2301,3 +2301,9 @@ uxaudit:
     file_drop_pick: Drop a file here, or click to choose
     file_drop_hint: .yaml / .json, up to 1 MB each
     file_drop_empty: No file selected
+
+paging:
+  search_ph: 'Search name / display name'
+  load_more: 'Load more'
+  showing: 'Showing {n}'
+  no_match: 'No matches'
