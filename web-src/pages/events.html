@@ -264,7 +264,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, readScope, saveScope, model, t, loadErrorNode } = A;
+    const { el, api, ready, readScope, saveScope, model, t, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("events.title") });
@@ -286,12 +286,16 @@
 
     /* 一个字段 = label + value，两者同一种盒模型；所有字段（含「已派发任务数」）
      * 走同一个函数，权重天然一致。 */
-    function fact(label, value) {
+    function fact(label, value, opts) {
       const box = el("div", { class: "ev-fact" });
-      box.append(
-        el("dt", { class: "ev-fact-key", text: label }),
-        el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) }),
-      );
+      const dd = el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) });
+      /* #374 验收 ②：内部标识也能一键取走（与 trace / message 的原始 JSON 复制按钮同一语言）。 */
+      if (opts && opts.copyable) {
+        const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy") });
+        copy.addEventListener("click", () => copyText(copy, () => (value == null ? "" : String(value))));
+        dd.append(" ", copy);
+      }
+      box.append(el("dt", { class: "ev-fact-key", text: label }), dd);
       return box;
     }
 
@@ -322,13 +326,18 @@
           text: t("events.v4.trace") }));
         head.append(actions);
       }
+      /* #374：首屏只留一个对外「事件 ID」（= metadata.uid，页面与链路/任务的链接锚点）；
+         deliveryId 是投递层内部标识，进「明细」折叠（与 signature/payload 同一处）。
+         注：v4 的 `/v1/console/events` 信封里没有 dispatched（只有 status.pruned），
+         所以不再把「已派发任务数 0」当成首屏事实（那是永远为 0 的假事实）。 */
       const facts = el("dl", { class: "ev-facts" },
-        fact(t("events.v4.event_uid"), event.uid), fact("deliveryId", event.deliveryId),
+        fact(t("uxaudit.dev.event_id"), event.uid),
         fact("Trace UID", event.traceUID), fact(t("events.v4.source"), event.involvedObject?.name),
-        fact(t("events.v4.received"), event.creationTimestamp), fact(t("events.v4.dispatched"), event.dispatched.length));
+        fact(t("events.v4.received"), event.creationTimestamp));
       const details = el("details", { class: "ev-details" },
         el("summary", null, t("events.v4.details")));
-      const dispatched = el("div", { class: "ev-details-body" });
+      const dispatched = el("div", { class: "ev-details-body" },
+        el("dl", { class: "ev-facts" }, fact("deliveryId", event.deliveryId, { copyable: true })));
       event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono ev-fact-val", text: JSON.stringify(task) })));
       details.append(dispatched, el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: "JSON" })),

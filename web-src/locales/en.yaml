@@ -1201,7 +1201,7 @@ events:
     no_match: No matches on this page — page older or jump back to latest
     invalid_cursor: 'Cursor expired — back to latest'
   v4:
-    dedup: "deliveryId deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
+    dedup: "Delivery ID deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
     refresh: "Refresh"
     namespace: "Namespace"
     source: "Involved object / source"
@@ -1583,7 +1583,7 @@ nodes:
     saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
     stale: "409: Stale CAS; draft retained exactly. Reload explicitly before retrying; no automatic overwrite."
     error: "Request failed"
-    loaded: "Current configuration loaded; resourceVersion is only a CAS token."
+    loaded: "Current configuration loaded."
     pending: "ConfigPending: node defaults not yet applied"
     applied: "Node revisions match (not the namespace input revision)"
     revision: "Configuration & applied facts"
@@ -2302,3 +2302,14 @@ uxaudit:
     file_drop_pick: Drop a file here, or click to choose
     file_drop_hint: .yaml / .json, up to 1 MB each
     file_drop_empty: No file selected
+
+# ── #374/#375 · internal fields & raw JSON: developer info fold (same keys) ──
+  dev:
+    summary: 'Developer info'
+    instance: 'Instance {n}'
+    hint: 'Protocol internals — not needed for everyday use, only when troubleshooting.'
+    copy: 'Copy'
+    raw: 'View raw JSON'
+    event_id: 'Event ID'
+    drift: 'Config not applied yet: config {config}, node applied {applied}'
+    drift_short: 'Awaiting node apply'

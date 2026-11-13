@@ -60,6 +60,43 @@
   .nd-label-unit { font-size: 11px; color: var(--faint); font-weight: 400; }
   .nd-tip { margin-top: 2px; }
 
+  /* ---------- #374：配置版本漂移警示（不是普通文本）+ 开发者信息折叠 ---------- */
+  .nd-drift {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--warn);
+  }
+  .nd-drift-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    border-radius: var(--r-full);
+    background: var(--warn);
+    color: var(--surface-1);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .devf { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); margin-top: 12px; min-width: 0; }
+  .devf > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+  .devf > summary::-webkit-details-marker { display: none; }
+  .devf > summary::before { content: "▸"; color: var(--faint); font-size: 11px; }
+  .devf[open] > summary::before { content: "▾"; }
+  .devf > summary:hover { color: var(--text); }
+  .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
 </style>
 {{end}}
@@ -96,7 +133,10 @@
     <section id="namespace-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.ns_config"}}</div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
       <div class="field"><label for="config-namespace" class="field-label">namespace</label><select id="config-namespace" class="select"></select></div>
-      <div id="namespace-revisions" class="c2-kv"></div>
+      <details class="devf">
+        <summary>{{t "uxaudit.dev.summary"}}</summary>
+        <div class="devf-body"><div id="namespace-revisions" class="c2-kv"></div></div>
+      </details>
       <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
       <div class="c2-actions"><button id="namespace-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       <div id="namespace-state" class="c2-state" role="status"></div>
@@ -104,7 +144,10 @@
     <section id="system-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.retention"}}</div><p class="c2-note">{{t "nodes.v4.retention_hint"}}</p>
       <div id="system-fields" hidden>
-        <div id="system-revisions" class="c2-kv"></div>
+        <details class="devf">
+          <summary>{{t "uxaudit.dev.summary"}}</summary>
+          <div class="devf-body"><div id="system-revisions" class="c2-kv"></div></div>
+        </details>
         <!-- ND-4：中文 label + 单位提示；原始 JSON key 放 title，不再当 label -->
         <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
         <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
@@ -122,6 +165,8 @@
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
   // 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
   const x = key => A.t('uxaudit.res.nodes.' + key);
+  /* #374/#375：开发者信息（内部字段 / 原始 JSON）命名空间 */
+  const yd = key => A.t('uxaudit.dev.' + key);
   A.mountLayout({ active: 'nodes', title: t('title'), subtitle: t('subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   // ND-2：主次分开 —— 行尾动作是次要按钮（.btn-quiet），不再每行挂一个主按钮。
@@ -188,7 +233,20 @@
       pair(x('applied_rev'), rev(n.appliedRevision), 'appliedRevision'),
       pair(x('slots_label'), slots, t('slots')),
     );
-    return dl;
+    /* #374：配置版本 ≠ 已应用版本 = 重要的「未生效」状态，必须与普通文本区分开：
+       给带周界的警示条（.nd-drift），而不是又一行灰字。 */
+    const hasRevs = n.configRevision != null && n.configRevision !== '' && n.appliedRevision != null && n.appliedRevision !== '';
+    const drifted = hasRevs && String(n.configRevision) !== String(n.appliedRevision);
+    if (!drifted) return dl;
+    const frag = document.createDocumentFragment();
+    frag.append(dl);
+    const warn = make('div', 'nd-drift');
+    warn.dataset.drift = 'config-vs-applied';
+    warn.append(make('span', 'nd-drift-ico', '!'),
+      make('span', null, yd('drift').replace('{config}', rev(n.configRevision)).replace('{applied}', rev(n.appliedRevision))),
+      make('span', 'badge badge-warn', yd('drift_short')));
+    frag.append(warn);
+    return frag;
   }
   async function loadNodes() {
     $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');

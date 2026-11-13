@@ -1201,7 +1201,7 @@ events:
     no_match: 当前页没有匹配项，可继续向更旧翻页或回到最新
     invalid_cursor: 游标已失效，已回到最新
   v4:
-    dedup: "deliveryId 在 30 天保留窗内去重；接收成功不保证下游任务成功。"
+    dedup: "投递 ID 在 30 天保留窗内去重；接收成功不保证下游任务成功。"
     refresh: "刷新"
     namespace: "命名空间"
     source: "涉及对象 / 源"
@@ -1585,7 +1585,7 @@ nodes:
     saved: "已保存；节点配置须等待节点 apply，命名空间值仅影响下一个任务。"
     stale: "409：CAS 已过期，草稿完整保留。请明确重载后重试，不自动覆盖。"
     error: "请求失败"
-    loaded: "已读取当前配置；resourceVersion 只是 CAS 令牌。"
+    loaded: "已读取当前配置。"
     pending: "ConfigPending：节点配置尚未应用"
     applied: "节点 revision 已一致（不代表 ns 输入版本）"
     revision: "配置与应用事实"
@@ -2307,3 +2307,14 @@ uxaudit:
     file_drop_pick: 拖入文件，或点击选择
     file_drop_hint: 支持 .yaml / .json，单个 ≤ 1MB
     file_drop_empty: 未选择文件
+
+# ── #374/#375 · 内部字段与裸 JSON：开发者信息折叠（四语言同键）──────────
+  dev:
+    summary: '开发者信息'
+    instance: '实例 {n}'
+    hint: '协议内部字段；日常操作不需要，排查时用。'
+    copy: '复制'
+    raw: '查看原始 JSON'
+    event_id: '事件 ID'
+    drift: '配置未对齐：配置版本 {config}，节点已应用 {applied}'
+    drift_short: '待节点应用'
