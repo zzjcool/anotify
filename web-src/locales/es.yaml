@@ -9,6 +9,49 @@ common:
   server_error: 'error del servidor HTTP {code}'
   request_rejected: 'solicitud rechazada HTTP {code}'
   request_failed: 'la solicitud falló'
+  err:
+    title:
+      unauthorized: Tu sesión expiró
+      forbidden: No tienes permiso para esta acción
+      not_found: Esto ya no existe
+      conflict: Otra persona lo cambió antes
+      gone: Esto ha caducado
+      throttled: Demasiados intentos
+      rejected: La solicitud no fue aceptada
+      server: Error del servidor
+      offline: No se puede contactar al servidor
+      failed: La solicitud falló
+    hint:
+      unauthorized: La sesión terminó. Inicia sesión de nuevo y volverás a esta página.
+      forbidden: Es un tema de permisos, no un fallo. Pide al propietario del espacio de nombres para recursos dentro de él, o al administrador para ajustes de la instancia.
+      not_found: Puede haberse eliminado, o el nombre del enlace es incorrecto.
+      conflict: Recarga para obtener la última versión y vuelve a intentarlo.
+      gone: Se limpió o superó su periodo de retención. No volverá.
+      throttled: Espera un minuto. Reintentar de inmediato solo será rechazado otra vez.
+      rejected: Corrige la entrada como se indica y vuelve a intentarlo.
+      server: No es por lo que hiciste. Reintenta en unos segundos; si sigue fallando, envía los detalles al administrador.
+      offline: Revisa la red o si el proceso del servidor está en marcha, y reintenta.
+      failed: Inténtalo más tarde; si sigue fallando, envía los detalles al administrador.
+    go_login: Iniciar sesión
+    back_to_list: Volver a la lista
+    reload: Recargar
+    copy: Copiar detalles
+    request_id: 'ID de solicitud: {id}'
+  dialog:
+    title:
+      confirm: Confirmar
+      danger: Acción peligrosa
+    confirm: Confirmar
+    cancel: Cancelar
+    irreversible: Esto no se puede deshacer.
+    undoable: Tendrás 5 segundos para deshacerlo.
+  undo:
+    deleted: 'Se eliminó «{name}»'
+    revoked: 'Se revocó «{name}»'
+    done: Deshecho
+    failed: No se pudo deshacer
+    hint: Deshacer en 5 s
+    action: Deshacer
   resource_version_required: 'falta resourceVersion; actualiza la página e inténtalo de nuevo'
   brand:
     name: Anotify

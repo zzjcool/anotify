@@ -911,14 +911,16 @@
       }
 
       async function revokeKey(k) {
-        // 原生 confirm：e2e（i18n_coverage D1）拦截 window.confirm 抓文案
+        // #378：原生 confirm 下线 —— 弹层由 #anotify-dialog 承载，
+        // i18n 断言改读弹层正文（#anotify-dialog-body）。停用不可撤销，无撤销条。
         if (
-          !confirm(
-            t(
+          !(await window.Anotify.confirmDanger({
+            body: t(
               "keys.confirm.revoke",
               "确定停用「{name}」吗？使用它的 Agent 将无法上报。",
             ).replace("{name}", k.name),
-          )
+            undo: false,
+          }))
         )
           return;
         try {

@@ -1,5 +1,6 @@
 // Attributed F2b1 CRUD/fire/dryrun/deep-link chains. Both modes exact namespaced requests.
 import assert from 'node:assert/strict';
+import { acceptDialog } from './f3-dialogs.mjs';
 export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
@@ -56,8 +57,7 @@ export async function source(d){
   assert.equal(await page.locator('#src-modal').isVisible(), true);
   check('Edit 409 preserves draft and empty write-only credentials; immutable name/kind');
   await shot('edit-cas-conflict-draft');
-  page.once('dialog', d => d.accept());
-  await page.locator('#reload-draft').click();
+  await acceptDialog(page, () => page.locator('#reload-draft').click());
   await page.waitForFunction(() => document.querySelector('#f-display').value === '');
   await page.locator('#f-display').fill('after explicit reload');
   await page.locator('#modal-save').click();
@@ -77,16 +77,15 @@ export async function source(d){
   const latest = await req('/v1/namespaces/default/sources/ui-webhook');
   await req('/v1/namespaces/default/sources/ui-webhook', { method: 'PATCH', body: JSON.stringify({ apiVersion: 'anotify/v1', kind: 'Source', metadata: { resourceVersion: latest.metadata.resourceVersion }, spec: { enabled: true } }) });
   let confirmations = 0;
-  const confirmDelete = async dialog => { confirmations++; await dialog.accept(); };
-  page.on('dialog', confirmDelete);
-  await pickMenu('ui-webhook', 'Delete source');
+  await acceptDialog(page, () => pickMenu('ui-webhook', 'Delete source'));
+  confirmations++;
   await page.waitForFunction(() => document.querySelector('#action-error').textContent.includes('resource_version_conflict'));
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).metadata.name, 'ui-webhook');
   await page.locator('#action-error').getByRole('button', { name: 'Reload latest resource' }).click();
   await page.waitForFunction(() => document.querySelector('#action-error').textContent.includes('another confirmation'));
-  await pickMenu('ui-webhook', 'Delete source');
+  await acceptDialog(page, () => pickMenu('ui-webhook', 'Delete source'));
+  confirmations++;
   await hidden('#src-list > div[data-name="ui-webhook"]');
-  page.off('dialog', confirmDelete);
   assert.equal(confirmations, 2);
   check('DELETE query CAS stale409 retains resource; explicit reload and second confirmation deletes');
   await page.locator('#btn-new').click();

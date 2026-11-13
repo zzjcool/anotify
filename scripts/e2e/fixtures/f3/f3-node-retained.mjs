@@ -286,10 +286,10 @@ export async function nodeRetained(d,mode){
   if (mode === 'errors') {
     await goto('nodes'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#nodes-refresh').click();
     await page.waitForFunction(() => document.getElementById('nodes-list').textContent.includes('F3 deliberate disconnected transport')); await shot('nodes-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#nodes-list button').click(); await page.locator('[data-node="anode-1"]').waitFor();
+    await page.evaluate(() => window.__f3Fault = ''); /* #378：错误态多了「复制详情」，按 data-err-action 点重试。 */ await page.locator('#nodes-list [data-err-action="retry"]').click(); await page.locator('[data-node="anode-1"]').waitFor();
     await goto('node','en','?id=anode-1&namespace=default'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#node-refresh').click();
     await page.waitForFunction(() => document.getElementById('node-load-state').textContent.includes('F3 deliberate disconnected transport')); await shot('node-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
+    await page.evaluate(() => window.__f3Fault = ''); /* 节点详情页的失败态是页面自己的空态骨架（不是 loadErrorNode），所以这里仍是唯一那个重试按钮。 */ await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
     check('Both Node pages genuine disconnected error + working explicit retry; no automatic mock switch or false empty success');
   }
 

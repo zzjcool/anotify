@@ -255,22 +255,16 @@
       if (actions.children.length) box.append(actions);
       return box;
     }
-    /* 失败原因与 loadErrorNode 同口径（HTTP 档位 → 网络失败 → 兜底）。 */
+    /* 失败原因是**分级**（#378）：分级只留一处（A.errorFacts），本页只负责把结果排成
+       自己的骨架。这里以前又拄了一份「HTTP 档位 → 文案」的映射 —— 两份映射就是
+       页面上裸 HTTP 码的来源（#378 实测：日志区打出「请求被拒绝 HTTP 410」）。 */
     function failureState(error, retry) {
-      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
-      const status = (error && error.status) || 0;
-      const reason = status
-        ? status >= 500
-          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-        : /Failed to fetch|NetworkError|load failed/i.test(msg)
-          ? t("common.backend_offline", "连不上服务端")
-          : t("common.request_failed", "请求失败");
+      const facts = A.errorFacts(error);
       return stateNode({
         tone: "is-error",
-        title: t("common.load_failed_prefix", "载入失败：") + reason,
-        desc: msg,
-        retry,
+        title: t("common.load_failed_prefix", "载入失败：") + facts.title,
+        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        retry: facts.retry ? retry : undefined,
         back: { href: "events.html", text: t("message.back_events", "返回事件流") },
       });
     }
@@ -311,21 +305,13 @@
     };
     /* 卡片内的小失败态：同口径文案，但用紧凑骨架（不带「返回事件流」）。 */
     function inlineFailure(error, retry) {
-      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
-      const status = (error && error.status) || 0;
-      const reason = status
-        ? status >= 500
-          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-        : /Failed to fetch|NetworkError|load failed/i.test(msg)
-          ? t("common.backend_offline", "连不上服务端")
-          : t("common.request_failed", "请求失败");
+      const facts = A.errorFacts(error);
       return stateNode({
         tone: "is-error",
         compact: true,
-        title: t("common.load_failed_prefix", "载入失败：") + reason,
-        desc: msg,
-        retry,
+        title: t("common.load_failed_prefix", "载入失败：") + facts.title,
+        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        retry: facts.retry ? retry : undefined,
       });
     }
     function section(title, id) {
@@ -403,7 +389,8 @@
     }
     async function action(kind) {
       if (loading || !task || terminal.has(task.phase)) return;
-      if (!window.confirm(t("message.v4.confirm_" + kind))) return;
+      // #378：原生 confirm 下线 —— 弹层由 #anotify-dialog 承载（取消/放弃任务不可撤销，无撤销条）。
+      if (!(await A.confirmDanger({ body: t("message.v4.confirm_" + kind) }))) return;
       loading = true;
       node("task-cancel").disabled = true;
       node("task-abandon").disabled = true;

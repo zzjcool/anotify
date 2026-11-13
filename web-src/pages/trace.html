@@ -301,23 +301,16 @@
       if (actions.children.length) box.append(actions);
       return box;
     }
-    /* 失败原因与 loadErrorNode 同口径（HTTP 档位 → 网络失败 → 兜底），
-       但成品是统一空态：标题说「载入失败：原因」，说明放上游原始 message。 */
+    /* 失败原因是**分级**（#378）：分级只留一处（A.errorFacts），本页只负责把它排成
+       自己的空态骨架。以前这里拄了一份「HTTP 档位 → 文案」的映射，两份映射——
+       loadErrorNode 一份、本页一份——就是页面上裸 HTTP 码的来源。 */
     function failureState(error, retry) {
-      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
-      const status = (error && error.status) || 0;
-      const reason = status
-        ? status >= 500
-          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-        : /Failed to fetch|NetworkError|load failed/i.test(msg)
-          ? t("common.backend_offline", "连不上服务端")
-          : t("common.request_failed", "请求失败");
+      const facts = A.errorFacts(error);
       return stateNode({
         kind: "error",
-        title: t("common.load_failed_prefix", "载入失败：") + reason,
-        desc: msg,
-        retry,
+        title: t("common.load_failed_prefix", "载入失败：") + facts.title,
+        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        retry: facts.retry ? retry : undefined,
         back: { href: "events.html", text: t("trace.back", "返回事件流") },
       });
     }
