@@ -1201,7 +1201,7 @@ events:
     no_match: 'Sin coincidencias en esta página: avanza a más antiguos o vuelve a lo más reciente'
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
   v4:
-    dedup: "deliveryId deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
+    dedup: "El ID de entrega deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
     refresh: "Actualizar"
     namespace: "Espacio de nombres"
     source: "Objeto / fuente"
@@ -2308,7 +2308,6 @@ uxaudit:
     instance: 'Instancia {n}'
     hint: 'Campos internos del protocolo; solo para diagnóstico, no hacen falta en el uso diario.'
     copy: 'Copiar'
-    copied: 'Copiado'
     raw: 'Ver JSON original'
     event_id: 'ID de evento'
     drift: 'Configuración sin aplicar: configuración {config}, aplicado en el nodo {applied}'

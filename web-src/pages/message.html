@@ -500,9 +500,17 @@
         json({ error: task.result.error }, "error"));
       task.result.artifacts.forEach(artifact => result.append(artifactRow(artifact)));
       const attempts = section(t("message.v4.attempts"), "task-attempts");
-      task.attempts.forEach(fact => {
+      task.attempts.forEach((fact, index) => {
         const { envDiagnostics, ...safeFacts } = fact;
-        attempts.append(json(safeFacts, "JSON"), envRows(envDiagnostics));
+        /* #374 rework：attempt 的原始事实（configRevision / namespaceVarsRevision 等）默认不进首屏，
+           与任务级「开发者信息」共用同一套折叠语言；多次尝试时用 #n 区分（语言中立，不新增文案）。 */
+        const box = el("details", { class: "devf" });
+        box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.raw") }),
+          task.attempts.length > 1 ? el("span", { class: "devf-hint", text: "#" + (index + 1) }) : null));
+        const body = el("div", { class: "devf-body" });
+        body.append(json(safeFacts, "JSON"));
+        box.append(body);
+        attempts.append(box, envRows(envDiagnostics));
       });
       if (!task.attempts.length) attempts.append(el("p", { class: "card-sub", text: t("message.v4.attempts_empty") }));
       renderLogsControls();

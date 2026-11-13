@@ -1201,7 +1201,7 @@ events:
     no_match: No matches on this page — page older or jump back to latest
     invalid_cursor: 'Cursor expired — back to latest'
   v4:
-    dedup: "deliveryId deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
+    dedup: "Delivery ID deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
     refresh: "Refresh"
     namespace: "Namespace"
     source: "Involved object / source"
@@ -2308,7 +2308,6 @@ uxaudit:
     instance: 'Instance {n}'
     hint: 'Protocol internals — not needed for everyday use, only when troubleshooting.'
     copy: 'Copy'
-    copied: 'Copied'
     raw: 'View raw JSON'
     event_id: 'Event ID'
     drift: 'Config not applied yet: config {config}, node applied {applied}'

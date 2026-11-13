@@ -1201,7 +1201,7 @@ events:
     no_match: このページに一致なし。古いページへ進むか最新へ戻れます
     invalid_cursor: カーソルが無効です。最新へ戻りました
   v4:
-    dedup: "deliveryId は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
+    dedup: "配信 ID は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
     refresh: "更新"
     namespace: "名前空間"
     source: "関連オブジェクト / ソース"
@@ -2308,7 +2308,6 @@ uxaudit:
     instance: 'インスタンス {n}'
     hint: 'プロトコル内部の項目です。通常の操作には不要で、調査時に使います。'
     copy: 'コピー'
-    copied: 'コピーしました'
     raw: '元の JSON を表示'
     event_id: 'イベント ID'
     drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
