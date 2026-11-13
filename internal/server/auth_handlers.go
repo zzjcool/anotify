@@ -11,8 +11,13 @@ import (
 )
 
 // authHandler 包装 auth.Service，提供 /v1/auth/* HTTP 端点。
+//
+// db 只给「列表分页」这类只读查询用（#377）：会话/凭证列表需要 keyset 查询，
+// 而 auth.Service 只暴露全量 ListByUser（形状不对齐分页）。写入仍然全走 Service，
+// 不把认证逻辑搬进 handler。
 type authHandler struct {
 	svc *auth.Service
+	db  *store.DB
 }
 
 type usernameReq struct {
@@ -232,15 +237,35 @@ func (h *authHandler) sessions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "未登录")
 		return
 	}
-	list, err := h.svc.Sessions().ListByUser(uid)
+	limit, msg := pageLimitPlain(r)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	binding := "sessions|" + uid
+	keys, err := decodePageCursor(r.URL.Query().Get("continue"), binding, 2)
+	if err != nil {
+		writeErr(w, 400, pageCursorMessage(err))
+		return
+	}
+	afterAt, afterID := int64(0), ""
+	if len(keys) == 2 {
+		if afterAt, err = pageCursorInt64(keys[0]); err != nil {
+			writeErr(w, 400, pageCursorMessage(err))
+			return
+		}
+		afterID = keys[1]
+	}
+	list, err := h.db.ListSessionsByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if list == nil {
-		list = []*store.Session{}
-	}
-	writeJSON(w, 200, map[string]any{"sessions": list, "count": len(list)})
+	list, cont := pageCut(list, limit, binding, func(s *store.Session) []string {
+		return []string{pageKeyInt64(s.CreatedAt), s.ID}
+	})
+	// count 是**本页**条数；`continue` 非空表示还有下一页（末页回 ""）。
+	writeJSON(w, 200, map[string]any{"sessions": list, "count": len(list), "continue": cont})
 }
 
 // passkeysRoot 路由 /v1/auth/passkeys（无尾斜杠）：GET 列表 / POST 补建凭证完成。
@@ -320,16 +345,39 @@ func (h *authHandler) listPasskeys(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "未登录")
 		return
 	}
-	list, err := h.svc.ListPasskeys(uid)
+	limit, msg := pageLimitPlain(r)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	binding := "passkeys|" + uid
+	keys, err := decodePageCursor(r.URL.Query().Get("continue"), binding, 2)
+	if err != nil {
+		writeErr(w, 400, pageCursorMessage(err))
+		return
+	}
+	afterAt, afterID := int64(0), ""
+	if len(keys) == 2 {
+		if afterAt, err = pageCursorInt64(keys[0]); err != nil {
+			writeErr(w, 400, pageCursorMessage(err))
+			return
+		}
+		afterID = keys[1]
+	}
+	recs, err := h.db.ListPasskeysByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	out := make([]passkeyOut, 0, len(list))
-	for _, p := range list {
+	recs, cont := pageCut(recs, limit, binding, func(p *store.Passkey) []string {
+		return []string{pageKeyInt64(p.CreatedAt), p.ID}
+	})
+	out := make([]passkeyOut, 0, len(recs))
+	for _, p := range recs {
 		out = append(out, toPasskeyOut(p))
 	}
-	writeJSON(w, 200, map[string]any{"passkeys": out, "count": len(out)})
+	// count 是**本页**条数；`continue` 非空表示还有下一页（末页回 ""）。
+	writeJSON(w, 200, map[string]any{"passkeys": out, "count": len(out), "continue": cont})
 }
 
 // addPasskeyOptions POST /v1/auth/passkeys/register/options —— 已登录用户补建凭证。

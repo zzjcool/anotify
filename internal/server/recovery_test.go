@@ -53,7 +53,7 @@ func newRecoveryTestEnv(t *testing.T) *recoveryTestEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
-	authH := &authHandler{svc: svc}
+	authH := &authHandler{svc: svc, db: db}
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	mux.Handle("/v1/auth/me", noStore(sessMW(http.HandlerFunc(authH.me))))

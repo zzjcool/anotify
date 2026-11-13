@@ -126,18 +126,41 @@ func (h *adminHandler) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s)
 }
 
-// GET /v1/admin/users —— 用户列表（附各用户实体计数）。
+// GET /v1/admin/users —— 用户列表（附各用户实体计数；`limit`/`continue` keyset 分页）。
 func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.db.ListUsersWithStats(r.Context())
+	limit, msg := pageLimitPlain(r)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	binding := "adminUsers|"
+	keys, err := decodePageCursor(r.URL.Query().Get("continue"), binding, 2)
+	if err != nil {
+		writeErr(w, 400, pageCursorMessage(err))
+		return
+	}
+	afterAt, afterID := int64(0), ""
+	if len(keys) == 2 {
+		if afterAt, err = pageCursorInt64(keys[0]); err != nil {
+			writeErr(w, 400, pageCursorMessage(err))
+			return
+		}
+		afterID = keys[1]
+	}
+	users, err := h.db.ListUsersWithStatsPage(r.Context(), afterAt, afterID, limit+1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	users, cont := pageCut(users, limit, binding, func(u *store.UserWithStats) []string {
+		return []string{pageKeyInt64(u.CreatedAt), u.ID}
+	})
 	out := make([]adminUserOut, 0, len(users))
 	for _, u := range users {
 		out = append(out, toAdminUserOut(u))
 	}
-	writeJSON(w, 200, map[string]any{"users": out, "count": len(out)})
+	// count 是**本页**条数；`continue` 非空表示还有下一页（末页回 ""）。
+	writeJSON(w, 200, map[string]any{"users": out, "count": len(out), "continue": cont})
 }
 
 // GET /v1/admin/users/{id} —— 单用户详情（含实体计数）。

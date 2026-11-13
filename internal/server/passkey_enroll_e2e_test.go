@@ -61,7 +61,7 @@ func newEnrollE2EEnv(t *testing.T) *enrollE2EEnv {
 	cookie := &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
 
 	enrollH := &passkeyEnrollHandler{mgr: mgr, db: db}
-	authH := &authHandler{svc: svc}
+	authH := &authHandler{svc: svc, db: db}
 	sessMW := svc.Sessions().Middleware
 
 	mux := http.NewServeMux()

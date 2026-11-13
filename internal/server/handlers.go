@@ -263,16 +263,43 @@ func toKeyPublic(k *store.APIKey) keyPublic {
 
 func (h *keysHandler) list(w http.ResponseWriter, r *http.Request) {
 	uid := auth.UserIDFromContext(r.Context())
-	recs, err := h.db.ListAPIKeysByUser(uid)
+	if uid == "" {
+		writeErr(w, 401, "未登录")
+		return
+	}
+	limit, msg := pageLimitPlain(r)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	binding := "keys|" + uid
+	keys, err := decodePageCursor(r.URL.Query().Get("continue"), binding, 2)
+	if err != nil {
+		writeErr(w, 400, pageCursorMessage(err))
+		return
+	}
+	afterAt, afterID := int64(0), ""
+	if len(keys) == 2 {
+		if afterAt, err = pageCursorInt64(keys[0]); err != nil {
+			writeErr(w, 400, pageCursorMessage(err))
+			return
+		}
+		afterID = keys[1]
+	}
+	recs, err := h.db.ListAPIKeysByUserPage(r.Context(), uid, afterAt, afterID, limit+1)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	recs, cont := pageCut(recs, limit, binding, func(k *store.APIKey) []string {
+		return []string{pageKeyInt64(k.CreatedAt), k.ID}
+	})
 	out := make([]keyPublic, 0, len(recs))
 	for _, k := range recs {
 		out = append(out, toKeyPublic(k))
 	}
-	writeJSON(w, 200, map[string]any{"keys": out, "count": len(out)})
+	// count 是**本页**条数；`continue` 非空表示还有下一页（末页回 ""）。
+	writeJSON(w, 200, map[string]any{"keys": out, "count": len(out), "continue": cont})
 }
 
 func (h *keysHandler) create(w http.ResponseWriter, r *http.Request) {

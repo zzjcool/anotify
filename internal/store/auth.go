@@ -369,6 +369,107 @@ func (d *DB) ListSessionsByUser(userID string) ([]*Session, error) {
 	return out, rows.Err()
 }
 
+// ListAPIKeysByUserPage 是 ListAPIKeysByUser 的 keyset 分页版（#377）：同一排序
+// (created_at DESC, id DESC)。`afterID == ""` 表示第一页。
+func (d *DB) ListAPIKeysByUserPage(ctx context.Context, userID string, afterAt int64, afterID string, limit int) ([]*APIKey, error) {
+	query := `SELECT id, user_id, name, key_hash, prefix, scopes, enabled, created_at, last_used_at
+		 FROM api_keys WHERE user_id = ?`
+	args := []any{userID}
+	if afterID != "" {
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys page: %w", err)
+	}
+	defer rows.Close()
+	out := []*APIKey{}
+	for rows.Next() {
+		var k APIKey
+		var sc string
+		var enabled int
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.Prefix, &sc, &enabled, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		k.Enabled = enabled == 1
+		if err := json.Unmarshal([]byte(sc), &k.Scopes); err != nil {
+			k.Scopes = []string{}
+		}
+		out = append(out, &k)
+	}
+	return out, rows.Err()
+}
+
+// ListSessionsByUserPage 是会话列表的 keyset 分页版（#377）：排序
+// (created_at DESC, id DESC)，**只含未过期会话**（与 admin.ListAllSessions 同一口径
+// `expires_at > now`）。
+//
+// 为什么过滤放在 SQL 而不是让前端按 expiresAt 自己判：分页之后「本页恰好全过期」
+// 会让客户端拿不到任何可用行却还有 continue，前端得写「跳过整页再拉」的循环；
+// 而且过期行本来就不该出现在「我的登录会话」里。
+func (d *DB) ListSessionsByUserPage(ctx context.Context, userID string, afterAt int64, afterID string, limit int) ([]*Session, error) {
+	query := `SELECT id, user_id, device_name, created_at, expires_at, last_seen
+		 FROM sessions WHERE user_id = ? AND expires_at > strftime('%s','now')`
+	args := []any{userID}
+	if afterID != "" {
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions page: %w", err)
+	}
+	defer rows.Close()
+	out := []*Session{}
+	for rows.Next() {
+		var s Session
+		if err := rows.Scan(&s.ID, &s.UserID, &s.DeviceName, &s.CreatedAt, &s.ExpiresAt, &s.LastSeen); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		out = append(out, &s)
+	}
+	return out, rows.Err()
+}
+
+// ListPasskeysByUserPage 是 ListPasskeysByUser 的 keyset 分页版（#377）：同一排序
+// (created_at ASC, id ASC)。`afterID == ""` 表示第一页。
+func (d *DB) ListPasskeysByUserPage(ctx context.Context, userID string, afterAt int64, afterID string, limit int) ([]*Passkey, error) {
+	query := `SELECT id, user_id, public_key, sign_count, name, transports, backup_eligible, created_at, last_used_at
+		 FROM passkeys WHERE user_id = ?`
+	args := []any{userID}
+	if afterID != "" {
+		query += ` AND (created_at > ? OR (created_at = ? AND id > ?))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY created_at ASC, id ASC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list passkeys page: %w", err)
+	}
+	defer rows.Close()
+	out := []*Passkey{}
+	for rows.Next() {
+		var p Passkey
+		var tr string
+		var be int
+		if err := rows.Scan(&p.ID, &p.UserID, &p.PublicKey, &p.SignCount, &p.Name, &tr, &be, &p.CreatedAt, &p.LastUsedAt); err != nil {
+			return nil, fmt.Errorf("scan passkey: %w", err)
+		}
+		if err := json.Unmarshal([]byte(tr), &p.Transports); err != nil {
+			p.Transports = []string{}
+		}
+		p.BackupEligible = be != 0
+		out = append(out, &p)
+	}
+	return out, rows.Err()
+}
+
 // ---------- API Key ----------
 
 // CreateAPIKey 插入一个 API Key（仅存哈希）。

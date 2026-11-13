@@ -53,6 +53,9 @@ paths:
       tags: [capabilities]
       security: [{session: []}]
       summary: "列出命名空间内的能力（同名多版本各一行，name 升序、版本降序）"
+      description: |
+        `metadata.continue` 是不透明游标（keyset，排序键 `(name, version)`，与响应顺序一致），
+        绑定该命名空间；拿别的作用域的游标来用 → 400。末页不带 `continue`。
       parameters:
         - name: includeBody
           in: query
@@ -61,6 +64,8 @@ paths:
             `true`/`1` 时返回 `spec.run.files` 正文；默认剥离（文件正文可能很大，
             列表默认不带）。剥离只影响 `files`，其它字段不变。
           schema: {type: boolean, default: false}
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/ContinueQuery'
       responses:
         '200':
           description: "CapabilityList（items 恒为数组）"
@@ -287,12 +292,19 @@ paths:
       tags: [sources]
       security: [{session: []}]
       summary: "列出命名空间内的源"
+      description: |
+        `metadata.continue` 是不透明游标（keyset，排序 `createdAt` 降序 + `id` 破平局），
+        绑定该命名空间；拿别的作用域的游标来用 → 400。末页不带 `continue`。
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/ContinueQuery'
       responses:
         '200':
           description: "SourceList"
           content:
             application/json:
               schema: {$ref: '#/components/schemas/SourceList'}
+        '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
@@ -386,18 +398,24 @@ paths:
       tags: [playbooks]
       security: [{session: []}]
       summary: "列出命名空间内的包（默认摘要，不含包体全文）"
+      description: |
+        `metadata.continue` 是不透明游标（keyset，排序 `createdAt` 升序 + `id` 破平局），
+        绑定该命名空间；拿别的作用域的游标来用 → 400。末页不带 `continue`。
       parameters:
         - name: includeBody
           in: query
           required: false
           description: "`true`/`1` 时每项返回整份 `spec.files`；默认 `spec` 是 `{}`。"
           schema: {type: boolean, default: false}
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/ContinueQuery'
       responses:
         '200':
           description: "PlaybookList"
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PlaybookList'}
+        '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
@@ -809,12 +827,18 @@ paths:
       tags: [nodes]
       security: [{session: []}]
       summary: "列出全部节点（cluster 对象，无 namespace 参数）"
+      description: |
+        `metadata.continue` 是不透明游标（keyset，排序 `(name, id)`）。末页不带 `continue`。
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/ContinueQuery'
       responses:
         '200':
           description: "NodeList"
           content:
             application/json:
               schema: {$ref: '#/components/schemas/NodeList'}
+        '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '500': {$ref: '#/components/responses/Status500'}
     post:
@@ -1391,7 +1415,7 @@ components:
       additionalProperties: false
     ListMeta:
       type: object
-      description: "列表 metadata。只有 `continue`（不透明游标，仅 console events / emissions 会填）。"
+      description: "列表 metadata。只有 `continue`（不透明游标；末页省略）。"
       properties:
         continue:
           type: string

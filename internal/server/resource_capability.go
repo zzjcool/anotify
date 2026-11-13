@@ -96,6 +96,7 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 // ---------- 读端点 ----------
 
 // list 处理 GET …/capabilities：命名空间内全部能力行，按 name 升序、同名内版本降序。
+// `limit`/`continue` 是 keyset 分页（排序键 (name, version)，与对外顺序一致）。
 //
 // 为什么保留「同名多行」而不是只回最新版：每行都是有独立 `metadata.uid` 的版本对象
 // （A7：版本 = capability_versions 的行），按 version 降序排列只有在存在多个版本时
@@ -107,11 +108,32 @@ func (a *capabilityAPI) list(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	rows, err := a.d.DB.ListCapabilities(r.Context(), ns)
+	limit, err := pageLimit(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	binding := "capabilities|" + ns
+	afterName, afterVersion := "", 0
+	if keys, cerr := decodePageCursor(r.URL.Query().Get("continue"), binding, 2); cerr != nil {
+		writeAPIError(w, cerr)
+		return
+	} else if len(keys) == 2 {
+		v, verr := pageCursorInt64(keys[1])
+		if verr != nil {
+			writeAPIError(w, verr)
+			return
+		}
+		afterName, afterVersion = keys[0], int(v)
+	}
+	rows, err := a.d.DB.ListCapabilitiesPage(r.Context(), ns, afterName, afterVersion, limit+1)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rows, cont := pageCut(rows, limit, binding, func(row *store.CapabilityVersion) []string {
+		return []string{row.Name, pageKeyInt64(int64(row.Version))}
+	})
 	includeBody := includeBodyQuery(r)
 	ordered := orderedCapabilityVersions(rows)
 	items := make([]apiEnvelope, 0, len(ordered))
@@ -124,7 +146,7 @@ func (a *capabilityAPI) list(w http.ResponseWriter, r *http.Request) {
 		items = append(items, env)
 	}
 	// 空列表是 []（writeList 收口 nil → []）。
-	writeList(w, http.StatusOK, kindCapabilityList, listMeta{}, items)
+	writeList(w, http.StatusOK, kindCapabilityList, listMeta{Continue: cont}, items)
 }
 
 // get 处理 GET …/capabilities/{name}：裸 name = 该 name 的最大版本。

@@ -185,6 +185,36 @@ func (d *DB) CreatePlaybook(ctx context.Context, namespaceID, slug string, files
 	return row, nil
 }
 
+// ListPlaybooksPage 是 ListPlaybooks 的 keyset 分页版（#377）：同一排序
+// (created_at ASC, id ASC)。`afterID == ""` 表示第一页。
+func (d *DB) ListPlaybooksPage(ctx context.Context, namespaceID string, afterAt int64, afterID string, limit int) ([]*PlaybookRow, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	query := `SELECT ` + playbookColumns + ` FROM playbooks WHERE namespace_id = ?`
+	args := []any{namespaceID}
+	if afterID != "" {
+		query += ` AND (created_at > ? OR (created_at = ? AND id > ?))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY created_at, id LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.cachedQueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list playbooks page: %w", err)
+	}
+	defer rows.Close()
+	out := []*PlaybookRow{}
+	for rows.Next() {
+		p, err := scanPlaybookRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan playbook row: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // GetPlaybook 按 (namespace, slug) 取一份包（含原始 files；是否存在当前清单由它回答）。
 //
 // 未命中返回 ErrNotFound。名字里带 playbook 是为了与命名空间/能力的 Get* 区分。
