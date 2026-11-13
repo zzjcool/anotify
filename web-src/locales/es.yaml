@@ -289,6 +289,8 @@ message:
     env_hint: "Solo nombres y fuentes usados por esta tarea; no valores del equipo ni lista completa de variables permitidas."
     env_empty: "No hay diagnóstico de entorno retenido."
     result: "Resumen / error / artefactos"
+    error_message: 'Mensaje'
+    error_reason: 'Motivo'
     attempts: "Intentos de ejecución retenidos"
     attempts_empty: "No hay intentos retenidos."
     logs: "Registros de tarea"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "Estado real de despliegues de capacidades"
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
 
+    per_cap_default: 'predeterminado'
 sources:
   v4:
     new: "Nueva fuente"
@@ -1900,6 +1903,7 @@ trace:
     tasks: "Tareas / intentos / espera"
     events: "Hechos de eventos"
     pruned: "Motivos de poda"
+    pruned_link: 'Ver detalle de la poda'
     empty: "Esta traza no envió tareas."
     no_pruned: "No hay registros de poda retenidos."
     missing: "Falta traceUID en la URL."

@@ -224,9 +224,15 @@
     } else vars.append(make('p', 'c2-note', t('none')));
     const lim = make('div', 'nd-sum'), limits = src.limits || {};
     const total = limits.total == null ? x('unknown') : String(limits.total);
-    const perCap = limits.perCapability && typeof limits.perCapability === 'object' ? Object.keys(limits.perCapability).length : 0;
+    /* 每能力上限是**逐能力**的（{*: 2, fixer: 1}）：只能逐项显示。原先把键名个数当上限，
+       2 个键就显示成「每能力 2」，把 fixer 真实的 1 说错。 */
+    const perCapPairs = limits.perCapability && typeof limits.perCapability === 'object' && !Array.isArray(limits.perCapability)
+      ? Object.entries(limits.perCapability) : [];
+    const perCapText = perCapPairs.length
+      ? perCapPairs.map(([key, value]) => (key === '*' ? t('per_cap_default') : key) + ' ' + (value == null ? x('unknown') : String(value))).join(' · ')
+      : x('none');
     lim.append(make('div', 'nd-sum-k', t('limits')),
-      make('p', 'c2-note', dev('total') + ' ' + total + ' · ' + dev('per_cap') + ' ' + perCap));
+      make('p', 'c2-note', dev('total') + ' ' + total + ' · ' + dev('per_cap') + ' ' + perCapText));
     host.append(ns, vars, lim);
   }
   /* 草稿改动实时反映到摘要（解析失败时保留上一次可解析的摘要） */

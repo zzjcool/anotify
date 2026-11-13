@@ -200,12 +200,17 @@ function pair(label,value,muted){
   cell.append(el("dt","src-k",label),el("dd","src-v"+(muted ? " is-muted" : ""),value));
   return cell;
 }
-/* CP-5：统一走 .code-block（标题条 + 等宽正文），不再直接甩裸 <pre> */
+/* CP-5：统一走 .code-block（标题条 + 等宽正文），不再直接甩裸 <pre>
+   #375 rework：与 trace / message 的原始 JSON 一致，标题条带一键复制（应修 4）。 */
 function codeBlock(title,text){
   const box=el("div","code-block");
-  box.append(el("div","code-head",title));
+  const head=el("div","code-head",title);
+  const copy=el("button","copy-btn",dev("copy"));
+  copy.type="button";
+  copy.addEventListener("click",()=>A.copyText(copy,()=>text));
+  head.append(copy);
   const body=el("pre","code-body source-json mono",text);
-  box.append(body);
+  box.append(head,body);
   return box;
 }
 /* #374：开发者信息折叠。标签用**原始协议字段名**（语言中立、可 grep），

@@ -374,6 +374,19 @@
       }
       return dl;
     }
+    /* 错误事实：标签走 i18n。原本用 `error.` 前缀拼原始 key（error.reason / error.message），
+       等于把协议前缀当文案泄给用户。未知字段仍按原始 key 显示，信息不丢。 */
+    const ERROR_LABEL = { reason: "message.v4.error_reason", message: "message.v4.error_message" };
+    function errorFacts(error) {
+      const entries = error && typeof error === "object" && !Array.isArray(error) ? Object.entries(error) : [];
+      if (!entries.length) return el("p", { class: "card-sub", text: t("uxaudit.dev.none") });
+      const dl = el("dl", { class: "grid b2-facts gap-4" });
+      for (const [key, value] of entries) {
+        const label = ERROR_LABEL[key] ? t(ERROR_LABEL[key]) : key;
+        dl.append(field(label, value == null ? "—" : typeof value === "string" ? value : JSON.stringify(value)));
+      }
+      return dl;
+    }
     /* 原始 JSON 一律进「查看原始」折叠（默认收起） */
     function rawFold(label, value) {
       const box = el("details", { class: "devf" });
@@ -519,7 +532,7 @@
          注：产物 sha256 保留在首屏 —— 它是下载寻址的清单哈希（不是内部字段）。 */
       result.append(el("p", { class: "b2-wrap" },
         el("span", { "data-raw-content": "", text: task.result.summary || "—" })));
-      if (task.result.error) result.append(kvList(task.result.error, t("uxaudit.dev.none"), "error."));
+      if (task.result.error) result.append(errorFacts(task.result.error));
       task.result.artifacts.forEach(artifact => result.append(artifactRow(artifact)));
       result.append(rawFold("JSON", { summary: task.result.summary, error: task.result.error }));
       const attempts = section(t("message.v4.attempts"), "task-attempts");

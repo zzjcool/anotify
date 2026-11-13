@@ -428,24 +428,18 @@
           el("span", { class: "tr-ver", text: event.type || "—" }),
           event.reason ? el("span", { class: "tr-meta", text: event.reason }) : null));
         const facts = el("div", { class: "tr-facts" });
-        const dispatched = Array.isArray(event.dispatched) ? event.dispatched : [];
         const prune = event.pruned && typeof event.pruned === "object" ? event.pruned : null;
-        if (dispatched.length) {
-          facts.append(el("p", { class: "tr-meta", text: t("events.v4.dispatched", "已派发任务数") + " " + dispatched.length }));
-          for (const item of dispatched) {
-            const cap = item.capability || item.to || "—";
-            const taskId = item.task || item.taskId || "";
-            const taskRow = el("div", { class: "tr-fact-row" },
-              el("code", { class: "mono", text: String(cap) + (item.version ? "@" + item.version : "") }));
-            if (taskId) taskRow.append(el("a", { class: "tr-id", href: taskLink(taskId), text: taskId }));
-            facts.append(taskRow);
-          }
-        }
+        /* #375 rework：事件行不再重复渲染剪枝整句（B2）——原因码在这里点到为止，
+           完整诊断只留在上方 #trace-pruned「剪枝留痕」卡片（同屏一份）。
+           另外：真实 /v1/console/traces 从不发 status.dispatched，结构化 dispatched 块
+           恒为空（应修 2），普通事件也不该挂「无剪枝原因」空态（应修 1）；
+           原始事实仍可在下面的「查看原始 JSON」里看到。 */
         if (prune) {
-          facts.append(el("p", { class: "tr-prune" }, el("b", { text: (prune.reason || "—") + ": " }),
-            el("span", { "data-raw-content": "", text: prune.detail || "" })));
+          const line = el("p", { class: "tr-prune" }, el("b", { text: prune.reason || "—" }));
+          if (doc.pruned.length) line.append(" ", el("a", { class: "tr-id", href: "#trace-pruned", text: t("trace.v4.pruned_link") }));
+          else line.append(el("span", { "data-raw-content": "", text: ": " + (prune.detail || "") }));
+          facts.append(line);
         }
-        if (!dispatched.length && !prune) facts.append(el("p", { class: "tr-meta", text: t("trace.v4.no_pruned") }));
         row.append(facts, el("details", { class: "devf" },
           el("summary", {},
             el("span", { text: t("uxaudit.dev.raw") }),

@@ -289,6 +289,8 @@ message:
     env_hint: "只展示此任务实际使用的变量名与来源，不读取本机变量值或完整透传白名单。"
     env_empty: "没有保留的环境诊断。"
     result: "结果摘要 / 错误 / 产物"
+    error_message: '说明'
+    error_reason: '原因'
     attempts: "已保留的执行尝试事实"
     attempts_empty: "没有保留的执行尝试事实。"
     logs: "任务日志"
@@ -1612,6 +1614,7 @@ nodes:
     artifacts: "已部署能力的实际状态"
     batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
 
+    per_cap_default: '默认'
 sources:
   v4:
     new: "新建源"
@@ -1902,6 +1905,7 @@ trace:
     tasks: "任务 / 尝试 / 等待诊断"
     events: "事件事实"
     pruned: "剪枝原因"
+    pruned_link: '查看剪枝详情'
     empty: "这条链路没有派发任务。"
     no_pruned: "没有保留的剪枝记录。"
     missing: "URL 缺少 traceUID。"
