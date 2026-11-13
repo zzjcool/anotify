@@ -74,3 +74,13 @@
 | 383 | iOS 聚焦缩放 | c-mobile | [#391](https://github.com/zzjcool/anotify/pull/391) | rev-391 CHANGES → 返工 → rev-391b **APPROVE**（5 项承重测试） | ✅ `52e7c10` |
 | 384 | 主内容横滚 | c-mobile | — | — | — |
 | 385 | 手机首屏/弹层/安全区 | c-mobile | — | — | — |
+
+## 波末门禁（2026-11-14 03:30 实测，epic tip `e2e-driver-fix`）
+
+| 门禁 | 结果 |
+|---|---|
+| `make fe` | PASS（class 841 / tailwind 923 / sitegen 4×19 / 指纹 30+76） |
+| `./scripts/e2e/run_all.sh`（全量 28 套件） | **2274 断言全绿 / 0 失败**（基线 2136；新增 ~138 条来自 #377/#378/#381/#382/#383/#384/#385） |
+| 已合入子 issue | #370 #371 #372 #374 #375 #376 #377 #378 #380 #381 #382 #383 #384 #385（14/16） |
+| 在审 | #373（PR #402） |
+| 关键坑（本轮踩到） | **`run_all.sh` 不重建前端**：Go 二进制 embed 的是 `internal/server/dist`，`make fe` 没跑 → 二进制发的是旧页面，全量 e2e 会大面积假红（实测 7 套件红 → 跑完 make fe 后 1 条真红）。波末门禁必须 `make fe && ./scripts/e2e/run_all.sh` |
