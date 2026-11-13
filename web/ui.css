@@ -504,7 +504,11 @@ body {
 	}
 }
 
-/* 状态徽章 */
+/* 状态徽章
+ * #371：本族与 `.badge-*`（ui.css 底部）合并成**一个色阶** —— 两族文字色都取
+ * tokens.css 的 `--pill-*-fg`，底色都取 `--*-soft`；差别只保留形状（本族无边框、
+ * 圆角胶囊，`.badge` 有 1px 边框）。改色只改 tokens，脚本 scripts/check-contrast.mjs
+ * 对两族按同一阈值逐项卡 ≥4.5:1。 */
 .status-badge {
 	display: inline-flex;
 	align-items: center;
@@ -515,33 +519,31 @@ body {
 	border-radius: var(--r-full);
 	white-space: nowrap;
 }
-.status-success {
+.status-success,
+.status-on {
 	background: var(--success-soft);
-	color: var(--success-300);
+	color: var(--pill-success-fg);
 }
 .status-error {
 	background: var(--error-soft);
-	color: var(--error-300);
+	color: var(--pill-error-fg);
 }
 .status-warn {
 	background: var(--warn-soft);
-	color: var(--warn-300);
-}
-.status-on {
-	background: var(--success-soft);
-	color: var(--success-300);
+	color: var(--pill-warn-fg);
 }
 .status-off {
 	background: var(--surface-3);
-	color: var(--muted);
+	color: var(--pill-neutral-fg);
 }
 /* ST-1：admin 页（admin.html:560/567/574）拿 .status-info 当「工作中」与非超管
  * 角色的默认徽章，但全仓从未定义过 —— 结果是裸 .status-badge（无底色、无边框，
  * 和旁边的 status-warn / status-success 完全不像同一族）。补一档与家族同形状：
- * 胶囊底 + --info（= 主色，不引入第二个色相，D9）。 */
+ * 胶囊底 + --pill-info-fg（= 主色，不引入第二个色相，D9）。
+ * #371：底色改用 --info-soft（= --accent-soft，与 .badge-accent 同底同字）。 */
 .status-info {
-	background: color-mix(in srgb, var(--info) 14%, transparent);
-	color: var(--info);
+	background: var(--info-soft);
+	color: var(--pill-info-fg);
 }
 
 /* 输入 / 选择 */
@@ -1991,7 +1993,9 @@ html.flograph-fullscreen-open body {
 	padding: 16px;
 	border: 1px solid var(--line);
 	border-radius: 14px;
-	background: var(--bg-raise);
+	/* #370：--bg-raise 在亮色下已带冷灰调（侧栏专用），卡片仍用 --surface-1，
+	 * 否则同一页里会出现"灰卡"与"白卡"两种卡片底色。 */
+	background: var(--surface-1);
 	cursor: pointer;
 	transition:
 		border-color 0.15s ease,
@@ -2756,7 +2760,11 @@ a.side-link svg {
 	gap: 8px;
 }
 
-/* ---------- 卡片 ---------- */
+/* ---------- 卡片 ----------
+ * #370 容器层次：层级由**填充差 + 1px 边框 + 0 1px 2px 阴影**三者共同表达。
+ * 暗色靠填充（--surface-1 vs --bg = 1.28:1，卡片不再是页底的同色块）；
+ * 亮色靠边框（--line 在 #fff 上 1.41:1）+ 阴影（白卡不可能靠填充拉开）。
+ * 三条腿的阈值由 scripts/check-contrast.mjs 卡住，改 token 前先跑它。 */
 .card {
 	background: var(--surface-1);
 	border: 1px solid var(--line);
@@ -2980,30 +2988,33 @@ a.side-link svg {
 	line-height: 1;
 	white-space: nowrap;
 }
+/* #371：文字色与 `.status-*` 共用 --pill-*-fg 一个色阶（旧值直接用实色 --success/
+ * --warn/--error，亮色下只有 3.33/4.39/4.00:1）。边框色仍用实色 28% 混出，
+ * 只影响描边不影响文字对比度。 */
 .badge-neutral {
 	background: var(--surface-2);
 	border-color: var(--line);
-	color: var(--muted);
+	color: var(--pill-neutral-fg);
 }
 .badge-accent {
 	background: var(--accent-soft);
 	border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-	color: var(--accent);
+	color: var(--pill-accent-fg);
 }
 .badge-success {
 	background: var(--success-soft);
 	border-color: color-mix(in srgb, var(--success) 28%, transparent);
-	color: var(--success);
+	color: var(--pill-success-fg);
 }
 .badge-warn {
 	background: var(--warn-soft);
 	border-color: color-mix(in srgb, var(--warn) 28%, transparent);
-	color: var(--warn);
+	color: var(--pill-warn-fg);
 }
 .badge-error {
 	background: var(--error-soft);
 	border-color: color-mix(in srgb, var(--error) 28%, transparent);
-	color: var(--error);
+	color: var(--pill-error-fg);
 }
 
 /* ---------- 表格 ----------
@@ -3073,6 +3084,91 @@ a.side-link svg {
 	text-align: center;
 	font-size: 13px;
 	color: var(--faint);
+}
+
+/* — epic-369-actions — 动作菜单/危险动作统一语言（#376）；本段归 c-feactions 独占 */
+/* 行内/页头动作收敛成「1 主 + 1 次 + ⋯」：
+   触发按钮与菜单条目复用既有组件（.btn / .btn-sm / .menu / .menu-item），
+   本段只补三样东西：定位容器、两行条目（动作名 + 一句差异说明）、危险项的语义色。
+   危险项选择器带上 .menu-item / .btn 提高优先级 —— 否则同权重的
+   .menu-item:hover / .btn-quiet:hover（在本段之后声明）会把 color 抢回正文色。 */
+/* ⋯ 菜单是浮层：面板宽度 ≥ min-width，右对齐到只有 36px 宽的触发器时只能
+   往左长 —— 390/360 下停用行（编辑 + ⋯）会把左缘推出视口，再被 body 的
+   overflow-x:hidden 裁掉（实测左溢出 63/77px，菜单中点命中不到）。
+   所以菜单改 fixed 定位：包含块变成视口，祖先的 overflow 不再裁剪它；
+   left/top 由页面 JS 按触发器矩形夹进视口（见 sources.html / source.html
+   的 placeMenu）。max-width 兜住面板本身，任何一档都不宽过视口。 */
+.act-menu > .menu {
+	position: fixed;
+	top: 0;
+	left: 8px;
+	right: auto;
+	max-width: min(20rem, calc(100vw - 16px));
+}
+/* fixed 的包含块会被祖先的 transform 改掉：`.list-row:active` 的按压缩放
+   （scale(.995)）会让菜单在按下条目的那一瞬间整块跳到行内坐标里，命中测试
+   落到行内容上 —— 表现为“菜单点不中”。菜单所在的行动画期间不做缩放反馈。 */
+.list-row:has(.act-menu):active {
+	transform: none;
+}
+.act-menu {
+	position: relative;
+	display: inline-flex;
+	flex: none;
+}
+/* ⋯ 是字形不是图标：撑到与 btn-sm 同高，左右不因字体差异而不等宽 */
+.act-more {
+	min-width: 2.25rem;
+	padding-inline: 6px;
+	justify-content: center;
+	font-size: 15px;
+	line-height: 1;
+	letter-spacing: 0.08em;
+}
+/* 菜单条目：第一行是动作名，第二行是「它和旁边那个差在哪」。
+   选择器带上 .menu-item：.menu-item 在本段之后声明，同权重会把 align-items
+   落回 center（两行条目就会左边一截右边一截）。 */
+.menu-item.act-item {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	white-space: normal;
+}
+.menu-item.act-item .act-item-hint {
+	text-align: left;
+}
+.act-item-hint {
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--faint);
+}
+/* 危险项（删除 / 停用）：文字配错误色 + 软底，不靠实心红按钮抢走整行主次 */
+.menu-item.act-danger,
+.menu-item.act-danger:hover,
+.menu-item.act-danger:focus-visible {
+	color: var(--error);
+}
+.menu-item.act-danger:hover,
+.menu-item.act-danger:focus-visible {
+	background: var(--error-soft);
+}
+.menu-item.act-danger .act-item-hint {
+	color: color-mix(in srgb, var(--error) 62%, var(--faint));
+}
+/* 表格行尾的危险动作（keys）：图标 + 危险色 —— 危险动作不再与正文同级 */
+.btn.act-row-danger {
+	color: var(--error);
+}
+.btn.act-row-danger:hover,
+.btn.act-row-danger:focus-visible {
+	color: var(--error);
+	background: var(--error-soft);
+	border-color: color-mix(in srgb, var(--error) 30%, transparent);
+}
+.act-row-danger svg {
+	width: 14px;
+	height: 14px;
+	flex: none;
 }
 
 /* ---------- 表单 ---------- */

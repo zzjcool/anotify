@@ -26,16 +26,22 @@
 	color-scheme: dark;
 
 	/* ── 中性色 Neutral ─────────────────────────────── */
-	--bg: #08080e; /* 页面底 */
+	/* #370 容器层次（暗）：WCAG 在近黑区被压缩得很厉害 —— 卡片要跟 #06060b 的页底
+	 * 拉开到 1.25:1，卡片本身必须抬到 L*≈15（#22222a），差一两档就掉到 1.1 以下。
+	 * 因此整条中性梯子一起上移：页底 → 侧栏 → 卡片 → 悬浮面 → 实心面，保持单调递增，
+	 * 层级靠"填充差"而不是描边表达（旧值 1.055:1 = 肉眼分不出卡片）。 */
+	--bg: #06060b; /* 页面底 */
 	--bg-raise: #0c0c13; /* 侧栏 / 页头等凸起底 */
-	--surface-1: #101018; /* 卡片 */
-	--surface-2: #15151f; /* 悬浮 / 输入 / 次级面 */
-	--surface-3: #1b1b27; /* 更进一层的实心面（轨道、选中） */
-	--line: rgba(255, 255, 255, 0.07); /* 弱分隔线 */
-	--line-strong: rgba(255, 255, 255, 0.14); /* 强分隔线 */
+	--surface-1: #22222a; /* 卡片（vs --bg 1.281:1 / vs --bg-raise 1.234:1） */
+	--surface-2: #27272f; /* 悬浮 / 输入 / 次级面（vs 卡片 1.066:1，改前 1.045） */
+	--surface-3: #30303a; /* 更进一层的实心面（轨道、选中） */
+	--line: rgba(255, 255, 255, 0.09); /* 弱分隔线 */
+	--line-strong: rgba(255, 255, 255, 0.18); /* 强分隔线 */
 	--text: #edeef5; /* 主文字 */
-	--muted: #a2a6b6; /* 次要文字 */
-	--faint: #6e7284; /* 极弱文字 */
+	/* #371：卡片抬亮后 --muted/--faint 同步上抬，保证 --faint 在卡片、页底、
+	 * 输入框（--surface-2）三种底上都 ≥4.5:1，且 faint < muted < text 不倒挂。 */
+	--muted: #b6bac8; /* 次要文字（卡片 8.15:1） */
+	--faint: #9499a8; /* 极弱文字（输入框 5.21:1 / 卡片 5.55:1） */
 
 	/* ── 品牌色 Brand（唯一 accent）────────────────── */
 	--accent: #8b8bfd; /* indigo 主色 */
@@ -73,6 +79,18 @@
 	--error-300: #fda4af;
 	--warn-300: #fcd34d;
 
+	/* #371：语义药丸统一色阶 —— .status-*（.status-badge，无边框）与 .badge-*
+	 * （.badge，1px 边框）**共用**下面这组文字 token，两族不再各用一套颜色。
+	 * 改色只改这里，脚本 scripts/check-contrast.mjs 逐项卡 ≥4.5:1。
+	 * info 语义按 tokens 既有约定直接复用品牌色，不引入第二个色相。 */
+	--pill-success-fg: var(--success-300);
+	--pill-warn-fg: var(--warn-300);
+	--pill-error-fg: var(--error-300);
+	--pill-info-fg: var(--accent-strong); /* #371：暗底上 --accent 只有 4.40:1，用提亮档 */
+	--pill-accent-fg: var(--accent-strong);
+	--pill-neutral-fg: var(--muted);
+	--info-soft: var(--accent-soft); /* info 的浅底 = 品牌浅底（两族共用） */
+
 	/* ── 执行状态九态（图表 / 瀑布条 / 状态点唯一来源）──
 	 * graphs.js 与 traceview.js 都用这组变量取色，不要出现第三套色板。 */
 	--st-pending: #71717a;
@@ -88,7 +106,7 @@
 	/* ── 热力图 ─────────────────────────────────────────
 	 * 空格**不能**用 --surface-2：卡片实底 --surface-1 上叠一层几乎同色，
 	 * 整片数据可视化会退化成空场（REVIEW R5 / D17）。 */
-	--hm-empty: #1c1c29;
+	--hm-empty: #2e2e39;
 
 	/* ── 能力类型三色（capabilities 页 .kind-origin/.kind-pipe/.kind-end）──
 	 * 三条独立色相，不复用语义色（语义色留给状态，混用会让「绿=成功」失效）。
@@ -101,8 +119,8 @@
 	--kind-end-soft: rgba(52, 211, 153, 0.14);
 
 	/* ── 功能面板色（非彩色）：弹层 / 代码块 / 实心按钮 ── */
-	--panel-overlay: #14141e; /* 弹层 / Toast 底 */
-	--panel-modal: #0d0d15; /* 模态底 */
+	--panel-overlay: #262630; /* 弹层 / Toast 底（高于 --surface-1，浮层不掉进卡片里） */
+	--panel-modal: #1a1a22; /* 模态底 */
 	--code-bg: #0b0b13; /* 代码块底 */
 	--code-text: #d7d9e6; /* 代码正文 */
 	--on-solid: #0a0a10; /* 实心（accent）按钮上的文字 */
@@ -175,19 +193,23 @@
 :root[data-theme="light"] {
 	color-scheme: light;
 
-	/* 中性色 */
-	--bg: #f7f8fc;
-	--bg-raise: #ffffff;
+	/* 中性色
+	 * #370 亮色：旧值 --bg-raise 与 --surface-1 同为 #ffffff → 侧栏与卡片 1.000:1，
+	 * 全站「白 on 白」。现在：页底略深（--bg）+ 侧栏带一丝冷灰（--bg-raise）
+	 * + 1px 边框（--line 抬到 1.41:1 vs 白）——三条腿一起把块边界立起来。 */
+	--bg: #eef0f8;
+	--bg-raise: #f4f5fb;
 	--surface-1: #ffffff;
-	--surface-2: #f4f5fa;
+	--surface-2: #f5f6fb;
 	--surface-3: #eceef6;
-	--line: rgba(17, 19, 28, 0.08);
-	--line-strong: rgba(17, 19, 28, 0.15);
+	--line: rgba(17, 19, 28, 0.16); /* 1px 边框 = 可见边界（vs 白卡 1.41:1） */
+	--line-strong: rgba(17, 19, 28, 0.26);
 	--text: #11131c;
 	--muted: #5b6070;
-	/* REVIEW §5.3：旧值 #8b90a1 在 #f7f8fc 上仅 3.02:1，11–13px 辅助字读不清。
-	 * 压到 #6b7080 → 4.63:1（WCAG AA 正文阈值），--muted 6.35:1 保持层次。 */
-	--faint: #6b7080;
+	/* REVIEW §5.3：旧值 #8b90a1 在页底上仅 3.02:1，11–13px 辅助字读不清。
+	 * #371 再压一档到 #666b7b：白卡 5.31:1 / 页底 4.67:1 / 输入框底 4.92:1 全过 AA，
+	 * --muted 6.27:1 仍在其上，层级不倒挂。 */
+	--faint: #666b7b;
 
 	/* 品牌色 */
 	--accent: #5b5bd6;
@@ -216,7 +238,17 @@
 	/* 亮底上的「亮色阶」要压深，否则小字对比度不足 */
 	--success-300: #047857;
 	--error-300: #be123c;
-	--warn-300: #a16207;
+	/* #371：旧值 #a16207 在 warn-soft 底上只有 ~4.3:1（评审点名的 FAIL），压深到 5.53:1 */
+	--warn-300: #8a5306;
+
+	/* #371：语义药丸统一色阶（与暗色同名同义，两族 .status-* / .badge-* 共用） */
+	--pill-success-fg: var(--success-300);
+	--pill-warn-fg: var(--warn-300);
+	--pill-error-fg: var(--error-300);
+	--pill-info-fg: var(--accent);
+	--pill-accent-fg: var(--accent);
+	--pill-neutral-fg: var(--muted);
+	--info-soft: var(--accent-soft);
 
 	/* 执行状态九态：作为**文字**时亮底（#fff/#f4f5fa）对比 ≥4.5:1；bar/dot 允许更深。
 	 * D9：running / abandoned / lease_expired 三态旧值压深，对 --surface-3(#eceef6)

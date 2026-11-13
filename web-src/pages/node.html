@@ -56,6 +56,41 @@
   .nd-empty-acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
   /* 左栅比右栅矮时不要被拉高到等高 */
   .nd-grid-top { align-items: start; }
+  /* ---------- #374：开发者信息折叠（内部协议字段不上首屏，一个都不删）---------- */
+  .devf { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); margin-top: 12px; min-width: 0; }
+  .devf > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+  .devf > summary::-webkit-details-marker { display: none; }
+  .devf > summary::before { content: "▸"; color: var(--faint); font-size: 11px; }
+  .devf[open] > summary::before { content: "▾"; }
+  .devf > summary:hover { color: var(--text); }
+  .devf-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--faint); }
+  .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+  .devf-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px 18px; margin: 0; }
+  .devf-pair { display: grid; gap: 2px; min-width: 0; }
+  .devf-k { font-family: var(--font-mono); font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .devf-v { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .devf-foot { display: flex; align-items: center; gap: 8px; }
+  /* #375：配置摘要（结构化） */
+  .nd-sum { display: grid; gap: 6px; margin-top: 10px; min-width: 0; }
+  .nd-sum-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .nd-sum-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* 开发者旁白默认收起（同 nodes.html 的 ND-3）：原文一字不删 */
+  .nd-more { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
+  .nd-more > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+  .nd-more > summary::-webkit-details-marker { display: none; }
+  .nd-more > summary::before { content: "▸"; color: var(--faint); }
+  .nd-more[open] > summary::before { content: "▾"; }
+  .nd-more > summary:hover { color: var(--text); }
+  .nd-more-body { padding: 0 12px 12px; margin: 0; }
+  /* 槽位行：实例号 + 占用徽章（原始 task=/id= 串进开发者信息） */
+  .nd-slot { align-items: center; gap: 8px; }
+  .nd-slot-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  /* 已部署能力行：能力名 + 状态徽章（digest 指纹进开发者信息） */
+  .nd-dep { align-items: center; gap: 8px; }
+  .nd-dep-name { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+  /* 配置漂移：不是普通文本，是带周界的警示条 */
+  .nd-drift { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent); border-radius: var(--r-sm); background: var(--warn-soft); font-size: 12px; line-height: 1.5; color: var(--warn); }
+  .nd-drift-ico { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; border-radius: var(--r-full); background: var(--warn); color: var(--surface-1); font-size: 11px; font-weight: 700; line-height: 1; }
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
 </style>
 {{end}}
@@ -67,14 +102,23 @@
   <div id="node-load-state" role="status"></div>
   <div id="node-body" class="c2-stack" hidden>
     <section class="card card-pad"><div id="node-facts" class="nd-chips"></div><div id="head-actions" class="c2-actions"><button id="node-drain" class="btn btn-ghost" type="button">{{t "nodes.v4.drain"}}</button><button id="node-upgrade" class="btn btn-ghost" type="button">{{t "nodes.v4.upgrade"}}</button><button id="node-rotate" class="btn btn-ghost" type="button">{{t "nodes.v4.rotate"}}</button></div><div id="node-action-state" class="c2-state" role="status"></div>
+      <div id="node-dev-host"></div>
       <div id="node-token-result" hidden><p class="c2-note">{{t "nodes.v4.token_warning"}}</p><div class="code-block"><div class="code-head">{{t "nodes.v4.token"}}</div><div class="code-body"><code id="node-token"></code></div></div><button id="node-token-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
     </section>
     <div class="c2-grid nd-grid-top">
       <section id="node-config" class="card card-pad">
         <div class="card-title">{{t "nodes.v4.config"}}</div><p class="c2-note">{{t "nodes.v4.batch_hint"}}</p><div id="node-revisions" class="c2-note"></div>
-        <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
-        <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-        <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
+        <!-- #375：首屏只给结构化摘要（授权 / 本机变量 / 限制）；三块 JSON textarea
+             收进「编辑原始 JSON」折叠 —— 节点配置仍可编辑，锚点 #node-namespaces/#node-vars/#node-limits 不变。 -->
+        <div id="node-config-summary" class="c2-stack"></div>
+        <details id="node-config-advanced" class="devf">
+          <summary><span>{{t "uxaudit.dev.edit_raw"}}</span><span class="devf-hint">{{t "uxaudit.dev.edit_raw_hint"}}</span></summary>
+          <div class="devf-body">
+            <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
+            <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
+            <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
+          </div>
+        </details>
         <div class="c2-actions"><button id="node-config-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="node-config-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div><div id="node-config-state" class="c2-state" role="status"></div>
       </section>
       <section class="card card-pad c2-stack">
@@ -84,7 +128,9 @@
       </section>
     </div>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.effective_vars"}}</div><div class="field"><label class="field-label" for="node-namespace">{{t "nodes.v4.context"}}</label><select id="node-namespace" class="select"></select></div><div id="node-context-revision" class="c2-note"></div><div id="node-effective-vars"></div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p></section>
-    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><p class="c2-note">{{t "nodes.v4.slot_note"}}</p><div id="node-slots"></div></section>
+    <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><div id="node-slots"></div>
+      <details class="nd-more"><summary>{{t "uxaudit.res.nodes.note_summary"}}</summary><p class="c2-note nd-more-body">{{t "nodes.v4.slot_note"}}</p></details>
+    </section>
     <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
     <section class="card card-pad"><div class="code-block"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body nd-code">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>
   </div>
@@ -105,6 +151,92 @@
   const request = (url, body, method = 'PUT') => A.api(url, { method, body: JSON.stringify(body) });
   const configInputs = ['namespaces', 'vars', 'limits'];
   const draft = () => JSON.stringify(configInputs.map(k => $('node-' + k).value));
+  /* ---------- #374：开发者信息折叠 ----------
+     内部协议字段（resourceVersion / configRevision / appliedRevision / appliedHash /
+     槽位的 task=·id= 调试串 / 已部署能力 digest）默认不进首屏；标签用原始字段名
+     （语言中立），值可一键复制。字段一个不少，只是收起来。 */
+  const dev = key => A.t('uxaudit.dev.' + key);
+  let devFacts = [], devConfig = [], devDeploy = [], devSlots = [];
+  function devFields(id, rows) {
+    const box = make('details', 'devf'); if (id) box.id = id;
+    const sum = make('summary');
+    sum.append(make('span', null, dev('summary')), make('span', 'devf-hint', dev('hint')));
+    const body = make('div', 'devf-body'), dl = make('dl', 'devf-kv');
+    for (const [key, value] of rows) {
+      const cell = make('div', 'devf-pair');
+      cell.append(make('dt', 'devf-k', key), make('dd', 'devf-v', value == null || value === '' ? '—' : String(value)));
+      dl.append(cell);
+    }
+    body.append(dl);
+    if (rows.length) {
+      const foot = make('div', 'devf-foot'), copy = make('button', 'copy-btn', dev('copy'));
+      copy.type = 'button';
+      copy.addEventListener('click', () => A.copyText(copy, () => rows.map(([k, v]) => k + ': ' + (v == null ? '' : String(v))).join('\n')));
+      foot.append(copy); body.append(foot);
+    }
+    box.append(sum, body); return box;
+  }
+  function renderDev() {
+    const host = $('node-dev-host'); if (!host) return;
+    host.replaceChildren(devFields('node-dev', devFacts.concat(devSlots, devConfig, devDeploy)));
+  }
+  /* 配置漂移：带周界的警示条（不是普通文本） */
+  function driftBanner() {
+    const box = make('div', 'nd-drift');
+    box.append(make('span', 'nd-drift-ico', '!'),
+      make('span', null, dev('drift').replace('{config}', revText(n.configRevision)).replace('{applied}', revText(n.appliedRevision))));
+    return box;
+  }
+  function showRevisions(value) {
+    devConfig = [['resourceVersion', value.metadata.resourceVersion], ['configRevision', value.configRevision], ['appliedRevision', value.appliedRevision]];
+    $('node-revisions').textContent = x('config_rev') + ' ' + revText(value.configRevision) + ' · ' + x('applied_rev') + ' ' + revText(value.appliedRevision);
+    renderDev();
+    renderConfigSummary();
+  }
+  /* ---------- #375：配置摘要（结构化）---------- */
+  function summarySource() {
+    // 编辑器里的草稿优先（改了一半也看得见自己的值）；解析失败就退回已加载的配置。
+    try {
+      const draftObj = {};
+      for (const key of configInputs) draftObj[key] = JSON.parse($('node-' + key).value);
+      return draftObj;
+    } catch (_) { return config || null; }
+  }
+  function renderConfigSummary() {
+    const host = $('node-config-summary'); if (!host) return;
+    const src = summarySource();
+    host.replaceChildren();
+    if (!src) { host.append(make('div', 'c2-note', t('loading'))); return; }
+    const ns = make('div', 'nd-sum');
+    ns.append(make('div', 'nd-sum-k', t('authorized')));
+    const chips = make('div', 'nd-sum-chips');
+    const list = Array.isArray(src.namespaces) ? src.namespaces : [];
+    if (!list.length) chips.append(make('span', 'c2-note', t('none')));
+    else for (const name of list) chips.append(make('span', 'badge badge-neutral', String(name)));
+    ns.append(chips);
+    const vars = make('div', 'nd-sum');
+    const pairs = src.vars && typeof src.vars === 'object' && !Array.isArray(src.vars) ? Object.entries(src.vars) : [];
+    vars.append(make('div', 'nd-sum-k', t('vars') + ' · ' + pairs.length));
+    if (pairs.length) {
+      const dl = make('dl', 'nd-kv');
+      for (const [key, value] of pairs) dl.append(pair(key, String(value), key));
+      vars.append(dl);
+    } else vars.append(make('p', 'c2-note', t('none')));
+    const lim = make('div', 'nd-sum'), limits = src.limits || {};
+    const total = limits.total == null ? x('unknown') : String(limits.total);
+    /* 每能力上限是**逐能力**的（{*: 2, fixer: 1}）：只能逐项显示。原先把键名个数当上限，
+       2 个键就显示成「每能力 2」，把 fixer 真实的 1 说错。 */
+    const perCapPairs = limits.perCapability && typeof limits.perCapability === 'object' && !Array.isArray(limits.perCapability)
+      ? Object.entries(limits.perCapability) : [];
+    const perCapText = perCapPairs.length
+      ? perCapPairs.map(([key, value]) => (key === '*' ? t('per_cap_default') : key) + ' ' + (value == null ? x('unknown') : String(value))).join(' · ')
+      : x('none');
+    lim.append(make('div', 'nd-sum-k', t('limits')),
+      make('p', 'c2-note', dev('total') + ' ' + total + ' · ' + dev('per_cap') + ' ' + perCapText));
+    host.append(ns, vars, lim);
+  }
+  /* 草稿改动实时反映到摘要（解析失败时保留上一次可解析的摘要） */
+  for (const key of configInputs) $('node-' + key).addEventListener('input', () => renderConfigSummary());
   const table = (id, values, source, valueText = v => String(v)) => {
     const rows = Object.entries(values || {}); $(id).replaceChildren();
     if (!rows.length) { $(id).appendChild(make('div', 'c2-note', t('none'))); return; }
@@ -156,10 +288,16 @@
       statePair,
       pair(x('config_rev'), revText(n.configRevision), 'configRevision'),
       pair(x('applied_rev'), revText(n.appliedRevision), 'appliedRevision'),
-      pair(x('applied_hash'), revText(n.appliedHash), 'appliedHash'),
     );
     if (n.overrideStale === true) applied.append(pair(x('override_stale'), t('override_stale'), 'overrideStale'));
-    $('node-applied').replaceChildren(applied);
+    /* #374：appliedHash（sha256:<64>）是内部指纹，进开发者信息；漂移用警示条。 */
+    $('node-applied').replaceChildren(applied, ...(knownRevision && n.pending === true ? [driftBanner()] : []));
+    devFacts = [
+      ['configRevision', revText(n.configRevision)],
+      ['appliedRevision', revText(n.appliedRevision)],
+      ['appliedHash', revText(n.appliedHash)],
+    ];
+    renderDev();
     table('node-machine-vars', n.machineVars, key => Object.hasOwn(n.localVars, key) ? 'local' : 'node');
     const limits = { ...(n.machineLimits.total == null ? {} : { total: n.machineLimits.total }), ...Object.fromEntries(Object.entries(n.machineLimits.perCapability || {}).map(([k,v]) => ['perCapability.' + k, v])) };
     table('node-machine-limits', limits, key => key === 'total' ? (n.localLimits.total != null ? 'local' : 'node') : (Object.hasOwn(n.localLimits.perCapability || {}, key.slice(14)) ? 'local' : 'node'));
@@ -178,11 +316,20 @@
     if (!n.instances?.length) $('node-slots').appendChild(make('div', 'c2-note', t('unknown')));
     /* v4 的实例没有 slot 字段（NodeInstanceRef 只有 id/task/busy）：
      * 「第几个槽」只能是 instances 的下标（0 起），实例身份是 id，占用任务是在跑的 task。
-     * 不拿 v3 的 slot/taskId/assignmentId 拼一份服务端没说过的事实。 */
+     * 不拿 v3 的 slot/taskId/assignmentId 拼一份服务端没说过的事实。
+     * #374：首屏只给「实例 N + 占用状态」；`task=` / `id=nins_*` 调试串进开发者信息。 */
+    const slotDev = [];
     for (const [i, inst] of (n.instances || []).entries()) {
-      const row = make('div', 'c2-row', 'slot ' + i + ' · ' + t(inst.occupancy) + (inst.task ? ' · task=' + inst.task : '') + (inst.id ? ' · id=' + inst.id : ''));
-      row.dataset.slot = String(i); row.dataset.occupancy = inst.occupancy; if (inst.id) row.dataset.instanceId = inst.id; if (inst.task) row.dataset.task = inst.task; $('node-slots').appendChild(row);
+      const row = make('div', 'c2-row nd-slot');
+      const head = make('span', 'nd-slot-head', dev('instance').replace('{n}', String(i + 1)));
+      head.append(make('span', 'badge ' + (inst.occupancy === 'occupied' ? 'badge-accent' : 'badge-neutral'), t(inst.occupancy)));
+      row.append(head);
+      row.dataset.slot = String(i); row.dataset.occupancy = inst.occupancy; if (inst.id) row.dataset.instanceId = inst.id; if (inst.task) row.dataset.task = inst.task;
+      $('node-slots').appendChild(row);
+      slotDev.push(['slot ' + i, [inst.occupancy, inst.task ? 'task=' + inst.task : '', inst.id ? 'id=' + inst.id : ''].filter(Boolean).join(' · ')]);
     }
+    devSlots = slotDev;
+    renderDev();
   }
   /* SRC-5 / CP-4：无参 / 404 都落到同一套空态（图标 + 标题 + 说明 + 返回列表/重试） */
   const EMPTY_ICON = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/><path d="M9 10h6"/></svg>';
@@ -216,12 +363,21 @@
       if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }
       const rows = result.value.items.filter(x => i === 0 ? x.node === name : x.status.nodeName === name);
       if (!rows.length) $(id).appendChild(make('div', 'c2-note', t('none')));
+      const depDev = [];
       for (const x of rows) {
         const row = make('div', 'c2-row');
-        if (i === 0) row.textContent = (x.spec?.capability?.name || x.capability) + ' · ' + x.state + ' · ' + (x.reason || '') + ' · ' + x.digest;
-        else { const link = make('a', null, x.metadata.name + ' · ' + x.status.phase); link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(x.metadata.name); row.appendChild(link); }
+        if (i === 0) {
+          /* #374：已部署能力首屏只给「能力名 + 状态 + 原因」，digest 指纹（sha256:<64>）进开发者信息 */
+          const cap = x.spec?.capability?.name || x.capability || '—';
+          row.classList.add('nd-dep');
+          row.append(make('span', 'nd-dep-name', cap),
+            make('span', 'badge badge-neutral', x.state || t('unknown')));
+          if (x.reason) row.append(make('span', 'c2-note', x.reason));
+          depDev.push([cap + ' · digest', x.digest || '']);
+        } else { const link = make('a', null, x.metadata.name + ' · ' + x.status.phase); link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(x.metadata.name); row.appendChild(link); }
         $(id).appendChild(row);
       }
+      if (i === 0) { devDeploy = depDev; renderDev(); }
     }
   }
   async function loadConfig() {
@@ -231,7 +387,7 @@
       if (!value.metadata?.resourceVersion || !Array.isArray(value.namespaces) || !value.vars || !value.limits) throw new Error('Invalid Node config wrapper');
       config = value;
       for (const key of configInputs) { $('node-' + key).value = JSON.stringify(value[key], null, 2); $('node-' + key).disabled = false; }
-      original = draft(); $('node-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion + ' · configRevision=' + value.configRevision + ' · appliedRevision=' + value.appliedRevision;
+      original = draft(); showRevisions(value);
       msg('node-config-state', t('loaded')); $('node-config-save').disabled = false;
     } catch (e) { msg('node-config-state', errorText(e), true); }
   }
@@ -242,7 +398,7 @@
       const body = { metadata: { resourceVersion: config.metadata.resourceVersion } };
       for (const key of configInputs) body[key] = JSON.parse($('node-' + key).value);
       config = await request(path + '/config', body); original = draft();
-      $('node-revisions').textContent = 'resourceVersion=' + config.metadata.resourceVersion + ' · configRevision=' + config.configRevision + ' · appliedRevision=' + config.appliedRevision;
+      showRevisions(config);
       msg('node-config-state', t('saved')); await loadFacts();
     } catch (e) { msg('node-config-state', errorText(e), true); } finally { $('node-config-save').disabled = false; }
   };

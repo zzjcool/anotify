@@ -289,6 +289,8 @@ message:
     env_hint: "Solo nombres y fuentes usados por esta tarea; no valores del equipo ni lista completa de variables permitidas."
     env_empty: "No hay diagnóstico de entorno retenido."
     result: "Resumen / error / artefactos"
+    error_message: 'Mensaje'
+    error_reason: 'Motivo'
     attempts: "Intentos de ejecución retenidos"
     attempts_empty: "No hay intentos retenidos."
     logs: "Registros de tarea"
@@ -688,7 +690,7 @@ security:
   unknown_device: Dispositivo desconocido
   credential: Credencial
   current_session: Sesión actual
-  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en este dispositivo" arriba a la derecha para crear una en este equipo.
+  empty_passkeys: Usa "+ Añadir en este dispositivo" en la cabecera para crear una en este equipo.
   empty_sessions: No hay sesiones activas.
   in_use: En uso
   last_used: Último uso {time}
@@ -1201,7 +1203,7 @@ events:
     no_match: 'Sin coincidencias en esta página: avanza a más antiguos o vuelve a lo más reciente'
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
   v4:
-    dedup: "deliveryId deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
+    dedup: "El ID de entrega deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
     refresh: "Actualizar"
     namespace: "Espacio de nombres"
     source: "Objeto / fuente"
@@ -1583,7 +1585,7 @@ nodes:
     saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
     stale: "409: CAS obsoleto; borrador conservado exactamente. Recargue explícitamente antes de reintentar."
     error: "Solicitud fallida"
-    loaded: "Configuración actual cargada; resourceVersion solo es token CAS."
+    loaded: "Configuración actual cargada."
     pending: "ConfigPending: configuración de nodo aún no aplicada"
     applied: "Revisiones de nodo coinciden (no la revisión del namespace)"
     revision: "Estado de configuración y aplicación"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "Estado real de despliegues de capacidades"
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
 
+    per_cap_default: 'predeterminado'
 sources:
   v4:
     new: "Nueva fuente"
@@ -1663,6 +1666,8 @@ sources:
     event_id: "ID del evento"
     fire: "Ejecutar ahora"
     saved_dry: "Vista previa de fuente guardada"
+    more: "Más acciones"
+    saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"
@@ -1900,6 +1905,7 @@ trace:
     tasks: "Tareas / intentos / espera"
     events: "Hechos de eventos"
     pruned: "Motivos de poda"
+    pruned_link: 'Ver detalle de la poda'
     empty: "Esta traza no envió tareas."
     no_pruned: "No hay registros de poda retenidos."
     missing: "Falta traceUID en la URL."
@@ -2063,6 +2069,7 @@ pb:
     slug_taken: "El nombre ya existe: abra el detalle y use PUT para reemplazar la plantilla (entrada conservada)."
     namespace: "Espacio de nombres"
     loading: "Cargando…"
+    load_failed: "Error al cargar"
     not_ready: "No listo (ver diagnóstico)"
     not_installed: "Aún no hay recursos instalados. Una plantilla guardada no es una instalación."
     unapplied_count: "{n} diferencias sin aplicar"
@@ -2229,6 +2236,7 @@ uxaudit:
       ctx_namespace: 'Namespace de contexto'
       no_param: 'El enlace no trae nombre de nodo (falta ?id=). Abre el detalle desde la lista de nodos.'
       no_param_title: 'No se indicó ningún nodo'
+      none: 'Ninguno'
     sources:
       dedup_summary: 'Deduplicación de entregas y su ventana (deliveryId)'
       group_basic: 'Básico'
@@ -2301,6 +2309,29 @@ uxaudit:
     file_drop_pick: Arrastra un archivo aquí o haz clic para elegirlo
     file_drop_hint: .yaml / .json, hasta 1 MB cada uno
     file_drop_empty: Ningún archivo seleccionado
+
+# ── #374/#375 · campos internos y JSON en bruto: plegado «dev» (mismas claves) ──
+  dev:
+    summary: 'Información para desarrolladores'
+    instance: 'Instancia {n}'
+    hint: 'Campos internos del protocolo; solo para diagnóstico, no hacen falta en el uso diario.'
+    copy: 'Copiar'
+    raw: 'Ver JSON original'
+    event_id: 'ID de evento'
+    drift: 'Configuración sin aplicar: configuración {config}, aplicado en el nodo {applied}'
+    drift_short: 'Pendiente de aplicar en el nodo'
+    field: 'Campo'
+    type: 'Tipo'
+    required: 'Obligatorio'
+    description: 'Descripción'
+    yes: 'Sí'
+    no: 'No'
+    none: 'Ninguno'
+    params: 'Parámetros'
+    total: 'Total'
+    per_cap: 'Por capacidad'
+    edit_raw: 'Editar JSON original'
+    edit_raw_hint: 'se guarda con el CAS actual'
 
 paging:
   search_ph: 'Buscar nombre / nombre visible'

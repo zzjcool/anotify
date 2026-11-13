@@ -289,6 +289,8 @@ message:
     env_hint: "このタスクが使用した変数の名前と取得元のみ。ホスト値や透過の許可リスト全体は読み取りません。"
     env_empty: "保持されている環境診断はありません。"
     result: "結果概要 / エラー / 成果物"
+    error_message: 'メッセージ'
+    error_reason: '理由'
     attempts: "保持されている実行試行記録"
     attempts_empty: "保持されている実行試行記録はありません。"
     logs: "タスクログ"
@@ -688,7 +690,7 @@ security:
   unknown_device: 不明なデバイス
   credential: 資格情報
   current_session: 現在のセッション
-  empty_passkeys: まだ Passkey がありません。右上の「+ このデバイスで追加」でこのデバイスに作成できます。
+  empty_passkeys: ページ上部の「+ このデバイスで追加」でこのデバイスに作成できます。
   empty_sessions: アクティブなセッションはありません。
   in_use: 使用中
   last_used: 最終使用 {time}
@@ -1201,7 +1203,7 @@ events:
     no_match: このページに一致なし。古いページへ進むか最新へ戻れます
     invalid_cursor: カーソルが無効です。最新へ戻りました
   v4:
-    dedup: "deliveryId は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
+    dedup: "配信 ID は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
     refresh: "更新"
     namespace: "名前空間"
     source: "関連オブジェクト / ソース"
@@ -1583,7 +1585,7 @@ nodes:
     saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
     stale: "409: CAS が古いため下書きをそのまま保持しました。明示的に再読込して再試行してください。"
     error: "リクエスト失敗"
-    loaded: "現在の設定を読み込みました。resourceVersion は CAS トークンのみです。"
+    loaded: "現在の設定を読み込みました。"
     pending: "ConfigPending: ノードの設定は未適用"
     applied: "ノード revision は一致（名前空間入力の版とは別）"
     revision: "設定と適用の状態"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "能力デプロイの実際の状態"
     batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
 
+    per_cap_default: '既定'
 sources:
   v4:
     new: "ソースを作成"
@@ -1663,6 +1666,8 @@ sources:
     event_id: "イベント ID"
     fire: "今すぐ実行"
     saved_dry: "保存済みソースをプレビュー"
+    more: "その他の操作"
+    saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"
@@ -1900,6 +1905,7 @@ trace:
     tasks: "タスク / 試行 / 待機診断"
     events: "イベントの記録"
     pruned: "枝刈りの理由"
+    pruned_link: '剪枝の詳細を見る'
     empty: "このトレースから送出されたタスクはありません。"
     no_pruned: "保持されている枝刈り記録はありません。"
     missing: "URL に traceUID がありません。"
@@ -2063,6 +2069,7 @@ pb:
     slug_taken: "同名パッケージがあります。詳細で PUT 更新してください（入力は保持）。"
     namespace: "名前空間"
     loading: "読み込み中…"
+    load_failed: "読み込みに失敗しました"
     not_ready: "未準備（診断を確認）"
     not_installed: "インストール済みリソースはありません。保存済みテンプレートはインストールではありません。"
     unapplied_count: "未適用の差分 {n} 件"
@@ -2229,6 +2236,7 @@ uxaudit:
       ctx_namespace: 'コンテキスト名前空間'
       no_param: 'リンクにノード名がありません（?id= が無い）。ノード一覧から詳細を開いてください。'
       no_param_title: 'ノードが指定されていません'
+      none: 'なし'
     sources:
       dedup_summary: '配信の重複排除とその期間（deliveryId）'
       group_basic: '基本'
@@ -2301,6 +2309,29 @@ uxaudit:
     file_drop_pick: ファイルをドロップ、またはクリックして選択
     file_drop_hint: .yaml / .json、1 ファイル 1MB まで
     file_drop_empty: ファイル未選択
+
+# ── #374/#375 · 内部フィールドと生 JSON：開発者情報の折りたたみ（同一キー）──
+  dev:
+    summary: '開発者情報'
+    instance: 'インスタンス {n}'
+    hint: 'プロトコル内部の項目です。通常の操作には不要で、調査時に使います。'
+    copy: 'コピー'
+    raw: '元の JSON を表示'
+    event_id: 'イベント ID'
+    drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
+    drift_short: 'ノードの適用待ち'
+    field: 'フィールド'
+    type: '型'
+    required: '必須'
+    description: '説明'
+    yes: 'はい'
+    no: 'いいえ'
+    none: 'なし'
+    params: 'パラメータ'
+    total: '合計'
+    per_cap: '能力ごと'
+    edit_raw: '元の JSON を編集'
+    edit_raw_hint: '現在の CAS トークンで保存'
 
 paging:
   search_ph: '名前 / 表示名で検索'

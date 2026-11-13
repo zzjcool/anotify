@@ -346,6 +346,100 @@ const action = (key, fn) => {
   b.onclick=()=>fn(b);
   return b;
 };
+/* #376：行内动作收敛成「1 主 + 1 次 + ⋯」。菜单本体复用 .menu/.menu-item
+   （与顶部头像菜单同一套），开合只切 .hidden；条目可带一句 hint 说明
+   「它和旁边那个差在哪」（试运行 vs 立即运行）。 */
+const actionMenu = (items) => {
+  const wrap=el("div","act-menu");
+  const trigger=el("button","btn btn-ghost btn-sm act-more","⋯");
+  trigger.type="button";
+  trigger.setAttribute("aria-haspopup","menu");
+  trigger.setAttribute("aria-expanded","false");
+  trigger.setAttribute("aria-label",t("more"));
+  const menu=el("div","menu hidden");
+  menu.setAttribute("role","menu");
+  const setOpen=open=>{
+    menu.classList.toggle("hidden",!open);
+    trigger.setAttribute("aria-expanded",open ? "true" : "false");
+    if(open)placeMenu(wrap);
+  };
+  trigger.onclick=()=>setOpen(menu.classList.contains("hidden"));
+  for(const item of items){
+    const b=el("button","menu-item act-item"+(item.danger ? " act-danger" : ""));
+    b.type="button";
+    b.setAttribute("role","menuitem");
+    /* 只有带 hint 的条目才拆两行；单行条目保持纯文本 —— 包一层 span 会让
+       `button:text-is("Enable")` 这类定位器失配（最小文本元素变成 span）。 */
+    if(item.hint){
+      b.append(el("span",null,item.label),el("span","act-item-hint",item.hint));
+    }else{
+      b.textContent=item.label;
+    }
+    b.onclick=()=>{
+      setOpen(false);item.run(b);
+    };
+    menu.append(b);
+  }
+  wrap.append(trigger,menu);
+  return wrap;
+};
+const closeMenus = except => {
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")){
+    const wrap=menu.parentElement;
+    if(except && wrap.contains(except))continue;
+    menu.classList.add("hidden");
+    const trigger=wrap.querySelector(".act-more");
+    if(trigger)trigger.setAttribute("aria-expanded","false");
+  }
+};
+/* #376 rework：⋯ 菜单开合时的视口边界定位。
+   390/360 下停用行只有「编辑 + ⋯」，触发器离左缘近，200px 面板右对齐后
+   会越出视口左缘、被 body 的 overflow-x:hidden 裁掉（实测左溢出 63~77px）。
+   菜单在 ui.css 里改成 position:fixed（包含块=视口，祖先 overflow 不再裁剪），
+   left/top 由这里按触发器矩形夹进视口：左右各留 8px，下方放不下就翻到
+   触发器上方，上下也不越界。 */
+function placeMenu(wrap){
+  const trigger=wrap.querySelector(".act-more"),menu=wrap.querySelector(".menu");
+  if(!trigger || !menu || menu.classList.contains("hidden"))return;
+  const gap=8,pad=8;
+  /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度
+     压到 0，量出来的宽度偏小，之后夹边就会算错。 */
+  menu.style.left="";
+  menu.style.top="";
+  const t=trigger.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  const left=Math.min(Math.max(pad,t.right-w),Math.max(pad,innerWidth-pad-w));
+  let top=t.bottom+gap;
+  if(top+h>innerHeight-pad && t.top-gap-h>=pad)top=t.top-gap-h;
+  top=Math.min(Math.max(pad,top),Math.max(pad,innerHeight-pad-h));
+  menu.style.left=left+"px";
+  menu.style.top=top+"px";
+  /* 祖先若带 transform/filter，fixed 的包含块会变成那个祖先（列表行 :active
+     的按压缩放就带 transform）；用实际矩形与期望矩形的差补一次，菜单不偏移。 */
+  const r=menu.getBoundingClientRect();
+  if(Math.abs(r.left-left)>0.5 || Math.abs(r.top-top)>0.5){
+    menu.style.left=(left+(left-r.left))+"px";
+    menu.style.top=(top+(top-r.top))+"px";
+  }
+}
+/* 菜单是 fixed 浮层：页面/容器滚动、视口变化、按压缩放过渡结束时都要重新贴回触发器 */
+const reflowMenus = () => {
+  if(!document.querySelector(".act-menu .menu:not(.hidden)"))return;
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)"))placeMenu(menu.parentElement);
+};
+document.addEventListener("click",event=>closeMenus(event.target));
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  const open=document.querySelector(".act-menu .menu:not(.hidden)");
+  if(!open)return;
+  const wrap=open.parentElement;
+  closeMenus(null);
+  /* 关掉之后再把焦点还给触发器（原先先 close 再 query，永远找不到 open） */
+  const trigger=wrap.querySelector(".act-more");
+  if(trigger)trigger.focus();
+});
+document.addEventListener("scroll",reflowMenus,{passive:true,capture:true});
+window.addEventListener("resize",reflowMenus);
+document.addEventListener("transitionend",reflowMenus,true);
 const fmt = value => value ? new Date(value).toLocaleString() : "—";
 const json = (box, optional=false) => {
   const raw=box.value.trim();
@@ -582,8 +676,20 @@ function render(){
     badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
     titleWrap.append(a,badges);
     const acts=el("div","src-acts");
-    acts.append(action("edit",()=>openEditor(src)),action(m.enabled ? "disable" : "enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
+    /* #376：5 个平铺按钮 → 1 主（编辑）+ 1 次（立即运行）+ ⋯。
+       「已保存源试运行」与「立即运行」不再并列：后者是行内次动作，
+       前者进菜单并带一句差异说明（只预演解析，不写事件）。 */
+    const editBtn=el("button","btn btn-sm",t("edit"));
+    editBtn.type="button";
+    editBtn.onclick=()=>openEditor(src);
+    acts.append(editBtn);
     if(m.enabled)acts.append(action("fire",()=>openFire(src)));
+    const menuItems=[{label:t("saved_dry"),hint:t("saved_dry_hint"),run:()=>openFire(src)},{
+      label:t(m.enabled ? "disable" : "enable"),run:b=>toggle(src,b)
+    },{
+      label:t("delete"),danger:true,run:b=>removeSource(src,b)
+    }];
+    acts.append(actionMenu(menuItems));
     head.append(titleWrap,acts);
     /* ② 主字段：4 列 KV 网格 */
     const kv=el("dl","src-kv");

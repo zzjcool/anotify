@@ -256,7 +256,8 @@
       </div>
       <div class="page-actions">
         <button id="btn-refresh" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
-        <a href="#pb-import" class="btn btn-primary">{{t "pb.v4.import"}}</a>
+        {{/* #376：入口从 `#pb-import` 锚点改成就地弹层（旧行为只把页面滚下去）。 */}}
+        <button id="btn-import" type="button" class="btn btn-primary">{{t "pb.v4.import"}}</button>
       </div>
     </div>
     <p id="pb-scope" class="field-hint"></p>
@@ -304,10 +305,18 @@
       </span>
     </template>
 
-    <section id="pb-import" class="card card-pad">
-      <h3 class="card-title">{{t "pb.v4.import"}}</h3>
-      <p class="card-sub">{{t "pb.v4.package_hint"}}</p>
-      <form id="pb-import-form" class="pb-upload">
+    <!-- #376：导入表单不再常驻页面（旧形态＝空态卡 + 常驻表单同时存在，
+         同一件事三个入口）。表单整体进了就地弹层：页头 + 空态两个入口
+         打开的是同一个 #pb-import-modal。 -->
+    <div id="pb-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pb-import-title">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2 id="pb-import-title" class="card-title">{{t "pb.v4.import"}}</h2>
+          <button id="pb-import-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.action.close"}}">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="card-sub">{{t "pb.v4.package_hint"}}</p>
+          <form id="pb-import-form" class="pb-upload">
         <div class="field">
           <label for="pb-input-kind" class="field-label">{{t "pb.v4.input_kind"}}</label>
           <select id="pb-input-kind" class="select">
@@ -363,8 +372,10 @@
           <button id="pb-create" type="submit" class="btn btn-primary">{{t "pb.v4.store"}}</button>
         </div>
       </form>
-      <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
-    </section>
+          <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 {{end}}
@@ -464,18 +475,17 @@
       return section;
     }
 
-    /* PB-1：空态 = 图标 + 标题 + 说明（沿用既有 pb.empty 文案）+ 立即导入。
-     * 按钮真的把同一个导入表单带到眼前（滚到 #pb-import 并聚焦包名输入框）。 */
+    /* PB-1：空态 = 图标 + 标题 + 说明（沿用既有 pb.empty 文案）+ 一个 CTA。
+     * #376：CTA 不再滚动到常驻表单，而是就地弹出导入弹层（与页头同一入口）；
+     * 空态只剩这一个按钮，全页不再有「空态卡 + 常驻表单」两个东西同时存在。 */
     function emptyState() {
       const box = el("div", "empty");
       const tpl = $("pb-empty-tpl");
       // 本地 el(tag, cls, text) 的第二个参数是**类名字符串**（不是 attrs 对象）
       const cta = el("button", "btn btn-primary", t("uxaudit.work.pb_empty_cta"));
       cta.type = "button";
-      cta.addEventListener("click", () => {
-        $("pb-import").scrollIntoView({ behavior: "smooth", block: "start" });
-        $("pb-input-name").focus({ preventScroll: true });
-      });
+      cta.id = "pb-empty-cta";
+      cta.addEventListener("click", () => openImport());
       box.append(
         ...(tpl ? [tpl.content.cloneNode(true)] : []),
         el("p", "pb-empty-title", t("pb.empty_title", "还没有预案")),
@@ -496,6 +506,15 @@
         : t("uxaudit.work.pb_no_file", "未选择文件");
     }
 
+    /* #376：导入弹层开合。页头 #btn-import 与空态 #pb-empty-cta 共用同一个入口；
+       点遮罩关、✕ 关（Esc 与站内其它弹层一致地未绑 —— 见 #369 评审 §4.1 C5）。 */
+    function openImport() {
+      Anotify.openModal($("pb-import-modal"));
+      $("pb-input-name").focus({ preventScroll: true });
+    }
+    function closeImport() {
+      Anotify.closeModal($("pb-import-modal"));
+    }
     async function load() {
       if (loading) return;
       loading = true; $("btn-refresh").disabled = true;
@@ -617,6 +636,11 @@
       } finally { $("pb-create").disabled = false; }
     });
     $("btn-refresh").addEventListener("click", load);
+    $("btn-import").addEventListener("click", openImport);
+    $("pb-import-close").addEventListener("click", closeImport);
+    $("pb-import-modal").addEventListener("click", event => {
+      if (event.target === $("pb-import-modal")) closeImport();
+    });
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

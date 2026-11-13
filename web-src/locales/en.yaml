@@ -289,6 +289,8 @@ message:
     env_hint: "Only variable names and sources used by this task; no host values or full passthrough allowlist."
     env_empty: "No retained environment diagnostics."
     result: "Result summary / error / artifacts"
+    error_message: 'Message'
+    error_reason: 'Reason'
     attempts: "Retained execution attempt facts"
     attempts_empty: "No retained execution attempt facts."
     logs: "Task logs"
@@ -688,7 +690,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one on this device.
+  empty_passkeys: Use "+ Add on this device" in the page header to create one on this device.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -1201,7 +1203,7 @@ events:
     no_match: No matches on this page — page older or jump back to latest
     invalid_cursor: 'Cursor expired — back to latest'
   v4:
-    dedup: "deliveryId deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
+    dedup: "Delivery ID deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
     refresh: "Refresh"
     namespace: "Namespace"
     source: "Involved object / source"
@@ -1583,7 +1585,7 @@ nodes:
     saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
     stale: "409: Stale CAS; draft retained exactly. Reload explicitly before retrying; no automatic overwrite."
     error: "Request failed"
-    loaded: "Current configuration loaded; resourceVersion is only a CAS token."
+    loaded: "Current configuration loaded."
     pending: "ConfigPending: node defaults not yet applied"
     applied: "Node revisions match (not the namespace input revision)"
     revision: "Configuration & applied facts"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "Reported capability deployments"
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
 
+    per_cap_default: 'default'
 sources:
   v4:
     new: "New source"
@@ -1663,6 +1666,8 @@ sources:
     event_id: "Event ID"
     fire: "Fire now"
     saved_dry: "Saved source preview"
+    more: "More actions"
+    saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"
@@ -1900,6 +1905,7 @@ trace:
     tasks: "Tasks / attempts / waiting diagnostics"
     events: "Event facts"
     pruned: "Pruning reasons"
+    pruned_link: 'See pruned detail'
     empty: "This trace dispatched no tasks."
     no_pruned: "No retained pruning facts."
     missing: "URL is missing traceUID."
@@ -2063,6 +2069,7 @@ pb:
     slug_taken: "Slug exists: open details and use PUT to replace the template (your input is retained)."
     namespace: "Namespace"
     loading: "Loading…"
+    load_failed: "Load failed"
     not_ready: "Not ready (see checkup)"
     not_installed: "No installed resources yet. A stored template is not an install."
     unapplied_count: "{n} unapplied differences"
@@ -2229,6 +2236,7 @@ uxaudit:
       ctx_namespace: 'Context namespace'
       no_param: 'The link has no node name (missing ?id=). Open the detail from the node list.'
       no_param_title: 'No node specified'
+      none: 'None'
     sources:
       dedup_summary: 'Delivery deduplication and its window (deliveryId)'
       group_basic: 'Basics'
@@ -2301,6 +2309,29 @@ uxaudit:
     file_drop_pick: Drop a file here, or click to choose
     file_drop_hint: .yaml / .json, up to 1 MB each
     file_drop_empty: No file selected
+
+# ── #374/#375 · internal fields & raw JSON: developer info fold (same keys) ──
+  dev:
+    summary: 'Developer info'
+    instance: 'Instance {n}'
+    hint: 'Protocol internals — not needed for everyday use, only when troubleshooting.'
+    copy: 'Copy'
+    raw: 'View raw JSON'
+    event_id: 'Event ID'
+    drift: 'Config not applied yet: config {config}, node applied {applied}'
+    drift_short: 'Awaiting node apply'
+    field: 'Field'
+    type: 'Type'
+    required: 'Required'
+    description: 'Description'
+    yes: 'Yes'
+    no: 'No'
+    none: 'None'
+    params: 'Parameters'
+    total: 'Total'
+    per_cap: 'Per capability'
+    edit_raw: 'Edit raw JSON'
+    edit_raw_hint: 'saved with the current CAS token'
 
 paging:
   search_ph: 'Search name / display name'

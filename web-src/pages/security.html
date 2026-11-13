@@ -671,13 +671,16 @@
         <p class="page-sub">{{t "security.intro"}}</p>
       </div>
       <div class="page-actions">
-        <button type="button" onclick="addPasskey()" class="btn btn-ghost">
+        {{/* #376：同一个「添加 Passkey」原来有三个入口（页头两个 + 空态一个），
+             且文案教用户“点右上角”。页头只留 1 主（本机）+ 1 次（新设备）；
+             空态不再自带按钮，改成指向页头的同一个主按钮。 */}}
+        <button type="button" onclick="addPasskey()" class="btn btn-primary">
           + {{t "passkeyenroll.local_button"}}
         </button>
         <button
           type="button"
           onclick="openEnrollModal()"
-          class="btn btn-primary"
+          class="btn btn-ghost"
         >
           ⇄ {{t "passkeyenroll.entry_button"}}
         </button>
@@ -1594,7 +1597,8 @@
 
     if (PASSKEYS.length === 0) {
       // 空态落在 #passkey-list **内部**（ux_regression #22 读它的 innerText）。
-      // 硬约束：文案必须指向**本机添加**，且这个动作只能有一个按钮（#22 要求唯一）。
+      // #376：添加动作全页只留页头那一个主按钮（唯一）。空态只给一句指向它的话，
+      // 而且不再重复标题那句（“还没有 Passkey”只说一次）。
       const box = el("div", { class: "empty sec-empty" });
       const ico = el("span", { class: "sec-empty-ico" });
       ico.innerHTML =
@@ -1609,18 +1613,9 @@
           class: "sec-empty-desc",
           text: t(
             "security.empty_passkeys",
-            "还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。",
+            "用页头的「+ 本机添加」为这台设备创建一个。",
           ),
         }),
-        el(
-          "button",
-          {
-            type: "button",
-            class: "btn btn-primary btn-sm",
-            onclick: () => addPasskey(),
-          },
-          "+ " + t("passkeyenroll.local_button", "本机添加"),
-        ),
       );
       list.replaceChildren(box);
       return;
