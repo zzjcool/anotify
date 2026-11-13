@@ -24,7 +24,9 @@ export async function bootstrap(d) {
   await goto('capabilities','');await page.locator('[data-cap="fixer"]').waitFor();
   const rows=await calls();
   assert.ok(rows.some(c=>c.url==='/v1/namespaces'));
-  assert.ok(rows.some(c=>c.url==='/v1/namespaces/default/capabilities'&&c.result.kind==='CapabilityList'));
+  // 断言的语义是「首访：NamespaceList → default 的 CapabilityList」；#377 分页之后
+  // nsList 显式带 limit=500（整份列表用于计数/建图），所以按路径比对、查询串忽略。
+  assert.ok(rows.some(c=>c.url.split('?')[0]==='/v1/namespaces/default/capabilities'&&c.result.kind==='CapabilityList'));
   check('F3-SCOPE-03 first visit NamespaceList -> default CapabilityList, no flat compatibility');
 }
 export async function aba(d) {
