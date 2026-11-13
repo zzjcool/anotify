@@ -41,11 +41,7 @@
   .msg-state-icon {
     display: block;
   }
-  .msg-state.is-error .msg-state-mark {
-    border-color: color-mix(in srgb, var(--error) 30%, transparent);
-    background: var(--error-soft);
-    color: var(--error);
-  }
+  /* 错误态的颜色在 ui.css 的「状态语义修饰 is-*」一节（#372：页面不再写一份）。 */
   /* 卡片内的小块（日志 / emissions / 动作错误）：图标与内距收一档，
      不要在一个区块里画一个整页空态 */
   .msg-state.is-compact {
