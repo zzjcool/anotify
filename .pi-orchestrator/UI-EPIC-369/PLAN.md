@@ -58,19 +58,19 @@
 
 | # | issue | 车道 | PR | 审查 | 合并 |
 |---|---|---|---|---|---|
-| 370 | 容器层次 | c-vis | — | — | — |
-| 371 | 对比度 | c-vis | — | — | — |
+| 370 | 容器层次 | c-vis | [#387](https://github.com/zzjcool/anotify/pull/387) | rev-387 进行中 | — |
+| 371 | 对比度 | c-vis | #387（同上） | rev-387 进行中 | — |
 | 372 | 设计系统收编 | c-vis | — | — | — |
 | 373 | 强调密度 | c-vis | — | — | — |
-| 374 | 内部字段上屏 | c-fecontent | — | — | — |
-| 375 | 裸 JSON | c-fecontent | — | — | — |
-| 376 | 动作收敛 | c-feactions | — | — | — |
+| 374 | 内部字段上屏 | c-fecontent | [#386](https://github.com/zzjcool/anotify/pull/386) | rev-386 进行中 | — |
+| 375 | 裸 JSON | c-fecontent | [#388](https://github.com/zzjcool/anotify/pull/388)（stacked #386） | rev-388 进行中 | — |
+| 376 | 动作收敛 | c-feactions | 进行中（c-feactions） | — | — |
 | 377 | 列表分页 | c-paging | — | — | — |
 | 378 | 错误态分级 | c-fecontent | — | — | — |
 | 379 | 文案与未接能力 | c-copy | — | — | — |
-| 380 | 预案徽章失败态 | c-feactions | — | — | — |
+| 380 | 预案徽章失败态 | c-feactions | 分支 ui/369-playbook-badge @ f9f0757（PR 待建） | — | — |
 | 381 | 通知接收 + 首跑 | c-ia | — | — | — |
-| 382 | 触控目标 | c-mobile | — | — | — |
-| 383 | iOS 聚焦缩放 | c-mobile | — | — | — |
+| 382 | 触控目标 | c-mobile | 进行中（c-mobile，stacked 在 #383 之上） | — | — |
+| 383 | iOS 聚焦缩放 | c-mobile | 进行中（c-mobile） | — | — |
 | 384 | 主内容横滚 | c-mobile | — | — | — |
 | 385 | 手机首屏/弹层/安全区 | c-mobile | — | — | — |
