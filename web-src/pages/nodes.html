@@ -202,7 +202,7 @@
     } catch (e) { message('reg-error', errorText(e), true); } finally { $('reg-submit').disabled = false; }
   };
   async function rotate(name) {
-    if (!confirm(t('rotate_confirm').replace('{name}', name))) return;
+    if (!(await A.confirmDanger({ body: t('rotate_confirm').replace('{name}', name) }))) return;
     clearToken();
     try { const response = await write('/v1/nodes/' + encodeURIComponent(name) + '/tokens', {}, 'POST'); showToken(name, response.token); await loadNodes(); }
     catch (e) { A.toast(errorText(e), 'error'); }
@@ -297,7 +297,7 @@
       return { ok: false, error: e };
     }
   }
-  $('namespace-reload').onclick = () => { if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) return; loadNamespace(); };
+  $('namespace-reload').onclick = async () => { if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadNamespace(); };
   $('namespace-save').onclick = async () => {
     // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
     if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
@@ -321,8 +321,8 @@
     catch (e) { if (current()) message('namespace-state', errorText(e), true); }
     finally { if (current()) $('namespace-save').disabled = false; }
   };
-  $('config-namespace').onchange = () => {
-    if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) { $('config-namespace').value = selectedNamespace; return; }
+  $('config-namespace').onchange = async () => {
+    if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
     selectedNamespace = $('config-namespace').value; nsConfig = null; nsLoaded = ''; loadNamespace();
   };
   const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
@@ -346,7 +346,7 @@
       $('system-fields').hidden = false; message('system-state', t('loaded')); $('system-save').disabled = false;
     } catch (e) { message('system-state', errorText(e), true); }
   }
-  $('system-reload').onclick = () => { if (currentTtls() !== systemOriginal && !confirm(t('reload_confirm'))) return; loadSystem(); };
+  $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadSystem(); };
   $('system-save').onclick = async () => {
     if (!systemConfig) return; $('system-save').disabled = true;
     try {
