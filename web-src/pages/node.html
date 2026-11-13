@@ -341,7 +341,7 @@
   function emptyState(title, desc, onRetry) {
     const box = make('div', 'nd-empty'), ico = make('div', 'nd-empty-ico');
     ico.innerHTML = EMPTY_ICON;
-    const acts = make('div', 'nd-empty-acts'), back = make('a', 'btn btn-primary', t('back'));
+    const acts = make('div', 'nd-empty-acts'), back = make('a', 'btn', t('back'));
     back.href = 'nodes.html' + (location.search || '');
     acts.append(back);
     if (onRetry) { const retry = make('button', 'btn btn-ghost', A.t('common.retry', '重试')); retry.type = 'button'; retry.onclick = () => onRetry(); acts.append(retry); }

@@ -369,7 +369,7 @@
           <p class="field-hint">{{t "pb.v4.oci_hint"}}</p>
         </div>
         <div class="page-actions">
-          <button id="pb-create" type="submit" class="btn btn-primary">{{t "pb.v4.store"}}</button>
+          <button id="pb-create" type="submit" class="btn">{{t "pb.v4.store"}}</button>
         </div>
       </form>
           <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
@@ -482,7 +482,7 @@
       const box = el("div", "empty");
       const tpl = $("pb-empty-tpl");
       // 本地 el(tag, cls, text) 的第二个参数是**类名字符串**（不是 attrs 对象）
-      const cta = el("button", "btn btn-primary", t("uxaudit.work.pb_empty_cta"));
+      const cta = el("button", "btn", t("uxaudit.work.pb_empty_cta"));
       cta.type = "button";
       cta.id = "pb-empty-cta";
       cta.addEventListener("click", () => openImport());
@@ -623,7 +623,7 @@
         const name = $("pb-input-name").value.trim();
         const spec = $("pb-input-kind").value === "files" ? { files: JSON.parse($("pb-input-files").value) } : { source: $("pb-input-source").value.trim() };
         const response = await api(nsPath("playbooks"), { method: "POST", body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Playbook", metadata: { name, namespace: getScope().namespace }, spec }) });
-        const open = el("a", "btn btn-primary btn-sm", t("pb.v4.open")); open.href = link(response.metadata.name);
+        const open = el("a", "btn btn-sm", t("pb.v4.open")); open.href = link(response.metadata.name);
         $("pb-import-result").replaceChildren(el("p", "field-hint", t("pb.v4.stored")), open);
         await load();
       } catch (error) {

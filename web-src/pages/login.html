@@ -226,7 +226,7 @@
         padding: 0 12px;
       }
       /* 选中项是「抬起的中性药丸」而不是又一颗品牌色按钮（AU-1）：
-         原来选中 tab 用 --accent-soft + accent 字，与下方 .btn-primary 抢同一档视觉，
+         原来选中 tab 用 --accent-soft + accent 字，与下方的登录主按钮抢同一档视觉，
          五个动作读起来同权。品牌色只留给 Passkey 主按钮，tab 用中性抬升表达选中。 */
       .tab-btn.active {
         background: var(--surface-1);
@@ -758,7 +758,7 @@
           <button
             type="submit"
             id="password-login-btn"
-            class="btn btn-primary auth-submit"
+            class="btn auth-submit"
           >
             {{t "login.password.button"}}
           </button>
@@ -797,7 +797,7 @@
         <button
           id="signup-btn"
           type="button"
-          class="btn btn-primary auth-submit"
+          class="btn auth-submit"
         >
           <svg
             viewBox="0 0 24 24"
@@ -861,7 +861,7 @@
           <button
             type="submit"
             id="password-signup-btn"
-            class="btn btn-primary auth-submit"
+            class="btn auth-submit"
           >
             {{t "login.signup.password.button"}}
           </button>
@@ -959,7 +959,7 @@
           <button
             id="recovery-btn"
             type="button"
-            class="btn btn-primary auth-submit"
+            class="btn auth-submit"
           >
             {{t "login.recovery.button"}}
           </button>
@@ -989,7 +989,7 @@
       <button type="button" id="codes-copy-all" class="btn btn-ghost btn-sm">
         {{t "login.codes.copy_all"}}
       </button>
-      <button type="button" id="codes-continue" class="btn btn-primary">
+      <button type="button" id="codes-continue" class="btn">
         {{t "login.codes.continue"}}
       </button>
     </div>

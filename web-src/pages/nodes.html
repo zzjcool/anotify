@@ -114,7 +114,7 @@
   <section id="register-panel" class="card card-pad" hidden>
     <div class="card-title">{{t "nodes.v4.register"}}</div>
     <div class="field"><label class="field-label" for="reg-name">{{t "nodes.v4.name"}}</label><input id="reg-name" class="input" autocomplete="off" pattern="[a-z0-9][a-z0-9._-]{0,62}" placeholder="node-a" /></div>
-    <div class="c2-actions"><button id="reg-submit" class="btn btn-primary" type="button">{{t "nodes.v4.create"}}</button><button id="reg-cancel" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
+    <div class="c2-actions"><button id="reg-submit" class="btn" type="button">{{t "nodes.v4.create"}}</button><button id="reg-cancel" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
     <div id="reg-error" class="c2-state" role="alert"></div>
   </section>
   <section id="reg-result" class="card card-pad c2-stack" hidden>
@@ -147,7 +147,7 @@
         <div class="devf-body"><div id="namespace-revisions" class="c2-kv"></div></div>
       </details>
       <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-      <div class="c2-actions"><button id="namespace-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+      <div class="c2-actions"><button id="namespace-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       <div id="namespace-state" class="c2-state" role="status"></div>
     </section>
     <section id="system-config" class="card card-pad">
@@ -161,7 +161,7 @@
         <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
         <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
         <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
-        <div class="c2-actions"><button id="system-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+        <div class="c2-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       </div>
       <div id="system-state" class="c2-state" role="status"></div>
     </section>
