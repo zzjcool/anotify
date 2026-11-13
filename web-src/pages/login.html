@@ -216,25 +216,14 @@
         border: 1px solid var(--line);
         border-radius: var(--r-md);
       }
+      /* #372：Tab 收编 —— 基线（字号/字重/圆角/描边/底色/光标/hover）全部来自
+         ui.css 的 `.tab`，`.tab-btn` 只保留登录页真正不同的两处：整宽等分 + 34px 行高。
+         选中态仍是中性“抬起”的药丸（AU-1：不和下方主按钮抢品牌色）。 */
       .tab-btn {
         flex: 1 1 0;
         justify-content: center;
         height: 34px;
         padding: 0 12px;
-        border-radius: var(--r-sm);
-        border: 1px solid transparent;
-        background: transparent;
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--muted);
-        cursor: pointer;
-        transition:
-          color var(--dur-fast) var(--ease),
-          background var(--dur-fast) var(--ease),
-          box-shadow var(--dur-fast) var(--ease);
-      }
-      .tab-btn:hover {
-        color: var(--text);
       }
       /* 选中项是「抬起的中性药丸」而不是又一颗品牌色按钮（AU-1）：
          原来选中 tab 用 --accent-soft + accent 字，与下方 .btn-primary 抢同一档视觉，

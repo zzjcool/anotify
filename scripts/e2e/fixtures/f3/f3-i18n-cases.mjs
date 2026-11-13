@@ -36,11 +36,19 @@ async function hasText(d,sel,key,values={}) {
   d.check(sel+' renders exact '+key+' = '+expected);
 }
 async function dialogClick(d,button,key,values={}) {
-  const expected=await t(d,key,values);let message;
-  const listener=async dialog=>{message=dialog.message();await dialog.dismiss();};
-  d.page.once('dialog',listener);
-  try { await button.click(); await d.page.waitForFunction(()=>true); assert.equal(message,expected,'Actual native dialog exact locale'); }
-  finally {d.page.off('dialog',listener);}
+  /* #378：确认句不再走原生 `window.confirm`（Playwright 的 dialog 事件），而是共享弹层
+   * `#anotify-dialog`（partials.js）。旧断言“精确等于本地化文案”必须保留强度 ——
+   * 所以继续比**正文**（#anotify-dialog-body）逐字相等，而不是“包含”：
+   * 弹层标题/附注是共享文案，正文才是这条流程自己的那句。
+   * 依然点「取消」：这个 case 的事实是“文案正确 + 取消 ⇒ 零写入”。 */
+  const expected=await t(d,key,values);
+  await button.click();
+  await d.page.locator('#anotify-dialog [data-dialog-ok]').waitFor({state:'visible',timeout:5000});
+  const body=(await d.page.locator('#anotify-dialog-body').innerText()).trim();
+  assert.equal(body,expected,'Actual confirmation dialog body exact locale');
+  assert.equal(await d.page.locator('#anotify-dialog-title').isVisible(),true,'dialog exposes a visible title');
+  await d.page.locator('#anotify-dialog [data-dialog-cancel]').click();
+  await d.page.locator('#anotify-dialog').waitFor({state:'hidden',timeout:5000});
   d.check('Actual click opens exact localized dialog '+key+' (cancelled, zero write)');
 }
 // Select detail query identities from the actual v4 wire, NEVER uid/name aliases.

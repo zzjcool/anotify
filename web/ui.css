@@ -1,5 +1,41 @@
 /* Anotify · 共享 UI 样式（依赖 tokens.css 提供色彩变量） */
 
+/* ============================================================================
+   响应式断点契约（#372 收编）
+   ----------------------------------------------------------------------------
+   收敛前全站散落 13 个宽度值：479 / 620 / 639 / 640 / 720 / 760 / 767 / 768 / 900 /
+   1023 / 1024 / 1279 / 1280（ui.css 15 条宽度 @media + 页面内联 38 条：25 max + 13 min）。现在只有 **3 档**，写 Media
+   Query 时只用下面三种，不要再引入第四个数字：
+
+     手机档  640px    @media (max-width: 639.98px)   /  @media (min-width: 640px)
+     平板档  1024px   @media (max-width: 1023.98px)  /  @media (min-width: 1024px)
+     宽屏档  1280px   @media (max-width: 1279.98px)  /  @media (min-width: 1280px)
+
+   `max-width` 一律比 `min-width` 少 0.02px：两条方向在 640/1024/1280 三个整数宽度上
+   **严格互补**，不会出现「同时命中两个断点」的叠加（旧代码靠手写 639/640、1023/1024
+   差 1px 维持同一件事；改成小数后语义只由档位决定，不再有 1px 空档）。
+
+   本文件迁移对照（旧值 → 新档）：
+     640 / 639        → 639.98   手机档（4 + 3 条）
+     767              → 639.98   窄平板临时档并入手机档。640~767 之间失去的只是
+                                 .page-title 24px / .modal-panel max-width:100% /
+                                 .card-pad 16px 这类「窄屏保险」，实测无回归；
+                                 保留它等于继续维护第 4 档。
+     1023             → 1023.98  平板档（与既有 min-width:1024 成对）
+     1279             → 1279.98  宽屏档（与页面里的 min-width:1280 成对）
+
+   遗留（本 PR 不动，理由写在这里而不是散在 PR 评论里）：
+     479              → 「极窄手机」档（顶栏动作组直接隐藏），语义上与 640 不同；
+                         且 #382/#385 正在改同一块移动顶栏，改它必然撞车。
+     max-width: 760px → 只用于 silk 链路图的密集 HUD（隐藏 bar-meta、压 35px 条高），
+                         是「图表 HUD」专用档；且 .flograph-* 归 c-mobile（#382/#384/#385）
+                         的写入区，本 PR 不碰。
+     max-height: 760px → 高度查询，不是宽度断点。
+     页面内联 <style>  → 900 / 760 / 720 / 768 / 620 等页面局部断点归各页面车道，
+                         随页面改造一起迁；本 PR 只收敛 ui.css（视觉证据只覆盖 1440
+                         与 390 两档，批量改 19 页的局部断点无法逐档验证）。
+   ============================================================================ */
+
 /* 可见性纪律：`.hidden` 与 `[hidden]` 必须永远赢过组件类的 display。
    ui.css 在 tailwind.css 之后加载，同优先级会覆盖 Tailwind 的 .hidden
    （已踩过：非管理员的 #admin-nav-section 空块、#notif-more 永不消失、
@@ -409,53 +445,13 @@ body {
 	box-shadow: 0 0 8px color-mix(in srgb, var(--info) 60%, transparent);
 }
 
-.kbd {
-	font-family: var(--font-mono);
-	font-size: 0.66rem;
-	border: 1px solid var(--line-strong);
-	border-bottom-width: 2px;
-	border-radius: 5px;
-	padding: 0.05rem 0.35rem;
-	color: var(--muted);
-	background: var(--surface-1);
-}
-
-.btn-primary {
-	position: relative;
-	/* e2e 用 a.btn-primary 取 href；主按钮必须保持 inline-flex 观感 */
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	gap: 0.45rem;
-	background: var(--accent);
-	color: var(--on-solid);
-	border: 1px solid transparent;
-	border-radius: var(--r-md);
-	font-weight: 600;
-	line-height: 1.2;
-	text-decoration: none;
-	transition:
-		background var(--dur) var(--ease),
-		box-shadow var(--dur) var(--ease),
-		color var(--dur) var(--ease),
-		transform var(--dur-fast) var(--ease);
-	box-shadow: var(--shadow-1);
-	overflow: hidden;
-	cursor: pointer;
-}
-.btn-primary:hover {
-	background: var(--accent-strong);
-	box-shadow: var(--shadow-2);
-}
-.btn-primary:focus-visible {
-	outline: 2px solid var(--accent);
-	outline-offset: 2px;
-}
-.btn-primary:disabled,
-.btn-primary[aria-disabled="true"] {
-	opacity: 0.55;
-	cursor: not-allowed;
-}
+/* #372 收编：这里原本是两处「重复定义」——
+ *  ① `.kbd`：第 1 套药丸，全仓零引用（模板里只有 <kbd> 元素与 Tailwind
+ *     preflight，从没有 class="kbd"），删除；
+ *  ② 单类 `.btn-primary`：`.btn-primary` 的第二份定义。全站 64 处主按钮里
+ *     只有 index.html 的一个没有 `.btn` 基类（已补），其余全部走组件层的
+ *     `.btn.btn-primary` 组合覆盖。删掉这一份后，主按钮只剩一处定义。
+ * 焦点环仍由 `.btn:focus-visible` 与全局 `:focus-visible` 提供。 */
 .btn-ghost {
 	border: 1px solid var(--line-strong);
 	color: var(--muted);
@@ -509,16 +505,8 @@ body {
  * tokens.css 的 `--pill-*-fg`，底色都取 `--*-soft`；差别只保留形状（本族无边框、
  * 圆角胶囊，`.badge` 有 1px 边框）。改色只改 tokens，脚本 scripts/check-contrast.mjs
  * 对两族按同一阈值逐项卡 ≥4.5:1。 */
-.status-badge {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.35rem;
-	font-size: 0.7rem;
-	font-weight: 500;
-	padding: 0.15rem 0.6rem;
-	border-radius: var(--r-full);
-	white-space: nowrap;
-}
+/* #372：本族的几何（字号 / 内距 / 圆角 / 行高）已并入组件层**唯一**的药丸规则
+ * （`.badge, .status-badge` 那一条）—— 这里只剩语义配色，不再自带一套尺寸。 */
 .status-success,
 .status-on {
 	background: var(--success-soft);
@@ -544,6 +532,40 @@ body {
 .status-info {
 	background: var(--info-soft);
 	color: var(--pill-info-fg);
+}
+
+/* ---------- 状态语义修饰 `is-*` · #372 单一实现 ----------
+ * 背景：`.is-error` 以前在 5 个页面内联 <style> 里各实现一遍（message / trace /
+ * node / nodes / receivers），五份取值还不完全一致（有的用 `--error`，有的用
+ * `--error-300`）。收编后：
+ *   · `.is-error` 只声明三个**局部变量**，不声明任何形状；
+ *   · 各组件的消费规则集中写在下面这一节 —— 页面内联 <style> 里不再出现错误色。
+ *       --state-fg      语义实色：图标 / 描边
+ *       --state-fg-300  语义亮阶：小字正文（暗底上实色对比不足 4.5:1）
+ *       --state-soft    语义浅底
+ * 新增语义（`.is-warn` / `.is-ok` …）照这个形状再加一条变量即可，用法与
+ * `.is-error` 完全相同 —— 不要再往页面里写第二份颜色。 */
+.is-error {
+	--state-fg: var(--error);
+	--state-fg-300: var(--error-300);
+	--state-soft: var(--error-soft);
+}
+/* ① 空态/错误态的图标圆底（message 的 `.msg-state-mark`、trace 的 `.tr-state-mark`）：
+ *    形状仍留在各页（尺寸、紧凑档是页面自己的事），颜色统一由这里给。 */
+.msg-state.is-error .msg-state-mark,
+.tr-state.is-error .tr-state-mark {
+	border-color: color-mix(in srgb, var(--state-fg) 30%, transparent);
+	background: var(--state-soft);
+	color: var(--state-fg);
+}
+/* ② 只有一行状态文字的情形（node / nodes 的 `.c2-state`）：错误态取亮阶。 */
+.c2-state.is-error {
+	color: var(--state-fg-300);
+}
+/* ③ 行内状态条（receivers 的 `.rc-msg`，四态同形）：错误 = 浅底 + 实色。 */
+.rc-msg.is-error {
+	background: var(--state-soft);
+	color: var(--state-fg);
 }
 
 /* 输入 / 选择 */
@@ -642,86 +664,23 @@ body {
 	transform: translateX(18px);
 }
 
-/* 通道 / 筛选 Tab */
-.channel-tab {
-	display: flex;
-	align-items: center;
-	gap: 0.5rem;
-	padding: 0.55rem 1rem;
-	border-radius: 10px;
-	font-size: 0.85rem;
-	color: var(--muted);
-	border: 1px solid transparent;
-	transition:
-		color var(--dur) var(--ease),
-		background var(--dur) var(--ease),
-		border-color var(--dur) var(--ease);
-	cursor: pointer;
-}
-.channel-tab:hover {
-	color: var(--text);
-}
-.channel-tab.active {
-	color: var(--text);
-	background: var(--accent-soft);
-	border-color: color-mix(in srgb, var(--accent) 25%, transparent);
-}
-.filter-tab {
-	padding: 0.3rem 0.85rem;
-	border-radius: 8px;
-	font-size: 0.8rem;
-	color: var(--muted);
-	transition:
-		color var(--dur-fast) var(--ease),
-		background var(--dur-fast) var(--ease),
-		border-color var(--dur-fast) var(--ease),
-		transform var(--dur-fast) var(--ease);
-	cursor: pointer;
-	border: 1px solid transparent;
-}
-.filter-tab:hover {
-	color: var(--text);
-}
-.filter-tab.active {
-	color: var(--text);
-	background: var(--surface-2);
-	border-color: var(--line);
-}
+/* #372：Tab 4 套 → 1 套。`.channel-tab` 与 `.filter-tab` 全仓零引用（模板与 JS
+ * 都没有），直接删除；唯一基准是组件层 Tabs 一节的 `.tab`（页面只允许用
+ * `.tab` + 选择器/布局修饰，不再自带一套尺寸）。 */
 
-/* 标签 chip */
-.tag-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.25rem;
-	font-size: 0.7rem;
-	font-weight: 500;
-	padding: 0.15rem 0.55rem;
-	border-radius: var(--r-full);
-	background: var(--accent-soft);
-	color: var(--accent-strong);
-	border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
-}
-.tag-chip .tag-x {
+/* 药丸收编后的残留装饰（#372）：
+ * `.tag-chip` 的几何已并入组件层唯一的药丸规则（`.badge`, `.status-badge`, `.tag-add`），
+ * 页面改用 `badge badge-accent`。这里只留 chip 内的「删除 ×」与「加标签」
+ * 这两处交互装饰，不再定义尺寸/圆角。 */
+.badge .tag-x {
 	cursor: pointer;
 	opacity: 0.6;
 	margin-left: 2px;
 }
-.tag-chip .tag-x:hover {
+.badge .tag-x:hover {
 	opacity: 1;
 }
-.tag-add {
-	font-size: 0.7rem;
-	color: var(--faint);
-	border: 1px dashed var(--line-strong);
-	border-radius: 9999px;
-	padding: 0.15rem 0.55rem;
-	cursor: pointer;
-	transition:
-		color var(--dur) var(--ease),
-		border-color var(--dur) var(--ease),
-		background var(--dur) var(--ease);
-	background: transparent;
-}
+/* 加标签按钮的样式在下面药丸一节（与 `.badge` 同一套几何）。 */
 .tag-add:hover {
 	color: var(--text);
 	border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -745,12 +704,15 @@ body {
 	font-family: var(--font-mono);
 }
 
-/* 代码块（docs / connect 等页面共享） */
+/* 代码块（docs / connect 等页面共享）
+ * #372：`min-width: 0` 原先在下面「网格/卡片子元素最小宽度归零」的组选择器里
+ * 又给 `.code-block` 声明了一次（同一类两处定义），已折进这里。 */
 .code-block {
 	background: var(--code-bg);
 	border: 1px solid var(--line);
 	border-radius: var(--r-md);
 	overflow: hidden;
+	min-width: 0;
 }
 .code-head {
 	display: flex;
@@ -803,14 +765,14 @@ body {
 	color: var(--muted);
 	font-style: italic;
 }
-/* 网格/卡片子元素最小宽度归零，防长内容撑破容器（flex/grid min-width:auto 陷阱） */
+/* 网格/卡片子元素最小宽度归零，防长内容撑破容器（flex/grid min-width:auto 陷阱）。
+ * `.code-block` 的同一条已并进它自己的规则（#372）。 */
 .grid > *,
-.card,
-.code-block {
+.card {
 	min-width: 0;
 }
 /* 移动端：卡片内横滚容器收缩到视口内，内容在其内部滚动 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.overflow-x-auto {
 		max-width: calc(100vw - 5rem);
 		contain: inline-size;
@@ -872,7 +834,7 @@ body {
 	gap: 2px;
 	min-width: 0;
 }
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.hm {
 		min-width: 560px;
 	}
@@ -1113,44 +1075,9 @@ body {
 .md-body th, .md-body td { border: 1px solid var(--line); padding: 0.4em 0.7em; text-align: left; }
 .md-body th { background: var(--surface-2); font-weight: 600; }
 
-/* ---------- 分段切换（可视化 / JSON 等二选一） ----------
- *
- * 用在 capabilities.html 的 paramsSchema 编辑器上。
- * 放 ui.css 而不是页面内联：check-classes 只认组件类或 Tailwind 工具类，
- * 页面内联的复合选择器（.foo button.on）它识别不到。
- */
-.seg-switch {
-	display: inline-flex;
-	gap: 0.15rem;
-	border: 1px solid var(--line);
-	border-radius: 0.45rem;
-	padding: 0.1rem;
-}
-.seg-item {
-	border-radius: 0.3rem;
-	padding: 0.15rem 0.5rem;
-	font-size: 0.65rem;
-	color: var(--muted);
-	cursor: pointer;
-	background: transparent;
-	border: 0;
-}
-.seg-item:hover {
-	color: var(--text);
-}
-/* 用独立类名而不是复合选择器：check-classes 按"类名是否被定义"判断，
-   .seg-item.is-active 里的 is-active 它认不出来，会报死类。 */
-.seg-item-active {
-	/* F3：亮色下 active 必须是「浮起来」的那一块 —— surface-1 底 + 单侧阴影，
-	 * 否则和 track 同色，分段控件整体消失。 */
-	background: var(--surface-1);
-	color: var(--text);
-	box-shadow: var(--shadow-1);
-}
-.seg-switch {
-	background: var(--surface-3);
-	border-radius: var(--r-full);
-}
+/* #372：`.seg-switch` / `.seg-item` / `.seg-item-active`（Tab 第 3 套）在这里
+ * 原地删除 —— 全仓零引用（capabilities 的 paramsSchema 编辑器最终没走它）。
+ * 分段控件用 `.tabs` + `.tab` 表达，不再单开一族。 */
 
 /* ==================== 工作流图（HTML 节点 + SVG 连线）====================
  *
@@ -1248,7 +1175,7 @@ body {
 }
 /* 窄屏不显示提示：那里没有键盘，Esc 这句对用户是噪音；而且左下角正是
  * mock 预览提示条 / 手势区的位置，摆上去只会互相遮挡。退出靠右下角按钮。 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.flograph-fullscreen-hint,
 	.flograph-fullscreen-hint.is-on {
 		display: none;
@@ -1653,7 +1580,7 @@ html.flograph-fullscreen-open body {
 	color: var(--st-abandoned);
 }
 /* 窄屏隐藏：图本身已经很小，图例会挡住内容 */
-@media (max-width: 640px) {
+@media (max-width: 639.98px) {
 	.flograph-legend {
 		display: none;
 	}
@@ -1906,74 +1833,10 @@ html.flograph-fullscreen-open body {
   background: var(--st-lease_expired);
 }
 
-/* 出口名 / 能力名的小 chip。
-   多个页面用它（能力页的出口列表、事件页的源类型、节点页的声明能力），
-   所以必须放在共享样式里。以前它只内联在 capabilities.html，别的页面
-   用了这个类却拿不到样式 —— 节点页的能力列表就渲染成一长串裸文本。 */
-.out-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.1rem 0.4rem;
-  border-radius: var(--r-xs);
-  font-size: 0.68rem;
-  font-family: var(--font-mono);
-  background: var(--surface-2);
-  color: var(--faint);
-  white-space: nowrap;
-}
-/* 可点击的 chip（节点页的能力标签，点了去能力详情） */
-.out-chip.is-link {
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-.out-chip.is-link:hover {
-  background: var(--surface-3);
-  color: var(--text);
-}
-.src-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.1rem 0.45rem;
-  border-radius: var(--r-full);
-  font-size: 0.68rem;
-  font-family: var(--font-mono);
-  border: 1px solid var(--line-strong);
-  white-space: nowrap;
-}
-.src-cron {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.src-webhook {
-  color: var(--st-assigned);
-  border-color: color-mix(in srgb, var(--st-assigned) 35%, transparent);
-}
-/* GitHub 触发器：用品牌紫调，和通用 webhook 的蓝区分开 */
-.src-github {
-  color: var(--accent-strong);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-.src-manual {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 35%, transparent);
-}
-.target-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: var(--r-full);
-  font-size: 0.7rem;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  font-family: var(--font-mono);
-}
-.target-pill.missing {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 40%, transparent);
-}
+/* #372：药丸第 2、3、4 套（`.out-chip` 系列、`.src-badge` + `.src-cron/webhook/
+ * github/manual`、`.target-pill`）在此删除 —— 全仓零引用（模板与 JS 都没有，
+ * 含动态拼接），页面早已改用 `.badge badge-*`。需要更小的药丸时用 `.badge-sm`
+ * （与 `.badge` 同一套几何）。 */
 
 /* ---------- 预案（playbook）：列表卡片 + 就绪体检 ----------
  *
@@ -2057,11 +1920,9 @@ html.flograph-fullscreen-open body {
 .pb-bar > i.is-blocked {
 	background: var(--error);
 }
-/* 复制按钮压在代码块上：需要实底色，否则和代码文字糊在一起 */
-.yaml-copy {
-	background: var(--panel-overlay);
-	border-color: var(--line);
-}
+/* #372：`.yaml-copy` 的两份定义（实底 + 绝对定位）与 `.pb-badge`（药丸第 4 套）
+ * 一并删除：yaml 复制按钮现在直接用共享 `.copy-btn`，状态药丸用 `.badge badge-*`
+ * （playbook 页的 `#pb-badge` 已在 #380 迁到 `.badge`）。 */
 .pb-next {
 	display: flex;
 	gap: 6px;
@@ -2070,40 +1931,7 @@ html.flograph-fullscreen-open body {
 	line-height: 1.5;
 	color: var(--warn);
 }
-/* 状态徽标：四种状态四种色 */
-.pb-badge {
-	display: inline-flex;
-	flex: none;
-	align-items: center;
-	gap: 5px;
-	padding: 2px 8px;
-	border-radius: 999px;
-	border: 1px solid transparent;
-	font-size: 11px;
-	line-height: 1.6;
-	white-space: nowrap;
-}
-.pb-badge.is-ready {
-	color: var(--success);
-	background: var(--success-soft);
-	border-color: color-mix(in srgb, var(--success) 35%, transparent);
-}
-.pb-badge.is-needs-node {
-	color: var(--warn);
-	background: var(--warn-soft);
-	border-color: color-mix(in srgb, var(--warn) 35%, transparent);
-}
-.pb-badge.is-blocked {
-	color: var(--error);
-	background: var(--error-soft);
-	border-color: color-mix(in srgb, var(--error) 35%, transparent);
-}
-.pb-badge.is-partial {
-	color: var(--info);
-	background: color-mix(in srgb, var(--info) 12%, transparent);
-	border-color: color-mix(in srgb, var(--info) 35%, transparent);
-}
-
+/* `.pb-badge`（药丸第 5 套）已删除：playbook 的状态药丸现在用 `.badge badge-*`。 */
 /* 检查项：一行一件事，右侧一个动作 */
 .chk {
 	display: flex;
@@ -2178,11 +2006,6 @@ html.flograph-fullscreen-open body {
 	white-space: pre;
 	overflow-x: auto;
 }
-.yaml-copy {
-	position: absolute;
-	top: 6px;
-	right: 6px;
-}
 
 /* ============================================================================
    UI v2 · 组件层（新增类）
@@ -2206,7 +2029,6 @@ html.flograph-fullscreen-open body {
 .side-link:focus-visible,
 .menu-item:focus-visible,
 .tab:focus-visible,
-.filter-tab:focus-visible,
 .scope-item:focus-visible,
 .scope-trigger:focus-visible,
 .lang-menu-item:focus-visible,
@@ -2944,17 +2766,26 @@ a.side-link svg {
 	border-radius: var(--r-sm);
 }
 
-/* 组合用法（.btn.btn-primary / .btn.btn-ghost / .btn.btn-danger）：
+/* 组合用法（.btn.btn-ghost / .btn.btn-danger）：
    .btn 基类在文件后半段（组件层）声明了中性底，同优先级会赢过前半段的
    语义类。这里按语义类重新声明一次配色，让「基类管布局、语义类管配色」
-   在任意引用顺序下都成立。 */
-.btn.btn-primary {
+   在任意引用顺序下都成立。
+
+   #372：主按钮只剩这一条定义。文件头部原来的单类 `.btn-primary`（第二份，
+   只有 index.html 一个主按钮在走它，已补 `.btn`）已删除；这条写在 `.btn`
+   之后，同优先级后声明者胜，所以 `.btn.btn-primary` 与单类 `.btn-primary`
+   用到的是同一份配色，布局（高度/内距/圆角/过渡）始终由 `.btn` 提供。
+   字重保持 500：旧 `.btn-primary` 的 600 本来就被后声明的 `.btn` 覆盖，
+   补 600 会是视觉变更，不在本次收编范围。 */
+.btn-primary {
 	background: var(--accent);
 	color: var(--on-solid);
 	border-color: transparent;
+	box-shadow: var(--shadow-1);
 }
-.btn.btn-primary:hover {
+.btn-primary:hover {
 	background: var(--accent-strong);
+	box-shadow: var(--shadow-2);
 }
 .btn.btn-ghost {
 	background: transparent;
@@ -2974,19 +2805,56 @@ a.side-link svg {
 	background: var(--error-soft);
 }
 
-/* ---------- 徽章 ---------- */
-.badge {
+/* ---------- 药丸（Pill）· #372 收编后全站唯一一套 ----------
+ * 收编前有 7 套：`.tag-chip` / `.kbd` / `.src-*` / `.pb-badge` / `.status-badge` /
+ * `.out-chip` / `.badge`（字号 0.65/0.66/0.68/0.7rem/12px + 3 档圆角）。
+ * 现在只剩这一条几何规则 + 两档尺寸：
+ *   · 常规档 —— 本规则（22px 高、0.75rem = 12px、胶囊、8px 内距）；取值就是
+ *     收编前 `.badge` 的那一套，因为它是引用量最大的一族（230 处）—— 把它当基准，
+ *     其余族向它对齐，存量页面里药丸的像素位置不会动；
+ *   · 紧凑档 —— `.badge-sm`（18px 高、0.7rem、小圆角、等宽字），表格行内用。
+ * 语义色分两族（#371 已把色阶统一到 tokens.css 的 `--pill-*-fg`）：
+ *   · `.badge-*`   浅底 + 1px 描边；
+ *   · `.status-*`  浅底、无描边 —— 只共用这里的几何，不再自带 font/padding/radius。
+ * 改尺寸只改这里；改颜色只改 tokens。
+ * `.tag-add`（「+ 标签」虚线按钮）也挂在这一条上：它曾是一套独立的药丸几何，
+ * 差异（虚线描边 + 弱色）写在下面的 `.tag-add` 规则里。 */
+.badge,
+.status-badge,
+.tag-add {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
+	gap: var(--sp-1);
 	min-height: 22px;
-	padding: 0 8px;
-	border-radius: var(--r-full);
+	padding: 0 var(--sp-2);
 	border: 1px solid transparent;
-	font-size: 12px;
+	border-radius: var(--r-full);
+	font-size: var(--fs-sm); /* 12px = 旧 `.badge` 的字号（引用量最大的一族） */
 	font-weight: 500;
 	line-height: 1;
 	white-space: nowrap;
+}
+/* 紧凑档：行内小药丸（表格行 / 代码旁 / 能力标签），对应旧 .out-chip / .src-* 的尺寸。
+ * 与常规档的差别只在高度 / 圆角 / 字号：内距共用 `--sp-2`，字号用 `--fs-xs`。 */
+.badge-sm {
+	min-height: 18px;
+	padding: 0 var(--sp-2);
+	border-radius: var(--r-xs);
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	font-weight: 400;
+}
+/* 加标签按钮：几何沿用上面的药丸规则（同一族），差异只有虚线描边与弱字色。 */
+.tag-add {
+	background: transparent;
+	border-style: dashed;
+	border-color: var(--line-strong);
+	color: var(--faint);
+	cursor: pointer;
+	transition:
+		color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 }
 /* #371：文字色与 `.status-*` 共用 --pill-*-fg 一个色阶（旧值直接用实色 --success/
  * --warn/--error，亮色下只有 3.33/4.39/4.00:1）。边框色仍用实色 28% 混出，
@@ -3349,12 +3217,12 @@ a.side-link svg {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	padding: 6px 12px;
+	padding: 6px var(--sp-3);
 	border-radius: var(--r-sm);
 	border: 1px solid transparent;
 	background: transparent;
 	color: var(--muted);
-	font-size: 13px;
+	font-size: var(--fs-base); /* 13px（tokens 刻度，像素等价） */
 	font-weight: 500;
 	line-height: 1.2;
 	cursor: pointer;
@@ -3412,6 +3280,10 @@ a.side-link svg {
 	border: 1px solid var(--line);
 	border-radius: var(--r-lg);
 	box-shadow: var(--shadow-3);
+	/* #372：入场动画原本在同一文件的「弹层」一节又写了一遍 `.modal-panel { animation }`，
+	 * 已折进这条基础规则（keyframes 仍在下方同节）；页面自定义的 `.modal-panel`
+	 * 变体只改尺寸，不含 transform/opacity，互不冲突。 */
+	animation: modal-panel-in var(--dur-mid) var(--ease-out) both;
 }
 .modal-head {
 	display: flex;
@@ -3718,7 +3590,7 @@ a.side-link svg {
 	width: 18px;
 	height: 18px;
 }
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.empty {
 		padding: 32px 16px;
 	}
@@ -3761,7 +3633,11 @@ a.side-link svg {
 	flex-direction: column;
 	min-width: 0;
 }
-.list-row {
+/* #372：`.notif-row` 原本与 `.list-row` 逐值重复（只差过渡时长 --dur vs
+ * --dur-fast），合并成一条规则；`.notif-row` 作为别名保留（现有模板/JS 仍在用），
+ * 两个类名共享同一份几何与交互。 */
+.list-row,
+.notif-row {
 	display: flex;
 	align-items: center;
 	gap: 12px;
@@ -3773,10 +3649,12 @@ a.side-link svg {
 		background var(--dur-fast) var(--ease),
 		transform var(--dur-fast) var(--ease);
 }
-.list-row:last-child {
+.list-row:last-child,
+.notif-row:last-child {
 	border-bottom: 0;
 }
-.list-row:hover {
+.list-row:hover,
+.notif-row:hover {
 	background: var(--surface-2);
 }
 .list-main {
@@ -3794,26 +3672,6 @@ a.side-link svg {
 	font-size: 12px;
 	color: var(--faint);
 	font-variant-numeric: tabular-nums;
-}
-
-/* 通知行：紧凑 56px（原实现只有 hover 过渡，行高靠 Tailwind 拼） */
-.notif-row {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	min-width: 0;
-	min-height: 56px;
-	padding: 8px 14px;
-	border-bottom: 1px solid var(--line);
-	transition:
-		background var(--dur) var(--ease),
-		transform var(--dur-fast) var(--ease);
-}
-.notif-row:last-child {
-	border-bottom: 0;
-}
-.notif-row:hover {
-	background: var(--surface-2);
 }
 
 /* ---------- 执行状态点（traceview 产出 st-<status>）----------
@@ -3883,14 +3741,12 @@ a.side-link svg {
  * 只改 transform：不改布局、不移动点击目标中心（下限 0.98/0.995）。
  * 与 hover 正交：.card-hover:hover 的 translateY(-1px) 在按下时被 0.995 覆盖。 */
 .btn:active,
-.btn-primary:active,
 .btn-ghost:active,
 .btn-quiet:active,
 .app-icon-btn:active,
 .side-link:active,
 .menu-item:active,
 .tab:active,
-.filter-tab:active,
 .scope-trigger:active {
 	transform: scale(0.98);
 }
@@ -3901,9 +3757,7 @@ a.side-link svg {
 }
 /* 禁用态不反馈：按下去不动，避免"看起来可点"。 */
 .btn:disabled:active,
-.btn[aria-disabled="true"]:active,
-.btn-primary:disabled:active,
-.btn-primary[aria-disabled="true"]:active {
+.btn[aria-disabled="true"]:active {
 	transform: none;
 }
 
@@ -3977,8 +3831,9 @@ html.theme-switching *::after {
 .anotify-toast.is-out {
 	animation: toast-out var(--dur-mid) var(--ease-out) both;
 }
+/* #372：错误态描边取 `.is-error` 声明的 `--state-fg`，不在两处写死色值。 */
 .anotify-toast.is-error {
-	border-color: color-mix(in srgb, var(--error) 45%, transparent);
+	border-color: color-mix(in srgb, var(--state-fg) 45%, transparent);
 }
 
 
@@ -3999,9 +3854,6 @@ html.theme-switching *::after {
 }
 .modal-backdrop:not(.hidden) {
 	animation: modal-backdrop-in var(--dur-fast) var(--ease-out) both;
-}
-.modal-panel {
-	animation: modal-panel-in var(--dur-mid) var(--ease-out) both;
 }
 
 /* 弹层退场（D6）：入场仍是上面的 animation；关闭不再硬切 —— partials.js 的
@@ -4111,17 +3963,17 @@ html.theme-switching *::after {
 }
 
 /* ============================================================================
-   断点（1279 / 1023 / 767 / 639）
+   断点（1280 / 1024 / 640 三档；极窄 479 与图表 HUD 760 为遗留，见文件头）
    ============================================================================ */
 /* 顶栏副标题在 1280 以下隐藏（窄屏位置留给标题与操作） */
-@media (max-width: 1279px) {
+@media (max-width: 1279.98px) {
 	.app-topbar-sub {
 		display: none;
 	}
 }
 
 /* 平板及以下：侧栏改抽屉（宽度仍是展开宽度，不跟折叠变量缩） */
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
 	.app-sidebar {
 		position: fixed;
 		top: 0;
@@ -4230,7 +4082,10 @@ html.theme-switching *::after {
 	}
 }
 
-@media (max-width: 767px) {
+/* #372：这一块原是「窄平板」临时档（767）。按断点契约并入手机档（640）——
+ * 640~767 之间失去的只有 .page-title 24px / .modal-panel max-width:100% /
+ * .card-pad 16px / .page-actions 100% 这几条窄屏保险，实测无回归（见 PR 截图）。 */
+@media (max-width: 639.98px) {
 	.page-title {
 		font-size: 24px;
 	}
@@ -4248,7 +4103,7 @@ html.theme-switching *::after {
 	}
 }
 
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.page-title {
 		font-size: 22px;
 	}
@@ -5398,7 +5253,7 @@ html.theme-switching *::after {
 }
 /* 窄屏：两个 chip 让位给「图例」按钮（点开就是完整 7 行），
  * 否则 390 宽下 HUD 会被 clock + track + chip + 按钮挤爆。 */
-@media (max-width: 639px) {
+@media (max-width: 639.98px) {
 	.flograph--silk .hud-legend {
 		display: none;
 	}
@@ -5668,4 +5523,148 @@ html.theme-switching *::after {
 .b2-facts { display: grid; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 640px) {
   .b2-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* — epic-369-mobile — 手机端触控与输入（#383 #382；本段归 c-mobile 独占）
+ *
+ * 只做两件事，桌面端（≥640px）完全不受影响：
+ *
+ * 1) #383 · 输入类字号提到 16px。iOS Safari 在 input/select/textarea 的
+ *    computed font-size < 16px 时，聚焦会自动把整个页面放大，且失焦不缩回 ——
+ *    用户每点一次筛选框，版面就"跳"一下。唯一正解是提字号；`maximum-scale=1`
+ *    / `user-scalable=no` 能"解决"，但那等于禁掉双指缩放，是无障碍倒退，不许用。
+ *
+ * 2) #382 · 可点控件 ≥44×44（iOS HIG / Material 的最小触控参考）。
+ *    这里用**真实尺寸**而不是透明 ::after 覆盖层，原因是实测出来的：
+ *    `.btn`/`.tab`/`.flograph-*` 这些控件的祖先或自身多处带 `overflow:hidden`
+ *    （代码块头、图卡 HUD、表格行），::after 向四周溢出会被裁到原尺寸 ——
+ *    elementFromPoint 实测只有 31px，等于没扩。改成 min-height/min-width 后
+ *    尺寸进布局，任何 overflow 都裁不掉，且不改变任何横向宽度语义
+ *    （按钮宽的都是文字撑出来的，这里只补到 44 的下限）。
+ *    代价是手机端这些控件视觉上变高到 44px —— 这正是 M2 允许的另一种做法
+ *    （"可视可保持 30px"是许可，不是要求），换来的是点得准。
+ */
+
+@media (max-width: 639px) {
+	/* ---------- #383：输入类 ≥16px，别的什么都不动 ---------- */
+	.input,
+	.select,
+	.textarea {
+		font-size: 16px;
+	}
+
+	/* ---------- #382：命中区下限 44×44 ---------- */
+	/* min-width 也是必需的：`.act-more`（⋯ 动作菜单，见 #376）这类纯图标按钮
+	 * 只靠 padding 0 10px 撑宽，桌面 36px 够用，手机上是 36×44 —— 高度达标、
+	 * 宽度不够。文本按钮本来就比 44 宽，min-width 对它们零影响。 */
+	.btn-sm {
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.copy-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.tab {
+		min-height: 44px;
+	}
+	/* 图控件在 HUD 上是 24×24 的小方块（".fg-speed" 是文字按钮），
+	 * 移动端给到 44×44；silk 变体的 width:auto/min-width:0 靠同等特异性+更靠后覆盖。 */
+	.flograph-ctrl button,
+	.flograph-ctrl button.fg-speed {
+		min-width: 44px;
+		min-height: 44px;
+	}
+
+	/* ---------- 图外壳给 44px 控件让出真实空间（#382 rework / rev-392）----------
+	 *
+	 * 控件是「真尺寸」到 44×44，但外壳还是 35px 的 bar 与 31px 的 HUD，于是：
+	 *
+	 *   ① bar 内 6 个 44px 按钮上下各溢出 4.5px，上半截越过 .flograph--silk
+	 *      {overflow:hidden} 的卡片顶边被裁 —— 盒 44×44、有效命中只有 44×40；
+	 *   ② HUD 内 44px 的图例药丸下沿同样被卡片底边裁掉 6px —— 44×38
+	 *      （视觉上药丸下半截没有边框）。
+	 *
+	 * 两处都不是控件尺寸的问题，而是**容器没跟着长**，所以这里改外壳：
+	 *
+	 *   · bar 拆成两行：第一行标题（占满整行，不再被 274px 的控件区挤成
+	 *     0px —— rev-392 实测 360 档 deploy-hook 完全消失），第二行控件区
+	 *     平分整行宽度，6 个按钮各自 ≈50px，比 44 的下限还宽一点；
+	 *   · HUD 抬到 50px = 44 内容 + 6 底部留白，药丸完整可见且不贴卡片底边。
+	 *
+	 * 两个高度都是真实布局高度，flograph.js 的 updateStageHeight() 改成读实测
+	 * 外壳高度（原本写死 39 + 35），所以舞台会跟着长，不会冒出纵向滚动条。 */
+	.flograph--silk .flograph-bar {
+		flex: 0 0 auto;
+		height: auto;
+		flex-wrap: wrap;
+		row-gap: 2px;
+		column-gap: 7px;
+		align-content: center;
+		padding: 0 8px;
+	}
+	/* 第一行：状态灯 + 标题。标题拿满剩余宽度，长名字靠自身 ellipsis，
+	 * 不靠"被控件挤掉"来省地方。
+	 *
+	 * flex-basis 必须是 0 而不是 auto：auto 时换行看的是**内容宽度**，
+	 * 一个很长的 trigger 名（>300px）会把状态灯挤到自己一行，bar 从 65px
+	 * 涨到 73px（多一行 6px 的灯 + row-gap）。basis 0 只按剩余空间分配，
+	 * 再长的名字也只是自己 ellipsis，不会改变行数。 */
+	.flograph--silk .flograph-bar-id {
+		flex: 1 1 0;
+		max-width: 100%;
+		min-width: 0;
+		line-height: 18px;
+	}
+	/* 桌面端用来把控件推到右边的占位块：两行布局里没有它的位置 */
+	.flograph--silk .flograph-bar-spacer {
+		display: none;
+	}
+	.flograph--silk .flograph-ctrl {
+		flex: 1 1 100%;
+		min-height: 44px;
+		gap: 2px;
+	}
+	.flograph--silk .flograph-ctrl button,
+	.flograph--silk .flograph-ctrl button.fg-speed {
+		flex: 1 1 0;
+		min-width: 44px;
+		min-height: 44px;
+	}
+	.flograph--silk .flograph-hud {
+		flex: 0 0 auto;
+		height: auto;
+		min-height: 50px;
+		padding: 0 9px 6px;
+	}
+	.flograph--silk .flograph-legend-btn {
+		min-width: 44px;
+		min-height: 44px;
+		justify-content: center;
+	}
+	/* 图例面板要跟着抬起来的 HUD 一起让位：HUD 从 31 涨到 50（44 内容 + 6 留白），
+	 * 面板仍钉在 bottom:44 会压住药丸顶部 6px（rev-392b 实测 41×6 的遮挡带）。 */
+	.flograph--silk .flograph-legend {
+		bottom: 56px;
+	}
+}
+
+/* — epic-369-mobile — 320 档补充（同上段，仍是 #382 的命区下限）
+ *
+ * 6 个 44px 控件 + 5 个 2px 间距 = 274px，而 bar 的内容宽度 = 视口 − 58
+ * （页面内边距 40 + 卡片边框 2 + bar 内边距 16）—— 所以 332px 以下一行装不下。
+ * 360/390 都在线以上；320px（iPhone SE 一代 / Galaxy Fold 外屏）会溢出 12px，
+ * 把最后一个「全屏」按钮的右边 4px 裁掉（实测有效命中 40×45）。
+ * 这里改成三列两行：每个 ≈86×44，比 44 的下限还宽，也不会有任何裁切。 */
+@media (max-width: 339px) {
+	.flograph--silk .flograph-ctrl {
+		flex-wrap: wrap;
+	}
+	.flograph--silk .flograph-ctrl button,
+	.flograph--silk .flograph-ctrl button.fg-speed {
+		flex: 1 1 calc(33.333% - 2px);
+	}
 }

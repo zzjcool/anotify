@@ -1383,10 +1383,12 @@
                 1500,
               );
             },
-            () => alert(text),
+            // #378：剪贴板失败时把原文交给持久错误条（可复制、不自动消失），
+            // 用户仍能手工复制出去 —— 与 alert 的「显示原文」语义一致。
+            () => Anotify.errorBar(text),
           );
         } else {
-          alert(text); // 兜底：老浏览器
+          Anotify.errorBar(text); // 兜底：老浏览器
         }
       };
       el.appendChild(btn);
@@ -1742,12 +1744,13 @@
 
   async function deletePasskey(p) {
     if (
-      !confirm(
-        t(
+      !(await Anotify.confirmDanger({
+        body: t(
           "security.confirm.delete",
           "确定删除 Passkey「{name}」吗？\n用它的设备将无法再登录（可用恢复码兜底）。",
         ).replace("{name}", p.name),
-      )
+        undo: false,
+      }))
     )
       return;
     try {
@@ -1791,7 +1794,7 @@
   async function addPasskey() {
     // 情况 1：浏览器不支持 WebAuthn —— 硬件限制，无法绕过。
     if (!window.PublicKeyCredential || !navigator.credentials?.create) {
-      alert(
+      Anotify.errorBar(
         t(
           "uxaudit.security.alert_no_webauthn",
           "当前浏览器不支持 WebAuthn，无法添加 Passkey。\n请使用现代浏览器（Chrome/Safari/Firefox 最新版）。",
@@ -1802,7 +1805,7 @@
     // 情况 2：后端未连接（加载失败，loadFailed.passkeys 为真）——
     // 这是真的「后端没起来」：不是 HTTPS/生物识别的问题。如实报错，不伪造数据。
     if (loadFailed.passkeys) {
-      alert(
+      Anotify.errorBar(
         t(
           "security.alert.backend_down",
           "无法连接后端。\n请确认后端服务已启动且通过 HTTPS 访问，再重试。",
@@ -1986,12 +1989,13 @@
 
   async function revokeSession(s) {
     if (
-      !confirm(
-        t(
+      !(await Anotify.confirmDanger({
+        body: t(
           "security.confirm.revoke",
           "吊销「{name}」的登录会话？该设备将需要重新登录。",
         ).replace("{name}", s.device),
-      )
+        undo: false,
+      }))
     )
       return;
     try {
@@ -2138,12 +2142,13 @@
 
   async function regenRecoveryCodes() {
     if (
-      !confirm(
-        t(
+      !(await Anotify.confirmDanger({
+        body: t(
           "security.recovery.confirm_regen",
           "重新生成会让旧恢复码全部立即失效。确定继续？",
         ),
-      )
+        undo: false,
+      }))
     ) {
       return;
     }
@@ -2690,7 +2695,7 @@
     Anotify.openModal(document.getElementById("enroll-modal"));
   }
 
-  function closeEnrollModal() {
+  async function closeEnrollModal() {
     // 如果还在进行中，弹确认
     if (enrollSession) {
       const waitingEl = document.getElementById("enroll-state-waiting");
@@ -2700,12 +2705,13 @@
         !confirmEl.classList.contains("hidden")
       ) {
         if (
-          !confirm(
-            t(
+          !(await Anotify.confirmDanger({
+            body: t(
               "passkeyenroll.panel.cancel_confirm",
               "取消本次添加？新设备上的链接与短码将立即失效。",
             ),
-          )
+            undo: false,
+          }))
         ) {
           return;
         }

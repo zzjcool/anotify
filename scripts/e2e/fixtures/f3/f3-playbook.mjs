@@ -1,6 +1,8 @@
 // Attributed F2c1 package/UI actions. Raw resource snapshots in real mode.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+// #378：危险操作不再是原生 confirm()，而是文档里的 #anotify-dialog；驱动真实按钮。
+import { acceptDialog } from './f3-dialogs.mjs';
 const files = {
   'playbook.yaml': `apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: project-chain\n  displayName: Project chain\n  version: 1\nspec:\n  values:\n    type: object\n    additionalProperties: false\n    required: [project]\n    properties:\n      project: { type: string, pattern: '^[a-z][a-z0-9-]*$' }\n      env: { type: string, enum: [dev, prod], default: prod }\n      credential: { type: string, writeOnly: true }\n  capabilities:\n    - capabilities/review.yaml\n    - capabilities/fixer.yaml\n  sources:\n    - sources/on-push.yaml\n`,
   'capabilities/review.yaml': `apiVersion: anotify/v1
@@ -91,7 +93,7 @@ export async function playbook(d,mode){
     const downloading = page.waitForEvent('download'); await page.locator('#pb-export').click();
     const download = await downloading; const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
     assert.deepEqual(Object.keys(exported).sort(), Object.keys(files).sort()); assert.equal(exported['capabilities/fixer.yaml'], draft);
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-reload-template').click();
+    await acceptDialog(page, () => page.locator('#pb-reload-template').click());
     await page.waitForFunction(() => document.querySelector('#pb-template-state').textContent.includes('Latest raw package'));
     await page.locator('#pb-file-path').selectOption('capabilities/fixer.yaml');
     assert.equal(await page.locator('#pb-file-content').inputValue(), edited);
@@ -206,7 +208,7 @@ export async function playbook(d,mode){
     assert.equal((await stored()).spec.files['README.md'], changedAgain['README.md'], 'Second remote edit is stored in original raw spec.files');
     assert.notEqual(changedAgain['README.md'], changed['README.md']);
     assert.notEqual(current.metadata.resourceVersion, raw.metadata.resourceVersion, 'Concurrent PUT setup must advance CAS before testing DELETE409');
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-delete').click();
+    await acceptDialog(page, () => page.locator('#pb-delete').click());
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Stale CAS'));
     assert.equal((await req('/v1/namespaces/default/playbooks')).items.length, 1);
     await page.locator('#btn-rescan').click(); await page.waitForFunction(() => !document.querySelector('#btn-rescan').disabled);
@@ -217,7 +219,7 @@ export async function playbook(d,mode){
     const history = await req('/v1/namespaces/default/tasks?limit=100');
     assert.ok(history.items.some(task => JSON.stringify(task.spec).includes('"a-review"')), 'An actual installed Source creates execution references before manifest deletion');
     const keptBefore = await keptResources(receiptId);
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-delete').click();
+    await acceptDialog(page, () => page.locator('#pb-delete').click());
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Manifest deleted'));
     const removed = (await calls()).findLast(c => c.method === 'DELETE'); assert.ok(removed.url.includes('?resourceVersion=')); assert.equal(removed.body, undefined);
     // `kept` 是删清单后保留的资源引用**集合**（能力钉版本 / 源名）：整体内容相等即可，
@@ -241,11 +243,12 @@ export async function playbook(d,mode){
     await page.evaluate(() => window.__f3Fault = '/playbooks'); await page.locator('#btn-refresh').click();
     await page.waitForFunction(() => document.querySelector('#pb-state').textContent.includes('disconnected'));
     await shot('real-list-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-state button').click();
+    /* #378：loadErrorNode 现在固定带「复制详情」，所以按 data-err-action 点**重试**，不按"第一个按钮"。 */
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-state [data-err-action="retry"]').click();
     await page.waitForFunction(() => document.querySelector('#pb-grid [data-slug]'));
     await goto('playbook', 'namespace=default&id=project-chain'); await page.evaluate(() => window.__f3Fault = '/playbooks'); await page.locator('#btn-rescan').click();
     await page.waitForFunction(() => document.querySelector('#pb-load-state').textContent.includes('disconnected'));
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-load-state button').click();
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-load-state [data-err-action="retry"]').click();
     await page.waitForFunction(() => !document.querySelector('#pb-load-state').textContent);
     const invalid = await clickAction('#btn-render', '/render'); assert.equal(invalid.status, 400); assert.equal(invalid.reason, 'values_missing');
     await shot('actual-values-error');
@@ -294,12 +297,14 @@ export async function playbook(d,mode){
     assert.ok(summary.hidden === true && summary.display === 'none' && summary.height === 0,
       '#380 失败路径必须移除残留空容器（hidden/display:none/0 高），实际 ' + JSON.stringify(summary));
     // 错误面板与重试入口必须还在：失败不是死路。
-    assert.equal(await page.locator('#pb-load-state button').count(), 1, '#380 失败态保留重试入口');
+    /* #378：错误态里除「重试」还有「复制详情」（报障要机器事实），所以断言从
+       "按钮恰好 1 个"改成"恰好 1 个重试入口" —— 意图（失败不是死路）不变。 */
+    assert.equal(await page.locator('#pb-load-state [data-err-action="retry"]').count(), 1, '#380 失败态保留重试入口');
     assert.match(await page.locator('#pb-load-state').innerText(), /Failed to load/);
     assert.ok(!(await page.locator('#page-main').innerText()).includes('pb.v4.'), '没有漏翻的 i18n key');
     await shot('missing-package-failed-badge');
     // 再点一次重试：仍然 404，徽章不得回退成 loading 或 success。
-    await page.locator('#pb-load-state button').click();
+    await page.locator('#pb-load-state [data-err-action="retry"]').click();
     await page.waitForFunction(() => document.querySelector('#pb-load-state').textContent.includes('Failed to load'));
     assert.equal((await page.locator('#pb-badge').innerText()).trim(), 'Load failed');
     assert.equal(await page.locator('#pb-summary').isVisible(), false, '#380 重试失败后空容器仍然不出现');

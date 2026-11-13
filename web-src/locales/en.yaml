@@ -9,6 +9,49 @@ common:
   server_error: 'server error HTTP {code}'
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
+  err:
+    title:
+      unauthorized: Your session expired
+      forbidden: You do not have permission to do this
+      not_found: This no longer exists
+      conflict: Someone else changed it first
+      gone: This has expired
+      throttled: Too many attempts
+      rejected: The request was not accepted
+      server: Server error
+      offline: Cannot reach the server
+      failed: Request failed
+    hint:
+      unauthorized: The session is gone. Sign in again and you come back to this page.
+      forbidden: This is permissions, not a bug. Ask the namespace owner for resources inside a namespace, or the instance admin for instance-wide settings.
+      not_found: It may have been deleted, or the name in the link is wrong.
+      conflict: Reload to get the latest version, then try again.
+      gone: It was cleaned up or passed its retention window. It will not come back.
+      throttled: Wait a minute. Retrying immediately is just refused again.
+      rejected: Fix the input as described, then try again.
+      server: Not caused by what you did. Retry in a few seconds; if it keeps failing, send the details to your admin.
+      offline: Check the network, or whether the server process is running, then retry.
+      failed: Try again later; if it keeps failing, send the details to your admin.
+    go_login: Sign in
+    back_to_list: Back to list
+    reload: Reload
+    copy: Copy details
+    request_id: 'Request ID: {id}'
+  dialog:
+    title:
+      confirm: Confirm
+      danger: Dangerous action
+    confirm: Confirm
+    cancel: Cancel
+    irreversible: This cannot be undone.
+    undoable: You get 5 seconds to undo.
+  undo:
+    deleted: 'Deleted "{name}"'
+    revoked: 'Revoked "{name}"'
+    done: Undone
+    failed: Undo failed
+    hint: Undo within 5s
+    action: Undo
   resource_version_required: 'missing resourceVersion; refresh and try again'
   brand:
     name: Anotify

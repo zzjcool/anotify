@@ -9,6 +9,49 @@ common:
   server_error: 'サーバーエラー HTTP {code}'
   request_rejected: 'リクエスト拒否 HTTP {code}'
   request_failed: 'リクエスト失敗'
+  err:
+    title:
+      unauthorized: ログインの有効期限が切れました
+      forbidden: この操作を行う権限がありません
+      not_found: この内容は見つかりません
+      conflict: 他の人が先に変更しました
+      gone: この内容は期限切れです
+      throttled: 操作が多すぎます
+      rejected: リクエストは受け付けられませんでした
+      server: サーバーエラー
+      offline: サーバーに接続できません
+      failed: リクエストに失敗しました
+    hint:
+      unauthorized: セッションが切れました。再度ログインするとこのページに戻ります。
+      forbidden: 権限の問題で、故障ではありません。名前空間内のリソースは名前空間の所有者へ、インスタンス設定は管理者へお問い合わせください。
+      not_found: 削除されたか、リンクの名前が違う可能性があります。
+      conflict: 最新の状態を再読み込みしてから、もう一度お試しください。
+      gone: クリーンアップされたか保存期間を過ぎています。復元されません。
+      throttled: 1 分待ってからお試しください。すぐ再試行しても拒否されます。
+      rejected: 表示に従って入力を直してから再試行してください。
+      server: 操作の問題ではありません。数秒後に再試行し、直らない場合は詳細を管理者へ送ってください。
+      offline: ネットワークかサーバープロセスを確認してから再試行してください。
+      failed: 後でもう一度お試しください。直らない場合は詳細を管理者へ送ってください。
+    go_login: ログインへ
+    back_to_list: 一覧へ戻る
+    reload: 再読み込み
+    copy: 詳細をコピー
+    request_id: 'リクエスト ID：{id}'
+  dialog:
+    title:
+      confirm: 操作の確認
+      danger: 危険な操作
+    confirm: 実行
+    cancel: キャンセル
+    irreversible: この操作は取り消せません。
+    undoable: 実行後 5 秒間は取り消せます。
+  undo:
+    deleted: 「{name}」を削除しました
+    revoked: 「{name}」を無効化しました
+    done: 取り消しました
+    failed: 取り消しに失敗しました
+    hint: 5 秒以内なら取り消せます
+    action: 取り消す
   resource_version_required: 'resourceVersion がありません。再読み込みしてからやり直してください'
   brand:
     name: Anotify

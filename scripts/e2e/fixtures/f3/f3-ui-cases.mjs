@@ -22,6 +22,7 @@ const SUITES = Object.freeze({
     { id: "interact-namespace-switch", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-dialogs", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-error-states", kind: "interact", lang: "zh-CN", views: 2 },
+    { id: "interact-error-403", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "retained-auth-shell", kind: "retained", lang: "en", views: 1 },
     { id: "retained-graph", kind: "retained", lang: "en", views: 1 },
     { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 6 },
@@ -267,25 +268,51 @@ async function interactDialogs(c) {
     };
     const rowSelector = host === "capabilities" ? "#page-main [data-cap]" : host === "keys" ? "#page-main tbody tr" : host === "playbooks" ? "#page-main [data-slug]" : "#page-main [data-name]";
     const rowsBefore = await d.page.locator(rowSelector).count();
-    let message = null;
-    const listen = async dialog => { message = dialog.message(); await dialog.dismiss(); };
-    d.page.once("dialog", listen);
-    await ensureRowMenu();
-    await buttons.nth(target).click();
-    await d.page.waitForTimeout(500);
-    d.page.off("dialog", listen);
-    assert.ok(message && message.length > 0, "native confirm dialog opened with a real message: " + JSON.stringify(message));
+
+    /* #378：原生 confirm 换成了共享弹层 #anotify-dialog（partials.js）。
+       旧断言的事实全部保留，并且多钉两件事：
+         · 弹层是**真实可点控件**（不是 window.confirm），危险动作用 danger 按钮；
+         · 弹层 Esc 可关（C5），关掉同样是零写入。 */
+    const dialogOk = d.page.locator("#anotify-dialog [data-dialog-ok]");
+    const dialogCancel = d.page.locator("#anotify-dialog [data-dialog-cancel]");
+    const dialogBody = d.page.locator("#anotify-dialog-body");
+    const waitClosed = () => d.page.locator("#anotify-dialog").waitFor({ state: "hidden", timeout: 5000 });
+    const openDialog = async () => {
+      await ensureRowMenu();
+      await buttons.nth(target).click();
+      await dialogOk.waitFor({ state: "visible", timeout: 5000 });
+      return { body: (await dialogBody.innerText()).trim(), title: (await d.page.locator("#anotify-dialog-title").innerText()).trim(), cls: (await dialogOk.getAttribute("class")) || "" };
+    };
+
+    // ① 取消：零写入、行保留（旧断言）
+    const first = await openDialog();
+    assert.ok(first.body.length > 0, "danger dialog opened with a real message: " + JSON.stringify(first.body));
+    assert.ok(first.title.length > 0, "danger dialog has a visible title: " + JSON.stringify(first.title));
+    assert.ok(first.cls.includes("btn-danger"), "destructive actions use the danger button, never a neutral one: " + first.cls);
+    await dialogCancel.click();
+    await waitClosed();
     assert.deepEqual(await writeWrites(d), [], "dismissed dialog performs zero write");
     const rowsAfterDismiss = await d.page.locator(rowSelector).count();
     assert.equal(rowsAfterDismiss, rowsBefore, "dismissed dialog keeps the row: " + rowsBefore + "→" + rowsAfterDismiss);
-    let accepted = null;
-    const accept = async dialog => { accepted = dialog.message(); await dialog.accept(); };
-    d.page.once("dialog", accept);
-    await ensureRowMenu();
-    await buttons.nth(target).click();
-    await d.page.waitForTimeout(1500);
-    d.page.off("dialog", accept);
-    assert.equal(accepted, message, "second click repeats the exact same confirm message");
+
+    // ② Esc：弹层可关（#378 C5），同样零写入（旧的「重开文案相同」也在这里钉住）
+    const second = await openDialog();
+    assert.equal(second.body, first.body, "second click repeats the exact same confirm message");
+    await d.page.keyboard.press("Escape");
+    await waitClosed();
+    assert.deepEqual(await writeWrites(d), [], "Esc-dismissed dialog performs zero write");
+    assert.equal(await d.page.locator(rowSelector).count(), rowsBefore, "Esc-dismissed dialog keeps the row");
+
+    // ③ 确认：恰好一次真实 DELETE（旧断言）
+    const accepted = await openDialog();
+    assert.equal(accepted.body, first.body, "confirm message is stable across opens");
+    await dialogOk.click();
+    await waitClosed();
+    /* #378：撤销条只有 5 秒窗口 —— 它比"行消失"更容易错过，所以先钉它（它同时是
+       "删除真的成功"的证据：撤销条只在 DELETE + 列表重载都成功后才会弹）。 */
+    const undo = d.page.locator("#anotify-undo-host [data-undo-bar]").last();
+    await undo.waitFor({ state: "visible", timeout: 4500 });
+    const undoText = (await undo.innerText()).replace(/\s+/g, " ").trim();
     const writes = await writeWrites(d);
     assert.equal(writes.length, 1, "accepted dialog issues exactly one real write: " + JSON.stringify(writes.map(x => x.method + " " + x.url)).slice(0, 200));
     assert.equal(writes[0].method, "DELETE", "resource deletion is not Key revocation");
@@ -294,8 +321,95 @@ async function interactDialogs(c) {
     assert.ok([200, 202, 204].includes(writes[0].httpStatus), "write answered by the wire: " + writes[0].httpStatus);
     const rowsAfter = await d.page.locator(rowSelector).count();
     assert.equal(rowsAfter, rowsBefore - 1, "the deleted row left the live list " + rowsBefore + "→" + rowsAfter);
+
+    // ④ 删除后可撤销（#378）：撤销 = 用删除前的快照重建（不是延迟提交）
+    assert.match(undoText, /已删除|Deleted|削除|Eliminad/i, "undo bar names the deleted object: " + undoText);
+    assert.match(undoText, /5/, "undo bar states the 5s window: " + undoText);
+    await undo.locator("[data-undo-action]").click();
+    await d.page.waitForFunction(() => (window.__f3Calls || []).some(c => c.method === "POST" && /\/v1\/namespaces\/default\/(capabilities|sources|playbooks)$/.test(c.url) && c.httpStatus >= 200 && c.httpStatus < 300), null, { timeout: 6000 });
+    /* 重建是 POST + 列表重载，等行数回到删除前（不睡固定时长）。 */
+    await d.page.waitForFunction(([sel, n]) => document.querySelectorAll(sel).length === n, [rowSelector, rowsBefore], { timeout: 6000 });
+    assert.equal(await d.page.locator(rowSelector).count(), rowsBefore, "undo restores the row " + rowsAfter + "→" + rowsBefore);
+    assert.deepEqual(await d.page.evaluate(() => Array.from(document.querySelectorAll("[data-error-bar]")).map(n => n.innerText.replace(/\s+/g, " ").trim())), [], "undo did not have to fall back to an error bar");
     await d.finish(); count.inc();
-    return ok(count.n, [{ page: host, lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, dialog: message, write: writes[0].method + " " + writes[0].url }]);
+    return ok(count.n, [{ page: host, lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, dialog: first.body, write: writes[0].method + " " + writes[0].url, undo: undoText }]);
+  });
+}
+
+/* #378：403 的**页级**断言。
+ *
+ * 为什么这么写：真实服务端上唯一产生 403 的地方是 /v1/admin/*（非管理员会话，
+ * internal/auth/admin.go），而**没有任何页面**会在载入时请求 admin 接口
+ * （admin.html 自己先看 role，成员看到的是它自己的无权限页）。所以：
+ *   ① 先用真实会话向真实服务端要一个真的 403（不是伪造响应）；
+ *   ② 再在真实页面里用**页面的 api()**（真实错误对象 → 真实分级 → 真实渲染）
+ *      把这次失败画成 loadErrorNode，塞进 #page-main；
+ * ③④⑤ 断言的是浏览器里最终看到的那一屏。
+ * 这个 case 钉的正是 #378 的原始 bug：403 和 500 曾经共用同一句「请求被拒绝 HTTP 403」。 */
+async function interactError403(c) {
+  return withDriver(c.id, { lang: "zh-CN", theme: "dark" }, async (d, count) => {
+    await d.goto("index");
+    if (d.mock) await greetMember(d);
+    await d.archive();
+    await gotoPage(d, "nodes", await fixtures(d), "zh-CN");
+    /* ① 先拿一个 403。
+     * 真实权威：服务端 admin 中间件真的拒绝（internal/auth/admin.go:43）。
+     * mock 权威：MockApi 没有权限模型（ME 恒为 admin，全库没有 403），mock 预览下
+     * 一个 403 都不存在；这里的 403 由本用例在**传输层**给出，响应体逐字复制真实
+     * 服务端那条 403（{"error":"需要管理员权限"}）—— 断言的是"403 这一屏"，不是
+     * "mock 支持权限"。 */
+    /* ① 403 从哪来，按权威分三种（都不是假绿灯，如实记在 view.authority 里）：
+     *   · real + member 会话 → 服务端真的拒绝（最有力，端到端）
+     *   · real + admin 会话  → admin 本来就不该被拒；构造与真实路径**同形**的错误
+     *   · mock 预览          → MockApi 没有权限模型（ME 恒为 admin），同上
+     * 后两种情况注入的只是"错误对象"，渲染/分级/文案/DOM 全是生产链路。 */
+    const errorsFrom = d.report.errors.length;
+    const me = d.mock ? null : await d.req("/v1/auth/me");
+    const realMember = !!me && me.role !== "admin";
+    if (realMember) {
+      const probe = await d.api("/v1/admin/users");
+      assert.equal(probe.status, 403, "a member session really is refused the admin API: " + JSON.stringify(probe.body));
+    }
+    const authority = realMember ? "real-server" : "constructed-same-shape";
+    // ② 页面级渲染：走真实 api() 的错误对象 + 真实 loadErrorNode
+    const state = await d.page.evaluate(async realMember => {
+      const main = document.getElementById("page-main");
+      let box = null, status = 0, message = "";
+      try {
+        /* 非 member 会话（mock 预览 / admin）没有可触发的真 403，见上面的 authority 说明：
+           这里构造的错误对象与真实路径产出**同形**（status + 服务端原文），
+           之后走的是同一条 apiError → loadErrorNode 生产链路。 */
+        if (!realMember) throw Object.assign(new Error("需要管理员权限"), { status: 403 });
+        await window.Anotify.api("/v1/admin/users");
+      }
+      catch (e) { status = e.status; message = String(e.message || ""); box = window.Anotify.loadErrorNode(e); }
+      if (!box) return { status, message, rendered: false };
+      main.replaceChildren(box);
+      return {
+        status, message, rendered: true,
+        text: (main.innerText || "").replace(/\s+/g, " ").trim(),
+        title: (box.querySelector("p") || {}).textContent || "",
+        actions: Array.from(box.querySelectorAll("[data-err-action]")).map(n => n.getAttribute("data-err-action")),
+        raw: box.querySelectorAll("[data-raw-content]").length,
+        scrollWidth: document.documentElement.scrollWidth, inner: innerWidth,
+      };
+    }, realMember);
+    assert.equal(state.status, 403, "the rendered error really carries status 403");
+    assert.equal(state.rendered, true, "a 403 renders a real error node");
+    assert.match(state.title, /你没有权限执行这个操作/, "403 heading names the situation in plain language: " + state.title);
+    assert.match(state.text, /命名空间所有者/, "403 tells the user who to ask: " + state.text);
+    assert.match(state.text, /管理员/, "403 also names the instance admin: " + state.text);
+    assert.doesNotMatch(state.text, /HTTP ?403|\b403\b/, "no bare HTTP code is shown for a 403: " + state.text);
+    assert.doesNotMatch(state.text, /服务端出错|服务端错误|Server error/, "403 never claims a server error: " + state.text);
+    assert.ok(state.actions.includes("copy"), "403 keeps copy-details (machine facts stay available): " + JSON.stringify(state.actions));
+    assert.ok(state.actions.includes("back"), "403 is not a dead end: it still offers a way out: " + JSON.stringify(state.actions));
+    assert.equal(state.actions.includes("retry"), false, "403 offers no pointless retry: " + JSON.stringify(state.actions));
+    assert.ok(state.raw >= 1, "the server's own message is still shown as data: " + state.raw);
+    assert.ok(state.scrollWidth <= state.inner + 2, "403 error state stays bounded: " + state.scrollWidth + "<=" + state.inner);
+    assert.ok(d.report.errors.slice(errorsFrom).every(e => /403|Forbidden/.test(e)), "the only tolerated console entries are the 403s we asked for: " + JSON.stringify(d.report.errors.slice(errorsFrom).slice(0, 3)));
+    await d.shot("error-403-page");
+    await d.finish(); count.inc();
+    return ok(count.n, [{ page: "nodes", lang: "zh-CN", theme: "dark", viewport: "desktop", attempted: true, ok: true, forbidden: state.status, authority, actions: state.actions }]);
   });
 }
 async function interactErrorStates(c) {
@@ -753,6 +867,7 @@ export async function runUiCase(suite, id) {
     "shift-lang-hint": () => shiftLangHint(c), "shift-scope-slot": () => shiftScopeSlot(c), "shift-collapsed": () => shiftCollapsed(c),
     "shift-prelayout-expanded": () => shiftPrelayout(c, false), "shift-prelayout-collapsed": () => shiftPrelayout(c, true),
     "interact-namespace-switch": () => interactNamespaceSwitch(c), "interact-dialogs": () => interactDialogs(c), "interact-error-states": () => interactErrorStates(c),
+    "interact-error-403": () => interactError403(c),
     "retained-auth-shell": () => retainedAuthShell(c), "retained-graph": () => retainedGraph(c),
     "ux19-member-admin": () => ux19(c), "ux20-notification-denied": () => ux20(c), "ux21-authme-identity": () => ux21(c),
     "ux22-passkey-empty-enrollment": () => ux22(c), "ux23-zero-devices-honest": () => ux23(c),
