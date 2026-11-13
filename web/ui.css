@@ -5752,9 +5752,14 @@ html.theme-switching *::after {
 		padding: 0 8px;
 	}
 	/* 第一行：状态灯 + 标题。标题拿满剩余宽度，长名字靠自身 ellipsis，
-	 * 不靠"被控件挤掉"来省地方。 */
+	 * 不靠"被控件挤掉"来省地方。
+	 *
+	 * flex-basis 必须是 0 而不是 auto：auto 时换行看的是**内容宽度**，
+	 * 一个很长的 trigger 名（>300px）会把状态灯挤到自己一行，bar 从 65px
+	 * 涨到 73px（多一行 6px 的灯 + row-gap）。basis 0 只按剩余空间分配，
+	 * 再长的名字也只是自己 ellipsis，不会改变行数。 */
 	.flograph--silk .flograph-bar-id {
-		flex: 1 1 auto;
+		flex: 1 1 0;
 		max-width: 100%;
 		min-width: 0;
 		line-height: 18px;
