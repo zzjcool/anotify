@@ -648,17 +648,32 @@ async function webVerify(server) {
 				errs[0]?.slice(0, 100),
 			);
 			const overflow = await page.evaluate(() => {
+			// #384：不再按「在 pre / .code-body / .overflow-x-auto 里」整族豁免。
+				// 现在只豁免**白名单内的可横滚容器**，且该容器必须有可见滚动提示
+				// （渐隐 mask / 拖动提示 / data-scroll-hint、aria-label 文案）。
 				const vw = window.innerWidth;
+				const WHITELIST = [".flograph-scroll", ".hm-scroll"];
+				const hinted = (p) => {
+						const cs = getComputedStyle(p);
+						const mask = String(cs.maskImage || "") + " " + String(cs.webkitMaskImage || "");
+						if (/gradient/.test(mask)) return true;
+						if ((p.getAttribute("data-scroll-hint") || "").trim()) return true;
+						if ((p.getAttribute("aria-label") || "").trim()) return true;
+						return Array.from(p.parentElement ? p.parentElement.querySelectorAll(".flograph-pan-hint") : []).some((x) => parseFloat(getComputedStyle(x).opacity) > 0.1);
+				};
 				let n = 0;
 				for (const el of document.querySelectorAll("body *")) {
-					const r = el.getBoundingClientRect();
-					if (
-						r.right > vw + 5 &&
-						!el.closest("pre") &&
-						!el.closest(".overflow-x-auto") &&
-						!el.closest("code")
-					)
-						n++;
+						const r = el.getBoundingClientRect();
+						if (r.right <= vw + 5) continue;
+						let ok = false;
+						for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+							const cs = getComputedStyle(p);
+							if (cs.overflowX !== "auto" && cs.overflowX !== "scroll") continue;
+							if (p.scrollWidth - p.clientWidth <= 2) continue;
+							ok = WHITELIST.some((s) => p.matches(s)) && hinted(p);
+							break;
+						}
+						if (!ok) n++;
 				}
 				return n;
 			});

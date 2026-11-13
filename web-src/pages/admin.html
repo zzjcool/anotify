@@ -118,6 +118,19 @@
           min-width: 34rem;
         }
       }
+      /* #384：<640 用户表换成行式卡片（ui.css 的 .data-cards）。这里要盖掉两处
+         桌面假设：
+         ① 34rem 的最小宽 —— 卡片本身是竖排，宽度不该再被写死；
+         ② <1280 隐藏的设备 / Keys / 注册时间三列 —— 卡片的约束是高度不是宽度，
+             8 个字段竖排反而都能读到（操作列不再需要滑 236px 才出现）。 */
+      @media (max-width: 639px) {
+        .ad-table .data-table {
+          min-width: 0;
+        }
+        #users-tbody td[data-col-priority="2"] {
+          display: grid;
+        }
+      }
 
       /* ---------- 首帧骨架 ----------
          骨架**不放进** #*-tbody：e2e 用 `#users-tbody tr` 做「数据已就绪」
@@ -415,7 +428,7 @@
       <div id="users-error" class="hidden"></div>
       <div id="users-body" class="ad-table">
         <div class="table-wrap overflow-x-auto">
-          <table class="data-table" id="users-table">
+          <table class="data-table data-cards" id="users-table">
             <thead>
               <tr>
                 <th>{{t "admin.users.user"}}</th>
@@ -906,11 +919,15 @@
         );
       }
 
-      const roleCell = el("td", {}, roleBadgeEl(u.role));
+      const roleCell = el(
+        "td",
+        { "data-label": t("admin.users.role", "角色") },
+        roleBadgeEl(u.role),
+      );
 
       const statusCell = el(
         "td",
-        {},
+        { "data-label": t("admin.users.status", "状态") },
         el("span", {
           class: u.disabled ? "badge badge-error" : "badge badge-success",
           text: u.disabled
@@ -955,7 +972,7 @@
       const metaCell = secondary(
         el(
           "td",
-          { class: "ad-nowrap" },
+          { class: "ad-nowrap", "data-label": t("admin.users.created", "注册时间") },
           el("span", { class: "ad-cell-meta", text: fmtTime(u.createdAt) }),
         ),
       );
@@ -966,11 +983,27 @@
         nameCell,
         roleCell,
         statusCell,
-        el("td", { class: "ad-num", text: fmtNum(u.messageCount) }),
-        secondary(el("td", { class: "ad-num", text: fmtNum(u.deviceCount) })),
-        secondary(el("td", { class: "ad-num", text: fmtNum(u.keyCount) })),
+        el("td", {
+          class: "ad-num",
+          "data-label": t("admin.users.messages", "消息"),
+          text: fmtNum(u.messageCount),
+        }),
+        secondary(
+          el("td", {
+            class: "ad-num",
+            "data-label": t("admin.users.devices", "设备"),
+            text: fmtNum(u.deviceCount),
+          }),
+        ),
+        secondary(
+          el("td", {
+            class: "ad-num",
+            "data-label": t("admin.users.keys", "Keys"),
+            text: fmtNum(u.keyCount),
+          }),
+        ),
         metaCell,
-        el("td", {}, acts),
+        el("td", { "data-label": t("admin.users.actions", "操作") }, acts),
       );
     }
 
