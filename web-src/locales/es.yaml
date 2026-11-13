@@ -690,7 +690,7 @@ security:
   unknown_device: Dispositivo desconocido
   credential: Credencial
   current_session: Sesión actual
-  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en este dispositivo" arriba a la derecha para crear una en este equipo.
+  empty_passkeys: Usa "+ Añadir en este dispositivo" en la cabecera para crear una en este equipo.
   empty_sessions: No hay sesiones activas.
   in_use: En uso
   last_used: Último uso {time}
@@ -1666,6 +1666,8 @@ sources:
     event_id: "ID del evento"
     fire: "Ejecutar ahora"
     saved_dry: "Vista previa de fuente guardada"
+    more: "Más acciones"
+    saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"

@@ -3086,6 +3086,91 @@ a.side-link svg {
 	color: var(--faint);
 }
 
+/* — epic-369-actions — 动作菜单/危险动作统一语言（#376）；本段归 c-feactions 独占 */
+/* 行内/页头动作收敛成「1 主 + 1 次 + ⋯」：
+   触发按钮与菜单条目复用既有组件（.btn / .btn-sm / .menu / .menu-item），
+   本段只补三样东西：定位容器、两行条目（动作名 + 一句差异说明）、危险项的语义色。
+   危险项选择器带上 .menu-item / .btn 提高优先级 —— 否则同权重的
+   .menu-item:hover / .btn-quiet:hover（在本段之后声明）会把 color 抢回正文色。 */
+/* ⋯ 菜单是浮层：面板宽度 ≥ min-width，右对齐到只有 36px 宽的触发器时只能
+   往左长 —— 390/360 下停用行（编辑 + ⋯）会把左缘推出视口，再被 body 的
+   overflow-x:hidden 裁掉（实测左溢出 63/77px，菜单中点命中不到）。
+   所以菜单改 fixed 定位：包含块变成视口，祖先的 overflow 不再裁剪它；
+   left/top 由页面 JS 按触发器矩形夹进视口（见 sources.html / source.html
+   的 placeMenu）。max-width 兜住面板本身，任何一档都不宽过视口。 */
+.act-menu > .menu {
+	position: fixed;
+	top: 0;
+	left: 8px;
+	right: auto;
+	max-width: min(20rem, calc(100vw - 16px));
+}
+/* fixed 的包含块会被祖先的 transform 改掉：`.list-row:active` 的按压缩放
+   （scale(.995)）会让菜单在按下条目的那一瞬间整块跳到行内坐标里，命中测试
+   落到行内容上 —— 表现为“菜单点不中”。菜单所在的行动画期间不做缩放反馈。 */
+.list-row:has(.act-menu):active {
+	transform: none;
+}
+.act-menu {
+	position: relative;
+	display: inline-flex;
+	flex: none;
+}
+/* ⋯ 是字形不是图标：撑到与 btn-sm 同高，左右不因字体差异而不等宽 */
+.act-more {
+	min-width: 2.25rem;
+	padding-inline: 6px;
+	justify-content: center;
+	font-size: 15px;
+	line-height: 1;
+	letter-spacing: 0.08em;
+}
+/* 菜单条目：第一行是动作名，第二行是「它和旁边那个差在哪」。
+   选择器带上 .menu-item：.menu-item 在本段之后声明，同权重会把 align-items
+   落回 center（两行条目就会左边一截右边一截）。 */
+.menu-item.act-item {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	white-space: normal;
+}
+.menu-item.act-item .act-item-hint {
+	text-align: left;
+}
+.act-item-hint {
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--faint);
+}
+/* 危险项（删除 / 停用）：文字配错误色 + 软底，不靠实心红按钮抢走整行主次 */
+.menu-item.act-danger,
+.menu-item.act-danger:hover,
+.menu-item.act-danger:focus-visible {
+	color: var(--error);
+}
+.menu-item.act-danger:hover,
+.menu-item.act-danger:focus-visible {
+	background: var(--error-soft);
+}
+.menu-item.act-danger .act-item-hint {
+	color: color-mix(in srgb, var(--error) 62%, var(--faint));
+}
+/* 表格行尾的危险动作（keys）：图标 + 危险色 —— 危险动作不再与正文同级 */
+.btn.act-row-danger {
+	color: var(--error);
+}
+.btn.act-row-danger:hover,
+.btn.act-row-danger:focus-visible {
+	color: var(--error);
+	background: var(--error-soft);
+	border-color: color-mix(in srgb, var(--error) 30%, transparent);
+}
+.act-row-danger svg {
+	width: 14px;
+	height: 14px;
+	flex: none;
+}
+
 /* ---------- 表单 ---------- */
 .field {
 	display: flex;

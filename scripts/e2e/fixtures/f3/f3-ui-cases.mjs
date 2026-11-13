@@ -238,7 +238,16 @@ async function interactDialogs(c) {
     // Keys are retained auth identities; revoke is NOT a namespaced resource delete.
     for (const page of ["capabilities", "sources", "playbooks"]) {
       await gotoPage(d, page, f, "zh-CN");
-      const candidates = d.page.locator("#page-main [data-cap] button, #page-main [data-cap] a, #page-main tbody tr button, #page-main .rc-dev-row button, #page-main [data-name] button, #page-main [data-slug] button");
+      /* #376：源列表的「删除源」收进了行内 ⋯ 菜单 —— 菜单未开时不可见即不可点。
+         先逐行打开菜单，再只用 `:visible` 找破坏性动作（发现语义不变：仍然只认
+         用户真正点得到的控件，隐藏项不再被误当成可点目标）。 */
+      if (page === "sources") {
+        /* 只开第一行：菜单是浮层，开着的菜单会挡住下面那行的 ⋯，逐行开点不到。 */
+        const more = d.page.locator("#src-list [data-name] .act-more").first();
+        if (await more.count()) await more.click();
+        await d.page.locator("#src-list [data-name] .menu:not(.hidden)").first().waitFor({ state: "visible" });
+      }
+      const candidates = d.page.locator("#page-main [data-cap] button:visible, #page-main [data-cap] a:visible, #page-main tbody tr button:visible, #page-main .rc-dev-row button:visible, #page-main [data-name] button:visible, #page-main [data-slug] button:visible");
       const total = await candidates.count();
       for (let i = 0; i < total; i++) {
         const text = ((await candidates.nth(i).innerText().catch(() => "")) || "").trim() + " " + ((await candidates.nth(i).getAttribute("aria-label").catch(() => "")) || "");
@@ -247,11 +256,21 @@ async function interactDialogs(c) {
       if (target >= 0) break;
     }
     assert.ok(target >= 0, "a genuine resource DELETE action exists (capabilities/sources/playbooks); retained Keys coverage stays separate");
+    /* #376：源列表的破坏性动作在行内 ⋯ 菜单里，条目点一次就收起 —— 每次点它之前
+       先把菜单重新打开（这个助手只对 sources 生效）。 */
+    const ensureRowMenu = async () => {
+      if (host !== "sources") return;
+      const open = d.page.locator("#src-list [data-name] .menu:not(.hidden)").first();
+      if (await open.count()) return;
+      await d.page.locator("#src-list [data-name] .act-more").first().click();
+      await open.waitFor({ state: "visible" });
+    };
     const rowSelector = host === "capabilities" ? "#page-main [data-cap]" : host === "keys" ? "#page-main tbody tr" : host === "playbooks" ? "#page-main [data-slug]" : "#page-main [data-name]";
     const rowsBefore = await d.page.locator(rowSelector).count();
     let message = null;
     const listen = async dialog => { message = dialog.message(); await dialog.dismiss(); };
     d.page.once("dialog", listen);
+    await ensureRowMenu();
     await buttons.nth(target).click();
     await d.page.waitForTimeout(500);
     d.page.off("dialog", listen);
@@ -262,6 +281,7 @@ async function interactDialogs(c) {
     let accepted = null;
     const accept = async dialog => { accepted = dialog.message(); await dialog.accept(); };
     d.page.once("dialog", accept);
+    await ensureRowMenu();
     await buttons.nth(target).click();
     await d.page.waitForTimeout(1500);
     d.page.off("dialog", accept);
@@ -575,8 +595,11 @@ async function ux22(c) {
     assert.ok(copy.empty.length > 0, "#22 the empty passkey list renders a meaningful enrollment anchor: " + copy.empty);
     assert.match(copy.empty, /本机添加|Add on this device|この端末|este dispositivo/i, "#22 the empty state points at this device: " + copy.empty);
     assert.ok(!/在新设备添加|点右上角「\+ 添加 Passkey」/.test(copy.empty), "#22 obsolete add-on-new-device copy is gone: " + copy.empty);
-    const add = d.page.locator('#passkey-list button').filter({ hasText: /本机添加|Add on this device|この端末|este dispositivo/i });
-    assert.equal(await add.count(), 1, "#22 the canonical empty-list add-on-this-device control is unique: " + JSON.stringify(copy.buttons));
+    /* #376：添加 Passkey 收敛成「页头 1 主 + 1 次」，空态不再自带第三个按钮。
+       唯一性断言从「#passkey-list 里恰好 1 个」升级成「页头 + 空态这两个入口里恰好 1 个」
+       —— 隐藏的恢复码 nudge（文案也含「本机添加」）不在范围内。 */
+    const add = d.page.locator('.page-head button, #passkey-list button').filter({ hasText: /本机添加|Add on this device|この端末|este dispositivo/i });
+    assert.equal(await add.count(), 1, "#22 the canonical add-on-this-device control is unique on the whole page: " + JSON.stringify(copy.buttons));
     const before = d.page.url();
     const beforeFeedback = await d.page.evaluate(() => ({ toast: (document.getElementById("toast")?.textContent || "").trim(), list: (document.getElementById("passkey-list")?.innerText || "").slice(0, 160) }));
     const beforeCalls = (await d.calls()).length;

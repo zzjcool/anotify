@@ -690,7 +690,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one on this device.
+  empty_passkeys: Use "+ Add on this device" in the page header to create one on this device.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -1666,6 +1666,8 @@ sources:
     event_id: "Event ID"
     fire: "Fire now"
     saved_dry: "Saved source preview"
+    more: "More actions"
+    saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"

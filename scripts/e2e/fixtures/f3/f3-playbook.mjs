@@ -27,8 +27,19 @@ export async function playbook(d,mode){
  const keptResources=async receiptId=>JSON.stringify([await resources(),await req(basePath+'/installs/'+encodeURIComponent(receiptId)),await req('/v1/namespaces/default/tasks?limit=100'),await req('/v1/console/events?namespace=default')]);
  const archive=d.archive;
   const stored = () => req(basePath + '?includeBody=true');
+  // #376：导入表单搬进就地弹层（页头 #btn-import 与空态 CTA 是同一个入口），
+  // 所以「上传/新建」之前必须先把弹层打开。
+  const openImport = async () => {
+    await page.locator('#btn-import').click();
+    await page.waitForSelector('#pb-import-modal:not(.hidden)');
+  };
+  const closeImport = async () => {
+    await page.locator('#pb-import-close').click();
+    await page.locator('#pb-import-modal').waitFor({ state: 'hidden' });
+  };
   const upload = async () => {
     await goto('playbooks');
+    await openImport();
     await page.locator('#pb-upload-files').setInputFiles({ name: 'project-chain-files.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(files)) });
     await page.waitForFunction(() => document.querySelector('#pb-input-name').value === 'project-chain');
     await page.locator('#pb-create').click();
@@ -60,6 +71,8 @@ export async function playbook(d,mode){
     assert.equal(await page.locator('#pb-input-name').inputValue(), 'project-chain');
     assert.deepEqual(JSON.parse(await page.locator('#pb-input-files').inputValue()), files);
     await shot('post409-guidance-draft'); await archive();
+    // 弹层仍开着（409 保留草稿是契约），点列表卡之前先关掉它。
+    await closeImport();
     await page.locator('#pb-grid [data-slug="project-chain"] a').click();
     await page.waitForURL('**/playbook.html?namespace=default&id=project-chain');
     await page.locator('#pb-value-project').waitFor();

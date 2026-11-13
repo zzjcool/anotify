@@ -4,6 +4,11 @@ export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
  const row=name=>page.locator('#src-list > div[data-name="'+name+'"]');
+ // #376：行内动作收敛成「1 主 + 1 次 + ⋯」——停用/启用/删除在 ⋯ 菜单里，
+ // 必须先把菜单打开；菜单没开时这些条目不在无障碍树里（不可见 = 不可点）。
+ // 幂等：菜单可能已经开着（上一段断言后没关），再点触发按钮会把它关掉。
+ const openMenu=async name=>{const menu=row(name).locator('.menu');if(!(await menu.isVisible()))await row(name).locator('.act-more').click();await menu.waitFor({state:'visible'});};
+ const pickMenu=async(name,label)=>{await openMenu(name);await row(name).locator('.menu-item',{hasText:label}).click();};
   await page.goto(base + '/en/sources.html?namespace=default', { waitUntil: 'domcontentloaded' });
   await visible('#src-list > div[data-name="deploy-hook"]');
   if(d.mock) await page.evaluate(() => MockApi.latency(0));
@@ -59,12 +64,14 @@ export async function source(d){
   await hidden('#src-modal');
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).spec.config.secretSet, true);
   check('Explicit reload -> next edit succeeds, omitted credentials preserve secret/hookUrl');
-  await row('ui-webhook').getByRole('button', { name: 'Disable', exact: true }).click();
+  await pickMenu('ui-webhook', 'Disable');
+  await openMenu('ui-webhook');
   await visible('#src-list > div[data-name="ui-webhook"] button:text-is("Enable")');
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).spec.enabled, false);
-  await row('ui-webhook').getByRole('button', { name: 'Enable', exact: true }).click();
+  await row('ui-webhook').locator('.menu-item', { hasText: 'Enable' }).click();
+  await openMenu('ui-webhook');
   await visible('#src-list > div[data-name="ui-webhook"] button:text-is("Disable")');
-  check('CAS toggle disable/enable actual state changes');
+  check('CAS toggle disable/enable actual state changes (via the row action menu)');
   // Make list DELETE stale through a concurrent real PATCH, then require two
   // separate user confirmations: failed delete and explicit retry after reload.
   const latest = await req('/v1/namespaces/default/sources/ui-webhook');
@@ -72,12 +79,12 @@ export async function source(d){
   let confirmations = 0;
   const confirmDelete = async dialog => { confirmations++; await dialog.accept(); };
   page.on('dialog', confirmDelete);
-  await row('ui-webhook').getByRole('button', { name: 'Delete source', exact: true }).click();
+  await pickMenu('ui-webhook', 'Delete source');
   await page.waitForFunction(() => document.querySelector('#action-error').textContent.includes('resource_version_conflict'));
   assert.equal((await req('/v1/namespaces/default/sources/ui-webhook')).metadata.name, 'ui-webhook');
   await page.locator('#action-error').getByRole('button', { name: 'Reload latest resource' }).click();
   await page.waitForFunction(() => document.querySelector('#action-error').textContent.includes('another confirmation'));
-  await row('ui-webhook').getByRole('button', { name: 'Delete source', exact: true }).click();
+  await pickMenu('ui-webhook', 'Delete source');
   await hidden('#src-list > div[data-name="ui-webhook"]');
   page.off('dialog', confirmDelete);
   assert.equal(confirmations, 2);

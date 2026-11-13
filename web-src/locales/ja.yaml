@@ -690,7 +690,7 @@ security:
   unknown_device: 不明なデバイス
   credential: 資格情報
   current_session: 現在のセッション
-  empty_passkeys: まだ Passkey がありません。右上の「+ このデバイスで追加」でこのデバイスに作成できます。
+  empty_passkeys: ページ上部の「+ このデバイスで追加」でこのデバイスに作成できます。
   empty_sessions: アクティブなセッションはありません。
   in_use: 使用中
   last_used: 最終使用 {time}
@@ -1666,6 +1666,8 @@ sources:
     event_id: "イベント ID"
     fire: "今すぐ実行"
     saved_dry: "保存済みソースをプレビュー"
+    more: "その他の操作"
+    saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"
