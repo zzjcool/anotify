@@ -93,6 +93,83 @@
     gap: 8px;
     margin-top: 4px;
   }
+
+  /* ---------- #374：开发者信息折叠（内部协议字段不上首屏，一个都不删）---------- */
+  .devf {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+    margin-top: 4px;
+    min-width: 0;
+  }
+  .devf > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  .devf > summary::-webkit-details-marker {
+    display: none;
+  }
+  .devf > summary::before {
+    content: "▸";
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .devf[open] > summary::before {
+    content: "▾";
+  }
+  .devf > summary:hover {
+    color: var(--text);
+  }
+  .devf-hint {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--faint);
+  }
+  .devf-body {
+    display: grid;
+    gap: 10px;
+    padding: 0 12px 12px;
+    min-width: 0;
+  }
+  .devf-kv {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+    gap: 10px 18px;
+    margin: 0;
+  }
+  .devf-pair {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .devf-k {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--faint);
+  }
+  .devf-v {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .devf-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 </style>
 {{end}}
 {{define "content"}}
@@ -265,6 +342,26 @@
       return el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: label || "JSON" }), button), body);
     }
+    /* ---------- #374：开发者信息折叠 ----------
+       协议内部字段（revision / digest / instanceId）默认不进首屏；标签用原始字段名
+       （语言中立），值可一键复制。字段一个不少，只是收起来。 */
+    function devFold(rows) {
+      const box = el("details", { class: "devf", id: "task-dev" });
+      box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.summary") }),
+        el("span", { class: "devf-hint", text: t("uxaudit.dev.hint") })));
+      const body = el("div", { class: "devf-body" }), dl = el("dl", { class: "devf-kv" });
+      for (const [key, value] of rows) {
+        dl.append(el("div", { class: "devf-pair" },
+          el("dt", { class: "devf-k", text: key }),
+          el("dd", { class: "devf-v", text: value == null || value === "" ? "—" : String(value) })));
+      }
+      body.append(dl);
+      const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy") });
+      copy.addEventListener("click", () => copyText(copy, () => rows.map(([k, v]) => k + ": " + (v == null ? "" : String(v))).join("\n")));
+      body.append(el("div", { class: "devf-foot" }, copy));
+      box.append(body);
+      return box;
+    }
     function envRows(facts) {
       if (!facts.length) return el("p", { class: "card-sub", text: t("message.v4.env_empty") });
       const list = el("dl", { class: "grid b2-facts gap-4" });
@@ -358,15 +455,21 @@
         ["waitingReason", task.waitingReason],
         ["nextAttemptAt", task.nextAttemptAt],
         [t("message.v4.attempt"), task.attempt + "/" + task.maxAttempts],
-        ["nodeName / instanceId", [task.nodeName, task.instanceId].filter(v => v != null && v !== "").join(" / ")],
+        ["nodeName", task.nodeName],
         ["leaseExpiresAt", task.leaseExpiresAt],
         ["parentTaskId", task.parentTaskId],
-        ["configRevision", task.configRevision],
-        ["namespaceVarsRevision", task.namespaceVarsRevision],
         ["createdAt", task.creationTimestamp],
         ["startedAt", task.startedAt],
         ["finishedAt", task.finishedAt],
-        ["digest", task.capability.digest],
+      ];
+      /* #374：configRevision / namespaceVarsRevision / capability.digest / instanceId
+         是协议内部字段（sha256 摘要、nins_* 实例号），移到开发者信息折叠；
+         首屏只留人能直接用的等待/尝试/时间线。 */
+      const devEntries = [
+        ["instanceId", task.instanceId],
+        ["configRevision", task.configRevision],
+        ["namespaceVarsRevision", task.namespaceVarsRevision],
+        ["capability.digest", task.capability.digest],
       ];
       const filled = entries.filter(([, value]) => value != null && value !== "");
       const unset = entries.filter(([, value]) => value == null || value === "").map(([label]) => label);
@@ -377,6 +480,7 @@
           el("b", { text: t("uxaudit.doc.msg_unset", "未设置") + " " }),
           el("span", { text: unset.join(" · ") })));
       }
+      facts.append(devFold(devEntries));
       facts.append(el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),
         el("p", { class: "card-sub", text: t("message.v4.lease_hint") }));
       const actions = el("div", { class: "flex flex-wrap gap-2" });

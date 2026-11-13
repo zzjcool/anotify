@@ -34,6 +34,21 @@
 .src-k{font-size:11px;line-height:1.4;color:var(--faint)}
 .src-v{margin:0;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .src-v.is-muted{color:var(--muted)}
+/* #374：内部协议字段统一收进「开发者信息」折叠 —— 一个都不删，但不上首屏。
+   样式只写在本页内联 <style>（web/ui.css 归 c-vis，本车道不改）。 */
+.devf{border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-1);margin-top:12px;min-width:0}
+.devf>summary{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:12px;line-height:1.5;color:var(--muted);cursor:pointer;list-style:none}
+.devf>summary::-webkit-details-marker{display:none}
+.devf>summary::before{content:"▸";color:var(--faint);font-size:11px}
+.devf[open]>summary::before{content:"▾"}
+.devf>summary:hover{color:var(--text)}
+.devf-hint{margin-left:auto;font-size:11px;color:var(--faint);font-weight:400}
+.devf-body{display:grid;gap:10px;padding:0 12px 12px;min-width:0}
+.devf-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px 18px;margin:0}
+.devf-pair{display:grid;gap:2px;min-width:0}
+.devf-k{font-size:11px;line-height:1.4;color:var(--faint);font-family:var(--font-mono)}
+.devf-v{margin:0;font-size:12px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.devf-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 </style>
 {{end}}
 {{define "content"}}
@@ -187,14 +202,40 @@ function codeBlock(title,text){
   box.append(body);
   return box;
 }
+/* #374：开发者信息折叠。标签用**原始协议字段名**（语言中立、可 grep），
+   值可一键复制；字段一个都不删，只是默认不出现在首屏。 */
+const dev = key => A.t("uxaudit.dev." + key);
+function devFields(id, rows){
+  const box=el("details","devf");
+  if(id)box.id=id;
+  const sum=el("summary");
+  sum.append(el("span",null,dev("summary")),el("span","devf-hint",dev("hint")));
+  const body=el("div","devf-body"), dl=el("dl","devf-kv");
+  for(const [key,value] of rows){
+    const cell=el("div","devf-pair");
+    cell.append(el("dt","devf-k",key),el("dd","devf-v",value==null||value==="" ? "—" : String(value)));
+    dl.append(cell);
+  }
+  body.append(dl);
+  if(rows.length){
+    const foot=el("div","devf-foot");
+    const copy=el("button","copy-btn",dev("copy"));
+    copy.type="button";
+    copy.addEventListener("click",()=>A.copyText(copy,()=>rows.map(([key,value])=>key+": "+(value==null||value==="" ? "" : String(value))).join("\n")));
+    foot.append(copy);
+    body.append(foot);
+  }
+  box.append(sum,body);
+  return box;
+}
 function facts(src){
   const dl=el("dl","src-kv");
   const m=A.model.source(src);
   const lastError=src.status?.lastError ? JSON.stringify(src.status.lastError) : "—";
+  /* #374：resourceVersion（CAS 令牌）与 targetsResolved（布尔）是协议内部字段，
+     移到 devFields() 的折叠区；首屏只留人能直接用的时间线与来源。 */
   dl.append(
     pair(t("namespace"),m.namespace),
-    pair(t("rv"),m.resourceVersion),
-    pair(t("resolved"),m.targetsResolved ? xt("resolved_yes") : xt("resolved_no")),
     pair(t("last_fire"),fmt(m.lastFiredAt),!m.lastFiredAt),
     pair(t("next_fire"),fmt(m.nextFireAt),!m.nextFireAt),
     pair(t("last_error"),lastError,!src.status?.lastError),
@@ -361,8 +402,11 @@ async function render(src,caps,edges){
   badges.append(badge(m.kind,"badge-neutral"));
   badges.append(m.enabled ? badge(t("enabled"),"badge-success") : badge(t("disabled"),"badge-neutral"));
   badges.append(badge(m.health || "—",healthTone(m.health)));
-  badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
-  config.append(badges,facts(src));
+  // #374：targetsResolved 不再做成首屏徽章（内部布尔），只留在开发者信息里。
+  config.append(badges,facts(src),devFields("src-dev",[
+    ["resourceVersion",m.resourceVersion],
+    ["targetsResolved",m.targetsResolved ? xt("resolved_yes") : xt("resolved_no")]
+  ]));
   const safe={
   };
   for(const key of ["expr","tz","payload","payloadSchema","sample"])if(m.config[key]!=null)safe[key]=m.config[key];

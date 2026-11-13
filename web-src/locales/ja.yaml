@@ -1583,7 +1583,7 @@ nodes:
     saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
     stale: "409: CAS が古いため下書きをそのまま保持しました。明示的に再読込して再試行してください。"
     error: "リクエスト失敗"
-    loaded: "現在の設定を読み込みました。resourceVersion は CAS トークンのみです。"
+    loaded: "現在の設定を読み込みました。"
     pending: "ConfigPending: ノードの設定は未適用"
     applied: "ノード revision は一致（名前空間入力の版とは別）"
     revision: "設定と適用の状態"
@@ -2301,3 +2301,15 @@ uxaudit:
     file_drop_pick: ファイルをドロップ、またはクリックして選択
     file_drop_hint: .yaml / .json、1 ファイル 1MB まで
     file_drop_empty: ファイル未選択
+
+# ── #374/#375 · 内部フィールドと生 JSON：開発者情報の折りたたみ（同一キー）──
+  dev:
+    summary: '開発者情報'
+    instance: 'インスタンス {n}'
+    hint: 'プロトコル内部の項目です。通常の操作には不要で、調査時に使います。'
+    copy: 'コピー'
+    copied: 'コピーしました'
+    raw: '元の JSON を表示'
+    event_id: 'イベント ID'
+    drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
+    drift_short: 'ノードの適用待ち'

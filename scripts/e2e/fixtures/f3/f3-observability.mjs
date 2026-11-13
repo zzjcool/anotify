@@ -64,7 +64,8 @@ export async function observability(d, mode) {
       assert.ok(opened?.spec?.reason, '真实事件必须带 spec.reason');
       assert.match(await page.locator('#ev-list').innerText(), new RegExp(opened.spec.reason));
     }
-    assert.match(await page.locator('#ev-list').innerText(), /deliveryId/);
+    // #374：deliveryId 是投递层内部标识，收进行内「明细」折叠 —— 断言改读 textContent（含折叠内容）
+    assert.match(await page.locator('#ev-list').textContent(), /deliveryId/);
     check('Actual source+trace filter reset and namespace cursor isolation/empty-to-nonempty');
     await shot('pagination-filters-scope'); await clean('events interaction');
   }
@@ -211,8 +212,11 @@ export async function observability(d, mode) {
     assert.equal(await page.locator('#task-phase').getAttribute('data-phase'), firstTask.status.phase);
     const factsText = await page.locator('#task-facts').innerText();
     assert.match(factsText, new RegExp(firstTask.status.attempt + '/' + firstTask.status.maxAttempts));
-    assert.match(factsText, /namespaceVarsRevision/);
-    assert.match(factsText, new RegExp('configRevision[\\s\\S]*' + firstTask.status.configRevision));
+    // #374：configRevision / namespaceVarsRevision 收进「开发者信息」折叠 ——
+    // 断言改读折叠区（textContent 含折叠内容），事实本身仍然被验证。
+    const devText = await page.locator('#task-facts #task-dev').textContent();
+    assert.match(devText, /namespaceVarsRevision/);
+    assert.match(devText, new RegExp('configRevision[\\s\\S]*' + firstTask.status.configRevision));
     check('Actual multi-hop Trace readmodel, real task-node graph/pruned codes/attempt facts and Task deep link');
     await clean('trace-to-task');
   }
@@ -220,7 +224,7 @@ export async function observability(d, mode) {
     if (d.mock) {
       await goto('message', 'namespace=default&id=tsk_mock_5');
       assert.match(await page.locator('#task-facts').innerText(), /retry_backoff/);
-      assert.match(await page.locator('#task-facts').innerText(), /namespaceVarsRevision/);
+      assert.match(await page.locator('#task-facts #task-dev').textContent(), /namespaceVarsRevision/);
       assert.match(await page.locator('#task-facts').innerText(), /leaseExpiresAt/);
       await page.locator('#logs-previous').selectOption('true');
       await page.waitForFunction(() => document.querySelector('#logs-output').textContent.includes('infra_transient'));
@@ -287,12 +291,13 @@ export async function observability(d, mode) {
     await goto('message', 'namespace=default&id=' + runningTask);
     const factsText = await page.locator('#task-facts').innerText();
     assert.match(factsText, /waitingReason/);
-    assert.match(factsText, /namespaceVarsRevision/);
     assert.match(factsText, /leaseExpiresAt/);
     assert.match(factsText, new RegExp(running.body.status.attempt + '/' + running.body.status.maxAttempts));
     // 任务行的真实配置版本（不是 mock 的固定 7/12）。
-    assert.match(factsText, new RegExp('configRevision[\\s\\S]*' + running.body.status.configRevision));
-    assert.match(factsText, new RegExp('namespaceVarsRevision[\\s\\S]*' + running.body.status.namespaceVarsRevision));
+    // #374：revision 字段收进「开发者信息」折叠 —— 断言改读折叠区
+    const devText = await page.locator('#task-facts #task-dev').textContent();
+    assert.match(devText, new RegExp('configRevision[\\s\\S]*' + running.body.status.configRevision));
+    assert.match(devText, new RegExp('namespaceVarsRevision[\\s\\S]*' + running.body.status.namespaceVarsRevision));
     // 当前 attempt 的日志：中枢转发 logs_request，节点回 logs_response（truncated=true）。
     const logLines = d.fx('runningLogLines');
     await page.waitForFunction(text => document.querySelector('#logs-output').textContent.includes(text), logLines[1]);

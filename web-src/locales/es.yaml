@@ -1583,7 +1583,7 @@ nodes:
     saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
     stale: "409: CAS obsoleto; borrador conservado exactamente. Recargue explícitamente antes de reintentar."
     error: "Solicitud fallida"
-    loaded: "Configuración actual cargada; resourceVersion solo es token CAS."
+    loaded: "Configuración actual cargada."
     pending: "ConfigPending: configuración de nodo aún no aplicada"
     applied: "Revisiones de nodo coinciden (no la revisión del namespace)"
     revision: "Estado de configuración y aplicación"
@@ -2301,3 +2301,15 @@ uxaudit:
     file_drop_pick: Arrastra un archivo aquí o haz clic para elegirlo
     file_drop_hint: .yaml / .json, hasta 1 MB cada uno
     file_drop_empty: Ningún archivo seleccionado
+
+# ── #374/#375 · campos internos y JSON en bruto: plegado «dev» (mismas claves) ──
+  dev:
+    summary: 'Información para desarrolladores'
+    instance: 'Instancia {n}'
+    hint: 'Campos internos del protocolo; solo para diagnóstico, no hacen falta en el uso diario.'
+    copy: 'Copiar'
+    copied: 'Copiado'
+    raw: 'Ver JSON original'
+    event_id: 'ID de evento'
+    drift: 'Configuración sin aplicar: configuración {config}, aplicado en el nodo {applied}'
+    drift_short: 'Pendiente de aplicar en el nodo'

@@ -341,8 +341,9 @@
         const event = model.event(resource);
         events.body.append(el("div", { class: "tr-fact", "data-uid": event.uid },
           el("code", { class: "mono b2-wrap", text: event.eventType + " · " + event.type + " · " + event.reason }),
-          el("p", { class: "tr-fact-id", text: event.uid + " · deliveryId: " + (event.deliveryId || "—") }),
-          codeBlock("JSON", JSON.stringify({ dispatched: event.dispatched, pruned: event.pruned }, null, 2))));
+          /* #374：首屏只留事件 ID（与事件流同口径）；deliveryId、dispatched、pruned 的原始事实进代码块。 */
+          el("p", { class: "tr-fact-id", text: event.uid || "—" }),
+          codeBlock("JSON", JSON.stringify({ deliveryId: event.deliveryId, dispatched: event.dispatched, pruned: event.pruned }, null, 2))));
       }
       if (!doc.events.length) events.body.append(el("p", { class: "tr-meta", text: t("events.v4.empty") }));
       /* pruned[] 的每个条目是**事件信封**（events.yaml·TraceView：「原样给事件信封」）：
