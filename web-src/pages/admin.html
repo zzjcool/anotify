@@ -886,7 +886,7 @@
       const st = panelState("users");
       showLoading(st);
       try {
-        const data = await api("/v1/admin/users");
+        const data = await api("/v1/admin/users?limit=500"); /* #377 分页缺省 50：这里要整份列表去计数 */
         const users = data.users || [];
         if (!users.length) {
           showEmpty(st);

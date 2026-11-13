@@ -1962,10 +1962,15 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return api(nsPath(plural, name), opts);
 	}
 
-	/** 列表版 `nsApi`：先引导 scope，再 GET `KindList`（严格 `items[]` 校验）。 */
+	/** 列表版 `nsApi`：先引导 scope，再 GET `KindList`（严格 `items[]` 校验）。
+	 *
+	 * `limit=500` 是显式的，不是装饰：#377 给 8 个列表接口加了 keyset 分页、
+	 * 缺省 limit=50。这里的调用方（能力/源/拓扑）要的是**整份列表**去计数与建图，
+	 * 跟着缺省走就会在第 51 项上静默截断 —— 计数变假、拓扑少节点，而且不报错。
+	 * 分页是给"列表页"用的；这里显式要上限，行为和加接口之前一致。 */
 	async function nsList(plural) {
 		await ensureScope();
-		return apiList(nsPath(plural));
+		return apiList(nsPath(plural) + "?limit=500");
 	}
 
 	/**

@@ -1511,7 +1511,7 @@
   }
 
   async function loadPasskeys() {
-    const { data, status } = await fetchApiResult(API + "/auth/passkeys", {
+    const { data, status } = await fetchApiResult(API + "/auth/passkeys?limit=500", {
       credentials: "same-origin",
     });
     loadError.passkeys = status;
@@ -1538,7 +1538,7 @@
   }
 
   async function loadSessions() {
-    const { data, status } = await fetchApiResult(API + "/auth/sessions", {
+    const { data, status } = await fetchApiResult(API + "/auth/sessions?limit=500", {
       credentials: "same-origin",
     });
     loadError.sessions = status;

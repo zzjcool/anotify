@@ -215,6 +215,15 @@ function makeSandbox(opts = {}) {
 			removeListener() {},
 		}),
 		document: fakeDocument(),
+		// 页面控制器的顶层会挂 window 级监听（source.html:261 的 resize → reflowMenus，
+		// #376 之后才有）。vm 里 globalThis 就是浏览器里的 window，但**没有** DOM 的
+		// addEventListener —— 缺了它 inline 脚本第一行就抛，整页控制器不执行，
+		// SOURCE-STARTUP / R1 会以"什么都没跑"的方式红（不是真的回归）。
+		addEventListener() {},
+		removeEventListener() {},
+		dispatchEvent() {
+			return true;
+		},
 		getComputedStyle: () => ({ getPropertyValue: () => "" }),
 		alert() {},
 		prompt: () => null,
@@ -550,7 +559,7 @@ test("nsList 空 scope：先引导 scope 再取严格列表，返回 {items,warn
 	const { A, calls } = loadAnotify({
 		fetch: async (p) => {
 			if (p === "/v1/namespaces") return jsonResponse(NS_LIST_BODY);
-			if (p === "/v1/namespaces/default/sources") return jsonResponse(LIST);
+			if (p === "/v1/namespaces/default/sources?limit=500") return jsonResponse(LIST);
 			throw new Error("unexpected request: " + p);
 		},
 	});
@@ -559,7 +568,8 @@ test("nsList 空 scope：先引导 scope 再取严格列表，返回 {items,warn
 	const out = await A.nsList("sources");
 	assert.deepEqual(calls.map((c) => c.path), [
 		"/v1/namespaces",
-		"/v1/namespaces/default/sources",
+		// 显式 limit=500：#377 分页缺省 50，nsList 的调用方要的是整份列表去计数/建图。
+		"/v1/namespaces/default/sources?limit=500",
 	]);
 	assert.equal(out.items.length, 1);
 	assert.equal(out.items[0].metadata.name, "hook");
@@ -4210,7 +4220,9 @@ test("R1 namespace deep link: playbooks list and capabilities actions bind the U
 
   const caps = await b2Page('capabilities', '?namespace=prod');
   assert.equal(JSON.parse(caps.sandbox.localStorage.getItem('anotify.scope')).namespace, 'prod');
-  assert.ok(caps.fetches.some(c => c.url === '/v1/namespaces/prod/capabilities'));
+  // 断言的是「绑定的是 URL 里的 namespace」，不是「URL 没有查询串」；
+  // #377 分页之后 nsList 显式带 limit=500（整份列表用于计数/建图）。
+  assert.ok(caps.fetches.some(c => c.url === '/v1/namespaces/prod/capabilities?limit=500'));
   assert.equal(caps.fetches.some(c => c.url.includes('/namespaces/default/')), false, 'capabilities must not read default');
   const capRow = () => b2Find(caps.get('caps-list'), n => n.getAttribute && n.getAttribute('data-cap') === 'report.send')[0];
   assert.ok(capRow(), 'prod-only capability must be listed');
@@ -5888,7 +5900,7 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
 });
 test('E1b all 35 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  assert.equal(CASES.length,35);
+  assert.equal(CASES.length,36); // #376/#384 新增 playbook-missing 后冻结 pin 跟着 +1
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all35',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
