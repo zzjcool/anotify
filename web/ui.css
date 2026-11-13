@@ -5961,12 +5961,15 @@ body > header {
 	padding-top: env(safe-area-inset-top);
 }
 /* 全屏链路图是「临时独占」态：右下角控件与底部 HUD 都贴屏幕边，
-   手势区会正好压在它们上面。 */
-.flograph.is-fullscreen .flograph-ctrl {
-	bottom: calc(16px + env(safe-area-inset-bottom));
-}
-.flograph.is-fullscreen .flograph-hud {
-	padding-bottom: calc(6px + env(safe-area-inset-bottom));
+   手势区会正好压在它们上面。只在触屏档（pointer: coarse）加这段内距 ——
+   鼠标环境没有手势区，改了只会让 #382 调好的 HUD 高度白长 6px。 */
+@media (pointer: coarse) {
+	.flograph.is-fullscreen .flograph-ctrl {
+		bottom: calc(16px + env(safe-area-inset-bottom));
+	}
+	.flograph.is-fullscreen .flograph-hud {
+		padding-bottom: calc(6px + env(safe-area-inset-bottom));
+	}
 }
 
 /* ---------- 三、手机档首屏 ---------- */

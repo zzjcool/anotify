@@ -25,21 +25,50 @@ async function openCap(page, name) {
 	}
 	return row;
 }
+/* #385 起「新建能力」是 3 步向导（基础 / 脚本 / 高级）：字段按步分组，跨步填必须先
+ * 走「下一步」。这个 helper 保持原来「全字段都填一遍」的覆盖度（不是砍用例），
+ * 只是按向导的步序填；第 3 步的运维参数在两个 <details> 里，展开方式就用用户点的那个
+ * summary（不是 page.evaluate 改 open，那样测不到可点性）。
+ * 第 1/2 步的「下一步」= #cap-submit（同一个 id），第 3 步才是「创建」，由调用方点。 */
+async function step(page, n) {
+	await page.waitForFunction(
+		(expected) => {
+			const chip = document.querySelector("#cap-modal .cap-step-current");
+			return !!chip && chip.getAttribute("data-step-chip") === String(expected);
+		},
+		n,
+		{ timeout: 10000 },
+	);
+}
 async function fillCreateForm(page) {
+	// ---- 第 1 步：基础 ----
 	await page.fill("#cap-name", "f2a-demo");
 	await page.fill("#cap-display-name", "F2a 演示");
 	await page.fill("#cap-version", "1");
+	await page.click("#cap-submit"); // 下一步
+	await step(page, 2);
+
+	// ---- 第 2 步：脚本 ----
 	await page.fill(
 		"#cap-params",
 		JSON.stringify({ type: "object", required: ["repo"], properties: { repo: { type: "string" } } }, null, 2),
 	);
-	await page.fill("#cap-next", "notify");
 	await page.locator("#cap-files .cap-row-edit input").first().fill("run.sh");
 	await page
 		.locator("#cap-files .cap-row-edit textarea")
 		.first()
 		.fill('#!/usr/bin/env bash\nset -euo pipefail\necho "repo=$ANOTIFY_PARAM_REPO"\necho "root=$SOURCE_ROOT"\n');
 	await page.selectOption("#cap-entrypoint", "run.sh");
+	await page.click("#cap-submit"); // 下一步
+	await step(page, 3);
+
+	// ---- 第 3 步：高级（可选）——两个折叠块先展开 ----
+	const adv = page.locator("#cap-modal details.cap-adv");
+	assert.equal(await adv.count(), 2, "高级步必须有两个可折叠块（运行环境与并发 / 依赖与生命周期）");
+	await adv.nth(0).locator("summary").click();
+	await adv.nth(1).locator("summary").click();
+
+	await page.fill("#cap-next", "notify");
 	await page.fill("#cap-workdir", "$(vars.SOURCE_ROOT)");
 	await page.fill("#cap-requires-commands", "git");
 	await page.fill("#cap-requires-values", "vars.SOURCE_ROOT");
