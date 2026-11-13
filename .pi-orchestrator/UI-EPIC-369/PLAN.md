@@ -50,6 +50,12 @@
 
 ## 5. 进度台账
 
+### 基线事实（2026-11-13，`epic/369-ui-review` @ 5882659）
+
+- `./scripts/e2e/run_all.sh`（全量）→ **绿**：28/28 套件、2136 断言通过 / 0 失败、287s。→ 每波结束的推门禁就是它。
+- `make ci` → **红**（5 + 1 pre-existing 失败）：`internal/sitegen` docs test（确定性）、`cmd/anode` 5 个 bootstrap（本机无 sudo）、`internal/ws`+`runner`（负载 flaky）。→ 车道门禁不用 `make ci`，用"改哪个包跑哪个包 + make fe"。
+- 已冻结决策（#381）：**选 B —— 推送未开放期间下线「通知接收」页**（删 `receivers.html` + 清 `partials.js`/`login.html` 白名单，docs 注明推送未开放；e2e 无套件引用该页，风险低）。理由：`PUSH_UI_ENABLED=false`，给一个"暂未开放"页加导航入口是更差的 UX。
+
 | # | issue | 车道 | PR | 审查 | 合并 |
 |---|---|---|---|---|---|
 | 370 | 容器层次 | c-vis | — | — | — |

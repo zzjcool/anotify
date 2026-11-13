@@ -26,14 +26,27 @@
 make fe                                  # check-classes + sitegen + 指纹
 node --test scripts/v4-frontend.test.mjs # 改了 web/partials.js 或 web/*.js 必跑
 
-# Go / API 车道
-make ci                                  # gofmt + fe + vet + build + 单测 + tmp 泄漏守卫
+# Go / API 车道（只跑改动涉及的包，别跑 ./...）
+go test ./internal/server/... ./internal/store/... -count=1
+gofmt -l .
 python3 scripts/check_openapi.py         # 改了 api/*.yaml 必跑
 python3 scripts/check_contract.py        # 改了 api/*.yaml 必跑
 
 # 与改动相关的 e2e 套件（单跑，别跑全量；全量由协调者每波跑）
 ./scripts/e2e/run_all.sh --serial frontend
 ```
+
+### 已知的基线红（2026-11-13 在 `epic/369-ui-review` 上实测，**不是你引入的**）
+
+`make ci` 在本机基线就红，**不要**把它当成车道门禁，也不要顺手去修（不在 #369 范围）：
+
+| 位置 | 现象 | 性质 |
+|---|---|---|
+| `internal/sitegen` `TestDocsPageRendersFiveSpecFixturesFourLanguages` | `want 16 tag groups, got 0` | 确定性失败，main 上已有 |
+| `cmd/anode` 5 个 `TestInstallScript*` | systemctl/sudo 交互断言 | 本机无 sudo，环境性 |
+| `internal/ws` `TestRehelloUnknownBusyDoesNotRelease`、`cmd/anode/internal/runner` `TestRework2Timeout…` | 负载下偶发 | flaky，隔离单跑应绿 |
+
+判断标准：**你的 PR 不能新增失败**。改了哪个包就跑哪个包；报告里贴命令与结果。
 
 **端口分配（避免并行车道互相踩）**：`c-vis` 7781 / `c-fecontent` 7782 / `c-feactions` 7783 /
 `c-mobile` 7784 / `c-ia` 7785 / `c-paging` 7786 / `c-copy` 7787 / 审查者 7790-7792 / 协调者 7780。
