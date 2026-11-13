@@ -66,11 +66,11 @@
 | 375 | 裸 JSON | c-fecontent | [#388](https://github.com/zzjcool/anotify/pull/388) | rev-388 CHANGES → 返工 → rev-388b CHANGES(1行) → 修 → rev-388c **APPROVE** | ✅ `1747ce9` |
 | 376 | 动作收敛 | c-feactions | [#390](https://github.com/zzjcool/anotify/pull/390) | rev-390 CHANGES → c-actfix 返工 → rev-390b **APPROVE**（32/32 组 0 越界） | ✅ `5f0a75f` |
 | 377 | 列表分页 | c-paging | [#393](https://github.com/zzjcool/anotify/pull/393)（api）+ [#394](https://github.com/zzjcool/anotify/pull/394)（fe） | rev-393 CHANGES（users 破平局随机红）→ rowid 修 → rev-393b 只差 1 行文档 → 修；rev-394 **APPROVE** | ✅ `a74f516` + 前端 merge |
-| 378 | 错误态分级 | c-err | 进行中（c-err） | — | — |
+| 378 | 错误态分级 | c-err | [#398](https://github.com/zzjcool/anotify/pull/398) | rev-398 **APPROVE**（裸码 12/12 归零、真撤销 GET 404→200） | ✅ `ab6d269` |
 | 379 | 文案与未接能力 | c-copy | — | — | — |
 | 380 | 预案徽章失败态 | c-feactions | [#389](https://github.com/zzjcool/anotify/pull/389) | rev-389 **APPROVE**（新 e2e 回滚后确定性变红） | ✅ `535fa22` |
-| 381 | 通知接收 + 首跑 | c-ia | 进行中（c-ia；决策 B 下线 receivers） | — | — |
-| 382 | 触控目标 | c-mobile | [#392](https://github.com/zzjcool/anotify/pull/392)（stacked #391） | rev-392 CHANGES（图控件被裁 44×40/44×38 + 标题挤没）→ c-touchfix 返工中 | — |
-| 383 | iOS 聚焦缩放 | c-mobile | [#391](https://github.com/zzjcool/anotify/pull/391) | rev-391 CHANGES（脚本假绿）→ c-auditfix 返工 → rev-391b 复审中 | — |
+| 381 | 通知接收 + 首跑 | c-ia | [#397](https://github.com/zzjcool/anotify/pull/397) | rev-397 CHANGES（emit 命令跑不通/缓存不过期）→ 修 → rev-397b **APPROVE** | ✅ `2a4697c` |
+| 382 | 触控目标 | c-mobile | [#392](https://github.com/zzjcool/anotify/pull/392) | rev-392 CHANGES → 返工 → rev-392b **APPROVE** | ✅ `4e96c45` |
+| 383 | iOS 聚焦缩放 | c-mobile | [#391](https://github.com/zzjcool/anotify/pull/391) | rev-391 CHANGES → 返工 → rev-391b **APPROVE**（5 项承重测试） | ✅ `52e7c10` |
 | 384 | 主内容横滚 | c-mobile | — | — | — |
 | 385 | 手机首屏/弹层/安全区 | c-mobile | — | — | — |
