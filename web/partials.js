@@ -1962,10 +1962,15 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return api(nsPath(plural, name), opts);
 	}
 
-	/** 列表版 `nsApi`：先引导 scope，再 GET `KindList`（严格 `items[]` 校验）。 */
+	/** 列表版 `nsApi`：先引导 scope，再 GET `KindList`（严格 `items[]` 校验）。
+	 *
+	 * `limit=500` 是显式的，不是装饰：#377 给 8 个列表接口加了 keyset 分页、
+	 * 缺省 limit=50。这里的调用方（能力/源/拓扑）要的是**整份列表**去计数与建图，
+	 * 跟着缺省走就会在第 51 项上静默截断 —— 计数变假、拓扑少节点，而且不报错。
+	 * 分页是给"列表页"用的；这里显式要上限，行为和加接口之前一致。 */
 	async function nsList(plural) {
 		await ensureScope();
-		return apiList(nsPath(plural));
+		return apiList(nsPath(plural) + "?limit=500");
 	}
 
 	/**
@@ -2007,29 +2012,50 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	//	 err.status / code / reason / message / details / currentResourceVersion。
 	// `err.message` 同时保留在 `err.detail`（老页面/保留域仍在读 detail）。
 	// 非 Status 的响应体（网关错误页、旧式 `{error}`）不伪造 reason，只留原文。
-	function apiError(status, body) {
+	function apiError(status, body, requestId) {
 		const st = body && typeof body === "object" ? body : null;
 		const isStatus = !!st && (st.kind === "Status" || typeof st.reason === "string");
 		const message = st ? String(st.message || st.error || "") : "";
 		const err = new Error(message || "HTTP " + status);
 		err.status = status;
 		err.detail = message;
+		// #378：错误详情可复制 —— 把服务端的 request_id 一并留在错误对象上。
+		// 目前中枢只把它写进访问日志（internal/server/middleware.go），响应头里没有；
+		// 所以这里是「有就用」：将来网关/反向代理回 `X-Request-Id`，前端零改动就能显示。
+		if (requestId) err.requestId = String(requestId);
 		if (isStatus) {
 			err.code = st.code != null ? st.code : status;
 			err.reason = st.reason || "";
 			err.details = st.details || null;
 			const cur = st.details && st.details.current;
 			err.currentResourceVersion = (cur && cur.resourceVersion) || null;
+			// Status.details 里若带 requestId，同样收下（同一条「有就用」）。
+			if (!err.requestId && st.details && st.details.requestId) {
+				err.requestId = String(st.details.requestId);
+			}
 		}
 		if (st && Array.isArray(st.warnings)) err.warnings = st.warnings;
 		return err;
 	}
 
+	// responseRequestID 读响应头里的 request id（大小写两种写法都试）。
+	// 读失败一律当作“没有”：它只影响详情里的一行，不影响错误本身的语义。
+	function responseRequestID(res) {
+		try {
+			const h = res && res.headers;
+			if (!h || typeof h.get !== "function") return "";
+			return h.get("X-Request-Id") || h.get("X-Request-ID") || "";
+		} catch (e) {
+			return "";
+		}
+	}
+
 	/**
-	 * redirectToLogin 跳登录页：页名走白名单、查询串只允许安全字符，防 open redirect。
-	 * 只由 api() 在**首个** 401 时调用一次（并发请求不会互相打断同一个导航）。
+	 * loginHref 生成登录页链接（#378）：页名走白名单、查询串只允许安全字符，防 open redirect。
+	 * redirectToLogin 与 401 错误态的「去登录」按钮共用它 —— 两边各自的 whitelist
+	 * 迟早漂移，而 401 的落点关系到「登录后回不回得来」。
 	 */
-	function redirectToLogin() {
+	function loginHref() {
 		const PAGES = [
 			"index.html",
 			"message.html",
@@ -2054,7 +2080,15 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		const page = PAGES.includes(name) ? name : "index.html";
 		// 保留查询串（如推送深链 ?msg=<id>），登录后仍能跳到目标消息。
 		const qs = /^[?][\w\-=&%.]*$/.test(location.search) ? location.search : "";
-		location.href = "login.html?next=" + encodeURIComponent(page + qs);
+		return "login.html?next=" + encodeURIComponent(page + qs);
+	}
+
+	/**
+	 * redirectToLogin 跳登录页。
+	 * 只由 api() 在**首个** 401 时调用一次（并发请求不会互相打断同一个导航）。
+	 */
+	function redirectToLogin() {
+		location.href = loginHref();
 	}
 
 	// 一次 401 只跳一次登录页：页面上多个并发请求（me / namespaces / 列表）会各自
@@ -2076,7 +2110,13 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				loginRedirecting = true;
 				redirectToLogin();
 			}
-			throw new Error("HTTP 401");
+			// 401 也是一个**可分类的错误**（#378）：带上 status / requestId，
+			// 页面把它交给 loadErrorNode 时能落到「登录已过期」而不是「请求失败」。
+			const unauthorized = new Error("HTTP 401");
+			unauthorized.status = 401;
+			const rid = responseRequestID(res);
+			if (rid) unauthorized.requestId = rid;
+			throw unauthorized;
 		}
 		if (!res.ok) {
 			// 服务端的校验信息（"cron 表达式需要 5 段"、"metadata.resourceVersion
@@ -2087,7 +2127,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			} catch (e) {
 				/* 响应不是 JSON（网关错误页等）：保持 body=null */
 			}
-			throw apiError(res.status, body);
+			throw apiError(res.status, body, responseRequestID(res));
 		}
 		// 204 No Content / 205 Reset Content 没有响应体（v4 的 DELETE 一律 204，见
 		// internal/server/resource_*.go 的 `WriteHeader(http.StatusNoContent)`）。
@@ -2150,7 +2190,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 * 位置（顶部居中）与层级（--z-toast，必须高于弹层）也在 ui.css —
 	 * 这里只给类名，避免同一件事在 JS 的 Tailwind 串和 CSS 里各写一份。
 	 * reduce 下不加动画类，直接 remove。退场时长从 --dur-mid 读，避免与
-	 * ui.css 双份硬编码（reviewer minor）。 */
+	 * ui.css 双份硬编码（reviewer minor）。
+	 *
+	 * #378：错误不再走这条自动退场——错误是产品的一部分，3.6s 既读不完也复制不到。
+	 * 错误条见 errorBar()：持久、可关、可复制；成功/警告仍是回执，照旧自动退场。 */
 	function toastExitMs() {
 		const raw = getComputedStyle(document.documentElement)
 			.getPropertyValue("--dur-mid")
@@ -2158,30 +2201,141 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return parseFloat(raw) || 160;
 	}
 
-	function toast(msg, kind) {
+	/* toastHost 拿（或首次创建一个）toast 容器。 */
+	function toastHost() {
 		let host = document.getElementById("anotify-toast-host");
 		if (!host) {
 			host = el("div", {
 				id: "anotify-toast-host",
 				class: "anotify-toast-host",
 			});
+			/* 容器是 `left:50%` + translateX(-50%) 且没有 width：**可用宽度只剩视口的一半**
+			 * （fixed 定位下 left 之后的空间才是可用宽度）。短 toast 看不出来，但错误条的
+			 * 长文案会在 390 屏上被压成一列一个字。给容器一个明确的宽度，子元素仍然各自
+			 * 收缩到内容宽度（align-items:center 不拉伸）。 */
+			host.setAttribute("style", "width: calc(100vw - 32px); max-width: 560px");
 			document.body.append(host);
 		}
+		return host;
+	}
+
+	/* ---------- 错误详情：一份可复制的纯文本 ----------
+	 * 只取有语义的字段（message / status / reason / requestId）。
+	 * 不 stringify 整个错误对象：它可能含 URL、堆栈甚至请求体。 */
+	function detailLines(value) {
+		if (value == null) return [];
+		if (typeof value !== "object") {
+			const text = String(value).trim();
+			return text ? [text] : [];
+		}
+		const out = [];
+		if (typeof value.message === "string" && value.message.trim()) out.push(value.message.trim());
+		else if (typeof value.detail === "string" && value.detail.trim()) out.push(value.detail.trim());
+		if (value.status) out.push("status: " + value.status);
+		if (value.reason) out.push("reason: " + String(value.reason));
+		if (value.requestId) out.push("requestId: " + String(value.requestId));
+		return out;
+	}
+
+	/* copyButton 一个会自己改文案的「复制」按钮（1.5s 后改回）。 */
+	function copyButton(text, label, cls) {
+		const idle = label || t("common.err.copy", "复制详情");
+		const btn = el("button", { type: "button", class: cls || "btn btn-ghost btn-sm", text: idle });
+		// e2e / 无障碍都靠这个钩子找「复制详情」，不靠文案（四语言文案各不相同）。
+		btn.setAttribute("data-copy-details", "");
+		const reset = () => setTimeout(() => (btn.textContent = idle), 1500);
+		btn.addEventListener("click", () => {
+			const ok = () => {
+				btn.textContent = t("common.copy.copied", "已复制 ✓");
+				reset();
+			};
+			const fail = () => {
+				btn.textContent = t("common.copy.failed", "复制失败，请手动选择复制");
+				reset();
+			};
+			try {
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(text).then(ok, fail);
+					return;
+				}
+			} catch (e) {
+				/* 落到 fail */
+			}
+			fail();
+		});
+		return btn;
+	}
+
+	/* 同时存在的错误条上限：错误不自动消失，连点几次失败就会堆满屏。
+	 * 超过就丢**最旧**的（最新的那次失败才是用户刚才做的事）。 */
+	const ERROR_BAR_MAX = 4;
+
+	/**
+	 * errorBar 持久错误条（#378）：不自动退场，带「复制详情」与「关闭」。
+	 *
+	 * @param {string|object} value 文案，或一个错误对象（含 status/reason/requestId）
+	 * @returns {HTMLElement}
+	 */
+	function errorBar(value) {
+		const host = toastHost();
+		const text =
+			detailLines(value).join("\n") || t("common.request_failed", "请求失败");
+		const bar = el("div", {
+			class:
+				"card tx-name flex items-center gap-3 px-4 py-3 text-sm shadow-2xl",
+			role: "alert",
+			/* 文字的换行/断字与边框色走同一处内联（不新增 ui.css 类，也不硬编码色值）：
+			 * 错误原文允许换行、长 id 允许断字；边框用 --error 提亮，表明这是错误而非常规提示。
+			 * 点击只有**动作区**接收（见下面的 actions）：错误条是持久的，整条接管点击
+			 * 会把顶部头栏（搜索/主题/菜单）永久挡住 —— 那比错误本身更难用。 */
+			style:
+				"background: var(--bg-raise); border-color: color-mix(in srgb, var(--error) 45%, transparent); pointer-events: none; max-width: 100%; align-items: flex-start",
+		});
+		bar.setAttribute("data-error-bar", "");
+		bar.append(
+			el("span", { class: "dot", style: "background: var(--error)" }),
+			el("span", {
+				class: "flex-1 min-w-0",
+				text: text,
+				style: "white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word",
+			}),
+		);
+		const close = el("button", {
+			type: "button",
+			class: "btn btn-ghost btn-icon btn-sm",
+			"aria-label": t("common.action.close", "关闭"),
+			text: "×",
+		});
+		close.addEventListener("click", () => bar.remove());
+		const actions = el("span", { class: "flex items-center gap-2" });
+		// 只有按钮是可点的（见上面的 pointer-events 说明）。
+		actions.setAttribute("style", "pointer-events: auto");
+		actions.append(copyButton(text), close);
+		bar.append(actions);
+		host.append(bar);
+		try {
+			const open = host.querySelectorAll("[data-error-bar]");
+			for (let i = 0; i < open.length - ERROR_BAR_MAX; i++) open[i].remove();
+		} catch (e) {
+			/* querySelectorAll 不可用（单测 sandbox）：不做条数限制 */
+		}
+		return bar;
+	}
+
+	function toast(msg, kind) {
 		/* kind 归一化：error / err / danger（以及布尔 true）都按错误处理。
 		 * 旧实现只认精确的 "error"，其他失败调用会落回绿点。 */
 		const isError =
 			kind === "error" || kind === "err" || kind === "danger" || kind === true;
-		const color = isError
-			? "var(--error)"
-			: kind === "warn"
-				? "var(--warn)"
-				: "var(--success)";
+		// #378：错误**不自动消失** —— 手动关闭 + 复制详情。
+		if (isError) return errorBar(msg);
+		const host = toastHost();
+		const color = kind === "warn" ? "var(--warn)" : "var(--success)";
 		const node = el(
 			"div",
 			{
 				class:
 					"card anotify-toast tx-name flex items-center gap-2.5 px-4 py-3 text-sm shadow-2xl" +
-					(isError ? " is-error" : "") +
 					(REDUCE_MOTION.matches ? "" : " is-in"),
 				style: "background: var(--bg-raise)",
 			},
@@ -2198,6 +2352,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			node.classList.add("is-out");
 			setTimeout(() => node.remove(), toastExitMs());
 		}, 3600);
+		// 返回节点：单测据此断言「成功还是那条自动退场的 toast、错误走持久条」。
+		return node;
 	}
 
 	/* WebAuthn ArrayBuffer <-> base64url */
@@ -2476,8 +2632,164 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return list.filter((c) => !(c && HIDDEN_CAP_NAMES.has(c.name)));
 	}
 
+	/* ---------- 错误分级（#378） ----------
+	 * 用户问的是「我该怎么办」，不是「HTTP 几」。先把状态码收敛成一种**处境**，
+	 * 每种处境给一句人话标题 + 一句下一步（谁去做什么），页面上**不出现裸 HTTP 码**。
+	 * 机器事实（status / reason / requestId / 服务端原文）留在「复制详情」里：报障时
+	 * 需要的是那份文本，而不是让所有人每天读状态码。 */
+	const ERROR_KINDS = [
+		{
+			id: "unauthorized",
+			match: (s) => s === 401,
+			title: () => t("common.err.title.unauthorized", "登录已过期"),
+			hint: () =>
+				t(
+					"common.err.hint.unauthorized",
+					"会话已失效。重新登录后会回到这一页。",
+				),
+			retry: false,
+			login: true,
+		},
+		{
+			id: "forbidden",
+			match: (s) => s === 403,
+			title: () => t("common.err.title.forbidden", "你没有权限执行这个操作"),
+			hint: () =>
+				t(
+					"common.err.hint.forbidden",
+					"这是权限，不是故障。命名空间内的资源找命名空间所有者，实例级设置找实例管理员。",
+				),
+			retry: false,
+			// 403 不是死路：说清找谁之后，还得给一条能走的路。
+			back: true,
+		},
+		{
+			id: "not_found",
+			match: (s) => s === 404,
+			title: () => t("common.err.title.not_found", "找不到这个内容"),
+			hint: () =>
+				t(
+					"common.err.hint.not_found",
+					"可能已被删除，也可能链接里的名字不对。",
+				),
+			retry: true,
+			retryLabel: () => t("common.err.reload", "重新加载"),
+			back: true,
+		},
+		{
+			id: "conflict",
+			match: (s) => s === 409,
+			title: () => t("common.err.title.conflict", "内容已被别人改过"),
+			hint: () =>
+				t(
+					"common.err.hint.conflict",
+					"别人先改过它。重新加载拿到最新版本，再改一次。",
+				),
+			retry: true,
+			retryLabel: () => t("common.err.reload", "重新加载"),
+			back: true,
+		},
+		{
+			id: "gone",
+			match: (s) => s === 410,
+			title: () => t("common.err.title.gone", "内容已过期"),
+			hint: () =>
+				t(
+					"common.err.hint.gone",
+					"已被清理或超过保留期，不会再恢复。",
+				),
+			retry: false,
+			back: true,
+		},
+		{
+			id: "throttled",
+			match: (s) => s === 429,
+			title: () => t("common.err.title.throttled", "操作太频繁"),
+			hint: () =>
+				t(
+					"common.err.hint.throttled",
+					"等一分钟再试；连续重试只会继续被拒。",
+				),
+			retry: true,
+		},
+		{
+			id: "rejected",
+			match: (s) => s >= 400 && s < 500,
+			title: () => t("common.err.title.rejected", "请求没有被接受"),
+			hint: () =>
+				t("common.err.hint.rejected", "按提示改好输入再试一次。"),
+			retry: true,
+		},
+		{
+			id: "server",
+			match: (s) => s >= 500,
+			title: () => t("common.err.title.server", "服务端出错"),
+			hint: () =>
+				t(
+					"common.err.hint.server",
+					"不是你操作的问题。等几秒再重试；一直失败就把详情发给管理员。",
+				),
+			retry: true,
+		},
+		{
+			id: "offline",
+			match: () => false,
+			title: () => t("common.err.title.offline", "连不上服务端"),
+			hint: () =>
+				t(
+					"common.err.hint.offline",
+					"检查网络，或服务端进程是否在运行，然后重试。",
+				),
+			retry: true,
+		},
+	];
+
+	/* errorKind 状态码 + 原文 → 处境。无 status 时只在原文看起来像网络失败时才叫「连不上」，
+	 * 其余归「请求失败」——不把解析错误、前端异常一并说成后端挂了。 */
+	function errorKind(status, message) {
+		const s = Number(status) || 0;
+		for (const kind of ERROR_KINDS) if (kind.match(s)) return kind;
+		if (
+			!s &&
+			/Failed to fetch|NetworkError|load failed|network error/i.test(message)
+		)
+			return ERROR_KINDS.find((k) => k.id === "offline");
+		return {
+			id: "failed",
+			title: () => t("common.err.title.failed", "请求失败"),
+			hint: () =>
+				t(
+					"common.err.hint.failed",
+					"稍后再试；一直失败就把详情发给管理员。",
+				),
+			retry: true,
+		};
+	}
+
+	/* 详情页 → 它的列表页（404/410 的「返回列表」落点）。
+	 * 只收「有真实列表」的详情页；其余回落到首页。 */
+	const LIST_OF = {
+		"source.html": "sources.html",
+		"playbook.html": "playbooks.html",
+		"node.html": "nodes.html",
+		"trace.html": "events.html",
+		"message.html": "events.html",
+	};
+
+	function listHref() {
+		const name = String(location.pathname || "").split("/").pop();
+		const target = LIST_OF[name] || "index.html";
+		let ns = "";
+		try {
+			ns = readScope().namespace || "";
+		} catch (e) {
+			ns = "";
+		}
+		return target + (ns ? "?namespace=" + encodeURIComponent(ns) : "");
+	}
+
 	/**
-	 * loadErrorNode 渲染「载入失败 + 重试」，是一个 DOM 节点，调用方自己塞进合适的位置。
+	 * loadErrorNode 渲染「载入失败 + 为什么 + 下一步」，是一个 DOM 节点，调用方自己塞进合适的位置。
 	 *
 	 * 为什么要有它：页面**绝不**在后端失败时伪造数据（#273）。演示数据只有 make mock
 	 * 那条路——cmd/fe-preview 给每个 HTML 注入 /mock.js，由它在 fetch 层应答，
@@ -2485,32 +2797,41 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 * 只会让人把「服务挂了」看成「功能如此」。
 	 *
 	 * err 约定：fetch 层会带 status（见 api()）；网络错误没有 status。
+	 *
+	 * @param {*} err 错误对象 / 字符串
+	 * @param {Function} [onRetry] 重试回调
+	 * @param {{back?: string}} [opts] back 覆盖「返回列表」的落点
 	 */
-	function loadErrorNode(err, onRetry) {
+	function loadErrorNode(err, onRetry, opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
 		/* F2：调用方有时只传 {status}（例如 events.html 早年传的是 {status: r.status}）。
 		 * 直接 String(err) 会把 "[object Object]" 印到页面上。这里只接受
 		 * 字符串 / 带 message 的对象，其余一律当作「没有细节」交给下面的兜底文案。 */
 		const msg =
 			typeof err === "string"
 				? err
-				: err && typeof err.message === "string"
+				: err && typeof err === "object" && typeof err.message === "string"
 					? err.message
 					: "";
-		const status = (err && err.status) || 0;
-		// UI 标题走 t()；上游解码后的 message 是数据，单独以纯文本叶子展示。
-		const reason = status
-			? status >= 500
-				? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-				: t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-			: /Failed to fetch|NetworkError|load failed/i.test(msg)
-				? t("common.backend_offline", "连不上服务端")
-				: t("common.request_failed", "请求失败");
+		const status =
+			(err && typeof err === "object" && Number(err.status)) || 0;
+		const requestId =
+			(err && typeof err === "object" && err.requestId) || "";
+		const kind = errorKind(status, msg);
+
 		const box = document.createElement("div");
 		box.className = "flex flex-col items-center gap-3 px-6 py-10 text-center";
-		const p = document.createElement("p");
-		p.className = "text-sm tx-meta";
-		p.textContent = t("common.load_failed_prefix", "载入失败：") + reason;
-		box.appendChild(p);
+		// 标题：前缀 + 人话（不拼状态码）。
+		const title = document.createElement("p");
+		title.className = "text-sm tx-meta";
+		title.textContent = t("common.load_failed_prefix", "载入失败：") + kind.title();
+		box.appendChild(title);
+		// 下一步：谁去找谁 / 能不能重试。
+		const hint = document.createElement("p");
+		hint.className = "text-xs tx-meta";
+		hint.textContent = kind.hint();
+		box.appendChild(hint);
+		// 服务端原文是数据，单独以纯文本叶子展示（只有它带 data-raw-content）。
 		if (msg) {
 			const detail = document.createElement("span");
 			detail.className = "text-sm tx-meta";
@@ -2518,25 +2839,198 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			detail.textContent = msg;
 			box.appendChild(detail);
 		}
-		if (typeof onRetry === "function") {
+		// 报障要对得上日志：服务端/网关给了 request id 就印出来（没有就不占位）。
+		if (requestId) {
+			const rid = document.createElement("p");
+			rid.className = "text-xs tx-meta";
+			rid.setAttribute("data-request-id", String(requestId));
+			rid.textContent = t("common.err.request_id", "请求 ID：{id}").replace(
+				"{id}",
+				String(requestId),
+			);
+			box.appendChild(rid);
+		}
+
+		const actions = document.createElement("div");
+		actions.className = "flex items-center gap-2";
+		const addAction = (node) => actions.appendChild(node);
+		const mkBtn = (label, action, handler) => {
 			const btn = document.createElement("button");
 			btn.type = "button";
 			btn.className = "btn btn-ghost btn-sm";
-			btn.textContent = t("common.retry", "重试");
-			btn.addEventListener("click", onRetry);
-			box.appendChild(btn);
+			btn.setAttribute("data-err-action", action);
+			btn.textContent = label;
+			if (handler) btn.addEventListener("click", handler);
+			return btn;
+		};
+		const mkLink = (label, action, href) => {
+			const a = document.createElement("a");
+			a.className = "btn btn-ghost btn-sm";
+			a.setAttribute("data-err-action", action);
+			a.setAttribute("href", href);
+			a.textContent = label;
+			return a;
+		};
+
+		/* 重试：只给真的可能变好的处境（401/403/410 重试只是浪费一次点击）。
+		 * 404/409 的重试语义是「拿最新的一份」，所以叫“重新加载”。 */
+		if (typeof onRetry === "function" && kind.retry !== false) {
+			addAction(
+				mkBtn(
+					kind.retryLabel
+						? kind.retryLabel()
+						: t("common.retry", "重试"),
+					"retry",
+					onRetry,
+				),
+			);
+		}
+		if (kind.login) {
+			addAction(
+				mkLink(t("common.err.go_login", "去登录"), "login", loginHref()),
+			);
+		}
+		if (kind.back) {
+			addAction(
+				mkLink(
+					t("common.err.back_to_list", "返回列表"),
+					"back",
+					o.back && typeof o.back === "string" ? o.back : listHref(),
+				),
+			);
+		}
+		// 复制详情：带 status / reason / requestId 的机器事实（报障用）。
+		const copyText = detailLines(
+			err && typeof err === "object" ? err : { message: msg },
+		).join("\n");
+		if (copyText) {
+			const copyBtn = copyButton(
+				copyText,
+				t("common.err.copy", "复制详情"),
+				"btn btn-ghost btn-sm",
+			);
+			copyBtn.setAttribute("data-err-action", "copy");
+			addAction(copyBtn);
+		}
+		if (actions.childNodes ? actions.childNodes.length : actions.children.length) {
+			box.appendChild(actions);
 		}
 		return box;
 	}
 
+	/**
+	 * errorFacts 把一个错误收敛成「处境 + 人话 + 该有哪些动作」。
+	 *
+	 * loadErrorNode 自己用不上它（它直接建 DOM），但 trace/message 的错误态有自己的
+	 * 视觉骨架（图标 + 标题 + 说明 + 动作），不能整个换成 loadErrorNode。它们又各拄了
+	 * 一份「HTTP 码 → 文案」的映射 —— #378 里裸 HTTP 码就是从这两份拄出来的。
+	 * 所以分级只留一处，排版各页自己做。
+	 *
+	 * @param {*} err 错误对象 / 字符串
+	 * @returns {{kind: string, status: number, message: string, requestId: string,
+	 *   title: string, hint: string, retry: boolean, retryLabel: string,
+	 *   back: boolean, login: boolean, copy: string}}
+	 */
+	function errorFacts(err) {
+		const isObj = err && typeof err === "object";
+		const message =
+			typeof err === "string"
+				? err
+				: isObj && typeof err.message === "string"
+					? err.message
+					: "";
+		const status = (isObj && Number(err.status)) || 0;
+		const kind = errorKind(status, message);
+		return {
+			kind: kind.id,
+			status,
+			message,
+			requestId: (isObj && err.requestId) || "",
+			title: kind.title(),
+			hint: kind.hint(),
+			retry: kind.retry !== false,
+			retryLabel: kind.retryLabel ? kind.retryLabel() : t("common.retry", "重试"),
+			back: !!kind.back,
+			login: !!kind.login,
+			copy: detailLines(isObj ? err : { message }).join("\n"),
+		};
+	}
+
 	/* ---------- 弹层：共享开关 + 退场（D6/D7） ----------
 	 * 9 个页内 modal 各自维护 hidden↔flex（见 web-src/pages/*.html）。这里只补
-	 * 两件共享的事，不改各页的打开逻辑与 aria：
+	 * 三件共享的事，不改各页的打开逻辑与 aria：
 	 *   1) 退场：加 .is-closing 播 140ms 淡出，计时到点才切 hidden（原本硬切）；
-	 *   2) 重开：清掉可能残留的 .is-closing —— 140ms 窗口内重开若不清，会卡在淡出态。
+	 *   2) 重开：清掉可能残留的 .is-closing —— 140ms 窗口内重开若不清，会卡在淡出态；
+	 *   3) #378：Esc 关掉**最上层**那个（C5），关完把焦点还给打开它的控件。
 	 * 幂等：重复调用 / 已隐藏 / 传空都不抛错、不重复计时。 */
 	const MODAL_CLOSE_TIMERS = new WeakMap();
 	const MODAL_CLOSE_FALLBACK_MS = 140;
+	// 打开中的弹层栈（栈顶 = 最上层）；Esc 只关最上面那个，不一次关一排。
+	const MODAL_STACK = [];
+	// backdrop → 打开之前的焦点元素（关闭时还回去）。
+	const MODAL_RETURN_FOCUS = new WeakMap();
+	let MODAL_ESCAPE_BOUND = false;
+
+	function safeActiveElement() {
+		try {
+			const a = document.activeElement;
+			return a && a !== document.body ? a : null;
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function topOpenModal() {
+		for (let i = MODAL_STACK.length - 1; i >= 0; i--) {
+			const el = MODAL_STACK[i];
+			if (!el || !el.classList) continue;
+			if (el.classList.contains("hidden") || el.classList.contains("is-closing")) continue;
+			return el;
+		}
+		return null;
+	}
+
+	function onModalEscape(event) {
+		if (event.key !== "Escape" && event.key !== "Esc") return;
+		const top = topOpenModal();
+		if (!top) return;
+		event.preventDefault();
+		/* 先给页面一次自行收尾的机会（清 token、还原选择…）：
+		 * 监听者 preventDefault() 就表示它自己关，这里不再插手。 */
+		let handled = false;
+		try {
+			const ev = new CustomEvent("modal:dismiss", {
+				bubbles: true,
+				cancelable: true,
+				detail: { reason: "escape" },
+			});
+			handled = top.dispatchEvent(ev) === false;
+		} catch (e) {
+			handled = false;
+		}
+		if (!handled) closeModal(top);
+	}
+
+	function bindModalEscape() {
+		if (MODAL_ESCAPE_BOUND) return;
+		MODAL_ESCAPE_BOUND = true;
+		// capture 阶段：页面自己的 keydown 处理不会先把 Esc 吃掉。
+		document.addEventListener("keydown", onModalEscape, true);
+	}
+
+	function returnModalFocus(backdrop) {
+		const prev = MODAL_RETURN_FOCUS.get(backdrop);
+		MODAL_RETURN_FOCUS.delete(backdrop);
+		const at = MODAL_STACK.indexOf(backdrop);
+		if (at >= 0) MODAL_STACK.splice(at, 1);
+		if (!prev || typeof prev.focus !== "function") return;
+		try {
+			if (prev.isConnected === false) return; // 触发它的行/按钮已重渲染：不抢焦点
+			prev.focus({ preventScroll: true });
+		} catch (e) {
+			/* 焦点归还失败不影响关闭 */
+		}
+	}
 
 	function openModal(backdrop) {
 		if (!backdrop || !backdrop.classList) return;
@@ -2548,6 +3042,14 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		backdrop.classList.remove("is-closing");
 		backdrop.classList.remove("hidden");
 		backdrop.classList.add("flex");
+		if (!MODAL_RETURN_FOCUS.has(backdrop)) {
+			const active = safeActiveElement();
+			if (active) MODAL_RETURN_FOCUS.set(backdrop, active);
+		}
+		const at = MODAL_STACK.indexOf(backdrop);
+		if (at >= 0) MODAL_STACK.splice(at, 1);
+		MODAL_STACK.push(backdrop);
+		bindModalEscape();
 	}
 
 	function closeModal(backdrop) {
@@ -2559,6 +3061,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		}
 		if (backdrop.classList.contains("is-closing")) return; /* 重复调用不叠加 */
 		backdrop.classList.add("is-closing");
+		returnModalFocus(backdrop);
 		/* 时长与 CSS 同源；reduce 下该 token 是 0ms，0 必须当有效值 */
 		const raw = parseFloat(
 			getComputedStyle(document.documentElement).getPropertyValue(
@@ -2577,6 +3080,233 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		);
 	}
 
+	/* ---------- 危险操作统一弹层（#378 / C7） ----------
+	 * 原生 confirm() 的问题不是丑，是**没有后果**：系统对话框只有一句问句和一个“确定”，
+	 * 用户看不出这个动作能不能撤、影响谁。这里集中成一种弹层：
+	 *   · 复用页面弹层的 DOM 结构与类（.modal-backdrop/.modal-panel/.modal-foot），
+	 *     样式仍归 ui.css，本文件不新增设计语言；
+	 *   · 危险动作用 .btn-danger，并且**默认焦点在“取消”** —— 回车不会替用户按下删除；
+	 *   · 可撤销的动作在 note 里明文写“5 秒内可以撤销”，不可撤销的写“不可撤销”；
+	 *   · Esc / 点背景 / 关闭按钮 都等于取消（openModal 的 Esc 支持）。
+	 * 返回 Promise<boolean>：true = 确认，false = 取消。 */
+	let DANGER_DIALOG = null;
+	let DANGER_SETTLE = null;
+
+	function dangerDialog() {
+		if (DANGER_DIALOG) return DANGER_DIALOG;
+		const backdrop = el("div", {
+			id: "anotify-dialog",
+			class: "modal-backdrop hidden",
+			role: "dialog",
+			"aria-modal": "true",
+			"aria-labelledby": "anotify-dialog-title",
+			"aria-describedby": "anotify-dialog-body",
+		});
+		const title = el("h3", {
+			id: "anotify-dialog-title",
+			class: "card-title",
+			text: "",
+		});
+		const headClose = el("button", {
+			type: "button",
+			class: "btn btn-ghost btn-icon",
+			"aria-label": t("common.action.close", "关闭"),
+			"data-dialog-close": "",
+			text: "×",
+		});
+		const head = el("div", { class: "modal-head" }, title, headClose);
+		const bodyText = el("p", {
+			id: "anotify-dialog-body",
+			class: "card-sub",
+			text: "",
+		});
+		const noteText = el("p", { id: "anotify-dialog-note", class: "field-hint", text: "" });
+		const body = el("div", { class: "modal-body" }, bodyText, noteText);
+		const cancel = el("button", {
+			type: "button",
+			class: "btn btn-ghost",
+			"data-dialog-cancel": "",
+			text: t("common.dialog.cancel", "取消"),
+		});
+		const ok = el("button", {
+			type: "button",
+			class: "btn btn-danger",
+			"data-dialog-ok": "",
+			text: t("common.dialog.confirm", "确认"),
+		});
+		const foot = el("div", { class: "modal-foot" }, cancel, ok);
+		const panel = el("div", { class: "modal-panel" }, head, body, foot);
+		backdrop.append(panel);
+		/* 必须真的挂进文档：openModal 只切 .hidden/.flex，不负责挂载。
+		 * （少了这一行弹层永远不可见 —— e2e 只能等到 5s 超时。） */
+		document.body.append(backdrop);
+
+		const settle = (value) => {
+			if (!DANGER_SETTLE) return;
+			const resolve = DANGER_SETTLE;
+			DANGER_SETTLE = null;
+			closeModal(backdrop);
+			resolve(value);
+		};
+		cancel.addEventListener("click", () => settle(false));
+		headClose.addEventListener("click", () => settle(false));
+		ok.addEventListener("click", () => settle(true));
+		// 点背景 = 取消（与原生 confirm 的 Esc 语义一致）；点面板本身不关。
+		backdrop.addEventListener("click", (event) => {
+			if (event.target === backdrop) settle(false);
+		});
+		// Esc 已在 openModal 处理；这里接住事件并自行结算，避免“关了但 promise 没结”。
+		backdrop.addEventListener("modal:dismiss", (event) => {
+			event.preventDefault();
+			settle(false);
+		});
+
+		DANGER_DIALOG = {
+			backdrop,
+			title,
+			bodyText,
+			noteText,
+			cancel,
+			ok,
+			settle,
+		};
+		return DANGER_DIALOG;
+	}
+
+	/**
+	 * confirmDanger 统一危险/确认弹层，替代原生 confirm()/alert()。
+	 *
+	 * @param {object} [opts]
+	 * @param {string} [opts.title]        标题（默认「危险操作」/「确认操作」）
+	 * @param {string} [opts.body]         一句人话（通常直接给页面已有的 confirm 文案）
+	 * @param {string} [opts.note]         附加说明（默认按 danger/undo 自动给）
+	 * @param {string} [opts.confirmLabel] 主按钮文案
+	 * @param {string} [opts.cancelLabel]  次按钮文案
+	 * @param {boolean} [opts.danger]      默认 true；false 用主色按钮
+	 * @param {boolean} [opts.undo]        调用方会提供撤销窗口
+	 * @returns {Promise<boolean>} true=确认，false=取消/Esc
+	 */
+	function confirmDanger(opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
+		const dlg = dangerDialog();
+		const danger = o.danger !== false;
+		return new Promise((resolve) => {
+			// 上一个还没结算（连点两次/两条代码路径）时按“取消”结掉，绝不让 promise 挂死。
+			if (DANGER_SETTLE) {
+				const prev = DANGER_SETTLE;
+				DANGER_SETTLE = null;
+				prev(false);
+			}
+			DANGER_SETTLE = resolve;
+			dlg.title.textContent =
+				o.title ||
+				(danger
+					? t("common.dialog.title.danger", "危险操作")
+					: t("common.dialog.title.confirm", "确认操作"));
+			dlg.bodyText.textContent = o.body || "";
+			let note = o.note;
+			if (note === undefined) {
+				if (o.undo) note = t("common.dialog.undoable", "操作后会给你 5 秒撤销。");
+				else if (danger) note = t("common.dialog.irreversible", "这个操作不可撤销。");
+				else note = "";
+			}
+			dlg.noteText.textContent = note;
+			/* hidden 是布尔属性：**存在即隐藏**，所以必须 remove，不能 setAttribute("")。 */
+			if (note) dlg.noteText.removeAttribute("hidden");
+			else dlg.noteText.setAttribute("hidden", "");
+			dlg.ok.className = danger ? "btn btn-danger" : "btn btn-primary";
+			dlg.ok.textContent = o.confirmLabel || t("common.dialog.confirm", "确认");
+			dlg.cancel.textContent = o.cancelLabel || t("common.dialog.cancel", "取消");
+			openModal(dlg.backdrop);
+			// 默认焦点放“取消”：危险动作不能靠一次回车完成（与原生 confirm 相反，故意的）。
+			try {
+				dlg.cancel.focus({ preventScroll: true });
+			} catch (e) {
+				/* 无 focus 环境忽略 */
+			}
+		});
+	}
+
+	/* ---------- 「已删除 · 撤销」（#378） ----------
+	 * 删除是不可逆的 API 操作，所以撤销**不是**延迟提交（关页面就丢），而是页面在删除成功后
+	 * 用快照重建（见各页 onUndo）。这里只提供条本身：一条 5 秒的撤销窗口 + 手动关闭。
+	 * 放在底部居中：顶部已经被错误条占了，两个都出现时不该重叠。 */
+	const UNDO_WINDOW_MS = 5000;
+
+	/**
+	 * undoBar 显示「已删除 · 撤销（5s）」条。
+	 *
+	 * @param {object} opts
+	 * @param {string} opts.message    主文案（如「已删除「foo」」）
+	 * @param {Function} [opts.onUndo] 点「撤销」时回调
+	 * @param {string} [opts.actionLabel]
+	 * @param {string} [opts.hint]
+	 * @param {number} [opts.ms]       默认 5000；e2e 可缩短
+	 * @returns {{close: Function, undo: Function}}
+	 */
+	function undoBar(opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
+		const ms = Number.isFinite(o.ms) && o.ms >= 0 ? o.ms : UNDO_WINDOW_MS;
+		let host = document.getElementById("anotify-undo-host");
+		if (!host) {
+			host = el("div", { id: "anotify-undo-host" });
+			host.setAttribute(
+				"style",
+				"position: fixed; left: 0; right: 0; bottom: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: var(--z-toast); pointer-events: none; padding: 0 16px",
+			);
+			document.body.append(host);
+		}
+		const bar = el("div", {
+			class: "card flex items-center gap-3 px-4 py-3 text-sm shadow-2xl",
+			role: "status",
+			"data-undo-bar": "",
+		});
+		/* 与错误条同理：整条条接管点击会在 5 秒里挡住页面底部（包括别的按钮）。
+		 * 只有「撤销」这个真实控件可点。 */
+		bar.setAttribute(
+			"style",
+			"background: var(--bg-raise); pointer-events: none; max-width: 100%",
+		);
+		const text = el("span", {
+			class: "flex-1 min-w-0",
+			text: o.message || "",
+		});
+		const hint = el("span", {
+			class: "text-xs",
+			text: o.hint || t("common.undo.hint", "5 秒内可撤销"),
+		});
+		hint.setAttribute("style", "color: var(--faint)");
+		const undo = el("button", {
+			type: "button",
+			class: "btn btn-ghost btn-sm",
+			"data-undo-action": "",
+			text: o.actionLabel || t("common.undo.action", "撤销"),
+		});
+		undo.setAttribute("style", "pointer-events: auto");
+		bar.append(text, hint, undo);
+		host.append(bar);
+
+		let settled = false;
+		let timer = null;
+		const close = () => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			bar.remove();
+		};
+		undo.addEventListener("click", () => {
+			if (settled) return;
+			close();
+			if (typeof o.onUndo === "function") o.onUndo();
+		});
+		// 手动关闭 = 放弃撤销（用户已经不改主意了）
+		if (ms > 0)
+			timer = setTimeout(() => {
+				settled = true;
+				bar.remove();
+			}, ms);
+		return { close, undo: () => undo.click() };
+	}
 	/* ---------- agent 自升级：错误码 → 人话（节点列表页 / 节点详情页共用） ----------
 	 * 事实源：`.pi-orchestrator/CONTRACT-agent-upgrade.md` §5.1（控制台读侧，冻结）。
 	 *
@@ -3391,6 +4121,13 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	window.Anotify = {
 		el,
 		loadErrorNode,
+		// #378：错误分级 / 持久错误条 / 统一危险弹层 / 已删除·撤销
+		errorBar,
+		errorFacts,
+		confirmDanger,
+		undoBar,
+		loginHref,
+		listHref,
 		pushUIEnabled: PUSH_UI_ENABLED,
 		filterCaps,
 		icon,

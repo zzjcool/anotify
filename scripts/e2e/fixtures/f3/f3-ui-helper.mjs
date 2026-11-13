@@ -9,15 +9,22 @@ export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
 export const PAGES = Object.freeze(["admin","capabilities","cli-auth","docs","events","index","keys","login","message","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
+// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 19 页 × 4 语言 ×
+// 2 主题 × 2 视口的固定矩阵，加一个键就把 304 视图变成 456。内容档只用于
+// 「#384 主内容不用横滚」的专项用例（tablet / desktop 两种 kind）。
+export const TABLET_VIEW = Object.freeze({ width: 768, height: 1024 });
 export const STANDALONE = Object.freeze(["cli-auth", "passkey-enroll"]);
 export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真正调用）";
 // Batches keep every matrix case inside the fixed 55s outer budget.
 export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,19]].map(([a,b]) => PAGES.slice(a,b)));
 export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","receivers","events","trace","playbook"]);
 // Per-page structural anchor. Detail pages get their identity from real v4 list rows.
+// #381：登录页的默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），所以 #login-panel
+// 可能真的是 hidden（0×0）。锚点改成**两个 tab 都一定看得见**的容器：仍然证「这一页真的
+// 渲染了」，而不是在默认态上赌一把。
 export const ANCHORS = Object.freeze({
   admin: "#kpi-devices", capabilities: "[data-cap]", "cli-auth": "#code-input", docs: "#endpoints",
-  events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: "#login-panel",
+  events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-file-path", playbooks: "#pb-grid", receivers: "#current-device-card",
   security: "#passkey-list", source: "#src-name", sources: "#src-list [data-name]", trace: "#trace-tasks",
@@ -156,9 +163,41 @@ export async function auditPage(d, spec, errorsFrom) {
       }
       if (!ok) bounded.push({ tag: el.tagName, id: el.id, left: Math.round(r.left), right: Math.round(r.right), unbounded: true });
     }
+    /* #384：主内容横滚「白名单 + 可见提示」（只在手机档断言）。
+       —— 旧口径是**全局豁免**：只要有 overflow 祖先就算合法，于是 keys 表 2.01×、
+       链路图 3.6× 全都放行。现在反过来：主内容里的横滚容器必须①在白名单内
+       （只放行用户主动打开的完整视图），②本身带可见提示（渐隐 mask / 拖动提示
+       文案 / data-scroll-hint 或 aria-label 的语义副本）。默认态的主内容一律不该滚。 */
+    const hscroll = [];
+    if (innerWidth < 640) {
+      const mainEl = document.getElementById("page-main") || document.body;
+      const WHITELIST = [".flograph-scroll", ".hm-scroll"];
+      for (const el of mainEl.querySelectorAll("*")) {
+        const cs = getComputedStyle(el);
+        if (cs.overflowX !== "auto" && cs.overflowX !== "scroll") continue;
+        if (el.scrollWidth - el.clientWidth <= 2) continue;
+        const before = el.scrollLeft;
+        el.scrollLeft = before ? 0 : Math.min(24, el.scrollWidth - el.clientWidth);
+        const moved = el.scrollLeft !== before;
+        el.scrollLeft = before;
+        if (!moved) continue;
+        const mask = String(cs.maskImage || "") + " " + String(cs.webkitMaskImage || "");
+        const hint = (el.getAttribute("data-scroll-hint") || el.getAttribute("aria-label") || "").trim();
+        const pan = Array.from(el.parentElement ? el.parentElement.querySelectorAll(".flograph-pan-hint") : [])
+          .some((n) => parseFloat(getComputedStyle(n).opacity) > 0.1);
+        hscroll.push({
+          sel: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + "." + String(el.className || "").trim().split(/\s+/).slice(0, 2).join("."),
+          whitelisted: WHITELIST.some((s) => el.matches(s)),
+          hint: !!hint,
+          mask: /gradient/.test(mask),
+          pan,
+        });
+      }
+    }
     const anchorEl = document.querySelector(anchorSel);
     const ar = anchorEl ? anchorEl.getBoundingClientRect() : null;
     return {
+      hscroll,
       innerWidth, scrollWidth: doc.scrollWidth, innerHeight, scrollHeight: doc.scrollHeight,
       lang: doc.lang, theme: doc.getAttribute("data-theme"), shellReady: doc.hasAttribute("data-shell-ready"),
       overflow: bounded,
@@ -172,6 +211,12 @@ export async function auditPage(d, spec, errorsFrom) {
   const label = `${page}·${lang}·${theme}·${viewport}`;
   const unbounded = geo.overflow.filter(o => o.unbounded);
   assert.ok(geo.scrollWidth <= geo.innerWidth + 2, label + ": document horizontal overflow " + geo.scrollWidth + ">" + geo.innerWidth + (unbounded.length ? " unbounded=" + JSON.stringify(unbounded.slice(0, 3)) : ""));
+  if (spec.viewport === "mobile") {
+    for (const h of geo.hscroll || []) {
+      assert.ok(h.whitelisted, label + ": #384 main-content horizontal scroller is not whitelisted (" + h.sel + ") \u2014 scroll-to-read main content is forbidden");
+      assert.ok(h.hint || h.mask || h.pan, label + ": #384 whitelisted scroller has no visible scroll hint (" + h.sel + "); need a fade mask, the pan hint, or aria/data hint text");
+    }
+  }
   assert.ok(geo.bodyText.length >= 40, label + ": nonempty rendered body required (" + geo.bodyText.length + " chars)");
   assert.ok(!FAILURE_TEXT.test(geo.mainText ?? geo.bodyText), label + ": genuine load-failure text not waived: " + (geo.mainText ?? geo.bodyText));
   assert.equal(geo.theme, theme, label + ": requested theme applied");

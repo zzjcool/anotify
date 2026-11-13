@@ -70,6 +70,9 @@ add('playbook-delete',d=>playbook(d,'delete'),{expectHttpStatus:[PB_409_CAS,
   {status:404,path:'/v1/namespaces/default/playbooks/project-chain/installs',exact:true,note:'删除父清单后 installs 组 GET 必须 404'},
 ]});
 add('playbook-errors',d=>playbook(d,'errors'),{expectHttpStatus:[{status:400,path:'/v1/namespaces/default/playbooks/project-chain/render',exact:true,note:'values_missing：render 缺 values 必须 400，页面显示原因'}]});
+// playbook-missing（#380）：访问不存在的 playbook id。GET 这个资源**必须** 404，
+// 前端失败路径要露出它就是靠这个真实拒绝，且要能重试（重试会再发一次同样的 404）。
+add('playbook-missing',d=>playbook(d,'missing'),{expectHttpStatus:[{status:404,path:'/v1/namespaces/default/playbooks/f3-no-such-package',exact:true,note:'not_found：不存在的 playbook id，前端必须把徽章收敛成失败态并移除残留空容器'}]});
 add('playbook-matrix-12',matrix,{expectHttpStatus:[
   {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-6/install',exact:true,note:'version_content_immutable：同版本号内容变化必须在 install 被拒'},
   {status:400,path:'/v1/namespaces/default/playbooks/f3-matrix-10/install',exact:true,note:'playbook_conflict：复用行与库里不一致 → 400，原子 0 写'},
@@ -248,6 +251,7 @@ add('auth-route-guards',async d=>{
   for(const file of GUARDED){
     await d.page.goto(d.base+'/'+file+'.html',{waitUntil:'domcontentloaded'});
     await waitLogin(d.page);
+    await d.page.locator('#tab-login').click();
     await d.page.locator('#password-login-toggle').waitFor();
     assert.ok(d.page.url().includes('/login.html'));
     d.check('F3-AUTH-GUARD '+file+' genuine 401 -> public login');

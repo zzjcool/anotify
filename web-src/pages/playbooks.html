@@ -237,6 +237,11 @@
   .pb-card-facts { display: grid; gap: 8px; }
   .pb-result { margin-top: 12px; }
   .pb-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* #377：本地搜索 + 「20 条 + 加载更多」（控件样式走页面内联） */
+  .pb-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+  .pb-toolbar .input { max-width: 320px; min-width: 180px; }
+  .pb-toolbar-count { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .pb-more-wrap { display: flex; justify-content: center; padding: 12px 0 2px; }
   [hidden] { display: none !important; }
 </style>
 {{end}}
@@ -251,11 +256,17 @@
       </div>
       <div class="page-actions">
         <button id="btn-refresh" type="button" class="btn btn-ghost">{{t "pb.rescan"}}</button>
-        <a href="#pb-import" class="btn btn-primary">{{t "pb.v4.import"}}</a>
+        {{/* #376：入口从 `#pb-import` 锚点改成就地弹层（旧行为只把页面滚下去）。 */}}
+        <button id="btn-import" type="button" class="btn btn-primary">{{t "pb.v4.import"}}</button>
       </div>
     </div>
     <p id="pb-scope" class="field-hint"></p>
     <div id="pb-state" aria-live="polite"></div>
+    <!-- #377：搜索只过滤已加载的页（不重新请求） -->
+    <div class="pb-toolbar">
+      <input id="pb-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
+      <span id="pb-count" class="pb-toolbar-count" aria-live="polite"></span>
+    </div>
     <div id="pb-grid" class="pb-grid anim-stagger">
       <!-- 首屏骨架（AN-3）：数据到达前先画出卡片形状，不再是一张空白页 -->
       <div class="pb-skel" aria-hidden="true">
@@ -272,6 +283,9 @@
       </div>
     </div>
     <div id="pb-empty" class="card hidden"></div>
+    <div id="pb-more-wrap" class="pb-more-wrap" hidden>
+      <button id="pb-load-more" type="button" class="btn btn-ghost">{{t "paging.load_more"}}</button>
+    </div>
     <!-- 空态图标位：静态模板，JS 克隆（本仓约定不用 innerHTML 渲染） -->
     <template id="pb-empty-tpl">
       <span class="pb-empty-icon" aria-hidden="true">
@@ -291,10 +305,18 @@
       </span>
     </template>
 
-    <section id="pb-import" class="card card-pad">
-      <h3 class="card-title">{{t "pb.v4.import"}}</h3>
-      <p class="card-sub">{{t "pb.v4.package_hint"}}</p>
-      <form id="pb-import-form" class="pb-upload">
+    <!-- #376：导入表单不再常驻页面（旧形态＝空态卡 + 常驻表单同时存在，
+         同一件事三个入口）。表单整体进了就地弹层：页头 + 空态两个入口
+         打开的是同一个 #pb-import-modal。 -->
+    <div id="pb-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pb-import-title">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2 id="pb-import-title" class="card-title">{{t "pb.v4.import"}}</h2>
+          <button id="pb-import-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.action.close"}}">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="card-sub">{{t "pb.v4.package_hint"}}</p>
+          <form id="pb-import-form" class="pb-upload">
         <div class="field">
           <label for="pb-input-kind" class="field-label">{{t "pb.v4.input_kind"}}</label>
           <select id="pb-input-kind" class="select">
@@ -347,11 +369,13 @@
           <p class="field-hint">{{t "pb.v4.oci_hint"}}</p>
         </div>
         <div class="page-actions">
-          <button id="pb-create" type="submit" class="btn btn-primary">{{t "pb.v4.store"}}</button>
+          <button id="pb-create" type="submit" class="btn">{{t "pb.v4.store"}}</button>
         </div>
       </form>
-      <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
-    </section>
+          <div id="pb-import-result" class="pb-result pb-wrap" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 {{end}}
@@ -451,18 +475,17 @@
       return section;
     }
 
-    /* PB-1：空态 = 图标 + 标题 + 说明（沿用既有 pb.empty 文案）+ 立即导入。
-     * 按钮真的把同一个导入表单带到眼前（滚到 #pb-import 并聚焦包名输入框）。 */
+    /* PB-1：空态 = 图标 + 标题 + 说明（沿用既有 pb.empty 文案）+ 一个 CTA。
+     * #376：CTA 不再滚动到常驻表单，而是就地弹出导入弹层（与页头同一入口）；
+     * 空态只剩这一个按钮，全页不再有「空态卡 + 常驻表单」两个东西同时存在。 */
     function emptyState() {
       const box = el("div", "empty");
       const tpl = $("pb-empty-tpl");
       // 本地 el(tag, cls, text) 的第二个参数是**类名字符串**（不是 attrs 对象）
-      const cta = el("button", "btn btn-primary", t("uxaudit.work.pb_empty_cta"));
+      const cta = el("button", "btn", t("uxaudit.work.pb_empty_cta"));
       cta.type = "button";
-      cta.addEventListener("click", () => {
-        $("pb-import").scrollIntoView({ behavior: "smooth", block: "start" });
-        $("pb-input-name").focus({ preventScroll: true });
-      });
+      cta.id = "pb-empty-cta";
+      cta.addEventListener("click", () => openImport());
       box.append(
         ...(tpl ? [tpl.content.cloneNode(true)] : []),
         el("p", "pb-empty-title", t("pb.empty_title", "还没有预案")),
@@ -483,6 +506,15 @@
         : t("uxaudit.work.pb_no_file", "未选择文件");
     }
 
+    /* #376：导入弹层开合。页头 #btn-import 与空态 #pb-empty-cta 共用同一个入口；
+       点遮罩关、✕ 关（Esc 与站内其它弹层一致地未绑 —— 见 #369 评审 §4.1 C5）。 */
+    function openImport() {
+      Anotify.openModal($("pb-import-modal"));
+      $("pb-input-name").focus({ preventScroll: true });
+    }
+    function closeImport() {
+      Anotify.closeModal($("pb-import-modal"));
+    }
     async function load() {
       if (loading) return;
       loading = true; $("btn-refresh").disabled = true;
@@ -491,12 +523,9 @@
       try {
         await ready();
         $("pb-scope").textContent = t("pb.v4.namespace") + ": " + getScope().namespace;
-        const { items: rows } = await apiList(nsPath("playbooks"));
-        for (const row of rows) $("pb-grid").append(card(row));
-        if (!rows.length) {
-          $("pb-empty").replaceChildren(emptyState());
-          $("pb-empty").classList.remove("hidden");
-        }
+        const first = await fetchPlaybookPage("");
+        PB_ROWS = first.items; PB_CURSOR = first.cursor; PB_MORE = !!first.cursor;
+        renderGrid();
         $("pb-state").replaceChildren();
       } catch (error) {
         $("pb-state").replaceChildren(loadErrorNode(error, load));
@@ -504,6 +533,61 @@
         loading = false; $("btn-refresh").disabled = false; $("pb-state").removeAttribute("aria-busy");
       }
     }
+
+    /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+    const PB_PAGE = 20;
+    let PB_ROWS = [], PB_CURSOR = "", PB_MORE = false, PB_QUERY = "";
+    async function fetchPlaybookPage(cursor) {
+      await ready();
+      const qs = new URLSearchParams({ limit: String(PB_PAGE) });
+      if (cursor) qs.set("continue", cursor);
+      const res = await api(nsPath("playbooks") + "?" + qs.toString());
+      if (!res || !Array.isArray(res.items)) throw new Error(t("common.request_failed"));
+      const cont = res.metadata && typeof res.metadata.continue === "string" ? res.metadata.continue : "";
+      return { items: res.items, cursor: cont };
+    }
+    function visibleRows() {
+      const q = PB_QUERY.trim().toLowerCase();
+      if (!q) return PB_ROWS;
+      return PB_ROWS.filter((row) => {
+        const pb = model.playbook(row);
+        const hay = [pb.slug, pb.displayName, row.spec && row.spec.description].filter(Boolean).join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    function renderGrid() {
+      const rows = visibleRows();
+      $("pb-grid").replaceChildren(...rows.map(card));
+      if (!PB_ROWS.length) {
+        $("pb-empty").replaceChildren(emptyState());
+        $("pb-empty").classList.remove("hidden");
+      } else if (!rows.length) {
+        $("pb-grid").append(el("p", "pb-empty-title", t("paging.no_match")));
+      }
+      /* 用 hidden 属性而不是 .hidden class：.pb-more-wrap 自带 display:flex，
+         Tailwind 的 .hidden 与它同特异性，顺序一变就会「按钮明明该藏却显示」。 */
+      $("pb-more-wrap").hidden = !PB_MORE;
+      $("pb-count").textContent = t("paging.showing").replace("{n}", String(rows.length));
+    }
+    async function loadMore() {
+      if (!PB_MORE) return;
+      $("pb-load-more").disabled = true;
+      try {
+        const next = await fetchPlaybookPage(PB_CURSOR);
+        const seen = new Set(PB_ROWS.map((row) => row.metadata.name));
+        for (const item of next.items) {
+          if (seen.has(item.metadata.name)) continue;
+          PB_ROWS.push(item); seen.add(item.metadata.name);
+        }
+        PB_CURSOR = next.cursor; PB_MORE = !!next.cursor;
+        renderGrid();
+      } catch (error) {
+        $("pb-load-more").disabled = false;
+        $("pb-state").replaceChildren(loadErrorNode(error, () => loadMore()));
+      }
+    }
+    $("pb-search").addEventListener("input", (event) => { PB_QUERY = event.target.value; renderGrid(); });
+    $("pb-load-more").addEventListener("click", loadMore);
     async function upload(input, directory) {
       reflectFiles(input);
       try {
@@ -539,7 +623,7 @@
         const name = $("pb-input-name").value.trim();
         const spec = $("pb-input-kind").value === "files" ? { files: JSON.parse($("pb-input-files").value) } : { source: $("pb-input-source").value.trim() };
         const response = await api(nsPath("playbooks"), { method: "POST", body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Playbook", metadata: { name, namespace: getScope().namespace }, spec }) });
-        const open = el("a", "btn btn-primary btn-sm", t("pb.v4.open")); open.href = link(response.metadata.name);
+        const open = el("a", "btn btn-sm", t("pb.v4.open")); open.href = link(response.metadata.name);
         $("pb-import-result").replaceChildren(el("p", "field-hint", t("pb.v4.stored")), open);
         await load();
       } catch (error) {
@@ -552,6 +636,11 @@
       } finally { $("pb-create").disabled = false; }
     });
     $("btn-refresh").addEventListener("click", load);
+    $("btn-import").addEventListener("click", openImport);
+    $("pb-import-close").addEventListener("click", closeImport);
+    $("pb-import-modal").addEventListener("click", event => {
+      if (event.target === $("pb-import-modal")) closeImport();
+    });
     document.addEventListener("DOMContentLoaded", load);
   })();
 </script>

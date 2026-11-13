@@ -302,18 +302,25 @@ paths:
       tags: [auth]
       summary: 列出当前用户的登录会话
       description: |
-        列出 `sessions` 表里属于当前用户的全部会话（**不过滤过期**：过期行由后台清理，
-        前端按 `expiresAt` 自行判断），按 `createdAt` 倒序。空时为 `[]`。
+        列出 `sessions` 表里属于当前用户、**未过期**（`expiresAt > now`）的会话，
+        按 `createdAt` 倒序（`id` 破平局）。空时为 `[]`。
+
+        分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是绑定当前
+        用户的不透明游标；末页回 `continue: ""`。坏游标 / 别人的游标 → `400`。
 
         注意 `id` 本身是一条 bearer 凭据（`<sessionID>.<随机后缀>`），不要当无害日志字段。
       operationId: listAuthSessions
       security: [{ session: [] }]
+      parameters:
+        - $ref: "./resource.yaml#/components/parameters/LimitQuery"
+        - $ref: "./resource.yaml#/components/parameters/ContinueQuery"
       responses:
         "200":
           description: 会话列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SessionList" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
@@ -324,14 +331,21 @@ paths:
       summary: 列出当前用户的 Passkey
       description: |
         安全公开视图（不含 publicKey 原始字节）。空时为 `[]`（不是 `null`）。
+
+        分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是绑定当前
+        用户的不透明游标；末页回 `continue: ""`。坏游标 / 别人的游标 → `400`。
       operationId: listPasskeys
       security: [{ session: [] }]
+      parameters:
+        - $ref: "./resource.yaml#/components/parameters/LimitQuery"
+        - $ref: "./resource.yaml#/components/parameters/ContinueQuery"
       responses:
         "200":
           description: Passkey 列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PasskeyList" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
@@ -692,14 +706,22 @@ paths:
       description: |
         只回当前用户的 Key。`prefix` 是明文的前 16 个字符（含 `ant_<label>_` 开头部分），
         够识别、不够使用。空时为 `[]`。
+
+        分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是绑定当前
+        用户的不透明游标；末页回 `continue: ""`。坏游标 / 别人的游标 → `400`。
+        `count` 是**本页**条数，不是总数。
       operationId: listAPIKeys
       security: [{ session: [] }]
+      parameters:
+        - $ref: "./resource.yaml#/components/parameters/LimitQuery"
+        - $ref: "./resource.yaml#/components/parameters/ContinueQuery"
       responses:
         "200":
           description: Key 列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/APIKeyList" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "500": { $ref: "./resource.yaml#/components/responses/AuthError500" }
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
@@ -1375,17 +1397,24 @@ paths:
       tags: [admin]
       summary: 用户列表（含各用户实体计数，超管）
       description: |
-        按 `createdAt` 升序（首注册用户排最前，便于识别超管来源）。每个用户附 `deviceCount` /
-        `keyCount` / `sessionCount`（不存在的用户也不会有这三项之外的假字段）。
+        按 `createdAt` 升序；同一秒内按**注册顺序**（插入序）——首注册用户排最前，便于识别超管来源。
+        每个用户附 `deviceCount` / `keyCount` / `sessionCount`（不存在的用户也不会有这三项之外的假字段）。
         非 `GET` 方法由 handler 自己回 `405`。
+
+        分页：`limit` 缺省 50（`<=0` 按 50，`>500` 钳到 500），`continue` 是不透明游标；
+        末页回 `continue: ""`。`count` 是**本页**条数，不是总数。
       operationId: listAdminUsers
       security: [{ adminSession: [] }]
+      parameters:
+        - $ref: "./resource.yaml#/components/parameters/LimitQuery"
+        - $ref: "./resource.yaml#/components/parameters/ContinueQuery"
       responses:
         "200":
           description: 用户列表
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AdminUserList" }
+        "400": { $ref: "./resource.yaml#/components/responses/AuthError400" }
         "401": { $ref: "./resource.yaml#/components/responses/AuthError401" }
         "403": { $ref: "./resource.yaml#/components/responses/AuthError403" }
         "405": { $ref: "./resource.yaml#/components/responses/AuthError405" }
@@ -1717,13 +1746,16 @@ components:
 
     PasskeyList:
       type: object
-      required: [passkeys, count]
+      required: [passkeys, count, continue]
       properties:
         passkeys:
           type: array
           items: { $ref: "#/components/schemas/Passkey" }
           description: 空时是 `[]`（不是 `null`）
-        count: { type: integer }
+        count: { type: integer, description: "**本页**条数（不是总数）" }
+        continue:
+          type: string
+          description: "下一页不透明游标；末页为空串。坏游标/跨用户游标 → `400`"
 
     PasskeyRenameRequest:
       type: object
@@ -1749,13 +1781,16 @@ components:
 
     SessionList:
       type: object
-      required: [sessions, count]
+      required: [sessions, count, continue]
       properties:
         sessions:
           type: array
           items: { $ref: "#/components/schemas/Session" }
           description: 空时是 `[]`
-        count: { type: integer }
+        count: { type: integer, description: "**本页**条数（不是总数）" }
+        continue:
+          type: string
+          description: "下一页不透明游标；末页为空串。坏游标/跨用户游标 → `400`"
 
     # ---------- 密码与恢复码 ----------
     PasswordLoginRequest:
@@ -1968,13 +2003,16 @@ components:
 
     APIKeyList:
       type: object
-      required: [keys, count]
+      required: [keys, count, continue]
       properties:
         keys:
           type: array
           items: { $ref: "#/components/schemas/APIKey" }
           description: 空时是 `[]`
-        count: { type: integer }
+        count: { type: integer, description: "**本页**条数（不是总数）" }
+        continue:
+          type: string
+          description: "下一页不透明游标；末页为空串。坏游标/跨用户游标 → `400`"
 
     APIKeyCreateRequest:
       type: object
@@ -2277,13 +2315,16 @@ components:
 
     AdminUserList:
       type: object
-      required: [users, count]
+      required: [users, count, continue]
       properties:
         users:
           type: array
           items: { $ref: "#/components/schemas/AdminUser" }
           description: 按 `createdAt` 升序；空为 `[]`
-        count: { type: integer }
+        count: { type: integer, description: "**本页**条数（不是总数）" }
+        continue:
+          type: string
+          description: "下一页不透明游标；末页为空串。坏游标 → `400`"
 
     AdminUserPatchRequest:
       type: object

@@ -6,7 +6,7 @@
   .c2-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
   .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
   .c2-state { color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 10px; }
-  .c2-state.is-error { color: var(--error-300); }
+  /* 错误态颜色在 ui.css 的「状态语义修饰 is-*」一节（#372）。 */
   .c2-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line); }
   .c2-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .c2-name { color: var(--text); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
@@ -60,7 +60,49 @@
   .nd-label-unit { font-size: 11px; color: var(--faint); font-weight: 400; }
   .nd-tip { margin-top: 2px; }
 
+  /* ---------- #374：配置版本漂移警示（不是普通文本）+ 开发者信息折叠 ---------- */
+  .nd-drift {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--warn);
+  }
+  .nd-drift-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: none;
+    border-radius: var(--r-full);
+    background: var(--warn);
+    color: var(--surface-1);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .devf { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); margin-top: 12px; min-width: 0; }
+  .devf > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+  .devf > summary::-webkit-details-marker { display: none; }
+  .devf > summary::before { content: "▸"; color: var(--faint); font-size: 11px; }
+  .devf[open] > summary::before { content: "▾"; }
+  .devf > summary:hover { color: var(--text); }
+  .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
+  /* #377：本地搜索 + 「20 条 + 加载更多」 */
+  .nd-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .nd-toolbar .input { max-width: 320px; min-width: 180px; }
+  .nd-toolbar-count { color: var(--muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .nd-more-wrap { display: flex; justify-content: center; padding: 12px 0 2px; }
 </style>
 {{end}}
 {{define "content"}}
@@ -72,7 +114,7 @@
   <section id="register-panel" class="card card-pad" hidden>
     <div class="card-title">{{t "nodes.v4.register"}}</div>
     <div class="field"><label class="field-label" for="reg-name">{{t "nodes.v4.name"}}</label><input id="reg-name" class="input" autocomplete="off" pattern="[a-z0-9][a-z0-9._-]{0,62}" placeholder="node-a" /></div>
-    <div class="c2-actions"><button id="reg-submit" class="btn btn-primary" type="button">{{t "nodes.v4.create"}}</button><button id="reg-cancel" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
+    <div class="c2-actions"><button id="reg-submit" class="btn" type="button">{{t "nodes.v4.create"}}</button><button id="reg-cancel" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button></div>
     <div id="reg-error" class="c2-state" role="alert"></div>
   </section>
   <section id="reg-result" class="card card-pad c2-stack" hidden>
@@ -83,10 +125,14 @@
     <p class="c2-note">{{t "nodes.v4.bootstrap_hint"}}</p>
     <div class="code-block"><div class="code-head">{{t "nodes.v4.local_setup"}}</div><pre class="code-body"><code id="reg-install">anode install</code>
 <code id="reg-serve">anode serve</code>
-<code id="reg-emit">anode emit fixer --id review-a.go --data '{"file":"a.go"}'</code></pre></div>
+<code id="reg-emit">anode emit &lt;capability&gt; --data '{}'</code></pre></div>
+    <!-- #381：示例命令必须是**这个实例真的有**的能力（原写死 fixer，新实例跑不通）。
+         有真能力才展示命令；没有就把这行换成「先建一个能力」的入口。 -->
+    <div class="c2-actions"><button id="reg-emit-copy" class="btn btn-ghost btn-sm" type="button">{{t "nodes.v4.copy_emit"}}</button><a id="reg-emit-create" class="btn btn-ghost btn-sm" href="capabilities.html" hidden>{{t "nodes.v4.emit_create"}}</a></div>
+    <p class="c2-note" id="reg-emit-hint"></p>
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
-  <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><div id="nodes-list" aria-live="polite"></div></section>
+  <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><!-- #377：搜索只过滤已加载的页（不重新请求） --><div class="nd-toolbar"><input id="nodes-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" /><span id="nodes-count" class="nd-toolbar-count" aria-live="polite"></span></div><div id="nodes-list" aria-live="polite"></div><div id="nodes-more-wrap" class="nd-more-wrap" hidden><button id="nodes-load-more" class="btn btn-ghost" type="button">{{t "paging.load_more"}}</button></div></section>
   <!-- ND-3：整段开发者旁白默认收起（原文保留，e2e 搜文本仍成立） -->
   <details class="nd-more">
     <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
@@ -96,20 +142,26 @@
     <section id="namespace-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.ns_config"}}</div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
       <div class="field"><label for="config-namespace" class="field-label">namespace</label><select id="config-namespace" class="select"></select></div>
-      <div id="namespace-revisions" class="c2-kv"></div>
+      <details class="devf">
+        <summary>{{t "uxaudit.dev.summary"}}</summary>
+        <div class="devf-body"><div id="namespace-revisions" class="c2-kv"></div></div>
+      </details>
       <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-      <div class="c2-actions"><button id="namespace-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+      <div class="c2-actions"><button id="namespace-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       <div id="namespace-state" class="c2-state" role="status"></div>
     </section>
     <section id="system-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.retention"}}</div><p class="c2-note">{{t "nodes.v4.retention_hint"}}</p>
       <div id="system-fields" hidden>
-        <div id="system-revisions" class="c2-kv"></div>
+        <details class="devf">
+          <summary>{{t "uxaudit.dev.summary"}}</summary>
+          <div class="devf-body"><div id="system-revisions" class="c2-kv"></div></div>
+        </details>
         <!-- ND-4：中文 label + 单位提示；原始 JSON key 放 title，不再当 label -->
         <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
         <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
         <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
-        <div class="c2-actions"><button id="system-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+        <div class="c2-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
       </div>
       <div id="system-state" class="c2-state" role="status"></div>
     </section>
@@ -122,6 +174,8 @@
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
   // 本轮新增文案统一在 uxaudit.res.* 命名空间（四份 locale 同步）
   const x = key => A.t('uxaudit.res.nodes.' + key);
+  /* #374/#375：开发者信息（内部字段 / 原始 JSON）命名空间 */
+  const yd = key => A.t('uxaudit.dev.' + key);
   A.mountLayout({ active: 'nodes', title: t('title'), subtitle: t('subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   // ND-2：主次分开 —— 行尾动作是次要按钮（.btn-quiet），不再每行挂一个主按钮。
@@ -130,6 +184,40 @@
   const message = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
   const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? t('stale') : t('error') + ': ' + (e.reason || '') + ' ' + e.message;
   const write = (path, body, method = 'PUT') => A.api(path, { method, body: JSON.stringify(body) });
+  /* #381：节点登记后的示例 emit 命令必须指向**本实例真实存在**的能力。
+   * 节点跑在哪个 namespace 由上方的 anode.yaml 决定（namespaces: [default]），
+   * 所以先按 default 找；default 没有再看用户当前在看的 namespace（他可能把能力
+   * 建在别处）。都没找到就不编一条跑不通的命令，改成「先建一个能力」的入口。
+   * 单页能力上限 500（与 capabilities 页同口径），只取第一个，不把全量拉进内存。 */
+  /* #381 rework（rev-397）：这里原来有一个 `emitNames` Map 做缓存，但注释写的是
+     「每次打开面板都重算」—— 两者相反。缓存永不失效的后果：先开面板（报「还没有
+     能力」）→ 去建一个能力 → 回来再开，仍是「还没有能力」，只有整页刷新才对。
+     面板每次打开都要显示当前真相，所以不缓存。 */
+  async function firstCapability(ns) {
+    let name = '';
+    try {
+      const doc = await A.api('/v1/namespaces/' + encodeURIComponent(ns) + '/capabilities?limit=500');
+      const items = Array.isArray(doc && doc.items) ? doc.items : [];
+      const hit = items.find(c => c && c.metadata && typeof c.metadata.name === 'string' && c.metadata.name);
+      if (hit) name = hit.metadata.name;
+    } catch { name = ''; /* 取不到能力不编造，走「先建一个」分支 */ }
+    return name;
+  }
+  async function renderEmit() {
+    const primary = 'default';
+    let cap = await firstCapability(primary);
+    const current = A.readScope && A.readScope() ? A.readScope().namespace : '';
+    if (!cap && current && current !== primary) cap = await firstCapability(current);
+    const line = $('reg-emit'), copy = $('reg-emit-copy'), create = $('reg-emit-create'), hint = $('reg-emit-hint');
+    if (cap) {
+      line.textContent = "anode emit " + cap + " --data '{}'";
+      line.hidden = false; copy.hidden = false; create.hidden = true;
+      hint.textContent = t('emit_hint').replace('{cap}', cap);
+    } else {
+      line.hidden = true; copy.hidden = true; create.hidden = false;
+      hint.textContent = t('emit_none');
+    }
+  }
   const showToken = (name, token) => {
     if (typeof token !== 'string' || !token) throw new Error('Invalid NodeToken response');
     $('register-panel').hidden = true; $('reg-result').hidden = false;
@@ -138,12 +226,14 @@
     $('reg-yaml').textContent = 'name: ' + JSON.stringify(name) + '\nserver: ' + JSON.stringify(server) + '\ntoken: ' + JSON.stringify(token) + '\nnamespaces: [default]\nlisten: tcp://127.0.0.1:0\nvars: {}\nlimits:\n  total: 1\n  perCapability: {}\n';
     // 一条命令安装：server 用 location.origin（脚本自己归一化 http(s)→ws(s)）；不让用户加 sudo，脚本自己探测提权。
     $('reg-bootstrap').textContent = 'curl -fsSL ' + location.origin + '/install-anode.sh | sh -s -- --name ' + name + ' --server ' + location.origin + ' --token ' + token;
+    // 能力列表可能变了（刚建过），每次打开面板都重算。
+    renderEmit();
   };
   const clearToken = () => { $('reg-token').textContent = ''; $('reg-yaml').textContent = ''; $('reg-bootstrap').textContent = ''; $('reg-result').hidden = true; };
   let createdName = '';
   $('node-register-btn').onclick = () => { clearToken(); createdName = ''; $('register-panel').hidden = false; message('reg-error', ''); $('reg-name').focus(); };
   $('reg-cancel').onclick = $('reg-close').onclick = () => { clearToken(); $('register-panel').hidden = true; };
-  for (const id of ['token', 'yaml', 'bootstrap']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
+  for (const id of ['token', 'yaml', 'bootstrap', 'emit']) $('reg-' + id + '-copy').onclick = () => A.copyText($('reg-' + id + '-copy'), () => $('reg-' + id).textContent);
   $('reg-submit').onclick = async () => {
     const name = $('reg-name').value.trim(); if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(name)) { message('reg-error', t('name') + ': ^[a-z0-9][a-z0-9._-]{0,62}$', true); return; }
     $('reg-submit').disabled = true; clearToken(); message('reg-error', t('loading'));
@@ -157,7 +247,7 @@
     } catch (e) { message('reg-error', errorText(e), true); } finally { $('reg-submit').disabled = false; }
   };
   async function rotate(name) {
-    if (!confirm(t('rotate_confirm').replace('{name}', name))) return;
+    if (!(await A.confirmDanger({ body: t('rotate_confirm').replace('{name}', name) }))) return;
     clearToken();
     try { const response = await write('/v1/nodes/' + encodeURIComponent(name) + '/tokens', {}, 'POST'); showToken(name, response.token); await loadNodes(); }
     catch (e) { A.toast(errorText(e), 'error'); }
@@ -188,26 +278,85 @@
       pair(x('applied_rev'), rev(n.appliedRevision), 'appliedRevision'),
       pair(x('slots_label'), slots, t('slots')),
     );
-    return dl;
+    /* #374：配置版本 ≠ 已应用版本 = 重要的「未生效」状态，必须与普通文本区分开：
+       给带周界的警示条（.nd-drift），而不是又一行灰字。 */
+    const hasRevs = n.configRevision != null && n.configRevision !== '' && n.appliedRevision != null && n.appliedRevision !== '';
+    const drifted = hasRevs && String(n.configRevision) !== String(n.appliedRevision);
+    if (!drifted) return dl;
+    const frag = document.createDocumentFragment();
+    frag.append(dl);
+    const warn = make('div', 'nd-drift');
+    warn.dataset.drift = 'config-vs-applied';
+    warn.append(make('span', 'nd-drift-ico', '!'),
+      make('span', null, yd('drift').replace('{config}', rev(n.configRevision)).replace('{applied}', rev(n.appliedRevision))),
+      make('span', 'badge badge-warn', yd('drift_short')));
+    frag.append(warn);
+    return frag;
   }
   async function loadNodes() {
     $('nodes-skel').hidden = false; $('nodes-list').setAttribute('aria-busy', 'true');
     try {
-      const { items: rows } = await A.apiList('/v1/nodes'); $('nodes-list').replaceChildren();
-      for (const resource of rows) {
-        const n = A.model.node(resource), row = make('div', 'c2-row nd-row'); row.dataset.node = n.name;
-        const main = make('div', 'c2-main'), head = make('div', 'nd-head'), link = make('a', 'c2-name', n.name);
-        link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default');
-        head.append(link, statusBadge(n));
-        main.append(head, kvGrid(n));
-        row.append(main, make('div', 'nd-acts'));
-        row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
-        $('nodes-list').appendChild(row);
-      }
-      if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
+      const first = await fetchNodePage('');
+      NODES = first.items; NODES_CURSOR = first.cursor; NODES_MORE = !!first.cursor;
+      renderNodes();
     } catch (e) { $('nodes-list').replaceChildren(A.loadErrorNode(e, loadNodes)); }
     finally { $('nodes-skel').hidden = true; $('nodes-list').removeAttribute('aria-busy'); }
   }
+  /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长。 */
+  const NODES_PAGE = 20;
+  let NODES = [], NODES_CURSOR = '', NODES_MORE = false, NODES_QUERY = '';
+  async function fetchNodePage(cursor) {
+    const qs = new URLSearchParams({ limit: String(NODES_PAGE) });
+    if (cursor) qs.set('continue', cursor);
+    const res = await A.api('/v1/nodes?' + qs.toString());
+    if (!res || !Array.isArray(res.items)) throw new Error(A.t("common.request_failed"));
+    const cont = res.metadata && typeof res.metadata.continue === 'string' ? res.metadata.continue : '';
+    return { items: res.items, cursor: cont };
+  }
+  function visibleNodes() {
+    const q = NODES_QUERY.trim().toLowerCase();
+    if (!q) return NODES;
+    return NODES.filter((resource) => {
+      const n = A.model.node(resource);
+      const hay = [n.name, ...(n.effectiveNamespaces || []), ...(n.tags || [])].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  function renderNodes() {
+    const rows = visibleNodes();
+    $('nodes-list').replaceChildren();
+    for (const resource of rows) {
+      const n = A.model.node(resource), row = make('div', 'c2-row nd-row'); row.dataset.node = n.name;
+      const main = make('div', 'c2-main'), head = make('div', 'nd-head'), link = make('a', 'c2-name', n.name);
+      link.href = 'node.html?id=' + encodeURIComponent(n.name) + '&namespace=' + encodeURIComponent(A.readScope()?.namespace || 'default');
+      head.append(link, statusBadge(n));
+      main.append(head, kvGrid(n));
+      row.append(main, make('div', 'nd-acts'));
+      row.lastChild.append(button(t('rotate'), () => rotate(n.name)));
+      $('nodes-list').appendChild(row);
+    }
+    if (!NODES.length) $('nodes-list').appendChild(make('div', 'empty', t('empty')));
+    else if (!rows.length) $('nodes-list').appendChild(make('div', 'empty', A.t("paging.no_match")));
+    /* 用 hidden 属性：.nd-more-wrap 自带 display:flex，.hidden class 会被它盖掉。 */
+    $('nodes-more-wrap').hidden = !NODES_MORE;
+    $('nodes-count').textContent = A.t("paging.showing").replace('{n}', String(rows.length));
+  }
+  async function loadMoreNodes() {
+    if (!NODES_MORE) return;
+    $('nodes-load-more').disabled = true;
+    try {
+      const next = await fetchNodePage(NODES_CURSOR);
+      const seen = new Set(NODES.map((row) => row.metadata.name));
+      for (const item of next.items) {
+        if (seen.has(item.metadata.name)) continue;
+        NODES.push(item); seen.add(item.metadata.name);
+      }
+      NODES_CURSOR = next.cursor; NODES_MORE = !!next.cursor;
+      renderNodes();
+    } catch (e) { $('nodes-load-more').disabled = false; A.toast(errorText(e), 'error'); }
+  }
+  $('nodes-search').addEventListener('input', (event) => { NODES_QUERY = event.target.value; renderNodes(); });
+  $('nodes-load-more').addEventListener('click', loadMoreNodes);
   $('nodes-refresh').onclick = loadNodes;
   // Configuration wrappers deliberately do not pass through resource adapters.
   let nsConfig, systemConfig, selectedNamespace = '', nsOriginal = '', systemOriginal = '';
@@ -239,7 +388,7 @@
       return { ok: false, error: e };
     }
   }
-  $('namespace-reload').onclick = () => { if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) return; loadNamespace(); };
+  $('namespace-reload').onclick = async () => { if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadNamespace(); };
   $('namespace-save').onclick = async () => {
     // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
     if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
@@ -263,8 +412,8 @@
     catch (e) { if (current()) message('namespace-state', errorText(e), true); }
     finally { if (current()) $('namespace-save').disabled = false; }
   };
-  $('config-namespace').onchange = () => {
-    if ($('namespace-vars').value !== nsOriginal && !confirm(t('reload_confirm'))) { $('config-namespace').value = selectedNamespace; return; }
+  $('config-namespace').onchange = async () => {
+    if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
     selectedNamespace = $('config-namespace').value; nsConfig = null; nsLoaded = ''; loadNamespace();
   };
   const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
@@ -288,7 +437,7 @@
       $('system-fields').hidden = false; message('system-state', t('loaded')); $('system-save').disabled = false;
     } catch (e) { message('system-state', errorText(e), true); }
   }
-  $('system-reload').onclick = () => { if (currentTtls() !== systemOriginal && !confirm(t('reload_confirm'))) return; loadSystem(); };
+  $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadSystem(); };
   $('system-save').onclick = async () => {
     if (!systemConfig) return; $('system-save').disabled = true;
     try {

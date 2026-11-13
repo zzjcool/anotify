@@ -41,11 +41,7 @@
   .msg-state-icon {
     display: block;
   }
-  .msg-state.is-error .msg-state-mark {
-    border-color: color-mix(in srgb, var(--error) 30%, transparent);
-    background: var(--error-soft);
-    color: var(--error);
-  }
+  /* 错误态的颜色在 ui.css 的「状态语义修饰 is-*」一节（#372：页面不再写一份）。 */
   /* 卡片内的小块（日志 / emissions / 动作错误）：图标与内距收一档，
      不要在一个区块里画一个整页空态 */
   .msg-state.is-compact {
@@ -92,6 +88,83 @@
     justify-content: center;
     gap: 8px;
     margin-top: 4px;
+  }
+
+  /* ---------- #374：开发者信息折叠（内部协议字段不上首屏，一个都不删）---------- */
+  .devf {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+    margin-top: 4px;
+    min-width: 0;
+  }
+  .devf > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  .devf > summary::-webkit-details-marker {
+    display: none;
+  }
+  .devf > summary::before {
+    content: "▸";
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .devf[open] > summary::before {
+    content: "▾";
+  }
+  .devf > summary:hover {
+    color: var(--text);
+  }
+  .devf-hint {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--faint);
+  }
+  .devf-body {
+    display: grid;
+    gap: 10px;
+    padding: 0 12px 12px;
+    min-width: 0;
+  }
+  .devf-kv {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+    gap: 10px 18px;
+    margin: 0;
+  }
+  .devf-pair {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .devf-k {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--faint);
+  }
+  .devf-v {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .devf-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 </style>
 {{end}}
@@ -154,6 +227,14 @@
       return el("div", {}, el("dt", { class: "card-sub", text: label }),
         el("dd", { class: "mono b2-wrap", text: String(value) }));
     }
+    /* #379：参数值是**用户数据**（能力自己的 params），不是界面文案。
+       按仓里既有约定用 data-raw-content 的纯文本 SPAN 标出来，多语言
+       残留扫描就不会把中文参数当成没翻译的界面字（同 #374 的用法：
+       result.summary / pruned.detail 已经这样标）。 */
+    function fieldRaw(label, value) {
+      return el("div", {}, el("dt", { class: "card-sub", text: label }),
+        el("dd", { class: "mono b2-wrap" }, el("span", { "data-raw-content": "", text: String(value) })));
+    }
     /* ---------- 空态 / 错误态（MSG-2 / CP-4）----------
        图标 + 标题 + 说明 + 动作；与 trace.html 同一套骨架（各自页内定义）。 */
     const ICON_ALERT = [
@@ -178,22 +259,16 @@
       if (actions.children.length) box.append(actions);
       return box;
     }
-    /* 失败原因与 loadErrorNode 同口径（HTTP 档位 → 网络失败 → 兜底）。 */
+    /* 失败原因是**分级**（#378）：分级只留一处（A.errorFacts），本页只负责把结果排成
+       自己的骨架。这里以前又拄了一份「HTTP 档位 → 文案」的映射 —— 两份映射就是
+       页面上裸 HTTP 码的来源（#378 实测：日志区打出「请求被拒绝 HTTP 410」）。 */
     function failureState(error, retry) {
-      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
-      const status = (error && error.status) || 0;
-      const reason = status
-        ? status >= 500
-          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-        : /Failed to fetch|NetworkError|load failed/i.test(msg)
-          ? t("common.backend_offline", "连不上服务端")
-          : t("common.request_failed", "请求失败");
+      const facts = A.errorFacts(error);
       return stateNode({
         tone: "is-error",
-        title: t("common.load_failed_prefix", "载入失败：") + reason,
-        desc: msg,
-        retry,
+        title: t("common.load_failed_prefix", "载入失败：") + facts.title,
+        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        retry: facts.retry ? retry : undefined,
         back: { href: "events.html", text: t("message.back_events", "返回事件流") },
       });
     }
@@ -234,21 +309,13 @@
     };
     /* 卡片内的小失败态：同口径文案，但用紧凑骨架（不带「返回事件流」）。 */
     function inlineFailure(error, retry) {
-      const msg = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : "";
-      const status = (error && error.status) || 0;
-      const reason = status
-        ? status >= 500
-          ? t("common.server_error", "服务端错误 HTTP {code}").replace("{code}", String(status))
-          : t("common.request_rejected", "请求被拒绝 HTTP {code}").replace("{code}", String(status))
-        : /Failed to fetch|NetworkError|load failed/i.test(msg)
-          ? t("common.backend_offline", "连不上服务端")
-          : t("common.request_failed", "请求失败");
+      const facts = A.errorFacts(error);
       return stateNode({
         tone: "is-error",
         compact: true,
-        title: t("common.load_failed_prefix", "载入失败：") + reason,
-        desc: msg,
-        retry,
+        title: t("common.load_failed_prefix", "载入失败：") + facts.title,
+        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        retry: facts.retry ? retry : undefined,
       });
     }
     function section(title, id) {
@@ -265,6 +332,58 @@
       return el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: label || "JSON" }), button), body);
     }
+    /* ---------- #374：开发者信息折叠 ----------
+       协议内部字段（revision / digest / instanceId）默认不进首屏；标签用原始字段名
+       （语言中立），值可一键复制。字段一个不少，只是收起来。 */
+    function devFold(rows) {
+      const box = el("details", { class: "devf", id: "task-dev" });
+      box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.summary") }),
+        el("span", { class: "devf-hint", text: t("uxaudit.dev.hint") })));
+      const body = el("div", { class: "devf-body" }), dl = el("dl", { class: "devf-kv" });
+      for (const [key, value] of rows) {
+        dl.append(el("div", { class: "devf-pair" },
+          el("dt", { class: "devf-k", text: key }),
+          el("dd", { class: "devf-v", text: value == null || value === "" ? "—" : String(value) })));
+      }
+      body.append(dl);
+      const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy") });
+      copy.addEventListener("click", () => copyText(copy, () => rows.map(([k, v]) => k + ": " + (v == null ? "" : String(v))).join("\n")));
+      body.append(el("div", { class: "devf-foot" }, copy));
+      box.append(body);
+      return box;
+    }
+    /* ---------- #375：结构化视图帮手 ---------- */
+    /* 参数/错误对象 → 键值表（标量直接显示，嵌套对象给紧凑 JSON 字符串）。
+       空对象不编一行空表，只说「无」。 */
+    function kvList(value, emptyText, prefix) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length)
+        return el("p", { class: "card-sub", text: emptyText });
+      const dl = el("dl", { class: "grid b2-facts gap-4" });
+      for (const [key, item] of Object.entries(value)) {
+        dl.append(fieldRaw((prefix || "") + key, item == null ? "—" : typeof item === "string" ? item : JSON.stringify(item)));
+      }
+      return dl;
+    }
+    /* 错误事实：标签走 i18n。原本用 `error.` 前缀拼原始 key（error.reason / error.message），
+       等于把协议前缀当文案泄给用户。未知字段仍按原始 key 显示，信息不丢。 */
+    const ERROR_LABEL = { reason: "message.v4.error_reason", message: "message.v4.error_message" };
+    function errorFacts(error) {
+      const entries = error && typeof error === "object" && !Array.isArray(error) ? Object.entries(error) : [];
+      if (!entries.length) return el("p", { class: "card-sub", text: t("uxaudit.dev.none") });
+      const dl = el("dl", { class: "grid b2-facts gap-4" });
+      for (const [key, value] of entries) {
+        const label = ERROR_LABEL[key] ? t(ERROR_LABEL[key]) : key;
+        dl.append(field(label, value == null ? "—" : typeof value === "string" ? value : JSON.stringify(value)));
+      }
+      return dl;
+    }
+    /* 原始 JSON 一律进「查看原始」折叠（默认收起） */
+    function rawFold(label, value) {
+      const box = el("details", { class: "devf" });
+      box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.raw") }), el("span", { class: "devf-hint", text: label })));
+      box.append(el("div", { class: "devf-body" }, json(value, label)));
+      return box;
+    }
     function envRows(facts) {
       if (!facts.length) return el("p", { class: "card-sub", text: t("message.v4.env_empty") });
       const list = el("dl", { class: "grid b2-facts gap-4" });
@@ -274,7 +393,8 @@
     }
     async function action(kind) {
       if (loading || !task || terminal.has(task.phase)) return;
-      if (!window.confirm(t("message.v4.confirm_" + kind))) return;
+      // #378：原生 confirm 下线 —— 弹层由 #anotify-dialog 承载（取消/放弃任务不可撤销，无撤销条）。
+      if (!(await A.confirmDanger({ body: t("message.v4.confirm_" + kind) }))) return;
       loading = true;
       node("task-cancel").disabled = true;
       node("task-abandon").disabled = true;
@@ -358,25 +478,38 @@
         ["waitingReason", task.waitingReason],
         ["nextAttemptAt", task.nextAttemptAt],
         [t("message.v4.attempt"), task.attempt + "/" + task.maxAttempts],
-        ["nodeName / instanceId", [task.nodeName, task.instanceId].filter(v => v != null && v !== "").join(" / ")],
+        ["nodeName", task.nodeName],
         ["leaseExpiresAt", task.leaseExpiresAt],
         ["parentTaskId", task.parentTaskId],
-        ["configRevision", task.configRevision],
-        ["namespaceVarsRevision", task.namespaceVarsRevision],
         ["createdAt", task.creationTimestamp],
         ["startedAt", task.startedAt],
         ["finishedAt", task.finishedAt],
-        ["digest", task.capability.digest],
+      ];
+      /* #374：configRevision / namespaceVarsRevision / capability.digest / instanceId
+         是协议内部字段（sha256 摘要、nins_* 实例号），移到开发者信息折叠；
+         首屏只留人能直接用的等待/尝试/时间线。 */
+      const devEntries = [
+        ["instanceId", task.instanceId],
+        ["configRevision", task.configRevision],
+        ["namespaceVarsRevision", task.namespaceVarsRevision],
+        ["capability.digest", task.capability.digest],
       ];
       const filled = entries.filter(([, value]) => value != null && value !== "");
       const unset = entries.filter(([, value]) => value == null || value === "").map(([label]) => label);
-      facts.append(el("span", { id: "task-phase", class: "badge msg-phase " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase, text: t("message.v4.phase." + task.phase) + " · " + task.phase }),
+      /* #379：相位徽章只说当前语言的一种话。原始协议 token 不丢：它仍在
+         data-phase（机器读）、title 与 aria-label（读屏/悬停）里。 */
+      const phaseLabel = t("message.v4.phase." + task.phase);
+      const phaseBadge = el("span", { id: "task-phase", class: "badge msg-phase " + (PHASE_BADGE[task.phase] || "badge-neutral"), "data-phase": task.phase, text: phaseLabel });
+      phaseBadge.setAttribute("title", phaseLabel + " · " + task.phase);
+      phaseBadge.setAttribute("aria-label", phaseLabel + " · " + task.phase);
+      facts.append(phaseBadge,
         el("dl", { class: "grid b2-facts gap-4" }, ...filled.map(([label, value]) => field(label, value))));
       if (unset.length) {
         facts.append(el("p", { class: "msg-unset" },
           el("b", { text: t("uxaudit.doc.msg_unset", "未设置") + " " }),
           el("span", { text: unset.join(" · ") })));
       }
+      facts.append(devFold(devEntries));
       facts.append(el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),
         el("p", { class: "card-sub", text: t("message.v4.lease_hint") }));
       const actions = el("div", { class: "flex flex-wrap gap-2" });
@@ -387,18 +520,30 @@
         actions.append(button);
       }
       facts.append(actions, el("div", { id: "task-action-error", role: "status" }));
-      section(t("message.v4.params"), "task-params").append(json(task.params, t("message.v4.params")));
+      const params = section(t("message.v4.params"), "task-params");
+      params.append(kvList(task.params, t("uxaudit.dev.none"), ""), rawFold(t("message.v4.params"), task.params));
       const env = section(t("message.v4.env"), "task-env");
       env.append(el("p", { class: "card-sub", text: t("message.v4.env_hint") }), envRows(task.envDiagnostics));
       const result = section(t("message.v4.result"), "task-result");
+      /* #375：结果 = 摘要 + 结构化错误 + 产物清单；原始 JSON 进「查看原始」。
+         注：产物 sha256 保留在首屏 —— 它是下载寻址的清单哈希（不是内部字段）。 */
       result.append(el("p", { class: "b2-wrap" },
-        el("span", { "data-raw-content": "", text: task.result.summary || "—" })),
-        json({ error: task.result.error }, "error"));
+        el("span", { "data-raw-content": "", text: task.result.summary || "—" })));
+      if (task.result.error) result.append(errorFacts(task.result.error));
       task.result.artifacts.forEach(artifact => result.append(artifactRow(artifact)));
+      result.append(rawFold("JSON", { summary: task.result.summary, error: task.result.error }));
       const attempts = section(t("message.v4.attempts"), "task-attempts");
-      task.attempts.forEach(fact => {
+      task.attempts.forEach((fact, index) => {
         const { envDiagnostics, ...safeFacts } = fact;
-        attempts.append(json(safeFacts, "JSON"), envRows(envDiagnostics));
+        /* #374 rework：attempt 的原始事实（configRevision / namespaceVarsRevision 等）默认不进首屏，
+           与任务级「开发者信息」共用同一套折叠语言；多次尝试时用 #n 区分（语言中立，不新增文案）。 */
+        const box = el("details", { class: "devf" });
+        box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.raw") }),
+          task.attempts.length > 1 ? el("span", { class: "devf-hint", text: "#" + (index + 1) }) : null));
+        const body = el("div", { class: "devf-body" });
+        body.append(json(safeFacts, "JSON"));
+        box.append(body);
+        attempts.append(box, envRows(envDiagnostics));
       });
       if (!task.attempts.length) attempts.append(el("p", { class: "card-sub", text: t("message.v4.attempts_empty") }));
       renderLogsControls();

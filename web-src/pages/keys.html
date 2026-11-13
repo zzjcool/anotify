@@ -66,8 +66,17 @@
         gap: 12px;
         margin-bottom: 8px;
       }
+      /* #377：本地搜索（只过滤已加载的页，不重新请求） */
+      .kx-keys-search { max-width: 320px; min-width: 180px; margin-left: auto; }
       .kx-keys-table {
         min-width: 620px;
+      }
+      /* #384：<640 表格换成行式卡片（ui.css 的 .data-cards）——桌面写死的
+         620px 最小宽必须归零，否则卡片本身又被撑出横滚。 */
+      @media (max-width: 639px) {
+        .kx-keys-table {
+          min-width: 0;
+        }
       }
       /* ADM-4：粘顶表头只有在滚动容器有高度上限时才生效（.data-table th 已是
          position:sticky）。列表长起来/窄屏横滚时表头钉住，行 hover 有过渡。 */
@@ -100,16 +109,8 @@
         align-items: center;
         gap: 8px;
       }
-      /* 破坏性行操作用「quiet 底 + error 字」，与 admin 的行操作同一套语言；
-         不再用实心 danger 按钮抢走整行的主次。 */
-      .kx-act-danger {
-        color: var(--error);
-      }
-      .kx-act-danger:hover {
-        color: var(--error);
-        background: var(--error-soft);
-        border-color: color-mix(in srgb, var(--error) 30%, transparent);
-      }
+      /* 破坏性行操作的语言统一到 ui.css 的 `.act-row-danger`
+         （epic-369-actions 段：图标 + 危险色），页内不再重复定义。 */
       .kx-chip-row {
         display: flex;
         flex-wrap: wrap;
@@ -364,7 +365,11 @@
     <div class="page-head">
       <div class="min-w-0">
         <h2 class="page-title">{{t "keys.title"}}</h2>
-        <p class="page-sub">
+        <!-- #385：副标题在 390 下原本折成 4 行（~168px 页头），把第一行 Key 挤到
+             587px。这里只留「Agent 用哪条接口上报」这一句（≤2 行），
+             安全提示（只展示一次 / 只存哈希）本来就在下方「Key 的安全实践」卡里
+             逐条写着，不是丢失而是去重；悬停仍能看到被收起的整句。 -->
+        <p class="page-sub" title="{{t "keys.desc_tip"}}">
           {{t "keys.desc_prefix"}}<code class="kx-inline-code">POST /v1/namespaces/{namespace}/events</code>{{t "keys.desc_suffix"}}
         </p>
       </div>
@@ -422,6 +427,7 @@
     <section>
       <div class="kx-keys-head">
         <div class="card-title">{{t "keys.my_keys"}}</div>
+        <input id="keys-search" class="input kx-keys-search" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
       </div>
 
       <!-- 加载骨架：独立容器，数据到后整体 remove。
@@ -452,7 +458,7 @@
            display/overflow，和 .hidden 同元素会被盖掉）。 -->
       <div id="keys-table" class="hidden">
         <div class="table-wrap overflow-x-auto kx-keys-scroll">
-          <table class="data-table kx-keys-table">
+          <table class="data-table kx-keys-table data-cards">
             <thead>
               <tr>
                 <th>{{t "keys.col.name"}}</th>
@@ -467,6 +473,7 @@
           </table>
           <div class="table-foot">
             <span id="keys-summary"></span>
+            <button id="keys-load-more" class="btn btn-ghost btn-sm hidden" type="button">{{t "paging.load_more"}}</button>
           </div>
         </div>
       </div>
@@ -491,7 +498,7 @@
           </span>
           <div class="kx-empty-title">{{t "keys.emptyTitle"}}</div>
           <p class="kx-empty-desc">{{t "keys.empty"}}</p>
-          <button type="button" id="btn-create-empty" class="btn btn-primary">
+          <button type="button" id="btn-create-empty" class="btn">
             + {{t "keys.create_button"}}
           </button>
         </div>
@@ -674,12 +681,12 @@
         </button>
       </div>
       <div id="kxf-generate" class="hidden">
-        <button type="button" id="create-submit" class="btn btn-primary">
+        <button type="button" id="create-submit" class="btn">
           {{t "keys.create.generate"}}
         </button>
       </div>
       <div id="kxf-done" class="hidden">
-        <button type="button" id="create-done" class="btn btn-primary">
+        <button type="button" id="create-done" class="btn">
           {{t "keys.save.done"}}
         </button>
       </div>
@@ -691,7 +698,7 @@
 {{define "script"}}
     <script>
       // ==================== 数据层 ====================
-      const { el, t, mountPullRefresh } = window.Anotify;
+      const { el, t, mountPullRefresh, icon } = window.Anotify;
       const API = "/v1";
 
       // 权限 → 表格 chip 的类（颜色全在页内样式里走 token）
@@ -710,6 +717,12 @@
       let PENDING_KEY = null;
       let LAST_FOCUS = null; // 弹层关闭后焦点归还到这个元素
       let FETCH_ERROR = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
+      /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
+         搜索只在已加载的页上本地过滤，加载更多翻下一页。 */
+      const KEYS_PAGE = 20;
+      let KEYS_CURSOR = "";
+      let KEYS_MORE = false;
+      let KEYS_QUERY = "";
 
       function fmtTime(ts) {
         if (!ts) return t("common.time.never", "从未使用");
@@ -757,37 +770,82 @@
         }
       }
 
-      async function loadKeys() {
-        const data = await fetchApi(API + "/keys", {
+      async function fetchKeyPage(cursor) {
+        const qs = new URLSearchParams({ limit: String(KEYS_PAGE) });
+        if (cursor) qs.set("continue", cursor);
+        const data = await fetchApi(API + "/keys?" + qs.toString(), {
           credentials: "same-origin",
         });
-        if (data) {
-          KEYS = (data.keys || data || []).map((k) => ({
-            id: k.id,
-            name: k.name || t("keys.unnamed", "未命名"),
-            prefix: k.prefix || "ant_????",
-            scopes: k.scopes || [],
-            lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
-            enabled: k.enabled !== false && k.enabled !== 0,
-            created:
-              k.createdAt || k.created_at
-                ? new Date(
-                    (k.createdAt || k.created_at) *
-                      (typeof (k.createdAt || k.created_at) === "number"
-                        ? 1000
-                        : 1),
-                  )
-                    .toISOString()
-                    .slice(0, 10)
-                : "",
-          }));
+        if (!data) return null;
+        const cont = typeof data.continue === "string" ? data.continue : "";
+        return { data, cursor: cont };
+      }
+
+      function normalizeKey(k) {
+        return {
+          id: k.id,
+          name: k.name || t("keys.unnamed", "未命名"),
+          prefix: k.prefix || "ant_????",
+          scopes: k.scopes || [],
+          lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
+          enabled: k.enabled !== false && k.enabled !== 0,
+          created:
+            k.createdAt || k.created_at
+              ? new Date(
+                  (k.createdAt || k.created_at) *
+                    (typeof (k.createdAt || k.created_at) === "number"
+                      ? 1000
+                      : 1),
+                )
+                  .toISOString()
+                  .slice(0, 10)
+              : "",
+        };
+      }
+
+      async function loadKeys() {
+        const page = await fetchKeyPage("");
+        if (page) {
+          KEYS = (page.data.keys || []).map(normalizeKey);
+          KEYS_CURSOR = page.cursor;
+          KEYS_MORE = !!page.cursor;
           LOAD_ERROR = null;
         } else {
           // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
           KEYS = [];
+          KEYS_CURSOR = "";
+          KEYS_MORE = false;
           LOAD_ERROR = FETCH_ERROR || new Error(t("common.request_failed", "请求失败"));
         }
         renderKeys();
+      }
+
+      async function loadMoreKeys() {
+        if (!KEYS_MORE) return;
+        const btn = document.getElementById("keys-load-more");
+        if (btn) btn.disabled = true;
+        const page = await fetchKeyPage(KEYS_CURSOR);
+        if (!page) {
+          if (btn) btn.disabled = false;
+          return;
+        }
+        const seen = new Set(KEYS.map((k) => k.id));
+        for (const k of (page.data.keys || []).map(normalizeKey)) {
+          if (seen.has(k.id)) continue;
+          KEYS.push(k);
+          seen.add(k.id);
+        }
+        KEYS_CURSOR = page.cursor;
+        KEYS_MORE = !!page.cursor;
+        renderKeys();
+      }
+
+      function visibleKeys() {
+        const q = KEYS_QUERY.trim().toLowerCase();
+        if (!q) return KEYS;
+        return KEYS.filter((k) =>
+          [k.name, k.prefix, ...k.scopes].filter(Boolean).join(" ").toLowerCase().includes(q),
+        );
       }
 
       // ==================== 渲染 ====================
@@ -796,9 +854,10 @@
       // 空串，绝不把字面量 {demo} 印到用户眼前（locale 的修正句见 keys.fixes.json，
       // 模板侧这段是兜底：locale 还没合并时也不会漏字面量）。
       function summaryLine() {
-        const active = KEYS.filter((k) => k.enabled).length;
+        const rows = visibleKeys();
+        const active = rows.filter((k) => k.enabled).length;
         return t("keys.summary", "{total} 个 Key · {active} 启用")
-          .replace("{total}", String(KEYS.length))
+          .replace("{total}", String(rows.length))
           .replace("{active}", String(active))
           .replace("{demo}", "");
       }
@@ -839,22 +898,22 @@
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.prefix", "Key 前缀") },
             el("code", { class: "kx-cell-mono", text: k.prefix + "••••••••" }),
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.scope", "权限") },
             el("div", { class: "kx-chip-row" }, ...k.scopes.map(scopeChip)),
           ),
           el(
             "td",
-            { class: "num" },
+            { class: "num", "data-label": t("keys.col.last_used", "最近使用") },
             el("span", { class: "kx-cell-time", text: k.lastUsed }),
           ),
           el(
             "td",
-            {},
+            { "data-label": t("keys.col.status", "状态") },
             el("span", {
               class: "status-badge " + (k.enabled ? "status-on" : "status-off"),
               text: k.enabled
@@ -864,17 +923,27 @@
           ),
           el(
             "td",
-            { class: "num" },
+            { class: "num", "data-label": t("keys.col.actions", "操作") },
             el(
               "div",
               { class: "kx-cell-actions" },
+              /* #376：行尾危险动作统一语言 —— 图标 + 危险色（.act-row-danger 在
+                 ui.css 的 epic-369-actions 段）+ 原生 confirm 二次确认。
+                 不能用 aria-label 覆盖可见文案：i18n 套件按可见名「停用」点它。 */
               el(
                 "button",
                 {
                   type: "button",
-                  class: "btn btn-quiet btn-sm kx-act-danger",
+                  class: "btn btn-quiet btn-sm act-row-danger",
                   onclick: () => revokeKey(k),
                 },
+                icon(
+                  [
+                    "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20",
+                    "M4.93 4.93l14.14 14.14",
+                  ],
+                  "h-4 w-4",
+                ),
                 t("keys.action.revoke", "停用"),
               ),
             ),
@@ -885,7 +954,13 @@
       function renderKeys() {
         const body = document.getElementById("keys-body");
         const summary = document.getElementById("keys-summary");
+        const more = document.getElementById("keys-load-more");
+        const rows = visibleKeys();
         if (summary) summary.textContent = summaryLine();
+        if (more) {
+          more.classList.toggle("hidden", !KEYS_MORE);
+          more.disabled = false;
+        }
         // 骨架是独立容器：数据到后整块 remove（留在 DOM 里会让「骨架 = 就绪」误判）
         const skel = document.getElementById("keys-skel");
         if (skel) skel.remove();
@@ -904,19 +979,21 @@
           setView("empty");
           return;
         }
-        body.replaceChildren(...KEYS.map(keyRow));
+        body.replaceChildren(...rows.map(keyRow));
         setView("ready");
       }
 
       async function revokeKey(k) {
-        // 原生 confirm：e2e（i18n_coverage D1）拦截 window.confirm 抓文案
+        // #378：原生 confirm 下线 —— 弹层由 #anotify-dialog 承载，
+        // i18n 断言改读弹层正文（#anotify-dialog-body）。停用不可撤销，无撤销条。
         if (
-          !confirm(
-            t(
+          !(await window.Anotify.confirmDanger({
+            body: t(
               "keys.confirm.revoke",
               "确定停用「{name}」吗？使用它的 Agent 将无法上报。",
             ).replace("{name}", k.name),
-          )
+            undo: false,
+          }))
         )
           return;
         try {
@@ -1142,6 +1219,12 @@
         title: t("keys.title", "API Keys"),
         subtitle: t("keys.subtitle", "Agent 用它上报通知"),
       });
+      /* #377：搜索只在已加载的页上本地过滤；加载更多翻下一页。 */
+      document.getElementById("keys-search").addEventListener("input", (event) => {
+        KEYS_QUERY = event.target.value;
+        renderKeys();
+      });
+      document.getElementById("keys-load-more").addEventListener("click", loadMoreKeys);
       loadKeys();
       /* 下拉刷新：重新拉取 Key 列表 */
       mountPullRefresh(loadKeys);

@@ -230,7 +230,7 @@
             </div>
           </div>
           <div class="page-actions">
-            <button id="pb-save-template" type="button" class="btn btn-primary">{{t "pb.v4.save_template"}}</button>
+            <button id="pb-save-template" type="button" class="btn">{{t "pb.v4.save_template"}}</button>
             <button id="pb-reload-template" type="button" class="btn btn-ghost">{{t "pb.v4.reload_template"}}</button>
           </div>
         </div>
@@ -252,7 +252,8 @@
 {{define "script"}}
 <script>
   (() => {
-    const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode, copyText } = Anotify;
+    const { api, ready, nsPath, readScope: getScope, model, el: dom, loadErrorNode, copyText,
+      confirmDanger, undoBar, errorBar, t: sharedT } = Anotify;
     const t = (key, vars = {}) => {
       let value = window.AnotifyI18n[key] || key;
       for (const [name, text] of Object.entries(vars)) value = value.replaceAll("{" + name + "}", text);
@@ -486,8 +487,23 @@
       draft = pb.files; templateRV = pb.resourceVersion; filePicker("playbook.yaml");
       if (resetValues) valuesForm(pb.valuesSchema);
     }
+    /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，
+       404/409/网络错误时原来会永久停在 loading，并留下一个空的 #pb-summary 圆角容器。
+       失败分支把徽章改成 badge-error + 「载入失败」，并把空容器移除（hidden）；
+       重试（#btn-rescan / loadErrorNode 的重试按钮）会把它复位成 loading 再走一遍。 */
+    function loadingBadge() {
+      $("pb-badge").textContent = t("pb.v4.loading");
+      $("pb-badge").className = "badge badge-neutral";
+    }
+    function failedBadge() {
+      $("pb-badge").textContent = t("pb.v4.load_failed");
+      $("pb-badge").className = "badge badge-error";
+      $("pb-summary").replaceChildren();
+      $("pb-summary").hidden = true;
+    }
     async function load() {
       if (loading) return; loading = true; $("btn-rescan").disabled = true;
+      loadingBadge(); $("pb-summary").hidden = false;
       $("pb-load-state").textContent = t("pb.v4.loading"); $("pb-summary").setAttribute("aria-busy", "true");
       try {
         await ready(); if (!name) throw new Error(t("pb.v4.missing_id"));
@@ -495,7 +511,7 @@
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
         $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await installs();
-      } catch (error) { $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
+      } catch (error) { failedBadge(); $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
       finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
     }
     $("pb-file-path").addEventListener("change", () => { const next = $("pb-file-path").value; rememberFile(); filePicker(next); });
@@ -504,9 +520,21 @@
       if (!key || key.startsWith("/") || key.split("/").some(p => p === ".." || !p) || key in draft) { $("pb-template-state").textContent = t("pb.v4.invalid_path"); return; }
       draft[key] = ""; filePicker(key); $("pb-new-path").value = "";
     });
-    $("pb-remove-file").addEventListener("click", () => {
+    $("pb-remove-file").addEventListener("click", async () => {
       if (filePath === "playbook.yaml") { $("pb-template-state").textContent = t("pb.v4.entry_required"); return; }
-      if (confirm(t("pb.v4.remove_confirm", { path: filePath }))) { delete draft[filePath]; filePicker(); }
+      /* #378：删掉草稿里的一个文件只是本地动作（没提交过），所以「撤销」也纯本地 ——
+       * 删之前留一份值，撤销时把它放回 draft 并重新选中那个文件；不涉及任何 API。 */
+      // 这一步之后会弹「已删除 · 撤销」条，所以弹层如实说「5 秒内可以撤销」。
+      if (!(await confirmDanger({ body: t("pb.v4.remove_confirm", { path: filePath }), undo: true }))) return;
+      /* 删掉的 key 要先抓成局部量：filePath 是模块级变量，撤销条 5 秒后触发时它已经被
+       * filePicker() 改成了别的文件，用活变量会把内容写回错的文件。 */
+      const removedPath = filePath;
+      const removed = draft[removedPath];
+      delete draft[removedPath]; filePicker();
+      undoBar({
+        message: sharedT("common.undo.deleted", "已删除「{name}」").replace("{name}", removedPath),
+        onUndo: () => { draft[removedPath] = removed; filePicker(removedPath); },
+      });
     });
     $("pb-export").addEventListener("click", () => {
       rememberFile(); const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
@@ -526,7 +554,7 @@
       try {
         const files = JSON.parse(await event.target.files[0].text());
         if (!files || Array.isArray(files) || Object.values(files).some(v => typeof v !== "string") || !files["playbook.yaml"]) throw new Error(t("pb.v4.raw_missing"));
-        if (!confirm(t("pb.v4.replace_draft"))) return;
+        if (!(await confirmDanger({ body: t("pb.v4.replace_draft") }))) return;
         draft = files; filePicker("playbook.yaml");
       } catch (error) { $("pb-template-state").replaceChildren(loadErrorNode(error)); }
     });
@@ -545,7 +573,7 @@
       } finally { $("pb-save-template").disabled = false; }
     });
     $("pb-reload-template").addEventListener("click", async () => {
-      if (!confirm(t("pb.v4.reload_confirm"))) return;
+      if (!(await confirmDanger({ body: t("pb.v4.reload_confirm") }))) return;
       try { await rawTemplate(true); await refreshSummary(); $("pb-template-state").textContent = t("pb.v4.reloaded"); }
       catch (error) { $("pb-template-state").replaceChildren(loadErrorNode(error)); }
     });
@@ -557,12 +585,25 @@
       } catch (error) { $("pb-schema-state").replaceChildren(loadErrorNode(error)); }
     });
     $("pb-delete").addEventListener("click", async () => {
-      if (!confirm(t("pb.v4.delete_confirm"))) return;
+      if (!(await confirmDanger({ body: t("pb.v4.delete_confirm"), undo: true }))) return;
+      /* #378：删除是真的 DELETE，撤销不是延迟提交（关页面就丢），而是用删除前抓的
+       * 整份包文档重建 —— 所以快照必须在 DELETE 之前拿。 */
+      const snapshot = { name, namespace: getScope().namespace, files: draft };
       $("pb-delete").disabled = true;
       try {
         const response = await api(path("?resourceVersion=" + encodeURIComponent(resource.metadata.resourceVersion)), { method: "DELETE" });
         $("pb-delete-state").replaceChildren(el("h4", "card-title", t("pb.v4.deleted")), code(response));
         for (const id of ["pb-save-template", "btn-render", "btn-dry-run", "btn-install", "btn-rescan"]) $(id).disabled = true;
+        undoBar({
+          message: sharedT("common.undo.deleted", "已删除「{name}」").replace("{name}", snapshot.name),
+          onUndo: async () => {
+            try {
+              // 重建：POST 创建（清单已经没了，PUT 会 404），路径不带 resourceVersion query。
+              await api(path(), { method: "POST", body: JSON.stringify({ apiVersion: "anotify/v1", kind: "Playbook", metadata: { name, namespace: snapshot.namespace }, spec: { files: snapshot.files } }) });
+              location.reload();
+            } catch (e) { errorBar(e); }
+          },
+        });
       } catch (error) {
         $("pb-delete-state").replaceChildren(loadErrorNode(error));
         if (error.status === 409) $("pb-delete-state").append(el("p", "field-hint", t("pb.v4.delete_stale")));

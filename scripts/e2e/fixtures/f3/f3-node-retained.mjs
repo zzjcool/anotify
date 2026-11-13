@@ -1,5 +1,6 @@
 // Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
 import assert from 'node:assert/strict';
+import { acceptDialog, dismissDialog } from './f3-dialogs.mjs';
 export async function nodeRetained(d,mode){
  const {page,check,shot,clean,base}=d;
  const goto=(file,lang='en',query='?namespace=default')=>d.goto(file,query.replace(/^\?/,''),lang);
@@ -49,9 +50,9 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#reg-bootstrap').textContent(), '');
     const rotate = page.locator('[data-node="browser-new-node"] button');
     const before = (await calls()).filter(c => c.url.endsWith('/tokens')).length;
-    page.once('dialog', dialog => dialog.dismiss()); await rotate.click();
+    await dismissDialog(page, () => rotate.click());
     assert.equal((await calls()).filter(c => c.url.endsWith('/tokens')).length, before);
-    page.once('dialog', dialog => dialog.accept()); await rotate.click();
+    await acceptDialog(page, () => rotate.click());
     await page.waitForFunction(() => document.getElementById('reg-token').textContent.length > 0);
     const rotated = await page.locator('#reg-token').innerText(); assert.notEqual(rotated, token);
     assert.equal((await calls()).findLast(c => c.url.endsWith('/browser-new-node/tokens')).result.token, rotated);
@@ -63,6 +64,8 @@ export async function nodeRetained(d,mode){
   }
   if (mode === 'config') {
     await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();
+    // #375：三块 JSON textarea 默认收在「编辑原始 JSON」折叠里；要 .fill() 先展开。
+    await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
     assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(1).innerText(), '/local-src');
     assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
     assert.equal(await page.locator('#node-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');
@@ -91,8 +94,8 @@ export async function nodeRetained(d,mode){
     const draft = '{\n  "NODE_ONLY": "browser-draft-kept",\n  "SOURCE_ROOT": "/new-node-default"\n}';
     await page.locator('#node-vars').fill(draft); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'draft retained exactly');
     assert.equal(await page.locator('#node-vars').inputValue(), draft); await shot('config409-draft');
-    page.once('dialog', dialog => dialog.dismiss()); await page.locator('#node-config-reload').click(); assert.equal(await page.locator('#node-vars').inputValue(), draft);
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-config-reload').click(); await waitState('node-config-state', 'Current configuration loaded');
+    await dismissDialog(page, () => page.locator('#node-config-reload').click()); assert.equal(await page.locator('#node-vars').inputValue(), draft);
+    await acceptDialog(page, () => page.locator('#node-config-reload').click()); await waitState('node-config-state', 'Current configuration loaded');
     assert.deepEqual(JSON.parse(await page.locator('#node-vars').inputValue()), concurrent.body.vars);
     await page.locator('#node-vars').fill('{"NODE_ONLY":"ui-saved", "SOURCE_ROOT":"/new-node-default"}'); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'Saved.');
     const saved = (await req(configPath)).body; assert.equal(saved.vars.NODE_ONLY, 'ui-saved'); assert.equal(saved.appliedRevision, config.appliedRevision); assert.notEqual(saved.configRevision, config.configRevision);
@@ -125,11 +128,11 @@ export async function nodeRetained(d,mode){
     const remoteEventTtl = initial.eventTtlSec + 1000;
     const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: remoteEventTtl } }, 'PUT'); assert.equal(remote.status, 200);
     await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitState('system-state', 'draft retained exactly'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
-    await shot('system0-permanent-stale409-draft'); page.once('dialog', dialog => dialog.accept()); await page.locator('#system-reload').click(); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
+    await shot('system0-permanent-stale409-draft'); await acceptDialog(page, () => page.locator('#system-reload').click()); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
     const namespacePath = '/v1/namespaces/default/config'; const ns = (await req(namespacePath)).body;
     const nsRemote = await req(namespacePath, { metadata: ns.metadata, vars: { NS_ONLY: 'remote-ns' } }, 'PUT'); assert.equal(nsRemote.status, 200);
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#namespace-reload').click(); await waitState('namespace-state', 'Current configuration loaded');
+    await acceptDialog(page, () => page.locator('#namespace-reload').click()); await waitState('namespace-state', 'Current configuration loaded');
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'Saved.');
     const nsPut = (await calls()).filter(c => c.url === namespacePath && c.method === 'PUT').at(-1); assert.deepEqual(Object.keys(nsPut.body).sort(), ['metadata','vars']); assert.notEqual(nsPut.result.namespaceVarsRevision, ns.namespaceVarsRevision);
     const first = (await req(configPath)).body, secondBefore = (await req('/v1/nodes/anode-2/config')).body;
@@ -169,14 +172,14 @@ export async function nodeRetained(d,mode){
     }
     if(d.mock){
     await page.evaluate(() => { MockApi.noAgentBinary(); });
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-upgrade').click(); await waitState('node-action-state', 'agent_binary_unavailable');
+    await acceptDialog(page, () => page.locator('#node-upgrade').click()); await waitState('node-action-state', 'agent_binary_unavailable');
     await page.evaluate(() => { MockApi.noAgentBinary(false); MockApi.failUpgrade('checksum_mismatch'); });
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-upgrade').click(); await waitState('node-action-state', 'checksum_mismatch'); await shot('actual-checksum-upgrade-failure');
+    await acceptDialog(page, () => page.locator('#node-upgrade').click()); await waitState('node-action-state', 'checksum_mismatch'); await shot('actual-checksum-upgrade-failure');
     }
     const before = JSON.stringify((await req(nodePath)).body.status.instances);
-    page.once('dialog', dialog => dialog.dismiss()); await page.locator('#node-drain').click();
+    await dismissDialog(page, () => page.locator('#node-drain').click());
     assert.ok(!(await calls()).some(c => c.url.endsWith('/drain')));
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#node-drain').click(); await waitState('node-action-state', 'Hub accepted action');
+    await acceptDialog(page, () => page.locator('#node-drain').click()); await waitState('node-action-state', 'Hub accepted action');
     assert.equal(JSON.stringify((await req(nodePath)).body.status.instances), before); await noLeaks(); await shot('real-upgrade-failure-and-physical-occupancy');
     if(d.mock){
     await page.evaluate(() => { delete MockApi.state.nodes[0].facts.instances; }); await page.locator('#node-refresh').click();
@@ -272,6 +275,10 @@ export async function nodeRetained(d,mode){
     // rejection uses an actual Status body and never fakes authentication success.
     if(d.mock) await page.evaluate(() => sessionStorage.setItem('f3-guest','1')); else await d.context.clearCookies();
     await goto('login');
+    // #381：登录页在「本浏览器首次来访 + 无会话」时默认落在「注册」tab（首跑闭环）。
+    // 这里要测的是密码登录拒绝，所以先显式切回登录 tab —— 顺便把切换本身也验一次。
+    await page.locator('#tab-login').click();
+    await page.locator('#login-panel:not(.hidden)').waitFor();
     await page.locator('#password-login-toggle').click(); await page.locator('#password-username').fill('retained-user'); await page.locator('#password-password').fill('wrong-password');
     await page.evaluate(() => { window.__f3Guest = true; window.__f3Reject = '/v1/auth/password/login'; });
     await page.locator('#password-login-btn').click();
@@ -283,10 +290,10 @@ export async function nodeRetained(d,mode){
   if (mode === 'errors') {
     await goto('nodes'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#nodes-refresh').click();
     await page.waitForFunction(() => document.getElementById('nodes-list').textContent.includes('F3 deliberate disconnected transport')); await shot('nodes-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#nodes-list button').click(); await page.locator('[data-node="anode-1"]').waitFor();
+    await page.evaluate(() => window.__f3Fault = ''); /* #378：错误态多了「复制详情」，按 data-err-action 点重试。 */ await page.locator('#nodes-list [data-err-action="retry"]').click(); await page.locator('[data-node="anode-1"]').waitFor();
     await goto('node','en','?id=anode-1&namespace=default'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#node-refresh').click();
     await page.waitForFunction(() => document.getElementById('node-load-state').textContent.includes('F3 deliberate disconnected transport')); await shot('node-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
+    await page.evaluate(() => window.__f3Fault = ''); /* 节点详情页的失败态是页面自己的空态骨架（不是 loadErrorNode），所以这里仍是唯一那个重试按钮。 */ await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
     check('Both Node pages genuine disconnected error + working explicit retry; no automatic mock switch or false empty success');
   }
 

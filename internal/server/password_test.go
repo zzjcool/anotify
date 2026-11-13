@@ -75,7 +75,7 @@ func newPasswordTestEnv(t *testing.T) *passwordTestEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
-	authH := &authHandler{svc: svc}
+	authH := &authHandler{svc: svc, db: db}
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	// 与生产 mux.go 一致：显式的密码路由 + Passkey 路由 + /v1/auth/ 兜底。

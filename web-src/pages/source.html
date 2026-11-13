@@ -19,6 +19,10 @@
 #src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
 .source-graph{min-height:320px;width:100%;min-width:0}
+/* #384：≤820 紧凑视图的高度跟着内容走 —— 桌面那个 320px 最小高会在
+   「3 步 + 还有 N」下方留一块空白（无数据可放）。展开完整图时不受影响。
+   断点跟 ui.css 的「内容档」820 一致（紧凑视图本身也在那里开启）。 */
+@media (max-width: 819.98px){.source-graph.is-compact:not(.is-expanded){min-height:0}}
 .source-loading{padding:24px;color:var(--muted)}
 /* SRC-5 / CP-4：统一空态（图标 + 标题 + 说明 + 返回列表/重试 两个动作） */
 .src-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 20px;text-align:center}
@@ -34,6 +38,27 @@
 .src-k{font-size:11px;line-height:1.4;color:var(--faint)}
 .src-v{margin:0;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .src-v.is-muted{color:var(--muted)}
+/* #374：内部协议字段统一收进「开发者信息」折叠 —— 一个都不删，但不上首屏。
+   样式只写在本页内联 <style>（web/ui.css 归 c-vis，本车道不改）。 */
+.devf{border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-1);margin-top:12px;min-width:0}
+.devf>summary{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:12px;line-height:1.5;color:var(--muted);cursor:pointer;list-style:none}
+.devf>summary::-webkit-details-marker{display:none}
+.devf>summary::before{content:"▸";color:var(--faint);font-size:11px}
+.devf[open]>summary::before{content:"▾"}
+.devf>summary:hover{color:var(--text)}
+.devf-hint{margin-left:auto;font-size:11px;color:var(--faint);font-weight:400}
+.devf-body{display:grid;gap:10px;padding:0 12px 12px;min-width:0}
+.devf-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px 18px;margin:0}
+.devf-pair{display:grid;gap:2px;min-width:0}
+.devf-k{font-size:11px;line-height:1.4;color:var(--faint);font-family:var(--font-mono)}
+.devf-v{margin:0;font-size:12px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.devf-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* #375：载荷契约结构化（字段表） */
+.src-schema{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+.src-schema th,.src-schema td{padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.src-schema th{color:var(--muted);font-weight:500}
+.src-schema code{font-family:var(--font-mono);font-size:11.5px;color:var(--text)}
+.src-schema-cap{font-size:11px;color:var(--faint)}
 </style>
 {{end}}
 {{define "content"}}
@@ -142,6 +167,99 @@ const action = (key, fn) => {
   b.onclick=()=>fn(b);
   return b;
 };
+/* #376：页头动作收敛成「1 主 + 1 次 + ⋯」（与 sources.html 行内同一套
+   .act-menu/.menu 语言；菜单条目可带一句 hint 说明差异）。 */
+const actionMenu = (items) => {
+  const wrap=el("div","act-menu");
+  const trigger=el("button","btn btn-ghost btn-sm act-more","⋯");
+  trigger.type="button";
+  trigger.setAttribute("aria-haspopup","menu");
+  trigger.setAttribute("aria-expanded","false");
+  trigger.setAttribute("aria-label",t("more"));
+  const menu=el("div","menu hidden");
+  menu.setAttribute("role","menu");
+  const setOpen=open=>{
+    menu.classList.toggle("hidden",!open);
+    trigger.setAttribute("aria-expanded",open ? "true" : "false");
+    if(open)placeMenu(wrap);
+  };
+  trigger.onclick=()=>setOpen(menu.classList.contains("hidden"));
+  for(const item of items){
+    const b=el("button","menu-item act-item"+(item.danger ? " act-danger" : ""));
+    b.type="button";
+    b.setAttribute("role","menuitem");
+    /* 只有带 hint 的条目才拆两行；单行条目保持纯文本 —— 包一层 span 会让
+       `button:text-is("Enable")` 这类定位器失配（最小文本元素变成 span）。 */
+    if(item.hint){
+      b.append(el("span",null,item.label),el("span","act-item-hint",item.hint));
+    }else{
+      b.textContent=item.label;
+    }
+    b.onclick=()=>{
+      setOpen(false);item.run(b);
+    };
+    menu.append(b);
+  }
+  wrap.append(trigger,menu);
+  return wrap;
+};
+const closeMenus = except => {
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")){
+    const wrap=menu.parentElement;
+    if(except && wrap.contains(except))continue;
+    menu.classList.add("hidden");
+    const trigger=wrap.querySelector(".act-more");
+    if(trigger)trigger.setAttribute("aria-expanded","false");
+  }
+};
+/* #376 rework：⋯ 菜单开合时的视口边界定位。
+   390/360 下停用行只有「编辑 + ⋯」，触发器离左缘近，200px 面板右对齐后
+   会越出视口左缘、被 body 的 overflow-x:hidden 裁掉（实测左溢出 63~77px）。
+   菜单在 ui.css 里改成 position:fixed（包含块=视口，祖先 overflow 不再裁剪），
+   left/top 由这里按触发器矩形夹进视口：左右各留 8px，下方放不下就翻到
+   触发器上方，上下也不越界。 */
+function placeMenu(wrap){
+  const trigger=wrap.querySelector(".act-more"),menu=wrap.querySelector(".menu");
+  if(!trigger || !menu || menu.classList.contains("hidden"))return;
+  const gap=8,pad=8;
+  /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度
+     压到 0，量出来的宽度偏小，之后夹边就会算错。 */
+  menu.style.left="";
+  menu.style.top="";
+  const t=trigger.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  const left=Math.min(Math.max(pad,t.right-w),Math.max(pad,innerWidth-pad-w));
+  let top=t.bottom+gap;
+  if(top+h>innerHeight-pad && t.top-gap-h>=pad)top=t.top-gap-h;
+  top=Math.min(Math.max(pad,top),Math.max(pad,innerHeight-pad-h));
+  menu.style.left=left+"px";
+  menu.style.top=top+"px";
+  /* 祖先若带 transform/filter，fixed 的包含块会变成那个祖先（列表行 :active
+     的按压缩放就带 transform）；用实际矩形与期望矩形的差补一次，菜单不偏移。 */
+  const r=menu.getBoundingClientRect();
+  if(Math.abs(r.left-left)>0.5 || Math.abs(r.top-top)>0.5){
+    menu.style.left=(left+(left-r.left))+"px";
+    menu.style.top=(top+(top-r.top))+"px";
+  }
+}
+/* 菜单是 fixed 浮层：页面/容器滚动、视口变化、按压缩放过渡结束时都要重新贴回触发器 */
+const reflowMenus = () => {
+  if(!document.querySelector(".act-menu .menu:not(.hidden)"))return;
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)"))placeMenu(menu.parentElement);
+};
+document.addEventListener("click",event=>closeMenus(event.target));
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  const open=document.querySelector(".act-menu .menu:not(.hidden)");
+  if(!open)return;
+  const wrap=open.parentElement;
+  closeMenus(null);
+  /* 关掉之后再把焦点还给触发器（原先先 close 再 query，永远找不到 open） */
+  const trigger=wrap.querySelector(".act-more");
+  if(trigger)trigger.focus();
+});
+document.addEventListener("scroll",reflowMenus,{passive:true,capture:true});
+window.addEventListener("resize",reflowMenus);
+document.addEventListener("transitionend",reflowMenus,true);
 const fmt = value => value ? new Date(value).toLocaleString() : "—";
 const json = (box, optional=false) => {
   const raw=box.value.trim();
@@ -179,22 +297,94 @@ function pair(label,value,muted){
   cell.append(el("dt","src-k",label),el("dd","src-v"+(muted ? " is-muted" : ""),value));
   return cell;
 }
-/* CP-5：统一走 .code-block（标题条 + 等宽正文），不再直接甩裸 <pre> */
+/* CP-5：统一走 .code-block（标题条 + 等宽正文），不再直接甩裸 <pre>
+   #375 rework：与 trace / message 的原始 JSON 一致，标题条带一键复制（应修 4）。 */
 function codeBlock(title,text){
   const box=el("div","code-block");
-  box.append(el("div","code-head",title));
+  const head=el("div","code-head",title);
+  const copy=el("button","copy-btn",dev("copy"));
+  copy.type="button";
+  copy.addEventListener("click",()=>A.copyText(copy,()=>text));
+  head.append(copy);
   const body=el("pre","code-body source-json mono",text);
-  box.append(body);
+  box.append(head,body);
+  return box;
+}
+/* #374：开发者信息折叠。标签用**原始协议字段名**（语言中立、可 grep），
+   值可一键复制；字段一个都不删，只是默认不出现在首屏。 */
+const dev = key => A.t("uxaudit.dev." + key);
+function devFields(id, rows){
+  const box=el("details","devf");
+  if(id)box.id=id;
+  const sum=el("summary");
+  sum.append(el("span",null,dev("summary")),el("span","devf-hint",dev("hint")));
+  const body=el("div","devf-body"), dl=el("dl","devf-kv");
+  for(const [key,value] of rows){
+    const cell=el("div","devf-pair");
+    cell.append(el("dt","devf-k",key),el("dd","devf-v",value==null||value==="" ? "—" : String(value)));
+    dl.append(cell);
+  }
+  body.append(dl);
+  if(rows.length){
+    const foot=el("div","devf-foot");
+    const copy=el("button","copy-btn",dev("copy"));
+    copy.type="button";
+    copy.addEventListener("click",()=>A.copyText(copy,()=>rows.map(([key,value])=>key+": "+(value==null||value==="" ? "" : String(value))).join("\n")));
+    foot.append(copy);
+    body.append(foot);
+  }
+  box.append(sum,body);
+  return box;
+}
+/* #375：原始 JSON 一律进「查看原始」折叠（默认收起），结构化视图留在外面。 */
+function rawJson(label, value){
+  const box=el("details","devf");
+  const sum=el("summary");
+  sum.append(el("span",null,dev("raw")),el("span","devf-hint",label));
+  const body=el("div","devf-body");
+  body.append(codeBlock(label,typeof value==="string" ? value : JSON.stringify(value,null,2)));
+  box.append(sum,body);
+  return box;
+}
+/* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
+   没有 properties 时不编一张空表，只说「没声明字段」。 */
+function schemaTable(schema){
+  const box=el("div","source-target");
+  box.append(el("h4","card-title",t("schema")));
+  const props=schema && typeof schema==="object" && schema.properties && typeof schema.properties==="object" ? schema.properties : null;
+  if(!props || !Object.keys(props).length){
+    box.append(el("p","card-sub",dev("none")));
+    return box;
+  }
+  const required=new Set(Array.isArray(schema.required) ? schema.required : []);
+  const table=el("table","src-schema");
+  const thead=el("thead"), hr=el("tr");
+  for(const head of [dev("field"),dev("type"),dev("required"),dev("description")]) hr.append(el("th",null,head));
+  thead.append(hr);
+  const tbody=el("tbody");
+  for(const [name, prop] of Object.entries(props)){
+    const p=prop && typeof prop==="object" ? prop : {};
+    const type=p.type ? String(p.type) : (p.enum ? "enum" : (p.oneOf ? "oneOf" : "—"));
+    const tr=el("tr");
+    const nameCell=el("td");
+    nameCell.append(el("code",null,name));
+    tr.append(nameCell,el("td",null,type),
+      el("td",null,required.has(name) ? dev("yes") : dev("no")),
+      el("td",null,p.description ? String(p.description) : "—"));
+    tbody.append(tr);
+  }
+  table.append(thead,tbody);
+  box.append(table);
   return box;
 }
 function facts(src){
   const dl=el("dl","src-kv");
   const m=A.model.source(src);
   const lastError=src.status?.lastError ? JSON.stringify(src.status.lastError) : "—";
+  /* #374：resourceVersion（CAS 令牌）与 targetsResolved（布尔）是协议内部字段，
+     移到 devFields() 的折叠区；首屏只留人能直接用的时间线与来源。 */
   dl.append(
     pair(t("namespace"),m.namespace),
-    pair(t("rv"),m.resourceVersion),
-    pair(t("resolved"),m.targetsResolved ? xt("resolved_yes") : xt("resolved_no")),
     pair(t("last_fire"),fmt(m.lastFiredAt),!m.lastFiredAt),
     pair(t("next_fire"),fmt(m.nextFireAt),!m.nextFireAt),
     pair(t("last_error"),lastError,!src.status?.lastError),
@@ -208,7 +398,7 @@ function emptyState(title,desc,onRetry){
   ico.innerHTML=EMPTY_ICON;
   box.append(ico,el("div","src-empty-title",title),el("p","src-empty-desc",desc));
   const acts=el("div","src-empty-acts");
-  const back=el("a","btn btn-primary",t("back"));
+  const back=el("a","btn",t("back"));
   back.href=link("sources.html");
   acts.append(back);
   if(onRetry){
@@ -290,13 +480,38 @@ async function toggle(src,btn){
   }
 }
 async function removeSource(src,btn){
-  if(!confirm(t("delete_confirm").replace("{name}",src.metadata.name)))return;
+  if(!(await A.confirmDanger({
+    body:t("delete_confirm").replace("{name}",src.metadata.name),
+    undo:true
+  })))return;
+  /* 撤销条：快照在删除前拿；删除是真删，撤销 = 用快照 POST 重建（不做延迟提交）。
+     详情页删除后的导航/刷新行为不变（仍是 load() 落到空态），只追加撤销条。 */
+  const snapshot=src;
+  const ns=A.readScope().namespace;
   btn.disabled=true;
   try{
     await A.api(A.deletePath(path(src.metadata.name),src.metadata.resourceVersion),{
       method:"DELETE"
     });
     await load();
+    A.undoBar({
+      message:A.t("common.undo.deleted","已删除「{name}」").replace("{name}",snapshot.metadata.name),
+      onUndo:async()=>{
+        try{
+          await A.api("/v1/namespaces/"+ns+"/sources",{
+            method:"POST",
+            body:JSON.stringify({
+              apiVersion:"anotify/v1",kind:"Source",metadata:{
+                name:snapshot.metadata.name,namespace:snapshot.metadata.namespace || ns
+              },spec:snapshot.spec
+            })
+          });
+          await load();
+        }catch(err){
+          A.errorBar(err);
+        }
+      }
+    });
   }catch(err){
     showActionError(src,err);
   }finally{
@@ -350,23 +565,45 @@ async function render(src,caps,edges){
   $("src-name").replaceChildren(name);
   $("src-body").replaceChildren();
   $("src-actions").replaceChildren();
-  const edit=el("a","btn btn-ghost",t("edit"));
+  /* #376：页头 5 个按钮 → 1 主（编辑）+ 1 次（立即运行）+ ⋯。
+     停用/启用/删除进菜单（删除是危险项）；「已保存源试运行」带一句差异说明。 */
+  const edit=el("a","btn btn-sm",t("edit"));
   edit.href=link("sources.html",{
     edit:m.name
   });
-  $("src-actions").append(edit,action(m.enabled?"disable":"enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
+  $("src-actions").append(edit);
   if(m.enabled)$("src-actions").append(action("fire",()=>openFire(src)));
+  $("src-actions").append(actionMenu([{label:t("saved_dry"),hint:t("saved_dry_hint"),run:()=>openFire(src)},{
+    label:t(m.enabled ? "disable" : "enable"),run:b=>toggle(src,b)
+  },{
+    label:t("delete"),danger:true,run:b=>removeSource(src,b)
+  }]));
   const config=section("config");
   const badges=el("div","src-badges");
   badges.append(badge(m.kind,"badge-neutral"));
   badges.append(m.enabled ? badge(t("enabled"),"badge-success") : badge(t("disabled"),"badge-neutral"));
   badges.append(badge(m.health || "—",healthTone(m.health)));
-  badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
-  config.append(badges,facts(src));
+  // #374：targetsResolved 不再做成首屏徽章（内部布尔），只留在开发者信息里。
+  const cfgDev=devFields("src-dev",[
+    ["resourceVersion",m.resourceVersion],
+    ["targetsResolved",m.targetsResolved ? xt("resolved_yes") : xt("resolved_no")]
+  ]);
+  config.append(badges,facts(src),cfgDev);
+  /* #375：配置不再甩一整块裸 JSON —— 常用值走 KV、载荷契约走字段表，
+     原始 JSON 收进「查看原始 JSON」（默认收起）。 */
+  const cfg=m.config;
+  const cfgKv=el("dl","src-kv");
+  cfgKv.append(
+    pair(t("expr"),cfg.expr||"—",!cfg.expr),
+    pair(t("tz"),cfg.tz||"—",!cfg.tz),
+    pair(t("payload"),cfg.payload ? JSON.stringify(cfg.payload) : "—",!cfg.payload),
+    pair(t("sample"),cfg.sample ? JSON.stringify(cfg.sample) : "—",!cfg.sample));
+  config.append(cfgKv);
+  if(cfg.payloadSchema)config.append(schemaTable(cfg.payloadSchema));
   const safe={
   };
-  for(const key of ["expr","tz","payload","payloadSchema","sample"])if(m.config[key]!=null)safe[key]=m.config[key];
-  config.append(codeBlock(t("config"),JSON.stringify(safe,null,2)));
+  for(const key of ["expr","tz","payload","payloadSchema","sample"])if(cfg[key]!=null)safe[key]=cfg[key];
+  config.append(rawJson(t("config"),safe));
   if(m.kind==="webhook"){
     // f3-source 断言：这段文本必须留在 DOM 里（secretSet: true）
     config.append(
@@ -378,11 +615,29 @@ async function render(src,caps,edges){
   if(!m.targets.length)targets.append(el("p","card-sub",t("no_target")));
   for(const target of m.targets){
     const row=el("div","source-target");
-    row.append(el("strong","source-wrap",target.capability),el("pre","code-body source-json mono",JSON.stringify(target.params,null,2)));
+    row.append(el("strong","source-wrap",target.capability||"—"));
+    const params=target.params && typeof target.params==="object" && !Array.isArray(target.params) ? target.params : null;
+    const keys=params ? Object.keys(params) : [];
+    if(!keys.length)row.append(el("p","card-sub",dev("none")));
+    else{
+      const dl=el("dl","src-kv");
+      for(const key of keys){
+        const value=params[key];
+        dl.append(pair(key,typeof value==="string" ? value : JSON.stringify(value)));
+      }
+      row.append(dl);
+    }
     targets.append(row);
-  }const projection=section("edges");
-  // v4 的边投影是 `{from,to,kind}`：入口边 = kind==="source" 且 from 是这个源名。
-  projection.append(codeBlock(t("edges"),JSON.stringify(edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge),null,2)));
+  }
+  if(m.targets.length)targets.append(rawJson(t("targets"),m.targets));
+  /* #375：「目标能力 targets」与「只读 v4 目标能力投影」是同一份关系的两种画法 ——
+     主内容只留结构化 targets（上面）；投影的原始 JSON 进开发者信息 #src-edges
+     （e2e 仍按 textContent 验证 {from,to,kind} 事实存在，不是删断言）。 */
+  const edgeRows=edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge);
+  const edgesDev=rawJson(t("edges"),edgeRows);
+  edgesDev.id="src-edges";
+  const devBody=cfgDev.querySelector(".devf-body");
+  if(devBody)devBody.append(edgesDev);
   // 图自带标题栏（源 · 能力数 · 状态）与外框：外面再裹一层 card + 卡片标题就是两层框，
   // 和 trace 页同一个毛病。直接插进 src-body（顺序不变：仍在只读投影之后）。
   const host=el("div","source-graph");

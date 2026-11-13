@@ -145,12 +145,77 @@
     align-items: end;
     gap: 12px;
   }
+  /* #385：字段组用 display:contents 包起来 —— 桌面端字段仍是 .ev-filters 的直接
+     网格项（视觉零变化），收起时只需把这一层藏掉。 */
+  .ev-filters-fields {
+    display: contents;
+  }
+  .ev-filters-toggle {
+    display: none;
+  }
+  /* [hidden] 必须压过下面的 display:inline-flex（UA 样式表里的 display:none 优先级最低） */
+  .ev-filters-active[hidden] {
+    display: none;
+  }
+  .ev-filters-active {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .ev-filters-chevron {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    transition: transform var(--dur) var(--ease);
+  }
   .ev-filters-actions {
     display: flex;
     align-items: end;
   }
   .ev-filters-actions > .btn {
     width: 100%;
+  }
+  /* 收起态（手机档）：第一列是开关，第二列是「应用筛选」。
+     开关本身是一行：筛icon/文字 + 生效计数药丸 + chevron（收起时朝下）。 */
+  @media (max-width: 899px) {
+    .ev-filters-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-md);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .ev-filters-toggle[aria-expanded="true"] .ev-filters-chevron {
+      transform: rotate(180deg);
+    }
+    .ev-filters[data-collapsed="1"] {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+    }
+    .ev-filters[data-collapsed="1"] .ev-filters-fields {
+      display: none;
+    }
+    .ev-filters[data-collapsed="1"] .ev-filters-actions > .btn {
+      width: auto;
+      min-height: 44px;
+    }
   }
   @media (min-width: 900px) {
     /* 宽屏一行排满：4 个控件等分 + 按钮吃自身宽度，右侧不留大片空白 */
@@ -210,27 +275,58 @@
       </div>
       <button id="ev-refresh" class="btn btn-ghost" type="button">{{t "events.v4.refresh"}}</button>
     </div>
-    <form id="ev-filters" class="card card-pad ev-filters">
-      <div class="field">
-        <label class="field-label" for="ev-namespace">{{t "events.v4.namespace"}}</label>
-        <select id="ev-namespace" class="select"></select>
-      </div>
-      <div class="field">
-        <label class="field-label" for="ev-source">{{t "events.v4.source"}}</label>
-        <input id="ev-source" class="input" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label class="field-label" for="ev-trace">Trace UID</label>
-        <input id="ev-trace" class="input" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label class="field-label" for="ev-limit">{{t "events.v4.limit"}}</label>
-        <select id="ev-limit" class="select">
-          <option value="2">2</option>
-          <option value="10">10</option>
-          <option value="20" selected>20</option>
-          <option value="50">50</option>
-        </select>
+    <!-- 筛选栏（#385）：手机档默认**收起成一行**，点开才展开。
+         390×844 实测：展开的 5 行筛选占 360px，把第一张事件卡挤到 643px 处
+         （首屏只剩一条 chip 行）；收起后第一行事件上提到 ~330px。
+         桌面（>=900）默认展开 —— 那里本来就是一行，收起只会多一次点击。
+         展开/收起状态记在 localStorage（anotify.ev-filters.open）：用户点开过一次，
+         下次进页面不再重新收起。
+         #ev-filter 是本行里的提交按钮，收起时仍可点（e2e events_paging 直接点它）。 -->
+    <form id="ev-filters" class="card card-pad ev-filters" data-collapsed="0">
+      <button
+        type="button"
+        id="ev-filters-toggle"
+        class="ev-filters-toggle"
+        aria-expanded="false"
+        aria-controls="ev-filters-fields"
+      >
+        <span>{{t "events.v4.filters"}}</span>
+        <span id="ev-filters-active" class="ev-filters-active" hidden></span>
+        <svg
+          class="ev-filters-chevron"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      <div id="ev-filters-fields" class="ev-filters-fields">
+        <div class="field">
+          <label class="field-label" for="ev-namespace">{{t "events.v4.namespace"}}</label>
+          <select id="ev-namespace" class="select"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="ev-source">{{t "events.v4.source"}}</label>
+          <input id="ev-source" class="input" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ev-trace">Trace UID</label>
+          <input id="ev-trace" class="input" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ev-limit">{{t "events.v4.limit"}}</label>
+          <select id="ev-limit" class="select">
+            <option value="2">2</option>
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+          </select>
+        </div>
       </div>
       <div class="ev-filters-actions">
         <button id="ev-filter" class="btn btn-primary" type="submit">{{t "events.v4.filter"}}</button>
@@ -264,7 +360,7 @@
   (function () {
     "use strict";
     const A = window.Anotify;
-    const { el, api, ready, readScope, saveScope, model, t, loadErrorNode } = A;
+    const { el, api, ready, readScope, saveScope, model, t, copyText, loadErrorNode } = A;
     const query = new URLSearchParams(location.search);
     if (query.get("namespace")) saveScope({ namespace: query.get("namespace") });
     A.mountLayout({ active: "events", title: t("events.title") });
@@ -286,12 +382,16 @@
 
     /* 一个字段 = label + value，两者同一种盒模型；所有字段（含「已派发任务数」）
      * 走同一个函数，权重天然一致。 */
-    function fact(label, value) {
+    function fact(label, value, opts) {
       const box = el("div", { class: "ev-fact" });
-      box.append(
-        el("dt", { class: "ev-fact-key", text: label }),
-        el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) }),
-      );
+      const dd = el("dd", { class: "ev-fact-val mono", text: value == null ? "—" : String(value) });
+      /* #374 验收 ②：内部标识也能一键取走（与 trace / message 的原始 JSON 复制按钮同一语言）。 */
+      if (opts && opts.copyable) {
+        const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy") });
+        copy.addEventListener("click", () => copyText(copy, () => (value == null ? "" : String(value))));
+        dd.append(" ", copy);
+      }
+      box.append(el("dt", { class: "ev-fact-key", text: label }), dd);
       return box;
     }
 
@@ -322,13 +422,18 @@
           text: t("events.v4.trace") }));
         head.append(actions);
       }
+      /* #374：首屏只留一个对外「事件 ID」（= metadata.uid，页面与链路/任务的链接锚点）；
+         deliveryId 是投递层内部标识，进「明细」折叠（与 signature/payload 同一处）。
+         注：v4 的 `/v1/console/events` 信封里没有 dispatched（只有 status.pruned），
+         所以不再把「已派发任务数 0」当成首屏事实（那是永远为 0 的假事实）。 */
       const facts = el("dl", { class: "ev-facts" },
-        fact(t("events.v4.event_uid"), event.uid), fact("deliveryId", event.deliveryId),
+        fact(t("uxaudit.dev.event_id"), event.uid),
         fact("Trace UID", event.traceUID), fact(t("events.v4.source"), event.involvedObject?.name),
-        fact(t("events.v4.received"), event.creationTimestamp), fact(t("events.v4.dispatched"), event.dispatched.length));
+        fact(t("events.v4.received"), event.creationTimestamp));
       const details = el("details", { class: "ev-details" },
         el("summary", null, t("events.v4.details")));
-      const dispatched = el("div", { class: "ev-details-body" });
+      const dispatched = el("div", { class: "ev-details-body" },
+        el("dl", { class: "ev-facts" }, fact("deliveryId", event.deliveryId, { copyable: true })));
       event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono ev-fact-val", text: JSON.stringify(task) })));
       details.append(dispatched, el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: "JSON" })),
@@ -391,11 +496,69 @@
       rows = new Map();
       continuation = "";
       filters = { source: node("ev-source").value.trim(), traceId: node("ev-trace").value.trim(), limit: node("ev-limit").value };
+      // 收起态的「N 个生效」药丸与 filters 同源，随每次 reset 重画（含首屏与切换命名空间）。
+      paintFilterCount();
       // 加载中 = 骨架（不是 .empty：那是「真的一条都没有」的语义，ST-8）
       list.replaceChildren(skeletonRows(4));
       return load("reset");
     }
-    node("ev-filters").addEventListener("submit", event => { event.preventDefault(); reset(); });
+    /* ---------- #385：手机档筛选栏收起成一行 ----------
+     * 390×844 实测：展开的 5 行筛选占 360px，第一张事件卡被挤到 643px（首屏只剩
+     * 一条 chip）；收起成一行后第一行事件上提到 ~330px。
+     * 默认值：桌面（>=900）展开、手机收起 —— 桌面本来就只有一行，收起只会多一次点击。
+     * 用户的手动选择记在 localStorage：点开过一次，下次进页面不再重新收起。
+     * 注意：这里只改 DOM 属性，不碰请求参数；收起状态下 #ev-filter（应用筛选）
+     * 仍在一行里可点 —— e2e events_paging 直接点它，不需要先展开。 */
+    const FILTERS_OPEN_KEY = "anotify.ev-filters.open";
+    function filtersNarrow() {
+      try { return !!matchMedia("(max-width: 899px)").matches; } catch { return false; }
+    }
+    function readFiltersOpen() {
+      let saved = null;
+      try { saved = localStorage.getItem(FILTERS_OPEN_KEY); } catch { /* 隐私模式/存储关 */ }
+      if (saved === "1") return true;
+      if (saved === "0") return false;
+      return !filtersNarrow(); // 没存过 = 按视口默认
+    }
+    function applyFiltersCollapse(open, persist) {
+      const form = node("ev-filters");
+      const toggle = node("ev-filters-toggle");
+      if (!form) return;
+      form.setAttribute("data-collapsed", open ? "0" : "1");
+      /* 收起时按钮是「展开」动作、展开时是「收起」；aria-expanded 表达的是
+         「面板当前是否可见」，与视觉状态同一份事实。 */
+      if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (persist) {
+        try { localStorage.setItem(FILTERS_OPEN_KEY, open ? "1" : "0"); } catch { /* 存储关：只在本次生效 */ }
+      }
+    }
+    /* 生效中的筛选项（收起时用一枚药丸告诉用户「现在是筛过的」）：
+       命名空间是 scope、数量上限是分页，都不算筛选 —— 只数 source / traceId。 */
+    function paintFilterCount() {
+      const badge = node("ev-filters-active");
+      if (!badge) return;
+      const n = (filters.source ? 1 : 0) + (filters.traceId ? 1 : 0);
+      if (!n) {
+        badge.setAttribute("hidden", "");
+        badge.textContent = "";
+        return;
+      }
+      badge.removeAttribute("hidden");
+      badge.textContent = t("events.v4.filters_active", "{n} 个生效").replace("{n}", n);
+    }
+
+    node("ev-filters").addEventListener("submit", event => {
+      event.preventDefault();
+      reset();
+      paintFilterCount();
+      /* 手机上「应用筛选」= 想看结果，顺手收起面板（桌面不动）。 */
+      if (filtersNarrow()) applyFiltersCollapse(false, false);
+    });
+    node("ev-filters-toggle").addEventListener("click", () => {
+      const open = node("ev-filters").getAttribute("data-collapsed") !== "1";
+      applyFiltersCollapse(!open, true);
+    });
+    applyFiltersCollapse(readFiltersOpen(), false);
     node("ev-namespace").addEventListener("change", () => {
       saveScope({ namespace: node("ev-namespace").value });
       reset();

@@ -475,6 +475,37 @@
     overflow-x: auto;
   }
 
+  /* ---------- #384：≤820 文档表格不再把内容藏到右边界外 ----------
+     接口地图是 Method / Path / Desc 三列，Path 里 48 字符的 URL 在 390 下
+     把整张表撑到 465px（1.34 屏）。列宽改成固定分配 + 长串软换行：
+     不隐藏任何一列、不改成横滚，读完一行仍然不用拖。
+     参数表（两列）同理，只是它的长串在 desc 里的 <code>。
+     断点 820 = ui.css 的「内容档」：768 竖屏平板上 Path 列同样放不下，
+     而 docs 的这类表在 ≤820 一律按「读得完」处理。 */
+  @media (max-width: 819.98px) {
+    #api .table-wrap table.data-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+    #api .table-wrap table.data-table th,
+    #api .table-wrap table.data-table td {
+      padding: 6px 8px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    #api .table-wrap table.data-table td.mono {
+      font-size: 11px;
+    }
+    .param-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+    .param-table td {
+      padding: 0.6rem 0.5rem;
+      overflow-wrap: anywhere;
+    }
+  }
+
   /* ---------- 目录（桌面右侧 sticky） ---------- */
   /* 目录锚点平滑滚动：只在本页、且用户未要求减少动效时生效。
      不影响 e2e（docs 没有滚动断言）；回到顶部仍走独立 JS。 */
@@ -792,6 +823,9 @@
           >
           <a class="doc-chip" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
+          >
+          <a class="doc-chip" href="#design-notes" data-toc="#design-notes"
+            >{{t "docs.toc.design"}}</a
           >
         </div>
       </details>
@@ -1148,6 +1182,11 @@
         </section>
 
         <!-- ===== Web Push subscription ===== -->
+        <!-- #381：推送未开放期间整段 push 文档隐藏（data-push-doc），但「为什么没有」
+             要留一句真话，否则读者会把缺页当成文档缺陷。这条 note 只在关闭时显示。 -->
+        <div class="doc-note" id="webpush-off-note" hidden>
+          {{t "docs.webpush.off_note"}}
+        </div>
         <section
           id="webpush"
           class="doc-anchor doc-sec reveal visible hidden"
@@ -1270,6 +1309,20 @@ GET /v1/namespaces/{namespace}/config
 GET /v1/system/config</pre>
           </div>
         </section>
+
+        <!-- #379：设计取舍说明。四个页面首屏上那些「讲设计」的旁白（源的配置图语义、
+             预案包的边界、节点配置的原子性与保留期默认值）集中到这里；
+             首屏只留「要你做决定」的信息。 -->
+        <section id="design-notes" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">{{t "docs.design.title"}}</h2>
+          <p class="doc-lede">{{t "docs.design.lede"}}</p>
+          <h3 class="doc-h2">{{t "sources.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.sources"}}</p>
+          <h3 class="doc-h2">{{t "pb.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.playbooks"}}</p>
+          <h3 class="doc-h2">{{t "nodes.v4.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.nodes"}}</p>
+        </section>
       </div>
 
       <!-- 右侧「本页目录」：≥1280 sticky 跟随（<1280 用上面的 chips 版） -->
@@ -1296,6 +1349,9 @@ GET /v1/system/config</pre>
           >
           <a class="toc-link" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
+          >
+          <a class="toc-link" href="#design-notes" data-toc="#design-notes"
+            >{{t "docs.toc.design"}}</a
           >
         </div>
       </nav>
@@ -1463,12 +1519,15 @@ GET /v1/system/config</pre>
   }
 
   // 手机推送（Web Push）文档暂未开放：开关在 web/partials.js（PUSH_UI_ENABLED）。
-  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链。
+  // 章节与目录里的那一条一起隐藏 —— 否则目录里留一个点了跳不动的死链；
+  // 同时把「暂未开放」的实话留在原位（#381：隐藏不等于假装没这功能）。
   document.querySelectorAll("[data-push-doc]").forEach((el) => {
     const off = !window.Anotify.pushUIEnabled;
     el.classList.toggle("hidden", off);
     if (off) el.setAttribute("hidden", "");
     else el.removeAttribute("hidden");
   });
+  const webpushOffNote = document.getElementById("webpush-off-note");
+  if (webpushOffNote) webpushOffNote.hidden = !!window.Anotify.pushUIEnabled;
 </script>
 {{end}}

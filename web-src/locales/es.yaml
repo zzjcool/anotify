@@ -9,6 +9,49 @@ common:
   server_error: 'error del servidor HTTP {code}'
   request_rejected: 'solicitud rechazada HTTP {code}'
   request_failed: 'la solicitud falló'
+  err:
+    title:
+      unauthorized: Tu sesión expiró
+      forbidden: No tienes permiso para esta acción
+      not_found: Esto ya no existe
+      conflict: Otra persona lo cambió antes
+      gone: Esto ha caducado
+      throttled: Demasiados intentos
+      rejected: La solicitud no fue aceptada
+      server: Error del servidor
+      offline: No se puede contactar al servidor
+      failed: La solicitud falló
+    hint:
+      unauthorized: La sesión terminó. Inicia sesión de nuevo y volverás a esta página.
+      forbidden: Es un tema de permisos, no un fallo. Pide al propietario del espacio de nombres para recursos dentro de él, o al administrador para ajustes de la instancia.
+      not_found: Puede haberse eliminado, o el nombre del enlace es incorrecto.
+      conflict: Recarga para obtener la última versión y vuelve a intentarlo.
+      gone: Se limpió o superó su periodo de retención. No volverá.
+      throttled: Espera un minuto. Reintentar de inmediato solo será rechazado otra vez.
+      rejected: Corrige la entrada como se indica y vuelve a intentarlo.
+      server: No es por lo que hiciste. Reintenta en unos segundos; si sigue fallando, envía los detalles al administrador.
+      offline: Revisa la red o si el proceso del servidor está en marcha, y reintenta.
+      failed: Inténtalo más tarde; si sigue fallando, envía los detalles al administrador.
+    go_login: Iniciar sesión
+    back_to_list: Volver a la lista
+    reload: Recargar
+    copy: Copiar detalles
+    request_id: 'ID de solicitud: {id}'
+  dialog:
+    title:
+      confirm: Confirmar
+      danger: Acción peligrosa
+    confirm: Confirmar
+    cancel: Cancelar
+    irreversible: Esto no se puede deshacer.
+    undoable: Tendrás 5 segundos para deshacerlo.
+  undo:
+    deleted: 'Se eliminó «{name}»'
+    revoked: 'Se revocó «{name}»'
+    done: Deshecho
+    failed: No se pudo deshacer
+    hint: Deshacer en 5 s
+    action: Deshacer
   resource_version_required: 'falta resourceVersion; actualiza la página e inténtalo de nuevo'
   brand:
     name: Anotify
@@ -167,6 +210,29 @@ index:
       date: '{d}/{m} {w}'
     foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
     foot_na: Estadísticas no disponibles
+    summary: 'Últimos 7 días: {n} eventos · más activo {d}'
+    summary_none: Sin eventos en los últimos 7 días
+    day_label: '{d}/{m}'
+    expand: Mostrar el mapa completo
+    collapse: Contraer el mapa
+    scroll_hint: Desliza en horizontal para ver las 53 semanas
+  steps:
+    title: "De cero a tu primer evento"
+    subtitle: "Con los tres en su sitio, un nodo puede emitir el primer evento."
+    source:
+      title: "Crea una fuente"
+      desc: "La entrada de eventos: programación, webhook o disparo manual."
+    capability:
+      title: "Crea una capacidad"
+      desc: "Lo que se ejecuta al llegar un evento (script y parámetros)."
+    node:
+      title: "Registra un nodo"
+      desc: "Donde se ejecutan de verdad las capacidades; al registrarlo obtienes un token para instalar."
+    state_done: "Hecho"
+    state_current: "Hazlo ahora"
+    state_todo: "Espera al paso anterior"
+    all_done: "Los tres están listos: abre una fuente y pulsa «Ejecutar ahora» para escribir tu primer evento."
+    all_done_link: "Ir a fuentes →"
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
@@ -239,6 +305,8 @@ graph:
   silk_meta_failed: '{n} fallidas'
   silk_meta_done: '{n} tareas completadas'
   silk_clock: 'reproducción {t}'
+  compact_more: '{n} más →'
+  compact_collapse: Volver a la vista compacta
 
 message:
   title: Detalle de notificación
@@ -289,6 +357,8 @@ message:
     env_hint: "Solo nombres y fuentes usados por esta tarea; no valores del equipo ni lista completa de variables permitidas."
     env_empty: "No hay diagnóstico de entorno retenido."
     result: "Resumen / error / artefactos"
+    error_message: 'Mensaje'
+    error_reason: 'Motivo'
     attempts: "Intentos de ejecución retenidos"
     attempts_empty: "No hay intentos retenidos."
     logs: "Registros de tarea"
@@ -384,6 +454,9 @@ login:
     err_empty: Introduce el usuario y el código de recuperación.
     err_failed: 'Error al entrar con código: {msg}'
     success: Sesión iniciada — añade un Passkey en este dispositivo pronto…
+  first_run:
+    hint: "¿Primera vez en esta instancia? Regístrate primero: si es la primera cuenta de la instancia, pasará a ser administradora automáticamente."
+
   codes:
     title: Guarda tus códigos de recuperación
     subtitle: Cada código sirve una sola vez. No volverás a ver el texto en claro al salir. Cópialos a un gestor de contraseñas.
@@ -392,6 +465,7 @@ login:
     copied: Copiado
     continue: Guardados — entrar al espacio de trabajo
     warn: Es la única vez que se muestran. Sin ellos, si pierdes todos los dispositivos con Passkey no podrás entrar.
+    ack: He guardado estos códigos de recuperación
   trust:
     data_local: Tus datos solo en tu servidor
     webauthn: Estándar WebAuthn
@@ -418,6 +492,9 @@ login:
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
 receivers:
+  back_home: "Volver al panel"
+  docs_link: "Guía de integración"
+  unavailable_next: "Cuando se publique, aquí verás tus dispositivos de recepción y la tasa de entrega."
   unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
   title: Destinatarios
   channel:
@@ -531,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Los agentes las usan para reportar notificaciones
   desc_prefix: Los agentes llevan una Key para llamar a
-  desc_suffix: y reportar notificaciones. La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato.
+  desc_suffix: y reportar notificaciones.
+  desc_tip: La Key se muestra completa una sola vez al crearla; el servidor solo guarda un hash — guárdala de inmediato (ver "Buenas prácticas" abajo).
   create_button: Nueva Key
   cli_auth_entry: Autorización de dispositivo CLI
   api_endpoint: Endpoint de reporte
@@ -688,7 +766,7 @@ security:
   unknown_device: Dispositivo desconocido
   credential: Credencial
   current_session: Sesión actual
-  empty_passkeys: Aún no hay Passkeys. Haz clic en "+ Añadir en este dispositivo" arriba a la derecha para crear una en este equipo.
+  empty_passkeys: Usa "+ Añadir en este dispositivo" en la cabecera para crear una en este equipo.
   empty_sessions: No hay sesiones activas.
   in_use: En uso
   last_used: Último uso {time}
@@ -743,6 +821,13 @@ docs:
     events: POST /v1/events
     node: Protocolo de nodo
     endpoints: Todos los endpoints
+    design: "Notas de diseño"
+  design:
+    title: "Notas de diseño: por qué la interfaz muestra esto"
+    lede: "Estas notas son para quien mantiene o depura. La consola deja en la primera pantalla solo lo que necesitas para decidir; el razonamiento y los límites están aquí."
+    sources: "Las fuentes producen eventos y las capacidades destino reciben parámetros. El grafo de destinos de una fuente refleja las referencias de spec.targets: no demuestra una ejecución correcta. Para saber si se recibió, mira la lista de eventos; para saber si se ejecutó, el detalle de la tarea. El deliveryId se deduplica 30 días por defecto y el mismo id solo significa «ya recibido»."
+    playbooks: "playbook.yaml es el único manifiesto raíz y todos los archivos de capacidades y fuentes a los que hace referencia deben estar dentro del paquete. La página de playbooks solo guarda el paquete: instalar es un POST …/install aparte y desplegar es un POST …/deploy de la capacidad."
+    nodes: "La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial: no es la regla de cero escrituras de paquete de Playbook. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. En pantalla, configRevision y appliedRevision vienen de un GET real: si falta el campo se muestra como desconocido y no se supone un valor por defecto."
   endpoints:
     title: Todos los endpoints
     intro: Esta lista se genera en tiempo de compilación desde api/openapi.yaml, así que no puede desviarse de las rutas reales. Los endpoints heredados de notificaciones están excluidos.
@@ -878,6 +963,7 @@ docs:
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
+    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles: el servidor no tiene claves VAPID configuradas, así que esta versión no incluye página de suscripción de dispositivos. Los eventos se registran igualmente: consulta la página de eventos."
     title: Suscripción Web Push (recepción en navegador)
     intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
     step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1201,12 +1287,14 @@ events:
     no_match: 'Sin coincidencias en esta página: avanza a más antiguos o vuelve a lo más reciente'
     invalid_cursor: 'Cursor no válido: se volvió a lo más reciente'
   v4:
-    dedup: "deliveryId deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
+    dedup: "El ID de entrega deduplica durante la retención de 30 días; aceptar no garantiza éxito posterior."
     refresh: "Actualizar"
     namespace: "Espacio de nombres"
     source: "Objeto / fuente"
     limit: "Tamaño de página"
     filter: "Aplicar filtros"
+    filters: "Filtros"
+    filters_active: "{n} activos"
     loading: "Cargando datos…"
     more: "Cargar más"
     trace: "Abrir traza"
@@ -1359,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = no se limpia nunca.'
     save: 'Guardar'
     saving: 'Guardando…'
+    step_basics: 'Básico'
+    step_script: 'Script'
+    step_advanced: 'Avanzado (opcional)'
+    next_step: 'Siguiente'
+    prev_step: 'Atrás'
+    adv_runtime: 'Entorno y concurrencia'
+    adv_lifecycle: 'Requisitos y ciclo de vida'
     submit: 'Crear'
     timeout: 'Tiempo de ejecución (s)'
     timeout_hint: '0 = sin límite de ejecución local.'
@@ -1367,6 +1462,13 @@ caps:
     version_hint: 'Vacío = direccionamiento por contenido (asigna/reutiliza); una versión explícita es inmutable.'
     workdir: 'Directorio de trabajo'
     workdir_hint: 'Puede incluir $(vars.X) o $(params.X); vacío = un directorio por tarea.'
+    template: "Plantilla"
+    template_blank: "Empezar en blanco"
+    template_failed: "No se pudieron cargar las plantillas: {msg}"
+    template_fields: "Parámetros de la plantilla (se pasan en ejecución como variables ANOTIFY_PARAM_*)"
+    template_hint: "Elige una plantilla para rellenar el contrato de parámetros, los destinos y el esqueleto del script; también puedes empezar en blanco."
+    template_none: "Esta plantilla no lleva parámetros."
+    template_required: "obligatorio"
   meta:
     installed_from: 'Origen de instalación'
     next: 'Destinos'
@@ -1547,7 +1649,7 @@ nodes:
   v4:
     copy: "Copiar"
     title: "Nodos y configuración"
-    subtitle: "Identidad del clúster · declarado ∩ permitido · configuración real"
+    subtitle: "Registrar nodos · estado en línea y configuración · editar por nodo"
     register: "Registrar nodo"
     name: "Nombre único del clúster"
     create: "Crear y emitir token de identidad"
@@ -1564,6 +1666,10 @@ nodes:
     copy_bootstrap: "Copiar comando de instalación"
     local_setup: "Configuración local y tres comandos públicos"
     setup_hint: "Guarde anode.yaml antes de install o serve. Usa un token emitido; nunca registra automáticamente. vars no son secretos. envPassthrough queda local; PATH, HOME y ANOTIFY_ están prohibidos. No se suben listas ni valores. ANOTIFY_ARTIFACT_DIR muestra nombre/origen, no rutas absolutas."
+    copy_emit: "Copiar comando emit"
+    emit_hint: "Esta línea usa «{cap}», una capacidad que ya existe en esta instancia. emit se ejecuta dentro de una tarea en el nodo (el token de tarea se añade solo); no lo ejecutes en tu propia terminal."
+    emit_none: "Esta instancia aún no tiene capacidades: crea una primero y el comando será ejecutable."
+    emit_create: "Crear una capacidad →"
     online: "En línea"
     offline: "Sin conexión"
     unknown: "Desconocido (sin declaración local explícita)"
@@ -1583,7 +1689,7 @@ nodes:
     saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
     stale: "409: CAS obsoleto; borrador conservado exactamente. Recargue explícitamente antes de reintentar."
     error: "Solicitud fallida"
-    loaded: "Configuración actual cargada; resourceVersion solo es token CAS."
+    loaded: "Configuración actual cargada."
     pending: "ConfigPending: configuración de nodo aún no aplicada"
     applied: "Revisiones de nodo coinciden (no la revisión del namespace)"
     revision: "Estado de configuración y aplicación"
@@ -1597,7 +1703,7 @@ nodes:
     ns_config: "Configuración vars del namespace (sin limits)"
     ns_hint: "Se resuelve para la siguiente tarea del namespace; nunca entra en applied de nodo."
     retention: "Retención del sistema (administrador)"
-    retention_hint: "Los valores actuales vienen de GET, nunca de supuestos. Segundos; 0 es permanente. Valores iniciales: registros/artefactos 604800, eventos/tareas terminales 2592000. Tareas activas y referencias protegidas; workDir nunca se elimina."
+    retention_hint: "Segundos; 0 significa conservar siempre."
     admin_only: "Solo administradores pueden leer o editar retención del sistema."
     drain: "Drenar nodo"
     drain_confirm: "¿Drenar {name}? Detiene nuevas tareas; la ocupación existente espera recuperación real."
@@ -1610,6 +1716,7 @@ nodes:
     artifacts: "Estado real de despliegues de capacidades"
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
 
+    per_cap_default: 'predeterminado'
 sources:
   v4:
     new: "Nueva fuente"
@@ -1619,7 +1726,7 @@ sources:
     reload: "Recargar recurso actual"
     detail: "Detalles de la fuente"
     back: "Volver a fuentes"
-    intro: "Las fuentes producen eventos; las capacidades reciben parámetros. El gráfico de configuración no demuestra una ejecución correcta."
+    intro: "Las fuentes producen eventos; las capacidades reciben parámetros."
     loading: "Cargando…"
     empty: "No hay fuentes. Una entrada sin destinos es válida."
     name: "Nombre del recurso · metadata.name"
@@ -1663,6 +1770,8 @@ sources:
     event_id: "ID del evento"
     fire: "Ejecutar ahora"
     saved_dry: "Vista previa de fuente guardada"
+    more: "Más acciones"
+    saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"
@@ -1821,6 +1930,7 @@ sources:
     daily3: Diario 3:00
     weekdays9: Laborables 9:00
     every15: Cada 15 min
+    label: "Ajustes cron"
   flow:
     title: Flujo descendente (vista previa)
     nodes: nodos
@@ -1900,6 +2010,7 @@ trace:
     tasks: "Tareas / intentos / espera"
     events: "Hechos de eventos"
     pruned: "Motivos de poda"
+    pruned_link: 'Ver detalle de la poda'
     empty: "Esta traza no envió tareas."
     no_pruned: "No hay registros de poda retenidos."
     missing: "Falta traceUID en la URL."
@@ -2046,7 +2157,7 @@ pb:
   v4:
     subtitle: "Paquetes autocontenidos: guardar, renderizar, simular e instalar. Sin despliegue automático."
     import: "Importar paquete"
-    package_hint: "playbook.yaml es el único manifiesto raíz. Incluya todos los archivos referenciados. Guardar no instala."
+    package_hint: "Todos los archivos de capacidades y fuentes referenciados deben estar dentro del paquete."
     input_kind: "Entrada del paquete"
     files: "Archivos originales"
     oci: "Origen OCI"
@@ -2063,6 +2174,7 @@ pb:
     slug_taken: "El nombre ya existe: abra el detalle y use PUT para reemplazar la plantilla (entrada conservada)."
     namespace: "Espacio de nombres"
     loading: "Cargando…"
+    load_failed: "Error al cargar"
     not_ready: "No listo (ver diagnóstico)"
     not_installed: "Aún no hay recursos instalados. Una plantilla guardada no es una instalación."
     unapplied_count: "{n} diferencias sin aplicar"
@@ -2229,6 +2341,7 @@ uxaudit:
       ctx_namespace: 'Namespace de contexto'
       no_param: 'El enlace no trae nombre de nodo (falta ?id=). Abre el detalle desde la lista de nodos.'
       no_param_title: 'No se indicó ningún nodo'
+      none: 'Ninguno'
     sources:
       dedup_summary: 'Deduplicación de entregas y su ventana (deliveryId)'
       group_basic: 'Básico'
@@ -2301,3 +2414,32 @@ uxaudit:
     file_drop_pick: Arrastra un archivo aquí o haz clic para elegirlo
     file_drop_hint: .yaml / .json, hasta 1 MB cada uno
     file_drop_empty: Ningún archivo seleccionado
+
+# ── #374/#375 · campos internos y JSON en bruto: plegado «dev» (mismas claves) ──
+  dev:
+    summary: 'Información para desarrolladores'
+    instance: 'Instancia {n}'
+    hint: 'Campos internos del protocolo; solo para diagnóstico, no hacen falta en el uso diario.'
+    copy: 'Copiar'
+    raw: 'Ver JSON original'
+    event_id: 'ID de evento'
+    drift: 'Configuración sin aplicar: configuración {config}, aplicado en el nodo {applied}'
+    drift_short: 'Pendiente de aplicar en el nodo'
+    field: 'Campo'
+    type: 'Tipo'
+    required: 'Obligatorio'
+    description: 'Descripción'
+    yes: 'Sí'
+    no: 'No'
+    none: 'Ninguno'
+    params: 'Parámetros'
+    total: 'Total'
+    per_cap: 'Por capacidad'
+    edit_raw: 'Editar JSON original'
+    edit_raw_hint: 'se guarda con el CAS actual'
+
+paging:
+  search_ph: 'Buscar nombre / nombre visible'
+  load_more: 'Cargar más'
+  showing: 'Mostrando {n}'
+  no_match: 'Sin coincidencias'

@@ -9,6 +9,49 @@ common:
   server_error: 'サーバーエラー HTTP {code}'
   request_rejected: 'リクエスト拒否 HTTP {code}'
   request_failed: 'リクエスト失敗'
+  err:
+    title:
+      unauthorized: ログインの有効期限が切れました
+      forbidden: この操作を行う権限がありません
+      not_found: この内容は見つかりません
+      conflict: 他の人が先に変更しました
+      gone: この内容は期限切れです
+      throttled: 操作が多すぎます
+      rejected: リクエストは受け付けられませんでした
+      server: サーバーエラー
+      offline: サーバーに接続できません
+      failed: リクエストに失敗しました
+    hint:
+      unauthorized: セッションが切れました。再度ログインするとこのページに戻ります。
+      forbidden: 権限の問題で、故障ではありません。名前空間内のリソースは名前空間の所有者へ、インスタンス設定は管理者へお問い合わせください。
+      not_found: 削除されたか、リンクの名前が違う可能性があります。
+      conflict: 最新の状態を再読み込みしてから、もう一度お試しください。
+      gone: クリーンアップされたか保存期間を過ぎています。復元されません。
+      throttled: 1 分待ってからお試しください。すぐ再試行しても拒否されます。
+      rejected: 表示に従って入力を直してから再試行してください。
+      server: 操作の問題ではありません。数秒後に再試行し、直らない場合は詳細を管理者へ送ってください。
+      offline: ネットワークかサーバープロセスを確認してから再試行してください。
+      failed: 後でもう一度お試しください。直らない場合は詳細を管理者へ送ってください。
+    go_login: ログインへ
+    back_to_list: 一覧へ戻る
+    reload: 再読み込み
+    copy: 詳細をコピー
+    request_id: 'リクエスト ID：{id}'
+  dialog:
+    title:
+      confirm: 操作の確認
+      danger: 危険な操作
+    confirm: 実行
+    cancel: キャンセル
+    irreversible: この操作は取り消せません。
+    undoable: 実行後 5 秒間は取り消せます。
+  undo:
+    deleted: 「{name}」を削除しました
+    revoked: 「{name}」を無効化しました
+    done: 取り消しました
+    failed: 取り消しに失敗しました
+    hint: 5 秒以内なら取り消せます
+    action: 取り消す
   resource_version_required: 'resourceVersion がありません。再読み込みしてからやり直してください'
   brand:
     name: Anotify
@@ -167,6 +210,29 @@ index:
       date: '{m}月{d}日 {w}曜日'
     foot: '直近 30 日 {n} 件 · アクティブ {d}/30 日'
     foot_na: 統計を取得できません
+    summary: '直近 7 日 {n} 件 · 最多 {d}'
+    summary_none: 直近 7 日はイベントなし
+    day_label: '{m}月{d}日'
+    expand: ヒートマップ全体を表示
+    collapse: ヒートマップを折りたたむ
+    scroll_hint: 横にスクロールして 53 週すべてを表示
+  steps:
+    title: "ゼロから最初のイベントまで"
+    subtitle: "3 つが揃えば、ノードから最初のイベントを発行できます。"
+    source:
+      title: "ソースを作成"
+      desc: "イベントの入口：スケジュール、Webhook、手動トリガー。"
+    capability:
+      title: "能力を作成"
+      desc: "イベント到着後に実行するもの（スクリプトとパラメータ）。"
+    node:
+      title: "ノードを登録"
+      desc: "能力が実際に動く場所。登録するとインストール用トークンが発行されます。"
+    state_done: "完了"
+    state_current: "今この手順"
+    state_todo: "前の手順待ち"
+    all_done: "3 つが揃いました。ソースページを開いて「今すぐ実行」を押すと、最初のイベントが書き込まれます。"
+    all_done_link: "ソースページへ →"
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
@@ -239,6 +305,8 @@ graph:
   silk_meta_failed: '{n} 個失敗'
   silk_meta_done: '{n} 個のタスク完了'
   silk_clock: '再生 {t}'
+  compact_more: '残り {n} 件 →'
+  compact_collapse: コンパクト表示に戻す
 
 message:
   title: 通知の詳細
@@ -289,6 +357,8 @@ message:
     env_hint: "このタスクが使用した変数の名前と取得元のみ。ホスト値や透過の許可リスト全体は読み取りません。"
     env_empty: "保持されている環境診断はありません。"
     result: "結果概要 / エラー / 成果物"
+    error_message: 'メッセージ'
+    error_reason: '理由'
     attempts: "保持されている実行試行記録"
     attempts_empty: "保持されている実行試行記録はありません。"
     logs: "タスクログ"
@@ -384,6 +454,9 @@ login:
     err_empty: ユーザー名とリカバリーコードを入力してください。
     err_failed: リカバリーコードログインに失敗：{msg}
     success: ログイン成功。この端末に Passkey を追加してください…
+  first_run:
+    hint: "このインスタンスを初めて使いますか？まず登録してください。このインスタンスの最初のアカウントであれば、自動的に管理者になります。"
+
   codes:
     title: リカバリーコードを保存してください
     subtitle: 各コードは1回限り。この画面を離れると平文は再表示されません。コピーしてパスワードマネージャーへ。
@@ -392,6 +465,7 @@ login:
     copied: コピー済み
     continue: 保存した · ワークスペースへ
     warn: 表示は今回限りです。コードがなく、すべての Passkey 端末を失うとログインできません。
+    ack: リカバリーコードを保存しました
   trust:
     data_local: データはあなたのサーバーにのみ保存
     webauthn: WebAuthn 標準
@@ -418,6 +492,9 @@ login:
     signup_success_short: 登録成功！ワークスペースに移動中…
     need_username_short: まずユーザー名を決めてください。
 receivers:
+  back_home: "ダッシュボードに戻る"
+  docs_link: "連携手順を見る"
+  unavailable_next: "公開後はここに受信デバイスと配信率が表示されます。"
   unavailable: 'プッシュ通知は未公開です。公開後にここへ受信デバイスが表示されます。'
   title: 通知先
   channel:
@@ -531,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agent が通知報告に使用する Key
   desc_prefix: Agent が Key を携えて呼び出す
-  desc_suffix: で通知を報告。Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください。
+  desc_suffix: で通知を報告。
+  desc_tip: Key は作成時に一度だけ完全表示され、サーバーにはハッシュのみ保存 — すぐに保管してください（下の「Key のセキュリティ」を参照）。
   create_button: Key を作成
   cli_auth_entry: CLI デバイス認証
   api_endpoint: 報告エンドポイント
@@ -688,7 +766,7 @@ security:
   unknown_device: 不明なデバイス
   credential: 資格情報
   current_session: 現在のセッション
-  empty_passkeys: まだ Passkey がありません。右上の「+ このデバイスで追加」でこのデバイスに作成できます。
+  empty_passkeys: ページ上部の「+ このデバイスで追加」でこのデバイスに作成できます。
   empty_sessions: アクティブなセッションはありません。
   in_use: 使用中
   last_used: 最終使用 {time}
@@ -743,6 +821,13 @@ docs:
     events: POST /v1/events
     node: ノードプロトコル
     endpoints: 全エンドポイント
+    design: "設計メモ"
+  design:
+    title: "設計メモ：画面がこう表示される理由"
+    lede: "以下は保守・調査する人向けの説明です。コンソールのファーストビューには「判断に必要な情報」だけを置き、原理と境界はここにまとめています。"
+    sources: "ソースはイベントを生成し、対象の能力にパラメータを渡します。ソース詳細の下流構成図は spec.targets の参照関係を示すだけで、実行成功の証明ではありません。受信されたかはイベント一覧、実行されたかはタスク詳細で確認します。deliveryId は既定で 30 日間重複排除され、同じ id は「受信済み」だけを意味します。"
+    playbooks: "playbook.yaml が唯一のルートマニフェストで、参照する能力・ソースのファイルはすべてパッケージ内に必要です。プリセット（Playbook）ページはパッケージを保存するだけで、インストールもデプロイもしません。インストールは POST …/install、デプロイは能力の POST …/deploy です。"
+    nodes: "ノード設定はノードごとに編集できます。一括 API はノード単位で原子的で部分成功を許します（Playbook の全体ゼロ書込ルールではありません）。保持期間の単位は秒で 0 は永久です。既定値はログ・成果物が 604800 秒、イベントと終端タスクが 2592000 秒で、活動中のタスクと参照保護は有効なまま、ユーザーの workDir は削除しません。画面の configRevision と appliedRevision は実 GET の値で、欠けている項目は既定値で埋めず「不明」と表示します。"
   endpoints:
     title: 全エンドポイント
     intro: この一覧はビルド時に api/openapi.yaml から生成されるため、実際のルートとずれません。非推奨の旧「通知端末」エンドポイントは含まれません。
@@ -878,6 +963,7 @@ docs:
     rules:
       title: 配信ルール（タグルーティング + レベルフィルタ）
   webpush:
+    off_note: "モバイルプッシュ（Web Push）は未公開です：サーバーに VAPID 鍵が設定されていないため、このバージョンでは端末購読ページを提供しません。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
     title: Web Push 購読（ブラウザ受信）
     intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
     step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1201,12 +1287,14 @@ events:
     no_match: このページに一致なし。古いページへ進むか最新へ戻れます
     invalid_cursor: カーソルが無効です。最新へ戻りました
   v4:
-    dedup: "deliveryId は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
+    dedup: "配信 ID は30日の保持期間内で重複排除されます。受理は下流タスクの成功を保証しません。"
     refresh: "更新"
     namespace: "名前空間"
     source: "関連オブジェクト / ソース"
     limit: "ページ件数"
     filter: "絞り込み"
+    filters: "絞り込み条件"
+    filters_active: "{n} 件有効"
     loading: "データ読み込み中…"
     more: "さらに読み込む"
     trace: "トレースを開く"
@@ -1359,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = 削除しない。'
     save: '保存'
     saving: '保存中…'
+    step_basics: '基本'
+    step_script: 'スクリプト'
+    step_advanced: '詳細（任意）'
+    next_step: '次へ'
+    prev_step: '戻る'
+    adv_runtime: '実行環境と同時実行'
+    adv_lifecycle: '依存関係とライフサイクル'
     submit: '作成'
     timeout: '実行タイムアウト（秒）'
     timeout_hint: '0 = ローカル実行タイムアウトなし。'
@@ -1367,6 +1462,13 @@ caps:
     version_hint: '空 = 内容アドレス（自動採番・再利用）。明示バージョンの内容は不変です。'
     workdir: '作業ディレクトリ'
     workdir_hint: '$(vars.X) や $(params.X) を含められます。空 = タスクごとに独立ディレクトリ。'
+    template: "テンプレート"
+    template_blank: "空白から始める"
+    template_failed: "テンプレート一覧を読み込めません：{msg}"
+    template_fields: "テンプレートのパラメータ（実行時に ANOTIFY_PARAM_* 環境変数として渡されます）"
+    template_hint: "テンプレートを選ぶと、パラメータ契約・下流・スクリプトの雛形が自動で入ります。空白から始めることもできます。"
+    template_none: "このテンプレートにパラメータはありません。"
+    template_required: "必須"
   meta:
     installed_from: '導入元'
     next: '下流'
@@ -1547,7 +1649,7 @@ nodes:
   v4:
     copy: "コピー"
     title: "ノードと設定"
-    subtitle: "クラスタの識別 · 申告 ∩ 許可 · 実際の設定状態"
+    subtitle: "ノード登録 · オンラインと設定状態 · ノードごとの設定"
     register: "ノードを登録"
     name: "クラスタ内で一意の名前"
     create: "登録して識別トークンを発行"
@@ -1564,6 +1666,10 @@ nodes:
     copy_bootstrap: "インストールコマンドをコピー"
     local_setup: "本機の設定と3つの公開コマンド"
     setup_hint: "anode.yaml を保存して install または serve を実行します。発行済みトークンを使用し、自動登録しません。vars は秘密ではありません。envPassthrough の一覧と値は本機のみ。PATH、HOME、ANOTIFY_ は禁止です。ANOTIFY_ARTIFACT_DIR の診断は名前と出所のみで絶対パスは表示しません。"
+    copy_emit: "emit コマンドをコピー"
+    emit_hint: "この行はこのインスタンスに実在する「{cap}」を使っています。emit はノード上のエージェントがタスク内で実行するもの（タスクトークンは自動で付与されます）で、ご自身のターミナルでは実行しないでください。"
+    emit_none: "このインスタンスにはまだ能力がありません。まず 1 つ作成してください。"
+    emit_create: "能力を作成する →"
     online: "オンライン"
     offline: "オフライン"
     unknown: "不明（本機の明示的報告なし）"
@@ -1583,7 +1689,7 @@ nodes:
     saved: "保存しました。ノードの既定値は apply を待ち、名前空間の値は次のタスクのみへ反映します。"
     stale: "409: CAS が古いため下書きをそのまま保持しました。明示的に再読込して再試行してください。"
     error: "リクエスト失敗"
-    loaded: "現在の設定を読み込みました。resourceVersion は CAS トークンのみです。"
+    loaded: "現在の設定を読み込みました。"
     pending: "ConfigPending: ノードの設定は未適用"
     applied: "ノード revision は一致（名前空間入力の版とは別）"
     revision: "設定と適用の状態"
@@ -1597,7 +1703,7 @@ nodes:
     ns_config: "名前空間 vars 設定（limits なし）"
     ns_hint: "この名前空間の次のタスク用に解決し、ノードの applied には保存しません。"
     retention: "システム保持期間（管理者）"
-    retention_hint: "現在の値は GET の結果のみです。単位は秒、0 は永久。既定値はログ・成果物604800、イベント・終端タスク2592000。活動中タスクと参照は保護し、ユーザー workDir は削除しません。"
+    retention_hint: "単位は秒です。0 は永久保存を意味します。"
     admin_only: "管理者のみシステム保持期間を閲覧・編集できます。"
     drain: "ノードを排出"
     drain_confirm: "{name} を排出しますか？新規タスクを停止し、既存の占有は実際の回収を待ちます。"
@@ -1610,6 +1716,7 @@ nodes:
     artifacts: "能力デプロイの実際の状態"
     batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
 
+    per_cap_default: '既定'
 sources:
   v4:
     new: "ソースを作成"
@@ -1619,7 +1726,7 @@ sources:
     reload: "最新のリソースを再読込"
     detail: "ソース詳細"
     back: "ソース一覧へ"
-    intro: "ソースはイベントを生成し、対象の能力にパラメータを渡します。構成図は実行成功の証明ではありません。"
+    intro: "ソースはイベントを生成し、対象の能力にパラメータを渡します。"
     loading: "読み込み中…"
     empty: "ソースがありません。対象のない入口も作成できます。"
     name: "リソース名 · metadata.name"
@@ -1663,6 +1770,8 @@ sources:
     event_id: "イベント ID"
     fire: "今すぐ実行"
     saved_dry: "保存済みソースをプレビュー"
+    more: "その他の操作"
+    saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"
@@ -1821,6 +1930,7 @@ sources:
     daily3: 毎日 3:00
     weekdays9: 平日 9:00
     every15: 15 分ごと
+    label: "Cron プリセット"
   flow:
     title: 下流フロー（プレビュー）
     nodes: ノード
@@ -1900,6 +2010,7 @@ trace:
     tasks: "タスク / 試行 / 待機診断"
     events: "イベントの記録"
     pruned: "枝刈りの理由"
+    pruned_link: '剪枝の詳細を見る'
     empty: "このトレースから送出されたタスクはありません。"
     no_pruned: "保持されている枝刈り記録はありません。"
     missing: "URL に traceUID がありません。"
@@ -2046,7 +2157,7 @@ pb:
   v4:
     subtitle: "自己完結ファイルパッケージ：保存、レンダー、試行、インストール。自動デプロイはしません。"
     import: "パッケージをインポート"
-    package_hint: "playbook.yaml が唯一のルートです。参照する能力・ソースのファイルを含めます。保存のみでインストールはしません。"
+    package_hint: "参照する能力・ソースのファイルはすべてパッケージ内に含めます。"
     input_kind: "パッケージ入力"
     files: "元ファイル"
     oci: "OCI ソース"
@@ -2063,6 +2174,7 @@ pb:
     slug_taken: "同名パッケージがあります。詳細で PUT 更新してください（入力は保持）。"
     namespace: "名前空間"
     loading: "読み込み中…"
+    load_failed: "読み込みに失敗しました"
     not_ready: "未準備（診断を確認）"
     not_installed: "インストール済みリソースはありません。保存済みテンプレートはインストールではありません。"
     unapplied_count: "未適用の差分 {n} 件"
@@ -2229,6 +2341,7 @@ uxaudit:
       ctx_namespace: 'コンテキスト名前空間'
       no_param: 'リンクにノード名がありません（?id= が無い）。ノード一覧から詳細を開いてください。'
       no_param_title: 'ノードが指定されていません'
+      none: 'なし'
     sources:
       dedup_summary: '配信の重複排除とその期間（deliveryId）'
       group_basic: '基本'
@@ -2301,3 +2414,32 @@ uxaudit:
     file_drop_pick: ファイルをドロップ、またはクリックして選択
     file_drop_hint: .yaml / .json、1 ファイル 1MB まで
     file_drop_empty: ファイル未選択
+
+# ── #374/#375 · 内部フィールドと生 JSON：開発者情報の折りたたみ（同一キー）──
+  dev:
+    summary: '開発者情報'
+    instance: 'インスタンス {n}'
+    hint: 'プロトコル内部の項目です。通常の操作には不要で、調査時に使います。'
+    copy: 'コピー'
+    raw: '元の JSON を表示'
+    event_id: 'イベント ID'
+    drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
+    drift_short: 'ノードの適用待ち'
+    field: 'フィールド'
+    type: '型'
+    required: '必須'
+    description: '説明'
+    yes: 'はい'
+    no: 'いいえ'
+    none: 'なし'
+    params: 'パラメータ'
+    total: '合計'
+    per_cap: '能力ごと'
+    edit_raw: '元の JSON を編集'
+    edit_raw_hint: '現在の CAS トークンで保存'
+
+paging:
+  search_ph: '名前 / 表示名で検索'
+  load_more: 'さらに読み込む'
+  showing: '表示中 {n} 件'
+  no_match: '一致する項目がありません'

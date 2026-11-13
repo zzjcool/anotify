@@ -66,6 +66,49 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 	return out, rows.Err()
 }
 
+// ListUsersWithStatsPage 是 ListUsersWithStats 的 keyset 分页版（#377）：同一排序
+// (created_at ASC, rowid ASC)。`afterID == ""` 表示第一页。
+//
+// 原查询只按 created_at 排序：同一秒创建的两个用户在翻页时没有稳定位置
+// （页边界可能重复或漏行），这里补破平局键。
+//
+// **破平局用 rowid 而不是 id**：id 是 `usr_` + crypto/rand，同一毫秒创建的两个用户
+// 谁在前由随机低位决定 —— 既违背「首注册用户排最前」（admin 常常是第一行），也让
+// 断言该语义的用例随机红（#377 复审实测 TestAdmin_ListUsers 42.5% 失败、基线 0/40）。
+// rowid 是插入序，稳定且与「注册先后」同义。游标形状不变（仍是 created_at + id），
+// 用 id 反查 rowid 只多一次唯一索引查找。
+func (d *DB) ListUsersWithStatsPage(ctx context.Context, afterAt int64, afterID string, limit int) ([]*UserWithStats, error) {
+	query := `SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
+	        (SELECT COUNT(*) FROM devices   d WHERE d.user_id = u.id),
+	        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
+	        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
+	 FROM users u`
+	args := []any{}
+	if afterID != "" {
+		query += ` WHERE (u.created_at > ? OR (u.created_at = ? AND u.rowid > (SELECT rowid FROM users u2 WHERE u2.id = ?)))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY u.created_at ASC, u.rowid ASC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list users with stats page: %w", err)
+	}
+	defer rows.Close()
+	out := []*UserWithStats{}
+	for rows.Next() {
+		var u UserWithStats
+		var disabled int
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &disabled, &u.CreatedAt,
+			&u.DeviceCount, &u.KeyCount, &u.SessionCount); err != nil {
+			return nil, fmt.Errorf("scan user with stats: %w", err)
+		}
+		u.Disabled = disabled != 0
+		out = append(out, &u)
+	}
+	return out, rows.Err()
+}
+
 // SystemStats 是管理后台的系统级总览统计。
 type SystemStats struct {
 	UserCount      int64        `json:"userCount"`      // 用户总数

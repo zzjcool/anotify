@@ -9,6 +9,49 @@ common:
   server_error: 'server error HTTP {code}'
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
+  err:
+    title:
+      unauthorized: Your session expired
+      forbidden: You do not have permission to do this
+      not_found: This no longer exists
+      conflict: Someone else changed it first
+      gone: This has expired
+      throttled: Too many attempts
+      rejected: The request was not accepted
+      server: Server error
+      offline: Cannot reach the server
+      failed: Request failed
+    hint:
+      unauthorized: The session is gone. Sign in again and you come back to this page.
+      forbidden: This is permissions, not a bug. Ask the namespace owner for resources inside a namespace, or the instance admin for instance-wide settings.
+      not_found: It may have been deleted, or the name in the link is wrong.
+      conflict: Reload to get the latest version, then try again.
+      gone: It was cleaned up or passed its retention window. It will not come back.
+      throttled: Wait a minute. Retrying immediately is just refused again.
+      rejected: Fix the input as described, then try again.
+      server: Not caused by what you did. Retry in a few seconds; if it keeps failing, send the details to your admin.
+      offline: Check the network, or whether the server process is running, then retry.
+      failed: Try again later; if it keeps failing, send the details to your admin.
+    go_login: Sign in
+    back_to_list: Back to list
+    reload: Reload
+    copy: Copy details
+    request_id: 'Request ID: {id}'
+  dialog:
+    title:
+      confirm: Confirm
+      danger: Dangerous action
+    confirm: Confirm
+    cancel: Cancel
+    irreversible: This cannot be undone.
+    undoable: You get 5 seconds to undo.
+  undo:
+    deleted: 'Deleted "{name}"'
+    revoked: 'Revoked "{name}"'
+    done: Undone
+    failed: Undo failed
+    hint: Undo within 5s
+    action: Undo
   resource_version_required: 'missing resourceVersion; refresh and try again'
   brand:
     name: Anotify
@@ -167,6 +210,29 @@ index:
       date: '{m}/{d} {w}'
     foot: '{n} events in the last 30 days · active {d}/30 days'
     foot_na: Stats unavailable
+    summary: 'Last 7 days: {n} events · busiest {d}'
+    summary_none: No events in the last 7 days
+    day_label: '{m}/{d}'
+    expand: Show the full heatmap
+    collapse: Collapse the heatmap
+    scroll_hint: Swipe horizontally to see all 53 weeks
+  steps:
+    title: "From zero to your first event"
+    subtitle: "Get all three in place and a node can emit the first event."
+    source:
+      title: "Create a source"
+      desc: "The entry point for events: schedule, webhook or manual trigger."
+    capability:
+      title: "Create a capability"
+      desc: "What runs when an event arrives (script and parameters)."
+    node:
+      title: "Register a node"
+      desc: "Where capabilities actually run; registering gives you a token to install with."
+    state_done: "Done"
+    state_current: "Do this now"
+    state_todo: "Waiting for the previous step"
+    all_done: "All three are in place — open a source and hit “Fire now” to write your first event."
+    all_done_link: "Go to sources →"
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
@@ -239,6 +305,8 @@ graph:
   silk_meta_failed: '{n} failed'
   silk_meta_done: '{n} tasks done'
   silk_clock: 'replay {t}'
+  compact_more: '{n} more →'
+  compact_collapse: Collapse to 3 steps
 
 message:
   title: Notification detail
@@ -289,6 +357,8 @@ message:
     env_hint: "Only variable names and sources used by this task; no host values or full passthrough allowlist."
     env_empty: "No retained environment diagnostics."
     result: "Result summary / error / artifacts"
+    error_message: 'Message'
+    error_reason: 'Reason'
     attempts: "Retained execution attempt facts"
     attempts_empty: "No retained execution attempt facts."
     logs: "Task logs"
@@ -384,6 +454,9 @@ login:
     err_empty: Enter both username and recovery code.
     err_failed: 'Recovery sign-in failed: {msg}'
     success: Signed in — please add a Passkey on this device soon…
+  first_run:
+    hint: "First time on this instance? Register first — if this is the instance’s first account it becomes the administrator automatically."
+
   codes:
     title: Save your recovery codes
     subtitle: Each code works once. You will not see the plaintext again after leaving this screen. Copy and store them in a password manager.
@@ -392,6 +465,7 @@ login:
     copied: Copied
     continue: Saved — enter workspace
     warn: This is the only time these codes are shown. Without them, losing every Passkey device means you cannot sign in.
+    ack: I've saved these recovery codes
   trust:
     data_local: Your data stays on your server
     webauthn: WebAuthn standard
@@ -418,6 +492,9 @@ login:
     signup_success_short: Account created — entering workspace…
     need_username_short: Please pick a username first.
 receivers:
+  back_home: "Back to dashboard"
+  docs_link: "Integration docs"
+  unavailable_next: "Once released, your receiving devices and delivery rate will appear here."
   unavailable: 'Push notifications are not available yet. Your receiving devices will show up here once released.'
   title: Receivers
   channel:
@@ -531,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agents use them to report notifications
   desc_prefix: Agents carry a Key to call
-  desc_suffix: to report notifications. The Key is shown in full only once at creation; the server stores only a hash — save it immediately.
+  desc_suffix: to report notifications.
+  desc_tip: The Key is shown in full only once at creation; the server stores only a hash — save it immediately (see "Key security practices" below).
   create_button: New Key
   cli_auth_entry: CLI Device Authorization
   api_endpoint: Reporting endpoint
@@ -688,7 +766,7 @@ security:
   unknown_device: Unknown device
   credential: Credential
   current_session: Current session
-  empty_passkeys: No Passkeys yet. Click "+ Add on this device" in the top right to create one on this device.
+  empty_passkeys: Use "+ Add on this device" in the page header to create one on this device.
   empty_sessions: No active sessions.
   in_use: In use
   last_used: Last used {time}
@@ -743,6 +821,13 @@ docs:
     events: POST /v1/events
     node: Node protocol
     endpoints: All endpoints
+    design: "Design notes"
+  design:
+    title: "Design notes: why the UI shows what it shows"
+    lede: "The notes below are for maintainers and anyone debugging. The console keeps only what you need to make a decision on the first screen; rationale and boundaries live here."
+    sources: "Sources produce events; target capabilities receive params. The downstream graph on a source page mirrors the references in spec.targets — it is not proof of execution success: check the event stream for ingestion and the task detail for execution. A deliveryId is de-duplicated for 30 days by default; the same id only means \"already received\"."
+    playbooks: "playbook.yaml is the only root manifest, and every capability/source file it references must be inside the package. The playbooks page only stores that package: installing is a separate POST …/install and deploying is a capability POST …/deploy."
+    nodes: "Node configuration is edited per node. The batch API is atomic per node and permits partial success — it is not the Playbook whole-package zero-write rule. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. On screen, configRevision and appliedRevision both come from a real GET — a missing field shows as unknown rather than an assumed default."
   endpoints:
     title: All endpoints
     intro: Generated at build time from api/openapi.yaml, so it can't drift from the real routes. Deprecated legacy notification endpoints are not listed.
@@ -878,6 +963,7 @@ docs:
     rules:
       title: Delivery rules (tag routing + level filtering)
   webpush:
+    off_note: "Mobile push (Web Push) is not available yet: the server has no VAPID keys configured, so this version ships no device-subscription page. Events are still recorded — see the Events page."
     title: Web Push subscription (browser receiving)
     intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
     step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1201,12 +1287,14 @@ events:
     no_match: No matches on this page — page older or jump back to latest
     invalid_cursor: 'Cursor expired — back to latest'
   v4:
-    dedup: "deliveryId deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
+    dedup: "Delivery ID deduplicates within the 30-day retention window; acceptance does not guarantee downstream success."
     refresh: "Refresh"
     namespace: "Namespace"
     source: "Involved object / source"
     limit: "Page size"
     filter: "Apply filters"
+    filters: "Filters"
+    filters_active: "{n} active"
     loading: "Loading data…"
     more: "Load more"
     trace: "Open trace"
@@ -1359,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = never cleaned up.'
     save: 'Save'
     saving: 'Saving…'
+    step_basics: 'Basics'
+    step_script: 'Script'
+    step_advanced: 'Advanced (optional)'
+    next_step: 'Next'
+    prev_step: 'Back'
+    adv_runtime: 'Runtime & concurrency'
+    adv_lifecycle: 'Requirements & lifecycle'
     submit: 'Create'
     timeout: 'Run timeout (s)'
     timeout_hint: '0 = no local run timeout.'
@@ -1367,6 +1462,13 @@ caps:
     version_hint: 'Empty = content-addressed (auto-assign/reuse); an explicit version is immutable.'
     workdir: 'Work dir'
     workdir_hint: 'May contain $(vars.X) or $(params.X); empty = one directory per task.'
+    template: "Template"
+    template_blank: "Start from scratch"
+    template_failed: "Could not load templates: {msg}"
+    template_fields: "Template params (passed at run time as ANOTIFY_PARAM_* env vars)"
+    template_hint: "Pick a template to prefill the params contract, downstream and script skeleton — or start from scratch."
+    template_none: "This template takes no params."
+    template_required: "required"
   meta:
     installed_from: 'Installed from'
     next: 'Downstream'
@@ -1547,7 +1649,7 @@ nodes:
   v4:
     copy: "Copy"
     title: "Nodes & configuration"
-    subtitle: "Cluster identity · declared ∩ allowed · reported configuration"
+    subtitle: "Register nodes · online and configuration state · edit per node"
     register: "Register Node"
     name: "Cluster-unique name"
     create: "Create, then issue identity token"
@@ -1564,6 +1666,10 @@ nodes:
     copy_bootstrap: "Copy install command"
     local_setup: "Local setup & three public commands"
     setup_hint: "Save anode.yaml before install or serve. Installation uses an issued token; it never auto-registers. vars are not secrets. envPassthrough names stay local; PATH, HOME and ANOTIFY_ are forbidden. No full whitelist or values are uploaded. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics expose names/sources, not absolute export paths."
+    copy_emit: "Copy emit command"
+    emit_hint: "This line uses “{cap}”, a capability that already exists on this instance. emit runs inside a task on the node (the task token is supplied for you) — don’t run it in your own shell."
+    emit_none: "This instance has no capability yet — create one first, then this command becomes runnable."
+    emit_create: "Create a capability →"
     online: "Online"
     offline: "Offline"
     unknown: "Unknown (no explicit local assertion)"
@@ -1583,7 +1689,7 @@ nodes:
     saved: "Saved. Node defaults wait for node apply; namespace values affect the next task only."
     stale: "409: Stale CAS; draft retained exactly. Reload explicitly before retrying; no automatic overwrite."
     error: "Request failed"
-    loaded: "Current configuration loaded; resourceVersion is only a CAS token."
+    loaded: "Current configuration loaded."
     pending: "ConfigPending: node defaults not yet applied"
     applied: "Node revisions match (not the namespace input revision)"
     revision: "Configuration & applied facts"
@@ -1597,7 +1703,7 @@ nodes:
     ns_config: "Namespace vars configuration (no limits)"
     ns_hint: "Resolved for the next task in this namespace; never written to node applied."
     retention: "System retention (administrator)"
-    retention_hint: "Current values must come from GET, never assumed defaults. Seconds; 0 means permanent. Defaults: logs/artifacts 604800, events/terminal tasks 2592000. Active tasks/references remain protected; user workDir is never deleted."
+    retention_hint: "Seconds; 0 means keep forever."
     admin_only: "Only administrators may read or edit system retention."
     drain: "Drain Node"
     drain_confirm: "Drain {name}? Stop new tasks; existing physical occupancy waits for real reaping."
@@ -1610,6 +1716,7 @@ nodes:
     artifacts: "Reported capability deployments"
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
 
+    per_cap_default: 'default'
 sources:
   v4:
     new: "New source"
@@ -1619,7 +1726,7 @@ sources:
     reload: "Reload latest resource"
     detail: "Source details"
     back: "Back to sources"
-    intro: "Sources produce events; target capabilities receive params. A configuration graph is not proof of execution success."
+    intro: "Sources produce events; target capabilities receive params."
     loading: "Loading…"
     empty: "No sources yet. An entry without targets is legal."
     name: "Resource name · metadata.name"
@@ -1663,6 +1770,8 @@ sources:
     event_id: "Event ID"
     fire: "Fire now"
     saved_dry: "Saved source preview"
+    more: "More actions"
+    saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"
@@ -1821,6 +1930,7 @@ sources:
     daily3: Daily 3:00
     weekdays9: Weekdays 9:00
     every15: Every 15 min
+    label: "Cron presets"
   flow:
     title: Downstream flow (preview)
     nodes: nodes
@@ -1900,6 +2010,7 @@ trace:
     tasks: "Tasks / attempts / waiting diagnostics"
     events: "Event facts"
     pruned: "Pruning reasons"
+    pruned_link: 'See pruned detail'
     empty: "This trace dispatched no tasks."
     no_pruned: "No retained pruning facts."
     missing: "URL is missing traceUID."
@@ -2046,7 +2157,7 @@ pb:
   v4:
     subtitle: "Self-contained file packages: store, render, dry-run, then install. No automatic deployment."
     import: "Import package"
-    package_hint: "playbook.yaml is the only root manifest. All referenced capability/source files must be included. This stores the package, not an install."
+    package_hint: "Every referenced capability/source file must be inside the package."
     input_kind: "Package input"
     files: "Raw files"
     oci: "OCI source"
@@ -2063,6 +2174,7 @@ pb:
     slug_taken: "Slug exists: open details and use PUT to replace the template (your input is retained)."
     namespace: "Namespace"
     loading: "Loading…"
+    load_failed: "Load failed"
     not_ready: "Not ready (see checkup)"
     not_installed: "No installed resources yet. A stored template is not an install."
     unapplied_count: "{n} unapplied differences"
@@ -2229,6 +2341,7 @@ uxaudit:
       ctx_namespace: 'Context namespace'
       no_param: 'The link has no node name (missing ?id=). Open the detail from the node list.'
       no_param_title: 'No node specified'
+      none: 'None'
     sources:
       dedup_summary: 'Delivery deduplication and its window (deliveryId)'
       group_basic: 'Basics'
@@ -2301,3 +2414,32 @@ uxaudit:
     file_drop_pick: Drop a file here, or click to choose
     file_drop_hint: .yaml / .json, up to 1 MB each
     file_drop_empty: No file selected
+
+# ── #374/#375 · internal fields & raw JSON: developer info fold (same keys) ──
+  dev:
+    summary: 'Developer info'
+    instance: 'Instance {n}'
+    hint: 'Protocol internals — not needed for everyday use, only when troubleshooting.'
+    copy: 'Copy'
+    raw: 'View raw JSON'
+    event_id: 'Event ID'
+    drift: 'Config not applied yet: config {config}, node applied {applied}'
+    drift_short: 'Awaiting node apply'
+    field: 'Field'
+    type: 'Type'
+    required: 'Required'
+    description: 'Description'
+    yes: 'Yes'
+    no: 'No'
+    none: 'None'
+    params: 'Parameters'
+    total: 'Total'
+    per_cap: 'Per capability'
+    edit_raw: 'Edit raw JSON'
+    edit_raw_hint: 'saved with the current CAS token'
+
+paging:
+  search_ph: 'Search name / display name'
+  load_more: 'Load more'
+  showing: 'Showing {n}'
+  no_match: 'No matches'

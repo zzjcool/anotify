@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import * as H from "../../lib/harness.mjs";
 import {
-  ANCHORS, DATA_PAGES, KEY_PAGES, LANGS, MATRIX_VIEWS, PAGES, STANDALONE, THEMES, VIEWPORTS,
+  ANCHORS, DATA_PAGES, KEY_PAGES, LANGS, MATRIX_VIEWS, PAGES, STANDALONE, TABLET_VIEW, THEMES, VIEWPORTS,
   auditPage, fixtures, gotoPage, matrixCases, openDriver, shoot, viewUrl, greetGuest, greetMember, passiveUiProbe,
 } from "./f3-ui-helper.mjs";
 
@@ -22,9 +22,48 @@ const SUITES = Object.freeze({
     { id: "interact-namespace-switch", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-dialogs", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "interact-error-states", kind: "interact", lang: "zh-CN", views: 2 },
+    { id: "interact-error-403", kind: "interact", lang: "zh-CN", views: 1 },
     { id: "retained-auth-shell", kind: "retained", lang: "en", views: 1 },
     { id: "retained-graph", kind: "retained", lang: "en", views: 1 },
     { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 6 },
+    /* #384：390 视口下四类主内容（keys/admin 表 / 链路图 / 热力图 / docs 代码块）
+       必须「不用横滚就能读完」——默认态零横向滚动容器。 */
+    {
+      id: "mobile-390-fits",
+      kind: "mobile",
+      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "mobile",
+      views: 6,
+    },
+    /* #384：同一组事实在 768×1024 竖屏平板上必须同样成立 —— issue 的验收口径是
+       390 / 360 / **768** 三档，而「内容档」820 正是为 768 而立（640 档覆盖不到）。
+       没有这条，断点退回 <640 也一样是绿的。 */
+    {
+      id: "mobile-768-fits",
+      kind: "tablet",
+      pages: ["keys", "admin", "index", "docs", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "tablet",
+      views: 6,
+    },
+    /* #384 回滚守卫（rev-400 阻塞项）：宽档不能漏出紧凑视图的裸控件。
+       紧凑块/收起按钮由 flograph.js 无条件插进 DOM，样式一写进窄档媒体查询，
+       ≥640 就会退回 UA 按钮：图卡底部多出 24px 的「收起紧凑视图」，同时把
+       .flograph-scroll 压出 24px **纵向**嵌套滚动（吃掉滚轮，f3 clean() 的
+       mouse.wheel 断言因此 4500ms 超时）。一个 case 里量 3 个宽度（1440 记录视图，
+       1024 / 820 额外量），820 是内容档边界外侧 —— JS 与 CSS 的阈值必须同时切。 */
+    {
+      id: "desktop-graph-clean",
+      kind: "desktop",
+      pages: ["index", "trace", "source"],
+      lang: "zh-CN",
+      theme: "dark",
+      viewport: "desktop",
+      views: 3,
+    },
     ...shots.map(s => ({ id: s.id, kind: "shots", lang: "zh-CN", page: s.page, views: 4 })),
   ]),
   ux_regression_19_23: Object.freeze([
@@ -84,6 +123,190 @@ async function gridCase(c) {
     await d.finish();
     const failed = pages.filter(p => !p.ok);
     return { ok: failed.length === 0, checks: count.n, error: failed.length ? failed.map(p => p.page + ": " + p.error).join(" | ").slice(0, 900) : null, report: { errors: [], pages } };
+  });
+}
+
+// ---------- #384 · 390 / 768：四类主内容不再需要横滚 ----------
+// 断言的是 issue 的四条验收（keys/admin 行式卡片、链路图 3 节点 + 「还有 N →」、
+// 热力图一行摘要、docs 代码块软换行），全部量真实 DOM 几何；另加两条全局约束：
+//   ① documentElement.scrollWidth == innerWidth（页面级不横滚）；
+//   ② #page-main 里默认态下**没有任何**横向滚动容器 —— 不是「有提示就算过」，
+//      而是主内容根本不该需要滚（保留的横滚只允许是用户主动打开的完整视图，
+//      那条路径由 auditPage 的「白名单 + 可见提示」断言守）。
+async function mobileFitsCase(c) {
+  const viewport = c.viewport === "tablet" ? TABLET_VIEW : VIEWPORTS.mobile;
+  const vpLabel = c.viewport === "tablet" ? "768" : "390";
+  return withDriver(c.id, { lang: c.lang, theme: c.theme }, async (d, count) => {
+    await d.page.setViewportSize(viewport);
+    const f = await fixtures(d);
+    const pages = [];
+    for (const page of c.pages) {
+      const errorsFrom = d.report.errors.length;
+      const view = { page, lang: c.lang, theme: c.theme, viewport: c.viewport, attempted: true, ok: false };
+      try {
+        await gotoPage(d, page, f, c.lang);
+        const facts = await d.page.evaluate(() => {
+          const main = document.getElementById("page-main") || document.body;
+          const scrollers = [];
+          for (const el of main.querySelectorAll("*")) {
+            const cs = getComputedStyle(el);
+            if (cs.overflowX !== "auto" && cs.overflowX !== "scroll") continue;
+            if (el.scrollWidth - el.clientWidth <= 2) continue;
+            const cls = String(el.className || "").trim().split(/\s+/).slice(0, 2).join(".");
+            scrollers.push(el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (cls ? "." + cls : ""));
+          }
+          const visible = (el) => {
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0 ? r : null;
+          };
+          const compact = main.querySelector(".flograph-compact");
+          const more = compact ? compact.querySelector(".flograph-compact-more") : null;
+          const graphScroll = main.querySelector(".flograph-scroll");
+          const hmScroll = main.querySelector(".hm-scroll");
+          const hmSummary = main.querySelector("#hm-summary");
+          const codeOver = Array.from(main.querySelectorAll(".code-body"))
+            .filter((el) => el.getBoundingClientRect().width > 0)
+            .map((el) => el.scrollWidth - el.clientWidth)
+            .filter((n) => n > 1);
+          // 行尾操作按钮：跳过「你自己」这种没有按钮的行（admin 的 demo 行）
+          const lastBtn = main.querySelector("tbody tr td:last-child button");
+          const lastRect = lastBtn ? lastBtn.getBoundingClientRect() : null;
+          return {
+            docW: document.documentElement.scrollWidth,
+            innerW: innerWidth,
+            scrollers,
+            steps: compact ? compact.querySelectorAll(".flograph-compact-step").length : 0,
+            moreText: more ? more.textContent.trim() : "",
+            graphCompactVisible: !!visible(compact),
+            graphScrollVisible: !!visible(graphScroll),
+            hmSummaryVisible: !!visible(hmSummary),
+            hmSummaryText: hmSummary ? hmSummary.textContent.trim() : "",
+            hmScrollVisible: !!visible(hmScroll),
+            codeOver,
+            rowActionRight: lastRect ? Math.round(lastRect.right) : null,
+            rowActionW: lastRect ? Math.round(lastRect.width) : null,
+          };
+        });
+        const label = page + "\u00b7" + vpLabel;
+        assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
+        assert.deepEqual(facts.scrollers, [], label + ": \u9ed8\u8ba4\u6001\u4e3b\u5185\u5bb9\u4e0d\u8be5\u6709\u4efb\u4f55\u6a2a\u5411\u6eda\u52a8\u5bb9\u5668: " + JSON.stringify(facts.scrollers));
+        assert.deepEqual(facts.codeOver, [], label + ": \u4ee3\u7801\u5757\u4e0d\u5e94\u628a\u5185\u5bb9\u85cf\u5230\u53f3\u8fb9\u754c\u5916: " + JSON.stringify(facts.codeOver));
+        if (page === "keys" || page === "admin") {
+          assert.ok(facts.rowActionRight !== null && facts.rowActionW > 0, label + ": \u884c\u5185\u64cd\u4f5c\u6309\u94ae\u5fc5\u987b\u5b58\u5728\u4e14\u53ef\u89c1");
+          assert.ok(facts.rowActionRight <= facts.innerW, label + ": \u64cd\u4f5c\u5217\u4e0d\u8be5\u9700\u8981\u6a2a\u6eda\u624d\u80fd\u770b\u5230\uff08right=" + facts.rowActionRight + " > " + facts.innerW + "\uff09");
+        }
+        if (page === "index" || page === "trace" || page === "source") {
+          assert.equal(facts.graphCompactVisible, true, label + ": \u94fe\u8def\u56fe " + vpLabel + " \u4e0b\u5e94\u662f\u7d27\u51d1\u89c6\u56fe\uff083 \u8282\u70b9 + \u8fd8\u6709 N\uff09");
+          assert.equal(facts.steps, 3, label + ": \u7d27\u51d1\u89c6\u56fe\u53ea\u753b 3 \u4e2a\u8282\u70b9\uff0cgot " + facts.steps);
+          assert.equal(facts.graphScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574\u56fe\uff081102px \u753b\u5e03\uff09");
+          if (facts.moreText) assert.match(facts.moreText, /\d/, label + ": \u300c\u8fd8\u6709 N \u2192\u300d\u5fc5\u987b\u5e26\u6570\u91cf\uff0cgot " + JSON.stringify(facts.moreText));
+        }
+        if (page === "index") {
+          assert.equal(facts.hmSummaryVisible, true, label + ": \u70ed\u529b\u56fe\u6298\u53e0\u6210\u4e00\u884c\u6458\u8981");
+          assert.ok(facts.hmSummaryText.length > 0 && facts.hmSummaryText !== "\u2014", label + ": \u6458\u8981\u8981\u6709\u5185\u5bb9\uff0cgot " + JSON.stringify(facts.hmSummaryText));
+          assert.equal(facts.hmScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574 53 \u5468");
+        }
+        assert.deepEqual(d.report.errors.slice(errorsFrom), [], label + ": pageerror/console/network \u5931\u8d25");
+        view.ok = true;
+        count.inc();
+        pages.push(view);
+      } catch (error) {
+        view.error = String(error.message || error).slice(0, 500);
+        pages.push(view);
+      }
+    }
+    await d.finish();
+    const failed = pages.filter((p) => !p.ok);
+    return {
+      ok: failed.length === 0,
+      checks: count.n,
+      error: failed.length ? failed.map((p) => p.page + ": " + p.error).join(" | ").slice(0, 900) : null,
+      report: { errors: [], views: pages, pages },
+    };
+  });
+}
+
+// ---------- #384 rev-400 回滚守卫：宽档没有紧凑视图的残留 ----------
+// 三个宽度：1440（记录视图）、1024（平板档）、820（内容档**外侧**一格 —— JS 的
+// matchMedia 与 ui.css 的 819.98 必须同时切，差 1px 就会漏出裸按钮）。每个宽度都量
+// 真实几何，任一条不成立即红：
+//   ① 紧凑块与「收起紧凑视图」都不可见（宽档退回 UA 按钮 = 24px 的裸 <button>）；
+//   ② 完整图在（宽档不该被藏），且 .flograph-scroll 没有纵向嵌套滚动
+//      —— 24px 的纵向溢出会把滚轮事件吃掉，f3 clean() 的 mouse.wheel 断言超时；
+//   ③ 页面级不横滚。
+const DESKTOP_WIDTHS = [1440, 1024, 820];
+async function desktopGraphCleanCase(c) {
+  return withDriver(c.id, { lang: c.lang, theme: c.theme }, async (d, count) => {
+    await d.page.setViewportSize(VIEWPORTS.desktop);
+    const f = await fixtures(d);
+    const pages = [];
+    for (const page of c.pages) {
+      const errorsFrom = d.report.errors.length;
+      const view = { page, lang: c.lang, theme: c.theme, viewport: c.viewport, attempted: true, ok: false };
+      try {
+        await gotoPage(d, page, f, c.lang);
+        const widths = [];
+        for (const width of DESKTOP_WIDTHS) {
+          if (width !== VIEWPORTS.desktop.width) await d.page.setViewportSize({ width, height: 900 });
+          // flograph 的 resize 走 rAF + relayout（重新算 geo），量之前在两帧后
+          await d.page.waitForTimeout(400);
+          widths.push(await d.page.evaluate((width) => {
+            const main = document.getElementById("page-main") || document.body;
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const cs = getComputedStyle(el);
+              return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0;
+            };
+            const scroll = main.querySelector(".flograph-scroll");
+            return {
+              width,
+              docW: document.documentElement.scrollWidth,
+              innerW: innerWidth,
+              compactVisible: visible(main.querySelector(".flograph-compact")),
+              collapseVisible: visible(main.querySelector(".flograph-compact-collapse")),
+              collapseText: (main.querySelector(".flograph-compact-collapse") || {}).textContent || "",
+              graphScrollVisible: visible(scroll),
+              graphVertOverflow: scroll ? scroll.scrollHeight - scroll.clientHeight : 0,
+            };
+          }, width));
+        }
+        await d.page.setViewportSize(VIEWPORTS.desktop);
+        for (const facts of widths) {
+          const label = page + "\u00b7" + facts.width;
+          assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
+          assert.equal(facts.compactVisible, false, label + ": \u5bbd\u6863\u4e0d\u8be5\u51fa\u73b0\u7d27\u51d1\u89c6\u56fe");
+          assert.equal(
+            facts.collapseVisible,
+            false,
+            label + ": \u5bbd\u6863\u4e0d\u8be5\u9732\u51fa\u300c" + String(facts.collapseText).trim() + "\u300d\u88f8\u6309\u94ae\uff08ua display \u56de\u9000\u5c31\u662f\u8fd9\u4e2a\uff09",
+          );
+          assert.equal(facts.graphScrollVisible, true, label + ": \u5bbd\u6863\u5fc5\u987b\u663e\u793a\u5b8c\u6574\u56fe");
+          assert.ok(
+            facts.graphVertOverflow <= 1,
+            label + ": .flograph-scroll \u4e0d\u8be5\u6709\u7eb5\u5411\u5d4c\u5957\u6eda\u52a8\uff08scrollHeight-clientHeight=" + facts.graphVertOverflow + "\uff0c\u5403\u6389 wheel \u4e8b\u4ef6\uff09",
+          );
+        }
+        assert.deepEqual(d.report.errors.slice(errorsFrom), [], page + ": pageerror/console/network \u5931\u8d25");
+        view.ok = true;
+        view.widths = widths.map((x) => x.width);
+        count.inc();
+        pages.push(view);
+      } catch (error) {
+        view.error = String(error.message || error).slice(0, 500);
+        pages.push(view);
+      }
+    }
+    await d.finish();
+    const failed = pages.filter((p) => !p.ok);
+    return {
+      ok: failed.length === 0,
+      checks: count.n,
+      error: failed.length ? failed.map((p) => p.page + ": " + p.error).join(" | ").slice(0, 900) : null,
+      report: { errors: [], views: pages, pages },
+    };
   });
 }
 
@@ -238,7 +461,16 @@ async function interactDialogs(c) {
     // Keys are retained auth identities; revoke is NOT a namespaced resource delete.
     for (const page of ["capabilities", "sources", "playbooks"]) {
       await gotoPage(d, page, f, "zh-CN");
-      const candidates = d.page.locator("#page-main [data-cap] button, #page-main [data-cap] a, #page-main tbody tr button, #page-main .rc-dev-row button, #page-main [data-name] button, #page-main [data-slug] button");
+      /* #376：源列表的「删除源」收进了行内 ⋯ 菜单 —— 菜单未开时不可见即不可点。
+         先逐行打开菜单，再只用 `:visible` 找破坏性动作（发现语义不变：仍然只认
+         用户真正点得到的控件，隐藏项不再被误当成可点目标）。 */
+      if (page === "sources") {
+        /* 只开第一行：菜单是浮层，开着的菜单会挡住下面那行的 ⋯，逐行开点不到。 */
+        const more = d.page.locator("#src-list [data-name] .act-more").first();
+        if (await more.count()) await more.click();
+        await d.page.locator("#src-list [data-name] .menu:not(.hidden)").first().waitFor({ state: "visible" });
+      }
+      const candidates = d.page.locator("#page-main [data-cap] button:visible, #page-main [data-cap] a:visible, #page-main tbody tr button:visible, #page-main .rc-dev-row button:visible, #page-main [data-name] button:visible, #page-main [data-slug] button:visible");
       const total = await candidates.count();
       for (let i = 0; i < total; i++) {
         const text = ((await candidates.nth(i).innerText().catch(() => "")) || "").trim() + " " + ((await candidates.nth(i).getAttribute("aria-label").catch(() => "")) || "");
@@ -247,25 +479,62 @@ async function interactDialogs(c) {
       if (target >= 0) break;
     }
     assert.ok(target >= 0, "a genuine resource DELETE action exists (capabilities/sources/playbooks); retained Keys coverage stays separate");
+    /* #376：源列表的破坏性动作在行内 ⋯ 菜单里，条目点一次就收起 —— 每次点它之前
+       先把菜单重新打开（这个助手只对 sources 生效）。 */
+    const ensureRowMenu = async () => {
+      if (host !== "sources") return;
+      const open = d.page.locator("#src-list [data-name] .menu:not(.hidden)").first();
+      if (await open.count()) return;
+      await d.page.locator("#src-list [data-name] .act-more").first().click();
+      await open.waitFor({ state: "visible" });
+    };
     const rowSelector = host === "capabilities" ? "#page-main [data-cap]" : host === "keys" ? "#page-main tbody tr" : host === "playbooks" ? "#page-main [data-slug]" : "#page-main [data-name]";
     const rowsBefore = await d.page.locator(rowSelector).count();
-    let message = null;
-    const listen = async dialog => { message = dialog.message(); await dialog.dismiss(); };
-    d.page.once("dialog", listen);
-    await buttons.nth(target).click();
-    await d.page.waitForTimeout(500);
-    d.page.off("dialog", listen);
-    assert.ok(message && message.length > 0, "native confirm dialog opened with a real message: " + JSON.stringify(message));
+
+    /* #378：原生 confirm 换成了共享弹层 #anotify-dialog（partials.js）。
+       旧断言的事实全部保留，并且多钉两件事：
+         · 弹层是**真实可点控件**（不是 window.confirm），危险动作用 danger 按钮；
+         · 弹层 Esc 可关（C5），关掉同样是零写入。 */
+    const dialogOk = d.page.locator("#anotify-dialog [data-dialog-ok]");
+    const dialogCancel = d.page.locator("#anotify-dialog [data-dialog-cancel]");
+    const dialogBody = d.page.locator("#anotify-dialog-body");
+    const waitClosed = () => d.page.locator("#anotify-dialog").waitFor({ state: "hidden", timeout: 5000 });
+    const openDialog = async () => {
+      await ensureRowMenu();
+      await buttons.nth(target).click();
+      await dialogOk.waitFor({ state: "visible", timeout: 5000 });
+      return { body: (await dialogBody.innerText()).trim(), title: (await d.page.locator("#anotify-dialog-title").innerText()).trim(), cls: (await dialogOk.getAttribute("class")) || "" };
+    };
+
+    // ① 取消：零写入、行保留（旧断言）
+    const first = await openDialog();
+    assert.ok(first.body.length > 0, "danger dialog opened with a real message: " + JSON.stringify(first.body));
+    assert.ok(first.title.length > 0, "danger dialog has a visible title: " + JSON.stringify(first.title));
+    assert.ok(first.cls.includes("btn-danger"), "destructive actions use the danger button, never a neutral one: " + first.cls);
+    await dialogCancel.click();
+    await waitClosed();
     assert.deepEqual(await writeWrites(d), [], "dismissed dialog performs zero write");
     const rowsAfterDismiss = await d.page.locator(rowSelector).count();
     assert.equal(rowsAfterDismiss, rowsBefore, "dismissed dialog keeps the row: " + rowsBefore + "→" + rowsAfterDismiss);
-    let accepted = null;
-    const accept = async dialog => { accepted = dialog.message(); await dialog.accept(); };
-    d.page.once("dialog", accept);
-    await buttons.nth(target).click();
-    await d.page.waitForTimeout(1500);
-    d.page.off("dialog", accept);
-    assert.equal(accepted, message, "second click repeats the exact same confirm message");
+
+    // ② Esc：弹层可关（#378 C5），同样零写入（旧的「重开文案相同」也在这里钉住）
+    const second = await openDialog();
+    assert.equal(second.body, first.body, "second click repeats the exact same confirm message");
+    await d.page.keyboard.press("Escape");
+    await waitClosed();
+    assert.deepEqual(await writeWrites(d), [], "Esc-dismissed dialog performs zero write");
+    assert.equal(await d.page.locator(rowSelector).count(), rowsBefore, "Esc-dismissed dialog keeps the row");
+
+    // ③ 确认：恰好一次真实 DELETE（旧断言）
+    const accepted = await openDialog();
+    assert.equal(accepted.body, first.body, "confirm message is stable across opens");
+    await dialogOk.click();
+    await waitClosed();
+    /* #378：撤销条只有 5 秒窗口 —— 它比"行消失"更容易错过，所以先钉它（它同时是
+       "删除真的成功"的证据：撤销条只在 DELETE + 列表重载都成功后才会弹）。 */
+    const undo = d.page.locator("#anotify-undo-host [data-undo-bar]").last();
+    await undo.waitFor({ state: "visible", timeout: 4500 });
+    const undoText = (await undo.innerText()).replace(/\s+/g, " ").trim();
     const writes = await writeWrites(d);
     assert.equal(writes.length, 1, "accepted dialog issues exactly one real write: " + JSON.stringify(writes.map(x => x.method + " " + x.url)).slice(0, 200));
     assert.equal(writes[0].method, "DELETE", "resource deletion is not Key revocation");
@@ -274,8 +543,95 @@ async function interactDialogs(c) {
     assert.ok([200, 202, 204].includes(writes[0].httpStatus), "write answered by the wire: " + writes[0].httpStatus);
     const rowsAfter = await d.page.locator(rowSelector).count();
     assert.equal(rowsAfter, rowsBefore - 1, "the deleted row left the live list " + rowsBefore + "→" + rowsAfter);
+
+    // ④ 删除后可撤销（#378）：撤销 = 用删除前的快照重建（不是延迟提交）
+    assert.match(undoText, /已删除|Deleted|削除|Eliminad/i, "undo bar names the deleted object: " + undoText);
+    assert.match(undoText, /5/, "undo bar states the 5s window: " + undoText);
+    await undo.locator("[data-undo-action]").click();
+    await d.page.waitForFunction(() => (window.__f3Calls || []).some(c => c.method === "POST" && /\/v1\/namespaces\/default\/(capabilities|sources|playbooks)$/.test(c.url) && c.httpStatus >= 200 && c.httpStatus < 300), null, { timeout: 6000 });
+    /* 重建是 POST + 列表重载，等行数回到删除前（不睡固定时长）。 */
+    await d.page.waitForFunction(([sel, n]) => document.querySelectorAll(sel).length === n, [rowSelector, rowsBefore], { timeout: 6000 });
+    assert.equal(await d.page.locator(rowSelector).count(), rowsBefore, "undo restores the row " + rowsAfter + "→" + rowsBefore);
+    assert.deepEqual(await d.page.evaluate(() => Array.from(document.querySelectorAll("[data-error-bar]")).map(n => n.innerText.replace(/\s+/g, " ").trim())), [], "undo did not have to fall back to an error bar");
     await d.finish(); count.inc();
-    return ok(count.n, [{ page: host, lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, dialog: message, write: writes[0].method + " " + writes[0].url }]);
+    return ok(count.n, [{ page: host, lang: "zh-CN", theme: "light", viewport: "desktop", attempted: true, ok: true, dialog: first.body, write: writes[0].method + " " + writes[0].url, undo: undoText }]);
+  });
+}
+
+/* #378：403 的**页级**断言。
+ *
+ * 为什么这么写：真实服务端上唯一产生 403 的地方是 /v1/admin/*（非管理员会话，
+ * internal/auth/admin.go），而**没有任何页面**会在载入时请求 admin 接口
+ * （admin.html 自己先看 role，成员看到的是它自己的无权限页）。所以：
+ *   ① 先用真实会话向真实服务端要一个真的 403（不是伪造响应）；
+ *   ② 再在真实页面里用**页面的 api()**（真实错误对象 → 真实分级 → 真实渲染）
+ *      把这次失败画成 loadErrorNode，塞进 #page-main；
+ * ③④⑤ 断言的是浏览器里最终看到的那一屏。
+ * 这个 case 钉的正是 #378 的原始 bug：403 和 500 曾经共用同一句「请求被拒绝 HTTP 403」。 */
+async function interactError403(c) {
+  return withDriver(c.id, { lang: "zh-CN", theme: "dark" }, async (d, count) => {
+    await d.goto("index");
+    if (d.mock) await greetMember(d);
+    await d.archive();
+    await gotoPage(d, "nodes", await fixtures(d), "zh-CN");
+    /* ① 先拿一个 403。
+     * 真实权威：服务端 admin 中间件真的拒绝（internal/auth/admin.go:43）。
+     * mock 权威：MockApi 没有权限模型（ME 恒为 admin，全库没有 403），mock 预览下
+     * 一个 403 都不存在；这里的 403 由本用例在**传输层**给出，响应体逐字复制真实
+     * 服务端那条 403（{"error":"需要管理员权限"}）—— 断言的是"403 这一屏"，不是
+     * "mock 支持权限"。 */
+    /* ① 403 从哪来，按权威分三种（都不是假绿灯，如实记在 view.authority 里）：
+     *   · real + member 会话 → 服务端真的拒绝（最有力，端到端）
+     *   · real + admin 会话  → admin 本来就不该被拒；构造与真实路径**同形**的错误
+     *   · mock 预览          → MockApi 没有权限模型（ME 恒为 admin），同上
+     * 后两种情况注入的只是"错误对象"，渲染/分级/文案/DOM 全是生产链路。 */
+    const errorsFrom = d.report.errors.length;
+    const me = d.mock ? null : await d.req("/v1/auth/me");
+    const realMember = !!me && me.role !== "admin";
+    if (realMember) {
+      const probe = await d.api("/v1/admin/users");
+      assert.equal(probe.status, 403, "a member session really is refused the admin API: " + JSON.stringify(probe.body));
+    }
+    const authority = realMember ? "real-server" : "constructed-same-shape";
+    // ② 页面级渲染：走真实 api() 的错误对象 + 真实 loadErrorNode
+    const state = await d.page.evaluate(async realMember => {
+      const main = document.getElementById("page-main");
+      let box = null, status = 0, message = "";
+      try {
+        /* 非 member 会话（mock 预览 / admin）没有可触发的真 403，见上面的 authority 说明：
+           这里构造的错误对象与真实路径产出**同形**（status + 服务端原文），
+           之后走的是同一条 apiError → loadErrorNode 生产链路。 */
+        if (!realMember) throw Object.assign(new Error("需要管理员权限"), { status: 403 });
+        await window.Anotify.api("/v1/admin/users");
+      }
+      catch (e) { status = e.status; message = String(e.message || ""); box = window.Anotify.loadErrorNode(e); }
+      if (!box) return { status, message, rendered: false };
+      main.replaceChildren(box);
+      return {
+        status, message, rendered: true,
+        text: (main.innerText || "").replace(/\s+/g, " ").trim(),
+        title: (box.querySelector("p") || {}).textContent || "",
+        actions: Array.from(box.querySelectorAll("[data-err-action]")).map(n => n.getAttribute("data-err-action")),
+        raw: box.querySelectorAll("[data-raw-content]").length,
+        scrollWidth: document.documentElement.scrollWidth, inner: innerWidth,
+      };
+    }, realMember);
+    assert.equal(state.status, 403, "the rendered error really carries status 403");
+    assert.equal(state.rendered, true, "a 403 renders a real error node");
+    assert.match(state.title, /你没有权限执行这个操作/, "403 heading names the situation in plain language: " + state.title);
+    assert.match(state.text, /命名空间所有者/, "403 tells the user who to ask: " + state.text);
+    assert.match(state.text, /管理员/, "403 also names the instance admin: " + state.text);
+    assert.doesNotMatch(state.text, /HTTP ?403|\b403\b/, "no bare HTTP code is shown for a 403: " + state.text);
+    assert.doesNotMatch(state.text, /服务端出错|服务端错误|Server error/, "403 never claims a server error: " + state.text);
+    assert.ok(state.actions.includes("copy"), "403 keeps copy-details (machine facts stay available): " + JSON.stringify(state.actions));
+    assert.ok(state.actions.includes("back"), "403 is not a dead end: it still offers a way out: " + JSON.stringify(state.actions));
+    assert.equal(state.actions.includes("retry"), false, "403 offers no pointless retry: " + JSON.stringify(state.actions));
+    assert.ok(state.raw >= 1, "the server's own message is still shown as data: " + state.raw);
+    assert.ok(state.scrollWidth <= state.inner + 2, "403 error state stays bounded: " + state.scrollWidth + "<=" + state.inner);
+    assert.ok(d.report.errors.slice(errorsFrom).every(e => /403|Forbidden/.test(e)), "the only tolerated console entries are the 403s we asked for: " + JSON.stringify(d.report.errors.slice(errorsFrom).slice(0, 3)));
+    await d.shot("error-403-page");
+    await d.finish(); count.inc();
+    return ok(count.n, [{ page: "nodes", lang: "zh-CN", theme: "dark", viewport: "desktop", attempted: true, ok: true, forbidden: state.status, authority, actions: state.actions }]);
   });
 }
 async function interactErrorStates(c) {
@@ -575,8 +931,11 @@ async function ux22(c) {
     assert.ok(copy.empty.length > 0, "#22 the empty passkey list renders a meaningful enrollment anchor: " + copy.empty);
     assert.match(copy.empty, /本机添加|Add on this device|この端末|este dispositivo/i, "#22 the empty state points at this device: " + copy.empty);
     assert.ok(!/在新设备添加|点右上角「\+ 添加 Passkey」/.test(copy.empty), "#22 obsolete add-on-new-device copy is gone: " + copy.empty);
-    const add = d.page.locator('#passkey-list button').filter({ hasText: /本机添加|Add on this device|この端末|este dispositivo/i });
-    assert.equal(await add.count(), 1, "#22 the canonical empty-list add-on-this-device control is unique: " + JSON.stringify(copy.buttons));
+    /* #376：添加 Passkey 收敛成「页头 1 主 + 1 次」，空态不再自带第三个按钮。
+       唯一性断言从「#passkey-list 里恰好 1 个」升级成「页头 + 空态这两个入口里恰好 1 个」
+       —— 隐藏的恢复码 nudge（文案也含「本机添加」）不在范围内。 */
+    const add = d.page.locator('.page-head button, #passkey-list button').filter({ hasText: /本机添加|Add on this device|この端末|este dispositivo/i });
+    assert.equal(await add.count(), 1, "#22 the canonical add-on-this-device control is unique on the whole page: " + JSON.stringify(copy.buttons));
     const before = d.page.url();
     const beforeFeedback = await d.page.evaluate(() => ({ toast: (document.getElementById("toast")?.textContent || "").trim(), list: (document.getElementById("passkey-list")?.innerText || "").slice(0, 160) }));
     const beforeCalls = (await d.calls()).length;
@@ -724,12 +1083,15 @@ export async function runUiCase(suite, id) {
   const c = casesFor(suite).find(x => x.id === id);
   assert.ok(c, "unknown registered case " + id);
   if (c.kind === "grid") return gridCase(c);
+  if (c.kind === "mobile" || c.kind === "tablet") return mobileFitsCase(c);
+  if (c.kind === "desktop") return desktopGraphCleanCase(c);
   if (c.kind === "shots") return shotsCase(c);
   if (c.kind === "guard") return id === "retained-login-form" ? retainedLoginForm(c) : guardsGuest(c);
   const single = {
     "shift-lang-hint": () => shiftLangHint(c), "shift-scope-slot": () => shiftScopeSlot(c), "shift-collapsed": () => shiftCollapsed(c),
     "shift-prelayout-expanded": () => shiftPrelayout(c, false), "shift-prelayout-collapsed": () => shiftPrelayout(c, true),
     "interact-namespace-switch": () => interactNamespaceSwitch(c), "interact-dialogs": () => interactDialogs(c), "interact-error-states": () => interactErrorStates(c),
+    "interact-error-403": () => interactError403(c),
     "retained-auth-shell": () => retainedAuthShell(c), "retained-graph": () => retainedGraph(c),
     "ux19-member-admin": () => ux19(c), "ux20-notification-denied": () => ux20(c), "ux21-authme-identity": () => ux21(c),
     "ux22-passkey-empty-enrollment": () => ux22(c), "ux23-zero-devices-honest": () => ux23(c),

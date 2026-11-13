@@ -99,24 +99,39 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 
 // ---------- 资源 CRUD ----------
 
-// list 处理 GET …/sources（List 信封，空列表 `[]`）。
+// list 处理 GET …/sources（List 信封，空列表 `[]`；`limit`/`continue` keyset 分页）。
 func (a *sourceAPI) list(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	rows, err := a.d.DB.ListSources(r.Context(), ns)
+	limit, err := pageLimit(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	binding := "sources|" + ns
+	afterAt, afterID, err := pageAfterTimeID(r, binding)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 多取一行只用于判定「还有没有下一页」，不进响应。
+	rows, err := a.d.DB.ListSourcesPage(r.Context(), ns, afterAt, afterID, limit+1)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rows, cont := pageCut(rows, limit, binding, func(row *store.Source) []string {
+		return []string{pageKeyInt64(row.CreatedAt), row.ID}
+	})
 	nsDisplay := a.d.namespaceDisplay(r.Context(), ns)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, srcEnvelopeOf(row, nsDisplay))
 	}
-	writeList(w, http.StatusOK, kindSourceDoc+"List", listMeta{}, items)
+	writeList(w, http.StatusOK, kindSourceDoc+"List", listMeta{Continue: cont}, items)
 }
 
 // get 处理 GET …/sources/{name}：单对象读，走读投影（脱敏）。

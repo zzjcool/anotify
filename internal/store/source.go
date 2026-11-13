@@ -347,6 +347,40 @@ func (d *DB) ListSources(ctx context.Context, namespaceID string) ([]*Source, er
 	return out, rows.Err()
 }
 
+// ListSourcesPage 是 ListSources 的 keyset 分页版（#377）：同一排序
+// (created_at DESC, id DESC)。`afterAt`/`afterID` 是上一页最后一行的位置，
+// `afterID == ""` 表示第一页。
+//
+// 只比较排序键，不做 OFFSET：跨页插入/删除不会让同一行出现两次或被跳过；
+// 同秒批量创建的源靠 id 破平局（created_at 相同的行不会在页边界抖动）。
+func (d *DB) ListSourcesPage(ctx context.Context, namespaceID string, afterAt int64, afterID string, limit int) ([]*Source, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	query := `SELECT ` + sourceColumns + ` FROM sources WHERE namespace_id = ?`
+	args := []any{namespaceID}
+	if afterID != "" {
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, afterAt, afterAt, afterID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.cachedQueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sources page: %w", err)
+	}
+	defer rows.Close()
+	out := []*Source{}
+	for rows.Next() {
+		s, err := scanSource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // GetSource 按 (namespaceID, id) 取源；未命中返回 ErrSourceNotFound。
 func (d *DB) GetSource(ctx context.Context, namespaceID, id string) (*Source, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {

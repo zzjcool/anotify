@@ -1,6 +1,8 @@
 // Attributed F2c1 package/UI actions. Raw resource snapshots in real mode.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+// #378：危险操作不再是原生 confirm()，而是文档里的 #anotify-dialog；驱动真实按钮。
+import { acceptDialog } from './f3-dialogs.mjs';
 const files = {
   'playbook.yaml': `apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: project-chain\n  displayName: Project chain\n  version: 1\nspec:\n  values:\n    type: object\n    additionalProperties: false\n    required: [project]\n    properties:\n      project: { type: string, pattern: '^[a-z][a-z0-9-]*$' }\n      env: { type: string, enum: [dev, prod], default: prod }\n      credential: { type: string, writeOnly: true }\n  capabilities:\n    - capabilities/review.yaml\n    - capabilities/fixer.yaml\n  sources:\n    - sources/on-push.yaml\n`,
   'capabilities/review.yaml': `apiVersion: anotify/v1
@@ -27,8 +29,19 @@ export async function playbook(d,mode){
  const keptResources=async receiptId=>JSON.stringify([await resources(),await req(basePath+'/installs/'+encodeURIComponent(receiptId)),await req('/v1/namespaces/default/tasks?limit=100'),await req('/v1/console/events?namespace=default')]);
  const archive=d.archive;
   const stored = () => req(basePath + '?includeBody=true');
+  // #376：导入表单搬进就地弹层（页头 #btn-import 与空态 CTA 是同一个入口），
+  // 所以「上传/新建」之前必须先把弹层打开。
+  const openImport = async () => {
+    await page.locator('#btn-import').click();
+    await page.waitForSelector('#pb-import-modal:not(.hidden)');
+  };
+  const closeImport = async () => {
+    await page.locator('#pb-import-close').click();
+    await page.locator('#pb-import-modal').waitFor({ state: 'hidden' });
+  };
   const upload = async () => {
     await goto('playbooks');
+    await openImport();
     await page.locator('#pb-upload-files').setInputFiles({ name: 'project-chain-files.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(files)) });
     await page.waitForFunction(() => document.querySelector('#pb-input-name').value === 'project-chain');
     await page.locator('#pb-create').click();
@@ -60,6 +73,8 @@ export async function playbook(d,mode){
     assert.equal(await page.locator('#pb-input-name').inputValue(), 'project-chain');
     assert.deepEqual(JSON.parse(await page.locator('#pb-input-files').inputValue()), files);
     await shot('post409-guidance-draft'); await archive();
+    // 弹层仍开着（409 保留草稿是契约），点列表卡之前先关掉它。
+    await closeImport();
     await page.locator('#pb-grid [data-slug="project-chain"] a').click();
     await page.waitForURL('**/playbook.html?namespace=default&id=project-chain');
     await page.locator('#pb-value-project').waitFor();
@@ -78,7 +93,7 @@ export async function playbook(d,mode){
     const downloading = page.waitForEvent('download'); await page.locator('#pb-export').click();
     const download = await downloading; const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
     assert.deepEqual(Object.keys(exported).sort(), Object.keys(files).sort()); assert.equal(exported['capabilities/fixer.yaml'], draft);
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-reload-template').click();
+    await acceptDialog(page, () => page.locator('#pb-reload-template').click());
     await page.waitForFunction(() => document.querySelector('#pb-template-state').textContent.includes('Latest raw package'));
     await page.locator('#pb-file-path').selectOption('capabilities/fixer.yaml');
     assert.equal(await page.locator('#pb-file-content').inputValue(), edited);
@@ -193,7 +208,7 @@ export async function playbook(d,mode){
     assert.equal((await stored()).spec.files['README.md'], changedAgain['README.md'], 'Second remote edit is stored in original raw spec.files');
     assert.notEqual(changedAgain['README.md'], changed['README.md']);
     assert.notEqual(current.metadata.resourceVersion, raw.metadata.resourceVersion, 'Concurrent PUT setup must advance CAS before testing DELETE409');
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-delete').click();
+    await acceptDialog(page, () => page.locator('#pb-delete').click());
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Stale CAS'));
     assert.equal((await req('/v1/namespaces/default/playbooks')).items.length, 1);
     await page.locator('#btn-rescan').click(); await page.waitForFunction(() => !document.querySelector('#btn-rescan').disabled);
@@ -204,7 +219,7 @@ export async function playbook(d,mode){
     const history = await req('/v1/namespaces/default/tasks?limit=100');
     assert.ok(history.items.some(task => JSON.stringify(task.spec).includes('"a-review"')), 'An actual installed Source creates execution references before manifest deletion');
     const keptBefore = await keptResources(receiptId);
-    page.once('dialog', dialog => dialog.accept()); await page.locator('#pb-delete').click();
+    await acceptDialog(page, () => page.locator('#pb-delete').click());
     await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Manifest deleted'));
     const removed = (await calls()).findLast(c => c.method === 'DELETE'); assert.ok(removed.url.includes('?resourceVersion=')); assert.equal(removed.body, undefined);
     // `kept` 是删清单后保留的资源引用**集合**（能力钉版本 / 源名）：整体内容相等即可，
@@ -228,11 +243,12 @@ export async function playbook(d,mode){
     await page.evaluate(() => window.__f3Fault = '/playbooks'); await page.locator('#btn-refresh').click();
     await page.waitForFunction(() => document.querySelector('#pb-state').textContent.includes('disconnected'));
     await shot('real-list-disconnected');
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-state button').click();
+    /* #378：loadErrorNode 现在固定带「复制详情」，所以按 data-err-action 点**重试**，不按"第一个按钮"。 */
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-state [data-err-action="retry"]').click();
     await page.waitForFunction(() => document.querySelector('#pb-grid [data-slug]'));
     await goto('playbook', 'namespace=default&id=project-chain'); await page.evaluate(() => window.__f3Fault = '/playbooks'); await page.locator('#btn-rescan').click();
     await page.waitForFunction(() => document.querySelector('#pb-load-state').textContent.includes('disconnected'));
-    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-load-state button').click();
+    await page.evaluate(() => window.__f3Fault = ''); await page.locator('#pb-load-state [data-err-action="retry"]').click();
     await page.waitForFunction(() => !document.querySelector('#pb-load-state').textContent);
     const invalid = await clickAction('#btn-render', '/render'); assert.equal(invalid.status, 400); assert.equal(invalid.reason, 'values_missing');
     await shot('actual-values-error');
@@ -258,6 +274,42 @@ export async function playbook(d,mode){
     await page.locator('#btn-refresh').click(); await page.waitForFunction(() => !document.querySelector('#pb-empty').classList.contains('hidden'));
     assert.match(await page.locator('#pb-empty').innerText(), /No playbooks/);
     check('True disconnected errors/retry both pages, genuine HTTP400 schema error, 4 languages and real empty list after manifest deletion');
+  }
+  if (mode === 'missing') {
+    // #380：不存在的 playbook id → 徽章必须从「正在读取…」收敛到失败态，
+    // 且失败路径不得留下空圆角容器（#pb-summary 是 card card-pad + min-height:80px）。
+    const missing = 'f3-no-such-package';
+    await goto('playbook', 'namespace=default&id=' + missing);
+    await page.waitForFunction(() => document.querySelector('#pb-badge').className.includes('badge-error'));
+    const badge = await page.evaluate(() => {
+      const el = document.querySelector('#pb-badge');
+      return { text: el.textContent.trim(), className: el.className };
+    });
+    assert.equal(badge.text, 'Load failed', '#380 失败徽章必须写成「载入失败」，不能停在「正在读取…」');
+    assert.equal(badge.className, 'badge badge-error', '#380 失败徽章用 badge-error 语义色');
+    assert.ok(!(await page.locator('#page-main').innerText()).includes('Loading…'), '#380 失败后页面上不得残留 loading 文案');
+    const summary = await page.evaluate(() => {
+      const el = document.querySelector('#pb-summary');
+      const box = el.getBoundingClientRect();
+      return { hidden: el.hidden, display: getComputedStyle(el).display, children: el.children.length, height: box.height };
+    });
+    assert.equal(summary.children, 0, '#380 失败路径不得往空容器里塞内容');
+    assert.ok(summary.hidden === true && summary.display === 'none' && summary.height === 0,
+      '#380 失败路径必须移除残留空容器（hidden/display:none/0 高），实际 ' + JSON.stringify(summary));
+    // 错误面板与重试入口必须还在：失败不是死路。
+    /* #378：错误态里除「重试」还有「复制详情」（报障要机器事实），所以断言从
+       "按钮恰好 1 个"改成"恰好 1 个重试入口" —— 意图（失败不是死路）不变。 */
+    assert.equal(await page.locator('#pb-load-state [data-err-action="retry"]').count(), 1, '#380 失败态保留重试入口');
+    assert.match(await page.locator('#pb-load-state').innerText(), /Failed to load/);
+    assert.ok(!(await page.locator('#page-main').innerText()).includes('pb.v4.'), '没有漏翻的 i18n key');
+    await shot('missing-package-failed-badge');
+    // 再点一次重试：仍然 404，徽章不得回退成 loading 或 success。
+    await page.locator('#pb-load-state [data-err-action="retry"]').click();
+    await page.waitForFunction(() => document.querySelector('#pb-load-state').textContent.includes('Failed to load'));
+    assert.equal((await page.locator('#pb-badge').innerText()).trim(), 'Load failed');
+    assert.equal(await page.locator('#pb-summary').isVisible(), false, '#380 重试失败后空容器仍然不出现');
+    check('#380 missing playbook id → failed badge text/DOM, no residual empty card, retry stays failed');
+    await clean('missing');
   }
 
 }

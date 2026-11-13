@@ -62,6 +62,12 @@
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
 .source-graph{min-height:320px;width:100%;min-width:0}
 .source-loading{padding:24px;color:var(--muted)}
+/* #377 列表规模化：搜索框 + 「20 条 + 加载更多」。
+   分页控件样式走页面内联（契约 §3：本车道不写 ui.css）。 */
+.src-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}
+.src-toolbar .input{max-width:320px;min-width:180px}
+.src-toolbar-count{color:var(--muted);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
+.src-more-wrap{display:flex;justify-content:center;padding:12px 0 2px}
 </style>
 {{end}}
 {{define "content"}}
@@ -94,6 +100,11 @@
 </div>
 <div id="src-list-skel" class="source-loading">
 {{t "sources.v4.loading"}}
+</div>
+<!-- #377：本地搜索 + 已加载计数（搜索只过滤已加载的页，不重新请求） -->
+<div class="src-toolbar">
+<input id="src-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
+<span id="src-count" class="src-toolbar-count" aria-live="polite"></span>
 </div>
 <div id="src-list" class="list card">
 </div>
@@ -157,6 +168,14 @@
 </label>
 <input id="f-tz" class="input"  />
 </div>
+</div>
+<!-- #379：cron 预设。i18n 里本来就有 sources.preset.* 四个键但页面 0 引用，
+     用户得手写五段表达式。点一下写进 #f-expr（写进输入框后仍可继续改）。 -->
+<div id="cron-presets" class="source-hints" role="group" aria-label="{{t "sources.preset.label"}}">
+<button type="button" class="btn btn-ghost btn-sm" data-cron="*/15 * * * *">{{t "sources.preset.every15"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 * * * *">{{t "sources.preset.hourly"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 3 * * *">{{t "sources.preset.daily3"}}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 9 * * 1-5">{{t "sources.preset.weekdays9"}}</button>
 </div>
 </div>
 <div id="f-hook-wrap" class="hidden">
@@ -271,7 +290,7 @@
 <button id="btn-dry" class="btn btn-ghost">
 {{t "sources.v4.draft_dry"}}
 </button>
-<button id="modal-save" class="btn btn-primary">
+<button id="modal-save" class="btn">
 {{t "sources.v4.save"}}
 </button>
 </div>
@@ -305,7 +324,7 @@
 <button id="fire-dry" class="btn btn-ghost">
 {{t "sources.v4.saved_dry"}}
 </button>
-<button id="fire-submit" class="btn btn-primary">
+<button id="fire-submit" class="btn">
 {{t "sources.v4.fire"}}
 </button>
 </div>
@@ -335,6 +354,100 @@ const action = (key, fn) => {
   b.onclick=()=>fn(b);
   return b;
 };
+/* #376：行内动作收敛成「1 主 + 1 次 + ⋯」。菜单本体复用 .menu/.menu-item
+   （与顶部头像菜单同一套），开合只切 .hidden；条目可带一句 hint 说明
+   「它和旁边那个差在哪」（试运行 vs 立即运行）。 */
+const actionMenu = (items) => {
+  const wrap=el("div","act-menu");
+  const trigger=el("button","btn btn-ghost btn-sm act-more","⋯");
+  trigger.type="button";
+  trigger.setAttribute("aria-haspopup","menu");
+  trigger.setAttribute("aria-expanded","false");
+  trigger.setAttribute("aria-label",t("more"));
+  const menu=el("div","menu hidden");
+  menu.setAttribute("role","menu");
+  const setOpen=open=>{
+    menu.classList.toggle("hidden",!open);
+    trigger.setAttribute("aria-expanded",open ? "true" : "false");
+    if(open)placeMenu(wrap);
+  };
+  trigger.onclick=()=>setOpen(menu.classList.contains("hidden"));
+  for(const item of items){
+    const b=el("button","menu-item act-item"+(item.danger ? " act-danger" : ""));
+    b.type="button";
+    b.setAttribute("role","menuitem");
+    /* 只有带 hint 的条目才拆两行；单行条目保持纯文本 —— 包一层 span 会让
+       `button:text-is("Enable")` 这类定位器失配（最小文本元素变成 span）。 */
+    if(item.hint){
+      b.append(el("span",null,item.label),el("span","act-item-hint",item.hint));
+    }else{
+      b.textContent=item.label;
+    }
+    b.onclick=()=>{
+      setOpen(false);item.run(b);
+    };
+    menu.append(b);
+  }
+  wrap.append(trigger,menu);
+  return wrap;
+};
+const closeMenus = except => {
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")){
+    const wrap=menu.parentElement;
+    if(except && wrap.contains(except))continue;
+    menu.classList.add("hidden");
+    const trigger=wrap.querySelector(".act-more");
+    if(trigger)trigger.setAttribute("aria-expanded","false");
+  }
+};
+/* #376 rework：⋯ 菜单开合时的视口边界定位。
+   390/360 下停用行只有「编辑 + ⋯」，触发器离左缘近，200px 面板右对齐后
+   会越出视口左缘、被 body 的 overflow-x:hidden 裁掉（实测左溢出 63~77px）。
+   菜单在 ui.css 里改成 position:fixed（包含块=视口，祖先 overflow 不再裁剪），
+   left/top 由这里按触发器矩形夹进视口：左右各留 8px，下方放不下就翻到
+   触发器上方，上下也不越界。 */
+function placeMenu(wrap){
+  const trigger=wrap.querySelector(".act-more"),menu=wrap.querySelector(".menu");
+  if(!trigger || !menu || menu.classList.contains("hidden"))return;
+  const gap=8,pad=8;
+  /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度
+     压到 0，量出来的宽度偏小，之后夹边就会算错。 */
+  menu.style.left="";
+  menu.style.top="";
+  const t=trigger.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  const left=Math.min(Math.max(pad,t.right-w),Math.max(pad,innerWidth-pad-w));
+  let top=t.bottom+gap;
+  if(top+h>innerHeight-pad && t.top-gap-h>=pad)top=t.top-gap-h;
+  top=Math.min(Math.max(pad,top),Math.max(pad,innerHeight-pad-h));
+  menu.style.left=left+"px";
+  menu.style.top=top+"px";
+  /* 祖先若带 transform/filter，fixed 的包含块会变成那个祖先（列表行 :active
+     的按压缩放就带 transform）；用实际矩形与期望矩形的差补一次，菜单不偏移。 */
+  const r=menu.getBoundingClientRect();
+  if(Math.abs(r.left-left)>0.5 || Math.abs(r.top-top)>0.5){
+    menu.style.left=(left+(left-r.left))+"px";
+    menu.style.top=(top+(top-r.top))+"px";
+  }
+}
+/* 菜单是 fixed 浮层：页面/容器滚动、视口变化、按压缩放过渡结束时都要重新贴回触发器 */
+const reflowMenus = () => {
+  if(!document.querySelector(".act-menu .menu:not(.hidden)"))return;
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)"))placeMenu(menu.parentElement);
+};
+document.addEventListener("click",event=>closeMenus(event.target));
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  const open=document.querySelector(".act-menu .menu:not(.hidden)");
+  if(!open)return;
+  const wrap=open.parentElement;
+  closeMenus(null);
+  /* 关掉之后再把焦点还给触发器（原先先 close 再 query，永远找不到 open） */
+  const trigger=wrap.querySelector(".act-more");
+  if(trigger)trigger.focus();
+});
+document.addEventListener("scroll",reflowMenus,{passive:true,capture:true});
+window.addEventListener("resize",reflowMenus);
+document.addEventListener("transitionend",reflowMenus,true);
 const fmt = value => value ? new Date(value).toLocaleString() : "—";
 const json = (box, optional=false) => {
   const raw=box.value.trim();
@@ -443,13 +556,37 @@ async function toggle(src,btn){
   }
 }
 async function removeSource(src,btn){
-  if(!confirm(t("delete_confirm").replace("{name}",src.metadata.name)))return;
+  if(!(await A.confirmDanger({
+    body:t("delete_confirm").replace("{name}",src.metadata.name),
+    undo:true
+  })))return;
+  /* 撤销条：快照在删除前拿；删除是真删，撤销 = 用快照 POST 重建（不做延迟提交） */
+  const snapshot=src;
+  const ns=A.readScope().namespace;
   btn.disabled=true;
   try{
     await A.api(A.deletePath(path(src.metadata.name),src.metadata.resourceVersion),{
       method:"DELETE"
     });
     await load();
+    A.undoBar({
+      message:A.t("common.undo.deleted","已删除「{name}」").replace("{name}",snapshot.metadata.name),
+      onUndo:async()=>{
+        try{
+          await A.api("/v1/namespaces/"+ns+"/sources",{
+            method:"POST",
+            body:JSON.stringify({
+              apiVersion:"anotify/v1",kind:"Source",metadata:{
+                name:snapshot.metadata.name,namespace:snapshot.metadata.namespace || ns
+              },spec:snapshot.spec
+            })
+          });
+          await load();
+        }catch(err){
+          A.errorBar(err);
+        }
+      }
+    });
   }catch(err){
     showActionError(src,err);
   }finally{
@@ -465,32 +602,81 @@ function showActionError(src,err){
 }
 let SOURCES=[], CAPS=[], EVENTS=[], EDITING=null;
 let loaded=false, editHandled=false, editorSeq=0;
+/* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
+   「加载更多」翻下一页，搜索只在已加载的页上本地过滤。 */
+const SOURCES_PAGE=20;
+let SOURCES_CURSOR="", SOURCES_MORE=false, SOURCE_QUERY="";
 A.mountLayout({
   active:"sources",title:A.t("sources.title")
 });
+async function fetchSourcePage(cursor){
+  await A.ensureScope();
+  const qs=new URLSearchParams({limit:String(SOURCES_PAGE)});
+  if(cursor)qs.set("continue",cursor);
+  const res=await A.api(A.nsPath("sources")+"?"+qs.toString());
+  if(!res || !Array.isArray(res.items))throw new Error(A.t("common.request_failed"));
+  const cont=res.metadata && typeof res.metadata.continue==="string" ? res.metadata.continue : "";
+  return {items:res.items,cursor:cont};
+}
 async function load(){
   try{
     await initScope();
-    const [sources,caps]=await Promise.all([A.nsList("sources"),A.nsList("capabilities")]);
-    SOURCES=sources.items;
+    const [first,caps]=await Promise.all([fetchSourcePage(""),A.nsList("capabilities")]);
+    SOURCES=first.items;
+    SOURCES_CURSOR=first.cursor;
+    SOURCES_MORE=!!first.cursor;
     CAPS=caps.items;
     loaded=true;
     render();
     const edit=new URLSearchParams(location.search).get("edit");
     if(edit && !editHandled){
       editHandled=true;
-      const src=SOURCES.find(s=>s.metadata.name===edit);
+      let src=SOURCES.find(s=>s.metadata.name===edit);
+      if(!src && SOURCES_MORE){
+        /* 深链目标不在第一页：单对象读，?edit= 的行为与分页无关（e2e 锚点不变）。 */
+        try{ src=await A.nsApi("sources",edit); }catch(err){ src=null; }
+      }
       if(src)await openEditor(src);
       else throw new Error(t("notfound"));
     }
   }catch(err){
     $("src-list").replaceChildren(A.loadErrorNode(err,load));
+    $("src-count").textContent="";
   }finally{
     $("src-list-skel").classList.add("hidden");
   }
 }
+async function loadMoreSources(){
+  if(!SOURCES_MORE)return;
+  const btn=$("src-load-more");
+  if(btn)btn.disabled=true;
+  try{
+    const next=await fetchSourcePage(SOURCES_CURSOR);
+    const seen=new Set(SOURCES.map(s=>s.metadata.name));
+    for(const item of next.items){
+      if(seen.has(item.metadata.name))continue;
+      SOURCES.push(item);
+      seen.add(item.metadata.name);
+    }
+    SOURCES_CURSOR=next.cursor;
+    SOURCES_MORE=!!next.cursor;
+    render();
+  }catch(err){
+    if(btn)btn.disabled=false;
+    $("action-error").replaceChildren(A.loadErrorNode(err,()=>loadMoreSources()));
+  }
+}
+function visibleSources(){
+  const q=SOURCE_QUERY.trim().toLowerCase();
+  if(!q)return SOURCES;
+  return SOURCES.filter(src=>{
+    const m=A.model.source(src);
+    return [m.name,m.displayName,m.kind,...m.targets.map(x=>x.capability)].filter(Boolean).join(" ").toLowerCase().includes(q);
+  });
+}
 function render(){
   $("src-list").replaceChildren();
+  const rows=visibleSources();
   if(!SOURCES.length){
     const box=el("div","empty");
     box.append(
@@ -498,8 +684,10 @@ function render(){
       el("p","card-sub",t("empty")),
       action("new",()=>openEditor(null)));
     $("src-list").append(box);
+  }else if(!rows.length){
+    $("src-list").append(el("div","empty",A.t("paging.no_match")));
   }
-  for(const src of SOURCES){
+  for(const src of rows){
     const m=A.model.source(src);
     const row=el("div","list-row src-row");
     row.dataset.name=m.name;
@@ -520,8 +708,20 @@ function render(){
     badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
     titleWrap.append(a,badges);
     const acts=el("div","src-acts");
-    acts.append(action("edit",()=>openEditor(src)),action(m.enabled ? "disable" : "enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
+    /* #376：5 个平铺按钮 → 1 主（编辑）+ 1 次（立即运行）+ ⋯。
+       「已保存源试运行」与「立即运行」不再并列：后者是行内次动作，
+       前者进菜单并带一句差异说明（只预演解析，不写事件）。 */
+    const editBtn=el("button","btn btn-sm",t("edit"));
+    editBtn.type="button";
+    editBtn.onclick=()=>openEditor(src);
+    acts.append(editBtn);
     if(m.enabled)acts.append(action("fire",()=>openFire(src)));
+    const menuItems=[{label:t("saved_dry"),hint:t("saved_dry_hint"),run:()=>openFire(src)},{
+      label:t(m.enabled ? "disable" : "enable"),run:b=>toggle(src,b)
+    },{
+      label:t("delete"),danger:true,run:b=>removeSource(src,b)
+    }];
+    acts.append(actionMenu(menuItems));
     head.append(titleWrap,acts);
     /* ② 主字段：4 列 KV 网格 */
     const kv=el("dl","src-kv");
@@ -542,7 +742,21 @@ function render(){
     row.append(head,kv,more);
     $("src-list").append(row);
   }
+  if(SOURCES_MORE){
+    const wrap=el("div","src-more-wrap");
+    const more=el("button","btn btn-ghost",A.t("paging.load_more"));
+    more.id="src-load-more";
+    more.type="button";
+    more.onclick=loadMoreSources;
+    wrap.append(more);
+    $("src-list").append(wrap);
+  }
+  $("src-count").textContent=A.t("paging.showing").replace("{n}",String(rows.length));
 }
+$("src-search").addEventListener("input",event=>{
+  SOURCE_QUERY=event.target.value;
+  render();
+});
 function targetRow(target={
   capability:"",params:{
   }
@@ -770,7 +984,9 @@ $("btn-dry").onclick=async()=>{
   }
 };
 $("reload-draft").onclick=async()=>{
-  if(!confirm(t("reload_confirm")))return;
+  if(!(await A.confirmDanger({
+    body:t("reload_confirm")
+  })))return;
   try{
     const src=await A.nsApi("sources",EDITING.metadata.name);
     await openEditor(src);
@@ -800,6 +1016,13 @@ $("src-modal-body").addEventListener("scroll",syncScrollHint);
 window.addEventListener("resize",syncScrollHint);
 $("add-target").onclick=()=>$("f-targets").append(targetRow());
 $("f-kind").onchange=syncKind;
+/* #379：cron 预设 —— 点一下把五段表达式写进 #f-expr（不锁输入，写完还能改）。 */
+for(const preset of document.querySelectorAll("#cron-presets [data-cron]")){
+  preset.addEventListener("click",()=>{
+    $("f-expr").value=preset.dataset.cron;
+    $("f-expr").focus();
+  });
+}
 for(const id of ["dry-payload","f-sample","f-payload-schema","f-payload"])$(id).oninput=suggest;
 load();
 </script>

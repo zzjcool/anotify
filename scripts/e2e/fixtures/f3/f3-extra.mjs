@@ -1,12 +1,15 @@
 // New F3 registered behavior: bootstrap, node ABA, full install matrix and historical recursive masking.
 import assert from 'node:assert/strict';
+import { acceptOpenDialog } from './f3-dialogs.mjs';
 export async function bootstrap(d) {
   const {page,goto,calls,req,check}=d;
   await goto('sources','namespace=prod');
   await page.locator('#src-list > div[data-name]').first().waitFor();
-  const list=(await calls()).find(c=>c.url==='/v1/namespaces/prod/sources');
+  // #377 起列表请求带分页参数（?limit=20）；匹配时只剥查询串，命名空间仍逐字比对。
+  const pathOf=u=>String(u).split('?')[0];
+  const list=(await calls()).find(c=>pathOf(c.url)==='/v1/namespaces/prod/sources');
   assert.equal(list.result.kind,'SourceList');assert.ok(Array.isArray(list.result.items));
-  assert.ok(!(await calls()).some(c=>c.url==='/v1/namespaces/default/sources'));
+  assert.ok(!(await calls()).some(c=>pathOf(c.url)==='/v1/namespaces/default/sources'));
   assert.equal(await page.evaluate(()=>Anotify.readScope().namespace),'prod');
   assert.ok((await page.evaluate(()=>localStorage.getItem('anotify.scope'))).includes('prod'));
   check('F3-SCOPE-01 empty-storage prod deep link awaits scope and exact SourceList.items');
@@ -21,7 +24,9 @@ export async function bootstrap(d) {
   await goto('capabilities','');await page.locator('[data-cap="fixer"]').waitFor();
   const rows=await calls();
   assert.ok(rows.some(c=>c.url==='/v1/namespaces'));
-  assert.ok(rows.some(c=>c.url==='/v1/namespaces/default/capabilities'&&c.result.kind==='CapabilityList'));
+  // 断言的语义是「首访：NamespaceList → default 的 CapabilityList」；#377 分页之后
+  // nsList 显式带 limit=500（整份列表用于计数/建图），所以按路径比对、查询串忽略。
+  assert.ok(rows.some(c=>c.url.split('?')[0]==='/v1/namespaces/default/capabilities'&&c.result.kind==='CapabilityList'));
   check('F3-SCOPE-03 first visit NamespaceList -> default CapabilityList, no flat compatibility');
 }
 export async function aba(d) {
@@ -37,11 +42,17 @@ export async function aba(d) {
       return response;
     };
   });
-  page.on('dialog',dialog=>dialog.accept());
+  /* 切换 namespace 时，草稿 ≠ 已加载内容会弹「重载会替换当前草稿」（#378 的真实弹层）——
+     旧代码用全局 dialog 事件自动确认，这里改成显式点那个真实的确认按钮。
+     注意：同样的草稿切回去不会弹（草稿 === 已加载内容），所以只在弹层真的开着时才点，
+     否则 acceptOpenDialog 会空等到 5s 超时。 */
+  const acceptReloadIfOpen = async () => {
+    if (await page.locator('#anotify-dialog:not(.hidden)').count()) await acceptOpenDialog(page);
+  };
   await page.fill('#namespace-vars','{"OLD_SAVE":"old-submission"}');await page.click('#namespace-save');
   await page.waitForFunction(()=>!!window.__f3Release);
-  await page.selectOption('#config-namespace','prod');await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('prod-visible'));
-  await page.selectOption('#config-namespace','default');await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('OLD_SAVE'));
+  await page.selectOption('#config-namespace','prod');await acceptReloadIfOpen();await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('prod-visible'));
+  await page.selectOption('#config-namespace','default');await acceptReloadIfOpen();await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('OLD_SAVE'));
   await page.fill('#namespace-vars','{"NEW_DRAFT":"must-survive-old-response"}');
   const snapshot=()=>page.evaluate(()=>({draft:document.getElementById('namespace-vars').value,rv:document.getElementById('namespace-revisions').textContent,state:document.getElementById('namespace-state').textContent,disabled:document.getElementById('namespace-save').disabled,count:__f3Calls.length}));
   const before=await snapshot();await page.evaluate(()=>window.__f3Release());

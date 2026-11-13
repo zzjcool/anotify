@@ -9,6 +9,49 @@ common:
   server_error: '服务端错误 HTTP {code}'
   request_rejected: '请求被拒绝 HTTP {code}'
   request_failed: '请求失败'
+  err:
+    title:
+      unauthorized: 登录已过期
+      forbidden: 你没有权限执行这个操作
+      not_found: 找不到这个内容
+      conflict: 内容已被别人改过
+      gone: 内容已过期
+      throttled: 操作太频繁
+      rejected: 请求没有被接受
+      server: 服务端出错
+      offline: 连不上服务端
+      failed: 请求失败
+    hint:
+      unauthorized: 会话已失效。重新登录后会回到这一页。
+      forbidden: 这是权限，不是故障。命名空间内的资源找命名空间所有者，实例级设置找实例管理员。
+      not_found: 可能已被删除，也可能链接里的名字不对。
+      conflict: 别人先改过它。重新加载拿到最新版本，再改一次。
+      gone: 已被清理或超过保留期，不会再恢复。
+      throttled: 等一分钟再试；连续重试只会继续被拒。
+      rejected: 按提示改好输入再试一次。
+      server: 不是你操作的问题。等几秒再重试；一直失败就把详情发给管理员。
+      offline: 检查网络，或服务端进程是否在运行，然后重试。
+      failed: 稍后再试；一直失败就把详情发给管理员。
+    go_login: 去登录
+    back_to_list: 返回列表
+    reload: 重新加载
+    copy: 复制详情
+    request_id: '请求 ID：{id}'
+  dialog:
+    title:
+      confirm: 确认操作
+      danger: 危险操作
+    confirm: 确认
+    cancel: 取消
+    irreversible: 这个操作不可撤销。
+    undoable: 操作后会给你 5 秒撤销。
+  undo:
+    deleted: 已删除「{name}」
+    revoked: 已吊销「{name}」
+    done: 已撤销
+    failed: 撤销失败
+    hint: 5 秒内可撤销
+    action: 撤销
   resource_version_required: '写入缺少 resourceVersion，请刷新后重试'
   brand:
     name: Anotify
@@ -167,6 +210,29 @@ index:
       date: '{m}月{d}日 周{w}'
     foot: '近 30 天 {n} 条事件 · 活跃 {d}/30 天'
     foot_na: 统计数据暂不可用
+    summary: '近 7 天 {n} 次 · 最活跃 {d}'
+    summary_none: 近 7 天没有新事件
+    day_label: '{m}月{d}日'
+    expand: 展开完整热力图
+    collapse: 收起热力图
+    scroll_hint: 可横向滑动查看全部 53 周
+  steps:
+    title: "从 0 到第一条事件"
+    subtitle: "三步都齐了，节点上就能发出第一条事件。"
+    source:
+      title: "建一个源"
+      desc: "事件的入口：定时、Webhook 或手动触发。"
+    capability:
+      title: "建一个能力"
+      desc: "事件到达后要跑什么（脚本与参数）。"
+    node:
+      title: "登记一个节点"
+      desc: "真正执行能力的地方，登记后拿令牌安装。"
+    state_done: "已完成"
+    state_current: "现在做这一步"
+    state_todo: "等待上一步"
+    all_done: "三步都齐了 —— 去源页面点「立即运行」，就会写出第一条事件。"
+    all_done_link: "去源页面 →"
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
@@ -239,6 +305,8 @@ graph:
   silk_meta_failed: '{n} 个失败'
   silk_meta_done: '{n} 个任务完成'
   silk_clock: '回放 {t}'
+  compact_more: '还有 {n} →'
+  compact_collapse: 收起紧凑视图
 
 message:
   title: 通知详情
@@ -289,6 +357,8 @@ message:
     env_hint: "只展示此任务实际使用的变量名与来源，不读取本机变量值或完整透传白名单。"
     env_empty: "没有保留的环境诊断。"
     result: "结果摘要 / 错误 / 产物"
+    error_message: '说明'
+    error_reason: '原因'
     attempts: "已保留的执行尝试事实"
     attempts_empty: "没有保留的执行尝试事实。"
     logs: "任务日志"
@@ -384,6 +454,9 @@ login:
     err_empty: 请填写用户名和恢复码。
     err_failed: 恢复码登录失败：{msg}
     success: 登录成功，请尽快为本机补建 Passkey…
+  first_run:
+    hint: "第一次使用这个实例？先注册 —— 如果这是本实例的第一个账号，它会自动成为管理员。"
+
   codes:
     title: 请保存你的恢复码
     subtitle: 每个码只能用一次，关闭后无法再查看明文。请复制并保存到密码管理器。
@@ -392,6 +465,7 @@ login:
     copied: 已复制
     continue: 已保存，进入工作台
     warn: 这是唯一一次展示机会。没有恢复码且丢失全部 Passkey 设备时，将无法登录。
+    ack: 我已保存这些恢复码
   trust:
     data_local: 数据仅存于你的服务器
     webauthn: WebAuthn 标准
@@ -418,6 +492,9 @@ login:
     signup_success_short: 注册成功！正在进入工作台…
     need_username_short: 先给自己起个用户名。
 receivers:
+  back_home: "返回工作台"
+  docs_link: "接入文档"
+  unavailable_next: "开放后这里会出现接收设备与送达率。"
   unavailable: '手机推送暂未开放，上线后这里会显示你的接收设备。'
   title: 通知接收
   channel:
@@ -531,7 +608,8 @@ keys:
   title: API Keys
   subtitle: Agent 用它上报通知
   desc_prefix: Agent 携带 Key 调用
-  desc_suffix: 上报通知。 Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存。
+  desc_suffix: 上报通知。
+  desc_tip: Key 仅在创建时完整展示一次，服务端只存哈希——请立即妥善保存（见下方「Key 的安全实践」）。
   create_button: 新建 Key
   cli_auth_entry: CLI 设备授权
   api_endpoint: 上报接口
@@ -688,7 +766,7 @@ security:
   unknown_device: 未知设备
   credential: 凭证
   current_session: 当前会话
-  empty_passkeys: 还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。
+  empty_passkeys: 用页头的「+ 本机添加」为这台设备创建一个。
   empty_sessions: 当前没有活跃会话。
   in_use: 本机在用
   last_used: 最近使用 {time}
@@ -743,6 +821,13 @@ docs:
     events: POST /v1/events
     node: 节点协议
     endpoints: 全部端点
+    design: "设计取舍说明"
+  design:
+    title: "设计取舍说明：为什么界面这样显示"
+    lede: "下面这些是写给维护者与排障者的说明。控制台首屏只保留「要你做决定」的信息，原理与边界集中在这里。"
+    sources: "源产生事件，目标能力接收参数。源详情页的下游配置图只反映 spec.targets 的引用关系，不是执行成功的证明：事件有没有被接收要看事件流，任务有没有跑成功要看任务详情。deliveryId 默认去重 30 天，同一个 id 只表示「已接收」。"
+    playbooks: "playbook.yaml 是唯一根清单，它引用的能力/源文件必须都在包内。预案页只保存这份包，不安装、不部署——安装是单独的 POST …/install，部署是能力的 POST …/deploy。"
+    nodes: "节点配置可以逐台编辑；批量配置 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。保留期单位为秒，0 表示永久；默认值为日志/产物 604800 秒、事件与终态任务 2592000 秒，活动任务与引用保护仍然生效，用户的 workDir 不会被清理。首屏的配置版本（configRevision）与已应用版本（appliedRevision）都来自真实 GET，缺字段时界面显示「未知」而不以默认值冒充。"
   endpoints:
     title: 全部端点
     intro: 这份清单在构建时从 api/openapi.yaml 生成，与真实路由同源，不会漂移。已弃用的旧「通知终端」端点不在此列。
@@ -878,6 +963,7 @@ docs:
     rules:
       title: 投递规则（标签路由 + 级别过滤）
   webpush:
+    off_note: "手机推送（Web Push）暂未开放：服务端未启用 VAPID，本版不提供设备订阅页。事件仍会正常产生，可在「事件流」页查看。"
     title: Web Push 订阅（浏览器接收）
     intro: 浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="doc-em">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
     step1: <b class="doc-em">① 取 VAPID 公钥</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1201,12 +1287,14 @@ events:
     no_match: 当前页没有匹配项，可继续向更旧翻页或回到最新
     invalid_cursor: 游标已失效，已回到最新
   v4:
-    dedup: "deliveryId 在 30 天保留窗内去重；接收成功不保证下游任务成功。"
+    dedup: "投递 ID 在 30 天保留窗内去重；接收成功不保证下游任务成功。"
     refresh: "刷新"
     namespace: "命名空间"
     source: "涉及对象 / 源"
     limit: "每页数量"
     filter: "应用筛选"
+    filters: "筛选条件"
+    filters_active: "{n} 个生效"
     loading: "正在读取真实数据…"
     more: "加载更多"
     trace: "查看链路"
@@ -1359,6 +1447,13 @@ caps:
     result_ttl_hint: '0 = 永不清理。'
     save: '保存'
     saving: '保存中…'
+    step_basics: '基础'
+    step_script: '脚本'
+    step_advanced: '高级（可选）'
+    next_step: '下一步'
+    prev_step: '上一步'
+    adv_runtime: '运行环境与并发'
+    adv_lifecycle: '依赖与生命周期'
     submit: '创建'
     timeout: '执行超时（秒）'
     timeout_hint: '0 = 不设本地执行超时。'
@@ -1367,6 +1462,13 @@ caps:
     version_hint: '留空 = 内容寻址（自动分配/复用）；显式版本的内容不可变。'
     workdir: '工作目录'
     workdir_hint: '可含 $(vars.X) 或 $(params.X)；留空 = 每次任务一个独立目录。'
+    template: "模板"
+    template_blank: "从空白开始"
+    template_failed: "模板列表载入失败：{msg}"
+    template_fields: "模板参数（运行时以 ANOTIFY_PARAM_* 环境变量传入）"
+    template_hint: "选一个模板，参数契约、下游与脚本骨架会自动填好；也可以从空白开始。"
+    template_none: "该模板不需要参数。"
+    template_required: "必填"
   meta:
     installed_from: '安装来源'
     next: '下游'
@@ -1549,7 +1651,7 @@ nodes:
   v4:
     copy: "复制"
     title: "节点与配置"
-    subtitle: "集群身份 · 本机申报 ∩ 中枢授权 · 真实配置状态"
+    subtitle: "登记节点 · 在线与配置状态 · 逐台改配置"
     register: "登记节点"
     name: "集群唯一名称"
     create: "登记并签发身份令牌"
@@ -1566,6 +1668,10 @@ nodes:
     copy_bootstrap: "复制安装命令"
     local_setup: "本机配置与三个公开命令"
     setup_hint: "先保存 anode.yaml，再运行 install 或 serve；安装使用已签发的令牌，不会自动登记。vars 非秘密；envPassthrough 仅本机名字名单，禁 PATH、HOME、ANOTIFY_；完整名单和值不上传。ANOTIFY_ARTIFACT_DIR 由节点提供，诊断只展示名字/来源，不展示导出绝对路径。"
+    copy_emit: "复制 emit 命令"
+    emit_hint: "这一行用的是本实例已存在的「{cap}」。emit 由节点上的 agent 在任务内执行（会自动带上任务令牌），不要在你的终端直接跑。"
+    emit_none: "这个实例还没有能力 —— 先建一个，这条命令才有意义。"
+    emit_create: "去建一个能力 →"
     online: "在线"
     offline: "离线"
     unknown: "未知（没有明确本机断言）"
@@ -1585,7 +1691,7 @@ nodes:
     saved: "已保存；节点配置须等待节点 apply，命名空间值仅影响下一个任务。"
     stale: "409：CAS 已过期，草稿完整保留。请明确重载后重试，不自动覆盖。"
     error: "请求失败"
-    loaded: "已读取当前配置；resourceVersion 只是 CAS 令牌。"
+    loaded: "已读取当前配置。"
     pending: "ConfigPending：节点配置尚未应用"
     applied: "节点 revision 已一致（不代表 ns 输入版本）"
     revision: "配置与应用事实"
@@ -1599,7 +1705,7 @@ nodes:
     ns_config: "命名空间 vars 配置（无 limits）"
     ns_hint: "仅按该 namespace 的下一任务解析；不写进节点 applied。"
     retention: "系统保留配置（管理员）"
-    retention_hint: "下列值必须来自真实 GET，不以默认值冒充当前配置。单位为秒；0 永久。默认日志/产物 604800、事件与终态任务 2592000；活动任务及引用保护仍保留，用户 workDir 不清理。"
+    retention_hint: "单位为秒；0 表示永久保留。"
     admin_only: "仅管理员可读取或编辑系统保留配置。"
     drain: "排空节点"
     drain_confirm: "排空 {name}？停止接收新任务；已有物理占用仍等真实回收。"
@@ -1612,6 +1718,7 @@ nodes:
     artifacts: "已部署能力的实际状态"
     batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
 
+    per_cap_default: '默认'
 sources:
   v4:
     new: "新建源"
@@ -1621,7 +1728,7 @@ sources:
     reload: "重新加载最新资源"
     detail: "源详情"
     back: "返回源列表"
-    intro: "源产生事件；目标能力接收参数。配置图不是执行成功的证明。"
+    intro: "源产生事件；目标能力接收参数。"
     loading: "加载中…"
     empty: "还没有源。可以先创建无目标的入口。"
     name: "资源名 metadata.name"
@@ -1665,6 +1772,8 @@ sources:
     event_id: "事件 ID"
     fire: "立即运行"
     saved_dry: "已保存源试运行"
+    more: "更多动作"
+    saved_dry_hint: "只预演目标解析，不写事件；立即运行会写事件并派发"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: "resourceVersion（CAS 令牌）"
@@ -1823,6 +1932,7 @@ sources:
     daily3: 每天 3:00
     weekdays9: 工作日 9:00
     every15: 每 15 分钟
+    label: "Cron 预设"
   flow:
     title: 下游流向（预览）
     nodes: 个节点
@@ -1902,6 +2012,7 @@ trace:
     tasks: "任务 / 尝试 / 等待诊断"
     events: "事件事实"
     pruned: "剪枝原因"
+    pruned_link: '查看剪枝详情'
     empty: "这条链路没有派发任务。"
     no_pruned: "没有保留的剪枝记录。"
     missing: "URL 缺少 traceUID。"
@@ -2048,7 +2159,7 @@ pb:
   v4:
     subtitle: "自包含文件包：保存模板、预览、试装，再安装；不会自动部署。"
     import: "导入安装包"
-    package_hint: "playbook.yaml 是唯一根清单，引用的能力/源文件必须在包内；这里只保存，不安装。"
+    package_hint: "引用的能力/源文件必须都在包内。"
     input_kind: "包输入"
     files: "原始文件"
     oci: "OCI 来源"
@@ -2065,6 +2176,7 @@ pb:
     slug_taken: "包名已存在：打开详情，用 PUT 整体更新模板（保留当前输入）。"
     namespace: "命名空间"
     loading: "正在读取…"
+    load_failed: "载入失败"
     not_ready: "未就绪（查看体检）"
     not_installed: "尚无安装产生的资源。模板不代表已安装。"
     unapplied_count: "{n} 项差异未生效"
@@ -2233,6 +2345,7 @@ uxaudit:
       ctx_namespace: '上下文 namespace'
       no_param: '链接里没有节点名（缺 ?id=）。请从节点列表打开详情。'
       no_param_title: '没有指定节点'
+      none: '无'
     sources:
       dedup_summary: '投递去重与窗口（deliveryId）'
       group_basic: '基本'
@@ -2306,3 +2419,32 @@ uxaudit:
     file_drop_pick: 拖入文件，或点击选择
     file_drop_hint: 支持 .yaml / .json，单个 ≤ 1MB
     file_drop_empty: 未选择文件
+
+# ── #374/#375 · 内部字段与裸 JSON：开发者信息折叠（四语言同键）──────────
+  dev:
+    summary: '开发者信息'
+    instance: '实例 {n}'
+    hint: '协议内部字段；日常操作不需要，排查时用。'
+    copy: '复制'
+    raw: '查看原始 JSON'
+    event_id: '事件 ID'
+    drift: '配置未对齐：配置版本 {config}，节点已应用 {applied}'
+    drift_short: '待节点应用'
+    field: '字段'
+    type: '类型'
+    required: '必填'
+    description: '说明'
+    yes: '是'
+    no: '否'
+    none: '无'
+    params: '参数'
+    total: '总量'
+    per_cap: '每能力'
+    edit_raw: '编辑原始 JSON'
+    edit_raw_hint: '以当前 CAS 令牌保存'
+
+paging:
+  search_ph: '搜索名称 / 显示名'
+  load_more: '加载更多'
+  showing: '已显示 {n} 条'
+  no_match: '没有匹配项'

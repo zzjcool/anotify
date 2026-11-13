@@ -189,7 +189,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	//
 	// 这些域**不**走资源信封（api-conventions §8.3「保持现有路径与请求体」），所以它们
 	// 的 handler 仍在各自的文件里，本函数只负责挂路由与中间件。
-	authH := &authHandler{svc: authSvc}
+	authH := &authHandler{svc: authSvc, db: db}
 	devicesH := &devicesHandler{db: db}
 	keysH := &keysHandler{keys: authSvc.Keys(), db: db}
 	cliAuthStaticFS := resolveStaticFS(cfg)

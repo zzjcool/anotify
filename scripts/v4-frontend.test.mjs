@@ -215,6 +215,15 @@ function makeSandbox(opts = {}) {
 			removeListener() {},
 		}),
 		document: fakeDocument(),
+		// 页面控制器的顶层会挂 window 级监听（source.html:261 的 resize → reflowMenus，
+		// #376 之后才有）。vm 里 globalThis 就是浏览器里的 window，但**没有** DOM 的
+		// addEventListener —— 缺了它 inline 脚本第一行就抛，整页控制器不执行，
+		// SOURCE-STARTUP / R1 会以"什么都没跑"的方式红（不是真的回归）。
+		addEventListener() {},
+		removeEventListener() {},
+		dispatchEvent() {
+			return true;
+		},
 		getComputedStyle: () => ({ getPropertyValue: () => "" }),
 		alert() {},
 		prompt: () => null,
@@ -550,7 +559,7 @@ test("nsList 空 scope：先引导 scope 再取严格列表，返回 {items,warn
 	const { A, calls } = loadAnotify({
 		fetch: async (p) => {
 			if (p === "/v1/namespaces") return jsonResponse(NS_LIST_BODY);
-			if (p === "/v1/namespaces/default/sources") return jsonResponse(LIST);
+			if (p === "/v1/namespaces/default/sources?limit=500") return jsonResponse(LIST);
 			throw new Error("unexpected request: " + p);
 		},
 	});
@@ -559,7 +568,8 @@ test("nsList 空 scope：先引导 scope 再取严格列表，返回 {items,warn
 	const out = await A.nsList("sources");
 	assert.deepEqual(calls.map((c) => c.path), [
 		"/v1/namespaces",
-		"/v1/namespaces/default/sources",
+		// 显式 limit=500：#377 分页缺省 50，nsList 的调用方要的是整份列表去计数/建图。
+		"/v1/namespaces/default/sources?limit=500",
 	]);
 	assert.equal(out.items.length, 1);
 	assert.equal(out.items[0].metadata.name, "hook");
@@ -3141,6 +3151,17 @@ async function b2Page(pageName, search, setup = () => {}, options = {}) {
   // 浏览器里 sitegen 注入 window.AnotifyI18n；页面直接索引它，这里给空字典让 fallback 生效。
   run.sandbox.AnotifyI18n = {};
   run.sandbox.confirm = () => true;
+  /* #378：原生 confirm() 已被 Anotify.confirmDanger()（#anotify-dialog）取代。
+   * 单测里不渲染真弹层（fake DOM 不派发事件，await 会卡死）：默认答「确定」，
+   * 并把每次询问记下来 —— 断言点在于「页面写之前真的问过」，不是「弹层长什么样」。
+   * 真点击/Esc 由 ui_shift 的 interact-dialogs 在真浏览器里钉。
+   * 需要走「取消」分支的用例把 run.confirmAnswer 设成 false。 */
+  run.confirmAnswer = true;
+  run.confirmCalls = [];
+  run.A.confirmDanger = async opts => {
+    run.confirmCalls.push(opts || {});
+    return run.confirmAnswer !== false;
+  };
   run.sandbox.location.search = search;
   run.A.mountLayout = () => {};
   run.A.mountPullRefresh = () => {};
@@ -4199,7 +4220,9 @@ test("R1 namespace deep link: playbooks list and capabilities actions bind the U
 
   const caps = await b2Page('capabilities', '?namespace=prod');
   assert.equal(JSON.parse(caps.sandbox.localStorage.getItem('anotify.scope')).namespace, 'prod');
-  assert.ok(caps.fetches.some(c => c.url === '/v1/namespaces/prod/capabilities'));
+  // 断言的是「绑定的是 URL 里的 namespace」，不是「URL 没有查询串」；
+  // #377 分页之后 nsList 显式带 limit=500（整份列表用于计数/建图）。
+  assert.ok(caps.fetches.some(c => c.url === '/v1/namespaces/prod/capabilities?limit=500'));
   assert.equal(caps.fetches.some(c => c.url.includes('/namespaces/default/')), false, 'capabilities must not read default');
   const capRow = () => b2Find(caps.get('caps-list'), n => n.getAttribute && n.getAttribute('data-cap') === 'report.send')[0];
   assert.ok(capRow(), 'prod-only capability must be listed');
@@ -5516,6 +5539,16 @@ test('L1D AUTH1 postJSON keeps exact identity error and status without resource 
 
 
 // E1a: only loadErrorNode's decoded message leaf is raw; UI chrome stays translated.
+// #378：错误分级后的 DOM = [标题, 下一步提示, (raw span), (requestId), 动作区]。
+// 断言全部改成找属性锚点（data-err-action / data-raw-content），不再数下标 ——
+// 数下标正是旧断言跟着文案漂的原因。
+const errActions = (box) => box.children[box.children.length - 1];
+const errAction = (box, name) => {
+  const host = errActions(box);
+  return host.children.find((n) => n.getAttribute('data-err-action') === name) || null;
+};
+const errText = (node) => node.children.reduce((acc, n) => acc + ' ' + errText(n), node.textContent || '').replace(/\s+/g, ' ').trim();
+
 test('E1a loadErrorNode retains the actual rejected Status.message in one independent raw span', async () => {
   const message = 'E1a unique Status sentinel: targets must be an array';
   const { A } = loadAnotify({ fetch: async () => jsonResponse({ kind: 'Status', message, reason: 'invalid_values' }, 400) });
@@ -5528,7 +5561,12 @@ test('E1a loadErrorNode retains the actual rejected Status.message in one indepe
   assert.equal(raw[0].tagName, 'SPAN'); assert.equal(raw[0].textContent, message);
   assert.equal(box.hasAttribute('data-raw-content'), false);
   assert.equal(box.children[0].hasAttribute('data-raw-content'), false);
-  assert.equal(box.children.at(-1).tagName, 'BUTTON');
+  // #378：400 是「请求没被接受」，不是「服务端错误」；页面上不出现裸 HTTP 码。
+  assert.equal(box.children[0].textContent, '载入失败：请求没有被接受');
+  assert.doesNotMatch(errText(box), /HTTP|\b4\d\d\b|\b5\d\d\b/, 'no bare HTTP status in the visible copy: ' + errText(box));
+  // 机器事实进「复制详情」，不进标题。
+  assert.ok(errAction(box, 'copy'), 'rejected error keeps a copy-details action');
+  assert.ok(errAction(box, 'retry'), 'rejected error keeps the retry affordance when the caller passes one');
 });
 
 test('E1a loadErrorNode HTML-like/special-character message is text only, never whole error reflection', () => {
@@ -5552,29 +5590,202 @@ for (const lang of ['zh-CN', 'en', 'ja', 'es']) {
     const dict = sandbox.AnotifyI18n;
     const message = 'E1a 中文 raw sentinel <b>原样</b> & "';
     const box = A.loadErrorNode({ status: 400, message }, () => {});
-    assert.equal(box.children[0].textContent, dict['common.load_failed_prefix'] + dict['common.request_rejected'].replace('{code}', '400'));
-    assert.equal(box.children[1].tagName, 'SPAN');
-    assert.equal(box.children[1].hasAttribute('data-raw-content'), true);
-    assert.equal(box.children[1].textContent, message);
-    assert.equal(box.children[2].textContent, dict['common.retry']);
-    for (const n of [box, box.children[0], box.children[2]]) assert.equal(n.hasAttribute('data-raw-content'), false);
-    if (lang === 'en' || lang === 'es') assert.doesNotMatch(box.children[0].textContent + box.children[2].textContent, /[\u3400-\u9fff]/);
+    assert.equal(box.children[0].textContent, dict['common.load_failed_prefix'] + dict['common.err.title.rejected']);
+    assert.equal(box.children[1].textContent, dict['common.err.hint.rejected']);
+    const raw = box.children.filter(n => n.hasAttribute('data-raw-content'));
+    assert.equal(raw.length, 1);
+    assert.equal(raw[0].tagName, 'SPAN');
+    assert.equal(raw[0].textContent, message);
+    const retry = errAction(box, 'retry');
+    assert.ok(retry, 'retry action exists');
+    assert.equal(retry.textContent, dict['common.retry']);
+    assert.ok(errAction(box, 'copy'), 'copy-details action exists');
+    for (const n of [box, box.children[0], box.children[1], retry]) assert.equal(n.hasAttribute('data-raw-content'), false);
+    if (lang === 'en' || lang === 'es') assert.doesNotMatch(box.children[0].textContent + box.children[1].textContent + retry.textContent, /[\u3400-\u9fff]/);
   });
 }
 
-test('E1a loadErrorNode preserves 401/network/5xx headings and accepts only message strings', () => {
+test('E1a loadErrorNode classifies 401/403/404/409/410/5xx/offline and accepts only message strings', () => {
   const { A } = loadAnotify();
-  for (const [error, reason] of [[{ status: 401, message: 'identity error' }, '请求被拒绝 HTTP 401'], [{ status: 503, message: 'upstream unavailable' }, '服务端错误 HTTP 503'], [new TypeError('Failed to fetch'), '连不上服务端']]) {
+  const cases = [
+    // [error, 标题, 下一步提示包含, 必须有, 必须没有]
+    [{ status: 401, message: 'identity error' }, '登录已过期', null, 'login', 'retry'],
+    [{ status: 403, message: 'forbidden: namespace mismatch' }, '你没有权限执行这个操作', '命名空间所有者', 'copy', 'retry'],
+    [{ status: 404, message: 'not found' }, '找不到这个内容', null, 'back', null],
+    [{ status: 409, message: 'conflict' }, '内容已被别人改过', null, 'retry', null],
+    [{ status: 410, message: 'task log archive is unavailable or expired' }, '内容已过期', null, 'back', 'retry'],
+    [{ status: 503, message: 'upstream unavailable' }, '服务端出错', null, 'retry', null],
+    [new TypeError('Failed to fetch'), '连不上服务端', null, 'retry', null],
+  ];
+  for (const [error, title, hintContains, mustHave, mustNot] of cases) {
     const box = A.loadErrorNode(error, () => {});
-    assert.equal(box.children[0].textContent, '载入失败：' + reason);
-    assert.equal(box.children[1].textContent, error.message);
-    assert.equal(box.children[2].textContent, '重试');
+    assert.equal(box.children[0].textContent, '载入失败：' + title, 'heading for ' + JSON.stringify(error.status || error.message));
+    if (hintContains) assert.ok(box.children[1].textContent.includes(hintContains), 'hint names who to ask: ' + box.children[1].textContent);
+    assert.ok(errAction(box, mustHave), 'missing action ' + mustHave + ' for ' + title);
+    if (mustNot) assert.equal(errAction(box, mustNot), null, mustNot + ' must not exist for ' + title);
+    // 4xx 不再被说成「服务端」；任何处境都不显示裸 HTTP 码。
+    if ((error.status || 0) >= 400 && (error.status || 0) < 500) assert.doesNotMatch(errText(box), /服务端出错/, '4xx never claims a server error');
+    assert.doesNotMatch(errText(box), /HTTP ?\d{3}|\b[45]\d\d\b/, 'no bare HTTP code: ' + errText(box));
   }
+  // 409 的「重新加载」是重试按钮的文案，不是另一个 HTTP 词。
+  assert.equal(errAction(A.loadErrorNode({ status: 409 }, () => {}), 'retry').textContent, '重新加载');
+  /* 403 不是死路：说清"找谁"之外还要给一条能走的路（返回列表）+ 机器事实（复制详情），
+     但没有无意义的重试（重试一次还是没权限）。 */
+  const forbidden = A.loadErrorNode({ status: 403 }, () => {});
+  assert.ok(errAction(forbidden, 'copy') && errAction(forbidden, 'back'), '403 offers copy + a way out');
+  assert.equal(errAction(forbidden, 'retry'), null, '403 must not offer a pointless retry');
+  // 401 的「去登录」带 next，登录后回得来。
+  const login = errAction(A.loadErrorNode({ status: 401 }, () => {}), 'login');
+  assert.match(login.getAttribute('href'), /^login\.html\?next=/);
+  // 只有字符串 message 才是数据：对象/数字不进 raw 叶子。
   for (const error of [{ status: 400 }, { status: 400, message: { raw: 'must not stringify' } }, { status: 400, message: 42 }]) {
     const box = A.loadErrorNode(error);
     assert.equal(box.children.filter(n => n.hasAttribute('data-raw-content')).length, 0);
-    assert.equal(box.children.length, 1);
   }
+  // requestId 若有就上屏（服务端/网关给的），没有就不占位。
+  const withRid = A.loadErrorNode({ status: 500, message: 'boom', requestId: 'rid-abc123' }, () => {});
+  const ridNode = withRid.children.find(n => n.hasAttribute('data-request-id'));
+  assert.ok(ridNode, 'requestId is rendered when present');
+  assert.equal(ridNode.getAttribute('data-request-id'), 'rid-abc123');
+  assert.match(ridNode.textContent, /rid-abc123/);
+  assert.equal(A.loadErrorNode({ status: 500, message: 'boom' }, () => {}).children.some(n => n.hasAttribute('data-request-id')), false);
+});
+
+/* #378：错误分级的共享出口（trace/message 的错误态自己排版，但分级只能有一处）、
+ * 统一危险弹层、持久错误条、撤销条。
+ * 交互（点击/ Esc）在 fake DOM 里跑不了（stub 不派发事件），由 ui_shift 的
+ * interact-dialogs / interact-error-403 在真浏览器里钉；这里钉结构与接线。 */
+const findNode = (root, pred) => {
+  if (!root || !root.children) return null;
+  for (const child of root.children) {
+    if (pred(child)) return child;
+    const hit = findNode(child, pred);
+    if (hit) return hit;
+  }
+  return null;
+};
+const attrNode = (root, name, value = '') => findNode(root, n => n.getAttribute && n.getAttribute(name) === value);
+const textOf = node => (node.children || []).reduce((acc, n) => acc + ' ' + textOf(n), node.textContent || '').replace(/\s+/g, ' ').trim();
+
+test('E4a errorFacts is the single classification used by page-owned error states', () => {
+  const { A } = loadAnotify();
+  const cases = [
+    [{ status: 401 }, 'unauthorized', '登录已过期', false],
+    [{ status: 403, message: '需要管理员权限' }, 'forbidden', '你没有权限执行这个操作', false],
+    [{ status: 404 }, 'not_found', '找不到这个内容', true],
+    [{ status: 409 }, 'conflict', '内容已被别人改过', true],
+    [{ status: 410 }, 'gone', '内容已过期', false],
+    [{ status: 429 }, 'throttled', '操作太频繁', true],
+    [{ status: 422 }, 'rejected', '请求没有被接受', true],
+    [{ status: 503 }, 'server', '服务端出错', true],
+    [new TypeError('Failed to fetch'), 'offline', '连不上服务端', true],
+    [{}, 'failed', '请求失败', true],
+  ];
+  for (const [err, kind, title, retry] of cases) {
+    const facts = A.errorFacts(err);
+    assert.equal(facts.kind, kind, 'kind for ' + JSON.stringify(err));
+    assert.equal(facts.title, title);
+    assert.equal(facts.retry, retry, 'retry affordance for ' + kind);
+    assert.ok(facts.hint.length > 0, 'every kind explains what to do next: ' + kind);
+    assert.doesNotMatch(facts.title + ' ' + facts.hint, /HTTP ?\d{3}|\b[45]\d\d\b/, 'no bare HTTP code in ' + kind);
+  }
+  assert.equal(A.errorFacts({ status: 404 }).retryLabel, '重新加载');
+  assert.equal(A.errorFacts({ status: 403 }).login, false);
+  assert.equal(A.errorFacts({ status: 401 }).login, true);
+  assert.equal(A.errorFacts({ status: 410 }).back, true);
+  // 复制详情带机器事实（报障要的就是这几行），不 stringify 整个错误。
+  const facts = A.errorFacts({ status: 403, reason: 'Forbidden', message: '需要管理员权限', requestId: 'rid-x' });
+  assert.match(facts.copy, /需要管理员权限/);
+  assert.match(facts.copy, /status: 403/);
+  assert.match(facts.copy, /reason: Forbidden/);
+  assert.match(facts.copy, /requestId: rid-x/);
+});
+
+test('E4a confirmDanger mounts one real dialog (not a native confirm) and defaults to danger + undo note', () => {
+  const { A, sandbox } = loadAnotify();
+  const mounted = () => sandbox.document.body.children.find(n => n.getAttribute && n.getAttribute('id') === 'anotify-dialog') || null;
+  assert.equal(mounted(), null, 'the dialog is created lazily, not on load');
+  const pending = A.confirmDanger({ body: '删除源「a」？', undo: true });
+  assert.equal(typeof pending.then, 'function', 'confirmDanger returns a promise');
+  /* 这条是 e2e 前就能抓住的真 bug：openModal 只切 hidden/flex，不负责挂载；
+     忘了 document.body.append(backdrop) 的弹层永远不可见、e2e 只能等到超时。 */
+  const dlg = mounted();
+  assert.ok(dlg, 'the dialog is really mounted in document.body');
+  assert.equal(dlg.getAttribute('role'), 'dialog');
+  assert.equal(dlg.getAttribute('aria-modal'), 'true');
+  assert.equal(dlg.getAttribute('aria-labelledby'), 'anotify-dialog-title');
+  const title = sandbox.document.createElement('x');
+  const bodyText = attrNode(dlg, 'id', 'anotify-dialog-body');
+  assert.ok(bodyText, 'body is addressable for exact-locale assertions');
+  assert.equal(bodyText.textContent, '删除源「a」？');
+  const ok = attrNode(dlg, 'data-dialog-ok');
+  const cancel = attrNode(dlg, 'data-dialog-cancel');
+  const headClose = attrNode(dlg, 'data-dialog-close');
+  assert.ok(ok && cancel && headClose, 'ok / cancel / head-close are separate real controls');
+  assert.equal(ok.tagName, 'BUTTON');
+  assert.equal(ok.className, 'btn btn-danger', 'destructive dialogs use the danger button');
+  assert.equal(cancel.tagName, 'BUTTON');
+  assert.equal(cancel.className, 'btn btn-ghost', 'cancel is never the danger-styled one');
+  assert.match(textOf(dlg), /5 秒撤销/, 'undoable actions say so: ' + textOf(dlg));
+  /* hidden 是布尔属性：写 setAttribute("hidden","") 会把说明**藏起来**（就是这里踩过的坑）。 */
+  assert.equal(attrNode(dlg, 'id', 'anotify-dialog-note')?.hasAttribute?.('hidden') ?? false, false, 'the undo note is visible, not hidden');
+  // 第二次调用复用同一个弹层（不堆 DOM）。
+  A.confirmDanger({ body: 'x' });
+  assert.equal(sandbox.document.body.children.filter(n => n.getAttribute && n.getAttribute('id') === 'anotify-dialog').length, 1, 'one singleton dialog');
+  assert.ok(title);
+});
+
+test('E4a confirmDanger non-danger flavour uses the primary button and no irreversible note', () => {
+  const { A, sandbox } = loadAnotify();
+  A.confirmDanger({ body: '重载会替换当前草稿', danger: false, confirmLabel: '重载' });
+  const dlg = sandbox.document.body.children.find(n => n.getAttribute && n.getAttribute('id') === 'anotify-dialog');
+  const ok = attrNode(dlg, 'data-dialog-ok');
+  assert.equal(ok.className, 'btn btn-primary');
+  assert.equal(ok.textContent, '重载');
+  assert.doesNotMatch(textOf(dlg), /不可撤销/);
+});
+
+test('E4a errorBar is persistent/copyable/closable while success toasts still auto-expire', () => {
+  const { A, sandbox } = loadAnotify();
+  const bar = A.errorBar({ status: 403, message: '需要管理员权限', requestId: 'rid-9' });
+  assert.equal(bar.getAttribute('data-error-bar'), '', 'errors get the persistent bar');
+  assert.equal(bar.getAttribute('role'), 'alert');
+  assert.match(textOf(bar), /需要管理员权限/);
+  assert.match(textOf(bar), /requestId: rid-9/, 'the copy source carries the machine facts');
+  /* 持久错误条在顶部居中：整条可点会把头栏永久挡住，所以只有动作区收回点击。 */
+  assert.match(bar.getAttribute('style') || '', /pointer-events: none/, 'the bar itself never eats page clicks');
+  assert.ok(findNode(bar, n => /pointer-events: auto/.test(n.getAttribute('style') || '')), 'only the action island takes clicks');
+  assert.ok(findNode(bar, n => n.getAttribute && n.getAttribute('data-copy-details') === ''), 'copy-details button');
+  assert.ok(findNode(bar, n => n.tagName === 'BUTTON' && n.getAttribute('aria-label') === '关闭'), 'close button');
+  // A.toast(msg,'error') 也必须落到持久条（页面 42 处调用点不改）。
+  const viaToast = A.toast('保存失败', 'error');
+  assert.equal(viaToast.getAttribute('data-error-bar'), '', 'error toasts are persistent bars');
+  // 成功仍然是那条 3.6s 自动退场的 toast。
+  const okToast = A.toast('已保存');
+  assert.ok(okToast && String(okToast.className).includes('anotify-toast'), 'success keeps the transient toast');
+  assert.equal(okToast.getAttribute('data-error-bar'), null);
+  const host = sandbox.document.body.children.find(n => n.getAttribute && n.getAttribute('id') === 'anotify-toast-host');
+  /* 容器没有 width + left:50% ⇒ 可用宽度只剩半屏，长错误文案会被压成一列一个字。 */
+  assert.match(host.getAttribute('style') || '', /width: calc\(100vw - 32px\)/, 'the toast host declares a real width');
+});
+
+test('E4a undoBar renders the delete + undo affordance and expires without touching the page', () => {
+  const { A, sandbox } = loadAnotify();
+  let undone = 0;
+  const handle = A.undoBar({ message: '已删除「a」', onUndo: () => { undone += 1; } });
+  assert.equal(typeof handle.undo, 'function');
+  assert.equal(typeof handle.close, 'function');
+  const host = sandbox.document.body.children.find(n => n.getAttribute && n.getAttribute('id') === 'anotify-undo-host');
+  assert.ok(host, 'undo host mounted once');
+  const bar = attrNode(host, 'data-undo-bar');
+  assert.ok(bar, 'undo bar rendered');
+  assert.match(textOf(bar), /已删除「a」/);
+  assert.match(textOf(bar), /5 秒内可撤销/, 'the window is stated in the bar itself');
+  assert.equal(attrNode(bar, 'data-undo-action').textContent, '撤销');
+  assert.equal(undone, 0, 'nothing is undone until the user clicks');
+  // 过期的撤销条只是自己消失，不会触发 onUndo（撤销是用户动作，不是超时副作用）。
+  handle.close();
+  assert.equal(undone, 0);
 });
 
 // E1b regression: execute the real page controllers; no source-string PASS.
@@ -5689,7 +5900,7 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
 });
 test('E1b all 35 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  assert.equal(CASES.length,35);
+  assert.equal(CASES.length,36); // #376/#384 新增 playbook-missing 后冻结 pin 跟着 +1
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all35',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};

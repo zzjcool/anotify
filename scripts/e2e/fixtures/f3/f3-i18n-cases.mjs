@@ -6,7 +6,9 @@ import path from 'node:path';
 import { openDriver, ROOT, TEAM, PAGES, LANGS } from './f3-driver.mjs';
 export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'#login-panel',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
+// #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
+// 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
 const pkgFiles = {
   'playbook.yaml': 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: f3-locale-package\n  version: 1\nspec:\n  values: { type: object }\n  capabilities:\n    - cap.yaml\n  sources: []\n',
   'cap.yaml': 'metadata:\n  name: f3-locale-cap\nspec:\n  next: [notify, f3-locale-missing]\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo locale\n',
@@ -34,11 +36,19 @@ async function hasText(d,sel,key,values={}) {
   d.check(sel+' renders exact '+key+' = '+expected);
 }
 async function dialogClick(d,button,key,values={}) {
-  const expected=await t(d,key,values);let message;
-  const listener=async dialog=>{message=dialog.message();await dialog.dismiss();};
-  d.page.once('dialog',listener);
-  try { await button.click(); await d.page.waitForFunction(()=>true); assert.equal(message,expected,'Actual native dialog exact locale'); }
-  finally {d.page.off('dialog',listener);}
+  /* #378：确认句不再走原生 `window.confirm`（Playwright 的 dialog 事件），而是共享弹层
+   * `#anotify-dialog`（partials.js）。旧断言“精确等于本地化文案”必须保留强度 ——
+   * 所以继续比**正文**（#anotify-dialog-body）逐字相等，而不是“包含”：
+   * 弹层标题/附注是共享文案，正文才是这条流程自己的那句。
+   * 依然点「取消」：这个 case 的事实是“文案正确 + 取消 ⇒ 零写入”。 */
+  const expected=await t(d,key,values);
+  await button.click();
+  await d.page.locator('#anotify-dialog [data-dialog-ok]').waitFor({state:'visible',timeout:5000});
+  const body=(await d.page.locator('#anotify-dialog-body').innerText()).trim();
+  assert.equal(body,expected,'Actual confirmation dialog body exact locale');
+  assert.equal(await d.page.locator('#anotify-dialog-title').isVisible(),true,'dialog exposes a visible title');
+  await d.page.locator('#anotify-dialog [data-dialog-cancel]').click();
+  await d.page.locator('#anotify-dialog').waitFor({state:'hidden',timeout:5000});
   d.check('Actual click opens exact localized dialog '+key+' (cancelled, zero write)');
 }
 // Select detail query identities from the actual v4 wire, NEVER uid/name aliases.
@@ -217,7 +227,9 @@ async function taskStates(d,lang) {
   await d.goto('message','namespace=default&id='+encodeURIComponent(waiting.metadata.name),lang);
   await hasText(d,'#task-phase','message.v4.phase.'+waiting.status.phase);
   assert.ok((await d.page.locator('#task-facts').innerText()).includes('waitingReason'));
-  await d.page.locator('#logs-previous').selectOption('true');await d.page.locator('#task-logs button').click();
+  // 精确到「刷新」这个提交按钮：#378 在同一个日志区加了「复制」按钮，
+  // `#task-logs button` 会匹配到两个（strict mode 直接报错），语义也从来只是「刷新」。
+  await d.page.locator('#logs-previous').selectOption('true');await d.page.locator('#logs-form button[type=submit]').click();
   await d.page.waitForFunction(()=>__f3Calls.some(c=>c.url.includes('/logs?')&&c.url.includes('previous=true')&&c.result?.lines?.length));
   assert.ok((await d.calls()).some(c=>c.url.includes('/logs?')&&c.url.includes('previous=true')&&c.httpStatus===200&&c.result?.lines?.length),'Actual previous attempt logs nonempty');
   await hasText(d,'#task-logs','message.v4.truncated');
@@ -235,6 +247,8 @@ async function conflict(d,lang) {
   const f=await fixture(d);await d.goto('node',query('node',f),lang);
   const p='/v1/nodes/'+encodeURIComponent(f.nodes[0].metadata.name)+'/config';
   const current=await d.req(p);assert.ok(current.metadata.resourceVersion);
+  // #375：JSON textarea 默认收在「编辑原始 JSON」折叠里；fill 前先展开。
+  await d.page.locator('#node-config-advanced').evaluate(el=>{el.open=true;});
   await d.page.locator('#node-vars').fill('{"LOCALE_DRAFT":"retained"}');
   const fresh=await d.response(p,{metadata:{resourceVersion:current.metadata.resourceVersion},config:current.config},'PUT');assert.equal(fresh.status,200);
   await d.page.locator('#node-config-save').click();await hasText(d,'#node-config-state','nodes.v4.stale');
