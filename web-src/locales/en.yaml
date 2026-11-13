@@ -182,8 +182,8 @@ index:
     state_done: "Done"
     state_current: "Do this now"
     state_todo: "Waiting for the previous step"
-    all_done: "All three are in place — copy the emit command on the nodes page to send your first event."
-    all_done_link: "Go to nodes →"
+    all_done: "All three are in place — open a source and hit “Fire now” to write your first event."
+    all_done_link: "Go to sources →"
   quickstart:
     cta: Connect a new Agent
     title: Connect your Agent
@@ -404,7 +404,7 @@ login:
     err_failed: 'Recovery sign-in failed: {msg}'
     success: Signed in — please add a Passkey on this device soon…
   first_run:
-    hint: "First time on this instance? Register first — the first account automatically becomes the administrator."
+    hint: "First time on this instance? Register first — if this is the instance’s first account it becomes the administrator automatically."
 
   codes:
     title: Save your recovery codes
@@ -1592,7 +1592,7 @@ nodes:
     local_setup: "Local setup & three public commands"
     setup_hint: "Save anode.yaml before install or serve. Installation uses an issued token; it never auto-registers. vars are not secrets. envPassthrough names stay local; PATH, HOME and ANOTIFY_ are forbidden. No full whitelist or values are uploaded. ANOTIFY_ARTIFACT_DIR is node-provided; diagnostics expose names/sources, not absolute export paths."
     copy_emit: "Copy emit command"
-    emit_hint: "This line uses “{cap}”, a capability that already exists on this instance — copy and run it as-is."
+    emit_hint: "This line uses “{cap}”, a capability that already exists on this instance. emit runs inside a task on the node (the task token is supplied for you) — don’t run it in your own shell."
     emit_none: "This instance has no capability yet — create one first, then this command becomes runnable."
     emit_create: "Create a capability →"
     online: "Online"

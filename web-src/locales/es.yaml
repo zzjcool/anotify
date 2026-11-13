@@ -182,8 +182,8 @@ index:
     state_done: "Hecho"
     state_current: "Hazlo ahora"
     state_todo: "Espera al paso anterior"
-    all_done: "Los tres están listos: copia el comando emit en la página de nodos para enviar tu primer evento."
-    all_done_link: "Ir a nodos →"
+    all_done: "Los tres están listos: abre una fuente y pulsa «Ejecutar ahora» para escribir tu primer evento."
+    all_done_link: "Ir a fuentes →"
   quickstart:
     cta: Conectar nuevo Agent
     title: Conecta tu Agent
@@ -404,7 +404,7 @@ login:
     err_failed: 'Error al entrar con código: {msg}'
     success: Sesión iniciada — añade un Passkey en este dispositivo pronto…
   first_run:
-    hint: "¿Primera vez en esta instancia? Regístrate primero: la primera cuenta pasa a ser administradora."
+    hint: "¿Primera vez en esta instancia? Regístrate primero: si es la primera cuenta de la instancia, pasará a ser administradora automáticamente."
 
   codes:
     title: Guarda tus códigos de recuperación
@@ -1592,7 +1592,7 @@ nodes:
     local_setup: "Configuración local y tres comandos públicos"
     setup_hint: "Guarde anode.yaml antes de install o serve. Usa un token emitido; nunca registra automáticamente. vars no son secretos. envPassthrough queda local; PATH, HOME y ANOTIFY_ están prohibidos. No se suben listas ni valores. ANOTIFY_ARTIFACT_DIR muestra nombre/origen, no rutas absolutas."
     copy_emit: "Copiar comando emit"
-    emit_hint: "Esta línea usa «{cap}», una capacidad que ya existe en esta instancia: cópiala y ejecútala tal cual."
+    emit_hint: "Esta línea usa «{cap}», una capacidad que ya existe en esta instancia. emit se ejecuta dentro de una tarea en el nodo (el token de tarea se añade solo); no lo ejecutes en tu propia terminal."
     emit_none: "Esta instancia aún no tiene capacidades: crea una primero y el comando será ejecutable."
     emit_create: "Crear una capacidad →"
     online: "En línea"

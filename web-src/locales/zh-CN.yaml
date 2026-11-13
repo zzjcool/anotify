@@ -182,8 +182,8 @@ index:
     state_done: "已完成"
     state_current: "现在做这一步"
     state_todo: "等待上一步"
-    all_done: "三步都齐了 —— 去节点页复制 emit 命令，就能发出第一条事件。"
-    all_done_link: "去节点页 →"
+    all_done: "三步都齐了 —— 去源页面点「立即运行」，就会写出第一条事件。"
+    all_done_link: "去源页面 →"
   quickstart:
     cta: 接入新 Agent
     title: 接入你的 Agent
@@ -404,7 +404,7 @@ login:
     err_failed: 恢复码登录失败：{msg}
     success: 登录成功，请尽快为本机补建 Passkey…
   first_run:
-    hint: "第一次使用这个实例？先注册 —— 首个账号会自动成为管理员。"
+    hint: "第一次使用这个实例？先注册 —— 如果这是本实例的第一个账号，它会自动成为管理员。"
 
   codes:
     title: 请保存你的恢复码
@@ -1594,7 +1594,7 @@ nodes:
     local_setup: "本机配置与三个公开命令"
     setup_hint: "先保存 anode.yaml，再运行 install 或 serve；安装使用已签发的令牌，不会自动登记。vars 非秘密；envPassthrough 仅本机名字名单，禁 PATH、HOME、ANOTIFY_；完整名单和值不上传。ANOTIFY_ARTIFACT_DIR 由节点提供，诊断只展示名字/来源，不展示导出绝对路径。"
     copy_emit: "复制 emit 命令"
-    emit_hint: "这一行用的是本实例已存在的「{cap}」，可直接复制运行。"
+    emit_hint: "这一行用的是本实例已存在的「{cap}」。emit 由节点上的 agent 在任务内执行（会自动带上任务令牌），不要在你的终端直接跑。"
     emit_none: "这个实例还没有能力 —— 先建一个，这条命令才有意义。"
     emit_create: "去建一个能力 →"
     online: "在线"

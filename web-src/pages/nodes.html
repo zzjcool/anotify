@@ -189,19 +189,19 @@
    * 所以先按 default 找；default 没有再看用户当前在看的 namespace（他可能把能力
    * 建在别处）。都没找到就不编一条跑不通的命令，改成「先建一个能力」的入口。
    * 单页能力上限 500（与 capabilities 页同口径），只取第一个，不把全量拉进内存。 */
-  const emitNames = new Map();
+  /* #381 rework（rev-397）：这里原来有一个 `emitNames` Map 做缓存，但注释写的是
+     「每次打开面板都重算」—— 两者相反。缓存永不失效的后果：先开面板（报「还没有
+     能力」）→ 去建一个能力 → 回来再开，仍是「还没有能力」，只有整页刷新才对。
+     面板每次打开都要显示当前真相，所以不缓存。 */
   async function firstCapability(ns) {
-    if (!emitNames.has(ns)) {
-      let name = '';
-      try {
-        const doc = await A.api('/v1/namespaces/' + encodeURIComponent(ns) + '/capabilities?limit=500');
-        const items = Array.isArray(doc && doc.items) ? doc.items : [];
-        const hit = items.find(c => c && c.metadata && typeof c.metadata.name === 'string' && c.metadata.name);
-        if (hit) name = hit.metadata.name;
-      } catch { name = ''; /* 取不到能力不编造，走「先建一个」分支 */ }
-      emitNames.set(ns, name);
-    }
-    return emitNames.get(ns);
+    let name = '';
+    try {
+      const doc = await A.api('/v1/namespaces/' + encodeURIComponent(ns) + '/capabilities?limit=500');
+      const items = Array.isArray(doc && doc.items) ? doc.items : [];
+      const hit = items.find(c => c && c.metadata && typeof c.metadata.name === 'string' && c.metadata.name);
+      if (hit) name = hit.metadata.name;
+    } catch { name = ''; /* 取不到能力不编造，走「先建一个」分支 */ }
+    return name;
   }
   async function renderEmit() {
     const primary = 'default';

@@ -182,8 +182,8 @@ index:
     state_done: "完了"
     state_current: "今この手順"
     state_todo: "前の手順待ち"
-    all_done: "3 つが揃いました。ノードページの emit コマンドをコピーすれば最初のイベントを発行できます。"
-    all_done_link: "ノードページへ →"
+    all_done: "3 つが揃いました。ソースページを開いて「今すぐ実行」を押すと、最初のイベントが書き込まれます。"
+    all_done_link: "ソースページへ →"
   quickstart:
     cta: 新しい Agent を連携
     title: Agent を連携
@@ -404,7 +404,7 @@ login:
     err_failed: リカバリーコードログインに失敗：{msg}
     success: ログイン成功。この端末に Passkey を追加してください…
   first_run:
-    hint: "このインスタンスを初めて使いますか？まず登録してください。最初のアカウントが管理者になります。"
+    hint: "このインスタンスを初めて使いますか？まず登録してください。このインスタンスの最初のアカウントであれば、自動的に管理者になります。"
 
   codes:
     title: リカバリーコードを保存してください
@@ -1592,7 +1592,7 @@ nodes:
     local_setup: "本機の設定と3つの公開コマンド"
     setup_hint: "anode.yaml を保存して install または serve を実行します。発行済みトークンを使用し、自動登録しません。vars は秘密ではありません。envPassthrough の一覧と値は本機のみ。PATH、HOME、ANOTIFY_ は禁止です。ANOTIFY_ARTIFACT_DIR の診断は名前と出所のみで絶対パスは表示しません。"
     copy_emit: "emit コマンドをコピー"
-    emit_hint: "この行はこのインスタンスに実在する「{cap}」を使っています。そのままコピーして実行できます。"
+    emit_hint: "この行はこのインスタンスに実在する「{cap}」を使っています。emit はノード上のエージェントがタスク内で実行するもの（タスクトークンは自動で付与されます）で、ご自身のターミナルでは実行しないでください。"
     emit_none: "このインスタンスにはまだ能力がありません。まず 1 つ作成してください。"
     emit_create: "能力を作成する →"
     online: "オンライン"
