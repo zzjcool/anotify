@@ -2063,6 +2063,7 @@ pb:
     slug_taken: "El nombre ya existe: abra el detalle y use PUT para reemplazar la plantilla (entrada conservada)."
     namespace: "Espacio de nombres"
     loading: "Cargando…"
+    load_failed: "Error al cargar"
     not_ready: "No listo (ver diagnóstico)"
     not_installed: "Aún no hay recursos instalados. Una plantilla guardada no es una instalación."
     unapplied_count: "{n} diferencias sin aplicar"

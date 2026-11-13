@@ -259,5 +259,39 @@ export async function playbook(d,mode){
     assert.match(await page.locator('#pb-empty').innerText(), /No playbooks/);
     check('True disconnected errors/retry both pages, genuine HTTP400 schema error, 4 languages and real empty list after manifest deletion');
   }
+  if (mode === 'missing') {
+    // #380：不存在的 playbook id → 徽章必须从「正在读取…」收敛到失败态，
+    // 且失败路径不得留下空圆角容器（#pb-summary 是 card card-pad + min-height:80px）。
+    const missing = 'f3-no-such-package';
+    await goto('playbook', 'namespace=default&id=' + missing);
+    await page.waitForFunction(() => document.querySelector('#pb-badge').className.includes('badge-error'));
+    const badge = await page.evaluate(() => {
+      const el = document.querySelector('#pb-badge');
+      return { text: el.textContent.trim(), className: el.className };
+    });
+    assert.equal(badge.text, 'Load failed', '#380 失败徽章必须写成「载入失败」，不能停在「正在读取…」');
+    assert.equal(badge.className, 'badge badge-error', '#380 失败徽章用 badge-error 语义色');
+    assert.ok(!(await page.locator('#page-main').innerText()).includes('Loading…'), '#380 失败后页面上不得残留 loading 文案');
+    const summary = await page.evaluate(() => {
+      const el = document.querySelector('#pb-summary');
+      const box = el.getBoundingClientRect();
+      return { hidden: el.hidden, display: getComputedStyle(el).display, children: el.children.length, height: box.height };
+    });
+    assert.equal(summary.children, 0, '#380 失败路径不得往空容器里塞内容');
+    assert.ok(summary.hidden === true && summary.display === 'none' && summary.height === 0,
+      '#380 失败路径必须移除残留空容器（hidden/display:none/0 高），实际 ' + JSON.stringify(summary));
+    // 错误面板与重试入口必须还在：失败不是死路。
+    assert.equal(await page.locator('#pb-load-state button').count(), 1, '#380 失败态保留重试入口');
+    assert.match(await page.locator('#pb-load-state').innerText(), /Failed to load/);
+    assert.ok(!(await page.locator('#page-main').innerText()).includes('pb.v4.'), '没有漏翻的 i18n key');
+    await shot('missing-package-failed-badge');
+    // 再点一次重试：仍然 404，徽章不得回退成 loading 或 success。
+    await page.locator('#pb-load-state button').click();
+    await page.waitForFunction(() => document.querySelector('#pb-load-state').textContent.includes('Failed to load'));
+    assert.equal((await page.locator('#pb-badge').innerText()).trim(), 'Load failed');
+    assert.equal(await page.locator('#pb-summary').isVisible(), false, '#380 重试失败后空容器仍然不出现');
+    check('#380 missing playbook id → failed badge text/DOM, no residual empty card, retry stays failed');
+    await clean('missing');
+  }
 
 }

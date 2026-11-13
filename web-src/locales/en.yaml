@@ -2063,6 +2063,7 @@ pb:
     slug_taken: "Slug exists: open details and use PUT to replace the template (your input is retained)."
     namespace: "Namespace"
     loading: "Loading…"
+    load_failed: "Load failed"
     not_ready: "Not ready (see checkup)"
     not_installed: "No installed resources yet. A stored template is not an install."
     unapplied_count: "{n} unapplied differences"

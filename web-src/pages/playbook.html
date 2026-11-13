@@ -486,8 +486,23 @@
       draft = pb.files; templateRV = pb.resourceVersion; filePicker("playbook.yaml");
       if (resetValues) valuesForm(pb.valuesSchema);
     }
+    /* #380：徽章必须两条路径都收敛。「正在读取…」只在 checkup() 里被改写，
+       404/409/网络错误时原来会永久停在 loading，并留下一个空的 #pb-summary 圆角容器。
+       失败分支把徽章改成 badge-error + 「载入失败」，并把空容器移除（hidden）；
+       重试（#btn-rescan / loadErrorNode 的重试按钮）会把它复位成 loading 再走一遍。 */
+    function loadingBadge() {
+      $("pb-badge").textContent = t("pb.v4.loading");
+      $("pb-badge").className = "badge badge-neutral";
+    }
+    function failedBadge() {
+      $("pb-badge").textContent = t("pb.v4.load_failed");
+      $("pb-badge").className = "badge badge-error";
+      $("pb-summary").replaceChildren();
+      $("pb-summary").hidden = true;
+    }
     async function load() {
       if (loading) return; loading = true; $("btn-rescan").disabled = true;
+      loadingBadge(); $("pb-summary").hidden = false;
       $("pb-load-state").textContent = t("pb.v4.loading"); $("pb-summary").setAttribute("aria-busy", "true");
       try {
         await ready(); if (!name) throw new Error(t("pb.v4.missing_id"));
@@ -495,7 +510,7 @@
         // Re-check never destroys a user's unsaved whole-map draft.
         if (!draft) await rawTemplate(true);
         $("pb-content").hidden = false; $("pb-load-state").replaceChildren(); await installs();
-      } catch (error) { $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
+      } catch (error) { failedBadge(); $("pb-load-state").replaceChildren(loadErrorNode(error, load)); }
       finally { loading = false; $("btn-rescan").disabled = false; $("pb-summary").removeAttribute("aria-busy"); }
     }
     $("pb-file-path").addEventListener("change", () => { const next = $("pb-file-path").value; rememberFile(); filePicker(next); });
