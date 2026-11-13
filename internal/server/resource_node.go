@@ -276,15 +276,30 @@ type nodeConfigBatchResponse struct {
 
 // ---------- 读端点 ----------
 
-// list 处理 GET /v1/nodes。
+// list 处理 GET /v1/nodes（`limit`/`continue` keyset 分页，排序键 (name, id)）。
 //
 // Node 是 cluster 对象：没有 namespace 参数、没有 ns 授权，只有会话鉴权。
 func (a *nodeAPI) list(w http.ResponseWriter, r *http.Request) {
-	nodes, err := a.d.DB.ListNodes(r.Context())
+	limit, err := pageLimit(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	// cluster 级列表：binding 不绑 ns，但仍是独立作用域（跨列表游标一律 400）。
+	binding := "nodes|cluster"
+	afterName, afterID, err := pageAfterNameID(r, binding)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	nodes, err := a.d.DB.ListNodesPage(r.Context(), afterName, afterID, limit+1)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	nodes, cont := pageCut(nodes, limit, binding, func(n *store.Node) []string {
+		return []string{n.Name, n.ID}
+	})
 	items := make([]nodeReadEnvelope, 0, len(nodes))
 	for _, n := range nodes {
 		if n == nil {
@@ -297,7 +312,7 @@ func (a *nodeAPI) list(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, env)
 	}
-	writeList(w, http.StatusOK, kindNodeList, listMeta{}, items)
+	writeList(w, http.StatusOK, kindNodeList, listMeta{Continue: cont}, items)
 }
 
 // get 处理 GET /v1/nodes/{name}。

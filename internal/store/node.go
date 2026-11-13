@@ -433,6 +433,33 @@ func (d *DB) ListNodes(ctx context.Context) ([]*Node, error) {
 	return out, rows.Err()
 }
 
+// ListNodesPage 是 ListNodes 的 keyset 分页版（#377）：同一排序 (name, id)。
+// `afterID == ""` 表示第一页。
+func (d *DB) ListNodesPage(ctx context.Context, afterName, afterID string, limit int) ([]*Node, error) {
+	query := `SELECT ` + nodeColumns + ` FROM nodes`
+	args := []any{}
+	if afterID != "" {
+		query += ` WHERE (name > ? OR (name = ? AND id > ?))`
+		args = append(args, afterName, afterName, afterID)
+	}
+	query += ` ORDER BY name, id LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes page: %w", err)
+	}
+	defer rows.Close()
+	out := []*Node{}
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
 // UpdateNodeStatus 改节点状态（online/offline/draining），并刷新 last_seen_at。
 func (d *DB) UpdateNodeStatus(ctx context.Context, nodeID, status string) error {
 	switch status {

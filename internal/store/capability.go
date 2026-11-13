@@ -570,6 +570,41 @@ func (d *DB) ListCapabilities(ctx context.Context, namespaceID string) ([]*Capab
 	return out, rows.Err()
 }
 
+// ListCapabilitiesPage 是列表读取的 keyset 分页版（#377）：排序是**对外顺序**
+// name ASC、同名内 version DESC（与 handler 的 orderedCapabilityVersions 一致）。
+//
+// 不能用 ListCapabilities 的 (name ASC, version ASC) 翻页再在 handler 里倒序：
+// 那样每页窗口和最终顺序对不上，页边界会同时丢行和重复行。`afterName == ""`
+// 表示第一页；(namespace_id, name, version) 唯一，所以不需要额外的 id 破平局。
+func (d *DB) ListCapabilitiesPage(ctx context.Context, namespaceID, afterName string, afterVersion, limit int) ([]*CapabilityVersion, error) {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return nil, ErrNamespaceRequired
+	}
+	query := `SELECT ` + capabilityColumns + ` FROM capability_versions
+	 WHERE namespace_id = ? AND deleted_at IS NULL`
+	args := []any{namespaceID}
+	if afterName != "" {
+		query += ` AND (name > ? OR (name = ? AND version < ?))`
+		args = append(args, afterName, afterName, afterVersion)
+	}
+	query += ` ORDER BY name, version DESC LIMIT ?`
+	args = append(args, normalizePageLimit(limit))
+	rows, err := d.cachedQueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list capabilities page: %w", err)
+	}
+	defer rows.Close()
+	out := []*CapabilityVersion{}
+	for rows.Next() {
+		var c CapabilityVersion
+		if err := scanCapabilityRow(rows, &c); err != nil {
+			return nil, fmt.Errorf("scan capability row: %w", err)
+		}
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
 // NextCapabilityVersion 返回某 name 的下一个版本号（无定义时返回 1）。
 //
 // 写入路径不要用它来定版本（中间有窗口）；store 内部走 nextCapabilityVersionOn。

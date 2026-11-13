@@ -53,7 +53,7 @@ func newPasskeysTestEnv(t *testing.T) *passkeysTestEnv {
 		t.Fatalf("create session: %v", err)
 	}
 
-	authH := &authHandler{svc: svc}
+	authH := &authHandler{svc: svc, db: db}
 	sessMW := svc.Sessions().Middleware
 	mux := http.NewServeMux()
 	// 与生产 mux.go 路由一致：me/sessions/passkeys 需登录优先匹配，/v1/auth/ 兜底。

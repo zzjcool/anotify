@@ -68,18 +68,32 @@ func (a *playbookAPI) register(mux *http.ServeMux) {
 
 // ---------- 读端点 ----------
 
-// list 处理 GET …/playbooks：命名空间内的包清单（摘要投影）。
+// list 处理 GET …/playbooks：命名空间内的包清单（摘要投影；`limit`/`continue` keyset 分页）。
 func (a *playbookAPI) list(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
 	}
-	rows, err := a.d.DB.ListPlaybooks(r.Context(), ns)
+	limit, err := pageLimit(r)
 	if err != nil {
 		writePlaybookAPIError(w, err)
 		return
 	}
+	binding := "playbooks|" + ns
+	afterAt, afterID, err := pageAfterTimeID(r, binding)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	rows, err := a.d.DB.ListPlaybooksPage(r.Context(), ns, afterAt, afterID, limit+1)
+	if err != nil {
+		writePlaybookAPIError(w, err)
+		return
+	}
+	rows, cont := pageCut(rows, limit, binding, func(row *store.PlaybookRow) []string {
+		return []string{pageKeyInt64(row.CreatedAt), row.ID}
+	})
 	includeBody := includeBodyQuery(r)
 	items := make([]apiEnvelope, 0, len(rows))
 	for _, row := range rows {
@@ -92,7 +106,7 @@ func (a *playbookAPI) list(w http.ResponseWriter, r *http.Request) {
 	}
 	// 空列表是 []（writeList 收口 nil → []）；列表 kind 沿 api-conventions §3.3 的
 	// `<Kind>List` 约定（同 `CapabilityList` / `EventList`）。
-	writeList(w, http.StatusOK, kindPlaybook+"List", listMeta{}, items)
+	writeList(w, http.StatusOK, kindPlaybook+"List", listMeta{Continue: cont}, items)
 }
 
 // get 处理 GET …/playbooks/{slug}：默认摘要，`?includeBody=true` 回整份包体。
