@@ -688,7 +688,7 @@ security:
   unknown_device: 未知设备
   credential: 凭证
   current_session: 当前会话
-  empty_passkeys: 还没有 Passkey。点右上角「+ 本机添加」为这台设备创建一个。
+  empty_passkeys: 用页头的「+ 本机添加」为这台设备创建一个。
   empty_sessions: 当前没有活跃会话。
   in_use: 本机在用
   last_used: 最近使用 {time}
@@ -1665,6 +1665,8 @@ sources:
     event_id: "事件 ID"
     fire: "立即运行"
     saved_dry: "已保存源试运行"
+    more: "更多动作"
+    saved_dry_hint: "只预演目标解析，不写事件；立即运行会写事件并派发"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: "resourceVersion（CAS 令牌）"

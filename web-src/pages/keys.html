@@ -100,16 +100,8 @@
         align-items: center;
         gap: 8px;
       }
-      /* 破坏性行操作用「quiet 底 + error 字」，与 admin 的行操作同一套语言；
-         不再用实心 danger 按钮抢走整行的主次。 */
-      .kx-act-danger {
-        color: var(--error);
-      }
-      .kx-act-danger:hover {
-        color: var(--error);
-        background: var(--error-soft);
-        border-color: color-mix(in srgb, var(--error) 30%, transparent);
-      }
+      /* 破坏性行操作的语言统一到 ui.css 的 `.act-row-danger`
+         （epic-369-actions 段：图标 + 危险色），页内不再重复定义。 */
       .kx-chip-row {
         display: flex;
         flex-wrap: wrap;
@@ -691,7 +683,7 @@
 {{define "script"}}
     <script>
       // ==================== 数据层 ====================
-      const { el, t, mountPullRefresh } = window.Anotify;
+      const { el, t, mountPullRefresh, icon } = window.Anotify;
       const API = "/v1";
 
       // 权限 → 表格 chip 的类（颜色全在页内样式里走 token）
@@ -868,13 +860,23 @@
             el(
               "div",
               { class: "kx-cell-actions" },
+              /* #376：行尾危险动作统一语言 —— 图标 + 危险色（.act-row-danger 在
+                 ui.css 的 epic-369-actions 段）+ 原生 confirm 二次确认。
+                 不能用 aria-label 覆盖可见文案：i18n 套件按可见名「停用」点它。 */
               el(
                 "button",
                 {
                   type: "button",
-                  class: "btn btn-quiet btn-sm kx-act-danger",
+                  class: "btn btn-quiet btn-sm act-row-danger",
                   onclick: () => revokeKey(k),
                 },
+                icon(
+                  [
+                    "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20",
+                    "M4.93 4.93l14.14 14.14",
+                  ],
+                  "h-4 w-4",
+                ),
                 t("keys.action.revoke", "停用"),
               ),
             ),

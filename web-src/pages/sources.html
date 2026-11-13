@@ -335,6 +335,61 @@ const action = (key, fn) => {
   b.onclick=()=>fn(b);
   return b;
 };
+/* #376：行内动作收敛成「1 主 + 1 次 + ⋯」。菜单本体复用 .menu/.menu-item
+   （与顶部头像菜单同一套），开合只切 .hidden；条目可带一句 hint 说明
+   「它和旁边那个差在哪」（试运行 vs 立即运行）。 */
+const actionMenu = (items) => {
+  const wrap=el("div","act-menu");
+  const trigger=el("button","btn btn-ghost btn-sm act-more","⋯");
+  trigger.type="button";
+  trigger.setAttribute("aria-haspopup","menu");
+  trigger.setAttribute("aria-expanded","false");
+  trigger.setAttribute("aria-label",t("more"));
+  const menu=el("div","menu hidden");
+  menu.setAttribute("role","menu");
+  const setOpen=open=>{
+    menu.classList.toggle("hidden",!open);
+    trigger.setAttribute("aria-expanded",open ? "true" : "false");
+  };
+  trigger.onclick=()=>setOpen(menu.classList.contains("hidden"));
+  for(const item of items){
+    const b=el("button","menu-item act-item"+(item.danger ? " act-danger" : ""));
+    b.type="button";
+    b.setAttribute("role","menuitem");
+    /* 只有带 hint 的条目才拆两行；单行条目保持纯文本 —— 包一层 span 会让
+       `button:text-is("Enable")` 这类定位器失配（最小文本元素变成 span）。 */
+    if(item.hint){
+      b.append(el("span",null,item.label),el("span","act-item-hint",item.hint));
+    }else{
+      b.textContent=item.label;
+    }
+    b.onclick=()=>{
+      setOpen(false);item.run(b);
+    };
+    menu.append(b);
+  }
+  wrap.append(trigger,menu);
+  return wrap;
+};
+const closeMenus = except => {
+  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)")){
+    const wrap=menu.parentElement;
+    if(except && wrap.contains(except))continue;
+    menu.classList.add("hidden");
+    const trigger=wrap.querySelector(".act-more");
+    if(trigger)trigger.setAttribute("aria-expanded","false");
+  }
+};
+document.addEventListener("click",event=>closeMenus(event.target));
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  closeMenus(null);
+  const open=document.querySelector(".act-menu .menu:not(.hidden)");
+  if(open){
+    const trigger=open.parentElement.querySelector(".act-more");
+    if(trigger)trigger.focus();
+  }
+});
 const fmt = value => value ? new Date(value).toLocaleString() : "—";
 const json = (box, optional=false) => {
   const raw=box.value.trim();
@@ -520,8 +575,20 @@ function render(){
     badges.append(m.targetsResolved ? badge(xt("resolved_yes"),"badge-accent") : badge(xt("resolved_no"),"badge-neutral"));
     titleWrap.append(a,badges);
     const acts=el("div","src-acts");
-    acts.append(action("edit",()=>openEditor(src)),action(m.enabled ? "disable" : "enable",b=>toggle(src,b)),action("delete",b=>removeSource(src,b)),action("saved_dry",()=>openFire(src)));
+    /* #376：5 个平铺按钮 → 1 主（编辑）+ 1 次（立即运行）+ ⋯。
+       「已保存源试运行」与「立即运行」不再并列：后者是行内次动作，
+       前者进菜单并带一句差异说明（只预演解析，不写事件）。 */
+    const editBtn=el("button","btn btn-sm",t("edit"));
+    editBtn.type="button";
+    editBtn.onclick=()=>openEditor(src);
+    acts.append(editBtn);
     if(m.enabled)acts.append(action("fire",()=>openFire(src)));
+    const menuItems=[{label:t("saved_dry"),hint:t("saved_dry_hint"),run:()=>openFire(src)},{
+      label:t(m.enabled ? "disable" : "enable"),run:b=>toggle(src,b)
+    },{
+      label:t("delete"),danger:true,run:b=>removeSource(src,b)
+    }];
+    acts.append(actionMenu(menuItems));
     head.append(titleWrap,acts);
     /* ② 主字段：4 列 KV 网格 */
     const kv=el("dl","src-kv");
