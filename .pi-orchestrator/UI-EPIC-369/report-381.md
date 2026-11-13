@@ -16,6 +16,24 @@
 | 5 | 实例无用户时登录页默认落在「注册」 | ⚠️ 见 §5（无服务端判定位） | 无会话 + 本浏览器首次来访 → 注册 tab + 提示条；回访（本机有登录记录）→ 登录 tab |
 | 6 | e2e：新增首跑路径用例（无用户 → 注册 → 首页 → 三步引导可见） | ✅ | `auth_flow` 新增 `firstRunCase()`（含 14 条断言，见 §4） |
 
+## 1.1 `grep -rn "receivers\.html"` 的当前结果（B2 口径的真相）
+
+跟踪文件里共 **9 处**（`git grep -n "receivers\.html" -- . ':!.pi-orchestrator' ':!design'`），
+全部是「页面还在」时**应当保留**的引用，没有半删除后的悬空引用：
+
+| 文件:行 | 内容 | 为什么保留 |
+|---|---|---|
+| `web/partials.js:2036` | `redirectToLogin()` 白名单条目 | 页面还在；不保留则直连 `receivers.html` 的 401 会把 `?next=` 丢成 index |
+| `web/partials.js:2458` | `PUSH_UI_ENABLED` 注释提到该页 | 文档性注释，描述的就是这个开关影响什么 |
+| `web-src/pages/login.html:1278` | `NEXT_MAP` 映射 | 同上（深链登录后回原页） |
+| `web-src/pages/index.html:1091` | 注释「与 receivers.html 保持一致」 | 描述 KPI 隐藏口径，不是链接 |
+| `scripts/e2e/fixtures/f3/f3-ui-cases.mjs:510,666` | `ux20` / `retained-device-patch` 的真实导航 | 两个反-theatre 安全用例的被测面 |
+| `scripts/perf/c/s4-page.mjs:231` | 性能脚本注释（推的是 SW 注册） | 纯注释 |
+| `docs/dev-docker.md:182` | 运维文档表格行 | 活文档，需在删页时一起改 |
+| `docs/research/mygo-desktop-client-feasibility.md:55` | 研究成果文档 | 历史调研，不回写 |
+
+> 真正的删除事项开工时，上面除「历史调研」外 **8 处**都要一起动 —— 比我之前报的 6 个落点又多了 2 个（login 的 `NEXT_MAP`、`scripts/perf` 注释），已并入 §6.2 的清单。
+
 ## 2. 三步路径的三态判定逻辑
 
 `index.html` 的 `loadFirstEvent()` → `renderFirstEvent()`：
