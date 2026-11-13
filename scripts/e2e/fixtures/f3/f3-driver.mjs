@@ -867,8 +867,17 @@ export async function openDriver(id, options = {}) {
       const g=await stableGeometry(label);
       report.geometry.push({label,...g});
       assert.ok(g.scrollWidth<=g.width+2,label+': document overflow');assert.deepEqual(g.overflow,[],label+': bounded component overflow');
-      await page.evaluate(()=>scrollTo(0,0));await page.mouse.wheel(0,650);
-      if(g.scrollHeight>g.height+5)await page.waitForFunction(()=>scrollY>0);
+      await page.evaluate(()=>scrollTo(0,0));
+      // 轮子必须打在一个「自己不吃滚动」的固定位置：mouse.wheel 用的是指针当前位置，
+      // 而前面的点击会把指针留在抽屉/语言菜单/嵌套滚动容器里，滚轮被那个元素吃掉、
+      // 页面本身不动 → 下面的 waitForFunction 会误判成「页面不可滚动」
+      // （#369 实测：keys 390 从抽屉切完语言后 wheel 打在列表容器上，scrollY 恒为 0）。
+      // 顶栏（sticky, overflow:visible）不会截留滚轮，所以固定在顶栏中线。
+      const vp = page.viewportSize() || { width: g.width, height: g.height };
+      await page.mouse.move(Math.round(vp.width / 2), 12);
+      await page.mouse.wheel(0,650);
+      // 显式超时：默认 2200ms 在负载下会误伤；断言含义不变（页面滚不动仍然失败）。
+      if(g.scrollHeight>g.height+5)await page.waitForFunction(()=>scrollY>0,null,{timeout:8000});
       await page.evaluate(()=>scrollTo(0,0));check(label+': actual geometry and unlocked scroll');
     };
     const finish=async()=>{await archive();
