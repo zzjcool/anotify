@@ -308,7 +308,7 @@
   }
   .hm-card .hm-cell.hm-today {
     box-shadow:
-      0 0 0 1.5px var(--accent),
+      0 0 0 1.5px color-mix(in srgb, var(--text) 55%, transparent),
       inset 0 0 0 1px color-mix(in srgb, var(--text) 13%, transparent);
   }
   /* 卡片内三段（标题 / 图 / 底注）上下留白等值，旧值 32 / 22 忽宽忽窄。 */
@@ -400,17 +400,11 @@
     height: 1px;
     background: var(--line-strong);
   }
-  .stat-spark.is-baseline {
-    /* ui.css 里 .stat-spark 未就绪时 opacity:0（防假折线）—— 基线是真实
-       存在的信息（这里没有序列），不该被一起隐藏。 */
-    opacity: 1;
-  }
-  .stat-spark.is-baseline::after {
-    background: repeating-linear-gradient(
-      to right,
-      var(--line-strong) 0 5px,
-      transparent 5px 10px
-    );
+  /* #373（处方 P0-2）：没有日序列的卡不再画 5px/5px 虚线框。
+     一屏 4 张卡里 2 张虚线，第一眼像「数据挂了」；空趋势就整条收起，
+     槽高由同排有曲线的卡撑住（.card.stat 是 h-full，行高不变）。 */
+  .stat-spark.is-empty {
+    display: none;
   }
 
   /* ===== #381 「第一条事件」三步路径 =====
@@ -632,7 +626,7 @@
       <!-- 任务总数 -->
       <div class="card stat card-pad">
         <div class="flex items-start justify-between gap-2">
-          <span class="stat-icon" aria-hidden="true">
+          <span class="stat-icon stat-icon-neutral" aria-hidden="true">
             <svg
               class="h-4 w-4"
               viewBox="0 0 24 24"
@@ -663,7 +657,7 @@
       <div class="min-w-0" data-push-tile>
         <div class="card stat card-pad h-full">
           <div class="flex items-start justify-between gap-2">
-            <span class="stat-icon" aria-hidden="true">
+            <span class="stat-icon stat-icon-neutral" aria-hidden="true">
               <svg
                 class="h-4 w-4"
                 viewBox="0 0 24 24"
@@ -692,7 +686,7 @@
       <!-- 今日任务 -->
       <div class="card stat card-pad">
         <div class="flex items-start justify-between gap-2">
-          <span class="stat-icon" aria-hidden="true">
+          <span class="stat-icon stat-icon-neutral" aria-hidden="true">
             <svg
               class="h-4 w-4"
               viewBox="0 0 24 24"
@@ -722,7 +716,7 @@
       <div class="min-w-0" data-push-tile>
         <div class="card stat card-pad h-full">
           <div class="flex items-start justify-between gap-2">
-            <span class="stat-icon" aria-hidden="true">
+            <span class="stat-icon stat-icon-neutral" aria-hidden="true">
               <svg
                 class="h-4 w-4"
                 viewBox="0 0 24 24"
@@ -937,7 +931,7 @@
          改成横幅后高度固定，不需要拿邻居的高度凑，也不会把任何一排拉高。 -->
     <section id="quickstart" class="card qs-strip">
       <div class="qs-strip-lead">
-        <span class="stat-icon" aria-hidden="true">
+        <span class="stat-icon stat-icon-neutral" aria-hidden="true">
           <svg
             class="h-4 w-4"
             viewBox="0 0 24 24"
@@ -1000,19 +994,19 @@
             ></span>
             <span
               class="hm-legend-cell"
-              style="background: var(--accent-1)"
+              style="background: var(--hm-cell-1)"
             ></span>
             <span
               class="hm-legend-cell"
-              style="background: var(--accent-2)"
+              style="background: var(--hm-cell-2)"
             ></span>
             <span
               class="hm-legend-cell"
-              style="background: var(--accent-3)"
+              style="background: var(--hm-cell-3)"
             ></span>
             <span
               class="hm-legend-cell"
-              style="background: var(--accent-4)"
+              style="background: var(--hm-cell-4)"
             ></span>
             <span class="card-sub">{{t "index.heatmap.more"}}</span>
           </div>
@@ -1485,7 +1479,7 @@
     function renderKpis() {
       /* 数据未到/失败时不要展示静态假 sparkline——那会让人以为数字只是丢了。 */
       const sparks = document.querySelectorAll(".stat-spark");
-      sparks.forEach((el) => el.classList.remove("is-ready"));
+      sparks.forEach((el) => el.classList.remove("is-ready", "is-empty"));
       /* F14：首屏接口全挂时不能把「取不到」画成「0」。KPI 一律显示 – ，
        * 让错误态只出现在一个地方（列表里的 loadErrorNode），而不是各处谎报 0。 */
       if (loadError) {
@@ -1582,14 +1576,24 @@
         if (node.dataset.sparkScope !== "events") {
           node.removeAttribute("data-spark");
           node.replaceChildren();
-          // IDX-1：没有日序列的卡也只画「基线」——四张卡槽高与基线对齐，
-          // 形态统一，但不发明趋势（e2e 断言这几张卡里 svg 恒为 0）。
+          // IDX-1（#373 改）：没有日序列的卡不再画「基线」虚线 —— 一屏两张虚线
+          // 读起来像数据挂了；空趋势就整条收起（.stat-spark.is-empty），
+          // 槽高由同排有曲线的卡撑住（e2e 仍断言这几张卡里 svg 恒为 0）。
           node.classList.remove("is-ready");
-          node.classList.add("is-baseline");
+          node.classList.add("is-empty");
           node.setAttribute("aria-label", t("uxaudit.work.spark_na", "暂无趋势数据"));
           return; // No daily execution/device facts: do not imply an invented trend.
         }
-        node.classList.remove("is-baseline");
+        node.classList.remove("is-empty");
+        // 日序列全是 0 = 没有趋势可读：贴底的平线会被当成「有数据」，同样收起。
+        if (values.every((n) => !n)) {
+          node.removeAttribute("data-spark");
+          node.replaceChildren();
+          node.classList.remove("is-ready");
+          node.classList.add("is-empty");
+          node.setAttribute("aria-label", t("uxaudit.work.spark_na", "暂无趋势数据"));
+          return;
+        }
         node.dataset.spark = values.map(value => value / max).join(",");
         node.classList.add("is-ready");
       });
@@ -1794,10 +1798,10 @@
       }
       const LEVELS = [
         "var(--hm-empty)",
-        "var(--accent-1)",
-        "var(--accent-2)",
-        "var(--accent-3)",
-        "var(--accent-4)",
+        "var(--hm-cell-1)",
+        "var(--hm-cell-2)",
+        "var(--hm-cell-3)",
+        "var(--hm-cell-4)",
       ];
       const WEEK_LABELS = hmWeekLabels();
       const WEEKS = HM_WEEKS;

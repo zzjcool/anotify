@@ -701,7 +701,7 @@
       <div id="caps-empty" class="empty hidden">
         <p id="caps-empty-title" class="card-title">{{t "caps.empty_title"}}</p>
         <p id="caps-empty-text">{{t "caps.empty"}}</p>
-        <button type="button" id="caps-empty-new" class="btn btn-primary btn-sm">
+        <button type="button" id="caps-empty-new" class="btn btn-sm">
           + {{t "caps.new"}}
         </button>
       </div>
@@ -903,7 +903,7 @@
            第 3 步才是「创建」——都是同一个 id，e2e/页面脚本的锚点不变。 -->
       <button id="cap-back" type="button" class="btn btn-ghost hidden">{{t "caps.form.prev_step"}}</button>
       <button id="cap-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
-      <button id="cap-submit" type="button" class="btn btn-primary">{{t "caps.form.submit"}}</button>
+      <button id="cap-submit" type="button" class="btn">{{t "caps.form.submit"}}</button>
     </div>
   </div>
 </div>
@@ -931,7 +931,7 @@
     </div>
     <div class="modal-foot">
       <button id="deploy-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
-      <button id="deploy-submit" type="button" class="btn btn-primary">{{t "caps.deploy.submit"}}</button>
+      <button id="deploy-submit" type="button" class="btn">{{t "caps.deploy.submit"}}</button>
     </div>
   </div>
 </div>
@@ -1433,7 +1433,7 @@
         const actions = el("div", { class: "cap-row-actions cap-detail-actions" });
         const editBtn = el("button", {
           type: "button",
-          class: "btn btn-primary btn-sm",
+          class: "btn btn-sm",
           text: t("caps.detail.edit", "编辑"),
           onclick: () => openEditor("edit", cap),
         });
@@ -2488,7 +2488,7 @@
           const rv = e.currentResourceVersion || "—";
           const reload = el("button", {
             type: "button",
-            class: "btn btn-primary btn-sm",
+            class: "btn btn-sm",
             text: t("caps.conflict.reload", "重新载入最新（丢弃本地修改）"),
           });
           reload.addEventListener("click", reloadAfterConflict);

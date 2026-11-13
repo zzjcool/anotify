@@ -3046,6 +3046,25 @@ a.side-link svg {
 	flex: none;
 }
 
+/* — epic-369-emphasis — 强调密度收口（#373）；本段归 c-emph 独占，只新增两条，
+   不动既有组件规则与 tokens。
+   ① .stat-icon-neutral：KPI 图标从品牌浅底降成中性瓦片 —— 首页首屏一屏里 4 个
+      accent 底图标是响度最大的一块。语义变体 .stat-icon-warn / .stat-icon-error
+      保持不动：那是状态色，不是品牌强调。
+   ② .hm-card 的密度色阶：热力图原本是 accent-1..4 四档品牌色（= 4 个强调面）。
+      它是数据密度图，不是品牌；改成同一墨色的深浅（--text 与 --hm-empty 的混合），
+      品牌色就只留给 KPI 趋势线（全页唯一的数据强调）。 */
+.stat-icon-neutral {
+	background: var(--surface-2);
+	color: var(--muted);
+}
+.hm-card {
+	--hm-cell-1: color-mix(in srgb, var(--text) 14%, var(--hm-empty));
+	--hm-cell-2: color-mix(in srgb, var(--text) 30%, var(--hm-empty));
+	--hm-cell-3: color-mix(in srgb, var(--text) 52%, var(--hm-empty));
+	--hm-cell-4: color-mix(in srgb, var(--text) 78%, var(--hm-empty));
+}
+
 /* ---------- 表单 ---------- */
 .field {
 	display: flex;

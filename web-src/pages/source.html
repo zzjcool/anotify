@@ -398,7 +398,7 @@ function emptyState(title,desc,onRetry){
   ico.innerHTML=EMPTY_ICON;
   box.append(ico,el("div","src-empty-title",title),el("p","src-empty-desc",desc));
   const acts=el("div","src-empty-acts");
-  const back=el("a","btn btn-primary",t("back"));
+  const back=el("a","btn",t("back"));
   back.href=link("sources.html");
   acts.append(back);
   if(onRetry){

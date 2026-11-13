@@ -824,7 +824,7 @@
           </p>
         </div>
         <div class="sec-nudge-acts">
-          <button type="button" onclick="addPasskey()" class="btn btn-primary">
+          <button type="button" onclick="addPasskey()" class="btn">
             {{t "security.recovery.nudge_action"}}
           </button>
           <button
@@ -1156,7 +1156,7 @@
             type="button"
             id="enroll-approve-btn"
             onclick="enrollApprove()"
-            class="btn btn-primary"
+            class="btn"
           >
             <span id="enroll-approve-label"
               >{{t "passkeyenroll.panel.approve"}}</span
@@ -1194,7 +1194,7 @@
           <button
             type="button"
             onclick="finishEnroll()"
-            class="btn btn-primary enroll-full"
+            class="btn enroll-full"
           >
             {{t "passkeyenroll.panel.done"}}
           </button>
@@ -1233,7 +1233,7 @@
             <button
               type="button"
               id="enroll-failed-action"
-              class="btn btn-primary"
+              class="btn"
             ></button>
             <button
               type="button"
@@ -1318,7 +1318,7 @@
       <button type="button" id="password-modal-cancel" class="btn btn-ghost">
         {{t "security.password.modal.cancel"}}
       </button>
-      <button type="button" id="password-modal-submit" class="btn btn-primary">
+      <button type="button" id="password-modal-submit" class="btn">
         {{t "security.password.modal.save"}}
       </button>
     </div>
@@ -1636,7 +1636,7 @@
               "div",
               { class: "sec-row-head" },
               el("span", { class: "sec-row-title", text: p.name }),
-              el("span", { class: "badge badge-accent", text: p.type }),
+              el("span", { class: "badge badge-neutral", text: p.type }),
               p.current
                 ? el("span", {
                     class: "status-badge status-on",
@@ -2373,7 +2373,7 @@
           : t("security.password.modal.save", "保存");
       // 移除是破坏性操作：换 .btn-danger，避免和「保存」长成一模一样
       submit.className =
-        mode === "remove" ? "btn btn-danger" : "btn btn-primary";
+        mode === "remove" ? "btn btn-danger" : "btn";
     }
     if (note) {
       note.textContent =

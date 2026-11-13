@@ -621,7 +621,7 @@
       <div id="pair-status" class="hidden rc-msg"></div>
     </div>
     <div class="modal-foot">
-      <button type="button" id="pair-submit" class="btn btn-primary">
+      <button type="button" id="pair-submit" class="btn">
         {{t "receivers.pair.submit"}}
       </button>
     </div>
@@ -818,7 +818,7 @@
           acts.append(
             el("button", {
               type: "button",
-              class: "btn btn-primary",
+              class: "btn",
               text: t("uxaudit.res.receivers.to_ws", "查看 WebSocket 长连接"),
               onclick: () => activateChannel("ws"),
             }),
@@ -869,7 +869,7 @@
 
           const mainBtn = el("button", {
             type: "button",
-            class: "btn " + (subscribed ? "btn-ghost" : "btn-primary"),
+            class: subscribed ? "btn btn-ghost" : "btn",
             text: subscribed
               ? t("receivers.local.turn_off", "关闭本机通知")
               : perm === "denied"
@@ -1189,7 +1189,7 @@
             const empty = el("div", { class: "empty" });
             const cta = el("button", {
               type: "button",
-              class: "btn btn-primary btn-sm",
+              class: "btn btn-sm",
               text: t("receivers.push.add_device", "添加此设备"),
             });
             cta.addEventListener("click", openPair);
