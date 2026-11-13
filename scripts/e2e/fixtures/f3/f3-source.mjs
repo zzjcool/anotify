@@ -154,7 +154,9 @@ export async function source(d){
   // 边投影段落显示的是 v4 `{from,to,kind}`（CapabilityEdge），以及"这个源的入口边"：
   // kind="source"、from=源名。旧断言检查 v3 字段名 fromIsSource —— 那在真实服务上
   // 永远不存在（页面会渲染空数组），等于什么都没验。
-  const edgeText = await page.locator('#src-body').innerText();
+  // #375：「只读 v4 目标能力投影」不再作为主内容重复渲染（与 targets 同一事实），
+  // 原始投影进开发者信息 #src-edges 折叠 —— 断言改读折叠区（textContent 含折叠内容）。
+  const edgeText = await page.locator('#src-edges').textContent();
   assert.match(edgeText, /"kind": "source"/);
   assert.match(edgeText, /"from": "deploy-hook"/);
   check('Source detail real metadata.name deep link/ns, masked config/status/params/projected edges and rendered graph');

@@ -235,6 +235,8 @@ async function conflict(d,lang) {
   const f=await fixture(d);await d.goto('node',query('node',f),lang);
   const p='/v1/nodes/'+encodeURIComponent(f.nodes[0].metadata.name)+'/config';
   const current=await d.req(p);assert.ok(current.metadata.resourceVersion);
+  // #375：JSON textarea 默认收在「编辑原始 JSON」折叠里；fill 前先展开。
+  await d.page.locator('#node-config-advanced').evaluate(el=>{el.open=true;});
   await d.page.locator('#node-vars').fill('{"LOCALE_DRAFT":"retained"}');
   const fresh=await d.response(p,{metadata:{resourceVersion:current.metadata.resourceVersion},config:current.config},'PUT');assert.equal(fresh.status,200);
   await d.page.locator('#node-config-save').click();await hasText(d,'#node-config-state','nodes.v4.stale');

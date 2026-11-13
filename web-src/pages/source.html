@@ -49,6 +49,12 @@
 .devf-k{font-size:11px;line-height:1.4;color:var(--faint);font-family:var(--font-mono)}
 .devf-v{margin:0;font-size:12px;line-height:1.5;color:var(--text);overflow-wrap:anywhere;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .devf-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* #375：载荷契约结构化（字段表） */
+.src-schema{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+.src-schema th,.src-schema td{padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.src-schema th{color:var(--muted);font-weight:500}
+.src-schema code{font-family:var(--font-mono);font-size:11.5px;color:var(--text)}
+.src-schema-cap{font-size:11px;color:var(--faint)}
 </style>
 {{end}}
 {{define "content"}}
@@ -228,6 +234,47 @@ function devFields(id, rows){
   box.append(sum,body);
   return box;
 }
+/* #375：原始 JSON 一律进「查看原始」折叠（默认收起），结构化视图留在外面。 */
+function rawJson(label, value){
+  const box=el("details","devf");
+  const sum=el("summary");
+  sum.append(el("span",null,dev("raw")),el("span","devf-hint",label));
+  const body=el("div","devf-body");
+  body.append(codeBlock(label,typeof value==="string" ? value : JSON.stringify(value,null,2)));
+  box.append(sum,body);
+  return box;
+}
+/* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
+   没有 properties 时不编一张空表，只说「没声明字段」。 */
+function schemaTable(schema){
+  const box=el("div","source-target");
+  box.append(el("h4","card-title",t("schema")));
+  const props=schema && typeof schema==="object" && schema.properties && typeof schema.properties==="object" ? schema.properties : null;
+  if(!props || !Object.keys(props).length){
+    box.append(el("p","card-sub",dev("none")));
+    return box;
+  }
+  const required=new Set(Array.isArray(schema.required) ? schema.required : []);
+  const table=el("table","src-schema");
+  const thead=el("thead"), hr=el("tr");
+  for(const head of [dev("field"),dev("type"),dev("required"),dev("description")]) hr.append(el("th",null,head));
+  thead.append(hr);
+  const tbody=el("tbody");
+  for(const [name, prop] of Object.entries(props)){
+    const p=prop && typeof prop==="object" ? prop : {};
+    const type=p.type ? String(p.type) : (p.enum ? "enum" : (p.oneOf ? "oneOf" : "—"));
+    const tr=el("tr");
+    const nameCell=el("td");
+    nameCell.append(el("code",null,name));
+    tr.append(nameCell,el("td",null,type),
+      el("td",null,required.has(name) ? dev("yes") : dev("no")),
+      el("td",null,p.description ? String(p.description) : "—"));
+    tbody.append(tr);
+  }
+  table.append(thead,tbody);
+  box.append(table);
+  return box;
+}
 function facts(src){
   const dl=el("dl","src-kv");
   const m=A.model.source(src);
@@ -403,14 +450,26 @@ async function render(src,caps,edges){
   badges.append(m.enabled ? badge(t("enabled"),"badge-success") : badge(t("disabled"),"badge-neutral"));
   badges.append(badge(m.health || "—",healthTone(m.health)));
   // #374：targetsResolved 不再做成首屏徽章（内部布尔），只留在开发者信息里。
-  config.append(badges,facts(src),devFields("src-dev",[
+  const cfgDev=devFields("src-dev",[
     ["resourceVersion",m.resourceVersion],
     ["targetsResolved",m.targetsResolved ? xt("resolved_yes") : xt("resolved_no")]
-  ]));
+  ]);
+  config.append(badges,facts(src),cfgDev);
+  /* #375：配置不再甩一整块裸 JSON —— 常用值走 KV、载荷契约走字段表，
+     原始 JSON 收进「查看原始 JSON」（默认收起）。 */
+  const cfg=m.config;
+  const cfgKv=el("dl","src-kv");
+  cfgKv.append(
+    pair(t("expr"),cfg.expr||"—",!cfg.expr),
+    pair(t("tz"),cfg.tz||"—",!cfg.tz),
+    pair(t("payload"),cfg.payload ? JSON.stringify(cfg.payload) : "—",!cfg.payload),
+    pair(t("sample"),cfg.sample ? JSON.stringify(cfg.sample) : "—",!cfg.sample));
+  config.append(cfgKv);
+  if(cfg.payloadSchema)config.append(schemaTable(cfg.payloadSchema));
   const safe={
   };
-  for(const key of ["expr","tz","payload","payloadSchema","sample"])if(m.config[key]!=null)safe[key]=m.config[key];
-  config.append(codeBlock(t("config"),JSON.stringify(safe,null,2)));
+  for(const key of ["expr","tz","payload","payloadSchema","sample"])if(cfg[key]!=null)safe[key]=cfg[key];
+  config.append(rawJson(t("config"),safe));
   if(m.kind==="webhook"){
     // f3-source 断言：这段文本必须留在 DOM 里（secretSet: true）
     config.append(
@@ -422,11 +481,29 @@ async function render(src,caps,edges){
   if(!m.targets.length)targets.append(el("p","card-sub",t("no_target")));
   for(const target of m.targets){
     const row=el("div","source-target");
-    row.append(el("strong","source-wrap",target.capability),el("pre","code-body source-json mono",JSON.stringify(target.params,null,2)));
+    row.append(el("strong","source-wrap",target.capability||"—"));
+    const params=target.params && typeof target.params==="object" && !Array.isArray(target.params) ? target.params : null;
+    const keys=params ? Object.keys(params) : [];
+    if(!keys.length)row.append(el("p","card-sub",dev("none")));
+    else{
+      const dl=el("dl","src-kv");
+      for(const key of keys){
+        const value=params[key];
+        dl.append(pair(key,typeof value==="string" ? value : JSON.stringify(value)));
+      }
+      row.append(dl);
+    }
     targets.append(row);
-  }const projection=section("edges");
-  // v4 的边投影是 `{from,to,kind}`：入口边 = kind==="source" 且 from 是这个源名。
-  projection.append(codeBlock(t("edges"),JSON.stringify(edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge),null,2)));
+  }
+  if(m.targets.length)targets.append(rawJson(t("targets"),m.targets));
+  /* #375：「目标能力 targets」与「只读 v4 目标能力投影」是同一份关系的两种画法 ——
+     主内容只留结构化 targets（上面）；投影的原始 JSON 进开发者信息 #src-edges
+     （e2e 仍按 textContent 验证 {from,to,kind} 事实存在，不是删断言）。 */
+  const edgeRows=edges.filter(e=>e.kind==="source" && e.from===m.name).map(A.model.edge);
+  const edgesDev=rawJson(t("edges"),edgeRows);
+  edgesDev.id="src-edges";
+  const devBody=cfgDev.querySelector(".devf-body");
+  if(devBody)devBody.append(edgesDev);
   // 图自带标题栏（源 · 能力数 · 状态）与外框：外面再裹一层 card + 卡片标题就是两层框，
   // 和 trace 页同一个毛病。直接插进 src-body（顺序不变：仍在只读投影之后）。
   const host=el("div","source-graph");
