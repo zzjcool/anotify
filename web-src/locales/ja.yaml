@@ -2332,3 +2332,9 @@ uxaudit:
     per_cap: '能力ごと'
     edit_raw: '元の JSON を編集'
     edit_raw_hint: '現在の CAS トークンで保存'
+
+paging:
+  search_ph: '名前 / 表示名で検索'
+  load_more: 'さらに読み込む'
+  showing: '表示中 {n} 件'
+  no_match: '一致する項目がありません'

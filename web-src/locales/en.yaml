@@ -2332,3 +2332,9 @@ uxaudit:
     per_cap: 'Per capability'
     edit_raw: 'Edit raw JSON'
     edit_raw_hint: 'saved with the current CAS token'
+
+paging:
+  search_ph: 'Search name / display name'
+  load_more: 'Load more'
+  showing: 'Showing {n}'
+  no_match: 'No matches'

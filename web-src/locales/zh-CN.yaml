@@ -2337,3 +2337,9 @@ uxaudit:
     per_cap: '每能力'
     edit_raw: '编辑原始 JSON'
     edit_raw_hint: '以当前 CAS 令牌保存'
+
+paging:
+  search_ph: '搜索名称 / 显示名'
+  load_more: '加载更多'
+  showing: '已显示 {n} 条'
+  no_match: '没有匹配项'

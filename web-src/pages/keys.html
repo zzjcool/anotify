@@ -66,6 +66,8 @@
         gap: 12px;
         margin-bottom: 8px;
       }
+      /* #377：本地搜索（只过滤已加载的页，不重新请求） */
+      .kx-keys-search { max-width: 320px; min-width: 180px; margin-left: auto; }
       .kx-keys-table {
         min-width: 620px;
       }
@@ -414,6 +416,7 @@
     <section>
       <div class="kx-keys-head">
         <div class="card-title">{{t "keys.my_keys"}}</div>
+        <input id="keys-search" class="input kx-keys-search" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
       </div>
 
       <!-- 加载骨架：独立容器，数据到后整体 remove。
@@ -459,6 +462,7 @@
           </table>
           <div class="table-foot">
             <span id="keys-summary"></span>
+            <button id="keys-load-more" class="btn btn-ghost btn-sm hidden" type="button">{{t "paging.load_more"}}</button>
           </div>
         </div>
       </div>
@@ -702,6 +706,12 @@
       let PENDING_KEY = null;
       let LAST_FOCUS = null; // 弹层关闭后焦点归还到这个元素
       let FETCH_ERROR = null; // 最近一次请求失败的原因（渲染错误态用，不伪造数据）
+      /* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
+         搜索只在已加载的页上本地过滤，加载更多翻下一页。 */
+      const KEYS_PAGE = 20;
+      let KEYS_CURSOR = "";
+      let KEYS_MORE = false;
+      let KEYS_QUERY = "";
 
       function fmtTime(ts) {
         if (!ts) return t("common.time.never", "从未使用");
@@ -749,37 +759,82 @@
         }
       }
 
-      async function loadKeys() {
-        const data = await fetchApi(API + "/keys", {
+      async function fetchKeyPage(cursor) {
+        const qs = new URLSearchParams({ limit: String(KEYS_PAGE) });
+        if (cursor) qs.set("continue", cursor);
+        const data = await fetchApi(API + "/keys?" + qs.toString(), {
           credentials: "same-origin",
         });
-        if (data) {
-          KEYS = (data.keys || data || []).map((k) => ({
-            id: k.id,
-            name: k.name || t("keys.unnamed", "未命名"),
-            prefix: k.prefix || "ant_????",
-            scopes: k.scopes || [],
-            lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
-            enabled: k.enabled !== false && k.enabled !== 0,
-            created:
-              k.createdAt || k.created_at
-                ? new Date(
-                    (k.createdAt || k.created_at) *
-                      (typeof (k.createdAt || k.created_at) === "number"
-                        ? 1000
-                        : 1),
-                  )
-                    .toISOString()
-                    .slice(0, 10)
-                : "",
-          }));
+        if (!data) return null;
+        const cont = typeof data.continue === "string" ? data.continue : "";
+        return { data, cursor: cont };
+      }
+
+      function normalizeKey(k) {
+        return {
+          id: k.id,
+          name: k.name || t("keys.unnamed", "未命名"),
+          prefix: k.prefix || "ant_????",
+          scopes: k.scopes || [],
+          lastUsed: fmtTime(k.lastUsedAt || k.last_used_at),
+          enabled: k.enabled !== false && k.enabled !== 0,
+          created:
+            k.createdAt || k.created_at
+              ? new Date(
+                  (k.createdAt || k.created_at) *
+                    (typeof (k.createdAt || k.created_at) === "number"
+                      ? 1000
+                      : 1),
+                )
+                  .toISOString()
+                  .slice(0, 10)
+              : "",
+        };
+      }
+
+      async function loadKeys() {
+        const page = await fetchKeyPage("");
+        if (page) {
+          KEYS = (page.data.keys || []).map(normalizeKey);
+          KEYS_CURSOR = page.cursor;
+          KEYS_MORE = !!page.cursor;
           LOAD_ERROR = null;
         } else {
           // 失败就是失败：不伪造数据（演示数据只在 make mock 的 /mock.js 里，见 #273）
           KEYS = [];
+          KEYS_CURSOR = "";
+          KEYS_MORE = false;
           LOAD_ERROR = FETCH_ERROR || new Error(t("common.request_failed", "请求失败"));
         }
         renderKeys();
+      }
+
+      async function loadMoreKeys() {
+        if (!KEYS_MORE) return;
+        const btn = document.getElementById("keys-load-more");
+        if (btn) btn.disabled = true;
+        const page = await fetchKeyPage(KEYS_CURSOR);
+        if (!page) {
+          if (btn) btn.disabled = false;
+          return;
+        }
+        const seen = new Set(KEYS.map((k) => k.id));
+        for (const k of (page.data.keys || []).map(normalizeKey)) {
+          if (seen.has(k.id)) continue;
+          KEYS.push(k);
+          seen.add(k.id);
+        }
+        KEYS_CURSOR = page.cursor;
+        KEYS_MORE = !!page.cursor;
+        renderKeys();
+      }
+
+      function visibleKeys() {
+        const q = KEYS_QUERY.trim().toLowerCase();
+        if (!q) return KEYS;
+        return KEYS.filter((k) =>
+          [k.name, k.prefix, ...k.scopes].filter(Boolean).join(" ").toLowerCase().includes(q),
+        );
       }
 
       // ==================== 渲染 ====================
@@ -788,9 +843,10 @@
       // 空串，绝不把字面量 {demo} 印到用户眼前（locale 的修正句见 keys.fixes.json，
       // 模板侧这段是兜底：locale 还没合并时也不会漏字面量）。
       function summaryLine() {
-        const active = KEYS.filter((k) => k.enabled).length;
+        const rows = visibleKeys();
+        const active = rows.filter((k) => k.enabled).length;
         return t("keys.summary", "{total} 个 Key · {active} 启用")
-          .replace("{total}", String(KEYS.length))
+          .replace("{total}", String(rows.length))
           .replace("{active}", String(active))
           .replace("{demo}", "");
       }
@@ -887,7 +943,13 @@
       function renderKeys() {
         const body = document.getElementById("keys-body");
         const summary = document.getElementById("keys-summary");
+        const more = document.getElementById("keys-load-more");
+        const rows = visibleKeys();
         if (summary) summary.textContent = summaryLine();
+        if (more) {
+          more.classList.toggle("hidden", !KEYS_MORE);
+          more.disabled = false;
+        }
         // 骨架是独立容器：数据到后整块 remove（留在 DOM 里会让「骨架 = 就绪」误判）
         const skel = document.getElementById("keys-skel");
         if (skel) skel.remove();
@@ -906,7 +968,7 @@
           setView("empty");
           return;
         }
-        body.replaceChildren(...KEYS.map(keyRow));
+        body.replaceChildren(...rows.map(keyRow));
         setView("ready");
       }
 
@@ -1144,6 +1206,12 @@
         title: t("keys.title", "API Keys"),
         subtitle: t("keys.subtitle", "Agent 用它上报通知"),
       });
+      /* #377：搜索只在已加载的页上本地过滤；加载更多翻下一页。 */
+      document.getElementById("keys-search").addEventListener("input", (event) => {
+        KEYS_QUERY = event.target.value;
+        renderKeys();
+      });
+      document.getElementById("keys-load-more").addEventListener("click", loadMoreKeys);
       loadKeys();
       /* 下拉刷新：重新拉取 Key 列表 */
       mountPullRefresh(loadKeys);

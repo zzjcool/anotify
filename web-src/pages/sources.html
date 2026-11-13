@@ -62,6 +62,12 @@
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
 .source-graph{min-height:320px;width:100%;min-width:0}
 .source-loading{padding:24px;color:var(--muted)}
+/* #377 列表规模化：搜索框 + 「20 条 + 加载更多」。
+   分页控件样式走页面内联（契约 §3：本车道不写 ui.css）。 */
+.src-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}
+.src-toolbar .input{max-width:320px;min-width:180px}
+.src-toolbar-count{color:var(--muted);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
+.src-more-wrap{display:flex;justify-content:center;padding:12px 0 2px}
 </style>
 {{end}}
 {{define "content"}}
@@ -94,6 +100,11 @@
 </div>
 <div id="src-list-skel" class="source-loading">
 {{t "sources.v4.loading"}}
+</div>
+<!-- #377：本地搜索 + 已加载计数（搜索只过滤已加载的页，不重新请求） -->
+<div class="src-toolbar">
+<input id="src-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" />
+<span id="src-count" class="src-toolbar-count" aria-live="polite"></span>
 </div>
 <div id="src-list" class="list card">
 </div>
@@ -559,32 +570,81 @@ function showActionError(src,err){
 }
 let SOURCES=[], CAPS=[], EVENTS=[], EDITING=null;
 let loaded=false, editHandled=false, editorSeq=0;
+/* #377：首屏只拉一页（≤20 条），DOM 不随总条数线性增长；
+   「加载更多」翻下一页，搜索只在已加载的页上本地过滤。 */
+const SOURCES_PAGE=20;
+let SOURCES_CURSOR="", SOURCES_MORE=false, SOURCE_QUERY="";
 A.mountLayout({
   active:"sources",title:A.t("sources.title")
 });
+async function fetchSourcePage(cursor){
+  await A.ensureScope();
+  const qs=new URLSearchParams({limit:String(SOURCES_PAGE)});
+  if(cursor)qs.set("continue",cursor);
+  const res=await A.api(A.nsPath("sources")+"?"+qs.toString());
+  if(!res || !Array.isArray(res.items))throw new Error(A.t("common.request_failed"));
+  const cont=res.metadata && typeof res.metadata.continue==="string" ? res.metadata.continue : "";
+  return {items:res.items,cursor:cont};
+}
 async function load(){
   try{
     await initScope();
-    const [sources,caps]=await Promise.all([A.nsList("sources"),A.nsList("capabilities")]);
-    SOURCES=sources.items;
+    const [first,caps]=await Promise.all([fetchSourcePage(""),A.nsList("capabilities")]);
+    SOURCES=first.items;
+    SOURCES_CURSOR=first.cursor;
+    SOURCES_MORE=!!first.cursor;
     CAPS=caps.items;
     loaded=true;
     render();
     const edit=new URLSearchParams(location.search).get("edit");
     if(edit && !editHandled){
       editHandled=true;
-      const src=SOURCES.find(s=>s.metadata.name===edit);
+      let src=SOURCES.find(s=>s.metadata.name===edit);
+      if(!src && SOURCES_MORE){
+        /* 深链目标不在第一页：单对象读，?edit= 的行为与分页无关（e2e 锚点不变）。 */
+        try{ src=await A.nsApi("sources",edit); }catch(err){ src=null; }
+      }
       if(src)await openEditor(src);
       else throw new Error(t("notfound"));
     }
   }catch(err){
     $("src-list").replaceChildren(A.loadErrorNode(err,load));
+    $("src-count").textContent="";
   }finally{
     $("src-list-skel").classList.add("hidden");
   }
 }
+async function loadMoreSources(){
+  if(!SOURCES_MORE)return;
+  const btn=$("src-load-more");
+  if(btn)btn.disabled=true;
+  try{
+    const next=await fetchSourcePage(SOURCES_CURSOR);
+    const seen=new Set(SOURCES.map(s=>s.metadata.name));
+    for(const item of next.items){
+      if(seen.has(item.metadata.name))continue;
+      SOURCES.push(item);
+      seen.add(item.metadata.name);
+    }
+    SOURCES_CURSOR=next.cursor;
+    SOURCES_MORE=!!next.cursor;
+    render();
+  }catch(err){
+    if(btn)btn.disabled=false;
+    $("action-error").replaceChildren(A.loadErrorNode(err,()=>loadMoreSources()));
+  }
+}
+function visibleSources(){
+  const q=SOURCE_QUERY.trim().toLowerCase();
+  if(!q)return SOURCES;
+  return SOURCES.filter(src=>{
+    const m=A.model.source(src);
+    return [m.name,m.displayName,m.kind,...m.targets.map(x=>x.capability)].filter(Boolean).join(" ").toLowerCase().includes(q);
+  });
+}
 function render(){
   $("src-list").replaceChildren();
+  const rows=visibleSources();
   if(!SOURCES.length){
     const box=el("div","empty");
     box.append(
@@ -592,8 +652,10 @@ function render(){
       el("p","card-sub",t("empty")),
       action("new",()=>openEditor(null)));
     $("src-list").append(box);
+  }else if(!rows.length){
+    $("src-list").append(el("div","empty",A.t("paging.no_match")));
   }
-  for(const src of SOURCES){
+  for(const src of rows){
     const m=A.model.source(src);
     const row=el("div","list-row src-row");
     row.dataset.name=m.name;
@@ -648,7 +710,21 @@ function render(){
     row.append(head,kv,more);
     $("src-list").append(row);
   }
+  if(SOURCES_MORE){
+    const wrap=el("div","src-more-wrap");
+    const more=el("button","btn btn-ghost",A.t("paging.load_more"));
+    more.id="src-load-more";
+    more.type="button";
+    more.onclick=loadMoreSources;
+    wrap.append(more);
+    $("src-list").append(wrap);
+  }
+  $("src-count").textContent=A.t("paging.showing").replace("{n}",String(rows.length));
 }
+$("src-search").addEventListener("input",event=>{
+  SOURCE_QUERY=event.target.value;
+  render();
+});
 function targetRow(target={
   capability:"",params:{
   }

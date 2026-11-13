@@ -2332,3 +2332,9 @@ uxaudit:
     per_cap: 'Por capacidad'
     edit_raw: 'Editar JSON original'
     edit_raw_hint: 'se guarda con el CAS actual'
+
+paging:
+  search_ph: 'Buscar nombre / nombre visible'
+  load_more: 'Cargar más'
+  showing: 'Mostrando {n}'
+  no_match: 'Sin coincidencias'
