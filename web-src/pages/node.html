@@ -107,13 +107,18 @@
     </section>
     <div class="c2-grid nd-grid-top">
       <section id="node-config" class="card card-pad">
-        <div class="card-title">{{t "nodes.v4.config"}}</div><p class="c2-note">{{t "nodes.v4.batch_hint"}}</p><div id="node-revisions" class="c2-note"></div>
+        <!-- #379：讲设计的旁白移出首屏。批量 API 的原子性说明进页面底部的
+             折叠（与 slot 说明同处，原文一字不删），完整取舍写进 docs.html
+             「设计取舍说明」；配置版本行（configRevision/appliedRevision）
+             本来就在开发者信息里，首屏不再重复一遍。 -->
+        <div class="card-title">{{t "nodes.v4.config"}}</div>
         <!-- #375：首屏只给结构化摘要（授权 / 本机变量 / 限制）；三块 JSON textarea
              收进「编辑原始 JSON」折叠 —— 节点配置仍可编辑，锚点 #node-namespaces/#node-vars/#node-limits 不变。 -->
         <div id="node-config-summary" class="c2-stack"></div>
         <details id="node-config-advanced" class="devf">
           <summary><span>{{t "uxaudit.dev.edit_raw"}}</span><span class="devf-hint">{{t "uxaudit.dev.edit_raw_hint"}}</span></summary>
           <div class="devf-body">
+            <div id="node-revisions" class="c2-note"></div>
             <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
             <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
             <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
@@ -129,7 +134,7 @@
     </div>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.effective_vars"}}</div><div class="field"><label class="field-label" for="node-namespace">{{t "nodes.v4.context"}}</label><select id="node-namespace" class="select"></select></div><div id="node-context-revision" class="c2-note"></div><div id="node-effective-vars"></div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p></section>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><div id="node-slots"></div>
-      <details class="nd-more"><summary>{{t "uxaudit.res.nodes.note_summary"}}</summary><p class="c2-note nd-more-body">{{t "nodes.v4.slot_note"}}</p></details>
+      <details class="nd-more"><summary>{{t "uxaudit.res.nodes.note_summary"}}</summary><p class="c2-note nd-more-body">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p></details>
     </section>
     <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
     <section class="card card-pad"><div class="code-block"><div class="code-head">{{t "nodes.v4.bootstrap_title"}}</div><pre class="code-body nd-code">curl -fsSL https://&lt;your-hub&gt;/install-anode.sh | sh -s -- --name &lt;node&gt; --server https://&lt;your-hub&gt; --token &lt;node-token&gt;</pre></div><p class="c2-note">{{t "nodes.v4.setup_hint"}}</p></section>

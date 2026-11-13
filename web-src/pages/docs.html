@@ -793,6 +793,9 @@
           <a class="doc-chip" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
           >
+          <a class="doc-chip" href="#design-notes" data-toc="#design-notes"
+            >{{t "docs.toc.design"}}</a
+          >
         </div>
       </details>
 
@@ -1275,6 +1278,20 @@ GET /v1/namespaces/{namespace}/config
 GET /v1/system/config</pre>
           </div>
         </section>
+
+        <!-- #379：设计取舍说明。四个页面首屏上那些「讲设计」的旁白（源的配置图语义、
+             预案包的边界、节点配置的原子性与保留期默认值）集中到这里；
+             首屏只留「要你做决定」的信息。 -->
+        <section id="design-notes" class="doc-anchor doc-sec reveal visible">
+          <h2 class="doc-h2">{{t "docs.design.title"}}</h2>
+          <p class="doc-lede">{{t "docs.design.lede"}}</p>
+          <h3 class="doc-h2">{{t "sources.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.sources"}}</p>
+          <h3 class="doc-h2">{{t "pb.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.playbooks"}}</p>
+          <h3 class="doc-h2">{{t "nodes.v4.title"}}</h3>
+          <p class="doc-note">{{t "docs.design.nodes"}}</p>
+        </section>
       </div>
 
       <!-- 右侧「本页目录」：≥1280 sticky 跟随（<1280 用上面的 chips 版） -->
@@ -1301,6 +1318,9 @@ GET /v1/system/config</pre>
           >
           <a class="toc-link" href="#node" data-toc="#node"
             >{{t "docs.toc.node"}}</a
+          >
+          <a class="toc-link" href="#design-notes" data-toc="#design-notes"
+            >{{t "docs.toc.design"}}</a
           >
         </div>
       </nav>

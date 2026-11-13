@@ -648,7 +648,17 @@
         <div id="cap-banner-actions" class="cap-banner-actions"></div>
       </div>
 
-      <div class="cap-grid">
+      <!-- #379：内置能力模板（GET /v1/capability-templates，cluster 公共读模型）。
+           选模板 → 预填名称/params/next/脚本骨架；params 契约由模板字段推导，
+           不需要手写 JSON Schema。「从空白开始」保留原有手填路径。 -->
+      <div id="cap-template-wrap" class="field hidden">
+        <label class="field-label" for="cap-template">{{t "caps.form.template"}}</label>
+        <select id="cap-template" class="select"></select>
+        <p id="cap-template-hint" class="field-hint">{{t "caps.form.template_hint"}}</p>
+        <div id="cap-template-fields" class="cap-hint-list"></div>
+      </div>
+
+      <div class="cap-grid mt-3">
         <div class="field">
           <label class="field-label" for="cap-name">{{t "caps.form.name"}}<span class="cap-sep"> *</span></label>
           <input id="cap-name" class="input mono" autocomplete="off" spellcheck="false" placeholder="{{t "caps.form.name_ph"}}" />
@@ -1830,6 +1840,128 @@
         }
       }
 
+      /* ---------- #379：内置能力模板（GET /v1/capability-templates）----------
+       * 模板是「代码生成器的输入」：字段 → paramsSchema 由模板字段推导（与后端
+       * 后端 templates.go 的 paramsSchemaFor 同规则：type 映射、select→enum、
+       * required 排序），所以用户不需要手写 JSON Schema；script/next/requires/
+       * timeoutSec 也按模板预填。模板接口取不到时表单照旧可以手填。 */
+      let TEMPLATES = null; // null = 未加载；[] = 加载失败/为空
+      /* 上一次模板自动填进名称/显示名的值：切换模板时可以直接覆盖，
+         但用户手输过的内容不碰。 */
+      let TEMPLATE_AUTOFILL = { name: "", displayName: "" };
+      function templateName(tpl) {
+        const base = String((tpl && tpl.id) || "").split(".").pop() || "";
+        const slug = base
+          .toLowerCase()
+          .replace(/[^a-z0-9._-]+/g, "-")
+          .replace(/^[^a-z0-9]+/, "")
+          .slice(0, 63);
+        return NAME_RE.test(slug) ? slug : "";
+      }
+      function templateSchema(fields) {
+        const props = {};
+        const required = [];
+        for (const field of Array.isArray(fields) ? fields : []) {
+          if (!isObj(field) || !field.key) continue;
+          const prop = {};
+          if (field.type === "number") prop.type = "number";
+          else {
+            prop.type = "string";
+            if (field.type === "select") prop.enum = Array.isArray(field.options) ? field.options.slice() : [];
+          }
+          props[field.key] = prop;
+          if (field.required) required.push(field.key);
+        }
+        const schema = { type: "object", properties: props };
+        if (required.length) schema.required = required.sort();
+        return schema;
+      }
+      function renderTemplateFields(tpl) {
+        const box = $("cap-template-fields");
+        if (!box) return;
+        box.replaceChildren();
+        if (!tpl) return;
+        const fields = Array.isArray(tpl.fields) ? tpl.fields : [];
+        if (!fields.length) {
+          box.append(txt("p", "cap-detail-empty", t("caps.form.template_none", "该模板不需要参数。")));
+          return;
+        }
+        box.append(txt("p", "cap-detail-empty", t("caps.form.template_fields", "模板参数（运行时以 ANOTIFY_PARAM_* 环境变量传入）")));
+        for (const field of fields) {
+          const line = el("div", { class: "cap-hint-line" });
+          line.append(txt("span", "cap-mono", String(field.key || "")));
+          line.append(txt("span", null, String(field.label || "")));
+          if (field.required) {
+            line.append(el("span", { class: "badge badge-neutral", text: t("caps.form.template_required", "必填") }));
+          }
+          if (field.help) line.append(txt("span", "cap-detail-empty", String(field.help)));
+          box.append(line);
+        }
+      }
+      async function loadTemplateOptions() {
+        if (TEMPLATES) return TEMPLATES;
+        try {
+          const doc = await api("/v1/capability-templates");
+          TEMPLATES = doc && Array.isArray(doc.templates) ? doc.templates : [];
+        } catch (e) {
+          TEMPLATES = [];
+          const hint = $("cap-template-hint");
+          if (hint) hint.textContent = sub(t("caps.form.template_failed", "模板列表载入失败：{msg}"), { msg: statusLine(e) });
+        }
+        const sel = $("cap-template");
+        if (!sel) return TEMPLATES;
+        sel.replaceChildren(el("option", { value: "", text: t("caps.form.template_blank", "从空白开始") }));
+        for (const tpl of TEMPLATES) {
+          if (!tpl || !tpl.id) continue;
+          sel.append(el("option", { value: String(tpl.id), text: String(tpl.displayName || tpl.id) }));
+        }
+        return TEMPLATES;
+      }
+      /* 选模板 = 预填（名称 / params / next / 脚本骨架 / requires / timeout）；
+       * 选「从空白开始」= 清回编辑器默认值。 */
+      function applyTemplate(id) {
+        const tpl = (TEMPLATES || []).find((item) => item && item.id === id) || null;
+        renderTemplateFields(tpl);
+        if (id && !tpl) return; // 未知 id（加载失败）：不动用户已填的内容
+        if (!tpl) {
+          $("cap-params").value = "{}";
+          $("cap-next").value = "";
+          $("cap-requires-commands").value = "";
+          $("cap-timeout").value = 0;
+          if ($("cap-name").value === TEMPLATE_AUTOFILL.name) $("cap-name").value = "";
+          if ($("cap-display-name").value === TEMPLATE_AUTOFILL.displayName) $("cap-display-name").value = "";
+          TEMPLATE_AUTOFILL = { name: "", displayName: "" };
+          FILE_ROWS = fileRowsFrom({});
+          renderFiles();
+          refreshEntrypointOptions("run.sh");
+          renderNextHints();
+          return;
+        }
+        $("cap-params").value = JSON.stringify(templateSchema(tpl.fields), null, 2);
+        $("cap-next").value = (Array.isArray(tpl.next) ? tpl.next : []).join("\n");
+        $("cap-requires-commands").value = (Array.isArray(tpl.requires) ? tpl.requires : []).join("\n");
+        const timeout = Number(tpl.timeoutSec);
+        $("cap-timeout").value = Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
+        FILE_ROWS = [{ path: "run.sh", body: tpl.script == null ? "" : String(tpl.script) }];
+        renderFiles();
+        refreshEntrypointOptions("run.sh");
+        /* 名称 / 显示名：模板只给建议值。空着、或还是上一份模板自动填的值 → 直接覆盖；
+           用户手输过的（不等于自动填的那个）一律不动；空白脚本不占名字。 */
+        const suggestName = tpl.id === "script.blank" ? "" : templateName(tpl);
+        const suggestDisplay = String(tpl.displayName || "");
+        const nameEl = $("cap-name");
+        const displayEl = $("cap-display-name");
+        if (!nameEl.value.trim() || nameEl.value === TEMPLATE_AUTOFILL.name) nameEl.value = suggestName;
+        if (!displayEl.value.trim() || displayEl.value === TEMPLATE_AUTOFILL.displayName) displayEl.value = suggestDisplay;
+        TEMPLATE_AUTOFILL = { name: suggestName, displayName: suggestDisplay };
+        const paramsErr = $("cap-params-err");
+        if (paramsErr) {
+          paramsErr.textContent = "";
+          paramsErr.classList.add("hidden");
+        }
+        renderNextHints();
+      }
+
       /* openEditor 是**异步**的：编辑既有能力时必须先拿 `?includeBody=true` 的全文。
        * 列表投影按契约**剥离 run.files**（resource.yaml·listCapabilities：默认不带正文），
        * 直接拿列表行填表单会让编辑器显示一个默认空脚本、保存时把真实正文覆盖掉
@@ -1893,6 +2025,16 @@
         renderFiles();
         renderEnv();
         renderNextHints();
+        /* #379：模板区只在「新建」出现 —— 编辑既有能力时不该被模板覆盖；
+           新建时加载一次模板列表并回到「从空白开始」。 */
+        const templateWrap = $("cap-template-wrap");
+        if (templateWrap) templateWrap.classList.toggle("hidden", mode !== "create");
+        if (mode === "create") {
+          await loadTemplateOptions();
+          $("cap-template").value = "";
+          TEMPLATE_AUTOFILL = { name: "", displayName: "" };
+          applyTemplate("");
+        }
         $("cap-submit").textContent = mode === "create" ? t("caps.form.submit", "创建") : t("caps.form.save", "保存");
         openModal($("cap-modal"));
         nameInput.focus();
@@ -2418,6 +2560,7 @@
           renderEnv();
         });
         $("cap-submit").addEventListener("click", submitEditor);
+        $("cap-template").addEventListener("change", (e) => applyTemplate(e.target.value));
         $("cap-cancel").addEventListener("click", closeEditor);
         $("cap-modal-close").addEventListener("click", closeEditor);
         $("cap-modal").addEventListener("click", (e) => {

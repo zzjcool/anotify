@@ -812,6 +812,13 @@ docs:
     events: POST /v1/events
     node: Protocolo de nodo
     endpoints: Todos los endpoints
+    design: "Notas de diseño"
+  design:
+    title: "Notas de diseño: por qué la interfaz muestra esto"
+    lede: "Estas notas son para quien mantiene o depura. La consola deja en la primera pantalla solo lo que necesitas para decidir; el razonamiento y los límites están aquí."
+    sources: "Las fuentes producen eventos y las capacidades destino reciben parámetros. El grafo de destinos de una fuente refleja las referencias de spec.targets: no demuestra una ejecución correcta. Para saber si se recibió, mira la lista de eventos; para saber si se ejecutó, el detalle de la tarea. El deliveryId se deduplica 30 días por defecto y el mismo id solo significa «ya recibido»."
+    playbooks: "playbook.yaml es el único manifiesto raíz y todos los archivos de capacidades y fuentes a los que hace referencia deben estar dentro del paquete. La página de playbooks solo guarda el paquete: instalar es un POST …/install aparte y desplegar es un POST …/deploy de la capacidad."
+    nodes: "La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial: no es la regla de cero escrituras de paquete de Playbook. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. En pantalla, configRevision y appliedRevision vienen de un GET real: si falta el campo se muestra como desconocido y no se supone un valor por defecto."
   endpoints:
     title: Todos los endpoints
     intro: Esta lista se genera en tiempo de compilación desde api/openapi.yaml, así que no puede desviarse de las rutas reales. Los endpoints heredados de notificaciones están excluidos.
@@ -1437,6 +1444,13 @@ caps:
     version_hint: 'Vacío = direccionamiento por contenido (asigna/reutiliza); una versión explícita es inmutable.'
     workdir: 'Directorio de trabajo'
     workdir_hint: 'Puede incluir $(vars.X) o $(params.X); vacío = un directorio por tarea.'
+    template: "Plantilla"
+    template_blank: "Empezar en blanco"
+    template_failed: "No se pudieron cargar las plantillas: {msg}"
+    template_fields: "Parámetros de la plantilla (se pasan en ejecución como variables ANOTIFY_PARAM_*)"
+    template_hint: "Elige una plantilla para rellenar el contrato de parámetros, los destinos y el esqueleto del script; también puedes empezar en blanco."
+    template_none: "Esta plantilla no lleva parámetros."
+    template_required: "obligatorio"
   meta:
     installed_from: 'Origen de instalación'
     next: 'Destinos'
@@ -1617,7 +1631,7 @@ nodes:
   v4:
     copy: "Copiar"
     title: "Nodos y configuración"
-    subtitle: "Identidad del clúster · declarado ∩ permitido · configuración real"
+    subtitle: "Registrar nodos · estado en línea y configuración · editar por nodo"
     register: "Registrar nodo"
     name: "Nombre único del clúster"
     create: "Crear y emitir token de identidad"
@@ -1671,7 +1685,7 @@ nodes:
     ns_config: "Configuración vars del namespace (sin limits)"
     ns_hint: "Se resuelve para la siguiente tarea del namespace; nunca entra en applied de nodo."
     retention: "Retención del sistema (administrador)"
-    retention_hint: "Los valores actuales vienen de GET, nunca de supuestos. Segundos; 0 es permanente. Valores iniciales: registros/artefactos 604800, eventos/tareas terminales 2592000. Tareas activas y referencias protegidas; workDir nunca se elimina."
+    retention_hint: "Segundos; 0 significa conservar siempre."
     admin_only: "Solo administradores pueden leer o editar retención del sistema."
     drain: "Drenar nodo"
     drain_confirm: "¿Drenar {name}? Detiene nuevas tareas; la ocupación existente espera recuperación real."
@@ -1694,7 +1708,7 @@ sources:
     reload: "Recargar recurso actual"
     detail: "Detalles de la fuente"
     back: "Volver a fuentes"
-    intro: "Las fuentes producen eventos; las capacidades reciben parámetros. El gráfico de configuración no demuestra una ejecución correcta."
+    intro: "Las fuentes producen eventos; las capacidades reciben parámetros."
     loading: "Cargando…"
     empty: "No hay fuentes. Una entrada sin destinos es válida."
     name: "Nombre del recurso · metadata.name"
@@ -1898,6 +1912,7 @@ sources:
     daily3: Diario 3:00
     weekdays9: Laborables 9:00
     every15: Cada 15 min
+    label: "Ajustes cron"
   flow:
     title: Flujo descendente (vista previa)
     nodes: nodos
@@ -2124,7 +2139,7 @@ pb:
   v4:
     subtitle: "Paquetes autocontenidos: guardar, renderizar, simular e instalar. Sin despliegue automático."
     import: "Importar paquete"
-    package_hint: "playbook.yaml es el único manifiesto raíz. Incluya todos los archivos referenciados. Guardar no instala."
+    package_hint: "Todos los archivos de capacidades y fuentes referenciados deben estar dentro del paquete."
     input_kind: "Entrada del paquete"
     files: "Archivos originales"
     oci: "Origen OCI"
