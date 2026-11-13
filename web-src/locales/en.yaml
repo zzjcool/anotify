@@ -210,6 +210,12 @@ index:
       date: '{m}/{d} {w}'
     foot: '{n} events in the last 30 days · active {d}/30 days'
     foot_na: Stats unavailable
+    summary: 'Last 7 days: {n} events · busiest {d}'
+    summary_none: No events in the last 7 days
+    day_label: '{m}/{d}'
+    expand: Show the full heatmap
+    collapse: Collapse the heatmap
+    scroll_hint: Swipe horizontally to see all 53 weeks
   steps:
     title: "From zero to your first event"
     subtitle: "Get all three in place and a node can emit the first event."
@@ -299,6 +305,8 @@ graph:
   silk_meta_failed: '{n} failed'
   silk_meta_done: '{n} tasks done'
   silk_clock: 'replay {t}'
+  compact_more: '{n} more →'
+  compact_collapse: Collapse to 3 steps
 
 message:
   title: Notification detail
