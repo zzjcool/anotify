@@ -2063,6 +2063,7 @@ pb:
     slug_taken: "同名パッケージがあります。詳細で PUT 更新してください（入力は保持）。"
     namespace: "名前空間"
     loading: "読み込み中…"
+    load_failed: "読み込みに失敗しました"
     not_ready: "未準備（診断を確認）"
     not_installed: "インストール済みリソースはありません。保存済みテンプレートはインストールではありません。"
     unapplied_count: "未適用の差分 {n} 件"

@@ -2065,6 +2065,7 @@ pb:
     slug_taken: "包名已存在：打开详情，用 PUT 整体更新模板（保留当前输入）。"
     namespace: "命名空间"
     loading: "正在读取…"
+    load_failed: "载入失败"
     not_ready: "未就绪（查看体检）"
     not_installed: "尚无安装产生的资源。模板不代表已安装。"
     unapplied_count: "{n} 项差异未生效"
