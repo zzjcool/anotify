@@ -182,6 +182,10 @@ function buildCases(dark, light) {
 		bg: (t) => t.solid("--bg"),
 		min: 1.25,
 	});
+	/* 复审 N1：为什么这里取 1.15 而不是评审的"能分出块"经验值 1.3 ——
+	 * 这一对（卡片 vs 侧栏）只差 --bg-raise 一档，可用性由"卡片填充差 + 1px 描边
+	 * + --shadow-1"三条腿共同承担；单看填充比率会低估层次（亮色侧栏同样如此）。
+	 * 取 1.15 = 在暗色近黑区仍能肉眼分辨的下限，同时不让 token 为了刷比率而失真。 */
 	cases.push({
 		id: "D370-2",
 		theme: "dark",
@@ -197,6 +201,34 @@ function buildCases(dark, light) {
 		fg: (t) => t.solid("--surface-2"),
 		bg: (t) => t.solid("--surface-1"),
 		min: 1.045,
+	});
+
+	/* 复审 N2：容器层次门禁原先只覆盖卡片/表头，浮层与"侧栏 vs 页底"这两对
+	 * 同样是层次的一部分（弹层掉进卡片里、侧栏和页底糊在一起，都是同一类病）。
+	 * 先量再定阈值：这里卡的是"不低于本 PR 落地值"，属回归下限，不是设计目标。 */
+	cases.push({
+		id: "D370-4",
+		theme: "dark",
+		label: "浮层 --panel-overlay / 卡片 --surface-1 ≥ 1.04（回归下限）",
+		fg: (t) => t.solid("--panel-overlay"),
+		bg: (t) => t.solid("--surface-1"),
+		min: 1.04,
+	});
+	cases.push({
+		id: "D370-5",
+		theme: "dark",
+		label: "弹层 --panel-modal / 页底 --bg ≥ 1.03（回归下限）",
+		fg: (t) => t.solid("--panel-modal"),
+		bg: (t) => t.solid("--bg"),
+		min: 1.03,
+	});
+	cases.push({
+		id: "D370-6",
+		theme: "dark",
+		label: "侧栏 --bg-raise / 页底 --bg ≥ 1.02（回归下限）",
+		fg: (t) => t.solid("--bg-raise"),
+		bg: (t) => t.solid("--bg"),
+		min: 1.02,
 	});
 
 	// 亮色：白卡 + 1px 边框必须可辨（≥1.3），填充差做兜底（≥1.08）
