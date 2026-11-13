@@ -289,6 +289,8 @@ message:
     env_hint: "Only variable names and sources used by this task; no host values or full passthrough allowlist."
     env_empty: "No retained environment diagnostics."
     result: "Result summary / error / artifacts"
+    error_message: 'Message'
+    error_reason: 'Reason'
     attempts: "Retained execution attempt facts"
     attempts_empty: "No retained execution attempt facts."
     logs: "Task logs"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "Reported capability deployments"
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
 
+    per_cap_default: 'default'
 sources:
   v4:
     new: "New source"
@@ -1900,6 +1903,7 @@ trace:
     tasks: "Tasks / attempts / waiting diagnostics"
     events: "Event facts"
     pruned: "Pruning reasons"
+    pruned_link: 'See pruned detail'
     empty: "This trace dispatched no tasks."
     no_pruned: "No retained pruning facts."
     missing: "URL is missing traceUID."
@@ -2230,6 +2234,7 @@ uxaudit:
       ctx_namespace: 'Context namespace'
       no_param: 'The link has no node name (missing ?id=). Open the detail from the node list.'
       no_param_title: 'No node specified'
+      none: 'None'
     sources:
       dedup_summary: 'Delivery deduplication and its window (deliveryId)'
       group_basic: 'Basics'
@@ -2313,3 +2318,15 @@ uxaudit:
     event_id: 'Event ID'
     drift: 'Config not applied yet: config {config}, node applied {applied}'
     drift_short: 'Awaiting node apply'
+    field: 'Field'
+    type: 'Type'
+    required: 'Required'
+    description: 'Description'
+    yes: 'Yes'
+    no: 'No'
+    none: 'None'
+    params: 'Parameters'
+    total: 'Total'
+    per_cap: 'Per capability'
+    edit_raw: 'Edit raw JSON'
+    edit_raw_hint: 'saved with the current CAS token'

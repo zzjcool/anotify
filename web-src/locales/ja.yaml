@@ -289,6 +289,8 @@ message:
     env_hint: "このタスクが使用した変数の名前と取得元のみ。ホスト値や透過の許可リスト全体は読み取りません。"
     env_empty: "保持されている環境診断はありません。"
     result: "結果概要 / エラー / 成果物"
+    error_message: 'メッセージ'
+    error_reason: '理由'
     attempts: "保持されている実行試行記録"
     attempts_empty: "保持されている実行試行記録はありません。"
     logs: "タスクログ"
@@ -1610,6 +1612,7 @@ nodes:
     artifacts: "能力デプロイの実際の状態"
     batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
 
+    per_cap_default: '既定'
 sources:
   v4:
     new: "ソースを作成"
@@ -1900,6 +1903,7 @@ trace:
     tasks: "タスク / 試行 / 待機診断"
     events: "イベントの記録"
     pruned: "枝刈りの理由"
+    pruned_link: '剪枝の詳細を見る'
     empty: "このトレースから送出されたタスクはありません。"
     no_pruned: "保持されている枝刈り記録はありません。"
     missing: "URL に traceUID がありません。"
@@ -2230,6 +2234,7 @@ uxaudit:
       ctx_namespace: 'コンテキスト名前空間'
       no_param: 'リンクにノード名がありません（?id= が無い）。ノード一覧から詳細を開いてください。'
       no_param_title: 'ノードが指定されていません'
+      none: 'なし'
     sources:
       dedup_summary: '配信の重複排除とその期間（deliveryId）'
       group_basic: '基本'
@@ -2313,3 +2318,15 @@ uxaudit:
     event_id: 'イベント ID'
     drift: '設定が未反映です：設定 {config}、ノード適用済み {applied}'
     drift_short: 'ノードの適用待ち'
+    field: 'フィールド'
+    type: '型'
+    required: '必須'
+    description: '説明'
+    yes: 'はい'
+    no: 'いいえ'
+    none: 'なし'
+    params: 'パラメータ'
+    total: '合計'
+    per_cap: '能力ごと'
+    edit_raw: '元の JSON を編集'
+    edit_raw_hint: '現在の CAS トークンで保存'

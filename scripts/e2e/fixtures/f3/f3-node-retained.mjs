@@ -63,6 +63,8 @@ export async function nodeRetained(d,mode){
   }
   if (mode === 'config') {
     await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();
+    // #375：三块 JSON textarea 默认收在「编辑原始 JSON」折叠里；要 .fill() 先展开。
+    await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
     assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(1).innerText(), '/local-src');
     assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
     assert.equal(await page.locator('#node-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');

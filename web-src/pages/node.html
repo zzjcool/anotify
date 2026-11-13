@@ -70,6 +70,10 @@
   .devf-k { font-family: var(--font-mono); font-size: 11px; line-height: 1.4; color: var(--faint); }
   .devf-v { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .devf-foot { display: flex; align-items: center; gap: 8px; }
+  /* #375：配置摘要（结构化） */
+  .nd-sum { display: grid; gap: 6px; margin-top: 10px; min-width: 0; }
+  .nd-sum-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .nd-sum-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   /* 开发者旁白默认收起（同 nodes.html 的 ND-3）：原文一字不删 */
   .nd-more { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
   .nd-more > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
@@ -104,9 +108,17 @@
     <div class="c2-grid nd-grid-top">
       <section id="node-config" class="card card-pad">
         <div class="card-title">{{t "nodes.v4.config"}}</div><p class="c2-note">{{t "nodes.v4.batch_hint"}}</p><div id="node-revisions" class="c2-note"></div>
-        <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
-        <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-        <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
+        <!-- #375：首屏只给结构化摘要（授权 / 本机变量 / 限制）；三块 JSON textarea
+             收进「编辑原始 JSON」折叠 —— 节点配置仍可编辑，锚点 #node-namespaces/#node-vars/#node-limits 不变。 -->
+        <div id="node-config-summary" class="c2-stack"></div>
+        <details id="node-config-advanced" class="devf">
+          <summary><span>{{t "uxaudit.dev.edit_raw"}}</span><span class="devf-hint">{{t "uxaudit.dev.edit_raw_hint"}}</span></summary>
+          <div class="devf-body">
+            <div class="field"><label for="node-namespaces" class="field-label">{{t "nodes.v4.authorized"}} (JSON)</label><textarea id="node-namespaces" class="input" spellcheck="false" disabled></textarea></div>
+            <div class="field"><label for="node-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="node-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
+            <div class="field"><label for="node-limits" class="field-label">{{t "nodes.v4.limits"}} (JSON)</label><textarea id="node-limits" class="input c2-json" spellcheck="false" disabled></textarea></div>
+          </div>
+        </details>
         <div class="c2-actions"><button id="node-config-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="node-config-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div><div id="node-config-state" class="c2-state" role="status"></div>
       </section>
       <section class="card card-pad c2-stack">
@@ -179,7 +191,52 @@
     devConfig = [['resourceVersion', value.metadata.resourceVersion], ['configRevision', value.configRevision], ['appliedRevision', value.appliedRevision]];
     $('node-revisions').textContent = x('config_rev') + ' ' + revText(value.configRevision) + ' · ' + x('applied_rev') + ' ' + revText(value.appliedRevision);
     renderDev();
+    renderConfigSummary();
   }
+  /* ---------- #375：配置摘要（结构化）---------- */
+  function summarySource() {
+    // 编辑器里的草稿优先（改了一半也看得见自己的值）；解析失败就退回已加载的配置。
+    try {
+      const draftObj = {};
+      for (const key of configInputs) draftObj[key] = JSON.parse($('node-' + key).value);
+      return draftObj;
+    } catch (_) { return config || null; }
+  }
+  function renderConfigSummary() {
+    const host = $('node-config-summary'); if (!host) return;
+    const src = summarySource();
+    host.replaceChildren();
+    if (!src) { host.append(make('div', 'c2-note', t('loading'))); return; }
+    const ns = make('div', 'nd-sum');
+    ns.append(make('div', 'nd-sum-k', t('authorized')));
+    const chips = make('div', 'nd-sum-chips');
+    const list = Array.isArray(src.namespaces) ? src.namespaces : [];
+    if (!list.length) chips.append(make('span', 'c2-note', t('none')));
+    else for (const name of list) chips.append(make('span', 'badge badge-neutral', String(name)));
+    ns.append(chips);
+    const vars = make('div', 'nd-sum');
+    const pairs = src.vars && typeof src.vars === 'object' && !Array.isArray(src.vars) ? Object.entries(src.vars) : [];
+    vars.append(make('div', 'nd-sum-k', t('vars') + ' · ' + pairs.length));
+    if (pairs.length) {
+      const dl = make('dl', 'nd-kv');
+      for (const [key, value] of pairs) dl.append(pair(key, String(value), key));
+      vars.append(dl);
+    } else vars.append(make('p', 'c2-note', t('none')));
+    const lim = make('div', 'nd-sum'), limits = src.limits || {};
+    const total = limits.total == null ? x('unknown') : String(limits.total);
+    /* 每能力上限是**逐能力**的（{*: 2, fixer: 1}）：只能逐项显示。原先把键名个数当上限，
+       2 个键就显示成「每能力 2」，把 fixer 真实的 1 说错。 */
+    const perCapPairs = limits.perCapability && typeof limits.perCapability === 'object' && !Array.isArray(limits.perCapability)
+      ? Object.entries(limits.perCapability) : [];
+    const perCapText = perCapPairs.length
+      ? perCapPairs.map(([key, value]) => (key === '*' ? t('per_cap_default') : key) + ' ' + (value == null ? x('unknown') : String(value))).join(' · ')
+      : x('none');
+    lim.append(make('div', 'nd-sum-k', t('limits')),
+      make('p', 'c2-note', dev('total') + ' ' + total + ' · ' + dev('per_cap') + ' ' + perCapText));
+    host.append(ns, vars, lim);
+  }
+  /* 草稿改动实时反映到摘要（解析失败时保留上一次可解析的摘要） */
+  for (const key of configInputs) $('node-' + key).addEventListener('input', () => renderConfigSummary());
   const table = (id, values, source, valueText = v => String(v)) => {
     const rows = Object.entries(values || {}); $(id).replaceChildren();
     if (!rows.length) { $(id).appendChild(make('div', 'c2-note', t('none'))); return; }
