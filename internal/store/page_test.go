@@ -384,10 +384,9 @@ func TestListUsersKeysPasskeysSessionsPage(t *testing.T) {
 		pageTestSetCreatedAt(t, db, "users", id, 2000)
 		userIDs = append(userIDs, id)
 	}
-	// created_at 全同 → 期望顺序就是 id ASC（原 ListUsersWithStats 只按 created_at 排，
-	// 同秒行的相对顺序由 SQLite 决定；分页版显式补 id 破平局，这是本用例的验收点）。
+	// created_at 全同 → 期望顺序是**插入序**（rowid）：id 是 crypto/rand，拿它破平局
+	// 会让「首注册用户排最前」变成掷硬币（#377 复审：TestAdmin_ListUsers 42.5% 随机红）。
 	wantUsers := append([]string(nil), userIDs...)
-	sort.Strings(wantUsers)
 	var gotUsers []string
 	afterAt, afterID := int64(0), ""
 	for page := 0; ; page++ {
