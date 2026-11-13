@@ -2461,6 +2461,10 @@
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
+        /* #385：横幅在滚动体最顶部，而向导第 3 步 / 编辑长表单常常是滚到一半才点「创建」。
+           不回到顶，服务端拒绝（409/400）就变成「点了没反应」。 */
+        const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
+        if (body) body.scrollTop = 0;
       }
       function hideBanner() {
         const banner = $("cap-banner");
