@@ -294,10 +294,7 @@
         background: var(--warn-soft);
         color: var(--warn);
       }
-      .rc-msg.is-error {
-        background: var(--error-soft);
-        color: var(--error);
-      }
+      /* 错误态颜色在 ui.css 的「状态语义修饰 is-*」一节（#372）。 */
 
       /* WebSocket 命令块 */
       .rc-code {
@@ -1043,7 +1040,7 @@
             }),
           );
           d.tags.forEach((tag) => {
-            const chip = el("span", { class: "tag-chip", text: tag });
+            const chip = el("span", { class: "badge badge-accent", text: tag });
             const x = el("span", { class: "tag-x", text: "×" });
             x.addEventListener("click", () =>
               updateDevice(d, { tags: d.tags.filter((v) => v !== tag) }),
