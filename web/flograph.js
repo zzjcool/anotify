@@ -1559,7 +1559,8 @@
 		 *
 		 * W 是**上限**：列数（同层兄弟）多的时候按容器实宽等比收窄（见 computeGeo），
 		 * 保证 contentW ≤ 容器宽 —— 手机上永远不会出现「要横着拖才看得全」。 */
-		mobile: { W: 168, H: 54, GX: 18, GY: 22, PAD: 14, MINW: 124, SIDE: 14, LANE: 16 },
+		/* 手机横向：卡片 148×58（桌面 238×78），GX 26 给「一条弧 + 箭头」留位。 */
+		mobile: { W: 148, H: 58, GX: 26, GY: 20, TRIGW: 150, PAD: 14, MINW: 124, SIDE: 14, LANE: 16 },
 	};
 	// 每个实例一份 defs id 前缀：同一个页面里可能同时挂多张 silk 图
 	// （事件流里展开多条链），固定 id 会让箭头/渐变互相串台。
@@ -1833,7 +1834,15 @@
 		 * 读**视口**不读容器宽：伪全屏下容器就是视口，且 relayout() 会在伪全屏那段
 		 * 初始化之前跑一次（挂载期）—— 读 class/媒体查询不会撞 TDZ。 */
 		const VERTICAL_MQ = "(max-width: 819.98px)";
+		/* 用户裁决（第二轮，覆盖上一轮）：
+		 *   「手机上这个应该和电脑上一样，横向的，就是大小，线粗和现在一样细一点」
+		 * 所以**纵向布局不再启用** —— 手机上仍是 depth→x 的横向排布，
+		 * 只是换成窄几何（SILK_CFG.mobile）+ 细线。computeGeoVertical 暂时保留
+		 * 但不再被调用（后续清理单独做，避免这次改动面过大）。 */
 		function isVertical() {
+			return false;
+		}
+		function isNarrow() {
 			return !!(window.matchMedia && window.matchMedia(VERTICAL_MQ).matches);
 		}
 
@@ -2499,12 +2508,13 @@
 		 */
 		function computeGeo(inset, vertical) {
 			if (vertical) return computeGeoVertical(inset);
-			const P = SILK_CFG.PAD;
-			const W = SILK_CFG.W;
-			const H = SILK_CFG.H;
-			const GX = SILK_CFG.GX;
-			const GY = SILK_CFG.GY;
-			const TRIGW = SILK_CFG.TRIGW;
+			const nm = isNarrow() ? SILK_CFG.mobile : SILK_CFG;
+			const P = nm.PAD;
+			const W = nm.W;
+			const H = nm.H;
+			const GX = nm.GX;
+			const GY = nm.GY;
+			const TRIGW = nm.TRIGW;
 			const TOP = inset;
 			// 触发器列只在**真有触发器节点**时占位。
 			//
@@ -2536,7 +2546,16 @@
 				trigger.y = TOP + trigRow * (H + GY);
 			}
 			const contentW = P * 2 + trigCol + (G.maxDepth + 1) * W + G.maxDepth * GX;
-			const contentH = TOP * 2 + (G.maxRow + 1) * H + G.maxRow * GY + 14;
+			/* 顶部弧的 inset 只需要**上方**的空间。桌面从 #silk 起就一直按
+			 * 「上下各留一份 TOP」写（TOP*2），在 78px 卡片下不算显眼；窄档卡片
+			 * 58 高、TOP 又有 60~190（回边分道），下半边就空出一大块，看起来像
+			 * 「图没画完」。窄档改成只留上方 TOP，下方回到基础内边距 14。
+			 * 桌面保持原式，一个像素都不动。 */
+			const contentH =
+				(isNarrow() ? TOP : TOP * 2) +
+				(G.maxRow + 1) * H +
+				G.maxRow * GY +
+				(isNarrow() ? 44 : 14); /* 窄档底部 30px 给「← 可横向拖动 →」，别压在卡片上 */
 			return {
 				vertical: false,
 				P: P,
@@ -2719,6 +2738,13 @@
 			 * **页面**滚动，卡内不再套一层纵向滚动（嵌套滚动会吃掉滚轮/手势，
 			 * 也让“这是一张图”变成“一个滚动框”）。全屏态例外：那里本来就该
 			 * 用内部滚动看超大图（没有页面可滚）。 */
+			/* 窄档横向（用户裁决：手机上也要横向）：舞台只包住内容，
+			 * 下面不留一大片空白 —— 一张 58px 高的卡片配 327px 的舞台，
+			 * 看起来像"图没加载完"。 */
+			if (isNarrow() && !container.classList.contains("is-fullscreen")) {
+				if (cur !== need + "px") container.style.setProperty("--silk-h", need + "px");
+				return;
+			}
 			if (geo.vertical && !container.classList.contains("is-fullscreen")) {
 				if (cur !== need + "px") container.style.setProperty("--silk-h", need + "px");
 				return;
@@ -2824,6 +2850,9 @@
 
 		/** 箭头 marker 跟着轴向收小：纵向档卡片小、线也细（stroke-width 1.15）。 */
 		function applyEdgeScale(vertical) {
+			/* 窄档的卡片尺寸/字号/线宽由 CSS 的 .is-narrow 段给（原先叫
+			 * .is-vertical，纵向布局退役后改名，但小卡片那套数值继续生效）。 */
+			container.classList.toggle("is-narrow", isNarrow());
 			arrowMarker.setAttribute("markerWidth", vertical ? "6" : "5.2");
 			arrowMarker.setAttribute("markerHeight", vertical ? "6" : "5.2");
 			arrowMarker.setAttribute("refX", vertical ? "6.6" : "7");
@@ -2870,23 +2899,29 @@
 			 *   横向 = 顶部弧要占的 TOP（有回边先给 88，没有 34）；
 			 *   纵向 = 侧弧要占的侧边内距（无回边就是基础内边距）。
 			 * 路由完再按“真的占了几道”收敛，最多迭代 3 次。 */
+			const narrowHz = isNarrow();
 			let inset = vertical
 				? SILK_CFG.mobile.SIDE
 				: edgeItems.some((e) => e.loopback)
-					? 88
-					: 34;
+					? (narrowHz ? 62 : 88)
+					: (narrowHz ? 26 : 34);
 			let routes = null;
 			for (let iter = 0; iter < 3; iter++) {
 				geo = computeGeo(inset, vertical);
 				const res = routeAll(geo);
 				routes = res.routes;
+				/* 窄档（手机横向）把回边跑道的进深压紧：卡片只有 58 高，
+				 * 桌面那套 88 + 20/道 会顶出 190px 的空白，卡片被挤到画面最下沿。
+				 * 62 + 14/道 + 上限 104 —— 弧仍分得开，但不喧宾夺主。 */
 				const next = vertical
 					? res.lanes === 0
 						? SILK_CFG.mobile.SIDE
 						: SILK_CFG.mobile.SIDE + res.lanes * SILK_CFG.mobile.LANE
-					: res.lanes === 0
-						? 34
-						: 88 + (res.lanes - 1) * 20;
+					: narrowHz
+						? Math.min(104, res.lanes === 0 ? 26 : 62 + (res.lanes - 1) * 14)
+						: res.lanes === 0
+							? 34
+							: 88 + (res.lanes - 1) * 20;
 				if (next === inset) break;
 				inset = next;
 			}
