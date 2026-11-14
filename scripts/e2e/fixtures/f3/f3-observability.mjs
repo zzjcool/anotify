@@ -57,16 +57,17 @@ export async function observability(d, mode) {
     assert.equal(foreign.status, 400);
     assert.match(String(foreign.body.message), /continue token/);
     await page.locator('#ev-list details').first().locator('summary').click();
-    if (d.mock) {
-      // mock 种子的 ev() 带 type(Normal/Warning) 与 capability.emit 事件类型。
-      assert.match(await page.locator('#ev-list').innerText(), /Normal|Warning/);
-    } else {
-      // 真实事件的严重度字段 `spec.type` **不存在**（events.yaml 明写刻意不带
-      // Normal/Warning）：能断言的是条目自己的真实 reason。
-      const opened = (await calls()).find(c => c.url.includes('/console/events'))?.response?.items?.[0];
-      assert.ok(opened?.spec?.reason, '真实事件必须带 spec.reason');
-      assert.match(await page.locator('#ev-list').innerText(), new RegExp(opened.spec.reason));
-    }
+    /* 严重度字段 `spec.type` 在 v4 **不存在**（events.yaml 刻意不带 Normal/Warning）。
+     * 之前 mock 硬塞了它，把「真实数据里第三个 chip 是空药丸」这个 bug 藏住了；
+     * mock 已对齐真实 wire，这里两种模式都断言**真实字段** reason。 */
+    const opened = (await calls()).find(c => c.url.includes('/console/events'))?.response?.items?.[0];
+    assert.ok(opened?.spec?.reason, '事件必须带 spec.reason');
+    assert.match(await page.locator('#ev-list').innerText(), new RegExp(opened.spec.reason));
+    /* 空 chip 守卫：v4 没有 severity，页面不许再渲染空的 .ev-chip/.ix-chip——
+     * 空 chip 被 44px 最小触控尺寸撑成空圆圈（用户实拍的那张图）。 */
+    const emptyChips = await page.locator('#ev-list .ev-chip').evaluateAll((els) =>
+      els.filter((e) => !(e.textContent || '').trim()).length);
+    assert.equal(emptyChips, 0, '事件行不得有空的 chip（v4 没有 severity 字段）');
     // #374：deliveryId 是投递层内部标识，收进行内「明细」折叠 —— 断言改读 textContent（含折叠内容）
     assert.match(await page.locator('#ev-list').textContent(), /deliveryId/);
     check('Actual source+trace filter reset and namespace cursor isolation/empty-to-nonempty');

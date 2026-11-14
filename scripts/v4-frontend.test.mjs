@@ -1432,7 +1432,9 @@ test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console �
 	);
 	assert.equal(envelope.name, "ev-1");
 	assert.equal(envelope.reason, "Ingested");
-	assert.equal(envelope.type, "Normal");
+	/* v4 的 EventSpec 没有 severity（`spec.type`）：model 不该再把它当字段透传
+	 * （透传的后果是页面渲染出空 chip，见 #407）。 */
+	assert.equal("type" in envelope, false);
 	assert.equal(envelope.involvedObject.kind, "Source");
 	assert.equal(envelope.deliveryId, "d-1");
 	assert.equal(envelope.traceUID, "tr-1");
@@ -2977,10 +2979,10 @@ test("F2b2 W6 EventList: opaque pagination bound to namespace/source/traceId, UI
 
 test("F2b2 Event model: envelope identity/severity/business type; never flat fallback", () => {
   const { A } = loadAnotify();
-  const m = plain(A.model.event({ metadata: { uid: 'u', name: 'e', namespace: 'default', creationTimestamp: 'now' }, spec: { type: 'Warning', eventType: 'build.failed', deliveryId: 'business-id' }, status: { pruned: { reason: 'param_missing', detail: 'required repo' } } }));
+  const m = plain(A.model.event({ metadata: { uid: 'u', name: 'e', namespace: 'default', creationTimestamp: 'now' }, spec: { reason: 'Pruned', eventType: 'build.failed', deliveryId: 'business-id' }, status: { pruned: { reason: 'param_missing', detail: 'required repo' } } }));
   assert.equal(m.uid, 'u');
   assert.equal(m.creationTimestamp, 'now');
-  assert.equal(m.type, 'Warning');
+  assert.equal(m.reason, 'Pruned');
   assert.equal(m.eventType, 'build.failed');
   assert.equal(m.deliveryId, 'business-id');
   assert.equal(A.model.event({ type: 'Normal', eventType: 'flat', deliveryId: 'old' }).deliveryId, null);
