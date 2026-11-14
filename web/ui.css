@@ -5944,6 +5944,8 @@ html.theme-switching *::after {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		word-break: break-word;
+	}
+}
 
 /* — epic-369-mobile — 首屏优先级 · 安全区（#385；接在上面 #384 段之后）
  *
@@ -6017,8 +6019,13 @@ body > header {
 	.stat-value {
 		font-size: 24px;
 	}
-	.stat-spark,
+	/* 脚注与 label 语义重复（「事件总数 / 累计」）→ 手机档收掉。
+	 * spark 不一样：它是**真实日趋势**，不是装饰。用户裁决「不能为了手机牺牲
+	 * 视觉效果」——所以宁可矮一点（32→22px），也不整条 display:none。 */
 	.stat-foot {
 		display: none;
+	}
+	.stat-spark {
+		height: 22px;
 	}
 }
