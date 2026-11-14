@@ -1662,6 +1662,29 @@
 		return silkCubic(x1, y1, x1 + k, y1, x2 - k, y2, x2, y2, "forward");
 	}
 
+	/**
+	 * 窄档横向的前向边：**右边缘出线 → 左边缘入线**，一条短 S 曲线。
+	 *
+	 * 为什么不用 silkBezierRoute：那条是给桌面 92px 列间距写的（k 最少 38），
+	 * 手机列间距只有 26px，控制点会越过目标、绕出一圈大弧 —— 也就是用户看到的
+	 * 「连线怎么都从上面绕过去」。这里 k 跟着实际间隙走（上限 22），线在两张卡
+	 * 之间的空隙里就走完，箭头直接指进下一张卡的左边。
+	 */
+	function silkHFlow(from, to) {
+		const x1 = from.x + from.w;
+		const y1 = from.y + from.h / 2;
+		/* 终点比卡片左边再往外 2.5px：卡片 z-index 高于 svg，贴边画时箭头会被吃掉一半 */
+		const x2 = to.x - 2.5;
+		const y2 = to.y + to.h / 2;
+		const gap = Math.max(6, x2 - x1);
+		const k = Math.max(4, Math.min(gap * 0.5, 22));
+		if (Math.abs(y2 - y1) < 3) {
+			/* 同一行：微微起伏，避免和相邻边完全重合 */
+			return silkCubic(x1, y1, x1 + k, y1 - k * 0.3, x2 - k, y2 + k * 0.3, x2, y2, "forward");
+		}
+		return silkCubic(x1, y1, x1 + k, y1, x2 - k, y2, x2, y2, "forward");
+	}
+
 	/** 顶部弧（契约 §5.3）：回边 / 跨两行以上 / 同行后退。lane 决定弧高。 */
 	function silkTopArc(from, to, lane) {
 		const x1 = from.x + from.w / 2;
@@ -2681,6 +2704,9 @@
 				} else if (e.loopback) {
 					cands.push(silkTopArc(from, to, lane));
 				} else {
+					/* 窄档（手机横向）：先试「右侧出 → 左侧入」的短曲线，
+					 * 让连线在两张卡之间走完，而不是绕到卡片上方。 */
+					if (isNarrow() && rowDiff <= 1 && x2 - x1 >= 8) cands.push(silkHFlow(from, to));
 					if (forward) cands.push(silkBezierRoute(x1, y1, x2, y2));
 					if (rowDiff === 1) cands.push(silkBandRoute(from, to, g.GY));
 					// 同层跨列：优先走顶部弧（lab 的形态），长横带只做
