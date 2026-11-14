@@ -523,6 +523,11 @@
      桌面（>=640）保留完整清单：那里一屏装得下，且它是「源→能力→节点」的入口。
      收掉的是重复的清单，不是信息：#fe-done 那行仍指向「去源页面点立即运行」。 */
   @media (max-width: 639px) {
+    /* 三步齐了：副标题与收官行重复 → 收掉副标题。只在窄档（≤639）生效，
+       桌面保留副标题（版面与 #381 交付时一致）。 */
+    #first-event[data-complete="1"] #fe-sub {
+      display: none;
+    }
     #first-event[data-complete="1"] .fe-steps {
       display: none;
     }
@@ -1260,11 +1265,9 @@
       });
       const doneLine = document.getElementById("fe-done");
       if (doneLine) doneLine.hidden = !allDone;
-      // 三步齐了以后，卡片副标题（"三步都齐了，节点上就能发出第一条事件"）与
-      // 收官行（"三步都齐了 —— 去源页面点「立即运行」…"）说的是同一件事，
-      // 同屏出现就是重复。收官行带动作，副标题不带 —— 收掉副标题。
-      const subLine = document.getElementById("fe-sub");
-      if (subLine) subLine.hidden = allDone;
+      // 三步齐了以后副标题与收官行说的是同一件事，手机档收掉副标题
+      // （选择器见页面 <style> 里 [data-complete="1"] #fe-sub；桌面保持原样，
+      //  否则 1440 下首屏高度会凭空少 20px）。
       // 三轮状态算完才置的「渲染已落地」标记：模板初始态是 todo，读得太早会把
       // 「还没算」当成「还没做」。e2e 靠它等待，不靠 sleep。
       // #385：data-complete 是手机档「收成一行」的开关（CSS 在页面 <style> 里）。
