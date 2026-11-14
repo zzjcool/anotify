@@ -5746,8 +5746,8 @@ html.theme-switching *::after {
  * 手机档不再折叠/摘要/「还有 N →」，而是画**同一张完整图**：节点、连线、箭头、
  * 流向一个不少，只把几何缩小并把 depth 轴从 x 换成 y（纵向流向）。实现分两半：
  *   · 几何/routing → `web/flograph.js` 的 `computeGeoVertical` + `silkVFlow` /
- *     `silkSideArc`（JS 在 <820 时给容器挂 `.is-vertical`）；
- *   · 卡片内部的字号/图标/圆角/线宽 → 下面 §2 的 `.is-vertical` 段。
+ *     `silkSideArc`（JS 在 <820 时给容器挂 `.is-narrow`）；
+ *   · 卡片内部的字号/图标/圆角/线宽 → 下面 §2 的 `.is-narrow` 段。
  * 舞台高度也改成「内容多高就多高」，由**页面**滚动看全图，卡内不再套一层纵向滚动。
  *
  * 仍然保留的横滚只可能是极窄容器下的退路（卡片列收窄到 MINW 仍放不下）或横轴
@@ -5832,7 +5832,7 @@ html.theme-switching *::after {
 /* ---------- 2. 链路图：纵向流向 · 手机几何（#369） ----------
  *
  * 轴向与坐标由 `web/flograph.js` 决定：视口 <820 时 `computeGeoVertical` 把
- * depth 排成 y、row 排成 x（触发器 = 顶部整行），并给容器挂 `.is-vertical`；
+ * depth 排成 y、row 排成 x（触发器 = 顶部整行），并给容器挂 `.is-narrow`；
  * 卡片的 left/top/width/height 都是 JS 写的内联值（168×54 上限，按容器实宽收窄）。
  * 所以这一段只改**卡片内部**与连线尺寸 —— 特意不再按视口写 @media：轴向已经是
  * JS 的 class，CSS 再按视口判一次的话，两边条件稍有差异就会出现「class 在、
@@ -5843,7 +5843,7 @@ html.theme-switching *::after {
  * 箭头 marker 由 JS 同步改到 6 个 marker 单位（markerUnits=strokeWidth，≈1.4×
  * 桌面视觉尺寸；桌面 5.2，纵向档卡片小、空隙只有 22px，同尺寸会看不见）。
  */
-.flograph--silk.is-vertical .wf-node.sl-node {
+.flograph--silk.is-narrow .wf-node.sl-node {
 	grid-template-columns: 20px minmax(0, 1fr) auto;
 	gap: 7px;
 	padding: 6px 8px;
@@ -5854,44 +5854,44 @@ html.theme-switching *::after {
 	-webkit-backdrop-filter: blur(8px);
 }
 /* 左缘状态竖条：卡片只有 54 高，上下各留 8 才不被圆角吃掉 */
-.flograph--silk.is-vertical .sl-node::before {
+.flograph--silk.is-narrow .sl-node::before {
 	top: 8px;
 	bottom: 8px;
 }
-.flograph--silk.is-vertical .sl-node .n-icon {
+.flograph--silk.is-narrow .sl-node .n-icon {
 	width: 20px;
 	height: 20px;
 	border-radius: 6px;
 	font-size: 10px;
 }
-.flograph--silk.is-vertical .sl-node .n-icon svg {
+.flograph--silk.is-narrow .sl-node .n-icon svg {
 	width: 12px;
 	height: 12px;
 }
-.flograph--silk.is-vertical .sl-node .n-main {
+.flograph--silk.is-narrow .sl-node .n-main {
 	gap: 2px;
 }
-.flograph--silk.is-vertical .sl-node .n-title {
+.flograph--silk.is-narrow .sl-node .n-title {
 	font-size: 11.5px;
 	line-height: 1.15;
 }
-.flograph--silk.is-vertical .sl-node .n-sub {
+.flograph--silk.is-narrow .sl-node .n-sub {
 	font-size: 10px;
 	line-height: 1.2;
 }
-.flograph--silk.is-vertical .sl-node .n-side {
+.flograph--silk.is-narrow .sl-node .n-side {
 	gap: 2px;
 	min-width: 18px;
 }
 /* 副标题里已经有同一段时长（"succeeded · 20s"），54px 高的卡片上再占一列
  * 会把副标题挤成省略号。手机档只留「序号 + 状态点」，时长交给副标题。 */
-.flograph--silk.is-vertical .sl-node .n-dur {
+.flograph--silk.is-narrow .sl-node .n-dur {
 	display: none;
 }
-.flograph--silk.is-vertical .sl-node .n-step {
+.flograph--silk.is-narrow .sl-node .n-step {
 	font-size: 9px;
 }
-.flograph--silk.is-vertical .sl-node .n-dot {
+.flograph--silk.is-narrow .sl-node .n-dot {
 	width: 4px;
 	height: 4px;
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--state) 12%, transparent);
@@ -5899,26 +5899,26 @@ html.theme-switching *::after {
 /* 连线：手机档细一档（用户原话「线细一点」）。卡片之间的纵向空隙只有 22px，
  * 桌面那套 30px 雾 + 11px 带会把空隙填满成一条"光桥"，箭头也就淹没在光里。
  * 收到 14/5.5 之后仍然是有柔光的丝带，但主线与箭头读得出来。 */
-.flograph--silk.is-vertical .flograph-svg .sl-under {
+.flograph--silk.is-narrow .flograph-svg .sl-under {
 	stroke-width: 14;
 	opacity: 0.16;
 	filter: blur(3px);
 }
-.flograph--silk.is-vertical .flograph-svg .sl-mid {
+.flograph--silk.is-narrow .flograph-svg .sl-mid {
 	stroke-width: 5.5;
 	opacity: 0.42;
 }
-.flograph--silk.is-vertical .flograph-svg .sl-core {
+.flograph--silk.is-narrow .flograph-svg .sl-core {
 	stroke-width: 1.15;
 }
-.flograph--silk.is-vertical .flograph-svg .sl-shim {
+.flograph--silk.is-narrow .flograph-svg .sl-shim {
 	stroke-width: 3;
 }
 /* 箭头：桌面档的 marker 三角形继承 `.flograph-svg path` 的 `fill:none`，所以
  * 实际画出来是一个细 V 字形（1.4px、--line-strong）。纵向档的卡片小、行间空隙
  * 只有 22px，同样的灰 V 会消失在丝带的柔光里 —— 这里只对纵向档把箭头换成主色
  * 并把 V 的笔画加到 2 个 marker 单位（≈1.3px），桌面一个像素不动。 */
-.flograph--silk.is-vertical .flograph-svg marker path {
+.flograph--silk.is-narrow .flograph-svg marker path {
 	stroke: color-mix(in srgb, var(--accent) 62%, var(--text));
 	stroke-width: 2;
 	stroke-linecap: round;
@@ -5927,7 +5927,7 @@ html.theme-switching *::after {
 /* 纵向图不需要左右渐隐：contentW ≤ 容器宽，13px 的 mask 反而会吃掉卡片两端。
  * 保留 is-h-overflow 分支：极端扇出把卡片收窄到 MINW 仍放不下时，渐隐与
  * 「← 可横向拖动 →」提示一起回来（那是退路，不是默认态）。 */
-.flograph--silk.is-vertical:not(.is-h-overflow) .flograph-scroll {
+.flograph--silk.is-narrow:not(.is-h-overflow) .flograph-scroll {
 	mask-image: none;
 	-webkit-mask-image: none;
 	/* 没有可横拖的东西就不要 grab 光标：页面滚动手势不能被读成"拖图" */

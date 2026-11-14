@@ -217,12 +217,23 @@ async function mobileFitsCase(c) {
         const facts = await d.page.evaluate(() => {
           const main = document.getElementById("page-main") || document.body;
           const scrollers = [];
+          /* 图内横向滚动是**设计**（用户裁决：手机上也要横向完整图，和电脑一样）。
+           * 但"能横滚"必须同时"看得出能横滚"：容器带 can-left/can-right，
+           * 且「← 可横向拖动 →」提示可见。没有提示的横滚仍然算违规。 */
+          const graphScrollers = [];
           for (const el of main.querySelectorAll("*")) {
             const cs = getComputedStyle(el);
             if (cs.overflowX !== "auto" && cs.overflowX !== "scroll") continue;
             if (el.scrollWidth - el.clientWidth <= 2) continue;
             const cls = String(el.className || "").trim().split(/\s+/).slice(0, 2).join(".");
-            scrollers.push(el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (cls ? "." + cls : ""));
+            const name = el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (cls ? "." + cls : "");
+            if (el.classList.contains("flograph-scroll")) {
+              const hint = main.querySelector(".flograph-pan-hint");
+              const hintVisible = !!hint && getComputedStyle(hint).display !== "none" && parseFloat(getComputedStyle(hint).opacity) > 0.05;
+              graphScrollers.push({ name: name, affordance: el.classList.contains("can-left") || el.classList.contains("can-right"), hintVisible: hintVisible });
+              continue;
+            }
+            scrollers.push(name);
           }
           const codeOver = Array.from(main.querySelectorAll(".code-body"))
             .filter((el) => el.getBoundingClientRect().width > 0)
@@ -235,6 +246,7 @@ async function mobileFitsCase(c) {
             docW: document.documentElement.scrollWidth,
             innerW: innerWidth,
             scrollers,
+            graphScrollers,
             codeOver,
             rowActionRight: lastRect ? Math.round(lastRect.right) : null,
             rowActionW: lastRect ? Math.round(lastRect.width) : null,
@@ -265,14 +277,21 @@ async function mobileFitsCase(c) {
         if (page === "trace" || page === "source") assert.ok(graph.hasGraph, label + ": \u94fe\u8def\u56fe\u5fc5\u987b\u6e32\u67d3\u51fa\u6765");
         if (graph.hasGraph) {
           assert.equal(graph.compactDom, 0, label + ": #369 \u5df2\u5220\u6389\u7d27\u51d1\u89c6\u56fe\uff0cDOM \u91cc\u4e0d\u5f97\u6b8b\u7559 .flograph-compact*");
-          assert.equal(graph.isVertical, true, label + ": " + vpLabel + " \u4e0b\u6d41\u5411\u5fc5\u987b\u662f\u7eb5\u5411\uff08.depth \u2192 y\uff09");
+          /* 用户第二裁决：手机上也要**横向**（和桌面同一种排布），
+           * 只把卡片/图标/线宽缩小 —— 不再要求纵向。 */
+          assert.equal(graph.isVertical, false, label + ": " + vpLabel + " 下流向必须是横向（和 1440 同一套排布）");
+          /* 图内横滚必须带可见提示（can-left/can-right + 「← 可横向拖动 →」）。 */
+          for (const gs of facts.graphScrollers) {
+            assert.ok(gs.affordance, label + ": 图内横滚容器必须带 can-left/can-right 提示（" + gs.name + "）");
+            assert.ok(gs.hintVisible, label + ": 图内横滚时必须显示「← 可横向拖动 →」（" + gs.name + "）");
+          }
           assert.ok(graph.nodes >= 4, label + ": \u5b8c\u6574\u94fe\u8def\u5fc5\u987b\u753b\u51fa\u8282\u70b9\uff0cgot " + graph.nodes);
           /* \u4e0b\u9762\u4e09\u6761\u662f\u300c\u56fe\u771f\u7684\u663e\u793a\u51fa\u6765\u4e86\u300d\u7684\u6b63\u5411\u951a\u70b9\uff1a\u53ea\u6570 DOM \u91cc\u7684\u8282\u70b9\u6570\u662f\u91cf\u4e0d\u51fa
            * \u7d27\u51d1\u89c6\u56fe\u7684\uff08\u5b83\u628a\u8282\u70b9\u7559\u5728 DOM\u3001\u53ea\u85cf\u6389\u6eda\u52a8\u5bb9\u5668\uff09\u3002 */
           assert.equal(graph.visibleNodes, graph.nodes, label + ": \u6bcf\u4e00\u5f20\u5361\u90fd\u5fc5\u987b\u6709\u771f\u5b9e\u76d2\u5b50\uff08display \u4e0d\u5f97\u4e3a none\uff09\uff0cgot " + graph.visibleNodes + "/" + graph.nodes);
           assert.equal(graph.nodesInsideCanvas, graph.nodes, label + ": \u5361\u7247\u5fc5\u987b\u5168\u90e8\u843d\u5728\u753b\u5e03\u5185\uff08\u753b\u5e03 " + graph.canvasW + "x" + graph.canvasH + "\uff09\uff0cgot " + graph.nodesInsideCanvas + "/" + graph.nodes);
           assert.ok(graph.scrollVisible && graph.scrollW > 0 && graph.scrollH > 0, label + ": \u56fe\u7684\u6eda\u52a8\u5bb9\u5668\u5fc5\u987b\u53ef\u89c1\u4e14\u6709\u771f\u5b9e\u5c3a\u5bf8\uff08" + graph.scrollW + "x" + graph.scrollH + "\uff09");
-          if (graph.isVertical) {
+          if (graph.isVertical) { /* 纵向已退役：保留分支不进入，删掉会牵动上一轮注释 */
             /* #369 \u88c1\u51b3\u7b2c 5 \u6761\uff1a\u7a84\u6863\u753b\u5e03\u9ad8\u5ea6 = \u5185\u5bb9\u9ad8\u5ea6\uff0c\u6574\u56fe\u8ddf\u9875\u9762\u6eda\u3002
              * \u753b\u5e03\u9ad8\u88ab\u622a\u77ed\u5c31\u4f1a\u91cd\u65b0\u51fa\u73b0\u5361\u5185\u7eb5\u5411\u6eda\u52a8\uff08\u4e0a\u9762 gVertOver \u5df2\u9489\uff09\u3002 */
             assert.ok(Math.abs(graph.canvasH - graph.scrollH) <= 1, label + ": \u7eb5\u5411\u6863\u753b\u5e03\u9ad8\u5fc5\u987b\u7b49\u4e8e\u53ef\u89c6\u9ad8\uff08canvas " + graph.canvasH + " vs \u53ef\u89c6 " + graph.scrollH + "\uff09");
@@ -283,7 +302,10 @@ async function mobileFitsCase(c) {
           assert.equal(graph.edges, wide.edges, label + ": \u624b\u673a\u6863\u8fde\u7ebf\u6570\u5fc5\u987b\u4e0e 1440 \u4e00\u81f4\uff08" + graph.edges + " vs " + wide.edges + "\uff09");
           assert.equal(wide.isVertical, false, label + ": 1440 \u6863\u5fc5\u987b\u4ecd\u662f\u6a2a\u5411\u6d41\u5411");
           assert.ok(graph.gVertOver <= 1, label + ": \u5361\u5185\u4e0d\u5f97\u6709\u7eb5\u5411\u5d4c\u5957\u6eda\u52a8\uff08scrollHeight-clientHeight=" + graph.gVertOver + "\uff09");
-          assert.ok(graph.gHorzOver <= 2, label + ": \u5b8c\u6574\u56fe\u4e0d\u5e94\u9700\u8981\u6a2a\u5411\u62d6\u624d\u770b\u5f97\u5168\uff08scrollWidth-clientWidth=" + graph.gHorzOver + "\uff09");
+          /* 用户第二裁决：「手机上应该和电脑上一样，横向的」—— 完整图**允许**
+           * 图内横滚（桌面窄窗口也是这样），前提是上面已经断言过的可见提示。
+           * 这条原来写的是「不许横滚」，会把用户要的横向图判死。 */
+          assert.ok(graph.gHorzOver >= 0, label + ": 图的可滚动宽度必须可测（got " + graph.gHorzOver + "）");
           assert.ok(graph.ctrl.length > 0, label + ": \u56fe\u63a7\u4ef6\u5fc5\u987b\u5b58\u5728");
           for (const b of graph.ctrl) {
             assert.ok(b.w > 0 && b.h > 0, label + ": \u56fe\u63a7\u4ef6\u5fc5\u987b\u6709\u771f\u5b9e\u5c3a\u5bf8\uff0cgot " + b.w + "\u00d7" + b.h);
