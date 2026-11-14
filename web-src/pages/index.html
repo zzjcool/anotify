@@ -1347,8 +1347,10 @@
         // 只靠强调色区分；旧的「裸 mono 文本 + .badge」是两套语言并排。
         el("span", { class: "ix-chip ix-mono ix-source", text: event.involvedObject?.name || "—" }),
         el("span", { class: "ix-chip ix-mono", text: event.eventType || "—" }),
-        // ST-3：Warning 用 badge-warn（与事件流页同色），不再丢成中性色。
-        el("span", { class: event.type === "Warning" ? "ix-chip ix-warn" : "ix-chip", text: event.type }),
+        /* v4 没有 severity（Normal/Warning 是 v3 字段），第三个 chip 用**真实**的
+         * reason（Ingested / Pruned / …）。没有 reason 就不渲染 —— 空 chip 会被
+         * 44px 最小触控尺寸撑成一个空圆圈（用户看到的「很多圆圈」）。 */
+        event.reason ? el("span", { class: "ix-chip", text: event.reason }) : null,
       );
       row.append(el("div", { class: "ev-feed-main" }, head,
         el("span", { class: "mono ev-feed-trace", text: event.traceUID || event.name })),

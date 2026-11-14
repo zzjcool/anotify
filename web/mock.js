@@ -1247,7 +1247,6 @@
 			Object.assign(
 				{
 					ns: "default",
-					type: "Normal",
 					involvedObject: { kind: "Source", name: "deploy-hook", uid: "src_mock_deploy_hook" },
 					traceUID: T1,
 					deliveryId: null,
@@ -1290,7 +1289,6 @@
 			ev({
 				name: "evt_mock_3",
 				reason: "Pruned",
-				type: "Warning",
 				eventType: "capability.emit",
 				deliveryId: "emit-tsk_mock_2-3",
 				involvedObject: { kind: "Task", name: "tsk_mock_2", uid: "tsk_mock_2" },
@@ -1326,7 +1324,6 @@
 				name: "evt_mock_6",
 				ns: "prod",
 				reason: "Pruned",
-				type: "Warning",
 				eventType: "capability.emit",
 				traceUID: T2,
 				deliveryId: "emit-tsk_mock_10-1",
@@ -2003,7 +2000,8 @@
 			},
 			spec: {
 				reason: ev.reason,
-				type: ev.type || "Normal",
+				/* v4 的 EventSpec 没有 type（severity）：mock 原来硬塞 "Normal"，
+				 * 把「真实数据里这个 chip 是空的」这个 bug 一路藏到现在。 */
 				involvedObject: clone(ev.involvedObject || {}),
 				traceUID: ev.traceUID || null,
 				eventType: ev.eventType || null,
@@ -4019,7 +4017,6 @@
 				ns: row.ns,
 				name: "evt_mock_" + (state.events.length + 1) + "_prune",
 				reason: "Pruned",
-				type: "Warning",
 				involvedObject: { kind: "Source", name: row.name, uid: "src_mock_" + row.name },
 				traceUID: ev.traceUID,
 				eventType: ev.eventType,
@@ -4063,7 +4060,6 @@
 			ns: row.ns,
 			name: "evt_mock_" + (state.events.length + 1),
 			reason: "Ingested",
-			type: "Normal",
 			involvedObject: { kind: "Source", name: row.name, uid: "src_mock_" + row.name },
 			traceUID: "trace_mock_run" + (state.events.length + 1),
 			eventType: o.eventType || row.name,

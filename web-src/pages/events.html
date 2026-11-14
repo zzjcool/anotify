@@ -411,7 +411,7 @@
       const row = el("article", { class: "card ev-row", "data-uid": event.uid });
       const chips = el("div", { class: "ev-chips" },
         el("span", { class: "ev-chip ev-mono", text: event.eventType || "—" }),
-        el("span", { class: event.type === "Warning" ? "ev-chip ev-warn" : "ev-chip", text: event.type }),
+        /* v4 无 severity 字段：这里原来渲染 spec.type（真实数据恒为空 → 空药丸）。 */
         event.reason ? el("span", { class: "ev-reason", text: event.reason }) : null,
       );
       const head = el("div", { class: "ev-row-head" }, chips);

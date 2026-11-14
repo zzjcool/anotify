@@ -3998,7 +3998,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			creationTimestamp: meta.creationTimestamp == null ? null : meta.creationTimestamp,
 			namespace: meta.namespace == null ? null : meta.namespace,
 			reason: spec.reason == null ? null : spec.reason,
-			type: spec.type == null ? null : spec.type,
+			/* v4 的 EventSpec **刻意没有 severity**（events.yaml：Normal/Warning 是
+			 * v3 的观察字段，v4 用 reason + pruned 表达）。这里原来透传 `spec.type`，
+			 * 于是真实数据里恒为 undefined —— 首页每条事件行的第三个 chip 变成空
+			 * 药丸，被 #382 的 44px 最小尺寸撑成一个空圆圈。删掉，别再让页面以为
+			 * 有这个字段可用。 */
 			involvedObject: isObj(spec.involvedObject) ? deepCopy(spec.involvedObject) : null,
 			traceUID: spec.traceUID == null ? null : spec.traceUID,
 			eventType: spec.eventType == null ? null : spec.eventType,

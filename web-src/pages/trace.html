@@ -414,7 +414,7 @@
            原始 JSON（deliveryId / dispatched / pruned）收进「查看原始 JSON」。 */
         row.append(el("div", { class: "tr-head" },
           el("span", { class: "tr-cap", text: event.eventType || "—" }),
-          el("span", { class: "tr-ver", text: event.type || "—" }),
+          el("span", { class: "tr-ver", text: event.reason || "—" }),
           event.reason ? el("span", { class: "tr-meta", text: event.reason }) : null));
         const facts = el("div", { class: "tr-facts" });
         const prune = event.pruned && typeof event.pruned === "object" ? event.pruned : null;
