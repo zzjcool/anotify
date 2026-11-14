@@ -1547,7 +1547,19 @@
 		GY: 30,
 		TRIGW: 198,
 		PAD: 34,
-		narrow: { W: 164, H: 68, GX: 26, GY: 20, TRIGW: 124, PAD: 14 },
+		/* #369 · 手机档（视口 <820）：**同一张完整图**，只是几何缩小 + 流向改纵向。
+		 * 卡片 168×54（图标 20 / 标题 11.5 / 副标题 10 / 序号 9，见 ui.css 的
+		 * `.flograph--silk.is-vertical` 段），间距 GY 22（纵向）/ GX 18（同层兄弟的
+		 * 横向间隔），连线与箭头同比例收细。
+		 *
+		 * 与旧「紧凑视图」的区别就在这一条：没有任何折叠/摘要/「还有 N」——手机上
+		 * 画的仍是**完整链路**（每个节点 + 每条边 + 箭头），只是把 depth 轴从
+		 * x 换成 y、row 轴从 y 换成 x。9 节点的链在 390 下宽度只有单列卡宽，
+		 * 所以「不用横滚」是布局本身的结果，不是把内容藏起来。
+		 *
+		 * W 是**上限**：列数（同层兄弟）多的时候按容器实宽等比收窄（见 computeGeo），
+		 * 保证 contentW ≤ 容器宽 —— 手机上永远不会出现「要横着拖才看得全」。 */
+		mobile: { W: 168, H: 54, GX: 18, GY: 22, PAD: 14, MINW: 124, SIDE: 14, LANE: 16 },
 	};
 	// 每个实例一份 defs id 前缀：同一个页面里可能同时挂多张 silk 图
 	// （事件流里展开多条链），固定 id 会让箭头/渐变互相串台。
@@ -1650,15 +1662,68 @@
 	}
 
 	/** 顶部弧（契约 §5.3）：回边 / 跨两行以上 / 同行后退。lane 决定弧高。 */
-	function silkTopArc(from, to, lane, narrow) {
+	function silkTopArc(from, to, lane) {
 		const x1 = from.x + from.w / 2;
 		const y1 = from.y;
 		const x2 = to.x + to.w / 2;
 		const y2 = to.y;
-		const drop = narrow ? 52 : 62;
-		const step = narrow ? 16 : 20;
-		const apex = Math.max(8, Math.min(y1, y2) - drop - lane * step);
+		const apex = Math.max(8, Math.min(y1, y2) - 62 - lane * 20);
 		return silkCubic(x1, y1, x1, apex, x2, apex, x2, y2, "top");
+	}
+
+	/* ============================================================
+	 * 纵向流向的两条路由（#369 · 手机档 <820）
+	 *
+	 * 横向档里「前向边」是左右出线、「回边」是顶部弧；把轴换到 y 之后，
+	 * 这两件事必须各有对应的形状，否则要么连线穿过卡片，要么退回
+	 * 「只画一根直线」的伪图。这里就是它们的纵向版本：
+	 *
+	 *   silkVFlow  前向边（目标在下方）：从**底边**出线、从**顶边**进线，
+	 *              一条竖向 S 曲线（同列时退化为垂直线）。箭头在终点处
+	 *              朝下 —— 这是纵向图里「流向」的主方向。
+	 *   silkSideArc 回边 / 反向边 / 被节点挡住的跨层边：从卡片**侧边**出线，
+	 *              沿着卡片列外侧的一条 lane 竖直上行，再从目标**顶边**
+	 *              下来。终点切向仍然是「向下」，所以箭头依旧朝下 ——
+	 *              和顶部弧在横向图里的角色一一对应（只是旋转了 90°）。
+	 *              lane 用来给多条回边分道（沿用 EDGE_GAP，箭头不压节点）。
+	 * ============================================================ */
+
+	/** 纵向前向边：底边中点 → 顶边中点，竖向 S 曲线。 */
+	function silkVFlow(from, to, GY) {
+		const x1 = from.x + from.w / 2;
+		const y1 = from.y + from.h;
+		const x2 = to.x + to.w / 2;
+		/* 终点比卡片顶边高 2.5px：卡片 z-index 比 svg 高，正好贴在边上时
+		 * 三角箭头有一半被卡片底/边框盖掉。留这 2.5px 之后箭头整个落在
+		 * 颜色更暗的空隙里，「箭头朝下」才看得见。 */
+		const y2 = to.y - 2.5;
+		/* 控制点长度：跟着垂直间距走、但**不超过半格**（超过就会在两端之间
+		 * 互相越过，箭头附近会出现一撮多余的弧度）。同列时两点共线，公式
+		 * 自然退化成一条直线。 */
+		const gap = Math.abs(y2 - y1);
+		const k = Math.max(6, Math.min(gap * 0.42, GY));
+		return silkCubic(x1, y1, x1, y1 + k, x2, y2 - k, x2, y2, "vflow");
+	}
+
+	/**
+	 * 纵向侧弧：侧边出线 → lane 上行 → 目标顶边进入（箭头朝下）。
+	 * dir = 1 走左侧（卡片列之外），-1 走右侧。lane 是第几道（0 起）。
+	 */
+	function silkSideArc(from, to, lane, dir, laneStep) {
+		const outLeft = dir > 0;
+		const x1 = outLeft ? from.x : from.x + from.w;
+		const y1 = from.y + from.h / 2;
+		const x2 = to.x + to.w / 2;
+		const y2 = to.y - 2.5; // 同 silkVFlow：让三角箭头完整露在卡片上方
+		const span = EDGE_GAP + lane * laneStep;
+		/* lane 的 x 落在「卡片列外侧 + 内边距里」：出线点本身也要让开
+		 * EDGE_GAP，否则弧线会贴着卡片边框出发。 */
+		const lx = outLeft ? Math.min(from.x, to.x) - span : Math.max(from.x + from.w, to.x + to.w) + span;
+		/* 入线段的垂直长度：正好落在两行之间的空隙里，不压上/下一行。
+		 * 末控制点取 (x2, y2-k) 而不是 (lx, y2-k)：切线方向决定 marker 的朝向，
+		 * 用 lx 时终点切线只俯 ~9°，箭头几乎是横着插进目标顶边的（#369 实测）。 */
+		const k = Math.max(12, laneStep * 0.9);
+		return silkCubic(x1, y1, lx, y1, x2, y2 - k, x2, y2, "side");
 	}
 
 	/** 行间带（契约 §5.2）：跨一行但横向不够，从上行底边走到下行顶边。 */
@@ -1755,6 +1820,22 @@
 			if (dict && dict[k]) return dict[k];
 			return d || k;
 		};
+
+		/* ---- 轴向开关（#369）---------------------------------------------------
+		 * 判定只有一条：**视口** <820（= ui.css 的「内容档」`max-width: 819.98px`）。
+		 * 阈值取 819.98 而不是 820：`max-width: 820px` 与 `min-width: 821px` 之间会
+		 * 留出 820.5px 这种“两边都不匹配”的半开带 —— JS 说横向、CSS 说纵向。
+		 * 为什么是 820 而不是 640：#384 的验收口径是 390 / 360 / **768** 三档，768
+		 * 竖屏平板上完整图横向仍是 2.7 屏，没有第二块屏可以横过去。
+		 * 改阈值时两处要一起动：本函数 + ui.css 里 819.98 的「内容档」媒体查询
+		 * （#369 的纵向样式按 .is-vertical 走，不再自带媒体查询，所以不是三处；
+		 * 热力图的 640 窄档是另一个断点，与本阈值无关）。
+		 * 读**视口**不读容器宽：伪全屏下容器就是视口，且 relayout() 会在伪全屏那段
+		 * 初始化之前跑一次（挂载期）—— 读 class/媒体查询不会撞 TDZ。 */
+		const VERTICAL_MQ = "(max-width: 819.98px)";
+		function isVertical() {
+			return !!(window.matchMedia && window.matchMedia(VERTICAL_MQ).matches);
+		}
 
 		const uid = "slk" + ++silkSeq;
 		const nodes = (options.nodes || []).map((n) => Object.assign({}, n));
@@ -1884,7 +1965,10 @@
 		scroll.setAttribute("role", "region");
 		scroll.setAttribute(
 			"aria-label",
-			tt("graph.silk_region", "任务链；可拖动，或使用左右方向键平移"),
+			// 纵向档（#369）整图按内容高度展开、跟页面一起滚，没有"左右平移"这回事。
+			isVertical()
+				? tt("graph.silk_region_v", "任务链")
+				: tt("graph.silk_region", "任务链；可拖动，或使用左右方向键平移"),
 		);
 		const canvas = div("flograph-canvas");
 		scroll.appendChild(canvas);
@@ -1944,102 +2028,9 @@
 		 * （读屏 + 机械断言都能读到它）。 */
 		scroll.setAttribute("data-scroll-hint", panHint.textContent || "");
 
-		/* ---- #384 · ≤820 紧凑视图：3 个节点 + 「还有 N →」--------------------
-		 *
-		 * 390 下整张 silk 图宽 1102px（3.6 屏），768 竖屏平板（卡片 702）上是 2.7 屏，
-		 * 「必须横滚才读得完」的正是这条主内容。窄屏上先把链路**怎么走**说清楚：
-		 * 竖向排 3 步 + 剩余数量；「还有 N →」是用户主动动作，点开才回到完整图
-		 * （这时 flograph-scroll 自带的两端渐隐 + 「← 可横向拖动 →」提示才出现）。
-		 *
-		 * 为什么是竖向而不是把 3 个节点横着摊开：3 × 164 + 2 × 26 + 触发器 124
-		 * 仍然 ≥ 640，横排等于把「必须横滚」换个壳，问题没解决。
-		 *
-		 * 这两块 DOM（compact / compact-collapse）**无条件**插进 body，只有紧凑态
-		 * 才填内容 —— 所以「宽屏隐藏」是 ui.css §0 的默认态，不是本轮询里的 CSS。 */
-		const compact = div("flograph-compact");
-		const compactCollapse = document.createElement("button");
-		compactCollapse.type = "button";
-		compactCollapse.className = "flograph-compact-collapse";
-		compactCollapse.textContent = tt("graph.compact_collapse", "收起紧凑视图");
-		body.appendChild(compact);
-		body.appendChild(compactCollapse);
-		const COMPACT_LIMIT = 3;
-		let compactExpanded = false;
-
-		/* 竖向顺序 = 图上的阅读顺序：触发器 → （深度, 行, 执行拍号, id）。
-		 * depth/row 由 computeGeo 写回节点，所以只能在布局之后调用。 */
-		function compactOrder() {
-			const rest = nodes.filter((n) => n.id !== ROOT_ID);
-			rest.sort(
-				(a, b) =>
-					(a.depth || 0) - (b.depth || 0) ||
-					(a.row || 0) - (b.row || 0) ||
-					execKey(a.id) - execKey(b.id) ||
-					String(a.id).localeCompare(String(b.id)),
-			);
-			return trigger ? [trigger].concat(rest) : rest;
-		}
-
-		function compactDotColor(n) {
-			if (n.badge) return String(n.badge);
-			if (n.accent) return String(n.accent);
-			if (n.kind === "pruned" || n.role === "deadport") return "var(--faint)";
-			return silkStatusColor(n.kind);
-		}
-
-		function renderCompact() {
-			const order = compactOrder();
-			const shown = order.slice(0, COMPACT_LIMIT);
-			const restN = order.length - shown.length;
-			compact.replaceChildren();
-			for (const n of shown) {
-				const row = div("flograph-compact-step");
-				const dot = div("flograph-compact-dot");
-				dot.style.background = compactDotColor(n);
-				const main = div("flograph-compact-main");
-				main.appendChild(div("flograph-compact-label", n.label || n.id));
-				const sub = n.sub == null ? "" : String(n.sub);
-				if (sub) main.appendChild(div("flograph-compact-sub", sub));
-				const no = n.id === ROOT_ID
-					? "SRC"
-					: stepNoOf(n.id)
-						? String(stepNoOf(n.id)).padStart(2, "0")
-						: "";
-				row.appendChild(dot);
-				row.appendChild(main);
-				row.appendChild(div("flograph-compact-stepno", no));
-				if (options.onNodeClick) {
-					row.style.cursor = "pointer";
-					row.addEventListener("click", (ev) => options.onNodeClick(n, ev));
-				}
-				compact.appendChild(row);
-			}
-			if (restN > 0) {
-				const more = document.createElement("button");
-				more.type = "button";
-				more.className = "flograph-compact-more";
-				more.textContent = silkFill(tt("graph.compact_more", "还有 {n} →"), { n: restN });
-				more.addEventListener("click", expandCompact);
-				compact.appendChild(more);
-			}
-		}
-
-		function expandCompact() {
-			if (!container.classList.contains("is-compact")) return;
-			compactExpanded = true;
-			container.classList.add("is-expanded");
-			compact.replaceChildren();
-			updateStageHeight();
-			syncOverflow();
-			const st = scroll.querySelector(".sl-node.is-trigger") || scroll.querySelector(".sl-node");
-			if (st && typeof st.scrollIntoView === "function") st.scrollIntoView({ block: "nearest", inline: "start" });
-		}
-
-		compactCollapse.addEventListener("click", () => {
-			compactExpanded = false;
-			container.classList.remove("is-expanded");
-			applyCompact();
-		});
+		/* 手机上不再有「紧凑视图」（#369 用户裁决）：<820 画的就是同一张完整图，
+		 * 只是流向改纵向、几何缩小。这里没有任何折叠/摘要/展开态 —— 节点、连线、
+		 * 箭头本来就是全画出来的，读者不需要再点一次才「看到剩下的」。 */
 
 		container.appendChild(body);
 
@@ -2490,15 +2481,31 @@
 		let geo = null;
 		let zoom = 1;
 
-		/** 坐标（契约 §4.4）：x 按列、y 按行，触发器独占第 0 列。 */
-		function computeGeo(TOP, narrow) {
-			const nm = narrow ? SILK_CFG.narrow : SILK_CFG;
-			const P = narrow ? SILK_CFG.narrow.PAD : SILK_CFG.PAD;
-			const W = nm.W;
-			const H = nm.H;
-			const GX = nm.GX;
-			const GY = nm.GY;
-			const TRIGW = nm.TRIGW;
+		/** 容器可用宽度（= 舞台可视宽）。用于纵向档按实宽收窄卡片列。 */
+		function layoutWidth() {
+			const w = scroll.clientWidth || container.clientWidth || 0;
+			return w > 0 ? w : 910;
+		}
+
+		/**
+		 * 坐标（契约 §4.4）。**两个轴向，同一张图**（#369）：
+		 *
+		 *   横向（≥820）  x 按列（depth）、y 按行（row），触发器独占第 0 列。
+		 *   纵向（<820）  y 按列（depth）、x 按行（row），触发器占**顶部整行**。
+		 *
+		 * 纵向的唯一目的：390/360 下**不需要横滚就能读完一整条链**（单列卡片宽
+		 * 只有 168，9 层链也放得下），而不是把图折叠成摘要。`inset` 在两个轴向
+		 * 里含义不同：横向是顶部弧要占的 TOP，纵向是回边 lane 要占的侧边内距。
+		 */
+		function computeGeo(inset, vertical) {
+			if (vertical) return computeGeoVertical(inset);
+			const P = SILK_CFG.PAD;
+			const W = SILK_CFG.W;
+			const H = SILK_CFG.H;
+			const GX = SILK_CFG.GX;
+			const GY = SILK_CFG.GY;
+			const TRIGW = SILK_CFG.TRIGW;
+			const TOP = inset;
 			// 触发器列只在**真有触发器节点**时占位。
 			//
 			// 无底图的链路（首页只画执行链、或源已被删）里没有 __trigger__ 节点，
@@ -2517,11 +2524,9 @@
 				n.h = H;
 			}
 			const rootRows = G.roots.map((id) => G.row.get(id) || 0);
-			const trigRow = narrow
-				? rootRows[0] || 0
-				: rootRows.length
-					? rootRows.reduce((a, b) => a + b, 0) / rootRows.length
-					: 0;
+			const trigRow = rootRows.length
+				? rootRows.reduce((a, b) => a + b, 0) / rootRows.length
+				: 0;
 			if (trigger) {
 				trigger.depth = -1;
 				trigger.row = trigRow;
@@ -2531,9 +2536,9 @@
 				trigger.y = TOP + trigRow * (H + GY);
 			}
 			const contentW = P * 2 + trigCol + (G.maxDepth + 1) * W + G.maxDepth * GX;
-			const contentH = TOP * 2 + (G.maxRow + 1) * H + G.maxRow * GY + (narrow ? 0 : 14);
+			const contentH = TOP * 2 + (G.maxRow + 1) * H + G.maxRow * GY + 14;
 			return {
-				narrow: narrow,
+				vertical: false,
 				P: P,
 				W: W,
 				H: H,
@@ -2541,6 +2546,72 @@
 				GY: GY,
 				TRIGW: TRIGW,
 				TOP: TOP,
+				contentW: contentW,
+				contentH: contentH,
+			};
+		}
+
+		/**
+		 * 纵向几何（手机档）：depth 向下、row 向右，触发器是顶部整行。
+		 *
+		 * 卡片宽度是**按容器实宽算出来的**，不是写死的：同一深度可能有多个兄弟
+		 * （row > 0），列数多的时候只有把卡片等比收窄才能保证
+		 * `contentW ≤ 容器宽` —— 那条才是「手机上看整张图不用横滚」的真判据。
+		 * 收窄到 MINW 还不够时（同层 ≥3 个兄弟的扇出）才退回横向滚动，由
+		 * pan-hint + 两端渐隐兑现"可拖"的可见提示 —— 这是兜底，不是默认路径。
+		 */
+		function computeGeoVertical(inset) {
+			const cfg = SILK_CFG.mobile;
+			const H = cfg.H;
+			const GX = cfg.GX;
+			const GY = cfg.GY;
+			const cols = G.maxRow + 1;
+			const availW = layoutWidth();
+			// 画布左右内距就是 inset（回边 lane 跑在这条带子里）
+			const P = inset;
+			const inner = Math.max(cfg.MINW, availW - inset * 2);
+			const fitW = Math.floor((inner - (cols - 1) * GX) / cols);
+			const W = Math.max(cfg.MINW, Math.min(cfg.W, fitW));
+			const innerW = cols * W + (cols - 1) * GX;
+			// 触发器占**顶部整行**（横贯画布）；节点列在它下面居中
+			const trigW = trigger ? Math.max(innerW, inner) : 0;
+			const offX = P + Math.max(0, Math.floor((inner - innerW) / 2));
+			const topOff = trigger ? H + GY : 0;
+			for (const n of nodes) {
+				if (n.id === ROOT_ID) continue;
+				const d = G.depth.get(n.id) || 0;
+				const r = G.row.get(n.id) || 0;
+				n.depth = d;
+				n.row = r;
+				n.x = offX + r * (W + GX);
+				n.y = P + topOff + d * (H + GY);
+				n.w = W;
+				n.h = H;
+			}
+			if (trigger) {
+				trigger.depth = -1;
+				trigger.row = 0;
+				trigger.x = P;
+				trigger.y = P;
+				trigger.w = trigW;
+				trigger.h = H;
+			}
+			/* 无 trigger 时（链路没有根事件，graphs.js 会不给 root）列是**在容器里
+			 * 居中**的：offX = P + (inner-innerW)/2。此时画布宽必须也覆盖 inner，
+			 * 否则 contentW 只算到 2P+innerW，卡片会跑出画布右边界、整张图在
+			 * margin:auto 的画布上再右移一次（390 下单列链实测偏 ~97px）。 */
+			const contentW = P * 2 + Math.max(innerW, trigW, trigger ? 0 : inner);
+			const contentH = P * 2 + topOff + (G.maxDepth + 1) * H + G.maxDepth * GY;
+			return {
+				vertical: true,
+				P: P,
+				W: W,
+				H: H,
+				GX: GX,
+				GY: GY,
+				TRIGW: trigW,
+				TOP: P,
+				layoutW: availW,
 				contentW: contentW,
 				contentH: contentH,
 			};
@@ -2581,18 +2652,25 @@
 				const y2 = to.y + to.h / 2;
 				const forward = x2 - x1 >= 40 && rowDiff <= 1;
 				const cands = [];
-				if (e.loopback) {
-					cands.push(silkTopArc(from, to, lane, g.narrow));
+				if (g.vertical) {
+					/* 纵向档（#369）：目标在下方 → 竖向 S 曲线（主方向）；
+					 * 其余（回边 / 上行跳转 / 同层连线）→ 侧弧，左右各试一次，
+					 * 先左后右（从左往右读，左侧 lane 是“回边跑道”）。 */
+					if (to.y > from.y + from.h - 1) cands.push(silkVFlow(from, to, g.GY));
+					cands.push(silkSideArc(from, to, lane, 1, SILK_CFG.mobile.LANE));
+					cands.push(silkSideArc(from, to, lane, -1, SILK_CFG.mobile.LANE));
+				} else if (e.loopback) {
+					cands.push(silkTopArc(from, to, lane));
 				} else {
 					if (forward) cands.push(silkBezierRoute(x1, y1, x2, y2));
 					if (rowDiff === 1) cands.push(silkBandRoute(from, to, g.GY));
 					// 同层跨列：优先走顶部弧（lab 的形态），长横带只做
 					// 顶部被占满时的 fallback；TOP 会随 lane 数增长。
 					if (rowDiff === 0 && e.from !== ROOT_ID) {
-						cands.push(silkTopArc(from, to, lane, g.narrow));
+						cands.push(silkTopArc(from, to, lane));
 					}
 					if (rowDiff === 0) cands.push(silkRowBandRoute(from, to, G.maxRow, g.GY));
-					cands.push(silkTopArc(from, to, lane, g.narrow));
+					cands.push(silkTopArc(from, to, lane));
 				}
 				let chosen = cands[0];
 				for (const c of cands) {
@@ -2601,7 +2679,8 @@
 						break;
 					}
 				}
-				if (chosen && chosen.kind === "top") lane += 1;
+				// lane 分道：横向是顶部弧分道（TOP 跟着长），纵向是侧弧分道（侧边内距跟着长）
+				if (chosen && (chosen.kind === "top" || chosen.kind === "side")) lane += 1;
 				routes.push(chosen);
 			}
 			return { routes: routes, lanes: lane };
@@ -2633,14 +2712,20 @@
 
 		function updateStageHeight() {
 			if (!geo) return;
-			// #384：紧凑视图的高度是内容高度（CSS: .is-compact:not(.is-expanded){height:auto}），
-			// 不能被「完整图 + 外壳」的舞台高度盖回去。
-			if (container.classList.contains("is-compact") && !compactExpanded) return;
-			const need = geo.contentH + chromeHeight();
+			const need = Math.round(geo.contentH + chromeHeight());
+			const cur = container.style.getPropertyValue("--silk-h");
+			/* 纵向档（#369 用户裁决：“不能为了手机牺牲视觉效果”）：
+			 * 舞台高度 = 内容高度，**不夹到 560** —— 手机上整张图一屏装不下就由
+			 * **页面**滚动，卡内不再套一层纵向滚动（嵌套滚动会吃掉滚轮/手势，
+			 * 也让“这是一张图”变成“一个滚动框”）。全屏态例外：那里本来就该
+			 * 用内部滚动看超大图（没有页面可滚）。 */
+			if (geo.vertical && !container.classList.contains("is-fullscreen")) {
+				if (cur !== need + "px") container.style.setProperty("--silk-h", need + "px");
+				return;
+			}
 			// 顶部弧会让内容比旧舞台高；允许舞台跟着长到 560，
 			// 否则 480 卡片里会出现 12px 纵向滚动条（E2E 纵向完整断言）。
 			const want = Math.round(Math.min(need, Math.max(baseH, 560)));
-			const cur = container.style.getPropertyValue("--silk-h");
 			if (cur !== want + "px") container.style.setProperty("--silk-h", want + "px");
 		}
 
@@ -2713,8 +2798,23 @@
 			for (const e of edgeItems) {
 				if (!e.badge || !e.route) continue;
 				const r = e.route;
-				const cx = (r.x1 + r.x2) / 2;
-				const cy = r.kind === "top" ? Math.min(r.c1y, r.c2y) : Math.min(r.y1, r.y2) - 12;
+				let cx = (r.x1 + r.x2) / 2;
+				let cy = Math.min(r.y1, r.y2) - 12;
+				if (r.kind === "top") {
+					cy = Math.min(r.c1y, r.c2y);
+				} else if (r.kind === "vflow") {
+					/* 纵向前向边：徽章放两卡之间空隙的**中线**，否则默认的
+					 * min(y1,y2)-12 会正好压在源卡的副标题上。 */
+					cx = r.x1;
+					cy = (r.y1 + r.y2) / 2;
+				} else if (r.kind === "side") {
+					/* 侧弧的 lane 只有十几像素宽，徽章比 lane 宽 —— 钉在 lane 中段高度、
+					 * 横向夹进画布内（往侧面挪一点），不压卡片正文。 */
+					cx = r.c1x;
+					cy = (r.y1 + r.y2) / 2;
+					const half = (e.badge.offsetWidth || 44) / 2;
+					cx = Math.max(half + 2, Math.min(geo.contentW - half - 2, cx));
+				}
 				e.badgeCx = cx;
 				e.badgeCy = cy;
 				e.badge.style.left = cx + "px";
@@ -2722,8 +2822,17 @@
 			}
 		}
 
+		/** 箭头 marker 跟着轴向收小：纵向档卡片小、线也细（stroke-width 1.15）。 */
+		function applyEdgeScale(vertical) {
+			arrowMarker.setAttribute("markerWidth", vertical ? "6" : "5.2");
+			arrowMarker.setAttribute("markerHeight", vertical ? "6" : "5.2");
+			arrowMarker.setAttribute("refX", vertical ? "6.6" : "7");
+			container.classList.toggle("is-vertical", vertical);
+		}
+
 		function applyGeometry() {
 			const g = geo;
+			applyEdgeScale(g.vertical);
 			svgRoot.setAttribute("width", String(g.contentW));
 			svgRoot.setAttribute("height", String(g.contentH));
 			svgRoot.setAttribute("viewBox", "0 0 " + g.contentW + " " + g.contentH);
@@ -2756,73 +2865,35 @@
 		}
 
 		function relayout() {
-			const narrow = isNarrow();
-			// 起手 TOP：有回边就先给 88（narrow 56），没有就 34（narrow 14）；
-			// 路由完再按"真的占了几道顶部空隙"收敛，最多迭代 3 次。
-			let TOP = edgeItems.some((e) => e.loopback)
-				? narrow
-					? 56
-					: 88
-				: narrow
-					? 14
+			const vertical = isVertical();
+			/* 起手 inset：
+			 *   横向 = 顶部弧要占的 TOP（有回边先给 88，没有 34）；
+			 *   纵向 = 侧弧要占的侧边内距（无回边就是基础内边距）。
+			 * 路由完再按“真的占了几道”收敛，最多迭代 3 次。 */
+			let inset = vertical
+				? SILK_CFG.mobile.SIDE
+				: edgeItems.some((e) => e.loopback)
+					? 88
 					: 34;
 			let routes = null;
 			for (let iter = 0; iter < 3; iter++) {
-				geo = computeGeo(TOP, narrow);
+				geo = computeGeo(inset, vertical);
 				const res = routeAll(geo);
 				routes = res.routes;
-				const next =
-					res.lanes === 0
-						? narrow
-							? 14
-							: 34
-						: narrow
-							? 56 + (res.lanes - 1) * 16
-							: 88 + (res.lanes - 1) * 20;
-				if (next === TOP) break;
-				TOP = next;
+				const next = vertical
+					? res.lanes === 0
+						? SILK_CFG.mobile.SIDE
+						: SILK_CFG.mobile.SIDE + res.lanes * SILK_CFG.mobile.LANE
+					: res.lanes === 0
+						? 34
+						: 88 + (res.lanes - 1) * 20;
+				if (next === inset) break;
+				inset = next;
 			}
 			edgeItems.forEach((e, i) => {
 				e.route = routes[i] || null;
 			});
 			applyGeometry();
-			// #384：布局完成（depth/row 已写回节点）后才知道竖向该排哪 3 个
-			applyCompact();
-		}
-
-		function isNarrow() {
-			let w = scroll.clientWidth || 0;
-			if (!w) w = container.clientWidth || 0;
-			if (!w) w = 910;
-			return w < 620;
-		}
-
-		/* ---- #384 · 紧凑视图的开关与重绘 --------------------------------------
-		 * 判定只有一条：**视口** ≤820（= ui.css 里的「内容档」`max-width: 819.98px`）。
-		 * 与宽度相关的 640 旧阈值一起退役：同一份「要不要折叠」的事实如果 CSS 按视口、
-		 * JS 按容器宽，两条线之间（容器 702 而视口 821~880）就会出现「class 在、样式不在」
-		 * 的半开状态 —— 反而把完整图也藏了。
-		 * 为什么是 820 而不是 640：#384 的验收口径是 390 / 360 / 768 三档，768 竖屏
-		 * 平板上完整图仍是 2.7 屏，没有第二块屏可以横过去。改阈值时三处要一起动：
-		 * 本函数、ui.css 的 #384 段、以及页面内联（index 热力图摘要 / docs 表格）。
-		 * （不再量 container.clientWidth：紧凑态下 scroll 是 display:none，
-		 *   clientWidth 恒为 0；改读视口后这条自振荡风险也不存在了。） */
-		const COMPACT_MQ = "(max-width: 819.98px)";
-		function isCompact() {
-			// 用 class 而不是 `fullscreen` 变量：relayout() 在伪全屏那段初始化之前
-			// 就会跑一次（挂载期），读 let 变量会撞 TDZ。class 是同一事实的等价物。
-			if (container.classList.contains("is-fullscreen")) return false;
-			return window.matchMedia(COMPACT_MQ).matches;
-		}
-
-		function applyCompact() {
-			if (!geo) return;
-			const compactOn = isCompact();
-			container.classList.toggle("is-compact", compactOn);
-			const expanded = compactOn && compactExpanded;
-			container.classList.toggle("is-expanded", expanded);
-			if (compactOn && !expanded) renderCompact();
-			else compact.replaceChildren();
 		}
 
 		baseH = measureBaseHeight();
@@ -2852,8 +2923,26 @@
 
 		// ---- 相机（原生滚动，不用 transform） -----------------------------
 		let followOff = false;
+		/**
+		 * 纵向档没有可横滚的画布（contentW ≤ 容器宽），"跟随当前节点"只能落到
+		 * **页面**滚动上。只在用户亲手点重播/换速度时跟（playEnter(true)）：
+		 * 挂载即播的那一次如果也跟，页面会在用户还在读标题时自己往下跳。
+		 */
+		let followWindow = false;
 		function followTo(node) {
 			if (followOff || !node || node.id === ROOT_ID) return;
+			if (geo && geo.vertical) {
+				if (!followWindow) return;
+				const rec = nodeEls.get(node.id);
+				if (rec && rec.el.scrollIntoView) {
+					rec.el.scrollIntoView({
+						block: "nearest",
+						inline: "nearest",
+						behavior: reduceNow() ? "auto" : "smooth",
+					});
+				}
+				return;
+			}
 			const max = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
 			// 预览不"把当前节点居中"：源详情页的卡片比 trace 窄，居中会把上一个
 			// 节点一张半剪在边缘（源 → 首层这种两列都装得下的地方也会硬滚）。
@@ -3001,16 +3090,12 @@
 		}
 
 		function zoomBy(factor) {
-			/* #384：紧凑视图里画布不可见，缩放没有意义 —— 把用户的「想看看」
-			 * 接到展开上（否则点了没反应，比没按钮更差）。 */
-			if (isCompact()) return expandCompact();
 			const next = Math.max(1, Math.min(3, zoom * factor));
 			if (Math.abs(next - zoom) < 0.001) return;
 			zoom = next;
 			applyZoom();
 		}
 		function fit() {
-			if (isCompact()) return expandCompact();
 			zoom = 1;
 			applyZoom();
 			resetCamera();
@@ -3070,7 +3155,7 @@
 				fsPlaceholder.hidden = true;
 				fsRestore = null;
 			}
-			// 容器尺寸彻底变了：下一帧重排（含 narrow 断点与 --silk-h）
+			// 容器尺寸彻底变了：下一帧重排（含轴向断点与 --silk-h）
 			requestAnimationFrame(() => {
 				if (!fullscreen && !container.isConnected) return;
 				baseH = measureBaseHeight();
@@ -3090,7 +3175,7 @@
 		}
 		window.addEventListener("keydown", onFsKey);
 
-		// ---- 尺寸变化：narrow 变了才重排（避免抖动），高度总是跟着重算 -----
+		// ---- 尺寸变化：轴向变了 / 纵向列宽变了才重排（避免抖动），高度总是跟着重算 ----
 		let ro = null;
 		let rafResize = 0;
 		function onResize() {
@@ -3099,13 +3184,12 @@
 				rafResize = 0;
 				if (!container.isConnected) return;
 				baseH = measureBaseHeight();
-				if (isNarrow() !== geo.narrow) relayout();
-				else {
-					updateStageHeight();
-					/* #384：这一档只影响紧凑视图（820 视口阈值），不动 geo，
-					 * 所以两档都要重新判一次紧凑开关。 */
-					applyCompact();
-				}
+				const vertical = isVertical();
+				/* 纵向档的卡片宽是按容器实宽算的（见 computeGeoVertical），所以
+				 * 容器变窄/变宽也要重排，不只是轴向跳变。横向档的几何与容器宽无关。 */
+				const widthDrift = vertical && Math.abs(layoutWidth() - (geo.layoutW || 0)) > 2;
+				if (vertical !== geo.vertical || widthDrift) relayout();
+				else updateStageHeight();
 				syncOverflow();
 			});
 		}
@@ -3363,6 +3447,7 @@
 
 		function playEnter(force) {
 			// 自动播放尊重系统"减少动态效果"；用户亲手点重播是明确意图，不该再挡。
+			followWindow = !!force;
 			if (!force && reduceNow()) {
 				showFinal();
 				return;
@@ -3478,7 +3563,7 @@
 				document.removeEventListener("keydown", onLegendKey);
 				if (ro) ro.disconnect();
 				container.replaceChildren();
-				container.classList.remove("flograph", "flograph--silk", "is-playing", "is-compact", "is-expanded");
+				container.classList.remove("flograph", "flograph--silk", "is-playing", "is-vertical");
 				container.style.removeProperty("--silk-h");
 			},
 			_debug: {

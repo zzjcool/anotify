@@ -210,11 +210,6 @@ index:
       date: '{d}/{m} {w}'
     foot: '{n} eventos en los últimos 30 días · activo {d}/30 días'
     foot_na: Estadísticas no disponibles
-    summary: 'Últimos 7 días: {n} eventos · más activo {d}'
-    summary_none: Sin eventos en los últimos 7 días
-    day_label: '{d}/{m}'
-    expand: Mostrar el mapa completo
-    collapse: Contraer el mapa
     scroll_hint: Desliza en horizontal para ver las 53 semanas
   steps:
     title: "De cero a tu primer evento"
@@ -298,6 +293,7 @@ graph:
   hud_path: 'Ruta de tareas'
   hud_fail: 'Tareas fallidas'
   silk_region: 'Cadena de tareas; arrastra, o usa las flechas izquierda y derecha para desplazarte'
+  silk_region_v: 'Cadena de tareas; el grafo se expande a la altura de su contenido y se desplaza con la página'
   silk_ready: 'Listo para reproducir'
   silk_meta_preview: '{n} capacidades · {m} destinos'
   silk_meta_run: '{n} tareas · reproducción {t}'
@@ -305,8 +301,6 @@ graph:
   silk_meta_failed: '{n} fallidas'
   silk_meta_done: '{n} tareas completadas'
   silk_clock: 'reproducción {t}'
-  compact_more: '{n} más →'
-  compact_collapse: Volver a la vista compacta
 
 message:
   title: Detalle de notificación
