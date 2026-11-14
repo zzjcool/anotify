@@ -210,11 +210,6 @@ index:
       date: '{m}/{d} {w}'
     foot: '{n} events in the last 30 days · active {d}/30 days'
     foot_na: Stats unavailable
-    summary: 'Last 7 days: {n} events · busiest {d}'
-    summary_none: No events in the last 7 days
-    day_label: '{m}/{d}'
-    expand: Show the full heatmap
-    collapse: Collapse the heatmap
     scroll_hint: Swipe horizontally to see all 53 weeks
   steps:
     title: "From zero to your first event"
@@ -298,6 +293,7 @@ graph:
   hud_path: 'Task path'
   hud_fail: 'Failed tasks'
   silk_region: 'Task chain; drag, or use the left and right arrow keys to pan'
+  silk_region_v: 'Task chain; the full graph expands to its content height and scrolls with the page'
   silk_ready: 'Ready to replay'
   silk_meta_preview: '{n} capabilities · {m} downstream'
   silk_meta_run: '{n} tasks · replay {t}'
@@ -305,8 +301,6 @@ graph:
   silk_meta_failed: '{n} failed'
   silk_meta_done: '{n} tasks done'
   silk_clock: 'replay {t}'
-  compact_more: '{n} more →'
-  compact_collapse: Collapse to 3 steps
 
 message:
   title: Notification detail

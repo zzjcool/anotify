@@ -281,13 +281,13 @@
     background-image:
       repeating-linear-gradient(
         to right,
-        transparent 0 calc(100% / 53 - 2px),
-        var(--surface-1) calc(100% / 53 - 2px) calc(100% / 53)
+        transparent 0 calc(100% / 53 - var(--hm-gap, 2px)),
+        var(--surface-1) calc(100% / 53 - var(--hm-gap, 2px)) calc(100% / 53)
       ),
       repeating-linear-gradient(
         to bottom,
-        transparent 0 calc(100% / 7 - 2px),
-        var(--surface-1) calc(100% / 7 - 2px) calc(100% / 7)
+        transparent 0 calc(100% / 7 - var(--hm-gap, 2px)),
+        var(--surface-1) calc(100% / 7 - var(--hm-gap, 2px)) calc(100% / 7)
       );
   }
   /* ---- IDX-2：热力图可读性 ----
@@ -322,64 +322,47 @@
     margin: 0 20px;
     padding: 10px 0 14px;
   }
-  /* ---- #384：≤820 热力图折叠成一行摘要 ----
-     53 周 × (格+缝) 在 390 下是 600px = 1.94 屏，手机上默认只看得到「某几个月」，
-     反而把「最近有没有事」这个主问题挡在后面。默认只给一行结论（近 7 天次数 +
-     最活跃一天），想看全图再点开 —— 展开后的横向滚动有两端渐隐 + data-scroll-hint。
-     断点 820 而不是 640：#384 的验收含 768×1024 竖屏平板（ui.css 里的「内容档」，
-     三处内容级改动共用），平板上一屏也只放得下 53 周里的半年，折叠语义相同。
-     桌面（≥820）摘要按钮不出现，图卡与现在逐像素一致。 */
-  .hm-summary {
-    display: none;
-  }
-  @media (max-width: 819.98px) {
-    .hm-summary {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: calc(100% - 40px);
-      margin: 0 20px 12px;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: var(--r-md);
-      background: var(--surface-2);
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--text);
-      text-align: left;
-      cursor: pointer;
+  /* ---- #369：手机档热力图**不折叠**，只把格与缝缩小 ----
+     用户裁决：「这里不能为了手机牺牲视觉效果……原来的 flow 图不能去掉」——
+     同一个原则适用于热力图：390 下也要看到完整 53 周，而不是一行摘要。
+     53 列 × 格 + 52 × 缝 + 星期列必须 ≤ 卡片内宽（390 下 350 − 2×10 = 330），
+     所以手机档把缝收到 1px、星期列收到 0（见下）、内距从 20 收到 10，格子由
+     `.hm` 的 `minmax(0, 1fr)` 自己缩到 ≈5px（实测见 issue 报告）。
+     桌面（≥640）这段一个字不生效，图卡与改动前逐像素一致。
+     `.hm-scroll` 仍然留着（它是 D17 的滚动容器 + `data-scroll-hint` 的载体），
+     只是 390 下 scrollWidth == clientWidth，不再需要拖。 */
+  @media (max-width: 639px) {
+    .hm {
+      --hm-gap: 1px;
+      --hm-label: 0px;
     }
-    .hm-summary-text {
-      min-width: 0;
-      overflow-wrap: anywhere;
+    .hm-card .hm-scroll {
+      padding: 0 10px 12px;
     }
-    /* 折叠箭头：折叠时朝下（点开看更多），展开时朝上（点收起） */
-    .hm-summary-chev {
-      flex: 0 0 auto;
-      margin-left: auto;
-      width: 7px;
-      height: 7px;
-      border-right: 1.5px solid var(--muted);
-      border-bottom: 1.5px solid var(--muted);
-      transform: rotate(45deg);
-      transition: transform var(--dur-fast) var(--ease);
+    /* 格子只有 ~5px：2.5px 圆角会把方块磨成圆点，读起来像噪点 */
+    .hm-card .hm-cell {
+      border-radius: 1.5px;
     }
-    .hm-card.is-open .hm-summary-chev {
-      transform: rotate(-135deg);
+    /* 必须带 .hm-cell：基础规则是 `.hm-card .hm-cell.hm-today`（0,3,0），
+       少一个类就永远被压住、这个环宽根本不生效。 */
+    .hm-card .hm-cell.hm-today {
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--text) 55%, transparent),
+        inset 0 0 0 1px color-mix(in srgb, var(--text) 13%, transparent);
     }
-    .hm-card:not(.is-open) .hm-scroll {
+    .hm-legend-cell {
+      width: 8px;
+      height: 8px;
+      border-radius: 1.5px;
+    }
+    /* 月份标签收到 8px 才不压第一列格子；星期列在 4.3px 的行高下无论多大
+       字号都会互相叠字（7 行 × 8px > 30px 的格子区），手机档整列收掉 ——
+       日期仍然能从格子的 tooltip 读到，月份轴与整幅 53 周不受影响。 */
+    .hm-card .hm-month {
+      font-size: 8px;
+    }
+    .hm-card .hm-day {
       display: none;
-    }
-    /* 展开后的 53 周仍比屏宽：两端渐隐告诉用户「右边还有」 */
-    .hm-card.is-open .hm-scroll {
-      mask-image: linear-gradient(90deg, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
-      -webkit-mask-image: linear-gradient(
-        90deg,
-        transparent 0,
-        #000 18px,
-        #000 calc(100% - 18px),
-        transparent 100%
-      );
     }
   }
   /* ---- IDX-1：四张 KPI 卡 = 同一种迷你图形态 ----
@@ -540,6 +523,11 @@
      桌面（>=640）保留完整清单：那里一屏装得下，且它是「源→能力→节点」的入口。
      收掉的是重复的清单，不是信息：#fe-done 那行仍指向「去源页面点立即运行」。 */
   @media (max-width: 639px) {
+    /* 三步齐了：副标题与收官行重复 → 收掉副标题。只在窄档（≤639）生效，
+       桌面保留副标题（版面与 #381 交付时一致）。 */
+    #first-event[data-complete="1"] #fe-sub {
+      display: none;
+    }
     #first-event[data-complete="1"] .fe-steps {
       display: none;
     }
@@ -1012,21 +1000,6 @@
           </div>
         </div>
       </div>
-      {{/* #384：<640 热力图默认折叠成一行摘要（近 7 天次数 + 最活跃一天），
-           点开才看完整 53 周。摘要按钮在桌面端 display:none（见本页 <style>），
-           桌面端的图卡完全不变；展开后的完整图仍然可横滚，所以带两端渐隐 +
-           data-scroll-hint（白名单内必须给可见提示的机械断言读这两样）。 */}}
-      <button
-        id="hm-summary"
-        class="hm-summary"
-        type="button"
-        aria-expanded="false"
-        aria-controls="hm-scroll"
-        aria-label="{{t "index.heatmap.expand"}}"
-      >
-        <span id="hm-summary-text" class="hm-summary-text">—</span>
-        <span class="hm-summary-chev" aria-hidden="true"></span>
-      </button>
       <div
         id="hm-scroll"
         class="hm-scroll overflow-x-auto px-5 py-3"
@@ -1292,6 +1265,9 @@
       });
       const doneLine = document.getElementById("fe-done");
       if (doneLine) doneLine.hidden = !allDone;
+      // 三步齐了以后副标题与收官行说的是同一件事，手机档收掉副标题
+      // （选择器见页面 <style> 里 [data-complete="1"] #fe-sub；桌面保持原样，
+      //  否则 1440 下首屏高度会凭空少 20px）。
       // 三轮状态算完才置的「渲染已落地」标记：模板初始态是 todo，读得太早会把
       // 「还没算」当成「还没做」。e2e 靠它等待，不靠 sleep。
       // #385：data-complete 是手机档「收成一行」的开关（CSS 在页面 <style> 里）。
@@ -1753,37 +1729,6 @@
       hm.append(hmAxisFragment(hmCalendar().startMonday));
     }
 
-    /* ---- #384 · <640 热力图折叠：一行摘要 + 点开看全图 ---------------------
-     * 摘要与格子完全同源（STATS.daily）：近 7 天事件量 + 事件最多的那天。
-     * /v1/stats 只有日粒度 —— 所以**不编造**「峰值 18:00」这种钟点。
-     * 桌面端摘要按钮 display:none，图卡与原来逐像素一致。 */
-    const HM_CARD = document.querySelector(".hm-card");
-    const HM_SUMMARY_BTN = document.getElementById("hm-summary");
-    const HM_SUMMARY_TEXT = document.getElementById("hm-summary-text");
-
-    function setHeatSummary(text) {
-      if (HM_SUMMARY_TEXT) HM_SUMMARY_TEXT.textContent = text || "—";
-    }
-
-    function setHeatOpen(open) {
-      const on = !!open;
-      if (HM_CARD) HM_CARD.classList.toggle("is-open", on);
-      if (!HM_SUMMARY_BTN) return;
-      HM_SUMMARY_BTN.setAttribute("aria-expanded", on ? "true" : "false");
-      HM_SUMMARY_BTN.setAttribute(
-        "aria-label",
-        on
-          ? t("index.heatmap.collapse", "收起热力图")
-          : t("index.heatmap.expand", "展开完整热力图"),
-      );
-    }
-
-    if (HM_SUMMARY_BTN) {
-      HM_SUMMARY_BTN.addEventListener("click", () => {
-        setHeatOpen(!(HM_CARD && HM_CARD.classList.contains("is-open")));
-      });
-    }
-
     function renderHeatmap() {
       const hm = document.getElementById("hm");
       if (!hm) return;
@@ -1793,7 +1738,6 @@
       if (!STATS) {
         hm.append(window.Anotify.loadErrorNode(loadError, load));
         document.getElementById("hm-foot").textContent = t("index.heatmap.foot_na");
-        setHeatSummary("");
         return;
       }
       const LEVELS = [
@@ -1912,35 +1856,6 @@
             .replace("{n}", sum)
             .replace("{d}", activeDays);
         }
-      }
-
-      /* #384：折叠态摘要句（近 7 天事件量 + 最活跃一天） */
-      let week = 0;
-      let weekPeak = 0;
-      let weekPeakDate = null;
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(today);
-        d.setDate(today.getDate() - i);
-        const c = dayCount(d);
-        week += c;
-        if (c > weekPeak) {
-          weekPeak = c;
-          weekPeakDate = d;
-        }
-      }
-      if (!week) {
-        setHeatSummary(t("index.heatmap.summary_none", "近 7 天没有新事件"));
-      } else {
-        const dayLabel = weekPeakDate
-          ? t("index.heatmap.day_label", "{m}月{d}日")
-              .replace("{m}", weekPeakDate.getMonth() + 1)
-              .replace("{d}", weekPeakDate.getDate())
-          : "—";
-        setHeatSummary(
-          t("index.heatmap.summary", "近 7 天 {n} 次 · 最活跃 {d}")
-            .replace("{n}", week)
-            .replace("{d}", dayLabel),
-        );
       }
     }
 

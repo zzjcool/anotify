@@ -833,18 +833,19 @@ body {
 
 /* 热力图 */
 .hm {
+	/* 53 周 × (格 + 缝)：格子本身就是 1fr，所以 "53 列能不能塞进屏宽" 由
+	 * 列宽自动决定 —— 只有缝宽与左侧星期列是显式尺寸。
+	 * #369：手机上**不折叠、也不横滚**，改为把缝从 2px 收到 1px、星期列整列
+	 * 收掉（4.5px 的行高放不下 7 个 8px 的星期字，会互相叠字），让 53 列在
+	 * 390 的卡片内宽（≈290）里自己缩到 ≈4.5px/格。
+	 * 窄档的取值写在 index.html 的 `@media (max-width: 639px)` 里；这里只留
+	 * 桌面默认值，≥640 两个变量取原值、逐像素不变。 */
+	--hm-gap: 2px;
+	--hm-label: 12px;
 	display: grid;
-	/* 53 周 × (格 + gap)。首页两列布局里卡片内宽约 620px，
-	   所以格子只能 ~9.5px；min-width:0 让它在宽容器里铺满、
-	   在窄容器里靠 .hm-scroll 横滚（640 断点见下）。 */
-	grid-template-columns: 12px repeat(53, minmax(0, 1fr));
-	gap: 2px;
+	grid-template-columns: var(--hm-label) repeat(53, minmax(0, 1fr));
+	gap: var(--hm-gap);
 	min-width: 0;
-}
-@media (max-width: 639.98px) {
-	.hm {
-		min-width: 560px;
-	}
 }
 .hm-month {
 	grid-row: 1;
@@ -857,7 +858,9 @@ body {
 	/* 标签只做标注，不抢格子的 hover */
 	pointer-events: none;
 }
-/* 移动端横滚容器：53 周在 390 宽放不下，靠卡片内横向滚动（D17） */
+/* 横滚容器：桌面（卡片内宽 < 53×9.5px 时）仍靠它横向滚动（D17 + 可见提示）。
+ * #369 起手机档不再靠它：格子会缩到 ≈5px 把 53 周整幅放下（见 index 页的
+ * `<640` 段与 .hm 的 --hm-gap / --hm-label）。 */
 .hm-scroll {
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -4527,7 +4530,7 @@ html.theme-switching *::after {
       这里只写 stroke-width / opacity / fill / 动画；但必须显式压过既有的
       `.flograph-svg path { stroke-width: 1.4; fill: none }`（ui.css:1239）与
       `.flograph-svg path.is-muted { stroke-dasharray: 3 3 }`（ui.css:1260）。
-   ③ 卡片宽高由 JS 内联（238×78，触发器 198×78，narrow 164×68）：这里不写死
+   ③ 卡片宽高由 JS 内联（横向 238×78、触发器 198×78；纵向 168×54，见 #369 段）：这里不写死
       width/height，只保证 `box-sizing: border-box` 下内联宽高就是最终尺寸。
    ④ 只引用 tokens.css 里存在的变量。lab 里的 `--panel` / `--border` 生产**没有
       定义**（已实测），换成 `--bg` + `--line-strong`；lab 的 `#000` 阴影换成
@@ -5721,15 +5724,15 @@ html.theme-switching *::after {
 
 /* — epic-369-mobile · #384 主内容不再必须横滚（本段仍归 c-mobile 独占）
  *
- * 四类主内容从「必须横滚才读得完」改成「默认不用滚」，但**分两个断点**：
+ * 主内容从「必须横滚才读得完」改成「默认不用滚」，但**分两个断点**：
  *
  *   手机档 640（`max-width: 639px`）—— 表格 → 行式卡片。
  *     `.data-cards` 隐藏表头，每行一张卡、字段竖排，标签来自 `td[data-label]`
  *     （模板/JS 用 t() 写，四语言同步）。卡片化改的是阅读形态，只在真手机上做；
  *     640~819 仍是正常表格（keys 620px / admin 34rem 的最小宽在 700 级卡片里放得下）。
  *
- *   内容档 820（`max-width: 819.98px`）—— 链路图紧凑视图 / docs 代码块软换行 /
- *     首页热力图摘要 三处内容级改动。
+ *   内容档 820（`max-width: 819.98px`）—— 链路图**改纵向流向** / docs 代码块软换行 /
+ *     首页热力图缩格但**保留完整 53 周**。
  *     为什么不是 640：#384 的验收口径是 390 / 360 / **768** 三档，而 768×1024
  *     竖屏平板上链路图内容宽仍是 1916（实测；基准版 1102）/ 卡片 702 = 2.7 屏，
  *     docs 的 930px 长行也比 702 宽 —— 这块屏没有第二块屏可以横过去。
@@ -5738,22 +5741,18 @@ html.theme-switching *::after {
  *     820 因此是本段新增的「内容档」，只用在这三处内容上；机型档仍是
  *     640 / 1024 / 1280（见文件头断点契约里的例外说明）。
  *
- * 默认态（≥820，或内容档里还没挂上 `is-compact` 时）必须**隐藏紧凑块与收起按钮**：
- * 这两块 DOM 由 flograph.js 无条件插进 body（只有紧凑态才填内容），所以「隐藏」是
- * 默认态、不是窄档里的覆盖 —— 写在媒体查询里只对窄档生效，宽档会退回 <button> 的
- * UA display:inline-block：图卡底部多出一个 24px 的「收起紧凑视图」裸按钮，并把
- * `.flograph-scroll` 从 308 压到 284 —— 一个 24px 的**纵向**嵌套滚动，把滚轮吃掉
- * （e2e 的 wheel 断言因此 4500ms 超时）。见下面 §0。
+ * **#369 用户裁决（覆盖 #384 的旧方案）**：「这里不能为了手机牺牲视觉效果……
+ * 原来的 flow 图不能去掉，专门为手机适配，比如图标小点线细一点」。所以链路图在
+ * 手机档不再折叠/摘要/「还有 N →」，而是画**同一张完整图**：节点、连线、箭头、
+ * 流向一个不少，只把几何缩小并把 depth 轴从 x 换成 y（纵向流向）。实现分两半：
+ *   · 几何/routing → `web/flograph.js` 的 `computeGeoVertical` + `silkVFlow` /
+ *     `silkSideArc`（JS 在 <820 时给容器挂 `.is-vertical`）；
+ *   · 卡片内部的字号/图标/圆角/线宽 → 下面 §2 的 `.is-vertical` 段。
+ * 舞台高度也改成「内容多高就多高」，由**页面**滚动看全图，卡内不再套一层纵向滚动。
  *
- * 仍然保留的横滚只可能是用户主动打开的完整图 / 完整热力图，两处都带可见提示
- * （渐隐 + 拖动提示 + `data-scroll-hint`）。
+ * 仍然保留的横滚只可能是极窄容器下的退路（卡片列收窄到 MINW 仍放不下）或横轴
+ * 桌面图，两处都带可见提示（渐隐 + 拖动提示 + `data-scroll-hint`）。
  */
-
-/* ---------- 0. 默认态：紧凑块与收起按钮只在「内容档 + is-compact」下出现 ---------- */
-.flograph--silk .flograph-compact,
-.flograph--silk .flograph-compact-collapse {
-	display: none;
-}
 
 @media (max-width: 639px) {
 	/* ---------- 1. 表格 → 行式卡片（keys / admin 用户表） ----------
@@ -5830,115 +5829,112 @@ html.theme-switching *::after {
 	}
 }
 
-/* ---------- 2. 链路图紧凑视图（#384）：内容档 820 ----------
- * 完整图在 390 下是 1102px / 3.6 屏；紧凑态只排 3 步 + 剩余数量，
- * 高度跟着内容走（height:auto），点「还有 N →」才回到完整图。
- * 两个元素在宽档的默认隐藏见 §0；这里只写「内容档 + is-compact」下的形态。 */
-@media (max-width: 819.98px) {
-	.flograph--silk.is-compact:not(.is-expanded) {
-		height: auto;
-	}
-	.flograph--silk.is-compact:not(.is-expanded) .flograph-scroll,
-	.flograph--silk.is-compact:not(.is-expanded) .flograph-pan-hint {
-		display: none;
-	}
-	.flograph--silk.is-compact:not(.is-expanded) .flograph-compact {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding: 12px 14px 14px;
-		overflow-y: auto;
-		-webkit-overflow-scrolling: touch;
-	}
-	.flograph--silk .flograph-compact-step {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-width: 0;
-		padding: 8px 10px;
-		border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
-		border-radius: var(--r-md);
-		background: color-mix(in srgb, var(--surface-1) 88%, transparent);
-	}
-	/* 步骤之间的竖向连接线：告诉读者这几步是一条链，不是三个孤立卡片 */
-	.flograph--silk .flograph-compact-step + .flograph-compact-step::before {
-		content: "";
-		position: absolute;
-		left: 21px;
-		top: -7px;
-		width: 1px;
-		height: 6px;
-		background: var(--line-strong);
-	}
-	.flograph--silk .flograph-compact-dot {
-		flex: 0 0 auto;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-	}
-	.flograph--silk .flograph-compact-main {
-		flex: 1 1 auto;
-		min-width: 0;
-	}
-	.flograph--silk .flograph-compact-label {
-		font-size: 13px;
-		font-weight: 500;
-		line-height: 1.4;
-		color: var(--text);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.flograph--silk .flograph-compact-sub {
-		font-size: 11px;
-		line-height: 1.4;
-		color: var(--faint);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.flograph--silk .flograph-compact-stepno {
-		flex: 0 0 auto;
-		font-family: var(--font-mono);
-		font-size: 10px;
-		color: var(--faint);
-	}
-	.flograph--silk .flograph-compact-more {
-		align-self: flex-start;
-		min-height: 36px;
-		padding: 6px 14px;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--r-full);
-		background: var(--surface-2);
-		font-size: 12px;
-		color: var(--text);
-		cursor: pointer;
-	}
-	.flograph--silk .flograph-compact-more:hover {
-		border-color: color-mix(in srgb, var(--text) 30%, transparent);
-	}
-	/* 展开后回到完整图：这一枚是「返回紧凑视图」的唯一入口，浮在舞台右上角。
-	 * 默认（没有 is-compact / 没展开）隐藏 —— 见 §0，别在这里写 display:none。 */
-	.flograph--silk.is-compact.is-expanded .flograph-compact-collapse {
-		display: inline-flex;
-		align-items: center;
-		position: absolute;
-		top: 10px;
-		right: 10px;
-		z-index: 4;
-		min-height: 32px;
-		padding: 4px 12px;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--r-full);
-		background: color-mix(in srgb, var(--surface-1) 90%, transparent);
-		backdrop-filter: blur(6px);
-		-webkit-backdrop-filter: blur(6px);
-		font-size: 11px;
-		color: var(--muted);
-		cursor: pointer;
-	}
+/* ---------- 2. 链路图：纵向流向 · 手机几何（#369） ----------
+ *
+ * 轴向与坐标由 `web/flograph.js` 决定：视口 <820 时 `computeGeoVertical` 把
+ * depth 排成 y、row 排成 x（触发器 = 顶部整行），并给容器挂 `.is-vertical`；
+ * 卡片的 left/top/width/height 都是 JS 写的内联值（168×54 上限，按容器实宽收窄）。
+ * 所以这一段只改**卡片内部**与连线尺寸 —— 特意不再按视口写 @media：轴向已经是
+ * JS 的 class，CSS 再按视口判一次的话，两边条件稍有差异就会出现「class 在、
+ * 样式不在」的半开态（#384 踩过：宽档退回 UA 按钮、24px 裸控件压出纵向嵌套滚动）。
+ *
+ * 尺寸按 168×54 反推（用户要求「图标小点线细一点」，而不是把图折叠掉）：
+ * 图标 20 / 标题 11.5 / 副标题 10 / 序号 9 / 圆角 10，主线 1.5 → 1.15，
+ * 箭头 marker 由 JS 同步改到 6 个 marker 单位（markerUnits=strokeWidth，≈1.4×
+ * 桌面视觉尺寸；桌面 5.2，纵向档卡片小、空隙只有 22px，同尺寸会看不见）。
+ */
+.flograph--silk.is-vertical .wf-node.sl-node {
+	grid-template-columns: 20px minmax(0, 1fr) auto;
+	gap: 7px;
+	padding: 6px 8px;
+	border-radius: 10px;
+	/* 手机上要同时画九个模糊层：14px 的高斯模糊在这个尺寸上收益很小、
+	 * 代价很高（滚动时每帧重算），收到 8px 观感几乎不变。 */
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+}
+/* 左缘状态竖条：卡片只有 54 高，上下各留 8 才不被圆角吃掉 */
+.flograph--silk.is-vertical .sl-node::before {
+	top: 8px;
+	bottom: 8px;
+}
+.flograph--silk.is-vertical .sl-node .n-icon {
+	width: 20px;
+	height: 20px;
+	border-radius: 6px;
+	font-size: 10px;
+}
+.flograph--silk.is-vertical .sl-node .n-icon svg {
+	width: 12px;
+	height: 12px;
+}
+.flograph--silk.is-vertical .sl-node .n-main {
+	gap: 2px;
+}
+.flograph--silk.is-vertical .sl-node .n-title {
+	font-size: 11.5px;
+	line-height: 1.15;
+}
+.flograph--silk.is-vertical .sl-node .n-sub {
+	font-size: 10px;
+	line-height: 1.2;
+}
+.flograph--silk.is-vertical .sl-node .n-side {
+	gap: 2px;
+	min-width: 18px;
+}
+/* 副标题里已经有同一段时长（"succeeded · 20s"），54px 高的卡片上再占一列
+ * 会把副标题挤成省略号。手机档只留「序号 + 状态点」，时长交给副标题。 */
+.flograph--silk.is-vertical .sl-node .n-dur {
+	display: none;
+}
+.flograph--silk.is-vertical .sl-node .n-step {
+	font-size: 9px;
+}
+.flograph--silk.is-vertical .sl-node .n-dot {
+	width: 4px;
+	height: 4px;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--state) 12%, transparent);
+}
+/* 连线：手机档细一档（用户原话「线细一点」）。卡片之间的纵向空隙只有 22px，
+ * 桌面那套 30px 雾 + 11px 带会把空隙填满成一条"光桥"，箭头也就淹没在光里。
+ * 收到 14/5.5 之后仍然是有柔光的丝带，但主线与箭头读得出来。 */
+.flograph--silk.is-vertical .flograph-svg .sl-under {
+	stroke-width: 14;
+	opacity: 0.16;
+	filter: blur(3px);
+}
+.flograph--silk.is-vertical .flograph-svg .sl-mid {
+	stroke-width: 5.5;
+	opacity: 0.42;
+}
+.flograph--silk.is-vertical .flograph-svg .sl-core {
+	stroke-width: 1.15;
+}
+.flograph--silk.is-vertical .flograph-svg .sl-shim {
+	stroke-width: 3;
+}
+/* 箭头：桌面档的 marker 三角形继承 `.flograph-svg path` 的 `fill:none`，所以
+ * 实际画出来是一个细 V 字形（1.4px、--line-strong）。纵向档的卡片小、行间空隙
+ * 只有 22px，同样的灰 V 会消失在丝带的柔光里 —— 这里只对纵向档把箭头换成主色
+ * 并把 V 的笔画加到 2 个 marker 单位（≈1.3px），桌面一个像素不动。 */
+.flograph--silk.is-vertical .flograph-svg marker path {
+	stroke: color-mix(in srgb, var(--accent) 62%, var(--text));
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+/* 纵向图不需要左右渐隐：contentW ≤ 容器宽，13px 的 mask 反而会吃掉卡片两端。
+ * 保留 is-h-overflow 分支：极端扇出把卡片收窄到 MINW 仍放不下时，渐隐与
+ * 「← 可横向拖动 →」提示一起回来（那是退路，不是默认态）。 */
+.flograph--silk.is-vertical:not(.is-h-overflow) .flograph-scroll {
+	mask-image: none;
+	-webkit-mask-image: none;
+	/* 没有可横拖的东西就不要 grab 光标：页面滚动手势不能被读成"拖图" */
+	cursor: default;
+}
 
+@media (max-width: 819.98px) {
 	/* ---------- 3. 代码块软换行 ---------- */
 	/* 代码块软换行：white-space:pre 的 930px 长行在 390 下只能看到 348px、
 	 * 768 下也只看到 702px，换成 pre-wrap + anywhere 让整段可读
@@ -5948,6 +5944,8 @@ html.theme-switching *::after {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		word-break: break-word;
+	}
+}
 
 /* — epic-369-mobile — 首屏优先级 · 安全区（#385；接在上面 #384 段之后）
  *
@@ -5968,26 +5966,33 @@ html {
 	-webkit-tap-highlight-color: transparent;
 }
 
-/* ---------- 二、安全区 ---------- */
-/* 顶栏（sticky top-0）让开状态栏 / 刘海。min-height 由 --topbar-h 决定，加的是
-   额外内距，所以顶栏在刘海屏上会变高而不是把内容挤到安全区里。 */
-.app-topbar {
-	padding-top: env(safe-area-inset-top);
-}
-/* 文档底部：app 外壳的 footer 与 focus/login 布局的 footer 都贴视口底边。 */
-.app-footer {
-	padding-bottom: max(10px, env(safe-area-inset-bottom));
-}
-/* focus/login 布局的 footer 在 .app-shell 里，不是 body 的直接子节点，而且带着
- * Tailwind 的 `.py-6`（0,1,0）。所以：①选择器不能写成 `body > footer`（matched 不到）；
- * ②必须用**类选择器**才压得住 `.py-6`（同级时 ui.css 在后 → 胜）。
- * rev-401 实测：改前 inset-bottom=34 下仍是 24px（`.py-6` 赢），本规则后为 34px。 */
-.auth-footer {
-	padding-bottom: max(24px, env(safe-area-inset-bottom));
-}
-/* focus/login 布局没有侧栏，顶栏是 body 的直接子节点（h-16 内层）。 */
-body > header {
-	padding-top: env(safe-area-inset-top);
+/* ---------- 二、安全区（只在窄档生效） ---------- */
+/* 为什么整段关在 @media (max-width: 819.98px) 里：桌面没有刘海/手势区，
+ * env() 恒 0，但 `.app-footer` 写的是 `max(10px, env())` —— 在桌面就是**多出 10px**
+ * （rev-404 实测：1440 下页脚高度 +10px，整页截图 AE 不再为 0）。
+ * 安全区是「窄档 + 触屏」的事，桌面不该为它付账。
+ *
+ * 顶栏（sticky top-0）让开状态栏 / 刘海。min-height 由 --topbar-h 决定，加的是
+ * 额外内距，所以顶栏在刘海屏上会变高而不是把内容挤到安全区里。 */
+@media (max-width: 819.98px) {
+	.app-topbar {
+		padding-top: env(safe-area-inset-top);
+	}
+	/* 文档底部：app 外壳的 footer 与 focus/login 布局的 footer 都贴视口底边。 */
+	.app-footer {
+		padding-bottom: max(10px, env(safe-area-inset-bottom));
+	}
+	/* focus/login 布局的 footer 在 .app-shell 里，不是 body 的直接子节点，而且带着
+	 * Tailwind 的 `.py-6`（0,1,0）。所以：①选择器不能写成 `body > footer`（matched 不到）；
+	 * ②必须用**类选择器**才压得住 `.py-6`（同级时 ui.css 在后 → 胜）。
+	 * rev-401 实测：改前 inset-bottom=34 下仍是 24px（`.py-6` 赢），本规则后为 34px。 */
+	.auth-footer {
+		padding-bottom: max(24px, env(safe-area-inset-bottom));
+	}
+	/* focus/login 布局没有侧栏，顶栏是 body 的直接子节点（h-16 内层）。 */
+	body > header {
+		padding-top: env(safe-area-inset-top);
+	}
 }
 /* 全屏链路图是「临时独占」态：右下角控件与底部 HUD 都贴屏幕边，
    手势区会正好压在它们上面。只在触屏档（pointer: coarse）加这段内距 ——
@@ -6021,8 +6026,13 @@ body > header {
 	.stat-value {
 		font-size: 24px;
 	}
-	.stat-spark,
+	/* 脚注与 label 语义重复（「事件总数 / 累计」）→ 手机档收掉。
+	 * spark 不一样：它是**真实日趋势**，不是装饰。用户裁决「不能为了手机牺牲
+	 * 视觉效果」——所以宁可矮一点（32→22px），也不整条 display:none。 */
 	.stat-foot {
 		display: none;
+	}
+	.stat-spark {
+		height: 22px;
 	}
 }

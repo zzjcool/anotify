@@ -210,11 +210,6 @@ index:
       date: '{m}月{d}日 {w}曜日'
     foot: '直近 30 日 {n} 件 · アクティブ {d}/30 日'
     foot_na: 統計を取得できません
-    summary: '直近 7 日 {n} 件 · 最多 {d}'
-    summary_none: 直近 7 日はイベントなし
-    day_label: '{m}月{d}日'
-    expand: ヒートマップ全体を表示
-    collapse: ヒートマップを折りたたむ
     scroll_hint: 横にスクロールして 53 週すべてを表示
   steps:
     title: "ゼロから最初のイベントまで"
@@ -298,6 +293,7 @@ graph:
   hud_path: 'タスク経路'
   hud_fail: '失敗タスク'
   silk_region: 'タスクチェーン；ドラッグ、または左右の矢印キーで移動できます'
+  silk_region_v: 'タスクチェーン；図は内容の高さに展開し、ページと一緒にスクロールします'
   silk_ready: '再生の準備'
   silk_meta_preview: '{n} 個の能力 · {m} 本の下流'
   silk_meta_run: '{n} 個のタスク · 再生 {t}'
@@ -305,8 +301,6 @@ graph:
   silk_meta_failed: '{n} 個失敗'
   silk_meta_done: '{n} 個のタスク完了'
   silk_clock: '再生 {t}'
-  compact_more: '残り {n} 件 →'
-  compact_collapse: コンパクト表示に戻す
 
 message:
   title: 通知の詳細

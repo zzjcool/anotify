@@ -26,8 +26,10 @@ const SUITES = Object.freeze({
     { id: "retained-auth-shell", kind: "retained", lang: "en", views: 1 },
     { id: "retained-graph", kind: "retained", lang: "en", views: 1 },
     { id: "guards-guest", kind: "guard", lang: "zh-CN", views: 6 },
-    /* #384：390 视口下四类主内容（keys/admin 表 / 链路图 / 热力图 / docs 代码块）
-       必须「不用横滚就能读完」——默认态零横向滚动容器。 */
+    /* #369（覆盖 #384 的旧方案）：390 视口下四类主内容（keys/admin 表 / 链路图 /
+       热力图 / docs 代码块）必须「不用横滚就能读完」，但**不许靠折叠**：
+       链路图要画出完整链路（节点数/连线数与 1440 档一致），热力图要画出完整
+       53 周（371 格），只是几何缩小。默认态零横向滚动容器。 */
     {
       id: "mobile-390-fits",
       kind: "mobile",
@@ -37,7 +39,7 @@ const SUITES = Object.freeze({
       viewport: "mobile",
       views: 6,
     },
-    /* #384：同一组事实在 768×1024 竖屏平板上必须同样成立 —— issue 的验收口径是
+    /* 同一组事实在 768×1024 竖屏平板上必须同样成立 —— 验收口径是
        390 / 360 / **768** 三档，而「内容档」820 正是为 768 而立（640 档覆盖不到）。
        没有这条，断点退回 <640 也一样是绿的。 */
     {
@@ -49,12 +51,13 @@ const SUITES = Object.freeze({
       viewport: "tablet",
       views: 6,
     },
-    /* #384 回滚守卫（rev-400 阻塞项）：宽档不能漏出紧凑视图的裸控件。
-       紧凑块/收起按钮由 flograph.js 无条件插进 DOM，样式一写进窄档媒体查询，
-       ≥640 就会退回 UA 按钮：图卡底部多出 24px 的「收起紧凑视图」，同时把
-       .flograph-scroll 压出 24px **纵向**嵌套滚动（吃掉滚轮，f3 clean() 的
-       mouse.wheel 断言因此 4500ms 超时）。一个 case 里量 3 个宽度（1440 记录视图，
-       1024 / 820 额外量），820 是内容档边界外侧 —— JS 与 CSS 的阈值必须同时切。 */
+    /* 宽档回归守卫：桌面（1440/1024/820）必须还是横向完整图，且 DOM 里不能残留
+       任何紧凑视图控件（#369 已把 `.flograph-compact*` 整块删掉，这里同时钉住
+       「删干净了」这件事）。820 是内容档边界外侧 —— JS 的 matchMedia 与 ui.css 的
+       819.98 必须同时切，差 1px 就会在 820 上画纵向图。三个宽度都要量：
+       ① 无 compact 残留；② 完整图可见；③ .flograph-scroll 无纵向嵌套滚动
+       （24px 的纵向溢出会吃掉滚轮，f3 clean() 的 mouse.wheel 断言会超时）；
+       ④ 页面级不横滚。 */
     {
       id: "desktop-graph-clean",
       kind: "desktop",
@@ -126,13 +129,79 @@ async function gridCase(c) {
   });
 }
 
-// ---------- #384 · 390 / 768：四类主内容不再需要横滚 ----------
-// 断言的是 issue 的四条验收（keys/admin 行式卡片、链路图 3 节点 + 「还有 N →」、
-// 热力图一行摘要、docs 代码块软换行），全部量真实 DOM 几何；另加两条全局约束：
+// ---------- 390 / 768：四类主内容不再需要横滚，且**不是靠折叠** ----------
+// 断言的是四条验收（keys/admin 行式卡片、链路图完整图、热力图完整 53 周、
+// docs 代码块软换行），全部量真实 DOM 几何；另加三条全局约束：
 //   ① documentElement.scrollWidth == innerWidth（页面级不横滚）；
 //   ② #page-main 里默认态下**没有任何**横向滚动容器 —— 不是「有提示就算过」，
 //      而是主内容根本不该需要滚（保留的横滚只允许是用户主动打开的完整视图，
-//      那条路径由 auditPage 的「白名单 + 可见提示」断言守）。
+//      那条路径由 auditPage 的「白名单 + 可见提示」断言守）；
+//   ③ 手机档画的必须**和宽档是同一张图**：节点数、连线数逐项相等（见下
+//      mobileGraphFacts 的 mobile===wide 断言），不是 3 步摘要。
+/* 链图 / 热力图的**真实几何**探针（page.evaluate 里跑，不引用外部变量）。
+ * 「手机档画的是一张完整的图」不能被写成「有 .flograph-scroll 就算过」——
+ * 这里量的是节点数、连线数、是否纵向、卡内有没有嵌套滚动、控件真实尺寸，
+ * 以及热力图的 53×7 = 371 格是否整幅落在卡片内。 */
+const GRAPH_FACTS = () => {
+  const main = document.getElementById("page-main") || document.body;
+  const graph = main.querySelector(".flograph--silk");
+  const gScroll = main.querySelector(".flograph-scroll");
+  const canvas = main.querySelector(".flograph-canvas");
+  const int = (n) => Math.round(n);
+  const nodeEls = graph ? [...graph.querySelectorAll("[data-node-id]")] : [];
+  const cRect = canvas ? canvas.getBoundingClientRect() : null;
+  /* 「画出来了」不能只看 DOM 里有没有节点 —— #384 的紧凑视图把节点留在 DOM 里
+   * 只藏掉滚动容器，光数节点是量不出来的（那正是这条断言以前的漏洞）。所以这里
+   * 逐卡量真实盒子，并核对每一张都落在画布内。 */
+  const visible = nodeEls.filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  const inside = cRect
+    ? nodeEls.filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.left >= cRect.left - 1 && r.right <= cRect.right + 1 && r.top >= cRect.top - 1 && r.bottom <= cRect.bottom + 1;
+      })
+    : [];
+  return {
+    hasGraph: !!graph,
+    isVertical: graph ? graph.classList.contains("is-vertical") : false,
+    nodes: nodeEls.length,
+    visibleNodes: visible.length,
+    nodesInsideCanvas: inside.length,
+    edges: graph ? graph.querySelectorAll("path.sl-core").length : 0,
+    /* #369 删掉紧凑视图之后，这三种 class 一个都不该再出现（DOM 里残留就是死代码） */
+    compactDom: main.querySelectorAll(".flograph-compact, .flograph-compact-collapse, .flograph-compact-more").length,
+    /* 卡内纵向滚动必须为 0：纵向图靠**页面**滚动看全图，卡里再套一层会吃掉滚轮 */
+    gVertOver: gScroll ? gScroll.scrollHeight - gScroll.clientHeight : -1,
+    gHorzOver: gScroll ? gScroll.scrollWidth - gScroll.clientWidth : -1,
+    canvasW: cRect ? int(cRect.width) : 0,
+    canvasH: cRect ? int(cRect.height) : 0,
+    scrollW: gScroll ? gScroll.clientWidth : 0,
+    scrollH: gScroll ? gScroll.clientHeight : 0,
+    scrollVisible: (() => {
+      if (!gScroll) return false;
+      const r = gScroll.getBoundingClientRect();
+      return getComputedStyle(gScroll).display !== "none" && r.width > 0 && r.height > 0;
+    })(),
+    ctrl: [...main.querySelectorAll(".flograph-ctrl button")].map((b) => {
+      const r = b.getBoundingClientRect();
+      return { w: int(r.width), h: int(r.height) };
+    }),
+    hmCells: main.querySelectorAll("#hm .hm-cell").length,
+    hmSummary: !!main.querySelector("#hm-summary"),
+    hmScrollOver: (() => { const e = main.querySelector(".hm-scroll"); return e ? e.scrollWidth - e.clientWidth : -1; })(),
+    hmGridW: (() => { const e = main.querySelector("#hm"); return e ? int(e.getBoundingClientRect().width) : 0; })(),
+    hmBoxW: (() => { const e = main.querySelector(".hm-scroll"); return e ? e.clientWidth : 0; })(),
+    hmVisible: (() => {
+      const e = main.querySelector("#hm .hm-cell");
+      if (!e) return false;
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    })(),
+  };
+};
+
 async function mobileFitsCase(c) {
   const viewport = c.viewport === "tablet" ? TABLET_VIEW : VIEWPORTS.mobile;
   const vpLabel = c.viewport === "tablet" ? "768" : "390";
@@ -155,17 +224,6 @@ async function mobileFitsCase(c) {
             const cls = String(el.className || "").trim().split(/\s+/).slice(0, 2).join(".");
             scrollers.push(el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (cls ? "." + cls : ""));
           }
-          const visible = (el) => {
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            const cs = getComputedStyle(el);
-            return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0 ? r : null;
-          };
-          const compact = main.querySelector(".flograph-compact");
-          const more = compact ? compact.querySelector(".flograph-compact-more") : null;
-          const graphScroll = main.querySelector(".flograph-scroll");
-          const hmScroll = main.querySelector(".hm-scroll");
-          const hmSummary = main.querySelector("#hm-summary");
           const codeOver = Array.from(main.querySelectorAll(".code-body"))
             .filter((el) => el.getBoundingClientRect().width > 0)
             .map((el) => el.scrollWidth - el.clientWidth)
@@ -177,18 +235,24 @@ async function mobileFitsCase(c) {
             docW: document.documentElement.scrollWidth,
             innerW: innerWidth,
             scrollers,
-            steps: compact ? compact.querySelectorAll(".flograph-compact-step").length : 0,
-            moreText: more ? more.textContent.trim() : "",
-            graphCompactVisible: !!visible(compact),
-            graphScrollVisible: !!visible(graphScroll),
-            hmSummaryVisible: !!visible(hmSummary),
-            hmSummaryText: hmSummary ? hmSummary.textContent.trim() : "",
-            hmScrollVisible: !!visible(hmScroll),
             codeOver,
             rowActionRight: lastRect ? Math.round(lastRect.right) : null,
             rowActionW: lastRect ? Math.round(lastRect.width) : null,
           };
         });
+        const graph = await d.page.evaluate(GRAPH_FACTS);
+        /* 宽档对照：同一页在 1440 下渲染的节点/连线数。手机档必须与它**逐项相等**。
+         * 注意单靠这条不够（#384 的紧凑视图把节点留在 DOM、只藏滚动容器，也能全绿），
+         * 所以下面还配了三条正向锚点：每张卡有真实盒子、全落在画布内、滚动容器可见。
+         * 三条合起来才等于「手机档画的是一张看得见的完整图」。 */
+        let wide = null;
+        if (graph.hasGraph) {
+          await d.page.setViewportSize(VIEWPORTS.desktop);
+          await d.page.waitForTimeout(450);
+          wide = await d.page.evaluate(GRAPH_FACTS);
+          await d.page.setViewportSize(viewport);
+          await d.page.waitForTimeout(350);
+        }
         const label = page + "\u00b7" + vpLabel;
         assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
         assert.deepEqual(facts.scrollers, [], label + ": \u9ed8\u8ba4\u6001\u4e3b\u5185\u5bb9\u4e0d\u8be5\u6709\u4efb\u4f55\u6a2a\u5411\u6eda\u52a8\u5bb9\u5668: " + JSON.stringify(facts.scrollers));
@@ -197,16 +261,44 @@ async function mobileFitsCase(c) {
           assert.ok(facts.rowActionRight !== null && facts.rowActionW > 0, label + ": \u884c\u5185\u64cd\u4f5c\u6309\u94ae\u5fc5\u987b\u5b58\u5728\u4e14\u53ef\u89c1");
           assert.ok(facts.rowActionRight <= facts.innerW, label + ": \u64cd\u4f5c\u5217\u4e0d\u8be5\u9700\u8981\u6a2a\u6eda\u624d\u80fd\u770b\u5230\uff08right=" + facts.rowActionRight + " > " + facts.innerW + "\uff09");
         }
-        if (page === "index" || page === "trace" || page === "source") {
-          assert.equal(facts.graphCompactVisible, true, label + ": \u94fe\u8def\u56fe " + vpLabel + " \u4e0b\u5e94\u662f\u7d27\u51d1\u89c6\u56fe\uff083 \u8282\u70b9 + \u8fd8\u6709 N\uff09");
-          assert.equal(facts.steps, 3, label + ": \u7d27\u51d1\u89c6\u56fe\u53ea\u753b 3 \u4e2a\u8282\u70b9\uff0cgot " + facts.steps);
-          assert.equal(facts.graphScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574\u56fe\uff081102px \u753b\u5e03\uff09");
-          if (facts.moreText) assert.match(facts.moreText, /\d/, label + ": \u300c\u8fd8\u6709 N \u2192\u300d\u5fc5\u987b\u5e26\u6570\u91cf\uff0cgot " + JSON.stringify(facts.moreText));
+        // trace / source 一定有图；index 的「最新链路」在没有任何执行时可以是空的
+        if (page === "trace" || page === "source") assert.ok(graph.hasGraph, label + ": \u94fe\u8def\u56fe\u5fc5\u987b\u6e32\u67d3\u51fa\u6765");
+        if (graph.hasGraph) {
+          assert.equal(graph.compactDom, 0, label + ": #369 \u5df2\u5220\u6389\u7d27\u51d1\u89c6\u56fe\uff0cDOM \u91cc\u4e0d\u5f97\u6b8b\u7559 .flograph-compact*");
+          assert.equal(graph.isVertical, true, label + ": " + vpLabel + " \u4e0b\u6d41\u5411\u5fc5\u987b\u662f\u7eb5\u5411\uff08.depth \u2192 y\uff09");
+          assert.ok(graph.nodes >= 4, label + ": \u5b8c\u6574\u94fe\u8def\u5fc5\u987b\u753b\u51fa\u8282\u70b9\uff0cgot " + graph.nodes);
+          /* \u4e0b\u9762\u4e09\u6761\u662f\u300c\u56fe\u771f\u7684\u663e\u793a\u51fa\u6765\u4e86\u300d\u7684\u6b63\u5411\u951a\u70b9\uff1a\u53ea\u6570 DOM \u91cc\u7684\u8282\u70b9\u6570\u662f\u91cf\u4e0d\u51fa
+           * \u7d27\u51d1\u89c6\u56fe\u7684\uff08\u5b83\u628a\u8282\u70b9\u7559\u5728 DOM\u3001\u53ea\u85cf\u6389\u6eda\u52a8\u5bb9\u5668\uff09\u3002 */
+          assert.equal(graph.visibleNodes, graph.nodes, label + ": \u6bcf\u4e00\u5f20\u5361\u90fd\u5fc5\u987b\u6709\u771f\u5b9e\u76d2\u5b50\uff08display \u4e0d\u5f97\u4e3a none\uff09\uff0cgot " + graph.visibleNodes + "/" + graph.nodes);
+          assert.equal(graph.nodesInsideCanvas, graph.nodes, label + ": \u5361\u7247\u5fc5\u987b\u5168\u90e8\u843d\u5728\u753b\u5e03\u5185\uff08\u753b\u5e03 " + graph.canvasW + "x" + graph.canvasH + "\uff09\uff0cgot " + graph.nodesInsideCanvas + "/" + graph.nodes);
+          assert.ok(graph.scrollVisible && graph.scrollW > 0 && graph.scrollH > 0, label + ": \u56fe\u7684\u6eda\u52a8\u5bb9\u5668\u5fc5\u987b\u53ef\u89c1\u4e14\u6709\u771f\u5b9e\u5c3a\u5bf8\uff08" + graph.scrollW + "x" + graph.scrollH + "\uff09");
+          if (graph.isVertical) {
+            /* #369 \u88c1\u51b3\u7b2c 5 \u6761\uff1a\u7a84\u6863\u753b\u5e03\u9ad8\u5ea6 = \u5185\u5bb9\u9ad8\u5ea6\uff0c\u6574\u56fe\u8ddf\u9875\u9762\u6eda\u3002
+             * \u753b\u5e03\u9ad8\u88ab\u622a\u77ed\u5c31\u4f1a\u91cd\u65b0\u51fa\u73b0\u5361\u5185\u7eb5\u5411\u6eda\u52a8\uff08\u4e0a\u9762 gVertOver \u5df2\u9489\uff09\u3002 */
+            assert.ok(Math.abs(graph.canvasH - graph.scrollH) <= 1, label + ": \u7eb5\u5411\u6863\u753b\u5e03\u9ad8\u5fc5\u987b\u7b49\u4e8e\u53ef\u89c6\u9ad8\uff08canvas " + graph.canvasH + " vs \u53ef\u89c6 " + graph.scrollH + "\uff09");
+          }
+          assert.ok(graph.edges >= graph.nodes - 1, label + ": \u8fde\u7ebf\u6570\u5fc5\u987b \u2265 \u8282\u70b9\u6570-1\uff08got " + graph.edges + " / " + graph.nodes + "\uff09");
+          assert.ok(wide, label + ": \u5bbd\u6863\u5bf9\u7167\u91c7\u96c6\u5931\u8d25");
+          assert.equal(graph.nodes, wide.nodes, label + ": \u624b\u673a\u6863\u8282\u70b9\u6570\u5fc5\u987b\u4e0e 1440 \u4e00\u81f4\uff08" + graph.nodes + " vs " + wide.nodes + "\uff09");
+          assert.equal(graph.edges, wide.edges, label + ": \u624b\u673a\u6863\u8fde\u7ebf\u6570\u5fc5\u987b\u4e0e 1440 \u4e00\u81f4\uff08" + graph.edges + " vs " + wide.edges + "\uff09");
+          assert.equal(wide.isVertical, false, label + ": 1440 \u6863\u5fc5\u987b\u4ecd\u662f\u6a2a\u5411\u6d41\u5411");
+          assert.ok(graph.gVertOver <= 1, label + ": \u5361\u5185\u4e0d\u5f97\u6709\u7eb5\u5411\u5d4c\u5957\u6eda\u52a8\uff08scrollHeight-clientHeight=" + graph.gVertOver + "\uff09");
+          assert.ok(graph.gHorzOver <= 2, label + ": \u5b8c\u6574\u56fe\u4e0d\u5e94\u9700\u8981\u6a2a\u5411\u62d6\u624d\u770b\u5f97\u5168\uff08scrollWidth-clientWidth=" + graph.gHorzOver + "\uff09");
+          assert.ok(graph.ctrl.length > 0, label + ": \u56fe\u63a7\u4ef6\u5fc5\u987b\u5b58\u5728");
+          for (const b of graph.ctrl) {
+            assert.ok(b.w > 0 && b.h > 0, label + ": \u56fe\u63a7\u4ef6\u5fc5\u987b\u6709\u771f\u5b9e\u5c3a\u5bf8\uff0cgot " + b.w + "\u00d7" + b.h);
+            /* #382 \u7684 44\u00d744 \u662f**\u624b\u673a\u6863**\uff08\u2264639\uff09\u7684\u547d\u533a\uff1b768 \u5e73\u677f\u4ecd\u662f\u684c\u9762\u5c3a\u5bf8\uff0c\u5728\u90a3\u91cc\u65ad\u8a00 44 \u7b49\u4e8e\u628a\u53e6\u4e00\u4e2a issue \u7684\u8303\u56f4\u5077\u5077\u6269\u5927\u3002 */
+            if (c.viewport === "mobile") {
+              assert.ok(b.w >= 44 && b.h >= 44, label + ": #382 \u89e6\u63a7\u70ed\u533a\u5fc5\u987b \u2265 44\u00d744\uff0cgot " + b.w + "\u00d7" + b.h);
+            }
+          }
         }
         if (page === "index") {
-          assert.equal(facts.hmSummaryVisible, true, label + ": \u70ed\u529b\u56fe\u6298\u53e0\u6210\u4e00\u884c\u6458\u8981");
-          assert.ok(facts.hmSummaryText.length > 0 && facts.hmSummaryText !== "\u2014", label + ": \u6458\u8981\u8981\u6709\u5185\u5bb9\uff0cgot " + JSON.stringify(facts.hmSummaryText));
-          assert.equal(facts.hmScrollVisible, false, label + ": \u9ed8\u8ba4\u6001\u4e0d\u663e\u793a\u5b8c\u6574 53 \u5468");
+          assert.equal(graph.hmSummary, false, label + ": #369 \u5df2\u5220\u6389\u70ed\u529b\u56fe\u6458\u8981\u6309\u94ae\uff08#hm-summary\uff09");
+          assert.equal(graph.hmCells, 371, label + ": \u70ed\u529b\u56fe\u5fc5\u987b\u662f\u5b8c\u6574 53\u00d77=371 \u683c\uff0cgot " + graph.hmCells);
+          assert.equal(graph.hmVisible, true, label + ": \u70ed\u529b\u56fe\u683c\u5b50\u5fc5\u987b\u771f\u7684\u663e\u793a\u51fa\u6765\uff08\u4e0d\u662f\u85cf\u5728 display:none \u91cc\u6570\u6570\uff09");
+          assert.ok(graph.hmScrollOver <= 2, label + ": \u5b8c\u6574 53 \u5468\u5fc5\u987b\u4e0d\u6a2a\u6eda\u5c31\u80fd\u770b\u5168\uff08overflow=" + graph.hmScrollOver + "\uff09");
+          assert.ok(graph.hmGridW <= graph.hmBoxW + 1, label + ": \u70ed\u529b\u56fe\u7f51\u683c\u4e0d\u5f97\u6ea2\u51fa\u5361\u7247\uff08" + graph.hmGridW + " > " + graph.hmBoxW + "\uff09");
         }
         assert.deepEqual(d.report.errors.slice(errorsFrom), [], label + ": pageerror/console/network \u5931\u8d25");
         view.ok = true;
@@ -261,13 +353,16 @@ async function desktopGraphCleanCase(c) {
               return cs.display !== "none" && cs.visibility !== "hidden" && r.width > 0 && r.height > 0;
             };
             const scroll = main.querySelector(".flograph-scroll");
+            const graph = main.querySelector(".flograph--silk");
             return {
               width,
               docW: document.documentElement.scrollWidth,
               innerW: innerWidth,
-              compactVisible: visible(main.querySelector(".flograph-compact")),
-              collapseVisible: visible(main.querySelector(".flograph-compact-collapse")),
-              collapseText: (main.querySelector(".flograph-compact-collapse") || {}).textContent || "",
+              // #369：紧凑视图的 DOM 已经从 flograph.js 里删掉，任何宽度都不该再出现
+              compactDom: main.querySelectorAll(".flograph-compact, .flograph-compact-collapse, .flograph-compact-more").length,
+              isVertical: graph ? graph.classList.contains("is-vertical") : false,
+              nodes: graph ? graph.querySelectorAll("[data-node-id]").length : 0,
+              edges: graph ? graph.querySelectorAll("path.sl-core").length : 0,
               graphScrollVisible: visible(scroll),
               graphVertOverflow: scroll ? scroll.scrollHeight - scroll.clientHeight : 0,
             };
@@ -277,12 +372,10 @@ async function desktopGraphCleanCase(c) {
         for (const facts of widths) {
           const label = page + "\u00b7" + facts.width;
           assert.ok(facts.docW <= facts.innerW + 1, label + ": document horizontal overflow " + facts.docW + ">" + facts.innerW);
-          assert.equal(facts.compactVisible, false, label + ": \u5bbd\u6863\u4e0d\u8be5\u51fa\u73b0\u7d27\u51d1\u89c6\u56fe");
-          assert.equal(
-            facts.collapseVisible,
-            false,
-            label + ": \u5bbd\u6863\u4e0d\u8be5\u9732\u51fa\u300c" + String(facts.collapseText).trim() + "\u300d\u88f8\u6309\u94ae\uff08ua display \u56de\u9000\u5c31\u662f\u8fd9\u4e2a\uff09",
-          );
+          assert.equal(facts.compactDom, 0, label + ": #369 \u5df2\u5220\u6389\u7d27\u51d1\u89c6\u56fe\uff0c\u4efb\u4f55\u5bbd\u5ea6\u90fd\u4e0d\u5f97\u6b8b\u7559 .flograph-compact*");
+          assert.equal(facts.isVertical, false, label + ": \u5bbd\u6863\uff08\u2265820\uff09\u5fc5\u987b\u4ecd\u662f\u6a2a\u5411\u6d41\u5411\uff08JS \u65ad\u70b9\u4e0e ui.css \u7684 819.98 \u5fc5\u987b\u540c\u65f6\u5207\uff09");
+          assert.ok(facts.nodes >= 4, label + ": \u5bbd\u6863\u5fc5\u987b\u753b\u51fa\u5b8c\u6574\u56fe\uff0cgot " + facts.nodes + " \u8282\u70b9");
+          assert.ok(facts.edges >= facts.nodes - 1, label + ": \u5bbd\u6863\u8fde\u7ebf\u6570\u5fc5\u987b \u2265 \u8282\u70b9\u6570-1\uff08got " + facts.edges + " / " + facts.nodes + "\uff09");
           assert.equal(facts.graphScrollVisible, true, label + ": \u5bbd\u6863\u5fc5\u987b\u663e\u793a\u5b8c\u6574\u56fe");
           assert.ok(
             facts.graphVertOverflow <= 1,
