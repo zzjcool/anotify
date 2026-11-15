@@ -1252,7 +1252,6 @@
 					deliveryId: null,
 					payload: {},
 					signature: null,
-					dispatched: [],
 					prunedCount: 0,
 					deliveredAt: null,
 				},
@@ -1268,7 +1267,6 @@
 				involvedObject: { kind: "Source", name: "deploy-hook", uid: "src_mock_deploy_hook" },
 				payload: { repo: "acme/api", environment: "prod", commit: "9f2a1b3" },
 				signature: { algorithm: "hmac-sha256", verified: true },
-				dispatched: [{ task: "tsk_mock_1", capability: "fixer" }],
 				deliveredAt: t(630),
 				createdAt: t(630),
 			}),
@@ -1279,10 +1277,6 @@
 				deliveryId: "emit-tsk_mock_1-1",
 				involvedObject: { kind: "Task", name: "tsk_mock_1", uid: "tsk_mock_1" },
 				payload: { to: "analyze-pr", fields: ["repo"] },
-				dispatched: [
-					{ task: "tsk_mock_2", capability: "analyze-pr" },
-					{ task: "tsk_mock_3", capability: "lint-fix" },
-				],
 				deliveredAt: t(599),
 				createdAt: t(599),
 			}),
@@ -1316,7 +1310,6 @@
 				deliveryId: "cron-nightly-1",
 				involvedObject: { kind: "Source", name: "nightly", uid: "src_mock_nightly" },
 				payload: { suite: "e2e" },
-				dispatched: [{ task: "tsk_mock_8", capability: "report.send" }],
 				deliveredAt: t(3601),
 				createdAt: t(3601),
 			}),
@@ -2010,7 +2003,6 @@
 				signature: ev.signature ? clone(ev.signature) : null,
 			},
 			status: {
-				dispatched: clone(ev.dispatched || []),
 				pruned: ev.prunedCount ? (() => {
 					const facts = state.prunes.filter(p => p.ns === ev.ns && p.event === ev.name);
 					return facts.length ? { reason: facts[0].reason, detail: facts[0].detail } : null;
@@ -4023,7 +4015,6 @@
 				deliveryId: null,
 				payload: clone(payload || {}),
 				signature: null,
-				dispatched: [],
 				prunedCount: plan.pruned.length,
 				deliveredAt: isoNow(),
 				createdAt: isoNow(),
@@ -4066,7 +4057,6 @@
 			deliveryId: deliveryId,
 			payload: payload,
 			signature: o.signature || null,
-			dispatched: [],
 			prunedCount: 0,
 			deliveredAt: isoNow(),
 			createdAt: isoNow(),
@@ -4074,7 +4064,6 @@
 		recordEvent(ev);
 		const plan = planDispatch(row, payload);
 		const created = applyPlan(row, ev, plan, payload);
-		ev.dispatched = created.map((c) => ({ task: c.name, capability: c.capability }));
 		ev.prunedCount = plan.pruned.length;
 		row.lastFiredAt = isoNow();
 		const receipt = {

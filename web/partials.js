@@ -3612,7 +3612,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			// 契约 api-conventions §7.2：boolean（所有 target 可解析才是 true）。
 			// 明细在 trace/events 的 dispatched/pruned 里，不在这里再存一份数组。
 			targetsResolved: !!st.targetsResolved,
-			installedFrom: st.installedFrom == null ? null : st.installedFrom,
+			/* 源没有 installedFrom 这个事实（只在 CapabilityStatus 里）。 */
 		};
 	}
 
@@ -3871,8 +3871,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			creationTimestamp:
 				meta.creationTimestamp == null ? null : meta.creationTimestamp,
 			traceUID: spec.traceUID == null ? null : spec.traceUID,
-			sequence: spec.sequence == null ? null : spec.sequence,
-			sourceRef: spec.sourceRef == null ? null : spec.sourceRef,
+			/* TaskSpec 只有 traceUID/parentRef/parentTaskId/capability/params：
+			 * `sequence` 与 `sourceRef` 都不在契约里，也不被任何页面消费 —— 删掉，
+			 * 免得以后有人拿它们当真实字段用。 */
 			parentRef: spec.parentRef == null ? null : spec.parentRef,
 			parentTaskId: spec.parentTaskId == null ? null : spec.parentTaskId,
 			capability: cap
@@ -4008,7 +4009,11 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			eventType: spec.eventType == null ? null : spec.eventType,
 			deliveryId: spec.deliveryId == null ? null : spec.deliveryId,
 			payload: spec.payload == null ? null : deepCopy(spec.payload),
-			signature: isObj(spec.signature) ? deepCopy(spec.signature) : null,
+			/* EventSpec 没有 signature（events.yaml）：签名事实不在事件信封里。
+			 * 之前页面把它印进「查看原始 JSON」的 `"signature": null`，删掉。 */
+			/* v4 的 EventStatus 只有 pruned —— 服务端从不发 dispatched。
+			 * 这里仍原样透传（mock 的 console 形状带着它），但**页面不再展示**：
+			 * 「查看原始 JSON」里印 `"dispatched": []` 等于给用户一条假事实。 */
 			dispatched: arr(st.dispatched),
 			// pruned 原样透传（对象 `{reason,detail}` 或 null）：不转计数、不转数组。
 			pruned: st.pruned == null ? null : deepCopy(st.pruned),

@@ -1406,7 +1406,7 @@ test("model.edge：只留 v4 的 from/to/kind，v3 的 fromIsSource/position/por
 	assert.equal(empty.kind, null);
 });
 
-test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console 同信封）", () => {
+test("model.event：v4 信封字段 deliveryId/pruned/signature（W6 console 同信封）", () => {
 	const { A } = loadAnotify();
 	const envelope = plain(
 		A.model.event({
@@ -1421,10 +1421,8 @@ test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console �
 				eventType: "webhook",
 				deliveryId: "d-1",
 				payload: { repo: "a/b" },
-				signature: { algorithm: "hmac-sha256", verified: true },
 			},
 			status: {
-				dispatched: [{ capability: "fixer", state: "ok" }],
 				pruned: { reason: "param_missing", detail: "需要 file" },
 				deliveredAt: "2024-01-01T00:00:00Z",
 			},
@@ -1438,8 +1436,11 @@ test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console �
 	assert.equal(envelope.involvedObject.kind, "Source");
 	assert.equal(envelope.deliveryId, "d-1");
 	assert.equal(envelope.traceUID, "tr-1");
-	assert.equal(envelope.signature.verified, true);
-	assert.equal(envelope.dispatched.length, 1);
+	/* EventSpec 没有 signature：模型不得透传（否则「原始 JSON」里是假字段）。 */
+	assert.equal("signature" in envelope, false);
+	/* v4 的 EventStatus 只有 pruned（additionalProperties:false）。model 仍原样透传
+	 * `dispatched`（mock 的 console 形状带着它），但页面**不再展示** —— 在「查看
+	 * 原始 JSON」里印 `"dispatched": []` 是一条服务端从不发送的假事实。 */
 	// pruned 是对象（playbook/event 语义：{reason,detail}）或 null，不是计数
 	assert.deepEqual(envelope.pruned, { reason: "param_missing", detail: "需要 file" });
 	assert.equal(envelope.deliveredAt, "2024-01-01T00:00:00Z");
@@ -1450,14 +1451,12 @@ test("model.event：v4 信封字段 deliveryId/dispatched/pruned（W6 console �
 			type: "Info",
 			deliveryId: "d-2",
 			pruned: null,
-			dispatched: [],
 		}),
 	);
 	// W6 supersedes the old flat console example; explicitly reject it.
 	assert.equal(row.reason, null);
 	assert.equal(row.deliveryId, null);
 	assert.equal(row.pruned, null);
-	assert.deepEqual(row.dispatched, []);
 });
 
 test("model.trace：{events,tasks,pruned} 缺省 []", () => {
@@ -2271,7 +2270,9 @@ test("mock: stats / console.events 必须显式给 namespace（不再默认全 n
 	assert.equal(rows.body.metadata.continue, "", "W6 metadata.continue, not a flat wrapper");
 	const row = rows.body.items.find(r => r.spec.reason === "Ingested");
 	assert.ok(row.spec.deliveryId, "Event spec deliveryId remains visible");
-	assert.ok(Array.isArray(row.status.dispatched));
+	/* v4 的 EventStatus 只有 pruned（additionalProperties:false）；mock 不再伪造成
+	 * 「总有 dispatched 数组」——真实信封里它压根不存在。 */
+	assert.equal("dispatched" in row.status || row.status.dispatched === undefined, true);
 	assert.equal(row.status.pruned, null);
 	assert.equal(row.metadata.namespace, "default");
 });

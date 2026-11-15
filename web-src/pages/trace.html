@@ -411,7 +411,7 @@
         const event = model.event(resource);
         const row = el("div", { class: "tr-fact", "data-uid": event.uid });
         /* #375：首屏 = 结构化事实（事件类型/严重度/原因 + 派发到哪些任务 + 剪枝原因），
-           原始 JSON（deliveryId / dispatched / pruned）收进「查看原始 JSON」。 */
+           原始 JSON（deliveryId / pruned）收进「查看原始 JSON」——v4 没有 status.dispatched。 */
         row.append(el("div", { class: "tr-head" },
           el("span", { class: "tr-cap", text: event.eventType || "—" }),
           el("span", { class: "tr-ver", text: event.reason || "—" }),
@@ -434,7 +434,7 @@
             el("span", { text: t("uxaudit.dev.raw") }),
             el("span", { class: "devf-hint", text: event.uid || "—" })),
           el("div", { class: "devf-body" },
-            codeBlock("JSON", JSON.stringify({ deliveryId: event.deliveryId, dispatched: event.dispatched, pruned: event.pruned }, null, 2)))));
+            codeBlock("JSON", JSON.stringify({ deliveryId: event.deliveryId, pruned: event.pruned }, null, 2)))));
         events.body.append(row);
       }
       if (!doc.events.length) events.body.append(el("p", { class: "tr-meta", text: t("events.v4.empty") }));
