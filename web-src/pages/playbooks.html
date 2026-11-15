@@ -462,13 +462,9 @@
       if (pb.status.unapplied.length) {
         section.append(el("p", "badge badge-warn", t("pb.v4.unapplied_count", { n: pb.status.unapplied.length })));
       }
-      if (pb.status.blocker) {
-        // 拼接前先滤掉空段：capability 为空时旧实现会印出「Implemented ·  · edit_capability」
-        // 这种悬挂分隔符（审计 R7 的同一类问题）。
-        const parts = [t("pb.v4.blocker") + ": " + pb.status.blocker.type,
-          pb.status.blocker.capability, pb.status.blocker.action].filter(Boolean);
-        section.append(el("p", "field-hint", parts.join(" · ")));
-      }
+      /* `status.blocker` 不在 v4 的 PlaybookStatus 里（api/resource.yaml：
+       * ready/unapplied/total/conditions/items/sources/lastInstallId/source），
+       * 服务端从不发它 —— 「优先处理」这块 UI 永远不显示，已按用户裁决下线。 */
       if (pb.status.lastInstallId) {
         section.append(el("p", "mono field-hint", t("pb.v4.last_install") + ": " + pb.status.lastInstallId));
       }

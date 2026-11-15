@@ -3786,7 +3786,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 				unapplied: arr(st.unapplied),
 				total: st.total == null ? null : st.total,
 				conditions: arr(st.conditions),
-				blocker: st.blocker == null ? null : deepCopy(st.blocker),
+				/* `status.blocker` 不在 PlaybookStatus 里（服务端从不发）：模型不再透传，
+			 * 页面也不再渲染「优先处理」。 */
 				items: arr(st.items),
 				sources: obj(st.sources),
 				lastInstallId: st.lastInstallId == null ? null : st.lastInstallId,

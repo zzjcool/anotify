@@ -3145,11 +3145,9 @@
 		const sources = { total: owned.sources.length, enabled: owned.sources.filter(s => s.enabled).length, blocked: 0, disabled: 0, unapplied: 0 };
 		for (const i of items.filter(i => i.kind === "source")) if (i.state in sources) sources[i.state]++;
 		const bad = conditions.find(c => c.status !== "True");
-		const blocker = unapplied.length ? { type: unapplied[0].reason, capability: unapplied[0].ref, action: unapplied[0].kind === "source" ? "edit_source" : "edit_capability" }
-			: bad ? { type: bad.type, capability: bad.members[0] || null, action: { Implemented: "edit_capability", NodesAvailable: "open_node_page", DownstreamResolved: "create_capability", Deployed: "deploy" }[bad.type] } : null;
 		// Mask only provenance-bearing display leaves above, not fixed action/type
 		// identities by a substring sweep of the entire status object.
-		return pbMask({ ready: caps.length > 0 && !bad && !unapplied.length, unapplied, total: items.length, conditions, blocker, items, sources, lastInstallId: last?.install.id || null, ...(row.source ? { source: row.source } : {}) });
+		return pbMask({ ready: caps.length > 0 && !bad && !unapplied.length, unapplied, total: items.length, conditions, items, sources, lastInstallId: last?.install.id || null, ...(row.source ? { source: row.source } : {}) });
 	}
 	function pbResource(row, body = false) {
 		return { apiVersion: API_VERSION, kind: "Playbook", metadata: { name: row.name, namespace: row.ns, uid: row.uid, resourceVersion: row.rv, creationTimestamp: row.createdAt, displayName: row.root.metadata.displayName || row.name, description: row.root.metadata.description || "", ...(row.root.metadata.version ? { version: row.root.metadata.version } : {}) },
