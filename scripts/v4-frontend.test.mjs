@@ -1061,7 +1061,6 @@ const PLAYBOOK_RES = {
 			},
 		],
 		conditions: [{ type: "Installed", status: "True" }],
-		blocker: { type: "pending_ref", capability: "analyze", action: "install analyze" },
 		items: [
 			{ kind: "Capability", name: "fixer", version: 3, state: "no_node", targets: ["repo"] },
 			{ kind: "Source", name: "hook", state: "unapplied" },
@@ -1071,7 +1070,7 @@ const PLAYBOOK_RES = {
 	},
 };
 
-test("model.playbook：valuesSchema/status.unapplied/items/sources/blocker/files", () => {
+test("model.playbook：valuesSchema/status.unapplied/items/sources/files", () => {
 	const { A } = loadAnotify();
 	const m = plain(A.model.playbook(PLAYBOOK_RES));
 
@@ -1088,7 +1087,8 @@ test("model.playbook：valuesSchema/status.unapplied/items/sources/blocker/files
 	assert.equal(m.status.items[0].state, "no_node");
 	assert.equal(m.status.items[1].state, "unapplied");
 	assert.equal(m.status.sources.unapplied, 1);
-	assert.equal(m.status.blocker.action, "install analyze");
+	/* v4 的 PlaybookStatus 没有 blocker：模型不再透传，页面也没有「优先处理」块。 */
+	assert.equal("blocker" in m.status, false);
 	assert.equal(m.status.lastInstallId, "inst-1");
 	assert.equal(m.files["capabilities/a.yaml"], "kind: Capability");
 
@@ -3871,7 +3871,7 @@ test("F2c1 matrix: next/targets.params never edited on reuse, unapplied declared
 	assert.equal(JSON.stringify(Mock.capByName("a-review", "default")), oldCap); assert.equal(JSON.stringify(Mock.state.sources.find(s => s.name === "a-push")), oldSource);
 	const status = (await req("/v1/namespaces/default/playbooks/project-chain")).body.status;
 	assert.equal(status.ready, false); assert.equal(status.unapplied.length, 2); assert.ok(status.items.some(i => i.kind === "source" && i.state === "unapplied"));
-	assert.equal(status.lastInstallId, result.install.id); assert.equal(status.conditions.length, 4); assert.ok(status.blocker);
+	assert.equal(status.lastInstallId, result.install.id); assert.equal(status.conditions.length, 4);
 });
 
 test("F2c1 matrix: normalized defaults/token omitted reuse, true config/kind conflict gives atomic ALL-state zero writes", async () => {
@@ -5092,7 +5092,6 @@ test('G1 M1 sensitive version upgrade/from/to and implicit reuse refs stay maske
   const copies = [second.body, reuse.body, (await req(G1_PB + '/installs/' + second.body.install.id)).body,
     (await req(G1_PB + '/installs/' + reuse.body.install.id)).body, ...Mock.state.playbookInstalls.map(i => i.receipt)];
   for (const copy of copies) { assert.equal(JSON.stringify(copy).includes('a-review@23'), false); assert.equal(JSON.stringify(copy).includes('a-review@17'), false); }
-  assert.equal((await req(G1_PB)).body.status.blocker.action, 'deploy', 'fixture has compatible nodes but no applied deployment');
   // Identical non-secret integers MUST NOT be globally masked.
   const plainRun = loadMock(); const plainFiles = pbRawEdit(files, d => { delete d['playbook.yaml'].spec.values.properties.version.writeOnly; });
   await pbCreate(plainRun.req, plainFiles);
@@ -5146,8 +5145,6 @@ test('G1 M3 status masks sensitive-derived messages but preserves edit_capabilit
   assert.equal((await pbAction(req, 'install', { project: 'a', route: 'edit' })).status, 200);
   const second = await pbAction(req, 'install', { project: 'a', route: 'missing-next' }); assert.equal(second.status, 200);
   const status = (await req(G1_PB)).body.status;
-  assert.equal(status.blocker.action, 'edit_capability', 'fixed action must not be swept by secret substring edit');
-  assert.equal(status.blocker.type, 'routing_unapplied'); assert.equal(status.blocker.capability, 'a-review@1');
   assert.ok(status.items.some(i => i.name === 'edit'), 'unrelated literal resource name equal to secret stays navigable');
   assert.ok(status.conditions.every(c => ['Implemented', 'NodesAvailable', 'DownstreamResolved', 'Deployed'].includes(c.type)));
   assert.deepEqual(status.unapplied[0].actual, ['***']); assert.deepEqual(status.unapplied[0].declared, ['***']);
@@ -5162,7 +5159,8 @@ test('G1 M3 status masks sensitive-derived messages but preserves edit_capabilit
 });
 test('G1 masked resource identifier is not an actual URL while valid identity and masked-version links stay valid', () => {
   const source = readFileSync(path.join(ROOT, 'web-src/pages/playbook.html'), 'utf8');
-  const start = source.indexOf('    function resourceLink('), end = source.indexOf('    function manualAction(', start);
+  /* manualAction 已随 status.blocker 下线，切片终点换成下一个顶层函数 */
+  const start = source.indexOf('    function resourceLink('), end = source.indexOf('    function showUnapplied(', start);
   const ctx = vm.createContext({ el: (tag, cls, text) => ({ tag, cls, text }), scoped: (page, key, value) => `${page}.html?namespace=prod&${key}=${encodeURIComponent(value)}` });
   vm.runInContext(source.slice(start, end) + '\n globalThis.link = resourceLink;', ctx);
   for (const kind of ['capability', 'source']) assert.equal(ctx.link(kind, '***').href, undefined, 'masked identity must not become resource URL');
@@ -5190,18 +5188,6 @@ test('G1 Silk pan defers capture for native clicks and retains horizontal/vertic
   ctx.down(event(50)); listeners.get('pointermove')(event(50, 50)); assert.equal(ctx.dragMoved, true, 'vertical node drag also suppresses navigation');
   listeners.get('pointercancel')(event(50, 50)); assert.equal(listeners.size, 0);
   const before = captured.length; ctx.down({ ...event(50), pointerType: 'touch' }); assert.equal(captured.length, before, 'native touch scrolling remains uncaptured');
-});
-
-test('G1 masked blocker identity has no blind resource URL but keeps identity-free Node action and valid edit actions', () => {
-  const source = readFileSync(path.join(ROOT, 'web-src/pages/playbook.html'), 'utf8');
-  const start = source.indexOf('    function manualAction('), end = source.indexOf('    function showUnapplied(', start);
-  const ctx = vm.createContext({ el: (tag, cls, text) => ({ tag, cls, text }), t: () => 'Manual action', scoped: (page, key, value) => `${page}.html?namespace=prod${key ? `&${key}=${encodeURIComponent(value)}` : ''}` });
-  vm.runInContext(source.slice(start, end) + '\n globalThis.action = manualAction;', ctx);
-  assert.equal(ctx.action({ action: 'edit_capability', capability: '***' }).href, undefined, 'masked blocker identity must not become URL');
-  assert.equal(ctx.action({ action: 'edit_source', capability: '***' }).href, undefined);
-  assert.equal(ctx.action({ action: 'open_node_page', capability: '***' }).href, 'nodes.html?namespace=prod');
-  assert.equal(ctx.action({ action: 'edit_capability', capability: 'real-cap@***' }).href, 'capabilities.html?namespace=prod&name=real-cap');
-  assert.equal(ctx.action({ action: 'edit_source', capability: 'real-source' }).href, 'source.html?namespace=prod&name=real-source');
 });
 
 test('G1 M3 condition provenance masks a private versioned-next derived name without masking equal public next or unrelated conditions', async () => {
@@ -5313,11 +5299,9 @@ test('G2 Source whole-array/object and mixed target ancestor policies mask only 
     const status = (await req(G1_PB)).body.status;
     assert.deepEqual(status.items.find(i => i.kind === 'source').targets, shape === 'mixed' ? ['***', 'a-review'] : ['***']);
     assert.ok(status.items.some(i => i.kind === 'capability' && i.name === 'a-review'));
-    assert.equal(status.blocker.action, 'deploy');
     const changed = { project: 'a', ...(shape === 'mixed' ? { target: { capability: 'a-fixer', params: { fixed: 23 } } } : { targets: [{ capability: 'a-fixer', params: { fixed: 23 } }] }) };
     const reused = await pbAction(req, 'install', changed); assert.equal(reused.status, 200);
     const next = (await req(G1_PB)).body.status;
-    assert.equal(next.blocker.action, 'edit_source'); assert.equal(next.blocker.type, 'targets_unapplied');
     assert.deepEqual(next.items.find(i => i.kind === 'source').targets, shape === 'mixed' ? ['***', 'a-review'] : ['***']);
     assert.equal(next.unapplied[0].field, 'targets'); assert.equal(next.unapplied[0].reason, 'targets_unapplied');
     assert.deepEqual(plain(Mock.state.sources.find(s => s.name === 'a-push').targets), applied);
@@ -6068,7 +6052,6 @@ test('FINALR1 P2 reused Source keeps original private identity despite new liter
   assert.deepEqual(plain(Mock.state.sources.find(s => s.name === actualName)), original, 'no autoapply/config/targets/UID mutation');
   for (const route of [G1_PB + '/installs', G1_PB + '/installs/' + reused.body.install.id])
     assert.equal(JSON.stringify((await req(route)).body).includes(actualName), false, 'history/detail retain original identity privacy');
-  assert.equal((await req(G1_PB)).body.status.blocker.action, 'edit_source');
 });
 function finalR1CaseBody(name, next, sandbox) {
   const src = process.env.FINALR1_CASE_BASELINE === '9022863'

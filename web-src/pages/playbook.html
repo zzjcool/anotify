@@ -290,14 +290,6 @@
       a.href = kind === "source" ? scoped("source", "name", identifier) : scoped("capabilities", "name", identifier);
       return a;
     }
-    function manualAction(blocker) {
-      const identifier = blocker.action === "edit_source" ? blocker.capability || "" : (blocker.capability || "").split("@")[0];
-      const label = t("pb.v4.manual_action") + " · " + blocker.action;
-      if (blocker.action !== "open_node_page" && identifier === "***") return el("span", "btn btn-ghost btn-sm", label);
-      const target = el("a", "btn btn-ghost btn-sm", label);
-      target.href = blocker.action === "open_node_page" ? scoped("nodes") : blocker.action === "edit_source" ? scoped("source", "name", identifier) : scoped("capabilities", "name", identifier);
-      return target;
-    }
     function showUnapplied(host, rows) {
       host.replaceChildren();
       if (!rows.length) return;
@@ -318,14 +310,8 @@
       $("pb-badge").textContent = t(status.ready ? "pb.status.ready" : "pb.v4.not_ready");
       $("pb-badge").className = "badge " + (status.ready ? "badge-success" : "badge-warn");
       $("pb-summary").replaceChildren(el("p", "card-title", t(status.ready ? "pb.status.ready" : "pb.v4.not_ready")));
-      if (status.blocker) {
-        // R7：capability 为空时不印悬挂分隔符（旧实现会出「优先处理: Implemented ·」）
-        $("pb-summary").append(
-          el("p", "field-hint", [t("pb.v4.blocker") + ": " + status.blocker.type, status.blocker.capability]
-            .filter(Boolean).join(" · ")),
-          manualAction(status.blocker),
-        );
-      }
+      /* v4 的 PlaybookStatus 没有 blocker（见 api/resource.yaml），「优先处理 + 手动操作」
+       * 在真实数据下永不渲染 —— 已按用户裁决下线，连同 manualAction()。 */
       if (status.lastInstallId) {
         const button = el("button", "btn btn-ghost btn-sm", t("pb.v4.last_install") + ": " + status.lastInstallId);
         button.addEventListener("click", () => singleReceipt(status.lastInstallId));
