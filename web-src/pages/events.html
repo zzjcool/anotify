@@ -434,12 +434,11 @@
         el("summary", null, t("events.v4.details")));
       const dispatched = el("div", { class: "ev-details-body" },
         el("dl", { class: "ev-facts" }, fact("deliveryId", event.deliveryId, { copyable: true })));
-      event.dispatched.forEach(task => dispatched.append(el("code", { class: "mono ev-fact-val", text: JSON.stringify(task) })));
       details.append(dispatched, el("div", { class: "code-block" },
         el("div", { class: "code-head" }, el("span", { text: "JSON" })),
         el("pre", { class: "code-body mono ev-raw" }, el("span", {
           "data-raw-content": "",
-          text: JSON.stringify({ pruned: event.pruned, signature: event.signature, payload: event.payload }, null, 2),
+          text: JSON.stringify({ pruned: event.pruned, payload: event.payload }, null, 2),
         }))));
       row.append(head, facts, details);
       return row;
