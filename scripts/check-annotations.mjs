@@ -329,7 +329,9 @@ export const SPEC_DOC_RE = /^spec-doc\s*[:：]\s*(\S.*)$/;
  * 其他语言（py/html/make）目前一律不认：宁可红，也不做静默豁免；真要用到时再扩这张表。
  */
 export const TEST_FILE_RE = {
-	go: /\bfunc\s+Test[A-Za-z0-9_]*\s*\(/,
+	// Go 的测试函数总是包级声明（gofmt 后必在行首）——所以锚行首，注释/字符串里提到 `func Test` 不算数。
+	// （负向对照就靠这一点：把标记文件的 `func Test` 全改名后，说明段里残留的提法不能继续给它充数。）
+	go: /^func\s+Test[A-Za-z0-9_]*\s*\(/m,
 	js: /\b(?:test|describe|it)\s*\(/,
 };
 
