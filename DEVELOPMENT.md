@@ -758,7 +758,7 @@ go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://loca
 
 | 变量 | 默认 | 语义 |
 | --- | --- | --- |
-| `ANOTIFY_EVENT_RETENTION_DAYS` | `30` | events 保留天数；**`0` = 永久保留**（启动日志 `server.retention.permanent` 会 WARN：磁盘随写入线性增长） |
+| `ANOTIFY_EVENT_RETENTION_DAYS` | `30` | events 保留天数；**`0` = 永久保留**（启动日志 `server.retention.permanent` 会 WARN：磁盘随写入线性增长）。**只在首次启动且 `system_config` 无行时播种**；之后运行期改保留期用 `PUT /v1/system/config`（已有行时 env 被忽略，启动日志 `server.retention.env_ignored` 会 WARN）。生效值以启动日志的 `server.retention.configured` / `.permanent` 为准，`source` 字段说明它来自 `system_config` / `env_seed` / `default` |
 | `ANOTIFY_PENDING_MAX_AGE_SEC` | `120` | 最老 pending 任务等待秒数**超过**它 → 三个新事件入口（`POST /v1/events`、`POST /v1/hooks/{token}`、`POST /v1/sources/{id}/fire`）返回 `503` + `Retry-After`。**`0` = 不启用**（小部署别被自己的保护坑到）。超阈持续 30 分钟会 fail-open（孤儿 pending，见 §8） |
 | `ANOTIFY_RUNS_RETENTION_DAYS`（**节点**） | `7` | 节点本地执行档案（`<data-dir>/runs/`）的保留天数；`0` = 不按时间删（只按条数） |
 | `ANOTIFY_RUNS_MAX_COUNT`（**节点**） | `2000` | 执行档案最多保留多少个 run 目录；超过就按最旧的删（`0` = 不限） |

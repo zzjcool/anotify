@@ -434,6 +434,58 @@ func (d *DB) PutSystemConfig(ctx context.Context, cfg *SystemConfig, rv int64) e
 	return nil
 }
 
+// SeedSystemConfigIfEmpty 在 system_config **无行**时写入给定保留期，返回「确实播种了」。
+//
+// 已有行 → 一个字节都不动、返回 false。运行期改配置的唯一路径仍是 PutSystemConfig。
+//
+// 为什么需要它（#005）：保留期的**运行期**来源只有一个 —— system_config
+// （RunRetention 每轮 GetSystemConfig）。而 env `ANOTIFY_EVENT_RETENTION_DAYS` 在 v4
+// 只剩启动日志：运维把 env 改成 90 天、日志也说 90 天，实际仍按默认 30 天删（不可逆）。
+// 这个函数让 env 重新有意义，但只在一个**恰好安全**的位置：空库的首次启动。
+//
+// 为什么是「只播种、不覆盖」而不是让 env 优先：保留期是**运行时可改**的配置
+// （GET/PUT /v1/system/config）。若 env 每次启动都覆盖，就退回「双源互相打架」——
+// 「昨天在控制台改成 7 天，今天重启又变回 90 天」这类事故比「不生效」更难查。
+//
+// 并发安全：单条 `INSERT OR IGNORE` 本身就是原子的，多实例同时首次启动时只有一行
+// 插得进去，另一条拿到 RowsAffected()==0。刻意**不**写成「先查再插」：那中间有窗口，
+// 而单行表（id 恒为 1）的冲突判定交给 SQLite 比应用层更可靠。
+//
+// 记账：resource_version 写 1（= 与「无行」时 GetSystemConfig 报出的默认令牌一致）。
+// 这条很关键：首次 PUT 的前置条件仍然成立，且「rv>1」可以当「运维 PUT 过」的证据用。
+//
+// 校验口径照 PutSystemConfig：nil / 负数 → ErrConfigInvalid，且**不写**。
+// 「负数 = 永久保留」这种归一化只发生在解析层（server 侧），store 不接受负数。
+func (d *DB) SeedSystemConfigIfEmpty(ctx context.Context, cfg *SystemConfig) (bool, error) {
+	if cfg == nil {
+		return false, fmt.Errorf("seed system config: nil")
+	}
+	for name, v := range map[string]int64{
+		"retention.eventTtlSec":  cfg.RetentionEventTTLSec,
+		"retention.taskTtlSec":   cfg.RetentionTaskTTLSec,
+		"retention.resultTtlSec": cfg.RetentionResultTTLSec,
+	} {
+		if v < 0 {
+			return false, fmt.Errorf("%w: %s 不能为负（0 = 永久）", ErrConfigInvalid, name)
+		}
+	}
+
+	res, err := d.ExecContext(ctx,
+		`INSERT OR IGNORE INTO system_config
+		   (id, retention_event_ttl_sec, retention_task_ttl_sec,
+		    retention_result_ttl_sec, resource_version, updated_at)
+		 VALUES (1,?,?,?,1,?)`,
+		cfg.RetentionEventTTLSec, cfg.RetentionTaskTTLSec, cfg.RetentionResultTTLSec, Now())
+	if err != nil {
+		return false, fmt.Errorf("seed system config: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("seed system config: rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // ---------- 命名空间默认值（config.md §3） ----------
 
 // GetNamespaceConfig 读某个命名空间的默认 vars；没有配置行时返回空默认。

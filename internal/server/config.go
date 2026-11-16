@@ -150,6 +150,18 @@ type Config struct {
 	// （注意 auto_vacuum=0：清理让文件「平台化」而不是变小，见 store/retention.go）。
 	EventRetentionDays int
 
+	// EventRetentionDaysSet 表示 ANOTIFY_EVENT_RETENTION_DAYS 被**显式设置**过（非空）。
+	//
+	// 为什么需要单独一个布尔（#005）：env 现在的职责只是「空库首次启动播种 system_config」，
+	// 而「未设置」与「显式设成默认值 30」在数值上相同、语义却完全不同：
+	//   - 未设置 → **不写库**（保住「无行 = store 默认值」这条事实，别把默认值固化进库，
+	//     否则以后改默认值，老库永远不会跟上）；
+	//   - 显式设 → 空库时播种一次（保留运维已有的部署习惯），已有行则忽略并 WARN。
+	//
+	// 用它来区分，而不是拿 EventRetentionDays == defaultEventRetentionDays 猜：
+	// 「显式 30」与「根本没配」在启动日志和库里必须是两件不同的事。
+	EventRetentionDaysSet bool
+
 	// PendingMaxAgeSec 是派发背压阈值（#228）：最老 pending 任务的等待秒数**超过**它，
 	// 新事件入口返回 503。0 = 不启用（永远放行）。
 	//
@@ -282,6 +294,18 @@ func retentionDaysFromEnv(key string, def int) int {
 		return maxEventRetentionDays // 溢出保护：钳到上限，理由见 maxEventRetentionDays 的注释
 	}
 	return n
+}
+
+// retentionDaysSetFromEnv 报告保留期 env 是否被**显式设置**（非空）。
+//
+// 判据必须与 retentionDaysFromEnv 的入口判断逐字一致（都是 `TrimSpace != ""`）：
+// 两个函数一旦漂移，就会出现「解析层认为没配（回落 30）而接线层认为配了（去播种 30）」
+// 或者反过来的组合，而两种都表现为静默的错值。
+//
+// 空串等价于「未设置」：os.Getenv 对「未设」与「设为空」都返回 ""，用数值猜
+// （== 默认值）则会把「显式写 30」误判成「没配」。
+func retentionDaysSetFromEnv(key string) bool {
+	return strings.TrimSpace(os.Getenv(key)) != ""
 }
 
 // pendingMaxAgeFromEnv 读取 ANOTIFY_PENDING_MAX_AGE_SEC（派发背压阈值，#228）。
@@ -498,9 +522,14 @@ func FromEnv() Config {
 
 		// events 保留期（#229，默认 30 天，0 = 永久保留）与派发背压阈值
 		// （#228，默认 120 秒，0 = 不启用）。
-		EventRetentionDays: retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
-		PendingMaxAgeSec:   pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
-		StatsIntervalSec:   statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
+		//
+		// 保留期的**生效值**在 store 的 system_config（#005）：这两个字段只负责
+		// 「解析出一个候选值 + 它是否被显式设置」，接线层（mux.go）在空库首次启动时
+		// 用它播种一次，之后运行期改保留期走 PUT /v1/system/config。
+		EventRetentionDays:    retentionDaysFromEnv("ANOTIFY_EVENT_RETENTION_DAYS", defaultEventRetentionDays),
+		EventRetentionDaysSet: retentionDaysSetFromEnv("ANOTIFY_EVENT_RETENTION_DAYS"),
+		PendingMaxAgeSec:      pendingMaxAgeFromEnv("ANOTIFY_PENDING_MAX_AGE_SEC", defaultPendingMaxAgeSec),
+		StatsIntervalSec:      statsIntervalFromEnv("ANOTIFY_STATS_INTERVAL_SEC"),
 
 		// 运行产物托管目录与字节 GC 周期（#332）。默认目录 = DBPath 同目录 artifacts/。
 		ArtifactSpoolDir:      get("ANOTIFY_ARTIFACT_SPOOL_DIR", ""),

@@ -103,7 +103,7 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		"path", cfg.DBPath,
 	)
 
-	// events 保留期（#229）：默认 30 天，0 = 永久保留。
+	// events 保留期（#229 / #005）：**生效值来自 system_config**，env 只在空库首次启动时播种。
 	//
 	// 为什么启动时必须打这一条：events 清理**不可逆**，而「默认 30 天」是一个真实的
 	// 产品决策（用户拍板）。运维必须在重启后就能从日志里读到「这台机器会删 30 天前的
@@ -115,27 +115,9 @@ func NewApp(ctx context.Context, cfg Config) *App {
 	// 30 天窗口 ≈ 62.4 GiB（空 payload）/ 175.1 GiB（1KB）。
 	// 完整的容量表与复现口径见 docs/perf/capacity-and-backpressure.md。
 	//
-	// 注意 `days=0` 有两个来源（env 未设 + 显式 0 / 负数都会被归一），日志里不能谎称
-	// 「你设的是 0」——那会让「保留期被悄悄关掉」这条路径无法追查，所以 hint 里明写。
-	if cfg.EventRetentionSec() > 0 {
-		slog.Info("event retention configured",
-			"event", "server.retention.configured",
-			"days", cfg.EventRetentionDays,
-			"events_retention_sec", cfg.EventRetentionSec(),
-			"est_bytes_per_event", 679.9,
-			"est_bytes_per_event_1kb_payload", 1908.7,
-			"note", "events 超过保留期会被分批删除（不可逆）；idem_key 去重窗口缩成保留期同长；auto_vacuum=0 → 文件是平台化而不是变小",
-		)
-	} else {
-		slog.Warn("event retention disabled: events are kept forever",
-			"event", "server.retention.permanent",
-			"days", 0,
-			"est_bytes_per_event", 679.9,
-			"note", "events 永久保留：磁盘会随写入量线性增长，必须自行做容量监控与告警（auto_vacuum=0，删了也不会还盘）",
-			"hint", "ANOTIFY_EVENT_RETENTION_DAYS 未设置时默认 30；显式设 0 **或负数**都会落到这条分支（解析层把负数归一到 0），所以「没配」与「配错成负数」在这里长得一样——请确认部署配置",
-			"est_30d_bytes_at_38ev_per_sec_gib", 62.4,
-		)
-	}
+	// 调用点只负责「装配期做一次」，分支与字段在 reportEventRetention 里（那个函数带
+	// 一条确定性单测：日志里的数字必须是 system_config 的生效值，不是 env 的回显）。
+	reportEventRetention(ctx, db, cfg)
 
 	// 3. 认证（WebAuthn + API Key）
 	authSvc, err := auth.NewService(db, auth.Config{
@@ -597,4 +579,134 @@ func (a *App) runBackgroundLoop(ctx context.Context, name string, run func(conte
 			"error", err.Error(),
 		)
 	}()
+}
+
+// eventRetentionSource* 是 server.retention.* 日志里 `source` 字段的封闭取值。
+//
+// 为什么它必须进日志（#005）：env 现在只是一个**播种器**，生效值在 system_config。
+// 「这台机器为什么删 30 天而不是 90 天」的答案只有三个：库里被人 PUT 过、
+// 这次启动用 env 播的种、根本没有行所以用 store 默认值。少一个取值就剩一条查不动的路径。
+const (
+	// eventRetentionSourceSystemConfig 生效值来自 system_config 的行
+	// （运维 PUT 过，或者上一次启动用 env 播过种）。
+	eventRetentionSourceSystemConfig = "system_config"
+	// eventRetentionSourceEnvSeed 本次启动用 ANOTIFY_EVENT_RETENTION_DAYS 播下了 system_config。
+	eventRetentionSourceEnvSeed = "env_seed"
+	// eventRetentionSourceDefault 既没有 system_config 行、也没有 env：
+	// 生效值是 store 的内置默认（DefaultRetention*TTLSec）。
+	eventRetentionSourceDefault = "default"
+)
+
+// reportEventRetention 是启动期的保留期接线：空库用 env 播种一次，然后**报生效值**。
+//
+// 为什么必须拆成「播种」与「报值」两步（#005 的病灶就在这里）：v4 把保留期搬进了
+// system_config（RunRetention 每轮 GetSystemConfig），而 env 那一套没删、只剩一句启动
+// 日志。于是运维把 env 改成 90 天、日志也说 90 天，实际仍按库里的默认 30 天删（不可逆）。
+// 现在 env 的作用域缩到「空库首次启动播种一次」，日志报的是从库里读回来的生效值，
+// 并用 source 说明它是从哪来的。
+//
+// 三条纪律：
+//   - 播种失败**不阻断启动**：保留期配错方向的后果是「按默认值删」，不是服务不可用；
+//     真正读写库的路径（RunRetention / API）自己会暴露更严重的错误。
+//   - 已有行时**绝不覆盖**（理由见 store.SeedSystemConfigIfEmpty 的注释：那会变成双源）。
+//   - 不再把 cfg.EventRetentionDays 当生效值打印。env 的取值只出现在
+//     env_ignored / seeded_from_env 这两条**属于自己的**日志里——那里它确实是
+//     「你想设的值」，与「实际会删多老的事件」是两件事。
+func reportEventRetention(ctx context.Context, db *store.DB, cfg Config) {
+	source := eventRetentionSourceDefault
+
+	if cfg.EventRetentionDaysSet {
+		seeded, err := db.SeedSystemConfigIfEmpty(ctx, &store.SystemConfig{
+			RetentionEventTTLSec:  int64(cfg.EventRetentionSec()),
+			RetentionTaskTTLSec:   store.DefaultRetentionTaskTTLSec,
+			RetentionResultTTLSec: store.DefaultRetentionResultTTLSec,
+		})
+		switch {
+		case err != nil:
+			slog.Warn("event retention seed from env failed; starting anyway",
+				"event", "server.retention.seed_failed",
+				"days", cfg.EventRetentionDays,
+				"events_retention_sec", cfg.EventRetentionSec(),
+				"error", err.Error(),
+				"hint", "ANOTIFY_EVENT_RETENTION_DAYS 只在 system_config 无行时播种；本次播种失败 → 保留期仍以 system_config（或 store 默认值）为准，服务不因此拒绝启动",
+			)
+		case seeded:
+			source = eventRetentionSourceEnvSeed
+			slog.Info("event retention seeded from env",
+				"event", "server.retention.seeded_from_env",
+				"days", cfg.EventRetentionDays,
+				"events_retention_sec", cfg.EventRetentionSec(),
+				"hint", "env 只在 system_config 无行时播种一次；之后改保留期用 PUT /v1/system/config（env 不再生效）",
+			)
+		default:
+			source = eventRetentionSourceSystemConfig
+			slog.Warn("ANOTIFY_EVENT_RETENTION_DAYS ignored: system_config already has a row",
+				"event", "server.retention.env_ignored",
+				"days", cfg.EventRetentionDays,
+				"events_retention_sec", cfg.EventRetentionSec(),
+				"hint", "env 只在首次启动（system_config 无行）时播种；已有的行不会被覆盖，实际生效值见随后 server.retention.configured / .permanent 的 events_retention_sec；要改保留期请用 PUT /v1/system/config",
+			)
+		}
+	}
+
+	// 生效值一律以库为准。读失败时按 store 默认值报并留一条 WARN：
+	// 本函数只负责日志，真正跑清理的 RunRetention 下一轮会自己重试并报错。
+	eff, err := db.GetSystemConfig(ctx)
+	if err != nil {
+		slog.Warn("event retention config unreadable",
+			"event", "server.retention.config_unreadable",
+			"error", err.Error(),
+			"hint", "读不到 system_config；下面这条日志里的保留期是 store 默认值，不是生效值",
+		)
+		eff = &store.SystemConfig{
+			RetentionEventTTLSec:  store.DefaultRetentionEventTTLSec,
+			RetentionTaskTTLSec:   store.DefaultRetentionTaskTTLSec,
+			RetentionResultTTLSec: store.DefaultRetentionResultTTLSec,
+			ResourceVersion:       1,
+		}
+		source = eventRetentionSourceDefault
+	}
+
+	if source != eventRetentionSourceEnvSeed {
+		// 没有播种时反推「库里有行吗」：GetSystemConfig 刻意把「无行」与「有行」压成同一个
+		// 结构体（无行 → 返回默认值），所以只能靠两个可观测事实判断：
+		//   - resource_version > 1 ⇔ 至少 PUT 过一次（播种固定写 1；无行时的默认令牌也是 1）；
+		//   - events TTL ≠ store 默认值 ⇔ 这个值只可能来自库里。
+		// 一条都不成立就报 default —— 此时「无行」与「行里恰好是默认值」确实同形，
+		// 而值一致时来源对运维不再有影响。反过来**不能**因为「反正值一样」就统一报
+		// default：上一次播种的 90 天在重启后（env 已撤）必须报 system_config。
+		if eff.ResourceVersion > 1 || eff.RetentionEventTTLSec != store.DefaultRetentionEventTTLSec {
+			source = eventRetentionSourceSystemConfig
+		} else {
+			source = eventRetentionSourceDefault
+		}
+	}
+
+	effSec := eff.RetentionEventTTLSec
+	// days 由**生效秒数**反算（不是 env 的天数）：两者在 env 与库不一致时正好不同，
+	// 而那正是这条日志存在的理由。用浮点是因为 PUT 可以写任意秒数（如 3600），
+	// 整数除法会把它显示成「0 天」而落在 configured 分支里，自相矛盾。
+	days := float64(effSec) / 86400
+	if effSec > 0 {
+		slog.Info("event retention configured",
+			"event", "server.retention.configured",
+			"days", days,
+			"events_retention_sec", effSec,
+			"source", source,
+			"est_bytes_per_event", 679.9,
+			"est_bytes_per_event_1kb_payload", 1908.7,
+			"note", "events 超过保留期会被分批删除（不可逆）；idem_key 去重窗口缩成保留期同长；auto_vacuum=0 → 文件是平台化而不是变小",
+		)
+		return
+	}
+	slog.Warn("event retention disabled: events are kept forever",
+		"event", "server.retention.permanent",
+		"days", 0,
+		"events_retention_sec", effSec,
+		"source", source,
+		"est_bytes_per_event", 679.9,
+		"note", "events 永久保留：磁盘会随写入量线性增长，必须自行做容量监控与告警（auto_vacuum=0，删了也不会还盘）",
+		"hint", "0 = 永久保留。这个 0 来自 system_config（`source` 说明是运维 PUT 的还是本次 env 播的）；ANOTIFY_EVENT_RETENTION_DAYS 只在空库首次启动时播种，解析层把负数也归一到 0，所以「显式 0」与「配错成负数」在库里长得一样——请确认部署配置",
+		"est_30d_bytes_at_38ev_per_sec_gib", 62.4,
+	)
 }

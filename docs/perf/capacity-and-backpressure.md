@@ -275,7 +275,7 @@ huge,requests=23097, rps=923.8, cpu_us_per_request=1776.85, read_syscalls_per_re
 | 环境变量 | 默认 | 语义 |
 |---|---|---|
 | `ANOTIFY_PENDING_MAX_AGE_SEC` | **120** | 最老 pending 等待秒数**超过**它 → 新事件入口 503。`0` = 不启用；负数同 `0`；**非数字**回落 120；**`> 7 天` 钳到 7 天**（防 `time.Duration` 回绕） |
-| `ANOTIFY_EVENT_RETENTION_DAYS` | **30** | events 保留天数。`0` = **永久保留**（启动日志 WARN：磁盘会持续增长）；负数同 `0`；**非数字**回落 30；**`> 100 年` 钳到 100 年**（防 `days*86400` 回绕成「删全库」） |
+| `ANOTIFY_EVENT_RETENTION_DAYS` | **30** | events 保留天数。`0` = **永久保留**（启动日志 WARN：磁盘会持续增长）；负数同 `0`；**非数字**回落 30；**`> 100 年` 钳到 100 年**（防 `days*86400` 回绕成「删全库」）。**只在首次启动且 `system_config` 无行时播种**；之后运行期改保留期用 `PUT /v1/system/config`（已有行时 env 被忽略，启动日志 `server.retention.env_ignored` 会 WARN）。生效值看启动日志的 `events_retention_sec` + `source`（`system_config` / `env_seed` / `default`） |
 
 > 两个上界都是**防溢出**，不是产品策略：`strconv.Atoi` 能吃下 9.2e18，乘完会回绕，
 > 而回绕方向极其危险（保留期回绕成几分钟 = 一次删掉几乎全库；背压阈值回绕成 290ms = 全站立刻 503）。
