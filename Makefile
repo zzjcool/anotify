@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
+.PHONY: help build anode manifest fe check-wire-fields sitegen test test-repeat bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -147,8 +147,17 @@ manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / 
 	@printf 'spec:     %s  (api/*.yaml)\n' "$$(cat api/*.yaml | sha256sum | cut -d' ' -f1)"
 	@printf 'fe:       %s  (internal/server/dist/manifest.json)\n' "$$(sha256sum internal/server/dist/manifest.json | cut -d' ' -f1)"
 
-test: ## 运行全部单元测试（不含 make e2e / make integration）
-	go test ./... -count=1
+# 单元测试一律带 `-shuffle=on`：Go 默认**固定**测试顺序，于是「用例 A 污染的全局状态
+# 只有 B 才看得见」这类顺序耦合永远不会在 CI 里暴露。shuffle 失败时 go test 会把种子
+# 打在 `-test.shuffle <seed>` 那行，用它可原样复现（顺序问题不是 flake 的借口，见
+# DEVELOPMENT.md 测试章节的处置口径）。
+test: ## 运行全部单元测试（不含 make e2e / make integration；带 -shuffle=on，失败按种子复现）
+	go test ./... -shuffle=on -count=1
+
+# -count=2 让每个用例在同一次运行里再跑一遍：专治「第一次跑时某个状态刚好没被初始化」
+# 与跨用例顺序耦合。比 -count=1 慢一倍，所以不进 PR 门禁，放在合并前 / 夜间。
+test-repeat: ## 合并前/夜间用：go test ./... -shuffle=on -count=2，专治与执行顺序相关的 flake
+	go test ./... -shuffle=on -count=2
 
 # contract: 契约 §9 的静态断言。这几条不依赖运行期，放在 CI 里最快。
 #
