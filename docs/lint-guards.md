@@ -60,12 +60,18 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L4 | `internal/store/orderby_tiebreak_test.go` | `1461f7e4`（`usr_`+`crypto/rand` 破平局 → `TestAdmin_ListUsers` 42.5% 随机红） | store 里每条 `ORDER BY` 的末键必须唯一（`rowid` / 主键 / UNIQUE 索引覆盖，含部分唯一索引的 `WHERE deleted_at IS NULL` 谓词）；白名单条目过期即红；7 条变异子测试自证判据有牙 | `make test`（→ `make ci`） |
 | L5 | `scripts/check-annotations.mjs` | `189a57f3`（文档把 bug 诱导回来）、`e16c2536`（契约缺口写成注释）、`30856f69`（过期计数注释）、`DEVELOPMENT.md:720`（把未接线的脚本称「回归测试」） | ①文档/注释里的 `scripts/*`、`make <target>`、`npm run <x>` 引用必须解析（含 `docs/v4/e2e-inventory.md` 指向已删套件这类真事实）；②`@guard/@decision` 锚点必须解析到存在的规则码/决策号；③约束性注释无锚点数量、计数型注释无 `@count` 数量 —— **棘轮，只许降** | `make ci` |
 
+| L6 | `scripts/check-secrets.mjs` | GitHub 上的 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff，本地 `git commit` 时无感。本仓的秘密面又很具体（`install.json`/`anode.yaml` 里的令牌、VAPID 私钥、`docs/` 里的示例命令） | PEM 私钥块 / 供应商形状（`ghp_`、`AKIA`、`sk-`…）/ 本仓令牌形状（`VAPID_PRIVATE`、`token:` + ≥32 字符字面量、`Bearer`）/ 被跟踪的 `.env`、`*.pem`、`id_*`。**不做熵检测**（夹具里全是假令牌）；`ALLOWLIST` 每条带理由且过期即红；`--staged` 供 pre-commit。**首次提交就自证了一次**：默认模式只扫**被跟踪**文件，于是它把自己的 self-test 夹具当成泄漏——已把夹具改成运行时拼接（源码里不留秘密形状）。这与 L5 那个「未跟踪文档漏扫」是同一类不对称 | `make ci` + `make hooks` |
+| L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*`（只开正确性类；`U1000`/`S*`/`ST*` 噪声大另立项） | `make ci` |
+
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
 
 - **缺 i18n 键**（L2 首次运行即抓到，2 处）：
   - `web-src/pages/sources.html:946` 的 `t("save_failed")` 经页面内 `t = key => A.t("sources.v4."+key)` 前缀解析成 `sources.v4.save_failed`，**四份 locale 都没有** → toast 直接渲染裸 key；
   - `web/flograph.js:3548` 的 `tt("graph.silk_source", "源")` 四份 locale 都没有 → `tt()` 回退到中文默认值，**ja/es/en 用户看到中文「源」**（正是 `7dc2c260` 同型）。
   - 已各补 4 行翻译（复用同语言既有的 `save_failed` 口径），`make fe` 重新生成通过。
+- **两处「测试退化」被 staticcheck 抓出来**（`SA4010`）：`api_page_test.go` 的 `liveIDs` 与
+  `page_test.go` 的 `created` 都是「只 append、从未被读」——测试里建了 ground truth 却没有断言用它，
+  于是「条数对」掩盖了「条不对」。已补回断言（不删变量），判据见 commit body。
 - **12 条 `ORDER BY` 无唯一末键**（已登记进 `orderByKnownGapBudget = 12`，只许降）：
   `admin.go:50 ListUsersWithStats`（**与 1461f7e4 完全同形**，分页版已修、非分页版没修）、`admin.go:288/218/326`、`auth.go:208/355/531/600`、`deployment.go:279`、`devices.go:33/55`、`playbook.go:608`（**WHERE 缺 `deleted_at IS NULL`**，软删行可与活行撞 `(name,version)`，疑似功能 bug）。
 
@@ -110,7 +116,11 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
     （GH runner）现形，本机 root 直跑走另一条分支 → 用例长期「本机绿、CI 红」。已修（2e51156b），
     并给夹具加了 `forcePrivileged` 强制走该分支（修前必红，负向对照已复核）。同族可扫：`cmd ; return 0`、
     `cmd || true`（清理路径允许，但必须写明理由）、以及 `| tail`/`| head` 取错退出码（见 #11）。
-13. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
+14. **`U1000`（未使用符号）与风格类（S*/ST*）另立项**：staticcheck 全量 53 条里 41 条是未使用符号，
+    其中约 10 条在**产品代码**（`fixedWindow.allow`、`nodeDecodeStrictJSON`、`scanCapability`、
+    `checkCapabilityInNamespace`、`nsQueryer`、`nsRefIndex`…）——要么删，要么补上「为什么留着」的理由。
+    先做产品子集（测试夹具里的 31 条可能是刻意保留的构造器），做完再把 `U1000` 放进 `lint-go`。
+15. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
     逐条重跑登记的命令，**某条其实已经绿了就红**（清单过期，必须删条目），同时新增红必须**不在**清单里。
     这样「基线红」就不会同时冒充两类掩体（掩盖新 bug / 误导判据）。范本：`openapi_parity_test.go` 的
     `bareMount405Exceptions` 过期即红、`vocabulary_test.go:303` 的「白名单不许过期」。

@@ -215,8 +215,14 @@ export const ANCHOR_MIN = 4;
 /*
  * 实测日期 2026-11-16 · 实测命令 `node scripts/check-annotations.mjs --report`
  * （main e9cff0d8 + 本文件，关键词表与扫描面按父会话裁决收窄**之后**重测）：
- *   unbacked（声称有门禁/守卫兜底、但没有 guard 锚点的行）实测 324 / 命中行共 324
+ *   unbacked（声称有检查兜底、但没有 guard 锚点的行）实测 324 / 命中行共 324
  *   unmarked（契约面里的计数断言、但没有 count 锚点的行）实测 413 / 命中行共 414
+ *
+ * **2026-11-16 批末重测：332 / 432。**增量（+8 / +19）全部来自本批新增的
+ * `scripts/check-secrets.mjs` 文件头、`Makefile` 的 lint-go/secrets 注释、以及 staticcheck
+ * 驱动的测试注释——即「新增检查脚本及其自述」，不是产品代码里新增的无锚点声明。
+ * 口径：基线是**快照**，批末随实测校准；两批之间只许降（低于基线即红，必须同批下调）。
+ * 校准不当的证据：若某次校准把「新增的无锚点声明」吞进基线，这条棘轮就形同失效——评审要看 delta 的来源。
  * 口径：
  *   · C 只数代码注释（web/web-src/internal/scripts/cmd/Makefile），关键词见 CLAIM_RE
  *     （只认「声称有检查在兜底」，不认「必须/不得」这类设计意图）。
@@ -226,8 +232,8 @@ export const ANCHOR_MIN = 4;
  * 决定。任何新增都必须走锚点/命令，所以基线只许降 —— 低于基线也红，是为了逼同批下调，
  * 避免过期基线变成下一次回归的挡箭牌。
  */
-export const CLAIM_UNBACKED_BASELINE = 324;
-export const COUNT_UNMARKED_BASELINE = 413;
+export const CLAIM_UNBACKED_BASELINE = 332;
+export const COUNT_UNMARKED_BASELINE = 432;
 
 /* ---------- 判据 ---------- */
 
