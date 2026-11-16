@@ -483,14 +483,18 @@ make test-repeat      # 合并前/夜间：go test ./... -shuffle=on -count=2（
 
 ### Go 单测：`-shuffle`、重复跑与 flaky 处置
 
-`make test` 固定带 `-shuffle=on`：Go **默认固定**测试顺序，于是「用例 A 留下的全局状态
-只有 B 看得见」这类顺序耦合在固定顺序下永远不会在 CI 里暴露。shuffle 失败时 `go test`
-会把种子打在 `-test.shuffle <seed>` 那一行，用 `go test ./... -shuffle=<seed> -count=1`
-可原样复现。
+`-shuffle` 目前**只**开在 `make test-repeat`（`go test ./... -shuffle=on -count=2`，合并
+前 / 夜间跑），`make test` 保持 `-count=1` 的固定顺序。理由两头都要：
 
-合并前 / 夜间再跑一次 `make test-repeat`（`go test ./... -shuffle=on -count=2`）：同一
-用例在一次运行里再跑一遍，专治「第一次跑时某个状态刚好没被初始化」与跨用例顺序耦合。
-比 `make test` 慢一倍，所以不进 PR 门禁。
+- Go **默认固定**测试顺序，于是「用例 A 留下的全局状态只有 B 看得见」这类顺序耦合在
+  固定顺序下永远不会暴露 —— 所以需要一条带 shuffle 的入口；
+- 但带 shuffle 的全量跑目前还会因为**一条尚未修复的时钟型 flake**（`internal/ws` 的
+  `TestRehelloUnknownBusyDoesNotRelease`）随机变红，而随机红的入口等于没有入口。
+  **先收窄到 `test-repeat`，等那条修完再抬进 `make test`。**
+
+shuffle 失败时 `go test` 会把种子打在 `-test.shuffle <seed>` 那一行，用
+`go test ./... -shuffle=<seed> -count=1` 可原样复现。`-count=2` 让同一用例在一次运
+行里再跑一遍，专治「第一次跑时某个状态刚好没被初始化」。
 
 **flaky 的处置口径（不许登记成已知失败）**：
 
@@ -550,7 +554,7 @@ make ci
 4. `go build ./...`，以及两个带版本注入的生产二进制（`anotify` 带 `-tags embeddist`；`anode` 走 `cmd/anode`）
 5. `make check-anode-skill`：`docs/v4/anode-cli.md` 里的子命令 / flag 与真 `anode`
    `-h` 对账，`--version` 的 JSON 与注入值对齐（#334 的防漂移门禁，承接 v3 #317）
-6. `go test ./... -shuffle=on -count=1`（与 `make test` 相同；shuffle 失败按种子复现）
+6. `go test ./... -count=1`（与 `make test` 相同；带 shuffle 的入口是 `make test-repeat`）
 
 不跑 `make e2e`、`make integration`、`scripts/e2e/`（要浏览器或已启动的服务）。`make e2e` 仍是合并前的固化门禁；这条 CI 只守构建、格式和包内单测。名为 `*_e2e_test.go` 的 Go 测试走 `httptest`，不连外部服务，留在 `go test` 里。
 
@@ -761,7 +765,7 @@ make build           # 构建两个产品二进制（anotify 指纹+embed；anod
 make manifest        # 构建 + 打印对账信息（二进制 sha256 / git sha / spec hash / 前端指纹）
 make anode           # 只编节点二进制（./anode）
 make dev             # 开发模式：server + devseed +（有 .dev-anode/anode.yaml 时的）本机节点
-make test            # Go 单测（go test ./... -shuffle=on；默认不嵌入 dist）
+make test            # Go 单测（go test ./...；默认不嵌入 dist）
 make test-repeat     # 合并前/夜间：-shuffle=on -count=2，专治顺序相关 flake
 make ci              # PR 门禁：gofmt + fe + vet + build + check-anode-skill + 单测（不含 e2e）
 make contract        # 契约静态断言 + 五 spec 一致性 + anode 可编译

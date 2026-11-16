@@ -147,15 +147,17 @@ manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / 
 	@printf 'spec:     %s  (api/*.yaml)\n' "$$(cat api/*.yaml | sha256sum | cut -d' ' -f1)"
 	@printf 'fe:       %s  (internal/server/dist/manifest.json)\n' "$$(sha256sum internal/server/dist/manifest.json | cut -d' ' -f1)"
 
-# 单元测试一律带 `-shuffle=on`：Go 默认**固定**测试顺序，于是「用例 A 污染的全局状态
-# 只有 B 才看得见」这类顺序耦合永远不会在 CI 里暴露。shuffle 失败时 go test 会把种子
-# 打在 `-test.shuffle <seed>` 那行，用它可原样复现（顺序问题不是 flake 的借口，见
-# DEVELOPMENT.md 测试章节的处置口径）。
-test: ## 运行全部单元测试（不含 make e2e / make integration；带 -shuffle=on，失败按种子复现）
-	go test ./... -shuffle=on -count=1
+test: ## 运行全部单元测试（不含 make e2e / make integration）
+	go test ./... -count=1
 
-# -count=2 让每个用例在同一次运行里再跑一遍：专治「第一次跑时某个状态刚好没被初始化」
-# 与跨用例顺序耦合。比 -count=1 慢一倍，所以不进 PR 门禁，放在合并前 / 夜间。
+# shuffle 目前**只**放在这里，暂不进 `make test`（父会话裁决：见 DEVELOPMENT.md §5）。
+#
+# 为什么要一条带 shuffle 的入口：Go 默认**固定**测试顺序，于是「用例 A 污染的全局
+# 状态只有 B 才看得见」这类顺序耦合在固定顺序下永远不会暴露。
+# 为什么先不抬进 `make test`：`internal/ws` 还有一条**未修**的时钟型 flake
+# （TestRehelloUnknownBusyDoesNotRelease），带 shuffle 的全量跑会随机变红 ——
+# 随机红的入口不如没有。等那条修完再把它抬进 `make test`。
+# shuffle 失败时 go test 会把种子打在 `-test.shuffle <seed>` 那行，用它可原样复现。
 test-repeat: ## 合并前/夜间用：go test ./... -shuffle=on -count=2，专治与执行顺序相关的 flake
 	go test ./... -shuffle=on -count=2
 

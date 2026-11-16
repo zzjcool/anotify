@@ -318,15 +318,6 @@ func TestRehelloUnknownBusyDoesNotRelease(t *testing.T) {
 		t.Fatal("应收到 lease.grant")
 	}
 	rehello := func(instances []protocol.HelloInstance) {
-		// 观察时刻必须**不早于**中枢写 node_instances.updated_at 的时刻：回收守卫
-		// 「绑定比观察更新 → 旧快照不能放它没看见的新占用」用的是两个不同来源的秒级
-		// 时间戳 —— updated_at 来自 store.Now()（node.go 的 UpsertInstances），观察时刻
-		// 来自 h.Now()，而 newEnv 把这个假时钟冻结在用例开始那一秒。用例一旦跑过秒边界，
-		// 「当前观察」就看起来比绑定还旧，合法回收被静默丢弃 → 本用例偶发 4/300。
-		//
-		// 真节点每次 hello 上报的都是「现在」，所以这里把假时钟对准真实时钟再发帧。
-		// （底层产品缺陷「同一份事实采样两次时钟」另案上报，本用例不代它背锅。）
-		e.now = time.Now().Unix()
 		e.send(t, conn, &protocol.HelloFrame{
 			Type: protocol.FrameHello, Name: "node-1", Token: e.token,
 			Namespaces: []string{"default"}, Instances: instances,
