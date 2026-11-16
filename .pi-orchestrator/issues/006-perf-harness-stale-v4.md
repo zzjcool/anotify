@@ -87,8 +87,9 @@ v4 的 `events` 没有 `idem_key`（改成了 `delivery_id` / `receipt`，见 `s
 
 ## 还没修
 
-- `s1-soak.sh`：`s1_cap` 拼的是 v3 body，且 `outputs` 概念在 v4 **不存在**（端口路由已退役）
-  → 不是机械替换，要重新设计这个套件测什么。
+- ~~`s1-soak.sh`：`s1_cap` 拼的是 v3 body~~ → **已迁**（`21f7ced`）：改成 `spec.next` + `source.targets`
+  + Bearer 命名空间投递入口，删掉建边/outputs 逻辑；600s 实跑通过（events=tasks=128174、edges=3 自动物化）。
+  但它暴露了下一个阻塞点 → **[007](007-perf-agent-v3-frames.md)**（假节点还是 v3 帧，后 8 分钟全 503）。
 - `s2-retention.sh`：`pc_cap perfgen` 之后的断言可能仍按 v3 字段，未跑验证。
 - `s5-slowquery.sh`：SQL 列已改，但整段未跑验证（它还用 `svc_up` 自己起停服务）。
 - a/d/e/f 段未跑（a 段依赖 30 天外推口径，d/e 依赖背压，f 段是 profile）。
