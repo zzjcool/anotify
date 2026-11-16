@@ -61,6 +61,13 @@ export PC_ROOT="$S1_DIR"
 source "$HERE/common.sh"
 
 DURATION="${S1_DURATION:-600}"      # 主压总时长
+# 主压限速（请求/秒，所有并发共享）。0 = 不限速。
+#
+# 为什么默认限速（issue 007）：v4 的派发吞吐上限实测 40-90 任务/s（每任务 5 次读 +
+# 1 次 assignment 写事务，与 ingest 抢同一把写锁）。不限速时摄取 330-670/s 会把最老
+# pending 推过 120s，背压介入后整段 100% 503 —— 那时量到的不是稳态，是「积压+背压」。
+# 40 是给上限留了余量的稳态档；要量「极限吞吐」用 S1_RATE=0，并清楚那一段的 503 是设计行为。
+S1_RATE="${S1_RATE:-40}"
 SEG_A="${S1_SEG_A:-120}"            # 0-2min 段
 SEG_C="${S1_SEG_C:-120}"            # 最后 2min 段（即 8-10min）
 SEG_B=$((DURATION - SEG_A - SEG_C)) # 中间段
@@ -431,10 +438,10 @@ s1_seg() {  # s1_seg <a> <b>  跑 [a,b) 这一段
 	tag=$(printf '%03d-%03d' "$a" "$b")
 	echo "$tag" >"$S1_DIR/seg"   # 采样子进程是独立进程，共享变量传不过去，用文件传
 
-	log "主压段 $tag（${secs}s，-c 8）开始 @ t=$(elapsed_s)"
+	log "主压段 $tag（${secs}s，-c 8，rate=${S1_RATE}/s）开始 @ t=$(elapsed_s)"
 	taskset -c "$PC_CPUS" "$LG_BIN" -url "$S1_EVENTS_URL" -method POST \
 		-body-file "$BODY_JSON" -header 'content-type: application/json' \
-		-header "Authorization: Bearer $PC_SEND_KEY" -c 8 -d "${secs}s" \
+		-header "Authorization: Bearer $PC_SEND_KEY" -c 8 -d "${secs}s" -rate "$S1_RATE" \
 		2>&1 | tee -a "$RAW/ingest.log" >>"$RAW/ingest_$tag.log" &
 	LG_PID=$!
 	echo "$LG_PID" >"$S1_DIR/lg.pid"

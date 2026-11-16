@@ -55,6 +55,7 @@ func main() {
 	dur := flag.Duration("d", 10*time.Second, "持续时间")
 	bodyFile := flag.String("body-file", "", "请求体文件（POST 用）")
 	timeout := flag.Duration("timeout", 10*time.Second, "单请求超时")
+	rate := flag.Float64("rate", 0, "全局限速（请求/秒，所有并发共享一个令牌桶）；0 = 不限制")
 	noKeepAlive := flag.Bool("no-keepalive", false, "禁用连接复用（模拟每次新建连接）")
 	var headerFlags multiFlag
 	flag.Var(&headerFlags, "header", `请求头，可重复："Cookie: anotify_session=..."`)
@@ -95,6 +96,27 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *dur)
 	defer cancel()
 
+	// 全局限速：并发只影响延迟分布，不影响总速率。
+	//
+	// 为什么要它（issue 007）：soak 想量的是**稳态**，而 v4 的派发吞吐上限约 40-90 任务/s
+	// （每任务 5 次读 + 1 次 assignment 写事务，与 ingest 抢同一把写锁）。不限速时摄取
+	// 330-670/s 会把 pending 年龄一路推过 120s，背压介入后整段 100% 503 —— 量到的就不是
+	// 稳态，而是「积压无界上涨 + 背压生效」。
+	//
+	// 实现用一个 ticker 当全局令牌桶：rate=40 → 每 25ms 放行一个请求。ticker 在压力下丢拍
+	// 不会超发，所以实际速率 ≤ rate（够用：我们只需要「不超过天花板」）。
+	var pace func()
+	if *rate > 0 {
+		tick := time.NewTicker(time.Duration(float64(time.Second) / *rate))
+		defer tick.Stop()
+		pace = func() {
+			select {
+			case <-tick.C:
+			case <-ctx.Done():
+			}
+		}
+	}
+
 	results := make(chan result, 4096)
 	var wg sync.WaitGroup
 
@@ -104,6 +126,9 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for ctx.Err() == nil {
+				if pace != nil {
+					pace()
+				}
 				var rdr io.Reader
 				if body != nil {
 					rdr = bytes.NewReader(body)
