@@ -59,12 +59,20 @@ func newCapabilityAPI(d *serverDeps) *capabilityAPI { return &capabilityAPI{d: d
 // register 注册全部 Capability 路由（session + noStore 包裹；未登录直 401，
 // 动态 API 一律不许缓存）。
 //
-// 方法不匹配（例如 `PUT …/capabilities/{name}`）仍由 Go 1.22 ServeMux 自己回 405：v4 里能力没有
-// PUT（内容变化 = 新版本，走 POST），不为它再实现一遍方法分派。
+// 方法不匹配（例如 `PUT …/capabilities/{name}`）本函数**不**兜底：这张表只挂带方法的 pattern，
+// 「路径存在、方法不允许」的答案取决于本 register 被挂到哪里——
 //
-// 唯一的例外是**完全只读**的路径（edges）：它在生产 mux 上会落到末尾的静态兜底，自动 405 根本不会
-// 发生，所以另加一条不带方法的 pattern 显式回 405（见下表最后一行，与 deployments 共用同一个
-// methodNotAllowedAllowGet）。
+//   - 裸 mux（测试夹具 `http.NewServeMux()` 后逐个 register，如 api_integration_test 的
+//     itEnv）：Go 1.22 ServeMux 自动回 405 + Allow，因为没有任何别的 pattern 能接住这条请求；
+//   - 生产 mux（mux.go 末尾的 `mux.Handle("/", resolveStatic(cfg))`，见那里的「静态资源
+//     （CDN 缓存分级）」段）：那条兜底**接受任意方法**，所以未注册的 method+path 组合全被它
+//     接住 —— 真实二进制回 404、未内嵌前端的测试构建回 503。自动 405 在这里根本不会发生，
+//     客户端看到的是「文件不存在」而不是「方法不允许」。
+//
+// 能力域接受后者、不为逐条写端点补方法兜底：v4 里能力没有 PUT（内容变化 = 新版本，走 POST），
+// 方法分派只由下面这张表表达。唯一的例外是**完全只读**的 edges（没有任何写端点，写请求的
+// 正确语义是 405 而不是 404）：它另挂一条不带方法的 pattern 显式回 405（见下表 edges 两行，
+// 与 deployments 共用同一个 methodNotAllowedAllowGet）。
 func (a *capabilityAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/capabilities"
 	routes := []struct {
