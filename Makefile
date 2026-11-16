@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +49,10 @@ sitegen: check-classes check-tailwind check-graph-access ## 构建期静态站�
 
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
+
+check-agents: ## 模块约定守卫：AGENTS.md 的 path:line 引用 / 索引表 / 行数预算（防文档漂移）
+	@node scripts/check-agents.mjs --self-test
+	@node scripts/check-agents.mjs
 
 check-wire-fields: ## 契约字段守卫：前端 model 读的 spec./status. 字段必须是服务端真的会发的
 	node scripts/check-wire-fields.mjs
@@ -144,6 +148,10 @@ tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级�
 	$(TMP_GUARD) --lint
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
+	@# 模块约定漂移守卫：AGENTS.md 里的 `mux.go:69` 这类引用一旦指向不存在的行，
+	@# 读它的子 agent 会把错的当约定照做（本轮已真实发生过两次：迁移块规则、悬空指路）。
+	@# 放在 ci 而不是 contract：它需要 node，而 contract 目前在只有 Go 的环境也能跑。
+	$(MAKE) check-agents
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
