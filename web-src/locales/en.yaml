@@ -289,6 +289,7 @@ graph:
   exit_fullscreen: Exit fullscreen (Esc)
   fullscreen_hint: Scroll to zoom · drag to pan · Esc to exit
   silk_preview_done: Preview complete
+  silk_source: "Source"
   hud_flow: Downstream flow
   hud_path: 'Task path'
   hud_fail: 'Failed tasks'
@@ -1717,6 +1718,7 @@ sources:
     edit: "Edit source"
     close: "Close"
     save: "Save"
+    save_failed: "Save failed"
     reload: "Reload latest resource"
     detail: "Source details"
     back: "Back to sources"

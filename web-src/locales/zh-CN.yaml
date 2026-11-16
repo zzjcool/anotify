@@ -289,6 +289,7 @@ graph:
   exit_fullscreen: 退出全屏（Esc）
   fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
   silk_preview_done: 预览完成
+  silk_source: "源"
   hud_flow: 下游流向
   hud_path: '任务路径'
   hud_fail: '失败任务'
@@ -1719,6 +1720,7 @@ sources:
     edit: "编辑源"
     close: "关闭"
     save: "保存"
+    save_failed: "保存失败"
     reload: "重新加载最新资源"
     detail: "源详情"
     back: "返回源列表"
