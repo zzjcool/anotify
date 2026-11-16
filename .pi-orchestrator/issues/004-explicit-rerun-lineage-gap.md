@@ -4,7 +4,7 @@ kind: docs
 area: [contract]
 size: S
 severity: P2
-state: needs-decision
+state: done
 needs_recon: false
 contract: [api-yaml]
 depends_on: []
@@ -58,3 +58,17 @@ opened: 2026-11-16
 
 - 本卡不产生代码改动；`route: [scout]` 只用于裁决前的现状取证。
 - 不要为了让某个 UI 需求好看而先加列后补契约（这正是 dry-run 里被判为越界的做法）。
+
+## 裁决（协调者代行，2026-11-16）：选 A —— 明确不做，并写入契约
+
+已写入 `docs/design/v4/decisions.md` 的「刻意不做」节：
+
+- 重跑 = 重新触发一次（新事件 / 新 trace），不新增 `retryOf` / `rerunOf` 类字段；
+- `tasks.parentTaskId` 继续只表达业务 emit 的父子关系，**不**承载手动重跑关系；
+- 不拿 `attempt` 冒充重跑谱系（那会让「同一逻辑任务的第 N 次尝试」与「人手动再跑一次」混成一个口径）。
+
+**代价（已知并接受）**：前端/用户看不到「重跑链」，也做不出「同一能力连续失败 N 次」的统计
+（那需要先定 trace 生命周期与去重窗口，属于另一次契约变更）。
+
+**如果将来要做**：重新开卡，按「选项 B 复用 trace」优先评估（不改 schema），
+只有 B 不可行时才考虑 C（加列，需动 baseline）。
