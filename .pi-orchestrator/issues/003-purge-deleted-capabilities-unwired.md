@@ -4,7 +4,7 @@ kind: bug
 area: [task]
 size: L
 severity: P2
-state: needs-decision
+state: working
 needs_recon: false
 contract: []
 depends_on: []
@@ -75,22 +75,89 @@ SELECT count(*) FROM capability_versions WHERE namespace_id = ?
 `json_tree` 虚拟表 + `USE TEMP B-TREE FOR ORDER BY`，整段在 `BEGIN IMMEDIATE` 写事务里。
 挂进 `RunRetention`（30s 一轮）= 每 30s 在写锁内做 4 次全扫，与事件入口抢锁。
 
-## 需要 owner 裁决（4 条，卡在这一步）
+## 裁决（协调者代行，2026-11-16）
 
-| # | 分歧 | 选项 A | 选项 B |
-|---|---|---|---|
-| 1 | **时间窗** | 无时间窗（现状语义：无引用即删）—— 零改动，但事故现场没有恢复窗口 | 引入 `capabilityTtlSec`：改 `PurgeDeletedCapabilities` 签名 + `system_config` 加列（老库 `ErrSchemaInvalid`）+ `api/resource.yaml` |
-| 2 | **挂在哪个循环** | `RunRetention` 内部（零收尾负担，但 30s 全扫写锁） | server 独立循环，抄 `artifact-gc`（`mux.go:296-341`，可独立间隔/env、可 `<=0` 关闭） |
-| 3 | **判据是否放宽** | 只接现成 primitive（绝对安全，收益小） | 同时让 deployments/回执随能力回收（改部署同步语义，`DeploymentsForNode` 会少推） |
-| 4 | **要不要含退役行的历史投影** | 不做（`capability.md:844`「逻辑删除 ≠ 事实删除」） | 做（回收窗口变对外承诺，必须先写进 `api-conventions`） |
+用户授权代行裁决。依据：仓库哲学「不改产品语义、不做比做错好」+ 侦察事实。
 
-## 验收草案（裁决后定稿）
+| # | 裁决 | 理由 |
+|---|---|---|
+| 1 | **不加时间窗**（无引用即删） | 判据已经保证「无引用才删」；加时间窗要改 baseline + API，代价与收益不成正比。事故恢复靠备份，不靠墓碑 |
+| 2 | **server 独立循环**（抄 `artifact-gc`） | 全表扫不该跟事件清理同频（30s）；独立间隔可调、`<=0` 可关、有现成关停护栏 |
+| 3 | **只接 `PurgeDeletedCapabilities`；不动判据、不接另两个原语** | `deployments` 生命周期是产品语义（另开卡）；`DeleteExpiredPlaybookInstalls` 不接是因为 `retention.go:120-124` 已有父裁决「回执不自动删」 |
+| 4 | **不做含退役行的历史投影** | 回收窗口保成内部实现细节，不变成对外承诺 |
 
-- 接上之后**真的会删**：过一段时间（或 `RunOnce` 一轮）后行数下降，且被引用的不删。
-- 判据 4 漏判的失效模式单独测：`deployments` 不出现静默级联删除。
-- `DELETE /v1/namespaces/{ns}` 的语义变化有测试（tombstone 曾在 → 409；purge 后 → 200）。
-- 统计要能区分「跳过」与「扫了没删」（沿用 `EventsSkipped` / `Truncated` 的既有语义）。
-- `make contract` 绿；若动了 schema，按 `internal/store/AGENTS.md` §3.2（当前只支持单块）。
+**判据 3 的收益被低估了**：`task_attempts` / `task_artifact_manifests` / `emits` 对 `tasks(id)` 都是
+`ON DELETE CASCADE`（`schema.sql:481,520,631,641`），而 `task_ttl` 默认 30 天——所以「跑过一次」
+的能力在任务过期后**会自动变成可回收**。真正永久卡住的只有「部署过」和「被安装回执钉住」两类。
+
+## 施工方案（冻结）
+
+### 1. 配置（`internal/server/config.go`，逐字模访 `ArtifactGCIntervalSec`）
+
+- 新字段 `CapabilityGCIntervalSec int`：未设/手滑 → **3600**；`0`/负数 → 0（禁用）；正数上限 86400。
+- `func (c Config) CapabilityGCInterval() time.Duration`：`<=0 → 0`（= 不启 goroutine）。
+- env 名：`ANOTIFY_CAPABILITY_GC_INTERVAL_SEC`。
+
+### 2. GC 驱动器（新文件 `internal/server/capability_gc.go`）
+
+```go
+type capabilityGC struct {
+    db         *store.DB
+    log        *slog.Logger
+    batch      int // 1000
+    maxBatches int // 20（≈ 20000 行/轮，避免长写锁）
+}
+func newCapabilityGC(db *store.DB, log *slog.Logger) *capabilityGC
+func (g *capabilityGC) RunOnce(ctx context.Context) (int64, error) // 多批直到返回 0 或预算用尽
+func (g *capabilityGC) Run(ctx context.Context, interval time.Duration) error // ticker；单轮失败只 Warn；ctx 取消干净退出
+```
+
+- 每批之间检查 `ctx.Err()`；删除总数 >0 时打一条 `Info`（`event=server.capability.gc.deleted`）。
+- 单批错误 → 返回已删数 + 包装错误（丢掉已删数会让运维以为没删）。
+
+### 3. 接线（`internal/server/mux.go`，紧接 artifact-gc 那块之后）
+
+```go
+if cfg.CapabilityGCInterval() > 0 {
+    gc := newCapabilityGC(db, slog.Default())
+    app.runBackgroundLoop(ctx, "capability-gc", func(loopCtx context.Context) error {
+        return gc.Run(loopCtx, cfg.CapabilityGCInterval())
+    })
+}
+```
+
+必须走 `runBackgroundLoop`（它已挂 `trackBackground`），否则绕过 `WaitBackground` 关停屏障。
+
+### 4. 测试
+
+- `internal/server/capability_gc_test.go`：
+  a) 无 tombstone → `RunOnce` 返回 0、无错；
+  b) 软删一个能力（无引用）→ `RunOnce` 删掉（返回 >0），再跑一次返回 0；
+  c) 有引用（task 或 deployment 钉住）→ 不删；
+  d) `ctx` 已取消时 `RunOnce` 立即返回、不删；
+  e) `WaitBackground` 收尾不撞已关库（照 `artifact_gc_test.go` 的写法）。
+- `internal/server/config_test.go`（或新文件）：`CapabilityGCIntervalSec` 解析（未设 / `"0"` / 负数 / 非数字 / 超大）。
+- 判据本身的覆盖已有（`internal/store/v4test/reference_*`），不重复。
+
+### 5. 文档
+
+- `DEVELOPMENT.md` §10 环境变量表加一行 `ANOTIFY_CAPABILITY_GC_INTERVAL_SEC | 3600 | 已删能力（tombstone）物理回收周期；0 = 禁用`。
+- `docs/design/v4/capability.md` 删除那一节（`844` 附近）补一句：tombstone 的物理回收由后台 GC 驱动；
+  有引用（任务/尝试/产物清单/部署/安装回执）的不删 —— **因此「已删能力会挡住命名空间删除」不是契约保证**。
+
+### 6. 不做
+
+- 不接 `DeleteDeployment` / `DeleteExpiredPlaybookInstalls`（前者另开卡，后者已有父裁决）。
+- 不加时间窗、不动 schema、不改 `PurgeDeletedCapabilities` 的 SQL 与签名。
+
+### 7. 门禁
+
+```bash
+gofmt -l .
+go test ./internal/server/... ./internal/store/... -count=1
+make contract
+make e2e-one S=orphans          # 覆盖 no_capability 分支
+```
 
 ## 不做
 
