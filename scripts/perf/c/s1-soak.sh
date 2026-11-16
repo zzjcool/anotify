@@ -53,6 +53,11 @@ set -uo pipefail   # 故意不加 -e：采样/压测里个别命令失败不该�
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S1_DIR="${S1_DIR:-/tmp/perf-c/s1}"
 RAW="$S1_DIR/raw"
+# 跨轮污染：raw/ 下是本轮产物，开跑前清空（profiles/ 与 runs/ 保留，那是历史证据）。
+# 不清的后果：重跑同一时长会读到上一轮的数字（`s1_seg_status` 取第一行「状态码」）。
+mkdir -p "$RAW"
+: >"$RAW/agent.log"; : >"$RAW/hook.log"; : >"$RAW/ingest.log"
+rm -f "$RAW"/ingest_*.log
 PROF="$RAW/profiles"
 
 # 独立可跑：PC_ROOT 指到本场景目录，和其他 C 路成员（s2/s3…）的 bin/runs 互不干扰。
@@ -438,6 +443,10 @@ s1_seg() {  # s1_seg <a> <b>  跑 [a,b) 这一段
 	tag=$(printf '%03d-%03d' "$a" "$b")
 	echo "$tag" >"$S1_DIR/seg"   # 采样子进程是独立进程，共享变量传不过去，用文件传
 
+	# 每段开跑前**必须**清掉同 tag 的旧文件：`s1_seg_status` 用 `grep -m1` 取第一行
+	# 「状态码」，而下面用 `>>` 追加。不清的后果是「重跑同一时长（如两次 S1_DURATION=180）
+	# 会读到上一轮的数字」—— 实测踩过一次：段 1 报 200×40311、实际本轮只有 4799。
+	: >"$RAW/ingest_$tag.log"
 	log "主压段 $tag（${secs}s，-c 8，rate=${S1_RATE}/s）开始 @ t=$(elapsed_s)"
 	taskset -c "$PC_CPUS" "$LG_BIN" -url "$S1_EVENTS_URL" -method POST \
 		-body-file "$BODY_JSON" -header 'content-type: application/json' \
