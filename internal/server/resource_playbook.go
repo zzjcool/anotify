@@ -43,8 +43,9 @@ func newPlaybookAPI(d *serverDeps) *playbookAPI { return &playbookAPI{d: d} }
 
 // register 注册全部 Playbook 路由（全部 session 包裹，未登录直 401）。
 //
-// 方法不匹配（例如 `PATCH …/playbooks/{slug}`）由 Go 1.22 ServeMux 自己回 405，
-// 这里不重复实现方法分派。
+// 方法不匹配（例如 `PATCH …/playbooks/{slug}`）本函数**不**兜底方法分派：这里只挂带方法的
+// pattern，生产 mux 会把这类请求交给末尾的静态兜底（回 404/503 而不是 405）。两种挂载方式
+// 为什么答案不同，见 resource_capability.go 的 register() 注释——同仓同结论只在那一处解释。
 func (a *playbookAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/playbooks"
 	routes := []struct {
