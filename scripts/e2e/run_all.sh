@@ -43,6 +43,17 @@ if [ "$NEED_FE" = "1" ]; then
 	echo "  ✅ 前端产物就绪"
 fi
 
+# 1b. 前置：dist 必须是**这次源**的产物，不是上一轮的。
+#     只判缺失不够 —— 改了 web-src/ 却忘了 make fe 时，dist 存在但陈旧，e2e 验的是
+#     旧前端产物（22d14d47 / 1256350f / 一次波末假绿都是这么假绿的）。
+#     陈旧就**硬失败**，不自动重建：自动重建会把「你忘了 make fe」重新变成静默
+#     （重建后永远绿），也让 e2e 启动时间翻倍。
+#     stamp 由 make fe 末尾写入（scripts/dist-stamp.mjs --write）。
+if ! node scripts/dist-stamp.mjs --check; then
+	echo "❌ dist 与 web-src 不一致（前端产物陈旧）→ 先 make fe，再跑 e2e" >&2
+	exit 1
+fi
+
 # 2. 构建测试二进制
 #
 # 三个真实产物，没有 mock：

@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go
+.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -74,6 +74,10 @@ check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 
 
 check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
 	node scripts/check-contrast.mjs
+
+check-dist-fresh: ## dist 新鲜度：dist 必须与 web-src/api/web 的源指纹一致（陈旧就判红，不自动重建）
+	node scripts/dist-stamp.mjs --self-test
+	node scripts/dist-stamp.mjs --check
 
 check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/time.Sleep/裸标签+.first()（超基线红，降基线也红）
 	node scripts/check-test-discipline.mjs --self-test
@@ -112,6 +116,8 @@ tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 n
 
 fe: check-classes check-wire-fields check-css check-i18n-keys check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
+	@# 产物指纹落好之后记下输入面指纹（dist/.source-stamp）：e2e 前置据此判定 dist 是否陈旧。
+	node scripts/dist-stamp.mjs --write
 
 dist: fe ## 同 fe（生成 embed 产物）
 

@@ -50,7 +50,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 设计原则（照抄本仓已验证的范式）：**纯函数判据 + `--self-test` 红/绿双侧自证 + 打印检查数量（0 项也算红）+ 例外表过期即红 + 退出码 0/1/2**。
 恒红的门禁等于没有门禁（`check_contract.py:1-30` 的头注释教训），所有新守卫必须在合入时**真的是绿的**。
 
-## 1. 本批落地（5 条）
+## 1. 本批落地（8 条）
 
 | 编号 | 文件 | 抓什么事故 | 判据要点 | 接在哪 |
 |---|---|---|---|---|
@@ -62,6 +62,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 
 | L6 | `scripts/check-secrets.mjs` | GitHub 上的 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff，本地 `git commit` 时无感。本仓的秘密面又很具体（`install.json`/`anode.yaml` 里的令牌、VAPID 私钥、`docs/` 里的示例命令） | PEM 私钥块 / 供应商形状（`ghp_`、`AKIA`、`sk-`…）/ 本仓令牌形状（`VAPID_PRIVATE`、`token:` + ≥32 字符字面量、`Bearer`）/ 被跟踪的 `.env`、`*.pem`、`id_*`。**不做熵检测**（夹具里全是假令牌）；`ALLOWLIST` 每条带理由且过期即红；`--staged` 供 pre-commit。**首次提交就自证了一次**：默认模式只扫**被跟踪**文件，于是它把自己的 self-test 夹具当成泄漏——已把夹具改成运行时拼接（源码里不留秘密形状）。这与 L5 那个「未跟踪文档漏扫」是同一类不对称 | `make ci` + `make hooks` |
 | L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*`（只开正确性类；`U1000`/`S*`/`ST*` 噪声大另立项） | `make ci` |
+| L8 | `scripts/dist-stamp.mjs` | 陈旧 dist 假绿 `22d14d47` / `1256350f` / 一次波末假绿（`run_all.sh:31-43` 只在 dist 缺失或为空时才重建 ⇒ 改了 `web-src/` 却忘了 `make fe` 时，e2e 验的是上一轮的前端产物） | 对输入面（`web-src/**` + `api/*.yaml` + `web/` 的 git 源文件，**不含** `internal/server/dist` 自己）逐个 sha256 → `dist/.source-stamp`；`--check` 重算并逐条列出变动/新增/删除（路径 + 旧前 8 位 → 新前 8 位）；stamp 缺失、输入面解析为空、stamp 字段与 digests 不自洽一律判红；二进制照算（字体/图标变 dist 就变），超上限的大文件跳过但打印计数（不静默） | `make fe`（写）+ `make check-dist-fresh` / `scripts/e2e/run_all.sh` 前置（验） |
 
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
 
@@ -100,7 +101,13 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
    明文进回执 → 已按 **fail-closed 整值打码**修掉（判据反转成 allowlist 语义，契约 §1.2 同步）。
    原始构想：判据：「`MaskValues` 打成 `***`」⇔「`refHitsWriteOnly` 同判」；随机生成含 `writeOnly`/`additionalProperties`/`prefixItems`/`items`/`type:[object,array]` 的 schema 对撞。一次性覆盖 6 个历史 fix，判据无启发式，误报≈0。
 2. ~~**`openapi_parity_test.go:4329` 放开到 `in: header`**~~ —— **已完成（PR #412）**：双向对账 + 两张例外表过期即红 + `headerParamFloor` + 7 条变异子测试。实况：契约 7 条 header 全部已实现（`X-Anotify-Signature` 早已由 e897e015 落地），缺口是门禁本身。原始构想：（抓 #355：`X-Anotify-Signature` 验签在契约里、实现里不存在）。复用现成 `literals` 判据 + 白名单 + 过期即红。
-3. **dist 新鲜度守卫**：`make e2e` 前断言 `internal/server/dist` 含本次 `web-src` 指纹（`run_all.sh:31-43` 至今只在缺失时重建，已三次假绿）。
+3. ~~**dist 新鲜度守卫**~~ —— **已完成**：`scripts/dist-stamp.mjs`（`make fe` 末尾 `--write` 把输入面 sha256 写进
+   `internal/server/dist/.source-stamp`；`--check` 重算并逐条列出变动/新增/删除，stamp 缺失、输入面解析为空、
+   stamp 字段与 digests 不自洽一律判红）+ `make check-dist-fresh` + `scripts/e2e/run_all.sh` 前置 `--check`。
+   **为什么陈旧就硬失败、不自动重建**：自动 `make fe` 会把「你忘了 `make fe`」这条缝隙重新变成静默 —— 重建后永远绿，
+   人再也看不到「刚才验的那份是旧的」；而且每次 e2e 都要多付一次 sitegen + 指纹。硬失败把「忘了」换成一次
+   带文件名与新旧指纹的显式报错，代价只有一次 `make fe`。
+   原始构想：`make e2e` 前断言 `internal/server/dist` 含本次 `web-src` 指纹（`run_all.sh:31-43` 至今只在缺失时重建，已三次假绿）。
 4. **白名单到期机制**：`KNOWN_DEAD`/`vocabWhitelist`/`bareMount405Exceptions` 等所有例外表必须带 `issue#`，缺即红（`vocabulary_test.go:303` 已有「白名单不许过期」的范本，缺的是统一执行）。
 5. **`go test -json` 断言 skip 集合为空**（CI 里 dist 必存在 ⇒ `t.Skip` 集合必须为空）。把「静默跳过」从 review 变成运行期事实。
 6. **`-shuffle=on`（每次跑）+ `-count=2`（nightly）**：全仓现在 `-shuffle` 0 处、`-count≥2` 0 处，所有 flake 都是人肉 `-count=40` 事后发现的。
