@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go
+.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -204,7 +204,7 @@ tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级�
 # 检查面是 SA* + U1000。U1000（未使用符号）台账记 41 条、本次实测 40 条，被当成噪声另立项；
 # chore/u1000-cleanup 把它们逐条判过（产品 11 条 + 测试 29 条，全部是真死代码，没有一条
 # 值得用抑制注释保下来）后清零。敢把它放进来的理由是这个不对称：基线是 0，它只会点名
-# **本次新写下的**死符号，而不是像当初那样一开就让整条门禁红到没人看
+# **本次新写下的**死符号，而不是像当初那样一开就让整条检查红到没人看
 # （见 docs/lint-guards.md §0 的第一类缝隙）。落地时做过变异自证：往任意包里加一个
 # 没人调的私有函数，这条检查立刻红并点名它。
 #
@@ -217,8 +217,12 @@ tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级�
 # 1.23.x，而 staticcheck 2025.1.1 分析 go1.25 的模块会报 "was built with go1.23.4"。
 STATICCHECK_VERSION ?= 2025.1.1
 GOTOOLCHAIN_PIN := go1.25.0
+# staticcheck 装在仓库内的 .bin/（gitignore），而不是每次 `go run pkg@version`：
+# 后者每次都要向 honnef.co 做一次 go-get 解析，网络抖一下就让整条检查随机红
+# （2026-11-16 实测过一次 `https fetch: EOF`，把一个与代码无关的失败伪装成代码失败）。
+STATICCHECK_BIN := $(CURDIR)/.bin/staticcheck
 
-lint-go: ## Go 静态门禁：gofmt + 包注释 + vet + staticcheck SA*,U1000（正确性类 + 未使用符号）
+lint-go: ## Go 静态检查：gofmt + 包注释 + vet + staticcheck SA*,U1000（正确性类 + 未使用符号）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
@@ -230,7 +234,16 @@ lint-go: ## Go 静态门禁：gofmt + 包注释 + vet + staticcheck SA*,U1000（
 		exit 1; \
 	fi
 	go vet ./...
-	GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) -checks=SA*,U1000 ./...
+	@if [ ! -x "$(STATICCHECK_BIN)" ]; then \
+		echo "静态检查工具未安装，先装一次（之后离线可用）：make tools"; \
+		$(MAKE) tools; \
+	fi
+	GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) "$(STATICCHECK_BIN)" -checks=SA*,U1000 ./...
+
+tools: ## 安装 Go 静态检查工具到 .bin/（版本钉在 Makefile；装一次后 lint-go 不再走网络）
+	@mkdir -p .bin
+	GOBIN=$(CURDIR)/.bin GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+	@echo "✅ $(STATICCHECK_BIN) $$( $(STATICCHECK_BIN) -version 2>/dev/null | head -1 )"
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
 	$(MAKE) lint-go
