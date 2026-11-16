@@ -232,7 +232,8 @@ export const ANCHOR_MIN = 4;
  *   unbacked（声称有检查兜底、但没有 guard 锚点的行）实测 324 / 命中行共 324
  *   unmarked（契约面里的计数断言、但没有 count 锚点的行）实测 413 / 命中行共 414
  *
- * **2026-11-16 批末重测：338 / 432。**增量（+14 / +19）全部来自本批新增的
+ * **2026-11-16 批末重测：300 / 432。**（301 → 300：新写的 Makefile 注释里那个过强的词改回「检查」，
+ * 措辞与含义不变；`make tools` 的 help 文本同理。）增量（+14 / +19）全部来自本批新增的
  * `scripts/check-secrets.mjs` 文件头、`Makefile` 的 lint-go/secrets 注释、以及 staticcheck
  * 驱动的测试注释——即「新增检查脚本及其自述」，不是产品代码里新增的无锚点声明。
  * 口径：基线是**快照**，批末随实测校准；两批之间只许降（低于基线即红，必须同批下调）。
@@ -256,7 +257,7 @@ export const ANCHOR_MIN = 4;
  * 一条 claim 行都没有（说明段里没有「声称有检查兜底」的句子），按 SPEC_DOC_STALE 加标记
  * 即红，故**未**加 —— 需豁免时先让它真的产生 noise，而不是给标记挖一个空容器。
  */
-export const CLAIM_UNBACKED_BASELINE = 301;
+export const CLAIM_UNBACKED_BASELINE = 300;
 export const COUNT_UNMARKED_BASELINE = 432;
 
 /* ---------- 判据 ---------- */

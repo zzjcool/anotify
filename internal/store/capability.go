@@ -429,12 +429,7 @@ func getCapabilityByDigestOn(ctx context.Context, ex queryExec, namespaceID, dig
 		namespaceID, digest)
 }
 
-// scanCapability 执行查询并解析一行；未命中返回 ErrNotFound（事务外）。
-func (d *DB) scanCapability(ctx context.Context, query string, args ...any) (*CapabilityVersion, error) {
-	return scanCapabilityOn(ctx, d, query, args...)
-}
-
-// scanCapabilityOn 是 scanCapability 的 ex 版：所有读都经 ex，
+// scanCapabilityOn 是 scanCapabilityRow 的查询封装：所有读都经 ex，
 // 事务内传 txExec 才能看到本事务刚写入的行（见 txexec.go）。
 func scanCapabilityOn(ctx context.Context, ex queryExec, query string, args ...any) (*CapabilityVersion, error) {
 	var c CapabilityVersion
@@ -631,18 +626,4 @@ func (d *DB) CapabilityNamespace(ctx context.Context, capabilityID string) (stri
 		return "", fmt.Errorf("lookup capability namespace: %w", err)
 	}
 	return ns, nil
-}
-
-// checkCapabilityInNamespace 是隔离的公共校验：能力定义必须属于 wantNS。
-//
-// what 用来说明违反的是哪条引用，让人一眼看出是哪一端写错了。
-func (d *DB) checkCapabilityInNamespace(ctx context.Context, wantNS, capabilityID, what string) error {
-	ns, err := d.CapabilityNamespace(ctx, capabilityID)
-	if err != nil {
-		return err
-	}
-	if ns != wantNS {
-		return &CrossNamespaceError{What: what, Want: wantNS, Got: ns}
-	}
-	return nil
 }

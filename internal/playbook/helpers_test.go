@@ -102,7 +102,6 @@ type bundle struct {
 	extras map[string]string
 	// entryOverride 非空时整份替换 playbook.yaml（测入口形状错误用）。
 	entryOverride string
-	rawEntry      map[string]string
 }
 
 func newBundle() *bundle {

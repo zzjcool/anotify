@@ -267,8 +267,6 @@ func unitReplaceable(o Options, oldUnit, expected []byte, record *PathRecord) bo
 	return false
 }
 
-func unit(o Options) []byte { return unitWithPath(o, o.UnitPathEnv) }
-
 // unitWithPath 用给定的 PATH 项渲染 unit（apply / path add / 守卫比对共用同一模板）。
 func unitWithPath(o Options, entries []string) []byte {
 	var b strings.Builder

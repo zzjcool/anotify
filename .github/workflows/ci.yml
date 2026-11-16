@@ -35,6 +35,14 @@ jobs:
         with:
           node-version: "22"
 
+      # staticcheck 装在 .bin/（make tools）。缓存它：`go install pkg@version` 每次都要向
+      # honnef.co 做 go-get 解析，网络抖一下就把「工具没装上」伪装成「代码有问题」。
+      - name: Cache Go static tools
+        uses: actions/cache@v4
+        with:
+          path: .bin
+          key: go-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
       - name: Install guard-only JS dep
         run: npm install --no-save --no-audit --no-fund yaml@2
 

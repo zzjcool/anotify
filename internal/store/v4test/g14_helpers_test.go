@@ -264,22 +264,6 @@ func mustPhase(t *testing.T, db *store.DB, nsID, taskID, want string) *store.Tas
 	return got
 }
 
-// eventTTL 把系统配置的事件保留期设成 sec（去重窗口就是它）。
-func setEventTTL(t *testing.T, db *store.DB, sec int64) {
-	t.Helper()
-	ctx := context.Background()
-	cfg, err := db.GetSystemConfig(ctx)
-	if err != nil {
-		t.Fatalf("get system config: %v", err)
-	}
-	cfg.RetentionEventTTLSec = sec
-	cfg.RetentionTaskTTLSec = 0
-	cfg.RetentionResultTTLSec = 0
-	if err := db.PutSystemConfig(ctx, cfg, cfg.ResourceVersion); err != nil {
-		t.Fatalf("put system config: %v", err)
-	}
-}
-
 // setRetention 设置三条保留期。
 func setRetention(t *testing.T, db *store.DB, eventSec, taskSec, resultSec int64) {
 	t.Helper()

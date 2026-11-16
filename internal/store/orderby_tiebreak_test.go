@@ -1862,12 +1862,6 @@ func orderByMatchGap(cl orderByClause, gaps []orderByKnownGap) int {
 	return -1
 }
 
-// orderByFindExemption 返回命中的白名单下标（真实登记表）。
-func orderByFindExemption(cl orderByClause) int { return orderByMatchExemption(cl, orderByExemptions) }
-
-// orderByFindGap 返回命中的缺口登记下标（真实登记表）。
-func orderByFindGap(cl orderByClause) int { return orderByMatchGap(cl, orderByKnownGaps) }
-
 // orderByScanGuard 是「解析器必须真的干活」的守卫（反假绿），单独成函数便于变异自证。
 func orderByScanGuard(count, minimum int) []string {
 	if count == 0 {

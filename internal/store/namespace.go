@@ -88,14 +88,6 @@ type Namespace struct {
 	EdgeCount       int `json:"edgeCount"`
 }
 
-// nsQueryer 让同一段 SQL 既能跑在 *DB 上，也能跑在事务里
-// （建命名空间 / 注册用户 / 装预案都必须与播种内置能力同事务）。
-type nsQueryer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // namespaceSlugPattern 是 slug 的合法字符集：它出现在 URL 与令牌作用域里，
 // 只允许小写字母、数字、连字符，且以字母或数字开头。
 var namespaceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)

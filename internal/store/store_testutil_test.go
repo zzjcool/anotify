@@ -24,23 +24,6 @@ func newTestDBFile(t *testing.T) (db *DB, path string) {
 	return db, path
 }
 
-// newRawNamespace 直接插一个命名空间行（**不走注册、不播种内置能力**）。
-//
-// 「老库升级」类用例必须在**尚未迁到当前 schema** 的库上造数据：注册路径会顺带
-// 播种内置能力，而播种要写新列（spec），老 schema 上根本没有那一列。用老库真实
-// 的书写方式（裸 INSERT）造数据，才不会把「旧版本代码从没写过这一列」这个事实
-// 掩盖成一次运行期报错。
-func newRawNamespace(t *testing.T, db *DB) string {
-	t.Helper()
-	id := NewNamespaceID()
-	if _, err := db.Exec(
-		`INSERT INTO namespaces (id, slug, name, created_at) VALUES (?,?,?,?)`,
-		id, "raw-"+id, "raw", Now()); err != nil {
-		t.Fatalf("insert raw namespace: %v", err)
-	}
-	return id
-}
-
 // newTestNS 注册一个用户（= 建用户 + 它的默认命名空间 + 内置能力），
 // 返回 (默认命名空间 id, userID)。
 //
@@ -55,18 +38,6 @@ func newTestNS(t *testing.T, db *DB) (namespaceID, userID string) {
 		t.Fatalf("register user: %v", err)
 	}
 	return ns.ID, u.ID
-}
-
-// newTestNSNamed 注册一个用户，并额外建一个指定 slug 的命名空间，
-// 返回 (该 slug 的命名空间 id, userID)。用于跨命名空间（数据隔离）用例。
-func newTestNSNamed(t *testing.T, db *DB, slug string) (namespaceID, userID string) {
-	t.Helper()
-	_, userID = newTestNS(t, db)
-	ns, err := db.CreateNamespace(context.Background(), slug, slug)
-	if err != nil {
-		t.Fatalf("create namespace %q: %v", slug, err)
-	}
-	return ns.ID, userID
 }
 
 // newTestExtraNS 在**同一个部署**里再建一个命名空间（不建用户），
@@ -119,13 +90,6 @@ func mustExec(t *testing.T, db interface {
 		t.Fatalf("exec %q: %v", q, err)
 	}
 }
-
-// capRef 返回一个能力的**钉死引用**（`name@version`），当测试里 link 的一端用。
-//
-// P2.2 之后边里存的是**引用**，不是 `capability_versions.id`。所以测试也要写引用：
-// `X.ID` 那种写法构造的是「P2.2 之前的形状」，它只能走输入兼容层
-// （CreateEdge 会把 id 翻成 name@version），测的就不是路由语义了。
-func capRef(c *CapabilityVersion) string { return FormatRef(c.Name, c.Version) }
 
 // ---------- schema 形状 / 查询计划 helper（baseline 结构门禁与计划门禁用）----------
 

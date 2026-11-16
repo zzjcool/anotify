@@ -223,7 +223,7 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 	return changes
 }
 
-// upgradeAffectedLinks 列出会被这套变更影响的 link（§3.6「列出受影响的 link」）。
+// upgradeAffectedLinksOn 列出会被这套变更影响的 link（§3.6「列出受影响的 link」）。
 //
 // 两类受影响者，判据都落在「这条 link 会不会解析到新版」上：
 //
@@ -231,11 +231,6 @@ func diffContracts(prev, next *CapabilityVersion) []UpgradeChange {
 //     钉死的 to_ref 不受影响（它钉的就是旧版）。
 //
 // 同一条 link 两类都命中时合并成一行，reason 拼起来。
-func (d *DB) upgradeAffectedLinks(ctx context.Context, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
-	return upgradeAffectedLinksOn(ctx, d, namespaceID, prev, next)
-}
-
-// upgradeAffectedLinksOn 是 upgradeAffectedLinks 的 ex 版。
 func upgradeAffectedLinksOn(ctx context.Context, ex queryExec, namespaceID string, prev, next *CapabilityVersion) ([]UpgradeLink, error) {
 	// 入参契约真的变了才去查右端（v4 只有这一类破坏性变更）。
 	prevProps, prevReq := schemaProperties(prev.Spec.Params)
