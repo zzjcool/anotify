@@ -94,8 +94,12 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 
 ## 2. Backlog（按性价比排序，未开工）
 
-1. **打码 fail-open 的一致性 property 测试**（#356，9 个 fix）。判据：「`MaskValues` 打成 `***`」⇔「`refHitsWriteOnly` 同判」；随机生成含 `writeOnly`/`additionalProperties`/`prefixItems`/`items`/`type:[object,array]` 的 schema 对撞。一次性覆盖 6 个历史 fix，判据无启发式，误报≈0。
-2. **`openapi_parity_test.go:4329` 放开到 `in: header`**（抓 #355：`X-Anotify-Signature` 验签在契约里、实现里不存在）。复用现成 `literals` 判据 + 白名单 + 过期即红。
+1. ~~**打码 fail-open 的一致性 property 测试**（#356，9 个 fix）~~ —— **已完成（PR #412 + #413）**：
+   `internal/playbook/mask_consistency_property_test.go`（100 固定种子 / P1 两 walker 同判（含 param 粒度）/ 
+   P2 无明文 / P3 顺序无关 + 覆盖账本）；它一上线就抓到 **GAP-1**：`spec.values` 用 `$ref` 藏 writeOnly 时
+   明文进回执 → 已按 **fail-closed 整值打码**修掉（判据反转成 allowlist 语义，契约 §1.2 同步）。
+   原始构想：判据：「`MaskValues` 打成 `***`」⇔「`refHitsWriteOnly` 同判」；随机生成含 `writeOnly`/`additionalProperties`/`prefixItems`/`items`/`type:[object,array]` 的 schema 对撞。一次性覆盖 6 个历史 fix，判据无启发式，误报≈0。
+2. ~~**`openapi_parity_test.go:4329` 放开到 `in: header`**~~ —— **已完成（PR #412）**：双向对账 + 两张例外表过期即红 + `headerParamFloor` + 7 条变异子测试。实况：契约 7 条 header 全部已实现（`X-Anotify-Signature` 早已由 e897e015 落地），缺口是门禁本身。原始构想：（抓 #355：`X-Anotify-Signature` 验签在契约里、实现里不存在）。复用现成 `literals` 判据 + 白名单 + 过期即红。
 3. **dist 新鲜度守卫**：`make e2e` 前断言 `internal/server/dist` 含本次 `web-src` 指纹（`run_all.sh:31-43` 至今只在缺失时重建，已三次假绿）。
 4. **白名单到期机制**：`KNOWN_DEAD`/`vocabWhitelist`/`bareMount405Exceptions` 等所有例外表必须带 `issue#`，缺即红（`vocabulary_test.go:303` 已有「白名单不许过期」的范本，缺的是统一执行）。
 5. **`go test -json` 断言 skip 集合为空**（CI 里 dist 必存在 ⇒ `t.Skip` 集合必须为空）。把「静默跳过」从 review 变成运行期事实。
@@ -120,6 +124,11 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
     其中约 10 条在**产品代码**（`fixedWindow.allow`、`nodeDecodeStrictJSON`、`scanCapability`、
     `checkCapabilityInNamespace`、`nsQueryer`、`nsRefIndex`…）——要么删，要么补上「为什么留着」的理由。
     先做产品子集（测试夹具里的 31 条可能是刻意保留的构造器），做完再把 `U1000` 放进 `lint-go`。
+16. **注解棘轮对「测试文档段」是噪音源**：连续两批被批末校准（324→332→338），增量全部来自
+    新测试文件里描述「这条测试查什么」的注释段（`openapi_parity_test.go` 的对账说明、
+    `mask_consistency_property_test.go` 的不变量说明）。它们不是「无锚点的门禁声称」，而是门禁自身的规格。
+    可行做法：给这类段落一个锚点约定（如 `@guard <本测试文件>#<用例名>` 或文件头 `spec-doc:` 标记），
+    由 lint 校被引用用例名存在。眼下靠「批末校准 + 增量点名到文件」撑着。
 15. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
     逐条重跑登记的命令，**某条其实已经绿了就红**（清单过期，必须删条目），同时新增红必须**不在**清单里。
     这样「基线红」就不会同时冒充两类掩体（掩盖新 bug / 误导判据）。范本：`openapi_parity_test.go` 的
