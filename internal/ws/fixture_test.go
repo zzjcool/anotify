@@ -139,7 +139,9 @@ func (e *env) deployApplied(t *testing.T, capability *store.CapabilityVersion) {
 func (e *env) directGrant(t *testing.T, task *store.Task) (leaseID, attemptToken string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := e.db.UpsertInstances(ctx, e.node.ID, []store.InstanceSpec{{Slot: 0}}); err != nil {
+	// 夹具全部写假时钟（e.now）：与 hub 的 Now() 同域，避免测试自身的 updated_at
+	// 落在另一个时钟上（回收判据就是拿它比大小的）。
+	if _, err := e.db.UpsertInstancesAt(ctx, e.node.ID, []store.InstanceSpec{{Slot: 0}}, e.now); err != nil {
 		t.Fatalf("申报槽位: %v", err)
 	}
 	if err := e.db.AssignTaskAt(ctx, task.ID, e.node.ID, "asg_direct", 1, e.now); err != nil {

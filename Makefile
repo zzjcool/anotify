@@ -147,16 +147,18 @@ manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / 
 	@printf 'spec:     %s  (api/*.yaml)\n' "$$(cat api/*.yaml | sha256sum | cut -d' ' -f1)"
 	@printf 'fe:       %s  (internal/server/dist/manifest.json)\n' "$$(sha256sum internal/server/dist/manifest.json | cut -d' ' -f1)"
 
-test: ## 运行全部单元测试（不含 make e2e / make integration）
-	go test ./... -count=1
+test: ## 运行全部单元测试（不含 make e2e / make integration；带 shuffle，顺序耦合会暴露）
+	go test ./... -count=1 -shuffle=on
 
-# shuffle 目前**只**放在这里，暂不进 `make test`（父会话裁决：见 DEVELOPMENT.md §5）。
-#
-# 为什么要一条带 shuffle 的入口：Go 默认**固定**测试顺序，于是「用例 A 污染的全局
+# 为什么 `make test` 也带 shuffle：Go 默认**固定**测试顺序，于是「用例 A 污染的全局
 # 状态只有 B 才看得见」这类顺序耦合在固定顺序下永远不会暴露。
-# 为什么先不抬进 `make test`：`internal/ws` 还有一条**未修**的时钟型 flake
-# （TestRehelloUnknownBusyDoesNotRelease），带 shuffle 的全量跑会随机变红 ——
-# 随机红的入口不如没有。等那条修完再把它抬进 `make test`。
+#
+# 曾经因为 `internal/ws` 有一条时钟型 flake（TestRehelloUnknownBusyDoesNotRelease）
+# 先把 shuffle 收窄到 test-repeat：随机红的入口不如没有。那条已修成「同一条节点事实
+# 只用一个采样点」（hub.applyInstances → store.UpsertInstancesAt；钉死用例在
+# internal/ws/rehello_clock_test.go），`internal/ws` 在 -shuffle=on -count=100 下
+# 0 失败，于是 shuffle 抬回 `make test`。
+#
 # shuffle 失败时 go test 会把种子打在 `-test.shuffle <seed>` 那行，用它可原样复现。
 test-repeat: ## 合并前/夜间用：go test ./... -shuffle=on -count=2，专治与执行顺序相关的 flake
 	go test ./... -shuffle=on -count=2
