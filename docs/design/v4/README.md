@@ -19,7 +19,7 @@
 | 现在 | v4 |
 |---|---|
 | `anotify-agent` | **`anode`**（和 AI 的 agent 撞名，改掉） |
-| `cmd/agent/` | `cmd/anode/` |
+| `cmd/agent/`（已删除） | `cmd/anode/` |
 | `node.yaml` | **`anode.yaml`**（+ 新增 `listen` / `vars` / `limits` / `envPassthrough`；中枢另有节点默认值与 ns 默认值） |
 | systemd 单元 `anotify-agent.service` | `anode.service` |
 

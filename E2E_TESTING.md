@@ -58,7 +58,7 @@ scripts/e2e/
 ## 临时目录与 /tmp 卫生（#326）
 
 **本机 `/tmp` 是 tmpfs（7.5G）——测试漏下的临时目录吃的是内存，不是磁盘。**
-2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（v3 时代 `go test ./cmd/agent`
+2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（v3 时代 `go test ./cmd/agent`（已删除）
 每次编一份真二进制；v4 的等价物是 `cmd/anode` 的 `anode-n3-binaries-*`，已由 `TestMain` 自清）、
 1424 个 `anotify-e2e-*`（端口重试失败的那些尝试从不删）、
 214 个 `anotify-script-*`（cli_auth 的假 HOME）。泄漏还会放大并行 e2e 的
@@ -176,6 +176,6 @@ make e2e-one S=auth_flow   # 只跑某个套件
     往返、SIGTERM 干净退出后中枢承认离线。验收读**进程退出码 / 文件权限 / 文件内容**，
     专抓「每层单独看都对、连起来才错」的一类 bug。
   > 构建事实（#336/#338）：`run_all.sh` 只构建三个真实产物 —— `anotify`（`cmd/server`，带
-  > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent` / `AGENT_BIN` 已随协议 v4
+  > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent`（已退役）/ `AGENT_BIN`
   > 退役，已不存在「迁移中」的构建路径。
   > `real_backend` 已具名退役并删文件（理由见 `docs/v4/e2e-inventory.md` §4）。

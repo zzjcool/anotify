@@ -317,6 +317,13 @@ func TestListPlaybooksPageAscendingWithTies(t *testing.T) {
 	if !pageTestEqualStrings(got, want) {
 		t.Fatalf("包翻页与全量不一致\n got=%v\nwant=%v", got, want)
 	}
+	// 上面比的是 ListPlaybooks（同一排序的另一条 SQL）；再用本用例自己建的 id 做一次
+	// 不依赖被查对象的独立断言：全部同 created_at（1000）时，期望顺序就是 id ASC
+	// ——keyset 的破平局规则必须自己站得住，不能靠「和全量一致」蒙过去。
+	sort.Strings(created)
+	if !pageTestEqualStrings(got, created) {
+		t.Fatalf("同秒并列应按 id ASC 破平局\n got=%v\nwant=%v", got, created)
+	}
 }
 
 // TestListNodesPage 覆盖 (name, id) 排序键。

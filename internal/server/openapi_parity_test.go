@@ -44,6 +44,10 @@ package server
 //     （`case http.MethodPatch:` 这类），token 的方法必须与表里的 method 一致。
 //   - **responses 与参数也在门禁内**（F2）：query 参数双向对账、requestBody → 400、
 //     CAS DELETE → 400+409、security → 401、裸挂载 handler 会 405 就必须声明 405。
+//   - **`in: header` 也在门禁内**（F2）：契约声明了请求头，就必须有人在实现里真的读它
+//     （`X.Header.Get(...)`，参数可以是字面量也可以是常量）；读了没声明同样红。两个方向都
+//     走「登记 + 过期即红」的例外表 —— 之前这里只收 `in: query`，header 是 fail-open by
+//     omission（#355 的 `X-Anotify-Signature` 就是这么溜过去的）。
 //   - 负向变异（`TestOpenAPIParityMutations`）把每一层门禁都打一遍：删 operation、加幽灵
 //     operation、复制 operationId、把 session 改成匿名、给 schema 删/加字段、断跨文件 $ref
 //     都必须**报错**。变异只在内存里做，绝不写盘。
@@ -59,6 +63,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -571,6 +576,7 @@ var registerPackageLevel = func(mux *http.ServeMux) {
 		details, _ := collectSpecDetails(docs)
 		literals, _ := stringLiterals(serverPkgDir)
 		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
 		const logsOp = "GET /v1/namespaces/{namespace}/tasks/{taskId}/logs"
 		detail, ok := details[logsOp]
 		if !ok {
@@ -578,7 +584,7 @@ var registerPackageLevel = func(mux *http.ServeMux) {
 		}
 		detail.QueryParams = replaceString(detail.QueryParams, "tailLines", "tail")
 		details[logsOp] = detail
-		problems := responsesAndParamsProblems(ops, details, literals, usage, patterns, statusExceptionTables{
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
 			RequestBodyNo400: requestBodyNo400Exceptions,
 			SecurityNo401:    securityNo401Exceptions,
 			BareMount405:     bareMount405Exceptions,
@@ -592,13 +598,118 @@ var registerPackageLevel = func(mux *http.ServeMux) {
 		details, _ := collectSpecDetails(docs)
 		literals, _ := stringLiterals(serverPkgDir)
 		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
 		usage["ghostParam"] = []string{"handlers.go:1"}
-		problems := responsesAndParamsProblems(ops, details, literals, usage, patterns, statusExceptionTables{
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
 			RequestBodyNo400: requestBodyNo400Exceptions,
 			SecurityNo401:    securityNo401Exceptions,
 			BareMount405:     bareMount405Exceptions,
 		})
 		requireProblem(t, "实现读了未声明参数", problems, "query 参数反向")
+	})
+
+	t.Run("F2: spec 声明了一个没人读的 header → header 正向必须红", func(t *testing.T) {
+		docs := mustReloadDocs(t)
+		ops, _ := collectSpecOps(docs)
+		details, _ := collectSpecDetails(docs)
+		literals, _ := stringLiterals(serverPkgDir)
+		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		const logsOp = "GET /v1/namespaces/{namespace}/tasks/{taskId}/logs"
+		detail, ok := details[logsOp]
+		if !ok {
+			t.Fatalf("变异失败：spec 里没有 %s", logsOp)
+		}
+		// 模拟「契约声明了验签头、实现根本没读」（#355 的形状）。
+		detail.HeaderParams = append(detail.HeaderParams, "X-Anotify-Ghost-Signature")
+		details[logsOp] = detail
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+			RequestBodyNo400: requestBodyNo400Exceptions,
+			SecurityNo401:    securityNo401Exceptions,
+			BareMount405:     bareMount405Exceptions,
+		})
+		requireProblem(t, "spec 声明无人读的 header", problems, "header 参数正向")
+	})
+
+	t.Run("F2: 实现读了 spec 没声明的 header → header 反向必须红", func(t *testing.T) {
+		docs := mustReloadDocs(t)
+		ops, _ := collectSpecOps(docs)
+		details, _ := collectSpecDetails(docs)
+		literals, _ := stringLiterals(serverPkgDir)
+		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		headerReads["x-anotify-ghost"] = []string{"internal/server/handlers.go:1"}
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+			RequestBodyNo400: requestBodyNo400Exceptions,
+			SecurityNo401:    securityNo401Exceptions,
+			BareMount405:     bareMount405Exceptions,
+			// 反向表**不登记**它：未登记的读取必须自己撞红。
+			UndeclaredHeaderRead: undeclaredHeaderReadWhitelist,
+		})
+		requireProblem(t, "实现读了未声明 header", problems, "header 参数反向")
+	})
+
+	t.Run("F2: header 例外表过期（实现早就读了）→ 必须红", func(t *testing.T) {
+		docs := mustReloadDocs(t)
+		ops, _ := collectSpecOps(docs)
+		details, _ := collectSpecDetails(docs)
+		literals, _ := stringLiterals(serverPkgDir)
+		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		// 拿一条**已经读了**的头去登记「实现没读」：正是「例外变永久后门」的形状。
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+			RequestBodyNo400: requestBodyNo400Exceptions,
+			SecurityNo401:    securityNo401Exceptions,
+			BareMount405:     bareMount405Exceptions,
+			UnreadHeader: map[string]headerParamException{
+				"x-anotify-signature": {
+					Issue:   "#355",
+					Reason:  "变异用：这条例外已经过期（实现早就读了）",
+					Witness: "internal/source/webhook_sign.go:HookSignatureHeader",
+				},
+			},
+		})
+		requireProblem(t, "header 未读例外过期", problems, "unreadHeaderParamExceptions 已过期")
+	})
+
+	t.Run("F2: 反向 header 例外表过期（spec 已经声明了）→ 必须红", func(t *testing.T) {
+		docs := mustReloadDocs(t)
+		ops, _ := collectSpecOps(docs)
+		details, _ := collectSpecDetails(docs)
+		literals, _ := stringLiterals(serverPkgDir)
+		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+			RequestBodyNo400: requestBodyNo400Exceptions,
+			SecurityNo401:    securityNo401Exceptions,
+			BareMount405:     bareMount405Exceptions,
+			UndeclaredHeaderRead: map[string]schemaWitness{
+				"x-anotify-signature": {
+					Reason:  "变异用：spec 已经声明了 X-Anotify-Signature",
+					Witness: "internal/server/resource_source.go:hook",
+				},
+			},
+		})
+		requireProblem(t, "反向 header 例外过期", problems, "undeclaredHeaderReadWhitelist 已过期")
+	})
+
+	t.Run("F2: header 例外登记没 issue/没理由 → 必须红", func(t *testing.T) {
+		docs := mustReloadDocs(t)
+		ops, _ := collectSpecOps(docs)
+		details, _ := collectSpecDetails(docs)
+		literals, _ := stringLiterals(serverPkgDir)
+		usage, _ := queryParamUsage(serverPkgDir)
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+			RequestBodyNo400: requestBodyNo400Exceptions,
+			SecurityNo401:    securityNo401Exceptions,
+			BareMount405:     bareMount405Exceptions,
+			UnreadHeader: map[string]headerParamException{
+				"x-anotify-signature": {Witness: "internal/source/webhook_sign.go:HookSignatureHeader"},
+			},
+		})
+		requireProblem(t, "header 例外没 issue", problems, "没登记 issue")
+		requireProblem(t, "header 例外没理由", problems, "没写「为什么当前不实现」")
 	})
 
 	t.Run("F2: 405 例外表清空 → 裸挂载下的 405 缺口必须暴露（证明例外在承重）", func(t *testing.T) {
@@ -607,7 +718,8 @@ var registerPackageLevel = func(mux *http.ServeMux) {
 		details, _ := collectSpecDetails(docs)
 		literals, _ := stringLiterals(serverPkgDir)
 		usage, _ := queryParamUsage(serverPkgDir)
-		problems := responsesAndParamsProblems(ops, details, literals, usage, patterns, statusExceptionTables{
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
 			RequestBodyNo400: requestBodyNo400Exceptions,
 			SecurityNo401:    securityNo401Exceptions,
 			BareMount405:     map[string]statusException{},
@@ -621,12 +733,61 @@ var registerPackageLevel = func(mux *http.ServeMux) {
 		details, _ := collectSpecDetails(docs)
 		literals, _ := stringLiterals(serverPkgDir)
 		usage, _ := queryParamUsage(serverPkgDir)
-		problems := responsesAndParamsProblems(ops, details, literals, usage, patterns, statusExceptionTables{
+		headerReads, _ := headerParamUsage(headerParamDirs())
+		problems := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
 			RequestBodyNo400: map[string]statusException{},
 			SecurityNo401:    securityNo401Exceptions,
 			BareMount405:     bareMount405Exceptions,
 		})
 		requireProblem(t, "requestBody 400 例外清空", problems, "却没声明 400")
+	})
+
+	t.Run("F2: header 读取用动态变量 → 收集器必须响亮失败（不许静默漏检）", func(t *testing.T) {
+		dir := t.TempDir()
+		src := `package server
+
+import "net/http"
+
+func readHeader(name string, r *http.Request) string { return r.Header.Get(name) }
+`
+		if err := os.WriteFile(filepath.Join(dir, "ghost.go"), []byte(src), 0o600); err != nil {
+			t.Fatalf("变异失败：写不了临时源码：%v", err)
+		}
+		built, problems := headerParamUsage([]string{dir})
+		requireProblem(t, "动态 header 名", problems, "静态解不出 header 名")
+		if len(built) != 0 {
+			t.Fatalf("变异失败：动态 header 名居然被收进了 %v", built)
+		}
+	})
+
+	t.Run("F2: header 名只写在常量里 → 常量引用也必须认（否则 6 条真实现被误判成没人读）", func(t *testing.T) {
+		dir := t.TempDir()
+		files := map[string]string{
+			"proto.go": `package proto
+
+const SigHeader = "X-Sig-Only-In-Const"
+`,
+			"use.go": `package server
+
+import (
+	"net/http"
+
+	"example.test/proto"
+)
+
+func readHeader(r *http.Request) string { return r.Header.Get(proto.SigHeader) }
+`,
+		}
+		for name, src := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
+				t.Fatalf("变异失败：写不了临时源码：%v", err)
+			}
+		}
+		built, problems := headerParamUsage([]string{dir})
+		fatalIfProblems(t, "常量引用形态的 header 读取", problems)
+		if len(built["x-sig-only-in-const"]) != 1 {
+			t.Fatalf("常量引用的 header 读取被漏收了：收集结果=%v", built)
+		}
 	})
 
 	t.Run("F4: admin 路由的中间件掉成纯会话 → 注册语句必须红", func(t *testing.T) {
@@ -3921,6 +4082,29 @@ func witnessProblems(where, witness string) []string {
 	return nil
 }
 
+// headerExceptionProblems 校验一条 header 例外登记的硬字段：issue（或 TODO）+ 为什么不实现 + 证人。
+//
+// 「登记了但没期限」就是这次要治的病（#355：契约里的验签头没人读，测试也不会红），
+// 所以这里把「挂在哪个 issue 上」做成必填：
+//   - GH 能查到的写 `#355`；
+//   - 查不到的写 `TODO(parity-header)`，并在 Reason 里说清为什么现在不做。
+func headerExceptionProblems(where string, ex headerParamException) []string {
+	var problems []string
+	switch issue := strings.TrimSpace(ex.Issue); {
+	case issue == "":
+		problems = append(problems, fmt.Sprintf(
+			"%s 没登记 issue —— header 例外必须挂到 issue（#123）或 TODO(parity-header) 上，否则就是个无期限口子", where))
+	case !strings.HasPrefix(issue, "#") && !strings.Contains(issue, "TODO(parity-header)"):
+		problems = append(problems, fmt.Sprintf(
+			"%s 的 issue %q 形态不对：要么 `#355`（GH 能查到的号），要么 `TODO(parity-header)`", where, issue))
+	}
+	if strings.TrimSpace(ex.Reason) == "" {
+		problems = append(problems, fmt.Sprintf("%s 没写「为什么当前不实现」", where))
+	}
+	problems = append(problems, witnessProblems(where, ex.Witness)...)
+	return problems
+}
+
 // fileMustContain 报告 rel 的源码里是否出现 want（源码事实，不是注释——注释也算在源码里，
 // 所以这里只用于「函数体里出现了这个调用」这类高置信度的判据）。
 func fileMustContain(rel, want string) (bool, error) {
@@ -4288,11 +4472,15 @@ func schemaCoverageProblems(docs specDocs, pairs []parityPair) ([]string, schema
 // 10. responses 与参数（F2）：spec 的「声明」必须与实现的「读取/回答」对账
 // ============================================================================
 
-// specOpDetail 是 operation 上与 F2 相关的细节（query 参数 / 响应码 / 有没有请求体）。
+// specOpDetail 是 operation 上与 F2 相关的细节（query/header 参数 / 响应码 / 有没有请求体）。
 type specOpDetail struct {
 	QueryParams []string
-	Responses   []string
-	HasBody     bool
+	// HeaderParams 是 `in: header` 的请求头参数名（**大小写照契约原样留着**：比对时归一小写，
+	// 但失败信息要能直接对上 spec 里那一行）。
+	// 它**不进** QueryParams：query 的判据（读法、方向、例外表）与 header 完全不同。
+	HeaderParams []string
+	Responses    []string
+	HasBody      bool
 }
 
 // collectSpecDetails 走一遍五份 spec，把每条 operation 的参数与响应码摊平成表。
@@ -4325,6 +4513,18 @@ func collectSpecDetails(docs specDocs) (map[string]specOpDetail, []string) {
 					continue
 				}
 				param = resolved
+			}
+			// `in: header` 收进单独一张表（下面 query 那段一字未动）：header 由
+			// `http.Header` 按名读取、大小写不敏感，query 由 `URL.Query()` 读取，
+			// 两个方向的判据与例外表都不一样，混成一条判据会两边都变糊。
+			if in, _ := param["in"].(string); in == "header" {
+				name, _ := param["name"].(string)
+				if name == "" {
+					problems = append(problems, fmt.Sprintf("%s：%s 有一个没有 name 的 header 参数", file, where))
+					continue
+				}
+				detail.HeaderParams = append(detail.HeaderParams, name)
+				continue
 			}
 			if in, _ := param["in"].(string); in != "query" {
 				continue
@@ -4507,6 +4707,235 @@ func expressionIsURLQuery(e ast.Expr) bool {
 	return true
 }
 
+// headerReadMethods 是 `http.Header` 上的**读取**方法（`Set`/`Add`/`Del` 是写：往外设置一个头
+// 不是「实现读了它」，不算证据）。
+var headerReadMethods = map[string]bool{"Get": true, "Values": true}
+
+// headerParamDirs 是 header 读取点的扫描根（相对仓库根；本测试的工作目录是 internal/server）。
+//
+// 扫 `internal/` 而不是只扫 `internal/server`：handler 常常把读取包在共享 helper 里 ——
+// `Authorization` 的读取点在 internal/authn/authn.go 与 internal/auth/apikey.go（handler
+// 里只写 `authn.BearerToken(r)`）。只扫 server 包会把这类真实现误判成「没人读」。
+//
+// 刻意**不**扫 `cmd/`：那里是节点侧客户端 / CLI（`cmd/anode` 的 emit 网关读/写的是**自己
+// 出站请求**的头）。把客户端读取当成「服务端实现了这个请求头」就是假绿 —— 服务端可能根本
+// 不理它。所以 `cmd/` 下再多的读取点也不能当证据。
+func headerParamDirs() []string {
+	return []string{filepath.Join(repoRoot, "internal")}
+}
+
+// headerParamUsage 收集实现里**真的从请求头读出来**的 header 名（键 = 小写归一）→ 读取点。
+//
+// 读法归一（大小写不敏感是 http.Header 自己的语义：读 `X-Anotify-Signature` 与读
+// `x-anotify-signature` 是同一件事）。
+//
+// 认哪些形态（刻意**只**认读）：
+//
+//	r.Header.Get("X-Anotify-Attempt")             读请求头（字面量）
+//	r.Header.Values("Accept-Encoding")            读请求头（多值）
+//	r.Header.Get(protocol.ArtifactHeaderAttempt)  读请求头（**常量引用**）
+//	r.Header["X-Anotify-Attempt"]                 map 取下标
+//
+// 常量引用必须解出唯一取值：本仓库的 header 名有多处只写在常量里
+// （`protocol.ArtifactHeader*` / `source.HookSignatureHeader`），不按常量解析就会把 6 条
+// 真实实现误判成「没人读」—— 一个只会产生假红的门禁最后一定会被人删掉。
+//
+// 解不出来（动态变量 / 同名常量多处不同取值）**是 problem**，不是静默跳过：
+// 静默跳过 = 这条 header 从此脱离对账（fail-open by omission，正是本门禁要治的病）。
+//
+// 已知边界：只认 `X.Header.<Read>(...)` / `X.Header[key]` 形态。若将来有 handler 把
+// `http.Header` 传给 helper 再 `h.Get(name)`，这里看不到 —— 届时把 helper 的读取点补进来。
+func headerParamUsage(roots []string) (map[string][]string, []string) {
+	var problems []string
+
+	type goSource struct {
+		rel  string
+		fset *token.FileSet
+		file *ast.File
+	}
+	var sources []goSource
+
+	// ① 解析所有非测试 .go，顺手把「常量/变量名 → string 取值」收成表（常量引用解析用）。
+	constValues := map[string]map[string]bool{}
+	recordConst := func(name, value string) {
+		if constValues[name] == nil {
+			constValues[name] = map[string]bool{}
+		}
+		constValues[name][value] = true
+	}
+	for _, root := range roots {
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if path == root {
+					return nil
+				}
+				if name := d.Name(); name == "testdata" || strings.HasPrefix(name, ".") {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			name := d.Name()
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				return nil
+			}
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				problems = append(problems, fmt.Sprintf("读不了 %s：%v", path, readErr))
+				return nil
+			}
+			fset := token.NewFileSet()
+			parsed, parseErr := parser.ParseFile(fset, path, src, 0)
+			if parseErr != nil {
+				problems = append(problems, fmt.Sprintf("解析 %s 失败：%v", path, parseErr))
+				return nil
+			}
+			rel, relErr := filepath.Rel(filepath.Clean(repoRoot), path)
+			if relErr != nil {
+				rel = path
+			}
+			sources = append(sources, goSource{rel: filepath.ToSlash(rel), fset: fset, file: parsed})
+			for _, decl := range parsed.Decls {
+				gen, ok := decl.(*ast.GenDecl)
+				if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
+					continue
+				}
+				for _, spec := range gen.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, ident := range vs.Names {
+						if i >= len(vs.Values) {
+							continue
+						}
+						lit, ok := vs.Values[i].(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							continue
+						}
+						v, unquoteErr := strconv.Unquote(lit.Value)
+						if unquoteErr != nil {
+							continue
+						}
+						recordConst(ident.Name, v)
+					}
+				}
+			}
+			return nil
+		})
+		if walkErr != nil {
+			problems = append(problems, fmt.Sprintf("遍历 %s 失败：%v", root, walkErr))
+		}
+	}
+	if len(sources) == 0 {
+		return nil, append(problems, "一个非测试 .go 文件都没扫到 —— 收集器坏了（不许 0 项检查也绿）")
+	}
+
+	// ② 名字解析：字面量，或同名常量的**唯一**取值。
+	var resolveConst func(name string) (string, string)
+	resolveConst = func(name string) (string, string) {
+		values := constValues[name]
+		switch len(values) {
+		case 0:
+			return "", fmt.Sprintf("标识符 %q 不是本模块里的 string 常量/变量，静态解不出 header 名", name)
+		case 1:
+			for v := range values {
+				return v, ""
+			}
+		}
+		return "", fmt.Sprintf("标识符 %q 在全模块有多处不同取值，静态解不出唯一 header 名", name)
+	}
+	resolveName := func(expr ast.Expr) (string, string) {
+		switch e := expr.(type) {
+		case *ast.BasicLit:
+			if e.Kind != token.STRING {
+				return "", fmt.Sprintf("header 名不是字符串字面量（%s）", e.Kind)
+			}
+			v, err := strconv.Unquote(e.Value)
+			if err != nil {
+				return "", fmt.Sprintf("字符串字面量解不出来：%v", err)
+			}
+			return v, ""
+		case *ast.Ident:
+			return resolveConst(e.Name)
+		case *ast.SelectorExpr:
+			return resolveConst(e.Sel.Name)
+		}
+		return "", "header 名是动态表达式，静态收不到（无法对账）"
+	}
+
+	// ③ 扫读取点。
+	usage := map[string][]string{}
+	for _, source := range sources {
+		at := func(n ast.Node) string {
+			return fmt.Sprintf("%s:%d", source.rel, source.fset.Position(n.Pos()).Line)
+		}
+		record := func(expr ast.Expr, n ast.Node) {
+			name, why := resolveName(expr)
+			if why != "" {
+				problems = append(problems, fmt.Sprintf("%s：%s", at(n), why))
+				return
+			}
+			lower := strings.ToLower(strings.TrimSpace(name))
+			if lower == "" {
+				problems = append(problems, fmt.Sprintf("%s：读了一个空名字的 header", at(n)))
+				return
+			}
+			usage[lower] = append(usage[lower], at(n))
+		}
+		ast.Inspect(source.file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.CallExpr:
+				sel, ok := node.Fun.(*ast.SelectorExpr)
+				if !ok || !headerReadMethods[sel.Sel.Name] {
+					return true
+				}
+				recv, ok := sel.X.(*ast.SelectorExpr)
+				if !ok || recv.Sel.Name != "Header" {
+					return true
+				}
+				if len(node.Args) != 1 {
+					problems = append(problems, fmt.Sprintf(
+						"%s：.Header.%s 不是单参数调用，静态收不到 header 名", at(node), sel.Sel.Name))
+					return true
+				}
+				record(node.Args[0], node)
+			case *ast.IndexExpr:
+				recv, ok := node.X.(*ast.SelectorExpr)
+				if !ok || recv.Sel.Name != "Header" {
+					return true
+				}
+				record(node.Index, node)
+			}
+			return true
+		})
+	}
+	for _, name := range sortedKeys(usage) {
+		sort.Strings(usage[name])
+	}
+	return usage, problems
+}
+
+// serverHeaderReads 只保留 internal/server 下的读取点（反向检查的作用域）。
+//
+// 反向（实现读了 → 契约要声明）只在 server 包内成立：internal/authn / internal/auth 是
+// **被 handler 调用**的凭据 helper（那里读 `Authorization` 算实现，但那是正向的证据；
+// 反向要问的是「这个头由哪个操作引入」，而 helper 读的头不归属任何具体 handler）。
+// 把它们算进来，反向表会被传输层头淹掉。正向不受这个限制（见 headerParamDirs）。
+func serverHeaderReads(reads map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for name, positions := range reads {
+		for _, pos := range positions {
+			if strings.HasPrefix(pos, "internal/server/") {
+				out[name] = append(out[name], pos)
+			}
+		}
+	}
+	return out
+}
+
 // stringLiterals 收集 dir 下非测试源码里出现的**全部**字符串字面量（AST 取值，不含注释）。
 func stringLiterals(dir string) (map[string]string, []string) {
 	var problems []string
@@ -4561,6 +4990,58 @@ var unreadQueryParamWhitelist = map[string]schemaWitness{}
 // 内部诊断参数（?debug=1 这类）才允许进来；普通参数必须补进 spec。
 var undeclaredQueryParamWhitelist = map[string]schemaWitness{}
 
+// headerParamFloor 是「契约里 `in: header` 声明数」的快照下限（削表即红）。
+//
+// 与 parityPairsFloor / bareMountFloor 同一个纪律：把一个 header 声明删掉，对账就少一项，
+// 而剩下的全绿。数量掉了必须显式改这个常量 —— 那是一次有人看过 diff 的动作。
+const headerParamFloor = 7
+
+// headerParamException 是「契约声明了、实现没读」的 header 例外登记。
+//
+// 比 unreadQueryParamWhitelist 多一道硬要求：**必须挂 issue**。header 是验签/身份这类
+// 安全事实的主要载体，#355（契约声明了 `X-Anotify-Signature`、实现没读、测试也不会红）
+// 就是无期限口子的代价。拿不到 issue 号就写 `TODO(parity-header)`，并在 Reason 里写清
+// 「为什么当前不实现」；两者都没有 = problem。
+type headerParamException struct {
+	// Issue 是这件事挂在哪个 issue 上：GH 能查到的写 `#355`，查不到的写 `TODO(parity-header)`。
+	Issue string
+	// Reason 是「为什么当前不实现」（必填）。
+	Reason string
+	// Witness 是机械证据（必填，`相对仓库根的.go:标识符`）：说明这条理由指向哪段真实代码。
+	Witness string
+}
+
+// unreadHeaderParamExceptions：契约声明了、实现里**确实**没人读的 header（键 = 小写归一）。
+//
+// 现在是空表：7 条 header 声明全部在实现里读到了（见 TestOpenAPIParityResponsesAndParams
+// 的「header 声明」日志）。表存在的意义是让将来真的需要声明一个不读的头时，必须走显式登记
+// + issue，而不是静默留一个死参数；登记一旦过期（实现补上了 / spec 里没有这条声明了）立刻红。
+var unreadHeaderParamExceptions = map[string]headerParamException{}
+
+// undeclaredHeaderReadWhitelist：实现读了、但五份 spec 都没声明的 header（键 = 小写归一）。
+//
+// 只允许**传输层标准头**：读它们的是压缩协商、断点续传、反代识别，不是我们的业务契约。
+// 业务头（带身份/验签/attempt 语义的）必须进 spec，不许在这里挂。
+// 过期即红：实现不读了 / spec 补上了声明 → 删掉这条。
+var undeclaredHeaderReadWhitelist = map[string]schemaWitness{
+	"accept-encoding": {
+		Reason:  "HTTP 传输层：gzip 协商（`Accept-Encoding` 决定要不要压），不是 API 契约的一部分",
+		Witness: "internal/server/middleware.go:gzipJSON",
+	},
+	"range": {
+		Reason:  "HTTP 传输层：断点续传（有 Range 时 Content-Length 留给 ServeContent 算），不是 API 契约的一部分",
+		Witness: "internal/server/static.go:serveStaticEntry",
+	},
+	"x-forwarded-for": {
+		Reason:  "反代识别：仅在 ANOTIFY_TRUST_PROXY 开启时用于取客户端 IP（限流维度），部署约定而不是 API 契约",
+		Witness: "internal/server/ratelimit.go:clientIP",
+	},
+	"x-forwarded-proto": {
+		Reason:  "反代识别：构造授权链接时判定 http/https（后台在 TLS 终结后面），部署约定而不是 API 契约",
+		Witness: "internal/server/passkey_enroll_handlers.go:enrollAuthURL",
+	},
+}
+
 // statusException 是「响应码声明」的显式例外（理由 + 证人 + 会过期）。
 type statusException struct {
 	Reason  string
@@ -4601,13 +5082,17 @@ var bareMount405Exceptions = map[string]statusException{
 
 // TestOpenAPIParityResponsesAndParams 是 F2：responses 与参数此前完全不在门禁内。
 //
-// 机械对账四件事：
+// 机械对账六件事：
 //  1. spec 声明的每个 query 参数名，必须在 internal/server 的非测试源码里作为字符串字面量
 //     出现（真有人读它）——反例就是被 review 抓到的 `tail`（spec 写 tail、实现只读 tailLines）。
 //  2. 实现里真的读出来的每个 query 名，必须被至少一条 operation 声明。
-//  3. 状态码正向（有限但真实）：requestBody → 400；CAS DELETE → 400+409；
+//  3. spec 声明的每个 `in: header` 请求头，必须真的有人从 `http.Header` 里读它
+//     （字面量或同名常量都算）——反例就是 #355 的 `X-Anotify-Signature`：契约声明了
+//     验签头，而实现里没人读，旧版收集器直接把 `in: header` 筛掉了，测试也不会红。
+//  4. 实现里（internal/server 内）真的读出来的每个请求头，必须有 operation 声明它。
+//  5. 状态码正向（有限但真实）：requestBody → 400；CAS DELETE → 400+409；
 //     security 非空 → 401；落在裸挂载下且 handler 有 405 分支 → 405。
-//  4. 检查数量必须非零（防「0 项检查也绿」）。
+//  6. 检查数量必须非零（防「0 项检查也绿」）；header 声明数还有快照下限（削表即红）。
 func TestOpenAPIParityResponsesAndParams(t *testing.T) {
 	docs, problems := loadSpecDocs()
 	fatalIfProblems(t, "载入五份 spec", problems)
@@ -4620,21 +5105,40 @@ func TestOpenAPIParityResponsesAndParams(t *testing.T) {
 	fatalIfProblems(t, "收集字符串字面量", literalProblems)
 	usage, usageProblems := queryParamUsage(serverPkgDir)
 	fatalIfProblems(t, "收集 query 参数读取点", usageProblems)
+	headerReads, headerProblems := headerParamUsage(headerParamDirs())
+	fatalIfProblems(t, "收集请求头读取点", headerProblems)
 	patterns, patternProblems := collectMuxPatterns(serverPkgDir)
 	fatalIfProblems(t, "静态收集 mux pattern", patternProblems)
 
-	all := responsesAndParamsProblems(ops, details, literals, usage, patterns, statusExceptionTables{
-		RequestBodyNo400: requestBodyNo400Exceptions,
-		SecurityNo401:    securityNo401Exceptions,
-		BareMount405:     bareMount405Exceptions,
+	all := responsesAndParamsProblems(ops, details, literals, usage, headerReads, patterns, statusExceptionTables{
+		RequestBodyNo400:     requestBodyNo400Exceptions,
+		SecurityNo401:        securityNo401Exceptions,
+		BareMount405:         bareMount405Exceptions,
+		UnreadHeader:         unreadHeaderParamExceptions,
+		UndeclaredHeaderRead: undeclaredHeaderReadWhitelist,
 	})
 	declaredCount := 0
+	declaredHeaders := 0
 	for _, op := range ops {
 		declaredCount += len(details[op.Key()].QueryParams)
+		declaredHeaders += len(details[op.Key()].HeaderParams)
 	}
 	t.Logf("F2 对账：operation=%d，query 声明=%d（去重 %d），实现读取=%d，例外表=%d/%d/%d",
 		len(ops), declaredCount, len(queryParamNames(ops, details)), len(usage),
 		len(requestBodyNo400Exceptions), len(securityNo401Exceptions), len(bareMount405Exceptions))
+	t.Logf("F2 header 对账：声明=%d，实现读取=%d（其中 internal/server 内 %d），例外表=未读%d/未声明%d",
+		declaredHeaders, len(headerReads), len(serverHeaderReads(headerReads)),
+		len(unreadHeaderParamExceptions), len(undeclaredHeaderReadWhitelist))
+	// 逐条打印声明 → 读取点：报告里那张「契约里的 header 清单」就是这份输出。
+	for _, op := range ops {
+		for _, name := range details[op.Key()].HeaderParams {
+			if positions, read := headerReads[strings.ToLower(name)]; read {
+				t.Logf("header 声明：%s ← %s（读取点 %s）", name, op.Key(), positions[0])
+				continue
+			}
+			t.Logf("header 声明：%s ← %s（**实现里没人读**）", name, op.Key())
+		}
+	}
 	fatalIfProblems(t, "responses 与参数", all)
 }
 
@@ -4649,18 +5153,22 @@ func queryParamNames(ops []specOp, details map[string]specOpDetail) []string {
 	return sortedKeys(seen)
 }
 
-// statusExceptionTables 是 F2 的三张例外表（参数化是为了让变异测试能「换成空表」验证它们
-// 确实在承重，而不是永久后门）。
+// statusExceptionTables 是 F2 的例外表集合（参数化是为了让变异测试能「换成空表」验证它们
+// 确实在承重，而不是永久后门）。前三是响应码表，后二是 header 参数双向表。
 type statusExceptionTables struct {
 	RequestBodyNo400 map[string]statusException
 	SecurityNo401    map[string]statusException
 	BareMount405     map[string]statusException
+	// UnreadHeader：「spec 声明了、实现没读」的 header（带 issue）。
+	UnreadHeader map[string]headerParamException
+	// UndeclaredHeaderRead：「实现读了、spec 没声明」的 header。
+	UndeclaredHeaderRead map[string]schemaWitness
 }
 
 // responsesAndParamsProblems 是 F2 的纯函数实现（docs 侧的输入全部显式传入）。
 func responsesAndParamsProblems(ops []specOp, details map[string]specOpDetail,
-	literals map[string]string, usage map[string][]string, patterns []routePattern,
-	exceptions statusExceptionTables) []string {
+	literals map[string]string, usage map[string][]string, headerReads map[string][]string,
+	patterns []routePattern, exceptions statusExceptionTables) []string {
 	var all []string
 	// ① query 参数正向：spec 声明了就一定有人读。
 	declared := map[string][]string{}
@@ -4708,7 +5216,90 @@ func responsesAndParamsProblems(ops []specOp, details map[string]specOpDetail,
 		all = append(all, "query 参数反向检查了 0 个参数 —— 收集器坏了（不许 0 项检查也绿）")
 	}
 
-	// ③ 状态码正向。
+	// ④ header 参数正向：契约声明 `in: header` 就必须有人真的去读。
+	// 这里刻意**不**复用 query 的判据（query 是 `URL.Query().Get` 的字面量，header 是
+	// `http.Header` 的常量/字面量）：两个方向的语义、读法、例外表都不一样。
+	declaredHeaders := map[string][]string{} // 小写名 → 声明它的 op
+	declaredHeaderCount := 0
+	for _, op := range ops {
+		detail, ok := details[op.Key()]
+		if !ok {
+			continue // ① 已经报过「没有 detail」
+		}
+		for _, name := range detail.HeaderParams {
+			declaredHeaderCount++
+			lower := strings.ToLower(strings.TrimSpace(name))
+			declaredHeaders[lower] = append(declaredHeaders[lower], op.Key())
+			if _, read := headerReads[lower]; read {
+				continue
+			}
+			if _, listed := exceptions.UnreadHeader[lower]; listed {
+				continue // 登记在案（字段校验与过期检测在 ⑥ 的表循环里）
+			}
+			all = append(all, fmt.Sprintf(
+				"header 参数正向：%s 声明的请求头 `%s` 在 internal/ 的非测试源码里没有被读过一次 —— "+
+					"没有任何 `X.Header.Get/Values(%q)`（也没有同名常量被这样读）。"+
+					"契约在说一件没人做的事（#355 的 X-Anotify-Signature 就是这一类）："+
+					"要么补实现，要么在 unreadHeaderParamExceptions 里登记 issue",
+				op.Key(), name, name))
+		}
+	}
+	if declaredHeaderCount == 0 {
+		all = append(all, "header 参数正向检查了 0 条声明 —— 解析器坏了（不许 0 项检查也绿）")
+	}
+	if declaredHeaderCount < headerParamFloor {
+		all = append(all, fmt.Sprintf(
+			"header 参数正向只检查了 %d 条 `in: header` 声明（快照下限 %d）—— "+
+				"spec 里的 header 声明被删了，或者解析器漏了参数（削表即红；确实该减就改 headerParamFloor）",
+			declaredHeaderCount, headerParamFloor))
+	}
+
+	// ⑤ header 参数反向：实现读了就要有声明（只看 internal/server，见 serverHeaderReads）。
+	serverReads := serverHeaderReads(headerReads)
+	for _, lower := range sortedKeys(serverReads) {
+		if _, declaredHere := declaredHeaders[lower]; declaredHere {
+			continue
+		}
+		if _, listed := exceptions.UndeclaredHeaderRead[lower]; listed {
+			continue // 登记在案（见表循环）
+		}
+		all = append(all, fmt.Sprintf(
+			"header 参数反向：实现读了请求头 `%s`（%s），但五份 spec 里没有任何 operation 声明它",
+			lower, serverReads[lower][0]))
+	}
+	if len(serverReads) == 0 {
+		all = append(all, "header 参数反向检查了 0 个请求头 —— 收集器坏了（不许 0 项检查也绿）")
+	}
+
+	// ⑥ 两张 header 例外表：字段齐不齐 + 过期即红（两个方向各自过期：实现补上了 /
+	// spec 不再声明 / 实现不读了 / spec 补上了声明）。
+	for _, lower := range sortedKeys(exceptions.UnreadHeader) {
+		all = append(all, headerExceptionProblems("unreadHeaderParamExceptions 的 "+lower,
+			exceptions.UnreadHeader[lower])...)
+		if positions, read := headerReads[lower]; read {
+			all = append(all, fmt.Sprintf(
+				"unreadHeaderParamExceptions 已过期：实现已经读了 `%s`（%s），请从表里删掉", lower, positions[0]))
+			continue
+		}
+		if _, declaredHere := declaredHeaders[lower]; !declaredHere {
+			all = append(all, fmt.Sprintf(
+				"unreadHeaderParamExceptions 已过期：spec 里已经没有任何 operation 声明 `%s`，请从表里删掉", lower))
+		}
+	}
+	for _, lower := range sortedKeys(exceptions.UndeclaredHeaderRead) {
+		entry := exceptions.UndeclaredHeaderRead[lower]
+		all = append(all, witnessProblems("undeclaredHeaderReadWhitelist 的 "+lower, entry.Witness)...)
+		if len(serverReads[lower]) == 0 {
+			all = append(all, fmt.Sprintf(
+				"undeclaredHeaderReadWhitelist 已过期：internal/server 里已经没有读 `%s` 的地方了，请从表里删掉", lower))
+		}
+		if _, declaredHere := declaredHeaders[lower]; declaredHere {
+			all = append(all, fmt.Sprintf(
+				"undeclaredHeaderReadWhitelist 已过期：spec 现在声明了 `%s`，请从表里删掉", lower))
+		}
+	}
+
+	// ⑦ 状态码正向。
 	mux, muxProblems := newProbeMux(patterns)
 	all = append(all, muxProblems...)
 	bareHandlers := map[string]string{} // 裸 pattern → handler 文件

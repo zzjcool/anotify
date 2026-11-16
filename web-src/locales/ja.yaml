@@ -289,6 +289,7 @@ graph:
   exit_fullscreen: 全画面を終了（Esc）
   fullscreen_hint: ホイールで拡大縮小 · ドラッグで移動 · Esc で終了
   silk_preview_done: プレビュー完了
+  silk_source: "ソース"
   hud_flow: 下流フロー
   hud_path: 'タスク経路'
   hud_fail: '失敗タスク'
@@ -1717,6 +1718,7 @@ sources:
     edit: "ソースを編集"
     close: "閉じる"
     save: "保存"
+    save_failed: "保存に失敗しました"
     reload: "最新のリソースを再読込"
     detail: "ソース詳細"
     back: "ソース一覧へ"

@@ -4,8 +4,8 @@
 
 ## 0.5 v4 的形状（先读这一节，否则会拿 v3 的心智读代码）
 
-v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agent`、`internal/broker`、
-中央执行域（`internal/executor` / `internal/ws` 的 NodeHandler）已删除，不保留兼容层。
+v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agent`（已删除）、`internal/broker`、
+中央执行域（`internal/executor` / `internal/ws` 的 NodeHandler，均已删除）不保留兼容层。
 
 | 进程 | 入口 | 职责 |
 | --- | --- | --- |
@@ -717,8 +717,12 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 - 实现只有一份：`partials.js` 的 `expectGraphics()` / `graphLib()`；
 - 页面解析期一行 `A.expectGraphics();`，画图处 `const G = await A.graphLib(文案);`；
 - 页面**不得**直接读 `window.AnotifyGraphs` —— `scripts/check-graph-access.mjs`
-  （挂在 `make sitegen` 上）会拦；回归测试是 `scripts/v4-frontend.test.mjs` 的
-  TRACE-STARTUP / SOURCE-STARTUP。
+  （挂在 `make sitegen` 上）会拦：@guard scripts/check-graph-access.mjs#no-direct-graph-lib
+  / #missing-expect-graphics。
+- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP），但它**尚未接线**：
+  `make ci` 里不跑，只能手工 `node --test scripts/v4-frontend.test.mjs`；它已经带一批基线红
+  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `.pi-orchestrator/UI-EPIC-369/CONTRACT.md`
+  的基线小节。别把它当门禁（这条此前写成「回归测试是…」，误导过人）。
 
 **教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，
 迟早会在页面重构成 await 续体后失效。要么用结构保证（解析期挂门闩），要么用门禁拦住。

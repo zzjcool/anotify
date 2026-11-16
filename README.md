@@ -31,7 +31,7 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 - **中枢不执行**：执行只发生在节点（契约机检：中枢侧不得 `os/exec`）
 - **路径分离**：`/v1/*` 动态 API（no-store），静态资源走 CDN 缓存分级（哈希文件 immutable）
 
-> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`
+> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`（已退役）与
 > 与 Broker 抽象已退役（不保留兼容层）。
 
 ## 快速开始

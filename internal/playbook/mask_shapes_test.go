@@ -13,6 +13,8 @@ package playbook
 //   - 执行事实（渲染结果 / PlannedSource.Spec / valuesDigest）保持明文与不变。
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/sourcespec"
@@ -318,6 +320,11 @@ spec:
 `
 
 // maskShapesSecrets 是回执里绝不允许出现的明文（新旧两轮）。
+//
+// 历史教训：#338/F8 写下这份清单时没人消费它，staticcheck 把它判成 unused —— 于是这条
+// 「回执里不许出现明文」的断言**从来没跑过**（一个恒真的校验等于没有校验）。现在它在
+// `TestPlanUnappliedMaskAdditionalPropertiesDerivedParams` 第 ⑤ 步被真扫一遍，并且带
+// 反向自检（明文必须真的进过待打码的原始数据，否则扫描本身是空断言）。
 var maskShapesSecrets = []string{
 	"ap-secret-old", "ap-secret-new", "bp-secret-old", "bp-secret-new",
 	"424242", "434343", "tup-secret-old", "tup-secret-new",
@@ -451,5 +458,34 @@ func TestPlanUnappliedMaskAdditionalPropertiesDerivedParams(t *testing.T) {
 	plain := planned.Spec.Targets[0].Params
 	if plain["byKey"] != "ap-secret-new" || plain["tuplePin"] != "tup-secret-new" {
 		t.Fatalf("PlannedSource.Spec 被打码/改动: %#v", plain)
+	}
+
+	// ⑤ `maskShapesSecrets` 的用处就在这里：整份**回执 JSON**（values + unapplied.declared /
+	// actual + notes）里一个 writeOnly 明文都不许出现。这条断言以前是死的（清单没人消费，
+	// staticcheck 判 unused），现在两边都盯：
+	//   - 正向：清单里的每个明文都不在回执里；
+	//   - 反向：每个明文确实在「打码前」的数据里（新值在执行事实 PlannedSource.Spec、
+	//     旧值在库里旧行），否则上面的扫描是空断言。
+	receiptJSON, err := json.Marshal(BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+		InstallMeta{ID: "i-f8", At: ts}))
+	if err != nil {
+		t.Fatalf("序列化回执失败: %v", err)
+	}
+	unmaskedFacts, err := json.Marshal(planned.Spec)
+	if err != nil {
+		t.Fatalf("序列化执行事实失败: %v", err)
+	}
+	oldTargets, err := json.Marshal(oldSrc.Spec.Targets)
+	if err != nil {
+		t.Fatalf("序列化旧行 targets 失败: %v", err)
+	}
+	for _, secret := range maskShapesSecrets {
+		if strings.Contains(string(receiptJSON), secret) {
+			t.Fatalf("回执里出现 writeOnly 明文 %q（values / unapplied.declared/actual / notes 任一字段）：%s",
+				secret, receiptJSON)
+		}
+		if !strings.Contains(string(unmaskedFacts), secret) && !strings.Contains(string(oldTargets), secret) {
+			t.Fatalf("语料自检失败：明文 %q 根本没进过打码前的数据，上面的扫描是空断言", secret)
+		}
 	}
 }

@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -59,10 +59,58 @@ check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib(
 check-tailwind: ## 核对已提交的 web/tailwind.css 覆盖源码工具类（stdlib，不跑 Tailwind CLI）
 	node scripts/check-tailwind-css.mjs
 
+# ---- 从返工事故反推的四条守卫（docs/lint-guards.md）----
+#
+# 每个静态守卫都先跑 --self-test：守卫自己坏掉（判据失效、解析出 0 条）时"绿"与
+# "没检查"同形，这类假绿在本仓反复出现过（例如丢两个 } 让 check-classes 结构性失明）。
+
+check-css: ## CSS 结构守卫：括号配平 + 禁原生嵌套（fdba2013：丢两个 } 让整段 ui.css 被吞）
+	node scripts/check-css.mjs --self-test
+	node scripts/check-css.mjs
+
+check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 里都有且集合一致（sitegen 缺键只 WARN）
+	node scripts/check-i18n-keys.mjs --self-test
+	node scripts/check-i18n-keys.mjs
+
+check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
+	node scripts/check-contrast.mjs
+
+check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/time.Sleep/裸标签+.first()（超基线红，降基线也红）
+	node scripts/check-test-discipline.mjs --self-test
+	node scripts/check-test-discipline.mjs
+
+check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
+	node scripts/check-classes.mjs --self-test
+	node scripts/check-graph-access.mjs --self-test
+
+check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
+	node scripts/check-annotations.mjs --self-test
+	node scripts/check-annotations.mjs
+
+# GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
+# 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
+check-secrets: ## 秘密守卫：私钥块 / 供应商密钥形状 / 本仓令牌形状 / 被跟踪的 .env 文件
+	node scripts/check-secrets.mjs --self-test
+	node scripts/check-secrets.mjs --staged
+	node scripts/check-secrets.mjs
+
+hooks: ## 安装本地 git 钩子：pre-commit 跑 check-secrets --staged（不覆盖别人的钩子）
+	@mkdir -p .git/hooks
+	@if [ -f .git/hooks/pre-commit ] && ! grep -q "check-secrets.mjs" .git/hooks/pre-commit; then \
+		printf '%s\n' "✗ .git/hooks/pre-commit 已存在且不是本仓的钩子，拒绝覆盖：" "  $$(head -1 .git/hooks/pre-commit)" "  要合并就手工在它里加一行：node scripts/check-secrets.mjs --staged"; \
+		exit 1; \
+	fi
+	@printf '%s\n' '#!/bin/sh' \
+		'# 由 `make hooks` 安装：提交前扫暂存区里的秘密。' \
+		'# 为什么本地还要一道：GitHub 上的 GitGuardian 是推上去之后才扫（服务端 App）。' \
+		'exec node scripts/check-secrets.mjs --staged' > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✅ 已安装 .git/hooks/pre-commit → node scripts/check-secrets.mjs --staged"
+
 tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
 	node scripts/build-tailwind.mjs
 
-fe: check-classes check-wire-fields sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+fe: check-classes check-wire-fields check-css check-i18n-keys check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 
 dist: fe ## 同 fe（生成 embed 产物）
@@ -143,14 +191,42 @@ tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级�
 	$(TMP_GUARD) --self-test
 	$(TMP_GUARD) --lint
 
-ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
+# Go 静态门禁（docs/lint-guards.md §1 的 L7）：把「AGENTS.md 写了但从没人查」的两条纪律
+# 变成可执行断言（gofmt / 包注释），再用 staticcheck 的 SA* 兜住真正确性类问题
+# （nil 解引用、无效 break、append 结果丢弃、误用 deprecated API…）。
+#
+# 只开 SA*：本仓现有 41 条 U1000（未使用符号，多数在测试夹具里）与若干 S*/ST*（风格），
+# 一次全放进来门禁就会红到没人看——那正是 docs/lint-guards.md §0 的第一类缝隙。
+# U1000 的产品代码子集（约 10 条）另立项清理。
+#
+# GOTOOLCHAIN 必须钉住：`go run pkg@version` 按**那个模块**的 go 指令选工具链，默认会拿到
+# 1.23.x，而 staticcheck 2025.1.1 分析 go1.25 的模块会报 "was built with go1.23.4"。
+STATICCHECK_VERSION ?= 2025.1.1
+GOTOOLCHAIN_PIN := go1.25.0
+
+lint-go: ## Go 静态门禁：gofmt + 包注释 + vet + staticcheck SA*（正确性类）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
 		exit 1; \
 	fi
-	$(MAKE) fe
+	@missing=$$(go list -f '{{if not .Doc}}{{.ImportPath}}{{end}}' ./... 2>/dev/null); \
+	if [ -n "$$missing" ]; then \
+		printf '%s\n' "以下包缺包注释（AGENTS.md §3：包注释要写这个包负责什么）：" "$$missing"; \
+		exit 1; \
+	fi
 	go vet ./...
+	GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) -checks=SA* ./...
+
+ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
+	$(MAKE) lint-go
+	$(MAKE) fe
+	@# 守卫自测 + 测试纪律棘轮（docs/lint-guards.md）：毫秒级，放在最便宜的位置，
+	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
+	$(MAKE) check-guard-selftest
+	$(MAKE) check-test-discipline
+	$(MAKE) check-annotations
+	$(MAKE) check-secrets
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
 	@# 且 --version 的 JSON 与注入值一致。写错一个 flag，这里就红。

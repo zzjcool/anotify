@@ -1,3 +1,8 @@
+// Package api 是 v4 事件投递入口的 HTTP handler（POST /v1/namespaces/{namespace}/events）：
+// 只做路径解析 + Bearer API Key 鉴权、把 body 翻成 source.Input、把回执原样写回，
+// 投递语义（归一化配置 / 幂等窗口 / 削枝留痕）全在 source.Service.Ingest。
+//
+// hooks / fire / events 三个入口共用同一份回执，所以这里不重算派发。
 package api
 
 import (

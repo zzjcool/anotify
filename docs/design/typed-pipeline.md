@@ -70,7 +70,7 @@ assign → ack → 进程启动 → emit* → 进程退出
 
 ### 2.1 CLI 复用 `anotify-agent`
 
-`cmd/agent` 已经是一个静态二进制、已经在节点上、已经会讲 WS 协议（assign/ack/result），并有 `run` 子命令的先例。新增一个子命令：
+`cmd/anode`（v3 时叫 `cmd/agent`，该目录已删除并改名）已经是一个静态二进制、已经在节点上、已经会讲 WS 协议（assign/ack/result），并有 `run` 子命令的先例。新增一个子命令：
 
 ```bash
 # 单出口（绝大多数能力）：--port 可省略，agent 自动采用它唯一的出口

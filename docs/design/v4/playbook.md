@@ -914,7 +914,7 @@ project-chain/  ──oras push──▶  ghcr.io/acme/playbooks/project-chain:1
 
 1. **只认 `oci://`**，不接裸 `http(s)://` URL 导入（那会变成任意 URL 代理）；
 2. 只对 registry 的 distribution API v2 发 GET（manifest / blob），不转发任意请求；
-3. 超时 / 重试写死一份（与 `cmd/agent/upgrade.go` 同款：单次上限 + 流式 sha256），不做用户可配。
+3. 超时 / 重试写死一份（与 v3 的 `cmd/agent/upgrade.go`（已删除）同款：单次上限 + 流式 sha256），不做用户可配。
 
 离线 / 内网同理：指向内网 registry 就行，不用另造"离线包"格式。
 
