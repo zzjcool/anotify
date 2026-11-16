@@ -660,6 +660,17 @@ func TestMaskUnprovableKeywordTableMatchesPredicate(t *testing.T) {
 	if len(maskProvableKeywords) == 0 {
 		t.Fatal("豁免关键字表为空：所有 schema 都会被整值打码")
 	}
+	// 契约（docs/design/v4/playbook.md §1.2 的 fail-closed note）逐字点名了下面这些关键字。
+	// 判据是 allowlist 语义（不在豁免表即打码），所以**从理由表删掉一行不会让任何用例变红**——
+	// 「文档承诺了、判据没写理由」就会静默发生。这里把文档点到名的关键字钉死。
+	for _, kw := range []string{
+		"$ref", "$dynamicRef", "$recursiveRef", "if", "then", "else", "not",
+		"patternProperties", "propertyNames", "unevaluatedProperties", "unevaluatedItems", "dependentSchemas",
+	} {
+		if _, ok := maskUnprovableKeywords[kw]; !ok {
+			t.Fatalf("契约点名要 fail-closed 的关键字 %q 在理由表里没有条目（删表不会让别的用例变红，所以在这里钉住）", kw)
+		}
+	}
 	for keyword, why := range maskUnprovableKeywords {
 		if why == "" {
 			t.Fatalf("关键字 %q 没写理由：审查者无法判断它为什么危险", keyword)
