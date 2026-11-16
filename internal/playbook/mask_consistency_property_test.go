@@ -25,10 +25,10 @@ package playbook
 //	   顺序）后，打码结果 / digest / 回执 JSON 必须字节相同——防「依赖 map 迭代顺序」的 bug。
 //
 // 生成器覆盖的容器形态见 `TestMaskPropertyGeneratorCoversShapes` 的账本（形状没被覆盖到就红，
-// 防止生成器悄悄退化成「只覆盖 properties」）。`$ref` 只生成**指向无 writeOnly 定义**的引用：
-// 「writeOnly 藏在 `$ref` 后面」是已知缺口（见 `maskPropertyKnownGaps` 与
-// `TestMaskPropertyRefHiddenWriteOnlyIsKnownGap`），本包不解析 `$ref`，所以那类形状不能混进
-// P1/P2 的严格断言里假装「已覆盖」。
+// 防止生成器悄悄退化成「只覆盖 properties」）。`$ref` 现在按 **fail-closed** 参与严格断言：
+// 节点上一出现 `$ref` 就整值打码（不解引用，见 sensitive.go 的 `cannotProveNoWriteOnly`），
+// 所以生成器把 `$ref` 节点下的每个叶子都标成「语义上必须打码」，并让被引用定义**可以**带
+// writeOnly（即 GAP-1 的真实形状）；两种同文档写法（`#/$defs/X` 与 `#/definitions/X`）都造。
 //
 // 纪律（与 helpers_test.go 同：不 skip、不弱化断言）：失败时打印**最小复现**——seed + 可粘贴的
 // schema/values 字面量 + 叶子路径，做到「看到红就知道是哪条路径分叉」。
@@ -58,24 +58,13 @@ type maskPropertyGap struct {
 	Fix   string // 两条候选修法（产品侧）
 }
 
-// maskPropertyKnownGaps 是**已知缺口清单**：`ISSUE-TBD` 占位，等父会话指派 issue 号。
+// maskPropertyKnownGaps 是**已知缺口清单**（当前为空）。
 //
-// 纪律：缺口被产品修复时，`TestMaskPropertyRefHiddenWriteOnlyIsKnownGap` 会失败——那时把对应
-// 条目从这里删掉，并把该形状升级进 `TestMaskPropertyWalkersAgree` 的严格语料（`$ref` 定义
-// 里带 writeOnly）。反过来，若有人把这条 tripwire 删掉而不修产品，等于让明文静默回潮。
-var maskPropertyKnownGaps = []maskPropertyGap{
-	{
-		ID:    "GAP-1 / ISSUE-TBD（#356 follow-up）",
-		Shape: "spec.values 里 writeOnly 叶被同文档 `$ref`（`#/$defs/X` / `#/definitions/X`）间接引用",
-		Why: "writeOnly 推导只认内联关键字：internal/schema 的受控子集明确不解析 `$ref`" +
-			"（schema.go 包注释：「$ref / …需要求值，不支持；不认识的关键字一律忽略」），" +
-			"于是 `MaskValues` 与 `refHitsWriteOnly` 都对 `$ref` 后面的 writeOnly 判不敏感。" +
-			"两个 walker **一致**（P1 绿），但明文按 fail-open 进回执 `values`（P2 会红）。",
-		Fix: "① fail-closed：把「节点上带无法证明不含 writeOnly 的未解析关键字（$ref/$dynamicRef…）」" +
-			"整值打码；② 在设计契约上明确：`spec.values` 的解析期**拒绝** `$ref`（明确报错，" +
-			"而不是静默漏明文）。无论选哪条，都不要「解析 $ref」——那会把中枢变成求值器。",
-	},
-}
+// 纪律：缺口不是 walker 之间的分叉（所以 P1 绿），而是两个 walker **共同**的 fail-open。
+// 它必须显式记账（不能静默 skip），由父会话裁决「算 bug 还是算契约外」。GAP-1（`writeOnly`
+// 藏在同文档 `$ref` 后面）已修（fail-closed 整值打码，正向断言见
+// `TestMaskValuesRefKeywordMasksWholeValue`），条目已删除；新缺口按同一格式追加。
+var maskPropertyKnownGaps []maskPropertyGap
 
 // ---------- 生成器的中间表示 ----------
 
@@ -102,7 +91,7 @@ type propShape struct {
 	// tuple：prefixItems（按位置）
 	prefix []*propShape
 
-	// ref：`$ref` 指向的 `$defs` 名字
+	// ref：`$ref` 指向的定义名（前缀决定写在哪个容器：`D*` → `$defs`，`E*` → `definitions`）
 	ref string
 }
 
@@ -141,8 +130,8 @@ type propNode struct {
 type propBuilder struct {
 	r      *rand.Rand
 	seed   int64
-	defs   map[string]*propShape // `$defs` 里的定义（**保证不含 writeOnly**，见 stripWriteOnly）
-	inDef  bool                  // 造 `$defs` 时禁止再生成 `$ref`（避免自引用/互引用）
+	defs   map[string]*propShape // 同文档定义：`D*` 落在 `$defs`、`E*` 落在 `definitions`
+	inDef  bool                  // 造定义时禁止再生成 `$ref`（避免自引用/互引用）
 	leafN  int
 	leaves []propLeaf
 	nodes  []propNode
@@ -321,6 +310,10 @@ func shapeHasWriteOnly(sh *propShape) bool {
 	if sh == nil {
 		return false
 	}
+	if sh.kind == "ref" {
+		// fail-closed：`$ref` 一律算「可能有 writeOnly」（产品侧 `cannotProveNoWriteOnly` 同判）。
+		return true
+	}
 	if sh.writeOnly {
 		return true
 	}
@@ -375,7 +368,7 @@ func (b *propBuilder) genDualShape(depth int) *propShape {
 	return out
 }
 
-// genRefShape 生成一个 `$ref` 节点（指向 `$defs` 里**已证明无 writeOnly** 的定义）。
+// genRefShape 生成一个 `$ref` 节点（指向同文档定义；定义可能带 writeOnly，也可能不带）。
 func (b *propBuilder) genRefShape() *propShape {
 	names := make([]string, 0, len(b.defs))
 	for name := range b.defs {
@@ -383,11 +376,31 @@ func (b *propBuilder) genRefShape() *propShape {
 	}
 	// 键序无关地选一个定义：用 r.Intn 在**排序后**的名字切片上取，保证跨版本/跨平台确定性。
 	sortStrings(names)
+	name := names[b.r.Intn(len(names))]
+	// 账本：两种同文档写法各记一维（`#/$defs/X` 与 `#/definitions/X`），并把
+	// 「被引用定义里真的有 writeOnly」（GAP-1 的原形）与「没有（保守多打码）」分开记。
 	b.cov["$ref"]++
-	return &propShape{kind: "ref", ref: names[b.r.Intn(len(names))]}
+	b.cov["$ref-"+refContainer(name)]++
+	if def, ok := b.defs[name]; ok && shapeHasWriteOnly(def) {
+		b.cov["writeOnly-behind-ref"]++
+	} else {
+		b.cov["ref-def-plain"]++
+	}
+	return &propShape{kind: "ref", ref: name}
 }
 
-// stripWriteOnly 清掉子树里的全部 writeOnly（用于 `$defs` 与元组的「至多一侧」纪律）。
+// refContainer 把定义名映射到它所在的同文档容器关键字。
+//
+// 两种写法（2020-12 的 `$defs` 与 draft-07 习惯的 `definitions`）都必须被语料覆盖：
+// fail-closed 下它们同判（见 `cannotProveNoWriteOnly`），只测一种写法等于没测另一种。
+func refContainer(name string) string {
+	if strings.HasPrefix(name, "E") {
+		return "definitions"
+	}
+	return "$defs"
+}
+
+// stripWriteOnly 清掉子树里的全部 writeOnly（用于元组的「至多一侧」纪律）。
 func stripWriteOnly(sh *propShape) {
 	if sh == nil {
 		return
@@ -453,7 +466,7 @@ func (b *propBuilder) buildSchema(sh *propShape, depth int) map[string]any {
 			out["items"] = b.buildSchema(sh.items, depth+1)
 		}
 	case "ref":
-		out["$ref"] = "#/$defs/" + sh.ref
+		out["$ref"] = "#/" + refContainer(sh.ref) + "/" + sh.ref
 	}
 	if sh.writeOnly {
 		out["writeOnly"] = true
@@ -470,13 +483,14 @@ func (b *propBuilder) buildValue(sh *propShape, path string, secret bool) any {
 	case "string", "integer", "boolean":
 		return b.buildLeafValue(sh.kind, path, secret)
 	case "ref":
-		// `$defs` 里的定义（已 stripWriteOnly）：`$ref` 节点本身不改 secret
+		// fail-closed：`$ref` 节点整值打码（不解引用就证明不了被引用定义里没有 writeOnly），
+		// 所以这整棵子树的叶子「语义上必须打码」——哪怕被引用定义自己没写 writeOnly。
+		b.recordNode(path, true)
 		def, ok := b.defs[sh.ref]
 		if !ok {
-			return b.buildLeafValue("string", path, secret)
+			return b.buildLeafValue("string", path, true)
 		}
-		b.recordNode(path, secret || shapeHasWriteOnly(def))
-		return b.buildValue(def, path, secret)
+		return b.buildValue(def, path, true)
 	case "object", "dual":
 		b.recordNode(path, secret || shapeHasWriteOnly(sh))
 		if sh.kind == "dual" && sh.items != nil && b.r.Intn(2) == 0 {
@@ -566,7 +580,10 @@ func (b *propBuilder) buildLeafValue(kind, path string, secret bool) any {
 	}
 }
 
-// newPropBuilder 为一个种子造生成器，并先造 `$defs`（保证 ref 目标存在且**不含 writeOnly**）。
+// newPropBuilder 为一个种子造生成器，并先造同文档定义（`D*` → `$defs`，`E*` → `definitions`）。
+//
+// 定义**不再脱 writeOnly**：语料必须覆盖 GAP-1 的真实形状（writeOnly 藏在 `$ref` 后面），
+// 同时也会造出「定义无 writeOnly 但引用仍被整值打码」的保守档（两者都记在账本里）。
 func newPropBuilder(seed int64) *propBuilder {
 	b := &propBuilder{
 		r:    rand.New(rand.NewSource(seed)),
@@ -576,10 +593,10 @@ func newPropBuilder(seed int64) *propBuilder {
 	}
 	b.inDef = true
 	for i := 0; i < 1+b.r.Intn(2); i++ {
-		def := b.genShape(1 + b.r.Intn(2))
-		stripWriteOnly(def)
-		b.defs[fmt.Sprintf("D%d", i)] = def
+		b.defs[fmt.Sprintf("D%d", i)] = b.genShape(1 + b.r.Intn(2))
 	}
+	// 固定造一个 `definitions`（draft-07 写法）侧的定义：两种容器都要非空，账本才能各记一维。
+	b.defs["E0"] = b.genShape(1 + b.r.Intn(2))
 	b.inDef = false
 	return b
 }
@@ -591,12 +608,18 @@ func (b *propBuilder) build() (map[string]any, map[string]any, []propLeaf, []pro
 	// 那属于「整份 values 都不该进回执」的另一个口径（契约要求 values 是对象），不是本文件的判据。
 	root.writeOnly = false
 	sch := b.buildSchema(root, 0)
-	if len(b.defs) > 0 && b.r.Intn(2) == 0 {
-		defs := make(map[string]any, len(b.defs))
-		for name, def := range b.defs {
-			defs[name] = b.buildSchema(def, 2)
+	// 两种同文档容器都写出来（`$ref` 分别指到 D* / E*）：语料因此同时覆盖 `#/$defs/X`
+	// 与 `#/definitions/X` 两种写法。
+	defsByWord := map[string]map[string]any{}
+	for name, def := range b.defs {
+		word := refContainer(name)
+		if defsByWord[word] == nil {
+			defsByWord[word] = map[string]any{}
 		}
-		sch["$defs"] = defs
+		defsByWord[word][name] = b.buildSchema(def, 2)
+	}
+	for word, defs := range defsByWord {
+		sch[word] = defs
 	}
 	// 根的形状与 buildSchema 一致（根上的 writeOnly 已清掉，见上）。
 	values, _ := b.buildValue(root, "", false).(map[string]any)
@@ -1011,6 +1034,13 @@ func TestMaskPropertyGeneratorCoversShapes(t *testing.T) {
 		"prefixItems+items",
 		"type-object+array",
 		"$ref",
+		// 同文档引用的两种写法各一维：`#/$defs/X`（2020-12）与 `#/definitions/X`（draft-07 习惯）。
+		// fail-closed 下两者必须同判，只覆盖一种等于只钉住一半。
+		"$ref-$defs",
+		"$ref-definitions",
+		// GAP-1 的原形（writeOnly 藏在 `$ref` 后面）与保守档（被引用定义无 writeOnly 仍打码）。
+		"writeOnly-behind-ref",
+		"ref-def-plain",
 		"nested>=2",
 		"nested>=3",
 		"writeOnly-leaf-string",
@@ -1041,31 +1071,38 @@ func TestMaskPropertyGeneratorCoversShapes(t *testing.T) {
 	}
 }
 
-// ---------- 已知缺口（显式记账，不静默 skip） ----------
+// ---------- 已修缺口（GAP-1）：`$ref` ⇒ 整值打码 ----------
 
-// TestMaskPropertyRefHiddenWriteOnlyIsKnownGap 是 `maskPropertyKnownGaps[GAP-1]` 的 tripwire。
+// TestMaskValuesRefKeywordMasksWholeValue 是 GAP-1 修好之后的正向断言：`spec.values` 里出现
+// 同文档 `$ref` 时**整值打码**（不解引用、不返回值）。
 //
-// 它**断言当前（漏明文的）行为**，把缺口钉成可观察事实，而不是 skip 掉：
-//   - `MaskValues` 对 `$ref` 后面的 writeOnly 叶不打码（明文留在回执 `values` 里）；
-//   - `refHitsWriteOnly` 同样判 false（两个 walker「一致」，所以 P1 抓不到它）；
-//   - 即：这是**共同 fail-open**，只能由契约/产品决定怎么修（见 gap 的 Fix 两条）。
+// 两种写法都盯：`#/$defs/X`（2020-12）与 `#/definitions/X`（draft-07 习惯），本包对两者的
+// 处理完全相同——都不解析，所以都必须整值打码。
 //
-// 产品一旦修好（解析或 fail-closed 整值打码），这条测试**会失败** —— 那时把
-// `maskPropertyKnownGaps` 的 GAP-1 删掉、并把「`$defs` 里带 writeOnly」的形状放进
-// `TestMaskPropertyWalkersAgree` 的严格语料。禁止的做法：改成 skip / 删掉这条 tripwire。
-func TestMaskPropertyRefHiddenWriteOnlyIsKnownGap(t *testing.T) {
-	gap := maskPropertyKnownGaps[0]
-	// 两种同文档引用写法都要盯：`#/$defs/X`（2020-12）与 `#/definitions/X`（draft-07 习惯），
-	// 本包对两者的处理完全相同——都不解析，所以都漏。
+// 并且**故意**分两档：
+//   - 被引用定义里**有** writeOnly（GAP-1 的原始形状，曾经明文进回执）；
+//   - 被引用定义里**没有** writeOnly（保守档：仍然整值打码）。后者是刻意的取舍：中枢不是
+//     求值器，不解引用就证明不了安全，所以按密文处置（多打码是可用性问题，漏明文是安全问题）。
+//
+// 三处 walker 必须同判：`MaskValues`（整值）、`refHitsWriteOnly`（param 链路）、
+// `subtreeHasWriteOnly`（祖先整块替换）。
+func TestMaskValuesRefKeywordMasksWholeValue(t *testing.T) {
 	cases := []struct {
-		name string
-		word string // 定义容器的关键字
+		name      string
+		word      string // 定义容器的关键字
+		defSecret bool   // 被引用定义里是否真的有 writeOnly
 	}{
-		{"2020-12 `$defs`", "$defs"},
-		{"draft-07 `definitions`", "definitions"},
+		{"2020-12 `$defs` / 定义含 writeOnly", "$defs", true},
+		{"2020-12 `$defs` / 定义无 writeOnly（保守多打码）", "$defs", false},
+		{"draft-07 `definitions` / 定义含 writeOnly", "definitions", true},
+		{"draft-07 `definitions` / 定义无 writeOnly（保守多打码）", "definitions", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			defPin := map[string]any{"type": "string"}
+			if tc.defSecret {
+				defPin["writeOnly"] = true
+			}
 			sch := map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1075,41 +1112,82 @@ func TestMaskPropertyRefHiddenWriteOnlyIsKnownGap(t *testing.T) {
 				tc.word: map[string]any{
 					"Credential": map[string]any{
 						"type":       "object",
-						"properties": map[string]any{"pin": map[string]any{"type": "string", "writeOnly": true}},
+						"properties": map[string]any{"pin": defPin},
 					},
 				},
 			}
+			const sentinel = "secret-0-0001-token.pin"
 			values := map[string]any{
-				"token": map[string]any{"pin": "secret-0-0001-token.pin"},
+				"token": map[string]any{"pin": sentinel},
 				"note":  "plain-note",
 			}
+
+			// ① `MaskValues`：`$ref` 节点整值打码，同一层的普通叶不被误伤。
 			masked := MaskValues(sch, values)
-			token, ok := masked["token"].(map[string]any)
-			if !ok || token["pin"] != "secret-0-0001-token.pin" {
-				t.Fatalf("GAP-1 已被修复（`$ref` 后面的 writeOnly 被打码了）：%#v\n"+
-					"请：① 从 maskPropertyKnownGaps 删掉 %s；② 把 `%s` 带 writeOnly 的形状并进 "+
-					"TestMaskPropertyWalkersAgree 的严格语料。", masked["token"], gap.ID, tc.word)
+			if got := masked["token"]; got != MaskedValue {
+				t.Fatalf("`$ref` 节点没被整值打码（GAP-1 fail-open）：%#v", got)
 			}
-			if refHitsWriteOnly("token.pin", sch) {
-				t.Fatalf("GAP-1 已被修复（refHitsWriteOnly 能看见 `$ref` 后面的 writeOnly）：%s\n"+
-					"同上的两步收尾。", gap.ID)
+			if got := masked["note"]; got != "plain-note" {
+				t.Fatalf("同一层的普通叶被误伤：%#v", got)
 			}
-			// 端到端：明文不只留在 `MaskValues` 的返回值里，它会真的进**回执**（这就是缺口的分量）。
-			refs := []propRef{{Key: "p00", Path: "token.pin", Sensitive: false}}
+
+			// ② `refHitsWriteOnly`：引用 `$ref` 节点或其下的任何路径都判敏感。
+			if !refHitsWriteOnly("token", sch) {
+				t.Fatal("refHitsWriteOnly(token) = false：param 链路会漏明文")
+			}
+			if !refHitsWriteOnly("token.pin", sch) {
+				t.Fatal("refHitsWriteOnly(token.pin) = false：param 链路会漏明文")
+			}
+			if refHitsWriteOnly("note", sch) {
+				t.Fatal("refHitsWriteOnly(note) = true：普通叶被误判为敏感")
+			}
+
+			// ③ `subtreeHasWriteOnly`：`$ref` 节点自身就是「无法证明」。
+			refNode, _ := sch["properties"].(map[string]any)["token"].(map[string]any)
+			if !subtreeHasWriteOnly(refNode) {
+				t.Fatalf("subtreeHasWriteOnly($ref 节点) = false：祖先整块替换那一档会漏，节点=%#v", refNode)
+			}
+
+			// ④ 端到端：回执里不许出现明文，但执行事实（plan.Values / PlannedSource.Spec）继续带明文。
+			refs := []propRef{{Key: "p00", Path: "token.pin", Sensitive: true}}
 			plan, err := Plan(propPackage(t, sch, refs), values, propExisting(0, refs))
 			if err != nil {
-				t.Fatalf("GAP-1 复现包计划失败: %v", err)
+				t.Fatalf("`$ref` 回执包计划失败: %v", err)
 			}
-			receiptJSON := mustJSON(t, BuildReceipt(plan, plan.Values, plan.ValuesDigest,
-				InstallMeta{ID: "i-gap", At: ts}))
-			if !strings.Contains(receiptJSON, "secret-0-0001-token.pin") {
-				t.Fatalf("GAP-1 已被修复（回执里不再出现 `$ref` 后面的 writeOnly 明文）：%s\n"+
-					"请按上面的两步收尾。回执：%s", gap.ID, receiptJSON)
+			receipt := BuildReceipt(plan, plan.Values, plan.ValuesDigest,
+				InstallMeta{ID: "i-ref", At: ts})
+			receiptJSON := mustJSON(t, receipt)
+			if strings.Contains(receiptJSON, sentinel) {
+				t.Fatalf("回执里仍有 `$ref` 后面的明文 %q：%s", sentinel, receiptJSON)
+			}
+			if !strings.Contains(receiptJSON, MaskedValue) {
+				t.Fatalf("回执里既没有明文也没有打码占位，断言退化成空断言：%s", receiptJSON)
+			}
+			if got := plan.Values["token"].(map[string]any)["pin"]; got != sentinel {
+				t.Fatalf("执行事实（plan.Values）被动过，应当继续带明文：%#v", got)
+			}
+			planned := findPlannedSource(plan.Sources, "prop-src")
+			if planned == nil || len(planned.Spec.Targets) != 1 {
+				t.Fatalf("计划里没有 prop-src 或 target 数不为 1: %#v", planned)
+			}
+			if got := planned.Spec.Targets[0].Params["p00"]; got != sentinel {
+				t.Fatalf("PlannedSource.Spec 被打码（执行事实不能打码）：%#v", got)
 			}
 		})
 	}
-	// 说明为什么这条不是「静默跳过」：缺口形状被显式记账 + 双向 tripwire（现在是漏，修好就失败）。
-	if gap.ID == "" || gap.Fix == "" {
-		t.Fatalf("已知缺口条目必须带 ID 与修法建议（否则等于静默接受）")
+}
+
+// TestMaskPropertyNoKnownGaps 断言缺口账本当前为空。
+//
+// 缺口必须**显式记账**（不许静默 skip）：新发现「两个 walker 一致、但语义上该打码却没打」
+// 的形状时，先往 `maskPropertyKnownGaps` 加条目 + tripwire，再由父会话裁决产品修法。
+// GAP-1 已修（见上一条用例），这条防它或下一个缺口被悄悄加回来。
+func TestMaskPropertyNoKnownGaps(t *testing.T) {
+	if len(maskPropertyKnownGaps) != 0 {
+		ids := make([]string, 0, len(maskPropertyKnownGaps))
+		for _, gap := range maskPropertyKnownGaps {
+			ids = append(ids, gap.ID+" / "+gap.Shape)
+		}
+		t.Fatalf("缺口账本非空（缺口必须先红后绿、不能长期挂在账本上）：%v", ids)
 	}
 }

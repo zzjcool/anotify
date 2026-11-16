@@ -56,6 +56,11 @@ func ValuesDigest(values map[string]any) (string, error) {
 // 打码跟着 schema 走（不是猜字段名、也不按值匹配）：对象按 `properties` 递归、未声明的键
 // 回落 `additionalProperties`（当其子树含 writeOnly）、数组按位置（`prefixItems[i]` 优先，
 // `items` 管其余）。打码只影响回执，不影响渲染与 digest。
+//
+// fail-closed（GAP-1）：节点上若带「无法证明不含 writeOnly」的关键字（`$ref` /
+// `$dynamicRef` / `if` / `patternProperties` …，判据见 `cannotProveNoWriteOnly`），
+// 该节点整值打码成 `MaskedValue`——不解引用、不求值。根节点带这类关键字时 values
+// 整份打码成空对象（`values` 契约要求是对象）。
 func MaskValues(sch map[string]any, values map[string]any) map[string]any {
 	if values == nil {
 		return map[string]any{}
@@ -69,15 +74,19 @@ func MaskValues(sch map[string]any, values map[string]any) map[string]any {
 
 // maskValue 递归打码一个值（只按 schema 判密文，不按值猜）。
 //
-// 三条分支（顺序即优先级）：
+// 四条分支（顺序即优先级）：
 //   - 节点自身 `writeOnly: true` → 整值换成 `MaskedValue`；
+//   - 节点带「无法证明」的关键字（`cannotProveNoWriteOnly`：`$ref` / `if` /
+//     `patternProperties` …）→ 同样整值换成 `MaskedValue`。`$ref` 指向的节点里可能写着
+//     writeOnly，而中枢不做求值器（`internal/schema` 不变量 I6），所以“证明不了”就按密文处置：
+//     多打码是可用性问题，漏明文是安全问题（GAP-1）；
 //   - 对象：键命中 `properties` 走该子 schema；**未命中的键**若节点上的
 //     `additionalProperties` 是「自身/子树含 writeOnly 的对象 schema」→ 按它递归打码
 //     （任意键都可能是密文）；否则原样透传——非 writeOnly 的 `additionalProperties`
 //     行为完全不变（一次多余深拷贝都不做）；
 //   - 数组：按位置取 schema（见 `arrayElementSchema`）。
 func maskValue(sch map[string]any, v any) any {
-	if isWriteOnly(sch) {
+	if isWriteOnly(sch) || cannotProveNoWriteOnly(sch) {
 		return MaskedValue
 	}
 	switch val := v.(type) {
@@ -117,7 +126,8 @@ func maskValue(sch map[string]any, v any) any {
 //
 // 2020-12 语义：`prefixItems[i]` 管第 i 个元素、`items` 管其余。打码每个位置只留**一个**
 // schema，取法按「谁声明了 writeOnly」，方向只允许**多**打码：
-//   - `prefixItems[i]` 自身/子树含 writeOnly → 用它（元组按位精确打码）；
+//   - `prefixItems[i]` 自身/子树含 writeOnly（或带无法证明的关键字，`subtreeHasWriteOnly`
+//     已含这一档）→ 用它（元组按位精确打码）；
 //   - 否则回落 `items`——包括「`prefixItems[i]` 只是普通 schema 而 `items` 带 writeOnly」
 //     这种歧义形状：旧口径（数组一律按 items）保留，元素仍整体打码，不留缝。
 func arrayElementSchema(prefix []any, items map[string]any, i int) map[string]any {

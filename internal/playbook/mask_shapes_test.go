@@ -489,3 +489,263 @@ func TestPlanUnappliedMaskAdditionalPropertiesDerivedParams(t *testing.T) {
 		}
 	}
 }
+
+// ---------- GAP-1：无法证明的关键字 ⇒ fail-closed 整值打码 ----------
+
+// 背景（安全性质的 fail-open）：`spec.values` 用同文档 `$ref`（`#/$defs/X` / `#/definitions/X`）
+// 间接声明 `writeOnly` 时，打码 walker 判「不敏感」，明文进回执 `values`。
+//
+// 采纳的修法：**fail-closed 整值打码**，不解析 `$ref`。判据是「节点上只要出现无法证明不含
+// `writeOnly` 的关键字，就按『这里可能藏着 writeOnly』处理」（`cannotProveNoWriteOnly`）。
+//
+// 本节的语料是**测试自己写死**的关键字清单（不迭代产品侧的 `maskUnprovableKeywords`）：
+// 产品把某个关键字从判据里去掉，这里立刻红。三个 walker 必须同判：
+// `MaskValues`（回执 `values`）/ `refHitsWriteOnly`（param 链路）/ `subtreeHasWriteOnly`
+// （祖先整块替换）——只改一处就会重演 #356 的裂缝。
+
+// TestMaskUnprovableKeywordsMaskWholeValue 逐条验「关键字 ⇒ 整值打码」。
+//
+// 每条同时断言四件事（向量固定：`properties.hidden` 带该关键字、`properties.plain` 是普通叶）：
+//  1. `MaskValues` 把 `hidden` **整值**换成 `***`；
+//  2. `refHitsWriteOnly("hidden")` 与 `refHitsWriteOnly("hidden.pin")` 都判敏感；
+//  3. `subtreeHasWriteOnly` 对该节点判真（祖先整块替换那一档）；
+//  4. 同层普通叶 `plain` 不被误伤（多打码只在这个节点上，不往外扩散一整棵树）。
+func TestMaskUnprovableKeywordsMaskWholeValue(t *testing.T) {
+	// 每条：关键字 + 一个真实形状的取值 + 为什么它「藏得住 writeOnly」。
+	cases := []struct {
+		keyword string
+		val     any
+		why     string
+	}{
+		{"$ref", "#/$defs/Credential", "writeOnly 可能写在被引用节点里，不解引用就看不见"},
+		{"$dynamicRef", "#Credential", "目标要到求值期按动态作用域才确定"},
+		{"$recursiveRef", "#", "2019-09 的递归引用，同类求值关键字"},
+		{"allOf", []any{map[string]any{"type": "object"}}, "组合分支可能带 writeOnly"},
+		{"anyOf", []any{map[string]any{"type": "object"}}, "组合分支可能带 writeOnly"},
+		{"oneOf", []any{map[string]any{"type": "object"}}, "组合分支可能带 writeOnly"},
+		{"not", map[string]any{"type": "null"}, "取反的判定要跑一遍子 schema"},
+		{"if", map[string]any{"type": "object"}, "条件分支可能带 writeOnly"},
+		{"then", map[string]any{"type": "object"}, "条件分支可能带 writeOnly"},
+		{"else", map[string]any{"type": "object"}, "条件分支可能带 writeOnly"},
+		{"patternProperties", map[string]any{"^p": map[string]any{"type": "string"}}, "按键名匹配，walker 不读模式里的子 schema"},
+		{"propertyNames", map[string]any{"pattern": "^[a-z]+$"}, "键名 schema：本仓子集不认识"},
+		{"additionalItems", map[string]any{"type": "string"}, "draft-07 元组尾巴承载子 schema"},
+		{"unevaluatedProperties", false, "判据本身是求值结果"},
+		{"unevaluatedItems", false, "判据本身是求值结果"},
+		{"dependentSchemas", map[string]any{"a": map[string]any{"type": "object"}}, "依赖触发的子 schema"},
+		{"dependencies", map[string]any{"a": map[string]any{"type": "object"}}, "draft-07 依赖写法"},
+		{"contains", map[string]any{"type": "string"}, "元素子 schema，walker 不读"},
+		{"minContains", 1, "与 contains 一起才生效"},
+		{"maxContains", 3, "与 contains 一起才生效"},
+	}
+	if len(cases) == 0 {
+		t.Fatal("关键字语料为空：这条用例会退化成空断言")
+	}
+	for _, tc := range cases {
+		t.Run(tc.keyword, func(t *testing.T) {
+			node := map[string]any{tc.keyword: tc.val}
+			sch := map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"hidden": node,
+					"plain":  map[string]any{"type": "string"},
+				},
+			}
+			values := map[string]any{
+				"hidden": map[string]any{"pin": "kw-secret-" + tc.keyword},
+				"plain":  "keep-me",
+			}
+
+			masked := MaskValues(sch, values)
+			if got := masked["hidden"]; got != MaskedValue {
+				t.Fatalf("`%s` 节点没被整值打码（%s）：%#v", tc.keyword, tc.why, got)
+			}
+			if got := masked["plain"]; got != "keep-me" {
+				t.Fatalf("`%s` 同层普通叶被误伤：%#v", tc.keyword, got)
+			}
+			if !refHitsWriteOnly("hidden", sch) {
+				t.Fatalf("refHitsWriteOnly(hidden) = false（`%s`：%s）：param 链路会漏明文", tc.keyword, tc.why)
+			}
+			if !refHitsWriteOnly("hidden.pin", sch) {
+				t.Fatalf("refHitsWriteOnly(hidden.pin) = false（`%s`：%s）：param 链路会漏明文", tc.keyword, tc.why)
+			}
+			if refHitsWriteOnly("plain", sch) {
+				t.Fatalf("refHitsWriteOnly(plain) = true（`%s` 误伤了同层普通叶）", tc.keyword)
+			}
+			if !subtreeHasWriteOnly(node) {
+				t.Fatalf("subtreeHasWriteOnly(`%s` 节点) = false：祖先整块替换那一档会漏，节点=%#v",
+					tc.keyword, node)
+			}
+		})
+	}
+}
+
+// TestMaskProvableKeywordsDoNotOverMask 是反误伤：注解 / 纯值断言 / 定义容器**不得**触发整值
+// 打码。
+//
+// 为什么这条必要：fail-closed 只允许往「多打码」方向偏，但把所有普通 schema 都打成 `***` 会让
+// 回执失去可用性（`values` 是给人看「这次装的是哪一组值」的）。边界就钉在这里：
+//   - 注解（`title` / `description` / `default` / `format` / `example`…）不承载子 schema；
+//   - 纯值断言（`pattern` / `enum` / `maxLength` / `uniqueItems`…）只约束标量；
+//   - 定义容器（`$defs` / `definitions`）本身不生效——只有 `$ref` 才危险。
+func TestMaskProvableKeywordsDoNotOverMask(t *testing.T) {
+	sch := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"project": map[string]any{
+				"type": "string", "title": "Project", "description": "slug",
+				"format": "uri-reference", "pattern": "^[a-z][a-z0-9-]*$",
+				"default": "a", "example": "a", "deprecated": false,
+				"contentEncoding": "utf-8", "contentMediaType": "text/plain",
+				"$comment": "no secret here",
+			},
+			"tags": map[string]any{
+				"type": "array", "uniqueItems": true, "minItems": 1, "maxItems": 4,
+				"items": map[string]any{"type": "string", "maxLength": 8, "minLength": 1},
+			},
+			"replicas": map[string]any{"type": "integer", "minimum": 1, "maximum": 9, "multipleOf": 1},
+			// 定义容器本身不生效：`$defs` 里藏着 writeOnly 但没有 `$ref` 引用它 ⇒ 不该打码。
+			"labels": map[string]any{
+				"type": "object",
+				"$defs": map[string]any{
+					"Unused": map[string]any{"type": "string", "writeOnly": true},
+				},
+				"definitions": map[string]any{
+					"Unused7": map[string]any{"type": "string", "writeOnly": true},
+				},
+				"properties": map[string]any{"env": map[string]any{"type": "string", "enum": []any{"a", "b"}}},
+			},
+		},
+	}
+	values := map[string]any{
+		"project":  "proj-1",
+		"tags":     []any{"one", "two"},
+		"replicas": 2,
+		"labels":   map[string]any{"env": "a"},
+	}
+	masked := MaskValues(sch, values)
+	if got := mustJSON(t, masked); got != mustJSON(t, values) {
+		t.Fatalf("可证明的关键字触发了多余打码（反误伤）：\n got=%s\nwant=%s", got, mustJSON(t, values))
+	}
+	for _, ref := range []string{"project", "tags", "tags.0", "replicas", "labels", "labels.env"} {
+		if refHitsWriteOnly(ref, sch) {
+			t.Fatalf("refHitsWriteOnly(%q) = true：可证明的关键字被误判为敏感", ref)
+		}
+	}
+	// 反向自检：把那个「藏着 writeOnly 的定义」真的引用一次，同一份 schema 立刻整值打码——
+	// 说明上面「不打码」的原因是「没有 `$ref`」，不是判据瞎了。
+	refNode, _ := sch["properties"].(map[string]any)["labels"].(map[string]any)
+	if subtreeHasWriteOnly(refNode) {
+		t.Fatalf("未引用的 `$defs` 定义影响了打码：%#v", refNode)
+	}
+	withRef := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"labels": map[string]any{"$ref": "#/$defs/Used"}},
+		"$defs":      map[string]any{"Used": map[string]any{"type": "string", "writeOnly": true}},
+	}
+	if got := MaskValues(withRef, values)["labels"]; got != "***" {
+		t.Fatalf("同一份定义被 `$ref` 引用后仍没打码：%#v", got)
+	}
+}
+
+// TestMaskUnprovableKeywordTableMatchesPredicate 把产品侧的关键字表与判据对账。
+//
+// 为什么需要：`maskUnprovableKeywords` 是**理由表**（每个关键字为什么藏得住 writeOnly），
+// `maskProvableKeywords` 是**豁免表**。判据 =「不在豁免表里 ⇒ 无法证明」。两张表若重叠或
+// 理由表里的关键字其实被豁免，就会出现「表里写了、判据没接」这种写了等于没写。
+func TestMaskUnprovableKeywordTableMatchesPredicate(t *testing.T) {
+	if len(maskUnprovableKeywords) == 0 {
+		t.Fatal("危险关键字表为空：fail-closed 的语义面被清空了")
+	}
+	if len(maskProvableKeywords) == 0 {
+		t.Fatal("豁免关键字表为空：所有 schema 都会被整值打码")
+	}
+	// 契约（docs/design/v4/playbook.md §1.2 的 fail-closed note）逐字点名了下面这些关键字。
+	// 判据是 allowlist 语义（不在豁免表即打码），所以**从理由表删掉一行不会让任何用例变红**——
+	// 「文档承诺了、判据没写理由」就会静默发生。这里把文档点到名的关键字钉死。
+	for _, kw := range []string{
+		"$ref", "$dynamicRef", "$recursiveRef", "if", "then", "else", "not",
+		"patternProperties", "propertyNames", "unevaluatedProperties", "unevaluatedItems", "dependentSchemas",
+	} {
+		if _, ok := maskUnprovableKeywords[kw]; !ok {
+			t.Fatalf("契约点名要 fail-closed 的关键字 %q 在理由表里没有条目（删表不会让别的用例变红，所以在这里钉住）", kw)
+		}
+	}
+	for keyword, why := range maskUnprovableKeywords {
+		if why == "" {
+			t.Fatalf("关键字 %q 没写理由：审查者无法判断它为什么危险", keyword)
+		}
+		if maskProvableKeywords[keyword] {
+			t.Fatalf("关键字 %q 同时出现在两张表里（豁免表说安全、危险表说危险）", keyword)
+		}
+		if !cannotProveNoWriteOnly(map[string]any{keyword: map[string]any{"type": "string"}}) {
+			t.Fatalf("关键字 %q 在危险表里但判据判假（「表里写了、判据没接」）", keyword)
+		}
+	}
+	// 豁免表里的每个关键字也自证一遍：单独出现时判据必须判假（否则豁免表是文档，不是判据）。
+	// 注意要用**它认识的形态**：`items` / `properties` 这类结构关键字进豁免表，是因为
+	// walker 会读它们的对象形态；换成别的形态就不在豁免面内（见 TestMaskDraft07TupleItemsMaskWholeValue）。
+	for keyword := range maskProvableKeywords {
+		if cannotProveNoWriteOnly(map[string]any{keyword: provableSampleValue(keyword)}) {
+			t.Fatalf("关键字 %q 在豁免表里但判据判真", keyword)
+		}
+	}
+}
+
+// provableSampleValue 是豁免表自证用例里用的「该关键字认识的形态」。
+//
+// 默认给 `true`（注解/纯值断言的值不参与判定），结构关键字给 walker 真会走的那个形状。
+func provableSampleValue(keyword string) any {
+	switch keyword {
+	case "properties":
+		return map[string]any{"k": map[string]any{"type": "string"}}
+	case "items":
+		return map[string]any{"type": "string"}
+	case "prefixItems":
+		return []any{map[string]any{"type": "string"}}
+	case "additionalProperties":
+		return map[string]any{"type": "string"}
+	}
+	return true
+}
+
+// TestMaskDraft07TupleItemsMaskWholeValue 盯同一类 fail-open 的另一个入口：**关键字名认识、
+// 值形态不认识**。
+//
+// draft-07 的 `items` 可以是 schema 列表（元组写法），而打码 walker 只读对象/布尔的 `items`
+// （2020-12 口径：元组走 `prefixItems`）。列表形态里的 writeOnly 看不见，所以按无法证明处理：
+// 整个数组值打码（而不是逐位置打码）——方向仍然是多打码。
+func TestMaskDraft07TupleItemsMaskWholeValue(t *testing.T) {
+	tuple := map[string]any{
+		"type": "array",
+		"items": []any{
+			map[string]any{"type": "string", "writeOnly": true},
+			map[string]any{"type": "string"},
+		},
+	}
+	sch := map[string]any{"type": "object", "properties": map[string]any{"pair": tuple}}
+	values := map[string]any{"pair": []any{"draft07-secret", "keep-me"}}
+
+	if got := MaskValues(sch, values)["pair"]; got != MaskedValue {
+		t.Fatalf("draft-07 元组写法（`items: [schema]`）没被整值打码（列表形态里的 writeOnly 会漏）：%#v", got)
+	}
+	if !refHitsWriteOnly("pair", sch) || !refHitsWriteOnly("pair.0", sch) {
+		t.Fatal("refHitsWriteOnly 对 draft-07 元组写法判不敏感：param 链路会漏明文")
+	}
+	if !subtreeHasWriteOnly(tuple) {
+		t.Fatal("subtreeHasWriteOnly 对 draft-07 元组写法判假：祖先整块替换那一档会漏")
+	}
+
+	// 反误伤对照：2020-12 的对象形态 `items` 仍然**逐元素**打码（不是整值替换），
+	// 非 writeOnly 的兄弟元素保留——证明上面那一条修的是「形状不认识」，不是把数组一律打成 `***`。
+	objItems := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"list": map[string]any{"type": "array", "items": map[string]any{"type": "string", "writeOnly": true}},
+		},
+	}
+	got, ok := MaskValues(objItems, map[string]any{"list": []any{"a", "b"}})["list"].([]any)
+	if !ok || len(got) != 2 || got[0] != MaskedValue || got[1] != MaskedValue {
+		t.Fatalf("对象形态 `items` 的逐元素打码行为变了（回归）：%#v", MaskValues(objItems, map[string]any{"list": []any{"a", "b"}}))
+	}
+}
