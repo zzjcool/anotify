@@ -221,6 +221,23 @@ type Config struct {
 	//
 	// 保留期事实（7 天副本 / 30 天事实 / 0 永久）在 store 侧（expires_at），这里只是驱动器。
 	ArtifactGCIntervalSec int
+
+	// CapabilityGCIntervalSec 是已删能力（capability tombstone）**物理回收**的周期（秒，issue 003）。
+	//
+	// 语义（解析见 capabilityGCIntervalFromEnv，与 ArtifactGCIntervalSec 逐字同构）：
+	//   - 未设置 / 手滑 → 3600（1 小时）；
+	//   - "0" / 负数     → **禁用**周期回收（显式运维选择：tombstone 会一直留着）；
+	//   - 正数           → 原值（上限 1 天）。
+	//
+	// 为什么默认是 1 小时而不是照抄产物 GC 的 5 分钟：purge 的判据是
+	// `capability_versions` 全扫 + 三次相关全扫 + `json_tree` + 临时 B 树排序，
+	// 全程持 `BEGIN IMMEDIATE` 写锁（见 store.PurgeDeletedCapabilities）。按分钟级跑
+	// 等于持续与事件入口抢写锁，而 tombstone 的增长速率是个位数/天量级
+	// （每删一次能力只把现有 live 版本原地打 `deleted_at`，不新增行）。
+	//
+	// 判据事实（无引用才删、tasks 是 RESTRICT / deployments 是 CASCADE）全在 store 侧
+	// （PurgeDeletedCapabilities），这里只是驱动器。
+	CapabilityGCIntervalSec int
 }
 
 // hookRateLimits 把两个字段归宿成最终额度（perToken, perIP）。
@@ -400,6 +417,44 @@ func (c Config) ArtifactGCInterval() time.Duration {
 	return time.Duration(c.ArtifactGCIntervalSec) * time.Second
 }
 
+// CapabilityGCInterval 把配置换算成 tombstone 回收周期：<=0 = 禁用（不启 goroutine）。
+//
+// 与 ArtifactGCInterval 逐字同构：0 与「未设置」都是禁用，因为默认值已经由
+// capabilityGCIntervalFromEnv 填成 3600 —— 直接构造 Config 的调用方（测试、内嵌部署）
+// 拿到的是明确的「不启动」，不会凭空多一条后台循环。
+func (c Config) CapabilityGCInterval() time.Duration {
+	if c.CapabilityGCIntervalSec <= 0 {
+		return 0
+	}
+	return time.Duration(c.CapabilityGCIntervalSec) * time.Second
+}
+
+// capabilityGCIntervalFromEnv 读 ANOTIFY_CAPABILITY_GC_INTERVAL_SEC（issue 003）。
+//
+// 未设置/非法 → 3600（默认 1 小时）；"0"/负数 → 0（禁用）；正数 → 原值（上限 1 天）。
+//
+// 非法值回落默认而不是 0：`0` 是「关掉回收」这种不可逆方向（tombstone 只增不减）的
+// 显式选择，一个拼写错误绝不能替运维做出这个决定。
+func capabilityGCIntervalFromEnv(key string) int {
+	const defSec = 3600
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defSec
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defSec // 手滑不改变默认策略（与 artifactGCIntervalFromEnv 同原则）
+	}
+	if n <= 0 {
+		return 0 // 显式禁用
+	}
+	const maxSec = 24 * 3600
+	if n > maxSec {
+		return maxSec
+	}
+	return n
+}
+
 // artifactGCIntervalFromEnv 读 ANOTIFY_ARTIFACT_GC_INTERVAL_SEC（#332）。
 //
 // 未设置/非法 → 300（默认 5 分钟）；"0"/负数 → 0（禁用）；正数 → 原值（上限 7 天）。
@@ -534,6 +589,9 @@ func FromEnv() Config {
 		// 运行产物托管目录与字节 GC 周期（#332）。默认目录 = DBPath 同目录 artifacts/。
 		ArtifactSpoolDir:      get("ANOTIFY_ARTIFACT_SPOOL_DIR", ""),
 		ArtifactGCIntervalSec: artifactGCIntervalFromEnv("ANOTIFY_ARTIFACT_GC_INTERVAL_SEC"),
+
+		// 已删能力（tombstone）物理回收周期（issue 003）：默认 1 小时，0 = 禁用。
+		CapabilityGCIntervalSec: capabilityGCIntervalFromEnv("ANOTIFY_CAPABILITY_GC_INTERVAL_SEC"),
 
 		// 派发预算（v3 契约 §2）：非法值由 Validate 拦在启动那一刻。
 		//

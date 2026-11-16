@@ -313,6 +313,21 @@ func NewApp(ctx context.Context, cfg Config) *App {
 		}
 	}
 
+	// 已删能力（tombstone）的物理回收（issue 003），紧接产物 GC：两者都是「到点就把
+	// 不可恢复的行/字节删掉」的驱动器，收尾约束也一样（必须登记进 background）。
+	//
+	// 为什么独立循环而不是塞进 RunRetention：RunRetention 挂在 30s 的租约巡检里，而
+	// purge 的判据是全表扫 + 写锁（见 capability_gc.go 的注释）；周期 0 = 不启动。
+	if cfg.CapabilityGCInterval() > 0 {
+		gc := newCapabilityGC(db, slog.Default())
+		// 走 runBackgroundLoop 而不是裸 go：purge 是库写者，不登记进 background 就等于
+		// 绕过了 #340 r3 的关停屏障（cancel 之后 WaitBackground 会提前返回，db.Close()
+		// 仍可能与一轮回收并发）。
+		app.runBackgroundLoop(ctx, "capability-gc", func(loopCtx context.Context) error {
+			return gc.Run(loopCtx, cfg.CapabilityGCInterval())
+		})
+	}
+
 	// 一条事件入口（Bearer key，机器调用）——与控制台的会话 Cookie 是两套鉴权。
 	//
 	// 顺序与 v3 的 POST /v1/events 一致：`noStore(bp.Wrap(eventH))`，即**背压在外、

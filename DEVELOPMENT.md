@@ -763,3 +763,4 @@ go run ./cmd/devseed -db ./anotify.db -username demo -demo -demo-url http://loca
 | `ANOTIFY_RUNS_RETENTION_DAYS`（**节点**） | `7` | 节点本地执行档案（`<data-dir>/runs/`）的保留天数；`0` = 不按时间删（只按条数） |
 | `ANOTIFY_RUNS_MAX_COUNT`（**节点**） | `2000` | 执行档案最多保留多少个 run 目录；超过就按最旧的删（`0` = 不限） |
 | `ANOTIFY_STATS_INTERVAL_SEC` | 未设 = `6h` | SQLite 统计维护周期（#265）：到点先问 `PRAGMA optimize` 需不需要刷新，需要才执行它给出的 `ANALYZE`。**`0` = 禁用周期维护**（启动时仍会问一次）。不设就走默认 6h——统计随行数漂移会让规划器选错索引，症状是「索引建好了但慢查询」，且没有任何报错。 |
+| `ANOTIFY_CAPABILITY_GC_INTERVAL_SEC` | `3600` | 已删能力（capability tombstone）的**物理回收**周期（issue 003）。**`0` / 负数 = 禁用**（tombstone 只增不减，禁用后重启也不补扫）。判据在 `store.PurgeDeletedCapabilities`：被任务 / attempt / 产物清单 / 部署 / 安装回执**任一**引用即不删，所以「已删能力」并不保证会被回收（尤其部署过或被 Playbook 安装回执钉住的那类）。单轮上限 `1000 × 20` 行，避免长写锁；非零删除会打 `server.capability.gc.deleted`（含 `deleted` 行数）。 |

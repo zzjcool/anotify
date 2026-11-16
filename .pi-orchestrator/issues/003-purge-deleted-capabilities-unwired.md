@@ -4,12 +4,12 @@ kind: bug
 area: [task]
 size: L
 severity: P2
-state: working
+state: done
 needs_recon: false
 contract: []
 depends_on: []
 route: [worker]
-gates: ["go test ./internal/store/... ./internal/lease/... -count=1", "make contract"]
+gates: ["go test ./internal/server/... ./internal/store/... -count=1", "make contract", "make e2e-one S=orphans"]
 opened: 2026-11-16
 recon: 2026-11-16
 ---
@@ -163,3 +163,11 @@ make e2e-one S=orphans          # 覆盖 no_capability 分支
 
 - 不改成硬删：`deleted_at` 是对外语义的一部分（删除后 `/versions` 恒 404 靠它）。
 - 不在本卡里动 `api/*.yaml`（除非裁决选了 1-B 或 4-B）。
+
+## 交付（提交见本卡同批 commit）
+
+- 实施：`internal/server/capability_gc.go`（新）+ `mux.go` 接线 + `config.go` 周期 + 9 条驱动测试 + 2 条配置测试
+- 文档：`DEVELOPMENT.md` §10 环境变量表 + `docs/design/v4/capability.md` §8.4
+- 验证：`go test ./internal/server/... ./internal/store/... -count=1` 全绿；`make contract` 通过；`make e2e-one S=orphans` 98/0
+- 语义变化（已测）：tombstone 被回收后 `DELETE /v1/namespaces/{ns}` 从 409 变 200（`TestCapabilityGCPurgeFlipsNamespaceDeleteFromBlockedToAllowed`）
+- 未做：`DeleteDeployment` / `DeleteExpiredPlaybookInstalls` 仍未接（裁决 3 有意保留）；启动不立即补扫（首轮等一个 tick）
