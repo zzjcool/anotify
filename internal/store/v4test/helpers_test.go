@@ -3,7 +3,6 @@ package v4test
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -139,18 +138,6 @@ func testCap(nsID, name string, version int, next []string) *store.CapabilityVer
 		},
 	}
 }
-
-// capSpec 造一份只给 params/next、正文用默认最小脚本的 spec。
-func capSpec(params string, next []string) artifact.Spec {
-	spec := testCap("", "x", 0, next).Spec
-	if params != "" {
-		spec.Params = []byte(params)
-	}
-	return spec
-}
-
-// formatRef 给错误消息拼 name@version。
-func formatRef(name string, version int) string { return fmt.Sprintf("%s@%d", name, version) }
 
 // openTestDBWithPath 打开测试库并返回路径（重开幂等类用例需要路径）。
 func openTestDBWithPath(t *testing.T) (*store.DB, string) {
