@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
+.PHONY: help build anode manifest fe check-wire-fields sitegen test test-repeat bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -149,6 +149,17 @@ manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / 
 
 test: ## 运行全部单元测试（不含 make e2e / make integration）
 	go test ./... -count=1
+
+# shuffle 目前**只**放在这里，暂不进 `make test`（父会话裁决：见 DEVELOPMENT.md §5）。
+#
+# 为什么要一条带 shuffle 的入口：Go 默认**固定**测试顺序，于是「用例 A 污染的全局
+# 状态只有 B 才看得见」这类顺序耦合在固定顺序下永远不会暴露。
+# 为什么先不抬进 `make test`：`internal/ws` 还有一条**未修**的时钟型 flake
+# （TestRehelloUnknownBusyDoesNotRelease），带 shuffle 的全量跑会随机变红 ——
+# 随机红的入口不如没有。等那条修完再把它抬进 `make test`。
+# shuffle 失败时 go test 会把种子打在 `-test.shuffle <seed>` 那行，用它可原样复现。
+test-repeat: ## 合并前/夜间用：go test ./... -shuffle=on -count=2，专治与执行顺序相关的 flake
+	go test ./... -shuffle=on -count=2
 
 # contract: 契约 §9 的静态断言。这几条不依赖运行期，放在 CI 里最快。
 #

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -328,16 +329,16 @@ func TestRehelloUnknownBusyDoesNotRelease(t *testing.T) {
 	// 缺 instances / 缺 busy 都是「没有新断言」，不是 idle。
 	rehello(nil)
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask == nil {
-		t.Fatalf("缺 instances 不得释放旧 busy: %+v", inst)
+		t.Fatalf("缺 instances 不得释放旧 busy: %s", instFacts(inst))
 	}
 	rehello([]protocol.HelloInstance{{Slot: intPtr(0)}})
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask == nil {
-		t.Fatalf("缺 busy 不得释放旧 busy: %+v", inst)
+		t.Fatalf("缺 busy 不得释放旧 busy: %s", instFacts(inst))
 	}
 	// busy=false 但无匹配历史引用：不清旧 busy（需真实 cancel.ack）。
 	rehello([]protocol.HelloInstance{{Slot: intPtr(0), Busy: boolPtr(false)}})
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask == nil {
-		t.Fatalf("无匹配引用的 idle 不得清旧 busy: %+v", inst)
+		t.Fatalf("无匹配引用的 idle 不得清旧 busy: %s", instFacts(inst))
 	}
 	// 匹配的历史绑定 + busy=false：真实回收。
 	rehello([]protocol.HelloInstance{{
@@ -345,7 +346,7 @@ func TestRehelloUnknownBusyDoesNotRelease(t *testing.T) {
 		TaskID: task.ID, Attempt: 1, LeaseID: grant.LeaseID,
 	}})
 	if inst := e.instances(t); len(inst) != 1 || inst[0].BusyTask != nil {
-		t.Fatalf("匹配引用的 idle 应回收旧槽: %+v", inst)
+		t.Fatalf("匹配引用的 idle 应回收旧槽: %s", instFacts(inst))
 	}
 }
 
@@ -690,10 +691,109 @@ func TestUnknownFrameKeepsConnectionAndBadFrameCloses(t *testing.T) {
 	}
 }
 
+// frameSeq 把已收到的帧按到达顺序渲染成「类型 → 类型」：读帧断言失败时要能看出
+// **真实帧序**，否则只剩一句「得到 *protocol.CapabilityDeployFrame」无法定位。
+func frameSeq(frames []any) string {
+	if len(frames) == 0 {
+		return "（一帧都没有）"
+	}
+	types := make([]string, len(frames))
+	for i, frame := range frames {
+		types[i] = fmt.Sprintf("%T", frame)
+	}
+	return strings.Join(types, " → ")
+}
+
+// readUntil 读到期望类型 T 为止（总时长有界，失败时打印完整帧序）。
+//
+// 为什么不能写「读下一帧并断言类型」：节点流是**多路下行**。中枢会在任意时刻主动
+// 下发 capability.deploy（hello 后重放未完成部署）/ task.dispatch / config.changed /
+// logs.response 等，协议只规定**因果**次序（capability.md §8.5 时序：dispatch →
+// accept/reject → lease.grant → 启动 → result），没有任何地方保证「我等的这条应答
+// 的下一帧就是它」——一条请求的应答后面随时可以跟着一条主动推送。所以断言必须是
+// 「限时内读到期望帧」，而不是「下一帧必须是期望帧」（后者实测 2/300 偶发红）。
+//
+// 语义不放松：穿插进来的帧不静默跳过，逐个交给 allow 判定（类型 + 载荷都要对得上），
+// allow 为 nil 时任何穿插都是失败；超时 / 读到不可接受的帧都会把帧序打出来。
+func readUntil[T any](t *testing.T, e *env, conn *websocket.Conn, timeout time.Duration, want string,
+	allow func(frame any) error) T {
+	t.Helper()
+	seen := make([]any, 0, 2)
+	deadlineAt := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadlineAt)
+		if remaining <= 0 {
+			break
+		}
+		frame, _, err := e.readRaw(t, conn, remaining)
+		if err != nil {
+			t.Fatalf("等 %s 时读帧失败（已收到帧序: %s）: %v", want, frameSeq(seen), err)
+		}
+		if typed, ok := frame.(T); ok {
+			return typed
+		}
+		seen = append(seen, frame)
+		if allow == nil {
+			t.Fatalf("等 %s 时收到意外帧 %T；已收到帧序: %s", want, frame, frameSeq(seen))
+		}
+		if aerr := allow(frame); aerr != nil {
+			t.Fatalf("等 %s 时收到不该出现的帧 %T: %v；已收到帧序: %s", want, frame, aerr, frameSeq(seen))
+		}
+	}
+	t.Fatalf("%s 内没读到 %s；已收到帧序: %s", timeout, want, frameSeq(seen))
+	var zero T
+	return zero
+}
+
+// instFacts 把槽位账本渲染成可读事实（%+v 打 []*NodeInstance 只有一串指针地址，
+// 失败时看不出是哪一格、什么绑定）。
+func instFacts(rows []*store.NodeInstance) string {
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		busy := "idle"
+		if row.BusyTask != nil {
+			busy = fmt.Sprintf("busy(task=%s attempt=%d lease=%s)", *row.BusyTask, row.BusyAttempt, row.BusyLeaseID)
+		}
+		parts = append(parts, fmt.Sprintf("slot=%d %s alive=%v updatedAt=%d", row.Slot, busy, row.Alive, row.UpdatedAt))
+	}
+	return "[" + strings.Join(parts, "; ") + "]"
+}
+
 func TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant(t *testing.T) {
 	e := newEnv(t)
 	capability := e.capability(t, "analyze", "", false, nil)
 	conn := e.dial(t)
+	// 中枢在 hello 之后会重放**未完成**部署（hub.go 的 replayDeployments 只发
+	// state=pending 的行）。本用例的部署是现场造的（CreateDeployments → applied），
+	// 于是「那次重放正好读到还在 pending 的那一行」是一个真实存在的窗口：
+	// capability.deploy 因此偶尔会插在 welcome 之后、lease.grant / task.dispatch 之前
+	// 到达（实测 2/300）。
+	//
+	// 这不是产品缺陷：节点本来就必须容忍主动推送（主动推送与请求应答在同一条流上
+	// 多路复用）。读帧改成「限时读到期望帧」，但允许穿过的这一帧仍要逐项核对——
+	// 必须是被测能力的部署重放，且整场只允许出现一条（重放只该发 pending 的那一条，
+	// 两条就说明 replayDeployments 的判据坏了）。
+	tolerated := 0
+	allowDeploy := func(frame any) error {
+		deploy, ok := frame.(*protocol.CapabilityDeployFrame)
+		if !ok {
+			return fmt.Errorf("本用例只容忍 capability.deploy 穿插")
+		}
+		if deploy.Namespace != e.ns.Slug || deploy.Name != capability.Name ||
+			deploy.Version != capability.Version || deploy.Digest != capability.Digest {
+			return fmt.Errorf("穿插的 capability.deploy 不是被测能力的重放: %+v", deploy.DeployRefs)
+		}
+		if !strings.HasPrefix(deploy.RequestID, "dep_") {
+			return fmt.Errorf("重放的 requestId 不是部署意图 id: %q", deploy.RequestID)
+		}
+		tolerated++
+		if tolerated > 1 {
+			return fmt.Errorf("同一次部署被重放了两遍（replayDeployments 只该发 pending 的那一条）")
+		}
+		return nil
+	}
+	// welcome 是 hello 的**保证次序**应答：session.go 的 HelloFrame 分支先 sendWelcome
+	// 再 replayDeployments，所以欢迎帧之前不会有本次 hello 触发的推送（allow=nil）。
 	hello := func(total int) {
 		e.send(t, conn, &protocol.HelloFrame{
 			Type: protocol.FrameHello, Name: "node-1", Token: e.token,
@@ -703,19 +803,28 @@ func TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant(t *testing.T) {
 				{Slot: intPtr(0)}, {Slot: intPtr(1)},
 			},
 		})
-		if _, ok := e.read(t, conn).(*protocol.WelcomeFrame); !ok {
-			t.Fatal("hello 应回 welcome")
-		}
+		_ = readUntil[*protocol.WelcomeFrame](t, e, conn, 3*time.Second, "welcome（hello 的应答）", nil)
 	}
 	// 初始预算 2：第一条任务正常 grant，占住 slot 0。
 	hello(2)
-	taskA, dispatchA := e.dispatchOne(t, conn, capability)
+	// 不用 dispatchOne：它内部的「读下一帧并断言是 task.dispatch」正是本用例偶发红的写法。
+	// 三步照抄 dispatchOne（applied 部署 + pending 任务 + DispatchOnce），只把读帧换掉。
+	e.deployApplied(t, capability)
+	taskA := e.pendingTask(t, capability)
+	if n, err := e.hub.DispatchOnce(context.Background(), 10); err != nil || n != 1 {
+		t.Fatalf("DispatchOnce = %d, %v", n, err)
+	}
+	dispatchA := readUntil[*protocol.TaskDispatchFrame](t, e, conn, 3*time.Second, "第一条 task.dispatch", allowDeploy)
+	if dispatchA.TaskID != taskA.ID || dispatchA.AssignmentID == "" {
+		t.Fatalf("第一条 dispatch 不对: %+v", dispatchA)
+	}
 	e.send(t, conn, &protocol.TaskAcceptFrame{
 		Type: protocol.FrameTaskAccept, TaskID: taskA.ID, AssignmentID: dispatchA.AssignmentID,
 		ProposedAttempt: dispatchA.ProposedAttempt, Node: "node-1", Slot: intPtr(0),
 	})
-	if _, ok := e.read(t, conn).(*protocol.LeaseGrantFrame); !ok {
-		t.Fatal("预算内应授予 lease.grant")
+	grantA := readUntil[*protocol.LeaseGrantFrame](t, e, conn, 3*time.Second, "预算内的 lease.grant", allowDeploy)
+	if grantA.TaskID != taskA.ID || grantA.LeaseID == "" || grantA.Slot == nil || *grantA.Slot != 0 {
+		t.Fatalf("预算内应授予 slot 0 的 lease.grant: %+v", grantA)
 	}
 	// 预算收缩到 1：旧 busy 必须保留，新 accept 因预算/slot 越界被拒。
 	hello(1)
@@ -723,8 +832,11 @@ func TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant(t *testing.T) {
 	if n, err := e.hub.DispatchOnce(context.Background(), 10); err != nil || n != 1 {
 		t.Fatalf("DispatchOnce = %d, %v", n, err)
 	}
-	dispatchB, ok := e.read(t, conn).(*protocol.TaskDispatchFrame)
-	if !ok || dispatchB.TaskID != taskB.ID {
+	// 这里的重放窗口已关闭（部署早就是 applied，hello(1) 没有 pending 行可重放），
+	// 所以第二条 dispatch 之前**必须**没有别的帧：allow=nil 保持原有严格度，
+	// 只是失败时会打出帧序。
+	dispatchB := readUntil[*protocol.TaskDispatchFrame](t, e, conn, 3*time.Second, "第二条 task.dispatch", nil)
+	if dispatchB.TaskID != taskB.ID {
 		t.Fatalf("应收到第二条 dispatch: %+v", dispatchB)
 	}
 	e.send(t, conn, &protocol.TaskAcceptFrame{
@@ -751,10 +863,23 @@ func TestBudgetShrinkKeepsOldBusyAndRejectsNewGrant(t *testing.T) {
 		}
 	}
 	if busy != 1 {
-		t.Fatalf("旧 busy 必须保留（收缩预算不假释放）: %+v", instances)
+		t.Fatalf("旧 busy 必须保留（收缩预算不假释放）: %s", instFacts(instances))
 	}
-	// 没有 grant 帧可收（最后的读会超时并关闭连接）。
-	if _, _, err := e.readRaw(t, conn, 300*time.Millisecond); err == nil {
-		t.Fatal("预算拒绝不得发 lease.grant")
+	// 没有 grant 帧可收：300ms 窗口内不许出现 lease.grant。判据必须按**帧类型**判，
+	// 不能按「这 300ms 里一帧都不许来」——后者会把合法的主动推送算成违规。
+	// 收尾的读会超时并关闭连接，所以放在用例最后。
+	grantWindow := time.Now().Add(300 * time.Millisecond)
+	for {
+		remaining := time.Until(grantWindow)
+		if remaining <= 0 {
+			break
+		}
+		frame, _, err := e.readRaw(t, conn, remaining)
+		if err != nil {
+			break // 窗口内没有更多帧：预期路径
+		}
+		if _, isGrant := frame.(*protocol.LeaseGrantFrame); isGrant {
+			t.Fatalf("预算拒绝不得发 lease.grant（收到 %T）", frame)
+		}
 	}
 }
