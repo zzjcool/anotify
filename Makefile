@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build anode manifest fe check-wire-fields sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port check-css check-i18n-keys check-contrast check-test-discipline check-guard-selftest check-annotations
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -59,10 +59,38 @@ check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib(
 check-tailwind: ## 核对已提交的 web/tailwind.css 覆盖源码工具类（stdlib，不跑 Tailwind CLI）
 	node scripts/check-tailwind-css.mjs
 
+# ---- 从返工事故反推的四条守卫（docs/lint-guards.md）----
+#
+# 每个静态守卫都先跑 --self-test：守卫自己坏掉（判据失效、解析出 0 条）时"绿"与
+# "没检查"同形，这类假绿在本仓反复出现过（例如丢两个 } 让 check-classes 结构性失明）。
+
+check-css: ## CSS 结构守卫：括号配平 + 禁原生嵌套（fdba2013：丢两个 } 让整段 ui.css 被吞）
+	node scripts/check-css.mjs --self-test
+	node scripts/check-css.mjs
+
+check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 里都有且集合一致（sitegen 缺键只 WARN）
+	node scripts/check-i18n-keys.mjs --self-test
+	node scripts/check-i18n-keys.mjs
+
+check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
+	node scripts/check-contrast.mjs
+
+check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/time.Sleep/裸标签+.first()（超基线红，降基线也红）
+	node scripts/check-test-discipline.mjs --self-test
+	node scripts/check-test-discipline.mjs
+
+check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
+	node scripts/check-classes.mjs --self-test
+	node scripts/check-graph-access.mjs --self-test
+
+check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
+	node scripts/check-annotations.mjs --self-test
+	node scripts/check-annotations.mjs
+
 tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
 	node scripts/build-tailwind.mjs
 
-fe: check-classes check-wire-fields sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+fe: check-classes check-wire-fields check-css check-i18n-keys check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 
 dist: fe ## 同 fe（生成 embed 产物）
@@ -150,6 +178,11 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 		exit 1; \
 	fi
 	$(MAKE) fe
+	@# 守卫自测 + 测试纪律棘轮（docs/lint-guards.md）：毫秒级，放在最便宜的位置，
+	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
+	$(MAKE) check-guard-selftest
+	$(MAKE) check-test-discipline
+	$(MAKE) check-annotations
 	go vet ./...
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
