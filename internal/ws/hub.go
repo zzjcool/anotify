@@ -324,7 +324,10 @@ func (h *Hub) applyHello(ctx context.Context, sess *Session, hello *protocol.Hel
 //   - slot 必须 presence 且 ≥0（0 合法），缺失/负数/重复项不更新账本；
 //   - 申报的 slot 集合 upsert 成真实槽位（这是「本机有几格」，不是「哪格空闲」）；
 //   - Busy 三态原样交给 store.ReclaimStaleSlots：nil/缺 instances 都是未知，
-//     绝不折算成 idle。
+//     绝不折算成 idle；
+//   - **时间只采样一次**：upsert（写 node_instances.updated_at）与回收判据
+//     （ObservedAt）共用同一个 now。两处各采一次会让两次采样窗口内的合法 idle
+//     被当成旧快照静默丢弃（生产是微秒级窗口：节点明确回报空闲、中枢却不回收）。
 func (h *Hub) applyInstances(ctx context.Context, nodeID string, instances []protocol.HelloInstance) error {
 	if len(instances) == 0 {
 		return nil
@@ -349,7 +352,9 @@ func (h *Hub) applyInstances(ctx context.Context, nodeID string, instances []pro
 	if len(specs) == 0 {
 		return nil
 	}
-	if _, err := h.db.UpsertInstances(ctx, nodeID, specs); err != nil {
+	// 同一个 now 贯穿「写槽位」与「回收旧绑定」：updated_at 是回收判据（见
+	// store.UpsertInstancesAt），两处各采一次时钟会让窗口内的合法 idle 被当成旧快照丢掉。
+	if _, err := h.db.UpsertInstancesAt(ctx, nodeID, specs, now); err != nil {
 		return err
 	}
 	if _, err := h.db.ReclaimStaleSlots(ctx, nodeID, observations, now); err != nil {
