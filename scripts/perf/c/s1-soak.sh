@@ -24,7 +24,11 @@
 # 为什么必须有常驻节点（scripts/perf/c/agent.mjs）：光造事件只会写 events/tasks 行，
 #   没有 assignment / attempt / 结果事实，量出来的不是同一条写路径。
 #   **v4 提醒**：tasks 在接收事务里就落库，所以「tasks 涨了」不能证明节点在接单；
-#   派发前提是 deployments.state=applied（v3 靠 node_capabilities 行），见 §3 打的派发事实。
+#   派发前提是 deployments.state=applied（v3 靠 node_capabilities 行）——§3 现在会真的
+#   调一次 POST …/capabilities/{name}/deploy，并在节点回执收敛后断言 NodesAvailable=True。
+#   节点侧的帧也必须走 v4（task.dispatch/task.accept/lease.grant/task.result）：
+#   issue 007 之前 agent.mjs 还是 v3 的 assign/ack/result，节点**一帧都收不到**，
+#   而脚本照样跑完 600s —— 所以 §3 与每个主压段都断言 acked/resulted 必须随 tasks 涨。
 #
 # 用法：
 #   bash scripts/perf/c/s1-soak.sh              # 默认 600s 主压
@@ -60,9 +64,21 @@ DURATION="${S1_DURATION:-600}"      # 主压总时长
 SEG_A="${S1_SEG_A:-120}"            # 0-2min 段
 SEG_C="${S1_SEG_C:-120}"            # 最后 2min 段（即 8-10min）
 SEG_B=$((DURATION - SEG_A - SEG_C)) # 中间段
+# 短跑（如 S1_DURATION=180 冒烟）装不下三段：中间段收成 0，末段压到总时长的 1/3。
+# 默认 600s 的口径（120 / 360 / 120）一个数都不变，短跑仍保留「前段 + 后段」两个测点，
+# 否则 SEG_B 会变成负数（`s1_seg 120 60` → loadgen 收到 `-d -60s`）。
+if [ "$SEG_B" -lt 0 ]; then
+	SEG_C=$(( DURATION / 3 ))
+	SEG_B=$(( DURATION - SEG_A - SEG_C ))
+fi
+if [ "$SEG_B" -lt 0 ]; then
+	SEG_A=$(( DURATION - SEG_C ))
+	SEG_B=0
+fi
 HOOK_EVERY="${S1_HOOK_EVERY:-2}"    # 支路间隔 → 600s/2s = 300 投 = 30/min（< 600/min 每 token 限速）
 SAMPLE_EVERY="${S1_SAMPLE_EVERY:-30}"
 EVENT_TYPE="${S1_EVENT_TYPE:-go}"   # 事件 type（v4 里只是事件标签：v3 的 fromPort/出口名已退役）
+SLOTS="${S1_SLOTS:-8}"             # 假节点的物理槽位数（= 本机能同时跑几个；中枢上限 20，超了 hello 被拒成 too_many_instances）
 CPU_PROFILE_AT="${S1_CPU_PROFILE_AT:-300}"  # CPU profile 抓取起点（相对开压）
 
 LOGF="$S1_DIR/run.log"
@@ -134,7 +150,7 @@ touch "$S1_DIR/.running"
 #   c) 能力 spec 必填六项（params/next/run/requires/lifecycle/concurrency），其中 `run` 是
 #      必填的可执行入口（entrypoint + files，入口正文必须以 `#!` 开头、直接 exec 不经 shell）。
 #      common.sh 的 `pc_cap` 只给 params（它要服务 C 路其他成员，不动它），所以这里用
-#      本文件内的 `s1_cap` 发完整信封。
+#      本文件内的 `s1_cap` 发完整信封；`concurrency.maxPerNode` 必须对齐节点槽位数（§s1_cap）。
 #
 # 链路形状（与 v3 测量口径等价的部分）：
 #   perf.echo --(spec.next)--> perf.sink     让「下游解析」成立（v3 的 E2 能力边）；
@@ -148,21 +164,28 @@ log "seed 完成 ns=$PC_NS uid=$PC_UID"
 # 会话 Cookie 的 header 拼一次复用（名字分片写：整串会被通用凭据脱敏规则改写）。
 S1_COOKIE_HDR="Cookie: anotify_""session=$PC_SESSION"
 
-# s1_cap <name> <next-json> [params-schema]：建能力（发 v4 信封），打印 metadata.uid。
-# 与 pc_cap 的唯一差别是 `next`：v4 用它声明下游（v3 的 outputs 已随端口路由退役）。
+# s1_cap <name> <next-json> [params-schema] [concurrency-json]：建能力（发 v4 信封），打印 metadata.uid。
+# 与 pc_cap 的两处差别：
+#   * `next`：v4 用它声明下游（v3 的 outputs 已随端口路由退役）；
+#   * `concurrency`：v4 的「同一能力在这台机器上最多并发几个」是**能力 spec** 的一部分
+#     （internal/artifact：concurrency.maxPerNode，省略 = 1）。默认 1 时一台 8 槽的节点
+#     只能同时跑 1 个 perf.echo，其余 accept 全被 grantBudgetOn 拒成
+#     slot_unavailable ⇒ 节点吞吐被钉在「1 个在飞任务」上（实测 ≈56 任务/s），
+#     摄取一高 pending 就永远涨 —— 那是配置出来的假瓶颈，不是被测链路的容量。
+#     所以这里把它对齐到 SLOTS。
 s1_cap() {
-	local name="$1" next="${2:-[]}" schema="${3:-{\"type\":\"object\"}}"
+	local name="$1" next="${2:-[]}" schema="${3:-"{\"type\":\"object\"}"}" conc="${4:-"{}"}"
 	curl -s -X POST "$PC_BASE/v1/namespaces/$PC_NS/capabilities" \
 		-H "$S1_COOKIE_HDR" -H 'content-type: application/json' \
-		-d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Capability\",\"metadata\":{\"name\":\"$name\"},\"spec\":{\"params\":$schema,\"next\":$next,\"run\":{\"entrypoint\":\"run.sh\",\"files\":{\"run.sh\":\"#!/bin/sh\\nexit 0\\n\"}},\"requires\":{},\"lifecycle\":{},\"concurrency\":{}}}" \
+		-d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Capability\",\"metadata\":{\"name\":\"$name\"},\"spec\":{\"params\":$schema,\"next\":$next,\"run\":{\"entrypoint\":\"run.sh\",\"files\":{\"run.sh\":\"#!/bin/sh\\nexit 0\\n\"}},\"requires\":{},\"lifecycle\":{},\"concurrency\":$conc}}" \
 		| jq -r '.metadata.uid // empty'
 }
 
 SINK_ID=$(s1_cap perf.sink)
 [ -n "$SINK_ID" ] || die "建能力 perf.sink 失败（s1_cap 返回空 uid）"
-ECHO_ID=$(s1_cap perf.echo '["perf.sink"]')
+ECHO_ID=$(s1_cap perf.echo '["perf.sink"]' '{"type":"object"}' "{\"maxPerNode\":$SLOTS}")
 [ -n "$ECHO_ID" ] || die "建能力 perf.echo 失败（s1_cap 返回空 uid）"
-log "能力就绪 perf.echo=$ECHO_ID（next=[perf.sink]） perf.sink=$SINK_ID"
+log "能力就绪 perf.echo=$ECHO_ID（next=[perf.sink] concurrency.maxPerNode=$SLOTS） perf.sink=$SINK_ID"
 
 # 源：主压入口与 webhook 支路各一个 hook token（主压实际用的是 Bearer key，token 只当建源成功的凭据）。
 #
@@ -191,17 +214,79 @@ jq -nc --arg src "perf.echo" --arg t "$EVENT_TYPE" \
 log "请求体 $(wc -c <"$BODY_JSON") 字节：$(cat "$BODY_JSON")"
 
 # ---------------------------------------------------------------------------
-# 3. 常驻节点 + 链路自检（tasks 表必须先真的涨，否则不压）
+# 3. 常驻节点 → 部署（v4 的派发前提）→ 链路自检
+#
+# 顺序是刻意的：deploy 必须在自检之前。v4 的派发要求 deployments.state=applied，
+# 而 deploy 的收敛是「中枢下发 capability.deploy → 节点回 capability.deployed」一个
+# WS 往返；没收敛前派发判据是 NotDeployed，任务只会堆在 pending。
 # ---------------------------------------------------------------------------
 # 节点申报 **perf.echo**（源的 targets）：v4 派发判据按 name@version 匹配 hello.capabilities。
+# --tick-ms 5s：采样器每 30s 一行，tick 太稀会让 extra.csv / 段断言读到 30s 前的旧数。
 node "$PC_REPO/scripts/perf/c/agent.mjs" --base "$PC_BASE" --db "$PC_DB" --ns "$PC_NS" \
-	--cap-id "$ECHO_ID" --cap-name perf.echo --slots 8 --tick-ms 30000 >"$RAW/agent.log" 2>&1 &
+	--cap-name perf.echo --slots "$SLOTS" --tick-ms 5000 >"$RAW/agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 50); do grep -q '"ev":"ready"' "$RAW/agent.log" 2>/dev/null && break; sleep 0.2; done
 grep -q '"ev":"ready"' "$RAW/agent.log" || { tail -20 "$RAW/agent.log" | tee -a "$LOGF"; die "常驻节点没 ready"; }
 log "节点就绪 $(head -1 "$RAW/agent.log")"
 
+# s1_agent_counter <field>：agent.log 最后一条 tick 里的某个计数器（没有则 0）。
+# 读 tick 而不是另开查库/HTTP：压测节点不能给被测服务再添一条读路径。
+s1_agent_counter() {
+	local n
+	n=$(grep -o "\"$1\":[0-9]*" "$RAW/agent.log" 2>/dev/null | tail -1 | cut -d: -f2)
+	printf '%s' "${n:-0}"
+}
+
+# 部署（v4 新增的一关，v3 没有）：
+#   v3：node_capabilities 里有一行就算「这台机器装着该能力」，mock 节点由 seed 造好即可派单；
+#   v4：候选节点还要求 deployments 里 (node, capability, digest) 是 state=applied —— 只能由
+#       POST …/capabilities/{name}/deploy 下发 + 节点回 capability.deployed 产生（seed 不能替）。
+# 不部署的后果是**静默停摆**而不是报错（issue 007 根因链第 1 条）：NodesAvailable=False/
+# NotDeployed，节点一帧都收不到，soak 照样跑完。所以这里部署完必须断言。
+s1_deploy() {  # s1_deploy <cap-name>：下发部署，把逐节点结论摊到 run.log
+	local name="$1" out
+	out=$(curl -s -X POST "$PC_BASE/v1/namespaces/$PC_NS/capabilities/$name/deploy" \
+		-H "$S1_COOKIE_HDR" -H 'content-type: application/json' -d '{}')
+	log "部署 $name → $(printf '%s' "$out" | jq -c '{version, deployed:(.deployed//[]|map({node,state,sent}))}' 2>/dev/null || printf '%s' "$out")"
+}
+# s1_applied_deploys <cap-name>：该能力在 deployments 里 applied 的节点数（= 真的持有 digest）。
+s1_applied_deploys() {
+	s1_count_where "deployments d join capability_versions c on c.id = d.capability_id" \
+		"d.state='applied' and c.name='$1'"
+}
+# s1_nodes_available <cap-name>：能力的 NodesAvailable 条件（"True/Valid" / "False/NotDeployed" / …）。
+s1_nodes_available() {
+	curl -s -H "$S1_COOKIE_HDR" "$PC_BASE/v1/namespaces/$PC_NS/capabilities/$1" \
+		| jq -r '(.status.conditions // [])[] | select(.type=="NodesAvailable") | "\(.status)/\(.reason)"' 2>/dev/null
+}
+
+# 源 perf.echo 的 targets 指向 perf.echo，主压事件派出去的就是它；perf.sink 是
+# spec.next 的下游，一并部署（没有 emit 就不会有下游任务，但它同样是「网关→下一跳」的前提）。
+s1_deploy perf.echo
+s1_deploy perf.sink
+APPLIED_ECHO=0
+for _ in $(seq 1 50); do
+	APPLIED_ECHO=$(s1_applied_deploys perf.echo)
+	[ "${APPLIED_ECHO:-0}" -ge 1 ] && break
+	sleep 0.2
+done
+APPLIED_SINK=$(s1_applied_deploys perf.sink)
+NA_ECHO=""
+for _ in $(seq 1 50); do
+	NA_ECHO=$(s1_nodes_available perf.echo)
+	[ "${NA_ECHO%%/*}" = "True" ] && break
+	sleep 0.2
+done
+log "派发前提：deployments.applied perf.echo=${APPLIED_ECHO:-0} perf.sink=${APPLIED_SINK:-0}；NodesAvailable(perf.echo)=${NA_ECHO:-?}"
+if [ "${APPLIED_ECHO:-0}" -lt 1 ] || [ "${NA_ECHO%%/*}" != "True" ]; then
+	log "部署没收敛：capability.deployed 回执没上来 ⇒ 节点不会成为候选，任务只会停在 pending。"
+	tail -20 "$RAW/agent.log" | tee -a "$LOGF"
+	tail -20 "$PC_RUN/server.log" | tee -a "$LOGF"
+	die "派发前提不成立（applied=${APPLIED_ECHO:-0} NodesAvailable=${NA_ECHO:-?}）"
+fi
+
 TASKS_BEFORE=$(s1_count tasks)
+ACKED_BEFORE=$(s1_agent_counter acked)
 ONE=$(curl -s -X POST "$PC_BASE/v1/namespaces/$PC_NS/events" -H "Authorization: Bearer $PC_SEND_KEY" \
 	-H 'content-type: application/json' -d @"$BODY_JSON")
 log "自检事件响应 $(printf '%s' "$ONE" | jq -c '{eventId, tasks:(.tasks|length), duplicate, pruned:(.pruned//[]|map(.reason))}' 2>/dev/null || printf '%s' "$ONE")"
@@ -214,25 +299,22 @@ if [ "${TASKS_AFTER:-0}" -le "${TASKS_BEFORE:-0}" ]; then
 	tail -20 "$RAW/agent.log" | tee -a "$LOGF"
 	die "派发链路未打通（tasks 表没增长）"
 fi
-log "链路自检通过：tasks $TASKS_BEFORE → $TASKS_AFTER（+$((TASKS_AFTER - TASKS_BEFORE))）"
-
-# 派发前提（v4 新增的一关，v3 没有）：
-#   v3：node_capabilities 里有一行就算「这台机器装着该能力」，mock 节点由 seed 造好即可派单；
-#   v4：候选节点还要求 deployments 里 (node, capability, digest) 是 state=applied ——
-#       由 POST …/capabilities/{name}/deploy 下发、节点回 capability.deployed 才收敛。
-# 常驻节点 scripts/perf/c/agent.mjs 仍是 v3 帧名（assign/ack/result）的实现，既不处理
-# capability.deploy 也不回 capability.deployed，所以这里把事实**打出来**（不让它静默成
-# 一个恒为 0 的列）：本脚本主压量的是 ingest → 路由 → 任务落库 + 派发提案这一段；
-# ack/result 写路径要等 agent.mjs 迁到 v4 帧（task.dispatch/task.result），见 issue 006 遗留。
-NA_COND=$(curl -s -H "$S1_COOKIE_HDR" \
-	"$PC_BASE/v1/namespaces/$PC_NS/capabilities/perf.echo" \
-	| jq -r '(.status.conditions // [])[] | select(.type=="NodesAvailable") | "\(.status)/\(.reason)"' 2>/dev/null)
-APPLIED_DEPLOYS=$(s1_count_where deployments "state='applied'")
-log "派发前提：NodesAvailable=${NA_COND:-?} deployments.applied=${APPLIED_DEPLOYS:-0}"
-if [ "${APPLIED_DEPLOYS:-0}" -eq 0 ]; then
-	log "注意：没有 applied 部署 ⇒ 任务停在 pending/派发提案，节点收不到 task.dispatch（acked 恒 0）。"
-	log "      v3 的等价事实是 seed 出来的 node_capabilities 行；v4 只能由「部署 + 节点回报」产生。"
-	log "      agent.mjs 未迁 v4 帧，本轮 extra.csv 的 agent_tick_acked 记 0 —— 已知遗留，不属本卡范围。"
+# 节点**真的接住了**这一条：v4 的 tasks 在接收事务里就落库，tasks 涨了不能证明节点
+# 收得到帧（issue 007 现场：手工插 deployments.state='applied' 后 tasks 照涨、acked 恒 0）。
+# 等一个派发周期（250ms）+ 一次 accept/grant/result 往返 + 一条 tick 落盘。
+for _ in $(seq 1 40); do
+	[ "$(s1_agent_counter acked)" -gt "${ACKED_BEFORE:-0}" ] && break
+	sleep 0.25
+done
+ACKED_AFTER=$(s1_agent_counter acked)
+RESULTED_AFTER=$(s1_agent_counter resulted)
+log "链路自检通过：tasks $TASKS_BEFORE → $TASKS_AFTER（+$((TASKS_AFTER - TASKS_BEFORE))）；节点 acked $ACKED_BEFORE → $ACKED_AFTER resulted=$RESULTED_AFTER"
+if [ "${ACKED_AFTER:-0}" -le "${ACKED_BEFORE:-0}" ] || [ "${RESULTED_AFTER:-0}" -le 0 ]; then
+	log "节点一帧都没接住（acked $ACKED_BEFORE → ${ACKED_AFTER:-0}, resulted=${RESULTED_AFTER:-0}）："
+	log "  task.dispatch 没到节点（节点不是候选：部署/配置 applied/命令探测），或节点的 accept/result 帧形状不对。"
+	tail -20 "$RAW/agent.log" | tee -a "$LOGF"
+	tail -40 "$PC_RUN/server.log" | tee -a "$LOGF"
+	die "v4 帧链未打通（acked/resulted 不涨）—— 这正是本卡要防的静默失败"
 fi
 
 # ---------------------------------------------------------------------------
@@ -277,15 +359,20 @@ log "argon2 三点量测完成（v4 有 key 缓存 ⇒ 三点应持平 ≈64MB�
 # 5. 三个后台采样/触发循环（每行立刻落盘 → 跑崩也有前半段数据）
 # ---------------------------------------------------------------------------
 pc_sample_header >"$RAW/samples.csv"
-echo 'elapsed_s,events,tasks,health_codes,loadgen_seg,loadgen_alive,hook_200,hook_429,agent_tick_acked' >"$RAW/extra.csv"
+# agent_tick_acked / agent_tick_resulted 是「节点真的在吃任务」的两列：v4 的 tasks 在接收
+# 事务里就落库，tasks 涨不能证明帧到过节点（issue 007）。两列一直持平 = 节点没在消费。
+echo 'elapsed_s,events,tasks,health_codes,loadgen_seg,loadgen_alive,hook_200,hook_429,agent_tick_acked,agent_tick_resulted' >"$RAW/extra.csv"
 : >"$RAW/ingest.log"
 : >"$RAW/hook.log"   # 必须在支路循环**之前**清空，否则会截掉已经开始写的那几行
+echo none >"$S1_DIR/seg"   # 上一轮的分段标记（否则 t=0 那一行会写成上一轮的最后一段）
+# 注意**不要**在这里清 agent.log：§3 起节点时已经用 `>` 截过，而且此刻节点还在往里写，
+# 进程内 fd 偏移不会跟随 truncate（会挖出一个 NUL 洞）。
 
 # 注意 grep -c 在 0 匹配时仍会打印 "0" 但退出码非 0，所以不能写 `|| echo 0`（会拼出两行）。
 s1_count_code() { local n; n=$(grep -c "$1" "$2" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 s1_sampler() {
-	local e ev tk hc n200 n429 ack seg lgp
+	local e ev tk hc n200 n429 ack res seg lgp
 	while [ -f "$S1_DIR/.running" ]; do
 		e=$(elapsed_s)
 		PC_ELAPSED=$e
@@ -293,10 +380,10 @@ s1_sampler() {
 		ev=$(s1_count events); tk=$(s1_count tasks); hc=$(s1_health)
 		n200=$(s1_count_code ',200$' "$RAW/hook.log")
 		n429=$(s1_count_code ',429$' "$RAW/hook.log")
-		ack=$(grep -o '"acked":[0-9]*' "$RAW/agent.log" 2>/dev/null | tail -1 | cut -d: -f2)
+		ack=$(s1_agent_counter acked); res=$(s1_agent_counter resulted)
 		seg=$(cat "$S1_DIR/seg" 2>/dev/null); seg=${seg:-none}
 		lgp=$(cat "$S1_DIR/lg.pid" 2>/dev/null)
-		echo "$e,${ev:-0},${tk:-0},$hc,$seg,$([ -n "$lgp" ] && kill -0 "$lgp" 2>/dev/null && echo 1 || echo 0),$n200,$n429,${ack:-0}" \
+		echo "$e,${ev:-0},${tk:-0},$hc,$seg,$([ -n "$lgp" ] && kill -0 "$lgp" 2>/dev/null && echo 1 || echo 0),$n200,$n429,${ack:-0},${res:-0}" \
 			>>"$RAW/extra.csv"
 		sleep "$SAMPLE_EVERY"
 	done
@@ -364,23 +451,65 @@ s1_seg() {  # s1_seg <a> <b>  跑 [a,b) 这一段
 # 被拒的请求只需 ~300µs，loadgen 的 RPS 会反而飙剐到 2 万级 —— 光看 RPS 会误以为
 # “性能很好”，实际这一整段一条事件都没写进去。v3 没有这道关（节点吃掉任务 ⇒ pending 不涨）。
 s1_seg_status() {
-	local tag="$1" line total bad
+	local tag="$1" line total bad breakdown code
 	line=$(grep -m1 '^状态码' "$RAW/ingest_$tag.log" 2>/dev/null)
 	[ -n "$line" ] || return 0
 	total=$(printf '%s' "$line" | grep -oE '[0-9]+×[0-9]+' | awk -F'×' '{s+=$2} END{print s+0}')
 	bad=$(printf '%s' "$line" | grep -oE '[0-9]+×[0-9]+' | awk -F'×' '$1!=200{s+=$2} END{print s+0}')
 	log "主压段 $tag ${line#状态码}"
-	if [ "${bad:-0}" -gt 0 ]; then
-		log "WARN 主压段 $tag 有 $bad/${total:-0} 个非 200：503 = 派发积压背压（最老 pending 任务超过 pending_max_age 就拒新事件）。"
-		log "     这一段里的 RPS 不是写入吞吐，raw/extra.csv 的 events/tasks 列才是实际落库行数；原因见 raw/server.log 的 server.backpressure.engaged。"
+	[ "${bad:-0}" -gt 0 ] || return 0
+	# 把**实际**出现的非 200 码列出来，不只笼统写「503 = 背压」：
+	# 本轮就碰到过 500（SQLITE_BUSY），写成 503 会把一个产品缺陷误读成「设计内的背压」。
+	breakdown=$(printf '%s' "$line" | grep -oE '[0-9]+×[0-9]+' | awk -F'×' '$1!=200{printf "%s×%s ", $1, $2}')
+	log "WARN 主压段 $tag 有 $bad/${total:-0} 个非 200：[${breakdown% }]"
+	for code in $breakdown; do
+		case "${code%%×*}" in
+		503)
+			log "      503 = 派发积压背压（最老 pending 超过 pending_max_age 就拒新事件，见 server.backpressure.engaged）。"
+			;;
+		500)
+			log "      500 = 服务端错误（本轮实测为 SQLITE_BUSY：读事务也走 _txlock=immediate，等写锁超 5s 就 500）。"
+			;;
+		esac
+	done
+	log "      这一段里的 RPS 不是写入吞吐，raw/extra.csv 的 events/tasks 列才是实际落库行数。"
+}
+
+# s1_seg_assert <tag>：该段结束后断言「节点消费」跟着 tasks 一起涨。
+#
+# 为什么必须在**每一段**都断言而不是只看结尾：issue 007 的失败形态是「前 2 分钟真写、
+# 后 8 分钟 0 写入，脚本还以为成功」。只看结尾的累计数会被前 2 分钟的量掩盖。
+# 阈值的口径是「这一段里 acked/resulted 都**涨了**」：这不依赖派发速率跟摄取速率谁大，
+# 只验证「帧链路活着」——而那正是本卡要防的回归。
+s1_seg_assert() {
+	local tag="$1" pa="$2" pr="$3" pt="$4" a r t da dr dt
+	a=$(s1_agent_counter acked); r=$(s1_agent_counter resulted); t=$(s1_count tasks)
+	da=$(( ${a:-0} - ${pa:-0} )); dr=$(( ${r:-0} - ${pr:-0} )); dt=$(( ${t:-0} - ${pt:-0} ))
+	log "节点消费 $tag：acked +$da resulted +$dr tasks +$dt（累计 acked=${a:-0} resulted=${r:-0} tasks=${t:-0}）"
+	if [ "${dt:-0}" -gt 0 ] && { [ "${da:-0}" -le 0 ] || [ "${dr:-0}" -le 0 ]; }; then
+		log "本段写了 $dt 条任务，节点却只 acked +$da / resulted +$dr —— 帧没到节点（或 accept/result 被拒）。"
+		log "看 raw/agent.log 的 errors/inflight/queued 与 raw/server.log 的 grant rejected / result rejected。"
+		tail -20 "$RAW/agent.log" | tee -a "$LOGF"
+		die "主压段 $tag 节点没在消费（acked/resulted 没随 tasks 涨）"
 	fi
 }
 
 # 注意：`go run` 的等价性——这里分段是为了拿到 0-2min / 8-10min 的**分位数**，
 # loadgen 只在退出时打一次汇总，单段 600s 拿不到分段对比。
+# 短跑（SEG_B=0）时中间那一段直接跳过：loadgen 收到 `-d 0s` 只会立刻退出。
+A_SEG=$(s1_agent_counter acked)
+R_SEG=$(s1_agent_counter resulted)
+T_SEG=$(s1_count tasks)
 s1_seg 0 "$SEG_A"
-s1_seg "$SEG_A" $(( SEG_A + SEG_B ))
+s1_seg_assert "0-$SEG_A" "$A_SEG" "$R_SEG" "$T_SEG"
+A_SEG=$(s1_agent_counter acked); R_SEG=$(s1_agent_counter resulted); T_SEG=$(s1_count tasks)
+if [ "$SEG_B" -gt 0 ]; then
+	s1_seg "$SEG_A" $(( SEG_A + SEG_B ))
+	s1_seg_assert "$SEG_A-$(( SEG_A + SEG_B ))" "$A_SEG" "$R_SEG" "$T_SEG"
+	A_SEG=$(s1_agent_counter acked); R_SEG=$(s1_agent_counter resulted); T_SEG=$(s1_count tasks)
+fi
 s1_seg $(( SEG_A + SEG_B )) "$DURATION"
+s1_seg_assert "$(( SEG_A + SEG_B ))-$DURATION" "$A_SEG" "$R_SEG" "$T_SEG"
 
 # ---------------------------------------------------------------------------
 # 7. 收尾：最后一次采样（仍在 running 标记内）→ 停采 → 停服务 → 停节点
@@ -395,7 +524,7 @@ FRESH_HOOK_200=$(s1_count_code ',200$' "$RAW/hook.log")
 FRESH_HOOK_429=$(s1_count_code ',429$' "$RAW/hook.log")
 PC_ELAPSED=$(elapsed_s)
 { pc_sample "t${PC_ELAPSED}_final" >>"$RAW/samples.csv"; } 2>/dev/null
-echo "$(elapsed_s),$(s1_count events),$(s1_count tasks),$(s1_health),end,0,$FRESH_HOOK_200,$FRESH_HOOK_429,$(grep -o '"acked":[0-9]*' "$RAW/agent.log" | tail -1 | cut -d: -f2)" \
+echo "$(elapsed_s),$(s1_count events),$(s1_count tasks),$(s1_health),end,0,$FRESH_HOOK_200,$FRESH_HOOK_429,$(s1_agent_counter acked),$(s1_agent_counter resulted)" \
 	>>"$RAW/extra.csv"
 rm -f "$S1_DIR/.running"
 
@@ -426,13 +555,19 @@ echo "server.log tail:" >"$RAW/server_log_tail.txt"
 tail -40 "$PC_RUN/server.log" >>"$RAW/server_log_tail.txt" 2>/dev/null
 
 log "压测结束：events=$(s1_count events) tasks=$(s1_count tasks) rss=$(ps -o rss= -p "$PC_PID" | tr -d ' ')KB"
+log "压测结束：节点 acked=$(s1_agent_counter acked) resulted=$(s1_agent_counter resulted) confirmed=$(s1_agent_counter confirmed) errors=$(s1_agent_counter errors) inflight=$(s1_agent_counter inflight) queued=$(s1_agent_counter queued)"
 
 # 被背压拒掉的请求总数（跨段汇总）：非 0 就说明本轮写曲线被截断，不能当 10 分钟稳态读。
 REJECTED=$(grep -oE '503×[0-9]+' "$RAW/ingest.log" 2>/dev/null | awk -F'×' '{s+=$2} END{print s+0}')
+TOTAL_REQ=$(grep -oE '[0-9]+×[0-9]+' "$RAW/ingest.log" 2>/dev/null | awk -F'×' '{s+=$2} END{print s+0}')
 if [ "${REJECTED:-0}" -gt 0 ]; then
-	log "WARN 本轮共 ${REJECTED} 个请求被 503 拒（写曲线自背压介入起失效）："
-	log "     v4 的背压信号是最老 pending 任务年龄；任务没人吃（mock 节点未接 v4 帧、也没有 applied 部署）就会一直长。"
-	log "     重跑取有效曲线前，先把「任务被消费」这条路修通（见 run.log 开头打的派发前提）。"
+	log "WARN 本轮共 ${REJECTED}/${TOTAL_REQ:-0} 个请求被 503 拒（写曲线自背压介入起失效）："
+	log "     背压信号是最老 pending 任务年龄（默认 120s）；摄取持续高于消耗速率时它只会一直涨。"
+	log "     消耗速率的天花板是**派发**而不是节点：实测 ≈87 任务/s（节点 20 个空槽、inflight 常为 0）。"
+	log "     派发循环的配置上限是 250ms/轮 ×100 条（internal/ws/hub.go RunDispatchLoop），但一轮实际要 ~1.1s："
+	log "     每任务 5 次读（EligibleNodes/FreeSlots/…）+ 1 次 assignment 写事务，且与 ingest 抢同一把写锁。"
+	log "     对照 raw/extra.csv 的 events/tasks/agent_tick_acked/agent_tick_resulted 四列看「落了库 / 吃了多少」；"
+	log "     backpressure 介入点见 raw/server.log 的 server.backpressure.engaged。"
 fi
 
 # 停服务/节点（cleanup 幂等，EXIT 时再跑一次也无害）
