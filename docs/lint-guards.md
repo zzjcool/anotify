@@ -104,7 +104,13 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
     `go test -run` 匹配不到即 0）。规矩：跑门禁/后台任务一律 `set -o pipefail`，或
     `cmd > log 2>&1; echo EXIT=$?`；可机械化的一面是把 `scripts/**` 与文档代码块里
     「`| tail` / `| head` 且无 pipefail」的形态扫出来（`check-annotations.mjs` 的 `REF` 已能定位代码块，可复用）。
-12. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
+12. **脚本里「必须成功的步骤」不许吞子进程退出码**：`scripts/install-anode.sh` 的 `anode_install()`
+    在提权分支里 `run_maybe_root … ; return 0`，把 `anode install` 的失败码清零 —— 于是失败后脚本
+    继续 `enable/restart` 并报「已装好」、exit 0（契约要求退 2 且回滚旧服务）。它只在**非 root + 有 sudo**
+    （GH runner）现形，本机 root 直跑走另一条分支 → 用例长期「本机绿、CI 红」。已修（2e51156b），
+    并给夹具加了 `forcePrivileged` 强制走该分支（修前必红，负向对照已复核）。同族可扫：`cmd ; return 0`、
+    `cmd || true`（清理路径允许，但必须写明理由）、以及 `| tail`/`| head` 取错退出码（见 #11）。
+13. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
     逐条重跑登记的命令，**某条其实已经绿了就红**（清单过期，必须删条目），同时新增红必须**不在**清单里。
     这样「基线红」就不会同时冒充两类掩体（掩盖新 bug / 误导判据）。范本：`openapi_parity_test.go` 的
     `bareMount405Exceptions` 过期即红、`vocabulary_test.go:303` 的「白名单不许过期」。
