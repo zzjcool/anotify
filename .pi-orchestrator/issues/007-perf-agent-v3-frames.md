@@ -9,7 +9,7 @@ needs_recon: false
 contract: []
 depends_on: [006]
 route: [worker]
-gates: ["bash -n scripts/perf/c/agent.mjs", "bash scripts/perf/c/s1-soak.sh"]
+gates: ["node --check scripts/perf/c/agent.mjs", "bash -n scripts/perf/c/s1-soak.sh", "bash scripts/perf/c/s1-soak.sh"]
 opened: 2026-11-16
 ---
 
@@ -41,6 +41,27 @@ opened: 2026-11-16
    → `server.backpressure.engaged` → **两个投递入口都回 503**（这是设计行为，不是 bug）。
 
 所以这不是背压的 bug，而是**假节点没跟上 v4 协议**，把 soak 变成了「积压无界上涨」的实验。
+
+## 进展（2026-11-16，`6c94d93`）
+
+**帧链已修好并验证**：`agent.mjs` 86 → 375 行，走 v4 `hello`(两段) → `capability.deploy/deployed`
+→ `task.dispatch` → `task.accept` → `lease.grant` → `task.result` → `result.ack`；
+`s1` 起压前真的 `POST …/deploy` 并断言 `NodesAvailable=True`，每段断言 `acked/resulted` 必须涨。
+
+实测：`acked=10647 / resulted=10644 / confirmed=10644 / errors=0`，每段都在涨 ⇒ 卡要防的「静默不消费」回归已被钉住。
+
+**但仍拿不到 10 分钟稳态**，原因换了一个（见下）。
+
+## 新的阻塞点：派发吞吐 ≈40-90 任务/s，摄取 330-670/s
+
+- 对照实验（20 空槽、`inflight` 常为 0、`dropped=0`、`queued=0`）下派发仍只有 **87/s**；
+  `RunDispatchLoop` 配置是 250ms/轮 ×100，实测一轮 ~1.1s。
+- 每任务 **5 次读 + 1 次 assignment 写事务**，且与 ingest 抢同一把写锁。
+- 摄取持续高于消耗 ⇒ 最老 pending 在 **t≈141s** 越过 120s ⇒ 背压介入 ⇒ 之后 100% 503。
+
+这不是 soak 脚本的错，也不是背压的 bug；是**派发侧吞吐上限**。所以在「测稳态」这个目标上，
+要么把压力降到天花板之下（给 loadgen 加 `-rate`，soak 默认跑 40/s），
+要么单开产品卡去提派发吞吐（批量派发 / 去掉每任务 5 次读 / assignment 事务合并）。
 
 ## 修法（推荐 A）
 
