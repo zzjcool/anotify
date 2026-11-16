@@ -61,7 +61,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L5 | `scripts/check-annotations.mjs` | `189a57f3`（文档把 bug 诱导回来）、`e16c2536`（契约缺口写成注释）、`30856f69`（过期计数注释）、`DEVELOPMENT.md:720`（把未接线的脚本称「回归测试」） | ①文档/注释里的 `scripts/*`、`make <target>`、`npm run <x>` 引用必须解析（含 `docs/v4/e2e-inventory.md` 指向已删套件这类真事实）；②`@guard/@decision` 锚点必须解析到存在的规则码/决策号；③约束性注释无锚点数量、计数型注释无 `@count` 数量 —— **棘轮，只许降** | `make ci` |
 
 | L6 | `scripts/check-secrets.mjs` | GitHub 上的 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff，本地 `git commit` 时无感。本仓的秘密面又很具体（`install.json`/`anode.yaml` 里的令牌、VAPID 私钥、`docs/` 里的示例命令） | PEM 私钥块 / 供应商形状（`ghp_`、`AKIA`、`sk-`…）/ 本仓令牌形状（`VAPID_PRIVATE`、`token:` + ≥32 字符字面量、`Bearer`）/ 被跟踪的 `.env`、`*.pem`、`id_*`。**不做熵检测**（夹具里全是假令牌）；`ALLOWLIST` 每条带理由且过期即红；`--staged` 供 pre-commit。**首次提交就自证了一次**：默认模式只扫**被跟踪**文件，于是它把自己的 self-test 夹具当成泄漏——已把夹具改成运行时拼接（源码里不留秘密形状）。这与 L5 那个「未跟踪文档漏扫」是同一类不对称 | `make ci` + `make hooks` |
-| L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*`（只开正确性类；`U1000`/`S*`/`ST*` 噪声大另立项） | `make ci` |
+| L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*,U1000`（正确性类 + 未使用符号；`U1000` 已清零后再开，见 backlog #14；`S*`/`ST*` 噪声大仍另立项） | `make ci` |
 | L8 | `scripts/dist-stamp.mjs` | 陈旧 dist 假绿 `22d14d47` / `1256350f` / 一次波末假绿（`run_all.sh:31-43` 只在 dist 缺失或为空时才重建 ⇒ 改了 `web-src/` 却忘了 `make fe` 时，e2e 验的是上一轮的前端产物） | 对输入面（`web-src/**` + `api/*.yaml` + `web/` 的 git 源文件，**不含** `internal/server/dist` 自己）逐个 sha256 → `dist/.source-stamp`；`--check` 重算并逐条列出变动/新增/删除（路径 + 旧前 8 位 → 新前 8 位）；stamp 缺失、输入面解析为空、stamp 字段与 digests 不自洽一律判红；二进制照算（字体/图标变 dist 就变），超上限的大文件跳过但打印计数（不静默） | `make fe`（写）+ `make check-dist-fresh` / `scripts/e2e/run_all.sh` 前置（验） |
 
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
@@ -127,10 +127,22 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
     （GH runner）现形，本机 root 直跑走另一条分支 → 用例长期「本机绿、CI 红」。已修（2e51156b），
     并给夹具加了 `forcePrivileged` 强制走该分支（修前必红，负向对照已复核）。同族可扫：`cmd ; return 0`、
     `cmd || true`（清理路径允许，但必须写明理由）、以及 `| tail`/`| head` 取错退出码（见 #11）。
-14. **`U1000`（未使用符号）与风格类（S*/ST*）另立项**：staticcheck 全量 53 条里 41 条是未使用符号，
-    其中约 10 条在**产品代码**（`fixedWindow.allow`、`nodeDecodeStrictJSON`、`scanCapability`、
-    `checkCapabilityInNamespace`、`nsQueryer`、`nsRefIndex`…）——要么删，要么补上「为什么留着」的理由。
-    先做产品子集（测试夹具里的 31 条可能是刻意保留的构造器），做完再把 `U1000` 放进 `lint-go`。
+14. ~~**`U1000`（未使用符号）与风格类（S*/ST*）另立项**~~ —— **`U1000` 已完成（`chore/u1000-cleanup`）**：
+    台账记 41 条（本条原先这么写的），本次在 `cd5f79b5` 上实测 **40** 条 —— 差的那条在前序改动里已消失，
+    未逐条追溯；其中 11 条在**产品代码**（`fixedWindow.allow`、`nodeDecodeStrictJSON`、
+    `scanCapability`、`checkCapabilityInNamespace`、`nsQueryer`、`nsRefIndex`…）、29 条在测试夹具。
+    逐条判过：**全部是真死代码 —— 删 40 条，零条值得留抑制注释**（判据：`git grep` 复核 + 无 build tag/
+    平台变体 + 无反射/脚本/文档引用）。现在 `make lint-go` 的检查面是 `-checks=SA*,U1000`，全仓 0 条，
+    所以它只会点名**新**写下的死符号。
+    为什么现在敢开——不对称：基线是 0 的检查不会重演 §0 第一类缝隙（恒红即无门禁）；当初不开正是因为那 41 条
+    存量会让它长期红着。落地时做了变异自证：往任意包里加一个没人调的私有函数，`make lint-go` 立刻红并点名它。
+    **真正的收获不是删掉的代码行数，而是两处「断言从没跑过」被暴露**：`internal/store/v4test/fixture_test.go`
+    整套（6 个夹具构造器，零调用点）与 `internal/store/schema_baseline_test.go` 的 `baselineTables`/
+    `baselineIndexes` 期望清单（配 5 件探针，同样零调用点 —— 而文件头一直声称「表集合 / 外键 / 索引 /
+    唯一约束 / 主键」都被守）。后者的覆盖**现在真的不存在**：要么补成真断言，要么承认没有，不能在注释里假装有
+    （§3.1）。同理，产品侧 `checkCapabilityInNamespace`（跨命名空间校验）零调用点并不构成 bug —— 隔离靠
+    `WHERE namespace_id = ?` 的 SQL 作用域已成立；但它是「补丁式校验没接线」的活标本。
+    `S*`/`ST*`（风格类）仍另立项：那是口味，不是可判定负债。
 16. ~~**注解棘轮对「测试文档段」是噪音源**~~ —— **已完成（本轮）**：连续两批被批末校准（324→332→338），增量全部来自
     新测试文件里描述「这条测试查什么」的注释段（`openapi_parity_test.go` 的对账说明、
     `mask_consistency_property_test.go` 的不变量说明）。它们不是「无锚点的门禁声称」，而是门禁自身的规格。
