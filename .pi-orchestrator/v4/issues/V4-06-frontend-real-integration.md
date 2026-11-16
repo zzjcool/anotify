@@ -1,0 +1,28 @@
+# 目标
+将已交付并通过 mock 门槛的 v4 前端接到真实五 spec、HTTP/Node 数据；只补新事实边界与 mock 保真度，不重做已完成 UI、图表或五文件 reader。
+
+## 基线 / 依赖
+- 已完成：真实 FE 交付树 `.../worktrees/v4-frontend-delivery` @ bf21f18（code1abc042），Node203、完整195组、353视图/304矩阵均已父独立验收。
+- `cmd/sitegen/internal/sitegen` 已支持 exact-five/input list/missing warning/ref reader；现缺真实 YAML 输入不是 reader 未实现。
+- 依赖 {{ISSUE_V4_01}}、{{ISSUE_V4_02}}、{{ISSUE_V4_03}}、{{ISSUE_V4_04}}、{{ISSUE_V4_05}}；先消费已冻结的真实 server/Node harness，避免前端与共享底座形成循环依赖。
+
+## 实施范围 / 所有权
+- `web/mock.js`、`web/partials.js`、`web-src` 中确需新契约适配的页面/locale；`scripts/v4-frontend.test.mjs`、五个 FE suite 与专属 f3 helpers。
+- `cmd/sitegen/**`、`internal/sitegen/**` 仅真实五输入集成暴露的精确缺口/测试，不能重写现已交 reader；api五spec/Makefile/server/Node/store只读。
+- 两 frontend writer 不并发；五 suite 由本 issue 唯一 owner 保留，不被 harness issue 全盘改写。
+
+## 必须实现
+1. 真实五 spec 输入生成 API 文档，无旧 openapi fallback；method/path/ref/security 对照真实接口，缺文件明确 warning，不假空成功。
+2. `downstream_missing` 真 failed/attempt0 Task、basename/明确 version、未知 digest/version 缺席及 E1 emit 真实 taskId 可展示与导航；不从最新版能力猜丢失事实。
+3. 日志 mock 已有 lines/attempt/previous，补的是全局当前 attempt/历史 Node 绑定、无档案/离线/不可读区别；不能“挑最新有档案”掩盖当前失败，不新增未冻结 wireErrors 字段。
+4. 真实 writeOnly/provenance/动态 raw 数据只做敏感叶处理；不全局子串替换破坏 `edit_capability` 等静态 action。保原身份/设备/语言/主题/移动端行为。
+5. 实际页面使用真实 backend/Node/API 契约，explicit-mock 与真实模式分开，禁止失败自动 fallback mock。
+
+## 验收标准
+- [ ] 新契约、真实五输入、失败 Task/字段缺席、跨 Node 日志历史与错误边界新增具名回归；原203 tests 与195/304不删除弱化。
+- [ ] `go test ./internal/sitegen/... -count=1`、`node --test scripts/v4-frontend.test.mjs`、`make fe` 通过。
+- [ ] 新 source/artifact epoch 固定后五 FE suite 各完整执行一次，结果/manifest/exit/hash前后记录齐全；不复用旧失败 run 或选最新绿样本。
+- [ ] 真实 backend 页面 dark/light、桌面/手机无 JS 错误/不可解释视口溢出，可滚到底；纯诊断列表不能代像素可见性判断。
+
+## 完成定义
+交付真实输入/HTTP 页面与 mock 的差异说明、新回归/截图/全套 source epoch 证据，fresh review 无 critical/major。旧 mock195PASS不等本 issue 真 API 集成完成。

@@ -1,0 +1,27 @@
+# 目标
+让 v4 的服务入口、开发播种、构建/镜像/安装文档与已交付 Node 产品一致，恢复可重复的开发与构建链路。
+
+## 依赖
+{{ISSUE_V4_01}}、{{ISSUE_V4_02}}、{{ISSUE_V4_03}} 的接口与五 spec 冻结。Node/anode 已实施，不创建新的协议/执行器。
+
+## 实施范围 / 所有权
+- `cmd/server/**`、`cmd/devseed/**`、Makefile（本 issue 唯一 writer）、Dockerfile/compose/发布构建配置中实际需要的文件。
+- `scripts/dev.sh` 等启动/seed 脚本、旧 agent 安装入口退役或新 anode 入口装配、check_agent_skill 的产品名/命令对账；README/DEVELOPMENT/E2E_TESTING 等用户运行文档。
+- Node源码、store/runtime/API/五spec、sitegen/前端和 E2E suite 实现只读。若既有 Node 安装文件已交付，只消费，不重做。
+
+## 必须实现
+1. cmd/server 装配真实 v4 Hub/Source/lease/store/resultspool，不再引用退休 executor/ws NodeHandler。
+2. devseed 用真实 v4 资源/namespace/token/事件/Node 握手生成开发场景；不能直接插 fake 成功 Task/伪 result 来冒真实执行。
+3. Makefile/build/CI/镜像分别生成 server 与真实 anode，使用正确版本/内容 hash/指纹；不构建已退役 cmd/agent，不保旧协议兼容层。
+4. 开发启动有界、服务与 Node 子进程可回收，临时 DB/登录数据安全，默认不删除用户数据；不写受保护 `.env`/settings 或依赖目录。
+5. 五 spec 与 checker/sitegen 的参数/入口正确串接；帮助/skill/安装文档与实际 CLI flag 一致。
+
+## 验收标准
+- [ ] 正常/空数据启动、devseed 重开、Node 注册与真实一次执行均成功，失败能清理 owned 进程与 temp。
+- [ ] `go test ./cmd/server/... ./cmd/devseed/... -count=1`、`go build ./...` 通过。
+- [ ] `make contract`、`make build`（含 fe/指纹）通过，产物 version/commit/manifest 可对账。
+- [ ] 新 server/anode CLI help/skill/schema 与 flag 机械一致；无旧 agent/executor 生产引用。
+- [ ] Docker 最终镜像构建与 smoke 可启动，保数据卷；文档命令均为非交互/可重复，不依赖未发布旧 PR。
+
+## 完成定义
+给出构建产物/运行命令、seed 真实执行证据、源码/文档变更与完整日志。这里不修改 E2E suite 或替代其全量验收。

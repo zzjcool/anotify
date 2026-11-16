@@ -50,6 +50,19 @@
 - 该worker正确在scope边界停止：Fake0/HTTPredirect包级红绿，但生产leaseLoop正duration跨注册新反例FAIL需父扩大runner权限，旧8dirtyfiles无丢。
 - 父新v4-node-absolute-clock-close用默认rootstore记录、代码任务明确分配旧NodeWT（所有文件绝对路径/verify cd），从8files接续，没有并发旧writer。批准内部absoluteTimerAt与leaseLoop精确段，不更改协议或通过重试把首FAIL抹去。
 
+## Core fixture worker 的 .pi/subagents 字面路径错误
+
+- 旧A已retired/scope-incomplete，canonical `.pi-subagents` 与错误 `.pi/subagents` 两路径被交替使用，错误路径的Go命令借父module解析，造成误报副本/环境倒退。已撤回replicas推断，不作harness/产品bug。
+- 父核gitstatus：仅原settings/编排文件及新untracked `.pi/subagents/`；父index空、tracked internal/cmd/api/scripts/web无diff，未证根生产损坏。
+- 已只读保存错误目录中10个`*_test.go` hash与tar到 `/tmp/anotify-v4-core-cwd-incident/`。原错误目录未删/移；没有收集或改动env/settings/Git数据/依赖。worker禁止自行『清环境』。
+- 新leaf须校验每个命令的真实cwd/gitroot/GOMOD和现helperhash，源码工具仅实际cwd相对路径；不从ENOENT创造另一工作树。canonical部分原测试改动保留，17整file删除的安全逐案映射仍未证，禁止用vague家族/wholeBuiltin分类放行。
+
+## Core B真实route红与经理无事件停滞
+
+- 07:35父接旧07:03L2，核B全包实际仅route安装/直建名验证不一致仍FAIL，v4test/auth/push运行PASS，测试-only未越production。首红打印包含synthetic自动token字节，父不另复制该payload，仅保原raw日志。
+- manager07:27 read/bash已返回而>15分钟无下一turn；run元数据确认A/三映射review/B全部retired，无待命shell/活writer。不是把静默等同子任务死锁。
+- 父只abort manager当前turn一次并保context/queued批准，continue返回livechildqueued；没有stop/新建team/停实现者。已授Source-name最小共同validator小生产卡，实际派发/门禁结果仍须后续确认，不伪resume立即成功。
+
 ## T3 最终分支 / 早期 draft PR329
 
 - 原E1 writer提前push隔离分支并创建base=main的PR329，远端旧08ef49a不含最终Node成果；它不是最终交付凭据。父暂不授权更新/forcepush/改base/merge/关闭/删远端。
