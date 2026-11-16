@@ -92,7 +92,7 @@ make dev-up TUNNEL=1
 A 模式的两个注意点（都是踩过的坑）：
 
 1. **凭据挂载要挂文件，不能把整个目录只读挂进来再往里叠文件**——只读目录里建挂载点会失败
-   （`make mountpoint ... read-only file system`）。所以 compose 里是两条独立的文件挂载。
+   （`mountpoint ... read-only file system` 报错）。所以 compose 里是两条独立的文件挂载。
 2. **cloudflared 官方镜像以 nonroot 运行，而隧道凭据权限是 400**（属主是宿主机用户）→ 容器里读不了。
    本地开发用 `user: "0:0"` 跑这个容器最省事（它只读挂载、不写任何东西）。
 

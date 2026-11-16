@@ -13,7 +13,7 @@
 // 放在任何一侧都会让另一侧反向依赖。
 //
 // 缺省值就是「没注入」的样子：Version="dev"、Commit/BuiltAt 为空。零配置
-// `go run ./cmd/agent` 也能如实回答「我是 dev 构建，不是某个正式版本」。
+// `go run ./cmd/anode` 也能如实回答「我是 dev 构建，不是某个正式版本」。
 package version
 
 import "strings"

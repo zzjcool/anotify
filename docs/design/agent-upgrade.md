@@ -1,5 +1,7 @@
 # agent 自升级（中枢当升级源）
 
+frozen-doc: v3 历史文档（`cmd/agent` 等 v3 物已随节点产品换代为 anode 退役删除），不再随代码演进。
+
 > **v3 历史文档**（#338）：v4 的节点产品叫 **anode**（`cmd/anode`，CLI 见 `docs/v4/anode-cli.md`），
 > 镜像里的升级源二进制是 `/app/anode`（Dockerfile `COPY --from=build /anode /app/anode` +
 > `ENV ANOTIFY_AGENT_BIN=/app/anode`）。下文里的 `agent` / `cmd/agent` / `/app/agent` /
