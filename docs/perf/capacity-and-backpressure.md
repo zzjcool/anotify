@@ -8,6 +8,12 @@
 > 本文所有数字都是**实测**的，并且每个数字都注明来自哪一段、哪一行输出
 > （产物目录 `~/perf-b5/out/<段>/`，每段另有一份 `out/report-<段>.txt`）。
 > 外推（7 天 / 30 天）不是估的，是「实测 B/事件 × 实测速率」。换机型 / 换 payload 大小要重跑脚本。
+>
+> **复测状态（2026-11-16）**：perf 台子原先对 v4 整体失效（v3 路径 `/v1/capabilities`、v3 信封
+> `.namespaces[0].id`、v3 表列 `events.idem_key`），已修复（见 `.pi-orchestrator/issues/006-perf-harness-stale-v4.md`）。
+> 当前 **§3（b 段）已用 v4 代码复测**：模型与结论不变，但字节/页数因 v4 表结构变化整体上移（见下表）。
+> **其余段（a/c/d/e/f）仍是 2026-11-01（v3）的数字，待复测**；v4 的保留期日志字段也变了
+> （不再有 `events_deleted=` / `elapsed_ms` / `truncated`），引用旧日志行的例子已按当前输出更新。
 
 ---
 
@@ -118,26 +124,28 @@ D ≥ 30  ⇔  R ≤ 10 GiB / (679.9 B × 2,592,000) = 6.09 ev/s
 
 | 时点 | 文件字节 | page_count | freelist | events 行 |
 |---|---|---|---|---|
-| before（满积压） | 5,185,536 | 1266 | 0 | 26,000 |
-| after（删空） | 5,185,536 | 1266 | **1178** | 0 |
-| refilled（重灌 26,000 行） | 5,267,456 | 1286 | **0** | 26,000 |
+| before（满积压） | 5,595,136 | 1366 | 0 | 26,000 |
+| after（删空） | 5,595,136 | 1366 | **1258** | 0 |
+| refilled（重灌 26,000 行） | 5,672,960 | 1385 | **0** | 26,000 |
 
-- **删空后文件一字节没变**（100.0%），93% 的页进 freelist —— 印证 `auto_vacuum=0`。
-- **重灌同样多的行只多花 1.6%**（+81,920 B），freelist 被复用 → **稳态是「页数到顶不再涨」，
+- **删空后文件一字节没变**（100.0%），92% 的页进 freelist —— 印证 `auto_vacuum=0`。
+- **重灌同样多的行只多花 1.4%**（+77,824 B），freelist 被复用 → **稳态是「页数到顶不再涨」，
   不是「文件变小」**。这条不写清，运维开了保留期看到磁盘没变小会以为功能没生效。
 
-### 清理吞吐与轮次（`out/b/sweep-round1.log`）
+### 清理轮次（`out/b/sweep-round1.log`）
 
 ```json
-{"event":"lease.sweeper.retention","events_deleted":20000,"truncated":true, "elapsed_ms":242}
-{"event":"lease.sweeper.retention","events_deleted":6000, "truncated":false,"elapsed_ms":67}
+{"msg":"retention sweep deleted rows","events":20000,"tasks":0,"deliveries":0}
+{"msg":"retention sweep deleted rows","events":6000,"tasks":0,"deliveries":0}
 ```
 
-- 单轮 **20,000 行 / 242 ms ≈ 82,600 行/秒**；小轮 **6,000 行 / 67 ms ≈ 89,600 行/秒**。
-- **从满积压到删空 35 s**（首个 5s tick + 一次 30s 追赶门）。
+- 两轮共 **26,000 行**（20,000 + 6,000），与插入数一致 ⇒ 单轮预算 20×1000 生效、剩余下一轮补齐。
+- **从满积压到删空 60 s**（首轮 5s tick + 一个 30s 追赶门；两轮日志时间戳相差 30s）。
+- v4 的清理日志**只记行数**（`events`/`tasks`/`deliveries`），不再带 `elapsed_ms` / `truncated`，
+  所以「单轮行/秒」不再能从日志读；要测吞吐得用 profile 或外部计时，不要拿旧数字对比。
 - **幂等 / 可重入**：同一份库再起一次进程（已无过期数据）→ **没有再删任何行**
-  （`lease.sweeper.retention` 只在「删了东西或被截断」时才打，所以第二轮一条都不该有）、
-  `retention_failed` **0 条**、文件**没有被再次撑大**。
+  （`retention sweep deleted rows` 只在「删了东西」时才打，所以第二轮一条都不该有）、
+  `lease sweep failed` **0 条**、文件**没有被再次撑大**。
   这一条的**门禁**在 `make e2e` 的 capacity 套件里（真进程、真重启、逐项断言，见 §8）；
   perf 侧的旁证是 `out/b/second-round.log` 里该进程一条 retention 轮次都没有、也没有 failed
   ——注意「没删到就不打日志」本身是设计，所以这个文件里**不会**出现 `events_deleted: 0`。
