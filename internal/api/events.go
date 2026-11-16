@@ -218,6 +218,12 @@ const (
 	reasonMethodNotAllowed  = "MethodNotAllowed"
 	reasonInternal          = "InternalError"
 	reasonNamespaceMismatch = "namespace_mismatch"
+
+	// 冲突类（api-conventions §4.2）。ingress 也会撞上：投递计划与写入之间，
+	// 源的 resourceVersion 或 ns 输入 revision 可能已变 —— 那是「重新取令牌 /
+	// 重新计划」的 409，不是服务端故障（#008：漏映射就落 default 500）。
+	reasonConflict                = "Conflict"
+	reasonResourceVersionConflict = "resource_version_conflict"
 )
 
 // statusDoc 是统一错误体（api-conventions §4.1）。
@@ -268,6 +274,17 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "namespace not found")
 	case errors.Is(err, store.ErrNotFound):
 		writeAPIStatus(w, http.StatusNotFound, reasonNotFound, "not found")
+	case errors.Is(err, store.ErrNamespaceInputsChanged):
+		// 计划时钉住的 namespaceVarsRevision 在写事务内已不符（source_event.go）：
+		// 调用方必须**重新计划**（重新解析目标/参数），原地重试同一批预编译任务无效。
+		// 与 server.writeAPIError 同码同 reason（§4.2 的 409 语义）。
+		writeAPIStatus(w, http.StatusConflict, reasonConflict, err.Error())
+	case errors.Is(err, store.ErrResourceVersionConflict):
+		// 源行的 resource_version 在「按名取源」与 AcceptSourceEvent 的写事务之间变了。
+		// *store.ResourceVersionConflictError 的 Unwrap 就是这个 sentinel，所以这一条
+		// 同时覆盖 typed 与哨兵两种形状（ingress 不回 details.current：投递端点的
+		// 调用方拿到 409 后重新 GET 源即可）。
+		writeAPIStatus(w, http.StatusConflict, reasonResourceVersionConflict, err.Error())
 	case errors.Is(err, store.ErrSourceEventReceiptMissing):
 		// 回执缺行是**服务端**的不变量破了（写事件与写回执同事务），必须 5xx。
 		slog.Error("source event receipt missing", "event", "events.ingress.receipt_missing", "err", err.Error())
