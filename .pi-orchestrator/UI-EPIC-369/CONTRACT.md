@@ -38,11 +38,14 @@ python3 scripts/check_contract.py        # 改了 api/*.yaml 必跑
 
 ### 已知的基线红（2026-11-13 在 `epic/369-ui-review` 上实测，**不是你引入的**）
 
-`make ci` 在本机基线就红，**不要**把它当成车道门禁，也不要顺手去修（不在 #369 范围）：
+> **2026-11-16 更新**：下表的 sitegen 那条已修（断言耦合 class 属性字面量，不是产品 bug），
+> `make ci` 在本机**恢复全绿**（`MAKE_CI_EXIT=0`）。剩下的两类是环境性/flaky，不是产品缺陷。
+
+`make ci` 历史上在本机基线就红（2026-11-13 实测），当时的口径是「不要当成车道门禁」：
 
 | 位置 | 现象 | 性质 |
 |---|---|---|
-| `internal/sitegen` `TestDocsPageRendersFiveSpecFixturesFourLanguages` | `want 16 tag groups, got 0` | 确定性失败，main 上已有 |
+| ~~`internal/sitegen` `TestDocsPageRendersFiveSpecFixturesFourLanguages`~~ | ~~`want 16 tag groups, got 0`~~ → **已修（不再红）** | 根因不是产品 bug，是**断言耦合了 class 属性字面量**：`3f3e041b` 给 docs 页加上 Tailwind 类后 `class="doc-ep-table table-wrap"`，而断言写的是整串相等 `class="doc-ep-table"` → 计数恒 0。已改成按 class token 计数（`countClassTokens`），反向断言也从 `strings.Contains` 改成同一判据（原本属性一变反向断言就恒绿）。|
 | `cmd/anode` 5 个 `TestInstallScript*` | systemctl/sudo 交互断言 | 本机无 sudo，环境性 |
 | `internal/ws` `TestRehelloUnknownBusyDoesNotRelease`、`cmd/anode/internal/runner` `TestRework2Timeout…` | 负载下偶发 | flaky，隔离单跑应绿 |
 
