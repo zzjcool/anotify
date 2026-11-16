@@ -4,7 +4,7 @@ kind: bug
 area: [server]
 size: M
 severity: P1
-state: open
+state: done
 needs_recon: true
 contract: []
 depends_on: []
@@ -100,6 +100,21 @@ ingest 一次会拿 **3 次写锁**（2 读 + 1 写）：
   b) 把 `SQLITE_BUSY` 映射成 503 + `Retry-After`（与背压同码），并缩短该路径的 busy timeout；
   c) 两者都做：读路径去写锁 + 兜底映射。
 - 必须确认：改读事务锁模式不会破坏「读一致性」或与现有 CAS 语义冲突（`internal/store/AGENTS.md` §3.4/§3.6）。
+
+## Phase 1 已交付（`61934c2` + 报告 `8e3edaa`）
+
+| 改动 | 内容 |
+|---|---|
+| `internal/store/config.go` | `GetSystemConfig` / `GetNamespaceConfig` 改无事务读（`ex := d`，三条内部读共用同一 ex，防撕裂）；注释写明为什么仍安全 |
+| `internal/api/events.go` | 补 `ErrNamespaceInputsChanged` → 409、`ErrResourceVersionConflict` → 409（含 typed），与 `server/api_status.go` 对齐 |
+| 测试 | `pool_test` 的「写持锁期间读照常」换成两条**真热路径读**：改前 4.62s 红（`database is locked (5) (SQLITE_BUSY)`，就是线上那条文本），改后 0.44s 绿；`TestWriteAPIErrorConflictMapping` 4 子用例（含「未知错误仍 500」反向对照） |
+
+**ingest 一次请求的写锁次数：3 → 1**（只剩 `AcceptSourceEvent` 那次真正的写）。
+
+门禁（我复核过）：`go test ./internal/store/... ./internal/api/... ./internal/server/...` 全绿、`make contract` 通过、`gofmt -l` 无输出。
+
+**未做**：写事务自身撞 BUSY 仍是 500（→ 见 [010](010-busy-on-write-path-503.md)）；
+读侧从「单事务快照」降级为「三条独立快照」（写侧无影响，两处**展示**投影在并发 PUT 时可能早一拍，CAS 仍安全）。
 
 ## 验收
 
