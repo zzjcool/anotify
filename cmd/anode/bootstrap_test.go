@@ -283,8 +283,19 @@ type scriptFixture struct {
 	pathOverride string
 	// asNonRoot 让脚本以为自己是普通用户（假 id）且没有 sudo（ANODE_SUDO 指向不存在的命令）：
 	// “auto 推导成 user”只在这种情况下发生，而开发机/CI 常常以 root 跑测试（root 一律走 system）。
-	asNonRoot  bool
-	nonRootBin string
+	asNonRoot bool
+	// forcePrivileged 强制走「需要提权」的那条分支（install_needs_root → run_maybe_root）。
+	//
+	// 事故背景（PR #412 的 ci 恒红）：runner 是「非 root + 有 sudo」，install 脚本因此
+	// SUDO_MODE=sudo-n，`anode install` 经 run_maybe_root 提权执行；而 anode_install 在提权
+	// 分支后面无条件 `return 0`，把子进程的退出码吞成了成功（install 以 7 失败 → 脚本仍
+	// enable/restart 并 exit 0）。本机以 root 直跑时 install_needs_root 直接返回 1、走另一条
+	// 不吞码的直跑分支，所以这个 bug 长期只在 CI 现形。
+	//
+	// 打开它 = 假 id 让脚本以为自己是普通用户 + 保留夹具的假 sudo（`sudo -n true` 成功 →
+	// SUDO_MODE=sudo-n），于是 root 机器上也走 CI 那条路。断言一个字不改，只改「走到哪条分支」。
+	forcePrivileged bool
+	nonRootBin      string
 }
 
 func newScriptFixture(t *testing.T) *scriptFixture {
@@ -418,8 +429,9 @@ func (f *scriptFixture) env() []string {
 	if path == "" {
 		path = f.binDir + ":/usr/local/bin:/usr/bin:/bin"
 	}
-	if f.asNonRoot {
+	if f.asNonRoot || f.forcePrivileged {
 		// 假 id 放在最前面：脚本的 platform/提权/落盘判定都会看到“普通用户”。
+		// forcePrivileged 只要这半截（假 id），sudo 仍用夹具里那个“能提权”的假 sudo。
 		path = f.nonRootBin + ":" + path
 	}
 	env := []string{
@@ -448,7 +460,9 @@ func (f *scriptFixture) env() []string {
 	if f.installExit != "" {
 		env = append(env, "FIXTURE_INSTALL_EXIT="+f.installExit)
 	}
-	if f.sudoUser != "" {
+	// forcePrivileged 模拟的是 runner：SUDO_USER 不存在（resolve_runner 只在 id -u == 0 时读它，
+	// 真实 runner 上也没这个变量）。root 机器上夹具会补一个假安装者，这里要去掉。
+	if f.sudoUser != "" && !f.forcePrivileged {
 		env = append(env, "SUDO_USER="+f.sudoUser)
 	}
 	if f.asNonRoot {
@@ -1195,7 +1209,23 @@ func TestInstallScriptRestoresOldServiceWhenStartFails(t *testing.T) {
 
 // ---- 9f. anode install 失败：不吞失败、不把节点留在停止态（R1/M4 + 旧用例“失败码传播”）----
 func TestInstallScriptInstallFailureRestoresServiceAndKeepsCode(t *testing.T) {
-	f := newScriptFixture(t)
+	// 两种身份都要走一遍：`anode install` 的失败码必须原样传到调用方。
+	// root 直跑走 install_needs_root 的直跑分支；非 root + 有 sudo（= CI runner）走
+	// run_maybe_root 的 sudo-n 分支 —— PR #412 的 ci 只红在后者（见 forcePrivileged 注）。
+	t.Run("root 直跑", func(t *testing.T) {
+		runInstallFailureContract(t, newScriptFixture(t))
+	})
+	t.Run("提权分支（非 root + sudo）", func(t *testing.T) {
+		f := newScriptFixture(t)
+		f.forcePrivileged = true
+		runInstallFailureContract(t, f)
+	})
+}
+
+// runInstallFailureContract 是「install 失败」的完整契约：脚本退 2、子进程退出码与原文都
+// 透传、旧服务被恰好拉起一次、且没有 restart。断言不分身份，只由调用方决定走哪条分支。
+func runInstallFailureContract(t *testing.T, f *scriptFixture) {
+	t.Helper()
 	if code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...); code != 0 {
 		t.Fatalf("首次安装失败 %d\n%s\n%s", code, out, errOut)
 	}

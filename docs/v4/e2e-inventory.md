@@ -172,7 +172,7 @@ bash scripts/e2e/run_all.sh --serial i18n
 cat .e2e-bin/results/_authority-manifest.json
 
 # real_backend 确实不在了：文件不存在 + 注册表无该项
-ls scripts/e2e/suites/real_backend.mjs   # No such file or directory
+ls scripts/e2e/suites/real_backend.mjs   # 已删除：No such file or directory
 grep -n real_backend scripts/e2e/parallel_runner.mjs   # 1 行（实测，`rg -c` = 1）：只有 :85 那条具名退役注释，没有任何代码引用
 ```
 

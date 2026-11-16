@@ -17,7 +17,7 @@
 | `/devseed`（镜像 build 阶段） | `cmd/devseed` | `make docker` | 开发播种；**不进** runtime 镜像 |
 | `anotify-anode` 镜像 | `cmd/anode` | `make docker-anode` | 节点镜像（容器即一台节点） |
 
-v3 的 `./anotify-agent`、`./agent`、`Dockerfile.agent`、`cmd/agent` 已随节点产品换代为
+v3 的 `./anotify-agent`、`./agent`、`Dockerfile.agent`、`cmd/agent`（均已删除）随节点产品换代为
 `anode` 退役（#334），Makefile 不再有任何目标引用它们。
 
 ## 2. 版本注入（两处变量不同源，但必须是同一个串）

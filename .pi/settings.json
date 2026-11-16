@@ -1,1 +1,8 @@
-{}
+{
+  "subagents": {
+    "agentOverrides": {
+      "scout": { "model": "workbuddy/deepseek-v4.1-flash", "thinking": "max" },
+      "worker": { "model": "workbuddy/deepseek-v4.1-flash", "thinking": "max" }
+    }
+  }
+}

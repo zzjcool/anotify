@@ -33,8 +33,9 @@ func TestRenderQRASCII(t *testing.T) {
 			switch c {
 			case '▀', '▄', '█', ' ':
 			default:
+				// 每条非法字符都要报，不 break：这里的 break 只跳出 switch，
+				// 不影响外层 range，留着只会让读的人以为能提前收工。
 				t.Errorf("非法字符 %q in %q", c, l)
-				break
 			}
 		}
 	}

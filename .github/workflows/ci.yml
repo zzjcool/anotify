@@ -25,12 +25,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # make fe（check-classes + sitegen + hash）只用 Node 标准库，不装 npm 依赖。
-      # make ci 会用 -tags embeddist 编译内嵌前端；默认 go build / go test 不嵌入 dist。
+      # make fe（check-classes/check-css/check-i18n-keys/check-contrast/sitegen/hash）
+      # 绝大多数只用 Node 标准库；唯一例外是 check-wire-fields.mjs（要解析 api/*.yaml）。
+      # 少了下面这一步，它会 ERR_MODULE_NOT_FOUND，而挂在 make fe 上 ⇒ 每条 PR 的
+      # `make ci` 在 make fe 处整条红（2026-09~11 一直如此：CI 门禁实际无人看）。
+      # 只装这一个纯 JS 小包：不写 lock、不引入 playwright 等大件。
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      # staticcheck 装在 .bin/（make tools）。缓存它：`go install pkg@version` 每次都要向
+      # honnef.co 做 go-get 解析，网络抖一下就把「工具没装上」伪装成「代码有问题」。
+      - name: Cache Go static tools
+        uses: actions/cache@v4
+        with:
+          path: .bin
+          key: go-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Install guard-only JS dep
+        run: npm install --no-save --no-audit --no-fund yaml@2
 
       - name: PR gate
         run: make ci

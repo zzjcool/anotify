@@ -181,10 +181,132 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 	}
 }
 
+// ---------- fail-closed：无法证明的关键字（GAP-1） ----------
+
+// maskUnprovableKeywords 是「节点上一旦出现就无法证明它不含 writeOnly」的关键字表（值为理由）。
+//
+// 为什么需要这张表（GAP-1 的根因）：`internal/schema` 的受控子集明确「不认识的关键字一律
+// 忽略（不报错）」（该包注释 + 不变量 I6：中枢不做求值器）。打码只看**内联结构关键字**
+// （properties / items / prefixItems / additionalProperties），于是「一个我看不懂、但要紧的
+// 关键字」会被当成「这里没有 writeOnly」——`$ref` 后面的 writeOnly 就这样明文进了回执
+// `values`（回归用例见 mask_shapes_test.go 的 TestMaskUnprovableKeywordsMaskWholeValue）。
+//
+// 判据（刻意**不求值**）：节点上出现下面任何一个关键字，就按「这里可能藏着 writeOnly」
+// 处理，整值打码成 `MaskedValue`。这个取舍是产品口径，写在这里而不是只写在测试里：
+//   - 多打码是**可用性**问题（`$ref` 指向的定义其实没有 writeOnly 也照样打码），漏明文是
+//     **安全**问题；方向只允许前者。
+//   - 「证明这个关键字不含 writeOnly」需要一个求值器（解引用、跑 if/then、按键名匹配
+//     patternProperties……），那正是 I6 禁止中枢做的事；证明不了，就按不安全处理。
+//   - 所以等价类语义是「出现需要求值的关键字 ⇒ 整值打码」，**不是**「解引用后看被引用节点
+//     有没有 writeOnly」。后者会把中枢变成求值器，远程 `$ref` 还会引入外部请求面。
+//     契约口径见 docs/design/v4/playbook.md §1.2 的「打码」行。
+//
+// 这张表是**理由表**（审查者看「为什么这个关键字危险」），判据的默认面在 `maskProvableKeywords`
+// 那边：不在豁免表里的关键字——包括本表没枚举的、未来的新 draft 关键字——同样算无法证明。
+// 表里每一条都由 TestMaskUnprovableKeywordTableMatchesPredicate 与判据对账。
+var maskUnprovableKeywords = map[string]string{
+	"$ref":                  "引用：writeOnly 可能写在被引用节点里，不解引用就看不见",
+	"$dynamicRef":           "动态引用：目标要到求值期按动态作用域才确定",
+	"$recursiveRef":         "递归引用：同类求值关键字（draft 2019-09 写法）",
+	"allOf":                 "组合：任一子 schema 都可能带 writeOnly，本仓子集不认识该关键字",
+	"anyOf":                 "组合：同上",
+	"oneOf":                 "组合：同上",
+	"not":                   "取反：子 schema 里可能有 writeOnly，而「是否被否定掉」得求值才知道",
+	"if":                    "条件：分支子 schema 可能带 writeOnly",
+	"then":                  "条件：同上（不写 if 时它本身不生效，但仍算无法证明）",
+	"else":                  "条件：同上",
+	"patternProperties":     "按键名模式的子 schema：walker 只读 properties / additionalProperties，模式里的 writeOnly 看不见",
+	"propertyNames":         "键名 schema：本仓子集不认识，无法排除它对值的作用",
+	"additionalItems":       "draft-07 元组尾巴：承载子 schema，walker 不读",
+	"unevaluatedProperties": "对「未被其它关键字求值过的属性」生效：判据本身就是求值结果",
+	"unevaluatedItems":      "同上（数组侧）",
+	"dependentSchemas":      "依赖触发的子 schema：生效与否取决于值里出现了哪些键",
+	"dependencies":          "draft-07 的依赖写法（schema 形态承载子 schema）",
+	"contains":              "元素子 schema：walker 不读，元素里的 writeOnly 看不见",
+	"minContains":           "contains 的计数门槛：与 contains 一起才生效，单独看无法判定",
+	"maxContains":           "同上",
+}
+
+// maskProvableKeywords 是「能证明不含 writeOnly」的关键字表：要么 walker 自己会读它
+// （properties / items / prefixItems / additionalProperties / writeOnly），要么它只是注解
+// 或纯值断言（不承载子 schema ⇒ 藏不了 writeOnly）。
+//
+// 为什么要有这张**白名单**（而不是只列危险表）：GAP-1 的真正成因是「不认识的关键字被当成
+// 安全」。危险表只挡得住已经想到的关键字，挡不住下一个 draft 新加的求值关键字；白名单让
+// 「没见过」默认落到危险侧——不认识 ⇒ 无法证明 ⇒ 整值打码。
+//
+// 名字进这张表**不等于免检**：同一个关键字在不同 draft 里有不同形态（`items` 在 draft-07 可以
+// 是 schema 列表），walker 只读它认识的那个形态，所以判据还要过 `maskKeywordShapeProvable`。
+var maskProvableKeywords = map[string]bool{
+	// walker 会读的结构关键字
+	"type": true, "properties": true, "required": true, "additionalProperties": true,
+	"items": true, "prefixItems": true, "writeOnly": true, "readOnly": true,
+	// 纯值断言：只约束标量/长度/计数，不承载子 schema
+	"enum": true, "const": true, "uniqueItems": true, "multipleOf": true,
+	"minItems": true, "maxItems": true, "minLength": true, "maxLength": true,
+	"pattern": true, "minimum": true, "maximum": true,
+	"exclusiveMinimum": true, "exclusiveMaximum": true,
+	"minProperties": true, "maxProperties": true,
+	// 注解 / 标识 / 定义容器：本身不作用于当前值（定义要被 `$ref` 引用才生效，
+	// 而 `$ref` 在危险表里）
+	"title": true, "description": true, "default": true, "examples": true,
+	"example": true, "deprecated": true, "format": true,
+	"contentMediaType": true, "contentEncoding": true,
+	"$comment": true, "$schema": true, "$id": true, "$anchor": true,
+	"$dynamicAnchor": true, "$recursiveAnchor": true, "$vocabulary": true,
+	"$defs": true, "definitions": true,
+}
+
+// cannotProveNoWriteOnly 报告一个 schema 节点上是否有「无法证明不含 writeOnly」的关键字。
+//
+// 三个 walker **共用同一个判据**，这是 #356 之后的不变量：
+//   - `maskValue`（values.go，回执 `values` 的叶子级打码）→ 整值换成 `MaskedValue`；
+//   - `refHitsWriteOnly`（引用/param 链路）→ 判敏感（param 整值打码）；
+//   - `subtreeHasWriteOnly`（祖先整块替换）→ 判真。
+//
+// 一处改、三处生效；只改一处会重演「一个 walker 打码、另一个漏明文」的裂缝。
+func cannotProveNoWriteOnly(sch map[string]any) bool {
+	for key, val := range sch {
+		if !maskProvableKeywords[key] {
+			// 危险表里的（理由见上），以及本仓子集从未见过的关键字（未来 draft / 厂商扩展），
+			// 一律算无法证明 —— 「不认识」不等于「安全」，这正是 GAP-1 的教训。
+			return true
+		}
+		if !maskKeywordShapeProvable(key, val) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskKeywordShapeProvable 报告「walker 会读的结构关键字」的**值形态**是不是我们能走的那种。
+//
+// 为什么单靠关键字名不够：同名关键字在不同 draft 里有不同形态。draft-07 的 `items` 可以是
+// **schema 列表**（元组写法），而 walker 只读对象 / 布尔的 `items`——列表形态里的 writeOnly
+// 看不见。这类「形状不认识」与「关键字不认识」是同一个 fail-open，所以同样按无法证明处理。
+func maskKeywordShapeProvable(key string, val any) bool {
+	switch key {
+	case "properties":
+		_, ok := val.(map[string]any)
+		return ok
+	case "items", "additionalProperties":
+		switch val.(type) {
+		case map[string]any, bool:
+			return true
+		}
+		return false
+	case "prefixItems":
+		_, ok := val.([]any)
+		return ok
+	}
+	return true
+}
+
 // refHitsWriteOnly 报告一条 values 点号引用是否会把 writeOnly 明文带进回执。
 //
 // 两段判定：
-//  1. **下钻途中**只看每一步节点**自身**的 `writeOnly`（与 `maskValue` 的递归口径一致）；
+//  1. **下钻途中**看每一步节点**自身**的 `writeOnly`（与 `maskValue` 的递归口径一致），
+//     以及它是否带「无法证明」的关键字（`cannotProveNoWriteOnly`：`$ref` 等，见上）；
 //  2. **走完整条路径后**，对**最终解析节点**再判整棵子树（`subtreeHasWriteOnly`）——
 //     引用一个「里面装着 writeOnly 叶的容器」时，整对象 / 整数组 / 整个数组元素插值同样
 //     会把明文带进 `unapplied[].declared/actual`，必须整值打码。
@@ -204,6 +326,7 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 //   - `{{values.credList.0}}`（解析到 `items` 节点，其子树含 writeOnly）→ true
 //   - `{{values.credList.0.token}}`（解析到 writeOnly 叶）→ true（下钻途中就命中）
 //   - `{{values.auth.label}}`（label 本身是普通叶，auth 下的 writeOnly 兄弟**不传染**）→ false
+//   - `{{values.token}}` / `{{values.token.pin}}`（`token` 是 `$ref` → 无法证明）→ true
 //   - `{{values.project}}` / 不存在的路径 → false
 //   - 混合串 `secret={{values.auth}}` 的**敏感性函数**→ true（渲染阶段本来会
 //     `render_type_mismatch`，但推导必须保守为真：先打码，别赌渲染一定失败）
@@ -212,7 +335,9 @@ func refHitsWriteOnly(ref string, sch map[string]any) bool {
 	for _, seg := range splitValuePath(ref) {
 		var next []map[string]any
 		for _, cur := range curs {
-			if isWriteOnly(cur) {
+			// 自身 writeOnly，或带「无法证明」的关键字（`$ref` / `if` / `patternProperties`…）：
+			// 后者意味着这个节点的子树里有看不见的约束，按有 writeOnly 处理（fail-closed）。
+			if isWriteOnly(cur) || cannotProveNoWriteOnly(cur) {
 				return true
 			}
 			next = append(next, descendSchemaCandidates(cur, seg)...)
@@ -230,10 +355,12 @@ func refHitsWriteOnly(ref string, sch map[string]any) bool {
 	return false
 }
 
-// subtreeHasWriteOnly 报告一个 schema 节点**自身或其任意后代**是否声明了 `writeOnly: true`。
+// subtreeHasWriteOnly 报告一个 schema 节点**自身或其任意后代**是否声明了 `writeOnly: true`，
+// 以及它是否带「无法证明」的关键字（`cannotProveNoWriteOnly`）。
 //
-// 只在**引用最终解析到的节点**上调用（见 `refHitsWriteOnly`）：
-//   - 节点自身 writeOnly → true；
+// 调用点：`refHitsWriteOnly`（引用最终解析到的节点）、`maskValue` 的 `additionalProperties`
+// 兜底、`arrayElementSchema`（元组按位）。
+//   - 节点自身 writeOnly / 带无法证明的关键字（`$ref` 等）→ true；
 //   - `properties` 下任一子节点递归为真 → true（`{{values.auth}}` 因 `auth.properties.token`）；
 //   - `items` 递归为真 → true（`{{values.credList}}` 因 `credList.items.properties.token`）；
 //   - `prefixItems` 任一元素递归为真 → true（元组写法的同一条规则）；
@@ -241,11 +368,13 @@ func refHitsWriteOnly(ref string, sch map[string]any) bool {
 //     与 `maskValue` 的兜底打码口径对齐）。
 //
 // 不做关键词猜测（`format` / 字段名一律不看）：只有 `writeOnly` 是密文的唯一真相。
+// 唯一例外是 `maskUnprovableKeywords` 里那类「要求值才能判定」的关键字——它们不是「猜
+// 字段名」，而是「承认自己证明不了」（GAP-1）。
 func subtreeHasWriteOnly(sch map[string]any) bool {
 	if sch == nil {
 		return false
 	}
-	if isWriteOnly(sch) {
+	if isWriteOnly(sch) || cannotProveNoWriteOnly(sch) {
 		return true
 	}
 	for _, child := range schema.Properties(sch) {
@@ -310,6 +439,14 @@ func splitValuePath(ref string) []string {
 func descendSchemaCandidates(sch map[string]any, seg string) []map[string]any {
 	if sch == nil {
 		return nil
+	}
+	// 带「无法证明」关键字（`$ref` / `patternProperties` / `if`…）的节点：它的子 schema 推不出来
+	// （`$ref` 指向的定义、模式匹配到的子 schema 都在别处）。把**本节点**当唯一候选返回，
+	// 于是后续路径仍在「无法证明」的判据下被检查 —— 三处 walker 同判（`cannotProveNoWriteOnly`），
+	// 不允许这里返回空集把引用悄悄判成非敏感。`refHitsWriteOnly` 当前会在调用前先判，这一层
+	// 是给未来的新调用点兜的：少写一次判据就漏明文，这正是 #356 的形态。
+	if cannotProveNoWriteOnly(sch) {
+		return []map[string]any{sch}
 	}
 	if child, ok := schema.Properties(sch)[seg].(map[string]any); ok {
 		return []map[string]any{child}

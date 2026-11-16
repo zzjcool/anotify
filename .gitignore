@@ -69,3 +69,5 @@ node_modules
 
 # design 目录下的截图产物（7.8MB PNG，只是视觉对照，不入库）
 design/silk-shots/
+# Go 静态检查工具（make tools 装到这里；不进版本库）
+/.bin/

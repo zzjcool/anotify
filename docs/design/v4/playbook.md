@@ -154,11 +154,23 @@ spec:
 | 默认值 | 安装时按 schema 的 `properties` 递归填 `default`（数组元素与 `additionalProperties` 不填） |
 | 必填 | `required` 里的键必须出现在**有效 values**（= 传入 + default）中，否则 400 `values_missing` |
 | 未知键 | 建议 `additionalProperties: false`；写了就整份拒绝（400 `values_invalid`） |
-| 打码 | `writeOnly: true` 的字段照常参与渲染，但**进回执时替换成 `"***"`** |
+| 打码 | `writeOnly: true` 的字段照常参与渲染，但**进回执时替换成 `"***"`**；schema 若在某处用了 `$ref` / `if` / `patternProperties` 这类**需要求值**的关键字，该节点**整值**打码（fail-closed，见下） |
 | 不渲染 | `spec.values` 本身是**纯数据，不参与模板**（不许 values 引用 values） |
 
 **给名字用的变量要在 schema 里收紧。** 把 `{{values.project}}` 拼进能力名，就得保证它渲染后仍然是合法名字——
 `pattern` / `maxLength` 写在这里，比在模板里补救便宜得多（§2.3 的报错会直接指向这条建议）。
+
+> **`$ref` 等求值关键字是整节点打码，不是漏打码（fail-closed）**：`spec.values` 里某个节点一旦用了
+> `$ref` / `$dynamicRef` / `$recursiveRef` / `allOf` / `anyOf` / `oneOf` / `not` / `if` / `then` /
+> `else` / `patternProperties` / `propertyNames` / `unevaluatedProperties` / `unevaluatedItems` /
+> `dependentSchemas` / `dependencies` / `contains` 这类「**要求值才能判定**」的关键字，回执里那个节点
+> **整值打码成 `"***"`**：中枢**不解引用、不返回值**。
+>
+> 理由：中枢不是 JSON Schema 求值器（`internal/schema` 的受控子集明确忽略不认识的关键字），
+> 不解引用就**证不了**被引用节点里没有 `writeOnly`；多打码只是可用性问题，漏明文是安全问题。
+> 所以把 `writeOnly` 藏进 `$defs` 不会“绕过”打码——它只会让整个节点的值都进不了回执。
+> 要用 `$ref` 组织 schema 随便用，但别指望那种节点的值在回执里可见（想让它可见，就把
+> `writeOnly` 之外的字段拆到不参与引用的节点上）。
 
 ### 1.3 `spec.capabilities[]` / `spec.sources[]`（引用清单）
 
@@ -471,7 +483,7 @@ notes:                          # 稳定机器码 + 人话；不是一串自由�
 |---|---|
 | **回执落库** | 每次 install 写一行 `playbook_installs`（含打码后的 `values` JSON 与 `receipt` JSON、`values_digest`、`source`；`writeOnly` 字段均为 `"***"`）；`dryRun` **不写行**（§4.6 的 0 写入）；`GET /v1/namespaces/{namespace}/playbooks/{slug}` 带 `lastInstallId` |
 | **values 必须留痕** | 回执存**有效** values（含补上的默认值，`writeOnly` 字段替换为 `"***"`）+ digest。未打码的有效 values 只用于当前渲染与 `valuesDigest`，不另存未打码 `valuesJSON` 快照、不回显，也不把安装 values 快照记入任务 env；**渲染结果里资源自己的 `config.token` / `config.secret` 等仍按 Source 自己的持久化/鉴权规则保存，不把所有已渲染资源配置强制打码**。打码后的 values + digest 留住“这次装的是哪一组值”的身份（§0.1） |
-| **secret 打码** | `writeOnly: true` 是合法 JSON Schema 关键字（不是非法扩展）；这类字段在回执里是 `"***"`，digest 对**打码前**的值算，这样"同一组值"仍可比较。API 回执/冲突字段中的 `config.token` / `config.secret` 差异固定为 `"***"`，不回显 token 后 4 位；源读响应只给 `secretSet`，不回显 `secret` / `token` |
+| **secret 打码** | `writeOnly: true` 是合法 JSON Schema 关键字（不是非法扩展）；这类字段在回执里是 `"***"`，digest 对**打码前**的值算，这样"同一组值"仍可比较。`spec.values` 的 schema 若用了 `$ref` 等**需要求值**的关键字，回执里那个节点整值打码（不解引用、不返回值，口径见 §1.2）。API 回执/冲突字段中的 `config.token` / `config.secret` 差异固定为 `"***"`，不回显 token 后 4 位；源读响应只给 `secretSet`，不回显 `secret` / `token` |
 | **note 有 `code`** | 每个 note 是 `{code, ref?, message}`。`code` 是稳定标识（e2e 断言它），`message` 只给人读 |
 | **跳过必有原因** | 只有"早装过了（第 2/5/9 行）"不写 note；其余跳过 / 未生效 / 断链都必须有一条 |
 
@@ -914,7 +926,7 @@ project-chain/  ──oras push──▶  ghcr.io/acme/playbooks/project-chain:1
 
 1. **只认 `oci://`**，不接裸 `http(s)://` URL 导入（那会变成任意 URL 代理）；
 2. 只对 registry 的 distribution API v2 发 GET（manifest / blob），不转发任意请求；
-3. 超时 / 重试写死一份（与 `cmd/agent/upgrade.go` 同款：单次上限 + 流式 sha256），不做用户可配。
+3. 超时 / 重试写死一份（与 v3 的 `cmd/agent/upgrade.go`（已删除）同款：单次上限 + 流式 sha256），不做用户可配。
 
 离线 / 内网同理：指向内网 registry 就行，不用另造"离线包"格式。
 

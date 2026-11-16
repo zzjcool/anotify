@@ -4,8 +4,8 @@
 
 ## 0.5 v4 的形状（先读这一节，否则会拿 v3 的心智读代码）
 
-v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agent`、`internal/broker`、
-中央执行域（`internal/executor` / `internal/ws` 的 NodeHandler）已删除，不保留兼容层。
+v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agent`（已删除）、`internal/broker`、
+中央执行域（`internal/executor` / `internal/ws` 的 NodeHandler，均已删除）不保留兼容层。
 
 | 进程 | 入口 | 职责 |
 | --- | --- | --- |
@@ -478,7 +478,42 @@ make e2e              # 全量：构建三个二进制 + 28 个 E2E 套件（不
 make e2e-quick        # 合并前快检（~25s）：真机执行 + 派发 + 部署 + 契约
 make e2e-one S=auth_flow  # 只跑某个套件
 make ci               # PR 门禁（与 GitHub Actions 相同；不含 e2e / integration）
+make test-repeat      # 合并前/夜间：go test ./... -shuffle=on -count=2（专治顺序相关 flake）
 ```
+
+### Go 单测：`-shuffle`、重复跑与 flaky 处置
+
+`-shuffle=on` 是**默认**：`make test` = `go test ./... -count=1 -shuffle=on`，
+`make test-repeat` = `go test ./... -shuffle=on -count=2`（合并前 / 夜间）。理由：
+
+- Go **默认固定**测试顺序，于是「用例 A 留下的全局状态只有 B 看得见」这类顺序耦合在
+  固定顺序下永远不会暴露 —— 所以必须有一条带 shuffle 的固定入口；
+- 曾经因为 `internal/ws` 的一条时钟型 flake（`TestRehelloUnknownBusyDoesNotRelease`，
+  实测 8/300）把 shuffle 收窄到 `test-repeat`：随机红的入口等于没有入口。根因是
+  `hub.applyInstances` 把**同一条节点事实**采了两次时钟（upsert 写 `store.Now()`，回收
+  判据用 hub 的 `now`），两次采样窗口内的合法 idle 被回收守卫当成旧快照静默丢弃。
+  已修成**同一采样点**（`store.UpsertInstancesAt`，钉死用例
+  `internal/ws/rehello_clock_test.go`）；`internal/ws` 在 `-shuffle=on -count=100` 下
+  0 失败，于是把 shuffle 抬回 `make test`。
+
+shuffle 失败时 `go test` 会把种子打在 `-test.shuffle <seed>` 那一行，用
+`go test ./... -shuffle=<seed> -count=1` 可原样复现。`-count=2` 让同一用例在一次运
+行里再跑一遍，专治「第一次跑时某个状态刚好没被初始化」。
+
+**flaky 的处置口径（不许登记成已知失败）**：
+
+1. **先量化**：`-count=N` 拿到「失败次数 / 总次数」（0/N 也要报，并说清在什么条件下才会
+   出现）；不许拿「重跑一次就绿」当结论。
+2. **定位到同步点**：是**测试脆弱**（“读下一帧并断言类型”、固定 `sleep`、把假时钟当真实
+   时间）还是**产品缺陷**（次序 / 时钟 / 可见性）——去契约里找依据（例如
+   `docs/design/v4/capability.md` §8.5 只规定因果次序，没有规定“一条请求的下一帧就是它的
+   应答”），不要凭直觉选。
+3. **测试脆弱** → 改成「限时内读到期望帧 / 等条件成立」，但**保留原有语义**：穿插的帧
+   要逐项核对（类型 + 载荷）而不是静默跳过，失败时打印真实帧序
+   （参考 `internal/ws/ws_test.go` 的 `readUntil` / `frameSeq`，以及 fixture 里的有序屏障
+   `e.handled`）。**产品缺陷** → 修产品并补能复现的用例。
+4. **反假绿**：把期望帧类型临时改成永不出现的类型，用例必须红（超时 + 帧序）；还原必须
+   绿。两次输出都要贴进交付报告——看不到红，就不知道检查还在不在承重。
 
 ### 某个套件变慢了怎么查
 
@@ -523,7 +558,7 @@ make ci
 4. `go build ./...`，以及两个带版本注入的生产二进制（`anotify` 带 `-tags embeddist`；`anode` 走 `cmd/anode`）
 5. `make check-anode-skill`：`docs/v4/anode-cli.md` 里的子命令 / flag 与真 `anode`
    `-h` 对账，`--version` 的 JSON 与注入值对齐（#334 的防漂移门禁，承接 v3 #317）
-6. `go test ./... -count=1`（与 `make test` 相同）
+6. `go test ./... -count=1 -shuffle=on`（与 `make test` 相同；`make test-repeat` 再叠 `-count=2`）
 
 不跑 `make e2e`、`make integration`、`scripts/e2e/`（要浏览器或已启动的服务）。`make e2e` 仍是合并前的固化门禁；这条 CI 只守构建、格式和包内单测。名为 `*_e2e_test.go` 的 Go 测试走 `httptest`，不连外部服务，留在 `go test` 里。
 
@@ -717,8 +752,12 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
 - 实现只有一份：`partials.js` 的 `expectGraphics()` / `graphLib()`；
 - 页面解析期一行 `A.expectGraphics();`，画图处 `const G = await A.graphLib(文案);`；
 - 页面**不得**直接读 `window.AnotifyGraphs` —— `scripts/check-graph-access.mjs`
-  （挂在 `make sitegen` 上）会拦；回归测试是 `scripts/v4-frontend.test.mjs` 的
-  TRACE-STARTUP / SOURCE-STARTUP。
+  （挂在 `make sitegen` 上）会拦：@guard scripts/check-graph-access.mjs#no-direct-graph-lib
+  / #missing-expect-graphics。
+- 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP），但它**尚未接线**：
+  `make ci` 里不跑，只能手工 `node --test scripts/v4-frontend.test.mjs`；它已经带一批基线红
+  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `.pi-orchestrator/UI-EPIC-369/CONTRACT.md`
+  的基线小节。别把它当门禁（这条此前写成「回归测试是…」，误导过人）。
 
 **教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，
 迟早会在页面重构成 await 续体后失效。要么用结构保证（解析期挂门闩），要么用门禁拦住。
@@ -730,7 +769,8 @@ make build           # 构建两个产品二进制（anotify 指纹+embed；anod
 make manifest        # 构建 + 打印对账信息（二进制 sha256 / git sha / spec hash / 前端指纹）
 make anode           # 只编节点二进制（./anode）
 make dev             # 开发模式：server + devseed +（有 .dev-anode/anode.yaml 时的）本机节点
-make test            # Go 单测（go test ./...；默认不嵌入 dist）
+make test            # Go 单测（go test ./... -shuffle=on -count=1；默认不嵌入 dist）
+make test-repeat     # 合并前/夜间：-shuffle=on -count=2，专治顺序相关 flake
 make ci              # PR 门禁：gofmt + fe + vet + build + check-anode-skill + 单测（不含 e2e）
 make contract        # 契约静态断言 + 五 spec 一致性 + anode 可编译
 make e2e             # 全量端到端（固化门禁）

@@ -620,7 +620,14 @@ install_needs_root() {
 anode_install() {
 	if install_needs_root; then
 		run_maybe_root "$DL_BIN" install "$@" # dry-run 下 run_maybe_root 只打印
-		return 0
+		# 提权分支也必须把子进程的退出码带回调用方。这里曾是无条件的 `return 0`：
+		# runner 是非 root + 有 sudo → SUDO_MODE=sudo-n → 正是这条分支，于是 `anode install`
+		# 以 7 失败、stderr 也透传出来了，脚本却当成成功继续 enable/restart 并 exit 0
+		# （PR #412 的 ci 因此恒红）。本机 root 直跑走的是下面那条不吞码的直跑分支，
+		# 所以这个 bug 长期只在 CI 现形；bootstrap_test.go 现在有 forcePrivileged 用例
+		# 在非 root 也强制走这条分支。
+		_ai_rc=$?
+		return "$_ai_rc"
 	fi
 	if [ "$DRY_RUN" = "yes" ]; then
 		printf '  [dry-run] %s install %s\n' "$DL_BIN" "$*"

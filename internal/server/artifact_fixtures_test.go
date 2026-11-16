@@ -47,11 +47,10 @@ type artifactEnv struct {
 	node      *store.Node
 	nodeToken string
 
-	task        *store.Task
-	leaseID     string
-	attemptTok  string
-	attempt     int
-	spoolDirTag string
+	task       *store.Task
+	leaseID    string
+	attemptTok string
+	attempt    int
 }
 
 // newArtifactEnv 建库 + 用户/两个命名空间/能力 + 一台真节点 + 一条**已 grant**的任务。

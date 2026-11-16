@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,30 @@ import (
 // （绝对 /v1 路径、servers[/]、deprecated、method+path 合并、五文件内 $ref、
 // 协议文档无 paths）的行为；绝不从旧 api/openapi.yaml 生成兜底数据。
 const fixtureSpecDir = "testdata/specs"
+
+// classAttrRe 抽出一个元素所有 class 属性的值（不论顺序）。
+var classAttrRe = regexp.MustCompile(`\bclass="([^"]*)"`)
+
+// countClassTokens 数「class 列表里含这个 token」的元素个数。
+//
+// 为什么不能直接用 strings.Count(page, `class="doc-ep-table"`)（3f3e041b 的真实事故）：
+// 给一个组件补上新的样式类（`class="doc-ep-table table-wrap"`）时，整串相等会变成 0：
+// 正向断言（应该有几个）恒红，反向断言（空态不该出现）恒绿——两头都错。
+// 正向红只是噪声，反向假绿是漏检；所以这里按 token 数，不按属性字面量。
+func countClassTokens(page, token string) int {
+	n := 0
+	for _, m := range classAttrRe.FindAllStringSubmatch(page, -1) {
+		for _, tok := range strings.Fields(m[1]) {
+			if tok == token {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+func hasClassToken(page, token string) bool { return countClassTokens(page, token) > 0 }
 
 func writeSpecFile(t *testing.T, name, body string) string {
 	t.Helper()
@@ -1090,10 +1115,10 @@ func TestDocsPageRendersFiveSpecFixturesFourLanguages(t *testing.T) {
 		if strings.Contains(page, "docs.openapi.tag.") {
 			t.Errorf("%s: docs page contains a bare tag i18n key", lang)
 		}
-		if got := strings.Count(page, `class="doc-ep-path"`); got != wantOps {
+		if got := countClassTokens(page, "doc-ep-path"); got != wantOps {
 			t.Errorf("%s: want %d endpoint rows, got %d", lang, wantOps, got)
 		}
-		if got := strings.Count(page, `class="doc-ep-table"`); got != wantGroups {
+		if got := countClassTokens(page, "doc-ep-table"); got != wantGroups {
 			t.Errorf("%s: want %d tag groups, got %d", lang, wantGroups, got)
 		}
 		for _, path := range []string{
@@ -1108,7 +1133,7 @@ func TestDocsPageRendersFiveSpecFixturesFourLanguages(t *testing.T) {
 			}
 		}
 		// 空态不能和卡片同时出现。
-		if strings.Contains(page, `class="doc-empty-title"`) {
+		if hasClassToken(page, "doc-empty-title") {
 			t.Errorf("%s: docs page rendered empty state alongside endpoints", lang)
 		}
 	}
@@ -1151,7 +1176,7 @@ paths:
 			t.Fatalf("read %s docs.html: %v", lang, err)
 		}
 		page := string(raw)
-		if got := strings.Count(page, `class="doc-ep-path"`); got != 2 {
+		if got := countClassTokens(page, "doc-ep-path"); got != 2 {
 			t.Errorf("%s: want 2 endpoint rows for alternate placeholders, got %d", lang, got)
 		}
 		for _, path := range []string{"/v1/namespaces/{ns}/capabilities", "/v1/namespaces/{workspace}/sources"} {
@@ -1159,7 +1184,7 @@ paths:
 				t.Errorf("%s: alternate namespace placeholder path %s missing from docs page", lang, path)
 			}
 		}
-		if strings.Contains(page, `class="doc-empty-title"`) {
+		if hasClassToken(page, "doc-empty-title") {
 			t.Errorf("%s: nonempty OpenAPI must not render the empty state", lang)
 		}
 	}
@@ -1188,10 +1213,10 @@ func TestDocsPageAllSpecsMissingEmptyState(t *testing.T) {
 		t.Fatalf("read docs.html: %v", err)
 	}
 	page := string(raw)
-	if strings.Contains(page, `class="doc-ep-path"`) {
+	if hasClassToken(page, "doc-ep-path") {
 		t.Errorf("empty docs must not render endpoint rows")
 	}
-	if !strings.Contains(page, `class="doc-empty-title"`) {
+	if !hasClassToken(page, "doc-empty-title") {
 		t.Errorf("empty docs must render the real empty state")
 	}
 	if strings.Contains(page, "docs.v4.missing") {

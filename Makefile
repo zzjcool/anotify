@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -63,11 +63,65 @@ check-graph-access: ## 图库访问守卫：画图页只能走 Anotify.graphLib(
 check-tailwind: ## 核对已提交的 web/tailwind.css 覆盖源码工具类（stdlib，不跑 Tailwind CLI）
 	node scripts/check-tailwind-css.mjs
 
+# ---- 从返工事故反推的四条守卫（docs/lint-guards.md）----
+#
+# 每个静态守卫都先跑 --self-test：守卫自己坏掉（判据失效、解析出 0 条）时"绿"与
+# "没检查"同形，这类假绿在本仓反复出现过（例如丢两个 } 让 check-classes 结构性失明）。
+
+check-css: ## CSS 结构守卫：括号配平 + 禁原生嵌套（fdba2013：丢两个 } 让整段 ui.css 被吞）
+	node scripts/check-css.mjs --self-test
+	node scripts/check-css.mjs
+
+check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 里都有且集合一致（sitegen 缺键只 WARN）
+	node scripts/check-i18n-keys.mjs --self-test
+	node scripts/check-i18n-keys.mjs
+
+check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
+	node scripts/check-contrast.mjs
+
+check-dist-fresh: ## dist 新鲜度：dist 必须与 web-src/api/web 的源指纹一致（陈旧就判红，不自动重建）
+	node scripts/dist-stamp.mjs --self-test
+	node scripts/dist-stamp.mjs --check
+
+check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/time.Sleep/裸标签+.first()（超基线红，降基线也红）
+	node scripts/check-test-discipline.mjs --self-test
+	node scripts/check-test-discipline.mjs
+
+check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
+	node scripts/check-classes.mjs --self-test
+	node scripts/check-graph-access.mjs --self-test
+
+check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
+	node scripts/check-annotations.mjs --self-test
+	node scripts/check-annotations.mjs
+
+# GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
+# 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
+check-secrets: ## 秘密守卫：私钥块 / 供应商密钥形状 / 本仓令牌形状 / 被跟踪的 .env 文件
+	node scripts/check-secrets.mjs --self-test
+	node scripts/check-secrets.mjs --staged
+	node scripts/check-secrets.mjs
+
+hooks: ## 安装本地 git 钩子：pre-commit 跑 check-secrets --staged（不覆盖别人的钩子）
+	@mkdir -p .git/hooks
+	@if [ -f .git/hooks/pre-commit ] && ! grep -q "check-secrets.mjs" .git/hooks/pre-commit; then \
+		printf '%s\n' "✗ .git/hooks/pre-commit 已存在且不是本仓的钩子，拒绝覆盖：" "  $$(head -1 .git/hooks/pre-commit)" "  要合并就手工在它里加一行：node scripts/check-secrets.mjs --staged"; \
+		exit 1; \
+	fi
+	@printf '%s\n' '#!/bin/sh' \
+		'# 由 `make hooks` 安装：提交前扫暂存区里的秘密。' \
+		'# 为什么本地还要一道：GitHub 上的 GitGuardian 是推上去之后才扫（服务端 App）。' \
+		'exec node scripts/check-secrets.mjs --staged' > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✅ 已安装 .git/hooks/pre-commit → node scripts/check-secrets.mjs --staged"
+
 tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
 	node scripts/build-tailwind.mjs
 
-fe: check-classes check-wire-fields sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+fe: check-classes check-wire-fields check-css check-i18n-keys check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
+	@# 产物指纹落好之后记下输入面指纹（dist/.source-stamp）：e2e 前置据此判定 dist 是否陈旧。
+	node scripts/dist-stamp.mjs --write
 
 dist: fe ## 同 fe（生成 embed 产物）
 
@@ -97,8 +151,21 @@ manifest: build ## 打印构建产物对账信息（二进制 sha256 / 版本 / 
 	@printf 'spec:     %s  (api/*.yaml)\n' "$$(cat api/*.yaml | sha256sum | cut -d' ' -f1)"
 	@printf 'fe:       %s  (internal/server/dist/manifest.json)\n' "$$(sha256sum internal/server/dist/manifest.json | cut -d' ' -f1)"
 
-test: ## 运行全部单元测试（不含 make e2e / make integration）
-	go test ./... -count=1
+test: ## 运行全部单元测试（不含 make e2e / make integration；带 shuffle，顺序耦合会暴露）
+	go test ./... -count=1 -shuffle=on
+
+# 为什么 `make test` 也带 shuffle：Go 默认**固定**测试顺序，于是「用例 A 污染的全局
+# 状态只有 B 才看得见」这类顺序耦合在固定顺序下永远不会暴露。
+#
+# 曾经因为 `internal/ws` 有一条时钟型 flake（TestRehelloUnknownBusyDoesNotRelease）
+# 先把 shuffle 收窄到 test-repeat：随机红的入口不如没有。那条已修成「同一条节点事实
+# 只用一个采样点」（hub.applyInstances → store.UpsertInstancesAt；钉死用例在
+# internal/ws/rehello_clock_test.go），`internal/ws` 在 -shuffle=on -count=100 下
+# 0 失败，于是 shuffle 抬回 `make test`。
+#
+# shuffle 失败时 go test 会把种子打在 `-test.shuffle <seed>` 那行，用它可原样复现。
+test-repeat: ## 合并前/夜间用：go test ./... -shuffle=on -count=2，专治与执行顺序相关的 flake
+	go test ./... -shuffle=on -count=2
 
 # contract: 契约 §9 的静态断言。这几条不依赖运行期，放在 CI 里最快。
 #
@@ -147,18 +214,67 @@ tmp-leak-guard: ## 临时目录泄漏守卫：自测 + 静态检查（毫秒级�
 	$(TMP_GUARD) --self-test
 	$(TMP_GUARD) --lint
 
-ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
-	@# 模块约定漂移守卫：AGENTS.md 里的 `mux.go:69` 这类引用一旦指向不存在的行，
-	@# 读它的子 agent 会把错的当约定照做（本轮已真实发生过两次：迁移块规则、悬空指路）。
-	@# 放在 ci 而不是 contract：它需要 node，而 contract 目前在只有 Go 的环境也能跑。
-	$(MAKE) check-agents
+# Go 静态门禁（docs/lint-guards.md §1 的 L7）：把「AGENTS.md 写了但从没人查」的两条纪律
+# 变成可执行断言（gofmt / 包注释），再用 staticcheck 兜住真正确性类问题
+# （nil 解引用、无效 break、append 结果丢弃、误用 deprecated API…）。
+#
+# 检查面是 SA* + U1000。U1000（未使用符号）台账记 41 条、本次实测 40 条，被当成噪声另立项；
+# chore/u1000-cleanup 把它们逐条判过（产品 11 条 + 测试 29 条，全部是真死代码，没有一条
+# 值得用抑制注释保下来）后清零。敢把它放进来的理由是这个不对称：基线是 0，它只会点名
+# **本次新写下的**死符号，而不是像当初那样一开就让整条检查红到没人看
+# （见 docs/lint-guards.md §0 的第一类缝隙）。落地时做过变异自证：往任意包里加一个
+# 没人调的私有函数，这条检查立刻红并点名它。
+#
+# 为什么值得为此付一次清理成本：同族的真事故就是「清单/夹具写了却没人用 ⇒ 断言从没跑过」
+# ——maskShapesSecrets、v4test/fixture_test.go 整套夹具、schema_baseline 的 baselineTables
+# 清单都是这么烂掉的，而它们当时谁都没报错。
+# S*/ST*（风格）仍然不开：那是口味，不是「写了没人用」这种可判定的负债。
+#
+# GOTOOLCHAIN 必须钉住：`go run pkg@version` 按**那个模块**的 go 指令选工具链，默认会拿到
+# 1.23.x，而 staticcheck 2025.1.1 分析 go1.25 的模块会报 "was built with go1.23.4"。
+STATICCHECK_VERSION ?= 2025.1.1
+GOTOOLCHAIN_PIN := go1.25.0
+# staticcheck 装在仓库内的 .bin/（gitignore），而不是每次 `go run pkg@version`：
+# 后者每次都要向 honnef.co 做一次 go-get 解析，网络抖一下就让整条检查随机红
+# （2026-11-16 实测过一次 `https fetch: EOF`，把一个与代码无关的失败伪装成代码失败）。
+STATICCHECK_BIN := $(CURDIR)/.bin/staticcheck
+
+lint-go: ## Go 静态检查：gofmt + 包注释 + vet + staticcheck SA*,U1000（正确性类 + 未使用符号）
 	@unformatted=$$(git ls-files '*.go' | xargs -r gofmt -l 2>/dev/null); \
 	if [ -n "$$unformatted" ]; then \
 		printf '%s\n' "未通过 gofmt，请执行 gofmt -w：" "$$unformatted"; \
 		exit 1; \
 	fi
-	$(MAKE) fe
+	@missing=$$(go list -f '{{if not .Doc}}{{.ImportPath}}{{end}}' ./... 2>/dev/null); \
+	if [ -n "$$missing" ]; then \
+		printf '%s\n' "以下包缺包注释（AGENTS.md §3：包注释要写这个包负责什么）：" "$$missing"; \
+		exit 1; \
+	fi
 	go vet ./...
+	@if [ ! -x "$(STATICCHECK_BIN)" ]; then \
+		echo "静态检查工具未安装，先装一次（之后离线可用）：make tools"; \
+		$(MAKE) tools; \
+	fi
+	GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) "$(STATICCHECK_BIN)" -checks=SA*,U1000 ./...
+
+tools: ## 安装 Go 静态检查工具到 .bin/（版本钉在 Makefile；装一次后 lint-go 不再走网络）
+	@mkdir -p .bin
+	GOBIN=$(CURDIR)/.bin GOTOOLCHAIN=$(GOTOOLCHAIN_PIN) go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+	@echo "✅ $(STATICCHECK_BIN) $$( $(STATICCHECK_BIN) -version 2>/dev/null | head -1 )"
+
+ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
+	@# 模块约定漂移守卫：AGENTS.md 里的 `mux.go:69` 这类引用一旦指向不存在的行，
+	@# 读它的子 agent 会把错的当约定照做（本轮已真实发生过两次：迁移块规则、悬空指路）。
+	@# 放在 ci 而不是 contract：它需要 node，而 contract 目前在只有 Go 的环境也能跑。
+	$(MAKE) check-agents
+	$(MAKE) lint-go
+	$(MAKE) fe
+	@# 守卫自测 + 测试纪律棘轮（docs/lint-guards.md）：毫秒级，放在最便宜的位置，
+	@# 让"检查本身坏了"和"测试纪律倒退"在 PR 里第一批就红。
+	$(MAKE) check-guard-selftest
+	$(MAKE) check-test-discipline
+	$(MAKE) check-annotations
+	$(MAKE) check-secrets
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
 	@# 且 --version 的 JSON 与注入值一致。写错一个 flag，这里就红。

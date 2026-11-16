@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -12,89 +11,22 @@ import (
 //
 // squash 把 28 块增量迁移合并成了一份终态 DDL，升级路径（逐块 ALTER / 重建表 /
 // 数据搬迁）整条删掉了。原来守护那些路径的用例（migrate14/15/16/18/26/27/28_test.go、
-// migrate_engine_compat_test.go 等）测的是「已经不存在的代码」，但**它们守护的性质
-// 一条都不能丢**——那些性质现在由「全新库的终态结构」来表达：
+// migrate_engine_compat_test.go 等）测的是「已经不存在的代码」，但它们守护的性质
+// 要靠**全新库的终态结构**来表达。
 //
-//   · 表集合（哪些表存在、哪些历史表不该复活）
-//   · 关键外键（级联语义、哪一列刻意**不**带外键）
-//   · 关键索引（名字 → 列序 → unique / partial）
-//   · 唯一约束、主键
-//   · PRAGMA foreign_key_check / integrity_check 干净
-//   · 重开同一个库幂等（不重复执行、不报错、结构不变）
-//   · squash 之前建的库被明确拦截（而不是半死不活）
-
-// baselineTables 是全新库建完之后的**全部**表（含迁移机制自身的 schema_version）。
+// 本文件实际守的是下面三条（注释只能声称真的跑过的断言，见 docs/lint-guards.md §3.1）：
 //
-// 逐个点名而不是只数个数：少一张 / 多一张都要被抓出来。
-// 历史包袱刻意不在这里：source_targets（并入入口边）、orgs / org_members（组织层已删）、
-// messages / consumer_offsets / deliveries（旧通知模型已下线）。
-var baselineTables = []string{
-	// 身份与密钥（部署级，属于人）
-	"users", "passkeys", "sessions", "api_keys",
-	"cli_auth_sessions", "recovery_codes",
-	// 推送设备（属于用户，不属于命名空间）
-	"devices",
-	// 命名空间：唯一隔离边界
-	"namespaces",
-	// 能力 / 节点 / 边（路由的三件套）
-	"capability_versions", "nodes", "node_capabilities", "node_instances",
-	"node_pins", "edges",
-	// 事件 / 任务 / 图
-	"events", "tasks", "graph_versions",
-	// 部署（内容寻址）：P2 起 deployments 直接引用能力行，artifacts 表已删
-	// （Capability Spec v3 §11.1）——产物就是能力行的正文算出来的值。
-	"deployments",
-	// emit 落库
-	"emissions",
-	// 任务日志（迁移 4：stdout/stderr 原文，随任务级联删除）
-	"task_logs",
-	// 预案与源
-	"playbooks", "sources",
-	// 迁移机制自身
-	"schema_version",
-}
-
-// baselineIndexes 是全部显式索引的期望形状（列序 = 查询形状）。
+//   · PRAGMA foreign_key_check / integrity_check 干净（TestBaselineIntegrity）
+//   · 重开同一个库幂等：版本不重复记账、sqlite_master 形状一字不差
+//     （TestBaselineReopenIsIdempotent）
+//   · squash 之前建的库被明确拦截、且不动数据（TestLegacyDatabaseRejected）
 //
-// P2 的 migration 10 删掉了 artifacts（连带 idx_artifacts_cap），把
-// idx_deploy_artifact 换成了 idx_deploy_cap —— 数量没变，指向变了。
-var baselineIndexes = []struct {
-	name    string
-	table   string
-	cols    []string
-	unique  bool
-	partial bool
-}{
-	{name: "idx_apikeys_user", table: "api_keys", cols: []string{"user_id"}},
-	{name: "idx_cap_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}},
-	{name: "idx_cli_auth_expires", table: "cli_auth_sessions", cols: []string{"expires_at"}},
-	{name: "idx_deploy_cap", table: "deployments", cols: []string{"capability_id"}},
-	{name: "idx_deploy_node", table: "deployments", cols: []string{"node_id"}},
-	{name: "idx_devices_user", table: "devices", cols: []string{"user_id"}},
-	{name: "idx_events_idem", table: "events",
-		cols: []string{"namespace_id", "source", "idem_key"}, unique: true, partial: true},
-	{name: "idx_events_retention", table: "events", cols: []string{"namespace_id", "created_at"}},
-	{name: "idx_events_trace", table: "events", cols: []string{"namespace_id", "trace_id"}},
-	{name: "idx_namespaces_created", table: "namespaces", cols: []string{"created_at"}},
-	{name: "idx_nodecap_cap", table: "node_capabilities", cols: []string{"capability_id"}},
-	{name: "idx_playbooks_ns", table: "playbooks", cols: []string{"namespace_id", "created_at"}},
-	{name: "idx_recovery_codes_prefix", table: "recovery_codes", cols: []string{"prefix"}},
-	{name: "idx_recovery_codes_user", table: "recovery_codes", cols: []string{"user_id"}},
-	{name: "idx_sessions_user", table: "sessions", cols: []string{"user_id"}},
-	{name: "idx_sources_due", table: "sources", cols: []string{"enabled", "next_fire_at"}},
-	{name: "idx_sources_ns", table: "sources", cols: []string{"namespace_id", "created_at"}},
-	{name: "idx_tasks_lease", table: "tasks", cols: []string{"status", "lease_until"}},
-	{name: "idx_tasks_node", table: "tasks", cols: []string{"node_id", "status"}},
-	// 任务列表：前两列对齐过滤 + 排序，第三列 id 同秒破平
-	{name: "idx_tasks_ns_created", table: "tasks", cols: []string{"namespace_id", "created_at", "id"}},
-	{name: "idx_tasks_parent", table: "tasks", cols: []string{"namespace_id", "parent_task_id"}},
-	// 背压信号：**部分**索引只收 pending 行（终态行不进索引）
-	{name: "idx_tasks_pending_created_at", table: "tasks", cols: []string{"created_at"}, partial: true},
-	{name: "idx_tasks_retention", table: "tasks",
-		cols: []string{"namespace_id", "capability_id", "status", "finished_at"}},
-	{name: "idx_tasks_trace", table: "tasks", cols: []string{"namespace_id", "trace_id"}},
-	{name: "idx_users_role", table: "users", cols: []string{"role"}},
-}
+// 曾经还在这里写着一份「表集合 / 索引形状 / 外键 / 唯一约束 / 主键」的期望清单
+// （baselineTables / baselineIndexes，配 masterTables / indexShape / hasUniqueOn /
+// primaryKeyColumns / foreignKeys 五件探针），但**从来没有任何用例调用过它们**：清单写了
+// 却没人用，等于断言从没跑过（同 maskShapesSecrets 一族，是负债不是资产）。已在
+// chore/u1000-cleanup 里按死代码删除；要拿回这项覆盖，必须重新接成真断言。
+// 见 docs/lint-guards.md backlog #14。
 
 // TestBaselineIntegrity 全新库必须自洽：外键检查干净、integrity_check = ok。
 func TestBaselineIntegrity(t *testing.T) {
@@ -235,31 +167,6 @@ func TestLegacyDatabaseRejected(t *testing.T) {
 
 // ---------- 小工具 ----------
 
-// masterTables 返回库里全部用户表（排除 sqlite_ 内部表），已排序。
-func masterTables(t *testing.T, db *DB) []string {
-	t.Helper()
-	rows, err := db.Query(
-		`SELECT name FROM sqlite_master
-		  WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-		  ORDER BY name`)
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan table name: %v", err)
-		}
-		out = append(out, name)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate tables: %v", err)
-	}
-	return out
-}
-
 // masterDDL 把 sqlite_master 拉平成 `type|name|tbl_name|sql` 的排序切片（形状比对用）。
 //
 // 排除 sqlite_ 内部表：sqlite_stat1 / sqlite_stat4 / sqlite_sequence 是**运行期数据**，
@@ -285,174 +192,5 @@ func masterDDL(t *testing.T, db *DB) []string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate sqlite_master: %v", err)
 	}
-	return out
-}
-
-// indexShape 返回索引的 (列序, unique, partial, 是否存在)。
-func indexShape(t *testing.T, db *DB, index string) (cols []string, unique, partial, ok bool) {
-	t.Helper()
-	rows, err := db.Query(`SELECT "unique", partial FROM pragma_index_list(
-		(SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?)) WHERE name = ?`,
-		index, index)
-	if err != nil {
-		t.Fatalf("probe index %s: %v", index, err)
-	}
-	seen := false
-	for rows.Next() {
-		var u, p int
-		if err := rows.Scan(&u, &p); err != nil {
-			rows.Close()
-			t.Fatalf("scan index list of %s: %v", index, err)
-		}
-		unique = u == 1
-		partial = p == 1
-		seen = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("iterate index list of %s: %v", index, err)
-	}
-	rows.Close()
-	if !seen {
-		return nil, false, false, false
-	}
-
-	crows, err := db.Query(`SELECT name FROM pragma_index_info(?) ORDER BY seqno`, index)
-	if err != nil {
-		t.Fatalf("probe columns of index %s: %v", index, err)
-	}
-	defer crows.Close()
-	for crows.Next() {
-		var name string
-		if err := crows.Scan(&name); err != nil {
-			t.Fatalf("scan column of index %s: %v", index, err)
-		}
-		cols = append(cols, name)
-	}
-	if err := crows.Err(); err != nil {
-		t.Fatalf("iterate columns of index %s: %v", index, err)
-	}
-	return cols, unique, partial, true
-}
-
-// hasUniqueOn 判断表上是否存在一条列序完全等于 cols 的 UNIQUE 索引。
-func hasUniqueOn(t *testing.T, db *DB, table string, cols []string) bool {
-	t.Helper()
-	rows, err := db.Query(
-		`SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND origin IN ('u','pk')`, table)
-	if err != nil {
-		t.Fatalf("list unique indexes on %s: %v", table, err)
-	}
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			t.Fatalf("scan unique index of %s: %v", table, err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("iterate unique indexes of %s: %v", table, err)
-	}
-	rows.Close()
-
-	for _, name := range names {
-		crows, err := db.Query(`SELECT name FROM pragma_index_info(?) ORDER BY seqno`, name)
-		if err != nil {
-			t.Fatalf("probe columns of index %s: %v", name, err)
-		}
-		var got []string
-		for crows.Next() {
-			var col string
-			if err := crows.Scan(&col); err != nil {
-				crows.Close()
-				t.Fatalf("scan column of index %s: %v", name, err)
-			}
-			got = append(got, col)
-		}
-		if err := crows.Err(); err != nil {
-			crows.Close()
-			t.Fatalf("iterate columns of index %s: %v", name, err)
-		}
-		crows.Close()
-		if strings.Join(got, ",") == strings.Join(cols, ",") {
-			return true
-		}
-	}
-	return false
-}
-
-// primaryKeyColumns 返回表的主键列（按 pk 序号升序）。
-func primaryKeyColumns(t *testing.T, db *DB, table string) []string {
-	t.Helper()
-	rows, err := db.Query(
-		`SELECT name, pk FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk`, table)
-	if err != nil {
-		t.Fatalf("probe primary key of %s: %v", table, err)
-	}
-	defer rows.Close()
-	type col struct {
-		name string
-		pk   int
-	}
-	var cols []col
-	for rows.Next() {
-		var c col
-		if err := rows.Scan(&c.name, &c.pk); err != nil {
-			t.Fatalf("scan primary key column of %s: %v", table, err)
-		}
-		cols = append(cols, c)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate primary key of %s: %v", table, err)
-	}
-	sort.Slice(cols, func(i, j int) bool { return cols[i].pk < cols[j].pk })
-	out := make([]string, 0, len(cols))
-	for _, c := range cols {
-		out = append(out, c.name)
-	}
-	return out
-}
-
-// foreignKeys 返回全库外键的描述行（`表.列 -> 引用表(引用列) ON DELETE X`），已排序。
-func foreignKeys(t *testing.T, db *DB) []string {
-	t.Helper()
-	var out []string
-	for _, table := range masterTables(t, db) {
-		rows, err := db.Query(
-			`SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list(?)`, table)
-		if err != nil {
-			t.Fatalf("list foreign keys of %s: %v", table, err)
-		}
-		type fk struct {
-			refTable, from string
-			to             sql.NullString
-			onDelete       string
-		}
-		var fks []fk
-		for rows.Next() {
-			var f fk
-			if err := rows.Scan(&f.refTable, &f.from, &f.to, &f.onDelete); err != nil {
-				rows.Close()
-				t.Fatalf("scan foreign key of %s: %v", table, err)
-			}
-			fks = append(fks, f)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			t.Fatalf("iterate foreign keys of %s: %v", table, err)
-		}
-		rows.Close()
-		for _, f := range fks {
-			ref := f.refTable
-			if f.to.Valid {
-				ref += "(" + f.to.String + ")"
-			}
-			out = append(out, table+"."+f.from+" -> "+ref+" ON DELETE "+f.onDelete)
-		}
-	}
-	sort.Strings(out)
 	return out
 }

@@ -2,6 +2,7 @@
 
 > 状态：**冻结 · 已全部落地**（冻结 2026-11-07，P1–P6 于 2026-11-08 交付完成）。实施中若要改本文，先改本文再改代码，禁止「代码这么写所以文档也这么写」。
 > 权威性：本文取代 `docs/design/playbooks.md` §2（定义/产物分离）与 `api/openapi.yaml` 的 `CapabilityInput`。
+> frozen-doc: v3 契约快照（已全部落地）。文中的 `cmd/agent` / `make demo-chain` / `real_backend` 等 v3 物已随节点产品退役删除，不再回填。
 > `docs/contracts/CONTRACT.md` §2.2/§2.8 是陈旧副本（写着 `-- +migration 13` + `org_id`），与 `schema.sql` 不符，**以本文和 `schema.sql` 为准**。
 
 ---

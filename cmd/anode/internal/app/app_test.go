@@ -46,21 +46,6 @@ func readFrame(ctx context.Context, conn *websocket.Conn) (any, error) {
 	return protocol.Decode(data)
 }
 
-func readUntil(t *testing.T, ctx context.Context, conn *websocket.Conn, pred func(any) bool) any {
-	t.Helper()
-	deadline, cancel := context.WithTimeout(ctx, testTimeout)
-	defer cancel()
-	for {
-		frame, err := readFrame(deadline, conn)
-		if err != nil {
-			t.Fatalf("读帧失败: %v", err)
-		}
-		if pred(frame) {
-			return frame
-		}
-	}
-}
-
 func testArtifact(t *testing.T) (*artifact.Artifact, string) {
 	t.Helper()
 	a := &artifact.Artifact{
