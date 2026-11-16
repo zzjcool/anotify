@@ -54,11 +54,22 @@ pc_port_ok() {
 	fi
 }
 
-# pc_build：构建带前端 embed 的服务（静态资源场景要指纹文件名 → 必须 embeddist）。
-# 先跑 `make fe` 生成 internal/server/dist；它 1 秒内完成且不会弄脏工作区。
+# pc_build：确保 $PC_BIN / $PC_DEVSEED 存在**且比源码新**。
+#
+# 构建带前端 embed 的服务（静态资源场景要指纹文件名 → 必须 embeddist）；
+# 先跑 `make fe` 生成 internal/server/dist（1 秒内完成，不弄脏工作区）。
+#
+# 「只判断二进制存不存在」踩过两次坑：改了代码再跑 perf，用的还是上一轮的旧二进制，
+# 症状是「修复没生效」——一次被误判成环境问题，一次差点把 008 的验证跑成假绿。
+# 现在用 `find -newer` 比时间戳：任一 .go 比二进制新就重编（便宜、准确、不需要记 marker）。
+# PC_FORCE_BUILD=1 仍然强制重编（依赖变动、-tags 变化时用）。
 pc_build() {
 	mkdir -p "$PC_ROOT/bin"
-	if [ ! -x "$PC_BIN" ] || [ -n "${PC_FORCE_BUILD:-}" ]; then
+	local stale=""
+	if [ -x "$PC_BIN" ] && [ -x "$PC_DEVSEED" ]; then
+		stale=$(cd "$PC_REPO" && find ./internal ./cmd ./api -name '*.go' -newer "$PC_BIN" -print -quit 2>/dev/null)
+	fi
+	if [ ! -x "$PC_BIN" ] || [ ! -x "$PC_DEVSEED" ] || [ -n "$stale" ] || [ -n "${PC_FORCE_BUILD:-}" ]; then
 		( cd "$PC_REPO" && make fe >"$PC_ROOT/logs/fe.log" 2>&1 ) || {
 			echo "pc_build: make fe 失败，见 $PC_ROOT/logs/fe.log" >&2
 			return 1
