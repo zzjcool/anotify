@@ -71,6 +71,18 @@
  *    同行/上一行没有 `@guard` 的这类注释行计 1 条 `unbacked`。总数必须
  *    ≤ `CLAIM_UNBACKED_BASELINE`；**低于基线也红**（要求同步下调）。
  *
+ *    ── spec-doc 豁免（仅代码文件；backlog #16） ─────────────────────────────
+ *    测试/检查文件的说明段（「这条测试查什么」）是**检查自身的规格**，不是无锚点的对外
+ *    约束声称。这类文件可以在文件头（前四十行，即 FROZEN_LINE_LIMIT 之内）用一条注释写
+ *    `spec-doc: <中文理由>`；该文件的 C 整体跳过，跳过行数单独记到 `specDocSuppressed`。
+ *    三条防滥用硬校验（少一条它就变成免死金牌）：
+ *      ① SPEC_DOC_NOT_TEST：文件里必须真有测试（Go 的 `func Test…` / JS 的
+ *         `test(`、`describe(`、`it(`），否则红 —— 产品代码不能用它躲 `@guard`；
+ *      ② SPEC_DOC_STALE：去掉标记行后必须仍有 claim 行，否则这份豁免已不需要 → 红；
+ *      ③ SPEC_DOC_NOT_CODE：markdown 里写它无效并判红（文档类用 frozen-doc / snapshot-doc）。
+ *    标记只认注释文本的**开头**（`^` 锚定）且只在文件头 —— 否则散文里提到标记名就能自我
+ *    豁免（本文件自己的说明因此写在四十行之后）。
+ *
  * D `COUNT_UNMARKED`（棘轮，只许降）· 计数型断言必须有 `@count`
  *    **只扫契约面文件**（父会话裁决 2026-11-16 收窄，见 `inCountScope`）：`Makefile`、
  *    `scripts/**\/*.mjs|*.py`、`web-src/**`、`docs/**`、`DEVELOPMENT.md`、`AGENTS.md`、
@@ -84,8 +96,8 @@
  *   1. 永远打印「扫描文件数 / 注释行数 / 引用数 / 锚点数 / unbacked / unmarked」，
  *      每一项都有下限（常量 + 实测出处写在下面注释里）。0 文件、0 引用直接红。
  *   2. `--report`：只盘点、不判红、exit 0（首次盘点用；`make ci` 用默认模式）。
- *   3. `--self-test`：纯内存 fixture，红/绿双侧自证 27 组（①～⑫ 是 docs/lint-guards.md
- *      §1 L5 行冻结的 12 条，㉔～㉗ 等为收窄判据后的加固用例）。
+ *   3. `--self-test`：纯内存 fixture，红/绿双侧自证 32 组（①～⑫ 是 docs/lint-guards.md
+ *      §1 L5 行冻结的 12 条，㉔～㉗ 为收窄判据后的加固用例，㉘～㉜ 为 spec-doc 豁免的防滥用校验与对照）。
  *
  * ── 用法 ────────────────────────────────────────────────────────────────
  *   node scripts/check-annotations.mjs               # 体检（CI 用）；有 findings ⇒ exit 1
@@ -123,6 +135,8 @@
  *   · Python 只认 `#` 行注释（docstring 不认）；HTML 只认 `<!-- -->`。
  *   · 冻结标记只抑制**规则 A**（引用）；锚点与棘轮照查。冻结标记文件若一条引用都没有，
  *     只打 info（标记可能因为别的理由而存在），只有「有引用且全部解析成功」才判红。
+ *   · `spec-doc` 只跳过规则 C（claim）；引用（A）、锚点（B）、计数（D）在标记文件里照查 ——
+ *     它豁免的是「说明段算不算对外约束声称」，不是整份文件。
  *   · 占位符（含 `<…>` `*` `{…}` `$…` 的路径/目标）不参与解析，计入 `placeholder`
  *     统计并在盘点里列出 —— 这是显式的缺口，不是静默豁免。
  *
@@ -233,8 +247,16 @@ export const ANCHOR_MIN = 4;
  * 这两个数字就是「注释当契约」的存量账本。本批只落地守卫与账本；清理排期由主 agent
  * 决定。任何新增都必须走锚点/命令，所以基线只许降 —— 低于基线也红，是为了逼同批下调，
  * 避免过期基线变成下一次回归的挡箭牌。
+ *
+ * **2026-11-16 spec-doc 校准：338 → 301。**下降全部来自新加的 `spec-doc:` 标记：
+ * `internal/server/openapi_parity_test.go` 的说明段（它描述的就是自己实现的 OpenAPI
+ * 对账）整份跳过 C，共跳过三十七行。边界是「文件里的说明段讲的是**本文件实现的检查**」，
+ * 所以只标了真正会因此降数的这一份，没有顺手把「本来就该锚定的 claim 行」塞进标记。
+ * 原计划同时标 `internal/playbook/mask_consistency_property_test.go`，但该文件今天
+ * 一条 claim 行都没有（说明段里没有「声称有检查兜底」的句子），按 SPEC_DOC_STALE 加标记
+ * 即红，故**未**加 —— 需豁免时先让它真的产生 noise，而不是给标记挖一个空容器。
  */
-export const CLAIM_UNBACKED_BASELINE = 338;
+export const CLAIM_UNBACKED_BASELINE = 301;
 export const COUNT_UNMARKED_BASELINE = 432;
 
 /* ---------- 判据 ---------- */
@@ -288,6 +310,46 @@ export const FROZEN_RE = /frozen-doc\s*[:：]\s*(\S.*)$/;
 /** 快照标记：`snapshot-doc: 理由`（只豁免规则 D 的计数棘轮，不豁免引用/锚点）。 */
 export const SNAPSHOT_RE = /snapshot-doc\s*[:：]\s*(\S.*)$/;
 export const FROZEN_LINE_LIMIT = 40;
+
+/**
+ * spec-doc 标记：`spec-doc: 理由`。
+ * 语义：**仅对代码文件生效**，该文件的规则 C（claim）整体跳过；被跳过的行数单独记账。
+ * 约束：
+ *   · 必须出现在**文件头**（前 FROZEN_LINE_LIMIT 行的某条注释里），且是注释文本的**开头**
+ *     （`^` 锚定）—— 散文里提到这个标记（包括本文件自己的说明）不算，否则本脚本能给自己签豁免；
+ *   · 必须真是测试/检查文件（SPEC_DOC_NOT_TEST）；
+ *   · 文件去掉标记行后必须仍有 claim 行，否则标记已过期（SPEC_DOC_STALE）；
+ *   · markdown 里写它无效并判红（SPEC_DOC_NOT_CODE）—— 文档类继续用 frozen-doc / snapshot-doc。
+ */
+export const SPEC_DOC_RE = /^spec-doc\s*[:：]\s*(\S.*)$/;
+
+/**
+ * `spec-doc` 只允许用在「测试/检查文件」上（SPEC_DOC_NOT_TEST 的判据）。
+ * 只认 Go 的 `func Test*` 与 JS 测试框架调用（`test(` / `describe(` / `it(`）——
+ * 其他语言（py/html/make）目前一律不认：宁可红，也不做静默豁免；真要用到时再扩这张表。
+ */
+export const TEST_FILE_RE = {
+	// Go 的测试函数总是包级声明（gofmt 后必在行首）——所以锚行首，注释/字符串里提到 `func Test` 不算数。
+	// （负向对照就靠这一点：把标记文件的 `func Test` 全改名后，说明段里残留的提法不能继续给它充数。）
+	go: /^func\s+Test[A-Za-z0-9_]*\s*\(/m,
+	js: /\b(?:test|describe|it)\s*\(/,
+};
+
+/** 纯函数：这份代码文件看起来是不是测试/检查文件（按语言取 TEST_FILE_RE）。 */
+export function looksLikeTestFile(file, text) {
+	const re = TEST_FILE_RE[langOf(file)];
+	return !!re && re.test(String(text));
+}
+
+/** 纯函数：在「注解载体」里找文件头（前 FROZEN_LINE_LIMIT 行）的 spec-doc 标记。 */
+export function findSpecDocMarker(carriers) {
+	for (const c of carriers) {
+		if (c.line > FROZEN_LINE_LIMIT) continue;
+		const m = SPEC_DOC_RE.exec(c.text);
+		if (m) return { line: c.line, reason: m[1].trim() };
+	}
+	return null;
+}
 
 /** 引用前缀：出现在这些字符之后才算「一条命令的开头」（避免匹配单词内部）。 */
 const REF_PREFIX = "[\\s`(\"'=\\[<,，、:：;&|]";
@@ -983,6 +1045,9 @@ export function analyzeProject({ files, env }) {
 		frozenDocs: 0,
 		frozenSuppressed: 0,
 		snapshotDocs: 0,
+		specDocFiles: 0,
+		specDocSuppressed: 0,
+		specDocList: [],
 		byKind: {},
 	};
 
@@ -1059,6 +1124,24 @@ export function analyzeProject({ files, env }) {
 			counts.commentLines += comments.length;
 			carriers = comments;
 			inlineSegments = inlineSpansOf(comments);
+		}
+
+		// ①b spec-doc 标记：只对**代码文件**生效（文档里写它无效并判红，见下面 SPEC_DOC_NOT_CODE）
+		if (f.kind === "code") {
+			f.specDoc = findSpecDocMarker(carriers);
+		} else {
+			const badSpecDoc = findSpecDocMarker(carriers);
+			if (badSpecDoc) {
+				findings.push({
+					rule: "SPEC_DOC_NOT_CODE",
+					file: f.file,
+					line: badSpecDoc.line,
+					raw: `spec-doc: ${badSpecDoc.reason}`,
+					message:
+						"`spec-doc:` 只对代码文件（测试/检查文件）生效 —— markdown 里写它无效，不会豁免任何东西",
+					fix: "文档类改用 `frozen-doc: 理由`（历史快照）或 `snapshot-doc: 理由`（总账/体检里的定格数字）。",
+				});
+			}
 		}
 
 		// ② 引用（规则 A）
@@ -1154,16 +1237,26 @@ export function analyzeProject({ files, env }) {
 		// 不是「现在是多少」的承诺；漂移风险由「复算命令」承担，而不是由裸数字承担。
 		// 但标记自己也受检：文件里一条计数型断言都没有 ⇒ 标记多余（SNAPSHOT_STALE）。
 		let snapshotCountLines = 0;
+		// spec-doc 标记文件：除标记行自身外，整份文件的 claim 行**整体跳过**（不计数、不判基线），
+		// 单独记到 specDocSuppressed —— 报告里逐文件列出，审查者据 delta 看增量来源。
+		let specDocClaimLines = 0;
 		if (f.kind === "code" || countScope) {
 			for (const c of carriers) {
 				const bare = c.text.replace(/@(?:guard|decision|count)\b\S*/g, "");
-				if (f.kind === "code" && CLAIM_RE.test(bare)) {
-					counts.claimLines++;
-					if (!(guardLines.has(c.line) || guardLines.has(c.line - 1))) {
-						counts.claimUnbacked++;
-						counts.unbackedSamples = (counts.unbackedSamples ?? []).concat([
-							{ file: f.file, line: c.line, text: oneLine(c.text, 90) },
-						]);
+				// 标记行自身既不计 claim（否则理由文字能把豁免计数灌水成「自称的证据」），
+				// 也不参与 SPEC_DOC_STALE 的存续判据（否则理由里带一个约束类词就自证不 stale）。
+				const onMarkerLine = f.specDoc != null && c.line === f.specDoc.line;
+				if (f.kind === "code" && CLAIM_RE.test(bare) && !onMarkerLine) {
+					if (f.specDoc) {
+						specDocClaimLines++;
+					} else {
+						counts.claimLines++;
+						if (!(guardLines.has(c.line) || guardLines.has(c.line - 1))) {
+							counts.claimUnbacked++;
+							counts.unbackedSamples = (counts.unbackedSamples ?? []).concat([
+								{ file: f.file, line: c.line, text: oneLine(c.text, 90) },
+							]);
+						}
 					}
 				}
 				if (countScope && COUNT_RE.test(bare)) {
@@ -1190,6 +1283,43 @@ export function analyzeProject({ files, env }) {
 				message: "该文件里没有任何计数型断言，快照标记不再需要",
 				fix: "删掉 `snapshot-doc:` 标记 —— 只有当文档里的数字是某次体检的定格时才用它。",
 			});
+		}
+
+		// ④c spec-doc 标记自身的三条硬校验：
+		//   · SPEC_DOC_NOT_TEST：必须真是测试/检查文件（Go 的 func Test / JS 的 test(|describe(|it(）
+		//   · SPEC_DOC_STALE   ：去掉标记行后必须仍有 claim 行，否则这份豁免已不需要
+		//   · SPEC_DOC_NOT_CODE：markdown 里写它无效（在 ①b 里判红）
+		// 少一条都会让标记变成免死金牌，所以三条都是硬判，不是 info。
+		if (f.specDoc) {
+			counts.specDocFiles++;
+			counts.specDocSuppressed += specDocClaimLines;
+			counts.specDocList.push({
+				file: f.file,
+				line: f.specDoc.line,
+				reason: f.specDoc.reason,
+				suppressed: specDocClaimLines,
+			});
+			if (!looksLikeTestFile(f.file, f.text)) {
+				findings.push({
+					rule: "SPEC_DOC_NOT_TEST",
+					file: f.file,
+					line: f.specDoc.line,
+					raw: `spec-doc: ${f.specDoc.reason}`,
+					message:
+						"`spec-doc:` 只能用在测试/检查文件上，本文件里找不到测试函数（Go 的 `func Test…` / JS 的 `test(`、`describe(`、`it(`）",
+					fix: "要么把标记指向真的在跑的测试文件，要么删掉它 —— 产品代码的约束声称必须挂 `@guard`。",
+				});
+			}
+			if (specDocClaimLines === 0) {
+				findings.push({
+					rule: "SPEC_DOC_STALE",
+					file: f.file,
+					line: f.specDoc.line,
+					raw: `spec-doc: ${f.specDoc.reason}`,
+					message: "该文件（去掉标记行后）没有任何 claim 行，spec-doc 豁免已不需要",
+					fix: "删掉 `spec-doc:` 标记 —— 标记自己也由 lint 校验仍需要；否则它会变成写上去就再没人看的免死金牌。",
+				});
+			}
 		}
 
 		// ⑤ 冻结标记自身的存续检查（引用全部解析成功 ⇒ 标记已多余）
@@ -1384,6 +1514,9 @@ const RULE_LABEL = {
 	CLAIM_UNBACKED_UNDER: "棘轮已改善但基线未下调（规则 C）",
 	COUNT_UNMARKED_OVER: "棘轮超标（规则 D）",
 	COUNT_UNMARKED_UNDER: "棘轮已改善但基线未下调（规则 D）",
+	SPEC_DOC_NOT_CODE: "spec-doc 标到文档上了（只对代码文件生效）",
+	SPEC_DOC_NOT_TEST: "spec-doc 标到非测试/检查文件上了",
+	SPEC_DOC_STALE: "spec-doc 标记已过期",
 	SCAN_NO_FILES: "扫描空转",
 	SCAN_FILES_BELOW_MIN: "扫描量低于下限",
 	SCAN_DOCS_BELOW_MIN: "文档量低于下限",
@@ -1426,6 +1559,7 @@ function printCounts(counts) {
 	console.log(`  历史提及 ${counts.historical}（不判红，见 --report 清单）`);
 	console.log(`  冻结标记文档 ${counts.frozenDocs}（其中抑制引用 ${counts.frozenSuppressed} 条）`);
 	console.log(`  快照标记文档 ${counts.snapshotDocs}（只豁免计数棘轮）`);
+	console.log(`  spec-doc 文件 ${counts.specDocFiles}（跳过 claim 行 ${counts.specDocSuppressed}）`);
 }
 
 function printFindings(findings, { verbose }) {
@@ -1463,6 +1597,14 @@ function printReportExtras(counts, info, findings) {
 		console.log("    （无 @count 锚点 —— 计数型注释目前一条都没有可重跑的命令）");
 	} else {
 		for (const c of cmds) console.log(`    ${c.file}:${c.line}  ${c.command}`);
+	}
+
+	console.log("\n  ── spec-doc 标记文件（整份跳过规则 C，逐文件看跳过行数） ──");
+	const specDocs = counts.specDocList ?? [];
+	if (specDocs.length === 0) {
+		console.log("    （无）");
+	} else {
+		for (const s of specDocs) console.log(`    ${s.file}:${s.line}  skip ${s.suppressed}  ${oneLine(s.reason, 80)}`);
 	}
 
 	console.log("\n  ── 决策文档探测 ──");
@@ -1847,7 +1989,89 @@ function selfTest() {
 		);
 	}
 
-	console.log(failed === 0 ? "\n✅ 自测全部通过（27 组红/绿判据）" : `\n❌ 自测失败 ${failed} 组`);
+	// ㉘ spec-doc ①：测试文件 + 标记 + 有 claim 行 ⇒ 绿，且 claim 计数归零（单独记账）
+	{
+		const code = [
+			"package x",
+			"",
+			"// spec-doc: 本文件是某检查的规格说明段，描述的就是本文件实现的对账",
+			"// 这个不变量由本文件的用例保证，门禁会拦住",
+			"func TestX(t *testing.T) {}",
+		].join("\n");
+		const r = run(fx({ "internal/sd_ok_test.go": code }), { "internal/sd_ok_test.go": code });
+		check(
+			"㉘ spec-doc① 测试文件 + 标记 + claim 行 ⇒ 绿，claim 计数 0、跳过行 1",
+			r.findings.length === 0 &&
+				r.counts.claimUnbacked === 0 &&
+				r.counts.claimLines === 0 &&
+				r.counts.specDocFiles === 1 &&
+				r.counts.specDocSuppressed === 1,
+			`${JSON.stringify(r.findings)} ${JSON.stringify(r.counts)}`,
+		);
+	}
+
+	// ㉙ spec-doc ②：没有测试函数就标标记 ⇒ SPEC_DOC_NOT_TEST（产品代码不能用它躲 @guard）
+	{
+		const code = [
+			"package x",
+			"",
+			"// spec-doc: 这里的约束门禁会拦住",
+			"// 随便一段说明：别的检查会拦住跑飞",
+			"func helper() {}",
+		].join("\n");
+		const r = run(fx({ "internal/sd_not_test.go": code }), { "internal/sd_not_test.go": code });
+		check(
+			"㉙ spec-doc② 无 `func Test` 却标了标记 ⇒ SPEC_DOC_NOT_TEST 红",
+			at(r, "SPEC_DOC_NOT_TEST", "internal/sd_not_test.go", 3),
+			JSON.stringify(r.findings),
+		);
+	}
+
+	// ㉚ spec-doc ③：标了但去掉标记行后没 claim 行 ⇒ SPEC_DOC_STALE（标记自己也会过期）
+	{
+		const code = [
+			"package x",
+			"",
+			"// spec-doc: 标了但其实不需要",
+			"// 这里只有普通说明，没有任何约束声称。",
+			"func TestX(t *testing.T) {}",
+		].join("\n");
+		const r = run(fx({ "internal/sd_stale_test.go": code }), { "internal/sd_stale_test.go": code });
+		check(
+			"㉚ spec-doc③ 标记了但没有 claim 行 ⇒ SPEC_DOC_STALE 红",
+			at(r, "SPEC_DOC_STALE", "internal/sd_stale_test.go", 3) && r.counts.specDocSuppressed === 0,
+			`${JSON.stringify(r.findings)} ${JSON.stringify(r.counts)}`,
+		);
+	}
+
+	// ㉛ spec-doc ④：markdown 里写它无效并判红；该文档的计数断言照常计入（不静默豁免）
+	{
+		const doc = "spec-doc: 想给文档偷偷开豁免\n\n这里一共 13 个宽度值。\n";
+		const r = run(fx({ "docs/sd.md": doc }), { "docs/sd.md": doc });
+		check(
+			"㉛ spec-doc④ markdown 里写标记 ⇒ SPEC_DOC_NOT_CODE 红、不产生豁免、计数照常计入",
+			at(r, "SPEC_DOC_NOT_CODE", "docs/sd.md", 1) && r.counts.specDocFiles === 0 && r.counts.countUnmarked === 1,
+			`${JSON.stringify(r.findings)} ${JSON.stringify(r.counts)}`,
+		);
+	}
+
+	// ㉜ spec-doc ⑤：没标记的测试文件照常计数（防「标记漏写就静默豁免」）
+	{
+		const code = [
+			"package x",
+			"",
+			"// 这个不变量由本文件的用例保证，门禁会拦住",
+			"func TestX(t *testing.T) {}",
+		].join("\n");
+		const r = run(fx({ "internal/sd_plain_test.go": code }), { "internal/sd_plain_test.go": code });
+		check(
+			"㉜ spec-doc⑤ 没标记的测试文件照常计入 claim（不漏写就豁免）",
+			r.counts.claimUnbacked === 1 && r.counts.specDocFiles === 0 && r.counts.specDocSuppressed === 0,
+			JSON.stringify(r.counts),
+		);
+	}
+
+	console.log(failed === 0 ? "\n✅ 自测全部通过（32 组红/绿判据）" : `\n❌ 自测失败 ${failed} 组`);
 	return failed === 0;
 }
 

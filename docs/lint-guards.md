@@ -124,11 +124,12 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
     其中约 10 条在**产品代码**（`fixedWindow.allow`、`nodeDecodeStrictJSON`、`scanCapability`、
     `checkCapabilityInNamespace`、`nsQueryer`、`nsRefIndex`…）——要么删，要么补上「为什么留着」的理由。
     先做产品子集（测试夹具里的 31 条可能是刻意保留的构造器），做完再把 `U1000` 放进 `lint-go`。
-16. **注解棘轮对「测试文档段」是噪音源**：连续两批被批末校准（324→332→338），增量全部来自
+16. ~~**注解棘轮对「测试文档段」是噪音源**~~ —— **已完成（本轮）**：连续两批被批末校准（324→332→338），增量全部来自
     新测试文件里描述「这条测试查什么」的注释段（`openapi_parity_test.go` 的对账说明、
     `mask_consistency_property_test.go` 的不变量说明）。它们不是「无锚点的门禁声称」，而是门禁自身的规格。
-    可行做法：给这类段落一个锚点约定（如 `@guard <本测试文件>#<用例名>` 或文件头 `spec-doc:` 标记），
-    由 lint 校被引用用例名存在。眼下靠「批末校准 + 增量点名到文件」撑着。
+    落地做法：文件头 `spec-doc: 理由` 标记（**仅代码文件**，语义与三条硬校验见 §3.1），整份跳过 claim 棘轮并单独记账，
+    基线随之 **338 → 301**。原计划同批标的 `mask_consistency_property_test.go` 实测零条 claim 行，
+    加标记会直接撞 `SPEC_DOC_STALE`，故未加（没声明就不给豁免）。
 15. **「已知红」台账要自证仍然红**：把 CONTRACT 一类的基线红清单变成可执行断言 ——
     逐条重跑登记的命令，**某条其实已经绿了就红**（清单过期，必须删条目），同时新增红必须**不在**清单里。
     这样「基线红」就不会同时冒充两类掩体（掩盖新 bug / 误导判据）。范本：`openapi_parity_test.go` 的
@@ -156,6 +157,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | 可判定的事实/约束 | 「不得裸读 `AnotifyGraphs`」「缺键会回退」「有 13 个宽度值」 | **改成可执行断言**（lint/test），注释里只留锚点 `@guard <脚本>#<规则码>` |
 | 不可判定的意图 | 「为什么宁可少报也不伪造 stale」 | 保留，但必须挂**决策编号** `@decision D7`，编号由 lint 校存在性 |
 | 历史/废止物 | v3 设计文档里提到的已删脚本 | 文件头打 `frozen-doc: 理由`，**该标记自己也由 lint 校验仍需要**（引用全部解析成功即红，强迫删标记） |
+| 检查文件自己的规格段 | 测试文件头写「这条测试查什么」（如 `openapi_parity_test.go` 的对账说明） | 代码文件头（四十行内）打 `spec-doc: 理由`（**仅代码文件**），整份跳过 claim 棘轮并单独记账；三条硬校验：① 必须真是测试/检查文件（Go `func Test…` / JS `test(`、`describe(`、`it(`），否则 `SPEC_DOC_NOT_TEST` 红；② 去掉标记行后必须仍有 claim 行，否则 `SPEC_DOC_STALE` 红；③ markdown 里写它无效（`SPEC_DOC_NOT_CODE` 红），文档类继续用 `frozen-doc` / `snapshot-doc` |
 
 ### 3.2 锚点格式（写进代码/文档即可，lint 校验）
 
@@ -164,6 +166,8 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 @decision D7                                     ← 决策编号必须能在契约文档里找到
 @count    node scripts/check-contrast.mjs        ← 计数型断言必须附可重跑的命令
 frozen-doc: v3 设计快照，不再随代码演进           ← 仅 markdown 前 40 行，且引用已全部解析时必红
+spec-doc:  本文件是这条检查自己的规格说明         ← 仅代码文件（测试/检查文件）的文件头，整份跳过 claim 棘轮；
+                                                   三条硬校验见 §3.1（不是免死金牌）
 ```
 
 这样「注解」就从自由文本降级为**外键**：外键的引用完整性由 lint 检查，
