@@ -97,7 +97,7 @@
  *      每一项都有下限（常量 + 实测出处写在下面注释里）。0 文件、0 引用直接红。
  *   2. `--report`：只盘点、不判红、exit 0（首次盘点用；`make ci` 用默认模式）。
  *   3. `--self-test`：纯内存 fixture，红/绿双侧自证 32 组（①～⑫ 是 docs/lint-guards.md
- *      §1 L5 行冻结的 12 条，㉔～㉗ 为收窄判据后的加固用例，㉘～㉜ 为 spec-doc 豁免的三条硬校验）。
+ *      §1 L5 行冻结的 12 条，㉔～㉗ 为收窄判据后的加固用例，㉘～㉜ 为 spec-doc 豁免的防滥用校验与对照）。
  *
  * ── 用法 ────────────────────────────────────────────────────────────────
  *   node scripts/check-annotations.mjs               # 体检（CI 用）；有 findings ⇒ exit 1
@@ -1243,7 +1243,7 @@ export function analyzeProject({ files, env }) {
 		if (f.kind === "code" || countScope) {
 			for (const c of carriers) {
 				const bare = c.text.replace(/@(?:guard|decision|count)\b\S*/g, "");
-				// 标记行自身既不计 claim（否则理由文字能把豁免计数湛水成「自称的证据」），
+				// 标记行自身既不计 claim（否则理由文字能把豁免计数灌水成「自称的证据」），
 				// 也不参与 SPEC_DOC_STALE 的存续判据（否则理由里带一个约束类词就自证不 stale）。
 				const onMarkerLine = f.specDoc != null && c.line === f.specDoc.line;
 				if (f.kind === "code" && CLAIM_RE.test(bare) && !onMarkerLine) {
@@ -1989,7 +1989,7 @@ function selfTest() {
 		);
 	}
 
-	// 㗸 spec-doc ①：测试文件 + 标记 + 有 claim 行 ⇒ 绿，且 claim 计数归零（单独记账）
+	// ㉘ spec-doc ①：测试文件 + 标记 + 有 claim 行 ⇒ 绿，且 claim 计数归零（单独记账）
 	{
 		const code = [
 			"package x",
@@ -2000,7 +2000,7 @@ function selfTest() {
 		].join("\n");
 		const r = run(fx({ "internal/sd_ok_test.go": code }), { "internal/sd_ok_test.go": code });
 		check(
-			"㗸 spec-doc① 测试文件 + 标记 + claim 行 ⇒ 绿，claim 计数 0、跳过行 1",
+			"㉘ spec-doc① 测试文件 + 标记 + claim 行 ⇒ 绿，claim 计数 0、跳过行 1",
 			r.findings.length === 0 &&
 				r.counts.claimUnbacked === 0 &&
 				r.counts.claimLines === 0 &&
@@ -2010,7 +2010,7 @@ function selfTest() {
 		);
 	}
 
-	// 㗹 spec-doc ②：没有测试函数就标标记 ⇒ SPEC_DOC_NOT_TEST（产品代码不能用它躲 @guard）
+	// ㉙ spec-doc ②：没有测试函数就标标记 ⇒ SPEC_DOC_NOT_TEST（产品代码不能用它躲 @guard）
 	{
 		const code = [
 			"package x",
@@ -2021,13 +2021,13 @@ function selfTest() {
 		].join("\n");
 		const r = run(fx({ "internal/sd_not_test.go": code }), { "internal/sd_not_test.go": code });
 		check(
-			"㗹 spec-doc② 无 `func Test` 却标了标记 ⇒ SPEC_DOC_NOT_TEST 红",
+			"㉙ spec-doc② 无 `func Test` 却标了标记 ⇒ SPEC_DOC_NOT_TEST 红",
 			at(r, "SPEC_DOC_NOT_TEST", "internal/sd_not_test.go", 3),
 			JSON.stringify(r.findings),
 		);
 	}
 
-	// 㛰 spec-doc ③：标了但去掉标记行后没 claim 行 ⇒ SPEC_DOC_STALE（标记自己也会过期）
+	// ㉚ spec-doc ③：标了但去掉标记行后没 claim 行 ⇒ SPEC_DOC_STALE（标记自己也会过期）
 	{
 		const code = [
 			"package x",
@@ -2038,24 +2038,24 @@ function selfTest() {
 		].join("\n");
 		const r = run(fx({ "internal/sd_stale_test.go": code }), { "internal/sd_stale_test.go": code });
 		check(
-			"㛰 spec-doc③ 标记了但没有 claim 行 ⇒ SPEC_DOC_STALE 红",
+			"㉚ spec-doc③ 标记了但没有 claim 行 ⇒ SPEC_DOC_STALE 红",
 			at(r, "SPEC_DOC_STALE", "internal/sd_stale_test.go", 3) && r.counts.specDocSuppressed === 0,
 			`${JSON.stringify(r.findings)} ${JSON.stringify(r.counts)}`,
 		);
 	}
 
-	// 㛱 spec-doc ④：markdown 里写它无效并判红；该文档的计数断言照常计入（不静默豁免）
+	// ㉛ spec-doc ④：markdown 里写它无效并判红；该文档的计数断言照常计入（不静默豁免）
 	{
 		const doc = "spec-doc: 想给文档偷偷开豁免\n\n这里一共 13 个宽度值。\n";
 		const r = run(fx({ "docs/sd.md": doc }), { "docs/sd.md": doc });
 		check(
-			"㛱 spec-doc④ markdown 里写标记 ⇒ SPEC_DOC_NOT_CODE 红、不产生豁免、计数照常计入",
+			"㉛ spec-doc④ markdown 里写标记 ⇒ SPEC_DOC_NOT_CODE 红、不产生豁免、计数照常计入",
 			at(r, "SPEC_DOC_NOT_CODE", "docs/sd.md", 1) && r.counts.specDocFiles === 0 && r.counts.countUnmarked === 1,
 			`${JSON.stringify(r.findings)} ${JSON.stringify(r.counts)}`,
 		);
 	}
 
-	// 㛲 spec-doc ⑤：没标记的测试文件照常计数（防「标记漏写就静默豁免」）
+	// ㉜ spec-doc ⑤：没标记的测试文件照常计数（防「标记漏写就静默豁免」）
 	{
 		const code = [
 			"package x",
@@ -2065,7 +2065,7 @@ function selfTest() {
 		].join("\n");
 		const r = run(fx({ "internal/sd_plain_test.go": code }), { "internal/sd_plain_test.go": code });
 		check(
-			"㛲 spec-doc⑤ 没标记的测试文件照常计入 claim（不漏写就豁免）",
+			"㉜ spec-doc⑤ 没标记的测试文件照常计入 claim（不漏写就豁免）",
 			r.counts.claimUnbacked === 1 && r.counts.specDocFiles === 0 && r.counts.specDocSuppressed === 0,
 			JSON.stringify(r.counts),
 		);
