@@ -113,7 +113,18 @@ pc_start_db() {
 }
 
 s6_build() {
-	if [ -n "${S6_SKIP_BUILD:-}" ] && [ -x "$PC_BIN" ] && [ -x "$LG_BIN" ]; then return 0; fi
+	# S6_SKIP_BUILD：只有 1/true/yes/on 才算「跳过构建」。显式写 0 是「不要跳过」。
+	# 原实现用 [ -n ] 判非空，于是 S6_SKIP_BUILD=0 反而会跳过 —— 与直觉相反。
+	# 注意它只管「二进制缺失时要不要补建」：pc_build 自己有「已存在就不重编」的判断，
+	# 要强制重编用 PC_FORCE_BUILD=1。跳过了又缺二进制时必须当场说清，
+	# 否则会拖到几步之后以「取不到默认命名空间」这种不相干的报错死掉。
+	local skip=0
+	case "${S6_SKIP_BUILD:-0}" in 1|true|yes|on) skip=1 ;; esac
+	if [ "$skip" -eq 1 ]; then
+		if [ -x "$PC_BIN" ] && [ -x "$LG_BIN" ]; then return 0; fi
+		echo "s6_build: S6_SKIP_BUILD 要求跳过构建，但缺二进制（$PC_BIN / $LG_BIN）；先跑一次不带该变量的脚本" >&2
+		return 1
+	fi
 	pc_build || return 1
 	( cd "$PC_REPO" && taskset -c "$PC_CPUS" go build -o "$LG_BIN" ./scripts/perf/loadgen ) || return 1
 	return 0

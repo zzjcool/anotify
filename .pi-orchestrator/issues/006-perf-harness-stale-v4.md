@@ -70,7 +70,10 @@ v4 的 `events` 没有 `idem_key`（改成了 `delivery_id` / `receipt`，见 `s
   失败计数 `lease.sweeper.retention_failed` → `lease sweep failed`；
 - c 段建第二命名空间：v3 `{"slug","name"}` → v4 信封 `{apiVersion,kind,metadata{name,displayName},spec{}}`；
 - c 段读 URL：`?namespaceId=<id>` → `?namespace=<名字>`（v4 缺参直接 400，实测 `400×298576`）；
-- c 段测量时长 20s → **40s**（v4 首拍清理在 ~30s，窗口太短则「删除落在窗口内」不成立）。
+- c 段测量时长 20s → **40s**（v4 首拍清理在 ~30s，窗口太短则「删除落在窗口内」不成立）；
+- `S6_SKIP_BUILD` 语义修正：原实现 `[ -n ]` 判非空 → `S6_SKIP_BUILD=0` 也跳过（与直觉相反）。
+  现在只认 `1/true/yes/on`，且「跳过了但没二进制」会当场报清楚（实测：`s6_build: … 缺二进制` → `❌ 构建失败`），
+  不再拖到后面以「取不到默认命名空间」这种不相干的报错死掉。
 
 `scripts/perf/c/s5-slowquery.sh`：两处 `events` 插入列 + `EV_COLS` 去掉 `idem_key`（**未跑验证**）。
 
