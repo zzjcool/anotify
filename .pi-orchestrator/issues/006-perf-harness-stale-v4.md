@@ -53,9 +53,9 @@ v4 的 `events` 没有 `idem_key`（改成了 `delivery_id` / `receipt`，见 `s
   （`/home/*/perf-b5/runs/*/server.log` 的时间戳），是 v3 时代的结果，**不可复现**。
 - 005（保留期 env 改为空库播种）之后 s6 的 b/c 段口径本就需要复测——现在连台子都起不来。
 
-## 已修（本轮）
+## 已修（2026-11-16）
 
-`scripts/perf/c/common.sh` 三个助手按 v4 校准（`pc_seed` / `pc_cap` / `pc_source`）：
+`scripts/perf/c/common.sh` 三个助手按 v4 校准：
 
 | 助手 | v3 → v4 |
 |---|---|
@@ -63,14 +63,32 @@ v4 的 `events` 没有 `idem_key`（改成了 `delivery_id` / `receipt`，见 `s
 | `pc_cap` | `/v1/capabilities` + `{namespaceId,name,paramsSchema}` → `/v1/namespaces/{ns}/capabilities` + 信封（`spec.run` 必填，入口要 `#!`），返回 `.metadata.uid` |
 | `pc_source` | `/v1/sources` + `targets[].capabilityId` → `/v1/namespaces/{ns}/sources` + `targets[].capability`（只认 name/name@version，所以对 `cap_…` 先反查 name），hookUrl 取 `.spec.config.hookUrl` |
 
-`scripts/perf/c/s6-capacity.sh` 的 4 处 `INSERT INTO events (... idem_key ...)` 去掉 v3 列。
+`scripts/perf/c/s6-capacity.sh`：
 
-## 还没修（下一张卡）
+- 4 处 `INSERT INTO events (… idem_key …)` 去掉 v3 列；
+- 清理日志名 `lease.sweeper.retention` → `retention sweep deleted rows`，字段 `events_deleted=N` → `"events":N`，
+  失败计数 `lease.sweeper.retention_failed` → `lease sweep failed`；
+- c 段建第二命名空间：v3 `{"slug","name"}` → v4 信封 `{apiVersion,kind,metadata{name,displayName},spec{}}`；
+- c 段读 URL：`?namespaceId=<id>` → `?namespace=<名字>`（v4 缺参直接 400，实测 `400×298576`）；
+- c 段测量时长 20s → **40s**（v4 首拍清理在 ~30s，窗口太短则「删除落在窗口内」不成立）。
 
-- `s1-soak.sh`：`s1_cap` 自己拼 v3 body，且 `outputs` 字段在 v4 不存在（对应 `spec` 的其它字段）。
-- `s2-retention.sh`：`pc_cap perfgen` 用法相同但后续断言可能仍按 v3 字段。
-- `s5-slowquery.sh`：`EV_COLS="… idem_key …"`、两处 `INSERT` 同 s6。
-- 其余段（a/d/e/f）是否需要改，取决于它们是否只用 `pc_*` 助手。
+`scripts/perf/c/s5-slowquery.sh`：两处 `events` 插入列 + `EV_COLS` 去掉 `idem_key`（**未跑验证**）。
+
+## 复测结果（2026-11-16，v4 代码）
+
+- **b 段已复测**：26000 行积压 → 两轮 20000 + 6000 删空，文件 100.0% 不变、freelist 1258 页、
+  重灌后 101.4% ⇒ 「平台化而非变小」的结论在 v4 仍成立。已把新数字写回
+  `docs/perf/capacity-and-backpressure.md` §3。
+- **c 段已复测**：baseline p95 1.428ms / under-sweep p95 1.415ms（20000 行删除落在 40s 窗口内），
+  结论「无可测退化」不变。已写回 §4。
+
+## 还没修
+
+- `s1-soak.sh`：`s1_cap` 拼的是 v3 body，且 `outputs` 概念在 v4 **不存在**（端口路由已退役）
+  → 不是机械替换，要重新设计这个套件测什么。
+- `s2-retention.sh`：`pc_cap perfgen` 之后的断言可能仍按 v3 字段，未跑验证。
+- `s5-slowquery.sh`：SQL 列已改，但整段未跑验证（它还用 `svc_up` 自己起停服务）。
+- a/d/e/f 段未跑（a 段依赖 30 天外推口径，d/e 依赖背压，f 段是 profile）。
 
 ## 验收
 

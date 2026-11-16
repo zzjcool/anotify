@@ -46,7 +46,7 @@ S6_EVENTS="${S6_EVENTS:-1000}"      # 空 payload 档每批条数
 S6_EVENTS_1K="${S6_EVENTS_1K:-500}" # 1KB payload 档条数
 S6_CONC="${S6_CONC:-8}"
 S6_BACKLOG="${S6_BACKLOG:-26000}"   # 保留期实验的积压条数（> 单轮预算 20×1000 → 多轮）
-S6_READ_SECS="${S6_READ_SECS:-20}"
+S6_READ_SECS="${S6_READ_SECS:-40}"   # 必须跨过 v4 的第一拍清理（首轮 tick ≈ 30s，否则「删除发生在窗口内」不成立）
 S6_BP_SECS="${S6_BP_SECS:-40}"
 S6_RPS_SECS="${S6_RPS_SECS:-20}"
 
@@ -382,8 +382,11 @@ sec_c() {
 	pc_seed >/dev/null || { pc_stop; die "c 段 seed 失败"; }
 	local ns_a="$PC_NS"
 	local ns_b
+	# v4 信封：body 是 {apiVersion,kind,metadata,spec}（spec 恒 {}），标识在 metadata.uid。
 	ns_b=$(curl -s -X POST "$PC_BASE/v1/namespaces" -H "Cookie: anotify_session=$PC_SESSION" \
-		-H 'content-type: application/json' -d '{"slug":"cleanup","name":"清理专用"}' | jq -r '.namespace.id // empty')
+		-H 'content-type: application/json' \
+		-d '{"apiVersion":"anotify/v1","kind":"Namespace","metadata":{"name":"cleanup","displayName":"清理专用"},"spec":{}}' \
+		| jq -r '.metadata.uid // empty')
 	pc_stop
 	[ -n "$ns_b" ] || die "c 段建第二个命名空间失败"
 	log "c: nsA=$ns_a nsB=$ns_b"
@@ -418,7 +421,7 @@ SQL
 		local name="$1" port="$2" db="$3" days="$4" out="$5"
 		pc_start_db "$name" "$port" "$db" ANOTIFY_EVENT_RETENTION_DAYS="$days" ANOTIFY_LOG_LEVEL=info || return 1
 		pc_seed >/dev/null || { pc_stop; return 1; }
-		local url="$PC_BASE/v1/console/events?limit=20&namespaceId=$ns_a"
+		local url="$PC_BASE/v1/console/events?limit=20&namespace=default"   # v4：namespace 只认名字，缺参数是 400
 		taskset -c "$PC_CPUS" "$LG_BIN" -url "$url" -header "Cookie: anotify_session=$PC_SESSION" \
 			-c 4 -d 4s >/dev/null 2>&1
 		taskset -c "$PC_CPUS" "$LG_BIN" -url "$url" -header "Cookie: anotify_session=$PC_SESSION" \
