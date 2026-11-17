@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
+	"github.com/zzjcool/anotify/internal/yamldoc"
 )
 
 // kindCapability / kindCapabilityList 是资源 kind 字面（与 artifact.KindCapability 同值，
@@ -81,6 +83,10 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 	}{
 		{"GET " + base, a.list},
 		{"POST " + base, a.create},
+		// 「从 YAML 创建」是集合级的**字面段**：Go 1.22+ 的最长匹配让
+		// `/capabilities/yaml` 与 `/capabilities/{name}` 不歧义（方法也不同），
+		// 与源域的 `POST …/sources/dry-run` 同一条先例。
+		{"POST " + base + "/yaml", a.createYAML},
 		{"GET " + base + "/{name}", a.get},
 		{"PATCH " + base + "/{name}", a.patch},
 		{"DELETE " + base + "/{name}", a.remove},
@@ -365,13 +371,67 @@ func (a *capabilityAPI) templates(w http.ResponseWriter, r *http.Request) {
 // 这里刻意不预先填 `NextCapabilityVersion`：那会绕过 foldKey 复用，让「同一份内容
 // POST 两次」长出两个版本，与 §3 的内容寻址语义直接冲突。
 func (a *capabilityAPI) create(w http.ResponseWriter, r *http.Request) {
-	ns, err := a.d.authorizePathNamespace(r)
-	if err != nil {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	var specDst artifact.Spec
 	meta, err := decodeWriteEnvelope(r, kindCapability, &specDst, "version", "namespace")
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, specDst)
+}
+
+// createYAML 处理 POST …/capabilities/yaml：请求体是一份 Capability YAML 文档
+// （`{"yaml": "…"}`），而不是信封 JSON。
+//
+// 链路是「转换 → 复用」，不是「另写一份创建逻辑」：
+//
+//	yamldoc.Decode（语法/未知字段/类型/必填，带行号）
+//	→ canonical JSON
+//	→ decodeWriteEnvelopeBytes（与 JSON 创建同一套严格解码）
+//	→ createCore（与 JSON 创建同一个后半段：归一、store、信封）
+//
+// 所以 `spec` 的语义校验、版本处置、信封投影一行都没有第二份实现；YAML 路径多的
+// 只是「文档层」的诊断能力。
+func (a *capabilityAPI) createYAML(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := decodeYAMLRequestBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	res, err := yamldoc.Decode(text, writeDocShape(r, reflect.TypeOf(artifact.Spec{}), "version", "namespace"))
+	if err != nil {
+		writeYAMLError(w, err)
+		return
+	}
+	var specDst artifact.Spec
+	meta, err := decodeWriteEnvelopeBytes(r, res.JSON, kindCapability, &specDst, "version", "namespace")
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, specDst)
+}
+
+// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）。
+//
+// 两条入口只在前半段不同（信封 JSON vs YAML 文档 → 同一个 objectMeta + spec），
+// 之后的行为必须逐字一致：版本分配、foldKey 复用（同内容 201）、显式同版本异内容
+// 400 version_content_immutable、信封投影——这些全部由 store 与 a.envelope 决定。
+//
+// 这里再调一次 authorizePathNamespace 是签名（w, r, meta, spec）的直接代价：ns 是
+// store 事实表的引用键（id），不能从 meta/path 推，也不能把「已授权」这件事藏在 context
+// 里。顺序不变（未登录仍在读 body 之前就 401，两条入口都各自先授权一遍），代价是
+// 每个 create 多两次轻量查询（ListNamespaces + AuthorizeNamespace）。
+func (a *capabilityAPI) createCore(w http.ResponseWriter, r *http.Request, meta objectMeta, specDst artifact.Spec) {
+	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return

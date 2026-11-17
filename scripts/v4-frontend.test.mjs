@@ -6141,10 +6141,10 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 35 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 38 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  assert.equal(CASES.length,36); // #376/#384 新增 playbook-missing 后冻结 pin 跟着 +1
-  const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all35',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
+  assert.equal(CASES.length,38); // #376/#384 playbook-missing +1；yaml-create +1；#424 observe-index-all 再 +1
+  const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
   e1bEpoch.validateManifest(manifest,registered,attempts,exits);

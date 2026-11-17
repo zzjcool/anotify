@@ -1550,6 +1550,14 @@ caps:
     current: '現行'
     empty: 'サーバーがバージョン履歴を返していません'
     open: '本文を表示'
+  yaml:
+    open: 'YAML から作成'
+    title: 'YAML からケイパビリティを作成'
+    hint: 'Capability ドキュメントを貼り付けてください（apiVersion/kind/metadata/spec）。status と metadata.resourceVersion はサーバーが管理します。'
+    submit: '作成'
+    cancel: 'キャンセル'
+    created: 'YAML からケイパビリティを作成しました'
+    empty: '先に YAML ドキュメントを貼り付けてください'
 prune:
   no_edge: 候補が接続されていません
   no_capability: 対象の能力が存在しません
@@ -1796,6 +1804,14 @@ sources:
     yaml_hint: "保存済みの定義から再構築。認証情報は書き込み専用のため hookUrl / secretSet のみ表示"
     yaml_loading: "YAML を生成中…"
     yaml_error: "元の YAML を読み込めませんでした"
+    yaml_create:
+      open: "YAML から作成"
+      title: "YAML からソースを作成"
+      hint: "Source ドキュメントを貼り付けてください。`spec.config.token` / `secret` は書き込み専用で、保存後は hookUrl のみ表示されます。"
+      submit: "作成"
+      cancel: "キャンセル"
+      created: "YAML からソースを作成しました"
+      empty: "先に YAML ドキュメントを貼り付けてください"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"

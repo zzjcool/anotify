@@ -1550,6 +1550,14 @@ caps:
     current: '当前'
     empty: '服务端没有返回版本历史'
     open: '查看正文'
+  yaml:
+    open: '从 YAML 创建'
+    title: '从 YAML 创建能力'
+    hint: '粘贴一份 Capability 文档（apiVersion/kind/metadata/spec）。status 与 metadata.resourceVersion 由服务端管，不要写。'
+    submit: '创建'
+    cancel: '取消'
+    created: '已从 YAML 创建能力'
+    empty: '请先粘贴 YAML 文档'
 prune:
   no_edge: 没有接候选
   no_capability: 目标能力不存在
@@ -1798,6 +1806,14 @@ sources:
     yaml_hint: "由存储的定义重建；凭据只写不读，这里只有 hookUrl / secretSet"
     yaml_loading: "正在生成 YAML…"
     yaml_error: "原始 YAML 加载失败"
+    yaml_create:
+      open: "从 YAML 创建"
+      title: "从 YAML 创建源"
+      hint: "粘贴一份 Source 文档。`spec.config.token` / `secret` 只写不读，保存后只显示 hookUrl。"
+      submit: "创建"
+      cancel: "取消"
+      created: "已从 YAML 创建源"
+      empty: "请先粘贴 YAML 文档"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: "resourceVersion（CAS 令牌）"

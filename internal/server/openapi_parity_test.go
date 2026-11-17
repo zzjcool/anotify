@@ -131,7 +131,10 @@ const (
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
-	muxPatternCount = 116
+	//
+	// 116 → 118：两条从 YAML 创建的字面段写端点
+	// （`POST …/capabilities/yaml`、`POST …/sources/yaml`）。
+	muxPatternCount = 118
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
@@ -175,8 +178,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// docs/v4/g3c-spec-inventory.md §1 的 124/3 与 §5.1 的缺口条目待文档 owner 同步。
 	// 125 → 127：两条 `/yaml` 只读端点（能力的正文全文 / 源的脱敏重建，
 	// CONTRACT-capability-yaml §1.1）。
-	if len(ops) != 127 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 127（124 + Node 能力包体下行 + 2 条 /yaml）", len(ops))
+	// 127 → 129：+2 两条 `POST …/yaml` 从 YAML 创建（yaml-create）。
+	if len(ops) != 129 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 129（124 + Node 能力包体下行 + 2 条只读 /yaml + 2 条 POST /yaml）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0

@@ -60,6 +60,10 @@
 .is-invalid:focus{border-color:var(--error)}
 #src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
 #fire-modal .modal-panel{width:min(660px,calc(100vw - 24px))}
+/* 从 YAML 创建（契约 §5.2）：粘贴区要保持够高，长文档不在弹层里只剩一条缝。
+   宽度与 #src-modal 对齐（同一页面的弹层保持同一块面）。 */
+#src-yaml-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
+#src-yaml-input{min-height:22rem}
 .source-graph{min-height:320px;width:100%;min-width:0}
 .source-loading{padding:24px;color:var(--muted)}
 /* #377 列表规模化：搜索框 + 「20 条 + 加载更多」。
@@ -85,6 +89,9 @@
 <div class="page-actions">
 <button id="btn-refresh" class="btn btn-ghost">
 {{t "sources.v4.reload"}}
+</button>
+<button id="btn-new-yaml" class="btn">
+{{t "sources.v4.yaml_create.open"}}
 </button>
 <button id="btn-new" class="btn btn-primary">
 {{t "sources.v4.new"}}
@@ -326,6 +333,38 @@
 </button>
 <button id="fire-submit" class="btn">
 {{t "sources.v4.fire"}}
+</button>
+</div>
+</div>
+</div>
+<!-- 从 YAML 创建（契约 §5.2）：粘贴一份 Source 文档 → POST .../sources/yaml。
+     与其它弹层同规则挂在 #page-main 之外（.reveal 的 transform 会给 position:fixed
+     造包含块，弹层就不再相对视口定位）。前端不解析 YAML（D8）：原文整份发给服务端。 -->
+<div id="src-yaml-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="src-yaml-title">
+<div class="modal-panel">
+<div class="modal-head">
+<h3 id="src-yaml-title">
+{{t "sources.v4.yaml_create.title"}}
+</h3>
+</div>
+<div class="modal-body">
+<textarea
+id="src-yaml-input"
+class="textarea mono"
+rows="18"
+spellcheck="false"
+aria-label="{{t "sources.v4.yaml_create.title"}}"
+></textarea>
+<p class="field-hint">{{t "sources.v4.yaml_create.hint"}}</p>
+<div id="src-yaml-msg" class="field-error" role="alert">
+</div>
+</div>
+<div class="modal-foot">
+<button id="src-yaml-cancel" class="btn btn-ghost" type="button">
+{{t "sources.v4.yaml_create.cancel"}}
+</button>
+<button id="src-yaml-submit" class="btn btn-primary" type="button">
+{{t "sources.v4.yaml_create.submit"}}
 </button>
 </div>
 </div>
@@ -997,6 +1036,83 @@ $("reload-draft").onclick=async()=>{
   }
 };
 $("btn-new").onclick=()=>openEditor(null);
+/* ==================== 从 YAML 创建（契约 §5.2） ====================
+   粘贴一份 Source 文档 → POST .../sources/yaml，body 只有 `{yaml: 原文}`。
+   前端不解析 YAML（D8）：textarea 原文整份交给服务端，带行号的定位由服务端给。
+   失败时按行展开 err.message 与 details.causes[].message（后者带「第 N 行」），
+   textarea 内容一律保留、不清空、不自动重试。 */
+let YAML_BUSY=false;
+function yamlMsg(lines){
+  $("src-yaml-msg").replaceChildren(...(lines||[]).map(line=>el("p",null,line)));
+}
+/* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
+   服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
+   「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
+function yamlLines(err){
+  const out=[],seen=new Set();
+  const push=line=>{
+    const text=line==null?"":String(line);
+    if(!text||seen.has(text))return;
+    seen.add(text);
+    out.push(text);
+  };
+  const causes=err&&err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
+  if(causes.length){
+    push(err&&err.reason);
+    for(const cause of causes){
+      if(!cause)continue;
+      const field=cause.field==null?"":String(cause.field);
+      const message=cause.message==null?"":String(cause.message);
+      push(field&&message?field+" · "+message:field||message);
+    }
+  }else if(err&&err.reason&&err.message)push(err.reason+" · "+err.message);
+  else if(err&&err.message)push(err.message);
+  else if(err&&err.reason)push(err.reason);
+  if(!out.length)push(A.t("common.request_failed"));
+  return out;
+}
+function openYamlEditor(){
+  yamlMsg([]);
+  A.openModal($("src-yaml-modal"));
+  $("src-yaml-input").focus();
+}
+function closeYamlEditor(clear){
+  A.closeModal($("src-yaml-modal"));
+  yamlMsg([]);
+  /* 成功才清；取消/失败把草稿留下来（重开即继续编辑） */
+  if(clear)$("src-yaml-input").value="";
+}
+$("btn-new-yaml").onclick=openYamlEditor;
+$("src-yaml-cancel").onclick=()=>closeYamlEditor(false);
+$("src-yaml-modal").addEventListener("click",event=>{
+  if(event.target===event.currentTarget)closeYamlEditor(false);
+});
+$("src-yaml-submit").onclick=async()=>{
+  if(YAML_BUSY)return;
+  const input=$("src-yaml-input"),text=String(input.value||"");
+  if(!text.trim()){
+    /* 空文档在服务端也是 400，没必要为一个必然失败的请求跑一趟网络（零请求） */
+    yamlMsg([t("yaml_create.empty")]);
+    input.focus();
+    return;
+  }
+  YAML_BUSY=true;
+  const btn=$("src-yaml-submit");
+  yamlMsg([]);
+  btn.disabled=true;
+  try{
+    await request("yaml",{yaml:text});
+    A.toast(t("yaml_create.created"));
+    closeYamlEditor(true);
+    /* 不自动跳转：留在列表上，新行就是这次创建的回执 */
+    await load();
+  }catch(err){
+    yamlMsg(yamlLines(err));
+  }finally{
+    YAML_BUSY=false;
+    btn.disabled=false;
+  }
+};
 $("btn-refresh").onclick=load;
 function closeEditor(){
   A.closeModal($("src-modal"));

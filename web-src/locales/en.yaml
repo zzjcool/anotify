@@ -1550,6 +1550,14 @@ caps:
     current: 'Current'
     empty: 'The server returned no version history'
     open: 'View body'
+  yaml:
+    open: 'Create from YAML'
+    title: 'Create capability from YAML'
+    hint: 'Paste a Capability document (apiVersion/kind/metadata/spec). status and metadata.resourceVersion are managed by the server — do not write them.'
+    submit: 'Create'
+    cancel: 'Cancel'
+    created: 'Capability created from YAML'
+    empty: 'Paste a YAML document first'
 prune:
   no_edge: no candidate connected
   no_capability: target capability does not exist
@@ -1796,6 +1804,14 @@ sources:
     yaml_hint: "Rebuilt from the stored definition; credentials are write-only, so only hookUrl / secretSet appear"
     yaml_loading: "Generating YAML…"
     yaml_error: "Could not load the raw YAML"
+    yaml_create:
+      open: "Create from YAML"
+      title: "Create source from YAML"
+      hint: "Paste a Source document. `spec.config.token` / `secret` are write-only; only hookUrl is shown after save."
+      submit: "Create"
+      cancel: "Cancel"
+      created: "Source created from YAML"
+      empty: "Paste a YAML document first"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"
