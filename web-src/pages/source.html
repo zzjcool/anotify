@@ -342,6 +342,53 @@ function rawJson(label, value){
   box.append(sum,body);
   return box;
 }
+/* 子资源请求：`nsApi` 只管资源本体（两段路径），子资源要在其后拼后缀（与能力页 capApi 同形）。 */
+async function srcApi(name,suffix){
+  if(!suffix)return A.nsApi("sources",name);
+  await A.ready();
+  return A.api(A.nsPath("sources",name)+suffix);
+}
+/* 原始 YAML：默认收起，展开才取（懒加载 + 按 name 记忆）。
+   服务端不保存用户原始字节：这份文档由存储的规范化定义重建；凭据只写不读，
+   所以里面只有 hookUrl/secretSet，没有 token/secret 明文。 */
+function rawYaml(name){
+  const box=el("details","devf");
+  box.setAttribute("id","src-yaml");
+  const sum=el("summary");
+  sum.append(el("span",null,t("yaml")),el("span","devf-hint",t("yaml_hint")));
+  const body=el("div","devf-body");
+  box.append(sum,body);
+  const st={status:"idle",text:null,err:null};
+  const paint=()=>{
+    body.replaceChildren();
+    if(st.status==="ok"){body.append(codeBlock(t("yaml"),st.text));return;}
+    if(st.status==="error"){
+      body.append(el("p","field-hint",t("yaml_error")));
+      const line=st.err ? [st.err.reason,st.err.message].filter(Boolean).join(": ") : "";
+      if(line)body.append(el("p","devf-v",line));
+      const retry=el("button","btn btn-ghost btn-sm",A.t("common.retry","重试"));
+      retry.type="button";
+      retry.addEventListener("click",()=>{st.status="idle";void load();});
+      body.append(retry);
+      return;
+    }
+    if(st.status==="loading")body.append(el("p","field-hint",t("yaml_loading")));
+  };
+  async function load(){
+    if(st.status==="loading"||st.status==="ok")return;
+    st.status="loading";st.err=null;paint();
+    try{
+      const res=await srcApi(name,"/yaml");
+      const text=res && typeof res.yaml==="string" ? res.yaml : "";
+      if(!text)throw new Error("empty yaml");
+      st.text=text;st.status="ok";
+    }catch(err){st.err=err;st.status="error";}
+    paint();
+  }
+  box.addEventListener("toggle",()=>{ if(box.open===true)void load(); });
+  paint();
+  return box;
+}
 /* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
    没有 properties 时不编一张空表，只说「没声明字段」。 */
 function schemaTable(schema){
@@ -626,6 +673,9 @@ async function render(src,caps,edges){
     targets.append(row);
   }
   if(m.targets.length)targets.append(rawJson(t("targets"),m.targets));
+  /* 原始 YAML 放在「目标」之后（默认收起，展开才取）：同一张卡片里的`.devf` 折叠，
+     与上面的 targets 原 JSON 相邻。不改任何既有区块的 DOM 顺序/文案。 */
+  targets.append(rawYaml(m.name));
   /* #375：「目标能力 targets」与「只读 v4 目标能力投影」是同一份关系的两种画法 ——
      主内容只留结构化 targets（上面）；投影的原始 JSON 进开发者信息 #src-edges
      （e2e 仍按 textContent 验证 {from,to,kind} 事实存在，不是删断言）。 */

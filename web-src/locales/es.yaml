@@ -1362,8 +1362,14 @@ caps:
     script: 'Script (run.files)'
     script_empty: 'Esta capacidad no tiene archivos de script'
     script_entry: 'Archivo de entrada'
+    script_error: 'No se pudo cargar el cuerpo del script'
+    script_loading: 'Cargando el cuerpo del script…'
     versions: 'Historial de versiones'
     versions_hide: 'Ocultar versiones'
+    yaml: 'YAML original'
+    yaml_error: 'No se pudo cargar el YAML original'
+    yaml_hint: 'Reconstruido desde la definición guardada; puedes pegarlo tal cual en un paquete playbook'
+    yaml_loading: 'Generando YAML…'
   error:
     immutable: 'Esta versión explícita ya existe con otro cuerpo: cambiar run/params/requires/lifecycle/concurrency requiere una versión nueva (next/displayName son la excepción).'
     title: 'Error al guardar: {reason}'
@@ -1768,6 +1774,10 @@ sources:
     saved_dry: "Vista previa de fuente guardada"
     more: "Más acciones"
     saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
+    yaml: "YAML original"
+    yaml_hint: "Reconstruido desde la definición guardada; las credenciales son solo de escritura, así que solo aparecen hookUrl / secretSet"
+    yaml_loading: "Generando YAML…"
+    yaml_error: "No se pudo cargar el YAML original"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"

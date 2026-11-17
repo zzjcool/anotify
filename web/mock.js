@@ -2629,6 +2629,88 @@
 		];
 	}
 
+	// ---------- 资源 YAML（由存储的规范化定义重建）----------
+	//
+	// mock 没有 YAML 序列化器（playbook.render 的 files 就因此用 JSON 文本），但两条
+	// `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
+	// 这里只写够用的最小发射器：键序 = 对象自身顺序，块标量 `|` 保住脚本文本里的
+	// 换行与缩进（脚本正文是唯一需要逐字保留的东西）。
+	function yamlScalar(v) {
+		if (v == null) return "null";
+		if (typeof v === "boolean" || typeof v === "number") return String(v);
+		const s = String(v);
+		if (s === "") return '""';
+		// 需要引号的形态：YAML 保留字、纯数字、含特殊字符、首尾空白
+		const plain = /^[A-Za-z_][A-Za-z0-9_./@{}$()*+\-]*$/.test(s);
+		const reserved = /^(true|false|null|yes|no|on|off|~)$/i.test(s);
+		if (plain && !reserved) return s;
+		return JSON.stringify(s);
+	}
+	function yamlLines(value, indent, out) {
+		const pad = " ".repeat(indent);
+		if (Array.isArray(value)) {
+			if (!value.length) {
+				out.push(pad + "[]");
+				return;
+			}
+			for (const item of value) {
+				if (pbObject(item) || Array.isArray(item)) {
+					const inner = [];
+					yamlLines(item, indent + 2, inner);
+					out.push(pad + "- " + String(inner[0]).trimStart());
+					for (const line of inner.slice(1)) out.push(line);
+				} else {
+					out.push(pad + "- " + yamlScalar(item));
+				}
+			}
+			return;
+		}
+		if (pbObject(value)) {
+			const keys = Object.keys(value);
+			if (!keys.length) {
+				out.push(pad + "{}");
+				return;
+			}
+			for (const key of keys) {
+				const v = value[key];
+				if (pbObject(v) || Array.isArray(v)) {
+					if (!Object.keys(v).length) {
+						out.push(pad + key + ": " + (Array.isArray(v) ? "[]" : "{}"));
+					} else {
+						out.push(pad + key + ":");
+						yamlLines(v, indent + 2, out);
+					}
+				} else if (typeof v === "string" && v.includes("\n")) {
+					out.push(pad + key + ": |");
+					for (const line of v.replace(/\n$/, "").split("\n")) out.push(" ".repeat(indent + 2) + line);
+				} else {
+					out.push(pad + key + ": " + yamlScalar(v));
+				}
+			}
+			return;
+		}
+		out.push(pad + yamlScalar(value));
+	}
+	function toYaml(doc) {
+		const out = [];
+		yamlLines(doc, 0, out);
+		return out.join("\n") + "\n";
+	}
+	// 能力的定义文档：完整 spec（含 run.files 全文）—— 不是读投影。
+	function capabilityYaml(row) {
+		const meta = { name: row.name };
+		if (row.displayName) meta.displayName = row.displayName;
+		meta.version = row.version;
+		return toYaml({ apiVersion: API_VERSION, kind: "Capability", metadata: meta, spec: clone(row.spec || {}) });
+	}
+	// 源的定义文档：用**读投影的脱敏 config**（hookUrl/secretSet），所以文档里
+	// 一定没有 token/secret 明文（凭据只写不读，写回时留空 = 保留）。
+	function sourceYaml(row) {
+		const meta = { name: row.name };
+		if (row.displayName) meta.displayName = row.displayName;
+		return toYaml({ apiVersion: API_VERSION, kind: "Source", metadata: meta, spec: sourceResource(row).spec });
+	}
+
 	// ---------- 路由表 ----------
 	//
 	// 每个条目：(method, 正则) → handler(ctx) → Response
@@ -3507,10 +3589,16 @@
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
+		// 列表是摘要：**默认剥 `spec.run.files`**（真后端 capabilitySpecView 同口径，
+		// resource_capability.go）。mock 若默认回正文，「详情面板从不懒加载正文」的
+		// bug 在预览里永远看不见 —— 页面读列表就不会空，真实权威下才空。
+		const includeBody = ctx.query.get("includeBody") === "true";
 		return json(
 			listOf(
 				"CapabilityList",
-				state.capabilities.filter((c) => c.ns === ns).map(capabilityResource),
+				state.capabilities
+					.filter((c) => c.ns === ns)
+					.map((c) => currentVersionResource(c, includeBody)),
 			),
 		);
 	});
@@ -3558,7 +3646,7 @@
 			// 不是“当前版本”）。
 			return json(
 				hit.version === current.version
-					? capabilityResource(current)
+					? currentVersionResource(current, ctx.query.get("includeBody") === "true")
 					: archivedVersionResource(current, hit, ctx.query.get("includeBody") === "true"),
 				201,
 			);
@@ -3581,7 +3669,7 @@
 		};
 		if (!current) {
 			state.capabilities.push(fresh);
-			return json(capabilityResource(fresh), 201);
+			return json(currentVersionResource(fresh, ctx.query.get("includeBody") === "true"), 201);
 		}
 		// 资源级事实（uid / 创建时刻 / 安装来源 / 隐私策略）跟着**名字**走：mock 用一行
 		// 代表一个名字的当前版本（真服务是每版本一行），所以手动新版本不能把这些
@@ -3624,7 +3712,7 @@
 		]);
 		const row = Object.assign(fresh, inherited, { versions: archived });
 		state.capabilities.splice(state.capabilities.indexOf(current), 1, row);
-		return json(capabilityResource(row), 201);
+		return json(currentVersionResource(row, ctx.query.get("includeBody") === "true"), 201);
 	});
 
 	on("GET", CAP_ONE, (ctx) => {
@@ -3633,7 +3721,8 @@
 		if (miss) return miss;
 		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
 		if (!row) return notFound("能力 ");
-		return json(capabilityResource(row));
+		// 与列表同一读面：默认剥正文，`?includeBody=true`（详情面板/编辑器）才回全文。
+		return json(currentVersionResource(row, ctx.query.get("includeBody") === "true"));
 	});
 
 	on("PATCH", CAP_ONE, (ctx) => {
@@ -3693,7 +3782,7 @@
 			row.displayName = body.metadata.displayName || "";
 		}
 		row.rv = nextRV();
-		return json(capabilityResource(row));
+		return json(currentVersionResource(row, includeBody));
 	});
 
 	on("DELETE", CAP_ONE, (ctx) => {
@@ -3787,6 +3876,17 @@
 			return json(archivedVersionResource(row, v, includeBody));
 		},
 	);
+
+	// 原始 YAML：`{yaml}` 文档（不是信封 —— 没有 apiVersion/kind/metadata 外壳）。
+	// 取该 name 的**最高版本**（与 GET 单资源同一行），正文含 run.files 全文。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		return json({ yaml: capabilityYaml(row) });
+	});
 
 	// ===== 源（ns 私有）=====
 	const SRC = /^\/v1\/namespaces\/([^/]+)\/sources$/;
@@ -3909,6 +4009,16 @@
 		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
 		if (!row) return notFound("源 ");
 		return json(sourceResource(row));
+	});
+
+	// 原始 YAML：`{yaml}` 文档（不是信封）。默认读面剥正文，这里回**完整定义**。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		return json({ yaml: sourceYaml(row) });
 	});
 
 	on("PATCH", SRC_ONE, (ctx) => {

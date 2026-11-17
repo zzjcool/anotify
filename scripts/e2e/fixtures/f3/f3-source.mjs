@@ -168,4 +168,30 @@ export async function source(d){
   check('Source detail real metadata.name deep link/ns, masked config/status/params/projected edges and rendered graph');
   await shot('source-detail-graph');
 
+  /* 原始 YAML：默认收起，展开才取（懒加载）。凭据只写不读：文档里只有
+     hookUrl/secretSet，绝无 token/secret 明文（红线）。 */
+  const rawYaml = page.locator('#src-yaml');
+  assert.equal(await rawYaml.count(), 1, '源详情必须有「原始 YAML」折叠块（#src-yaml）');
+  assert.equal(await rawYaml.evaluate((n) => n.open === true), false, '原始 YAML 默认收起');
+  const yamlCallsBefore = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.equal(yamlCallsBefore.length, 0, '收起时不得请求 /yaml（懒加载）');
+  await rawYaml.locator('summary').click();
+  await page.waitForFunction(
+    () => {
+      const box = document.getElementById('src-yaml');
+      return !!box && /kind: Source/.test(box.textContent || '');
+    },
+    { timeout: 15000 },
+  );
+  const yamlCallsAfter = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.ok(yamlCallsAfter.length >= 1, '展开才请求 /yaml');
+  const yamlText = await rawYaml.textContent();
+  assert.match(yamlText, /kind: Source/, 'YAML 块必须含 kind: Source');
+  assert.match(yamlText, /hookUrl: /, '读投影只有 hookUrl');
+  assert.match(yamlText, /secretSet: true/, 'secret 只报「设了没有」');
+  assert.ok(!/^\s*secret:/m.test(yamlText) && !/^\s*token:/m.test(yamlText), 'YAML 不得出现凭据字段');
+  if (d.mock) assert.equal(yamlText.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 不得出现 secret 明文');
+  assert.equal((await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), false, '凭据明文不得出现在页面上');
+  check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
+  await shot('source-detail-yaml');
 }

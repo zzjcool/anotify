@@ -141,7 +141,81 @@ export async function capability(d){
 			return "POST body 全字段一致，服务端读回 v1";
 		});
 
-		/* ---------- 2) 编辑：改内容 → 新版本（POST，内容寻址） ----------
+		/* ---------- 2) 详情：脚本正文懒加载 + 原始 YAML ----------
+		 * 读面契约（api/resource.yaml）：GET 列表/详情**默认剥掉** spec.run.files，
+		 * 正文只在 `?includeBody=true` 时才回。所以展开详情必须**自己**再取一次正文，
+		 * 否则真实权威下永远显示「这个能力没有脚本文件」。用例 1 刚创建的 run.sh 正文
+		 * 就是这里的权威依据（不是拿列表里的旧事实凑数）。 */
+		await check("详情：脚本正文按 name@version 懒加载（?includeBody=true）且 run.sh 正文可见", async () => {
+			assert.ok(created.ok, "依赖创建成功");
+			// 创建成功后页面会**自动展开**新行并已取过正文（OPEN.add）。不重建页面的话，
+			// openCap 走「已展开」分支、正文请求发生在 takeRec 之前，这条断言只会拿到空记录；
+			// reload 是让用例真的从「列表无正文 → 展开 → 懒加载」这条路径走一遍。
+			await page.reload({ waitUntil: "domcontentloaded" });
+			await page.waitForSelector('[data-cap="f2a-demo"]', { timeout: 15000 });
+			if (d.mock) await page.evaluate(() => MockApi.latency(0));
+			await takeRec(page);
+			await openCap(page, "f2a-demo");
+			await page.waitForFunction(
+				() => {
+					const sec = document.querySelector('[data-cap="f2a-demo"] [data-sec="run"]');
+					return !!sec && !!sec.querySelector(".cap-script-pre");
+				},
+				{ timeout: 15000 },
+			);
+			const recs = await takeRec(page);
+			// 预演 mock 与真实权威走同一个页面路径：两边都必须自己发这条 includeBody 请求。
+			assert.ok(
+				recs.some((r) => /\/capabilities\/f2a-demo\?includeBody=true$/.test(r.url)),
+				"详情面板必须自己请求 ?includeBody=true（列表行只有摘要）：" + JSON.stringify(recs.map((r) => r.url)),
+			);
+			const shown = await page.textContent('[data-cap="f2a-demo"] [data-sec="run"]');
+			assert.ok(
+				!/这个能力没有脚本文件|This capability has no script files/.test(shown),
+				"详情不能停在「没有脚本文件」空态：" + shown,
+			);
+			assert.match(shown, /run\.sh/, "必须显示脚本文件名 run.sh");
+			assert.match(shown, /ANOTIFY_PARAM_REPO/, "必须显示 run.sh 的正文（创建时输入的那份）");
+			await shot(page, "02b-detail-script-body");
+			return "详情自行取正文：run.sh 正文可见";
+		});
+
+		/* ---------- 3) 原始 YAML：默认收起，展开才取（懒加载） ---------- */
+		await check("原始 YAML：折叠块默认收起，展开才请求 /yaml，内容含 apiVersion 与 run.files", async () => {
+			assert.ok(created.ok, "依赖创建成功");
+			const raw = page.locator('[data-cap="f2a-demo"] details.cap-raw');
+			await raw.waitFor({ state: "attached", timeout: 15000 });
+			assert.equal(await raw.evaluate((n) => n.open === true), false, "原始 YAML 默认收起");
+			await takeRec(page);
+			await raw.locator("summary").click();
+			await page.waitForFunction(
+				() => {
+					const box = document.querySelector('[data-cap="f2a-demo"] details.cap-raw');
+					return !!box && /apiVersion/.test(box.textContent || "");
+				},
+				{ timeout: 15000 },
+			);
+			const recs = await takeRec(page);
+			assert.ok(
+				recs.some((r) => /\/capabilities\/f2a-demo\/yaml$/.test(r.url)),
+				"展开才请求 /yaml：" + JSON.stringify(recs.map((r) => r.url)),
+			);
+			const yamlText = await raw.textContent();
+			assert.match(yamlText, /apiVersion/, "YAML 块必须含 apiVersion");
+			assert.match(yamlText, /kind: Capability/, "YAML 块必须含 kind: Capability");
+			assert.match(yamlText, /files:/, "YAML 块必须含 run.files");
+			assert.match(yamlText, /run\.sh/, "run.files 的文件路径必须出现");
+			// 正文的序列化风格由后端决定（块标量或引号串都合法）：只断言内容逐字在场。
+			assert.match(yamlText, /ANOTIFY_PARAM_REPO/, "脚本正文逐字保留");
+			assert.ok(
+				(await raw.locator("button.copy-btn").count()) >= 1,
+				"原始 YAML 块必须带复制按钮（.copy-btn）",
+			);
+			await shot(page, "02c-detail-raw-yaml");
+			return "展开才取 /yaml；apiVersion/kind/run.files 均可见";
+		});
+
+		/* ---------- 4) 编辑：改内容 → 新版本（POST，内容寻址） ----------
 		 * 真实契约（capability.md §3 / resource_capability.go）：能力的**内容面不可变**，
 		 * PATCH 只接 displayName 与 next；改 run/params/requires/lifecycle/concurrency
 		 * 一律 400 immutable_field。所以"改正文"的唯一合法路径是 **POST 一个新版本**
@@ -173,7 +247,7 @@ export async function capability(d){
 			return "POST 内容寻址 → v" + got.metadata.version;
 		});
 
-		/* ---------- 3) CAS 409：并发写后旧 rv，输入保留 ---------- */
+		/* ---------- 5) CAS 409：并发写后旧 rv，输入保留 ---------- */
 		await check("CAS 409：并发写后旧 rv 保存 → 横幅说明 + 用户输入保留", async () => {
 			assert.ok(created.ok, "依赖创建成功");
 			const row = await openCap(page, "f2a-demo");
@@ -217,7 +291,7 @@ export async function capability(d){
 			return "横幅含 409/当前 rv；输入保留；点重新载入才丢弃并拿到最新";
 		});
 
-		/* ---------- 4) 显式版本不可变 + 版本切换 ---------- */
+		/* ---------- 6) 显式版本不可变 + 版本切换 ---------- */
 		await check("版本：显式同版本改正文 → 400 version_content_immutable，改 version=3 保存成功", async () => {
 			const row = await openCap(page, "analyze-pr");
 			await row.locator('[data-act="edit"]').click();
@@ -251,7 +325,7 @@ export async function capability(d){
 			return "400 指引完整；改 v3 保存成功（正文=本次输入）";
 		});
 
-		/* ---------- 5) 版本历史 + 单版本正文 includeBody=true ---------- */
+		/* ---------- 7) 版本历史 + 单版本正文 includeBody=true ---------- */
 		await check("版本历史：CapabilityList.items（每项 Capability 信封、无 item.current），单版本 ?includeBody=true", async () => {
 			const row = await openCap(page, "analyze-pr");
 			await row.locator('[data-act="versions"]').click();
@@ -284,7 +358,7 @@ export async function capability(d){
 			return "版本 " + vers.join(" / ") + "；正文接口 includeBody=true";
 		});
 
-		/* ---------- 6) 人工部署：选历史版本 + 选节点 ---------- */
+		/* ---------- 8) 人工部署：选历史版本 + 选节点 ---------- */
 		await check("人工部署：选 v1 + 节点 → POST /deploy（body version/nodes），部署后该节点 stale", async () => {
 			// 候选节点不是随意列的在线节点，而是**被渲染行**的只读 status.nodes（capability.md §5：
 			// deployments 事实的投影）。真实权威下 analyze-pr 从没部署到任何节点 → status.nodes=[]
@@ -376,7 +450,7 @@ export async function capability(d){
 			return "POST body " + JSON.stringify(dep.body) + "；节点 " + nodeName + " → stale";
 		});
 
-		/* ---------- 7) resolved / observed / conditions 诊断明细 ---------- */
+		/* ---------- 9) resolved / observed / conditions 诊断明细 ---------- */
 		await check("诊断：conditions 四条 + resolved 明细（missing/reason/required）+ observed emits/pruned", async () => {
 			const fx = await openCap(page, "fixer");
 			await fx.locator('[data-sec="conditions"]').waitFor({ state: "visible" });
@@ -423,7 +497,7 @@ export async function capability(d){
 			return "fixer 四条件+resolved+emits；deploy-preview ValueMissing";
 		});
 
-		/* ---------- 8) DELETE CAS：旧 rv 409 重载 + 二次确认 ---------- */
+		/* ---------- 10) DELETE CAS：旧 rv 409 重载 + 二次确认 ---------- */
 		await check("删除 CAS：旧 rv → 409 重新载入并二次确认；成功 DELETE 带 ?resourceVersion=", async () => {
 			const row = await openCap(page, "lint-fix");
 			await row.locator('[data-act="delete"]').click();
@@ -477,7 +551,7 @@ export async function capability(d){
 			return "409 后二次确认；DELETE rv=" + param;
 		});
 
-		/* ---------- 9) prod 命名空间诊断：missing 下游 + NodeOffline + pruned ---------- */
+		/* ---------- 11) prod 命名空间诊断：missing 下游 + NodeOffline + pruned ---------- */
 		await check("诊断（prod）：scope 切换后 report.send DownstreamResolved=NotFound，prod-deploy NodeOffline，observed pruned", async () => {
 			await page.locator(".scope-trigger").click();
 			await page.locator('[data-ns-id="prod"]').click();
@@ -498,7 +572,7 @@ export async function capability(d){
 			return "report.send NotFound/pruned；prod-deploy NodeOffline";
 		});
 
-		/* ---------- 10) 四语言页面：无裸 key ---------- */
+		/* ---------- 12) 四语言页面：无裸 key ---------- */
 		await check("四语言页面：?lang=en/ja/es/zh-CN 标题与按钮已翻译，页面无裸 caps.* key", async () => {
 			const expect = { "zh-CN": "能力", en: "Capabilities", ja: "能力", es: "Capacidades" };
 			await page.evaluate(() => {

@@ -1658,6 +1658,13 @@ test("mock: capability POST 内容寻址（同内容复用同一版本行）；P
 	const fixer = byNameOrFail(list.body.items, "fixer");
 	const rv = fixer.metadata.resourceVersion;
 	const one = CAP_LIST + "/fixer";
+	// 列表是摘要（默认剥 spec.run.files，与真后端 capabilitySpecView 一致）：
+	// 要整份贴回去做内容寻址，必须自己取 `?includeBody=true` 的正文。
+	const fixerFull = await req(one + "?includeBody=true");
+	assert.ok(
+		fixerFull.body.spec.run && Object.keys(fixerFull.body.spec.run.files || {}).length,
+		"includeBody=true 必须带回 run.files 正文",
+	);
 
 	// POST 同名**不再是** 409 AlreadyExists：v4 的 POST 是内容寻址
 	// （store.createCapabilityTx）——同内容复用那一行，新内容分配 max+1。
@@ -1665,7 +1672,7 @@ test("mock: capability POST 内容寻址（同内容复用同一版本行）；P
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "fixer" },
-		spec: plain(fixer.spec),
+		spec: plain(fixerFull.body.spec),
 	}));
 	assert.equal(reuse.status, 201);
 	assert.equal(reuse.body.kind, "Capability");
@@ -1882,6 +1889,53 @@ test("mock: source GET 投影只有 hookUrl/secretSet（无 token/secret），PA
 	}));
 	assert.equal(badTmpl.status, 400);
 	assert.equal(badTmpl.body.reason, "invalid_source_config");
+});
+
+test("mock: 读面默认剥 run.files（?includeBody=true 才回全文）；两条 /yaml 路由回可贴回的定义", async () => {
+	const { req } = loadMock();
+
+	// ① 列表/详情默认是摘要：只剥 `run.files`，entrypoint 等其它字段仍在。
+	//    这与真后端 capabilitySpecView 一致（否则「详情不懒加载正文」的 bug 在预览里看不见）。
+	const list = await req(CAP_LIST);
+	const listed = itemByName(list.body.items, "analyze-pr");
+	assert.equal(listed.spec.run.files, undefined, "列表默认不携带脚本正文");
+	assert.ok(listed.spec.run.entrypoint, "只剥 files：entrypoint 仍在摘要里");
+	const summary = await req(CAP_LIST + "/analyze-pr");
+	assert.equal(summary.body.spec.run.files, undefined, "单资源默认也不携带正文");
+
+	// ② ?includeBody=true 才回全文（详情面板/编辑器走的就是这条）
+	const full = await req(CAP_LIST + "/analyze-pr?includeBody=true");
+	const files = full.body.spec.run.files;
+	assert.ok(files && Object.keys(files).length, "includeBody=true 必须回 run.files 正文");
+	const entryPath = Object.keys(files)[0];
+
+	// ③ 能力的原始 YAML：完整定义（含 run.files 全文），且**不是**资源信封
+	const capYaml = await req(CAP_LIST + "/analyze-pr/yaml");
+	assert.equal(capYaml.status, 200);
+	assert.deepEqual(Object.keys(capYaml.body).sort(), ["yaml"], "响应只认 {yaml}（E1 信封规则：没有 apiVersion/metadata）");
+	assert.equal(typeof capYaml.body.yaml, "string");
+	const doc = capYaml.body.yaml;
+	assert.match(doc, /^apiVersion: anotify\/v1$/m);
+	assert.match(doc, /^kind: Capability$/m);
+	assert.match(doc, /^ {2}version: 2$/m, "metadata 带当前版本（最高版本）");
+	assert.match(doc, /^spec:$/m);
+	assert.match(doc, /^ {2}run:$/m);
+	assert.ok(doc.includes(entryPath + ": |"), "run.files 的正文必须进 YAML（块标量）");
+	assert.ok(doc.includes(String(files[entryPath]).split("\n")[0].trim()), "脚本正文逐字保留");
+	assert.equal(doc.includes("namespace: default"), false, "metadata 不写 namespace（可整份贴回 playbook 包）");
+	assert.equal((await req(CAP_LIST + "/ghost-cap/yaml")).status, 404, "不存在的能力 → 404（与 get 同语义）");
+
+	// ④ 源的原始 YAML：读投影（只有 hookUrl/secretSet），**绝无**凭据明文
+	const srcYaml = await req("/v1/namespaces/default/sources/deploy-hook/yaml");
+	assert.equal(srcYaml.status, 200);
+	const sdoc = srcYaml.body.yaml;
+	assert.match(sdoc, /^kind: Source$/m);
+	assert.match(sdoc, /^ {2}enabled: true$/m);
+	assert.ok(sdoc.includes("hookUrl: "), "读投影只有 hookUrl");
+	assert.match(sdoc, /^ {4}secretSet: true$/m, "secret 只报「设了没有」");
+	assert.equal(sdoc.includes("hmac_mock_secret_deploy_hook"), false, "secret 明文绝不能进 YAML（红线）");
+	assert.equal(sdoc.includes("secret:"), false, "连 secret 字段都不该出现");
+	assert.equal((await req("/v1/namespaces/default/sources/ghost-src/yaml")).status, 404);
 });
 
 test("mock: Source W6 fire / saved+draft preview: exact receipts and zero persistence", async () => {
@@ -2580,7 +2634,9 @@ test("mock: 能力版本规则（只改 next 不换版本/digest；改 run 只�
 	}));
 	assert.equal(patchedRun.status, 400);
 	assert.equal(patchedRun.body.reason, "immutable_field");
-	const runChange = await req(CAP_LIST, jsonInit("POST", {
+	// 读正文（spec.run.files）必须走 `?includeBody=true`：列表/详情默认是摘要，
+	// 拿摘要去 POST 会被当成「同版本不同内容」（400 version_content_immutable）。
+	const runChange = await req(CAP_LIST + "?includeBody=true", jsonInit("POST", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "analyze-pr" },
@@ -4565,6 +4621,58 @@ test("R1 A2 capability versions: selected version issues its own includeBody req
   assert.equal(shown.includes('caps.versions.body_empty'), false, 'no empty-body placeholder');
 });
 
+// 回归：列表读面按契约剥掉 spec.run.files（真后端 capabilitySpecView），详情面板必须
+// **自己**懒加载 `?includeBody=true`，否则真实权威下「这个能力没有脚本文件」永远在骗人。
+test('R1 A2b capability detail: run.files 按 name@version 懒加载（只取一次）；原始 YAML 默认收起、展开才取', async () => {
+  const run = await b2Page('capabilities', '?namespace=default');
+  const row = () => b2Find(run.get('caps-list'), n => n.getAttribute && n.getAttribute('data-cap') === 'analyze-pr')[0];
+  const detailBtn = () => b2Find(row(), n => n.tagName === 'BUTTON' && n.textContent === '详情')[0];
+  const bodyRequests = () => run.calls.filter(c => /\/capabilities\/analyze-pr\?includeBody=true$/.test(c.url));
+
+  await detailBtn().fire('click'); await run.settle(); await run.settle();
+  assert.equal(bodyRequests().length, 1, '详情打开时必须自己取一次正文（列表行只有摘要）');
+  const script = b2Find(row(), n => String(n.className).split(' ').includes('cap-script-pre'))[0];
+  assert.ok(script, '正文区块必须渲染出 cap-script-pre');
+  assert.ok(b2Text(script).includes('ANOTIFY_PARAM_REPO'), '渲染的必须是 includeBody 回来的脚本正文');
+  assert.equal(b2Text(row()).includes('这个能力没有脚本文件'), false, '不能停在「没有脚本文件」空态');
+  assert.equal(b2Text(row()).includes('脚本正文加载中'), false, '加载完不该还停在加载中文案');
+
+  // 开合一次不会重复请求（按 name@version 记忆）
+  await b2Find(row(), n => n.tagName === 'BUTTON' && n.textContent === '收起')[0].fire('click'); await run.settle();
+  await detailBtn().fire('click'); await run.settle(); await run.settle();
+  assert.equal(bodyRequests().length, 1, '同一 name@version 只取一次正文');
+
+  // 原始 YAML：默认收起、收起时不请求；展开才取，内容含 apiVersion 与 run.files
+  const raw = b2Find(row(), n => n.tagName === 'DETAILS' && String(n.className || '').includes('cap-raw'))[0];
+  assert.ok(raw, '详情必须有「原始 YAML」折叠块（details.cap-raw）');
+  assert.notEqual(raw.open, true, '默认收起');
+  assert.equal(run.calls.some(c => /\/capabilities\/analyze-pr\/yaml$/.test(c.url)), false, '收起时不得请求 /yaml');
+  raw.open = true; await raw.fire('toggle'); await run.settle(); await run.settle();
+  assert.ok(run.calls.some(c => /\/capabilities\/analyze-pr\/yaml$/.test(c.url)), '展开才请求 /yaml');
+  const yamlText = b2Text(raw);
+  assert.match(yamlText, /apiVersion: anotify\/v1/, 'YAML 块必须展示 apiVersion');
+  assert.match(yamlText, /files:/, 'YAML 块必须含 run.files');
+  assert.match(yamlText, /main\.sh: \|/, 'run.files 的脚本正文必须真的在块里');
+  const copy = b2Find(raw, n => n.tagName === 'BUTTON' && String(n.className || '').includes('copy-btn'))[0];
+  assert.ok(copy, 'YAML 块必须有复制按钮（.copy-btn）');
+});
+
+test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，且不含 secret 明文', async () => {
+  const run = await b2Page('source', '?namespace=default&name=deploy-hook');
+  const box = run.get('src-yaml');
+  assert.ok(box, '源详情必须有「原始 YAML」折叠块（#src-yaml）');
+  assert.notEqual(box.open, true, '默认收起');
+  assert.equal(run.calls.some(c => /\/sources\/deploy-hook\/yaml$/.test(c.url)), false, '收起时不得请求 /yaml');
+  box.open = true; await box.fire('toggle'); await run.settle(); await run.settle();
+  assert.ok(run.calls.some(c => /\/sources\/deploy-hook\/yaml$/.test(c.url)), '展开才请求 /yaml');
+  const text = b2Text(box);
+  assert.match(text, /kind: Source/);
+  assert.match(text, /hookUrl: /, '读投影只有 hookUrl');
+  assert.equal(text.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 里绝不能出现 secret 明文');
+  // 既有区块不受影响：#src-body 仍然给出 secretSet: true（e2e 的固定断言）
+  assert.ok(b2Text(run.get('src-body')).includes('secretSet: true'));
+});
+
 
 // R1b: genuine registered regressions for deferred writes and exact display provenance.
 for (const [journey, outcome] of [['ABA', 'success'], ['ABA', '409'], ['ABA', 'error'], ['sameNS', 'success'], ['sameNS', '409']]) {
@@ -6005,7 +6113,8 @@ test('FINALR1 P1 ordinary PATCH archives original per-version privacy and immuta
   const { req, Mock } = loadMock(); await pbCreate(req, g1VersionFiles());
   const installed = await pbAction(req, 'install', { project: 'a', version: 17 }); assert.equal(installed.status, 200);
   const old = plain(Mock.state.capabilities.find(c => c.name === 'a-review'));
-  const current = (await req('/v1/namespaces/default/capabilities/a-review')).body;
+  // 详情默认是摘要（spec.run.files 剥离）：改内容的人必须自己取 ?includeBody=true。
+  const current = (await req('/v1/namespaces/default/capabilities/a-review?includeBody=true')).body;
   // 内容变更的合法路径是 POST 新版本（省略 metadata.version = 内容寻址）；
   // PATCH 带 spec 会被 400 immutable_field 拒掉，永远不会换版本。
   const patched = await req('/v1/namespaces/default/capabilities/a-review', { method: 'PATCH', body: JSON.stringify({

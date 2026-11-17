@@ -1362,8 +1362,14 @@ caps:
     script: '脚本（run.files）'
     script_empty: '这个能力没有脚本文件'
     script_entry: '入口文件'
+    script_error: '脚本正文加载失败'
+    script_loading: '脚本正文加载中…'
     versions: '版本历史'
     versions_hide: '收起版本'
+    yaml: '原始 YAML'
+    yaml_error: '原始 YAML 加载失败'
+    yaml_hint: '由存储的定义重建，可整份贴回 playbook 包'
+    yaml_loading: '正在生成 YAML…'
   error:
     immutable: '这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。'
     title: '保存失败：{reason}'
@@ -1770,6 +1776,10 @@ sources:
     saved_dry: "已保存源试运行"
     more: "更多动作"
     saved_dry_hint: "只预演目标解析，不写事件；立即运行会写事件并派发"
+    yaml: "原始 YAML"
+    yaml_hint: "由存储的定义重建；凭据只写不读，这里只有 hookUrl / secretSet"
+    yaml_loading: "正在生成 YAML…"
+    yaml_error: "原始 YAML 加载失败"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: "resourceVersion（CAS 令牌）"

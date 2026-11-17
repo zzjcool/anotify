@@ -1362,8 +1362,14 @@ caps:
     script: 'Script (run.files)'
     script_empty: 'This capability has no script files'
     script_entry: 'Entrypoint'
+    script_error: 'Could not load the script body'
+    script_loading: 'Loading the script body…'
     versions: 'Version history'
     versions_hide: 'Hide versions'
+    yaml: 'Raw YAML'
+    yaml_error: 'Could not load the raw YAML'
+    yaml_hint: 'Rebuilt from the stored definition; paste it back into a playbook package as-is'
+    yaml_loading: 'Generating YAML…'
   error:
     immutable: 'This explicit version already exists with a different body: changing run/params/requires/lifecycle/concurrency requires a new version (next/displayName excepted).'
     title: 'Save failed: {reason}'
@@ -1768,6 +1774,10 @@ sources:
     saved_dry: "Saved source preview"
     more: "More actions"
     saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
+    yaml: "Raw YAML"
+    yaml_hint: "Rebuilt from the stored definition; credentials are write-only, so only hookUrl / secretSet appear"
+    yaml_loading: "Generating YAML…"
+    yaml_error: "Could not load the raw YAML"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"

@@ -1362,8 +1362,14 @@ caps:
     script: 'スクリプト（run.files）'
     script_empty: 'この能力にはスクリプトファイルがありません'
     script_entry: 'エントリファイル'
+    script_error: 'スクリプト本文を読み込めませんでした'
+    script_loading: 'スクリプト本文を読み込み中…'
     versions: 'バージョン履歴'
     versions_hide: 'バージョンを閉じる'
+    yaml: '元の YAML'
+    yaml_error: '元の YAML を読み込めませんでした'
+    yaml_hint: '保存済みの定義から再構築したものです。そのまま playbook パッケージに貼り戻せます'
+    yaml_loading: 'YAML を生成中…'
   error:
     immutable: 'この明示バージョンの内容は既に存在し変更できません。run/params/requires/lifecycle/concurrency を変えるには別バージョンが必要です（next/displayName は例外）。'
     title: '保存に失敗：{reason}'
@@ -1768,6 +1774,10 @@ sources:
     saved_dry: "保存済みソースをプレビュー"
     more: "その他の操作"
     saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
+    yaml: "元の YAML"
+    yaml_hint: "保存済みの定義から再構築。認証情報は書き込み専用のため hookUrl / secretSet のみ表示"
+    yaml_loading: "YAML を生成中…"
+    yaml_error: "元の YAML を読み込めませんでした"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"

@@ -266,6 +266,57 @@
         overflow-wrap: anywhere;
       }
 
+      /* ---------- 原始 YAML 折叠块 ----------
+         默认收起、展开才取（`.code-block`/`.code-head`/`.copy-btn`/`.code-body` 全来自
+         ui.css，这里只补外层折叠壳）。长行必须在 pre 自己身上横滚（`.cap-raw .code-body`），
+         否则一条长行会把整张卡片撑出横向溢出。 */
+      .cap-raw {
+        border: 1px solid var(--line);
+        border-radius: var(--r-sm);
+        background: var(--surface-2);
+        min-width: 0;
+      }
+      .cap-raw > summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+        list-style: none;
+      }
+      .cap-raw > summary::-webkit-details-marker {
+        display: none;
+      }
+      .cap-raw > summary::before {
+        content: "▸";
+        color: var(--faint);
+        font-size: 11px;
+      }
+      .cap-raw[open] > summary::before {
+        content: "▾";
+      }
+      .cap-raw > summary:hover {
+        color: var(--text);
+      }
+      .cap-raw-hint {
+        margin-left: auto;
+        font-size: 10.5px;
+        color: var(--faint);
+        text-align: right;
+      }
+      .cap-raw-body {
+        display: grid;
+        gap: 6px;
+        padding: 0 10px 10px;
+        min-width: 0;
+      }
+      .cap-raw .code-body {
+        overflow-x: auto;
+        max-height: 20rem;
+      }
+
       /* 条件明细：type / status / reason / message 四件都要看得见 */
       .cap-cond {
         display: grid;
@@ -984,6 +1035,7 @@
         toast,
         ready,
         parseJSON,
+        copyText,
       } = A;
 
       A.mountLayout({
@@ -1001,6 +1053,14 @@
       let FILTER = "all";
       const OPEN = new Set(); // 展开详情的能力名（renderList 会整体重建，得记住）
       const VERS = new Map(); // 能力名 → 版本历史面板状态（懒加载）
+      /* 脚本正文（`?includeBody=true`）的懒加载状态：列表读面按契约剥掉 run.files，
+         详情面板必须自己再取一次。按 `name@version` 记忆 —— 同一份正文只取一次；
+         换版本（升级/新建）自然换 key，不会拿旧正文骗人。 */
+      const RUN_BODY = new Map(); // `name@version` → {status, spec, err}
+      const RUN_SEC = new Map(); // `name@version` → 当前渲染出的 [data-sec="run"] 元素
+      /* 原始 YAML 折叠块：默认收起，展开才请求；同一个 `name@version` 只取一次。 */
+      const YAML_ST = new Map(); // `name@version` → {status, open, text, err}
+      const YAML_SEC = new Map(); // `name@version` → 当前的 .cap-raw-body 宿主
       let EDIT = null; // {mode:"create"|"edit", res, name}
       let DEPLOY = null; // {res, versions, selectedVersion}
       let DEL = null; // {res, snapshot}：res 是当前要删的资源，snapshot 是打开弹层时的原文档（撤销重建用）
@@ -1425,6 +1485,190 @@
         return line;
       }
 
+      /* ======================= 脚本正文懒加载 / 原始 YAML ======================= */
+
+      /* 详情里的脚本正文与原始 YAML 都按 `name@version` 记账：同一份只取一次，
+         换版本自然换 key（升级后不会拿旧正文当新正文）。 */
+      function capBodyKey(m) {
+        return m.name + "@" + (m.version == null ? "?" : m.version);
+      }
+
+      /* 与 docs / trace / nodes 页共用一套代码块组件（ui.css 的
+         .code-block/.code-head/.copy-btn/.code-body）：标题 + 一键复制（copyText）+ 等宽正文。
+         长行横滚在 pre 自己身上（.cap-raw .code-body { overflow-x: auto }）。 */
+      function codeBlock(title, body) {
+        const box = el("div", { class: "code-block" });
+        const head = el("div", { class: "code-head" });
+        head.append(txt("span", null, title));
+        const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy", "复制") });
+        copy.addEventListener("click", () => copyText(copy, () => body));
+        head.append(copy);
+        const pre = el("pre", { class: "code-body mono" });
+        pre.textContent = body == null ? "" : String(body);
+        box.append(head, pre);
+        return box;
+      }
+
+      function runBodyState(m) {
+        const key = capBodyKey(m);
+        let st = RUN_BODY.get(key);
+        if (!st) {
+          st = { status: "idle", spec: null, err: null };
+          RUN_BODY.set(key, st);
+        }
+        return st;
+      }
+
+      function mountRunSection(m, sec) {
+        RUN_SEC.set(capBodyKey(m), sec);
+        paintRunSection(m, sec);
+        if (runBodyState(m).status === "idle") void loadRunBody(m);
+      }
+
+      async function loadRunBody(m) {
+        const st = runBodyState(m);
+        if (st.status === "loading" || st.status === "ok") return;
+        st.status = "loading";
+        st.err = null;
+        paintRunSection(m, RUN_SEC.get(capBodyKey(m)));
+        try {
+          const res = await capApi(m.name, "?includeBody=true");
+          st.spec = isObj(res && res.spec) ? res.spec : {};
+          st.status = "ok";
+        } catch (e) {
+          st.err = e;
+          st.status = "error";
+        }
+        paintRunSection(m, RUN_SEC.get(capBodyKey(m)));
+      }
+
+      function paintRunSection(m, sec) {
+        if (!sec) return;
+        const st = runBodyState(m);
+        sec.replaceChildren();
+        sec.append(txt("div", "cap-sec-title", t("caps.detail.script")));
+        if (st.status === "error") {
+          // 失败只坏这一块：其它区块照常可读，给一句具体原因 + 重试
+          sec.append(txt("p", "cap-detail-empty", t("caps.detail.script_error", "脚本正文加载失败")));
+          const line = statusLine(st.err);
+          if (line) sec.append(txt("p", "cap-mono", line));
+          const retry = el("button", {
+            type: "button",
+            class: "btn btn-ghost btn-sm",
+            text: t("common.retry", "重试"),
+          });
+          retry.addEventListener("click", () => {
+            st.status = "idle";
+            void loadRunBody(m);
+          });
+          sec.append(retry);
+          return;
+        }
+        if (st.status !== "ok") {
+          // idle / loading：正文还在路上（列表行本来就不带正文）
+          sec.append(txt("p", "cap-detail-empty", t("caps.detail.script_loading", "脚本正文加载中…")));
+          return;
+        }
+        const spec = isObj(st.spec) ? st.spec : {};
+        const run = isObj(spec.run) ? spec.run : {};
+        const files = isObj(run.files) ? run.files : {};
+        const paths = Object.keys(files);
+        if (!paths.length) {
+          sec.append(txt("p", "cap-detail-empty", t("caps.detail.script_empty", "这个能力没有脚本文件")));
+          return;
+        }
+        for (const p of paths) {
+          const f = el("div", { class: "cap-file" });
+          const head = el("div", { class: "cap-file-head" });
+          head.append(txt("span", "cap-file-path", p));
+          if (p === run.entrypoint) head.append(txt("span", "badge badge-accent", t("caps.detail.script_entry", "入口文件")));
+          f.append(head, preBlock(files[p] == null ? "" : files[p], "cap-script-pre"));
+          sec.append(f);
+        }
+      }
+
+      function yamlState(m) {
+        const key = capBodyKey(m);
+        let st = YAML_ST.get(key);
+        if (!st) {
+          st = { status: "idle", open: false, text: null, err: null };
+          YAML_ST.set(key, st);
+        }
+        return st;
+      }
+
+      function capYamlBlock(m) {
+        const st = yamlState(m);
+        const box = el("details", { class: "cap-raw" });
+        /* 展开态记在状态里：列表整体重绘（这页的开合、刷新都会重绘）时不要把它收回去。 */
+        if (st.open) box.open = true;
+        const sum = el("summary");
+        sum.append(
+          txt("span", null, t("caps.detail.yaml", "原始 YAML")),
+          txt("span", "cap-raw-hint", t("caps.detail.yaml_hint", "由存储的定义重建，可整份贴回 playbook 包")),
+        );
+        const holder = el("div", { class: "cap-raw-body" });
+        box.append(sum, holder);
+        YAML_SEC.set(capBodyKey(m), holder);
+        box.addEventListener("toggle", () => {
+          st.open = box.open === true;
+          YAML_SEC.set(capBodyKey(m), holder);
+          paintCapYaml(m, holder);
+          if (st.open && st.status === "idle") void loadCapYaml(m, holder);
+        });
+        paintCapYaml(m, holder);
+        if (st.open && st.status === "idle") void loadCapYaml(m, holder);
+        return box;
+      }
+
+      async function loadCapYaml(m, holder) {
+        const st = yamlState(m);
+        if (st.status === "loading" || st.status === "ok") return;
+        st.status = "loading";
+        st.err = null;
+        paintCapYaml(m, YAML_SEC.get(capBodyKey(m)) || holder);
+        try {
+          const res = await capApi(m.name, "/yaml");
+          const text = res && typeof res.yaml === "string" ? res.yaml : "";
+          if (!text) throw new Error("empty yaml");
+          st.text = text;
+          st.status = "ok";
+        } catch (e) {
+          st.err = e;
+          st.status = "error";
+        }
+        paintCapYaml(m, YAML_SEC.get(capBodyKey(m)) || holder);
+      }
+
+      function paintCapYaml(m, holder) {
+        if (!holder) return;
+        const st = yamlState(m);
+        holder.replaceChildren();
+        if (st.status === "ok") {
+          holder.append(codeBlock(t("caps.detail.yaml", "原始 YAML"), st.text));
+          return;
+        }
+        if (st.status === "error") {
+          holder.append(txt("p", "cap-detail-empty", t("caps.detail.yaml_error", "原始 YAML 加载失败")));
+          const line = statusLine(st.err);
+          if (line) holder.append(txt("p", "cap-mono", line));
+          const retry = el("button", {
+            type: "button",
+            class: "btn btn-ghost btn-sm",
+            text: t("common.retry", "重试"),
+          });
+          retry.addEventListener("click", () => {
+            st.status = "idle";
+            void loadCapYaml(m, holder);
+          });
+          holder.append(retry);
+          return;
+        }
+        if (st.status === "loading") {
+          holder.append(txt("p", "cap-detail-empty", t("caps.detail.yaml_loading", "正在生成 YAML…")));
+        }
+      }
+
       function renderDetail(cap) {
         const m = model.capability(cap);
         const box = el("div", { class: "cap-detail" });
@@ -1612,23 +1856,17 @@
         ssec.append(lcRow);
         box.append(ssec);
 
-        // 脚本：run.entrypoint 与 run.files 全文（v4 直接随资源返回，不需要另外的产物接口）
+        /* 脚本：run.entrypoint 与 run.files 全文。
+         * 读面**默认剥掉** spec.run.files（api/resource.yaml：GET 默认给 `{}`），
+         * 所以这个区块自己懒加载 `?includeBody=true`：只重绘本区块（[data-sec="run"]），
+         * 不整块 renderList —— 否则会丢展开态与滚动位置。 */
         const fsec = section("caps.detail.script", "run");
-        const files = isObj(run.files) ? run.files : {};
-        const paths = Object.keys(files);
-        if (!paths.length) {
-          fsec.append(txt("p", "cap-detail-empty", t("caps.detail.script_empty", "这个能力没有脚本文件")));
-        } else {
-          for (const p of paths) {
-            const f = el("div", { class: "cap-file" });
-            const head = el("div", { class: "cap-file-head" });
-            head.append(txt("span", "cap-file-path", p));
-            if (p === run.entrypoint) head.append(txt("span", "badge badge-accent", t("caps.detail.script_entry", "入口文件")));
-            f.append(head, preBlock(files[p] == null ? "" : files[p], "cap-script-pre"));
-            fsec.append(f);
-          }
-        }
         box.append(fsec);
+        mountRunSection(m, fsec);
+
+        /* 原始 YAML：默认收起，展开才取（懒加载）。服务端不保存用户原始字节，
+         * 这份文档由存储的规范化定义重建（含 run.files 全文），可直接贴回 playbook 包。 */
+        box.append(capYamlBlock(m));
 
         // 版本历史：新→旧；点开单版本才拉正文（?includeBody=true），只读查看脚本
         const vsec = section("caps.detail.versions", "versions");
