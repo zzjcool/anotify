@@ -144,11 +144,66 @@ export async function source(d){
   assert.ok(editCalls.every(c => !c.configKeys.includes('secret') && !c.configKeys.includes('token')));
   const deepLink = await row('deploy-hook').locator('a').first().getAttribute('href');
   assert.match(deepLink, /name=deploy-hook/); assert.match(deepLink, /namespace=default/);
+  // 名称链接 = **只读详情页**；行内动作（编辑/立即运行/⋯）仍在，编辑能力一点不少。
+  assert.match(deepLink, /source-detail\.html/, '名称链接指向 source-detail.html');
   await row('deploy-hook').locator('a').first().click();
+
+  /* ---------- 一、源只读详情页（source-detail.html?namespace=&name=）---------- */
+  await page.waitForFunction(() => location.pathname.endsWith('/source-detail.html'));
+  await visible('#src-detail[data-source="deploy-hook"]');
+  assert.equal(await page.locator('#src-detail').getAttribute('data-source'), 'deploy-hook');
+  assert.match(await page.locator('#src-detail-name').innerText(), /deploy-hook/);
+  // 四块内容（锚点是冻结契约）：基本信息 / 定义与字段 / 目标 / 近期回执。
+  for (const sec of ['basic', 'config', 'targets', 'recent']) {
+    assert.equal(await page.locator('#src-detail [data-sec="' + sec + '"]').count(), 1, '详情必须有 [data-sec="' + sec + '"]');
+  }
+  // 只读：这一页不渲染编辑表单（写动作全在编辑页）。
+  assert.equal(await page.locator('#src-body').count(), 0, '只读页不渲染编辑表单 #src-body');
+  assert.equal(await page.locator('#src-detail-edit').isVisible(), true, '编辑入口可见');
+  // 脱敏：凭据只写不读，明文不得出现在详情页的任何文本里。
+  assert.equal((await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), false, '凭据明文不得出现在页面上');
+  // 近期回执走既有过滤参数（不是全量拉回来再本地筛）。
+  const recentCalls = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/events\?source=deploy-hook&limit=20$/.test(c.url));
+  assert.ok(recentCalls.length >= 1, '近期回执必须 GET …/events?source=<name>&limit=20');
+  assert.equal(recentCalls[0].httpStatus, 200, '近期回执端点 200');
+  const recentText = (await page.locator('#src-detail [data-sec="recent"]').innerText()).trim();
+  assert.ok(recentText.length > 0, '近期回执要么列出事件、要么说清楚还没有（诚实空态）');
+  check('Source detail read-only page: name link, four sections, source-filtered receipts, no edit form, masked credentials');
+  await shot('source-detail-readonly');
+
+  /* 原始 YAML：默认收起，展开才取（懒加载）——详情页的 details.src-raw。
+     凭据只写不读：文档里只有 hookUrl/secretSet，绝无 token/secret 明文（红线）。 */
+  const rawYamlDetail = page.locator('#src-detail details.src-raw');
+  assert.equal(await rawYamlDetail.count(), 1, '源详情必须有且只有一个「原始 YAML」折叠块（details.src-raw）');
+  assert.equal(await rawYamlDetail.evaluate((n) => n.open === true), false, '原始 YAML 默认收起');
+  const yamlCallsBeforeDetail = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.equal(yamlCallsBeforeDetail.length, 0, '收起时不得请求 /yaml（懒加载）');
+  await rawYamlDetail.locator('summary').click();
+  await page.waitForFunction(
+    () => {
+      const box = document.querySelector('#src-detail details.src-raw');
+      return !!box && /kind: Source/.test(box.textContent || '');
+    },
+    { timeout: 15000 },
+  );
+  const yamlCallsAfterDetail = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.ok(yamlCallsAfterDetail.length >= 1, '展开才请求 /yaml');
+  const yamlTextDetail = await rawYamlDetail.textContent();
+  assert.match(yamlTextDetail, /kind: Source/, 'YAML 块必须含 kind: Source');
+  assert.match(yamlTextDetail, /hookUrl: /, '读投影只有 hookUrl');
+  assert.match(yamlTextDetail, /secretSet: true/, 'secret 只报「设了没有」');
+  assert.ok(!/^\s*secret:/m.test(yamlTextDetail) && !/^\s*token:/m.test(yamlTextDetail), 'YAML 不得出现凭据字段');
+  if (d.mock) assert.equal(yamlTextDetail.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 不得出现 secret 明文');
+  check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
+  await shot('source-detail-yaml');
+
+  /* 二、点编辑入口 → 原有编辑页：图 / 主体 / 边投影 / 原始 YAML 的原断言全部保留。 */
+  await page.locator('#src-detail-edit').click();
+  await page.waitForFunction(() => location.pathname.endsWith('/source.html'));
   await visible('#src-flow svg.flograph-svg');
   assert.match(await page.locator('#src-name').innerText(), /deploy-hook/);
   assert.match(await page.locator('#src-body').innerText(), /secretSet: true/);
-  assert.ok(!(await page.locator('body').innerText()).includes('hmac_mock_secret_deploy_hook'));
+  assert.ok(!(await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), '凭据明文不得出现在页面上');
   const topology = await page.evaluate(() => document.getElementById('src-flow')._graphSpec || document.getElementById('src-flow')._mountSpec);
   assert.ok(topology, 'real graph rendered');
   assert.equal(topology.preview, true, 'configuration preview, not execution success');

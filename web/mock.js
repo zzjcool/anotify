@@ -4458,8 +4458,12 @@
 		const miss = nsMissing(ns);
 		if (miss) return miss;
 		const limit = Number(ctx.query.get("limit") || 100);
+		/* `?source=` 按 involvedObject.name 过滤（api/events.yaml · NamespaceEvents）。
+			源详情页的「近期回执」就用这个参数；mock 不实现它的话，预览会把别的源
+			（甚至任务）的事件算到当前源头上 —— 那是假事实，不是宽松。 */
+		const source = ctx.query.get("source");
 		const list = state.events
-			.filter((e) => e.ns === ns)
+			.filter((e) => e.ns === ns && (!source || (e.involvedObject || {}).name === source))
 			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
 			.slice(0, limit);
 		return json(listOf("EventList", list.map(eventResource)));

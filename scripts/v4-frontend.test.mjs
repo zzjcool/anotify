@@ -5463,10 +5463,10 @@ test('G1 M3 condition provenance masks a private versioned-next derived name wit
 });
 
 // F3b2a locale registrations and aggregate anti-degeneration (original 141 retained).
-test('F3b2a both locale suites register all twenty pages in each of four languages and retained interactions', async () => {
+test('F3b2a both locale suites register all twenty-one pages in each of four languages and retained interactions', async () => {
   const { casesFor, pageBatches } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
   const { PAGES, LANGS } = await import('./e2e/fixtures/f3/f3-driver.mjs');
-  assert.equal(pageBatches.flat().length, 20);
+  assert.equal(pageBatches.flat().length, 21);
   for (const suite of ['i18n', 'i18n_coverage']) {
     const cases = casesFor(suite); assert.equal(new Set(cases.map(x => x.id)).size, cases.length);
     for (const lang of LANGS) {
@@ -5650,12 +5650,12 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
   }
 });
 
-// F3b2b: last two suites — truthful 320-view registry, retained UX19–23 and
+// F3b2b: last two suites — truthful 336-view registry, retained UX19–23 and
 // aggregate rules that cannot be satisfied by a partial or retried run.
-test('F3b2b ui_shift registers every one of the 320 page views exactly once with an anonymous login view', async () => {
+test('F3b2b ui_shift registers every one of the 336 page views exactly once with an anonymous login view', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
-  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','sources','trace']);
+  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
   assert.deepEqual(Object.keys(VIEWPORTS), ['desktop','mobile']);
@@ -5664,13 +5664,13 @@ test('F3b2b ui_shift registers every one of the 320 page views exactly once with
   assert.equal(new Set(cases.map(x => x.id)).size, cases.length, 'unique registered ids');
   const grid = cases.filter(x => x.kind === 'grid');
   const cells = grid.flatMap(c => c.pages.map(page => [page, c.lang, c.theme, c.viewport].join('|')));
-  assert.equal(cells.length, MATRIX_VIEWS, '320 registered matrix views');
-  assert.equal(new Set(cells).size, 320, 'no duplicated page/lang/theme/viewport cell');
+  assert.equal(cells.length, MATRIX_VIEWS, '336 registered matrix views');
+  assert.equal(new Set(cells).size, 336, 'no duplicated page/lang/theme/viewport cell');
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS)) {
     const slice = grid.filter(c => c.lang === lang && c.theme === theme && c.viewport === viewport);
     assert.deepEqual(slice.flatMap(c => c.pages).sort(), PAGES.slice().sort(), `complete page coverage for ${lang}/${theme}/${viewport}`);
   }
-  assert.equal(registeredViews('ui_shift').matrix, 320);
+  assert.equal(registeredViews('ui_shift').matrix, 336);
   // login is a genuine guest form view in the matrix (no session), and never a duplicate of index.
   const loginViews = grid.filter(c => c.pages.includes('login')).length;
   assert.equal(loginViews, 16, 'login is registered in all sixteen lang/theme/viewport combinations');
