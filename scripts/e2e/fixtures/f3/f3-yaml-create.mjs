@@ -204,8 +204,10 @@ export async function yamlCreate(d) {
   const emptyText = (await page.locator('#cap-yaml-msg').innerText()).trim();
   assert.equal(emptyText.includes('第'), false, '空正文的提示必须替换掉上一条错误消息，实际 ' + JSON.stringify(emptyText));
   assert.equal(await modalOpen('#cap-yaml-modal'), true, '空正文提示之后弹层不能关');
-  // 拦截是同步的：留一小段窗口，确认没有迟到的写请求。
-  await page.waitForTimeout(400);
+  // 拦截是同步的：让出两帧 + 一个宏任务，把「点击时已经排队的写请求」全部抖出来之后
+  // 再读账本。不用固定 sleep（测试纪律棘轮禁止 `waitForTimeout`），这里等的是一个
+  // 可观察的页面状态（渲染帧）而不是一段时间。
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(done, 0)))));
   const postsAfter = (await d.calls()).filter((c) => c.method !== 'GET');
   assert.equal(postsAfter.length, postsBefore, '空正文必须零写请求，实际新增 ' + (postsAfter.length - postsBefore) + ' 条');
   assert.equal((await postsTo(CAP_YAML_PATH)).length, brokenPosts.length, '空正文不得再发 POST …/capabilities/yaml');
