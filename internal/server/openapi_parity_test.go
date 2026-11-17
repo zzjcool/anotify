@@ -125,7 +125,9 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
-	parityPairsFloor = 192
+	// 192 → 196：上面那四个 observed 子 schema 各自进 pair（虽然能从 CapabilityStatus
+	// 递归到达，但「可达」不等于「被单独钉住」——具名 DTO 都单独成对）。
+	parityPairsFloor = 196
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
@@ -133,7 +135,9 @@ const (
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
-	specSchemaFloor = 230
+	// 230 → 234：status.observed 从自由 object 改成四个具名 schema
+	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
+	specSchemaFloor = 234
 )
 
 // ---------- 测试入口 ----------
@@ -3009,6 +3013,12 @@ func parityPairs() []parityPair {
 		{GoLabel: "capabilityDeployResponse", File: "resource.yaml", Schema: "CapabilityDeployResponse", Sample: capabilityDeployResponse{}},
 		{GoLabel: "capabilityDeployOutcome", File: "resource.yaml", Schema: "CapabilityDeployOutcome", Sample: capabilityDeployOutcome{}},
 		{GoLabel: "capabilityEdgeView", File: "resource.yaml", Schema: "CapabilityEdge", Sample: capabilityEdgeView{}},
+		// status.observed：空对象是合法形状（无事实时 `{}`），所以顶层四个键都不在 required；
+		// 子形状全部 required（有事实时每个键都在）。
+		{GoLabel: "capabilityObserved", File: "resource.yaml", Schema: "CapabilityObserved", Sample: capabilityObserved{}},
+		{GoLabel: "capabilityObservedEmit", File: "resource.yaml", Schema: "CapabilityObservedEmit", Sample: capabilityObservedEmit{}},
+		{GoLabel: "capabilityObservedPrune", File: "resource.yaml", Schema: "CapabilityObservedPrune", Sample: capabilityObservedPrune{}},
+		{GoLabel: "capabilityObservedTasks", File: "resource.yaml", Schema: "CapabilityObservedTasks", Sample: capabilityObservedTasks{}},
 
 		// ---- source ----
 		{GoLabel: "srcSpecView", File: "resource.yaml", Schema: "SourceSpec", Sample: srcSpecView{}},

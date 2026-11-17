@@ -1790,13 +1790,36 @@
 		}
 		conditions.push(Object.assign({ type: "Deployed" }, depCond));
 
-		// observed：最近一个逻辑 task 的 emits / pruned + 任务计数（明细数组保留，不只给计数）
+		/* observed：最近一个逻辑 task 的 emits / pruned + **近 24h** 任务计数。形状与
+		 * 真后端同一份（internal/server/resource_capability.go·capabilityObservedStatus），
+		 * 预览里也要说同样的话：
+		 *   · 没有最近任务（这个能力从没跑过）⇒ 服务端写 `{}`（四个键都不写）。mock 也
+		 *     必须给空对象——给 `tasks:{total:0}` 会把「没数据」画成一条假计数；
+		 *   · emits[].ok 由回执判定（store.observedEmitOK 的镜像）：剪枝回执（pruned 非空）
+		 *     = 下游没建出任务 ⇒ false；点名了 taskId ⇒ true。写死 true 会让预览把一次
+		 *     被剪掉的 emit 画成成功（❌ 该看见的失败看不见）；
+		 *   · tasks.total/failed 只统计近 24h（store.ObservedWindow）内建的任务行。
+		 */
+		const OBSERVED_WINDOW_MS = 24 * 3600 * 1000;
 		const tasks = state.tasks.filter((t) => t.ns === ns && t.capability === row.name);
 		const latest = tasks
 			.slice()
-			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.name).localeCompare(String(a.name)))[0];
 		const emits = latest ? state.emissions.filter((e) => e.task === latest.name) : [];
 		const prunes = latest ? state.prunes.filter((p) => p.task === latest.name) : [];
+		const windowStart = Date.now() - OBSERVED_WINDOW_MS;
+		const inWindow = tasks.filter((t) => Date.parse(t.createdAt) >= windowStart);
+		const observed = latest
+			? {
+					taskId: latest.name,
+					emits: emits.map((e) => ({ to: e.to, fields: clone(e.fields || []), ok: !e.pruned && Boolean(e.taskId) })),
+					pruned: prunes.map((p) => ({ to: p.to, reason: p.reason, detail: p.detail })),
+					tasks: {
+						total: inWindow.length,
+						failed: inWindow.filter((t) => t.phase === "failed").length,
+					},
+				}
+			: {};
 
 		return {
 			ready: conditions.every((c) => c.status === "True"),
@@ -1812,15 +1835,7 @@
 					return out;
 				}),
 			},
-			observed: {
-				taskId: latest ? latest.name : null,
-				emits: emits.map((e) => ({ to: e.to, fields: clone(e.fields || []), ok: true })),
-				pruned: prunes.map((p) => ({ to: p.to, reason: p.reason, detail: p.detail })),
-				tasks: {
-					total: tasks.length,
-					failed: tasks.filter((t) => t.phase === "failed").length,
-				},
-			},
+			observed: observed,
 			installedFrom: row.installedFrom || null,
 		};
 	}

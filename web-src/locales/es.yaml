@@ -1500,7 +1500,9 @@ caps:
     tasks: 'Tareas totales'
     tasks_failed: 'Fallidas'
     title: 'Rastro de la última ejecución (observed)'
-    unavailable: 'El servidor aún no expone registros de ejecución por capacidad'
+    truncated: 'Solo se listan los últimos {n}; los anteriores no se muestran'
+    unavailable: 'Esta capacidad aún no tiene historial de ejecución (aparece tras la primera ejecución)'
+    window: 'Los recuentos cubren las últimas 24 horas'
   resolved:
     empty: 'Capacidad terminal: termina al ejecutarse y no entrega a ningún destino'
     missing: 'No se resuelve'

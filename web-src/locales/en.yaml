@@ -1500,7 +1500,9 @@ caps:
     tasks: 'Tasks total'
     tasks_failed: 'Failed'
     title: 'Trace of the latest run (observed)'
-    unavailable: 'The server does not expose per-capability run records yet'
+    truncated: 'Only the latest {n} are listed; earlier ones are not shown'
+    unavailable: 'This capability has no run history yet (it appears after the first run)'
+    window: 'Counts cover the last 24 hours'
   resolved:
     empty: 'Terminal capability: it ends when done and hands off to nothing'
     missing: 'Does not resolve'

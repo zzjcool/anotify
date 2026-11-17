@@ -652,7 +652,7 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 		Nodes:            []capabilityNodeState{},
 		DeployCandidates: []capabilityDeployCandidate{},
 		Resolved:         capabilityResolved{Next: []capabilityResolvedNext{}},
-		Observed:         map[string]any{}, // 事件/任务的窗口统计本域不查，给空对象而不是编造 0
+		Observed:         capabilityObserved{}, // 无事实时就是 {}（⑥ 有事实再填）
 		InstalledFrom:    row.InstalledFrom,
 	}
 
@@ -695,6 +695,22 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 	}
 	status.DeployCandidates = candidates
 
+	// ⑥ Observed：最近任务 + 它的 emit/剪枝 + 24h 计数（capability.md §2）。
+	//
+	// 降级而不是报错：observed 是**可选派生面**，而 statusFor 是两个读端点（列表/详情）
+	// 共用的——这里返回 error 会把整个 GET 变成 500，代价远大于「这一块暂时空着」。
+	// 空对象本身就是文档允许的形状（`{}`），所以降级不破坏契约；但必须留一条 warn，
+	// 否则一个永久坏的库会安静地让 observed 永远为空。
+	observed, oerr := a.d.DB.ObservedForCapability(ctx, row.NamespaceID, row.Name)
+	if oerr != nil {
+		a.d.logger().Warn("capability status: observed degraded to empty object",
+			"event", "api.capabilities.status.observed_failed",
+			"namespace_id", row.NamespaceID, "capability", row.Name, "version", row.Version,
+			"error", oerr.Error())
+	} else {
+		status.Observed = capabilityObservedStatus(observed)
+	}
+
 	status.Ready = true
 	for _, condition := range status.Conditions {
 		if condition.Status != protocol.ConditionStatusTrue {
@@ -703,6 +719,33 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 		}
 	}
 	return status, nil
+}
+
+// capabilityObservedStatus 把 store 的事实拼成 wire 形状。
+//
+// 没有最近任务（= 这个能力从没跑过）就返回零值 `{}`：四个键都不写。这与升级前的
+// 行为逐字节一致（向后兼容），「从没跑过」也就不需要额外的哨兵值。
+// 反过来，**有**最近任务但窗口内零条时仍然写 `tasks:{total:0,failed:0}`：那是一句
+// 有信息量的话（最近跑过，但最近 24h 没动静），不该退化成「没数据」。
+// emits/pruned 的元素恒写 `fields:[]` 而不是 null。
+func capabilityObservedStatus(o store.CapabilityObserved) capabilityObserved {
+	out := capabilityObserved{}
+	if o.TaskID == "" {
+		return out
+	}
+	out.TaskID = o.TaskID
+	for _, emit := range o.Emits {
+		fields := emit.Fields
+		if fields == nil {
+			fields = []string{}
+		}
+		out.Emits = append(out.Emits, capabilityObservedEmit{To: emit.To, Fields: fields, OK: emit.OK})
+	}
+	for _, prune := range o.Pruned {
+		out.Pruned = append(out.Pruned, capabilityObservedPrune{To: prune.To, Reason: prune.Reason, Detail: prune.Detail})
+	}
+	out.Tasks = &capabilityObservedTasks{Total: o.Total, Failed: o.Failed}
+	return out
 }
 
 // nodesAvailableCondition 派生 NodesAvailable（capability.md §2.4 的判据集合）。
@@ -983,6 +1026,38 @@ type capabilityResolved struct {
 	Next []capabilityResolvedNext `json:"next"`
 }
 
+// capabilityObserved 是 status.observed（capability.md §2 / CONTRACT-observed）。
+//
+// **空对象是合法且默认的形状**：没有任何事实时四个键都不写，`observed` 本身仍然是
+// `{}`——这是本域「派生不出来的字段给空对象，绝不编造」那条边界的延续（见文件头 §2）。
+// 所以这里全部 omitempty，且 tasks 用指针（struct 的 omitempty 永不生效）。
+type capabilityObserved struct {
+	TaskID string                    `json:"taskId,omitempty"`
+	Emits  []capabilityObservedEmit  `json:"emits,omitempty"`
+	Pruned []capabilityObservedPrune `json:"pruned,omitempty"`
+	Tasks  *capabilityObservedTasks  `json:"tasks,omitempty"`
+}
+
+// capabilityObservedEmit 是一次 emit 的观察行（`to`/`fields`/`ok` 恒出现）。
+type capabilityObservedEmit struct {
+	To     string   `json:"to"`
+	Fields []string `json:"fields"`
+	OK     bool     `json:"ok"`
+}
+
+// capabilityObservedPrune 是一条剪枝事实（`to`/`reason`/`detail` 恒出现，detail 可为空串）。
+type capabilityObservedPrune struct {
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+	Detail string `json:"detail"`
+}
+
+// capabilityObservedTasks 是 24h 窗口计数（不做统计报表，只够判断「最近是不是老挂」）。
+type capabilityObservedTasks struct {
+	Total  int `json:"total"`
+	Failed int `json:"failed"`
+}
+
 type capabilityStatus struct {
 	Version          int                         `json:"version"`
 	Digest           string                      `json:"digest"`
@@ -991,7 +1066,7 @@ type capabilityStatus struct {
 	Nodes            []capabilityNodeState       `json:"nodes"`
 	DeployCandidates []capabilityDeployCandidate `json:"deployCandidates"`
 	Resolved         capabilityResolved          `json:"resolved"`
-	Observed         map[string]any              `json:"observed"`
+	Observed         capabilityObserved          `json:"observed"`
 	InstalledFrom    string                      `json:"installedFrom,omitempty"`
 }
 

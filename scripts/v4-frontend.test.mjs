@@ -4710,6 +4710,101 @@ test('R1 A2b capability detail: run.files 按 name@version 懒加载（只取一
   assert.ok(copy, 'YAML 块必须有复制按钮（.copy-btn）');
 });
 
+/* observed 的**数据态**只有 mock 权威能稳定造全：真实权威的 e2e 里 fixer 有真任务（taskId +
+ * 24h 计数），但 emits/pruned 需要一条真实的 grant→emit→剪枝链（要在线节点 + 部署 digest），
+ * 52s 的用例窗口不适合现造。mock 的 observed 与真后端同一份形状、同一套 ok 判定
+ * （web/mock.js·capabilityStatus 镜像 store.observedEmitOK），所以四种说法都在这里钉死：
+ *   ① 有最近任务 → taskId + 近 24h 计数（且标明是 24h 窗口，不把窗口数字当全部历史）；
+ *   ② emits 每条 → to + fields + ok 标记；✗ 必须由回执（剪枝）算出来，不是写死 true；
+ *   ③ pruned 每条 → to/reason/detail，detail 走 span[data-raw-content]（服务端原文豁免）；
+ *   ④ 到服务端上限 50 → 显示 caps.observed.truncated（列表被截断 ≠ 只有这些）；
+ *   ⑤ 服务端 {} → 空态文案，且不渲染 0 计数（不把「没数据」编成事实）。 */
+test('R1 A2d capability detail observed: taskId/24h 计数/emits(ok)/pruned/50 条上限/{} 空态', async () => {
+  const flat = (node) => b2Text(node).replace(/\s+/g, '');
+  const observedSection = (run) =>
+    b2Find(run.get('cap-body'), (n) => n.getAttribute && n.getAttribute('data-sec') === 'observed')[0];
+  const emitRows = (sec) => b2Find(sec, (n) => String(n.className || '').split(' ').includes('cap-line'));
+
+  // ① + ②：fixer 的最近任务 tsk_mock_1 本来有两条 emit（都建出了任务 ⇒ ✓）；再塞一条
+  // 带剪枝回执的 emit（taskId=null + pruned）—— 它必须显示 ✗，而不是被画成成功。
+  const okRun = await b2Page('capability', '?namespace=default&name=fixer', ({ Mock }) => {
+    Mock.state.emissions.push({
+      ns: 'default', task: 'tsk_mock_1', eventId: 'evt_pruned_emit', to: 'run-tests', version: 3,
+      taskId: null, pruned: { reason: 'param_missing', detail: '需要 suite' }, fields: ['suite'], at: new Date().toISOString(),
+    });
+  });
+  const okSec = observedSection(okRun);
+  assert.ok(okSec, 'observed 区块必须渲染（`[data-sec="observed"]`）');
+  const okText = flat(okSec);
+  assert.match(okText, /最近任务：tsk_mock_1/, '有最近任务时必须给出 taskId');
+  assert.match(okText, /任务总数：1/, '必须显示读模型的 24h 任务总数');
+  assert.match(okText, /失败：0/, '必须显示读模型的失败数（0 也要显示，不是省略）');
+  assert.match(okText, /计数是近24小时的窗口/, '计数必须标明是近 24h 窗口（否则 24h 数字被当成全部历史）');
+  assert.match(okText, /analyze-pr/, 'emit 必须列出下游名');
+  assert.match(okText, /字段：repo/, 'emit 必须列出这次带的字段（caps.observed.fields 模板）');
+  assert.match(okText, /字段：scope/);
+  const prunedEmitRow = emitRows(okSec).find((n) => b2Text(n).includes('run-tests'));
+  assert.ok(prunedEmitRow, '被剪枝的那条 emit 仍然是事实，必须列出来');
+  assert.ok(b2Text(prunedEmitRow).includes('✗'), '剪枝回执（没建出任务）必须标 ✗：' + b2Text(prunedEmitRow));
+  assert.equal(b2Text(prunedEmitRow).includes('✓'), false, '同一条 emit 不能既是 ✓ 又是 ✗');
+  assert.equal(
+    emitRows(okSec).filter((n) => b2Text(n).includes('✓')).length,
+    2,
+    '真的建出任务的两条 emit 必须是 ✓（不靠写死 ok:true，而是回执里点名了 taskId）',
+  );
+  // mock 的 read model 本身也必须是同一套判定（页面渲染错了会被这里先拦住）
+  const okApi = await okRun.req('/v1/namespaces/default/capabilities/fixer');
+  const okOb = okApi.body.status.observed;
+  assert.equal(okOb.taskId, 'tsk_mock_1');
+  assert.deepEqual(plain(okOb.tasks), { total: 1, failed: 0 });
+  assert.equal(okOb.emits.find((e) => e.to === 'run-tests').ok, false, '剪枝回执 ⇒ ok=false');
+  assert.ok(okOb.emits.filter((e) => e.to !== 'run-tests').every((e) => e.ok === true));
+
+  // ③ pruned 明细：to/reason/detail 都要有，detail 是服务端原文（含中文）→ span[data-raw-content]
+  const prodRun = await b2Page('capability', '?namespace=prod&name=prod-deploy');
+  const prodSec = observedSection(prodRun);
+  const prodText = flat(prodSec);
+  assert.match(prodText, /param_missing/, 'pruned 必须显示 reason 码');
+  assert.equal(prodText.includes('这次运行没有剪枝'), false, 'pruned 非空时不得还显示“没有剪枝”空态句');
+  const rawLeaves = b2Find(prodSec, (n) => n.getAttribute && n.getAttribute('data-raw-content') === '');
+  assert.ok(
+    rawLeaves.some((n) => b2Text(n).includes('需要 tag')),
+    'pruned.detail 是服务端原文（可能含中文）：必须落在 span[data-raw-content]，否则 en/es 页面会被判成未翻译文案',
+  );
+
+  // ④ 上限 50：服务端各截断到 50，页面到上限必须说“还有更多没显示”
+  const cappedRun = await b2Page('capability', '?namespace=default&name=fixer', ({ Mock }) => {
+    Mock.state.emissions = Mock.state.emissions.filter((e) => e.task !== 'tsk_mock_1');
+    for (let i = 0; i < 50; i += 1) {
+      Mock.state.emissions.push({
+        ns: 'default', task: 'tsk_mock_1', eventId: 'evt_many_' + i, to: 'down-' + i, version: 1,
+        taskId: 'tsk_down_' + i, pruned: null, fields: ['f' + i], at: new Date().toISOString(),
+      });
+    }
+  });
+  const cappedSec = observedSection(cappedRun);
+  assert.equal(emitRows(cappedSec).length, 50, '服务端上限内的 50 条都要列出来');
+  assert.match(
+    flat(cappedSec),
+    /只显示最近50条，更早的没有列出/,
+    '到服务端 50 条上限必须给出截断提示（新增词条 caps.observed.truncated）',
+  );
+
+  // ⑤ {}
+  const emptyRun = await b2Page('capability', '?namespace=default&name=sketch');
+  const emptySec = observedSection(emptyRun);
+  const emptyText = flat(emptySec);
+  assert.match(emptyText, /这个能力还没有运行记录/, '服务端 {} 时必须给空态文案');
+  assert.equal(emptyText.includes('任务总数'), false, '{} 时不得渲染 0 计数（那是把“没数据”编成事实）');
+  assert.equal(emptyText.includes('最近任务'), false, '{} 时不得渲染最近任务行');
+  const emptyApi = await emptyRun.req('/v1/namespaces/default/capabilities/sketch');
+  assert.deepEqual(
+    plain(emptyApi.body.status.observed),
+    {},
+    'mock 与真后端同形：没有最近任务就是 {}（不是 {tasks:{total:0}}，也不是 null）',
+  );
+});
+
 test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，且不含 secret 明文', async () => {
   const run = await b2Page('source', '?namespace=default&name=deploy-hook');
   const box = run.get('src-yaml');

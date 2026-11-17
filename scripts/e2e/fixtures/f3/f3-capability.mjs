@@ -42,6 +42,65 @@ async function openCap(page, name) {
 	);
 	return page.locator('#cap-detail[data-cap="' + name + '"]');
 }
+/* observed 的期望值**只能来自读模型本身**：真实权威由中枢按 24h 窗口派生，mock 权威由
+ * MockApi 从同名字段派生。先用页面同一条读路径（`?includeBody=true`）取事实，再把 DOM 与它
+ * 逐字对账 —— 这样断言的是「页面显示了服务端此刻说的事实」，不是「页面里有某个字串」。 */
+async function readObserved(d, ns, name) {
+	const res = await d.req("/v1/namespaces/" + ns + "/capabilities/" + encodeURIComponent(name) + "?includeBody=true");
+	assert.equal(res && res.kind, "Capability", ns + "/" + name + " 的读面必须是 Capability 信封");
+	return (res.status && res.status.observed) || {};
+}
+/* 有任务之后 status.observed.taskId 必须非空。轮询带超时（不靠固定 sleep 猜）：派发是同步
+ * 事务，但读面是下一次 GET 才看到，给中枢一点余量而不是断言「一定有」。 */
+async function waitObserved(d, ns, name, why) {
+	const deadline = Date.now() + 15000;
+	for (;;) {
+		const ob = await readObserved(d, ns, name);
+		if (ob.taskId) return ob;
+		if (Date.now() > deadline) {
+			assert.fail(why + "：轮询 15s 后 " + ns + "/" + name + " 的 status.observed.taskId 仍为空（读模型 " + JSON.stringify(ob) + "）");
+		}
+		// 轮询间隔走 Node 定时器（带 deadline，不是「等固定时间再断言」）：页面侧
+		// `waitForTimeout` 是测试纪律棘轮要清零的形态，这里只做有界轮询的节流。
+		await new Promise((r) => setTimeout(r, 200));
+	}
+}
+async function runtimeI18n(d) {
+	const dict = await d.page.evaluate(() => Object.assign({}, window.AnotifyI18n || {}));
+	for (const key of ["caps.observed.unavailable", "caps.observed.tasks", "caps.observed.tasks_failed", "caps.observed.task", "caps.observed.window"]) {
+		assert.equal(typeof dict[key], "string", "运行时字典必须有 " + key + "（缺了页面就渲染兜底文案，四语言守卫也会红）");
+		assert.ok(dict[key].trim() && dict[key] !== key, key + " 必须有真实译文");
+	}
+	return dict;
+}
+/* 有数据态：taskId + 24h 计数（含窗口说明）都是读模型里的**具体值**，不是“出现过某个标签”。 */
+async function assertObservedDataDom(d, root, ob, label) {
+	const sec = root.locator('[data-sec="observed"]');
+	await sec.waitFor({ state: "visible", timeout: 15000 });
+	const text = await sec.textContent();
+	const dict = await runtimeI18n(d);
+	assert.ok(ob.taskId, label + "：读模型必须已给出 taskId（读模型没给就不该指望页面有）");
+	assert.ok(text.includes(String(ob.taskId)), label + "：observed 必须显示最近任务 id " + ob.taskId + "，实际：" + text);
+	assert.ok(Number.isInteger(ob.tasks && ob.tasks.total), label + "：读模型必须给 tasks.total（整数）");
+	assert.ok(Number.isInteger(ob.tasks && ob.tasks.failed), label + "：读模型必须给 tasks.failed（整数）");
+	// 计数必须和它自己的标签连在一起出现：「任务总数：3」而不是碰巧页面里有个 3。
+	assert.ok(text.includes(dict["caps.observed.tasks"] + "：" + ob.tasks.total), label + "：必须显示 24h 任务总数 " + ob.tasks.total + "，实际：" + text);
+	assert.ok(text.includes(dict["caps.observed.tasks_failed"] + "：" + ob.tasks.failed), label + "：必须显示失败数 " + ob.tasks.failed + "，实际：" + text);
+	assert.ok(text.includes(dict["caps.observed.window"]), label + "：计数必须标明是近 24h 窗口，否则 24h 的数字被当成全部历史");
+	assert.ok(!text.includes(dict["caps.observed.unavailable"]), label + "：有数据时不得再显示空态文案");
+	return text;
+}
+/* 无数据态（服务端 `{}`）：如实空态，且**不能**出现 0 计数（那是把「没有数据」编造成事实）。 */
+async function assertObservedEmptyDom(d, root, label) {
+	const sec = root.locator('[data-sec="observed"]');
+	await sec.waitFor({ state: "visible", timeout: 15000 });
+	const text = await sec.textContent();
+	const dict = await runtimeI18n(d);
+	assert.ok(text.includes(dict["caps.observed.unavailable"]), label + "：服务端 {} 时页面必须给空态文案，实际：" + text);
+	assert.ok(!text.includes(dict["caps.observed.tasks"] + "："), label + "：{} 时不得渲染任务计数（那是把 0 当成事实），实际：" + text);
+	assert.ok(!text.includes(dict["caps.observed.task"] + "："), label + "：{} 时不得渲染最近任务行，实际：" + text);
+	return text;
+}
 /* #385 起「新建能力」是 3 步向导（基础 / 脚本 / 高级）：字段按步分组，跨步填必须先
  * 走「下一步」。这个 helper 保持原来「全字段都填一遍」的覆盖度（不是砍用例），
  * 只是按向导的步序填；第 3 步的运维参数在两个 <details> 里，展开方式就用用户点的那个
@@ -485,19 +544,14 @@ export async function capability(d){
 			assert.match(resolved, /lint-fix/);
 			assert.match(resolved, /v1/, "钉死 lint-fix@1 必须显示版本");
 			const observed = await fx.textContent('[data-sec="observed"]');
-			// observed 的两种权威说两种话：
-			//   · 预览 mock 种子**造了**留痕事实（tsk_mock_1 的 emits/pruned），页面必须给明细；
-			//   · 真实权威的 CapabilityStatus.observed 按契约（api/resource.yaml·
-			//     CapabilityStatus.observed「当前恒 {}」）就是空对象 —— internal/server 与之一致。
-			//     所以这里断言页面**如实空态**（caps.observed.unavailable：「服务端暂未提供
-			//     能力维度的运行记录」，不杜撰时间/计数），而不是拿 mock 的固定事实去要求一个
-			//     契约上恒空的字段。
-			if (d.mock) {
-				assert.match(observed, /tsk_mock_1|最近任务/);
-				assert.match(observed, /字段|emit|派出/, "observed 必须显示 emits 明细，不只计数");
-			} else {
-				assert.match(observed, /服务端暂未提供/, "真实权威下 observed 恒 {}：页面必须如实空态，不编造留痕");
-			}
+			/* observed 现在两种权威都说**真实事实**（服务端 `status.observed`：最近任务 +
+			 * emits/pruned + 近 24h 计数，见 docs/design/v4/capability.md §2）。修复器在本用例的
+			 * 默认 ns 里已经有真实任务（真实权威：base fixtures 经 `POST /sources/deploy-hook/fire`
+			 * 建出 fixer 任务；mock 权威：种子 tsk_mock_1），所以这一条直接对账「页面 = 读模型」，
+			 * 不再把契约上已不存在的「恒 {}」当预期。 */
+			const fxOb = await readObserved(d, "default", "fixer");
+			await assertObservedDataDom(d, fx, fxOb, "default/fixer");
+			if (d.mock) assert.match(observed, /字段|emit|派出/, "mock 种子里 fixer 的最近任务有 emit 明细，页面必须列出来");
 			await shot(page, "08-detail-diagnostics-fixer");
 
 			const dp = await openCap(page, "deploy-preview");
@@ -518,7 +572,37 @@ export async function capability(d){
 			return "fixer 四条件+resolved+emits；deploy-preview ValueMissing";
 		});
 
-		/* ---------- 10) DELETE CAS：旧 rv 409 重载 + 二次确认 ---------- */
+		/* ---------- 10) observed：真实任务 → taskId/24h 计数；没跑过 → 诚实空态 ----------
+		 * 造数据走**产品入口**：`POST /sources/{name}/fire`（真实权威同一个 handler，mock 权威同一
+		 * 条 MockApi 路由）为源的下游 fixer 建一个真任务；再轮询读面的 status.observed.taskId
+		 * 非空（带超时）后打开详情页断言 DOM。反面对照用本用例刚建、从没跑过的 f2a-demo。 */
+		await check("observed：真实投递后详情页显示最近任务与 24h 计数（与读模型逐字一致），没跑过的能力保持诚实空态", async () => {
+			const before = await readObserved(d, "default", "fixer");
+			const fired = await d.req("/v1/namespaces/default/sources/deploy-hook/fire", {
+				method: "POST",
+				body: JSON.stringify({ payload: { repo: "f3/observed", environment: "staging", commit: "9f2a1b3" } }),
+			});
+			assert.equal(fired.duplicate, false, "首次投递不得被当成幂等重复");
+			assert.ok((fired.tasks || []).some((t) => t.capability === "fixer"), "投递必须为 fixer 建出真实任务：" + JSON.stringify(fired));
+			const ob = await waitObserved(d, "default", "fixer", "fire 之后 fixer 必须有最近任务");
+			assert.ok(ob.tasks.total >= 1, "24h 窗口内至少含这次投递的任务，实际 " + JSON.stringify(ob.tasks));
+			// 最近任务只能前进：投递前如果有更旧的，现在必须变（不能拿旧值硬充）
+			if (before.taskId) assert.notEqual(ob.taskId, before.taskId, "投递后 status.observed.taskId 必须指向更近的那个任务");
+			if (d.mock) assert.equal(ob.taskId, (fired.tasks || []).find((t) => t.capability === "fixer").taskId, "mock 权威下最近任务就是这次投递建出的那个");
+
+			const fx = await openCap(page, "fixer");
+			await assertObservedDataDom(d, fx, ob, "投递后 default/fixer");
+			await shot(page, "10-observed-real-task");
+
+			// 反面对照：f2a-demo 在本用例里只被创建/改过，从没跑过 → 服务端 `{}`（不是 null、不是报错）
+			const demo = await openCap(page, "f2a-demo");
+			const demoOb = await readObserved(d, "default", "f2a-demo");
+			assert.deepEqual(demoOb, {}, "从没跑过的能力，服务端必须回空对象 " + JSON.stringify(demoOb));
+			await assertObservedEmptyDom(d, demo, "从没跑过的 default/f2a-demo");
+			return "fire → taskId=" + ob.taskId + " total=" + ob.tasks.total + " failed=" + ob.tasks.failed + "；从没跑过的 f2a-demo 保持空态（服务端 {}）";
+		});
+
+		/* ---------- 11) DELETE CAS：旧 rv 409 重载 + 二次确认 ---------- */
 		await check("删除 CAS：旧 rv → 409 重新载入并二次确认；成功 DELETE 带 ?resourceVersion=", async () => {
 			const row = await openCap(page, "lint-fix");
 			await row.locator('[data-act="delete"]').click();
@@ -583,7 +667,7 @@ export async function capability(d){
 			return "409 后二次确认；DELETE rv=" + param + "；回列表该行已消失";
 		});
 
-		/* ---------- 11) prod 命名空间诊断：missing 下游 + NodeOffline + pruned ---------- */
+		/* ---------- 12) prod 命名空间诊断：missing 下游 + NodeOffline + pruned ---------- */
 		await check("诊断（prod）：scope 切换后 report.send DownstreamResolved=NotFound，prod-deploy NodeOffline，observed pruned", async () => {
 			await page.locator(".scope-trigger").click();
 			await page.locator('[data-ns-id="prod"]').click();
@@ -594,9 +678,12 @@ export async function capability(d){
 			assert.match(rsResolved, /ghost-cap/);
 			assert.match(rsResolved, /NotFound|解析不到/);
 			const rsObserved = await rs.textContent('[data-sec="observed"]');
-			// 同 check 7 的 observed：mock 种子里有 pruned（param_missing）留痕，真实权威恒 {}。
-			if (d.mock) assert.match(rsObserved, /param_missing|剪枝/);
-			else assert.match(rsObserved, /服务端暂未提供/, "真实权威下 observed 恒 {}：页面必须如实空态");
+			/* 同 check 10：observed 说真实事实。prod 的 report.send 在 base fixtures 里已经被真实投递
+			 * 过一条（`f3-report-hook`），所以这里同样对账「页面 = 读模型」；mock 种子里它还带一条
+			 * param_missing 剪枝留痕（下面单独断言）。 */
+			const rsOb = await readObserved(d, "prod", "report.send");
+			await assertObservedDataDom(d, rs, rsOb, "prod/report.send");
+			if (d.mock) assert.match(rsObserved, /param_missing/, "mock 种子里 report.send 的最近任务有 param_missing 剪枝留痕，页面必须列出来");
 			await shot(page, "09-detail-diagnostics-prod-missing");
 			const pd = await openCap(page, "prod-deploy");
 			const pdConds = await pd.textContent('[data-sec="conditions"]');
@@ -604,7 +691,7 @@ export async function capability(d){
 			return "report.send NotFound/pruned；prod-deploy NodeOffline";
 		});
 
-		/* ---------- 12) 四语言页面：无裸 key ---------- */
+		/* ---------- 13) 四语言页面：无裸 key ---------- */
 		await check("四语言页面：?lang=en/ja/es/zh-CN 标题与按钮已翻译，页面无裸 caps.* key", async () => {
 			const expect = { "zh-CN": "能力", en: "Capabilities", ja: "能力", es: "Capacidades" };
 			await page.evaluate(() => {

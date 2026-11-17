@@ -453,6 +453,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_retention
 CREATE INDEX IF NOT EXISTS idx_tasks_ns_created
     ON tasks(namespace_id, created_at, id);
 
+-- 能力 status.observed.tasks{total,failed} 的 24h 窗口计数：
+-- (ns, 能力, 时间倒序) 三段 seek，不做全表扫（EXPLAIN 门禁见 capability_observed_test.go）。
+-- 注意「最近一个逻辑任务」**不**走这条索引：既有 idx_tasks_ns_created 反向扫一段就
+-- 满足 created_at DESC, id DESC（零排序），实测比走这条更快（会多一个 temp B-tree）。
+CREATE INDEX IF NOT EXISTS idx_tasks_cap_created
+    ON tasks(namespace_id, capability, created_at DESC, id);
+
 -- 背压信号：取最早一条 pending（部分索引只收 pending 行）。
 CREATE INDEX IF NOT EXISTS idx_tasks_pending_created_at
     ON tasks(created_at) WHERE phase = 'pending';
