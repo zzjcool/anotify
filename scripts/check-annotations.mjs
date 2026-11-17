@@ -257,8 +257,11 @@ export const ANCHOR_MIN = 4;
  * 一条 claim 行都没有（说明段里没有「声称有检查兜底」的句子），按 SPEC_DOC_STALE 加标记
  * 即红，故**未**加 —— 需豁免时先让它真的产生 noise，而不是给标记挖一个空容器。
  */
+// 2026-11-17 校准：C 实测仍是 300（只把 Makefile 两处自述与测试注释的措辞改准确，
+// 没有挪走真 claim）；D 由 432 降到 387 —— 下降全部来自 docs/perf 两份体检报告加
+// `snapshot-doc:`（定格数字 + 文内复算命令，不是「现在是多少」的承诺）。
 export const CLAIM_UNBACKED_BASELINE = 300;
-export const COUNT_UNMARKED_BASELINE = 432;
+export const COUNT_UNMARKED_BASELINE = 387;
 
 /* ---------- 判据 ---------- */
 

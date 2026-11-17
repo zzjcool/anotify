@@ -17,12 +17,12 @@
 | --- | --- | --- | --- |
 | `store` | `internal/store/` | [`internal/store/AGENTS.md`](internal/store/AGENTS.md) | ✅ 已写 |
 | `server` | `internal/server/` | [`internal/server/AGENTS.md`](internal/server/AGENTS.md) | ✅ 已写 |
-| `node` | `cmd/anode/` | `cmd/anode/AGENTS.md` | 待写 |
+| `node` | `cmd/anode/` | `cmd/anode/`（模块约定待写：AGENTS.md） | 待写 |
 | `edge` | `internal/protocol/`、`internal/ws/` | `internal/protocol/AGENTS.md` | 待写 |
 | `auth` | `internal/auth/`、`internal/authn/` | `internal/auth/AGENTS.md` | 待写 |
 | `api` | `api/`（五份 OpenAPI 真源） | `api/AGENTS.md` | 待写 |
 | `web` | `web-src/`（源）、`web/`（手写 css/js + 生成物） | `web-src/AGENTS.md` | 待写 |
-| `e2e` | `scripts/e2e/` | `scripts/e2e/AGENTS.md` | 待写 |
+| `e2e` | `scripts/e2e/` | `scripts/e2e/`（模块约定待写：AGENTS.md） | 待写 |
 
 **硬规则（写成可检查的动作，因为宽泛说法会被窄任务绕过）**：
 

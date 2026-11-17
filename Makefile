@@ -50,7 +50,7 @@ sitegen: check-classes check-tailwind check-graph-access ## 构建期静态站�
 check-classes: ## 前端死类守卫：校验 web-src 里每个 class 都落在设计系统 / Tailwind 工具类内（防自造未定义类）
 	node scripts/check-classes.mjs
 
-check-agents: ## 模块约定守卫：AGENTS.md 的 path:line 引用 / 索引表 / 行数预算（防文档漂移）
+check-agents: ## 模块约定检查：AGENTS.md 的 path:line 引用 / 索引表 / 行数预算（防文档漂移）
 	@node scripts/check-agents.mjs --self-test
 	@node scripts/check-agents.mjs
 
@@ -263,7 +263,7 @@ tools: ## 安装 Go 静态检查工具到 .bin/（版本钉在 Makefile；装一
 	@echo "✅ $(STATICCHECK_BIN) $$( $(STATICCHECK_BIN) -version 2>/dev/null | head -1 )"
 
 ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、vet、build、单元测试、基准冒烟（不含 e2e / integration）
-	@# 模块约定漂移守卫：AGENTS.md 里的 `mux.go:69` 这类引用一旦指向不存在的行，
+	@# 模块约定漂移检查：AGENTS.md 里的 `mux.go:69` 这类引用一旦指向不存在的行，
 	@# 读它的子 agent 会把错的当约定照做（本轮已真实发生过两次：迁移块规则、悬空指路）。
 	@# 放在 ci 而不是 contract：它需要 node，而 contract 目前在只有 Go 的环境也能跑。
 	$(MAKE) check-agents
