@@ -188,8 +188,13 @@ index:
     trend_live: Live
     running: In progress
     running_sub: "All tasks in this namespace"
+    running_sub_all: All tasks across every namespace
     failed: Failed tasks
     failed_sub: "All tasks in this namespace"
+    failed_sub_all: All tasks across every namespace
+    devices_sub_all: Devices belong to your user, not to a namespace, so they don't change when you switch
+  aggregate:
+    unsupported: This figure can't be summed across namespaces yet
   heatmap:
     title: Event activity
     subtitle: Past year · daily volume
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
   new_ns_failed: "Create failed"
   deployment_wide: "Deployment-wide"
+  all_namespaces: "All namespaces"
+  all_sub: "Summed over every namespace"
   deployment_wide_hint: "This page is the same across the whole deployment — it does not change with the namespace"
 graph:
   zoom_in: Zoom in

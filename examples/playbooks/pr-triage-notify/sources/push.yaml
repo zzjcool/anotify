@@ -1,0 +1,35 @@
+# 链的入口：一个 webhook 源。外部 POST 一次 = 一次事件 = 一条 trace。
+apiVersion: anotify/v1
+kind: Source
+metadata:
+  name: '{{values.project}}-push'
+  displayName: '{{values.project}} 提交事件'
+spec:
+  kind: webhook
+  enabled: true                       # 省略也是 true；显式写出来便于 review
+  config:
+    # 空串 = 安装时由服务端生成 token。装完 GET 这个源，status.hookUrl 就是可直接
+    # POST 的完整地址（只读投影；token / secret 本身永远不回显）。
+    token: ''
+    # 入站载荷的形状。不合规的投递在入口就被拒（不会进到能力里）。
+    payloadSchema:
+      type: object
+      required: [repo, commit, changedLines]
+      properties:
+        repo:         { type: string }
+        commit:       { type: string }
+        changedLines: { type: integer }
+    # 只是编辑器里的示意载荷，不参与校验。
+    sample:
+      repo: checkout
+      commit: 9f2c1ab
+      changedLines: 240
+  # targets 的 params 走**另一套定界符**：$(payload.点号路径) 在触发期由派发器求值
+  # （不是装包时的 {{values.*}}）。整个值恰好一个引用 → 保留原类型，所以
+  # changedLines 到下游仍是整数。
+  targets:
+    - capability: '{{values.project}}-triage'
+      params:
+        repo: $(payload.repo)
+        commit: $(payload.commit)
+        changedLines: $(payload.changedLines)

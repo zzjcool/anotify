@@ -1,0 +1,32 @@
+# 常规分支的终点：不打扰人，只把这次判定留成一份证据文件。
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: '{{values.project}}-audit'
+  displayName: '{{values.project}} 留证'
+spec:
+  params:
+    type: object
+    required: [repo, commit, changedLines]
+    properties:
+      repo:         { type: string }
+      commit:       { type: string }
+      changedLines: { type: integer }
+  next: []
+  run:
+    entrypoint: run.sh
+    files:
+      # 没有 requires：只用到 sh 与 ANOTIFY_* 契约变量，基线 PATH 就够。
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        printf '%s %s %s %s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          "${ANOTIFY_PARAM_REPO:-unknown}" \
+          "${ANOTIFY_PARAM_COMMIT:-unknown}" \
+          "${ANOTIFY_PARAM_CHANGEDLINES:-0}" \
+          >> "${ANOTIFY_ARTIFACT_DIR}/audit.log"
+
+        echo "audit: 已留证（$(wc -l < "${ANOTIFY_ARTIFACT_DIR}/audit.log") 行）"

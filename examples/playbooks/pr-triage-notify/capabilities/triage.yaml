@@ -1,0 +1,54 @@
+# 链头：把事件里的改动量判成「高危 / 常规」，再 emit 给对应的下游。
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: '{{values.project}}-triage'      # 渲染后如 checkout-triage
+  displayName: '{{values.project}} 提交判定'
+spec:
+  # 只有在这里声明过的**顶层字段**才会变成脚本里的 ANOTIFY_PARAM_* 环境变量。
+  # 没声明 = 脚本里拿不到，即使上游传了。
+  params:
+    type: object
+    required: [repo, commit, changedLines]
+    properties:
+      repo:         { type: string }
+      commit:       { type: string }
+      changedLines: { type: integer }
+  # 两个下游。v4 没有端口/没有独立的边，分支写在脚本里（这里同时是环检测与
+  # 回执 unreachable 自检的输入）。裸名 = 每次派发跟随该名字的最新版本。
+  next:
+    - '{{values.project}}-page'
+    - '{{values.project}}-audit'
+  # emit 由节点上的 anode 提供；缺这个命令的节点不会被算作可跑这条能力的节点。
+  requires:
+    commands: [anode]
+  concurrency:
+    maxPerNode: 2
+  run:
+    entrypoint: run.sh
+    files:
+      # 脚本正文同样参与 {{values.*}} 渲染；$(...) / ${...} 原样透传（它们属于 shell）。
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        # 参数名归一规则：大写 + 非字母数字换下划线 + 不插大小写边界，
+        # 所以 changedLines → ANOTIFY_PARAM_CHANGEDLINES（不是 CHANGED_LINES）。
+        repo=${ANOTIFY_PARAM_REPO:-unknown}
+        commit=${ANOTIFY_PARAM_COMMIT:-unknown}
+        lines=${ANOTIFY_PARAM_CHANGEDLINES:-0}
+
+        # 阈值来自 spec.values.threshold（默认 200），装包时被替换成字面量。
+        threshold={{values.threshold}}
+
+        echo "triage: repo=${repo} commit=${commit} lines=${lines} threshold=${threshold}"
+
+        if [ "${lines}" -ge "${threshold}" ]; then
+          echo "triage: 高危 → {{values.project}}-page"
+          anode emit '{{values.project}}-page' \
+            --data "{\"repo\":\"${repo}\",\"commit\":\"${commit}\",\"changedLines\":${lines}}"
+        else
+          echo "triage: 常规 → {{values.project}}-audit"
+          anode emit '{{values.project}}-audit' \
+            --data "{\"repo\":\"${repo}\",\"commit\":\"${commit}\",\"changedLines\":${lines}}"
+        fi

@@ -7,6 +7,7 @@ import { capability } from './f3-capability.mjs';
 import { source } from './f3-source.mjs';
 import { yamlCreate } from './f3-yaml-create.mjs';
 import { observability } from './f3-observability.mjs';
+import { overviewAll } from './f3-overview-all.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
@@ -49,6 +50,11 @@ add('observe-events',d=>observability(d,'events'),{expectHttpStatus:[
   {status:400,path:'/v1/console/events',note:'cursor 绑定 ns+筛选：拿默认 ns 的游标读 prod 必须 400'},
 ]});
 for(const mode of ['index','trace'])add('observe-'+mode,d=>observability(d,mode));
+// observe-index-all：首页**默认**（裸 index.html，无 ?namespace=）= 全部命名空间聚合。
+// 期望值一律从真实 API 现算（/v1/stats?namespace=* + /v1/namespaces），实现在
+// f3-overview-all.mjs；锚点是契约 D5/D7 冻结的 [data-ns-id] / [data-ns-badge] /
+// #latest-flow[data-scope-ns] / #scope-crumb 与既有 KPI id。
+add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
 // 必须 409（task_not_running）——两条都是用例要的拒绝路径。
 add('observe-errors',d=>observability(d,'errors'),{expectHttpStatus:[LOGS_410[0],

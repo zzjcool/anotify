@@ -188,8 +188,13 @@ index:
     trend_live: 实时
     running: 进行中
     running_sub: "当前命名空间所有任务"
+    running_sub_all: 全部命名空间的所有任务
     failed: 异常任务
     failed_sub: "当前命名空间所有任务"
+    failed_sub_all: 全部命名空间的所有任务
+    devices_sub_all: 设备按用户维度，不随命名空间变化
+  aggregate:
+    unsupported: 该口径暂不支持跨命名空间统计
   heatmap:
     title: 事件活动
     subtitle: 近一年 · 每天的事件量
@@ -279,6 +284,8 @@ scope:
   new_ns_failed: "创建失败"
   deployment_wide: "全部署通用"
   deployment_wide_hint: "这一页的内容不随命名空间切换变化"
+  all_namespaces: "全部命名空间"
+  all_sub: "所有命名空间汇总"
 graph:
   zoom_in: 放大
   replay: 重播动画

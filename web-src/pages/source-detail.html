@@ -159,11 +159,16 @@ function preBlock(text) {
   return pre;
 }
 /* 与 docs / trace / message 页共用一套代码块（.code-block/.code-head/.copy-btn/.code-body）：
-   标题 + 一键复制 + 等宽正文。 */
+   标题 + 一键复制 + 等宽正文。
+
+   `title` 为 null = 调用方已经把标签印在容器上（例如 `details > summary`），这里**不渲染**
+   标题节点，只留复制按钮：否则折叠块展开后会在自己身上再出现一行同样的标题，看起来像两段内容。
+   不要用空串/空格占位 —— 那会留下一个空元素，布局仍按"有标题"算。 */
 function codeBlock(title, body) {
   const box = el("div", { class: "code-block" });
   const head = el("div", { class: "code-head" });
-  head.append(txt("span", null, title));
+  const label = title == null ? "" : String(title).trim();
+  if (label) head.append(txt("span", null, label));
   const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy", "复制") });
   copy.addEventListener("click", () => copyText(copy, () => body));
   head.append(copy);
@@ -291,7 +296,8 @@ function yamlBlock(name) {
   const paint = () => {
     holder.replaceChildren();
     if (YAML.status === "ok") {
-      holder.append(codeBlock(t("sources.v4.yaml", "原始 YAML"), YAML.text));
+      /* 标签已在 summary 上：「原始 YAML」只出现一次。 */
+      holder.append(codeBlock(null, YAML.text));
       return;
     }
     if (YAML.status === "error") {

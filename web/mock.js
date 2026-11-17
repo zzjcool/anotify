@@ -1594,6 +1594,19 @@
 		};
 	}
 
+	/* v4 `NamespaceAggregate.tasksByPhase`（resource.yaml · NamespaceStatus，required
+	 * [tasksByPhase, edges]）：按相位数这个 ns 的任务。以前 mock 根本没有 `stats`，
+	 * 于是首页「全部命名空间」的在途/失败只能拿到 undefined —— 服务端派生量必须跟上，
+	 * 否则那两张卡会退化成「该口径暂不支持」而不是真计数。 */
+	function namespaceTasksByPhase(name) {
+		const out = {};
+		for (const t of state.tasks) {
+			if (t.ns !== name) continue;
+			out[t.phase] = (out[t.phase] || 0) + 1;
+		}
+		return out;
+	}
+
 	function namespaceResource(row) {
 		const count = (list) => list.filter((x) => x.ns === row.name).length;
 		return {
@@ -1614,6 +1627,11 @@
 					tasks: count(state.tasks),
 					nodes: state.nodes.filter((n) => nodeEffectiveNamespaces(n).indexOf(row.name) >= 0)
 						.length,
+				},
+				/* 服务端派生量（不落库）：相位计数 + 派生边数。 */
+				stats: {
+					tasksByPhase: namespaceTasksByPhase(row.name),
+					edges: edgeItems(row.name).length,
 				},
 			},
 		};
@@ -4778,10 +4796,11 @@
 	on("GET", /^\/v1\/console\/events$/, (ctx) => {
 		const want = requireNamespace(ctx.query);
 		if (want.err) return want.err;
-		if (!nsRow(want.ns)) return badRequest("namespace_required", "Select one namespace");
 		const trace = ctx.query.get("traceId") || "";
 		const source = ctx.query.get("source") || "";
-		let list = state.events.filter(e => e.ns === want.ns);
+		/* `namespace=*` = 全部命名空间（服务端原生支持）：不再要求一个具体 ns，
+		 * 事件行仍各自带自己的 metadata.namespace（首页的全部模式靠它画徽标）。 */
+		let list = state.events.filter(e => want.ns === "*" || e.ns === want.ns);
 		if (trace) list = list.filter(e => e.traceUID === trace);
 		if (source) list = list.filter(e => e.involvedObject && e.involvedObject.name === source);
 		list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || b.name.localeCompare(a.name));

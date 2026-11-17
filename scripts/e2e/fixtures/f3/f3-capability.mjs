@@ -276,6 +276,21 @@ export async function capability(d){
 				recs.some((r) => /\/capabilities\/f2a-demo\/yaml$/.test(r.url)),
 				"展开才请求 /yaml：" + JSON.stringify(recs.map((r) => r.url)),
 			);
+			const labelSeen = await raw.evaluate((node, phrase) => {
+				let text = "";
+				const walk = (n) => {
+					if (n.nodeType === 3) { text += n.textContent || ""; return; }
+					if (n.nodeType !== 1) return;
+					for (const c of n.childNodes) walk(c);
+				};
+				walk(node);
+				return text.split(phrase).length - 1;
+			}, await page.evaluate(() => window.AnotifyI18n?.["caps.detail.yaml"] || "原始 YAML"));
+			assert.equal(
+				labelSeen,
+				1,
+				"折叠块内部「原始 YAML」只能出现一次（summary 那次算）：展开后多出一行=codeBlock 又渲染了标题",
+			);
 			const yamlText = await raw.textContent();
 			assert.match(yamlText, /apiVersion/, "YAML 块必须含 apiVersion");
 			assert.match(yamlText, /kind: Capability/, "YAML 块必须含 kind: Capability");
