@@ -322,23 +322,24 @@ func TestCapabilityGCWiredByNewApp(t *testing.T) {
 	defer func() {
 		cancel()
 		app.WaitBackground()
+		// 回收事务提交后，连接归还到池可能比 `WaitBackground` 晚一拍（曾以 1/5 概率
+		// 撞到 closeDBForTempDir 的「关库前无在用连接」断言）。这里用**条件等待**而不是
+		// 固定 sleep：真泄漏时 5s 后仍然红，守卫强度不变；只是不再赌时序。
+		waitUntil(t, "后台回收归还 DB 连接", func() bool { return app.DB.Stats().InUse == 0 }, 5*time.Second)
 		closeDBForTempDir(t, app.DB, dir)
 	}()
 
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	// 等后台 GC 真的把 tombstone 回收掉：用同包的 `waitUntil` 轮询（条件等待 +
+	// 超时上限），不要再写裸 `time.Sleep(50ms)` 的固定间隔循环 —— 那是测试纪律守卫
+	// （scripts/check-test-discipline.mjs）要清零的历史形态：固定间隔既拖慢一次通过
+	// 的用例，又会在慢机上把「还没回收」当成「没装配」。
+	waitUntil(t, "tombstone 被后台回收（能力 GC 循环被 NewApp 装配）", func() bool {
 		var n int
 		if err := app.DB.QueryRow(`SELECT count(*) FROM capability_versions WHERE id=?`, c.ID).Scan(&n); err != nil {
 			t.Fatalf("poll capability row: %v", err)
 		}
-		if n == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("20s 内 tombstone 没有被回收：能力 GC 循环没有被 NewApp 装配（或没走 runBackgroundLoop）")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return n == 0
+	}, 20*time.Second)
 }
 
 // TestCapabilityGCPurgeFlipsNamespaceDeleteFromBlockedToAllowed 钉住本卡唯一一个
