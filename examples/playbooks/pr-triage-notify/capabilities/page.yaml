@@ -1,0 +1,48 @@
+# 高危分支的终点：把告警 POST 到 values.alertUrl，并落一份可下载的证据文件。
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: '{{values.project}}-page'
+  displayName: '{{values.project}} 告警'
+spec:
+  params:
+    type: object
+    required: [repo, commit, changedLines]
+    properties:
+      repo:         { type: string }
+      commit:       { type: string }
+      changedLines: { type: integer }
+  next: []                                  # 空 = 终端能力
+  requires:
+    commands: [curl]
+  lifecycle:
+    idempotent: true                        # 短暂基础设施失败允许自动重试
+    timeoutSec: 60
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/sh
+        set -eu
+
+        # ALERT_URL 由 run.env 从 values.alertUrl 注入：整个值恰好一个 {{values.*}} 引用，
+        # 所以类型保留为 string（拼接了常量才会变字符串）。
+        alert_url=${ALERT_URL:?ALERT_URL 未注入}
+        repo=${ANOTIFY_PARAM_REPO:-unknown}
+        commit=${ANOTIFY_PARAM_COMMIT:-unknown}
+        lines=${ANOTIFY_PARAM_CHANGEDLINES:-0}
+
+        # 告警正文：换成企业微信 / Slack / 你自己的网关都只是改这个 JSON 的形状。
+        body=$(printf '{"text":"[%s/%s] %s 改动 %s 行，commit %s"}' \
+          '{{values.project}}' '{{values.env}}' "${repo}" "${lines}" "${commit}")
+
+        echo "page: POST ${alert_url}"
+        curl -fsS -m 10 -X POST -H 'content-type: application/json' --data "${body}" "${alert_url}"
+
+        # ANOTIFY_ARTIFACT_DIR 是本 attempt 专属的导出目录；写进去的文件会出现在
+        # 任务详情的 artifacts 里（可下载、带 sha256）。
+        mkdir -p "${ANOTIFY_ARTIFACT_DIR}"
+        printf '{"verdict":"page","repo":"%s","commit":"%s","changedLines":%s}\n' \
+          "${repo}" "${commit}" "${lines}" > "${ANOTIFY_ARTIFACT_DIR}/verdict.json"
+    env:
+      ALERT_URL: '{{values.alertUrl}}'

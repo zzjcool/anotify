@@ -1,0 +1,6 @@
+{
+  "project": "checkout",
+  "env": "staging",
+  "alertUrl": "https://alerts.example.com/anotify-demo",
+  "threshold": 200
+}
