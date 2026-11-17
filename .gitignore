@@ -71,3 +71,6 @@ node_modules
 design/silk-shots/
 # Go 静态检查工具（make tools 装到这里；不进版本库）
 /.bin/
+
+# === 本地报告（不随代码走）===
+/.reports/
