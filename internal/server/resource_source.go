@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/yamldoc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,6 +23,7 @@ import (
 //
 //	GET    /v1/namespaces/{ns}/sources                       List 信封
 //	POST   /v1/namespaces/{ns}/sources                       创建
+//	POST   /v1/namespaces/{ns}/sources/yaml                  从 YAML 文档创建（同一套语义）
 //	GET    /v1/namespaces/{ns}/sources/{name}                单对象（读投影脱敏）
 //	GET    /v1/namespaces/{ns}/sources/{name}/yaml           存储定义的 YAML 重建（走同一读投影）
 //	PATCH  /v1/namespaces/{ns}/sources/{name}                改 displayName/config/targets/enabled
@@ -91,6 +94,9 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 	mux.Handle("POST "+base, noStore(a.d.session(http.HandlerFunc(a.create))))
 	// Go 1.22+ 的最长匹配：字面段 `/dry-run` 比 `{name}` 更具体，不会歧义。
 	mux.Handle("POST "+base+"/dry-run", noStore(a.d.session(http.HandlerFunc(a.previewInline))))
+	// 同理：字面段 `/yaml` 比 `{name}` 更具体（同 dry-run 口径），且与
+	// `GET …/{name}/yaml` 方法不同、互不干扰。
+	mux.Handle("POST "+base+"/yaml", noStore(a.d.session(http.HandlerFunc(a.createYAML))))
 	mux.Handle("GET "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.get))))
 	// `/yaml` 是同一行的**存储定义重建**（见 srcYAMLDocument 的四条边界）。
 	mux.Handle("GET "+base+"/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.yaml))))
@@ -183,13 +189,58 @@ func (a *sourceAPI) yaml(w http.ResponseWriter, r *http.Request) {
 // 「省略 = 启用、显式 false 才停用」是 HTTP 契约的一层语义，写进 store 会让
 // playbook 安装等内部调用也意外继承这个默认。
 func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
-	ns, err := a.d.authorizePathNamespace(r)
-	if err != nil {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	var spec srcSpecDoc
 	meta, err := decodeWriteEnvelope(r, kindSourceDoc, &spec)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, spec)
+}
+
+// createYAML 处理 POST …/sources/yaml：请求体是一份 Source YAML 文档
+// （`{"yaml": "…"}`），而不是信封 JSON。
+//
+// 与能力域同构（见 capabilityAPI.createYAML）：YAML 只负责变成 canonical JSON，
+// 后面走的就是 JSON 创建的同一条路。所以 kind/config/targets 的校验仍然只有
+// store/sourcespec 一份实现，同名 409 source_name_used 也仍然是唯一索引的事实投影。
+// 凭据面不变：`spec.config.token` / `secret` 可写，响应只走 srcEnvelopeOf 的脱敏投影。
+func (a *sourceAPI) createYAML(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := decodeYAMLRequestBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 源的 metadata 没有额外可写键（不像能力有 version）：白名单就是 name/displayName
+	// + 位置生效的 namespace（POST 不带 resourceVersion）。
+	res, err := yamldoc.Decode(text, writeDocShape(r, reflect.TypeOf(srcSpecDoc{})))
+	if err != nil {
+		writeYAMLError(w, err)
+		return
+	}
+	var spec srcSpecDoc
+	meta, err := decodeWriteEnvelopeBytes(r, res.JSON, kindSourceDoc, &spec)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, spec)
+}
+
+// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）。
+//
+// 再次 authorizePathNamespace 的理由与代价同 capabilityAPI.createCore（签名只需要
+// meta+spec，而 store 的 sources.namespace_id 是内部 id，不能从路径段直接拿来用）。
+func (a *sourceAPI) createCore(w http.ResponseWriter, r *http.Request, meta objectMeta, spec srcSpecDoc) {
+	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return

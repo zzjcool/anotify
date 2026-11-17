@@ -1,8 +1,10 @@
 # anotify v4 · 资源域 HTTP 契约（exact-five 之一，共享组件的家）
 #
 # 本文件是五份 OpenAPI 真源中的 **resource.yaml**：#333 冻结的归属表
-# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，另有 2 条 `/yaml`
-# 只读端点（共 55，归属表待文档 owner 同步）；其余四份
+# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，另有 4 条 `/yaml`
+# 端点（共 57，归属表待文档 owner 同步）——其中 2 条只读（`GET …/{name}/yaml`：
+# 能力的正文全文 / 源的脱敏重建），2 条从 YAML 创建（`POST …/capabilities/yaml` /
+# `POST …/sources/yaml`）；其余四份
 # （events/agent/ingress/auth）通过**相对 `$ref`** 引用本文件的 components：
 #
 #     $ref: './resource.yaml#/components/schemas/Status'
@@ -95,6 +97,49 @@ paths:
               schema: {$ref: '#/components/schemas/Capability'}
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    post:
+      operationId: createCapabilityFromYAML
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "从一份 Capability YAML 文档创建（与 JSON 创建同一套语义）"
+      description: |
+        请求体是**一份 YAML 文档**，装在 JSON 的 `yaml` 字段里（与只读端点
+        `GET …/{name}/yaml` 同一个 `ResourceYAML` shape，所以「取 → 改 → 贴回」
+        是一次 schema 复用的往返）。不用 `Content-Type: application/yaml`：本仓
+        YAML 正文一律作为字符串装在 JSON 里（playbook 的 `spec.files` 同款）。
+
+        处理链路与 `POST …/capabilities` 完全一致：YAML 先在文档层做严格解析
+        （语法 / 未知字段 / 类型 / `metadata.name` 必填，带行号与字段路径），
+        转成 canonical JSON 后走同一个严格信封解码，再走同一套 store 语义。
+        所以版本处置与 JSON 创建逐字相同：省略 `metadata.version` 时按内容
+        （foldKey）折叠复用已有行；显式版本已存在且内容不同 →
+        400 `version_content_immutable`；显式同版本同内容 → 201 复用。
+
+        文档层问题一律 400，细节在 `details.causes[]`：
+        `reason` ∈ `invalid_yaml`（语法错 / 重复键 / 多文档 / 锚点别名 / 自定义
+        tag / 非字符串键 / 空文档）、`unknown_field`、`value_invalid`；
+        顶层 `reason` 是第一条 cause 的 reason，`message` 带「第 N 行」定位。
+
+        `status` 仍不可写（400 `status_not_writable`）：多文档导入（一次创建多个
+        资源）刻意不支持，一份文档只建一个资源。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResourceYAML'}
+      responses:
+        '201':
+          description: "从 YAML 创建出的 Capability（version 与 digest 是真实派生值）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/Status401'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/capabilities/{name}:
@@ -359,6 +404,42 @@ paths:
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/sources/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+    post:
+      operationId: createSourceFromYAML
+      tags: [sources]
+      security: [{session: []}]
+      summary: "从一份 Source YAML 文档创建（与 JSON 创建同一套语义）"
+      description: |
+        请求体是**一份 Source YAML 文档**，装在 JSON 的 `yaml` 字段里（与
+        `GET …/{name}/yaml` 同一个 `ResourceYAML` shape）。
+
+        具体校验与 JSON 创建没有第二份实现：`kind` / `config` / `targets` 的判据仍
+        只在 store / sourcespec 一处（YAML 层只负责文档形状与行号）。同名源 →
+        409 `source_name_used`（`UNIQUE(namespace_id,name)` 是硬约束，不做 upsert）。
+
+        凭据面不变：`spec.config.token` / `spec.config.secret` **可写**（与 JSON
+        同义），但响应只走读投影——它们永不回显，webhook 用 `hookUrl` /
+        `secretSet` 代替。`spec.config.hookUrl` / `secretSet` 出现在文档里 →
+        400 `unknown_field`（只读投影不可写回），错误消息不含 config 原文。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResourceYAML'}
+      responses:
+        '201':
+          description: "从 YAML 创建出的 Source（config 已脱敏）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Source'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/Status401'}
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
@@ -1612,12 +1693,20 @@ components:
     ResourceYAML:
       type: object
       description: |
-        资源的 YAML 文本（`…/capabilities/{name}/yaml` 与 `…/sources/{name}/yaml` 两个
-        只读端点的响应体）。**刻意不套信封**：信封规则的判据是「有 apiVersion + metadata」，
+        资源的 YAML 文本。两个方向都用这**同一个 shape**：
+
+          - 只读端点的响应体（`GET …/capabilities/{name}/yaml`、
+            `GET …/sources/{name}/yaml`）；
+          - 两条 `POST …/yaml` 的请求体（`POST …/capabilities/yaml`、
+            `POST …/sources/yaml`：把一份 YAML 文档贴回来创建资源）。
+
+        **刻意不套信封**：信封规则的判据是「有 apiVersion + metadata」，
         给这个响应套信封会把它伪装成一种资源 kind。
 
-        `yaml` 里是**存储定义的规范化重建**（不是用户原始字节；用户原文只在 playbook 包里），
-        泄露面只到该资源的读投影（源的 `config.token` / `config.secret` 永不出现）。
+        只读方向的 `yaml` 里是**存储定义的规范化重建**（不是用户原始字节；用户原文
+        只在 playbook 包里），泄露面只到该资源的读投影（源的 `config.token` /
+        `config.secret` 永不出现）；写入方向接受任意单文档 YAML（多文档、锚点/别名
+        会被拒），`spec.config.token` / `secret` 是可写字段。
       additionalProperties: false
       required: [yaml]
       properties:
