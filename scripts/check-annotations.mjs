@@ -261,7 +261,7 @@ export const ANCHOR_MIN = 4;
 // 没有挪走真 claim）；D 由 432 降到 387 —— 下降全部来自 docs/perf 两份体检报告加
 // `snapshot-doc:`（定格数字 + 文内复算命令，不是「现在是多少」的承诺）。
 export const CLAIM_UNBACKED_BASELINE = 300;
-export const COUNT_UNMARKED_BASELINE = 387;
+export const COUNT_UNMARKED_BASELINE = 386;
 
 /* ---------- 判据 ---------- */
 
