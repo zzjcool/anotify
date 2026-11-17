@@ -1792,12 +1792,79 @@ components:
           items: {$ref: '#/components/schemas/CapabilityDeployCandidate'}
         resolved: {$ref: '#/components/schemas/CapabilityResolved'}
         observed:
-          type: object
-          description: "观测到的派生事实；当前恒 `{}`（不编造计数）"
-          additionalProperties: true
+          # 从没跑过时是空对象 `{}`（四个键都不写）；已跑但窗口内零条是 tasks:{total:0,failed:0}。
+          $ref: '#/components/schemas/CapabilityObserved'
         installedFrom:
           type: string
           description: "初次安装来源（`ins_…`）；手工创建的能力没有这个键"
+    CapabilityObserved:
+      type: object
+      description: |
+        观察到的派生事实（capability.md §2「observed」）。
+
+        **没有事实时是 `{}`**：四个键全部不写。这是刻意的向后兼容（本域早先恒返回
+        `{}`），也让「从没跑过」不需要额外哨兵。
+      additionalProperties: false
+      properties:
+        taskId:
+          type: string
+          description: "最近一个逻辑任务的 id；没有可保留的历史时整个键不出现（不是空串）"
+        emits:
+          type: array
+          description: "最近任务自己的 emit（按发生顺序，至多 50 条）"
+          items: {$ref: '#/components/schemas/CapabilityObservedEmit'}
+        pruned:
+          type: array
+          description: "最近任务被剪掉的下游（按发生顺序，至多 50 条）"
+          items: {$ref: '#/components/schemas/CapabilityObservedPrune'}
+        tasks:
+          $ref: '#/components/schemas/CapabilityObservedTasks'
+    CapabilityObservedEmit:
+      type: object
+      description: "一次 emit：交给了谁、带了哪些字段、有没有真的建出任务"
+      additionalProperties: false
+      required: [to, fields, ok]
+      properties:
+        to:
+          type: string
+          description: "目标引用（`name` 或 `name@version`）"
+        fields:
+          type: array
+          description: "本次请求体的**键名**（排序后）；请求体没有键时是 `[]` 而不是 null"
+          items: {type: string}
+        ok:
+          type: boolean
+          description: |
+            这次 emit 是否**真的建出了任务**：剪枝回执（`taskId:null` + `pruned`）为 `false`；
+            没有回执的旧行视为 `true`。注意下游任务**执行失败**仍是 `true` —— 「发出去没有」
+            与「发出去之后成不成」是两个字段（后者看 `tasks.failed`）。
+    CapabilityObservedPrune:
+      type: object
+      description: "一条剪枝事实：事件收到了，下游没建任务"
+      additionalProperties: false
+      required: [to, reason, detail]
+      properties:
+        to:
+          type: string
+          description: "没被派发出去的那个下游"
+        reason:
+          type: string
+          description: "剪枝码（`param_missing` / `param_schema` / `param_type` / `no_target` / `event_schema`）"
+        detail:
+          type: string
+          description: "人话补充，可为空串；不参与任何判断"
+    CapabilityObservedTasks:
+      type: object
+      description: "近 24h 的计数——只够判断「最近是不是老挂」，不是统计报表"
+      additionalProperties: false
+      required: [total, failed]
+      properties:
+        total:
+          type: integer
+          description: "窗口内该能力的任务总数"
+        failed:
+          type: integer
+          description: "其中 `phase=failed` 的数量"
     CapabilityDeployCandidate:
       type: object
       required: [name, online]
