@@ -65,7 +65,19 @@ func (w *walker) intValue(n *yaml.Node, path string) any {
 	// 十进制字面量原文照抄——这是「1700000000 不能变成 1.7e+09」的唯一保证。
 	// 走 Decode(&int64) 再格式化对 2^53 内的值也等价，但中间类型一旦被改成
 	// float64（本仓真这么错过一次），超过 2^53 的 id / 时间戳就会静默改值。
-	if plainIntPattern.MatchString(lit) {
+	//
+	// 与 floatValue 对称的判断：**匹配 `-?[0-9]+` 不等于「合法 JSON number」**。
+	// `010` / `00` / `-010` / `01067` 这类带前导零的写法在 YAML 里是八进制
+	// （yaml.v3：010 → 8、01067 → 567），原文照抄会让 encoding/json 在编码阶段报
+	// `json: invalid number literal "01067"` —— 一份合法 YAML 被 400 拒掉。
+	// 所以只照抄同时满足 JSON number 语法的字面量（RFC 8259 不允许前导零）；
+	// 其余回落到下面的 Decode(&int64)，输出 yaml.v3 解出的十进制值。
+	//
+	// 为什么不用「去掉前导零」的字符串变换代替回落：那会把 010 变成 10，**改值**。
+	// 为什么 plainIntPattern 也不能省：isJSONNumber 是 JSON 语法判据，它会放行
+	// `1e3`（`!!int 1e3` 这种显式标 int 的写法），而 `1e3` 进 JSON 后解不进 int64
+	// 目标字段——必须由 plainIntPattern 先把它挡到回落分支里。
+	if plainIntPattern.MatchString(lit) && isJSONNumber(lit) {
 		return json.Number(lit)
 	}
 	var i int64

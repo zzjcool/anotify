@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -768,23 +769,34 @@ func TestNumberFidelity(t *testing.T) {
 		field   string // count（int64）或 ratio（float64）
 		literal string
 		want    string // JSON 里必须出现的 `"field":<want>`
+		// notHas：JSON 里**不**允许出现的片段（数字不得被照抄回字面量）。
+		notHas []string
 		// decode 为真时还断言能解进 DTO 且数值正确（int 用 int64，float 用 float64）。
 		decode bool
 	}{
-		{"十进制大整数原文照抄", "count", "1700000000", `"count":1700000000`, true},
-		{"负整数", "count", "-42", `"count":-42`, true},
-		{"负零", "count", "-0", `"count":-0`, true},
-		{"十六进制转十进制", "count", "0x1f", `"count":31`, true},
-		{"下划线分隔转十进制", "count", "1_000", `"count":1000`, true},
-		{"加号前缀转十进制", "count", "+5", `"count":5`, true},
-		{"显式 !!int 的浮点字面量转十进制", "count", "!!int 1e3", `"count":1000`, true},
-		{"超出 int64 的整数保持字面量", "count", "18446744073709551615", `"count":18446744073709551615`, false},
-		{"超出 int64 的十六进制转十进制", "count", "0xFFFFFFFFFFFFFFFF", `"count":18446744073709551615`, false},
-		{"浮点原文照抄", "ratio", "1.5", `"ratio":1.5`, true},
-		{"浮点保留尾零", "ratio", "1.50", `"ratio":1.50`, true},
-		{"指数浮点归一到十进制", "ratio", "1e9", `"ratio":1000000000`, true},
-		{"带正号指数归一到十进制", "ratio", "1e+09", `"ratio":1000000000`, true},
-		{"小数缺整数位", "ratio", ".5", `"ratio":0.5`, true},
+		{"十进制大整数原文照抄", "count", "1700000000", `"count":1700000000`, nil, true},
+		{"负整数", "count", "-42", `"count":-42`, nil, true},
+		{"负零", "count", "-0", `"count":-0`, nil, true},
+		{"十六进制转十进制", "count", "0x1f", `"count":31`, nil, true},
+		{"下划线分隔转十进制", "count", "1_000", `"count":1000`, nil, true},
+		{"加号前缀转十进制", "count", "+5", `"count":5`, nil, true},
+		{"显式 !!int 的浮点字面量转十进制", "count", "!!int 1e3", `"count":1000`, nil, true},
+		{"超出 int64 的整数保持字面量", "count", "18446744073709551615", `"count":18446744073709551615`, nil, false},
+		{"超出 int64 的十六进制转十进制", "count", "0xFFFFFFFFFFFFFFFF", `"count":18446744073709551615`, nil, false},
+		// 带前导零的十进制字面量：yaml.v3 把它们当**八进制**（探针实测：
+		// 010 → 8、00 → 0、-010 → -8、01067 → 567）。旧实现把原文照抄进 JSON，
+		// encoding/json 在编码阶段报 `json: invalid number literal "01067"`，
+		// 一份合法 YAML 被 400 拒掉（reviewer 抓到的真 bug）。
+		// 期望值 = yaml.v3 的 Decode(&int64) 结果，**不是**「去掉前导零」（那会改值）。
+		{"前导零八进制 010 → 8（不是 010、不是 10）", "count", "010", `"count":8`, []string{"010"}, true},
+		{"前导零全零 00 → 0", "count", "00", `"count":0`, []string{"00"}, true},
+		{"负的前导零八进制 -010 → -8", "count", "-010", `"count":-8`, []string{"-010", "-10"}, true},
+		{"多位数前导零八进制 01067 → 567", "count", "01067", `"count":567`, []string{"01067", "1067"}, true},
+		{"浮点原文照抄", "ratio", "1.5", `"ratio":1.5`, nil, true},
+		{"浮点保留尾零", "ratio", "1.50", `"ratio":1.50`, nil, true},
+		{"指数浮点归一到十进制", "ratio", "1e9", `"ratio":1000000000`, nil, true},
+		{"带正号指数归一到十进制", "ratio", "1e+09", `"ratio":1000000000`, nil, true},
+		{"小数缺整数位", "ratio", ".5", `"ratio":0.5`, nil, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -802,6 +814,16 @@ func TestNumberFidelity(t *testing.T) {
 			if strings.Contains(got, "e+") || strings.Contains(got, "E+") {
 				t.Fatalf("JSON 出现科学计数法：%s", got)
 			}
+			// 字面量不得被原样抄回（前导零 / 非十进制写法的回归护栏）。
+			for _, bad := range tc.notHas {
+				if strings.Contains(got, bad) {
+					t.Fatalf("JSON 原样照抄了 %q：%s", bad, got)
+				}
+			}
+			// 定位：所有用例的字面量都落在第 6 行，LineOf 必须查得到。
+			if line := res.LineOf("spec." + tc.field); line != 6 {
+				t.Fatalf("LineOf(spec.%s) = %d, want 6（%s）", tc.field, line, got)
+			}
 			if !tc.decode {
 				return
 			}
@@ -811,7 +833,76 @@ func TestNumberFidelity(t *testing.T) {
 			if err := json.Unmarshal(res.JSON, &env); err != nil {
 				t.Fatalf("解不进 DTO：%v（%s）", err, got)
 			}
+			if env.Spec == nil {
+				t.Fatalf("spec 丢了：%s", got)
+			}
+			// 值必须等于表里 `want` 的那一串（即 yaml.v3 语义下的真实值）。
+			wantNum := tc.want[strings.LastIndexByte(tc.want, ':')+1:]
+			switch tc.field {
+			case "count":
+				wantInt, perr := strconv.ParseInt(wantNum, 10, 64)
+				if perr != nil {
+					t.Fatalf("表里的 want 不是十进制整数：%q", wantNum)
+				}
+				if env.Spec.Count != wantInt {
+					t.Fatalf("count = %d, want %d（%s）", env.Spec.Count, wantInt, got)
+				}
+			case "ratio":
+				wantFloat, perr := strconv.ParseFloat(wantNum, 64)
+				if perr != nil {
+					t.Fatalf("表里的 want 不是浮点数：%q", wantNum)
+				}
+				if env.Spec.Ratio != wantFloat {
+					t.Fatalf("ratio = %v, want %v（%s）", env.Spec.Ratio, wantFloat, got)
+				}
+			}
 		})
+	}
+}
+
+// TestInfProblemHasLocation 钉死「无法表示成 JSON 的数字」的错误形状（契约 §1.6/§1.7）：
+// 必须带 Path + Line（客户端才定位得到），消息不得回显字面量。
+// 这是「YAML 的 .inf / .nan 在 JSON 里没有对应物」的唯一用户可见出口。
+func TestInfProblemHasLocation(t *testing.T) {
+	doc := "apiVersion: anotify/v1\nkind: Capability\nmetadata:\n  name: n\nspec:\n  ratio: .inf\n"
+	res, err := yamldoc.Decode([]byte(doc), testShape())
+	if err == nil {
+		t.Fatalf("期望失败，实际成功：%s", res.JSON)
+	}
+	var ye *yamldoc.Error
+	if !errors.As(err, &ye) {
+		t.Fatalf("期望 *yamldoc.Error，实际 %T：%v", err, err)
+	}
+	if len(ye.Problems) != 1 {
+		t.Fatalf("问题数 = %d：\n%s", len(ye.Problems), ye.Error())
+	}
+	p := ye.Problems[0]
+	if p.Reason != "value_invalid" {
+		t.Fatalf("Reason = %q", p.Reason)
+	}
+	// 定位必须可用：Path 非空、Line 是字面量所在行。
+	if p.Path == "" || p.Path != "spec.ratio" {
+		t.Fatalf("Path = %q, want spec.ratio", p.Path)
+	}
+	if p.Line == 0 || p.Line != 6 {
+		t.Fatalf("Line = %d, want 6", p.Line)
+	}
+	if !strings.Contains(p.Message, "无法表示成 JSON 数字") {
+		t.Fatalf("Message = %q", p.Message)
+	}
+	// §1.7 红线：消息里不得出现标量字面量。
+	for _, bad := range []string{"inf", "Inf", "INF", "nan", "NaN", ".inf"} {
+		if strings.Contains(p.Message, bad) {
+			t.Fatalf("Message 回显了字面量 %q：%q", bad, p.Message)
+		}
+	}
+	// causes 同样带定位（handler 只下发 Causes）。
+	causes := ye.Causes()
+	if len(causes) != 1 || causes[0].Field != "spec.ratio" {
+		t.Fatalf("causes = %#v", causes)
+	}
+	if !strings.Contains(causes[0].Message, "第 6 行") {
+		t.Fatalf("cause.Message = %q，缺行号前缀", causes[0].Message)
 	}
 }
 

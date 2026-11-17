@@ -1,6 +1,7 @@
 package yamldoc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -51,6 +52,49 @@ func TestNodeReject(t *testing.T) {
 				t.Errorf("Message = %q，缺少 %q", got.Message, tc.has)
 			}
 		})
+	}
+}
+
+// marshalCanonical 的失败分支只能白盒测：数字在 scalarValue 里就过了 isJSONNumber /
+// formatFloat，`.inf` / `.nan` 在 badNumber 就被拒，所以从公开 API 到不了这里。
+// 但它必须「不可能静默」：带行号，且**绝不**转发 encoding/json 的错误文本——
+// 那段文本带标量字面量（reviewer 抓到的 `json: invalid number literal "01067"` 就是它）。
+func TestMarshalProblem(t *testing.T) {
+	// 先证明「为什么不转发 err」：编码器的错误文本里就有字面量。
+	_, encErr := marshalCanonical(json.Number("01067"))
+	if encErr == nil {
+		t.Fatal("encoding/json 应当拒绝 json.Number(\"01067\")")
+	}
+	if !strings.Contains(encErr.Error(), "01067") {
+		t.Fatalf("前提变了：编码错误文本里没有字面量：%v", encErr)
+	}
+
+	e := marshalProblem(&yaml.Node{Kind: yaml.MappingNode, Line: 4})
+	if len(e.Problems) != 1 {
+		t.Fatalf("问题数 = %d", len(e.Problems))
+	}
+	p := e.Problems[0]
+	if p.Reason != reasonValueInvalid {
+		t.Errorf("Reason = %q, want %q", p.Reason, reasonValueInvalid)
+	}
+	// 文档级问题：Path 为空是 Problem 对这个形状的定义（编码失败的是整棵树）。
+	if p.Path != "" {
+		t.Errorf("Path = %q, want \"\"（文档级）", p.Path)
+	}
+	if p.Line != 4 {
+		t.Errorf("Line = %d, want 4（根节点行）", p.Line)
+	}
+	if p.Message == "" {
+		t.Error("Message 为空")
+	}
+	for _, bad := range []string{"01067", "invalid number literal", encErr.Error()} {
+		if strings.Contains(p.Message, bad) {
+			t.Errorf("Message 回显了编码器细节 %q：%q", bad, p.Message)
+		}
+	}
+	// nil 根节点不得 panic（防御性：调用方将来可能换源）。
+	if got := marshalProblem(nil); len(got.Problems) != 1 || got.Problems[0].Line != 0 {
+		t.Errorf("marshalProblem(nil) = %#v", got)
 	}
 }
 

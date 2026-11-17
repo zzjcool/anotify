@@ -178,7 +178,7 @@ func Decode(data []byte, shape Shape) (*Result, error) {
 	}
 	raw, err := marshalCanonical(val)
 	if err != nil {
-		return nil, fatal(Problem{Reason: reasonValueInvalid, Message: "无法序列化成 JSON：" + err.Error()})
+		return nil, marshalProblem(root)
 	}
 	return &Result{JSON: raw, LineOf: w.lineOf}, nil
 }
@@ -367,6 +367,29 @@ func allowedTag(tag string) bool {
 		return true
 	}
 	return false
+}
+
+// marshalProblem 是 canonical JSON 编码失败时的兜底问题（正常输入到不了这里：
+// 数字在 scalarValue 里已过 isJSONNumber / formatFloat，`.inf` / `.nan` 在 badNumber
+// 就被拒）。留着它是为了让「编码失败」不可能静默 —— 一旦真发生，客户端至少拿到定位。
+//
+// 两条纪律：
+//   - **不拼 err.Error()**：encoding/json 的编码错误会带上标量字面量
+//     （`json: invalid number literal "01067"`），转发它等于开了一条凭据回显通道
+//     （契约 §1.7 红线）。消息只做类型性描述。
+//   - Line 取根节点、Path 为空：失败的是整棵树，没有单一 culprit 路径可归，
+//     「Path 为空 = 文档级问题」正是 Problem 对这个形状的定义。
+func marshalProblem(root *yaml.Node) *Error {
+	line := 0
+	if root != nil {
+		line = root.Line
+	}
+	return fatal(Problem{
+		Reason:  reasonValueInvalid,
+		Path:    "",
+		Line:    line,
+		Message: "文档里有值无法表示成 JSON（YAML 的 .inf / .nan 没有 JSON 对应物）",
+	})
 }
 
 func marshalCanonical(v any) ([]byte, error) {
