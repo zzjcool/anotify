@@ -55,7 +55,21 @@ markdown 围栏块，目录下没有一个 `.yaml`），这里的文件是要被
    和 `curl`（page 能力用）。没有节点时安装照样成功、事件照样接收，但任务会停在
    `pending`，能力的 `NodesAvailable` 条件不是 `Valid`（`NoMatchingNode`）。
 
-## 五步把它装进空环境
+## 方式一：控制台（最快，先走一遍）
+
+不写命令也能装 —— 控制台走的是同一套端点：
+
+1. `playbooks.html` → 「导入」→ 选**目录**上传 `examples/playbooks/pr-triage-notify`。
+   顶层目录名会被剥掉，路径按包根算；包名会从 `playbook.yaml` 的 `metadata.name` 自动填好。
+   提交后出现「打开」链接（同名再传会 409 `slug_taken`，并给出去详情页的入口）。
+2. 打开详情页：`spec.values` 已经被渲染成表单，填 `project` 与 `alertUrl`，其余留空（= 用 schema 默认值）。
+3. 依次点「渲染」→「试运行」→「安装」：第一个只回渲染后的文档，第二个是 `dryRun: true`（0 写入），
+   最后一个才落库。回执按 `created / skipped / upgraded / external / pending / notes` 分区展示。
+4. 把 `project` 改成另一个值再点一次「安装」，就是第二套并存的链。
+
+下面的 curl 是同一件事的可脚本版本，无人值守环境用它。
+
+## 方式二：curl 五步
 
 下面的 `NS=default`；换成别的命名空间就改这个变量。
 
