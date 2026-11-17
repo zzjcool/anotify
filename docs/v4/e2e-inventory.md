@@ -79,6 +79,15 @@
 （`git diff --stat 66d926a 3651707 -- scripts/e2e/suites/{lang_hint,recovery_next,p2_guards}.mjs` 为空），
 且在本基线实跑全绿 —— 它们不碰 v3 删除掉的 API 形状，所以不需要迁移。
 
+### `frontend` 套件里的用例清单
+
+用例清单的唯一注册表是 `scripts/e2e/fixtures/f3/f3-cases.mjs`（一串 `add(id, run)`），
+本文件不复制它。2026-11-16 新增一条（**不新增套件**：注册表大小与端口表是冻结常量）：
+
+| 用例 | 实现 | 覆盖什么 |
+|---|---|---|
+| `observe-index-all` | `scripts/e2e/fixtures/f3/f3-overview-all.mjs` | 首页总览**默认「全部命名空间」聚合**（契约 `.reports/overview-allns-contract.md` D1/D2/D5/D7）。六条断言：① 裸 `index.html` 的 KPI 等于从 `/v1/stats?namespace=*` + Σ`/v1/namespaces`（`tasksByPhase`）**现算**的聚合值（不写死数字）且既有 id 都在；② 全部模式的 `[data-ns-id="*"][aria-checked="true"]`、`#scope-crumb`=i18n `scope.all_namespaces`、逐行 `[data-ns-badge]`=事件自己的 ns、`#latest-flow[data-scope-ns]`、371 格热力图；③ `?namespace=prod` 只显示该 ns（`#kpi-total`=prod 单值 ≠ 聚合值、无徽标、uid 全属 prod）；④⑤ 选择器双向切换与 URL 同步；⑥ `reload()` 后两种模式都保持 |
+
 ## 3. 五个 FE 套件的验收 authority（#338 冻结裁决）
 
 原文：`.pi-orchestrator/v4/issues/dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。

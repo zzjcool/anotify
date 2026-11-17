@@ -188,8 +188,13 @@ index:
     trend_live: ライブ
     running: 実行中
     running_sub: "この名前空間の全タスク"
+    running_sub_all: すべてのネームスペースの全タスク
     failed: 異常タスク
     failed_sub: "この名前空間の全タスク"
+    failed_sub_all: すべてのネームスペースの全タスク
+    devices_sub_all: デバイスはユーザー単位で、ネームスペースによって変わりません
+  aggregate:
+    unsupported: この指標はまだネームスペースをまたいで集計できません
   heatmap:
     title: イベントアクティビティ
     subtitle: 過去1年 · 1日あたりのイベント数
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "新しいネームスペースの slug（小文字・数字・ハイフン）"
   new_ns_failed: "作成に失敗しました"
   deployment_wide: "デプロイ全体で共通"
+  all_namespaces: "すべてのネームスペース"
+  all_sub: "すべてのネームスペースの合計"
   deployment_wide_hint: "このページはデプロイ全体で共通で、名前空間の切り替えでは変わりません"
 graph:
   zoom_in: 拡大

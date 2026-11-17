@@ -188,8 +188,13 @@ index:
     trend_live: En vivo
     running: En curso
     running_sub: "Todas las tareas del espacio"
+    running_sub_all: Todas las tareas de todos los espacios
     failed: Tareas con error
     failed_sub: "Todas las tareas del espacio"
+    failed_sub_all: Todas las tareas de todos los espacios
+    devices_sub_all: Los dispositivos son por usuario y no cambian al cambiar de espacio de nombres
+  aggregate:
+    unsupported: Esta métrica aún no se puede agregar entre espacios de nombres
   heatmap:
     title: Actividad de eventos
     subtitle: Último año · volumen diario
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
   new_ns_failed: "Error al crear"
   deployment_wide: "Todo el despliegue"
+  all_namespaces: "Todos los espacios de nombres"
+  all_sub: "Suma de todos los espacios de nombres"
   deployment_wide_hint: "Esta página es común a todo el despliegue y no cambia al cambiar de espacio de nombres"
 graph:
   zoom_in: Acercar

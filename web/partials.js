@@ -815,7 +815,12 @@
 	// v4 起列表是 `NamespaceList` 信封：条目读 `metadata.name`（slug，也是路径
 	// 里的 {namespace}）与 `metadata.displayName`（人读名）。`data-ns-id` 属性
 	// 保留给 e2e 定位，值就是 namespace name。
-	async function mountNamespaceSwitcher(box, slot) {
+	async function mountNamespaceSwitcher(box, slot, opts) {
+		/* 「全部命名空间」只由 mountLayout({scopeAll:true}) 的页面渲染（今天是总览页）。
+		 * 这里只是**多一项可选**：其他页面不传 = DOM 与行为逐字不变。 */
+		const switcher = opts || {};
+		const showAll = !!switcher.scopeAll;
+		const allActive = showAll && !!switcher.scopeAllActive;
 		/* 失败路径：骨架让位（不再预留 53px）。侧栏一次性上移，用户看到的就是
 		 * 「没有切换器」—— 与今天「加载失败就不渲染」的行为一致（已知遗留）。 */
 		const giveUp = () => {
@@ -857,14 +862,21 @@
 			return;
 		}
 
-		// 存着的选择可能已经失效（换了账号、删了这个命名空间），回落到第一个
-		const nsId = list.some((n) => n.name === scopeNamespace())
-			? scopeNamespace()
-			: (list[0] || {}).name || "";
+		// 存着的选择可能已经失效（换了账号、删了这个命名空间），回落到第一个。
+		// 全部模式下**不回落**：视图是「全部命名空间」，没有任何具体 ns 被选中
+		// （回落会把 #prod 画成选中态，与 KPI / 事件流的聚合口径自相矛盾）。
+		const nsId = allActive
+			? ""
+			: list.some((n) => n.name === scopeNamespace())
+				? scopeNamespace()
+				: (list[0] || {}).name || "";
 
 		const nsOf = () => list.find((n) => n.name === nsId) || list[0] || null;
 
 		/* ---- 触发器：# + 命名空间 + 箭头（没有第二个维度了） ---- */
+		/* 全部模式下 lead 是 `*`（与 URL 的 `?namespace=*` 同形）：写 `#` 会读成
+		 * 「真的有一个叫『全部命名空间』的命名空间」。 */
+		const hashEl = el("span", { class: "scope-hash", text: "#" });
 		const nsText = el("span", { class: "scope-ns" });
 		const trigger = el(
 			"button",
@@ -875,7 +887,7 @@
 				"aria-expanded": "false",
 				"aria-label": t("scope.switcher_label", "切换命名空间"),
 			},
-			el("span", { class: "scope-hash", text: "#" }),
+			hashEl,
 			el("span", { class: "scope-text" }, nsText),
 			icon(["M6 9l6 6 6-6"], "h-3.5 w-3.5 scope-chevron"),
 		);
@@ -905,9 +917,71 @@
 				el("span", { class: "scope-item-sub", "data-raw-content": "", text: ns.name }),
 				checked ? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check") : null,
 			);
-			b.addEventListener("click", () => switchScope(ns.name));
+			b.addEventListener("click", () => {
+				/* 首页（声明了 scopeAll 的页面）选具体 ns：URL 是首页视图的唯一真源，
+				 * 所以跳 `index.html?namespace=<ns>` 整页重载；同时落盘让其他页面跟随
+				 * （与 switchScope 的落盘语义一致，只是目标是首页的显式 URL）。
+				 * 其他页面仍走既有 switchScope（内部 reload），一字不改。 */
+				if (showAll) {
+					saveScope({ namespace: ns.name });
+					navigateKeepingQuery((url) =>
+						url.searchParams.set("namespace", ns.name),
+					);
+					return;
+				}
+				switchScope(ns.name);
+			});
 			return b;
 		};
+
+		/* 「全部命名空间」项（只有 scopeAll 页面有，D7 的 DOM 契约）：
+		 *   button.scope-item[data-ns-id="*"] role=menuitemradio aria-checked
+		 *     > .scope-item-name = scope.all_namespaces
+		 *     > .scope-item-sub  = scope.all_sub
+		 * 名字/副行是 i18n 文案（不是数据），所以不带 data-raw-content。 */
+		const allItem = () => {
+			const b = el(
+				"button",
+				{
+					type: "button",
+					class: "scope-item",
+					role: "menuitemradio",
+					"aria-checked": allActive ? "true" : "false",
+					"data-ns-id": "*",
+				},
+				el("span", { class: "scope-hash", text: "*" }),
+				el("span", {
+					class: "scope-item-name",
+					text: t("scope.all_namespaces"),
+				}),
+				el("span", { class: "scope-item-sub", text: t("scope.all_sub") }),
+				allActive
+					? icon(["M20 6L9 17l-5-5"], "h-3.5 w-3.5 scope-check")
+					: null,
+			);
+			b.addEventListener("click", goAllNamespaces);
+			return b;
+		};
+
+		/* 切到「全部命名空间」：去掉 URL 的 `?namespace=` 再整页重载（URL 是唯一真源，
+		 * 不 reload 的话页面里的数据还是上一个 ns 的）。**不写 localStorage** ——
+		 * 其他页面永远是单 ns，不该被首页的聚合视图带歪（D1/D5）。 */
+		function goAllNamespaces() {
+			navigateKeepingQuery((url) => url.searchParams.delete("namespace"));
+		}
+
+		/* 导航到 `url` 改过的同一页（保留 lang / u 等其余 query）：scope 切换必须是
+		 * **整页**导航，页面里所有读模型都得重新取。file:// 等拼不出绝对 URL 的环境
+		 * 退回首页裸链接（那里没有别的 query 可保）。 */
+		function navigateKeepingQuery(mutate) {
+			try {
+				const url = new URL(location.href);
+				mutate(url);
+				location.assign(url.href);
+			} catch (e) {
+				location.assign("index.html");
+			}
+		}
 
 		// 新建：v4 信封 `{apiVersion,kind,metadata:{name,displayName},spec:{}}`。
 		// name 就是路径里的 {namespace}（slug 语义）；组织已经不是前端概念。
@@ -986,11 +1060,17 @@
 		const paint = () => {
 			const n = nsOf();
 			nsText.removeAttribute("data-raw-content");
-			nsText.textContent = n
-				? `${n.displayName} · ${n.name}`
-				: t("scope.none", "（还没有命名空间）");
-			if (n) nsText.setAttribute("data-raw-content", "");
-
+			if (allActive) {
+				// 全部命名空间：触发器的文字就是这一项本身，不借任何具体 ns 的名字。
+				hashEl.textContent = "*";
+				nsText.textContent = t("scope.all_namespaces");
+			} else {
+				hashEl.textContent = "#";
+				nsText.textContent = n
+					? `${n.displayName} · ${n.name}`
+					: t("scope.none", "（还没有命名空间）");
+				if (n) nsText.setAttribute("data-raw-content", "");
+			}
 			menu.textContent = "";
 			menu.append(
 				el(
@@ -1000,6 +1080,8 @@
 					plus,
 				),
 			);
+			// 「全部命名空间」排在具体 ns 之前：它是一个**范围**，其余是同级的取值。
+			if (showAll) menu.append(allItem());
 			if (!list.length) {
 				menu.append(empty);
 				return;
@@ -1063,7 +1145,8 @@
 		paint();
 		// 纠正落盘的选择：存着的那条可能已不存在，写回真正生效的 namespace name
 		// （空列表时写空串，语义 = "确实没有命名空间"，别留一个不存在的值）。
-		saveScope({ namespace: nsId });
+		// 全部模式下**跳过**：这里没有「生效的某一个 ns」，写盘只会把别的页面带歪。
+		if (!allActive) saveScope({ namespace: nsId });
 	}
 
 	/* 导航 id → 所属分组标题。顶栏上下文（SH-4）用：一个页面属于“工作台 / 资源 / 管理”，
@@ -1083,8 +1166,6 @@
 	})();
 
 	function mountLayout(opts) {
-		// 侧栏、首帧与之后的读写必须看到同一个显式范围：先 adopt，再挂任何 DOM。
-		adoptUrlNamespace();
 		const o = Object.assign(
 			{
 				active: "",
@@ -1095,9 +1176,19 @@
 				// 三页；能力与节点已随命名空间）。页面必须标出来，否则用户切了
 				// 命名空间发现列表没变，只会以为功能坏了。
 				scopeLevel: "",
+				/* 「全部命名空间」是一等视图，**只有**声明了 scopeAll 的页面（今天只有
+				 * 首页总览）才有：侧栏选择器多第一项，面包屑写「全部命名空间」。
+				 *   scopeAllActive = 当前就在全部模式（URL 里没有具体 namespace）。 */
+				scopeAll: false,
+				scopeAllActive: false,
 			},
 			opts || {},
 		);
+		/* 模块级旗标：全部模式页的 scope 引导/落盘一律短路（见 ensureScope /
+		 * adoptUrlNamespace）。其他页面永远是 false。 */
+		scopeAllMode = !!(o.scopeAll && o.scopeAllActive);
+		// 侧栏、首帧与之后的读写必须看到同一个显式范围：先 adopt，再挂任何 DOM。
+		adoptUrlNamespace();
 		const pageMain = document.getElementById("page-main");
 		if (!pageMain) {
 			console.error('[partials] 需要 <div id="page-main"> 包裹主内容');
@@ -1117,6 +1208,15 @@
 		/* 命名空间名直接读 scope；拿不到就写与切换器同一句空态文案，不编一个假 namespace。 */
 		function paintScopeCrumb() {
 			if (!scopeCrumbEl) return;
+			/* 全部模式：面包屑说「全部命名空间」，**不是** scopeLevel:"deployment"
+			 * 那枚「全部署通用」徽标（那是「本页不随 ns 变化」的另一种语义，
+			 * 首页恰恰是随 ns 变化的，只是当前选了「全部」）。 */
+			if (scopeAllMode) {
+				scopeCrumbEl.textContent = t("scope.all_namespaces");
+				scopeCrumbEl.title = t("scope.all_sub");
+				scopeCrumbEl.dataset.ns = "*";
+				return;
+			}
 			const ns = scopeNamespace();
 			scopeCrumbEl.textContent = ns
 				? "#" + ns
@@ -1252,7 +1352,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			),
 			scopeBox,
 		);
-		const nsSwitcherReady = mountNamespaceSwitcher(scopeBox, scopeSlot);
+		const nsSwitcherReady = mountNamespaceSwitcher(scopeBox, scopeSlot, o);
 
 		/* ----- 侧栏品牌行：logo + 品牌字 + 折叠按钮 ----- */
 		const brandRow = el(
@@ -1550,7 +1650,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 								}),
 							);
 						} else {
+							/* id 是契约 D5 的断言锚点（`#scope-crumb`）：全部模式下这里的
+							 * 文本是「全部命名空间」，其余页面仍是 `#<name>`。 */
 							const scopeEl = el("span", {
+								id: "scope-crumb",
 								class: "app-topbar-scope",
 							});
 							if (grp) h.append(el("span", { class: "app-topbar-sep", text: "·" }));
@@ -1761,6 +1864,12 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	const SCOPE_KEY = "anotify.scope";
 	let scope = readScope();
 
+	/* 全部命名空间模式（只有总览页会置位，见 mountLayout 的 scopeAll/scopeAllActive）：
+	 *   · scope 引导不 bootstrap、不落盘（ensureScope 直接短路）
+	 *   · 选择器不回落 list[0]、不写回生效值，面包屑写「全部命名空间」
+	 * 其他页面永远是 false —— 它们的单 ns 行为逐字不变。 */
+	let scopeAllMode = false;
+
 	function readScope() {
 		try {
 			return JSON.parse(localStorage.getItem(SCOPE_KEY) || "{}") || {};
@@ -1769,7 +1878,18 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		}
 	}
 	function saveScope(v) {
-		scope = Object.assign({}, scope, v || {});
+		const next = Object.assign({}, v || {});
+		/* D1：“禁止写 `*` 进 localStorage”的唯一一道口子在这里：
+		 * `*` = 「全部命名空间」，它只属于**首页的 URL**，永远不是一个真实范围。
+		 * 各页面自己的深链采纳（如 events.html 的 `saveScope({namespace: query})`）
+		 * 会把 query 原样递进来，所以在这一层集中拦，而不是逐个页面改：
+		 * 掉键 = 当成「没给」→ 内存与磁盘都保持原来的真实 ns。 */
+		if (typeof next.namespace === "string" && next.namespace.trim() === "*") {
+			delete next.namespace;
+		}
+		/* 历史脏值（旧版本页把 `*` 写进去过）：这次写盘顺手清掉，不继续带它走。 */
+		if (scope && scope.namespace === "*") scope.namespace = "";
+		scope = Object.assign({}, scope, next);
 		// v3 的 scope 里还有一个 `namespaceId`（旧扁平接口的 query 参数）。它已经
 		// 没有任何消费方了，留着只会在 localStorage 里冒充“当前范围”，写回前清掉。
 		delete scope.namespaceId;
@@ -1799,6 +1919,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		} catch (e) {
 			return scope; // 畸形 query 不是深链：保持持久化范围（下次还能重试）
 		}
+		/* `*` 是「全部命名空间」的显式写法（首页 URL 的合法取值），它**不是**一个
+		 * 命名空间名：既能拼出 `/v1/namespaces/<星号>/…` 这种畸形路径，也不许落进
+		 * localStorage 带歪其他页面（D1：其他页面永远单 ns）。所以当成「没给」。 */
+		if (explicit === "*") return scope;
 		if (explicit && explicit !== scopeNamespace()) saveScope({ namespace: explicit });
 		return scope;
 	}
@@ -1866,6 +1990,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	function ensureScope() {
 		// 所有 ns 路径/请求的唯一入口：先对齐 URL 的显式 namespace，再判断要不要引导。
 		adoptUrlNamespace();
+		/* 全部模式页：scope 就是「全部」，既没有可引导的默认 ns，也不许写盘。
+		 * 短路成 resolved 后，页面的 `await ready()` 变成彻底无副作用的一行
+		 * （否则全新浏览器第一帧就会把 default 写进 scope，其他页面被动跟随）。 */
+		if (scopeAllMode) return Promise.resolve(scope);
 		if (scopeNamespace()) return Promise.resolve(scope);
 		if (scopeReady) return scopeReady;
 		scopeReady = fetch("/v1/namespaces", { credentials: "include" })

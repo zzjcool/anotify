@@ -601,6 +601,11 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 
 	nsIDs := []string{ns}
 	if ns == store.AllNamespaces {
+		userID, uerr := requireUser(r.Context())
+		if uerr != nil {
+			writeAPIError(w, uerr)
+			return
+		}
 		all, lerr := a.d.DB.ListNamespaces(r.Context())
 		if lerr != nil {
 			writeAPIError(w, lerr)
@@ -608,6 +613,14 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		nsIDs = make([]string, 0, len(all))
 		for _, item := range all {
+			// 逐 ns 授权（api-conventions §8.3 / §8.4）：`*` 是跨 ns 汇总**读**，不是绕过
+			// 收口的后门。之前这里只过了登录闸门（而 orphans / stats 都逐 ns 授权），
+			// 同一个收口在三条 cluster 读模型上必须一致，否则将来按成员表收紧权限时
+			// 只有 console events 还在“全员可读”。
+			if aerr := a.d.DB.AuthorizeNamespace(r.Context(), userID, item.ID); aerr != nil {
+				writeAPIError(w, aerr)
+				return
+			}
 			nsIDs = append(nsIDs, item.ID)
 		}
 	}
