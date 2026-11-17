@@ -698,7 +698,9 @@ function render(){
     const name=el("span",null,m.displayName ? m.displayName+" · "+m.name : m.name);
     name.setAttribute("data-raw-content","");
     a.append(name);
-    a.href=link("source.html",{
+    /* 名称链接 = 只读详情页（source-detail.html?namespace=&name=）；行内动作
+       （编辑 / 立即运行 / ⋯）一个不少，编辑能力不因这次改动丢失。 */
+    a.href=link("source-detail.html",{
       name:m.name
     });
     const badges=el("div","src-badges");

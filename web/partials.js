@@ -2068,6 +2068,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			// 源详情页 (#112)：页面私有的深层链接，必须留在白名单里，
 			// 否则 401 后 next= 会回落到 index.html，把 ?id= 丢掉。
 			"source.html",
+			// 源只读详情页：同样是页面私有的深层链接（?namespace=&name=），
+			// 名称链接从列表页整页导航到这里。
+			"source-detail.html",
 			"capabilities.html",
 			// 能力详情页：同样是页面私有的深层链接（?namespace=&name=）。
 			"capability.html",
@@ -2772,6 +2775,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 * 只收「有真实列表」的详情页；其余回落到首页。 */
 	const LIST_OF = {
 		"source.html": "sources.html",
+		// 源只读详情 → 源列表（404/410 的「返回列表」落点，见 loadErrorNode）。
+		"source-detail.html": "sources.html",
 		// 能力详情 → 能力列表（404/410 的「返回列表」落点，见 loadErrorNode）。
 		"capability.html": "capabilities.html",
 		"playbook.html": "playbooks.html",
