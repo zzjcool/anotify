@@ -161,12 +161,12 @@ paths:
       operationId: getStats
       tags: [aggregates]
       security: [{session: []}]
-      summary: 命名空间工作台统计（事件数 / 任务数 / 设备数 / 近 371 天日桶）
+      summary: 工作台统计（事件数 / 任务数 / 设备数 / 近 371 天日桶；`?namespace=*` 跨 ns 汇总）
       description: |
         形状沿用 v3（`store.Stats`，§8.4「请求/响应形状本轮不改，只统一错误体」）：
         `total` / `today` / `delivered` / `deliveryTotal` / `deviceCount` / `daily[]`。
 
-          - `total`：该命名空间的事件总数（含剪枝留痕）。
+          - `total`：事件总数（含剪枝留痕）。
           - `today`：今日事件数，日界取**服务端进程本地时区**的 00:00。
           - `delivered` / `deliveryTotal`：终态任务里成功数 / 终态任务数
             （终态 = succeeded|failed|cancelled|abandoned；pending/running 不计）。
@@ -174,8 +174,16 @@ paths:
           - `daily[]`：近 371 天（≈53 周）的每日事件数热力图数据，`day` 是本地时区
             `YYYY-MM-DD`；无数据时是 `[]`（不是 `null`）。
 
-        `?namespace=*` 在这里是 **400**：跨 ns 把事件数加成一个数字没有语义
-        （store 口径直接拒绝 `*`）。
+        作用域口径（`namespace` 必须**显式**给，没有隐式全量）：
+
+          - `?namespace=NAME`：只算该命名空间（v3 行为逐项不变）。
+          - `?namespace=*`：**全部命名空间**聚合。服务端先列出命名空间并**逐 ns**
+            过授权（与 `/v1/orphans` 同一收口，不是「登录即全量」），再逐 ns 求和：
+            `total`/`today`/`delivered`/`deliveryTotal` 是事实条数之和（跨 ns 求和
+            不造出不存在的数字），`daily[]` 按 day **合并成一行**（不同 ns 的同一天
+            不重复计），`deviceCount` 仍是用户维度、不参与求和。
+          - 缺 `namespace` → **400**（绝不隐式全量：忘传参数不能静默变成全集群读数）；
+            不存在的 ns → 404。
       parameters:
         - $ref: '#/components/parameters/NamespaceQuery'
       responses:
@@ -273,8 +281,9 @@ components:
       required: true
       description: |
         命名空间 slug（也接受 `ns_…` 内部 id；slug 优先）。这里**必须显式给**，
-        没有"默认命名空间"的隐式回退。`*` 只在允许跨 ns 汇总读的端点上合法
-        （`/v1/console/events`、`/v1/orphans`），`/v1/stats` 给 `*` → 400。
+        没有"默认命名空间"的隐式回退。`*` 表示跨 ns 汇总**读**：只在允许跨 ns 汇总读的
+        端点上合法（`/v1/console/events`、`/v1/orphans`、`/v1/stats`），且服务端必须
+        逐 ns 过授权；缺参数一律 400（绝不隐式全量）。
       schema:
         type: string
   pathItems:
@@ -487,7 +496,8 @@ components:
       type: object
       description: |
         工作台统计（形状沿用 v3 `store.Stats`，§8.4 §"请求/响应形状本轮不改"）。
-        所有计数都是**该命名空间**的口径，唯一例外是 `deviceCount`（设备按用户维度）。
+        每个计数都是「该命名空间口径的条数」；`?namespace=*` 时是**所有命名空间求和**
+        （每个计数仍各自相加，唯一的例外是 `deviceCount`：设备按用户维度，跨 ns 不重复计）。
       required: [total, today, delivered, deliveryTotal, deviceCount, daily]
       properties:
         total:
