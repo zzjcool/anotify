@@ -1,4 +1,5 @@
 
+<!-- snapshot-doc: v4 迁移前后对照的定格数字，复算命令见文内 -->
 > **v4 口径变更（2026-11-17）**：本节的 soak 数字全部来自 **v3**（假节点 `agent.mjs` 用 v3 `assign` 帧、
 > 投递走 `POST /v1/events`）。v4 下这些都不成立：
 > ①节点头已迁到 `task.dispatch`/`lease.grant`/`task.result`；

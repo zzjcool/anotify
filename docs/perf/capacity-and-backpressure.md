@@ -1,4 +1,5 @@
 # 容量与背压：保留期、磁盘稳态测算、背压配置与运维
+<!-- snapshot-doc: 容量体检的定格数字，复算命令见文内 -->
 
 > 对应 issue：#229（事件保留期关闭且无上限）· #228（派发无背压）。
 > 测量脚本：`scripts/perf/c/s6-capacity.sh`（6 段，可单独跑：`bash scripts/perf/c/s6-capacity.sh a b`）。
