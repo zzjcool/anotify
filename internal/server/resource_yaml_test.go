@@ -16,7 +16,8 @@ package server
 //  4. 凭据不可回显（secret 一个字符都不出现；token 只允许出现在 hookUrl 里，
 //     这是 srcReadConfig 的既有语义 —— 见 sourceResAssertNoCredentialLeak）
 //  5. 同名冲突（能力折叠复用 / 显式同版本异内容 / 源 409）
-//  6. 请求体自身的 400（yaml 缺失 / 空串 / 多余键）与未登录 401
+//  6. 请求体自身的 400（yaml 缺失 / 空串 / 多余键 / 请求体 > 8 MiB）与未登录 401
+//     （两条端点都在同表里断言 401，且形状必须是 AuthError 而不是 Status）
 
 import (
 	"net/http"
@@ -182,6 +183,85 @@ func TestCapabilityYAMLSyntaxErrorCarriesLine(t *testing.T) {
 	// 顶层 message 同样可读（只看 message 的前端也能定位）。
 	if msg := capString(t, doc, "message"); !strings.Contains(msg, "第 5 行") {
 		t.Fatalf("顶层 message 应带行号，得到 %q", msg)
+	}
+}
+
+// TestSourceYAMLSyntaxErrorCarriesLine 是能力侧同名用例的源侧对照：源文档走同一个
+// yamldoc.Decode，行号也必须原样到达 `details.causes[]` 与顶层 message。
+func TestSourceYAMLSyntaxErrorCarriesLine(t *testing.T) {
+	env := newSourceResEnv(t)
+	// 用「第二行漏冒号」而不是「缩进错」：yaml.v3 对缺冒号报的是**出问题的这一行**
+	// 本身（实测 2），而缩进类错误会报外层 mapping 的起始行（见能力侧那条注释）。
+	// 钉死成 2 才有回归价值：yamldoc 一旦不再把行号带出来，这里立刻红。
+	bad := "apiVersion: anotify/v1\n" + // 1
+		"kind Source\n" + // 2 ← 这一行漏了冒号
+		"metadata:\n" + // 3
+		"  name: broken-src\n" + // 4
+		"spec:\n" + // 5
+		"  kind: webhook\n" + // 6
+		"  config:\n" + // 7
+		"    token: tok-broken\n" + // 8
+		"  targets:\n" + // 9
+		"    - capability: notify\n" // 10
+
+	rec := env.request(http.MethodPost, env.sourcesPath()+"/yaml", yamlBody(bad))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("语法错的 YAML 期望 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	doc := env.doc(rec)
+	if got := sourceResString(t, doc["reason"]); got != "invalid_yaml" {
+		t.Fatalf("reason = %q，want invalid_yaml（body=%s）", got, rec.Body.String())
+	}
+	// 实测行号 = 2（漏冒号的那一行），不是外层缩进块的首行。
+	cause := firstCause(t, doc)
+	if msg := sourceResString(t, cause["message"]); !strings.Contains(msg, "第 2 行") {
+		t.Fatalf("details.causes[0].message 应带实测行号「第 2 行」，得到 %q", msg)
+	}
+	if reason := sourceResString(t, cause["reason"]); reason != "invalid_yaml" {
+		t.Fatalf("details.causes[0].reason = %q，want invalid_yaml", reason)
+	}
+	// 顶层 message 同样可读（契约 §1.6：message = 第一条问题的定位描述）。
+	if msg := sourceResString(t, doc["message"]); !strings.Contains(msg, "第 2 行") {
+		t.Fatalf("顶层 message 应带行号，得到 %q", msg)
+	}
+}
+
+// ---------- 2b) 必填缺失 ----------
+
+// TestSourceYAMLMissingRequiredName 验 `metadata.name` 必填在源侧也真的被拒。
+//
+// 行号按实测值钉 3：契约 §2.7 规定必填缺失的行 = 父节点行，`metadata:` 正好在第 3 行。
+// 断言 field 才是主要价值 —— 没有它，前端只能看到一句「必填字段缺失」而不知道该补哪个键。
+func TestSourceYAMLMissingRequiredName(t *testing.T) {
+	env := newSourceResEnv(t)
+	bad := "apiVersion: anotify/v1\n" + // 1
+		"kind: Source\n" + // 2
+		"metadata:\n" + // 3 ← 父节点行（必填缺失报这一行）
+		"  namespace: default\n" + // 4 ---- 只有 namespace，没有 name
+		"spec:\n" + // 5
+		"  kind: webhook\n" + // 6
+		"  config:\n" + // 7
+		"    token: tok-noname\n" + // 8
+		"  targets:\n" + // 9
+		"    - capability: notify\n" // 10
+
+	rec := env.request(http.MethodPost, env.sourcesPath()+"/yaml", yamlBody(bad))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺 metadata.name 期望 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	doc := env.doc(rec)
+	if got := sourceResString(t, doc["reason"]); got != "invalid_yaml" {
+		t.Fatalf("reason = %q，want invalid_yaml（body=%s）", got, rec.Body.String())
+	}
+	cause := firstCause(t, doc)
+	if field := sourceResString(t, cause["field"]); field != "metadata.name" {
+		t.Fatalf("details.causes[0].field = %q，want metadata.name（body=%s）", field, rec.Body.String())
+	}
+	if msg := sourceResString(t, cause["message"]); !strings.Contains(msg, "第 3 行") {
+		t.Fatalf("details.causes[0].message 应带实测行号「第 3 行」（父节点行），得到 %q", msg)
+	}
+	if msg := sourceResString(t, doc["message"]); !strings.Contains(msg, "metadata.name") {
+		t.Fatalf("顶层 message 应点出 metadata.name，得到 %q", msg)
 	}
 }
 
@@ -485,6 +565,34 @@ func TestYAMLCreateTextLimit(t *testing.T) {
 	}
 }
 
+// TestYAMLCreateBodyLimit 验的是**另一个分支**：`http.MaxBytesReader` 的 8 MiB 请求体
+// 上限（`http.MaxBytesError`），不是上面那条 2 MiB 文本上限。
+//
+// 两者的分界线很关键：文本上限在 decode 之后看长度，请求体上限在读 body 时就截断。
+// 用一份 > 8 MiB 的 JSON（`{"yaml":"aaa…"}`）才能落到 MaxBytesError 分支上 ——
+// 如果这里拿到的是「2 MiB」的消息，说明 MaxBytesReader 没生效：一个 8 MiB 的请求会先
+// 把整份正文读进内存，再被文本上限拒掉。
+func TestYAMLCreateBodyLimit(t *testing.T) {
+	env := newCapTestEnv(t)
+	// JSON 外壳本身还有十来个字节，所以正文取 writeBodyLimit 就已经越过 8 MiB。
+	// 一次性分配 ~8 MiB 可接受（只需几百微秒，远低于 go test 默认内存上限）。
+	rec := env.do(t, http.MethodPost, env.capPath(env.nsA, "", "yaml"), yamlBody(strings.Repeat("a", writeBodyLimit)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("请求体超 8 MiB 期望 400，得到 %d：%s", rec.Code, rec.Body.String())
+	}
+	doc := decodeCapJSON(t, rec)
+	if got := capString(t, doc, "reason"); got != "BadRequest" {
+		t.Fatalf("reason = %q，want BadRequest", got)
+	}
+	msg := capString(t, doc, "message")
+	if !strings.Contains(msg, "8 MiB") {
+		t.Fatalf("message = %q，应含 8 MiB 上限说明（这是 MaxBytesError 分支）", msg)
+	}
+	if strings.Contains(msg, "2 MiB") {
+		t.Fatalf("message = %q 落到了 2 MiB 文本分支（说明请求体没被 MaxBytesReader 截断）", msg)
+	}
+}
+
 // TestWriteDocShapeDerivesFromExistingTypes 是「YAML 侧不得手写第二份键清单」的硬探针。
 //
 // 契约 §3.1 要求 writeDocShape 的顶层键只从 writeRequestMeta 的 json tag 来、metadata
@@ -553,13 +661,53 @@ func TestWriteDocShapeDerivesFromExistingTypes(t *testing.T) {
 	}
 }
 
+// TestYAMLCreateRequiresSession 验**两条**新端点都真的包在会话中间件里：未登录 401，
+// 且不解析正文（未登录的请求不该把一份 8 MiB 的 body 读进来）。
+//
+// 源的 401 不能复用 newSourceResEnv：那个夹具按文件头注释把 `Session` 换成了「直接往
+// context 里放登录用户」，在它上面永远看不到 401。所以两行都挂在 capTestEnv 的**真**
+// 会话中间件（auth.SessionManager）上，源行只换路由表（真 newSourceAPI(...).register）。
 func TestYAMLCreateRequiresSession(t *testing.T) {
-	env := newCapTestEnv(t)
-	// 不带会话 cookie：新端点必须真的走 session 中间件（未登录 401，不解析正文）。
-	req := httptest.NewRequest(http.MethodPost, env.capPath(env.nsA, "", "yaml"), strings.NewReader(`{"yaml":"x"}`))
-	rec := httptest.NewRecorder()
-	env.mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("未登录期望 401，得到 %d：%s", rec.Code, rec.Body.String())
+	cases := []struct {
+		name string
+		path func(env *capTestEnv) string
+		mux  func(env *capTestEnv) http.Handler
+	}{
+		{
+			name: "capabilities/yaml",
+			path: func(env *capTestEnv) string { return env.capPath(env.nsA, "", "yaml") },
+			mux:  func(env *capTestEnv) http.Handler { return env.mux },
+		},
+		{
+			name: "sources/yaml",
+			path: func(env *capTestEnv) string { return "/v1/namespaces/" + env.nsA + "/sources/yaml" },
+			mux: func(env *capTestEnv) http.Handler {
+				m := http.NewServeMux()
+				newSourceAPI(env.deps).register(m)
+				return m
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newCapTestEnv(t)
+			// 不带会话 cookie。
+			req := httptest.NewRequest(http.MethodPost, tc.path(env), strings.NewReader(`{"yaml":"x"}`))
+			rec := httptest.NewRecorder()
+			tc.mux(env).ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("未登录期望 401，得到 %d：%s", rec.Code, rec.Body.String())
+			}
+			// 形状必须是会话中间件产的 AuthError（`{"error":…}`），不是 handler 侧的
+			// Status 信封：api/resource.yaml 里这两条端点的 401 组件选 AuthError401
+			// 就是以这条为据。
+			body := rec.Body.String()
+			if !strings.Contains(body, `"error"`) {
+				t.Fatalf("401 正文应是 AuthError 形状（含 error 键），得到 %q", body)
+			}
+			if strings.Contains(body, `"reason"`) || strings.Contains(body, `"status":"Failure"`) {
+				t.Fatalf("401 正文不该是 Status 信封（那是 handler 侧的形状），得到 %q", body)
+			}
+		})
 	}
 }

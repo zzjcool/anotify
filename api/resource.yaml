@@ -127,6 +127,11 @@ paths:
 
         `status` 仍不可写（400 `status_not_writable`）：多文档导入（一次创建多个
         资源）刻意不支持，一份文档只建一个资源。
+
+        响应集与它的 JSON 兄弟 `POST …/capabilities` **逐字一致**（`201` / `400` /
+        `401` / `500`，不多不少）：YAML 只是另一种输入形状，不新增失败模式，也不
+        吞掉任何一种 —— 所以这里同样不声明 `404`，`401` 同样用 `AuthError401`
+        （401 恒由会话中间件产出，handler 内产不出）。
       requestBody:
         required: true
         content:
@@ -139,7 +144,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Capability'}
         '400': {$ref: '#/components/responses/Status400'}
-        '401': {$ref: '#/components/responses/Status401'}
+        '401': {$ref: '#/components/responses/AuthError401'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/capabilities/{name}:
@@ -427,6 +432,12 @@ paths:
         同义），但响应只走读投影——它们永不回显，webhook 用 `hookUrl` /
         `secretSet` 代替。`spec.config.hookUrl` / `secretSet` 出现在文档里 →
         400 `unknown_field`（只读投影不可写回），错误消息不含 config 原文。
+
+        响应集与它的 JSON 兄弟 `POST …/sources` **逐字一致**（`201` / `400` / `401` /
+        `404` / `409` / `500`，不多不少）：YAML 只是另一种输入形状，不新增失败模式，
+        也不吞掉任何一种 —— 包括 `404`（路径里的命名空间不存在时
+        `authorizePathNamespace` 真的 404）与 `AuthError401`（401 恒由会话中间件
+        产出，handler 内产不出）。
       requestBody:
         required: true
         content:
@@ -439,7 +450,8 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Source'}
         '400': {$ref: '#/components/responses/Status400'}
-        '401': {$ref: '#/components/responses/Status401'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
