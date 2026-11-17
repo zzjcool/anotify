@@ -1,7 +1,8 @@
 # anotify v4 · 资源域 HTTP 契约（exact-five 之一，共享组件的家）
 #
 # 本文件是五份 OpenAPI 真源中的 **resource.yaml**：#333 冻结的归属表
-# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，其余四份
+# （docs/v4/g3c-spec-inventory.md §4.1）里的 53 个 operation 在这里，另有 2 条 `/yaml`
+# 只读端点（共 55，归属表待文档 owner 同步）；其余四份
 # （events/agent/ingress/auth）通过**相对 `$ref`** 引用本文件的 components：
 #
 #     $ref: './resource.yaml#/components/schemas/Status'
@@ -155,6 +156,37 @@ paths:
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    get:
+      operationId: getCapabilityYAML
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "读取能力的 YAML 全文（最高版本，**含**脚本正文）"
+      description: |
+        `yaml` 是这份能力的**存储定义的规范化重建**，**不是**用户当初贴的原始字节：
+        用户原文只存在于 playbook 包的 files 里，库里存的是归一化后的结构化 spec
+        （默认值已补齐、键序固定），所以重新 Parse 这份文本得到的 digest 与库里一致。
+
+        取该 `name` 的**最高版本**（与 `GET …/{name}` 同一套判据，不存在 → 404）。
+        `spec.run.files` 与其它 spec 字段（`params` / `next` / `requires` / `lifecycle` /
+        `concurrency`）**总是**全文返回——这个端点的用途就是把正文拿走，默认读面剥正文
+        的纪律不适用于它。
+
+        `metadata` 只含 `name` / `version` / `displayName`，**不含** `namespace`
+        （包内禁止 namespace，保证这份文本可整份贴回 playbook 包）。
+      responses:
+        '200':
+          description: "ResourceYAML（`yaml` 为 Capability 文档全文）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
   /v1/namespaces/{namespace}/capabilities/{name}/versions:
@@ -387,6 +419,39 @@ paths:
         '401': {$ref: '#/components/responses/AuthError401'}
         '404': {$ref: '#/components/responses/Status404'}
         '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/sources/{name}/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - name: name
+        in: path
+        required: true
+        description: "源名（同命名空间内唯一；与共享的来源名校验器同口径）"
+        schema: {type: string}
+    get:
+      operationId: getSourceYAML
+      tags: [sources]
+      security: [{session: []}]
+      summary: "读取源的 YAML 全文（读投影重建，永不回显 token/secret）"
+      description: |
+        `yaml` 是这条源的**存储定义的规范化重建**，**不是**用户当初贴的原始字节。
+
+        脱敏面与 `GET …/{name}` 完全相同：`config.token` / `config.secret` 永不出现，
+        webhook 用只读投影 `hookUrl` / `secretSet` 代替——泄露面只到读投影，这个端点
+        **不是**绕开脱敏的第二条路径。
+
+        `metadata` 只写 `name` / `displayName`（**不含** `namespace`：包内禁止 namespace，
+        保证这份文本可整份贴回 playbook 包）；`spec` 写 `kind` / `enabled` / `config` /
+        `targets`，不写 `status`（status 是读时派生的，不是定义）。
+      responses:
+        '200':
+          description: "ResourceYAML（`yaml` 为 Source 文档全文）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
   # ------------------------------------------------------------------ playbooks
@@ -1542,6 +1607,23 @@ components:
             - forbidden
             - artifact_upload_unavailable
             - internal
+
+    # ------------------------------------------- 通用响应件（/yaml 文本承载）
+    ResourceYAML:
+      type: object
+      description: |
+        资源的 YAML 文本（`…/capabilities/{name}/yaml` 与 `…/sources/{name}/yaml` 两个
+        只读端点的响应体）。**刻意不套信封**：信封规则的判据是「有 apiVersion + metadata」，
+        给这个响应套信封会把它伪装成一种资源 kind。
+
+        `yaml` 里是**存储定义的规范化重建**（不是用户原始字节；用户原文只在 playbook 包里），
+        泄露面只到该资源的读投影（源的 `config.token` / `config.secret` 永不出现）。
+      additionalProperties: false
+      required: [yaml]
+      properties:
+        yaml:
+          type: string
+          description: "资源文档全文（Capability 或 Source 的 YAML 文本）"
 
     # ------------------------------------------------------------ capability
     CapabilityEnvValue:

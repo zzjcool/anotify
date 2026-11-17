@@ -33,7 +33,7 @@ package server
 //     `unpairedSchemas` / 三张 status 例外表）**过期即红**：某条例外不再需要（两边都有了 /
 //     都没有了 / spec 里那条 operation 没了 / 基线期望已经与例外同向）就失败，防止例外变成
 //     永久后门。
-//   - **每个 component schema 都有归属**（F1）：228 个 schema 必须要么在 `parityPairs` 里，
+//   - **每个 component schema 都有归属**（F1）：230 个 schema 必须要么在 `parityPairs` 里，
 //     要么被某对 pair 顺着 `$ref` 递归比对到（`schemaReachability` 的真实可达集），要么在
 //     `unpairedSchemas` 里（理由 + 源码证人）。Go 侧形状可以直接反射具名类型，也可以从
 //     handler 源码里读（`goWire`：`writeJSON` 的 map 字面量 / 函数内的匿名 struct）。
@@ -125,15 +125,15 @@ const maxRefDepth = 8
 // 删一个 schema，都必须同时改这里的数字，并在 PR 里写清为什么。
 const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
-	parityPairsFloor = 191
+	parityPairsFloor = 192
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
-	muxPatternCount = 114
+	muxPatternCount = 116
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
-	specSchemaFloor = 228
+	specSchemaFloor = 230
 )
 
 // ---------- 测试入口 ----------
@@ -169,8 +169,10 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 已经实现（internal/server/node_capability.go + mux 接线），agent.yaml 因此多一条
 	// operation。这是**实现追上契约**的方向（契约 §8.2 一直要求这条通道），不是新增端点：
 	// docs/v4/g3c-spec-inventory.md §1 的 124/3 与 §5.1 的缺口条目待文档 owner 同步。
-	if len(ops) != 125 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 125（124 + Node 能力包体下行）", len(ops))
+	// 125 → 127：两条 `/yaml` 只读端点（能力的正文全文 / 源的脱敏重建，
+	// CONTRACT-capability-yaml §1.1）。
+	if len(ops) != 127 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 127（124 + Node 能力包体下行 + 2 条 /yaml）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -2981,6 +2983,8 @@ func parityPairs() []parityPair {
 			},
 		},
 		{GoLabel: "statusCause", File: "resource.yaml", Schema: "StatusCause", Sample: statusCause{}},
+		// `/yaml` 两个只读端点的文本承载（刻意不是信封：没有 apiVersion/metadata）。
+		{GoLabel: "yamlDoc", File: "resource.yaml", Schema: "ResourceYAML", Sample: yamlDoc{}},
 
 		// ---- 全部 kind 的信封（apiEnvelope = {apiVersion,kind,metadata,spec,status}）----
 		// 信封本身只有一个 Go 类型（apiEnvelope），六份 kind schema 必须与它同形；

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"gopkg.in/yaml.v3"
 
 	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/protocol"
@@ -1320,5 +1321,107 @@ func TestCapabilityStatusNodesEmptyWhenNeverDeployed(t *testing.T) {
 	deployed := capConditionOf(t, status, "Deployed")
 	if deployed["status"] != "False" || capString(t, deployed, "reason") != "NotDeployed" {
 		t.Fatalf("Deployed = %#v, want False/NotDeployed", deployed)
+	}
+}
+
+// ---------- 12) /yaml：存储定义的规范化重建（完整 spec + 最高版本） ----------
+
+// TestCapabilityResourceYAMLFullSpec 钉住三条契约边界（CONTRACT-capability-yaml §1.1）：
+//
+//	① 序列化的是**完整** spec（`run.files` 全文）—— 默认读面剥正文的纪律不适用于这个端点；
+//	② 取该 name 的**最高版本**；
+//	③ `metadata` 不含 namespace（包内禁止 namespace，保证这份文本可整份贴回 playbook 包）。
+//
+// 另钉错误语义与 `get` 对齐：不存在 / 跨命名空间都是 404（不泄露存在性），未登录 401。
+func TestCapabilityResourceYAMLFullSpec(t *testing.T) {
+	env := newCapTestEnv(t)
+
+	env.createCapability(t, env.nsA, "raw-yaml", "#!/bin/sh\necho v1-only\n")
+	second := env.createCapability(t, env.nsA, "raw-yaml", "#!/bin/sh\necho v2-marker\n")
+	wantVersion := capNumber(t, capObject(t, second["metadata"], "metadata"), "version")
+
+	rec := env.do(t, http.MethodGet, env.capPath(env.nsA, "raw-yaml", "yaml"), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /yaml: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	text := capString(t, decodeCapJSON(t, rec), "yaml")
+
+	// 「可整份贴回 playbook 包」的第一条判据：它是合法 YAML 文档，且带完整的文档头。
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("/yaml 的正文必须是合法 YAML 文档：%v\n%s", err, text)
+	}
+	if doc["apiVersion"] != "anotify/v1" || doc["kind"] != "Capability" {
+		t.Fatalf("文档头不对：apiVersion=%v kind=%v", doc["apiVersion"], doc["kind"])
+	}
+	meta := capObject(t, doc["metadata"], "metadata")
+	if meta["name"] != "raw-yaml" {
+		t.Fatalf("metadata.name = %v, want raw-yaml", meta["name"])
+	}
+	if got, ok := meta["version"].(int); !ok || got != wantVersion {
+		t.Fatalf("metadata.version = %v（%T），want 最高版本 %d", meta["version"], meta["version"], wantVersion)
+	}
+	if _, ok := meta["namespace"]; ok {
+		t.Fatalf("metadata 不能写 namespace（playbook 包内禁止）：%v", meta)
+	}
+
+	spec := capObject(t, doc["spec"], "spec")
+	// 六个顶层键都在（Normalize 已补齐默认值）——缺一个就说明有人把读投影塞进来了。
+	for _, key := range []string{"params", "next", "run", "requires", "lifecycle", "concurrency"} {
+		if _, ok := spec[key]; !ok {
+			t.Fatalf("spec 缺 %q —— /yaml 必须是完整 spec，不是默认读面的投影：%v", key, spec)
+		}
+	}
+	run := capObject(t, spec["run"], "spec.run")
+	if run["entrypoint"] != "run.sh" {
+		t.Fatalf("spec.run.entrypoint = %v, want run.sh", run["entrypoint"])
+	}
+	files := capObject(t, run["files"], "spec.run.files")
+	script, _ := files["run.sh"].(string)
+	if !strings.Contains(script, "echo v2-marker") {
+		t.Fatalf("spec.run.files 必须是最高版本的脚本正文，实际 %q", script)
+	}
+	if strings.Contains(script, "v1-only") {
+		t.Fatalf("/yaml 取了旧版本正文：%q", script)
+	}
+	// 归一化默认值也在（否则贴回去的 digest 与库里不一致）。
+	if n, ok := capObject(t, spec["lifecycle"], "lifecycle")["maxAttempts"].(int); !ok || n != 3 {
+		t.Fatalf("lifecycle.maxAttempts 应被 Normalize 补成 3，实际 %v", spec["lifecycle"])
+	}
+	if n, ok := capObject(t, spec["lifecycle"], "lifecycle")["resultTtlSec"].(int); !ok || n != 604800 {
+		t.Fatalf("lifecycle.resultTtlSec 应被 Normalize 补成 604800，实际 %v", spec["lifecycle"])
+	}
+	if n, ok := capObject(t, spec["concurrency"], "concurrency")["maxPerNode"].(int); !ok || n != 1 {
+		t.Fatalf("concurrency.maxPerNode 应被 Normalize 补成 1，实际 %v", spec["concurrency"])
+	}
+	// status 是读时派生的，不是定义：不写进 YAML。
+	if _, ok := doc["status"]; ok {
+		t.Fatalf("YAML 文档里不该有 status（它是读时派生的）：%v", doc["status"])
+	}
+
+	// 404：不存在与「不属于本命名空间」是同一条回答（与 get 一致，不泄露存在性）。
+	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "missing-yaml", "yaml"), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /yaml 不存在: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	env.createCapability(t, env.nsB, "only-in-b", "#!/bin/sh\necho b\n")
+	rec = env.do(t, http.MethodGet, env.capPath(env.nsA, "only-in-b", "yaml"), nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("跨 ns 读 /yaml: status=%d body=%s（与 get 一致：404 而不是 403，不能泄露存在性）",
+			rec.Code, rec.Body.String())
+	}
+	if reason := capString(t, decodeCapJSON(t, rec), "reason"); reason != reasonNotFound {
+		t.Fatalf("跨 ns /yaml 的 reason = %q, want %q（与 get 同码）", reason, reasonNotFound)
+	}
+
+	// 401：不带 cookie（noStore 在 session 外层：即使 401 也声明不可缓存）。
+	req := httptest.NewRequest(http.MethodGet, env.capPath(env.nsA, "raw-yaml", "yaml"), nil)
+	anon := httptest.NewRecorder()
+	env.mux.ServeHTTP(anon, req)
+	if anon.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录 GET /yaml: status=%d body=%s", anon.Code, anon.Body.String())
+	}
+	if got := anon.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("未登录 GET /yaml 的 Cache-Control = %q, want no-store", got)
 	}
 }

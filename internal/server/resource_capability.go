@@ -84,6 +84,7 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 		{"GET " + base + "/{name}", a.get},
 		{"PATCH " + base + "/{name}", a.patch},
 		{"DELETE " + base + "/{name}", a.remove},
+		{"GET " + base + "/{name}/yaml", a.yaml},
 		{"GET " + base + "/{name}/versions", a.listVersions},
 		{"GET " + base + "/{name}/versions/{version}", a.getVersion},
 		{"POST " + base + "/{name}/deploy", a.deploy},
@@ -182,6 +183,50 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeEnvelope(w, http.StatusOK, env)
+}
+
+// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义
+// 序列化成一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
+//
+// 三条边界（CONTRACT-capability-yaml §1.1）：
+//   - 取最高版本与 `get` 同一套判据（ListCapabilities + newestVersionOf），不存在同样回 404；
+//   - 序列化的是**完整** spec（`artifact.MarshalYAML` 会先 Normalize：`run.files` 全文、
+//     `params`、`next`、`requires`、`lifecycle`、`concurrency` 都在），所以默认读面剥正文的
+//     那条纪律**不**适用于这里 —— 这个端点的用途就是把正文拿走；
+//   - 这是「存储定义的规范化重建」，不是用户当初贴的原始字节（用户原文只存在于 playbook
+//     包的 files 里）；键序与默认值由 Normalize 固定，re-Parse 的 digest 与存量一致。
+func (a *capabilityAPI) yaml(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rows, err := a.d.DB.ListCapabilities(r.Context(), ns)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	row := newestVersionOf(rows, capabilityNameFromPath(r))
+	if row == nil {
+		// 不存在与「不属于本命名空间」是同一个回答（隔离不泄露存在性），与 get 同一条边。
+		writeAPIError(w, store.ErrNotFound)
+		return
+	}
+	text, err := artifact.MarshalYAML(capabilityArtifact(row))
+	if err != nil {
+		// 行里的 spec 反序列化不出来 = 服务端事实损坏，按统一映射落 500。
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(text)})
+}
+
+// yamlDoc 是两条 `/yaml` 端点的响应体（CONTRACT-capability-yaml §1.1）。
+//
+// 刻意**不**带 apiVersion/kind/metadata：信封规则的判据是「有 apiVersion + metadata」，
+// 给这个响应套信封会把它伪装成一种资源 kind；YAML 全文放在 yaml 字段里，客户端原样展示/复制。
+type yamlDoc struct {
+	YAML string `json:"yaml"`
 }
 
 // listVersions 处理 GET …/capabilities/{name}/versions：CapabilityList，
