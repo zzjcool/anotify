@@ -1555,7 +1555,21 @@
         const sourceName = source?.spec?.involvedObject?.name || "";
         // 底图 = 这个源的静态配置拓扑，取数与降级规则在 Anotify.loadSourceTopology
         // （和链路页 / 源详情页共用一份）。拿不到源就退回只画执行链，不白屏、不编造。
-        const baseGraph = await loadSourceTopology(sourceName);
+        // 取数**按这条 trace 自己的 ns**：loadSourceTopology 自己拉时会走 nsList()
+        // → nsPath() → 「当前范围」（全部模式下是 `*` 或上一个 ns 的旧值），
+        // 那就可能把别的命名空间的源配置画到这张图上。
+        let baseGraph = null;
+        if (sourceName) {
+          const [sourcesDoc, capsDoc] = await Promise.all([
+            api(nsPathIn(flowNs, "sources") + "?limit=500").catch(() => null),
+            api(nsPathIn(flowNs, "capabilities") + "?limit=500").catch(() => null),
+          ]);
+          baseGraph = await loadSourceTopology(sourceName, {
+            // 传 [] 而不是 undefined：后者会让它回退去拉「当前范围」的列表。
+            sources: sourcesDoc || [],
+            capabilities: capsDoc || [],
+          });
+        }
         G.taskChain(host, {
           tasks: doc.tasks, baseGraph: baseGraph, sourceLabel: sourceName,
           sourceSub: source?.spec.eventType || "", t,
