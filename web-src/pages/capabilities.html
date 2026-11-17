@@ -464,6 +464,10 @@
       .cap-skel .skeleton + .skeleton {
         width: 62%;
       }
+      /* 从 YAML 创建（契约 §5.1）：粘贴区要保持够高，否则长文档在弹层里只剩一条缝 */
+      #cap-yaml-input {
+        min-height: 22rem;
+      }
     </style>
 {{end}}
 
@@ -477,6 +481,7 @@
       </div>
       <div class="page-actions">
         <button type="button" id="caps-refresh" class="btn btn-ghost">{{t "caps.refresh"}}</button>
+        <button type="button" id="caps-yaml" class="btn">{{t "caps.yaml.open"}}</button>
         <button type="button" id="caps-new" class="btn btn-primary">+ {{t "caps.new"}}</button>
       </div>
     </div>
@@ -735,6 +740,33 @@
       <button id="cap-back" type="button" class="btn btn-ghost hidden">{{t "caps.form.prev_step"}}</button>
       <button id="cap-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
       <button id="cap-submit" type="button" class="btn">{{t "caps.form.submit"}}</button>
+    </div>
+  </div>
+</div>
+
+<!-- 从 YAML 创建（契约 §5.1）：粘贴一份 Capability 文档 → POST .../capabilities/yaml。
+     与 #cap-modal 同一条规则挂在 #page-main 之外：.reveal 的 transform 会给
+     position:fixed 造包含块，弹层就不再相对视口定位。
+     前端不解析 YAML（D8）：textarea 原文整份发给服务端，带行号的定位由服务端给。 -->
+<div id="cap-yaml-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cap-yaml-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="cap-yaml-title">{{t "caps.yaml.title"}}</h3>
+    </div>
+    <div class="modal-body">
+      <textarea
+        id="cap-yaml-input"
+        class="textarea mono"
+        rows="18"
+        spellcheck="false"
+        aria-label="{{t "caps.yaml.title"}}"
+      ></textarea>
+      <p class="field-hint">{{t "caps.yaml.hint"}}</p>
+      <div id="cap-yaml-msg" class="field-error" role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="cap-yaml-cancel" class="btn btn-ghost">{{t "caps.yaml.cancel"}}</button>
+      <button type="button" id="cap-yaml-submit" class="btn btn-primary">{{t "caps.yaml.submit"}}</button>
     </div>
   </div>
 </div>
@@ -1738,6 +1770,77 @@
         showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason }), statusLine(e), []);
       }
 
+      /* ==================== 从 YAML 创建（契约 §5.1） ====================
+       * 粘贴一份 Capability 文档 → POST .../capabilities/yaml，body 只有 `{yaml: 原文}`。
+       * 前端不解析 YAML（D8）：textarea 原文整份交给服务端，带行号的定位由服务端给。
+       * 失败时按行展开 err.message 与 details.causes[].message（后者带「第 N 行」），
+       * textarea 内容一律保留、不清空、不自动重试。 */
+      let YAML_BUSY = false;
+
+      function showYAMLMessage(lines) {
+        const box = $("cap-yaml-msg");
+        if (!box) return;
+        box.replaceChildren();
+        for (const line of lines || []) box.append(txt("p", null, line));
+      }
+
+      /* 一行一条原因：第一行是 Status 的 reason · message，后面逐条展开 causes。
+         去重是因为顶层 message 本身就是「第一条 cause 的 field: message」。 */
+      function yamlErrorLines(e) {
+        const out = [];
+        const head = statusLine(e);
+        if (head) out.push(head);
+        const causes = e && e.details && Array.isArray(e.details.causes) ? e.details.causes : [];
+        for (const cause of causes) {
+          const line = cause && cause.message ? String(cause.message) : cause && cause.field ? String(cause.field) : "";
+          if (line && out.indexOf(line) < 0) out.push(line);
+        }
+        if (!out.length) out.push(t("common.request_failed", "请求失败"));
+        return out;
+      }
+
+      function openYAML() {
+        showYAMLMessage([]);
+        openModal($("cap-yaml-modal"));
+        $("cap-yaml-input").focus();
+      }
+
+      function closeYAML(clear) {
+        closeModal($("cap-yaml-modal"));
+        showYAMLMessage([]);
+        /* 成功才清；取消/失败都把草稿留下来（重开即继续编辑） */
+        if (clear) $("cap-yaml-input").value = "";
+      }
+
+      async function submitYAML() {
+        if (YAML_BUSY) return;
+        const input = $("cap-yaml-input");
+        const text = String(input.value || "");
+        if (!text.trim()) {
+          /* 空文档在服务端也是 400，但没必要为一个必然失败的请求跑一趟网络（零请求） */
+          showYAMLMessage([t("caps.yaml.empty", "请先粘贴 YAML 文档")]);
+          input.focus();
+          return;
+        }
+        YAML_BUSY = true;
+        const btn = $("cap-yaml-submit");
+        showYAMLMessage([]);
+        btn.disabled = true;
+        try {
+          await ready();
+          await api(nsPath("capabilities") + "/yaml", writeOpts("POST", { yaml: text }));
+          toast(t("caps.yaml.created", "已从 YAML 创建能力"));
+          closeYAML(true);
+          /* 不自动跳转：留在列表上，新行就是这次创建的回执 */
+          await loadCaps();
+        } catch (e) {
+          showYAMLMessage(yamlErrorLines(e));
+        } finally {
+          YAML_BUSY = false;
+          btn.disabled = false;
+        }
+      }
+
       async function submitCreate() {
         if (BUSY || !EDIT) return;
         clearFieldErrors();
@@ -1773,6 +1876,12 @@
       /* ============================ 事件绑定 ============================ */
       function bind() {
         $("caps-refresh").addEventListener("click", () => loadCaps());
+        $("caps-yaml").addEventListener("click", openYAML);
+        $("cap-yaml-cancel").addEventListener("click", () => closeYAML(false));
+        $("cap-yaml-submit").addEventListener("click", () => void submitYAML());
+        $("cap-yaml-modal").addEventListener("click", (e) => {
+          if (e.target === e.currentTarget) closeYAML(false);
+        });
         $("caps-new").addEventListener("click", () => void openCreate());
         $("caps-empty-new").addEventListener("click", () => void openCreate());
         $("caps-search").addEventListener("input", (e) => {

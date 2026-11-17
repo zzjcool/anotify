@@ -1543,6 +1543,14 @@ caps:
     current: 'Actual'
     empty: 'El servidor no devolvió historial de versiones'
     open: 'Ver contenido'
+  yaml:
+    open: 'Crear desde YAML'
+    title: 'Crear capacidad desde YAML'
+    hint: 'Pega un documento Capability (apiVersion/kind/metadata/spec). Los credenciales son de solo escritura y no se devuelven.'
+    submit: 'Crear'
+    cancel: 'Cancelar'
+    created: 'Capacidad creada desde YAML'
+    empty: 'Primero pega un documento YAML'
 prune:
   no_edge: sin candidato conectado
   no_capability: la capacidad destino no existe
@@ -1789,6 +1797,14 @@ sources:
     yaml_hint: "Reconstruido desde la definición guardada; las credenciales son solo de escritura, así que solo aparecen hookUrl / secretSet"
     yaml_loading: "Generando YAML…"
     yaml_error: "No se pudo cargar el YAML original"
+    yaml_create:
+      open: "Crear desde YAML"
+      title: "Crear fuente desde YAML"
+      hint: "Pega un documento Source. `spec.config.token` / `secret` son de solo escritura; tras guardar solo se muestra hookUrl."
+      submit: "Crear"
+      cancel: "Cancelar"
+      created: "Fuente creada desde YAML"
+      empty: "Primero pega un documento YAML"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"
