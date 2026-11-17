@@ -295,9 +295,13 @@ function pair(label,value,muted){
 }
 /* CP-5：统一走 .code-block（标题条 + 等宽正文），不再直接甩裸 <pre>
    #375 rework：与 trace / message 的原始 JSON 一致，标题条带一键复制（应修 4）。 */
+/* `title` 为 null = 标签已印在容器上（`details > summary`）：不渲染标题节点，只留复制按钮。
+   空串/空格占位会留下一个空元素，布局仍按"有标题"算，所以这里判 null/空白后**不建**节点。 */
 function codeBlock(title,text){
   const box=el("div","code-block");
-  const head=el("div","code-head",title);
+  const head=el("div","code-head");
+  const label=title==null?"":String(title).trim();
+  if(label)head.append(el("span",null,label));
   const copy=el("button","copy-btn",dev("copy"));
   copy.type="button";
   copy.addEventListener("click",()=>A.copyText(copy,()=>text));
@@ -361,7 +365,7 @@ function rawYaml(name){
   const st={status:"idle",text:null,err:null};
   const paint=()=>{
     body.replaceChildren();
-    if(st.status==="ok"){body.append(codeBlock(t("yaml"),st.text));return;}
+    if(st.status==="ok"){/* 标签已在 summary 上：「原始 YAML」只出现一次。 */body.append(codeBlock(null,st.text));return;}
     if(st.status==="error"){
       body.append(el("p","field-hint",t("yaml_error")));
       const line=st.err ? [st.err.reason,st.err.message].filter(Boolean).join(": ") : "";
