@@ -1,6 +1,21 @@
 // Attributed F2b1 CRUD/fire/dryrun/deep-link chains. Both modes exact namespaced requests.
 import assert from 'node:assert/strict';
 import { acceptDialog } from './f3-dialogs.mjs';
+/* 「原始 YAML」标签只允许出现一次：折叠块 summary 已经印了它，里面若再套一层带标题的
+   codeBlock（历史 bug），展开后就出现两行同样的标题。断言范围=**折叠块内部**（summary 那次算），
+   不是整页 —— 整页还有面包屑与别的块。 */
+async function labelCountIn(page, selector, keys) {
+	return page.locator(selector).evaluate((node, phrase) => {
+		let text = "";
+		const walk = (n) => {
+			if (n.nodeType === 3) { text += n.textContent || ""; return; }
+			if (n.nodeType !== 1) return;
+			for (const c of n.childNodes) walk(c);
+		};
+		walk(node);
+		return text.split(phrase).length - 1;
+	}, await page.evaluate((ks) => ks.map((k) => window.AnotifyI18n?.[k]).find(Boolean) || "原始 YAML", keys));
+}
 export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
@@ -188,6 +203,11 @@ export async function source(d){
   );
   const yamlCallsAfterDetail = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
   assert.ok(yamlCallsAfterDetail.length >= 1, '展开才请求 /yaml');
+  assert.equal(
+    await labelCountIn(page, "#src-detail details.src-raw", ["sources.v4.yaml", "source_detail.yaml"]),
+    1,
+    "折叠块内部「原始 YAML」只能出现一次（summary 那次算）：展开后多出一行=codeBlock 又渲染了标题",
+  );
   const yamlTextDetail = await rawYamlDetail.textContent();
   assert.match(yamlTextDetail, /kind: Source/, 'YAML 块必须含 kind: Source');
   assert.match(yamlTextDetail, /hookUrl: /, '读投影只有 hookUrl');
@@ -240,6 +260,11 @@ export async function source(d){
   );
   const yamlCallsAfter = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
   assert.ok(yamlCallsAfter.length >= 1, '展开才请求 /yaml');
+  assert.equal(
+    await labelCountIn(page, "#src-yaml", ["sources.v4.yaml", "source_detail.yaml", "yaml"]),
+    1,
+    "编辑页 YAML 折叠块内部「原始 YAML」只能出现一次（summary 那次算）",
+  );
   const yamlText = await rawYaml.textContent();
   assert.match(yamlText, /kind: Source/, 'YAML 块必须含 kind: Source');
   assert.match(yamlText, /hookUrl: /, '读投影只有 hookUrl');
