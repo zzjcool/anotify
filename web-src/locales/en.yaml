@@ -1546,7 +1546,7 @@ caps:
   yaml:
     open: 'Create from YAML'
     title: 'Create capability from YAML'
-    hint: 'Paste a Capability document (apiVersion/kind/metadata/spec). Credential fields are write-only and never echoed.'
+    hint: 'Paste a Capability document (apiVersion/kind/metadata/spec). status and metadata.resourceVersion are managed by the server — do not write them.'
     submit: 'Create'
     cancel: 'Cancel'
     created: 'Capability created from YAML'

@@ -1045,18 +1045,30 @@ let YAML_BUSY=false;
 function yamlMsg(lines){
   $("src-yaml-msg").replaceChildren(...(lines||[]).map(line=>el("p",null,line)));
 }
-/* 一行一条原因：首行 reason: message，后面逐条展开 causes（去重：顶层 message
-   本身就是「第一条 cause 的 field: message」）。 */
+/* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
+   服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
+   「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
 function yamlLines(err){
-  const out=[];
-  const head=[err&&err.reason,err&&err.message].filter(Boolean).join(": ");
-  if(head)out.push(head);
+  const out=[],seen=new Set();
+  const push=line=>{
+    const text=line==null?"":String(line);
+    if(!text||seen.has(text))return;
+    seen.add(text);
+    out.push(text);
+  };
   const causes=err&&err.details&&Array.isArray(err.details.causes)?err.details.causes:[];
-  for(const cause of causes){
-    const line=cause&&cause.message?String(cause.message):cause&&cause.field?String(cause.field):"";
-    if(line&&!out.includes(line))out.push(line);
-  }
-  if(!out.length)out.push(A.t("common.request_failed"));
+  if(causes.length){
+    push(err&&err.reason);
+    for(const cause of causes){
+      if(!cause)continue;
+      const field=cause.field==null?"":String(cause.field);
+      const message=cause.message==null?"":String(cause.message);
+      push(field&&message?field+" · "+message:field||message);
+    }
+  }else if(err&&err.reason&&err.message)push(err.reason+" · "+err.message);
+  else if(err&&err.message)push(err.message);
+  else if(err&&err.reason)push(err.reason);
+  if(!out.length)push(A.t("common.request_failed"));
   return out;
 }
 function openYamlEditor(){

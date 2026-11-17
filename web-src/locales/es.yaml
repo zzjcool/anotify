@@ -1546,7 +1546,7 @@ caps:
   yaml:
     open: 'Crear desde YAML'
     title: 'Crear capacidad desde YAML'
-    hint: 'Pega un documento Capability (apiVersion/kind/metadata/spec). Los credenciales son de solo escritura y no se devuelven.'
+    hint: 'Pega un documento Capability (apiVersion/kind/metadata/spec). status y metadata.resourceVersion los gestiona el servidor; no los escribas.'
     submit: 'Crear'
     cancel: 'Cancelar'
     created: 'Capacidad creada desde YAML'

@@ -1546,7 +1546,7 @@ caps:
   yaml:
     open: '从 YAML 创建'
     title: '从 YAML 创建能力'
-    hint: '粘贴一份 Capability 文档（apiVersion/kind/metadata/spec）。凭据字段只写不读，不会被回显。'
+    hint: '粘贴一份 Capability 文档（apiVersion/kind/metadata/spec）。status 与 metadata.resourceVersion 由服务端管，不要写。'
     submit: '创建'
     cancel: '取消'
     created: '已从 YAML 创建能力'

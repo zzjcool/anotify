@@ -1784,18 +1784,35 @@
         for (const line of lines || []) box.append(txt("p", null, line));
       }
 
-      /* 一行一条原因：第一行是 Status 的 reason · message，后面逐条展开 causes。
-         去重是因为顶层 message 本身就是「第一条 cause 的 field: message」。 */
+      /* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
+         服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
+         「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
       function yamlErrorLines(e) {
         const out = [];
-        const head = statusLine(e);
-        if (head) out.push(head);
+        const seen = new Set();
+        const push = (line) => {
+          const text = line == null ? "" : String(line);
+          if (!text || seen.has(text)) return;
+          seen.add(text);
+          out.push(text);
+        };
         const causes = e && e.details && Array.isArray(e.details.causes) ? e.details.causes : [];
-        for (const cause of causes) {
-          const line = cause && cause.message ? String(cause.message) : cause && cause.field ? String(cause.field) : "";
-          if (line && out.indexOf(line) < 0) out.push(line);
+        if (causes.length) {
+          push(e && e.reason);
+          for (const cause of causes) {
+            if (!cause) continue;
+            const field = cause.field == null ? "" : String(cause.field);
+            const message = cause.message == null ? "" : String(cause.message);
+            push(field && message ? field + " · " + message : field || message);
+          }
+        } else if (e && e.reason && e.message) {
+          push(e.reason + " · " + e.message);
+        } else if (e && e.message) {
+          push(e.message);
+        } else if (e && e.reason) {
+          push(e.reason);
         }
-        if (!out.length) out.push(t("common.request_failed", "请求失败"));
+        if (!out.length) push(t("common.request_failed", "请求失败"));
         return out;
       }
 

@@ -1546,7 +1546,7 @@ caps:
   yaml:
     open: 'YAML から作成'
     title: 'YAML からケイパビリティを作成'
-    hint: 'Capability ドキュメントを貼り付けてください（apiVersion/kind/metadata/spec）。認証情報は書き込み専用で返されません。'
+    hint: 'Capability ドキュメントを貼り付けてください（apiVersion/kind/metadata/spec）。status と metadata.resourceVersion はサーバーが管理します。'
     submit: '作成'
     cancel: 'キャンセル'
     created: 'YAML からケイパビリティを作成しました'
