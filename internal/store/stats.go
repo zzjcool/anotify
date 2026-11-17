@@ -143,7 +143,7 @@ func (d *DB) taskRefCounts(ctx context.Context, query string, args ...any) ([]Re
 //
 // 为什么抽成常量而不是各写一份：两条路径的口径必须逐字一致（今日日界、终态集合、
 // 日桶表达式）。出现第二份副本的症状是「全部命名空间」的卡片和单 ns 卡片对同一个 ns
-// 给出不同数字，而且改动只会改到一半。EXPLAIN 计划门禁（stats_all_test.go）也直接对
+// 给出不同数字，而且改动只会改到一半。EXPLAIN 计划断言（stats_all_test.go）也直接对
 // 这几个常量跑，所以「查询走哪个索引」同样只有一处真源。
 const (
 	statsTotalSQL = `SELECT COUNT(*) FROM events WHERE namespace_id=?`

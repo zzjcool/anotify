@@ -9,7 +9,7 @@ package store
 //  1. 逐字段求和 == 两个单 ns 结果之和（total/today/delivered/deliveryTotal）；
 //  2. Daily 跨 ns 同日**合并成一行**（不重复计同一天）且升序；
 //  3. 空 nsID 列表 = 全零 + `daily: []`（不报错）；`*` / 空串元素 = ErrNamespaceRequired；
-//  4. 聚合 SQL 的索引计划（EXPLAIN QUERY PLAN 门禁，直接跑生产常量，不抄副本）；
+//  4. 聚合 SQL 的索引计划（EXPLAIN QUERY PLAN 断言，直接跑生产常量，不抄副本）；
 //  5. 3 ns × 40k 事件的 benchmark（`-benchtime 1x` 可跑，量出 ms 级成本）。
 //
 // 时区纪律沿用 stats_tz_test.go：全部用 time.FixedZone + 可注入的 now，
@@ -281,9 +281,10 @@ func TestMessageStatsAllRejectsAllNamespacesElement(t *testing.T) {
 	}
 }
 
-// TestMessageStatsAggregateQueryPlans 是索引计划门禁。
+// TestMessageStatsAggregateQueryPlans 断言 5 条聚合语句的索引计划（走哪个索引、
+// 有没有全表/索引全扫）。
 //
-// 为什么必须钉住：stats 是首页每次加载都要打的读路径，events 是最大的表；退化成
+// 为什么必须钉住：stats 是首页每次加载都要打到的读路径，events 是最大的表；退化成
 // 全表扫没有任何功能测试能发现（结果一样，只是慢）。断言跑在**生产常量**上
 // （statsTodaySQL / statsTasksSQL / statsDailySQL 是 accumulateMessageStats 实际
 // 执行的语句），所以换谓词/换索引名当场会在这里红。
