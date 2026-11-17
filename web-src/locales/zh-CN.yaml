@@ -1500,7 +1500,9 @@ caps:
     tasks: '任务总数'
     tasks_failed: '失败'
     title: '最近一次运行的留痕（observed）'
-    unavailable: '服务端暂未提供能力维度的运行记录'
+    truncated: '只显示最近 {n} 条，更早的没有列出'
+    unavailable: '这个能力还没有运行记录（跑过一次就会出现）'
+    window: '计数是近 24 小时的窗口'
   resolved:
     empty: '终端能力：跑完就结束，不再交给下游'
     missing: '解析不到'

@@ -65,7 +65,7 @@ type CapabilityObservedPrune struct {
 
 // observedCountsSQL 是 24h 窗口计数（契约第 4 条）。
 //
-// 形状被 capability_observed_test.go 的计划门禁钉住：`(ns, capability, created_at>=?)`
+// 形状被 capability_observed_test.go 的计划断言钉住：`(ns, capability, created_at>=?)`
 // 必须走 idx_tasks_cap_created 的三段 seek。改这条 SQL 就要连 EXPLAIN 断言一起改。
 const observedCountsSQL = `SELECT count(*), count(CASE WHEN phase = 'failed' THEN 1 END)
 	  FROM tasks
@@ -87,7 +87,7 @@ const observedPruneSQL = `SELECT type, payload
 
 // ObservedForCapability 汇总一个能力的 status.observed 事实。
 //
-// 四段查询各走哪条索引（改形状前先跑 EXPLAIN，测试里有门禁）：
+// 四段查询各走哪条索引（改形状前先跑 EXPLAIN，测试里有断言）：
 //
 //  1. 最近任务：`ORDER BY created_at DESC, id DESC LIMIT 1` 走**既有**
 //     idx_tasks_ns_created(namespace_id, created_at, id) 的**反向扫**——零排序，

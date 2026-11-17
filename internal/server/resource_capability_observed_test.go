@@ -1,6 +1,6 @@
 package server
 
-// status.observed 的资源层门禁（CONTRACT-observed）：
+// status.observed 的资源层断言（CONTRACT-observed）：
 //   - 有事实时 envelope 里四个键齐全、形状与 api/resource.yaml 的具名 schema 一致；
 //   - 无事实时仍是**空对象 `{}`**（升级前的行为，客户端不需要改）。
 //

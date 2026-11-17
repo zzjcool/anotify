@@ -279,7 +279,7 @@ func TestObservedForCapabilityLimits(t *testing.T) {
 	})
 }
 
-// ---------- 查询计划门禁 ----------
+// ---------- 查询计划断言 ----------
 
 // TestObservedCountsQueryPlan 钉住 24h 计数的计划：必须是 idx_tasks_cap_created 的
 // 三段 seek（ns/capability/created_at），不能是全表扫——这条查询在能力详情与列表里
@@ -287,7 +287,7 @@ func TestObservedForCapabilityLimits(t *testing.T) {
 //
 // 为什么必须**多命名空间 + ANALYZE**：单 ns 的小库上规划器会认为 `namespace_id=?`
 // 没有区分度而退化成 `SCAN tasks`（实测），那样的断言是假绿。真库是「一个 ns 一小片，
-// 多个 ns 并存」且 Open 末尾会补统计（PRAGMA optimize），所以门禁按那个形状造数据。
+// 多个 ns 并存」且 Open 末尾会补统计（PRAGMA optimize），所以断言按那个形状造数据。
 func TestObservedCountsQueryPlan(t *testing.T) {
 	ctx := context.Background()
 	db, _ := newTestDBFile(t)
@@ -363,7 +363,7 @@ func TestObservedCountsQueryPlan(t *testing.T) {
 		t.Errorf("24h 计数出现 `SCAN tasks`（全表扫）:\n%s", plan)
 	}
 
-	// 索引形状：列序 / 数量各一条（防「重名不同列」的老索引把门禁骗过去）。
+	// 索引形状：列序 / 数量各一条（防「重名不同列」的老索引把断言骗过去）。
 	if n := countIndexRows(t, db, "tasks", "idx_tasks_cap_created"); n != 1 {
 		t.Fatalf("idx_tasks_cap_created 有 %d 条, want 1", n)
 	}
@@ -372,7 +372,7 @@ func TestObservedCountsQueryPlan(t *testing.T) {
 		t.Fatalf("idx_tasks_cap_created 的列序 = %v, want [namespace_id capability created_at id]", cols)
 	}
 
-	// 计划门禁必须测**产品真的跑的那条 SQL**：常量被换掉而这里还在测旧串 = 假绿。
+	// 计划断言必须测**产品真的跑的那条 SQL**：常量被换掉而这里还在测旧串 = 假绿。
 	src, err := os.ReadFile("capability_observed.go")
 	if err != nil {
 		t.Fatalf("read capability_observed.go: %v", err)

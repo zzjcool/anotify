@@ -1500,7 +1500,9 @@ caps:
     tasks: 'タスク総数'
     tasks_failed: '失敗'
     title: '直近の実行痕跡（observed）'
-    unavailable: 'サーバーはまだ能力単位の実行記録を提供していません'
+    truncated: '直近 {n} 件のみ表示しています（それ以前は表示していません）'
+    unavailable: 'この能力にはまだ実行記録がありません（一度実行すると表示されます）'
+    window: '件数は直近 24 時間の範囲です'
   resolved:
     empty: '終端能力：実行後は終了し、下流に渡しません'
     missing: '解決できません'

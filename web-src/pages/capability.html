@@ -759,7 +759,7 @@
        *
        * 数据层与列表页同一套：nsApi/nsPath/model.capability/writable/
        * withResourceVersion/deletePath/isConflict；失败不伪造数据（错误态交给
-       * loadErrorNode），observed 为空时如实说明服务端没有该维度数据。 */
+       * loadErrorNode），observed 全空（服务端 `{}`）时如实说明这个能力还没跑过。 */
       const A = window.Anotify;
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const {
@@ -1355,16 +1355,23 @@
         for (const r of m.resolvedNext) rsec.append(resolvedLine(r));
         body.append(rsec);
 
-        /* 近期调用记录（status.observed）：服务端这一维**恒为 {}**（本域不查事件/任务
-           窗口），所以没有数据时如实说明「服务端暂未提供」，不编造时间与计数。 */
+        /* 近期调用记录（status.observed）——服务端按 24h 窗口给出**真实事实**
+           （docs/design/v4/capability.md §2「observed」、CONTRACT-observed）：
+             {taskId, emits:[{to,fields,ok}], pruned:[{to,reason,detail}], tasks:{total,failed}}
+           四个键全空时服务端写 `{}`（这个能力从没跑过）——那时如实空态，不杜撰
+           时间与计数。emits/pruned 各被服务端截到 50 条（store.ObservedEmitLimit /
+           ObservedPruneLimit），到上限就必须说清「还有更多没显示」，不能假装是全部。 */
+        const OBSERVED_LIST_LIMIT = 50; // = store.ObservedEmitLimit / ObservedPruneLimit（服务端截断上限）
         const osec = section("caps.observed.title", "observed");
-        const ob = m.observed || { taskId: null, emits: [], pruned: [], tasks: {} };
+        const ob = isObj(m.observed) ? m.observed : {};
         const obTasks = isObj(ob.tasks) ? ob.tasks : {};
+        const obEmits = Array.isArray(ob.emits) ? ob.emits : [];
+        const obPruned = Array.isArray(ob.pruned) ? ob.pruned : [];
         const hasObserved =
-          Boolean(ob.taskId) || (ob.emits && ob.emits.length) || (ob.pruned && ob.pruned.length) ||
+          Boolean(ob.taskId) || obEmits.length > 0 || obPruned.length > 0 ||
           obTasks.total != null || obTasks.failed != null;
         if (!hasObserved) {
-          osec.append(txt("p", "cap-detail-empty", t("caps.observed.unavailable", "服务端暂未提供能力维度的运行记录")));
+          osec.append(txt("p", "cap-detail-empty", t("caps.observed.unavailable", "这个能力还没有运行记录（跑过一次就会出现）")));
         } else {
           const okv = el("div", { class: "cap-kv" });
           okv.append(
@@ -1373,11 +1380,14 @@
             kvLine(t("caps.observed.tasks_failed", "失败"), obTasks.failed == null ? "—" : obTasks.failed),
           );
           osec.append(okv);
+          /* tasks.total/failed 是**近 24h** 窗口（更早的任务不计入）：不写出窗口就等于
+             把 24h 的数字说成全部历史。 */
+          osec.append(txt("p", "cap-detail-empty", t("caps.observed.window", "计数是近 24 小时的窗口")));
           osec.append(txt("div", "cap-kv-key", t("caps.observed.emits", "派出记录")));
-          if (!ob.emits || !ob.emits.length) {
+          if (!obEmits.length) {
             osec.append(txt("p", "cap-detail-empty", t("caps.observed.emits_empty", "这次运行没有派出去")));
           } else {
-            for (const e of ob.emits) {
+            for (const e of obEmits) {
               const line = el("div", { class: "cap-line" });
               line.append(txt("span", "cap-mono", String(e.to == null ? "—" : e.to)));
               const fields = Array.isArray(e.fields) ? e.fields : [];
@@ -1393,12 +1403,20 @@
               line.append(txt("span", e.ok === false ? "cap-missing" : null, e.ok === false ? "✗" : "✓"));
               osec.append(line);
             }
+            /* 到服务端上限时说出来：列表被截断 ≠ 只有这些。数字取自同一份上限
+               （OBSERVED_LIST_LIMIT 与 store.ObservedEmitLimit/ObservedPruneLimit 同值），
+               不在文案里写死。 */
+            if (obEmits.length >= OBSERVED_LIST_LIMIT) {
+              osec.append(
+                txt("p", "cap-detail-empty", sub(t("caps.observed.truncated", "只显示最近 {n} 条，更早的没有列出"), { n: OBSERVED_LIST_LIMIT })),
+              );
+            }
           }
           osec.append(txt("div", "cap-kv-key", t("caps.observed.pruned", "剪枝留痕")));
-          if (!ob.pruned || !ob.pruned.length) {
+          if (!obPruned.length) {
             osec.append(txt("p", "cap-detail-empty", t("caps.observed.pruned_empty", "这次运行没有剪枝")));
           } else {
-            for (const p of ob.pruned) {
+            for (const p of obPruned) {
               const line = el("div", { class: "cap-line" });
               line.append(
                 txt("span", "cap-mono", String(p.to == null ? "—" : p.to)),
@@ -1412,6 +1430,11 @@
                 line.append(detail);
               }
               osec.append(line);
+            }
+            if (obPruned.length >= OBSERVED_LIST_LIMIT) {
+              osec.append(
+                txt("p", "cap-detail-empty", sub(t("caps.observed.truncated", "只显示最近 {n} 条，更早的没有列出"), { n: OBSERVED_LIST_LIMIT })),
+              );
             }
           }
         }
