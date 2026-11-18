@@ -449,7 +449,7 @@ test("HTTP/Chrome 分区与 parallel_runner.mjs 的注册表一致（否则风�
 });
 
 // ---------------------------------------------------------------- ③b 执行顺序
-test("执行顺序按注册表（信号量按提交顺序发，字母序会让 4 个矩阵套件同时开跑）", () => {
+test("执行顺序按注册表（信号量按提交顺序发，字母序会让四个矩阵套件同时开跑）", () => {
 	const order = registryOrder(ROOT);
 	assert.equal(order.length, SUITES.length, "注册表顺序必须覆盖全部套件");
 	assert.deepEqual([...order].sort(), [...SUITES].sort(), "只是顺序不同，集合必须相同");
