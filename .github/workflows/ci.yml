@@ -134,7 +134,13 @@ jobs:
     # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
     env:
       E2E_CONCURRENCY: "2"
-      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
+      # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
+      #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
+      #   F3_NAV_TIMEOUT_MS     → 导航默认等待
+      #   F3_CASE_BUDGET_MS     → 单 case 外层预算（超预算仍判红）
+      F3_DEFAULT_TIMEOUT_MS: "15000"
+      F3_NAV_TIMEOUT_MS: "20000"
       F3_CASE_BUDGET_MS: "150000"
     # label `full-ci` 的 PR 走 full-e2e，这里不重复跑部分集。
     if: >-
@@ -143,13 +149,6 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    # ⚠️ 尚未成为合并门禁。加 e2e 进 CI 时才发现 f3 的四个矩阵套件在 GitHub runner 上
-    # 有两个**与断言无关**的环境失败（4 次真跑的证据都在 PR #428 的评论/报告里）：
-    #   ① frontend/source-actions：子进程没落盘 case.json（预算抬到 150s 后依旧）
-    #   ② ui_shift/interact-dialogs：Chrome 渲染进程被关（降并发 + dev-shm 后仍偶发）
-    # 所以现在：**跑，但不拦合并**（失败仍红、日志仍全，nightly 的 full-e2e 也照跑）。
-    # 等这两个环境问题修掉，把这一行删掉即可变成真门禁 —— 别在没有证据的时候假装它是门禁。
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -207,6 +206,9 @@ jobs:
           echo "suites=$suites" >> "$GITHUB_OUTPUT"
 
       - name: 跑被选中的 e2e 套件
+        # 失败不直接判红：交给下一步按「已知环境性失败清单」裁决。
+        # 为什么不是整块 continue-on-error：那样清单之外的新失败也会被吞掉（永久红着没人看）。
+        continue-on-error: true
         run: |
           set -euo pipefail
           count="${{ steps.pick.outputs.count }}"
@@ -216,9 +218,20 @@ jobs:
           fi
           ./scripts/e2e/run_all.sh ${{ steps.pick.outputs.suites }}
 
+      # 裁决：失败集 ⊆ 已知清单 → 绿（逐条 warning）；清单之外 → 红并拦合并。
+      # 这个 job 是真门禁 —— 容忍范围写在 scripts/e2e/known-env-failures.json（棘轮只许变小），
+      # 不是靠 continue-on-error 整块放行。
+      - name: 判定（清单内容忍，清单外拦）
+        if: steps.pick.outputs.count != '0'
+        run: |
+          node scripts/e2e/ci-e2e-verdict.mjs \
+            --results .e2e-bin/results \
+            --known scripts/e2e/known-env-failures.json \
+            --selected "${{ steps.pick.outputs.suites }}"
+
       # 失败时把证据留下来：没有逐 case 的 full.log，上面的环境问题只能靠猜。
-      - name: 上传 e2e 证据（失败时）
-        if: failure()
+      - name: 上传 e2e 证据（总是上传：判定靠它复核「清单外的失败」）
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-evidence-${{ github.run_id }}
@@ -226,6 +239,7 @@ jobs:
             .e2e-bin/results
             scripts/e2e/fixtures/f3/screenshots
           retention-days: 7
+          if-no-files-found: ignore
 
   # ── main push：轻量回归（不跑 e2e；全量留给 nightly）───────────────
   regression:
@@ -266,7 +280,13 @@ jobs:
     name: full（make ci + 全量 e2e）
     env:
       E2E_CONCURRENCY: "2"
-      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
+      # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
+      #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
+      #   F3_NAV_TIMEOUT_MS     → 导航默认等待
+      #   F3_CASE_BUDGET_MS     → 单 case 外层预算（超预算仍判红）
+      F3_DEFAULT_TIMEOUT_MS: "15000"
+      F3_NAV_TIMEOUT_MS: "20000"
       F3_CASE_BUDGET_MS: "150000"   # 同 e2e-affected：runner 上 4 路 Chrome 会把浏览器打崩
     if: >-
       github.event_name == 'schedule' ||
