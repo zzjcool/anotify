@@ -208,13 +208,19 @@ const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
 // ---------- 参数解析 ----------
 const args = process.argv.slice(2);
 let serial = false;
+// 显式给了模式就听显式的：`--parallel` 以前会在下面被「带套件名默认串行」
+// 无条件覆盖掉 —— 一个静默失效的 flag（`run_all.sh --parallel a b c` 仍串行，
+// 于是「只跑 5 套」看起来只省了一半时间）。
+let serialExplicit = false;
 let planOnly = false;
 const suiteArgs = [];
 for (const a of args) {
 	if (a === "--serial") {
 		serial = true;
+		serialExplicit = true;
 	} else if (a === "--parallel") {
 		serial = false;
+		serialExplicit = true;
 	} else if (a === "--authority-plan") {
 		// 只打印每套件的 mode/authority，不跑任何套件：门禁要能**离线**自证
 		// 「frontend 是 real、四个 FE 套件是显式 mock」，而不是靠读代码相信。
@@ -241,7 +247,8 @@ if (suiteArgs.length > 0) {
 		process.exit(2);
 	}
 	suitesToRun = [...suiteArgs];
-	serial = true; // 单/多套件参数默认串行
+	// 带套件名参数时默认串行（兼容 e2e-one）；但显式 `--parallel` 不再被覆盖。
+	if (!serialExplicit) serial = true;
 } else {
 	suitesToRun = [...ALL_SUITES];
 }

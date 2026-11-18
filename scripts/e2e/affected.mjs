@@ -29,7 +29,7 @@
  *   AFFECTED_FILES=...   同 --files（换行分隔）
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -105,6 +105,42 @@ export const HTTP_SUITES = [
 
 /** 只吃节点二进制的套件：`cmd/anode/**` 改动时它们的风险面。 */
 export const ANODE_ONLY_SUITES = ["deploy", "live_agent", "node_v4"];
+
+/**
+ * 执行顺序 = 注册表顺序（HTTP 类在前，Chrome 类按 parallel_runner 的声明顺序）。
+ *
+ * 为什么不是字母序：Chrome 类走信号量（并发 4），**谁先拿到信号量谁先跑**。
+ * 全量运行时 i18n/i18n_coverage/frontend 先上，四个 f3 矩阵套件被"错峰"开；
+ * 如果子集按字母序（frontend, i18n, i18n_coverage, ui_shift 一起开始），
+ * 四个多进程 Chrome 套件同时抢 8 核 —— 实测 ui_shift 会撞到自己的 300s 预算
+ * （全量跑里从没超过 256s）。按注册表顺序跑 = 与全量完全相同的调度形状。
+ */
+export function registryOrder(root = ROOT) {
+	try {
+		const src = readFileSync(path.join(root, "scripts/e2e/parallel_runner.mjs"), "utf8");
+		const pick = (name) => {
+			const m = src.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
+			if (!m) return [];
+			return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+		};
+		const order = [...pick("HTTP_SUITES"), ...pick("CHROME_SUITES")];
+		if (order.length > 0) return order;
+	} catch {
+		/* 落到下面的兜底 */
+	}
+	// 兜底：字母序的已注册套件（root 里连 suites/ 都没有时退到本仓库）
+	try {
+		return registeredSuites(root);
+	} catch {
+		return registeredSuites();
+	}
+}
+
+/** 按执行顺序排列给定的套件（未知的排最后，保持不丢）。 */
+export function inRunOrder(suites, order = registryOrder()) {
+	const rank = new Map(order.map((s, i) => [s, i]));
+	return [...suites].sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9) || a.localeCompare(b));
+}
 
 /** 全部 Chrome 类套件（= 已注册 - HTTP 类）。 */
 export function chromeSuites(suites = registeredSuites()) {
@@ -514,7 +550,8 @@ function runE2E(suites) {
 	}
 	// **显式 --parallel**：带套件名参数时执行器默认串行（为 e2e-one 兼容），
 	// 多套件串行会把「少跑几套」的收益吃掉一半。
-	const args = ["./scripts/e2e/run_all.sh", "--parallel", ...suites];
+	// 顺序按注册表（见 registryOrder 的注释：信号量是按提交顺序发的）。
+	const args = ["./scripts/e2e/run_all.sh", "--parallel", ...inRunOrder(suites)];
 	console.log(`▶ ${args.join(" ")}`);
 	const r = spawnSync("bash", args, { cwd: ROOT, stdio: "inherit" });
 	return r.status ?? 1;

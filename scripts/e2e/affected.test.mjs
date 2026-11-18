@@ -44,6 +44,8 @@ import {
 	ANODE_ONLY_SUITES,
 	HTTP_SUITES,
 	chromeSuites,
+	inRunOrder,
+	registryOrder,
 	findGo,
 	globMatch,
 	goPlan,
@@ -444,6 +446,26 @@ test("HTTP/Chrome 分区与 parallel_runner.mjs 的注册表一致（否则风�
 		"HTTP + Chrome 必须正好等于全部注册套件",
 	);
 	for (const s of ANODE_ONLY_SUITES) assert.ok(SUITES.includes(s), `ANODE_ONLY_SUITES 里的 ${s} 未注册`);
+});
+
+// ---------------------------------------------------------------- ③b 执行顺序
+test("执行顺序按注册表（信号量按提交顺序发，字母序会让 4 个矩阵套件同时开跑）", () => {
+	const order = registryOrder(ROOT);
+	assert.equal(order.length, SUITES.length, "注册表顺序必须覆盖全部套件");
+	assert.deepEqual([...order].sort(), [...SUITES].sort(), "只是顺序不同，集合必须相同");
+
+	// 反例回归：ui_shift 与其它三个矩阵套件同时开跑时，实测会撞到自己的 300s 预算
+	// （全量跑里从没超过 256s）。按注册表顺序时 ui_shift 排在它们后面。
+	const subset = ["events_paging", "frontend", "i18n", "i18n_coverage", "ui_shift"];
+	const ordered = inRunOrder(subset, order);
+	assert.equal(ordered[ordered.length - 1], "ui_shift", "ui_shift 必须最后才拿到信号量");
+	assert.deepEqual([...ordered].sort(), [...subset].sort(), "排序不许增删套件");
+});
+
+test("执行顺序：注册表解析失败时退回字母序，而不是抛错或丢套件", () => {
+	const order = registryOrder("/nonexistent-root-for-test");
+	assert.ok(Array.isArray(order) && order.length > 0, "必须回退到 registeredSuites，而不是空/抛错");
+	assert.deepEqual(inRunOrder(["b", "a"], []), ["a", "b"]);
 });
 
 // ---------------------------------------------------------------- ④ Go 包反向闭包
