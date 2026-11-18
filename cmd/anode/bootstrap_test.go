@@ -273,6 +273,9 @@ type scriptFixture struct {
 	isActiveFail int          // 假 systemctl 前 N 次 is-active 返回"未 active"
 	// loginShell 是抓 PATH 用的假登录 shell（ANODE_LOGIN_SHELL 测试钩子）；空 = 脚本自己探测。
 	loginShell string
+	// hostRoot 非空时注入 ANODE_HOST_ROOT：把脚本「这台机器上已经装过一份吗」的宿主探测
+	// 落点搬进夹具。真 /etc 不可写，只有这个钩子能往「宿主」里种诱饵。
+	hostRoot string
 
 	// ownershipCheck 打开「所有权敏感」夹具：假 systemctl 的 is-active 只在
 	// 「config 属主 == unit 的 User=」时成功（C1 的回归门）。
@@ -360,6 +363,23 @@ func newScriptFixture(t *testing.T) *scriptFixture {
 func (f *scriptFixture) writeSum(digest string) {
 	f.t.Helper()
 	put(f.t, f.sumPath, digest+"  anode\n", 0600)
+}
+
+// seedHostInstall 在夹具里种一份「**宿主**已经装过 anode」的诱饵，并把它接在
+// ANODE_HOST_ROOT 上：宿主 /etc/anode/anode.yaml（名字 decoy-node、令牌 fixtureWrong、
+// 中枢指向一个连不上的端口）与宿主 /etc/systemd/system/anode.service。
+//
+// 诱饵为什么这样写：
+//   - 令牌用 fixtureWrong（假中枢必拒）：一旦被当成这次的令牌，预检就会被 1008 拒；
+//   - 中枢指向 127.0.0.1:1：一旦被当成本次的中枢，预检连不上；
+//   - 名字 decoy-node 在输出里出现 = 宿主的配置漏进了本次安装。
+func (f *scriptFixture) seedHostInstall() {
+	f.t.Helper()
+	f.hostRoot = filepath.Join(f.root, "host")
+	put(f.t, filepath.Join(f.hostRoot, "etc/anode/anode.yaml"),
+		"name: decoy-node\nserver: ws://127.0.0.1:1"+protocol.NodeStreamPath+"\ntoken: "+fixtureWrong+"\n", 0600)
+	put(f.t, filepath.Join(f.hostRoot, "etc/systemd/system/anode.service"),
+		"# decoy：宿主那份真安装的 unit\n[Service]\nUser=decoy\n", 0644)
 }
 
 // newFakeHub 是"真 WS 中枢"的最小实现：鉴权头 + hello 令牌都对才回 welcome，否则 close 1008。
@@ -456,6 +476,9 @@ func (f *scriptFixture) env() []string {
 	}
 	if f.loginShell != "" {
 		env = append(env, "ANODE_LOGIN_SHELL="+f.loginShell)
+	}
+	if f.hostRoot != "" {
+		env = append(env, "ANODE_HOST_ROOT="+f.hostRoot)
 	}
 	if f.installExit != "" {
 		env = append(env, "FIXTURE_INSTALL_EXIT="+f.installExit)
@@ -1581,6 +1604,72 @@ func TestInstallScriptAutoUserWithPrefixDowngradesToNone(t *testing.T) {
 	if strings.Contains(out+errOut, fixtureToken) {
 		t.Fatalf("令牌泄露到输出")
 	}
+}
+
+// ---- 9n. --prefix 是自包含安装：不读宿主那份真安装（配置 / unit）----
+//
+// docs/anode-install.md：「--prefix DIR 是 staging 布局 ……**staging 不启动/改动宿主服务**」。
+// 实测过的两处越界（在**真装过 anode 的开发机**上一跑就现形，干净 runner 上永远绿）：
+//
+//	· 宿主 /etc/anode/anode.yaml 被当成「本次的已有配置」→ UPGRADE=yes，于是摘要说
+//	  「升级完成」、还会给 install 带上 --update-token（拿宿主的令牌当「旧令牌」）；
+//	· 宿主 /etc/systemd/system/anode.service 被当成「本次安装的旧实例」→ 先 stop 掉
+//	  （失败时再 start 回来）宿主正在跑的生产节点。
+//
+// 真 /etc 不可写，所以诱饵种在夹具里、由 ANODE_HOST_ROOT 把探测落点搬过去（见 seedHostInstall）。
+// 变异验证：把脚本里「--prefix 下不探测宿主」那两个分支去掉 → 本用例必红。
+func TestInstallScriptPrefixIgnoresHostInstall(t *testing.T) {
+	t.Run("只落盘", func(t *testing.T) {
+		f := newScriptFixture(t)
+		f.seedHostInstall()
+		code, out, errOut := f.run(append(f.baseArgs(), "--service", "none", "--token", fixtureToken)...)
+		if code != 0 {
+			t.Fatalf("--prefix + --service none 应该成功，实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		// 首次安装：没有「已有配置」可沿用，摘要是首装口气。
+		if !strings.Contains(out, "未安装服务") {
+			t.Fatalf("宿主配置被当成了本次的已有配置（摘要不是首装口气）：%s", out)
+		}
+		if strings.Contains(out+errOut, "升级完成") {
+			t.Fatalf("staging 安装被当成了宿主那份的升级：stdout=%s stderr=%s", out, errOut)
+		}
+		if strings.Contains(out+errOut, "decoy-node") {
+			t.Fatalf("宿主的配置漏进了本次安装（名字被改成了诱饵）：stdout=%s stderr=%s", out, errOut)
+		}
+		// 「旧令牌」来自诱饵：一旦读了宿主的配置，install 就会带上 --update-token。
+		if lines := f.calls(); countLines(lines, func(l string) bool { return hasArg(l, "--update-token") }) != 0 {
+			t.Fatalf("拿宿主配置里的令牌当成了「旧令牌」（--update-token）：%v", lines)
+		}
+		if n := countLines(f.calls(), isSystemctlCall); n != 0 {
+			t.Fatalf("--service none 却调用了 systemctl %d 次：%v", n, f.calls())
+		}
+		// 预检用的是 --token 给的那把（fixtureToken），所以假中枢会放行一次。
+		if hits := f.stream.Load(); hits != 1 {
+			t.Fatalf("预检应该连中枢 1 次（用 --token 给的令牌），实际 %d", hits)
+		}
+	})
+
+	t.Run("系统服务", func(t *testing.T) {
+		f := newScriptFixture(t)
+		f.seedHostInstall()
+		code, out, errOut := f.run(append(f.baseArgs(), "--token", fixtureToken)...)
+		if code != 0 {
+			t.Fatalf("--prefix + auto 应该装成功（用 --token 给的令牌），实际 %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		// 宿主的 unit 不是「本次安装的旧实例」：一次 stop 都不该有。
+		// （后面的 daemon-reload / enable / restart 是本次新装的服务，另当别论。）
+		if lines := f.calls(); countLines(lines, func(l string) bool {
+			return isDirectSystemctl(l) && hasArg(l, "stop")
+		}) != 0 {
+			t.Fatalf("停掉了宿主正在跑的 anode.service：%v", lines)
+		}
+		if strings.Contains(errOut, "已恢复升级前的服务") {
+			t.Fatalf("没停过任何东西却声称恢复了旧服务：%s", errOut)
+		}
+		if strings.Contains(out+errOut, "decoy-node") {
+			t.Fatalf("宿主的配置漏进了本次安装：stdout=%s stderr=%s", out, errOut)
+		}
+	})
 }
 
 // ---- 10. 脚本与 web/install-anode.sh 字节一致（D2：静态服务匿名下发的就是它）----
