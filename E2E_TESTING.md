@@ -152,6 +152,36 @@ make e2e          # 全量端到端（构建 + 所有套件）
 make e2e-one S=auth_flow   # 只跑某个套件
 ```
 
+### 按改动选择（affected）：什么时候可以不跑全量
+
+全量 e2e 的自证成本很高，而「改一页 HTML」与「改一个协议帧」的风险面并不相同。
+选择器把这件事算出来，并且**必须**把「跑哪些 / 跳过哪些 / 为什么跳过」打印出来 ——
+静默少跑等于静默降低覆盖，那比慢更贵。
+
+```bash
+make plan-affected   # 只打印计划（Go 包 + e2e 套件 + 跳过清单），不执行任何东西
+make test-affected   # 跑被选中的 Go 包测试 + 被选中的 e2e 套件
+make e2e-affected    # 只跑被选中的 e2e 套件
+PI_E2E_FULL=1 make test-affected   # 强制全量（任何时候都可回到全量）
+```
+
+判据（`scripts/e2e/affected.mjs` + `scripts/e2e/affected-map.mjs`）：
+
+- **Go 侧**：`go list` 的 import 图反向闭包（谁依赖被改包 → 谁的测试要跑）；
+  被改包是否进入 `cmd/server` / `cmd/anode` 的依赖闭包，决定 e2e 风险面
+  （中枢变了 ⇒ 每个套件都起它 ⇒ 全量；只有 anode 变了 ⇒ 只跑真跑节点的套件）。
+- **e2e 侧**：只有映射表显式登记的「页面 / 路径」才会选中套件。表里没登记的路径
+  ⇒ **全量**（fail-closed）。所以表腐烂的代价是「多跑」，不会变成「漏跑」。
+- 唯一的「可以不跑」白名单是 `NO_E2E_IMPACT`（`docs/**`、`*.md`、`.reports/**` …），
+  每条都写了理由。
+
+映射表不会静默腐烂：`make check-affected-map`（已进 `make ci`）钉住四件事 ——
+已知耦合的改动必须选中、已知无关的不许选中、**删掉表里一行必须红**、
+套件源码访问的页面必须登记（漏登记 = 漏跑），以及表里每条 glob 必须还匹配得到文件。
+
+**全量永远有一个与选择逻辑无关的出口**：`make e2e`、CI 的 nightly 与 `full-ci` 标签。
+没有全量跑的地方不许上线。
+
 ## 测试矩阵（全 case 清单）
 
 见各 suite 文件顶部注释。当前注册 **28 套件**（13 HTTP + 15 Chrome），断言总数以执行器

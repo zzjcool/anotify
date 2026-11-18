@@ -1,7 +1,23 @@
-# PR / main 门禁：gofmt、vet、build、单元测试。
-# 与本地 `make ci` 同一条命令。不跑 make e2e / make integration
-# （那些需要浏览器或已经启动的服务）。
-# 合并前的全量端到端仍是 make e2e，不在这个 workflow 里。
+# Anotify CI —— 分阶段 + 按改动自适应选择（2026-11-18）
+#
+# ── 一句话 ────────────────────────────────────────────────────────────
+# 不是「跑得更快」，而是「不再跑不需要跑的」，并且**全量永远有一个与选择逻辑
+# 无关的出口**（nightly / workflow_dispatch / PR label `full-ci`）。
+#
+# ── 四个阶段（改动的风险面不相等，门禁也不该相等）────────────────────
+#   triage        PR：用与本地同一个分类器算出「这次是不是 docs-only」
+#   quick         PR + main push：`make ci`（contract / 守卫 / lint / fe / 单测 /
+#                 基准冒烟）—— **内容与改造前完全一致**，只是 PR 上多了一层 e2e
+#   e2e-affected  PR：只跑被改动选中的 e2e 套件（`make plan-affected` 的结论）
+#   full-e2e      nightly / workflow_dispatch / PR label `full-ci`：`make ci` + **全量** e2e
+#
+# ── 硬纪律 ────────────────────────────────────────────────────────────
+# 1. **没有全量跑的地方 = 这段不许合进 main。** 全量的入口是 nightly（每天
+#    18:00 UTC = 02:00 CST）与 `full-ci` 标签，二者都不经过 affected 选择器。
+# 2. **不许静默降低覆盖。** PR 上跳过某个套件的理由必须由 `make plan-affected`
+#    打印出来（选择器的输出里有「跳过清单 + 原因」）；找不到理由的跳过一次都不许有。
+# 3. docs-only 的判据来自 `scripts/e2e/affected-map.mjs` 的 NO_E2E_IMPACT 表，
+#    不是「后缀看起来像文档」——所以 `docs/**` 与 `web/docs.html` 是两回事。
 name: ci
 
 on:
@@ -9,42 +25,299 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # 每天 18:00 UTC（02:00 CST）跑一次全量：选择器可能漏，nightly 是那张兜底的网。
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# 同一个 ref 上后来的运行取消前面的：改造前同一条分支上曾出现连续 7 次运行
+# 同时跑满（每条 200s 级），其中绝大多数结果被后一次覆盖 —— 纯浪费。
+# nightly 用独立 group：别让一次 push 把定时全量取消掉。
+concurrency:
+  group: ci-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  # ── 分类：这次改动有没有「e2e 会读的东西」──────────────────────────
+  triage:
+    name: triage（docs-only？）
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # merge-base 需要历史；blob:none 只取提交图，不取文件内容。
+          fetch-depth: 0
+          filter: blob:none
 
-      # make fe（check-classes/check-css/check-i18n-keys/check-contrast/sitegen/hash）
-      # 绝大多数只用 Node 标准库；唯一例外是 check-wire-fields.mjs（要解析 api/*.yaml）。
-      # 少了下面这一步，它会 ERR_MODULE_NOT_FOUND，而挂在 make fe 上 ⇒ 每条 PR 的
-      # `make ci` 在 make fe 处整条红（2026-09~11 一直如此：CI 门禁实际无人看）。
-      # 只装这一个纯 JS 小包：不写 lock、不引入 playwright 等大件。
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      # staticcheck 装在 .bin/（make tools）。缓存它：`go install pkg@version` 每次都要向
-      # honnef.co 做 go-get 解析，网络抖一下就把「工具没装上」伪装成「代码有问题」。
+      - name: 分类（--no-go：只判 docs-only，不需要 Go 工具链）
+        id: classify
+        run: |
+          set -euo pipefail
+          node scripts/e2e/affected.mjs --json --no-go \
+            --base "origin/${{ github.base_ref }}" > plan.json
+          docs_only=$(python3 -c 'import json;print(str(json.load(open("plan.json"))["docsOnly"]).lower())')
+          echo "docsOnly=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          if [ "$docs_only" = "true" ]; then
+            echo "::notice::本次改动只碰了 e2e 不读的路径（docs/**、*.md、.reports/** …）⇒ 跳过 quick 与 e2e"
+          fi
+
+  # ── 快门禁：内容与改造前一致（make ci）────────────────────────────
+  quick:
+    name: quick（make ci）
+    needs: triage
+    # 显式写成 pull_request：main push 走下面的 regression（避免依赖「被 needs 的 job
+    # 被 skip 时下游是否还会跑」这种容易想错的语言细节）。
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.triage.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # quick 不需要历史（make ci 只看工作树），1 个提交就够。
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # 显式声明：模块缓存 + 构建/测试缓存都由 setup-go 管（key 含 go.sum）。
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # staticcheck 装在 .bin/（make tools）。缓存它：`go install pkg@version` 每次
+      # 都要向 honnef.co 做 go-get 解析，网络抖一下就把「工具没装上」伪装成「代码有问题」。
       - name: Cache Go static tools
         uses: actions/cache@v4
         with:
           path: .bin
           key: go-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
 
-      - name: Install guard-only JS dep
-        run: npm install --no-save --no-audit --no-fund yaml@2
+      # 改造前这里是 `npm install --no-save yaml@2`：每次都重新解析 registry，且
+      # check-wire-fields.mjs 依赖的 yaml 是**隐式**依赖（不在 package.json 里）。
+      # `npm ci` 按 package-lock.json 装（yaml 已在 lock 里作为传递依赖），配合
+      # setup-node 的 npm 缓存，冷启动只走一次 tarball 下载。
+      - name: Install JS deps（按 lock 安装，不再临时装单个包）
+        run: npm ci --no-audit --no-fund
 
       - name: PR gate
         run: make ci
+
+  # ── PR：只跑被改动选中的 e2e 套件 ─────────────────────────────────
+  e2e-affected:
+    name: e2e（affected）
+    needs: [triage, quick]
+    # 实测（本 workflow 第一次真跑，PR #428）：Chrome 并发 4 时 ui_shift 中途
+    # 「Target page, context or browser has been closed」——浏览器被打崩，不是断言失败。
+    # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
+    env:
+      E2E_CONCURRENCY: "2"
+      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      F3_CASE_BUDGET_MS: "150000"
+    # label `full-ci` 的 PR 走 full-e2e，这里不重复跑部分集。
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.triage.outputs.docs_only != 'true' &&
+      !contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # ⚠️ 尚未成为合并门禁。加 e2e 进 CI 时才发现 f3 的四个矩阵套件在 GitHub runner 上
+    # 有两个**与断言无关**的环境失败（4 次真跑的证据都在 PR #428 的评论/报告里）：
+    #   ① frontend/source-actions：子进程没落盘 case.json（预算抬到 150s 后依旧）
+    #   ② ui_shift/interact-dialogs：Chrome 渲染进程被关（降并发 + dev-shm 后仍偶发）
+    # 所以现在：**跑，但不拦合并**（失败仍红、日志仍全，nightly 的 full-e2e 也照跑）。
+    # 等这两个环境问题修掉，把这一行删掉即可变成真门禁 —— 别在没有证据的时候假装它是门禁。
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 选择器要 merge-base（这次改动相对目标分支的名字集合）。
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install JS deps
+        run: npm ci --no-audit --no-fund
+
+      # e2e 的 Chrome 类套件要真 Chrome。runner 自带 google-chrome；找不到就**当场红**
+      # —— 不许因为「没有浏览器」而静默跳过前端套件（那正是本仓最贵的假绿形态）。
+      - name: 预检：Chrome 与 python3（缺了就红，不静默跳过）
+        run: |
+          set -euo pipefail
+          for bin in /usr/bin/google-chrome python3; do
+            command -v "$bin" >/dev/null || { echo "❌ 缺少 $bin：e2e 不能在没有浏览器的情况下跑（不做静默降级）"; exit 1; }
+          done
+          /usr/bin/google-chrome --version
+
+      # VAPID 密钥缺失时，api_contract 里那条 VAPID 断言会被 `if (env)` 静默跳过。
+      # 生成一对临时密钥，让 CI 的断言集合与本地一致。
+      - name: VAPID 密钥（避免「没有 key 就静默少一条断言」）
+        run: |
+          set -euo pipefail
+          eval "$(go run ./scripts/genkeys.go | grep '^ANOTIFY_VAPID_')"
+          {
+            echo "ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY"
+            echo "ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY"
+          } >> "$GITHUB_ENV"
+
+      - name: 选择本次要跑的套件（并打印跳过清单）
+        id: pick
+        run: |
+          set -euo pipefail
+          node scripts/e2e/affected.mjs --base "origin/${{ github.base_ref }}" > plan.txt
+          cat plan.txt
+          node scripts/e2e/affected.mjs --json --base "origin/${{ github.base_ref }}" > plan.json
+          count=$(python3 -c 'import json;print(len(json.load(open("plan.json"))["e2e"]["selected"]))')
+          suites=$(python3 -c 'import json;print(" ".join(json.load(open("plan.json"))["e2e"]["selected"]))')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+
+      - name: 跑被选中的 e2e 套件
+        run: |
+          set -euo pipefail
+          count="${{ steps.pick.outputs.count }}"
+          if [ "$count" = "0" ]; then
+            echo "ℹ️ 本次改动没有被任何 e2e 套件覆盖（计划里已有跳过原因）⇒ 不跑"
+            exit 0
+          fi
+          ./scripts/e2e/run_all.sh ${{ steps.pick.outputs.suites }}
+
+      # 失败时把证据留下来：没有逐 case 的 full.log，上面的环境问题只能靠猜。
+      - name: 上传 e2e 证据（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence-${{ github.run_id }}
+          path: |
+            .e2e-bin/results
+            scripts/e2e/fixtures/f3/screenshots
+          retention-days: 7
+
+  # ── main push：轻量回归（不跑 e2e；全量留给 nightly）───────────────
+  regression:
+    name: regression（main push：make ci）
+    # PR 走 quick 那个 job（同一个 make ci，多了 triage 门槛）；
+    # push 到此分支即 main，跑同一条门禁但不跑 e2e —— 全量 e2e 的唯一固定出口是 nightly。
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: .bin
+          key: go-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: main 轻量回归
+        run: make ci
+
+  # ── 全量：nightly / workflow_dispatch / PR label `full-ci` ────────
+  full-e2e:
+    name: full（make ci + 全量 e2e）
+    env:
+      E2E_CONCURRENCY: "2"
+      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      F3_CASE_BUDGET_MS: "150000"   # 同 e2e-affected：runner 上 4 路 Chrome 会把浏览器打崩
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: .bin
+          key: go-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: 预检：Chrome 与 python3
+        run: |
+          set -euo pipefail
+          for bin in /usr/bin/google-chrome python3; do
+            command -v "$bin" >/dev/null || { echo "❌ 缺少 $bin"; exit 1; }
+          done
+
+      - name: VAPID 密钥
+        run: |
+          set -euo pipefail
+          eval "$(go run ./scripts/genkeys.go | grep '^ANOTIFY_VAPID_')"
+          {
+            echo "ANOTIFY_VAPID_PUBLIC_KEY=$ANOTIFY_VAPID_PUBLIC_KEY"
+            echo "ANOTIFY_VAPID_PRIVATE_KEY=$ANOTIFY_VAPID_PRIVATE_KEY"
+          } >> "$GITHUB_ENV"
+
+      - name: 快门禁
+        run: make ci
+
+      # 全量 e2e：**不经过 affected 选择器**。这条是「选择器漏了」的兜底网，
+      # 也是「没有全量跑的地方就不许上线」的那条纪律。
+      - name: 全量 e2e
+        run: make e2e

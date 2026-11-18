@@ -103,8 +103,12 @@ export async function uiMain(suite, self) {
       let output = 'COMMAND ' + JSON.stringify({ cwd: ROOT, argv: [process.execPath, self, '--fragment', id], ...identity }) + '\n';
       let timedOut = false;
       const kill = sig => { try { process.kill(-child.pid, sig); } catch { /* group settled */ } };
-      const soft = setTimeout(() => { timedOut = true; kill('SIGTERM'); }, 52000);
-      const hard = setTimeout(() => { if (timedOut || interrupted) kill('SIGKILL'); }, 54000);
+      // 每个 case 的外层预算：默认 52s/54s（本地实测口径）。慢机（CI runner 比开发机慢
+      // 2–3 倍）用 F3_CASE_BUDGET_MS 抬高 —— 这**不是**放宽断言：超预算仍然 timedOut=true
+      // 判红，只是把「多久算超时」变成可配置，跟 parallel_runner 的 per-suite 预算同款。
+      const budgetMs = Number(process.env.F3_CASE_BUDGET_MS || 52000);
+      const soft = setTimeout(() => { timedOut = true; kill('SIGTERM'); }, budgetMs);
+      const hard = setTimeout(() => { if (timedOut || interrupted) kill('SIGKILL'); }, budgetMs + 2000);
       child.stdout.on('data', chunk => { output += chunk; });
       child.stderr.on('data', chunk => { output += chunk; });
       child.once('error', error => { output += String(error); });

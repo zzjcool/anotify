@@ -282,7 +282,7 @@ async function main() {
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 	// 根路径页面是 zh-CN（<html lang="zh-CN"> + /i18n.zh-CN.js），
 	// locale 只是把 navigator.language 也对齐，避免语言提示条干扰交互。

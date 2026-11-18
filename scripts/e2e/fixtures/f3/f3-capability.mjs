@@ -437,7 +437,16 @@ export async function capability(d){
 
 			await takeRec(page);
 			await page.locator('[data-cap="analyze-pr"] .cap-ver-row button').nth(1).click();
-			await page.waitForSelector('[data-cap="analyze-pr"] .cap-ver-body', { timeout: 15000 });
+			// 等**正文真的有内容**，而不是只等容器出现：容器先挂上、includeBody=true 的响应后到，
+			// 只等容器会让下面的 textContent 读到空串（CI 上就是这样红的：那两条断言里
+			// 一条是「版本正文不能为空」，本地因为响应快没暴露）。断言本身不放松，只把等待改成有条件。
+			await page.waitForFunction(
+				() => {
+					const el = document.querySelector('[data-cap="analyze-pr"] .cap-ver-body');
+					return !!el && (el.textContent || "").trim().length > 0;
+				},
+				{ timeout: 15000 },
+			);
 			const recs = await takeRec(page);
 			assert.ok(
 				recs.some((r) => /\/versions\/\d+\?includeBody=true$/.test(r.url)),
