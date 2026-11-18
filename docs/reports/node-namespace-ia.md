@@ -3,6 +3,7 @@
 - Issue: [#436](https://github.com/zzjcool/anotify/issues/436)
 - 设计: [`docs/design/node-namespace-ia.md`](../design/node-namespace-ia.md)
 - 分支: `feat/node-namespace-ia`（基线 `origin/main 2c115020`）
+- PR: [#441](https://github.com/zzjcool/anotify/pull/441)（①② 同一 PR，提交按 docs / server / web / report 分开）
 - 本轮落地: **① 页面 IA + 旧 URL 兼容**、**② Node YAML 查看/编辑**
 - 未落地（设计已写死，可独立继续）: ③ Namespace 独立页的 YAML 面、④ System 迁位已完成 —— 见 §6
 
@@ -163,10 +164,15 @@ go test ./cmd/anode -run 'TestInstallScript…' -count=1     # 同样 4 条 FAIL
 
 ## 6. PR 与顺序
 
-| 顺序 | 分支 | 内容 | 状态 |
+| 顺序 | 提交 | 内容 | 状态 |
 | --- | --- | --- | --- |
-| 1 | `feat/node-namespace-ia` | server 提交（② 的读写面 + spec + 测试） | 见下 |
-| 2 | 同上 | web 提交（① 的页面/导航/i18n + ② 的 YAML 面板 + e2e） | 见下 |
+| 1 | `0661d2ab` docs(design) | 设计文档（页面地图 / YAML 契约 / 拆分） | ✅ |
+| 2 | `29069ef6` feat(server) | ② 的读写面 + OpenAPI + 测试 | ✅ |
+| 3 | `1312cbc1` feat(web) | ① 的页面/导航/i18n/mock/e2e + ② 的 YAML 面板 | ✅ |
+| 4 | `c7e5170f` docs(report) | 本报告 | ✅ |
+
+PR [#441](https://github.com/zzjcool/anotify/pull/441) 覆盖 ①②；③（Namespace YAML 面）与 ④ 的剩余部分
+按设计 §6 另开 PR。
 
 > ① 与 ② 在同一个 PR 落地：两者改的是同一张卡片（`node.html` 的配置区）——先删 ns 上下文、
 > 再加 YAML 面板如果拆成两个 PR，第二个 PR 会把第一个 PR 刚写的卡片整块重写。提交仍按
