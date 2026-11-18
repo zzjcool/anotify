@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets hooks lint-go tools
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -94,6 +94,9 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
 	node scripts/check-annotations.mjs
+
+check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中、已知无关不许选中、删一行必须红、表不许腐烂
+	node --test scripts/e2e/affected.test.mjs
 
 # GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
 # 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
@@ -274,6 +277,9 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) check-guard-selftest
 	$(MAKE) check-test-discipline
 	$(MAKE) check-annotations
+	@# 改动选择器的护栏：映射表烂掉不会让 CI 变红（只会让「跳过」变多）—— 那是最贵的假绿。
+	@# 它同时反证「选择确实来自表」（删一行必红），所以放进 make ci，而不是只留在报告里。
+	$(MAKE) check-affected-map
 	$(MAKE) check-secrets
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
@@ -369,6 +375,29 @@ e2e-serial: ## 全量端到端测试（串行模式，调试用）
 
 e2e-one: ## 只跑某个 E2E 套件：make e2e-one S=auth_flow
 	./scripts/e2e/run_all.sh $(S)
+
+# ---- 按改动自适应选择（affected）----
+#
+# 为什么要它：CI 与本地 agent 的重复劳动主要来自「一页 HTML 的改动也跑全量 e2e」。
+# 选择器把「这次需要跑什么」算出来，**并且必须打印**「跑哪些 / 跳过哪些 / 为什么」。
+# 判据是 fail-closed：映射表（scripts/e2e/affected-map.mjs）没登记的路径 ⇒ 全量；
+# 所以表腐烂的代价是「多跑」，不会变成「漏跑」。
+#
+# 三条入口：
+#   plan-affected  只打印计划（不跑任何东西）——review 时用它核对「跳过是否合理」
+#   test-affected  跑被选中的 Go 包测试 + 被选中的 e2e 套件
+#   e2e-affected   只跑被选中的 e2e 套件（Go 那段由 make ci / make test 覆盖）
+#
+# 强制全量：PI_E2E_FULL=1 make test-affected（CI 的 nightly 走的是 make e2e 全量，
+# 不是这个开关 —— 全量必须有一个与选择逻辑**无关**的出口）。
+plan-affected: ## 只打印「按改动该跑什么」（Go 包 + e2e 套件 + 跳过原因），不执行
+	node scripts/e2e/affected.mjs
+
+test-affected: ## 按改动选择执行：Go 包测试 + 选中的 e2e 套件（PI_E2E_FULL=1 强制全量）
+	node scripts/e2e/affected.mjs --run
+
+e2e-affected: ## 按改动选择只跑 e2e 套件（PI_E2E_FULL=1 强制全量）
+	node scripts/e2e/affected.mjs --run-e2e
 
 # e2e-quick：合并前的快检（~25s），覆盖「派发能到 + 部署能对账 + 目录能生效 + 契约没漂」。
 #

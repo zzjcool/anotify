@@ -11,6 +11,13 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 同一条 ref 上后来的构建取消前面的：改造前没有 concurrency，连续 push 会并行
+# 构建同一份镜像（cache-from/to 也会互相踩）。
+# 注意 tag 构建同样会被同名 tag 的新运行取消 —— 与 release.yml 的语义一致。
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   # github.repository = zzjcool/anotify（大写会被 GHCR 归一为小写，这里显式转小写）
@@ -19,6 +26,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -26,6 +34,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 镜像只从工作树构建，不需要历史；blob:none 让 checkout 只取文件内容。
+          fetch-depth: 1
+          filter: blob:none
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
