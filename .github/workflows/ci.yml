@@ -134,7 +134,13 @@ jobs:
     # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
     env:
       E2E_CONCURRENCY: "2"
-      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
+      # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
+      #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
+      #   F3_NAV_TIMEOUT_MS     → 导航默认等待
+      #   F3_CASE_BUDGET_MS     → 单 case 外层预算（超预算仍判红）
+      F3_DEFAULT_TIMEOUT_MS: "15000"
+      F3_NAV_TIMEOUT_MS: "20000"
       F3_CASE_BUDGET_MS: "150000"
     # label `full-ci` 的 PR 走 full-e2e，这里不重复跑部分集。
     if: >-
@@ -266,7 +272,13 @@ jobs:
     name: full（make ci + 全量 e2e）
     env:
       E2E_CONCURRENCY: "2"
-      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      # runner 比开发机慢 2–3 倍（实测 source-actions/interact-dialogs 在本地 3–5s 通过、
+      # 在 runner 上撞 4.5s 默认等待）。这些都是**等待上界**，不是断言：
+      #   F3_DEFAULT_TIMEOUT_MS → 页面元素/动作的默认等待
+      #   F3_NAV_TIMEOUT_MS     → 导航默认等待
+      #   F3_CASE_BUDGET_MS     → 单 case 外层预算（超预算仍判红）
+      F3_DEFAULT_TIMEOUT_MS: "15000"
+      F3_NAV_TIMEOUT_MS: "20000"
       F3_CASE_BUDGET_MS: "150000"   # 同 e2e-affected：runner 上 4 路 Chrome 会把浏览器打崩
     if: >-
       github.event_name == 'schedule' ||

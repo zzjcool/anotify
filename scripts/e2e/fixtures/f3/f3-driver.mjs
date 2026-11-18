@@ -764,7 +764,12 @@ export async function openDriver(id, options = {}) {
         window.__f3TraceAttach?.(value);
       }});
     },{mock,id,scope:options.scope??'default',theme:options.theme||'light'});
-    page=await context.newPage(); page.setDefaultTimeout(4500); page.setDefaultNavigationTimeout(7000);
+    // 等待上界（不是断言）：CI runner 比开发机慢 2–3 倍，4.5s 的默认值在那边会把
+    // 「慢」判成「没有」（实测 source-actions / interact-dialogs 在 runner 上超时，
+    // 本地同样代码 3–5s 就过）。用环境变量抬高，本地默认行为一个字没改。
+    page=await context.newPage();
+    page.setDefaultTimeout(Number(process.env.F3_DEFAULT_TIMEOUT_MS || 4500));
+    page.setDefaultNavigationTimeout(Number(process.env.F3_NAV_TIMEOUT_MS || 7000));
     page.on('pageerror',e=>report.errors.push(e.message));
     page.on('console',msg=>{
       if(msg.type()!=='error'){ if(msg.text().includes('mock 未实现')) report.errors.push(msg.text()); return; }
