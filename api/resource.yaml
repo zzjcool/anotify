@@ -326,6 +326,149 @@ paths:
         '500': {$ref: '#/components/responses/Status500'}
         '403': {$ref: '#/components/responses/Status403'}
 
+  /v1/namespaces/{namespace}/capabilities/{name}/enable:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    post:
+      operationId: enableCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "启用能力（幂等；无请求体）"
+      description: |
+        开关是**派生投影**之外的一个事实：`capability_switches` 里按 `(namespace, name)` 存一行，
+        **没有行 = 启用**。所以「启用」的两种状态（无行 / enabled 行）是同一个语义，本端点
+        不报错也不跳过审计——重复调 = 200 + 同一条审计又加一条（「我又确认了一次」也是事实）。
+
+        返回**整个** `Capability` 而不是 `204`：页面拿到 `metadata.resourceVersion` 才能接着
+        做 PATCH/删除，省一次往返。动作 POST **不套 CAS**（与 `deploy` 一致），也**不**改能力行
+        的 `resourceVersion` —— 开关不是能力内容，换版本（PATCH）也不重置开关。
+
+        启用不影响已经排队的任务，也不触发任何派发：它是「下一次触发判定」的读时闸门。
+      responses:
+        '200':
+          description: "启用后的能力（`status.enabled: true`）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/disable:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    post:
+      operationId: disableCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "停用能力（幂等；拒绝新触发，进行中的任务不受影响）"
+      description: |
+        停用拦的是**自动**触发：源事件路由到它、上游 emit 指向它，都不建任务，留在剪枝事实
+        `capability_disabled` 里。已排队/进行中的任务**不取消、不暂停**；`deploy` / 建版本 /
+        删除照旧可用；人工 `POST …/test` 仍然能跑（停用不是「关掉一切」）。
+
+        `reason` 只进审计的 `detail.reason`（不进 `status`），每次覆盖（= 最近一次操作是谁、
+        为什么），全 history 在 `capability_audit`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityDisableRequest'}
+      responses:
+        '200':
+          description: "停用后的能力（`status.enabled: false`）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capability'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/test:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    post:
+      operationId: testCapability
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "手动跑一次该能力（建真任务；事件带 origin=test 标记）"
+      description: |
+        试跑是一次**真实的运行**：建真任务、走真派发、真出结果。它不是 dry-run（源的 dry-run
+        是 0 写入预览），也不是「重跑一条历史事件」。与 `fireSource` 同一状态码语义：
+        **200 + 接收回执**（已建任务、还没跑完），不是 202。
+
+        三条边界：
+
+          - `version` 省略 = 当前 live 版本（与 PATCH/deploy 同一条解析）；显式版本不存在 → 404。
+          - `params` 按 `spec.params` 的 JSON Schema 校验；不合 schema → **400**，
+            `details.causes[]` 每条给 `{reason, field, message}`，`field` 指到具体参数路径
+            （如 `params.diff`）。它不是剪枝：人工试跑没有「下游不接」这回事。
+          - 一个节点都没持有该 digest 时**仍然 200**：任务停在 `pending`，回执给一条
+            `warnings[{reason: capability_not_deployed}]`。把「现在没有在线机器」伪装成 4xx
+            会让调用方去重试一个永远不会成功的请求。
+
+        在 `disabled` 能力上**可用**（L-D2）：停用拦的是自动触发，人工验证手段不受影响。
+        审计在同一事务里写 `action='test'`，`detail={traceId, version}`（不存参数全文）。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityTestRequest'}
+      responses:
+        '200':
+          description: "接收回执（`tasks[].taskId` 是已建任务的 id）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityTestReceipt'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/namespaces/{namespace}/capabilities/{name}/audit:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/CapabilityNamePath'
+    get:
+      operationId: listCapabilityAudit
+      tags: [capabilities]
+      security: [{session: []}]
+      summary: "该能力的最近操作（enable / disable / test，最新在前）"
+      description: |
+        非信封（与 `GET …/edges` 同类）：这是一份派生观察，不是可寻址资源。
+
+        `items` 按 `created_at DESC, id DESC`（最新在前），空为 `[]`（不是 `null`）。
+        `action` 闭集是 `enable` / `disable` / `test`；`actor` 空串 = 非会话主体（CLI/系统），
+        不做伪造；`at` 是 RFC3339（UTC）；`detail` 恒为对象（`enable`/`disable` 记 `{reason}`，
+        `test` 记 `{traceId, version}` —— 试跑的 params 全文不落审计）。
+
+        `limit` 缺省 50、上限 200（服务端夹取）；非整数 → 400。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: "最近多少条（1..200，缺省 50）"
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: "审计列表"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityAuditList'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/namespaces/{namespace}/edges:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
@@ -1873,6 +2016,13 @@ components:
       properties:
         version: {type: integer}
         digest: {type: string, description: 内容标识（能力 spec 的 canonical sha256）}
+        enabled:
+          type: boolean
+          description: |
+            该能力是否接受新的**自动**触发（派生投影：从 `capability_switches` 的开关行读，
+            无行 = `true`）。`false` 只拦自动触发（源事件 / 上游 emit 不建任务，留剪枝事实
+            `capability_disabled`）：已排队与进行中的任务不受影响，`deploy` / 建版本 / 删除
+            也照旧可用，人工 `POST …/test` 仍然能跑。与 `DELETE`（tombstone）无关。
         ready:
           type: boolean
           description: "四条 condition 全 True 且无 missing 下游"
@@ -2066,6 +2216,102 @@ components:
           type: array
           items: {$ref: '#/components/schemas/CapabilityDeployOutcome'}
         version: {type: integer}
+    CapabilityDisableRequest:
+      type: object
+      description: |
+        停用动作的可选 body。`reason` 只进审计的 `detail.reason`（不进 `status`）：
+        「为什么停」是可追溯的操作事实，不是能力的期望状态。
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 200
+          description: "停用原因（如「上游在改接口」）；超过 200 字符 → 400 `value_invalid`"
+    CapabilityTestRequest:
+      type: object
+      description: "试跑动作的可选 body（三个字段全部可省略）"
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: "省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；显式版本不存在 → 404"
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            该能力 `spec.params` 的实参；服务端按 JSON Schema 校验（不合 → 400，
+            `details.causes[].field` 指到具体参数路径）
+        nodes:
+          type: array
+          description: |
+            试跑诊断用的**候选节点白名单**（节点名或 id）：给出时回执的 `warnings` 只按这些节点
+            判「有没有机器能跑」；解析不到 → 404。
+            注意：v4 的派发在 `lease.grant` 时按「在线 + 授权 + 已 applied + 持有所需 digest」选点，
+            任务行**不钉节点**，所以本字段不改变最终派发到哪台机器。
+          items: {type: string}
+    CapabilityTestWarning:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          enum: [capability_not_deployed]
+          description: |
+            `capability_not_deployed` = 已排队，但当前没有（指定的）节点持有需要的 digest。
+            任务停在 `pending`，节点上线或部署收敛后自动派发——它不是 4xx，也不是任务失败码。
+        detail: {type: string}
+    CapabilityTestReceipt:
+      type: object
+      description: |
+        试跑回执（与 `SourceReceipt` 同形状口径：空列表恒 `[]`，`tasks[].taskId` 一定是
+        **已建任务**的 id）。状态码是 200（已建任务、还没跑完），不是 202。
+      required: [traceId, origin, tasks, pruned, warnings]
+      properties:
+        traceId: {type: string}
+        origin:
+          type: string
+          enum: [test]
+          description: "恒 `test`（让前端把人工试跑和外部投递分开）"
+        tasks:
+          type: array
+          items: {$ref: '#/components/schemas/SourceReceiptTask'}
+        pruned:
+          type: array
+          items: {$ref: '#/components/schemas/PruneFact'}
+        warnings:
+          type: array
+          description: "「跑得起来但会等」的观察（不是 4xx、也不是任务失败码）"
+          items: {$ref: '#/components/schemas/CapabilityTestWarning'}
+    CapabilityAuditEntry:
+      type: object
+      description: "该能力的一次操作（append-only；没有删除/修改入口）"
+      required: [id, action, actor, at, detail]
+      properties:
+        id: {type: string}
+        action:
+          type: string
+          enum: [enable, disable, test]
+        actor:
+          type: string
+          description: "发起操作的用户 id；空串 = 非会话主体（CLI / 系统），不做伪造"
+        at:
+          type: string
+          description: "RFC3339（UTC）"
+        detail:
+          type: object
+          additionalProperties: true
+          description: |
+            操作摘要：`enable`/`disable` 记 `{reason}`，`test` 记 `{traceId, version}`。
+            试跑的 params 全文**不**落审计（参数里可能有业务数据）。
+    CapabilityAuditList:
+      type: object
+      description: "审计列表（非信封，与 EdgeList 同类）：`items` 最新在前，空为 `[]`"
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CapabilityAuditEntry'}
     CapabilityEdge:
       type: object
       required: [from, to, kind]

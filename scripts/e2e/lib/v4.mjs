@@ -58,6 +58,11 @@ export const P = {
 	capabilityVersions: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/versions`),
 	capabilityVersion: (ns, name, v) => nsPath(ns, `/capabilities/${seg(name)}/versions/${seg(v)}`),
 	capabilityDeploy: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/deploy`),
+	// #432 能力启停 + 手动试跑（四个动作/读端点）
+	capabilityEnable: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/enable`),
+	capabilityDisable: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/disable`),
+	capabilityTest: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/test`),
+	capabilityAudit: (ns, name) => nsPath(ns, `/capabilities/${seg(name)}/audit`),
 	capabilityTemplates: () => "/v1/capability-templates",
 
 	edges: (ns) => nsPath(ns, "/edges"),

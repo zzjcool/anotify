@@ -1,6 +1,10 @@
 common:
   skip_to_content: メインコンテンツへ
   close: 閉じる
+  # 共有 schemaForm（#432）の select 空項目：空 = 送信しない（サーバーが schema の既定値を適用）
+  omitted: '空（既定値を使用）'
+  # #432：イベントの出所が test（手動試走）であることを示す表示（イベント一覧 / トレース）
+  origin_test: '手動試走'
   action:
     close: 閉じる
   load_failed_prefix: '読み込みに失敗：'
@@ -1325,6 +1329,24 @@ caps:
   not_ready: '未完了'
   ready_unknown: '状態不明'
   terminal_short: '終端能力（実行後は終了）'
+  # #432 有効化 / 無効化：アクションバーのボタン（enable / disable は状態でどちらか一方、test は常時）
+  act:
+    enable: '有効化'
+    disable: '無効化'
+    test: 'テスト実行'
+    disable_title: '能力 {name} を無効化'
+    disable_body: '「{name}」を無効化すると、ソースイベントも上流の emit も新しいタスクを作らなくなります（capability_disabled の剪枝事実が残ります）。キュー済み・実行中のタスクには影響しません。デプロイ、新バージョン、テスト実行は引き続き使えます。'
+  # #432 最近の操作（監査）：誰が · いつ · 何を + detail の要約
+  audit:
+    title: '最近の操作'
+    loading: '最近の操作を読み込み中…'
+    empty: 'まだ手動操作の記録はありません。有効化 / 無効化 / テスト実行がここに残ります。'
+    actor_none: 'セッション主体なし（CLI / システム）'
+    act_enable: '有効化'
+    act_disable: '無効化'
+    act_test: 'テスト実行'
+    reason_label: '理由：'
+    version: 'バージョン v{version}'
   cond:
     Deployed: '配備済み'
     DownstreamResolved: '下流解決'
@@ -1538,7 +1560,38 @@ caps:
     version: 'バージョン'
     workdir: '作業ディレクトリ'
     workdir_default: '未設定（タスクごとに独立ディレクトリ）'
+  state:
+    enabled: '有効'
+    disabled: '無効'
+  # #432 テスト実行ダイアログ（sources.html の #fire-modal と同じ形、#page-main の外）
+  test:
+    title: 'テスト実行'
+    title_named: '能力 {name} をテスト実行'
+    hint: 'テスト実行は実際にタスクを作成して配信します（プレビューではありません）。イベントには origin=test が付き、統計には含まれません。'
+    version: 'バージョン'
+    version_hint: '既定は現在の live バージョン。明示する場合は既存のバージョンである必要があります。'
+    params: 'パラメータ（spec.params から描画）'
+    params_json: 'params JSON を直接入力'
+    params_json_hint: 'params オブジェクト全体を入力すると上のフォームを上書きします。空ならフォームの値を使います。'
+    params_degraded: 'このパラメータ契約（oneOf / allOf / $ref など）はフォームにできないため、JSON を直接入力してください。'
+    params_empty: 'この能力はパラメータを取りません。'
+    params_invalid: 'params は JSON オブジェクトである必要があります'
+    nodes: 'ノードを限定'
+    nodes_hint: '空 = 必要な digest を持つオンラインの全ノード。候補はデプロイ候補から取得します。'
+    nodes_none: 'デプロイ候補のノードがありません（空のままにするとサーバーが digest で選びます）。'
+    submit: 'テスト実行'
+    submitting: '送信中…'
+    trace: 'traceId: '
+    tasks: 'タスク'
+    tasks_none: '今回はタスクが作成されませんでした（下の警告と剪枝を参照）。'
+    pruned: '剪枝'
+    warnings: '警告'
+    failed: 'テスト実行に失敗しました'
+    err_version: 'バージョンは 1 以上の整数である必要があります'
   toast:
+    enabled: '能力 {name} を有効化しました'
+    disabled: '能力 {name} を無効化しました'
+    test_sent: 'テスト実行を送信しました'
     created: '能力 {name} を作成しました'
     deleted: '能力 {name} を削除しました'
     deployed: 'デプロイしました（{n} 台）'

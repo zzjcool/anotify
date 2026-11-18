@@ -127,20 +127,27 @@ const (
 	// parityPairsFloor 是 parityPairs() 的对数（含 auth/ingress/agent 的全部 DTO 与协议帧）。
 	// 192 → 196：上面那四个 observed 子 schema 各自进 pair（虽然能从 CapabilityStatus
 	// 递归到达，但「可达」不等于「被单独钉住」——具名 DTO 都单独成对）。
-	parityPairsFloor = 196
+	// 196 → 202：启停/试跑的六对 DTO（disable body、test body、test 回执、
+	// warning、审计条目、审计列表）。
+	parityPairsFloor = 202
 	// bareMountFloor 是 bareMountSpec() 的条目数。
 	bareMountFloor = 27
 	// muxPatternCount 是静态收集到的真实 mux pattern 总数（含裸挂载与兜底）。
 	//
 	// 116 → 118：两条从 YAML 创建的字面段写端点
 	// （`POST …/capabilities/yaml`、`POST …/sources/yaml`）。
-	muxPatternCount = 118
+	// 118 → 122：能力的启停与试跑（`…/{name}/enable`、`/disable`、`/test`、`/audit`，
+	// CONTRACT-capability-lifecycle）。
+	muxPatternCount = 122
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
 	// 230 → 234：status.observed 从自由 object 改成四个具名 schema
 	// （CapabilityObserved + Emit + Prune + Tasks，CONTRACT-observed）。
-	specSchemaFloor = 234
+	// 234 → 240：启停/试跑六个具名 schema（CapabilityDisableRequest /
+	// CapabilityTestRequest / CapabilityTestReceipt / CapabilityTestWarning /
+	// CapabilityAuditEntry / CapabilityAuditList）。
+	specSchemaFloor = 240
 )
 
 // ---------- 测试入口 ----------
@@ -179,8 +186,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 125 → 127：两条 `/yaml` 只读端点（能力的正文全文 / 源的脱敏重建，
 	// CONTRACT-capability-yaml §1.1）。
 	// 127 → 129：+2 两条 `POST …/yaml` 从 YAML 创建（yaml-create）。
-	if len(ops) != 129 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 129（124 + Node 能力包体下行 + 2 条只读 /yaml + 2 条 POST /yaml）", len(ops))
+	// 129 → 133：+4 能力的启停/试跑/审计端点（enable / disable / test / audit）。
+	if len(ops) != 133 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 133（124 + Node 能力包体下行 + 2 条只读 /yaml + 2 条 POST /yaml + 4 条启停/试跑/审计）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0
@@ -3017,6 +3025,14 @@ func parityPairs() []parityPair {
 		{GoLabel: "capabilityDeployResponse", File: "resource.yaml", Schema: "CapabilityDeployResponse", Sample: capabilityDeployResponse{}},
 		{GoLabel: "capabilityDeployOutcome", File: "resource.yaml", Schema: "CapabilityDeployOutcome", Sample: capabilityDeployOutcome{}},
 		{GoLabel: "capabilityEdgeView", File: "resource.yaml", Schema: "CapabilityEdge", Sample: capabilityEdgeView{}},
+		// 启停与试跑（capability-lifecycle）：两个动作 body + 回执 + 审计列表。
+		// 回执的 tasks/pruned 复用 SourceReceiptTask / PruneFact 的既有配对（$ref 递归比对）。
+		{GoLabel: "capabilitySwitchRequest", File: "resource.yaml", Schema: "CapabilityDisableRequest", Sample: capabilitySwitchRequest{}},
+		{GoLabel: "capabilityTestRequest", File: "resource.yaml", Schema: "CapabilityTestRequest", Sample: capabilityTestRequest{}},
+		{GoLabel: "capabilityTestReceiptDoc", File: "resource.yaml", Schema: "CapabilityTestReceipt", Sample: capabilityTestReceiptDoc{}},
+		{GoLabel: "capabilityTestWarning", File: "resource.yaml", Schema: "CapabilityTestWarning", Sample: capabilityTestWarning{}},
+		{GoLabel: "capabilityAuditEntryDoc", File: "resource.yaml", Schema: "CapabilityAuditEntry", Sample: capabilityAuditEntryDoc{}},
+		{GoLabel: "capabilityAuditListDoc", File: "resource.yaml", Schema: "CapabilityAuditList", Sample: capabilityAuditListDoc{}},
 		// status.observed：空对象是合法形状（无事实时 `{}`），所以顶层四个键都不在 required；
 		// 子形状全部 required（有事实时每个键都在）。
 		{GoLabel: "capabilityObserved", File: "resource.yaml", Schema: "CapabilityObserved", Sample: capabilityObserved{}},

@@ -655,6 +655,199 @@ async function main() {
 		H.bad("manifest.json 无任何哈希资源条目");
 	}
 
+	// ---------- #432 能力启停 + 手动试跑（四个端点的 HTTP 契约）----------
+	{
+		const lifeName = "contract.life";
+		const life = await V.createCapability(
+			B,
+			session,
+			NS,
+			V.capabilityBody({
+				name: lifeName,
+				params: {
+					type: "object",
+					properties: { diff: { type: "string" } },
+					required: ["diff"],
+				},
+			}),
+		);
+		V.expectStatus("造数：建能力 contract.life（带 params schema）→ 201", life, 201);
+		const capPath = V.P.capability(NS, lifeName);
+		const enablePath = V.P.capabilityEnable(NS, lifeName);
+		const disablePath = V.P.capabilityDisable(NS, lifeName);
+		const testPath = V.P.capabilityTest(NS, lifeName);
+		const auditPath = V.P.capabilityAudit(NS, lifeName);
+
+		// ① 未登录一律 401（四个端点都在 session 中间件内侧，读端点也不例外）
+		// 动作端点是 POST-only：不带 method 会落到静态兜底拿 404（那是路径不存在，不是鉴权）。
+		expectAnon401("capability disable 未登录 → 401", await H.req(B, disablePath, { method: "POST", body: {} }));
+		expectAnon401("capability enable 未登录 → 401", await H.req(B, enablePath, { method: "POST", body: {} }));
+		expectAnon401("capability test 未登录 → 401", await H.req(B, testPath, { method: "POST", body: {} }));
+		expectAnon401("capability audit 未登录 → 401", await H.req(B, auditPath, {}));
+
+		// ② 默认 enabled（无开关行 = enabled，不是「没有这个字段」）
+		const before = await H.req(B, capPath, { session });
+		V.expectStatus("能力详情 GET → 200", before, 200);
+		H.eq("默认 status.enabled=true（无开关行 = 启用）", before.json?.status?.enabled, true);
+		const rvBefore = before.json?.metadata?.resourceVersion;
+
+		// ③ 停用 → 200 + 整个 Capability（status.enabled=false），resourceVersion 不变
+		const off = await H.req(B, disablePath, { session, method: "POST", body: {} });
+		V.expectStatus("POST …/disable → 200", off, 200);
+		H.eq("disable 返回 Capability 信封", off.json?.kind, "Capability");
+		H.eq("disable 后 status.enabled=false", off.json?.status?.enabled, false);
+		H.eq("disable 不改能力行 resourceVersion", off.json?.metadata?.resourceVersion, rvBefore);
+		// 幂等：再调一次仍是 200 + false（动作 POST 不套 CAS）
+		const offAgain = await H.req(B, disablePath, { session, method: "POST", body: {} });
+		V.expectStatus("POST …/disable 重复调用 → 200（幂等）", offAgain, 200);
+		H.eq("重复 disable 仍为 false", offAgain.json?.status?.enabled, false);
+		H.eq("重复 disable 仍不改 resourceVersion", offAgain.json?.metadata?.resourceVersion, rvBefore);
+		const afterDisable = await H.req(B, capPath, { session });
+		H.eq("停用是持久事实（重读仍是 false）", afterDisable.json?.status?.enabled, false);
+
+		// ④ 停用能力上仍然可以人工试跑（L-D2：停用拦的是自动触发）
+		// 事件数口径在保留域读模型 `/v1/stats`（`…/namespaces/{ns}/stats` 是资源计数，
+		// 没有事件总数——用错端点会让这条断言在任何实现下都「通过」）。
+		const statsBefore = await H.req(B, `/v1/stats?namespace=${encodeURIComponent(NS)}`, { session });
+		V.expectStatus("试跑前 /v1/stats → 200", statsBefore, 200);
+		H.check(
+			"/v1/stats 真的带事件总数（否则下面的隔离断言等于空转）",
+			typeof statsBefore.json?.total === "number",
+			JSON.stringify(statsBefore.json),
+		);
+		const totalBefore = statsBefore.json?.total;
+		const runOnDisabled = await H.req(B, testPath, {
+			session,
+			method: "POST",
+			body: { params: { diff: "disabled-run" } },
+		});
+		V.expectStatus("disabled 能力上 POST …/test → 200（人工动作不被停用拦）", runOnDisabled, 200);
+		H.eq("试跑回执 origin=test", runOnDisabled.json?.origin, "test");
+		H.check(
+			"试跑回执带 traceId",
+			typeof runOnDisabled.json?.traceId === "string" && runOnDisabled.json.traceId.length > 0,
+			JSON.stringify(runOnDisabled.json),
+		);
+		H.eq("试跑真建任务（tasks 长度 1）", (runOnDisabled.json?.tasks || []).length, 1);
+		H.eq("试跑任务的能力名", runOnDisabled.json?.tasks?.[0]?.capability, lifeName);
+		H.check(
+			"试跑回执的 pruned/warnings 都是数组（不是 null）",
+			Array.isArray(runOnDisabled.json?.pruned) && Array.isArray(runOnDisabled.json?.warnings),
+			JSON.stringify(runOnDisabled.json),
+		);
+		// 未部署（本套件没有在线节点持有所需 digest）→ 200 + warning，**不是 4xx**
+		H.eq(
+			"未部署 → warnings[0].reason=capability_not_deployed",
+			runOnDisabled.json?.warnings?.[0]?.reason,
+			"capability_not_deployed",
+		);
+		const testTaskId = runOnDisabled.json?.tasks?.[0]?.taskId;
+		const testTask = await H.req(B, V.P.task(NS, testTaskId), { session });
+		V.expectStatus("试跑建的是真任务（GET …/tasks/{id} → 200）", testTask, 200);
+		H.eq("试跑任务落在 pending（没有节点就跑不起来，但不是失败）", testTask.json?.status?.phase, "pending");
+
+		// ⑤ origin 隔离：试跑事件不进事件流，也不进 /stats 的事件数
+		const statsAfter = await H.req(B, `/v1/stats?namespace=${encodeURIComponent(NS)}`, { session });
+		H.eq("/v1/stats 的事件总数不被试跑抬高（L-D6）", statsAfter.json?.total, totalBefore);
+		const streamAll = await H.req(B, V.P.events(NS) + "?limit=200", { session });
+		const streamItems = V.assertListEnvelope("events 流", streamAll, "EventList");
+		H.check(
+			"事件流默认不含试跑（events.origin=test）",
+			!streamItems.some((it) => it?.spec?.origin === "test"),
+			JSON.stringify(streamItems.map((it) => it?.spec?.origin)),
+		);
+		const onlyTest = await H.req(B, V.P.events(NS) + "?origin=test&limit=50", { session });
+		V.expectStatus("events?origin=test → 200", onlyTest, 200);
+		const testItems = V.assertListEnvelope("events?origin=test", onlyTest, "EventList");
+		H.check(
+			"events?origin=test 只看试跑行",
+			testItems.length > 0 && testItems.every((it) => it?.spec?.origin === "test"),
+			JSON.stringify(testItems.map((it) => it?.spec?.origin)),
+		);
+		V.expectReason(
+			"events?origin=replay → 400（封闭集合外的值不静默忽略）",
+			await H.req(B, V.P.events(NS) + "?origin=replay", { session }),
+			400,
+			"value_invalid",
+		);
+
+		// ⑥ 参数不合 schema → 400 + details.causes[].field 指向字段路径
+		const badParams = await H.req(B, testPath, {
+			session,
+			method: "POST",
+			body: { params: {} },
+		});
+		V.expectStatus("试跑缺必填参数 → 400", badParams, 400);
+		const causes = badParams.json?.details?.causes || [];
+		H.check("400 带 details.causes[]", causes.length > 0, JSON.stringify(badParams.json));
+		H.check(
+			"causes[].field 指向参数路径（params.…）",
+			causes.some((c) => String(c?.field || "").startsWith("params.")),
+			JSON.stringify(causes),
+		);
+
+		// ⑦ 指定不存在的版本 → 404；跨命名空间 → 404（不泄露存在性）
+		V.expectReason(
+			"试跑指定不存在版本 → 404",
+			await H.req(B, testPath, { session, method: "POST", body: { version: 99, params: { diff: "x" } } }),
+			404,
+			"NotFound",
+		);
+		V.expectReason(
+			"能力启停在不存在的 ns → 404（不回退默认 ns）",
+			await H.req(B, V.P.capabilityDisable("no-such-ns", lifeName), { session, method: "POST", body: {} }),
+			404,
+			"NotFound",
+		);
+
+		// ⑧ 启用回来 → 200 + true
+		const on = await H.req(B, enablePath, { session, method: "POST", body: {} });
+		V.expectStatus("POST …/enable → 200", on, 200);
+		H.eq("enable 后 status.enabled=true", on.json?.status?.enabled, true);
+
+		// ⑨ 审计：disable×2 + test×1 + enable×1，倒序；limit 生效
+		const audit = await H.req(B, auditPath + "?limit=10", { session });
+		V.expectStatus("GET …/audit → 200", audit, 200);
+		const auditItems = audit.json?.items || [];
+		H.check(
+			"审计含 enable/disable/test 三类动作",
+			["enable", "disable", "test"].every((a) => auditItems.some((it) => it.action === a)),
+			JSON.stringify(auditItems.map((it) => it.action)),
+		);
+		H.eq("审计最新在前（最后一条是 enable）", auditItems[0]?.action, "enable");
+		H.eq("重复 disable 也留审计（幂等不跳过审计）", auditItems.filter((it) => it.action === "disable").length, 2);
+		H.check(
+			"审计项带 actor 与 RFC3339 时间",
+			typeof auditItems[0]?.actor === "string" &&
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(String(auditItems[0]?.at || "")),
+			JSON.stringify(auditItems[0]),
+		);
+		const auditTest = auditItems.find((it) => it.action === "test");
+		H.check(
+			"试跑审计只存 traceId + version（不存参数全文）",
+			auditTest?.detail?.traceId &&
+				auditTest.detail.version >= 1 &&
+				!JSON.stringify(auditTest.detail).includes("disabled-run"),
+			JSON.stringify(auditTest?.detail),
+		);
+		const auditOne = await H.req(B, auditPath + "?limit=1", { session });
+		H.eq("audit?limit=1 只回一条", (auditOne.json?.items || []).length, 1);
+		V.expectReason(
+			"audit?limit=abc → 400",
+			await H.req(B, auditPath + "?limit=abc", { session }),
+			400,
+			"BadRequest",
+		);
+		// 没有审计的能力 → items 是 []（不是 null）
+		const freshAudit = await H.req(B, V.P.capabilityAudit(NS, "contract.ping"), { session });
+		V.expectStatus("没有审计的能力 → 200", freshAudit, 200);
+		H.check(
+			"空审计是 {items: []}（不是 null）",
+			Array.isArray(freshAudit.json?.items) && freshAudit.json.items.length === 0,
+			JSON.stringify(freshAudit.json),
+		);
+	}
+
 	const passed = H.summary("api_contract");
 	server.stop();
 	process.exit(passed ? 0 : 1);
