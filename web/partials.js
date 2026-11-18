@@ -97,6 +97,12 @@
 			"M6 16h.01",
 			"M10 16h.01",
 		],
+		/* 命名空间 = 一层层的边界：三个叠起来的圆角框（与「节点」的机器匣轮廓区分开）。 */
+		namespaces: [
+			"M3 5h18v5H3z",
+			"M6 10h15v5H6z",
+			"M9 15h12v4H9z",
+		],
 		/* 事件流 = 带项目符号的列表 */
 		events: [
 			"M8 6h13",
@@ -211,6 +217,15 @@
 					fallback: "节点",
 					href: "nodes.html",
 					icon: "nodes",
+				},
+				{
+					/* #436：命名空间是独立的管理对象（它是唯一的硬隔离边界），
+					     不再寄生在节点页的「命名空间 vars 配置」里。 */
+					id: "namespaces",
+					labelKey: "common.nav.namespaces",
+					fallback: "命名空间",
+					href: "namespaces.html",
+					icon: "namespaces",
 				},
 			],
 		},

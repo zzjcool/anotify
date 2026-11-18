@@ -137,7 +137,7 @@ export const SUITE_SURFACES = {
 	// pages: ALL 的来源：矩阵/批次遍历 PAGES（f3-i18n-cases / f3-ui-helper）。
 	frontend: {
 		why: "注册 case 逐个起真 server + 真 Chrome（real authority）",
-		pages: ["admin", "capabilities", "capability", "sources", "source", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "security", "docs", "cli-auth", "login"],
+		pages: ["admin", "capabilities", "capability", "sources", "source", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
 		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**"],
 	},
 	i18n: {

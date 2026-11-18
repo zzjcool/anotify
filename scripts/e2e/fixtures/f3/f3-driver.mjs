@@ -17,7 +17,7 @@ export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
-export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace'];
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
 // 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
 // loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），

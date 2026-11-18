@@ -9,6 +9,7 @@ common:
   server_error: 'error del servidor HTTP {code}'
   request_rejected: 'solicitud rechazada HTTP {code}'
   request_failed: 'la solicitud falló'
+  unknown: 'Desconocido'
   err:
     title:
       unauthorized: Tu sesión expiró
@@ -62,6 +63,7 @@ common:
     capabilities: Capacidades
     playbooks: "Playbooks"
     nodes: Nodos
+    namespaces: Espacios de nombres
     receivers: Destinatarios
     keys: API Keys
     api: Docs API
@@ -1743,6 +1745,28 @@ nodes:
     artifacts: "Estado real de despliegues de capacidades"
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
 
+    node_subtitle: "Dimensión de nodo: identidad y conexión · espacios autorizados · configuración (YAML) · ranuras físicas"
+    moved_title: "La configuración de espacios de nombres y del sistema no está en esta página"
+    moved_note: "Las vars de un espacio de nombres son configuración de ese espacio (movidas a su página); la retención es configuración del sistema (movida al panel de administración). Esta página solo conserva la lista de autorización: qué espacios pueden usar esta máquina."
+    moved_ns: "Ir a espacios de nombres"
+    moved_system: "Ir al panel de administración"
+    yaml_title: "YAML del nodo (apiVersion anotify/v1 · kind Node)"
+    yaml_hint: "Documento canónico reconstruido por el servidor a partir de los hechos actuales: solo los campos de spec, sin status ni campos privados de la máquina (token / server / listen / envPassthrough nunca llegan al hub). Pegue el documento completo para guardar; los cambios del formulario se sincronizan en el mismo texto."
+    yaml_view: "Documento actual"
+    yaml_edit: "Editar YAML"
+    yaml_edit_hint: "Análisis estricto: campos desconocidos, tipos incorrectos y resourceVersion ausente se rechazan con número de línea y ruta de campo"
+    yaml_input: "YAML completo"
+    yaml_save: "Guardar este YAML"
+    yaml_reset: "Reescribir desde el formulario actual"
+    yaml_saved: "Guardado: el YAML se aplicó y el documento se normalizó de nuevo."
+    yaml_invalid: "El documento no validó: corrija los números de línea y las rutas de campo y vuelva a guardar."
+    yaml_dirty: "Borrador modificado; el servidor lo normaliza al guardar."
+    yaml_reset_done: "Reescrito desde el formulario actual (sin guardar)."
+    authorized_title: "Espacios autorizados (quién puede usar este nodo)"
+    authorized_hint: "Es la lista de autorización, no una copia: efectivo = autorizado ∩ declarado por la máquina, y solo se puede restringir."
+    effective_title: "Espacios efectivos (solo lectura)"
+    effective_hint: "Declarado por el nodo ∩ autorizado por el hub. Para revocar todo, vacíe la lista de autorización."
+    open_namespace: "Abrir un espacio de nombres"
     per_cap_default: 'predeterminado'
 sources:
   v4:
@@ -2509,3 +2533,43 @@ source_detail:
   recent_error: 'No se pudieron cargar los recibos recientes'
   view_trace: 'Ver traza'
   no_name_hint: 'Abre un origen desde la lista, o pon ?namespace=<ns>&name=<name> en la dirección.'
+namespaces:
+  v4:
+    title: "Espacios de nombres"
+    subtitle: "El único límite de aislamiento fuerte: capacidades, fuentes, eventos y tareas se separan por él; las vars por defecto viven aquí."
+    refresh: "Actualizar"
+    loading: "Cargando…"
+    empty: "Todavía no hay espacios de nombres."
+    col_capabilities: "Capacidades"
+    col_nodes: "Nodos"
+    col_sources: "Fuentes"
+    col_tasks: "Tareas"
+    col_created: "Creado"
+    note_summary: "Qué se puede configurar en un espacio de nombres"
+    note_body: "A nivel de espacio de nombres solo existen las vars por defecto (namespace_configs) y la revisión de configuración; el esquema no tiene cuota por espacio — limits solo existe en las capas máquina + nodo, y la autorización del nodo decide qué espacios pueden usar una máquina."
+namespace:
+  v4:
+    title: "Espacio de nombres"
+    subtitle: "Vars por defecto · revisión de configuración · vars efectivas por nodo"
+    back: "Volver a espacios de nombres"
+    scope: "Espacio actual"
+    scope_label: "Espacio de nombres"
+    scope_hint: "Cambiar actualiza el parámetro name de la URL (se puede guardar/compartir) y las mismas reglas CAS garantizan que el borrador de A nunca se escriba en B."
+    vars_hint: "Solo afecta a la próxima tarea resuelta en este espacio; nunca se escribe en el snapshot aplicado del nodo."
+    counts: "Recuentos (derivados)"
+    count_capabilities: "Capacidades"
+    count_nodes: "Nodos"
+    count_sources: "Fuentes"
+    count_tasks: "Tareas"
+    effective: "Vars efectivas en un nodo"
+    node: "Nodo"
+    effective_hint: "Se resuelve clave por clave como local > node > namespace; las fuentes las da el servidor, la página no adivina."
+    context_namespace: "Contexto del espacio"
+    links: "Otras cosas en este espacio"
+    link_caps: "Capacidades →"
+    link_sources: "Fuentes →"
+    link_events: "Eventos →"
+    pick_node: "Elija un nodo para ver sus vars efectivas en este espacio."
+    no_nodes: "Todavía no hay nodos."
+    no_param: "Falta el parámetro name: entre desde la lista de espacios."
+    not_found: "El espacio de nombres no existe (o fue eliminado)."

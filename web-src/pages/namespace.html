@@ -1,0 +1,259 @@
+{{define "title"}}{{t "namespace.v4.title"}}{{end}}
+{{define "style"}}
+<style>
+  .c2-stack { display: grid; gap: 16px; min-width: 0; }
+  .c2-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 16px; }
+  .c2-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .c2-state { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .c2-json { min-height: 130px; font-family: var(--font-mono); }
+  .c2-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+  .c2-table th, .c2-table td { padding: 8px; text-align: left; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+  .c2-table th { color: var(--muted); }
+  .nd-kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; margin: 0; }
+  .nd-pair { display: grid; gap: 2px; min-width: 0; }
+  .nd-k { font-size: 11px; line-height: 1.4; color: var(--faint); }
+  .nd-v { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .nd-v.is-unknown { color: var(--muted); }
+  .devf { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); margin-top: 12px; min-width: 0; }
+  .devf > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+  .devf > summary::-webkit-details-marker { display: none; }
+  .devf > summary::before { content: "▸"; color: var(--faint); font-size: 11px; }
+  .devf[open] > summary::before { content: "▾"; }
+  .devf > summary:hover { color: var(--text); }
+  .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+  @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
+</style>
+{{end}}
+{{define "content"}}
+<div id="page-main"><div class="page c2-stack">
+  <div class="page-head">
+    <div class="min-w-0"><h2 class="page-title" id="ns-name">{{t "namespace.v4.title"}}</h2><p id="ns-sub" class="page-sub">{{t "namespace.v4.subtitle"}}</p></div>
+    <div class="page-actions"><a class="btn btn-ghost" href="namespaces.html">{{t "namespace.v4.back"}}</a><button id="ns-refresh" class="btn btn-ghost" type="button">{{t "nodes.v4.refresh"}}</button></div>
+  </div>
+  <div id="ns-load-state" role="status"></div>
+  <div id="ns-body" class="c2-stack" hidden>
+    <section class="card card-pad">
+      <div class="card-title">{{t "namespace.v4.scope"}}</div>
+      <div class="field"><label class="field-label" for="config-namespace">{{t "namespace.v4.scope_label"}}</label><select id="config-namespace" class="select"></select></div>
+      <p class="c2-note">{{t "namespace.v4.scope_hint"}}</p>
+    </section>
+    <div class="c2-grid">
+      <section class="card card-pad">
+        <div class="card-title">{{t "nodes.v4.vars"}}</div>
+        <p class="c2-note">{{t "namespace.v4.vars_hint"}}</p>
+        <details class="devf">
+          <summary>{{t "uxaudit.dev.summary"}}</summary>
+          <div class="devf-body"><div id="namespace-revisions" class="c2-note"></div></div>
+        </details>
+        <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
+        <div class="c2-actions"><button id="namespace-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+        <div id="namespace-state" class="c2-state" role="status"></div>
+      </section>
+      <section class="card card-pad c2-stack">
+        <div class="card-title">{{t "namespace.v4.counts"}}</div>
+        <div id="ns-counts"></div>
+        <div class="card-title">{{t "namespace.v4.effective"}}</div>
+        <div class="field"><label class="field-label" for="namespace-node">{{t "namespace.v4.node"}}</label><select id="namespace-node" class="select"></select></div>
+        <div id="namespace-context-revision" class="c2-note"></div>
+        <div id="namespace-effective-vars"></div>
+        <p class="c2-note">{{t "namespace.v4.effective_hint"}}</p>
+      </section>
+    </div>
+    <section class="card card-pad">
+      <div class="card-title">{{t "namespace.v4.links"}}</div>
+      <div class="c2-actions"><a id="link-caps" class="btn btn-ghost" href="capabilities.html">{{t "namespace.v4.link_caps"}}</a><a id="link-sources" class="btn btn-ghost" href="sources.html">{{t "namespace.v4.link_sources"}}</a><a id="link-events" class="btn btn-ghost" href="events.html">{{t "namespace.v4.link_events"}}</a></div>
+    </section>
+  </div>
+</div></div>
+{{end}}
+{{define "script"}}
+<script>
+(() => {
+  const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('namespace.v4.' + key);
+  // 配置编辑器的公共文案与节点页共用同一批 key（同一套 CAS 语义，不抄第二份译文）。
+  const n = key => A.t('nodes.v4.' + key);
+  const make = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
+  const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? n('stale') : n('error') + ': ' + (e.reason || '') + ' ' + (e.message || '');
+  const write = (path, body) => A.api(path, { method: 'PUT', body: JSON.stringify(body) });
+  const unk = () => A.t('common.unknown');
+
+  // 布局必须挂：页头/侧栏/语言切换器都在 mountLayout 里生成（漏了它页面只有裸内容，
+  // i18n 矩阵的「四个真实语言链接」会直接 0 !== 4）。
+  A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle') });
+  let selectedNamespace = new URLSearchParams(location.search).get('name') || '';
+  let nsConfig = null, nsOriginal = '', nsLoaded = '';
+  // 命名空间配置的「当前编辑器身份」：请求代号 + 真正加载进来的范围（与节点页同一套
+  // ABA 判据：并发切 ns 不能让「最后返回的响应」决定显示，也不能拿当前选择拼保存路径）。
+  let nsLoadSeq = 0, nsEditEpoch = 0;
+  const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
+
+  function paintHead() {
+    $('ns-name').textContent = selectedNamespace || t('title');
+    document.title = (selectedNamespace || t('title')) + ' · Anotify';
+    $('ns-sub').textContent = t('subtitle');
+    for (const [id, page] of [['link-caps', 'capabilities.html'], ['link-sources', 'sources.html'], ['link-events', 'events.html']]) {
+      $(id).href = page + (selectedNamespace ? '?namespace=' + encodeURIComponent(selectedNamespace) : '');
+    }
+  }
+
+  /* ---------- vars（CAS + ABA，逐字沿用节点页上的那份逻辑） ---------- */
+  $('namespace-vars').addEventListener('input', () => {
+    nsEditEpoch++;
+    if (nsConfig && nsLoaded === selectedNamespace) $('namespace-save').disabled = false;
+  });
+  async function loadNamespace(scope = selectedNamespace) {
+    const seq = ++nsLoadSeq, editEpoch = nsEditEpoch;
+    $('namespace-save').disabled = true; msg('namespace-state', n('loading'));
+    try {
+      const value = await A.api(nsPath(scope));
+      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
+      if (!value.metadata?.resourceVersion || !value.vars || value.namespaceVarsRevision == null) throw new Error('Invalid namespace config wrapper');
+      nsConfig = value; nsLoaded = scope; nsOriginal = JSON.stringify(value.vars, null, 2); $('namespace-vars').value = nsOriginal; $('namespace-vars').disabled = false;
+      $('namespace-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion + ' · namespaceVarsRevision=' + value.namespaceVarsRevision;
+      msg('namespace-state', n('loaded')); $('namespace-save').disabled = false;
+      return { ok: true };
+    } catch (e) {
+      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
+      nsConfig = null; nsLoaded = '';
+      msg('namespace-state', errorText(e), true);
+      return { ok: false, error: e };
+    }
+  }
+  $('namespace-reload').onclick = async () => { if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: n('reload_confirm') }))) return; loadNamespace(); };
+  $('namespace-save').onclick = async () => {
+    // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
+    if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
+    const saveScope = nsLoaded, saveEpoch = nsEditEpoch, saveRV = nsConfig.metadata.resourceVersion;
+    const saveDraft = $('namespace-vars').value;
+    let saveSeq = nsLoadSeq;
+    const current = () => saveScope === selectedNamespace && saveSeq === nsLoadSeq && saveEpoch === nsEditEpoch;
+    $('namespace-save').disabled = true;
+    try {
+      const vars = JSON.parse(saveDraft); const value = await write(nsPath(saveScope), { metadata: { resourceVersion: saveRV }, vars });
+      // 同名 namespace 的新加载（ABA）或新草稿不是这次提交的编辑器。
+      if (!current() || $('namespace-vars').value !== saveDraft) return;
+      nsConfig = value;
+      const refresh = loadNamespace(saveScope); saveSeq = nsLoadSeq;
+      const refreshed = await refresh;
+      if (!current()) return;
+      if (refreshed.ok) msg('namespace-state', n('saved'));
+      else if (!refreshed.stale) msg('namespace-state', n('saved') + ' · ' + errorText(refreshed.error), true);
+    }
+    catch (e) { if (current()) msg('namespace-state', errorText(e), true); }
+    finally { if (current()) $('namespace-save').disabled = false; }
+  };
+
+  /* ---------- 身份 / 计数（都来自真实 NamespaceList，不另开一份口径） ---------- */
+  function pair(label, value, hint) {
+    const cell = make('div', 'nd-pair'), dt = make('dt', 'nd-k', label), dd = make('dd', 'nd-v', value == null || value === '' ? unk() : String(value));
+    if (hint) dt.title = hint;
+    if (value == null || value === '') dd.classList.add('is-unknown');
+    cell.append(dt, dd); return cell;
+  }
+  function renderCounts(resource) {
+    const status = resource?.status || {}, counts = status.counts || {};
+    const dl = make('dl', 'nd-kv');
+    dl.append(
+      pair(t('count_capabilities'), counts.capabilities, 'counts.capabilities'),
+      pair(t('count_nodes'), counts.nodes, 'counts.nodes'),
+      pair(t('count_sources'), counts.sources, 'counts.sources'),
+      pair(t('count_tasks'), counts.tasks, 'counts.tasks'),
+    );
+    $('ns-counts').replaceChildren(dl);
+  }
+  const contextPair = (label, value, hint) => {
+    const cell = make('div', 'nd-pair'), dt = make('dt', 'nd-k', label), dd = make('dd', 'nd-v', value);
+    if (hint) { dt.title = hint; cell.dataset.key = hint; }
+    cell.append(dt, dd); return cell;
+  };
+  function table(id, values, source, valueText = v => String(v)) {
+    const rows = Object.entries(values || {}); $(id).replaceChildren();
+    if (!rows.length) { $(id).appendChild(make('div', 'c2-note', n('none'))); return; }
+    const tbl = make('table', 'c2-table'), head = make('tr');
+    for (const title of [n('key'), n('value'), n('source')]) head.appendChild(make('th', null, title));
+    const thead = make('thead'); thead.appendChild(head); tbl.appendChild(thead); const body = make('tbody');
+    for (const [key, value] of rows) {
+      const row = make('tr'); row.dataset.key = key;
+      for (const text of [key, valueText(value, key), source(key)]) row.appendChild(make('td', null, text));
+      body.appendChild(row);
+    }
+    tbl.appendChild(body); $(id).appendChild(tbl);
+  }
+  /* 某 ns 的有效 vars（local > node > namespace）是**命名空间维度**的视图：
+     它需要「选一台节点」而不是在节点页选 ns。读的就是 v4 的
+     `GET /v1/nodes/{name}?namespace=`（status.namespaceVars / status.effectiveVars），
+     来源由服务端逐键解析，页面不自己拿三层变量表猜。 */
+  let nodes = [];
+  async function loadEffective() {
+    const nodeName = $('namespace-node').value;
+    $('namespace-context-revision').replaceChildren();
+    if (!nodeName || !selectedNamespace) { $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('pick_node'))); return; }
+    try {
+      const resource = await A.api('/v1/nodes/' + encodeURIComponent(nodeName) + '?namespace=' + encodeURIComponent(selectedNamespace));
+      if (resource.context?.namespace !== selectedNamespace) throw new Error('Invalid Node context');
+      const ctx = make('dl', 'nd-kv');
+      ctx.append(contextPair(t('context_namespace'), resource.context.namespace, 'namespace'));
+      $('namespace-context-revision').replaceChildren(ctx);
+      table('namespace-effective-vars', resource.status?.effectiveVars, key => String(resource.status.effectiveVars[key]?.source ?? '?'), entry => String(entry?.value ?? ''));
+    } catch (e) {
+      $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadEffective));
+    }
+  }
+  $('namespace-node').onchange = loadEffective;
+
+  /* ---------- 加载 / 切换 ---------- */
+  function paintPickers(namespaces) {
+    const options = namespaces.map(row => { const o = make('option', null, row.metadata.name); o.value = row.metadata.name; return o; });
+    $('config-namespace').replaceChildren(...options);
+    $('config-namespace').value = selectedNamespace;
+  }
+  async function loadNodes() {
+    try {
+      const doc = await A.api('/v1/nodes?limit=500');
+      nodes = Array.isArray(doc.items) ? doc.items : [];
+      $('namespace-node').replaceChildren(...nodes.map(row => { const o = make('option', null, row.metadata.name); o.value = row.metadata.name; return o; }));
+      if (nodes.length) await loadEffective(); else $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('no_nodes')));
+    } catch (e) { $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadNodes)); }
+  }
+  async function loadAll() {
+    if (!selectedNamespace) {
+      $('ns-body').hidden = true;
+      $('ns-load-state').replaceChildren(t('no_param'));
+      return;
+    }
+    paintHead();
+    try {
+      const doc = await A.api('/v1/namespaces?limit=500');
+      if (!doc || !Array.isArray(doc.items)) throw new Error(A.t('common.request_failed'));
+      const namespaces = doc.items;
+      if (!namespaces.some(row => row.metadata.name === selectedNamespace)) {
+        $('ns-body').hidden = true;
+        $('ns-load-state').textContent = t('not_found');
+        return;
+      }
+      paintPickers(namespaces);
+      renderCounts(namespaces.find(row => row.metadata.name === selectedNamespace));
+      $('ns-body').hidden = false; $('ns-load-state').textContent = '';
+      await loadNamespace();
+      await loadNodes();
+    } catch (e) {
+      $('ns-body').hidden = true;
+      $('ns-load-state').replaceChildren(A.loadErrorNode(e, loadAll));
+    }
+  }
+  $('config-namespace').onchange = async () => {
+    if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: n('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
+    selectedNamespace = $('config-namespace').value;
+    // URL 跟着走（可收藏、可分享），但不重新导航：编辑器身份由上面那套代号判定。
+    const url = new URL(location.href); url.searchParams.set('name', selectedNamespace); history.replaceState(null, '', url);
+    nsConfig = null; nsLoaded = ''; paintHead();
+    $('namespace-vars').value = ''; $('namespace-vars').disabled = true;
+    await loadAll();
+  };
+  $('ns-refresh').onclick = loadAll;
+  loadAll();
+})();
+</script>
+{{end}}

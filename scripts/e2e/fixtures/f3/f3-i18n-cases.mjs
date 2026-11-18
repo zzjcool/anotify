@@ -8,7 +8,7 @@ export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
 // #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
 // 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',namespace:'#ns-name',namespaces:'#ns-list [data-ns]',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
   // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
   'source-detail':'#src-detail[data-source]',
   sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
@@ -75,7 +75,7 @@ async function fixture(d) {
   const namespaces=await d.req('/v1/namespaces');for(const n of namespaces.items)strings(n.metadata.displayName);
   return {tasks,sources,nodes,caps,pb:created.body.metadata.name,userValues:[...userValues].filter(Boolean)};
 }
-const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='source-detail'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:file==='capability'?{name:f.caps[0].metadata.name}:{})}).toString();
+const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='namespace'?{name:'default'}:file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='source-detail'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:file==='capability'?{name:f.caps[0].metadata.name}:{})}).toString();
 async function scan(d,lang,f) {
   if(d.mock)assert.ok((await d.page.locator('body').innerText()).includes('前端预览 · 数据均为 mock（接口未真正调用）'),'Explicit preview authority banner must remain visible');
   const finite=await d.page.evaluate(scanRawChrome);
@@ -151,7 +151,7 @@ async function pageMatrix(d,lang,batch,coverage) {
       if(file==='cli-auth'||file==='passkey-enroll'){await d.page.fill('#code-input','TEST-AB');assert.equal(await d.page.inputValue('#code-input'),'TEST-AB');record.states.push('code-input-draft');}
       if(file==='message'){const request=(await d.calls()).find(x=>x.url===NS+'/tasks/'+f.tasks[0].metadata.name&&x.result?.kind==='Task');assert.ok(request);assert.equal(await d.page.locator('#msg-sub').innerText(),'default · '+request.result.metadata.name);record.states.push('task-name-phase-attempt');}
       if(file==='trace'){assert.ok(await d.page.locator('#trace-graph svg').count());record.states.push('nonempty-trace-resource-graph');}
-      if(file==='source'||file==='source-detail'||file==='node'||file==='playbook')assert.ok((await d.calls()).some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Genuine canonical detail GET, not placeholder text');
+      if(file==='source'||file==='source-detail'||file==='node'||file==='namespace'||file==='playbook')assert.ok((await d.calls()).some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Genuine canonical detail GET, not placeholder text');
       await scan(d,lang,f);
       await d.clean(lang+' '+file+' desktop');
       /* 登录页会把会话切成「游客」（模拟未登录）。f3-guest 是 sessionStorage 级的标记，

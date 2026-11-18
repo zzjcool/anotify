@@ -1,0 +1,102 @@
+{{define "title"}}{{t "namespaces.v4.title"}}{{end}}
+{{define "style"}}
+<style>
+  .c2-stack { display: grid; gap: 16px; min-width: 0; }
+  .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  /* 旁白折叠（与节点页同一套：原文不删，只是默认收起） */
+  .nd-more { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
+  .nd-more > summary { padding: 8px 12px; font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
+  .nd-more > summary::-webkit-details-marker { display: none; }
+  .nd-more > summary::before { content: "▸"; color: var(--faint); }
+  .nd-more[open] > summary::before { content: "▾"; }
+  .nd-more > summary:hover { color: var(--text); }
+  .nd-more-body { padding: 0 12px 12px; margin: 0; }
+  /* 列表用「行」而不是表格：手机（390px）上表格的 min-content 会撑出横向滚动，
+     ui_shift 的 #384 门禁把「主内容需要横滚才能读」判为失败。行 + 自动换行的
+     chip 在窄屏自然折成两行，信息一个不少。 */
+  .nsl-list { display: grid; min-width: 0; }
+  .nsl-row { display: grid; gap: 10px; padding: 14px 16px; border-top: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
+  .nsl-row:first-child { border-top: 0; }
+  .nsl-row:hover { background: var(--surface-2); }
+  .nsl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+  .nsl-name { color: var(--text); font-weight: 600; }
+  .nsl-sub { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .nsl-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .nsl-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-1); font-size: 11px; color: var(--muted); }
+  .nsl-chip b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .nsl-created { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .nsl-message { padding: 16px; }
+</style>
+{{end}}
+{{define "content"}}
+<div id="page-main"><div class="page c2-stack">
+  <div class="page-head">
+    <div class="min-w-0"><h2 class="page-title">{{t "namespaces.v4.title"}}</h2><p class="page-sub">{{t "namespaces.v4.subtitle"}}</p></div>
+    <div class="page-actions"><button id="ns-refresh" class="btn btn-ghost" type="button">{{t "namespaces.v4.refresh"}}</button></div>
+  </div>
+  <section class="card" aria-live="polite"><div id="ns-list" class="nsl-list"><div class="nsl-message c2-note">{{t "namespaces.v4.loading"}}</div></div></section>
+  <details class="nd-more">
+    <summary>{{t "namespaces.v4.note_summary"}}</summary>
+    <p class="c2-note nd-more-body">{{t "namespaces.v4.note_body"}}</p>
+  </details>
+</div></div>
+{{end}}
+{{define "script"}}
+<script>
+(() => {
+  const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('namespaces.v4.' + key);
+  A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle') });
+  const make = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
+  const unk = () => A.t('common.unknown');
+  const count = (status, key) => {
+    const n = status && status.counts ? status.counts[key] : undefined;
+    return Number.isInteger(n) ? String(n) : unk();
+  };
+  /* displayName 是**用户数据**，不是界面文案：用 data-raw-content 标记成
+     只能包文本的 SPAN —— i18n 矩阵据此豁免它（并仍禁止拿标记包 UI 容器）。 */
+  function row(resource) {
+    const meta = resource.metadata || {}, status = resource.status || {};
+    const row = make('a', 'nsl-row');
+    row.dataset.ns = meta.name || '';
+    row.href = 'namespace.html?name=' + encodeURIComponent(meta.name || '');
+    const head = make('div', 'nsl-head');
+    head.append(make('span', 'nsl-name', meta.name || unk()));
+    if (meta.displayName) {
+      const sub = make('span', 'nsl-sub');
+      sub.setAttribute('data-raw-content', '');
+      sub.textContent = meta.displayName;
+      head.append(sub);
+    }
+    const chips = make('div', 'nsl-chips');
+    for (const key of ['capabilities', 'nodes', 'sources', 'tasks']) {
+      const chip = make('span', 'nsl-chip', t('col_' + key) + ' ');
+      chip.append(make('b', null, count(status, key)));
+      chips.append(chip);
+    }
+    row.append(head, chips);
+    if (meta.creationTimestamp) row.append(make('span', 'nsl-created', t('col_created') + ' · ' + String(meta.creationTimestamp).slice(0, 10)));
+    return row;
+  }
+  const message = (node, text) => {
+    const box = make('div', 'nsl-message');
+    if (text != null) box.append(make('p', 'c2-note', text)); else box.append(node);
+    return box;
+  };
+  /* 命名空间是 cluster 级资源：列表页只读一份真实 NamespaceList（含派生计数）。
+     不发明「批量删除 / 配额」这类没有 API 的动作：这里能做的事就是进入某个 ns。 */
+  async function load() {
+    $('ns-list').replaceChildren(message(null, t('loading')));
+    try {
+      const doc = await A.api('/v1/namespaces?limit=500');
+      if (!doc || !Array.isArray(doc.items)) throw new Error(A.t('common.request_failed'));
+      const rows = doc.items.map(row);
+      $('ns-list').replaceChildren(...(rows.length ? rows : [message(null, t('empty'))]));
+    } catch (e) {
+      $('ns-list').replaceChildren(message(A.loadErrorNode(e, load), null));
+    }
+  }
+  $('ns-refresh').onclick = load;
+  load();
+})();
+</script>
+{{end}}

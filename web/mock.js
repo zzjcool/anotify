@@ -3180,6 +3180,42 @@
 	on("PUT", /^\/v1\/nodes\/([^/]+)\/config$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); return row ? updateNodeConfig(row, ctx.body) : notFound("Node ");
 	});
+	/* ② Node YAML（IA 重构）：读面把同一份事实序列化成规范化文档。
+	 * 写面在预览里刻意**不实现**：YAML 解析器只能有一份（服务端 internal/yamldoc），
+	 * 在 mock 里再写一个宽松解析器就等于造第二个真相 —— 直接具名拒绝，比假装解析安全。
+	 * 真写路径由真实权威的 e2e（frontend 套件）覆盖。 */
+	function nodeYAMLText(row) {
+		const scalar = v => (v == null ? "null" : typeof v === "number" || typeof v === "boolean" ? String(v) : /^[A-Za-z0-9][A-Za-z0-9_.\/:@+-]*$/.test(String(v)) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(String(v)) && !/^[-+]?\d+(?:\.\d+)?$/.test(String(v)) ? String(v) : JSON.stringify(String(v)));
+		const spec = row.spec || {}, limits = spec.limits || {};
+		const lines = ["apiVersion: anotify/v1", "kind: Node", "metadata:", "  name: " + scalar(row.name), "  resourceVersion: " + scalar(String(row.rv)), "spec:"];
+		const list = (key, items, pad) => {
+			if (!items || !items.length) { lines.push(pad + key + ": []"); return; }
+			lines.push(pad + key + ":"); for (const it of items) lines.push(pad + "  - " + scalar(it));
+		};
+		const map = (key, obj, pad) => {
+			const entries = Object.entries(obj && typeof obj === "object" ? obj : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+			if (!entries.length) { lines.push(pad + key + ": {}"); return; }
+			lines.push(pad + key + ":"); for (const [k, v] of entries) lines.push(pad + "  " + scalar(k) + ": " + scalar(v));
+		};
+		list("namespaces", spec.namespaces || [], "  ");
+		map("vars", spec.vars || {}, "  ");
+		lines.push("  limits:", "    total: " + (limits.total == null ? "null" : scalar(limits.total)));
+		const per = Object.entries(limits.perCapability && typeof limits.perCapability === "object" ? limits.perCapability : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		lines.push("    perCapability:" + (per.length ? "" : " {}"));
+		for (const [k, v] of per) lines.push("      " + scalar(k) + ": " + scalar(v));
+		list("tags", spec.tags || [], "  ");
+		return lines.join("\n") + "\n";
+	}
+	on("GET", /^\/v1\/nodes\/([^/]+)\/yaml$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		return json({ yaml: nodeYAMLText(row) });
+	});
+	on("PUT", /^\/v1\/nodes\/([^/]+)\/yaml$/, ctx => {
+		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
+		if (!configObject(ctx.body) || Object.keys(ctx.body).some(k => k !== "yaml") || typeof ctx.body.yaml !== "string") return badRequest("BadRequest", "yaml document required");
+		// 预览环境没有严格 YAML 解析器：拒绝而不是宽松解析（产物永远由真实服务端决定）。
+		return statusErr(501, "yaml_write_unavailable", "Preview cannot parse YAML; use the form editor or a real server");
+	});
 	on("POST", /^\/v1\/nodes\/config\/batch$/, async ctx => {
 		if (!configObject(ctx.body) || !Array.isArray(ctx.body.updates) || Object.keys(ctx.body).some(k => k !== "updates")) return badRequest("BadRequest", "updates array required");
 		const items = [];

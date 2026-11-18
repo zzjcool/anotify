@@ -138,34 +138,13 @@
     <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
     <p class="c2-note nd-more-body" id="slot-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>
   </details>
-  <div class="c2-grid">
-    <section id="namespace-config" class="card card-pad">
-      <div class="card-title">{{t "nodes.v4.ns_config"}}</div><p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
-      <div class="field"><label for="config-namespace" class="field-label">namespace</label><select id="config-namespace" class="select"></select></div>
-      <details class="devf">
-        <summary>{{t "uxaudit.dev.summary"}}</summary>
-        <div class="devf-body"><div id="namespace-revisions" class="c2-kv"></div></div>
-      </details>
-      <div class="field"><label for="namespace-vars" class="field-label">{{t "nodes.v4.vars"}}</label><textarea id="namespace-vars" class="input c2-json" spellcheck="false" disabled></textarea></div>
-      <div class="c2-actions"><button id="namespace-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
-      <div id="namespace-state" class="c2-state" role="status"></div>
-    </section>
-    <section id="system-config" class="card card-pad">
-      <div class="card-title">{{t "nodes.v4.retention"}}</div><p class="c2-note">{{t "nodes.v4.retention_hint"}}</p>
-      <div id="system-fields" hidden>
-        <details class="devf">
-          <summary>{{t "uxaudit.dev.summary"}}</summary>
-          <div class="devf-body"><div id="system-revisions" class="c2-kv"></div></div>
-        </details>
-        <!-- ND-4：中文 label + 单位提示；原始 JSON key 放 title，不再当 label -->
-        <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
-        <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
-        <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
-        <div class="c2-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
-      </div>
-      <div id="system-state" class="c2-state" role="status"></div>
-    </section>
-  </div>
+  <!-- IA：#436 —— 命名空间 vars 与系统保留期不属于节点维度，已迁出本页。
+       这里只留一个指向新宿主的说明，避免旧书签/肌肉记忆把用户留在死处。 -->
+  <section class="card card-pad">
+    <div class="card-title">{{t "nodes.v4.moved_title"}}</div>
+    <p class="c2-note">{{t "nodes.v4.moved_note"}}</p>
+    <div class="c2-actions"><a class="btn btn-ghost" href="namespaces.html">{{t "nodes.v4.moved_ns"}}</a><a class="btn btn-ghost" href="admin.html">{{t "nodes.v4.moved_system"}}</a></div>
+  </section>
 </div></div>
 {{end}}
 {{define "script"}}
@@ -358,106 +337,9 @@
   $('nodes-search').addEventListener('input', (event) => { NODES_QUERY = event.target.value; renderNodes(); });
   $('nodes-load-more').addEventListener('click', loadMoreNodes);
   $('nodes-refresh').onclick = loadNodes;
-  // Configuration wrappers deliberately do not pass through resource adapters.
-  let nsConfig, systemConfig, selectedNamespace = '', nsOriginal = '', systemOriginal = '';
-  // 命名空间配置的“当前编辑器身份”：请求代号 + 真正加载进来的范围。
-  // 并发读（切 namespace 很快）不能靠“最后返回的响应”决定显示，也不能拿
-  // 当前选择去拼保存路径 —— 那会把 A 范围的正文写进 B 范围的 CAS。
-  let nsLoadSeq = 0, nsEditEpoch = 0, nsLoaded = '';
-  $('namespace-vars').addEventListener('input', () => {
-    nsEditEpoch++;
-    if (nsConfig && nsLoaded === selectedNamespace) $('namespace-save').disabled = false;
-  });
-  const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
-  async function loadNamespace(scope = selectedNamespace) {
-    const seq = ++nsLoadSeq, editEpoch = nsEditEpoch;
-    $('namespace-save').disabled = true; message('namespace-state', t('loading'));
-    try {
-      const value = await A.api(nsPath(scope));
-      // 过期响应（更新的请求或用户已切走）：它属于另一个范围，不落编辑器、不报错。
-      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
-      if (!value.metadata?.resourceVersion || !value.vars || value.namespaceVarsRevision == null) throw new Error('Invalid namespace config wrapper');
-      nsConfig = value; nsLoaded = scope; nsOriginal = JSON.stringify(value.vars, null, 2); $('namespace-vars').value = nsOriginal; $('namespace-vars').disabled = false;
-      $('namespace-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion + ' · namespaceVarsRevision=' + value.namespaceVarsRevision;
-      message('namespace-state', t('loaded')); $('namespace-save').disabled = false;
-      return { ok: true };
-    } catch (e) {
-      if (seq !== nsLoadSeq || scope !== selectedNamespace || editEpoch !== nsEditEpoch) return { ok: false, stale: true };
-      nsConfig = null; nsLoaded = '';
-      message('namespace-state', errorText(e), true);
-      return { ok: false, error: e };
-    }
-  }
-  $('namespace-reload').onclick = async () => { if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadNamespace(); };
-  $('namespace-save').onclick = async () => {
-    // 只写编辑器里真正加载出来的那个范围；切换中/过期的配置一律不保存。
-    if (!nsConfig || !nsLoaded || nsLoaded !== selectedNamespace) return;
-    const saveScope = nsLoaded, saveEpoch = nsEditEpoch, saveRV = nsConfig.metadata.resourceVersion;
-    const saveDraft = $('namespace-vars').value;
-    let saveSeq = nsLoadSeq;
-    const current = () => saveScope === selectedNamespace && saveSeq === nsLoadSeq && saveEpoch === nsEditEpoch;
-    $('namespace-save').disabled = true;
-    try {
-      const vars = JSON.parse(saveDraft); const value = await write(nsPath(saveScope), { metadata: { resourceVersion: saveRV }, vars });
-      // 同名 namespace 的新加载（ABA）或新草稿不是这次提交的编辑器。
-      if (!current() || $('namespace-vars').value !== saveDraft) return;
-      nsConfig = value;
-      // 保存成功 ≠ 刷新成功；刷新本身也必须隔离其间的新输入。
-      const refresh = loadNamespace(saveScope); saveSeq = nsLoadSeq;
-      const refreshed = await refresh;
-      if (!current()) return;
-      if (refreshed.ok) message('namespace-state', t('saved'));
-      else if (!refreshed.stale) message('namespace-state', t('saved') + ' · ' + errorText(refreshed.error), true);
-    }
-    catch (e) { if (current()) message('namespace-state', errorText(e), true); }
-    finally { if (current()) $('namespace-save').disabled = false; }
-  };
-  $('config-namespace').onchange = async () => {
-    if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
-    selectedNamespace = $('config-namespace').value; nsConfig = null; nsLoaded = ''; loadNamespace();
-  };
-  const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
-  const currentTtls = () => JSON.stringify(ttlFields.map(([id]) => $(id + '-ttl').value));
-  /* ND-4：单位提示 —— 裸数字旁边给出「秒 ≈ 天」的换算，0 说清是“永久” */
-  function renderTtlHint(id) {
-    const box = $(id + '-hint'); if (!box) return;
-    const raw = $(id + '-ttl').value.trim(), n = Number(raw);
-    if (!/^\d+$/.test(raw) || !Number.isFinite(n)) { box.textContent = ''; return; }
-    const days = n % 86400 === 0 ? String(n / 86400) : (n / 86400).toFixed(1);
-    box.textContent = n === 0 ? x('ttl_zero') : x('ttl_hint').replace('{n}', String(n)).replace('{days}', days);
-  }
-  for (const [id] of ttlFields) $(id + '-ttl').addEventListener('input', () => renderTtlHint(id));
-  async function loadSystem() {
-    $('system-save').disabled = true; message('system-state', t('loading'));
-    try {
-      const value = await A.api('/v1/system/config');
-      if (!value.metadata?.resourceVersion || ttlFields.some(([, k]) => !Number.isInteger(value.retention?.[k]) || value.retention[k] < 0)) throw new Error('Invalid system config wrapper');
-      systemConfig = value; for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; renderTtlHint(id); }
-      systemOriginal = currentTtls(); $('system-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion;
-      $('system-fields').hidden = false; message('system-state', t('loaded')); $('system-save').disabled = false;
-    } catch (e) { message('system-state', errorText(e), true); }
-  }
-  $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; loadSystem(); };
-  $('system-save').onclick = async () => {
-    if (!systemConfig) return; $('system-save').disabled = true;
-    try {
-      const retention = Object.fromEntries(ttlFields.map(([id, key]) => { const raw = $(id + '-ttl').value; if (!/^\d+$/.test(raw)) throw new Error('TTL requires integer seconds >= 0'); return [key, Number(raw)]; }));
-      const value = await write('/v1/system/config', { metadata: { resourceVersion: systemConfig.metadata.resourceVersion }, retention }); systemConfig = value;
-      await loadSystem(); message('system-state', t('saved'));
-    } catch (e) { message('system-state', errorText(e), true); } finally { $('system-save').disabled = false; }
-  };
-  async function boot() {
-    await loadNodes();
-    try {
-      await A.ready(); const { items: namespaces } = await A.apiList('/v1/namespaces');
-      $('config-namespace').replaceChildren(...namespaces.map(n => { const o = make('option', null, n.metadata.name); o.value = n.metadata.name; return o; }));
-      const requested = new URLSearchParams(location.search).get('namespace') || A.readScope()?.namespace;
-      selectedNamespace = namespaces.some(n => n.metadata.name === requested) ? requested : namespaces[0]?.metadata.name || '';
-      $('config-namespace').value = selectedNamespace; if (selectedNamespace) await loadNamespace();
-    } catch (e) { message('namespace-state', errorText(e), true); }
-    try { const me = await A.api('/v1/auth/me'); if (me.role === 'admin') await loadSystem(); else message('system-state', t('admin_only')); }
-    catch (e) { message('system-state', errorText(e), true); }
-  }
+  /* IA（#436）：节点页只负责节点列表。命名空间 vars 在 namespaces.html，
+     系统保留期在 admin.html —— 本页不再请求那两份配置，也不再是它们的宿主。 */
+  async function boot() { await loadNodes(); }
   boot();
 })();
 </script>

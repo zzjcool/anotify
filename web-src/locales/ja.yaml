@@ -9,6 +9,7 @@ common:
   server_error: 'サーバーエラー HTTP {code}'
   request_rejected: 'リクエスト拒否 HTTP {code}'
   request_failed: 'リクエスト失敗'
+  unknown: '不明'
   err:
     title:
       unauthorized: ログインの有効期限が切れました
@@ -62,6 +63,7 @@ common:
     capabilities: 能力
     playbooks: "プレイブック"
     nodes: ノード
+    namespaces: ネームスペース
     receivers: 通知先
     keys: API Keys
     api: API ドキュメント
@@ -1743,6 +1745,28 @@ nodes:
     artifacts: "能力デプロイの実際の状態"
     batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
 
+    node_subtitle: "ノード単位：識別と接続 · 許可ネームスペース · 設定（YAML）· 物理スロット"
+    moved_title: "ネームスペース設定とシステム設定はこのページにありません"
+    moved_note: "ネームスペースの vars はネームスペース単位の設定（ネームスペースページへ移動）、保持期間はシステム単位の設定（管理画面へ移動）です。このページには「このマシンをどのネームスペースが使えるか」の許可リストだけが残ります。"
+    moved_ns: "ネームスペースページへ"
+    moved_system: "管理画面へ"
+    yaml_title: "ノード YAML（apiVersion anotify/v1 · kind Node）"
+    yaml_hint: "サーバーが現在の事実から再構築した正規化ドキュメントです：spec のフィールド集合のみで、status とマシン固有のフィールド（token / server / listen / envPassthrough はハブに届きません）は含みません。丸ごと貼り戻せば保存できます。フォームの変更は同じテキストに同期します。"
+    yaml_view: "現在のドキュメント"
+    yaml_edit: "YAML を編集"
+    yaml_edit_hint: "厳格に解析：未知のフィールド、型の誤り、resourceVersion の欠落は行番号とフィールドパス付きで拒否されます"
+    yaml_input: "YAML 全文"
+    yaml_save: "この YAML を保存"
+    yaml_reset: "現在のフォームから書き直す"
+    yaml_saved: "保存しました：YAML を適用し、ドキュメントを再正規化しました。"
+    yaml_invalid: "検証に通りませんでした：下の行番号とフィールドパスを直してから保存してください。"
+    yaml_dirty: "下書きが変更されています。保存時にサーバーが正規化します。"
+    yaml_reset_done: "現在のフォームから書き直しました（未保存）。"
+    authorized_title: "許可ネームスペース（このノードを使える範囲）"
+    authorized_hint: "これは許可リストであり複製ではありません：有効 = 許可 ∩ マシンの申告。締める方向にだけ変更できます。"
+    effective_title: "有効ネームスペース（読み取り専用）"
+    effective_hint: "ノードの申告 ∩ ハブの許可。すべて取り消すには許可リストを空にします。"
+    open_namespace: "ネームスペースページを開く"
     per_cap_default: '既定'
 sources:
   v4:
@@ -2509,3 +2533,43 @@ source_detail:
   recent_error: '最近の受信を読み込めませんでした'
   view_trace: 'トレースを見る'
   no_name_hint: 'ソース一覧から名前をクリックするか、アドレスに ?namespace=<ns>&name=<name> を付けてください。'
+namespaces:
+  v4:
+    title: "ネームスペース"
+    subtitle: "唯一の強い分離境界：能力・ソース・イベント・タスクはすべてこれで分離されます。既定 vars はここで管理します。"
+    refresh: "更新"
+    loading: "読み込み中…"
+    empty: "ネームスペースがまだありません。"
+    col_capabilities: "能力"
+    col_nodes: "ノード"
+    col_sources: "ソース"
+    col_tasks: "タスク"
+    col_created: "作成日時"
+    note_summary: "ネームスペースで設定できること"
+    note_body: "ネームスペース単位で設定できるのは既定 vars（namespace_configs）と設定リビジョンだけです。schema にネームスペース単位の割当はありません — limits は「マシン + ノード」の二層のみで、どのネームスペースがマシンを使えるかはノードの許可で決まります。"
+namespace:
+  v4:
+    title: "ネームスペース"
+    subtitle: "既定 vars · 設定リビジョン · ノードごとの有効変数"
+    back: "ネームスペース一覧へ"
+    scope: "現在のネームスペース"
+    scope_label: "ネームスペース"
+    scope_hint: "切り替えると URL の name パラメータが変わります（ブックマーク・共有可）。同じ CAS 判定により、A の下書きが B に書き込まれることはありません。"
+    vars_hint: "このネームスペースで次に解決されるタスクにのみ影響します。ノードの applied には書き込みません。"
+    counts: "件数（派生）"
+    count_capabilities: "能力"
+    count_nodes: "ノード"
+    count_sources: "ソース"
+    count_tasks: "タスク"
+    effective: "あるノードの有効変数"
+    node: "ノード"
+    effective_hint: "local > node > namespace の順にキー単位で解決します。ソースはサーバーが返し、ページは推測しません。"
+    context_namespace: "ネームスペースのコンテキスト"
+    links: "このネームスペースの他のもの"
+    link_caps: "能力 →"
+    link_sources: "ソース →"
+    link_events: "イベント →"
+    pick_node: "ノードを選ぶと、このネームスペースでの有効変数が表示されます。"
+    no_nodes: "ノードがまだありません。"
+    no_param: "name パラメータがありません：ネームスペース一覧から入ってください。"
+    not_found: "ネームスペースが存在しません（または削除済み）。"

@@ -1,6 +1,6 @@
 // Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
 import assert from 'node:assert/strict';
-import { acceptDialog, dismissDialog } from './f3-dialogs.mjs';
+import { acceptDialog, acceptOpenDialog, dismissDialog } from './f3-dialogs.mjs';
 export async function nodeRetained(d,mode){
  const {page,check,shot,clean,base}=d;
  const goto=(file,lang='en',query='?namespace=default')=>d.goto(file,query.replace(/^\?/,''),lang);
@@ -63,13 +63,18 @@ export async function nodeRetained(d,mode){
     check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; one-liner bootstrap (curl -fsSL … | sh -s -- --name/--server/--token) + copy button + close clears plaintext; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
   }
   if (mode === 'config') {
+    // IA（#436）：节点页用**不带 ns** 的 URL 也要正常渲染（旧链接带 namespace= 时忽略参数）。
     await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();
+    assert.equal(await page.locator('#node-namespace').count(), 0, '节点页不再有命名空间选择器');
+    assert.equal(await page.locator('#node-effective-vars').count(), 0, '节点页不再承载某 ns 的有效值');
+    // ② Node YAML：读面必须是 Node 文档（apiVersion/kind/spec.namespaces）。
+    await page.locator('#node-yaml-text').waitFor();
+    const yamlDoc = await page.locator('#node-yaml-text').innerText();
+    assert.ok(yamlDoc.includes('apiVersion: anotify/v1') && yamlDoc.includes('kind: Node'), 'YAML 读面是 Node 文档');
+    assert.ok(yamlDoc.includes('namespaces:'), 'YAML 里必须有授权命名空间（单一来源）');
+    assert.ok(!yamlDoc.includes('status:'), 'YAML 不含派生只读面 status');
     // #375：三块 JSON textarea 默认收在「编辑原始 JSON」折叠里；要 .fill() 先展开。
     await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
-    assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(1).innerText(), '/local-src');
-    assert.equal(await page.locator('#node-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
-    assert.equal(await page.locator('#node-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');
-    assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(2).innerText(), 'namespace');
     if (d.mock) {
       assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), '4');
       assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(2).innerText(), 'local');
@@ -103,16 +108,31 @@ export async function nodeRetained(d,mode){
     // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
     // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
     assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
-    await page.locator('#node-namespace').selectOption('prod');
-    // 旧版渲染成 "namespace=prod" 的键值串；本轮改成 KV 对（本地化标签 + 值），
-    // 改用 data-key 锚点断言「值本身」——比断言某个译法更稳。
-    await page.waitForFunction(() => (document.querySelector('#node-context-revision [data-key="namespace"] .nd-v')?.textContent || '').trim() === 'prod');
-    assert.equal(await page.locator('#node-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
+    /* #436：local > node > namespace 的有效值属于**命名空间维度**，已搬到
+       namespace.html（选节点，而不是在节点页选 ns）。这里继续断言同一份事实：
+       切到 prod 之后 NS_ONLY 显示 prod 的值，来源层仍然逐键由服务端给出。 */
+    await goto('namespace', 'en', '?namespace=default&name=default');
+    await page.locator('#namespace-vars:not([disabled])').waitFor();
+    await page.selectOption('#namespace-node', 'anode-1');
+    await page.locator('#namespace-effective-vars [data-key="SOURCE_ROOT"]').waitFor();
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="SOURCE_ROOT"] td').nth(1).innerText(), '/local-src');
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="SOURCE_ROOT"] td').nth(2).innerText(), 'local');
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="NODE_ONLY"] td').nth(2).innerText(), 'node');
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="NS_ONLY"] td').nth(2).innerText(), 'namespace');
+    await page.selectOption('#config-namespace', 'prod');
+    if (await page.locator('#anotify-dialog:not(.hidden)').count()) await acceptOpenDialog(page);
+    await page.waitForFunction(() => (document.querySelector('#namespace-context-revision [data-key="namespace"] .nd-v')?.textContent || '').trim() === 'prod');
+    await page.locator('#namespace-effective-vars [data-key="NS_ONLY"]').waitFor();
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
     await noLeaks(); await shot('ns-context-limits-revisions'); await clean('Node config and namespace context');
-    check('GET W5 config, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied/ns revisions, local>node>ns sources, per-leaf two-layer limits and machine applied excludes ns');
+    check('GET W5 config + Node YAML document, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied revisions, local>node>ns sources on the namespace page, per-leaf two-layer limits and machine applied excludes ns');
   }
   if (mode === 'namespace-system') {
-    await goto('nodes', 'en', '?namespace=default'); await page.locator('#system-save:not([disabled])').waitFor();
+    // IA（#436）：节点列表页**不再**承载系统保留期与命名空间 vars；两者各自归位。
+    await goto('nodes', 'en', '?namespace=default'); await page.locator('[data-node="anode-1"]').waitFor();
+    assert.equal(await page.locator('#system-config').count(), 0, '节点页不再有系统保留配置');
+    assert.equal(await page.locator('#namespace-vars').count(), 0, '节点页不再有命名空间 vars 配置');
+    await goto('admin', 'en', '?namespace=default'); await page.locator('#system-save:not([disabled])').waitFor();
     const get = (await calls()).find(c => c.url === '/v1/system/config' && c.method === 'GET');
     // retention 的**当前值**来自真实 GET（api/events.yaml · getSystemConfig）：mock 种子是
     // 3600/7000/9000，真实服务默认是 604800/2592000/2592000。断言「页面显示的就是服务端
@@ -129,6 +149,9 @@ export async function nodeRetained(d,mode){
     const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: remoteEventTtl } }, 'PUT'); assert.equal(remote.status, 200);
     await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitState('system-state', 'draft retained exactly'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
     await shot('system0-permanent-stale409-draft'); await acceptDialog(page, () => page.locator('#system-reload').click()); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
+    // 顺序很关键：页面**先**加载旧 rv，再做远端写入，页面的草稿才会真的过期
+    // （反过来的话页面拿到的是远端写入后的新 rv，保存会成功，"stale 409" 就假绿了）。
+    await goto('namespace', 'en', '?namespace=default&name=default'); await page.locator('#namespace-save:not([disabled])').waitFor();
     const namespacePath = '/v1/namespaces/default/config'; const ns = (await req(namespacePath)).body;
     const nsRemote = await req(namespacePath, { metadata: ns.metadata, vars: { NS_ONLY: 'remote-ns' } }, 'PUT'); assert.equal(nsRemote.status, 200);
     await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
@@ -148,7 +171,7 @@ export async function nodeRetained(d,mode){
     assert.deepEqual(batch.body.items.map(x => x.ok), [true,false]); assert.equal(batch.body.items[1].error.code, 409); assert.deepEqual((await req('/v1/nodes/anode-2/config')).body, secondAfter);
     for (const [url,field] of [[namespacePath,'vars'],['/v1/system/config','retention']]) assert.equal((await req(url, { [field]: {} }, 'PUT')).status, 400);
     await noLeaks(); await clean('namespace and system configuration');
-    check('Actual nondefault GET current retention (not guessed defaults), CAS edit0 permanent, stale409 draft+explicit reload, namespace vars-only CAS/double revision; real batch partial node success, other node unchanged and missing CAS400. No new batch product UI invented.');
+    check('System retention lives on admin (not the node page) with actual GET + CAS edit0/stale409 draft; namespace vars live on namespace.html with vars-only CAS/double revision; real batch partial node success, other node unchanged and missing CAS400. No new batch product UI invented.');
   }
   if (mode === 'actions-slots') {
     await goto('node', 'en', '?id=anode-1&namespace=default');
