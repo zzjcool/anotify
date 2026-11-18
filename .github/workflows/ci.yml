@@ -134,6 +134,8 @@ jobs:
     # runner 是 4 vCPU，而每个 Chrome 套件自己还会 spawn 多进程；降到 2 换稳定。
     env:
       E2E_CONCURRENCY: "2"
+      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      F3_CASE_BUDGET_MS: "150000"
     # label `full-ci` 的 PR 走 full-e2e，这里不重复跑部分集。
     if: >-
       github.event_name == 'pull_request' &&
@@ -245,7 +247,9 @@ jobs:
   full-e2e:
     name: full（make ci + 全量 e2e）
     env:
-      E2E_CONCURRENCY: "2"   # 同 e2e-affected：runner 上 4 路 Chrome 会把浏览器打崩
+      E2E_CONCURRENCY: "2"
+      # runner 比开发机慢 2–3 倍：把 f3 单 case 的外层预算抬到 150s（超预算仍判红）。
+      F3_CASE_BUDGET_MS: "150000"   # 同 e2e-affected：runner 上 4 路 Chrome 会把浏览器打崩
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
