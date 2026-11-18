@@ -237,4 +237,4 @@ make ci && make e2e-affected
 ## 10. 交付
 
 - issue：#435（本 bug 的登记）
-- PR：PR_PLACEHOLDER（`Fixes #435`）
+- PR：#437（`Fixes #435`）→ https://github.com/zzjcool/anotify/pull/437
