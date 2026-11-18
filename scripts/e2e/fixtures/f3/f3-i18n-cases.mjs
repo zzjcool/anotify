@@ -8,12 +8,15 @@ export const LOCALE_OUT = path.join(TEAM, 'screenshots/f3locales');
 const NS = '/v1/namespaces/default';
 // #381：登录页默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），#login-panel 可能
 // 是 hidden。锚点换成两个 tab 都在里面的容器：仍然证「这一页真的渲染了」，不赌默认态。
-const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
+const anchors = {admin:'#kpi-devices',capabilities:'[data-cap]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',login:'.auth-tabs',message:'#task-facts',node:'#node-slots',nodes:'[data-node]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#current-device-card',security:'#passkey-list',source:'#src-name',
+  // 源只读详情页：渲染成功后才带 data-source（空态/404 不带），所以它是吊吊的事实锤。
+  'source-detail':'#src-detail[data-source]',
+  sources:'#src-list [data-name]',trace:'#trace-tasks [data-task]'};
 const pkgFiles = {
   'playbook.yaml': 'apiVersion: anotify/v1\nkind: Playbook\nmetadata:\n  name: f3-locale-package\n  version: 1\nspec:\n  values: { type: object }\n  capabilities:\n    - cap.yaml\n  sources: []\n',
   'cap.yaml': 'metadata:\n  name: f3-locale-cap\nspec:\n  next: [notify, f3-locale-missing]\n  run:\n    entrypoint: run.sh\n    files:\n      run.sh: |\n        #!/bin/sh\n        echo locale\n',
 };
-export const pageBatches = Object.freeze(Array.from({length:5},(_,i)=>PAGES.slice(i*4,i*4+4)));
+export const pageBatches = Object.freeze(Array.from({length:6},(_,i)=>PAGES.slice(i*4,i*4+4)));
 // 裸 i18n key 扫描：前缀必须是一个独立 token，绝不能在 `-`、`/`、`.` 之后——否则
 // 渲染文本里的真实路径（如 locales 的 `common/login.sh`）会被当成 `login.sh` 裸 key（假阳）。
 const bareKeys = /(?<![-/\w.])(?:pb\.v4|nodes\.v4|sources\.v4|events\.v4|message\.v4|caps|receivers|keys|security|login)\.[a-z_]+/;
@@ -72,7 +75,7 @@ async function fixture(d) {
   const namespaces=await d.req('/v1/namespaces');for(const n of namespaces.items)strings(n.metadata.displayName);
   return {tasks,sources,nodes,caps,pb:created.body.metadata.name,userValues:[...userValues].filter(Boolean)};
 }
-const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:{})}).toString();
+const query=(file,f)=>new URLSearchParams({namespace:'default',...(file==='message'?{id:f.tasks[0].metadata.name}:file==='trace'?{traceUID:f.tasks[0].spec.traceUID}:file==='source'?{name:f.sources[0].metadata.name}:file==='source-detail'?{name:f.sources[0].metadata.name}:file==='node'?{id:f.nodes[0].metadata.name}:file==='playbook'?{id:f.pb}:file==='capability'?{name:f.caps[0].metadata.name}:{})}).toString();
 async function scan(d,lang,f) {
   if(d.mock)assert.ok((await d.page.locator('body').innerText()).includes('前端预览 · 数据均为 mock（接口未真正调用）'),'Explicit preview authority banner must remain visible');
   const finite=await d.page.evaluate(scanRawChrome);
@@ -88,7 +91,34 @@ async function scan(d,lang,f) {
 }
 
 async function guest(d,on=true) {
-  if(d.mock)await d.page.evaluate(on=>{sessionStorage.setItem('f3-guest',on?'1':'0');},on);
+  /* 游客态不是「只拨一个开关」：mock 下 /v1/auth/me 的 401 分支会把
+   * `MockApi.state.auth.loggedOut = true`、写 `anotify.mock.loggedOut=1`，并且这些事实
+   * 会随 `f3-facts` 快照跟到下一个 document。登录页在同批里不是最后一个时（PAGES 变了
+   * 批次就会变），后面那些页全被 401 打回登录页 —— 所以进游客前先把 auth 事实存下来，
+   * 登录页验完再逐项恢复。会话 cookie 不用手工补：mock.js 在每次 document 初始化时
+   * 会只要 !loggedOut 就重新发一份（web/mock.js · `if (!state.auth.loggedOut) sessionCookie()`）。 */
+  if(d.mock)await d.page.evaluate(on=>{
+    const KEY='f3-i18n-auth-before-guest';
+    if(on){
+      if(!sessionStorage.getItem(KEY))sessionStorage.setItem(KEY,JSON.stringify({
+        auth:MockApi.state.auth,
+        loggedOut:sessionStorage.getItem('anotify.mock.loggedOut'),
+      }));
+      sessionStorage.setItem('f3-guest','1');
+      return;
+    }
+    sessionStorage.setItem('f3-guest','0');
+    const saved=JSON.parse(sessionStorage.getItem(KEY)||'null');
+    if(saved){
+      MockApi.state.auth=saved.auth;
+      if(saved.loggedOut===null)sessionStorage.removeItem('anotify.mock.loggedOut');
+      else sessionStorage.setItem('anotify.mock.loggedOut',saved.loggedOut);
+      const facts=JSON.parse(sessionStorage.getItem('f3-facts')||'{}');
+      facts.auth=saved.auth;
+      sessionStorage.setItem('f3-facts',JSON.stringify(facts));
+    }else sessionStorage.removeItem('anotify.mock.loggedOut');
+    sessionStorage.removeItem(KEY);
+  },on);
   else if(on)await d.context.clearCookies();
   else throw new Error('Real authenticated locale requires a new H seeded driver, not fabricated cookie');
 }
@@ -121,9 +151,14 @@ async function pageMatrix(d,lang,batch,coverage) {
       if(file==='cli-auth'||file==='passkey-enroll'){await d.page.fill('#code-input','TEST-AB');assert.equal(await d.page.inputValue('#code-input'),'TEST-AB');record.states.push('code-input-draft');}
       if(file==='message'){const request=(await d.calls()).find(x=>x.url===NS+'/tasks/'+f.tasks[0].metadata.name&&x.result?.kind==='Task');assert.ok(request);assert.equal(await d.page.locator('#msg-sub').innerText(),'default · '+request.result.metadata.name);record.states.push('task-name-phase-attempt');}
       if(file==='trace'){assert.ok(await d.page.locator('#trace-graph svg').count());record.states.push('nonempty-trace-resource-graph');}
-      if(file==='source'||file==='node'||file==='playbook')assert.ok((await d.calls()).some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Genuine canonical detail GET, not placeholder text');
+      if(file==='source'||file==='source-detail'||file==='node'||file==='playbook')assert.ok((await d.calls()).some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Genuine canonical detail GET, not placeholder text');
       await scan(d,lang,f);
       await d.clean(lang+' '+file+' desktop');
+      /* 登录页会把会话切成「游客」（模拟未登录）。f3-guest 是 sessionStorage 级的标记，
+         会影响**同一批次里后面那些页**（整批共用一份浏览器上下文）—— 它们会被 401 打回
+         登录页，锚点永远等不到。所以登录页自己验完之后立刻恢复认证态：这样批次怎么切
+         （PAGES 多一页就变）都不会把「游客」漏给下一个页面。 */
+      if(file==='login'&&d.mock)await guest(d,false);
       record.states.push(coverage?'localized-live-resource':'AC1-2-3-7');record.ok=true;
       d.check(lang+' '+file+' actual page/locale/anchor/switcher/hreflang/data/scroll');
     } catch(e){record.error=String(e);failures.push(file+': '+String(e));}
@@ -203,9 +238,17 @@ async function retained(d,lang) {
 async function resourceStates(d,lang) {
   const f=await fixture(d);
   await d.goto('capabilities',query('capabilities',f),lang);
-  const cap=d.page.locator('[data-cap]').first();await cap.getByRole('button',{name:await t(d,'caps.detail.btn'),exact:true}).click();
-  await hasText(d,'[data-cap]','caps.cond.title');await hasText(d,'[data-cap]','caps.nodes.title');
-  assert.ok((await d.calls()).some(c=>c.result?.kind==='CapabilityList'&&c.result.items.length));
+  /* 能力详情是**独立页**：列表行只留一个「详情」链接，点它 = 整页导航到
+     capability.html?namespace=<ns>&name=<cap>。所以这里不再看行内展开，
+     而是先记下列表来自真实 CapabilityList（导航会把 __f3Calls 重置），
+     再在详情页上断言两个区块标题已本地化。 */
+  const cap=d.page.locator('[data-cap]').first();
+  const listCalls=await d.calls();
+  await cap.getByRole('link',{name:await t(d,'caps.detail.btn'),exact:true}).click();
+  await d.page.waitForFunction(()=>{const root=document.getElementById('cap-detail');return !!root&&!!root.getAttribute('data-cap');});
+  assert.ok(listCalls.some(c=>c.result?.kind==='CapabilityList'&&c.result.items.length),'列表来自真实 CapabilityList');
+  assert.ok((await d.calls()).some(c=>c.httpStatus===200&&c.result?.kind==='Capability'),'详情页自己 GET 这个能力（不是拿列表行当详情）');
+  await hasText(d,'[data-sec="conditions"]','caps.cond.title');await hasText(d,'[data-sec="nodes"]','caps.nodes.title');
   await d.goto('node',query('node',f),lang);
   assert.ok(await d.page.locator('#node-slots [data-slot="0"]').count(),'Physical slot zero is valid');
   await hasText(d,'#node-slots [data-occupancy="occupied"]','nodes.v4.occupied');

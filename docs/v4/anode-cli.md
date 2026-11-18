@@ -3,7 +3,7 @@
 > 状态：**被机检**（`make check-anode-skill` / `scripts/check_anode_skill.py`）。
 > 本文的 ```bash 代码块是**操作面契约**：块里出现的每个 `anode <sub>` 与 `--flag`
 > 都必须能在真二进制的 `-h` 里找到；改 flag 忘了改这里 → CI 红。
-> 这与 v3 的 `cmd/agent/skill.md` 是同一个防漂移思路（手册 ↔ 真二进制），
+> 这与 v3 的 `cmd/agent/skill.md`（已删除）是同一个防漂移思路（手册 ↔ 真二进制），
 > 只是 v4 的节点产品换成 `anode`，手册从「内嵌进二进制」改为「随仓库发布」。
 
 `anode` 是**节点**（执行者）唯一的产品二进制，只有四个子命令：

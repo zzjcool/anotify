@@ -51,7 +51,7 @@ async function main() {
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 
 	const username = "rec_next_" + Date.now();

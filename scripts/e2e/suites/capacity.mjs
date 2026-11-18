@@ -20,8 +20,9 @@
  *    连「发生了什么」都查不了。
  * 4. 派发证据变了：v4 的 assign 只记**候选**（phase 仍是 pending、没有租约），
  *    所以「还在派发」的证据是 `assignment_id` 非空 + `node_id` 写上，不是「离开 pending」。
- * 5. 保留期的**权威是系统配置** `retention.*`（config.md §3.6、CONTRACT R7），不是
- *    `ANOTIFY_EVENT_RETENTION_DAYS`（那个 env 在 v4 只剩启动日志）。清理挂在 30s 的
+ * 5. 保留期的**权威是系统配置** `retention.*`（config.md §3.6、CONTRACT R7）。
+ *    `ANOTIFY_EVENT_RETENTION_DAYS` 只在 **system_config 无行时播种一次**（#005）；
+ *    已有行时它被忽略并打 `server.retention.env_ignored`。清理挂在 30s 的
  *    租约巡检 tick 上（`lease.DefaultInterval`），所以每条保留期用例要等一整轮。
  *
  * 套件里**没有任何 skip / 放宽**：v4 语义变了的地方，断言换成 v4 的对应事实（见上）。
@@ -443,7 +444,8 @@ async function runRetentionEnabled() {
 
 // runRetentionPermanent 验永久保留（0）这一侧：
 //   · env `ANOTIFY_EVENT_RETENTION_DAYS=0` 的启动告警必须在（磁盘会持续增长，不能静默）
-//   · 但**真正生效的是系统配置**：PUT retention.eventTtlSec=0 之后 40 天前的事件不被删
+//   · env 会**播种**进 system_config（#005：只在无行时），之后以库为准；
+//     PUT retention.eventTtlSec=0 仍是运行期改法，40 天前的事件不被删
 //   · 0 的语义是「永久」，不是「立刻删全部」
 async function runRetentionPermanent() {
 	console.log("--- 保留期 0（永久保留，系统配置权威）---");
@@ -466,12 +468,17 @@ async function runRetentionPermanent() {
 			server.log().slice(0, 900),
 		);
 
-		// v4 的权威是系统配置：env 只影响**启动日志**，不改 system_config。
-		// （DEVELOPMENT.md 里「ANOTIFY_EVENT_RETENTION_DAYS 决定保留天数」的表述在 v4
-		//   已过期；本套件按 CONTRACT R7 / config.md §3.6 的事实断言，并已在报告里上报。）
+		// #005 之后：env 只在 system_config **无行**时播种一次（本套件每次都是全新库），
+		// 所以 env=0 会真的落进库；之后运行期改保留期的唯一路径是 PUT /v1/system/config。
+		H.check(
+			"启动日志有 server.retention.seeded_from_env（env 确实播种了）",
+			server.log().includes("server.retention.seeded_from_env"),
+			server.log().slice(0, 900),
+		);
 		const cfg0 = await H.req(server.base, V.P.systemConfig(), { session: s.session });
 		V.expectStatus("GET /v1/system/config（env=0 时）", cfg0, 200);
-		H.eq("env=0 不改变 system_config：默认仍是 30 天", cfg0.json?.retention?.eventTtlSec, 2592000);
+		H.eq("env=0 播种进 system_config：eventTtlSec=0（永久保留）", cfg0.json?.retention?.eventTtlSec, 0);
+		H.eq("播种只写 events：task 保留期仍是 store 默认 30 天", cfg0.json?.retention?.taskTtlSec, 2592000);
 
 		// 显式把 events 保留期写成 0（三个字段都要写：漏一个就是 400 value_invalid）
 		const put = await setRetention(server.base, s.session, { eventTtlSec: 0 });

@@ -59,7 +59,7 @@
 
 | 套件 | 分类 | authority | 覆盖什么 / 迁移要点 |
 |---|---|---|---|
-| `frontend` | migrated（#335 / PR #354） | **real**（点名） | 前端渲染 + 路由守卫 + 真实数据：真 server / anode / devseed，35 条契约用例。f3 驱动，`mode` 由 `E2E_MOCK_ONLY` 决定，默认 real |
+| `frontend` | migrated（#335 / PR #354） | **real**（点名） | 前端渲染 + 路由守卫 + 真实数据：真 server / anode / devseed，39 条契约用例。f3 驱动，`mode` 由 `E2E_MOCK_ONLY` 决定，默认 real |
 | `i18n` | migrated（#335 / PR #354） | explicit-mock | 多语言 AC：页面 × 4 语言可达、hreflang、切换器、跨语言导航、query 保留。f3 版覆盖 19 页；**基线 66d926a 的 7 页版实测 299 断言 0 失败** |
 | `i18n_coverage` | migrated（#335 / PR #354） | explicit-mock | 渲染 DOM 的中文残留门禁：en/es 页可见文本 ZERO CJK |
 | `ui_shift` | migrated（#335 / PR #354） | explicit-mock | 开页抖动（layout shift）回归：语言条 / 命名空间槽位 / 折叠态 / 预排版，实测几何去重。#354 起超时预算 300s（单跑 ~148s，默认 120s 在并发下必被 SIGKILL） |
@@ -78,6 +78,16 @@
 「kept」= 在 66d926a 与 `338/chrome-v4`（`3651707`）之间**逐字节未改**
 （`git diff --stat 66d926a 3651707 -- scripts/e2e/suites/{lang_hint,recovery_next,p2_guards}.mjs` 为空），
 且在本基线实跑全绿 —— 它们不碰 v3 删除掉的 API 形状，所以不需要迁移。
+
+### `frontend` 套件里的用例清单
+
+用例清单的唯一注册表是 `scripts/e2e/fixtures/f3/f3-cases.mjs`（一串 `add(id, run)`），
+本文件不复制它。2026-11-16 新增一条（**不新增套件**：注册表大小与端口表是冻结常量）：
+
+| 用例 | 实现 | 覆盖什么 |
+|---|---|---|
+| `observe-index-all` | `scripts/e2e/fixtures/f3/f3-overview-all.mjs` | 首页总览**默认「全部命名空间」聚合**（契约 `.reports/overview-allns-contract.md` D1/D2/D5/D7）。六条断言：① 裸 `index.html` 的 KPI 等于从 `/v1/stats?namespace=*` + Σ`/v1/namespaces`（`tasksByPhase`）**现算**的聚合值（不写死数字）且既有 id 都在；② 全部模式的 `[data-ns-id="*"][aria-checked="true"]`、`#scope-crumb`=i18n `scope.all_namespaces`、逐行 `[data-ns-badge]`=事件自己的 ns、`#latest-flow[data-scope-ns]`、371 格热力图；③ `?namespace=prod` 只显示该 ns（`#kpi-total`=prod 单值 ≠ 聚合值、无徽标、uid 全属 prod）；④⑤ 选择器双向切换与 URL 同步；⑥ `reload()` 后两种模式都保持 |
+| `source-edit-jump` | `scripts/e2e/fixtures/f3/f3-source-edit.mjs` | 源详情页「编辑源」= **就地编辑**，编辑器与列表页共用 `web/source-editor.js`（契约 `.reports/source-edit-jump.md`）。五条断言：① 点 `#src-detail-edit` **不发生文档级导航**（同一文档记号仍在）、URL 只多 `edit=1`、`#src-modal` 打开且 `#f-name` 回填、弹层标题走运行期 i18n；② 编辑流程零 `/v1/namespaces/prod/` 请求（localStorage scope 故意设成 `prod`，资源在 `default`）；③ 保存 → PATCH 带 `metadata.resourceVersion`、弹层关闭、`edit=1` 移除、**详情页立刻显示新值**；④ 深链 `?edit=1` 直接打开编辑器；⑤ 能力详情页 `#cap-back` 用资源 ns 而不是 scope。实测值从 `/v1/namespaces/default/{sources,capabilities}` 现算 |
 
 ## 3. 五个 FE 套件的验收 authority（#338 冻结裁决）
 
@@ -152,7 +162,7 @@ cat .e2e-bin/results/_authority-manifest.json
 | 13 个非前端套件（含 `node_v4`）**两连绿** | **1321** | **PR #353**（`issue/336-real-node-e2e`，merge `0b0501b`）；记录在 `.pi-orchestrator/v4/issues/dispatch/TRACKER.md:58`：「13 个非前端套件 1321 断言两连绿；node_v4 真 anode 88」 |
 | 其中 `node_v4`（真 `anode`） | 88 | 同上 |
 | 7 个 legacy Chrome 迁移后 | 527 / 0 | `338/chrome-v4 @ 3651707`（7 个套件完整跑一遍） |
-| `frontend`（real） | 35 条契约用例 35/35（用例数，非断言数） | #338 裁决记录（TRACKER「2026-11-11 13:5x」） |
+| `frontend`（real） | 39 条契约用例 39/39（用例数，非断言数） | #338 裁决记录（TRACKER「2026-11-11 13:5x」） |
 | 66d926a 基线实测（本轮门禁预置） | `i18n` 299/0、`ux_regression_19_23` 13/0、`lang_hint` 86/0、`recovery_next` 5/0、`p2_guards` 30/0 | 本轮实跑，日志 `/root/tmp/338prep/{i18n,ux,kept3}.log` |
 | `make e2e-quick`（4 套件快检） | 463 断言 0 失败 | TRACKER「2026-11-11 13:0x 快照」协调者基线 |
 
@@ -172,7 +182,7 @@ bash scripts/e2e/run_all.sh --serial i18n
 cat .e2e-bin/results/_authority-manifest.json
 
 # real_backend 确实不在了：文件不存在 + 注册表无该项
-ls scripts/e2e/suites/real_backend.mjs   # No such file or directory
+ls scripts/e2e/suites/real_backend.mjs   # 已删除：No such file or directory
 grep -n real_backend scripts/e2e/parallel_runner.mjs   # 1 行（实测，`rg -c` = 1）：只有 :85 那条具名退役注释，没有任何代码引用
 ```
 

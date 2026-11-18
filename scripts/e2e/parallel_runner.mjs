@@ -208,13 +208,19 @@ const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
 // ---------- 参数解析 ----------
 const args = process.argv.slice(2);
 let serial = false;
+// 显式给了模式就听显式的：`--parallel` 以前会在下面被「带套件名默认串行」
+// 无条件覆盖掉 —— 一个静默失效的 flag（`run_all.sh --parallel a b c` 仍串行，
+// 于是「只跑 5 套」看起来只省了一半时间）。
+let serialExplicit = false;
 let planOnly = false;
 const suiteArgs = [];
 for (const a of args) {
 	if (a === "--serial") {
 		serial = true;
+		serialExplicit = true;
 	} else if (a === "--parallel") {
 		serial = false;
+		serialExplicit = true;
 	} else if (a === "--authority-plan") {
 		// 只打印每套件的 mode/authority，不跑任何套件：门禁要能**离线**自证
 		// 「frontend 是 real、四个 FE 套件是显式 mock」，而不是靠读代码相信。
@@ -241,7 +247,8 @@ if (suiteArgs.length > 0) {
 		process.exit(2);
 	}
 	suitesToRun = [...suiteArgs];
-	serial = true; // 单/多套件参数默认串行
+	// 带套件名参数时默认串行（兼容 e2e-one）；但显式 `--parallel` 不再被覆盖。
+	if (!serialExplicit) serial = true;
 } else {
 	suitesToRun = [...ALL_SUITES];
 }
@@ -324,6 +331,11 @@ function printAuthorityPlan(suites) {
 // ---------- 跑单个套件 ----------
 function runSuite(name) {
 	return new Promise((resolve) => {
+		// 墙钟计时（成本可见性）：套件自己写的 results/*.json 里 durationMs 一直是 0，
+		// 于是汇总只有「跑了什么」没有「花了多久」，任何成本优化都无从下手。
+		// 这里由执行器自己计时，不改任何判定：status/断言计数/集合校验一律照旧。
+		const startedAt = Date.now();
+		const elapsed = () => Date.now() - startedAt;
 		const suiteFile = path.join(ROOT, "scripts", "e2e", "suites", `${name}.mjs`);
 		const env = suiteEnv(name);
 		const mode = suiteAuthority(name);
@@ -346,6 +358,7 @@ function runSuite(name) {
 				mode,
 				status: "timeout",
 				budget,
+				elapsedMs: elapsed(),
 				stdout,
 				stderr,
 			});
@@ -358,6 +371,7 @@ function runSuite(name) {
 				mode,
 				status: code === 0 ? "pass" : "fail",
 				exitCode: code,
+				elapsedMs: elapsed(),
 				stdout,
 				stderr,
 			});
@@ -370,6 +384,7 @@ function runSuite(name) {
 				mode,
 				status: "fail",
 				error: err.message,
+				elapsedMs: elapsed(),
 				stdout,
 				stderr,
 			});
@@ -478,7 +493,9 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		const json = readJsonResult(r.suite, resultsDir);
 		const passCount = json?.passed ?? 0;
 		const failCount = json?.failed ?? 0;
-		const durationMs = json?.durationMs ?? 0;
+		// 套件自报 durationMs 目前恒为 0（没有套件写它）→ 用执行器的墙钟时间兜底，
+		// 两者都有时取套件自报（它更接近「被测工作量」，不含 node 启动）。
+		const durationMs = (json?.durationMs || 0) > 0 ? json.durationMs : (r.elapsedMs ?? 0);
 
 		let status = "pass";
 		const why = [];
@@ -736,6 +753,21 @@ async function main() {
 	if (agg.failedSuites.length > 0) {
 		console.log("");
 		console.log(`  失败套件: ${agg.failedSuites.join(", ")}`);
+	}
+
+	// 成本可见性：最慢的几个套件（按执行器墙钟）。没排序就不知道钱花在哪，
+	// 也就没有依据去做「按改动选套件」或调并发/预算。纯输出，不参与判定。
+	const slowest = [...agg.suiteSummary]
+		.filter((s) => s.durationMs > 0)
+		.sort((a, b) => b.durationMs - a.durationMs)
+		.slice(0, 5);
+	if (slowest.length > 0) {
+		console.log("");
+		console.log(
+			`  最慢套件: ${slowest
+				.map((s) => `${s.suite} ${(s.durationMs / 1000).toFixed(1)}s`)
+				.join(" · ")}`,
+		);
 	}
 
 	// 判分问题（#338）：这些都不是 warning，是「本次没有验证到什么」。

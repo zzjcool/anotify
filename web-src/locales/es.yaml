@@ -188,8 +188,13 @@ index:
     trend_live: En vivo
     running: En curso
     running_sub: "Todas las tareas del espacio"
+    running_sub_all: Todas las tareas de todos los espacios
     failed: Tareas con error
     failed_sub: "Todas las tareas del espacio"
+    failed_sub_all: Todas las tareas de todos los espacios
+    devices_sub_all: Los dispositivos son por usuario y no cambian al cambiar de espacio de nombres
+  aggregate:
+    unsupported: Esta métrica aún no se puede agregar entre espacios de nombres
   heatmap:
     title: Actividad de eventos
     subtitle: Último año · volumen diario
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "Slug del nuevo espacio (minúsculas / dígitos / guiones)"
   new_ns_failed: "Error al crear"
   deployment_wide: "Todo el despliegue"
+  all_namespaces: "Todos los espacios de nombres"
+  all_sub: "Suma de todos los espacios de nombres"
   deployment_wide_hint: "Esta página es común a todo el despliegue y no cambia al cambiar de espacio de nombres"
 graph:
   zoom_in: Acercar
@@ -289,6 +296,7 @@ graph:
   exit_fullscreen: Salir de pantalla completa (Esc)
   fullscreen_hint: Rueda para zoom · arrastra para mover · Esc para salir
   silk_preview_done: Vista previa completada
+  silk_source: "Origen"
   hud_flow: Flujo descendente
   hud_path: 'Ruta de tareas'
   hud_fail: 'Tareas fallidas'
@@ -1351,18 +1359,32 @@ caps:
     title: 'Despliegue manual de {name}'
     version: 'Versión objetivo'
   detail:
+    back: 'Volver a capacidades'
     btn: 'Detalles'
     delete: 'Eliminar'
     deploy: 'Desplegar'
     edit: 'Editar'
+    gone: 'Esta capacidad fue eliminada'
+    gone_hint: 'Usa la barra de deshacer de abajo para restaurarla, o vuelve a la lista para ver las demás.'
     hide: 'Ocultar'
+    loading: 'Cargando la capacidad…'
+    no_name: 'Falta el nombre de la capacidad (la URL necesita ?name=…)'
+    no_name_hint: 'Abre una capacidad desde la lista o añade ?namespace=<ns>&name=<name> a la URL.'
     outputs: 'Salidas (qué puede emitir)'
+    page_sub: 'Identidad, salud, definición y script; editar, desplegar y eliminar están en esta página'
+    page_title: 'Detalle de la capacidad'
     rv: 'resourceVersion'
     script: 'Script (run.files)'
     script_empty: 'Esta capacidad no tiene archivos de script'
     script_entry: 'Archivo de entrada'
+    script_error: 'No se pudo cargar el cuerpo del script'
+    script_loading: 'Cargando el cuerpo del script…'
     versions: 'Historial de versiones'
     versions_hide: 'Ocultar versiones'
+    yaml: 'YAML original'
+    yaml_error: 'No se pudo cargar el YAML original'
+    yaml_hint: 'Reconstruido desde la definición guardada; puedes pegarlo tal cual en un paquete playbook'
+    yaml_loading: 'Generando YAML…'
   error:
     immutable: 'Esta versión explícita ya existe con otro cuerpo: cambiar run/params/requires/lifecycle/concurrency requiere una versión nueva (next/displayName son la excepción).'
     title: 'Error al guardar: {reason}'
@@ -1485,6 +1507,9 @@ caps:
     tasks: 'Tareas totales'
     tasks_failed: 'Fallidas'
     title: 'Rastro de la última ejecución (observed)'
+    truncated: 'Solo se listan los últimos {n}; los anteriores no se muestran'
+    unavailable: 'Esta capacidad aún no tiene historial de ejecución (aparece tras la primera ejecución)'
+    window: 'Los recuentos cubren las últimas 24 horas'
   resolved:
     empty: 'Capacidad terminal: termina al ejecutarse y no entrega a ningún destino'
     missing: 'No se resuelve'
@@ -1525,6 +1550,14 @@ caps:
     current: 'Actual'
     empty: 'El servidor no devolvió historial de versiones'
     open: 'Ver contenido'
+  yaml:
+    open: 'Crear desde YAML'
+    title: 'Crear capacidad desde YAML'
+    hint: 'Pega un documento Capability (apiVersion/kind/metadata/spec). status y metadata.resourceVersion los gestiona el servidor; no los escribas.'
+    submit: 'Crear'
+    cancel: 'Cancelar'
+    created: 'Capacidad creada desde YAML'
+    empty: 'Primero pega un documento YAML'
 prune:
   no_edge: sin candidato conectado
   no_capability: la capacidad destino no existe
@@ -1717,6 +1750,7 @@ sources:
     edit: "Editar fuente"
     close: "Cerrar"
     save: "Guardar"
+    save_failed: "No se pudo guardar"
     reload: "Recargar recurso actual"
     detail: "Detalles de la fuente"
     back: "Volver a fuentes"
@@ -1766,6 +1800,18 @@ sources:
     saved_dry: "Vista previa de fuente guardada"
     more: "Más acciones"
     saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
+    yaml: "YAML original"
+    yaml_hint: "Reconstruido desde la definición guardada; las credenciales son solo de escritura, así que solo aparecen hookUrl / secretSet"
+    yaml_loading: "Generando YAML…"
+    yaml_error: "No se pudo cargar el YAML original"
+    yaml_create:
+      open: "Crear desde YAML"
+      title: "Crear fuente desde YAML"
+      hint: "Pega un documento Source. `spec.config.token` / `secret` son de solo escritura; tras guardar solo se muestra hookUrl."
+      submit: "Crear"
+      cancel: "Cancelar"
+      created: "Fuente creada desde YAML"
+      empty: "Primero pega un documento YAML"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
     rv: "resourceVersion (token CAS)"
@@ -2435,3 +2481,31 @@ paging:
   load_more: 'Cargar más'
   showing: 'Mostrando {n}'
   no_match: 'Sin coincidencias'
+
+# Página de detalle de solo lectura del origen (source-detail.html).
+source_detail:
+  title: 'Detalle del origen'
+  sub: 'Vista de solo lectura: identidad, configuración y campos, destinos, recibos recientes y YAML en bruto. Para cambiar algo usa "Editar origen" arriba a la derecha.'
+  refresh: 'Actualizar'
+  basic: 'Datos básicos'
+  definition: 'Configuración y campos'
+  resolved: 'Resolución de destinos'
+  resolved_yes: 'targets resueltos'
+  resolved_no: 'targets sin resolver'
+  created: 'Creado'
+  updated: 'Actualizado'
+  updated_hint: 'v4 no tiene una marca de actualización aparte: cada escritura se refleja en un resourceVersion que aumenta.'
+  hook_url: 'Hook URL'
+  secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
+  secret_set_no: 'Sin firma HMAC'
+  schema_none: 'El contrato del payload no declara campos'
+  config_json: 'Ver JSON en bruto'
+  config_json_hint: 'la proyección de lectura ya está enmascarada'
+  params_none: 'Sin parámetros configurados'
+  recent: 'Recibos recientes'
+  recent_hint: 'Últimos 20 eventos (filtrados por origen); aceptado no significa que la tarea terminara bien.'
+  recent_loading: 'Cargando recibos recientes…'
+  recent_empty: 'Este origen todavía no tiene eventos de recibo.'
+  recent_error: 'No se pudieron cargar los recibos recientes'
+  view_trace: 'Ver traza'
+  no_name_hint: 'Abre un origen desde la lista, o pon ?namespace=<ns>&name=<name> en la dirección.'

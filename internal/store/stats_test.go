@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,27 +13,6 @@ import (
 //  1. 常态下 **不** 无条件 ANALYZE（成本远大于收益，大表上会挡住写）
 //  2. 只执行 SQLite 自己给的 `ANALYZE ...` 建议，别的字符串一律不碰
 //     （"把数据库返回的字符串当 SQL 执行"必须锁在最小面上）
-
-// fakeStatsQueryer 让用例能指定 SQLite 的"建议"。
-type fakeStatsQueryer struct {
-	suggestions []string
-	executed    []string
-	execErr     error
-}
-
-func (f *fakeStatsQueryer) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
-	// maintainStatsOn 只查一条：PRAGMA optimize
-	rows := &sql.Rows{} // 占位，真正的实现对 *sql.Rows 不可构造
-	_ = rows
-	return nil, errFakeNotConstructible
-}
-
-func (f *fakeStatsQueryer) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
-	f.executed = append(f.executed, q)
-	return nil, f.execErr
-}
-
-var errFakeNotConstructible = sql.ErrConnDone
 
 // TestMaintainStatsFreshDBIsQuiet 新库上没有漂移 → 不该执行任何 ANALYZE。
 //

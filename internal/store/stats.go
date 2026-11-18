@@ -138,6 +138,36 @@ func (d *DB) taskRefCounts(ctx context.Context, query string, args ...any) ([]Re
 	return out, nil
 }
 
+// 工作台统计的聚合 SQL —— 单 ns（MessageStats）与跨 ns 汇总（MessageStatsAll）
+// 共用**同一份**语句。
+//
+// 为什么抽成常量而不是各写一份：两条路径的口径必须逐字一致（今日日界、终态集合、
+// 日桶表达式）。出现第二份副本的症状是「全部命名空间」的卡片和单 ns 卡片对同一个 ns
+// 给出不同数字，而且改动只会改到一半。EXPLAIN 计划断言（stats_all_test.go）也直接对
+// 这几个常量跑，所以「查询走哪个索引」同样只有一处真源。
+const (
+	statsTotalSQL = `SELECT COUNT(*) FROM events WHERE namespace_id=?`
+	statsTodaySQL = `SELECT COUNT(*) FROM events WHERE namespace_id=? AND created_at >= ?`
+	// 终态集合：succeeded 计入分子，四个终态计入分母（pending/running 不计）。
+	statsTasksSQL = `SELECT
+		   COALESCE(SUM(CASE WHEN phase = ? THEN 1 ELSE 0 END),0),
+		   COUNT(*)
+		 FROM tasks
+		 WHERE namespace_id=? AND phase IN (?,?,?,?)`
+	statsDevicesSQL = `SELECT COUNT(*) FROM devices WHERE user_id=? AND enabled=1`
+	// 近 N 天每天数量：日界与 Today 用同一个本地时区。
+	//
+	// SQLite 的 'localtime' 修饰符读进程 TZ，结果不确定（同一次请求里 Today 与 Daily
+	// 可能落在不同时区），所以把 now 的时区偏移加到 created_at 上再按 UTC 取日期
+	// ——等价于「按本地墙钟分桶」，且完全由 now 决定、可复现。
+	// DST 取舍：offset 只从 now 取一次，切换日附近可能有 ±1h 的分桶偏差；宁可接受
+	// 这个极小边界偏差，也不要依赖 SQLite 读进程 TZ 这种不可测的全局状态。
+	statsDailySQL = `SELECT strftime('%Y-%m-%d', created_at + ?, 'unixepoch') AS day, COUNT(*)
+		 FROM events
+		 WHERE namespace_id=? AND created_at >= ?
+		 GROUP BY day ORDER BY day`
+)
+
 // MessageStats 计算某命名空间的工作台统计（sinceSec 为热力图起点，unixepoch 秒）。
 //
 // 口径：#80 之后「发生了什么」是 events、「做完没有」是 tasks：
@@ -149,6 +179,21 @@ func (d *DB) taskRefCounts(ctx context.Context, query string, args ...any) ([]Re
 // 字段名与 JSON key 沿用旧契约：改名会让前端变成破坏性变更，而收益只是语义更贴切。
 func (d *DB) MessageStats(ctx context.Context, namespaceID, userID string, sinceSec int64) (*Stats, error) {
 	return d.messageStats(ctx, namespaceID, userID, sinceSec, time.Now())
+}
+
+// MessageStatsAll 把**显式给定**的一组命名空间的统计求和（「全部命名空间」视图）。
+//
+// 为什么签名是 nsID 列表而不是 `AllNamespaces`：`*` 是 wire 上的写法，不是 store 的
+// 作用域。调用方（server）必须先把 `*` 展开成「逐 ns 授权过的真实 id 列表」，store 只
+// 接受确定的命名空间；收到空串或 `*` 一律 ErrNamespaceRequired（防御，不是可选项）。
+//
+// 口径与单 ns **完全一致**（共用 accumulateMessageStats 里那一份 SQL）：
+//   - Total/Today/Delivered/DeliveryTotal 逐 ns 相加；
+//   - Daily 按 day 合并（不同 ns 的同一天合成一行，不重复计同一天），升序；
+//   - DeviceCount 是用户维度，只查一次、**不**乘 ns 数量；
+//   - 空列表 = 全零 + `daily: []`（**不报错**：没有命名空间是合法的空集合，不是调用错误）。
+func (d *DB) MessageStatsAll(ctx context.Context, namespaceIDs []string, userID string, sinceSec int64) (*Stats, error) {
+	return d.messageStatsAll(ctx, namespaceIDs, userID, sinceSec, time.Now())
 }
 
 // startOfLocalDayUnix 返回 now 所在时区当天 00:00:00 的 Unix 秒。
@@ -164,57 +209,107 @@ func startOfLocalDayUnix(now time.Time) int64 {
 // 机器时区/真实时钟地验证「今日」与日桶口径）。
 func (d *DB) messageStats(ctx context.Context, namespaceID, userID string, sinceSec int64, now time.Time) (*Stats, error) {
 	s := &Stats{Daily: []DayCount{}}
-	if namespaceID == "" || namespaceID == AllNamespaces {
-		return nil, ErrNamespaceRequired
+	if err := d.accumulateMessageStats(ctx, s, namespaceID, userID, sinceSec, now, true); err != nil {
+		return nil, err
 	}
+	return s, nil
+}
 
-	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE namespace_id=?`, namespaceID).Scan(&s.Total); err != nil {
-		return nil, fmt.Errorf("stats total: %w", err)
+// messageStatsAll 是 MessageStatsAll 的可注入时间版本（理由同 messageStats）。
+func (d *DB) messageStatsAll(ctx context.Context, namespaceIDs []string, userID string, sinceSec int64, now time.Time) (*Stats, error) {
+	s := &Stats{Daily: []DayCount{}}
+	for _, namespaceID := range namespaceIDs {
+		if err := d.accumulateMessageStats(ctx, s, namespaceID, userID, sinceSec, now, false); err != nil {
+			return nil, err
+		}
 	}
-	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE namespace_id=? AND created_at >= ?`,
-		namespaceID, startOfLocalDayUnix(now)).Scan(&s.Today); err != nil {
-		return nil, fmt.Errorf("stats today: %w", err)
-	}
-	if err := d.QueryRowContext(ctx,
-		`SELECT
-		   COALESCE(SUM(CASE WHEN phase = ? THEN 1 ELSE 0 END),0),
-		   COUNT(*)
-		 FROM tasks
-		 WHERE namespace_id=? AND phase IN (?,?,?,?)`,
-		TaskSucceeded, namespaceID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
-		Scan(&s.Delivered, &s.DeliveryTotal); err != nil {
-		return nil, fmt.Errorf("stats tasks: %w", err)
-	}
-	if err := d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM devices WHERE user_id=? AND enabled=1`, userID).Scan(&s.DeviceCount); err != nil {
+	// 设备是**用户维度**的：只查一次，不参与逐 ns 求和（否则会被乘上 ns 数量）。
+	if err := d.QueryRowContext(ctx, statsDevicesSQL, userID).Scan(&s.DeviceCount); err != nil {
 		return nil, fmt.Errorf("stats devices: %w", err)
 	}
+	return s, nil
+}
 
-	// 近 N 天每天数量：日界与 Today 用同一个本地时区。
-	//
-	// SQLite 的 'localtime' 修饰符读进程 TZ，结果不确定（同一次请求里 Today 与 Daily
-	// 可能落在不同时区），所以把 now 的时区偏移加到 created_at 上再按 UTC 取日期
-	// ——等价于「按本地墙钟分桶」，且完全由 now 决定、可复现。
-	// DST 取舍：offset 只从 now 取一次，切换日附近可能有 ±1h 的分桶偏差；宁可接受
-	// 这个极小边界偏差，也不要依赖 SQLite 读进程 TZ 这种不可测的全局状态。
+// accumulateMessageStats 把**一个**命名空间的聚合叠加进 s。
+//
+// 这是两条读路径唯一的事实来源：单 ns（MessageStats）只调一次且带设备计数，跨 ns
+// 汇总（MessageStatsAll）对每个 ns 调一次、设备计数由调用方单独查一次。任何口径
+// 改动都只发生在这里，不存在「第二份 SQL 漂了」的可能。
+func (d *DB) accumulateMessageStats(ctx context.Context, s *Stats, namespaceID, userID string,
+	sinceSec int64, now time.Time, withDevices bool) error {
+	if namespaceID == "" || namespaceID == AllNamespaces {
+		return ErrNamespaceRequired
+	}
+
+	var total, today, delivered, deliveryTotal int
+	if err := d.QueryRowContext(ctx, statsTotalSQL, namespaceID).Scan(&total); err != nil {
+		return fmt.Errorf("stats total: %w", err)
+	}
+	if err := d.QueryRowContext(ctx, statsTodaySQL, namespaceID, startOfLocalDayUnix(now)).Scan(&today); err != nil {
+		return fmt.Errorf("stats today: %w", err)
+	}
+	if err := d.QueryRowContext(ctx, statsTasksSQL,
+		TaskSucceeded, namespaceID, TaskSucceeded, TaskFailed, TaskCancelled, TaskAbandoned).
+		Scan(&delivered, &deliveryTotal); err != nil {
+		return fmt.Errorf("stats tasks: %w", err)
+	}
+	s.Total += total
+	s.Today += today
+	s.Delivered += delivered
+	s.DeliveryTotal += deliveryTotal
+
+	if withDevices {
+		if err := d.QueryRowContext(ctx, statsDevicesSQL, userID).Scan(&s.DeviceCount); err != nil {
+			return fmt.Errorf("stats devices: %w", err)
+		}
+	}
+
 	_, offset := now.Zone()
-	rows, err := d.QueryContext(ctx,
-		`SELECT strftime('%Y-%m-%d', created_at + ?, 'unixepoch') AS day, COUNT(*)
-		 FROM events
-		 WHERE namespace_id=? AND created_at >= ?
-		 GROUP BY day ORDER BY day`, offset, namespaceID, sinceSec)
+	rows, err := d.QueryContext(ctx, statsDailySQL, offset, namespaceID, sinceSec)
 	if err != nil {
-		return nil, fmt.Errorf("stats daily: %w", err)
+		return fmt.Errorf("stats daily: %w", err)
 	}
 	defer rows.Close()
+	add := []DayCount{}
 	for rows.Next() {
 		var dc DayCount
 		if err := rows.Scan(&dc.Day, &dc.Count); err != nil {
-			return nil, fmt.Errorf("stats daily scan: %w", err)
+			return fmt.Errorf("stats daily scan: %w", err)
 		}
-		s.Daily = append(s.Daily, dc)
+		add = append(add, dc)
 	}
-	return s, rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	mergeDaily(&s.Daily, add)
+	return nil
+}
+
+// mergeDaily 把 add 里的日桶按 day 叠加进 dst，并保持 day 升序。
+//
+// 单 ns 只有一次叠加（结果与 SQL 的 `ORDER BY day` 逐字节一致）；跨 ns 汇总时同一
+// day 的多行必须**合并成一行**——热力图的口径是「每天一个格子」，不是「每 ns 每天
+// 一个格子」，否则 371 天的窗口会被 ns 数量拉长成 371×N 个点。
+//
+// 日期键是 `YYYY-MM-DD`，字典序 == 时间序，所以升序就是字符串升序。
+func mergeDaily(dst *[]DayCount, add []DayCount) {
+	if len(add) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = []DayCount{}
+	}
+	idx := make(map[string]int, len(*dst)+len(add))
+	for i := range *dst {
+		idx[(*dst)[i].Day] = i
+	}
+	for _, dc := range add {
+		if i, ok := idx[dc.Day]; ok {
+			(*dst)[i].Count += dc.Count
+			continue
+		}
+		idx[dc.Day] = len(*dst)
+		*dst = append(*dst, dc)
+	}
+	sort.Slice(*dst, func(i, j int) bool { return (*dst)[i].Day < (*dst)[j].Day })
 }

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+
+	"github.com/zzjcool/anotify/internal/yamldoc"
 )
 
 // 轻量资源信封（api-conventions §3.1–§3.3 / V4-D1）。
@@ -108,6 +110,12 @@ func nonNilSlice(v any) any {
 // writeEnvelopeStrict 用于写请求的解码结果便于统一报错；见 decodeWriteEnvelope。
 var errEmptyBody = errors.New("request body is required")
 
+// writeBodyLimit 是资源写请求的请求体上限（8 MiB）。
+//
+// 两个入口共用这一个数字：JSON 信封（decodeWriteEnvelope）与「JSON 里装一份 YAML」
+// （decodeYAMLRequestBody）。分成两个数字迟早一个改了另一个没改。
+const writeBodyLimit = 8 << 20
+
 // writeMeta 顶层允许的键（写请求）。
 type writeRequestMeta struct {
 	APIVersion *string         `json:"apiVersion"`
@@ -132,11 +140,22 @@ func decodeWriteEnvelope(r *http.Request, wantKind string, specDst any, metaKeys
 	if r.Body == nil {
 		return meta, errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, writeBodyLimit))
 	if err != nil {
 		return meta, errStatus(http.StatusBadRequest, reasonBadRequest, "cannot read request body")
 	}
 	_ = r.Body.Close()
+	return decodeWriteEnvelopeBytes(r, raw, wantKind, specDst, metaKeys...)
+}
+
+// decodeWriteEnvelopeBytes 是 decodeWriteEnvelope 的「body 已经读过」版本。
+//
+// 存在的理由只有一条：`POST …/capabilities/yaml` 的正文要先过 `yamldoc.Decode`
+// 变成 canonical JSON 才能走同一条严格解码，而那条路径没有「原始 HTTP body」可读。
+// 语义与 decodeWriteEnvelope 完全一致（后者只是读完 body 再调这里），所以未知顶层
+// 字段 / status 只读 / kind 不一致 / metadata 白名单的判据不会分叉成两份。
+func decodeWriteEnvelopeBytes(r *http.Request, raw []byte, wantKind string, specDst any, metaKeys ...string) (objectMeta, error) {
+	var meta objectMeta
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return meta, errStatus(http.StatusBadRequest, reasonBadRequest, errEmptyBody.Error())
 	}
@@ -160,26 +179,13 @@ func decodeWriteEnvelope(r *http.Request, wantKind string, specDst any, metaKeys
 			fmt.Sprintf("apiVersion %q is not supported", *top.APIVersion))
 	}
 
-	allowed := map[string]bool{"name": true, "displayName": true}
-	// 两个「按位置生效」的键（§3.4 / §3.2）：
-	//   - metadata.resourceVersion：只在 PUT/PATCH 是合法令牌；POST 创建时带了它是
-	//     调用方误解了协议（创建不套 CAS），必须 400 而不是静默丢弃。
-	//   - metadata.namespace：只在 namespaced 路径下有意义（可省略；显式值与 path
-	//     不同 → namespace_mismatch）。cluster 级资源（Node/Namespace）带它就是写错。
-	if r.Method == http.MethodPatch || r.Method == http.MethodPut {
-		allowed["resourceVersion"] = true
-	}
-	if strings.TrimSpace(r.PathValue("ns")) != "" {
-		allowed["namespace"] = true
-	}
-	for _, k := range metaKeys {
-		allowed[k] = true
-	}
+	allowed := writeMetaAllowList(r, metaKeys...)
 	if len(top.Metadata) > 0 && !isEmptyJSON(top.Metadata) {
-		meta, err = decodeObjectMeta(top.Metadata, allowed)
+		decoded, err := decodeObjectMeta(top.Metadata, allowed)
 		if err != nil {
 			return meta, err
 		}
+		meta = decoded
 	}
 
 	if specDst != nil {
@@ -194,6 +200,92 @@ func decodeWriteEnvelope(r *http.Request, wantKind string, specDst any, metaKeys
 		}
 	}
 	return meta, nil
+}
+
+// writeMetaAllowList 是写请求允许的 metadata 键白名单（唯一一份）。
+//
+// 两个消费点共用它：JSON 信封解码（decodeWriteEnvelopeBytes 交给 decodeObjectMeta）
+// 与 YAML 文档形状（writeDocShape 的 Meta）。抄两份的症状是「YAML 里能写、JSON 里
+// 不能写」这种只在一条路径上出现的 400。
+//
+// 两个「按位置生效」的键（§3.4 / §3.2）：
+//   - metadata.resourceVersion：只在 PUT/PATCH 是合法令牌；POST 创建时带了它是
+//     调用方误解了协议（创建不套 CAS），必须 400 而不是静默丢弃。
+//   - metadata.namespace：只在 namespaced 路径下有意义（可省略；显式值与 path
+//     不同 → namespace_mismatch）。cluster 级资源（Node/Namespace）带它就是写错。
+func writeMetaAllowList(r *http.Request, metaKeys ...string) map[string]bool {
+	allowed := map[string]bool{"name": true, "displayName": true}
+	if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+		allowed["resourceVersion"] = true
+	}
+	if strings.TrimSpace(r.PathValue("ns")) != "" {
+		allowed["namespace"] = true
+	}
+	for _, k := range metaKeys {
+		allowed[k] = true
+	}
+	return allowed
+}
+
+// writeDocShape 描述一份写请求 YAML 文档允许的形状（`POST …/yaml` 用）。
+//
+// 三条纪律决定了它必须从现有类型推导、而不是另写一张表：
+//   - 顶层键只认 writeRequestMeta 的 json tag（多一个少一个都是双写规则）；
+//   - metadata 键只认 writeMetaAllowList（安全边界，与 JSON 路径同一份）；
+//   - spec 的类型由调用方给（能力 artifact.Spec / 源 srcSpecDoc），这里不猜。
+//
+// status 的类型是 nil：它**允许出现**（由后续的严格 JSON 解码按 status_not_writable
+// 拒掉），形状校验本身不对它做类型检查 —— 报「status 类型不对」而不是「status 只读」
+// 会把调用方引向错误的心智模型。
+func writeDocShape(r *http.Request, specType reflect.Type, metaKeys ...string) yamldoc.Shape {
+	metaType := reflect.TypeOf(objectMeta{})
+	allow := writeMetaAllowList(r, metaKeys...)
+	meta := make(map[string]reflect.Type, len(allow))
+	for i := 0; i < metaType.NumField(); i++ {
+		f := metaType.Field(i)
+		name := jsonFieldName(f)
+		if name == "" || !allow[name] {
+			continue
+		}
+		meta[name] = f.Type
+	}
+
+	requestType := reflect.TypeOf(writeRequestMeta{})
+	root := make(map[string]reflect.Type, requestType.NumField())
+	for i := 0; i < requestType.NumField(); i++ {
+		f := requestType.Field(i)
+		name := jsonFieldName(f)
+		if name == "" {
+			continue
+		}
+		switch f.Name {
+		case "APIVersion", "Kind":
+			// 保持 writeRequestMeta 的原始类型（*string → yamldoc 走 indirect）。
+			root[name] = f.Type
+		case "Metadata":
+			// RawMessage 是 opaque，会跳过键校验；这里必须换成 objectMeta（键集由 Meta 裁剪）。
+			root[name] = metaType
+		case "Spec":
+			root[name] = specType
+		default:
+			// status：存在但不检查类型（见函数注释）。
+			root[name] = nil
+		}
+	}
+	return yamldoc.Shape{Root: root, Meta: meta, Required: []string{"metadata.name"}}
+}
+
+// jsonFieldName 取结构体字段的 JSON 键名（与 encoding/json 同规则：tag 名优先、
+// `json:"-"` 跳过、无 tag 用字段名）。
+func jsonFieldName(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	if name == "-" {
+		return ""
+	}
+	if name == "" {
+		return f.Name
+	}
+	return name
 }
 
 // decodeObjectMeta 严格解码写请求的 metadata：只认白名单键。

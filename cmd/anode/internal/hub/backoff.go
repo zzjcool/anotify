@@ -1,3 +1,9 @@
+// Package hub 是 anode 侧的节点连接客户端：把配置里的 server 解析成
+// /v1/node/stream、用 WebSocket 收发 protocol 帧（含 ping 保活），并在断线后按
+// 有界指数退避重连；下行帧的业务处理由 Handler 的实现方（internal/node）承担。
+//
+// 它只管连接与收发：派发、租约、结果、emit 的权威判定都在中枢侧 route/store，
+// hub 不重算任何一条（重算就是两侧判定分叉的起点）。
 package hub
 
 import "time"

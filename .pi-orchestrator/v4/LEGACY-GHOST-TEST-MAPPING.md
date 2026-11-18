@@ -1,0 +1,9 @@
+# 两个旧 badLink 例的精确退役与不变量承接
+
+v4能力的next允许暂时未存在下游；创建/更新保留声明与投影，missing由读状态/DownstreamResolved报告。现批量原子业务入口是Playbook安装，不恢复旧CreateCapabilitiesBatch或创建时ghost预检。
+
+- TestCreateCapabilitiesBatchRollsBackOnBadLink：旧batch API＋ghost前置拒绝部分narrow-retired。原批量失败零写入的不变量仍由具体当前Playbook整包冲突／计划错误零写入测试承接，不能称旧API已迁移或全部原子性退休。
+- TestCreateCapabilityWithLinksRollsBackOnBadLink：创建拒ghost部分narrow-retired；capability正文与边投影的事务一致性由实际edges INSERT失败导致全部cap/body/edge零写入的具名测试证明。读取ghost或非法脚本不是rollback证明。
+- 另外保留当前允许ghost next且声明留存、读时missing的真实测试，不能为了旧断言补回ghost禁令。
+
+原两个名字仍在完整原460账目中，逐项记录纯旧语义退役理由及具体当前不变量测试路径；不虚称原ghost错误仍被触发。生产/schema/API不改，测试-only writer补映射后原五树格式/vet/test及有限六finding复审通过，才G1收口。完整G2–G4和全项目Go/contract/quick门禁不减。

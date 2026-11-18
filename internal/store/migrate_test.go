@@ -296,26 +296,3 @@ func readSource(t *testing.T, name string) string {
 	}
 	return string(b)
 }
-
-// ---------- migration 11：deployments 改引用能力行（Capability Spec v3 §11.1）----------
-
-// mig10Legacy 是一份「停在 migration 10 的库」里的产物夹具：
-//   - capA 有两份产物（当前 + 历史），capB 有一份；
-//   - 三条部署：A 的当前产物（applied）、B 的产物（pending）、A 的**历史**产物（applied）。
-//
-// 为什么要有「历史 digest」那一条：迁移必须逐行照抄 artifact 的 (capability_id, digest)，
-// 而不是把 digest 换成能力行当前的 content_hash——那会让一次「部署了旧版本」的历史
-// 事实凭空变成「部署了当前版本」，而且抹掉以后无法恢复。
-type mig10Legacy struct {
-	nsID, node1, node2     string
-	capA, capB             string
-	artACurrent, artAOld   string
-	artB                   string
-	digestACurrent         string
-	digestAOld             string
-	digestB                string
-	deployIDs              []string
-	deploymentArtifactByID map[string]string // deployment id → artifact id
-	artifactCapability     map[string]string // artifact id → capability id
-	artifactDigest         map[string]string // artifact id → digest
-}

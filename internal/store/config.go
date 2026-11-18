@@ -346,20 +346,28 @@ func decodeStringList(raw string) ([]string, error) {
 //
 // 没有行时 ResourceVersion = 1：单行表（id 恒为 1）在语义上已经存在，
 // 首次 PUT 必须能带一个合法的前置条件（缺失 = 400），所以默认值也给出可用令牌。
+//
+// 只读路径**不**开事务（形状与理由照 `nodeEligibility`，见 node.go）：DSN 带着
+// `_txlock=immediate`（store.go:104），驱动把它应用到该 DSN 上的**每一条**连接 ——
+// 哪怕只是一条 SELECT，包了 `BeginTx` 也会开局抢写锁、排到写者后面。写者持锁时这里
+// 要等满 busy_timeout（store.go:102 的 5000ms）才报 `database is locked`，而这条读在
+// **ingest 热路径**上（`source.Service.eventWindow`，internal/source/source.go:363）——
+// 一次锁等待就是一次事件投递失败，并且被 ingress 翻成 500。
+//
+// 为什么去掉事务仍然安全：
+//   - 读的是**单行、单语句**（`WHERE id = 1`），一条语句本身就是原子的，不会读到「半个行」；
+//   - 调用方把错误当**可回落**：eventWindow 出错即用默认保留期
+//     （internal/source/source.go:364-367）；RetentionConfig / RunRetention 只是报错，不写库；
+//   - 没有调用方拿它做 check-then-act：改配置一律走 PutSystemConfig 的 CAS，它在自己的
+//     **写事务内**重读 resource_version 再比。
 func (d *DB) GetSystemConfig(ctx context.Context) (*SystemConfig, error) {
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get system config: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	cfg := &SystemConfig{
 		RetentionEventTTLSec:  DefaultRetentionEventTTLSec,
 		RetentionTaskTTLSec:   DefaultRetentionTaskTTLSec,
 		RetentionResultTTLSec: DefaultRetentionResultTTLSec,
 		ResourceVersion:       1,
 	}
-	err = tx.QueryRowContext(ctx,
+	err := d.queryRowContext(ctx,
 		`SELECT retention_event_ttl_sec, retention_task_ttl_sec,
 		        retention_result_ttl_sec, resource_version
 		   FROM system_config WHERE id = 1`).
@@ -367,9 +375,6 @@ func (d *DB) GetSystemConfig(ctx context.Context) (*SystemConfig, error) {
 			&cfg.RetentionResultTTLSec, &cfg.ResourceVersion)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("get system config: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("get system config: commit: %w", err)
 	}
 	return cfg, nil
 }
@@ -434,23 +439,85 @@ func (d *DB) PutSystemConfig(ctx context.Context, cfg *SystemConfig, rv int64) e
 	return nil
 }
 
+// SeedSystemConfigIfEmpty 在 system_config **无行**时写入给定保留期，返回「确实播种了」。
+//
+// 已有行 → 一个字节都不动、返回 false。运行期改配置的唯一路径仍是 PutSystemConfig。
+//
+// 为什么需要它（#005）：保留期的**运行期**来源只有一个 —— system_config
+// （RunRetention 每轮 GetSystemConfig）。而 env `ANOTIFY_EVENT_RETENTION_DAYS` 在 v4
+// 只剩启动日志：运维把 env 改成 90 天、日志也说 90 天，实际仍按默认 30 天删（不可逆）。
+// 这个函数让 env 重新有意义，但只在一个**恰好安全**的位置：空库的首次启动。
+//
+// 为什么是「只播种、不覆盖」而不是让 env 优先：保留期是**运行时可改**的配置
+// （GET/PUT /v1/system/config）。若 env 每次启动都覆盖，就退回「双源互相打架」——
+// 「昨天在控制台改成 7 天，今天重启又变回 90 天」这类事故比「不生效」更难查。
+//
+// 并发安全：单条 `INSERT OR IGNORE` 本身就是原子的，多实例同时首次启动时只有一行
+// 插得进去，另一条拿到 RowsAffected()==0。刻意**不**写成「先查再插」：那中间有窗口，
+// 而单行表（id 恒为 1）的冲突判定交给 SQLite 比应用层更可靠。
+//
+// 记账：resource_version 写 1（= 与「无行」时 GetSystemConfig 报出的默认令牌一致）。
+// 这条很关键：首次 PUT 的前置条件仍然成立，且「rv>1」可以当「运维 PUT 过」的证据用。
+//
+// 校验口径照 PutSystemConfig：nil / 负数 → ErrConfigInvalid，且**不写**。
+// 「负数 = 永久保留」这种归一化只发生在解析层（server 侧），store 不接受负数。
+func (d *DB) SeedSystemConfigIfEmpty(ctx context.Context, cfg *SystemConfig) (bool, error) {
+	if cfg == nil {
+		return false, fmt.Errorf("seed system config: nil")
+	}
+	for name, v := range map[string]int64{
+		"retention.eventTtlSec":  cfg.RetentionEventTTLSec,
+		"retention.taskTtlSec":   cfg.RetentionTaskTTLSec,
+		"retention.resultTtlSec": cfg.RetentionResultTTLSec,
+	} {
+		if v < 0 {
+			return false, fmt.Errorf("%w: %s 不能为负（0 = 永久）", ErrConfigInvalid, name)
+		}
+	}
+
+	res, err := d.ExecContext(ctx,
+		`INSERT OR IGNORE INTO system_config
+		   (id, retention_event_ttl_sec, retention_task_ttl_sec,
+		    retention_result_ttl_sec, resource_version, updated_at)
+		 VALUES (1,?,?,?,1,?)`,
+		cfg.RetentionEventTTLSec, cfg.RetentionTaskTTLSec, cfg.RetentionResultTTLSec, Now())
+	if err != nil {
+		return false, fmt.Errorf("seed system config: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("seed system config: rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // ---------- 命名空间默认值（config.md §3） ----------
 
 // GetNamespaceConfig 读某个命名空间的默认 vars；没有配置行时返回空默认。
 //
 // 空默认的 ResourceVersion = 1（与 namespace_configs 列默认同值），
 // 让首次 PUT 能带一个合法前置条件。命名空间不存在 → ErrNamespaceNotFound。
+//
+// 只读路径**不**开事务（同 GetSystemConfig / `nodeEligibility`）：`_txlock=immediate`
+// 让读事务开局就抢写锁，把 ingest 热路径串行化到写者后面 —— 写者持锁时这里等满
+// busy_timeout(5000ms) 才报 `database is locked`（#008 的 5.006s 500 就是这一步）。
+//
+// 为什么去掉事务仍然安全：这三条读**不是** check-then-act。
+//   - 存在性（namespaceExistsOn）只是把「ns 不存在」翻成具名错误；
+//   - Revision 是调用方带进写事务的「**计划时**钉住的输入版本」，真正的校验发生在
+//     AcceptSourceEvent 的**写事务内**（internal/store/source_event.go:187-196 →
+//     ErrNamespaceInputsChanged，api 侧翻 409，调用方重新计划）；
+//   - namespaces.resource_version 同样只是写侧 CAS 的**前置条件**，写事务内会重读再比。
+//
+// 所以最坏情况是「拿到略旧的快照 → 写事务里被判 409」，不会被伪造成成功。
 func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*NamespaceConfig, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
 	}
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("get namespace config: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := namespaceExistsOn(ctx, txExec{tx: tx}, namespaceID); err != nil {
+	// 下面三条读必须走**同一个** ex：一半走池、一半走事务就成了两个快照的
+	// 撕裂形态（存在性看见的行与配置看不见的行不是同一个时刻）。
+	ex := d
+	if err := namespaceExistsOn(ctx, ex, namespaceID); err != nil {
 		return nil, err
 	}
 	cfg := &NamespaceConfig{
@@ -459,7 +526,7 @@ func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*Names
 		ResourceVersion: 1,
 	}
 	var rawVars string
-	err = tx.QueryRowContext(ctx,
+	err := ex.queryRowContext(ctx,
 		`SELECT vars, revision FROM namespace_configs WHERE namespace_id = ?`,
 		namespaceID).Scan(&rawVars, &cfg.Revision)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -472,11 +539,8 @@ func (d *DB) GetNamespaceConfig(ctx context.Context, namespaceID string) (*Names
 		}
 		cfg.Vars = vars
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT resource_version FROM namespaces WHERE id = ?", namespaceID).Scan(&cfg.ResourceVersion); err != nil {
+	if err := ex.queryRowContext(ctx, "SELECT resource_version FROM namespaces WHERE id = ?", namespaceID).Scan(&cfg.ResourceVersion); err != nil {
 		return nil, fmt.Errorf("get namespace config version: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("get namespace config: commit: %w", err)
 	}
 	return cfg, nil
 }
@@ -572,7 +636,10 @@ func putNamespaceConfigOn(ctx context.Context, ex queryExec, namespaceID string,
 	}, nil
 }
 
-// namespaceExistsOn 在事务内确认命名空间存在（不存在 → ErrNamespaceNotFound）。
+// namespaceExistsOn 确认命名空间存在（不存在 → ErrNamespaceNotFound）。
+//
+// 调用方有两种：写路径必须传 `txExec{tx: tx}`（事务内的读不许走池，见 txexec.go），
+// 无事务的只读路径传 `d`。
 func namespaceExistsOn(ctx context.Context, ex queryExec, namespaceID string) error {
 	var one int
 	err := ex.queryRowContext(ctx,

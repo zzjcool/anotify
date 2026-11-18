@@ -832,7 +832,8 @@ GET /v1/node/capabilities/{digest}  内容下发（完整 artifact.ArtifactJSON�
 ### 8.4 其它现有读模型
 
 `/v1/devices`、`/v1/vapid-public-key`、`/v1/capability-templates` 沿用现有 cluster/读模型端点；
-`/v1/stats`、`/v1/orphans` 必须显式带 `namespace` 过滤并逐 ns 授权；
+`/v1/stats`、`/v1/orphans` 必须显式带 `namespace` 过滤并逐 ns 授权
+（`*` 表示跨 ns 汇总读，同样必须显式给且逐 ns 授权；缺参数 400，绝无隐式全量）；
 `edges` / `deployments` 是 ns 私有事实，读路径统一为 `/v1/namespaces/{namespace}/edges`、`/v1/namespaces/{namespace}/deployments`。
 本轮不重新设计；是否下线另开决策，不在 v4 API 派生里顺手删。`capability-templates` 是公共模板，不能承载 ns 私有数据。
 

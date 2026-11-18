@@ -1,6 +1,23 @@
 // Attributed F2b1 CRUD/fire/dryrun/deep-link chains. Both modes exact namespaced requests.
 import assert from 'node:assert/strict';
 import { acceptDialog } from './f3-dialogs.mjs';
+/* 「原始 YAML」标签只允许出现一次：折叠块 summary 已经印了它，里面若再套一层带标题的
+   codeBlock（历史 bug），展开后就出现两行同样的标题。断言范围=**折叠块内部**（summary 那次算），
+   不是整页 —— 整页还有面包屑与别的块。 */
+async function labelCountIn(page, selector, keys) {
+	return page.locator(selector).evaluate((node, phrase) => {
+		let text = "";
+		const walk = (n) => {
+			if (n.nodeType === 3) { text += n.textContent || ""; return; }
+			if (n.nodeType !== 1) return;
+			for (const c of n.childNodes) walk(c);
+		};
+		walk(node);
+		return text.split(phrase).length - 1;
+	}, await page.evaluate((ks) => ks.map((k) => window.AnotifyI18n?.[k]).find(Boolean) || "原始 YAML", keys));
+}
+const location_pathname_is_detail = (page) => new URL(page.url()).pathname.endsWith('/source-detail.html');
+
 export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
@@ -144,11 +161,85 @@ export async function source(d){
   assert.ok(editCalls.every(c => !c.configKeys.includes('secret') && !c.configKeys.includes('token')));
   const deepLink = await row('deploy-hook').locator('a').first().getAttribute('href');
   assert.match(deepLink, /name=deploy-hook/); assert.match(deepLink, /namespace=default/);
+  // 名称链接 = **只读详情页**；行内动作（编辑/立即运行/⋯）仍在，编辑能力一点不少。
+  assert.match(deepLink, /source-detail\.html/, '名称链接指向 source-detail.html');
   await row('deploy-hook').locator('a').first().click();
+
+  /* ---------- 一、源只读详情页（source-detail.html?namespace=&name=）---------- */
+  await page.waitForFunction(() => location.pathname.endsWith('/source-detail.html'));
+  await visible('#src-detail[data-source="deploy-hook"]');
+  assert.equal(await page.locator('#src-detail').getAttribute('data-source'), 'deploy-hook');
+  assert.match(await page.locator('#src-detail-name').innerText(), /deploy-hook/);
+  // 四块内容（锚点是冻结契约）：基本信息 / 定义与字段 / 目标 / 近期回执。
+  for (const sec of ['basic', 'config', 'targets', 'recent']) {
+    assert.equal(await page.locator('#src-detail [data-sec="' + sec + '"]').count(), 1, '详情必须有 [data-sec="' + sec + '"]');
+  }
+  // 只读：这一页不渲染编辑表单（写动作全在编辑页）。
+  assert.equal(await page.locator('#src-body').count(), 0, '只读页不渲染编辑表单 #src-body');
+  assert.equal(await page.locator('#src-detail-edit').isVisible(), true, '编辑入口可见');
+  // 脱敏：凭据只写不读，明文不得出现在详情页的任何文本里。
+  assert.equal((await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), false, '凭据明文不得出现在页面上');
+  // 近期回执走既有过滤参数（不是全量拉回来再本地筛）。
+  const recentCalls = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/events\?source=deploy-hook&limit=20$/.test(c.url));
+  assert.ok(recentCalls.length >= 1, '近期回执必须 GET …/events?source=<name>&limit=20');
+  assert.equal(recentCalls[0].httpStatus, 200, '近期回执端点 200');
+  const recentText = (await page.locator('#src-detail [data-sec="recent"]').innerText()).trim();
+  assert.ok(recentText.length > 0, '近期回执要么列出事件、要么说清楚还没有（诚实空态）');
+  check('Source detail read-only page: name link, four sections, source-filtered receipts, no edit form, masked credentials');
+  await shot('source-detail-readonly');
+
+  /* 原始 YAML：默认收起，展开才取（懒加载）——详情页的 details.src-raw。
+     凭据只写不读：文档里只有 hookUrl/secretSet，绝无 token/secret 明文（红线）。 */
+  const rawYamlDetail = page.locator('#src-detail details.src-raw');
+  assert.equal(await rawYamlDetail.count(), 1, '源详情必须有且只有一个「原始 YAML」折叠块（details.src-raw）');
+  assert.equal(await rawYamlDetail.evaluate((n) => n.open === true), false, '原始 YAML 默认收起');
+  const yamlCallsBeforeDetail = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.equal(yamlCallsBeforeDetail.length, 0, '收起时不得请求 /yaml（懒加载）');
+  await rawYamlDetail.locator('summary').click();
+  await page.waitForFunction(
+    () => {
+      const box = document.querySelector('#src-detail details.src-raw');
+      return !!box && /kind: Source/.test(box.textContent || '');
+    },
+    { timeout: 15000 },
+  );
+  const yamlCallsAfterDetail = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.ok(yamlCallsAfterDetail.length >= 1, '展开才请求 /yaml');
+  assert.equal(
+    await labelCountIn(page, "#src-detail details.src-raw", ["sources.v4.yaml", "source_detail.yaml"]),
+    1,
+    "折叠块内部「原始 YAML」只能出现一次（summary 那次算）：展开后多出一行=codeBlock 又渲染了标题",
+  );
+  const yamlTextDetail = await rawYamlDetail.textContent();
+  assert.match(yamlTextDetail, /kind: Source/, 'YAML 块必须含 kind: Source');
+  assert.match(yamlTextDetail, /hookUrl: /, '读投影只有 hookUrl');
+  assert.match(yamlTextDetail, /secretSet: true/, 'secret 只报「设了没有」');
+  assert.ok(!/^\s*secret:/m.test(yamlTextDetail) && !/^\s*token:/m.test(yamlTextDetail), 'YAML 不得出现凭据字段');
+  if (d.mock) assert.equal(yamlTextDetail.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 不得出现 secret 明文');
+  check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
+  await shot('source-detail-yaml');
+
+  /* 二、点「编辑源」→ **就地**打开共享编辑器（web/source-editor.js，与列表页同一个组件）：
+     页面不跳走，弹层在本页打开并回填。旧断言把 source.html（只读拓扑页）当「编辑页」，
+     等于用测试把错误的目标钉住；「跳到列表页再弹窗」也不符合用户预期。 */
+  await page.locator('#src-detail-edit').click();
+  await visible('#src-modal:not(.hidden)');
+  await page.waitForFunction(() => document.getElementById('f-name')?.value === 'deploy-hook');
+  assert.equal(location_pathname_is_detail(page), true, '就地编辑：仍停在 source-detail.html');
+  assert.equal(new URL(page.url()).searchParams.get('edit'), '1', 'URL 用 edit=1 表示「编辑器开着」');
+  assert.equal(await page.locator('#f-name').inputValue(), 'deploy-hook', '编辑器必须回填这个源');
+  check('Source detail edit entry opens the shared editor in place (URL keeps edit=1, form prefilled)');
+  await shot('source-detail-edit-inline');
+  await page.locator('#modal-cancel').click();
+  await page.waitForFunction(() => document.getElementById('src-modal').classList.contains('hidden'));
+
+  /* 三、源拓扑/配置页（source.html）仍按深链可读：图 / 主体 / 边投影的原断言全部保留
+     （它不再负责「编辑入口」，但它是 owner 关心的只读事实，不能因本次修复丢覆盖）。 */
+  await d.goto('source', 'namespace=default&name=deploy-hook');
   await visible('#src-flow svg.flograph-svg');
   assert.match(await page.locator('#src-name').innerText(), /deploy-hook/);
   assert.match(await page.locator('#src-body').innerText(), /secretSet: true/);
-  assert.ok(!(await page.locator('body').innerText()).includes('hmac_mock_secret_deploy_hook'));
+  assert.ok(!(await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), '凭据明文不得出现在页面上');
   const topology = await page.evaluate(() => document.getElementById('src-flow')._graphSpec || document.getElementById('src-flow')._mountSpec);
   assert.ok(topology, 'real graph rendered');
   assert.equal(topology.preview, true, 'configuration preview, not execution success');
@@ -168,4 +259,35 @@ export async function source(d){
   check('Source detail real metadata.name deep link/ns, masked config/status/params/projected edges and rendered graph');
   await shot('source-detail-graph');
 
+  /* 原始 YAML：默认收起，展开才取（懒加载）。凭据只写不读：文档里只有
+     hookUrl/secretSet，绝无 token/secret 明文（红线）。 */
+  const rawYaml = page.locator('#src-yaml');
+  assert.equal(await rawYaml.count(), 1, '源详情必须有「原始 YAML」折叠块（#src-yaml）');
+  assert.equal(await rawYaml.evaluate((n) => n.open === true), false, '原始 YAML 默认收起');
+  const yamlCallsBefore = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.equal(yamlCallsBefore.length, 0, '收起时不得请求 /yaml（懒加载）');
+  await rawYaml.locator('summary').click();
+  await page.waitForFunction(
+    () => {
+      const box = document.getElementById('src-yaml');
+      return !!box && /kind: Source/.test(box.textContent || '');
+    },
+    { timeout: 15000 },
+  );
+  const yamlCallsAfter = (await page.evaluate(() => __sourceCalls)).filter((c) => /\/sources\/deploy-hook\/yaml$/.test(c.url));
+  assert.ok(yamlCallsAfter.length >= 1, '展开才请求 /yaml');
+  assert.equal(
+    await labelCountIn(page, "#src-yaml", ["sources.v4.yaml", "source_detail.yaml", "yaml"]),
+    1,
+    "编辑页 YAML 折叠块内部「原始 YAML」只能出现一次（summary 那次算）",
+  );
+  const yamlText = await rawYaml.textContent();
+  assert.match(yamlText, /kind: Source/, 'YAML 块必须含 kind: Source');
+  assert.match(yamlText, /hookUrl: /, '读投影只有 hookUrl');
+  assert.match(yamlText, /secretSet: true/, 'secret 只报「设了没有」');
+  assert.ok(!/^\s*secret:/m.test(yamlText) && !/^\s*token:/m.test(yamlText), 'YAML 不得出现凭据字段');
+  if (d.mock) assert.equal(yamlText.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 不得出现 secret 明文');
+  assert.equal((await page.locator('body').innerText()).includes(d.mock ? 'hmac_mock_secret_deploy_hook' : '__unreachable_secret__'), false, '凭据明文不得出现在页面上');
+  check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
+  await shot('source-detail-yaml');
 }

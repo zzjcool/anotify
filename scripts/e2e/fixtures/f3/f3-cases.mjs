@@ -5,7 +5,10 @@ import { readFile } from 'node:fs/promises';
 import { openDriver, PAGES, LANGS, GUARDED, ROOT } from './f3-driver.mjs';
 import { capability } from './f3-capability.mjs';
 import { source } from './f3-source.mjs';
+import { yamlCreate } from './f3-yaml-create.mjs';
 import { observability } from './f3-observability.mjs';
+import { overviewAll } from './f3-overview-all.mjs';
+import { sourceEditJump } from './f3-source-edit.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
@@ -35,12 +38,27 @@ add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[
   {status:409,path:'/v1/namespaces/default/capabilities/lint-fix',exact:true,note:'resource_version_conflict：用例 8 并发写后按旧 rv 删除必须 409'},
 ]});
 add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
+// yaml-create：从 YAML 创建的两条写端点（能力 / 源）。用例故意触发两条**真实**拒绝：
+//   · 错 YAML 400 invalid_yaml（第二行缺冒号，页面要把行号原样显示出来）；
+//   · 源同名 409 source_name_used（不做 upsert）。声明窄到那一条请求，别的仍红。
+add('yaml-create',yamlCreate,{lang:'zh-CN',expectHttpStatus:[
+  {status:400,path:'/v1/namespaces/default/capabilities/yaml',exact:true,note:'invalid_yaml：坏 YAML 必须 400 并给出带行号的可读原因'},
+  {status:409,path:'/v1/namespaces/default/sources/yaml',exact:true,note:'source_name_used：同名源不做 upsert，必须 409 且在弹层里显示原因'},
+]});
 // observe-events 故意用「默认 ns 的游标读 prod」验证 cursor 绑定：真实服务回 400
 // （continue token 不属于这次查询），Chrome 记一条 console error，必须声明范围。
 add('observe-events',d=>observability(d,'events'),{expectHttpStatus:[
   {status:400,path:'/v1/console/events',note:'cursor 绑定 ns+筛选：拿默认 ns 的游标读 prod 必须 400'},
 ]});
 for(const mode of ['index','trace'])add('observe-'+mode,d=>observability(d,mode));
+// observe-index-all：首页**默认**（裸 index.html，无 ?namespace=）= 全部命名空间聚合。
+// 期望值一律从真实 API 现算（/v1/stats?namespace=* + /v1/namespaces），实现在
+// f3-overview-all.mjs；锚点是契约 D5/D7 冻结的 [data-ns-id] / [data-ns-badge] /
+// #latest-flow[data-scope-ns] / #scope-crumb 与既有 KPI id。
+/* source-edit-jump：「编辑源」的终点是编辑器、链接 ns 取资源自己的 ns（不是 scope）。
+   实现在 f3-source-edit.mjs，断言口径与失败现场都写在那份文件顶部。 */
+add('source-edit-jump',sourceEditJump,{lang:'zh-CN'});
+add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
 // 必须 409（task_not_running）——两条都是用例要的拒绝路径。
 add('observe-errors',d=>observability(d,'errors'),{expectHttpStatus:[LOGS_410[0],
@@ -273,18 +291,21 @@ add('auth-route-guards',async d=>{
 ]});
 // 深链里的对象身份来自当前权威：mock 是固定事实，real 是 bootstrap 用真实 API 造出来的同一角色。
 // 名字类（source/playbook）两边一致，只有中枢生成的 id（任务/追踪/节点）需要经 d.fx 取。
-const queryFor=(file,d)=>file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':'namespace=default';
+const queryFor=(file,d)=>file==='message'?'namespace=default&id='+d.fx('msgTask'):file==='trace'?'namespace=default&traceUID='+d.fx('defaultTrace'):file==='node'?'namespace=default&id='+d.fx('node'):file==='source'?'namespace=default&name='+d.fx('source'):file==='source-detail'?'namespace=default&name='+d.fx('source'):file==='playbook'?'namespace=default&id=f3-page-package':file==='capability'?'namespace=default&name='+d.fx('capability'):'namespace=default';
 // receivers：e2e 真实权威**没有 VAPID 密钥**（run_all.sh 只在有 vapid.json 时注入），
 // 推送是关闭的 —— 按设计此时页面上不存在 #current-device-card（只在 push 开放分支
 // 创建，ux_regression_19_23 断言 card===null），所以 real 锚点必须是"永远存在"的
 // 真实控制器输出 #push-count（mock 权威下同样存在，两个权威都不放水）。
-const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',node:'#node-effective-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
+const pageAnchors={admin:'#kpi-devices',capabilities:'[data-cap="fixer"]',capability:'#cap-name','cli-auth':'#code-input',docs:'#endpoints',events:'#ev-list article',index:'#kpi-total',keys:'#keys-body tr',message:'#task-facts',node:'#node-effective-vars [data-key]',nodes:'[data-node="anode-1"]','passkey-enroll':'#code-input',playbook:'#pb-file-path',playbooks:'#pb-grid [data-slug]',receivers:'#push-count',security:'#passkey-list',source:'#src-name',
+  // 源只读详情页：data-source 只在真的读到一个源之后才落盘（空态/404 不带它）。
+  'source-detail':'#src-detail[data-source]',
+  sources:'#src-list > div[data-name]',trace:'#trace-tasks [data-task]'};
 async function seedPagePackage(d){
   await d.goto('playbooks');
   const files={'playbook.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',version:1},spec:{values:{type:'object'},capabilities:['cap.yaml'],sources:[]}}),'cap.yaml':JSON.stringify({apiVersion:'anotify/v1',kind:'Capability',metadata:{name:'f3-page-cap'},spec:{next:[],run:{entrypoint:'run.sh',files:{'run.sh':'#!/bin/sh\necho page'}}}})};
   await d.req('/v1/namespaces/default/playbooks',{method:'POST',body:JSON.stringify({apiVersion:'anotify/v1',kind:'Playbook',metadata:{name:'f3-page-package',namespace:'default'},spec:{files}})});
 }
-for(const lang of LANGS)add('pages-19-'+lang,async d=>{
+for(const lang of LANGS)add('pages-21-'+lang,async d=>{
   await seedPagePackage(d);
   for(const file of PAGES){
     try {
@@ -305,7 +326,7 @@ for(const lang of LANGS)add('pages-19-'+lang,async d=>{
     const title=(await d.page.title()).trim();assert.ok(title.length>0);
     const text=await d.page.locator('body').innerText();assert.ok(!/\b(?:pb\.v4|nodes\.v4|sources\.v4|caps\.[a-z_])/.test(text),'No bare translation keys');
     const cs=await d.calls();
-    if(['source','message','node','playbook'].includes(file))assert.ok(cs.some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Actual detail controller successfully GETs named object');
+    if(['source','source-detail','message','node','playbook'].includes(file))assert.ok(cs.some(c=>c.httpStatus===200&&c.result?.metadata?.name),'Actual detail controller successfully GETs named object');
     if(file==='docs'){await d.page.locator('a[href="#auth"]:visible').first().click();assert.equal(new URL(d.page.url()).hash,'#auth');}
     if(file==='cli-auth'||file==='passkey-enroll'){await d.page.locator('#code-input').fill('TEST-AB');assert.equal(await d.page.inputValue('#code-input'),'TEST-AB');}
     await d.clean('F3-PAGE '+lang+' '+file);
@@ -315,7 +336,7 @@ for(const lang of LANGS)add('pages-19-'+lang,async d=>{
       await d.archive();
     }
   }
-  assert.deepEqual(d.report.errors,[],'All 19 pages must pass; failed pages never suppress later page assertions');
+  assert.deepEqual(d.report.errors,[],'All 21 pages must pass; failed pages never suppress later page assertions');
 },{lang,expectHttpStatus:LOGS_410});
 for(const file of ['capabilities','sources','nodes','message'])add('views-'+file,async d=>{
   // message 视图会读任务日志：真服务对没有本地归档的任务回 410（no_local_archive）。

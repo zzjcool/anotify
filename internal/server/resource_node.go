@@ -898,22 +898,6 @@ func nodeValidateConfigInput(namespaces *[]string, vars map[string]string, limit
 	return nil
 }
 
-// nodeDecodeStrictJSON 解码一个**没有信封**的写请求体（配置子资源 / 批量 / 动作）。
-//
-// 未知字段一律 400 unknown_field：静默忽略会让调用方以为字段生效了（§3.1 E4）。
-func nodeDecodeStrictJSON(r *http.Request, dst any) error {
-	raw, err := nodeReadJSONBody(r, 8<<20)
-	if err != nil {
-		return err
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		return unknownFieldError(err)
-	}
-	return nil
-}
-
 // nodeDecodeConfigStrictJSON 解码配置写请求，并把 `status` 识别为**只读字段**。
 //
 // 为什么单独一层：config wrapper（PUT /v1/nodes/{name}/config 与批量）没有 spec/status

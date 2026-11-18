@@ -62,7 +62,8 @@ func nsSlugByID(t *testing.T, db *store.DB, id string) string {
 }
 
 // TestRetainedStatsRequiresNamespaceAndScopes 钉住 /v1/stats 的作用域口径：
-// 缺 namespace 400（不是默认 ns、更不是全量）、`*` 400、逐 ns 计数、slug/id 都能解析。
+// 缺 namespace 400（不是默认 ns、更不是全量）、逐 ns 计数、slug/id 都能解析；
+// `?namespace=*` 是「全部命名空间」聚合（见 TestRetainedStatsAllNamespacesAggregates）。
 func TestRetainedStatsRequiresNamespaceAndScopes(t *testing.T) {
 	env, mux := newRetainedReadMux(t)
 	slugA := nsSlugByID(t, env.db, env.ns)
@@ -75,11 +76,8 @@ func TestRetainedStatsRequiresNamespaceAndScopes(t *testing.T) {
 	env.seedEvent(env.ns2, "trace_stats_b", "github", "push", `{"n":3}`, "", base+2)
 
 	// 缺 namespace → 400（统一 Status 体；不回退默认命名空间）。
+	// 这条是本次语义变更的**红线**：`*` 现在是合法显式值，但缺参数绝不能变成隐式全量。
 	rr := retainedDo(t, mux, "/v1/stats")
-	trReason(t, rr, http.StatusBadRequest, reasonBadRequest)
-
-	// `*` 在这条端点是 400：store.MessageStats 没有「跨 ns 相加」的口径（会造出不存在的数字）。
-	rr = retainedDo(t, mux, "/v1/stats?namespace=*")
 	trReason(t, rr, http.StatusBadRequest, reasonBadRequest)
 
 	// 不存在的 ns → 404（存在性判断在同一个收口里）。
@@ -107,6 +105,90 @@ func TestRetainedStatsRequiresNamespaceAndScopes(t *testing.T) {
 	doc = trWant(t, retainedDo(t, mux, "/v1/stats?namespace="+slugB), http.StatusOK)
 	if got := trNumber(t, doc, "total"); got != 1 {
 		t.Fatalf("按 slug 取 B 的 stats.total = %v, want 1", got)
+	}
+}
+
+// TestRetainedStatsAllNamespacesAggregates 钉住 `?namespace=*` 的新语义（契约 D3）：
+// 「全部命名空间」是一等视图 → 200 + 逐 ns 授权后求和；`deviceCount` 是用户维度，
+// 不参与求和；`daily[]` 仍是数组。
+//
+// 为什么刻意造**三个** ns 且条数各不相同（2/1/3）：只加前两个、只加第一个、或把某
+// 一个 ns 乘上 2 的实现都会算出一个不同的总数（6 是所有组合里唯一的答案）。
+func TestRetainedStatsAllNamespacesAggregates(t *testing.T) {
+	env, mux := newRetainedReadMux(t)
+	slugA := nsSlugByID(t, env.db, env.ns)
+	base := store.Now() - 100
+
+	env.seedEvent(env.ns, "trace_all", "github", "push", `{"n":1}`, "", base)
+	env.seedEvent(env.ns, "trace_all", "github", "push", `{"n":2}`, "", base+1)
+	env.seedEvent(env.ns2, "trace_all_b", "github", "push", `{"n":3}`, "", base+2)
+	nsC, err := env.db.CreateNamespace(context.Background(), "taskres-c", "Task 资源 C")
+	if err != nil {
+		t.Fatalf("create third namespace: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		env.seedEvent(nsC.ID, "trace_all_c", "github", "push", `{"n":4}`, "", base+10+int64(i))
+	}
+	// 设备是用户维度：插 1 台 enabled → 聚合视图的 deviceCount 必须仍是 1（不是 ×3）。
+	if _, err := env.db.Exec(
+		`INSERT INTO devices (id,user_id,name,platform,enabled,endpoint,p256dh,auth,created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		store.NewDeviceID(), taskResUserID, "all-ns-dev", "ios", 1,
+		"https://push.example/allns", "p256dh", "auth", store.Now()); err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+
+	doc := trWant(t, retainedDo(t, mux, "/v1/stats?namespace=*"), http.StatusOK)
+	if got := trNumber(t, doc, "total"); got != 6 {
+		t.Fatalf("stats?namespace=* total = %v, want 6（A2+B1+C3 逐 ns 求和）", got)
+	}
+	if got := trNumber(t, doc, "today"); got != 6 {
+		t.Fatalf("stats?namespace=* today = %v, want 6（同上，日界口径一致）", got)
+	}
+	if got := trNumber(t, doc, "deviceCount"); got != 1 {
+		t.Fatalf("stats?namespace=* deviceCount = %v, want 1（用户维度，不随 ns 数量翻倍）", got)
+	}
+	// daily 必须是数组（热力图数据；null 会被前端当成「未连接」），且各行 count 之和 == total。
+	daily := trArray(t, doc, "daily")
+	if len(daily) == 0 {
+		t.Fatalf("stats?namespace=* daily = %v, want 非空数组", daily)
+	}
+	sum := 0.0
+	for _, row := range daily {
+		sum += trNumber(t, row.(map[string]any), "count")
+	}
+	if sum != 6 {
+		t.Fatalf("daily 各行 count 之和 = %v, want 6（同一 day 合并成一行，不重复计）", sum)
+	}
+
+	// 单 ns 视图不受影响：A 仍是 2（聚合口径不得污染单 ns 路径）。
+	docA := trWant(t, retainedDo(t, mux, "/v1/stats?namespace="+slugA), http.StatusOK)
+	if got := trNumber(t, docA, "total"); got != 2 {
+		t.Fatalf("单 ns stats.total = %v, want 2", got)
+	}
+}
+
+// TestConsoleEventsAllNamespacesPerNamespaceAuth 覆盖 consoleEvents 的 `*` 分支改动
+// （逐 ns `AuthorizeNamespace`）：行为不变——仍 200、跨 ns 汇总、行数正确、
+// 每行回显事件自己的 ns。
+func TestConsoleEventsAllNamespacesPerNamespaceAuth(t *testing.T) {
+	env := newTaskResEnv(t)
+	base := store.Now() - 100
+	env.seedEvent(env.ns, "tr_console_all", "github", "push", `{"n":1}`, "", base)
+	env.seedEvent(env.ns, "tr_console_all", "github", "push", `{"n":2}`, "", base+1)
+	env.seedEvent(env.ns2, "tr_console_all_b", "github", "push", `{"n":3}`, "", base+2)
+
+	doc := trWant(t, retainedDo(t, env.mux, consoleEventsPath+"?namespace=*&limit=50"), http.StatusOK)
+	items := trArray(t, doc, "items")
+	if len(items) != 3 {
+		t.Fatalf("console/events?namespace=* = %d 条, want 3（跨 ns 汇总，逐 ns 授权不改变结果）", len(items))
+	}
+	seen := map[string]bool{}
+	for _, it := range items {
+		seen[trString(t, it.(map[string]any), "metadata", "namespace")] = true
+	}
+	if !seen[env.nsSlug] || !seen[nsSlugByID(t, env.db, env.ns2)] {
+		t.Fatalf("逐 item 的 metadata.namespace = %v, want 两个 ns 都出现", seen)
 	}
 }
 
@@ -310,6 +392,8 @@ func TestRetainedDeploymentsListAndFilters(t *testing.T) {
 	newRetainedReadAPI(noSession).register(bare)
 	for _, path := range []string{
 		"/v1/stats?namespace=" + slugA,
+		// `*`（聚合读）也必须过会话：跨 ns 汇总不是绕过登录的非后门。
+		"/v1/stats?namespace=*",
 		"/v1/orphans?namespace=" + slugA,
 		"/v1/namespaces/" + slugA + "/deployments",
 	} {

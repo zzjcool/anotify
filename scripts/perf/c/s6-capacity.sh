@@ -46,7 +46,7 @@ S6_EVENTS="${S6_EVENTS:-1000}"      # 空 payload 档每批条数
 S6_EVENTS_1K="${S6_EVENTS_1K:-500}" # 1KB payload 档条数
 S6_CONC="${S6_CONC:-8}"
 S6_BACKLOG="${S6_BACKLOG:-26000}"   # 保留期实验的积压条数（> 单轮预算 20×1000 → 多轮）
-S6_READ_SECS="${S6_READ_SECS:-20}"
+S6_READ_SECS="${S6_READ_SECS:-40}"   # 必须跨过 v4 的第一拍清理（首轮 tick ≈ 30s，否则「删除发生在窗口内」不成立）
 S6_BP_SECS="${S6_BP_SECS:-40}"
 S6_RPS_SECS="${S6_RPS_SECS:-20}"
 
@@ -113,7 +113,18 @@ pc_start_db() {
 }
 
 s6_build() {
-	if [ -n "${S6_SKIP_BUILD:-}" ] && [ -x "$PC_BIN" ] && [ -x "$LG_BIN" ]; then return 0; fi
+	# S6_SKIP_BUILD：只有 1/true/yes/on 才算「跳过构建」。显式写 0 是「不要跳过」。
+	# 原实现用 [ -n ] 判非空，于是 S6_SKIP_BUILD=0 反而会跳过 —— 与直觉相反。
+	# 注意它只管「二进制缺失时要不要补建」：pc_build 自己有「已存在就不重编」的判断，
+	# 要强制重编用 PC_FORCE_BUILD=1。跳过了又缺二进制时必须当场说清，
+	# 否则会拖到几步之后以「取不到默认命名空间」这种不相干的报错死掉。
+	local skip=0
+	case "${S6_SKIP_BUILD:-0}" in 1|true|yes|on) skip=1 ;; esac
+	if [ "$skip" -eq 1 ]; then
+		if [ -x "$PC_BIN" ] && [ -x "$LG_BIN" ]; then return 0; fi
+		echo "s6_build: S6_SKIP_BUILD 要求跳过构建，但缺二进制（$PC_BIN / $LG_BIN）；先跑一次不带该变量的脚本" >&2
+		return 1
+	fi
 	pc_build || return 1
 	( cd "$PC_REPO" && taskset -c "$PC_CPUS" go build -o "$LG_BIN" ./scripts/perf/loadgen ) || return 1
 	return 0
@@ -173,8 +184,8 @@ s6_make_backlog() {
 	sqlite3 -cmd '.timeout 8000' "$dbpath" <<SQL >/dev/null
 PRAGMA journal_mode=WAL;
 WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i < $n)
-INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
-SELECT 'evt_bk' || i, '$ns', 'trace_bk' || i, 'perfgen', 's6.ret', '{}', NULL,
+INSERT INTO events (id, namespace_id, trace_id, source, type, payload, created_at)
+SELECT 'evt_bk' || i, '$ns', 'trace_bk' || i, 'perfgen', 's6.ret', '{}',
        CAST(strftime('%s','now') AS INTEGER) - 40*86400
   FROM seq;
 SQL
@@ -313,7 +324,7 @@ sec_b() {
 	done
 	log "b: 积压排空耗时 ≈ ${waited}s（剩余 $left 行）"
 	s6_size after >>"$dir/sizes.txt"
-	grep -h 'lease.sweeper.retention' "$PC_RUN/server.log" >"$dir/sweep-round1.log" 2>/dev/null || true
+	grep -h 'retention sweep deleted rows' "$PC_RUN/server.log" >"$dir/sweep-round1.log" 2>/dev/null || true
 	pc_stop
 
 	# ---- 第 2 轮：同一个库、已无过期数据 → 再跑一轮必须删 0 条且不报错（可重入）----
@@ -321,8 +332,8 @@ sec_b() {
 		|| die "b 段第 2 轮服务起不来"
 	sleep 14 # 越过首轮 Tick（5s）+ 一次追赶门（30s 内的第一拍不会来，这里只看「不该有删除」）
 	local r2_failed r2_deleted
-	r2_failed=$(grep -c 'lease.sweeper.retention_failed' "$PC_RUN/server.log" 2>/dev/null); r2_failed=${r2_failed:-0}
-	r2_deleted=$(grep -h 'lease.sweeper.retention' "$PC_RUN/server.log" 2>/dev/null | grep -oE 'events_deleted=[0-9]+' | awk -F= '{s+=$2} END{print s+0}')
+	r2_failed=$(grep -c 'lease sweep failed' "$PC_RUN/server.log" 2>/dev/null); r2_failed=${r2_failed:-0}
+	r2_deleted=$(grep -h 'retention sweep deleted rows' "$PC_RUN/server.log" 2>/dev/null | grep -oE '"events":[0-9]+' | awk -F: '{s+=$2} END{print s+0}')
 	cp "$PC_RUN/server.log" "$dir/second-round.log"
 	pc_stop
 
@@ -331,8 +342,8 @@ sec_b() {
 	ns_refill=$(sqlite3 -cmd '.timeout 8000' "$db" 'SELECT id FROM namespaces ORDER BY created_at, id LIMIT 1;')
 	sqlite3 -cmd '.timeout 8000' "$db" <<SQL >/dev/null
 WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i < $S6_BACKLOG)
-INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
-SELECT 'evt_re' || i, '$ns_refill', 'trace_re' || i, 'perfgen', 's6.refill', '{}', NULL,
+INSERT INTO events (id, namespace_id, trace_id, source, type, payload, created_at)
+SELECT 'evt_re' || i, '$ns_refill', 'trace_re' || i, 'perfgen', 's6.refill', '{}',
        CAST(strftime('%s','now') AS INTEGER)
   FROM seq;
 SQL
@@ -342,11 +353,11 @@ SQL
 		echo "## b 段 · 保留期稳态与清理（积压 $S6_BACKLOG 条 40 天前事件，retention=1 天）"
 		echo "--- 尺寸 / 页数：before=满积压  after=删空  refilled=重新灌同样多行"
 		cat "$dir/sizes.txt"
-		echo "--- 清理轮次（events_deleted / elapsed_ms / truncated）"
+		echo "--- 清理轮次（v4 日志：msg=retention sweep deleted rows，字段 events/tasks/deliveries）"
 		if [ -s "$dir/sweep-round1.log" ]; then cat "$dir/sweep-round1.log"; else echo "(无 retention 日志)"; fi
 		echo "--- 第 2 轮（同库、已无过期数据）"
 		echo "retention_failed 条数 = $r2_failed（必须是 0）"
-		echo "本进程 events_deleted 合计 = $r2_deleted（必须是 0）"
+		echo "本进程 events 删除合计 = $r2_deleted（必须是 0）"
 		awk -F, '{db[$1]=$2;pg[$1]=$3;fl[$1]=$6}
 			END{
 				printf "\n文件字节 : before=%s after=%s refilled=%s\n", db["before"],db["after"],db["refilled"];
@@ -355,7 +366,7 @@ SQL
 				if(db["before"]+0>0) printf "删空后文件剩 %.1f%%（auto_vacuum=0 → 不压缩，页进 freelist）\n", db["after"]*100.0/db["before"];
 				if(db["before"]+0>0) printf "重灌同样多行后回到 %.1f%%（freelist 复用 → 稳态是**平台化**，不是变小）\n", db["refilled"]*100.0/db["before"];
 			}' "$dir/sizes.txt"
-		echo "单轮删除吞吐见上面 elapsed_ms（每轮预算 = batches × batch = 20 × 1000 行）"
+		echo "单轮预算 = batches × batch = 20 × 1000 行（v4 日志不带 elapsed_ms，耗时看上面「积压排空耗时」与轮次间隔 30s）"
 	} | s6_section_tee
 	log "b 段完成 → $dir"
 }
@@ -382,8 +393,11 @@ sec_c() {
 	pc_seed >/dev/null || { pc_stop; die "c 段 seed 失败"; }
 	local ns_a="$PC_NS"
 	local ns_b
+	# v4 信封：body 是 {apiVersion,kind,metadata,spec}（spec 恒 {}），标识在 metadata.uid。
 	ns_b=$(curl -s -X POST "$PC_BASE/v1/namespaces" -H "Cookie: anotify_session=$PC_SESSION" \
-		-H 'content-type: application/json' -d '{"slug":"cleanup","name":"清理专用"}' | jq -r '.namespace.id // empty')
+		-H 'content-type: application/json' \
+		-d '{"apiVersion":"anotify/v1","kind":"Namespace","metadata":{"name":"cleanup","displayName":"清理专用"},"spec":{}}' \
+		| jq -r '.metadata.uid // empty')
 	pc_stop
 	[ -n "$ns_b" ] || die "c 段建第二个命名空间失败"
 	log "c: nsA=$ns_a nsB=$ns_b"
@@ -391,13 +405,13 @@ sec_c() {
 	sqlite3 -cmd '.timeout 8000' "$base_db" <<SQL >/dev/null
 PRAGMA journal_mode=WAL;
 WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i < 24000)
-INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
-SELECT 'evt_a' || i, '$ns_a', 'trace_a' || i, 'perfgen', 'c.read', '{}', NULL,
+INSERT INTO events (id, namespace_id, trace_id, source, type, payload, created_at)
+SELECT 'evt_a' || i, '$ns_a', 'trace_a' || i, 'perfgen', 'c.read', '{}',
        CAST(strftime('%s','now') AS INTEGER) - i
   FROM seq;
 WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i < 26000)
-INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
-SELECT 'evt_b' || i, '$ns_b', 'trace_b' || i, 'perfgen', 'c.sweep', '{}', NULL,
+INSERT INTO events (id, namespace_id, trace_id, source, type, payload, created_at)
+SELECT 'evt_b' || i, '$ns_b', 'trace_b' || i, 'perfgen', 'c.sweep', '{}',
        CAST(strftime('%s','now') AS INTEGER) - 40*86400
   FROM seq;
 SQL
@@ -418,7 +432,7 @@ SQL
 		local name="$1" port="$2" db="$3" days="$4" out="$5"
 		pc_start_db "$name" "$port" "$db" ANOTIFY_EVENT_RETENTION_DAYS="$days" ANOTIFY_LOG_LEVEL=info || return 1
 		pc_seed >/dev/null || { pc_stop; return 1; }
-		local url="$PC_BASE/v1/console/events?limit=20&namespaceId=$ns_a"
+		local url="$PC_BASE/v1/console/events?limit=20&namespace=default"   # v4：namespace 只认名字，缺参数是 400
 		taskset -c "$PC_CPUS" "$LG_BIN" -url "$url" -header "Cookie: anotify_session=$PC_SESSION" \
 			-c 4 -d 4s >/dev/null 2>&1
 		taskset -c "$PC_CPUS" "$LG_BIN" -url "$url" -header "Cookie: anotify_session=$PC_SESSION" \
@@ -427,10 +441,10 @@ SQL
 	}
 
 	s6_c_read s6coff 8144 "$off_db" 0 "$dir/read-baseline.txt" || die "c 段基线起不来"
-	grep -h 'lease.sweeper' "$PC_RUN/server.log" >"$dir/sweep-baseline.log" 2>/dev/null || true
+	grep -hE 'retention sweep deleted rows|event retention' "$PC_RUN/server.log" >"$dir/sweep-baseline.log" 2>/dev/null || true
 	pc_stop
 	s6_c_read s6con 8145 "$on_db" 1 "$dir/read-under-sweep.txt" || die "c 段对照起不来"
-	grep -h 'lease.sweeper.retention' "$PC_RUN/server.log" >"$dir/sweep.log" 2>/dev/null || true
+	grep -h 'retention sweep deleted rows' "$PC_RUN/server.log" >"$dir/sweep.log" 2>/dev/null || true
 	pc_stop
 
 	{

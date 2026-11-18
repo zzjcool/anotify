@@ -54,11 +54,22 @@ pc_port_ok() {
 	fi
 }
 
-# pc_build：构建带前端 embed 的服务（静态资源场景要指纹文件名 → 必须 embeddist）。
-# 先跑 `make fe` 生成 internal/server/dist；它 1 秒内完成且不会弄脏工作区。
+# pc_build：确保 $PC_BIN / $PC_DEVSEED 存在**且比源码新**。
+#
+# 构建带前端 embed 的服务（静态资源场景要指纹文件名 → 必须 embeddist）；
+# 先跑 `make fe` 生成 internal/server/dist（1 秒内完成，不弄脏工作区）。
+#
+# 「只判断二进制存不存在」踩过两次坑：改了代码再跑 perf，用的还是上一轮的旧二进制，
+# 症状是「修复没生效」——一次被误判成环境问题，一次差点把 008 的验证跑成假绿。
+# 现在用 `find -newer` 比时间戳：任一 .go 比二进制新就重编（便宜、准确、不需要记 marker）。
+# PC_FORCE_BUILD=1 仍然强制重编（依赖变动、-tags 变化时用）。
 pc_build() {
 	mkdir -p "$PC_ROOT/bin"
-	if [ ! -x "$PC_BIN" ] || [ -n "${PC_FORCE_BUILD:-}" ]; then
+	local stale=""
+	if [ -x "$PC_BIN" ] && [ -x "$PC_DEVSEED" ]; then
+		stale=$(cd "$PC_REPO" && find ./internal ./cmd ./api -name '*.go' -newer "$PC_BIN" -print -quit 2>/dev/null)
+	fi
+	if [ ! -x "$PC_BIN" ] || [ ! -x "$PC_DEVSEED" ] || [ -n "$stale" ] || [ -n "${PC_FORCE_BUILD:-}" ]; then
 		( cd "$PC_REPO" && make fe >"$PC_ROOT/logs/fe.log" 2>&1 ) || {
 			echo "pc_build: make fe 失败，见 $PC_ROOT/logs/fe.log" >&2
 			return 1
@@ -144,8 +155,9 @@ pc_seed() {
 	PC_UID=$(echo "$out" | sed -n 's/^UID=//p')
 	export PC_SESSION PC_SEND_KEY PC_RECV_KEY PC_UID
 	# 默认命名空间：走契约端点，不查库（库是 store 的私有实现）。
+	# v4 信封：列表在 `items[]`，标识在 `metadata.uid`（v3 的 `namespaces[0].id` 已不存在）。
 	PC_NS=$(curl -s -H "Cookie: anotify_session=$PC_SESSION" "$PC_BASE/v1/namespaces" \
-		| jq -r '(.namespaces // [])[0].id // empty')
+		| jq -r '(.items // [])[0].metadata.uid // empty')
 	export PC_NS
 	if [ -z "$PC_NS" ]; then
 		echo "pc_seed: 取不到默认命名空间（会话是否有效？）" >&2
@@ -154,32 +166,42 @@ pc_seed() {
 	return 0
 }
 
-# pc_cap <name>：建一个能力，打印 capability id。
+# pc_cap <name> [paramsSchema]：建一个能力，打印 capability uid。
+#
+# v4 形态（2026-11-16 按 api/resource.yaml 校准）：
+#   * 路径是命名空间下的子资源 `/v1/namespaces/{ns}/capabilities`（v3 的 `/v1/capabilities` 已 404）；
+#   * body 是信封 {apiVersion,kind,metadata,spec}，namespaceId 不再在 body 里；
+#   * spec 的 `run` 必填（entrypoint + files，入口正文必须以 #! 开头，直接 exec 不经 shell）。
 pc_cap() {
 	local name="$1" schema="${2:-{\"type\":\"object\"}}"
-	curl -s -X POST "$PC_BASE/v1/capabilities" \
+	curl -s -X POST "$PC_BASE/v1/namespaces/$PC_NS/capabilities" \
 		-H "Cookie: anotify_session=$PC_SESSION" -H 'content-type: application/json' \
-		-d "{\"namespaceId\":\"$PC_NS\",\"name\":\"$name\",\"paramsSchema\":$schema}" \
-		| jq -r '.capability.id // empty'
+		-d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Capability\",\"metadata\":{\"name\":\"$name\"},\"spec\":{\"params\":$schema,\"next\":[],\"run\":{\"entrypoint\":\"run.sh\",\"files\":{\"run.sh\":\"#!/bin/sh\\nexit 0\\n\"}},\"requires\":{},\"lifecycle\":{},\"concurrency\":{}}}" \
+		| jq -r '.metadata.uid // empty'
 }
 
-# pc_source <name> <capId...>：建 webhook 源，指向给定出口能力，打印 hook token。
+# pc_source <name> <capRef...>：建 webhook 源，指向给定出口能力，打印 hook token。
+#
+# v4 形态：targets 的键是 `capability`（接受 `name` 或 `name@version`，**不再收 cap_ id**），
+# 所以这里对 `cap_…` 形式的入参先按 uid → name 反查，保住旧调用点的写法。
+# hook token 在 `spec.config.hookUrl`（读形态只读投影），也兼容 `status.hookUrl`。
 pc_source() {
 	local name="$1"; shift
-	local targets='[]'
-	local cap
-	targets="["
-	local first=1
-	for cap in "$@"; do
-		[ $first -eq 1 ] || targets+=","
-		targets+="{\"capabilityId\":\"$cap\"}"
-		first=0
+	local targets="[" sep="" ref
+	for ref in "$@"; do
+		if [ "${ref#cap_}" != "$ref" ]; then
+			ref=$(curl -s -H "Cookie: anotify_session=$PC_SESSION" \
+				"$PC_BASE/v1/namespaces/$PC_NS/capabilities?limit=500" \
+				| jq -r --arg id "$ref" '(.items // [])[] | select(.metadata.uid==$id) | .metadata.name' | head -1)
+		fi
+		targets+="$sep{\"capability\":\"$ref\"}"
+		sep=","
 	done
 	targets+="]"
-	curl -s -X POST "$PC_BASE/v1/sources" \
+	curl -s -X POST "$PC_BASE/v1/namespaces/$PC_NS/sources" \
 		-H "Cookie: anotify_session=$PC_SESSION" -H 'content-type: application/json' \
-		-d "{\"name\":\"$name\",\"kind\":\"webhook\",\"namespaceId\":\"$PC_NS\",\"config\":{},\"targets\":$targets}" \
-		| jq -r '.source.hookUrl // empty' | sed 's#^/v1/hooks/##'
+		-d "{\"apiVersion\":\"anotify/v1\",\"kind\":\"Source\",\"metadata\":{\"name\":\"$name\"},\"spec\":{\"kind\":\"webhook\",\"enabled\":true,\"config\":{},\"targets\":$targets}}" \
+		| jq -r '.spec.config.hookUrl // .status.hookUrl // empty' | sed 's#^/v1/hooks/##'
 }
 
 # pc_hook <token> <json-body>：投递一条事件，打印 http 码。

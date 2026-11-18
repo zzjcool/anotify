@@ -257,6 +257,9 @@
 - 不新增 `labels` / `annotations` / selectors；不引 `/apis` group 路由、discovery、CRD、SSA。
 - 不新增中枢凭证管理 / secrets 通道；不承诺 sandbox；不承诺 exactly-once。
 - 不自动覆盖已有路由；不自动重跑非幂等任务；不自动扩张节点授权 ns。
+- **不为「显式重跑」建谱系**（2026-11-16 裁决）：重跑 = 重新触发一次（新事件 / 新 trace），
+  不新增 `retryOf` / `rerunOf` 类字段；`tasks.parentTaskId` 只表达业务 emit 的父子关系，
+  不承载「人手动重跑」的执行关系，也不拿 `attempt` 冒充（见 `capability.md` 重试一节）。
 - 不做永久保留默认；不加 replay API；不做历史 migration / 旧库升级。
 
 ---

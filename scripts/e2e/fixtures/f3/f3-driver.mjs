@@ -17,8 +17,12 @@ export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
-export const PAGES = ['admin','capabilities','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','sources','trace'];
-export const GUARDED = ['index','receivers','keys','security','message','events','sources','capabilities','nodes'];
+export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace'];
+// 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
+// 它自己的布局挂载就会打 /v1/auth/me，游客必得 401，且它在 partials.js 的
+// loginHref 白名单里（next=capability.html 必须保住 ?namespace=&name=），
+// 所以进 GUARDED 才是与产品真实页面集一致的覆盖。
+export const GUARDED = ['index','receivers','keys','security','message','events','sources','capabilities','capability','nodes'];
 export const isMock = () => process.env.E2E_MOCK_ONLY === '1';
 export function chromePath() {
   if (process.env.E2E_CHROME_PATH) return process.env.E2E_CHROME_PATH;
@@ -597,7 +601,7 @@ export async function withPreviewResources(fn, signal) {
   const interrupt=()=>{ if(browser) closing ||= browser.close(); };
   signal?.addEventListener('abort',interrupt,{once:true});
   try {
-    browser=await chromium.launch({executablePath:chromePath(),headless:true,args:['--no-sandbox']});
+    browser=await chromium.launch({executablePath:chromePath(),headless:true,args:['--no-sandbox', '--disable-dev-shm-usage']});
     previewResources={server,browser};
     if(signal?.aborted) throw new Error('Scoped browser deadline before launch');
     return await fn();
@@ -674,7 +678,7 @@ export async function openDriver(id, options = {}) {
       assert.ok(ns.body.items.some(n=>n.metadata.name==='prod'),'T1 seam: prod Namespace fixture required');
       server.fixtures = fixtures;
     }
-    browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox'] });
+    browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox', '--disable-dev-shm-usage'] });
     context = await browser.newContext({viewport:{width:1440,height:900},locale:options.lang||'en',reducedMotion:'reduce',acceptDownloads:true});
     await H.mockExternalCdn(context);
     if (!mock) await context.addCookies([{name:'anotify_session',value:server.session,url:server.base}]);
@@ -760,7 +764,12 @@ export async function openDriver(id, options = {}) {
         window.__f3TraceAttach?.(value);
       }});
     },{mock,id,scope:options.scope??'default',theme:options.theme||'light'});
-    page=await context.newPage(); page.setDefaultTimeout(4500); page.setDefaultNavigationTimeout(7000);
+    // 等待上界（不是断言）：CI runner 比开发机慢 2–3 倍，4.5s 的默认值在那边会把
+    // 「慢」判成「没有」（实测 source-actions / interact-dialogs 在 runner 上超时，
+    // 本地同样代码 3–5s 就过）。用环境变量抬高，本地默认行为一个字没改。
+    page=await context.newPage();
+    page.setDefaultTimeout(Number(process.env.F3_DEFAULT_TIMEOUT_MS || 4500));
+    page.setDefaultNavigationTimeout(Number(process.env.F3_NAV_TIMEOUT_MS || 7000));
     page.on('pageerror',e=>report.errors.push(e.message));
     page.on('console',msg=>{
       if(msg.type()!=='error'){ if(msg.text().includes('mock 未实现')) report.errors.push(msg.text()); return; }

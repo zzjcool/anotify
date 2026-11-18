@@ -1658,6 +1658,13 @@ test("mock: capability POST 内容寻址（同内容复用同一版本行）；P
 	const fixer = byNameOrFail(list.body.items, "fixer");
 	const rv = fixer.metadata.resourceVersion;
 	const one = CAP_LIST + "/fixer";
+	// 列表是摘要（默认剥 spec.run.files，与真后端 capabilitySpecView 一致）：
+	// 要整份贴回去做内容寻址，必须自己取 `?includeBody=true` 的正文。
+	const fixerFull = await req(one + "?includeBody=true");
+	assert.ok(
+		fixerFull.body.spec.run && Object.keys(fixerFull.body.spec.run.files || {}).length,
+		"includeBody=true 必须带回 run.files 正文",
+	);
 
 	// POST 同名**不再是** 409 AlreadyExists：v4 的 POST 是内容寻址
 	// （store.createCapabilityTx）——同内容复用那一行，新内容分配 max+1。
@@ -1665,7 +1672,7 @@ test("mock: capability POST 内容寻址（同内容复用同一版本行）；P
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "fixer" },
-		spec: plain(fixer.spec),
+		spec: plain(fixerFull.body.spec),
 	}));
 	assert.equal(reuse.status, 201);
 	assert.equal(reuse.body.kind, "Capability");
@@ -1882,6 +1889,53 @@ test("mock: source GET 投影只有 hookUrl/secretSet（无 token/secret），PA
 	}));
 	assert.equal(badTmpl.status, 400);
 	assert.equal(badTmpl.body.reason, "invalid_source_config");
+});
+
+test("mock: 读面默认剥 run.files（?includeBody=true 才回全文）；两条 /yaml 路由回可贴回的定义", async () => {
+	const { req } = loadMock();
+
+	// ① 列表/详情默认是摘要：只剥 `run.files`，entrypoint 等其它字段仍在。
+	//    这与真后端 capabilitySpecView 一致（否则「详情不懒加载正文」的 bug 在预览里看不见）。
+	const list = await req(CAP_LIST);
+	const listed = itemByName(list.body.items, "analyze-pr");
+	assert.equal(listed.spec.run.files, undefined, "列表默认不携带脚本正文");
+	assert.ok(listed.spec.run.entrypoint, "只剥 files：entrypoint 仍在摘要里");
+	const summary = await req(CAP_LIST + "/analyze-pr");
+	assert.equal(summary.body.spec.run.files, undefined, "单资源默认也不携带正文");
+
+	// ② ?includeBody=true 才回全文（详情面板/编辑器走的就是这条）
+	const full = await req(CAP_LIST + "/analyze-pr?includeBody=true");
+	const files = full.body.spec.run.files;
+	assert.ok(files && Object.keys(files).length, "includeBody=true 必须回 run.files 正文");
+	const entryPath = Object.keys(files)[0];
+
+	// ③ 能力的原始 YAML：完整定义（含 run.files 全文），且**不是**资源信封
+	const capYaml = await req(CAP_LIST + "/analyze-pr/yaml");
+	assert.equal(capYaml.status, 200);
+	assert.deepEqual(Object.keys(capYaml.body).sort(), ["yaml"], "响应只认 {yaml}（E1 信封规则：没有 apiVersion/metadata）");
+	assert.equal(typeof capYaml.body.yaml, "string");
+	const doc = capYaml.body.yaml;
+	assert.match(doc, /^apiVersion: anotify\/v1$/m);
+	assert.match(doc, /^kind: Capability$/m);
+	assert.match(doc, /^ {2}version: 2$/m, "metadata 带当前版本（最高版本）");
+	assert.match(doc, /^spec:$/m);
+	assert.match(doc, /^ {2}run:$/m);
+	assert.ok(doc.includes(entryPath + ": |"), "run.files 的正文必须进 YAML（块标量）");
+	assert.ok(doc.includes(String(files[entryPath]).split("\n")[0].trim()), "脚本正文逐字保留");
+	assert.equal(doc.includes("namespace: default"), false, "metadata 不写 namespace（可整份贴回 playbook 包）");
+	assert.equal((await req(CAP_LIST + "/ghost-cap/yaml")).status, 404, "不存在的能力 → 404（与 get 同语义）");
+
+	// ④ 源的原始 YAML：读投影（只有 hookUrl/secretSet），**绝无**凭据明文
+	const srcYaml = await req("/v1/namespaces/default/sources/deploy-hook/yaml");
+	assert.equal(srcYaml.status, 200);
+	const sdoc = srcYaml.body.yaml;
+	assert.match(sdoc, /^kind: Source$/m);
+	assert.match(sdoc, /^ {2}enabled: true$/m);
+	assert.ok(sdoc.includes("hookUrl: "), "读投影只有 hookUrl");
+	assert.match(sdoc, /^ {4}secretSet: true$/m, "secret 只报「设了没有」");
+	assert.equal(sdoc.includes("hmac_mock_secret_deploy_hook"), false, "secret 明文绝不能进 YAML（红线）");
+	assert.equal(sdoc.includes("secret:"), false, "连 secret 字段都不该出现");
+	assert.equal((await req("/v1/namespaces/default/sources/ghost-src/yaml")).status, 404);
 });
 
 test("mock: Source W6 fire / saved+draft preview: exact receipts and zero persistence", async () => {
@@ -2580,7 +2634,9 @@ test("mock: 能力版本规则（只改 next 不换版本/digest；改 run 只�
 	}));
 	assert.equal(patchedRun.status, 400);
 	assert.equal(patchedRun.body.reason, "immutable_field");
-	const runChange = await req(CAP_LIST, jsonInit("POST", {
+	// 读正文（spec.run.files）必须走 `?includeBody=true`：列表/详情默认是摘要，
+	// 拿摘要去 POST 会被当成「同版本不同内容」（400 version_content_immutable）。
+	const runChange = await req(CAP_LIST + "?includeBody=true", jsonInit("POST", {
 		apiVersion: "anotify/v1",
 		kind: "Capability",
 		metadata: { name: "analyze-pr" },
@@ -2665,8 +2721,18 @@ test("mock: 人工 deploy 可指定历史版本（写该版本的 digest 事实�
 	assert.equal(node.state, "stale");
 });
 
-test("F2a 静态守卫：capabilities 页只用 v4 字段/路径，人工部署走能力子资源", () => {
-	const page = readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8");
+test("F2a 静态守卫：能力两页（列表 + 详情）只用 v4 字段/路径，人工部署走能力子资源", () => {
+	/* 能力域现在是**两页**：列表（capabilities.html：搜索/筛选/新建向导）与详情
+	 * （capability.html：身份/健康/定义/脚本/YAML/版本 + 编辑/部署/删除）。同一套 v4
+	 * 红线要用在两页上，所以这里两页一起读：
+	 *   · 禁用字段/路径 —— **逐页**都要干净（任一张页命中就红，比原先只看一张更强）；
+	 *   · canonical 层 token —— 两页合起来必须全部落地（写动作搬到详情页、nsList 之类的
+	 *     列表读面留在列表页，所以 token 集合是两页的并集而不是单页全集）。 */
+	const pages = {
+		list: readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8"),
+		detail: readFileSync(path.join(ROOT, "web-src/pages/capability.html"), "utf8"),
+	};
+	const pair = pages.list + "\n" + pages.detail;
 
 	const banned = [
 		{ re: /namespaceId/, why: "v4 用 scope + 显式 ns 路径，不再有 namespaceId query" },
@@ -2681,9 +2747,11 @@ test("F2a 静态守卫：capabilities 页只用 v4 字段/路径，人工部署�
 		{ re: /\/v1\/edges/, why: "Edge 写端点已删除：边由 spec.next / targets 派生" },
 		{ re: /\.artifact\b|\/artifact/, why: "v4 没有 artifact 概念：脚本全文在 versions?includeBody=true" },
 	];
-	for (const { re, why } of banned) {
-		const m = page.match(re);
-		assert.equal(m, null, why + "（命中 " + (m && m[0]) + "）");
+	for (const [name, page] of Object.entries(pages)) {
+		for (const { re, why } of banned) {
+			const m = page.match(re);
+			assert.equal(m, null, "能力 " + name + " 页：" + why + "（命中 " + (m && m[0]) + "）");
+		}
 	}
 
 	const required = [
@@ -2701,13 +2769,14 @@ test("F2a 静态守卫：capabilities 页只用 v4 字段/路径，人工部署�
 		"isConflict",
 	];
 	for (const token of required) {
-		assert.ok(page.includes(token), "capabilities 页必须落地 v4 canonical 层：缺 " + token);
+		assert.ok(pair.includes(token), "能力两页必须落地 v4 canonical 层：缺 " + token);
 	}
 
-	// 编辑/创建都必须经过 writable()，提交不得把 status 带回去
-	assert.match(page, /writable\([^)]*create/, "创建必须 writable(..., {create:true})");
-	assert.match(page, /withResourceVersion\(/, "PATCH 必须注入 resourceVersion");
-	assert.match(page, /deletePath\(/, "DELETE 必须带 ?resourceVersion=");
+	// 编辑/创建都必须经过 writable()，提交不得把 status 带回去（两页各有一条写路径）
+	assert.match(pages.list, /writable\([^)]*create/, "列表页创建必须 writable(..., {create:true})");
+	assert.match(pages.detail, /writable\([^)]*create/, "详情页改内容必须 writable(..., {create:true})");
+	assert.match(pages.detail, /withResourceVersion\(/, "PATCH 必须注入 resourceVersion");
+	assert.match(pages.detail, /deletePath\(/, "DELETE 必须带 ?resourceVersion=");
 });
 
 /* ------------------------------------------------------------------ *
@@ -2739,10 +2808,16 @@ function readCapsLocale(lang) {
 	return out;
 }
 
-test("F2a i18n：capabilities 页使用的 caps.* key 在四语言都存在（含动态 cond/nodes、无空值）", () => {
+test("F2a i18n：能力两页（列表 + 详情）使用的 caps.* key 在四语言都存在（含动态 cond/nodes、无空值）", () => {
 	const langs = ["zh-CN", "en", "ja", "es"];
 	const dict = new Map(langs.map((l) => [l, readCapsLocale(l)]));
-	const page = readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8");
+	/* 能力域拆成两页（capabilities.html 列表 + capability.html 详情）后，caps.* 的
+	 * 使用面也是两页的**并集**：只扫一页会让另一页的裸 key 漏网。两页原文拼在一起，
+	 * 下面的扫描逻辑（全局 matchAll）一字不改地继续工作。 */
+	const page = [
+		readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8"),
+		readFileSync(path.join(ROOT, "web-src/pages/capability.html"), "utf8"),
+	].join("\n");
 
 	// 页面里三种来源：JS 的 t("caps.…")、模板的 {{t "caps.…"}}、以及动态拼的
 	// cond.<type> / nodes.<state>（key 的**完整集合**是冻结词表，不是字面前缀）。
@@ -2771,8 +2846,14 @@ test("F2a i18n：capabilities 页使用的 caps.* key 在四语言都存在（�
 	assert.equal(new Set(sets).size, 1, "四语言 caps key 集合不一致");
 });
 
-test("F2a 静态守卫：能力编辑器覆盖 params/files/env/workDir/next/requires/lifecycle/concurrency", () => {
-	const page = readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8");
+test("F2a 静态守卫：能力两页的编辑器都覆盖 params/files/env/workDir/next/requires/lifecycle/concurrency", () => {
+	/* 新建向导在列表页（capabilities.html）、编辑在详情页（capability.html），两个
+	 * readForm 必须覆盖**同一套** v4 spec 段。所以两页逐页断言：只查一页会让另一页
+	 * 的表单缺口漏网（这是把原来「只读列表页」扩成「两页都要」）。 */
+	const pages = ["capabilities", "capability"].map((name) => ({
+		name,
+		text: readFileSync(path.join(ROOT, "web-src/pages", name + ".html"), "utf8"),
+	}));
 
 	// 表单控件：每个 v4 spec 段都要有可输入/可选择的落点（不能只读展示）。
 	const controls = [
@@ -2793,21 +2874,26 @@ test("F2a 静态守卫：能力编辑器覆盖 params/files/env/workDir/next/req
 		"cap-timeout",
 		"cap-concurrency",
 	];
-	for (const id of controls) {
-		assert.ok(page.includes('id="' + id + '"'), "能力编辑器缺少控件：" + id);
-	}
+	for (const { name, text } of pages) {
+		for (const id of controls) {
+			assert.ok(text.includes('id="' + id + '"'), name + " 页能力编辑器缺少控件：" + id);
+		}
 
-	// 读表单必须真的组装 v4 spec（不是拼旧字段）。
-	assert.match(page, /run:\s*\{\s*entrypoint:\s*entrypoint,\s*files:\s*files\s*\}/, "readForm 必须组装 spec.run.files/entrypoint");
-	assert.match(page, /requires:\s*\{\s*commands:\s*commands,\s*values:\s*values\s*\}/, "readForm 必须组装 spec.requires");
-	assert.match(page, /lifecycle:\s*\{[\s\S]*?idempotent:[\s\S]*?maxAttempts:[\s\S]*?resultTtlSec:[\s\S]*?timeoutSec:/, "readForm 必须组装 spec.lifecycle");
-	assert.match(page, /concurrency:\s*\{\s*maxPerNode:\s*concurrency\s*\}/, "readForm 必须组装 spec.concurrency");
-	assert.match(page, /if \(workDir\) spec\.run\.workDir = workDir/, "readForm 必须写 spec.run.workDir（空 = 独立目录）");
-	assert.match(page, /spec\.run\.env = env/, "readForm 必须写 spec.run.env");
+		// 读表单必须真的组装 v4 spec（不是拼旧字段）。
+		assert.match(text, /run:\s*\{\s*entrypoint:\s*entrypoint,\s*files:\s*files\s*\}/, name + " readForm 必须组装 spec.run.files/entrypoint");
+		assert.match(text, /requires:\s*\{\s*commands:\s*commands,\s*values:\s*values\s*\}/, name + " readForm 必须组装 spec.requires");
+		assert.match(text, /lifecycle:\s*\{[\s\S]*?idempotent:[\s\S]*?maxAttempts:[\s\S]*?resultTtlSec:[\s\S]*?timeoutSec:/, name + " readForm 必须组装 spec.lifecycle");
+		assert.match(text, /concurrency:\s*\{\s*maxPerNode:\s*concurrency\s*\}/, name + " readForm 必须组装 spec.concurrency");
+		assert.match(text, /if \(workDir\) spec\.run\.workDir = workDir/, name + " readForm 必须写 spec.run.workDir（空 = 独立目录）");
+		assert.match(text, /spec\.run\.env = env/, name + " readForm 必须写 spec.run.env");
+	}
 });
 
-test("F2a 静态守卫：版本不可变/409 保留输入/人工部署/删除二次确认的指引都在页面里", () => {
-	const page = readFileSync(path.join(ROOT, "web-src/pages/capabilities.html"), "utf8");
+test("F2a 静态守卫：版本不可变/409 保留输入/人工部署/删除二次确认的指引都在详情页里", () => {
+	/* 这三个写动作（编辑/人工部署/删除）随详情一起从列表页搬到了 capability.html：
+	 * 所以这条校验读**详情页**原文（断言逐条保留，没有放宽）。列表页对应的能力业已
+	 * 删掉，行内只剩一个「详情」链接 —— 那部分由上面的两页红线断言覆盖。 */
+	const page = readFileSync(path.join(ROOT, "web-src/pages/capability.html"), "utf8");
 
 	// 版本：显式版本内容不可变的用户指引 + 服务端 400 的个人化显示。
 	assert.ok(page.includes("version_content_immutable"), "必须识别 400 version_content_immutable");
@@ -3187,6 +3273,20 @@ async function b2Page(pageName, search, setup = () => {}, options = {}) {
     return api(url, opts);
   };
   await setup(run);
+  /* capability.html 的区块重绘用 `document.querySelector('#cap-body [data-sec="run"]')`
+   * 这种选择器找自己的区块（paintRun / paintVersions）—— 它是独立文档，没有列表页
+   * 那层行容器。fake document 的 querySelector 原本恒为 null，这里只给详情页补最小实现：
+   * 只认 `#<id> [<attr>="<value>"]` 一种形状（在 #<id> 子树里按属性找第一个后代），
+   * 其它选择器仍然返回 null（不为测试扩大假 DOM 的能力）。 */
+  if (pageName === 'capability') {
+    run.sandbox.document.querySelector = sel => {
+      const m = /^#([\w-]+) \[([\w-]+)="([^"]*)"\]$/.exec(String(sel));
+      if (!m) return null;
+      const root = nodes.get(m[1]);
+      if (!root) return null;
+      return b2Find(root, n => n && typeof n.getAttribute === 'function' && n.getAttribute(m[2]) === m[3])[0] || null;
+    };
+  }
   const source = readFileSync(path.join(ROOT, 'web-src/pages/' + pageName + '.html'), 'utf8');
   for (const script of source.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
     vm.runInContext(script[1], run.ctx, { filename: pageName + '.inline.js' });
@@ -4229,13 +4329,19 @@ test("R1 namespace deep link: playbooks list and capabilities actions bind the U
   assert.equal(caps.fetches.some(c => c.url.includes('/namespaces/default/')), false, 'capabilities must not read default');
   const capRow = () => b2Find(caps.get('caps-list'), n => n.getAttribute && n.getAttribute('data-cap') === 'report.send')[0];
   assert.ok(capRow(), 'prod-only capability must be listed');
-  await b2Find(capRow(), n => n.tagName === 'BUTTON' && n.textContent === '详情')[0].fire('click'); await caps.settle();
-  await b2Find(capRow(), n => n.getAttribute && n.getAttribute('data-act') === 'delete')[0].fire('click'); await caps.settle();
-  await caps.get('del-submit').fire('click'); await caps.settle();
-  const del = caps.calls.filter(c => c.opts && c.opts.method === 'DELETE').at(-1);
+  // 行里只剩一个「详情」链接：它必须把 URL 的 namespace 带进详情页（写动作都在那边）。
+  const detailHref = b2Find(capRow(), n => n.getAttribute && n.getAttribute('data-act') === 'open')[0].getAttribute('href');
+  assert.equal(detailHref, 'capability.html?namespace=prod&name=report.send', 'row detail link binds the URL namespace');
+  // 删除（列表页已无此动作）直接在详情页驱动同一份真实点击链
+  const detail = await b2Page('capability', '?namespace=prod&name=report.send');
+  assert.equal(JSON.parse(detail.sandbox.localStorage.getItem('anotify.scope')).namespace, 'prod');
+  assert.equal(detail.calls.some(c => c.url.includes('/namespaces/default/')), false, 'capability detail must not read default');
+  await b2Find(detail.get('cap-actions'), n => n.getAttribute && n.getAttribute('data-act') === 'delete')[0].fire('click'); await detail.settle();
+  await detail.get('del-submit').fire('click'); await detail.settle();
+  const del = detail.calls.filter(c => c.opts && c.opts.method === 'DELETE').at(-1);
   assert.match(del.url, /^\/v1\/namespaces\/prod\/capabilities\/report\.send\?resourceVersion=/);
-  assert.equal(caps.Mock.state.capabilities.some(c => c.ns === 'prod' && c.name === 'report.send'), false);
-  assert.ok(caps.Mock.state.capabilities.some(c => c.ns === 'default' && c.name === 'fixer'), 'default resources untouched');
+  assert.equal(detail.Mock.state.capabilities.some(c => c.ns === 'prod' && c.name === 'report.send'), false);
+  assert.ok(detail.Mock.state.capabilities.some(c => c.ns === 'default' && c.name === 'fixer'), 'default resources untouched');
 });
 
 test("R1 scope rule: URL namespace wins at entry (mount/ensureScope), in-page switch wins afterwards", () => {
@@ -4539,7 +4645,9 @@ test("R1 A1 artifacts: valid logical path + malformed hash stays display-only (n
 });
 
 test("R1 A2 capability versions: selected version issues its own includeBody request and renders that exact script", async () => {
-  const run = await b2Page('capabilities', '?namespace=default', ({ Mock }) => {
+  // 详情是独立页（capability.html?namespace=&name=）：版本历史就在这个页面上，
+  // 不再有「先展开列表行」这一步。
+  const run = await b2Page('capability', '?namespace=default&name=analyze-pr', ({ Mock }) => {
     const cap = Mock.state.capabilities.find(c => c.ns === 'default' && c.name === 'analyze-pr' && c.version === 2);
     const historical = plain(cap.spec);
     historical.run.files['main.sh'] = '#!/bin/sh\necho r1-selected-v2-sentinel\n';
@@ -4547,15 +4655,14 @@ test("R1 A2 capability versions: selected version issues its own includeBody req
     cap.version = 3;
     cap.spec.run.files['main.sh'] = '#!/bin/sh\necho r1-current-v3-only\n';
   });
-  const row = () => b2Find(run.get('caps-list'), n => n.getAttribute && n.getAttribute('data-cap') === 'analyze-pr')[0];
-  await b2Find(row(), n => n.tagName === 'BUTTON' && n.textContent === '详情')[0].fire('click'); await run.settle();
-  await b2Find(row(), n => n.getAttribute && n.getAttribute('data-act') === 'versions')[0].fire('click'); await run.settle();
-  const v2 = b2Find(row(), n => String(n.className).includes('cap-ver-row') && String(b2Text(n)).trim().startsWith('v2'))[0];
+  const root = () => run.get('cap-body');
+  await b2Find(root(), n => n.getAttribute && n.getAttribute('data-act') === 'versions')[0].fire('click'); await run.settle();
+  const v2 = b2Find(root(), n => String(n.className).includes('cap-ver-row') && String(b2Text(n)).trim().startsWith('v2'))[0];
   assert.ok(v2, 'historical version v2 row must be rendered');
   await b2Find(v2, n => n.tagName === 'BUTTON')[0].fire('click'); await run.settle();
   const requested = run.calls.filter(c => c.url.includes('/versions/')).at(-1);
   assert.equal(requested.url, '/v1/namespaces/default/capabilities/analyze-pr/versions/2?includeBody=true');
-  const body = b2Find(row(), n => String(n.className).split(' ').includes('cap-ver-body'))[0];
+  const body = b2Find(root(), n => String(n.className).split(' ').includes('cap-ver-body'))[0];
   assert.ok(body, 'selected historical body has its own container');
   const script = b2Find(body, n => String(n.className).split(' ').includes('cap-script-pre'))[0];
   assert.equal(b2Text(script).trim(), '#!/bin/sh\necho r1-selected-v2-sentinel', 'isolated historical script equals the full requested body');
@@ -4563,6 +4670,155 @@ test("R1 A2 capability versions: selected version issues its own includeBody req
   assert.equal(shown.includes('r1-current-v3-only'), false);
   assert.equal(shown.includes('echo v1'), false, 'v1 body must not be displayed for a v2 request');
   assert.equal(shown.includes('caps.versions.body_empty'), false, 'no empty-body placeholder');
+});
+
+// 回归：读面按契约剥掉 spec.run.files（真后端 capabilitySpecView），详情页必须
+// **自己**懒加载 `?includeBody=true`，否则真实权威下「这个能力没有脚本文件」永远在骗人。
+test('R1 A2b capability detail: run.files 按 name@version 懒加载（只取一次）；原始 YAML 默认收起、展开才取', async () => {
+  // 正文/原始 YAML 这些「详情区块」现在住在独立页（capability.html）上：直接打开
+  // 详情深链，而不是先展开列表行（那个交互已不存在）。
+  const run = await b2Page('capability', '?namespace=default&name=analyze-pr');
+  const root = () => run.get('cap-body');
+  const bodyRequests = () => run.calls.filter(c => /\/capabilities\/analyze-pr\?includeBody=true$/.test(c.url));
+
+  assert.equal(bodyRequests().length, 1, '详情载入时必须自己取一次正文（读面默认剥掉 run.files）');
+  const script = b2Find(root(), n => String(n.className).split(' ').includes('cap-script-pre'))[0];
+  assert.ok(script, '正文区块必须渲染出 cap-script-pre');
+  assert.ok(b2Text(script).includes('ANOTIFY_PARAM_REPO'), '渲染的必须是 includeBody 回来的脚本正文');
+  assert.equal(b2Text(root()).includes('这个能力没有脚本文件'), false, '不能停在「没有脚本文件」空态');
+  assert.equal(b2Text(root()).includes('脚本正文加载中'), false, '加载完不该还停在加载中文案');
+
+  /* 只取一次（按 name@version 记忆）：页面上其它交互（这里的版本历史开关、
+     下面的原始 YAML 展开）不得把正文重新请求一遍。列表页的内联展开/收起已随
+     改造退役，所以这条从「开合一次」改成「页面自己的其它交互不重取」。 */
+  await b2Find(root(), n => n.getAttribute && n.getAttribute('data-act') === 'versions')[0].fire('click'); await run.settle();
+  assert.equal(bodyRequests().length, 1, '同一 name@version 只取一次正文');
+
+  // 原始 YAML：默认收起、收起时不请求；展开才取，内容含 apiVersion 与 run.files
+  const raw = b2Find(root(), n => n.tagName === 'DETAILS' && String(n.className || '').includes('cap-raw'))[0];
+  assert.ok(raw, '详情必须有「原始 YAML」折叠块（details.cap-raw）');
+  assert.notEqual(raw.open, true, '默认收起');
+  assert.equal(run.calls.some(c => /\/capabilities\/analyze-pr\/yaml$/.test(c.url)), false, '收起时不得请求 /yaml');
+  raw.open = true; await raw.fire('toggle'); await run.settle(); await run.settle();
+  assert.ok(run.calls.some(c => /\/capabilities\/analyze-pr\/yaml$/.test(c.url)), '展开才请求 /yaml');
+  assert.equal(bodyRequests().length, 1, '展开原始 YAML 不得把正文重取一遍');
+  const yamlText = b2Text(raw);
+  assert.match(yamlText, /apiVersion: anotify\/v1/, 'YAML 块必须展示 apiVersion');
+  assert.match(yamlText, /files:/, 'YAML 块必须含 run.files');
+  assert.match(yamlText, /main\.sh: \|/, 'run.files 的脚本正文必须真的在块里');
+  const copy = b2Find(raw, n => n.tagName === 'BUTTON' && String(n.className || '').includes('copy-btn'))[0];
+  assert.ok(copy, 'YAML 块必须有复制按钮（.copy-btn）');
+});
+
+/* observed 的**数据态**只有 mock 权威能稳定造全：真实权威的 e2e 里 fixer 有真任务（taskId +
+ * 24h 计数），但 emits/pruned 需要一条真实的 grant→emit→剪枝链（要在线节点 + 部署 digest），
+ * 52s 的用例窗口不适合现造。mock 的 observed 与真后端同一份形状、同一套 ok 判定
+ * （web/mock.js·capabilityStatus 镜像 store.observedEmitOK），所以四种说法都在这里钉死：
+ *   ① 有最近任务 → taskId + 近 24h 计数（且标明是 24h 窗口，不把窗口数字当全部历史）；
+ *   ② emits 每条 → to + fields + ok 标记；✗ 必须由回执（剪枝）算出来，不是写死 true；
+ *   ③ pruned 每条 → to/reason/detail，detail 走 span[data-raw-content]（服务端原文豁免）；
+ *   ④ 到服务端上限 50 → 显示 caps.observed.truncated（列表被截断 ≠ 只有这些）；
+ *   ⑤ 服务端 {} → 空态文案，且不渲染 0 计数（不把「没数据」编成事实）。 */
+test('R1 A2d capability detail observed: taskId/24h 计数/emits(ok)/pruned/50 条上限/{} 空态', async () => {
+  const flat = (node) => b2Text(node).replace(/\s+/g, '');
+  const observedSection = (run) =>
+    b2Find(run.get('cap-body'), (n) => n.getAttribute && n.getAttribute('data-sec') === 'observed')[0];
+  const emitRows = (sec) => b2Find(sec, (n) => String(n.className || '').split(' ').includes('cap-line'));
+
+  // ① + ②：fixer 的最近任务 tsk_mock_1 本来有两条 emit（都建出了任务 ⇒ ✓）；再塞一条
+  // 带剪枝回执的 emit（taskId=null + pruned）—— 它必须显示 ✗，而不是被画成成功。
+  const okRun = await b2Page('capability', '?namespace=default&name=fixer', ({ Mock }) => {
+    Mock.state.emissions.push({
+      ns: 'default', task: 'tsk_mock_1', eventId: 'evt_pruned_emit', to: 'run-tests', version: 3,
+      taskId: null, pruned: { reason: 'param_missing', detail: '需要 suite' }, fields: ['suite'], at: new Date().toISOString(),
+    });
+  });
+  const okSec = observedSection(okRun);
+  assert.ok(okSec, 'observed 区块必须渲染（`[data-sec="observed"]`）');
+  const okText = flat(okSec);
+  assert.match(okText, /最近任务：tsk_mock_1/, '有最近任务时必须给出 taskId');
+  assert.match(okText, /任务总数：1/, '必须显示读模型的 24h 任务总数');
+  assert.match(okText, /失败：0/, '必须显示读模型的失败数（0 也要显示，不是省略）');
+  assert.match(okText, /计数是近24小时的窗口/, '计数必须标明是近 24h 窗口（否则 24h 数字被当成全部历史）');
+  assert.match(okText, /analyze-pr/, 'emit 必须列出下游名');
+  assert.match(okText, /字段：repo/, 'emit 必须列出这次带的字段（caps.observed.fields 模板）');
+  assert.match(okText, /字段：scope/);
+  const prunedEmitRow = emitRows(okSec).find((n) => b2Text(n).includes('run-tests'));
+  assert.ok(prunedEmitRow, '被剪枝的那条 emit 仍然是事实，必须列出来');
+  assert.ok(b2Text(prunedEmitRow).includes('✗'), '剪枝回执（没建出任务）必须标 ✗：' + b2Text(prunedEmitRow));
+  assert.equal(b2Text(prunedEmitRow).includes('✓'), false, '同一条 emit 不能既是 ✓ 又是 ✗');
+  assert.equal(
+    emitRows(okSec).filter((n) => b2Text(n).includes('✓')).length,
+    2,
+    '真的建出任务的两条 emit 必须是 ✓（不靠写死 ok:true，而是回执里点名了 taskId）',
+  );
+  // mock 的 read model 本身也必须是同一套判定（页面渲染错了会被这里先拦住）
+  const okApi = await okRun.req('/v1/namespaces/default/capabilities/fixer');
+  const okOb = okApi.body.status.observed;
+  assert.equal(okOb.taskId, 'tsk_mock_1');
+  assert.deepEqual(plain(okOb.tasks), { total: 1, failed: 0 });
+  assert.equal(okOb.emits.find((e) => e.to === 'run-tests').ok, false, '剪枝回执 ⇒ ok=false');
+  assert.ok(okOb.emits.filter((e) => e.to !== 'run-tests').every((e) => e.ok === true));
+
+  // ③ pruned 明细：to/reason/detail 都要有，detail 是服务端原文（含中文）→ span[data-raw-content]
+  const prodRun = await b2Page('capability', '?namespace=prod&name=prod-deploy');
+  const prodSec = observedSection(prodRun);
+  const prodText = flat(prodSec);
+  assert.match(prodText, /param_missing/, 'pruned 必须显示 reason 码');
+  assert.equal(prodText.includes('这次运行没有剪枝'), false, 'pruned 非空时不得还显示“没有剪枝”空态句');
+  const rawLeaves = b2Find(prodSec, (n) => n.getAttribute && n.getAttribute('data-raw-content') === '');
+  assert.ok(
+    rawLeaves.some((n) => b2Text(n).includes('需要 tag')),
+    'pruned.detail 是服务端原文（可能含中文）：必须落在 span[data-raw-content]，否则 en/es 页面会被判成未翻译文案',
+  );
+
+  // ④ 上限 50：服务端各截断到 50，页面到上限必须说“还有更多没显示”
+  const cappedRun = await b2Page('capability', '?namespace=default&name=fixer', ({ Mock }) => {
+    Mock.state.emissions = Mock.state.emissions.filter((e) => e.task !== 'tsk_mock_1');
+    for (let i = 0; i < 50; i += 1) {
+      Mock.state.emissions.push({
+        ns: 'default', task: 'tsk_mock_1', eventId: 'evt_many_' + i, to: 'down-' + i, version: 1,
+        taskId: 'tsk_down_' + i, pruned: null, fields: ['f' + i], at: new Date().toISOString(),
+      });
+    }
+  });
+  const cappedSec = observedSection(cappedRun);
+  assert.equal(emitRows(cappedSec).length, 50, '服务端上限内的 50 条都要列出来');
+  assert.match(
+    flat(cappedSec),
+    /只显示最近50条，更早的没有列出/,
+    '到服务端 50 条上限必须给出截断提示（新增词条 caps.observed.truncated）',
+  );
+
+  // ⑤ {}
+  const emptyRun = await b2Page('capability', '?namespace=default&name=sketch');
+  const emptySec = observedSection(emptyRun);
+  const emptyText = flat(emptySec);
+  assert.match(emptyText, /这个能力还没有运行记录/, '服务端 {} 时必须给空态文案');
+  assert.equal(emptyText.includes('任务总数'), false, '{} 时不得渲染 0 计数（那是把“没数据”编成事实）');
+  assert.equal(emptyText.includes('最近任务'), false, '{} 时不得渲染最近任务行');
+  const emptyApi = await emptyRun.req('/v1/namespaces/default/capabilities/sketch');
+  assert.deepEqual(
+    plain(emptyApi.body.status.observed),
+    {},
+    'mock 与真后端同形：没有最近任务就是 {}（不是 {tasks:{total:0}}，也不是 null）',
+  );
+});
+
+test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，且不含 secret 明文', async () => {
+  const run = await b2Page('source', '?namespace=default&name=deploy-hook');
+  const box = run.get('src-yaml');
+  assert.ok(box, '源详情必须有「原始 YAML」折叠块（#src-yaml）');
+  assert.notEqual(box.open, true, '默认收起');
+  assert.equal(run.calls.some(c => /\/sources\/deploy-hook\/yaml$/.test(c.url)), false, '收起时不得请求 /yaml');
+  box.open = true; await box.fire('toggle'); await run.settle(); await run.settle();
+  assert.ok(run.calls.some(c => /\/sources\/deploy-hook\/yaml$/.test(c.url)), '展开才请求 /yaml');
+  const text = b2Text(box);
+  assert.match(text, /kind: Source/);
+  assert.match(text, /hookUrl: /, '读投影只有 hookUrl');
+  assert.equal(text.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 里绝不能出现 secret 明文');
+  // 既有区块不受影响：#src-body 仍然给出 secretSet: true（e2e 的固定断言）
+  assert.ok(b2Text(run.get('src-body')).includes('secretSet: true'));
 });
 
 
@@ -5207,10 +5463,10 @@ test('G1 M3 condition provenance masks a private versioned-next derived name wit
 });
 
 // F3b2a locale registrations and aggregate anti-degeneration (original 141 retained).
-test('F3b2a both locale suites register all nineteen pages in each of four languages and retained interactions', async () => {
+test('F3b2a both locale suites register all twenty-one pages in each of four languages and retained interactions', async () => {
   const { casesFor, pageBatches } = await import('./e2e/fixtures/f3/f3-i18n-cases.mjs');
   const { PAGES, LANGS } = await import('./e2e/fixtures/f3/f3-driver.mjs');
-  assert.equal(pageBatches.flat().length, 19);
+  assert.equal(pageBatches.flat().length, 21);
   for (const suite of ['i18n', 'i18n_coverage']) {
     const cases = casesFor(suite); assert.equal(new Set(cases.map(x => x.id)).size, cases.length);
     for (const lang of LANGS) {
@@ -5394,12 +5650,12 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
   }
 });
 
-// F3b2b: last two suites — truthful 304-view registry, retained UX19–23 and
+// F3b2b: last two suites — truthful 336-view registry, retained UX19–23 and
 // aggregate rules that cannot be satisfied by a partial or retried run.
-test('F3b2b ui_shift registers every one of the 304 page views exactly once with an anonymous login view', async () => {
+test('F3b2b ui_shift registers every one of the 336 page views exactly once with an anonymous login view', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
-  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','sources','trace']);
+  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
   assert.deepEqual(Object.keys(VIEWPORTS), ['desktop','mobile']);
@@ -5408,13 +5664,13 @@ test('F3b2b ui_shift registers every one of the 304 page views exactly once with
   assert.equal(new Set(cases.map(x => x.id)).size, cases.length, 'unique registered ids');
   const grid = cases.filter(x => x.kind === 'grid');
   const cells = grid.flatMap(c => c.pages.map(page => [page, c.lang, c.theme, c.viewport].join('|')));
-  assert.equal(cells.length, MATRIX_VIEWS, '304 registered matrix views');
-  assert.equal(new Set(cells).size, 304, 'no duplicated page/lang/theme/viewport cell');
+  assert.equal(cells.length, MATRIX_VIEWS, '336 registered matrix views');
+  assert.equal(new Set(cells).size, 336, 'no duplicated page/lang/theme/viewport cell');
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS)) {
     const slice = grid.filter(c => c.lang === lang && c.theme === theme && c.viewport === viewport);
     assert.deepEqual(slice.flatMap(c => c.pages).sort(), PAGES.slice().sort(), `complete page coverage for ${lang}/${theme}/${viewport}`);
   }
-  assert.equal(registeredViews('ui_shift').matrix, 304);
+  assert.equal(registeredViews('ui_shift').matrix, 336);
   // login is a genuine guest form view in the matrix (no session), and never a duplicate of index.
   const loginViews = grid.filter(c => c.pages.includes('login')).length;
   assert.equal(loginViews, 16, 'login is registered in all sixteen lang/theme/viewport combinations');
@@ -5885,10 +6141,10 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
   for(const change of [{ok:false},{checks:0},{report:{errors:['501 network failure']}}])assert.throws(()=>e1bEpoch.validateAttempt(id,{...result,...change},exit,id));
   assert.throws(()=>e1bEpoch.validateAttempt(id,result,null,id));
 });
-test('E1b all 35 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
+test('E1b all 38 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
-  assert.equal(CASES.length,36); // #376/#384 新增 playbook-missing 后冻结 pin 跟着 +1
-  const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all35',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
+  assert.equal(CASES.length,38); // #376/#384 playbook-missing +1；yaml-create +1；#424 observe-index-all 再 +1
+  const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
   const registered=CASES.map(x=>x.id),manifest={registered,attempts};
   e1bEpoch.validateManifest(manifest,registered,attempts,exits);
@@ -6005,7 +6261,8 @@ test('FINALR1 P1 ordinary PATCH archives original per-version privacy and immuta
   const { req, Mock } = loadMock(); await pbCreate(req, g1VersionFiles());
   const installed = await pbAction(req, 'install', { project: 'a', version: 17 }); assert.equal(installed.status, 200);
   const old = plain(Mock.state.capabilities.find(c => c.name === 'a-review'));
-  const current = (await req('/v1/namespaces/default/capabilities/a-review')).body;
+  // 详情默认是摘要（spec.run.files 剥离）：改内容的人必须自己取 ?includeBody=true。
+  const current = (await req('/v1/namespaces/default/capabilities/a-review?includeBody=true')).body;
   // 内容变更的合法路径是 POST 新版本（省略 metadata.version = 内容寻址）；
   // PATCH 带 spec 会被 400 immutable_field 拒掉，永远不会换版本。
   const patched = await req('/v1/namespaces/default/capabilities/a-review', { method: 'PATCH', body: JSON.stringify({

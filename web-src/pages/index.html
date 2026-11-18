@@ -248,6 +248,12 @@
     background: var(--warn-soft);
     color: var(--warn);
   }
+  /* 「全部命名空间」模式下每行事件自己的 ns 徽标（.ix-chip 的第四个变体）。
+     虚线边描 + faint 字：它是**行的范围标签**，不是状态，视觉上要比源/类型退一档。 */
+  .ix-ns {
+    border-style: dashed;
+    color: var(--faint);
+  }
   .ev-feed-time {
     white-space: nowrap;
     /* 时间列对齐：右缘对齐 + 等宽数字，几行「9 分钟前 / 10 分钟前」不再搓齿。 */
@@ -759,7 +765,7 @@
           <div class="stat-label">{{t "index.kpi.running"}}</div>
           <div class="stat-value" id="kpi-running">–</div>
           <div class="stat-foot">
-            <span>{{t "index.kpi.running_sub"}}</span>
+            <span id="kpi-running-sub">{{t "index.kpi.running_sub"}}</span>
           </div>
           <div
             class="stat-spark"
@@ -790,7 +796,9 @@
           </div>
           <div class="stat-label">{{t "index.kpi.failed"}}</div>
           <div class="stat-value" id="kpi-failed">–</div>
-          <div class="stat-foot"><span>{{t "index.kpi.failed_sub"}}</span></div>
+          <div class="stat-foot">
+            <span id="kpi-failed-sub">{{t "index.kpi.failed_sub"}}</span>
+          </div>
           <div
             class="stat-spark"
             role="img"
@@ -1134,6 +1142,13 @@
     // 解析期声明本页会画图：挂上 defer 图库的就绪门闩（实现只有 partials.js 一份）
     window.Anotify.expectGraphics();
     const qs = new URLSearchParams(location.search);
+    /* 首页视图的**唯一真源**是 URL（D1）：
+     *   没有 `?namespace=`（或空白值、或显式 `*`）→ 全部命名空间聚合（默认视图）
+     *   带了具体名字                                     → 只看那一个（= 今日行为）
+     * 刻意**不**做「localStorage 里存过某 ns 就回退到它」：侧栏 NAV 就是裸
+     * index.html 链接，默认必须是全部。 */
+    const NS = (qs.get("namespace") || "").trim() || "*";
+    const ALL = NS === "*";
     // 旧推送深链 index.html?msg=<taskId>：首页不再有任务弹层，直接转任务详情页。
     // （sw.js 的推送载荷早已是 message.html?id=，这里只是不让历史通知点成空页。）
     (function redirectLegacyMsg() {
@@ -1162,14 +1177,37 @@
       });
     }
 
-    if (qs.get("namespace")) window.Anotify.saveScope({ namespace: qs.get("namespace") });
-
     mountLayout({
       active: "overview",
       title: t("index.title", "总览"),
       subtitle: t("index.subtitle", "事件流一览"),
       username: username || "…",
+      /* 首页是唯一支持「全部命名空间」的页面：选择器多第一项（data-ns-id="*"），
+       * 全部模式下它带选中态，面包屑写「全部命名空间」。 */
+      scopeAll: true,
+      scopeAllActive: ALL,
     });
+
+    /* 深链 `?namespace=prod` 要写进持久化 scope（其他页面跟随），但**校验过才写**：
+     * 值必须是 /v1/namespaces 里真实存在的那一个 —— 手改 URL 打个脏值不该把全站
+     * 的范围带歪。全部模式一个字节都不落盘（`*` 不是命名空间名，D1/D5）。
+     * 校验失败也不拦页面：数据显示只在 URL 说的那个 ns 上。 */
+    async function adoptDeepLinkNamespace() {
+      if (ALL) return;
+      try {
+        const r = await fetch("/v1/namespaces", { credentials: "include" });
+        if (!r.ok) return;
+        const j = await r.json().catch(() => null);
+        if (!j || !Array.isArray(j.items)) return;
+        const known = j.items.some(
+          (it) => it && it.metadata && it.metadata.name === NS,
+        );
+        if (known) window.Anotify.saveScope({ namespace: NS });
+      } catch {
+        /* 脏值不落盘：内存里的 scope 无所谓，localStorage 不能被污染 */
+      }
+    }
+    adoptDeepLinkNamespace().catch(() => {});
 
     /* V4 statistics and Event envelopes share the explicit active namespace.
      * Trace is a single readmodel request; attempts never become graph nodes. */
@@ -1178,7 +1216,16 @@
     let loadError = null;
     let LATEST_EVENTS = [];
     let EVENT_ERROR = null;
-    const { ready, readScope, nsPath, loadSourceTopology, model, itemsOf } = window.Anotify;
+    const { ready, loadSourceTopology, model, itemsOf } = window.Anotify;
+
+    /* ns 私有资源路径（v4）：`/v1/namespaces/{ns}/{plural}[/{name}]`。
+     * 本页自己拼、**不用** partials 的 `nsPath()`：
+     *   · 全部模式下 `nsPath()` 拿 localStorage 里的范围会拼出 `/v1/namespaces/<星号>/…`（D5 禁用面）；
+     *   · 每条数据要的是它**自己**的 ns（事件行 / 链路卡），不是「当前范围」。 */
+    function nsPathIn(ns, plural, name) {
+      const base = "/v1/namespaces/" + encodeURIComponent(ns) + "/" + plural;
+      return name == null || name === "" ? base : base + "/" + encodeURIComponent(name);
+    }
 
     /* 两张执行状态卡的口径必须是**真实 Task 事实**，不是 stats 的臆造字段：
      * GET /v1/stats 只给 total/today/delivered/deliveryTotal/deviceCount/daily
@@ -1208,16 +1255,67 @@
       return counts;
     }
 
+    /* 全部模式的在途 / 失败：Σ 各 ns 的 `status.stats.tasksByPhase`（pending+running /
+     * failed）—— 服务端派生量（resource.yaml · NamespaceAggregate），**精确计数**，
+     * 不受 TaskList 500 截断影响。任何一个 ns 没有这个口径 ⇒ 整张卡退化成「该口径
+     * 暂不支持跨命名空间统计」，绝不拿部分和（更不拿 0）冒充全量。 */
+    async function loadTaskCountsAll() {
+      const items = await loadNamespaceItems();
+      // 一个命名空间都没有：0 在途 / 0 失败是**真的**，不是“算不出”。
+      if (!items.length) return { working: 0, failed: 0, truncated: false };
+      let working = 0;
+      let failed = 0;
+      let known = 0;
+      for (const it of items) {
+        const byPhase =
+          it && it.status && it.status.stats && it.status.stats.tasksByPhase;
+        if (!byPhase || typeof byPhase !== "object") continue;
+        known += 1;
+        for (const [phase, n] of Object.entries(byPhase)) {
+          if (!Number.isFinite(n)) continue;
+          if (phase === "pending" || phase === "running") working += n;
+          else if (phase === "failed") failed += n;
+        }
+      }
+      if (!known) return { unsupported: true };
+      return { working: working, failed: failed, truncated: false };
+    }
+
+    /* `GET /v1/namespaces` 一轮只拉一次：全部模式下它同时喂三处（在途/失败计数、
+     * 首条事件三步的 sources/capabilities 存在性；选择器自己那一份在 partials）。
+     * 每次 load() 重置，刷新时重取；失败不缓存（下一次还能再试）。 */
+    let nsListPromise = null;
+    function loadNamespaceItems() {
+      if (!nsListPromise) {
+        nsListPromise = api("/v1/namespaces").then((doc) => {
+          if (!doc || doc.kind !== "NamespaceList" || !Array.isArray(doc.items)) {
+            throw new Error("malformed NamespaceList");
+          }
+          return doc.items;
+        });
+        // 失败不缓存（否则一次闪烁会把整页固定成错误态）。
+        nsListPromise.catch(() => {
+          nsListPromise = null;
+        });
+      }
+      return nsListPromise;
+    }
+
     // 截断时补一个 +：既报出数到的量，也不假装它是全量。
+    // unsupported = 全部模式下有 ns 没给相位口径：值显示 –，副行说清原因。
     function taskCountText(counts, key) {
-      if (!counts) return "–";
+      if (!counts || counts.unsupported) return "–";
       return counts[key].toLocaleString() + (counts.truncated ? "+" : "");
     }
 
     /* ================= #381 首条事件三步 =================
      * 三步的存在性只用**真数据**判定：三个列表接口各要 limit=1（只要第一项在不在，
      * 不把全量拉进首屏）。取不到的那一步记 null（未知）——未知不当作「已完成」，
-     * 也不当作「没有」，按「还不能判断」展示为等待上一步。 */
+     * 也不当作「没有」，按「还不能判断」展示为等待上一步。
+     *
+     * 全部模式：源 / 能力的存在性跨 ns 求和（Σ `status.counts.sources|capabilities`
+     * > 0，来源 `GET /v1/namespaces`，**不新增请求**）；节点本来就不是 ns 私有资源
+     * （cluster 级），照旧 `/v1/nodes?limit=1`。 */
     const FIRST_EVENT = { source: null, capability: null, node: null };
     const FE_STEPS = ["source", "capability", "node"];
     const FIRST_EVENT_PATHS = {
@@ -1226,10 +1324,41 @@
         "/v1/namespaces/" + encodeURIComponent(ns) + "/capabilities?limit=1",
       node: () => "/v1/nodes?limit=1",
     };
+
+    /* 全部模式下的一步：
+     *   · 列表拿到、至少一个 ns 给出了 counts → 真值（Σ > 0）
+     *   · 列表拿到但没有任何 ns 给 counts → null（未知，不编）
+     *   · 列表本身取不到                   → null（未知） */
+    function anyCountAcrossNamespaces(items, key) {
+      if (!items) return null;
+      let sum = 0;
+      let known = false;
+      for (const it of items) {
+        const counts = it && it.status && it.status.counts;
+        const n = counts ? counts[key] : null;
+        if (!Number.isFinite(n)) continue;
+        known = true;
+        sum += n;
+      }
+      return known ? sum > 0 : null;
+    }
+
     async function loadFirstEvent() {
-      const ns = readScope().namespace;
+      if (ALL) {
+        const [nsItems, nodeDoc] = await Promise.allSettled([
+          loadNamespaceItems(),
+          api(FIRST_EVENT_PATHS.node()),
+        ]);
+        const items = nsItems.status === "fulfilled" ? nsItems.value : null;
+        FIRST_EVENT.source = anyCountAcrossNamespaces(items, "sources");
+        FIRST_EVENT.capability = anyCountAcrossNamespaces(items, "capabilities");
+        const doc = nodeDoc.status === "fulfilled" ? nodeDoc.value : null;
+        FIRST_EVENT.node = doc && Array.isArray(doc.items) ? doc.items.length > 0 : null;
+        renderFirstEvent();
+        return;
+      }
       const results = await Promise.allSettled(
-        FE_STEPS.map(step => api(FIRST_EVENT_PATHS[step](ns))),
+        FE_STEPS.map(step => api(FIRST_EVENT_PATHS[step](NS))),
       );
       FE_STEPS.forEach((step, i) => {
         const r = results[i];
@@ -1280,16 +1409,20 @@
 
     async function load() {
       loadError = null;
+      // 每次刷新都重新取一遍命名空间列表（全部模式的三处派生口径都吃它）。
+      nsListPromise = null;
       document.getElementById("index-events").setAttribute("aria-busy", "true");
       try {
         await ready();
-        STATS = await api("/v1/stats?namespace=" + encodeURIComponent(readScope().namespace));
+        /* 一份 STATS 同时驱动 KPI 与热力图（不重复请求）；`?namespace=*` 是服务端
+         * 显式的跨 ns 聚合口径（D3.1），单 ns 时就是今天的同一个请求。 */
+        STATS = await api("/v1/stats?namespace=" + encodeURIComponent(NS));
       } catch (error) {
         STATS = null;
         loadError = error;
       }
       try {
-        TASK_COUNTS = await loadTaskCounts(readScope().namespace);
+        TASK_COUNTS = ALL ? await loadTaskCountsAll() : await loadTaskCounts(NS);
       } catch {
         // 任务列表取不到时只让这两张卡显示 –（其余 KPI 照常有真数据）。
         TASK_COUNTS = null;
@@ -1308,8 +1441,10 @@
       await loadLatestFlow();
     }
 
-    function traceLink(uid) {
-      return "trace.html?namespace=" + encodeURIComponent(readScope().namespace) +
+    /* 链路页的深链：**一条 trace 必属单一 ns**，所以 ns 由调用方给（事件自己的
+     * metadata.namespace），不是当前范围 —— 全部模式下读当前范围会拼出 `*`。 */
+    function traceLink(ns, uid) {
+      return "trace.html?namespace=" + encodeURIComponent(ns) +
         "&traceUID=" + encodeURIComponent(uid);
     }
 
@@ -1320,8 +1455,9 @@
       EVENT_ERROR = null;
       try {
         await ready();
+        // `namespace=*` = 跨 ns 归并的最新 8 条（端点原生支持，D2/D3）。
         const doc = await api("/v1/console/events?namespace=" +
-          encodeURIComponent(readScope().namespace) + "&limit=8");
+          encodeURIComponent(NS) + "&limit=8");
         if (doc.kind !== "EventList" || !Array.isArray(doc.items)) throw new Error("malformed EventList");
         LATEST_EVENTS = [...new Map(itemsOf(doc).map(e => [e.metadata.uid, e])).values()];
         box.replaceChildren(...LATEST_EVENTS.map(eventRow));
@@ -1338,11 +1474,21 @@
 
     function eventRow(resource) {
       const event = model.event(resource);
+      /* 一条事实只属于一个 ns：徽标读它**自己**的 metadata.namespace，不是当前范围。
+       * 单 ns 模式不渲染（整页就一个 ns，徽标只是噪音）；data-ns-badge 是 e2e 锚点。 */
+      const rowNs = event.namespace || "";
       const row = el(event.traceUID ? "a" : "div", {
         class: "ev-feed-row", "data-uid": event.uid,
       });
-      if (event.traceUID) row.href = traceLink(event.traceUID);
+      if (event.traceUID) row.href = traceLink(rowNs, event.traceUID);
       const head = el("div", { class: "ev-feed-head" },
+        ALL && rowNs
+          ? el("span", {
+              class: "ix-chip ix-mono ix-ns",
+              "data-ns-badge": rowNs,
+              text: "#" + rowNs,
+            })
+          : null,
         // IDX-5：源 / 类型 / 严重度 三个 chip 同一套盒模型（.ix-chip），
         // 只靠强调色区分；旧的「裸 mono 文本 + .badge」是两套语言并排。
         el("span", { class: "ix-chip ix-mono ix-source", text: event.involvedObject?.name || "—" }),
@@ -1360,6 +1506,7 @@
 
     async function loadLatestFlow() {
       const host = document.getElementById("flow-host");
+      const card = document.getElementById("latest-flow");
       const latest = LATEST_EVENTS.find(e => e.spec.traceUID);
       if (host._graph?.destroy) host._graph.destroy();
       host.replaceChildren();
@@ -1369,14 +1516,30 @@
         return;
       }
       if (!latest) {
+        if (card) card.removeAttribute("data-scope-ns");
         host.append(el("div", { class: "empty", text: t("index.flow.empty") }));
         return;
       }
+      /* 一条 trace **必属单一 ns**：这张卡不是聚合（D2）。全部模式下画的是
+       * 「最新一条带 traceUID 的事件」它**自己**那条 trace，并把该 ns 显式标在卡上
+       * （data-scope-ns + 可见文本），避免读者误以为是全量图。 */
       const event = model.event(latest);
-      document.getElementById("flow-open").href = traceLink(event.traceUID);
-      document.getElementById("flow-sub").textContent = event.eventType + " · " + event.traceUID;
+      const flowNs = event.namespace || (ALL ? "" : NS);
+      if (card) {
+        if (ALL && flowNs) card.dataset.scopeNs = flowNs;
+        else card.removeAttribute("data-scope-ns");
+      }
+      if (!flowNs) {
+        // 全部模式下这条事件没有 ns：画不出（也不能编一张「全量」图），退回空态。
+        host.append(el("div", { class: "empty", text: t("index.flow.empty") }));
+        return;
+      }
+      document.getElementById("flow-open").href = traceLink(flowNs, event.traceUID);
+      document.getElementById("flow-sub").textContent =
+        (ALL ? "#" + flowNs + " · " : "") + event.eventType + " · " + event.traceUID;
       try {
-        const doc = await api(nsPath("traces", event.traceUID));
+        // 按这条 trace 自己的 ns 取（不用 nsPath()：全部模式下它会拼出 `*` 路径）。
+        const doc = await api(nsPathIn(flowNs, "traces", event.traceUID));
         if (!Array.isArray(doc.tasks) || !Array.isArray(doc.events) || !Array.isArray(doc.pruned)) throw new Error("malformed Trace");
         if (!doc.tasks.length) {
           host.append(el("div", { class: "empty", text: t("index.flow.pruned") }));
@@ -1392,12 +1555,27 @@
         const sourceName = source?.spec?.involvedObject?.name || "";
         // 底图 = 这个源的静态配置拓扑，取数与降级规则在 Anotify.loadSourceTopology
         // （和链路页 / 源详情页共用一份）。拿不到源就退回只画执行链，不白屏、不编造。
-        const baseGraph = await loadSourceTopology(sourceName);
+        // 取数**按这条 trace 自己的 ns**：loadSourceTopology 自己拉时会走 nsList()
+        // → nsPath() → 「当前范围」（全部模式下是 `*` 或上一个 ns 的旧值），
+        // 那就可能把别的命名空间的源配置画到这张图上。
+        let baseGraph = null;
+        if (sourceName) {
+          const [sourcesDoc, capsDoc] = await Promise.all([
+            api(nsPathIn(flowNs, "sources") + "?limit=500").catch(() => null),
+            api(nsPathIn(flowNs, "capabilities") + "?limit=500").catch(() => null),
+          ]);
+          baseGraph = await loadSourceTopology(sourceName, {
+            // 传 [] 而不是 undefined：后者会让它回退去拉「当前范围」的列表。
+            sources: sourcesDoc || [],
+            capabilities: capsDoc || [],
+          });
+        }
         G.taskChain(host, {
           tasks: doc.tasks, baseGraph: baseGraph, sourceLabel: sourceName,
           sourceSub: source?.spec.eventType || "", t,
           onNodeClick(task) {
-            location.href = "message.html?namespace=" + encodeURIComponent(readScope().namespace) +
+            // 任务也在那条 trace 的 ns 里（全部模式下不能读「当前范围」）。
+            location.href = "message.html?namespace=" + encodeURIComponent(flowNs) +
               "&id=" + encodeURIComponent(task.name);
           },
         });
@@ -1454,10 +1632,45 @@
       bumpStat(node);
     }
 
+    /* 三张卡的**副行**（口径说明）：单 ns 与全部模式说的不是同一件事。
+     *   · 设备：用户维度，不随 ns 变（全部模式下必须写明，否则读起来像跨 ns 求和）
+     *   · 在途 / 失败：全部模式 = Σ 各 ns 的所有任务；有 ns 没给相位口径时
+     *     明说「该口径暂不支持跨命名空间统计」（绝不写 0 冒充）
+     * 错误态也照样画：它们是**文案**不是数字，范围说错比不说更糟。 */
+    function paintKpiSubs() {
+      const devicesSub = document.getElementById("kpi-devices-sub");
+      if (devicesSub) {
+        devicesSub.textContent = ALL
+          ? t("index.kpi.devices_sub_all")
+          : t("index.kpi.devices_sub2", "推送订阅 + 长连接");
+      }
+      const unsupported =
+        ALL && !!TASK_COUNTS && TASK_COUNTS.unsupported === true;
+      const runningSub = document.getElementById("kpi-running-sub");
+      if (runningSub) {
+        runningSub.textContent = unsupported
+          ? t("index.aggregate.unsupported")
+          : ALL
+            ? t("index.kpi.running_sub_all")
+            : t("index.kpi.running_sub");
+      }
+      const failedSub = document.getElementById("kpi-failed-sub");
+      if (failedSub) {
+        failedSub.textContent = unsupported
+          ? t("index.aggregate.unsupported")
+          : ALL
+            ? t("index.kpi.failed_sub_all")
+            : t("index.kpi.failed_sub");
+      }
+    }
+
     function renderKpis() {
       /* 数据未到/失败时不要展示静态假 sparkline——那会让人以为数字只是丢了。 */
       const sparks = document.querySelectorAll(".stat-spark");
       sparks.forEach((el) => el.classList.remove("is-ready", "is-empty"));
+      /* 副行先画：它们是**口径说明**（不是数字），错误态下也得说对是哪一种范围，
+       * 否则全部模式的页在接口挂掉时会把两张卡写成「当前命名空间」。 */
+      paintKpiSubs();
       /* F14：首屏接口全挂时不能把「取不到」画成「0」。KPI 一律显示 – ，
        * 让错误态只出现在一个地方（列表里的 loadErrorNode），而不是各处谎报 0。 */
       if (loadError) {
@@ -1537,13 +1750,12 @@
           : t("index.kpi.rate_na", "暂无接收设备，送达率不可用");
       setStatValue(document.getElementById("kpi-today"), today);
       setStatValue(document.getElementById("kpi-devices"), devices || "0");
-      document.getElementById("kpi-devices-sub").textContent = t(
-        "index.kpi.devices_sub2",
-        "推送订阅 + 长连接",
-      );
 
-      /* 两张执行状态卡：数当前命名空间里真实 Task 的相位（pending+running /
-       * failed），见 loadTaskCounts 的口径说明；取不到就是 –，不写 0。 */
+      /* 两张执行状态卡：
+       *   单 ns = 数这个 ns 里真实 Task 的相位（loadTaskCounts，500 截断 + N+）；
+       *   全部  = Σ 各 ns 的 status.stats.tasksByPhase（loadTaskCountsAll，精确计数）。
+       * 取不到就是 –；有 ns 没给口径就明说「暂不支持跨命名空间统计」—— 两条路
+       * 都不写 0（0 是「真的没有」的断言，这里没有那个事实）。 */
       const runningEl = document.getElementById("kpi-running");
       const failedEl = document.getElementById("kpi-failed");
       if (runningEl) setStatValue(runningEl, taskCountText(TASK_COUNTS, "working"));

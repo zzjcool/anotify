@@ -6,31 +6,37 @@ import path from "node:path";
 import { openDriver } from "./f3-driver.mjs";
 
 export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
-export const PAGES = Object.freeze(["admin","capabilities","cli-auth","docs","events","index","keys","login","message","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","sources","trace"]);
+export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","source-detail","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
-// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 19 页 × 4 语言 ×
-// 2 主题 × 2 视口的固定矩阵，加一个键就把 304 视图变成 456。内容档只用于
+// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 21 页 × 4 语言 ×
+// 2 主题 × 2 视口的固定矩阵，加一个键就把 336 视图变成 384。内容档只用于
 // 「#384 主内容不用横滚」的专项用例（tablet / desktop 两种 kind）。
 export const TABLET_VIEW = Object.freeze({ width: 768, height: 1024 });
 export const STANDALONE = Object.freeze(["cli-auth", "passkey-enroll"]);
 export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真正调用）";
 // Batches keep every matrix case inside the fixed 55s outer budget.
-export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,19]].map(([a,b]) => PAGES.slice(a,b)));
+export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,21]].map(([a,b]) => PAGES.slice(a,b)));
 export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","receivers","events","trace","playbook"]);
 // Per-page structural anchor. Detail pages get their identity from real v4 list rows.
 // #381：登录页的默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），所以 #login-panel
 // 可能真的是 hidden（0×0）。锚点改成**两个 tab 都一定看得见**的容器：仍然证「这一页真的
 // 渲染了」，而不是在默认态上赌一把。
 export const ANCHORS = Object.freeze({
-  admin: "#kpi-devices", capabilities: "[data-cap]", "cli-auth": "#code-input", docs: "#endpoints",
+  admin: "#kpi-devices", capabilities: "[data-cap]", capability: "#cap-name", "cli-auth": "#code-input", docs: "#endpoints",
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-file-path", playbooks: "#pb-grid", receivers: "#current-device-card",
-  security: "#passkey-list", source: "#src-name", sources: "#src-list [data-name]", trace: "#trace-tasks",
+  security: "#passkey-list", source: "#src-name",
+  // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。
+  "source-detail": "#src-detail[data-source]", sources: "#src-list [data-name]", trace: "#trace-tasks",
 });
 // Pages whose controller must show real data facts, not just an empty shell.
-export const DATA_PAGES = Object.freeze(["admin","capabilities","events","index","keys","nodes","sources","security","receivers"]);
+// capability（能力详情页）是**有真实数据的事实页**：它按 ?namespace/&name 读一个真实
+// Capability（#cap-name 渲染成「显示名 · 名字」），所以进 DATA_PAGES；它不是自包含的
+// 匿名页（布局/受限读面都要登录），所以不进 STANDALONE；也不是关键页截图集（那份额度
+// 给的是入口页），所以不进 KEY_PAGES。
+export const DATA_PAGES = Object.freeze(["admin","capabilities","capability","events","index","keys","nodes","sources","security","receivers"]);
 const FAILURE_TEXT = /载入失败|加载失败|Failed to load|取不到数据|响应不是 \*List/;
 
 export const MATRIX_VIEWS = PAGES.length * LANGS.length * THEMES.length * 2;
@@ -39,7 +45,7 @@ export function matrixCases() {
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS))
     MATRIX_BATCHES.forEach((pages, index) => cases.push({ id: `grid-${lang}-${theme}-${viewport}-${index + 1}`, pages, lang, theme, viewport }));
   assert.equal(cases.length, MATRIX_BATCHES.length * LANGS.length * THEMES.length * 2);
-  assert.equal(cases.reduce((n, c) => n + c.pages.length, 0), MATRIX_VIEWS, "304 registered page views");
+  assert.equal(cases.reduce((n, c) => n + c.pages.length, 0), MATRIX_VIEWS, "336 registered page views");
   return cases;
 }
 export const localeFor = lang => ({ "zh-CN": "zh-CN", en: "en-US", ja: "ja-JP", es: "es-ES" })[lang];
@@ -60,6 +66,8 @@ export async function fixtures(d) {
   assert.ok(task?.metadata?.name && task?.spec?.traceUID, "canonical Task.name/spec.traceUID required");
   assert.ok(source?.metadata?.name, "canonical Source.name required");
   assert.ok(node?.metadata?.name, "canonical Node.metadata.name required");
+  // 能力详情页的身份：列表里第一个真实能力（两个权威都得有，且名字由公开 API 读回）。
+  assert.ok(caps.items[0]?.metadata?.name, "canonical Capability.metadata.name required for the detail page");
   const playbooks = await d.req("/v1/namespaces/default/playbooks");
   assert.equal(playbooks.kind, "PlaybookList", "canonical PlaybookList required");
   let playbook = playbooks.items[0];
@@ -77,7 +85,7 @@ export async function fixtures(d) {
   const detail = await d.req("/v1/namespaces/default/playbooks/" + encodeURIComponent(playbook.metadata.name) + "?includeBody=true");
   assert.equal(detail.metadata.name, playbook.metadata.name);
   assert.ok(detail.spec.files["playbook.yaml"], "real Playbook GET supplies editor content");
-  return { task: task.metadata.name, traceUID: task.spec.traceUID, source: source.metadata.name, node: node.metadata.name, playbook: playbook.metadata.name, devices: devices.devices.length };
+  return { task: task.metadata.name, traceUID: task.spec.traceUID, source: source.metadata.name, node: node.metadata.name, playbook: playbook.metadata.name, cap: caps.items[0].metadata.name, devices: devices.devices.length };
 }
 export function query(page, f = {}, guest) {
   const p = new URLSearchParams();
@@ -86,8 +94,12 @@ export function query(page, f = {}, guest) {
     if (page === "message" && f.task) p.set("id", f.task);
     if (page === "trace" && f.traceUID) p.set("traceUID", f.traceUID);
     if (page === "source" && f.source) p.set("name", f.source);
+    // 源只读详情页的深链形状与列表名称链接一致：?namespace=<ns>&name=<source>。
+    if (page === "source-detail" && f.source) p.set("name", f.source);
     if (page === "node" && f.node) p.set("id", f.node);
     if (page === "playbook" && f.playbook) p.set("id", f.playbook);
+    // 能力详情页的深链形状与列表行链接一致：?namespace=<ns>&name=<cap>。
+    if (page === "capability" && f.cap) p.set("name", f.cap);
   }
   return p.toString();
 }

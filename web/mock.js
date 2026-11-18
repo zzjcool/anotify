@@ -1594,6 +1594,19 @@
 		};
 	}
 
+	/* v4 `NamespaceAggregate.tasksByPhase`（resource.yaml · NamespaceStatus，required
+	 * [tasksByPhase, edges]）：按相位数这个 ns 的任务。以前 mock 根本没有 `stats`，
+	 * 于是首页「全部命名空间」的在途/失败只能拿到 undefined —— 服务端派生量必须跟上，
+	 * 否则那两张卡会退化成「该口径暂不支持」而不是真计数。 */
+	function namespaceTasksByPhase(name) {
+		const out = {};
+		for (const t of state.tasks) {
+			if (t.ns !== name) continue;
+			out[t.phase] = (out[t.phase] || 0) + 1;
+		}
+		return out;
+	}
+
 	function namespaceResource(row) {
 		const count = (list) => list.filter((x) => x.ns === row.name).length;
 		return {
@@ -1614,6 +1627,11 @@
 					tasks: count(state.tasks),
 					nodes: state.nodes.filter((n) => nodeEffectiveNamespaces(n).indexOf(row.name) >= 0)
 						.length,
+				},
+				/* 服务端派生量（不落库）：相位计数 + 派生边数。 */
+				stats: {
+					tasksByPhase: namespaceTasksByPhase(row.name),
+					edges: edgeItems(row.name).length,
 				},
 			},
 		};
@@ -1790,13 +1808,36 @@
 		}
 		conditions.push(Object.assign({ type: "Deployed" }, depCond));
 
-		// observed：最近一个逻辑 task 的 emits / pruned + 任务计数（明细数组保留，不只给计数）
+		/* observed：最近一个逻辑 task 的 emits / pruned + **近 24h** 任务计数。形状与
+		 * 真后端同一份（internal/server/resource_capability.go·capabilityObservedStatus），
+		 * 预览里也要说同样的话：
+		 *   · 没有最近任务（这个能力从没跑过）⇒ 服务端写 `{}`（四个键都不写）。mock 也
+		 *     必须给空对象——给 `tasks:{total:0}` 会把「没数据」画成一条假计数；
+		 *   · emits[].ok 由回执判定（store.observedEmitOK 的镜像）：剪枝回执（pruned 非空）
+		 *     = 下游没建出任务 ⇒ false；点名了 taskId ⇒ true。写死 true 会让预览把一次
+		 *     被剪掉的 emit 画成成功（❌ 该看见的失败看不见）；
+		 *   · tasks.total/failed 只统计近 24h（store.ObservedWindow）内建的任务行。
+		 */
+		const OBSERVED_WINDOW_MS = 24 * 3600 * 1000;
 		const tasks = state.tasks.filter((t) => t.ns === ns && t.capability === row.name);
 		const latest = tasks
 			.slice()
-			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.name).localeCompare(String(a.name)))[0];
 		const emits = latest ? state.emissions.filter((e) => e.task === latest.name) : [];
 		const prunes = latest ? state.prunes.filter((p) => p.task === latest.name) : [];
+		const windowStart = Date.now() - OBSERVED_WINDOW_MS;
+		const inWindow = tasks.filter((t) => Date.parse(t.createdAt) >= windowStart);
+		const observed = latest
+			? {
+					taskId: latest.name,
+					emits: emits.map((e) => ({ to: e.to, fields: clone(e.fields || []), ok: !e.pruned && Boolean(e.taskId) })),
+					pruned: prunes.map((p) => ({ to: p.to, reason: p.reason, detail: p.detail })),
+					tasks: {
+						total: inWindow.length,
+						failed: inWindow.filter((t) => t.phase === "failed").length,
+					},
+				}
+			: {};
 
 		return {
 			ready: conditions.every((c) => c.status === "True"),
@@ -1812,15 +1853,7 @@
 					return out;
 				}),
 			},
-			observed: {
-				taskId: latest ? latest.name : null,
-				emits: emits.map((e) => ({ to: e.to, fields: clone(e.fields || []), ok: true })),
-				pruned: prunes.map((p) => ({ to: p.to, reason: p.reason, detail: p.detail })),
-				tasks: {
-					total: tasks.length,
-					failed: tasks.filter((t) => t.phase === "failed").length,
-				},
-			},
+			observed: observed,
 			installedFrom: row.installedFrom || null,
 		};
 	}
@@ -2627,6 +2660,315 @@
 				timeoutSec: 3600,
 			},
 		];
+	}
+
+	// ---------- 资源 YAML（由存储的规范化定义重建）----------
+	//
+	// mock 没有 YAML 序列化器（playbook.render 的 files 就因此用 JSON 文本），但两条
+	// `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
+	// 这里只写够用的最小发射器：键序 = 对象自身顺序，块标量 `|` 保住脚本文本里的
+	// 换行与缩进（脚本正文是唯一需要逐字保留的东西）。
+	function yamlScalar(v) {
+		if (v == null) return "null";
+		if (typeof v === "boolean" || typeof v === "number") return String(v);
+		const s = String(v);
+		if (s === "") return '""';
+		// 需要引号的形态：YAML 保留字、纯数字、含特殊字符、首尾空白
+		const plain = /^[A-Za-z_][A-Za-z0-9_./@{}$()*+\-]*$/.test(s);
+		const reserved = /^(true|false|null|yes|no|on|off|~)$/i.test(s);
+		if (plain && !reserved) return s;
+		return JSON.stringify(s);
+	}
+	function yamlLines(value, indent, out) {
+		const pad = " ".repeat(indent);
+		if (Array.isArray(value)) {
+			if (!value.length) {
+				out.push(pad + "[]");
+				return;
+			}
+			for (const item of value) {
+				if (pbObject(item) || Array.isArray(item)) {
+					const inner = [];
+					yamlLines(item, indent + 2, inner);
+					out.push(pad + "- " + String(inner[0]).trimStart());
+					for (const line of inner.slice(1)) out.push(line);
+				} else {
+					out.push(pad + "- " + yamlScalar(item));
+				}
+			}
+			return;
+		}
+		if (pbObject(value)) {
+			const keys = Object.keys(value);
+			if (!keys.length) {
+				out.push(pad + "{}");
+				return;
+			}
+			for (const key of keys) {
+				const v = value[key];
+				if (pbObject(v) || Array.isArray(v)) {
+					if (!Object.keys(v).length) {
+						out.push(pad + key + ": " + (Array.isArray(v) ? "[]" : "{}"));
+					} else {
+						out.push(pad + key + ":");
+						yamlLines(v, indent + 2, out);
+					}
+				} else if (typeof v === "string" && v.includes("\n")) {
+					out.push(pad + key + ": |");
+					for (const line of v.replace(/\n$/, "").split("\n")) out.push(" ".repeat(indent + 2) + line);
+				} else {
+					out.push(pad + key + ": " + yamlScalar(v));
+				}
+			}
+			return;
+		}
+		out.push(pad + yamlScalar(value));
+	}
+	function toYaml(doc) {
+		const out = [];
+		yamlLines(doc, 0, out);
+		return out.join("\n") + "\n";
+	}
+	// 能力的定义文档：完整 spec（含 run.files 全文）—— 不是读投影。
+	function capabilityYaml(row) {
+		const meta = { name: row.name };
+		if (row.displayName) meta.displayName = row.displayName;
+		meta.version = row.version;
+		return toYaml({ apiVersion: API_VERSION, kind: "Capability", metadata: meta, spec: clone(row.spec || {}) });
+	}
+	// 源的定义文档：用**读投影的脱敏 config**（hookUrl/secretSet），所以文档里
+	// 一定没有 token/secret 明文（凭据只写不读，写回时留空 = 保留）。
+	function sourceYaml(row) {
+		const meta = { name: row.name };
+		if (row.displayName) meta.displayName = row.displayName;
+		return toYaml({ apiVersion: API_VERSION, kind: "Source", metadata: meta, spec: sourceResource(row).spec });
+	}
+
+	// ---------- 资源文档读取器（只服务两条 POST …/yaml，契约 §5.4）----------
+	//
+	// 预览态要把「粘贴的整份文档」读成**写信封**，才能交回既有的 create 处理器
+	// （不另写一套存储，也不另写一套同名语义）。真服务端用 internal/yamldoc 严格
+	// 解析；这里只覆盖控制台真能粘贴出来的子集：映射、序列、字面量块（| >）、
+	// 行内集合、引号标量、行尾注释。不支持的语法**显式报错**，绝不当成 {} ——
+	// 「解析失败」和「文档是空的」必须长得不一样。
+	// 为什么不复用 partials.js 的 playbook 读取器：它的注释把它限死在 playbook 包
+	// （契约 D8 的理由），这里要读的是资源文档；两套语义混用比一段小解析器更贵。
+	function readResourceDoc(source) {
+		const text = String(source == null ? "" : source);
+		// JSON 也是 YAML：先试一次（粘 JSON 文档不该被拒）
+		try {
+			const asJson = JSON.parse(text);
+			if (asJson && typeof asJson === "object" && !Array.isArray(asJson)) return asJson;
+		} catch (e) {
+			/* 不是 JSON：按 YAML 继续读 */
+		}
+		const lines = text.replace(/\r\n?/g, "\n").split("\n");
+		let at = 0;
+		const fail = (message, line) => {
+			throw Object.assign(new Error(message), { line: line || 0 });
+		};
+		// 去行尾注释（引号里的 # 不算）并去右侧空白；缩进原样保留
+		const strip = (line) => {
+			let quote = "";
+			for (let i = 0; i < line.length; i++) {
+				const ch = line[i];
+				if (quote) {
+					if (ch === "\\" && quote === '"') i++;
+					else if (ch === quote) quote = "";
+				} else if (ch === '"' || ch === "'") quote = ch;
+				else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).replace(/\s+$/, "");
+			}
+			return line.replace(/\s+$/, "");
+		};
+		const indentOf = (line) => /^ */.exec(line)[0].length;
+		const blank = (line) => {
+			const body = strip(line).trim();
+			return !body || body === "---" || body === "...";
+		};
+		const skip = () => {
+			while (at < lines.length && blank(lines[at])) at++;
+		};
+		// 找「键与值之间的冒号」：后面必须是空白或行尾，且不在引号里
+		const colonAt = (body) => {
+			let quote = "";
+			for (let i = 0; i < body.length; i++) {
+				const ch = body[i];
+				if (quote) {
+					if (ch === "\\" && quote === '"') i++;
+					else if (ch === quote) quote = "";
+				} else if (ch === '"' || ch === "'") quote = ch;
+				else if (ch === ":" && (i + 1 === body.length || /\s/.test(body[i + 1]))) return i;
+			}
+			return -1;
+		};
+		// 行内集合的顶层逗号切分（引号与嵌套里不切）
+		const cutFlow = (body) => {
+			const out = [];
+			let quote = "",
+				depth = 0,
+				start = 0;
+			for (let i = 0; i < body.length; i++) {
+				const ch = body[i];
+				if (quote) {
+					if (ch === "\\" && quote === '"') i++;
+					else if (ch === quote) quote = "";
+					continue;
+				}
+				if (ch === '"' || ch === "'") quote = ch;
+				else if (ch === "[" || ch === "{") depth++;
+				else if (ch === "]" || ch === "}") depth--;
+				else if (ch === "," && depth === 0) {
+					out.push(body.slice(start, i));
+					start = i + 1;
+				}
+			}
+			out.push(body.slice(start));
+			return out;
+		};
+		const scalarOf = (raw, line) => {
+			const body = raw.trim();
+			if (!body) return null;
+			if (/^[|>]/.test(body)) fail("块标量只能写在键的冒号后面", line);
+			if (/^[!&*]|^<<:/.test(body)) fail("不支持锚点 / 别名 / 标签", line);
+			if (body.startsWith('"')) {
+				try {
+					return JSON.parse(body);
+				} catch (e) {
+					fail("双引号标量没有闭合或转义非法", line);
+				}
+			}
+			if (body.startsWith("'")) {
+				if (body.length < 2 || !body.endsWith("'")) fail("单引号标量没有闭合", line);
+				return body.slice(1, -1).replaceAll("''", "'");
+			}
+			if (body.startsWith("[") || body.startsWith("{")) {
+				const closing = body[0] === "[" ? "]" : "}";
+				const inner = body.endsWith(closing) ? body.slice(1, -1) : body.slice(1);
+				if (body[0] === "[") {
+					return inner.trim() ? cutFlow(inner).map((part) => scalarOf(part, line)) : [];
+				}
+				const out = {};
+				if (!inner.trim()) return out;
+				for (const part of cutFlow(inner)) {
+					const colon = colonAt(part);
+					if (colon < 0) fail("行内映射缺少冒号", line);
+					out[String(scalarOf(part.slice(0, colon), line))] = scalarOf(part.slice(colon + 1), line);
+				}
+				return out;
+			}
+			if (body === "true") return true;
+			if (body === "false") return false;
+			if (body === "null" || body === "~") return null;
+			if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(body)) return Number(body);
+			return body;
+		};
+		function valueOf(rest, owner, line) {
+			// 字面量块（| / >，可带 - / + 收尾策略）：按缩进整段收进来
+			if (/^[|>][+-]?$/.test(rest)) {
+				const chunk = [];
+				let contentIndent = null;
+				while (at < lines.length) {
+					const row = lines[at];
+					if (row.trim() && indentOf(row) <= owner) break;
+					if (row.trim() && contentIndent == null) contentIndent = indentOf(row);
+					if (row.trim() && indentOf(row) < contentIndent) fail("块标量里的缩进不一致", at + 1);
+					chunk.push(row.trim() ? row.slice(contentIndent) : "");
+					at++;
+				}
+				let out = chunk.join("\n");
+				if (rest[0] === ">") out = out.replace(/([^\n])\n(?=[^\n])/g, "$1 ");
+				if (rest.endsWith("-")) return out.replace(/\n+$/, "");
+				if (rest.endsWith("+")) return out + "\n";
+				return out.replace(/\n+$/, "") + "\n";
+			}
+			if (rest) return scalarOf(rest, line);
+			skip();
+			return at < lines.length && indentOf(lines[at]) > owner ? block(indentOf(lines[at])) : null;
+		}
+		function block(level) {
+			skip();
+			const sequence = /^-(\s|$)/.test(strip(lines[at]).slice(level));
+			const out = sequence ? [] : {};
+			while (at < lines.length) {
+				skip();
+				if (at >= lines.length) break;
+				const row = lines[at];
+				if (indentOf(row) < level) break;
+				if (indentOf(row) > level) fail("缩进不一致", at + 1);
+				const body = strip(row).slice(level);
+				const line = at + 1;
+				at++;
+				if (sequence) {
+					if (!/^-(\s|$)/.test(body)) fail("序列与映射混在同一节", line);
+					const rest = body.replace(/^-/, "").trim();
+					const colon = colonAt(rest);
+					if (colon > 0) {
+						const item = {};
+						const key = scalarOf(rest.slice(0, colon), line);
+						if (typeof key !== "string" || !key) fail("映射键必须是字符串", line);
+						item[key] = valueOf(rest.slice(colon + 1).trim(), level, line);
+						// `- key: v` 之后同一项的兄弟键，缩进比 `- ` 更深
+						skip();
+						if (at < lines.length && indentOf(lines[at]) > level) {
+							const more = block(indentOf(lines[at]));
+							if (!more || typeof more !== "object" || Array.isArray(more)) fail("序列项里只能是映射", at);
+							Object.assign(item, more);
+						}
+						out.push(item);
+					} else {
+						out.push(valueOf(rest, level, line));
+					}
+					continue;
+				}
+				const colon = colonAt(body);
+				if (colon < 0) fail("缺少冒号的映射行", line);
+				const key = scalarOf(body.slice(0, colon), line);
+				if (typeof key !== "string" || !key) fail("映射键必须是字符串", line);
+				if (Object.prototype.hasOwnProperty.call(out, key)) fail("重复的键「" + key + "」", line);
+				out[key] = valueOf(body.slice(colon + 1).trim(), level, line);
+			}
+			return out;
+		}
+		skip();
+		if (at >= lines.length) return null;
+		const doc = block(indentOf(lines[at]));
+		skip();
+		if (at < lines.length) fail("无法解析的行", at + 1);
+		return doc;
+	}
+
+	// `metadata:` 那行的行号（1-based；找不到给 0）：模缺少 metadata.name 时的定位点
+	// 与真服务端同口径（Line = 父节点行，契约 §2 要点 6）。
+	function metadataLineOf(text) {
+		const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+		for (let i = 0; i < lines.length; i++) if (/^ *metadata:(\s|$)/.test(lines[i])) return i + 1;
+		return 0;
+	}
+
+	// 把一条 POST …/yaml 的 `{yaml}` 请求体读成写信封（或一个 400 响应）。
+	// 契约 §5.4 的最小语义：空文档 / 缺 metadata.name 走带行号的 invalid_yaml，
+	// 其余一律交回既有 create 处理器（同名折叠、唯一索引冲突都由它们决定）。
+	function yamlWriteBody(ctx, kind) {
+		const raw = ctx.body && typeof ctx.body.yaml === "string" ? ctx.body.yaml : "";
+		if (!raw.trim()) return { err: statusErr(400, "BadRequest", "yaml 文档为空") };
+		const yamlError = (field, message) => ({
+			err: statusErr(400, "invalid_yaml", message, { causes: [{ reason: "invalid_yaml", field: field, message: message }] }),
+		});
+		let doc;
+		try {
+			doc = readResourceDoc(raw);
+		} catch (e) {
+			return yamlError("", "第 " + (e.line || 1) + " 行：" + (e.message || "无法解析"));
+		}
+		if (!doc || typeof doc !== "object" || Array.isArray(doc)) return yamlError("", "文档必须是一个映射");
+		const metaLine = metadataLineOf(raw);
+		const name = doc.metadata && typeof doc.metadata === "object" ? doc.metadata.name : null;
+		if (name == null || String(name).trim() === "") {
+			return yamlError("metadata.name", "第 " + (metaLine || 1) + " 行 metadata.name：必填字段缺失");
+		}
+		// 省略 kind 时按端点定（真服务端也会对齐：kind_mismatch 只报写错的那个）
+		if (doc.kind == null) doc.kind = kind;
+		return { doc: doc };
 	}
 
 	// ---------- 路由表 ----------
@@ -3507,15 +3849,22 @@
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
+		// 列表是摘要：**默认剥 `spec.run.files`**（真后端 capabilitySpecView 同口径，
+		// resource_capability.go）。mock 若默认回正文，「详情面板从不懒加载正文」的
+		// bug 在预览里永远看不见 —— 页面读列表就不会空，真实权威下才空。
+		const includeBody = ctx.query.get("includeBody") === "true";
 		return json(
 			listOf(
 				"CapabilityList",
-				state.capabilities.filter((c) => c.ns === ns).map(capabilityResource),
+				state.capabilities
+					.filter((c) => c.ns === ns)
+					.map((c) => currentVersionResource(c, includeBody)),
 			),
 		);
 	});
 
-	on("POST", CAPS, (ctx) => {
+	// 创建能力：JSON POST 与 POST …/yaml 共用这一个实现（YAML 只多一层「文档 → 写信封」）。
+	const createCapability = (ctx) => {
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
@@ -3558,7 +3907,7 @@
 			// 不是“当前版本”）。
 			return json(
 				hit.version === current.version
-					? capabilityResource(current)
+					? currentVersionResource(current, ctx.query.get("includeBody") === "true")
 					: archivedVersionResource(current, hit, ctx.query.get("includeBody") === "true"),
 				201,
 			);
@@ -3581,7 +3930,7 @@
 		};
 		if (!current) {
 			state.capabilities.push(fresh);
-			return json(capabilityResource(fresh), 201);
+			return json(currentVersionResource(fresh, ctx.query.get("includeBody") === "true"), 201);
 		}
 		// 资源级事实（uid / 创建时刻 / 安装来源 / 隐私策略）跟着**名字**走：mock 用一行
 		// 代表一个名字的当前版本（真服务是每版本一行），所以手动新版本不能把这些
@@ -3624,7 +3973,20 @@
 		]);
 		const row = Object.assign(fresh, inherited, { versions: archived });
 		state.capabilities.splice(state.capabilities.indexOf(current), 1, row);
-		return json(capabilityResource(row), 201);
+		return json(currentVersionResource(row, ctx.query.get("includeBody") === "true"), 201);
+	};
+
+	on("POST", CAPS, createCapability);
+
+	// 从 YAML 创建能力（契约 §1.2/§5.4）：只多一层读取，创建语义（foldKey 复用 /
+	// version_content_immutable）完全交回 createCapability —— 不另写一套存储。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/capabilities\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const parsed = yamlWriteBody(ctx, "Capability");
+		if (parsed.err) return parsed.err;
+		return createCapability({ m: ctx.m, query: ctx.query, body: parsed.doc, path: ctx.path });
 	});
 
 	on("GET", CAP_ONE, (ctx) => {
@@ -3633,7 +3995,8 @@
 		if (miss) return miss;
 		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
 		if (!row) return notFound("能力 ");
-		return json(capabilityResource(row));
+		// 与列表同一读面：默认剥正文，`?includeBody=true`（详情面板/编辑器）才回全文。
+		return json(currentVersionResource(row, ctx.query.get("includeBody") === "true"));
 	});
 
 	on("PATCH", CAP_ONE, (ctx) => {
@@ -3693,7 +4056,7 @@
 			row.displayName = body.metadata.displayName || "";
 		}
 		row.rv = nextRV();
-		return json(capabilityResource(row));
+		return json(currentVersionResource(row, includeBody));
 	});
 
 	on("DELETE", CAP_ONE, (ctx) => {
@@ -3788,6 +4151,17 @@
 		},
 	);
 
+	// 原始 YAML：`{yaml}` 文档（不是信封 —— 没有 apiVersion/kind/metadata 外壳）。
+	// 取该 name 的**最高版本**（与 GET 单资源同一行），正文含 run.files 全文。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		return json({ yaml: capabilityYaml(row) });
+	});
+
 	// ===== 源（ns 私有）=====
 	const SRC = /^\/v1\/namespaces\/([^/]+)\/sources$/;
 	const SRC_ONE = /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)$/;
@@ -3861,7 +4235,8 @@
 		);
 	});
 
-	on("POST", SRC, (ctx) => {
+	// 创建源：JSON POST 与 POST …/yaml 共用这一个实现（YAML 只多一层「文档 → 写信封」）。
+	const createSource = (ctx) => {
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
@@ -3900,6 +4275,19 @@
 		};
 		state.sources.push(row);
 		return json(sourceResource(row), 201);
+	};
+
+	on("POST", SRC, createSource);
+
+	// 从 YAML 创建源（契约 §1.2/§5.4）：同名仍走 store 语义 —— 409 source_name_used
+	// （不做 upsert，schema.sql 的 UNIQUE(namespace_id,name) 是硬约束）。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/sources\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const parsed = yamlWriteBody(ctx, "Source");
+		if (parsed.err) return parsed.err;
+		return createSource({ m: ctx.m, query: ctx.query, body: parsed.doc, path: ctx.path });
 	});
 
 	on("GET", SRC_ONE, (ctx) => {
@@ -3909,6 +4297,16 @@
 		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
 		if (!row) return notFound("源 ");
 		return json(sourceResource(row));
+	});
+
+	// 原始 YAML：`{yaml}` 文档（不是信封）。默认读面剥正文，这里回**完整定义**。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/sources\/([^/]+)\/yaml$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findSource(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("源 ");
+		return json({ yaml: sourceYaml(row) });
 	});
 
 	on("PATCH", SRC_ONE, (ctx) => {
@@ -4333,8 +4731,12 @@
 		const miss = nsMissing(ns);
 		if (miss) return miss;
 		const limit = Number(ctx.query.get("limit") || 100);
+		/* `?source=` 按 involvedObject.name 过滤（api/events.yaml · NamespaceEvents）。
+			源详情页的「近期回执」就用这个参数；mock 不实现它的话，预览会把别的源
+			（甚至任务）的事件算到当前源头上 —— 那是假事实，不是宽松。 */
+		const source = ctx.query.get("source");
 		const list = state.events
-			.filter((e) => e.ns === ns)
+			.filter((e) => e.ns === ns && (!source || (e.involvedObject || {}).name === source))
 			.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
 			.slice(0, limit);
 		return json(listOf("EventList", list.map(eventResource)));
@@ -4394,10 +4796,11 @@
 	on("GET", /^\/v1\/console\/events$/, (ctx) => {
 		const want = requireNamespace(ctx.query);
 		if (want.err) return want.err;
-		if (!nsRow(want.ns)) return badRequest("namespace_required", "Select one namespace");
 		const trace = ctx.query.get("traceId") || "";
 		const source = ctx.query.get("source") || "";
-		let list = state.events.filter(e => e.ns === want.ns);
+		/* `namespace=*` = 全部命名空间（服务端原生支持）：不再要求一个具体 ns，
+		 * 事件行仍各自带自己的 metadata.namespace（首页的全部模式靠它画徽标）。 */
+		let list = state.events.filter(e => want.ns === "*" || e.ns === want.ns);
 		if (trace) list = list.filter(e => e.traceUID === trace);
 		if (source) list = list.filter(e => e.involvedObject && e.involvedObject.name === source);
 		list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || b.name.localeCompare(a.name));

@@ -662,7 +662,29 @@ func (d *DB) DeleteNode(ctx context.Context, nodeID string, expectedRV int64) er
 // nil/空清单不构成新断言，保留账本。非空清单缩容只删除未占用的老槽位；
 // occupied 槽即使超预算也保留到精确历史回收。slot 必须唯一且 ≥ 0，
 // 已有槽位重报只更新 liveness，不改 busy_task/attempt/lease 绑定。
+//
+// 没有「采集时刻」上下文的调用方（夹具 / 运维）走这个默认版本，时间取 store.Now()；
+// 手里已经有同一条事实的采样点（hello/config.applied 的处理方）必须用
+// UpsertInstancesAt 传进来，理由见那里。
 func (d *DB) UpsertInstances(ctx context.Context, nodeID string, specs []InstanceSpec) ([]*NodeInstance, error) {
+	return d.UpsertInstancesAt(ctx, nodeID, specs, Now())
+}
+
+// UpsertInstancesAt 是 UpsertInstances 的**显式采样点**版本：把 now 写进
+// node_instances.updated_at。
+//
+// 为什么必须由调用方传入、而不是在库里再采一次：updated_at 是回收判据里「绑定建立/
+// 刷新时刻」的唯一来源——ReclaimStaleSlots 拿它与观察的 ObservedAt 比大小，更新更晚就
+// 认为这条事实没看见该绑定、静默跳过回收。同一条节点事实若在 upsert 与 reclaim 各采
+// 一次时钟，两次采样之间的合法 idle 就会被当成旧快照丢掉：生产窗口是微秒级（节点明确
+// 回报空闲、中枢却不回收），测试里假时钟冻结则放大成整场用例是否跨秒的抽奖。
+// 传同一个 now 之后，写入与回收判据落在同一个时刻上。
+func (d *DB) UpsertInstancesAt(ctx context.Context, nodeID string, specs []InstanceSpec, now int64) ([]*NodeInstance, error) {
+	if now == 0 {
+		// 与 ReclaimStaleSlots 同口径：0 表示调用方没给采样点，退回本地墙钟；
+		// 节点事实路径（applyInstances）永远传非 0。
+		now = Now()
+	}
 	node, err := d.GetNode(ctx, nodeID)
 	if err != nil {
 		return nil, err
@@ -703,7 +725,6 @@ func (d *DB) UpsertInstances(ctx context.Context, nodeID string, specs []Instanc
 		}
 	}
 
-	now := Now()
 	for _, s := range specs {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO node_instances (id, node_id, slot, busy_task, busy_attempt, busy_lease_id, alive, updated_at)

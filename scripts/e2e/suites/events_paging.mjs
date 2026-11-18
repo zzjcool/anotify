@@ -486,7 +486,7 @@ async function main() {
 	//  ① 行序与 API 游标序列**逐条相等**（无重复、无遗漏、无换序）；
 	//  ② 到底后 #ev-more 被禁用、计数文案等于总数。
 	console.log(`--- C. events 页 UI 加载更多（Chrome 1280×800，${UI_PAGES} 页 × ${UI_PAGE_SIZE}）---`);
-	browser = await chromium.launch({ channel: "chrome", headless: true });
+	browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 	const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 	await H.mockExternalCdn(ctx);
 	await injectSession(ctx, s.session, base);

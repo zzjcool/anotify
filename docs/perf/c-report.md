@@ -1,3 +1,14 @@
+
+<!-- snapshot-doc: v4 迁移前后对照的定格数字，复算命令见文内 -->
+> **v4 口径变更（2026-11-17）**：本节的 soak 数字全部来自 **v3**（假节点 `agent.mjs` 用 v3 `assign` 帧、
+> 投递走 `POST /v1/events`）。v4 下这些都不成立：
+> ①节点头已迁到 `task.dispatch`/`lease.grant`/`task.result`；
+> ②投递入口是 `POST /v1/namespaces/{ns}/events` + Bearer；
+> ③soak 新增 `S1_RATE`（默认 **40/s**）—— v4 派发吞吐上限实测 ≈87 任务/s，不限速会让 pending
+> 一路涨过 120s 触发背压，量到的就不是稳态。
+> **本节的 RPS/内存/延迟数字与 v4 不可比**，重测前不要引用。v4 的 600s 稳态基线见
+> `.pi-orchestrator/issues/007-perf-agent-v3-frames.md`（22254 events/tasks、0 个 5xx、acked=19663）。
+
 # C 路 · 资源、泄漏与前端加载（性能评估报告）
 
 > 上游 #217《性能评估与瓶颈探查（三路并行）》· 分工：C 路 = 资源与泄漏：10 分钟持续写入下的

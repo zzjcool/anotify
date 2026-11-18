@@ -82,7 +82,7 @@ async function main() {
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 
 	const seedData = H.seed(server.dbPath, "lang_hint_tester");

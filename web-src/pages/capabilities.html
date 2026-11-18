@@ -4,7 +4,11 @@
     <style>
       /* 本页专有样式。颜色一律走 tokens.css 的变量，不硬编码色值；
          共享组件（.card/.btn/.badge/.field/.input/.select/.textarea/.list-row/
-         .modal-*/.empty/.skeleton/.mono）全部来自 ui.css，这里只补本页结构。 */
+         .modal-*/.empty/.skeleton/.mono）全部来自 ui.css，这里只补本页结构。
+
+         2026-11 拆分：能力详情搬到独立页（capability.html?namespace=&name=），
+         本页只留列表 + 新建向导。详情区块（.cap-sec/.cap-kv/.cap-raw/.cap-cond/
+         .cap-line/.cap-ver-*/.cap-file*）的样式随之迁到详情页的内联 <style>。 */
 
       /* ---------- 工具栏（搜索 + 筛选） ---------- */
       .cap-toolbar {
@@ -28,7 +32,7 @@
       }
 
       /* ---------- 列表行 ----------
-         第一行是「身份 + 状态点 + 动作」，详情区展开在下面（跨满整行）。
+         第一行是「身份 + 状态点 + 动作」。
          三列：信息 | 4 条条件简态 | 动作。 */
       .cap-row {
         display: grid;
@@ -80,6 +84,20 @@
         gap: 6px;
         min-width: 0;
       }
+      /* 行标题即深链（capability.html?namespace=&name=）：整块可点，
+         与源列表（sources.html）的行标题同一种交互。 */
+      .cap-title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        text-decoration: none;
+        color: inherit;
+      }
+      .cap-title:hover .cap-name {
+        text-decoration: underline;
+      }
       .cap-name {
         font-size: 13px;
         font-weight: 600;
@@ -106,12 +124,8 @@
         justify-content: flex-end;
         gap: 6px;
       }
-      /* 详情里的动作行靠左（列表行里的动作列靠右） */
-      .cap-detail-actions {
-        justify-content: flex-start;
-      }
 
-      /* 4 条 condition 的简态：每条一个 chip，点开详情看 reason/message。
+      /* 4 条 condition 的简态：每条一个 chip，点进详情看 reason/message。
          CAP-1：固定列宽（不是 flex 自适应）—— 文案长短不再决定 chip 宽度，
          四列在每一行都落在同一条竖线上，行与行之间不再搓齿。列宽取「英文最长的
          Downstream resolved 也放得下」，实在放不下就在列内折行（不省略号，保信息）。 */
@@ -177,157 +191,16 @@
         color: var(--muted);
       }
 
-      /* ---------- 详情区 ---------- */
-      .cap-detail {
-        grid-column: 1 / -1;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding-top: 10px;
-        border-top: 1px solid var(--line);
-      }
-      .cap-sec {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        min-width: 0;
-      }
-      .cap-sec-title {
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        color: var(--muted);
-      }
-      .cap-detail-empty {
-        font-size: 11px;
-        color: var(--faint);
-      }
-      .cap-kv {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 6px;
-        font-size: 11px;
-      }
-      .cap-kv-key {
-        color: var(--faint);
-      }
-      .cap-kv-val {
-        color: var(--text);
-        overflow-wrap: anywhere;
-      }
+      /* 行内小字（安装来源、下游简态等） */
       .cap-mono {
         font-family: var(--font-mono);
         font-size: 10.5px;
         color: var(--faint);
         overflow-wrap: anywhere;
       }
-      .cap-detail-pre {
-        margin: 0;
-        padding: 8px 10px;
-        max-height: 14rem;
-        overflow: auto;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-        color: var(--text);
-        font-size: 11px;
-        line-height: 1.6;
-      }
-      .cap-script-pre {
-        margin: 0;
-        padding: 8px 10px;
-        max-height: 22rem;
-        overflow: auto;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-        color: var(--text);
-        font-size: 11px;
-        line-height: 1.6;
-        white-space: pre;
-      }
-      .cap-file {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-        min-width: 0;
-      }
-      .cap-file-head {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-      }
-      .cap-file-path {
-        font-family: var(--font-mono);
-        font-size: 11px;
+      .cap-kv-val {
         color: var(--text);
         overflow-wrap: anywhere;
-      }
-
-      /* 条件明细：type / status / reason / message 四件都要看得见 */
-      .cap-cond {
-        display: grid;
-        grid-template-columns: 9.5rem minmax(0, 1fr);
-        gap: 2px 10px;
-        padding: 6px 8px;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-      }
-      @media (max-width: 620px) {
-        .cap-cond {
-          grid-template-columns: minmax(0, 1fr);
-        }
-      }
-      .cap-cond-type {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-family: var(--font-mono);
-        font-size: 10.5px;
-        color: var(--text);
-      }
-      .cap-cond-body {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 6px;
-        font-size: 11px;
-        color: var(--muted);
-        overflow-wrap: anywhere;
-      }
-      .cap-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        flex: none;
-        background: var(--faint);
-      }
-      .cap-dot.is-ok {
-        background: var(--success);
-      }
-      .cap-dot.is-bad {
-        background: var(--warn);
-      }
-      .cap-dot.is-missing {
-        background: var(--faint);
-      }
-
-      /* 节点 / 下游 / 留痕 的平铺项 */
-      .cap-line {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 0;
-        border-bottom: 1px dashed var(--line);
-        font-size: 11px;
-        color: var(--muted);
-      }
-      .cap-line:last-child {
-        border-bottom: 0;
       }
       .cap-missing {
         color: var(--warn);
@@ -335,44 +208,23 @@
       .cap-unready {
         color: var(--warn);
       }
-      .cap-terminal {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 8px;
-        border: 1px dashed color-mix(in srgb, var(--accent) 30%, transparent);
-        border-radius: var(--r-sm);
-        background: var(--accent-soft);
-        color: var(--accent);
+      .cap-detail-empty {
         font-size: 11px;
+        color: var(--faint);
       }
-
-      /* ---------- 版本历史 ---------- */
-      .cap-ver-row {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 8px;
-        border: 1px solid var(--line);
-        border-radius: var(--r-sm);
-        background: var(--surface-2);
-        font-size: 11px;
-      }
-      .cap-ver-row.is-current {
-        border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-      }
-      .cap-ver-no {
-        font-family: var(--font-mono);
-        font-size: 11px;
-        color: var(--text);
-      }
-      .cap-ver-body {
+      .cap-hint-list {
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 3px;
         margin-top: 4px;
+      }
+      .cap-hint-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--muted);
       }
 
       /* ---------- 弹层 ---------- */
@@ -572,20 +424,6 @@
         font-size: 13px;
         color: var(--text);
       }
-      .cap-hint-list {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-        margin-top: 4px;
-      }
-      .cap-hint-line {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        font-size: 11px;
-        color: var(--muted);
-      }
 
       /* ---------- 搜索无结果（W2-2）----------
          旧实现：1280px 宽的框里一行「没有匹配的能力」，没有图标也没有下一步。
@@ -626,6 +464,10 @@
       .cap-skel .skeleton + .skeleton {
         width: 62%;
       }
+      /* 从 YAML 创建（契约 §5.1）：粘贴区要保持够高，否则长文档在弹层里只剩一条缝 */
+      #cap-yaml-input {
+        min-height: 22rem;
+      }
     </style>
 {{end}}
 
@@ -639,6 +481,7 @@
       </div>
       <div class="page-actions">
         <button type="button" id="caps-refresh" class="btn btn-ghost">{{t "caps.refresh"}}</button>
+        <button type="button" id="caps-yaml" class="btn">{{t "caps.yaml.open"}}</button>
         <button type="button" id="caps-new" class="btn btn-primary">+ {{t "caps.new"}}</button>
       </div>
     </div>
@@ -709,9 +552,11 @@
   </div>
 </div>
 
-<!-- 能力编辑器：创建与编辑共用一份表单（metadata / params / next / run / requires /
-     lifecycle / concurrency）。挂在 #page-main 之外：.reveal 的 transform 会给
-     position:fixed 造包含块，弹层就不再相对视口定位。 -->
+<!-- 新建能力（#385 三步向导：基础 / 脚本 / 高级）。
+     编辑既有能力不在这里 —— 它需要 `?includeBody=true` 的全文与冲突重载，
+     跟能力详情一起放在 capability.html（同一个 #cap-modal 的形状，字段 id 相同）。
+     挂在 #page-main 之外：.reveal 的 transform 会给 position:fixed 造包含块，
+     弹层就不再相对视口定位。 -->
 <div id="cap-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cap-modal-title">
   <div class="modal-panel cap-modal-wide">
     <div class="modal-head">
@@ -727,13 +572,6 @@
         <div id="cap-banner-actions" class="cap-banner-actions"></div>
       </div>
 
-      <!-- #385：新建能力改「分步向导」（评审 §7.8 M11）。390×844 实测弹层滚动体
-           2415 / 593 = 4.1 屏、15 个字段；现在 ≤3 步、每步只留该步必要的字段：
-             1 基础   模板 / 名称* / 显示名 / 版本
-             2 脚本   入口 / 文件（脚本正文）/ 参数契约
-             3 高级   下游事件（下一步） + 两个可折叠块（运行环境与并发、依赖与生命周期）
-           编辑既有能力**不进向导**（编辑是改一份已存的 spec，逐项对照比逐步更省事）：
-           下面每个 [data-cap-step] 分组在编辑模式下全部展开，步骤条隐藏。 -->
       <div id="cap-steps" class="cap-steps hidden">
         <span class="cap-step cap-step-current" data-step-chip="1"><b>1</b>{{t "caps.form.step_basics"}}</span>
         <span class="cap-step" data-step-chip="2"><b>2</b>{{t "caps.form.step_script"}}</span>
@@ -742,10 +580,8 @@
 
       <!-- ---------- 第 1 步：基础 ---------- -->
       <div class="cap-step-body" data-cap-step="1">
-        <!-- #379：内置能力模板（GET /v1/capability-templates，cluster 公共读模型）。
-             选模板 → 预填名称/params/next/脚本骨架；params 契约由模板字段推导，
-             不需要手写 JSON Schema。「从空白开始」保留原有手填路径。
-             #385：模板是向导的第 1 步 —— 先选「做什么」，名字与显示名跟着预填。 -->
+        <!-- #379：内置能力模板（GET /v1/capability-templates）。选模板 → 预填
+             名称/params/next/脚本骨架；「从空白开始」保留原有手填路径。 -->
         <div id="cap-template-wrap" class="field hidden">
           <label class="field-label" for="cap-template">{{t "caps.form.template"}}</label>
           <select id="cap-template" class="select"></select>
@@ -908,49 +744,29 @@
   </div>
 </div>
 
-<!-- 人工部署：选版本 + 选节点（不选 = 服务端按现有策略选候选）。
-     安装包保存/install 都不会自动部署，这一点在弹层里写明。 -->
-<div id="deploy-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="deploy-title">
+<!-- 从 YAML 创建（契约 §5.1）：粘贴一份 Capability 文档 → POST .../capabilities/yaml。
+     与 #cap-modal 同一条规则挂在 #page-main 之外：.reveal 的 transform 会给
+     position:fixed 造包含块，弹层就不再相对视口定位。
+     前端不解析 YAML（D8）：textarea 原文整份发给服务端，带行号的定位由服务端给。 -->
+<div id="cap-yaml-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="cap-yaml-title">
   <div class="modal-panel">
     <div class="modal-head">
-      <h3 id="deploy-title">{{t "caps.deploy.title"}}</h3>
-      <button id="deploy-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+      <h3 id="cap-yaml-title">{{t "caps.yaml.title"}}</h3>
     </div>
     <div class="modal-body">
-      <p class="field-hint mb-3">{{t "caps.deploy.hint"}}</p>
-      <div class="field">
-        <label class="field-label" for="deploy-version">{{t "caps.deploy.version"}}</label>
-        <select id="deploy-version" class="select mono"></select>
-      </div>
-      <div class="field mt-3">
-        <label class="field-label">{{t "caps.deploy.nodes"}}</label>
-        <div id="deploy-nodes" class="cap-rows"></div>
-        <p id="deploy-nodes-hint" class="field-hint">{{t "caps.deploy.nodes_hint"}}</p>
-      </div>
-      <p id="deploy-msg" class="field-error hidden"></p>
+      <textarea
+        id="cap-yaml-input"
+        class="textarea mono"
+        rows="18"
+        spellcheck="false"
+        aria-label="{{t "caps.yaml.title"}}"
+      ></textarea>
+      <p class="field-hint">{{t "caps.yaml.hint"}}</p>
+      <div id="cap-yaml-msg" class="field-error" role="alert"></div>
     </div>
     <div class="modal-foot">
-      <button id="deploy-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
-      <button id="deploy-submit" type="button" class="btn">{{t "caps.deploy.submit"}}</button>
-    </div>
-  </div>
-</div>
-
-<!-- 删除：直接删逻辑资源，不级联改引用方；CAS 用 ?resourceVersion= -->
-<div id="del-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="del-title">
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 id="del-title">{{t "caps.delete.title"}}</h3>
-      <button id="del-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
-    </div>
-    <div class="modal-body">
-      <p id="del-body"></p>
-      <p id="del-rv" class="cap-mono"></p>
-      <p id="del-msg" class="field-error hidden"></p>
-    </div>
-    <div class="modal-foot">
-      <button id="del-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
-      <button id="del-submit" type="button" class="btn btn-danger">{{t "caps.delete.submit"}}</button>
+      <button type="button" id="cap-yaml-cancel" class="btn btn-ghost">{{t "caps.yaml.cancel"}}</button>
+      <button type="button" id="cap-yaml-submit" class="btn btn-primary">{{t "caps.yaml.submit"}}</button>
     </div>
   </div>
 </div>
@@ -958,32 +774,32 @@
 
 {{define "script"}}
     <script>
-      /* 能力页（v4）：列表 → 详情 → 编辑/创建 → 人工部署 → 删除 → 版本历史。
+      /* 能力列表页（v4）：列表 → 新建。
        *
-       * 数据层只用 canonical 层：nsList/nsApi（先引导 scope 再拼 ns 路径）、
-       * model.capability（读投影）、writable/withResourceVersion/deletePath（写请求）、
-       * isConflict（409 resource_version_conflict）。页面不自己拼扁平路径、
-       * 不读旧字段、失败不伪造数据（错误态交给 loadErrorNode）。 */
+       * 2026-11 拆分：详情、编辑、部署、删除、版本历史搬到独立页
+       * capability.html?namespace=<ns>&name=<cap>（行标题即深链）。本页只负责
+       * 「找得到、建得出」：搜索 / 筛选 / 计数 / 空态 / 刷新 + 新建向导。
+       * 列表状态（搜索词、筛选、滚动位置）在离开列表时写进 sessionStorage，
+       * 详情页的「返回列表」带 ?restore=1 回来还原（见 §列表状态保留）。
+       *
+       * 数据层只用 canonical 层：nsList/nsPath/model.capability/writable、
+       * loadErrorNode；失败不伪造数据。 */
       const t = (k, d) => (window.AnotifyI18n && window.AnotifyI18n[k]) || d || k;
       const A = window.Anotify;
       const {
         el,
         api,
-        nsApi,
         nsList,
         nsPath,
         model,
         writable,
-        withResourceVersion,
-        deletePath,
-        isConflict,
-        itemsOf,
         loadErrorNode,
         openModal,
         closeModal,
         toast,
         ready,
         parseJSON,
+        readScope,
       } = A;
 
       A.mountLayout({
@@ -999,11 +815,7 @@
       let LOADING = true;
       let SEARCH = "";
       let FILTER = "all";
-      const OPEN = new Set(); // 展开详情的能力名（renderList 会整体重建，得记住）
-      const VERS = new Map(); // 能力名 → 版本历史面板状态（懒加载）
-      let EDIT = null; // {mode:"create"|"edit", res, name}
-      let DEPLOY = null; // {res, versions, selectedVersion}
-      let DEL = null; // {res, snapshot}：res 是当前要删的资源，snapshot 是打开弹层时的原文档（撤销重建用）
+      let EDIT = null; // 新建向导的上下文（只有 create 一种模式）
       let BUSY = false;
 
       // 四个 condition 的固定顺序（capability.md §2：派生面固定四条）
@@ -1012,6 +824,11 @@
       const REF_RE = /^[a-z0-9][a-z0-9._-]{0,62}(@[1-9][0-9]*)?$/;
       const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
       const VALUE_REF_RE = /^vars\.[A-Z][A-Z0-9_]{0,63}$/;
+
+      /* 列表状态快照：详情页的「返回列表」带 restore=1 回来时还原。
+         超过 30 分钟的快照当作过期（换了一个会话上下文，还原反而突兀）。 */
+      const LIST_KEY = "anotify.caps.list";
+      const RESTORE_MAX_MS = 30 * 60 * 1000;
 
       const $ = (id) => document.getElementById(id);
 
@@ -1024,31 +841,10 @@
         n.textContent = text == null ? "" : String(text);
         return n;
       }
-      function numOr(v, dflt) {
-        const n = Number(v);
-        return Number.isFinite(n) ? n : dflt;
-      }
       function intOr(v, dflt, min) {
         const n = Number(v);
         if (!Number.isInteger(n) || n < min) return dflt;
         return n;
-      }
-      function fmtTime(iso) {
-        if (!iso) return "—";
-        const d = new Date(iso);
-        if (Number.isNaN(d.getTime())) return String(iso);
-        try {
-          return d.toLocaleString();
-        } catch (e) {
-          return String(iso);
-        }
-      }
-      function shortDigest(d) {
-        const s = String(d || "");
-        if (!s) return "—";
-        const parts = s.split(":");
-        const hex = parts.length > 1 ? parts[1] : parts[0];
-        return parts[0] + ":" + hex.slice(0, 12) + (hex.length > 12 ? "…" : "");
       }
       function sub(template, pairs) {
         let out = template;
@@ -1060,17 +856,17 @@
         if (err.reason) return err.reason + (err.message ? " · " + err.message : "");
         return err.message || String(err);
       }
-      function fieldPathOf(val) {
-        if (!isObj(val) || !isObj(val.valueFrom) || !isObj(val.valueFrom.fieldRef)) return "";
-        return val.valueFrom.fieldRef.fieldPath == null ? "" : String(val.valueFrom.fieldRef.fieldPath);
+      function refName(ref) {
+        const s = String(ref || "");
+        const at = s.lastIndexOf("@");
+        return at > 0 ? s.slice(0, at) : s;
       }
-
-      // 子资源与写请求都走同一对 helper：先 await ready() 再拼 ns 路径。
-      // （nsApi 只处理「资源本体」的两段路径；子资源要在其后拼 /versions、/deploy。）
-      async function capApi(name, suffix) {
-        if (!suffix) return nsApi("capabilities", name);
-        await ready();
-        return api(nsPath("capabilities", name) + suffix);
+      /* 行标题 / 动作列指向详情页的唯一链接形状。 */
+      function detailHref(name) {
+        return (
+          "capability.html?" +
+          new URLSearchParams({ namespace: readScope().namespace || "", name: name || "" })
+        );
       }
       function writeOpts(method, body) {
         return {
@@ -1079,7 +875,6 @@
           body: JSON.stringify(body),
         };
       }
-
       function condOf(m, type) {
         const list = Array.isArray(m.conditions) ? m.conditions : [];
         return list.find((c) => c && c.type === type) || null;
@@ -1087,38 +882,55 @@
       function condTypeLabel(type) {
         return t("caps.cond." + type, type);
       }
-      function stateLabel(state) {
-        return t("caps.nodes." + state, state || "—");
-      }
-      function stateTone(state) {
-        if (state === "deployed") return "is-ok";
-        if (state === "stale") return "is-bad";
-        return "is-missing";
-      }
-      function refName(ref) {
-        const s = String(ref || "");
-        const at = s.lastIndexOf("@");
-        return at > 0 ? s.slice(0, at) : s;
-      }
 
-      // 版本历史与部署选版本的 wire 形状：CapabilityList.items，每项都是**同一个
-      // Capability 信封**（versions 不是独立 kind）。wire 上没有自造的 current 字段，
-      // “当前版本”按 max(metadata.version) 判定。
-      function versionIndexOf(res) {
-        const m = model.capability(res);
-        return {
-          version: m.version,
-          digest: m.status && m.status.digest != null ? m.status.digest : null,
-          createdAt: res && res.metadata ? res.metadata.creationTimestamp || null : null,
-        };
-      }
-      function currentVersionOf(items) {
-        let max = null;
-        for (const res of items || []) {
-          const v = versionIndexOf(res).version;
-          if (Number.isInteger(v) && (max == null || v > max)) max = v;
+      /* ========================= 列表状态保留 ========================= */
+      function saveListState() {
+        try {
+          sessionStorage.setItem(
+            LIST_KEY,
+            JSON.stringify({
+              q: SEARCH,
+              filter: FILTER,
+              scrollY: Math.round(window.scrollY || 0),
+              savedAt: Date.now(),
+            }),
+          );
+        } catch (e) {
+          /* 隐私模式写不进去：只是少了还原，不影响功能 */
         }
-        return max;
+      }
+      function readListState() {
+        try {
+          const raw = sessionStorage.getItem(LIST_KEY);
+          if (!raw) return null;
+          const st = JSON.parse(raw);
+          if (!st || typeof st !== "object") return null;
+          if (typeof st.savedAt !== "number" || Date.now() - st.savedAt > RESTORE_MAX_MS) return null;
+          return st;
+        } catch (e) {
+          return null;
+        }
+      }
+      function dropListState() {
+        try {
+          sessionStorage.removeItem(LIST_KEY);
+        } catch (e) {
+          /* 同上 */
+        }
+      }
+      /* 只在 `?restore=1` 且快照新鲜时还原；返回要滚回的 Y（没有就 null）。
+         还原后立刻删快照：下次不带 restore=1 干净进入时不会被旧条件筛掉列表。 */
+      function restoreListState() {
+        const params = new URLSearchParams(location.search);
+        if (params.get("restore") !== "1") return null;
+        const st = readListState();
+        if (!st) return null;
+        SEARCH = typeof st.q === "string" ? st.q : "";
+        FILTER = typeof st.filter === "string" ? st.filter : "all";
+        $("caps-search").value = SEARCH;
+        $("caps-filter").value = FILTER;
+        dropListState();
+        return Number.isFinite(st.scrollY) ? st.scrollY : 0;
       }
 
       /* ============================ 列表 ============================ */
@@ -1131,7 +943,7 @@
           /* CapabilityList 是**同名多版本各一行**（resource.yaml·listCapabilities：
            * "name 升序、版本降序"）——那是给版本对比用的清单形状，不是列表页的行。
            * 列表页一行 = 一个能力名，所以这里按 name 归并、只留最高版本；
-           * 每个名字的全部版本仍在行内的「版本历史」里逐个可见。 */
+           * 每个名字的全部版本在详情页的「版本历史」里逐个可见。 */
           const latest = new Map();
           for (const item of res.items) {
             const meta = model.capability(item);
@@ -1198,8 +1010,7 @@
         const rows = visibleCaps();
         const filtering = SEARCH.trim() !== "" || FILTER !== "all";
         if (summary) {
-          // W2-2：搜索/筛选生效时显示「共 N · 匹配 M」，不再永远写总数（旧实现
-          // 在「没有匹配的能力」时右上角仍写「8 个能力」）。
+          // W2-2：搜索/筛选生效时显示「共 N · 匹配 M」，不再永远写总数。
           summary.textContent = filtering
             ? sub(t("uxaudit.work.cap_count_filtered", "共 {total} 个 · 匹配 {shown} 个"), {
                 total: CAPS.length,
@@ -1233,6 +1044,7 @@
             $("caps-search").value = "";
             $("caps-filter").value = "all";
             renderList();
+            saveListState();
           });
           box.append(
             ...(tpl ? [tpl.content.cloneNode(true)] : []),
@@ -1260,9 +1072,7 @@
       function condChip(m, type) {
         const c = condOf(m, type);
         const ok = !!c && c.status === "True";
-        // CAP-1：chip 里不再写 ✓ / ✗ —— 一枚彩色 dot 表达同一个语义，且不占字宽
-        // （✓/✗ 在中英混排里宽度不一，正是各行 badge 对不齐的一半原因）。
-        // 文案本身一个字都没动：仍是 condTypeLabel(type)。
+        // CAP-1：chip 里不再写 ✓ / ✗ —— 一枚彩色 dot 表达同一个语义，且不占字宽。
         const chip = el("span", {
           class: "cap-cond-chip" + (c ? (ok ? " is-ok" : " is-bad") : ""),
         });
@@ -1282,20 +1092,23 @@
 
       function renderRow(cap) {
         const m = model.capability(cap);
-        const open = OPEN.has(m.name);
         const row = el("div", { class: "list-row cap-row" });
         row.setAttribute("data-cap", m.name || "");
 
         const main = el("div", { class: "list-main" });
         const title = el("div", { class: "cap-row-title" });
-        title.append(txt("span", "cap-name mono", m.name || "—"));
+        /* 行标题即深链：整块可点（名字 + 显示名 + 版本），与源列表同一交互。
+           .cap-title 是 <a>，所以键盘 Tab / 浏览器状态栏 / 中键新标签页都免费可用。 */
+        const openLink = el("a", { class: "cap-title", href: detailHref(m.name) });
+        openLink.setAttribute("data-act", "open");
+        openLink.append(txt("span", "cap-name mono", m.name || "—"));
         if (m.displayName) {
           const displayName = txt("span", "cap-kv-val", m.displayName);
           displayName.setAttribute("data-raw-content", "");
-          title.append(txt("span", "cap-sep", "·"), displayName);
+          openLink.append(txt("span", "cap-sep", "·"), displayName);
         }
-        title.append(txt("span", "cap-ver", "v" + (m.version == null ? "—" : m.version)));
-        title.append(readyBadge(m));
+        openLink.append(txt("span", "cap-ver", "v" + (m.version == null ? "—" : m.version)));
+        title.append(openLink, readyBadge(m));
         main.append(title);
 
         const meta = el("div", { class: "list-meta cap-row-meta" });
@@ -1335,449 +1148,18 @@
         for (const type of COND_TYPES) conds.append(condChip(m, type));
         row.append(conds);
 
+        /* 动作列只留一个「详情」链接：编辑、部署、删除、版本历史都在详情页，
+           避免同一个动作在页面上出现两份（也避免误点）。 */
         const actions = el("div", { class: "cap-row-actions" });
-        const detailBtn = el("button", {
-          type: "button",
-          class: "btn btn-ghost btn-sm",
-          text: open ? t("caps.detail.hide", "收起") : t("caps.detail.btn", "详情"),
-          onclick: () => {
-            if (OPEN.has(m.name)) OPEN.delete(m.name);
-            else OPEN.add(m.name);
-            renderList();
-          },
-        });
-        detailBtn.setAttribute("aria-expanded", open ? "true" : "false");
-        // 列表行只留「展开/收起」：编辑、部署、删除都在详情面板里，
-        // 避免同一个动作在页面上出现两份（也避免误点）。
-        actions.append(detailBtn);
+        const detailLink = el("a", { class: "btn btn-ghost btn-sm", href: detailHref(m.name), text: t("caps.detail.btn", "详情") });
+        detailLink.setAttribute("data-act", "open");
+        actions.append(detailLink);
         row.append(actions);
 
-        if (open) row.append(renderDetail(cap));
         return row;
       }
 
-      /* ============================ 详情面板 ============================ */
-      function section(titleKey, wire, hint) {
-        const s = el("div", { class: "cap-sec" });
-        if (wire) s.setAttribute("data-sec", wire);
-        s.append(txt("div", "cap-sec-title", t(titleKey)));
-        if (hint) s.append(txt("div", "cap-detail-empty", hint));
-        return s;
-      }
-      function kvLine(label, value, mono) {
-        const line = el("span", { class: "cap-kv" });
-        line.append(
-          txt("span", "cap-kv-key", label + "："),
-          txt("span", "cap-kv-val" + (mono ? " mono" : ""), value == null || value === "" ? "—" : value),
-        );
-        return line;
-      }
-      function preBlock(text, cls) {
-        const pre = el("pre", { class: cls || "cap-detail-pre" });
-        pre.textContent = text == null ? "" : String(text);
-        return pre;
-      }
-
-      function condRow(c) {
-        const row = el("div", { class: "cap-cond" });
-        const type = el("div", { class: "cap-cond-type" });
-        type.append(
-          el("span", { class: "cap-dot " + (c.status === "True" ? "is-ok" : "is-bad") }),
-          txt("span", null, c.type || "—"),
-        );
-        const body = el("div", { class: "cap-cond-body" });
-        body.append(txt("span", "cap-kv-val", c.status == null ? "—" : String(c.status)));
-        if (c.reason) body.append(txt("span", "cap-mono", String(c.reason)));
-        if (c.message) body.append(txt("span", null, String(c.message)));
-        row.append(type, body);
-        return row;
-      }
-
-      function resolvedLine(r) {
-        const line = el("div", { class: "cap-line" });
-        const missing = r.missing === true;
-        const ok = r.ready === true && !missing;
-        line.append(
-          el("span", { class: "cap-dot " + (missing ? "is-bad" : ok ? "is-ok" : "is-bad") }),
-          txt("span", "cap-kv-val mono", r.name == null ? "—" : r.name),
-        );
-        if (r.version != null) line.append(txt("span", "cap-mono", "v" + r.version));
-        if (r.digest) line.append(txt("span", "cap-mono", shortDigest(r.digest)));
-        if (missing) {
-          line.append(txt("span", "cap-missing", t("caps.resolved.missing", "解析不到")));
-          if (r.reason) line.append(txt("span", "cap-mono", String(r.reason)));
-        } else {
-          line.append(
-            txt("span", ok ? null : "cap-unready", ok ? t("caps.resolved.ready", "可执行") : t("caps.resolved.not_ready", "不可执行")),
-          );
-          if (r.reason) line.append(txt("span", "cap-mono", String(r.reason)));
-        }
-        const required = isObj(r.params) && Array.isArray(r.params.required) ? r.params.required : [];
-        line.append(
-          txt(
-            "span",
-            "cap-kv-key",
-            required.length
-              ? sub(t("caps.resolved.params_required", "需要的参数：{p}"), { p: required.join(", ") })
-              : t("caps.resolved.no_params", "不需要参数"),
-          ),
-        );
-        return line;
-      }
-
-      function renderDetail(cap) {
-        const m = model.capability(cap);
-        const box = el("div", { class: "cap-detail" });
-
-        // 动作：编辑 / 人工部署 / 删除（版本历史在下面的独立小节里）
-        const actions = el("div", { class: "cap-row-actions cap-detail-actions" });
-        const editBtn = el("button", {
-          type: "button",
-          class: "btn btn-sm",
-          text: t("caps.detail.edit", "编辑"),
-          onclick: () => openEditor("edit", cap),
-        });
-        editBtn.setAttribute("data-act", "edit");
-        const deployBtn = el("button", {
-          type: "button",
-          class: "btn btn-ghost btn-sm",
-          text: t("caps.detail.deploy", "部署"),
-          onclick: () => openDeploy(cap),
-        });
-        deployBtn.setAttribute("data-act", "deploy");
-        const deleteBtn = el("button", {
-          type: "button",
-          class: "btn btn-danger btn-sm",
-          text: t("caps.detail.delete", "删除"),
-          onclick: () => openDelete(cap),
-        });
-        deleteBtn.setAttribute("data-act", "delete");
-        actions.append(
-          editBtn,
-          deployBtn,
-          deleteBtn,
-          txt("span", "field-hint", t("caps.deploy.hint", "安装包保存或 install 都不会自动部署；部署只在这里发生。")),
-        );
-        box.append(actions);
-
-        // 身份：版本 / digest / resourceVersion / 安装来源
-        const idsec = el("div", { class: "cap-sec" });
-        const idrow = el("div", { class: "cap-kv" });
-        idrow.append(
-          kvLine(t("caps.spec.version", "版本"), "v" + (m.version == null ? "—" : m.version)),
-          kvLine(t("caps.spec.digest", "digest"), shortDigest(m.status.digest), true),
-          kvLine(t("caps.detail.rv", "resourceVersion"), m.resourceVersion || "—", true),
-          kvLine(t("caps.spec.installed_from", "安装来源"), m.installedFrom || "—", Boolean(m.installedFrom)),
-        );
-        idsec.append(idrow);
-        box.append(idsec);
-
-        // 四条 condition：type / status / reason / message 全显示
-        const csec = section("caps.cond.title", "conditions");
-        if (!m.conditions.length) csec.append(txt("p", "cap-detail-empty", t("caps.cond.none", "服务端没有返回条件")));
-        for (const c of m.conditions) csec.append(condRow(c));
-        box.append(csec);
-
-        // 节点上的部署状态（deployed / stale / missing）
-        const nsec = section("caps.nodes.title", "nodes");
-        if (!m.nodes.length) nsec.append(txt("p", "cap-detail-empty", t("caps.nodes.held_empty", "还没有节点持有这份能力（点「部署」下发）")));
-        for (const n of m.nodes) {
-          const line = el("div", { class: "cap-line" });
-          line.append(
-            el("span", { class: "cap-dot " + stateTone(n.state) }),
-            txt("span", "cap-kv-val mono", n.name == null ? "—" : n.name),
-            txt("span", stateTone(n.state) === "is-bad" ? "cap-missing" : null, stateLabel(n.state)),
-          );
-          nsec.append(line);
-        }
-        box.append(nsec);
-
-        // 下游解析：每条都要 name / version / digest / ready / missing / required 明细
-        const rsec = section("caps.resolved.title", "resolved");
-        if (!m.resolvedNext.length) {
-          const term = el("div", { class: "cap-terminal" });
-          term.append(txt("span", null, t("caps.resolved.empty", "终端能力：跑完就结束，不再交给下游")));
-          rsec.append(term);
-        }
-        for (const r of m.resolvedNext) rsec.append(resolvedLine(r));
-        box.append(rsec);
-
-        // 最近一次运行的留痕（observed）：明细数组，不是只给计数；无历史时如实空态
-        const osec = section("caps.observed.title", "observed");
-        const ob = m.observed || { taskId: null, emits: [], pruned: [], tasks: {} };
-        const obTasks = isObj(ob.tasks) ? ob.tasks : {};
-        const hasObserved =
-          Boolean(ob.taskId) || (ob.emits && ob.emits.length) || (ob.pruned && ob.pruned.length) ||
-          obTasks.total != null || obTasks.failed != null;
-        if (!hasObserved) {
-          osec.append(txt("p", "cap-detail-empty", t("caps.observed.empty", "没有保留历史（清理后 observed 为空，不杜撰时间）")));
-        } else {
-          const okv = el("div", { class: "cap-kv" });
-          okv.append(
-            kvLine(t("caps.observed.task", "最近任务"), ob.taskId || "—", Boolean(ob.taskId)),
-            kvLine(t("caps.observed.tasks", "任务总数"), obTasks.total == null ? "—" : obTasks.total),
-            kvLine(t("caps.observed.tasks_failed", "失败"), obTasks.failed == null ? "—" : obTasks.failed),
-          );
-          osec.append(okv);
-          osec.append(txt("div", "cap-kv-key", t("caps.observed.emits", "派出记录")));
-          if (!ob.emits || !ob.emits.length) {
-            osec.append(txt("p", "cap-detail-empty", t("caps.observed.emits_empty", "这次运行没有 emit")));
-          } else {
-            for (const e of ob.emits) {
-              const line = el("div", { class: "cap-line" });
-              line.append(txt("span", "cap-mono", String(e.to == null ? "—" : e.to)));
-              const fields = Array.isArray(e.fields) ? e.fields : [];
-              line.append(
-                txt(
-                  "span",
-                  null,
-                  fields.length
-                    ? sub(t("caps.observed.fields", "字段：{f}"), { f: fields.join(", ") })
-                    : t("caps.observed.no_fields", "无字段"),
-                ),
-              );
-              line.append(txt("span", e.ok === false ? "cap-missing" : null, e.ok === false ? "✗" : "✓"));
-              osec.append(line);
-            }
-          }
-          osec.append(txt("div", "cap-kv-key", t("caps.observed.pruned", "剪枝留痕")));
-          if (!ob.pruned || !ob.pruned.length) {
-            osec.append(txt("p", "cap-detail-empty", t("caps.observed.pruned_empty", "这次运行没有剪枝")));
-          } else {
-            for (const p of ob.pruned) {
-              const line = el("div", { class: "cap-line" });
-              line.append(
-                txt("span", "cap-mono", String(p.to == null ? "—" : p.to)),
-                txt("span", "cap-missing", String(p.reason == null ? "—" : p.reason)),
-              );
-              if (p.detail) line.append(txt("span", null, String(p.detail)));
-              osec.append(line);
-            }
-          }
-        }
-        box.append(osec);
-
-        // 定义（spec）：params / next / run / requires / lifecycle / concurrency
-        const spec = isObj(m.spec) ? m.spec : {};
-        const run = isObj(spec.run) ? spec.run : {};
-        const ssec = section("caps.spec.title", "spec");
-        ssec.append(txt("div", "cap-kv-key", t("caps.spec.params", "参数契约（JSON Schema）")));
-        ssec.append(preBlock(JSON.stringify(isObj(spec.params) ? spec.params : {}, null, 2)));
-        const nextRefs = Array.isArray(spec.next) ? spec.next : [];
-        const nextRow = el("div", { class: "cap-kv" });
-        nextRow.append(
-          txt("span", "cap-kv-key", t("caps.spec.next", "下游（next）") + "："),
-          txt("span", "cap-kv-val mono", nextRefs.length ? nextRefs.join(" → ") : t("caps.terminal_short", "终端能力（跑完就结束）")),
-        );
-        ssec.append(nextRow);
-        ssec.append(
-          kvLine(t("caps.spec.entrypoint", "入口"), run.entrypoint || "—", true),
-          kvLine(t("caps.spec.workdir", "工作目录"), run.workDir || t("caps.spec.workdir_default", "未设置（每次任务独立目录）"), Boolean(run.workDir)),
-        );
-        const envNames = isObj(run.env) ? Object.keys(run.env) : [];
-        if (envNames.length) {
-          const envRows = el("div", { class: "cap-kv" });
-          envRows.append(txt("span", "cap-kv-key", t("caps.spec.env", "环境变量（env）") + "："));
-          for (const key of envNames) {
-            const path = fieldPathOf(run.env[key]);
-            envRows.append(
-              txt(
-                "span",
-                "cap-kv-val mono",
-                key + " = " + (path ? t("caps.spec.valuefrom", "取自") + " " + path : JSON.stringify(run.env[key])),
-              ),
-            );
-          }
-          ssec.append(envRows);
-        }
-        const reqSpec = isObj(spec.requires) ? spec.requires : {};
-        const cmds = Array.isArray(reqSpec.commands) ? reqSpec.commands : [];
-        const vals = Array.isArray(reqSpec.values) ? reqSpec.values : [];
-        const reqRow = el("div", { class: "cap-kv" });
-        reqRow.append(
-          kvLine(t("caps.spec.commands", "命令"), cmds.length ? cmds.join(", ") : "—", Boolean(cmds.length)),
-          kvLine(t("caps.spec.values", "值"), vals.length ? vals.join(", ") : "—", Boolean(vals.length)),
-        );
-        ssec.append(reqRow);
-        const lc = isObj(spec.lifecycle) ? spec.lifecycle : {};
-        const conc = isObj(spec.concurrency) ? spec.concurrency : {};
-        const lcRow = el("div", { class: "cap-kv" });
-        lcRow.append(
-          kvLine(t("caps.spec.idempotent", "幂等"), lc.idempotent === true ? "true" : "false", true),
-          kvLine(t("caps.spec.max_attempts", "最大尝试"), lc.maxAttempts == null ? "—" : lc.maxAttempts),
-          kvLine(t("caps.spec.result_ttl", "结果保留（秒）"), lc.resultTtlSec == null ? "—" : lc.resultTtlSec),
-          kvLine(t("caps.spec.timeout", "执行超时（秒）"), lc.timeoutSec == null ? "—" : lc.timeoutSec),
-          kvLine(t("caps.spec.concurrency", "单节点并发上限"), conc.maxPerNode == null ? "—" : conc.maxPerNode),
-        );
-        ssec.append(lcRow);
-        box.append(ssec);
-
-        // 脚本：run.entrypoint 与 run.files 全文（v4 直接随资源返回，不需要另外的产物接口）
-        const fsec = section("caps.detail.script", "run");
-        const files = isObj(run.files) ? run.files : {};
-        const paths = Object.keys(files);
-        if (!paths.length) {
-          fsec.append(txt("p", "cap-detail-empty", t("caps.detail.script_empty", "这个能力没有脚本文件")));
-        } else {
-          for (const p of paths) {
-            const f = el("div", { class: "cap-file" });
-            const head = el("div", { class: "cap-file-head" });
-            head.append(txt("span", "cap-file-path", p));
-            if (p === run.entrypoint) head.append(txt("span", "badge badge-accent", t("caps.detail.script_entry", "入口文件")));
-            f.append(head, preBlock(files[p] == null ? "" : files[p], "cap-script-pre"));
-            fsec.append(f);
-          }
-        }
-        box.append(fsec);
-
-        // 版本历史：新→旧；点开单版本才拉正文（?includeBody=true），只读查看脚本
-        const vsec = section("caps.detail.versions", "versions");
-        const vst = VERS.get(m.name);
-        const vbtn = el("button", {
-          type: "button",
-          class: "btn btn-ghost btn-sm",
-          text: vst && vst.open ? t("caps.detail.versions_hide", "收起版本") : t("caps.versions.load", "加载版本历史"),
-        });
-        vbtn.setAttribute("data-act", "versions");
-        vbtn.addEventListener("click", () => toggleVersions(m.name));
-        vsec.append(vbtn);
-        if (vst && vst.open) vsec.append(renderVersions(m.name, vst));
-        box.append(vsec);
-
-        return box;
-      }
-
-      /* ============================ 版本历史 ============================ */
-      async function toggleVersions(name) {
-        const st = VERS.get(name);
-        if (st && st.open) {
-          st.open = false;
-          renderList();
-          return;
-        }
-        const next = st || {};
-        next.open = true;
-        next.loading = true;
-        next.err = null;
-        next.items = next.items || [];
-        VERS.set(name, next);
-        renderList();
-        try {
-          const res = await capApi(name, "/versions");
-          next.items = itemsOf(res);
-        } catch (e) {
-          next.err = e;
-        }
-        next.loading = false;
-        renderList();
-      }
-
-      async function loadVersionBody(name, version) {
-        const st = VERS.get(name);
-        if (!st) return;
-        st.bodyName = name;
-        if (st.bodyVersion === version) {
-          st.bodyVersion = null;
-          st.body = null;
-          st.bodyErr = null;
-          renderList();
-          return;
-        }
-        st.bodyVersion = version;
-        st.bodyLoading = true;
-        st.bodyErr = null;
-        st.body = null;
-        renderList();
-        try {
-          st.body = await capApi(
-            name,
-            "/versions/" + encodeURIComponent(String(version)) + "?includeBody=true",
-          );
-        } catch (e) {
-          st.bodyErr = e;
-        }
-        st.bodyLoading = false;
-        renderList();
-      }
-
-      function renderVersions(name, st) {
-        const box = el("div", { class: "cap-rows" });
-        if (st.loading) {
-          const skel = el("div", { class: "cap-skel" });
-          skel.append(el("span", { class: "skeleton" }), el("span", { class: "skeleton" }));
-          box.append(skel);
-          return box;
-        }
-        if (st.err) {
-          box.append(
-            loadErrorNode(st.err, () => {
-              VERS.delete(name);
-              toggleVersions(name);
-            }),
-          );
-          return box;
-        }
-        if (!st.items.length) {
-          box.append(txt("p", "cap-detail-empty", t("caps.versions.empty", "服务端没有返回版本历史")));
-          return box;
-        }
-        const rows = st.items.map(versionIndexOf);
-        const current = currentVersionOf(st.items);
-        for (const v of rows) {
-          const isCurrent = current != null && v.version === current;
-          const row = el("div", { class: "cap-ver-row" + (isCurrent ? " is-current" : "") });
-          row.append(txt("span", "cap-ver-no", "v" + (v.version == null ? "—" : v.version)));
-          if (isCurrent) row.append(txt("span", "badge badge-accent", t("caps.versions.current", "当前")));
-          row.append(txt("span", "cap-mono", shortDigest(v.digest)));
-          row.append(txt("span", "cap-mono", fmtTime(v.createdAt)));
-          const btn = el("button", {
-            type: "button",
-            class: "btn btn-ghost btn-sm",
-            text:
-              st.bodyVersion === v.version
-                ? t("caps.versions.close", "收起正文")
-                : t("caps.versions.open", "查看正文"),
-          });
-          btn.addEventListener("click", () => loadVersionBody(name, v.version));
-          row.append(btn);
-          box.append(row);
-          if (st.bodyVersion === v.version) box.append(renderVersionBody(st));
-        }
-        return box;
-      }
-
-      function renderVersionBody(st) {
-        const wrap = el("div", { class: "cap-ver-body" });
-        if (st.bodyLoading) {
-          const skel = el("div", { class: "cap-skel" });
-          skel.append(el("span", { class: "skeleton" }), el("span", { class: "skeleton" }));
-          wrap.append(skel);
-          return wrap;
-        }
-        if (st.bodyErr) {
-          wrap.append(loadErrorNode(st.bodyErr, () => loadVersionBody(st.bodyName, st.bodyVersion)));
-          return wrap;
-        }
-        const body = st.body || {};
-        const spec = isObj(body.spec) ? body.spec : {};
-        const run = isObj(spec.run) ? spec.run : {};
-        const files = isObj(run.files) ? run.files : {};
-        const paths = Object.keys(files);
-        if (!paths.length) {
-          wrap.append(txt("p", "cap-detail-empty", t("caps.versions.body_empty", "这个版本没有可显示的脚本")));
-          return wrap;
-        }
-        for (const p of paths) {
-          const f = el("div", { class: "cap-file" });
-          const head = el("div", { class: "cap-file-head" });
-          head.append(txt("span", "cap-file-path", p));
-          f.append(head, preBlock(files[p] == null ? "" : files[p], "cap-script-pre"));
-          wrap.append(f);
-        }
-        return wrap;
-      }
-
-      /* ============================ 编辑器 ============================ */
+      /* ============================ 编辑器（新建） ============================ */
       let FILE_ROWS = [];
       let ENV_ROWS = [];
 
@@ -1796,18 +1178,6 @@
         }
         if (!rows.length) {
           rows.push({ path: "run.sh", body: "#!/usr/bin/env bash\nset -euo pipefail\n\n" });
-        }
-        return rows;
-      }
-      function envRowsFrom(env) {
-        const rows = [];
-        if (isObj(env)) {
-          for (const key of Object.keys(env)) {
-            const val = env[key];
-            const path = fieldPathOf(val);
-            if (path) rows.push({ key: key, mode: "valueFrom", value: "", fieldPath: path });
-            else rows.push({ key: key, mode: "literal", value: val == null ? "" : String(val), fieldPath: "" });
-          }
         }
         return rows;
       }
@@ -1965,7 +1335,7 @@
 
       /* ---------- #379：内置能力模板（GET /v1/capability-templates）----------
        * 模板是「代码生成器的输入」：字段 → paramsSchema 由模板字段推导（与后端
-       * 后端 templates.go 的 paramsSchemaFor 同规则：type 映射、select→enum、
+       * templates.go 的 paramsSchemaFor 同规则：type 映射、select→enum、
        * required 排序），所以用户不需要手写 JSON Schema；script/next/requires/
        * timeoutSec 也按模板预填。模板接口取不到时表单照旧可以手填。 */
       let TEMPLATES = null; // null = 未加载；[] = 加载失败/为空
@@ -2091,8 +1461,7 @@
        *   1 基础  模板 / 名称* / 显示名 / 版本
        *   2 脚本  入口 / 文件正文 / 参数契约
        *   3 高级  下游事件（常显）+ 两个可折叠块（运行环境与并发、依赖与生命周期）
-       * 编辑既有能力不进向导：编辑是「对照一份已存的 spec 逐项改」，逐步反而更慢；
-       * 此时把三个 step-body 全部展开、步骤条与「上一步」隐藏。
+       * 编辑既有能力不进向导（它在详情页，是「对照一份已存的 spec 逐项改」）。
        *
        * 状态只有一份（WIZARD.on / WIZARD.step），DOM 侧只做三件事：
        * 给非当前步的 .cap-step-body 加 hidden、给步骤条上色、改底栏按钮文案。
@@ -2112,16 +1481,12 @@
       function syncSubmitLabel() {
         const btn = $("cap-submit");
         if (!btn) return;
-        const creating = !!(EDIT && EDIT.mode === "create");
         btn.textContent =
-          WIZARD.on && creating && WIZARD.step < WIZARD_STEPS
+          WIZARD.on && WIZARD.step < WIZARD_STEPS
             ? t("caps.form.next_step", "下一步")
-            : creating
-              ? t("caps.form.submit", "创建")
-              : t("caps.form.save", "保存");
+            : t("caps.form.submit", "创建");
       }
       function wizardPaint() {
-        const creating = !!(EDIT && EDIT.mode === "create");
         const steps = $("cap-steps");
         if (steps) steps.classList.toggle("hidden", !WIZARD.on);
         const back = $("cap-back");
@@ -2135,10 +1500,9 @@
           const n = Number(body.getAttribute("data-cap-step"));
           body.classList.toggle("hidden", WIZARD.on && n !== WIZARD.step);
         }
-        /* 模板区只属于「新建的第 1 步」：它是这一步入场的第一件事，不是独立开关。
-           编辑模式下 applyTemplate 不会跑，这里保持隐藏。 */
+        /* 模板区只属于「新建的第 1 步」：它是这一步入场的第一件事，不是独立开关。 */
         const tpl = $("cap-template-wrap");
-        if (tpl) tpl.classList.toggle("hidden", !creating || (WIZARD.on && WIZARD.step !== 1));
+        if (tpl) tpl.classList.toggle("hidden", !WIZARD.on || WIZARD.step !== 1);
         syncSubmitLabel();
       }
       function wizardGo(step) {
@@ -2204,84 +1568,48 @@
           wizardGo(WIZARD.step + 1);
           return;
         }
-        submitEditor();
+        submitCreate();
       }
 
-      /* openEditor 是**异步**的：编辑既有能力时必须先拿 `?includeBody=true` 的全文。
-       * 列表投影按契约**剥离 run.files**（resource.yaml·listCapabilities：默认不带正文），
-       * 直接拿列表行填表单会让编辑器显示一个默认空脚本、保存时把真实正文覆盖掉
-       * ——既是数据丢失，也让"内容有没有变"的判断必然为真。 */
-      async function openEditor(mode, cap) {
-        let source = cap || null;
-        if (mode === "edit" && cap) {
-          const name = model.capability(cap).name;
-          try {
-            source = await api(nsPath("capabilities", name) + "?includeBody=true");
-          } catch (e) {
-            // 取不到全文就不要用半份事实开编辑器：报错而不是让用户把正文存成空。
-            showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason: statusLine(e) }), statusLine(e), []);
-            return;
-          }
-        }
-        EDIT = { mode: mode, res: source, name: source ? model.capability(source).name : "" };
-        cap = source;
+      /* 新建：打开一份干净的表单（无正文可丢，不需要额外请求）。 */
+      async function openCreate() {
+        EDIT = { mode: "create", res: null };
         hideBanner();
         clearFieldErrors();
         $("cap-form-msg").textContent = "";
-        const m = cap ? model.capability(cap) : null;
-        $("cap-modal-title").textContent =
-          mode === "create"
-            ? t("caps.form.create_title", "新建能力")
-            : sub(t("caps.form.edit_title", "编辑能力 {name}"), { name: EDIT.name });
+        $("cap-modal-title").textContent = t("caps.form.create_title", "新建能力");
         const nameInput = $("cap-name");
-        nameInput.value = m && m.name ? m.name : "";
-        nameInput.readOnly = mode === "edit";
-        $("cap-name-hint").textContent =
-          mode === "edit" ? t("caps.form.name_readonly", "名字不可变（改名 = 另建一个能力）") : t("caps.form.name_hint", "小写字母/数字/._-，以字母或数字开头；建好后不能改。");
-        $("cap-display-name").value = m && m.displayName ? m.displayName : "";
-        // 版本：创建时可显式指定；编辑时留空 = 内容寻址（改正文自动分配新版本）
+        nameInput.value = "";
+        nameInput.readOnly = false;
+        $("cap-name-hint").textContent = t("caps.form.name_hint", "小写字母/数字/._-，以字母或数字开头；建好后不能改。");
+        $("cap-display-name").value = "";
+        // 创建时可显式指定版本；留空 = 内容寻址（自动分配/复用）
         $("cap-version").value = "";
-        $("cap-version-hint").textContent =
-          mode === "edit"
-            ? t("caps.form.version_edit_hint", "留空 = 内容寻址（改正文自动分配新版本）；显式版本的内容不可变。")
-            : t("caps.form.version_hint", "留空 = 内容寻址（自动分配/复用）；显式版本的内容不可变。");
-        $("cap-current-version").textContent =
-          m && m.version != null ? sub(t("caps.form.current_version", "当前版本：v{v}"), { v: m.version }) : "";
+        $("cap-version-hint").textContent = t("caps.form.version_hint", "留空 = 内容寻址（自动分配/复用）；显式版本的内容不可变。");
+        $("cap-current-version").textContent = "";
 
-        const spec = m && isObj(m.spec) ? m.spec : {};
-        const run = isObj(spec.run) ? spec.run : {};
-        $("cap-params").value = JSON.stringify(isObj(spec.params) ? spec.params : {}, null, 2);
-        $("cap-next").value = (Array.isArray(spec.next) ? spec.next : []).join("\n");
-        FILE_ROWS = fileRowsFrom(run.files);
-        ENV_ROWS = envRowsFrom(run.env);
-        refreshEntrypointOptions(run.entrypoint || "");
-        $("cap-workdir").value = run.workDir == null ? "" : String(run.workDir);
-        const req = isObj(spec.requires) ? spec.requires : {};
-        $("cap-requires-commands").value = (Array.isArray(req.commands) ? req.commands : []).join("\n");
-        $("cap-requires-values").value = (Array.isArray(req.values) ? req.values : []).join("\n");
-        const lc = isObj(spec.lifecycle) ? spec.lifecycle : {};
-        $("cap-idempotent").checked = lc.idempotent === true;
-        $("cap-max-attempts").value = lc.maxAttempts == null ? 3 : lc.maxAttempts;
-        $("cap-result-ttl").value = lc.resultTtlSec == null ? 604800 : lc.resultTtlSec;
-        $("cap-timeout").value = lc.timeoutSec == null ? 0 : lc.timeoutSec;
-        const conc = isObj(spec.concurrency) ? spec.concurrency : {};
-        $("cap-concurrency").value = conc.maxPerNode == null ? 1 : conc.maxPerNode;
+        FILE_ROWS = fileRowsFrom({});
+        ENV_ROWS = [];
+        refreshEntrypointOptions("");
+        $("cap-workdir").value = "";
+        $("cap-requires-commands").value = "";
+        $("cap-requires-values").value = "";
+        $("cap-idempotent").checked = false;
+        $("cap-max-attempts").value = 3;
+        $("cap-result-ttl").value = 604800;
+        $("cap-timeout").value = 0;
+        $("cap-concurrency").value = 1;
 
         renderFiles();
         renderEnv();
         renderNextHints();
-        /* #379：模板区只在「新建」出现 —— 编辑既有能力时不该被模板覆盖；
-           新建时加载一次模板列表并回到「从空白开始」。 */
-        const templateWrap = $("cap-template-wrap");
-        if (templateWrap) templateWrap.classList.toggle("hidden", mode !== "create");
-        if (mode === "create") {
-          await loadTemplateOptions();
-          $("cap-template").value = "";
-          TEMPLATE_AUTOFILL = { name: "", displayName: "" };
-          applyTemplate("");
-        }
-        /* #385：新建 = 3 步向导（第 1 步），编辑 = 整份表单（步骤条与上一步隐藏）。 */
-        WIZARD.on = mode === "create";
+        /* #379：模板区只在「新建」出现；加载一次模板列表并回到「从空白开始」。 */
+        await loadTemplateOptions();
+        $("cap-template").value = "";
+        TEMPLATE_AUTOFILL = { name: "", displayName: "" };
+        applyTemplate("");
+        /* #385：新建 = 3 步向导（第 1 步）。 */
+        WIZARD.on = true;
         WIZARD.step = 1;
         wizardPaint();
         openModal($("cap-modal"));
@@ -2291,7 +1619,7 @@
       function closeEditor() {
         closeModal($("cap-modal"));
         EDIT = null;
-        /* 关掉时复位向导：下一次 openEditor 会按模式重新决定（新建=第 1 步）。 */
+        /* 关掉时复位向导：下一次 openCreate 会重新回到第 1 步。 */
         WIZARD.on = false;
         WIZARD.step = 1;
         hideBanner();
@@ -2334,7 +1662,7 @@
           const hasAny =
             key || String(row.value == null ? "" : row.value).length || String(row.fieldPath || "").trim();
           if (!hasAny) continue; // 整行空 = 没填，忽略（空串字面量仍然算“填了”，见下）
-          if (!ENV_KEY_RE.test(key)) return { error: sub(t("caps.form.err_env_key", "环境变量名不合法：{k}"), { k: key || "—" }), field: "env" };
+          if (!ENV_KEY_RE.test(key)) return { error: sub(t("caps.form.err_env_key", "环境变量名不合法：{k}"), { k: key || "M-bM-^@M-^T" }), field: "env" };
           if (/^ANOTIFY_/.test(key)) return { error: sub(t("caps.form.err_env_reserved", "{k} 是契约保留前缀（ANOTIFY_）"), { k: key }), field: "env" };
           if (Object.prototype.hasOwnProperty.call(env, key)) return { error: sub(t("caps.form.err_env_dupe", "环境变量重复：{k}"), { k: key }), field: "env" };
           if (row.mode === "valueFrom") {
@@ -2394,41 +1722,6 @@
         };
       }
 
-      /* 能力的**内容面**是不可变的（capability.md §3 / resource_capability.go：
-       * PATCH 只接 metadata.displayName 与 spec.next，改 run/params/requires/
-       * lifecycle/concurrency 一律 400 immutable_field）。所以编辑器必须先判断
-       * "这次改的是内容还是元数据"：
-       *   · 内容变了 → POST 一个**新版本**（省略 metadata.version = 内容寻址）；
-       *   · 只改 displayName / next → PATCH + metadata.resourceVersion（CAS）。
-       * 比较用规范化后的键：服务端对空数组/空串是 omitempty，表单却总会填上默认值，
-       * 直接 JSON.stringify 比会把"什么都没改"误判成内容变更。 */
-      function contentKey(spec) {
-        const canon = (value) => {
-          if (Array.isArray(value)) {
-            const list = value.map(canon).filter((item) => item !== null);
-            return list.length ? list : null;
-          }
-          if (value && typeof value === "object") {
-            const out = {};
-            for (const key of Object.keys(value).sort()) {
-              const item = canon(value[key]);
-              if (item !== null) out[key] = item;
-            }
-            return Object.keys(out).length ? out : null;
-          }
-          if (value === "" || value === undefined) return null;
-          return value;
-        };
-        const source = spec && typeof spec === "object" ? spec : {};
-        return JSON.stringify(canon({
-          params: source.params,
-          run: source.run,
-          requires: source.requires,
-          lifecycle: source.lifecycle,
-          concurrency: source.concurrency,
-        }));
-      }
-
       function buildEnvelope(form) {
         const metadata = { name: form.name };
         if (form.displayName) metadata.displayName = form.displayName;
@@ -2461,7 +1754,7 @@
         const box = $("cap-banner-actions");
         box.replaceChildren();
         for (const a of actions || []) box.append(a);
-        /* #385：横幅在滚动体最顶部，而向导第 3 步 / 编辑长表单常常是滚到一半才点「创建」。
+        /* #385：横幅在滚动体最顶部，而向导第 3 步常常是滚到一半才点「创建」。
            不回到顶，服务端拒绝（409/400）就变成「点了没反应」。 */
         const body = $("cap-modal") && $("cap-modal").querySelector(".modal-body");
         if (body) body.scrollTop = 0;
@@ -2470,50 +1763,102 @@
         const banner = $("cap-banner");
         if (banner) banner.className = "cap-banner hidden";
       }
-
-      async function reloadAfterConflict() {
-        const name = EDIT && EDIT.name;
-        if (!name) return;
-        try {
-          const fresh = await capApi(name);
-          openEditor("edit", fresh); // 用户点了「重新载入最新」= 明确丢弃本地修改
-          toast(t("caps.conflict.reloaded", "已载入最新版本"));
-        } catch (e) {
-          showBanner("error", t("caps.conflict.title", "资源已被别人改动"), statusLine(e), []);
-        }
-      }
-
       function showWriteError(e) {
-        if (isConflict(e)) {
-          const rv = e.currentResourceVersion || "—";
-          const reload = el("button", {
-            type: "button",
-            class: "btn btn-sm",
-            text: t("caps.conflict.reload", "重新载入最新（丢弃本地修改）"),
-          });
-          reload.addEventListener("click", reloadAfterConflict);
-          showBanner(
-            "error",
-            t("caps.conflict.title", "资源已被别人改动（409 resource_version_conflict）"),
-            sub(t("caps.conflict.body", "服务端当前的 resourceVersion 是 {rv}；你本地的输入都还在。重新载入最新会丢弃本地修改。"), { rv }),
-            [reload],
-          );
-          return;
-        }
-        if (e && e.status === 400 && e.reason === "version_content_immutable") {
-          showBanner(
-            "warn",
-            sub(t("caps.error.title", "保存失败：{reason}"), { reason: e.reason }),
-            t("caps.error.immutable", "这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。") + (e.message ? " " + e.message : ""),
-            [],
-          );
-          return;
-        }
+        /* 新建只有一个写动作（POST），409 就是「这个名字已被占用」，400 是输入问题；
+           两种都把服务端结论原样说清楚，输入一律保留、不自动重试。 */
         const reason = e && e.reason ? e.reason : e && e.status ? "HTTP " + e.status : "—";
         showBanner("error", sub(t("caps.error.title", "保存失败：{reason}"), { reason }), statusLine(e), []);
       }
 
-      async function submitEditor() {
+      /* ==================== 从 YAML 创建（契约 §5.1） ====================
+       * 粘贴一份 Capability 文档 → POST .../capabilities/yaml，body 只有 `{yaml: 原文}`。
+       * 前端不解析 YAML（D8）：textarea 原文整份交给服务端，带行号的定位由服务端给。
+       * 失败时按行展开 err.message 与 details.causes[].message（后者带「第 N 行」），
+       * textarea 内容一律保留、不清空、不自动重试。 */
+      let YAML_BUSY = false;
+
+      function showYAMLMessage(lines) {
+        const box = $("cap-yaml-msg");
+        if (!box) return;
+        box.replaceChildren();
+        for (const line of lines || []) box.append(txt("p", null, line));
+      }
+
+      /* 一行一条原因：首行只放机器码 reason（e2e 断言它必须可见），后面逐条展开 causes。
+         服务端的 cause 是「field 独立 + message 自带『第 N 行』」，所以人话那行拼成
+         「字段路径 · 第 N 行：人话」；顶层 Status 的人话就是第一条 cause，不再重复印一遍。 */
+      function yamlErrorLines(e) {
+        const out = [];
+        const seen = new Set();
+        const push = (line) => {
+          const text = line == null ? "" : String(line);
+          if (!text || seen.has(text)) return;
+          seen.add(text);
+          out.push(text);
+        };
+        const causes = e && e.details && Array.isArray(e.details.causes) ? e.details.causes : [];
+        if (causes.length) {
+          push(e && e.reason);
+          for (const cause of causes) {
+            if (!cause) continue;
+            const field = cause.field == null ? "" : String(cause.field);
+            const message = cause.message == null ? "" : String(cause.message);
+            push(field && message ? field + " · " + message : field || message);
+          }
+        } else if (e && e.reason && e.message) {
+          push(e.reason + " · " + e.message);
+        } else if (e && e.message) {
+          push(e.message);
+        } else if (e && e.reason) {
+          push(e.reason);
+        }
+        if (!out.length) push(t("common.request_failed", "请求失败"));
+        return out;
+      }
+
+      function openYAML() {
+        showYAMLMessage([]);
+        openModal($("cap-yaml-modal"));
+        $("cap-yaml-input").focus();
+      }
+
+      function closeYAML(clear) {
+        closeModal($("cap-yaml-modal"));
+        showYAMLMessage([]);
+        /* 成功才清；取消/失败都把草稿留下来（重开即继续编辑） */
+        if (clear) $("cap-yaml-input").value = "";
+      }
+
+      async function submitYAML() {
+        if (YAML_BUSY) return;
+        const input = $("cap-yaml-input");
+        const text = String(input.value || "");
+        if (!text.trim()) {
+          /* 空文档在服务端也是 400，但没必要为一个必然失败的请求跑一趟网络（零请求） */
+          showYAMLMessage([t("caps.yaml.empty", "请先粘贴 YAML 文档")]);
+          input.focus();
+          return;
+        }
+        YAML_BUSY = true;
+        const btn = $("cap-yaml-submit");
+        showYAMLMessage([]);
+        btn.disabled = true;
+        try {
+          await ready();
+          await api(nsPath("capabilities") + "/yaml", writeOpts("POST", { yaml: text }));
+          toast(t("caps.yaml.created", "已从 YAML 创建能力"));
+          closeYAML(true);
+          /* 不自动跳转：留在列表上，新行就是这次创建的回执 */
+          await loadCaps();
+        } catch (e) {
+          showYAMLMessage(yamlErrorLines(e));
+        } finally {
+          YAML_BUSY = false;
+          btn.disabled = false;
+        }
+      }
+
+      async function submitCreate() {
         if (BUSY || !EDIT) return;
         clearFieldErrors();
         hideBanner();
@@ -2531,45 +1876,11 @@
         btn.textContent = t("caps.form.saving", "保存中…");
         try {
           const body = buildEnvelope(form);
-          if (EDIT.mode === "create") {
-            await ready();
-            await api(nsPath("capabilities"), writeOpts("POST", writable(body, { create: true })));
-            toast(sub(t("caps.toast.created", "已创建能力 {name}"), { name: form.name }));
-            OPEN.add(form.name);
-            closeEditor();
-            await loadCaps();
-          } else if (contentKey(form.spec) !== contentKey(model.capability(EDIT.res).spec)) {
-            // 内容变更 = 新版本（不是 PATCH）：省略 metadata.version 让服务端按内容定版本号，
-            // 同一份内容重复保存会折叠到已有版本，不会长出重复行。
-            await ready();
-            // form.version 已经区分了「留空 = 内容寻址（null）」与「显式版本」：
-            // 显式版本照原样发出去，服务端才有机会回 version_content_immutable。
-            const fresh = buildEnvelope(form);
-            await api(nsPath("capabilities"), writeOpts("POST", writable(fresh, { create: true })));
-            toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
-            OPEN.add(form.name);
-            VERS.delete(EDIT.name);
-            closeEditor();
-            await loadCaps();
-          } else {
-            /* PATCH 的**全部**合法面只有 metadata.displayName 与 spec.next
-             * （resource_capability.go·immutableCapabilitySpecPatch：出现其它 spec 键
-             * 一律 400 immutable_field）。所以这里只发这两个键的**最小补丁** —
-             * 把整份 spec 塞进 PATCH 会让"只改显示名"也被 400 拒掉。 */
-            const patch = {
-              apiVersion: "anotify/v1",
-              kind: "Capability",
-              metadata: { name: form.name, displayName: form.displayName || "" },
-              spec: { next: form.spec.next },
-            };
-            const payload = withResourceVersion(patch, EDIT.res.metadata.resourceVersion);
-            await api(nsPath("capabilities", EDIT.name), writeOpts("PATCH", payload));
-            toast(sub(t("caps.toast.saved", "已保存能力 {name}"), { name: form.name }));
-            OPEN.add(form.name);
-            VERS.delete(EDIT.name);
-            closeEditor();
-            await loadCaps();
-          }
+          await ready();
+          await api(nsPath("capabilities"), writeOpts("POST", writable(body, { create: true })));
+          toast(sub(t("caps.toast.created", "已创建能力 {name}"), { name: form.name }));
+          closeEditor();
+          await loadCaps();
         } catch (e) {
           showWriteError(e); // 输入全部保留；不自动重试覆盖
         } finally {
@@ -2579,226 +1890,32 @@
         }
       }
 
-      /* ============================ 人工部署 ============================ */
-      async function openDeploy(cap) {
-        const m = model.capability(cap);
-        DEPLOY = { res: cap, versions: [], version: m.version, selected: new Set() };
-        $("deploy-title").textContent = sub(t("caps.deploy.title", "人工部署 {name}"), { name: m.name });
-        $("deploy-msg").classList.add("hidden");
-        const sel = $("deploy-version");
-        sel.replaceChildren(el("option", { value: String(m.version), text: "v" + m.version }));
-        renderDeployNodes();
-        openModal($("deploy-modal"));
-        // 版本历史懒加载；读不到也不影响部署当前版本（不伪造版本）
-        try {
-          const listed = await capApi(m.name, "/versions");
-          const items = itemsOf(listed);
-          if (DEPLOY && DEPLOY.res === cap) {
-            DEPLOY.versions = items;
-            fillDeployVersions();
-          }
-        } catch (e) {
-          /* 版本列表只是辅助：失败时仍可部署当前版本 */
-        }
-      }
-
-      function fillDeployVersions() {
-        const sel = $("deploy-version");
-        if (!DEPLOY) return;
-        const rows = (DEPLOY.versions || []).map(versionIndexOf);
-        if (!rows.length) rows.push({ version: DEPLOY.version });
-        const current = currentVersionOf(DEPLOY.versions);
-        sel.replaceChildren();
-        for (const v of rows) {
-          sel.append(
-            el("option", {
-              value: String(v.version),
-              text:
-                "v" + v.version +
-                (v.version === current ? " · " + t("caps.versions.current", "当前") : ""),
-            }),
-          );
-        }
-        sel.value = String(DEPLOY.version);
-      }
-
-      function renderDeployNodes() {
-        const box = $("deploy-nodes");
-        box.replaceChildren();
-        if (!DEPLOY) return;
-        const m = model.capability(DEPLOY.res);
-        // 候选来自 status.deployCandidates（部署判据），**不是** status.nodes：
-        // 后者是「已经持有这份能力的机器」，首次部署时必然为空 —— 用它列目标就是
-        // 「首次部署永远没有候选节点」那股死结。
-        if (!m.deployCandidates.length) {
-          box.append(txt("p", "cap-detail-empty", t("caps.deploy.nodes_none", "没有可部署的节点：没有节点授权到本命名空间，或它们都在排空中。")));
-          return;
-        }
-        for (const n of m.deployCandidates) {
-          const label = el("label", { class: "cap-inline-check" });
-          const cb = el("input", { class: "cap-check", type: "checkbox", value: n.name == null ? "" : n.name });
-          cb.checked = DEPLOY.selected.has(n.name);
-          cb.addEventListener("change", () => {
-            if (!DEPLOY) return;
-            if (cb.checked) DEPLOY.selected.add(n.name);
-            else DEPLOY.selected.delete(n.name);
-          });
-          // 只用已定义的组件类 / Tailwind 工具类（不自造 class，见 check-classes）。
-          label.append(
-            cb,
-            txt("span", n.online ? null : "cap-missing",
-              (n.name || "—") + " · " + (n.online ? t("nodes.status.online", "在线") : t("nodes.status.offline", "离线"))),
-          );
-          box.append(label);
-        }
-      }
-
-      async function submitDeploy() {
-        if (BUSY || !DEPLOY) return;
-        const m = model.capability(DEPLOY.res);
-        BUSY = true;
-        const btn = $("deploy-submit");
-        btn.disabled = true;
-        btn.textContent = t("caps.deploy.submitting", "部署中…");
-        $("deploy-msg").classList.add("hidden");
-        try {
-          const body = { version: Number(DEPLOY.version) };
-          const nodes = Array.from(DEPLOY.selected);
-          if (nodes.length) body.nodes = nodes; // 不选 = 服务端按现有策略选候选节点
-          await ready();
-          // v4 端点：POST /v1/namespaces/{ns}/capabilities/{name}/deploy（api/resource.yaml
-          // CapabilityDeployRequest：{version?, nodes?: [节点名]}）。响应契约是
-          // CapabilityDeployResponse {deployed, version}；预览 mock 仍回 DeploymentList{items}，
-          // 两种形状都只用来数「已部署几台」，不参与成功判定。
-          const out = await api(nsPath("capabilities", m.name) + "/deploy", writeOpts("POST", body));
-          const deployedRows = Array.isArray(out && out.deployed) ? out.deployed : out && Array.isArray(out.items) ? out.items : [];
-          const count = deployedRows.length;
-          if (count === 0) {
-            // 0 台不是「成功」：服务端没有任何目标可推（没有授权/不在线）。别让 toast
-            // 把「什么都没发出去」说成部署完成。
-            const msg = $("deploy-msg");
-            msg.textContent = t("caps.deploy.deploy_none", "没有节点可部署（0 台）：先确认节点已授权到本命名空间并在线。");
-            msg.classList.remove("hidden");
-            return;
-          }
-          toast(sub(t("caps.toast.deployed", "已部署（{n} 台）"), { n: count }));
-          OPEN.add(m.name);
-          DEPLOY = null;
-          closeModal($("deploy-modal"));
-          await loadCaps();
-        } catch (e) {
-          const msg = $("deploy-msg");
-          msg.textContent = statusLine(e);
-          msg.classList.remove("hidden");
-        } finally {
-          BUSY = false;
-          btn.disabled = false;
-          btn.textContent = t("caps.deploy.submit", "确认部署");
-        }
-      }
-
-      /* ============================ 删除 ============================ */
-      function openDelete(cap) {
-        const m = model.capability(cap);
-        /* #378：撤销条的快照在 submitDelete 里**删除前一刻**取（要带正文，见那里的注释）。 */
-        DEL = { res: cap, snapshot: null };
-        $("del-body").textContent = sub(
-          t("caps.delete.body", "确认删除「{name}」？删除只删这个能力本身，不级联改引用方：其它能力或源引用它会解析不到（由 status 报缺失）。"),
-          { name: m.name },
-        );
-        $("del-rv").textContent = sub(t("caps.delete.rv", "当前 resourceVersion：{rv}"), { rv: m.resourceVersion || "—" });
-        $("del-msg").classList.add("hidden");
-        openModal($("del-modal"));
-      }
-
-      async function submitDelete() {
-        if (BUSY || !DEL) return;
-        const m = model.capability(DEL.res);
-        BUSY = true;
-        const btn = $("del-submit");
-        btn.disabled = true;
-        btn.textContent = t("caps.delete.deleting", "删除中…");
-        $("del-msg").classList.add("hidden");
-        let snapshot = DEL.snapshot;
-        try {
-          await ready();
-          /* #378：撤销要能真的重建，所以快照必须是**带正文**的完整文档：
-           * 列表行来自 GET …/capabilities（无 includeBody），服务端把 spec.run.files
-           * 剥空；而创建校验要求 run.files 非空 —— 拿列表行重建会被 400 files_invalid。
-           * 取不到就退回列表行：撤销会失败但会弹持久错误条，不静默丢数据。 */
-          if (!snapshot) {
-            try {
-              snapshot = await capApi(m.name, "?includeBody=true");
-            } catch (e) {
-              snapshot = DEL.res;
-            }
-          }
-          await api(deletePath(nsPath("capabilities", m.name), m.resourceVersion), { method: "DELETE" });
-          toast(sub(t("caps.toast.deleted", "已删除能力 {name}"), { name: m.name }));
-          OPEN.delete(m.name);
-          VERS.delete(m.name);
-          DEL = null;
-          closeModal($("del-modal"));
-          await loadCaps();
-          // #378：删除真删了资源，成功后给 5 秒撤销 —— 用快照 POST 重建（不是延迟提交）。
-          A.undoBar({
-            message: t("common.undo.deleted", "已删除「{name}」").replace("{name}", m.name),
-            onUndo: async () => {
-              try {
-                await api(nsPath("capabilities"), {
-                  method: "POST",
-                  body: JSON.stringify({
-                    apiVersion: snapshot.apiVersion || "anotify/v1",
-                    kind: "Capability",
-                    metadata: { name: snapshot.metadata.name, namespace: snapshot.metadata.namespace },
-                    spec: snapshot.spec,
-                  }),
-                });
-                await loadCaps();
-              } catch (e) {
-                A.errorBar(e);
-              }
-            },
-          });
-        } catch (e) {
-          const msg = $("del-msg");
-          if (isConflict(e)) {
-            // 不静默 last-write-wins：重新载入最新 resourceVersion，并要求再点一次确认
-            try {
-              const fresh = await capApi(m.name);
-              DEL.res = fresh;
-              const fm = model.capability(fresh);
-              $("del-rv").textContent = sub(t("caps.delete.rv", "当前 resourceVersion：{rv}"), { rv: fm.resourceVersion || "—" });
-              msg.textContent = sub(
-                t("caps.delete.conflict", "这个能力刚被别人改过（409）。已重新载入最新 resourceVersion {rv}；请确认后再点一次删除，不会自动重试。"),
-                { rv: e.currentResourceVersion || fm.resourceVersion || "—" },
-              );
-            } catch (e2) {
-              msg.textContent = statusLine(e);
-            }
-          } else {
-            msg.textContent = statusLine(e);
-          }
-          msg.classList.remove("hidden");
-        } finally {
-          BUSY = false;
-          btn.disabled = false;
-          btn.textContent = t("caps.delete.submit", "删除");
-        }
-      }
-
       /* ============================ 事件绑定 ============================ */
       function bind() {
         $("caps-refresh").addEventListener("click", () => loadCaps());
-        $("caps-new").addEventListener("click", () => openEditor("create"));
-        $("caps-empty-new").addEventListener("click", () => openEditor("create"));
+        $("caps-yaml").addEventListener("click", openYAML);
+        $("cap-yaml-cancel").addEventListener("click", () => closeYAML(false));
+        $("cap-yaml-submit").addEventListener("click", () => void submitYAML());
+        $("cap-yaml-modal").addEventListener("click", (e) => {
+          if (e.target === e.currentTarget) closeYAML(false);
+        });
+        $("caps-new").addEventListener("click", () => void openCreate());
+        $("caps-empty-new").addEventListener("click", () => void openCreate());
         $("caps-search").addEventListener("input", (e) => {
           SEARCH = e.target.value || "";
           renderList();
+          saveListState();
         });
         $("caps-filter").addEventListener("change", (e) => {
           FILTER = e.target.value;
           renderList();
+          saveListState();
+        });
+        /* 点行标题 / 「详情」链接离开列表前，把当前搜索词、筛选与滚动位置记下来：
+           详情页的「返回列表」带 ?restore=1 回来时按这份快照还原（≤30 分钟）。 */
+        $("caps-list").addEventListener("click", (e) => {
+          const link = e.target && e.target.closest ? e.target.closest('a[data-act="open"]') : null;
+          if (link) saveListState();
         });
 
         $("cap-next").addEventListener("input", renderNextHints);
@@ -2825,70 +1942,27 @@
           if (e.target === e.currentTarget) closeEditor();
         });
 
-        $("deploy-version").addEventListener("change", (e) => {
-          if (DEPLOY) DEPLOY.version = Number(e.target.value);
-        });
-        $("deploy-submit").addEventListener("click", submitDeploy);
-        $("deploy-close").addEventListener("click", () => {
-          DEPLOY = null;
-          closeModal($("deploy-modal"));
-        });
-        $("deploy-cancel").addEventListener("click", () => {
-          DEPLOY = null;
-          closeModal($("deploy-modal"));
-        });
-        $("deploy-modal").addEventListener("click", (e) => {
-          if (e.target === e.currentTarget) {
-            DEPLOY = null;
-            closeModal($("deploy-modal"));
-          }
-        });
-
-        $("del-submit").addEventListener("click", submitDelete);
-        $("del-close").addEventListener("click", () => {
-          DEL = null;
-          closeModal($("del-modal"));
-        });
-        $("del-cancel").addEventListener("click", () => {
-          DEL = null;
-          closeModal($("del-modal"));
-        });
-        $("del-modal").addEventListener("click", (e) => {
-          if (e.target === e.currentTarget) {
-            DEL = null;
-            closeModal($("del-modal"));
-          }
-        });
-
         document.addEventListener("keydown", (e) => {
           if (e.key !== "Escape") return;
           const capModal = $("cap-modal");
           if (capModal && !capModal.classList.contains("hidden")) {
             e.preventDefault();
             closeEditor();
-            return;
-          }
-          const depModal = $("deploy-modal");
-          if (depModal && !depModal.classList.contains("hidden")) {
-            e.preventDefault();
-            DEPLOY = null;
-            closeModal(depModal);
-            return;
-          }
-          const delModal = $("del-modal");
-          if (delModal && !delModal.classList.contains("hidden")) {
-            e.preventDefault();
-            DEL = null;
-            closeModal(delModal);
           }
         });
       }
 
       document.addEventListener("DOMContentLoaded", () => {
         bind();
-        // 刷新节奏与改版前一致：进入页面拉一次，动作成功后刷新。
-        // （不轮询：status 是服务端读时派生的，刷新按钮随时可拿最新。）
-        loadCaps();
+        /* 还原只发生在 `?restore=1`：进入页面拉一次列表，渲染完成后滚回快照位置。
+           （不轮询：status 是服务端读时派生的，刷新按钮随时可拿最新。） */
+        const scrollY = restoreListState();
+        loadCaps().then(() => {
+          if (scrollY == null) return;
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => window.scrollTo(0, scrollY));
+          });
+        });
       });
     </script>
 {{end}}

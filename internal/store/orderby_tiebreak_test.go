@@ -1,55 +1,37 @@
 package store
 
-// ============================================================================
-// L4 · 排序破平局守卫（docs/lint-guards.md 的 L4 条目）
+// 本文件是 docs/lint-guards.md 的 L4 门禁：store 里每条 `ORDER BY` 的**末键必须唯一**。
 //
-// 事故来源（commit 1461f7e4）：`ListUsersWithStatsPage` 原来只 `ORDER BY created_at`，
-// 同一毫秒创建的两个用户在游标翻页里谁是「前一行」由 SQLite 的排序实现决定。
-// 破平局改成 `id` 之后变成了掷硬币的另一面：`users.id` 是 `usr_` + crypto/rand，
-// 谁在前由随机低位决定 —— `TestAdmin_ListUsers` 改成 `-count=40` 实测 17 次红（42.5%）。
-// 终态修法是 `ORDER BY created_at, rowid`（rowid = 插入序，稳定且语义正确）。
+// 为什么需要它（1461f7e4）：`ListUsersWithStatsPage` 曾用 `id`（`usr_` + crypto/rand）给
+// 同秒用户破平局 —— 同毫秒创建的两个用户谁在前是掷硬币，`TestAdmin_ListUsers` 因此
+// 42.5% 随机红（`-count=40` 失败 17 次）。修法是把末键改成 `rowid`。全仓 store 有 70 条
+// `ORDER BY`，修完这一条之后没有任何机械约束防止下一条复发 —— 本文件就是那道约束。
 //
-// 那条 commit 之后，全仓 store 还有 70 条 ORDER BY，没有任何机械约束防止复发：
-// 下一个人写 `ORDER BY created_at` 时，review 看不出来，测试要么不覆盖并列、
-// 要么靠运气（并列概率 = 同一时间粒度内落两行）。本文件把这条纪律变成静态门禁。
+// 判据（纯静态，不连数据库）：
 //
-// 判据（四档，逐条都必须落在某一档里）：
+//	① 抽出 internal/store 非测试源码里的 SQL：走 go/ast，覆盖反引号字符串、
+//	   `+` 拼接、`query += ...` 累积、包级常量列清单（`capabilityColumns` 之类）；
+//	② 解析 schema.sql：主键、`UNIQUE (...)`、`CREATE UNIQUE INDEX`（含部分索引的
+//	   WHERE 谓词）、以及「非 WITHOUT ROWID 表才有 rowid」；
+//	③ 逐条 `ORDER BY` 判定，只认四类**可核验**的安全证明（其余一律红）：
+//	     · `末键唯一`       —— 末键是 rowid / 单列主键 / 单列唯一索引；
+//	     · `分组键`         —— 结果集按 `GROUP BY` 分组，末键就是分组键（每组一行）；
+//	     · `覆盖唯一键`     —— 末键自身不唯一，但「ORDER BY 全键 + WHERE 里 `=` 钉住的列」
+//	                          合起来覆盖了某个唯一键，整条排序仍是全序（edges 的复合主键就是这种）；
+//	     · `排序前缀覆盖`   —— 唯一键的列全部被 WHERE 等值钉住、末键只是它最前面的列时，
+//	                          末键在**该结果集内**唯一（例：`WHERE task_id = ? ORDER BY attempt`）。
+//	   判不动的两条出口：`orderByExemptions`（证明无害的白名单，必须写理由 + 可核验证据，
+//	   过期即红）与 `orderByKnownGaps`（已确认的缺口，有上限预算，修好必须删登记）。
+//	④ 白名单/缺口表**过期即红**（照 internal/server/openapi_parity_test.go 的例外表纪律）：
+//	   登记项不再命中任何 ORDER BY 就失败，要求删除 —— 例外不许变成永久的后门。
+//	⑤ 反假绿：解析到的条数必须 ≥ `orderByMinimumClauses`（实测值，出处见常量注释），
+//	   解析到 0 条必须失败，并把条数/各类计数/白名单命中数打印出来。
+//	⑥ 失败信息指名道姓：`文件:行 + 表名 + 子句原文 + 末键为什么不唯一 + 修法建议`。
+//	⑦ 变异自证：把一条已知安全子句的末键替换成非唯一列（内存里改，不动源码文件），
+//	   断言判据会红；再断言未变异的原句是绿的（红/绿双侧）。
 //
-//  1. **末键自身唯一** —— 自动通过，不用登记：
-//     末键是 `rowid`（表不是 WITHOUT ROWID 时 rowid 天然唯一），
-//     或者是单列主键 / 单列 UNIQUE 约束（`id TEXT PRIMARY KEY`、`UNIQUE (slug)` 等）。
-//  2. **证明安全** —— 必须登记（orderByAllowlist），且证据是**机械可核验**的：
-//     · WHERE 用等值把唯一索引的其余列收窄成常量（`task_id=? AND attempt=? ORDER BY path`；
-//       索引是 `PRIMARY KEY (task_id, attempt, path)`）；
-//     · 聚合：末键就是 `GROUP BY` 的分组键（每组一行，天然唯一）；
-//     · GC 批量删除：`DELETE ... WHERE id IN (SELECT ... ORDER BY x LIMIT n)` 的并列
-//       只影响「这一批删哪几行」，不影响不变式（下一轮继续删），也没有游标可漂；
-//     · 目录表（sqlite_master / pragma_*）：行来源是 SQLite 内省，天然每行唯一。
-//     「证不了」的不许塞进这一档 —— 见第 4 档。
-//  3. **已知缺口** —— 末键确实不唯一、且证不了安全（orderByKnownGaps）：每条必须写
-//     为什么现在还没出事 + 风险等级与具体影响 + 建议修法。条数受 orderByKnownGapBudget
-//     棘轮约束（修好一条必须下调常量，新增一条必须上调 —— 两个方向都红）。
-//  4. 剩下的任何一条 = **红**：失败信息指名道姓给 文件:行 + 函数 + 表 + 子句原文 +
-//     为什么末键不唯一 + 修法建议。
-//
-// 纪律（照 internal/server/openapi_parity_test.go 的例外表范式）：
-//
-//   · **过期即红**：登记项（白名单/缺口）必须仍然命中一条真实存在的子句；
-//     子句被改写或删掉 ⇒ 登记项过期 ⇒ 测试失败并要求删除该条。
-//   · **反假绿**：扫描到的子句条数有下限（orderByClauseFloor，冻结时实测 70），
-//     扫到 0 条直接失败；条数、自动通过、白名单命中、缺口命中全部打印出来。
-//     「绿」与「没检查」必须长得不一样。
-//   · **证据不许口说无凭**：白名单的每条证据都由 orderByEvidenceProblems 机械复核
-//     （声明的唯一索引必须真的在 schema 里、声明的收窄列必须真的出现在 WHERE 里、
-//     部分唯一索引的谓词必须真的在子句窗口里）—— 写一个「我觉得安全」登不进去。
-//   · **解析器自己也有守卫**：sqlite 侧结构（主键/唯一索引/WITHOUT ROWID）与
-//     schema.sql 的解析结果逐表比对（见「schema 解析与真实库一致」子测试）。
-//     解析器看漏一个 UNIQUE 索引，就等于给自己开了一个口子。
-//
-// 为什么扫源码而不是扫运行期日志：ORDER BY 有一半是 `query := ...` + `query += ...`
-// 拼出来的，只有把它们在**函数作用域**内拼回去才能拿到完整语句（表名与排序键在同一
-// 条语句里）。所以这里用 go/ast 取字面量、按函数拼成 blob，再逐个字面量算括号深度
-// （字面量是独立片段，跨片段累计深度会被一个未闭合的 `(` 带偏）。
+// 纪律：本门禁只读源码与 schema.sql，**不改任何生产文件**；发现的产品缺口登记在
+// `orderByKnownGaps` 并由协调者裁决，不在本文件里悄悄修掉。
 
 import (
 	"fmt"
@@ -57,7 +39,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -65,1777 +46,2241 @@ import (
 	"testing"
 )
 
-// orderByClauseFloor 是「非测试源码里能扫到的 ORDER BY 子句条数」的下限。
-//
-// 冻结时实测值：70（internal/store 的 40 个非测试 .go 文件；全仓 74 条里其余 4 条在
-// 测试文件里，本守卫按契约只扫非测试源码）。条数掉了只有两种可能：有人删了查询
-// （那就同步下调这个常量，并说明为什么），或者**扫描器自己失效了**（字面量拼接、
-// 常量引用、注释掉整段 SQL……）—— 后者正是「绿与没检查同形」的事故形态。
-const orderByClauseFloor = 70
-
-// orderByKnownGapBudget 是已知缺口（末键不唯一且证不了安全）的条数棘轮。
-//
-// 当前 12 条，全部是「展示型列表只按时间列排序、没有游标翻页」的同一个形态，
-// 逐条列在 orderByKnownGaps 里（带风险等级与修法）。修好一条就把它从表里删掉并把
-// 这个常量减一；新增一条必须同时上调 —— 两个方向都红，不许静默膨胀也不许静默消失。
-const orderByKnownGapBudget = 12
-
-// TestStoreOrderByTiebreak 是全仓 store 的 ORDER BY 破平局门禁（L4）。
-//
-// 五个子测试分别守：扫描器真的扫到了东西（下限）、每条子句都有归属（判据四档）、
-// 缺口预算的棘轮、schema 解析与真实库一致、以及守卫自己的双侧自证（变异必红）。
-func TestStoreOrderByTiebreak(t *testing.T) {
-	t.Run("扫到足够的 ORDER BY（反假绿下限）", func(t *testing.T) {
-		clauses := orderByScanPackage(t)
-		if len(clauses) == 0 {
-			t.Fatalf("一条 ORDER BY 都没扫到：扫描器失效了（不是「没有 ORDER BY」——schema.sql 与 admin.go/auth.go 里必然有）")
-		}
-		if len(clauses) < orderByClauseFloor {
-			var got []string
-			for _, c := range clauses {
-				got = append(got, fmt.Sprintf("%s:%d", c.File, c.Line))
-			}
-			t.Fatalf("只扫到 %d 条 ORDER BY，低于下限 %d。\n扫到的：%s\n"+
-				"要么有人删了查询（同步下调 orderByClauseFloor 并写明原因），要么扫描器失效（常量拼接/多行字面量/注释掉整段 SQL）",
-				len(clauses), orderByClauseFloor, strings.Join(got, " "))
-		}
-		// 契约点名的 10 个文件必须都出现在扫描结果里：缺一个说明某个文件的字面量
-		// 抽取路径挂了（例如整文件都在常量里、或 SQL 换成非常量拼接）。
-		perFile := map[string]int{}
-		for _, c := range clauses {
-			perFile[c.File]++
-		}
-		for _, want := range []string{
-			"admin.go", "auth.go", "devices.go", "event_page.go", "node.go",
-			"capability.go", "deployment.go", "artifact_manifest.go", "graph.go", "retention.go",
-		} {
-			if perFile[want] == 0 {
-				t.Fatalf("%s 里一条 ORDER BY 都没扫到（契约点名的文件必须被覆盖；扫描器漏了这个文件的字面量）", want)
-			}
-		}
-		t.Logf("扫描到 %d 条 ORDER BY（下限 %d），覆盖 %d 个文件", len(clauses), orderByClauseFloor, len(perFile))
-	})
-
-	t.Run("每条 ORDER BY 都属于判据四档之一", func(t *testing.T) {
-		clauses := orderByScanPackage(t)
-		tables := orderByParseSchema(t, schemaSQL)
-		got := orderByAudit(clauses, tables, orderByAllowlist, orderByKnownGaps)
-		if len(got.Problems) > 0 {
-			t.Fatalf("ORDER BY 破平局判据不满足（%d 条问题）：\n%s",
-				len(got.Problems), strings.Join(got.Problems, "\n"))
-		}
-		t.Logf("ORDER BY %d 条：末键自身唯一 %d 条、证明安全登记 %d 条、已知缺口 %d 条",
-			got.Clauses, got.Auto, got.Allowed, got.Gaps)
-	})
-
-	t.Run("已知缺口条数受棘轮约束", func(t *testing.T) {
-		if len(orderByKnownGaps) != orderByKnownGapBudget {
-			t.Fatalf("已知缺口 %d 条，预算常量 orderByKnownGapBudget = %d。\n"+
-				"修好一条 ⇒ 从 orderByKnownGaps 里删掉它并把常量减一；新增一条 ⇒ 常量加一并在表里写清为什么。",
-				len(orderByKnownGaps), orderByKnownGapBudget)
-		}
-	})
-
-	t.Run("schema 解析与真实库一致", func(t *testing.T) {
-		// 解析器看漏一个 UNIQUE 索引/把 WITHOUT ROWID 当普通表，都会让上面的判据
-		// 误放（或误杀）—— 所以拿真实建库结果逐表对账。
-		db := newTestDB(t)
-		tables := orderByParseSchema(t, schemaSQL)
-		if len(tables) < 20 {
-			t.Fatalf("schema.sql 只解析出 %d 张表，明显不对（v4 baseline 是 27 张）", len(tables))
-		}
-		names := make([]string, 0, len(tables))
-		for name := range tables {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			shape := tables[name]
-			// 主键：与 sqlite 的 pragma_table_info(pk>0) 完全一致（顺序也算）。
-			wantPK := primaryKeyColumns(t, db, name)
-			if strings.Join(shape.PK, ",") != strings.Join(wantPK, ",") {
-				t.Errorf("表 %s 的主键解析 = %v，真实库 = %v", name, shape.PK, wantPK)
-			}
-			// 唯一键集合：主键 + UNIQUE 约束 + CREATE UNIQUE INDEX，逐集合比对。
-			wantUnique := orderByDBUniqueSets(t, db, name)
-			var gotUnique []string
-			for _, u := range shape.Uniques {
-				gotUnique = append(gotUnique, strings.Join(u.Cols, ","))
-			}
-			sort.Strings(gotUnique)
-			if strings.Join(gotUnique, " | ") != strings.Join(wantUnique, " | ") {
-				t.Errorf("表 %s 的唯一键集合解析 = %v，真实库 = %v", name, gotUnique, wantUnique)
-			}
-			// rowid：sqlite_master 的 DDL 里有没有 WITHOUT ROWID。
-			if want := orderByDBWithoutRowID(t, db, name); shape.HasRowID == want {
-				t.Errorf("表 %s 的 WITHOUT ROWID 判定不一致：解析 HasRowID=%v，真实库 WITHOUT ROWID=%v",
-					name, shape.HasRowID, want)
-			}
-		}
-	})
-
-	t.Run("守卫双侧自证（变异必红）", func(t *testing.T) {
-		orderBySelfTest(t)
-	})
-}
-
 // ============================================================================
-// 白名单：末键不唯一，但**能机械证明**不会因并列抖动
-// ============================================================================
-//
-// 每条的 Clause 必须与 SQL 里 ORDER BY 之后的原文一致（归一化：小写 + 空白折叠）。
-// 改 SQL 就会让登记项过期（红），改完必须回来同步这张表 —— 这正是它的作用：
-// 让人没法「顺手改一句 ORDER BY」而不说清楚并列怎么破。
-var orderByAllowlist = []orderByEntry{
-	// ---- 证据①：WHERE 等值收窄 + 唯一索引覆盖排序键 ----
-	{
-		File: "artifact_manifest.go", Func: "uploadedManifestOn", Table: "task_artifact_manifests",
-		Clause:   "order by path",
-		Narrowed: []string{"task_id", "attempt"},
-		Unique:   []string{"task_id", "attempt", "path"},
-		Why: "PRIMARY KEY (task_id, attempt, path)：WHERE 已把前两列钉成常量，" +
-			"同一 (task, attempt) 下 path 是唯一的 —— 末键并列不可能发生。",
-	},
-	{
-		File: "artifact_manifest.go", Func: "ListArtifactManifest", Table: "task_artifact_manifests",
-		Clause:   "order by path",
-		Narrowed: []string{"namespace_id", "task_id", "attempt"},
-		Unique:   []string{"task_id", "attempt", "path"},
-		Why:      "同上：WHERE 钉住 task_id + attempt，path 在同一个 PK 里唯一。",
-	},
-	{
-		File: "capability.go", Func: "getCapabilityByFoldKeyOn", Table: "capability_versions",
-		Clause:   "order by version desc",
-		Narrowed: []string{"namespace_id", "name", "fold_key"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "idx_cap_live_name_ver 是**部分唯一索引**（WHERE deleted_at IS NULL），" +
-			"而本查询的 WHERE 也带 deleted_at IS NULL、并把 namespace_id + name 钉成常量 " +
-			"⇒ 活行里 (namespace_id, name, version) 唯一，version 就是末键。",
-	},
-	{
-		File: "capability.go", Func: "ListCapabilities", Table: "capability_versions",
-		Clause:   "order by name, version",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "同一部分唯一索引：WHERE namespace_id=? + deleted_at IS NULL，" +
-			"排序键 (name, version) 补齐了索引的剩余两列 ⇒ 活行里 (name, version) 唯一。",
-	},
-	{
-		File: "capability.go", Func: "ListCapabilitiesPage", Table: "capability_versions",
-		Clause:   "order by name, version desc",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "keyset 分页版，同一句 WHERE（namespace_id + deleted_at IS NULL）⇒ " +
-			"(name, version) 在活行里唯一，页边界不会因为并列重复/丢行。",
-	},
-	{
-		File: "graph.go", Func: "EdgesFrom", Table: "edges",
-		Clause:   "order by to_ref",
-		Narrowed: []string{"namespace_id", "from_is_source", "from_ref"},
-		Unique:   []string{"namespace_id", "from_is_source", "from_ref", "to_ref"},
-		Why: "PRIMARY KEY (namespace_id, from_is_source, from_ref, to_ref)：" +
-			"WHERE 把前三列钉成常量，to_ref 在同一个上游下唯一。",
-	},
-	{
-		File: "graph.go", Func: "listEdgesOn", Table: "edges",
-		Clause:   "order by from_is_source, from_ref, to_ref",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "from_is_source", "from_ref", "to_ref"},
-		Why:      "排序键就是主键去掉 namespace_id（WHERE 已钉常量）⇒ 整行身份唯一。",
-	},
-	{
-		File: "node.go", Func: "ListInstances", Table: "node_instances",
-		Clause:   "order by slot",
-		Narrowed: []string{"node_id"},
-		Unique:   []string{"node_id", "slot"},
-		Why: "UNIQUE (node_id, slot)：WHERE node_id=? 之后 slot 在节点内唯一" +
-			"（槽位语义本来就是「每槽最多一个」）。",
-	},
-	{
-		File: "playbook.go", Func: "ListPlaybookInstalls", Table: "sources",
-		Clause:   "order by name",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "name"},
-		Why:      "UNIQUE (namespace_id, name)：源名在命名空间内唯一，WHERE 已钉 namespace_id。",
-	},
-	{
-		File: "playbook_tx.go", Func: "getCapabilityByFoldKeyLatestOn", Table: "capability_versions",
-		Clause:   "order by version desc",
-		Narrowed: []string{"namespace_id", "name", "fold_key"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "安装快照的 foldKey 取最高版本：WHERE 钉住 namespace_id + name + fold_key " +
-			"且带 deleted_at IS NULL ⇒ 活行里 (namespace_id, name, version) 唯一，" +
-			"所以「取哪一行」是确定的（这正是该函数注释里承诺的确定性）。",
-	},
-	{
-		File: "playbook_tx.go", Func: "keptPlaybookObjectsOn", Table: "capability_versions",
-		Clause:   "order by name, version",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "同一部分唯一索引（WHERE 里有 namespace_id=? 与 deleted_at IS NULL）⇒ " +
-			"(name, version) 在活行里唯一，保留集快照的顺序是确定的。",
-	},
-	{
-		File: "playbook_tx.go", Func: "keptPlaybookObjectsOn", Table: "sources",
-		Clause:   "order by name",
-		Narrowed: []string{"namespace_id"},
-		Unique:   []string{"namespace_id", "name"},
-		Why:      "UNIQUE (namespace_id, name)：WHERE 钉 namespace_id，源名唯一。",
-	},
-	{
-		File: "ref.go", Func: "getCapabilityLatestOn", Table: "capability_versions",
-		Clause:   "order by version desc",
-		Narrowed: []string{"namespace_id", "name"},
-		Unique:   []string{"namespace_id", "name", "version"},
-		Why: "「解析裸名 = latest 版本」的唯一口径：WHERE namespace_id + name 钉常量、" +
-			"deleted_at IS NULL 命中部分唯一索引 ⇒ version 在返回集里唯一。",
-	},
-	{
-		File: "task_attempt.go", Func: "ListTaskAttempts", Table: "task_attempts",
-		Clause:   "order by attempt",
-		Narrowed: []string{"task_id"},
-		Unique:   []string{"task_id", "attempt"},
-		Why: "PRIMARY KEY (task_id, attempt)：WHERE task_id=? 之后 attempt 唯一" +
-			"（attempt 本来就是任务内的执行序号）。",
-	},
-	{
-		File: "task_attempt.go", Func: "PreviousTaskAttempt", Table: "task_attempts",
-		Clause:   "order by attempt desc",
-		Narrowed: []string{"task_id"},
-		Unique:   []string{"task_id", "attempt"},
-		Why:      "同上（attempt 的范围谓词不只影响唯一性：task_id 已钉常量 ⇒ attempt 唯一）。",
-	},
-
-	// ---- 证据②：聚合后分组键天然唯一 ----
-	{
-		File: "admin.go", Func: "SystemStats", Table: "events",
-		Clause:   "order by day",
-		GroupKey: "day",
-		Why: "按 strftime('%Y-%m-%d') GROUP BY day 之后再 ORDER BY day：每天只有一行结果，" +
-			"末键就是分组键本身 ⇒ 并列不可能发生。",
-	},
-	{
-		File: "stats.go", Func: "messageStats", Table: "events",
-		Clause:   "order by day",
-		GroupKey: "day",
-		Why:      "同上：GROUP BY day 的每组一行，ORDER BY day 的末键就是分组键。",
-	},
-
-	// ---- 证据③：GC 批量删除（并列只影响本批成员，不影响不变式）----
-	{
-		File: "retention.go", Func: "DeleteExpiredTasks", Table: "tasks",
-		Clause:  "order by coalesce(t.result_accepted_at, case when t.reported=0 then t.finished_at end)",
-		GCBatch: true,
-		Why: "DELETE ... WHERE id IN (SELECT ... ORDER BY <过期时刻> LIMIT n)：这条 ORDER BY 只决定" +
-			"「这一批先删哪 n 行」。并列 ⇒ 换一批同样过期的行，下一轮继续删，不变式（过期行终将删光）" +
-			"不受影响，也没有游标会漂。",
-	},
-	{
-		File: "retention.go", Func: "DeleteExpiredEvents", Table: "events",
-		Clause:  "order by e.created_at",
-		GCBatch: true,
-		Why:     "同上的 GC 批量删除：ORDER BY created_at 只影响本批成员，并列无害。",
-	},
-	{
-		File: "retention.go", Func: "DeleteExpiredEventDeliveries", Table: "event_deliveries",
-		Clause:  "order by expires_at",
-		GCBatch: true,
-		Why:     "同上的 GC 批量删除：去重窗过期的行迟早都会被删，并列只影响批次构成。",
-	},
-	{
-		File: "retention.go", Func: "DeleteExpiredPlaybookInstalls", Table: "playbook_installs",
-		Clause:  "order by pi.created_at",
-		GCBatch: true,
-		Why:     "同上的 GC 批量删除：并列只影响本批删哪几行回执。",
-	},
-	{
-		File: "retention.go", Func: "PurgeDeletedCapabilities", Table: "capability_versions",
-		Clause:  "order by c.deleted_at,c.id",
-		GCBatch: true,
-		Why: "同上的 GC 批量删除（末键 c.id 其实是主键，只是别名在子查询里、自动路径解析不到）；" +
-			"按 deleted_at 排序只决定先清哪一批软删行。",
-	},
-
-	// ---- 证据④：目录表（SQLite 内省），行来源天然唯一 ----
-	{
-		File: "migrate.go", Func: "userSchemaObjects", Table: "sqlite_master",
-		Clause:     "order by type, name",
-		MetaUnique: []string{"name"},
-		Why: "sqlite_master 的 name 在库内唯一（对象名不许重名）⇒ ORDER BY type, name 的末键唯一；" +
-			"这条排序只是让 schema 指纹列表可比对。",
-	},
-	{
-		File: "migrate.go", Func: "userTables", Table: "sqlite_master",
-		Clause:     "order by name",
-		MetaUnique: []string{"name"},
-		Why:        "同上：sqlite_master.name 唯一，按它排序即全序。",
-	},
-	{
-		File: "migrate.go", Func: "foreignKeysDB", Table: "pragma_foreign_key_list",
-		Clause:     "order by id, seq",
-		MetaUnique: []string{"id", "seq"},
-		Why: "pragma_foreign_key_list 一行 = 一条外键的某一列：(id, seq) 是这张虚拟表的行身份" +
-			"（id = 约束序号，seq = 约束内列序）⇒ 排序键自身唯一。",
-	},
-	{
-		File: "migrate.go", Func: "uniqueIndexesDB", Table: "pragma_index_list",
-		Clause:     "order by seq",
-		MetaUnique: []string{"seq"},
-		Why:        "pragma_index_list 的 seq 是表内索引序号（pk 为 0，其余 1..n），单表结果里唯一。",
-	},
-	{
-		File: "migrate.go", Func: "indexKeyColumnsDB", Table: "pragma_index_xinfo",
-		Clause:     "order by seqno",
-		MetaUnique: []string{"seqno"},
-		Why:        "pragma_index_xinfo 的 seqno 是索引内列序，单索引结果里唯一。",
-	},
-}
-
-// ============================================================================
-// 已知缺口：末键确实不唯一，而且证不了安全
-// ============================================================================
-//
-// 这一档是**待裁决清单**，不是「允许」清单：每条都是真违规（判据要求末键唯一），
-// 只是它的并列抖动目前只影响展示顺序、不影响数据正确性。修法都是同一招：
-// 在末键后面补一个唯一键（`, rowid` / `, id`）。条数受 orderByKnownGapBudget 棘轮约束。
-var orderByKnownGaps = []orderByGap{
-	{
-		File: "admin.go", Func: "ListUsersWithStats", Clause: "order by u.created_at asc",
-		Why: "admin 用户列表一次取全量（admin_handlers.go:168 拿 all 再在内存里筛），没有游标翻页",
-		Risk: "中 —— 同一秒注册的两个用户谁在前不确定；#377 只修了分页版（ListUsersWithStatsPage 用 rowid），" +
-			"这一版没修，任何断言「首注册用户排最前」的用例仍可能随机红（正是 1461f7e4 的原始形态）",
-		Fix: "ORDER BY u.created_at ASC, u.rowid ASC（与分页版同一破平局键，语义 = 注册先后）",
-	},
-	{
-		File: "admin.go", Func: "SystemStats", Clause: "order by coalesce((select max(s2.last_seen) from sessions s2 where s2.user_id = u.id), 0) desc, u.created_at asc",
-		Why:  "「最近活跃的前 10 个用户」展示榜，LIMIT 10，无游标",
-		Risk: "低 —— 并列发生在 last_seen + created_at 都相同的两个用户之间，只影响榜单边缘谁上榜，且每次刷新可能换人",
-		Fix:  "末键补 `, u.rowid`",
-	},
-	{
-		File: "admin.go", Func: "ListGlobalEvents", Clause: "order by created_at desc",
-		Why:  "admin 全局事件流，单次 LIMIT 取前 N 条，无游标（事件分页走 event_page.go 的 created_at+id）",
-		Risk: "低-中 —— 同一毫秒/同秒落库的事件在前端先后不确定；若日后在这个接口上加游标翻页会立刻变成丢行/重复行（event_page 已经因为同一原因必须带 id）",
-		Fix:  "ORDER BY created_at DESC, id DESC",
-	},
-	{
-		File: "admin.go", Func: "ListAllSessions", Clause: "order by s.last_seen desc",
-		Why:  "admin 会话总览，LIMIT 500 一次取全，无游标",
-		Risk: "低 —— 并列只影响同一 last_seen 的会话在列表里的先后",
-		Fix:  "末键补 `, s.id`",
-	},
-	{
-		File: "auth.go", Func: "ListPasskeysByUser", Clause: "order by created_at asc",
-		Why:  "某用户的 passkey 列表，一次取全（登录时的候选断言列表也用这份），无游标",
-		Risk: "低 —— 同秒注册的多个 passkey 顺序不确定；登录侧按「全部候选都试一遍」消费，不依赖顺序",
-		Fix:  "末键补 `, id`",
-	},
-	{
-		File: "auth.go", Func: "ListSessionsByUser", Clause: "order by created_at desc",
-		Why:  "「我的设备/会话」列表，一次取全，无游标",
-		Risk: "低 —— 同秒创建的两个会话先后不确定（分页版 ListSessionsByUserPage 已带 id 破平局）",
-		Fix:  "ORDER BY created_at DESC, id DESC",
-	},
-	{
-		File: "auth.go", Func: "ListAPIKeysByUser", Clause: "order by created_at desc",
-		Why:  "某用户的 API key 列表，一次取全，无游标",
-		Risk: "低 —— 同秒创建的 key 先后不确定（分页版 ListAPIKeysByUserPage 已带 id）",
-		Fix:  "ORDER BY created_at DESC, id DESC",
-	},
-	{
-		File: "auth.go", Func: "ListUnusedRecoveryCodesByUser", Clause: "order by created_at asc",
-		Why:  "未使用恢复码列表；恢复码是**批量签发**的，同一批必然同秒",
-		Risk: "低 —— 同一批签发的恢复码之间顺序随机；目前没有调用方依赖这个顺序",
-		Fix:  "末键补 `, id`",
-	},
-	{
-		File: "deployment.go", Func: "CreateDeployments", Clause: "order by d.node_id",
-		Why:  "写事务提交后回读刚建的部署行，调用方（ws/hub.go:598）只做集合消费，不取首行",
-		Risk: "低 —— 同一节点上同一能力的多行（不同 digest）先后不确定；若日后有人改成「取第一行」会读到随机 digest",
-		Fix:  "末键补 `, d.id`",
-	},
-	{
-		File: "devices.go", Func: "ListDevices", Clause: "order by created_at asc",
-		Why:  "用户的推送设备列表，一次取全（handlers.go:51/116），无游标",
-		Risk: "低 —— 同秒添加的两个设备先后不确定",
-		Fix:  "末键补 `, id`",
-	},
-	{
-		File: "devices.go", Func: "ListEnabledDevices", Clause: "order by created_at asc",
-		Why:  "推送扇出的设备集（push/central.go:32），顺序不参与语义",
-		Risk: "低 —— 同上；扇出顺序会影响 push 的投递先后，但对正确性无影响",
-		Fix:  "末键补 `, id`",
-	},
-	{
-		File: "playbook.go", Func: "ListPlaybookInstalls", Clause: "order by name, version",
-		Why: "安装回执里「这个安装装过哪些能力」的展示集，一次取全",
-		Risk: "低 —— WHERE 没有 deleted_at IS NULL，部分唯一索引 idx_cap_live_name_ver 不适用，" +
-			"软删行可能与活行撞 (name, version) ⇒ 展示顺序不确定（不会丢行，因为这是全量而不是翻页）",
-		Fix: "先补 `AND deleted_at IS NULL`（配合部分唯一索引即可证明唯一），或末键补 `, id`",
-	},
-}
-
-// ============================================================================
-// 判据实现
+// 一、源码侧：把 store 里的 SQL 拼出来，抽出每一条 ORDER BY
 // ============================================================================
 
-// orderByClause 是一条被扫到的 ORDER BY 子句（连同解析出的上下文）。
-type orderByClause struct {
-	File    string            // 文件名（不含目录）
-	Line    int               // ORDER BY 关键字所在行（跨字面量时为该字面量的起始行 + 偏移行数）
-	Func    string            // 所在函数名（登记表的键之一）
-	Clause  string            // 归一化子句：小写、空白折叠、以 "order by " 开头
-	Keys    []string          // 全部排序键（去掉 ASC/DESC/COLLATE 尾巴，保留原文大小写前的归一化形态）
-	LastKey string            // 末键（已去掉 ASC/DESC）
-	Refs    []orderByTableRef // 语句窗口里顶层（括号深度 0）出现的表引用
-	Window  string            // 归一化的语句窗口（从语句起始关键字到 ORDER BY 之前）
+// orderByChunk 是一段可解析的 SQL 文本片段，带它在源码里的起点（用于报 文件:行）。
+type orderByChunk struct {
+	file string
+	line int
+	col  int
+	text string
 }
 
-// orderByTableRef 是语句窗口里的一张表（及其别名）。
-type orderByTableRef struct {
-	Table string
-	Alias string
+// orderByText 是一条（可能由多段拼出来的）SQL 文本；unknown 记录拼不出来的子表达式
+// （例如 `strings.Join(where, " AND ")`），只用于诊断，不影响已拼出部分的行号定位。
+type orderByText struct {
+	chunks  []orderByChunk
+	unknown []string
 }
 
-// orderByEntry 是一条「末键不唯一但可以证明安全」的登记项。
-//
-// 证据四选一（至少一条，且会被机械复核，见 orderByEvidenceProblems）。
-type orderByEntry struct {
-	File   string // 文件名
-	Func   string // 函数名
-	Clause string // 归一化 ORDER BY 子句（改 SQL 即过期）
-	Table  string // 该子句作用的表（必须是语句里真实出现的顶层表）
-	Why    string // 人话理由
-
-	Narrowed   []string // 证据①：WHERE 里用 `= ?` 收窄成常量的列
-	Unique     []string // 证据①：覆盖 (Narrowed ∪ 排序键) 的唯一索引列（前缀/全匹配都算）
-	GroupKey   string   // 证据②：聚合分组键（必须等于末键）
-	GCBatch    bool     // 证据③：GC 批量删除
-	MetaUnique []string // 证据④：目录表里天然唯一的列（必须被排序键覆盖）
-}
-
-// orderByGap 是一条「末键确实不唯一、而且证不了安全」的已知缺口（待裁决清单）。
-type orderByGap struct {
-	File   string
-	Func   string
-	Clause string
-	Why    string // 为什么现在还没出事
-	Risk   string // 风险等级 + 具体影响
-	Fix    string // 建议修法
-}
-
-// orderByTableShape 是一张表的唯一性事实（从 schema.sql 解析）。
-type orderByTableShape struct {
-	Name     string
-	HasRowID bool // 不是 WITHOUT ROWID ⇒ rowid 唯一可用
-	PK       []string
-	Uniques  []orderByUniqueKey // 主键 + UNIQUE 约束 + CREATE UNIQUE INDEX
-}
-
-// orderByUniqueKey 是一条唯一约束（或部分唯一索引）。
-type orderByUniqueKey struct {
-	Cols    []string
-	Partial string // 归一化的 WHERE 谓词；非空 = 部分唯一索引，只在谓词内唯一
-	Source  string // 出处（主键 / UNIQUE 约束 / 索引名），只用于失败信息
-}
-
-// orderByAuditResult 是一次判据跑批的结果（条数用于打印与反假绿）。
-type orderByAuditResult struct {
-	Clauses  int
-	Auto     int // 末键自身唯一
-	Allowed  int // 白名单命中
-	Gaps     int // 已知缺口命中
-	Problems []string
-}
-
-// orderByAudit 是这条门禁的**纯函数判据**：子句集合 + schema + 两张登记表 → 问题清单。
-//
-// 拆成纯函数是为了「双侧自证」：变异用例（orderBySelfTest）用同一份逻辑跑合成输入，
-// 证明它真的会红，而不是恰好对所有真实输入都放行。
-func orderByAudit(clauses []orderByClause, tables map[string]*orderByTableShape,
-	allow []orderByEntry, gaps []orderByGap) orderByAuditResult {
-	var res orderByAuditResult
-	res.Clauses = len(clauses)
-	if len(clauses) == 0 {
-		res.Problems = append(res.Problems,
-			"一条 ORDER BY 都没扫到：扫描器失效（0 条不等于「没有 ORDER BY」）")
-		return res
-	}
-
-	entryHit := make([]int, len(allow))
-	gapHit := make([]int, len(gaps))
-
-	for _, c := range clauses {
-		if orderByAutoUnique(c, tables) {
-			res.Auto++
-			continue
-		}
-
-		// 表必须是人认识的：schema.sql 里的表，或显式登记的目录表。
-		for _, ref := range c.Refs {
-			if _, ok := tables[ref.Table]; ok {
-				continue
-			}
-			if _, ok := orderByMetaTables[ref.Table]; ok {
-				continue
-			}
-			res.Problems = append(res.Problems, fmt.Sprintf(
-				"%s:%d %s(): 表 %q 既不在 schema.sql 里，也不在目录表白名单里 —— "+
-					"新增表（可能在 Go 代码里建）必须先在 orderByMetaTables 登记，否则唯一性无从判断",
-				c.File, c.Line, c.Func, ref.Table))
-		}
-
-		var allowIdx, gapIdx = -1, -1
-		for i, e := range allow {
-			if e.File == c.File && e.Func == c.Func && e.Clause == c.Clause {
-				allowIdx = i
-				break
-			}
-		}
-		for i, g := range gaps {
-			if g.File == c.File && g.Func == c.Func && g.Clause == c.Clause {
-				gapIdx = i
-				break
-			}
-		}
-		switch {
-		case allowIdx >= 0 && gapIdx >= 0:
-			res.Problems = append(res.Problems, fmt.Sprintf(
-				"%s:%d %s(): 同一条子句同时登记为「证明安全」和「已知缺口」—— 二者只能选一个",
-				c.File, c.Line, c.Func))
-		case allowIdx >= 0:
-			entryHit[allowIdx]++
-			res.Allowed++
-			res.Problems = append(res.Problems, orderByEvidenceProblems(c, allow[allowIdx], tables)...)
-		case gapIdx >= 0:
-			gapHit[gapIdx]++
-			res.Gaps++
-			if strings.TrimSpace(gaps[gapIdx].Why) == "" ||
-				strings.TrimSpace(gaps[gapIdx].Risk) == "" ||
-				strings.TrimSpace(gaps[gapIdx].Fix) == "" {
-				res.Problems = append(res.Problems, fmt.Sprintf(
-					"%s:%d %s(): 已知缺口登记缺字段（Why/Risk/Fix 都必须写清），壳子登记不许过",
-					c.File, c.Line, c.Func))
-			}
-		default:
-			res.Problems = append(res.Problems, orderByViolation(c, tables))
-		}
-	}
-
-	// 过期即红：登记项必须仍然命中真实子句。
-	for i, e := range allow {
-		if entryHit[i] == 0 {
-			res.Problems = append(res.Problems, fmt.Sprintf(
-				"白名单已过期：%s %s() 的 %q 不再命中任何 ORDER BY（SQL 改过或函数改名）—— "+
-					"如果这条已经满足判据就删掉登记项；只是改了写法就同步更新 Clause",
-				e.File, e.Func, e.Clause))
-		}
-	}
-	for i, g := range gaps {
-		if gapHit[i] == 0 {
-			res.Problems = append(res.Problems, fmt.Sprintf(
-				"已知缺口已过期：%s %s() 的 %q 不再命中任何 ORDER BY —— 修好就把它删掉，"+
-					"并同步下调 orderByKnownGapBudget", g.File, g.Func, g.Clause))
-		}
-	}
-	return res
-}
-
-// orderByMetaTables 是 SQLite 目录虚表的登记（只用来判定「这不是 schema.sql 里的表」）。
-//
-// 这些表的行来自 SQLite 内省，权威定义在 SQLite 文档里（见各条白名单理由），
-// 因此不进 schema.sql 的解析结果，但必须显式点名 —— 不能让未知表名静默通过。
-var orderByMetaTables = map[string]string{
-	"sqlite_master":           "库对象目录（type/name/tbl_name/rootpage/sql）",
-	"pragma_foreign_key_list": "外键列表（id=约束序号, seq=约束内列序）",
-	"pragma_index_list":       "索引列表（seq=表内索引序号, unique, origin, partial）",
-	"pragma_index_xinfo":      "索引列（seqno=索引内列序）",
-}
-
-// orderByAutoUnique 判断「末键自身就是唯一键」：rowid / 单列主键 / 单列 UNIQUE。
-//
-// 多表（join）时按表限定符定位；键不带限定符时看全部顶层表里有没有任何一张在该列上
-// 单列唯一 —— 不带限定符而两表同名的列，SQLite 自己会报 ambiguous，走不到这里。
-func orderByAutoUnique(c orderByClause, tables map[string]*orderByTableShape) bool {
-	col := orderByStripQualifier(c.LastKey)
-	alias := orderByQualifier(c.LastKey)
-
-	// rowid：表不是 WITHOUT ROWID 时唯一（WITHOUT ROWID 表根本没有 rowid 列）。
-	if col == "rowid" || col == "_rowid_" || col == "oid" {
-		for _, ref := range c.Refs {
-			if alias != "" && ref.Alias != alias {
-				continue
-			}
-			if t, ok := tables[ref.Table]; ok && t.HasRowID {
-				return true
-			}
-		}
-		return false
-	}
-
-	for _, ref := range c.Refs {
-		if alias != "" && ref.Alias != alias {
-			continue
-		}
-		t, ok := tables[ref.Table]
-		if !ok {
-			continue
-		}
-		for _, u := range t.Uniques {
-			if u.Partial == "" && len(u.Cols) == 1 && u.Cols[0] == col {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// orderByViolation 生成一条「没有任何归属」的失败信息。
-//
-// 契约要求：文件:行 + 表名 + 子句原文 + 为什么末键不唯一 + 修法建议。
-func orderByViolation(c orderByClause, tables map[string]*orderByTableShape) string {
+func (t orderByText) String() string {
 	var b strings.Builder
-
-	// 先按表限定符定位表（join 语句里 `d.id` 指的是哪张表必须看别名），
-	// 定位不到就退回第一张顶层表 —— 失败信息宁可粗一点，也要指名道姓。
-	tbl := "?"
-	var shape *orderByTableShape
-	alias := orderByQualifier(c.LastKey)
-	for _, ref := range c.Refs {
-		if alias != "" && ref.Alias != alias {
-			continue
-		}
-		if s, ok := tables[ref.Table]; ok {
-			tbl, shape = ref.Table, s
-			break
-		}
+	for _, c := range t.chunks {
+		b.WriteString(c.text)
 	}
-	if shape == nil && len(c.Refs) > 0 {
-		tbl = c.Refs[0].Table
-		shape = tables[tbl]
-	}
-
-	// 为什么末键不唯一
-	reason := ""
-	col := orderByStripQualifier(c.LastKey)
-	switch {
-	case shape != nil && orderByIsExpression(c.LastKey):
-		reason = fmt.Sprintf("末键 %q 是表达式（而非列），表上没有任何唯一键能覆盖它", c.LastKey)
-	case shape != nil:
-		var singles []string
-		for _, u := range shape.Uniques {
-			if u.Partial == "" && len(u.Cols) == 1 {
-				singles = append(singles, u.Cols[0])
-			}
-		}
-		if col == "rowid" || col == "_rowid_" || col == "oid" {
-			reason = fmt.Sprintf("末键是 %q，但表 %s 是 WITHOUT ROWID（没有 rowid 列）", col, tbl)
-		} else if len(singles) == 0 {
-			reason = fmt.Sprintf("末键 %q 所在的表 %s 没有单列唯一键（实际唯一键：%s）", col, tbl,
-				strings.Join(orderByUniqueBrief(shape), "，"))
-		} else {
-			reason = fmt.Sprintf("末键 %q 不是唯一键（表 %s 的单列唯一键只有 %s）",
-				col, tbl, strings.Join(singles, " / "))
-		}
-	case col == "rowid" || col == "_rowid_" || col == "oid":
-		reason = fmt.Sprintf("末键是 %q，但没有解析到它属于哪张表 —— 无法确认 rowid 可用", col)
-	default:
-		reason = "没有解析到这条子句作用的表，无法判断末键唯一性"
-	}
-
-	fmt.Fprintf(&b, "%s:%d %s(): 表 %s 的 ORDER BY 末键 %q 不唯一（子句原文：%q）\n"+
-		"    —— %s。\n"+
-		"    —— 修法：末键后面补一个唯一键（`, rowid` 即插入序，或 `, id` 即主键列）；"+
-		"若确实不需要破平局（聚合/GC 批量/目录表），登记进 orderByAllowlist 并写清可核验的证据。\n"+
-		"    —— 事故形态参考 commit 1461f7e4：只按时间列排序 ⇒ 同毫秒两行谁在前是掷硬币，翻页丢行/重复行、断言随机红。",
-		c.File, c.Line, c.Func, tbl, c.LastKey, c.Clause, reason)
 	return b.String()
 }
 
-// orderByIsExpression 判断排序键是不是表达式（函数/运算符/CASE）而不是普通列。
-func orderByIsExpression(key string) bool {
-	return strings.ContainsAny(key, "( ,+'*/") || strings.Contains(strings.ToUpper(key), "CASE")
+// orderByOccurrence 是「某条 SQL 文本里第 N 个 ORDER BY 关键字」的定位结果。
+type orderByOccurrence struct {
+	file   string
+	line   int
+	col    int
+	offset int    // 在整条 SQL 文本里的绝对偏移（指向 ORDER BY 的 O）
+	clause string // 「ORDER BY ...」到子句结束的原文
 }
 
-// orderByUniqueBrief 把一张表的唯一键简述出来（失败信息用）。
-func orderByUniqueBrief(shape *orderByTableShape) []string {
+// orderByFile 是一个待扫描的 Go 源文件（非测试）。
+// ============================================================================
+// 文件扫描：只读 internal/store 下的非测试 .go
+// ============================================================================
+
+// orderBySourceFiles 列出 internal/store 下的非测试 Go 源文件（相对文件名，已排序）。
+//
+// 为什么不用 filepath.Walk：本门禁只覆盖 store 这一层（schema.sql 与 SQL 都在这里），
+// 递归下去会把 internal/server 的查询混进来，而那份的 schema 归属是另一套纪律。
+func orderBySourceFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("列 internal/store 目录: %v", err)
+	}
 	var out []string
-	for _, u := range shape.Uniques {
-		s := "(" + strings.Join(u.Cols, ",") + ")"
-		if u.Partial != "" {
-			s += " WHERE " + u.Partial
-		}
-		out = append(out, s)
-	}
-	if len(out) == 0 {
-		return []string{"无"}
-	}
-	return out
-}
-
-// orderByEvidenceProblems 机械复核一条白名单的证据（口说无凭一律红）。
-func orderByEvidenceProblems(c orderByClause, e orderByEntry, tables map[string]*orderByTableShape) []string {
-	var probs []string
-	bad := func(format string, args ...any) {
-		probs = append(probs, fmt.Sprintf("%s:%d %s(): 白名单证据不成立 —— ", c.File, c.Line, c.Func)+
-			fmt.Sprintf(format, args...))
-	}
-	if strings.TrimSpace(e.Why) == "" {
-		bad("Why 不能为空（这条为什么不会因为并列抖动）")
-		return probs
-	}
-	if len(e.Unique) == 0 && e.GroupKey == "" && !e.GCBatch && len(e.MetaUnique) == 0 {
-		bad("没有给任何证据（Unique+Narrowed / GroupKey / GCBatch / MetaUnique 至少给一条）")
-		return probs
-	}
-
-	keys := map[string]bool{}
-	for _, k := range c.Keys {
-		keys[orderByStripQualifier(k)] = true
-	}
-
-	if len(e.Unique) > 0 {
-		if e.Table == "" {
-			bad("声明了 Unique 证据却没写作用于哪张表（Table）")
-			return probs
-		}
-		inRefs := false
-		for _, ref := range c.Refs {
-			if ref.Table == e.Table {
-				inRefs = true
-			}
-		}
-		if !inRefs {
-			bad("声明的表 %q 不在这条语句的顶层表里（%s）", e.Table, strings.Join(orderByRefNames(c.Refs), " "))
-			return probs
-		}
-		shape := tables[e.Table]
-		if shape == nil {
-			bad("表 %q 不在 schema.sql 里", e.Table)
-			return probs
-		}
-		// 收窄列必须真的以 `col = ?` 出现在窗口里（等值 = 常量，才能当索引前缀用）。
-		covered := map[string]bool{}
-		for _, col := range e.Narrowed {
-			if !orderByHasEquality(c.Window, col) {
-				bad("声明的收窄列 %q 并没有以 `= ?` 出现在这条语句的 WHERE 里", col)
-				return probs
-			}
-			covered[col] = true
-		}
-		for k := range keys {
-			covered[k] = true
-		}
-		matched := false
-		for _, u := range shape.Uniques {
-			if strings.Join(u.Cols, ",") != strings.Join(e.Unique, ",") {
-				continue
-			}
-			ok := true
-			for _, col := range u.Cols {
-				if !covered[col] {
-					ok = false
-				}
-			}
-			if !ok {
-				continue
-			}
-			// 部分唯一索引只在谓词成立的行上唯一：查询的 WHERE 必须蕴含那个谓词。
-			if u.Partial != "" && !strings.Contains(c.Window, u.Partial) {
-				bad("唯一键 %v 是部分唯一索引（WHERE %s），但这条语句的 WHERE 里没有该谓词 ⇒ 不唯一", u.Cols, u.Partial)
-				return probs
-			}
-			matched = true
-			break
-		}
-		if !matched {
-			bad("表 %s 上找不到列组合 %v 的唯一键（真实唯一键：%s），或者收窄列 + 排序键覆盖不了它",
-				e.Table, e.Unique, strings.Join(orderByUniqueBrief(shape), "，"))
-			return probs
-		}
-	}
-
-	if e.GroupKey != "" {
-		if orderByStripQualifier(c.LastKey) != orderByStripQualifier(e.GroupKey) {
-			bad("GroupKey %q 与末键 %q 不一致（聚合证据要求末键就是分组键）", e.GroupKey, c.LastKey)
-			return probs
-		}
-		groupKeys, ok := orderByGroupKeys(c.Window)
-		if !ok {
-			bad("这条语句里没有 GROUP BY，却声明了聚合证据")
-			return probs
-		}
-		if !groupKeys[orderByStripQualifier(e.GroupKey)] {
-			bad("GROUP BY 里没有 %q（实际分组键：%v）", e.GroupKey, orderBySortedKeys(groupKeys))
-			return probs
-		}
-	}
-
-	if e.GCBatch {
-		if !strings.Contains(c.Window, "delete from") {
-			bad("GC 批量删除证据要求语句是 DELETE ... WHERE ... IN (SELECT ... ORDER BY ... LIMIT n)，这里没看到 delete from")
-			return probs
-		}
-	}
-
-	if len(e.MetaUnique) > 0 {
-		if _, ok := orderByMetaTables[e.Table]; !ok {
-			bad("MetaUnique 证据只能用在 orderByMetaTables 登记的目录表上（Table=%q）", e.Table)
-			return probs
-		}
-		inRefs := false
-		for _, ref := range c.Refs {
-			if ref.Table == e.Table {
-				inRefs = true
-			}
-		}
-		if !inRefs {
-			bad("声明的目录表 %q 不在这条语句的顶层表里", e.Table)
-			return probs
-		}
-		for _, col := range e.MetaUnique {
-			if !keys[col] {
-				bad("声明的目录表唯一列 %q 不在排序键里（排序键：%v）", col, orderBySortedKeys(keys))
-				return probs
-			}
-		}
-	}
-	return probs
-}
-
-// orderByHasEquality 判断归一化窗口里是否有 `col = ?`（允许表限定与空格）。
-func orderByHasEquality(window, col string) bool {
-	re := regexp.MustCompile(`(?:^|[\s(,])(?:[a-z_][\w]*\.)?` + regexp.QuoteMeta(col) + `\s*=\s*\?`)
-	return re.MatchString(window)
-}
-
-// orderByGroupKeys 取归一化窗口里 GROUP BY 的分组键集合。
-func orderByGroupKeys(window string) (map[string]bool, bool) {
-	idx := strings.Index(window, "group by")
-	if idx < 0 {
-		return nil, false
-	}
-	rest := window[idx+len("group by"):]
-	// 分组键到 ORDER BY / LIMIT / HAVING 之前为止（窗口本身已截到 ORDER BY 之前）。
-	for _, stop := range []string{" having ", " limit ", " window "} {
-		if i := strings.Index(rest, stop); i >= 0 {
-			rest = rest[:i]
-		}
-	}
-	out := map[string]bool{}
-	for _, k := range orderBySplitTop(rest) {
-		out[orderByStripQualifier(orderByCleanKey(k))] = true
-	}
-	return out, true
-}
-
-func orderByRefNames(refs []orderByTableRef) []string {
-	out := make([]string, 0, len(refs))
-	for _, r := range refs {
-		if r.Alias != "" {
-			out = append(out, r.Table+"("+r.Alias+")")
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		out = append(out, r.Table)
-	}
-	return out
-}
-
-func orderBySortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+		out = append(out, name)
 	}
 	sort.Strings(out)
-	return out
-}
-
-// ============================================================================
-// 扫描器：从 Go 源码里把 ORDER BY 子句捞出来
-// ============================================================================
-
-// orderByScanPackage 扫本包全部非测试源码。
-func orderByScanPackage(t *testing.T) []orderByClause {
-	t.Helper()
-	sources := orderByReadPackageSources(t)
-	return orderByScanSources(t, sources)
-}
-
-// orderByReadPackageSources 读取本包非测试 .go 源码（文件名 → 内容）。
-func orderByReadPackageSources(t *testing.T) map[string]string {
-	t.Helper()
-	patterns := []string{"*.go", filepath.Join("internal", "store", "*.go")}
-	var paths []string
-	for _, pat := range patterns {
-		got, err := filepath.Glob(pat)
-		if err != nil {
-			t.Fatalf("glob %s: %v", pat, err)
-		}
-		if len(got) > 10 { // 找对了包目录
-			paths = got
-			break
-		}
-	}
-	if len(paths) == 0 {
-		t.Fatalf("没找到本包的源码（工作目录 = %q）：显然不是从包目录跑的，扫描器无法工作", ".")
-	}
-	out := map[string]string{}
-	for _, p := range paths {
-		if strings.HasSuffix(p, "_test.go") {
-			continue
-		}
-		buf, err := os.ReadFile(p)
-		if err != nil {
-			t.Fatalf("read %s: %v", p, err)
-		}
-		out[filepath.Base(p)] = string(buf)
-	}
-	if len(out) < 30 {
-		t.Fatalf("只读到 %d 个非测试源文件，太少了（扫描面不完整会假绿）", len(out))
+	if len(out) == 0 {
+		t.Fatalf("internal/store 下没有扫到任何非测试 .go 源文件 —— 扫描器自己坏了")
 	}
 	return out
 }
 
-// orderByScanSources 扫一组 Go 源（文件名 → 源码），返回其中 SQL 字面量里的 ORDER BY 子句。
+// orderByParsePackage 解析 store 包的所有非测试文件，返回文件集合与常量表。
+func orderByParsePackage(t *testing.T, fset *token.FileSet) (map[string]*ast.File, map[string]orderByText) {
+	t.Helper()
+	files := make(map[string]*ast.File, 48)
+	for _, name := range orderBySourceFiles(t) {
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("解析 %s: %v", name, err)
+		}
+		files[name] = f
+	}
+	return files, orderByPackageConsts(fset, files)
+}
+
+// orderByPackageConsts 收集包级字符串常量（含 `const a = b + "..."` 这种引用）。
 //
-// 两步：先把**同一函数**里的字符串字面量按源码顺序拼成 blob（变量拼接 `q += ...`
-// 因此能接上前面那句 FROM），再在 blob 里找 ORDER BY 并按字面量边界/顶层关键字
-// （LIMIT/UNION/OFFSET/结束括号）截出子句。包级字符串常量（nodeColumns 之类）按
-// 引用展开 —— deploymentSelect 这种常量里就有 FROM。
-func orderByScanSources(t *testing.T, sources map[string]string) []orderByClause {
-	t.Helper()
-	fset := token.NewFileSet()
-	names := make([]string, 0, len(sources))
-	for name := range sources {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var files []*ast.File
-	for _, name := range names {
-		file, err := parser.ParseFile(fset, name, sources[name], parser.ParseComments)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		files = append(files, file)
-	}
-	consts := orderByConstExprs(files)
-
-	var out []orderByClause
-	for _, file := range files {
-		fname := filepath.Base(fset.Position(file.Pos()).Filename)
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			blob := orderByFuncBlob(fset, consts, fn)
-			out = append(out, orderByClausesInBlob(fname, fn.Name.Name, blob)...)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].File != out[j].File {
-			return out[i].File < out[j].File
-		}
-		return out[i].Line < out[j].Line
-	})
-	for i := range out {
-		out[i].Refs = orderByTopTableRefs(out[i])
-	}
-	return out
-}
-
-// orderBySpan 是 blob 里一段字面量的位置（用于把偏移映射回文件行号）。
-type orderBySpan struct {
-	start, end int
-	line       int
-	file       string
-}
-
-// orderByBlob 是一个函数里拼起来的 SQL 文本。
-type orderByBlob struct {
-	text  string
-	spans []orderBySpan
-}
-
-// orderByConstExprs 收集包级 const/var 的初值表达式（初值本身可以是 + 拼接或引用别的常量）。
-func orderByConstExprs(files []*ast.File) map[string]ast.Expr {
-	out := map[string]ast.Expr{}
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok {
+// 为什么要它：`deploymentSelect` / `capabilityColumns` / `taskColumns` 这些常量是 SQL 的
+// 一部分（FROM 子句就在里面），不解出来就判不出表名，等于把判据让给了「解析失败」。
+func orderByPackageConsts(fset *token.FileSet, files map[string]*ast.File) map[string]orderByText {
+	consts := make(map[string]orderByText, 64)
+	// 三轮：允许常量之间跨文件前向引用（`deploymentSelect` 引用 `deploymentDigestSQL`）。
+	for pass := 0; pass < 3; pass++ {
+		for name, f := range files {
+			for _, decl := range f.Decls {
+				gen, ok := decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.CONST {
 					continue
 				}
-				for i, name := range vs.Names {
-					if i >= len(vs.Values) {
+				for _, spec := range gen.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) != len(vs.Values) {
 						continue
 					}
-					if _, dup := out[name.Name]; dup {
-						// 同名多份（不该发生）：当作不可解析，宁可少拼也不要拼错。
-						out[name.Name] = nil
-						continue
+					for i, ident := range vs.Names {
+						if _, done := consts[ident.Name]; done {
+							continue
+						}
+						if txt, ok := orderByResolveExpr(fset, name, consts, nil, vs.Values[i]); ok {
+							consts[ident.Name] = txt
+						}
 					}
-					out[name.Name] = vs.Values[i]
 				}
 			}
 		}
 	}
-	return out
+	return consts
 }
 
-// orderByFuncBlob 把一个函数体里的字符串字面量按源码顺序拼成 blob。
-func orderByFuncBlob(fset *token.FileSet, consts map[string]ast.Expr, fn *ast.FuncDecl) orderByBlob {
-	var sb strings.Builder
-	var spans []orderBySpan
-	var walk func(expr ast.Expr, seen map[string]bool)
-	walk = func(expr ast.Expr, seen map[string]bool) {
-		switch e := expr.(type) {
-		case *ast.BasicLit:
-			if e.Kind != token.STRING {
-				return
-			}
-			raw, err := strconv.Unquote(e.Value)
-			if err != nil {
-				return
-			}
-			pos := fset.Position(e.Pos())
-			spans = append(spans, orderBySpan{start: sb.Len(), end: sb.Len() + len(raw), line: pos.Line, file: pos.Filename})
-			sb.WriteString(raw)
-		case *ast.Ident:
-			init, ok := consts[e.Name]
-			if !ok || init == nil || seen[e.Name] {
-				return
-			}
-			seen[e.Name] = true
-			walk(init, seen)
-		case *ast.BinaryExpr:
-			if e.Op != token.ADD {
-				return
-			}
-			walk(e.X, seen)
-			walk(e.Y, seen)
-		case *ast.ParenExpr:
-			walk(e.X, seen)
+// orderByResolveExpr 把一个 Go 字符串表达式解析成 SQL 文本片段序列。
+//
+// 认得：反引号/双引号字面量、`+` 拼接、括号、局部变量、包级常量。
+// 不认得：函数调用等（例如 `strings.Join(where, " AND ")`、`placeholdersFor(n)`）——
+// 这些返回 ok=false，由调用方决定是「忽略整条」还是「记进 unknown 继续拼」。
+func orderByResolveExpr(fset *token.FileSet, file string, consts, locals map[string]orderByText, expr ast.Expr) (orderByText, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return orderByText{}, false
 		}
+		raw, err := strconv.Unquote(e.Value)
+		if err != nil {
+			return orderByText{}, false
+		}
+		pos := fset.Position(e.Pos())
+		return orderByText{chunks: []orderByChunk{{file: file, line: pos.Line, col: pos.Column, text: raw}}}, true
+	case *ast.ParenExpr:
+		return orderByResolveExpr(fset, file, consts, locals, e.X)
+	case *ast.Ident:
+		if locals != nil {
+			if txt, ok := locals[e.Name]; ok {
+				return txt, true
+			}
+		}
+		if txt, ok := consts[e.Name]; ok {
+			return txt, true
+		}
+		return orderByText{}, false
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return orderByText{}, false
+		}
+		left, okLeft := orderByResolveExpr(fset, file, consts, locals, e.X)
+		right, okRight := orderByResolveExpr(fset, file, consts, locals, e.Y)
+		if !okLeft && !okRight {
+			return orderByText{}, false
+		}
+		out := orderByText{}
+		if okLeft {
+			out.chunks = append(out.chunks, left.chunks...)
+			out.unknown = append(out.unknown, left.unknown...)
+		} else {
+			out.unknown = append(out.unknown, orderByExprSite(fset, file, e.X))
+		}
+		if okRight {
+			out.chunks = append(out.chunks, right.chunks...)
+			out.unknown = append(out.unknown, right.unknown...)
+		} else {
+			out.unknown = append(out.unknown, orderByExprSite(fset, file, e.Y))
+		}
+		return out, true
 	}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if n == nil {
+	return orderByText{}, false
+}
+
+// orderByExprSite 把「拼不出来的子表达式」记成 file:line，便于诊断。
+func orderByExprSite(fset *token.FileSet, file string, expr ast.Expr) string {
+	pos := fset.Position(expr.Pos())
+	return fmt.Sprintf("%s:%d", file, pos.Line)
+}
+
+// orderByStatementsFromSource 扫一个文件，返回所有「可能是 SQL」的文本（按语句位置去过重）。
+//
+// 做法：沿函数体按源码顺序走语句，维护局部变量 → SQL 文本的映射（`query := ...` /
+// `query += ...`），把每个调用实参与 return 值当 SQL 候选。同一处 ORDER BY 只会被
+// 记一次：候选按「ORDER BY 关键字所在 文件:行:列」归并，取**最长**的那份文本 ——
+// 最长的那份就是运行时真正执行的整条 SQL（局部变量累积够了，FROM 才在里面）。
+func orderByStatementsFromSource(fset *token.FileSet, file string, f *ast.File, consts map[string]orderByText) []orderByText {
+	var out []orderByText
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		locals := make(map[string]orderByText)
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				// `q := ...` / `q = ...` / `q += ...`：维护局部变量累积。
+				for i, lhs := range node.Lhs {
+					ident, ok := lhs.(*ast.Ident)
+					if !ok || ident.Name == "_" {
+						continue
+					}
+					var rhs ast.Expr
+					switch {
+					case len(node.Rhs) == len(node.Lhs):
+						rhs = node.Rhs[i]
+					case len(node.Rhs) == 1:
+						rhs = node.Rhs[0]
+					default:
+						continue
+					}
+					txt, ok := orderByResolveExpr(fset, file, consts, locals, rhs)
+					if !ok {
+						continue
+					}
+					if node.Tok == token.ADD_ASSIGN {
+						prev := locals[ident.Name]
+						txt.chunks = append(append([]orderByChunk{}, prev.chunks...), txt.chunks...)
+						txt.unknown = append(append([]string{}, prev.unknown...), txt.unknown...)
+					}
+					locals[ident.Name] = txt
+				}
+				// 赋值右侧自身也可能是一条完整 SQL（不经过变量的写法）。
+				for _, rhs := range node.Rhs {
+					if txt, ok := orderByResolveExpr(fset, file, consts, locals, rhs); ok {
+						out = append(out, txt)
+					}
+				}
+			case *ast.CallExpr:
+				for _, arg := range node.Args {
+					if txt, ok := orderByResolveExpr(fset, file, consts, locals, arg); ok {
+						out = append(out, txt)
+					}
+				}
+			case *ast.ReturnStmt:
+				for _, res := range node.Results {
+					if txt, ok := orderByResolveExpr(fset, file, consts, locals, res); ok {
+						out = append(out, txt)
+					}
+				}
+			}
 			return true
-		}
-		// 遇到 + 拼接就整体展开（并剪掉子节点，避免重复计入）；否则遇到字符串字面量就收。
-		if be, ok := n.(*ast.BinaryExpr); ok && be.Op == token.ADD {
-			walk(be, map[string]bool{})
-			sb.WriteString("\n")
-			return false
-		}
-		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			walk(lit, map[string]bool{})
-			sb.WriteString("\n")
-			return false
-		}
-		return true
-	})
-	return orderByBlob{text: sb.String(), spans: spans}
-}
-
-var (
-	orderByReKeyword = regexp.MustCompile(`(?i)\border\s+by\b`)
-	orderByReTail    = regexp.MustCompile(`(?i)\s+(asc|desc)\s*$`)
-	orderByStops     = []string{"limit", "offset", "union", "except", "intersect", "returning", "window", "from", "where", "join", "select"}
-	orderByStmtStart = []string{"select", "insert", "update", "delete", "replace", "with", "pragma"}
-)
-
-// orderByClausesInBlob 在 blob 里找出全部 ORDER BY 子句。
-func orderByClausesInBlob(file, fnName string, blob orderByBlob) []orderByClause {
-	depth := orderBySpanDepths(blob)
-	var out []orderByClause
-	for _, loc := range orderByReKeyword.FindAllStringIndex(blob.text, -1) {
-		limit := orderBySpanEnd(blob, loc[0])
-		end := orderByClauseEnd(blob.text, depth, loc[1], limit)
-		raw := strings.TrimSpace(blob.text[loc[1]:end])
-		keys := orderBySplitTop(raw)
-		for i := range keys {
-			keys[i] = orderByCleanKey(keys[i])
-		}
-		// 语句窗口：往前找最近一个括号深度 0 的语句关键字（拼出来的 SQL 才有 FROM 可看）。
-		winStart := 0
-		for i := loc[0] - 1; i >= 0; i-- {
-			if depth[i] != 0 {
-				continue
-			}
-			hit := false
-			for _, w := range orderByStmtStart {
-				if orderByWordAt(blob.text, i, w) {
-					winStart, hit = i, true
-					break
-				}
-			}
-			if hit {
-				break
-			}
-		}
-		line, spanFile := orderByLocate(blob, loc[0])
-		if spanFile != "" {
-			file = filepath.Base(spanFile)
-		}
-		out = append(out, orderByClause{
-			File:    file,
-			Line:    line,
-			Func:    fnName,
-			Clause:  orderByNorm("order by " + raw),
-			Keys:    keys,
-			LastKey: keys[len(keys)-1],
-			Window:  orderByNorm(blob.text[winStart:loc[0]]),
 		})
 	}
 	return out
 }
 
-// orderBySpanDepths 逐字面量算括号深度（每个字面量从 0 起算）。
-//
-// 为什么要按字面量重置：字面量是独立片段，拼起来后一个未闭合的 `(` 会把后面所有
-// 片段都算成「子查询里」，顶层表就被漏掉（表解析不到 ⇒ 判据失效）。
-func orderBySpanDepths(blob orderByBlob) []int {
-	d := make([]int, len(blob.text)+1)
-	for _, sp := range blob.spans {
-		cur := 0
-		inStr := byte(0)
-		for i := sp.start; i < sp.end && i < len(blob.text); i++ {
-			c := blob.text[i]
-			d[i] = cur
-			if inStr != 0 {
-				if c == inStr {
-					inStr = 0
-				}
-				continue
-			}
-			switch c {
-			case '\'', '"', '`':
-				inStr = c
-			case '(':
-				cur++
-			case ')':
-				if cur > 0 {
-					cur--
-				}
-			}
-		}
-	}
-	return d
-}
-
-// orderByClauseEnd 找子句终点：顶层关键字（LIMIT/UNION/...）、结束括号、或字面量结束。
-func orderByClauseEnd(text string, depth []int, start, limit int) int {
-	base := depth[start]
-	i := start
-	inStr := byte(0)
-	for i < limit {
-		c := text[i]
-		if inStr != 0 {
-			if c == inStr {
-				inStr = 0
-			}
-			i++
-			continue
-		}
-		switch c {
-		case '\'', '"', '`':
-			inStr = c
-			i++
-			continue
-		case ')':
-			if depth[i] < base {
-				return i
-			}
-		}
-		if depth[i] == base {
-			for _, w := range orderByStops {
-				if orderByWordAt(text, i, w) {
-					return i
-				}
-			}
-		}
-		i++
-	}
-	return i
-}
-
-// orderBySpanEnd 返回包含 off 的字面量结束偏移。
-func orderBySpanEnd(blob orderByBlob, off int) int {
-	for _, sp := range blob.spans {
-		if sp.start <= off && off <= sp.end {
-			return sp.end
-		}
-	}
-	return len(blob.text)
-}
-
-// orderByLocate 把 blob 偏移映射回（文件行号, 文件名）。
-func orderByLocate(blob orderByBlob, off int) (int, string) {
-	line, file := 0, ""
-	for _, sp := range blob.spans {
-		if sp.start > off {
+// orderByFindOccurrences 在一条 SQL 文本里找出所有 ORDER BY 关键字并定位到源码行。
+func orderByFindOccurrences(stmt orderByText) []orderByOccurrence {
+	text := stmt.String()
+	lower := strings.ToLower(text)
+	var out []orderByOccurrence
+	for from := 0; ; {
+		idx := strings.Index(lower[from:], "order by")
+		if idx < 0 {
 			break
 		}
-		line = sp.line
-		file = sp.file
-		if off <= sp.end {
-			line = sp.line + strings.Count(blob.text[sp.start:off], "\n")
-			break
-		}
-	}
-	return line, file
-}
-
-// orderByTopTableRefs 取语句窗口里**括号深度 0**的表引用（子查询里的表不算）。
-func orderByTopTableRefs(c orderByClause) []orderByTableRef {
-	// 窗口是归一化文本，深度按归一化文本重算即可（子查询括号在归一化后仍在）。
-	depth := orderByPlainDepths(c.Window)
-	var out []orderByTableRef
-	for _, m := range orderByReTableRef.FindAllStringSubmatchIndex(c.Window, -1) {
-		if depth[m[0]] != 0 {
+		off := from + idx
+		from = off + len("order by")
+		// 边界检查：避免把 `reorder by` 之类的子串当关键字（保留字对齐即可）。
+		if off > 0 && isOrderByWordByte(lower[off-1]) {
 			continue
 		}
-		ref := orderByTableRef{Table: strings.ToLower(c.Window[m[4]:m[5]])}
-		rest := strings.TrimLeft(c.Window[m[1]:], " ")
-		if len(rest) > 2 && strings.EqualFold(rest[:2], "as") {
-			rest = strings.TrimLeft(rest[2:], " ")
+		if from < len(lower) && isOrderByWordByte(lower[from]) {
+			continue
 		}
-		if len(rest) > 0 && orderByIsIdentByte(rest[0]) && !orderByIsDigit(rest[0]) {
-			j := 0
-			for j < len(rest) && orderByIsIdentByte(rest[j]) {
-				j++
-			}
-			if cand := strings.ToLower(rest[:j]); !orderBySQLKeywords[cand] {
-				ref.Alias = cand
-			}
+		chunk, inChunk, ok := orderByLocateChunk(stmt, off)
+		if !ok {
+			continue
 		}
-		out = append(out, ref)
+		line := chunk.line
+		col := chunk.col
+		prefix := chunk.text[:inChunk]
+		if n := strings.Count(prefix, "\n"); n > 0 {
+			line += n
+			col = len(prefix) - strings.LastIndex(prefix, "\n")
+		} else {
+			col += inChunk
+		}
+		out = append(out, orderByOccurrence{
+			file:   chunk.file,
+			line:   line,
+			col:    col,
+			offset: off,
+			clause: orderByClauseText(text, off),
+		})
 	}
 	return out
 }
 
-var orderByReTableRef = regexp.MustCompile(`(?i)\b(from|join|update|into)\s+([a-z_][a-z0-9_]*)`)
-
-var orderBySQLKeywords = map[string]bool{
-	"where": true, "join": true, "left": true, "right": true, "inner": true, "outer": true,
-	"on": true, "group": true, "order": true, "limit": true, "offset": true, "set": true,
-	"using": true, "union": true, "values": true, "select": true, "and": true, "or": true,
-	"natural": true, "cross": true, "full": true, "returning": true, "as": true,
+// isOrderByWordByte 报告 b 是否是 SQL 标识符/数字的一部分（用于关键字边界判断）。
+func isOrderByWordByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
-// orderByPlainDepths 对一段普通文本算括号深度（忽略引号内的括号）。
-func orderByPlainDepths(s string) []int {
-	d := make([]int, len(s)+1)
-	cur := 0
-	inStr := byte(0)
-	for i := 0; i < len(s); i++ {
-		d[i] = cur
-		c := s[i]
-		if inStr != 0 {
-			if c == inStr {
-				inStr = 0
+// orderByLocateChunk 把整条 SQL 文本里的绝对偏移映射回具体片段及其内部偏移。
+func orderByLocateChunk(stmt orderByText, offset int) (orderByChunk, int, bool) {
+	seen := 0
+	for _, c := range stmt.chunks {
+		if offset < seen+len(c.text) {
+			return c, offset - seen, true
+		}
+		seen += len(c.text)
+	}
+	return orderByChunk{}, 0, false
+}
+
+// orderByClauseText 从 ORDER BY 关键字处抽出整条子句原文（到同层 `)` / `;` / 文本结尾）。
+//
+// 为什么要跟踪括号：清理型 SQL 是 `DELETE ... WHERE id IN (SELECT ... ORDER BY x LIMIT ?)`，
+// 子句到同层 `)` 就结束了，多抓会把 IN 的右括号后面那截空文本也算进来。
+func orderByClauseText(text string, orderByOffset int) string {
+	depth := 0
+	inQuote := false
+	for i := orderByOffset; i < len(text); i++ {
+		c := text[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
 			}
 			continue
 		}
 		switch c {
-		case '\'', '"', '`':
-			inStr = c
+		case '\'':
+			inQuote = true
 		case '(':
-			cur++
+			depth++
 		case ')':
-			if cur > 0 {
-				cur--
+			if depth == 0 {
+				return strings.TrimSpace(text[orderByOffset:i])
+			}
+			depth--
+		case ';':
+			if depth == 0 {
+				return strings.TrimSpace(text[orderByOffset:i])
 			}
 		}
 	}
-	d[len(s)] = cur
-	return d
+	return strings.TrimSpace(text[orderByOffset:])
 }
 
-func orderByWordAt(text string, i int, word string) bool {
-	if i+len(word) > len(text) || !strings.EqualFold(text[i:i+len(word)], word) {
-		return false
-	}
-	if i > 0 && orderByIsIdentByte(text[i-1]) {
-		return false
-	}
-	if i+len(word) < len(text) && orderByIsIdentByte(text[i+len(word)]) {
-		return false
-	}
-	return true
+// ============================================================================
+// 二、schema.sql 侧：主键 / UNIQUE 约束 / 唯一索引 / rowid 可用性
+// ============================================================================
+
+// orderByUniqueKey 是一条唯一性事实（主键、UNIQUE 约束或 CREATE UNIQUE INDEX）。
+type orderByUniqueKey struct {
+	columns  []string // 列组合（小写）
+	partial  string   // 非空 = 部分唯一索引的 WHERE 谓词原文；只有查询真的带这个谓词才可依赖
+	evidence string   // 可核验证据：`PRIMARY KEY (...)` / `UNIQUE (...)` / `CREATE UNIQUE INDEX name`
 }
 
-func orderByIsIdentByte(c byte) bool {
-	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+// orderByTable 是 schema 里一张表在本门禁眼里需要的全部事实。
+type orderByTable struct {
+	name     string
+	hasRowid bool // 非 WITHOUT ROWID 表才有 rowid 可用
+	uniques  []orderByUniqueKey
 }
 
-func orderByIsDigit(c byte) bool { return c >= '0' && c <= '9' }
+// orderBySchema 是 schema.sql 的静态事实。
+type orderBySchema struct {
+	tables map[string]*orderByTable
+}
 
-// orderBySplitTop 按顶层逗号切分（忽略括号/引号内的逗号）。
-func orderBySplitTop(s string) []string {
+var (
+	// orderByCreateTableRe / orderByCreateIndexRe 只做「定位括号起点」这一步，列与谓词的解析
+	// 交给后面的括号/逗号扫描（正则切不开 `CHECK (id = 1)` 这种带逗号的列定义）。
+	orderByCreateTableRe = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	orderByCreateIndexRe = regexp.MustCompile(`(?is)^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s+ON\s+("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	// orderByPartialPredicateRe 认「部分唯一索引」的谓词形态：`<col> IS [NOT] NULL`。
+	// schema 里的部分索引只有这一种（idx_cap_live_name_ver / idx_cap_live_digest /
+	// idx_emits_task_emit / idx_tasks_pending_created_at / idx_task_attempts_unreaped）。
+	// 认不出的谓词一律按「无法证明」处理（fail closed），不猜。
+	orderByPartialPredicateRe = regexp.MustCompile(`(?is)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+(NOT\s+)?NULL\s*$`)
+	// orderByPinRe 认 WHERE 里「列 = 常量/参数」这种等值钉住。
+	orderByPinRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\?|'[^']*'|-?\d+)`)
+	// orderByBarePinRe 认不带限定符的等值：`task_id = ?`。
+	orderByBarePinRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\?|'[^']*'|-?\d+)`)
+	// orderByJoinOnRe 认 JOIN 的 ON 等值对，用于判定「这条 JOIN 会不会把行放大」。
+	orderByJoinOnRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)`)
+	// orderByBareIdentRe / orderByQualifiedIdentRe 是排序键的两种合法形态。
+	orderByBareIdentRe      = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+	orderByQualifiedIdentRe = regexp.MustCompile(`^([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)$`)
+)
+
+// orderByLoadSchema 解析 internal/store/schema.sql。
+//
+// 只收本门禁需要的事实：每张表的唯一键（主键 / UNIQUE 约束 / 唯一索引，含部分索引的谓词）
+// 与「有没有 rowid」。CHECK / 外键 / 默认值 / 类型都不进来 —— 判据用不到，收了只会腐坏。
+func orderByLoadSchema(t *testing.T) *orderBySchema {
+	t.Helper()
+	raw, err := os.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatalf("读 schema.sql: %v", err)
+	}
+	sch := &orderBySchema{tables: make(map[string]*orderByTable)}
+	for _, stmt := range orderBySplitStatements(orderByStripLineComments(string(raw))) {
+		if m := orderByCreateTableRe.FindStringSubmatch(stmt); m != nil {
+			sch.addTable(stmt, m)
+			continue
+		}
+		if m := orderByCreateIndexRe.FindStringSubmatch(stmt); m != nil {
+			sch.addIndex(stmt, m)
+		}
+	}
+	if len(sch.tables) == 0 {
+		t.Fatalf("schema.sql 里一张表都没解析出来 —— schema 解析器自己坏了（反假绿）")
+	}
+	return sch
+}
+
+// orderByStripLineComments 去掉 SQL 行注释（`-- ...`），保留换行以便行号不错乱。
+// 单引号字符串里的 `--` 不算注释（schema 里有 `'[]'`、`'unixepoch'` 这类默认值）。
+func orderByStripLineComments(src string) string {
+	var b strings.Builder
+	inQuote := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inQuote {
+			b.WriteByte(c)
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		if c == '\'' {
+			inQuote = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == '-' && i+1 < len(src) && src[i+1] == '-' {
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			if i < len(src) {
+				b.WriteByte('\n')
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// orderBySplitStatements 按顶层分号切语句（括号与引号内的分号不切）。
+func orderBySplitStatements(src string) []string {
 	var out []string
 	depth := 0
-	inStr := byte(0)
-	last := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inStr != 0 {
-			if c == inStr {
-				inStr = 0
+	inQuote := false
+	start := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
 			}
 			continue
 		}
 		switch c {
-		case '\'', '"', '`':
-			inStr = c
+		case '\'':
+			inQuote = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ';':
+			if depth == 0 {
+				if stmt := strings.TrimSpace(src[start:i]); stmt != "" {
+					out = append(out, stmt)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if stmt := strings.TrimSpace(src[start:]); stmt != "" {
+		out = append(out, stmt)
+	}
+	return out
+}
+
+// orderByMatchingParen 返回 open 处 `(` 对应的 `)` 下标（找不到返回 -1）。
+func orderByMatchingParen(s string, open int) int {
+	depth := 0
+	inQuote := false
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
 		case '(':
 			depth++
 		case ')':
 			depth--
-		case ',':
 			if depth == 0 {
-				out = append(out, s[last:i])
-				last = i + 1
+				return i
 			}
 		}
 	}
-	return append(out, s[last:])
+	return -1
 }
 
-// orderByCleanKey 去掉排序键尾巴上的 ASC/DESC 与空白。
-func orderByCleanKey(key string) string {
-	key = strings.TrimSpace(key)
-	for {
-		trimmed := strings.TrimSpace(orderByReTail.ReplaceAllString(key, ""))
-		if trimmed == key {
-			return key
+// orderBySplitTopLevel 按顶层逗号切（括号与引号内的逗号不切）。
+func orderBySplitTopLevel(s string) []string {
+	var out []string
+	depth := 0
+	inQuote := false
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
 		}
-		key = trimmed
+		switch c {
+		case '\'':
+			inQuote = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				if item := strings.TrimSpace(s[start:i]); item != "" {
+					out = append(out, item)
+				}
+				start = i + 1
+			}
+		}
 	}
+	if item := strings.TrimSpace(s[start:]); item != "" {
+		out = append(out, item)
+	}
+	return out
 }
 
-// orderByStripQualifier 去掉表限定符（`u.created_at` → `created_at`），小写化。
-func orderByStripQualifier(key string) string {
-	key = strings.TrimSpace(key)
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		key = key[i+1:]
+// orderByTopLevelTokens 把一段列定义按「顶层空白」切成 token（括号/引号内的空白不切）。
+// 例：`id INTEGER PRIMARY KEY CHECK (id = 1)` → [id, INTEGER, PRIMARY, KEY, CHECK (id = 1)]。
+func orderByTopLevelTokens(s string) []string {
+	var out []string
+	depth := 0
+	inQuote := false
+	var cur strings.Builder
+	flush := func() {
+		if tok := strings.TrimSpace(cur.String()); tok != "" {
+			out = append(out, tok)
+		}
+		cur.Reset()
 	}
-	return orderByUnquoteIdent(key)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			cur.WriteByte(c)
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
+			cur.WriteByte(c)
+		case '(':
+			depth++
+			cur.WriteByte(c)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteByte(c)
+		case ' ', '\t', '\n', '\r':
+			if depth > 0 {
+				cur.WriteByte(c)
+			} else {
+				flush()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return out
 }
 
-// orderByQualifier 取表限定符（`d.node_id` → `d`），没有则空串。
-func orderByQualifier(key string) string {
-	key = strings.TrimSpace(key)
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		return strings.ToLower(strings.TrimSpace(key[:i]))
+// orderByIdent 去掉标识符两侧的引号（`"values"` / `[x]` / 反引号）并转小写。
+func orderByIdent(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "`[]")
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = strings.Trim(s, `"`)
+	}
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// orderByColumnsFromParenGroup 取出 `(...)` 里的列名列表。
+func orderByColumnsFromParenGroup(s string) []string {
+	open := strings.IndexByte(s, '(')
+	if open < 0 {
+		return nil
+	}
+	closeIdx := orderByMatchingParen(s, open)
+	if closeIdx < 0 {
+		return nil
+	}
+	var cols []string
+	for _, item := range orderBySplitTopLevel(s[open+1 : closeIdx]) {
+		// 列项可能带 COLLATE / ASC / DESC（索引定义里合法），只取第一个 token 当列名。
+		toks := orderByTopLevelTokens(item)
+		if len(toks) == 0 {
+			continue
+		}
+		cols = append(cols, orderByIdent(toks[0]))
+	}
+	return cols
+}
+
+// addTable 解析一条 CREATE TABLE：列级/表级 PRIMARY KEY 与 UNIQUE、WITHOUT ROWID。
+func (s *orderBySchema) addTable(stmt string, m []string) {
+	name := orderByIdent(m[1])
+	open := strings.IndexByte(stmt, '(')
+	if open < 0 {
+		return
+	}
+	closeIdx := orderByMatchingParen(stmt, open)
+	if closeIdx < 0 {
+		return
+	}
+	tbl := &orderByTable{
+		name:     name,
+		hasRowid: !strings.Contains(strings.ToUpper(stmt[closeIdx:]), "WITHOUT ROWID"),
+	}
+	for _, item := range orderBySplitTopLevel(stmt[open+1 : closeIdx]) {
+		toks := orderByTopLevelTokens(item)
+		if len(toks) == 0 {
+			continue
+		}
+		// flat 只看「这条定义是什么」，列名与括号内容仍从原始 item 取。
+		flat := strings.ToUpper(orderByFlatten(item))
+		if strings.HasPrefix(flat, "CONSTRAINT ") {
+			// `CONSTRAINT name CHECK (...)` / `CONSTRAINT name PRIMARY KEY (...)`：
+			// 去掉 `CONSTRAINT` 与约束名两个 token，再看真实约束关键字。
+			parts := strings.SplitN(flat, " ", 4)
+			if len(parts) < 4 {
+				continue
+			}
+			flat = parts[3]
+		}
+		switch {
+		case strings.HasPrefix(flat, "PRIMARY KEY"):
+			cols := orderByColumnsFromParenGroup(item)
+			if len(cols) > 0 {
+				tbl.uniques = append(tbl.uniques, orderByUniqueKey{
+					columns:  cols,
+					evidence: "PRIMARY KEY (" + strings.Join(cols, ", ") + ")",
+				})
+			}
+		case strings.HasPrefix(flat, "UNIQUE"):
+			cols := orderByColumnsFromParenGroup(item)
+			if len(cols) > 0 {
+				tbl.uniques = append(tbl.uniques, orderByUniqueKey{
+					columns:  cols,
+					evidence: "UNIQUE (" + strings.Join(cols, ", ") + ")",
+				})
+			}
+		case strings.HasPrefix(flat, "FOREIGN") || strings.HasPrefix(flat, "CHECK"):
+			// 与本门禁无关（外键/CHECK 不产生唯一性事实）。
+		default:
+			// 列定义：列名 + 类型/约束 token。只认顶层出现的 PRIMARY KEY / UNIQUE。
+			col := orderByIdent(toks[0])
+			for i := 1; i < len(toks); i++ {
+				up := strings.ToUpper(toks[i])
+				if up == "PRIMARY" && i+1 < len(toks) && strings.ToUpper(toks[i+1]) == "KEY" {
+					tbl.uniques = append(tbl.uniques, orderByUniqueKey{
+						columns:  []string{col},
+						evidence: "列级 PRIMARY KEY（" + col + "）",
+					})
+					i++
+					continue
+				}
+				if up == "UNIQUE" {
+					tbl.uniques = append(tbl.uniques, orderByUniqueKey{
+						columns:  []string{col},
+						evidence: "列级 UNIQUE（" + col + "）",
+					})
+				}
+			}
+		}
+	}
+	s.tables[name] = tbl
+}
+
+// addIndex 解析一条 CREATE UNIQUE INDEX（含部分索引的 WHERE 谓词）。
+//
+// 非唯一索引直接忽略：它们不提供「列组合唯一」这条事实（`idx_cap_name_ver` 就是非唯一的）。
+func (s *orderBySchema) addIndex(stmt string, m []string) {
+	if strings.TrimSpace(m[1]) == "" {
+		return
+	}
+	indexName := orderByIdent(m[2])
+	table := orderByIdent(m[3])
+	tbl, ok := s.tables[table]
+	if !ok {
+		return
+	}
+	open := strings.IndexByte(stmt, '(')
+	if open < 0 {
+		return
+	}
+	closeIdx := orderByMatchingParen(stmt, open)
+	if closeIdx < 0 {
+		return
+	}
+	cols := orderByColumnsFromParenGroup(stmt[open:])
+	if len(cols) == 0 {
+		return
+	}
+	partial := ""
+	if tail := strings.TrimSpace(stmt[closeIdx+1:]); tail != "" {
+		if idx := strings.Index(strings.ToLower(tail), "where"); idx >= 0 {
+			partial = orderByFlatten(tail[idx+len("where"):])
+		}
+	}
+	tbl.uniques = append(tbl.uniques, orderByUniqueKey{
+		columns:  cols,
+		partial:  partial,
+		evidence: "CREATE UNIQUE INDEX " + indexName + " (" + strings.Join(cols, ", ") + ")",
+	})
+}
+
+// ============================================================================
+// 三、逐条 ORDER BY 的静态分析（表 / WHERE 钉住的列 / JOIN / GROUP BY）
+// ============================================================================
+
+// orderByJoin 是一条 JOIN 及其 ON 等值对被 JOIN 表一侧的列。
+type orderByJoin struct {
+	table     string
+	alias     string
+	onColumns []string // 被 JOIN 表在 ON 里参与等值的列（用于判「不会放大行数」）
+}
+
+// orderByClause 是一条 ORDER BY 的全部静态事实。
+type orderByClause struct {
+	file        string
+	line        int
+	sql         string // 整条 SQL 原文（判据与变异都基于它）
+	orderOffset int    // ORDER BY 关键字在 sql 里的偏移（变异后重新定位用）
+	// clause 是子句原文（空白压平），clauseKey 是小写版（白名单/缺口表按它匹配）。
+	clause    string
+	clauseKey string
+	// 规范化排序键（小写，去掉 ASC/DESC/COLLATE）。
+	keys []string
+	// 驱动表与限定符 → 表（别名/表名都能当限定符）。
+	table      string
+	qualifiers map[string]string
+	// WHERE 里被 `=` 钉死的列：表 → 列集合。
+	pinned map[string]map[string]bool
+	// WHERE 段（只保留 AND 连通的片段，OR 分支整段丢弃 —— fail closed）。
+	where string
+	// GROUP BY 键（规范化列名）。
+	groupKeys []string
+	joins     []orderByJoin
+	// 解析阶段的问题（表名解析不出、语句里找不到 FROM 等）。
+	problems []string
+	// SQL 里拼不出来（函数调用等）的子表达式位置，失败信息里要能说明「可能因此判不出表」。
+	unresolved []string
+}
+
+// orderByScanClauses 扫全包，返回按 文件:行 排序、按 ORDER BY 出现位置去重后的子句表。
+func orderByScanClauses(t *testing.T) []orderByClause {
+	t.Helper()
+	fset := token.NewFileSet()
+	files, consts := orderByParsePackage(t, fset)
+
+	type occurrence struct {
+		stmt orderByText // 该出现位置所属的那条 SQL（取最长的一份）
+		occ  orderByOccurrence
+	}
+	best := make(map[string]occurrence)
+	for name, f := range files {
+		for _, stmt := range orderByStatementsFromSource(fset, name, f, consts) {
+			for _, occ := range orderByFindOccurrences(stmt) {
+				key := fmt.Sprintf("%s:%d:%d", occ.file, occ.line, occ.col)
+				cur, ok := best[key]
+				if !ok || len(stmt.String()) > len(cur.stmt.String()) {
+					best[key] = occurrence{stmt: stmt, occ: occ}
+				}
+			}
+		}
+	}
+	if len(best) == 0 {
+		t.Fatalf("没有扫到任何 ORDER BY —— 扫描器自己坏了（反假绿：0 条必须红）")
+	}
+
+	var out []orderByClause
+	for _, oc := range best {
+		out = append(out, orderByAnalyzeClause(oc.stmt, oc.occ))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].file != out[j].file {
+			return out[i].file < out[j].file
+		}
+		return out[i].line < out[j].line
+	})
+	return out
+}
+
+// orderByAnalyzeClause 从「整条 SQL + ORDER BY 位置」推出这条子句的全部事实。
+func orderByAnalyzeClause(stmt orderByText, occ orderByOccurrence) orderByClause {
+	text := stmt.String()
+	cl := orderByClause{
+		file:        occ.file,
+		line:        occ.line,
+		sql:         text,
+		orderOffset: occ.offset,
+		unresolved:  stmt.unknown,
+		clause:      orderByFlatten(occ.clause),
+		clauseKey:   orderByNormalizeClause(occ.clause),
+		qualifiers:  make(map[string]string),
+		pinned:      make(map[string]map[string]bool),
+	}
+	cl.keys = orderByParseSortKeys(occ.clause)
+	if len(cl.keys) == 0 {
+		cl.problems = append(cl.problems, "ORDER BY 后面解析不出任何排序键")
+	}
+
+	depth := orderByDepthAt(text, occ.offset)
+	fromIdx := orderByLastKeyword(text, "from", occ.offset, depth)
+	if fromIdx < 0 {
+		cl.problems = append(cl.problems, "ORDER BY 之前找不到同层 FROM：表名无法确定")
+		return cl
+	}
+	table, alias, afterAlias := orderByParseTableRef(text, fromIdx+len("from"))
+	if table == "" {
+		cl.problems = append(cl.problems, "FROM 后面解析不出表名")
+		return cl
+	}
+	cl.table = table
+	cl.qualifiers[table] = table
+	if alias != "" {
+		cl.qualifiers[alias] = table
+	}
+	cl.joins = orderByParseJoins(text, afterAlias, occ.offset, depth, cl.qualifiers)
+
+	if whereIdx := orderByLastKeyword(text, "where", occ.offset, depth); whereIdx >= 0 {
+		cl.where = orderByAndSpans(text[whereIdx+len("where") : occ.offset])
+		orderByCollectPins(&cl)
+	}
+	if groupIdx := orderByLastKeyword(text, "groupby", occ.offset, depth); groupIdx >= 0 {
+		groupText := text[groupIdx+len("group by") : occ.offset]
+		if cut := orderByCutAtClauseKeyword(groupText); cut != "" {
+			groupText = cut
+		}
+		for _, key := range orderBySplitTopLevel(groupText) {
+			if col, _, ok := orderByNormalizeSortKey(key); ok {
+				cl.groupKeys = append(cl.groupKeys, col)
+			}
+		}
+	}
+	return cl
+}
+
+// orderByFlatten 折叠空白（保留大小写）。
+func orderByFlatten(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// orderByNormalizeClause 小写 + 折叠空白：白名单/缺口表与扫描结果都用这一份规范形态。
+func orderByNormalizeClause(s string) string {
+	return strings.ToLower(orderByFlatten(s))
+}
+
+// orderByParseSortKeys 把 ORDER BY 子句切成排序键（到同层 LIMIT/OFFSET 为止）。
+func orderByParseSortKeys(clause string) []string {
+	body := clause
+	if lower := strings.ToLower(strings.TrimSpace(body)); strings.HasPrefix(lower, "order by") {
+		body = strings.TrimSpace(body)[len("order by"):]
+	}
+	if cut := orderByCutAtClauseKeyword(body); cut != "" {
+		body = cut
+	}
+	var keys []string
+	for _, item := range orderBySplitTopLevel(body) {
+		if item = strings.TrimSpace(item); item != "" {
+			keys = append(keys, item)
+		}
+	}
+	return keys
+}
+
+// orderByCutAtClauseKeyword 截到同层 LIMIT / OFFSET 之前（排序键列表到此结束）。
+func orderByCutAtClauseKeyword(s string) string {
+	lower := strings.ToLower(s)
+	depth := 0
+	inQuote := false
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 && (i == 0 || !isOrderByWordByte(lower[i-1])) {
+				if strings.HasPrefix(lower[i:], "limit") && (i+5 == len(lower) || !isOrderByWordByte(lower[i+5])) {
+					return s[:i]
+				}
+				if strings.HasPrefix(lower[i:], "offset") && (i+6 == len(lower) || !isOrderByWordByte(lower[i+6])) {
+					return s[:i]
+				}
+			}
+		}
 	}
 	return ""
 }
 
-// orderByUnquoteIdent 去掉标识符引号并小写化。
-func orderByUnquoteIdent(s string) string {
-	s = strings.TrimSpace(s)
-	for _, pair := range [][2]string{{`"`, `"`}, {"`", "`"}, {"[", "]"}} {
-		if strings.HasPrefix(s, pair[0]) && strings.HasSuffix(s, pair[1]) && len(s) >= 2 {
-			s = s[1 : len(s)-1]
-		}
-	}
-	return strings.ToLower(s)
-}
-
-// orderByNorm 归一化：小写 + 空白折叠。
-func orderByNorm(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
-}
-
-// ============================================================================
-// schema.sql 解析
-// ============================================================================
-
-// orderByParseSchema 解析 schema.sql，产出每张表的主键 / 唯一键 / rowid 可用性。
+// orderByNormalizeSortKey 把一个排序键规范化成 (列名, 限定符, 是否列)。
 //
-// 为什么直接解析 SQL 文本而不是查 pragma：判据要在**静态**层面成立（不建库也能查
-// 一条新写的 ORDER BY 是否安全），而且 schema.sql 是这张库的单一事实源。
-// 解析器本身由「schema 解析与真实库一致」子测试兜住。
-func orderByParseSchema(t *testing.T, ddl string) map[string]*orderByTableShape {
-	t.Helper()
-	if strings.TrimSpace(ddl) == "" {
-		t.Fatalf("schema.sql 为空：嵌入的 schemaSQL 没读到（判定依据缺失）")
-	}
-	body := orderByStripLineComments(ddl)
-	tables := map[string]*orderByTableShape{}
-	for _, stmt := range orderBySplitStatements(body) {
-		s := strings.TrimSpace(stmt)
-		if s == "" {
+// 认 `col`、`t.col`、`col ASC|DESC`、`col COLLATE x`；其余（函数调用、CASE 表达式）返回 ok=false。
+func orderByNormalizeSortKey(key string) (column, qualifier string, ok bool) {
+	k := orderByFlatten(strings.ToLower(key))
+	for {
+		switch {
+		case strings.HasSuffix(k, " asc"):
+			k = strings.TrimSuffix(k, " asc")
+			continue
+		case strings.HasSuffix(k, " desc"):
+			k = strings.TrimSuffix(k, " desc")
 			continue
 		}
-		if m := orderByReCreateTable.FindStringSubmatch(s); m != nil {
-			name := orderByUnquoteIdent(m[1])
-			shape := &orderByTableShape{Name: name, HasRowID: strings.TrimSpace(m[3]) == ""}
-			for _, def := range orderBySplitTop(m[2]) {
-				d := strings.TrimSpace(def)
-				low := strings.ToLower(d)
-				switch {
-				case strings.HasPrefix(low, "primary key"):
-					cols := orderByParenCols(d)
-					shape.PK = cols
-					shape.Uniques = append(shape.Uniques, orderByUniqueKey{Cols: cols, Source: "PRIMARY KEY"})
-				case strings.HasPrefix(low, "unique"):
-					shape.Uniques = append(shape.Uniques, orderByUniqueKey{
-						Cols: orderByParenCols(d), Source: "UNIQUE 约束"})
-				case strings.HasPrefix(low, "constraint"), strings.HasPrefix(low, "foreign key"),
-					strings.HasPrefix(low, "check"):
-					// 与唯一性无关
-				default:
-					// 列级：`x TEXT PRIMARY KEY` / `endpoint TEXT NOT NULL UNIQUE`
-					if m2 := orderByReColPK.FindStringSubmatch(d); m2 != nil {
-						col := orderByUnquoteIdent(m2[1])
-						shape.PK = []string{col}
-						shape.Uniques = append(shape.Uniques, orderByUniqueKey{Cols: []string{col}, Source: "PRIMARY KEY（列内）"})
-					}
-					if m2 := orderByReColUnique.FindStringSubmatch(d); m2 != nil {
-						col := orderByUnquoteIdent(m2[1])
-						if !orderByIsReservedWord(col) {
-							shape.Uniques = append(shape.Uniques, orderByUniqueKey{
-								Cols: []string{col}, Source: "UNIQUE（列内）"})
-						}
-					}
+		if idx := strings.Index(k, " collate "); idx >= 0 {
+			k = strings.TrimSpace(k[:idx])
+			continue
+		}
+		break
+	}
+	if m := orderByQualifiedIdentRe.FindStringSubmatch(k); m != nil {
+		return m[2], m[1], true
+	}
+	if orderByBareIdentRe.MatchString(k) {
+		return k, "", true
+	}
+	return "", "", false
+}
+
+// orderByDepthAt 返回 offset 处的括号深度（忽略单引号字符串里的括号）。
+func orderByDepthAt(s string, offset int) int {
+	depth := 0
+	inQuote := false
+	for i := 0; i < offset && i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
+}
+
+// orderByLastKeyword 返回 before 之前、深度为 depth 的最后一个关键字位置（找不到 -1）。
+// keyword 为 `groupby` 时匹配 `GROUP BY`（两个词，中间任意空白）。
+func orderByLastKeyword(s, keyword string, before, depth int) int {
+	lower := strings.ToLower(s)
+	found := -1
+	curDepth := 0
+	inQuote := false
+	for i := 0; i < before && i < len(lower); i++ {
+		c := lower[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
+			continue
+		case '(':
+			curDepth++
+			continue
+		case ')':
+			if curDepth > 0 {
+				curDepth--
+			}
+			continue
+		}
+		if curDepth != depth || (i > 0 && isOrderByWordByte(lower[i-1])) {
+			continue
+		}
+		if keyword == "groupby" {
+			rest := lower[i:]
+			if strings.HasPrefix(rest, "group") && (len(rest) == 5 || !isOrderByWordByte(rest[5])) {
+				after := strings.TrimLeft(rest[5:], " \t\r\n")
+				if strings.HasPrefix(after, "by") && (len(after) == 2 || !isOrderByWordByte(after[2])) {
+					found = i
 				}
 			}
-			tables[name] = shape
 			continue
 		}
-		if m := orderByReCreateIndex.FindStringSubmatch(s); m != nil {
-			if strings.TrimSpace(m[1]) == "" { // 普通索引不影响唯一性
-				continue
-			}
-			shape, ok := tables[orderByUnquoteIdent(m[3])]
-			if !ok {
-				continue
-			}
-			shape.Uniques = append(shape.Uniques, orderByUniqueKey{
-				Cols:    orderByColumnList(m[4]),
-				Partial: orderByNorm(m[5]),
-				Source:  "UNIQUE INDEX " + orderByUnquoteIdent(m[2]),
-			})
+		if strings.HasPrefix(lower[i:], keyword) && (i+len(keyword) == len(lower) || !isOrderByWordByte(lower[i+len(keyword)])) {
+			found = i
 		}
 	}
-	return tables
+	return found
 }
 
-var (
-	orderByReCreateTable = regexp.MustCompile(`(?is)^create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][\w]*)\s*\((.*)\)\s*(without\s+rowid)?\s*$`)
-	orderByReCreateIndex = regexp.MustCompile(`(?is)^create\s+(unique\s+)?index\s+(?:if\s+not\s+exists\s+)?([a-z_][\w]*)\s+on\s+([a-z_][\w]*)\s*\(([^)]*)\)\s*(?:where\s+(.*))?$`)
-	orderByReColPK       = regexp.MustCompile(`(?is)^([a-z_][\w]*)\s+.*\bprimary\s+key\b`)
-	orderByReColUnique   = regexp.MustCompile(`(?is)^([a-z_][\w]*)\s+.*\bunique\b`)
-)
+// orderByParseTableRef 从 FROM/JOIN 之后解析「表名 [别名]」，返回表、别名与别名之后的偏移。
+func orderByParseTableRef(s string, pos int) (table, alias string, next int) {
+	pos = orderBySkipSpace(s, pos)
+	start := pos
+	for pos < len(s) && (isOrderByWordByte(s[pos]) || s[pos] == '.') {
+		pos++
+	}
+	table = orderByIdent(s[start:pos])
+	if table == "" {
+		return "", "", pos
+	}
+	afterTable := pos
+	pos = orderBySkipSpace(s, pos)
+	wordStart := pos
+	for pos < len(s) && isOrderByWordByte(s[pos]) {
+		pos++
+	}
+	candidate := strings.ToLower(s[wordStart:pos])
+	if candidate != "" && !orderByReservedWord(candidate) {
+		return table, candidate, pos
+	}
+	return table, "", afterTable
+}
 
-// orderByIsReservedWord 拦住把表级约束（`UNIQUE (a, b)`）误当列级 UNIQUE 的形态。
-func orderByIsReservedWord(word string) bool {
-	switch word {
-	case "unique", "primary", "key", "constraint", "foreign", "check":
+// orderBySkipSpace 跳过空白。
+func orderBySkipSpace(s string, pos int) int {
+	for pos < len(s) {
+		switch s[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
+}
+
+// orderByReservedWord 报告某个词是否是「不可能是表别名」的 SQL 关键字。
+func orderByReservedWord(w string) bool {
+	switch w {
+	case "where", "join", "left", "right", "inner", "outer", "cross", "natural", "on",
+		"using", "group", "by", "order", "limit", "offset", "union", "having", "as",
+		"and", "or", "not", "when", "then", "else", "end", "select", "from", "set":
 		return true
 	}
 	return false
 }
 
-// orderByParenCols 取 `PRIMARY KEY (a, b)` / `UNIQUE (a, b)` 括号里的列。
-func orderByParenCols(def string) []string {
-	open := strings.Index(def, "(")
-	close := strings.LastIndex(def, ")")
-	if open < 0 || close <= open {
-		return nil
-	}
-	return orderByColumnList(def[open+1 : close])
-}
-
-// orderByColumnList 把列清单切成小写列名（吃掉 ASC/COLLATE 之类的尾巴）。
-func orderByColumnList(list string) []string {
-	var out []string
-	for _, part := range orderBySplitTop(list) {
-		part = orderByStripQualifier(orderByCleanKey(part))
-		if i := strings.Index(part, " collate"); i >= 0 {
-			part = part[:i]
+// orderByParseJoins 收集 [start, end) 里同层的 JOIN 及其 ON 等值列。
+func orderByParseJoins(s string, start, end, depth int, qualifiers map[string]string) []orderByJoin {
+	var out []orderByJoin
+	for pos := start; pos < end; {
+		idx := orderByNextKeyword(s, "join", pos, end, depth)
+		if idx < 0 {
+			break
 		}
-		if part != "" {
-			out = append(out, part)
+		table, alias, afterAlias := orderByParseTableRef(s, idx+len("join"))
+		join := orderByJoin{table: table, alias: alias}
+		onIdx := orderByNextKeyword(s, "on", afterAlias, end, depth)
+		if onIdx < 0 {
+			if table != "" {
+				qualifiers[table] = table
+			}
+			if alias != "" {
+				qualifiers[alias] = table
+			}
+			out = append(out, join)
+			pos = afterAlias
+			continue
 		}
+		onEnd := end
+		for _, kw := range []string{"join", "where", "group", "order", "limit"} {
+			if next := orderByNextKeyword(s, kw, onIdx+len("on"), end, depth); next >= 0 && next < onEnd {
+				onEnd = next
+			}
+		}
+		segment := s[onIdx+len("on") : onEnd]
+		for _, m := range orderByJoinOnRe.FindAllStringSubmatch(segment, -1) {
+			leftQual, leftCol := strings.ToLower(m[1]), strings.ToLower(m[2])
+			rightQual, rightCol := strings.ToLower(m[3]), strings.ToLower(m[4])
+			switch {
+			case orderByLeavesJoinSide(leftQual, table, alias):
+				join.onColumns = append(join.onColumns, leftCol)
+			case orderByLeavesJoinSide(rightQual, table, alias):
+				join.onColumns = append(join.onColumns, rightCol)
+			}
+		}
+		if table != "" {
+			qualifiers[table] = table
+		}
+		if alias != "" {
+			qualifiers[alias] = table
+		}
+		out = append(out, join)
+		pos = onEnd
 	}
 	return out
 }
 
-// orderByStripLineComments 去掉 SQL 的 `--` 行注释（引号内的 `--` 不动）。
-func orderByStripLineComments(s string) string {
-	var sb strings.Builder
-	inStr := byte(0)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inStr != 0 {
-			sb.WriteByte(c)
-			if c == inStr {
-				inStr = 0
-			}
-			continue
-		}
-		switch c {
-		case '\'', '"', '`':
-			inStr = c
-			sb.WriteByte(c)
-		case '-':
-			if i+1 < len(s) && s[i+1] == '-' {
-				for i < len(s) && s[i] != '\n' {
-					i++
-				}
-				sb.WriteByte('\n')
-				continue
-			}
-			sb.WriteByte(c)
-		default:
-			sb.WriteByte(c)
-		}
-	}
-	return sb.String()
+// orderByLeavesJoinSide 报告某个限定符是否指向被 JOIN 的那张表（决定 ON 里哪一侧的列算它的）。
+func orderByLeavesJoinSide(qualifier, table, alias string) bool {
+	return qualifier != "" && (qualifier == alias || qualifier == table)
 }
 
-// orderBySplitStatements 按顶层 `;` 切语句（忽略括号与引号内的分号）。
-func orderBySplitStatements(s string) []string {
-	var out []string
-	depth := 0
-	inStr := byte(0)
-	last := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inStr != 0 {
-			if c == inStr {
-				inStr = 0
+// orderByNextKeyword 返回 pos 之后第一个深度为 depth 的关键字位置。
+func orderByNextKeyword(s, keyword string, pos, end, depth int) int {
+	lower := strings.ToLower(s)
+	curDepth := orderByDepthAt(s, pos)
+	inQuote := false
+	for i := pos; i < end && i < len(lower); i++ {
+		c := lower[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
 			}
 			continue
 		}
 		switch c {
-		case '\'', '"', '`':
-			inStr = c
+		case '\'':
+			inQuote = true
+			continue
+		case '(':
+			curDepth++
+			continue
+		case ')':
+			if curDepth > 0 {
+				curDepth--
+			}
+			continue
+		}
+		if curDepth != depth || (i > 0 && isOrderByWordByte(lower[i-1])) {
+			continue
+		}
+		if strings.HasPrefix(lower[i:], keyword) && (i+len(keyword) == len(lower) || !isOrderByWordByte(lower[i+len(keyword)])) {
+			return i
+		}
+	}
+	return -1
+}
+
+// orderByAndSpans 只保留 AND 连通的片段：遇到含顶层 OR 的括号组整段丢弃。
+//
+// 为什么必须这样做（fail closed）：`WHERE (name = ? OR version < ?)` 里 `name = ?`
+// 只是 OR 的一个分支，不能当「name 被钉死」用。宁可直接放弃这组线索，也不许
+// 把分支条件当成等值钉住 —— 那是把判据放宽成「看起来有 WHERE 就算安全」。
+func orderByAndSpans(where string) string {
+	var parts []string
+	depth := 0
+	inQuote := false
+	start := 0
+	groupStart := -1
+	for i := 0; i < len(where); i++ {
+		c := where[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
+		case '(':
+			if depth == 0 {
+				groupStart = i
+				if seg := strings.TrimSpace(where[start:i]); seg != "" {
+					parts = append(parts, seg)
+				}
+			}
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+				if depth == 0 && groupStart >= 0 {
+					inner := where[groupStart+1 : i]
+					if !orderByHasTopLevelOr(inner) {
+						parts = append(parts, orderByAndSpans(inner))
+					}
+					start = i + 1
+					groupStart = -1
+				}
+			}
+		}
+	}
+	if depth == 0 {
+		if seg := strings.TrimSpace(where[start:]); seg != "" {
+			parts = append(parts, seg)
+		}
+	}
+	return strings.ToLower(orderByFlatten(strings.Join(parts, " ")))
+}
+
+// orderByHasTopLevelOr 报告片段里是否有顶层 `OR`。
+func orderByHasTopLevelOr(s string) bool {
+	lower := strings.ToLower(s)
+	depth := 0
+	inQuote := false
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		if inQuote {
+			if c == '\'' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inQuote = true
 		case '(':
 			depth++
 		case ')':
-			depth--
-		case ';':
-			if depth == 0 {
-				out = append(out, s[last:i])
-				last = i + 1
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 && (i == 0 || !isOrderByWordByte(lower[i-1])) &&
+				strings.HasPrefix(lower[i:], "or") && (i+2 == len(lower) || !isOrderByWordByte(lower[i+2])) {
+				return true
 			}
 		}
 	}
-	return append(out, s[last:])
+	return false
+}
+
+// orderByCollectPins 收集 WHERE（AND 连通部分）里被 `=` 钉死的列。
+//
+// 带限定符的列按 `限定符 → 表` 归属；不带限定符的列只在**单表查询**里归给驱动表 ——
+// 多表时裸列到底属于谁光看文本判定不了，按「证不出就不算」处理（fail closed）。
+func orderByCollectPins(cl *orderByClause) {
+	add := func(table, col string) {
+		if table == "" || col == "" {
+			return
+		}
+		if cl.pinned[table] == nil {
+			cl.pinned[table] = make(map[string]bool)
+		}
+		cl.pinned[table][col] = true
+	}
+	for _, m := range orderByPinRe.FindAllStringSubmatch(cl.where, -1) {
+		if table, ok := cl.qualifiers[strings.ToLower(m[1])]; ok {
+			add(table, strings.ToLower(m[2]))
+		}
+	}
+	if len(cl.joins) > 0 {
+		return
+	}
+	for _, m := range orderByBarePinRe.FindAllStringSubmatch(cl.where, -1) {
+		col := strings.ToLower(m[1])
+		if col == "rowid" {
+			continue
+		}
+		add(cl.table, col)
+	}
 }
 
 // ============================================================================
-// 与真实库对账（schema 解析器的守卫）
+// 四、判定：一条 ORDER BY 凭什么算秩定
 // ============================================================================
 
-// orderByDBUniqueSets 返回真实库里某张表的唯一键集合（主键 + UNIQUE 约束 + UNIQUE 索引）。
-func orderByDBUniqueSets(t *testing.T, db *DB, table string) []string {
-	t.Helper()
-	sets := map[string]bool{}
-	// 主键：pragma_table_info 的 pk 序号（INTEGER PRIMARY KEY 是 rowid 别名，索引列表里
-	// 可能没有它，所以主键要单独取）。
-	if pk := primaryKeyColumns(t, db, table); len(pk) > 0 {
-		sets[strings.Join(pk, ",")] = true
+// orderByProof 是一条 ORDER BY 被视为「秩定」的证据（class 为空 = 没证出来）。
+type orderByProof struct {
+	class    string
+	evidence string
+}
+
+// orderByJudge 判定一条 ORDER BY 是否秩定 —— 纯函数（变异自证拿它直接进内存判据）。
+//
+// 三类证明（都要求可核验的事实，不猜）：
+//   - 分组键：结果集按 GROUP BY 分好组了，末键就是分组键 → 每组一行，天然唯一；
+//   - 末键唯一：末键是 rowid（表不是 WITHOUT ROWID）或单列唯一键（含部分唯一索引的谓词被满足）；
+//   - 覆盖唯一键：末键自身不唯一，但「ORDER BY 全键 ∪ WHERE 里 `=` 钉住的列」覆盖了某个
+//     唯一键 —— 两行在上面这些列上全等就意味着它们是同一行，整条排序仍是全序。
+//     JOIN 必须是 1:1（ON 的列在被 JOIN 表上是唯一键），否则一行会被放大成多行。
+func orderByJudge(cl orderByClause, sch *orderBySchema) (orderByProof, []string) {
+	proof, problems := orderByJudgeCore(cl, sch)
+	if proof.class != "" && len(problems) > 0 {
+		// 有证明、但同时有「推翻它」的问题（典型：JOIN 不 1:1，一行会被放大成多行）——
+		// 证明作废。这是 fail closed 的关键一步：不许「一边报问题一边算通过」。
+		return orderByProof{}, problems
 	}
-	rows, err := db.Query(`SELECT name FROM pragma_index_list(?) WHERE "unique" = 1`, table)
-	if err != nil {
-		t.Fatalf("list unique indexes on %s: %v", table, err)
+	return proof, problems
+}
+
+// orderByJudgeCore 是判据的实体（见 orderByJudge 的契约）。
+func orderByJudgeCore(cl orderByClause, sch *orderBySchema) (orderByProof, []string) {
+	if len(cl.keys) == 0 {
+		return orderByProof{}, []string{"ORDER BY 后面解析不出任何排序键"}
 	}
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			t.Fatalf("scan unique index of %s: %v", table, err)
+	lastRaw := cl.keys[len(cl.keys)-1]
+	lastCol, lastQual, isColumn := orderByNormalizeSortKey(lastRaw)
+	if !isColumn {
+		return orderByProof{}, []string{fmt.Sprintf(
+			"末键 %q 是表达式而不是列：表达式上没有唯一性事实可依赖（把表达式放前面、末键留一列）", lastRaw)}
+	}
+
+	// ① 分组键：结果集每组一行。
+	for _, gk := range cl.groupKeys {
+		if gk == lastCol {
+			return orderByProof{
+				class:    "分组键",
+				evidence: fmt.Sprintf("结果集按 GROUP BY 分组，末键 %s 就是分组键（每组一行）", gk),
+			}, nil
 		}
-		names = append(names, name)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("iterate unique indexes of %s: %v", table, err)
+
+	// ② 定位末键所属的表。
+	table := cl.table
+	if lastQual != "" {
+		resolved, ok := cl.qualifiers[lastQual]
+		if !ok {
+			return orderByProof{}, []string{fmt.Sprintf(
+				"末键 %q 的限定符 %q 解析不到表（既不是驱动表别名，也不是 JOIN 进来的表）", lastRaw, lastQual)}
+		}
+		table = resolved
 	}
-	rows.Close()
-	for _, name := range names {
-		cols, unique, _, ok := indexShape(t, db, name)
-		if !ok || !unique {
+	if table == "" {
+		return orderByProof{}, []string{"没有解析出驱动表，无法核对唯一性事实"}
+	}
+	tbl := sch.tables[table]
+	if tbl == nil {
+		return orderByProof{}, []string{fmt.Sprintf(
+			"schema.sql 里没有表 %q —— 这张表不在 schema 管辖内（SQLite 目录表 / pragma 虚表？）", table)}
+	}
+
+	// ③ JOIN 必须是 1:1，否则唯一键不蕴含「结果集里每行只出现一次」。
+	var joinProblems []string
+	for _, j := range cl.joins {
+		jt := sch.tables[j.table]
+		if jt == nil {
+			joinProblems = append(joinProblems, fmt.Sprintf("JOIN 进来的表 %q 不在 schema.sql 里", j.table))
 			continue
 		}
-		sets[strings.Join(cols, ",")] = true
+		if len(j.onColumns) == 0 {
+			joinProblems = append(joinProblems, fmt.Sprintf(
+				"JOIN %s 的 ON 条件解析不出 `x.col = y.col` 等值对，无法证明它不会放大行数", j.table))
+			continue
+		}
+		if !orderByJoinIsOneToOne(jt, j.onColumns, cl) {
+			joinProblems = append(joinProblems, fmt.Sprintf(
+				"JOIN %s 的 ON 列 %v 在 %s 上不构成唯一键：这条 JOIN 可能把一行放大成多行",
+				j.table, j.onColumns, j.table))
+		}
 	}
-	out := make([]string, 0, len(sets))
-	for s := range sets {
-		out = append(out, s)
+
+	// ④ 末键唯一：rowid 或单列唯一键。
+	if lastCol == "rowid" {
+		if tbl.hasRowid {
+			return orderByProof{
+				class:    "末键唯一",
+				evidence: fmt.Sprintf("末键 rowid：%s 不是 WITHOUT ROWID 表，rowid 天然唯一", table),
+			}, joinProblems
+		}
+		return orderByProof{}, []string{fmt.Sprintf("末键是 rowid，但 %s 是 WITHOUT ROWID 表（没有 rowid 可用）", table)}
 	}
-	sort.Strings(out)
+	for _, u := range tbl.uniques {
+		if len(u.columns) != 1 || u.columns[0] != lastCol {
+			continue
+		}
+		distinct, why := orderByPartialDistinct(u, cl, table)
+		if !distinct {
+			return orderByProof{}, append(joinProblems, why)
+		}
+		proof := orderByProof{
+			class:    "末键唯一",
+			evidence: fmt.Sprintf("末键 %s 被 %s 覆盖", lastCol, u.evidence),
+		}
+		if u.partial != "" {
+			proof.evidence += fmt.Sprintf("（部分唯一索引，谓词 %q 在 WHERE 里已满足）", u.partial)
+		}
+		return proof, joinProblems
+	}
+
+	// ⑤ 覆盖唯一键：ORDER BY 全键 ∪ WHERE 等值钉住的列 ⊇ 某个唯一键。
+	covered := map[string]bool{}
+	for _, key := range cl.keys {
+		if col, _, ok := orderByNormalizeSortKey(key); ok {
+			covered[col] = true
+		}
+	}
+	pinnedCols := make([]string, 0, len(cl.pinned[table]))
+	for col := range cl.pinned[table] {
+		covered[col] = true
+		pinnedCols = append(pinnedCols, col)
+	}
+	sort.Strings(pinnedCols)
+	for _, u := range tbl.uniques {
+		if !orderByColumnsAllIn(u.columns, covered) {
+			continue
+		}
+		distinct, why := orderByPartialDistinct(u, cl, table)
+		if !distinct {
+			return orderByProof{}, append(joinProblems, why)
+		}
+		missing := orderByColumnsNotInKeys(u.columns, cl.keys)
+		evidence := fmt.Sprintf("末键 %s 不单独唯一，但 ORDER BY 全键覆盖了 %s；其中 %v 由 WHERE 等值钉住",
+			lastCol, u.evidence, missing)
+		if u.partial != "" {
+			evidence += fmt.Sprintf("（部分唯一索引，谓词 %q 在 WHERE 里已满足）", u.partial)
+		}
+		return orderByProof{class: "覆盖唯一键", evidence: evidence}, joinProblems
+	}
+
+	// ⑥ 证不出来：把「末键为什么不唯一」写清楚。
+	problems := append([]string{}, joinProblems...)
+	if len(pinnedCols) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"WHERE 里被 `=` 钉住的 %s 列 %v 不够覆盖任何一个唯一键", table, pinnedCols))
+	}
+	return orderByProof{}, append(problems, fmt.Sprintf("末键 %s 在 %s 上不唯一", lastCol, table))
+}
+
+// orderByJoinIsOneToOne 报告 ON 的列是否构成被 JOIN 表的一个唯一键（= JOIN 至多 1:1）。
+func orderByJoinIsOneToOne(tbl *orderByTable, onColumns []string, cl orderByClause) bool {
+	onSet := map[string]bool{}
+	for _, c := range onColumns {
+		onSet[c] = true
+	}
+	for _, u := range tbl.uniques {
+		if !orderByColumnsAllIn(u.columns, onSet) {
+			continue
+		}
+		if distinct, _ := orderByPartialDistinct(u, cl, tbl.name); distinct {
+			return true
+		}
+	}
+	return false
+}
+
+// orderByPartialDistinct 判断一条唯一键在**这条查询**里是否真的唯一：
+// 非部分索引直接可用；部分唯一索引要求它的 WHERE 谓词确实出现在本条 SQL 的 WHERE 里。
+func orderByPartialDistinct(u orderByUniqueKey, cl orderByClause, table string) (bool, string) {
+	if u.partial == "" {
+		return true, ""
+	}
+	if orderByPredicateEntailed(u.partial, cl.where, table, cl) {
+		return true, ""
+	}
+	return false, fmt.Sprintf(
+		"%s 是部分唯一索引（谓词 %q），但本条 SQL 的 WHERE 里没有这个谓词 —— 部分索引不生效，不能当唯一性证据",
+		u.evidence, u.partial)
+}
+
+// orderByPredicateEntailed 报告部分唯一索引的谓词是否被本条 SQL 的 WHERE 蕴含。
+//
+// 只认 `<col> IS [NOT] NULL` 这一种形态（schema 里的部分索引都是这一种），
+// 其余形态返回 false（fail closed）。
+func orderByPredicateEntailed(predicate, where, table string, cl orderByClause) bool {
+	m := orderByPartialPredicateRe.FindStringSubmatch(predicate)
+	if m == nil {
+		return false
+	}
+	col := strings.ToLower(m[1])
+	negated := strings.TrimSpace(m[2]) != ""
+	// 带限定符的写法：限定符必须指向同一张表（别的表的同名列不算）。
+	qualified := regexp.MustCompile(`([a-z_][a-z0-9_]*)\.` + regexp.QuoteMeta(col) + `\s+is\s+(not\s+)?null`)
+	for _, qm := range qualified.FindAllStringSubmatch(where, -1) {
+		if (strings.TrimSpace(qm[2]) != "") != negated {
+			continue
+		}
+		if resolved, ok := cl.qualifiers[strings.ToLower(qm[1])]; ok && resolved == table {
+			return true
+		}
+	}
+	// 不带限定符的写法：要求 where 里确实出现裸 `col is [not] null`（前面不是点号）。
+	nullness := "null"
+	if negated {
+		nullness = "not null"
+	}
+	bare := regexp.MustCompile(`(?:^|[^a-z0-9_.])` + regexp.QuoteMeta(col) + `\s+is\s+` + nullness)
+	return bare.MatchString(where)
+}
+
+// orderByColumnsAllIn 报告 cols 是否全部落在 set 里。
+func orderByColumnsAllIn(cols []string, set map[string]bool) bool {
+	for _, c := range cols {
+		if !set[c] {
+			return false
+		}
+	}
+	return true
+}
+
+// orderByColumnsNotInKeys 返回唯一键里**不在 ORDER BY 键里**的列（它们必须由 WHERE 钉住）。
+func orderByColumnsNotInKeys(cols []string, keys []string) []string {
+	keySet := map[string]bool{}
+	for _, k := range keys {
+		if col, _, ok := orderByNormalizeSortKey(k); ok {
+			keySet[col] = true
+		}
+	}
+	var out []string
+	for _, c := range cols {
+		if !keySet[c] {
+			out = append(out, c)
+		}
+	}
 	return out
 }
 
-// orderByDBWithoutRowID 报告真实库里某张表是不是 WITHOUT ROWID。
-func orderByDBWithoutRowID(t *testing.T, db *DB, table string) bool {
-	t.Helper()
-	var ddl string
-	if err := db.QueryRow(`SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'table' AND name = ?`,
-		table).Scan(&ddl); err != nil {
-		t.Fatalf("read DDL of %s: %v", table, err)
+// orderByClauseFailure 把一条未证明的 ORDER BY 渲染成「点名到行」的失败信息：
+// 文件:行 + 表 + 子句原文 + 末键为什么不唯一 + 修法建议。
+func orderByClauseFailure(cl orderByClause, sch *orderBySchema) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "internal/store/%s:%d · 表 %s", cl.file, cl.line, orderByTableLabel(cl))
+	fmt.Fprintf(&b, "\n    子句：%s", cl.clause)
+	for _, p := range cl.problems {
+		fmt.Fprintf(&b, "\n    解析：%s", p)
 	}
-	return strings.Contains(strings.ToUpper(ddl), "WITHOUT ROWID")
+	if len(cl.unresolved) > 0 {
+		fmt.Fprintf(&b, "\n    解析：SQL 里有 %d 处拼不出来的子表达式（%s）——表名/条件可能因此判不出",
+			len(cl.unresolved), strings.Join(cl.unresolved, "、"))
+	}
+	if tbl := sch.tables[cl.table]; tbl != nil {
+		var ev []string
+		for _, u := range tbl.uniques {
+			e := u.evidence
+			if u.partial != "" {
+				e += "（部分，WHERE " + u.partial + "）"
+			}
+			ev = append(ev, e)
+		}
+		fmt.Fprintf(&b, "\n    %s 的唯一键：%s", cl.table, strings.Join(ev, "；"))
+	}
+	fmt.Fprintf(&b, "\n    修法：%s", orderByFixSuggestion(cl, sch))
+	return b.String()
+}
+
+// orderByTableLabel 给失败信息用的表名（解析不出时说明是解析问题）。
+func orderByTableLabel(cl orderByClause) string {
+	if cl.table == "" {
+		return "（未解析出表名）"
+	}
+	return cl.table
+}
+
+// orderByFixSuggestion 给出这条子句的修法建议。
+func orderByFixSuggestion(cl orderByClause, sch *orderBySchema) string {
+	tbl := sch.tables[cl.table]
+	last := ""
+	if len(cl.keys) > 0 {
+		last = cl.keys[len(cl.keys)-1]
+	}
+	qual := ""
+	if _, q, ok := orderByNormalizeSortKey(last); ok && q != "" {
+		qual = q + "."
+	}
+	if tbl == nil {
+		return "末键无法在本门禁下证明 —— 若它是 SQLite 目录表/pragma 虚表，登记进 orderByExemptions 并写清「顺序为什么无语义」；否则改成按唯一列排序"
+	}
+	// 优先 rowid：它是插入序，语义与 1461f7e4 的修法一致（「首注册用户排最前」只能这么表达）；
+	// 没有 rowid 的表退到单列唯一键。
+	suffix := "rowid"
+	if !tbl.hasRowid {
+		suffix = "主键列"
+		for _, u := range tbl.uniques {
+			if len(u.columns) == 1 {
+				suffix = u.columns[0]
+				break
+			}
+		}
+	}
+	// 用解析出来的排序键拼建议，不用子句原文：原文还带着 ` LIMIT ?`，拼出来的修法是错的。
+	keysText := strings.Join(cl.keys, ", ")
+	return fmt.Sprintf("末键后补一个唯一列：`ORDER BY %s, %s%s`（%s 的唯一键：%s）",
+		keysText, qual, suffix, cl.table, orderByUniqueKeySummary(tbl))
+}
+
+// orderByUniqueKeySummary 把一张表的唯一键压成一行，用于失败信息。
+func orderByUniqueKeySummary(tbl *orderByTable) string {
+	var parts []string
+	for _, u := range tbl.uniques {
+		parts = append(parts, strings.Join(u.columns, "+"))
+	}
+	if len(parts) == 0 {
+		return "（无）"
+	}
+	return strings.Join(parts, "、")
 }
 
 // ============================================================================
-// 双侧自证：变异必须变红（证「这套判据真的在承重」）
+// 五、登记表：证明无害的白名单 / 已确认的缺口
+// ============================================================================
+//
+// 两张表的纪律（照 internal/server/openapi_parity_test.go 的例外表）：
+//   - 每条必须写**理由**与**可核验证据**（Evidence 要指得出看哪里，不许「应该没问题」）；
+//   - 登记项过期即红：不再命中任何 ORDER BY 就失败，要求删除 —— 例外不许变成永久后门；
+//   - 白名单只收「顺序真的没有语义」的，收不下的改进 orderByKnownGaps（缺口有上限预算）。
+//
+// 键是 `文件 + 子句原文（小写、空白压平）`：不用行号，避免改一行注释就整表失效；
+// 同一文件里两条原文相同的子句共用一条登记（hits 会打印出来，多于 1 时必须核对两张表都安全）。
+
+const (
+	// orderByMinimumClauses 是「扫到的 ORDER BY 条数」下限，只许升不许降。
+	//
+	// 实测出处：2026-11-16 落地本门禁时，`internal/store/*.go`（非测试）里有 74 行文本含
+	// `ORDER BY`，其中 4 行是注释（artifact_manifest.go:366、event_page.go:12、
+	// playbook_tx.go:139、stats.go:113），真正写在 SQL 字符串里的是 **70** 条。
+	// 下限取 69：留 1 条余量给「解析器对某种新写法暂不认识」，但少两条就要红 ——
+	// 任何「扫描器悄悄不干活」都必须表现为失败，而不是静默变绿。
+	orderByMinimumClauses = 69
+
+	// orderByKnownGapBudget 是「已确认缺口」的条数上限（按子句计，不是按登记项计）。
+	//
+	// **只许降不许升**：修掉一条就把这里的数字与 orderByKnownGaps 对应登记一起下调；
+	// 新缺口要通过本门禁只能走进 orderByExemptions（证明顺序无害），不许抬高预算蒙混。
+	orderByKnownGapBudget = 12
+)
+
+// orderByExemption 是一条「证明顺序无语义」的白名单登记。
+type orderByExemption struct {
+	File     string // internal/store 下的文件名
+	Clause   string // ORDER BY 子句原文（小写、空白压平；与扫描结果的 clauseKey 逐字相等）
+	Reason   string // 为什么这对顺序不敏感
+	Evidence string // 可核验证据：查哪里能确认（行号/函数名/不变量）
+}
+
+// orderByKnownGap 是一条**已确认为缺口**的登记：末键不唯一，顺序确实不确定，但本轮不修。
+type orderByKnownGap struct {
+	File   string
+	Clause string
+	Risk   string // 会怎么坏（谁来读这个顺序、并列时看到什么）
+	Fix    string // 修法
+}
+
+// orderByExemptions 是白名单：只有「顺序真的没有语义」的才进得来。
+var orderByExemptions = []orderByExemption{
+	{
+		File:   "migrate.go",
+		Clause: "order by type, name",
+		Reason: "SQLite 目录表的枚举：结果只用来判「库里有没有用户对象」与拼诊断文本，顺序不进入任何行为；" +
+			"且 sqlite_master 的对象名在同一 schema 内唯一（表/视图/索引共享命名空间），并列不成立",
+		Evidence: "migrate.go:276 userSchemaObjects 的唯一消费者是 migrate.go:335 `len(f.objects) > 0` 与 " +
+			"migrate.go:339 的错误消息 strings.Join；没有任何按顺序取用的地方",
+	},
+	{
+		File:   "migrate.go",
+		Clause: "order by name",
+		Reason: "同上，只取 `type='table'` 的表名：结果喂给 map/ledger 探测，顺序无语义；" +
+			"表名在 sqlite_master 内唯一（本例还额外用 type='table' 收窄）",
+		Evidence: "migrate.go:244-258（ledger 探测是 for 循环里的相等比较）、migrate.go:519-531（写进 map[表名]）",
+	},
+	{
+		File:   "migrate.go",
+		Clause: "order by id, seq",
+		Reason: "pragma_foreign_key_list 是 SQLite 虚表（不在 schema.sql 管辖）：行按 id 分组拼进 map，" +
+			"最后 out 又被 sort.Strings 显式排序 —— 顺序在消费端被重新确定",
+		Evidence: "migrate.go:606-628：groups[id] 累积，末尾 `sort.Strings(out)`",
+	},
+	{
+		File:   "migrate.go",
+		Clause: "order by seq",
+		Reason: "pragma_index_list 是 SQLite 虚表：结果只用于按列匹配（嵌套循环逐列比对唯一索引），" +
+			"顺序不参与判定",
+		Evidence: "migrate.go:448-456：for actual := range got.unique / for required := range want[...]，按列比较",
+	},
+	{
+		File:     "migrate.go",
+		Clause:   "order by seqno",
+		Reason:   "pragma_index_xinfo 是 SQLite 虚表：seqno 是列在索引里的位置，同一索引内唯一 —— 不存在并列",
+		Evidence: "migrate.go:680 indexKeyColumnsDB 只在按索引取列顺序时使用；SQLite 文档保证 seqno 为该 pivot 的行号",
+	},
+	{
+		File:   "retention.go",
+		Clause: "order by coalesce(t.result_accepted_at, case when t.reported=0 then t.finished_at end) limit ?",
+		Reason: "清理批量选取，不是分页：批次边界不来自「上一批的最后一行」，而是调用方传入的固定 cutoff，" +
+			"所以并列只影响「这一批先删哪几条」，到期条件与轮次无关（每轮重算，直到删空）；顺序无语义",
+		Evidence: "retention.go:150-166：WHERE 里只有 `COALESCE(...) < ?`（cutoff 参数）与 NOT EXISTS 保护，没有基于排序键的续传条件",
+	},
+	{
+		File:     "retention.go",
+		Clause:   "order by e.created_at limit ?",
+		Reason:   "同上的清理批量选取：到期判定是 `created_at < cutoff`，与上一批删到哪无关；并列只是本批选谁先删",
+		Evidence: "retention.go:189-198：`DELETE FROM events WHERE id IN (SELECT e.id ... WHERE e.created_at < ? ... ORDER BY e.created_at LIMIT ?)`",
+	},
+	{
+		File:     "retention.go",
+		Clause:   "order by expires_at limit ?",
+		Reason:   "同上的清理批量选取：`expires_at <= ?` 是固定阈值，不是游标；并列无语义",
+		Evidence: "retention.go:218-225：`DELETE FROM event_deliveries WHERE rowid IN (SELECT rowid ... WHERE expires_at > 0 AND expires_at <= ? ... LIMIT ?)`",
+	},
+	{
+		File:     "retention.go",
+		Clause:   "order by pi.created_at limit ?",
+		Reason:   "同上的清理批量选取：`pi.created_at < ?` 是固定阈值 + NOT EXISTS 引用保护（保护每轮重算），并列无语义",
+		Evidence: "retention.go:255-268：批内按 created_at 排序只为「先删更老的」，并列时先删哪条不影响最终结果",
+	},
+}
+
+// orderByKnownGaps 是已确认的缺口（本轮不修，由协调者裁决）。
+//
+// 每一条都真的会坏：末键不唯一 ⇒ 并列行的先后由查询计划/插入序决定 ⇒
+// 「谁排第一」「LIMIT 边界取到谁」不是不变量。1461f7e4 修的是其中一条的分页版
+// （ListUsersWithStatsPage → ORDER BY created_at, rowid），本表是同一类问题的存量清单。
+var orderByKnownGaps = []orderByKnownGap{
+	{
+		File:   "admin.go",
+		Clause: "order by u.created_at asc",
+		Risk: "ListUsersWithStats（管理后台用户页，admin_handlers.go:168）：created_at 是秒级时间戳，" +
+			"同一秒注册的两个用户谁在前不确定。现在碰巧稳定只因 users 没有 created_at 索引（走全表扫描按 rowid 出）——" +
+			"这是查询计划的巧合，不是不变量；一旦加索引或计划变化，顺序就变（1461f7e4 的 42.5% 随机红就是这么来的）",
+		Fix: "与分页版一致：ORDER BY u.created_at ASC, u.rowid ASC",
+	},
+	{
+		File:   "admin.go",
+		Clause: "order by coalesce((select max(s2.last_seen) from sessions s2 where s2.user_id = u.id), 0) desc, u.created_at asc limit 10",
+		Risk:   "系统统计的 Top 10 活跃用户：末键 created_at 可重复，并列时谁进 Top10、谁排第几由计划决定（LIMIT 边界抖动）",
+		Fix:    "末键补 u.rowid：ORDER BY COALESCE(...) DESC, u.created_at ASC, u.rowid ASC",
+	},
+	{
+		File:   "admin.go",
+		Clause: "order by created_at desc limit ?",
+		Risk:   "ListGlobalEvents（admin_handlers.go:347）：同秒事件并列 → 「最近 N 条全站事件」的边界与内部顺序不确定",
+		Fix:    "ORDER BY created_at DESC, id DESC（事件 id 唯一）",
+	},
+	{
+		File:   "admin.go",
+		Clause: "order by s.last_seen desc limit 500",
+		Risk:   "ListAllSessions（admin_handlers.go:357）：last_seen 是秒级时间戳，同秒会话并列 → 500 条边界与顺序不确定",
+		Fix:    "ORDER BY s.last_seen DESC, s.id DESC",
+	},
+	{
+		File:   "auth.go",
+		Clause: "order by created_at asc",
+		Risk: "ListPasskeysByUser（auth.go:208，passkeys）与 ListUnusedRecoveryCodesByUser（auth.go:600，recovery_codes）：" +
+			"同一秒创建的多条凭证/恢复码并列，列表顺序不确定（用户看到的「第 N 个凭证」会变）",
+		Fix: "两条都补唯一列：ORDER BY created_at ASC, id ASC",
+	},
+	{
+		File:   "auth.go",
+		Clause: "order by created_at desc",
+		Risk: "ListSessionsByUser（auth.go:355，sessions）与 ListAPIKeysByUser（auth.go:531，api_keys）：同秒并列 → 列表顺序不确定" +
+			"（分页版 auth.go:421/382 已用 `created_at, id` 破平局，非分页版漏了）",
+		Fix: "两条都补唯一列：ORDER BY created_at DESC, id DESC",
+	},
+	{
+		File:   "devices.go",
+		Clause: "order by created_at asc",
+		Risk: "ListDevices（devices.go:33）与 ListEnabledDevices（devices.go:55，投递候选集）：同秒注册的设备并列，" +
+			"设备列表与推送候选顺序不确定（候选顺序会体现在实际投递顺序上）",
+		Fix: "两条都补唯一列：ORDER BY created_at ASC, id ASC",
+	},
+	{
+		File:   "deployment.go",
+		Clause: "order by d.node_id",
+		Risk: "按能力列部署（deployment.go:279）：deployments 的唯一键是 (node_id, capability_id, digest)，" +
+			"同一节点对同一能力可以有多个 digest → node_id 并列，返回顺序不确定",
+		Fix: "ORDER BY d.node_id, d.digest（或 d.id）",
+	},
+	{
+		File:   "playbook.go",
+		Clause: "order by name, version",
+		Risk: "install 回执的 kept 能力清单（playbook.go:608）：WHERE **没有** deleted_at IS NULL，" +
+			"部分唯一索引 idx_cap_live_name_ver(namespace_id,name,version) 不生效 → 已删能力的 (name,version) 可与活行重复，" +
+			"顺序与内容都不确定（顺带把已删能力算进 kept？这是产品口径问题，不是本门禁能定的）",
+		Fix: "补上 `AND deleted_at IS NULL`（同文件 playbook_tx.go:452-456 就是这么写的），再 ORDER BY name, version",
+	},
+}
+
+// orderByMatchExemption 在一张白名单表里找命中项（-1 = 没命中）。
+//
+// 表作为参数传进来（不直接读全局）：变异自证要能喂一条假登记进去断言会红。
+func orderByMatchExemption(cl orderByClause, exs []orderByExemption) int {
+	for i, ex := range exs {
+		if ex.File == cl.file && ex.Clause == cl.clauseKey {
+			return i
+		}
+	}
+	return -1
+}
+
+// orderByMatchGap 在一张缺口登记表里找命中项（-1 = 没命中）。
+func orderByMatchGap(cl orderByClause, gaps []orderByKnownGap) int {
+	for i, gap := range gaps {
+		if gap.File == cl.file && gap.Clause == cl.clauseKey {
+			return i
+		}
+	}
+	return -1
+}
+
+// orderByScanGuard 是「解析器必须真的干活」的守卫（反假绿），单独成函数便于变异自证。
+func orderByScanGuard(count, minimum int) []string {
+	if count == 0 {
+		return []string{"解析到 0 条 ORDER BY —— 扫描器坏了或被绕过；本门禁在 0 条上必须红，不许静默通过"}
+	}
+	if count <= minimum {
+		return []string{fmt.Sprintf(
+			"只解析到 %d 条 ORDER BY，下限是 > %d（实测 70 条，见 orderByMinimumClauses 注释）："+
+				"少这么多说明扫描漏了，不是「代码变干净了」", count, minimum)}
+	}
+	return nil
+}
+
+// orderByRegistryProblems 检查两张登记表：过期即红（不再命中任何未证明的 ORDER BY）+ 缺口预算。
+//
+// 单独成函数（不内联在 Test 里）是为了让变异自证能直接喂一条假登记进去断言会红。
+func orderByRegistryProblems(unproven []orderByClause, exs []orderByExemption, gaps []orderByKnownGap, budget int) []string {
+	var problems []string
+	exHits := make([]int, len(exs))
+	gapHits := make([]int, len(gaps))
+	for _, cl := range unproven {
+		if i := orderByMatchExemption(cl, exs); i >= 0 {
+			exHits[i]++
+		}
+		if i := orderByMatchGap(cl, gaps); i >= 0 {
+			gapHits[i]++
+		}
+	}
+	for i, ex := range exs {
+		if exHits[i] == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"白名单已过期：internal/store/%s 的 `%s` 不再命中任何未证明的 ORDER BY（这条子句可能已被修好/被证明）——"+
+					"请从 orderByExemptions 删除该条（原理由：%s）", ex.File, ex.Clause, ex.Reason))
+		}
+	}
+	total := 0
+	for i, gap := range gaps {
+		total += gapHits[i]
+		if gapHits[i] == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"缺口登记已过期：internal/store/%s 的 `%s` 不再命中任何未证明的 ORDER BY（缺口已修好或被证明）——"+
+					"请从 orderByKnownGaps 删除该条，并把 orderByKnownGapBudget 从 %d 下调（原风险：%s）",
+				gap.File, gap.Clause, budget, gap.Risk))
+		}
+	}
+	if total > budget {
+		problems = append(problems, fmt.Sprintf(
+			"已确认缺口 %d 条，超出预算 %d：orderByKnownGapBudget 只许降不许升 —— "+
+				"要么修掉（多半是末键补一个唯一列），要么证明顺序无害后进 orderByExemptions", total, budget))
+	}
+	return problems
+}
+
+// ============================================================================
+// 六、门禁本体
 // ============================================================================
 
-// orderBySelfTest 用合成输入跑同一份判据，红/绿两侧都要被证明。
-func orderBySelfTest(t *testing.T) {
-	t.Helper()
-	schema := `
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE,
-    created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS capability_versions (
-    id TEXT PRIMARY KEY,
-    namespace_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    deleted_at INTEGER
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cap_live ON capability_versions(namespace_id, name, version) WHERE deleted_at IS NULL;
-CREATE TABLE IF NOT EXISTS kv (
-    k TEXT PRIMARY KEY,
-    created_at INTEGER NOT NULL
-) WITHOUT ROWID;
-`
-	tables := orderByParseSchema(t, schema)
+// orderByGateStats 是一次门禁判定的汇总（打印用 + 变异自证断言用）。
+type orderByGateStats struct {
+	byClass   map[string]int
+	exempted  int
+	knownGaps int // 命中的**子句**条数（不是登记项数）
+	// unproven 是判据证不出来的子句（登记表的命中情况在它之上定义）。
+	unproven []orderByClause
+	problems []string
+}
 
-	// 把源码片段变成子句集合（走的是真实扫描路径，不是手搓结构体）。
-	mutate := func(body string) []orderByClause {
-		src := "package store\n\nfunc mutant() {\n\t_ = `" + body + "`\n}\n"
-		return orderByScanSources(t, map[string]string{"mutant.go": src})
+// orderByGate 是门禁本体（纯函数：输入子句表 + schema + 登记表，输出证据/统计/问题）。
+//
+// 从 Test 里抽出来是为了让「红侧」也能自证：变异自证可以喂一条末键非唯一的子句进来，
+// 断言它被按 文件:行 点名，而不是只测内层判据（orderByJudge）就算完。
+func orderByGate(clauses []orderByClause, sch *orderBySchema, exs []orderByExemption, gaps []orderByKnownGap, budget int) ([]string, orderByGateStats) {
+	stats := orderByGateStats{byClass: map[string]int{}}
+	var details []string
+	var unproven []orderByClause
+	// unprovenProblems 与 unproven 同下标对齐：证不出来的原因要原样留在失败信息里，
+	// 不重跑一遍判据（判据是纯函数，重跑只是浪费）。
+	var unprovenProblems [][]string
+	for _, cl := range clauses {
+		proof, judgeProblems := orderByJudge(cl, sch)
+		if proof.class != "" {
+			stats.byClass[proof.class]++
+			details = append(details, fmt.Sprintf("✅ %s internal/store/%s:%d · %s",
+				proof.class, cl.file, cl.line, proof.evidence))
+			continue
+		}
+		unproven = append(unproven, cl)
+		unprovenProblems = append(unprovenProblems, judgeProblems)
+	}
+	stats.unproven = unproven
+	for i, cl := range unproven {
+		exIdx, gapIdx := orderByMatchExemption(cl, exs), orderByMatchGap(cl, gaps)
+		switch {
+		case exIdx >= 0 && gapIdx >= 0:
+			stats.problems = append(stats.problems, fmt.Sprintf(
+				"internal/store/%s:%d 同时登记在白名单与缺口表 —— 一条子句只能是一者", cl.file, cl.line))
+		case exIdx >= 0:
+			stats.exempted++
+			details = append(details, fmt.Sprintf("🟡 白名单 internal/store/%s:%d · %s",
+				cl.file, cl.line, exs[exIdx].Reason))
+		case gapIdx >= 0:
+			stats.knownGaps++
+			details = append(details, fmt.Sprintf("🔴 已知缺口 internal/store/%s:%d · %s",
+				cl.file, cl.line, gaps[gapIdx].Risk))
+		default:
+			stats.problems = append(stats.problems, orderByClauseFailure(cl, sch)+
+				"\n    判据："+strings.Join(unprovenProblems[i], "；"))
+		}
+	}
+	// ④ 两张登记表过期即红 + 缺口预算只许降。
+	stats.problems = append(stats.problems, orderByRegistryProblems(stats.unproven, exs, gaps, budget)...)
+	return details, stats
+}
+
+// TestStoreOrderByTiebreak 是 L4 门禁：store 里每条 ORDER BY 的末键必须唯一。
+//
+// 失败信息的形态（直接给修法，省掉一次「这是哪条子句」的往返）：
+//
+//	internal/store/admin.go:50 · 表 users
+//	    子句：ORDER BY u.created_at ASC
+//	    users 的唯一键：列级 PRIMARY KEY（id）；列级 UNIQUE（username）
+//	    修法：末键后补一个唯一列：`ORDER BY u.created_at ASC, rowid`（users 的唯一键：id、username）
+func TestStoreOrderByTiebreak(t *testing.T) {
+	clauses := orderByScanClauses(t)
+	sch := orderByLoadSchema(t)
+
+	// ⑤ 反假绿：0 条 / 低于下限都必须红。
+	if guard := orderByScanGuard(len(clauses), orderByMinimumClauses); len(guard) > 0 {
+		t.Fatalf("%s", strings.Join(guard, "\n"))
 	}
 
-	t.Run("只按时间列排序（1461f7e4 的形态）必须红", func(t *testing.T) {
-		clauses := mutate("SELECT id FROM users ORDER BY created_at")
-		if len(clauses) != 1 {
-			t.Fatalf("扫描器没抓到预期的 1 条子句，实际 %d 条", len(clauses))
+	details, stats := orderByGate(clauses, sch, orderByExemptions, orderByKnownGaps, orderByKnownGapBudget)
+	for _, d := range details {
+		t.Log(d)
+	}
+	t.Logf("ORDER BY 共 %d 条（下限 > %d）｜末键唯一 %d｜分组键 %d｜覆盖唯一键 %d｜白名单 %d｜已知缺口 %d（预算上限 %d）｜"+
+		"登记：白名单 %d 条 / 缺口 %d 条",
+		len(clauses), orderByMinimumClauses, stats.byClass["末键唯一"], stats.byClass["分组键"], stats.byClass["覆盖唯一键"],
+		stats.exempted, stats.knownGaps, orderByKnownGapBudget, len(orderByExemptions), len(orderByKnownGaps))
+
+	if len(stats.problems) > 0 {
+		t.Fatalf("ORDER BY 破平局门禁失败（%d 条）：\n  - %s", len(stats.problems), strings.Join(stats.problems, "\n  - "))
+	}
+
+	// ========================================================================
+	// ⑦ 变异自证：判据必须真的会因为「末键不唯一」变红，而不是恒绿。
+	// ========================================================================
+	t.Run("schema 解析自证：唯一键与部分索引谓词确实解析到了", func(t *testing.T) {
+		// 判据全靠这些事实；解析器悄悄退化成「什么都没有」时，下面的断言会先红。
+		users := sch.tables["users"]
+		if users == nil || !users.hasRowid {
+			t.Fatalf("users 表解析异常：%+v（它是普通 rowid 表）", users)
 		}
-		got := orderByAudit(clauses, tables, nil, nil)
-		if len(got.Problems) == 0 {
-			t.Fatalf("ORDER BY created_at（末键不唯一）被判据放行了 —— 这正是 1461f7e4 的形态")
+		if !orderByColumnsAllIn([]string{"id"}, orderByUniqueColumnSet(users)) {
+			t.Fatalf("users 的单列唯一键 id 没解析出来：%+v", users.uniques)
 		}
-		msg := strings.Join(got.Problems, "\n")
-		for _, want := range []string{"users", "order by created_at", "created_at"} {
-			if !strings.Contains(msg, want) {
-				t.Errorf("失败信息里缺 %q（要求：文件:行 + 表 + 子句原文 + 为什么 + 修法）：\n%s", want, msg)
+		if orderByColumnsAllIn([]string{"created_at"}, orderByUniqueColumnSet(users)) {
+			t.Fatalf("users.created_at 被当成了唯一键 —— 解析器把非唯一列也算进唯一性事实里了")
+		}
+		capTbl := sch.tables["capability_versions"]
+		if capTbl == nil {
+			t.Fatalf("capability_versions 表没解析出来")
+		}
+		var partial bool
+		for _, u := range capTbl.uniques {
+			if len(u.columns) == 3 && u.columns[0] == "namespace_id" && u.columns[2] == "version" && u.partial != "" {
+				partial = true
 			}
 		}
+		if !partial {
+			t.Fatalf("idx_cap_live_name_ver 没被识别成「带 WHERE 谓词的部分唯一索引」：%+v", capTbl.uniques)
+		}
 	})
 
-	t.Run("rowid / 主键破平局必须绿", func(t *testing.T) {
-		for _, body := range []string{
-			"SELECT id FROM users ORDER BY created_at, rowid",
-			"SELECT id FROM users ORDER BY created_at, id",
-			"SELECT k FROM kv ORDER BY created_at, k",
-		} {
-			clauses := mutate(body)
-			got := orderByAudit(clauses, tables, nil, nil)
-			if len(got.Problems) > 0 {
-				t.Errorf("%q 被判成违规（应绿）：%v", body, got.Problems)
+	t.Run("变异：把 rowid 破平局换成同列（非唯一）→ 必须红", func(t *testing.T) {
+		cl := orderByRequireClause(t, clauses, "admin.go", "order by u.created_at asc, u.rowid asc limit ?")
+		if proof, _ := orderByJudge(cl, sch); proof.class == "" {
+			t.Fatalf("绿侧不成立：原始子句应当已被证明（%s）", cl.clause)
+		}
+		mutated := orderByReanalyze(t, cl, func(sqlText string) string {
+			return strings.Replace(sqlText, "u.rowid ASC", "u.created_at ASC", 1)
+		})
+		proof, judgeProblems := orderByJudge(mutated, sch)
+		if proof.class != "" {
+			t.Fatalf("变异没被抓到：末键换成非唯一的 u.created_at 之后仍被判成 %q（%s）", proof.class, proof.evidence)
+		}
+		orderByRequireProblem(t, "rowid→created_at 的变异", strings.Join(judgeProblems, "；"), "末键 created_at 在 users 上不唯一")
+	})
+
+	t.Run("变异：去掉 deleted_at IS NULL → 部分唯一索引失效，必须红", func(t *testing.T) {
+		// capability.go:557 靠部分唯一索引 idx_cap_live_name_ver 证明 (name, version) 在全表唯一；
+		// 一旦 WHERE 不再带谓词，已删能力的同 name/version 行会让 version 重新可重复。
+		cl := orderByRequireClause(t, clauses, "capability.go", "order by name, version")
+		if proof, _ := orderByJudge(cl, sch); proof.class == "" {
+			t.Fatalf("绿侧不成立：原始子句应当已由部分唯一索引证明（%s）", cl.clause)
+		}
+		mutated := orderByReanalyze(t, cl, func(sqlText string) string {
+			return strings.Replace(sqlText, "AND deleted_at IS NULL", "", 1)
+		})
+		proof, judgeProblems := orderByJudge(mutated, sch)
+		if proof.class != "" {
+			t.Fatalf("变异没被抓到：去掉谓词后仍被判成 %q", proof.class)
+		}
+		orderByRequireProblem(t, "删掉 deleted_at IS NULL 的变异", strings.Join(judgeProblems, "；"), "部分唯一索引")
+	})
+
+	t.Run("变异：去掉 WHERE 里钉住的 namespace_id → 复合主键覆盖不上，必须红", func(t *testing.T) {
+		// graph.go:85 靠「edges 复合主键 (namespace_id, from_is_source, from_ref, to_ref)
+		// 被 ORDER BY 全键 + WHERE 钉住的 namespace_id 覆盖」。钉住消失后必须立刻红 ——
+		// 否则「覆盖唯一键」这条规则就是「键多就算安全」的假绿。
+		cl := orderByRequireClause(t, clauses, "graph.go", "order by from_is_source, from_ref, to_ref")
+		if proof, _ := orderByJudge(cl, sch); proof.class != "覆盖唯一键" {
+			t.Fatalf("绿侧不成立：原始子句应当由覆盖唯一键证明，实际 %q", proof.class)
+		}
+		mutated := orderByReanalyze(t, cl, func(sqlText string) string {
+			return strings.Replace(sqlText, "WHERE namespace_id = ?", "WHERE 1 = 1", 1)
+		})
+		proof, judgeProblems := orderByJudge(mutated, sch)
+		if proof.class != "" {
+			t.Fatalf("变异没被抓到：去掉 namespace_id 钉住后仍被判成 %q（%s）", proof.class, proof.evidence)
+		}
+		orderByRequireProblem(t, "去掉 namespace_id 钉住的变异", strings.Join(judgeProblems, "；"), "末键 to_ref 在 edges 上不唯一")
+	})
+
+	t.Run("变异：扫描条数归零 → 反假绿守卫必须红", func(t *testing.T) {
+		if guard := orderByScanGuard(0, orderByMinimumClauses); len(guard) == 0 {
+			t.Fatalf("0 条 ORDER BY 竟然通过了守卫 —— 门禁可以在「什么都没扫到」时变绿，等于没有门禁")
+		}
+		if guard := orderByScanGuard(orderByMinimumClauses, orderByMinimumClauses); len(guard) == 0 {
+			t.Fatalf("条数等于下限（不 > 下限）竟然通过了守卫")
+		}
+		if guard := orderByScanGuard(len(clauses), orderByMinimumClauses); len(guard) > 0 {
+			t.Fatalf("绿侧不成立：实测 %d 条应当通过下限守卫，实际 %v", len(clauses), guard)
+		}
+	})
+
+	t.Run("变异：登记表过期 → 必须红（例外不许变成永久后门）", func(t *testing.T) {
+		// 红侧：一条永远命中不了的登记必须被点名要求删除。
+		probe := []orderByExemption{{
+			File: "admin.go", Clause: "order by u.id",
+			Reason: "变异用：多余的登记", Evidence: "变异用：本门禁里不存在这条子句",
+		}}
+		if problems := orderByRegistryProblems(stats.unproven, probe, nil, orderByKnownGapBudget); !orderByHasProblem(problems, "白名单已过期") {
+			t.Fatalf("过期白名单没被抓到：%v", problems)
+		}
+		// 红侧：预算一旦收紧到缺口数以下，就必须报超预算。
+		if len(orderByKnownGaps) > 0 {
+			if problems := orderByRegistryProblems(stats.unproven, orderByExemptions, orderByKnownGaps, 0); !orderByHasProblem(problems, "超出预算") {
+				t.Fatalf("缺口预算收紧到 0 之后没报超预算：%v", problems)
 			}
-			if got.Auto != 1 {
-				t.Errorf("%q 没有走「末键自身唯一」自动路径（Auto=%d）", body, got.Auto)
+		}
+		// 绿侧：真实登记表 + 真实未证明集合，一条问题都不许有。
+		if problems := orderByRegistryProblems(stats.unproven, orderByExemptions, orderByKnownGaps, orderByKnownGapBudget); len(problems) > 0 {
+			t.Fatalf("绿侧不成立：真实登记表自己报问题 %v", problems)
+		}
+	})
+
+	t.Run("变异：JOIN 的 ON 换成非唯一列 → 唯一性证明必须作废", func(t *testing.T) {
+		// deployment.go:425 的末键 d.id 是 deployments 的主键，但那条 SQL JOIN 了 capability_versions。
+		// 「末键唯一」只有在 JOIN 至多 1:1 时才蕴含「结果集每行只出现一次」——
+		// 把 ON 换成不唯一的列之后，证明必须立刻作废（fail closed，不许一边报问题一边算通过）。
+		cl := orderByRequireClause(t, clauses, "deployment.go", "order by d.node_id, c.version, d.id")
+		if proof, _ := orderByJudge(cl, sch); proof.class != "末键唯一" {
+			t.Fatalf("绿侧不成立：原始子句应当由末键唯一证明，实际 %q", proof.class)
+		}
+		mutated := orderByReanalyze(t, cl, func(sqlText string) string {
+			return strings.Replace(sqlText, "JOIN capability_versions c ON c.id = d.capability_id",
+				"JOIN capability_versions c ON c.namespace_id = d.capability_id", 1)
+		})
+		proof, judgeProblems := orderByJudge(mutated, sch)
+		if proof.class != "" {
+			t.Fatalf("变异没被抓到：JOIN 的 ON 列不唯一（会放大行数）时仍被判成 %q（%s）", proof.class, proof.evidence)
+		}
+		orderByRequireProblem(t, "JOIN ON 换成 namespace_id 的变异", strings.Join(judgeProblems, "；"), "不构成唯一键")
+	})
+
+	t.Run("变异：未登记的非唯一末键 → 门禁必须按 文件:行 点名失败", func(t *testing.T) {
+		// 把真实子句换成「末键非唯一」的变异体，走**整条门禁**（不是只测内层判据）：
+		// 断言失败信息指名道姓（文件:行 + 表 + 子句原文 + 末键为什么不唯一 + 修法），
+		// 并且不会被任何登记表兜住。
+		var mutated []orderByClause
+		for _, cl := range clauses {
+			if cl.file == "admin.go" && cl.clauseKey == "order by u.created_at asc, u.rowid asc limit ?" {
+				mutated = append(mutated, orderByReanalyze(t, cl, func(sqlText string) string {
+					return strings.Replace(sqlText, "u.rowid ASC", "u.created_at ASC", 1)
+				}))
+				continue
+			}
+			mutated = append(mutated, cl)
+		}
+		_, got := orderByGate(mutated, sch, orderByExemptions, orderByKnownGaps, orderByKnownGapBudget)
+		var hit string
+		for _, p := range got.problems {
+			if strings.Contains(p, "internal/store/admin.go:91") {
+				hit = p
 			}
 		}
-	})
-
-	t.Run("WITHOUT ROWID 表上 rowid 破平局必须红", func(t *testing.T) {
-		clauses := mutate("SELECT k FROM kv ORDER BY created_at, rowid")
-		got := orderByAudit(clauses, tables, nil, nil)
-		if len(got.Problems) == 0 {
-			t.Fatalf("kv 是 WITHOUT ROWID，`ORDER BY ..., rowid` 不可能给出全序（rowid 列根本不存在），却被放行")
+		if hit == "" {
+			t.Fatalf("整条门禁没抓到变异（问题列表 %v）", got.problems)
 		}
-	})
-
-	t.Run("部分唯一索引必须要求谓词在 WHERE 里", func(t *testing.T) {
-		entry := orderByEntry{
-			File: "mutant.go", Func: "mutant", Table: "capability_versions",
-			Clause: "order by name, version", Narrowed: []string{"namespace_id"},
-			Unique: []string{"namespace_id", "name", "version"}, Why: "合成用例",
-		}
-		// 有 deleted_at IS NULL：命中部分唯一索引 ⇒ 绿。
-		withPred := mutate("SELECT id FROM capability_versions WHERE namespace_id = ? AND deleted_at IS NULL ORDER BY name, version")
-		if got := orderByAudit(withPred, tables, []orderByEntry{entry}, nil); len(got.Problems) > 0 {
-			t.Errorf("带谓词的证据被拒（应绿）：%v", got.Problems)
-		}
-		// 去掉谓词：行集里可能有软删重复行 ⇒ 必须红。
-		noPred := mutate("SELECT id FROM capability_versions WHERE namespace_id = ? ORDER BY name, version")
-		if got := orderByAudit(noPred, tables, []orderByEntry{entry}, nil); len(got.Problems) == 0 {
-			t.Errorf("缺 deleted_at IS NULL 时部分唯一索引不成立，却被放行")
-		}
-	})
-
-	t.Run("证据口说无凭必须红", func(t *testing.T) {
-		clauses := mutate("SELECT id FROM users ORDER BY created_at")
-		cases := []struct {
-			name  string
-			entry orderByEntry
-		}{
-			{"没有证据", orderByEntry{File: "mutant.go", Func: "mutant", Table: "users", Clause: "order by created_at", Why: "我觉得安全"}},
-			{"声明的唯一键不存在", orderByEntry{File: "mutant.go", Func: "mutant", Table: "users", Clause: "order by created_at", Why: "x",
-				Narrowed: []string{"id"}, Unique: []string{"id", "created_at"}}},
-			{"声明的收窄列不在 WHERE 里", orderByEntry{File: "mutant.go", Func: "mutant", Table: "users", Clause: "order by created_at", Why: "x",
-				Narrowed: []string{"username"}, Unique: []string{"username", "created_at"}}},
-			{"GC 证据但语句不是 DELETE", orderByEntry{File: "mutant.go", Func: "mutant", Table: "users", Clause: "order by created_at", Why: "x", GCBatch: true}},
-		}
-		for _, tc := range cases {
-			got := orderByAudit(clauses, tables, []orderByEntry{tc.entry}, nil)
-			if len(got.Problems) == 0 {
-				t.Errorf("白名单「%s」没写可核验证据，却被放行", tc.name)
+		for _, want := range []string{"表 users", "ORDER BY u.created_at ASC", "末键 created_at 在 users 上不唯一", "修法："} {
+			if !strings.Contains(hit, want) {
+				t.Fatalf("失败信息缺 %q，实际：\n%s", want, hit)
 			}
 		}
+		// 绿侧：换回原来的子句，同一个门禁必须一条问题都没有。
+		if _, ok := orderByGate(clauses, sch, orderByExemptions, orderByKnownGaps, orderByKnownGapBudget); len(ok.problems) > 0 {
+			t.Fatalf("绿侧不成立：未变异的子句集应当通过，实际 %v", ok.problems)
+		}
 	})
+}
 
-	t.Run("登记项过期必须红", func(t *testing.T) {
-		clauses := mutate("SELECT id FROM users ORDER BY created_at")
-		// 过期白名单（子句已不存在）
-		stale := orderByEntry{File: "mutant.go", Func: "mutant", Clause: "order by created_at, rowid",
-			Table: "users", Why: "过期", Unique: []string{"id"}, Narrowed: []string{"created_at"}}
-		got := orderByAudit(clauses, tables, []orderByEntry{stale}, nil)
-		if len(got.Problems) == 0 || !strings.Contains(strings.Join(got.Problems, "\n"), "过期") {
-			t.Errorf("不命中的白名单没有报过期：%v", got.Problems)
+// orderByUniqueColumnSet 把一张表的单列唯一键收成集合（供自证用）。
+func orderByUniqueColumnSet(tbl *orderByTable) map[string]bool {
+	set := map[string]bool{}
+	for _, u := range tbl.uniques {
+		if len(u.columns) == 1 {
+			set[u.columns[0]] = true
 		}
-		// 过期缺口
-		staleGap := orderByGap{File: "mutant.go", Func: "mutant", Clause: "order by x", Why: "w", Risk: "r", Fix: "f"}
-		got = orderByAudit(clauses, tables, nil, []orderByGap{staleGap})
-		if !strings.Contains(strings.Join(got.Problems, "\n"), "过期") {
-			t.Errorf("不命中的已知缺口没有报过期：%v", got.Problems)
-		}
-	})
+	}
+	return set
+}
 
-	t.Run("扫到 0 条必须红", func(t *testing.T) {
-		got := orderByAudit(nil, tables, nil, nil)
-		if len(got.Problems) == 0 {
-			t.Fatalf("0 条子句被判据放行 —— 「绿」与「没检查」同形")
+// orderByRequireClause 按 文件 + 子句原文取一条扫描结果（取不到就失败）。
+func orderByRequireClause(t *testing.T, clauses []orderByClause, file, clauseKey string) orderByClause {
+	t.Helper()
+	for _, cl := range clauses {
+		if cl.file == file && cl.clauseKey == clauseKey {
+			return cl
 		}
-	})
+	}
+	t.Fatalf("扫描结果里找不到 internal/store/%s 的 `%s` —— 子句被改写了？变异自证依赖它", file, clauseKey)
+	return orderByClause{}
+}
 
-	t.Run("未知表必须红（新表不许静默通过）", func(t *testing.T) {
-		clauses := mutate("SELECT id FROM mystery_table ORDER BY created_at, id")
-		got := orderByAudit(clauses, tables, nil, nil)
-		if !strings.Contains(strings.Join(got.Problems, "\n"), "mystery_table") {
-			t.Fatalf("不在 schema.sql 也不在目录表白名单的表被静默放过：%v", got.Problems)
+// orderByReanalyze 在内存里用**变异后的整条 SQL** 重跑分析（源码文件一个字都不动）。
+//
+// 定位方式：变异只改 WHERE/其它部分，ORDER BY 子句原文不变 —— 按「规范化后的子句原文相等」
+// 找到同一处 ORDER BY，再用新文本重新分析。
+func orderByReanalyze(t *testing.T, cl orderByClause, mutate func(string) string) orderByClause {
+	t.Helper()
+	mutated := mutate(cl.sql)
+	if mutated == cl.sql {
+		t.Fatalf("变异没有真的改到 SQL 文本（internal/store/%s:%d）", cl.file, cl.line)
+	}
+	// 锚点：把原 ORDER BY 的偏移映射到变异后的文本上（变异在它前面就把偏移平移）。
+	if off := orderByMapOffset(cl.sql, mutated, cl.orderOffset); off >= 0 &&
+		strings.HasPrefix(strings.ToLower(mutated[off:]), "order by") {
+		return orderByAnalyzeClause(orderByMutatedText(cl.file, mutated), orderByOccurrence{
+			file: cl.file, line: cl.line, col: 1, offset: off, clause: orderByClauseText(mutated, off),
+		})
+	}
+	// 回退：偏移映射不上（变异把 ORDER BY 前面的结构改得面目全非）时按子句原文找。
+	lower := strings.ToLower(mutated)
+	for from := 0; ; {
+		idx := strings.Index(lower[from:], "order by")
+		if idx < 0 {
+			break
 		}
-	})
+		off := from + idx
+		from = off + len("order by")
+		if off > 0 && isOrderByWordByte(lower[off-1]) {
+			continue
+		}
+		clause := orderByClauseText(mutated, off)
+		if orderByNormalizeClause(clause) != cl.clauseKey {
+			continue
+		}
+		return orderByAnalyzeClause(orderByMutatedText(cl.file, mutated), orderByOccurrence{
+			file: cl.file, line: cl.line, col: 1, offset: off, clause: clause,
+		})
+	}
+	t.Fatalf("变异后的 SQL 里找不到同一处 ORDER BY（%s）", cl.clauseKey)
+	return orderByClause{}
+}
+
+// orderByMutatedText 把内存里变异过的 SQL 包成 orderByText（片段行号沿用原文件，仅用于报错定位）。
+func orderByMutatedText(file, text string) orderByText {
+	return orderByText{chunks: []orderByChunk{{file: file, line: 1, col: 1, text: text}}}
+}
+
+// orderByMapOffset 把旧文本里的偏移映射到新文本：
+// 变异发生在偏移之前 → 偏移按长度差平移；发生在偏移之后（或子句内部）→ 偏移不动。
+func orderByMapOffset(oldText, newText string, offset int) int {
+	limit := len(oldText)
+	if len(newText) < limit {
+		limit = len(newText)
+	}
+	common := 0
+	for common < limit && oldText[common] == newText[common] {
+		common++
+	}
+	if common >= offset {
+		if offset > len(newText) {
+			return -1
+		}
+		return offset
+	}
+	moved := offset + (len(newText) - len(oldText))
+	if moved < 0 || moved > len(newText) {
+		return -1
+	}
+	return moved
+}
+
+// orderByRequireProblem 断言问题串里出现了期望的判据文本（变异真的被抓到）。
+func orderByRequireProblem(t *testing.T, mutation, got, want string) {
+	t.Helper()
+	if !strings.Contains(got, want) {
+		t.Fatalf("变异「%s」没有被判据抓住：期望出现 %q，实际判据 %q", mutation, want, got)
+	}
+}
+
+// orderByHasProblem 断言问题串里出现了期望的子串。
+func orderByHasProblem(problems []string, want string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, want) {
+			return true
+		}
+	}
+	return false
 }

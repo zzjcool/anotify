@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -14,13 +15,17 @@ import (
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/sourcespec"
 	"github.com/zzjcool/anotify/internal/store"
+	"github.com/zzjcool/anotify/internal/yamldoc"
+	"gopkg.in/yaml.v3"
 )
 
 // resource_source.go 是 v4 的 **Source 资源域 + 事件入口**（#331 / W-src）。
 //
 //	GET    /v1/namespaces/{ns}/sources                       List 信封
 //	POST   /v1/namespaces/{ns}/sources                       创建
+//	POST   /v1/namespaces/{ns}/sources/yaml                  从 YAML 文档创建（同一套语义）
 //	GET    /v1/namespaces/{ns}/sources/{name}                单对象（读投影脱敏）
+//	GET    /v1/namespaces/{ns}/sources/{name}/yaml           存储定义的 YAML 重建（走同一读投影）
 //	PATCH  /v1/namespaces/{ns}/sources/{name}                改 displayName/config/targets/enabled
 //	DELETE /v1/namespaces/{ns}/sources/{name}?resourceVersion= 删（CAS 只在 query）
 //	POST   /v1/namespaces/{ns}/sources/{name}/fire           手动触发 → 接收回执
@@ -89,7 +94,12 @@ func (a *sourceAPI) register(mux *http.ServeMux) {
 	mux.Handle("POST "+base, noStore(a.d.session(http.HandlerFunc(a.create))))
 	// Go 1.22+ 的最长匹配：字面段 `/dry-run` 比 `{name}` 更具体，不会歧义。
 	mux.Handle("POST "+base+"/dry-run", noStore(a.d.session(http.HandlerFunc(a.previewInline))))
+	// 同理：字面段 `/yaml` 比 `{name}` 更具体（同 dry-run 口径），且与
+	// `GET …/{name}/yaml` 方法不同、互不干扰。
+	mux.Handle("POST "+base+"/yaml", noStore(a.d.session(http.HandlerFunc(a.createYAML))))
 	mux.Handle("GET "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.get))))
+	// `/yaml` 是同一行的**存储定义重建**（见 srcYAMLDocument 的四条边界）。
+	mux.Handle("GET "+base+"/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.yaml))))
 	mux.Handle("PATCH "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.patch))))
 	mux.Handle("DELETE "+base+"/{name}", noStore(a.d.session(http.HandlerFunc(a.remove))))
 	mux.Handle("POST "+base+"/{name}/fire", noStore(a.d.session(a.d.backpressure(http.HandlerFunc(a.fire)))))
@@ -149,19 +159,88 @@ func (a *sourceAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, srcEnvelopeOf(src, a.d.namespaceDisplay(r.Context(), src.NamespaceID)))
 }
 
+// yaml 处理 GET …/sources/{name}/yaml：把一行的存储定义重建成可整份贴回 playbook 包的
+// Source 文档文本（`{"yaml": "<全文>"}`）。
+//
+// 判据与 `get` 完全一致（同一个 authorizePathNamespace + GetSourceByName），所以 401/404
+// 的语义不会在这里分叉；转换与脱敏都在 srcYAMLDocument 里（唯一一份）。
+func (a *sourceAPI) yaml(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	src, err := a.d.DB.GetSourceByName(r.Context(), ns, srcPathName(r))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := srcYAMLDocument(src)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(text)})
+}
+
 // create 处理 POST …/sources。
 //
 // enabled 的默认值在这里给（true），不在 store 里：`CreateSource` 不设默认值，
 // 「省略 = 启用、显式 false 才停用」是 HTTP 契约的一层语义，写进 store 会让
 // playbook 安装等内部调用也意外继承这个默认。
 func (a *sourceAPI) create(w http.ResponseWriter, r *http.Request) {
-	ns, err := a.d.authorizePathNamespace(r)
-	if err != nil {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	var spec srcSpecDoc
 	meta, err := decodeWriteEnvelope(r, kindSourceDoc, &spec)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, spec)
+}
+
+// createYAML 处理 POST …/sources/yaml：请求体是一份 Source YAML 文档
+// （`{"yaml": "…"}`），而不是信封 JSON。
+//
+// 与能力域同构（见 capabilityAPI.createYAML）：YAML 只负责变成 canonical JSON，
+// 后面走的就是 JSON 创建的同一条路。所以 kind/config/targets 的校验仍然只有
+// store/sourcespec 一份实现，同名 409 source_name_used 也仍然是唯一索引的事实投影。
+// 凭据面不变：`spec.config.token` / `secret` 可写，响应只走 srcEnvelopeOf 的脱敏投影。
+func (a *sourceAPI) createYAML(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := decodeYAMLRequestBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 源的 metadata 没有额外可写键（不像能力有 version）：白名单就是 name/displayName
+	// + 位置生效的 namespace（POST 不带 resourceVersion）。
+	res, err := yamldoc.Decode(text, writeDocShape(r, reflect.TypeOf(srcSpecDoc{})))
+	if err != nil {
+		writeYAMLError(w, err)
+		return
+	}
+	var spec srcSpecDoc
+	meta, err := decodeWriteEnvelopeBytes(r, res.JSON, kindSourceDoc, &spec)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, spec)
+}
+
+// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）。
+//
+// 再次 authorizePathNamespace 的理由与代价同 capabilityAPI.createCore（签名只需要
+// meta+spec，而 store 的 sources.namespace_id 是内部 id，不能从路径段直接拿来用）。
+func (a *sourceAPI) createCore(w http.ResponseWriter, r *http.Request, meta objectMeta, spec srcSpecDoc) {
+	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -642,6 +721,89 @@ func srcReadConfig(kind string, raw json.RawMessage) (json.RawMessage, string) {
 		return json.RawMessage(`{}`), hookURL
 	}
 	return out, hookURL
+}
+
+// srcYAMLDocument 把一行源重建成 Source 文档文本（可整份贴回 playbook 包的 sources/*.yaml）。
+//
+// 四条边界（CONTRACT-capability-yaml §1.1）：
+//   - 输入只能是**读投影**：config 走 srcReadConfig（token/secret 已删，webhook 补
+//     hookUrl/secretSet），所以 YAML 的凭据面与 GET 响应一致 —— 不存在「/yaml 绕过脱敏」
+//     的第二条路径；
+//   - metadata 只写 name/displayName：namespace 属于部署事实，playbook 包内禁止出现；
+//   - spec 写 kind/enabled/config/targets，不写 status（status 是读时派生的，不是定义）；
+//   - 这是**存储定义的规范化重建**，不是用户当初贴的原始字节（默认值已补齐、键序固定）。
+func srcYAMLDocument(src *store.Source) ([]byte, error) {
+	if src == nil {
+		return nil, errStatus(http.StatusInternalServerError, reasonInternal, "source row is nil")
+	}
+	cfg, _ := srcReadConfig(src.Kind, src.Config)
+	meta := map[string]any{"name": src.Name}
+	if src.DisplayName != "" {
+		meta["displayName"] = src.DisplayName
+	}
+	targets := make([]any, 0, len(src.Targets))
+	for _, target := range src.Targets {
+		entry := map[string]any{"capability": target.Capability}
+		// params 为空时省掉（与读投影的 omitempty 同口径）：空对象不是「声明了空映射」。
+		if len(target.Params) > 0 {
+			entry["params"] = target.Params
+		}
+		targets = append(targets, entry)
+	}
+	doc := map[string]any{
+		"apiVersion": apiVersionV1,
+		"kind":       kindSourceDoc,
+		"metadata":   meta,
+		"spec": map[string]any{
+			"kind":    src.Kind,
+			"enabled": src.Enabled,
+			"config":  cfg, // 脱敏后的读投影（json.RawMessage，原样嵌入）
+			"targets": targets,
+		},
+	}
+	// 先按 JSON 编一遍再解（UseNumber）：map[string]any 里的数字是 float64，直接
+	// yaml.Marshal 会把 1700000000 写成 1.7e+09。这份文本的用途是「贴回去重新 apply」，
+	// 数字写法漂移会让重新落库的 config 与当前值不等（与 artifact.MarshalYAML 同一手法）。
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var tree any
+	if err := dec.Decode(&tree); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(srcYAMLNumbers(tree))
+}
+
+// srcYAMLNumbers 递归把 json.Number 还原成 int64 / float64。
+//
+// 为什么要这一步：yaml.v3 把 json.Number（底层是 string）当字符串编，于是 `5` 会变成
+// `"5"` —— 把数字改成字符串类型，贴回去就不再是同一份 config。
+func srcYAMLNumbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return i
+		}
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+		return t.String()
+	case map[string]any:
+		for k, child := range t {
+			t[k] = srcYAMLNumbers(child)
+		}
+		return t
+	case []any:
+		for i, child := range t {
+			t[i] = srcYAMLNumbers(child)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // srcRejectReadOnlyConfig 拒绝写请求里的只读投影字段（config.hookUrl / config.secretSet）。

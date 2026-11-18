@@ -171,6 +171,7 @@ func TestPoolWriteTxIsImmediateAndDoesNotBlockReaders(t *testing.T) {
 	t.Setenv(maxConnsEnv, "") // 钉住默认池：池=1 时「并发读者」这条断言会因为拿不到连接而变味
 	db, _ := newTestDBFile(t)
 	ctx := context.Background()
+	nsID, _ := newTestNS(t, db) // 下面要读 ns 配置：命名空间必须先存在
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -184,11 +185,20 @@ func TestPoolWriteTxIsImmediateAndDoesNotBlockReaders(t *testing.T) {
 	// 自己的连接，红的原因会是「连接被占」而不是「SQLite 读写互斥」。也就是说它只证明
 	// WAL 的「写不挡读」，不证明 `_txlock=immediate` 生效（后者由 ② 与
 	// TestPoolConcurrentWritesNoLockErrors 负责）。
-	readCtx, cancelRead := context.WithTimeout(ctx, 3*time.Second)
+	//
+	// 读的是 #008 里两个 **ingest 热路径上的配置读**，而不是一条裸 SELECT：
+	// 它们必须走**无事务读**。`_txlock=immediate` 是 DSN 级开关（store.go:104），驱动
+	// 把它应用到每一条连接，所以只要读还包一层 `BeginTx`，这条「读」也会去抢写锁 ——
+	// 写者持锁期间它会等满 busy_timeout（5000ms）再报 `database is locked`。
+	// 生产上这就是「外部事件投递偶发 500」（#008 的实测形状：延迟 5.006s）。
+	// 超时给到 busy_timeout 之上：让回归表现为锁错误，而不是 ctx 先取消。
+	readCtx, cancelRead := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelRead()
-	var n int
-	if err := db.QueryRowContext(readCtx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
-		t.Fatalf("写事务持锁期间只读查询应照常成功，实际: %v", err)
+	if _, err := db.GetNamespaceConfig(readCtx, nsID); err != nil {
+		t.Fatalf("写事务持锁期间 GetNamespaceConfig 应照常成功，实际: %v", err)
+	}
+	if _, err := db.GetSystemConfig(readCtx); err != nil {
+		t.Fatalf("写事务持锁期间 GetSystemConfig 应照常成功，实际: %v", err)
 	}
 
 	// ② 第二个写事务必须等锁。

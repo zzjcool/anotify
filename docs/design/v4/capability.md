@@ -842,7 +842,10 @@ anode emit fixer --id review-a.go --data '{"file":"a.go"}'
 - **外部 deliveryId 与内部 eventId 分开**：`deliveryId` 是调用方幂等键，`eventId` 是内部事件行 id；去重记录按 `(source, deliveryId)`，事件行不要求 `deliveryId` 全局唯一，窗口过期后可重收不冲突。
 - 保留配置是中枢系统配置（`config.md §3.6`），不是 `vars`、不是 node 限额。
 - **逻辑删除 ≠ 事实删除**：删能力/源/包后，被任务钉住的 version / digest / attempt 事实保留到对应任务保留期结束；
-  “解析目录里看不见”和“保留执行事实”分开处理。
+  “解析目录里看不见”和“保留执行事实”分开处理。tombstone（`deleted_at` 非空的 `capability_versions` 行）的
+  **物理回收**由中枢后台 GC 驱动（`ANOTIFY_CAPABILITY_GC_INTERVAL_SEC`，默认 1 小时，`0` = 禁用）：
+  只有**无引用**的才会被删，判据是任务 / 尝试 / 产物清单 / 部署 / 安装回执（`installed_from`）任一不存在。
+  因此「已删能力会挡住 `DELETE /v1/namespaces/{ns}`」**不是**契约保证——它只是被回收之前的中间状态。
 - 开发库直接建 v4 baseline，不引历史 migration（`decisions.md` V4-D6）。
 
 ### 8.5 协议（中枢 ↔ `anode`）

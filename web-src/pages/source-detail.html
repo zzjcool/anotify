@@ -1,0 +1,631 @@
+{{define "title"}}{{t "source_detail.title"}}{{end}}
+
+{{define "style"}}
+<style>
+/* 源只读详情页（source-detail.html?namespace=<ns>&name=<source>）专有样式。
+   颜色一律走 tokens.css 的变量，不硬编码色值；共享组件（.card/.btn/.badge/
+   .code-block/.copy-btn/.mono/.skeleton）来自 ui.css。区块名 [data-sec] 由本页脚本填。 */
+#page-main > .page{grid-template-columns:minmax(0,1fr)}
+.sd-wrap{overflow-wrap:anywhere;min-width:0}
+.sd-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+/* 加载骨架 / 空态 / 错误态宿主 */
+.sd-loading{padding:24px;color:var(--muted)}
+.sd-skel{display:grid;gap:8px;max-width:520px;margin-bottom:8px}
+.sd-skel .skeleton{height:12px;border-radius:var(--r-sm)}
+.sd-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 20px;text-align:center}
+.sd-empty-ico{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:var(--r-full);background:var(--surface-2);border:1px solid var(--line);color:var(--faint)}
+.sd-empty-title{font-size:15px;font-weight:600;color:var(--text)}
+.sd-empty-desc{max-width:46ch;font-size:13px;line-height:1.6;color:var(--muted)}
+.sd-empty-acts{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:4px}
+/* 区块：独立页没有列表行做层级，区块之间补一条细线，标题抬到正文色 */
+.sd-body{display:flex;flex-direction:column;gap:14px;min-width:0}
+.sd-sec{display:flex;flex-direction:column;gap:8px;min-width:0}
+.sd-sec:not(:first-child){border-top:1px solid var(--line);padding-top:12px}
+.sd-sec-title{font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--text)}
+.sd-badges{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+/* 事实网格：label/value 严格成对，窄屏自动落成一列 */
+.sd-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:10px 18px;margin:0}
+.sd-pair{display:grid;gap:2px;min-width:0}
+.sd-k{font-size:11px;line-height:1.4;color:var(--faint)}
+.sd-v{margin:0;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.sd-v.is-muted{color:var(--muted)}
+.sd-pre{margin:0;padding:8px 10px;max-height:14rem;overflow:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);color:var(--text);font-size:11.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.sd-target{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+.sd-rows{display:flex;flex-direction:column;gap:6px;min-width:0}
+.sd-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:12px;color:var(--muted)}
+.sd-line:last-child{border-bottom:0}
+/* 载荷契约字段表（有 payloadSchema 才画；没有 properties 时只说没有声明） */
+.sd-schema{width:100%;border-collapse:collapse;font-size:11.5px;table-layout:fixed}
+.sd-schema th,.sd-schema td{padding:6px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.sd-schema th{color:var(--muted);font-weight:500}
+.sd-schema code{font-family:var(--font-mono);font-size:11px;color:var(--text)}
+/* ---------- 折叠块（原始 YAML / 脱敏后的 config JSON）----------
+   默认收起、展开才取。长行必须在 pre 自己身上横滚（`.src-raw .code-body`），
+   否则一条长行会把整张卡片撑出横向溢出。YAML 块独用 `.src-raw`，
+   脱敏 JSON 块用 `.sd-raw`：`.src-raw` 只指向 YAML 一处，选择器不留歧义。 */
+/* 每条规则单独一行、类名放在行首：死类检测按「行首 .class」收内联 <style> 里
+   定义的类，合并选择器（`.a,.b{`）里的第二个类会被当成没有定义。 */
+.src-raw{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0}
+.sd-raw{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0}
+.src-raw>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;list-style:none}
+.sd-raw>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;list-style:none}
+.src-raw>summary::-webkit-details-marker{display:none}
+.sd-raw>summary::-webkit-details-marker{display:none}
+.src-raw>summary::before{content:"▸";color:var(--faint);font-size:11px}
+.sd-raw>summary::before{content:"▸";color:var(--faint);font-size:11px}
+.src-raw[open]>summary::before{content:"▾"}
+.sd-raw[open]>summary::before{content:"▾"}
+.src-raw>summary:hover{color:var(--text)}
+.sd-raw>summary:hover{color:var(--text)}
+.src-raw-hint{margin-left:auto;font-size:10.5px;color:var(--faint);text-align:right}
+.sd-raw-hint{margin-left:auto;font-size:10.5px;color:var(--faint);text-align:right}
+.src-raw-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
+.sd-raw-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
+.src-raw .code-body{overflow-x:auto;max-height:20rem}
+.sd-raw .code-body{overflow-x:auto;max-height:20rem}
+</style>
+{{end}}
+
+{{define "content"}}
+<div id="page-main">
+  <!-- 只读视图；「编辑源」在本页就地打开共享编辑器（web/source-editor.js），不跳走。
+       根元素渲染成功后才带 data-source；深链/刷新/前进后退仍由整页导航满足。 -->
+  <div id="src-detail" class="page">
+    <div class="page-head">
+      <div class="sd-wrap">
+        <a id="src-detail-back" class="btn btn-ghost" href="sources.html">{{t "sources.v4.back"}}</a>
+        <h2 id="src-detail-name" class="page-title sd-wrap">{{t "source_detail.title"}}</h2>
+        <p class="page-sub">{{t "source_detail.sub"}}</p>
+      </div>
+      <div class="page-actions sd-actions">
+        <button type="button" id="src-detail-edit" class="btn hidden">{{t "sources.v4.edit"}}</button>
+        <button type="button" id="src-detail-refresh" class="btn btn-ghost">{{t "source_detail.refresh"}}</button>
+      </div>
+    </div>
+
+    <!-- 加载 / 空态 / 错误态宿主：内容就绪后清空并隐藏 -->
+    <div id="src-detail-state" class="sd-loading" aria-live="polite">{{t "sources.v4.loading"}}</div>
+
+    <!-- 四块内容（[data-sec] 由脚本填）+ 原始 YAML 折叠块 -->
+    <div id="src-detail-body" class="card card-pad sd-body hidden"></div>
+  </div>
+</div>
+{{end}}
+
+{{define "script"}}
+<script src="/source-editor.js"></script>
+<script>
+/* 源只读详情页（source-detail.html?namespace=<ns>&name=<source>）
+ *
+ * 列表页（sources.html）的名称链接落到这里：身份/定义与字段/目标/近期回执/原始 YAML
+ * 全部只读；唯一的写入口是右上角「编辑源」——它打开**共享编辑器组件**
+ * （web/source-editor.js，与列表页的弹层同一份 DOM/逻辑）就地编辑，保存后本页刷新。
+ * URL 带上 `edit=1` 即可深链到「打开编辑器」的状态（关掉即移除该参数）。
+ *
+ * 数据层与其它页同一套：nsApi/nsPath/apiList/model.source/loadErrorNode/copyText。
+ * 失败不伪造数据：错误态交给 loadErrorNode，近期回执没有行时如实说明「还没有事件」。
+ */
+const A = window.Anotify;
+const t = (k, d) => A.t(k, d);
+const {
+  el, nsApi, api, apiList, nsPath, model, itemsOf, loadErrorNode, copyText, readScope, saveScope, ready,
+} = A;
+const $ = (id) => document.getElementById(id);
+
+A.mountLayout({
+  active: "sources",
+  title: t("source_detail.title"),
+  subtitle: t("source_detail.sub"),
+});
+
+/* 「编辑源」= 就地弹层（与列表页共用 web/source-editor.js），不离开本页。
+   `?edit=1` 是可深链的状态：点编辑时写进 URL，关掉/保存后移除。 */
+function setEditParam(on) {
+  const url = new URL(location.href);
+  if (on) url.searchParams.set("edit", "1");
+  else url.searchParams.delete("edit");
+  history.replaceState(null, "", url.toString());
+}
+async function openEditor() {
+  if (!RAW_RES) return;
+  const m = model.source(RAW_RES);
+  setEditParam(true);
+  await A.sourceEditor.open({
+    resource: RAW_RES,
+    namespace: m.namespace || readScope().namespace,
+    onClose: () => setEditParam(false),
+    onSaved: async () => {
+      A.toast(t("sources.saved", "已保存"), "success");
+      /* 保存后回到详情并刷新：新值必须马上可见（约束：保存成功要能看到结果）。 */
+      await load();
+    },
+  });
+}
+
+/* ============================== 状态 ============================== */
+/* 原始 YAML 是懒加载的单例：换源/刷新时 reset，绝不拿上一个源的正文骗人。 */
+const YAML = { status: "idle", open: false, text: null, err: null };
+let RECENT_SEQ = 0; // 近期回执的请求序号：后发先至的旧响应不许覆盖新源
+
+/* ============================ 小工具 ============================ */
+function isObj(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+function txt(tag, cls, text) {
+  const n = el(tag, cls ? { class: cls } : null);
+  n.textContent = text == null ? "" : String(text);
+  return n;
+}
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  try {
+    return d.toLocaleString();
+  } catch (e) {
+    return String(iso);
+  }
+}
+function statusLine(err) {
+  if (!err) return "";
+  if (err.reason) return err.reason + (err.message ? " · " + err.message : "");
+  return err.message || String(err);
+}
+/* 服务端/用户数据（YAML、JSON、名字、事件名）一律套一层纯文本 span 标
+   data-raw-content：语言切换时它属于数据，不属于界面文案。 */
+function rawText(value) {
+  const s = el("span");
+  s.setAttribute("data-raw-content", "");
+  s.textContent = value == null ? "" : String(value);
+  return s;
+}
+function preBlock(text) {
+  const pre = el("pre", { class: "sd-pre" });
+  pre.append(rawText(text));
+  return pre;
+}
+/* 与 docs / trace / message 页共用一套代码块（.code-block/.code-head/.copy-btn/.code-body）：
+   标题 + 一键复制 + 等宽正文。
+
+   `title` 为 null = 调用方已经把标签印在容器上（例如 `details > summary`），这里**不渲染**
+   标题节点，只留复制按钮：否则折叠块展开后会在自己身上再出现一行同样的标题，看起来像两段内容。
+   不要用空串/空格占位 —— 那会留下一个空元素，布局仍按"有标题"算。 */
+function codeBlock(title, body) {
+  const box = el("div", { class: "code-block" });
+  const head = el("div", { class: "code-head" });
+  const label = title == null ? "" : String(title).trim();
+  if (label) head.append(txt("span", null, label));
+  const copy = el("button", { type: "button", class: "copy-btn", text: t("uxaudit.dev.copy", "复制") });
+  copy.addEventListener("click", () => copyText(copy, () => body));
+  head.append(copy);
+  const pre = el("pre", { class: "code-body mono" });
+  pre.append(rawText(body));
+  box.append(head, pre);
+  return box;
+}
+/* 空态：图标 + 标题 + 说明 + 返回列表。 */
+const EMPTY_ICON =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+function emptyState(title, desc) {
+  const box = el("div", { class: "sd-empty" });
+  const ico = el("div", { class: "sd-empty-ico" });
+  ico.innerHTML = EMPTY_ICON;
+  box.append(ico, txt("div", "sd-empty-title", title), txt("p", "sd-empty-desc", desc));
+  const acts = el("div", { class: "sd-empty-acts" });
+  acts.append(el("a", { class: "btn", href: listHref(), text: t("sources.v4.back", "返回源列表") }));
+  box.append(acts);
+  return box;
+}
+function skeleton() {
+  const box = el("div", { class: "sd-skel" });
+  for (const width of ["62%", "88%", "74%"]) {
+    const bar = el("span", { class: "skeleton" });
+    bar.setAttribute("style", "width:" + width);
+    box.append(bar);
+  }
+  return box;
+}
+
+/* ============================ 链接形状 ============================ */
+/* 链接里的 namespace 取**资源自己的** `metadata.namespace`，不取 localStorage 的
+   scope —— 深链页的权威来源是 URL / API 响应：
+     · scope 是「用户上次选的浏览范围」，与手上这条资源无关；拿它拼链接会把用户带到
+       另一个 ns（列表空白、编辑 404 空态）；
+     · scope 为空时 `new URLSearchParams({namespace: undefined})` 写出的字面量是
+       `namespace=undefined`，下游页面 `if (ns) saveScope(...)` 会把它当真值落盘。
+   只有拿不到资源（空态/错误态）时才回落到 URL 的 `?namespace=`，最后才是 scope。 */
+function urlNs() {
+  try {
+    return (new URLSearchParams(location.search).get("namespace") || "").trim();
+  } catch (e) {
+    return "";
+  }
+}
+function fallbackNs() {
+  const persisted = readScope().namespace;
+  return urlNs() || (typeof persisted === "string" ? persisted.trim() : "");
+}
+function linkNs(res) {
+  const own = isObj(res) && typeof res.namespace === "string" ? res.namespace.trim() : "";
+  return own || fallbackNs();
+}
+function withNs(ns, page, params) {
+  const qs = new URLSearchParams();
+  if (ns) qs.set("namespace", ns);
+  for (const key of Object.keys(params || {})) qs.set(key, String(params[key]));
+  const query = qs.toString();
+  return query ? page + "?" + query : page;
+}
+/* 当前渲染的资源：空态/错误态下为 null（那时只能靠 URL 的 ns 拼返回链接）。 */
+let CUR_RES = null;
+/* 原始资源（未投影）：编辑器要用 metadata.resourceVersion 做 CAS，投影里没有它。 */
+let RAW_RES = null;
+const listHref = (res = CUR_RES) => withNs(linkNs(res), "sources.html");
+const traceHref = (res, uid) => withNs(linkNs(res), "trace.html", { traceUID: uid });
+
+/* ============================ 区块构件 ============================ */
+function section(titleText, wire) {
+  const s = el("div", { class: "sd-sec" });
+  if (wire) s.setAttribute("data-sec", wire);
+  s.append(txt("div", "sd-sec-title", titleText));
+  return s;
+}
+/* 值默认按「服务端原文」渲染（rawText）；`plain` 给已经是本地化文案的值用，
+   免得把界面文案也标成 API 数据。 */
+function pair(label, value, opts) {
+  const o = opts || {};
+  const cell = el("div", { class: "sd-pair" });
+  const dd = el("dd", { class: "sd-v" + (o.muted ? " is-muted" : "") + (o.mono ? " mono" : "") });
+  const text = value == null || value === "" ? "—" : value;
+  if (value && value.nodeType) dd.append(value);
+  else if (o.plain) dd.textContent = String(text);
+  else dd.append(rawText(text));
+  cell.append(txt("dt", "sd-k", label), dd);
+  return cell;
+}
+function badge(text, cls) {
+  return el("span", { class: "badge " + (cls || "badge-neutral"), text: text == null ? "—" : String(text) });
+}
+function healthTone(health) {
+  if (health === "ok") return "badge-success";
+  if (health === "disabled" || !health) return "badge-neutral";
+  return "badge-warn";
+}
+/* 载荷契约（payloadSchema）→ 字段表：名字 / 类型 / 必填 / 说明。
+   没有 properties 时不编一张空表，只说「没有声明字段」。 */
+function schemaTable(schema) {
+  const box = el("div", { class: "sd-target" });
+  box.append(txt("h4", "card-title", t("sources.v4.schema", "载荷契约 config.payloadSchema")));
+  const props = isObj(schema) && isObj(schema.properties) ? schema.properties : null;
+  if (!props || !Object.keys(props).length) {
+    box.append(txt("p", "field-hint", t("source_detail.schema_none", "载荷契约没有声明字段")));
+    return box;
+  }
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const table = el("table", { class: "sd-schema" });
+  const thead = el("thead");
+  const hr = el("tr");
+  for (const head of [
+    t("uxaudit.dev.field", "字段"),
+    t("uxaudit.dev.type", "类型"),
+    t("uxaudit.dev.required", "必填"),
+    t("uxaudit.dev.description", "说明"),
+  ]) {
+    hr.append(txt("th", null, head));
+  }
+  thead.append(hr);
+  const tbody = el("tbody");
+  for (const name of Object.keys(props)) {
+    const prop = isObj(props[name]) ? props[name] : {};
+    const type = prop.type ? String(prop.type) : prop.enum ? "enum" : prop.oneOf ? "oneOf" : "—";
+    const tr = el("tr");
+    const nameCell = el("td");
+    nameCell.append(el("code", { text: name }));
+    const requiredCell = el("td");
+    requiredCell.textContent = required.has(name) ? t("uxaudit.dev.yes", "是") : t("uxaudit.dev.no", "否");
+    const descCell = el("td");
+    descCell.append(rawText(prop.description ? String(prop.description) : "—"));
+    tr.append(nameCell, txt("td", null, type), requiredCell, descCell);
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  box.append(table);
+  return box;
+}
+
+/* ======================= 原始 YAML（懒加载 /yaml） ======================= */
+function yamlBlock(name) {
+  const box = el("details", { class: "src-raw" });
+  box.setAttribute("id", "src-detail-yaml");
+  if (YAML.open) box.open = true;
+  const sum = el("summary");
+  sum.append(
+    txt("span", null, t("sources.v4.yaml", "原始 YAML")),
+    txt("span", "src-raw-hint", t("sources.v4.yaml_hint", "由存储的定义重建；凭据只写不读")),
+  );
+  const holder = el("div", { class: "src-raw-body" });
+  box.append(sum, holder);
+
+  const paint = () => {
+    holder.replaceChildren();
+    if (YAML.status === "ok") {
+      /* 标签已在 summary 上：「原始 YAML」只出现一次。 */
+      holder.append(codeBlock(null, YAML.text));
+      return;
+    }
+    if (YAML.status === "error") {
+      holder.append(txt("p", "field-hint", t("sources.v4.yaml_error", "原始 YAML 加载失败")));
+      const line = statusLine(YAML.err);
+      if (line) holder.append(preBlock(line));
+      const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
+      retry.addEventListener("click", () => {
+        YAML.status = "idle";
+        void fetchYaml();
+      });
+      holder.append(retry);
+      return;
+    }
+    if (YAML.status === "loading") holder.append(txt("p", "field-hint", t("sources.v4.yaml_loading", "正在生成 YAML…")));
+  };
+  async function fetchYaml() {
+    if (YAML.status === "loading" || YAML.status === "ok") return;
+    YAML.status = "loading";
+    YAML.err = null;
+    paint();
+    try {
+      /* 复用既有端点：服务端不保存用户原始字节，这份文档由存储的规范化定义重建，
+         凭据只写不读，所以里面只有 hookUrl/secretSet，没有 token/secret 明文。 */
+      const res = await api(nsPath("sources", name) + "/yaml");
+      const text = res && typeof res.yaml === "string" ? res.yaml : "";
+      if (!text) throw new Error("empty yaml");
+      YAML.text = text;
+      YAML.status = "ok";
+    } catch (err) {
+      YAML.err = err;
+      YAML.status = "error";
+    }
+    paint();
+  }
+  box.addEventListener("toggle", () => {
+    YAML.open = box.open === true;
+    paint();
+    if (YAML.open && YAML.status === "idle") void fetchYaml();
+  });
+  paint();
+  if (YAML.open && YAML.status === "idle") void fetchYaml();
+  return box;
+}
+
+/* ====================== 脱敏后的 config（原始 JSON 折叠） ====================== */
+function rawJsonBlock(label, text) {
+  const box = el("details", { class: "sd-raw" });
+  const sum = el("summary");
+  sum.append(txt("span", null, label), txt("span", "sd-raw-hint", t("source_detail.config_json_hint", "读投影已脱敏")));
+  const holder = el("div", { class: "sd-raw-body" });
+  holder.append(codeBlock(label, text));
+  box.append(sum, holder);
+  return box;
+}
+
+/* ============================ 近期回执 ============================ */
+async function loadRecent(name) {
+  const host = $("src-detail-recent");
+  if (!host) return;
+  const seq = ++RECENT_SEQ;
+  host.replaceChildren(txt("p", "field-hint", t("source_detail.recent_loading", "正在加载近期回执…")));
+  try {
+    /* 既有端点 + 既有过滤参数：limit 截断在服务端做，页面不再二次裁剪数量。 */
+    const qs = new URLSearchParams({ source: name, limit: "20" });
+    const doc = await apiList(nsPath("events") + "?" + qs.toString());
+    if (seq !== RECENT_SEQ) return; // 旧源的响应晚到：丢掉，不覆盖
+    const rows = itemsOf(doc);
+    host.replaceChildren();
+    if (!rows.length) {
+      // 诚实空态：没有就是没有，不编造时间与计数。
+      host.append(txt("p", "field-hint", t("source_detail.recent_empty", "这个源还没有回执事件。")));
+      return;
+    }
+    for (const event of rows) {
+      const m = model.event(event);
+      const line = el("div", { class: "sd-line" });
+      /* 事件名/类型/时间都是 API 原文：统一用 data-raw-content 的纯文本 span。 */
+      const nameEl = el("span", { class: "mono" });
+      nameEl.append(rawText(m.name == null ? "—" : m.name));
+      line.append(nameEl);
+      line.append(rawText([m.eventType || m.reason, fmtTime(m.creationTimestamp)].filter(Boolean).join(" · ")));
+      /* 有 traceUID 才给「看执行细节」的入口：没有就是纯事件行，不造死链。 */
+      if (m.traceUID) {
+        const a = el("a", { class: "btn btn-ghost btn-sm", href: traceHref(CUR_RES, m.traceUID) });
+        a.append(rawText(t("source_detail.view_trace", "查看链路")));
+        line.append(a);
+      }
+      host.append(line);
+    }
+  } catch (err) {
+    if (seq !== RECENT_SEQ) return;
+    host.replaceChildren(txt("p", "field-hint", t("source_detail.recent_error", "近期回执加载失败")));
+    const line = statusLine(err);
+    if (line) host.append(preBlock(line));
+    const retry = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("common.retry", "重试") });
+    retry.addEventListener("click", () => void loadRecent(name));
+    host.append(retry);
+  }
+}
+
+/* ============================ 详情渲染 ============================ */
+function render(res) {
+  const m = model.source(res);
+  /* 本页所有链接（返回列表 / 编辑 / 链路）都用这条资源自己的 ns。 */
+  CUR_RES = m;
+  RAW_RES = res;
+
+  const root = $("src-detail");
+  root.setAttribute("data-source", m.name || "");
+
+  /* 页头：一个源只有一份标题（显示名 + 名字），.page-title 只出现一次。 */
+  const title = el("span");
+  title.setAttribute("data-raw-content", "");
+  title.textContent = m.displayName ? m.displayName + " · " + m.name : m.name || "—";
+  $("src-detail-name").replaceChildren(title);
+
+  $("src-detail-back").href = listHref(m);
+  $("src-detail-edit").classList.remove("hidden");
+
+  const body = $("src-detail-body");
+  body.replaceChildren();
+  body.classList.remove("hidden");
+  const state = $("src-detail-state");
+  state.replaceChildren();
+  state.classList.add("hidden");
+
+  /* ---------- 基本信息：kind / enabled / health / targetsResolved / 触发与时间 ---------- */
+  const basic = section(t("source_detail.basic", "基本信息"), "basic");
+  const badges = el("div", { class: "sd-badges" });
+  badges.append(badge(m.kind || "—"));
+  badges.append(m.enabled ? badge(t("sources.v4.enabled", "已启用"), "badge-success") : badge(t("sources.v4.disabled", "已停用"), "badge-neutral"));
+  badges.append(badge(m.health || "—", healthTone(m.health)));
+  basic.append(badges);
+  const kv = el("dl", { class: "sd-kv" });
+  const resolved = m.targetsResolved
+    ? t("source_detail.resolved_yes", "已解析")
+    : t("source_detail.resolved_no", "未解析");
+  kv.append(
+    pair(t("sources.v4.namespace", "命名空间"), m.namespace, { muted: !m.namespace }),
+    pair(t("source_detail.resolved", "目标解析"), resolved, { plain: true, muted: !m.targetsResolved }),
+    pair(t("sources.v4.last_fire", "最近触发时间"), fmtTime(m.lastFiredAt), { muted: !m.lastFiredAt }),
+    pair(t("source_detail.created", "创建时间"), fmtTime(res && res.metadata ? res.metadata.creationTimestamp : null), {
+      muted: !(res && res.metadata && res.metadata.creationTimestamp),
+    }),
+    /* v4 没有「更新时间」这个落库事实（ObjectMeta 只有 creationTimestamp）：
+       把 resourceVersion 摆出来并说明它就是写入序号，不编一个时间。 */
+    pair(t("source_detail.updated", "更新时间"), m.resourceVersion, { mono: true, muted: !m.resourceVersion }),
+  );
+  basic.append(kv);
+  basic.append(txt("p", "field-hint", t("source_detail.updated_hint", "v4 没有独立的更新时间字段：每次写入以 resourceVersion 递增体现。")));
+  body.append(basic);
+
+  /* ---------- 定义与字段：config（脱敏后）+ payloadSchema ---------- */
+  const cfgSec = section(t("source_detail.definition", "定义与字段"), "config");
+  const cfg = m.config || {};
+  const cfgKv = el("dl", { class: "sd-kv" });
+  cfgKv.append(
+    pair(t("sources.v4.expr", "Cron 表达式"), cfg.expr, { muted: !cfg.expr }),
+    pair(t("sources.v4.tz", "时区"), cfg.tz, { muted: !cfg.tz }),
+    pair(t("sources.v4.payload", "静态载荷"), cfg.payload ? JSON.stringify(cfg.payload) : "—", { muted: !cfg.payload }),
+    pair(t("sources.v4.sample", "提示样例"), cfg.sample ? JSON.stringify(cfg.sample) : "—", { muted: !cfg.sample }),
+  );
+  cfgSec.append(cfgKv);
+  if (m.kind === "webhook") {
+    cfgSec.append(codeBlock(t("source_detail.hook_url", "Hook URL"), cfg.hookUrl || "—"));
+    cfgSec.append(txt("p", "field-hint", cfg.secretSet ? t("source_detail.secret_set_yes", "HMAC 签名已设置（只写不读）") : t("source_detail.secret_set_no", "没有 HMAC 签名")));
+  }
+  if (cfg.payloadSchema) cfgSec.append(schemaTable(cfg.payloadSchema));
+  /* 原始 JSON 是脱敏后的读投影：token/secret 永远不会出现在这里。 */
+  const safe = {};
+  for (const key of ["hookUrl", "secretSet", "expr", "tz", "payload", "payloadSchema", "sample"]) {
+    if (cfg[key] != null) safe[key] = cfg[key];
+  }
+  if (Object.keys(safe).length) cfgSec.append(rawJsonBlock(t("source_detail.config_json", "查看原始 JSON"), JSON.stringify(safe, null, 2)));
+  body.append(cfgSec);
+
+  /* ---------- 目标能力：targets[] 的 capability 与 params ---------- */
+  const tSec = section(t("sources.v4.targets", "目标能力"), "targets");
+  if (!m.targets.length) tSec.append(txt("p", "field-hint", t("sources.v4.no_target", "无目标合法：事件与 trace 保留，不派发任务。")));
+  for (const target of m.targets) {
+    const row = el("div", { class: "sd-target" });
+    const strong = el("strong", { class: "sd-wrap" });
+    strong.append(rawText(target.capability || "—"));
+    row.append(strong);
+    const params = isObj(target.params) ? target.params : null;
+    const keys = params ? Object.keys(params) : [];
+    if (!keys.length) {
+      row.append(txt("p", "field-hint", t("source_detail.params_none", "没有配置参数")));
+    } else {
+      const dl = el("dl", { class: "sd-kv" });
+      for (const key of keys) {
+        const value = params[key];
+        dl.append(pair(key, typeof value === "string" ? value : JSON.stringify(value)));
+      }
+      row.append(dl);
+    }
+    tSec.append(row);
+  }
+  body.append(tSec);
+
+  /* ---------- 近期回执：既有 events 端点的 source 过滤 ---------- */
+  const rSec = section(t("source_detail.recent", "近期回执"), "recent");
+  rSec.append(txt("p", "field-hint", t("source_detail.recent_hint", "最近 20 条事件（按 source 过滤）；接收成功不代表任务执行成功。")));
+  const rows = el("div", { class: "sd-rows" });
+  rows.id = "src-detail-recent";
+  rSec.append(rows);
+  body.append(rSec);
+
+  /* ---------- 原始 YAML：默认收起，展开才取 ---------- */
+  YAML.status = "idle";
+  YAML.open = false;
+  YAML.text = null;
+  YAML.err = null;
+  body.append(yamlBlock(m.name));
+
+  void loadRecent(m.name);
+}
+
+/* ============================ 空态与错误态 ============================ */
+function paintState(node) {
+  const root = $("src-detail");
+  CUR_RES = null;
+  RAW_RES = null;
+  root.removeAttribute("data-source");
+  $("src-detail-edit").classList.add("hidden");
+  const body = $("src-detail-body");
+  body.replaceChildren();
+  body.classList.add("hidden");
+  const state = $("src-detail-state");
+  state.classList.remove("hidden");
+  state.replaceChildren(node);
+  const title = el("span");
+  title.textContent = t("source_detail.title", "源详情");
+  $("src-detail-name").replaceChildren(title);
+}
+
+/* ============================ 载入 ============================ */
+const initScope = async () => {
+  const ns = new URLSearchParams(location.search).get("namespace");
+  if (ns) saveScope({ namespace: ns });
+  await ready();
+};
+
+async function load() {
+  try {
+    await initScope();
+    $("src-detail-back").href = listHref();
+    const name = new URLSearchParams(location.search).get("name");
+    if (!name) {
+      // 缺 name：空态（含返回列表），不请求、不编 id。
+      paintState(
+        emptyState(
+          t("sources.v4.no_name", "链接缺少 metadata.name。请从源列表打开详情。"),
+          t("source_detail.no_name_hint", "从源列表点一个源的名称进来，或在地址里带上 ?namespace=<ns>&name=<name>。"),
+        ),
+      );
+      return;
+    }
+    paintState(skeleton());
+    const res = await nsApi("sources", name);
+    render(res);
+    /* 深链 `?edit=1`：数据就绪后再打开，避免弹层里先空一下再被填。 */
+    if (new URLSearchParams(location.search).get("edit") === "1") await openEditor();
+  } catch (err) {
+    // 404 与其它失败走同一套错误态：说清发生了什么，给「重试 / 返回列表」。
+    paintState(loadErrorNode(err, () => load(), { back: listHref() }));
+  }
+}
+
+/* ============================ 事件绑定 ============================ */
+$("src-detail-edit").addEventListener("click", () => openEditor());
+$("src-detail-refresh").addEventListener("click", () => load());
+document.addEventListener("DOMContentLoaded", () => {
+  void load();
+});
+</script>
+{{end}}

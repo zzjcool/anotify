@@ -32,6 +32,7 @@ import (
 	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/source"
 	"github.com/zzjcool/anotify/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 // sourceResClock 是夹具的固定时钟（秒）：让回执/事件时间可复现。
@@ -1222,5 +1223,138 @@ func TestSourceResourceInvalidTargetIs400(t *testing.T) {
 	}
 	if cap := sourceResString(t, sourceResObj(t, targets[0])["capability"]); cap != "notify" {
 		t.Fatalf("被拒绝的 PATCH 把 targets 改成了 %q（应保持 notify）", cap)
+	}
+}
+
+// ---------- /yaml：存储定义的重建（脱敏投影，不含 namespace） ----------
+
+// TestSourceResourceYAMLIsMaskedProjection 钉住 /yaml 的三条硬边界
+// （CONTRACT-capability-yaml §1.1）：
+//
+//	① 脱敏面与 GET 相同：`config.token` / `config.secret` 全文一个字符都不出现，
+//	   webhook 用只读投影 `hookUrl` / `secretSet` 代替 —— /yaml **不是**绕开脱敏的第二条路径；
+//	② `metadata` 只有 name/displayName（**不含** namespace，可整份贴回 playbook 包）；
+//	③ `spec` 是 kind/enabled/config/targets，不写 status（status 是读时派生的）。
+//
+// 另钉：不存在 → 404；跨命名空间 → **404**（与 get 同一条边：存在性不泄露）。
+func TestSourceResourceYAMLIsMaskedProjection(t *testing.T) {
+	env := newSourceResEnv(t)
+	const token = "src_tok_YAML_LEAKME"
+	const secret = "sec_YAML_LEAKME"
+	const wantHook = srcHookPathPrefix + token
+
+	env.createSource(
+		map[string]any{
+			"kind": "webhook",
+			"config": map[string]any{
+				"token":  token,
+				"secret": secret,
+				"sample": map[string]any{"env": "prod", "count": 7, "ts": 1700000000},
+			},
+			"targets": []any{map[string]any{
+				"capability": "notify",
+				"params":     map[string]any{"text": "hi", "n": 3},
+			}},
+		},
+		map[string]any{"name": "yaml-hook", "displayName": "YAML 源"},
+	)
+
+	rr := env.request(http.MethodGet, env.sourcePath("yaml-hook")+"/yaml", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /yaml 期望 200，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	// 脱敏红线：先看响应体（YAML 文本就嵌在里面），secret 一个字符都不许有，
+	// token 除了 hookUrl 的路径段之外也不许再出现。
+	sourceResAssertNoCredentialLeak(t, rr.Body.String(), token, secret)
+	text := sourceResString(t, env.doc(rr)["yaml"])
+
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("/yaml 的正文必须是合法 YAML 文档：%v\n%s", err, text)
+	}
+	if doc["apiVersion"] != "anotify/v1" || doc["kind"] != "Source" {
+		t.Fatalf("文档头不对：apiVersion=%v kind=%v", doc["apiVersion"], doc["kind"])
+	}
+	meta := sourceResObj(t, doc["metadata"])
+	if meta["name"] != "yaml-hook" || meta["displayName"] != "YAML 源" {
+		t.Fatalf("metadata = %v，want name/displayName", meta)
+	}
+	if _, ok := meta["namespace"]; ok {
+		t.Fatalf("metadata 不能写 namespace（playbook 包内禁止）：%v", meta)
+	}
+	if _, ok := doc["status"]; ok {
+		t.Fatalf("YAML 文档里不该有 status（它是读时派生的）：%v", doc["status"])
+	}
+
+	spec := sourceResObj(t, doc["spec"])
+	if spec["kind"] != "webhook" || spec["enabled"] != true {
+		t.Fatalf("spec.kind/enabled 不对：%v", spec)
+	}
+	cfg := sourceResObj(t, spec["config"])
+	if _, ok := cfg["token"]; ok {
+		t.Fatalf("YAML 里出现了 config.token（必须换成 hookUrl）：%v", cfg)
+	}
+	if _, ok := cfg["secret"]; ok {
+		t.Fatalf("YAML 里出现了 config.secret（必须换成 secretSet）：%v", cfg)
+	}
+	if cfg["hookUrl"] != wantHook {
+		t.Fatalf("config.hookUrl 期望 %q，得到 %v", wantHook, cfg["hookUrl"])
+	}
+	if cfg["secretSet"] != true {
+		t.Fatalf("config.secretSet 期望 true，得到 %v", cfg["secretSet"])
+	}
+	// 非敏感字段原样保留，且数字写法不被 float64 改写（贴回去重新 apply 要等值）。
+	sample := sourceResObj(t, cfg["sample"])
+	if sample["env"] != "prod" {
+		t.Fatalf("非敏感 config 字段必须原样保留，sample=%v", cfg["sample"])
+	}
+	if n, ok := sample["count"].(int); !ok || n != 7 {
+		t.Fatalf("sample.count 期望整数 7，得到 %v（%T）", sample["count"], sample["count"])
+	}
+	if n, ok := sample["ts"].(int); !ok || n != 1700000000 {
+		t.Fatalf("sample.ts 期望整数 1700000000，得到 %v（%T）—— 大整数不能被写成浮点", sample["ts"], sample["ts"])
+	}
+	targets := sourceResArr(t, spec["targets"])
+	if len(targets) != 1 {
+		t.Fatalf("spec.targets 应有 1 条，得到 %v", targets)
+	}
+	target := sourceResObj(t, targets[0])
+	if target["capability"] != "notify" {
+		t.Fatalf("targets[0].capability = %v", target["capability"])
+	}
+	params := sourceResObj(t, target["params"])
+	if params["text"] != "hi" {
+		t.Fatalf("targets[0].params.text = %v", params["text"])
+	}
+	if n, ok := params["n"].(int); !ok || n != 3 {
+		t.Fatalf("targets[0].params.n 期望整数 3，得到 %v（%T）", params["n"], params["n"])
+	}
+
+	// 404：不存在的源（与 get 同码）。
+	rr = env.request(http.MethodGet, env.sourcePath("missing-yaml")+"/yaml", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("GET /yaml 不存在期望 404，得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	if reason := sourceResString(t, env.doc(rr)["reason"]); reason != reasonNotFound {
+		t.Fatalf("不存在 /yaml 的 reason 期望 %q，得到 %q", reasonNotFound, reason)
+	}
+
+	// 跨命名空间：**404，不是 403**。
+	//
+	// 契约 §1.1 枚举里写着「跨命名空间 403」，但它与 `get` 的冻结语义冲突：get 对
+	// 「别的 ns 的名字」回 404（resource_capability.go 的注释 + TestCapabilityResourceNamespaceIsolation），
+	// 理由是**不泄露存在性**。/yaml 与 get 走同一个 authorizePathNamespace + 点查，所以这里
+	// 必须同样是 404 —— 回 403 等于把「这个 ns 里有没有叫这个名字的源」变成可探测的事实。
+	ctx := context.Background()
+	other, err := env.db.CreateNamespace(ctx, "yaml-other", "另一个命名空间")
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	rr = env.request(http.MethodGet, "/v1/namespaces/"+other.Slug+"/sources/yaml-hook/yaml", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("跨 ns GET /yaml 期望 404（不泄露存在性），得到 %d：%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), wantHook) || strings.Contains(rr.Body.String(), token) {
+		t.Fatalf("跨 ns 的 404 响应体泄露了凭据投影：%s", rr.Body.String())
 	}
 }

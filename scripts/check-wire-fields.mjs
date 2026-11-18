@@ -80,7 +80,7 @@ const MODEL_SCHEMA = {
 };
 
 /* ---------- 3. 前端 model 层的读取点 ---------- */
-const WORTH_SCANNING = ["web/partials.js", "web/traceview.js", "web/graphs.js"];
+const WORTH_SCANNING = ["web/partials.js", "web/traceview.js", "web/graphs.js", "web/source-editor.js"];
 /* 白名单：这些名字属于「模块自己的选项对象」或「DOM 变量」，不是资源字段。 */
 const WHITELIST = new Set([
 	// graphs.js 的 options（布局参数），不是资源 spec

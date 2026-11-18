@@ -279,6 +279,208 @@ T2FINAL-READY902/314ebrun已被团队withdrawn：final3报告9major=2privacy实�
 
 T1C3b finalb46fd2c结果facts实际原4EXTENSIONverified与final3strict无major，fullJSONnanos/UTC/nil0/独立authserverNow和可信acceptedTTL+24原C3b/11facts反例保。Node-only60file1efcce4已SHA15/check/apply原样同步，gomod/protocol/artifact0diff无覆盖；当前readonly节点shared依赖close receipt待收，之后立即原白盒单writer，不重做C1C2C3a。mixedsamehash首expiredlookup410minor纳G3task授权manifestpath+hash精确item/TTL测试，不全局digest fallback/不让别owner live延旧引用TTL。整个G1/T1尚未done，G2runtime/G3API5/G4与原全Go-contract-quick及父crossgate不减。
 
-04:35 T1旧04:05L2实际核：8baf0ae/ad8d21c原G1TEST真实format0/vet1/test1且同10compileerrors被截断，只有authsetup+460inventory，migrate/7whitebox草稿已回滚非production；不是whitebox已过或裸cmd卡死。父两路只读report确认fixture-first是真有证据方法改变，WHITEBOX-CLOSURE-HANDOFF批准原allstore tests+2明确testbuilderfile/A完整compile闭合→B真实白盒，单freshwriter不legacyalias/skip/删断言，不repeat未改baseline。stageverify与完整原store/auth/push gate/460逐案去向/finalGo-contract-quick不减。该次extend/steer实际返回旧节点已ended/no terminal，**没有移动提醒或送达批准**；随后collect确认safeBLOCKED cleanbb0f690所有writersettled。父保存4.8MB当前T1+已验Node源码/证据snapshot（非重做C3），CORE-DELIVERY新合法入口按已批fixture-firstA→B→G2G3G4完整接续，不伪延时/重启旧terminal。
+04:35 T1旧04:05L2实际核：8baf0ae/ad8d21c原G1TEST真实format0/vet1/test1且同10compileerrors被截断，只有authsetup+460inventory，migrate/7whitebox草稿已回滚非production；不是whitebox已过或裸cmd卡死。父两路只读report确认fixture-first是真有证据方法改变，WHITEBOX-CLOSURE-HANDOFF批准原allstore tests+2明确testbuilderfile/A完整compile闭合→B真实白盒，单freshwriter不legacyalias/skip/删断言，不repeat未改baseline。stageverify与完整原store/auth/push gate/460逐案去向/finalGo-contract-quick不减。该次extend/steer实际返回旧节点已ended/no terminal，**没有移动提醒或送达批准**；随后collect确认safeBLOCKED cleanbb0f690所有writersettled。父保存4.8MB当前T1+已验Node源码/证据snapshot（非重做C3），CORE-DELIVERY新合法入口已派 **v4-core-delivery** 显式GPT独立WT，恢复bb0当前C3+Node后按已批fixture-firstA→B→G2G3G4完整接续，根编排b5adeda；原3最终gate工具数组不减，不伪延时/重启旧terminal。
+
+T2 FINALR1已worker settled主oktrue/self180Node49sitegen11native，但launcher真实verificationfailed（链输出budget截断未见尾）→**仍rejected非verified**。父仅批准无writer固定源码一次分条原4完整exit日志定位+独立新诊断CLIrun eachgroup一次，保原失败不retrytoGreen/不当full5。419Kmanager只fixed≤6files必要fresh门槛+cleancheckpoint把真receipt/新log/剩195groups304views/READY状态交父，major或机械未清不可READY假过、不再老ctx大writer/全JSONL探索。完整sourceepochfull5/原3/真实cross不减，旧902withdrawn不重用。
+
+新T1 v4-core-delivery 已恢复bb0当前C3/Node完整快照，SHA3/checkapply全过（首次relativecwd只校验openfail已纠正），branch pi-subagent/v4-core-delivery-6579febc父b5adeda；唯一delivery-a-fixtures已实际launch，tests-only明确builder/调用scope+格式/整个原store compile机械数组。未重跑baseline/重做C3/Node/权威scouts，A真实compile后B白盒→G2G3G4/原3完整gate不减。预存证据文档whitespace不混gofmt，最终diffcheck需准确处理，NoPushMergeMR/sourceowner边界保持。
+
+T2FINALR1 sourceca302bc已实际stage收齐：三finitefresh19/20/21strict无major，独立原3+vocab0/180Node49sitegen与显式preview新scoped11groups0（sourceartifactbeforeafter7180e345…）。原launcherrejected原因确证最后CLI缺E2E_MOCK_ONLY=1→同缺env反例exit1，保旧receipt不伪verified；正确env独立close不覆盖它。419Kmanager正只metadata/新READY/source当前epoch195全ID+日志与safecheckpoint收尾，不新writer/full5，父后各完整suite新uniqueID显式envreadonly机械执行eachonce，full5仍UNRUN/NOTT2DONE/304矩阵及真实cross不削。
+
+T2safecheckpoint6364b92已父核clean/READYcurrent/captureEpoch7180e345相等/195ID各suite无重复、slot未占，父已safe stop旧FEmanager保WT/session。**完整五套件父机械任务开始派发**：首批v4-fe-full-frontend35/v4-fe-full-ui83（含304矩阵），只launchverify执行各suite一次，无源码writer/self先跑；外部tmpwrapper1200有界+真实exit全log+source前后校验，不closedasync/旧run/空gate。host最多2suite/4case；后i18n29/coverage40/UX8待空槽派，全部原数量不减。FRONTEND-FINAL-EXECUTION落参数/handles，当前只是派发非PASS，真实CoreNodecross/原3最终机械close仍待。
+
+FE父final-08af冻结epoch首个完整frontend35真实结束 **33PASS/2FAIL**，sourcebeforeafter/HEADcheck0而commandExit1，工具rejected原log保。限域scout核observe-errors故障在goto被initScript清空→实际events/trace200正常图5按钮，playbook-delete helper仍读父包依赖installs列表404，未证产品资源/回执误级联；当前不改源码/放宽断言/重跑同ID，待全5同epoch收齐再精准fixture修。ui_shift仍在跑、空槽已派i18n29，只最多2suite；coverage40/UX8待派，原195/304覆盖不减，不因首fail混新源码/多数绿放行。
+
+05:08处理FEUI 05:01 L1 silence实际核：gate已05:02完成/retired，无活验证/browser，不abort/重启/重复case。UI完整83=80PASS3FAIL，304matrix实际PASS但另3几何prelayout/slot检查FAIL，350/353viewPASS/unrun0；i18n29=20PASS9FAIL、76page-lang全尝试65PASS11FAIL，两个cmd1而source/head一致0。失败原log/status全保，不把304过/大多数绿当suitePASS。最后空槽已派coverage40/UX8完整机械gate同冻结epocheachonce，当前不改源码混结果/放宽rawchrome或geometryassert，待195完整收齐后精准裁决，真实CoreNodecross不削。
+
+FE完整父195基线已**全数各一次**收齐：frontend33/2、i18n20/9、coverage33/7、ui80/3、UX8/0→总174PASS21FAIL；五真实exit与汇总一致、source/head前后0，UX工具verified不盖四suite失败，304matrix真实过而3其它geometry未过。完整summary/tmp/anotify-v4-fe-final-gates/full-five-summary.json保，旧final-08af/三个untrackedruns原record不清/重占。16locale重复fail五实际CAP/Key/SourceDN/EventJSON data叶已核按rawspan修不translateuserdata；faultgoto丢状态/删包后installslist依赖helper已证。新唯一v4-fe-parent-gate-repair接safe旧FEWT仅这些roots+prelayoutouter/slot跨doc被动证据，未证geometry生产禁止改/阈值不削。源码修改后新stage/fresh/currentREADY再完整195，原180Node/304及真实crossgate不减。
+
+05:27处理Core-delivery05:15L2：经理05:00collect(timeout1000)26min无结果异常，但leaf05:27仍真写node_agent_version/namespace/stmt，无挂shell；以bb0比当前逐blob核生产差异0，巨大HEADdiff是恢复支持，实际22tests改/17tests删+2允许builder。05:17仍Playbook编译红/安全lease-txn映射pending，不当A闭合。父只abort经理当前turn一次(context/queue保留)，continue消息实际为livechildqueued，不stop实现worker/另建队，要求经理首核同worker再有界wait/status；未声称立即resume完成或提醒延时已动。删整安全test必须逐名新真实case保留，原compile/完整store-auth-push/最终3gate不减，44K经理无恢复需要。
+
+FE父repair F1/F2/raw5叶真实native RED→GREEN，G3原几何FAIL保留但新精确box已证错边界/新doc构建：preouter264/76→mountedouter264/76，visual.page296/158前后恒定；scope原after在NEWdoc71ms全DOM无，firstmounted140ms slot53/nav117而prod175ms仍53无坏mounted帧。父GEOMETRY-ASSERTION-HANDOFF批准同唯一writer仅3testfunctions改比较真实outer/视觉prepaint+完整early纪录，首次已mounted起slot必须存在>=40每帧保持，负变异移外边界/丢已mounted槽需红；不magic32/晚framewait/CSS生产改，不丢原FAIL/195/304/180。新source+stage/fresh后另uniqueREADY全5，旧final-08af不重占。
+
+FEparentrepair源码5257ddf实际原5correctWT全0、183Node保180/F1F2/raw叶native已绿，G3原诊断FAIL仍留；几何边界tinytestfix已GEOMETRY-ASSERTION明确批准不再separate待批。当前worker仍live157K允许同scope继续仅3testfunctions+强负变异与原5新freeze复验，不新队/回滚已绿/生产CSS。原full17421旧run/三证据dirs不动，G全scope清后fixedfresh/newREADY全195一次、CoreNode真实cross不减；不把5257stagegreen顶G/full未过。
+
+T1A最新scope-incomplete已retired，亲核'.pi/subagents'字面错path非canonical'.pi-subagents'，错误Go包借父module造成replicas假象，撤回环境推断。父index空/tracked生产0diff，错scratch10tests只读snapshot/hash在/tmp/anotify-v4-core-cwd-incident，原目录未删除/settings不动。经理44K恢复正常wait；可sameWTfreshleaf接canonicalpartial但每cmd核cwd/root/GOMOD，不新team/预算reset/盲baseline。17删file的lease/txn/builtin安全逐名替代仍不合格草稿，不compile或securityPASS；原A/B/G2G3G4/finalgate不减。
+
+05:47 Core-delivery05:45L2实际核：freshAcontinue约4分钟/4tests实际diff，经理wait120准时返回正常非原collect挂死，79Kctx无恢复必要；延提醒30m仅通知不改A验收/不stopliveleaf。canonical guard已有SOP不再反复写流程，下一真实原包compile与17删除安全逐案替代证据门槛，A过才B白盒/G2G3G4/原final3；parentroot错scratch保留不清/生产0diff不捏风险。
+
+FEce7345f父有限3fresh：raw五数据叶stricttrue无finding，F1fault真实恢复/无globalwhitelist与G断言/5native负变异均符合；仍2有限补口：fullsuite实际imports parent-geometry-probe未入f3-epoch hash（major）、Node用parent-repair-evidence同漏（minor），删除case缺父/installs404直接coverage。父唯一v4-fe-epoch-closure仅collector2明确source依赖/删除helper断言/Node红绿/报告格式，原191及195/304不删，不动production/layout/模型，累计6364diffcheck也验原report尾空格无损编码。现不启动新READY/full5，待这2rootfreshclear/新产物+唯一epoch，旧17421与原native证据保。
+
+FEepochclose准确累计diffcheck有14处PARENT-FULL-REPAIR stdout双空格空行（非先前摘要2处），父批准同类型stdout块全部可逆JSONescaped+decode严格原block/SHA自检，原rawFAIL日志不改/不trim。仅报告编码不当源码bug/不免累计diffguard；M1两实际helperhash/M2删包group404原scope继续，191/195/304覆盖与后full新epoch不削，不再次等数字范围审批。
+
+FE最后273b0cb epoch/case闭包工具verified，父独立makefe/sitegen49/Node195(VS group195不同计数)/vocab/累计diffcheck全0，raw/G/fixture与最后两rootsfresh均stricttrue，14stdout空行lossless证据保。**修后完整五套件新版本已派首批** frontend35+i18n29：PARENT-FINAL-READY273/newfullhasha184caa4/newrunfinal-aa38ef83…；旧final-08af17421原记录不改/不重占。新tmpwrapper eachsuite一次1200/fulltee/sourcebeforeafter/exit，后coverage40/UI83/UX8按最多2suite空槽派；当前执行中非fullPASS，不源写/不大部分绿盖失败，T1API5/真实CoreNodecross仍待。
+
+T1A canonical060318 153B原store/v4test -run^$已父亲读**编译均过/no tests**，真实fixture闭包重要checkpoint；不runtime/白盒PASS/不A完整accepted。当前唯一leaf248K正17删文件逐名真实替代安全映射/固定compile数组收齐，禁止再重做已迁family/wholefilevague表放行；A自然收口+有限mapping门槛后B完整store/auth/push runtime白盒→G2G3G4/final3不减。ctx高只收尾或准确remaining安全checkpoint，不新manager重建/productioncompat，错root目录仍保留不清。
+
+06:20 CoreL2核：A编译-only fixed已真实acceptedverified且经理B卡更新正常，31原包runtime红未过/非死循环；延提醒30m不改B验收。父限定4claims对账：force删除刻意G3迁、不回兼容；原CAP github/cron/http/manual名单旧v3，真正Source route直建/install静态规则差需真实raw反例才批prod；新显式version同spec允许created、fold非unique未证SQLitebug；emptytargets明确event/no_target允许。WHITEBOX-CONTRACT-CHECKS亲读hash边界FoldKey排version、**deploymentdigest含version**，不拿压缩摘要/scout未找函数推断强制hash同。B立即单tests-only31红+真正白盒/安全mapping→G2G3G4/final3，原Node支持不等/no sourceprod私修。
+
+Core有限mappingauth18old已accounted仅2minor覆盖gap但JSONfalse：父现生产核Error投影normalize还在、rawResultJSON精确保，RESULT-ERROR-PROJECTION批准Btests-only验证现Task.errorfallback与rawerror空并存、success空清旧/nonemptyincoming不丢、有效auth基础invalidphase0写和现注册rollback引用。旧Finish入口退不等现projection撤，不新增生产回填/改C3；仅minor可明确B跟踪推进不无限停A，另两review实际major仍精确裁。全原31运行红/B3gate与后G2G3G4/final3保持，不18mapped=已runtimePASS。
+
+T1B delivery-b-whitebox已实际admitted canonicalguard/完整store-auth-push3数组（sourcecheckpoint5d44685）；有限17映射review未过：lease少minor、auth2minor有明确B校准、另78oldnames genericpending/appendix矛盾需逐案补，不当整体minor/compile过安全approved。Btests-only保原31runtime红→真实rollback/pool/字段facts/原case迁移，旧纯v3可以精确理由退但不能 family/noassert代安全。ErrorProjection根已明确rawJSONexact与现逻辑fallback并存、不回C3兼容；Source.route raw反例需实跑后父prod批准，#3/#4已裁不等票。B3真green+完整G1mapping/fresh后G2G3G4/final3，未通过不模型投票盖掉。
+
+FE修后final-aa38/273最新实际首两套均toolverified+日志全过：frontend35/35、i18n29/29及76page-lang全过，hash/head beforeafter0。第二批UI83+coverage40已派，最后UX8也受管verify先fs.watch等一套真正结束再run，900秒有限/无browserbusyloop，防延迟消息致idle，仍max2suite/4cases。源码/旧17421不改，剩三套结果待实际全收，不能64组过宣195/fullFE通过，真实CoreNodecross仍pending。
+
+CoreB实际新checkpoint日志已父亲读：canonical原internal/store count1 PASS5.033s；12顶层TestWhitebox(ledger连续/畸形header/DDL+ledger+hook真rollback/闭连接ctx取消/open原子marker/布局拒/txncommitrollback)及子例PASS0.198s，非no-tests。仍非B完整store-auth-push3EXTverified/78映射与反例/最终G1freshclear；当前唯一writer只收尾保持Error投影+raw事实/invalidphase0writes契约，未改C3。一个wrongprefix noop在成功guard前已要求去掉，不用它推environmentdrift/Root改动，scope/final3与G2G3G4不减。
+
+07:10 FEfinal2-UI07:00L1核实已07:01结束/retired无活verifier，不abort/重启。新full5全部complete同源epoch：35/0+29/0+39/1+80/3+8/0→**191PASS4FAIL**，source/head checks全0；UI353views全尝试350过，304matrixattempt不冒全过。四fail都是ES Trace anchor缺(3UIvariant/coveragees5)，GET200/kindTrace但body/错误容器/渲染时序记录缺，catch清content+撤busy可吞异常，未证根因/不加timeout。父两scout限域facts保，新唯一trace-diag仅driver测试观察和专用script/报告，捕实际publicIDs/shape/error/时间、不同链对照，不改production/model/Taskfallback或旧run重试。原21data/geometry根已过不重开，fullAA381914原日志不洗；真CoreNodeAPI5cross仍待。
+
+07:35核Core07:03L2：B原full唯一真实route源安装绕直建名验证FAIL(8.798s)，外v4test/auth/push运行PASS，sourceowner检查0越权。父SOURCE-NAME-CLOSURE批准现trim-empty/route共享sourcespec validator+direct/render物化/installed最后防御，Bsafe结束后唯一smallprodwriter原3+相关sharedtests，purePlan/dryrun/reuse0write不CAP旧禁名，不删红。经理07:27工具已返后>15min无下一event且A/reviews/B全部retired，父仅abort经理turn context/queue保+continue实际queued（不假立即恢复/不stopwriter/newteam）。当前核心不是完整green，待小修原3/freshG1+78mapping→G2G3G4/final3，真实API5未交仍crosspending。
+
+08:14 Core最新核Source-name closure producer/sharedname/eventalias/render/tx及测试真实diff已推进，quiet3s；旧prodawait审批mail已过时，不再tail-self/重复Root票。async registry closed无task真实历史留、不改harness/用裸长监听，formalverify收实际门槛。经理248K只短卡收Name fix+原3/sharedtests/freshG1mapping，安全收口再若需fresh直接G2G3G4全scope（不现在停writer/重做G1）；当前Sourceguard未以diff宣PASS，emptytargets/CAP旧名/12格不改。
+
+FETrace诊断0611be5已syntax/Node195/diff工具verified，只new观察script+报告；三独立ESlightdesktop/English/ESdarkmobile诊断均7tasks正常、未复现原4。**诊断完成不改full2191/4failed**，无原失败body/stack根因仍unknown，不以隔离PASS或延timeout放行。父新唯一trace-archive只driver真实full失败清理前的selected安全Trace响应/DOMerror/忙状态/挂载时序+observer测试，保返回值/异常/时间/全部原assert，不production改model/Auth图/全stateenvtoken日志。synthetic原生renderFAIL应真被archive记录、正常对照；之后新观察版本仅一次UIcoverage同并发诊断，不重用旧run/洗历史，真正root证据后再精确fix/完整195与CoreNodecross。
+
+CoreSource5debf01新名字共享validator已Cself原3/5trees0和工具stageverified，当前G1name/whitebox/486+78映射3freshlive。旧EXT-test文件缺失不证明测试必跳；新readonlyclose加subshell确认避免exit影响后cmd。**父独立fixed5dearchive原3全部实际执行PASS**：格式0/full5trees(storeauthpush+sourcespecplaybook)vet0/testcount1 allPASS（store8.905/v4test37.406/auth21.906等），proof/tmp/anotify-v4-core-g1-parent。不是原3项目全Go/contract/quick已过，G1fresh/scenario映射仍待，闭合后safe直接G2-G4不重做C3Node/B；经理248K后不新大ctx任务，父可fresh实际运行链，FETraceRoot未知另区不阻现核心。
+
+CoreG1三finite审已收：Name0major/460unique原案例+78映射0pending已确认，但4引用错语义与invalidPhase精确ledger/registry0写、BaselineIndexes真实有序前缀2coverage major未清，不能父机械PASS盖。父G1-REVIEW-CLOSURE批准下一单GPT tests-only精修6有限finding，保真实concurrent/update/atomic、不是仅COUNT/旧v3index；minor原raw包锚点/Error投影/BareBeginTx命名诚实处理，不重SourceName/C3Node/全460。原3five-tree格式vet/test+fresh限6门槛clear后真正G2-G4/final3，当前经理actual156K不据旧ctx强制再建队。空误EXTcopy可注明原log不删真失败，源码最终无变异。
+
+G1 proof-rework已实际admitted唯一TESTwriterGPT，精确2coverage/4映射不再库存。父提醒旧机械child只收SELF也可能因launchverify在final/collect自动跑，文字禁重跑不能抑extension；活writer期间不触发多余gate，若已跑保HEAD/timing但不认证当前rework，旧SELF原文只读保存足够，父5de原3PASS仍历史不改。新reworkfreeze/settled后原3five-tree完整新门槛+finite6复审才能G1clear，再safe直接G2G3G4，不借旧receipt或活变更test自报绿。
+
+G1proof新self五树3gate实际0，但2旧badLink名未清映射：父LEGACY-GHOST-TEST-MAPPING精确裁旧batchAPI/创建拒ghost部分narrow-retired，原batch原子性由现Playbook冲突/计划错误0写具名case承接，单cap事务由实际edgeINSERT失败cap/body/edge全rollback证明；保ghostnext允许且声明/missing读状态case，不复旧endpoint/ghostban。两个旧名账目保完整，不声称原错误仍发生或全不变量退役，production0diff，补具体映射后真receipt/finite6门槛→G2G3G4/final3；其它原proof/index/精确ledger和registry保持。
+
+Core已更正机械验证竞写事实：g1-mechanical-close自动EXT三array实际在新testproof writeradmitted期间跑并acceptedverified，任务文字未抑工具。日志timestamps/当时HEAD5de与dirty未知保，**不认证新rework或当前G1**；旧self/rootfixedarchive独立历史不改，不重复collect/重跑旧child。当前唯一testproof正常，结束冻结后其新固定3actual+finite6门槛才认证，NoName/C3/Node重做/NoSource竞写，完整后续scope不减。
+
+FE4db5b35 Trace真实失败归档补口toolverified：Node199(原195+4)，syntheticrendererror原anchor真实FAILexit1被同Doc Trace200/7task公共shape/清空content与busyfalse捕获，正常对照7rows无secretpayload。限域fresh可诊断true但自由Error字符串脱敏并非绝对秘密保证，受控mock诊断only风险记，不生产记录。父makefe固定4db5观察epochb2a2f67b/newrunfinal-28bbef29…已派**仅一次UI83+coverage40诊断重演**，same并发2/各IDonce/source前后/full日志，purpose非产品acceptance；本次过也不洗旧whole1914/rootunknown，不加超时/改production。若再fail将有实际响应/trace-error/时序证据下一精准fix，真CoreNodecross仍待。
+
+CoreG1两旧名精确narrowretire ruling已same既有testproofsession继续单writer，最后ghost合法create/Spec+edge声明留/missing读取正例不扩prodGuard；旧原子性由actualedgeINSERT0写/Playbook冲突0写具名承接，原SELF3=0仅上轮历史，当前freeze后新3five-treeverify+finite6审才能clear。commit只owner，不需强加ignored.pi-legion或改settings/ignore，copyreviewstdout可lossless编码副本留原childoutput/SHA，不trim/洗finding。既有facts/index/映射/anchors/rawprojection保，末不重扫460/C3Node，G1安全收口后actualG2-G4全scope不减。
+
+## 会话 01a1c041 新接续（用户要求默认模型）
+
+已由两个新只读 scout 恢复原会话和当前 WT；详情 `RESUME-01A1C041.md`。G1实际收口 HEAD50fb9ac/代码32ec26b、Node冻结5a3dae3，生产尚未集成父分支。Trace4db5b35观察版已取得同document图库未准备的真实TypeError，原trace-fix无写入，不反复恢复旧孤儿。
+
+已实际派发：
+- `trace-startup-resume`：worker，不指定model/preset，既有frontend-delivery WT唯一writer；仅按TRACE-STARTUP-HANDOFF，确定性native RED/GREEN与原五stage verify。结束冻结后fresh review、新uniqueREADY完整五suite各一次；当前不是PASS。
+- `core-g2-resume`：centurion，既有core-delivery WT，四阶段，仅一个源码worker且所有worker/scout不指定model/preset；G2固定format/vet/六runtime包/store-artifact-protocol四门禁，不重做G1/C3/Node，不越界G3/G4。
+- `logs-wire-facts` / `logs-contract-facts`：父限域并行scout，确认G2历史日志真实结构化事实缺口，以便父裁决。现LogsResponseFrame缺sequence/stream/text/at，G2禁止自行fabricate/改protocol-Node；其余运行链可继续。
+
+NEXT-G2-NOTES实际路径在core WT的 `teams/core-runtime/task-cards/NEXT-G2-NOTES.md`；EXPORTED旧PENDING已被ACTUAL C3b替代，当前store授权入口齐，不拿历史稿重开C3。父 `.pi/settings.json` 既有修改保留、不stage；旧失败/WT/日志/会话均不删除。
+
+接续实际成果：Trace code1abc042/deliverybf21f18已本地owner提交；worker EXT原五门禁真实verified203/203（199+4），native旧码REDexit1/taskChain→修后GREEN3caseexit0/7rows真图canonicalclick/真实errorretry。父另独立五stage在固定bf21f18已完整执行exit0，日志 `/tmp/anotify-v4-fe-trace-final/parent-stage.log` 与statusJSON齐。fresh正确性/简洁性审均oktrue、0major，有限minor已记录；coverage/生命周期审待收，未创建新READY或宣全FE通过，旧195/304完整门槛仍需新epoch各一次。
+
+父async_run真实失败 `admission is closed (registry suspended...)`，没有启动命令，不修改harness/裸后台替代；已用合法launch-verify只读carrier `trace-parent-stage-carrier` 执行同固定有界脚本，工具真实accepted(verified)，不是self文字冒PASS。
+
+G2工具实际隔离子WT `.../v4-core-delivery/.pi-subagents/runs/r-01be4aa7/worktrees/core-g2-resume` branch52fc54d4。父按 `G2-RESUME-PATH-CORRECTION.md` 接受实际隔离路径，原硬编码首verify路径不匹配的记录不改写为绿；worker四门禁核真实cwd、format只读不以gofmt-w代门禁。当前真实源码变更已开始，G2完整scope/review/门禁未收，旧runtime/Node测试必须逐名迁移或精确退役。
+
+日志两路scout+只读第二意见已闭合事实；新增父冻结 `LOG-RECORDS-HANDOFF.md` R1–R8要求Node真实采集旁路记录、不缩raw、Node时钟at/观察sequence、先since→tail→完整帧截断、历史global attempt/真实错误状态。已派 `node-log-records` 独立Node隔离单元，仅一个默认worker与freshscout三角审，protocol+Node四项机械门禁；不会和G2活writer竞改依赖。Node交付后在G2安全freeze边界父集成，G3/G4及cross仍待。
+
+Trace有限三fresh审现全部oktrue、0critical/major；接受记录中的minor，不在此gate扩修其他页、库自动重下或real-mode诊断。coverage超时清理疑点已核实际调用explicit-mock无PG、in-process preview随退出、Playwright退出清理浏览器；real-mode未实测风险单列，不拿理论风险洗实际失败/弱断言。父stage原五真实PASS仍bf21f18，203原199+4保。
+
+**新完整前端五套件已派** `trace-full-five-carrier`（只读机械carrier，默认模型，不写源码/不自行跑命令；由launchverify真正执行父固定master）：
+- 新唯一READY `frontend-delivery/teams/frontend/PARENT-TRACE-FINAL-READY.log`（完整前缀 `.pi-orchestrator/v4/`）。
+- source/delivery bf21f18，code1abc042；SourceCodeSHA `ff9ab45efc7c299ef3f991f580887e67243a1f3a49cfc62548a4b5586e81a771`；FULLSHA `338366cf0fd22ed5b62c095eae9d0f98238cb0be069b847f59df1220ab838ed1`。
+- run `final-trace-e4544a6f-338c-488a-b073-0705a7d3a71f`，完整35/29/40/83/8=195组，304是expectedmatrix不冒actualPASS。
+- `/tmp/anotify-v4-fe-trace-final/run-five.sh` 管一组受launcher托管的有限子命令，2suite批次（各2case、最多4），每suite1200秒/完整tee/真实exit/只执行一次/epoch前后，master3900秒。源码/产物全程冻结，无新FEwriter；旧READY与旧failedrun不覆盖。
+- `/tmp/anotify-v4-fe-trace-final/ready-summary.json`、待生成 `five-suite-status.json` 与各suite-status/full日志；当前只是已派，不PASS。结束后父必须收actualmanifest/reports/views/matrix/无活进程，不能只用plan195或部分case过宣全前端完成。
+
+11:10新full5首批已实际完整完成：frontend35PASS/0FAIL，i18n29PASS/0FAIL（76page/lang全过），各commandExit/epochCheck/headCheck均0；父亲读两statusJSON与master原始stdout。11:12 coverage40也已完整commandExit/epochCheck/headCheck全0；UI83仍真实受管执行，最后UX8由同master在批次收齐后自动运行。104组脚本已过不等完整195/304通过，carrier仍在受管运行。resume-worktree自动完成通知为此前已采信的旧侦察结果，无新源码/门禁，不重复恢复或重跑。
+
+旧trace-review-coverage被abort轮次的自动rejected通知晚到，原失败/中断记录仍保；后续continue实际产出已collected且最新status明确execution success/accepted(attested)/retired，有限coverage结论oktrue/0major仍有效，不把旧abort改成accepted，也不再次恢复已完成review。carrier的L1“no tool in flight”通知不代表verify没有运行：父11:12实际ps核timeout/run-five/ui_shift仍在、master日志增长、coverage结果已生成；不abort/重跑gate。extend30min只延长L2提醒，不修改实际suite/master超时或等待预算。
+
+11:13新full5实际全部结束且carrier工具accepted(verified)：35/35 +29/29 +40/40 +83/83 +8/8=195PASS/0FAIL，各source/head/command检查均0；UI aggregate actualMatrix304、353views全部PASS，UX13views全PASS。父亲读全部原始stdout/status与4个真实aggregate、frontend唯一manifest，并核无run-five/run-suite/suite CLI存活，不以carrier“ready”文字顶实际执行。旧21/4/1失败仍保，新完整结果另独立版本。
+
+父深度证据audit（不重跑任何case）仍在核：初版validator把身份元数据放错nestedreport层、把grid的pages误取views，均为父脚本schema映射错误，未改产品/断言/原报告。进一步强加geometry.overflow列表必须[]发现unbounded:true DIV[-11,11]，原CLIoktrue；这是额外父规则是否与既有冻结guard一致的待确认点，不能先判真实scroll溢出或改断言求绿。日志 `/tmp/anotify-v4-fe-trace-final/parent-audit.log` 保，已限域两scout `matrix-overflow-rule`/`matrix-overflow-evidence`（不指定模型，最多8工具/不跑browsertest/不改源码）核实际guard与现304观测，未完不宣完整父audit PASS。
+
+新full5父深度audit现已真实完成exit0（`parent-audit.json`/`parent-audit-final.log`），195组原case/exit/suiteJSON、4aggregate、frontend唯一manifest/enrollments、304成功tuple完全唯一及当前源/产物HEAD均独立核对通过。详 `FRONTEND-TRACE-GATE-CLOSURE.md`。额外geometry两scout已核原F3 UI guard只断言文档scrollWidth，诊断列表包含移动端离屏sidebar；父采用原冻结门槛并保全部12304诊断，不改原测试或生产CSS、不把左侧潜在视觉覆盖空隙假称完全安全。旧audit失败日志保、最终另文件，少数scout误称日志不存在不据此抹档。
+
+截至此检查，G2隔离树已本地源码/测试checkpoint `cba97d4`（预算收缩不假释放busy的回归），G2 manager原progress文档仍落后，不用其旧“no writer/无源码”替代实际git事实。Node-log隔离树 `.../v4-anode/.pi-subagents/runs/r-8d78ba7c/worktrees/node-log-records` branchc88408ff、checkpoint95e549f、唯一logs-source实际进行日志索引源/测试后续改动；父已核经理session中worker128K/实际协议ops/runner改动与当前索引测试dirty，不因quiet/collect在途误杀活writer。
+
+新并行现状侦察已收（g2-current-facts / node-logs-current-facts，未指定model）：
+- G2 source freeze cba97d4；writer ok:false SAFE_BLOCKED。三个fresh review仍在实际推进、未收齐；四门禁copy日志有守卫/包ok，缺raw退出行与extension正式认证待父，不用md自报代绿。除Node日志外，writer另报event+tasks/deliverywindow无统一原子store入口、downstream_missing无执行attempt的failedTask形状不能表达；这些只是已提接缝，不据其单一判断扩store写。
+- Node-log source freeze clean e3b030e（前95e549f），9owner文件；最新gate1/2 exit0、最新gate3 exit1：TestRework2ReplayRechecksSecondPendingAfterBlockedFirst/deadline 等真实execution awaiting ACK超时2.01s。旧count1/race曾绿但不能覆盖新失败；三fresh review未开始，公开index/DTO完整handoff仍待，不能集成或宣Node补口DONE。未改test不证明pre-existing flake。
+- 父已继续并行限域4scout（默认模型，不build/test/修改）：g2-atomic-seam核是否真缺事务API与冻结atomic语义；g2-failed-task-seam核最高契约/TaskFK/failed-noattempt形状；logs-replay-cause-facts核真实replay/logs作用链；logs-gate-failure-facts核前后失败/HEAD/exit与同根因预算。两manager已steer保sourcefreeze、原失败/历史绿，禁止重复到绿/放大2s阈值/越owner；事实后父冻结最小修复/API补口。
+- Node规划/启动的legion info mail为滞后进度，不因此重派worker/重新planning。第1gate canonical/只读gofmt认可；R2已精确补充真0记录索引成功[]、损坏/未知部分过滤后0不能假无匹配、真实档案不存在与有档案缺索引错误区分。
+
+父target replay parity诊断现实际accepted(verified)：原Node5a与Node-log e3各一次固定20轮、-failfast/GOMAXPROCS2/-p1/-parallel1、原2s未改，两个status均20run/20PASS/0FAIL/exit0、HEAD源码前后0；完整JSON在 `/tmp/anotify-v4-replay-parity/`。这排除了本批稳定必现失败，不证明历史11:31为pre-existing或CPU噪声；旧失败不覆盖，不再重跑同mode。grant-clock scout也证fixture deadline是fake now+60s，2s前置等待不因未resultACK立即ctx过期；新logs写/Close确在热路径，因果根仍未证明。
+
+两manager实际已经retired：Node-log terminalmissing导致steer未送达，doctor后status/collect证execution success但accepted rejected，SAFE_BLOCKED e3；G2晚消息给docsHEAD323c969、SAFE_BLOCKED未变，不盲resume孤儿。Node三fresh最终correctness/simplicity true但test false，已证index record写零字节失败且marker失败会读出假完整major，必须修，不以20样本/两票绿盖。父又并行 l1-review-repair-facts、l1-other-findings-facts、g2-final-review-facts 收精确finding/范围/终态（默认模型，不test/写）。
+
+G2原子性缺口正面枚举已证public ingress接口不足，不是两个方法名猜测；downstream_missing最高§6.2任务失败明确，§8.3/Taskwire缺未解析分支是表示契约缺口，不能降剪枝/造幽灵cap。protected-diff scout纠前误log-S：protocol/store等0diff，定义是既有，不认其前“e552改protocol”误报。有限文档owner/证据目录偏差另记不当生产越权。父已派只读计划worker `g2-store-seam-opinion`（verify仅git无protected改动，禁止基线test/重新侦察）就最小原子store入口/nullable失败ref/正常任务pin约束与emit同事务返回第二意见，然后父冻结具体契约再唯一writer实现。
+
+12:04 orphan通知已实核：node-log-records 最新记录retired/execution success/acceptance rejected，已无terminal；父不批准resume旧centurion，不把树里的旧running/无heartbeat当活writer。已收L1完整SAFE_BLOCKED报告与三审；G2最新323c969同样docs-only clean、三审全部okfalse，含真正cfgRevision混用critical与assignment/reject/emitprune/日志有界/部署ns/有限覆盖major，四项机械0不能盖审。
+
+父按新事实冻结两个最小补口卡，实际派两个独立WT唯一默认worker（无model/preset）：
+- `node-log-completeness-fix`：既有Node-log WT/e3基线，按 `L1-LOG-COMPLETENESS-REPAIR.md` R9，修doublefault可证finish/健康active0vscrashed0、Close同族、确定性I/O RED/GREEN，安全since大值溢出与预算充足两raw尾覆盖。UTF8现文字分片刻意允许、原replay2s/执行ACK/protocol只读，原28tests不减，四门禁完整。
+- `store-g2-seams-fix`：既有G2 WT/323c969基线，按 `STORE-INGRESS-FAILURE-HANDOFF.md` S1-D1–D6，仅store原子ingress/receipt+正常与未解析failedTask严格ref例外/emit附带facts同授权tx/proposal保持+RejectAuthorized。正常resolvedpin/C3不弱、Task不全pointer化、runtime/protocol/Node只读，五项机械与新白盒；后续runtime单writer才消费新接口。
+
+两个oldmanager皆不resume/另建WT，原SAFE_BLOCKED/rejected/失败与后绿均保；新writer不是重复规划/旧gate重试到绿。G2三review逐名证据已收，后续runtime限域计划须附最高D1-D6/A1/W6/S1，不能照单越store/协议/T2。
+
+新增有限deploy侦察已证：显式Node部署intent只检Node存在、没有namespace授权，ack当前credential/ns/intentCAS不在tx。父冻结 `STORE-DEPLOYMENT-AUTH-ADDENDUM.md` S1-D7，已steer唯一storewriter同scope最小deployment.go+tests补原CreateDeployments原子全目标权限/MarkDeployResultAuthorized；若已freeze则标pending不重启，不并发第三writer。原合法offline pending保，不默认全allow或改G1断言。
+
+后续 `G2-RUNTIME-REPAIR-HANDOFF.md` 已冻结但**尚未派writer**：C1真实cfgRevision一致、C2newstore proposal/reject authority、C3原子Source/Emit与失败Task/每目标previewreason、C4deployauth、C5有界日志关联、C6next钉版引用不可被裸to绕过、C7有限handshake/log/deploy/template及具名映射覆盖。next短scout确认当前实现裸to始终latest且注释过度声明；父按用户批准name@version钉死语义明确effective declaredRef，不以旧v3assert恢复/不改全局Resolver，子任务pin/当前mutable next授权分开。此writer只有S1安全冻结review/门禁清与必要Node/protocol集成后才串行派发，当前store/R9均正常working，不竞写。
+
+R9新源码已实际冻结：codeHEAD `bdfe8cfd4ace6fdfa122baeb51f00cc04e430bdd`、clean，原R9writer已retired execution success但acceptance unknown，不能自报4gate0顶launcher。交付5ownerfile（logs_index/store私有live/tests/opslogs_tests），indexv2 + index.done count/lastSeq/size finish facts（记录Sync/Close成功后原子写done）+healthy active snapshot区分active0/closed0/crashed0；doublefault RED→GREEN与回退LF完整规则mutation红日志在/tmp/r9keep，新增10top/6sub，protocol/runner/replay2s未改，原28tests保。父只亲核HEAD/clean，不提前认证代码正确。
+
+父已实际并行派三fresh默认scout r9-review-correctness/coverage/simplicity（仅e3..bdfe R9 scope、footer/live/故障真空/since/raw边界，有限12工具，不全Node重审），以及固定4命令 `r9-parent-gate-carrier`（由launchverify真正执行/tmp/anotify-v4-r9-parent/run-gate.sh，各900有界/once/full日志/exitJSON/源码前后，格式只读）。当前门禁与reviews待收，不集成Node。S1writer仍近期推进、尚未freeze，不据其ctx230K停活写；要求仅S1/D7准确接口/remaining checkpoint，不扩650库存。
+
+R9原worker acceptance后续实际更新accepted(verified)；父correct4gate也真全0（gate3/4 status分别12:46:39/53）。三fresh审现都已收：coverage/simplicity oktrue，correctness okfalse指出live register早于writerlock（初始化header前可被读出activecommitted0瞬时unreadable）；是安全方向但精修小，不以minor票数盖。父亲读/tmp/r9keep/red.log/mutation-red.log确有原始真实FAIL，两个scout“日志缺失”误判断不据此补造/重跑旧RED。
+
+已冻结 `R9-LIVE-PUBLICATION-HANDOFF.md` 并派fresh唯一 `r9-live-publication-fix`（默认model、不另开WT/manager），仅open发布锁顺序+确定性publication边界RED/GREEN/必要私有seam，原v2/done/raw/Node/replay2s不改，完整4gate仍须新source验收，后fresh限P1复审。不重做R9大方案/旧28/20parity；新修复期间旧bdfe父4gate0只历史、不集成。
+
+S1 ctx约253K且近期工具真实推进，父steer要求立即owner checkpoint实际HEAD/dirty/typed接口/5gate/D7具体remaining，若未能完整收口应freeze SAFE_BLOCKED而非临界ctx扩旧baseline/反复fixture/追加writer；当前依旧唯一storewriter、不按ctx数误杀活命令。
+
+R9-P1 已worker实际completed/accepted(verified)并freeze：code `4c822a7b49567641dfa61757757fe9fd2b5cf469`，RED-only checkpointfb321015新2回归真实红，修后绿；3ownerfile仅open publication锁顺序/私有nilhook/2test，原R9v2/done/raw/protocolrunner/2s不改。父亲核当前HEAD/clean与Node11文件总patch范围。已派三fresh默认P1限审（r9p1-review-correctness/test/scope）+新独立4gate carrier `r9p1-parent-gate-carrier`（脚本/tmp/anotify-v4-r9p1-parent/run-gate.sh，4c绑定/once/900各项/完整logs+exit/源前后），结果待收，旧bdfe认证只历史不复用。
+
+S1 ctx275K但quiet31s仅说明活，不证明收尾完成；已派只读 `s1-progress-checkpoint` 默认scout限8工具核actualHEAD/dirty/owner INTERFACES+CHECKPOINT/最近20session工具与真实gate/remaining、不读整高ctxsession、不跑旧baseline。父不盲等待/ctx误杀，也不在dirty活writer期间集成Node或启动runtime第二writer。
+
+P1新三fresh有限审现全部oktrue/0criticalmajor（publication持lock/所有return+Close/liveMu锁序+nil私有hook/new2tests REDfb→GREEN4c都核）；parent独立4项新source全0且HEAD/sourcechecks0已亲读status13:02:10–35，不拿ready文本或race耗时猜命令。`L1-NODE-LOGS-CLOSURE.md`已落，**最终Node-log4c822a7作为可用冻结依赖独立收口**：5a→4c11产品文件，真实records/完成proof/active0/oldv1unreadable/Since/预算与原Node全18包count1/race均过。当前不集成G2，S1仍活writer，旧orphan/oldreplay red历史不覆盖。
+
+S1新scout核code `5dc3f27`（13:03:49，21file、接口9940B）已经ownercommit，5selfgate真实0（store/v4test race378s）、无source剩余；仅S1-CHECKPOINT旧12:52表/remaining未更新+docscommit+返回verdict。父已派三fresh默认S1限审source5dc（atomic-authority/schema-task/tests-scope），不等checkpoint章节完美/不重G1C3/650；D5是ownership/D6是tests，接口卡不必有这两个API章。steerwriter立即真实checkpoint收尾+final供extension5门禁，不再selfbase/扩源竞改reviewepoch。
+
+S1全部三freshreview现已collected oktrue、0criticalmajor；scout认可真SQLtrigger6点all0rollback/完整旧receipt/NULL失败CHECK+normalpin+FK/SourceABA与snapshot/emit附facts授权/proposalreject/deploytxn，finitecoverage与strictOpen不比CHECK/rawlog留证等minor明确保。详 `S1-STORE-REVIEW-CLOSURE.md`，不把missingG3runtime/旧centralnotify-phone退役算S1缺失功能。writer实际fixedlaunch5gate也accepted(verified)，finaldocsHEAD已亲核 `ae3ace9`，5dc..ae3只有2docadded+docupdates源码0diff/clean。
+
+父新独立fivegate `s1-parent-gate-carrier` 已派，固定/tmp/anotify-v4-s1-parent/run-gate.sh绑定ae3/source5dc、各900有限/once/rawcommand/fulltee/exitJSON/sourceeq。全部待收之前不集成依赖/启动runtimewriter，不用三票或writer自报替结果。
+
+Node-log11产品文件onlypatch已准备在/tmp/anotify-v4-node-logs-handoff（5a→4c），SHA256ddeb2a73939065437cbac828bdc70581ac75f5ddf3c571666b8ce0d6ab2062d8、G2tree gitapply--check已0；当前仅预检、未apply/commit。S1五项结束全0且安全无writer后父才精确产品集成，原所有review/失败日志/旧WT不搬删。
+
+13:14 storeorphan notice已核最新status为retired/execution success，原5项accepted(verified)结果已收，父不批准resume旧writer/不根据stale running再派同WTwriter。当前唯一活任务是父只读 `s1-parent-gate-carrier`，13:15前三门禁format/vet/storecount1实际commandExit/head-source checks全0；第四store-race真实受管timeout/go-test进程仍在、完整log更新，非死等orphan。第五cross待race结束自动执行；当前尚未全五通过，不applyNodepatch/启动runtimewriter/abort活race。局部3绿不顶其余结果，旧notice只归档。
+
+13:23 S1父完整五项已真结束全0、HEAD/sourcechecks0，carrieraccepted(verified)/retired，race13:23:15、cross13:23:21，父13:24亲读后两status且无race/v4test/gate进程。此前L1silence重复mail均晚于已核时间点，无需abort/重复oncegate。S1可以作为冻结store依赖消费，runtime尚未打通。
+
+父已在安全无writer边界精确集成Node5a→4c的11产品文件，patchSHA核正确/gitapply--check0后apply--index与owneronly本地commit：**G2集成HEAD80eb523c9dd79819244a2320a7dff90c31ae2a30**，11files+3440/-78、clean；未merge/push/MR/覆写Node旧store/api/web。流程与来源见 `S1-NODE-INTEGRATION.md`，原S1/Node各epoch验证证据保，不混认证。
+
+已派只读mechanical `node-s1-integration-carrier`，固定/tmp/anotify-v4-node-logs-handoff/verify-integration.sh绑定80eb，formatreadonly+protocol/Node/store/runtimeallvet/allcount1，每900完整log/status/HEADsourcebeforeafter，源冻结无writer。该组合门禁待实际结果，runtime新writer尚未派，旧G2criticalcfgRevision/授权/原子调用/日志仍待G2-R1修，不能patchapply就宣G2完成。
+
+13:28集成组合门禁已实际accepted(verified)，父亲读integration-status/full.log：80eb源前后0、protocol/Node18包/store含v4test/六runtime全vet+count1真0，完整日志/tmp/anotify-v4-node-logs-handoff；S1五gate与Node四gate先前各自epoch0保历史，没有竞写混源。
+
+已正式派唯一默认worker `g2-runtime-repair`（worktreefalse当前G2树80eb）执行G2-RUNTIME-REPAIR-HANDOFF C1-C7有限返修，originalcriticalcfgRevision优先、newS1 proposal/reject/SourceEmit/deploy authority、真实Node日志DTO/有界关联、previewreason/declarednextref/有限安全与mapping阴性coverage。所有store/protocol/Node/sourcespec/Go依赖/FE只读，无第2writer；public W6回执不泄漏store内部failurefacts成新Resource/伪剪枝。旧centralnotify.phone刻意退役不恢复，独立notify/domain仍保。launch固定四门禁附full范围、readonlyformat、900有界、真实log与退出；原G3G4/goall/contract/quick/cross仍未宣，通过后父fresh三角+独立验证。
+
+G2-R1 worker现已实际交付/retired、launch4门禁accepted(verified)：code9a2b95c218cc780a4aed74862bea161a8d634d93/docs6ecb938e68600c2878e0d9d068c2ce1f5399bc50、clean且后commit仅3证据文档。25newcases/有限12mapping按C1-C7实现selfall0，store/protocol/Node/sourcespec等0越权；声明emitmissing failedTask虽真实落库但ack取不到ID的精确gap（EmitFailureFact/EmitResponse返回约束）不能带gap冒全scope完成。
+
+父已派三fresh默认G2R1审execution/routing/test-scope（仅80eb..9a有限newdiff，附D1-D6/A1W6/S1/刻意centralnotify.phone退役）+emit-failure-ack-gap限域scout核actual最高schema/是否callerID可用；并固定父独立4gatecarrier `g2r1-parent-gate-carrier` immutable6ec/source9a、各900/rawcommand/exit/once，结果待收，不用workerDONE顶父审。无源码writer，G3只准备不写。
+
+下一G3事实摸底已并行三scout（HTTPscope/interfaces、tests/fivespec/mechanical责任、artifact同hash过期遮活引用小接缝），限域不test/build/改、不重G1/C3/全345库存，产事实供父冻结G3卡；原G3/G4未开始不假称已交。等待G2R1精确gap及reviews后再决定返修/安全nextwriter。
+
+G2R1 三fresh现全oktrue/无已证criticalmajor，父独立4gate也accepted(verified)/source6ec检查0（gate4 14:16:42），原C1-C7有限安全/真实revision/模板/日志/部署negative已核；minor列表诚实保，不以“无major”忽略已knownemitfailedackgap。
+
+emit精确scout证unknownreceipt：existingEmitResponse.taskId可表示任何已建Task，包括真实failedTask，不需tasks数组；当前DispatchFailureInputs无TaskID入口/privateTaskID隐藏导致null+无pruned被CLI exit5resultunknown。父冻结 `EMIT-FAILED-TASK-RECEIPT-HANDOFF.md` E1-D1-D3，并实际派唯一默认worker `emit-failed-task-receipt-fix`（当前source6ec/writer与reviewgate都settled后串行）：可选store非wireTaskID/原emitResult精确同ID+routeexistingtaskId、未知Versionomitempty唯一DTOpresence例外、strict@ref不fmt前缀/failedname basename分版本，public5fields不增/错误同txn。只这一dependent小接口+consumer+directtests，不把其它9minor全盘转派、原Node/Source/ws/其他store只读。新4verify全范围挂，freeze后有限fresh/机械再认G2scope。
+
+G3三事实scout已收：旧server/api345+18tests、五spec0/5、旧checkers单path集合易覆盖，Makefile属G4/T2sitegen只读；artifactdownloadcurrentmanifest首expired遮live潜伏bug。父已提前冻结 `G3-HTTP-SPEC-RESUME-HANDOFF.md`（**尚未派源码writer**）：旧openapi单file删除、exact5真实operation/ref/DTO/security、G3own3checker与GoParity不偷改G4Makefile、resultspool/用户授权日志和NodeBearer上传、D4只按currenttaskhashanylive避免expired首选遮蔽（无newpathquery、不借otherownerlive复活）最小storeselection例外；保独立authnotifydevices/brokerpush与true失败Task字段事实，不恢复centralnotify.phone/v3flat。
+
+G3必须E1安全freeze/fresh/门禁清且无writer后再派，不能同时写同WT或拿旧G2green顶缺口。G4/真实NodeHTTPfrontendcross/最终全Go/contractquick/CI/build/fullE2E仍待。
+
+**用户新增优先级：当前任务完成后转issue拆分交接**。当前收口点E1 emit真实失败Task回执修复，完成codefreeze/fresh/机械验收后不自动启动G3/G4大实施。请求已持久化 `ISSUE-HANDOFF-REQUEST.md`；并行默认scout `remaining-issue-facts`/`issue-tracker-context` 核实际剩余delivery/owner/依赖/验收命令与平台/模板/可发布工具，不重复已过G1C3Node/前端。每issue必须目标/范围文件owner/AC新测试+固定命令/D决策与不做项/依赖与集成序列/风险，真实tracker无法发布时保完整草稿和明确原因不假链接。未因交接要求停止当前活E1writer或降低门禁。
+
+当前E1已workeractualaccepted(verified)、sourcefreeze **b30e998767544f475363815e5c03037cf9de0a1f**，1本地commit/10授权文件，旧missingnull无pruned→CLIunknown已真实RED，newcallerTaskID/事务真实Taskidentity核对/回放原字节/nullableversion/严格refs/真实basename已补，scopeNode/server/ws等只读。父已三fresh限E1并行（identity/refwire/coverage）+独立4gatecarrier `e1-parent-gate-carrier` 绑定b30/canonical/once/rawcommands/exitJSON，结果待收，不提前认证当前完成。
+
+用户剩余issue准备两scout已回，但remaining报告错误读取父旧root与旧core-runtime-next而误把Node产品/前端full5/reader当pending；父不采其过时源码结论。已新限域 `remaining-current-frontend` 核真实FEWT bf21/1abc、已前端195/353/304父auditpass与multi-reader/mocklines实际，只把真实五APIcross/未解析Task字段/日志globalcurrent校准列剩余，不重做旧UI或Node。tracker事实：GitHub zzjcool/anotify、gh可用、无模板/label体系；已派只读network `github-issue-live-facts` 核登录/openv4issues避免重复（不创建/编辑）。G3/G4仍无源码writer，当前E1完验后按用户要求发布清晰目标/范围/AC/依赖的issues，而非继续大实施。
+
+**当前E1正式父验收收口**：b30e998 sourceclean，三fresh identity/refwire/coverage皆oktrue无criticalmajor，parentfixed4命令实际accepted(verified)，亲读4status均commandExit/headsource0，14:55:10–14:56:01完成。原carrier‘ready之前要求结果文件’拒绝未执行记录保，continue明确执行前ready后原once命令真实跑；不把那次refusal当产品red/洗历史。闭包 `E1-RECEIPT-CLOSURE.md`，minor纵深防御/字段统一/测试判别性转后续issue，不为无限完备继续改源。
+
+**依用户要求已停止后续源码实施，转实际GitHub issue交接**：repo只读检查open0/no-v4-epic/authrepowrite后，创建并逐一ghissueview核真实title/url/open/body一致：总任务 **#330**；8子任务 **#331 HTTP资源/独立身份通知域、#332真实产物传输/托管私有下载、#333exactfiveOpenAPI/checkers、#334serverCLI/seed/Docker/Makefile工具链、#335真实API前端与日志/failedTask场景（现reader不重做）、#336非FE真实NodeE2E底座、#337strictschema/确定性安全回归加固、#338最终跨队集成/fullgates**。依赖URL与文件owner/不做项/新case+固定命令/完成定义均在issue正文，epic checklist链接已回填，仅用已有labels，无PR/push/merge/source更改。
+
+本地完整草稿+实际发布正文+manifest/state/索引在 `.pi-orchestrator/v4/issues/`；README.md和PUBLISH_STATE.json是真实GitHublinks/remoteVerifiedAt，状态published-and-verified（15:09:24）。发布脚本第一次JS解析引号错误未开始GH/写state/远端写，旧/tmp/anotify-v4-issues/publish.log/rejected保；父微修并node--check后distinct publish-final.log真实全执行0，无盲重试/重复issue。最终DAG已精修并实际remoteverify：主线331→332→333→334→336→335→338；先冻结真实Node/harness336再由FE335消费，336不反向依赖FE，避免执行循环。只更新已建335/336/330正文/epic清单与本地MANIFEST/state/README，不新建重复issue；337可从E1冻结基线隔离推进，最终338依所有前置。
+
+当前核心b30与FEbf21/1abc仍是本地工作树交付，不在旧main/PR329完整发布；后续issue已明确分派前协调者提供共同集成commit/补丁，避免重做完成部分。整体v4仍待上述issue，不宣全goall/contract/CI/build/fullE2E已过；当前无新G3/G4源码writer。所有worker/scout派发均未指定model/preset。
 
 尚未宣称任何 v4 能力完成；父最终review/跨团队集成门禁未开始。
+
+## 2026-11-12 · v4.1 节点安装完整版（用户新增需求，已合入集成分支）
+
+- 契约：`.pi-orchestrator/v4/issues/dispatch/node-install.md`（D1–D10 + §9 R1 修订）
+- 交付分支：`feat/v4-node-install` @ `56a9d79`（`bdc3ed4` 功能 + `af41bf6` R1 修复 + `56a9d79` R2）
+- 复审：`rev-nodeinstall` **ok:false**（C1 critical：system 服务 chown 时序；M1 dry-run linger；M2 token-file 轮换；M3 service none 跳过预检；M4 PATH 漂移）→ `af41bf6` 修复 → `rev-nodeinstall2` **ok:true**（两个 minor）→ `56a9d79` R2 → `rev-nodeinstall3` delta **ok:true**
+- 合并：`v4/integration` @ **`24a1215`**（merge commit，23 文件 +5150/−153）；PR #367 head 已自动指向 `24a1215`，未合 main
+- 门禁：`make ci` / `make contract` / `make check-anode-skill` 全 0；合并头全量 `make e2e` **2 次连续 28/28、2136 断言、0 失败、TMP 零残留**；首轮出现一次既有 `f3-node-retained` 登录响应竞态 flake（`retained-security-permissions`，非本功能引入），单跑 frontend 35/35、后续全量 2 次全绿
+- 本机主 checkout 已 FF 到 `24a1215`，`make build` → `v0.2.0-354-g24a1215-dirty`；33 个用户脏文件未动
+- 未发布：release/tag/image 仍等用户授权

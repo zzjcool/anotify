@@ -70,6 +70,9 @@ type apiError struct {
 	Code    int
 	Reason  string
 	Message string
+	// Details 是可选的结构化细节（目前只有 YAML 文档的 `details.causes` 用它）。
+	// 保持 nil 时输出与以前逐字节一致（statusDoc.Details 是 omitempty）。
+	Details *statusDetails
 }
 
 func (e *apiError) Error() string { return e.Message }
@@ -102,7 +105,7 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	}
 	var ae *apiError
 	if errors.As(err, &ae) {
-		writeStatus(w, ae.Code, ae.Reason, ae.Message, nil)
+		writeStatus(w, ae.Code, ae.Reason, ae.Message, ae.Details)
 		return
 	}
 

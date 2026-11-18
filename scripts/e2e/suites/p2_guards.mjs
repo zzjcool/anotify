@@ -66,7 +66,7 @@ async function main() {
 	browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 	const s = H.seed(server.dbPath, "p2_guards");
 	const origin = server.base;

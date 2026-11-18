@@ -30,7 +30,8 @@ import (
 // 三者的错误体统一成 Status（§4），作用域规则与资源域**同一份收口**：
 //   - `/stats`、`/orphans` 是 cluster 路径，**必须**显式给 `?namespace=`；
 //     缺参数 400（不回退默认 ns），且逐个 ns 过 store.AuthorizeNamespace；
-//     `*` 只用于跨 ns **读**汇总（orphans 的诊断需要；stats 的 store 口径拒绝 `*`）。
+//     `*` 是跨 ns **读**汇总（「全部命名空间」是一等视图，不是派生视图）：
+//     stats 把逐 ns 授权过的 id 列表交给 store.MessageStatsAll 求和，orphans 逐 ns 列出。
 //   - deployments 走 ns 路径，slug/id 解析与授权沿用 namespace_scope.go。
 
 const (
@@ -78,23 +79,53 @@ func methodNotAllowedAllowGet(w http.ResponseWriter, r *http.Request) {
 	writeStatus(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "method not allowed", nil)
 }
 
-// stats 处理 GET /v1/stats?namespace=NAME。
+// stats 处理 GET /v1/stats?namespace=NAME|*。
 //
 // 形状沿用 v3（`internal/store.Stats`：total/today/delivered/deliveryTotal/deviceCount/daily）：
-// §8.4 明确「请求/响应形状本轮不改，只统一错误体」。`*` 在这里是 400：store.MessageStats
-// 的口径就没有「跨 ns 汇总」这一项（会把不同命名空间的事件数加成一个不存在的数字）。
+// §8.4 明确「请求/响应形状本轮不改，只统一错误体」。
+//
+// 作用域：
+//   - 缺 `?namespace=` → 400（**绝不**隐式全量：隐式全量会让「忘记传参」在不知不觉中
+//     从一个 ns 的读数变成全集群读数，而客户端分不出两者）；
+//   - `?namespace=NAME` → 单 ns，行为与 v3 一致；
+//   - `?namespace=*` → 「全部命名空间」聚合：先 ListNamespaces + **逐 ns** 授权
+//     （store.AuthorizeNamespace，与 orphans 同一条收口），再把确定的 id 列表交给
+//     store.MessageStatsAll 求和。求和是有意义的：Total/Today/Delivered/DeliveryTotal
+//     是「事实的条数」，跨 ns 相加不造出不存在的数字；DeviceCount 是用户维度，不参与求和。
+//     逐 ns 授权不是形式：今天是「任何登录用户可读任何 ns」，将来按成员表收紧时，
+//     这一行就是权限生效的地方（不许因为「今天全员可读」把收口拿掉）。
 func (a *retainedReadAPI) stats(w http.ResponseWriter, r *http.Request) {
 	userID, err := requireUser(r.Context())
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	nsID, err := a.d.authorizeQueryNamespace(r, false)
+	nsID, err := a.d.authorizeQueryNamespace(r, true)
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	stats, err := a.d.DB.MessageStats(r.Context(), nsID, userID, taskNowSeconds(a.d)-legacyStatsWindowSec)
+	sinceSec := taskNowSeconds(a.d) - legacyStatsWindowSec
+	var stats *store.Stats
+	if nsID == store.AllNamespaces {
+		all, lerr := a.d.DB.ListNamespaces(r.Context())
+		if lerr != nil {
+			writeAPIError(w, lerr)
+			return
+		}
+		nsIDs := make([]string, 0, len(all))
+		for _, ns := range all {
+			// 逐 ns 授权：跨 ns 汇总不是绕过收口的后门（与 orphans 同一写法）。
+			if aerr := a.d.DB.AuthorizeNamespace(r.Context(), userID, ns.ID); aerr != nil {
+				writeAPIError(w, aerr)
+				return
+			}
+			nsIDs = append(nsIDs, ns.ID)
+		}
+		stats, err = a.d.DB.MessageStatsAll(r.Context(), nsIDs, userID, sinceSec)
+	} else {
+		stats, err = a.d.DB.MessageStats(r.Context(), nsID, userID, sinceSec)
+	}
 	if err != nil {
 		writeAPIError(w, err)
 		return

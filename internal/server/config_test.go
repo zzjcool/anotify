@@ -155,3 +155,57 @@ func TestRetentionAndBackpressureOverflowClamp(t *testing.T) {
 		}
 	})
 }
+
+// TestCapabilityGCIntervalEnvParsing 覆盖 ANOTIFY_CAPABILITY_GC_INTERVAL_SEC 的六种输入（issue 003）。
+//
+// 语义（逐字模仿 ANOTIFY_ARTIFACT_GC_INTERVAL_SEC，只有默认值与上限不同）：
+// 未设 / 空 / 非法 → 3600；"0" / 负数 → 0（禁用）；正数 → 原值；超大 → 钳到 1 天。
+//
+// 为什么非法值回落默认而不是 0：`0` 是「关掉 tombstone 回收」这种**不可逆方向**
+// （行只增不减）的显式选择，一个拼写错误不能替运维做这个决定。
+func TestCapabilityGCIntervalEnvParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"未设置", "", 3600},
+		{"显式 0 = 禁用", "0", 0},
+		{"负数归一到禁用", "-900", 0},
+		{"非法值回落默认", "hourly", 3600},
+		{"正常值原样使用", "120", 120},
+		{"超大值钳到上限 1 天", "9223372036854775807", 86400},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ANOTIFY_CAPABILITY_GC_INTERVAL_SEC", c.raw)
+			if got := FromEnv().CapabilityGCIntervalSec; got != c.want {
+				t.Errorf("ANOTIFY_CAPABILITY_GC_INTERVAL_SEC=%q → %d, want %d", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+// TestCapabilityGCIntervalConversion 钉住 Config.CapabilityGCInterval() 的换算口径。
+//
+// 关键不是「秒 → Duration」这个算术，而是 **<=0 必须返回 0**：mux 用它决定要不要起
+// goroutine（`if cfg.CapabilityGCInterval() > 0`）。负数若被换算成负 Duration，
+// 判断仍然为假、行为碰巧正确；但 `time.NewTicker(负数)` 会 panic——所以这里显式钉住
+// 「禁用就是 0」，让将来把判断写成 `!= 0` 的人立刻红。
+func TestCapabilityGCIntervalConversion(t *testing.T) {
+	cases := []struct {
+		sec  int
+		want time.Duration
+	}{
+		{0, 0},  // 未设置/显式禁用：不起 goroutine
+		{-1, 0}, // 负数归一到禁用，不能是负 Duration
+		{1, time.Second},
+		{3600, time.Hour},
+		{86400, 24 * time.Hour},
+	}
+	for _, c := range cases {
+		if got := (Config{CapabilityGCIntervalSec: c.sec}).CapabilityGCInterval(); got != c.want {
+			t.Errorf("CapabilityGCIntervalSec=%d → %v, want %v", c.sec, got, c.want)
+		}
+	}
+}

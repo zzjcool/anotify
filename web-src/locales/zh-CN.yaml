@@ -188,8 +188,13 @@ index:
     trend_live: 实时
     running: 进行中
     running_sub: "当前命名空间所有任务"
+    running_sub_all: 全部命名空间的所有任务
     failed: 异常任务
     failed_sub: "当前命名空间所有任务"
+    failed_sub_all: 全部命名空间的所有任务
+    devices_sub_all: 设备按用户维度，不随命名空间变化
+  aggregate:
+    unsupported: 该口径暂不支持跨命名空间统计
   heatmap:
     title: 事件活动
     subtitle: 近一年 · 每天的事件量
@@ -279,6 +284,8 @@ scope:
   new_ns_failed: "创建失败"
   deployment_wide: "全部署通用"
   deployment_wide_hint: "这一页的内容不随命名空间切换变化"
+  all_namespaces: "全部命名空间"
+  all_sub: "所有命名空间汇总"
 graph:
   zoom_in: 放大
   replay: 重播动画
@@ -289,6 +296,7 @@ graph:
   exit_fullscreen: 退出全屏（Esc）
   fullscreen_hint: 滚轮缩放 · 拖动平移 · Esc 退出
   silk_preview_done: 预览完成
+  silk_source: "源"
   hud_flow: 下游流向
   hud_path: '任务路径'
   hud_fail: '失败任务'
@@ -1351,18 +1359,32 @@ caps:
     title: '人工部署 {name}'
     version: '目标版本'
   detail:
+    back: '返回能力列表'
     btn: '详情'
     delete: '删除'
     deploy: '部署'
     edit: '编辑'
+    gone: '能力已删除'
+    gone_hint: '需要的话用底部的撤销条恢复；也可以回列表看看别的能力。'
     hide: '收起'
+    loading: '正在读取能力…'
+    no_name: '缺少能力名（URL 应该有 ?name=…）'
+    no_name_hint: '从能力列表点一个能力进来，或在地址里带上 ?namespace=<ns>&name=<name>。'
     outputs: '出口（能发什么）'
+    page_sub: '身份、健康、定义与脚本；编辑、部署、删除都在这一页'
+    page_title: '能力详情'
     rv: 'resourceVersion'
     script: '脚本（run.files）'
     script_empty: '这个能力没有脚本文件'
     script_entry: '入口文件'
+    script_error: '脚本正文加载失败'
+    script_loading: '脚本正文加载中…'
     versions: '版本历史'
     versions_hide: '收起版本'
+    yaml: '原始 YAML'
+    yaml_error: '原始 YAML 加载失败'
+    yaml_hint: '由存储的定义重建，可整份贴回 playbook 包'
+    yaml_loading: '正在生成 YAML…'
   error:
     immutable: '这个显式版本的内容已经存在且不可变：改 run/params/requires/lifecycle/concurrency 必须换一个版本（next/displayName 例外）。'
     title: '保存失败：{reason}'
@@ -1485,6 +1507,9 @@ caps:
     tasks: '任务总数'
     tasks_failed: '失败'
     title: '最近一次运行的留痕（observed）'
+    truncated: '只显示最近 {n} 条，更早的没有列出'
+    unavailable: '这个能力还没有运行记录（跑过一次就会出现）'
+    window: '计数是近 24 小时的窗口'
   resolved:
     empty: '终端能力：跑完就结束，不再交给下游'
     missing: '解析不到'
@@ -1525,6 +1550,14 @@ caps:
     current: '当前'
     empty: '服务端没有返回版本历史'
     open: '查看正文'
+  yaml:
+    open: '从 YAML 创建'
+    title: '从 YAML 创建能力'
+    hint: '粘贴一份 Capability 文档（apiVersion/kind/metadata/spec）。status 与 metadata.resourceVersion 由服务端管，不要写。'
+    submit: '创建'
+    cancel: '取消'
+    created: '已从 YAML 创建能力'
+    empty: '请先粘贴 YAML 文档'
 prune:
   no_edge: 没有接候选
   no_capability: 目标能力不存在
@@ -1719,6 +1752,7 @@ sources:
     edit: "编辑源"
     close: "关闭"
     save: "保存"
+    save_failed: "保存失败"
     reload: "重新加载最新资源"
     detail: "源详情"
     back: "返回源列表"
@@ -1768,6 +1802,18 @@ sources:
     saved_dry: "已保存源试运行"
     more: "更多动作"
     saved_dry_hint: "只预演目标解析，不写事件；立即运行会写事件并派发"
+    yaml: "原始 YAML"
+    yaml_hint: "由存储的定义重建；凭据只写不读，这里只有 hookUrl / secretSet"
+    yaml_loading: "正在生成 YAML…"
+    yaml_error: "原始 YAML 加载失败"
+    yaml_create:
+      open: "从 YAML 创建"
+      title: "从 YAML 创建源"
+      hint: "粘贴一份 Source 文档。`spec.config.token` / `secret` 只写不读，保存后只显示 hookUrl。"
+      submit: "创建"
+      cancel: "取消"
+      created: "已从 YAML 创建源"
+      empty: "请先粘贴 YAML 文档"
     draft_dry: "草稿试运行（无需保存）"
     namespace: "命名空间"
     rv: "resourceVersion（CAS 令牌）"
@@ -2440,3 +2486,31 @@ paging:
   load_more: '加载更多'
   showing: '已显示 {n} 条'
   no_match: '没有匹配项'
+
+# 源只读详情页（source-detail.html）：页头、四个区块与折叠块。写动作全在编辑页。
+source_detail:
+  title: '源详情'
+  sub: '只读视图：身份、定义与字段、目标能力、近期回执与原始 YAML；要改请点右上角「编辑源」。'
+  refresh: '刷新'
+  basic: '基本信息'
+  definition: '定义与字段'
+  resolved: '目标解析'
+  resolved_yes: 'targets 已解析'
+  resolved_no: 'targets 未解析'
+  created: '创建时间'
+  updated: '更新时间'
+  updated_hint: 'v4 没有独立的更新时间字段：每次写入以 resourceVersion 递增体现。'
+  hook_url: 'Hook URL'
+  secret_set_yes: 'HMAC 签名已设置（只写不读）'
+  secret_set_no: '没有 HMAC 签名'
+  schema_none: '载荷契约没有声明字段'
+  config_json: '查看原始 JSON'
+  config_json_hint: '读投影已脱敏'
+  params_none: '没有配置参数'
+  recent: '近期回执'
+  recent_hint: '最近 20 条事件（按 source 过滤）；接收成功不代表任务执行成功。'
+  recent_loading: '正在加载近期回执…'
+  recent_empty: '这个源还没有回执事件。'
+  recent_error: '近期回执加载失败'
+  view_trace: '查看链路'
+  no_name_hint: '从源列表点一个源的名称进来，或在地址里带上 ?namespace=<ns>&name=<name>。'

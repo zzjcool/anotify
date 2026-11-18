@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
+	"github.com/zzjcool/anotify/internal/yamldoc"
 )
 
 // kindCapability / kindCapabilityList 是资源 kind 字面（与 artifact.KindCapability 同值，
@@ -59,12 +61,20 @@ func newCapabilityAPI(d *serverDeps) *capabilityAPI { return &capabilityAPI{d: d
 // register 注册全部 Capability 路由（session + noStore 包裹；未登录直 401，
 // 动态 API 一律不许缓存）。
 //
-// 方法不匹配（例如 `PUT …/capabilities/{name}`）仍由 Go 1.22 ServeMux 自己回 405：v4 里能力没有
-// PUT（内容变化 = 新版本，走 POST），不为它再实现一遍方法分派。
+// 方法不匹配（例如 `PUT …/capabilities/{name}`）本函数**不**兜底：这张表只挂带方法的 pattern，
+// 「路径存在、方法不允许」的答案取决于本 register 被挂到哪里——
 //
-// 唯一的例外是**完全只读**的路径（edges）：它在生产 mux 上会落到末尾的静态兜底，自动 405 根本不会
-// 发生，所以另加一条不带方法的 pattern 显式回 405（见下表最后一行，与 deployments 共用同一个
-// methodNotAllowedAllowGet）。
+//   - 裸 mux（测试夹具 `http.NewServeMux()` 后逐个 register，如 api_integration_test 的
+//     itEnv）：Go 1.22 ServeMux 自动回 405 + Allow，因为没有任何别的 pattern 能接住这条请求；
+//   - 生产 mux（mux.go 末尾的 `mux.Handle("/", resolveStatic(cfg))`，见那里的「静态资源
+//     （CDN 缓存分级）」段）：那条兜底**接受任意方法**，所以未注册的 method+path 组合全被它
+//     接住 —— 真实二进制回 404、未内嵌前端的测试构建回 503。自动 405 在这里根本不会发生，
+//     客户端看到的是「文件不存在」而不是「方法不允许」。
+//
+// 能力域接受后者、不为逐条写端点补方法兜底：v4 里能力没有 PUT（内容变化 = 新版本，走 POST），
+// 方法分派只由下面这张表表达。唯一的例外是**完全只读**的 edges（没有任何写端点，写请求的
+// 正确语义是 405 而不是 404）：它另挂一条不带方法的 pattern 显式回 405（见下表 edges 两行，
+// 与 deployments 共用同一个 methodNotAllowedAllowGet）。
 func (a *capabilityAPI) register(mux *http.ServeMux) {
 	const base = "/v1/namespaces/{ns}/capabilities"
 	routes := []struct {
@@ -73,9 +83,14 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 	}{
 		{"GET " + base, a.list},
 		{"POST " + base, a.create},
+		// 「从 YAML 创建」是集合级的**字面段**：Go 1.22+ 的最长匹配让
+		// `/capabilities/yaml` 与 `/capabilities/{name}` 不歧义（方法也不同），
+		// 与源域的 `POST …/sources/dry-run` 同一条先例。
+		{"POST " + base + "/yaml", a.createYAML},
 		{"GET " + base + "/{name}", a.get},
 		{"PATCH " + base + "/{name}", a.patch},
 		{"DELETE " + base + "/{name}", a.remove},
+		{"GET " + base + "/{name}/yaml", a.yaml},
 		{"GET " + base + "/{name}/versions", a.listVersions},
 		{"GET " + base + "/{name}/versions/{version}", a.getVersion},
 		{"POST " + base + "/{name}/deploy", a.deploy},
@@ -174,6 +189,50 @@ func (a *capabilityAPI) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeEnvelope(w, http.StatusOK, env)
+}
+
+// yaml 处理 GET …/capabilities/{name}/yaml：把该 name **最高版本**的存储定义
+// 序列化成一份可整份贴回 playbook 包的 YAML 文本（`{"yaml": "<全文>"}`）。
+//
+// 三条边界（CONTRACT-capability-yaml §1.1）：
+//   - 取最高版本与 `get` 同一套判据（ListCapabilities + newestVersionOf），不存在同样回 404；
+//   - 序列化的是**完整** spec（`artifact.MarshalYAML` 会先 Normalize：`run.files` 全文、
+//     `params`、`next`、`requires`、`lifecycle`、`concurrency` 都在），所以默认读面剥正文的
+//     那条纪律**不**适用于这里 —— 这个端点的用途就是把正文拿走；
+//   - 这是「存储定义的规范化重建」，不是用户当初贴的原始字节（用户原文只存在于 playbook
+//     包的 files 里）；键序与默认值由 Normalize 固定，re-Parse 的 digest 与存量一致。
+func (a *capabilityAPI) yaml(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	rows, err := a.d.DB.ListCapabilities(r.Context(), ns)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	row := newestVersionOf(rows, capabilityNameFromPath(r))
+	if row == nil {
+		// 不存在与「不属于本命名空间」是同一个回答（隔离不泄露存在性），与 get 同一条边。
+		writeAPIError(w, store.ErrNotFound)
+		return
+	}
+	text, err := artifact.MarshalYAML(capabilityArtifact(row))
+	if err != nil {
+		// 行里的 spec 反序列化不出来 = 服务端事实损坏，按统一映射落 500。
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(text)})
+}
+
+// yamlDoc 是两条 `/yaml` 端点的响应体（CONTRACT-capability-yaml §1.1）。
+//
+// 刻意**不**带 apiVersion/kind/metadata：信封规则的判据是「有 apiVersion + metadata」，
+// 给这个响应套信封会把它伪装成一种资源 kind；YAML 全文放在 yaml 字段里，客户端原样展示/复制。
+type yamlDoc struct {
+	YAML string `json:"yaml"`
 }
 
 // listVersions 处理 GET …/capabilities/{name}/versions：CapabilityList，
@@ -312,13 +371,67 @@ func (a *capabilityAPI) templates(w http.ResponseWriter, r *http.Request) {
 // 这里刻意不预先填 `NextCapabilityVersion`：那会绕过 foldKey 复用，让「同一份内容
 // POST 两次」长出两个版本，与 §3 的内容寻址语义直接冲突。
 func (a *capabilityAPI) create(w http.ResponseWriter, r *http.Request) {
-	ns, err := a.d.authorizePathNamespace(r)
-	if err != nil {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
 		writeAPIError(w, err)
 		return
 	}
 	var specDst artifact.Spec
 	meta, err := decodeWriteEnvelope(r, kindCapability, &specDst, "version", "namespace")
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, specDst)
+}
+
+// createYAML 处理 POST …/capabilities/yaml：请求体是一份 Capability YAML 文档
+// （`{"yaml": "…"}`），而不是信封 JSON。
+//
+// 链路是「转换 → 复用」，不是「另写一份创建逻辑」：
+//
+//	yamldoc.Decode（语法/未知字段/类型/必填，带行号）
+//	→ canonical JSON
+//	→ decodeWriteEnvelopeBytes（与 JSON 创建同一套严格解码）
+//	→ createCore（与 JSON 创建同一个后半段：归一、store、信封）
+//
+// 所以 `spec` 的语义校验、版本处置、信封投影一行都没有第二份实现；YAML 路径多的
+// 只是「文档层」的诊断能力。
+func (a *capabilityAPI) createYAML(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.d.authorizePathNamespace(r); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := decodeYAMLRequestBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	res, err := yamldoc.Decode(text, writeDocShape(r, reflect.TypeOf(artifact.Spec{}), "version", "namespace"))
+	if err != nil {
+		writeYAMLError(w, err)
+		return
+	}
+	var specDst artifact.Spec
+	meta, err := decodeWriteEnvelopeBytes(r, res.JSON, kindCapability, &specDst, "version", "namespace")
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	a.createCore(w, r, meta, specDst)
+}
+
+// createCore 是 create 与 createYAML 共用的后半段（从 checkMetaNamespace 到写 201）。
+//
+// 两条入口只在前半段不同（信封 JSON vs YAML 文档 → 同一个 objectMeta + spec），
+// 之后的行为必须逐字一致：版本分配、foldKey 复用（同内容 201）、显式同版本异内容
+// 400 version_content_immutable、信封投影——这些全部由 store 与 a.envelope 决定。
+//
+// 这里再调一次 authorizePathNamespace 是签名（w, r, meta, spec）的直接代价：ns 是
+// store 事实表的引用键（id），不能从 meta/path 推，也不能把「已授权」这件事藏在 context
+// 里。顺序不变（未登录仍在读 body 之前就 401，两条入口都各自先授权一遍），代价是
+// 每个 create 多两次轻量查询（ListNamespaces + AuthorizeNamespace）。
+func (a *capabilityAPI) createCore(w http.ResponseWriter, r *http.Request, meta objectMeta, specDst artifact.Spec) {
+	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -599,7 +712,7 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 		Nodes:            []capabilityNodeState{},
 		DeployCandidates: []capabilityDeployCandidate{},
 		Resolved:         capabilityResolved{Next: []capabilityResolvedNext{}},
-		Observed:         map[string]any{}, // 事件/任务的窗口统计本域不查，给空对象而不是编造 0
+		Observed:         capabilityObserved{}, // 无事实时就是 {}（⑥ 有事实再填）
 		InstalledFrom:    row.InstalledFrom,
 	}
 
@@ -642,6 +755,22 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 	}
 	status.DeployCandidates = candidates
 
+	// ⑥ Observed：最近任务 + 它的 emit/剪枝 + 24h 计数（capability.md §2）。
+	//
+	// 降级而不是报错：observed 是**可选派生面**，而 statusFor 是两个读端点（列表/详情）
+	// 共用的——这里返回 error 会把整个 GET 变成 500，代价远大于「这一块暂时空着」。
+	// 空对象本身就是文档允许的形状（`{}`），所以降级不破坏契约；但必须留一条 warn，
+	// 否则一个永久坏的库会安静地让 observed 永远为空。
+	observed, oerr := a.d.DB.ObservedForCapability(ctx, row.NamespaceID, row.Name)
+	if oerr != nil {
+		a.d.logger().Warn("capability status: observed degraded to empty object",
+			"event", "api.capabilities.status.observed_failed",
+			"namespace_id", row.NamespaceID, "capability", row.Name, "version", row.Version,
+			"error", oerr.Error())
+	} else {
+		status.Observed = capabilityObservedStatus(observed)
+	}
+
 	status.Ready = true
 	for _, condition := range status.Conditions {
 		if condition.Status != protocol.ConditionStatusTrue {
@@ -650,6 +779,33 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 		}
 	}
 	return status, nil
+}
+
+// capabilityObservedStatus 把 store 的事实拼成 wire 形状。
+//
+// 没有最近任务（= 这个能力从没跑过）就返回零值 `{}`：四个键都不写。这与升级前的
+// 行为逐字节一致（向后兼容），「从没跑过」也就不需要额外的哨兵值。
+// 反过来，**有**最近任务但窗口内零条时仍然写 `tasks:{total:0,failed:0}`：那是一句
+// 有信息量的话（最近跑过，但最近 24h 没动静），不该退化成「没数据」。
+// emits/pruned 的元素恒写 `fields:[]` 而不是 null。
+func capabilityObservedStatus(o store.CapabilityObserved) capabilityObserved {
+	out := capabilityObserved{}
+	if o.TaskID == "" {
+		return out
+	}
+	out.TaskID = o.TaskID
+	for _, emit := range o.Emits {
+		fields := emit.Fields
+		if fields == nil {
+			fields = []string{}
+		}
+		out.Emits = append(out.Emits, capabilityObservedEmit{To: emit.To, Fields: fields, OK: emit.OK})
+	}
+	for _, prune := range o.Pruned {
+		out.Pruned = append(out.Pruned, capabilityObservedPrune{To: prune.To, Reason: prune.Reason, Detail: prune.Detail})
+	}
+	out.Tasks = &capabilityObservedTasks{Total: o.Total, Failed: o.Failed}
+	return out
 }
 
 // nodesAvailableCondition 派生 NodesAvailable（capability.md §2.4 的判据集合）。
@@ -930,6 +1086,38 @@ type capabilityResolved struct {
 	Next []capabilityResolvedNext `json:"next"`
 }
 
+// capabilityObserved 是 status.observed（capability.md §2 / CONTRACT-observed）。
+//
+// **空对象是合法且默认的形状**：没有任何事实时四个键都不写，`observed` 本身仍然是
+// `{}`——这是本域「派生不出来的字段给空对象，绝不编造」那条边界的延续（见文件头 §2）。
+// 所以这里全部 omitempty，且 tasks 用指针（struct 的 omitempty 永不生效）。
+type capabilityObserved struct {
+	TaskID string                    `json:"taskId,omitempty"`
+	Emits  []capabilityObservedEmit  `json:"emits,omitempty"`
+	Pruned []capabilityObservedPrune `json:"pruned,omitempty"`
+	Tasks  *capabilityObservedTasks  `json:"tasks,omitempty"`
+}
+
+// capabilityObservedEmit 是一次 emit 的观察行（`to`/`fields`/`ok` 恒出现）。
+type capabilityObservedEmit struct {
+	To     string   `json:"to"`
+	Fields []string `json:"fields"`
+	OK     bool     `json:"ok"`
+}
+
+// capabilityObservedPrune 是一条剪枝事实（`to`/`reason`/`detail` 恒出现，detail 可为空串）。
+type capabilityObservedPrune struct {
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+	Detail string `json:"detail"`
+}
+
+// capabilityObservedTasks 是 24h 窗口计数（不做统计报表，只够判断「最近是不是老挂」）。
+type capabilityObservedTasks struct {
+	Total  int `json:"total"`
+	Failed int `json:"failed"`
+}
+
 type capabilityStatus struct {
 	Version          int                         `json:"version"`
 	Digest           string                      `json:"digest"`
@@ -938,7 +1126,7 @@ type capabilityStatus struct {
 	Nodes            []capabilityNodeState       `json:"nodes"`
 	DeployCandidates []capabilityDeployCandidate `json:"deployCandidates"`
 	Resolved         capabilityResolved          `json:"resolved"`
-	Observed         map[string]any              `json:"observed"`
+	Observed         capabilityObserved          `json:"observed"`
 	InstalledFrom    string                      `json:"installedFrom,omitempty"`
 }
 

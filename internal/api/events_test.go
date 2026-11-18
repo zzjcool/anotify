@@ -22,6 +22,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -441,6 +443,68 @@ func TestEventIngressDisabledSource(t *testing.T) {
 	})
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404（停用的源不接收投递；body=%s）", code, raw)
+	}
+}
+
+// ---------- ⑥ 错误映射（#008） ----------
+
+// TestWriteAPIErrorConflictMapping 钉住 ingress 的 409 映射（与 server.writeAPIError 同口径）。
+//
+// 为什么这条与 store 的「无事务读」是**同一批**改动：GetNamespaceConfig 去掉读事务之后，
+// 「计划时钉住的 namespaceVarsRevision」与「AcceptSourceEvent 写事务里再校验的值」之间
+// 不再有读侧事务兜底；而「源的 resource_version 在计划与写入之间变了」本来就会走到这里。
+// 两者都是**调用方重新计划 / 重新取令牌**的语义 = 409。
+// 漏映射就落到 default 500 —— 那等于把「偶发 BUSY 500」换成「偶发 revision 500」，
+// 症状一模一样（同为低频、同为 5s 级慢失败后的 5xx）。
+func TestWriteAPIErrorConflictMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantCode   int
+		wantReason string
+	}{
+		{
+			name:       "命名空间输入 revision 变了 → 409",
+			err:        fmt.Errorf("source: 接收事件: %w", store.ErrNamespaceInputsChanged),
+			wantCode:   http.StatusConflict,
+			wantReason: "Conflict", // api-conventions §4.2 通用段（与 server.reasonConflict 逐字一致）
+		},
+		{
+			name:       "源 CAS 冲突（typed，带当前令牌）→ 409",
+			err:        &store.ResourceVersionConflictError{CurrentResourceVersion: "rv1:src_abc:3"},
+			wantCode:   http.StatusConflict,
+			wantReason: "resource_version_conflict", // §4.2：CAS 冲突的封闭 reason
+		},
+		{
+			name:       "源 CAS 冲突（sentinel，被包了一层）→ 409",
+			err:        fmt.Errorf("source: 接收事件: %w", store.ErrResourceVersionConflict),
+			wantCode:   http.StatusConflict,
+			wantReason: "resource_version_conflict", // §4.2：CAS 冲突的封闭 reason
+		},
+		{
+			// 反向对照：把未知错误也映射成 409 等于吞掉服务端故障。
+			name:       "未知错误仍然 500",
+			err:        errors.New("boom"),
+			wantCode:   http.StatusInternalServerError,
+			wantReason: "InternalError",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writeAPIError(rec, c.err)
+			if rec.Code != c.wantCode {
+				t.Fatalf("status = %d, want %d（body=%s）", rec.Code, c.wantCode, rec.Body.String())
+			}
+			var status statusDoc
+			if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+				t.Fatalf("decode status %s: %v", rec.Body.String(), err)
+			}
+			if status.Kind != kindStatus || status.Code != c.wantCode || status.Reason != c.wantReason {
+				t.Fatalf("错误体 = %+v, want kind=%s code=%d reason=%s",
+					status, kindStatus, c.wantCode, c.wantReason)
+			}
+		})
 	}
 }
 

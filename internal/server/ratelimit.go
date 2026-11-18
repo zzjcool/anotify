@@ -132,15 +132,7 @@ func newFixedWindow(limit int, window time.Duration) *fixedWindow {
 	}
 }
 
-// allow 返回是否允许通过；同时惰性清理过期 bucket。
-//
-// 保留这个方法：poll/其它调用点只关心 allow/deny，不需要 Retry-After。
-func (rl *fixedWindow) allow(key string) bool {
-	ok, _ := rl.allowWithRetry(key)
-	return ok
-}
-
-// allowWithRetry 是 allow 的增强版：放行时 ok=true（retryAfter=0），
+// allowWithRetry 返回是否放行；放行时 ok=true（retryAfter=0），
 // 拒绝时 ok=false 并给出**本窗口剩余时间**。
 //
 // 为什么要真实剩余时间：老实现硬编码 Retry-After: 60，窗口刚开就被拒的调用方

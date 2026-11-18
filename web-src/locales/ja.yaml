@@ -188,8 +188,13 @@ index:
     trend_live: ライブ
     running: 実行中
     running_sub: "この名前空間の全タスク"
+    running_sub_all: すべてのネームスペースの全タスク
     failed: 異常タスク
     failed_sub: "この名前空間の全タスク"
+    failed_sub_all: すべてのネームスペースの全タスク
+    devices_sub_all: デバイスはユーザー単位で、ネームスペースによって変わりません
+  aggregate:
+    unsupported: この指標はまだネームスペースをまたいで集計できません
   heatmap:
     title: イベントアクティビティ
     subtitle: 過去1年 · 1日あたりのイベント数
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "新しいネームスペースの slug（小文字・数字・ハイフン）"
   new_ns_failed: "作成に失敗しました"
   deployment_wide: "デプロイ全体で共通"
+  all_namespaces: "すべてのネームスペース"
+  all_sub: "すべてのネームスペースの合計"
   deployment_wide_hint: "このページはデプロイ全体で共通で、名前空間の切り替えでは変わりません"
 graph:
   zoom_in: 拡大
@@ -289,6 +296,7 @@ graph:
   exit_fullscreen: 全画面を終了（Esc）
   fullscreen_hint: ホイールで拡大縮小 · ドラッグで移動 · Esc で終了
   silk_preview_done: プレビュー完了
+  silk_source: "ソース"
   hud_flow: 下流フロー
   hud_path: 'タスク経路'
   hud_fail: '失敗タスク'
@@ -1351,18 +1359,32 @@ caps:
     title: '手動デプロイ {name}'
     version: '対象バージョン'
   detail:
+    back: '能力一覧に戻る'
     btn: '詳細'
     delete: '削除'
     deploy: 'デプロイ'
     edit: '編集'
+    gone: 'この能力は削除されました'
+    gone_hint: '必要なら下部の取り消しバーで復元できます。一覧に戻って他の能力を見ることもできます。'
     hide: '閉じる'
+    loading: '能力を読み込み中…'
+    no_name: '能力名がありません（URL に ?name=… が必要です）'
+    no_name_hint: '能力一覧から開くか、URL に ?namespace=<ns>&name=<name> を付けてください。'
     outputs: '出口（何を出せるか）'
+    page_sub: '識別情報・健全性・定義・スクリプト。編集・デプロイ・削除もこのページで行います'
+    page_title: '能力の詳細'
     rv: 'resourceVersion'
     script: 'スクリプト（run.files）'
     script_empty: 'この能力にはスクリプトファイルがありません'
     script_entry: 'エントリファイル'
+    script_error: 'スクリプト本文を読み込めませんでした'
+    script_loading: 'スクリプト本文を読み込み中…'
     versions: 'バージョン履歴'
     versions_hide: 'バージョンを閉じる'
+    yaml: '元の YAML'
+    yaml_error: '元の YAML を読み込めませんでした'
+    yaml_hint: '保存済みの定義から再構築したものです。そのまま playbook パッケージに貼り戻せます'
+    yaml_loading: 'YAML を生成中…'
   error:
     immutable: 'この明示バージョンの内容は既に存在し変更できません。run/params/requires/lifecycle/concurrency を変えるには別バージョンが必要です（next/displayName は例外）。'
     title: '保存に失敗：{reason}'
@@ -1485,6 +1507,9 @@ caps:
     tasks: 'タスク総数'
     tasks_failed: '失敗'
     title: '直近の実行痕跡（observed）'
+    truncated: '直近 {n} 件のみ表示しています（それ以前は表示していません）'
+    unavailable: 'この能力にはまだ実行記録がありません（一度実行すると表示されます）'
+    window: '件数は直近 24 時間の範囲です'
   resolved:
     empty: '終端能力：実行後は終了し、下流に渡しません'
     missing: '解決できません'
@@ -1525,6 +1550,14 @@ caps:
     current: '現行'
     empty: 'サーバーがバージョン履歴を返していません'
     open: '本文を表示'
+  yaml:
+    open: 'YAML から作成'
+    title: 'YAML からケイパビリティを作成'
+    hint: 'Capability ドキュメントを貼り付けてください（apiVersion/kind/metadata/spec）。status と metadata.resourceVersion はサーバーが管理します。'
+    submit: '作成'
+    cancel: 'キャンセル'
+    created: 'YAML からケイパビリティを作成しました'
+    empty: '先に YAML ドキュメントを貼り付けてください'
 prune:
   no_edge: 候補が接続されていません
   no_capability: 対象の能力が存在しません
@@ -1717,6 +1750,7 @@ sources:
     edit: "ソースを編集"
     close: "閉じる"
     save: "保存"
+    save_failed: "保存に失敗しました"
     reload: "最新のリソースを再読込"
     detail: "ソース詳細"
     back: "ソース一覧へ"
@@ -1766,6 +1800,18 @@ sources:
     saved_dry: "保存済みソースをプレビュー"
     more: "その他の操作"
     saved_dry_hint: "プレビューのみ（イベントを作成しません）。「今すぐ実行」はイベントを作成して配送します"
+    yaml: "元の YAML"
+    yaml_hint: "保存済みの定義から再構築。認証情報は書き込み専用のため hookUrl / secretSet のみ表示"
+    yaml_loading: "YAML を生成中…"
+    yaml_error: "元の YAML を読み込めませんでした"
+    yaml_create:
+      open: "YAML から作成"
+      title: "YAML からソースを作成"
+      hint: "Source ドキュメントを貼り付けてください。`spec.config.token` / `secret` は書き込み専用で、保存後は hookUrl のみ表示されます。"
+      submit: "作成"
+      cancel: "キャンセル"
+      created: "YAML からソースを作成しました"
+      empty: "先に YAML ドキュメントを貼り付けてください"
     draft_dry: "下書きをプレビュー（保存不要）"
     namespace: "名前空間"
     rv: "resourceVersion（CAS トークン）"
@@ -2435,3 +2481,31 @@ paging:
   load_more: 'さらに読み込む'
   showing: '表示中 {n} 件'
   no_match: '一致する項目がありません'
+
+# ソースの読み取り専用詳細ページ（source-detail.html）：ヘッダー・4 セクション・折りたたみ。
+source_detail:
+  title: 'ソース詳細'
+  sub: '読み取り専用の表示：識別情報・定義とフィールド・対象ケイパビリティ・最近の受信・生の YAML。変更は右上の「ソースを編集」から。'
+  refresh: '更新'
+  basic: '基本情報'
+  definition: '定義とフィールド'
+  resolved: 'ターゲット解決'
+  resolved_yes: 'targets 解決済み'
+  resolved_no: 'targets 未解決'
+  created: '作成日時'
+  updated: '更新日時'
+  updated_hint: 'v4 には独立した更新日時の項目がありません：書き込みごとに resourceVersion が増えて表されます。'
+  hook_url: 'Hook URL'
+  secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
+  secret_set_no: 'HMAC 署名なし'
+  schema_none: 'ペイロード契約にフィールドの宣言はありません'
+  config_json: '生の JSON を見る'
+  config_json_hint: '読み取り投影はマスク済み'
+  params_none: 'パラメータは未設定'
+  recent: '最近の受信'
+  recent_hint: '直近 20 件のイベント（source で絞り込み）。受信成功はタスク成功を意味しません。'
+  recent_loading: '最近の受信を読み込み中…'
+  recent_empty: 'このソースにはまだ受信イベントがありません。'
+  recent_error: '最近の受信を読み込めませんでした'
+  view_trace: 'トレースを見る'
+  no_name_hint: 'ソース一覧から名前をクリックするか、アドレスに ?namespace=<ns>&name=<name> を付けてください。'

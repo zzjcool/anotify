@@ -58,7 +58,7 @@ scripts/e2e/
 ## 临时目录与 /tmp 卫生（#326）
 
 **本机 `/tmp` 是 tmpfs（7.5G）——测试漏下的临时目录吃的是内存，不是磁盘。**
-2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（v3 时代 `go test ./cmd/agent`
+2026-11 一次清理就回收了 4.5G：281 个 `anotify-agent-bin`（v3 时代 `go test ./cmd/agent`（已删除）
 每次编一份真二进制；v4 的等价物是 `cmd/anode` 的 `anode-n3-binaries-*`，已由 `TestMain` 自清）、
 1424 个 `anotify-e2e-*`（端口重试失败的那些尝试从不删）、
 214 个 `anotify-script-*`（cli_auth 的假 HOME）。泄漏还会放大并行 e2e 的
@@ -152,6 +152,49 @@ make e2e          # 全量端到端（构建 + 所有套件）
 make e2e-one S=auth_flow   # 只跑某个套件
 ```
 
+### 按改动选择（affected）：什么时候可以不跑全量
+
+全量 e2e 的自证成本很高，而「改一页 HTML」与「改一个协议帧」的风险面并不相同。
+选择器把这件事算出来，并且**必须**把「跑哪些 / 跳过哪些 / 为什么跳过」打印出来 ——
+静默少跑等于静默降低覆盖，那比慢更贵。
+
+```bash
+make plan-affected   # 只打印计划（Go 包 + e2e 套件 + 跳过清单），不执行任何东西
+make test-affected   # 跑被选中的 Go 包测试 + 被选中的 e2e 套件
+make e2e-affected    # 只跑被选中的 e2e 套件
+PI_E2E_FULL=1 make test-affected   # 强制全量（任何时候都可回到全量）
+```
+
+判据（`scripts/e2e/affected.mjs` + `scripts/e2e/affected-map.mjs`）：
+
+- **Go 侧**：`go list` 的 import 图反向闭包（谁依赖被改包 → 谁的测试要跑）；
+  被改包是否进入 `cmd/server` / `cmd/anode` 的依赖闭包，决定 e2e 风险面
+  （中枢变了 ⇒ 每个套件都起它 ⇒ 全量；只有 anode 变了 ⇒ 只跑真跑节点的套件）。
+- **e2e 侧**：只有映射表显式登记的「页面 / 路径」才会选中套件。表里没登记的路径
+  ⇒ **全量**（fail-closed）。所以表腐烂的代价是「多跑」，不会变成「漏跑」。
+- 唯一的「可以不跑」白名单是 `NO_E2E_IMPACT`（`docs/**`、`*.md`、`.reports/**` …），
+  每条都写了理由。
+
+映射表不会静默腐烂：`make check-affected-map`（已进 `make ci`）钉住四件事 ——
+已知耦合的改动必须选中、已知无关的不许选中、**删掉表里一行必须红**、
+套件源码访问的页面必须登记（漏登记 = 漏跑），以及表里每条 glob 必须还匹配得到文件。
+
+**全量永远有一个与选择逻辑无关的出口**：`make e2e`、CI 的 nightly 与 `full-ci` 标签。
+没有全量跑的地方不许上线。
+
+### CI 上的 e2e：判定与「已知环境性失败」
+
+PR 上跑被选中的子集；nightly / `workflow_dispatch` / PR label `full-ci` 跑全量。
+GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性**失败，所以判定不是整块
+`continue-on-error`（那等于"永久红着没人看"），而是一张**只许变小的已知失败清单**：
+
+- 失败集 ⊆ `scripts/e2e/known-env-failures.json` → 容忍（job 绿，逐条 `::warning`）
+- **清单之外的失败 → 红，拦合并**
+- 清单项这次没失败 → 只提示删掉那一行（棘轮只许变小，最终目标是 `entries` 为空数组）
+
+判定器是 `scripts/e2e/ci-e2e-verdict.mjs`（自带变异自测：塞一个清单之外的假失败必须 `exit 1`），
+已挂进 `make check-affected-map`。
+
 ## 测试矩阵（全 case 清单）
 
 见各 suite 文件顶部注释。当前注册 **28 套件**（13 HTTP + 15 Chrome），断言总数以执行器
@@ -176,6 +219,6 @@ make e2e-one S=auth_flow   # 只跑某个套件
     往返、SIGTERM 干净退出后中枢承认离线。验收读**进程退出码 / 文件权限 / 文件内容**，
     专抓「每层单独看都对、连起来才错」的一类 bug。
   > 构建事实（#336/#338）：`run_all.sh` 只构建三个真实产物 —— `anotify`（`cmd/server`，带
-  > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent` / `AGENT_BIN` 已随协议 v4
+  > `embeddist`）、`devseed`、`anode`（`cmd/anode`）；v3 的 `cmd/agent`（已退役）/ `AGENT_BIN`
   > 退役，已不存在「迁移中」的构建路径。
   > `real_backend` 已具名退役并删文件（理由见 `docs/v4/e2e-inventory.md` §4）。

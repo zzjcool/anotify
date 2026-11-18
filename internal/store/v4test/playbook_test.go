@@ -1216,7 +1216,8 @@ func TestInstallTokenOmittedKeepsExisting(t *testing.T) {
 	pbCreatedHas(t, r.Skipped.Sources, "a-on-push", "skipped.sources")
 
 	// 显式不同 token → 冲突；错误 JSON 不含任何一个 token。
-	row = pbReplace(t, db, ns, func() *pbPackage {
+	// 这次 replace 的行后续不再读（CAS 入参取的是上一次的 row），所以不接返回值。
+	pbReplace(t, db, ns, func() *pbPackage {
 		p.files["sources/on-push.yaml"] = pbSourceDoc([]string{"{{values.project}}-review"}, "src_new_rotation")
 		return p
 	}(), store.ResourceVersion(row.ID, row.ResourceVersion))

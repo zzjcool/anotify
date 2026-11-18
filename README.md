@@ -16,6 +16,7 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 | **[AGENTS.md](AGENTS.md)** | 子 Agent | 工作约定、规范、陷阱 |
 | **[E2E_TESTING.md](E2E_TESTING.md)** | 开发者 | 端到端测试体系（`make e2e` 固化门禁） |
 | **[IOS_TESTING.md](IOS_TESTING.md)** | 验证者 | iOS 真机推送验证清单（唯一人工环节） |
+| **[examples/playbooks/](examples/playbooks/)** | 使用者 | 可直接安装的 playbook 示例（事件 → 判定 → 告警/留证），含空环境落地步骤 |
 | `.pi-orchestrator/TASKS.md` | 协调者 | 实施任务台账（历史记录） |
 
 ## 架构
@@ -31,7 +32,7 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 - **中枢不执行**：执行只发生在节点（契约机检：中枢侧不得 `os/exec`）
 - **路径分离**：`/v1/*` 动态 API（no-store），静态资源走 CDN 缓存分级（哈希文件 immutable）
 
-> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`
+> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`（已退役）与
 > 与 Broker 抽象已退役（不保留兼容层）。
 
 ## 快速开始

@@ -468,6 +468,16 @@ func TestAuthSessionsAndPasskeysPagingHTTP(t *testing.T) {
 		}
 		seen[id] = true
 	}
+	// 条数对不等于条对：liveIDs 是本用例自己建的那批会话，每一条都必须真的出现
+	// （否则「漏一条 live + 多一条别的」也能凑够 5 条）。登录会话本身同样必须在。
+	for _, id := range liveIDs {
+		if !seen[id] {
+			t.Fatalf("会话翻页漏了未过期会话 %s，got %v", id, got)
+		}
+	}
+	if !seen[env.cookie.Value] {
+		t.Fatalf("会话翻页漏了登录会话本身 %s，got %v", env.cookie.Value, got)
+	}
 
 	// ---- passkeys：3 条，limit=2 翻两页 ----
 	uid := env.userID

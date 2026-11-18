@@ -235,7 +235,7 @@ evbulk() {
 		PRAGMA synchronous=OFF;
 		BEGIN;
 		WITH RECURSIVE seq(i) AS (SELECT $from UNION ALL SELECT i+1 FROM seq WHERE i < $to)
-		INSERT INTO events (id, namespace_id, trace_id, source, type, payload, idem_key, created_at)
+		INSERT INTO events (id, namespace_id, trace_id, source, type, payload, created_at)
 		SELECT
 			printf('evt_bulk_%06d', i),
 			'$PC_NS',
@@ -421,7 +421,7 @@ qtime() {
 	PC_TEE=0
 }
 
-EV_COLS="id, namespace_id, trace_id, source, type, payload, idem_key, created_at"
+EV_COLS="id, namespace_id, trace_id, source, type, payload, created_at"
 TK_COLS="id, namespace_id, trace_id, parent_task_id, path, capability_id, capability,
 	version, params, status, node_id, instance_id, lease_until, attempts,
 	out, reported, summary, artifacts, error, cap_hash, graph_id,

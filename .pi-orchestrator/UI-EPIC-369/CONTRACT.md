@@ -36,17 +36,17 @@ python3 scripts/check_contract.py        # 改了 api/*.yaml 必跑
 ./scripts/e2e/run_all.sh --serial frontend
 ```
 
-### 已知的基线红（2026-11-13 在 `epic/369-ui-review` 上实测，**不是你引入的**）
+### 基线红清单：**已清空（2026-11-16）**
 
-`make ci` 在本机基线就红，**不要**把它当成车道门禁，也不要顺手去修（不在 #369 范围）：
+历史上这里列过三条「不是你引入的」基线红。它们现在都处理完了，所以这一节不再提供任何豁免：
 
-| 位置 | 现象 | 性质 |
-|---|---|---|
-| `internal/sitegen` `TestDocsPageRendersFiveSpecFixturesFourLanguages` | `want 16 tag groups, got 0` | 确定性失败，main 上已有 |
-| `cmd/anode` 5 个 `TestInstallScript*` | systemctl/sudo 交互断言 | 本机无 sudo，环境性 |
-| `internal/ws` `TestRehelloUnknownBusyDoesNotRelease`、`cmd/anode/internal/runner` `TestRework2Timeout…` | 负载下偶发 | flaky，隔离单跑应绿 |
+| 曾经的条目 | 结局 |
+|---|---|
+| `internal/sitegen TestDocsPageRendersFiveSpecFixturesFourLanguages`（`want 16 tag groups, got 0`） | **是测试脆弱性，不是产品 bug**：`3f3e041b` 给容器加了 Tailwind 类后，断言用的 `class="doc-ep-table"` 整串相等恒为 0；同一处的反向断言也因此恒绿。已改成按 class token 计数（PR #412） |
+| `cmd/anode` 5 个 `TestInstallScript*`（systemctl/sudo 交互） | 其中 `TestInstallScriptInstallFailureRestoresServiceAndKeepsCode` 暴露了**产品 bug**：`anode_install()` 在提权分支 `run_maybe_root … ; return 0` 把子进程退出码清零，失败后仍报「已装好」并 exit 0（只在「非 root + 有 sudo」的 runner 现形）。已修 + 夹具加 `forcePrivileged` 覆盖该分支（PR #412） |
+| `internal/ws` / `cmd/anode/internal/runner` 偶发 | 仍可能出现真 flake。**它是 flake，不是基线红**：复现就用 `-count=20`，定位到根因再修；不要登记成「已知失败」 |
 
-判断标准：**你的 PR 不能新增失败**。改了哪个包就跑哪个包；报告里贴命令与结果。
+判断标准：**任何红都是真红**。`make ci` / `make e2e` 在本机与 CI 上都应当是绿的（2026-11-16 实测：`MAKE_CI_EXIT=0`、`E2E_EXIT=0`、GitHub Actions ✓）。
 
 #### 追加（2026-11-14 实测，多轮 review 共同确认）
 

@@ -609,7 +609,7 @@ async function webVerify(server) {
 	const browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 	const VIEWPORTS = [
 		{ name: "桌面1280", width: 1280, height: 800 },
@@ -702,7 +702,7 @@ async function securityPageVerify(server, seedSession) {
 	const browser = await chromium.launch({
 		channel: "chrome",
 		headless: true,
-		args: ["--no-sandbox"],
+		args: ["--no-sandbox", "--disable-dev-shm-usage"],
 	});
 	const ctx = await browser.newContext();
 	await H.mockExternalCdn(ctx);

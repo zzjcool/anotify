@@ -1,0 +1,612 @@
+/* 源编辑器（共享组件）
+ *
+ * 为什么是共享模块：源的写表单在「列表页行内编辑 / 新建」和「源详情页就地编辑」两处都要用。
+ * 复制一份 DOM 或逻辑，下一次改字段（见 ./sources.html 的历史）就会两边不同步，所以只有这一份：
+ *   · 弹层 DOM 由本模块注入到 <body>（一次性，幂等），id/class 与历史实现完全一致；
+ *   · 取数、写信封、CAS/409、草稿试运行、变量建议、字段级错误都在这里；
+ *   · 调用方只提供上下文：要编辑的资源（或 null = 新建）、命名空间、保存成功后的回调。
+ *
+ * 用法：
+ *   await Anotify.sourceEditor.open({ resource, namespace, onSaved });
+ *   Anotify.sourceEditor.close();
+ *
+ * 深链：
+ *   · sources.html?edit=<name>      → 列表页打开本弹层（行为与历史上一致）；
+ *   · source-detail.html?…&edit=1   → 详情页加载完后打开本弹层。
+ */
+(function () {
+  "use strict";
+  const A = window.Anotify;
+  /* 前缀包装器：check-i18n-keys 能据此还原出 sources.v4.<key> / uxaudit.res.sources.<key>。 */
+  const t = (key) => A.t("sources.v4." + key);
+  const xt = (key) => A.t("uxaudit.res.sources." + key);
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    n.className = cls || "";
+    if (text != null) n.textContent = String(text);
+    return n;
+  };
+  const action = (key, fn) => {
+    const b = el("button", "btn btn-ghost btn-sm", t(key));
+    b.type = "button";
+    b.onclick = () => fn(b);
+    return b;
+  };
+
+  /* 弹层 DOM：与历史模板逐字同构（id/class 全部保留，e2e 锚点不变）。 */
+  const MARKUP = `<div id="src-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+<div class="modal-panel">
+<div class="modal-head">
+<h3 id="modal-title">
+</h3>
+<button id="modal-close" class="btn btn-ghost btn-icon" type="button" aria-label="${A.t("common.action.close")}">
+✕
+</button>
+</div>
+<!-- SRC-6：body 可滚（.modal-body 自带 overflow-y:auto）、footer 粘底（.modal-foot 是
+     面板的固定末行）。内容按「基本 / 载荷 / 目标 / 其它」分段，不再是一列 14 个字段。 -->
+<div id="src-modal-body" class="modal-body src-modal-body">
+<div class="source-form">
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("uxaudit.res.sources.group_basic")}</span><span class="src-group-hint">${A.t("uxaudit.res.sources.group_basic_hint")}</span></div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-name">
+${A.t("sources.v4.name")}
+</label>
+<input id="f-name" class="input"  />
+<p id="f-name-error" class="field-error hidden" role="alert"></p>
+</div>
+<div class="field">
+<label class="field-label" for="f-display">
+${A.t("sources.v4.display")}
+</label>
+<input id="f-display" class="input"  />
+</div>
+</div>
+<div class="field">
+<label class="field-label" for="f-kind">
+${A.t("sources.v4.kind")}
+</label>
+<select id="f-kind" class="select">
+<option value="cron">cron</option>
+<option value="webhook">webhook</option>
+<option value="manual">manual</option>
+</select>
+<p class="field-hint">
+${A.t("sources.v4.immutable")}
+</p>
+</div>
+<div id="f-cron-wrap">
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-expr">
+${A.t("sources.v4.expr")}
+</label>
+<input id="f-expr" class="input"  />
+</div>
+<div class="field">
+<label class="field-label" for="f-tz">
+${A.t("sources.v4.tz")}
+</label>
+<input id="f-tz" class="input"  />
+</div>
+</div>
+<!-- #379：cron 预设。i18n 里本来就有 sources.preset.* 四个键但页面 0 引用，
+     用户得手写五段表达式。点一下写进 #f-expr（写进输入框后仍可继续改）。 -->
+<div id="cron-presets" class="source-hints" role="group" aria-label="${A.t("sources.preset.label")}">
+<button type="button" class="btn btn-ghost btn-sm" data-cron="*/15 * * * *">${A.t("sources.preset.every15")}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 * * * *">${A.t("sources.preset.hourly")}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 3 * * *">${A.t("sources.preset.daily3")}</button>
+<button type="button" class="btn btn-ghost btn-sm" data-cron="0 9 * * 1-5">${A.t("sources.preset.weekdays9")}</button>
+</div>
+</div>
+<div id="f-hook-wrap" class="hidden">
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("uxaudit.res.sources.group_credentials")}</span><span class="src-group-hint">${A.t("sources.v4.blank_credentials")}</span></div>
+<div class="src-cols">
+<div class="field">
+<label class="field-label" for="f-token">
+${A.t("sources.v4.token")}
+</label>
+<input id="f-token" class="input" type="password" autocomplete="new-password" />
+</div>
+<div class="field">
+<label class="field-label" for="f-secret">
+${A.t("sources.v4.secret")}
+</label>
+<input id="f-secret" class="input" type="password" autocomplete="new-password" />
+</div>
+</div>
+<div class="field">
+<label class="field-label" for="f-sample">
+${A.t("sources.v4.sample")}
+</label>
+<textarea id="f-sample" class="textarea mono" rows="3">
+</textarea>
+</div>
+<div id="hook-read" class="source-wrap">
+</div>
+<p class="field-hint">
+${A.t("sources.v4.hmac")}
+</p>
+</div>
+</div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("uxaudit.res.sources.group_payload")}</span><span class="src-group-hint">${A.t("uxaudit.res.sources.group_payload_hint")}</span></div>
+<div id="f-payload-wrap">
+<div class="field">
+<label class="field-label" for="f-payload">
+${A.t("sources.v4.payload")}
+</label>
+<textarea id="f-payload" class="textarea mono" rows="3">
+</textarea>
+</div>
+</div>
+<div class="field">
+<label class="field-label" for="f-payload-schema">
+${A.t("sources.v4.schema")}
+</label>
+<textarea id="f-payload-schema" class="textarea mono" rows="3">
+</textarea>
+<p class="field-hint">
+${A.t("sources.v4.schema_hint")}
+</p>
+</div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("uxaudit.res.sources.group_targets")}</span><span class="src-group-hint">${A.t("uxaudit.res.sources.group_targets_hint")}</span></div>
+<div class="field">
+<div id="f-targets" class="source-form">
+</div>
+<button id="add-target" type="button" class="btn btn-ghost">
+${A.t("sources.v4.add_target")}
+</button>
+<datalist id="source-capabilities">
+</datalist>
+<p class="field-hint">
+${A.t("sources.v4.params_hint")}
+</p>
+</div>
+</div>
+
+<div class="src-group">
+<div class="src-group-head"><span class="src-group-title">${A.t("uxaudit.res.sources.group_other")}</span><span class="src-group-hint">${A.t("uxaudit.res.sources.group_other_hint")}</span></div>
+<label class="field-label">
+<input id="f-enabled" type="checkbox" /> ${A.t("sources.v4.enabled")}
+</label>
+<div class="field">
+<label class="field-label" for="dry-payload">
+${A.t("sources.v4.override")}
+</label>
+<textarea id="dry-payload" class="textarea mono" rows="3">
+</textarea>
+<p class="field-hint">
+${A.t("sources.v4.omitted")}
+</p>
+</div>
+<div>
+<div class="field-label">
+${A.t("sources.v4.suggestions")}
+</div>
+<p id="avail-src" class="field-hint">
+</p>
+<div id="avail-vars-body" class="source-hints">
+</div>
+</div>
+<div id="form-result" aria-live="polite" class="source-wrap">
+</div>
+<button id="reload-draft" class="btn btn-ghost hidden" type="button">
+${A.t("sources.v4.reload_draft")}
+</button>
+</div>
+
+</div>
+</div>
+<div class="modal-foot">
+<button id="modal-cancel" class="btn btn-ghost" type="button">
+${A.t("uxaudit.res.common.cancel")}
+</button>
+<button id="btn-dry" class="btn btn-ghost">
+${A.t("sources.v4.draft_dry")}
+</button>
+<button id="modal-save" class="btn">
+${A.t("sources.v4.save")}
+</button>
+</div>
+</div>
+</div>`;
+
+  /* ---------- 上下文（调用方给的，不是全局隐式状态） ---------- */
+  const CTX = { onSaved: null, onClose: null, namespace: "" };
+  let DOM = null;
+  let EDITING = null;
+  let EVENTS = [];
+  let CAPS = [];
+  let editorSeq = 0;
+
+  /* 当前命名空间：调用方给的资源 ns 优先（详情页深链的权威来源），否则才用持久化 scope。 */
+  function nsNow() {
+    const own = typeof CTX.namespace === "string" ? CTX.namespace.trim() : "";
+    if (own) return own;
+    const scoped = A.readScope().namespace;
+    return typeof scoped === "string" ? scoped.trim() : "";
+  }
+  function nsBase(plural) {
+    return "/v1/namespaces/" + encodeURIComponent(nsNow()) + "/" + plural;
+  }
+  /* 编辑器自己的请求：路径用 nsNow()，不靠全局 nsPath（详情页可能 scope≠资源 ns）。 */
+  const request = (name, body, suffix = "", method = "POST") => {
+    const base = nsBase("sources");
+    const url = (name ? base + "/" + encodeURIComponent(name) : base) + suffix;
+    const opts = { method };
+    if (body !== null && body !== undefined) opts.body = JSON.stringify(body);
+    return A.api(url, opts);
+  };
+  async function loadCaps() {
+    try {
+      const doc = await A.api(nsBase("capabilities") + "?limit=500");
+      CAPS = A.itemsOf(doc);
+    } catch (e) {
+      CAPS = [];
+    }
+    return CAPS;
+  }
+  async function loadEvents() {
+    try {
+      const doc = await A.api(nsBase("events") + "?limit=500");
+      return A.itemsOf(doc);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /* ---------- 工具（与页面里同名实现一致） ---------- */
+const json = (box, optional=false) => {
+  const raw=box.value.trim();
+  if(!raw)return optional ? undefined : {
+  };
+  const value=A.parseJSON(raw,box.id);
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error(t("object_required"));
+  return value;
+};
+
+function error(box, err){
+  box.replaceChildren(el("p","source-error",[err.reason,err.message].filter(Boolean).join(": ")));
+}
+
+function preview(box, res){
+  box.replaceChildren(el("h4","card-title",t("preview")));
+  if(!res.targets.length)box.append(el("p","card-sub",t("no_target")));
+  for(const row of res.targets){
+    const p=el("div","source-target");
+    p.append(el("strong","source-wrap",row.capability+(row.version ? "@"+row.version : "")+" · "+row.state),el("pre","source-json mono",JSON.stringify(row.params,null,2)));
+    if(row.reason)p.append(el("p","source-error",row.reason+": "+row.detail));
+    box.append(p);
+  }for(const row of res.pruned)box.append(el("p","source-error",[row.capability,row.reason,row.detail].filter(Boolean).join(" · ")));
+}
+function targetRow(target={
+  capability:"",params:{
+  }
+}){
+  const row=el("div","source-target");
+  const label=el("label","field-label",t("capability"));
+  const cap=el("input","input");
+  cap.setAttribute("aria-label",t("capability"));
+  cap.setAttribute("list","source-capabilities");
+  cap.value=target.capability;
+  label.append(cap);
+  const paramLabel=el("label","field-label",t("params"));
+  const params=el("textarea","textarea mono source-params");
+  params.setAttribute("aria-label",t("params"));
+  params.value=JSON.stringify(target.params||{
+  },null,2);
+  paramLabel.append(params);
+  row.append(label,paramLabel,action("remove_target",()=>row.remove()));
+  return row;
+}
+
+  /* ---------- 打开 / 关闭 ---------- */
+async function openEditor(src){
+  const seq=++editorSeq;
+  EDITING=src;
+  EVENTS=[];
+  const m=src ? A.model.source(src) : null;
+  const cfg=m?.config||{
+  };
+  $("modal-title").textContent=t(src?"edit":"new");
+  $("f-name").value=m?.name||"";
+  $("f-name").disabled=!!src;
+  $("f-display").value=m?.displayName||"";
+  $("f-kind").value=m?.kind||"manual";
+  $("f-kind").disabled=!!src;
+  $("f-enabled").checked=m ? m.enabled : true;
+  $("f-expr").value=cfg.expr||"0 3 * * *";
+  $("f-tz").value=cfg.tz||"Local";
+  for(const [id,value] of [["f-payload",cfg.payload],["f-sample",cfg.sample],["f-payload-schema",cfg.payloadSchema]])$(id).value=value ? JSON.stringify(value,null,2) : "";
+  $("f-token").value="";
+  $("f-secret").value="";
+  $("dry-payload").value="";
+  $("f-targets").replaceChildren(...(m?.targets||[]).map(targetRow));
+  $("source-capabilities").replaceChildren(...CAPS.map(cap=>{
+    const opt=el("option");opt.value=cap.metadata.name;return opt;
+  }));
+  $("form-result").replaceChildren();
+  $("reload-draft").classList.add("hidden");
+  $("hook-read").replaceChildren();
+  if(cfg.hookUrl)$("hook-read").append(el("code","source-wrap",cfg.hookUrl),el("p","source-status","secretSet: "+String(cfg.secretSet)));
+  syncKind();
+  A.openModal($("src-modal"));
+  syncScrollHint();
+  suggest();
+  try{
+    const events={ items: await loadEvents() };
+    if(seq!==editorSeq)return;
+    EVENTS=events.items.filter(e=>e.spec.involvedObject?.name===m?.name && e.spec.reason==="Ingested").sort((a,b)=>b.metadata.creationTimestamp.localeCompare(a.metadata.creationTimestamp));
+    suggest();
+  }catch(err){
+    error($("avail-src"),err);
+  }
+}
+
+function syncKind(){
+  const kind=$("f-kind").value;
+  $("f-cron-wrap").classList.toggle("hidden",kind!=="cron");
+  $("f-hook-wrap").classList.toggle("hidden",kind!=="webhook");
+  $("f-payload-wrap").classList.toggle("hidden",kind==="webhook");
+  suggest();
+}
+function schemaPaths(schema,root="payload"){
+  return Object.entries(schema?.properties||{
+  }).flatMap(([k,v])=>{
+    const p=root+"."+k;return [p,...schemaPaths(v,p),...(v.items ? schemaPaths(v.items,p+".0") : [])];
+  });
+}
+function dataPaths(value,root="payload"){
+  if(!value||typeof value!=="object")return [];
+  return Object.keys(value).flatMap(k=>{
+    const p=root+"."+k;return [p,...dataPaths(value[k],p)];
+  });
+}
+function suggest(){
+  try{
+    const dry=json($("dry-payload"),true);
+    const sample=json($("f-sample"),true);
+    const schema=json($("f-payload-schema"),true);
+    const payload=json($("f-payload"),true);
+    let value,source,paths;
+    if(dry){
+      value=dry;
+      source="suggest_dry";
+    }else if(EDITING && EVENTS.length){
+      value=EVENTS[0].spec.payload;
+      source="suggest_event";
+    }else if($("f-kind").value==="webhook" && sample){
+      value=sample;
+      source="suggest_sample";
+    }else if(schema){
+      paths=schemaPaths(schema);
+      source="suggest_schema";
+    }else{
+      value=payload||{
+      };
+      source="suggest_payload";
+    }$("avail-src").textContent=t(source);
+    const values=["payload",...(paths||dataPaths(value))];
+    $("avail-vars-body").replaceChildren(...values.map(p=>{
+      const token="$("+p+")";const b=el("button","btn btn-ghost btn-sm mono",token);b.type="button";b.onclick=()=>A.copyText(b,()=>token);return b;
+    }));
+  }catch(err){
+    error($("avail-src"),err);
+  }
+}
+function writeSource(){
+  const kind=$("f-kind").value;
+  const config={
+    payloadSchema:json($("f-payload-schema"),true)||null
+  };
+  if(kind==="cron"){
+    config.expr=$("f-expr").value.trim();
+    config.tz=$("f-tz").value.trim()||"Local";
+  }if(kind==="webhook"){
+    config.sample=json($("f-sample"));
+    for(const key of ["token","secret"]){
+      const value=$("f-"+key).value.trim();
+      if(value)config[key]=value;
+    }
+  }else config.payload=json($("f-payload"));
+  const targets=[...$("f-targets").children].map(row=>({
+    capability:row.querySelector("input").value.trim(),params:json(row.querySelector("textarea"))
+  }));
+  const name=$("f-name").value.trim();
+  /* W2-4：必填失败必须给出**看得见**的反馈（字段红框 + 文案 + toast），
+     不能只把错误写进 body 底部的 #form-result（那在可视区外）。 */
+  if(!name){
+    const err=new Error(t("name_required"));
+    err.field="name";
+    throw err;
+  }
+  if(targets.some(x=>!x.capability)){
+    const err=new Error(t("capability_required"));
+    err.field="targets";
+    throw err;
+  }
+  return {
+    apiVersion:"anotify/v1",kind:"Source",metadata:{
+      name,namespace:nsNow(),displayName:$("f-display").value.trim()
+    },spec:{
+      kind,enabled:$("f-enabled").checked,config,targets
+    }
+  };
+}
+function flagField(id,message){
+  const input=$(id),box=$(id+"-error");
+  if(!input)return;
+  input.classList.toggle("is-invalid",!!message);
+  if(box){
+    box.textContent=message||"";
+    box.classList.toggle("hidden",!message);
+  }
+  if(message){
+    input.focus();
+    if(typeof input.scrollIntoView==="function")input.scrollIntoView({
+      block:"center"
+    });
+  }
+}
+
+    function bindActions() {
+  /* ---------- 提交 / 试运行 / 409 重载 ---------- */
+  $("modal-save").onclick=async()=>{
+    const btn=$("modal-save");
+    btn.disabled=true;
+    try{
+      let body=writeSource();
+      if(EDITING)body=A.withResourceVersion(body,EDITING.metadata.resourceVersion);
+      await request(EDITING?.metadata.name,body,"",EDITING?"PATCH":"POST");
+      /* 统一走 closeEditor：清凭据 + EDITING，并通知宿主（详情页据此移除 URL 上的 edit=1）。 */
+      closeEditor();
+      await (CTX.onSaved ? CTX.onSaved() : Promise.resolve());
+    }catch(err){
+      error($("form-result"),err);
+      // 校验类错误：字段红框 + 立即可见的 toast（W2-4）
+      if(err.field==="name")flagField("f-name",err.message);
+      if(err.field==="targets")A.toast(err.message,"error");
+      else if(!err.field)A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
+      if(A.isConflict(err)||err.reason==="resource_version_required"){
+        $("form-result").append(el("p","field-hint",t("draft_preserved")));
+        $("reload-draft").classList.remove("hidden");
+      }
+    }finally{
+      btn.disabled=false;
+    }
+  };
+
+  $("btn-dry").onclick=async()=>{
+    const btn=$("btn-dry");
+    btn.disabled=true;
+    try{
+      /* 未保存源的 dry-run 请求体是 InlinePreviewBody（api/ingress.yaml），它的
+       * `source` 是 InlineSourceDraft：metadata 只认 name/displayName，
+       * additionalProperties:false。草稿的 namespace 由 URL 路径与授权决定，
+       * 把写信封的 metadata.namespace 一起发过去会被严格解码拒掉（400
+       * unknown_field “metadata.namespace is not writable”）。所以这里只挑
+       * 草稿允许的键，spec 原样保留（它就是「这次试运行要预览的源」）。 */
+      const envelope=writeSource();
+      const source={
+        apiVersion:envelope.apiVersion,
+        kind:envelope.kind,
+        metadata:{name:envelope.metadata.name,displayName:envelope.metadata.displayName},
+        spec:envelope.spec
+      };
+      const payload=json($("dry-payload"),true);
+      preview($("form-result"),await request("dry-run",Object.assign({
+        source
+      },payload===undefined?{
+      }:{
+        payload
+      })));
+    }catch(err){
+      error($("form-result"),err);
+      A.toast([err.reason,err.message].filter(Boolean).join(": ")||t("save_failed"),"error");
+    }finally{
+      btn.disabled=false;
+    }
+  };
+
+  $("reload-draft").onclick=async()=>{
+    if(!(await A.confirmDanger({
+      body:t("reload_confirm")
+    })))return;
+    try{
+      const src=await request(EDITING.metadata.name, null, "", "GET");
+      await openEditor(src);
+    }catch(err){
+      error($("form-result"),err);
+    }
+  };
+  }
+
+  function closeEditor() {
+    const done = CTX.onClose;
+    CTX.onClose = null;
+    A.closeModal($("src-modal"));
+    $("f-token").value="";
+    $("f-secret").value="";
+    flagField("f-name","");
+    EDITING=null;
+    if (done) {
+      try {
+        done();
+      } catch (e) {
+        /* 关闭回调只是让宿主同步自己的 URL/状态，失败不该吃掉关闭动作 */
+      }
+    }
+  }
+
+  /* ---------- 弹层滚动提示 ---------- */
+function syncScrollHint(){
+  const body=$("src-modal-body");
+  if(!body)return;
+  const more=body.scrollHeight-body.clientHeight-body.scrollTop>8;
+  body.classList.toggle("is-more",more);
+}
+
+  function wire() {
+    /* Esc：openModal 的默认逃生门只切 class，不跑收尾逻辑（凭据/EDITING 都要清）。
+       拦下 modal:dismiss 走 closeEditor（本页没有别的东西需要 Esc 的默认行为）。 */
+    DOM.addEventListener("modal:dismiss", (event) => {
+      event.preventDefault();
+      closeEditor();
+    });
+    bindActions();
+    $("modal-close").onclick = closeEditor;
+    $("modal-cancel").onclick = closeEditor;
+    $("f-name").addEventListener("input", () => flagField("f-name", ""));
+    $("f-kind").onchange = syncKind;
+    $("add-target").onclick = () => $("f-targets").append(targetRow());
+    for (const btn of document.querySelectorAll("#cron-presets [data-cron]")) {
+      btn.onclick = () => {
+        $("f-expr").value = btn.getAttribute("data-cron");
+        $("f-expr").focus();
+      };
+    }
+    for (const id of ["dry-payload", "f-sample", "f-payload-schema", "f-payload"]) $(id).oninput = suggest;
+    syncScrollHint();
+    const body = $("src-modal-body");
+    body.addEventListener("scroll", syncScrollHint, { passive: true });
+    window.addEventListener("resize", syncScrollHint);
+  }
+
+  function ensureDom() {
+    if (DOM) return DOM;
+    const host = document.createElement("div");
+    host.innerHTML = MARKUP;
+    DOM = host.firstElementChild;
+    document.body.append(DOM);
+    wire();
+    return DOM;
+  }
+
+  /* ---------- 对外 API ---------- */
+  async function open(opts) {
+    const o = opts || {};
+    CTX.onSaved = typeof o.onSaved === "function" ? o.onSaved : null;
+    CTX.onClose = typeof o.onClose === "function" ? o.onClose : null;
+    CTX.namespace = typeof o.namespace === "string" ? o.namespace : "";
+    ensureDom();
+    if (Array.isArray(o.caps)) CAPS = o.caps;
+    else await loadCaps();
+    await openEditor(o.resource || null);
+  }
+  function close() {
+    if (DOM) closeEditor();
+  }
+
+  A.sourceEditor = { open, close };
+})();

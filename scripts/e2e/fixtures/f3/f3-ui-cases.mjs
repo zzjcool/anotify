@@ -648,7 +648,9 @@ async function interactDialogs(c) {
     /* #378：撤销条只有 5 秒窗口 —— 它比"行消失"更容易错过，所以先钉它（它同时是
        "删除真的成功"的证据：撤销条只在 DELETE + 列表重载都成功后才会弹）。 */
     const undo = d.page.locator("#anotify-undo-host [data-undo-bar]").last();
-    await undo.waitFor({ state: "visible", timeout: 4500 });
+    // 15s 是「等它出现」的上界，不是断言：撤销条自己的 5s 存活窗口（#378）由产品决定，
+    // 与这个等待无关。CI runner 上 DELETE + 列表重载更慢，原来 4500ms 贴着 5s 窗口会误红。
+    await undo.waitFor({ state: "visible", timeout: 15000 });
     const undoText = (await undo.innerText()).replace(/\s+/g, " ").trim();
     const writes = await writeWrites(d);
     assert.equal(writes.length, 1, "accepted dialog issues exactly one real write: " + JSON.stringify(writes.map(x => x.method + " " + x.url)).slice(0, 200));

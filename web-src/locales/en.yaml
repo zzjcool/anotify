@@ -188,8 +188,13 @@ index:
     trend_live: Live
     running: In progress
     running_sub: "All tasks in this namespace"
+    running_sub_all: All tasks across every namespace
     failed: Failed tasks
     failed_sub: "All tasks in this namespace"
+    failed_sub_all: All tasks across every namespace
+    devices_sub_all: Devices belong to your user, not to a namespace, so they don't change when you switch
+  aggregate:
+    unsupported: This figure can't be summed across namespaces yet
   heatmap:
     title: Event activity
     subtitle: Past year · daily volume
@@ -278,6 +283,8 @@ scope:
   new_ns_prompt: "New namespace slug (lowercase letters / digits / hyphens)"
   new_ns_failed: "Create failed"
   deployment_wide: "Deployment-wide"
+  all_namespaces: "All namespaces"
+  all_sub: "Summed over every namespace"
   deployment_wide_hint: "This page is the same across the whole deployment — it does not change with the namespace"
 graph:
   zoom_in: Zoom in
@@ -289,6 +296,7 @@ graph:
   exit_fullscreen: Exit fullscreen (Esc)
   fullscreen_hint: Scroll to zoom · drag to pan · Esc to exit
   silk_preview_done: Preview complete
+  silk_source: "Source"
   hud_flow: Downstream flow
   hud_path: 'Task path'
   hud_fail: 'Failed tasks'
@@ -1351,18 +1359,32 @@ caps:
     title: 'Manual deploy of {name}'
     version: 'Target version'
   detail:
+    back: 'Back to capabilities'
     btn: 'Details'
     delete: 'Delete'
     deploy: 'Deploy'
     edit: 'Edit'
+    gone: 'This capability was deleted'
+    gone_hint: 'Use the undo bar at the bottom to restore it, or go back to the list to look at the others.'
     hide: 'Hide'
+    loading: 'Loading the capability…'
+    no_name: 'Missing capability name (the URL needs ?name=…)'
+    no_name_hint: 'Open a capability from the list, or add ?namespace=<ns>&name=<name> to the URL.'
     outputs: 'Outputs (what it can emit)'
+    page_sub: 'Identity, health, definition and script; edit, deploy and delete live on this page'
+    page_title: 'Capability details'
     rv: 'resourceVersion'
     script: 'Script (run.files)'
     script_empty: 'This capability has no script files'
     script_entry: 'Entrypoint'
+    script_error: 'Could not load the script body'
+    script_loading: 'Loading the script body…'
     versions: 'Version history'
     versions_hide: 'Hide versions'
+    yaml: 'Raw YAML'
+    yaml_error: 'Could not load the raw YAML'
+    yaml_hint: 'Rebuilt from the stored definition; paste it back into a playbook package as-is'
+    yaml_loading: 'Generating YAML…'
   error:
     immutable: 'This explicit version already exists with a different body: changing run/params/requires/lifecycle/concurrency requires a new version (next/displayName excepted).'
     title: 'Save failed: {reason}'
@@ -1485,6 +1507,9 @@ caps:
     tasks: 'Tasks total'
     tasks_failed: 'Failed'
     title: 'Trace of the latest run (observed)'
+    truncated: 'Only the latest {n} are listed; earlier ones are not shown'
+    unavailable: 'This capability has no run history yet (it appears after the first run)'
+    window: 'Counts cover the last 24 hours'
   resolved:
     empty: 'Terminal capability: it ends when done and hands off to nothing'
     missing: 'Does not resolve'
@@ -1525,6 +1550,14 @@ caps:
     current: 'Current'
     empty: 'The server returned no version history'
     open: 'View body'
+  yaml:
+    open: 'Create from YAML'
+    title: 'Create capability from YAML'
+    hint: 'Paste a Capability document (apiVersion/kind/metadata/spec). status and metadata.resourceVersion are managed by the server — do not write them.'
+    submit: 'Create'
+    cancel: 'Cancel'
+    created: 'Capability created from YAML'
+    empty: 'Paste a YAML document first'
 prune:
   no_edge: no candidate connected
   no_capability: target capability does not exist
@@ -1717,6 +1750,7 @@ sources:
     edit: "Edit source"
     close: "Close"
     save: "Save"
+    save_failed: "Save failed"
     reload: "Reload latest resource"
     detail: "Source details"
     back: "Back to sources"
@@ -1766,6 +1800,18 @@ sources:
     saved_dry: "Saved source preview"
     more: "More actions"
     saved_dry_hint: "Preview only — no event written; “Fire now” writes an event and dispatches"
+    yaml: "Raw YAML"
+    yaml_hint: "Rebuilt from the stored definition; credentials are write-only, so only hookUrl / secretSet appear"
+    yaml_loading: "Generating YAML…"
+    yaml_error: "Could not load the raw YAML"
+    yaml_create:
+      open: "Create from YAML"
+      title: "Create source from YAML"
+      hint: "Paste a Source document. `spec.config.token` / `secret` are write-only; only hookUrl is shown after save."
+      submit: "Create"
+      cancel: "Cancel"
+      created: "Source created from YAML"
+      empty: "Paste a YAML document first"
     draft_dry: "Draft preview (no save needed)"
     namespace: "Namespace"
     rv: "resourceVersion (CAS token)"
@@ -2435,3 +2481,31 @@ paging:
   load_more: 'Load more'
   showing: 'Showing {n}'
   no_match: 'No matches'
+
+# Source read-only detail page (source-detail.html): header, four sections, fold blocks.
+source_detail:
+  title: 'Source detail'
+  sub: 'Read-only view: identity, config and fields, targets, recent receipts and raw YAML. Use "Edit source" in the corner to change anything.'
+  refresh: 'Refresh'
+  basic: 'Basics'
+  definition: 'Config and fields'
+  resolved: 'Target resolution'
+  resolved_yes: 'targets resolved'
+  resolved_no: 'targets unresolved'
+  created: 'Created'
+  updated: 'Updated'
+  updated_hint: 'v4 has no separate updated timestamp: every write is reflected by an incrementing resourceVersion.'
+  hook_url: 'Hook URL'
+  secret_set_yes: 'HMAC secret is set (write-only)'
+  secret_set_no: 'No HMAC secret'
+  schema_none: 'The payload contract declares no fields'
+  config_json: 'View raw JSON'
+  config_json_hint: 'read projection already masked'
+  params_none: 'No params configured'
+  recent: 'Recent receipts'
+  recent_hint: 'Last 20 events (filtered by source); accepted does not mean the task succeeded.'
+  recent_loading: 'Loading recent receipts…'
+  recent_empty: 'This source has no receipt events yet.'
+  recent_error: 'Recent receipts failed to load'
+  view_trace: 'View trace'
+  no_name_hint: 'Open a source from the source list, or put ?namespace=<ns>&name=<name> in the address.'
