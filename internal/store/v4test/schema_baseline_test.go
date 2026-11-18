@@ -20,6 +20,8 @@ import (
 // baselineTables 是 v4 baseline 的完整表集合（一个不多一个不少）。
 var baselineTables = []string{
 	"api_keys",
+	"capability_audit",
+	"capability_switches",
 	"capability_versions",
 	"cli_auth_sessions",
 	"deployments",
@@ -133,6 +135,19 @@ func TestSchemaBaselineCapabilityColumns(t *testing.T) {
 	db := openTestDB(t)
 
 	wantCols := map[string][]string{
+		// 能力开关：无行 = enabled；reason/updated_by 只记最近一次操作。
+		"capability_switches": {
+			"namespace_id", "name", "enabled", "reason", "updated_at", "updated_by",
+		},
+		// 能力审计（append-only）：detail 只存摘要（试跑记 traceId + version）。
+		"capability_audit": {
+			"id", "namespace_id", "name", "action", "actor_id", "detail", "created_at",
+		},
+		// events 的来源类别列（默认 source；试跑 = test）。
+		"events": {
+			"id", "namespace_id", "trace_id", "source", "origin", "type", "payload",
+			"delivery_id", "reason", "receipt", "created_at",
+		},
 		"capability_versions": {
 			"id", "namespace_id", "name", "display_name", "version", "spec", "digest",
 			"fold_key", "installed_from", "resource_version", "created_at", "deleted_at",
@@ -237,6 +252,8 @@ func TestSchemaBaselineIndexes(t *testing.T) {
 		{name: "idx_namespaces_created", table: "namespaces", cols: []string{"created_at"}},
 		{name: "idx_cap_live_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}, unique: true, predicate: "deleted_at is null"},
 		{name: "idx_cap_live_digest", table: "capability_versions", cols: []string{"namespace_id", "digest"}, unique: true, predicate: "deleted_at is null"},
+		{name: "idx_cap_audit_ns_name", table: "capability_audit",
+			cols: []string{"namespace_id", "name", "created_at", "id"}},
 		{name: "idx_cap_name_ver", table: "capability_versions", cols: []string{"namespace_id", "name", "version"}},
 		{name: "idx_cap_fold_key", table: "capability_versions", cols: []string{"namespace_id", "name", "fold_key"}},
 		{name: "idx_edges_from", table: "edges", cols: []string{"namespace_id", "from_is_source", "from_ref"}},

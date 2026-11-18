@@ -365,6 +365,8 @@ func deleteNamespaceOn(ctx context.Context, ex queryExec, id string, force bool)
 		`DELETE FROM edges WHERE namespace_id = ?`,
 		`DELETE FROM sources WHERE namespace_id = ?`,
 		`DELETE FROM deployments WHERE namespace_id = ?`,
+		`DELETE FROM capability_switches WHERE namespace_id = ?`,
+		`DELETE FROM capability_audit WHERE namespace_id = ?`,
 		`DELETE FROM capability_versions WHERE namespace_id = ?`,
 		`DELETE FROM namespace_configs WHERE namespace_id = ?`,
 		`DELETE FROM namespaces WHERE id = ?`,
