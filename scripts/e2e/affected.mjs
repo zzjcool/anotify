@@ -103,6 +103,13 @@ export const HTTP_SUITES = [
 	"edge_cases", "passkeys", "capacity", "orphans", "deploy", "live_agent", "node_v4",
 ];
 
+/**
+ * 「矩阵类」Chrome 套件：它们各自遍历全页面（× 全语言 / 主题 / 视口），
+ * 单次 150–350s，per-suite 预算本就贴着实测 ×2。选中它们时给一句提示：
+ * 机器被别的 e2e 抢核时，它们会先撞自己的预算（false red 方向，但会浪费一轮）。
+ */
+export const HEAVY_SUITES = ["frontend", "ui_shift", "i18n", "i18n_coverage"];
+
 /** 只吃节点二进制的套件：`cmd/anode/**` 改动时它们的风险面。 */
 export const ANODE_ONLY_SUITES = ["deploy", "live_agent", "node_v4"];
 
@@ -505,6 +512,14 @@ function printPlan({ baseLabel, files, suites, e2e, go }) {
 			console.log("    ── 跳过的套件与原因 ──");
 			for (const s of e2e.skipped) console.log(`    ⏭  ${s.suite.padEnd(20)} ← ${s.why}`);
 		}
+	}
+	const heavy = e2e.selected.filter((s) => HEAVY_SUITES.includes(s));
+	if (heavy.length >= 3) {
+		console.log(
+			`    ℹ️  本次选中 ${heavy.length} 个矩阵类浏览器套件（${heavy.join("/")}）：` +
+				`它们各自遍历全页面，单次 150–350s。机器上还有别的 e2e 在跑时，` +
+				`建议 E2E_CONCURRENCY=2（否则可能撞 per-suite 预算，是 false red）`,
+		);
 	}
 	if (e2e.ignored.length) {
 		console.log("    ── 明确没有 e2e 影响的改动 ──");

@@ -79,7 +79,11 @@ jobs:
   quick:
     name: quick（make ci）
     needs: triage
-    if: needs.triage.outputs.docs_only != 'true'
+    # 显式写成 pull_request：main push 走下面的 regression（避免依赖「被 needs 的 job
+    # 被 skip 时下游是否还会跑」这种容易想错的语言细节）。
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.triage.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
