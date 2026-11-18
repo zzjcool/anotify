@@ -143,6 +143,13 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # ⚠️ 尚未成为合并门禁。加 e2e 进 CI 时才发现 f3 的四个矩阵套件在 GitHub runner 上
+    # 有两个**与断言无关**的环境失败（4 次真跑的证据都在 PR #428 的评论/报告里）：
+    #   ① frontend/source-actions：子进程没落盘 case.json（预算抬到 150s 后依旧）
+    #   ② ui_shift/interact-dialogs：Chrome 渲染进程被关（降并发 + dev-shm 后仍偶发）
+    # 所以现在：**跑，但不拦合并**（失败仍红、日志仍全，nightly 的 full-e2e 也照跑）。
+    # 等这两个环境问题修掉，把这一行删掉即可变成真门禁 —— 别在没有证据的时候假装它是门禁。
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -208,6 +215,17 @@ jobs:
             exit 0
           fi
           ./scripts/e2e/run_all.sh ${{ steps.pick.outputs.suites }}
+
+      # 失败时把证据留下来：没有逐 case 的 full.log，上面的环境问题只能靠猜。
+      - name: 上传 e2e 证据（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-evidence-${{ github.run_id }}
+          path: |
+            .e2e-bin/results
+            scripts/e2e/fixtures/f3/screenshots
+          retention-days: 7
 
   # ── main push：轻量回归（不跑 e2e；全量留给 nightly）───────────────
   regression:
