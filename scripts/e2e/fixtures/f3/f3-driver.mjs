@@ -601,7 +601,7 @@ export async function withPreviewResources(fn, signal) {
   const interrupt=()=>{ if(browser) closing ||= browser.close(); };
   signal?.addEventListener('abort',interrupt,{once:true});
   try {
-    browser=await chromium.launch({executablePath:chromePath(),headless:true,args:['--no-sandbox']});
+    browser=await chromium.launch({executablePath:chromePath(),headless:true,args:['--no-sandbox', '--disable-dev-shm-usage']});
     previewResources={server,browser};
     if(signal?.aborted) throw new Error('Scoped browser deadline before launch');
     return await fn();
@@ -678,7 +678,7 @@ export async function openDriver(id, options = {}) {
       assert.ok(ns.body.items.some(n=>n.metadata.name==='prod'),'T1 seam: prod Namespace fixture required');
       server.fixtures = fixtures;
     }
-    browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox'] });
+    browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox', '--disable-dev-shm-usage'] });
     context = await browser.newContext({viewport:{width:1440,height:900},locale:options.lang||'en',reducedMotion:'reduce',acceptDownloads:true});
     await H.mockExternalCdn(context);
     if (!mock) await context.addCookies([{name:'anotify_session',value:server.session,url:server.base}]);

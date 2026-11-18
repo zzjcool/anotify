@@ -444,7 +444,7 @@ async function webVerify(server, seedSession) {
 		return;
 	}
 	console.log("\n  -- AC-35 web_verify（cli-auth 页）--");
-	const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox"] });
+	const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 	const VIEWPORTS = [
 		{ name: "桌面1280", width: 1280, height: 800 },
 		{ name: "移动390", width: 390, height: 844 },

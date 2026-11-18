@@ -167,7 +167,7 @@ async function main() {
 		JSON.stringify(emptyTrace.json),
 	);
 
-	browser = await chromium.launch({ channel: "chrome", headless: true });
+	browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 
 	// ---------- A/B/C. 详情页完整展示 ----------
 	console.log("--- 任务详情页 ---");
