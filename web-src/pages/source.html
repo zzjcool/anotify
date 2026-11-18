@@ -153,10 +153,19 @@ const el = (tag, cls, text) => {
   if(text!=null)n.textContent=String(text);
   return n;
 };
-const link = (page, params={
-}) => page + "?" + new URLSearchParams(Object.assign({
-  namespace:A.readScope().namespace
-},params));
+/* 链接里的 namespace：调用方可以显式传**资源自己的** ns（详情/编辑页的权威来源是
+   API 响应），不给才回落到持久化 scope。scope 为空时不许写出
+   `namespace=undefined` 这种字面量 —— 下游页面 `if (ns) saveScope(...)` 会把它当真值
+   落盘，之后整站都跑到一个不存在的 ns 上。 */
+const link = (page, params={}, ns) => {
+  const persisted=A.readScope().namespace;
+  const own=typeof ns==="string" && ns.trim() ? ns.trim() : (typeof persisted==="string" ? persisted.trim() : "");
+  const qs=new URLSearchParams();
+  if(own)qs.set("namespace",own);
+  for(const [key,value] of Object.entries(params))qs.set(key,String(value));
+  const query=qs.toString();
+  return page+(query ? "?"+query : "");
+};
 const action = (key, fn) => {
   const b=el("button","btn btn-ghost btn-sm",t(key));
   b.type="button";
@@ -615,9 +624,11 @@ async function render(src,caps,edges){
   /* #376：页头 5 个按钮 → 1 主（编辑）+ 1 次（立即运行）+ ⋯。
      停用/启用/删除进菜单（删除是危险项）；「已保存源试运行」带一句差异说明。 */
   const edit=el("a","btn btn-sm",t("edit"));
+  /* 「编辑」打开真正的编辑器（sources.html 的编辑弹层），链接带**资源自己的** ns；
+     不能用 scope：它与这条资源可能不是同一个 ns。 */
   edit.href=link("sources.html",{
     edit:m.name
-  });
+  },m.namespace);
   $("src-actions").append(edit);
   if(m.enabled)$("src-actions").append(action("fire",()=>openFire(src)));
   $("src-actions").append(actionMenu([{label:t("saved_dry"),hint:t("saved_dry_hint"),run:()=>openFire(src)},{
