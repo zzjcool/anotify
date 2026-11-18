@@ -381,6 +381,48 @@ test("表里每条 glob 都必须匹配至少一个被跟踪文件（死 glob = 
 	);
 });
 
+test("优先级：白名单与共享面重叠时按**更保守**的一头算（白名单不许吃掉共享面）", () => {
+	// 分类是短路的，所以两条规则重叠时的先后顺序就是判据的一部分。
+	// 实例：scripts/check-tmp-leaks.mjs 既像"守卫脚本"（白名单）又是每个 e2e 的
+	// 外层包装（共享面）—— 判成"无影响"就漏掉了一次真实的运行期变化。
+	// 这里同时钉两件事：① 重叠的文件必须判「全量」；② 白名单不许遮蔽某个套件的耦合面。
+	const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" })
+		.split("\0")
+		.filter(Boolean);
+	const suiteGlobs = Object.entries(SUITE_SURFACES).flatMap(([s, row]) =>
+		(row.paths || []).map((g) => ({ glob: g, where: s })),
+	);
+	const shadowed = [];
+	const fullWins = [];
+	for (const f of tracked) {
+		// markdown 例外：`**/*.md` 是整类文档，与"包目录里的 AGENTS.md"重叠是**设计**
+		// （改 AGENTS.md 不改变运行期行为），不算遮蔽。
+		if (f.endsWith(".md")) continue;
+		const ni = NO_E2E_IMPACT.find((r) => globMatch(r.glob, f));
+		if (!ni) continue;
+		if (FULL_SURFACES.some((r) => globMatch(r.glob, f))) fullWins.push(f);
+		for (const sg of suiteGlobs) {
+			if (globMatch(sg.glob, f)) shadowed.push(`${f}: 白名单 ${ni.glob} vs 套件 ${sg.where} (${sg.glob})`);
+		}
+	}
+	assert.deepEqual(shadowed, [], shadowed.join("\n"));
+
+	// ① 重叠即全量：用真实分类器验证一遍（含 docs 以外的真实文件）
+	for (const f of fullWins) {
+		const r = pickE2E([f]);
+		assert.ok(r.full, `${f} 同时命中白名单与共享面，必须判全量（实际判了"无影响"）`);
+	}
+	if (fullWins.length === 0) {
+		// 没有重叠样本时也要证明规则本身是活的：造一个必然重叠的输入。
+		const synthetic = {
+			...TABLE,
+			NO_E2E_IMPACT: [...NO_E2E_IMPACT, { glob: "scripts/e2e/lib/**", why: "合成的冲突行" }],
+		};
+		const r = pickE2E(["scripts/e2e/lib/harness.mjs"], synthetic);
+		assert.ok(r.full, "白名单遮蔽了共享 harness，仍然判了「无影响」");
+	}
+});
+
 test("SHARED_CHROME_SURFACES 不能抢走页面级精确匹配（页面先被 pageOf 处理）", () => {
 	// 页面文件的匹配必须走 pageOf 分支：否则 web/**/*.html 会把所有 Chrome 套件都拉进来
 	for (const p of PAGES) {

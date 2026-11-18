@@ -136,16 +136,18 @@ export function selectE2E({ files, suites, table, pages = [] }) {
 	let full = null; // {why}
 
 	for (const file of files) {
-		// ① 白名单：明确没有 e2e 影响的路径
-		const ni = noImpact.find((r) => globMatch(r.glob, file));
-		if (ni) {
-			ignored.push({ file, why: ni.why });
-			continue;
-		}
-		// ② 共享面：命中即全量（不逐套件猜）
+		// ① 共享面优先于白名单：两者都命中时按**更保守**的那一头算。
+		//    实例：scripts/check-tmp-leaks.mjs 既像"检查脚本"（白名单）又是每个 e2e 的
+		//    外层包装（共享面）—— 判成"无影响"就会漏掉一次真实的运行期变化。
 		const fu = fulls.find((r) => globMatch(r.glob, file));
 		if (fu) {
 			full = full || { why: `${file} 落在共享面（${fu.why}）` };
+			continue;
+		}
+		// ② 白名单：明确没有 e2e 影响的路径
+		const ni = noImpact.find((r) => globMatch(r.glob, file));
+		if (ni) {
+			ignored.push({ file, why: ni.why });
 			continue;
 		}
 		// ③ 页面：`web-src/pages/<p>.html` 与生成物 `web/<p>.html`
@@ -385,17 +387,29 @@ function git(args, opts = {}) {
 
 export function changedFiles({ base } = {}) {
 	const ref = base || process.env.AFFECTED_BASE;
+	const tip = ref || "origin/main";
 	let mergeBase = null;
 	try {
-		mergeBase = git(["merge-base", "HEAD", ref || "origin/main"]).trim();
+		mergeBase = git(["merge-base", "HEAD", tip]).trim();
 	} catch {
 		mergeBase = null;
 	}
 	const sets = [];
 	if (mergeBase) {
 		sets.push(git(["diff", "--name-only", "-z", `${mergeBase}...HEAD`]));
+	} else if (ref || process.env.AFFECTED_BASE) {
+		// 显式给了基准却算不出 merge-base：这是**配置错误**，不许静默退化成 HEAD~1
+		// （在 shallow clone 里 HEAD~1 也不存在，退化只会换一种更难懂的方式红）。
+		throw new Error(
+			`算不出与 ${tip} 的 merge-base（浅克隆？）—— 在 CI 里给 checkout 加 fetch-depth: 0，` +
+				`或显式用 --files 传改动集合`,
+		);
 	} else {
-		sets.push(git(["diff", "--name-only", "-z", "HEAD~1", "HEAD"], { stdio: ["ignore", "pipe", "ignore"] }));
+		try {
+			sets.push(git(["diff", "--name-only", "-z", "HEAD~1", "HEAD"], { stdio: ["ignore", "pipe", "ignore"] }));
+		} catch {
+			throw new Error("没有 origin/main 也没有 HEAD~1：无法确定改动范围（用 --files 显式给）");
+		}
 	}
 	// 未提交的改动也算（agent 边改边验证的最常见形态）
 	sets.push(git(["diff", "--name-only", "-z", "HEAD"]));
@@ -437,7 +451,10 @@ function printPlan({ baseLabel, files, suites, e2e, go }) {
 	console.log(`  基准: ${baseLabel}`);
 	console.log(`  改动文件: ${files.length} 个`);
 	if (files.length <= 20) for (const f of files) console.log(`    · ${f}`);
-	else for (const f of files.slice(0, 20)) console.log(`    · ${f}`), console.log(`    … 其余 ${files.length - 20} 个省略`);
+	else {
+		for (const f of files.slice(0, 20)) console.log(`    · ${f}`);
+		console.log(`    … 另有若干文件省略（共 ${files.length} 个）`);
+	}
 
 	console.log("");
 	if (e2e.full) {
@@ -476,8 +493,15 @@ function printPlan({ baseLabel, files, suites, e2e, go }) {
 	console.log("");
 }
 
-function runGoTests(packages) {
-	const args = ["test", ...packages, "-count=1", "-shuffle=on"];
+function runGoTests(packages, allPackages) {
+	// 空列表必须短路：`go test` 不带包参数会退回「当前目录的包」——那既不是全量
+	// 也不是空集，而是一个没人打算跑的包（本仓根目录还没有 .go 文件，会直接报错）。
+	if (!allPackages && packages.length === 0) {
+		console.log("▶ 没有需要重跑的 Go 包，跳过 go test（改动只落在非 Go 面上）");
+		return 0;
+	}
+	const targets = allPackages ? ["./..."] : packages;
+	const args = ["test", ...targets, "-count=1", "-shuffle=on"];
 	console.log(`▶ go ${args.join(" ")}`);
 	const r = spawnSync("go", args, { cwd: ROOT, stdio: "inherit" });
 	return r.status ?? 1;
@@ -608,7 +632,7 @@ async function main() {
 	}
 
 	let rc = 0;
-	if (args.run || args.runGo) rc = runGoTests(go.packages) || rc;
+	if (args.run || args.runGo) rc = runGoTests(go.packages, go.allPackages) || rc;
 	if (args.run || args.runE2e) rc = runE2E(e2e.selected) || rc;
 	return rc;
 }

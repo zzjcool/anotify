@@ -31,6 +31,21 @@ export const NO_E2E_IMPACT = [
 	{ glob: ".pi-subagents/**", why: "子 agent 会话记录，不是运行输入", unversioned: true },
 	{ glob: ".reports/**", why: "测量/报告产物，不是运行输入", unversioned: true },
 	{ glob: ".github/**", why: "CI 编排；改动它不会改变被 e2e 断言的产品行为" },
+	// scripts/ 下的「不是运行期输入」的部分。注意 install-anode.sh / hash.mjs / inject-head.mjs
+	// 不在其中（那三个真的在 e2e 路径上），由 affected.test.mjs 的「优先级冲突」用例兜住。
+	{ glob: "scripts/check-*.mjs", why: "静态检查脚本本身；改它不改变任何运行期行为" },
+	{ glob: "scripts/check_*.py", why: "静态检查脚本本身（python 版）" },
+	{ glob: "scripts/*.test.mjs", why: "node 单测；不被任何 e2e 套件执行" },
+	{ glob: "scripts/ws_test.mjs", why: "独立的 WS 手工验证脚本，不在 e2e 注册表里" },
+	{ glob: "scripts/push_e2e.mjs", why: "推送手工验证脚本，不在 e2e 注册表里" },
+	{ glob: "scripts/ui-audit-mobile.mjs", why: "手机端取数脚本，产物不进 e2e 断言" },
+	{ glob: "scripts/integration.sh", why: "对着已启动服务的集成脚本，与 e2e 编排无关" },
+	{ glob: "scripts/mock.sh", why: "本地 mock 服务启动脚本，e2e 不用它" },
+	{ glob: "scripts/dev.sh", why: "开发环境脚本，e2e 不用它" },
+	{ glob: "scripts/cli_auth_smoke.sh", why: "手工冒烟脚本，e2e 用 cli_auth 套件" },
+	{ glob: "examples/**", why: "示例 playbook/能力包；e2e 用的是内联 fixture，不读 examples/" },
+	{ glob: "design/**", why: "设计稿 HTML/截图，不参与构建与运行" },
+	{ glob: "E2E_TESTING.md", why: "文档" },
 	{ glob: ".gitignore", why: "版本控制元数据" },
 	{ glob: "LICENSE", why: "许可证文本" },
 ];
