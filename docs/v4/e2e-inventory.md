@@ -87,7 +87,7 @@
 | 用例 | 实现 | 覆盖什么 |
 |---|---|---|
 | `observe-index-all` | `scripts/e2e/fixtures/f3/f3-overview-all.mjs` | 首页总览**默认「全部命名空间」聚合**（契约 `.reports/overview-allns-contract.md` D1/D2/D5/D7）。六条断言：① 裸 `index.html` 的 KPI 等于从 `/v1/stats?namespace=*` + Σ`/v1/namespaces`（`tasksByPhase`）**现算**的聚合值（不写死数字）且既有 id 都在；② 全部模式的 `[data-ns-id="*"][aria-checked="true"]`、`#scope-crumb`=i18n `scope.all_namespaces`、逐行 `[data-ns-badge]`=事件自己的 ns、`#latest-flow[data-scope-ns]`、371 格热力图；③ `?namespace=prod` 只显示该 ns（`#kpi-total`=prod 单值 ≠ 聚合值、无徽标、uid 全属 prod）；④⑤ 选择器双向切换与 URL 同步；⑥ `reload()` 后两种模式都保持 |
-| `source-edit-jump` | `scripts/e2e/fixtures/f3/f3-source-edit.mjs` | 源详情页「编辑源」的**终点是编辑器**、链接 ns 是**资源自己的**（`.reports/source-edit-jump.md`）。四条断言：① 点 `#src-detail-edit` → `sources.html?namespace=default&edit=<name>`，`#src-modal` 打开且 `#f-name` 回填；② 故意把 localStorage scope 设成 `prod` 时链接仍是 `default`，且编辑流程**零** `/v1/namespaces/prod/` 请求；③ localStorage 里没有 scope 时链接仍带深链的 `namespace=default`；④ 能力详情页 `#cap-back` 用资源 ns 而不是 scope。实测值从 `/v1/namespaces/default/{sources,capabilities}` 现算 |
+| `source-edit-jump` | `scripts/e2e/fixtures/f3/f3-source-edit.mjs` | 源详情页「编辑源」= **就地编辑**，编辑器与列表页共用 `web/source-editor.js`（契约 `.reports/source-edit-jump.md`）。五条断言：① 点 `#src-detail-edit` **不发生文档级导航**（同一文档记号仍在）、URL 只多 `edit=1`、`#src-modal` 打开且 `#f-name` 回填、弹层标题走运行期 i18n；② 编辑流程零 `/v1/namespaces/prod/` 请求（localStorage scope 故意设成 `prod`，资源在 `default`）；③ 保存 → PATCH 带 `metadata.resourceVersion`、弹层关闭、`edit=1` 移除、**详情页立刻显示新值**；④ 深链 `?edit=1` 直接打开编辑器；⑤ 能力详情页 `#cap-back` 用资源 ns 而不是 scope。实测值从 `/v1/namespaces/default/{sources,capabilities}` 现算 |
 
 ## 3. 五个 FE 套件的验收 authority（#338 冻结裁决）
 
