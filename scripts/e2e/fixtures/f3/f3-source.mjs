@@ -16,6 +16,8 @@ async function labelCountIn(page, selector, keys) {
 		return text.split(phrase).length - 1;
 	}, await page.evaluate((ks) => ks.map((k) => window.AnotifyI18n?.[k]).find(Boolean) || "原始 YAML", keys));
 }
+const location_pathname_is_detail = (page) => new URL(page.url()).pathname.endsWith('/source-detail.html');
+
 export async function source(d){
  const {page,base,req,check,shot}=d;const state=d.snapshot;
  const visible=sel=>page.locator(sel).waitFor({state:'visible'});const hidden=sel=>page.locator(sel).waitFor({state:'hidden'});
@@ -217,18 +219,19 @@ export async function source(d){
   check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
   await shot('source-detail-yaml');
 
-  /* 二、点「编辑源」→ **真正的编辑器**：源的写表单只在 sources.html 的编辑弹层里
-     （`?edit=<name>` 深链）。旧断言把 source.html（只读的拓扑/配置页）当「编辑页」，
-     等于用测试把错误的目标钉住：用户点了编辑，却落在一张只读详情页上。 */
+  /* 二、点「编辑源」→ **就地**打开共享编辑器（web/source-editor.js，与列表页同一个组件）：
+     页面不跳走，弹层在本页打开并回填。旧断言把 source.html（只读拓扑页）当「编辑页」，
+     等于用测试把错误的目标钉住；「跳到列表页再弹窗」也不符合用户预期。 */
   await page.locator('#src-detail-edit').click();
-  await page.waitForFunction(() => location.pathname.endsWith('/sources.html'));
   await visible('#src-modal:not(.hidden)');
   await page.waitForFunction(() => document.getElementById('f-name')?.value === 'deploy-hook');
-  assert.equal(new URL(page.url()).searchParams.get('namespace'), 'default', '编辑链接的 ns 是资源自己的 default');
-  assert.equal(new URL(page.url()).searchParams.get('edit'), 'deploy-hook');
+  assert.equal(location_pathname_is_detail(page), true, '就地编辑：仍停在 source-detail.html');
+  assert.equal(new URL(page.url()).searchParams.get('edit'), '1', 'URL 用 edit=1 表示「编辑器开着」');
   assert.equal(await page.locator('#f-name').inputValue(), 'deploy-hook', '编辑器必须回填这个源');
-  check('Source detail edit entry opens the real editor (sources.html?namespace=default&edit=deploy-hook, prefilled)');
-  await shot('source-detail-edit-entry');
+  check('Source detail edit entry opens the shared editor in place (URL keeps edit=1, form prefilled)');
+  await shot('source-detail-edit-inline');
+  await page.locator('#modal-cancel').click();
+  await page.waitForFunction(() => document.getElementById('src-modal').classList.contains('hidden'));
 
   /* 三、源拓扑/配置页（source.html）仍按深链可读：图 / 主体 / 边投影的原断言全部保留
      （它不再负责「编辑入口」，但它是 owner 关心的只读事实，不能因本次修复丢覆盖）。 */

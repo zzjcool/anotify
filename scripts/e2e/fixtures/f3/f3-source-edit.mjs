@@ -1,19 +1,18 @@
-// 源详情页「编辑源」必须进入**编辑器**，而且链接里的 namespace 必须是**资源自己的**。
+// 源详情页「编辑源」= **就地编辑**（不离开详情页），且编辑器与列表页共用同一份组件。
 //
-// 用户报的现象（anotify-dev）：在 `source-detail.html?namespace=default&name=<src>`
-// 点「编辑源」，地址变成 `source.html?namespace=default&name=<src>`（参数看着对），
-// 但落地的不是编辑表单。
+// 用户报过两次：
+//   ① 点「编辑源」落到 `source.html`（另一张只读页）→「点了编辑却跳走、看不到表单」；
+//   ② 修成 `sources.html?edit=<name>` 后仍不满意 —— 「为什么会跳转到源页面然后在上面弹窗编辑」。
+// 也就是说：目标是编辑器还不够，**在详情页点编辑就应该在详情页编辑**。
 //
-// 这个用例只钉两条产品事实，两条都对用户可见：
-//   1. 「编辑源」的终点是**编辑态**：`sources.html?namespace=<res-ns>&edit=<name>`，
-//      弹层打开且表单里就是这个源（`#src-modal:not(.hidden)` + `#f-name` 回填）。
-//      落到别的页面（尤其是另一张只读详情页）就是「跳走 / 不是编辑表单」。
-//   2. 链接里的 namespace 取**资源自己的 ns**（`metadata.namespace`），不取
-//      localStorage 的 scope：深链永远由 URL 决定，持久化范围与资源 ns 不一致时
-//      也不许把用户带到错误的 ns（那会 404 成空态）。这里用「scope=prod + 资源在
-//      default」把两个来源做成可区分的，判据不是时长而是 URL 参数。
-// 附带同族检查：能力详情页的「返回能力列表」也必须落在资源自己的 ns 上（同一天
-// 合入的两个详情页共用同一段 scope 拼链接的写法）。
+// 本用例钉四条用户可见事实：
+//   1. 点 `#src-detail-edit` 后**没有文档级导航**（URL 仍是 source-detail.html，只多 `edit=1`），
+//      弹层 `#src-modal` 在本页打开且 `#f-name` 就是这个源；
+//   2. 保存（PATCH）后：弹层关闭、`edit=1` 被移除、**详情页立刻显示新值**（保存能看到结果），
+//      且写请求带 `metadata.resourceVersion`（CAS 语义没被这次重构弄丢）；
+//   3. 深链 `?edit=1` 直接打开编辑器（刷新/分享同一个 URL 都能工作）；
+//   4. 编辑流程的请求全部落在**资源自己的 ns**（default），一条 `/v1/namespaces/prod/` 都不许有。
+// 附带同族检查：能力详情页的「返回能力列表」同样落在资源自己的 ns。
 import assert from 'node:assert/strict';
 
 /** 把失败时需要的现场（URL / 导航链 / 请求 / localStorage）一次性附在错误里。 */
@@ -31,15 +30,23 @@ const facts = async (d, extra) => {
 	} catch {
 		/* 同上 */
 	}
-	return JSON.stringify({ url: d.page.url(), nav, scope, calls, ...extra }, null, 2);
+	const dom = await d.page
+		.evaluate(() => ({
+			modalVisible: !!document.querySelector('#src-modal:not(.hidden)'),
+			modalExists: !!document.querySelector('#src-modal'),
+			detail: !!document.querySelector('#src-detail'),
+			name: (document.querySelector('#src-detail-name')?.textContent || '').trim(),
+			title: document.querySelector('#f-name')?.value ?? null,
+		}))
+		.catch(() => ({}));
+	return JSON.stringify({ url: d.page.url(), nav, scope, calls, dom, ...extra }, null, 2);
 };
 
 export async function sourceEditJump(d) {
 	const { page, goto, check, api } = d;
 	// 期望值从真实 API 现算（不写死夹具名字），所以只能在 real authority 上跑：
-	// 首页/详情页的 ns 归属是真实后端的授权与 404 语义，mock 预览里没有这些。
+	// ns 归属与 PATCH/CAS 是真实后端的语义，mock 预览里没有这些。
 	assert.ok(!d.mock, 'source-edit-jump 只属于 real authority（期望值从 /v1/namespaces/*/sources 现算）');
-	// 导航链：一次点击触发了哪些文档级导航（"跳走"要看得到，不靠猜）。
 	d.nav = [];
 	page.on('framenavigated', (frame) => {
 		if (frame === page.mainFrame()) d.nav.push(frame.url());
@@ -53,81 +60,92 @@ export async function sourceEditJump(d) {
 	const srcName = source.metadata.name;
 	assert.equal(source.metadata.namespace, 'default', '源必须属于 default（夹具前提），实际 ' + source.metadata.namespace);
 
-	// ① 持久化 scope 故意与资源 ns 不一致：链接必须跟资源走，不跟 localStorage 走。
+	// ① 持久化 scope 故意与资源 ns 不一致：编辑流程必须跟资源走，不跟 localStorage 走。
 	await goto('source-detail', 'namespace=default&name=' + srcName, 'zh-CN');
 	await page.evaluate(() => localStorage.setItem('anotify.scope', JSON.stringify({ namespace: 'prod' })));
 	await goto('source-detail', 'namespace=default&name=' + srcName, 'zh-CN');
 	await page.waitForFunction((n) => document.querySelector('#src-detail')?.getAttribute('data-source') === n, srcName, { timeout: 20000 });
-	const href = await page.locator('#src-detail-edit').getAttribute('href');
-	assert.ok(href, '详情页的「编辑源」必须有 href，实际 ' + href);
-	check('#src-detail-edit href = ' + href);
 
-	d.nav.length = 0;
 	const before = page.url();
+	d.nav.length = 0;
+	/* 「就地」= 同一个文档：先在 window 上留个记号，点完还在就说明没有整页导航。
+	   （history.replaceState 也会触发 framenavigated，所以不能用 d.nav 为空当判据。） */
+	await page.evaluate(() => {
+		window.__f3SameDocument = 'yes';
+	});
 	await page.locator('#src-detail-edit').click();
-	// 导航到**任何**别的文档都算发生了（不是拿期望值当等待条件，否则失败现场只剩超时）。
-	await page.waitForURL((u) => u.href !== before, { timeout: 20000, waitUntil: 'domcontentloaded' });
-	// 落地那一页要真的画完：只读页有自己的容器，编辑器是 sources.html 的弹层。
-	const state = await page.evaluate(() => ({
-		page: document.body?.dataset?.page || '',
-		editor: !!document.querySelector('#src-modal'),
-		readonlyDetail: !!document.querySelector('#src-detail'),
-		flowDetail: !!document.querySelector('#src-body'),
-		title: (document.querySelector('#src-name, #src-detail-name, .page-title')?.textContent || '').trim(),
-	}));
-	const landed = new URL(page.url());
-	assert.equal(
-		landed.pathname.replace(/^\/(en|ja|es)\//, '/').replace(/^\//, ''),
-		'sources.html',
-		'「编辑源」必须落在编辑器所在的 sources.html（源只在那一页可编辑），实际 ' +
-			(await facts(d, { href, landedState: state })),
-	);
-	assert.equal(
-		landed.searchParams.get('namespace'),
-		'default',
-		'编辑链接的 namespace 必须是**资源自己的** ns（default），不是 localStorage 的 prod；实际 ' + (await facts(d, { href })),
-	);
-	assert.equal(
-		landed.searchParams.get('edit'),
-		srcName,
-		'编辑链接必须用 ?edit=<name> 打开该源的编辑器，实际 ' + (await facts(d, { href })),
-	);
-	// 落地的必须是**编辑态**，不是另一张只读页：弹层打开 + 表单回填到这个源。
+	// 就地编辑的判据：URL 还是这一页（只多 edit=1），而且**没有发生文档级导航**。
+	await page.waitForFunction(() => new URLSearchParams(location.search).get('edit') === '1', null, { timeout: 20000 });
 	await page.locator('#src-modal:not(.hidden)').waitFor({ state: 'visible', timeout: 20000 });
-	await page.waitForFunction(
-		({ name, sel }) => document.querySelector(sel)?.value === name,
-		{ name: srcName, sel: '#f-name' },
+	await page.waitForFunction(({ name, sel }) => document.querySelector(sel)?.value === name, { name: srcName, sel: '#f-name' }, { timeout: 20000 });
+
+	assert.equal(
+		await page.evaluate(() => window.__f3SameDocument ?? null),
+		'yes',
+		'「编辑源」必须就地打开（同一个文档，不许整页导航 —— 跳走就是这次要修掉的体验），实际 ' + (await facts(d)),
+	);
+	assert.equal(new URL(page.url()).pathname, new URL(before).pathname, '点编辑后仍应停在 source-detail.html，实际 ' + (await facts(d)));
+	assert.equal(await page.locator('#f-name').inputValue(), srcName, '编辑弹层必须回填这个源的名字，实际 ' + (await facts(d)));
+	assert.equal(await page.locator('#src-detail').count(), 1, '编辑时详情页仍在（就地编辑），实际 ' + (await facts(d)));
+	/* 弹层文案是运行期通过 A.t() 渲染的（DOM 由共享组件注入），zh-CN 下必须是译文而不是 key。 */
+	const titleText = (await page.locator('#modal-title').innerText()).trim();
+	const wantTitle = await page.evaluate(() => window.Anotify.t('sources.v4.edit'));
+	assert.equal(titleText, wantTitle, '弹层的标题必须走 i18n（运行期 A.t），实际 ' + titleText);
+	assert.ok(!titleText.includes('sources.v4.'), '弹层标题不许漏出 i18n key，实际 ' + titleText);
+	check('SOURCE-EDIT-INLINE 编辑源 → 就地打开 #src-modal（无导航，URL 仅加 edit=1，表单回填 ' + srcName + '）');
+
+	// 同一次编辑里：请求必须全部落在资源自己的 ns 上。
+	const inlineCalls = await page.evaluate(() => window.__f3Calls || []);
+	const wrongNs = inlineCalls.filter((c) => /\/v1\/namespaces\/prod\//.test(c.url));
+	assert.deepEqual(wrongNs.map((c) => c.url), [], '编辑流程不许请求 prod 的资源（scope 串进了编辑器），实际 ' + (await facts(d)));
+	check('SOURCE-EDIT-NS 编辑流程零 /v1/namespaces/prod/ 请求（scope=prod 也不串）');
+
+	// ② 保存 → 弹层关闭 + edit=1 移除 + 详情页立刻显示新值。
+	const marker = srcName + '-inline-e2e';
+	await page.locator('#f-display').fill(marker);
+	/* 先挂上等待再点：超时直接抛（比 .catch(()=>null) 更好 —— 失败现场是「没发出 PATCH」本身）。 */
+	const saveRespP = page.waitForResponse(
+		(r) => r.request().method() === 'PATCH' && /\/v1\/namespaces\/default\/sources\//.test(r.url()),
 		{ timeout: 20000 },
 	);
-	assert.equal(await page.locator('#f-name').inputValue(), srcName, '编辑弹层必须回填这个源的名字');
-	assert.equal(
-		await page.locator('#src-detail').count(),
-		0,
-		'目的地不许还是只读详情页（source-detail 的容器不在这个页面上），实际 ' + (await facts(d)),
-	);
-	// 错 ns 的请求一条都不许有：那是「404 → 空态」的另一条路。
-	const pageCalls = await page.evaluate(() => window.__f3Calls || []);
-	const wrongNs = pageCalls.filter((c) => /\/v1\/namespaces\/prod\//.test(c.url));
-	assert.deepEqual(wrongNs.map((c) => c.url), [], '编辑流程不许请求 prod 的资源（scope 串到了链接里），实际 ' + (await facts(d)));
+	const saveReqP = page.waitForRequest((r) => r.method() === 'PATCH' && /\/v1\/namespaces\/default\/sources\//.test(r.url()), { timeout: 20000 });
+	await page.locator('#modal-save').click();
+	const [req, resp] = await Promise.all([saveReqP, saveRespP]);
+	const sent = JSON.parse(req.postData() || '{}');
+	assert.equal(sent.apiVersion, 'anotify/v1', '写信封apiVersion必须保持 anotify/v1，实际 ' + JSON.stringify(sent));
 	assert.ok(
-		pageCalls.some((c) => c.url.startsWith('/v1/namespaces/default/sources')),
-		'编辑弹层必须在 default 里读源（列表页的 SOURCES 已包含该源时不再单对象读，所以不钉具体端点），实际 ' + (await facts(d)),
+		sent.metadata && sent.metadata.resourceVersion,
+		'PATCH 必须带 metadata.resourceVersion（CAS；抽共享模块时最容易丢的就是这条），实际 ' + JSON.stringify(sent.metadata),
 	);
-	check('SOURCE-EDIT-DETAIL 编辑源 → sources.html?namespace=default&edit=<name>，弹层打开且回填（scope=prod 也不串）');
+	assert.equal(sent.metadata.name, srcName, 'PATCH 的 metadata.name 必须是要编辑的那个源，实际 ' + sent.metadata.name);
+	assert.equal(resp.status(), 200, 'PATCH 必须 200，实际 ' + resp.status());
 
-	// ② 全新浏览器（localStorage 没有 scope）：深链的 namespace 仍然说了算。
-	await page.evaluate(() => localStorage.removeItem('anotify.scope'));
-	await goto('source-detail', 'namespace=default&name=' + srcName, 'zh-CN');
-	await page.waitForFunction((n) => document.querySelector('#src-detail')?.getAttribute('data-source') === n, srcName, { timeout: 20000 });
-	const emptyScopeHref = await page.locator('#src-detail-edit').getAttribute('href');
-	assert.equal(
-		new URL(emptyScopeHref, 'http://x/').searchParams.get('namespace'),
-		'default',
-		'scope 为空时编辑链接也必须带资源自己的 ns（深链不依赖 localStorage），实际 ' + emptyScopeHref,
-	);
-	check('SOURCE-EDIT-NOSCOPE scope 为空时编辑链接仍是 namespace=default（' + emptyScopeHref + '）');
+	await page.waitForFunction(() => document.querySelector('#src-modal').classList.contains('hidden'), null, { timeout: 20000 });
+	await page.waitForFunction(() => !new URLSearchParams(location.search).get('edit'), null, { timeout: 20000 });
+	try {
+		await page.waitForFunction(
+			(m) => (document.querySelector('#src-detail-name')?.textContent || '').includes(m),
+			marker,
+			{ timeout: 20000 },
+		);
+	} catch (e) {
+		throw new Error('保存后详情标题没有出现新值 ' + marker + '，现场 ' + (await facts(d, { state: await page.locator('#src-detail-state').innerText().catch(() => '?') })));
+	}
+	const nameText = (await page.locator('#src-detail-name').innerText()).trim();
+	assert.ok(nameText.includes(marker), '保存后详情页必须显示新值（保存要能看到结果），实际标题 ' + nameText + '，现场 ' + (await facts(d)));
+	assert.equal(new URL(page.url()).pathname.endsWith('/source-detail.html'), true, '保存后仍应停在详情页，实际 ' + (await facts(d)));
+	check('SOURCE-EDIT-SAVE 保存后弹层关闭、edit=1 移除、详情页显示新值（' + marker + '）');
 
-	// ③ 能力详情页（同一天合入的另一张详情页）：返回入口同样必须落在资源自己的 ns。
+	// ③ 深链 `?edit=1`：直接打开编辑器（不点任何按钮）。
+	await goto('source-detail', 'namespace=default&name=' + srcName + '&edit=1', 'zh-CN');
+	await page.locator('#src-modal:not(.hidden)').waitFor({ state: 'visible', timeout: 20000 });
+	await page.waitForFunction(({ name, sel }) => document.querySelector(sel)?.value === name, { name: srcName, sel: '#f-name' }, { timeout: 20000 });
+	assert.equal(new URL(page.url()).searchParams.get('edit'), '1', '深链 edit=1 必须保持，实际 ' + (await facts(d)));
+	check('SOURCE-EDIT-DEEPLINK ?edit=1 直接打开编辑器并回填（深链可分享/可刷新）');
+	await page.locator('#modal-cancel').click();
+	await page.waitForFunction(() => !new URLSearchParams(location.search).get('edit'), null, { timeout: 20000 });
+
+	// ④ 能力详情页（同一天合入的另一张详情页）：返回入口必须落在资源自己的 ns。
 	const capList = await api('/v1/namespaces/default/capabilities');
 	assert.equal(capList.status, 200, 'GET /v1/namespaces/default/capabilities 必须 200，实际 ' + capList.status);
 	const cap = (capList.body.items || [])[0];

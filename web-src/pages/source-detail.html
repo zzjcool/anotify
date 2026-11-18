@@ -68,8 +68,8 @@
 
 {{define "content"}}
 <div id="page-main">
-  <!-- 只读：写动作全在编辑页（source.html）。根元素渲染成功后才带 data-source，
-       深链/刷新/前进后退由整页导航天然满足（没有客户端路由）。 -->
+  <!-- 只读视图；「编辑源」在本页就地打开共享编辑器（web/source-editor.js），不跳走。
+       根元素渲染成功后才带 data-source；深链/刷新/前进后退仍由整页导航满足。 -->
   <div id="src-detail" class="page">
     <div class="page-head">
       <div class="sd-wrap">
@@ -78,7 +78,7 @@
         <p class="page-sub">{{t "source_detail.sub"}}</p>
       </div>
       <div class="page-actions sd-actions">
-        <a id="src-detail-edit" class="btn hidden" href="source.html">{{t "sources.v4.edit"}}</a>
+        <button type="button" id="src-detail-edit" class="btn hidden">{{t "sources.v4.edit"}}</button>
         <button type="button" id="src-detail-refresh" class="btn btn-ghost">{{t "source_detail.refresh"}}</button>
       </div>
     </div>
@@ -93,12 +93,14 @@
 {{end}}
 
 {{define "script"}}
+<script src="/source-editor.js"></script>
 <script>
 /* 源只读详情页（source-detail.html?namespace=<ns>&name=<source>）
  *
  * 列表页（sources.html）的名称链接落到这里：身份/定义与字段/目标/近期回执/原始 YAML
- * 全部只读，写动作在编辑器（sources.html 的编辑弹层，经 `?edit=<name>` 深链打开）。
- * URL 参数与列表行链接一一对应，深链、刷新、前进后退由整页导航天然满足（没有客户端路由）。
+ * 全部只读；唯一的写入口是右上角「编辑源」——它打开**共享编辑器组件**
+ * （web/source-editor.js，与列表页的弹层同一份 DOM/逻辑）就地编辑，保存后本页刷新。
+ * URL 带上 `edit=1` 即可深链到「打开编辑器」的状态（关掉即移除该参数）。
  *
  * 数据层与其它页同一套：nsApi/nsPath/apiList/model.source/loadErrorNode/copyText。
  * 失败不伪造数据：错误态交给 loadErrorNode，近期回执没有行时如实说明「还没有事件」。
@@ -115,6 +117,30 @@ A.mountLayout({
   title: t("source_detail.title"),
   subtitle: t("source_detail.sub"),
 });
+
+/* 「编辑源」= 就地弹层（与列表页共用 web/source-editor.js），不离开本页。
+   `?edit=1` 是可深链的状态：点编辑时写进 URL，关掉/保存后移除。 */
+function setEditParam(on) {
+  const url = new URL(location.href);
+  if (on) url.searchParams.set("edit", "1");
+  else url.searchParams.delete("edit");
+  history.replaceState(null, "", url.toString());
+}
+async function openEditor() {
+  if (!RAW_RES) return;
+  const m = model.source(RAW_RES);
+  setEditParam(true);
+  await A.sourceEditor.open({
+    resource: RAW_RES,
+    namespace: m.namespace || readScope().namespace,
+    onClose: () => setEditParam(false),
+    onSaved: async () => {
+      A.toast(t("sources.saved", "已保存"), "success");
+      /* 保存后回到详情并刷新：新值必须马上可见（约束：保存成功要能看到结果）。 */
+      await load();
+    },
+  });
+}
 
 /* ============================== 状态 ============================== */
 /* 原始 YAML 是懒加载的单例：换源/刷新时 reset，绝不拿上一个源的正文骗人。 */
@@ -232,11 +258,9 @@ function withNs(ns, page, params) {
 }
 /* 当前渲染的资源：空态/错误态下为 null（那时只能靠 URL 的 ns 拼返回链接）。 */
 let CUR_RES = null;
+/* 原始资源（未投影）：编辑器要用 metadata.resourceVersion 做 CAS，投影里没有它。 */
+let RAW_RES = null;
 const listHref = (res = CUR_RES) => withNs(linkNs(res), "sources.html");
-/* 「编辑源」= 打开**编辑器**，不是另一张只读页：源的写表单只有 sources.html 的编辑
-   弹层（`?edit=<name>` 深链，与列表行内「编辑」同一个动作）。曾经的 `source.html`
-   是只读的拓扑/配置页，点上去就是「点了编辑却跳走、看不到表单」。 */
-const editHref = (res, name) => withNs(linkNs(res), "sources.html", { edit: name });
 const traceHref = (res, uid) => withNs(linkNs(res), "trace.html", { traceUID: uid });
 
 /* ============================ 区块构件 ============================ */
@@ -433,6 +457,7 @@ function render(res) {
   const m = model.source(res);
   /* 本页所有链接（返回列表 / 编辑 / 链路）都用这条资源自己的 ns。 */
   CUR_RES = m;
+  RAW_RES = res;
 
   const root = $("src-detail");
   root.setAttribute("data-source", m.name || "");
@@ -444,9 +469,7 @@ function render(res) {
   $("src-detail-name").replaceChildren(title);
 
   $("src-detail-back").href = listHref(m);
-  const edit = $("src-detail-edit");
-  edit.href = editHref(m, m.name || "");
-  edit.classList.remove("hidden");
+  $("src-detail-edit").classList.remove("hidden");
 
   const body = $("src-detail-body");
   body.replaceChildren();
@@ -551,6 +574,7 @@ function render(res) {
 function paintState(node) {
   const root = $("src-detail");
   CUR_RES = null;
+  RAW_RES = null;
   root.removeAttribute("data-source");
   $("src-detail-edit").classList.add("hidden");
   const body = $("src-detail-body");
@@ -589,6 +613,8 @@ async function load() {
     paintState(skeleton());
     const res = await nsApi("sources", name);
     render(res);
+    /* 深链 `?edit=1`：数据就绪后再打开，避免弹层里先空一下再被填。 */
+    if (new URLSearchParams(location.search).get("edit") === "1") await openEditor();
   } catch (err) {
     // 404 与其它失败走同一套错误态：说清发生了什么，给「重试 / 返回列表」。
     paintState(loadErrorNode(err, () => load(), { back: listHref() }));
@@ -596,6 +622,7 @@ async function load() {
 }
 
 /* ============================ 事件绑定 ============================ */
+$("src-detail-edit").addEventListener("click", () => openEditor());
 $("src-detail-refresh").addEventListener("click", () => load());
 document.addEventListener("DOMContentLoaded", () => {
   void load();
