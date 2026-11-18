@@ -97,6 +97,8 @@ check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm
 
 check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中、已知无关不许选中、删一行必须红、表不许腐烂
 	node --test scripts/e2e/affected.test.mjs
+	@# CI 上 e2e 的判定器（已知环境性失败清单 + 「清单外必须拦」的变异自测）
+	node scripts/e2e/ci-e2e-verdict.mjs --self-test
 
 # GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
 # 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。

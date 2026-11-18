@@ -182,6 +182,19 @@ PI_E2E_FULL=1 make test-affected   # 强制全量（任何时候都可回到全�
 **全量永远有一个与选择逻辑无关的出口**：`make e2e`、CI 的 nightly 与 `full-ci` 标签。
 没有全量跑的地方不许上线。
 
+### CI 上的 e2e：判定与「已知环境性失败」
+
+PR 上跑被选中的子集；nightly / `workflow_dispatch` / PR label `full-ci` 跑全量。
+GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性**失败，所以判定不是整块
+`continue-on-error`（那等于"永久红着没人看"），而是一张**只许变小的已知失败清单**：
+
+- 失败集 ⊆ `scripts/e2e/known-env-failures.json` → 容忍（job 绿，逐条 `::warning`）
+- **清单之外的失败 → 红，拦合并**
+- 清单项这次没失败 → 只提示删掉那一行（棘轮只许变小，最终目标是 `entries` 为空数组）
+
+判定器是 `scripts/e2e/ci-e2e-verdict.mjs`（自带变异自测：塞一个清单之外的假失败必须 `exit 1`），
+已挂进 `make check-affected-map`。
+
 ## 测试矩阵（全 case 清单）
 
 见各 suite 文件顶部注释。当前注册 **28 套件**（13 HTTP + 15 Chrome），断言总数以执行器
