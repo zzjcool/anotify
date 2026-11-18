@@ -8,6 +8,7 @@ import { source } from './f3-source.mjs';
 import { yamlCreate } from './f3-yaml-create.mjs';
 import { observability } from './f3-observability.mjs';
 import { overviewAll } from './f3-overview-all.mjs';
+import { sourceEditJump } from './f3-source-edit.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
@@ -54,6 +55,9 @@ for(const mode of ['index','trace'])add('observe-'+mode,d=>observability(d,mode)
 // 期望值一律从真实 API 现算（/v1/stats?namespace=* + /v1/namespaces），实现在
 // f3-overview-all.mjs；锚点是契约 D5/D7 冻结的 [data-ns-id] / [data-ns-badge] /
 // #latest-flow[data-scope-ns] / #scope-crumb 与既有 KPI id。
+/* source-edit-jump：「编辑源」的终点是编辑器、链接 ns 取资源自己的 ns（不是 scope）。
+   实现在 f3-source-edit.mjs，断言口径与失败现场都写在那份文件顶部。 */
+add('source-edit-jump',sourceEditJump,{lang:'zh-CN'});
 add('observe-index-all',overviewAll);
 // observe-errors：pending 任务没有日志档案（410 no_local_archive）；并发取消之后再放弃
 // 必须 409（task_not_running）——两条都是用例要的拒绝路径。

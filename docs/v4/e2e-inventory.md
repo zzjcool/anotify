@@ -59,7 +59,7 @@
 
 | 套件 | 分类 | authority | 覆盖什么 / 迁移要点 |
 |---|---|---|---|
-| `frontend` | migrated（#335 / PR #354） | **real**（点名） | 前端渲染 + 路由守卫 + 真实数据：真 server / anode / devseed，38 条契约用例。f3 驱动，`mode` 由 `E2E_MOCK_ONLY` 决定，默认 real |
+| `frontend` | migrated（#335 / PR #354） | **real**（点名） | 前端渲染 + 路由守卫 + 真实数据：真 server / anode / devseed，39 条契约用例。f3 驱动，`mode` 由 `E2E_MOCK_ONLY` 决定，默认 real |
 | `i18n` | migrated（#335 / PR #354） | explicit-mock | 多语言 AC：页面 × 4 语言可达、hreflang、切换器、跨语言导航、query 保留。f3 版覆盖 19 页；**基线 66d926a 的 7 页版实测 299 断言 0 失败** |
 | `i18n_coverage` | migrated（#335 / PR #354） | explicit-mock | 渲染 DOM 的中文残留门禁：en/es 页可见文本 ZERO CJK |
 | `ui_shift` | migrated（#335 / PR #354） | explicit-mock | 开页抖动（layout shift）回归：语言条 / 命名空间槽位 / 折叠态 / 预排版，实测几何去重。#354 起超时预算 300s（单跑 ~148s，默认 120s 在并发下必被 SIGKILL） |
@@ -87,6 +87,7 @@
 | 用例 | 实现 | 覆盖什么 |
 |---|---|---|
 | `observe-index-all` | `scripts/e2e/fixtures/f3/f3-overview-all.mjs` | 首页总览**默认「全部命名空间」聚合**（契约 `.reports/overview-allns-contract.md` D1/D2/D5/D7）。六条断言：① 裸 `index.html` 的 KPI 等于从 `/v1/stats?namespace=*` + Σ`/v1/namespaces`（`tasksByPhase`）**现算**的聚合值（不写死数字）且既有 id 都在；② 全部模式的 `[data-ns-id="*"][aria-checked="true"]`、`#scope-crumb`=i18n `scope.all_namespaces`、逐行 `[data-ns-badge]`=事件自己的 ns、`#latest-flow[data-scope-ns]`、371 格热力图；③ `?namespace=prod` 只显示该 ns（`#kpi-total`=prod 单值 ≠ 聚合值、无徽标、uid 全属 prod）；④⑤ 选择器双向切换与 URL 同步；⑥ `reload()` 后两种模式都保持 |
+| `source-edit-jump` | `scripts/e2e/fixtures/f3/f3-source-edit.mjs` | 源详情页「编辑源」的**终点是编辑器**、链接 ns 是**资源自己的**（`.reports/source-edit-jump.md`）。四条断言：① 点 `#src-detail-edit` → `sources.html?namespace=default&edit=<name>`，`#src-modal` 打开且 `#f-name` 回填；② 故意把 localStorage scope 设成 `prod` 时链接仍是 `default`，且编辑流程**零** `/v1/namespaces/prod/` 请求；③ localStorage 里没有 scope 时链接仍带深链的 `namespace=default`；④ 能力详情页 `#cap-back` 用资源 ns 而不是 scope。实测值从 `/v1/namespaces/default/{sources,capabilities}` 现算 |
 
 ## 3. 五个 FE 套件的验收 authority（#338 冻结裁决）
 
@@ -161,7 +162,7 @@ cat .e2e-bin/results/_authority-manifest.json
 | 13 个非前端套件（含 `node_v4`）**两连绿** | **1321** | **PR #353**（`issue/336-real-node-e2e`，merge `0b0501b`）；记录在 `.pi-orchestrator/v4/issues/dispatch/TRACKER.md:58`：「13 个非前端套件 1321 断言两连绿；node_v4 真 anode 88」 |
 | 其中 `node_v4`（真 `anode`） | 88 | 同上 |
 | 7 个 legacy Chrome 迁移后 | 527 / 0 | `338/chrome-v4 @ 3651707`（7 个套件完整跑一遍） |
-| `frontend`（real） | 38 条契约用例 38/38（用例数，非断言数） | #338 裁决记录（TRACKER「2026-11-11 13:5x」） |
+| `frontend`（real） | 39 条契约用例 39/39（用例数，非断言数） | #338 裁决记录（TRACKER「2026-11-11 13:5x」） |
 | 66d926a 基线实测（本轮门禁预置） | `i18n` 299/0、`ux_regression_19_23` 13/0、`lang_hint` 86/0、`recovery_next` 5/0、`p2_guards` 30/0 | 本轮实跑，日志 `/root/tmp/338prep/{i18n,ux,kept3}.log` |
 | `make e2e-quick`（4 套件快检） | 463 断言 0 失败 | TRACKER「2026-11-11 13:0x 快照」协调者基线 |
 

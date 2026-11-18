@@ -217,9 +217,22 @@ export async function source(d){
   check('Source detail raw YAML: collapsed by default, lazy /yaml, kind: Source with masked credentials');
   await shot('source-detail-yaml');
 
-  /* 二、点编辑入口 → 原有编辑页：图 / 主体 / 边投影 / 原始 YAML 的原断言全部保留。 */
+  /* 二、点「编辑源」→ **真正的编辑器**：源的写表单只在 sources.html 的编辑弹层里
+     （`?edit=<name>` 深链）。旧断言把 source.html（只读的拓扑/配置页）当「编辑页」，
+     等于用测试把错误的目标钉住：用户点了编辑，却落在一张只读详情页上。 */
   await page.locator('#src-detail-edit').click();
-  await page.waitForFunction(() => location.pathname.endsWith('/source.html'));
+  await page.waitForFunction(() => location.pathname.endsWith('/sources.html'));
+  await visible('#src-modal:not(.hidden)');
+  await page.waitForFunction(() => document.getElementById('f-name')?.value === 'deploy-hook');
+  assert.equal(new URL(page.url()).searchParams.get('namespace'), 'default', '编辑链接的 ns 是资源自己的 default');
+  assert.equal(new URL(page.url()).searchParams.get('edit'), 'deploy-hook');
+  assert.equal(await page.locator('#f-name').inputValue(), 'deploy-hook', '编辑器必须回填这个源');
+  check('Source detail edit entry opens the real editor (sources.html?namespace=default&edit=deploy-hook, prefilled)');
+  await shot('source-detail-edit-entry');
+
+  /* 三、源拓扑/配置页（source.html）仍按深链可读：图 / 主体 / 边投影的原断言全部保留
+     （它不再负责「编辑入口」，但它是 owner 关心的只读事实，不能因本次修复丢覆盖）。 */
+  await d.goto('source', 'namespace=default&name=deploy-hook');
   await visible('#src-flow svg.flograph-svg');
   assert.match(await page.locator('#src-name').innerText(), /deploy-hook/);
   assert.match(await page.locator('#src-body').innerText(), /secretSet: true/);
