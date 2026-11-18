@@ -7,20 +7,22 @@
     "为什么需要它：GitHub runner 比开发机慢，f3 的浏览器矩阵套件在那边会偶发环境性失败。",
     "没有这张清单，就只能整块 continue-on-error —— 那等于永久红着没人看；有了它，",
     "「新失败」仍然是硬的。收敛方式：每次真跑看到「清单项没失败」就删掉那一行，",
-    "最终目标是本文件的 entries 为空数组（= 完全的硬门禁）。"
+    "最终目标是本文件的 entries 为空数组（= 完全的硬门禁）。",
+    "每个条目的 tracking 指向 #431（本清单的收敛追踪 issue）：entries 清空即可关掉它。",
+    "（历史上这两条都指向 #428 —— 那是引入本清单的 PR 自身，自指、追踪不到可收敛的东西，已改。）"
   ],
   "entries": [
     {
       "suite": "frontend",
       "case": "source-actions",
       "reason": "runner 上 case 子进程偶发死亡（case.json 未落盘 / locator 4500ms 撞线），本地同代码 3–5s 通过",
-      "tracking": "#428"
+      "tracking": "#431"
     },
     {
       "suite": "ui_shift",
       "case": "interact-dialogs",
       "reason": "runner 上 Chrome 渲染进程偶发被关（已加 --disable-dev-shm-usage、并发降到 2，仍偶发）",
-      "tracking": "#428"
+      "tracking": "#431"
     }
   ]
 }

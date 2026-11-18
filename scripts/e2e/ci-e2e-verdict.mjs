@@ -130,7 +130,7 @@ function parseArgs(argv) {
  * 只钉三件事，多一条都不必：**容忍清单内 / 拦清单外 / 清单过期只提示不红**。 */
 function selfTest() {
 	const known = {
-		entries: [{ suite: "frontend", case: "source-actions", reason: "x", tracking: "#428" }],
+		entries: [{ suite: "frontend", case: "source-actions", reason: "x", tracking: "#431" }],
 	};
 	const cases = [
 		{
