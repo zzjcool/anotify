@@ -870,10 +870,25 @@
         };
       }
       /* 列表页 / 详情页之间的唯一链接形状：列表带 `restore=1`（用它还原搜索词、
-         筛选与滚动位置），详情带 `namespace` 与 `name`。 */
+         筛选与滚动位置），详情带 `namespace` 与 `name`。
+
+         链接里的 namespace 取**这条能力自己的** `metadata.namespace`（META 来自 API
+         响应），不取持久化 scope：深链的权威来源是 URL / 资源，scope 与资源不一致时
+         会把用户带到一个空的「另一个 ns」。拿不到资源时（加载中/错误态）才依次回落
+         到 URL 的 `?namespace=` 与 scope；两者都没有就不写这个参数（绝不写
+         `namespace=undefined` 这种字面量）。 */
+      function resNs() {
+        const own = META && typeof META.namespace === "string" ? META.namespace.trim() : "";
+        const url = (new URLSearchParams(location.search).get("namespace") || "").trim();
+        const persisted = readScope().namespace;
+        return own || url || (typeof persisted === "string" ? persisted.trim() : "");
+      }
       function listHref() {
-        const ns = readScope().namespace;
-        return "capabilities.html?" + new URLSearchParams(Object.assign({ namespace: ns }, { restore: "1" }));
+        const qs = new URLSearchParams();
+        const ns = resNs();
+        if (ns) qs.set("namespace", ns);
+        qs.set("restore", "1");
+        return "capabilities.html?" + qs.toString();
       }
 
       function stateLabel(state) {
