@@ -4,7 +4,7 @@
 > 分支 `feat/cap-lifecycle` · 基线 `origin/main` `2c115020` · 设计真源
 > `docs/design/capability-lifecycle.md`（随 #433 合入）· 冻结 wire 契约
 > `.pi-orchestrator/cap-lifecycle/WIRE.md`
-> PR：见文末（`Fixes #432`）
+> PR：[#438](https://github.com/zzjcool/anotify/pull/438)（`Fixes #432`）
 
 一句话：**停用是路由期的闸门（不建新任务），不是任务的暂停；试跑是一次带标记的真实运行
 （建真任务、走真派发），标记落在事件上（`origin='test'`）而不是新开一条建任务路径。**
