@@ -39,7 +39,9 @@ type UserWithStats struct {
 }
 
 // ListUsersWithStats 列出全部用户并附各用户的实体计数（管理后台用户页用）。
-// 按 created_at ASC 排序（首注册用户排最前，便于识别超管来源）。
+// 按 created_at ASC 排序（首注册用户排最前，便于识别超管来源），末键用 rowid 破平局：
+// created_at 是秒级时间戳，同秒注册的两个用户若只按 created_at 排，谁在前由查询计划决定
+// （orderby_tiebreak_test.go 里登记过这一条；1461f7e4 的 42.5% 随机红是同形状）。
 func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.created_at,
@@ -47,7 +49,7 @@ func (d *DB) ListUsersWithStats(ctx context.Context) ([]*UserWithStats, error) {
 		        (SELECT COUNT(*) FROM api_keys  k WHERE k.user_id = u.id),
 		        (SELECT COUNT(*) FROM sessions  s WHERE s.user_id = u.id)
 		 FROM users u
-		 ORDER BY u.created_at ASC`)
+		 ORDER BY u.created_at ASC, u.rowid ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list users with stats: %w", err)
 	}

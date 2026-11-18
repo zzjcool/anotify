@@ -1687,7 +1687,10 @@ const (
 	//
 	// **只许降不许升**：修掉一条就把这里的数字与 orderByKnownGaps 对应登记一起下调；
 	// 新缺口要通过本门禁只能走进 orderByExemptions（证明顺序无害），不许抬高预算蒙混。
-	orderByKnownGapBudget = 12
+	//
+	// 12 → 11（2026-11-18）：ListUsersWithStats 与 1461f7e4 同形，
+	// 补 `, u.rowid` 后登记项过期，按纪律下调预算（不跟着擦账，TestStoreOrderByTiebreak 会报「登记项过期」）。
+	orderByKnownGapBudget = 11
 )
 
 // orderByExemption 是一条「证明顺序无语义」的白名单登记。
@@ -1776,14 +1779,6 @@ var orderByExemptions = []orderByExemption{
 // 「谁排第一」「LIMIT 边界取到谁」不是不变量。1461f7e4 修的是其中一条的分页版
 // （ListUsersWithStatsPage → ORDER BY created_at, rowid），本表是同一类问题的存量清单。
 var orderByKnownGaps = []orderByKnownGap{
-	{
-		File:   "admin.go",
-		Clause: "order by u.created_at asc",
-		Risk: "ListUsersWithStats（管理后台用户页，admin_handlers.go:168）：created_at 是秒级时间戳，" +
-			"同一秒注册的两个用户谁在前不确定。现在碰巧稳定只因 users 没有 created_at 索引（走全表扫描按 rowid 出）——" +
-			"这是查询计划的巧合，不是不变量；一旦加索引或计划变化，顺序就变（1461f7e4 的 42.5% 随机红就是这么来的）",
-		Fix: "与分页版一致：ORDER BY u.created_at ASC, u.rowid ASC",
-	},
 	{
 		File:   "admin.go",
 		Clause: "order by coalesce((select max(s2.last_seen) from sessions s2 where s2.user_id = u.id), 0) desc, u.created_at asc limit 10",
@@ -1980,7 +1975,7 @@ func orderByGate(clauses []orderByClause, sch *orderBySchema, exs []orderByExemp
 //
 // 失败信息的形态（直接给修法，省掉一次「这是哪条子句」的往返）：
 //
-//	internal/store/admin.go:50 · 表 users
+//	internal/store/admin.go · 表 users	← 行号随源码变，下面取立项时的一条
 //	    子句：ORDER BY u.created_at ASC
 //	    users 的唯一键：列级 PRIMARY KEY（id）；列级 UNIQUE（username）
 //	    修法：末键后补一个唯一列：`ORDER BY u.created_at ASC, rowid`（users 的唯一键：id、username）
@@ -2143,8 +2138,12 @@ func TestStoreOrderByTiebreak(t *testing.T) {
 		// 断言失败信息指名道姓（文件:行 + 表 + 子句原文 + 末键为什么不唯一 + 修法），
 		// 并且不会被任何登记表兜住。
 		var mutated []orderByClause
+		// 期望的「文件:行」从扫描结果现算：本测试上面的注释/代码改一行，行号就变，
+		// 写死字面量会把「判据其实没点名」伪装成自测失败（2026-11-18 真实发生）。
+		wantSite := ""
 		for _, cl := range clauses {
 			if cl.file == "admin.go" && cl.clauseKey == "order by u.created_at asc, u.rowid asc limit ?" {
+				wantSite = fmt.Sprintf("internal/store/%s:%d", cl.file, cl.line)
 				mutated = append(mutated, orderByReanalyze(t, cl, func(sqlText string) string {
 					return strings.Replace(sqlText, "u.rowid ASC", "u.created_at ASC", 1)
 				}))
@@ -2152,10 +2151,13 @@ func TestStoreOrderByTiebreak(t *testing.T) {
 			}
 			mutated = append(mutated, cl)
 		}
+		if wantSite == "" {
+			t.Fatalf("变异目标子句不见了（admin.go 的分页 ORDER BY 改了原文？先修本自测的目标定位）")
+		}
 		_, got := orderByGate(mutated, sch, orderByExemptions, orderByKnownGaps, orderByKnownGapBudget)
 		var hit string
 		for _, p := range got.problems {
-			if strings.Contains(p, "internal/store/admin.go:91") {
+			if strings.Contains(p, wantSite) {
 				hit = p
 			}
 		}

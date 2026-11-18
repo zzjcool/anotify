@@ -73,8 +73,10 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 - **两处「测试退化」被 staticcheck 抓出来**（`SA4010`）：`api_page_test.go` 的 `liveIDs` 与
   `page_test.go` 的 `created` 都是「只 append、从未被读」——测试里建了 ground truth 却没有断言用它，
   于是「条数对」掩盖了「条不对」。已补回断言（不删变量），判据见 commit body。
-- **12 条 `ORDER BY` 无唯一末键**（已登记进 `orderByKnownGapBudget = 12`，只许降）：
-  `admin.go:50 ListUsersWithStats`（**与 1461f7e4 完全同形**，分页版已修、非分页版没修）、`admin.go:288/218/326`、`auth.go:208/355/531/600`、`deployment.go:279`、`devices.go:33/55`、`playbook.go:608`（**WHERE 缺 `deleted_at IS NULL`**，软删行可与活行撞 `(name,version)`，疑似功能 bug）。
+- **11 条 `ORDER BY` 无唯一末键**（已登记进 `orderByKnownGapBudget = 11`，只许降）：
+  `admin.go:220/290/328`、`auth.go:208/355/531/600`、`deployment.go:279`、`devices.go:33/55`、`playbook.go:608`（**WHERE 缺 `deleted_at IS NULL`**，软删行可与活行撞 `(name,version)`，疑似功能 bug）。
+  其中 `admin.go ListUsersWithStats`（**与 1461f7e4 完全同形**：分页版早修、非分页版漏着）已于
+  2026-11-18 补上 `, u.rowid` 并下调预算 12 → 11 —— 守卫当场报「登记项过期」，按纪律一起擦账。
 
 ### 1.2 L5「注解即外键」首次体检结果（已修）
 
