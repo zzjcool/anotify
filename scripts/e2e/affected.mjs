@@ -566,9 +566,25 @@ function runE2E(suites) {
 	// **显式 --parallel**：带套件名参数时执行器默认串行（为 e2e-one 兼容），
 	// 多套件串行会把「少跑几套」的收益吃掉一半。
 	// 顺序按注册表（见 registryOrder 的注释：信号量是按提交顺序发的）。
-	const args = ["./scripts/e2e/run_all.sh", "--parallel", ...inRunOrder(suites)];
+	const ordered = inRunOrder(suites);
+	const env = { ...process.env };
+
+	// 子集里挤着多个「矩阵类」套件时把 Chrome 并发降到 2（只在调用方没显式设置时）。
+	// 依据是实测反复出现的同一个形状：多个矩阵套件同时开跑（并发 4）时，
+	// frontend / ui_shift 会撞穿自己的 per-suite 预算被判 SIGKILL（false red），
+	// 而**同一份产物**在它们互相不竞争时只需两百秒上下。降并发比「跑错再重跑」便宜。
+	const heavy = ordered.filter((s) => HEAVY_SUITES.includes(s));
+	if (heavy.length >= 3 && env.E2E_CONCURRENCY === undefined) {
+		env.E2E_CONCURRENCY = "2";
+		console.log(
+			`ℹ️  选中 ${heavy.length} 个矩阵类套件（${heavy.join("/")}）→ 本次 E2E_CONCURRENCY=2` +
+				`（避免它们同时开跑撞穿 per-suite 预算；想覆盖就显式设 E2E_CONCURRENCY）`,
+		);
+	}
+
+	const args = ["./scripts/e2e/run_all.sh", "--parallel", ...ordered];
 	console.log(`▶ ${args.join(" ")}`);
-	const r = spawnSync("bash", args, { cwd: ROOT, stdio: "inherit" });
+	const r = spawnSync("bash", args, { cwd: ROOT, stdio: "inherit", env });
 	return r.status ?? 1;
 }
 
