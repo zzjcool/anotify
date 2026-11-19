@@ -113,6 +113,44 @@ go build ./...                                ✅
 go test ./...（除 cmd/anode）                  ✅
 ```
 
+> 说明：合并 `origin/main` 之前，`cmd/anode` 的四条 install-script 用例在本机失败
+> （`origin/main@2c115020` 的干净 worktree 上同样失败，属环境差异）；main 的 #440
+> （`fix/node`: 安装脚本 `--prefix` 下不再探测宿主安装）合并进来后，这四条在本机也随
+> `make ci` 一起绿了 —— 本轮最终 `make ci` 退出码 0。
+
+### e2e（改宿主 + 新增断言）
+
+- `f3-driver.mjs`：`PAGES` 加 `namespace` / `namespaces`；`MATRIX_BATCHES` 末段改用 `PAGES.length`（避免新页静默漏跑）。
+- `f3-ui-helper.mjs`：`PAGES` 同步；`ANCHORS` 加两页。
+- `f3-i18n-cases.mjs` / `f3-cases.mjs`：`anchors`、`query(...)`（`namespace` → `name=default`）、
+  `pageAnchors.node` 改 `#node-machine-vars`、`pageAnchors` 加两页。
+- `f3-node-retained.mjs`：
+  - 新增 `node-ia` 覆盖（`node-config` case 内）：节点页 **没有** `#node-namespace` / `#node-effective-vars`，
+    `#node-yaml-text` 是 Node 文档且不含 `status:`；
+  - 有效变量断言迁到 `namespace.html`（选 `anode-1`，切 `prod` 后 `NS_ONLY=prod-visible`）；
+  - `namespace-system` case：节点页不再有 `#system-config` / `#namespace-vars`；系统保留期在 `admin.html`，
+    命名空间 vars 在 `namespace.html`（同一套 409 草稿保留 / 显式重载 / 保存体形状断言）。
+- `f3-extra.mjs`：ABA/CAS 用例宿主改 `namespace.html`（`#namespace-*` 锚点不变）。
+- `affected-map.mjs`：`frontend.pages` 登记两页（`check-affected-map` 的「PAGES == web-src/pages」棘轮）。
+
+## 4. 验证证据
+
+### 门禁
+
+```
+make contract                                 ✅ 131 operations / 120 mux pattern 双向对账
+make check-agents                             ✅
+make lint-go                                  ✅
+make fe                                       ✅ class 869 / i18n 2111 引用点 / sitegen 23 页 × 4 语言 / 指纹
+make check-guard-selftest                     ✅
+make check-test-discipline                    ✅
+make check-annotations                        ✅（unmarked 385 = 基线，未上调）
+make check-affected-map                       ✅（PAGES == web-src/pages 覆盖检查绿）
+make check-secrets                            ✅
+go build ./...                                ✅
+go test ./...（除 cmd/anode）                  ✅
+```
+
 **`cmd/anode` 的四条 install-script 用例在本机失败，且不是本分支引入的**：
 
 ```
