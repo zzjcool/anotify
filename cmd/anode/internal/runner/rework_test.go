@@ -21,6 +21,11 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
+// 本文件（与 rework2_test.go）等异步 ACK/帧/真实请求一律走 waitTest，上限
+// testWaitLimit=15s，不再是 2s：这些等待等的是 goroutine 送出的异步事实，2s 硬墙钟
+// 在 CI 负载下会被吃掉，曾让「只改文档」的 PR 被合并闸随机拦红（anotify#478）。
+// 放宽的只有 deadline，断言条件没动：等不到那个 ACK 仍然 Fatal。
+
 // A real HTTP receiver blocks each response while the lease fakeclock advances.
 // The production Upload flow must cancel both its request and the receiver context.
 type heldUpload struct {
@@ -81,27 +86,19 @@ func slowUploadHarness(t *testing.T, files int) (*harness, *heldTransport, *Atte
 		default:
 			return false
 		}
-	}, 2*time.Second)
+	}, testWaitLimit)
 	t.Cleanup(att.cancelUpload) // unblock the transport even on a RED fatal assertion
 	return h, tr, att
 }
 func takeUpload(t *testing.T, tr *heldTransport) *heldUpload {
 	t.Helper()
-	select {
-	case u := <-tr.requests:
-		return u
-	case <-time.After(2 * time.Second):
-		t.Fatal("upload request not started")
-		return nil
-	}
+	return waitTest(t, tr.requests, testWaitLimit, "upload request not started", describeChan("heldTransport.requests", tr.requests))
 }
+
+// waitClosed 只把「等多久」交给 waitTest；"必须关闭"这条断言不变。
 func waitClosed(t *testing.T, ch <-chan struct{}, message string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(2 * time.Second):
-		t.Fatal(message)
-	}
+	waitTest(t, ch, testWaitLimit, message)
 }
 func renews(h *harness) int {
 	n := 0
@@ -119,7 +116,7 @@ func TestReworkSlowUploadsRenewAcross20And60(t *testing.T) {
 		u := takeUpload(t, tr)
 		// Each file occupies a real in-flight request for 25 simulated seconds.
 		h.clk.Advance(20 * time.Second)
-		h.waitUntil(t, "renew while process is already done", func() bool { h.clk.Advance(0); return renews(h) >= i+1 }, time.Second)
+		h.waitUntil(t, "renew while process is already done", func() bool { h.clk.Advance(0); return renews(h) >= i+1 }, testWaitLimit)
 		h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "slow", Attempt: 1, LeaseID: "lease-slow"})
 		h.clk.Advance(5 * time.Second)
 		if err := u.req.Context().Err(); err != nil {
@@ -127,7 +124,7 @@ func TestReworkSlowUploadsRenewAcross20And60(t *testing.T) {
 		}
 		close(u.release)
 	}
-	h.waitUntil(t, "result submitted but ACK delayed", func() bool { return findResult(h.sender.snapshot(), "slow", 1) != nil }, time.Second)
+	h.waitUntil(t, "result submitted but ACK delayed", func() bool { return findResult(h.sender.snapshot(), "slow", 1) != nil }, testWaitLimit)
 	res := findResult(h.sender.snapshot(), "slow", 1)
 	if res == nil || res.Phase != protocol.TaskPhaseSucceeded || len(res.Result.Artifacts) != 3 {
 		t.Fatalf("three confirmed uploads must succeed: %+v", res)
@@ -141,7 +138,7 @@ func TestReworkSlowUploadsRenewAcross20And60(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		n := renews(h)
 		h.clk.Advance(20 * time.Second)
-		h.waitUntil(t, "pending result must renew until trusted ACK", func() bool { h.clk.Advance(0); return renews(h) > n }, time.Second)
+		h.waitUntil(t, "pending result must renew until trusted ACK", func() bool { h.clk.Advance(0); return renews(h) > n }, testWaitLimit)
 		h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "slow", Attempt: 1, LeaseID: "lease-slow"})
 		if !h.r.ActiveTasks()["slow"] || !att.authorized() {
 			t.Fatal("pending result ACK lost slot/authorization")
@@ -185,7 +182,7 @@ func TestReworkExplicitCancelStopsUploadAndReaps(t *testing.T) {
 	h.cancel("slow", 1, "lease-slow")
 	waitClosed(t, u.cancelled, "explicit cancel did not cancel upload context")
 	waitClosed(t, att.done, "cancelled upload did not settle")
-	ack := h.waitFrame(t, func(f any) bool { c, ok := f.(*protocol.CancelAckFrame); return ok && c.TaskID == "slow" }, time.Second).(*protocol.CancelAckFrame)
+	ack := h.waitFrame(t, func(f any) bool { c, ok := f.(*protocol.CancelAckFrame); return ok && c.TaskID == "slow" }, testWaitLimit).(*protocol.CancelAckFrame)
 	if !ack.ProcessGroupReaped || ack.LeaseID != "lease-slow" || ack.Slot == nil || *ack.Slot != 0 {
 		t.Fatalf("wrong physical cancel ACK: %+v", ack)
 	}
@@ -221,7 +218,7 @@ func TestReworkFutureGrantMustExactlyMatchProposedAttempt(t *testing.T) {
 	h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "future" && r.Attempt == 1 && r.Phase == protocol.TaskPhaseSucceeded
-	}, 2*time.Second)
+	}, testWaitLimit)
 	if _, err := os.Stat(filepath.Join(h.workRoot, hexNameForTest("future"), "2")); !os.IsNotExist(err) {
 		t.Fatalf("future attempt created work: %v", err)
 	}
@@ -249,7 +246,7 @@ func TestReworkLateOldGrantPreservesNewReservation(t *testing.T) {
 	h.waitFrame(t, func(f any) bool {
 		r, ok := f.(*protocol.TaskResultFrame)
 		return ok && r.TaskID == "same" && r.LeaseID == "new-lease" && r.Phase == protocol.TaskPhaseSucceeded
-	}, 2*time.Second)
+	}, testWaitLimit)
 	data, err := os.ReadFile(filepath.Join(h.workRoot, hexNameForTest("same"), "1", "executions"))
 	if err != nil || string(data) != "once" {
 		t.Fatalf("new assignment must execute exactly once: %q %v", data, err)
@@ -309,11 +306,11 @@ func TestReworkTerminalUnreapedRestartProtectsUntilPhysicalDeath(t *testing.T) {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			_ = cmd.Wait()
 			reaped = true
-			h.waitUntil(t, "restarted runner physically observes reap", func() bool { return !r.ActiveTasks()["historical"] }, 2*time.Second)
+			h.waitUntil(t, "restarted runner physically observes reap", func() bool { return !r.ActiveTasks()["historical"] }, testWaitLimit)
 			ack := h.waitFrame(t, func(f any) bool {
 				c, ok := f.(*protocol.CancelAckFrame)
 				return ok && c.TaskID == "historical" && c.ProcessGroupReaped
-			}, time.Second).(*protocol.CancelAckFrame)
+			}, testWaitLimit).(*protocol.CancelAckFrame)
 			if ack.Attempt != 3 || ack.LeaseID != "historical-lease" || ack.Slot == nil || *ack.Slot != 1 {
 				t.Fatalf("reap ACK lost historical binding: %+v", ack)
 			}
@@ -352,7 +349,7 @@ func TestReworkShrinkCountsOutOfRangeRunningAndReservations(t *testing.T) {
 					att.mu.Lock()
 					defer att.mu.Unlock()
 					return att.pgid > 0
-				}, time.Second)
+				}, testWaitLimit)
 			} else if occupied == "recovered" {
 				cmd, err := startSleepGroup(t, 30)
 				if err != nil {
@@ -378,7 +375,7 @@ func TestReworkShrinkCountsOutOfRangeRunningAndReservations(t *testing.T) {
 				}
 			}
 			h.grant("first", 1, "first-lease", "first-token")
-			h.waitUntil(t, "slot0 ends and is idle", func() bool { return !h.r.ActiveTasks()["first"] }, 2*time.Second)
+			h.waitUntil(t, "slot0 ends and is idle", func() bool { return !h.r.ActiveTasks()["first"] }, testWaitLimit)
 			h.mu.Lock()
 			h.limits = protocol.Limits{Total: 1, PerCapability: map[string]int{"echo": 2}}
 			h.mu.Unlock()
@@ -400,7 +397,7 @@ func TestReworkShrinkCountsOutOfRangeRunningAndReservations(t *testing.T) {
 				_ = child.Wait()
 			}
 			if occupied != "reservation" {
-				h.waitUntil(t, "outside physically reaped", func() bool { return !h.r.ActiveTasks()["outside"] }, 2*time.Second)
+				h.waitUntil(t, "outside physically reaped", func() bool { return !h.r.ActiveTasks()["outside"] }, testWaitLimit)
 			}
 			h.dispatch("after-reap", 1, other, otherDigest)
 			if !hasAccept(h.sender.snapshot(), "after-reap") {
