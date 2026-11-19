@@ -108,6 +108,46 @@ export async function nodeRetained(d,mode){
     // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
     // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
     assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
+    /* #454：YAML 编辑面必须保住 `tags`（P1 数据丢失）。`GET …/config` 是 W5 wrapper
+       （namespaces/vars/limits + revision 三兄弟）——**不返回 tags**；页面只能从权威读面
+       `GET /v1/nodes/{name}` 的 spec.tags 回读现值。把「读面没告诉我」写成 `tags: []`
+       会让「打开编辑 → 改点别的 → 保存 YAML」静默清空标签（两条写入口都把显式空数组当清空）。 */
+    let expectedTags;
+    if (d.mock) {
+      expectedTags = (await req(nodePath)).body.spec.tags; // 预览种子：['build','prod']
+    } else {
+      const beforeTag = (await req(nodePath)).body;
+      // 真实写入口（PATCH 是 merge-patch 信封：spec 内省略的键 = 不动）。
+      // limits 一并给回一份合法值：本用例前面那次 `PUT …/config` 是**全量替换**，把 limits
+      // 清成了 {}，而页面会把空的 total 序列化成 `total: null` —— 服务端 ValidateLimits
+      // 会拒（400 value_invalid，相邻缺陷，已登记在 docs/reports/node-yaml-tags.md，不在此修）。
+      const tagged = await req(nodePath, { apiVersion: 'anotify/v1', kind: 'Node', metadata: { resourceVersion: beforeTag.metadata.resourceVersion }, spec: { tags: ['gpu', 'prod'], limits: { total: 4, perCapability: { '*': 2 } } } }, 'PATCH');
+      assert.equal(tagged.status, 200, 'T1 seam: PATCH spec.tags 必须 200');
+      assert.deepEqual(tagged.body.spec.tags, ['gpu', 'prod']);
+      // 缺陷根因就是「读面缺这个字段」：钉成事实，而不是靠猜。
+      assert.equal('tags' in (await req(configPath)).body, false, '/config（W5 wrapper）不返回 tags');
+      // 重新打开页面：tags 的现值只能从 Node 资源读到（页面重新走一次 boot）。
+      await goto('node', 'en', '?id=anode-1');
+      await page.locator('#node-config-save:not([disabled])').waitFor();
+      // 两个折叠块（原始 JSON / YAML 编辑）刷新后回到收起态：点按钮前要展开。
+      await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
+      await page.locator('#node-yaml-edit').evaluate(el => { el.open = true; });
+      expectedTags = ['gpu', 'prod'];
+    }
+    assert.ok(expectedTags.length >= 1, 'T1 seam: 节点必须带 tags');
+    /* 用户路径：改一下表单（值原样填回，只有 input 事件重要）→ 页面把草稿重新序列化成
+       YAML。没有修复时这一步就是「tags 被写成 []」的那个瞬间。 */
+    await page.locator('#node-vars').evaluate(el => el.dispatchEvent(new Event('input', { bubbles: true })));
+    const tagsInDraft = '  tags:\n' + expectedTags.map(tag => '    - ' + tag).join('\n') + '\n';
+    const draftYAML = await page.locator('#node-yaml-input').inputValue();
+    assert.ok(draftYAML.includes(tagsInDraft), 'YAML 草稿必须带 tags（把 `|| []` 写回去这条必红）：\n' + draftYAML);
+    if (!d.mock) {
+      // 保存：写进去的文本里 tags 在 → 服务端读回的 tags 仍在（不回退成空）。
+      await page.locator('#node-yaml-save').click();
+      await waitState('node-yaml-state', 'Saved');
+      assert.deepEqual((await req(nodePath)).body.spec.tags, expectedTags, '保存 YAML 后 tags 必须仍在');
+      assert.ok((await page.locator('#node-yaml-text').innerText()).includes('    - ' + expectedTags[0]), '保存后的 YAML 读面仍含 tags');
+    }
     /* #436：local > node > namespace 的有效值属于**命名空间维度**，已搬到
        namespace.html（选节点，而不是在节点页选 ns）。这里继续断言同一份事实：
        切到 prod 之后 NS_ONLY 显示 prod 的值，来源层仍然逐键由服务端给出。 */
@@ -125,7 +165,7 @@ export async function nodeRetained(d,mode){
     await page.locator('#namespace-effective-vars [data-key="NS_ONLY"]').waitFor();
     assert.equal(await page.locator('#namespace-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
     await noLeaks(); await shot('ns-context-limits-revisions'); await clean('Node config and namespace context');
-    check('GET W5 config + Node YAML document, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied revisions, local>node>ns sources on the namespace page, per-leaf two-layer limits and machine applied excludes ns');
+    check('GET W5 config + Node YAML document, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied revisions, YAML save keeps spec.tags when /config omits it (#454), local>node>ns sources on the namespace page, per-leaf two-layer limits and machine applied excludes ns');
   }
   if (mode === 'namespace-system') {
     // IA（#436）：节点列表页**不再**承载系统保留期与命名空间 vars；两者各自归位。

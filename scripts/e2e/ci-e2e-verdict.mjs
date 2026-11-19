@@ -44,9 +44,13 @@ export function caseOf(failure) {
  * 条目是否声明「整套」：`"case": "*"`（推荐）或 `"case": null`（历史写法，等价）。
  * 只有这两种能覆盖「套件没有 results」；它们**不**覆盖任何一个具体 case 的失败。
  */
-export function isWholeSuite(entry) {
+export function entryTiers(entry) {
 	const c = entry?.case ?? null;
-	return c === null || c === "*";
+	return Array.isArray(c) ? c : [c];
+}
+
+export function isWholeSuite(entry) {
+	return entryTiers(entry).some((c) => c === null || c === "*");
 }
 
 /**
@@ -65,8 +69,10 @@ export function validateEntries(known) {
 		}
 		if (typeof e.suite !== "string" || !e.suite.trim()) problems.push(`${at} 缺 suite`);
 		const c = e.case;
-		const shapeOk = c === "*" || c === null || (typeof c === "string" && c.trim().length > 0);
-		if (!shapeOk) problems.push(`${at}.case 必须是具体 case 名、"*"（整套）或 null（= "*"）`);
+		const okTier = (v) => v === "*" || v === null || (typeof v === "string" && v.trim().length > 0);
+		const shapeOk = Array.isArray(c) ? c.length > 0 && c.every(okTier) : okTier(c);
+		if (!shapeOk)
+			problems.push(`${at}.case 必须是具体 case 名、"*"（整套）、null（= "*"）或它们的非空数组`);
 		if (typeof e.reason !== "string" || !e.reason.trim()) problems.push(`${at} 缺 reason`);
 		if (typeof e.tracking !== "string" || !e.tracking.trim()) problems.push(`${at} 缺 tracking`);
 	});
@@ -89,7 +95,9 @@ export function verdict({ results, known }) {
 		entries.find(
 			(e) =>
 				e.suite === suite &&
-				(caseName === null ? isWholeSuite(e) : (e.case ?? null) === caseName),
+				(caseName === null
+					? isWholeSuite(e)
+					: entryTiers(e).some((t) => t !== null && t !== "*" && t === caseName)),
 		);
 
 	for (const r of results) {
@@ -115,9 +123,10 @@ export function verdict({ results, known }) {
 		const failedCases = new Set(
 			(results.find((r) => r.suite === e.suite)?.failures || []).map(caseOf),
 		);
-		const present = isWholeSuite(e)
-			? Boolean(results.find((r) => r.suite === e.suite)?.missing)
-			: failedCases.has(e.case);
+		const wholeSuiteMissing = Boolean(results.find((r) => r.suite === e.suite)?.missing);
+		const present = entryTiers(e).some((t) =>
+			t === null || t === "*" ? wholeSuiteMissing : failedCases.has(t),
+		);
 		if (!present) stale.push(e);
 	}
 
@@ -183,6 +192,13 @@ function selfTest() {
 	// 套件级条目：只覆盖「整套没有 results」
 	const knownSuite = {
 		entries: [{ suite: "frontend", case: "*", reason: "整套崩", tracking: "#431" }],
+	};
+	// 条目可同时登记「整套」与具体 case（同一条环境故障的两种观测形态）
+	const knownBoth = {
+		entries: [{ suite: "ui_shift", case: ["*", "interact-dialogs"], reason: "两种死法", tracking: "#431" }],
+	};
+	const knownStarOnly = {
+		entries: [{ suite: "ui_shift", case: ["*"], reason: "只登记整套", tracking: "#431" }],
 	};
 	const cases = [
 		{
@@ -266,6 +282,30 @@ function selfTest() {
 			expectTolerated: 0,
 			expectBlocking: 0,
 			expectStale: 1,
+		},
+		{
+			name: "★ case 数组 [\"*\", 具体名] + 整套没有 results → 容忍",
+			results: [{ suite: "ui_shift", missing: "没有 results" }],
+			known: knownBoth,
+			expectOk: true,
+			expectTolerated: 1,
+			expectBlocking: 0,
+		},
+		{
+			name: "★ case 数组 [\"*\", 具体名] + 该具体 case 失败 → 容忍",
+			results: [{ suite: "ui_shift", failures: ["interact-dialogs — Target page, context or browser has been closed"] }],
+			known: knownBoth,
+			expectOk: true,
+			expectTolerated: 1,
+			expectBlocking: 0,
+		},
+		{
+			name: "★ 只登记 [\"*\"] + 具体 case 失败 → 仍然拦（数组化不放宽这条不变量）",
+			results: [{ suite: "ui_shift", failures: ["interact-dialogs — Target page, context or browser has been closed"] }],
+			known: knownStarOnly,
+			expectOk: false,
+			expectTolerated: 0,
+			expectBlocking: 1,
 		},
 	];
 	for (const c of cases) {
