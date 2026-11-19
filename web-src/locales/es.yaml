@@ -1808,10 +1808,6 @@ nodes:
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
 
     node_subtitle: "Dimensión de nodo: identidad y conexión · espacios autorizados · configuración (YAML) · ranuras físicas"
-    moved_title: "La configuración de espacios de nombres y del sistema no está en esta página"
-    moved_note: "Las vars de un espacio de nombres son configuración de ese espacio (movidas a su página); la retención es configuración del sistema (movida al panel de administración). Esta página solo conserva la lista de autorización: qué espacios pueden usar esta máquina."
-    moved_ns: "Ir a espacios de nombres"
-    moved_system: "Ir al panel de administración"
     yaml_title: "YAML del nodo (apiVersion anotify/v1 · kind Node)"
     yaml_hint: "Documento canónico reconstruido por el servidor a partir de los hechos actuales: solo los campos de spec, sin status ni campos privados de la máquina (token / server / listen / envPassthrough nunca llegan al hub). Pegue el documento completo para guardar; los cambios del formulario se sincronizan en el mismo texto."
     yaml_view: "Documento actual"

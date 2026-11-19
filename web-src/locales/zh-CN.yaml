@@ -1810,10 +1810,6 @@ nodes:
     batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
 
     node_subtitle: "节点维度：身份与连接 · 授权命名空间 · 配置（YAML）· 物理槽位"
-    moved_title: "命名空间与系统配置不在这页"
-    moved_note: "命名空间 vars 是命名空间级配置（已迁到命名空间页）；系统保留期是系统级配置（已迁到管理后台）。节点页只保留「这个节点能被哪些命名空间使用」的授权列表。"
-    moved_ns: "去命名空间页"
-    moved_system: "去管理后台"
     yaml_title: "节点 YAML（apiVersion anotify/v1 · kind Node）"
     yaml_hint: "服务端按当前事实重建的规范化文档：只含 spec 的字段集，不含 status 与本机私有字段（token / server / listen / envPassthrough 不在中枢）。整份贴回即可保存；表单改动会同步成同一份文本。"
     yaml_view: "当前文档"
