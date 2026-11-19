@@ -192,8 +192,20 @@ GitHub runner 比开发机慢，f3 的浏览器矩阵套件会偶发**环境性*
 - **清单之外的失败 → 红，拦合并**
 - 清单项这次没失败 → 只提示删掉那一行（棘轮只许变小，最终目标是 `entries` 为空数组）
 
-判定器是 `scripts/e2e/ci-e2e-verdict.mjs`（自带变异自测：塞一个清单之外的假失败必须 `exit 1`），
-已挂进 `make check-affected-map`。
+条目有两种粒度，按**实际观测到的**那一档登记（同一故障不并存两条）：
+
+| 条目 | 覆盖什么 | 不覆盖什么 |
+| --- | --- | --- |
+| `{"suite": X, "case": "<case 名>"}` | 该 suite 里这个 case 的断言失败 | 其他 case、整套崩 |
+| `{"suite": X, "case": "*"}` | 该 suite **整套没有 `results/<suite>.json`**（进程崩溃 / 被 SIGKILL，一条 case 名都拿不到） | **任何具体 case 的失败**（`*` 不是万能豁免） |
+
+`"case": null` 与 `"*"` 等价（历史写法，新条目用 `"*"`）。分粒度的原因：#449 里
+`ui_shift` 整个套件没产出 results，而清单只登记了 `interact-dialogs` —— 同一个环境故障
+按 case 死被容忍、按套件死却被判「清单之外」。写错形状的条目（`case` 拼错、缺 reason/tracking）
+会直接 `exit 2`，因为那种条目永远匹配不上 = 静默不生效。
+
+判定器是 `scripts/e2e/ci-e2e-verdict.mjs`（自带变异自测：清单外必须 `exit 1`、
+`*` 只在「整套没有 results」时生效），已挂进 `make check-affected-map`。
 
 ## 测试矩阵（全 case 清单）
 
