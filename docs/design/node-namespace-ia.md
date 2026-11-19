@@ -1,6 +1,6 @@
 # 节点 / 命名空间 / 系统的信息架构（node-namespace-ia）
 
-> 状态：**设计 + 分阶段实施**（本轮落地 ① 与 ②，③④ 见 §6）
+> 状态：**设计 + 分阶段实施**（①② 见 PR #441；③④ 的 YAML 只读面与系统区块见 `docs/reports/ns-detail-and-system.md`）
 > 契约真源：`docs/design/v4/decisions.md` > `internal/store/AGENTS.md` / `internal/server/AGENTS.md` > 本文。
 > 本文写的是「配置归谁、页面在哪、YAML 长什么样」，不改 `Node` / `Namespace` 的资源定义本身。
 >
@@ -158,24 +158,39 @@ spec:
   放进可编辑文档只会让人以为能改。想看状态事实用 JSON 读面（页面上就是那一圈只读卡片）。
 - `metadata.resourceVersion` 是写回的 CAS 令牌（`PUT` 时必填，缺失 400、旧值 409）。
 
-### 2.2 Namespace 文档（`GET /v1/namespaces/{name}/yaml`，③ 落地）
+### 2.2 Namespace 文档（`GET /v1/namespaces/{name}/yaml`，③ 已落地）
 
 ```yaml
+# Namespace document (read-only). spec.vars are namespace defaults; a node may
+# override them (merge order: local > node > namespace). Writes go through
+# PUT /v1/namespaces/{name}/config (CAS) - this endpoint deliberately has no PUT.
 apiVersion: anotify/v1
 kind: Namespace
 metadata:
   name: default
-  displayName: 默认命名空间
-  uid: ns_01H...                # 只读
   resourceVersion: rv1:ns_01H...:3
-spec: {}                        # 无写开关（未批准功能）
-status:                         # 只读（counts / stats）
-  counts: {capabilities: 12, nodes: 3, sources: 4, tasks: 91}
+spec:
+  vars:
+    # namespace defaults; a node may override them (see the per-node effective values table)
+    LOG_LEVEL: info
 ```
 
-命名空间 vars 不是 `spec` 字段而是配置子资源（`api-conventions.md §7.5` 冻结的 wrapper 形状）。
-③ 的 Namespace YAML **只读**：写 vars 仍走 `PUT /v1/namespaces/{name}/config`（CAS + revision 语义
-与现有 UI 一致），YAML 里以注释标明「vars 见配置子资源」——不发明第二种写入口。
+实现口径（与上面的早期草图不同，以本条为准）：
+
+- **`spec.vars` 就是命名空间的默认值**（用户批准的文档形状）。JSON 侧它仍是配置子资源
+  （`api-conventions.md §7.5` 的 wrapper），YAML 文档把它折叠进 `spec` —— 一份可复制的配置工件
+  比「去读另一个端点」更有用。
+- **只读，且没有 PUT**：写 vars 的唯一入口是 `PUT /v1/namespaces/{name}/config`（CAS +
+  `namespaceVarsRevision`）。文档头部注释写明这一点，页面文案解释为什么（第二条写路径会让
+  「谁赢了」无法判定）。生产 mux 对 `PUT …/yaml` 落 404（静态兜底），本包单测只断言「不是 2xx」。
+- **`status` / `metadata.uid` / `displayName` 不出现**：前两者是派生/内部身份（和 Node YAML
+  同一口径）；`displayName` 是**用户数据**，而 `<pre>` 里的多语言文本会被 en/es 的 i18n
+  残留扫描当成漏翻 —— 要看它请读 JSON 读面。
+- **注释用英文**：文本由服务端生成、不随 locale 翻译（中文解释在页面文案 `namespace.v4.*` 里）。
+- **`metadata.resourceVersion` 是 Namespace 对象（展示名）的令牌**，不是 vars 的令牌；
+  vars 的令牌属于 config 子资源，不在这里冒充。
+- **System 文档同理**（④）：`GET /v1/system/yaml` → `kind: SystemConfig` +
+  `spec.retention.{eventTtlSec,taskTtlSec,resultTtlSec}`，只读，管理员面（非 admin 403）。
 
 ### 2.3 与 `/etc/anode/anode.yaml` 的字段对齐（重要边界）
 
@@ -248,6 +263,8 @@ status:                         # 只读（counts / stats）
 | --- | --- | --- |
 | `GET` | `/v1/nodes/{name}/yaml` | 规范化 Node 文档文本 `{"yaml": "…"}`；401/404/500 |
 | `PUT` | `/v1/nodes/{name}/yaml` | 严格解析 → 与 `PATCH` 同一条 store 路径；400/401/404/409/500 |
+| `GET` | `/v1/namespaces/{name}/yaml` | 规范化 Namespace 文档文本（只读，**没有 PUT**）；401/404/500 —— ③ |
+| `GET` | `/v1/system/yaml` | 规范化 SystemConfig 文档文本（只读，管理员）；401/403/500 —— ④ |
 
 - 路由挂在 `internal/server/resource_node.go` 的 `register`（Node 资源域，cluster 级，只包 `session`）。
 - 请求体：`{"yaml": "…"}`（`ResourceYAML`），上限 2 MiB（`yamlDocTextLimit`），与能力/源同口径。
@@ -311,14 +328,14 @@ status:                         # 只读（counts / stats）
   表单 ↔ YAML 同步），mock 补 `GET/PUT /v1/nodes/{name}/yaml`。
 - 验收：§5 的 2 + `TestOpenAPIParity*` + `go test ./internal/server/...` 绿。
 
-### ③ `feat(web): 命名空间详情页补齐（上下文与 YAML 只读）`
+### ③ `feat(web): 命名空间详情页补齐（上下文与 YAML 只读）`（已落地）
 
 - `Namespace` YAML（只读，vars 以注释指路）+ `GET /v1/namespaces/{name}/yaml`（若做）。
 - 从节点页迁来的「某 ns 的有效变量（逐节点）」视图：`status.effectiveVars` 的调用落在 ns 页，
   选节点而不是选 ns。
 - 验收：namespace 页能看 revisions / counts / 每节点有效值；e2e 覆盖。
 
-### ④ `refactor(web): 系统配置成区块（或 system.html），并给 System YAML`
+### ④ `refactor(web): 系统配置成区块（或 system.html），并给 System YAML`（已落地）
 
 - 若 ① 已把 `#system-config` 放进 admin，则 ④ 只做「系统 YAML + 权限态文案 + 保留期校验提示」
   与 `admin.html` 的分组结构；否则 ④ 是整块迁位。
