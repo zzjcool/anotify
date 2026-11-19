@@ -2038,8 +2038,9 @@
 
   // ==================== 恢复码 ====================
   let recoveryPlaintext = null; // 仅 regenerate / 本页会话内保留
-  let recoveryStatus = { unusedCount: 0, hasCodes: false };
-  let recoveryDemo = false;
+  // null = 状态不可知（接口失败）。这时页面上不出现任何码，也不冒充「暂无恢复码」
+  // —— #453：旧实现在这份状态下本地造了一组 DEMO 假码并提示「请立即保存」。
+  let recoveryStatus = null;
 
   function copyRecoveryText(text, btn) {
     const labelKey = "security.recovery.copy";
@@ -2101,7 +2102,7 @@
 
     copyAll.classList.add("hidden");
     grid.replaceChildren();
-    if (recoveryDemo) {
+    if (!recoveryStatus) {
       hint.textContent = t(
         "security.recovery.toast_status_failed",
         "无法加载恢复码状态",
@@ -2130,12 +2131,11 @@
         unusedCount: data.unusedCount,
         hasCodes: !!data.hasCodes,
       };
-      recoveryDemo = false;
       // 刷新后不再保留明文
       if (!recoveryPlaintext) recoveryPlaintext = null;
     } else {
-      recoveryDemo = true;
-      recoveryStatus = { unusedCount: 0, hasCodes: false };
+      // 状态不可知：保持 null，渲染「无法加载恢复码状态」，绝不填任何码。
+      recoveryStatus = null;
     }
     renderRecovery();
   }
@@ -2159,25 +2159,6 @@
       btn.textContent = t("security.recovery.regenerating", "生成中…");
     }
     try {
-      if (recoveryDemo) {
-        // 演示：本地假码
-        recoveryPlaintext = Array.from({ length: 8 }, (_, i) => {
-          const raw = ("DEMO" + (i + 1) + "CODEXXXXXXXX").slice(0, 16);
-          return (
-            raw.slice(0, 4) +
-            "-" +
-            raw.slice(4, 8) +
-            "-" +
-            raw.slice(8, 12) +
-            "-" +
-            raw.slice(12, 16)
-          ).toUpperCase();
-        });
-        recoveryStatus = { unusedCount: 8, hasCodes: true };
-        renderRecovery();
-        toast(t("security.recovery.toast_regen", "已生成新恢复码，请立即保存"));
-        return;
-      }
       const res = await fetch(API + "/auth/recovery/regenerate", {
         method: "POST",
         credentials: "same-origin",
@@ -2196,6 +2177,8 @@
       const codes = Array.isArray(data.recoveryCodes)
         ? data.recoveryCodes.filter(Boolean)
         : [];
+      // 200 但没给码 = 生成失败：不能当成功渲染（否则又是一次「空成功」）
+      if (!codes.length) throw new Error("no recovery codes returned");
       recoveryPlaintext = codes;
       recoveryStatus = {
         unusedCount: codes.length,
@@ -2204,11 +2187,11 @@
       renderRecovery();
       toast(t("security.recovery.toast_regen", "已生成新恢复码，请立即保存"));
     } catch (e) {
+      // #453：失败只报错。绝不渲染任何码（含占位/示例/演示）——用户把假码当成
+      // 真码存下，真丢设备时就再也进不来了。详情只进 console，页面上给明确指引。
+      console.error("[recovery] regenerate failed:", e);
       toast(
-        t("security.recovery.toast_regen_failed", "重新生成失败：{msg}").replace(
-          "{msg}",
-          e.message || e,
-        ),
+        t("security.recovery.toast_regen_failed", "生成失败，请重试"),
         true,
       );
     } finally {

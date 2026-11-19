@@ -748,7 +748,7 @@ security:
     hint_plaintext: Copia y guarda ahora · al salir o actualizar solo verás la cantidad restante
     confirm_regen: Regenerar anula de inmediato todos los códigos antiguos. ¿Continuar?
     toast_regen: Nuevos códigos generados — guárdalos ahora
-    toast_regen_failed: 'Error al regenerar: {msg}'
+    toast_regen_failed: No se pudo generar. Inténtalo de nuevo.
     toast_status_failed: No se pudo cargar el estado de los códigos
     copy_all: Copiar todos
     copy: Copiar

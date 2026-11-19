@@ -748,7 +748,7 @@ security:
     hint_plaintext: Copy and save now · after you leave or refresh, only the remaining count is shown
     confirm_regen: Regenerating voids all old recovery codes immediately. Continue?
     toast_regen: New recovery codes generated — save them now
-    toast_regen_failed: 'Regenerate failed: {msg}'
+    toast_regen_failed: Generation failed. Please try again.
     toast_status_failed: Could not load recovery-code status
     copy_all: Copy all
     copy: Copy
