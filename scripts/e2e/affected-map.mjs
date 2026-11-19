@@ -184,7 +184,7 @@ export const SUITE_SURFACES = {
 		pages: ["capabilities", "index", "login", "nodes", "sources"],
 	},
 	recovery_next: {
-		why: "恢复码登录跳转（?next= 白名单）",
+		why: "恢复码登录跳转（?next= 白名单）+ #453 重新生成失败时不造假码",
 		pages: ["keys", "login", "security"],
 	},
 	events_paging: {
