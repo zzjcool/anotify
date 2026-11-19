@@ -5,6 +5,7 @@
 - 基线: `origin/feat/node-namespace-ia` @ `7cd93dbb`（PR [#441](https://github.com/zzjcool/anotify/pull/441)，①② 在那边；
   该分支已把 `origin/main` 合进来，本 PR 直接 rebase 到它）
 - 本分支: `feat/ns-detail-yaml`
+- PR: [#444](https://github.com/zzjcool/anotify/pull/444)
 - 本轮: **③ 命名空间详情页补齐**（只读 Namespace YAML + 逐节点有效值表）、
   **④ 系统配置成区块**（只读 System YAML + 权限态文案 + 危险操作分区）
 - 依赖：**#441 先合**（本 PR 以它的分支为基线，不重复它已交付的内容）
@@ -265,6 +266,12 @@ E2E_MOCK_ONLY=1 … --case namespace-system                       → 1 通过 /
 
 ## 8. 提交与 PR
 
-<!-- COMMITS -->
+- `feat(server): 只读 Namespace / System YAML 读面，系统保留期收紧为管理员面`
+- `feat(web): 命名空间详情页补只读 YAML 与逐节点有效值表，系统配置分区块`
+- `test(e2e): 覆盖 ns 列表到详情、只读 YAML 与非管理员的 403`
+- `docs: 记录 #436 ③④ 的交付与系统配置授权口径`
+
+rebase 到 `7cd93dbb`（#441 合并 main 后的基线）后重跑：`make ci` 全绿、
+full e2e 28/28 全绿（passed 2358 / failed 0）。
 
 PR 基于 `feat/node-namespace-ia`，PR 描述里注明**依赖 #441 先合**；不 force push、不直推 main。
