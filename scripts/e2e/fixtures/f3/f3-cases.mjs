@@ -12,6 +12,7 @@ import { overviewAll } from './f3-overview-all.mjs';
 import { sourceEditJump } from './f3-source-edit.mjs';
 import { playbook } from './f3-playbook.mjs';
 import { nodeRetained } from './f3-node-retained.mjs';
+import { nsScopeTopbar } from './f3-ns-scope.mjs';
 import { bootstrap, aba, matrix, historyMask } from './f3-extra.mjs';
 const definitions = [];
 const add=(id,run,options={})=>definitions.push({id,run,options});
@@ -126,6 +127,10 @@ add('namespace-detail',d=>nodeRetained(d,'namespace-detail'),{expectHttpStatus:[
   // （与 production_mux_test 的「退役写 = 404」同一已知行为）。它必须**不是** 2xx。
   {status:404,path:'/v1/namespaces/default/yaml',exact:true,note:'只读：Namespace YAML 没有写路径（PUT 不被接受）'},
 ]});
+// #455：顶栏切 ns 必须与页面编辑目标一致。namespace.html 的 `?name=` 就是这一页的
+// 范围，顶栏切换要去改它并整页跳转；页内下拉改 ns 时顶栏两个显示面要就地跟上。
+// 这条用例用**真实 PUT** 证明「顶栏显示 prod ⇒ 写进 prod、default 不变」。
+add('ns-scope-topbar',nsScopeTopbar);
 add('node-aba',aba);
 // retained-security-permissions：用错误的当前密码移除密码必须 400（账户已有密码，
 // 用例先走真实 POST /v1/auth/password 建密码再验这个失败面）。

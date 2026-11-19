@@ -101,7 +101,9 @@
 
   // 布局必须挂：页头/侧栏/语言切换器都在 mountLayout 里生成（漏了它页面只有裸内容，
   // i18n 矩阵的「四个真实语言链接」会直接 0 !== 4）。
-  A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle') });
+  // scopeParam: 'name' —— 本页的范围由 `?name=` 表达（不是全站约定的 `?namespace=`）：
+  // 顶栏切 ns 时必须跳 `namespace.html?name=<新ns>`，否则顶栏显示 B、表单还在写 A（#455）。
+  A.mountLayout({ active: 'namespaces', title: t('title'), subtitle: t('subtitle'), scopeParam: 'name' });
   let selectedNamespace = new URLSearchParams(location.search).get('name') || '';
   let nsConfig = null, nsOriginal = '', nsLoaded = '';
   // 命名空间配置的「当前编辑器身份」：请求代号 + 真正加载进来的范围（与节点页同一套
@@ -326,7 +328,12 @@
     if ($('namespace-vars').value !== nsOriginal && !(await A.confirmDanger({ body: n('reload_confirm') }))) { $('config-namespace').value = selectedNamespace; return; }
     selectedNamespace = $('config-namespace').value;
     // URL 跟着走（可收藏、可分享），但不重新导航：编辑器身份由上面那套代号判定。
-    const url = new URL(location.href); url.searchParams.set('name', selectedNamespace); history.replaceState(null, '', url);
+    // `?namespace=`（其他页面的跳页深链约定）若在就同步成同一个值，URL 里不留两种读法。
+    const url = new URL(location.href); url.searchParams.set('name', selectedNamespace);
+    if (url.searchParams.has('namespace')) url.searchParams.set('namespace', selectedNamespace);
+    history.replaceState(null, '', url);
+    // 顶栏（面包屑 + 切换器勾选）跟着走：同一页不允许「显示 A、实际改 B」（#455）。
+    A.setScope(selectedNamespace);
     nsConfig = null; nsLoaded = ''; paintHead();
     $('namespace-vars').value = ''; $('namespace-vars').disabled = true;
     await loadAll();
