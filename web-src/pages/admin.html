@@ -512,9 +512,9 @@
           <table class="data-table" id="messages-table">
             <thead>
               <tr>
-                <th>{{t "admin.messages.title"}}</th>
-                <th>{{t "admin.messages.user"}}</th>
-                <th>{{t "admin.messages.agent_state"}}</th>
+                <th>{{t "admin.messages.type"}}</th>
+                <th>{{t "admin.messages.source"}}</th>
+                <th>{{t "admin.messages.namespace"}}</th>
                 <th>{{t "admin.messages.time"}}</th>
               </tr>
             </thead>
@@ -737,23 +737,6 @@
     function setText(id, text) {
       const node = document.getElementById(id);
       if (node) node.textContent = text;
-    }
-
-    /* ST-1：`.status-info` 全仓没有定义（渲染出来是裸 .status-badge，无底色无边框）。
-       这里统一改用有样式的 `.badge badge-*`：语义一致，且两套主题下都可读。 */
-    function statusBadgeEl(agentState) {
-      const map = {
-        working: "badge-accent",
-        blocked: "badge-warn",
-        done: "badge-success",
-        interrupted: "badge-warn",
-        error: "badge-error",
-      };
-      const span = el("span", {
-        class: `badge ${map[agentState] || "badge-neutral"}`,
-      });
-      span.textContent = agentState;
-      return span;
     }
 
     /* ADM-4：角色列不再把 `member` 这种接口枚举值直接印给用户 */
@@ -1189,46 +1172,64 @@
     }
 
     /* ================= 全局消息流 ================= */
+    /* 数据源是 events（#80），不是旧的通知实体：行只有
+       id / namespaceId / source / type / traceId / deliveryId / createdAt 七个扁平字段。
+       字段映射只活在 model 层（web/partials.js · model.adminEvent），页面只负责把值塞进 td ——
+       曾经在这页直接读 m.title / m.username / m.agentState，三个名字服务端都不发，
+       结果是整表空白 + `undefined` 徽章（#456）。
+       盯住这个映射的是 scripts/admin-messages.test.mjs（真实事件 → 三列都有值；
+       字段名改回旧名 → 断言红）。 */
     async function loadMessages() {
       const st = panelState("messages");
       showLoading(st);
       try {
         const data = await api("/v1/admin/messages?limit=100");
-        const msgs = data.messages || [];
-        if (!msgs.length) {
+        const events = data.messages || [];
+        if (!events.length) {
           showEmpty(st);
           return;
         }
         showData(
           st,
-          msgs.map((m) =>
-            el(
+          events.map((row) => {
+            const e = Anotify.model.adminEvent(row);
+            return el(
               "tr",
               {},
               el(
                 "td",
                 {},
-                el("div", { class: "ad-cell-strong", text: m.title }),
+                el("span", {
+                  class: "badge badge-neutral",
+                  text: e.type || "—",
+                }),
               ),
               el(
                 "td",
                 {},
                 el("span", {
                   class: "ad-cell-meta",
-                  text: m.username || "—",
+                  text: e.source || "—",
                 }),
               ),
-              el("td", {}, statusBadgeEl(m.agentState)),
+              el(
+                "td",
+                {},
+                el("span", {
+                  class: "ad-cell-meta mono",
+                  text: e.namespaceId || "—",
+                }),
+              ),
               el(
                 "td",
                 { class: "ad-nowrap" },
                 el("span", {
                   class: "ad-cell-meta",
-                  text: fmtTime(m.createdAt),
+                  text: fmtTime(e.createdAt),
                 }),
               ),
-            ),
-          ),
+            );
+          }),
         );
       } catch (e) {
         showError(st, e, loadMessages);

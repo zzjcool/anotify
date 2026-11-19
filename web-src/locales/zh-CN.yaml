@@ -1217,11 +1217,11 @@ admin:
     disable: 禁用
     empty: 暂无用户
   messages:
-    title: 标题
-    user: 用户
-    agent_state: 运行状态
+    type: 事件
+    source: 来源
+    namespace: 命名空间
     time: 时间
-    empty: 暂无消息
+    empty: 暂无事件
   sessions:
     user: 用户
     device: 设备
@@ -1252,7 +1252,7 @@ admin:
     network: 网络错误
   scopeChip: '全部署'
   usersEmptySub: '被邀请的用户会出现在这里'
-  messagesEmptySub: 'Agent 上报的通知会保留在这里'
+  messagesEmptySub: '源产生的事件会逐条出现在这里'
   sessionsEmptySub: '有设备保持长连接时会出现在这里'
 events:
   load_failed_hint: '载入失败：连不上服务端，请重试。'

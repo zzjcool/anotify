@@ -5189,7 +5189,35 @@
 			],
 		}),
 	);
-	on("GET", /^\/v1\/admin\/messages$/, () => json({ messages: [] }));
+	/* 「全局消息」面板的数据源是 events（#80），行形 = AdminEvent（api/auth.yaml）：
+	 * id / namespaceId / source / type / traceId / deliveryId / createdAt。
+	 * 这里给两条真实形状的行：预览里三列（事件/来源/命名空间）必须有值，
+	 * 空列表看不出渲染对不对（#456 就是这么带着一页空白上的）。 */
+	on("GET", /^\/v1\/admin\/messages$/, () =>
+		json({
+			messages: [
+				{
+					id: "evt_mock_a1",
+					namespaceId: "ns_mock_default",
+					source: "github",
+					type: "pr_opened",
+					traceId: "trc_mock_a1",
+					deliveryId: "gh-delivery-88213",
+					createdAt: now() - 120,
+				},
+				{
+					id: "evt_mock_b2",
+					namespaceId: "ns_mock_default",
+					source: "cron",
+					type: "daily_report",
+					traceId: "trc_mock_b2",
+					deliveryId: "",
+					createdAt: now() - 3600,
+				},
+			],
+			count: 2,
+		}),
+	);
 
 	// ===== CLI 设备授权（保留域）=====
 	on("POST", /^\/v1\/cli-auth\/sessions$/, () =>

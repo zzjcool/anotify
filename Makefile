@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected test-frontend
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -111,6 +111,12 @@ check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中
 	node --test scripts/e2e/affected.test.mjs
 	@# CI 上 e2e 的判定器（已知环境性失败清单 + 「清单外必须拦」的变异自测）
 	node scripts/e2e/ci-e2e-verdict.mjs --self-test
+
+test-frontend: ## 前端单测（node:test）：管理后台「全局消息」流字段映射 + 变异自证（#456）
+	@# 为什么必须接进 ci：这页的事故是「页面读的字段名服务端从不发」，静态检查
+	@# （check-classes / check-i18n-keys）和 e2e（只看端点 200 + 数组）当时都通过了，
+	@# 只有真的把一条事件送进渲染路径才会失败。
+	node --test scripts/admin-messages.test.mjs
 
 # GitHub 上那条 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff。
 # 本地这一道才是推之前的防线；它同时也盯「被跟踪的 .env / *.pem / *.key」。
@@ -298,6 +304,8 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	@# 改动选择器的护栏：映射表烂掉不会让 CI 变红（只会让「跳过」变多）—— 那是最贵的假绿。
 	@# 它同时反证「选择确实来自表」（删一行必红），所以放进 make ci，而不是只留在报告里。
 	$(MAKE) check-affected-map
+	@# 前端单测（#456）：管理后台「全局消息」三列真的从事件字段读值（变异自证同在此）。
+	$(MAKE) test-frontend
 	$(MAKE) check-secrets
 	go build ./...
 	@# 节点 CLI 的可发现面（#334）：手册/安装脚本里的子命令与 flag 必须能在真 anode 里找到，
