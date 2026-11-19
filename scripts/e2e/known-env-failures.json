@@ -27,8 +27,8 @@
     },
     {
       "suite": "ui_shift",
-      "case": "*",
-      "reason": "整套没有 results：runner 上 Chrome 渲染进程整批死亡；同一份代码本地 3–5s 通过",
+      "case": "interact-dialogs",
+      "reason": "runner 上 case 子进程/浏览器被杀：page.evaluate: Target page, context or browser has been closed（f3-ui-helper.mjs:126 authFlag → gotoPage）；同一份代码本地 3-5s 通过",
       "tracking": "#431"
     }
   ]
