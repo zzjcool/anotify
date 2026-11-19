@@ -183,6 +183,14 @@
   // IA（#436）：节点是**节点维度**。旧的 `?namespace=` 参数被忽略（书签继续可用），
   // 页面不再请求任何带 ns 上下文的读面。
   let n, nodeId = '', config, original = '', loaded = false;
+  /* #454：`tags` 的**现值**只存在于权威读面，不在 `GET …/config` 里。
+   * config 是 W5 wrapper（只有 namespaces / vars / limits 三个可写键 + 只读 revision 三兄弟），
+   * 所以 `config.tags || []` 会把「这个读面没告诉我」写成「用户清空了」—— YAML 一保存
+   * 就是一次静默的数据丢失（P1）。现值取自 `GET /v1/nodes/{name}` 的 `spec.tags`；
+   * 真拿不到（读面没给 / 还没加载）就是 null = **未知**，序列化时整键省略，
+   * 让服务端按 merge-patch 的「省略 = 不动」保留原值（resource_node_yaml.go · nodeYAMLSpecPatch）。
+   * 铁律：不许把「不知道」降级成 `[]`。 */
+  let knownTags = null;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('node_subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
@@ -300,7 +308,9 @@
     lines.push('  limits:', '    total: ' + (limits.total == null ? 'null' : yamlScalar(limits.total)));
     lines.push('    perCapability:' + (perEntries.length ? '' : ' {}'));
     for (const [k, v] of perEntries) lines.push('      ' + yamlScalar(k) + ': ' + yamlScalar(v));
-    lines.push(...yamlList('tags', Array.isArray(spec.tags) ? spec.tags : [], 2));
+    // #454：只有**真的知道**现值时才写这个键。未知（null/undefined）就整键省略 ——
+    // 写 `tags: []` 在两条写入口（YAML / PATCH）上都等于「显式清空」。
+    if (Array.isArray(spec.tags)) lines.push(...yamlList('tags', spec.tags, 2));
     return lines.join('\n') + '\n';
   }
   function draftDoc() {
@@ -310,7 +320,7 @@
     return {
       apiVersion: 'anotify/v1', kind: 'Node',
       metadata: { name, resourceVersion: config.metadata.resourceVersion },
-      spec: { namespaces, vars, limits, tags: config.tags || [] },
+      spec: { namespaces, vars, limits, tags: Array.isArray(config.tags) ? config.tags : knownTags },
     };
   }
   function syncYAMLFromForm() {
@@ -474,6 +484,8 @@
     if (resource.kind !== 'Node') throw new Error('Invalid Node resource');
     nodeId = resource.metadata?.uid;
     if (!nodeId) throw new Error('Node metadata.uid missing');
+    // #454：tags 的现值来自这里（Node.spec.tags），不是 /config。读面没给就是未知。
+    knownTags = Array.isArray(resource.spec?.tags) ? resource.spec.tags.slice() : null;
     n = A.model.node(resource); renderFacts(); renderConfigSummary();
   }
   /* 这台节点的「已部署能力」与「最近任务」：**节点事实**，不是节点配置。
