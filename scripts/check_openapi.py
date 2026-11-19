@@ -162,10 +162,10 @@ def canonical_path(path: str) -> str:
 
 
 # Namespace **自己**的对象/子资源路径用 `{name}`（api-conventions §7.5 的
-# `/v1/namespaces/{name}` / `…/config` / `…/stats`）。`{namespace}` 的约束是给
+# `/v1/namespaces/{name}` / `…/config` / `…/stats` / `…/yaml`）。`{namespace}` 的约束是给
 # 「被命名空间作用域化的**其它**资源」用的（`/v1/namespaces/{namespace}/tasks` 等），
 # 因为那是跨资源的一致命名，而 ns 自身的名字沿 k8s 的对象段惯例。
-NAMESPACE_OWN_SUBRESOURCES = {"config", "stats"}
+NAMESPACE_OWN_SUBRESOURCES = {"config", "stats", "yaml"}
 
 
 def placeholder_errors(path: str) -> list[str]:

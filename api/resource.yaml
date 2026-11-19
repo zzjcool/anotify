@@ -1083,12 +1083,41 @@ paths:
         '404': {$ref: '#/components/responses/Status404'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/namespaces/{name}/yaml:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getNamespaceYAML
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "读取命名空间文档的规范化 YAML（只读）"
+      description: |
+        `yaml` 是 `Namespace` 文档（`apiVersion` / `kind` / `metadata` / `spec`）的规范化重建，
+        与 `GET /v1/nodes/{name}/yaml` 同一套形状约定：键序稳定、两次 GET 字节一致。
+
+        三条边界：① `spec.vars` 是命名空间默认 vars（合并顺序 `local > node > namespace`），
+        只投影真实存在的配置；② `status`（派生计数）与 `metadata.uid` **不出现**；
+        ③ **只有 GET**：vars 的写入口是 `PUT /v1/namespaces/{name}/config`（CAS +
+        `namespaceVarsRevision`），本端点刻意不提供写路径，文档头部也写明这一点。
+      responses:
+        '200':
+          description: "ResourceYAML（`yaml` 为 Namespace 文档全文）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/system/config:
     get:
       operationId: getSystemConfig
       tags: [namespaces]
       security: [{session: []}]
-      summary: "读取系统保留期配置"
+      summary: "读取系统保留期配置（管理员）"
       responses:
         '200':
           description: "系统配置 wrapper"
@@ -1096,6 +1125,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/SystemConfig'}
         '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
         '500': {$ref: '#/components/responses/Status500'}
     put:
       operationId: putSystemConfig
@@ -1118,7 +1148,31 @@ paths:
               schema: {$ref: '#/components/schemas/SystemConfig'}
         '400': {$ref: '#/components/responses/Status400'}
         '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
         '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
+  /v1/system/yaml:
+    get:
+      operationId: getSystemYAML
+      tags: [namespaces]
+      security: [{session: []}]
+      summary: "读取系统配置（保留期）的规范化 YAML（只读，管理员）"
+      description: |
+        `yaml` 是 `SystemConfig` 文档（`apiVersion` / `kind` / `metadata.resourceVersion` /
+        `spec.retention`）的规范化重建。保留期单位秒，`0` = 永久保留。
+
+        只读：写入入口是 `PUT /v1/system/config`（CAS），本端点不提供 PUT。
+        管理员面：与 `GET /v1/system/config` 同一判据，非 admin → 403 `forbidden`
+        （未登录仍是 401）。
+      responses:
+        '200':
+          description: "ResourceYAML（`yaml` 为 SystemConfig 文档全文）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '403': {$ref: '#/components/responses/Status403'}
         '500': {$ref: '#/components/responses/Status500'}
 
   # ---------------------------------------------------------------------- nodes

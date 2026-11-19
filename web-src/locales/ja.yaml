@@ -1175,6 +1175,15 @@ admin:
     title: 管理画面へのアクセス権がありません
     body: このアカウントは管理者ではありません。権限が必要な場合は既存のスーパー管理者に昇格を依頼してください。
     back: 概要に戻る
+    status: "HTTP 403 · Forbidden"
+  system:
+    group_retention: "保持期間（変更可）"
+    group_retention_note: "3 つの値はすべて秒単位です。0 は永久保持を意味します。保存すると次のクリーンアップから有効になります。"
+    group_yaml: "System YAML（読み取り専用）"
+    group_yaml_note: "現在の事実からサーバーが再構築した正規化ドキュメント。読み取り専用：保持期間の書き込み経路は下の CAS 保存だけです。2 本目の経路はありません。"
+    group_danger: "危険な操作"
+    group_danger_note: "保持期間を保存するとデータのライフサイクルが実際に変わります。新しい期間を超えたイベント / タスク / 成果物は削除され、復元できません。0 は永久保持です（ディスクは増える一方）。期間と影響を確認してから保存してください。"
+    yaml_view: "現在のドキュメント"
   subtitle: システム概要とユーザー管理
   loading: 読み込み中…
   top_users: アクティブユーザー Top
@@ -2617,6 +2626,16 @@ namespace:
     effective: "あるノードの有効変数"
     node: "ノード"
     effective_hint: "local > node > namespace の順にキー単位で解決します。ソースはサーバーが返し、ページは推測しません。"
+    col_node: "ノード"
+    col_status: "状態"
+    node_online: "オンライン"
+    node_offline: "オフライン"
+    node_draining: "ドレイン中"
+    node_online_draining: "オンライン（ドレイン中）"
+    effective_source_hint: "ソースはサーバーがキー単位で解決します：local（マシンのスナップショット）> node（ノード既定）> namespace（ここの既定値）。vars に「能力レベル」はありません — perCapability は limits だけです。"
+    yaml_title: "ネームスペース YAML（読み取り専用）"
+    yaml_hint: "現在の事実からサーバーが再構築した正規化ドキュメント（apiVersion / kind / metadata / spec.vars）。意図的に読み取り専用です：ネームスペースの vars の書き込み経路は左の CAS フォーム（PUT /v1/namespaces/{name}/config）だけです。2 本目の経路を作ると「どちらが勝ったか」を判定できなくなります。"
+    yaml_view: "現在のドキュメント"
     context_namespace: "ネームスペースのコンテキスト"
     links: "このネームスペースの他のもの"
     link_caps: "能力 →"

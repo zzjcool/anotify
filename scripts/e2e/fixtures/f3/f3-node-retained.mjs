@@ -133,6 +133,10 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#system-config').count(), 0, '节点页不再有系统保留配置');
     assert.equal(await page.locator('#namespace-vars').count(), 0, '节点页不再有命名空间 vars 配置');
     await goto('admin', 'en', '?namespace=default'); await page.locator('#system-save:not([disabled])').waitFor();
+    // ④ 只读 System YAML：与 retention 同一份事实（kind/retention），且没有编辑框。
+    await page.waitForFunction(() => (document.getElementById('system-yaml-text')?.textContent || '').includes('kind: SystemConfig'));
+    assert.ok((await page.locator('#system-yaml-text').innerText()).includes('retention:'), 'System YAML 有 spec.retention');
+    assert.equal(await page.locator('#system-yaml-input').count(), 0, 'System YAML 只读（没有编辑框）');
     const get = (await calls()).find(c => c.url === '/v1/system/config' && c.method === 'GET');
     // retention 的**当前值**来自真实 GET（api/events.yaml · getSystemConfig）：mock 种子是
     // 3600/7000/9000，真实服务默认是 604800/2592000/2592000。断言「页面显示的就是服务端
@@ -143,6 +147,8 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#event-ttl').inputValue(), String(initial.eventTtlSec));
     assert.equal(await page.locator('#task-ttl').inputValue(), String(initial.taskTtlSec));
     await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitState('system-state', 'Saved.');
+    // 保存会同时刷新只读 YAML（同一份事实的两个视图，不允许其中一个是旧的）。
+    await page.waitForFunction(() => (document.getElementById('system-yaml-text')?.textContent || '').includes('resultTtlSec: 0'));
     const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, initial.eventTtlSec);
     const systemPut = (await calls()).filter(c => c.method === 'PUT' && c.url === '/v1/system/config').at(-1); assert.deepEqual(Object.keys(systemPut.body).sort(), ['metadata','retention']);
     const remoteEventTtl = initial.eventTtlSec + 1000;
@@ -309,6 +315,97 @@ export async function nodeRetained(d,mode){
     else { await page.waitForFunction(()=>__f3Calls.some(c=>c.url==='/v1/auth/password/login'&&c.httpStatus>=400)); const rejected=(await calls()).findLast(c=>c.url==='/v1/auth/password/login'); assert.deepEqual(Object.keys(rejected.result),['error']); await waitState('status-box',rejected.result.error); }
     await shot('login-actual400-status-message');
     check('Retained password/passkey empty anchor + real400; API-key error preserves draft and CLI/docs anchors; receivers denied gives visible feedback/no subscribe; actual zero-device0/0 admin; CLI/passkey-enroll DOM retained; login AUTH1 identity.error is not swallowed');
+  }
+  if (mode === 'namespace-detail') {
+    /* IA ③④：列表 → 详情这条路必须真的通（导航入口在共享侧栏 web/partials.js 的 NAV，
+       不是每页各写一份）；详情页要有只读 Namespace YAML 与逐节点有效值；节点页不得回潮；
+       非 admin 打开管理后台的系统区块必须看到明确的 403，而不是空白页。 */
+    await goto('nodes', 'en', '?namespace=default'); await page.locator('[data-node="anode-1"]').waitFor();
+    const navLink = page.locator('#sidebar a[href="namespaces.html"]');
+    assert.equal(await navLink.count(), 1, '共享侧栏必须有且只有一个「命名空间」入口');
+    await navLink.click(); await page.waitForURL(/namespaces\.html/);
+    await page.locator('#ns-list [data-ns]').first().waitFor();
+    assert.ok((await page.locator('#ns-list [data-ns]').count()) >= 1, '列表至少一行');
+    assert.match(await page.locator('#ns-list [data-ns]').first().getAttribute('href'), /^namespace\.html\?name=/);
+
+    // 列表点一行 → 详情页（URL 带 name，页头显示那一个 ns）。
+    await page.locator('#ns-list [data-ns="default"]').click();
+    await page.waitForURL(/namespace\.html\?name=default/);
+    await page.locator('#namespace-vars:not([disabled])').waitFor();
+    assert.ok((await page.locator('#ns-name').innerText()).includes('default'), '详情页标题是该命名空间');
+    assert.ok((await page.locator('a[href="namespaces.html"]').count()) >= 1, '详情页有返回列表');
+
+    // 逐节点有效值：先确保这个 ns 有一条默认值，再断言「值 + 覆盖来源」都来自服务端。
+    const nsCfg = (await req('/v1/namespaces/default/config')).body;
+    assert.equal((await req('/v1/namespaces/default/config', { metadata: nsCfg.metadata, vars: { ...nsCfg.vars, F3_NS_DETAIL: 'from-namespace' } }, 'PUT')).status, 200);
+    await page.locator('#ns-refresh').click();
+    await page.locator('#namespace-nodes [data-node]').first().waitFor();
+    const nodeRows = page.locator('#namespace-nodes [data-node]');
+    assert.ok((await nodeRows.count()) >= 1, '逐节点表至少一行');
+    assert.equal(await page.locator('#namespace-nodes [data-node="anode-1"] td').count(), 2, '逐节点表列 = 节点 / 状态');
+    assert.ok((await page.locator('#namespace-nodes [data-node="anode-1"] td:nth-child(2)').innerText()).trim().length > 0, '状态列非空');
+    await page.selectOption('#namespace-node', 'anode-1');
+    await page.locator('#namespace-effective-vars [data-key="F3_NS_DETAIL"]').waitFor();
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="F3_NS_DETAIL"] td').nth(1).innerText(), 'from-namespace');
+    assert.equal(await page.locator('#namespace-effective-vars [data-key="F3_NS_DETAIL"] td').nth(2).innerText(), 'namespace', '覆盖来源由服务端给出');
+    // 行点击与 select 是同一个选中态（维度反转：在 ns 页选节点）。
+    await page.locator('#namespace-nodes [data-node="anode-2"]').click();
+    await page.waitForFunction(() => document.getElementById('namespace-node').value === 'anode-2');
+    await page.locator('#namespace-nodes [data-node="anode-1"]').click();
+    await page.waitForFunction(() => document.getElementById('namespace-node').value === 'anode-1');
+
+    // 只读 Namespace YAML：kind: Namespace + spec.vars，**没有**编辑框。
+    await page.waitForFunction(() => (document.getElementById('namespace-yaml-text')?.textContent || '').includes('kind: Namespace'));
+    const nsYaml = await page.locator('#namespace-yaml-text').innerText();
+    assert.ok(nsYaml.includes('apiVersion: anotify/v1'), 'YAML 有 apiVersion');
+    assert.ok(nsYaml.includes('spec:') && nsYaml.includes('vars:'), 'YAML 有 spec.vars');
+    assert.ok(nsYaml.includes('F3_NS_DETAIL: from-namespace'), 'YAML 读的是真实 vars');
+    assert.ok(!nsYaml.includes('status:'), 'YAML 不含派生只读面 status');
+    assert.ok(nsYaml.includes('PUT /v1/namespaces/{name}/config'), '只读声明指向唯一写入口');
+    assert.equal(await page.locator('#namespace-yaml-input').count(), 0, '只读：没有 YAML 编辑框');
+    // 只读的机械证据：写这条路根本没有（PUT 不被接受；生产 mux 的静态兜底给 404）。
+    const putYaml = await req('/v1/namespaces/default/yaml', { yaml: 'kind: Namespace' }, 'PUT');
+    assert.ok(putYaml.status >= 400, 'Namespace YAML 不能有写路径，实际 ' + putYaml.status);
+
+    if (d.mock) {
+      /* 空态只在预览里造：真实权威的节点来自 fixtures，删掉会污染同批其它用例。
+         断言「没有节点时是明确空态，不是一张空白表」。 */
+      const savedNodes = await page.evaluate(() => { const nodes = MockApi.state.nodes; MockApi.state.nodes = []; return JSON.parse(JSON.stringify(nodes)); });
+      await page.locator('#ns-refresh').click();
+      await page.waitForFunction(() => !document.querySelector('#namespace-nodes [data-node]') && document.getElementById('namespace-nodes').textContent.includes('No nodes yet'));
+      assert.equal(await page.locator('#namespace-node').isDisabled(), true, '没有节点时选择器禁用');
+      await page.evaluate(nodes => { MockApi.state.nodes = nodes; }, savedNodes);
+      await page.locator('#ns-refresh').click();
+      await page.locator('#namespace-nodes [data-node]').first().waitFor();
+    }
+
+    // 防回潮：节点页 / 节点列表页都没有这些（ns 维度的事实只属于 ns 页）。
+    await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-yaml-text').waitFor();
+    for (const sel of ['#node-effective-vars', '#node-namespace', '#namespace-yaml-text', '#namespace-nodes', '#namespace-effective-vars']) {
+      assert.equal(await page.locator(sel).count(), 0, sel + ' 不应出现在节点页');
+    }
+    await goto('nodes', 'en', '?namespace=default');
+    assert.equal(await page.locator('#namespace-nodes').count(), 0, '节点列表页不承载 ns 逐节点表');
+
+    // ④ 权限态：非 admin 打开 admin 的系统区块 → 明确的 403（不是空白页）。
+    if (d.mock) await page.evaluate(() => sessionStorage.setItem('f3-member', '1'));
+    else {
+      assert.ok(process.env.E2E_V4_MEMBER_SESSION, 'T1 seam: real member session required, never fake real role');
+      await d.context.addCookies([{ name: 'anotify_session', value: process.env.E2E_V4_MEMBER_SESSION, url: d.base }]);
+    }
+    await goto('admin');
+    await page.locator('#admin-forbidden').waitFor();
+    assert.ok((await page.locator('#admin-forbidden').innerText()).includes('403'), '403 提示必须可见');
+    assert.equal(await page.locator('#system-save').count(), 0, 'member 看不到可写的系统区块');
+    if (!d.mock) {
+      // 服务端同一判据：member 的 system 端点回 403 forbidden（不是 200、不是 401）。
+      const res = await fetch(d.base + '/v1/system/yaml', { headers: { cookie: 'anotify_session=' + process.env.E2E_V4_MEMBER_SESSION } });
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).reason, 'Forbidden');
+    }
+    await shot('namespace-detail-list-to-yaml-and-member-403');
+    await clean('namespace detail: list → detail → yaml / per-node table / member 403');
+    check('Sidebar nav (partials.js NAV) → namespaces list → row → namespace.html; read-only Namespace YAML (kind: Namespace, no editor); per-node table rows + effective values with server-provided source; node pages carry none of it; member sees real 403 (page + /v1/system/yaml).');
   }
   if (mode === 'errors') {
     await goto('nodes'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#nodes-refresh').click();

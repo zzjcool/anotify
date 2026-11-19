@@ -827,12 +827,14 @@ export async function startServer({
 }
 
 // ---------- 播种（devseed 后门，仅用于非 auth 套件快速建用户/Key/会话） ----------
-export function seed(dbPath, username = "e2e") {
-	const out = execFileSync(
-		DEVSEED_BIN,
-		["-db", dbPath, "-username", username],
-		{ encoding: "utf8" },
-	);
+//
+// `opts.admin`：devseed 的 `-admin`。系统保留期（`/v1/system/config` 与其只读 YAML）
+// 是**管理员面**，用 member 会话读写在真实服务上是 403 —— 需要那两条路由的套件必须
+// 显式要一个 admin 会话，不能靠「历史上 member 也能写」这个假设。
+export function seed(dbPath, username = "e2e", opts = {}) {
+	const args = ["-db", dbPath, "-username", username];
+	if (opts.admin) args.push("-admin");
+	const out = execFileSync(DEVSEED_BIN, args, { encoding: "utf8" });
 	const get = (k) => (out.match(new RegExp(`^${k}=(.*)$`, "m")) || [])[1];
 	const session = get("SESSION");
 	// 登记这个库的会话：#162 之后资源请求要带 namespaceId，而 /v1/events 这类

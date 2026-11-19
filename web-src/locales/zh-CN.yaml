@@ -1175,6 +1175,15 @@ admin:
     title: 无权访问管理后台
     body: 当前账号不是管理员。如需管理权限，请联系已有超管提升角色。
     back: 返回总览
+    status: "HTTP 403 · Forbidden"
+  system:
+    group_retention: "保留期（可修改）"
+    group_retention_note: "三个值都以秒为单位，0 表示永久保留。保存后立刻对清理任务生效。"
+    group_yaml: "System YAML（只读）"
+    group_yaml_note: "服务端按当前事实重建的规范化文档。只读：保留期的写入口只有下面那个 CAS 保存动作，没有第二条写路径。"
+    group_danger: "危险操作"
+    group_danger_note: "保存保留期会真的改变数据生命周期：超出新窗口的事件 / 任务 / 产物会被清理且不可恢复；把值改成 0 等于永久保留（磁盘只增不减）。确认窗口与影响后再保存。"
+    yaml_view: "当前文档"
   subtitle: 系统总览与用户管理
   loading: 加载中…
   top_users: Top 活跃用户
@@ -2622,6 +2631,16 @@ namespace:
     effective: "某台节点的有效变量"
     node: "节点"
     effective_hint: "local > node > namespace 逐键解析；来源由服务端给出，页面不猜。"
+    col_node: "节点"
+    col_status: "状态"
+    node_online: "在线"
+    node_offline: "离线"
+    node_draining: "排空"
+    node_online_draining: "在线（排空）"
+    effective_source_hint: "来源由服务端逐键解析：local（本机快照）> node（节点默认）> namespace（这里配置的默认值）。vars 没有「能力级」这一层 —— perCapability 只存在于 limits。"
+    yaml_title: "命名空间 YAML（只读）"
+    yaml_hint: "服务端按当前事实重建的规范化文档（apiVersion / kind / metadata / spec.vars）。刻意只读：命名空间 vars 只有一条写路径 —— 左侧的 CAS 表单（PUT /v1/namespaces/{name}/config）；再开第二条写入口会让「谁赢了」变得无法判定。"
+    yaml_view: "当前文档"
     context_namespace: "命名空间上下文"
     links: "这个命名空间里的其他东西"
     link_caps: "能力 →"

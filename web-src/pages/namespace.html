@@ -22,6 +22,12 @@
   .devf[open] > summary::before { content: "▾"; }
   .devf > summary:hover { color: var(--text); }
   .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+  /* "逐节点"表：点击行 = 选中那台节点（表格与 select 是同一个选中态的两个入口）。 */
+  .nst-row { cursor: pointer; }
+  .nst-row:hover { background: var(--surface-2); }
+  .nst-row[aria-selected="true"] { background: var(--surface-2); }
+  .yd-block { margin-top: 12px; }
+  .yd-pre { max-height: 340px; overflow: auto; margin: 0; }
   @media (max-width: 760px) { .c2-grid { grid-template-columns: minmax(0,1fr); } }
 </style>
 {{end}}
@@ -54,12 +60,26 @@
         <div class="card-title">{{t "namespace.v4.counts"}}</div>
         <div id="ns-counts"></div>
         <div class="card-title">{{t "namespace.v4.effective"}}</div>
+        <p class="c2-note">{{t "namespace.v4.effective_hint"}}</p>
+        <div id="namespace-nodes"></div>
         <div class="field"><label class="field-label" for="namespace-node">{{t "namespace.v4.node"}}</label><select id="namespace-node" class="select"></select></div>
+        <div id="namespace-node-status" class="c2-note"></div>
         <div id="namespace-context-revision" class="c2-note"></div>
         <div id="namespace-effective-vars"></div>
-        <p class="c2-note">{{t "namespace.v4.effective_hint"}}</p>
+        <p class="c2-note">{{t "namespace.v4.effective_source_hint"}}</p>
       </section>
     </div>
+    <!-- 只读 Namespace YAML（IA ③）：服务端按当前事实重建的规范化文档。
+         刻意没有编辑框 —— vars 的写入口是左边那张 CAS 表单（PUT …/config），
+         同一个事实不提供第二条写路径（页面右侧/卡内文案说明这一点）。 -->
+    <section class="card card-pad">
+      <div class="card-title">{{t "namespace.v4.yaml_title"}}</div>
+      <p class="c2-note">{{t "namespace.v4.yaml_hint"}}</p>
+      <div class="yd-block">
+        <div class="code-block"><div class="code-head"><span>{{t "namespace.v4.yaml_view"}}</span><button id="namespace-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body yd-pre"><code id="namespace-yaml-text"></code></pre></div>
+      </div>
+      <div id="namespace-yaml-state" class="c2-state" role="status"></div>
+    </section>
     <section class="card card-pad">
       <div class="card-title">{{t "namespace.v4.links"}}</div>
       <div class="c2-actions"><a id="link-caps" class="btn btn-ghost" href="capabilities.html">{{t "namespace.v4.link_caps"}}</a><a id="link-sources" class="btn btn-ghost" href="sources.html">{{t "namespace.v4.link_sources"}}</a><a id="link-events" class="btn btn-ghost" href="events.html">{{t "namespace.v4.link_events"}}</a></div>
@@ -186,9 +206,44 @@
      `GET /v1/nodes/{name}?namespace=`（status.namespaceVars / status.effectiveVars），
      来源由服务端逐键解析，页面不自己拿三层变量表猜。 */
   let nodes = [];
+  const nodeOf = name => nodes.find(row => row.metadata?.name === name);
+  /* 节点状态：online / draining 是两个**独立**的派生 boolean（api/resource.yaml·NodeStatus）。
+     缺一个就把「排空中的在线节点」错报成离线 —— 所以两维都要看，不拿 one 字段猜。 */
+  const nodeStatusText = row => {
+    const st = row?.status || {};
+    if (st.online === true) return st.draining === true ? t('node_online_draining') : t('node_online');
+    return st.draining === true ? t('node_draining') : t('node_offline');
+  };
+  /* “逐节点”表：节点 / 状态（点击行 = 选中那台节点）。这是与节点页相反的维度：
+     节点页回答「这台节点能用于哪些 ns」，这里回答「这个 ns 下每台节点的状态」。 */
+  function renderNodeTable() {
+    $('namespace-nodes').replaceChildren();
+    if (!nodes.length) { $('namespace-nodes').appendChild(make('div', 'c2-note', t('no_nodes'))); return; }
+    const tbl = make('table', 'c2-table'), head = make('tr');
+    for (const title of [t('col_node'), t('col_status')]) head.appendChild(make('th', null, title));
+    const thead = make('thead'); thead.appendChild(head); tbl.appendChild(thead);
+    const body = make('tbody');
+    for (const row of nodes) {
+      const name = row.metadata?.name || '';
+      const tr = make('tr', 'nst-row'); tr.dataset.node = name;
+      tr.setAttribute('aria-selected', String(name === $('namespace-node').value));
+      tr.append(make('td', null, name), make('td', null, nodeStatusText(row)));
+      tr.onclick = () => { if ($('namespace-node').value === name) return; $('namespace-node').value = name; syncSelectedRow(); loadEffective(); };
+      body.appendChild(tr);
+    }
+    tbl.appendChild(body); $('namespace-nodes').appendChild(tbl);
+  }
+  const syncSelectedRow = () => {
+    const current = $('namespace-node').value;
+    for (const tr of $('namespace-nodes').querySelectorAll('[data-node]')) tr.setAttribute('aria-selected', String(tr.dataset.node === current));
+    const row = nodeOf(current);
+    const st = row?.status || {};
+    $('namespace-node-status').textContent = !row ? t('pick_node') : nodeStatusText(row) + ' · configRevision=' + (st.configRevision ?? unk()) + ' · appliedRevision=' + (st.appliedRevision ?? unk());
+  };
   async function loadEffective() {
     const nodeName = $('namespace-node').value;
     $('namespace-context-revision').replaceChildren();
+    syncSelectedRow();
     if (!nodeName || !selectedNamespace) { $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('pick_node'))); return; }
     try {
       const resource = await A.api('/v1/nodes/' + encodeURIComponent(nodeName) + '?namespace=' + encodeURIComponent(selectedNamespace));
@@ -213,10 +268,33 @@
     try {
       const doc = await A.api('/v1/nodes?limit=500');
       nodes = Array.isArray(doc.items) ? doc.items : [];
+      const keep = $('namespace-node').value;
       $('namespace-node').replaceChildren(...nodes.map(row => { const o = make('option', null, row.metadata.name); o.value = row.metadata.name; return o; }));
-      if (nodes.length) await loadEffective(); else $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('no_nodes')));
+      if (!nodes.length) {
+        $('namespace-node').disabled = true; $('namespace-node-status').textContent = '';
+        renderNodeTable();
+        $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('no_nodes')));
+        return;
+      }
+      $('namespace-node').disabled = false;
+      $('namespace-node').value = keep && nodeOf(keep) ? keep : nodes[0].metadata.name;
+      renderNodeTable();
+      await loadEffective();
     } catch (e) { $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadNodes)); }
   }
+  /* 只读 Namespace YAML：服务端重建的规范化文档（GET /v1/namespaces/{name}/yaml）。
+     只刷新文本、不碰 CAS 编辑器 —— 两者读的是同一份事实但写入路径只有表单那一条。 */
+  async function loadNamespaceYAML(scope = selectedNamespace) {
+    msg('namespace-yaml-state', n('loading'));
+    try {
+      const value = await A.api('/v1/namespaces/' + encodeURIComponent(scope) + '/yaml');
+      if (scope !== selectedNamespace) return;
+      if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+      $('namespace-yaml-text').textContent = value.yaml;
+      msg('namespace-yaml-state', n('loaded'));
+    } catch (e) { if (scope === selectedNamespace) msg('namespace-yaml-state', errorText(e), true); }
+  }
+  $('namespace-yaml-copy').onclick = () => A.copyText($('namespace-yaml-copy'), () => $('namespace-yaml-text').textContent);
   async function loadAll() {
     if (!selectedNamespace) {
       $('ns-body').hidden = true;
@@ -238,6 +316,7 @@
       $('ns-body').hidden = false; $('ns-load-state').textContent = '';
       await loadNamespace();
       await loadNodes();
+      await loadNamespaceYAML();
     } catch (e) {
       $('ns-body').hidden = true;
       $('ns-load-state').replaceChildren(A.loadErrorNode(e, loadAll));

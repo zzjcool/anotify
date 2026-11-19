@@ -260,6 +260,15 @@
       .devf[open] > summary::before { content: "▾"; }
       .devf > summary:hover { color: var(--text); }
       .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
+      /* ===== 系统配置的分组（④）：标题 / 说明 / 危险操作分区 ===== */
+      .sys-group { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); min-width: 0; }
+      .sys-group:first-of-type { border-top: 0; }
+      .sys-group-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+      .sys-group-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+      .sys-danger { margin-top: 4px; padding: 12px; border: 1px solid color-mix(in srgb, var(--error) 38%, transparent); border-radius: var(--r-md); background: var(--error-soft); }
+      .sys-danger .sys-group-title { color: var(--error); }
+      .sys-status-code { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+      .system-yaml-pre { max-height: 320px; overflow: auto; margin: 0; }
     </style>
 {{end}}
 
@@ -635,7 +644,10 @@
     <!-- ===== 系统保留配置（管理员）=====
          IA（#436）：这块原先挂在节点列表页（nodes.html 的 #system-config）——
          它是**系统级**配置（system_config 单行表），与节点无关。整块原样迁到这里，
-         元素 id 与 CAS 语义逐字保留（#result-ttl / #event-ttl / #task-ttl）。 -->
+         元素 id 与 CAS 语义逐字保留（#result-ttl / #event-ttl / #task-ttl）。
+         ④：再分成三个区（标题 + 说明 + 分隔）——可改的保留期、只读的 System YAML、
+         真正会造成数据丢失的写动作（危险操作）。非 admin 不是空白页：
+         页面级无权限卡（#admin-forbidden）+ 这里的 #system-forbidden 都给出 403。 -->
     <section id="system-config" class="card card-pad">
       <div class="card-title">{{t "nodes.v4.retention"}}</div>
       <p class="card-sub">{{t "nodes.v4.retention_hint"}}</p>
@@ -644,11 +656,26 @@
           <summary>{{t "uxaudit.dev.summary"}}</summary>
           <div class="devf-body"><div id="system-revisions" class="c2-kv"></div></div>
         </details>
-        <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
-        <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
-        <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
-        <div class="card-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+        <div class="sys-group" id="system-group-retention">
+          <h3 class="sys-group-title">{{t "admin.system.group_retention"}}</h3>
+          <p class="sys-group-note">{{t "admin.system.group_retention_note"}}</p>
+          <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
+          <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
+          <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
+        </div>
+        <div class="sys-group" id="system-group-yaml">
+          <h3 class="sys-group-title">{{t "admin.system.group_yaml"}}</h3>
+          <p class="sys-group-note">{{t "admin.system.group_yaml_note"}}</p>
+          <div class="code-block"><div class="code-head"><span>{{t "admin.system.yaml_view"}}</span><button id="system-yaml-copy" class="copy-btn" type="button">{{t "nodes.v4.copy"}}</button></div><pre class="code-body system-yaml-pre"><code id="system-yaml-text"></code></pre></div>
+          <div id="system-yaml-state" class="c2-state" role="status"></div>
+        </div>
+        <div class="sys-group sys-danger" id="system-group-danger">
+          <h3 class="sys-group-title">{{t "admin.system.group_danger"}}</h3>
+          <p class="sys-group-note">{{t "admin.system.group_danger_note"}}</p>
+          <div class="card-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+        </div>
       </div>
+      <div id="system-forbidden" class="c2-state" hidden></div>
       <div id="system-state" class="c2-state" role="status"></div>
     </section>
   </div>
@@ -1309,13 +1336,20 @@
           { class: "page" },
           el(
             "div",
-            { class: "card card-pad" },
+            { class: "card card-pad", id: "admin-forbidden" },
             el(
               "div",
               { class: "empty" },
               el("div", {
                 class: "card-title",
                 text: t("admin.forbidden.title", "无权访问管理后台"),
+              }),
+              /* ④：权限态文案必须说清“这是 403，不是页面坏了”。状态码用固定文本，
+                 不随文案翻译——它与 HTTP 层的事实一一对应（服务端 /v1/system/*
+                 与 /v1/admin/* 对非 admin 都回 403 forbidden）。 */
+              el("div", {
+                class: "sys-status-code",
+                text: t("admin.forbidden.status", "HTTP 403 · Forbidden"),
               }),
               el("p", {
                 class: "page-sub",
@@ -1441,8 +1475,25 @@
       for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; renderTtlHint(id); }
       systemOriginal = currentTtls(); $('system-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion;
       $('system-fields').hidden = false; msg('system-state', nt('loaded')); $('system-save').disabled = false;
+      await loadSystemYAML();
     } catch (e) { msg('system-state', errorText(e), true); }
   }
+  /* ④ 只读 System YAML：与 retention 同一份事实的规范化文档（GET /v1/system/yaml）。
+     刻意不提供编辑框：保留期的写入口只有 PUT /v1/system/config（CAS + 危险操作确认）。 */
+  async function loadSystemYAML() {
+    if (!has('system-yaml-text')) return;
+    msg('system-yaml-state', nt('loading'));
+    try {
+      const value = await A.api('/v1/system/yaml');
+      if (!has('system-yaml-text')) return;
+      if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+      $('system-yaml-text').textContent = value.yaml;
+      msg('system-yaml-state', nt('loaded'));
+    } catch (e) { msg('system-yaml-state', errorText(e), true); }
+  }
+  // 绑定本身先确认元素还在：member 的无权限页会把 #page-main 整块换掉，
+  // 而这两个元素可能已经不在了（此时直接读会抛 JS 错误）。
+  if (has('system-yaml-copy')) $('system-yaml-copy').onclick = () => A.copyText($('system-yaml-copy'), () => $('system-yaml-text').textContent);
   $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: nt('reload_confirm') }))) return; loadSystem(); };
   $('system-save').onclick = async () => {
     if (!systemConfig) return; $('system-save').disabled = true;
@@ -1457,12 +1508,18 @@
       await loadSystem(); msg('system-state', nt('saved'));
     } catch (e) { msg('system-state', errorText(e), true); } finally { $('system-save').disabled = false; }
   };
-  /* 只有管理员能读写系统保留期（GET/PUT /v1/system/config 对其它角色 403）。
-     页面先把「谁能看这块」问清楚，再决定是加载还是显示仅管理员提示。 */
+  /* 只有管理员能读写系统保留期（GET/PUT /v1/system/config 与 GET /v1/system/yaml
+     对其它角色一律 403 forbidden —— 服务端判据，不是前端隐藏）。
+     页面先把「谁能看这块」问清楚，再决定是加载还是显示 403 提示。 */
   (async () => {
     try {
       const me = await A.api('/v1/auth/me');
-      if (me.role === 'admin') await loadSystem(); else msg('system-state', nt('admin_only'));
+      if (me.role === 'admin') { await loadSystem(); return; }
+      msg('system-state', nt('admin_only'));
+      if (has('system-forbidden')) {
+        $('system-forbidden').hidden = false;
+        $('system-forbidden').textContent = nt('admin_only') + ' · HTTP 403';
+      }
     } catch (e) { msg('system-state', errorText(e), true); }
   })();
 })();

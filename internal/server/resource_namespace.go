@@ -19,9 +19,12 @@ import (
 
 // 命名空间资源域 + 配置子资源 + 聚合计数（v4 契约 D2 / api-conventions §7.5 / W5）。
 //
-// 作用域分档（§5.2）：`/v1/namespaces…` 与 `/v1/system/config` 都是 **cluster** 级
+// 作用域分档（§5.2）：`/v1/namespaces…` 与 `/v1/system/*` 都是 **cluster** 级
 // ——命名空间对象不属于任何命名空间，问「这个 ns 属于哪个 ns」是自指。所以这一域
 // 的路径上没有 `{namespace}` 段，只要**登录**（cluster 写入口不能被匿名调用）。
+//
+// 例外是系统配置面（`/v1/system/config`、`/v1/system/yaml`）：它们是**管理员**面，
+// 判据见 requireAdminUser（401 未登录 / 403 非 admin）。
 //
 // 身份口径（§7.5）：`metadata.name` = 原 `slug`，路径 `{name}` 也是 slug；
 // 库里 `namespaces.id` 是另一个不透明值（`ns_…`），只出现在 `metadata.uid` 与
@@ -132,8 +135,12 @@ func (a *namespaceAPI) register(mux *http.ServeMux) {
 	mux.Handle("GET /v1/namespaces/{name}/config", noStore(a.d.session(http.HandlerFunc(a.getConfig))))
 	mux.Handle("PUT /v1/namespaces/{name}/config", noStore(a.d.session(http.HandlerFunc(a.putConfig))))
 	mux.Handle("GET /v1/namespaces/{name}/stats", noStore(a.d.session(http.HandlerFunc(a.getStats))))
+	// YAML 只读面（IA ③）：命名空间文档没有 PUT —— vars 的写入口只有 config 子资源。
+	mux.Handle("GET /v1/namespaces/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.getNamespaceYAML))))
 	mux.Handle("GET /v1/system/config", noStore(a.d.session(http.HandlerFunc(a.getSystemConfig))))
 	mux.Handle("PUT /v1/system/config", noStore(a.d.session(http.HandlerFunc(a.putSystemConfig))))
+	// 系统文档只读面（IA ④）：与 config 同一份事实的规范化文本，同样只读。
+	mux.Handle("GET /v1/system/yaml", noStore(a.d.session(http.HandlerFunc(a.getSystemYAML))))
 }
 
 // ---------- 信封与派生计数 ----------
@@ -504,8 +511,11 @@ func (a *namespaceAPI) getStats(w http.ResponseWriter, r *http.Request) {
 // ---------- 系统配置（cluster 级） ----------
 
 // getSystemConfig 处理 GET /v1/system/config（config.md §3.6）。
+//
+// 管理员面：保留期是**全站**生效值（GC 会按它删数据），普通成员既不能改也不该读到
+// 运维窗口。判据与 GET /v1/system/yaml 同一份（requireAdminUser）。
 func (a *namespaceAPI) getSystemConfig(w http.ResponseWriter, r *http.Request) {
-	if _, err := requireUser(r.Context()); err != nil {
+	if err := requireAdminUser(r.Context(), a.d.DB); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -518,8 +528,10 @@ func (a *namespaceAPI) getSystemConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // putSystemConfig 处理 PUT /v1/system/config：只接 metadata.resourceVersion + retention。
+//
+// 管理员面（与 GET 同判据）：改保留期等于决定「多久之后删数据」，不能是登录即可写。
 func (a *namespaceAPI) putSystemConfig(w http.ResponseWriter, r *http.Request) {
-	if _, err := requireUser(r.Context()); err != nil {
+	if err := requireAdminUser(r.Context(), a.d.DB); err != nil {
 		writeAPIError(w, err)
 		return
 	}

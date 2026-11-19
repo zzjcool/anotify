@@ -537,7 +537,30 @@ async function main() {
 
 	// ================= D6 保留期默认值（decisions 主动改默认） =================
 	{
-		const sys = await H.req(server.base, "/v1/system/config", { session });
+		// 系统保留期是**管理员面**（`requireAdminUser`）：member 读/写都 403。
+		// admin 会话**在这里**才建，不在 setup：任何额外用户都会分到一个 `default-N`
+		// 命名空间，而 A1 要断言的是「这次注册只有一行 default」——提前建会让那条
+		// 断言测到夹具而不是产品。
+		V.expectReason(
+			"D6 非管理员读系统保留期 → 403",
+			await H.req(server.base, "/v1/system/config", { session }),
+			403,
+			"Forbidden",
+		);
+		// 请求体用**合法形状**：写信封的语法校验在 mux 外层（先于鉴权），畸形体会先拿到
+		// 400 —— 这条钉的是「鉴权先于 CAS 令牌解析」，不是信封语法。
+		V.expectReason(
+			"D6 非管理员写系统保留期 → 403（先判权限，再解析 CAS）",
+			await H.req(server.base, "/v1/system/config", {
+				session,
+				method: "PUT",
+				body: { metadata: { resourceVersion: "rv1:uid/contract:1" }, retention: { eventTtlSec: 1, taskTtlSec: 1, resultTtlSec: 1 } },
+			}),
+			403,
+			"Forbidden",
+		);
+		const adminSession = H.seed(server.dbPath, "contract-admin", { admin: true }).session;
+		const sys = await H.req(server.base, "/v1/system/config", { session: adminSession });
 		V.expectStatus("D6 GET /v1/system/config → 200", sys, 200);
 		AEq("D6", "事件/trace 保留 30 天", sys.json?.retention?.eventTtlSec, 2592000);
 		AEq("D6", "任务行保留 30 天", sys.json?.retention?.taskTtlSec, 2592000);
@@ -547,7 +570,7 @@ async function main() {
 		V.expectReason(
 			"D6 PUT 缺一个保留期 → 400 value_invalid（0 也必须显式写）",
 			await H.req(server.base, "/v1/system/config", {
-				session,
+				session: adminSession,
 				method: "PUT",
 				body: { metadata: { resourceVersion: sys.json?.metadata?.resourceVersion }, retention: { eventTtlSec: 1, taskTtlSec: 2 } },
 			}),
@@ -557,7 +580,7 @@ async function main() {
 		V.expectReason(
 			"D6 PUT 缺 CAS 令牌 → 400 resource_version_required",
 			await H.req(server.base, "/v1/system/config", {
-				session,
+				session: adminSession,
 				method: "PUT",
 				body: { metadata: {}, retention: { eventTtlSec: 1, taskTtlSec: 2, resultTtlSec: 3 } },
 			}),
@@ -565,7 +588,7 @@ async function main() {
 			"resource_version_required",
 		);
 		const put = await H.req(server.base, "/v1/system/config", {
-			session,
+			session: adminSession,
 			method: "PUT",
 			body: {
 				metadata: { resourceVersion: sys.json?.metadata?.resourceVersion },

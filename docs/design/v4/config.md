@@ -208,6 +208,11 @@ GET /v1/system/config        → { metadata: { resourceVersion }, retention: { .
 PUT /v1/system/config        → 只接 metadata.resourceVersion + retention，返回同 GET wrapper；缺 / 旧 resourceVersion 同上（CAS）
 ```
 
+**授权**：这三条保留期是**管理员面**（`requireAdminUser`）。未登录 → 401；已登录非
+admin → 403 `Forbidden`（在请求体校验之前，畸形体也是 403）。同源的只读视图
+`GET /v1/system/yaml`（`kind: SystemConfig`）用同一道闸门 —— 页面上的无权限文案
+（`admin.forbidden.*`）讲的就是这个事实，不是前端隐藏。
+
 去重窗口与实体保留分开：去重记录跟 `retention.eventTtlSec` 同窗口；被任务/回执引用的实体必须延长保留（`capability.md §8.4` / `playbook.md §7.3`）。
 
 ---
