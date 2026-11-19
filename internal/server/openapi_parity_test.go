@@ -140,7 +140,9 @@ const (
 	// CONTRACT-capability-lifecycle）。
 	// 122 → 124：Node 文档的 YAML 读/写面（IA 重构 ②，
 	// `GET/PUT /v1/nodes/{name}/yaml`，docs/design/node-namespace-ia.md §2.1）。
-	muxPatternCount = 124
+	// 124 → 126：两条**只读** YAML 读面（IA ③④：
+	// `GET /v1/namespaces/{name}/yaml`、`GET /v1/system/yaml`）。
+	muxPatternCount = 126
 	// bareOpFloor 是裸挂载表登记的 spec operation 总数。
 	bareOpFloor = 39
 	// specSchemaFloor 是五份 spec 的 components.schemas 总数。
@@ -190,8 +192,9 @@ func TestOpenAPIParitySpecLoadAndRefs(t *testing.T) {
 	// 127 → 129：+2 两条 `POST …/yaml` 从 YAML 创建（yaml-create）。
 	// 129 → 133：+4 能力的启停/试跑/审计端点（enable / disable / test / audit）。
 	// 133 → 135：+2 Node 文档 YAML 读/写（IA 重构 ②）。
-	if len(ops) != 135 {
-		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 135（133 + Node 文档的 GET/PUT /yaml）", len(ops))
+	// 135 → 137：+2 只读 YAML（IA ③④：Namespace 文档 / SystemConfig 文档），两条都**没有** PUT。
+	if len(ops) != 137 {
+		t.Errorf("五份 spec 的 operation 总数 = %d，本门禁冻结的是 137（135 + Namespace / SystemConfig 的只读 YAML）", len(ops))
 	}
 	// 至少一条来自 components.pathItems（agent.yaml 四条 + events/ingress 的共享 pathItem）。
 	fromPathItems := 0

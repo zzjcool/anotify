@@ -26,6 +26,7 @@ type nsTestEnv struct {
 	t      *testing.T
 	db     *store.DB
 	mux    http.Handler
+	sm     *auth.SessionManager
 	userID string
 	nsID   string // 注册用户时建出的默认命名空间（slug = default）
 	cookie *http.Cookie
@@ -39,7 +40,7 @@ func newNamespaceTestEnv(t *testing.T) *nsTestEnv {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	user := &store.User{ID: store.NewUserID(), Username: "ns-user", DisplayName: "命名空间管理员", CreatedAt: store.Now()}
+	user := &store.User{ID: store.NewUserID(), Username: "ns-user", DisplayName: "命名空间管理员", Role: store.RoleAdmin, CreatedAt: store.Now()}
 	ns, err := db.RegisterUser(context.Background(), user)
 	if err != nil {
 		t.Fatalf("register user: %v", err)
@@ -55,7 +56,7 @@ func newNamespaceTestEnv(t *testing.T) *nsTestEnv {
 	newNamespaceAPI(deps).register(mux)
 
 	return &nsTestEnv{
-		t: t, db: db, mux: mux, userID: user.ID, nsID: ns.ID,
+		t: t, db: db, mux: mux, sm: sm, userID: user.ID, nsID: ns.ID,
 		cookie: &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID},
 	}
 }
@@ -650,6 +651,20 @@ func TestNamespaceResourceSpecSwitchRejected(t *testing.T) {
 		env.cookie), http.StatusBadRequest, reasonUnknownField)
 }
 
+// memberCookie 建一个真实 member 账号 + 会话（不伪造 role 字段：角色由 store 决定）。
+func (e *nsTestEnv) memberCookie(t *testing.T) *http.Cookie {
+	t.Helper()
+	u := &store.User{ID: store.NewUserID(), Username: "ns-member", DisplayName: "成员", CreatedAt: store.Now()}
+	if err := e.db.CreateUser(u); err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	sess, err := e.sm.Create(u.ID, "member test")
+	if err != nil {
+		t.Fatalf("create member session: %v", err)
+	}
+	return &http.Cookie{Name: auth.SessionCookieName, Value: sess.ID}
+}
+
 // TestNamespaceResourceRequiresSession cluster 级资源也要登录（未登录 401，不是 404）。
 func TestNamespaceResourceRequiresSession(t *testing.T) {
 	env := newNamespaceTestEnv(t)
@@ -662,8 +677,10 @@ func TestNamespaceResourceRequiresSession(t *testing.T) {
 		{http.MethodGet, "/v1/namespaces/default/config"},
 		{http.MethodPut, "/v1/namespaces/default/config"},
 		{http.MethodGet, "/v1/namespaces/default/stats"},
+		{http.MethodGet, "/v1/namespaces/default/yaml"},
 		{http.MethodGet, "/v1/system/config"},
 		{http.MethodPut, "/v1/system/config"},
+		{http.MethodGet, "/v1/system/yaml"},
 	}
 	for _, tc := range cases {
 		rec := env.do(tc.method, tc.path, map[string]any{"metadata": map[string]any{"name": "x"}}, nil)
