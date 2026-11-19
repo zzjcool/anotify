@@ -279,6 +279,46 @@ CREATE INDEX IF NOT EXISTS idx_cap_name_ver
 CREATE INDEX IF NOT EXISTS idx_cap_fold_key
     ON capability_versions(namespace_id, name, fold_key);
 
+-- 能力开关（capability.docx §5.1 / capability lifecycle L-D1）。
+--
+-- **没有行 = enabled**：所以老库升级不需要任何回填，新建能力天然启用。
+-- 主键是 (namespace_id, name) 而不是 capability_versions.id —— 开关是**名字**的属性：
+-- 换版本不重置它，历史版本也不各带一个开关。
+-- reason / updated_by 只记「最近一次操作是谁、为什么」（全 history 在 capability_audit）。
+-- 删除能力时本行随 namespaces 级联消失；同名重建 = 新身份，从 enabled 开始。
+CREATE TABLE IF NOT EXISTS capability_switches (
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    reason       TEXT NOT NULL DEFAULT '',
+    updated_at   INTEGER NOT NULL,
+    -- users.id；空串 = 非会话主体（命令行/系统），不伪造 system 用户。
+    updated_by   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (namespace_id, name)
+);
+
+-- 能力操作审计（append-only）。
+--
+-- 为什么不复用 events：events 是「只存不解释的原始输入」，它的消费者是事件时间线、
+-- 统计计数与 trace 全景，全都**没有 actor 概念**；把审批类记录塞进去会同时污染
+-- 统计口径和「事件内容」的语义，而 events 也没有 actor 列可加。
+-- detail 只存**摘要**（'{}' 默认）：试跑记 traceId + version，不存参数全文（参数里可能有业务数据）。
+-- 本表只增不删：没有修改/删除端点，也不接保留期（写量 = 人工动作次数）。
+CREATE TABLE IF NOT EXISTS capability_audit (
+    id           TEXT PRIMARY KEY,
+    namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('enable', 'disable', 'test')),
+    -- users.id；空串 = 非会话主体（命令行/系统）。
+    actor_id     TEXT NOT NULL DEFAULT '',
+    detail       TEXT NOT NULL DEFAULT '{}',
+    created_at   INTEGER NOT NULL
+);
+
+-- 倒序读最近操作（limit 生效）；与 ORDER BY created_at DESC, id DESC 同序。
+CREATE INDEX IF NOT EXISTS idx_cap_audit_ns_name
+    ON capability_audit(namespace_id, name, created_at DESC, id DESC);
+
 -- 边的派生投影：能力边来自 spec.next，源入口边来自源 targets。用户不直接写边。
 -- 只有四列身份 + created_at：没有端口、没有映射、没有优先级。
 -- from_is_source=0 时 from_ref 是能力名；=1 时 from_ref 是源 id。
@@ -297,11 +337,15 @@ CREATE INDEX IF NOT EXISTS idx_edges_from
 
 -- 事件：只存不解释的原始输入。payload 原样保存；delivery_id 是调用方幂等键。
 -- reason 是稳定机器码（默认 Ingested）。
+-- origin 区分「外部投递」与「人工试跑」：'source' 覆盖全部存量行，不需要回填。
+-- 不复用 source 列：source 存人类可读的源名（列表/详情要给人看），试跑没有源可写，
+-- 写个固定名字又会跟「用户真的建了同名源」混成一类，且不能当稳定过滤判据。
 CREATE TABLE IF NOT EXISTS events (
     id           TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
     trace_id     TEXT NOT NULL,
     source       TEXT NOT NULL,
+    origin       TEXT NOT NULL DEFAULT 'source' CHECK (origin IN ('source', 'test')),
     type         TEXT NOT NULL,
     payload      TEXT NOT NULL DEFAULT '{}',
     delivery_id  TEXT,

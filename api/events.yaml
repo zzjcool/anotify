@@ -116,7 +116,7 @@ paths:
         汇总读）；缺参数是 400，绝不回退默认命名空间。
 
         分页是 **keyset**（不是 OFFSET）：`continue` 是不透明游标，绑定
-        `namespace + source + traceId`——拿另一个 ns/另一组筛选条件的游标来读会 400，
+        `namespace + source + traceId + origin`——拿另一个 ns/另一组筛选条件的游标来读会 400，
         而不是被当成"第一页"静默回退（那会让翻页莫名跳回最新）。
 
         响应是 `EventList`：`metadata.continue` 只在还有更旧的行时出现；`items[]` 每项是
@@ -138,6 +138,15 @@ paths:
           description: 只看某条 trace 的事件（游标同样绑定它）
           schema:
             type: string
+        - name: origin
+          in: query
+          required: false
+          description: |
+            按事件的**来源类别**过滤（`source` 外部投递 / `test` 人工试跑）。省略 = 自动口径
+            （事件流不含试跑）。**游标同样绑定它**：拿另一组筛选的游标来翻页会 400。
+          schema:
+            type: string
+            enum: [source, test]
         - $ref: './resource.yaml#/components/parameters/LimitQuery'
         - $ref: './resource.yaml#/components/parameters/ContinueQuery'
       responses:
@@ -329,6 +338,17 @@ components:
               按来源名过滤。显式给 `route` 时**包含**剪枝留痕（省略则事件流不含它）。
             schema:
               type: string
+          - name: origin
+            in: query
+            required: false
+            description: |
+              按事件的**来源类别**过滤：`source` = 外部投递，`test` = 人工试跑
+              （`POST …/capabilities/{name}/test` 建的事件）。省略 = 不表态：事件流**不含**
+              试跑（人工动作不该冒充外部输入）；按 `trace` / `source` 查时保留（试跑是真实运行，
+              trace 全景必须完整）。非法值 → 400。
+            schema:
+              type: string
+              enum: [source, test]
           - $ref: './resource.yaml#/components/parameters/LimitQuery'
         responses:
           '200':
@@ -374,7 +394,7 @@ components:
       additionalProperties: false
     EventSpec:
       type: object
-      required: [eventType, involvedObject, traceUID, deliveryId, payload]
+      required: [eventType, involvedObject, traceUID, origin, deliveryId, payload]
       properties:
         reason:
           type: string
@@ -391,6 +411,13 @@ components:
         traceUID:
           type: string
           description: 事件级 trace 标识（`GET …/traces/{traceId}` 用它查全景）
+        origin:
+          type: string
+          enum: [source, test]
+          description: |
+            事件的**来源类别**：`source` = 外部投递（默认，覆盖全部存量行），`test` = 人工试跑
+            （`POST …/capabilities/{name}/test`）。它不改 trace 全景，只用于展示与事件流过滤
+            （`?origin=test`）：统计口径（`/v1/stats` 的事件数）在 store 已经排除 `test`。
         deliveryId:
           type: string
           nullable: true

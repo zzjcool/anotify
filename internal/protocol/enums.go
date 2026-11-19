@@ -170,6 +170,11 @@ const (
 	ReasonParamType         = "param_type"
 	ReasonNoTarget          = "no_target"
 	ReasonEventSchema       = "event_schema"
+	// ReasonCapabilityDisabled 是「这条边指向的能力被停用了」（capability-lifecycle §4.4）。
+	//
+	// 它是**剪枝**不是失败：事件照收 200，只是不建任务。给源调用方回 4xx 会让它
+	// 以为该重试——而停用是下游不接，与 downstream_missing / param_missing 同类。
+	ReasonCapabilityDisabled = "capability_disabled"
 )
 
 // pruneReasons 是「事件已接收、下游没建 task」的观察原因（capability.md §8.3）。
@@ -182,6 +187,7 @@ var pruneReasons = []string{
 	ReasonParamSchema,
 	ReasonParamType,
 	ReasonParamMissing,
+	ReasonCapabilityDisabled,
 }
 
 // IsPruneReason 报告 reason 是不是剪枝观察原因。

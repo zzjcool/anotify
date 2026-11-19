@@ -109,6 +109,11 @@ func idHashSuffix(hash string) string {
 	return hash[:8]
 }
 
+// NewCapabilityAuditID 生成能力审计行 ID：aud_<base62>。
+//
+// 审计是 append-only 的高频人动作记录：id 只需唯一、不需要可读内容前缀。
+func NewCapabilityAuditID() string { return newID("aud") }
+
 // NewCapabilityID 生成能力版本 ID：cap_<UTC 秒>_<hash8>（契约 §2.2 的形态）。
 //
 // 形态里有时间戳和内容 hash 前 8 位——但这两者都**不足以保证唯一**：

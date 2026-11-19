@@ -286,6 +286,8 @@ unit 用 `serve --config … --data …`，`UMask=0077`，`Restart=always`。它
 
 `--prefix /absolute/staging` 把默认布局置于 staging 根内；`--config`、`--bin`、`--unit`、`--data` 可显式覆盖路径。prefix 非根、路径必须绝对规范，无 `..`、符号链接、特殊文件或 prefix escape，三个文件名仍必须是 anode.yaml、anode、anode.service。staging 不启动/改动宿主服务；输出如需复制 unit 的管理员步骤。目录应由管理员控制，这是安装安全边界，不是对恶意本机并发 writer 的 sandbox。
 
+「这台机器上已经装过一份吗」这个**探测**（要不要把现有 anode.yaml 当升级来源、有没有在跑的旧实例要先停）只看**本次安装自己的落点**：给了 `--prefix` 就完全不看宿主默认落点（`/etc/anode/anode.yaml`、`/etc/systemd/system/anode.service`）。以前会在 prefix 之外兜底看宿主，后果是 staging 一次安装继承宿主的令牌（预检报「令牌不对」而不是缺 `--token`），并把宿主正在跑的节点 `systemctl stop` 一次——正好违反上一句。回归门：`TestInstallScriptPrefixIgnoresHostInstall`（用 `ANODE_HOST_ROOT` 把诱饵种进临时目录，见 `docs/reports/anode-install-red.md`）。
+
 ## 9. 安全
 
 - **令牌不进日志/报告**：脚本把令牌写进自己的临时 0600 文件再以 `--token-file` 交给 `anode install`（不进程 argv、不 echo、不进摘要），安装结束即 `rm`。从中枢下载二进制时也**不走 argv**：`curl --config <0600 文件>` 读 `Authorization: Bearer …`（同机其他用户从 `/proc/<pid>/cmdline` 看不到令牌），文件随临时目录删除。摘要与预检诊断都只出现节点名与中枢地址。

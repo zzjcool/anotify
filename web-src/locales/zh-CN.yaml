@@ -1,6 +1,10 @@
 common:
   skip_to_content: 跳到主内容
   close: 关闭
+  # 共享 schemaForm（#432）的 select 空选项：留空 = 不提交，服务端套 schema 默认值
+  omitted: '留空（用默认值）'
+  # #432：事件来源类别=test（人工试跑）的可见标记（事件流 / 链路全景）
+  origin_test: '手动试跑'
   action:
     close: 关闭
   load_failed_prefix: '载入失败：'
@@ -1327,6 +1331,24 @@ caps:
   not_ready: '未就绪'
   ready_unknown: '状态未知'
   terminal_short: '终端能力（跑完就结束）'
+  # #432 启停：动作条按钮（enable / disable 按状态二选一，test 恒在）
+  act:
+    enable: '启用'
+    disable: '停用'
+    test: '试跑'
+    disable_title: '停用能力 {name}'
+    disable_body: '停用「{name}」后，源事件与上游 emit 都不再为它建任务（留一条 capability_disabled 剪枝事实）。已排队与进行中的任务不受影响；部署、建版本与试跑照旧可用。'
+  # #432 最近操作（审计）：谁 · 何时 · 动作 + detail 摘要
+  audit:
+    title: '最近操作'
+    loading: '正在读取最近操作…'
+    empty: '还没有人工操作记录：启用 / 停用 / 试跑会记在这里。'
+    actor_none: '非会话主体（CLI / 系统）'
+    act_enable: '启用'
+    act_disable: '停用'
+    act_test: '试跑'
+    reason_label: '理由：'
+    version: '版本 v{version}'
   cond:
     Deployed: '已部署'
     DownstreamResolved: '下游可解析'
@@ -1540,7 +1562,38 @@ caps:
     version: '版本'
     workdir: '工作目录'
     workdir_default: '未设置（每次任务独立目录）'
+  state:
+    enabled: '已启用'
+    disabled: '已停用'
+  # #432 试跑弹窗（照 sources.html 的 #fire-modal 范式，挂在 #page-main 之外）
+  test:
+    title: '试跑一次'
+    title_named: '试跑能力 {name}'
+    hint: '试跑会真的建任务并派发（不是预览）：事件带 origin=test 标记，统计口径不计入。'
+    version: '版本'
+    version_hint: '默认当前 live 版本；显式版本必须已存在。'
+    params: '参数（按 spec.params 渲染）'
+    params_json: '直接填 params JSON'
+    params_json_hint: '填了整份 params 对象就覆盖上面的表单；留空 = 用表单的值。'
+    params_degraded: '这份参数契约（oneOf / allOf / $ref 等）抽不出表单，直接填 JSON。'
+    params_empty: '这个能力不需要参数。'
+    params_invalid: 'params 必须是 JSON 对象'
+    nodes: '限定节点'
+    nodes_hint: '留空 = 所有持有所需 digest 的在线节点；候选来自部署候选。'
+    nodes_none: '没有部署候选节点（留空 = 服务端按 digest 选）。'
+    submit: '试跑'
+    submitting: '提交中…'
+    trace: 'traceId：'
+    tasks: '任务'
+    tasks_none: '这次没有建出任务（见下面的提醒与剪枝）。'
+    pruned: '剪枝'
+    warnings: '提醒'
+    failed: '试跑失败'
+    err_version: '版本必须是 ≥1 的整数'
   toast:
+    enabled: '已启用能力 {name}'
+    disabled: '已停用能力 {name}'
+    test_sent: '已提交试跑'
     created: '已创建能力 {name}'
     deleted: '已删除能力 {name}'
     deployed: '已部署（{n} 台）'

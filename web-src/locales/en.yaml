@@ -1,6 +1,10 @@
 common:
   skip_to_content: Skip to content
   close: Close
+  # Shared schemaForm (#432) empty select option: empty = omit, server applies the schema default
+  omitted: 'Empty (use the default)'
+  # #432: visible marker for event origin=test (manual test run) in event stream / trace view
+  origin_test: 'Manual test run'
   action:
     close: Close
   load_failed_prefix: 'Failed to load: '
@@ -1327,6 +1331,24 @@ caps:
   not_ready: 'Not ready'
   ready_unknown: 'Status unknown'
   terminal_short: 'Terminal capability (ends when done)'
+  # #432 lifecycle: action-bar buttons (enable / disable one at a time, test always present)
+  act:
+    enable: 'Enable'
+    disable: 'Disable'
+    test: 'Test run'
+    disable_title: 'Disable capability {name}'
+    disable_body: 'After disabling "{name}", source events and upstream emits no longer create tasks for it (a capability_disabled prune fact is recorded). Queued and running tasks are unaffected; deploy, new versions and test runs keep working.'
+  # #432 recent actions (audit): who · when · action + detail summary
+  audit:
+    title: 'Recent actions'
+    loading: 'Loading recent actions…'
+    empty: 'No manual actions yet: enable / disable / test run will show up here.'
+    actor_none: 'No session principal (CLI / system)'
+    act_enable: 'Enable'
+    act_disable: 'Disable'
+    act_test: 'Test run'
+    reason_label: 'Reason: '
+    version: 'Version v{version}'
   cond:
     Deployed: 'Deployed'
     DownstreamResolved: 'Downstream resolved'
@@ -1540,7 +1562,38 @@ caps:
     version: 'Version'
     workdir: 'Work dir'
     workdir_default: 'Not set (one directory per task)'
+  state:
+    enabled: 'Enabled'
+    disabled: 'Disabled'
+  # #432 test-run modal (same pattern as #fire-modal in sources.html, outside #page-main)
+  test:
+    title: 'Test run'
+    title_named: 'Test capability {name}'
+    hint: 'A test run really creates and dispatches a task (it is not a preview): the event is marked origin=test and excluded from statistics.'
+    version: 'Version'
+    version_hint: 'Defaults to the current live version; an explicit version must already exist.'
+    params: 'Params (rendered from spec.params)'
+    params_json: 'Fill in params JSON directly'
+    params_json_hint: 'A full params object here overrides the form above; leave it empty to use the form values.'
+    params_degraded: 'This params contract (oneOf / allOf / $ref …) cannot be rendered as a form — fill in JSON directly.'
+    params_empty: 'This capability takes no params.'
+    params_invalid: 'params must be a JSON object'
+    nodes: 'Limit to nodes'
+    nodes_hint: 'Empty = every online node holding the required digest; candidates come from the deploy candidates.'
+    nodes_none: 'No deploy candidate nodes (leave empty and the server picks by digest).'
+    submit: 'Test run'
+    submitting: 'Submitting…'
+    trace: 'traceId: '
+    tasks: 'Tasks'
+    tasks_none: 'No tasks were created this time (see warnings and prunes below).'
+    pruned: 'Pruned'
+    warnings: 'Warnings'
+    failed: 'Test run failed'
+    err_version: 'Version must be an integer ≥ 1'
   toast:
+    enabled: 'Enabled capability {name}'
+    disabled: 'Disabled capability {name}'
+    test_sent: 'Test run submitted'
     created: 'Created capability {name}'
     deleted: 'Deleted capability {name}'
     deployed: 'Deployed ({n} nodes)'

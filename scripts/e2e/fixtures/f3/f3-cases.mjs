@@ -4,6 +4,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { openDriver, PAGES, LANGS, GUARDED, ROOT } from './f3-driver.mjs';
 import { capability } from './f3-capability.mjs';
+import { capabilityLifecycle } from './f3-capability-lifecycle.mjs';
 import { source } from './f3-source.mjs';
 import { yamlCreate } from './f3-yaml-create.mjs';
 import { observability } from './f3-observability.mjs';
@@ -37,6 +38,8 @@ add('capability-actions',capability,{lang:'zh-CN',expectHttpStatus:[
   {status:409,path:'/v1/namespaces/default/capabilities/f2a-demo',exact:true,note:'resource_version_conflict：用例 3 并发写后旧 rv 保存必须 409'},
   {status:409,path:'/v1/namespaces/default/capabilities/lint-fix',exact:true,note:'resource_version_conflict：用例 8 并发写后按旧 rv 删除必须 409'},
 ]});
+// #432 能力启停 + 手动试跑：一条真实权威的端到端链（停用 → 源触发 0 任务 → 启用 → 恢复）。
+add('capability-lifecycle',capabilityLifecycle,{lang:'zh-CN'});
 add('source-actions',source,{expectHttpStatus:[{status:409,path:'/v1/namespaces/default/sources/ui-webhook',exact:true,note:'resource_version_conflict：并发 PATCH 后再写/删，CAS 409 是用例要的拒绝'}]});
 // yaml-create：从 YAML 创建的两条写端点（能力 / 源）。用例故意触发两条**真实**拒绝：
 //   · 错 YAML 400 invalid_yaml（第二行缺冒号，页面要把行号原样显示出来）；

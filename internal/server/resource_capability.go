@@ -29,7 +29,9 @@ import (
 	"time"
 
 	"github.com/zzjcool/anotify/internal/artifact"
+	"github.com/zzjcool/anotify/internal/auth"
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/route"
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/ws"
 	"github.com/zzjcool/anotify/internal/yamldoc"
@@ -94,6 +96,13 @@ func (a *capabilityAPI) register(mux *http.ServeMux) {
 		{"GET " + base + "/{name}/versions", a.listVersions},
 		{"GET " + base + "/{name}/versions/{version}", a.getVersion},
 		{"POST " + base + "/{name}/deploy", a.deploy},
+		// 启停与试跑（capability-lifecycle L-D1..L-D8）：三个动作 POST + 一个只读审计面。
+		// 动作 POST 一律**不套 CAS**（与 deploy 一致：`enable`/`disable`/`test` 都不带
+		// resourceVersion，两个管理员同时按 = 最后写赢，两条审计都留）。
+		{"POST " + base + "/{name}/enable", a.enable},
+		{"POST " + base + "/{name}/disable", a.disable},
+		{"POST " + base + "/{name}/test", a.testRun},
+		{"GET " + base + "/{name}/audit", a.audit},
 		// edges 是两类派生投影的只读视图（能力 spec.next + 源 spec.targets）。
 		{"GET /v1/namespaces/{ns}/edges", a.edges},
 		// 「没有写端点」必须是一条**明确的** 405：不带方法的 pattern 只接非 GET/HEAD
@@ -664,6 +673,407 @@ func (a *capabilityAPI) resolveDeployTargets(ctx context.Context, entries []stri
 	return ids, nil
 }
 
+// ---------- 启停与试跑（capability-lifecycle §4）----------
+//
+// 三条语义边界（设计 §1 / §3 / L-D2）：
+//
+//  1. **停用是路由期的闸门**：不建新任务，进行中的任务不取消/不暂停；部署、建版本、
+//     删除都不受影响。所以这里只写开关行（`capability_switches`），不碰任务表。
+//  2. **开关不是 status 落库**：`status.enabled` 仍是读时派生（V4-D1），本文件只写「开关
+//     这个事实」，投影在 `statusFor`。
+//  3. **动作 POST 不套 CAS**（与 deploy 一致）：enable/disable 都不带 resourceVersion，
+//     也不改能力行的 resource_version —— 返回整个信封是为了让页面省一次往返。
+
+// 停用原因的长度上限（契约 `CapabilityDisableRequest.reason.maxLength`）。
+const capabilitySwitchReasonMax = 200
+
+// capabilityWarningNotDeployed 是试跑回执里的 warning 原因码（设计 §4.4：**不是**剪枝码、
+// 也不是任务失败码）：「已排队，但当前没有节点（或指定的那些节点没）持有需要的 digest」。
+const capabilityWarningNotDeployed = "capability_not_deployed"
+
+// capabilitySwitchRequest 是 enable/disable 的动作 body。
+//
+// enable 的发布形状是**无请求体**（传了也忽略：它没有可写字段）；disable 允许一条
+// `reason`（进审计的 `detail.reason`，不进 status）。两边共用一个类型，判据只有一份。
+type capabilitySwitchRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// capabilityTestRequest 是 POST …/test 的动作 body（全部可选）。
+//
+//   - `version` 省略 / 0 = 当前 live 版本（与 PATCH/deploy 同一条解析）；
+//   - `params` 按 `spec.params` 的 JSON Schema 校验（`route.PrepareParams`）；
+//   - `nodes` 限定目标节点名；省略 = 全部持有所需 digest 的在线节点。
+type capabilityTestRequest struct {
+	Version int            `json:"version,omitempty"`
+	Params  map[string]any `json:"params,omitempty"`
+	Nodes   []string       `json:"nodes,omitempty"`
+}
+
+// capabilityTestWarning 是回执里的一条「跑得起来但会等」的观察（reason 封闭）。
+type capabilityTestWarning struct {
+	Reason string `json:"reason"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// capabilityTestReceiptDoc 是试跑回执的 wire 形状（与 `CapabilityTestReceipt` 逐字对应）。
+//
+// 与 `fireSource` 同一条状态码语义：200 + 回执（已建任务、还没跑完），不是 202。
+// 空列表恒 `[]`；`origin` 恒 `test`（让前端能把人工试跑和外部投递分开）。
+type capabilityTestReceiptDoc struct {
+	TraceID  string                  `json:"traceId"`
+	Origin   string                  `json:"origin"`
+	Tasks    []srcReceiptTask        `json:"tasks"`
+	Pruned   []route.Prune           `json:"pruned"`
+	Warnings []capabilityTestWarning `json:"warnings"`
+}
+
+// capabilityAuditEntryDoc 是审计列表的一行（`at` 是 RFC3339 UTC，`detail` 恒为对象）。
+type capabilityAuditEntryDoc struct {
+	ID     string          `json:"id"`
+	Action string          `json:"action"`
+	Actor  string          `json:"actor"`
+	At     string          `json:"at"`
+	Detail json.RawMessage `json:"detail"`
+}
+
+// capabilityAuditListDoc 是审计列表（非信封，与 EdgeList 同类：没有 apiVersion/kind）。
+type capabilityAuditListDoc struct {
+	Items []capabilityAuditEntryDoc `json:"items"`
+}
+
+// enable 处理 POST …/capabilities/{name}/enable（幂等，无请求体）。
+func (a *capabilityAPI) enable(w http.ResponseWriter, r *http.Request) {
+	a.setEnabled(w, r, true)
+}
+
+// disable 处理 POST …/capabilities/{name}/disable（幂等，可选 `{reason}`）。
+func (a *capabilityAPI) disable(w http.ResponseWriter, r *http.Request) {
+	a.setEnabled(w, r, false)
+}
+
+// setEnabled 是 enable/disable 的唯一实现（两个动作只差 enabled 与 body 形状）。
+//
+// 幂等：对已是目标状态的能力再调一次 = 200 + 不变的能力行，但**仍记一条审计**
+// （「我又确认了一次」也是操作事实），`reason/updated_at/updated_by` 每次覆盖。
+func (a *capabilityAPI) setEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name, err := capabilityNameOrBadRequest(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 能力必须存在（不存在/已删除 → 404，不区分「不属于本命名空间」：隔离不泄露存在性）。
+	row, err := a.d.DB.ResolveRef(r.Context(), ns, name)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	body := capabilitySwitchRequest{}
+	if !enabled {
+		// enable 没有可写字段（body 忽略）；disable 的 reason 走严格解码。
+		if err := decodeCapabilityActionBody(r, &body); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		if ran := []rune(body.Reason); len(ran) > capabilitySwitchReasonMax {
+			writeAPIError(w, errStatus(http.StatusBadRequest, reasonValueInvalid,
+				fmt.Sprintf("reason must be at most %d characters", capabilitySwitchReasonMax)))
+			return
+		}
+	}
+	// 开关按**能力行的名字**写（不是路径原文）：路由闸门读的是 capability.Name，
+	// 两边必须同一个键，否则「按别名停用」会静默不生效。
+	if _, err := a.d.DB.SetCapabilitySwitch(r.Context(), store.CapabilitySwitchInput{
+		NamespaceID: ns,
+		Name:        row.Name,
+		Enabled:     enabled,
+		Reason:      body.Reason,
+		ActorID:     auth.UserIDFromContext(r.Context()),
+		Now:         taskNowSeconds(a.d),
+	}); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 返回**整个** Capability 信封（status.enabled 由开关行派生）。能力行本身没被写，
+	// 所以 metadata.resourceVersion 与动作前逐字一致（enable/disable 不产生新版本）。
+	env, err := a.envelope(r.Context(), row, includeBodyQuery(r))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeEnvelope(w, http.StatusOK, env)
+}
+
+// testRun 处理 POST …/capabilities/{name}/test：人工跑一次（建真任务、真派发）。
+//
+// 为什么**不**把 deploy/建任务/试跑合并：试跑走的是与源事件同一条接收事务
+// （`store.AcceptTestEvent`：事件 + 任务 + 审计一个事务），只多了一个 origin=test 标记；
+// 另开一条建任务旁路会立刻踩到 `tasks_resolved_pin_shape` 的 CHECK 约束。
+//
+// 为什么 disabled 上也**允许**（L-D2）：disable 拦的是**自动**触发；人工显式动作不是自动
+// 触发。反过来要求「先 enable → test → disable」，用户几乎一定忘记最后一步。
+func (a *capabilityAPI) testRun(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name, err := capabilityNameOrBadRequest(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	var body capabilityTestRequest
+	if err := decodeCapabilityActionBody(r, &body); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if body.Version < 0 {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonBadRequest, "version must be ≥ 1"))
+		return
+	}
+	row, err := a.testTargetVersion(r, ns, name, body.Version)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 参数对齐：schema 不合 = 调用方输入错误（400 + `details.causes[].field`），不是剪枝
+	// （剪枝是「事件收到了但下游不接」，人工试跑没有「下游」这回事）。
+	params, prune := route.PrepareParams(row.Spec.Params, body.Params)
+	if prune != nil {
+		writeAPIError(w, capabilityParamError(prune))
+		return
+	}
+	// 显式 nodes：解析成节点 id（名字或 id 都接受）；解析不到 → 404，不静默跳过。
+	targets, err := a.resolveDeployTargets(r.Context(), body.Nodes)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	task := &store.Task{
+		NamespaceID:  ns,
+		CapabilityID: row.ID,
+		Capability:   row.Name,
+		Version:      row.Version,
+		Digest:       row.Digest,
+		Params:       params,
+		Phase:        store.TaskPending,
+	}
+	receipt, err := a.d.DB.AcceptTestEvent(r.Context(), store.CapabilityTestInputs{
+		NamespaceID: ns,
+		Capability:  row.Name,
+		Version:     row.Version,
+		Payload:     params,
+		Tasks:       []*store.Task{task},
+		ActorID:     auth.UserIDFromContext(r.Context()),
+		Now:         taskNowSeconds(a.d),
+	})
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 「没有节点持有这个 digest」不是错误：任务停在 pending 等节点上线，回执里给一条
+	// warning（设计 §4.2：绝不把「现在没在线机器」伪装成 4xx）。
+	writeJSON(w, http.StatusOK, capabilityTestReceiptOf(receipt, a.testWarnings(r.Context(), task, targets)))
+}
+
+// testTargetVersion 解析被试跑的能力版本：省略 = live（ResolveRef），显式 = 那一行。
+//
+// 两个分支的 404 语义一致（不存在与「不属于本命名空间」同一个回答）。
+func (a *capabilityAPI) testTargetVersion(r *http.Request, ns, name string, version int) (*store.CapabilityVersion, error) {
+	if version > 0 {
+		row, err := a.d.DB.GetCapability(r.Context(), ns, name, version)
+		if err != nil {
+			return nil, err
+		}
+		return row, nil
+	}
+	row, err := a.d.DB.ResolveRef(r.Context(), ns, name)
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// capabilityParamError 把一条参数剪枝翻成 400 + `details.causes[]`。
+//
+// 顶层 reason 直接用剪枝码（`param_missing` / `param_type` / `param_schema` 都在
+// api-conventions §4.2 的封闭集合里），`field` 指到具体参数路径（如 `params.diff`）——
+// 前端据此把提示标到字段旁，而不是只弹一句「参数不合法」。
+func capabilityParamError(prune *route.Prune) error {
+	if prune == nil {
+		return errStatus(http.StatusBadRequest, reasonBadRequest, "params are invalid")
+	}
+	return &apiError{
+		Code:    http.StatusBadRequest,
+		Reason:  prune.Reason,
+		Message: prune.Detail,
+		Details: &statusDetails{Causes: []statusCause{{
+			Reason: prune.Reason, Field: prune.Field, Message: prune.Detail,
+		}}},
+	}
+}
+
+// testWarnings 判断这次试跑有没有「一个节点都跑不了」的事实（只观察，不改结果）。
+//
+// 判据复用派发路径的同一份实现（`EligibleNodesForTask`：在线 × 授权 × 配置已 apply ×
+// 持有该 digest × 命令/值齐），所以「回执说能跑」与「调度真的能派」不会分叉。
+// 显式给了 nodes 就只看那几台（用户已经缩小了范围，别拿别的机器安抚他）。
+func (a *capabilityAPI) testWarnings(ctx context.Context, task *store.Task, explicit []string) []capabilityTestWarning {
+	if task == nil {
+		return nil
+	}
+	eligible, _, err := a.d.DB.EligibleNodesForTask(ctx, task)
+	if err != nil {
+		// 降级而不是报错：任务已经建好（回执必须回 200），这里只是少一条提示。
+		a.d.logger().Warn("capability test: derive eligible nodes failed",
+			"event", "api.capabilities.test.eligible_failed",
+			"namespace_id", task.NamespaceID, "capability", task.Capability,
+			"version", task.Version, "error", err.Error())
+		return nil
+	}
+	if len(explicit) > 0 {
+		wanted := make(map[string]bool, len(explicit))
+		for _, id := range explicit {
+			wanted[id] = true
+		}
+		kept := 0
+		for _, node := range eligible {
+			if node != nil && wanted[node.ID] {
+				kept++
+			}
+		}
+		if kept > 0 {
+			return nil
+		}
+	} else if len(eligible) > 0 {
+		return nil
+	}
+	return []capabilityTestWarning{{
+		Reason: capabilityWarningNotDeployed,
+		Detail: fmt.Sprintf("没有在线节点持有 %s@%d 的 digest %s；任务 %s 已排队，等节点上线或完成部署后自动派发",
+			task.Capability, task.Version, task.Digest, task.ID),
+	}}
+}
+
+// capabilityTestReceiptOf 把 store 的回执投影成 wire 文档（空列表恒 `[]`，origin 恒 test）。
+func capabilityTestReceiptOf(receipt *store.CapabilityTestReceipt, warnings []capabilityTestWarning) capabilityTestReceiptDoc {
+	doc := capabilityTestReceiptDoc{
+		Origin:   store.EventOriginTest,
+		Tasks:    []srcReceiptTask{},
+		Pruned:   []route.Prune{},
+		Warnings: []capabilityTestWarning{},
+	}
+	if receipt != nil {
+		doc.TraceID = receipt.TraceID
+		if receipt.Origin != "" {
+			doc.Origin = receipt.Origin
+		}
+		for _, task := range receipt.Tasks {
+			doc.Tasks = append(doc.Tasks, srcReceiptTask{
+				TaskID: task.TaskID, Capability: task.Capability, Version: task.Version,
+			})
+		}
+		for _, prune := range receipt.Pruned {
+			doc.Pruned = append(doc.Pruned, route.Prune{
+				Capability: prune.Capability, Reason: prune.Reason, Detail: prune.Detail,
+			})
+		}
+	}
+	doc.Warnings = append(doc.Warnings, warnings...)
+	return doc
+}
+
+// audit 处理 GET …/capabilities/{name}/audit?limit=N：最近操作（最新在前）。
+//
+// 非信封（与 `GET /v1/namespaces/{ns}/edges` 同类：这是一份派生观察，不是可寻址资源）。
+// `limit` 只做**格式**校验（非法 = 400），夹取交给 store（1..200，缺省 50）：两个数字
+// 只能有一份，否则「handler 说 20、store 说 200」这种分歧会在翻页处才暴露。
+func (a *capabilityAPI) audit(w http.ResponseWriter, r *http.Request) {
+	ns, err := a.d.authorizePathNamespace(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	name, err := capabilityNameOrBadRequest(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	limit, err := taskQueryInt(r, "limit", 0)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	entries, err := a.d.DB.ListCapabilityAudit(r.Context(), ns, name, limit)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	doc := capabilityAuditListDoc{Items: make([]capabilityAuditEntryDoc, 0, len(entries))}
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		detail := bytes.TrimSpace(e.Detail)
+		if len(detail) == 0 {
+			detail = []byte("{}")
+		}
+		doc.Items = append(doc.Items, capabilityAuditEntryDoc{
+			ID:     e.ID,
+			Action: e.Action,
+			Actor:  e.ActorID,
+			At:     time.Unix(e.CreatedAt, 0).UTC().Format(time.RFC3339),
+			Detail: json.RawMessage(detail),
+		})
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// capabilityNameOrBadRequest 取路径里的 `{name}` 并拒绝空串。
+//
+// Go 1.22 的 `{name}` 通配不匹配空段，所以这条分支在正常路由下不可达；仍然显式拒绝：
+// 空名字落到 store 会变成 500（「我们没预料到」），而它的真实语义是调用方路径写坏了。
+func capabilityNameOrBadRequest(r *http.Request) (string, error) {
+	name := capabilityNameFromPath(r)
+	if name == "" {
+		return "", errStatus(http.StatusBadRequest, reasonBadRequest, "capability name is required")
+	}
+	return name, nil
+}
+
+// decodeCapabilityActionBody 严格解码动作 POST 的可选 body（未知字段 → 400，空 body = 全部省略）。
+//
+// 与 `decodeCapabilityDeployBody` 同一套判据（空 / `null` = 省略、未知字段 = 400、上限 1 MiB），
+// 只是目标类型不同：把 deploy 那一份抄成三份迟早「有的动作用空 body 合法、有的不合法」。
+// `UseNumber` 让 `params` 里的数字**原样**透传（试跑参数要逐字进任务行，不能被 float64 改写）。
+func decodeCapabilityActionBody(r *http.Request, dst any) error {
+	if r.Body == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return errStatus(http.StatusBadRequest, reasonBadRequest, "cannot read request body")
+	}
+	_ = r.Body.Close()
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return unknownFieldError(err)
+	}
+	return nil
+}
+
 // ---------- 信封与 status 派生 ----------
 
 // envelope 组装一个 Capability 信封（四键齐全；status 恒非 null）。
@@ -714,6 +1124,22 @@ func (a *capabilityAPI) statusFor(ctx context.Context, row *store.CapabilityVers
 		Resolved:         capabilityResolved{Next: []capabilityResolvedNext{}},
 		Observed:         capabilityObserved{}, // 无事实时就是 {}（⑥ 有事实再填）
 		InstalledFrom:    row.InstalledFrom,
+		// Enabled 的默认值就是「启用」（无开关行 = enabled，capability-lifecycle §1）。
+		Enabled: true,
+	}
+
+	// ⓪ Enabled：开关行的**派生投影**（不是把 status 落库，V4-D1）。
+	//
+	// 按**能力名**读（不是版本行）：换版本（PATCH）不重置开关，开关跟着 name 走。
+	// 降级而不是报错：statusFor 是列表/详情共用的，一次读失败把整页变 500 的代价
+	// 远大于「这一格暂时空着」——空着就是契约默认值（启用），并留一条 warn。
+	switch sw, serr := a.d.DB.GetCapabilitySwitch(ctx, row.NamespaceID, row.Name); {
+	case serr != nil:
+		a.d.logger().Warn("capability status: enabled degraded to default",
+			"event", "api.capabilities.status.enabled_failed",
+			"namespace_id", row.NamespaceID, "capability", row.Name, "error", serr.Error())
+	case sw != nil:
+		status.Enabled = sw.Enabled
 	}
 
 	// ① Implemented：正文能不能过静态校验（正常写入路径写不进 Invalid 的行）。
@@ -1119,8 +1545,10 @@ type capabilityObservedTasks struct {
 }
 
 type capabilityStatus struct {
-	Version          int                         `json:"version"`
-	Digest           string                      `json:"digest"`
+	Version int    `json:"version"`
+	Digest  string `json:"digest"`
+	// Enabled 是开关行的**派生投影**（无行 = true）；不是把 status 整块落库（V4-D1）。
+	Enabled          bool                        `json:"enabled"`
 	Ready            bool                        `json:"ready"`
 	Conditions       []capabilityCondition       `json:"conditions"`
 	Nodes            []capabilityNodeState       `json:"nodes"`
