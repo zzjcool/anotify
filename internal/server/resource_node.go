@@ -104,6 +104,10 @@ func (a *nodeAPI) register(mux *http.ServeMux) {
 	route("POST "+nodesPath+"/{name}/tokens", a.issueToken)
 	route("GET "+nodesPath+"/{name}/config", a.configGet)
 	route("PUT "+nodesPath+"/{name}/config", a.configPut)
+	// Node 文档的 YAML 读/写面（IA 重构 ②：docs/design/node-namespace-ia.md §2.1）。
+	// 与 config 子资源同一份底层事实、同一个 CAS；YAML 只是另一种序列化。
+	route("GET "+nodesPath+"/{name}/yaml", a.yamlGet)
+	route("PUT "+nodesPath+"/{name}/yaml", a.yamlPut)
 	route("POST "+nodesPath+"/{name}/drain", a.drain)
 	route("POST "+nodesPath+"/{name}/upgrade", a.upgradeNode)
 }

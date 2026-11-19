@@ -697,7 +697,7 @@ func TestNodeResourceListEmptyIsArray(t *testing.T) {
 	}
 }
 
-// TestNodeResourceRoutesAreSessionWrapped 证明 11 条路由都过了 session 中间件。
+// TestNodeResourceRoutesAreSessionWrapped 证明 13 条路由都过了 session 中间件。
 //
 // 用一个「一律 401」的 Session 注入：只要有一条路由漏包，它就会返回 200/400/405
 // 而不是 401，测试立刻红。
@@ -725,6 +725,8 @@ func TestNodeResourceRoutesAreSessionWrapped(t *testing.T) {
 		{http.MethodPost, "/v1/nodes/node-a/tokens"},
 		{http.MethodGet, "/v1/nodes/node-a/config"},
 		{http.MethodPut, "/v1/nodes/node-a/config"},
+		{http.MethodGet, "/v1/nodes/node-a/yaml"},
+		{http.MethodPut, "/v1/nodes/node-a/yaml"},
 		{http.MethodPost, "/v1/nodes/node-a/drain"},
 		{http.MethodPost, "/v1/nodes/node-a/upgrade"},
 	}

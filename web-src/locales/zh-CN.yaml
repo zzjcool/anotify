@@ -13,6 +13,7 @@ common:
   server_error: '服务端错误 HTTP {code}'
   request_rejected: '请求被拒绝 HTTP {code}'
   request_failed: '请求失败'
+  unknown: '未知'
   err:
     title:
       unauthorized: 登录已过期
@@ -66,6 +67,7 @@ common:
     capabilities: 能力
     playbooks: "预案"
     nodes: 节点
+    namespaces: 命名空间
     receivers: 通知接收
     keys: API Keys
     api: API 文档
@@ -1798,6 +1800,28 @@ nodes:
     artifacts: "已部署能力的实际状态"
     batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
 
+    node_subtitle: "节点维度：身份与连接 · 授权命名空间 · 配置（YAML）· 物理槽位"
+    moved_title: "命名空间与系统配置不在这页"
+    moved_note: "命名空间 vars 是命名空间级配置（已迁到命名空间页）；系统保留期是系统级配置（已迁到管理后台）。节点页只保留「这个节点能被哪些命名空间使用」的授权列表。"
+    moved_ns: "去命名空间页"
+    moved_system: "去管理后台"
+    yaml_title: "节点 YAML（apiVersion anotify/v1 · kind Node）"
+    yaml_hint: "服务端按当前事实重建的规范化文档：只含 spec 的字段集，不含 status 与本机私有字段（token / server / listen / envPassthrough 不在中枢）。整份贴回即可保存；表单改动会同步成同一份文本。"
+    yaml_view: "当前文档"
+    yaml_edit: "编辑 YAML"
+    yaml_edit_hint: "严格解析：未知字段、类型错误、缺 resourceVersion 都会被拒，并指出行号与字段路径"
+    yaml_input: "YAML 全文"
+    yaml_save: "保存这份 YAML"
+    yaml_reset: "按当前表单重写"
+    yaml_saved: "已保存：YAML 已应用，文档已重新规范化。"
+    yaml_invalid: "文档没有通过校验：按下面的行号与字段路径改好再保存。"
+    yaml_dirty: "草稿已改动；保存后由服务端规范化。"
+    yaml_reset_done: "已按当前表单重写文本（尚未保存）。"
+    authorized_title: "授权命名空间（谁能用这台节点）"
+    authorized_hint: "这是授权列表，不是副本：生效 = 授权 ∩ 本机申报；只能收紧。"
+    effective_title: "生效命名空间（只读）"
+    effective_hint: "节点申报 ∩ 中枢授权。要取消全部授权，把授权列表清空。"
+    open_namespace: "打开命名空间页"
     per_cap_default: '默认'
 sources:
   v4:
@@ -2567,3 +2591,43 @@ source_detail:
   recent_error: '近期回执加载失败'
   view_trace: '查看链路'
   no_name_hint: '从源列表点一个源的名称进来，或在地址里带上 ?namespace=<ns>&name=<name>。'
+namespaces:
+  v4:
+    title: "命名空间"
+    subtitle: "唯一的硬隔离边界：能力、源、事件、任务都按它隔离；这里管理默认 vars。"
+    refresh: "刷新"
+    loading: "正在读取…"
+    empty: "还没有命名空间。"
+    col_capabilities: "能力"
+    col_nodes: "节点"
+    col_sources: "源"
+    col_tasks: "任务"
+    col_created: "创建时间"
+    note_summary: "命名空间能配什么"
+    note_body: "命名空间维度目前只有默认 vars（namespace_configs）与配置生效版本；schema 里没有命名空间级配额 —— limits 只有「本机 + 节点」两层，节点授权决定这个节点能被哪些命名空间使用。"
+namespace:
+  v4:
+    title: "命名空间"
+    subtitle: "默认 vars · 配置版本 · 逐节点有效变量"
+    back: "返回命名空间列表"
+    scope: "当前命名空间"
+    scope_label: "命名空间"
+    scope_hint: "切换会改 URL 的 name 参数（可收藏/分享），并由同一套 CAS 判据保证不会把 A 的草稿写进 B。"
+    vars_hint: "只影响该命名空间的下一次任务解析；不写进节点 applied。"
+    counts: "计数（派生）"
+    count_capabilities: "能力"
+    count_nodes: "节点"
+    count_sources: "源"
+    count_tasks: "任务"
+    effective: "某台节点的有效变量"
+    node: "节点"
+    effective_hint: "local > node > namespace 逐键解析；来源由服务端给出，页面不猜。"
+    context_namespace: "命名空间上下文"
+    links: "这个命名空间里的其他东西"
+    link_caps: "能力 →"
+    link_sources: "源 →"
+    link_events: "事件流 →"
+    pick_node: "选择一台节点，看它在这个命名空间下的有效变量。"
+    no_nodes: "还没有节点。"
+    no_param: "缺少 name 参数：从命名空间列表进入。"
+    not_found: "命名空间不存在（或已被删除）。"

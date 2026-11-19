@@ -31,7 +31,8 @@ export async function bootstrap(d) {
 }
 export async function aba(d) {
   const {page,goto,check,calls,req}=d;
-  await goto('nodes','namespace=default');
+  // IA（#436）：命名空间 vars 编辑器搬到了 namespace.html；ABA/CAS 判据逐字不变。
+  await goto('namespace','namespace=default&name=default');
   await page.locator('#namespace-save:not([disabled])').waitFor();
   const original=await req('/v1/namespaces/prod/config');
   await page.evaluate(()=>{

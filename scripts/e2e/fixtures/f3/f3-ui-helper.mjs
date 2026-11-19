@@ -6,7 +6,7 @@ import path from "node:path";
 import { openDriver } from "./f3-driver.mjs";
 
 export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
-export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","source-detail","sources","trace"]);
+export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","source-detail","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
 // #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 21 页 × 4 语言 ×
@@ -16,7 +16,9 @@ export const TABLET_VIEW = Object.freeze({ width: 768, height: 1024 });
 export const STANDALONE = Object.freeze(["cli-auth", "passkey-enroll"]);
 export const PREVIEW_BANNER = "前端预览 · 数据均为 mock（接口未真正调用）";
 // Batches keep every matrix case inside the fixed 55s outer budget.
-export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,21]].map(([a,b]) => PAGES.slice(a,b)));
+// 末段用 PAGES.length（不是写死的 21）：新增页面只登记 PAGES 就会自动进矩阵，
+// 写死上界会让新页在 ui 矩阵里**静默漏跑**（#436 新增 namespace/namespaces 两页）。
+export const MATRIX_BATCHES = Object.freeze([[0,5],[5,10],[10,15],[15,PAGES.length]].map(([a,b]) => PAGES.slice(a,b)));
 export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","security","receivers","events","trace","playbook"]);
 // Per-page structural anchor. Detail pages get their identity from real v4 list rows.
 // #381：登录页的默认 tab 跟实例/浏览器状态走（首跑默认落在「注册」），所以 #login-panel
@@ -25,7 +27,7 @@ export const KEY_PAGES = Object.freeze(["index","capabilities","playbooks","secu
 export const ANCHORS = Object.freeze({
   admin: "#kpi-devices", capabilities: "[data-cap]", capability: "#cap-name", "cli-auth": "#code-input", docs: "#endpoints",
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
-  message: "#task-facts", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
+  message: "#task-facts", namespace: "#ns-name", namespaces: "#ns-list [data-ns]", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-file-path", playbooks: "#pb-grid", receivers: "#current-device-card",
   security: "#passkey-list", source: "#src-name",
   // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。

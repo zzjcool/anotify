@@ -247,6 +247,19 @@
         border-radius: var(--r-full);
         background: var(--accent);
       }
+      /* ===== 系统保留配置（#436）：从节点页整块迁来的三个输入 ===== */
+      .c2-state { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .c2-kv { overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+      .nd-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+      .nd-label-unit { font-size: 11px; color: var(--faint); font-weight: 400; }
+      .nd-tip { margin-top: 2px; }
+      .devf { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); margin: 12px 0; min-width: 0; }
+      .devf > summary { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; list-style: none; }
+      .devf > summary::-webkit-details-marker { display: none; }
+      .devf > summary::before { content: "▸"; color: var(--faint); font-size: 11px; }
+      .devf[open] > summary::before { content: "▾"; }
+      .devf > summary:hover { color: var(--text); }
+      .devf-body { display: grid; gap: 10px; padding: 0 12px 12px; min-width: 0; }
     </style>
 {{end}}
 
@@ -617,6 +630,26 @@
       <div class="card">
         <div id="top-users-list" class="list"></div>
       </div>
+    </section>
+
+    <!-- ===== 系统保留配置（管理员）=====
+         IA（#436）：这块原先挂在节点列表页（nodes.html 的 #system-config）——
+         它是**系统级**配置（system_config 单行表），与节点无关。整块原样迁到这里，
+         元素 id 与 CAS 语义逐字保留（#result-ttl / #event-ttl / #task-ttl）。 -->
+    <section id="system-config" class="card card-pad">
+      <div class="card-title">{{t "nodes.v4.retention"}}</div>
+      <p class="card-sub">{{t "nodes.v4.retention_hint"}}</p>
+      <div id="system-fields" hidden>
+        <details class="devf">
+          <summary>{{t "uxaudit.dev.summary"}}</summary>
+          <div class="devf-body"><div id="system-revisions" class="c2-kv"></div></div>
+        </details>
+        <div class="field"><label for="result-ttl" class="field-label nd-label" title="retention.resultTtlSec"><span>{{t "uxaudit.res.nodes.ttl_result"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="result-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="result-ttl-hint"></p></div>
+        <div class="field"><label for="event-ttl" class="field-label nd-label" title="retention.eventTtlSec"><span>{{t "uxaudit.res.nodes.ttl_event"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="event-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="event-ttl-hint"></p></div>
+        <div class="field"><label for="task-ttl" class="field-label nd-label" title="retention.taskTtlSec"><span>{{t "uxaudit.res.nodes.ttl_task"}}</span><span class="nd-label-unit">{{t "uxaudit.res.nodes.ttl_unit"}}</span></label><input id="task-ttl" class="input" type="number" min="0" step="1" disabled /><p class="field-hint nd-tip" id="task-ttl-hint"></p></div>
+        <div class="card-actions"><button id="system-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="system-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
+      </div>
+      <div id="system-state" class="c2-state" role="status"></div>
     </section>
   </div>
 </div>
@@ -1364,5 +1397,74 @@
 
     boot();
   })();
+</script>
+
+<!-- ===== 系统保留配置（管理员）=====
+     IA（#436）：整块控制器从 nodes.html 搬来，判据与文案不变：
+     保留期的**生效值**只来自 GET /v1/system/config（env 只播种一次，见 mux.go），
+     保存必须带 metadata.resourceVersion（缺 400 / 旧 409），0 = 永久保留。 -->
+<script>
+(() => {
+  const A = Anotify, $ = id => document.getElementById(id);
+  // 本页主脚本用的是全局 i18n `t`（admin.*）。这里另起名字，避免遮蔽它：
+  // check-i18n-keys 按「文件级 prefix wrapper」推断 key，遮蔽会把既有引用误判成
+  // nodes.v4.admin.*（本文件真实踩过）。
+  const nt = key => A.t('nodes.v4.' + key);
+  const nx = key => A.t('uxaudit.res.nodes.' + key);
+  // member 打开本页时主脚本会把 #page-main 整块换成「无权限」空态，系统保留区随之消失。
+  // 控制器跑在并行的异步流程里，任何 DOM 访问都必须先确认元素还在（否则控制台报
+  // Cannot set properties of null，e2e 的「零 JS 错误」门禁会红）。
+  const has = id => !!document.getElementById(id);
+  const msg = (id, text, error = false) => { const box = $(id); if (!box) return; box.textContent = text; box.classList.toggle('is-error', error); };
+  const errorText = e => e.status === 409 && e.reason === 'resource_version_conflict' ? nt('stale') : nt('error') + ': ' + (e.reason || '') + ' ' + e.message;
+  const write = (url, body) => A.api(url, { method: 'PUT', body: JSON.stringify(body) });
+  const ttlFields = [['result', 'resultTtlSec'], ['event', 'eventTtlSec'], ['task', 'taskTtlSec']];
+  const currentTtls = () => JSON.stringify(ttlFields.map(([id]) => $(id + '-ttl').value));
+  let systemConfig = null, systemOriginal = '';
+  /* ND-4：单位提示 —— 裸数字旁边给出「秒 ≈ 天」的换算，0 说清是“永久” */
+  function renderTtlHint(id) {
+    const box = $(id + '-hint'); if (!box) return;
+    const raw = $(id + '-ttl').value.trim(), n = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isFinite(n)) { box.textContent = ''; return; }
+    const days = n % 86400 === 0 ? String(n / 86400) : (n / 86400).toFixed(1);
+    box.textContent = n === 0 ? nx('ttl_zero') : nx('ttl_hint').replace('{n}', String(n)).replace('{days}', days);
+  }
+  for (const [id] of ttlFields) $(id + '-ttl').addEventListener('input', () => renderTtlHint(id));
+  async function loadSystem() {
+    if (!has('system-config')) return;
+    $('system-save').disabled = true; msg('system-state', nt('loading'));
+    try {
+      const value = await A.api('/v1/system/config');
+      if (!has('system-config')) return;
+      if (!value.metadata?.resourceVersion || ttlFields.some(([, k]) => !Number.isInteger(value.retention?.[k]) || value.retention[k] < 0)) throw new Error('Invalid system config wrapper');
+      systemConfig = value;
+      for (const [id, key] of ttlFields) { $(id + '-ttl').value = String(value.retention[key]); $(id + '-ttl').disabled = false; renderTtlHint(id); }
+      systemOriginal = currentTtls(); $('system-revisions').textContent = 'resourceVersion=' + value.metadata.resourceVersion;
+      $('system-fields').hidden = false; msg('system-state', nt('loaded')); $('system-save').disabled = false;
+    } catch (e) { msg('system-state', errorText(e), true); }
+  }
+  $('system-reload').onclick = async () => { if (currentTtls() !== systemOriginal && !(await A.confirmDanger({ body: nt('reload_confirm') }))) return; loadSystem(); };
+  $('system-save').onclick = async () => {
+    if (!systemConfig) return; $('system-save').disabled = true;
+    try {
+      const retention = Object.fromEntries(ttlFields.map(([id, key]) => {
+        const raw = $(id + '-ttl').value;
+        if (!/^\d+$/.test(raw)) throw new Error('TTL requires integer seconds >= 0');
+        return [key, Number(raw)];
+      }));
+      const value = await write('/v1/system/config', { metadata: { resourceVersion: systemConfig.metadata.resourceVersion }, retention });
+      systemConfig = value;
+      await loadSystem(); msg('system-state', nt('saved'));
+    } catch (e) { msg('system-state', errorText(e), true); } finally { $('system-save').disabled = false; }
+  };
+  /* 只有管理员能读写系统保留期（GET/PUT /v1/system/config 对其它角色 403）。
+     页面先把「谁能看这块」问清楚，再决定是加载还是显示仅管理员提示。 */
+  (async () => {
+    try {
+      const me = await A.api('/v1/auth/me');
+      if (me.role === 'admin') await loadSystem(); else msg('system-state', nt('admin_only'));
+    } catch (e) { msg('system-state', errorText(e), true); }
+  })();
+})();
 </script>
 {{end}}

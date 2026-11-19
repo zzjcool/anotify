@@ -1314,6 +1314,65 @@ paths:
         '409': {$ref: '#/components/responses/Status409'}
         '500': {$ref: '#/components/responses/Status500'}
 
+  /v1/nodes/{name}/yaml:
+    parameters:
+      - $ref: '#/components/parameters/NodeNamePath'
+    get:
+      operationId: getNodeYAML
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "读取节点配置的规范化 YAML（可整份贴回）"
+      description: |
+        `yaml` 是 Node 文档（`apiVersion` / `kind` / `metadata` / `spec`）的规范化重建，
+        **不是**用户当初贴的原始字节：键序与缺省由序列化固定，所以「取 → 改 → 贴回」
+        是一次 schema 复用的往返。
+
+        三条边界：① 只投影 `Node.spec` 的字段集（`namespaces` / `vars` / `limits` / `tags`），
+        不新增字段；② `status` 是派生只读面，**不出现**在文档里；③ `anode.yaml` 的私有字段
+        （`server` / `token` / `listen` / `envPassthrough`）不进 Node spec、不上报，
+        因此也不出现在这里（令牌明文只在 `POST …/tokens` 出现一次）。
+      responses:
+        '200':
+          description: "ResourceYAML（`yaml` 为 Node 文档全文）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '500': {$ref: '#/components/responses/Status500'}
+    put:
+      operationId: putNodeYAML
+      tags: [nodes]
+      security: [{session: []}]
+      summary: "用一份 Node YAML 文档整体应用配置（与 PATCH 同一条 store 路径）"
+      description: |
+        文档先由严格 YAML 解析器处理（语法 / 未知字段 / 类型 / `metadata.name` 必填，
+        带行号与字段路径），转成 canonical JSON 后走与 `PATCH /v1/nodes/{name}` **同一条**
+        store 路径（`UpdateNode`：同一 CAS、同一配置 revision 语义）。
+
+        - 省略的 spec 字段 = **不动**（merge-patch 语义，与 JSON 写入口一致）；
+        - `metadata.resourceVersion` 必填（CAS）；旧值 → 409 `resource_version_conflict`
+          （`details.current.resourceVersion` 给当前令牌）；
+        - `status` / `metadata.uid` 等只读面 → 400 `status_not_writable` / `unknown_field`；
+        - 文档层问题一律 400，`details.causes[].reason` ∈
+          `invalid_yaml` / `unknown_field` / `value_invalid`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResourceYAML'}
+      responses:
+        '200':
+          description: "应用后的规范化 Node 文档（同 GET）"
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceYAML'}
+        '400': {$ref: '#/components/responses/Status400'}
+        '401': {$ref: '#/components/responses/AuthError401'}
+        '404': {$ref: '#/components/responses/Status404'}
+        '409': {$ref: '#/components/responses/Status409'}
+        '500': {$ref: '#/components/responses/Status500'}
+
   /v1/nodes/{name}/drain:
     parameters:
       - $ref: '#/components/parameters/NodeNamePath'

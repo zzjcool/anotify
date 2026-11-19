@@ -13,6 +13,7 @@ common:
   server_error: 'server error HTTP {code}'
   request_rejected: 'request rejected HTTP {code}'
   request_failed: 'request failed'
+  unknown: 'Unknown'
   err:
     title:
       unauthorized: Your session expired
@@ -66,6 +67,7 @@ common:
     capabilities: Capabilities
     playbooks: "Playbooks"
     nodes: Nodes
+    namespaces: Namespaces
     receivers: Receivers
     keys: API Keys
     api: API Docs
@@ -1796,6 +1798,28 @@ nodes:
     artifacts: "Reported capability deployments"
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
 
+    node_subtitle: "Node dimension: identity & connection · authorized namespaces · config (YAML) · physical slots"
+    moved_title: "Namespace and system configuration are not on this page"
+    moved_note: "Namespace vars are namespace-level configuration (moved to the namespace page); retention is system-level configuration (moved to the admin console). This page keeps only the authorization list: which namespaces may use this machine."
+    moved_ns: "Go to namespaces"
+    moved_system: "Go to admin"
+    yaml_title: "Node YAML (apiVersion anotify/v1 · kind Node)"
+    yaml_hint: "The canonical document rebuilt by the server from current facts: only the spec field set, no status and no machine-private fields (token / server / listen / envPassthrough never reach the hub). Paste the whole document back to save; form edits sync into the same text."
+    yaml_view: "Current document"
+    yaml_edit: "Edit YAML"
+    yaml_edit_hint: "Strict parsing: unknown fields, wrong types and a missing resourceVersion are rejected with line numbers and field paths"
+    yaml_input: "Full YAML"
+    yaml_save: "Save this YAML"
+    yaml_reset: "Rewrite from the current form"
+    yaml_saved: "Saved: the YAML was applied and the document renormalized."
+    yaml_invalid: "The document did not validate: fix the line numbers and field paths below, then save again."
+    yaml_dirty: "Draft changed; the server normalizes it on save."
+    yaml_reset_done: "Rewritten from the current form (not saved yet)."
+    authorized_title: "Authorized namespaces (who may use this node)"
+    authorized_hint: "This is the authorization list, not a copy: effective = authorized ∩ declared by the machine, and it can only be tightened."
+    effective_title: "Effective namespaces (read-only)"
+    effective_hint: "Declared by the node ∩ authorized by the hub. To revoke everything, empty the authorization list."
+    open_namespace: "Open a namespace page"
     per_cap_default: 'default'
 sources:
   v4:
@@ -2562,3 +2586,43 @@ source_detail:
   recent_error: 'Recent receipts failed to load'
   view_trace: 'View trace'
   no_name_hint: 'Open a source from the source list, or put ?namespace=<ns>&name=<name> in the address.'
+namespaces:
+  v4:
+    title: "Namespaces"
+    subtitle: "The only hard isolation boundary: capabilities, sources, events and tasks are all scoped by it; default vars live here."
+    refresh: "Refresh"
+    loading: "Loading…"
+    empty: "No namespaces yet."
+    col_capabilities: "Capabilities"
+    col_nodes: "Nodes"
+    col_sources: "Sources"
+    col_tasks: "Tasks"
+    col_created: "Created"
+    note_summary: "What a namespace can configure"
+    note_body: "At namespace level there are only default vars (namespace_configs) and the config revision; the schema has no namespace quota — limits exist only on the machine + node layers, and node authorization decides which namespaces may use a machine."
+namespace:
+  v4:
+    title: "Namespace"
+    subtitle: "Default vars · config revision · per-node effective vars"
+    back: "Back to namespaces"
+    scope: "Current namespace"
+    scope_label: "Namespace"
+    scope_hint: "Switching updates the name parameter in the URL (bookmarkable/shareable), and the same CAS rules guarantee A's draft is never written into B."
+    vars_hint: "Only affects the next task resolved in this namespace; never written into a node's applied snapshot."
+    counts: "Counts (derived)"
+    count_capabilities: "Capabilities"
+    count_nodes: "Nodes"
+    count_sources: "Sources"
+    count_tasks: "Tasks"
+    effective: "Effective vars on one node"
+    node: "Node"
+    effective_hint: "Resolved key by key as local > node > namespace; sources come from the server, the page does not guess."
+    context_namespace: "Namespace context"
+    links: "Other things in this namespace"
+    link_caps: "Capabilities →"
+    link_sources: "Sources →"
+    link_events: "Events →"
+    pick_node: "Pick a node to see its effective vars in this namespace."
+    no_nodes: "No nodes yet."
+    no_param: "Missing the name parameter: enter from the namespace list."
+    not_found: "Namespace not found (or deleted)."
