@@ -6717,3 +6717,152 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
   assert.ok(scene.events.some(e => e.event === 'task:throw-before-cleanup'));
   assert.ok(scene.events.some(e => e.event === 'loadErrorNode:input'));
 });
+
+/* ------------------------------------------------------------------ *
+ * #454 · 节点 YAML 编辑面：`tags` 的现值来自权威读面，不是 /config
+ *
+ * 缺陷（P1 数据丢失）：`GET /v1/nodes/{name}/config` 是 W5 wrapper —— 只有
+ * namespaces / vars / limits 三个可写键 + 只读 revision 三兄弟，**没有 tags**。
+ * 页面把 `config.tags || []` 当成草稿现值，于是「这个读面没告诉我」被写成
+ * 「用户把标签清空了」：任何一次表单改动都会让 `syncYAMLFromForm()` 把
+ * `tags: []` 塞进 YAML 文本，保存即静默清空（YAML 与 PATCH 两条写入口都把
+ * 显式空数组当清空）。tags 的现值只出现在 `GET /v1/nodes/{name}.spec.tags`。
+ *
+ * 这里启动**真实**页面控制器（web-src/pages/node.html 的 inline script）+
+ * 真实 `Anotify.model.node`，只把「传输」和「布局」换成桩（不是本用例的被测
+ * 对象），喂真实形状的两个读面，然后走用户路径：改表单 → 草稿重新序列化 →
+ * 保存。把 `|| []` 写回去，这三条断言必红。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 启动节点 YAML 页面的真实控制器。
+ *
+ * @param {object} [opts]
+ * @param {string[]|null} [opts.specTags] 权威读面（GET /v1/nodes/{name}）给的 spec.tags；
+ *        null = 读面**没有**这个字段（「不知道现值」）
+ */
+async function bootNodeYAMLPage(opts = {}) {
+	const specTags = opts.specTags === undefined ? ['gpu', 'prod'] : opts.specTags;
+	const elements = new Map();
+	const handlers = new Map();
+	const el = (tag = 'div') => {
+		const node = fakeNode(tag);
+		node.value = '';
+		const own = new Map();
+		node.addEventListener = (type, fn) => {
+			if (!own.has(type)) own.set(type, []);
+			own.get(type).push(fn);
+			handlers.set(node, own);
+		};
+		node.removeEventListener = (type, fn) => {
+			const list = own.get(type) || [];
+			const at = list.indexOf(fn);
+			if (at >= 0) list.splice(at, 1);
+		};
+		// 真 DOM 的 click 会触发 onclick 处理器；stub 里显式转发一次。
+		node.click = () => (typeof node.onclick === 'function' ? node.onclick() : undefined);
+		return node;
+	};
+	const fire = (id, type) => {
+		const node = elements.get(id);
+		assert.ok(node, 'element #' + id + ' must exist before firing ' + type);
+		for (const fn of handlers.get(node)?.get(type) || []) fn({ type, target: node });
+	};
+	const byId = id => {
+		if (!elements.has(id)) elements.set(id, el());
+		return elements.get(id);
+	};
+	const doc = fakeDocument();
+	doc.getElementById = byId;
+	doc.createElement = tag => el(tag);
+	doc.title = '';
+
+	const base = makeSandbox({ pathname: '/node.html', search: '?id=anode-1' });
+	base.sandbox.document = doc;
+	base.sandbox.URLSearchParams = URLSearchParams;
+	const ctx = vm.createContext(base.sandbox);
+	vm.runInContext('globalThis.window = globalThis; globalThis.self = globalThis;', ctx);
+	vm.runInContext(PARTIALS_SRC, ctx, { filename: 'web/partials.js' });
+
+	// 两个读面的真实形状（resource_node.go · readEnvelope / nodeConfigWrap）。
+	const node = {
+		apiVersion: 'anotify/v1', kind: 'Node',
+		metadata: { name: 'anode-1', uid: 'nd_hw_454', resourceVersion: 'rv-1' },
+		spec: { namespaces: ['default'], vars: { TOOLCHAIN: '/opt/go1.25' }, limits: { total: 4, perCapability: { '*': 2 } }, ...(specTags === null ? {} : { tags: specTags }) },
+		status: { online: false, draining: false, configRevision: '1', appliedRevision: '1', appliedHash: '', effectiveNamespaces: ['default'], localVars: {}, nodeVars: { TOOLCHAIN: '/opt/go1.25' }, machineVars: { TOOLCHAIN: '/opt/go1.25' } },
+	};
+	// W5 wrapper：**没有 tags**（这就是缺陷的根因，不是测试桩的偷懒）。
+	const config = {
+		metadata: { resourceVersion: 'rv-1' },
+		namespaces: ['default'], vars: { TOOLCHAIN: '/opt/go1.25' }, limits: { total: 4, perCapability: { '*': 2 } },
+		configRevision: '1', appliedRevision: '1', appliedHash: '',
+	};
+	const serverYAML = [
+		'apiVersion: anotify/v1', 'kind: Node', 'metadata:', '  name: anode-1', '  resourceVersion: rv-1', 'spec:',
+		'  namespaces:', '    - default', '  vars:', '    TOOLCHAIN: /opt/go1.25',
+		'  limits:', '    total: 4', '    perCapability:', "      '*': 2",
+		...(specTags === null ? [] : ['  tags:' + (specTags.length ? '' : ' []'), ...specTags.map(t => '    - ' + t)]),
+	].join('\n') + '\n';
+	const calls = [];
+	const api = async (path, init = {}) => {
+		const method = init.method || 'GET';
+		calls.push({ path, method, body: init.body });
+		if (path === '/v1/nodes/anode-1' && method === 'GET') return node;
+		if (path === '/v1/nodes/anode-1/config' && method === 'GET') return config;
+		if (path === '/v1/nodes/anode-1/yaml' && method === 'GET') return { yaml: serverYAML };
+		if (path === '/v1/nodes/anode-1/yaml' && method === 'PUT') return { yaml: JSON.parse(init.body).yaml };
+		throw new Error('unexpected api call: ' + method + ' ' + path);
+	};
+	// 真实的 canonical 层 + 三个桩：传输（api/apiList）、布局（mountLayout）、
+	// 就绪引导（ready/readScope）。其余（model/t/…）一律用真货。
+	base.sandbox.Anotify = Object.assign({}, base.sandbox.Anotify, {
+		api, apiList: async () => ({ items: [] }),
+		ready: async () => {}, readScope: () => ({}), mountLayout: () => {},
+		confirmDanger: async () => true, copyText: () => {},
+	});
+
+	const source = readFileSync(path.join(ROOT, 'web-src/pages/node.html'), 'utf8');
+	const script = source.slice(source.indexOf('{{define "script"}}')).match(/<script>([\s\S]*?)<\/script>/)[1];
+	vm.runInContext(script, ctx, { filename: 'web-src/pages/node.html' });
+	// boot() 是 fire-and-forget：等到「三个读面都回来 + 两处文本都落了」再交给用例。
+	for (let i = 0; i < 2000 && !(byId('node-yaml-text').textContent || '').includes('kind: Node'); i++) {
+		await new Promise(resolve => setTimeout(resolve, 0));
+	}
+	assert.ok((byId('node-yaml-text').textContent || '').includes('kind: Node'), 'boot 必须读完 YAML 读面');
+	return { byId, fire, calls, el, savedYAML: () => calls.filter(c => c.method === 'PUT').map(c => JSON.parse(c.body).yaml), tagsLine: () => (/(?:^|\n) *tags:.*(?:\n +- .*)*/.exec(byId('node-yaml-input').value) || [''])[0].replace(/^\n/, '') };
+}
+
+test('#454 node YAML draft keeps authoritative spec.tags when /config omits the field', async () => {
+	const page = await bootNodeYAMLPage({ specTags: ['gpu', 'prod'] });
+	// 启动后输入框里是服务端原文（含 tags）—— 这不是缺陷现场，用户碰表单才是。
+	assert.ok(page.byId('node-yaml-input').value.includes('- gpu'), '启动文本含服务端原文的 tags');
+	// 用户路径：改一下表单（这里故意填回同样的值：只有 input 事件重要），
+	// 页面把它重新序列化成 YAML 草稿。
+	page.fire('node-vars', 'input');
+	assert.equal(page.byId('node-yaml-input').value.trim().endsWith('- prod'), true, 'input 折叠后 tags 值的序列化：\n' + page.byId('node-yaml-input').value);
+	assert.equal(page.tagsLine(), '  tags:\n    - gpu\n    - prod', '草稿必须从权威读面回读 tags（变异 `|| []` 会变成 `  tags: []`）');
+	// 保存：发出去的文本里 tags 也在。
+	await page.byId('node-yaml-save').click();
+	const sent = page.savedYAML();
+	assert.equal(sent.length, 1, '点保存必须只发一次 PUT …/yaml');
+	assert.ok(sent[0].includes('  tags:\n    - gpu\n    - prod\n'), 'PUT 的文本必须带 tags:\n' + sent[0]);
+});
+
+test('#454 node YAML draft omits tags entirely when no read面 carries the current value', async () => {
+	const page = await bootNodeYAMLPage({ specTags: null });
+	page.fire('node-limits', 'input');
+	// 「不知道」不许写成「清空」：整键省略，服务端按 merge-patch 保留原值
+	// （internal/server/resource_node_yaml_test.go · TestNodeYAMLPutOmittedFieldsKeepValues）。
+	assert.equal(page.tagsLine(), '', '未知现值的 tags 必须整键省略：\n' + page.byId('node-yaml-input').value);
+	await page.byId('node-yaml-save').click();
+	assert.equal(page.savedYAML().length, 1);
+	assert.equal(/(?:^|\n) *tags:/.test(page.savedYAML()[0]), false, '未知时 PUT 的文本里不得出现 tags 键');
+});
+
+test('#454 node YAML draft still writes an explicit empty tags list the server actually reports', async () => {
+	// 反向对照：读面明确说「这个节点没有标签」时，草稿照旧写 `tags: []` ——
+	// 修复不能把「已知的空」也吞掉（那只是把缺陷换个方向）。
+	const page = await bootNodeYAMLPage({ specTags: [] });
+	page.fire('node-namespaces', 'input');
+	assert.equal(page.tagsLine(), '  tags: []', '已知的空列表必须原样序列化');
+});
