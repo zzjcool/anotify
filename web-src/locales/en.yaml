@@ -1808,10 +1808,6 @@ nodes:
     batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
 
     node_subtitle: "Node dimension: identity & connection · authorized namespaces · config (YAML) · physical slots"
-    moved_title: "Namespace and system configuration are not on this page"
-    moved_note: "Namespace vars are namespace-level configuration (moved to the namespace page); retention is system-level configuration (moved to the admin console). This page keeps only the authorization list: which namespaces may use this machine."
-    moved_ns: "Go to namespaces"
-    moved_system: "Go to admin"
     yaml_title: "Node YAML (apiVersion anotify/v1 · kind Node)"
     yaml_hint: "The canonical document rebuilt by the server from current facts: only the spec field set, no status and no machine-private fields (token / server / listen / envPassthrough never reach the hub). Paste the whole document back to save; form edits sync into the same text."
     yaml_view: "Current document"
