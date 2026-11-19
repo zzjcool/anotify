@@ -41,7 +41,7 @@ PASS namespace-detail :: Sidebar nav (partials.js NAV) → namespaces list → r
 ```
 
 截图（文字内容即上面两条断言现场，1440×900、无横向溢出）：
-`scripts/e2e/fixtures/f3/screenshots/f3/runs/current/real/namespace-detail/<attempt>/namespace-detail-list-to-yaml-and-member-403.png`
+f3 运行时产物 `f3/runs/current/real/namespace-detail/<attempt>/namespace-detail-list-to-yaml-and-member-403.png`（本地产出、不入库）
 （截图里可见：左侧共享侧栏 `Namespaces` 项；admin 页 member 态是 `Admin access denied` +
 `HTTP 403 · Forbidden` + 返回按钮，不是空白页。）
 
