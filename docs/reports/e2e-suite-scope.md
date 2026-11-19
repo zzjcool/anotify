@@ -290,3 +290,8 @@ $ node scripts/e2e/ci-e2e-verdict.mjs --self-test
 - `"case": null` 保留为 `"*"` 的等价写法（历史条目/外部脚本可能用），新条目一律用 `"*"`；
   等 `entries` 清空后可以连同这条兼容一起删。
 - 清单里 `frontend / source-actions` 保持原样（本次没有它的新证据，不动）。
+- **本地守卫对未跟踪文件是个假绿坑**（本 PR 第一轮 CI 就踩了）：`check-annotations` / `check-doc-links`
+  都按 `git ls-files` 扫，新写的报告在 `git add` 之前根本不参与检查。本报告早稿里有一行
+  直接调用 `.e2e-bin/verdict-repro/old.mjs`（现场从 `git show` 取出的临时副本、不入库）：本地
+  那个文件恰好存在 → 绿；CI 上没有 → `REF_UNRESOLVED` 红。现在本地复验的口径是**把 `.e2e-bin/`
+  移开再跑守卫**（等价于干净 checkout），而不是“本地跑过了”。
