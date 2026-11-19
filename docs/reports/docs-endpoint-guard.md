@@ -218,3 +218,34 @@ make e2e-one S=ui_shift                      # → 87/87 case · 433/433 视图 
   报「等待 real executions awaiting result ACK 超时」，2.00s 墙钟等待）：单跑该用例与
   `-run TestRework2Replay` 三次全绿，重跑 `make ci` 全绿 —— 判为负载下的既有 flaky，
   与本轮（纯 CSS 注释 + 一行 `overflow-wrap`）无关，未做任何"让它变绿"的改动。
+
+---
+
+## 9. rebase 冲突处置（重放到最新 main）
+
+**触发**：本条分支的头停在 `61324190`，父提交是 `0358cd75`（#464 的合并点）；main 之后又前进到
+`a84d4648`（#466 的「管理后台全局事件」文案改造、#468 的 `make test-frontend` 接线）。
+rebase 之前 `gh pr view 465` 报 `DIRTY`，`gh pr update-branch 465` 直接拒绝（有冲突）。
+
+**冲突面是机器判出来的，不是猜的**：`git merge-tree --write-tree origin/main origin/pi-subagent/host-workspace/anotify-457-r3-aa45c4fb`
+只报一条 `CONFLICT (content): Merge conflict in Makefile`。四份 locale **没有文本冲突** —— 两边改的区域
+不重叠（PR 改 `docs.toc` / `docs.agent.step2` / `events.empty`；main 改 `security.toast_regen_failed` /
+`admin.messages` / `messagesEmptySub`）。但它们同文件同键集，语义上仍可能互相抹掉，所以另外按键集合判。
+
+| 文件 | 合入方式 |
+| --- | --- |
+| `Makefile` | 唯一的文本冲突，逐处取**并集**：① `.PHONY` 那一长行两边都要 —— `check-doc-endpoints` 插在 `check-doc-links` 之后（PR 的位置），`test-frontend` 留在行尾（main 的位置）；② `check-doc-endpoints` 目标与 main 的 `test-frontend` 目标插入点不同，git 自己合上了，两个目标都在；③ `ci` 的依赖串取并集 —— `check-doc-endpoints` 在 `check-doc-links` 之后、`test-frontend` 在 `check-affected-map` 之后，两条都留在链上。没有对整文件取 ours 或 theirs。 |
+| `web-src/locales/{zh-CN,en,ja,es}.yaml` | git 自动合并（无文本冲突）。判定不靠「看着对」，靠键集合：`scripts/check-i18n-keys.mjs` 判四份键集合一致；再逐文件 `git diff origin/main..HEAD` 确认只含 PR 自己那几行（`docs.toc.notify` 已删，`docs.toc.events` / `docs.agent.step2.desc` / `events.empty` 已换 v4 入口），main 新加的 `admin.messages.{type,source,namespace}` 与 `messagesEmptySub` 一条都没被抹回旧值。 |
+| 其余改动文件 | 两侧没有交叉改动，原样重放：本报告 / `scripts/check-doc-endpoints.mjs` / `docs/lint-guards.md` / 两份 README 只在 PR 侧改过；`web-src/pages/docs.html` 与 `scripts/e2e/**` 两侧动的是不同文件（PR 只碰 `.toc-link` 的注释与 `overflow-wrap`，main 碰的是 `affected-map` / `fixtures` / `suites`）。 |
+
+**结果自证**：rebase 后 `git diff origin/main..HEAD --stat` 与原 PR range 的 stat 逐项相同
+（同一份文件清单、`844 insertions(+) 37 deletions(-)`）—— 说明重放既没多改也没少改一行。
+本轮只做冲突处置与文档，功能语义零改动。
+
+复算命令：
+
+```bash
+git merge-tree --write-tree origin/main origin/pi-subagent/host-workspace/anotify-457-r3-aa45c4fb   # 冲突面
+git diff --stat origin/main..HEAD                                                                  # 重放后的净改动
+node scripts/check-i18n-keys.mjs                                                                   # 四份 locale 键集合一致
+```
