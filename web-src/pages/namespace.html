@@ -42,7 +42,6 @@
     <section class="card card-pad">
       <div class="card-title">{{t "namespace.v4.scope"}}</div>
       <div class="field"><label class="field-label" for="config-namespace">{{t "namespace.v4.scope_label"}}</label><select id="config-namespace" class="select"></select></div>
-      <p class="c2-note">{{t "namespace.v4.scope_hint"}}</p>
     </section>
     <div class="c2-grid">
       <section class="card card-pad">
@@ -78,8 +77,8 @@
       </section>
     </div>
     <!-- Namespace YAML（IA ③ / #476）：服务端按当前事实重建的规范化文档。
-         这里刻意不放编辑框 —— YAML 是**唯一写入口**，但输入的是右侧那张 vars 表：
-         表格的增删改序列化进同一份文档后 PUT …/yaml（CAS = metadata.resourceVersion）。
+         这里刻意不放编辑框 —— 写入口只有一条：左侧原始 JSON 与右侧 vars 表的编辑都
+         序列化进同一份文档后 PUT …/yaml（CAS = metadata.resourceVersion）。
          同一个事实不提供第二条写路径（`/config` 只剩 GET 读投影）。 -->
     <section class="card card-pad">
       <div class="card-title">{{t "namespace.v4.yaml_title"}}</div>

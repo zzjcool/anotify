@@ -524,6 +524,18 @@
   .fe-done a {
     color: var(--accent-strong);
   }
+  /* 失败 KPI 整张卡是一个入口：点进去看这段时间失败的是哪些任务。
+     链接不吃 .card 的正文色，hover 提亮沿用 .card-hover（在 ui.css 里），
+     这里只补链接的默认盒模型与键盘焦点环。 */
+  .kpi-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .kpi-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   /* #385：三步都齐后手机上整块**收成一行**——模板注释里承诺过「三步都齐时整块
      收成一行，不占有数据实例的首屏」，但 #381 只留了 done 文案、没真收。
      桌面（>=640）保留完整清单：那里一屏装得下，且它是「源→能力→节点」的入口。
@@ -632,9 +644,9 @@
               <path d="M4 7h16M4 12h16M4 17h10" />
             </svg>
           </span>
-          <span class="stat-delta" id="kpi-total-trend"
-            >{{t "ui.kpi.delta_na"}}</span
-          >
+          <!-- 没有昨日基线时这个药丸整块不渲染（JS 拿掉 hidden 才显示），
+               静态初值里不写「暂无对比」。 -->
+          <span class="stat-delta" id="kpi-total-trend" hidden></span>
         </div>
         <div class="stat-label">{{t "index.kpi.total"}}</div>
         <div class="stat-value" id="kpi-total">–</div>
@@ -775,8 +787,13 @@
         </div>
       </div>
 
+      <!-- 失败 KPI = 去事件流的入口（`#kpi-failed` 这几个 id 由页内 JS 覆写，别改）。 -->
       <div class="min-w-0" data-nonpush-tile>
-        <div class="card stat card-pad h-full">
+        <a
+          id="kpi-failed-link"
+          href="events.html?status=failed"
+          class="card stat card-pad h-full kpi-link card-hover"
+        >
           <div class="flex items-start justify-between gap-2">
             <span class="stat-icon stat-icon-error" aria-hidden="true">
               <svg
@@ -804,7 +821,7 @@
             role="img"
             aria-label="{{t "ui.kpi.spark"}}"
           ></div>
-        </div>
+        </a>
       </div>
     </section>
 
@@ -1343,7 +1360,37 @@
       return known ? sum > 0 : null;
     }
 
+    /* 已经有事件就不再问「从 0 到第一条事件」：三步引导与「接入你的 Agent」
+       一起收。两块都留在 DOM 里，只切 hidden —— 排版与锚点（#first-event /
+       #quickstart）不变，等它渲染落地的调用方仍拿得到同一组标记。 */
+    function hideOnboarding() {
+      const host = document.getElementById("first-event");
+      if (host) {
+        host.hidden = true;
+        // 标记照旧置上：e2e 与手机档样式都读这两个值，收起来不等于没渲染过。
+        host.dataset.ready = "1";
+        host.dataset.complete = "1";
+      }
+      const quickstart = document.getElementById("quickstart");
+      if (quickstart) quickstart.hidden = true;
+    }
+
+    /* 还没有发出第一条事件（或统计取不到）：两块都得在。刷新后事件被清空时
+       也靠这里把 hidden 拿掉，不让一次旧判断把引导永久收起来。 */
+    function showOnboarding() {
+      const host = document.getElementById("first-event");
+      if (host) host.hidden = false;
+      const quickstart = document.getElementById("quickstart");
+      if (quickstart) quickstart.hidden = false;
+    }
+
     async function loadFirstEvent() {
+      // STATS 在 load() 里先赋值（取不到时为 null），这里读的就是本次的口径。
+      if (STATS && STATS.total > 0) {
+        hideOnboarding();
+        return;
+      }
+      showOnboarding();
       if (ALL) {
         const [nsItems, nodeDoc] = await Promise.allSettled([
           loadNamespaceItems(),
@@ -1686,7 +1733,11 @@
           if (n) setStatValue(n, "–");
         }
         const trend = document.getElementById("kpi-total-trend");
-        if (trend) trend.textContent = "–";
+        if (trend) {
+          /* 没有数字就没有药丸：错误态不写「–」占位，整块收起。 */
+          trend.hidden = true;
+          trend.textContent = "";
+        }
         return;
       }
       // /v1/stats 的 total/today/daily 统计的是**事件**；送达率仍是终态任务口径。
@@ -1719,11 +1770,14 @@
       if (trendEl) {
         const delta = yesterdayDelta();
         if (delta == null) {
-          trendEl.textContent = t("ui.kpi.delta_na", "–");
+          /* 没有昨日基线可比：不渲染「暂无对比」这句，药丸整体收起。 */
+          trendEl.hidden = true;
+          trendEl.textContent = "";
           trendEl.classList.remove("up", "down");
         } else {
           const up = delta > 0;
           const down = delta < 0;
+          trendEl.hidden = false;
           trendEl.classList.toggle("up", up);
           trendEl.classList.toggle("down", down);
           trendEl.textContent =

@@ -1,10 +1,27 @@
 // Attributed F2c2 actual node/config/retained actions. Explicit mock alone permits fixture identity/failure knobs.
 import assert from 'node:assert/strict';
 import { acceptDialog, acceptOpenDialog, dismissDialog } from './f3-dialogs.mjs';
+/* B-1 的编辑面（方向变更 2026-11-19：YAML 是节点页的**唯一**写入口）。
+   命名沿用同一组 id：编辑面 `#node-yaml-input`（textarea）+ 保存 `#node-yaml-save`；
+   上一版把它收在 `<details id="node-yaml-edit">` 里，所以先把折叠块打开。
+   等 `apiVersion:` 出现即视为「YAML 已经由 GET …/yaml 预热」（不等固定时间）。 */
+async function openYamlEditor(page) {
+  const details = page.locator('#node-yaml-edit');
+  if (await details.count()) await details.evaluate(el => { el.open = true; });
+  const editor = page.locator('#node-yaml-input');
+  assert.equal(await editor.count(), 1, 'YAML 编辑面必须是唯一的 textarea#node-yaml-input（YAML 是唯一写入口）');
+  await page.waitForFunction(() => (document.getElementById('node-yaml-input')?.value || '').includes('apiVersion:'), null, { timeout: 15000 });
+  return editor;
+}
 export async function nodeRetained(d,mode){
  const {page,check,shot,clean,base}=d;
  const goto=(file,lang='en',query='?namespace=default')=>d.goto(file,query.replace(/^\?/,''),lang);
  const req=d.response,calls=d.calls;
+ const dict=()=>page.evaluate(()=>Object.assign({},window.AnotifyI18n||{}));
+ /* 状态文案一律从**运行时字典**取值再断言：页面文案已本地化/改写过一轮，
+    钉英文散文（'Saved.' / 'draft retained exactly'）会让「用户看到的话变了」变成假红，
+    而这条断言真正要证的是「状态确实推进到了哪一步」。 */
+ const waitStateKey=async(id,key)=>{const t=(await dict())[key];assert.equal(typeof t,'string','字典必须有 '+key);await page.waitForFunction(([id,t])=>(document.getElementById(id)?.textContent||'').includes(t),[id,t]);};
  const waitState=(id,text)=>page.waitForFunction(([id,text])=>document.getElementById(id).textContent.includes(text),[id,text]);
  const nodePath='/v1/nodes/anode-1',configPath=nodePath+'/config';
  const noLeaks=async()=>{ const ui=await page.locator('#page-main').innerText();const gets=await page.evaluate(()=>JSON.stringify(__f3Calls.filter(c=>c.method==='GET'&&c.url.startsWith('/v1/nodes')).map(c=>c.result)));for(const v of ['C2_EXACT_HOST_VALUE_NOT_PUBLIC_728f','COMPLETE_PRIVATE_WHITELIST_NAME','/private/export/absolute/c2-not-public']) {assert.ok(!ui.includes(v));assert.ok(!gets.includes(v));}};
@@ -48,10 +65,24 @@ export async function nodeRetained(d,mode){
     await page.locator('#reg-close').click(); assert.equal(await page.locator('#reg-token').innerText(), '');
     // 关闭面板 = 把一次性明文从 DOM 里抹掉（与 #reg-token 同档）：token/yaml/bootstrap 都清空。
     assert.equal(await page.locator('#reg-bootstrap').textContent(), '');
-    const rotate = page.locator('[data-node="browser-new-node"] button');
+    // B-6：轮换令牌已从行内按钮移到行尾「⋯」菜单（高破坏动作不再与「进入详情」同权重）。
+    // 所以必须先开菜单再点菜单项：`[data-node=…] button` 会同时命中主链与发生器（strict mode）。
+    // 结构本身也钉住：菜单默认收起，轮换令牌是菜单里的条目（不是行首的裸按钮）。
+    const nodeRow = page.locator('[data-node="browser-new-node"]');
+    assert.equal(await nodeRow.locator('.menu').isVisible(), false, '行尾「⋯」菜单默认收起（危险动作不占行首）');
+    assert.equal(await nodeRow.locator('.menu [data-act="rotate"]').count(), 1, '轮换令牌在「⋯」菜单里（唯一入口）');
+    const openRowMenu = async () => {
+      const menu = nodeRow.locator('.menu');
+      if (!(await menu.isVisible())) await nodeRow.locator('.act-more').click();
+      await menu.waitFor({ state: 'visible' });
+    };
+    await openRowMenu();
+    const rotate = nodeRow.locator('[data-act="rotate"]');
+    await rotate.waitFor({ state: 'visible' });
     const before = (await calls()).filter(c => c.url.endsWith('/tokens')).length;
     await dismissDialog(page, () => rotate.click());
     assert.equal((await calls()).filter(c => c.url.endsWith('/tokens')).length, before);
+    await openRowMenu();
     await acceptDialog(page, () => rotate.click());
     await page.waitForFunction(() => document.getElementById('reg-token').textContent.length > 0);
     const rotated = await page.locator('#reg-token').innerText(); assert.notEqual(rotated, token);
@@ -63,18 +94,32 @@ export async function nodeRetained(d,mode){
     check('Actual offline envelope POST → {} token action; once-only long identity, masked reads, confirmed rotation invalidates old identity, duplicate409 preserves input; one-liner bootstrap (curl -fsSL … | sh -s -- --name/--server/--token) + copy button + close clears plaintext; exact anode.yaml/install/serve/emit; no auto-registration or GET token');
   }
   if (mode === 'config') {
-    // IA（#436）：节点页用**不带 ns** 的 URL 也要正常渲染（旧链接带 namespace= 时忽略参数）。
-    await goto('node', 'en', '?id=anode-1&namespace=default'); await page.locator('#node-config-save:not([disabled])').waitFor();
+    /* B-1（方向变更 2026-11-19）：节点页的**唯一写入口是 YAML**。
+       上一版把 YAML 卡降成只读、把写入口放在「配置表单（PUT …/config）」；现在反过来 ——
+       同一份 spec 只能有一处能改，而且那一处就是 YAML。本段钉五件事，全部是「结构上有没有」
+       而不是「文案对不对」：
+         ① `#node-yaml-save` 存在；② 编辑面是可编辑的 textarea（不是只读 code）；
+         ③ 保存真的发 `PUT …/yaml`；④ 全生命周期**没有** `PUT …/config`；
+         ⑤ 「编辑原始 JSON」（vars / limits 裸 JSON 折叠块）与它的几个控件都不存在。 */
+    await goto('node', 'en', '?id=anode-1&namespace=default');
+    const yamlInput = await openYamlEditor(page);
+    // 只读事实面仍在（它们不是写入口）：授权命名空间、本机 vars、预算两层来源、版本对。
     assert.equal(await page.locator('#node-namespace').count(), 0, '节点页不再有命名空间选择器');
     assert.equal(await page.locator('#node-effective-vars').count(), 0, '节点页不再承载某 ns 的有效值');
-    // ② Node YAML：读面必须是 Node 文档（apiVersion/kind/spec.namespaces）。
-    await page.locator('#node-yaml-text').waitFor();
-    const yamlDoc = await page.locator('#node-yaml-text').innerText();
-    assert.ok(yamlDoc.includes('apiVersion: anotify/v1') && yamlDoc.includes('kind: Node'), 'YAML 读面是 Node 文档');
+    // ⑤ JSON 写面整块退役（不是 disabled、不是藏起来 —— 结构上就不该存在）。
+    assert.equal(await page.locator('#node-config-advanced').count(), 0, '「编辑原始 JSON」折叠块必须整块不存在（一个字段只有一个改法）');
+    for (const id of ['node-namespaces', 'node-vars', 'node-limits', 'node-config-save']) {
+      assert.equal(await page.locator('#' + id).count(), 0, 'JSON 写面已退役，不得再有 #' + id);
+    }
+    // ①② 唯一写入口真的存在且可编辑
+    assert.equal(await page.locator('#node-yaml-save').count(), 1, 'YAML 保存按钮必须存在（唯一写入口 #node-yaml-save）');
+    assert.equal(await yamlInput.evaluate(n => n.tagName.toLowerCase()), 'textarea', 'YAML 编辑面必须是真 textarea（不是只读 code）');
+    assert.equal(await yamlInput.isEnabled(), true, 'YAML 编辑面必须可用（不是 disabled）');
+    const yamlDoc = await yamlInput.inputValue();
+    assert.ok(yamlDoc.includes('apiVersion: anotify/v1') && yamlDoc.includes('kind: Node'), 'YAML 编辑面里必须是 Node 文档：\n' + yamlDoc);
     assert.ok(yamlDoc.includes('namespaces:'), 'YAML 里必须有授权命名空间（单一来源）');
     assert.ok(!yamlDoc.includes('status:'), 'YAML 不含派生只读面 status');
-    // #375：三块 JSON textarea 默认收在「编辑原始 JSON」折叠里；要 .fill() 先展开。
-    await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
+    assert.ok((await calls()).some(c => c.method === 'GET' && /\/yaml$/.test(c.url)), '编辑面由 GET …/yaml 预热（不是本地拼的）');
     if (d.mock) {
       assert.equal(await page.locator('#node-machine-limits [data-key="total"] td').nth(1).innerText(), '4');
       assert.equal(await page.locator('#node-machine-limits [data-key="perCapability.fixer"] td').nth(2).innerText(), 'local');
@@ -95,37 +140,40 @@ export async function nodeRetained(d,mode){
     }
     assert.equal(await page.locator('#node-machine-vars [data-key="NS_ONLY"]').count(), 0);
     const config = (await req(configPath)).body;
-    const concurrent = await req(configPath, { metadata: config.metadata, vars: { SOURCE_ROOT: '/new-node-default', NODE_ONLY: 'remote-default' } }, 'PUT'); assert.equal(concurrent.status, 200);
-    const draft = '{\n  "NODE_ONLY": "browser-draft-kept",\n  "SOURCE_ROOT": "/new-node-default"\n}';
-    await page.locator('#node-vars').fill(draft); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'draft retained exactly');
-    assert.equal(await page.locator('#node-vars').inputValue(), draft); await shot('config409-draft');
-    await dismissDialog(page, () => page.locator('#node-config-reload').click()); assert.equal(await page.locator('#node-vars').inputValue(), draft);
-    await acceptDialog(page, () => page.locator('#node-config-reload').click()); await waitState('node-config-state', 'Current configuration loaded');
-    assert.deepEqual(JSON.parse(await page.locator('#node-vars').inputValue()), concurrent.body.vars);
-    await page.locator('#node-vars').fill('{"NODE_ONLY":"ui-saved", "SOURCE_ROOT":"/new-node-default"}'); await page.locator('#node-config-save').click(); await waitState('node-config-state', 'Saved.');
-    const saved = (await req(configPath)).body; assert.equal(saved.vars.NODE_ONLY, 'ui-saved'); assert.equal(saved.appliedRevision, config.appliedRevision); assert.notEqual(saved.configRevision, config.configRevision);
-    // #476：页面不再写 `/config`（那只是读投影）；UI 保存序列化整份 Node 文档 → PUT …/yaml。
-    const uiPut = (await calls()).filter(c => c.method === 'PUT' && c.url === nodePath + '/yaml').at(-1);
-    assert.ok(uiPut, '期望一次 PUT …/yaml');
-    assert.deepEqual(Object.keys(uiPut.body), ['yaml']);
-    assert.ok(String(uiPut.body.yaml).includes('NODE_ONLY: ui-saved'), uiPut.body.yaml);
-    assert.equal(uiPut.httpStatus, 200);
+
+    /* ③ 真保存：只改 YAML 里的一个节点默认值 → 点保存 → `PUT …/yaml` 落地，服务端读回生效。
+       断言用的是**请求本身**（方法 + 路径 + 状态），不是「按钮被点过」。 */
+    const beforeSave = await yamlInput.inputValue();
+    const draft = beforeSave.replace(/^(\s+)NODE_ONLY:.*$/m, '$1NODE_ONLY: yaml-only-write');
+    assert.notEqual(draft, beforeSave, 'YAML 文档里必须有 NODE_ONLY，否则「编辑真的落地」无从判断：\n' + beforeSave);
+    await yamlInput.fill(draft);
+    await page.locator('#node-yaml-save').click();
+    await page.waitForFunction(() => __f3Calls.some(c => c.method === 'PUT' && /\/yaml$/.test(c.url) && c.httpStatus === 200), null, { timeout: 15000 });
+    const yamlPut = (await calls()).filter(c => c.method === 'PUT' && /\/yaml$/.test(c.url)).at(-1);
+    assert.equal(yamlPut.url, '/v1/nodes/anode-1/yaml', 'YAML 保存必须打 PUT …/{name}/yaml，实际 ' + yamlPut.method + ' ' + yamlPut.url);
+    assert.equal(yamlPut.httpStatus, 200, 'YAML 保存必须 200（实际 ' + yamlPut.httpStatus + ' ' + yamlPut.reason + '）');
+    const saved = (await req(configPath)).body;
+    assert.equal(saved.vars.NODE_ONLY, 'yaml-only-write', 'YAML 保存必须真的改到节点默认值');
+    assert.equal(saved.appliedRevision, config.appliedRevision, '保存只动配置，不动已应用版本');
+    assert.notEqual(saved.configRevision, config.configRevision, '配置版本必须递增');
     // 语义断言：保存后 appliedRevision 未变 → UI 必须透出「待应用」状态。
     // 旧版靠英文协议字面量 ConfigPending，本轮该文案已本地化，改用语言中立的 data 钩子。
+    // （保存成功后页面自己会 loadFacts + loadConfig，所以这里只等 DOM 收敛，不再点刷新。）
+    await page.waitForFunction(() => (document.querySelector('#node-applied [data-apply-state]')?.getAttribute('data-apply-state') || '') === 'pending', null, { timeout: 15000 });
     assert.equal(await page.locator('#node-applied [data-apply-state]').getAttribute('data-apply-state'), 'pending');
+    assert.equal(await page.locator('#node-applied [data-key="configRevision"] .nd-v').innerText(), String(saved.configRevision), '版本对里的 configRevision 必须等于服务端新版本');
+
     /* #454：YAML 编辑面必须保住 `tags`（P1 数据丢失）。`GET …/config` 是 W5 wrapper
        （namespaces/vars/limits + revision 三兄弟）——**不返回 tags**；页面只能从权威读面
        `GET /v1/nodes/{name}` 的 spec.tags 回读现值。把「读面没告诉我」写成 `tags: []`
-       会让「打开编辑 → 改点别的 → 保存 YAML」静默清空标签（两条写入口都把显式空数组当清空）。 */
+       会让「打开编辑 → 改点别的 → 保存 YAML」静默清空标签。 */
     let expectedTags;
     if (d.mock) {
       expectedTags = (await req(nodePath)).body.spec.tags; // 预览种子：['build','prod']
     } else {
       const beforeTag = (await req(nodePath)).body;
-      // 真实写入口（PATCH 是 merge-patch 信封：spec 内省略的键 = 不动）。
-      // limits 一并给回一份合法值：本用例前面那次 `PUT …/config` 是**全量替换**，把 limits
-      // 清成了 {}，而页面会把空的 total 序列化成 `total: null` —— 服务端 ValidateLimits
-      // 会拒（400 value_invalid，相邻缺陷，已登记在 docs/reports/node-yaml-tags.md，不在此修）。
+      // limits 一并给回一份合法值：本用例前面那次 YAML 保存已把 limits 写成合法形态，
+      // 但 PATCH 是 merge-patch（spec 内省略的键 = 不动），这里显式给回一份便于断言。
       const tagged = await req(nodePath, { apiVersion: 'anotify/v1', kind: 'Node', metadata: { resourceVersion: beforeTag.metadata.resourceVersion }, spec: { tags: ['gpu', 'prod'], limits: { total: 4, perCapability: { '*': 2 } } } }, 'PATCH');
       assert.equal(tagged.status, 200, 'T1 seam: PATCH spec.tags 必须 200');
       assert.deepEqual(tagged.body.spec.tags, ['gpu', 'prod']);
@@ -133,26 +181,55 @@ export async function nodeRetained(d,mode){
       assert.equal('tags' in (await req(configPath)).body, false, '/config（W5 wrapper）不返回 tags');
       // 重新打开页面：tags 的现值只能从 Node 资源读到（页面重新走一次 boot）。
       await goto('node', 'en', '?id=anode-1');
-      await page.locator('#node-config-save:not([disabled])').waitFor();
-      // 两个折叠块（原始 JSON / YAML 编辑）刷新后回到收起态：点按钮前要展开。
-      await page.locator('#node-config-advanced').evaluate(el => { el.open = true; });
-      await page.locator('#node-yaml-edit').evaluate(el => { el.open = true; });
+      await openYamlEditor(page);
       expectedTags = ['gpu', 'prod'];
     }
     assert.ok(expectedTags.length >= 1, 'T1 seam: 节点必须带 tags');
-    /* 用户路径：改一下表单（值原样填回，只有 input 事件重要）→ 页面把草稿重新序列化成
-       YAML。没有修复时这一步就是「tags 被写成 []」的那个瞬间。 */
-    await page.locator('#node-vars').evaluate(el => el.dispatchEvent(new Event('input', { bubbles: true })));
     const tagsInDraft = '  tags:\n' + expectedTags.map(tag => '    - ' + tag).join('\n') + '\n';
-    const draftYAML = await page.locator('#node-yaml-input').inputValue();
+    const draftYAML = await yamlInput.inputValue();
     assert.ok(draftYAML.includes(tagsInDraft), 'YAML 草稿必须带 tags（把 `|| []` 写回去这条必红）：\n' + draftYAML);
     if (!d.mock) {
       // 保存：写进去的文本里 tags 在 → 服务端读回的 tags 仍在（不回退成空）。
       await page.locator('#node-yaml-save').click();
-      await waitState('node-yaml-state', 'Saved');
+      await page.waitForFunction(() => __f3Calls.some(c => c.method === 'PUT' && /\/yaml$/.test(c.url) && c.httpStatus === 200), null, { timeout: 15000 });
       assert.deepEqual((await req(nodePath)).body.spec.tags, expectedTags, '保存 YAML 后 tags 必须仍在');
-      assert.ok((await page.locator('#node-yaml-text').innerText()).includes('    - ' + expectedTags[0]), '保存后的 YAML 读面仍含 tags');
+      assert.ok((await yamlInput.inputValue()).includes('    - ' + expectedTags[0]), '保存后的 YAML 编辑面仍含 tags');
     }
+
+    /* ④ + 并发 CAS：测试侧先打一发 `PUT …/config` 把版本抬走（**宿主侧的 d.req 走裸 fetch，
+       不进 __f3Calls**，所以下面的「页面没发 PUT /config」断言不会被它污染）；
+       页面拿旧版本保存 YAML → 必须 409、草稿逐字保留、服务端 0 写。 */
+    const staleBase = (await req(configPath)).body;
+    const concurrent = await req(configPath, { metadata: staleBase.metadata, vars: { SOURCE_ROOT: '/node-default', NODE_ONLY: 'concurrent-write' }, limits: staleBase.limits, namespaces: staleBase.namespaces }, 'PUT');
+    assert.equal(concurrent.status, 200, 'T1 seam: 并发写必须成功（这样页面手上的版本才是旧的）');
+    const conflictDraft = (await yamlInput.inputValue()).replace(/^(\s+)NODE_ONLY:.*$/m, '$1NODE_ONLY: yaml-conflict-draft');
+    await yamlInput.fill(conflictDraft);
+    await page.locator('#node-yaml-save').click();
+    await page.waitForFunction(() => __f3Calls.some(c => c.method === 'PUT' && /\/yaml$/.test(c.url) && c.httpStatus === 409), null, { timeout: 15000 });
+    const stalePut = (await calls()).filter(c => c.method === 'PUT' && /\/yaml$/.test(c.url)).at(-1);
+    assert.equal(stalePut.httpStatus, 409, '旧版本保存 YAML 必须 409（实际 ' + stalePut.httpStatus + ' ' + stalePut.reason + '）');
+    assert.equal(stalePut.reason, 'resource_version_conflict', '409 的 reason 必须是 resource_version_conflict');
+    assert.equal(await yamlInput.inputValue(), conflictDraft, '409 后草稿必须逐字保留（不静默覆盖用户的输入）');
+    assert.equal((await req(configPath)).body.vars.NODE_ONLY, 'concurrent-write', '409 必须 0 写（服务端仍是并发写进去的值）');
+    // 恢复：重开页面拿最新 YAML，再保存一次必须成功（这条证明「409 之后还能改」）。
+    await goto('node', 'en', '?id=anode-1');
+    await openYamlEditor(page);
+    const recoveredDraft = (await yamlInput.inputValue()).replace(/^(\s+)NODE_ONLY:.*$/m, '$1NODE_ONLY: yaml-recovered');
+    await yamlInput.fill(recoveredDraft);
+    await page.locator('#node-yaml-save').click();
+    await page.waitForFunction(() => __f3Calls.some(c => c.method === 'PUT' && /\/yaml$/.test(c.url) && c.httpStatus === 200), null, { timeout: 15000 });
+    assert.equal((await req(configPath)).body.vars.NODE_ONLY, 'yaml-recovered', '409 之后重新载入再保存必须成功');
+    /* 「按当前配置重写」：把草稿丢掉、回到已加载的配置（不是清空，也不是把手改留下）。
+       这条是 B-1 的配套 —— 只有一个写入口时，「草稿怎么退回」必须是可预期的。 */
+    await yamlInput.fill('apiVersion: anotify/v1\nkind: Node\nspec:\n  vars:\n    NODE_ONLY: scratch-draft\n');
+    await page.locator('#node-yaml-reset').click();
+    const resetYaml = await yamlInput.inputValue();
+    assert.ok(resetYaml.includes('apiVersion: anotify/v1') && resetYaml.includes('kind: Node'), '重置后必须还是合法 Node 文档：\n' + resetYaml);
+    assert.ok(!resetYaml.includes('scratch-draft'), '重置必须丢掉手改草稿（实际：\n' + resetYaml + '）');
+    assert.ok(resetYaml.includes('NODE_ONLY: yaml-recovered'), '重置回的是已加载配置（含刚保存的值）：\n' + resetYaml);
+    /* ④ 整个页面生命周期里，页面自己一条 `PUT …/config` 都不许发（写入口只有 YAML）。 */
+    const pageConfigWrites = (await calls()).filter(c => c.method === 'PUT' && /\/config$/.test(c.url));
+    assert.deepEqual(pageConfigWrites.map(c => c.method + ' ' + c.url), [], '节点页不得再对 /config 发 PUT（唯一写入口是 YAML）');
     /* #436：local > node > namespace 的有效值属于**命名空间维度**，已搬到
        namespace.html（选节点，而不是在节点页选 ns）。这里继续断言同一份事实：
        切到 prod 之后 NS_ONLY 显示 prod 的值，来源层仍然逐键由服务端给出。 */
@@ -170,7 +247,7 @@ export async function nodeRetained(d,mode){
     await page.locator('#namespace-effective-vars [data-key="NS_ONLY"]').waitFor();
     assert.equal(await page.locator('#namespace-effective-vars [data-key="NS_ONLY"] td').nth(1).innerText(), 'prod-visible');
     await noLeaks(); await shot('ns-context-limits-revisions'); await clean('Node config and namespace context');
-    check('GET W5 config + Node YAML document, actual concurrent PUT → stale409 retains byte-exact draft, cancel/explicit reload/save strict writable body, independent config/applied revisions, YAML save keeps spec.tags when /config omits it (#454), local>node>ns sources on the namespace page, per-leaf two-layer limits and machine applied excludes ns');
+    check('YAML is the only write entry: real PUT …/yaml save changes node vars, zero page-side PUT …/config, no raw-JSON editor, concurrent write yields stale409 with byte-exact draft and 0 writes then a successful recovery save, YAML keeps spec.tags when /config omits it (#454), independent config/applied revisions, local>node>ns sources on the namespace page, per-leaf two-layer limits and machine applied excludes ns');
   }
   if (mode === 'namespace-system') {
     // IA（#436）：节点列表页**不再**承载系统保留期与命名空间 vars；两者各自归位。
@@ -191,23 +268,23 @@ export async function nodeRetained(d,mode){
     assert.equal(await page.locator('#result-ttl').inputValue(), String(initial.resultTtlSec));
     assert.equal(await page.locator('#event-ttl').inputValue(), String(initial.eventTtlSec));
     assert.equal(await page.locator('#task-ttl').inputValue(), String(initial.taskTtlSec));
-    await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitState('system-state', 'Saved.');
+    await page.locator('#result-ttl').fill('0'); await page.locator('#system-save').click(); await waitStateKey('system-state', 'nodes.v4.saved');
     // 保存会同时刷新只读 YAML（同一份事实的两个视图，不允许其中一个是旧的）。
     await page.waitForFunction(() => (document.getElementById('system-yaml-text')?.textContent || '').includes('resultTtlSec: 0'));
     const zero = (await req('/v1/system/config')).body; assert.equal(zero.retention.resultTtlSec, 0); assert.equal(zero.retention.eventTtlSec, initial.eventTtlSec);
     const systemPut = (await calls()).filter(c => c.method === 'PUT' && c.url === '/v1/system/config').at(-1); assert.deepEqual(Object.keys(systemPut.body).sort(), ['metadata','retention']);
     const remoteEventTtl = initial.eventTtlSec + 1000;
     const remote = await req('/v1/system/config', { metadata: zero.metadata, retention: { ...zero.retention, eventTtlSec: remoteEventTtl } }, 'PUT'); assert.equal(remote.status, 200);
-    await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitState('system-state', 'draft retained exactly'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
-    await shot('system0-permanent-stale409-draft'); await acceptDialog(page, () => page.locator('#system-reload').click()); await waitState('system-state', 'Current configuration loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
+    await page.locator('#event-ttl').fill('42'); await page.locator('#system-save').click(); await waitStateKey('system-state', 'nodes.v4.stale'); assert.equal(await page.locator('#event-ttl').inputValue(), '42');
+    await shot('system0-permanent-stale409-draft'); await acceptDialog(page, () => page.locator('#system-reload').click()); await waitStateKey('system-state', 'nodes.v4.loaded'); assert.equal(await page.locator('#event-ttl').inputValue(), String(remoteEventTtl));
     // 顺序很关键：页面**先**加载旧 rv，再做远端写入，页面的草稿才会真的过期
     // （反过来的话页面拿到的是远端写入后的新 rv，保存会成功，"stale 409" 就假绿了）。
     await goto('namespace', 'en', '?namespace=default&name=default'); await page.locator('#namespace-save:not([disabled])').waitFor();
     const namespacePath = '/v1/namespaces/default/config'; const ns = (await req(namespacePath)).body;
     const nsRemote = await req(namespacePath, { metadata: ns.metadata, vars: { NS_ONLY: 'remote-ns' } }, 'PUT'); assert.equal(nsRemote.status, 200);
-    await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'draft retained exactly'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
-    await acceptDialog(page, () => page.locator('#namespace-reload').click()); await waitState('namespace-state', 'Current configuration loaded');
-    await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitState('namespace-state', 'Saved.');
+    await page.locator('#namespace-vars').fill('{"NS_ONLY":"draft-ns"}'); await page.locator('#namespace-save').click(); await waitStateKey('namespace-state', 'nodes.v4.stale'); assert.equal(await page.locator('#namespace-vars').inputValue(), '{"NS_ONLY":"draft-ns"}');
+    await acceptDialog(page, () => page.locator('#namespace-reload').click()); await waitStateKey('namespace-state', 'nodes.v4.loaded');
+    await page.locator('#namespace-vars').fill('{"NS_ONLY":"ui-ns-saved"}'); await page.locator('#namespace-save').click(); await waitStateKey('namespace-state', 'nodes.v4.saved');
     // #476：命名空间页的保存同样序列化进 YAML → PUT …/yaml（/config 只剩 GET 读投影）。
     const nsYAMLPath = '/v1/namespaces/default/yaml';
     const nsPut = (await calls()).filter(c => c.url === nsYAMLPath && c.method === 'PUT').at(-1);
@@ -411,8 +488,11 @@ export async function nodeRetained(d,mode){
     assert.ok(nsYaml.includes('spec:') && nsYaml.includes('vars:'), 'YAML 有 spec.vars');
     assert.ok(nsYaml.includes('F3_NS_DETAIL: from-namespace'), 'YAML 读的是真实 vars');
     assert.ok(!nsYaml.includes('status:'), 'YAML 不含派生只读面 status');
-    assert.ok(nsYaml.includes('PUT /v1/namespaces/{name}/yaml'), '#476：文档头指向唯一写入口 PUT …/yaml');
-    assert.equal(await page.locator('#namespace-yaml-input').count(), 0, 'YAML 不是第二个输入面：没有编辑框');
+    // A-3 ④：服务端 YAML 的**前导英文注释常量已删**（它曾在产品界面里讲实现）。
+    // 正向钉住「文档从 apiVersion 开始」，反向钉住那段英文提示不再回来。
+    assert.equal(nsYaml.trim().split('\n')[0].trim(), 'apiVersion: anotify/v1', 'YAML 首行必须是 apiVersion（不再有英文前导注释）');
+    assert.ok(!nsYaml.includes('PUT /v1/namespaces/{name}/yaml'), 'YAML 不得再自带写入口说明（实现叙述已删）');
+    assert.equal(await page.locator('#namespace-yaml-input').count(), 0, '只读：没有 YAML 编辑框（写入口是 vars 表与原始 JSON，都走 PUT …/yaml）');
     // 机械证据：写入口收下一份合法文档；坏文档（缺 spec.vars / CAS）仍然 400。
     const putYaml = await req('/v1/namespaces/default/yaml', { yaml: 'kind: Namespace' }, 'PUT');
     assert.equal(putYaml.status, 400, '缺 metadata.resourceVersion 的文档必须 400，实际 ' + putYaml.status);
@@ -462,7 +542,15 @@ export async function nodeRetained(d,mode){
     await page.waitForFunction(() => document.getElementById('nodes-list').textContent.includes('F3 deliberate disconnected transport')); await shot('nodes-disconnected');
     await page.evaluate(() => window.__f3Fault = ''); /* #378：错误态多了「复制详情」，按 data-err-action 点重试。 */ await page.locator('#nodes-list [data-err-action="retry"]').click(); await page.locator('[data-node="anode-1"]').waitFor();
     await goto('node','en','?id=anode-1&namespace=default'); await page.evaluate(() => window.__f3Fault = '/v1/nodes'); await page.locator('#node-refresh').click();
-    await page.waitForFunction(() => document.getElementById('node-load-state').textContent.includes('F3 deliberate disconnected transport')); await shot('node-disconnected');
+    /* D-3：节点详情的失败态是**本地化**的空态（标题 + 说明 + 重试），不再把英文协议原文
+       （`F3 deliberate disconnected transport` 这种）当用户文案贴出来。所以这里断言
+       三件事：标题来自字典、正文不出现原始传输错误、正文区不展示半成品。 */
+    const i18n = await dict();
+    await page.waitForFunction((title) => (document.querySelector('#node-load-state .nd-empty-title')?.textContent || '') === title, i18n['common.request_failed']);
+    assert.ok((await page.locator('#node-load-state').innerText()).includes(i18n['nodes.v4.load_failed']), '错误态必须有可读说明（' + i18n['nodes.v4.load_failed'] + '）');
+    assert.equal((await page.locator('#node-load-state').innerText()).includes('F3 deliberate disconnected transport'), false, '不得把英文协议原文当用户文案');
+    assert.equal(await page.locator('#node-body').isVisible(), false, '失败时不展示半成品正文');
+    await shot('node-disconnected');
     await page.evaluate(() => window.__f3Fault = ''); /* 节点详情页的失败态是页面自己的空态骨架（不是 loadErrorNode），所以这里仍是唯一那个重试按钮。 */ await page.locator('#node-load-state button').click(); await page.locator('#node-body:not([hidden])').waitFor();
     check('Both Node pages genuine disconnected error + working explicit retry; no automatic mock switch or false empty success');
   }

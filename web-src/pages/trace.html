@@ -299,13 +299,17 @@
     }
     /* 失败原因是**分级**（#378）：分级只留一处（A.errorFacts），本页只负责把它排成
        自己的空态骨架。以前这里拄了一份「HTTP 档位 → 文案」的映射，两份映射——
-       loadErrorNode 一份、本页一份——就是页面上裸 HTTP 码的来源。 */
+       loadErrorNode 一份、本页一份——就是页面上裸错误原文的来源。 */
     function failureState(error, retry) {
       const facts = A.errorFacts(error);
+      /* 服务端错误已经摊成「标题 + 下一步」，再跟着贴一行原文（如 `trace not found`）
+         就只是一串英文内部词；只有本地错误（如图库没加载）的消息本身是写给人看的，
+         才附在说明后面。 */
+      const detail = facts.status ? "" : facts.message;
       return stateNode({
         kind: "error",
         title: t("common.load_failed_prefix", "载入失败：") + facts.title,
-        desc: facts.hint + (facts.message ? "\n" + facts.message : ""),
+        desc: facts.hint + (detail ? "\n" + detail : ""),
         retry: facts.retry ? retry : undefined,
         back: { href: "events.html", text: t("trace.back", "返回事件流") },
       });

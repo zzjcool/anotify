@@ -215,10 +215,10 @@ function makeSandbox(opts = {}) {
 			removeListener() {},
 		}),
 		document: fakeDocument(),
-		// 页面控制器的顶层会挂 window 级监听（source.html:261 的 resize → reflowMenus，
+		// 页面控制器的顶层会挂 window 级监听（nodes.html:210 的 resize → reflowMenus，
 		// #376 之后才有）。vm 里 globalThis 就是浏览器里的 window，但**没有** DOM 的
 		// addEventListener —— 缺了它 inline 脚本第一行就抛，整页控制器不执行，
-		// SOURCE-STARTUP / R1 会以"什么都没跑"的方式红（不是真的回归）。
+		// TRACE-STARTUP / R1 会以"什么都没跑"的方式红（不是真的回归）。
 		addEventListener() {},
 		removeEventListener() {},
 		dispatchEvent() {
@@ -2965,8 +2965,9 @@ test("F2a 静态守卫：版本不可变/409 保留输入/人工部署/删除二
 	assert.match(page, /reloadAfterConflict/, "409 重载必须走独立函数（用户显式触发）");
 	assert.ok(page.includes("isConflict(e)"), "必须用统一 isConflict 判 409");
 
-	// 人工部署：不自动部署；部署只由 submitDeploy 的 POST 子资源发起。
-	assert.ok(page.includes("caps.deploy.hint"), "部署弹层必须写明不会自动部署");
+	// 人工部署：部署只由 submitDeploy 的 POST 子资源发起。
+	// 审计 A-5② 删掉了「部署只在这个按钮里发生」那句提示（用户原话：这是实现自述）；
+	// 「不自动部署」由这里的调用点数量与 e2e 的真实操作覆盖，不再要求文案里出现某个 key。
 	const deployPosts = page.match(/"\/deploy"/g) || [];
 	assert.equal(deployPosts.length, 1, "页面只允许一个人工部署调用点（POST …/deploy）");
 
@@ -3085,7 +3086,7 @@ test("Source hooks: HMAC raw bytes gate401, GET masks, credential rotation, enab
 });
 
 test("Source pages: frozen wire/ns/CAS/credential/read projection/static classes and four-language key parity",()=>{
- const pages=["sources","source"].map(name=>readFileSync(path.join(ROOT,"web-src/pages/"+name+".html"),"utf8"));
+ const pages=["sources"].map(name=>readFileSync(path.join(ROOT,"web-src/pages/"+name+".html"),"utf8"));
  for(const page of pages){assert.match(page,/A\.nsList/);assert.match(page,/A\.nsApi|A\.nsPath/);assert.match(page,/await A\.ready/);assert.match(page,/A\.deletePath/);assert.match(page,/A\.withResourceVersion/);assert.doesNotMatch(page,/configRaw|targetCaps|resultSchema|\?id=|fallbackMock|priority|mapping:/);}
  const sets=["zh-CN","en","ja","es"].map(lang=>{const yaml=readFileSync(path.join(ROOT,"web-src/locales/"+lang+".yaml"),"utf8");const block=yaml.split('sources:\n  v4:\n')[1].split(/\n  [^ ]/)[0];return [...block.matchAll(/^    ([a-z_]+):/gm)].map(m=>m[1]).sort();});
  assert.ok(sets[0].length>60);for(const keys of sets.slice(1))assert.deepEqual(keys,sets[0]);
@@ -3611,146 +3612,9 @@ test("TRACE-STARTUP native: delayed defer graph library, missing-script retry re
   assert.match(output, /TRACE-STARTUP OK /, 'the helper reports its own source epoch and runId');
 });
 
-/* ------------------------------------------------------------------ *
- * SOURCE-STARTUP：源详情页的图库启动依赖（与 TRACE-STARTUP 同一条规则）
- *
- * 现场：source.html 曾在 fetch 续体里同步读 window.AnotifyGraphs。只要 3 个 GET
- * 比 4 个 defer 图库先回来（API 命中缓存 / 弱网 / 移动端），图上就印「图组件未
- * 加载，请重新加载。」，而库往往几十毫秒后就绪——页面却不再重画。
- * 下面的沙箱精确控制 readyState 与 DCL：图库只在「defer 脚本执行」那一刻注入。
- * ------------------------------------------------------------------ */
-function sourceStartup(options = {}) {
-  const run = loadMock({ graphs: false, ...options, search: options.search || '?namespace=default&name=deploy-hook' });
-  const nodes = new Map();
-  function element(tag) {
-    const node = fakeNode(tag);
-    const listeners = new Map();
-    const set = node.setAttribute;
-    node.setAttribute = (key, value) => {
-      set(key, value);
-      if (key === 'id') nodes.set(String(value), node);
-    };
-    // source.html 里 `host.id = "src-flow"` 是**属性赋值**（不是 setAttribute），
-    // 断言要拿到这个节点，就得让 id 的赋值也进索引。
-    Object.defineProperty(node, 'id', {
-      configurable: true,
-      get: () => node.getAttribute('id') || '',
-      set: value => { set('id', value); nodes.set(String(value), node); },
-    });
-    node.addEventListener = (type, callback) => {
-      if (!listeners.has(type)) listeners.set(type, []);
-      listeners.get(type).push(callback);
-    };
-    node.fire = async type => {
-      for (const callback of listeners.get(type) || []) await callback({ preventDefault() {} });
-    };
-    return node;
-  }
-  run.sandbox.document.createElement = element;
-  run.sandbox.document.createElementNS = (_, tag) => element(tag);
-  run.sandbox.document.createDocumentFragment = () => element('fragment');
-  run.sandbox.document.getElementById = id => {
-    if (!nodes.has(id)) {
-      const node = element('div');
-      node.setAttribute('id', id);
-    }
-    return nodes.get(id);
-  };
-  run.sandbox.URLSearchParams = URLSearchParams;
-  run.sandbox.URL = URL;
-  run.sandbox.AnotifyI18n = {};
-  run.A.mountLayout = () => {};
-  run.A.mountPullRefresh = () => {};
-  const state = { readyState: options.readyState || 'loading' };
-  Object.defineProperty(run.sandbox.document, 'readyState', { configurable: true, get: () => state.readyState });
-  // 只收集 DOMContentLoaded；真实浏览器里 defer 图库恰好在它之前执行完。
-  const domReady = [];
-  run.sandbox.document.addEventListener = (type, callback) => {
-    if (type === 'DOMContentLoaded') domReady.push(callback);
-  };
-  const calls = [];
-  const api = run.A.api;
-  run.A.api = async (url, opts) => {
-    calls.push({ url });
-    return api(url, opts);
-  };
-  const loadGraphs = () => {
-    vm.runInContext(
-      `window.FlowGraph = { mount: function (host, spec) {
-        host._mountSpec = spec;
-        return { fit: function () {}, replay: function () {}, _debug: { animated: function () { return false; } } };
-      } };`,
-      run.ctx,
-    );
-    vm.runInContext(GRAPHS_SRC, run.ctx, { filename: 'web/graphs.js' });
-  };
-  if (options.graphs) loadGraphs();
-  const source = readFileSync(path.join(ROOT, 'web-src/pages/source.html'), 'utf8');
-  for (const script of source.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
-    vm.runInContext(script[1], run.ctx, { filename: 'source.html.inline.js' });
-  }
-  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(setImmediate); };
-  const fireDomReady = async () => {
-    state.readyState = 'interactive';
-    const pending = domReady.splice(0);
-    for (const callback of pending) await callback();
-    state.readyState = 'complete';
-  };
-  return { ...run, nodes, calls, state, domReady, settle, fireDomReady, loadGraphs,
-    get: id => run.sandbox.document.getElementById(id) };
-}
-
-test("SOURCE-STARTUP barrier: graph area waits for the deferred library instead of printing the stale error", async () => {
-  const run = sourceStartup({ readyState: 'loading' });
-  await run.settle();
-  // 竞态窗口已经建立：图容器已经进了 DOM（= 3 个 GET 都回来了、render 走到了画图那一行），
-  // 而 defer 图库还没执行。
-  const host = run.get('src-flow');
-  assert.ok(host, 'the graph host is in the document');
-  assert.equal(host.children.length, 0, 'nothing may be drawn before the deferred graph library ran');
-  assert.equal(b2Text(host), '', 'no error while the deferred library is still pending');
-  // defer 图库执行（= 浏览器里 DCL 之前的时刻），再触发 DCL。
-  run.loadGraphs();
-  assert.equal(host.children.length, 0, 'injecting the library alone must not draw');
-  await run.fireDomReady();
-  await run.settle();
-  assert.equal(b2Text(host), '', 'no error after the dependency arrived');
-  assert.ok(host._mountSpec && host._mountSpec.nodes.length >= 2, 'the real capabilityFlow spec is mounted');
-});
-
-test("SOURCE-STARTUP failure: missing library is a visible retryable error and the original retry recovers", async () => {
-  const run = sourceStartup({ readyState: 'loading' });
-  await run.settle();
-  await run.fireDomReady();
-  await run.settle();
-  const host = run.get('src-flow');
-  assert.match(b2Text(host), /graph_error/, 'explicit dependency error is shown');
-  assert.equal(host._mountSpec, undefined, 'no fabricated graph');
-  const retry = b2Find(host, n => n.tagName === 'BUTTON')[0];
-  assert.ok(retry, 'the retry button from loadErrorNode stays available');
-  // 库晚到：点原 retry（= 重新 load 整页），必须真的画出图并清掉错误。
-  run.loadGraphs();
-  await retry.fire('click');
-  await run.settle();
-  const redrawn = run.get('src-flow');
-  assert.ok(redrawn._mountSpec && redrawn._mountSpec.nodes.length >= 2, 'retry draws the real graph');
-  assert.equal(b2Text(redrawn).includes('graph_error'), false, 'error clears after the library is available');
-});
-
-test("SOURCE-STARTUP loaded path: already interactive/complete documents never wait on an event", async () => {
-  for (const readyState of ['interactive', 'complete']) {
-    const run = sourceStartup({ graphs: true, readyState });
-    await run.settle();
-    assert.equal(run.domReady.length, 0, readyState + ': no DOMContentLoaded listener when the document is already past parsing');
-    const host = run.get('src-flow');
-    assert.ok(host._mountSpec && host._mountSpec.nodes.length >= 2, readyState + ': normal loaded page draws immediately');
-    assert.equal(b2Text(host), '', readyState + ': no error on the normal path');
-  }
-});
-
 test("PAGE-GUARD: no page template reads AnotifyGraphs directly or calls graphLib without arming the gate", async () => {
   const guard = await import(path.join(ROOT, 'scripts/check-graph-access.mjs'));
-  for (const page of ['source', 'trace', 'index']) {
+  for (const page of ['trace', 'index']) {
     const html = readFileSync(path.join(ROOT, 'web-src/pages/' + page + '.html'), 'utf8');
     const violations = guard.scanTemplate(page + '.html', html);
     assert.deepEqual(violations, [], page + ' must go through Anotify.graphLib() with expectGraphics() armed');
@@ -4288,20 +4152,17 @@ test("F2c2: real Node controllers consume apiList.items, bootstrap config, prese
  const detail = await b2Page('node', '?id=anode-1&namespace=default', ({ Mock }) => {
   Mock.state.nodes[0].facts.instances = [{ id: 'nins_mock_1', task: 'tsk_mock_4', busy: true }, { id: 'nins_mock_2', task: null, busy: false }];
  });
- assert.equal(detail.get('head-name').textContent, 'anode-1'); assert.equal(detail.get('node-config-save').disabled, false);
+ assert.equal(detail.get('head-name').textContent, 'anode-1');
  assert.ok(detail.calls.some(c => c.url === '/v1/nodes/anode-1?namespace=default'));
  assert.ok(b2Text(detail.get('node-tasks')).includes('tsk_mock_'), 'actual TaskList items must be consumed');
- const current = (await detail.req('/v1/nodes/anode-1/config')).body;
- await detail.req('/v1/nodes/anode-1/config', jsonInit('PUT', { metadata: current.metadata, vars: { SOURCE_ROOT: '/remote-default' } }));
- const draft = '{\n  "SOURCE_ROOT":"/controller-draft"\n}'; detail.get('node-vars').value = draft;
- await detail.get('node-config-save').onclick(); await detail.settle();
- assert.equal(detail.get('node-vars').value, draft); assert.match(b2Text(detail.get('node-config-state')), /nodes.v4.stale/);
- await detail.get('node-config-reload').onclick(); assert.deepEqual(JSON.parse(detail.get('node-vars').value), { SOURCE_ROOT: '/remote-default' });
- detail.get('node-vars').value = '{"SOURCE_ROOT":"/ui-default"}'; await detail.get('node-config-save').onclick();
- assert.equal(detail.Mock.state.nodes[0].spec.vars.SOURCE_ROOT, '/ui-default');
- detail.get('node-namespace').value = 'prod'; await detail.get('node-namespace').onchange();
- assert.match(b2Text(detail.get('node-context-revision')), /namespace=prod/);
- assert.ok(b2Text(detail.get('node-effective-vars')).includes('hooks.example/notify/prod'));
+ // 唯一写入口 = YAML：没有表单写路径（#node-config-save 不存在），保存只发 PUT …/yaml。
+ assert.equal(detail.get('node-config-save'), null, '表单写入口必须已删除');
+ const yamlDoc = ['apiVersion: anotify/v1', 'kind: Node', 'metadata:', '  name: anode-1', 'spec:', '  vars:', '    SOURCE_ROOT: /ui-default'].join('\n') + '\n';
+ detail.get('node-yaml-input').value = yamlDoc;
+ await detail.get('node-yaml-save').onclick(); await detail.settle();
+ const writes = detail.calls.filter(c => c.method !== 'GET');
+ assert.ok(writes.some(c => c.url === '/v1/nodes/anode-1/yaml' && JSON.parse(c.body).yaml === yamlDoc), '保存必须把整份 YAML 发到 /yaml');
+ assert.ok(!writes.some(c => c.url === '/v1/nodes/anode-1/config'), '页面不得再写 /config');
  assert.equal(detail.Mock.state.nodes[0].facts.instances[0].busy, true, 'terminal Task does not clear occupied slot');
 });
 
@@ -4452,38 +4313,26 @@ test("R1 graph clicks: task-name nodes navigate to the canonical Task name; base
   assert.equal(clicks.length, 1, 'unknown nodes never fabricate a task');
 });
 
-test("R1 cross-page links: Source receipts/recent emit traceUID, Playbook source links emit name; destination really requests", async () => {
-  const src = await b2Page('source', '?namespace=default&name=deploy-hook');
-  const fireButton = b2Find(src.get('src-actions'), n => n.tagName === 'BUTTON' && n.textContent === 'sources.v4.fire')[0];
-  assert.ok(fireButton);
-  await fireButton.onclick(); await src.settle();
-  await src.get('fire-submit').onclick(); await src.settle();
-  const receiptLink = b2Find(src.get('fire-result'), n => n.tagName === 'A')[0];
-  assert.ok(receiptLink, 'fire receipt must expose its trace');
-  const receiptHref = receiptLink.href;
-  assert.match(receiptHref, /^trace\.html\?namespace=default&traceUID=trace_mock_run/);
-  assert.equal(receiptHref.includes('traceId='), false, 'the old traceId parameter must be gone');
-  const recent = b2Find(src.get('source-events'), n => n.tagName === 'A');
-  assert.ok(recent.length);
-  assert.ok(recent.every(n => String(n.href).includes('traceUID=')));
-  const opened = await b2Page('trace', '?' + receiptHref.split('?')[1]);
-  const traceCalls = opened.fetches.filter(c => c.url.includes('/traces/'));
-  assert.equal(traceCalls.length, 1, 'destination really issues the Trace request');
-  assert.match(traceCalls[0].url, /^\/v1\/namespaces\/default\/traces\/trace_mock_run/);
-  assert.equal(b2Text(opened.get('trace-error')).includes('trace.v4.missing'), false);
-
+test("R1 cross-page links: Playbook source links emit name; the read-only source-detail destination really requests it", async () => {
+  /* source.html 已删除（v4 决策 B-4）：fire 与回执动作只剩源列表页（由 R1b sources LIST
+   * 覆盖），详情页只读。这里钉的是列表/预案页 → 详情页的链接形状与目标页真的取数据。 */
   const page = await b2Page('playbook', '?namespace=default&id=project-chain', async run => {
     await pbCreate(run.req);
     await pbAction(run.req, 'install');
   });
-  const sourceLinks = b2Find(page.get('pb-items'), n => n.tagName === 'A' && String(n.href).startsWith('source.html?'));
+  const sourceLinks = b2Find(page.get('pb-items'), n => n.tagName === 'A' && String(n.href).startsWith('source-detail.html?'));
   assert.ok(sourceLinks.length, 'installed source must be linked');
   const href = sourceLinks[0].href;
   assert.match(href, /[?&]name=a-push/);
   assert.equal(href.includes('&id='), false, 'Source detail reads name, not id');
-  const detail = await b2Page('source', '?' + href.split('?')[1]);
+  // 每个 b2Page 是新 mock：目标页的实例里也装同一份预案包，a-push 才真的存在。
+  const detail = await b2Page('source-detail', '?' + href.split('?')[1], async run => {
+    await pbCreate(run.req);
+    await pbAction(run.req, 'install');
+  });
   assert.ok(detail.fetches.some(c => c.url === '/v1/namespaces/default/sources/a-push'), 'destination really reads the source');
-  assert.equal(b2Text(detail.get('src-body')).includes('sources.v4.no_name'), false);
+  assert.match(b2Text(detail.get('src-detail-name')), /a-push/);
+  assert.equal(b2Text(detail.get('src-detail-state')).trim(), '', 'no empty/error state once the source really loaded');
 });
 
 test("R1 mock versions: archived content immutable (PATCH 400 immutable_field, POST 同版本 400 version_content_immutable) and latest=max", async () => {
@@ -4864,9 +4713,9 @@ test('R1 A2d capability detail observed: taskId/24h 计数/emits(ok)/pruned/50 �
 });
 
 test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，且不含 secret 明文', async () => {
-  const run = await b2Page('source', '?namespace=default&name=deploy-hook');
-  const box = run.get('src-yaml');
-  assert.ok(box, '源详情必须有「原始 YAML」折叠块（#src-yaml）');
+  const run = await b2Page('source-detail', '?namespace=default&name=deploy-hook');
+  const box = run.get('src-detail-yaml');
+  assert.ok(box, '源详情必须有「原始 YAML」折叠块（#src-detail-yaml）');
   assert.notEqual(box.open, true, '默认收起');
   assert.equal(run.calls.some(c => /\/sources\/deploy-hook\/yaml$/.test(c.url)), false, '收起时不得请求 /yaml');
   box.open = true; await box.fire('toggle'); await run.settle(); await run.settle();
@@ -4875,8 +4724,12 @@ test('R1 A2c source detail: 原始 YAML 折叠块默认收起、展开才取，�
   assert.match(text, /kind: Source/);
   assert.match(text, /hookUrl: /, '读投影只有 hookUrl');
   assert.equal(text.includes('hmac_mock_secret_deploy_hook'), false, 'YAML 里绝不能出现 secret 明文');
-  // 既有区块不受影响：#src-body 仍然给出 secretSet: true（e2e 的固定断言）
-  assert.ok(b2Text(run.get('src-body')).includes('secretSet: true'));
+  // 既有区块不受影响：config 区块只说「HMAC 签名已设置（只写不读）」——
+  // 审计收尾时删掉了「脱敏后的 config JSON」折叠块（它是原始 YAML 的严格子集），
+  // 所以这里断言人话文案与「不含 secret 明文」，不再断言被删的 JSON 视图。
+  const bodyText = b2Text(run.get('src-detail-body'));
+  assert.ok(bodyText.includes('HMAC 签名已设置'), 'config 区块必须报告 HMAC 已设置（不读明文）');
+  assert.equal(bodyText.includes('hmac_mock_secret_deploy_hook'), false);
 });
 
 
@@ -5480,7 +5333,7 @@ test('G1 masked resource identifier is not an actual URL while valid identity an
   for (const kind of ['capability', 'source']) assert.equal(ctx.link(kind, '***').href, undefined, 'masked identity must not become resource URL');
   assert.equal(ctx.link('capability', 'real-cap@***').href, 'capabilities.html?namespace=prod&name=real-cap');
   assert.equal(ctx.link('capability', 'real-cap@17').href, 'capabilities.html?namespace=prod&name=real-cap');
-  assert.equal(ctx.link('source', 'real-source').href, 'source.html?namespace=prod&name=real-source');
+  assert.equal(ctx.link('source', 'real-source').href, 'source-detail.html?namespace=prod&name=real-source');
 });
 
 test('G1 Silk pan defers capture for native clicks and retains horizontal/vertical drag suppression and cleanup', () => {
@@ -5713,7 +5566,7 @@ test('L1 actual login controller boots only valid canonical200 sessions through 
 test('F3b2b ui_shift registers every one of the 336 page views exactly once with an anonymous login view', async () => {
   const { casesFor, registeredViews } = await import('./e2e/fixtures/f3/f3-ui-cases.mjs');
   const { PAGES, LANGS, THEMES, VIEWPORTS, KEY_PAGES, MATRIX_VIEWS } = await import('./e2e/fixtures/f3/f3-ui-helper.mjs');
-  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace']);
+  assert.deepEqual(PAGES.map(x => x), ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source-detail','sources','trace']);
   assert.deepEqual(LANGS.map(x => x), ['zh-CN','en','ja','es']);
   assert.deepEqual(THEMES.map(x => x), ['light','dark']);
   assert.deepEqual(Object.keys(VIEWPORTS), ['desktop','mobile']);
@@ -6602,7 +6455,7 @@ for (const synthetic of [true, false]) {
         });` : ''}
         async function nativeTraceCase() {
           const f = await fixtures(d);
-          for (const page of ['security', 'source', 'sources', 'trace']) {
+          for (const page of ['security', 'sources', 'trace']) {
             const from = d.report.errors.length;
             await gotoPage(d, page, f, 'es');
             await auditPage(d, { page, lang: 'es', theme: 'light', viewport: 'desktop', anchor: ANCHORS[page] }, from);
@@ -6741,128 +6594,6 @@ test('TRACE-ARCHIVE: observer preserves original return Promise, this, arguments
  * @param {string[]|null} [opts.specTags] 权威读面（GET /v1/nodes/{name}）给的 spec.tags；
  *        null = 读面**没有**这个字段（「不知道现值」）
  */
-async function bootNodeYAMLPage(opts = {}) {
-	const specTags = opts.specTags === undefined ? ['gpu', 'prod'] : opts.specTags;
-	const elements = new Map();
-	const handlers = new Map();
-	const el = (tag = 'div') => {
-		const node = fakeNode(tag);
-		node.value = '';
-		const own = new Map();
-		node.addEventListener = (type, fn) => {
-			if (!own.has(type)) own.set(type, []);
-			own.get(type).push(fn);
-			handlers.set(node, own);
-		};
-		node.removeEventListener = (type, fn) => {
-			const list = own.get(type) || [];
-			const at = list.indexOf(fn);
-			if (at >= 0) list.splice(at, 1);
-		};
-		// 真 DOM 的 click 会触发 onclick 处理器；stub 里显式转发一次。
-		node.click = () => (typeof node.onclick === 'function' ? node.onclick() : undefined);
-		return node;
-	};
-	const fire = (id, type) => {
-		const node = elements.get(id);
-		assert.ok(node, 'element #' + id + ' must exist before firing ' + type);
-		for (const fn of handlers.get(node)?.get(type) || []) fn({ type, target: node });
-	};
-	const byId = id => {
-		if (!elements.has(id)) elements.set(id, el());
-		return elements.get(id);
-	};
-	const doc = fakeDocument();
-	doc.getElementById = byId;
-	doc.createElement = tag => el(tag);
-	doc.title = '';
+/* #454 的三个「表单→YAML 草稿」用例已删除：唯一写入口改成 YAML 后，表单序列化路径不复存在，
+   这三条测的机制已被设计移除（不是放宽断言）。新路径由 F2c2 的 YAML 保存断言覆盖。 */
 
-	const base = makeSandbox({ pathname: '/node.html', search: '?id=anode-1' });
-	base.sandbox.document = doc;
-	base.sandbox.URLSearchParams = URLSearchParams;
-	const ctx = vm.createContext(base.sandbox);
-	vm.runInContext('globalThis.window = globalThis; globalThis.self = globalThis;', ctx);
-	vm.runInContext(PARTIALS_SRC, ctx, { filename: 'web/partials.js' });
-
-	// 两个读面的真实形状（resource_node.go · readEnvelope / nodeConfigWrap）。
-	const node = {
-		apiVersion: 'anotify/v1', kind: 'Node',
-		metadata: { name: 'anode-1', uid: 'nd_hw_454', resourceVersion: 'rv-1' },
-		spec: { namespaces: ['default'], vars: { TOOLCHAIN: '/opt/go1.25' }, limits: { total: 4, perCapability: { '*': 2 } }, ...(specTags === null ? {} : { tags: specTags }) },
-		status: { online: false, draining: false, configRevision: '1', appliedRevision: '1', appliedHash: '', effectiveNamespaces: ['default'], localVars: {}, nodeVars: { TOOLCHAIN: '/opt/go1.25' }, machineVars: { TOOLCHAIN: '/opt/go1.25' } },
-	};
-	// W5 wrapper：**没有 tags**（这就是缺陷的根因，不是测试桩的偷懒）。
-	const config = {
-		metadata: { resourceVersion: 'rv-1' },
-		namespaces: ['default'], vars: { TOOLCHAIN: '/opt/go1.25' }, limits: { total: 4, perCapability: { '*': 2 } },
-		configRevision: '1', appliedRevision: '1', appliedHash: '',
-	};
-	const serverYAML = [
-		'apiVersion: anotify/v1', 'kind: Node', 'metadata:', '  name: anode-1', '  resourceVersion: rv-1', 'spec:',
-		'  namespaces:', '    - default', '  vars:', '    TOOLCHAIN: /opt/go1.25',
-		'  limits:', '    total: 4', '    perCapability:', "      '*': 2",
-		...(specTags === null ? [] : ['  tags:' + (specTags.length ? '' : ' []'), ...specTags.map(t => '    - ' + t)]),
-	].join('\n') + '\n';
-	const calls = [];
-	const api = async (path, init = {}) => {
-		const method = init.method || 'GET';
-		calls.push({ path, method, body: init.body });
-		if (path === '/v1/nodes/anode-1' && method === 'GET') return node;
-		if (path === '/v1/nodes/anode-1/config' && method === 'GET') return config;
-		if (path === '/v1/nodes/anode-1/yaml' && method === 'GET') return { yaml: serverYAML };
-		if (path === '/v1/nodes/anode-1/yaml' && method === 'PUT') return { yaml: JSON.parse(init.body).yaml };
-		throw new Error('unexpected api call: ' + method + ' ' + path);
-	};
-	// 真实的 canonical 层 + 三个桩：传输（api/apiList）、布局（mountLayout）、
-	// 就绪引导（ready/readScope）。其余（model/t/…）一律用真货。
-	base.sandbox.Anotify = Object.assign({}, base.sandbox.Anotify, {
-		api, apiList: async () => ({ items: [] }),
-		ready: async () => {}, readScope: () => ({}), mountLayout: () => {},
-		confirmDanger: async () => true, copyText: () => {},
-	});
-
-	const source = readFileSync(path.join(ROOT, 'web-src/pages/node.html'), 'utf8');
-	const script = source.slice(source.indexOf('{{define "script"}}')).match(/<script>([\s\S]*?)<\/script>/)[1];
-	vm.runInContext(script, ctx, { filename: 'web-src/pages/node.html' });
-	// boot() 是 fire-and-forget：等到「三个读面都回来 + 两处文本都落了」再交给用例。
-	for (let i = 0; i < 2000 && !(byId('node-yaml-text').textContent || '').includes('kind: Node'); i++) {
-		await new Promise(resolve => setTimeout(resolve, 0));
-	}
-	assert.ok((byId('node-yaml-text').textContent || '').includes('kind: Node'), 'boot 必须读完 YAML 读面');
-	return { byId, fire, calls, el, savedYAML: () => calls.filter(c => c.method === 'PUT').map(c => JSON.parse(c.body).yaml), tagsLine: () => (/(?:^|\n) *tags:.*(?:\n +- .*)*/.exec(byId('node-yaml-input').value) || [''])[0].replace(/^\n/, '') };
-}
-
-test('#454 node YAML draft keeps authoritative spec.tags when /config omits the field', async () => {
-	const page = await bootNodeYAMLPage({ specTags: ['gpu', 'prod'] });
-	// 启动后输入框里是服务端原文（含 tags）—— 这不是缺陷现场，用户碰表单才是。
-	assert.ok(page.byId('node-yaml-input').value.includes('- gpu'), '启动文本含服务端原文的 tags');
-	// 用户路径：改一下表单（这里故意填回同样的值：只有 input 事件重要），
-	// 页面把它重新序列化成 YAML 草稿。
-	page.fire('node-vars', 'input');
-	assert.equal(page.byId('node-yaml-input').value.trim().endsWith('- prod'), true, 'input 折叠后 tags 值的序列化：\n' + page.byId('node-yaml-input').value);
-	assert.equal(page.tagsLine(), '  tags:\n    - gpu\n    - prod', '草稿必须从权威读面回读 tags（变异 `|| []` 会变成 `  tags: []`）');
-	// 保存：发出去的文本里 tags 也在。
-	await page.byId('node-yaml-save').click();
-	const sent = page.savedYAML();
-	assert.equal(sent.length, 1, '点保存必须只发一次 PUT …/yaml');
-	assert.ok(sent[0].includes('  tags:\n    - gpu\n    - prod\n'), 'PUT 的文本必须带 tags:\n' + sent[0]);
-});
-
-test('#454 node YAML draft omits tags entirely when no read面 carries the current value', async () => {
-	const page = await bootNodeYAMLPage({ specTags: null });
-	page.fire('node-limits', 'input');
-	// 「不知道」不许写成「清空」：整键省略，服务端按 merge-patch 保留原值
-	// （internal/server/resource_node_yaml_test.go · TestNodeYAMLPutOmittedFieldsKeepValues）。
-	assert.equal(page.tagsLine(), '', '未知现值的 tags 必须整键省略：\n' + page.byId('node-yaml-input').value);
-	await page.byId('node-yaml-save').click();
-	assert.equal(page.savedYAML().length, 1);
-	assert.equal(/(?:^|\n) *tags:/.test(page.savedYAML()[0]), false, '未知时 PUT 的文本里不得出现 tags 键');
-});
-
-test('#454 node YAML draft still writes an explicit empty tags list the server actually reports', async () => {
-	// 反向对照：读面明确说「这个节点没有标签」时，草稿照旧写 `tags: []` ——
-	// 修复不能把「已知的空」也吞掉（那只是把缺陷换个方向）。
-	const page = await bootNodeYAMLPage({ specTags: [] });
-	page.fire('node-namespaces', 'input');
-	assert.equal(page.tagsLine(), '  tags: []', '已知的空列表必须原样序列化');
-});
