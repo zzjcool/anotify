@@ -683,15 +683,19 @@ func TestCancelReapsGrandchildHoldingPipesAndReleasesSlot(t *testing.T) {
 	h.grant("t1", 1, "lease-1", "token-1")
 
 	workDir := execenv.SystemWorkDir(h.workRoot, "t1", 1)
-	h.waitUntil(t, "孙进程 pid 文件", func() bool {
-		_, err := os.Stat(filepath.Join(workDir, "child.pid"))
-		return err == nil
-	}, 3*time.Second)
-	pidData, _ := os.ReadFile(filepath.Join(workDir, "child.pid"))
+	// 等「文件存在且内容可解析」，不是等「文件存在」：`echo $! > child.pid` 是先建后写，
+	// 慢机器上存在性与内容之间有一个真实的窗口（CI 上实测读到过空字符串，见 #467）。
 	var childPID int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(pidData)), "%d", &childPID); err != nil || childPID <= 0 {
-		t.Fatalf("解析孙进程 pid 失败：%q", pidData)
-	}
+	h.waitUntil(t, "孙进程 pid 文件（非空且可解析）", func() bool {
+		pidData, err := os.ReadFile(filepath.Join(workDir, "child.pid"))
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(pidData)), "%d", &childPID); err != nil {
+			return false
+		}
+		return childPID > 0
+	}, 5*time.Second)
 
 	h.cancel("t1", 1, "lease-1")
 	ack := h.waitFrame(t, func(f any) bool {
