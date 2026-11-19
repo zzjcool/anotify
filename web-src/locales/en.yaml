@@ -823,10 +823,9 @@ docs:
     agent: Connect Agent
     api: API overview
     auth: Authentication
-    notify: POST /v1/notify
     webpush: Web Push subscription
     stream: WebSocket receiving
-    events: POST /v1/events
+    events: POST /v1/namespaces/{namespace}/events
     node: Node protocol
     endpoints: All endpoints
     design: "Behavior and limits"
@@ -899,7 +898,7 @@ docs:
       desc: Go to the <a href="keys.html" class="doc-link">API Keys</a> page and create a Key with <code class="doc-code">notify:send</code> scope (prefix <code class="doc-code">ant_live_</code>). Save it immediately.
     step2:
       title: Report when the task ends
-      desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/notify</code>.
+      desc: On an Agent completion event (e.g. pi's <code class="doc-code">agent_settled</code>) or at the end of a script, include the Key and <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> (namespace = your namespace).
     curl:
       title: Minimal setup · one curl to push to all devices
     journey:
@@ -1262,7 +1261,7 @@ events:
   refresh: Refresh
   recent: Recent events
   loading: Loading events…
-  empty: No events yet. Submit one with POST /v1/events.
+  empty: No events yet. Submit one with POST /v1/namespaces/{namespace}/events.
   view_chain: View chain
   filter:
     trace: Trace ID
