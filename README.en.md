@@ -210,24 +210,25 @@ go run ./cmd/devseed     # seed test user + keys + sessions
 | `POST /v1/auth/login[/options]` | Passkey login |
 | `POST /v1/auth/password/login` | Password login (username + password) |
 | `GET/POST/DELETE /v1/auth/password` | Password status / set / change / remove (session required) |
-| `POST /v1/notify` | **Agent reporting** (Bearer Key, scope=notify:send) |
-| `GET /v1/stream` | WebSocket receiving (Bearer Key, scope=notify:receive) |
+| `POST /v1/notify` | **Deleted** — v4 uses `POST /v1/namespaces/{namespace}/events` (Bearer Key, scope=notify:send) |
+| `GET /v1/stream` | **Deleted** — v4 long-lived connections are the node stream in `api/agent.yaml`; the console reads events via `GET /v1/console/events` |
 | `GET/POST /v1/devices` | Push subscription device management |
 | `GET/POST /v1/keys` | API Key management |
-| `GET /v1/notifications` | Notification history |
+| `GET /v1/notifications` | **Deleted** — in v4 the event stream *is* the notification history: `GET /v1/console/events` |
 | `GET /v1/vapid-public-key` | VAPID public key (for frontend subscription) |
 
-### Agent reporting example (v3 history: v4 uses `/v1/namespaces/{ns}/events` with an API key)
+### Agent reporting example (v4 event ingress)
 
 ```bash
-curl -X POST https://your-domain/v1/notify \
-  -H "Authorization: Bearer ant_send_..." \
+curl -X POST https://your-domain/v1/namespaces/{namespace}/events \
+  -H "Authorization: Bearer ant_live_..." \
   -H "Content-Type: application/json" \
-  -d '{"title":"Deploy done","agentState":"done","body":"Build succeeded","deviceTags":["ops"]}'
+  -d '{"source":"github","type":"pull_request.opened","idemKey":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
 ```
 
-Delivery rules: device enabled ∧ event_scope filter passes (final = terminal states done/interrupted/error only; all = full lifecycle) ∧ tags match
-(no-tag message = broadcast; no-tag device = catch-all; otherwise intersection).
+> v3's `/v1/notify` (`title` / `agentState` / `deviceTags` payload) is **deleted**: calling it returns 404,
+> not "the old behaviour". Same for every flat endpoint marked *Deleted* in the table above;
+> the v3 tag/level delivery rules are kept as history only.
 
 ## Environment Variables
 
@@ -250,7 +251,7 @@ internal/
   store/            SQLite data access + schema
   broker/           message queue abstraction + SQLiteBroker
   auth/             Passkey(WebAuthn)/password sign-up + password(argon2id) + API Key(argon2id) + sessions
-  api/              /v1/notify reporting
+  api/              event ingress + resource routes (see api/*.yaml)
   ws/               WebSocket dispatcher
   push/             Web Push dispatcher(VAPID)
   route/            tag/status delivery filter (shared pure logic)

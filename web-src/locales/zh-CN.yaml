@@ -823,10 +823,9 @@ docs:
     agent: 接入 Agent
     api: API 概览
     auth: 认证方式
-    notify: POST /v1/notify
     webpush: Web Push 订阅
     stream: WebSocket 接收
-    events: POST /v1/events
+    events: POST /v1/namespaces/{namespace}/events
     node: 节点协议
     endpoints: 全部端点
     design: "行为与边界"
@@ -899,7 +898,7 @@ docs:
       desc: 到 <a href="keys.html" class="doc-link">API Keys</a> 页新建一个 <code class="doc-code">notify:send</code> 权限的 Key（前缀 <code class="doc-code">ant_live_</code>），立即保存。
     step2:
       title: 任务结束时上报
-      desc: 在 Agent 结束事件（如 pi 的 <code class="doc-code">agent_settled</code>）或脚本末尾，携带 Key <code class="doc-code">POST /v1/notify</code>。
+      desc: 在 Agent 结束事件（如 pi 的 <code class="doc-code">agent_settled</code>）或脚本末尾，携带 Key 发 <code class="doc-code">POST /v1/namespaces/{namespace}/events</code>（namespace 换成你的命名空间）。
     curl:
       title: 最小接入 · 一行 curl 让通知送到所有设备
     journey:
@@ -1262,7 +1261,7 @@ events:
   refresh: 刷新
   recent: 最近事件
   loading: 正在加载事件…
-  empty: 还没有事件。用 POST /v1/events 提交第一个。
+  empty: 还没有事件。用 POST /v1/namespaces/{namespace}/events 提交第一个。
   view_chain: 查看链路
   filter:
     trace: Trace ID

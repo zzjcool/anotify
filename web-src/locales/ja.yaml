@@ -823,10 +823,9 @@ docs:
     agent: Agent 連携
     api: API 概要
     auth: 認証方法
-    notify: POST /v1/notify
     webpush: Web Push 購読
     stream: WebSocket 受信
-    events: POST /v1/events
+    events: POST /v1/namespaces/{namespace}/events
     node: ノードプロトコル
     endpoints: 全エンドポイント
     design: "動作と境界"
@@ -899,7 +898,7 @@ docs:
       desc: <a href="keys.html" class="doc-link">API Keys</a> ページで <code class="doc-code">notify:send</code> 権限の Key を新規作成してください（プレフィックス <code class="doc-code">ant_live_</code>）。作成後すぐに保存してください。
     step2:
       title: タスク終了時に上報
-      desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/notify</code> を送信します。
+      desc: Agent の終了イベント（例：pi の <code class="doc-code">agent_settled</code>）またはスクリプトの末尾で、Key を添えて <code class="doc-code">POST /v1/namespaces/{namespace}/events</code> を送信します（namespace は自分の名前空間に置き換え）。
     curl:
       title: 最小構成 · curl 一行で全デバイスに通知
     journey:
@@ -1262,7 +1261,7 @@ events:
   refresh: 更新
   recent: 最近のイベント
   loading: イベントを読み込み中…
-  empty: イベントはまだありません。POST /v1/events で送信してください。
+  empty: イベントはまだありません。POST /v1/namespaces/{namespace}/events で送信してください。
   view_chain: チェーンを表示
   filter:
     trace: Trace ID

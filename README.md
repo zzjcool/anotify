@@ -210,23 +210,24 @@ go run ./cmd/devseed     # 播种测试用户 + Key + 会话
 | `POST /v1/auth/login[/options]` | Passkey 登录 |
 | `POST /v1/auth/password/login` | 密码登录（用户名 + 密码） |
 | `GET/POST/DELETE /v1/auth/password` | 密码状态 / 设置 / 修改 / 移除（需会话） |
-| `POST /v1/notify` | **Agent 上报**（Bearer Key，scope=notify:send） |
-| `GET /v1/stream` | WebSocket 接收（Bearer Key，scope=notify:receive） |
+| `POST /v1/notify` | **已删除** —— v4 用 `POST /v1/namespaces/{namespace}/events`（Bearer Key，scope=notify:send） |
+| `GET /v1/stream` | **已删除** —— v4 长连接见 `api/agent.yaml` 的节点流；控制台读事件流走 `GET /v1/console/events` |
 | `GET/POST /v1/devices` | 推送订阅设备管理 |
 | `GET/POST /v1/keys` | API Key 管理 |
-| `GET /v1/notifications` | 通知历史 |
+| `GET /v1/notifications` | **已删除** —— v4 的事件流就是通知历史：`GET /v1/console/events` |
 | `GET /v1/vapid-public-key` | VAPID 公钥（前端订阅用） |
 
-### Agent 上报示例（v3 历史：v4 用 `/v1/namespaces/{ns}/events` + API Key）
+### Agent 上报示例（v4 事件入口）
 
 ```bash
-curl -X POST https://你的域名/v1/notify \
-  -H "Authorization: Bearer ant_send_..." \
+curl -X POST https://你的域名/v1/namespaces/{namespace}/events \
+  -H "Authorization: Bearer ant_live_..." \
   -H "Content-Type: application/json" \
-  -d '{"title":"部署完成","agentState":"done","body":"构建成功","deviceTags":["运维"]}'
+  -d '{"source":"github","type":"pull_request.opened","idemKey":"pr-1234-opened","payload":{"pr":1234,"repo":"acme/api"}}'
 ```
 
-投递规则：设备 enabled ∧ event_scope 过滤通过（final=仅终态 done/interrupted/error；all=全生命周期）∧ 标签匹配（无 tag 消息=广播；无 tag 设备=catch-all；否则取交集）。
+> v3 的 `/v1/notify`（`title` / `agentState` / `deviceTags` 载荷）**已删除**：打过去是 404，
+> 不是「旧行为还在」。上表里标了「已删除」的扁平端点同理；v3 的标签/级别投递规则只是历史说明。
 
 ## 环境变量
 
@@ -249,7 +250,7 @@ internal/
   store/            SQLite 数据访问 + schema
   broker/           消息队列抽象 + SQLiteBroker
   auth/             Passkey(WebAuthn)/密码注册 + 密码(argon2id) + API Key(argon2id) + 会话
-  api/              /v1/notify 上报
+  api/              事件入口 + 资源路由（见 api/*.yaml）
   ws/               WebSocket 派发器
   push/             Web Push 派发器(VAPID)
   route/            标签/status 投递过滤（共享纯逻辑）
