@@ -20,6 +20,11 @@ import (
 	"github.com/zzjcool/anotify/internal/protocol"
 )
 
+// 本文件（与 rework_test.go）等异步 ACK/帧/真实请求一律走 waitTest，上限
+// testWaitLimit=15s，不再是 2s：这些等待等的是 goroutine 送出的异步事实，2s 硬墙钟
+// 在 CI 负载下会被吃掉，曾让「只改文档」的 PR 被合并闸随机拦红（anotify#478）。
+// 放宽的只有 deadline，断言条件没动：等不到那个 ACK 仍然 Fatal。
+
 // The clock's wall time can pass without delivering a timer: expiry must be
 // checked by the sender, not inferred from waitResultAck having run already.
 type rework2WallClock struct {
@@ -161,13 +166,14 @@ func (c *rework2TimerClock) stopCount(d time.Duration) int {
 
 func (c *rework2TimerClock) wait(t *testing.T, desc string, ready func() bool) {
 	t.Helper()
-	limit := time.NewTimer(time.Second)
+	start := time.Now()
+	limit := time.NewTimer(testWaitLimit) // #478：与 waitTest 同一个上限，不是 1s
 	defer limit.Stop()
 	for !ready() {
 		select {
 		case <-c.changed:
 		case <-limit.C:
-			t.Fatalf("timer registration synchronization timed out: %s", desc)
+			t.Fatalf("timer registration synchronization timed out after %s (limit %s): %s", time.Since(start).Round(time.Millisecond), testWaitLimit, desc)
 		}
 	}
 }
@@ -206,7 +212,7 @@ func rework2Pending(t *testing.T, count int) (*harness, []*Attempt) {
 			}
 		}
 		return true
-	}, 2*time.Second)
+	}, testWaitLimit)
 	return h, attempts
 }
 
@@ -258,11 +264,7 @@ func TestParentPositiveLeaseTimerRegistrationCrossingAdvance(t *testing.T) {
 			observed.mu.Unlock()
 			h.clk.Advance(31 * time.Second)
 			for range 2 {
-				select {
-				case <-entered:
-				case <-time.After(time.Second):
-					t.Fatal("lease loops did not reach absolute registration barrier")
-				}
+				waitTest(t, entered, testWaitLimit, "lease loops did not reach absolute registration barrier")
 			}
 			h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "a-first", Attempt: 1, LeaseID: "lease-a-first"})
 			h.clk.Advance(registeredAt - 31*time.Second)
@@ -282,7 +284,7 @@ func TestParentPositiveLeaseTimerRegistrationCrossingAdvance(t *testing.T) {
 				h.r.mu.Lock()
 				defer h.r.mu.Unlock()
 				return h.r.pending[resultKey("b-second", 1)] == nil
-			}, time.Second)
+			}, testWaitLimit)
 			attempts[0].mu.Lock()
 			firstDeadline := attempts[0].deadline
 			attempts[0].mu.Unlock()
@@ -340,7 +342,7 @@ func TestRework2ReplayRechecksSecondPendingAfterBlockedFirst(t *testing.T) {
 				h.r.mu.Lock()
 				defer h.r.mu.Unlock()
 				return h.r.pending[resultKey("b-second", 1)] == nil
-			}, time.Second)
+			}, testWaitLimit)
 			if attempts[1].authorized() {
 				t.Fatal("second lease still authorized")
 			}
@@ -372,7 +374,7 @@ func TestRework2ReplayDeadlineWithoutTimerCleanup(t *testing.T) {
 	a, digest := h.artifact(nil)
 	h.dispatch("expired", 1, a, digest)
 	h.grant("expired", 1, "lease-expired", "token-expired")
-	h.waitUntil(t, "pending result", func() bool { return h.r.pendingResultCount() == 1 }, time.Second)
+	h.waitUntil(t, "pending result", func() bool { return h.r.pendingResultCount() == 1 }, testWaitLimit)
 	wall.elapse(61 * time.Second)
 	if h.r.pendingResultCount() != 1 {
 		t.Fatal("test needs an expired pending not yet removed by timer cleanup")
@@ -424,7 +426,7 @@ func TestRework2ReplayDeadlineWhileWaitingInsideSenderWriteQueue(t *testing.T) {
 	a, digest := h.artifact(nil)
 	h.dispatch("queued", 1, a, digest)
 	h.grant("queued", 1, "lease-queued", "token-queued")
-	h.waitUntil(t, "pending result", func() bool { return h.r.pendingResultCount() == 1 }, time.Second)
+	h.waitUntil(t, "pending result", func() bool { return h.r.pendingResultCount() == 1 }, testWaitLimit)
 	s := &rework2WriteQueue{base: h.sender, queued: make(chan struct{})}
 	s.writeMu.Lock() // An unrelated config/hello writer owns the real send queue.
 	h.r.SetSender(s)
@@ -479,7 +481,7 @@ func TestRework2LateOldGrantCannotCreateResultACKAlias(t *testing.T) {
 			}
 		}
 		return f != nil && f.LeaseID == "new-lease" && f.Phase == protocol.TaskPhaseSucceeded
-	}, 2*time.Second)
+	}, testWaitLimit)
 	h.r.mu.Lock()
 	pending := h.r.pending[resultKey("same", 1)]
 	current := h.r.running["same"]
@@ -680,7 +682,7 @@ func rework2TimeoutUpload(t *testing.T, files int) (*harness, *heldTransport, *A
 	h.waitUntil(t, "real script and timeout timer", func() bool {
 		_, err := os.Stat(filepath.Join(execenv.SystemWorkDir(h.workRoot, "slow", 1), "executions"))
 		return err == nil && h.clk.Pending() >= 2
-	}, time.Second)
+	}, testWaitLimit)
 	h.clk.Advance(2 * time.Second)
 	waitClosed(t, att.procDone, "timeout did not stop actual process")
 	if !att.authorized() {
@@ -701,7 +703,7 @@ func TestRework2TimeoutUploadsRenewAcross20And60UntilResultACK(t *testing.T) {
 		u := takeUpload(t, tr)
 		n := renews(h)
 		h.clk.Advance(20 * time.Second)
-		h.waitUntil(t, "timeout finalization still renews", func() bool { h.clk.Advance(0); return renews(h) > n }, time.Second)
+		h.waitUntil(t, "timeout finalization still renews", func() bool { h.clk.Advance(0); return renews(h) > n }, testWaitLimit)
 		h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "slow", Attempt: 1, LeaseID: "lease-slow"})
 		h.clk.Advance(5 * time.Second)
 		if u.req.Context().Err() != nil || !att.authorized() {
@@ -709,7 +711,7 @@ func TestRework2TimeoutUploadsRenewAcross20And60UntilResultACK(t *testing.T) {
 		}
 		close(u.release)
 	}
-	h.waitUntil(t, "legal failed timeout result", func() bool { return findResult(h.sender.snapshot(), "slow", 1) != nil }, time.Second)
+	h.waitUntil(t, "legal failed timeout result", func() bool { return findResult(h.sender.snapshot(), "slow", 1) != nil }, testWaitLimit)
 	result := findResult(h.sender.snapshot(), "slow", 1)
 	if result.Phase != protocol.TaskPhaseFailed || result.Result.Error == nil || result.Result.Error.Reason != protocol.ReasonTimeout || len(result.Result.Artifacts) != 3 {
 		t.Fatalf("must preserve legal failed/timeout and confirmed uploads: %+v", result)
@@ -722,7 +724,7 @@ func TestRework2TimeoutUploadsRenewAcross20And60UntilResultACK(t *testing.T) {
 	}
 	n := renews(h)
 	h.clk.Advance(20 * time.Second)
-	h.waitUntil(t, "timeout pending result still renews", func() bool { h.clk.Advance(0); return renews(h) > n }, time.Second)
+	h.waitUntil(t, "timeout pending result still renews", func() bool { h.clk.Advance(0); return renews(h) > n }, testWaitLimit)
 	h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "slow", Attempt: 1, LeaseID: "lease-slow"})
 	if !h.r.ActiveTasks()["slow"] || !att.authorized() {
 		t.Fatal("timeout result released lease/slot before ACK")
@@ -741,7 +743,7 @@ func TestRework2TimeoutFinalizationCancelOrExpiryFencesLateResult(t *testing.T) 
 			u := takeUpload(t, tr)
 			n := renews(h)
 			h.clk.Advance(20 * time.Second)
-			h.waitUntil(t, "timeout upload renew", func() bool { h.clk.Advance(0); return renews(h) > n }, time.Second)
+			h.waitUntil(t, "timeout upload renew", func() bool { h.clk.Advance(0); return renews(h) > n }, testWaitLimit)
 			h.r.HandleLeaseAck(&protocol.LeaseAckFrame{Type: protocol.FrameLeaseAck, TaskID: "slow", Attempt: 1, LeaseID: "lease-slow"})
 			if revoke == "cancel" {
 				h.cancel("slow", 1, "lease-slow")
@@ -759,7 +761,7 @@ func TestRework2TimeoutFinalizationCancelOrExpiryFencesLateResult(t *testing.T) 
 				default:
 					return false
 				}
-			}, 2*time.Second)
+			}, testWaitLimit)
 			waitClosed(t, att.done, "revoked timeout finalization did not settle")
 			if att.authorized() || findResult(h.sender.snapshot(), "slow", 1) != nil || h.r.pendingResultCount() != 0 {
 				t.Fatal("revoked timeout exported a late result/pending or revived lease")
@@ -770,7 +772,7 @@ func TestRework2TimeoutFinalizationCancelOrExpiryFencesLateResult(t *testing.T) 
 			ack := h.waitFrame(t, func(f any) bool {
 				a, ok := f.(*protocol.CancelAckFrame)
 				return ok && a.TaskID == "slow" && a.LeaseID == "lease-slow" && a.ProcessGroupReaped
-			}, time.Second).(*protocol.CancelAckFrame)
+			}, testWaitLimit).(*protocol.CancelAckFrame)
 			if ack.Slot == nil || *ack.Slot != 0 || h.r.ActiveTasks()["slow"] {
 				t.Fatal("timeout cancellation did not preserve physical binding/reap")
 			}
@@ -823,7 +825,7 @@ func TestRework2ExpiredHistoricalReapDoesNotTouchNewLeasePending(t *testing.T) {
 	h.waitUntil(t, "old real process started", func() bool {
 		_, err := os.Stat(filepath.Join(execenv.SystemWorkDir(h.workRoot, "history", 1), "executions"))
 		return err == nil
-	}, time.Second)
+	}, testWaitLimit)
 	h.clk.Advance(61 * time.Second)
 	h.waitUntil(t, "old expiry physically reaped", func() bool {
 		h.clk.Advance(0)
@@ -833,14 +835,14 @@ func TestRework2ExpiredHistoricalReapDoesNotTouchNewLeasePending(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Second)
+	}, testWaitLimit)
 	rework2AssertExpiredArchive(t, h, old)
 	fast, fastDigest := h.artifact(nil)
 	h.dispatch("history", 2, fast, fastDigest)
 	h.grant("history", 2, "new-lease", "new-token")
 	h.waitUntil(t, "new real execution result pending", func() bool {
 		return findResult(h.sender.snapshot(), "history", 2) != nil && h.r.pendingResultCount() == 1
-	}, time.Second)
+	}, testWaitLimit)
 	h.r.mu.Lock()
 	current := h.r.running["history"]
 	p := h.r.pending[resultKey("history", 2)]
@@ -894,7 +896,9 @@ func (s *lifecycleFailedResultSender) SendGuarded(ctx context.Context, frame any
 	select {
 	case <-s.release:
 		return false, s.err
-	case <-time.After(2 * time.Second):
+	// #478：这里拿不到 *testing.T（可能在生产者 goroutine 里被调），所以不用
+	// waitTest；但同样只放 deadline 不放断言：没被放行仍然返回错误。
+	case <-time.After(testWaitLimit):
 		return false, errors.New("failed result write barrier timed out")
 	}
 }
@@ -928,7 +932,7 @@ func TestResultWriteFailureAfterACKKeepsReplacementSlot(t *testing.T) {
 	h.grant(old.taskID, 2, "replacement-lease", "replacement-token")
 	h.waitUntil(t, "replacement result pending ACK", func() bool {
 		return findResult(h.sender.snapshot(), old.taskID, 2) != nil && h.r.pendingResultCount() == 1
-	}, 2*time.Second)
+	}, testWaitLimit)
 	h.r.mu.Lock()
 	current := h.r.running[old.taskID]
 	pending := h.r.pending[resultKey(old.taskID, 2)]
@@ -939,13 +943,8 @@ func TestResultWriteFailureAfterACKKeepsReplacementSlot(t *testing.T) {
 	slot := h.r.slots[current.slot]
 	h.r.mu.Unlock()
 	release.Do(func() { close(s.release) })
-	select {
-	case err := <-done:
-		if !errors.Is(err, failure) {
-			t.Fatalf("old write error=%v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("old failed write did not return")
+	if err := waitTest(t, done, testWaitLimit, "old failed write did not return", describeChan("done", done)); !errors.Is(err, failure) {
+		t.Fatalf("old write error=%v", err)
 	}
 	h.r.mu.Lock()
 	unchanged := h.r.running[old.taskID] == current && h.r.pending[resultKey(old.taskID, 2)] == pending && h.r.slots[current.slot] == slot
