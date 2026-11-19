@@ -387,7 +387,7 @@ func TestListEventsBeforeUsesRetentionIndex(t *testing.T) {
 	nsID, _ := newTestNS(t, db)
 	seedPageEvents(t, db, nsID)
 
-	q, args := eventPageQuery(nsID, "", "", math.MaxInt64, "", 10)
+	q, args := eventPageQuery(nsID, "", "", "", math.MaxInt64, "", 10)
 	rows, err := db.Query("EXPLAIN QUERY PLAN "+q, args...)
 	if err != nil {
 		t.Fatalf("explain query plan: %v", err)

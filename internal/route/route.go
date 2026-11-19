@@ -239,6 +239,16 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 			plan.Pruned = append(plan.Pruned, *prune)
 			continue
 		}
+		// ★ 闸门（capability-lifecycle §6.1）：resolve → param_* → 开关 → ready。
+		// 放在参数校验之后是设计图定的顺序：同时「参数不合法」与「已停用」时先报参数原因。
+		accepting, aerr := r.capabilityAccepting(ctx, src.NamespaceID, capability.Name)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if !accepting {
+			plan.pruneDisabled(capability, ref, capability.Name)
+			continue
+		}
 		plan.Targets = append(plan.Targets, Target{
 			Ref: ref, Capability: capability.Name, Version: capability.Version,
 			Digest: capability.Digest, CapabilityID: capability.ID,
@@ -246,6 +256,34 @@ func (r *Router) PlanFromSource(ctx context.Context, src *store.Source, traceID 
 		})
 	}
 	return plan, nil
+}
+
+// capabilityAccepting 是「能力能否接受新触发」的唯一判定点（capability-lifecycle §6.1）。
+//
+// PlanFromSource 与 PlanFromEmit 共用它，避免两条入口各写一份「这个能力能不能接」。
+// 开关按**能力名**查（不是 `name@version` 引用）：换版本不重置开关，一个名字一个闸门。
+// 无开关行 = enabled（默认接受），所以老库与未操作过的能力没有行为变化。
+//
+// 判定在**计划期**、不在接收/emit 事务内：与既有 sources.enabled 同一位置。
+// 这里只读，不写库、不取消或修改任何在途任务（§3：停用不是暂停）。
+func (r *Router) capabilityAccepting(ctx context.Context, namespaceID, name string) (bool, error) {
+	enabled, err := r.db.IsCapabilityEnabled(ctx, namespaceID, name)
+	if err != nil {
+		return false, fmt.Errorf("读能力开关 %q: %w", name, err)
+	}
+	return enabled, nil
+}
+
+// pruneDisabled 把「下游能力已停用」记成一条剪枝（target + 事实），两条入口共用。
+//
+// 停用是**剪枝**不是失败（§1/§6.1）：事件照收、回执 taskId:null、父任务不失败；
+// 剪枝事实是「为什么没跑」的唯一证据，所以 target 与 plan.Pruned 都必须留。
+func (p *Plan) pruneDisabled(capability *store.CapabilityVersion, ref, name string) {
+	detail := fmt.Sprintf("下游 %q 已停用", name)
+	p.Targets = append(p.Targets, prunedTarget(capability, ref, protocol.ReasonCapabilityDisabled, detail))
+	p.Pruned = append(p.Pruned, Prune{
+		Capability: capability.Name, Reason: protocol.ReasonCapabilityDisabled, Detail: detail,
+	})
 }
 
 // prunedTarget 把一条已解析但被剪枝的目标写成 Target（保留解析出的身份便于预览）。
@@ -321,6 +359,16 @@ func (r *Router) PlanFromEmit(ctx context.Context, parent *store.Task, to string
 		prune.Capability = capability.Name
 		plan.Targets = append(plan.Targets, prunedTarget(capability, to, prune.Reason, prune.Detail))
 		plan.Pruned = append(plan.Pruned, *prune)
+		return plan, nil
+	}
+	// ★ 与 PlanFromSource 同一个闸门、同一位置（参数之后、ready 之前）。
+	// 开关按**能力名**查：effective 可能是 `name@v`，必须先取名字（refName）。
+	accepting, aerr := r.capabilityAccepting(ctx, parent.NamespaceID, refName(effective))
+	if aerr != nil {
+		return nil, aerr
+	}
+	if !accepting {
+		plan.pruneDisabled(capability, to, refName(effective))
 		return plan, nil
 	}
 	plan.Targets = append(plan.Targets, Target{

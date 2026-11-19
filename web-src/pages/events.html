@@ -411,6 +411,9 @@
       const row = el("article", { class: "card ev-row", "data-uid": event.uid });
       const chips = el("div", { class: "ev-chips" },
         el("span", { class: "ev-chip ev-mono", text: event.eventType || "—" }),
+        /* #432：人工试跑的行**不隐藏**（「我明明跑过」比"纯净"更重要），但必须看得出
+           它不是外部投递 —— 标记由 spec.origin 驱动，不看 source 字面量。 */
+        event.origin === "test" ? el("span", { class: "badge badge-neutral badge-sm", text: t("common.origin_test") }) : null,
         /* v4 无 severity 字段：这里原来渲染 spec.type（真实数据恒为空 → 空药丸）。 */
         event.reason ? el("span", { class: "ev-reason", text: event.reason }) : null,
       );

@@ -3707,6 +3707,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			status: obj(st),
 			conditions: arr(st.conditions),
 			ready: st.ready === true,
+			/* #432：status.enabled 是开关行的**派生投影**（契约：没有开关行 = 启用）。
+			 * 所以只有显式 false 才算停用 —— 缺字段时按「启用」读，不能凭一个缺字段
+			 * 把一个默认启用的能力显示成停用。 */
+			enabled: st.enabled !== false,
 			nodes: nodesOf(res),
 			deployCandidates: deployCandidatesOf(res),
 			resolvedNext: resolvedNext(res),
@@ -4145,6 +4149,10 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 			involvedObject: isObj(spec.involvedObject) ? deepCopy(spec.involvedObject) : null,
 			traceUID: spec.traceUID == null ? null : spec.traceUID,
 			eventType: spec.eventType == null ? null : spec.eventType,
+			/* #432：来源类别（source 外部投递 / test 人工试跑）。事件流默认不含 test 行，
+			 * 但 trace 全景与显式 `?origin=test` 会带它们过来——页面据此标「手动试跑」，
+			 * 而不是把一次人工动作当成外部输入。 */
+			origin: spec.origin == null ? null : spec.origin,
 			deliveryId: spec.deliveryId == null ? null : spec.deliveryId,
 			payload: spec.payload == null ? null : deepCopy(spec.payload),
 			/* EventSpec 没有 signature（events.yaml）：签名事实不在事件信封里。
@@ -4198,6 +4206,168 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	/** phase → 类名后缀；未知相位原样返回（不要编一个假状态）。 */
 	function statusClass(st) {
 		return STATUS_CLASS[st] || String(st || "pending");
+	}
+
+	/* ---------- JSON Schema → 表单控件（#432 试跑弹窗） ----------
+	 * 渲染策略与 web-src/pages/playbook.html 的 valuesForm() 同源（那边是页面内闭包）：
+	 *   · 嵌套 object 逐层摊平成 `a.b` 路径，控件带 data-value-path，收集时按路径还原；
+	 *   · enum / boolean → select（空选项 = 不填，由服务端套 schema 默认值）；
+	 *   · object / array → textarea（填 JSON）；integer / number → number input；其余 → text input；
+	 *   · 空控件一律不写进结果 —— 表单只负责录入，校验的最终判据是服务端。
+	 * 为什么抽到这一层：能力的参数契约是 `spec.params`（JSON Schema），试跑弹窗要按同一套
+	 * 规则渲染它，与 playbook 的 values 表单是同一件事；复制一份必然漂移。playbook 页保留
+	 * 自己的闭包版本（writeOnly 遮盖 / secrets 掩码 / schema 重置是页面专属逻辑）。
+	 * 抽不出来的 schema（oneOf / anyOf / allOf / $ref、顶层不是 object）返回 supported:false，
+	 * 调用方降级成一个 JSON textarea；不猜、不半画。
+	 *
+	 * @param {object} schema JSON Schema（顶层应为 object）
+	 * @param {{values?: object, onChange?: Function}} [opts] values=初始值（嵌套对象）；
+	 *        onChange=任一控件被编辑时回调（无参，调用方用它清掉上一次的错误标记）
+	 * @returns {{el: HTMLElement, supported: boolean, controls: Object, values: Function}}
+	 */
+	const SCHEMA_FORM_OPAQUE = ["oneOf", "anyOf", "allOf", "$ref"];
+	/** 深扫整份 schema：出现 oneOf/anyOf/allOf/$ref 或嵌套过深 → 表单抽不出来。 */
+	function schemaFormOpaque(node, depth) {
+		if (depth > 12) return true;
+		if (Array.isArray(node))
+			return node.some((item) => schemaFormOpaque(item, depth + 1));
+		if (!isObj(node)) return false;
+		for (const key of SCHEMA_FORM_OPAQUE)
+			if (Object.hasOwn(node, key)) return true;
+		for (const value of Object.values(node))
+			if (schemaFormOpaque(value, depth + 1)) return true;
+		return false;
+	}
+	function schemaFormSupported(schema) {
+		if (!isObj(schema)) return false;
+		if (schema.type != null && schema.type !== "object") return false;
+		return !schemaFormOpaque(schema, 0);
+	}
+	let SCHEMA_FORM_SEQ = 0;
+
+	function schemaForm(schema, opts) {
+		const o = opts && typeof opts === "object" ? opts : {};
+		const box = el("div");
+		const controls = Object.create(null);
+		const fields = [];
+		const supported = schemaFormSupported(schema);
+		const onChange = typeof o.onChange === "function" ? o.onChange : null;
+		const initial = isObj(o.values) ? o.values : {};
+		const seq = ++SCHEMA_FORM_SEQ;
+		function pathValue(parts) {
+			let cur = initial;
+			for (const part of parts) {
+				if (!isObj(cur)) return undefined;
+				cur = cur[part];
+				if (cur === undefined) return undefined;
+			}
+			return cur;
+		}
+		function walk(sub, parts, required) {
+			if (!isObj(sub)) return;
+			if (sub.type === "object" && isObj(sub.properties)) {
+				const req = Array.isArray(sub.required) ? sub.required : [];
+				for (const [key, child] of Object.entries(sub.properties))
+					walk(child, parts.concat([key]), req.includes(key));
+				return;
+			}
+			const path = parts.join(".");
+			const fid = "schema-" + seq + "-" + path.replace(/[^\w-]/g, "_");
+			const isEnum = Array.isArray(sub.enum);
+			const isBool = sub.type === "boolean";
+			const isComplex = sub.type === "object" || sub.type === "array";
+			const tag = isEnum || isBool ? "select" : isComplex ? "textarea" : "input";
+			const input = el(tag, {
+				class:
+					isEnum || isBool ? "select" : isComplex ? "textarea mono" : "input",
+			});
+			input.id = fid;
+			input.setAttribute("data-value-path", path);
+			if (tag === "input") {
+				input.type =
+					sub.type === "number" || sub.type === "integer" ? "number" : "text";
+				input.autocomplete = "off";
+				if (sub.pattern != null) input.setAttribute("pattern", String(sub.pattern));
+				if (sub.type === "integer") input.setAttribute("step", "1");
+			}
+			if (tag === "select") {
+				const list = isEnum ? sub.enum : [true, false];
+				input.append(
+					el("option", { value: "", text: t("common.omitted", "留空（用默认值）") }),
+				);
+				for (const item of list)
+					input.append(
+						el("option", { value: JSON.stringify(item), text: String(item) }),
+					);
+			}
+			/* 预填：调用方给的 values 优先，其次 schema 的 default。空串 = 没填，不写进结果。 */
+			const fromValues = pathValue(parts);
+			const seed = fromValues !== undefined ? fromValues : sub.default;
+			if (seed !== undefined && seed !== null) {
+				if (tag === "select") input.value = JSON.stringify(seed);
+				else if (tag === "textarea")
+					input.value =
+						typeof seed === "string" ? seed : JSON.stringify(seed, null, 2);
+				else input.value = String(seed);
+			}
+			const wrap = el("div", { class: "field" });
+			wrap.append(
+				el("label", {
+					class: "field-label",
+					for: fid,
+					text: path + (required ? " *" : ""),
+				}),
+				input,
+			);
+			const hint = sub.description || sub.type;
+			if (hint) {
+				/* description 是 **schema 里的服务端数据**（可能带中文，例如作者写的字段说明）：
+				 * 按 API 原文豁免，包一层 text-only span[data-raw-content]（与 condRow / preBlock
+				 * 同一套约定：带这个标记的纯文本 span 不参与界面文案的翻译比对）。 */
+				const note = el("span");
+				note.textContent = String(hint);
+				note.setAttribute("data-raw-content", "");
+				wrap.append(el("p", { class: "field-hint" }, note));
+			}
+			box.append(wrap);
+			controls[path] = input;
+			fields.push({ parts, sub, input });
+			if (onChange) {
+				input.addEventListener("input", () => onChange());
+				input.addEventListener("change", () => onChange());
+			}
+		}
+		if (supported) {
+			const props = isObj(schema.properties) ? schema.properties : {};
+			const req = Array.isArray(schema.required) ? schema.required : [];
+			for (const [key, sub] of Object.entries(props))
+				walk(sub, [key], req.includes(key));
+		}
+		/** 收集表单值：空控件不写（服务端套默认值）；`a.b` 路径还原成嵌套对象。 */
+		function values() {
+			const out = {};
+			for (const field of fields) {
+				const raw = field.input.value;
+				if (raw === "" || raw == null) continue;
+				let value;
+				if (field.input.tagName === "SELECT") value = JSON.parse(raw);
+				else if (field.sub.type === "object" || field.sub.type === "array")
+					value = parseJSON(raw, field.parts.join("."));
+				else if (field.sub.type === "integer" || field.sub.type === "number") {
+					const num = Number(raw);
+					/* 非数字原样交给服务端判：它会回一条点名该字段的 400，比前端猜更准。 */
+					value = Number.isFinite(num) ? num : raw;
+				} else value = raw;
+				let parent = out;
+				for (const part of field.parts.slice(0, -1)) {
+					if (!isObj(parent[part])) parent[part] = {};
+					parent = parent[part];
+				}
+				parent[field.parts[field.parts.length - 1]] = value;
+			}
+			return out;
+		}
+		return { el: box, supported, controls, values };
 	}
 
 	/* ---------- 入场动画工具类（AN-1）----------
@@ -4331,6 +4501,9 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		deletePath,
 		isConflict,
 		parseJSON,
+		/* #432：JSON Schema → 表单控件（试跑弹窗按 spec.params 渲染，playbook 的
+		 * valuesForm 是页面内闭包版；这里只放可复用的渲染策略） */
+		schemaForm,
 		model,
 		/* v4 相位 → CSS 类名后缀（唯一一份，graphs.js / traceview.js 共用） */
 		STATUS_CLASS,

@@ -414,6 +414,8 @@
            原始 JSON（deliveryId / pruned）收进「查看原始 JSON」——v4 没有 status.dispatched。 */
         row.append(el("div", { class: "tr-head" },
           el("span", { class: "tr-cap", text: event.eventType || "—" }),
+          /* #432：链路全景对人工试跑行给可见标记（不静默隐藏：试跑是真实执行）。 */
+          event.origin === "test" ? el("span", { class: "badge badge-neutral badge-sm", text: t("common.origin_test") }) : null,
           el("span", { class: "tr-ver", text: event.reason || "—" }),
           event.reason ? el("span", { class: "tr-meta", text: event.reason }) : null));
         const facts = el("div", { class: "tr-facts" });

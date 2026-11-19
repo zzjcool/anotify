@@ -157,9 +157,10 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 		// 组织层删除后「用户 → 事件」没有对应关系，这个口径不再可计算，字段一并删除。
 		// MessageCount 字段名保留（前端/接口契约不变），语义已是"事件数"。
 		// 改名会让管理后台 API 变成破坏性变更，收益不足。
-		{&s.MessageCount, `SELECT COUNT(*) FROM events`, nil, "event count"},
+		// 事件数排除人工试跑（origin='test'）：口径与 MessageStats 一致（L-D6）。
+		{&s.MessageCount, `SELECT COUNT(*) FROM events WHERE origin <> 'test'`, nil, "event count"},
 		{&s.TodayMessages,
-			`SELECT COUNT(*) FROM events WHERE created_at >= ?`,
+			`SELECT COUNT(*) FROM events WHERE origin <> 'test' AND created_at >= ?`,
 			[]any{startOfLocalDayUnix(time.Now())}, "today events"},
 		{&s.DeviceCount, `SELECT COUNT(*) FROM devices`, nil, "device count"},
 		{&s.EnabledDevices, `SELECT COUNT(*) FROM devices WHERE enabled = 1`, nil, "enabled devices"},
@@ -194,7 +195,7 @@ func (d *DB) SystemStats(ctx context.Context, sinceSec int64) (*SystemStats, err
 	rows, err := d.QueryContext(ctx,
 		`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS day, COUNT(*)
 		 FROM events
-		 WHERE created_at >= ?
+		 WHERE origin <> 'test' AND created_at >= ?
 		 GROUP BY day ORDER BY day`, sinceSec)
 	if err != nil {
 		return nil, fmt.Errorf("system stats daily: %w", err)
