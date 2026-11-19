@@ -93,6 +93,8 @@ node.html?id=<name>            节点维度（无 namespace 参数）—— 只�
   ├─ 生效命名空间（只读）= 授权 ∩ 本机申报（用于排查「授权了却没生效」）
   ├─ 机器实际值（只读）：localVars / nodeVars / machineVars / localLimits / machineLimits
   ├─ 槽位与动作（drain / upgrade / rotate）
+  ├─ 已部署能力 / 最近任务：**节点事实**，跟随侧栏作用域（不是本页的 ns 上下文；
+  │    页面本身不读 URL 的 `?namespace=`）
   └─ 指向：namespace.html?name=<ns>（某 ns 的变量）、capabilities.html
 
 namespaces.html                命名空间列表（cluster）

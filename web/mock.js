@@ -2090,9 +2090,13 @@
 		return items;
 	}
 
-	// deployments 只读事实：一行 = 「某节点持有某 digest」。
-	// 页面要读的 `capability / capabilityId / name / version / digest / node / state`
-	// 都是 v4 可用字段（没有 v3 的 port / status 九态）。
+	// deployments 只读事实（resource.yaml · DeploymentList）：一行 = 「某节点持有某 digest」。
+	//
+	// 契约是**裸 `{deployments:[…]}`**，不是 `*List` 信封、也不是资源信封 —— 行字段严格按
+	// Deployment schema：id / namespaceId / nodeId / capabilityId / capability / version /
+	// digest / state / reason / createdAt / updatedAt（**没有** v3 的 spec/node/status）。
+	// 以前这里发 DeploymentList 信封 + 展平的 `node`，页面对照契约写了 apiList 也能跑 ——
+	// 真实服务一接就把「不是 *List 信封」变成整块 malformed_list（mock 不该替契约圆谎）。
 	function deploymentItems(ns) {
 		return state.deployments
 			.filter((d) => d.ns === ns)
@@ -2100,31 +2104,37 @@
 				const cap = state.capabilities.find(
 					(c) => c.ns === ns && c.name === d.capability && c.version === d.version,
 				);
-				const stateStr = !cap ? "missing" : cap.digest === d.digest ? "deployed" : "stale";
+				const updatedAt = unixSeconds(d.updatedAt);
 				return {
-					apiVersion: API_VERSION,
-					kind: "Deployment",
-					metadata: {
-						name: "dep_mock_" + d.capability + "_" + d.node,
-						namespace: ns,
-						creationTimestamp: d.updatedAt,
-					},
-					spec: {
-						capability: { name: d.capability, version: d.version, digest: d.digest },
-						node: d.node,
-					},
-					status: { updatedAt: d.updatedAt, current: stateStr === "deployed" },
-					// 展平读数（页面按行读；都是 v4 事实，不是 v3 别名）
+					id: "dep_mock_" + ns + "_" + d.capability + "_" + d.node,
+					namespaceId: "ns_mock_" + ns,
+					nodeId: mockNodeUID(d.node),
+					capabilityId: cap ? cap.uid : "cap_mock_" + ns + "_" + d.capability,
 					capability: d.capability,
-					capabilityId: d.capability,
-					name: d.capability + "/" + d.node,
 					version: d.version,
 					digest: d.digest,
-					node: d.node,
-					updatedAt: d.updatedAt,
-					state: stateStr,
+					// state 是**节点回报**的状态（pending | applied | failed | local），
+					// 不是「当前/过期」——stale 是「行的 digest ≠ 能力当前 digest」的派生结果，
+					// 由 capability 的 status.nodes / Deployed 条件单独算。
+					state: d.state || "applied",
+					reason: "",
+					createdAt: updatedAt,
+					updatedAt: updatedAt,
 				};
 			});
+	}
+
+	// mock 里的节点 id = Node.metadata.uid（真实服务里 deployments.node_id 存的就是它，
+	// 不是节点名：页面按 nodeId 过滤/对齐）。
+	function mockNodeUID(name) {
+		const row = state.nodes.find((n) => n.name === name);
+		return row && row.uid ? row.uid : "node_mock_" + name;
+	}
+
+	// 事实里的时间戳是 ISO 串；Deployment schema 的 createdAt/updatedAt 是**整数**秒。
+	function unixSeconds(value) {
+		const ms = typeof value === "number" ? value : Date.parse(String(value));
+		return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
 	}
 
 	// ---------- Stats（现有读模型形状，namespace 显式过滤）----------
@@ -4137,6 +4147,7 @@
 			Array.isArray(body.nodes) && body.nodes.length
 				? body.nodes.map(String)
 				: capCandidates(ns).map((n) => n.name);
+		const outcomes = [];
 		for (const node of nodes) {
 			const hit = state.deployments.find(
 				(d) => d.ns === ns && d.capability === row.name && d.node === node,
@@ -4147,18 +4158,23 @@
 				version: target.version,
 				digest: target.digest,
 				node: node,
+				// 意图刚落库：真服务等节点回报 capability.deployed 才变 applied。
+				state: "pending",
 				updatedAt: isoNow(),
 			};
 			if (hit) Object.assign(hit, fact);
 			else state.deployments.push(fact);
+			// CapabilityDeployResponse.deployed[]（resource.yaml · CapabilityDeployOutcome）：
+			// `node` 是节点 **id**；sent=false = mock 没有 WS 会话（同「离线节点收下意图」）。
+			outcomes.push({
+				node: mockNodeUID(node),
+				state: "pending",
+				sent: false,
+				requestId: "req_mock_dep_" + row.name + "_" + node,
+			});
 		}
-		return json(
-			listOf(
-				"DeploymentList",
-				deploymentItems(ns).filter((d) => d.capability === row.name),
-			),
-			201,
-		);
+		// 响应是 CapabilityDeployResponse（`{deployed, version}`），不是 DeploymentList 信封。
+		return json({ deployed: outcomes, version: target.version });
 	});
 
 	// 能力启停 + 手动试跑（#432）。
@@ -4944,7 +4960,15 @@
 		const ns = decodeURIComponent(ctx.m[1]);
 		const miss = nsMissing(ns);
 		if (miss) return miss;
-		return json(listOf("DeploymentList", deploymentItems(ns)));
+		// 契约（resource.yaml · DeploymentList）：裸 `{deployments:[…]}`，**不套信封**。
+		// 与 edges 同理：套信封会让页面对照 mock 写 apiList，真实服务一接就整块报
+		// malformed_list。可选 ?nodeId / ?capabilityId 也照服务端过滤（部署行的身份是 id）。
+		let rows = deploymentItems(ns);
+		const nodeID = ctx.query.get("nodeId") || "";
+		const capabilityID = ctx.query.get("capabilityId") || "";
+		if (nodeID) rows = rows.filter((d) => d.nodeId === nodeID);
+		if (capabilityID) rows = rows.filter((d) => d.capabilityId === capabilityID);
+		return json({ deployments: rows });
 	});
 
 	// ===== 统计 / 事件流读模型（保留形状；namespace 必填）=====

@@ -165,6 +165,7 @@
       <p class="c2-note">{{t "nodes.v4.ns_hint"}}</p>
       <div class="c2-actions"><a id="node-open-namespace" class="btn btn-ghost" href="namespaces.html">{{t "nodes.v4.open_namespace"}}</a></div>
     </section>
+    <div class="c2-grid"><section class="card card-pad"><div class="card-title">{{t "nodes.v4.artifacts"}}</div><div id="node-deployments"></div></section><section class="card card-pad"><div class="card-title">{{t "nodes.v4.tasks"}}</div><div id="node-tasks"></div></section></div>
     <section class="card card-pad"><div class="card-title">{{t "nodes.v4.slots"}}</div><div id="node-slots"></div>
       <details class="nd-more"><summary>{{t "uxaudit.res.nodes.note_summary"}}</summary><p class="c2-note nd-more-body">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p></details>
     </section>
@@ -193,7 +194,7 @@
 
   /* ---------- #374：开发者信息折叠 ---------- */
   const dev = key => A.t('uxaudit.dev.' + key);
-  let devFacts = [], devConfig = [], devSlots = [];
+  let devFacts = [], devConfig = [], devSlots = [], devDeploy = [];
   function devFields(id, rows) {
     const box = make('details', 'devf'); if (id) box.id = id;
     const sum = make('summary');
@@ -215,7 +216,7 @@
   }
   function renderDev() {
     const host = $('node-dev-host'); if (!host) return;
-    host.replaceChildren(devFields('node-dev', devFacts.concat(devSlots, devConfig)));
+    host.replaceChildren(devFields('node-dev', devFacts.concat(devDeploy, devSlots, devConfig)));
   }
   /* 配置漂移：带周界的警示条（不是普通文本） */
   function driftBanner() {
@@ -475,6 +476,47 @@
     if (!nodeId) throw new Error('Node metadata.uid missing');
     n = A.model.node(resource); renderFacts(); renderConfigSummary();
   }
+  /* 这台节点的「已部署能力」与「最近任务」：**节点事实**，不是节点配置。
+     IA（#436）：本页不再读 URL 的 ?namespace=（旧链接里的参数被忽略），这两块跟着
+     侧栏作用域走 —— 和 console 其它列表同一个口径；命名空间配置在 namespace.html。
+     #437（main 已合入的语义，必须原样保留）：部署投影**不是** `*List` 信封
+     （resource.yaml · DeploymentList 是裸 `{deployments:[…]}`，没有 apiVersion/kind/items），
+     用严格列表 A.apiList 会把整块渲染成 malformed_list；读数走 A.api + A.deploymentsOf，
+     行身份与过滤参数都是 nodeId（不是节点名）。 */
+  async function loadRelated() {
+    const namespace = A.readScope().namespace || '';
+    if (!namespace) return;
+    const base = '/v1/namespaces/' + encodeURIComponent(namespace);
+    const results = await Promise.allSettled([
+      A.api(base + '/deployments?nodeId=' + encodeURIComponent(nodeId)),
+      A.apiList(base + '/tasks?nodeId=' + encodeURIComponent(nodeId) + '&limit=20'),
+    ]);
+    for (const [i, id] of ['node-deployments', 'node-tasks'].entries()) {
+      $(id).replaceChildren(); const result = results[i];
+      if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }
+      const rows = i === 0 ? A.deploymentsOf(result.value) : result.value.items.filter(x => x.status.nodeName === name);
+      if (!rows.length) $(id).appendChild(make('div', 'c2-note', t('none')));
+      const depDev = [];
+      for (const x of rows) {
+        const row = make('div', 'c2-row');
+        if (i === 0) {
+          /* #374：已部署能力首屏只给「能力名 + 状态 + 原因」，digest 指纹（sha256:<64>）进开发者信息 */
+          const cap = x.spec?.capability?.name || x.capability || '—';
+          row.classList.add('nd-dep');
+          row.append(make('span', 'nd-dep-name', cap),
+            make('span', 'badge badge-neutral', x.state || t('unknown')));
+          if (x.reason) row.append(make('span', 'c2-note', x.reason));
+          depDev.push([cap + ' · digest', x.digest || '']);
+        } else {
+          const link = make('a', null, x.metadata.name + ' · ' + x.status.phase);
+          link.href = 'message.html?namespace=' + encodeURIComponent(namespace) + '&id=' + encodeURIComponent(x.metadata.name);
+          row.appendChild(link);
+        }
+        $(id).appendChild(row);
+      }
+      if (i === 0) { devDeploy = depDev; renderDev(); }
+    }
+  }
   async function loadConfig() {
     $('node-config-save').disabled = true; msg('node-config-state', t('loading'));
     try {
@@ -516,7 +558,7 @@
     $('node-load-state').textContent = t('loading'); $('node-load-state').setAttribute('aria-busy', 'true');
     try {
       await A.ready();
-      await loadFacts(); $('node-body').hidden = false; $('node-load-state').replaceChildren();
+      await loadFacts(); await loadRelated(); $('node-body').hidden = false; $('node-load-state').replaceChildren();
       // Refresh never silently replaces a user's configuration draft.
       if (!loaded) { await loadConfig(); await loadYAML(); loaded = true; }
     } catch (e) {

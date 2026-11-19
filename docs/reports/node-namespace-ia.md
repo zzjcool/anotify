@@ -113,6 +113,14 @@ go build ./...                                ✅
 go test ./...（除 cmd/anode）                  ✅
 ```
 
+> 合并冲突：main 期间合入 #437（节点页部署投影按裸 `{deployments}` 读）。冲突只在
+> `web-src/pages/node.html` 的 `loadRelated()` —— 本分支把它随 ns 上下文一起删掉了。
+> 处理：**保留 #437 的语义**（`A.api` + `A.deploymentsOf`、`?nodeId=` 过滤、裸投影不套
+> `*List` 信封），把这两块「已部署能力 / 最近任务」作为**节点事实**恢复，命名空间改为
+> 跟随侧栏作用域（不再读 URL 的 `?namespace=`）；main 新增的 `node-deployments` e2e
+> 用例因此继续有效。`api/resource.yaml` 与 `openapi_parity_test.go` 的 ratchet 取并集：
+> mux pattern 122+2=124、operation 133+2=135。
+
 > 说明：合并 `origin/main` 之前，`cmd/anode` 的四条 install-script 用例在本机失败
 > （`origin/main@2c115020` 的干净 worktree 上同样失败，属环境差异）；main 的 #440
 > （`fix/node`: 安装脚本 `--prefix` 下不再探测宿主安装）合并进来后，这四条在本机也随
