@@ -1,5 +1,8 @@
 # 白盒审计：页面与信息架构（只读，不改代码）
 
+snapshot-doc: 2026-11-19 白盒审计快照
+
+
 - 分支：`audit/ui-whitebox`（基线 `origin/main`）
 - 方法：读源码（模板 / 内联 JS / locale 值 / `api/*.yaml`），**不碰运行中的站点**
 - 覆盖面：`web-src/pages/*.html` 全部 **23 页**、`web-src/layouts/{base,login,focus}.html`、
