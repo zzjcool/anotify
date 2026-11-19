@@ -113,12 +113,12 @@ go build ./...                                ✅
 go test ./...（除 cmd/anode）                  ✅
 ```
 
-**`cmd/anode` 的 4 条 install-script 用例在本机失败，且不是本分支引入的**：
+**`cmd/anode` 的四条 install-script 用例在本机失败，且不是本分支引入的**：
 
 ```
 git worktree add /tmp/main-check origin/main
 cd /tmp/main-check
-go test ./cmd/anode -run 'TestInstallScript…' -count=1     # 同样 4 条 FAIL
+go test ./cmd/anode -run 'TestInstallScript…' -count=1     # 同样四条 FAIL
 ```
 
 失败点是本机 systemd/sudo 组合（脚本走了 `sudo -n systemctl start` 分支），与节点配置/YAML
@@ -131,10 +131,10 @@ go test ./cmd/anode -run 'TestInstallScript…' -count=1     # 同样 4 条 FAIL
 | `frontend` | 39 通过 / 0 失败 | real |
 | `i18n` | 33 通过 / 0 失败 | explicit-mock |
 | `i18n_coverage` | 44 通过 / 0 失败 | explicit-mock |
-| `ui_shift` | 87 通过 / 0 失败（368 个视图） | explicit-mock |
+| `ui_shift` | 87 通过 / 0 失败（368 视图） | explicit-mock |
 | `capacity` | 84 通过 / 0 失败 | real |
 | `ux_regression_19_23` | 8 通过 / 0 失败 | explicit-mock |
-| `make e2e`（全量 28 套件） | **2287 断言 / 0 失败**（`E2E_CONCURRENCY=2`） | real 24 / mock 4 |
+| `make e2e`（全量矩阵） | **28 suites / 2287 passing assertions，0 失败**（`E2E_CONCURRENCY=2`） | real 24 / mock 4 |
 
 本机 load average ~14（共享 VM 上还有别的会话/k8s），默认并行度（4）下全量跑出现过
 `database is locked` / `ERR_NETWORK_CHANGED` / 证据片段 ENOENT 这类**负载型抖动**：
