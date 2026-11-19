@@ -567,9 +567,21 @@ SCENARIOS.set('node-config', async (server, fixtures) => {
   };
 });
 
+// nodeDeploymentsScenario：节点页「已部署能力的实际状态」要**真有一条部署行**才验得到
+// （空态和错误态看起来都“不是报错”，断言会假绿）。部署判据要 declared ∩ authorized
+// 覆盖该 ns，所以这里起一台真夹具节点（hello + config.applied），再用真入口、真版本、
+// 真 digest 跑一次部署，等到行推进到 applied。
+SCENARIOS.set('node-deployments', async (server, fixtures) => {
+  const s = fixtures.adminSession;
+  const cap = await rawReq(server.base, `/v1/namespaces/${DEFAULT_NS}/capabilities/${MOCK_FIXTURES.capability}`, { headers: sessionCookie(s) });
+  assert.equal(cap.status, 200, 'T1 seam: GET fixture capability must be 200');
+  const node = await bringUpFixtureNode({ base: server.base, session: s, name: MOCK_FIXTURES.node, namespaces: [DEFAULT_NS] });
+  const applied = await deployApplied(server.base, s, node, capRef(cap.body), DEFAULT_NS);
+  return { __holdNodes: [node], deployedDigest: applied.digest, deployedNodeID: applied.nodeId };
+});
+
 async function preview() {
-  assert.equal(isMock(), true, 'Static preview is admitted only by E2E_MOCK_ONLY=1');
-  const root = path.join(ROOT, 'web');
+  assert.equal(isMock(), true, 'Static preview is admitted only by E2E_MOCK_ONLY=1');  const root = path.join(ROOT, 'web');
   const types = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.svg':'image/svg+xml', '.woff2':'font/woff2', '.png':'image/png', '.webmanifest':'application/manifest+json' };
   const server = createServer(async (req, res) => {
     try {

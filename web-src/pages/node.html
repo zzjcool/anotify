@@ -362,11 +362,20 @@
     const base = '/v1/namespaces/' + encodeURIComponent(namespace);
     // 查询参数是封闭集合（limit/status/traceId/nodeId）：旧的 `?node=` 会被 400
     // unknown_field 拒掉，且真服务按 node_id 过滤，所以这里传的是 id 不是名字。
-    const results = await Promise.allSettled([A.apiList(base + '/deployments'), A.apiList(base + '/tasks?nodeId=' + encodeURIComponent(nodeId) + '&limit=20')]);
+    //
+    // 部署投影**不是** `*List` 信封（resource.yaml · DeploymentList 是裸
+    // `{deployments:[…]}`，没有 apiVersion/kind/items）：用严格列表 A.apiList 会把
+    // 「不是 *List 信封」变成整块的 malformed_list（节点页「已部署能力的实际状态」
+    // 真实报过这个错）。读数走 A.api() + A.deploymentsOf，行身份是 nodeId 不是节点名
+    // —— 按 `x.node === name` 过滤会让「有数据」也渲染成空。
+    const results = await Promise.allSettled([
+      A.api(base + '/deployments?nodeId=' + encodeURIComponent(nodeId)),
+      A.apiList(base + '/tasks?nodeId=' + encodeURIComponent(nodeId) + '&limit=20'),
+    ]);
     for (const [i, id] of ['node-deployments', 'node-tasks'].entries()) {
       $(id).replaceChildren(); const result = results[i];
       if (result.status === 'rejected') { $(id).appendChild(A.loadErrorNode(result.reason, loadRelated)); continue; }
-      const rows = result.value.items.filter(x => i === 0 ? x.node === name : x.status.nodeName === name);
+      const rows = i === 0 ? A.deploymentsOf(result.value) : result.value.items.filter(x => x.status.nodeName === name);
       if (!rows.length) $(id).appendChild(make('div', 'c2-note', t('none')));
       const depDev = [];
       for (const x of rows) {

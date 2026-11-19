@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -322,8 +323,19 @@ func TestRetainedDeploymentsListAndFilters(t *testing.T) {
 	seedDeployment("dep_a_n2", env.ns, n2.ID, env.cap, "sha256:taskres")
 	seedDeployment("dep_b_n1", env.ns2, n1.ID, capB, "sha256:deployb")
 
-	// ns A：两条部署都在，字段是 v3 的 camelCase 形状。
+	// ns A：两条部署都在，字段是 Deployment schema 的 camelCase 形状。
 	doc := trWant(t, retainedDo(t, mux, "/v1/namespaces/"+slugA+"/deployments"), http.StatusOK)
+	// 形状断言：这份投影**不是** `*List` 信封（resource.yaml · DeploymentList 是裸
+	// `{deployments:[…]}`，没有 apiVersion/kind/items）。前端用严格列表读它时整块报
+	// malformed_list —— 所以这里连「顶层键集合」一起钉住：谁把信封加回来就是契约漂移。
+	topKeys := make([]string, 0, len(doc))
+	for k := range doc {
+		topKeys = append(topKeys, k)
+	}
+	sort.Strings(topKeys)
+	if len(topKeys) != 1 || topKeys[0] != "deployments" {
+		t.Fatalf("deployments 必须是裸 {deployments} 投影（不是 *List 信封），得到顶层键 %v（body=%v）", topKeys, doc)
+	}
 	items := trArray(t, doc, "deployments")
 	if len(items) != 2 {
 		t.Fatalf("ns A deployments = %d, want 2（body=%v）", len(items), doc)

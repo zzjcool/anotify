@@ -348,6 +348,37 @@ for(const file of ['capabilities','sources','nodes','message'])add('views-'+file
     await d.page.locator(pageAnchors[file]).first().waitFor();await d.clean(file+' '+size.name+' '+theme);await d.shot(size.name+'-'+theme);
   }
 },{expectHttpStatus:file==='message'?LOGS_410:[]});
+/* node-deployments：节点页「已部署能力的实际状态」读 `GET /v1/namespaces/{ns}/deployments`。
+   契约（resource.yaml · DeploymentList）是**裸 `{deployments:[…]}`**，不是 `*List` 信封；
+   行身份是 `nodeId`（不是节点名），过滤参数也是 nodeId。页面对照 mock 旧信封写了
+   `apiList`，真实服务上整块渲染成 malformed_list（真实缺陷）——本用例是它的回归用例：
+     ① 真实权威下先由**真入口**（POST …/deploy）落一条部署事实；
+     ② 打开节点页，`#node-deployments` 必须渲染出真行（不是错误态、不是空态）；
+     ③ 同页 `#node-tasks` 仍走 TaskList（*List 信封）并正常渲染（行或空态），不跟着坏。 */
+add('node-deployments',async d=>{
+  // 真实权威下的部署行由 node-deployments 场景（f3-driver）用真入口造：起夹具节点 →
+  // 部署 → 等 applied。mock 权威直接用种子事实（fixer 已部署到 anode-1）。
+  await d.goto('node',queryFor('node',d));
+  // 等**任一**终态（真行 / 空态 / 错误态）：只等行的话，失败的现场就只有一句 timeout，
+  // 看不出是“契约读错（malformed_list）”还是“行被过滤光了（空态）”。
+  await d.page.waitForFunction(()=>{
+    const b=document.querySelector('#node-deployments');
+    return !!b && (!!b.querySelector('.nd-dep, .c2-note') || !!b.querySelector('[data-raw-content], [data-err-action]'));
+  },null,{timeout:20000});
+  const box=d.page.locator('#node-deployments');
+  // 错误态有固定标记（[data-raw-content] 原文 + [data-err-action] 重试/返回），空态两样都没有。
+  const errText=await box.locator('[data-raw-content]').allTextContents();
+  assert.deepEqual(errText,[],'部署区块渲染成了错误态（契约读错）：'+errText.join(' | '));
+  assert.ok(await box.locator('.nd-dep').count()>=1,'有部署事实时必须渲染出真行，不能是空态');
+  const text=await box.innerText();
+  assert.ok(text.includes(d.fx('capability')),'必须渲染出部署的能力名（实际：'+text+'）');
+  assert.ok(!/malformed/i.test(text),'不得出现 malformed_list 错误：'+text);
+  // 同页另一个列表回归：任务列表仍是 *List 信封（apiList），不能变错误态。
+  const tasks=d.page.locator('#node-tasks');
+  await tasks.locator('.c2-row, .c2-note').first().waitFor({timeout:20000});
+  assert.deepEqual(await tasks.locator('[data-raw-content]').allTextContents(),[],'任务区块不得是错误态');
+  d.check('F3-NODE-DEPLOY bare {deployments} rows render on the node page; same-page TaskList unaffected');
+});
 add('graph-prod-node-click',async d=>{
   const traceUID=d.fx('prodTrace'),taskId=d.fx('prodTask');
   assert.ok(taskId,'Graph click requires a real prod Task identity (bootstrap fires a prod event, never a fabricated node)');

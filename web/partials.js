@@ -3541,6 +3541,21 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return res.items;
 	}
 
+	/**
+	 * 部署投影（`GET /v1/namespaces/{ns}/deployments`）的读数：**不是** `*List` 信封。
+	 *
+	 * 契约（resource.yaml · DeploymentList）是裸 `{deployments:[…]}` —— 没有
+	 * apiVersion/kind/items，所以 `apiList()`/`itemsOf()` 在这一份上必然抛
+	 * `malformed_list`（真实发生过：节点页「已部署能力的实际状态」整块报错）。
+	 * 读它只能走 `api()` + 本函数；非数组同样是畸形响应（空列表服务端保证是 `[]`）。
+	 */
+	function deploymentsOf(res) {
+		if (!res || !Array.isArray(res.deployments)) {
+			throw malformedListError("", "响应缺少 deployments 数组");
+		}
+		return res.deployments;
+	}
+
 	/** 顶层 `warnings[]`（与资源四键并列）；无 → `[]`。 */
 	function warningsOf(res) {
 		return res && Array.isArray(res.warnings) ? res.warnings : [];
@@ -4489,6 +4504,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		clusterPath,
 		apiList,
 		itemsOf,
+		deploymentsOf,
 		warningsOf,
 		statusOf,
 		readyOf,

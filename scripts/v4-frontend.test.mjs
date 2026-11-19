@@ -741,6 +741,23 @@ test("itemsOf 严格只认 items 数组", () => {
 	throwsWith(() => A.itemsOf(null), { reason: "malformed_list" });
 });
 
+test("deploymentsOf 只认裸 {deployments} 投影（*List 信封是畸形，不是空列表）", () => {
+	const { A } = loadAnotify();
+	// 契约（resource.yaml · DeploymentList）：裸投影，没有 apiVersion/kind/items。
+	assert.deepEqual(plain(A.deploymentsOf({ deployments: [{ id: "dep_a" }] })), [
+		{ id: "dep_a" },
+	]);
+	// 空列表是 []（服务端保证不是 null）—— 合法，不是错误。
+	assert.deepEqual(plain(A.deploymentsOf({ deployments: [] })), []);
+	// 把 *List 信封 / 旧 v3 形状给它都是畸形：不静默当空。
+	throwsWith(
+		() => A.deploymentsOf({ kind: "DeploymentList", items: [{ id: "dep_a" }] }),
+		{ reason: "malformed_list" },
+	);
+	throwsWith(() => A.deploymentsOf({ deployments: null }), { reason: "malformed_list" });
+	throwsWith(() => A.deploymentsOf(null), { reason: "malformed_list" });
+});
+
 test("apiList 返回 {items,warnings}，畸形列表抛 malformed_list", async () => {
 	const list = {
 		apiVersion: "anotify/v1",
@@ -1792,13 +1809,16 @@ test("mock: capability 版本列表 / 单版本 ?includeBody、人工 deploy 写
 	assert.equal(noBody.body.spec.run.files, undefined, "默认不带正文（run.files 省略）");
 
 	const deployed = await req(CAP_LIST + "/analyze-pr/deploy", jsonInit("POST", { nodes: ["anode-2"] }));
-	assert.equal(deployed.status, 201);
-	assert.equal(deployed.body.kind, "DeploymentList");
-	const hit = deployed.body.items.find((d) => d.node === "anode-2");
-	assert.ok(hit);
-	assert.equal(hit.capability, "analyze-pr");
-	assert.equal(hit.version, 2);
-	assert.equal(hit.state, "deployed");
+	// deployCapability 的成功码是 200（不是 201），响应是 CapabilityDeployResponse：
+	// `{deployed:[…], version}` —— 逐节点结论，不是 DeploymentList 信封。
+	assert.equal(deployed.status, 200);
+	assert.deepEqual(Object.keys(deployed.body), ["deployed", "version"]);
+	assert.equal(deployed.body.version, 2);
+	const hit = deployed.body.deployed.find((o) => o.node === "node_mock_anode-2");
+	assert.ok(hit, "deployed[].node 是节点 id（不是名字）");
+	assert.deepEqual(constKeys(hit), ["node", "requestId", "sent", "state"]);
+	assert.equal(hit.state, "pending");
+	assert.equal(hit.sent, false, "mock 没有 WS 会话：sent=false 与「离线收下意图」同形");
 
 	// 部署事实写完，能力的 nodes[] 立刻跟着变（status 是读时派生的，没有副本）
 	const detail = await req(CAP_LIST + "/analyze-pr");
@@ -2140,18 +2160,46 @@ test("mock: edges / deployments 是只读投影（无 port/priority）；trace �
 	);
 
 	const deps = await req("/v1/namespaces/default/deployments");
-	assert.equal(deps.body.kind, "DeploymentList");
-	const d = deps.body.items.find((x) => x.capability === "fixer" && x.node === "anode-1");
-	assert.ok(d);
-	assert.equal(d.kind, "Deployment");
-	assert.equal(d.spec.capability.name, "fixer");
-	assert.equal(d.node, "anode-1");
-	assert.ok(d.digest.startsWith("sha256:"));
-	assert.equal(d.state, "deployed");
-	assert.equal(
-		deps.body.items.find((x) => x.node === "anode-laptop" && x.capability === "fixer").state,
-		"stale",
+	// 契约（resource.yaml · DeploymentList）：裸 `{deployments}` 投影，没有 apiVersion/kind/items。
+	// 这一条是 #435 的产品 bug 的直接回归断言：mock 以前发的 DeploymentList 信封，
+	// 把页面对照 mock 写的 apiList 隐藏到了真实服务才爆（malformed_list）。
+	assert.deepEqual(Object.keys(deps.body), ["deployments"]);
+	const d = deps.body.deployments.find(
+		(x) => x.capability === "fixer" && x.nodeId === "node_mock_anode-1",
 	);
+	assert.ok(d);
+	// wire 只有 Deployment schema 的字段（v3 的 spec/node/status 一个都不能有）。
+	assert.deepEqual(constKeys(d), [
+		"capability",
+		"capabilityId",
+		"createdAt",
+		"digest",
+		"id",
+		"namespaceId",
+		"nodeId",
+		"reason",
+		"state",
+		"updatedAt",
+		"version",
+	]);
+	assert.equal(typeof d.createdAt, "number", "createdAt 是整数秒（schema: integer）");
+	assert.equal(d.state, "applied", "state 是节点回报的状态，不是把 stale/missing 塞进来");
+	assert.ok(d.digest.startsWith("sha256:"));
+	// 旧 digest 的节点也只是一行 applied 事实（stale 是能力 status 的派生结论）；
+	// 同一能力两行的 digest 不同，就是“持有旧 digest”的真事实。
+	const stale = deps.body.deployments.find(
+		(x) => x.capability === "fixer" && x.nodeId === "node_mock_anode-laptop",
+	);
+	assert.ok(stale);
+	assert.notEqual(stale.digest, d.digest);
+	// ?nodeId= 是服务端过滤（页面按 id 取自己那一行）：只回这一台。
+	const only = await req("/v1/namespaces/default/deployments?nodeId=node_mock_anode-laptop");
+	assert.ok(only.body.deployments.length >= 2);
+	assert.deepEqual(
+		only.body.deployments.map((x) => x.nodeId),
+		only.body.deployments.map(() => "node_mock_anode-laptop"),
+	);
+	assert.ok(only.body.deployments.some((x) => x.capability === "fixer"));
 
 	const trace = await req("/v1/namespaces/default/traces/trace_mock_t1");
 	assert.equal(trace.status, 200);
@@ -2709,10 +2757,20 @@ test("mock: 人工 deploy 可指定历史版本（写该版本的 digest 事实�
 		CAP_LIST + "/analyze-pr/deploy",
 		jsonInit("POST", { version: 1, nodes: ["anode-1"] }),
 	);
-	assert.equal(deployed.status, 201);
-	const hit = deployed.body.items.find((d) => d.node === "anode-1");
-	assert.equal(hit.version, 1);
-	assert.equal(hit.digest, v1.status.digest, "部署的是那个版本的 digest，不是当前版本");
+	assert.equal(deployed.status, 200);
+	assert.deepEqual(Object.keys(deployed.body), ["deployed", "version"]);
+	assert.equal(deployed.body.version, 1, "回执的 version 就是这次部署的版本");
+	const hit = deployed.body.deployed.find((o) => o.node === "node_mock_anode-1");
+	assert.ok(hit);
+	// 回执是逐节点结论（CapabilityDeployOutcome），不是 Deployment 行：
+	// “部署了哪个 version/digest”由后面的读模型验证，不从回执上臆测额外的行字段。
+	assert.equal(hit.state, "pending");
+
+	// 历史版本的 digest 真的落了库（读模型里那一行的 digest 就是 v1 的）
+	const rows = await req("/v1/namespaces/default/deployments?nodeId=node_mock_anode-1&capabilityId=" + encodeURIComponent("cap_mock_default_analyze-pr"));
+	const row = rows.body.deployments.find((d) => d.capability === "analyze-pr" && d.version === 1);
+	assert.ok(row, "部署事实必须记那个版本的一行：" + JSON.stringify(rows.body.deployments));
+	assert.equal(row.digest, v1.status.digest, "部署的是那个版本的 digest，不是当前版本");
 
 	// 当前版本没变：能力详情仍然报 v2，节点上拿着旧 digest → Deployed=Stale
 	const detail = await req(CAP_LIST + "/analyze-pr");
@@ -6143,6 +6201,9 @@ test('E1b immutable exactly-once attempt validator: UNIT fake records never brow
 });
 test('E1b all 38 ACTUAL frontend registered IDs exactly once: UNIT records, not browser PASS', async () => {
   const {CASES}=await import('./e2e/fixtures/f3/f3-cases.mjs');
+  // 注：这个字面量**已经陈旧**（本文件是未接线单测，带已知基线红）：#435 之前实际注册
+  // 就是 39，本批新增 node-deployments 后是 40。未在本批修正 —— 修正它等于顺手改“已知
+  // 红台账”，需要连同 docs/lint-guards.md 的账一起改。
   assert.equal(CASES.length,38); // #376/#384 playbook-missing +1；yaml-create +1；#424 observe-index-all 再 +1
   const attempts=CASES.map(({id},i)=>({suite:'frontend',id,runId:'UNIT-all38',attemptId:'a'+i,cwd:ROOT,mode:'explicit-mock',authority:'explicit-mock',sourceHash:'unitSHA',sourceCodeSHA:'unitCode',fullSourceArtifactSHA:'unitSHA',artifactEpoch:'unitSHA'}));
   const exits=attempts.map(x=>({...x,exitCode:0,signal:null,timedOut:false}));
