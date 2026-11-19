@@ -540,6 +540,12 @@
     font-size: 12.5px;
     color: var(--muted);
     text-decoration: none;
+    /* 桌面 rail 是固定 196px 的窄栏，而目录项就是接口路径本身：v4 把这一项
+       从 10 字符的斜杠串换成 `POST /v1/namespaces/{namespace}/events`
+       （33 字符 ≈223px、且整串不可断行），它撑出 rail 右缘、把
+       document.scrollWidth 抬到 1446>1440 —— 没有 overflow 祖先，只有文字悬在外面。
+       这里只放开断行，不动栏宽/栅格：路径按「下一个字符还放得下就继续」折行。 */
+    overflow-wrap: anywhere;
     transition:
       color var(--dur-fast) var(--ease),
       background var(--dur-fast) var(--ease),

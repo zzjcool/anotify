@@ -99,3 +99,122 @@ flock /tmp/anotify-ci.lock -c "make ci"
   文档写成 GET 也算绿。方法级核对需要 `paths:` 下的 method 键，属于下一步（未在本轮实现，避免判据变宽后误报）。
 - `README` 的 v3 端点表仍是历史清单（逐行标了「已删除」），没有整表删除：它对读 v3 文档的人仍有对照价值，
   且现在每一行死端点都带「改用 X」。
+
+## 8. es 横向溢出（本 PR 自测红 → 已修，同分支追加）
+
+本 PR 自己的 `ui_shift` 矩阵判了两条红（CI 实测，两档主题都红）：
+
+```text
+ui_shift / grid-es-light-desktop-1 — docs: docs·es·light·desktop: document horizontal overflow 1446>1440
+ui_shift / grid-es-dark-desktop-1  — docs: docs·es·dark·desktop:  document horizontal overflow 1446>1440
+```
+
+### 8.1 真因：目录 rail 里被换成 v4 长路径的那一项
+
+不是文案变长、不是测试口径松，而是**桌面目录栏**（`.doc-toc`，≥1280 才出现，栅格固定 196px、
+内容盒 176px）里的一项标签从
+
+- 旧：v3 的扁平路径（斜杠串 10 字符 ≈ 68px，放得下）
+- 新：`POST /v1/namespaces/{namespace}/events`（斜杠串 **33 字符 ≈ 223px**，整串不可断行）
+
+变成了一个**不可断行的长串**。`.toc-link` 是 `display:block` 的 `<a>`：块盒宽度仍是栏宽（176px），
+但盒子里那串文字按默认 `overflow-wrap: normal` 直接伸出栏外 —— 文字右缘量到 `x = 1446`
+（视口 1440），`document.documentElement.scrollWidth` 因此变成 1446。
+
+两个细节记下来，否则下次还会找错方向：
+
+1. **审计里的 `unbounded=[...]` 是空的**。它遍历元素盒（`getBoundingClientRect`），而这里溢出的只是
+   **文本**：`.toc-link` 这个元素盒仍旧老实是 176px，没有任何元素越界，只有 `scrollWidth` 抓到 1446。
+   定位手段是遍历文本节点 + `Range.getClientRects()`，命中的就是
+   `TEXT "POST /v1/namespaces/{namespace}/events" … parent=A.toc-link left=1223 right=1446`。
+2. **不是 es 独有**。`docs.toc.events` 在四份 locale 里是同一个字符串（它是语言无关的路径），
+   实测 `grid-en-light-desktop-1` 修前同样 `1446>1440`；任务卡只列了两条 es，是 CI 输出里先被点名的
+   那两条。修法必须对四语言同时成立 —— 所以**一个文案都没动**（也不该动）。
+
+### 8.2 修法：只放开断行，不动栏宽 / 栅格
+
+`web-src/pages/docs.html` 的 `.toc-link` 加一行（+7 行含注释）：
+
+```css
+overflow-wrap: anywhere;
+```
+
+- 只在「放不下」时生效：路径按「下一个字符还放得下就继续」折行，栏宽、栅格、其它语言、
+  其它页面零改动。
+- 不用 `overflow:hidden` / 缩字号：那会把路径裁掉或变小，读者看不到完整端点；
+  也不用 `word-break: break-all`（对所有词生效，属过度改动）。
+
+### 8.3 前后对比（实测）
+
+| 语言·主题（1440×900 桌面） | 修前 scrollWidth | 修后 scrollWidth |
+| --- | --- | --- |
+| es · light（`grid-es-light-desktop-1`） | 1446（溢出 6px，红） | 1440（绿） |
+| es · dark（`grid-es-dark-desktop-1`） | 1446（溢出 6px，红） | 1440（绿） |
+| en · light（`grid-en-light-desktop-1`） | 1446（溢出 6px，红） | 1440（绿） |
+| en · dark | 1446（溢出 6px） | 1440（绿） |
+
+宽度扫描（es / light，同一页面把 `.toc-link` 覆盖回 `overflow-wrap: normal` 的「预修复口径」对照）：
+
+| 视口宽 | 预修复 scrollWidth | 修后 scrollWidth | 备注 |
+| --- | --- | --- | --- |
+| 1279 | 1279 | 1279 | rail 未出现（走 chips），本来就绿 |
+| 1280 | 1286（溢出 6px） | 1280 | rail 刚出现就溢出 |
+| 1366 | 1372（溢出 6px） | 1366 | |
+| 1440 | 1446（溢出 6px） | 1440 | e2e 矩阵档 |
+| 1600 | 1600 | 1600 | 容器到宽上限，rail 右缘离视口更远 |
+
+修后 rail 里这项折成 4 行（`POST` / `/v1/namespaces/{namespace` / `}/events`），
+右缘 1408 < 1440，栏内对齐不变。
+
+### 8.4 变异自证 + 门禁
+
+| 项 | 结果 |
+| --- | --- |
+| 撤掉修复（删掉 `.toc-link` 里那行 `overflow-wrap` + `make fe` + **重建 embeddist 二进制**），跑两条用例 | **红**：`grid-es-light-desktop-1` 与 `grid-es-dark-desktop-1` 都回到 `document horizontal overflow 1446>1440` |
+| 恢复修复后跑两条用例（real authority） | **绿**：各 5 assertions 通过 |
+| 四语言抽查 `grid-{es,en,ja,zh-CN}-*-desktop-1` | **全绿** |
+| `make e2e-one S=ui_shift` 整套 | **绿**：87/87 case · 433/433 视图（368 矩阵视图）· 0 失败 |
+| `flock /tmp/anotify-ci.lock -c "make ci"` | **PASS（exit 0）**，见 §8.5 |
+
+（变异在 rebase 到 PR 新头 `448110df`（合入了 main）之后又跑了一遍，同样是 `1446>1440` 两条红；
+恢复后两条绿。）
+
+⚠️ 变异复现的两个坑：
+
+1. **e2e 的中枢是编译期内嵌**：`go build -tags embeddist`（`//go:embed all:dist`）把 dist 打进二进制。
+   只 `make fe` 重建 dist 而不重建二进制，跑的还是上一轮的 HTML —— 变异会「假绿」。
+   变异测试必须 `make fe` **且**重建 `.e2e-bin/anotify` 两个动作都做。
+2. **改动已经提交后，`git stash` 是空操作**：它只暂存工作区改动，对已提交的那行无效
+   （第一次变异就因此「绿」了一次，假绿）。此时变异要显式把那行删掉再重建产物。
+
+### 8.5 门禁（本轮真实输出）
+
+```bash
+flock /tmp/anotify-ci.lock -c "make ci"     # → PASS（exit 0）
+make e2e-one S=ui_shift                      # → 87/87 case · 433/433 视图 · 0 失败
+```
+
+`make ci` 关键数字：`check-annotations` unbacked 300 / 基线 300、unmarked 385 / 基线 385
+（**没涨棘轮**：注释里只写真实存在的端点，旧的死路径没被写进去 → `check-doc-endpoints`
+把 `web-src/pages/docs.html` 的注释也一起体检了，这条我第一版注释就红过，见下）；
+`check-doc-endpoints` 103 处 `/v1/` 引用全命中、历史提及 14 处；
+`check-i18n-keys` 2189 个引用点；`go test ./... -count=1 -shuffle=on` 41 个包 ok / 0 fail；
+`contract` PASS。
+
+自证记录（诚实留痕，不是本 PR 的产物）：
+
+- 第一版修复的注释里写了旧端点（v3 的扁平路径）做对照，`check-doc-endpoints` **判红**：
+  `web-src/pages/docs.html:544  /v1/events` —— 该文件在扫面内。于是重写注释，只保留 v4 真实端点，
+  不引入历史提及（历史提及计数仍是 14，不靠豁免换绿）。
+- 修复期间 PR #465 的头前进到了 `448110df`（把 main 合了进来）：本节的改动已 rebase 到它上面重跑，
+  `make e2e-one S=ui_shift`（87/87 case · 433/433 视图）与 `make ci`（exit 0）的数字与上表一致；
+  变异也在该基线重跑过（两条 es 用例照样 `1446>1440`）。
+- 环境事故（不是代码问题，留痕）：中途本机 `/tmp`（tmpfs 7.5G）的**用户配额**被 agent 运行时的临时目录副本
+  占满，`go test` 与写入直接报 `disk quota exceeded`（`bootstrap_test.go` / `rework_e2e_test.go` 的
+  `write /tmp/...: disk quota exceeded`），清掉 2 小时以上未触碰的运行时副本（76 个，3.0G）后 `make ci` 全绿。
+  tmpfs 上的配额耗尽会伪装成一大批「安装脚本/时序测试失败」，别当成回归。
+- `make ci` 的第 2 次运行红在一次与本改动无关的时序测试
+  （`cmd/anode/internal/runner` 的 `TestRework2ReplayRechecksSecondPendingAfterBlockedFirst/deadline`，
+  报「等待 real executions awaiting result ACK 超时」，2.00s 墙钟等待）：单跑该用例与
+  `-run TestRework2Replay` 三次全绿，重跑 `make ci` 全绿 —— 判为负载下的既有 flaky，
+  与本轮（纯 CSS 注释 + 一行 `overflow-wrap`）无关，未做任何"让它变绿"的改动。
