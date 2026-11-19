@@ -192,6 +192,9 @@ $ ./scripts/e2e/run_all.sh frontend
 `ANOTIFY_BIN=$PWD/anotify DEVSEED_BIN=$PWD/.e2e-bin/devseed ANODE_BIN=$PWD/.e2e-bin/anode \
 node scripts/e2e/suites/frontend.mjs --case node-config`。）
 
+同一命令在**已提交的树**上复跑：`✅ frontend 42通过/0失败 171.4s mode=real`
+（`断言 42 条通过 / 0 条失败`，断言数与 authority 一致）。
+
 ### 6.2 `make ci`
 
 ```
@@ -238,6 +241,14 @@ $ node --test scripts/v4-frontend.test.mjs      # 本 worktree，基线 = origin
    （本次 e2e 里那个 `PUT {metadata, vars}` 就是这么把 limits 变成 `{}` 的）。契约如此
    （`api/resource.yaml · putNodeConfig`「整体替换」），但页面用的是「表单里三块都带上」的写法，
    所以人不会踩到；只有在脚本/测试里写局部 body 才会。不改，只记录。
+4. **两条与 #454 无关的 e2e flake（本次实测撞到，均有复跑证据）**：
+   - `frontend · node-aba`（`namespace.html` 的 ABA 案例）：偶发 `__f3Calls.length` 19 ≠ 18
+     （多一次请求落进了 50ms 的事件循环屏障）。单跑 `--case node-aba` **3/3 绿**；
+     全量并行 4 次里 2 次红、2 次绿（本报告 §6.1 记的是绿的那两次）。
+   - `cmd/anode/internal/runner · TestParentPositiveLeaseTimerRegistrationCrossingAdvance/register_at_61s`：
+     全量 `make test`（包级并行 + shuffle）下偶发「等待 real executions awaiting result ACK 超时」
+     （2.00s 窗口打满）。单跑 `-run` **3/3 绿**（0.02s）。两条都不在 #454 的改动面上，
+     按 issue 边界只记录、不修。
 
 ## 8. 风险与未做的事
 
