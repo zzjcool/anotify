@@ -17,7 +17,9 @@ as_of: 2026-11-19 · area: e2e · 分支 `fix/e2e-suite-scope` · 基线 `origin
    同一次 CI 已经在提示「interact-dialogs 这次没失败 —— 删掉那一行」，说明那一行在故障
    真发生时根本没命中（故障的形态是整套崩），它是同一故障的**错粒度**登记。理由与代价见 §3。
 4. 自测从 9 组扩到 **14 组**（10 组纯函数 + 4 组真 CLI），四组必需的判定与两条变异
-   全部按预期（§4、§5）。`make check-affected-map` 绿；全量 `make e2e` 见 §6。
+   全部按预期（§4、§5）。`make check-affected-map` 绿；全量 `make e2e` 绿；PR #450 的
+   `e2e（affected）` 也绿——而且**同一故障在那一轮 CI 上真的又复现了一次**
+   （`ui_shift / 整套` 被容忍 + warning，见 §6.1）。
 
 ## 1. 现场与复现
 
@@ -257,6 +259,29 @@ $ node scripts/e2e/ci-e2e-verdict.mjs --self-test
 | 注解守卫 | `make check-annotations` | 绿（unbacked 300/300、unmarked 385/385，未上调基线） |
 | 现场复现 | §1.2 / §1.3 的命令 | before exit 1（与 #449 逐字一致）→ after exit 0（2 条 warning） |
 | 全量 e2e | `make e2e` | 绿：28/28 套件、**2358 断言通过 / 0 失败**，耗时 291.9s |
+| CI（PR #450） | `e2e（affected）` | 绿：`✅ e2e 判定：清单内 2 条（已容忍），清单外 0 条` |
+
+### 6.1 CI 上故障当场又复现了一次（这才是最硬的证据）
+
+同一轮 CI（PR #450，`scripts/e2e` 改动 → 选择器保守地跑全量 28/28）里，`ui_shift`
+**又整批崩了**（runner 上 Chrome 渲染进程再次死亡，没产出 results），而判定器按新语义
+容忍并逐条打 warning：
+
+```
+##[warning]frontend / source-actions —— runner 上 case 子进程偶发死亡（case.json 未落盘 / locator 4500ms 撞线），本地同代码 3–5s 通过（追踪 #431）
+##[warning]ui_shift / 整套 —— 整套没有 results：runner 上 Chrome 渲染进程整批死亡；同一份代码本地 3–5s 通过（追踪 #431）
+
+✅ e2e 判定：清单内 2 条（已容忍），清单外 0 条
+```
+
+同一种死法，改前是 job 红（#449），改后是带 reason + #431 的 warning。这不是“推演出的语义”，
+是**故障在改完以后真的再发生了一次、且被判对了**。
+
+另一条 CI 事实（与本改动无关，记下来避免误判）：本轮 `quick（make ci）` 首跑红在
+`cmd/anode/internal/runner` 的 `TestParentPositiveLeaseTimerRegistrationCrossingAdvance/register_at_61s`
+——`rework2_test.go:197-209` 的 `waitUntil(..., 2*time.Second)` 墙钟预算在 runner 上被挤到 2.01s。
+本地 `-count=8 -cpu=1` 全过（0.159s），`gh run rerun --failed` 即绿：既有测试的时序 flake，
+与本次改动无关（本 PR 不碰 Go）。
 
 全量 e2e 补记：首次运行在「生成前端产物」阶段就中止 —— 本 worktree 没有 `node_modules`，
 `node scripts/check-wire-fields.mjs` 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'yaml'`。
