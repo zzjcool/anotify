@@ -11,7 +11,7 @@
 > | 中枢「只存不执行」 | 中枢仍是**不执行**，但改为**授权部署**一份内容寻址的产物 |
 > | I1「中枢 DB 无命令」 | I1 改写为「执行边界」：内容寻址 + 不可变 + 可审计 + 受节点启动参数约束 |
 >
-> 权威契约在：`.pi-orchestrator/console-declares/{ISSUE,CONTRACT-artifact,CONTRACT-protocol}.md`
+> 权威契约在：`docs/contracts/console-declares/{ISSUE,CONTRACT-artifact,CONTRACT-protocol}.md`
 > 与 `docs/contracts/CONTRACT.md`。本文保留只为记录当时的设计推理。
 
 # 预案（playbook）与节点声明

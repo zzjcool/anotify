@@ -157,7 +157,7 @@
 
 ### D4-A3 正式实现期增补：物理 slot / 历史回收接缝
 
-**原因**：落实既有 D4“授权停止不等于进程退出、槽位真实回收”的必要数据相关性与容量拒绝；父正式裁决见 `.pi-orchestrator/v4/SLOT-HANDOFF.md`。这是技术接缝，不是用户新增产品功能，不重开 D1～D6 其它选择或 A2 env / stdout / error producer 语义。
+**原因**：落实既有 D4“授权停止不等于进程退出、槽位真实回收”的必要数据相关性与容量拒绝；父正式裁决见 `docs/contracts/v4/SLOT-HANDOFF.md`。这是技术接缝，不是用户新增产品功能，不重开 D1～D6 其它选择或 A2 env / stdout / error producer 语义。
 
 - Node 在 accept 前原子预留真实空槽：slot 为整数 0..N-1，每槽单能力进程，0 有效、必填有 presence；数据库 instanceId 不是 wire slot。候选容量只是提示，grant 事务复核 Node / ns 权限、预算、assignment 有效期与 accepted slot 未绑其它占用，不另选槽。dispatch 不授 lease / token / slot 执行权，新增 assignmentExpiresAt，双方用同一初值 30s 的窗口；grant echo 同 slot + assignmentId，Node 匹配 taskId / assignmentId / proposedAttempt / slot 的 reservation 才 exec。
 - 同一有效 assignment 重复 dispatch / accept 幂等回同一预留，不多占槽，不同 assignment 不共享。无真实空槽 / 预算满 / 本地占用用 slot_unavailable，回 pending / waiting_for_slot 并有界退避，不伪造 stale_config 或更多 reject 码。pending 预留只有未授权且本机确知从未创建进程，才可在到期 / 断连 / assignment 失败后释放；过期 assignment 不得新 grant。晚到 / 不匹配 grant 不执行；已 grant 计 attempt 走既有结构化基础设施失败 / lease 回收，不倒减 attempt、不伪装 pre-accept 拒绝。

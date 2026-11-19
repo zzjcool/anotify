@@ -1,6 +1,6 @@
 # Anotify UI v2 · 第三轮评审（最终验收）
 
-> 事实源：`.pi-orchestrator/UI-V2-CONTRACT.md`（v1.2 + §10/§11/§12 裁决）· `design/ui-v2/REVIEW.md`（D1–D20）· `design/ui-v2/REVIEW-2.md`（wave 1，3.2 分）。
+> 事实源：`docs/contracts/UI-V2-CONTRACT.md`（v1.2 + §10/§11/§12 裁决）· `design/ui-v2/REVIEW.md`（D1–D20）· `design/ui-v2/REVIEW-2.md`（wave 1，3.2 分）。
 > 只读评审：`web/`、`web-src/`、`scripts/`、`internal/`、`design/ui-v2/{REVIEW,REVIEW-2,gallery,dashboard,login}.html` 均未改动。
 > 全部数据由 `design/ui-v2/shots-review3/shoot.mjs` 自采（playwright-core 1.62 + chromium-1208，preview = 主 checkout 的 `127.0.0.1:7788` fe-preview + `web/mock.js`）：
 > **20 页 × 2 主题 × 1440×900**（40 张）+ 移动 390（6 页 ×2 主题 + 抽屉 12 张）+ 折叠侧栏 2 + 键盘焦点 2 页 ×26 tab stop + 断网错误态 11 页 + hover 2 + 慢网首屏 3。

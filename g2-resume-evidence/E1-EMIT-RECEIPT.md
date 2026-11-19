@@ -1,6 +1,6 @@
 # E1 · 已创建失败 Task 的 emit 回执身份（E1-only 接口卡）
 
-> 父契约：`/root/code/anotify/.pi-orchestrator/v4/EMIT-FAILED-TASK-RECEIPT-HANDOFF.md`（D1-D3 冻结）。
+> 父契约：`docs/contracts/v4/EMIT-FAILED-TASK-RECEIPT-HANDOFF.md`（D1-D3 冻结）。
 > 本卡只记 E1 的**新接缝**与当前 code 的事实（actual ids / 权威顺序 / result 字节来源），
 > 不改父契约、不新增 wire 字段/数组、不重做 G1/S1/Node。
 

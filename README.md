@@ -17,7 +17,6 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 | **[E2E_TESTING.md](E2E_TESTING.md)** | 开发者 | 端到端测试体系（`make e2e` 固化门禁） |
 | **[IOS_TESTING.md](IOS_TESTING.md)** | 验证者 | iOS 真机推送验证清单（唯一人工环节） |
 | **[examples/playbooks/](examples/playbooks/)** | 使用者 | 可直接安装的 playbook 示例（事件 → 判定 → 告警/留证），含空环境落地步骤 |
-| `.pi-orchestrator/TASKS.md` | 协调者 | 实施任务台账（历史记录） |
 
 ## 架构
 

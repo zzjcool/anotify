@@ -1,6 +1,6 @@
 # Anotify UI v2 · 第二轮设计批评（wave 1 验收）
 
-> 事实源：`.pi-orchestrator/UI-V2-CONTRACT.md`（v1.1）· `design/ui-v2/REVIEW.md`（D1–D20）· 实现分支 `feat/ui-v2`。
+> 事实源：`docs/contracts/UI-V2-CONTRACT.md`（v1.1）· `design/ui-v2/REVIEW.md`（D1–D20）· 实现分支 `feat/ui-v2`。
 > 本文只读产品代码；所有截图由 `design/ui-v2/shots-review2/shoot.mjs` 自采（playwright-core 1.62 + chromium-1208），
 > 覆盖 9 页 × 2 主题 × 1440×900、index/events 整页、折叠态、390 抽屉、键盘焦点、hover、错误/空态。
 > 行号指**当前实现**（`web/`、`web-src/`）；`design/ui-v2/{gallery,dashboard,login}.html`、`REVIEW.md` 未改动。

@@ -99,7 +99,7 @@ doc-ep-table 改名 → 测试立刻红，还原即绿。
 **断言新结构**（class token 计数 = 新结构下仍然成立的不变量），而不是放宽成 `>= 0` 或删除断言
 ——现在四语言仍是 **35 端点 / 16 分组** 的**精确**断言（`internal/sitegen/openapi_test.go:1118,1121`）。
 
-独立旁证：`.pi-orchestrator/UI-EPIC-369/CONTRACT.md:45` 的基线红台账已经写了同一条结论
+独立旁证：`docs/history/UI-EPIC-369/CONTRACT.md:48` 的基线红台账已经写了同一条结论
 （「**是测试脆弱性，不是产品 bug**：`3f3e041b` 给容器加了 Tailwind 类后，断言用的
 `class="doc-ep-table"` 整串相等恒为 0；同一处的反向断言也因此恒绿。已改成按 class token
 计数（PR #412）」）。也就是说「改断言」这个决定在仓库里已有正式记录，不是本次临时裁定。

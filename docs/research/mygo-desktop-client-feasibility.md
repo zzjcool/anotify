@@ -2,7 +2,7 @@
 
 > 调研日期：2026-11-06
 > 「mygo」口径：`github.com/egoist/mygo`（v0.7.4 / MIT / Go 1.27+ / 系统 WebView 或自绘原生 UI）
-> 本地事实源：`internal/`、`web-src/`、`api/openapi.yaml`、`IOS_TESTING.md`、`.pi-orchestrator/`
+> 本地事实源：`internal/`、`web-src/`、`api/openapi.yaml`、`IOS_TESTING.md`
 > 外部事实源：mygo.egoist.dev 文档、passkeys.dev（macOS 2025-10）、WebKit bug 205350 / PR 70116
 
 ## 0. 结论先行
@@ -129,7 +129,7 @@ MyGo 仓库里 `webauthn` / `passkey` / `navigator.credentials` 的代码命中�
 2. **设备注册带 token**：`POST /v1/devices` 接受 Bearer（桌面端直接登记自己，不必走 Web Push）。
 3. **事件流**：先 Go 侧轮询 `GET /v1/console/events?before=`（`internal/server/console_handlers.go:338+`，游标分页）；
    中期加用户级 WS（mygo 有 Go 侧 WebSocket 插件，带握手头；服务端新增 `/v1/stream` 侧 user 通道，
-   `.pi-orchestrator/receiver-capability-design.md:216-218` 里「桌面 Pet（WS + replay）」「CLI stream」正是这个方向）。
+   `docs/contracts/receiver-capability-design.md:218-220` 里「桌面 Pet（WS + replay）」「CLI stream」正是这个方向）。
 
 不做也不会死人的：CORS（Go-side fetch 绕过）、PWA manifest（壳里没用）。
 

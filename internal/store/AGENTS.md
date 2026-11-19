@@ -57,7 +57,7 @@ go test ./internal/store/ -run 'Baseline|Migrate|Schema' -count=1    # 改了迁
   **只在引入第 2 块之后**才成立，现在写了 `-- +migration 2` 会让每次 `Open` 报 `expected one v4 baseline`。
 - 改 baseline 的表/列/索引清单要同步 `schema_baseline_test.go`（`foreign_key_check` + `integrity_check` + 重开比对）。
 - 池放到 8 之后，历史注释里「单连接使 A 与 B 串行化」这类断言**已失效**（真实事故：并发首注册双 admin，
-  见 `.pi-orchestrator/issue-n1-body.md`）。看到这类注释不要信，按事务重新论证。
+  见 `docs/history/issue-n1-body.md`）。看到这类注释不要信，按事务重新论证。
 
 ## 6. 上下游契约
 

@@ -26,7 +26,7 @@ PPROF=${PPROF:-0}
 case "$CONFIG" in
 	a) INST=1;  CONC=1 ;;
 	c) INST=8;  CONC=1 ;;
-	b|d) pb_die "CONFIG=$CONFIG 在 v2 下语义已不可实现（run.concurrency 已随 node.yaml 的 capabilities 段下线，agent 侧 slotConcurrency() 恒 1，见 N3: .pi-orchestrator/issue-n3-body.md / #220）。只保留 a（1 槽）与 c（8 槽）" ;;
+	b|d) pb_die "CONFIG=$CONFIG 在 v2 下语义已不可实现（run.concurrency 已随 node.yaml 的 capabilities 段下线，agent 侧 slotConcurrency() 恒 1，见 N3: docs/history/issue-n3-body.md / #220）。只保留 a（1 槽）与 c（8 槽）" ;;
 	*) pb_die "CONFIG 只能是 a/c（收到 $CONFIG）" ;;
 esac
 SERIAL_N=${SERIAL_N:-10}

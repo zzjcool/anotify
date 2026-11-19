@@ -19,7 +19,6 @@ password), no polling, single binary — easy to self-host.
 | **[E2E_TESTING.md](E2E_TESTING.md)** | Developers | End-to-end test system (`make e2e` gate) |
 | **[IOS_TESTING.md](IOS_TESTING.md)** | QA | iOS real-device push checklist (only manual step) |
 | **[examples/playbooks/](examples/playbooks/)** | Users | Installable playbook examples (event → verdict → alert/audit), with empty-environment steps |
-| `.pi-orchestrator/TASKS.md` | Coordinator | Implementation task log (history) |
 
 ## Architecture
 
