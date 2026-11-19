@@ -102,7 +102,7 @@ const ALL_SUITES = [...HTTP_SUITES, ...CHROME_SUITES];
 // ---------- 验收 authority（#338 冻结裁决，2026-11-11 13:5x） ----------
 //
 // 五个 FE 套件的 authority 是**裁决结果**，不是「跑不动就降级」的产物。原文：
-// `.pi-orchestrator/v4/issues/dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。
+// `docs/history/v4-dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。
 //
 //   frontend                                              → real（真 server/anode/devseed）
 //   i18n / i18n_coverage / ui_shift / ux_regression_19_23 → explicit-mock（E2E_MOCK_ONLY=1）
@@ -170,7 +170,7 @@ function assertAuthorityContract() {
 		console.error("❌ 验收 authority 契约被破坏：");
 		for (const p of problems) console.error(`   - ${p}`);
 		console.error(
-			"   裁决：.pi-orchestrator/v4/issues/dispatch/TRACKER.md「2026-11-11 13:5x」",
+			"   裁决：docs/history/v4-dispatch/TRACKER.md「2026-11-11 13:5x」",
 		);
 		process.exit(2);
 	}

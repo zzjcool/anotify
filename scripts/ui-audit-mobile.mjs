@@ -35,7 +35,7 @@
  *
  * 参数（括号内是环境变量名）：
  *   --base URL            被测站点根地址（BASE，默认 http://127.0.0.1:7784）
- *   --out DIR             JSON + 汇总落盘目录（OUT，默认 <repo>/.pi-orchestrator/out/ui-audit-mobile）
+ *   --out DIR             JSON + 汇总落盘目录（OUT，默认 <repo>/.reports/ui-audit-mobile）
  *   --viewports LIST      `390x844,360x640`（VIEWPORTS，默认 `390x844,360x640`）
  *   --checks LIST         input-font,touch-targets,overflow,lost（CHECKS，默认全部）
  *   --pages LIST          只跑指定页 slug（PAGES）
@@ -132,7 +132,7 @@ const DEFAULT_MIN_TARGETS = 200;
 function parseArgs(argv) {
 	const a = {
 		base: process.env.BASE || "http://127.0.0.1:7784",
-		out: process.env.OUT || path.join(ROOT, ".pi-orchestrator/out/ui-audit-mobile"),
+		out: process.env.OUT || path.join(ROOT, ".reports/ui-audit-mobile"),
 		viewports: process.env.VIEWPORTS || "390x844,360x640",
 		checks: process.env.CHECKS || ALL_CHECKS.join(","),
 		pages: process.env.PAGES || "",

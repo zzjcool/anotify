@@ -11,7 +11,7 @@
 > 外推（7 天 / 30 天）不是估的，是「实测 B/事件 × 实测速率」。换机型 / 换 payload 大小要重跑脚本。
 >
 > **复测状态（2026-11-16）**：perf 台子原先对 v4 整体失效（v3 路径 `/v1/capabilities`、v3 信封
-> `.namespaces[0].id`、v3 表列 `events.idem_key`），已修复（见 `.pi-orchestrator/issues/006-perf-harness-stale-v4.md`）。
+> `.namespaces[0].id`、v3 表列 `events.idem_key`），已修复（见 `docs/history/issues/006-perf-harness-stale-v4.md`）。
 > 当前 **§3（b 段）已用 v4 代码复测**：模型与结论不变，但字节/页数因 v4 表结构变化整体上移（见下表）。
 > **其余段（a/c/d/e/f）仍是 2026-11-01（v3）的数字，待复测**；v4 的保留期日志字段也变了
 > （不再有 `events_deleted=` / `elapsed_ms` / `truncated`），引用旧日志行的例子已按当前输出更新。
@@ -170,7 +170,7 @@ pid 就是服务进程）：
 
 **运维口径**：容器内存 limit 必须按**峰值**给（40/s 时 ~512 MB 档），不能按稳态 40 MB 给，
 否则会被 OOM kill 得莫名其妙。要压峰值就调 `GOGC` 或给 `GOMEMLIMIT`（代价是 GC CPU 上升）。
-详见 `.pi-orchestrator/issues/011-rss-sawtooth-vs-live-heap.md`。
+详见 `docs/history/issues/011-rss-sawtooth-vs-live-heap.md`。
 
 ## 4. 清理对读路径 p95 的影响
 

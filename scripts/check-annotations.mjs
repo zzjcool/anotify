@@ -56,7 +56,7 @@
  *    `skip-unregistered` 都是这种形态）。找不到 ⇒ 红：引用方被改坏。
  *    `@decision <ID>`：ID 必须出现在决策文档里。探测顺序（见 `DECISION_DOC_CANDIDATES`）：
  *      ① `docs/design/v4/decisions.md`
- *      ② `.pi-orchestrator/v4/CONTRACT.md`
+ *      ② `docs/contracts/v4/CONTRACT.md`
  *      ③ `docs/design/v4/*.md`（按文件名序）
  *    实测（2026-11-16）三级都存在，判决取**并集**、每条锚点报出命中的那一份；
  *    本次实测实际命中的是 ①（`V4-D1` 在其中）。`--report` 会打印探测顺序与实际存在的文件。
@@ -201,7 +201,7 @@ export const EXCLUDE_ROOT_PREFIX = "_tmp_";
 /** 决策文档探测顺序（docs/lint-guards.md §3.2 的冻结口径）。 */
 export const DECISION_DOC_CANDIDATES = [
 	"docs/design/v4/decisions.md",
-	".pi-orchestrator/v4/CONTRACT.md",
+	"docs/contracts/v4/CONTRACT.md",
 ];
 /** 第三级：`docs/design/v4/*.md`（按文件名序，排除已在候选里的）。 */
 export const DECISION_DOC_GLOB_DIR = "docs/design/v4";
@@ -215,8 +215,8 @@ export const DECISION_DOC_GLOB_DIR = "docs/design/v4";
  *   注释行   28699                    → 24000
  *   引用     606（解析 583 / 未解析 15 / 历史提及 8 / 占位符 19） → 550
  *   锚点     8（guard 5 / decision 1 / count 1 / 占位符 1） → 4（= 头部四条自锚点）
- * 注意：文档只认 `git ls-files '*.md'` 且排除 .pi-orchestrator/ 等目录 —— 289 份被跟踪
- * md 里 234 份在 .pi-orchestrator/ 下，所以文档实测只有 47 份，这是扫描范围不是 bug。
+ * 注意：文档只认 `git ls-files '*.md'` 且排除 .pi-orchestrator/ 等目录 —— 协调者工作区
+ * 自 2026-11-19 起不再入库，这条排除如今只作兜底；文档实测份数以运行输出为准，这是扫描范围不是 bug。
  */
 export const SCAN_FILES_MIN = 520;
 export const SCAN_DOCS_MIN = 40;
@@ -1921,11 +1921,11 @@ function selfTest() {
 		const env = virtualEnv({
 			Makefile: "fe:\n\tnode scripts/check-css.mjs\n",
 			"package.json": '{"scripts":{}}',
-			".pi-orchestrator/v4/CONTRACT.md": "## V4-D6 决策在契约里\n",
+			"docs/contracts/v4/CONTRACT.md": "## V4-D6 决策在契约里\n",
 			"internal/x.go": "// @decision V4-D6\n",
 		});
 		const r = run(env, { "internal/x.go": "// @decision V4-D6\n" });
-		const ok = r.findings.length === 0 && r.info.decisionDocs.used.includes(".pi-orchestrator/v4/CONTRACT.md");
+		const ok = r.findings.length === 0 && r.info.decisionDocs.used.includes("docs/contracts/v4/CONTRACT.md");
 		check("㉒ 决策文档探测：decisions.md 不存在时退到 CONTRACT.md", ok, JSON.stringify(r.findings));
 	}
 

@@ -76,7 +76,7 @@ g2-resume-evidence/G2-WRITER-INTERFACES.md   （本文与 TEST-MAPPING G2 行见
   `TestRunDueErrorsAreNotSwallowed`。
 - `internal/logging`（10）：原测试保留（文件未改）。
 
-旧→新/退役逐名映射：`.pi-orchestrator/v4/teams/core-runtime/TEST-MAPPING.md` 的
+旧→新/退役逐名映射：`docs/history/v4-core-runtime/TEST-MAPPING.md` 的
 「G2 runtime 逐名迁移映射」节（336 个运行期旧名逐行 + `cmd/agent` 314 名整包退役名单与理由码）。
 
 ---

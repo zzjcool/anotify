@@ -7,7 +7,7 @@
 > ③soak 新增 `S1_RATE`（默认 **40/s**）—— v4 派发吞吐上限实测 ≈87 任务/s，不限速会让 pending
 > 一路涨过 120s 触发背压，量到的就不是稳态。
 > **本节的 RPS/内存/延迟数字与 v4 不可比**，重测前不要引用。v4 的 600s 稳态基线见
-> `.pi-orchestrator/issues/007-perf-agent-v3-frames.md`（22254 events/tasks、0 个 5xx、acked=19663）。
+> `docs/history/issues/007-perf-agent-v3-frames.md`（22254 events/tasks、0 个 5xx、acked=19663）。
 
 # C 路 · 资源、泄漏与前端加载（性能评估报告）
 

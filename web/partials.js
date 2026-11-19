@@ -3460,7 +3460,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return { close, undo: () => undo.click() };
 	}
 	/* ---------- agent 自升级：错误码 → 人话（节点列表页 / 节点详情页共用） ----------
-	 * 事实源：`.pi-orchestrator/CONTRACT-agent-upgrade.md` §5.1（控制台读侧，冻结）。
+	 * 事实源：`docs/contracts/CONTRACT-agent-upgrade.md` §5.1（控制台读侧，冻结）。
 	 *
 	 * 为什么收在一处：`need_root` 要给出可直接粘的命令、`bad_sha` 要说清「已拒绝」，
 	 * 两个页面各写一份映射迟早漂移；文案仍然只从 i18n 取，JS 里不硬编码句子。

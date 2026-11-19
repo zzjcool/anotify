@@ -168,7 +168,7 @@ pb_ns() {
 # 需要两个命令就声明两个能力（pb_node 的第 4 个实参只是核对用，见 pb_assert_cap_cmd）。
 pb_cap() {
 	local name=$1 cmd=${2:-} tmo=${3:-60} outputs=${4:-'["ok"]'} json script body
-	[ -n "$cmd" ] || pb_die "pb_cap $name 缺少命令：v2 里执行方式属于能力产物（节点不再自报），必须在这里声明（见 N3: .pi-orchestrator/issue-n3-body.md）"
+	[ -n "$cmd" ] || pb_die "pb_cap $name 缺少命令：v2 里执行方式属于能力产物（节点不再自报），必须在这里声明（见 N3: docs/history/issue-n3-body.md）"
 	script=$'#!/bin/bash\n'"$cmd"$'\n'
 	body=$(jq -nc --arg n "$name" --argjson o "$outputs" --arg s "$script" --argjson tmo "$tmo" \
 		'{name:$n,outputs:$o,paramsSchema:{type:"object"},
@@ -255,7 +255,7 @@ pb_assert_cap_cmd() {
 	[ "$cmd" = "${PB_CAP_CMD:-}" ] || pb_die "命令与能力 $PB_CAP_NAME 的产物不一致：
   能力产物（pb_cap）: ${PB_CAP_CMD:-<空>}
   节点声明（pb_node）: $cmd
-v2 的能力执行方式只在中枢定义一次（节点不再自报），要换命令就换能力（见 N3: .pi-orchestrator/issue-n3-body.md）"
+v2 的能力执行方式只在中枢定义一次（节点不再自报），要换命令就换能力（见 N3: docs/history/issue-n3-body.md）"
 	[ "$tmo" = "${PB_CAP_TMO:-}" ] || pb_die "timeoutSec 与能力 $PB_CAP_NAME 的产物不一致：能力 ${PB_CAP_TMO:-?}s，节点 ${tmo}s（timeoutSec 也属于产物，同上）"
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* SUITE: password_login —— 密码登录（Passkey 之外的第二套登录模型）全流程
  *
- * 契约：.pi-orchestrator/password-login-contract.md（§2 HTTP / §6 DOM / §7 e2e 锚点）
+ * 契约：docs/contracts/password-login-contract.md（§2 HTTP / §6 DOM / §7 e2e 锚点）
  *
  * 覆盖：
  *  注册（Passkey）→ 密码状态初始 hasPassword=false → 安全页设置密码 → hasPassword=true

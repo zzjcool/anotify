@@ -1,7 +1,7 @@
 # 修复：Passkey 登录失败文案误导（用户名一样却提示「用户不存在」）
 
 > 协调者定（改动边界清晰，无需起独立 pm agent）。事实源：本文件 + 下述 scout 侦察 context。
-> worktree：`.pi-orchestrator/worktrees/wt-passkey-errmsg`，分支 `fix/passkey-login-error-message`（off main cb7ae34）。
+> 隔离工作区：协调者本地 worktree `wt-passkey-errmsg`（不入库），分支 `fix/passkey-login-error-message`（off main cb7ae34）。
 
 ## 1. 背景与现象
 

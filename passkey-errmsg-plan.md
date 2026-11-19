@@ -1,7 +1,7 @@
 # 实施计划：Passkey 登录失败文案修复
 
 > 事实源：本文件 + passkey-errmsg-requirements.md + scout-context.md。
-> 基于 scout 侦察结论定方案。worktree：`.pi-orchestrator/worktrees/wt-passkey-errmsg`。
+> 基于 scout 侦察结论定方案。隔离工作区：协调者本地 worktree `wt-passkey-errmsg`（不入库）。
 
 ## 0. 关键决策（基于 scout 结论）
 

@@ -91,7 +91,7 @@
 
 ## 3. 五个 FE 套件的验收 authority（#338 冻结裁决）
 
-原文：`.pi-orchestrator/v4/issues/dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。
+原文：`docs/history/v4-dispatch/TRACKER.md`「2026-11-11 13:5x 裁决：五个 FE suite 的验收模式」。
 
 | 套件 | authority | 理由 |
 |---|---|---|
@@ -159,7 +159,7 @@ cat .e2e-bin/results/_authority-manifest.json
 
 | 口径 | 断言数（或已注明的用例数） | 出处 |
 |---|---|---|
-| 13 个非前端套件（含 `node_v4`）**两连绿** | **1321** | **PR #353**（`issue/336-real-node-e2e`，merge `0b0501b`）；记录在 `.pi-orchestrator/v4/issues/dispatch/TRACKER.md:58`：「13 个非前端套件 1321 断言两连绿；node_v4 真 anode 88」 |
+| 13 个非前端套件（含 `node_v4`）**两连绿** | **1321** | **PR #353**（`issue/336-real-node-e2e`，merge `0b0501b`）；记录在 `docs/history/v4-dispatch/TRACKER.md:61`：「13 个非前端套件 1321 断言两连绿；node_v4 真 anode 88」 |
 | 其中 `node_v4`（真 `anode`） | 88 | 同上 |
 | 7 个 legacy Chrome 迁移后 | 527 / 0 | `338/chrome-v4 @ 3651707`（7 个套件完整跑一遍） |
 | `frontend`（real） | 39 条契约用例 39/39（用例数，非断言数） | #338 裁决记录（TRACKER「2026-11-11 13:5x」） |

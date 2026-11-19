@@ -7,7 +7,7 @@ v3 版本硬编码 `api/openapi.yaml`、只查 path 集合与 `security` 存在�
 这件事一旦发生，门禁会变成假绿。
 
 v4 的真源是且只是这五份文件（`docs/design/v4/api-conventions.md` §2 /
-`.pi-orchestrator/v4/API-SPEC-HANDOFF.md`）：
+`docs/contracts/v4/API-SPEC-HANDOFF.md`）：
 
     api/resource.yaml   api/events.yaml   api/agent.yaml   api/ingress.yaml   api/auth.yaml
 

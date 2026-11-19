@@ -1,6 +1,6 @@
 # Anotify UI v2 · 设计批评与决策（design 侧）
 
-> 事实源：`/root/code/anotify/.pi-orchestrator/UI-V2-CONTRACT.md`（冻结契约，下称「契约」）。
+> 事实源：`docs/contracts/UI-V2-CONTRACT.md`（冻结契约，下称「契约」）。
 > 本文只做**批评 + 裁决 + 类名/尺寸规范**，不改产品代码；所有行号指 `web-src/` 与 `web/` 的**当前**实现。
 > 交付物：
 > `design/ui-v2/tokens.css`（§3 逐条实现）· `ui-v2.css`（组件层，供实现侧并入 `web/ui.css`）·

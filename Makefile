@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -94,6 +94,10 @@ check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒�
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
 	node scripts/check-annotations.mjs
+
+check-doc-links: ## 工作区引用：`.pi-orchestrator/` 已不入库，仓库里不许再有指向它的悬空文件引用
+	node scripts/check-doc-links.mjs --self-test
+	node scripts/check-doc-links.mjs
 
 check-affected-map: ## 改动选择的映射表自测：已知耦合必须选中、已知无关不许选中、删一行必须红、表不许腐烂
 	node --test scripts/e2e/affected.test.mjs
@@ -279,6 +283,10 @@ ci: contract ## PR 门禁：契约静态断言、gofmt、前端 embed 产物、v
 	$(MAKE) check-guard-selftest
 	$(MAKE) check-test-discipline
 	$(MAKE) check-annotations
+	@# 协调者工作区引用：`.pi-orchestrator/` 自 2026-11-19 起不入库，所以 docs/ 里指向它的
+	@# 「唯一事实源」链接会在 fresh clone 里直接扑空。检查面是 git ls-files（不是工作区），
+	@# 本地那 300 多份文件照旧在盘上，拿文件系统判会得到全员绿的假绿。
+	$(MAKE) check-doc-links
 	@# 改动选择器的护栏：映射表烂掉不会让 CI 变红（只会让「跳过」变多）—— 那是最贵的假绿。
 	@# 它同时反证「选择确实来自表」（删一行必红），所以放进 make ci，而不是只留在报告里。
 	$(MAKE) check-affected-map

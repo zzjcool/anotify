@@ -36,7 +36,7 @@ const SCRIPT_BODY = "#!/bin/sh\nset -eu\necho artifact-contract\n";
 
 // expectAnon401 钉住「会话层未登录」的**冻结形状**：401 + `{error:"未登录"}`。
 //
-// 为什么不套资源 Status：v4 明确把身份域留在保留域（.pi-orchestrator/v4/AUTH-HANDOFF.md
+// 为什么不套资源 Status：v4 明确把身份域留在保留域（docs/contracts/v4/AUTH-HANDOFF.md
 // 第 9 行：匿名 401 正文精确 `{"error":"未登录"}`，由 session middleware 的 http.Error
 // 写出，没有 reason/code）。资源 handler 自己的错误才是 Status —— 两种不能混。
 // 断言仍要求**有 body 且可解析**（§4.1「所有错误响应都带 body」），不退化成只看状态码。

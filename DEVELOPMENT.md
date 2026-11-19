@@ -670,7 +670,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 ### schema 变更：baseline 往后追加块（不再有增量迁移链）
 
-> **本轮 v4 开发期例外（用户已批准）**：全量转向 `docs/design/v4/`，不背旧版本数据/API/协议兼容包袱。允许直接重建 v4 baseline 并移除旧迁移链与 hooks，不追加 v3→v4 兼容迁移。旧库必须明确拒绝，程序不得自动删除数据。新库结构、字段往返、重新打开幂等和错误处理测试仍为硬门禁。具体分工见 `.pi-orchestrator/v4/CONTRACT.md`；以下规则继续适用于已发布结构的后续变更。
+> **本轮 v4 开发期例外（用户已批准）**：全量转向 `docs/design/v4/`，不背旧版本数据/API/协议兼容包袱。允许直接重建 v4 baseline 并移除旧迁移链与 hooks，不追加 v3→v4 兼容迁移。旧库必须明确拒绝，程序不得自动删除数据。新库结构、字段往返、重新打开幂等和错误处理测试仍为硬门禁。具体分工见 `docs/contracts/v4/CONTRACT.md`；以下规则继续适用于已发布结构的后续变更。
 
 `internal/store/schema.sql` 现在只有一块 `-- +migration 1 baseline`：squash 之后的**终态 DDL**。
 迁移链上的「建表 → 加列 → 删列 → 重建表 → 删表」已经合并进这一块，所以这里描述的就是
@@ -756,7 +756,7 @@ server.backpressure.stuck`），信号回落自动复位且**重新具备**拒�
   / #missing-expect-graphics。
 - 回归用例写在 `scripts/v4-frontend.test.mjs`（TRACE-STARTUP / SOURCE-STARTUP），但它**尚未接线**：
   `make ci` 里不跑，只能手工 `node --test scripts/v4-frontend.test.mjs`；它已经带一批基线红
-  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `.pi-orchestrator/UI-EPIC-369/CONTRACT.md`
+  （不是全绿）——判据是「失败集合与 base 逐条相同」，清单见 `docs/history/UI-EPIC-369/CONTRACT.md`
   的基线小节。别把它当门禁（这条此前写成「回归测试是…」，误导过人）。
 
 **教训**：「defer 一定在页面用到它之前跑完」是伪命题；只靠注释论证的时序假设，

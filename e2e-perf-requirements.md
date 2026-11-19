@@ -1,7 +1,7 @@
 # 重构：e2e 测试体系性能与架构（长期方案）
 
 > 协调者定（需求边界清晰，直接产出）。事实源：本文件 + scout-context.md。
-> worktree：`.pi-orchestrator/worktrees/wt-e2e-perf`，分支 `refactor/e2e-perf`（off main 269981a）。
+> 隔离工作区：协调者本地 worktree `wt-e2e-perf`（不入库），分支 `refactor/e2e-perf`（off main 269981a）。
 
 ## 1. 问题陈述
 

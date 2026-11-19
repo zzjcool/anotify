@@ -3,8 +3,8 @@
 snapshot-doc: 2026-11-16 体检快照（本文件里的数字是那次的定格；每节的「复算命令」才是事实源）
 
 > 本文是「最近犯错 → 变成什么 lint」的冻结契约与 backlog。
-> 事实来源：`git log -400` 返工 commit 逐条 diff、`.pi-orchestrator/UI-EPIC-369/*`、
-> `UI-REVIEW-2026-11-13.md`、`UI-AUDIT-v3.md`、issue #338/#355/#356/#357/#362/#369~#385。
+> 事实来源：`git log -400` 返工 commit 逐条 diff、`docs/history/UI-EPIC-369/`（Epic #369 的交付契约与逐轮报告）、
+> `docs/history/UI-REVIEW-2026-11-13.md`、`docs/history/UI-AUDIT-v3.md`、issue #338/#355/#356/#357/#362/#369~#385。
 
 ## 0. 结论先行：反复犯错的不是「不小心」，而是五类结构缝隙
 

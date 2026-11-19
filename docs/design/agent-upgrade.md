@@ -9,7 +9,7 @@ frozen-doc: v3 历史文档（`cmd/agent` 等 v3 物已随节点产品换代为 
 > `X-Agent-Sha256`、退出码词表）仍成立，但具体二进制/路径按 anode 读。
 >
 > 状态：**设计已定**，实现契约见 `docs/contracts/CONTRACT.md` §2.3 / §6.1 / §6.2 / §7。
-> 唯一事实源：`.pi-orchestrator/CONTRACT-agent-upgrade.md`（冻结）。
+> 唯一事实源：`docs/contracts/CONTRACT-agent-upgrade.md`（冻结）。
 > 相关：`docs/agent-install.md`（首次安装 + 兜底）、`DEVELOPMENT.md` §4（日常怎么升）。
 >
 > 本文只写**为什么这么切、线格式怎么走、失败怎么查**；字段与退出码以契约逐字为准。
