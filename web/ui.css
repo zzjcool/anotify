@@ -6060,3 +6060,40 @@ html {
 .src-modal-body .input.is-invalid{border-color:var(--error);box-shadow:0 0 0 3px var(--error-soft)}
 .is-invalid:focus{border-color:var(--error)}
 #src-modal .modal-panel{width:min(760px,calc(100vw - 24px))}
+
+/* ============================ vars 可视化表（#476） ============================
+   节点页与命名空间页共用同一张「名字 / 值 / 来源 / 被哪些能力用到 / 操作」表。
+   行状态用 data-* 表达（data-missing / data-deleted），颜色只取 tokens：
+   被 requires.values 要求却没有有效值 = 红标（信息缺口），不是普通文本。
+   列宽用 .vars-col-* 固定，避免长路径/长能力名把「来源」挤没。 */
+/* 窄视口（≤640px）不横滚：主内容禁止横向滚动（ui_shift #384），所以五列在手机上
+   折成「标签 : 值」的堆叠行 —— 每格用 data-label 画出自己的列名（文案来自 locale，
+   不在这里硬编码）。桌面仍是正常的表格。 */
+#node-vars-card,#namespace-vars-card{min-width:0}
+.vars-table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+.vars-table th,.vars-table td{padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.vars-table th{color:var(--muted)}
+.vars-table .vars-col-name{width:20%}
+.vars-table .vars-col-value{width:24%}
+.vars-table .vars-col-source{width:12%}
+.vars-table .vars-col-used{width:26%}
+.vars-table .vars-col-ops{width:18%}
+.vars-table tr[data-missing="true"] td{background:var(--error-soft)}
+.vars-table tr[data-missing="true"] .vars-name{color:var(--error)}
+.vars-table tr[data-deleted="true"] td{opacity:.55;text-decoration:line-through}
+.vars-table .vars-ops .btn-sm{margin-right:4px}
+.vars-hint{display:block;font-size:11px;line-height:1.5;color:var(--faint);overflow-wrap:anywhere}
+.vars-hint.is-warn{color:var(--warn)}
+.vars-editor{display:grid;gap:6px;min-width:0}
+.vars-editor .input{width:100%}
+.vars-editor-acts{display:flex;flex-wrap:wrap;gap:6px}
+@media (max-width:640px){
+  .vars-table{table-layout:auto}
+  .vars-table thead{display:none}
+  .vars-table,.vars-table tbody,.vars-table tr,.vars-table td{display:block;width:auto}
+  .vars-table tr{padding:8px 0;border-bottom:1px solid var(--line)}
+  .vars-table td{display:grid;grid-template-columns:84px minmax(0,1fr);gap:8px;border:0;padding:2px 0}
+  .vars-table td[data-label]::before{content:attr(data-label) ":";color:var(--muted);font-size:11px;line-height:1.6}
+  .vars-table .vars-ops{white-space:normal}
+  .vars-table .vars-hint{grid-column:1 / -1}
+}

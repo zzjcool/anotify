@@ -296,7 +296,7 @@ async function conflict(d,lang) {
   const fresh=await d.response(p,{metadata:{resourceVersion:current.metadata.resourceVersion},config:current.config},'PUT');assert.equal(fresh.status,200);
   await d.page.locator('#node-config-save').click();await hasText(d,'#node-config-state','nodes.v4.stale');
   assert.equal(await d.page.locator('#node-vars').inputValue(),'{"LOCALE_DRAFT":"retained"}');
-  assert.ok((await d.calls()).some(c=>c.url===p&&c.method==='PUT'&&c.httpStatus===409&&c.reason==='resource_version_conflict'));
+  assert.ok((await d.calls()).some(c=>c.url===p.replace(/\/config$/, '/yaml')&&c.method==='PUT'&&c.httpStatus===409&&c.reason==='resource_version_conflict'),'#476：UI 保存走 PUT …/yaml');
   await dialogClick(d,d.page.locator('#node-config-reload'),'nodes.v4.reload_confirm');
   assert.equal(await d.page.locator('#node-vars').inputValue(),'{"LOCALE_DRAFT":"retained"}');
   await scan(d,lang,f);d.check('Real concurrent CAS409 exact localized stale error/unmodified draft/explicit reload dialog');

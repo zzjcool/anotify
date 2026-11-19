@@ -135,8 +135,10 @@ func (a *namespaceAPI) register(mux *http.ServeMux) {
 	mux.Handle("GET /v1/namespaces/{name}/config", noStore(a.d.session(http.HandlerFunc(a.getConfig))))
 	mux.Handle("PUT /v1/namespaces/{name}/config", noStore(a.d.session(http.HandlerFunc(a.putConfig))))
 	mux.Handle("GET /v1/namespaces/{name}/stats", noStore(a.d.session(http.HandlerFunc(a.getStats))))
-	// YAML 只读面（IA ③）：命名空间文档没有 PUT —— vars 的写入口只有 config 子资源。
+	// Namespace 文档的 YAML 读/写面（IA ③）：YAML 是命名空间 vars 的唯一编辑面，
+	// PUT 走与 PUT …/config 同一条 store 入口（PutNamespaceConfigByName，CAS = metadata.resourceVersion）。
 	mux.Handle("GET /v1/namespaces/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.getNamespaceYAML))))
+	mux.Handle("PUT /v1/namespaces/{name}/yaml", noStore(a.d.session(http.HandlerFunc(a.putNamespaceYAML))))
 	mux.Handle("GET /v1/system/config", noStore(a.d.session(http.HandlerFunc(a.getSystemConfig))))
 	mux.Handle("PUT /v1/system/config", noStore(a.d.session(http.HandlerFunc(a.putSystemConfig))))
 	// 系统文档只读面（IA ④）：与 config 同一份事实的规范化文本，同样只读。

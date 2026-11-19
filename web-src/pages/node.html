@@ -155,6 +155,19 @@
         <div class="card-title">{{t "nodes.v4.limits"}}</div><div id="node-machine-limits"></div>
       </section>
     </div>
+    <section class="card card-pad" id="node-vars-card">
+      <div class="card-title">{{t "nodes.v4.vars_table_title"}}</div>
+      <p class="c2-note">{{t "nodes.v4.vars_table_hint"}}</p>
+      <div id="node-vars-table"></div>
+      <p id="node-vars-missing" class="c2-note" role="status" hidden></p>
+      <div class="c2-actions">
+        <button id="node-vars-add" class="btn btn-ghost" type="button">{{t "nodes.v4.vars_add"}}</button>
+        <button id="node-vars-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.vars_save"}}</button>
+        <button id="node-vars-reset" class="btn btn-ghost" type="button">{{t "nodes.v4.vars_reset"}}</button>
+      </div>
+      <div id="node-vars-state" class="c2-state" role="status"></div>
+      <datalist id="node-vars-suggest"></datalist>
+    </section>
     <section class="card card-pad" aria-labelledby="node-ns-title">
       <div class="card-title" id="node-ns-title">{{t "nodes.v4.authorized_title"}}</div>
       <p class="c2-note">{{t "nodes.v4.authorized_hint"}}</p>
@@ -174,6 +187,7 @@
 </div></div>
 {{end}}
 {{define "script"}}
+<script src="/vars-table.js"></script>
 <script>
 (() => {
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('nodes.v4.' + key);
@@ -183,6 +197,10 @@
   // IA（#436）：节点是**节点维度**。旧的 `?namespace=` 参数被忽略（书签继续可用），
   // 页面不再请求任何带 ns 上下文的读面。
   let n, nodeId = '', config, original = '', loaded = false;
+  /* #476：vars 表格状态。varsRows = 服务端事实折成的行；varsEditing = 正在编辑的那一行；
+     varsDirty = 有未保存改动（保存按钮也跟着它走）。 */
+  const VT = window.AnotifyVars;
+  let varsRows = [], varsEditing = null, varsRequired = {}, varsDirty = false, varsSeq = 0;
   /* #454：`tags` 的**现值**只存在于权威读面，不在 `GET …/config` 里。
    * config 是 W5 wrapper（只有 namespaces / vars / limits 三个可写键 + 只读 revision 三兄弟），
    * 所以 `config.tags || []` 会把「这个读面没告诉我」写成「用户清空了」—— YAML 一保存
@@ -199,6 +217,169 @@
   const configInputs = ['namespaces', 'vars', 'limits'];
   const draft = () => JSON.stringify(configInputs.map(k => $('node-' + k).value));
   const parseDraft = key => { try { return JSON.parse($('node-' + key).value); } catch (_) { return undefined; } };
+
+  /* ---------- #476：可视化 vars 表格（值 / 来源 / 谁要 / 缺） ----------
+   * 数据全来自既有读面：`GET /v1/nodes/{name}?namespace=<侧栏作用域>` 的
+   * status.effectiveVars（来源由服务端逐键解析）+ 当前 ns 能力读面的
+   * `spec.requires.values`。页面不拿三层变量表自己猜来源，也不新造后端端点。
+   * 写的是**节点默认层**（Node.spec.vars）：保存把整份 Node 文档序列化成 YAML，
+   * 走 `PUT /v1/nodes/{name}/yaml` —— 唯一的编辑面（`/config` 只剩读投影）。 */
+  const varsSourceLabel = src => src === 'local' ? t('vars_source_local') : src === 'node' ? t('vars_source_node') : src === 'namespace' ? t('vars_source_namespace') : '—';
+  const varsErrText = code => t('vars_err_' + code);
+  const varsNs = () => (A.readScope() || {}).namespace || '';
+  const varsSetState = (text, error = false) => msg('node-vars-state', text, error);
+  const varsMarkDirty = () => { varsDirty = true; $('node-vars-save').disabled = false; };
+  function varsCell(cls, label, text) {
+    const cell = make('td', cls, text); cell.dataset.label = label; return cell;
+  }
+  function varsButton(label, act, onclick) {
+    const button = make('button', 'btn btn-ghost btn-sm', label);
+    button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
+  }
+  async function refreshVars() {
+    const seq = ++varsSeq, ns = varsNs();
+    const query = ns ? '?namespace=' + encodeURIComponent(ns) : '';
+    try {
+      const [resource, capDoc] = await Promise.all([
+        A.api(path + query),
+        ns ? A.api('/v1/namespaces/' + encodeURIComponent(ns) + '/capabilities?limit=500') : Promise.resolve({ items: [] }),
+      ]);
+      if (seq !== varsSeq) return;
+      varsRequired = VT.requiredNames(Array.isArray(capDoc?.items) ? capDoc.items : []);
+      const st = resource.status || {};
+      varsRows = VT.buildRows({ effectiveVars: st.effectiveVars, machineVars: st.machineVars, localVars: st.localVars, namespaceVars: st.namespaceVars, required: varsRequired, layer: 'node' });
+      varsEditing = null; varsDirty = false;
+      renderVarsTable();
+      const missing = varsRows.filter(row => row.missing).length;
+      $('node-vars-missing').hidden = missing === 0;
+      $('node-vars-missing').textContent = missing ? t('vars_missing_summary').replace('{n}', String(missing)) : '';
+      if (!ns) varsSetState(t('vars_no_context'));
+      $('node-vars-save').disabled = !varsDirty;
+    } catch (e) {
+      if (seq !== varsSeq) return;
+      $('node-vars-table').replaceChildren(A.loadErrorNode(e, refreshVars));
+    }
+  }
+  function varsPlainRow(row) {
+    const tr = make('tr');
+    tr.dataset.key = row.name; tr.dataset.source = row.source || ''; tr.dataset.missing = String(!!row.missing);
+    if (row.deleted) tr.dataset.deleted = 'true';
+    tr.appendChild(varsCell('vars-name', t('vars_col_name'), row.name));
+    tr.appendChild(varsCell('vars-value', t('vars_col_value'), row.value == null ? t('vars_missing_value') : row.value));
+    const sourceCell = make('td', 'vars-source'); sourceCell.dataset.label = t('vars_col_source');
+    sourceCell.appendChild(make('span', 'badge ' + (row.source ? 'badge-neutral' : 'badge-error'), row.source ? row.source : '—'));
+    tr.appendChild(sourceCell);
+    const usedCell = make('td', 'vars-used'); usedCell.dataset.label = t('vars_col_used');
+    if (row.missing) usedCell.appendChild(make('span', 'badge badge-error', '⚠ ' + t('vars_required_badge')));
+    if (row.usedBy.length) {
+      usedCell.appendChild(make('span', null, t('vars_used_by_n').replace('{n}', String(row.usedBy.length))));
+      usedCell.appendChild(make('span', 'vars-hint', row.usedBy.join(' · ')));
+    } else if (!row.missing) usedCell.appendChild(make('span', 'vars-hint', '—'));
+    tr.appendChild(usedCell);
+    const ops = make('td', 'vars-ops'); ops.dataset.label = t('vars_col_ops');
+    if (row.deleted) {
+      ops.appendChild(varsButton(t('vars_undo'), 'vars-undo', () => { row.deleted = false; varsMarkDirty(); renderVarsTable(); }));
+    } else if (row.locked) {
+      ops.appendChild(make('span', 'vars-hint', t('vars_locked_local')));
+    } else {
+      ops.appendChild(varsButton(row.missing ? t('vars_fill') : t('vars_edit'), row.missing ? 'vars-fill' : 'vars-edit', () => { varsEditing = row; renderVarsTable(); }));
+      if (row.owned) {
+        ops.appendChild(varsButton(t('vars_delete'), 'vars-delete', () => {
+          if (row.isNew) varsRows = varsRows.filter(item => item !== row);
+          else row.deleted = true;
+          varsMarkDirty(); renderVarsTable();
+        }));
+      } else if (!row.missing) {
+        ops.appendChild(make('span', 'vars-hint', t('vars_other_layer').replace('{source}', varsSourceLabel(row.source))));
+      }
+    }
+    tr.appendChild(ops);
+    return tr;
+  }
+  function varsEditorRow(row) {
+    const tr = make('tr'); tr.dataset.editing = 'true'; tr.dataset.key = row.name || '';
+    const nameCell = make('td', 'vars-name'), nameInput = make('input', 'input'); nameCell.dataset.label = t('vars_col_name');
+    nameInput.value = row.name || ''; nameInput.dataset.field = 'name';
+    nameInput.setAttribute('list', 'node-vars-suggest'); nameInput.setAttribute('aria-label', t('vars_col_name'));
+    nameCell.appendChild(nameInput);
+    const valueCell = make('td', 'vars-value'), valueInput = make('input', 'input'); valueCell.dataset.label = t('vars_col_value');
+    valueInput.value = row.value == null ? '' : row.value; valueInput.dataset.field = 'value';
+    valueInput.setAttribute('aria-label', t('vars_col_value'));
+    valueCell.appendChild(valueInput);
+    const hint = make('span', 'vars-hint');
+    const hintCell = make('td', 'vars-used'); hintCell.colSpan = 2; hintCell.appendChild(hint);
+    const apply = varsButton(t('vars_apply'), 'vars-apply', () => varsApplyEdit(row, nameInput.value.trim(), valueInput.value));
+    const cancel = varsButton(t('vars_cancel'), 'vars-cancel', () => { varsEditing = null; renderVarsTable(); });
+    const acts = make('div', 'vars-editor-acts'); acts.append(apply, cancel);
+    const ops = make('td', 'vars-ops'); ops.appendChild(acts);
+    const update = () => {
+      const name = nameInput.value.trim(), reason = VT.checkVarName(name);
+      const impact = name !== row.name ? VT.renameImpact(varsRows, row.name) : 0;
+      let text = '', warn = false;
+      if (reason) { text = varsErrText(reason); warn = true; }
+      else if (impact) { text = t('vars_rename_impact').replace('{n}', String(impact)).replace('{name}', row.name); warn = true; }
+      else if (row.shadowed) { text = t('vars_shadowed').replace('{source}', varsSourceLabel(row.source)); warn = true; }
+      hint.textContent = text; hint.classList.toggle('is-warn', warn);
+      apply.disabled = !!reason || valueInput.value === '' || (!!name && name !== row.name && varsRows.some(item => item !== row && !item.deleted && item.name === name));
+    };
+    nameInput.oninput = update; valueInput.oninput = update; update();
+    tr.append(nameCell, valueCell, hintCell, ops);
+    return tr;
+  }
+  function renderVarsTable() {
+    const host = $('node-vars-table');
+    const suggestions = VT.suggestNames(varsRows, varsRequired);
+    $('node-vars-suggest').replaceChildren(...suggestions.map(name => { const option = make('option'); option.value = name; return option; }));
+    host.replaceChildren();
+    if (!varsRows.length) { host.appendChild(make('div', 'c2-note', t('none'))); return; }
+    const table = make('table', 'vars-table'), cols = make('colgroup');
+    for (const cls of ['vars-col-name', 'vars-col-value', 'vars-col-source', 'vars-col-used', 'vars-col-ops']) cols.appendChild(make('col', cls));
+    table.appendChild(cols);
+    const thead = make('thead'), head = make('tr');
+    for (const key of ['vars_col_name', 'vars_col_value', 'vars_col_source', 'vars_col_used', 'vars_col_ops']) head.appendChild(make('th', null, t(key)));
+    thead.appendChild(head); table.appendChild(thead);
+    const body = make('tbody');
+    for (const row of varsRows) body.appendChild(row === varsEditing ? varsEditorRow(row) : varsPlainRow(row));
+    table.appendChild(body); host.appendChild(table);
+  }
+  function varsApplyEdit(row, name, value) {
+    const reason = VT.checkVarName(name);
+    if (reason) return varsSetState(varsErrText(reason), true);
+    if (value === '') return varsSetState(t('vars_err_value'), true);
+    if (name !== row.name && varsRows.some(item => item !== row && !item.deleted && item.name === name)) return varsSetState(t('vars_err_dup'), true);
+    const from = row.name, renamed = name !== row.name;
+    row.name = name; row.value = value; row.missing = false; row.locked = false; row.owned = true;
+    row.usedBy = varsRequired[name] || (renamed ? [] : row.usedBy);
+    varsEditing = null; varsMarkDirty(); renderVarsTable();
+    varsSetState(renamed ? t('vars_renamed').replace('{from}', from || '—').replace('{to}', name) : t('vars_updated').replace('{name}', name));
+  }
+  $('node-vars-add').onclick = () => {
+    if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
+    const row = { name: '', value: '', source: '', usedBy: [], missing: false, locked: false, isNew: true };
+    varsRows.push(row); varsEditing = row; renderVarsTable();
+  };
+  $('node-vars-reset').onclick = async () => {
+    if (varsDirty && !(await A.confirmDanger({ body: t('vars_reset_confirm') }))) return;
+    varsSetState(''); await refreshVars();
+  };
+  /* 表格保存 = 把行折回 vars 映射 → 写进同一份 Node 文档 → PUT …/yaml。
+     `#node-vars`（高级 JSON 草稿）与它是同一个事实的两个编辑器，写路径只有一条。 */
+  $('node-vars-save').onclick = async () => {
+    if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
+    if (!config) return varsSetState(t('error'), true);
+    const vars = VT.rowsToVars(varsRows);
+    const diff = VT.diffVars(config.vars || {}, vars);
+    if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(t('vars_no_changes'));
+    $('node-vars-save').disabled = true; varsSetState(t('loading'));
+    try {
+      $('node-vars').value = JSON.stringify(vars, null, 2);
+      renderConfigSummary(); syncYAMLFromForm();
+      await saveNodeDoc();
+      varsDirty = false; varsSetState(t('vars_saved'));
+      await loadFacts(); await loadYAML(); await refreshVars();
+    } catch (e) { varsSetState(errorText(e), true); }
+    finally { $('node-vars-save').disabled = !varsDirty; }
+  };
 
   /* ---------- #374：开发者信息折叠 ---------- */
   const dev = key => A.t('uxaudit.dev.' + key);
@@ -305,7 +486,12 @@
     lines.push(...yamlList('namespaces', Array.isArray(spec.namespaces) ? spec.namespaces : [], 2));
     lines.push(...yamlMap('vars', spec.vars, 2));
     const perCap = limits.perCapability, perEntries = sortedEntries(perCap);
-    lines.push('  limits:', '    total: ' + (limits.total == null ? 'null' : yamlScalar(limits.total)));
+    // total 未设置时**省略这一行**（不写 `total: null`）：服务端 ValidateLimits 要求
+    // total 是 ≥1 的整数，把 null 贴回去会被 400 value_invalid。服务端 YAML 读面为
+    // 了表达「不压住下层」会写 `total: null`，但那是**读**语义；写回去时省略 = 不动。
+    // （相邻缺陷：「取 → 贴回」原样往返在无 limits 的节点上会 400，已记入报告。）
+    lines.push('  limits:');
+    if (limits.total != null) lines.push('    total: ' + yamlScalar(limits.total));
     lines.push('    perCapability:' + (perEntries.length ? '' : ' {}'));
     for (const [k, v] of perEntries) lines.push('      ' + yamlScalar(k) + ': ' + yamlScalar(v));
     // #454：只有**真的知道**现值时才写这个键。未知（null/undefined）就整键省略 ——
@@ -541,15 +727,29 @@
       syncYAMLFromForm();
     } catch (e) { msg('node-config-state', errorText(e), true); }
   }
-  $('node-config-reload').onclick = async () => { if (draft() !== original && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; await loadConfig(); try { await loadFacts(); await loadYAML(); } catch (e) { msg('node-config-state', errorText(e), true); } };
+  /* 唯一的写函数：把当前草稿序列化成**整份 Node 文档**，走 PUT …/yaml。
+     `draftDoc()` 里的 namespaces/vars/limits/tags 一个都不少（省略 = 不动是
+     merge-patch 的语义；这里是整份文档，所以必须把读到的其它字段原样带上）。 */
+  async function saveNodeDoc() {
+    const doc = draftDoc();
+    if (!doc) throw new Error('draft is not valid JSON');
+    const value = await write(path + '/yaml', { yaml: docToYAML(doc) });
+    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+    $('node-yaml-text').textContent = value.yaml;
+    $('node-yaml-input').value = value.yaml; yamlDirty = false;
+    // 回读读投影：CAS 令牌与三块配置都以服务端规范化后的值为准。
+    config = await A.api(path + '/config');
+    for (const key of configInputs) { $('node-' + key).value = JSON.stringify(config[key], null, 2); $('node-' + key).disabled = false; }
+    original = draft(); showRevisions(config); syncYAMLFromForm();
+    return value;
+  }
+  $('node-config-reload').onclick = async () => { if (draft() !== original && !(await A.confirmDanger({ body: t('reload_confirm') }))) return; await loadConfig(); try { await loadFacts(); await loadYAML(); await refreshVars(); } catch (e) { msg('node-config-state', errorText(e), true); } };
   $('node-config-save').onclick = async () => {
     if (!config) return; $('node-config-save').disabled = true;
     try {
-      const body = { metadata: { resourceVersion: config.metadata.resourceVersion } };
-      for (const key of configInputs) body[key] = JSON.parse($('node-' + key).value);
-      config = await write(path + '/config', body); original = draft();
-      showRevisions(config); yamlDirty = false; syncYAMLFromForm();
-      msg('node-config-state', t('saved')); await loadFacts(); await loadYAML();
+      await saveNodeDoc();
+      msg('node-config-state', t('saved'));
+      await loadFacts(); await loadYAML(); await refreshVars();
     } catch (e) { msg('node-config-state', errorText(e), true); } finally { $('node-config-save').disabled = false; }
   };
   for (const action of ['drain', 'upgrade']) $('node-' + action).onclick = async () => {
@@ -571,6 +771,7 @@
     try {
       await A.ready();
       await loadFacts(); await loadRelated(); $('node-body').hidden = false; $('node-load-state').replaceChildren();
+      await refreshVars();
       // Refresh never silently replaces a user's configuration draft.
       if (!loaded) { await loadConfig(); await loadYAML(); loaded = true; }
     } catch (e) {

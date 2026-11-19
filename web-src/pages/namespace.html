@@ -46,8 +46,8 @@
     </section>
     <div class="c2-grid">
       <section class="card card-pad">
-        <div class="card-title">{{t "nodes.v4.vars"}}</div>
-        <p class="c2-note">{{t "namespace.v4.vars_hint"}}</p>
+        <div class="card-title">{{t "namespace.v4.vars_raw_title"}}</div>
+        <p class="c2-note">{{t "namespace.v4.vars_raw_hint"}}</p>
         <details class="devf">
           <summary>{{t "uxaudit.dev.summary"}}</summary>
           <div class="devf-body"><div id="namespace-revisions" class="c2-note"></div></div>
@@ -56,22 +56,31 @@
         <div class="c2-actions"><button id="namespace-save" class="btn" type="button" disabled>{{t "nodes.v4.save"}}</button><button id="namespace-reload" class="btn btn-ghost" type="button">{{t "nodes.v4.reload"}}</button></div>
         <div id="namespace-state" class="c2-state" role="status"></div>
       </section>
-      <section class="card card-pad c2-stack">
+      <section class="card card-pad c2-stack" id="namespace-vars-card">
         <div class="card-title">{{t "namespace.v4.counts"}}</div>
         <div id="ns-counts"></div>
-        <div class="card-title">{{t "namespace.v4.effective"}}</div>
-        <p class="c2-note">{{t "namespace.v4.effective_hint"}}</p>
+        <div class="card-title">{{t "namespace.v4.vars_table_title"}}</div>
+        <p class="c2-note">{{t "namespace.v4.vars_table_hint"}}</p>
         <div id="namespace-nodes"></div>
         <div class="field"><label class="field-label" for="namespace-node">{{t "namespace.v4.node"}}</label><select id="namespace-node" class="select"></select></div>
         <div id="namespace-node-status" class="c2-note"></div>
         <div id="namespace-context-revision" class="c2-note"></div>
         <div id="namespace-effective-vars"></div>
+        <p id="namespace-vars-missing" class="c2-note" role="status" hidden></p>
+        <div class="c2-actions">
+          <button id="namespace-vars-add" class="btn btn-ghost" type="button">{{t "nodes.v4.vars_add"}}</button>
+          <button id="namespace-vars-save" class="btn btn-primary" type="button" disabled>{{t "nodes.v4.vars_save"}}</button>
+          <button id="namespace-vars-reset" class="btn btn-ghost" type="button">{{t "nodes.v4.vars_reset"}}</button>
+        </div>
+        <div id="namespace-vars-state" class="c2-state" role="status"></div>
+        <datalist id="namespace-vars-suggest"></datalist>
         <p class="c2-note">{{t "namespace.v4.effective_source_hint"}}</p>
       </section>
     </div>
-    <!-- 只读 Namespace YAML（IA ③）：服务端按当前事实重建的规范化文档。
-         刻意没有编辑框 —— vars 的写入口是左边那张 CAS 表单（PUT …/config），
-         同一个事实不提供第二条写路径（页面右侧/卡内文案说明这一点）。 -->
+    <!-- Namespace YAML（IA ③ / #476）：服务端按当前事实重建的规范化文档。
+         这里刻意不放编辑框 —— YAML 是**唯一写入口**，但输入的是右侧那张 vars 表：
+         表格的增删改序列化进同一份文档后 PUT …/yaml（CAS = metadata.resourceVersion）。
+         同一个事实不提供第二条写路径（`/config` 只剩 GET 读投影）。 -->
     <section class="card card-pad">
       <div class="card-title">{{t "namespace.v4.yaml_title"}}</div>
       <p class="c2-note">{{t "namespace.v4.yaml_hint"}}</p>
@@ -88,6 +97,7 @@
 </div></div>
 {{end}}
 {{define "script"}}
+<script src="/vars-table.js"></script>
 <script>
 (() => {
   const A = Anotify, $ = id => document.getElementById(id), t = key => A.t('namespace.v4.' + key);
@@ -109,7 +119,12 @@
   // 命名空间配置的「当前编辑器身份」：请求代号 + 真正加载进来的范围（与节点页同一套
   // ABA 判据：并发切 ns 不能让「最后返回的响应」决定显示，也不能拿当前选择拼保存路径）。
   let nsLoadSeq = 0, nsEditEpoch = 0;
+  // `/config` 只是**读投影**（GET）：拿 CAS 令牌与当前 vars。编辑的唯一写入口是
+  // `PUT …/yaml`（#476：YAML 是唯一编辑面；/config 的 PUT 不再被页面使用）。
   const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
+  const nsYamlPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/yaml';
+  const VT = window.AnotifyVars;
+  let varsRows = [], varsEditing = null, nsRequired = {}, varsDirty = false, varsSeq = 0;
 
   function paintHead() {
     $('ns-name').textContent = selectedNamespace || t('title');
@@ -153,18 +168,178 @@
     const current = () => saveScope === selectedNamespace && saveSeq === nsLoadSeq && saveEpoch === nsEditEpoch;
     $('namespace-save').disabled = true;
     try {
-      const vars = JSON.parse(saveDraft); const value = await write(nsPath(saveScope), { metadata: { resourceVersion: saveRV }, vars });
+      const vars = JSON.parse(saveDraft);
+      const bad = Object.keys(vars).find(key => VT.checkVarName(key));
+      if (bad) throw Object.assign(new Error('invalid var name: ' + bad), { reason: 'value_invalid' });
+      await saveNamespaceVars(saveScope, vars, saveRV);
       // 同名 namespace 的新加载（ABA）或新草稿不是这次提交的编辑器。
       if (!current() || $('namespace-vars').value !== saveDraft) return;
-      nsConfig = value;
       const refresh = loadNamespace(saveScope); saveSeq = nsLoadSeq;
       const refreshed = await refresh;
       if (!current()) return;
-      if (refreshed.ok) msg('namespace-state', n('saved'));
+      if (refreshed.ok) { msg('namespace-state', n('saved')); await loadNamespaceYAML(saveScope); await loadEffective(); }
       else if (!refreshed.stale) msg('namespace-state', n('saved') + ' · ' + errorText(refreshed.error), true);
     }
     catch (e) { if (current()) msg('namespace-state', errorText(e), true); }
     finally { if (current()) $('namespace-save').disabled = false; }
+  };
+
+  /* ---------- #476：命名空间 vars 表格（值 / 来源 / 谁要 / 缺） ----------
+   * 值/来源按**所选节点**解析（data source = `GET /v1/nodes/{name}?namespace=`），
+   * 需求侧 = 本 ns 能力读面的 `spec.requires.values`。
+   * 这张表写的是**命名空间默认层**（Namespace.spec.vars）：保存把文档序列化成
+   * YAML 文本，走 `PUT /v1/namespaces/{name}/yaml` —— 唯一写入口。
+   * 别的层（local / node）提供的值不会被抄进命名空间默认值（row.owned 判据在
+   * web/vars-table.js 里，单测钉住）。 */
+  const varsSourceLabel = src => src === 'local' ? n('vars_source_local') : src === 'node' ? n('vars_source_node') : src === 'namespace' ? n('vars_source_namespace') : '—';
+  const varsErrText = code => n('vars_err_' + code);
+  const varsSetState = (text, error = false) => msg('namespace-vars-state', text, error);
+  const varsMarkDirty = () => { varsDirty = true; $('namespace-vars-save').disabled = false; };
+  function varsCell(cls, label, text) {
+    const cell = make('td', cls, text); cell.dataset.label = label; return cell;
+  }
+  function varsButton(label, act, onclick) {
+    const button = make('button', 'btn btn-ghost btn-sm', label);
+    button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
+  }
+  /* 命名空间文档的 YAML 文本：apiVersion / kind / metadata / spec.vars。
+     `resourceVersion` = GET /config 给的同一个 CAS 令牌（写 vars 用的就是它）。 */
+  function namespaceYAMLText(scope, vars, resourceVersion) {
+    const lines = ['apiVersion: anotify/v1', 'kind: Namespace', 'metadata:', '  name: ' + VT.yamlScalar(scope)];
+    if (resourceVersion) lines.push('  resourceVersion: ' + VT.yamlScalar(resourceVersion));
+    lines.push('spec:');
+    if (Object.keys(vars || {}).length) { lines.push('  vars:'); lines.push(...VT.varsToYAMLLines(vars, 4)); }
+    else lines.push('  vars: {}');
+    return lines.join('\n') + '\n';
+  }
+  async function saveNamespaceVars(scope, vars, resourceVersion) {
+    const value = await write(nsYamlPath(scope), { yaml: namespaceYAMLText(scope, vars, resourceVersion) });
+    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+    return value;
+  }
+  function varsPlainRow(row) {
+    const tr = make('tr');
+    tr.dataset.key = row.name; tr.dataset.source = row.source || ''; tr.dataset.missing = String(!!row.missing);
+    if (row.deleted) tr.dataset.deleted = 'true';
+    tr.appendChild(varsCell('vars-name', n('vars_col_name'), row.name));
+    tr.appendChild(varsCell('vars-value', n('vars_col_value'), row.value == null ? n('vars_missing_value') : row.value));
+    const sourceCell = make('td', 'vars-source'); sourceCell.dataset.label = n('vars_col_source');
+    sourceCell.appendChild(make('span', 'badge ' + (row.source ? 'badge-neutral' : 'badge-error'), row.source ? row.source : '—'));
+    tr.appendChild(sourceCell);
+    const usedCell = make('td', 'vars-used'); usedCell.dataset.label = n('vars_col_used');
+    if (row.missing) usedCell.appendChild(make('span', 'badge badge-error', '⚠ ' + n('vars_required_badge')));
+    if (row.usedBy.length) {
+      usedCell.appendChild(make('span', null, n('vars_used_by_n').replace('{n}', String(row.usedBy.length))));
+      usedCell.appendChild(make('span', 'vars-hint', row.usedBy.join(' · ')));
+    } else if (!row.missing) usedCell.appendChild(make('span', 'vars-hint', '—'));
+    tr.appendChild(usedCell);
+    const ops = make('td', 'vars-ops'); ops.dataset.label = n('vars_col_ops');
+    if (row.deleted) {
+      ops.appendChild(varsButton(n('vars_undo'), 'vars-undo', () => { row.deleted = false; varsMarkDirty(); renderVarsTable(); }));
+    } else {
+      ops.appendChild(varsButton(row.missing ? n('vars_fill') : n('vars_edit'), row.missing ? 'vars-fill' : 'vars-edit', () => { varsEditing = row; renderVarsTable(); }));
+      if (row.owned) {
+        ops.appendChild(varsButton(n('vars_delete'), 'vars-delete', () => {
+          if (row.isNew) varsRows = varsRows.filter(item => item !== row);
+          else row.deleted = true;
+          varsMarkDirty(); renderVarsTable();
+        }));
+      } else if (!row.missing) {
+        ops.appendChild(make('span', 'vars-hint', n('vars_shadowed').replace('{source}', varsSourceLabel(row.source))));
+      }
+    }
+    tr.appendChild(ops);
+    return tr;
+  }
+  function varsEditorRow(row) {
+    const tr = make('tr'); tr.dataset.editing = 'true'; tr.dataset.key = row.name || '';
+    const nameCell = make('td', 'vars-name'), nameInput = make('input', 'input'); nameCell.dataset.label = n('vars_col_name');
+    nameInput.value = row.name || ''; nameInput.dataset.field = 'name';
+    nameInput.setAttribute('list', 'namespace-vars-suggest'); nameInput.setAttribute('aria-label', n('vars_col_name'));
+    nameCell.appendChild(nameInput);
+    const valueCell = make('td', 'vars-value'), valueInput = make('input', 'input'); valueCell.dataset.label = n('vars_col_value');
+    valueInput.value = row.value == null ? '' : row.value; valueInput.dataset.field = 'value';
+    valueInput.setAttribute('aria-label', n('vars_col_value'));
+    valueCell.appendChild(valueInput);
+    const hint = make('span', 'vars-hint');
+    const hintCell = make('td', 'vars-used'); hintCell.colSpan = 2; hintCell.appendChild(hint);
+    const apply = varsButton(n('vars_apply'), 'vars-apply', () => varsApplyEdit(row, nameInput.value.trim(), valueInput.value));
+    const cancel = varsButton(n('vars_cancel'), 'vars-cancel', () => { varsEditing = null; renderVarsTable(); });
+    const acts = make('div', 'vars-editor-acts'); acts.append(apply, cancel);
+    const ops = make('td', 'vars-ops'); ops.appendChild(acts);
+    const update = () => {
+      const name = nameInput.value.trim(), reason = VT.checkVarName(name);
+      const impact = name !== row.name ? VT.renameImpact(varsRows, row.name) : 0;
+      let text = '', warn = false;
+      if (reason) { text = varsErrText(reason); warn = true; }
+      else if (impact) { text = n('vars_rename_impact').replace('{n}', String(impact)).replace('{name}', row.name); warn = true; }
+      else if (row.shadowed) { text = n('vars_shadowed').replace('{source}', varsSourceLabel(row.source)); warn = true; }
+      hint.textContent = text; hint.classList.toggle('is-warn', warn);
+      apply.disabled = !!reason || valueInput.value === '' || (!!name && name !== row.name && varsRows.some(item => item !== row && !item.deleted && item.name === name));
+    };
+    nameInput.oninput = update; valueInput.oninput = update; update();
+    tr.append(nameCell, valueCell, hintCell, ops);
+    return tr;
+  }
+  function renderVarsTable() {
+    const host = $('namespace-effective-vars');
+    const suggestions = VT.suggestNames(varsRows, nsRequired);
+    $('namespace-vars-suggest').replaceChildren(...suggestions.map(name => { const option = make('option'); option.value = name; return option; }));
+    host.replaceChildren();
+    if (!varsRows.length) { host.appendChild(make('div', 'c2-note', n('none'))); return; }
+    const table = make('table', 'vars-table'), cols = make('colgroup');
+    for (const cls of ['vars-col-name', 'vars-col-value', 'vars-col-source', 'vars-col-used', 'vars-col-ops']) cols.appendChild(make('col', cls));
+    table.appendChild(cols);
+    const thead = make('thead'), head = make('tr');
+    for (const key of ['vars_col_name', 'vars_col_value', 'vars_col_source', 'vars_col_used', 'vars_col_ops']) head.appendChild(make('th', null, n(key)));
+    thead.appendChild(head); table.appendChild(thead);
+    const body = make('tbody');
+    for (const row of varsRows) body.appendChild(row === varsEditing ? varsEditorRow(row) : varsPlainRow(row));
+    table.appendChild(body); host.appendChild(table);
+  }
+  function renderVarsMissing() {
+    const missing = varsRows.filter(row => row.missing).length;
+    $('namespace-vars-missing').hidden = missing === 0;
+    $('namespace-vars-missing').textContent = missing ? n('vars_missing_summary').replace('{n}', String(missing)) : '';
+    $('namespace-vars-save').disabled = !varsDirty;
+  }
+  function varsApplyEdit(row, name, value) {
+    const reason = VT.checkVarName(name);
+    if (reason) return varsSetState(varsErrText(reason), true);
+    if (value === '') return varsSetState(n('vars_err_value'), true);
+    if (name !== row.name && varsRows.some(item => item !== row && !item.deleted && item.name === name)) return varsSetState(n('vars_err_dup'), true);
+    const from = row.name, renamed = name !== row.name;
+    row.name = name; row.value = value; row.missing = false; row.owned = true;
+    row.usedBy = nsRequired[name] || (renamed ? [] : row.usedBy);
+    varsEditing = null; varsMarkDirty(); renderVarsTable(); renderVarsMissing();
+    varsSetState(renamed ? n('vars_renamed').replace('{from}', from || '—').replace('{to}', name) : n('vars_updated').replace('{name}', name));
+  }
+  $('namespace-vars-add').onclick = () => {
+    if (varsEditing) return varsSetState(n('vars_finish_edit'), true);
+    const row = { name: '', value: '', source: '', usedBy: [], missing: false, locked: false, shadowed: false, owned: true, isNew: true };
+    varsRows.push(row); varsEditing = row; renderVarsTable();
+  };
+  $('namespace-vars-reset').onclick = async () => {
+    if (varsDirty && !(await A.confirmDanger({ body: n('vars_reset_confirm') }))) return;
+    varsSetState(''); await loadEffective();
+  };
+  $('namespace-vars-save').onclick = async () => {
+    if (varsEditing) return varsSetState(n('vars_finish_edit'), true);
+    if (!nsConfig || nsLoaded !== selectedNamespace) return;
+    const vars = VT.rowsToVars(varsRows);
+    const diff = VT.diffVars(nsConfig.vars || {}, vars);
+    if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(n('vars_no_changes'));
+    const saveScope = nsLoaded, saveRV = nsConfig.metadata.resourceVersion, saveEpoch = nsEditEpoch;
+    $('namespace-vars-save').disabled = true; varsSetState(n('loading'));
+    try {
+      await saveNamespaceVars(saveScope, vars, saveRV);
+      if (saveScope !== selectedNamespace || saveEpoch !== nsEditEpoch) return;
+      await loadNamespace(saveScope);
+      await loadNamespaceYAML(saveScope);
+      await loadEffective();
+      varsSetState(n('vars_saved'));
+    } catch (e) { varsSetState(errorText(e), true); }
+    finally { $('namespace-vars-save').disabled = !varsDirty; }
   };
 
   /* ---------- 身份 / 计数（都来自真实 NamespaceList，不另开一份口径） ---------- */
@@ -190,19 +365,6 @@
     if (hint) { dt.title = hint; cell.dataset.key = hint; }
     cell.append(dt, dd); return cell;
   };
-  function table(id, values, source, valueText = v => String(v)) {
-    const rows = Object.entries(values || {}); $(id).replaceChildren();
-    if (!rows.length) { $(id).appendChild(make('div', 'c2-note', n('none'))); return; }
-    const tbl = make('table', 'c2-table'), head = make('tr');
-    for (const title of [n('key'), n('value'), n('source')]) head.appendChild(make('th', null, title));
-    const thead = make('thead'); thead.appendChild(head); tbl.appendChild(thead); const body = make('tbody');
-    for (const [key, value] of rows) {
-      const row = make('tr'); row.dataset.key = key;
-      for (const text of [key, valueText(value, key), source(key)]) row.appendChild(make('td', null, text));
-      body.appendChild(row);
-    }
-    tbl.appendChild(body); $(id).appendChild(tbl);
-  }
   /* 某 ns 的有效 vars（local > node > namespace）是**命名空间维度**的视图：
      它需要「选一台节点」而不是在节点页选 ns。读的就是 v4 的
      `GET /v1/nodes/{name}?namespace=`（status.namespaceVars / status.effectiveVars），
@@ -246,17 +408,39 @@
     const nodeName = $('namespace-node').value;
     $('namespace-context-revision').replaceChildren();
     syncSelectedRow();
-    if (!nodeName || !selectedNamespace) { $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('pick_node'))); return; }
+    if (!selectedNamespace) return;
+    if (!nodeName) { await refreshNamespaceVars(); return; }
     try {
-      const resource = await A.api('/v1/nodes/' + encodeURIComponent(nodeName) + '?namespace=' + encodeURIComponent(selectedNamespace));
+      const [resource, capDoc] = await Promise.all([
+        A.api('/v1/nodes/' + encodeURIComponent(nodeName) + '?namespace=' + encodeURIComponent(selectedNamespace)),
+        A.api('/v1/namespaces/' + encodeURIComponent(selectedNamespace) + '/capabilities?limit=500'),
+      ]);
       if (resource.context?.namespace !== selectedNamespace) throw new Error('Invalid Node context');
       const ctx = make('dl', 'nd-kv');
       ctx.append(contextPair(t('context_namespace'), resource.context.namespace, 'namespace'));
       $('namespace-context-revision').replaceChildren(ctx);
-      table('namespace-effective-vars', resource.status?.effectiveVars, key => String(resource.status.effectiveVars[key]?.source ?? '?'), entry => String(entry?.value ?? ''));
+      nsRequired = VT.requiredNames(Array.isArray(capDoc?.items) ? capDoc.items : []);
+      const st = resource.status || {};
+      varsRows = VT.buildRows({ effectiveVars: st.effectiveVars, machineVars: st.machineVars, localVars: st.localVars, namespaceVars: st.namespaceVars, required: nsRequired, layer: 'namespace' });
+      varsEditing = null; varsDirty = false;
+      renderVarsTable(); renderVarsMissing();
     } catch (e) {
       $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadEffective));
     }
+  }
+  /* 没有节点可选时，这张表退回「命名空间默认值」视图：仍能增删改（写的就是 ns 文档），
+     但「缺但被要求」需要节点上下文才能判定，所以这里不标红、不编造缺口。 */
+  async function refreshNamespaceVars() {
+    const seq = ++varsSeq, scope = selectedNamespace;
+    try {
+      const capDoc = await A.api('/v1/namespaces/' + encodeURIComponent(scope) + '/capabilities?limit=500');
+      if (seq !== varsSeq || scope !== selectedNamespace) return;
+      nsRequired = VT.requiredNames(Array.isArray(capDoc?.items) ? capDoc.items : []);
+      varsRows = VT.buildRows({ namespaceVars: nsConfig ? nsConfig.vars : {}, required: nsRequired, layer: 'namespace' });
+      varsRows.forEach(row => { row.missing = false; });
+      varsEditing = null; varsDirty = false;
+      renderVarsTable(); renderVarsMissing();
+    } catch (e) { $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, refreshNamespaceVars)); }
   }
   $('namespace-node').onchange = loadEffective;
 
@@ -275,7 +459,7 @@
       if (!nodes.length) {
         $('namespace-node').disabled = true; $('namespace-node-status').textContent = '';
         renderNodeTable();
-        $('namespace-effective-vars').replaceChildren(make('div', 'c2-note', t('no_nodes')));
+        await refreshNamespaceVars();
         return;
       }
       $('namespace-node').disabled = false;
