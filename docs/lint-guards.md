@@ -50,7 +50,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 设计原则（照抄本仓已验证的范式）：**纯函数判据 + `--self-test` 红/绿双侧自证 + 打印检查数量（0 项也算红）+ 例外表过期即红 + 退出码 0/1/2**。
 恒红的门禁等于没有门禁（`check_contract.py:1-30` 的头注释教训），所有新守卫必须在合入时**真的是绿的**。
 
-## 1. 本批落地（8 条）
+## 1. 本批落地（9 条）
 
 | 编号 | 文件 | 抓什么事故 | 判据要点 | 接在哪 |
 |---|---|---|---|---|
@@ -63,6 +63,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L6 | `scripts/check-secrets.mjs` | GitHub 上的 `GitGuardian Security Checks` 是**服务端 App**：推上去之后才扫 PR diff，本地 `git commit` 时无感。本仓的秘密面又很具体（`install.json`/`anode.yaml` 里的令牌、VAPID 私钥、`docs/` 里的示例命令） | PEM 私钥块 / 供应商形状（`ghp_`、`AKIA`、`sk-`…）/ 本仓令牌形状（`VAPID_PRIVATE`、`token:` + ≥32 字符字面量、`Bearer`）/ 被跟踪的 `.env`、`*.pem`、`id_*`。**不做熵检测**（夹具里全是假令牌）；`ALLOWLIST` 每条带理由且过期即红；`--staged` 供 pre-commit。**首次提交就自证了一次**：默认模式只扫**被跟踪**文件，于是它把自己的 self-test 夹具当成泄漏——已把夹具改成运行时拼接（源码里不留秘密形状）。这与 L5 那个「未跟踪文档漏扫」是同一类不对称 | `make ci` + `make hooks` |
 | L7 | `Makefile` 的 `lint-go` | Go 侧原先只有 `gofmt` + `go vet`；AGENTS.md §3 写的「包注释」「`%w` 包装」两条纪律**无机检**（实测 `%v` 包 err 为 0 处、3 个包缺包注释、staticcheck SA 类 5 条） | gofmt + 包注释（`go list -f '{{if not .Doc}}'`）+ vet + `staticcheck -checks=SA*,U1000`（正确性类 + 未使用符号；`U1000` 已清零后再开，见 backlog #14；`S*`/`ST*` 噪声大仍另立项） | `make ci` |
 | L8 | `scripts/dist-stamp.mjs` | 陈旧 dist 假绿 `22d14d47` / `1256350f` / 一次波末假绿（`run_all.sh:31-43` 只在 dist 缺失或为空时才重建 ⇒ 改了 `web-src/` 却忘了 `make fe` 时，e2e 验的是上一轮的前端产物） | 对输入面（`web-src/**` + `api/*.yaml` + `web/` 的 git 源文件，**不含** `internal/server/dist` 自己）逐个 sha256 → `dist/.source-stamp`；`--check` 重算并逐条列出变动/新增/删除（路径 + 旧前 8 位 → 新前 8 位）；stamp 缺失、输入面解析为空、stamp 字段与 digests 不自洽一律判红；二进制照算（字体/图标变 dist 就变），超上限的大文件跳过但打印计数（不静默） | `make fe`（写）+ `make check-dist-fresh` / `scripts/e2e/run_all.sh` 前置（验） |
+| L9 | `scripts/check-ui-copy.mjs` | `9ec8afff`（PR #447）节点页挂着「命名空间与系统配置不在这页…已迁到…」，用户看到直接问「搞笑吧？你没有审核出来吗？」——但这类文案不只一处，而且**旧门禁完全没有抓它的面**：`check-i18n-keys` 只验 key 在不在、e2e 只验页面 200，于是任何旁白都能绿到生产 | 扫 `web-src/locales/*.yaml` 的**值**（页面里没有散文，locale 就是全量真相源）：5 类高危特征 = 迁移叙述 / 对照内部实现（工单号、`v4`、`docs/`、构建工具）/ 对开发者喊话 / 历史形态对照 / TODO。词表**窄而准**：宽带扫定稿前在现有 locale 上实测命中 0 条；被故意排除的误报词（`make dev`、`移行`、`旧 `、`XXX`）逐条记在脚本头注释里。行内豁免 `# ui-copy-ok: <理由>`（理由必填，空理由仍失败；标记必须落在注释里）。`--self-test` 17 红 / 12 绿 / 5 豁免 + 反向证明 | `make fe` + `make check-guard-selftest` |
 
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
 

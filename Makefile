@@ -39,7 +39,7 @@ ANODE_OUT ?= anode
 # 临时目录泄漏守卫（#326）：本机 /tmp 是 tmpfs，测试漏下的目录吃的是**内存**。
 TMP_GUARD := node scripts/check-tmp-leaks.mjs
 
-.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
+.PHONY: help build anode manifest fe check-wire-fields check-agents sitegen test bench bench-dispatch run dev docker docker-anode docker-run up down push integration tunnel keys dev-env dev-up dev-down dev-reset dev-logs dev-seed dev-demo dev-sh dev-node dev-tunnel-setup dev-tunnel-quick clean check-classes check-tailwind check-graph-access check-anode-skill tmp-leak-guard tailwind ci mock mock-local fe-preview fe-preview-port test-repeat check-css check-i18n-keys check-ui-copy check-contrast check-dist-fresh check-test-discipline check-guard-selftest check-annotations check-doc-links check-secrets check-affected-map hooks lint-go tools test-affected e2e-affected plan-affected
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -76,6 +76,13 @@ check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 
 	node scripts/check-i18n-keys.mjs --self-test
 	node scripts/check-i18n-keys.mjs
 
+check-ui-copy: ## 文案检查：用户可见文案（locale 值）里不许出现开发过程叙述（迁移/工单号/v4/构建工具/对开发者喊话）
+	@# 事故：`9ec8afff`（PR #447）节点页挂着「命名空间与系统配置不在这页…已迁到…」，
+	@# 用户看到直接问「搞笑吧？你没有审核出来吗？」。check-i18n-keys 只验键在不在，
+	@# 验不了「这条文案写得对不对」，所以任何旁白都能绿到生产。
+	node scripts/check-ui-copy.mjs --self-test
+	node scripts/check-ui-copy.mjs
+
 check-contrast: ## 对比度守卫：tokens.css 双主题 48 对 WCAG 复算（#370/#371 打回点）
 	node scripts/check-contrast.mjs
 
@@ -90,6 +97,7 @@ check-test-discipline: ## 测试纪律棘轮：waitForTimeout/吞异常/t.Skip/t
 check-guard-selftest: ## 守卫自测：拦"守卫自己静默不查了"（恒绿的门禁等于没有门禁）
 	node scripts/check-classes.mjs --self-test
 	node scripts/check-graph-access.mjs --self-test
+	node scripts/check-ui-copy.mjs --self-test
 
 check-annotations: ## 注解即外键：文档/注释里的 scripts、make、npm 引用与 @guard/@decision 锚点必须解析（docs/lint-guards.md §3）
 	node scripts/check-annotations.mjs --self-test
@@ -127,7 +135,7 @@ hooks: ## 安装本地 git 钩子：pre-commit 跑 check-secrets --staged（不�
 tailwind: ## 重新生成 web/tailwind.css（改了工具类后执行；需要 npm install）
 	node scripts/build-tailwind.mjs
 
-fe: check-classes check-wire-fields check-css check-i18n-keys check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
+fe: check-classes check-wire-fields check-css check-i18n-keys check-ui-copy check-contrast sitegen ## 前端指纹：sitegen 生成 web/ 后 → internal/server/dist/（content-hash + 引用改写，供 embed）
 	node scripts/hash.mjs web internal/server/dist
 	@# 产物指纹落好之后记下输入面指纹（dist/.source-stamp）：e2e 前置据此判定 dist 是否陈旧。
 	node scripts/dist-stamp.mjs --write

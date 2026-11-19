@@ -133,7 +133,7 @@
     <p class="c2-note">{{t "nodes.v4.setup_hint"}}</p><button id="reg-close" class="btn btn-ghost" type="button">{{t "nodes.v4.cancel"}}</button>
   </section>
   <section class="card"><div id="nodes-skel" class="card-pad c2-note">{{t "nodes.v4.loading"}}</div><!-- #377：搜索只过滤已加载的页（不重新请求） --><div class="nd-toolbar"><input id="nodes-search" class="input" type="search" autocomplete="off" placeholder="{{t "paging.search_ph"}}" aria-label="{{t "paging.search_ph"}}" /><span id="nodes-count" class="nd-toolbar-count" aria-live="polite"></span></div><div id="nodes-list" aria-live="polite"></div><div id="nodes-more-wrap" class="nd-more-wrap" hidden><button id="nodes-load-more" class="btn btn-ghost" type="button">{{t "paging.load_more"}}</button></div></section>
-  <!-- ND-3：整段开发者旁白默认收起（原文保留，e2e 搜文本仍成立） -->
+  <!-- ND-3：槽位判定与批量写规则默认收起（详规不占首屏） -->
   <details class="nd-more">
     <summary>{{t "uxaudit.res.nodes.note_summary"}}</summary>
     <p class="c2-note nd-more-body" id="slot-note">{{t "nodes.v4.slot_note"}} {{t "nodes.v4.batch_hint"}}</p>

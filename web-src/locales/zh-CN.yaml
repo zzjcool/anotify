@@ -829,18 +829,15 @@ docs:
     events: POST /v1/events
     node: 节点协议
     endpoints: 全部端点
-    design: "设计取舍说明"
+    design: "行为与边界"
   design:
-    title: "设计取舍说明：为什么界面这样显示"
-    lede: "下面这些是写给维护者与排障者的说明。控制台首屏只保留「要你做决定」的信息，原理与边界集中在这里。"
+    title: "行为与边界：这些地方容易误解"
+    lede: "下面这几条是产品行为里最容易误读的地方，出问题时按它们对账。"
     sources: "源产生事件，目标能力接收参数。源详情页的下游配置图只反映 spec.targets 的引用关系，不是执行成功的证明：事件有没有被接收要看事件流，任务有没有跑成功要看任务详情。deliveryId 默认去重 30 天，同一个 id 只表示「已接收」。"
     playbooks: "playbook.yaml 是唯一根清单，它引用的能力/源文件必须都在包内。预案页只保存这份包，不安装、不部署——安装是单独的 POST …/install，部署是能力的 POST …/deploy。"
-    nodes: "节点配置可以逐台编辑；批量配置 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。保留期单位为秒，0 表示永久；默认值为日志/产物 604800 秒、事件与终态任务 2592000 秒，活动任务与引用保护仍然生效，用户的 workDir 不会被清理。首屏的配置版本（configRevision）与已应用版本（appliedRevision）都来自真实 GET，缺字段时界面显示「未知」而不以默认值冒充。"
+    nodes: "节点配置可以逐台编辑；批量配置 API 逐节点原子，允许部分成功。保留期单位为秒，0 表示永久；默认值为日志/产物 604800 秒、事件与终态任务 2592000 秒，活动任务与引用保护仍然生效，用户的 workDir 不会被清理。配置版本与已应用版本显示的是服务端当前值，读不到时显示「未知」，不会填默认值。"
   endpoints:
     title: 全部端点
-    intro: 这份清单在构建时从 api/openapi.yaml 生成，与真实路由同源，不会漂移。已弃用的旧「通知终端」端点不在此列。
-    empty_desc: 构建时没有加载到 api/openapi.yaml。重新运行 make sitegen 即可生成这一节。
-    empty_title: 端点清单未生成
   openapi:
     tag:
       events: 事件
@@ -971,7 +968,7 @@ docs:
     rules:
       title: 投递规则（标签路由 + 级别过滤）
   webpush:
-    off_note: "手机推送（Web Push）暂未开放：服务端未启用 VAPID，本版不提供设备订阅页。事件仍会正常产生，可在「事件流」页查看。"
+    off_note: "手机推送（Web Push）暂未开放：开放后这里会出现订阅步骤。事件仍会正常产生，可在「事件流」页查看。"
     title: Web Push 订阅（浏览器接收）
     intro: 浏览器端通过 Service Worker + PushManager 订阅，后端用 VAPID 签名推送。<b class="doc-em">即使页面关闭也能收到</b>。iOS 需先「添加到主屏幕」以 standalone 运行（iOS 16.4+）。
     step1: <b class="doc-em">① 取 VAPID 公钥</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1019,11 +1016,11 @@ docs:
       title: 重连与续传
       desc: 断线后重连时携带 <code class="doc-code">Last-Event-Id</code> 头（或首帧发 <code class="doc-code">resume</code>），服务端会重放该位置之后 24h 内未确认的通知（回放窗口），随后进入实时流。超出保留窗口则返回 <code class="doc-code">resume_expired</code> 错误，客户端应拉取全量历史。
   v4:
-    five_specs: "端点来自 resource / events / agent / ingress / auth 五份 v4 spec；未接入时真实空态，不展示旧 spec 端点。"
-    missing: "尚未加载五份 v4 spec"
+    five_specs: "端点来自 resource / events / agent / ingress / auth 五份 spec。"
+    missing: "端点清单暂不可用"
     ingress: "命名空间事件入口（不是资源创建）"
     node: "anode：本机执行与配置"
-    node_note: "先登记 Node，再签发长期身份令牌。本机申报与授权取交集；install 不自动注册。没有旧 agent 命令、端口路由或 priority。"
+    node_note: "先登记 Node，再签发长期身份令牌。本机申报与授权取交集；install 不自动注册。"
     resource: "命名空间资源与写入 CAS"
     resource_note: "读取 KindList.items；创建资源用 apiVersion/kind/metadata/spec。编辑仅提交可写字段与 metadata.resourceVersion；缺令牌 400、过期 409 保留草稿，DELETE 使用 query resourceVersion。"
 
@@ -1807,7 +1804,7 @@ nodes:
     back: "返回节点列表"
     tasks: "当前 namespace 的最近任务"
     artifacts: "已部署能力的实际状态"
-    batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功，不是 Playbook 的整包 0 写规则。"
+    batch_hint: "配置可逐台编辑；批量 API 逐节点原子，允许部分成功。"
 
     node_subtitle: "节点维度：身份与连接 · 授权命名空间 · 配置（YAML）· 物理槽位"
     yaml_title: "节点 YAML（apiVersion anotify/v1 · kind Node）"
@@ -1906,9 +1903,9 @@ sources:
     last_error: "最近错误"
     installed: "安装来源 installedFrom"
     config: "配置与状态"
-    edges: "只读 v4 目标能力投影"
+    edges: "只读的目标能力引用"
     graph: "下游配置图"
-    graph_hint: "图只展示 v4 引用，不包含端口、优先级或独立接线；不是执行状态。"
+    graph_hint: "图只展示能力引用，不代表执行状态。"
     graph_error: "图组件未加载，请重新加载。"
     recent: "最近事件与触发"
     no_events: "还没有事件。"
@@ -2255,7 +2252,6 @@ pb:
     declared:
       inline: '内联能力'
       ref: 引用 {r}
-      legacy: 旧形态声明
     impl:
       script: 脚本
       noop: noop 占位
@@ -2435,7 +2431,7 @@ uxaudit:
     common:
       cancel: '取消'
     nodes:
-      note_summary: '开发者说明：槽位判定与批量写规则'
+      note_summary: '槽位判定与批量写规则'
       unknown: '—（未知）'
       ns_label: '生效授权'
       config_rev: '配置版本'
@@ -2581,7 +2577,7 @@ source_detail:
   resolved_no: 'targets 未解析'
   created: '创建时间'
   updated: '更新时间'
-  updated_hint: 'v4 没有独立的更新时间字段：每次写入以 resourceVersion 递增体现。'
+  updated_hint: '没有独立的更新时间字段：每次写入以 resourceVersion 递增体现。'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 签名已设置（只写不读）'
   secret_set_no: '没有 HMAC 签名'

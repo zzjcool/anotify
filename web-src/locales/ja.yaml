@@ -829,18 +829,15 @@ docs:
     events: POST /v1/events
     node: ノードプロトコル
     endpoints: 全エンドポイント
-    design: "設計メモ"
+    design: "動作と境界"
   design:
-    title: "設計メモ：画面がこう表示される理由"
-    lede: "以下は保守・調査する人向けの説明です。コンソールのファーストビューには「判断に必要な情報」だけを置き、原理と境界はここにまとめています。"
+    title: "動作と境界：誤解しやすいところ"
+    lede: "以下は製品の動作のうち誤解しやすい点です。おかしいと感じたらここで突き合わせてください。"
     sources: "ソースはイベントを生成し、対象の能力にパラメータを渡します。ソース詳細の下流構成図は spec.targets の参照関係を示すだけで、実行成功の証明ではありません。受信されたかはイベント一覧、実行されたかはタスク詳細で確認します。deliveryId は既定で 30 日間重複排除され、同じ id は「受信済み」だけを意味します。"
     playbooks: "playbook.yaml が唯一のルートマニフェストで、参照する能力・ソースのファイルはすべてパッケージ内に必要です。プリセット（Playbook）ページはパッケージを保存するだけで、インストールもデプロイもしません。インストールは POST …/install、デプロイは能力の POST …/deploy です。"
-    nodes: "ノード設定はノードごとに編集できます。一括 API はノード単位で原子的で部分成功を許します（Playbook の全体ゼロ書込ルールではありません）。保持期間の単位は秒で 0 は永久です。既定値はログ・成果物が 604800 秒、イベントと終端タスクが 2592000 秒で、活動中のタスクと参照保護は有効なまま、ユーザーの workDir は削除しません。画面の configRevision と appliedRevision は実 GET の値で、欠けている項目は既定値で埋めず「不明」と表示します。"
+    nodes: "ノード設定はノードごとに編集できます。一括 API はノード単位で原子的で、部分成功を許します。保持期間の単位は秒で 0 は永久です。既定値はログ・成果物が 604800 秒、イベントと終端タスクが 2592000 秒で、活動中のタスクと参照保護は有効なまま、ユーザーの workDir は削除しません。設定バージョンと適用済みバージョンはサーバーの現在値を表示し、読めないときは「不明」と表示して既定値を入れません。"
   endpoints:
     title: 全エンドポイント
-    intro: この一覧はビルド時に api/openapi.yaml から生成されるため、実際のルートとずれません。非推奨の旧「通知端末」エンドポイントは含まれません。
-    empty_desc: ビルド時に api/openapi.yaml が読み込まれませんでした。make sitegen を再実行するとこのセクションが生成されます。
-    empty_title: エンドポイント一覧が未生成です
   openapi:
     tag:
       events: イベント
@@ -971,7 +968,7 @@ docs:
     rules:
       title: 配信ルール（タグルーティング + レベルフィルタ）
   webpush:
-    off_note: "モバイルプッシュ（Web Push）は未公開です：サーバーに VAPID 鍵が設定されていないため、このバージョンでは端末購読ページを提供しません。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
+    off_note: "モバイルプッシュ（Web Push）は未公開です：公開されるとここに購読手順が表示されます。イベント自体は記録され、「イベントストリーム」ページで確認できます。"
     title: Web Push 購読（ブラウザ受信）
     intro: ブラウザは Service Worker + PushManager で購読し、バックエンドは VAPID 署名でプッシュします。<b class="doc-em">ページを閉じていても受信できます</b>。iOS は「ホーム画面に追加」してスタンドアローンモードで実行する必要があります（iOS 16.4+）。
     step1: <b class="doc-em">① VAPID 公開鍵を取得</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1019,11 +1016,11 @@ docs:
       title: 再接続とレジュム
       desc: 再接続時に <code class="doc-code">Last-Event-Id</code> ヘッダ（または最初のフレームで <code class="doc-code">resume</code>）を送信すると、サーバーは直近 24h の未確認通知（リプレイウィンドウ）を再送し、その後リアルタイムストリームに移行します。保持期間を超えると <code class="doc-code">resume_expired</code> エラーを返します。クライアントは全履歴を再取得してください。
   v4:
-    five_specs: "エンドポイントは resource / events / agent / ingress / auth の5つの v4 spec 由来です。未連携時は実際の空状態で旧 spec を表示しません。"
-    missing: "5つの v4 spec が未読込です"
+    five_specs: "エンドポイントは resource / events / agent / ingress / auth の5つの spec 由来です。"
+    missing: "エンドポイント一覧を利用できません"
     ingress: "名前空間イベント入力（リソース作成ではありません）"
     node: "anode: 本機実行と設定"
-    node_note: "Node を登録し長期識別トークンを発行します。申告と認可は積集合、install は自動登録しません。旧 agent コマンド、ポートルート、priority はありません。"
+    node_note: "Node を登録し長期識別トークンを発行します。申告と認可は積集合、install は自動登録しません。"
     resource: "名前空間リソースと書込 CAS"
     resource_note: "KindList.items を読みます。作成は apiVersion/kind/metadata/spec。編集は書込可能項目と metadata.resourceVersion のみ。欠落400、古い値409では下書きを保持。DELETE は query resourceVersion を使用します。"
 
@@ -1805,7 +1802,7 @@ nodes:
     back: "ノード一覧へ"
     tasks: "この名前空間の最近のタスク"
     artifacts: "能力デプロイの実際の状態"
-    batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的、部分成功可能です。Playbook の全体ゼロ書込とは異なります。"
+    batch_hint: "設定は各ノードで編集できます。バッチ API はノード単位で原子的で、部分成功を許します。"
 
     node_subtitle: "ノード単位：識別と接続 · 許可ネームスペース · 設定（YAML）· 物理スロット"
     yaml_title: "ノード YAML（apiVersion anotify/v1 · kind Node）"
@@ -1904,9 +1901,9 @@ sources:
     last_error: "最終エラー"
     installed: "インストール元 · installedFrom"
     config: "設定と状態"
-    edges: "読み取り専用 v4 対象投影"
+    edges: "読み取り専用の対象参照"
     graph: "下流の構成図"
-    graph_hint: "図は v4 参照のみで、ポート、優先順位、独立マッピング、実行状態ではありません。"
+    graph_hint: "図は能力参照のみで、実行状態ではありません。"
     graph_error: "グラフを読み込めません。再読込してください。"
     recent: "最近のイベントと実行"
     no_events: "イベントがありません。"
@@ -2253,7 +2250,6 @@ pb:
     declared:
       inline: 'インライン能力'
       ref: '{r} を参照'
-      legacy: 旧形式の宣言
     impl:
       script: スクリプト
       noop: noop プレースホルダー
@@ -2431,7 +2427,7 @@ uxaudit:
     common:
       cancel: 'キャンセル'
     nodes:
-      note_summary: '開発者向け説明：スロット判定と一括書き込みの規則'
+      note_summary: 'スロット判定と一括書き込みの規則'
       unknown: '—（不明）'
       ns_label: '有効な認可'
       config_rev: '設定リビジョン'
@@ -2576,7 +2572,7 @@ source_detail:
   resolved_no: 'targets 未解決'
   created: '作成日時'
   updated: '更新日時'
-  updated_hint: 'v4 には独立した更新日時の項目がありません：書き込みごとに resourceVersion が増えて表されます。'
+  updated_hint: '独立した更新日時の項目はありません：書き込みごとに resourceVersion が増えて表されます。'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC 署名は設定済み（書き込み専用）'
   secret_set_no: 'HMAC 署名なし'

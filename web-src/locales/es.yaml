@@ -829,18 +829,15 @@ docs:
     events: POST /v1/events
     node: Protocolo de nodo
     endpoints: Todos los endpoints
-    design: "Notas de diseño"
+    design: "Comportamiento y límites"
   design:
-    title: "Notas de diseño: por qué la interfaz muestra esto"
-    lede: "Estas notas son para quien mantiene o depura. La consola deja en la primera pantalla solo lo que necesitas para decidir; el razonamiento y los límites están aquí."
+    title: "Comportamiento y límites: dónde es fácil malinterpretar"
+    lede: "Estos son los comportamientos del producto que más se malinterpretan; úsalos para contrastar cuando algo no cuadre."
     sources: "Las fuentes producen eventos y las capacidades destino reciben parámetros. El grafo de destinos de una fuente refleja las referencias de spec.targets: no demuestra una ejecución correcta. Para saber si se recibió, mira la lista de eventos; para saber si se ejecutó, el detalle de la tarea. El deliveryId se deduplica 30 días por defecto y el mismo id solo significa «ya recibido»."
     playbooks: "playbook.yaml es el único manifiesto raíz y todos los archivos de capacidades y fuentes a los que hace referencia deben estar dentro del paquete. La página de playbooks solo guarda el paquete: instalar es un POST …/install aparte y desplegar es un POST …/deploy de la capacidad."
-    nodes: "La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial: no es la regla de cero escrituras de paquete de Playbook. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. En pantalla, configRevision y appliedRevision vienen de un GET real: si falta el campo se muestra como desconocido y no se supone un valor por defecto."
+    nodes: "La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. La versión de configuración y la versión aplicada muestran los valores actuales del servidor; si no se pueden leer muestran desconocido y no suponen un valor por defecto."
   endpoints:
     title: Todos los endpoints
-    intro: Esta lista se genera en tiempo de compilación desde api/openapi.yaml, así que no puede desviarse de las rutas reales. Los endpoints heredados de notificaciones están excluidos.
-    empty_desc: api/openapi.yaml no se cargó en tiempo de compilación. Vuelve a ejecutar make sitegen para generar esta sección.
-    empty_title: La lista de endpoints no se generó
   openapi:
     tag:
       events: Eventos
@@ -971,7 +968,7 @@ docs:
     rules:
       title: Reglas de entrega (enrutamiento por tags + filtrado por nivel)
   webpush:
-    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles: el servidor no tiene claves VAPID configuradas, así que esta versión no incluye página de suscripción de dispositivos. Los eventos se registran igualmente: consulta la página de eventos."
+    off_note: "Las notificaciones push móviles (Web Push) aún no están disponibles; los pasos de suscripción aparecerán aquí cuando lo estén. Los eventos se registran igualmente: consulta la página de eventos."
     title: Suscripción Web Push (recepción en navegador)
     intro: El navegador se suscribe vía Service Worker + PushManager; el backend envía con firma VAPID. <b class="doc-em">Se recibe incluso con la página cerrada.</b> iOS requiere "Añadir a pantalla de inicio" y modo standalone (iOS 16.4+).
     step1: <b class="doc-em">① Obtener clave pública VAPID</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1019,11 +1016,11 @@ docs:
       title: Reconectar y reanudar
       desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
   v4:
-    five_specs: "Los endpoints vienen de cinco specs v4: resource / events / agent / ingress / auth. Sin integración, la lista está realmente vacía, no muestra endpoints antiguos."
-    missing: "Cinco specs v4 aún no cargadas"
+    five_specs: "Los endpoints vienen de cinco specs: resource / events / agent / ingress / auth."
+    missing: "Lista de endpoints no disponible"
     ingress: "Entrada de eventos por namespace (no crea recurso)"
     node: "anode: ejecución y configuración local"
-    node_note: "Registre Node y emita identidad duradera. Se intersectan namespaces declarados y autorizados; install nunca registra. No hay comandos antiguos, rutas por puerto ni priority."
+    node_note: "Registre Node y emita identidad duradera. Se intersectan namespaces declarados y autorizados; install nunca registra."
     resource: "Recursos por namespace y CAS"
     resource_note: "Lea KindList.items. Cree con apiVersion/kind/metadata/spec. Edite campos escribibles y metadata.resourceVersion; ausencia400, obsoleto409 conserva borrador. DELETE usa query resourceVersion."
 
@@ -1805,7 +1802,7 @@ nodes:
     back: "Volver a nodos"
     tasks: "Tareas recientes del namespace"
     artifacts: "Estado real de despliegues de capacidades"
-    batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial, no cero escrituras de paquete Playbook."
+    batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial."
 
     node_subtitle: "Dimensión de nodo: identidad y conexión · espacios autorizados · configuración (YAML) · ranuras físicas"
     yaml_title: "YAML del nodo (apiVersion anotify/v1 · kind Node)"
@@ -1904,9 +1901,9 @@ sources:
     last_error: "Último error"
     installed: "Instalado desde · installedFrom"
     config: "Configuración y estado"
-    edges: "Proyección de destinos v4"
+    edges: "Referencias de destino de solo lectura"
     graph: "Configuración posterior"
-    graph_hint: "El gráfico muestra referencias v4, no puertos, prioridades, mapeos independientes ni estado de ejecución."
+    graph_hint: "El gráfico solo muestra referencias de capacidades; no es estado de ejecución."
     graph_error: "No se cargó el gráfico; recarga."
     recent: "Eventos y ejecuciones recientes"
     no_events: "Todavía no hay eventos."
@@ -2253,7 +2250,6 @@ pb:
     declared:
       inline: 'Capacidad en línea'
       ref: Referencia {r}
-      legacy: Declaración heredada
     impl:
       script: Script
       noop: Marcador noop
@@ -2431,7 +2427,7 @@ uxaudit:
     common:
       cancel: 'Cancelar'
     nodes:
-      note_summary: 'Notas para desarrollo: semántica de slots y reglas de escritura en lote'
+      note_summary: 'Semántica de slots y reglas de escritura en lote'
       unknown: '— (desconocido)'
       ns_label: 'Autorizaciones efectivas'
       config_rev: 'Revisión de configuración'
@@ -2576,7 +2572,7 @@ source_detail:
   resolved_no: 'targets sin resolver'
   created: 'Creado'
   updated: 'Actualizado'
-  updated_hint: 'v4 no tiene una marca de actualización aparte: cada escritura se refleja en un resourceVersion que aumenta.'
+  updated_hint: 'No hay una marca de actualización aparte: cada escritura se refleja en un resourceVersion que aumenta.'
   hook_url: 'Hook URL'
   secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
   secret_set_no: 'Sin firma HMAC'

@@ -829,18 +829,15 @@ docs:
     events: POST /v1/events
     node: Node protocol
     endpoints: All endpoints
-    design: "Design notes"
+    design: "Behavior and limits"
   design:
-    title: "Design notes: why the UI shows what it shows"
-    lede: "The notes below are for maintainers and anyone debugging. The console keeps only what you need to make a decision on the first screen; rationale and boundaries live here."
+    title: "Behavior and limits: where things are easy to misread"
+    lede: "These are the product behaviors most often misread; use them to check when something looks wrong."
     sources: "Sources produce events; target capabilities receive params. The downstream graph on a source page mirrors the references in spec.targets — it is not proof of execution success: check the event stream for ingestion and the task detail for execution. A deliveryId is de-duplicated for 30 days by default; the same id only means \"already received\"."
     playbooks: "playbook.yaml is the only root manifest, and every capability/source file it references must be inside the package. The playbooks page only stores that package: installing is a separate POST …/install and deploying is a capability POST …/deploy."
-    nodes: "Node configuration is edited per node. The batch API is atomic per node and permits partial success — it is not the Playbook whole-package zero-write rule. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. On screen, configRevision and appliedRevision both come from a real GET — a missing field shows as unknown rather than an assumed default."
+    nodes: "Node configuration is edited per node. The batch API is atomic per node and permits partial success. Retention is in seconds and 0 means forever; defaults are 604800 s for logs/artifacts and 2592000 s for events and terminal tasks, active tasks and reference protection still apply, and a user workDir is never deleted. Config revision and applied revision show the server's current values; when unreadable they show unknown rather than an assumed default."
   endpoints:
     title: All endpoints
-    intro: Generated at build time from api/openapi.yaml, so it can't drift from the real routes. Deprecated legacy notification endpoints are not listed.
-    empty_desc: api/openapi.yaml was not loaded at build time. Re-run make sitegen to generate this section.
-    empty_title: Endpoint list was not generated
   openapi:
     tag:
       events: Events
@@ -971,7 +968,7 @@ docs:
     rules:
       title: Delivery rules (tag routing + level filtering)
   webpush:
-    off_note: "Mobile push (Web Push) is not available yet: the server has no VAPID keys configured, so this version ships no device-subscription page. Events are still recorded — see the Events page."
+    off_note: "Mobile push (Web Push) is not available yet; the subscription steps will appear here once it is. Events are still recorded — see the Events page."
     title: Web Push subscription (browser receiving)
     intro: The browser subscribes via Service Worker + PushManager; the backend pushes with a VAPID signature. <b class="doc-em">Receives even when the page is closed.</b> iOS requires "Add to Home Screen" and standalone mode (iOS 16.4+).
     step1: <b class="doc-em">① Get VAPID public key</b> · <code class="doc-code">GET /v1/vapid-public-key</code>
@@ -1019,11 +1016,11 @@ docs:
       title: Reconnect and resume
       desc: On reconnect, send the <code class="doc-code">Last-Event-Id</code> header (or a <code class="doc-code">resume</code> first frame). The server replays unacknowledged notifications from the last 24h (replay window), then enters the live stream. Beyond the retention window it returns a <code class="doc-code">resume_expired</code> error; the client should fetch full history.
   v4:
-    five_specs: "Endpoints come from five v4 specs: resource / events / agent / ingress / auth. Until integrated, the list is truly empty, not legacy endpoints."
-    missing: "Five v4 specs not loaded yet"
+    five_specs: "Endpoints come from five specs: resource / events / agent / ingress / auth."
+    missing: "Endpoint list unavailable"
     ingress: "Namespaced event ingress (not resource creation)"
     node: "anode: local execution & configuration"
-    node_note: "Register a Node, then issue a long-lived identity token. Declared namespaces intersect central authorization; install never auto-registers. No legacy agent commands, port routing or priority."
+    node_note: "Register a Node, then issue a long-lived identity token. Declared namespaces intersect central authorization; install never auto-registers."
     resource: "Namespaced resources & write CAS"
     resource_note: "Read KindList.items. Create with apiVersion/kind/metadata/spec. Edits send writable fields plus metadata.resourceVersion; missing is 400, stale is 409 with draft retained. DELETE uses query resourceVersion."
 
@@ -1805,7 +1802,7 @@ nodes:
     back: "Back to Nodes"
     tasks: "Recent tasks in this namespace"
     artifacts: "Reported capability deployments"
-    batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success, unlike Playbook whole-package zero writes."
+    batch_hint: "Edit configurations individually. The batch API is atomic per node and permits partial success."
 
     node_subtitle: "Node dimension: identity & connection · authorized namespaces · config (YAML) · physical slots"
     yaml_title: "Node YAML (apiVersion anotify/v1 · kind Node)"
@@ -1904,9 +1901,9 @@ sources:
     last_error: "Last error"
     installed: "Installed from · installedFrom"
     config: "Config and status"
-    edges: "Read-only v4 target projection"
+    edges: "Read-only target references"
     graph: "Downstream configuration"
-    graph_hint: "The graph shows v4 references, not ports, priority, independent mappings, or execution state."
+    graph_hint: "The graph shows capability references only; it is not execution state."
     graph_error: "Graph component failed to load; reload."
     recent: "Recent events and fires"
     no_events: "No events yet."
@@ -2253,7 +2250,6 @@ pb:
     declared:
       inline: 'Inline capability'
       ref: Reference {r}
-      legacy: Legacy declaration
     impl:
       script: Script
       noop: noop placeholder
@@ -2431,7 +2427,7 @@ uxaudit:
     common:
       cancel: 'Cancel'
     nodes:
-      note_summary: 'Developer notes: slot semantics and batch-write rules'
+      note_summary: 'Slot semantics and batch-write rules'
       unknown: '— (unknown)'
       ns_label: 'Authorized namespaces'
       config_rev: 'Config revision'
@@ -2576,7 +2572,7 @@ source_detail:
   resolved_no: 'targets unresolved'
   created: 'Created'
   updated: 'Updated'
-  updated_hint: 'v4 has no separate updated timestamp: every write is reflected by an incrementing resourceVersion.'
+  updated_hint: 'There is no separate updated timestamp: every write is reflected by an incrementing resourceVersion.'
   hook_url: 'Hook URL'
   secret_set_yes: 'HMAC secret is set (write-only)'
   secret_set_no: 'No HMAC secret'
