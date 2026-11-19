@@ -78,6 +78,10 @@ LOGINCTL="${ANODE_LOGINCTL:-loginctl}"
 UNIT_OVERRIDE="${ANODE_UNIT_PATH:-}"
 # 抓 PATH 用的登录 shell（测试钩子；也给登录 shell 不是 POSIX-ish 的机器一个明确出口）。
 LOGIN_SHELL="${ANODE_LOGIN_SHELL:-}"
+# 「这台机器上是不是已经装过一份」的**探测**根（测试钩子；默认空 = 真宿主 /）。
+# 只影响探测（读谁的配置/要不要去停宿主服务），不影响任何落盘路径；用例用它把诱饵
+# 种进临时目录，验证 `--prefix` 不会把宿主那份真安装读进来。详见 host_default。
+HOST_ROOT="${ANODE_HOST_ROOT:-}"
 
 # ---- 运行期状态 ----
 TMP=""
@@ -193,6 +197,8 @@ usage() {
 
 环境变量：ANODE_VERSION、ANODE_DOWNLOAD_URL、ANODE_DOWNLOAD_BASE、ANODE_CHECKSUM_URL、
 ANODE_SUDO、ANODE_SYSTEMCTL、ANODE_LOGINCTL、ANODE_UNIT_PATH、ANODE_LOGIN_SHELL、ANODE_PREFLIGHT_SEC、ANODE_ARCH。
+测试钩子（正常环境不要设）：ANODE_UNIT_PATH、ANODE_LOGIN_SHELL、ANODE_HOST_ROOT —— 把 unit 落点 /
+抓 PATH 的登录 shell / 「已装过」探测用的宿主落点搬进临时目录。
 
 重跑同一条命令 = 升级；退出码 0 成功，2 为用法/下载/校验/预检/服务失败。
 EOF
@@ -776,6 +782,23 @@ check_prefix_service_combo() {
 	esac
 }
 
+# ---------- 宿主默认落点探测（≠ 落盘） ----------
+#
+# 脚本要回答两个「这台机器上已经装过一份吗」的问题：要不要把现有 anode.yaml 当成本次
+# 安装的升级来源（令牌/中枢/名字都从它读回），以及有没有正在跑的旧实例要先停。
+#
+# 这两个问题**只能看这次安装自己的落点**。`--prefix DIR` 就是另一份安装（staging /
+# 容器 / CI 的一次性目录），旧代码却在 prefix 之外还兜底看宿主默认落点，实测后果：
+#   · 宿主 /etc/anode/anode.yaml 的令牌被当成这次的令牌 → 预检拿别人的令牌连中枢，
+#     报「令牌不对」而不是「缺少 --token」；摘要还会说「升级完成」，因为 UPGRADE=yes；
+#   · 宿主 /etc/systemd/system/anode.service 被当成「本次安装的旧实例」→ 先 sudo
+#     systemctl stop 掉（失败时再 start 回来）宿主正在跑的生产节点。
+# 后者直接违反 docs/anode-install.md「staging 不启动/改动宿主服务」。
+#
+# ANODE_HOST_ROOT 是测试钩子（同 ANODE_UNIT_PATH）：把宿主默认落点整体搬到一个可写的
+# 根，用例才能在临时目录里种一份诱饵来验证上面两条。正常环境不要设。
+host_default() { printf '%s%s' "${HOST_ROOT%/}" "$1"; }
+
 # ---------- 已有配置（重跑 = 升级靠它） ----------
 cfg_get() { # cfg_get <file> <key>
 	[ -f "$1" ] || return 0
@@ -785,7 +808,18 @@ cfg_get() { # cfg_get <file> <key>
 
 read_existing_config() {
 	EXIST_CONFIG=""
-	for _f in "$CONFIG" "${RUN_HOME}/.anode/anode.yaml" /etc/anode/anode.yaml; do
+	# --prefix 下只认 prefix 自己那份配置：宿主的 /etc/anode/anode.yaml 属于另一份安装。
+	if [ -n "$PREFIX" ]; then
+		_c1=$CONFIG
+		_c2=""
+		_c3=""
+	else
+		# 没给 prefix 时保留宿主兜底：老机器上的配置可能不在默认位置（用户服务布局 / v3 遗留）。
+		_c1=$CONFIG
+		_c2="${RUN_HOME}/.anode/anode.yaml"
+		_c3=$(host_default /etc/anode/anode.yaml)
+	fi
+	for _f in "$_c1" "$_c2" "$_c3"; do
 		[ -n "$_f" ] || continue
 		if [ -f "$_f" ]; then
 			EXIST_CONFIG=$_f
@@ -1036,7 +1070,11 @@ stop_old_service() {
 	fi
 	_stopped="no"
 	if [ "$SUDO_MODE" != "none" ] && has_systemctl; then
-		if [ -f "$UNIT_FILE" ] || [ -f "/etc/systemd/system/${UNIT_BASENAME}" ]; then
+		# --prefix 下只有 prefix 里的 unit 才算「本次安装的旧实例」：宿主的同名 unit 是另一份
+		# 安装，停它/再把它 start 回来就是改了宿主服务（staging 契约不允许）。
+		_host_unit=""
+		[ -n "$PREFIX" ] || _host_unit=$(host_default "/etc/systemd/system/${UNIT_BASENAME}")
+		if [ -f "$UNIT_FILE" ] || { [ -n "$_host_unit" ] && [ -f "$_host_unit" ]; }; then
 			if systemctl_system stop "$UNIT_BASENAME" 2>/dev/null; then
 				_stopped="yes"
 				STOPPED_UNIT="system"
