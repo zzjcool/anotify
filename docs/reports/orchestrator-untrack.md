@@ -1,6 +1,6 @@
 <!-- snapshot-doc: 2026-11-19 把 .pi-orchestrator/ 摘出版本时的一次性台账（数字是那天的定格，复算命令见各节） -->
 
-# 把 `.pi-orchestrator/` 摘出版本 · 台账
+# 把 `.pi-orchestrator/` 摘出版本（PR #445）· 台账
 
 > **本表的路径写法**：所有「原路径」列都**省略** `.pi-orchestrator/` 前缀 —— 那个目录已不入库，
 > 在仓库文件里带前缀写它现在就是死链，`scripts/check-doc-links.mjs` 会判红（§5）。
