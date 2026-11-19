@@ -538,7 +538,7 @@ receivers:
     perm_denied: Notification permission not granted ({perm}). Please allow in browser settings and retry.
     registering_sw: Registering Service Worker…
     getting_vapid: Getting VAPID public key…
-    no_backend: Backend not connected — can't get the VAPID key. Make sure the server is running (run make dev locally), then retry.
+    no_backend: Backend not connected — can't get the VAPID key. Make sure the server is running, then retry.
     empty_vapid: VAPID public key is empty
     subscribing: Subscribing to push…
     reporting: Reporting subscription…
@@ -690,7 +690,7 @@ keys:
   error:
     no_scope: Please select at least one scope
     no_plaintext: Server did not return the Key plaintext
-    create_failed: 'Create failed: {msg}. Make sure the server is running, then retry (run make dev locally to start one).'
+    create_failed: 'Create failed: {msg}. Make sure the server is running, then retry.'
   emptyTitle: 'No API keys yet'
 security:
   title: Security & Login
@@ -800,7 +800,7 @@ security:
 
 
       Once the backend is ready, this will trigger system biometrics.'
-    backend_down: Cannot reach the backend. Make sure the server is running and served over HTTPS (run make dev locally), then try adding the passkey again.
+    backend_down: Cannot reach the backend. Make sure the server is running and served over HTTPS, then try adding the passkey again.
   toast:
     renamed: Renamed
     rename_failed: 'Rename failed: {msg}'
@@ -1105,7 +1105,7 @@ passkeyenroll:
     success_desc: A passkey for "{name}" was created. It can sign in directly next time.
     done: Done
     restart: Start over
-    error_backend_desc: Cannot reach the backend. Make sure the server is running and served over HTTPS (run make dev locally), then retry.
+    error_backend_desc: Cannot reach the backend. Make sure the server is running and served over HTTPS, then retry.
     denied_title: Enrollment denied
     denied_desc: No credential was created. If this wasn't you, check whether someone is trying to sign in to your account.
     expired_title: Session expired
@@ -2319,7 +2319,7 @@ pb:
     remove_file: "Remove file from template"
     export: "Export complete raw file map"
     import_map: "Import complete file-map JSON (draft only)"
-    save_template: "PUT whole template"
+    save_template: "Save whole template"
     reload_template: "Reload template (discard draft)"
     delete_manifest: "Delete manifest only"
     delete_hint: "Not an uninstall: capabilities, sources and receipts remain. Deletion requires current resourceVersion and confirmation."

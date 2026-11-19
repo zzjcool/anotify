@@ -76,10 +76,12 @@ check-i18n-keys: ## i18n 键守卫：模板引用的 key 必须在 4 份 locale 
 	node scripts/check-i18n-keys.mjs --self-test
 	node scripts/check-i18n-keys.mjs
 
-check-ui-copy: ## 文案检查：用户可见文案（locale 值）里不许出现开发过程叙述（迁移/工单号/v4/构建工具/对开发者喊话）
+check-ui-copy: ## 文案检查：用户可见文案（locale 值 + 页面文本节点）里不许出现开发过程叙述（迁移/工单号/v4/构建命令/对开发者喊话）
 	@# 事故：`9ec8afff`（PR #447）节点页挂着「命名空间与系统配置不在这页…已迁到…」，
 	@# 用户看到直接问「搞笑吧？你没有审核出来吗？」。check-i18n-keys 只验键在不在，
 	@# 验不了「这条文案写得对不对」，所以任何旁白都能绿到生产。
+	@# #458：扫描面从「只有 locale 值」扩到「页面模板的文本节点」—— 散文本来就会落在
+	@# 页面上（当时的「写给维护者与排障者」就写在 docs 页的 <p> 里）。
 	node scripts/check-ui-copy.mjs --self-test
 	node scripts/check-ui-copy.mjs
 
