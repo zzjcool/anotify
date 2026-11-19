@@ -82,7 +82,11 @@ const GLOB_CHARS_RE = /[*?[\]{}<>$]/;
  * @param {(rev:string, path:string)=>boolean} blobAt  rev 下是否有这个 blob
  */
 export function classify(ref, tracked, blobAt, isProvenance = false) {
-	if (ref.rev) return blobAt(ref.rev, ref.target) ? "REF_HIST" : "REF_DEAD";
+	if (ref.rev) {
+		// 三态：blob=有；no-blob=rev 在但路径不在（真死链）；no-rev=这个 clone 里没有该 rev
+		// （CI 默认浅克隆，历史对象本就取不到 —— 不可核验 ≠ 悬空，不能判红）
+		return blobAt(ref.rev, ref.target) === "no-blob" ? "REF_DEAD" : "REF_HIST";
+	}
 	if (isProvenance) return migratedHome(ref.suffix, tracked) ? "REF_MIGRATED" : "REF_DEAD";
 	if (ref.suffix === "") return "REF_LOCAL"; // 光秃秃的 `.pi-orchestrator/`
 	if (GLOB_CHARS_RE.test(ref.suffix)) return "REF_LOCAL"; // 通配/占位符：不是具体文件
@@ -107,7 +111,9 @@ function selfTest() {
 		["根 `.pi-orchestrator/v4/{CONTRACT,PLAN}.md`", [], 1, "REF_LOCAL"], // doc-links-ignore
 		// 历史 blob：只要求那个 rev 下真有这个对象
 		["git show 9022863:.pi-orchestrator/v4/f3.mjs", [], 1, "REF_HIST"], // doc-links-ignore
-		["git show 1111111:.pi-orchestrator/v4/f3.mjs", [], 1, "REF_DEAD"], // doc-links-ignore
+		// rev 在但路径不在 → 真死链；rev 不在（浅克隆）→ 不可核验，仍算 HIST
+		["git show HEAD:.pi-orchestrator/v4/f3.mjs", [], 1, "REF_DEAD"], // doc-links-ignore
+		["git show 1111111:.pi-orchestrator/v4/f3.mjs", [], 1, "REF_HIST"], // doc-links-ignore
 		// 没有该前缀：零命中
 		["`scripts/e2e/affected-map.mjs`", [], 0, null],
 		// 迁移声明：落点存在 → 绿；落点不存在 → 红（来历也得能核验）
@@ -118,7 +124,12 @@ function selfTest() {
 		["> 迁移自 .pi-orchestrator/v4/TRACKER.md（2026-11-19）", // doc-links-ignore
 			["docs/history/v4-dispatch/TRACKER.md"], 1, "REF_MIGRATED"], // 改了目录名，按 basename 对
 	];
-	const blobAt = (rev, p) => rev === "9022863" && p === `${PREFIX}/v4/f3.mjs`;
+	// 三态桩：blob（有）/ no-blob（rev 在、路径不在）/ no-rev（浅克隆里没有该 rev）
+	const blobAt = (rev, p) => {
+		if (rev === "9022863" && p === `${PREFIX}/v4/f3.mjs`) return "blob";
+		if (rev === "1111111") return "no-rev";
+		return "no-blob";
+	};
 	let ok = true;
 	for (const [line, trackedList, want, expect] of cases) {
 		const tracked = new Set(trackedList);
@@ -148,15 +159,22 @@ function main(argv) {
 	const blobAt = (rev, path) => {
 		const key = `${rev}:${path}`;
 		if (blobCache.has(key)) return blobCache.get(key);
-		let hit = false;
+		// 先判 rev 在不在：CI 是浅克隆，历史 rev 取不到时不能把「不可核验」当成「悬空」
+		try {
+			list(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+		} catch {
+			blobCache.set(key, "no-rev");
+			return "no-rev";
+		}
+		let state;
 		try {
 			list(["cat-file", "-e", `${rev}:${path}`]);
-			hit = true;
+			state = "blob";
 		} catch {
-			hit = false;
+			state = "no-blob";
 		}
-		blobCache.set(key, hit);
-		return hit;
+		blobCache.set(key, state);
+		return state;
 	};
 
 	for (const file of tracked) {
