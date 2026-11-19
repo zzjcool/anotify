@@ -27,8 +27,11 @@
     },
     {
       "suite": "ui_shift",
-      "case": "*",
-      "reason": "整套没有 results：runner 上 Chrome 渲染进程整批死亡；同一份代码本地 3–5s 通过",
+      "case": [
+        "*",
+        "interact-dialogs"
+      ],
+      "reason": "runner 上这套以两种形态死：① 整套没有 results（Chrome 渲染进程整批死亡）② 单个 case 死（page.evaluate: Target page, context or browser has been closed，f3-ui-helper.mjs:126 authFlag → gotoPage）。同一条环境故障的两种观测形态，用一个条目同时登记；本地同代码 3-5s 通过",
       "tracking": "#431"
     }
   ]
