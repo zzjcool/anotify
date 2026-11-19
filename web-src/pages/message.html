@@ -219,6 +219,7 @@
     let emissionCursor = "";
     let emissions = new Map();
     let emissionBusy = false;
+    let emissionsCard = null;
     let loading = false;
     let revision = 0;
     const terminal = new Set(["succeeded", "failed", "cancelled", "abandoned"]);
@@ -384,8 +385,9 @@
       box.append(el("div", { class: "devf-body" }, json(value, label)));
       return box;
     }
+    /* 环境诊断的行（名字 + 来源）。调用方先判空：没数据就不出这块，
+       也不写「没有保留…」这类占位句。 */
     function envRows(facts) {
-      if (!facts.length) return el("p", { class: "card-sub", text: t("message.v4.env_empty") });
       const list = el("dl", { class: "grid b2-facts gap-4" });
       // Model strips values and unknown diagnostic fields, including per attempt.
       facts.forEach(fact => list.append(field(fact.name, fact.source)));
@@ -509,8 +511,6 @@
           el("span", { text: unset.join(" · ") })));
       }
       facts.append(devFold(devEntries));
-      facts.append(el("p", { class: "card-sub", text: t("message.v4.wait_hint") }),
-        el("p", { class: "card-sub", text: t("message.v4.lease_hint") }));
       const actions = el("div", { class: "flex flex-wrap gap-2" });
       for (const kind of ["cancel", "abandon"]) {
         const button = el("button", { id: "task-" + kind, class: "btn btn-ghost", type: "button", text: t("message.v4." + kind) });
@@ -521,8 +521,11 @@
       facts.append(actions, el("div", { id: "task-action-error", role: "status" }));
       const params = section(t("message.v4.params"), "task-params");
       params.append(kvList(task.params, t("uxaudit.dev.none"), ""), rawFold(t("message.v4.params"), task.params));
-      const env = section(t("message.v4.env"), "task-env");
-      env.append(el("p", { class: "card-sub", text: t("message.v4.env_hint") }), envRows(task.envDiagnostics));
+      /* C-4：没有数据的块整块不占版面 —— 标题与空态都不渲染，只留真有的内容。 */
+      if (task.envDiagnostics.length) {
+        const env = section(t("message.v4.env"), "task-env");
+        env.append(el("p", { class: "card-sub", text: t("message.v4.env_hint") }), envRows(task.envDiagnostics));
+      }
       const result = section(t("message.v4.result"), "task-result");
       /* #375：结果 = 摘要 + 结构化错误 + 产物清单；原始 JSON 进「查看原始」。
          注：产物 sha256 保留在首屏 —— 它是下载寻址的清单哈希（不是内部字段）。 */
@@ -531,22 +534,27 @@
       if (task.result.error) result.append(errorFacts(task.result.error));
       task.result.artifacts.forEach(artifact => result.append(artifactRow(artifact)));
       result.append(rawFold("JSON", { summary: task.result.summary, error: task.result.error }));
-      const attempts = section(t("message.v4.attempts"), "task-attempts");
-      task.attempts.forEach((fact, index) => {
-        const { envDiagnostics, ...safeFacts } = fact;
-        /* #374 rework：attempt 的原始事实（configRevision / namespaceVarsRevision 等）默认不进首屏，
-           与任务级「开发者信息」共用同一套折叠语言；多次尝试时用 #n 区分（语言中立，不新增文案）。 */
-        const box = el("details", { class: "devf" });
-        box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.raw") }),
-          task.attempts.length > 1 ? el("span", { class: "devf-hint", text: "#" + (index + 1) }) : null));
-        const body = el("div", { class: "devf-body" });
-        body.append(json(safeFacts, "JSON"));
-        box.append(body);
-        attempts.append(box, envRows(envDiagnostics));
-      });
-      if (!task.attempts.length) attempts.append(el("p", { class: "card-sub", text: t("message.v4.attempts_empty") }));
+      if (task.attempts.length) {
+        const attempts = section(t("message.v4.attempts"), "task-attempts");
+        task.attempts.forEach((fact, index) => {
+          const { envDiagnostics, ...safeFacts } = fact;
+          /* #374 rework：attempt 的原始事实（configRevision / namespaceVarsRevision 等）默认不进首屏，
+             与任务级「开发者信息」共用同一套折叠语言；多次尝试时用 #n 区分（语言中立，不新增文案）。 */
+          const box = el("details", { class: "devf" });
+          box.append(el("summary", {}, el("span", { text: t("uxaudit.dev.raw") }),
+            task.attempts.length > 1 ? el("span", { class: "devf-hint", text: "#" + (index + 1) }) : null));
+          const body = el("div", { class: "devf-body" });
+          body.append(json(safeFacts, "JSON"));
+          box.append(body);
+          attempts.append(box);
+          if (envDiagnostics.length) attempts.append(envRows(envDiagnostics));
+        });
+      }
       renderLogsControls();
       const emitted = section(t("message.v4.emissions"), "task-emissions");
+      /* emit 事实是异步拉的：先藏整块，拿到东西再显出来（没拿到就是没这块）。 */
+      emissionsCard = emitted.parentElement;
+      if (emissionsCard) emissionsCard.hidden = true;
       emitted.append(el("div", { id: "emissions-list", class: "grid gap-4" }),
         el("div", { id: "emissions-error", role: "status" }));
       const more = el("button", { id: "emissions-more", class: "btn btn-ghost", type: "button", text: t("events.v4.more") });
@@ -630,9 +638,17 @@
             el("span", { "data-raw-content": "", text: fact.pruned.detail })));
           list.append(row);
         }
-        if (!emissions.size) list.append(el("p", { class: "card-sub", text: t("message.v4.emissions_empty") }));
+        if (!emissions.size) {
+          /* 没有 emit 就是没有：不写「没有保留的 emit 事实」。 */
+          if (emissionsCard) emissionsCard.hidden = true;
+        } else if (emissionsCard) {
+          emissionsCard.hidden = false;
+        }
       } catch (error) {
-        if (current === revision) node("emissions-error").replaceChildren(inlineFailure(error, () => loadEmissions(more)));
+        if (current === revision) {
+          if (emissionsCard) emissionsCard.hidden = false;
+          node("emissions-error").replaceChildren(inlineFailure(error, () => loadEmissions(more)));
+        }
       } finally {
         if (current === revision) {
           emissionBusy = false;

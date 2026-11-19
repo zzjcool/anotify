@@ -133,6 +133,12 @@ export async function playbook(d,mode){
     await page.locator('#pb-receipt').scrollIntoViewIfNeeded(); await shot('repeat-fold-single-receipt');
     const routes = (await calls()).map(c => c.url); assert.ok(routes.every(p => !p.endsWith('/deploy')));
     assert.equal(await page.locator('#pb-receipt a').last().getAttribute('href'), 'capabilities.html?namespace=default');
+    /* B-4（结构性）：playbook 里对**源**的引用只能链到现存的只读详情页。
+       旧链接指向已删除的 source.html（现在 404）——“点了引用跳进死路”就是这么坏的。 */
+    const sourceRefs = page.locator('#pb-receipt [data-receipt-axis] a[href^="source-detail.html?"]');
+    assert.ok(await sourceRefs.count() >= 1, '回执里源的引用必须链到 source-detail.html（实际：' + await page.locator('#pb-receipt').innerText() + '）');
+    assert.match(await sourceRefs.first().getAttribute('href'), /^source-detail\.html\?namespace=default&name=/);
+    assert.equal(await page.locator('#pb-receipt a[href^="source.html"]').count(), 0, '不得再链回已删除的 source.html');
     check('Render differs from dryRun; all-state0 dry run, real repeat creates new receipts, digest-fold group/single receipt, exact writeOnly mask/provenance and manual-only deploy CTA');
     await clean('install');
   }
@@ -209,7 +215,11 @@ export async function playbook(d,mode){
     assert.notEqual(changedAgain['README.md'], changed['README.md']);
     assert.notEqual(current.metadata.resourceVersion, raw.metadata.resourceVersion, 'Concurrent PUT setup must advance CAS before testing DELETE409');
     await acceptDialog(page, () => page.locator('#pb-delete').click());
-    await page.waitForFunction(() => document.querySelector('#pb-delete-state').textContent.includes('Stale CAS'));
+    /* 409 的提示文案已经本地化（旧断言钉的是 `Stale CAS` 这串英文，与产品文案无关）。
+       改成从运行时字典取值再断言 —— 四语都对，且改词不会假红。 */
+    const staleHint = await page.evaluate(() => window.AnotifyI18n && window.AnotifyI18n['pb.v4.delete_stale']);
+    assert.equal(typeof staleHint, 'string', '字典必须有 pb.v4.delete_stale');
+    await page.waitForFunction((hint) => (document.querySelector('#pb-delete-state')?.textContent || '').includes(hint), staleHint);
     assert.equal((await req('/v1/namespaces/default/playbooks')).items.length, 1);
     await page.locator('#btn-rescan').click(); await page.waitForFunction(() => !document.querySelector('#btn-rescan').disabled);
     const installed = await req(basePath + '/installs');

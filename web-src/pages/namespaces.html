@@ -3,14 +3,6 @@
 <style>
   .c2-stack { display: grid; gap: 16px; min-width: 0; }
   .c2-note { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-  /* 旁白折叠（与节点页同一套：原文不删，只是默认收起） */
-  .nd-more { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-1); }
-  .nd-more > summary { padding: 8px 12px; font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
-  .nd-more > summary::-webkit-details-marker { display: none; }
-  .nd-more > summary::before { content: "▸"; color: var(--faint); }
-  .nd-more[open] > summary::before { content: "▾"; }
-  .nd-more > summary:hover { color: var(--text); }
-  .nd-more-body { padding: 0 12px 12px; margin: 0; }
   /* 列表用「行」而不是表格：手机（390px）上表格的 min-content 会撑出横向滚动，
      ui_shift 的 #384 门禁把「主内容需要横滚才能读」判为失败。行 + 自动换行的
      chip 在窄屏自然折成两行，信息一个不少。 */
@@ -35,10 +27,6 @@
     <div class="page-actions"><button id="ns-refresh" class="btn btn-ghost" type="button">{{t "namespaces.v4.refresh"}}</button></div>
   </div>
   <section class="card" aria-live="polite"><div id="ns-list" class="nsl-list"><div class="nsl-message c2-note">{{t "namespaces.v4.loading"}}</div></div></section>
-  <details class="nd-more">
-    <summary>{{t "namespaces.v4.note_summary"}}</summary>
-    <p class="c2-note nd-more-body">{{t "namespaces.v4.note_body"}}</p>
-  </details>
 </div></div>
 {{end}}
 {{define "script"}}

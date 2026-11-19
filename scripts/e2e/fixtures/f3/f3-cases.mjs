@@ -122,6 +122,8 @@ add('namespace-system',d=>nodeRetained(d,'namespace-system'),{expectHttpStatus:[
 ]});
 // node-config：配置保存会拿到一个**真的** resource_version 冲突（用例先并发 PUT 改 rv，
 // 再从页面上用旧 rv 保存），页面必须保留草稿并显示 409。
+// B-1：写入口只有 YAML —— 页面发的是 PUT …/yaml（`/config` 的 PUT 已从页面上消失）。
+// 409 仍然是 CAS 语义：并发写之后拿旧 rv 保存，服务端必须拒（页面上草稿逐字保留）。
 add('node-config',d=>nodeRetained(d,'config'),{expectHttpStatus:[
   {status:409,path:'/v1/nodes/anode-1/yaml',note:'resource_version_conflict：并发 PUT 之后用旧 rv 保存必须 409（#476 起 UI 写 YAML）'},
 ]});
@@ -395,7 +397,22 @@ add('node-deployments',async d=>{
   const tasks=d.page.locator('#node-tasks');
   await tasks.locator('.c2-row, .c2-note').first().waitFor({timeout:20000});
   assert.deepEqual(await tasks.locator('[data-raw-content]').allTextContents(),[],'任务区块不得是错误态');
-  d.check('F3-NODE-DEPLOY bare {deployments} rows render on the node page; same-page TaskList unaffected');
+  /* C-3（结构性）：最近任务默认只铺前几行（TASK_ROWS），超出时给一个「查看全部 N 条」。
+     期望值取页面自己那一发 TaskList（不做公式反推），且要求夹具造出的任务数确实超过
+     默认行数：行数不足时「截不截断」长一个样，这条断言就什么都没证。 */
+  const fixtureCount=d.fx('nodeTaskCount');
+  assert.ok(fixtureCount>=6,'夹具必须给这台节点造出超过默认行数的真实任务，否则截断不可观测（实际 '+fixtureCount+'）');
+  const taskList=(await d.calls()).findLast(c=>/\/tasks\?nodeId=/.test(c.url))?.response;
+  assert.ok(taskList&&Array.isArray(taskList.items),'节点页必须以 nodeId 读 TaskList（*List 信封）');
+  const nodeName=d.fx('node');
+  const mine=taskList.items.filter(t=>t.status?.nodeName===nodeName);
+  assert.ok(mine.length>=6,'节点页读回的最近任务必须 ≥6（实际 '+mine.length+'），否则下面两条分支都白跑');
+  const shown=await tasks.locator('.c2-row').count();
+  assert.equal(shown,Math.min(mine.length,5),'最近任务默认只铺 5 行（实际 '+shown+' / 共 '+mine.length+'）');
+  const allBtn=tasks.locator('#node-tasks-all');
+  assert.equal(await allBtn.count(),1,'超过 5 条时必须有「查看全部 N 条」（#node-tasks-all）');
+  assert.ok((await allBtn.innerText()).includes(String(mine.length)),'按钮文案必须带真实总数 '+mine.length+'（实际：'+await allBtn.innerText()+'）');
+  d.check('F3-NODE-DEPLOY bare {deployments} rows render on the node page; same-page TaskList unaffected, recent tasks capped at 5 with a view-all button');
 });
 add('graph-prod-node-click',async d=>{
   const traceUID=d.fx('prodTrace'),taskId=d.fx('prodTask');

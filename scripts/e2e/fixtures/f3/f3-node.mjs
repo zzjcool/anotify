@@ -187,7 +187,10 @@ export class FixtureNode {
     assert.ok(dispatch, `任务 ${taskId} 没有收到 task.dispatch（节点不是候选或已离线）`);
     this.accept(dispatch, slot === undefined ? this.freeSlot() : slot);
     const grant = await this.waitGrant(taskId);
-    assert.ok(grant, `任务 ${taskId} 的 task.accept 没有换来 lease.grant（配置未 apply 或预算拒绝）`);
+    /* 拒发时把最近几帧一并带出来：hub 只回一条 `reason`（stale_config / slot_unavailable…），
+       面板上看不到就只能在日志里翻 —— 这条信息是排查「派发了但接不住」的唯一线索。 */
+    assert.ok(grant, `任务 ${taskId} 的 task.accept 没有换来 lease.grant（配置未 apply 或预算拒绝）；最近帧：` +
+      JSON.stringify(this.frames.slice(-8).map((f) => ({ type: f.type, taskId: f.taskId, reason: f.reason, err: f.error }))));
     // 真的跑过这一次执行的节点一定有这次 attempt 的日志档案（哪怕一条都没有）：
     // 没有档案只可能是「不是这台机器跑的 / 被 GC」——那是 410 的另一条路径，
     // 不该被夹具的懒省事静默冒充。

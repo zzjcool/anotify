@@ -21,13 +21,22 @@ export async function observability(d, mode) {
  if(mode==='errors') { await page.goto(d.base+'/en/index.html?namespace=default',{waitUntil:'domcontentloaded'}); await page.waitForFunction(()=>!!window.Anotify); await page.evaluate(()=>window.__f3Fault='/console/events'); }
   if (mode === 'events') {
     await goto('events', 'namespace=default');
+    /* B-3：筛选栏**全即时** —— 每个控件 change 即查询，不再有「应用筛选」按钮。
+     * selectOption 自带 change；文本框先用 fill（它只发 input），再补**同一个 change**
+     * （浏览器在失焦时补的就是这个事件）—— 断的就是「change 即查询」这条接线本身。 */
+    assert.equal(await page.locator('#ev-filter').count(), 0, 'events 页不得再有「应用筛选」按钮');
+    const fireChange = (sel) => page.locator(sel).dispatchEvent('change');
     await page.locator('#ev-limit').selectOption('2');
-    await page.locator('#ev-filter').click();
     await page.waitForFunction(() => document.querySelectorAll('#ev-list article').length === 2);
     const first = (await calls()).findLast(call => call.url.includes('/console/events')).response;
     assert.equal(first.kind, 'EventList'); assert.ok(first.metadata.continue);
+    // D-2 的反面：还有下一页时它必须真的看得见，否则下面的 click 就是点空气。
+    assert.equal(await page.locator('#ev-more').isVisible(), true, '还有下一页时「加载更多」必须可见');
     await page.locator('#ev-more').click();
     await page.waitForFunction(() => document.querySelectorAll('#ev-list article').length === 4);
+    // D-2：这一页已经到底（所有事件都在）⇒「加载更多」整块 hidden，而不是只置灰占位。
+    await page.waitForFunction(() => document.getElementById('ev-more').hidden === true);
+    assert.equal(await page.locator('#ev-more').isVisible(), false, '到底后「加载更多」必须整块 hidden');
     await page.locator('#ev-refresh').click();
     await page.waitForFunction(() => !document.querySelector('#ev-refresh').disabled);
     assert.equal(await count('#ev-list article'), 4);
@@ -35,18 +44,26 @@ export async function observability(d, mode) {
     assert.equal(new Set(uids).size, 4);
     check('Actual EventList pagination and first-page UID refresh dedup');
     await page.locator('#ev-source').fill(d.fx('source'));
+    await fireChange('#ev-source');
     await page.locator('#ev-trace').fill(d.fx('defaultTrace'));
-    await page.locator('#ev-filter').click();
-    await page.waitForFunction(() => !document.querySelector('#ev-refresh').disabled);
-    const filtered = (await calls()).findLast(call => call.url.includes('/console/events'));
+    await fireChange('#ev-trace');
+    /* 两个 change 各发一次查询；等到**同时带两个参数**的那一发落地再断言（先到的那发
+       只有 source，拿它当结果就是拿一个中间态当事实）。 */
+    // 等的是**已经拿到响应**的那一发（__f3Calls 在 fetch 之前就 push，只等 url 会拿到半条记录）。
+    await page.waitForFunction(([source, trace]) => window.__f3Calls.some(call =>
+      call.url.includes('/console/events') && !!call.response &&
+      call.url.includes('source=' + encodeURIComponent(source)) &&
+      call.url.includes('traceId=' + encodeURIComponent(trace)) &&
+      !call.url.includes('continue=')), [d.fx('source'), d.fx('defaultTrace')]);
+    const filtered = (await calls()).filter(call => call.url.includes('/console/events') && call.response).at(-1);
     assert.ok(filtered.url.includes('source=' + encodeURIComponent(d.fx('source'))) && filtered.url.includes('traceId=' + encodeURIComponent(d.fx('defaultTrace'))));
     assert.ok(!filtered.url.includes('continue='));
     assert.ok(filtered.response.items.every(event => event.spec.traceUID === d.fx('defaultTrace')));
     await page.locator('#ev-namespace').selectOption('prod');
     await page.waitForFunction(() => document.querySelector('#ev-list').textContent.includes('No events'));
     assert.ok((await calls()).findLast(c => c.url.includes('/console/events')).url.includes('namespace=prod'));
-    await page.locator('#ev-source').fill(''); await page.locator('#ev-trace').fill('');
-    await page.locator('#ev-filter').click();
+    await page.locator('#ev-source').fill(''); await fireChange('#ev-source');
+    await page.locator('#ev-trace').fill(''); await fireChange('#ev-trace');
     await page.waitForFunction(() => document.querySelectorAll('#ev-list article').length === 2);
     const foreign = await page.evaluate(async token => {
       const response = await fetch('/v1/console/events?namespace=prod&continue=' + encodeURIComponent(token));
@@ -132,6 +149,27 @@ export async function observability(d, mode) {
     assert.equal(await page.locator('#kpi-failed').innerText(), String(failed));
     assert.equal(await page.locator('#kpi-devices').textContent(), '0');
     assert.equal(await page.locator('#kpi-rate').textContent(), '–');
+    /* C-1（结构性）：已经有事件 ⇒ 「从 0 到第一条事件」与「接入你的 Agent」两块都收起。
+       两块留在 DOM 里只切 hidden（排版/锚点不变），标记照旧置上——收起不等于没渲染过。 */
+    assert.ok(stats.body.total > 0, '夹具必须让这个命名空间真的有事件（实际 total=' + stats.body.total + '）');
+    assert.equal(await page.locator('#first-event').evaluate(n => n.hidden), true, '有事件时三步引导必须 hidden');
+    assert.equal(await page.locator('#quickstart').evaluate(n => n.hidden), true, '有事件时「接入你的 Agent」必须 hidden');
+    assert.equal(await page.locator('#first-event').getAttribute('data-ready'), '1', '收起不等于未渲染：data-ready 仍置 1');
+    assert.equal(await page.locator('#first-event').getAttribute('data-complete'), '1', '收起不等于未渲染：data-complete 仍置 1');
+    /* D-1（结构性）：失败 KPI 整个包在一个真链接里（数字本身可点）。目标页的 `status`
+       参数还没有服务端过滤（api/events.yaml 里没有 status）——这是已登记的遗留，不伪造。 */
+    const failedLink = page.locator('#kpi-failed-link');
+    assert.equal(await failedLink.count(), 1, '失败 KPI 必须有入口链接 #kpi-failed-link');
+    assert.equal(await failedLink.evaluate(n => n.tagName), 'A', '入口必须是 <a>（不是 div + onclick）');
+    assert.equal(await failedLink.getAttribute('href'), 'events.html?status=failed', '入口指向事件流的失败过滤');
+    assert.equal(await failedLink.locator('#kpi-failed').count(), 1, '链接必须包住 KPI 数字本身（#kpi-failed）');
+    /* C-2 的另一半：没有对比数据时不得写「暂无对比」这种散文 —— 要么收起并留空文本，
+       要么是真实数字（药丸里带数字）。 */
+    const trend = page.locator('#kpi-total-trend');
+    const trendHidden = await trend.evaluate(n => n.hidden);
+    const trendText = (await trend.textContent()).trim();
+    if (trendHidden) assert.equal(trendText, '', '趋势药丸收起时不得留文字（实际：' + trendText + '）');
+    else assert.match(trendText, /[0-9]/, '趋势药丸要么收起，要么是真实数字（不得写「暂无对比」）：' + trendText);
     assert.equal(await count('[data-push-tile]'), 2);
     assert.equal(await count('#index-events [data-uid]'), eventPage.body.items.length);
     assert.equal(await count('#hm .hm-cell'), 371);
