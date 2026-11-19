@@ -4,7 +4,7 @@
 - 证据: [`docs/reports/ui-audit-blackbox.md`](ui-audit-blackbox.md) B-2（黑盒审计 Top1）
 - 基线: `origin/main` @ `370fcd69`
 - 分支: `pi-subagent/hw-nj/anotify-455-c448d702`
-- PR: 见本分支的 PR（标题含 `Fixes #455`）
+- PR: [#463](https://github.com/zzjcool/anotify/pull/463)（`Fixes #455`）
 - 范围: **只修 #455**；#453 / #454 / #456 / #457 / #458 一行未动。
 
 ## 0. 选哪一个方案：**A. 顶栏切换 → 跳转 `namespace.html?name=<新ns>`**
