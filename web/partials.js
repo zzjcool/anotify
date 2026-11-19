@@ -880,7 +880,7 @@
 		// 存着的选择可能已经失效（换了账号、删了这个命名空间），回落到第一个。
 		// 全部模式下**不回落**：视图是「全部命名空间」，没有任何具体 ns 被选中
 		// （回落会把 #prod 画成选中态，与 KPI / 事件流的聚合口径自相矛盾）。
-		const nsId = allActive
+		let nsId = allActive
 			? ""
 			: list.some((n) => n.name === scopeNamespace())
 				? scopeNamespace()
@@ -1162,6 +1162,18 @@
 		// （空列表时写空串，语义 = "确实没有命名空间"，别留一个不存在的值）。
 		// 全部模式下**跳过**：这里没有「生效的某一个 ns」，写盘只会把别的页面带歪。
 		if (!allActive) saveScope({ namespace: nsId });
+
+		/* 页内控件改了范围（namespace.html 的 `#config-namespace`）时，顶栏必须跟着变：
+		 * 「显示 A、实际写 B」不能共存（#455）。只更新顶栏 DOM（触发器文案 + 菜单勾选），
+		 * **不写 URL、不 reload** —— URL 与数据归调用方（页面）自己管，页内切换的
+		 * ABA/CAS 判据依赖「同一份文档」，重新导航会把那套判据一起废掉。 */
+		function syncScope(name) {
+			if (allActive || !name || name === nsId) return;
+			if (!list.some((n) => n.name === name)) return;
+			nsId = name;
+			paint();
+		}
+		return { syncScope };
 	}
 
 	/* 导航 id → 所属分组标题。顶栏上下文（SH-4）用：一个页面属于“工作台 / 资源 / 管理”，
@@ -1196,14 +1208,22 @@
 				 *   scopeAllActive = 当前就在全部模式（URL 里没有具体 namespace）。 */
 				scopeAll: false,
 				scopeAllActive: false,
+				/* 本页的范围参数：全站默认 `?namespace=`；页面若用**别的** query 表达
+				 * 「本页看/改哪个命名空间」（namespace.html 的 `?name=`）就显式声明。
+				 * 不声明它，顶栏切换只改 localStorage，页面停在旧值 —— 也就是「顶栏显示
+				 * A、表单还在写 B」这条唯一的写错配置路径（#455）。 */
+				scopeParam: "",
 			},
 			opts || {},
 		);
 		/* 模块级旗标：全部模式页的 scope 引导/落盘一律短路（见 ensureScope /
 		 * adoptUrlNamespace）。其他页面永远是 false。 */
 		scopeAllMode = !!(o.scopeAll && o.scopeAllActive);
+		scopeParam = typeof o.scopeParam === "string" ? o.scopeParam.trim() : "";
 		// 侧栏、首帧与之后的读写必须看到同一个显式范围：先 adopt，再挂任何 DOM。
+		// 页面自有参数（`?name=`）比 `?namespace=` 更具体，后 adopt ⇒ 以它为准。
 		adoptUrlNamespace();
+		adoptScopeParam();
 		const pageMain = document.getElementById("page-main");
 		if (!pageMain) {
 			console.error('[partials] 需要 <div id="page-main"> 包裹主内容');
@@ -1241,6 +1261,8 @@
 				: t("scope.missing", "还没有确定命名空间");
 			scopeCrumbEl.dataset.ns = ns;
 		}
+		// 登记给 setScope()：页内控件改范围时顶栏面包屑必须一起重画（#455）。
+		scopeCrumbPaint = paintScopeCrumb;
 
 		function paintCollapseBtn() {
 			/* 文案说的是「点一下会发生什么」：展开态按钮的动作是「收起侧栏」。 */
@@ -1732,7 +1754,17 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		 * 首帧时 scope 可能还是空的（全新浏览器 / 深链），mountNamespaceSwitcher
 		 * 会在拿到列表后把真正生效的 name 写进 scope 并 resolve。 */
 		if (nsSwitcherReady && typeof nsSwitcherReady.then === "function") {
-			nsSwitcherReady.then(paintScopeCrumb).catch(() => {});
+			nsSwitcherReady
+				.then((switcherApi) => {
+					/* 登记切换器的「就地重新勾选」入口（拿不到就退化成只更新面包屑：
+					 * 顶栏至少不会在同一个动作之后显示旧 ns）。 */
+					scopeSwitcherSync =
+						switcherApi && typeof switcherApi.syncScope === "function"
+							? switcherApi.syncScope
+							: null;
+					paintScopeCrumb();
+				})
+				.catch(() => {});
 		}
 		/* P1：外壳已经挂载 —— 关掉 base.html <head> 里的预排版规则
 		 * （html:not([data-shell-ready]) #page-main 的左/上内距）。必须同步、同一任务，
@@ -1885,6 +1917,15 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 	 * 其他页面永远是 false —— 它们的单 ns 行为逐字不变。 */
 	let scopeAllMode = false;
 
+	/* 「当前范围」的两个顶栏显示面（面包屑 / 侧栏切换器）由 mountLayout 挂载时登记：
+	 * 页内控件改了范围时，setScope() 用它们把顶栏一起改掉（#455）。
+	 *   scopeCrumbPaint      —— 重画顶栏 `#<ns>` 面包屑
+	 *   scopeSwitcherSync    —— 把切换器换成新 ns（触发器文案 + 菜单 aria-checked）
+	 *   scopeParam           —— 本页用哪个 query 参数表达范围（空串 = 全站约定的 `namespace`） */
+	let scopeCrumbPaint = null;
+	let scopeSwitcherSync = null;
+	let scopeParam = "";
+
 	function readScope() {
 		try {
 			return JSON.parse(localStorage.getItem(SCOPE_KEY) || "{}") || {};
@@ -1942,15 +1983,71 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		return scope;
 	}
 
-	// 切换范围：持久化 scope 与 URL 的 `?namespace=` 一起改，再整页重载。
+	/* 页面自有的范围参数（mountLayout({scopeParam:"name"})）：namespace.html 的 `?name=`
+	 * 是**这一页要编辑的那个命名空间**，比 `?namespace=`（跳页深链的默认约定）更具体。
+	 *
+	 * 两者不一致时以页面参数为准，并把 `?namespace=` 同步成同一个值 —— 同一个「当前
+	 * 命名空间」不能在 URL 里写两个值，否则深链一刷新就有两种读法（#455）。
+	 * 不往 localStorage 写 `*`（那是首页的聚合视图，不是命名空间名，见 D1）。 */
+	function adoptScopeParam() {
+		if (!scopeParam || scopeParam === "namespace") return scope;
+		let explicit = "";
+		try {
+			explicit = (new URLSearchParams(location.search).get(scopeParam) || "").trim();
+		} catch (e) {
+			return scope; // 畸形 query 不是深链
+		}
+		if (!explicit || explicit === "*") return scope;
+		if (explicit !== scopeNamespace()) saveScope({ namespace: explicit });
+		try {
+			const url = new URL(location.href);
+			if (
+				url.searchParams.has("namespace") &&
+				url.searchParams.get("namespace") !== explicit
+			) {
+				url.searchParams.set("namespace", explicit);
+				history.replaceState(null, "", url.pathname + url.search + url.hash);
+			}
+		} catch (e) {
+			/* 没有 URL/history 的环境（file://）：内存与落盘已对齐，够用 */
+		}
+		return scope;
+	}
+
+	/* 页内控件改了范围时的统一入口：落盘 + 顶栏两个显示面一起更新。
+	 * **不写 URL、不 reload** —— 调用方（页面）自己决定要不要导航。
+	 * namespace.html 的 `#config-namespace` 故意保持页内切换（CAS/ABA 用同一份
+	 * 文档里的请求代号判新旧），所以只能在这里对齐「顶栏显示 == 实际编辑目标」(#455)。 */
+	function setScope(namespace) {
+		if (namespace && namespace !== scopeNamespace()) {
+			saveScope({ namespace: namespace });
+			if (scopeSwitcherSync) scopeSwitcherSync(namespace);
+		}
+		if (scopeCrumbPaint) scopeCrumbPaint();
+	}
+
+	// 切换范围：持久化 scope 与 URL 一起改，再整页重载。
 	// 只改 localStorage 的话，深链页 reload 时 adoptUrlNamespace() 会把用户刚选的
 	// 范围顶回 URL 里那个旧值 —— 切换器会变成摆设。
+	//
+	// #455：页面若用自有参数表达范围（namespace.html 的 `?name=`），**必须**一起改。
+	// 旧实现只认 `?namespace=`，于是在 `namespace.html?name=default` 上顶栏显示
+	// default-2、表单仍然写 default —— 同一页两套「当前命名空间」，也是唯一能把
+	// 配置写进错对象的一条路。
 	function switchScope(namespace) {
 		saveScope({ namespace: namespace });
 		try {
 			const url = new URL(location.href);
+			let changed = false;
 			if (url.searchParams.has("namespace")) {
 				url.searchParams.set("namespace", namespace);
+				changed = true;
+			}
+			if (scopeParam && scopeParam !== "namespace") {
+				url.searchParams.set(scopeParam, namespace);
+				changed = true;
+			}
+			if (changed) {
 				history.replaceState(null, "", url.pathname + url.search + url.hash);
 			}
 		} catch (e) {
@@ -4508,6 +4605,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		saveScope,
 		adoptUrlNamespace,
 		switchScope,
+		setScope,
 		ensureScope,
 		ready,
 		expectGraphics,
