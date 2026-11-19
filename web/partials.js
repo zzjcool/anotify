@@ -4294,6 +4294,39 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		};
 	}
 
+	/* 全站事件流的一行 —— `GET /v1/admin/messages`（api/auth.yaml · AdminEvent）。
+	 *
+	 * 这个端点的数据源是 **events**（#80：事件中心里没有「通知」这个实体），响应键名沿用
+	 * 历史的 `messages`，行是七个**扁平**字段（internal/store/admin.go · AdminGlobalEvent）：
+	 * id / namespaceId / source / type / traceId / deliveryId / createdAt。没有信封、
+	 * 也就没有 metadata/spec/status —— 所以这里不用 metaOf/specOf，直接读行。
+	 *
+	 * 管理后台「全局消息」表原来按旧通知实体读 title / username / agentState：三个名字服务端
+	 * 一个都不发，于是整表空白、第三列印出 `undefined` 徽章（#456）。字段名只在这一层读一次，
+	 * 页面拿 `model.adminEvent(row)` 渲染；scripts/admin-messages.test.mjs 就盯这一层
+	 * （把名字改回旧名 → 三列断言必红）。
+	 */
+	function modelAdminEvent(row) {
+		const r = isObj(row) ? row : {};
+		const str = (v) => (v == null ? "" : String(v));
+		return {
+			id: str(r.id),
+			namespaceId: str(r.namespaceId),
+			source: str(r.source),
+			type: str(r.type),
+			traceId: str(r.traceId),
+			/* 外部投递幂等键**可空串**（AdminEvent.deliveryId）：空串本身是事实
+			 * （人工/内部事件没有投递键），所以这里保持 ""，展示层自己决定画什么。 */
+			deliveryId: str(r.deliveryId),
+			/* createdAt 是 int64 Unix **秒**（其它模型里 creationTimestamp 是毫秒），
+			 * 页面用 fmtTime(unix) 乘 1000 交给 timeAgo。非数字一律给 null（→ "—"）。 */
+			createdAt:
+				typeof r.createdAt === "number" && Number.isFinite(r.createdAt)
+					? r.createdAt
+					: null,
+		};
+	}
+
 	function modelTrace(res) {
 		const r = isObj(res) ? res : {};
 		return {
@@ -4315,6 +4348,8 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 		edge: modelEdge,
 		event: modelEvent,
 		trace: modelTrace,
+		/* #456：管理后台「全局消息」表的行 —— 扁平的事件行，不是 resource 信封 */
+		adminEvent: modelAdminEvent,
 	};
 
 	/* v4 执行相位 → CSS 类名后缀（**唯一一份**，ST-5）。

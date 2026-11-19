@@ -1217,11 +1217,11 @@ admin:
     disable: Deshabilitar
     empty: Sin usuarios
   messages:
-    title: Título
-    user: Usuario
-    agent_state: Estado del Agente
+    type: Evento
+    source: Fuente
+    namespace: Espacio de nombres
     time: Hora
-    empty: Sin mensajes
+    empty: Sin eventos
   sessions:
     user: Usuario
     device: Dispositivo
@@ -1252,7 +1252,7 @@ admin:
     network: Error de red
   scopeChip: 'Todo el despliegue'
   usersEmptySub: 'Los usuarios aparecerán aquí cuando se registren'
-  messagesEmptySub: 'Los avisos informados por tus agentes se guardan aquí'
+  messagesEmptySub: 'Los eventos de tus fuentes aparecen aquí, del más reciente al más antiguo'
   sessionsEmptySub: 'Las conexiones activas de dispositivos aparecen aquí'
 events:
   load_failed_hint: 'Error al cargar: no se puede conectar al servidor, reintenta.'

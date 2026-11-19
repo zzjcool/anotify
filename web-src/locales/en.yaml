@@ -1217,11 +1217,11 @@ admin:
     disable: Disable
     empty: No users
   messages:
-    title: Title
-    user: User
-    agent_state: Agent State
+    type: Event
+    source: Source
+    namespace: Namespace
     time: Time
-    empty: No messages
+    empty: No events
   sessions:
     user: User
     device: Device
@@ -1252,7 +1252,7 @@ admin:
     network: Network error
   scopeChip: 'Deployment'
   usersEmptySub: 'Users show up here once they sign up'
-  messagesEmptySub: 'Notifications reported by your agents land here'
+  messagesEmptySub: 'Events from your sources appear here, newest first'
   sessionsEmptySub: 'Live device connections appear here'
 events:
   load_failed_hint: 'Failed to load: cannot reach the server, please retry.'

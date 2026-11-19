@@ -1217,11 +1217,11 @@ admin:
     disable: 無効化
     empty: ユーザーなし
   messages:
-    title: タイトル
-    user: ユーザー
-    agent_state: エージェント状態
+    type: イベント
+    source: ソース
+    namespace: 名前空間
     time: 時刻
-    empty: メッセージなし
+    empty: イベントなし
   sessions:
     user: ユーザー
     device: デバイス
@@ -1252,7 +1252,7 @@ admin:
     network: ネットワークエラー
   scopeChip: 'デプロイ全体'
   usersEmptySub: 'ユーザーが登録されるとここに表示されます'
-  messagesEmptySub: 'エージェントが報告した通知がここに残ります'
+  messagesEmptySub: 'ソースが受け取ったイベントがここに並びます'
   sessionsEmptySub: 'デバイスが常時接続するとここに表示されます'
 events:
   load_failed_hint: '読み込みに失敗：サーバーに接続できません。再試行してください。'
