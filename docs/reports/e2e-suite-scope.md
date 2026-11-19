@@ -42,11 +42,9 @@ $ git show origin/main:scripts/e2e/ci-e2e-verdict.mjs > .e2e-bin/verdict-repro/o
 $ git show origin/main:scripts/e2e/known-env-failures.json > .e2e-bin/verdict-repro/known-old.json
 $ printf '%s' '{"suite":"frontend","passed":41,"failed":1,"failures":["source-actions — 偶发 case 子进程死亡"]}' \
     > .e2e-bin/verdict-repro/suite/results/frontend.json
+$ # 调用方式与 §1.3 完全相同，只把脚本/清单换成上面两份基线副本，--selected "frontend ui_shift"
 
-$ node .e2e-bin/verdict-repro/old.mjs \
-    --results "$PWD/.e2e-bin/verdict-repro/suite/results" \
-    --known   "$PWD/.e2e-bin/verdict-repro/known-old.json" \
-    --selected "frontend ui_shift"
+# 输出（origin/main 判定器 + 旧清单）：
 ::warning title=已知环境性失败（已登记）::frontend / source-actions —— runner 上 case 子进程偶发死亡（case.json 未落盘 / locator 4500ms 撞线），本地同代码 3–5s 通过（追踪 #431）
 ::warning title=已知失败清单可以缩小::ui_shift / interact-dialogs 这次没失败 —— 删掉 known-env-failures.json 里那一行（棘轮只许变小）
 
