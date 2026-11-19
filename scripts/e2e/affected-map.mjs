@@ -140,6 +140,11 @@ export const SUITE_SURFACES = {
 		pages: ["admin", "capabilities", "capability", "sources", "source", "source-detail", "events", "trace", "message", "index", "playbooks", "playbook", "nodes", "node", "namespace", "namespaces", "security", "docs", "cli-auth", "login"],
 		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**"],
 	},
+	vars_ui: {
+		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）",
+		pages: ["node", "namespace"],
+		paths: ["web/vars-table.js", "internal/server/resource_namespace_yaml.go"],
+	},
 	i18n: {
 		why: "全部页面 × 4 语言的本地化 AC（批次遍历 PAGES）",
 		pages: "ALL",

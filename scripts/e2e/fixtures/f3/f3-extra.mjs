@@ -32,6 +32,7 @@ export async function bootstrap(d) {
 export async function aba(d) {
   const {page,goto,check,calls,req}=d;
   // IA（#436）：命名空间 vars 编辑器搬到了 namespace.html；ABA/CAS 判据逐字不变。
+  // #476：写入口从 PUT …/config 变成 PUT …/yaml（YAML 是唯一编辑面），拦截目标同步。
   await goto('namespace','namespace=default&name=default');
   await page.locator('#namespace-save:not([disabled])').waitFor();
   const original=await req('/v1/namespaces/prod/config');
@@ -39,7 +40,7 @@ export async function aba(d) {
     const raw=window.fetch;
     window.fetch=async(url,opts={})=>{
       const response=await raw(url,opts);
-      if(url==='/v1/namespaces/default/config'&&opts.method==='PUT')return new Promise(resolve=>{window.__f3Release=()=>resolve(response);});
+      if(url==='/v1/namespaces/default/yaml'&&opts.method==='PUT')return new Promise(resolve=>{window.__f3Release=()=>resolve(response);});
       return response;
     };
   });
@@ -56,6 +57,10 @@ export async function aba(d) {
   await page.selectOption('#config-namespace','default');await acceptReloadIfOpen();await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('OLD_SAVE'));
   await page.fill('#namespace-vars','{"NEW_DRAFT":"must-survive-old-response"}');
   const snapshot=()=>page.evaluate(()=>({draft:document.getElementById('namespace-vars').value,rv:document.getElementById('namespace-revisions').textContent,state:document.getElementById('namespace-state').textContent,disabled:document.getElementById('namespace-save').disabled,count:__f3Calls.length}));
+  // #476：切回 default 的 loadAll 在 textarea 之后还会把 vars 表再取一轮（节点有效值 + 能力
+  // 需求）。那是一次**与延迟响应无关**的收尾请求，先等网络落定再拍快照，否则「旧响应不得
+  // 新增请求」会被它打红（判据本身不变：release 之后 count 必须与 before 完全相同）。
+  await page.waitForLoadState('networkidle');
   const before=await snapshot();await page.evaluate(()=>window.__f3Release());
   // Event-loop barrier after the submitted fetch continuation; no fake callback/controller.
   await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));

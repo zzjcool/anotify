@@ -601,6 +601,9 @@ export const SUITE_PORTS = {
 	// live_agent：真 anode CLI/生命周期（HTTP + 子进程，无 Chrome）。固定端口段，
 	// 别再退回随机段（随机段会与其他 worktree 的套件撞端口，表现为随机 401/0通过0失败）。
 	live_agent: 7350,
+	// vars_ui（#476）：节点页/命名空间页的可视化 vars（Chrome 类，真 server）。
+	// 接在 live_agent 段之后：固定段避免与其他 worktree 的同名套件抢端口。
+	vars_ui: 7450,
 };
 
 // findFreePort(base): 用 net.listen 探测端口是否可用，冲突 +1 重试（最多 50 次）。
