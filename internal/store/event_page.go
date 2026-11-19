@@ -14,15 +14,25 @@ import (
 // 等价性由 v4test 的 TestEventPageEquivalence 兜住（改剪枝规则时它会红）。
 func (d *DB) ListEventsBefore(ctx context.Context, namespaceID, traceID, source string,
 	beforeCreatedAt int64, beforeID string, limit int) ([]*Event, error) {
+	return d.ListEventsBeforeWithOrigin(ctx, namespaceID, traceID, source, "",
+		beforeCreatedAt, beforeID, limit)
+}
+
+// ListEventsBeforeWithOrigin 是 ListEventsBefore 的**来源类别**版（口径见 ListEventsWithOrigin）。
+func (d *DB) ListEventsBeforeWithOrigin(ctx context.Context, namespaceID, traceID, source, origin string,
+	beforeCreatedAt int64, beforeID string, limit int) ([]*Event, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
+	}
+	if origin != "" && !IsEventOrigin(origin) {
+		return nil, fmt.Errorf("list events before: origin %q 不在封闭集合内（source/test）", origin)
 	}
 	// limit 夹取必须与 ListEvents 同一实现：两个函数的差别只允许是游标谓词，
 	// 否则游标分页的第 1 页与后续页会取到不同窗口。
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	q, args := eventPageQuery(namespaceID, traceID, source, beforeCreatedAt, beforeID, limit)
+	q, args := eventPageQuery(namespaceID, traceID, source, origin, beforeCreatedAt, beforeID, limit)
 
 	rows, err := d.cachedQueryContext(ctx, q, args...)
 	if err != nil {
@@ -44,21 +54,11 @@ func (d *DB) ListEventsBefore(ctx context.Context, namespaceID, traceID, source 
 //
 // 单独抽出来是为了让 EXPLAIN QUERY PLAN 断言跑在**真实**语句上：把 SQL 复制一份到
 // 测试里写着更省事，但那是在断言测试自己的副本——真实查询换了谓词测试照样绿。
-func eventPageQuery(namespaceID, traceID, source string,
+func eventPageQuery(namespaceID, traceID, source, origin string,
 	beforeCreatedAt int64, beforeID string, limit int) (string, []any) {
 	q := `SELECT ` + eventColumns + ` FROM events WHERE namespace_id = ?`
 	args := []any{namespaceID}
-	if traceID != "" {
-		q += ` AND trace_id = ?`
-		args = append(args, traceID)
-	}
-	if source != "" {
-		q += ` AND source = ?`
-		args = append(args, source)
-	} else if traceID == "" {
-		q += ` AND source <> ?`
-		args = append(args, EventPruneSource)
-	}
+	q, args = eventFilterClause(q, args, traceID, source, origin)
 	// 游标：严格「更旧」。同一 created_at 可能有多行（同秒批量落库是常态），
 	// 所以破平局必须带 id——只按 created_at 比较会在页边界丢行或重复行。
 	q += ` AND (created_at < ? OR (created_at = ? AND id < ?))`

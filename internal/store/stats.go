@@ -146,8 +146,10 @@ func (d *DB) taskRefCounts(ctx context.Context, query string, args ...any) ([]Re
 // 给出不同数字，而且改动只会改到一半。EXPLAIN 计划断言（stats_all_test.go）也直接对
 // 这几个常量跑，所以「查询走哪个索引」同样只有一处真源。
 const (
-	statsTotalSQL = `SELECT COUNT(*) FROM events WHERE namespace_id=?`
-	statsTodaySQL = `SELECT COUNT(*) FROM events WHERE namespace_id=? AND created_at >= ?`
+	// 事件数口径**排除人工试跑**（origin='test'）：试跑是真实执行，但它不是
+	// 「外部世界发生了什么」——把它计进工作台卡片等于人工动作放大业务量（L-D6）。
+	statsTotalSQL = `SELECT COUNT(*) FROM events WHERE namespace_id=? AND origin <> 'test'`
+	statsTodaySQL = `SELECT COUNT(*) FROM events WHERE namespace_id=? AND origin <> 'test' AND created_at >= ?`
 	// 终态集合：succeeded 计入分子，四个终态计入分母（pending/running 不计）。
 	statsTasksSQL = `SELECT
 		   COALESCE(SUM(CASE WHEN phase = ? THEN 1 ELSE 0 END),0),
@@ -164,7 +166,7 @@ const (
 	// 这个极小边界偏差，也不要依赖 SQLite 读进程 TZ 这种不可测的全局状态。
 	statsDailySQL = `SELECT strftime('%Y-%m-%d', created_at + ?, 'unixepoch') AS day, COUNT(*)
 		 FROM events
-		 WHERE namespace_id=? AND created_at >= ?
+		 WHERE namespace_id=? AND origin <> 'test' AND created_at >= ?
 		 GROUP BY day ORDER BY day`
 )
 

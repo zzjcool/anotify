@@ -40,6 +40,9 @@ type Prune struct {
 	Reason string `json:"reason"`
 	// Detail 是给人看的补充（缺哪个参数、哪个字段类型不对），不参与任何判定。
 	Detail string `json:"detail,omitempty"`
+	// Field 是导致剪枝的参数路径（如 `params.diff`），只用于把 400 的
+	// details.causes[].field 指到具体字段。**不进 wire**：pruned[] 的形状不变。
+	Field string `json:"-"`
 }
 
 // paramProperty 是 JSON Schema 子集里的一个属性声明。
@@ -217,7 +220,7 @@ func PrepareParams(schema json.RawMessage, input map[string]any) (json.RawMessag
 		prop := s.properties[name]
 		if value, ok := input[name]; ok {
 			if detail := prop.check(name, value); detail != "" {
-				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: detail}
+				return nil, &Prune{Reason: protocol.ReasonParamType, Detail: detail, Field: "params." + name}
 			}
 			out[name] = value
 			continue
@@ -231,7 +234,8 @@ func PrepareParams(schema json.RawMessage, input map[string]any) (json.RawMessag
 		}
 	}
 	if len(missing) > 0 {
-		return nil, &Prune{Reason: protocol.ReasonParamMissing, Detail: "需要 " + strings.Join(missing, ", ")}
+		return nil, &Prune{Reason: protocol.ReasonParamMissing,
+			Detail: "需要 " + strings.Join(missing, ", "), Field: "params." + missing[0]}
 	}
 	return marshalObject(out), nil
 }

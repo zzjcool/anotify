@@ -42,6 +42,39 @@ const (
 // 淹没成两倍长度；按 trace 查时保留（「这条分支为什么没跑」就在这条 trace 里）。
 const EventPruneSource = "route"
 
+// 事件的来源类别（events.origin 列）：外部投递 vs 人工试跑。
+const (
+	// EventOriginSource 是外部投递（默认，覆盖全部存量行）。
+	EventOriginSource = "source"
+	// EventOriginTest 是人工试跑（POST …/capabilities/{name}/test 建的事件）。
+	EventOriginTest = "test"
+)
+
+// IsEventOrigin 报告 origin 是不是封闭集合内的取值。
+func IsEventOrigin(origin string) bool {
+	return origin == EventOriginSource || origin == EventOriginTest
+}
+
+// normalizeEventOrigin 把空 origin 归一到默认值，并拒绝闭集外的取值。
+//
+// 空串 = 调用方没表态 → 'source'（外部投递）；试跑路径必须显式写 'test'，
+// 不允许「默认成 test」这种隐式行为（否则写错一处就静默污染统计口径）。
+func normalizeEventOrigin(origin string) (string, error) {
+	if origin == "" {
+		return EventOriginSource, nil
+	}
+	if !IsEventOrigin(origin) {
+		return "", fmt.Errorf("event origin %q 不在封闭集合内（source/test）", origin)
+	}
+	return origin, nil
+}
+
+// EventTestSource 是试跑事件写进 events.source 的固定文本。
+//
+// 它**不是**一个源名：试跑没有源可写（不走 event_deliveries，也不校验源行）。
+// 展示层由 origin 决定显示「手动试跑」，不看这个字面量。
+const EventTestSource = "capability"
+
 // ErrReservedEventSource 表示有人把保留来源名当普通来源用。
 //
 // 业务事件若用了 `source='route'`，会被事件流过滤掉（**静默消失**）、并在 trace
@@ -50,12 +83,14 @@ var ErrReservedEventSource = sourcespec.ErrReservedName
 
 // Event 是 events 表的一行。
 type Event struct {
-	ID          string          `json:"id"`
-	NamespaceID string          `json:"namespaceId"`
-	TraceID     string          `json:"traceId"`
-	Source      string          `json:"source"`
-	Type        string          `json:"type"`
-	Payload     json.RawMessage `json:"payload"`
+	ID          string `json:"id"`
+	NamespaceID string `json:"namespaceId"`
+	TraceID     string `json:"traceId"`
+	Source      string `json:"source"`
+	// Origin ∈ source / test（默认 source）。
+	Origin  string          `json:"origin"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
 	// DeliveryID 是外部投递幂等键（可选）。同一源窗口内重复投递 → 返回已有行。
 	DeliveryID *string `json:"deliveryId"`
 	Reason     string  `json:"reason"`
@@ -63,7 +98,7 @@ type Event struct {
 }
 
 // eventColumns 是统一的列顺序，scanEvent 依赖它。
-const eventColumns = `id, namespace_id, trace_id, source, type, payload, delivery_id, reason, created_at`
+const eventColumns = `id, namespace_id, trace_id, source, type, payload, delivery_id, reason, origin, created_at`
 
 // InsertEvent 写入一条外部事件（带**投递去重窗**的幂等）。
 //
@@ -298,10 +333,14 @@ func insertEventRowOn(ctx context.Context, ex queryExec, e *Event, payload strin
 	if e.DeliveryID != nil && *e.DeliveryID != "" {
 		deliveryID = *e.DeliveryID
 	}
+	origin, err := normalizeEventOrigin(e.Origin)
+	if err != nil {
+		return err
+	}
 	if _, err := ex.execContext(ctx,
-		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, delivery_id, reason, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, deliveryID, e.Reason, e.CreatedAt); err != nil {
+		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, delivery_id, reason, origin, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, deliveryID, e.Reason, origin, e.CreatedAt); err != nil {
 		return fmt.Errorf("insert event: %w", err)
 	}
 	e.Payload = json.RawMessage(payload)
@@ -320,11 +359,15 @@ func insertIngestEventOn(ctx context.Context, ex queryExec, e *Event, payload st
 	if e.DeliveryID != nil && *e.DeliveryID != "" {
 		deliveryID = *e.DeliveryID
 	}
+	origin, err := normalizeEventOrigin(e.Origin)
+	if err != nil {
+		return err
+	}
 	if _, err := ex.execContext(ctx,
-		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, delivery_id, reason, receipt, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO events (id, namespace_id, trace_id, source, type, payload, delivery_id, reason, origin, receipt, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		e.ID, e.NamespaceID, e.TraceID, e.Source, e.Type, payload, deliveryID, e.Reason,
-		string(receipt), e.CreatedAt); err != nil {
+		origin, string(receipt), e.CreatedAt); err != nil {
 		return fmt.Errorf("insert event: %w", err)
 	}
 	e.Payload = json.RawMessage(payload)
@@ -377,7 +420,7 @@ func scanEventRow(rows *sql.Rows) (*Event, error) {
 		deliveryID sql.NullString
 	)
 	if err := rows.Scan(&e.ID, &e.NamespaceID, &e.TraceID, &e.Source, &e.Type,
-		&payload, &deliveryID, &e.Reason, &e.CreatedAt); err != nil {
+		&payload, &deliveryID, &e.Reason, &e.Origin, &e.CreatedAt); err != nil {
 		return nil, fmt.Errorf("scan event: %w", err)
 	}
 	if deliveryID.Valid {
@@ -441,13 +484,26 @@ func (d *DB) GetEventByTrace(ctx context.Context, namespaceID, traceID string) (
 //   - 事件流（无 traceId、无 source）：**不含**剪枝（source='route'）；
 //   - 显式给 source（包括 route）：听调用方的。
 func (d *DB) ListEvents(ctx context.Context, namespaceID, traceID, source string, limit int) ([]*Event, error) {
+	return d.ListEventsWithOrigin(ctx, namespaceID, traceID, source, "", limit)
+}
+
+// ListEventsWithOrigin 是 ListEvents 的**来源类别**版（origin ∈ source / test；空 = 自动口径）。
+//
+// origin 口径（与 source='route' 的剪枝规则同构）：
+//   - 显式给 origin：只听它（`?origin=test` 只看试跑，`?origin=source` 只看外部投递）；
+//   - 自动（空）：事件流（无 traceId、无 source）**不含**试跑——人工动作不该冒充外部输入；
+//     按 trace / 按 source 查时保留（试跑是真实运行，trace 全景必须完整）。
+func (d *DB) ListEventsWithOrigin(ctx context.Context, namespaceID, traceID, source, origin string, limit int) ([]*Event, error) {
 	if namespaceID == "" || namespaceID == AllNamespaces {
 		return nil, ErrNamespaceRequired
+	}
+	if origin != "" && !IsEventOrigin(origin) {
+		return nil, fmt.Errorf("list events: origin %q 不在封闭集合内（source/test）", origin)
 	}
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	q, args := eventListQuery(namespaceID, traceID, source, limit)
+	q, args := eventListQuery(namespaceID, traceID, source, origin, limit)
 	rows, err := d.cachedQueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
@@ -464,11 +520,10 @@ func (d *DB) ListEvents(ctx context.Context, namespaceID, traceID, source string
 	return out, rows.Err()
 }
 
-// eventListQuery 拼 ListEvents 的 SQL（分页版 event_page.go 必须与它逐字等价，
-// 差异只允许是游标谓词）。
-func eventListQuery(namespaceID, traceID, source string, limit int) (string, []any) {
-	q := `SELECT ` + eventColumns + ` FROM events WHERE namespace_id = ?`
-	args := []any{namespaceID}
+// eventFilterClause 追加 trace / source / origin 三个过滤谓词（列表与游标分页共用唯一一份）。
+//
+// 抽出来是为了让两个 SELECT 的过滤规则不可能分叉：改剪枝或 origin 口径只改这里。
+func eventFilterClause(q string, args []any, traceID, source, origin string) (string, []any) {
 	if traceID != "" {
 		q += ` AND trace_id = ?`
 		args = append(args, traceID)
@@ -480,6 +535,25 @@ func eventListQuery(namespaceID, traceID, source string, limit int) (string, []a
 		q += ` AND source <> ?`
 		args = append(args, EventPruneSource)
 	}
+	switch origin {
+	case EventOriginSource, EventOriginTest:
+		q += ` AND origin = ?`
+		args = append(args, origin)
+	default:
+		if traceID == "" && source == "" {
+			q += ` AND origin <> ?`
+			args = append(args, EventOriginTest)
+		}
+	}
+	return q, args
+}
+
+// eventListQuery 拼 ListEvents 的 SQL（分页版 event_page.go 必须与它逐字等价，
+// 差异只允许是游标谓词）。
+func eventListQuery(namespaceID, traceID, source, origin string, limit int) (string, []any) {
+	q := `SELECT ` + eventColumns + ` FROM events WHERE namespace_id = ?`
+	args := []any{namespaceID}
+	q, args = eventFilterClause(q, args, traceID, source, origin)
 	q += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 	return q, args

@@ -1,6 +1,10 @@
 common:
   skip_to_content: Ir al contenido
   close: Cerrar
+  # Opción vacía del select de schemaForm (#432): vacío = no se envía, el servidor aplica el valor por defecto del schema
+  omitted: 'Vacío (usar el valor por defecto)'
+  # #432: marca visible para eventos con origin=test (ejecución manual de prueba)
+  origin_test: 'Ejecución manual'
   action:
     close: Cerrar
   load_failed_prefix: 'Error al cargar: '
@@ -1325,6 +1329,24 @@ caps:
   not_ready: 'No lista'
   ready_unknown: 'Estado desconocido'
   terminal_short: 'Capacidad terminal (termina al ejecutarse)'
+  # #432 ciclo de vida: botones de la barra de acciones (enable / disable uno u otro, test siempre)
+  act:
+    enable: 'Habilitar'
+    disable: 'Deshabilitar'
+    test: 'Ejecución de prueba'
+    disable_title: 'Deshabilitar la capacidad {name}'
+    disable_body: 'Tras deshabilitar «{name}», los eventos de origen y los emit de aguas arriba ya no crean tareas (se registra un hecho de poda capability_disabled). Las tareas en cola o en ejecución no se ven afectadas; el despliegue, las nuevas versiones y las ejecuciones de prueba siguen funcionando.'
+  # #432 acciones recientes (auditoría): quién · cuándo · acción + resumen del detail
+  audit:
+    title: 'Acciones recientes'
+    loading: 'Cargando acciones recientes…'
+    empty: 'Aún no hay acciones manuales: habilitar / deshabilitar / ejecución de prueba aparecerán aquí.'
+    actor_none: 'Sin principal de sesión (CLI / sistema)'
+    act_enable: 'Habilitar'
+    act_disable: 'Deshabilitar'
+    act_test: 'Ejecución de prueba'
+    reason_label: 'Motivo: '
+    version: 'Versión v{version}'
   cond:
     Deployed: 'Desplegado'
     DownstreamResolved: 'Destinos resueltos'
@@ -1538,7 +1560,38 @@ caps:
     version: 'Versión'
     workdir: 'Directorio de trabajo'
     workdir_default: 'Sin definir (un directorio por tarea)'
+  state:
+    enabled: 'Habilitada'
+    disabled: 'Deshabilitada'
+  # #432 diálogo de ejecución de prueba (mismo patrón que #fire-modal en sources.html, fuera de #page-main)
+  test:
+    title: 'Ejecución de prueba'
+    title_named: 'Probar la capacidad {name}'
+    hint: 'Una ejecución de prueba crea y despacha una tarea de verdad (no es una vista previa): el evento se marca origin=test y queda fuera de las estadísticas.'
+    version: 'Versión'
+    version_hint: 'Por defecto la versión live actual; una versión explícita debe existir.'
+    params: 'Params (renderizados desde spec.params)'
+    params_json: 'Rellenar el JSON de params directamente'
+    params_json_hint: 'Un objeto params completo aquí anula el formulario de arriba; vacío = se usan los valores del formulario.'
+    params_degraded: 'Este contrato de params (oneOf / allOf / $ref…) no se puede renderizar como formulario: rellena el JSON directamente.'
+    params_empty: 'Esta capacidad no recibe params.'
+    params_invalid: 'params debe ser un objeto JSON'
+    nodes: 'Limitar a nodos'
+    nodes_hint: 'Vacío = todos los nodos online que tienen el digest requerido; los candidatos salen de los candidatos de despliegue.'
+    nodes_none: 'No hay nodos candidatos de despliegue (déjalo vacío y el servidor elige por digest).'
+    submit: 'Ejecución de prueba'
+    submitting: 'Enviando…'
+    trace: 'traceId: '
+    tasks: 'Tareas'
+    tasks_none: 'Esta vez no se creó ninguna tarea (mira los avisos y las podas de abajo).'
+    pruned: 'Podado'
+    warnings: 'Avisos'
+    failed: 'La ejecución de prueba falló'
+    err_version: 'La versión debe ser un entero ≥ 1'
   toast:
+    enabled: 'Capacidad {name} habilitada'
+    disabled: 'Capacidad {name} deshabilitada'
+    test_sent: 'Ejecución de prueba enviada'
     created: 'Capacidad {name} creada'
     deleted: 'Capacidad {name} eliminada'
     deployed: 'Desplegado ({n} nodos)'

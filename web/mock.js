@@ -1843,6 +1843,9 @@
 			ready: conditions.every((c) => c.status === "True"),
 			version: row.version,
 			digest: row.digest,
+			/* #432：开关是**派生**投影（真后端从 capability_switches 读，无行 = 启用）。
+			 * mock 把它存在行上，读面形状与真后端一致；停用不改能力行、不产生新版本。 */
+			enabled: row.enabled !== false,
 			conditions: conditions,
 			nodes: nodeStates,
 			// resolved 的每条都是「解析结果」，不是原始引用：`ref` 只是内部拼装字段
@@ -4136,6 +4139,128 @@
 		}
 		// 响应是 CapabilityDeployResponse（`{deployed, version}`），不是 DeploymentList 信封。
 		return json({ deployed: outcomes, version: target.version });
+	});
+
+	// 能力启停 + 手动试跑（#432）。
+	//
+	// 形状与真后端逐字一致（internal/server/resource_capability.go）：
+	//   · enable/disable 回**整个 Capability 信封**，`status.enabled` 由开关派生，
+	//     能力行的 resourceVersion **不变**（动作 POST 不套 CAS、不产生新版本）；
+	//   · test 回 `{traceId, origin:"test", tasks[], pruned[], warnings[]}`，空列表恒 `[]`；
+	//     未部署在真后端是 `200 + warnings`（不是 4xx），mock 只说同一句话；
+	//   · audit 回非信封 `{items:[...]}`，最新在前。
+	//
+	// 审计只活在本次页面会话里（不写 state）：刷新即清空，避免预览把「你刚才点过什么」
+	// 伪装成服务端历史。actor 用 mock 会话主体，不是伪造的 usr_*。
+	const capAudits = [];
+	const auditItemsFor = (ns, name) =>
+		capAudits
+			.filter((a) => a.ns === ns && a.name === name)
+			.slice()
+			.reverse()
+			.map((a) => ({ id: a.id, action: a.action, actor: a.actor, at: a.at, detail: clone(a.detail) }));
+	const appendCapAudit = (ns, name, action, detail) => {
+		capAudits.push({
+			id: "aud_mock_" + (capAudits.length + 1),
+			ns: ns,
+			name: name,
+			action: action,
+			actor: ME.id,
+			at: isoNow(),
+			detail: detail || {},
+		});
+	};
+	const setCapEnabled = (ctx, enabled) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const body = ctx.body || {};
+		if (body.status != null) return badRequest("status_not_writable", "启停不接受 status");
+		// reason 只对 disable 有意义（enable 的可写面是空的），长度上限与真后端一致。
+		const reason = body.reason == null ? "" : String(body.reason);
+		if (!enabled && Array.from(reason).length > 200) {
+			return badRequest("ValueInvalid", "reason 最多 200 字符");
+		}
+		row.enabled = enabled;
+		appendCapAudit(ns, row.name, enabled ? "enable" : "disable", enabled ? {} : { reason: reason });
+		return json(capabilityResource(row));
+	};
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/enable$/, (ctx) =>
+		setCapEnabled(ctx, true),
+	);
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/disable$/, (ctx) =>
+		setCapEnabled(ctx, false),
+	);
+
+	// 人工试跑：省略 version = 当前版本；params 原样回显（mock 不做 JSON Schema 校验——
+	// 参数校验的判据在真后端，预览只保证形状）。
+	on("POST", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/test$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const body = ctx.body || {};
+		if (body.status != null) return badRequest("status_not_writable", "试跑不接受 status");
+		const version = body.version == null ? row.version : Number(body.version);
+		if (!Number.isInteger(version) || version < 1) {
+			return badRequest("BadRequest", "version 必须是 ≥1 的整数");
+		}
+		const target =
+			version === row.version ? row : pbVersions(row).find((v) => v.version === version);
+		if (!target) return notFound("能力版本 ");
+		const traceId = "evt_mock_" + (state.tasks.length + capAudits.length + 1);
+		const taskId = "tsk_mock_" + (state.tasks.length + capAudits.length + 1);
+		appendCapAudit(ns, row.name, "test", { traceId: traceId, version: target.version });
+		// 有没有机器能跑：与 status.nodes 同一份派生事实（持有所需 digest 的在线节点）。
+		const holdsDigest = (nodeName) =>
+			!target.digest ||
+			state.deployments.some(
+				(d) =>
+					d.ns === ns &&
+					d.capability === row.name &&
+					d.node === nodeName &&
+					d.digest === target.digest,
+			);
+		const holders = capCandidates(ns).filter((n) => nodeOnline(n) && holdsDigest(n.name));
+		const warnings = holders.length
+			? []
+			: [
+					{
+						reason: "capability_not_deployed",
+						detail:
+							"没有在线节点持有 " +
+							row.name +
+							"@" +
+							target.version +
+							" 的 digest；任务已排队，等节点上线或完成部署后自动派发",
+					},
+				];
+		return json({
+			traceId: traceId,
+			origin: "test",
+			tasks: [{ taskId: taskId, capability: row.name, version: target.version }],
+			pruned: [],
+			warnings: warnings,
+		});
+	});
+
+	// 最近操作（非信封；空 → `{items: []}`，不是 null）。
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/capabilities\/([^/]+)\/audit$/, (ctx) => {
+		const ns = decodeURIComponent(ctx.m[1]);
+		const miss = nsMissing(ns);
+		if (miss) return miss;
+		const row = findCap(ns, decodeURIComponent(ctx.m[2]));
+		if (!row) return notFound("能力 ");
+		const raw = ctx.query.get("limit");
+		if (raw != null && raw !== "") {
+			const n = Number(raw);
+			if (!Number.isInteger(n) || n < 1) return badRequest("BadRequest", "limit 必须是 ≥1 的整数");
+		}
+		const limit = Math.min(Number(raw) || 50, 200);
+		return json({ items: auditItemsFor(ns, row.name).slice(0, limit) });
 	});
 
 	// 版本历史（只读列表：CapabilityList.items，每项同 Capability 信封）。

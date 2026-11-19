@@ -465,10 +465,12 @@ func taskEmitOlderThan(rec *store.EmitRecord, at int64, id string) bool {
 
 // events 是命名空间内的事件流（资源列表，只读）。
 //
-// source 过滤规则**不在 handler 里重写**（store.ListEvents 已经收口）：
+// source / origin 过滤规则**不在 handler 里重写**（store.ListEventsWithOrigin 已经收口）：
 //   - 按 trace 查：含剪枝留痕（那条 trace 的「为什么没跑」就在里面）；
-//   - 事件流（无 trace、无 source）：不含剪枝（source='route'）；
-//   - 显式给 source（包括 route）：听调用方的。
+//   - 事件流（无 trace、无 source）：不含剪枝（source='route'），也**不含试跑**
+//     （origin='test'：人工动作不该冒充外部输入）；
+//   - 显式给 source（包括 route）：听调用方的；
+//   - 显式给 origin（source / test）：只听它（`?origin=test` = 只看手动试跑）。
 func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 	ns, err := a.d.authorizePathNamespace(r)
 	if err != nil {
@@ -481,12 +483,17 @@ func (a *taskAPI) events(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	origin, err := eventOriginQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	// 契约 `api-conventions.md:167`：资源列表沿用现有 limit（默认/上限不变）。
 	// store.ListEvents 对 >500 的处理是**折回 50**（一个静默的不同窗口），所以 handler
 	// 先钳到 500：要 501 条就给你 500 条，不悄悄换成 50（#236 的守卫必须留住）。
 	limit = taskClampListLimit(limit)
-	rows, err := a.d.DB.ListEvents(r.Context(), ns,
-		strings.TrimSpace(q.Get("trace")), strings.TrimSpace(q.Get("source")), limit)
+	rows, err := a.d.DB.ListEventsWithOrigin(r.Context(), ns,
+		strings.TrimSpace(q.Get("trace")), strings.TrimSpace(q.Get("source")), origin, limit)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -592,7 +599,17 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 	if limit > taskListLimitCap {
 		limit = taskListLimitCap
 	}
+	origin, err := eventOriginQuery(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	// 游标绑 ns + 筛选条件：**origin 也是条件**（只看试跑与看全部是两种窗口，
+	// 拿另一组筛选的游标来翻页会直接跳过一半行且无从发现）。
 	binding := eventCursorBinding(ns, source, traceID)
+	if origin != "" {
+		binding += "|origin=" + origin
+	}
 	beforeID, beforeAt, err := decodeCursor(q.Get("continue"), binding)
 	if err != nil {
 		writeAPIError(w, err)
@@ -636,9 +653,9 @@ func (a *taskAPI) consoleEvents(w http.ResponseWriter, r *http.Request) {
 		var got []*store.Event
 		var gerr error
 		if beforeID != "" {
-			got, gerr = a.d.DB.ListEventsBefore(r.Context(), nsID, traceID, source, beforeAt, beforeID, fetch)
+			got, gerr = a.d.DB.ListEventsBeforeWithOrigin(r.Context(), nsID, traceID, source, origin, beforeAt, beforeID, fetch)
 		} else {
-			got, gerr = a.d.DB.ListEvents(r.Context(), nsID, traceID, source, fetch)
+			got, gerr = a.d.DB.ListEventsWithOrigin(r.Context(), nsID, traceID, source, origin, fetch)
 		}
 		if gerr != nil {
 			writeAPIError(w, gerr)
@@ -936,12 +953,16 @@ func taskResultReasonCode(s string) bool {
 // 失败观察行统一写成 reason='Pruned'，照抄会把「任务失败」报告成「剪枝」。events 表
 // 没有独立的失败观察 reason 事实，所以宁可不给（§7.7 的封闭值里没有对应项）。
 type eventSpecDoc struct {
-	Reason         string          `json:"reason,omitempty"`
-	EventType      string          `json:"eventType"`
-	InvolvedObject eventObjectRef  `json:"involvedObject"`
-	TraceUID       string          `json:"traceUID"`
-	DeliveryID     *string         `json:"deliveryId"`
-	Payload        json.RawMessage `json:"payload"`
+	Reason         string         `json:"reason,omitempty"`
+	EventType      string         `json:"eventType"`
+	InvolvedObject eventObjectRef `json:"involvedObject"`
+	TraceUID       string         `json:"traceUID"`
+	// Origin 是事件的来源类别（`source` 外部投递 / `test` 人工试跑）。它让前端把
+	// 「手动试跑」标出来，而不是把一次人工动作当成外部输入——统计口径在 store 已经
+	// 排除 origin='test'，但事件流里那一行仍然要能被认出来。
+	Origin     string          `json:"origin"`
+	DeliveryID *string         `json:"deliveryId"`
+	Payload    json.RawMessage `json:"payload"`
 }
 
 // eventObjectRef 是 involvedObject（来源只存名字，没有 UID 就不给）。
@@ -990,9 +1011,21 @@ func eventEnvelope(e *store.Event, nsDisplay string) apiEnvelope {
 		EventType:      e.Type,
 		InvolvedObject: eventObjectRef{Kind: "Source", Name: e.Source},
 		TraceUID:       e.TraceID,
+		Origin:         eventOriginOf(e),
 		DeliveryID:     e.DeliveryID,
 		Payload:        payload,
 	}, eventStatusDoc{Pruned: eventPruneFactOf(e)})
+}
+
+// eventOriginOf 取事件的来源类别（`source` 外部投递 / `test` 人工试跑）。
+//
+// 空值归一到 `source`：库里 `origin` 列有 `DEFAULT 'source'` + CHECK，空串只可能来自
+// 写 SQL 的旧夹具；wire 上是封闭枚举，回一个空串等于让客户端多一条无效分支。
+func eventOriginOf(e *store.Event) string {
+	if e != nil && store.IsEventOrigin(e.Origin) {
+		return e.Origin
+	}
+	return store.EventOriginSource
 }
 
 // eventIsDispatchFailure 报告这条观察行是不是**未解析派发失败**（downstream_missing）。
@@ -1161,6 +1194,24 @@ func taskQueryInt(r *http.Request, name string, def int) (int, error) {
 			fmt.Sprintf("%s must be an integer", name))
 	}
 	return n, nil
+}
+
+// eventOriginQuery 解析 `?origin=`（事件的来源类别：`source` 外部投递 / `test` 人工试跑）。
+//
+// 空 = 不表态，交给 store 的自动口径（事件流不含试跑；按 trace / source 查时保留）。
+// 非法值 → 400：静默忽视为「看全部」会把一个写错的筛选变成「少了一半行」，与
+// `?source=` 的 400 口径保持一致。
+func eventOriginQuery(r *http.Request) (string, error) {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("origin")))
+	if raw == "" {
+		return "", nil
+	}
+	if !store.IsEventOrigin(raw) {
+		return "", errStatus(http.StatusBadRequest, reasonValueInvalid,
+			fmt.Sprintf("origin must be one of %s / %s, got %q",
+				store.EventOriginSource, store.EventOriginTest, raw))
+	}
+	return raw, nil
 }
 
 // taskQueryBool 取布尔 query 参数（true / 1 为真，其它为假）。

@@ -504,6 +504,20 @@
       .cap-skel .skeleton + .skeleton {
         width: 62%;
       }
+
+      /* ---------- 状态徽标（#432） ----------
+         徽标紧贴页面标题，读作「谁 · 现在什么状态」；标题本身仍是 h2#cap-name（e2e 锚点）。 */
+      .cap-badges {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      /* 试跑弹窗：与 sources.html 的 #fire-modal 同档宽度（回执面板要放 traceId + 任务行）。 */
+      #test-modal .modal-panel {
+        width: min(680px, calc(100vw - 24px));
+      }
     </style>
 {{end}}
 
@@ -514,6 +528,8 @@
       <div class="cap-wrap">
         <a id="cap-back" class="btn btn-ghost" href="capabilities.html">{{t "caps.detail.back"}}</a>
         <h2 id="cap-name" class="page-title cap-wrap">{{t "caps.detail.page_title"}}</h2>
+        <!-- 状态徽标（#432）：内容由 render() 按 status.enabled 填，服务端事实一变就跟着变。 -->
+        <div id="cap-badges" class="cap-badges"></div>
         <p class="page-sub">{{t "caps.detail.page_sub"}}</p>
       </div>
       <div class="page-actions">
@@ -747,6 +763,53 @@
     </div>
   </div>
 </div>
+
+<!-- 试跑（#432）：**照抄** sources.html 的 #fire-modal 范式 —— 表单 → POST …/test → 回执面板。
+     与其它弹层同规则挂在 #page-main 之外（.reveal 的 transform 会给 position:fixed 造包含块）。
+     参数控件由共享的 Anotify.schemaForm(spec.params) 渲染；抽不出表单的 schema
+     （oneOf / allOf / $ref / anyOf、顶层非 object）降级成 #test-params-json 的 JSON 直填 ——
+     表单只是录入辅助，服务端仍是最终判据（400 的 details.causes[].field 会点名字段）。 -->
+<div id="test-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="test-title">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="test-title">{{t "caps.test.title"}}</h3>
+      <button id="test-close" type="button" class="btn btn-ghost btn-icon" aria-label="{{t "common.close"}}">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="field-hint mb-3">{{t "caps.test.hint"}}</p>
+
+      <div class="field">
+        <label class="field-label" for="test-version">{{t "caps.test.version"}}</label>
+        <input id="test-version" class="input mono" type="number" min="1" step="1" autocomplete="off" />
+        <p id="test-version-hint" class="field-hint">{{t "caps.test.version_hint"}}</p>
+      </div>
+
+      <div class="field mt-3">
+        <label class="field-label">{{t "caps.test.params"}}</label>
+        <div id="test-params" class="cap-rows"></div>
+        <details id="test-params-wrap" class="cap-adv mt-2">
+          <summary>{{t "caps.test.params_json"}}</summary>
+          <div class="cap-adv-body">
+            <textarea id="test-params-json" class="textarea mono" rows="6" spellcheck="false"></textarea>
+            <p class="field-hint mt-2">{{t "caps.test.params_json_hint"}}</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="field mt-3">
+        <label class="field-label">{{t "caps.test.nodes"}}</label>
+        <div id="test-nodes" class="cap-rows"></div>
+        <p id="test-nodes-hint" class="field-hint">{{t "caps.test.nodes_hint"}}</p>
+      </div>
+
+      <div id="test-result" class="cap-rows mt-3" aria-live="polite"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="test-cancel" type="button" class="btn btn-ghost">{{t "caps.form.cancel"}}</button>
+      <button id="test-submit" type="button" class="btn">{{t "caps.test.submit"}}</button>
+    </div>
+  </div>
+</div>
 {{end}}
 
 {{define "script"}}
@@ -802,6 +865,10 @@
       let DEPLOY = null; // {res, versions, version, selected}
       let DEL = null; // {res, snapshot}
       let BUSY = false;
+      /* #432：试跑弹窗的会话态（打开时建、关闭时丢）与「最近操作」（审计）的读面状态。
+         审计与脚本正文/YAML 一样是**独立的读**：失败只坏这一块，不把整页变成错误态。 */
+      let TEST = null; // {schema, form, selected}
+      const AUDIT = { status: "idle", items: [], err: null };
 
       const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
       const REF_RE = /^[a-z0-9][a-z0-9._-]{0,62}(@[1-9][0-9]*)?$/;
@@ -854,6 +921,23 @@
       function fieldPathOf(val) {
         if (!isObj(val) || !isObj(val.valueFrom) || !isObj(val.valueFrom.fieldRef)) return "";
         return val.valueFrom.fieldRef.fieldPath == null ? "" : String(val.valueFrom.fieldRef.fieldPath);
+      }
+      /* 服务端原文（reason / message / detail，以及用户写的停用理由）都可能含中文：
+         按 API 数据豁免，包一层纯文本 span[data-raw-content]（与 preBlock / condRow 同一套
+         约定：带这个标记的 text-only span = 原文，不参与界面文案的翻译比对）。 */
+      function rawSpan(text, cls) {
+        const s = el("span", { class: cls || null });
+        s.setAttribute("data-raw-content", "");
+        s.textContent = text == null ? "" : String(text);
+        return s;
+      }
+      /* trace 链接的落地形状与其它页一致：namespace 由本页资源决定，traceUID 是唯一键。 */
+      function traceHref(uid) {
+        const qs = new URLSearchParams();
+        const ns = resNs();
+        if (ns) qs.set("namespace", ns);
+        qs.set("traceUID", uid == null ? "" : String(uid));
+        return "trace.html?" + qs.toString();
       }
 
       // 子资源与写请求都走同一对 helper：先 await ready() 再拼 ns 路径。
@@ -1303,7 +1387,17 @@
         title.setAttribute("data-raw-content", "");
         $("cap-name").replaceChildren(title);
 
-        // 动作：编辑 / 人工部署 / 删除（版本历史在下面的独立小节里）
+        /* 状态徽标（#432）：status.enabled 的真值直接决定徽标与动作条上那颗按钮 ——
+           两处读同一个 m.enabled，不会出现「徽标说已停用、按钮还在问要不要停用」。 */
+        $("cap-badges").replaceChildren(
+          el("span", {
+            id: "cap-enabled-badge",
+            class: "badge " + (m.enabled ? "badge-success" : "badge-neutral"),
+            text: t(m.enabled ? "caps.state.enabled" : "caps.state.disabled", m.enabled ? "已启用" : "已停用"),
+          }),
+        );
+
+        // 动作：编辑 / 人工部署 / 启用（或停用）/ 试跑 / 删除（版本历史在下面的独立小节里）
         const actions = $("cap-actions");
         actions.replaceChildren();
         const editBtn = el("button", { type: "button", class: "btn btn-sm", text: t("caps.detail.edit", "编辑") });
@@ -1312,12 +1406,26 @@
         const deployBtn = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("caps.detail.deploy", "部署") });
         deployBtn.setAttribute("data-act", "deploy");
         deployBtn.addEventListener("click", () => openDeploy());
+        /* 启用 / 停用**二选一**：同一刻只存在一个合法动作，而不是把两个按钮都摆出来。
+           停用走二次确认（见 submitSwitch）—— 它是路由期闸门，先说清它不动在跑的任务。 */
+        const switchBtn = el("button", {
+          type: "button",
+          class: "btn btn-ghost btn-sm",
+          text: t(m.enabled ? "caps.act.disable" : "caps.act.enable", m.enabled ? "停用" : "启用"),
+        });
+        switchBtn.setAttribute("data-act", m.enabled ? "disable" : "enable");
+        switchBtn.addEventListener("click", () => submitSwitch(!m.enabled, switchBtn));
+        const testBtn = el("button", { type: "button", class: "btn btn-ghost btn-sm", text: t("caps.act.test", "试跑") });
+        testBtn.setAttribute("data-act", "test");
+        testBtn.addEventListener("click", () => openTest());
         const deleteBtn = el("button", { type: "button", class: "btn btn-danger btn-sm", text: t("caps.detail.delete", "删除") });
         deleteBtn.setAttribute("data-act", "delete");
         deleteBtn.addEventListener("click", () => openDelete());
         actions.append(
           editBtn,
           deployBtn,
+          switchBtn,
+          testBtn,
           deleteBtn,
           txt("span", "field-hint", t("caps.deploy.hint", "安装包保存或 install 都不会自动部署；部署只在这里发生。")),
         );
@@ -1533,6 +1641,15 @@
         VERS = null;
         body.append(section("caps.detail.versions", "versions"));
         paintVersions();
+
+        /* 最近操作（#432）：GET …/audit?limit=10 的懒加载 —— 区块先上屏，数据到了再填。
+           审计是**服务端事实**，读不到就如实说读不到，不拿本地操作记录冒充。 */
+        AUDIT.status = "idle";
+        AUDIT.items = [];
+        AUDIT.err = null;
+        body.append(section("caps.audit.title", "audit"));
+        paintAudit();
+        void loadAudit(true);
       }
 
       /* 删除成功后的落地页：能力已经不存在，再说「载入失败」就是误导。 */
@@ -1543,6 +1660,7 @@
         root.setAttribute("data-cap", "");
         root.setAttribute("data-version", "");
         $("cap-name").replaceChildren(document.createTextNode(t("caps.detail.page_title", "能力详情")));
+        $("cap-badges").replaceChildren();
         $("cap-actions").replaceChildren();
         $("cap-body").replaceChildren();
         $("cap-body").classList.add("hidden");
@@ -2206,6 +2324,375 @@
         }
       }
 
+      /* ============================ 启停（enable / disable） ============================ */
+      /* 停用是**路由期闸门**（不建新任务），不是任务暂停：二次确认里把这一点写清，
+         免得用户以为它会把在跑的任务掐掉。成功回执是**整个 Capability 信封**
+         （WIRE §1.1 / §1.2），所以直接 render(res) 一次到位 —— 省一次 GET，也让页面
+         显示的就是服务端刚给的那份状态（不拿本地状态冒充）。 */
+      async function submitSwitch(nextEnabled, btn) {
+        if (BUSY || !META) return;
+        const name = META.name;
+        if (!nextEnabled) {
+          const ok = await A.confirmDanger({
+            title: sub(t("caps.act.disable_title", "停用能力 {name}"), { name: name }),
+            body: sub(
+              t(
+                "caps.act.disable_body",
+                "停用「{name}」后，源事件与上游 emit 都不再为它建任务（留一条 capability_disabled 剪枝事实）。已排队与进行中的任务不受影响；部署、建版本与试跑照旧可用。",
+              ),
+              { name: name },
+            ),
+            confirmLabel: t("caps.act.disable", "停用"),
+            danger: true,
+          });
+          if (!ok) return;
+        }
+        BUSY = true;
+        const label = btn && btn.textContent != null ? btn.textContent : "";
+        if (btn) btn.disabled = true;
+        try {
+          await ready();
+          const path = nsPath("capabilities", name) + (nextEnabled ? "/enable" : "/disable");
+          /* enable 不带请求体（契约：带了也忽略）；disable 的空对象就是「理由留空」的合法
+             形态 —— v1 不弹理由输入框（reason 可选，maxLength 200），理由留空即可。 */
+          const out = nextEnabled
+            ? await api(path, { method: "POST" })
+            : await api(path, writeOpts("POST", {}));
+          toast(
+            sub(
+              t(
+                nextEnabled ? "caps.toast.enabled" : "caps.toast.disabled",
+                nextEnabled ? "已启用能力 {name}" : "已停用能力 {name}",
+              ),
+              { name: name },
+            ),
+          );
+          if (isObj(out) && isObj(out.metadata)) render(out);
+          else await load(); // 回执不是资源信封（代理/旧服务端）：退回一次 GET，不猜
+        } catch (e) {
+          A.errorBar(e);
+        } finally {
+          BUSY = false;
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = label;
+          }
+        }
+      }
+
+      /* ============================ 试跑（#432） ============================ */
+      /* 默认版本 = 当前 live 版本（status.version；取不到退回 metadata.version）。
+         省略 version 时服务端自己解析，所以这个默认值只是「让人看见跑的是哪一版」。 */
+      function liveVersionNum() {
+        const st = isObj(META && META.status) ? META.status : {};
+        const live = Number(st.version);
+        if (Number.isInteger(live) && live > 0) return live;
+        const meta = Number(META && META.version);
+        return Number.isInteger(meta) && meta > 0 ? meta : null;
+      }
+      function clearTestParamErrors() {
+        const host = $("test-params");
+        if (!host || typeof host.querySelectorAll !== "function") return;
+        for (const node of host.querySelectorAll(".field-error")) node.remove();
+      }
+      /* 限定节点 = 可选的多选，候选取 status.deployCandidates（**部署**判据，不是
+         status.nodes：后者是「已经持有这份能力」的机器，首次试跑前恒空）。
+         一台不选 = 服务端按 digest 选全部在线的持有者。 */
+      function renderTestNodes(m) {
+        const box = $("test-nodes");
+        box.replaceChildren();
+        if (!TEST) return;
+        TEST.selected = new Set();
+        const list = Array.isArray(m.deployCandidates) ? m.deployCandidates : [];
+        let shown = 0;
+        for (const n of list) {
+          const name = n && n.name != null ? String(n.name) : "";
+          if (!name) continue;
+          const label = el("label", { class: "cap-inline-check" });
+          const cb = el("input", { class: "cap-check", type: "checkbox", value: name });
+          cb.checked = TEST.selected.has(name);
+          cb.addEventListener("change", () => {
+            if (!TEST) return;
+            if (cb.checked) TEST.selected.add(name);
+            else TEST.selected.delete(name);
+          });
+          label.append(
+            cb,
+            txt(
+              "span",
+              n.online ? null : "cap-missing",
+              name + " · " + (n.online ? t("nodes.status.online", "在线") : t("nodes.status.offline", "离线")),
+            ),
+          );
+          box.append(label);
+          shown += 1;
+        }
+        if (!shown) {
+          box.append(txt("p", "cap-detail-empty", t("caps.test.nodes_none", "没有部署候选节点（留空 = 服务端按 digest 选）。")));
+        }
+      }
+      function openTest() {
+        if (!META) return;
+        const m = META;
+        const schema = isObj(m.spec) && isObj(m.spec.params) ? m.spec.params : {};
+        TEST = { schema: schema, form: null, selected: new Set() };
+        $("test-title").textContent = sub(t("caps.test.title_named", "试跑能力 {name}"), { name: m.name });
+        $("test-result").replaceChildren();
+        clearTestParamErrors();
+        $("test-params-json").value = "";
+        const live = liveVersionNum();
+        $("test-version").value = live == null ? "" : String(live);
+        const host = $("test-params");
+        host.replaceChildren();
+        /* 参数控件走共享的 schemaForm（渲染策略与 playbook 的 valuesForm 同源）。 */
+        const form = A.schemaForm(schema, { values: {}, onChange: () => clearTestParamErrors() });
+        TEST.form = form;
+        const wrap = $("test-params-wrap");
+        if (form.supported) {
+          host.append(form.el);
+          if (wrap) wrap.open = false;
+          if (!Object.keys(form.controls).length) {
+            host.append(txt("p", "cap-detail-empty", t("caps.test.params_empty", "这个能力不需要参数。")));
+          }
+        } else {
+          /* 抽不出表单：只留 JSON textarea（展开），服务端仍是最终判据。 */
+          if (wrap) wrap.open = true;
+          host.append(
+            txt("p", "field-hint", t("caps.test.params_degraded", "这份参数契约（oneOf / allOf / $ref 等）抽不出表单，直接填 JSON。")),
+          );
+        }
+        renderTestNodes(m);
+        openModal($("test-modal"));
+        $("test-version").focus();
+      }
+      function closeTest() {
+        closeModal($("test-modal"));
+        TEST = null;
+      }
+      /* 失败的两种来源（客户端校验一句人话 / 服务端 400 的 reason + causes）共用一块：
+         causes[] 逐条点名 field（如 params.diff），并在能对上那个控件时把 message 也
+         标到字段旁（data-value-path 是共享 schemaForm 打的标记）。 */
+      function paintTestFailure(headline, message, causes) {
+        const box = $("test-result");
+        box.replaceChildren();
+        const head = el("div", { class: "cap-line" });
+        head.append(txt("span", "badge badge-error", headline));
+        if (message) head.append(rawSpan(message));
+        box.append(head);
+        for (const item of Array.isArray(causes) ? causes : []) {
+          const cause = isObj(item) ? item : {};
+          const field = cause.field == null ? "" : String(cause.field);
+          const text = cause.message == null ? "" : String(cause.message);
+          const row = el("div", { class: "cap-line" });
+          row.append(
+            txt("span", "badge badge-warn", cause.reason == null ? "—" : String(cause.reason)),
+            txt("span", "cap-mono", field || "—"),
+            rawSpan(text),
+          );
+          box.append(row);
+          const path = field.replace(/^params\./, "");
+          const ctrl = TEST && TEST.form && TEST.form.controls ? TEST.form.controls[path] : null;
+          if (ctrl && ctrl.parentElement) ctrl.parentElement.append(txt("p", "field-error", text));
+        }
+      }
+      /* 回执（WIRE §1.3）：traceId 可点（trace.html?traceUID=…），tasks[] 逐条 taskId+能力@版本，
+         pruned[] / warnings[] 用 badge-warn。列表空 = 服务端控 `[]`，这里也按「没有」显示。 */
+      function paintTestReceipt(rec) {
+        const res = isObj(rec) ? rec : {};
+        const box = $("test-result");
+        box.replaceChildren();
+        const traceId = res.traceId == null ? "" : String(res.traceId);
+        const head = el("div", { class: "cap-kv" });
+        head.append(txt("span", "cap-kv-key", t("caps.test.trace", "traceId：")));
+        if (traceId) {
+          head.append(el("a", { class: "btn btn-ghost btn-sm mono", href: traceHref(traceId), text: traceId }));
+        } else {
+          head.append(txt("span", "cap-mono", "—"));
+        }
+        box.append(head);
+
+        const tasks = Array.isArray(res.tasks) ? res.tasks : [];
+        box.append(txt("div", "cap-kv-key", t("caps.test.tasks", "任务")));
+        if (!tasks.length) {
+          box.append(txt("p", "cap-detail-empty", t("caps.test.tasks_none", "这次没有建出任务（见下面的提醒与剪枝）。")));
+        } else {
+          for (const item of tasks) {
+            const row = el("div", { class: "cap-line" });
+            const task = isObj(item) ? item : {};
+            row.append(txt("span", "cap-mono", task.taskId == null ? "—" : String(task.taskId)));
+            const ref =
+              (task.capability == null ? "" : String(task.capability)) +
+              (task.version == null ? "" : "@" + task.version);
+            if (ref) row.append(txt("span", "cap-kv-val", ref));
+            box.append(row);
+          }
+        }
+        const pruned = Array.isArray(res.pruned) ? res.pruned : [];
+        if (pruned.length) {
+          box.append(txt("div", "cap-kv-key", t("caps.test.pruned", "剪枝")));
+          for (const item of pruned) {
+            const fact = isObj(item) ? item : {};
+            const row = el("div", { class: "cap-line" });
+            row.append(txt("span", "badge badge-warn", fact.reason == null ? "—" : String(fact.reason)));
+            if (fact.capability) row.append(txt("span", "cap-mono", String(fact.capability)));
+            if (fact.detail) row.append(rawSpan(String(fact.detail)));
+            box.append(row);
+          }
+        }
+        const warnings = Array.isArray(res.warnings) ? res.warnings : [];
+        if (warnings.length) {
+          box.append(txt("div", "cap-kv-key", t("caps.test.warnings", "提醒")));
+          for (const item of warnings) {
+            const warn = isObj(item) ? item : {};
+            const row = el("div", { class: "cap-line" });
+            row.append(txt("span", "badge badge-warn", warn.reason == null ? "—" : String(warn.reason)));
+            if (warn.detail) row.append(rawSpan(String(warn.detail)));
+            box.append(row);
+          }
+        }
+      }
+      async function submitTest() {
+        if (BUSY || !TEST) return;
+        clearTestParamErrors();
+        const body = {};
+        const rawVersion = String($("test-version").value == null ? "" : $("test-version").value).trim();
+        if (rawVersion) {
+          const version = Number(rawVersion);
+          if (!Number.isInteger(version) || version < 1) {
+            paintTestFailure(t("caps.test.failed", "试跑失败"), t("caps.test.err_version", "版本必须是 ≥1 的整数"), []);
+            return;
+          }
+          body.version = version;
+        }
+        /* params：JSON 直填优先（降级形态下它是唯一入口，表单形态下是覆盖）；否则用
+           schema 表单收集的值。空对象 = 不提交 params（服务端套 schema 默认值）。 */
+        const rawJSON = String($("test-params-json").value == null ? "" : $("test-params-json").value).trim();
+        let params = null;
+        if (rawJSON) {
+          try {
+            params = parseJSON(rawJSON, t("caps.test.params", "参数"));
+          } catch (e) {
+            paintTestFailure(t("caps.test.failed", "试跑失败"), e.message, []);
+            return;
+          }
+          if (!isObj(params)) {
+            paintTestFailure(t("caps.test.failed", "试跑失败"), t("caps.test.params_invalid", "params 必须是 JSON 对象"), []);
+            return;
+          }
+        } else if (TEST.form && TEST.form.supported) {
+          try {
+            params = TEST.form.values();
+          } catch (e) {
+            paintTestFailure(t("caps.test.failed", "试跑失败"), e.message, []);
+            return;
+          }
+        }
+        if (isObj(params) && Object.keys(params).length) body.params = params;
+        const nodes = TEST.selected ? Array.from(TEST.selected) : [];
+        if (nodes.length) body.nodes = nodes; // 不选 = 全部持有所需 digest 的在线节点
+        BUSY = true;
+        const btn = $("test-submit");
+        btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = t("caps.test.submitting", "提交中…");
+        try {
+          await ready();
+          const out = await api(nsPath("capabilities", META.name) + "/test", writeOpts("POST", body));
+          paintTestReceipt(out);
+          toast(t("caps.toast.test_sent", "已提交试跑"));
+          AUDIT.status = "idle"; // 试跑会写一条审计：回来重读一次（只刷这一块）
+          void loadAudit(true);
+        } catch (e) {
+          const causes = e && e.details && Array.isArray(e.details.causes) ? e.details.causes : [];
+          paintTestFailure(t("caps.test.failed", "试跑失败"), statusLine(e), causes);
+        } finally {
+          BUSY = false;
+          btn.disabled = false;
+          btn.textContent = label;
+        }
+      }
+
+      /* ============================ 最近操作（审计） ============================ */
+      /* 只读 GET …/audit?limit=10（WIRE §1.4）：谁 · 何时 · 动作 + detail 摘要。
+         行带 data-audit-action（e2e 的定位点）；detail 是**服务端给的**事实：
+         enable/disable 显示 reason（用户写的，可能是中文 → data-raw-content），
+         test 显示 traceId + version（不存 params 全文，也不在这里补显）。 */
+      const AUDIT_LIMIT = 10;
+      function auditActionLabel(action) {
+        if (action === "enable") return t("caps.audit.act_enable", "启用");
+        if (action === "disable") return t("caps.audit.act_disable", "停用");
+        if (action === "test") return t("caps.audit.act_test", "试跑");
+        return action == null ? "—" : String(action);
+      }
+      function paintAudit() {
+        const sec = document.querySelector('#cap-body [data-sec="audit"]');
+        if (!sec) return;
+        sec.replaceChildren();
+        sec.append(txt("div", "cap-sec-title", t("caps.audit.title", "最近操作")));
+        const box = el("div", { class: "cap-rows", id: "cap-audit" });
+        sec.append(box);
+        if (AUDIT.status === "error") {
+          box.append(loadErrorNode(AUDIT.err, () => loadAudit(true)));
+          return;
+        }
+        if (AUDIT.status !== "ok") {
+          box.append(txt("p", "cap-detail-empty", t("caps.audit.loading", "正在读取最近操作…")));
+          return;
+        }
+        if (!AUDIT.items.length) {
+          box.append(txt("p", "cap-detail-empty", t("caps.audit.empty", "还没有人工操作记录：启用 / 停用 / 试跑会记在这里。")));
+          return;
+        }
+        for (const item of AUDIT.items) {
+          const it = isObj(item) ? item : {};
+          const row = el("div", { class: "cap-line" });
+          row.setAttribute("data-audit-action", it.action == null ? "" : String(it.action));
+          row.append(
+            /* actor 空串 = 非会话主体（CLI / 系统）：契约明确**不**伪造一个 system 用户，
+               这里只是把它说成人话，不编 id。 */
+            txt("span", "cap-kv-val", it.actor ? String(it.actor) : t("caps.audit.actor_none", "非会话主体（CLI / 系统）")),
+            txt("span", "cap-sep", "·"),
+            txt("span", "cap-mono", fmtTime(it.at)),
+            txt("span", "cap-sep", "·"),
+            txt("span", "badge badge-neutral", auditActionLabel(it.action)),
+          );
+          const detail = isObj(it.detail) ? it.detail : {};
+          if (it.action === "test") {
+            if (detail.traceId) {
+              row.append(
+                el("a", {
+                  class: "btn btn-ghost btn-sm mono",
+                  href: traceHref(detail.traceId),
+                  text: String(detail.traceId),
+                }),
+              );
+            }
+            if (detail.version != null) {
+              row.append(txt("span", "cap-mono", sub(t("caps.audit.version", "版本 v{version}"), { version: detail.version })));
+            }
+          } else if (detail.reason) {
+            row.append(txt("span", "cap-kv-key", t("caps.audit.reason_label", "理由：")), rawSpan(String(detail.reason)));
+          }
+          box.append(row);
+        }
+      }
+      async function loadAudit(force) {
+        if (!META) return;
+        if (!force && (AUDIT.status === "loading" || AUDIT.status === "ok")) return;
+        AUDIT.status = "loading";
+        AUDIT.err = null;
+        paintAudit();
+        try {
+          const res = await capApi(META.name, "/audit?limit=" + AUDIT_LIMIT);
+          AUDIT.items = itemsOf(res);
+          AUDIT.status = "ok";
+        } catch (e) {
+          AUDIT.err = e;
+          AUDIT.status = "error";
+        }
+        paintAudit();
+      }
+
       /* ============================ 载入 ============================ */
       const initScope = async () => {
         const ns = new URLSearchParams(location.search).get("namespace");
@@ -2220,6 +2707,7 @@
           const name = new URLSearchParams(location.search).get("name");
           if (!name) {
             // 缺 name：空态（含返回列表），不请求、不编 id。
+            $("cap-badges").replaceChildren();
             $("cap-actions").replaceChildren();
             $("cap-body").replaceChildren();
             $("cap-body").classList.add("hidden");
@@ -2234,6 +2722,7 @@
           // 404 与其它失败都落到同一套错误态：说清发生了什么，并给「重试 / 返回列表」
           CAP = null;
           META = null;
+          $("cap-badges").replaceChildren();
           $("cap-actions").replaceChildren();
           $("cap-body").replaceChildren();
           $("cap-body").classList.add("hidden");
@@ -2303,8 +2792,22 @@
           }
         });
 
+        /* 试跑弹窗（#432）：head 的 × 与 foot 的取消都关；点遮罩也关（与其它弹层同规矩）。 */
+        $("test-submit").addEventListener("click", submitTest);
+        $("test-close").addEventListener("click", closeTest);
+        $("test-cancel").addEventListener("click", closeTest);
+        $("test-modal").addEventListener("click", (e) => {
+          if (e.target === e.currentTarget) closeTest();
+        });
+
         document.addEventListener("keydown", (e) => {
           if (e.key !== "Escape") return;
+          const testModal = $("test-modal");
+          if (testModal && !testModal.classList.contains("hidden")) {
+            e.preventDefault();
+            closeTest();
+            return;
+          }
           const capModal = $("cap-modal");
           if (capModal && !capModal.classList.contains("hidden")) {
             e.preventDefault();

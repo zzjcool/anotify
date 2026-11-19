@@ -672,3 +672,48 @@ func TestEmitMissingUndeclaredVersionOmitsResponseVersion(t *testing.T) {
 		t.Fatalf("失败 Task 的未声明版本事实 = %+v", task)
 	}
 }
+
+// TestPlanFromEmitDisabledDownstream 钉住停用下游的 emit 结论（capability-lifecycle §6.1）：
+// 同一个闸门在 emit 入口生效 —— 不报错、不建子任务、回执 taskId:null + capability_disabled，
+// 且父任务**不失败**（phase 仍是 running：停用拦的是新触发，不是在途任务）。
+func TestPlanFromEmitDisabledDownstream(t *testing.T) {
+	f := newEmitFixture(t)
+	disableCapability(t, f.db, f.namespace.ID, "consumer")
+	result, err := f.router.Emit(testCtx(), EmitInput{
+		Auth: f.auth, To: "consumer", Data: json.RawMessage(`{"file":"a.go"}`),
+	})
+	if err != nil {
+		t.Fatalf("停用下游是按剪枝回执，不该是错误: %v", err)
+	}
+	if result.Response.TaskID != nil {
+		t.Fatalf("停用下游必须回 taskId:null，得到 %+v", result.Response)
+	}
+	if result.Response.Pruned == nil || result.Response.Pruned.Reason != protocol.ReasonCapabilityDisabled {
+		t.Fatalf("剪枝回执原因必须是 capability_disabled，得到 %+v", result.Response.Pruned)
+	}
+	if result.Response.Pruned.Detail == "" {
+		t.Fatal("剪枝回执要带给人看的 detail")
+	}
+	if result.Response.EventID == "" {
+		t.Fatal("剪枝回执必须有真实 eventId（留痕行）")
+	}
+	if got := f.childCount(t); got != 0 {
+		t.Fatalf("停用下游不得建子任务，子任务数 = %d", got)
+	}
+	parent, err := f.db.GetTask(testCtx(), f.namespace.ID, f.parent.ID)
+	if err != nil {
+		t.Fatalf("回读父任务: %v", err)
+	}
+	if parent.Phase != store.TaskRunning {
+		t.Fatalf("父任务必须仍是 running（停用不取消/不暂停在途任务），得到 %q", parent.Phase)
+	}
+	// 留痕：剪枝事件行真实存在（source='route'，type=capability_disabled）。
+	var n int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM events WHERE trace_id = ? AND source = 'route' AND type = ?`,
+		f.parent.TraceID, protocol.ReasonCapabilityDisabled).Scan(&n); err != nil {
+		t.Fatalf("统计剪枝事件: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("剪枝留痕行数 = %d，want 1", n)
+	}
+}
