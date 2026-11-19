@@ -119,6 +119,13 @@ add('node-config',d=>nodeRetained(d,'config'),{expectHttpStatus:[
   {status:409,path:'/v1/nodes/anode-1/config',note:'resource_version_conflict：并发 PUT 之后用旧 rv 保存必须 409'},
 ]});
 for(const mode of ['actions-slots','errors'])add('node-'+mode,d=>nodeRetained(d,mode));
+// namespace-detail：列表 → 详情 → 只读 YAML / 逐节点表 / 非 admin 的 403（③④）。
+// 这条用例只读真相：导航入口在共享侧栏、YAML 由服务端重建、覆盖来源由服务端给出。
+add('namespace-detail',d=>nodeRetained(d,'namespace-detail'),{expectHttpStatus:[
+  // 只读证据：用 PUT 打 Namespace YAML —— 生产 mux 的静态兜底把「未注册方法」变成 404
+  // （与 production_mux_test 的「退役写 = 404」同一已知行为）。它必须**不是** 2xx。
+  {status:404,path:'/v1/namespaces/default/yaml',exact:true,note:'只读：Namespace YAML 没有写路径（PUT 不被接受）'},
+]});
 add('node-aba',aba);
 // retained-security-permissions：用错误的当前密码移除密码必须 400（账户已有密码，
 // 用例先走真实 POST /v1/auth/password 建密码再验这个失败面）。

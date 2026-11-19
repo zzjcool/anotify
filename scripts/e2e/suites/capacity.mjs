@@ -352,7 +352,8 @@ async function runRetentionEnabled() {
 	try {
 		server = await H.startServer({ suiteName: SUITE, portOffset: 2, rpId: "localhost" });
 		const dbPath = server.dbPath;
-		const s = H.seed(dbPath, "capret");
+		// 系统保留期是管理员面：member 读 `GET /v1/system/config` 是 403（不是 200）。
+		const s = H.seed(dbPath, "capret", { admin: true });
 		const nsId = await H.defaultNamespaceId(server.base, s.session);
 
 		// 启动日志必须先说清「会删」：保留期不可逆，运维必须能从日志读到这台机器的口径。
@@ -459,7 +460,7 @@ async function runRetentionPermanent() {
 			extraEnv: { ANOTIFY_EVENT_RETENTION_DAYS: "0" },
 		});
 		const dbPath = server.dbPath;
-		const s = H.seed(dbPath, "capret0");
+		const s = H.seed(dbPath, "capret0", { admin: true });
 		const nsId = await H.defaultNamespaceId(server.base, s.session);
 
 		H.check(
