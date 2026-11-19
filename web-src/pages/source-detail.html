@@ -39,30 +39,19 @@
 .sd-schema th,.sd-schema td{padding:6px;text-align:left;vertical-align:top;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
 .sd-schema th{color:var(--muted);font-weight:500}
 .sd-schema code{font-family:var(--font-mono);font-size:11px;color:var(--text)}
-/* ---------- 折叠块（原始 YAML / 脱敏后的 config JSON）----------
-   默认收起、展开才取。长行必须在 pre 自己身上横滚（`.src-raw .code-body`），
-   否则一条长行会把整张卡片撑出横向溢出。YAML 块独用 `.src-raw`，
-   脱敏 JSON 块用 `.sd-raw`：`.src-raw` 只指向 YAML 一处，选择器不留歧义。 */
-/* 每条规则单独一行、类名放在行首：死类检测按「行首 .class」收内联 <style> 里
+/* ---------- 折叠块（原始 YAML）----------
+   只有一处原始视图：YAML（脱敏后的 config 是它的子集，不再单独给折叠块）。
+   每条规则单独一行、类名放在行首：死类检测按「行首 .class」收内联 <style> 里
    定义的类，合并选择器（`.a,.b{`）里的第二个类会被当成没有定义。 */
 .src-raw{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0}
-.sd-raw{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);min-width:0}
 .src-raw>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;list-style:none}
-.sd-raw>summary{display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;list-style:none}
 .src-raw>summary::-webkit-details-marker{display:none}
-.sd-raw>summary::-webkit-details-marker{display:none}
 .src-raw>summary::before{content:"▸";color:var(--faint);font-size:11px}
-.sd-raw>summary::before{content:"▸";color:var(--faint);font-size:11px}
 .src-raw[open]>summary::before{content:"▾"}
-.sd-raw[open]>summary::before{content:"▾"}
 .src-raw>summary:hover{color:var(--text)}
-.sd-raw>summary:hover{color:var(--text)}
 .src-raw-hint{margin-left:auto;font-size:10.5px;color:var(--faint);text-align:right}
-.sd-raw-hint{margin-left:auto;font-size:10.5px;color:var(--faint);text-align:right}
 .src-raw-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
-.sd-raw-body{display:grid;gap:6px;padding:0 10px 10px;min-width:0}
 .src-raw .code-body{overflow-x:auto;max-height:20rem}
-.sd-raw .code-body{overflow-x:auto;max-height:20rem}
 </style>
 {{end}}
 
@@ -396,17 +385,6 @@ function yamlBlock(name) {
   return box;
 }
 
-/* ====================== 脱敏后的 config（原始 JSON 折叠） ====================== */
-function rawJsonBlock(label, text) {
-  const box = el("details", { class: "sd-raw" });
-  const sum = el("summary");
-  sum.append(txt("span", null, label), txt("span", "sd-raw-hint", t("source_detail.config_json_hint", "读投影已脱敏")));
-  const holder = el("div", { class: "sd-raw-body" });
-  holder.append(codeBlock(label, text));
-  box.append(sum, holder);
-  return box;
-}
-
 /* ============================ 近期回执 ============================ */
 async function loadRecent(name) {
   const host = $("src-detail-recent");
@@ -497,11 +475,10 @@ function render(res) {
       muted: !(res && res.metadata && res.metadata.creationTimestamp),
     }),
     /* v4 没有「更新时间」这个落库事实（ObjectMeta 只有 creationTimestamp）：
-       把 resourceVersion 摆出来并说明它就是写入序号，不编一个时间。 */
+       该字段展示写入序号，不编一个时间。 */
     pair(t("source_detail.updated", "更新时间"), m.resourceVersion, { mono: true, muted: !m.resourceVersion }),
   );
   basic.append(kv);
-  basic.append(txt("p", "field-hint", t("source_detail.updated_hint", "v4 没有独立的更新时间字段：每次写入以 resourceVersion 递增体现。")));
   body.append(basic);
 
   /* ---------- 定义与字段：config（脱敏后）+ payloadSchema ---------- */
@@ -520,12 +497,6 @@ function render(res) {
     cfgSec.append(txt("p", "field-hint", cfg.secretSet ? t("source_detail.secret_set_yes", "HMAC 签名已设置（只写不读）") : t("source_detail.secret_set_no", "没有 HMAC 签名")));
   }
   if (cfg.payloadSchema) cfgSec.append(schemaTable(cfg.payloadSchema));
-  /* 原始 JSON 是脱敏后的读投影：token/secret 永远不会出现在这里。 */
-  const safe = {};
-  for (const key of ["hookUrl", "secretSet", "expr", "tz", "payload", "payloadSchema", "sample"]) {
-    if (cfg[key] != null) safe[key] = cfg[key];
-  }
-  if (Object.keys(safe).length) cfgSec.append(rawJsonBlock(t("source_detail.config_json", "查看原始 JSON"), JSON.stringify(safe, null, 2)));
   body.append(cfgSec);
 
   /* ---------- 目标能力：targets[] 的 capability 与 params ---------- */

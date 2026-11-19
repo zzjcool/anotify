@@ -57,7 +57,7 @@ common:
     failed: No se pudo deshacer
     hint: Deshacer en 5 s
     action: Deshacer
-  resource_version_required: 'falta resourceVersion; actualiza la página e inténtalo de nuevo'
+  resource_version_required: 'La página está desactualizada; actualiza e inténtalo de nuevo'
   brand:
     name: Anotify
     tagline: Notifica cuando tu agente termina
@@ -274,7 +274,7 @@ index:
     title: Flujo de eventos
     subtitle: Últimos eventos · clic para ver la cadena
     open: Todos los eventos →
-    refresh: Actualizar →
+    refresh: 'Actualizar'
     count: 'Últimos {n}'
     loading: Cargando eventos…
     empty: 'Aún no hay eventos. Cuando conectes un webhook o un origen cron, el flujo aparecerá aquí.'
@@ -344,7 +344,7 @@ message:
     failed: Fallida
     canceled: Cancelada
     abandoned: Abandonada
-    lease_expired: Arrendamiento expirado
+    lease_expired: 'Autorización de ejecución expirada'
   node:
     central: Ejecutada por el hub
   chain:
@@ -354,8 +354,6 @@ message:
   v4:
     diagnostics: "Diagnóstico de ejecución"
     attempt: "Intento / máximo"
-    wait_hint: "Esperar no consume intentos. Las tareas no idempotentes no se reintentan automáticamente; aceptación desconocida no permite repetir con seguridad."
-    lease_hint: "La concesión limita la autorización, no garantiza efectos únicos. Los intentos antiguos o concesiones vencidas no pueden enviar más resultados."
     cancel: "Cancelar tarea"
     abandon: "Abandonar tarea"
     confirm_cancel: "¿Cancelar esta tarea? Se revoca la autorización y se detiene la ejecución."
@@ -363,12 +361,10 @@ message:
     params: "Parámetros de entrada"
     env: "Entorno (solo nombres y fuentes)"
     env_hint: "Solo nombres y fuentes usados por esta tarea; no valores del equipo ni lista completa de variables permitidas."
-    env_empty: "No hay diagnóstico de entorno retenido."
     result: "Resumen / error / artefactos"
     error_message: 'Mensaje'
     error_reason: 'Motivo'
     attempts: "Intentos de ejecución retenidos"
-    attempts_empty: "No hay intentos retenidos."
     logs: "Registros de tarea"
     current: "Último registro archivado"
     previous: "Intento de ejecución anterior"
@@ -376,7 +372,6 @@ message:
     complete: "Sin truncar"
     logs_empty: "No hay líneas para este intento (o no hay intento anterior)."
     emissions: "Hechos emit aceptados"
-    emissions_empty: "No hay hechos emit retenidos."
     missing: "Falta el id de tarea en la URL."
     not_found: "Tarea inexistente, eliminada o de otro espacio."
     artifact_download: "Descargar artefacto administrado"
@@ -500,9 +495,8 @@ login:
     signup_success_short: ¡Cuenta creada! — entrando al workspace…
     need_username_short: Por favor elige un usuario primero.
 receivers:
-  back_home: "Volver al panel"
+  back_home: 'Volver al resumen'
   docs_link: "Guía de integración"
-  unavailable_next: "Cuando se publique, aquí verás tus dispositivos de recepción y la tasa de entrega."
   unavailable: 'Las notificaciones push aún no están disponibles. Tus dispositivos aparecerán aquí cuando se publiquen.'
   title: Destinatarios
   channel:
@@ -759,17 +753,6 @@ security:
     nudge_action: Añadir Passkey en este dispositivo
     nudge_dismiss: Entendido
   concept:
-    title: Dos ejes independientes
-    auth_label: Eje de autenticación
-    auth_axis: quién eres (esta página)
-    auth_p1: '· Métodos de acceso: Passkey o contraseña, siempre al menos uno'
-    auth_p2: '· Sesiones de acceso: multidispositivo, revocables individualmente'
-    auth_p3: '· Códigos de recuperación: respaldo si se pierden todos los dispositivos'
-    delivery_label: Eje de entrega
-    delivery_axis: a dónde van las notificaciones
-    delivery_p1: · Se gestiona en la página Destinatarios, aparte de esta
-    delivery_p2: · Suscripciones push del navegador + conexiones WebSocket
-    delivery_p3: · Se siguen recibiendo tras cerrar sesión, hasta cancelar la suscripción
   unnamed_passkey: Passkey sin nombre
   unknown_device: Dispositivo desconocido
   credential: Credencial
@@ -832,9 +815,9 @@ docs:
   design:
     title: "Comportamiento y límites: dónde es fácil malinterpretar"
     lede: "Estos son los comportamientos del producto que más se malinterpretan; úsalos para contrastar cuando algo no cuadre."
-    sources: "Las fuentes producen eventos y las capacidades destino reciben parámetros. El grafo de destinos de una fuente refleja las referencias de spec.targets: no demuestra una ejecución correcta. Para saber si se recibió, mira la lista de eventos; para saber si se ejecutó, el detalle de la tarea. El deliveryId se deduplica 30 días por defecto y el mismo id solo significa «ya recibido»."
+    sources: 'Las fuentes producen eventos y las capacidades destino reciben parámetros. El grafo de destinos de una fuente refleja referencias: no demuestra una ejecución correcta. Para saber si se recibió, mira la lista de eventos; para saber si se ejecutó, el detalle de la tarea. El deliveryId se deduplica 30 días por defecto y el mismo id solo significa «ya recibido».'
     playbooks: "playbook.yaml es el único manifiesto raíz y todos los archivos de capacidades y fuentes a los que hace referencia deben estar dentro del paquete. La página de playbooks solo guarda el paquete: instalar es un POST …/install aparte y desplegar es un POST …/deploy de la capacidad."
-    nodes: "La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. La versión de configuración y la versión aplicada muestran los valores actuales del servidor; si no se pueden leer muestran desconocido y no suponen un valor por defecto."
+    nodes: 'La configuración de cada nodo se edita por separado. El API por lotes es atómico por nodo y permite éxito parcial. La retención va en segundos y 0 significa para siempre; los valores iniciales son 604800 s para registros/artefactos y 2592000 s para eventos y tareas terminales, las tareas activas y la protección de referencias siguen vigentes y el workDir del usuario nunca se elimina. La versión de configuración y la versión aplicada muestran los valores actuales del servidor; si no se pueden leer muestran desconocido y no suponen un valor por defecto.'
   endpoints:
     title: Todos los endpoints
   openapi:
@@ -861,6 +844,10 @@ docs:
       ingress: "Entrada"
       traces: "Trazas"
       system: "Configuración del sistema"
+      source-actions: 'Acciones de origen'
+      hooks: 'Hooks'
+      aggregates: 'Agregados'
+      console: 'Consola'
 
   events:
     core: Núcleo
@@ -872,7 +859,7 @@ docs:
       source: Origen del evento. También es el nombre de la capacidad raíz (github, cron, http).
       type: Evento tipo, un nombre significativo para ese origen (p. ej. pull_request.opened).
       payload: Carga del evento, se pasa tal cual a los params de las tareas siguientes.
-      idem: Clave de idempotencia. El mismo source + idemKey produce un solo evento.
+      idem: 'Clave de deduplicación. El mismo source + idemKey produce un solo evento.'
       trace: Trace explícito. Si se omite, se crea uno nuevo.
     note: Devuelve 200 en cuanto el evento se guarda. Un fallo de despacho también devuelve 200 — los eventos no se pierden por un error posterior; puedes reenviarlos luego.
     curl:
@@ -908,7 +895,7 @@ docs:
     base_url: Base URL
     base_url_desc: Su dominio en despliegue propio, o un dominio de Tunnel
     version: Versión de API
-    version_desc: Todos los endpoints dinámicos llevan prefijo de versión; los estáticos van a /static/*
+    version_desc: 'Todos los endpoints dinámicos llevan prefijo de versión; los estáticos se sirven desde la raíz con huella de contenido (p. ej. /ui.<hash>.css).'
     map:
       title: Mapa de endpoints
       notify: El Agent reporta una notificación (núcleo)
@@ -1015,17 +1002,17 @@ docs:
       title: Reconectar y reanudar
       desc: Al reconectar, envíe el header <code class="doc-code">Last-Event-Id</code> (o un primer frame <code class="doc-code">resume</code>). El servidor reenvía las notificaciones no confirmadas de las últimas 24h (ventana de replay), luego entra al stream en vivo. Si supera la ventana de retención, devuelve error <code class="doc-code">resume_expired</code>; el cliente debe obtener el historial completo.
   v4:
-    five_specs: "Los endpoints vienen de cinco specs: resource / events / agent / ingress / auth."
+    five_specs: 'Lista de endpoints: agrupada por recurso, con método y ruta.'
     missing: "Lista de endpoints no disponible"
     ingress: "Entrada de eventos por namespace (no crea recurso)"
     node: "anode: ejecución y configuración local"
     node_note: "Registre Node y emita identidad duradera. Se intersectan namespaces declarados y autorizados; install nunca registra."
-    resource: "Recursos por namespace y CAS"
-    resource_note: "Lea KindList.items. Cree con apiVersion/kind/metadata/spec. Edite campos escribibles y metadata.resourceVersion; ausencia400, obsoleto409 conserva borrador. DELETE usa query resourceVersion."
+    resource: 'Recursos por espacio de nombres (protección de conflictos al guardar)'
+    resource_note: 'Lee la lista de recursos; crea con apiVersion, kind, metadata y los campos de definición. Al editar se envían solo los campos escribibles y el token de versión: sin token devuelve 400, caducado devuelve 409 y conserva el borrador; DELETE usa el token de versión en la query.'
 
 cliauth:
   title: Autorización de dispositivo CLI
-  back_home: Volver al panel
+  back_home: 'Volver al resumen'
   entry:
     heading: Introduce el código de autorización
     sub: Tras ejecutar el script de inicio de sesión en tu terminal, introduce el código de 8 caracteres que aparece allí.
@@ -1176,7 +1163,7 @@ admin:
     group_retention: "Retención (editable)"
     group_retention_note: "Los tres valores están en segundos; 0 significa conservar para siempre. Al guardar se aplica en la siguiente limpieza."
     group_yaml: "YAML del sistema (solo lectura)"
-    group_yaml_note: "Documento normalizado reconstruido desde los hechos actuales. Solo lectura: la única vía de escritura de la retención es la acción CAS de abajo; no hay una segunda ruta."
+    group_yaml_note: 'Documento normalizado reconstruido desde los hechos actuales. Solo lectura.'
     group_danger: "Acciones peligrosas"
     group_danger_note: "Guardar la retención cambia de verdad el ciclo de vida de los datos: los eventos / tareas / artefactos fuera de la nueva ventana se eliminan y no se pueden recuperar; 0 los conserva para siempre (el disco solo crece). Revisa la ventana y el impacto antes de guardar."
     yaml_view: "Documento actual"
@@ -1305,7 +1292,6 @@ events:
     namespace: "Espacio de nombres"
     source: "Objeto / fuente"
     limit: "Tamaño de página"
-    filter: "Aplicar filtros"
     filters: "Filtros"
     filters_active: "{n} activos"
     loading: "Cargando datos…"
@@ -1360,22 +1346,21 @@ caps:
     Implemented: 'Implementación'
     NodesAvailable: 'Nodos disponibles'
     none: 'El servidor no devolvió condiciones'
-    title: 'Cuatro condiciones (derivadas al leer)'
+    title: '¿Puede ejecutarse?'
   conflict:
-    body: 'El resourceVersion actual del servidor es {rv}; tus datos locales siguen aquí. Recargar lo último descarta los cambios locales.'
+    body: 'El token de versión actual del servidor es {rv}; tus datos locales siguen aquí. Recargar lo último descarta los cambios locales.'
     reload: 'Recargar lo último (descartar cambios locales)'
     reloaded: 'Se cargó la última versión'
     title: 'Este recurso cambió en otro sitio (409 resource_version_conflict)'
   delete:
     body: '¿Eliminar «{name}»? Solo se elimina esta capacidad y no se propaga nada: otras capacidades u orígenes que la referencien dejarán de resolverse (se informa en status).'
-    conflict: 'Esta capacidad acaba de cambiar en otro sitio (409). Se recargó el resourceVersion {rv}; confirma y pulsa eliminar otra vez. Sin reintento automático.'
+    conflict: 'Esta capacidad acaba de cambiar en otro sitio (409). Se recargó el token de versión {rv}; confirma y pulsa eliminar otra vez. Sin reintento automático.'
     deleting: 'Eliminando…'
-    rv: 'resourceVersion actual: {rv}'
+    rv: 'Token de versión actual: {rv}'
     submit: 'Eliminar'
     title: 'Eliminar capacidad'
   deploy:
     col: 'Despliegue'
-    hint: 'Guardar o instalar un paquete no despliega nada; el despliegue solo ocurre con este botón.'
     nodes: 'Nodos objetivo'
     nodes_hint: 'Sin selección = el servidor elige candidatos con la política actual.'
     nodes_empty: 'No hay nodos desplegables (ninguno está autorizado para este espacio de nombres).'
@@ -1397,12 +1382,12 @@ caps:
     gone_hint: 'Usa la barra de deshacer de abajo para restaurarla, o vuelve a la lista para ver las demás.'
     hide: 'Ocultar'
     loading: 'Cargando la capacidad…'
+    more: 'Más acciones'
     no_name: 'Falta el nombre de la capacidad (la URL necesita ?name=…)'
     no_name_hint: 'Abre una capacidad desde la lista o añade ?namespace=<ns>&name=<name> a la URL.'
     outputs: 'Salidas (qué puede emitir)'
-    page_sub: 'Identidad, salud, definición y script; editar, desplegar y eliminar están en esta página'
     page_title: 'Detalle de la capacidad'
-    rv: 'resourceVersion'
+    rv: 'Token de versión'
     script: 'Script (run.files)'
     script_empty: 'Esta capacidad no tiene archivos de script'
     script_entry: 'Archivo de entrada'
@@ -1425,7 +1410,7 @@ caps:
     batch_created: 'Se crearon {caps} capacidades · {m} destinos'
     cancel: 'Cancelar'
     concurrency: 'Concurrencia por nodo'
-    concurrency_hint: 'spec.concurrency.maxPerNode (por defecto 1).'
+    concurrency_hint: 'Por defecto 1: cuántas tareas se ejecutan a la vez en un nodo.'
     create_title: 'Nueva capacidad'
     current_version: 'Versión actual: v{v}'
     display_name: 'Nombre visible'
@@ -1467,8 +1452,8 @@ caps:
     file_path: 'Ruta relativa, p. ej. run.sh'
     files: 'Archivos'
     files_hint: 'La primera línea de la entrada debe ser #! shebang; cada archivo forma parte de la capacidad.'
-    idempotent: 'Permitir reintentos automáticos (idempotente)'
-    idempotent_hint: 'Actívalo solo si es idempotente; si no, un fallo es terminal.'
+    idempotent: 'Permitir reintentos automáticos (repetible)'
+    idempotent_hint: 'Actívalo solo si la ejecución es claramente repetible; si no, un fallo es definitivo.'
     lifecycle: 'Ciclo de vida (lifecycle)'
     max_attempts: 'Intentos máximos'
     name: 'Nombre de la capacidad'
@@ -1519,22 +1504,20 @@ caps:
     next: 'Destinos'
     nodes: 'Nodos {total} (actual {deployed} · antiguo {stale} · sin desplegar {missing})'
   nodes:
-    deployed: 'digest actual'
+    deployed: 'Sincronizado'
     held_empty: 'Ningún nodo tiene esta capacidad todavía (pulsa Desplegar)'
     missing: 'sin desplegar'
-    stale: 'digest antiguo'
+    stale: 'Versión atrasada'
     title: 'Estado en los nodos'
   observed:
     emits: 'Registro de envíos'
-    emits_empty: 'Esta ejecución no envió nada'
     empty: 'No hay historial conservado (tras la limpieza observed queda vacío; no se inventan fechas)'
     fields: 'Campos: {f}'
     no_fields: 'Sin campos'
     pruned: 'Rastro de poda'
-    pruned_empty: 'Esta ejecución no podó nada'
     task: 'Última tarea'
-    tasks: 'Tareas totales'
-    tasks_failed: 'Fallidas'
+    tasks: 'Tareas en las últimas 24 h'
+    tasks_failed: 'Fallidas en las últimas 24 h'
     title: 'Rastro de la última ejecución (observed)'
     truncated: 'Solo se listan los últimos {n}; los anteriores no se muestran'
     unavailable: 'Esta capacidad aún no tiene historial de ejecución (aparece tras la primera ejecución)'
@@ -1554,14 +1537,14 @@ caps:
     entrypoint: 'Entrada'
     env: 'Variables de entorno (env)'
     files: 'Archivos'
-    idempotent: 'Idempotente'
+    idempotent: 'Repetible'
     installed_from: 'Origen de instalación'
     max_attempts: 'Intentos máximos'
     next: 'Destinos (next)'
     params: 'Contrato de parámetros (JSON Schema)'
     result_ttl: 'Retención del resultado (s)'
     timeout: 'Tiempo de ejecución (s)'
-    title: 'Definición (spec)'
+    title: 'Definición'
     valuefrom: 'Tomado de'
     values: 'Valores'
     version: 'Versión'
@@ -1577,15 +1560,15 @@ caps:
     hint: 'Una ejecución de prueba crea y despacha una tarea de verdad (no es una vista previa): el evento se marca origin=test y queda fuera de las estadísticas.'
     version: 'Versión'
     version_hint: 'Por defecto la versión live actual; una versión explícita debe existir.'
-    params: 'Params (renderizados desde spec.params)'
+    params: 'Parámetros (generados desde la definición)'
     params_json: 'Rellenar el JSON de params directamente'
     params_json_hint: 'Un objeto params completo aquí anula el formulario de arriba; vacío = se usan los valores del formulario.'
     params_degraded: 'Este contrato de params (oneOf / allOf / $ref…) no se puede renderizar como formulario: rellena el JSON directamente.'
     params_empty: 'Esta capacidad no recibe params.'
     params_invalid: 'params debe ser un objeto JSON'
     nodes: 'Limitar a nodos'
-    nodes_hint: 'Vacío = todos los nodos online que tienen el digest requerido; los candidatos salen de los candidatos de despliegue.'
-    nodes_none: 'No hay nodos candidatos de despliegue (déjalo vacío y el servidor elige por digest).'
+    nodes_hint: 'Vacío = todos los nodos online que tienen esta versión; los candidatos salen de los candidatos de despliegue.'
+    nodes_none: 'No hay nodos candidatos de despliegue (déjalo vacío y el servidor elige).'
     submit: 'Ejecución de prueba'
     submitting: 'Enviando…'
     trace: 'traceId: '
@@ -1613,7 +1596,7 @@ caps:
   yaml:
     open: 'Crear desde YAML'
     title: 'Crear capacidad desde YAML'
-    hint: 'Pega un documento Capability (apiVersion/kind/metadata/spec). status y metadata.resourceVersion los gestiona el servidor; no los escribas.'
+    hint: 'Pega un documento de capacidad; el estado y el token de versión los gestiona el servidor, no los escribas.'
     submit: 'Crear'
     cancel: 'Cancelar'
     created: 'Capacidad creada desde YAML'
@@ -1741,18 +1724,19 @@ nodes:
     name: "Nombre único del clúster"
     create: "Crear y emitir token de identidad"
     cancel: "Cerrar y borrar texto plano"
-    refresh: "Actualizar datos"
+    refresh: 'Actualizar'
     loading: "Cargando…"
     empty: "No hay nodos. Registre, emita un token e instale localmente."
     token: "Token de identidad del nodo"
     token_warning: "El texto plano se devuelve solo ahora. Identidad duradera, no bootstrap de un uso ni expiresAt. La rotación invalida tokens y sesiones anteriores. No lo incluya en URL, registros ni vars."
     rotate: "Rotar token de identidad"
+    more: 'Más acciones'
     rotate_confirm: "¿Rotar identidad de {name}? El token y la autorización de sesiones antiguas se invalidan inmediatamente. Actualice la configuración local."
     bootstrap_title: "Instalación con un solo comando (ejecútelo en el host del nodo)"
     bootstrap_hint: "Este comando descarga y verifica el binario del nodo, hace una precomprobación de identidad contra el hub, escribe la configuración y la unidad de servicio, y después arranca el servicio. Cuando necesita privilegios, el propio script le pide la contraseña: no anteponga sudo al comando. El token en claro solo se muestra en este panel y no se puede recuperar una vez cerrado."
     copy_bootstrap: "Copiar comando de instalación"
     local_setup: "Configuración local y tres comandos públicos"
-    setup_hint: "Guarde anode.yaml antes de install o serve. Usa un token emitido; nunca registra automáticamente. vars no son secretos. envPassthrough queda local; PATH, HOME y ANOTIFY_ están prohibidos. No se suben listas ni valores. ANOTIFY_ARTIFACT_DIR muestra nombre/origen, no rutas absolutas."
+    setup_hint: 'Guarda anode.yaml antes de ejecutar install o serve; la instalación usa un token emitido y nunca registra por sí sola. ANOTIFY_ARTIFACT_DIR lo aporta el nodo; el diagnóstico muestra nombre/origen, no rutas absolutas.'
     copy_emit: "Copiar comando emit"
     emit_hint: "Esta línea usa «{cap}», una capacidad que ya existe en esta instancia. emit se ejecuta dentro de una tarea en el nodo (el token de tarea se añade solo); no lo ejecutes en tu propia terminal."
     emit_none: "Esta instancia aún no tiene capacidades: crea una primero y el comando será ejecutable."
@@ -1765,25 +1749,26 @@ nodes:
     slots: "Estado físico de ranuras"
     slot_note: "Solo busy=false en una ranura válida implica libre; slot 0 es válido. Una tarea terminal no prueba recuperación física. La ausencia de busy/instances nunca implica libre."
     effective_namespaces: "Namespaces efectivos (declarado ∩ permitido)"
-    authorized: "Namespaces permitidos"
+    authorized: 'Espacios de nombres autorizados por el hub'
+    authorized_note: 'Solo surten efecto los espacios de nombres que este nodo declara.'
     none: "Ninguno"
     config: "Valores predeterminados del nodo"
     vars: "vars (JSON no secreto nombre → texto)"
     limits: "limits (solo local + nodo)"
-    save: "Guardar con CAS actual"
+    save: 'Guardar'
     reload: "Recargar última configuración explícitamente"
     reload_confirm: "Recargar reemplaza su borrador. ¿Continuar?"
     saved: "Guardado. La nodo espera apply; los valores de namespace afectan solo la siguiente tarea."
-    stale: "409: CAS obsoleto; borrador conservado exactamente. Recargue explícitamente antes de reintentar."
+    stale: 'Se modificó en otro lugar; tu borrador se conserva intacto. Actualiza y vuelve a intentar: no se sobrescribe automáticamente.'
     error: "Solicitud fallida"
     loaded: "Configuración actual cargada."
-    pending: "ConfigPending: configuración de nodo aún no aplicada"
-    applied: "Revisiones de nodo coinciden (no la revisión del namespace)"
-    revision: "Estado de configuración y aplicación"
+    pending: 'ConfigPending: configuración de nodo aún no aplicada'
+    applied: 'La configuración del nodo coincide con el hub'
+    revision: 'Estado de configuración y aplicación'
     override_stale: "overrideStale: valor inferior cambió; sigue prevaleciendo el local"
-    context: "Contexto namespace para valores efectivos"
-    effective_vars: "vars efectivos (local > node > namespace, origen por clave)"
-    machine_vars: "vars aplicados de nodo (sin valores de namespace)"
+    context: 'Contexto de espacio de nombres de los valores efectivos'
+    effective_vars: 'vars efectivos (anulación local > valor predeterminado del nodo, origen por clave)'
+    machine_vars: 'vars vigentes en este nodo (sin los valores predeterminados del espacio de nombres)'
     vars_table_title: "Variables de un vistazo (valor / origen / quién lo necesita)"
     vars_table_hint: "Los valores se resuelven por clave como local > node > namespace y el origen lo entrega el servidor. Un nombre que una capacidad exige y nada aporta se marca en rojo: ese valor no se resolvería en una tarea."
     vars_col_name: "Nombre"
@@ -1828,7 +1813,7 @@ nodes:
     key: "Nombre / campo hoja"
     value: "Valor"
     ns_config: "Configuración vars del namespace (sin limits)"
-    ns_hint: "Se resuelve para la siguiente tarea del namespace; nunca entra en applied de nodo."
+    ns_hint: 'Solo afecta a la próxima tarea de ese espacio de nombres; no se escribe en los valores predeterminados del nodo.'
     retention: "Retención del sistema (administrador)"
     retention_hint: "Segundos; 0 significa conservar siempre."
     admin_only: "Solo administradores pueden leer o editar retención del sistema."
@@ -1838,26 +1823,26 @@ nodes:
     upgrade_confirm: "¿Solicitar actualización de {name}? Puede reemplazar y reiniciar el binario. Solo se muestran resultados reales."
     action_done: "Acción aceptada: "
     not_found: "Nodo inexistente; vuelva a la lista del clúster."
+    load_failed: 'No se pudo cargar este nodo. Reinténtalo o vuelve a la lista de nodos.'
     back: "Volver a nodos"
-    tasks: "Tareas recientes del namespace"
+    tasks: 'Tareas recientes del espacio de nombres actual'
+    tasks_all: 'Ver los {n}'
     artifacts: "Estado real de despliegues de capacidades"
     batch_hint: "Edite cada nodo. El API por lotes es atómico por nodo y permite éxito parcial."
 
-    node_subtitle: "Dimensión de nodo: identidad y conexión · espacios autorizados · configuración (YAML) · ranuras físicas"
+    node_subtitle: 'Este nodo: estado de conexión, capacidades en marcha y configuración'
     yaml_title: "YAML del nodo (apiVersion anotify/v1 · kind Node)"
-    yaml_hint: "Documento canónico reconstruido por el servidor a partir de los hechos actuales: solo los campos de spec, sin status ni campos privados de la máquina (token / server / listen / envPassthrough nunca llegan al hub). Pegue el documento completo para guardar; los cambios del formulario se sincronizan en el mismo texto."
     yaml_view: "Documento actual"
-    yaml_edit: "Editar YAML"
-    yaml_edit_hint: "Análisis estricto: campos desconocidos, tipos incorrectos y resourceVersion ausente se rechazan con número de línea y ruta de campo"
-    yaml_input: "YAML completo"
-    yaml_save: "Guardar este YAML"
-    yaml_reset: "Reescribir desde el formulario actual"
-    yaml_saved: "Guardado: el YAML se aplicó y el documento se normalizó de nuevo."
-    yaml_invalid: "El documento no validó: corrija los números de línea y las rutas de campo y vuelva a guardar."
-    yaml_dirty: "Borrador modificado; el servidor lo normaliza al guardar."
-    yaml_reset_done: "Reescrito desde el formulario actual (sin guardar)."
+    yaml_edit: 'Editar YAML'
+    yaml_edit_hint: 'Se comprueba el documento entero al guardar: los problemas vuelven con número de línea y nombre de campo'
+    yaml_input: 'YAML completo'
+    yaml_save: 'Guardar este YAML'
+    yaml_reset: 'Reescribir desde la configuración actual'
+    yaml_saved: 'Guardado: el documento quedó actualizado y el nodo aplicará la nueva configuración en la próxima sincronización.'
+    yaml_invalid: 'El documento no validó: corrija los números de línea y los nombres de campo y vuelva a guardar.'
+    yaml_dirty: 'Borrador modificado; el servidor lo normaliza al guardar.'
+    yaml_reset_done: 'Reescrito desde la configuración actual (sin guardar).'
     authorized_title: "Espacios autorizados (quién puede usar este nodo)"
-    authorized_hint: "Es la lista de autorización, no una copia: efectivo = autorizado ∩ declarado por la máquina, y solo se puede restringir."
     effective_title: "Espacios efectivos (solo lectura)"
     effective_hint: "Declarado por el nodo ∩ autorizado por el hub. Para revocar todo, vacíe la lista de autorización."
     open_namespace: "Abrir un espacio de nombres"
@@ -1869,7 +1854,7 @@ sources:
     close: "Cerrar"
     save: "Guardar"
     save_failed: "No se pudo guardar"
-    reload: "Recargar recurso actual"
+    reload: 'Actualizar'
     detail: "Detalles de la fuente"
     back: "Volver a fuentes"
     intro: "Las fuentes producen eventos; las capacidades reciben parámetros."
@@ -1877,7 +1862,7 @@ sources:
     empty: "No hay fuentes. Una entrada sin destinos es válida."
     name: "Nombre del recurso · metadata.name"
     display: "Nombre visible (opcional)"
-    kind: "Tipo de fuente · spec.kind"
+    kind: 'Tipo de fuente'
     immutable: "El nombre y tipo no se pueden cambiar; elimina y vuelve a crear."
     expr: "Expresión cron (cinco campos)"
     tz: "Zona IANA (por defecto Local)"
@@ -1894,7 +1879,7 @@ sources:
     remove_target: "Quitar destino"
     capability: "Referencia de capacidad (nombre o nombre@versión)"
     params: "Objeto de parámetros · targets[].params"
-    params_hint: "Usa constantes, $(payload.x), $(payload.items.0.x) o concatenación. La referencia completa conserva el tipo; las rutas ausentes se podan. Los valores por defecto son del schema de capacidad. Destinos vacíos son válidos."
+    params_hint: 'Admite constantes, $(payload.x), $(payload.items.0.x) y concatenación. La referencia completa conserva el tipo; las rutas ausentes se podan. Los valores por defecto son de la capacidad. Los destinos pueden estar vacíos.'
     enabled: "Activada"
     disabled: "Desactivada"
     enable: "Activar"
@@ -1919,20 +1904,20 @@ sources:
     more: "Más acciones"
     saved_dry_hint: "Solo vista previa, sin evento; «Ejecutar ahora» crea el evento y despacha"
     yaml: "YAML original"
-    yaml_hint: "Reconstruido desde la definición guardada; las credenciales son solo de escritura, así que solo aparecen hookUrl / secretSet"
+    yaml_hint: 'Reconstruido desde la definición guardada; las credenciales son de solo escritura; incluye el config saneado'
     yaml_loading: "Generando YAML…"
     yaml_error: "No se pudo cargar el YAML original"
     yaml_create:
       open: "Crear desde YAML"
       title: "Crear fuente desde YAML"
-      hint: "Pega un documento Source. `spec.config.token` / `secret` son de solo escritura; tras guardar solo se muestra hookUrl."
+      hint: 'Pega un documento Source. <code>spec.config.token</code> / <code>secret</code> son de solo escritura; tras guardar solo se muestra hookUrl.'
       submit: "Crear"
       cancel: "Cancelar"
       created: "Fuente creada desde YAML"
       empty: "Primero pega un documento YAML"
     draft_dry: "Vista previa de borrador (sin guardar)"
     namespace: "Espacio de nombres"
-    rv: "resourceVersion (token CAS)"
+    rv: 'Token de versión'
     health: "Estado de salud"
     resolved: "targetsResolved (booleano)"
     last_fire: "Última ejecución"
@@ -1955,7 +1940,7 @@ sources:
     delete_confirm: "¿Eliminar fuente «{name}»? Se conservan los eventos y tareas."
     confirm_again: "Recargado. Revisa el estado actual; eliminar exige otra confirmación."
     reload_draft: "Descartar borrador y recargar"
-    draft_preserved: "Conflicto CAS: se conserva el borrador; no se reintenta con otro token. Recarga explícitamente."
+    draft_preserved: 'Conflicto de versión: se conserva el borrador; no se reintenta con otro token. Recarga explícitamente.'
     reload_confirm: "¿Descartar la entrada y recargar desde el servidor?"
   empty_title: Aún no hay orígenes
   detail: "Detalles"
@@ -2034,7 +2019,7 @@ sources:
     result_schema: "Contrato del payload del evento (resultSchema, opcional)"
     result_schema_hint: "Opcional. Con un JSON Schema aquí (p. ej. {\"type\":\"object\",\"required\":[\"action\"]}) cada entrega se valida antes de despachar: los eventos que no cumplen se guardan igual pero no se despachan, y queda una poda event_schema en el trace. Vacío = sin validación."
     bad_schema: "el contrato del payload no es JSON válido: {e}"
-    schema_not_object: "el contrato del payload debe ser un objeto JSON (arrays/escalares no son un schema)"
+    schema_not_object: 'el contrato del payload debe ser un objeto JSON (arrays/escalares no son objetos)'
     no_caps: 'Aún no hay capacidades utilizables. Créalas primero en la página «Capacidades».'
     no_params: Esta capacidad no toma parámetros
     bad_json: El parámetro {k} no es JSON válido
@@ -2129,7 +2114,7 @@ trace:
   copy_failed: No se pudo copiar
   triggered_by: Activada por
   nolib: No se pudo cargar el renderizador.
-  empty: 'No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin capacidad destino coincidente, parámetros que no cumplen el schema, o ningún nodo declara la capacidad destino).'
+  empty: 'No hay tareas en esta traza. Suele significar que se podó en el primer paso (sin capacidad destino coincidente, parámetros que no cumplen la definición, o ningún nodo declara la capacidad destino).'
   empty_title: No hay tareas
   emits:
     title: Salidas (emits)
@@ -2240,7 +2225,7 @@ pb:
   subtitle: 'Convierte capacidades, destinos y orígenes en un playbook verificable y completable'
   detail_subtitle: 'Verificación: capacidades → destinos → nodos → orígenes'
   detail_title: Detalle del playbook
-  rescan: Verificar de nuevo
+  rescan: 'Actualizar'
   rescanned: Verificado de nuevo
   back: Volver a playbooks
   install: Completar
@@ -2323,12 +2308,12 @@ pb:
     upload_directory: "Elegir directorio autocontenido"
     upload_hint: "Use un directorio para conservar rutas relativas, o pegue el mapa JSON completo."
     file_map: "Mapa JSON completo (ruta → texto sin renderizar)"
-    oci_hint: "El servidor descarga una vez y guarda el digest. OCI o archivos; credenciales privadas solo en el servidor."
+    oci_hint: 'El servidor descarga una vez y guarda la huella de contenido. OCI o archivos; credenciales privadas solo en el servidor.'
     store: "Guardar paquete"
     saving: "Guardando…"
     open: "Abrir paquete"
     stored: "Plantilla guardada; no se ha instalado ningún recurso."
-    slug_taken: "El nombre ya existe: abra el detalle y use PUT para reemplazar la plantilla (entrada conservada)."
+    slug_taken: 'El nombre ya existe: abra el detalle y guarde la plantilla completa para reemplazarla (entrada conservada).'
     namespace: "Espacio de nombres"
     loading: "Cargando…"
     load_failed: "Error al cargar"
@@ -2337,10 +2322,9 @@ pb:
     unapplied_count: "{n} diferencias sin aplicar"
     last_install: "Último recibo de instalación"
     duplicate_files: "Rutas duplicadas; elija un directorio que conserve las rutas relativas."
-    detail_hint: "Solo adiciones: instalar no modifica rutas/orígenes ni elimina recursos. Despliegue manualmente."
+    detail_hint: 'Instalar solo añade: no sobrescribe capacidades ni orígenes existentes.'
     checkup: "Chequeo: conditions / items"
     values: "Valores de instalación"
-    values_hint: "Campos del JSON Schema de playbook.yaml. El servidor completa valores predeterminados; writeOnly solo para esta solicitud."
     values_json: "Entrada completa de values JSON"
     values_json_hint: "Envía el mismo objeto values del formulario; solo se usa después de Aplicar."
     use_json: "Aplicar valores JSON"
@@ -2351,7 +2335,6 @@ pb:
     instances: "Instalaciones agrupadas por valuesDigest"
     instances_hint: "Vista de lectura: attempts cuenta intentos. La procedencia es el primer recibo de creación, no propiedad."
     template: "Editar / exportar paquete original"
-    template_hint: "Texto de GET includeBody=true spec.files. PUT con CAS reemplaza toda la plantilla sin instalar."
     file_path: "Ruta relativa del paquete"
     raw_content: "Contenido original sin renderizar"
     new_path: "Ruta relativa del archivo nuevo"
@@ -2359,16 +2342,17 @@ pb:
     remove_file: "Quitar archivo de la plantilla"
     export: "Exportar mapa original completo"
     import_map: "Importar mapa JSON completo (solo borrador)"
-    save_template: "Guardar plantilla completa"
+    save_template: 'Guardar plantilla'
     reload_template: "Recargar plantilla (descartar borrador)"
     delete_manifest: "Eliminar solo manifiesto"
-    delete_hint: "No es desinstalar: capacidades, orígenes y recibos permanecen. Requiere resourceVersion actual y confirmación."
+    delete_section: 'Eliminar este playbook'
+    delete_hint: 'No es desinstalar: capacidades, orígenes y recibos permanecen. Requiere el token de versión actual y confirmación.'
     unapplied: "Diferencias sin aplicar — NO listo"
     unapplied_hint: "Se reutilizan definiciones sin modificar next / targets.params. Compare lo declarado y actual, luego edite manualmente."
     declared: "Declarado por el paquete"
     actual: "Valor actual almacenado"
-    omitted: "Omitido (predeterminado del schema)"
-    schema_loaded: "Schema de valores leído del manifiesto raíz original."
+    omitted: 'Omitido (valor predeterminado)'
+    schema_loaded: 'Definición de valores cargada del manifiesto raíz original.'
     dry_receipt: "Recibo de simulación (no persistido)"
     receipt: "Recibo de una instalación"
     created: "Creado"
@@ -2389,7 +2373,7 @@ pb:
     group_count: "{n} grupos valuesDigest"
     single_receipt: "Leer recibo individual completo"
     no_installs: "Sin instalaciones normales (las simulaciones no se registran)."
-    raw_missing: "Falta spec.files / playbook.yaml original; no se puede guardar el resumen como plantilla."
+    raw_missing: 'Falta <code>spec.files</code> / <code>playbook.yaml</code> original; no se puede guardar el resumen como plantilla.'
     missing_id: "Falta el nombre del paquete."
     invalid_path: "Ruta inválida o duplicada; use una ruta relativa."
     entry_required: "playbook.yaml es la entrada obligatoria y no se puede quitar."
@@ -2398,12 +2382,12 @@ pb:
     template_saved: "Plantilla completa guardada; recursos existentes sin cambios y sin instalar."
     draft_kept: "400 / 409: borrador conservado. Revise el error o recargue explícitamente; sin reintento automático de sobrescritura."
     reload_confirm: "Recargar descarta archivos y valores sin guardar. ¿Continuar?"
-    reloaded: "Paquete original y token CAS actuales cargados."
+    reloaded: 'Paquete original y token de versión actuales cargados.'
     values_object: "values debe ser un objeto JSON."
     json_selected: "La próxima acción usa este JSON values completo."
     delete_confirm: "¿Eliminar solo el manifiesto? Capacidades, orígenes, recibos y procedencia permanecen. No es desinstalar."
     deleted: "Manifiesto eliminado; contenido conservado a continuación."
-    delete_stale: "CAS obsoleto. Actualice el diagnóstico; volver a eliminar requiere otra confirmación."
+    delete_stale: 'La versión está desactualizada. Actualiza para obtener la actual; volver a eliminar requiere otra confirmación.'
 
 node:
   artifacts:
@@ -2466,7 +2450,6 @@ uxaudit:
     common:
       cancel: 'Cancelar'
     nodes:
-      note_summary: 'Semántica de slots y reglas de escritura en lote'
       unknown: '— (desconocido)'
       ns_label: 'Autorizaciones efectivas'
       config_rev: 'Revisión de configuración'
@@ -2493,7 +2476,7 @@ uxaudit:
       applied_rev: 'Revisión aplicada'
       applied_hash: 'Hash aplicado'
       override_stale: 'La anulación local sigue activa'
-      ctx_namespace: 'Namespace de contexto'
+      ctx_namespace: 'Espacio de nombres de contexto'
       no_param: 'El enlace no trae nombre de nodo (falta ?id=). Abre el detalle desde la lista de nodos.'
       no_param_title: 'No se indicó ningún nodo'
       none: 'Ninguno'
@@ -2503,7 +2486,7 @@ uxaudit:
       group_basic_hint: 'El nombre y el tipo no se pueden cambiar tras crear'
       group_credentials: 'Credenciales de entrada'
       group_payload: 'Carga útil'
-      group_payload_hint: 'Carga estática / esquema de carga'
+      group_payload_hint: 'payload estático / contrato de valores'
       group_targets: 'Destinos'
       group_targets_hint: 'Una lista de destinos vacía es válida'
       group_other: 'Otros'
@@ -2519,12 +2502,6 @@ uxaudit:
       role_admin: 'Superadmin'
       role_member: 'Miembro'
       active_sessions: '{n} sesiones activas'
-      scope_note: 'Alcance: todos los namespaces (no sigue el namespace de la barra superior)'
-      notes_title: 'Qué puedes hacer en esta consola'
-      notes_sub: 'Son acciones a nivel de sistema: se aplican al instante y quedan registradas en el flujo de eventos.'
-      note_role: 'Solo hay dos roles: los superadmins gestionan usuarios y sesiones; los miembros usan los recursos del espacio de trabajo.'
-      note_disable: 'Desactivar una cuenta surte efecto de inmediato: su siguiente petición se rechaza (401).'
-      note_session: 'Las sesiones se pueden revocar una a una; solo se cierra esa sesión.'
   security:
     passkey_empty_title: 'Aún no hay Passkeys'
     session_empty_title: 'No hay sesiones activas'
@@ -2578,7 +2555,7 @@ uxaudit:
     copy: 'Copiar'
     raw: 'Ver JSON original'
     event_id: 'ID de evento'
-    drift: 'Configuración sin aplicar: configuración {config}, aplicado en el nodo {applied}'
+    drift: 'Configuración desincronizada: revisión de configuración {config}, el nodo está en {rev}'
     drift_short: 'Pendiente de aplicar en el nodo'
     field: 'Campo'
     type: 'Tipo'
@@ -2591,7 +2568,7 @@ uxaudit:
     total: 'Total'
     per_cap: 'Por capacidad'
     edit_raw: 'Editar JSON original'
-    edit_raw_hint: 'se guarda con el CAS actual'
+    edit_raw_hint: 'se guarda con el token de versión actual'
 
 paging:
   search_ph: 'Buscar nombre / nombre visible'
@@ -2611,13 +2588,10 @@ source_detail:
   resolved_no: 'targets sin resolver'
   created: 'Creado'
   updated: 'Actualizado'
-  updated_hint: 'No hay una marca de actualización aparte: cada escritura se refleja en un resourceVersion que aumenta.'
   hook_url: 'Hook URL'
   secret_set_yes: 'La firma HMAC está configurada (solo escritura)'
   secret_set_no: 'Sin firma HMAC'
   schema_none: 'El contrato del payload no declara campos'
-  config_json: 'Ver JSON en bruto'
-  config_json_hint: 'la proyección de lectura ya está enmascarada'
   params_none: 'Sin parámetros configurados'
   recent: 'Recibos recientes'
   recent_hint: 'Últimos 20 eventos (filtrados por origen); aceptado no significa que la tarea terminara bien.'
@@ -2638,8 +2612,6 @@ namespaces:
     col_sources: "Fuentes"
     col_tasks: "Tareas"
     col_created: "Creado"
-    note_summary: "Qué se puede configurar en un espacio de nombres"
-    note_body: "A nivel de espacio de nombres solo existen las vars por defecto (namespace_configs) y la revisión de configuración; el esquema no tiene cuota por espacio — limits solo existe en las capas máquina + nodo, y la autorización del nodo decide qué espacios pueden usar una máquina."
 namespace:
   v4:
     title: "Espacio de nombres"
@@ -2647,8 +2619,6 @@ namespace:
     back: "Volver a espacios de nombres"
     scope: "Espacio actual"
     scope_label: "Espacio de nombres"
-    scope_hint: "Cambiar actualiza el parámetro name de la URL (se puede guardar/compartir) y las mismas reglas CAS garantizan que el borrador de A nunca se escriba en B."
-    vars_hint: "Solo afecta a la próxima tarea resuelta en este espacio; nunca se escribe en el snapshot aplicado del nodo."
     counts: "Recuentos (derivados)"
     count_capabilities: "Capacidades"
     count_nodes: "Nodos"
@@ -2656,20 +2626,20 @@ namespace:
     count_tasks: "Tareas"
     effective: "Vars efectivas en un nodo"
     node: "Nodo"
-    effective_hint: "Se resuelve clave por clave como local > node > namespace; las fuentes las da el servidor, la página no adivina."
+    effective_hint: 'Local > nodo > espacio de nombres, resuelto variable por variable; el servidor indica de dónde viene cada valor.'
     col_node: "Nodo"
     col_status: "Estado"
     node_online: "En línea"
     node_offline: "Sin conexión"
     node_draining: "Drenando"
     node_online_draining: "En línea (drenando)"
-    effective_source_hint: "El servidor resuelve cada clave: local (instantánea de la máquina) > node (valores del nodo) > namespace (los valores por defecto de aquí). vars no tiene nivel de capacidad - perCapability solo existe en limits."
+    effective_source_hint: 'El servidor marca el origen de cada valor: instantánea local > valor por defecto del nodo > valor por defecto del espacio de nombres. Estos valores no tienen una capa por capacidad; esa capa solo existe en los limits del nodo.'
     vars_table_title: "Variables del espacio de nombres (esta tabla escribe los valores por defecto)"
     vars_table_hint: "Los valores y orígenes se resuelven para el nodo seleccionado; lo que edites aquí son los valores por defecto del espacio de nombres y se serializan en el mismo documento YAML (la única vía de escritura)."
     vars_raw_title: "JSON sin procesar (avanzado)"
     vars_raw_hint: "Guardar aquí escribe el mismo documento YAML; la tabla es la entrada estructurada del mismo hecho."
-    yaml_title: "YAML del espacio de nombres (documento)"
-    yaml_hint: "Documento normalizado reconstruido desde los hechos actuales (apiVersion / kind / metadata / spec.vars). Los cambios de la tabla superior se serializan en este documento y se guardan por la única vía de escritura PUT /v1/namespaces/{name}/yaml (CAS = metadata.resourceVersion)."
+    yaml_title: "YAML del espacio de nombres (solo lectura)"
+    yaml_hint: 'Un documento de solo lectura que el servidor genera a partir de la configuración actual.'
     yaml_view: "Documento actual"
     context_namespace: "Contexto del espacio"
     links: "Otras cosas en este espacio"

@@ -20,7 +20,7 @@
  * 就绪判据（不再用固定 sleep 当信号）：goto 之后跑 waitForFunction 哨兵 ——
  * document.readyState=complete + webfont 全部 loaded（字体迟到会改度量）+ 所有 ≤2s 的
  * 短定时器（含 mock 的 120–300ms 延迟）归零 + DOM 连续 2 帧无变更；超时（30s）按失败记 —— 页面有长动画时哨兵会等它跑完（index/
- * source/trace 的图动画约 8s），这正是"等到真的稳定"而不是"睡够 600ms"。目标站是 mock 时还会顺手 MockApi.latency(0)
+ * trace 的图动画约 8s），这正是"等到真的稳定"而不是"睡够 600ms"。目标站是 mock 时还会顺手 MockApi.latency(0)
  * （只去掉人为延迟、不改数据），让等待由"数据已渲染"而不是"睡够 600ms"决定。
  *
  * 用法（每个 flag 都有同名大写环境变量给默认值）：
@@ -98,12 +98,11 @@ const QUIET_MS = 150;
 const READY_TIMEOUT_MS = 30000;
 
 // ---------------------------------------------------------------- 页面清单
-// 19 页 = 生产站点的全部页面；参数页用固定 mock 参数（scripts/mock.sh 的假数据）。
+// 18 页 = 生产站点的全部页面；参数页用固定 mock 参数（scripts/mock.sh 的假数据）。
 export const PAGES = [
 	{ slug: "index", path: "/index.html", anon: false },
 	{ slug: "events", path: "/events.html", anon: false },
 	{ slug: "sources", path: "/sources.html", anon: false },
-	{ slug: "source", path: "/source.html?namespace=default&name=deploy-hook", anon: false },
 	{ slug: "capabilities", path: "/capabilities.html", anon: false },
 	{ slug: "playbooks", path: "/playbooks.html", anon: false },
 	{ slug: "playbook", path: "/playbook.html?namespace=default&id=nightly", anon: false },

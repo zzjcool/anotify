@@ -122,9 +122,9 @@
 
          **但「库在 DCL 之前跑完」不等于「页面拿到数据时库已经在了」。** 页面在 fetch
          的续体里画图时 DCL 可能还没到——Trace 真实现场：响应 132ms 回、138ms 读
-         taskChain 抛 TypeError、DCL 152ms 才到；source 页同构（API 命中缓存或弱网时
-         稳定复现「图组件未加载」）。反过来，等到 readyState 已是 interactive 时再挂
-         DCL 监听还可能永远等不到。唯一安全的点是在**解析期**挂监听，所以这件事收了
+         taskChain 抛 TypeError、DCL 152ms 才到（API 命中缓存或弱网时稳定复现）。
+         反过来，等到 readyState 已是 interactive 时再挂 DCL 监听还可能永远等不到。
+         唯一安全的点是在**解析期**挂监听，所以这件事收了
          一份到 partials.js（与 partials 的加载位置绑定）：
 
            页面解析期：A.expectGraphics();      ← 声明「本页会画图」，挂门闩
@@ -133,13 +133,13 @@
          页面**不得**直接读 window.AnotifyGraphs（scripts/check-graph-access.mjs 会拦）：
          漏写等待在结构上就画不出图，库真缺时是可见错误 + 重试，不画假图、不静默删图。
 
-         本产品只有 trace.html、source.html、index.html 画图（顺序仍不能乱：
-         vendor/dagre 全局 → FlowGraph → AnotifyGraphs；trace 页现在不再加载
-         traceview.js，source 页仍按 dagre → FlowGraph → AnotifyGraphs → TraceView 排）。
+         本产品只有 trace.html、index.html 画图（顺序仍不能乱：FlowGraph 在前 →
+         AnotifyGraphs 在后 —— graphs.js 挂载时用 window.FlowGraph；两页都不加载
+         traceview.js 的三视图切换）。
 
-         为什么其余页面不加载它们：这四个文件合计约 232KB（dagre 48 + flograph 118 +
-         graphs 50 + traceview 16）+ 4 个请求，对根本不画图的页面的首屏是纯成本。
-         一个只有 trace/source/index 用得上的库，不该让全站每个页面为它付首屏预算。 -->
+         为什么其余页面不加载它们：这几个文件合计约 232KB（dagre 48 + flograph 118 +
+         graphs 50 + traceview 16），画图页每页最多 2 个请求；对根本不画图的页面是纯成本。
+         一个只有 trace/index 用得上的库，不该让全站每个页面为它付首屏预算。 -->
     {{block "graph-libs" .}}{{end}}
     {{block "script" .}}{{end}}
   </body>

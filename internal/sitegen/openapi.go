@@ -165,6 +165,22 @@ type openAPIOp struct {
 // 从页面上静默消失）。
 const unknownTagKey = "other"
 
+// specTagAliases 把同一个资源的两种写法的 tag 归到规范 tag：文档页上一份资源只占一组
+// （审计 E-6：`节点` 与 `Node`、`事件` 与 `事件入口` 曾被拆成两组）。
+// 键 = spec 里写的 tag，值 = 规范 tag（也是 docs.openapi.tag.<规范 tag> 的词条名）。
+var specTagAliases = map[string]string{
+	"node":    "nodes",
+	"ingress": "events",
+}
+
+// canonicalTag 返回 tag 的规范名；没有别名时原样返回。
+func canonicalTag(tag string) string {
+	if canonical, ok := specTagAliases[tag]; ok {
+		return canonical
+	}
+	return tag
+}
+
 // methodBadgeClass 把方法映射到 docs.html 里已有的徽章样式。
 // GET/HEAD/OPTIONS 都是"读"，共用 m-get；PUT 与 POST 都是"写"，共用 m-post。
 func methodBadgeClass(method string) string {
@@ -784,7 +800,7 @@ func parsePathItemOperations(origin, specPath string, itemNode *yaml.Node, resol
 
 		tag := unknownTagKey
 		if tags := scalarList(opNode, "tags"); len(tags) > 0 && tags[0] != "" {
-			tag = tags[0]
+			tag = canonicalTag(tags[0])
 		}
 		usedTags[tag] = true
 
@@ -834,15 +850,17 @@ func sortedMappingKeys(n *yaml.Node) []string {
 
 // buildTagGroups 按「文件声明顺序 → 未声明的按字典序」建组，并在组内按
 // path + methodRank 排序（同 path 的 GET 一定排在 POST 前）。
+// 声明名与 operation 的 tag 都先过 canonicalTag：别名先合并，再决定分组顺序。
 func buildTagGroups(declaredTags []openAPITag, ops []parsedOperation, usedTags map[string]bool) []OpenAPIGroup {
 	var order []string
 	seen := make(map[string]bool, len(usedTags))
 	for _, t := range declaredTags {
-		if t.Name == "" || seen[t.Name] || !usedTags[t.Name] {
+		name := canonicalTag(t.Name)
+		if name == "" || seen[name] || !usedTags[name] {
 			continue
 		}
-		seen[t.Name] = true
-		order = append(order, t.Name)
+		seen[name] = true
+		order = append(order, name)
 	}
 	var extra []string
 	for tag := range usedTags {
@@ -1051,11 +1069,12 @@ func (b *groupBuilder) addGroups(origin string, groups []OpenAPIGroup) error {
 		b.seenID = make(map[string]string)
 	}
 	for _, g := range groups {
-		idx, ok := b.groupAt[g.Tag]
+		tag := canonicalTag(g.Tag)
+		idx, ok := b.groupAt[tag]
 		if !ok {
 			idx = len(b.groups)
-			b.groupAt[g.Tag] = idx
-			b.groups = append(b.groups, OpenAPIGroup{Tag: g.Tag})
+			b.groupAt[tag] = idx
+			b.groups = append(b.groups, OpenAPIGroup{Tag: tag})
 		}
 		for _, op := range g.Ops {
 			key := op.Method + " " + op.Path

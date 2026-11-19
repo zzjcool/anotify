@@ -36,10 +36,11 @@ try {
           sessionStorage.setItem('f3-facts',JSON.stringify(s));
           return {raw,source:s.sources[0].name,snapshot:sessionStorage.getItem('f3-facts')};
         });
-        for(const file of ['capabilities','keys','sources','source','events']) {
+        // source.html 已删除（B-4）：源侧的原文扫描改到 source-detail.html（现存的只读详情页）。
+        for(const file of ['capabilities','keys','sources','source-detail','events']) {
           try {
-            await d.goto(file,'namespace=default'+(file==='source'?'&name='+encodeURIComponent(fixture.source):''),lang);
-            const ready={capabilities:'[data-cap]',keys:'#keys-body tr',sources:'#src-list [data-name]',source:'#src-body section',events:'#ev-list article'}[file];
+            await d.goto(file,'namespace=default'+(file==='source-detail'?'&name='+encodeURIComponent(fixture.source):''),lang);
+            const ready={capabilities:'[data-cap]',keys:'#keys-body tr',sources:'#src-list [data-name]','source-detail':'#src-detail[data-source]',events:'#ev-list article'}[file];
             await d.page.locator(ready).first().waitFor();
             if(file==='events') await d.page.locator('#ev-list article details').evaluateAll(rows=>rows.forEach(e=>{e.open=true;}));
             const scan=await d.page.evaluate(scanRawChrome);
@@ -54,13 +55,13 @@ try {
             if(lang!=='zh-CN') assert.ok(chromeResidue(negative,lang).length,'CJK chrome is not hidden by data markers');
             await d.page.locator('#parent-negative-chrome').evaluate(e=>e.remove());
             await d.page.evaluate(file=>{
-              const key={capabilities:'capabilities',keys:'keys',sources:'sources',source:'sources',events:'events'}[file];
+              const key={capabilities:'capabilities',keys:'keys',sources:'sources','source-detail':'sources',events:'events'}[file];
               MockApi.state[key]=[];
               sessionStorage.setItem('f3-facts',JSON.stringify(MockApi.state));
             },file);
             // Reload through the real controller into its empty/no-name branch.
             await d.goto(file,'namespace=default',lang);
-            const dataRoot={capabilities:'[data-cap]',keys:'#keys-body',sources:'#src-list',source:'#src-name, #src-body',events:'#ev-list'}[file];
+            const dataRoot={capabilities:'[data-cap]',keys:'#keys-body',sources:'#src-list','source-detail':'#src-detail-name, #src-body',events:'#ev-list'}[file];
             await d.page.waitForFunction(()=>!document.querySelector('[aria-busy="true"]'));
             assert.equal(await d.page.locator(dataRoot).locator('[data-raw-content]').count(),0,'Empty/loading UI never inherits a raw data marker');
             const emptyScan=await d.page.evaluate(scanRawChrome);

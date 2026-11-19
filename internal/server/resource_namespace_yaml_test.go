@@ -50,12 +50,18 @@ func TestNamespaceYAMLDocument(t *testing.T) {
 		"vars:",
 		"LOG_LEVEL: info",
 		"REGION: cn-north",
-		// 写入入口必须随文档一起被复制走（页面之外也要能读到「改哪一份」）。
-		"PUT /v1/namespaces/{name}/yaml",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Namespace YAML 缺少 %q:\n%s", want, text)
 		}
+	}
+	// 文档本体不带前导声明（审计 A-3④）：这份文本会被复制走，所以只留文档本身；
+	// 「只读」由页面卡片标题表达，写方法不再随文本外带。
+	if first, _, _ := strings.Cut(text, "\n"); first != "apiVersion: anotify/v1" {
+		t.Fatalf("Namespace YAML 首行应是 apiVersion（不带前导注释），实际 %q:\n%s", first, text)
+	}
+	if strings.Contains(text, "Writes go through") || strings.Contains(text, "PUT ") {
+		t.Fatalf("Namespace YAML 不应携带写方法说明:\n%s", text)
 	}
 	// 派生只读面与不透明内部身份不进文档：带上它们只会让人以为能改。
 	for _, banned := range []string{"status:", "uid:", "counts:", "tasksByPhase"} {
@@ -338,11 +344,14 @@ func TestSystemYAMLAdminOnly(t *testing.T) {
 		"eventTtlSec: 11",
 		"taskTtlSec: 22",
 		"resultTtlSec: 33",
-		"PUT /v1/system/config",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("System YAML 缺少 %q:\n%s", want, text)
 		}
+	}
+	// 同前：系统文档也不带前导写方法声明（审计 A-7③）。
+	if first, _, _ := strings.Cut(text, "\n"); first != "apiVersion: anotify/v1" {
+		t.Fatalf("System YAML 首行应是 apiVersion（不带前导注释），实际 %q:\n%s", first, text)
 	}
 	if again := nsYAMLGet(t, env, path, env.cookie); again != text {
 		t.Fatalf("两次 GET 的 System YAML 不一致:\n--- first ---\n%s\n--- second ---\n%s", text, again)

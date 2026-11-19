@@ -204,54 +204,6 @@
     background: var(--success-soft);
     color: var(--success);
   }
-  /* 小号图标瓦片（概念说明的 24px 行内图标） */
-  .sec-icon-sm {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    width: 24px;
-    height: 24px;
-    border-radius: var(--r-sm);
-  }
-  /* 概念说明：两条轴并排（窄屏单列） */
-  .sec-concept-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
-    margin-top: 16px;
-  }
-  @media (min-width: 640px) {
-    .sec-concept-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-  .sec-concept-box {
-    padding: 16px;
-    border-radius: var(--r-md);
-    background: var(--surface-2);
-    border: 1px solid var(--line);
-    min-width: 0;
-  }
-  .sec-concept-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
-  }
-  .sec-concept-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 12px;
-    padding: 0;
-    list-style: none;
-    font-size: 12px;
-    line-height: 1.6;
-    color: var(--muted);
-  }
 
   /* ---------- ② 凭证 / 会话列表 ----------
    * 同页两种列表统一成 `.card > .list > .list-row`（一行一张 .card 已取消）。
@@ -890,59 +842,6 @@
         <p id="recovery-hint" class="field-hint">
           {{t "security.recovery.status_loading"}}
         </p>
-      </div>
-    </section>
-
-    <!-- 概念说明：两条独立的轴 -->
-    <section class="card card-pad">
-      <h3 class="card-title">{{t "security.concept.title"}}</h3>
-      <div class="sec-concept-grid">
-        <div class="sec-concept-box">
-          <div class="sec-concept-title">
-            <span class="sec-icon-sm sec-icon-accent">
-              <svg
-                class="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-            </span>
-            {{t "security.concept.auth_label"}} · {{t
-            "security.concept.auth_axis"}}
-          </div>
-          <ul class="sec-concept-list">
-            <li>{{t "security.concept.auth_p1"}}</li>
-            <li>{{t "security.concept.auth_p2"}}</li>
-            <li>{{t "security.concept.auth_p3"}}</li>
-          </ul>
-        </div>
-        <div class="sec-concept-box">
-          <div class="sec-concept-title">
-            <span class="sec-icon-sm sec-icon-success">
-              <svg
-                class="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
-            </span>
-            {{t "security.concept.delivery_label"}} · {{t
-            "security.concept.delivery_axis"}}
-          </div>
-          <ul class="sec-concept-list">
-            <li>{{t "security.concept.delivery_p1"}}</li>
-            <li>{{t "security.concept.delivery_p2"}}</li>
-            <li>{{t "security.concept.delivery_p3"}}</li>
-          </ul>
-        </div>
       </div>
     </section>
   </div>

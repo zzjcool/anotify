@@ -6,11 +6,13 @@ import path from "node:path";
 import { openDriver } from "./f3-driver.mjs";
 
 export const LANGS = Object.freeze(["zh-CN", "en", "ja", "es"]);
-export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source","source-detail","sources","trace"]);
+// 旧的 source 页已删除（B-4）：它与 source-detail 是同一件事的两页，只留后者；
+// `/source.html` 现在是 404，所以矩阵里不能再有它（否则整格 404 判红）。
+export const PAGES = Object.freeze(["admin","capabilities","capability","cli-auth","docs","events","index","keys","login","message","namespace","namespaces","node","nodes","passkey-enroll","playbook","playbooks","receivers","security","source-detail","sources","trace"]);
 export const THEMES = Object.freeze(["light", "dark"]);
 export const VIEWPORTS = Object.freeze({ desktop: Object.freeze({ width: 1440, height: 900 }), mobile: Object.freeze({ width: 390, height: 844 }) });
-// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 21 页 × 4 语言 ×
-// 2 主题 × 2 视口的固定矩阵，加一个键就把 336 视图变成 384。内容档只用于
+// #384：「内容档」768×1024（竖屏平板）。**不进 VIEWPORTS** —— 那份是 PAGES × 4 语言 ×
+// 2 主题 × 2 视口的固定矩阵，加一个键就把整座矩阵乘大一半。内容档只用于
 // 「#384 主内容不用横滚」的专项用例（tablet / desktop 两种 kind）。
 export const TABLET_VIEW = Object.freeze({ width: 768, height: 1024 });
 export const STANDALONE = Object.freeze(["cli-auth", "passkey-enroll"]);
@@ -29,7 +31,7 @@ export const ANCHORS = Object.freeze({
   events: "#ev-list article", index: "#kpi-total", keys: "#keys-body tr", login: ".auth-tabs",
   message: "#task-facts", namespace: "#ns-name", namespaces: "#ns-list [data-ns]", node: "#node-slots", nodes: "[data-node]", "passkey-enroll": "#code-input",
   playbook: "#pb-file-path", playbooks: "#pb-grid", receivers: "#current-device-card",
-  security: "#passkey-list", source: "#src-name",
+  security: "#passkey-list",
   // 源只读详情页：根元素渲染成功后才有 data-source（深链成立 = 真的读到了那个源）。
   "source-detail": "#src-detail[data-source]", sources: "#src-list [data-name]", trace: "#trace-tasks",
 });
@@ -47,7 +49,7 @@ export function matrixCases() {
   for (const lang of LANGS) for (const theme of THEMES) for (const viewport of Object.keys(VIEWPORTS))
     MATRIX_BATCHES.forEach((pages, index) => cases.push({ id: `grid-${lang}-${theme}-${viewport}-${index + 1}`, pages, lang, theme, viewport }));
   assert.equal(cases.length, MATRIX_BATCHES.length * LANGS.length * THEMES.length * 2);
-  assert.equal(cases.reduce((n, c) => n + c.pages.length, 0), MATRIX_VIEWS, "336 registered page views");
+  assert.equal(cases.reduce((n, c) => n + c.pages.length, 0), MATRIX_VIEWS, MATRIX_VIEWS + " registered page views");
   return cases;
 }
 export const localeFor = lang => ({ "zh-CN": "zh-CN", en: "en-US", ja: "ja-JP", es: "es-ES" })[lang];
@@ -95,7 +97,6 @@ export function query(page, f = {}, guest) {
   if (!guest) {
     if (page === "message" && f.task) p.set("id", f.task);
     if (page === "trace" && f.traceUID) p.set("traceUID", f.traceUID);
-    if (page === "source" && f.source) p.set("name", f.source);
     // 源只读详情页的深链形状与列表名称链接一致：?namespace=<ns>&name=<source>。
     if (page === "source-detail" && f.source) p.set("name", f.source);
     if (page === "node" && f.node) p.set("id", f.node);

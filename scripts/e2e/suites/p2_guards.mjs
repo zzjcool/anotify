@@ -764,15 +764,12 @@ async function main() {
 			path: "/sources.html",
 			trigger: "#src-list .src-row .act-more",
 		});
-		// source.html 的页头 ⋯ 用的是同一套 placeMenu/reflowMenus（两份拷贝），
-		// 两处都要有回路断开 —— 只修一处就是下次回归。
-		await menuSelfReflowLeg(browser, {
-			label: `Chrome ${chromeVersion} 源详情页`,
-			origin,
-			session: s.session,
-			path: `/source.html?name=${encodeURIComponent(SRC)}`,
-			trigger: "#src-actions .act-more",
-		});
+		// #491 这里原有一条「源详情页」腿：旧的 web-src/pages/source.html 是重复源页，
+		// 页头 ⋯ 用的是同一套 placeMenu/reflowMenus 的**另一份拷贝**，所以两份都得验。
+		// 黑盒审计 B-4 之后那一页被删除（/source.html 带参/无参一律 404，404 探针在
+		// events_paging 与 f3-source），页面脚本的拷贝就只剩 sources.html 这一份 ——
+		// 上面那条腿即全覆盖，再留一条 goto 已删页的腿只会 404 判红。
+		// 不要静默删腿：将来谁再把 placeMenu 复制到第二个页面，这里就得再加一条腿。
 
 		// Chromium 140 的对照腿：这个浏览器**从未**复现过缺陷（决定性变量是版本）。
 		// 同一组断言在原版本上跑一遍 = 「老浏览器行为没被这次改动改坏」。

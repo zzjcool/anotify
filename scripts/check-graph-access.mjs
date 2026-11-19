@@ -103,7 +103,7 @@ async function main() {
 			console.error(`       ${v.message}`);
 		}
 		console.error("");
-		console.error("   正确写法（source.html / trace.html / index.html 同款）：");
+		console.error("   正确写法（trace.html 同款，index.html 的图库入口同一形态）：");
 		console.error('     解析期：A.expectGraphics();');
 		console.error('     画图处：const G = await A.graphLib(t("...nolib"));');
 		process.exit(1);
