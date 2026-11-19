@@ -10,25 +10,36 @@
  *   e2e 只验页面 200 / 元素在。**「这条文案写得对不对」整个没有检查面**，
  *   所以只要 key 补全了，任何旁白都能一路绿到生产。
  *
- * 判据
- *   扫 `web-src/locales/*.yaml` 的**值**（跳过注释行与 key 名；值里的 HTML 标签不剥，
- *   因为泄漏点也可能在 <b>/<code> 里）。命中高危词表即失败，逐条打印
- *   `文件:行 → 命中词 → 原文`。
+ * 判据（两个扫描面，缺一就是半盲）
+ *   ① `web-src/locales/*.yaml` 的**值**：跳过注释行与 key 名；值里的 HTML 标签不剥
+ *      （泄漏点也可能在 <b>/<code> 里）。
+ *   ② `web-src/pages/*.html` 的**文本节点**：只留真的会渲染给用户的那部分（#458）。
+ *   两个面命中都判失败，逐条打印 `文件:行 → 命中词 → 原文`。
  *
- * 为什么只扫 locale 值：`web-src/pages/*.html` 里**没有散文**——
- *   2026-11 实测：把注释 / <script> / <style> / {{…}} 表达式剥掉后，全部页面里
- *   渲染出来的可见文字只剩符号、代码样例与 ASCII 图（零散文）；所有散文
- *   都走 `{{t "…"}}` / `t("…")`。所以 locale 就是用户可见文案的唯一真相源，
- *   一个检查面 = 全量检查面。页面里的开发注释（HTML 注释、块注释、行注释）是合法的，
- *   不在本检查的范围内（它们本来就该写给维护者看）。
+ * 为什么页面也必须扫（#458）：#448 只扫 locale 值，理由写的是「页面里没有散文」——
+ *   那条实测只对**改完之后**的页面成立，却把「现在没有」当成了「不会有」。
+ *   2026-11 审计里最露骨的一句「下面这些是写给维护者与排障者的说明」，当时就写在
+ *   `docs` 页的 <p> 里（#448 才把它换成 {{t "docs.design.lede"}}）；同一页还有
+ *   「为什么界面这样显示」这类标题。既然散文本来就会落在页面上，扫描面不覆盖页面 = 漏一半。
+ *
+ * 页面侧「哪些字算用户可见」（正反都在 --self-test 的 page 样例里测过）：
+ *   排除 · HTML 注释 <!-- -->（写给维护者的，本来就该在）
+ *   排除 · 模板注释段（`{{` 与 `}}` 之间以斜杠星号开头的内容）、模板表达式 {{t "…"}} / {{if …}} / {{range …}}（逻辑，不渲染成文字）
+ *   排除 · <script> / <style> 的内容（脚本与样式，不是文案）
+ *   排除 · 标签本身：属性名、属性值、类名都不是文本节点
+ *   排除 · 没被 layout 的 {{block "…"}} 接进渲染树的 define 体：sitegen 只执行 __layout__
+ *          （internal/sitegen/template.go 的 execute），页面顶层文字与死 define 永远进不了产物
+ *   保留 · 其余文本节点（含 <pre> 里的代码样例 —— 它们真的显示给用户；词表窄，实测零误报）
  *
  * 词表怎么定的（窄而准，靠实测不是靠感觉）
  *   先按 5 类特征（迁移叙述 / 对照内部实现 / 对开发者喊话 / 解释「为什么这么设计」/
  *   悬空指代）全量扫一遍 4 份 locale，逐条人工判定后**只留零误报的词**：
  *   定稿前在修完的 locale 上跑过，命中为零（见 docs/reports/ui-copy-audit.md）。
  *   被**故意排除**的高频词（都会误报，理由逐条记录）：
- *     · 「make + 目标名」：`make dev` 是本仓自托管排障指引的正常文案
- *       （receivers.pair.no_backend 等处），英文的 "make it" 是动词 → 改为只查 `sitegen`
+ *     · 「make + 目标名」曾整条排除（`make dev` 被视为「自托管排障指引」）。#458
+ *       纠正了这个判断：产品界面是部署后的东西，用户手上不一定有本仓 checkout，
+ *       界面里不出现构建命令。现在按**真实 target 名单**查（`make dev` / `make fe` /
+ *       `make sitegen` …），英文的 "make it / make sure" 是动词，不在名单里。
  *     · `\b[0-9a-f]{7,40}\b`（commit sha 形状）：会命中 `2592000` 这种秒数
  *     · `移行`（ja）：`…リアルタイムストリームに移行します` 是数据流状态迁移，不是「配置搬家」
  *     · `旧 `（ja/zh 裸词）：`更旧 →`（分页）、`旧 digest`（真实陈旧态标签）都是正常文案
@@ -36,22 +47,24 @@
  *     · `XXX`、`TXXX`：`XXXX-XXXX` 是恢复码的格式提示，是正常文案
  *
  * 允许行内豁免
- *   值所在行、或**上一行**的注释里写 `# ui-copy-ok: <理由>`。
- *   理由必填：空理由（`# ui-copy-ok:` 后面什么都没有）仍然失败 —— 否则
+ *   locale：值所在行、或**上一行**的注释里写 `# ui-copy-ok: <理由>`。
+ *   页面：文本节点所在行、或**上一行**的注释里写 `<!-- ui-copy-ok: <理由> -->`。
+ *   理由必填：空理由（`ui-copy-ok:` 后面什么都没有）仍然失败 —— 否则
  *   「加个标记就过」会变成新的假绿通道。
  *
  * 反假绿
- *   · `--self-test` 跑内置红/绿样例（12 红 / 8 绿 / 2 豁免），红样例必须真红，
- *     且断言**是哪条规则**红的（防「碰巧被别的规则抓到」）。
- *   · 打印 文件数 / 值数 / 命中数，并对文件数与值数设下限：解析出空值集一律失败 ——
- *     「绿」与「没检查」不能同形（本仓反复吃这个亏）。
+ *   · `--self-test` 跑内置红/绿样例（locale 20 红 / 13 绿 / 5 豁免；页面 6 红 / 7 绿 / 4 豁免），
+ *     红样例必须真红，且断言**是哪条规则**红的（防「碰巧被别的规则抓到」）；页面样例
+ *     另外断言行号，绿样例还钉住**抽到多少个文本节点**（扫出空集不能算绿）。
+ *   · 打印 文件数 / 值数 / 页面数 / 文本节点数，四个数各设下限：解析出空集一律
+ *     判失败 ——「绿」与「没检查」不能同形（本仓反复吃这个亏）。
  *   · locale YAML 解析复用 check-i18n-keys.mjs 的 parseLocale：遇到不认识的语法
- *     抛 ParseError → 退出码 2，绝不静默跳过。
+ *     抛 ParseError → 退出码 2，绝不静默跳过；页面目录 / layout 目录读不到也是退出码 2。
  *
  * 用法
- *   node scripts/check-ui-copy.mjs                 # 判据校验，违规退出 1
+ *   node scripts/check-ui-copy.mjs                 # 判据校验（locale 值 + 页面文本节点），违规退出 1
  *   node scripts/check-ui-copy.mjs --self-test     # 跑脚本自身的红/绿自测
- *   node scripts/check-ui-copy.mjs --src=web-src
+ *   node scripts/check-ui-copy.mjs --src=web-src   # 声明式全扫（locales/ + pages/ + layouts/ 都在这个根下）
  *   退出码：0 绿 / 1 违规 / 2 解析失败或用法错误
  *   接线：`make ci`（紧跟 check-i18n-keys；Makefile 由主 agent 统一收口，本脚本不自注册）
  */
@@ -88,6 +101,17 @@ export const RULES = [
 		id: "build-tool",
 		why: "构建工具名：用户跑不了 make/sitegen，这类话属于 README",
 		re: /\bsitegen\b/i,
+	},
+	{
+		// #458：`make dev` ×4 曾作为「正常文案」被排除（见头注释），但用户在界面上
+		// 没有 checkout、也没有 make。名单取 Makefile 里**本仓特有**的 target（白名单），
+		// 所以英文的 "make it" / "make sure" 不会被误伤。
+		// 故意不收 `make test` / `make build` / `make up`：容器安装提示里举的就是
+		// 「用户自己项目里跑 make test」这种例句（nodes.register.install_intro），
+		// 这类词在两个语境里同形，宁可漏也不误伤。
+		id: "build-command",
+		why: "构建/开发命令：用户手上没有本仓，跑不了 make；说「重启服务」而不是「跑 make dev」",
+		re: /\bmake\s+(?:dev|fe|ci|sitegen|e2e|docker|anode|manifest|tailwind|lint-go|contract|integration)\b/i,
 	},
 	{
 		id: "dev-todo",
@@ -180,11 +204,14 @@ export const RULES = [
 ];
 
 /**
- * 反假绿下限（棘轮）：2026-11 在 main 上实测的值 —— 4 份 locale、非空值 9284。
- * 低于它 = 扫描面被改窄了（要么 locale 被拆走，要么解析器坏了），红。
- * 合理缩减（删词条/加语言）时必须同步下调这里，否则这项检查会一直失败。
+ * 反假绿下限（棘轮）：2026-11-19 在 main 上实测 ——
+ * @count node scripts/check-ui-copy.mjs
+ * 4 份 locale、非空值 9280；23 个页面、222 个文本节点。
+ * 低于它 = 扫描面被改窄了（要么 locale/页面被拆走，要么解析器坏了），报失败。
+ * 页面数留了删页的余量（真实删页就同步下调）；文本节点数同理，但不允许归零 ——
+ * 「扫出空集却报绿」正是这个检查最怕的假绿形态。
  */
-const FLOORS = { files: 4, values: 9000 };
+const FLOORS = { files: 4, values: 9000, pages: 20, pageNodes: 160 };
 
 /**
  * 取一行的注释部分：第一个「不在引号里的 `#`」到行尾。没有注释返回 ""。
@@ -265,6 +292,199 @@ export function scanLocale(text, file = "<memory>") {
 	return { violations, values };
 }
 
+/* ---------- 页面模板（#458）：只取「会渲染给用户看」的文本节点 ---------- */
+
+/**
+ * Go 模板里需要配一个 `{{end}}` 的 action。
+ * `template` 不进栈（自闭合），`else` 也不进栈（不新增嵌套）。
+ */
+const OPEN_ACTIONS = new Set(["if", "range", "with", "define", "block"]);
+
+/**
+ * 找出 `{{define "X"}}…{{end}}` 的**体区间**（体内的 if/range 也按 end 配对）。
+ * 返回 [{ name, start, end }]；start/end 是字符下标，不含两端的 action。
+ */
+export function defineRanges(tpl) {
+	const ranges = [];
+	const stack = [];
+	const re = /\{\{-?\s*([a-zA-Z_][a-zA-Z0-9_]*)?/g;
+	let m;
+	while ((m = re.exec(tpl))) {
+		const word = m[1] ?? "";
+		if (OPEN_ACTIONS.has(word)) {
+			const close = tpl.indexOf("}}", m.index + 2);
+			const after = close < 0 ? tpl.length : close + 2;
+			let name = null;
+			if (word === "define" || word === "block") {
+				const rest = tpl.slice(m.index + m[0].length, close < 0 ? tpl.length : close);
+				const nm = /^\s+"([^"]+)"/.exec(rest);
+				name = nm ? nm[1] : null;
+			}
+			stack.push({ name, start: after });
+			continue;
+		}
+		if (word !== "end") continue;
+		const top = stack.pop();
+		if (top && top.name) ranges.push({ name: top.name, start: top.start, end: m.index });
+	}
+	return ranges;
+}
+
+/**
+ * layout 把哪些 define 接进了渲染树：`{{block "X"}}` / `{{template "X"}}` 的名字集合。
+ * sitegen 只执行 `__layout__`（internal/sitegen/template.go 的 execute），所以不在
+ * 这个集合里的 define 体永远进不了产物 —— 比如 `docs.html` 里那个没人引用的
+ * `{{define "fonts-extra"}}`：它的体是一段 URL 碎片，不是用户看得见的文字。
+ * 扫它只会把「给未来留的片段」当成文案。
+ */
+export function renderedDefineNames(texts) {
+	const names = new Set();
+	for (const t of texts) for (const m of t.matchAll(/\{\{-?\s*(?:block|template)\s+"([^"]+)"/g)) names.add(m[1]);
+	return names;
+}
+
+/** 页面侧豁免：同一行或上一行的 HTML 注释里写 `<!-- ui-copy-ok: <理由> -->`。 */
+export function pageExemption(rawLine) {
+	for (const c of rawLine.match(/<!--[\s\S]*?-->/g) ?? []) {
+		const r = readExemption(c.slice(4, -3));
+		if (r.marked) return r;
+	}
+	return { marked: false, reason: "" };
+}
+
+/** 数一段区间里的换行数（遮蔽区也要把行号抬到位，否则报错全落在第一行）。 */
+function countNl(text, from, to) {
+	let n = 0;
+	for (let i = from; i < to; i++) if (text[i] === "\n") n += 1;
+	return n;
+}
+
+/**
+ * 展平状态机：从（已按 define 遮罩过的）模板文本里取文本节点。
+ * 丢掉：标签（属性名/属性值/类名）、HTML 注释、<script>/<style> 内容、{{…}} 表达式。
+ * 返回 [{ line, text }]；text 已折叠空白，line 是 1-based 原文件行号。
+ */
+function textNodeLines(masked) {
+	const out = [];
+	let buf = "";
+	let bufLine = 1;
+	let line = 1;
+	const flush = () => {
+		const v = buf.replace(/\s+/g, " ").trim();
+		if (v) out.push({ line: bufLine, text: v });
+		buf = "";
+	};
+	const n = masked.length;
+	let i = 0;
+	while (i < n) {
+		const c = masked[i];
+		if (c === "\n") {
+			flush();
+			line += 1;
+			i += 1;
+			continue;
+		}
+		if (c === "<") {
+			flush();
+			if (masked.startsWith("<!--", i)) {
+				const end = masked.indexOf("-->", i + 4);
+				const stop = end < 0 ? n : end + 3;
+				line += countNl(masked, i, stop);
+				i = stop;
+				continue;
+			}
+			const raw = /^<(script|style)\b/i.exec(masked.slice(i, i + 12));
+			if (raw) {
+				const closeAt = masked.toLowerCase().indexOf(`</${raw[1].toLowerCase()}`, i + 1);
+				const stop = closeAt < 0 ? n : closeAt;
+				line += countNl(masked, i, stop);
+				i = stop;
+				continue;
+			}
+			// 普通标签：跳到 `>`；引号里的 `>` 不算结束（如 d="M4 17v2a1 1 0 0 0 1 1h14"）
+			let j = i + 1;
+			let quote = null;
+			while (j < n) {
+				const d = masked[j];
+				if (d === "\n") line += 1;
+				if (quote) {
+					if (d === quote) quote = null;
+				} else if (d === '"' || d === "'") {
+					quote = d;
+				} else if (d === ">") {
+					j += 1;
+					break;
+				}
+				j += 1;
+			}
+			i = j;
+			continue;
+		}
+		if (c === "{" && masked[i + 1] === "{") {
+			flush();
+			const end = masked.indexOf("}}", i + 2);
+			const stop = end < 0 ? n : end + 2;
+			line += countNl(masked, i, stop);
+			i = stop;
+			continue;
+		}
+		if (!buf) bufLine = line;
+		buf += c;
+		i += 1;
+	}
+	flush();
+	return out;
+}
+
+/**
+ * 纯函数：扫一个页面模板，返回 { violations, nodes, defines }。
+ * `opts.renderedDefines` 是 layout 接进渲染树的 define 名集合（见 renderedDefineNames）；
+ * 不传则不按 define 过滤（自测用），传空 Set 则一条文字都不扫（下限会报失败，这是故意的）。
+ */
+export function scanPage(text, file = "<memory>", opts = {}) {
+	const lines = text.split("\n");
+	const all = defineRanges(text);
+	let masked = text;
+	let defines = all.length;
+	if (opts.renderedDefines) {
+		const keep = new Uint8Array(text.length);
+		defines = 0;
+		for (const r of all) {
+			if (!opts.renderedDefines.has(r.name)) continue;
+			keep.fill(1, r.start, r.end);
+			defines += 1;
+		}
+		const buf = new Array(text.length);
+		for (let i = 0; i < text.length; i++) buf[i] = keep[i] || text[i] === "\n" ? text[i] : " ";
+		masked = buf.join("");
+	}
+
+	const nodes = textNodeLines(masked);
+	const violations = [];
+	for (const node of nodes) {
+		for (const rule of RULES) {
+			const m = node.text.match(rule.re);
+			if (!m) continue;
+			const own = pageExemption(lines[node.line - 1] ?? "");
+			const prev = node.line >= 2 ? pageExemption(lines[node.line - 2] ?? "") : { marked: false, reason: "" };
+			const ex = own.marked ? own : prev;
+			violations.push({
+				file,
+				line: node.line,
+				key: null,
+				ruleId: rule.id,
+				why: rule.why,
+				hit: m[0],
+				value: node.text,
+				exempted: ex.marked && ex.reason !== "",
+				reason: ex.reason,
+				blankReason: ex.marked && ex.reason === "",
+			});
+		}
+	}
+	return { violations, nodes: nodes.length, defines };
+}
+
 /** 自测用：红样例必须真红（且命中指定规则），绿样例必须完全无违规。 */
 const SELF_TEST = {
 	red: [
@@ -280,6 +500,10 @@ const SELF_TEST = {
 		{ text: `docs:\n  note: "细节见 docs/design/v4/decisions.md"\n`, rule: "docs-path" },
 		{ text: `docs:\n  empty: "重新运行 make sitegen 即可生成这一节"\n`, rule: "build-tool" },
 		{ text: `docs:\n  note: "Re-run make sitegen to generate this section"\n`, rule: "build-tool" },
+		// #458：构建命令（白名单式，见 RULES 里的 build-command）
+		{ text: `recv:\n  no_backend: "请确认服务端已启动（本地可运行 make dev）后重试。"\n`, rule: "build-command" },
+		{ text: `recv:\n  no_backend: "Make sure the server is running (run make dev locally), then retry."\n`, rule: "build-command" },
+		{ text: `docs:\n  hint: "Run make fe after touching web-src"\n`, rule: "build-command" },
 		// 对开发者喊话
 		{ text: `ux:\n  summary: "开发者说明：槽位判定与批量写规则"\n`, rule: "zh-dev-audience" },
 		{ text: `docs:\n  lede: "The notes below are for maintainers and anyone debugging."\n`, rule: "en-dev-audience" },
@@ -304,9 +528,11 @@ const SELF_TEST = {
 		`pb:\n  no_impl: "目标是占位实现（noop），中枢不会执行它"\n`,
 		// `更旧` 是分页方向的正常文案
 		`events:\n  older: "更旧 →"\n`,
-		// `make dev` 是本仓自托管排障指引的正常文案；英文的 "make it" 是动词
-		`recv:\n  no_backend: "请确认服务端已启动（本地可运行 make dev）后重试。"\n`,
+		// 英文的 make it / make sure 是动词，不在 target 白名单里（#458 的反向证明）。
+		// 注：这两个词不要写成行内反引号 —— check-annotations 会把反引号里的 make 子句当引用去解析。
 		`ns:\n  yaml_hint: "Paste it back to save; the page will not make it public."\n`,
+		`recv:\n  no_backend: "Make sure the server is running, then retry."\n`,
+		`recv:\n  hint: "Make the node visible to this namespace first."\n`,
 		// `移行` 是数据流状态迁移（进入实时流），不是配置搬家
 		`docs:\n  reconnect: "その後リアルタイムストリームに移行します。"\n`,
 		// 历史「状态」标签（旧 digest = 陈旧 digest）不是历史「过程」叙述
@@ -323,6 +549,46 @@ const SELF_TEST = {
 		// 豁免写在**值里**（不是注释里）不算数
 		{ text: `nodes:\n  x: "已迁到新页（#447） # ui-copy-ok: 假装是注释"\n`, ok: false },
 	],
+	// 页面模板（#458）：只扫「会渲染给用户看的文本节点」。red 带 line，用来证明遮蔽没把行号搞丢。
+	page: {
+		red: [
+			// 散文直接写在页面里（#448 修之前 docs 页就是这样）
+			{ html: `<div>\n  <p>下面这些是写给维护者与排障者的说明。</p>\n</div>\n`, rule: "zh-dev-audience", line: 2 },
+			{ html: `<div>\n  <p>命名空间与系统配置不在这页</p>\n</div>\n`, rule: "zh-migration", line: 2 },
+			{ html: `<div>\n  <p>本地可运行 make dev 起服务</p>\n</div>\n`, rule: "build-command", line: 2 },
+			// 行号：前面隔了 comment 与 script，仍要报在真实行号上（不是第一行）
+			{ html: `<div>\n  <!-- 注释吃掉三行\n       第二行\n       第三行 -->\n  <script>const a = 1;</script>\n  <p>Re-run make sitegen to generate it</p>\n</div>\n`, rule: "build-tool", line: 6 },
+			// <pre> 里的代码样例也是可见文字：塞一句旁白就判红
+			{ html: `<pre>\nGET /v1/nodes\n已迁到命名空间页\n</pre>\n`, rule: "zh-migration", line: 3 },
+			// 同一个 define：被 layout 接进渲染树就被扫（证明过滤是「选」，不是「一律不扫」）
+			{ html: `{{define "content"}}<p>写给维护者</p>{{end}}\n`, rule: "zh-dev-audience", line: 1, renderedDefines: ["content"] },
+		],
+		green: [
+			// 同一句放 HTML 注释里 → 不扫（写给维护者的注释合法）；`nodes` 是预期抽到的文本节点数，
+			// 用它钉住「确实扫了 / 确实什么也没渲染」，而不是只看「没违规」——后者与没检查同形。
+			{ html: `<div>\n  <!-- 下面这些是写给维护者与排障者的说明（已从 <p> 里删掉） -->\n  <p>{{t "docs.design.lede"}}</p>\n</div>\n`, nodes: 0 },
+			// <script> / <style> 内容不是文案
+			{ html: `<div>\n  <script>const hint = "本地可运行 make dev";</script>\n  <style>.a::after { content: "写给维护者"; }</style>\n</div>\n`, nodes: 0 },
+			// 属性名 / 属性值 / 类名都不是文本节点
+			{ html: `<div class="make-dev-note" title="写给维护者" data-hint="已迁到新页">\n  <span>{{.Lang}}</span>\n</div>\n`, nodes: 0 },
+			// 模板表达式（含 if/range 的条件）不渲染成文字
+			{ html: `{{if .OpenAPI}}<div>{{range .OpenAPI}}{{.Tag}}{{end}}</div>{{end}}\n`, nodes: 0 },
+			// 没进渲染树的 define 体（sitegen 只执行 layout）不扫：命中词全在 fonts-extra 里也绿地；
+			// content 被引用 → 只抽到它的一个节点
+			{ html: `{{define "fonts-extra"}}写给维护者 · docs/ · 已迁到{{end}}\n{{define "content"}}<p>ok</p>{{end}}\n`, renderedDefines: ["content"], nodes: 1 },
+			// 正常文案：路径型代码样例（真实页面里的）不误报
+			{ html: `<pre>GET /v1/nodes/{name}/config\ncurl -fsSL https://&lt;hub&gt;/install-anode.sh | sh</pre>\n`, nodes: 2 },
+			// 正常散文（真实页面上就有这种）：必须真抽到
+			{ html: `<div>\n  <p>下面这几条是产品行为里最容易误读的地方，出问题时按它们对账。</p>\n</div>\n`, nodes: 1 },
+		],
+		// 页面侧豁免：`<!-- ui-copy-ok: 理由 -->` 同行/上一行→绿；空理由/写在文字里→红。
+		exempt: [
+			{ html: `<div>\n  <!-- ui-copy-ok: 过渡期公告，保留工单号方便报障 -->\n  <p>已迁到新页（#447）</p>\n</div>\n`, ok: true },
+			{ html: `<div>\n  <p>已迁到新页</p> <!-- ui-copy-ok: 过渡期公告 -->\n</div>\n`, ok: true },
+			{ html: `<div>\n  <!-- ui-copy-ok: -->\n  <p>已迁到新页</p>\n</div>\n`, ok: false },
+			{ html: `<div>\n  <p>已迁到新页 # ui-copy-ok: 假装是注释</p>\n</div>\n`, ok: false },
+		],
+	},
 };
 
 /** 跑自测。返回 true = 全绿。 */
@@ -337,8 +603,11 @@ export function selfTest(log = console.log) {
 
 	log("check-ui-copy --self-test");
 	log(`  规则 ${RULES.length} 条；红样例 ${SELF_TEST.red.length} / 绿样例 ${SELF_TEST.green.length} / 豁免 ${SELF_TEST.exempt.length}`);
+	log(`  页面样例：红 ${SELF_TEST.page.red.length} / 绿 ${SELF_TEST.page.green.length} / 豁免 ${SELF_TEST.page.exempt.length}`);
 	expect(SELF_TEST.red.length >= 6, `红样例必须 ≥6（当前 ${SELF_TEST.red.length}）`);
 	expect(SELF_TEST.green.length >= 4, `绿样例必须 ≥4（当前 ${SELF_TEST.green.length}）`);
+	expect(SELF_TEST.page.red.length >= 3, `页面红样例必须 ≥3（当前 ${SELF_TEST.page.red.length}）`);
+	expect(SELF_TEST.page.green.length >= 4, `页面绿样例必须 ≥4（当前 ${SELF_TEST.page.green.length}）`);
 
 	for (const [i, c] of SELF_TEST.red.entries()) {
 		let got;
@@ -385,6 +654,46 @@ export function selfTest(log = console.log) {
 	const stripped = scanLocale(`nodes:\n  moved_title: "Namespace and system configuration"\n`, "strip.yaml");
 	expect(stripped.violations.length === 0, "删掉命中词后应转绿（否则规则在乱扫）");
 
+	// 页面侧：红样例必须真红 + 报对行号（行号错了 = 遮蔽把行搞丢，审阅者找不到原文）。
+	for (const [i, c] of SELF_TEST.page.red.entries()) {
+		const got = scanPage(c.html, `page-red-${i + 1}.html`, { renderedDefines: c.renderedDefines ? new Set(c.renderedDefines) : undefined });
+		const active = got.violations.filter((v) => !v.exempted);
+		if (!expect(active.length > 0, `page-red-${i + 1} 应该红，却绿了：${c.html.trim()}`)) continue;
+		expect(
+			active.some((v) => v.ruleId === c.rule),
+			`page-red-${i + 1} 红的规则应是 ${c.rule}，实际 ${active.map((v) => v.ruleId).join(",")}`,
+		);
+		if (c.line) {
+			expect(
+				active.some((v) => v.line === c.line),
+				`page-red-${i + 1} 应报在第 ${c.line} 行，实际 ${active.map((v) => v.line).join(",")}`,
+			);
+		}
+	}
+
+	// 页面侧绿样例还要钉住抽到的节点数：扫出空集时「绿」与「没检查」同形，这正是本检查最怕的假绿。
+	for (const [i, c] of SELF_TEST.page.green.entries()) {
+		const got = scanPage(c.html, `page-green-${i + 1}.html`, { renderedDefines: c.renderedDefines ? new Set(c.renderedDefines) : undefined });
+		const active = got.violations.filter((v) => !v.exempted);
+		expect(active.length === 0, `page-green-${i + 1} 应该绿，却红了：${active.map((v) => `${v.ruleId}«${v.hit}»@${v.line}`).join(", ")} ← ${c.html.trim()}`);
+		expect(got.nodes === c.nodes, `page-green-${i + 1} 应抽到 ${c.nodes} 个文本节点，实际 ${got.nodes}`);
+	}
+
+	for (const [i, c] of SELF_TEST.page.exempt.entries()) {
+		const got = scanPage(c.html, `page-exempt-${i + 1}.html`);
+		const active = got.violations.filter((v) => !v.exempted);
+		const pass = c.ok ? active.length === 0 : active.length > 0;
+		expect(pass, `page-exempt-${i + 1} 期望 ${c.ok ? "绿" : "红"}，实际 ${active.length === 0 ? "绿" : `红 ${active.map((v) => v.ruleId).join(",")}`}：${c.html.trim()}`);
+	}
+
+	// 页面侧反向证明：删掉命中词后转绿（防「页面规则永远红」的假阳性）。
+	const pageStripped = scanPage(`<p>Namespace and system configuration</p>\n`, "page-strip.html");
+	expect(pageStripped.violations.length === 0, "页面删掉命中词后应转绿（否则规则在乱扫）");
+
+	// 页面侧 define 过滤不是空转：同一个 define，没被 layout 引用就不扫、被引用就扫。
+	const dead = scanPage(`{{define "dead"}}<p>写给维护者</p>{{end}}\n`, "page-dead.html", { renderedDefines: new Set(["content"]) });
+	expect(dead.violations.length === 0 && dead.nodes === 0, "未被引用的 define 体不该扫（当前扫到了）");
+
 	log(failures === 0 ? "  ✅ 自测通过：红样例全红、绿样例全绿、豁免正反都对" : `  ✗ 自测失败 ${failures} 条`);
 	return failures === 0;
 }
@@ -422,13 +731,43 @@ async function main() {
 	}
 
 	const values = stats.reduce((n, s) => n + s.values, 0);
-	const counts = `${names.length} 文件 / ${values} 条值 / ${RULES.length} 条规则`;
-	const floors = `下限 文件≥${FLOORS.files}、值≥${FLOORS.values}`;
 
-	// 反假绿：扫描面被改窄（少语言、值为空）不能算绿。
+	// 页面模板（#458）：先算「哪些 define 会被 layout 接进渲染树」，再逐个页面抽文本节点。
+	const pageDir = path.resolve(src, "pages");
+	const layoutDir = path.resolve(src, "layouts");
+	let pageNames;
+	let layoutTexts;
+	try {
+		pageNames = (await fs.readdir(pageDir)).filter((f) => f.endsWith(".html")).sort();
+	} catch (e) {
+		console.error(`✗ 读不到页面目录 ${pageDir}：${e?.message ?? e}`);
+		return 2;
+	}
+	try {
+		const layoutNames = (await fs.readdir(layoutDir)).filter((f) => f.endsWith(".html")).sort();
+		layoutTexts = await Promise.all(layoutNames.map((n) => fs.readFile(path.join(layoutDir, n), "utf8")));
+	} catch (e) {
+		console.error(`✗ 读不到 layout 目录 ${layoutDir}（页面文本节点的可见性靠它判定）：${e?.message ?? e}`);
+		return 2;
+	}
+	const pageTexts = await Promise.all(pageNames.map((n) => fs.readFile(path.join(pageDir, n), "utf8")));
+	const rendered = renderedDefineNames([...layoutTexts, ...pageTexts]);
+	let pageNodes = 0;
+	for (const [i, name] of pageNames.entries()) {
+		const got = scanPage(pageTexts[i], `${src}/pages/${name}`, { renderedDefines: rendered });
+		pageNodes += got.nodes;
+		all.push(...got.violations);
+	}
+
+	const counts = `${names.length} 份 locale / ${values} 条值 · ${pageNames.length} 个页面 / ${pageNodes} 个文本节点 · ${RULES.length} 条规则`;
+	const floors = `下限 locale≥${FLOORS.files} 份、值≥${FLOORS.values}；页面≥${FLOORS.pages} 个、文本节点≥${FLOORS.pageNodes}`;
+
+	// 反假绿：扫描面被改窄（少语言、值为空、页面扫不到、文本节点归零）不能算绿。
 	const floorBreach = [];
 	if (names.length < FLOORS.files) floorBreach.push(`只解析到 ${names.length} 份 locale（下限 ${FLOORS.files}）`);
 	if (values < FLOORS.values) floorBreach.push(`只解析到 ${values} 条值（下限 ${FLOORS.values}）`);
+	if (pageNames.length < FLOORS.pages) floorBreach.push(`只扫到 ${pageNames.length} 个页面（下限 ${FLOORS.pages}）`);
+	if (pageNodes < FLOORS.pageNodes) floorBreach.push(`只抽到 ${pageNodes} 个页面文本节点（下限 ${FLOORS.pageNodes}）`);
 	for (const lang of LANGS) {
 		if (!names.includes(`${lang}.yaml`)) floorBreach.push(`缺 ${lang}.yaml`);
 	}
@@ -468,7 +807,7 @@ async function main() {
 		for (const v of vs) {
 			const shown = v.value.length > 160 ? `${v.value.slice(0, 160)}…` : v.value;
 			console.error(`    ${v.file}:${v.line} → «${v.hit}» → ${shown}`);
-			console.error(`      [${v.ruleId}] ${v.why}   (key: ${v.key})`);
+			console.error(`      [${v.ruleId}] ${v.why}${v.key ? `   (key: ${v.key})` : "   (页面文本节点)"}`);
 			if (v.blankReason) console.error(`      ↑ 这里有 ${EXEMPT_MARKER} 标记但没写理由 → 理由必填，请补或删标记`);
 		}
 	}
@@ -482,8 +821,10 @@ async function main() {
 	console.error("      没人引用的 key 四份 locale 一起删（make fe 之后 check-i18n-keys 会跟上）；");
 	console.error("    · 有信息量的 → 改写成用户视角：说「是什么、能做什么」，不说「从哪来」。");
 	console.error("      别把功能文案一起删掉，也别为了过守卫把句子拆得读不通；");
+	console.error("    · 页面模板里的同类文字 → 挪进 locale 再改写成用户视角；");
+	console.error("      纯开发注释留在 <!-- --> 里，那本来就该写给维护者看；");
 	console.error("    · 确属合理（例如过渡期公告要留工单号）→ 值所在行或上一行写");
-	console.error(`      \`# ${EXEMPT_MARKER}: <理由>\`（理由必填，空理由仍然失败）。`);
+	console.error(`      \`# ${EXEMPT_MARKER}: <理由>\`（locale）或 \`<!-- ${EXEMPT_MARKER}: <理由> -->\`（页面）；理由必填，空理由仍然失败。`);
 	return 1;
 }
 
