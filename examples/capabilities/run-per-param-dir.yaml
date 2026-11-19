@@ -1,0 +1,62 @@
+# 按任务参数分目录：每个 project 一个固定目录（/srv/work/<project>）。
+# 适合「一个项目一个 checkout / 一份缓存」这类需要在同一目录里连续跑的场景。
+#
+# 与 run-in-repo.yaml 的差别：目录名来自**任务参数**（payload 进 params），不是机器事实。
+# 所以 workDir 里写 $(params.project)，而不是 $(vars.SOURCE_ROOT)：
+#
+#   params.properties.project   ← 必须先声明；workDir 引用未声明的参数 = 400 undefined_param_ref
+#   pattern                     ← 参数契约：控制台与调用方按它校验参数值
+#   workDir: /srv/work/$(params.project)   ← 绝对、规范；展开后仍要求目录已存在
+#
+# pattern 的边界（照实说）：中枢派发期的参数对齐只执行 type / required / default 子集
+# （internal/route/params.go 明确忽略 pattern），所以 `..` / `/` **不是**服务端 400。
+# 真正的兜底在节点侧：展开后的路径必须是规范绝对路径且真实存在，否则任务以
+# workdir_unavailable 失败 —— 不会逃逸到 /srv/work 之外。
+#
+# 目录归你管，不归节点管：
+#   · workDir 必须**事先存在**且是绝对规范路径；节点**不创建**它，不存在时任务以
+#     workdir_unavailable 失败（这是配置问题，不是脚本 bug，也不会自动重试）；
+#   · 不得与 GC 根（节点工作根 `status.workRoot`）重叠：节点会清理自己的根，你的项目目录
+#     不该落在会被回收的目录里；
+#   · run.files 会展开到 workDir：**同名文件会被覆盖、权限变成 0600（入口 0700）**。
+#     /srv/work/<project> 里若已经有一份同名 run.sh，跑一次就被换掉。
+apiVersion: anotify/v1
+kind: Capability
+metadata:
+  name: run-per-param-dir
+  displayName: 按参数分目录执行
+spec:
+  params:
+    type: object
+    required: [project]
+    properties:
+      project:
+        type: string
+        # 只允许字母数字开头，后续是字母数字与 . _ -；点后面必须还有字母数字（所以 `a..b`
+        # 与结尾的点都不行），斜杠完全不允许。这样拼进 workDir 后不可能是相对路径或越界。
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$'
+        description: 目录名；只允许字母数字与 . _ -，不允许 / 与 ..
+      greeting:
+        type: string
+        default: hello
+        description: 可选参数，脚本用 ANOTIFY_PARAM_GREETING 读
+  # 只读参数、只用 bash，没有机器事实引用 —— 所以 values 是空的（省略 ≡ []）。
+  requires:
+    commands: [bash]
+  run:
+    entrypoint: run.sh
+    files:
+      run.sh: |
+        #!/bin/bash
+        set -euo pipefail
+
+        # workDir 已经展开成 /srv/work/<project>，脚本一启动就在里面（$PWD）。
+        # 参数（含 workDir 用到的 project）在脚本里通过 ANOTIFY_PARAM_* 读。
+        echo "run-per-param-dir: pwd=$PWD project=${ANOTIFY_PARAM_PROJECT:-} greeting=${ANOTIFY_PARAM_GREETING:-hello}"
+        # 真正要按目录做的事放这里；示例只留一行时间戳，方便确认落在哪个目录。
+        date -u +%Y-%m-%dT%H:%M:%SZ > .anotify-last-run
+    workDir: /srv/work/$(params.project)
+  lifecycle:
+    timeoutSec: 300
+  concurrency:
+    maxPerNode: 1
