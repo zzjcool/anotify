@@ -55,11 +55,12 @@
  *    `locale-drift`、`check-test-discipline.mjs` 的 `over` / `under` /
  *    `skip-unregistered` 都是这种形态）。找不到 ⇒ 红：引用方被改坏。
  *    `@decision <ID>`：ID 必须出现在决策文档里。探测顺序（见 `DECISION_DOC_CANDIDATES`）：
- *      ① `docs/design/v4/decisions.md`
- *      ② `docs/contracts/v4/CONTRACT.md`
- *      ③ `docs/design/v4/*.md`（按文件名序）
- *    实测（2026-11-16）三级都存在，判决取**并集**、每条锚点报出命中的那一份；
- *    本次实测实际命中的是 ①（`V4-D1` 在其中）。`--report` 会打印探测顺序与实际存在的文件。
+ *      ① `docs/contracts/v4/CONTRACT.md`（V4-D1～D6 的决策索引）
+ *      ② `docs/contracts/CONTRACT.md`
+ *    判决取**并集**、每条锚点报出命中的那一份；`--report` 会打印探测顺序与实际存在的文件。
+ *    2026-11-19 收窄：设计文档整套已移除（权威 = 代码 + 测试 + 契约文档，
+ *    见 `docs/README.md`），决策号只能落在契约文档里。原第三级（设计目录下的 `v4/*.md`）
+ *    一并取消 —— 让锚点去解析一份已经不存在的快照，等于把外键指向空气。
  *    `@count <command>`：只登记、不执行（打印清单），避免守卫自己变成命令执行面。
  *
  * C `CLAIM_UNBACKED`（棘轮，只许降）· 「声称有检查在兜底」必须有锚点
@@ -111,9 +112,9 @@
  *         scripts/**\/*.py、cmd/**\/*.go、Makefile（见 CODE_SOURCES / EXTRA_CODE_FILES）
  *   文档：`git ls-files '*.md'` **并上工作区里的 `.md`**（未提交的新文档同样是契约，见 listTrackedDocs 注释）
  *   排除：node_modules/ .git/ .pi/ .pi-subagents/ .pi-orchestrator/ 以及仓库根下的
- *         design/ stale/ missing/ _tmp_\* 系列 g2-resume-evidence/，还有 internal/server/dist/。
- *         注意 `design/` 只排除**根目录**那个（docs/design/ 必须扫：它装着决策文档与
- *         capability-spec-v3.md 这类历史契约）。
+ *         stale/ missing/ _tmp_\* 系列 g2-resume-evidence/，还有 internal/server/dist/。
+ *         2026-11-19：设计文档的两棵目录（`docs/` 下的设计子目录与仓库根的设计稿目录）都已移除，对应的排除项也随之删掉
+ *         —— 比现存目录还多的排除清单会让人以为还有东西没扫到。
  *
  * ── 已知边界（有意不做的部分） ──────────────────────────────────────────
  *   · 不判断断言**是否成立**，只判断**注解指向的对象是否存在**（存在性 ≠ 正确性）。
@@ -188,7 +189,6 @@ export const EXCLUDE_SEGMENTS = new Set([".git", "node_modules", ".pi", ".pi-sub
 
 /** 相对仓库根的前缀排除（只匹配从根开始的路径）。 */
 export const EXCLUDE_PREFIXES = [
-	"design/",
 	"stale/",
 	"missing/",
 	"g2-resume-evidence/",
@@ -198,13 +198,11 @@ export const EXCLUDE_PREFIXES = [
 /** 根目录下的临时目录（_tmp_pbvalidate 之类）。 */
 export const EXCLUDE_ROOT_PREFIX = "_tmp_";
 
-/** 决策文档探测顺序（docs/lint-guards.md §3.2 的冻结口径）。 */
+/** 决策文档探测顺序（docs/lint-guards.md §3.2 的口径；2026-11-19 设计文档移除后只剩契约）。 */
 export const DECISION_DOC_CANDIDATES = [
-	"docs/design/v4/decisions.md",
 	"docs/contracts/v4/CONTRACT.md",
+	"docs/contracts/CONTRACT.md",
 ];
-/** 第三级：`docs/design/v4/*.md`（按文件名序，排除已在候选里的）。 */
-export const DECISION_DOC_GLOB_DIR = "docs/design/v4";
 
 /* ---------- 反假绿下限（实测值，出处写在每条后面） ---------- */
 /*
@@ -264,8 +262,16 @@ export const ANCHOR_MIN = 4;
 // 「冻结值 = N 个套件」注释改成不带「证据」字样的陈述（它们只是解释常量来源，不是可执行
 // 断言），C 由 300 降到 299；D 383 —— #479 删掉 source.html 的图脚本说明，同批新增 e2e 注释。
 // 两个数字都是本树上 `node scripts/check-annotations.mjs` 的实测值，基线零余量（只许降）。
+//
+// 2026-11-19 校准（#477 rebase 到 #479 之后）：设计文档整套移除（Refs #473）后 D 由 383 降到 **312**。
+// 不是 314：PR 原分支的 314 是「385 - 71」，而 main 上 #479 已经先把 385 收到 383（见上一段），
+// 同一份删除在并集树上就是「383 - 71 = 312」—— 删掉的十八份 markdown 在两条基线上的贡献完全相同
+// （实测：8dacf8c6 上 385→314；e9878432 上 385→314；57298070 上 383→312，差量与删掉的文档对齐）。
+// 下降**全部**来自这些整篇落在规则 D 扫描面里的散文，不是判据放宽、也不是把计数断言换成不计数。
+// C 保持 299（#479 批末的实测值）—— 本批新增/改写的注释一句都没带「有检查在兜底」这类声称，
+// 没有可降的量，也没凭校准把噪声吞进基线。同批新增的交付报告用 `snapshot-doc:` 定格，不参与 D。
 export const CLAIM_UNBACKED_BASELINE = 299;
-export const COUNT_UNMARKED_BASELINE = 383;
+export const COUNT_UNMARKED_BASELINE = 312;
 
 /* ---------- 判据 ---------- */
 
@@ -967,11 +973,6 @@ export function decisionIdFound(id, text) {
 /** 纯函数：按冻结顺序探测决策文档。返回 {sources:[{file,text}], probed:[file], used:string[]}。 */
 export function probeDecisionDocs(env) {
 	const probed = [...DECISION_DOC_CANDIDATES];
-	for (const name of env.listDir(DECISION_DOC_GLOB_DIR)) {
-		if (!name.endsWith(".md")) continue;
-		const rel = `${DECISION_DOC_GLOB_DIR}/${name}`;
-		if (!probed.includes(rel)) probed.push(rel);
-	}
 	const sources = [];
 	for (const file of probed) {
 		const text = env.read(file);
@@ -1508,7 +1509,7 @@ export function collectRealFiles(env, root = ROOT) {
  */
 export const KNOWN_FACT_PROBES = [
 	{ file: "docs/v4/e2e-inventory.md", kind: "script", target: "scripts/e2e/suites/real_backend.mjs" },
-	{ file: "docs/design/capability-spec-v3.md", kind: "make", target: "demo-chain" },
+	{ file: "docs/reports/orchestrator-untrack.md", kind: "make", target: "demo-chain" },
 	{ file: "docs/dev-docker.md", kind: "make", target: "mountpoint" },
 ];
 
@@ -1669,7 +1670,7 @@ function selfTest() {
 			Makefile: "fe:\n\tnode scripts/check-css.mjs\nci:\n\t$(MAKE) fe\n",
 			"package.json": '{"scripts":{"test":"make e2e","tailwind":"node scripts/build-tailwind.mjs"}}',
 			"scripts/check-css.mjs": ['export const RULES = ["BRACE_UNBALANCED", "NESTED_RULE"];'].join("\n"),
-			"docs/design/v4/decisions.md": "# v4 已批准决策\n\n## V4-D1 轻量资源 API\n\n## V4-D2 节点上报\n",
+			"docs/contracts/v4/CONTRACT.md": "# v4 冻结契约\n\n## V4-D1 轻量资源 API\n\n## V4-D2 节点上报\n",
 			...extra,
 		});
 	const run = (env, docs = {}) => {
@@ -1920,7 +1921,7 @@ function selfTest() {
 		);
 	}
 
-	// ㉒ 决策文档探测顺序：decisions.md 缺时退到 CONTRACT.md
+	// ㉒ 决策号只在契约文档里也要能解析（设计文档移除后这是唯一落点）
 	{
 		const env = virtualEnv({
 			Makefile: "fe:\n\tnode scripts/check-css.mjs\n",
@@ -1930,7 +1931,7 @@ function selfTest() {
 		});
 		const r = run(env, { "internal/x.go": "// @decision V4-D6\n" });
 		const ok = r.findings.length === 0 && r.info.decisionDocs.used.includes("docs/contracts/v4/CONTRACT.md");
-		check("㉒ 决策文档探测：decisions.md 不存在时退到 CONTRACT.md", ok, JSON.stringify(r.findings));
+		check("㉒ 决策文档探测：设计文档已移除，决策号由契约文档 v4/CONTRACT.md 提供", ok, JSON.stringify(r.findings));
 	}
 
 	// ㉓ 冻结标记只在 markdown 前 40 行有效

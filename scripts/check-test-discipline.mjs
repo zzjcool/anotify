@@ -46,7 +46,7 @@
  *     `locator(ready)` 也不算 —— 变量不是「宽选择器」（这两处是实测出来的假阳性）。
  *     `page.click("button")` 这类动作调用也在「裸标签定位器」的识别面里，但判据要求
  *     **紧跟 `.first()/.nth(`** 才算命中。
- *   · 扫描范围剔除 `node_modules/`、`.pi` 系列目录、`design/`、`_tmp_` 系列、`vendor/`、`.git/`。
+ *   · 扫描范围剔除 `node_modules/`、`.pi` 系列目录、`_tmp_` 系列、`vendor/`、`.git/`。
  *
  * 用法：
  *   node scripts/check-test-discipline.mjs               # 跑守卫（CI 用这个）
@@ -150,7 +150,6 @@ export const MIN_SCANNED_FILES = {
 export const EXCLUDED_SEGMENTS = [
 	/^node_modules$/,
 	/^vendor$/,
-	/^design$/,
 	/^\.git$/,
 	/^\.pi/, // .pi / .pi-orchestrator / .pi-subagents …
 	/^_tmp_/, // 临时工作目录 _tmp_pbvalidate 之类

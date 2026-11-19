@@ -27,7 +27,7 @@
 **硬规则（写成可检查的动作，因为宽泛说法会被窄任务绕过）**：
 
 1. **本次会话的第一条工具调用**必须是「读本 area 的模块约定」；若该 area 还没有模块约定，就读本文件 §0 这一行并明确声明「该 area 暂无约定」。
-2. 模块约定与本文件冲突时**模块约定优先**（它更具体）；两者都不能覆盖 `docs/design/v4/decisions.md`（语义真源）。
+2. 模块约定与本文件冲突时**模块约定优先**（它更具体）；两者都不能覆盖 `docs/contracts/` 下的契约与 `api/` 五份 OpenAPI（语义/接口判据）。
 3. 派发卡的第一行固定写：`0. 第一步读 <area>/AGENTS.md`。
 
 > **防漂移守卫**：`make check-agents`（已接进 `make ci`）校验三件——本表「已写/待写」与真实文件是否一致、
@@ -60,7 +60,7 @@
 - **前端**：纯静态 HTML + Tailwind CDN + `tokens.css`（颜色只用 tokens 变量，不硬编码色值）；无构建框架
   - **class 纪律（硬红线）**：HTML 里的类只允许三种来源——① `ui.css`/`tokens.css` 组件类、② `ui.css`/页面内联 `<style>` 里定义的类、③ Tailwind 工具类。**禁止自造无定义的类**（如 `input-field` 这种不在任何 CSS 里的类，Tailwind CDN 会静默不生效，导致风格脱节）。`make fe`/`make sitegen`/`make dev` 已接入 `scripts/check-classes.mjs` 死类守卫，会拦住这种类；手写新类前先确认它落在上述三个来源内（若想要新组件类，就加进 `ui.css`）。
 - **API 契约**：JSON 字段统一 camelCase（给结构体加 `json` tag）；空列表返回 `[]` 而非 `null`
-- **v4 开发期全量切换（用户已批准）**：以 `docs/design/v4/decisions.md` 和 `docs/contracts/v4/CONTRACT.md` 为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外覆盖下面的历史 baseline 追加规则，仅适用于本次尚未发布的 v4 全量开发。
+- **v4 开发期全量切换（用户已批准）**：以 `docs/contracts/v4/CONTRACT.md`（含 V4-D1～D6 决策索引）为本轮契约；不保留 v3 API/协议/旧数据库迁移兼容层。允许把 `schema.sql` 直接重建为 v4 baseline、移除旧迁移 hooks/专属测试；仍须保留新库结构、重开幂等、错误拒绝和字段往返测试。旧库不可用时明确报错，禁止自动删除用户数据。此例外覆盖下面的历史 baseline 追加规则，仅适用于本次尚未发布的 v4 全量开发。
 - **store 层**：新增字段必加"往返一致性"单测（存什么读什么）。schema 变更的当前规则见
   [`internal/store/AGENTS.md §3.2`](internal/store/AGENTS.md)：**迁移引擎目前只支持单块**（`baselineLayout()` 硬校验），
   所以 v4 未发布期加表/加列是在 baseline 块内原地改、`headVersion` 保持 1；要引入第 2 块必须先改引擎（单独授权）。

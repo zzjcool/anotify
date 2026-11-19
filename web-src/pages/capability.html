@@ -1606,7 +1606,7 @@
         body.append(rsec);
 
         /* 近期调用记录（status.observed）——服务端按 24h 窗口给出**真实事实**
-           （docs/design/v4/capability.md §2「observed」、CONTRACT-observed）：
+           （`internal/server/resource_capability.go` 的 observed 投影、CONTRACT-observed）：
              {taskId, emits:[{to,fields,ok}], pruned:[{to,reason,detail}], tasks:{total,failed}}
            四个键全空时服务端写 `{}`（这个能力从没跑过）——那时如实空态，不杜撰
            时间与计数。emits/pruned 各被服务端截到 50 条（store.ObservedEmitLimit /

@@ -1,13 +1,13 @@
 // demo.go —— `devseed -demo`：为开发环境播种 v4 真实资源，并跑一条**真实**事件链。
 //
-// v4 的资源形状与 v3 完全不同（`docs/design/v4/{capability,source}.md` 是唯一权威）：
+// v4 的资源形状与 v3 完全不同（`api/resource.yaml` + `api/ingress.yaml` 是唯一权威）：
 //
 //   - 能力 = `params` + `next` + `run`：没有 ports / outputs / 边。**边是 `next` 的
 //     派生投影**（由 store 在同一事务里重建），不是用户实体，也没有写它的 API；
 //   - 源   = `kind`(cron|webhook|manual) + `config` + `targets`：入口边同样是
 //     `targets` 的派生投影；
 //   - 出口 = 脚本里的 `anode emit <name>`（`ANOTIFY_EMIT_ENDPOINT` +
-//     `ANOTIFY_TASK_TOKEN`，capability.md §4.0）。
+//     `ANOTIFY_TASK_TOKEN`，见 `internal/protocol/emit_frames.go`）。
 //
 // 所以这里只做三件事，一件也不越界：
 //

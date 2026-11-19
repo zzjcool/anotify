@@ -160,7 +160,7 @@
 
 ### 不动的
 `internal/**`（除生成的 dist，由 `make fe` 重写）、`scripts/e2e/**`、`scripts/check-classes.mjs`
-（除非新增合法 Tailwind 工具类被误判，需先向协调者报）、`api/**`、`design/` 既有文件（design 只新增 `design/ui-v2/`）。
+（除非新增合法 Tailwind 工具类被误判，需先向协调者报）、`api/**`、`web/ui.css` 与 `web/tokens.css` 的既有 token（UI v2 只做加法）。
 
 ## 7. 门禁（每轮必跑）
 
@@ -191,9 +191,9 @@ make fe                             # 指纹 → internal/server/dist（e2e 用�
 
 ---
 
-## 10. 契约修订 v1.1（协调者裁决，设计稿交付后）
+## 10. 契约修订 v1.1（协调者裁决，UI v2 交付后）
 
-依据 `design/ui-v2/REVIEW.md` §3/§6，裁决如下（后续 agent 以此为准）：
+依据当时 UI v2 评审稿的 §3/§6（该稿已随设计文档移除），裁决如下（后续 agent 以此为准）：
 
 - **C1 采纳 D2**：顶栏 `header h1` 是**上下文标题**（15px/600），内容区页面大标题用
   `.page-title`（`<h2>`，28px Inter 600 `-0.02em`）。`header h1` 唯一性 + `.scope-badge` 位置不变。
@@ -208,7 +208,7 @@ make fe                             # 指纹 → internal/server/dist（e2e 用�
 - **light 兼容 shim**：wave 1 允许在 `ui.css` 用 shim（把旧页的 `text-zinc-*`/`bg-white/*` 映射到 token）；
   wave 2 迁移页面后 shim 只能收缩，不能扩张。shim 必须放在 `ui.css` 末尾并带注释说明「临时兼容层」。
 - **默认主题**：跟随系统；无法判定时用 dark。`theme-toggle` 顺序 dark → light → auto，`title`/`aria-label` 走 i18n。
-- **设计稿位置**：`design/ui-v2/`（截图不入库；需要时 `node design/ui-v2/verify.mjs` 重新生成）。
+- **视觉基线位置**：`web/ui.css` + `web/tokens.css`（截图不入库；要重新采集就用 `node scripts/e2e/run_all.sh --serial frontend` 与 `web-verify` 工具）。
 
 ---
 

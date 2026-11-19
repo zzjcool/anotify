@@ -16,7 +16,7 @@
  *   打开就能用。代价是不能拦截 <img>/<link> 这类不走 fetch 的请求——
  *   而我们只需要拦 API。
  *
- * v4 口径（`docs/design/v4/api-conventions.md`）：
+ * v4 口径（`api/*.yaml`）：
  *   · 资源端点一律 `{apiVersion,kind,metadata,spec,status}` 信封，列表是 `KindList.items`；
  *   · 命名空间私有资源走 `/v1/namespaces/{namespace}/{plural}[/{name}]`；
  *   · 写已有资源必须带 `metadata.resourceVersion`（CAS），`status` 只读；

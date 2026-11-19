@@ -2,7 +2,7 @@
 
 > 状态：**冻结**（本文件是 #333 的实现契约，也是给 #335 frontend/sitegen 的输入清单）。
 > 基线：`issue/333-five-openapi` @ `289896f`（= `origin/issue/332-artifact-transport`，含 #331+#332 的 v4 路由/DTO）。
-> 权威顺序：用户本轮指令 > issue 原文 > G3-D5/D6 + W1–W6/A1/E1 > `docs/design/v4/*` > 旧代码注释。
+> 权威顺序：用户本轮指令 > issue 原文 > G3-D5/D6 + W1–W6/A1/E1 > `api/` 五份 spec 与代码 > 旧代码注释。
 > **代码是权威**：本文件记录的每个 path/method/字段都以 `289896f` 的真实 mux/handler/DTO 为准；
 > 与冻结文档冲突处见 §5「已知缺口与裁决」。
 

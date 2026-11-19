@@ -1,7 +1,9 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 # 节点 / 命名空间 / 系统信息架构重构 —— 交付报告
 
 - Issue: [#436](https://github.com/zzjcool/anotify/issues/436)
-- 设计: [`docs/design/node-namespace-ia.md`](../design/node-namespace-ia.md)
+- 设计: 已随设计文档移除（历史见 `docs/README.md`）；行为以代码与 `api/` 为准
 - 分支: `feat/node-namespace-ia`（基线 `origin/main 2c115020`）
 - PR: [#441](https://github.com/zzjcool/anotify/pull/441)（①② 同一 PR，提交按 docs / server / web / report 分开）
 - 本轮落地: **① 页面 IA + 旧 URL 兼容**、**② Node YAML 查看/编辑**
@@ -16,7 +18,7 @@
 | 系统保留期存在 `system_config` 单行表 | `internal/store/schema.sql` | 系统级配置，与节点无关 |
 | `effectiveNamespaces` = `store.AuthorizedNamespaces` = 中枢授权 ∩ 本机申报 | `internal/store/config.go:1359-1417` | 是**硬闸门/授权**（派发 / 产物 / WS 都读它），不是「可见」 |
 | limits 只有「本机 + 节点」两层，`ValidateLimits` 只认 `total` / `perCapability` | `internal/store/config.go:194-228` | 命名空间**没有** limits —— 新页面不能编一个 |
-| `anode.yaml` 私有字段 `server/token/listen/envPassthrough` 不进 Node spec、不上报 | `docs/design/v4/api-conventions.md §7.4`、`internal/protocol/config_frames.go:15` | Node YAML 文档里不能出现它们；token 明文只在 `POST /v1/nodes/{name}/tokens` 出现一次 |
+| `anode.yaml` 私有字段 `server/token/listen/envPassthrough` 不进 Node spec、不上报 | `api/resource.yaml`、`internal/protocol/config_frames.go:15` | Node YAML 文档里不能出现它们；token 明文只在 `POST /v1/nodes/{name}/tokens` 出现一次 |
 | `internal/yamldoc` 是叶子包严格解析器：`Decode(data, Shape) → Result{JSON, LineOf}` | `internal/yamldoc/yamldoc.go` | 行号 1-based、字段路径点号分隔、错误消息不回显标量值（凭据回显红线） |
 | 旧页面宿主 | `web-src/pages/nodes.html`（`#namespace-config` / `#system-config`）、`web-src/pages/node.html`（`#node-namespace` / `#node-effective-vars`、`#node-namespaces` / `#node-vars` / `#node-limits`） | 两类配置寄生在错的维度上 |
 

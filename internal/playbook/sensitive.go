@@ -199,7 +199,7 @@ func valueReferencesWriteOnly(v any, sch map[string]any) bool {
 //     patternProperties……），那正是 I6 禁止中枢做的事；证明不了，就按不安全处理。
 //   - 所以等价类语义是「出现需要求值的关键字 ⇒ 整值打码」，**不是**「解引用后看被引用节点
 //     有没有 writeOnly」。后者会把中枢变成求值器，远程 `$ref` 还会引入外部请求面。
-//     契约口径见 docs/design/v4/playbook.md §1.2 的「打码」行。
+//     契约口径就是下面这张理由表与 `maskProvableKeywords` 的 allowlist 语义。
 //
 // 这张表是**理由表**（审查者看「为什么这个关键字危险」），判据的默认面在 `maskProvableKeywords`
 // 那边：不在豁免表里的关键字——包括本表没枚举的、未来的新 draft 关键字——同样算无法证明。

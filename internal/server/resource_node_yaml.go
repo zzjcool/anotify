@@ -1,12 +1,11 @@
 package server
 
-// resource_node_yaml.go 是 Node 文档的 YAML 读/写面（IA 重构的 ②，
-// docs/design/node-namespace-ia.md §2.1 / §3）：
+// resource_node_yaml.go 是 Node 文档的 YAML 读/写面（IA 重构的 ②）：
 //
 //	GET /v1/nodes/{name}/yaml   规范化 Node 文档文本（{"yaml": "…"}）
 //	PUT /v1/nodes/{name}/yaml   严格解析 → 与 PATCH /v1/nodes/{name} 同一条 store 路径
 //
-// 三条边界（与 docs/design/v4/api-conventions.md §7.4 对齐，改之前先读）：
+// 三条边界（与 `api/resource.yaml` 的 Node 文档形状对齐，改之前先读）：
 //
 //  1. **YAML 就是 Node 文档本身**：apiVersion / kind / metadata / spec，字段集与
 //     `NodeSpec` 逐字相同（namespaces / vars / limits / tags）。不新增字段、不改语义，

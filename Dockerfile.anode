@@ -9,7 +9,7 @@
 # 三个设计取舍（与中枢镜像 Dockerfile 刻意不同）：
 #
 #  1. **配置只有一个文件**：`anode.yaml`（name/server/token/namespaces/listen/vars/limits/
-#     envPassthrough，见 docs/design/v4/anode.md）。容器里挂只读文件比注入一堆
+#     envPassthrough，字段真源是 `cmd/anode/internal/config/config.go` 的 `Config`）。容器里挂只读文件比注入一堆
 #     `ANOTIFY_*` 环境变量更接近真实部署；host env 默认不继承（anode 自己就不读）。
 #  2. **不打包 web/dist**：节点只要一个二进制，不需要中枢的前端产物，镜像小一个量级。
 #  3. **只带执行所需的最小工具**：能力脚本靠 shebang 选解释器，纯 scratch 镜像里连

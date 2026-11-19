@@ -9,7 +9,7 @@
 > 证据：截图 `/tmp/ui-scan/shots/`（90 张，命名 `<page>--<theme>--<viewport>.png`）、
 > DOM 报告 `/tmp/ui-scan/report.json`、局部放大 `/tmp/ui-scan/crops/`。
 >
-> 设计基线是 `design/ui-v2/REVIEW.md` §4 的 D1–D20。本清单**不改契约**，只收「实现没跟上基线」
+> 设计基线是当时的 UI v2 评审稿 §4 的 D1–D20（该稿已随设计文档移除）。本清单**不改契约**，只收「实现没跟上基线」
 > 与「基线没覆盖到的新页面/新状态」。
 
 ## 0. 一页结论

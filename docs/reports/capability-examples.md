@@ -1,3 +1,5 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 # 交付报告 · 能力样例（`run.workDir`）
 
 **issue**：https://github.com/zzjcool/anotify/issues/472
@@ -12,8 +14,8 @@
 - `internal/artifact/templates.go` 的内置模板没有一个使用 `run.workDir`（`script.blank` 只有
   一行注释提到 `run.env` + `fieldRef`）；
 - `examples/` 下只有 `playbooks/pr-triage-notify`，它是 playbook 包，不是单份能力；
-- 想要一份「在项目目录里跑 `make test`」的 YAML，只能去翻设计文档 `docs/design/v4/capability.md`
-  的示例段 —— 设计文档没有执行者复算，改坏了没人知道。
+- 想要一份「在项目目录里跑 `make test`」的 YAML，只能去翻已移除的设计文档的示例段
+  —— 那份文档没有执行者复算，改坏了没人知道。
 
 ## 交付
 
@@ -23,7 +25,7 @@
 | `examples/capabilities/run-per-param-dir.yaml` | 按参数分目录：`params.project` + `pattern` + `run.workDir: /srv/work/$(params.project)` |
 | `internal/artifact/examples_test.go` | 把样例真的喂给 `artifact.Parse`，并要求每个样例都带 `workDir` |
 | `scripts/check-examples.mjs` | 样例检查 + 变异自证，接进 `make ci` |
-| `docs/agent-install.md`、`docs/design/v4/capability.md`、`internal/artifact/templates.go` 注释 | 三处指路到样例 |
+| `docs/agent-install.md`、`internal/artifact/templates.go` 注释 | 两处指路到样例（原第三处是设计文档，已随设计文档移除） |
 
 ### 样例各证明什么
 
@@ -68,8 +70,8 @@
 
 ## 发现的产品问题（未在本 PR 修，按边界不动校验逻辑）
 
-`docs/design/v4/capability.md` 写「参数 schema 建议用 `pattern` 把 `..` / `/` 挡在**写入期**」，
-但服务端没有任何一处执行 `pattern`：中枢的派发期参数对齐（`internal/route/params.go` 的
+当时的**「参数 schema 建议用 `pattern` 把 `..` / `/` 挡在写入期**」这条说法（出处已随设计文档移除），
+在服务端没有任何一处执行 `pattern`：中枢的派发期参数对齐（`internal/route/params.go` 的
 `parseParamSchema`）只实现 `type / properties / required / default` 子集，注释里明确写着
 `pattern` 等关键字「被忽略而不是被当成失败」。
 

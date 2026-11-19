@@ -1,7 +1,7 @@
 package server
 
 // resource_namespace_yaml.go 是 Namespace 与 System 文档的 YAML 面
-// （IA 重构的 ③ / ④，docs/design/node-namespace-ia.md §2.2 / §3.1）：
+// （IA 重构的 ③ / ④）：
 //
 //	GET  /v1/namespaces/{name}/yaml  规范化 Namespace 文档文本（{"yaml": "…"}）
 //	PUT  /v1/namespaces/{name}/yaml  严格解析 → PutNamespaceConfigByName（CAS）

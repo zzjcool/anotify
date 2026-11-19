@@ -6,7 +6,7 @@ Agent 完成任务后，把通知自动推送到你的所有设备（iOS / Mac /
 Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进制易自托管。
 
 > 本仓库由原型（iOS Web Push 机制验证）演进为完整实现。
-> 设计稿见 `design/`，技术方案见 `design/tech-scheme.html`。
+> 行为的唯一权威是**代码 + 测试 + `docs/contracts/`**；文档入口见 [`docs/README.md`](docs/README.md)。
 
 ## 📚 文档导航
 
@@ -14,6 +14,7 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 | --- | --- | --- |
 | **[DEVELOPMENT.md](DEVELOPMENT.md)** | 开发者 / Agent | 架构决策、开发流程、测试体系、踩坑记录（上手必读） |
 | **[AGENTS.md](AGENTS.md)** | 子 Agent | 工作约定、规范、陷阱 |
+| **[docs/README.md](docs/README.md)** | 所有人 | 文档入口：权威在哪、哪些文档是快照、改行为的规矩 |
 | **[E2E_TESTING.md](E2E_TESTING.md)** | 开发者 | 端到端测试体系（`make e2e` 固化门禁） |
 | **[IOS_TESTING.md](IOS_TESTING.md)** | 验证者 | iOS 真机推送验证清单（唯一人工环节） |
 | **[examples/playbooks/](examples/playbooks/)** | 使用者 | 可直接安装的 playbook 示例（事件 → 判定 → 告警/留证），含空环境落地步骤 |
@@ -31,8 +32,7 @@ Passkey 无密码登录（也可选用密码登录）、无需轮询、单二进
 - **中枢不执行**：执行只发生在节点（契约机检：中枢侧不得 `os/exec`）
 - **路径分离**：`/v1/*` 动态 API（no-store），静态资源走 CDN 缓存分级（哈希文件 immutable）
 
-> v4 的设计与 API 以 `docs/design/v4/` 与 `api/` 下五份 spec 为准；v3 的 `cmd/agent`（已退役）与
-> 与 Broker 抽象已退役（不保留兼容层）。
+> v4 的行为与 API 以代码与 `api/` 下五份 spec 为准；v3 的 `cmd/agent` 与 Broker 抽象已退役（不保留兼容层）。
 
 ## 快速开始
 
@@ -258,7 +258,6 @@ internal/
 web/                前端（纯静态 HTML+Tailwind CDN+tokens.css）
 scripts/hash.mjs    指纹脚本（content-hash + 引用改写 + manifest）
 scripts/integration.sh / ws_test.mjs / push_e2e.mjs   测试脚本
-design/             设计稿 + 技术方案
 ```
 
 ## 安全

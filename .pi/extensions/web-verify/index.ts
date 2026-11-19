@@ -16,7 +16,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			target: Type.String({
 				description:
-					"要验证的本地 HTML 文件路径（如 design/tech-scheme.html）或完整 URL（http://...）",
+					"要验证的本地 HTML 文件路径（如 web/index.html）或完整 URL（http://...）",
 			}),
 			title: Type.Optional(
 				Type.String({

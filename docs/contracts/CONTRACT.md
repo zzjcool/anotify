@@ -1,14 +1,13 @@
 # Anotify 实现契约 v1 · 冻结
 
 > ⚠️ **v1 快照（历史文档）。** 本文是重构起点的冻结记录，**不再是当前实现的判据**：
-> 与今天的代码/接口不一致的地方（端点参数、状态机、命名空间语义等）以
-> [`docs/design/v4/`](../design/v4/) 与 `api/*.yaml` 为准，差异清单见
-> [`docs/design/v4/api-conventions.md`](../design/v4/api-conventions.md) 的「旧 → 新差异摘要」。
+> 与今天的代码/接口不一致的地方（端点参数、状态机、命名空间语义等）以代码 + `api/*.yaml`
+> 为准（设计文档已整套移除，见 [`docs/README.md`](../README.md)）。
 > 例：本文仍写 `/v1/stats?namespace=*` → `400`，而当前实现是「逐 ns 授权后求和」的跨 ns 汇总读。
 >
 > **v1 当时的声明（保留原文，仅作记录）**：状态冻结；这是重构的唯一事实源；任何与它冲突的代码都是待改的。
-> 自 v4 起该声明已转移：语义真源 = `docs/design/v4/decisions.md`，接口真源 = `api/` 五份 OpenAPI。
-> 设计依据：`design/wiki/`（10 页）。本文只写**实现层**：表、字段、状态机、协议帧、不变量。
+> 自 v4 起该声明已转移：接口真源 = `api/` 五份 OpenAPI，实现真源 = 代码与测试。
+> 本文只写**实现层**：表、字段、状态机、协议帧、不变量。
 >
 > **无历史包袱**：库清空重建，不迁移、不双写、不兼容。
 > 现有 `internal/store` 的 10 张表全部作废，按本文重建。
@@ -117,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id);
 
 #### 2.1.1 命名空间
 
-**组织之下还有一层：命名空间。** 完整设计见 `docs/design/namespaces.md`，
+**组织之下还有一层：命名空间。** 实现见 `internal/store/namespace.go`，
 这里只放实现必需的部分。
 
 ```sql
@@ -346,7 +345,7 @@ CREATE TABLE IF NOT EXISTS "edges" (
 -- 不额外建索引：这四列是 edges 主键的严格左前缀，sqlite_autoindex_edges_1 已覆盖（#252）。
 ```
 
-**边里只存引用，不存能力 id**（P2.2，设计 typed-pipeline §3.2）：`from_ref` / `to_ref` 是
+**边里只存引用，不存能力 id**（P2.2；实现在 `internal/store` 的边表）：`from_ref` / `to_ref` 是
 `name`（跟随 latest，升级自动生效）或 `name@version`（钉死那一版）。存 id 的话能力一升级，
 原来那条边还指着旧 id，升级永远不生效。
 
@@ -1080,7 +1079,7 @@ sources ──< source_targets(source_id, capability_id, params) >── capabil
 
 { "type": "progress",  "task_id": "tsk_x", "note": "step 2/5" }
 
-{ "type": "emit",      "task_id": "tsk_x", "seq": 3,      // 运行中的一次产出（docs/design/emit-protocol.md）
+{ "type": "emit",      "task_id": "tsk_x", "seq": 3,      // 运行中的一次产出（`internal/protocol/emit_frames.go`）
   "port": "fix",                                            // 唯一的路由输入（I2/I4）
   "data": { "issue": "#42" },                               // 直接就是下游的 params；必须是对象
   "note": "第 2 项" }                                        // 可选，只给人看，不参与路由
@@ -1487,7 +1486,7 @@ token 形态与现有 `api_keys` 一致：`ant_<label>_<base64url(24B)>`，DB �
 **解法是把命名空间放进节点令牌，而不是改协议帧** —— 令牌 → 节点行 → `namespace_id`，
 `hello` 一个字不用改，已部署的 agent 只需换令牌。
 一台机器要服务两个命名空间就注册两次（两个节点行、两个令牌）。
-完整推导见 `docs/design/namespaces.md` §2.1。
+完整推导见 `internal/store/namespace.go` 与 `internal/server` 的令牌→节点行路径。
 
 **两条容易漏的配套**：
 

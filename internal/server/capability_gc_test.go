@@ -349,7 +349,7 @@ func TestCapabilityGCWiredByNewApp(t *testing.T) {
 //
 // 为什么必须显式覆盖而不是当附带效果：这条变化只在「回收恰好发生在两次请求之间」时可见，
 // 谁也不会在手工验收里撞上；而它一旦变成「已删能力永远挡住命名空间删除」，运维就只能
-// 手工改库。docs/design/v4/capability.md §8.4 已写明它**不是**契约保证。
+// 手工改库。`capability_gc.go` 已写明它**不是**契约保证。
 //
 // 断言分两段（先红后绿），否则「删掉能力之后能删命名空间」会因为根本没有 tombstone 而假绿。
 func TestCapabilityGCPurgeFlipsNamespaceDeleteFromBlockedToAllowed(t *testing.T) {

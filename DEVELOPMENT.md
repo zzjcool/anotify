@@ -15,8 +15,8 @@ v4 把「中枢」和「节点」做成**两个独立产品**；v3 的 `cmd/agen
 
 四条必须记住的：
 
-- **四个资源对象**：`Namespace` / `Capability` / `Source` / `Node`。权威语义在
-  `docs/design/v4/{capability,source,anode,playbook}.md`；API 从它们派生（`api/` 五份 spec）。
+- **四个资源对象**：`Namespace` / `Capability` / `Source` / `Node`。权威语义在代码
+  （`internal/store` 的 spec 结构体、`internal/sourcespec`）与 `api/` 五份 spec；不再有单独的设计文档。
 - **中枢不持有「怎么执行」**：`internal/*` 与 `cmd/server` 不得 import `os/exec`
   （`make contract` 的 A5 机检），执行只发生在节点（`cmd/anode/internal/runner`）。
 - **产出只有一个通道：emit**：能力脚本调 `anode emit --to <name> --data <json>`；
@@ -33,7 +33,7 @@ v3 的 `skill.md` / `--skill` / `anotify-agent <sub>` 命令全部退役。
 
 Anotify 是「Agent 完成即通知」平台：Agent 任务结束后通过事件 Hook 上报，后端用 Web Push 把结果推送到用户所有设备（iOS/Mac/PC/Android）。Passkey 无密码登录（可选密码登录作为第二套模型），单 Go 二进制 + SQLite，易自托管。
 
-完整设计见 `design/tech-scheme.html`，产品定位见 `README.md`。
+完整设计见 `docs/contracts/CONTRACT.md`，文档入口见 `docs/README.md`，产品定位见 `README.md`。
 
 ## 2. 技术栈与关键决策
 
@@ -123,8 +123,6 @@ docker info  # 确认 daemon 在跑
 ### Tailwind（构建期 CSS，不用 Play CDN）
 
 线上和 embed 的页面（`web-src/layouts/`）引用 `/tailwind.css`，即提交在仓库里的 `web/tailwind.css`。**不要**在这些页面加载 `cdn.tailwindcss.com`：Play CDN 会在控制台打出 “should not be used in production”。
-
-`design/*.html` 设计稿仍引用 Play CDN，只给本地对照，不进 sitegen，也不进 embed。
 
 改了 `web-src/` 或 `web/partials.js` 里的 Tailwind 工具类之后：
 
@@ -459,8 +457,8 @@ anode --version   # 单行 JSON：{"version":"<version>+<commit>","commit":"<sha
 
 ### 能力定义写在哪（v3 的 `check` / `schema` 已退役）
 
-v4 的能力是**中枢资源**（`POST/PUT /v1/namespaces/{ns}/capabilities`，见
-`docs/design/v4/capability.md`）：校验发生在**写入期**，错误是带 `code` 的 400
+v4 的能力是**中枢资源**（`POST/PUT /v1/namespaces/{ns}/capabilities`，字段见
+`api/resource.yaml`）：校验发生在**写入期**，错误是带 `code` 的 400
 （`invalid_name` / `entrypoint_missing` / `invalid_output` …），不再是节点上的离线子命令。
 节点只消费中枢下发的产物（内容寻址，按 digest 缓存）。
 
@@ -505,8 +503,8 @@ shuffle 失败时 `go test` 会把种子打在 `-test.shuffle <seed>` 那一行�
 1. **先量化**：`-count=N` 拿到「失败次数 / 总次数」（0/N 也要报，并说清在什么条件下才会
    出现）；不许拿「重跑一次就绿」当结论。
 2. **定位到同步点**：是**测试脆弱**（“读下一帧并断言类型”、固定 `sleep`、把假时钟当真实
-   时间）还是**产品缺陷**（次序 / 时钟 / 可见性）——去契约里找依据（例如
-   `docs/design/v4/capability.md` §8.5 只规定因果次序，没有规定“一条请求的下一帧就是它的
+   时间）还是**产品缺陷**（次序 / 时钟 / 可见性）——去契约/代码里找依据（例如
+   `docs/contracts/CONTRACT.md` §6.1 只规定帧的因果次序，没有规定“一条请求的下一帧就是它的
    应答”），不要凭直觉选。
 3. **测试脆弱** → 改成「限时内读到期望帧 / 等条件成立」，但**保留原有语义**：穿插的帧
    要逐项核对（类型 + 载荷）而不是静默跳过，失败时打印真实帧序
@@ -635,7 +633,6 @@ scripts/
   gen-icons.mjs    图标生成器（Sacramento 字体 → 各尺寸 PNG）
   genkeys.go       VAPID 密钥生成
   e2e/             E2E 测试体系（run_all.sh + lib/ + suites/）
-design/            设计稿 + 技术方案（参考用）
 ```
 
 ## 7. 贡献规范
@@ -670,7 +667,7 @@ Go nil slice 序列化成 `null`，前端 `Array.isArray(null)` 为 false → �
 
 ### schema 变更：baseline 往后追加块（不再有增量迁移链）
 
-> **本轮 v4 开发期例外（用户已批准）**：全量转向 `docs/design/v4/`，不背旧版本数据/API/协议兼容包袱。允许直接重建 v4 baseline 并移除旧迁移链与 hooks，不追加 v3→v4 兼容迁移。旧库必须明确拒绝，程序不得自动删除数据。新库结构、字段往返、重新打开幂等和错误处理测试仍为硬门禁。具体分工见 `docs/contracts/v4/CONTRACT.md`；以下规则继续适用于已发布结构的后续变更。
+> **本轮 v4 开发期例外（用户已批准）**：全量转向 v4（契约见 `docs/contracts/v4/CONTRACT.md`），不背旧版本数据/API/协议兼容包袱。允许直接重建 v4 baseline 并移除旧迁移链与 hooks，不追加 v3→v4 兼容迁移。旧库必须明确拒绝，程序不得自动删除数据。新库结构、字段往返、重新打开幂等和错误处理测试仍为硬门禁。具体分工见 `docs/contracts/v4/CONTRACT.md`；以下规则继续适用于已发布结构的后续变更。
 
 `internal/store/schema.sql` 现在只有一块 `-- +migration 1 baseline`：squash 之后的**终态 DDL**。
 迁移链上的「建表 → 加列 → 删列 → 重建表 → 删表」已经合并进这一块，所以这里描述的就是

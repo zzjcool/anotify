@@ -62,5 +62,5 @@ go test ./internal/store/ -run 'Baseline|Migrate|Schema' -count=1    # 改了迁
 ## 6. 上下游契约
 
 - `schema.sql` 是**跨 area 共享文件**：任何 area 加表/列都由 contract owner 合并，不由本模块自决。
-- 语义变化（不只是加列）→ 同步 `docs/design/v4/*` 与 `api/*.yaml`。
+- 语义变化（不只是加列）→ 同步 `api/*.yaml` 与 `docs/contracts/`（字段级真源是 `schema.sql` + `api/`；设计文档已移除）。
 - 向 `server` 交付的是**事实**不是视图：store 不做展示裁剪（分页/信封在 server 侧）。

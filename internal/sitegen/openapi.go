@@ -65,7 +65,7 @@ type OpenAPIGroup struct {
 
 // CanonicalSpecFiles 是 v4 API 文档的五个 spec 文件名，顺序即合并顺序。
 //
-// 与 docs/design/v4/api-conventions.md §2 的五个域一一对应：
+// 与 `api/` 的五个文件一一对应：
 // resource / events / agent / ingress / auth。旧的单文件 api/openapi.yaml
 // **不再读取**：v4 路径是绝对 /v1/...，旧 spec 是相对 servers: /v1 的 v3 形状，
 // 两者混在一起只会把 v3 端点伪装成 v4 事实。这里没有 fallback。

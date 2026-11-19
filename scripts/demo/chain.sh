@@ -12,7 +12,7 @@
 #   make dev-node   # 真有台 anode 时：拉能力、执行脚本、回报结果/emit（profile=node）
 #   make dev        # 上面两条的宿主版（server + devseed + 可选本机 anode，见 scripts/dev.sh）
 #
-# 完整 CLI/能力写法见 docs/v4/anode-cli.md 与 docs/design/v4/。
+# 完整 CLI/能力写法见 docs/v4/anode-cli.md 与 `api/` 五份 spec。
 # v3 的原始实现见本文件的 git 历史版本。
 echo "scripts/demo/chain.sh 已随 v3 的 cmd/agent 退役；v4 请用 make dev-demo / make dev-node。" >&2
 exit 2

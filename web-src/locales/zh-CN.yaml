@@ -1631,7 +1631,7 @@ nodes:
   drain_confirm: 排空 {name}？它跑完手上的任务后不再接新任务。
   drain_done: 已排空
   drain_failed: 排空失败：
-  # agent 自升级（docs/design/agent-upgrade.md）。文案口径：
+  # agent 自升级（实现在 internal/server/node_upgrade_handlers.go）。文案口径：
   # 版本陈旧是**中性**提示（不是错误）；need_root / bad_sha 给的是「下一步怎么做」。
   upgrade:
     version_label: agent 版本

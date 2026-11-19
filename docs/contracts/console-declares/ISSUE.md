@@ -19,7 +19,7 @@
 
 1. **两个地方定义同一个能力**：中枢 `POST /v1/capabilities` 定义字段（`capability_versions`），
    机器上手写 `node.yaml` 的 `run.command`。中间靠人抄 YAML + SSH + 重启 agent。
-   `docs/design/playbooks.md:36` 自己把它列为「现存真问题④：没有任何地方能声明这台机器怎么跑这个能力」。
+   旧设计文档（已移除，历史见 `docs/README.md`）自己把它列为「现存真问题④：没有任何地方能声明这台机器怎么跑这个能力」。
 2. **硬顺序反人类**：能力没在中枢先定义 → hello 整帧被拒 `unknown_capability` → agent 根本连不上。
    正确顺序应该是「机器先上线，能力后部署」。
 3. **命令已经进中枢了，但没人承认**：`node_capabilities.run_spec` 这一列正存着 command 原文

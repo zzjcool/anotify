@@ -612,7 +612,7 @@ const SELF_TEST = {
 		// 对照内部实现
 		{ text: `pb:\n  hint: "槽位判定（#436）按物理槽位算"\n`, rule: "issue-ref" },
 		{ text: `docs:\n  note: "端点来自五份 v4 spec"\n`, rule: "internal-version" },
-		{ text: `docs:\n  note: "细节见 docs/design/v4/decisions.md"\n`, rule: "docs-path" },
+		{ text: `docs:\n  note: "细节见 docs/contracts/CONTRACT.md"\n`, rule: "docs-path" },
 		{ text: `docs:\n  empty: "重新运行 make sitegen 即可生成这一节"\n`, rule: "build-tool" },
 		{ text: `docs:\n  note: "Re-run make sitegen to generate this section"\n`, rule: "build-tool" },
 		// #458：构建命令（白名单式，见 RULES 里的 build-command）
