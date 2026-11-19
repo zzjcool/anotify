@@ -71,7 +71,9 @@ var templates = []Template{
 set -euo pipefail
 
 # 工作目录就是本次任务目录（$PWD）；除 HOME / PATH 与 ANOTIFY 前缀的契约变量，环境一个都不继承。
-# 机器事实（目录、端点）要经 run.env 的 valueFrom 显式引用，例如：
+# 机器事实（目录、端点）要经 run.env 的 valueFrom 显式引用；完整样例见
+# examples/capabilities/run-in-repo.yaml（在已有仓库目录里跑）与
+# examples/capabilities/run-per-param-dir.yaml（按参数分目录）。例如：
 #   env:
 #     SRC: {valueFrom: {fieldRef: {fieldPath: vars.SOURCE_ROOT}}}
 # 下游用 emit 派发（目标必须在本能力 spec.next 里）：

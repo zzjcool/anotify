@@ -22,6 +22,9 @@
 | 升级 | 拉新镜像重启 | `anotify-agent upgrade` 或控制台点一下（兜底：重跑安装脚本） |
 | 隔离 | 容器边界（更强） | 进程边界（= 你的用户权限） |
 
+> 完整样例见 `examples/capabilities/run-in-repo.yaml`（`requires.values` → `run.env` → `run.workDir`，
+> 脚本里再 `cd` 到同一个目录）；按参数分目录的写法见 `examples/capabilities/run-per-param-dir.yaml`。
+
 **选型建议**：能力只做网络/API 类的事（发通知、调 webhook、跑测试镜像）→ Docker 更省心；
 能力要改本地仓库、跑本地工具链 → 原生装。
 

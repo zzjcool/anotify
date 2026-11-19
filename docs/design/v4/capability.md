@@ -227,6 +227,10 @@ run:
   # workDir: /data/$(params.project)                    # 要按参数分目录：引用 spec.params（payload 经参数进来）
 ```
 
+> 可执行样例：`examples/capabilities/run-in-repo.yaml`（`$(vars.X)`，在机器上已有的仓库目录里跑）
+> 与 `examples/capabilities/run-per-param-dir.yaml`（`$(params.X)`，按参数分目录；`pattern` 把参数值约束成目录名）。
+> 两份都由 `scripts/check-examples.mjs` 在 `make ci` 里真跑 `artifact.Parse`。
+
 脚本里就是 `"$SOURCE_ROOT"` / `"$NOTIFY_BASE"` / `"$PWD"`——和任何别的环境变量一样，**脚本正文里没有第二套记号**。
 
 | 规则 | 说明 |
