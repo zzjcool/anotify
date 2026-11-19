@@ -168,6 +168,22 @@ func TestNodeYAMLPutOmittedFieldsKeepValues(t *testing.T) {
 	if got := nodeString(t, node, "spec", "vars", "ONLY_VARS"); got != "changed" {
 		t.Fatalf("spec.vars.ONLY_VARS = %q, want changed", got)
 	}
+	// #454：`tags` 的省略语义必须同样是「不动」。节点 YAML 编辑页在 `/config`
+	// （W5 wrapper，没有 tags）不返回现值时就是靠**整键省略**保住原值；
+	// 写成 `tags: []` 才会被当成显式清空。这两条语义必须可区分 —— 否则页面侧
+	// 「省略而不是空数组」的修复只是把缺陷挪了个地方。
+	if tags := nodeObject(t, node, "spec")["tags"].([]any); len(tags) != 2 {
+		t.Fatalf("省略 tags 被当成清空了：%v", tags)
+	}
+	// 反向对照：显式 `tags: []` **是**清空。
+	cleared := "apiVersion: anotify/v1\nkind: Node\nmetadata:\n  name: hw\n  resourceVersion: " +
+		nodeString(t, node, "metadata", "resourceVersion") + "\nspec:\n  tags: []\n"
+	if rr := env.do(http.MethodPut, "/v1/nodes/hw/yaml", map[string]any{"yaml": cleared}); rr.Code != http.StatusOK {
+		t.Fatalf("PUT yaml（显式 tags: []）= %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if tags := nodeObject(t, decodeNodeDoc(t, env.do(http.MethodGet, "/v1/nodes/hw", nil)), "spec")["tags"].([]any); len(tags) != 0 {
+		t.Fatalf("显式 tags: [] 必须清空（省略与清空不可区分就说明判据坏了）：%v", tags)
+	}
 }
 
 // TestNodeYAMLPutRejectsUnknownFieldWithLine 文档层问题必须带行号与字段路径。
