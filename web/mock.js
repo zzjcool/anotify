@@ -3256,6 +3256,42 @@
 		row.rv = nextRV(); if (row.rv === ctx.body.metadata.resourceVersion) row.rv = nextRV(); row.revision = String(Number(row.revision) + 1);
 		return json(namespaceConfig(name));
 	});
+	/* Namespace 文档（只读）：`{yaml}` 全文。与 true 服务端同形状
+	   （apiVersion / kind / metadata / spec.vars）；**没有** PUT —— 写入口只有 config。 */
+	function nsYAMLScalar(v) {
+		const text = String(v);
+		return /^[A-Za-z0-9][A-Za-z0-9_.\/:@+-]*$/.test(text) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(text) && !/^[-+]?\d+(?:\.\d+)?$/.test(text) ? text : JSON.stringify(text);
+	}
+	function namespaceYAMLText(name) {
+		const ns = state.namespaces.find(n => n.name === name) || {};
+		const vars = state.nsVars[name] || {};
+		const keys = Object.keys(vars).sort();
+		const lines = [
+			"# Namespace document (read-only). spec.vars are namespace defaults; a node may",
+			"# override them (merge order: local > node > namespace). Writes go through",
+			"# PUT /v1/namespaces/{name}/config (CAS) - this endpoint deliberately has no PUT.",
+			"apiVersion: anotify/v1",
+			"kind: Namespace",
+			"metadata:",
+			"  name: " + nsYAMLScalar(name),
+			"  resourceVersion: " + nsYAMLScalar(ns.rv || "1"),
+			"spec:",
+		];
+		if (!keys.length) lines.push("  vars: {}");
+		else {
+			lines.push("  vars:", "    # namespace defaults; a node may override them (see the per-node effective values table)");
+			for (const key of keys) lines.push("    " + nsYAMLScalar(key) + ": " + nsYAMLScalar(vars[key]));
+		}
+		return lines.join("\n") + "\n";
+	}
+	on("GET", /^\/v1\/namespaces\/([^/]+)\/yaml$/, ctx => {
+		const name = decodeURIComponent(ctx.m[1]); if (nsMissing(name)) return nsMissing(name);
+		return json({ yaml: namespaceYAMLText(name) });
+	});
+	on("PUT", /^\/v1\/namespaces\/([^/]+)\/yaml$/, () => {
+		// 只读面：写入口只有 PUT …/config（预览里也不开第二条写路径）。
+		return statusErr(405, "MethodNotAllowed", "Namespace YAML is read-only; write vars through PUT /v1/namespaces/{name}/config");
+	});
 	const systemConfig = () => ({ metadata: { resourceVersion: state.systemConfig.rv }, retention: clone(state.systemConfig.retention) });
 	on("GET", /^\/v1\/system\/config$/, () => ME.role === "admin" ? json(systemConfig()) : statusErr(403, "Forbidden", "Administrator required"));
 	on("PUT", /^\/v1\/system\/config$/, ctx => {
@@ -3265,6 +3301,28 @@
 		state.systemConfig.retention = { ...state.systemConfig.retention, ...clone(ctx.body.retention) };
 		state.systemConfig.rv = nextRV(); if (state.systemConfig.rv === ctx.body.metadata.resourceVersion) state.systemConfig.rv = nextRV();
 		return json(systemConfig());
+	});
+	/* SystemConfig 文档（只读）：与 GET /v1/system/config 同一份事实、同一道管理员闸门。
+	   没有 PUT（写入口只有上面那条 CAS 路由）。 */
+	on("GET", /^\/v1\/system\/yaml$/, () => {
+		if (ME.role !== "admin") return statusErr(403, "Forbidden", "Administrator required");
+		const cfg = systemConfig();
+		const r = cfg.retention;
+		const lines = [
+			"# SystemConfig document (read-only). retention holds three TTLs in seconds; 0 means",
+			"# keep forever. Writes go through PUT /v1/system/config (CAS) - this endpoint",
+			"# deliberately has no PUT.",
+			"apiVersion: anotify/v1",
+			"kind: SystemConfig",
+			"metadata:",
+			'  resourceVersion: "' + cfg.metadata.resourceVersion + '"',
+			"spec:",
+			"  retention:",
+			"    eventTtlSec: " + r.eventTtlSec,
+			"    taskTtlSec: " + r.taskTtlSec,
+			"    resultTtlSec: " + r.resultTtlSec,
+		];
+		return json({ yaml: lines.join("\n") + "\n" });
 	});
 	on("POST", /^\/v1\/nodes\/([^/]+)\/drain$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");

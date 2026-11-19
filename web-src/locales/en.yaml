@@ -1175,6 +1175,15 @@ admin:
     title: Admin access denied
     body: Your account is not an admin. Ask an existing super-admin to promote you if you need access.
     back: Back to overview
+    status: "HTTP 403 · Forbidden"
+  system:
+    group_retention: "Retention (editable)"
+    group_retention_note: "All three values are in seconds; 0 means keep forever. A save takes effect for the next cleanup run."
+    group_yaml: "System YAML (read-only)"
+    group_yaml_note: "Normalized document rebuilt from the current facts. Read-only: the only write path for retention is the CAS save action below; there is no second route."
+    group_danger: "Dangerous actions"
+    group_danger_note: "Saving retention really changes data lifetime: events / tasks / artifacts beyond the new window are cleaned up and cannot be restored; 0 keeps them forever (the disk only grows). Check the window and the impact before saving."
+    yaml_view: "Current document"
   subtitle: System overview & user management
   loading: Loading…
   top_users: Top active users
@@ -2617,6 +2626,16 @@ namespace:
     effective: "Effective vars on one node"
     node: "Node"
     effective_hint: "Resolved key by key as local > node > namespace; sources come from the server, the page does not guess."
+    col_node: "Node"
+    col_status: "Status"
+    node_online: "Online"
+    node_offline: "Offline"
+    node_draining: "Draining"
+    node_online_draining: "Online (draining)"
+    effective_source_hint: "Sources are resolved by the server: local (machine snapshot) > node (node defaults) > namespace (the defaults configured here). vars has no capability level - perCapability exists only under limits."
+    yaml_title: "Namespace YAML (read-only)"
+    yaml_hint: "Normalized document rebuilt from the current facts (apiVersion / kind / metadata / spec.vars). Read-only on purpose: namespace vars have exactly one write path, the CAS form on the left (PUT /v1/namespaces/{name}/config); a second write route would make it undecidable who won."
+    yaml_view: "Current document"
     context_namespace: "Namespace context"
     links: "Other things in this namespace"
     link_caps: "Capabilities →"

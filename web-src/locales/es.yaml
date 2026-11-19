@@ -1175,6 +1175,15 @@ admin:
     title: Sin acceso de administrador
     body: Tu cuenta no es administrador. Pide a un superadmin existente que te ascienda si lo necesitas.
     back: Volver al resumen
+    status: "HTTP 403 · Forbidden"
+  system:
+    group_retention: "Retención (editable)"
+    group_retention_note: "Los tres valores están en segundos; 0 significa conservar para siempre. Al guardar se aplica en la siguiente limpieza."
+    group_yaml: "YAML del sistema (solo lectura)"
+    group_yaml_note: "Documento normalizado reconstruido desde los hechos actuales. Solo lectura: la única vía de escritura de la retención es la acción CAS de abajo; no hay una segunda ruta."
+    group_danger: "Acciones peligrosas"
+    group_danger_note: "Guardar la retención cambia de verdad el ciclo de vida de los datos: los eventos / tareas / artefactos fuera de la nueva ventana se eliminan y no se pueden recuperar; 0 los conserva para siempre (el disco solo crece). Revisa la ventana y el impacto antes de guardar."
+    yaml_view: "Documento actual"
   subtitle: Resumen del sistema y gestión de usuarios
   loading: Cargando…
   top_users: Usuarios más activos
@@ -2617,6 +2626,16 @@ namespace:
     effective: "Vars efectivas en un nodo"
     node: "Nodo"
     effective_hint: "Se resuelve clave por clave como local > node > namespace; las fuentes las da el servidor, la página no adivina."
+    col_node: "Nodo"
+    col_status: "Estado"
+    node_online: "En línea"
+    node_offline: "Sin conexión"
+    node_draining: "Drenando"
+    node_online_draining: "En línea (drenando)"
+    effective_source_hint: "El servidor resuelve cada clave: local (instantánea de la máquina) > node (valores del nodo) > namespace (los valores por defecto de aquí). vars no tiene nivel de capacidad - perCapability solo existe en limits."
+    yaml_title: "YAML del espacio de nombres (solo lectura)"
+    yaml_hint: "Documento normalizado reconstruido desde los hechos actuales (apiVersion / kind / metadata / spec.vars). Es de solo lectura a propósito: las vars del espacio tienen una única vía de escritura, el formulario CAS de la izquierda (PUT /v1/namespaces/{name}/config); una segunda ruta haría imposible decidir quién gana."
+    yaml_view: "Documento actual"
     context_namespace: "Contexto del espacio"
     links: "Otras cosas en este espacio"
     link_caps: "Capacidades →"
