@@ -321,6 +321,48 @@ func (a *Attempt) resolveWorkDir() error {
 	return nil
 }
 
+// spawnRetries 是 ETXTBSY 的退避序列（总量有界，≈26ms）。
+//
+// 为什么需要：Linux 的 execve 在目标 inode 仍有写句柄时返回 ETXTBSY
+// （deny_write_access）。本节点在 prepare 阶段把入口脚本写进 workDir、随后 exec，
+// 而**另一个并发任务**的 fork 会把这份刚写完的写句柄复制进自己的子进程：CLOEXEC
+// 只在 execve 那一刻才关，fork→execve 这段窗口里 i_writecount 仍 > 0。于是
+// b 的 execve 偶发撞上 a 的 fork，健康任务被判成 script_failed（实测带负载
+// -count=100 约 1%：anotify#490 的 CI 红就是这个）。
+//
+// 窗口是微秒级、与脚本本身无关，所以正确答案不是「等更久」也不是「容忍失败」，
+// 而是退避重试到窗口关闭；重试仍失败才如实上报 script_failed。
+var spawnRetries = []time.Duration{
+	200 * time.Microsecond,
+	time.Millisecond,
+	5 * time.Millisecond,
+	20 * time.Millisecond,
+}
+
+// start 建立进程组并 exec 入口脚本；ETXTBSY 按 spawnRetries 退避重试。
+// 每次重试用新的 exec.Cmd（Start 失败的 Cmd 不可复用），管道/日志文件复用：
+// 重试发生在写下任何字节之前，读端仍会干净地等到写端关闭。
+func (a *Attempt) start(entry string, stdout, stderr *os.File) (*exec.Cmd, error) {
+	for retry := 0; ; retry++ {
+		cmd := exec.Command(entry)
+		cmd.Dir = a.workDir
+		cmd.Env = a.resolved.Env()
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		err := cmd.Start()
+		if err == nil {
+			return cmd, nil
+		}
+		if !errors.Is(err, syscall.ETXTBSY) || retry >= len(spawnRetries) {
+			return nil, err
+		}
+		a.r.logf("runner: task=%s attempt=%d 启动遇到 ETXTBSY（并发 fork 继承了脚本写句柄），%s 后重试：%v",
+			a.taskID, a.attempt, spawnRetries[retry], err)
+		time.Sleep(spawnRetries[retry])
+	}
+}
+
 // spawn 真 shebang 直接 exec（无 shell 包裹），进程放进独立进程组。
 func (a *Attempt) spawn() error {
 	// os.Pipe 返回 (读端, 写端)：cmd 拿写端，父进程 Start 后关写端，collector 持
@@ -355,13 +397,8 @@ func (a *Attempt) spawn() error {
 	}
 
 	entry := execenv.EntrypointPath(a.workDir, a.art.Spec.Run.Entrypoint)
-	cmd := exec.Command(entry)
-	cmd.Dir = a.workDir
-	cmd.Env = a.resolved.Env()
-	cmd.Stdout = stdoutW
-	cmd.Stderr = stderrW
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	cmd, err := a.start(entry, stdoutW, stderrW)
+	if err != nil {
 		_ = stdoutW.Close()
 		_ = stderrW.Close()
 		_ = stdoutR.Close()
@@ -375,6 +412,8 @@ func (a *Attempt) spawn() error {
 	a.groupReaped = false
 	a.groupMu.Unlock()
 	// 父进程关掉**写端**，否则读端永远等不到 EOF。
+	// （写端必须在 Start 之后关；ETXTBSY 重试全程复用同一条管道，重试期间
+	// 未向管道写入任何字节，所以不需要重建。）
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	_ = stdoutLog.Close()
