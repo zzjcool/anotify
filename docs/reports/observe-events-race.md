@@ -83,7 +83,7 @@ DIAG {"trusted":4,"untrusted":4,"atClick":16,"afterClick":17,"skel":0,"arts":2,"
 也就是说：这条竞态**每轮都存在**，只是骨架窗口只有几毫秒 —— 本机通常够快（`skel:0, arts:2`），
 CI 慢/抖动时就读在窗口里。这不是「偶发行为」，是「偶发命中」。
 
-失败现场的 `report.json`（`scripts/e2e/fixtures/f3/screenshots/f3/runs/<runId>/`）也能对上：
+失败现场的 `report.json`（运行时目录 `…/fixtures/f3/screenshots/f3/runs/<runId>/`（产物，不入库））也能对上：
 失败那次在 `continue` 400 之后**还有一发** `namespace=prod&limit=2`，正是这轮点击副作用。
 
 ## 5. 复现数字
