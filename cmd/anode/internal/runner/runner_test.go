@@ -346,16 +346,29 @@ func (h *harness) waitFrameAdvancing(t *testing.T, pred func(any) bool, step tim
 	return nil
 }
 
-func (h *harness) waitUntil(t *testing.T, what string, pred func() bool, timeout time.Duration) {
+// waitUntil 等一个异步事实（谓词变真）。两类失败都要当场说清楚：
+//
+//  1. fatal（可选）返回非空字符串 ⇒ 这个等待**已经不可能满足**（例如等的是
+//     succeeded 结果，而它已经以 failed 落地）。旧写法只把“phase 不是 succeeded”
+//     当“还没到”，于是把真实的 script_failed 埋成 15s 超时（anotify#490）。
+//     遇到终态就必须立即带着真实原因失败，不能把终态当成“再等等”。
+//  2. 真超时 ⇒ 带上 harness 快照（pending/running/slots/帧/各 attempt 生命周期
+//     + 包内 goroutine 栈），而不是只留一句「等待 X 超时」。
+func (h *harness) waitUntil(t *testing.T, what string, pred func() bool, timeout time.Duration, fatal ...func() string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if pred() {
 			return
 		}
+		if len(fatal) > 0 && fatal[0] != nil {
+			if why := fatal[0](); why != "" {
+				t.Fatalf("等待 %s 已不可能满足（%s）；当前状态：%s", what, why, h.describeStateSafe())
+			}
+		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("等待 %s 超时", what)
+	t.Fatalf("等待 %s 超时（上限 %s）；最后观察到的状态：%s", what, timeout, h.describeStateSafe())
 }
 
 func frameTypes(frames []any) []string {

@@ -6,11 +6,17 @@
  *   2) 抽屉 a11y：390 视口下 role=dialog / aria-modal / Esc 关闭 / 焦点回归
  *   3) reduce 语义：--dur / --dur-modal-out 归零（动效 token 是唯一事实源）
  *   4) View Transitions：跨文档导航 opt-in 生效 + 全程 0 pageerror
+ *   5) #489：源页 ⋯ 动作菜单在 reduce 下**不得自激重排**（Chrome ≥153 会冻死页面）
  *
  * 为什么不用固定 sleep：所有「等状态」都走 waitForSelector / waitForFunction，
  * 断言失败时把实际值打进 detail（例如实际请求 URL、aria-expanded 的值），
- * 避免红的时候只有一句「expected true」。
+ * 避免红的时候只有一句「expected true」。第 5 段是唯一的例外：它断言的**就是**
+ * 「2 秒内发生了几次」这种速率事实，所以那里显式采样一个固定窗口（口径写在函数上方）。
  */
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { chromium } from "playwright-core";
 import * as H from "../lib/harness.mjs";
 
@@ -55,6 +61,282 @@ function watchPageErrors(page) {
 /* 等字体真正 load 完再问 fonts.check：check() 对未加载的 @font-face 返回 false。 */
 async function fontsReady(page) {
 	await page.evaluate(() => document.fonts.ready.then(() => true));
+}
+
+/* ============================ #489 采样口径 ============================
+ *
+ * 缺陷（产品侧，P1）：Chrome ≥153 + prefers-reduced-motion: reduce 下，源页行内
+ * ⋯ 菜单点开就**页面冻死**。机制是自激：
+ *
+ *   placeMenu() 写 menu.style.left/top
+ *     → ui.css 的 reduce 兜底把 `*` 的 transition-duration 压到 0.001ms，
+ *       而 transition-property 仍是初始值 `all` ⇒ 这次写入真的起了一个过渡
+ *     → transitionend
+ *     → document 上的 transitionend 监听器 → reflowMenus()
+ *     → placeMenu() 再写 left/top ……
+ *
+ * Chrome ≤152 每一跳都被动画时钟（≥1 帧）限速，所以只是「慢」；≥153 起不再限速，
+ * 变成同步死循环，主线程被自己的回调占满。实测（2s 采样）：1550 次 transitionend
+ * （属性 left/top）、page.evaluate 4s 不返回；消融实验里只去掉 transitionend 监听
+ * 或只加 `.act-menu > .menu { transition: none }`，两者都立刻恢复正常。
+ *
+ * 所以这里断言的是**两个可测物理量**，不是「有没有加保护机制」：
+ *   ① 点开菜单后 2 秒内 transitionend 次数 < MENU_TE_BUDGET；
+ *   ② 采样结束后 page.evaluate 能在 READ_BUDGET 内往返（冻死时它永不返回）。
+ * 冻结时计数器读不出来 —— 那本身就是 ① 的失败证据（detail 里写明）。
+ */
+const MENU_TE_BUDGET = 10;
+const MENU_SAMPLE_MS = 2000;
+const MENU_READ_BUDGET = 2500;
+
+/* Playwright 自带 Chromium 的位置（#489 的对照浏览器：140 不复现，≥153 必现）。
+ * playwright-core 不会下载浏览器，所以 CI 上通常没有 —— 找不到就**明说**跳过那条腿，
+ * 不伪造一条绿断言（那正是本仓最贵的假绿形态）。 */
+function bundledChromium140() {
+	const cache = path.join(homedir(), ".cache", "ms-playwright");
+	if (!existsSync(cache)) return "";
+	const candidates = [];
+	for (const name of readdirSync(cache)) {
+		if (!name.startsWith("chromium-")) continue;
+		for (const sub of ["chrome-linux64/chrome", "chrome-linux/chrome"]) {
+			const p = path.join(cache, name, sub);
+			if (existsSync(p)) candidates.push(p);
+		}
+	}
+	for (const bin of candidates) {
+		let version = "";
+		try {
+			version = execFileSync(bin, ["--version"], { encoding: "utf8" });
+		} catch {
+			continue;
+		}
+		// 只认 140.x：对照腿的意义就是「老浏览器行为逐字不变」，换版本等于换命题。
+		if (/\b140\./.test(version)) return bin;
+	}
+	return "";
+}
+
+/* 等页面自己安静下来：连续两帧没有新的 transitionend、且没有在跑的 CSS 过渡。
+ * 为什么需要：采样窗要量的只有「点开菜单这一下造成的事件」，而详情页首屏一次流程图
+ * 渲染就会甩出 80+ 条 transitionend（`scrollbar-color` 在 `transition-property:all`
+ * 下每节点一条）。那是页面首屏的画，不是这次要断言的回路。
+ * 这是**状态**等待（无过渡在跑 / 没新事件），不是 sleep —— 然后在采样前把计数器
+ * 归零，窗口里就只剩本次点击的因果。 */
+async function waitForTransitionQuiet(page, maxFrames = 180) {
+	await page.evaluate(async (limit) => {
+		let last = window.__te.n;
+		let quiet = 0;
+		for (let i = 0; i < limit; i++) {
+			await new Promise((r) => requestAnimationFrame(r));
+			const running = document.getAnimations
+				? document
+						.getAnimations()
+						.filter((a) => a instanceof CSSTransition && a.playState === "running").length
+				: 0;
+			if (window.__te.n === last && running === 0) {
+				if (++quiet >= 2) return;
+			} else {
+				quiet = 0;
+				last = window.__te.n;
+			}
+		}
+	}, maxFrames);
+	await page.evaluate(() => {
+		window.__te = { n: 0, props: {} };
+	});
+}
+
+/* 一条腿 = 一个浏览器 + 一个页面：点开 ⋯ 菜单 → 采样 → 读回计数与几何。
+ * reduced-motion 全程开着，断言里也验它真的生效 —— 用户场景必须留在测试里。 */
+async function menuSelfReflowLeg(browser, { label, origin, session, path: pagePath, trigger }) {
+	const ctx = await browser.newContext({
+		locale: "zh-CN",
+		viewport: DESKTOP,
+		reducedMotion: "reduce",
+	});
+	await H.mockExternalCdn(ctx);
+	// 计数器必须比页面脚本更早装：用 capture 阶段，先于页面自己的 transitionend 监听器。
+	await ctx.addInitScript(() => {
+		window.__te = { n: 0, props: {} };
+		document.addEventListener(
+			"transitionend",
+			(e) => {
+				window.__te.n++;
+				const k = e.propertyName || "?";
+				window.__te.props[k] = (window.__te.props[k] || 0) + 1;
+			},
+			true,
+		);
+	});
+	await injectSession(ctx, session, origin);
+	const page = await ctx.newPage();
+	const errors = watchPageErrors(page);
+	await page.goto(origin + pagePath, { waitUntil: "load", timeout: 20000 });
+	await page.waitForSelector(trigger, { timeout: 15000 });
+
+	const reducedOn = await page.evaluate(
+		() => matchMedia("(prefers-reduced-motion: reduce)").matches,
+	);
+	H.check(
+		`${label}：reduce 模拟真的生效（用户场景没被测试绕开）`,
+		reducedOn === true,
+		`matches=${reducedOn}`,
+	);
+
+	// 先等首屏那批过渡跑完并归零计数器，采样窗里只剩本次点击的因果
+	await waitForTransitionQuiet(page);
+
+	await page.locator(trigger).first().click({ timeout: 15000 });
+	// 采样窗：Node 侧等 2s，不给渲染进程任何额外任务（挤它会让读数偏向「没冻死」）。
+	await new Promise((r) => setTimeout(r, MENU_SAMPLE_MS));
+
+	const readStart = Date.now();
+	let snap = null;
+	let readErr = "";
+	try {
+		snap = await Promise.race([
+			page.evaluate(() => {
+				const open = document.querySelector(".act-menu .menu:not(.hidden)");
+				const trig = document.querySelector(".act-menu .act-more");
+				const r = open ? open.getBoundingClientRect() : null;
+				const t = trig ? trig.getBoundingClientRect() : null;
+				return {
+					te: window.__te.n,
+					props: window.__te.props,
+					menu: r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null,
+					trig: t ? { left: t.left, top: t.top, right: t.right, bottom: t.bottom } : null,
+					vw: innerWidth,
+					vh: innerHeight,
+				};
+			}),
+			new Promise((_, rej) =>
+				setTimeout(
+					() => rej(new Error(`page.evaluate ${MENU_READ_BUDGET}ms 内没有返回`)),
+					MENU_READ_BUDGET,
+				),
+			),
+		]);
+	} catch (e) {
+		readErr = e.message;
+	}
+	const readMs = Date.now() - readStart;
+	// 绿的时候也把读数打出来：这条套件以后要回答「到底几次」而不是「绿了」。
+	console.log(
+		`  · ${label} 采样：transitionend=${snap ? snap.te : "读不到"} 属性分布=${snap ? JSON.stringify(snap.props) : "-"} evaluate=${snap ? readMs + "ms" : "超时"}`,
+	);
+
+	// ② 交互性：冻死时 evaluate 永不返回（#485 里 52s 硬杀就是这么来的）。
+	H.check(
+		`${label}：${MENU_SAMPLE_MS}ms 采样后页面仍可交互（evaluate ${MENU_READ_BUDGET}ms 内往返）`,
+		!!snap,
+		readErr ? `${readErr}（主线程被自己的过渡回调占满）` : `往返 ${readMs}ms`,
+	);
+	// ① 速率：正常应为个位数（开合本身最多几个过渡），自激时上千。
+	H.check(
+		`${label}：点开 ⋯ 后 ${MENU_SAMPLE_MS}ms 内 transitionend < ${MENU_TE_BUDGET}`,
+		!!snap && snap.te < MENU_TE_BUDGET,
+		snap
+			? `transitionend=${snap.te} 属性分布=${JSON.stringify(snap.props)}`
+			: `计数器读不出来（页面冻死：${readErr}）`,
+	);
+	// #489 的签名本身：``transitionend prop=left``。这一条是硬零 —— 面板是
+	// `transition: none`，写 left/top 不该再产生任何过渡；上面那条全局预算留出了
+	// 触发按钮自己的 color/border/transform 过夜（实测 4~9 次）。
+	H.check(
+		`${label}：菜单自身的 left/top 过渡次数为 0（#489 的签名）`,
+		!!snap && !snap.props.left && !snap.props.top,
+		snap
+			? `left=${snap.props.left || 0} top=${snap.props.top || 0} 全部=${JSON.stringify(snap.props)}`
+			: "页面无响应",
+	);
+
+	if (snap) {
+		const m = snap.menu;
+		const t = snap.trig;
+		H.check(
+			`${label}：菜单出现在视口内（左右各留 8px，不越界）`,
+			!!m && m.left >= 7.5 && m.right <= snap.vw - 7.5 && m.top >= 7.5 && m.bottom <= snap.vh - 7.5,
+			m ? `menu=${JSON.stringify(m)} vw=${snap.vw} vh=${snap.vh}` : "没有可见的 .act-menu .menu",
+		);
+		H.check(
+			`${label}：菜单贴着触发器（下方 8px，放不下才翻到上方）`,
+			!!m && !!t && (Math.abs(m.top - (t.bottom + 8)) <= 1 || Math.abs(m.bottom - (t.top - 8)) <= 1),
+			m && t ? `menuTop=${m.top} menuBottom=${m.bottom} trigBottom=${t.bottom} trigTop=${t.top}` : "缺矩形",
+		);
+		H.check(
+			`${label}：菜单水平方向不左溢（#376 修的那个 63~77px）`,
+			!!m && !!t && m.right <= snap.vw - 7.5,
+			m ? `menuRight=${m.right} vw=${snap.vw}` : "缺矩形",
+		);
+	}
+
+	/* ③ 「过渡风暴不会喂回菜单」：reduce 下 `transition-property` 仍是 `all`，页面上
+	   任何一个元素的属性变化都会变成一条 transitionend。所以连发 200 次非菜单来源的
+	   transitionend（模拟其它元素的过渡结束）：重排允许被它们触发，但**不允许**因此
+	   多出任何新的过渡事件（那就意味着重排又在写会触发过渡的属性）。 */
+	let storm = null;
+	let stormErr = "";
+	try {
+		storm = await Promise.race([
+			page.evaluate(async () => {
+				const before = window.__te.n;
+				const row = document.querySelector(".list-row:not(.act-menu)") || document.body;
+				for (let i = 0; i < 200; i++) {
+					row.dispatchEvent(
+						new TransitionEvent("transitionend", {
+							bubbles: true,
+							propertyName: i % 2 ? "transform" : "background-color",
+						}),
+					);
+				}
+				// 让被合并到帧里的重排真的跑完
+				await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+				const open = document.querySelector(".act-menu .menu:not(.hidden)");
+				const menu = open ? open.getBoundingClientRect() : null;
+				return {
+					delta: window.__te.n - before,
+					menu: menu ? { left: menu.left, top: menu.top, right: menu.right, bottom: menu.bottom } : null,
+				};
+			}),
+			new Promise((_, rej) =>
+				setTimeout(
+					() => rej(new Error(`page.evaluate ${MENU_READ_BUDGET}ms 内没有返回`)),
+					MENU_READ_BUDGET,
+				),
+			),
+		]);
+	} catch (e) {
+		stormErr = e.message;
+	}
+	H.check(
+		`${label}：200 次外来 transitionend 不引发任何新过渡（重排不写会触发过渡的属性）`,
+		!!storm && storm.delta === 200,
+		storm
+			? `新增 transitionend=${storm.delta}（期望正好 200，多出来的就是重排自己触发的）`
+			: `页面无响应：${stormErr}`,
+	);
+	if (snap && storm && storm.menu) {
+		H.check(
+			`${label}：风暴后菜单位置不变（重排是幂等的，不是每次重算重写）`,
+			Math.abs(storm.menu.left - snap.menu.left) < 0.5 &&
+				Math.abs(storm.menu.top - snap.menu.top) < 0.5,
+			`前 left=${snap.menu.left} top=${snap.menu.top} / 后 left=${storm.menu.left} top=${storm.menu.top}`,
+		);
+	}
+
+	// 交互仍正常：Esc 关菜单（顺带证明风暴后页面没卡在奇怪状态）
+	await page.keyboard.press("Escape");
+	const closed = await page
+		.locator(".act-menu .menu")
+		.first()
+		.isHidden({ timeout: 3000 })
+		.catch(() => false);
+	H.check(`${label}：Esc 能关掉菜单（交互逻辑未受影响）`, closed === true, `hidden=${closed}`);
+
+	H.check(`${label}：全程 0 pageerror`, errors.length === 0, errors[0] || "");
+
+	await ctx.close();
+	return snap;
 }
 
 async function main() {
@@ -445,6 +727,82 @@ async function main() {
 			`inline=${eventsHead}`,
 		);
 		await ctx.close();
+	}
+
+	// ---------- 5) #489：⋯ 菜单在 reduce 下不得自激重排 ----------
+	// 这一步**必须**用真 Chrome（channel: "chrome"）：缺陷的决定性变量是浏览器版本，
+	// 不是压力，也不是代码里能模拟的东西（CI 157 / 本地 153 必现，Chromium 140 不复现）。
+	console.log(
+		"--- 5) #489 源页 ⋯ 菜单：reduce 下写坐标不得变成新的 transitionend ---",
+	);
+	{
+		const SRC = "e2e-489-loop";
+		const created = await H.req(origin, `/v1/namespaces/default/sources`, {
+			session: s.session,
+			method: "POST",
+			body: {
+				apiVersion: "anotify/v1",
+				kind: "Source",
+				metadata: { name: SRC },
+				spec: { kind: "webhook", enabled: true, config: {}, targets: [] },
+			},
+		});
+		H.check(
+			"#489 造一条源（列表行才有 ⋯ 动作菜单）",
+			created.status === 201,
+			`status=${created.status} ${String(created.text || "").slice(0, 160)}`,
+		);
+
+		const chromeVersion = browser.version();
+		console.log(
+			`  被测浏览器（真实缺陷浏览器）：Chrome ${chromeVersion}（CI 上是 157，本地 153）`,
+		);
+		await menuSelfReflowLeg(browser, {
+			label: `Chrome ${chromeVersion} 源页`,
+			origin,
+			session: s.session,
+			path: "/sources.html",
+			trigger: "#src-list .src-row .act-more",
+		});
+		// source.html 的页头 ⋯ 用的是同一套 placeMenu/reflowMenus（两份拷贝），
+		// 两处都要有回路断开 —— 只修一处就是下次回归。
+		await menuSelfReflowLeg(browser, {
+			label: `Chrome ${chromeVersion} 源详情页`,
+			origin,
+			session: s.session,
+			path: `/source.html?name=${encodeURIComponent(SRC)}`,
+			trigger: "#src-actions .act-more",
+		});
+
+		// Chromium 140 的对照腿：这个浏览器**从未**复现过缺陷（决定性变量是版本）。
+		// 同一组断言在原版本上跑一遍 = 「老浏览器行为没被这次改动改坏」。
+		const bundled = bundledChromium140();
+		if (bundled) {
+			const oldBrowser = await chromium.launch({
+				executablePath: bundled,
+				headless: true,
+				args: ["--no-sandbox", "--disable-dev-shm-usage"],
+			});
+			const oldVersion = oldBrowser.version();
+			console.log(`  对照浏览器（Playwright 自带）：Chromium ${oldVersion} ← ${bundled}`);
+			try {
+				await menuSelfReflowLeg(oldBrowser, {
+					label: `Chromium ${oldVersion} 源页`,
+					origin,
+					session: s.session,
+					path: "/sources.html",
+					trigger: "#src-list .src-row .act-more",
+				});
+			} finally {
+				await oldBrowser.close();
+			}
+		} else {
+			// 不伪造断言：playwright-core 不下载浏览器，CI 上没有这一档。
+			console.log(
+				"  ⚠️ 未找到 Playwright 自带的 Chromium 140 ⇒ #489 的对照腿本次未执行" +
+					"（本机事实，不是产品判断；装了 `npx playwright install chromium@140` 就会跑）",
+			);
+		}
 	}
 
 	const passed = H.summary("p2_guards");
