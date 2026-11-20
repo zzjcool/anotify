@@ -12,7 +12,8 @@
  *      与能力读面（spec.requires.values），断言行的 name/value/source/missing/usedBy。
  *   ② 变异自证：把 `missing` 判据改成恒 false 重新加载，① 的「缺但被要求」断言必须变红
  *      —— 否则绿可能只是断言写松了。
- *   ③ 序列化：rowsToVars / varsToYAMLLines / diffVars 只动目标键，其它键逐字不变。
+ *   ③ 序列化不在本文件：`web/yamldoc.js` 统一做（`scripts/yamldoc.test.mjs` 覆盖）；
+ *      本文件只覆盖行逻辑（rowsToVars / diffVars 只动目标键，其它键逐字不变）。
  *
  * 跑法：`node --test scripts/vars-table.test.mjs`（接线：`make test-frontend`）
  */
@@ -185,21 +186,6 @@ test('renameImpact：改名提示引用它的能力数', () => {
 	assert.equal(V.renameImpact(rows, 'SOURCE_ROOT'), 2);
 	assert.equal(V.renameImpact(rows, 'NS_ONLY'), 0);
 	assert.equal(V.renameImpact(rows, 'NOPE'), 0);
-});
-
-test('varsToYAMLLines / yamlScalar：确定性、合法标量、空映射显式 {}', () => {
-	const V = load();
-	assert.deepEqual(plain(V.varsToYAMLLines({ B: 'x', A: '/srv/repos' }, 4)), [
-		'    A: "/srv/repos"',
-		'    B: x',
-	]);
-	assert.deepEqual(plain(V.varsToYAMLLines({}, 2)), ['  {}']);
-	// 会被 YAML 解释成布尔/数字/空值的字符串必须加引号（往返不能变类型）。
-	assert.equal(V.yamlScalar('true'), '"true"');
-	assert.equal(V.yamlScalar('123'), '"123"');
-	assert.equal(V.yamlScalar(''), '""');
-	assert.equal(V.yamlScalar('a b'), '"a b"');
-	assert.equal(V.yamlScalar('/srv/repos/anotify'), '"/srv/repos/anotify"', '以 / 开头的值用双引号标量（JSON 字符串即合法 YAML）');
 });
 
 test('diffVars：改一个键 / 删一个键的差集口径', () => {
