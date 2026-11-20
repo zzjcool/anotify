@@ -141,9 +141,9 @@ export const SUITE_SURFACES = {
 		paths: ["internal/sitegen/**", "cmd/sitegen/**", "web-src/layouts/**", "web-src/locales/**"],
 	},
 	vars_ui: {
-		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）",
+		why: "#476 节点页/命名空间页的可视化 vars：表格数据 = effectiveVars + requires.values，保存只走 PUT …/yaml（真 server + 真 Chrome，零 /config 写）；文档文本的序列化器是 web/yamldoc.js（#473），改它就会改变这两个页面的写面",
 		pages: ["node", "namespace"],
-		paths: ["web/vars-table.js", "internal/server/resource_namespace_yaml.go"],
+		paths: ["web/vars-table.js", "web/yamldoc.js", "internal/server/resource_namespace_yaml.go"],
 	},
 	i18n: {
 		why: "全部页面 × 4 语言的本地化 AC（批次遍历 PAGES）",

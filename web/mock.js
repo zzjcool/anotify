@@ -2679,26 +2679,26 @@
 	//
 	// 两条 `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
 	// 序列化只有一份实现（`web/yamldoc.js` 的 render），本文件不再自带发射器 ——
-	// 假服务端与真页面用同一套转义/空集合/块标量规则，预览里的文本才与保存时一致。
-	// 键序 = 对象自身顺序（mock 的定义对象是按契约形状构造的）。
-	function toYaml(doc) {
+	// 假服务端与真页面用同一套转义 / 空集合 / 块标量规则，预览里的文本才不会比保存时
+	// 多一套排版（`run.files` 的正文仍由块标量逐字保留）。
+	function renderDoc(kindId, doc) {
 		const yamldoc = window.AnotifyYamlDoc;
 		if (!yamldoc) throw new Error("yamldoc.js 未加载：/yaml 路由需要它（layout 里同步引入）");
-		return yamldoc.render(doc && doc.kind === "Source" ? "Source" : "Capability", doc);
+		return yamldoc.render(kindId, doc);
 	}
 	// 能力的定义文档：完整 spec（含 run.files 全文）—— 不是读投影。
 	function capabilityYaml(row) {
 		const meta = { name: row.name };
 		if (row.displayName) meta.displayName = row.displayName;
 		meta.version = row.version;
-		return toYaml({ apiVersion: API_VERSION, kind: "Capability", metadata: meta, spec: clone(row.spec || {}) });
+		return renderDoc("Capability", { apiVersion: API_VERSION, kind: "Capability", metadata: meta, spec: clone(row.spec || {}) });
 	}
 	// 源的定义文档：用**读投影的脱敏 config**（hookUrl/secretSet），所以文档里
 	// 一定没有 token/secret 明文（凭据只写不读，写回时留空 = 保留）。
 	function sourceYaml(row) {
 		const meta = { name: row.name };
 		if (row.displayName) meta.displayName = row.displayName;
-		return toYaml({ apiVersion: API_VERSION, kind: "Source", metadata: meta, spec: sourceResource(row).spec });
+		return renderDoc("Source", { apiVersion: API_VERSION, kind: "Source", metadata: meta, spec: sourceResource(row).spec });
 	}
 
 	// ---------- 资源文档读取器（只服务两条 POST …/yaml，契约 §5.4）----------
@@ -3172,31 +3172,26 @@
 	 * 写面在预览里刻意**不实现**：YAML 解析器只能有一份（服务端 internal/yamldoc），
 	 * 在 mock 里再写一个宽松解析器就等于造第二个真相 —— 直接具名拒绝，比假装解析安全。
 	 * 真写路径由真实权威的 e2e（frontend 套件）覆盖。 */
-	function nodeYAMLText(row) {
-		const scalar = v => (v == null ? "null" : typeof v === "number" || typeof v === "boolean" ? String(v) : /^[A-Za-z0-9][A-Za-z0-9_.\/:@+-]*$/.test(String(v)) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(String(v)) && !/^[-+]?\d+(?:\.\d+)?$/.test(String(v)) ? String(v) : JSON.stringify(String(v)));
+	function nodeDocText(row) {
 		const spec = row.spec || {}, limits = spec.limits || {};
-		const lines = ["apiVersion: anotify/v1", "kind: Node", "metadata:", "  name: " + scalar(row.name), "  resourceVersion: " + scalar(String(row.rv)), "spec:"];
-		const list = (key, items, pad) => {
-			if (!items || !items.length) { lines.push(pad + key + ": []"); return; }
-			lines.push(pad + key + ":"); for (const it of items) lines.push(pad + "  - " + scalar(it));
-		};
-		const map = (key, obj, pad) => {
-			const entries = Object.entries(obj && typeof obj === "object" ? obj : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-			if (!entries.length) { lines.push(pad + key + ": {}"); return; }
-			lines.push(pad + key + ":"); for (const [k, v] of entries) lines.push(pad + "  " + scalar(k) + ": " + scalar(v));
-		};
-		list("namespaces", spec.namespaces || [], "  ");
-		map("vars", spec.vars || {}, "  ");
-		lines.push("  limits:", "    total: " + (limits.total == null ? "null" : scalar(limits.total)));
-		const per = Object.entries(limits.perCapability && typeof limits.perCapability === "object" ? limits.perCapability : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-		lines.push("    perCapability:" + (per.length ? "" : " {}"));
-		for (const [k, v] of per) lines.push("      " + scalar(k) + ": " + scalar(v));
-		list("tags", spec.tags || [], "  ");
-		return lines.join("\n") + "\n";
+		/* 读面里「total 未设置」真服务端会写 `total: null`；文档层按**写面**语义把 null
+		   整键省略（null 贴回去会被 ValidateLimits 拒）。预览与页面保存的文本因此一致，
+		   差别只有这一行。 */
+		return renderDoc("Node", {
+			apiVersion: API_VERSION,
+			kind: "Node",
+			metadata: { name: row.name, resourceVersion: String(row.rv) },
+			spec: {
+				namespaces: clone(spec.namespaces || []),
+				vars: clone(spec.vars || {}),
+				limits: { total: limits.total == null ? null : limits.total, perCapability: clone(limits.perCapability || {}) },
+				tags: clone(spec.tags || []),
+			},
+		});
 	}
 	on("GET", /^\/v1\/nodes\/([^/]+)\/yaml$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
-		return json({ yaml: nodeYAMLText(row) });
+		return json({ yaml: nodeDocText(row) });
 	});
 	on("PUT", /^\/v1\/nodes\/([^/]+)\/yaml$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
@@ -3205,7 +3200,7 @@
 		// 复用 config 的 CAS/apply：YAML 与表单写的是同一份事实，只是输入面不同。
 		const applied = updateNodeConfig(row, { metadata: { resourceVersion: String(row.rv) }, vars: parsed.vars });
 		if (applied.status !== 200) return applied;
-		return json({ yaml: nodeYAMLText(row) });
+		return json({ yaml: nodeDocText(row) });
 	});
 	on("POST", /^\/v1\/nodes\/config\/batch$/, async ctx => {
 		if (!configObject(ctx.body) || !Array.isArray(ctx.body.updates) || Object.keys(ctx.body).some(k => k !== "updates")) return badRequest("BadRequest", "updates array required");
@@ -3237,36 +3232,17 @@
 	/* Namespace 文档：`{yaml}` 全文。与真服务端同形状（apiVersion / kind / metadata / spec.vars）。
 	   写入口是 PUT …/yaml（YAML 是唯一编辑面）；预览不解析 YAML（解析器只留服务端一份），
 	   所以 PUT 回 501，与 Node 文档的预览限制一致。 */
-	function nsYAMLScalar(v) {
-		const text = String(v);
-		return /^[A-Za-z0-9][A-Za-z0-9_.\/:@+-]*$/.test(text) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(text) && !/^[-+]?\d+(?:\.\d+)?$/.test(text) ? text : JSON.stringify(text);
-	}
-	function namespaceYAMLText(name) {
-		const ns = state.namespaces.find(n => n.name === name) || {};
-		const vars = state.nsVars[name] || {};
-		const keys = Object.keys(vars).sort();
-		const lines = [
-			"# Namespace document. spec.vars are namespace defaults; a node may override them",
-			"# (merge order: local > node > namespace). The only write path is",
-			"# PUT /v1/namespaces/{name}/yaml (CAS = metadata.resourceVersion) - the nodes /",
-			"# namespace pages serialize table edits into this document.",
-			"apiVersion: anotify/v1",
-			"kind: Namespace",
-			"metadata:",
-			"  name: " + nsYAMLScalar(name),
-			"  resourceVersion: " + nsYAMLScalar(namespaceConfig(name).metadata.resourceVersion),
-			"spec:",
-		];
-		if (!keys.length) lines.push("  vars: {}");
-		else {
-			lines.push("  vars:", "    # namespace defaults; a node may override them (see the per-node effective values table)");
-			for (const key of keys) lines.push("    " + nsYAMLScalar(key) + ": " + nsYAMLScalar(vars[key]));
-		}
-		return lines.join("\n") + "\n";
+	function namespaceDocText(name) {
+		return renderDoc("Namespace", {
+			apiVersion: API_VERSION,
+			kind: "Namespace",
+			metadata: { name: name, resourceVersion: String(namespaceConfig(name).metadata.resourceVersion) },
+			spec: { vars: clone(state.nsVars[name] || {}) },
+		});
 	}
 	on("GET", /^\/v1\/namespaces\/([^/]+)\/yaml$/, ctx => {
 		const name = decodeURIComponent(ctx.m[1]); if (nsMissing(name)) return nsMissing(name);
-		return json({ yaml: namespaceYAMLText(name) });
+		return json({ yaml: namespaceDocText(name) });
 	});
 	on("PUT", /^\/v1\/namespaces\/([^/]+)\/yaml$/, ctx => {
 		const name = decodeURIComponent(ctx.m[1]); const missing = nsMissing(name); if (missing) return missing;
@@ -3276,7 +3252,7 @@
 		state.nsVars[name] = clone(parsed.vars);
 		row.rv = nextRV(); if (row.rv === ctx.body.metadata?.resourceVersion) row.rv = nextRV();
 		row.revision = String(Number(row.revision) + 1);
-		return json({ yaml: namespaceYAMLText(name) });
+		return json({ yaml: namespaceDocText(name) });
 	});
 	const systemConfig = () => ({ metadata: { resourceVersion: state.systemConfig.rv }, retention: clone(state.systemConfig.retention) });
 	on("GET", /^\/v1\/system\/config$/, () => ME.role === "admin" ? json(systemConfig()) : statusErr(403, "Forbidden", "Administrator required"));

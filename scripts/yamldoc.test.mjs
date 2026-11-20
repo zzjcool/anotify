@@ -116,9 +116,15 @@ test('Node：读服务端原文，表单只改一个键，其余字段逐字保�
 	assert.equal(again.model.spec.limits.total, 4, 'total 不能从 4 变成 "4" 或消失');
 	assert.deepEqual(plain(again.model.spec.limits.perCapability), { '*': 2, fixer: 1 });
 	assert.deepEqual(plain(again.model.spec.tags), ['build', 'prod'], 'tags 的顺序也是事实');
-	assert.deepEqual(plain(again.model.spec.vars), {
-		A_KEY: '1', B_KEY: '2', TOOLCHAIN: '/opt/go1.25', ONLY_KEY: 'changed',
-	}, '原有的 vars 一个不丢，patch 的键写进去');
+	assert.deepEqual(plain(again.model.spec.vars), { ONLY_KEY: 'changed' },
+		'patch 里的 spec.vars 是这一层的**整份**映射（表格保存就是整份）：替换而不是合并');
+
+	// 「删一行」必须真的删掉 —— 合并语义会把 patch 里没有的键当成「没动」，删除静默失效。
+	const deleted = YD.edit('Node', NODE_DOC, { spec: { vars: { B_KEY: '2', TOOLCHAIN: '/opt/go1.25' } } });
+	const deletedBack = YD.parse('Node', deleted.text);
+	assert.deepEqual(plain(deletedBack.model.spec.vars), { B_KEY: '2', TOOLCHAIN: '/opt/go1.25' },
+		'patch 里没有 A_KEY → 文档里也不能留着它');
+	assert.doesNotMatch(deleted.text, /A_KEY/, '被删掉的键不能靠合并语义活下来');
 
 	// 文本层面：没被改的块仍按服务端那份形状出现（键序 + 缩进 + 引号形态）。
 	assert.match(edited.text, /^  limits:\n    total: 4\n    perCapability:\n      "\*": 2\n      fixer: 1\n/m);
@@ -190,9 +196,8 @@ test('limits 边界：total: null 写回时整键省略 / 没有 limits 就不�
 	assert.doesNotMatch(noLimits.text, /^ *limits:/m, '没有 limits 就不许造一个空 limits');
 	const noLimitsBack = YD.parse('Node', noLimits.text);
 	assert.equal(has(noLimitsBack.model.spec, 'limits'), false);
-	assert.deepEqual(plain(noLimitsBack.model.spec.vars), {
-		A_KEY: '1', B_KEY: '2', TOOLCHAIN: '/opt/go1.25', ONLY_KEY: 'changed',
-	});
+	assert.deepEqual(plain(noLimitsBack.model.spec.vars), { ONLY_KEY: 'changed' },
+		'没有 limits 的文档里，vars 也是整份替换');
 });
 
 test('未知扩展字段不丢：spec 下的 futureKnob 与顶层的 x-ext 都要原样带回', () => {
@@ -264,7 +269,7 @@ test('AnodeConfig：envPassthrough 是名字白名单（字符串数组），不
 	assert.deepEqual(plain(edited.problems), []);
 	const again = YD.parse('AnodeConfig', edited.text);
 	assert.deepEqual(plain(again.model.envPassthrough), ['SSH_AUTH_SOCK', 'GITHUB_TOKEN'], '两项都不变、顺序不变');
-	assert.deepEqual(plain(again.model.vars), { SOURCE_ROOT: '/srv/src', ONLY: 'v' });
+	assert.deepEqual(plain(again.model.vars), { ONLY: 'v' }, 'vars 是整份映射（替换）；白名单不进它');
 	assert.equal(has(again.model.vars, 'SSH_AUTH_SOCK'), false, '白名单名字不会变成 vars 的键');
 	assert.equal(again.model.limits.total, 1);
 
@@ -413,16 +418,17 @@ function fidelity(caseName, source, rewrite) {
 		findings.push(`${caseName}/${dimensionOf(item.path)}: ${item.path} ${show(item.before)} → ${show(item.after)}`);
 	}
 
+	/* vars 单独对账：patch 是这一层的**整份**映射，所以重写后必须**恰好**是它。
+	 * 旧实现走合并（`Object.assign`），于是 patch 里没写的键会活下来 —— 那正是
+	 * 「表格里删掉一行、文档里还在」这种缺陷的形状。 */
 	const beforeVars = (before.model.spec && before.model.spec.vars) || {};
 	const afterVars = (after.model.spec && after.model.spec.vars) || {};
-	for (const key of Object.keys(beforeVars)) {
-		if (afterVars[key] !== beforeVars[key]) {
-			findings.push(`${caseName}/vars: vars.${key} ${show(beforeVars[key])} → ${show(afterVars[key])}`);
-		}
-	}
 	if (afterVars.ONLY_KEY !== 'changed') findings.push(`${caseName}/vars: patch 里的键没写进文档`);
+	for (const key of Object.keys(beforeVars)) {
+		if (has(afterVars, key)) findings.push(`${caseName}/vars: 已经不在 patch 里的键 ${key} 还留在文档里（合并语义把删除吃掉了）`);
+	}
 	for (const key of Object.keys(afterVars)) {
-		if (!has(beforeVars, key) && key !== 'ONLY_KEY') findings.push(`${caseName}/vars: 多出没写过的键 ${key}`);
+		if (key !== 'ONLY_KEY') findings.push(`${caseName}/vars: 多出 patch 里没有的键 ${key}`);
 	}
 
 	return findings;

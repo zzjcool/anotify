@@ -372,11 +372,11 @@
 			return null;
 		}
 
+		/* 返回缩进空格数；-1 = 缩进里用了制表符（不在方言内，由调用方带行号报问题）。 */
 		function indentOf(line) {
 			var i = 0;
 			while (i < line.length && line.charAt(i) === ' ') i++;
-			if (line.charAt(i) === '\t' && line.slice(0, i + 1).trim() === '') return problem(pos + i, '缩进不能用制表符');
-			return i;
+			return line.charAt(i) === '\t' ? -1 : i;
 		}
 
 		function isBlank(line) {
@@ -506,7 +506,7 @@
 				var line = raw[at];
 				if (line.trim() === '') { lines.push(''); continue; }
 				var ind = indentOf(line);
-				if (ind === null) return null;
+				if (ind < 0) return problem(at, '缩进不能用制表符');
 				if (ind <= baseIndent) break;
 				if (bodyIndent < 0) bodyIndent = ind;
 				lines.push(line.slice(Math.min(bodyIndent, ind)));
@@ -544,7 +544,7 @@
 				var next = nextContent(pos);
 				if (next < raw.length) {
 					var nextIndent = indentOf(raw[next]);
-					if (nextIndent === null) return null;
+					if (nextIndent < 0) return problem(next, '缩进不能用制表符');
 					if (nextIndent > indent) {
 						pos = next;
 						var child = parseBlock(nextIndent);
@@ -572,7 +572,7 @@
 			pos = first;
 			var line = raw[first];
 			var ind = indentOf(line);
-			if (ind === null) return null;
+			if (ind < 0) return problem(first, '缩进不能用制表符');
 			if (ind !== indent) return problem(first, '缩进不一致');
 			var trimmed = stripComment(line).slice(ind);
 			if (trimmed === '---' || trimmed === '...') return problem(first, '多文档 / 文档结束标记不在本层方言内');
@@ -588,7 +588,7 @@
 				if (at >= raw.length) break;
 				var line = raw[at];
 				var ind = indentOf(line);
-				if (ind === null) return null;
+				if (ind < 0) return problem(at, '缩进不能用制表符');
 				if (ind < indent) break;
 				if (ind > indent) return problem(at, '序列项缩进不一致');
 				var body = stripComment(line).slice(ind);
@@ -599,7 +599,7 @@
 					var next = nextContent(pos);
 					if (next < raw.length) {
 						var childIndent = indentOf(raw[next]);
-						if (childIndent === null) return null;
+						if (childIndent < 0) return problem(next, '缩进不能用制表符');
 						if (childIndent > indent) {
 							pos = next;
 							var child = parseBlock(childIndent);
@@ -646,7 +646,7 @@
 				if (at >= raw.length) break;
 				var line = raw[at];
 				var ind = indentOf(line);
-				if (ind === null) return null;
+				if (ind < 0) return problem(at, '缩进不能用制表符');
 				if (ind < indent) break;
 				if (ind > indent) return problem(at, '映射缩进不一致');
 				var body = stripComment(line).slice(ind);
@@ -707,15 +707,38 @@
 		return out;
 	}
 
+	/* patchObject 按 kind 表打补丁：**结构**节点（object，如 spec / metadata / limits）递归，
+	 * 其余都是**值**节点，整份替换。
+	 *
+	 * 为什么值节点必须替换：`spec.vars` 在表格里是「这一层的全部变量」。如果按对象合并，
+	 * 用户删掉一行（patch 里没有那个键）就会被读成「没动」，删除静默失效 —— 那和 #454
+	 * 是同一类错误的另一面。`perCapability` / `namespaces` / `tags` 同理。 */
+	function patchObject(fields, base, patch) {
+		var out = isMap(base) ? merge({}, base) : {};
+		var byKey = {};
+		for (var i = 0; i < fields.length; i++) byKey[fields[i].key] = fields[i];
+		var keys = Object.keys(isMap(patch) ? patch : {});
+		for (var j = 0; j < keys.length; j++) {
+			var key = keys[j];
+			var next = patch[key];
+			if (next === undefined) continue;
+			var f = byKey[key];
+			if (f && f.type === 'object') out[key] = patchObject(f.fields, out[key], next);
+			else out[key] = next;
+		}
+		return out;
+	}
+
 	/* edit(kind, text, patch) = 「表单改一处」的完整动作：读服务端原文 → 只改 patch 里的键
 	 * → 重新序列化。页面不再自己拼文档：这就是「表单与原始编辑共用同一份文档」的那一处。
 	 * 返回 {text, model, problems}；problems 非空时 text 为空串，调用方必须**不要**写。 */
 	function edit(kindId, text, patch) {
+		var kind = kindOf(kindId);
 		var parsed = parseDoc(kindId, text);
 		if (parsed.problems.length || !parsed.model) {
 			return {text: '', model: null, problems: parsed.problems.length ? parsed.problems : [{line: 1, message: '文档根必须是映射'}]};
 		}
-		var model = merge(parsed.model, patch);
+		var model = kind.generic ? merge(parsed.model, patch) : patchObject(kind.fields, parsed.model, patch);
 		return {text: render(kindId, model), model: model, problems: []};
 	}
 

@@ -10,6 +10,10 @@
  *      删一个 var → YAML 只消失那个键；
  *      前端拒非法名字（1FOO / FOO-BAR），后端对非法名字 400；
  *      UI 对 `/config` 的写调用 = 0（守卫的运行时对照：写请求只出现 `/yaml`）。
+ *   ⑤ 表单不认识的字段必须逐字活过一次往返（#473 把序列化收成 `web/yamldoc.js` 之后
+ *      的新风险面）：表格保存后 `tags` / `limits` / 授权 `namespaces` 与改前逐字相同；
+ *      读面写出的 `total: null` 原样贴回仍然是 400 `value_invalid`（读面语义不因
+ *      序列化收拢而放宽）。
  *
  * 造数全走真实产品路径：能力（信封）→ 节点（登记 + spec.vars）→ 命名空间默认 vars。
  * 明确不做的：不直插库、不 mock 端点、不读 `.config` 写入口来"造"页面状态。
@@ -97,6 +101,68 @@ function onlyVarLine(lines, name) {
 	});
 }
 
+/* 取 `key:` 开头的整段（键行 + 其后比它更深的缩进行）。
+ * 「表单不认识的字段有没有被保存路径改掉」要按**整段**比：段落以缩进分界，所以某一段
+ * 被整键丢掉、被挪位置、里面少一行，都会让切出来的文本不同。本文档里的 namespaces /
+ * limits / tags / spec 都是这种扁平形状（没有同名嵌套键）。 */
+function yamlSection(text, key) {
+	const out = [];
+	let indent = -1;
+	for (const line of String(text || "").split("\n")) {
+		if (line.trim() === "") continue;
+		const lead = line.length - line.trimStart().length;
+		const head = line.trim();
+		if (indent < 0) {
+			if (head === key + ":" || head.startsWith(key + ": ")) {
+				indent = lead;
+				out.push(line);
+			}
+			continue;
+		}
+		if (lead <= indent) break; // 回到同级或更浅 = 本段结束
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+/* 去掉一整段（`key:` 及其缩进块）：用于「除这一段之外的文档逐字不变」。 */
+function yamlWithoutSection(text, key) {
+	const out = [];
+	let skip = -1;
+	for (const line of String(text || "").split("\n")) {
+		const lead = line.length - line.trimStart().length;
+		const head = line.trim();
+		if (skip >= 0) {
+			if (head === "" || lead > skip) continue;
+			skip = -1;
+		}
+		if (head === key + ":" || head.startsWith(key + ": ")) {
+			skip = lead;
+			continue;
+		}
+		out.push(line);
+	}
+	return out.join("\n");
+}
+
+/* 去掉某些行（按 trim 后的前缀匹配）：用于排除每次成功写入都会前进的 CAS 令牌。 */
+function yamlWithoutLine(text, prefix) {
+	return String(text || "")
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith(prefix))
+		.join("\n");
+}
+
+/* 命名空间文档里「不该被表单保存改动」的部分 = 去掉 spec 段 + 去掉 resourceVersion 行。
+ *
+ * 为什么排除 `resourceVersion`：它是 CAS 令牌，**每次成功写入都会前进**（这正是保存
+ * 生效的证据）；把它算进「逐字不变」等于要求写入不生效，会得到一条恒假断言。
+ * 为什么整段排除 `spec`：命名空间文档的 spec 只有 vars 一项，而它正是本次刻意改的东西 ——
+ * vars 的前后差异由上面的 vars 断言覆盖，不在这里重复。 */
+function namespaceDocShell(text) {
+	return yamlWithoutLine(yamlWithoutSection(text, "spec"), "resourceVersion:");
+}
+
 /* 点保存并等**真的** PUT …/yaml 回执（不是等本地行状态变化 —— 那只证明点了按钮）。 */
 async function saveAndWait(page, saveSelector, pathSuffix) {
 	const [response] = await Promise.all([
@@ -126,15 +192,22 @@ async function main() {
 	H.check("造数：deploy 要求 SOURCE_ROOT", deployCap.name === "deploy");
 
 	// 节点默认值：SOURCE_ROOT 由节点层提供；NODE_ONLY 只有节点层有。
+	// `tags` / `limits` 一起给：它们是「表单不认识的字段」（页面只编辑 spec.vars），
+	// 用来钉住 #473 的保真度 —— 表格保存把整份文档重新序列化之后，这几段必须逐字还在。
 	const created = await H.req(server.base, V.P.nodes(), {
 		session: s.session,
 		body: {
 			apiVersion: V.API_VERSION, kind: "Node",
 			metadata: { name: NODE },
-			spec: { namespaces: [NS], vars: { SOURCE_ROOT: "/from-node", NODE_ONLY: "node-value" } },
+			spec: {
+				namespaces: [NS],
+				vars: { SOURCE_ROOT: "/from-node", NODE_ONLY: "node-value" },
+				limits: { total: 4, perCapability: { "*": 2 } },
+				tags: ["gpu", "prod"],
+			},
 		},
 	});
-	V.expectStatus("登记节点（带 spec.vars）", created, 201);
+	V.expectStatus("登记节点（带 spec.vars / limits / tags）", created, 201);
 
 	// 命名空间默认值：NS_ONLY 只有 ns 层有。走真实 API（页面写的是同一份事实）。
 	const nsCfg = await H.req(server.base, V.P.namespaceConfig(NS), { session: s.session });
@@ -242,6 +315,23 @@ async function main() {
 	const nodeYamlPath = V.P.node(NODE) + "/yaml";
 	const beforeNodeYAML = (await H.req(server.base, nodeYamlPath, { session: s.session })).json?.yaml || "";
 	H.check("节点 YAML 读面可用", beforeNodeYAML.includes("kind: Node"), beforeNodeYAML.slice(0, 120));
+	/* 改前快照：表单不认识的字段（tags / limits / 授权 namespaces）。
+	 * 表格保存后要跟它逐字比，所以在这里先切出来；下面几条造数断言是为了让那三组
+	 * 等值比较**不可能空转**—— 段切出来是空的，`before === after` 就恒真了。 */
+	const nodeBefore = {
+		tags: yamlSection(beforeNodeYAML, "tags"),
+		limits: yamlSection(beforeNodeYAML, "limits"),
+		namespaces: yamlSection(beforeNodeYAML, "namespaces"),
+	};
+	H.check("造数：节点文档改前含 tags / limits / namespaces 三段",
+		!!nodeBefore.tags && !!nodeBefore.limits && !!nodeBefore.namespaces,
+		JSON.stringify(nodeBefore));
+	H.check('造数：limits 段是 total: 4 + perCapability 的 "*" 档',
+		/total: 4/.test(nodeBefore.limits) && /\*'?: 2/.test(nodeBefore.limits),
+		nodeBefore.limits);
+	H.check("造数：tags 段是 gpu / prod",
+		/- gpu/.test(nodeBefore.tags) && /- prod/.test(nodeBefore.tags),
+		nodeBefore.tags);
 	{
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
@@ -266,6 +356,24 @@ async function main() {
 			return cell && cell.textContent.trim() === "node-value-v2";
 		}, null, { timeout: 10000 });
 		const afterNodeYAML = (await H.req(server.base, nodeYamlPath, { session: s.session })).json?.yaml || "";
+		/* #473 保真：表格保存只应该改 `spec.vars`，其余字段（表单根本不认识）必须整段
+		 * 逐字活过「读 → 表格编辑 → 写 → 再读」。判据取**服务端两次 GET 的原文**
+		 * （不是页面发出的文本）：前端重排缩进/换引号会被服务端归一化掉，这里钉的是
+		 * 「事实没被表单路径改掉」，而不是序列化器的排版细节。 */
+		const nodeAfter = {
+			tags: yamlSection(afterNodeYAML, "tags"),
+			limits: yamlSection(afterNodeYAML, "limits"),
+			namespaces: yamlSection(afterNodeYAML, "namespaces"),
+		};
+		H.check("保真：表格保存后 tags 段逐字不变（gpu / prod 都还在）",
+			nodeAfter.tags === nodeBefore.tags,
+			JSON.stringify({ before: nodeBefore.tags, after: nodeAfter.tags }));
+		H.check("保真：表格保存后 limits 段逐字不变（total: 4 与 perCapability 都在）",
+			nodeAfter.limits === nodeBefore.limits,
+			JSON.stringify({ before: nodeBefore.limits, after: nodeAfter.limits }));
+		H.check("保真：表格保存后授权 namespaces 段逐字不变",
+			nodeAfter.namespaces === nodeBefore.namespaces,
+			JSON.stringify({ before: nodeBefore.namespaces, after: nodeAfter.namespaces }));
 		const changeDiff = lineDiff(beforeNodeYAML, afterNodeYAML);
 		H.check("改一个 var：YAML 里只有该键 + resourceVersion 变化",
 			changeDiff.removed.length === 2 && changeDiff.added.length === 2,
@@ -305,6 +413,12 @@ async function main() {
 	console.log("--- 阶段 2：命名空间页表格保存 → PUT …/yaml ---");
 	const nsYamlPath = V.P.namespace(NS) + "/yaml";
 	const beforeNSYAML = (await H.req(server.base, nsYamlPath, { session: s.session })).json?.yaml || "";
+	/* 改前快照：命名空间文档里「不该被表单保存改动」的部分（见 namespaceDocShell）。
+	 * 这里先断言这个壳非空，否则下面的等值比较等于什么都没验。 */
+	const nsBeforeShell = namespaceDocShell(beforeNSYAML);
+	H.check("造数：命名空间文档壳含 apiVersion / kind / metadata.name",
+		nsBeforeShell.includes("apiVersion: anotify/v1") && nsBeforeShell.includes("kind: Namespace") && nsBeforeShell.includes("name: " + NS),
+		nsBeforeShell);
 	{
 		const ctx = await browser.newContext();
 		await H.mockExternalCdn(ctx);
@@ -330,6 +444,11 @@ async function main() {
 			return cell && cell.textContent.trim() === "ns-value-v2";
 		}, null, { timeout: 10000 });
 		const afterNSYAML = (await H.req(server.base, nsYamlPath, { session: s.session })).json?.yaml || "";
+		/* #473 保真：命名空间表单也只能改 `spec.vars`。resourceVersion 会前进（那是保存生效的
+		 * 证据），所以从比较面上排除；vars 本身的变化由下面的 vars 断言覆盖，不重复。 */
+		H.check("保真：命名空间文档除 spec.vars 与 resourceVersion 外的行逐字不变",
+			namespaceDocShell(afterNSYAML) === nsBeforeShell,
+			JSON.stringify({ before: nsBeforeShell, after: namespaceDocShell(afterNSYAML) }));
 		const changeDiff = lineDiff(beforeNSYAML, afterNSYAML);
 		H.check("命名空间改一个 var：YAML 只有该键 + resourceVersion 变化",
 			onlyVarLine(changeDiff.removed, "NS_ONLY").length === 1 && onlyVarLine(changeDiff.added, "NS_ONLY").length === 1,
@@ -381,6 +500,32 @@ async function main() {
 		await page.close();
 		await ctx.close();
 	}
+
+	/* ================= 边界：读面写出的 `total: null` 原样贴回仍是 400 =================
+	 *
+	 * 读面为了表达「不压住下层」会把缺失的 limits.total 写成显式 `total: null`
+	 * （`internal/server/resource_node_yaml.go` 的文档注释：未写 → 显式 null），而写面要求
+	 * total 是 ≥1 的整数（`internal/store/config.go` 的 ValidateLimits）。这条不对称是**刻意**的：
+	 * 前端序列化器因此把 total 为 null 时**整键省略**（省略 = 不动），而不是写 null/0。
+	 * 所以「原文贴回 → 400 value_invalid」必须钉住：谁把写面放宽成「null = 清空/不动」，
+	 * 这条断言就立刻失败，而不是等用户在生产上把 total 悄悄改成 0。 */
+	console.log("--- 边界：total: null 的文档原样贴回 ---");
+	const BARE = "anode-vars-bare";
+	const bareCreated = await H.req(server.base, V.P.nodes(), {
+		session: s.session,
+		body: { apiVersion: V.API_VERSION, kind: "Node", metadata: { name: BARE }, spec: { namespaces: [NS] } },
+	});
+	V.expectStatus("登记 bare 节点（spec 不带 limits）", bareCreated, 201);
+	const barePath = V.P.node(BARE) + "/yaml";
+	const bareBefore = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
+	H.check("边界前提：没有 limits.total 的节点，读面写成显式 total: null",
+		bareBefore.includes("total: null"), bareBefore);
+	const barePut = await H.req(server.base, barePath, { session: s.session, method: "PUT", body: { yaml: bareBefore } });
+	H.eq("边界：把 total: null 的原文原样贴回 → 400", barePut.status, 400);
+	H.eq("边界：拒绝原因 = value_invalid", barePut.json?.reason, "value_invalid");
+	const bareAfter = (await H.req(server.base, barePath, { session: s.session })).json?.yaml || "";
+	H.check("边界：被拒的写没有落库（文档逐字未变）", bareAfter === bareBefore,
+		JSON.stringify({ before: bareBefore, after: bareAfter }));
 
 	const passed = H.summary("vars_ui");
 	await browser.close();

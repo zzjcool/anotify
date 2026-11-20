@@ -20,6 +20,9 @@ import assert from "node:assert/strict";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PARTIALS_SRC = readFileSync(path.join(ROOT, "web/partials.js"), "utf8");
+// YAML 文档层（#473）：mock 的 /yaml 路由与页面控制器都通过它渲染文档文本，
+// 所以这两个 vm 沙箱必须真的把它载进来（否则走 /yaml 的用例会是 500，而不是断言失败）。
+const YAMLDOC_SRC = readFileSync(path.join(ROOT, "web/yamldoc.js"), "utf8");
 const MOCK_SRC = readFileSync(path.join(ROOT, "web/mock.js"), "utf8");
 const GRAPHS_SRC = readFileSync(path.join(ROOT, "web/graphs.js"), "utf8");
 const TRACEVIEW_SRC = readFileSync(path.join(ROOT, "web/traceview.js"), "utf8");
@@ -243,6 +246,7 @@ function loadAnotify(opts = {}) {
 	const ctx = vm.createContext(base.sandbox);
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
+	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
 
 	return {
 		A: base.sandbox.Anotify,
@@ -264,6 +268,7 @@ function loadMock(opts = {}) {
 	const ctx = vm.createContext(base.sandbox);
 	vm.runInContext("globalThis.window = globalThis; globalThis.self = globalThis;", ctx);
 	vm.runInContext(PARTIALS_SRC, ctx, { filename: "web/partials.js" });
+	vm.runInContext(YAMLDOC_SRC, ctx, { filename: "web/yamldoc.js" });
 	vm.runInContext(opts.mockSrc || MOCK_SRC, ctx, { filename: "web/mock.js" });
 	// 图库（可选）：sourceTopology / taskOf 是纯函数，能在没有布局的情况下断言
 	if (opts.graphs) {
