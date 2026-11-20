@@ -2107,7 +2107,12 @@ components:
       properties:
         params:
           type: object
-          description: "任务输入契约（JSON Schema 对象；省略 = `{}` = 怎么传都过）"
+          description: |
+            任务输入契约（JSON Schema 对象；省略 = `{}` = 怎么传都过）。
+            写入期编译 `pattern`（RE2）：编不过 / 不是字符串 / 超过长度上限 → 400
+            `param_pattern_invalid`，`details.causes[].field` 指到
+            `spec.params.properties.<name>.pattern`。试跑与派发期执行 `pattern`：
+            只约束字符串值，整串匹配请自带 `^...$`（RE2 默认子串匹配）。
           additionalProperties: true
         next:
           type: array

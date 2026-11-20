@@ -26,7 +26,7 @@
 //	minItems / maxItems      数组长度
 //	enum                     取值必须在此列表内
 //	minLength / maxLength    字符串长度
-//	pattern                  字符串正则（RE2，编译失败视为 schema 有问题）
+//	pattern                  字符串正则（RE2，编译失败或超长视为 schema 有问题）
 //	minimum / maximum        数值范围
 //	minProperties/maxProperties 对象字段数
 package schema
@@ -38,6 +38,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // FromRaw 解析一份原始 schema。
@@ -404,7 +405,7 @@ func enumContains(list []any, want any) bool {
 // 这是「可以安全执行用户提供的 pattern」的前提（不变量 I6 的边界内）。
 // 编译失败视为 schema 本身有问题 → 拒绝（不能拿坏 pattern 静默放行）。
 func matchPattern(pattern, s, path string) string {
-	re, err := regexp.Compile(pattern)
+	re, err := CompilePattern(pattern)
 	if err != nil {
 		return fmt.Sprintf("%s: invalid pattern %q in params_schema: %v", path, pattern, err)
 	}
@@ -412,4 +413,35 @@ func matchPattern(pattern, s, path string) string {
 		return fmt.Sprintf("%s: %q does not match pattern %q", path, s, pattern)
 	}
 	return ""
+}
+
+const MaxPatternLen = 1024
+
+const patternCacheEntries = 256
+
+var (
+	patternMu    sync.RWMutex
+	patternCache = make(map[string]*regexp.Regexp, patternCacheEntries)
+)
+
+func CompilePattern(pattern string) (*regexp.Regexp, error) {
+	if len(pattern) > MaxPatternLen {
+		return nil, fmt.Errorf("pattern 长度 %d 字节，超过上限 %d", len(pattern), MaxPatternLen)
+	}
+	patternMu.RLock()
+	re, ok := patternCache[pattern]
+	patternMu.RUnlock()
+	if ok {
+		return re, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	patternMu.Lock()
+	if len(patternCache) < patternCacheEntries {
+		patternCache[pattern] = re
+	}
+	patternMu.Unlock()
+	return re, nil
 }

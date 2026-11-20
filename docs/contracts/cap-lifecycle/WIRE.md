@@ -72,7 +72,7 @@ type CapabilityTestReceipt struct {
   - `version`：省略 / 0 = 当前 live 版本（走 `ResolveRef`）；显式版本不存在 → `404`。
   - `params`：按 `spec.params` 的 JSON Schema 校验（`route.PrepareParams`）；不合 schema → `400`
     `reason=BadRequest`（或既有约定码），`details.causes[]` 每条 `{reason, field, message}`，
-    `field` 是**字段路径**（如 `params.diff`）。
+    `field` 是**字段路径**（如 `params.diff`）；`pattern`（RE2）只校验字符串值，语义见 `api/resource.yaml`。
   - `nodes`：候选节点白名单（节点名或 id），只用于回执 `warnings` 的判定；显式给了但解析不到 → `404`。
     **它不改变派发目标**：v4 在 `lease.grant` 时按 eligible 选点，任务行不钉节点（已写入 OpenAPI 描述）。
 - `200` → `CapabilityTestReceipt`（**不是** 202；与 `fireSource` 同一状态码语义）：
