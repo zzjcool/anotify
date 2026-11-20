@@ -235,17 +235,20 @@ $ flock /tmp/anotify-ci.lock -c "make ci"
 ✅ 契约静态断言（A2/A4/A5/A6/A7 + openapi 一致性 + 字段级核对）通过
 ✅ 契约字段守卫通过（234 个 schema、724 个已知字段）
 ✅ check-annotations 48 项判定 PASS 48 / FAIL 0（reduced-motion 注释里的计数词按规则 D 改写，棘轮 385/385）
-✅ gofmt / go vet / staticcheck 干净；go test 41 个包全 ok（含 internal/server 58.4s、store/v4test 30.9s）
+✅ gofmt / go vet / staticcheck 干净；go test 全包 ok（含 internal/server、store/v4test）
 ✅ harness 自测通过（端口/boot id/两次启动不同）
 EXIT=0
 
 $ flock /tmp/anotify-ci.lock -c "make e2e-affected"
-✅ E2E 全绿：28/28 个请求套件均达标（断言 2370 通过 / 0 失败，authority 清单覆盖 28 个）
-   frontend 43通过/0失败 161.5s · ui_shift 87通过/0失败 155.8s · capacity 178通过/0失败 147.5s
+✅ E2E 全绿：29/29 个请求套件均达标（断言 2431 通过 / 0 失败，authority 清单覆盖 29 个）
+   frontend 43通过/0失败 161.5s · ui_shift 87通过/0失败 156.6s · capacity 178通过/0失败 147.5s
    重试: 首次 incomplete 0 条 · 首次 timeout 0 条 · 重试通过 0 · 重试仍无结论 0（5 个套件上报了重试账本）
-✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 352.2s）
+✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 360.0s）
 EXIT=0
 ```
+
+（合并 main 前同一套门禁是 28/28、2370 断言；main 带来第 29 个套件后复跑仍全绿。数字是快照，
+以复跑输出为准。）
 
 （`make e2e-affected` 本次选中 28/28 全套：改动里的 `scripts/e2e/lib/harness.mjs` 是共享面，
 选择器按「无法判定 ⇒ 保守跑全套」处理，不是人为 `--full`。）
