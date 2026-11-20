@@ -1842,6 +1842,7 @@ nodes:
     yaml_invalid: 'The document did not validate: fix the line numbers and field names below, then save again.'
     yaml_dirty: 'Draft changed; the server normalizes it on save.'
     yaml_reset_done: 'Rewritten from the current config (not saved yet).'
+    yaml_unparsable: 'The form cannot read this document as written: edit it in the text box instead (the server validates on save).'
     authorized_title: "Authorized namespaces (who may use this node)"
     effective_title: "Effective namespaces (read-only)"
     effective_hint: "Declared by the node ∩ authorized by the hub. To revoke everything, empty the authorization list."

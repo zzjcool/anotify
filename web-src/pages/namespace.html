@@ -121,9 +121,41 @@
   // `/config` 只是**读投影**（GET）：拿 CAS 令牌与当前 vars。编辑的唯一写入口是
   // `PUT …/yaml`（#476：YAML 是唯一编辑面；/config 的 PUT 不再被页面使用）。
   const nsPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/config';
-  const nsYamlPath = ns => '/v1/namespaces/' + encodeURIComponent(ns) + '/yaml';
+  const YD = window.AnotifyYamlDoc;
   const VT = window.AnotifyVars;
   let varsRows = [], varsEditing = null, nsRequired = {}, varsDirty = false, varsSeq = 0;
+  /* 本页编辑的是**同一份 Namespace 文档**：`nsDocModel` 由 `GET …/yaml` 的原文解析而来
+   * （`YD.edit`：读原文 → 只替换 `spec.vars` 与 CAS 令牌 → 重新序列化），原始编辑器与
+   * vars 表格走的是同一个动作。所以表单不认识的字段（含服务端以后加的）不会被保存丢掉。
+   * 文档读不懂时 `nsDocModel` 为 null：保存退回「从 vars 重建一份最小文档」并在状态行
+   * 明说，不静默丢字段。 */
+  let nsDocText = '', nsDocScope = '';
+  function adoptNamespaceYAML(scope, text) {
+    if (scope !== selectedNamespace) return;
+    nsDocText = text;
+    nsDocScope = scope;
+  }
+  /* namespaceYAMLDoc：服务端原文 + 只替换 spec.vars（与 CAS 令牌）。
+     `resourceVersion` 缺省时保留文档里已经有的那个（省略 = 用读面给的令牌）。
+     原文读不懂时返回 null：调用方拒绝改写（不猜、不兜底成「只剩 vars 的一份」）。
+     文档还没加载（页面刚打开就点保存）时退回最小文档 —— 此时没有可丢的字段。 */
+  function namespaceYAMLDoc(scope, vars, resourceVersion) {
+    const patch = { metadata: { name: scope, resourceVersion: resourceVersion }, spec: { vars: vars || {} } };
+    if (nsDocScope === scope && nsDocText) {
+      const res = YD.edit('Namespace', nsDocText, patch);
+      return res.problems.length ? null : res.text;
+    }
+    return YD.render('Namespace', YD.merge({ apiVersion: 'anotify/v1', kind: 'Namespace', metadata: { name: scope } }, patch));
+  }
+  async function saveNamespaceVars(scope, vars, resourceVersion) {
+    const text = namespaceYAMLDoc(scope, vars, resourceVersion);
+    if (text === null) throw new Error(n('yaml_unparsable'));
+    const value = await write(YD.path('Namespace', scope), { yaml: text });
+    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
+    /* 写后的原文就是下一轮的起点（令牌也随之前进），免得下一次编辑拿旧文档重建。 */
+    if (scope === selectedNamespace) { nsDocText = ''; nsDocScope = ''; adoptNamespaceYAML(scope, value.yaml); }
+    return value;
+  }
 
   function paintHead() {
     $('ns-name').textContent = selectedNamespace || t('title');
@@ -201,21 +233,8 @@
     const button = make('button', 'btn btn-ghost btn-sm', label);
     button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
   }
-  /* 命名空间文档的 YAML 文本：apiVersion / kind / metadata / spec.vars。
-     `resourceVersion` = GET /config 给的同一个 CAS 令牌（写 vars 用的就是它）。 */
-  function namespaceYAMLText(scope, vars, resourceVersion) {
-    const lines = ['apiVersion: anotify/v1', 'kind: Namespace', 'metadata:', '  name: ' + VT.yamlScalar(scope)];
-    if (resourceVersion) lines.push('  resourceVersion: ' + VT.yamlScalar(resourceVersion));
-    lines.push('spec:');
-    if (Object.keys(vars || {}).length) { lines.push('  vars:'); lines.push(...VT.varsToYAMLLines(vars, 4)); }
-    else lines.push('  vars: {}');
-    return lines.join('\n') + '\n';
-  }
-  async function saveNamespaceVars(scope, vars, resourceVersion) {
-    const value = await write(nsYamlPath(scope), { yaml: namespaceYAMLText(scope, vars, resourceVersion) });
-    if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
-    return value;
-  }
+  /* 命名空间文档的 YAML 文本由 web/yamldoc.js 产出（见上面的 namespaceYAMLDoc）；
+   * 页面不再自己拼一份 —— 那一份必然与服务端的字段集漂移。 */
   function varsPlainRow(row) {
     const tr = make('tr');
     tr.dataset.key = row.name; tr.dataset.source = row.source || ''; tr.dataset.missing = String(!!row.missing);
@@ -468,14 +487,15 @@
     } catch (e) { $('namespace-effective-vars').replaceChildren(A.loadErrorNode(e, loadNodes)); }
   }
   /* 只读 Namespace YAML：服务端重建的规范化文档（GET /v1/namespaces/{name}/yaml）。
-     只刷新文本、不碰 CAS 编辑器 —— 两者读的是同一份事实但写入路径只有表单那一条。 */
+     文本同时是本页的**文档模型来源**（`adoptNamespaceYAML`）：两个编辑器都从它出发。 */
   async function loadNamespaceYAML(scope = selectedNamespace) {
     msg('namespace-yaml-state', n('loading'));
     try {
-      const value = await A.api('/v1/namespaces/' + encodeURIComponent(scope) + '/yaml');
+      const value = await A.api(YD.path('Namespace', scope));
       if (scope !== selectedNamespace) return;
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('namespace-yaml-text').textContent = value.yaml;
+      adoptNamespaceYAML(scope, value.yaml);
       msg('namespace-yaml-state', n('loaded'));
     } catch (e) { if (scope === selectedNamespace) msg('namespace-yaml-state', errorText(e), true); }
   }

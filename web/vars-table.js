@@ -8,6 +8,11 @@
  *
  * 页面只负责 DOM 与请求；本文件不碰 document、不读 localStorage、不发请求。
  *
+ * 序列化**不在这里**：把行折回映射（rowsToVars）之后，写进文档文本的工作由
+ * `web/yamldoc.js` 统一做（同一份实现给节点页、命名空间页与预览用的 mock 端点）。
+ * 本文件曾经自带一份 `yamlScalar` / `varsToYAMLLines`，那是同一套转义规则的第二份
+ * 实现 —— 两份必然漂移，所以删掉了。
+ *
  * 数据来源（都是既有读面，不新造后端）：
  *   · `GET /v1/nodes/{name}?namespace=<ns>` → status.effectiveVars / localVars /
  *     nodeVars / machineVars / namespaceVars（internal/server/resource_node.go）
@@ -205,31 +210,6 @@
 		return 0;
 	}
 
-	/* yamlScalar 把值序列化成合法的 YAML 标量。
-	 * 简单形状（字母数字开头的安全字符）直接写；其余用 JSON 字符串（JSON 的双引号
-	 * 标量本身就是合法 YAML），这样不写解析器也不会写错。 */
-	function yamlScalar(value) {
-		if (value == null) return 'null';
-		var text = String(value);
-		if (typeof value === 'number' || typeof value === 'boolean') return text;
-		var safe = /^[A-Za-z0-9][A-Za-z0-9_./:@+-]*$/.test(text);
-		var reserved = /^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(text);
-		var numeric = /^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(text);
-		if (safe && !reserved && !numeric) return text;
-		return JSON.stringify(text);
-	}
-
-	/* varsToYAMLLines 把 vars 映射序列化成 `KEY: value` 行（服务端按名字排序，
-	 * 这里也排序：同一份事实永远同一份文本）。 */
-	function varsToYAMLLines(vars, indent) {
-		var pad = ' '.repeat(indent == null ? 2 : indent);
-		var keys = Object.keys(vars || {}).sort();
-		if (!keys.length) return [pad + '{}'];
-		return keys.map(function (key) {
-			return pad + yamlScalar(key) + ': ' + yamlScalar(vars[key]);
-		});
-	}
-
 	/* diffVars 给「保存后告诉我改了什么」用（也用于单测断言只有目标键变化）。 */
 	function diffVars(before, after) {
 		var a = before || {};
@@ -258,8 +238,6 @@
 		rowsToVars: rowsToVars,
 		suggestNames: suggestNames,
 		renameImpact: renameImpact,
-		yamlScalar: yamlScalar,
-		varsToYAMLLines: varsToYAMLLines,
 		diffVars: diffVars,
 	};
 	root.AnotifyVars = api;

@@ -1842,6 +1842,7 @@ nodes:
     yaml_invalid: 'El documento no validó: corrija los números de línea y los nombres de campo y vuelva a guardar.'
     yaml_dirty: 'Borrador modificado; el servidor lo normaliza al guardar.'
     yaml_reset_done: 'Reescrito desde la configuración actual (sin guardar).'
+    yaml_unparsable: 'El formulario no puede interpretar este documento: edítelo en el cuadro de texto (el servidor lo valida al guardar).'
     authorized_title: "Espacios autorizados (quién puede usar este nodo)"
     effective_title: "Espacios efectivos (solo lectura)"
     effective_hint: "Declarado por el nodo ∩ autorizado por el hub. Para revocar todo, vacíe la lista de autorización."

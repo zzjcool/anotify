@@ -1844,6 +1844,7 @@ nodes:
     yaml_invalid: '文档没有通过校验：按下面的行号与字段名改好再保存。'
     yaml_dirty: '草稿已改动；保存后由服务端规范化。'
     yaml_reset_done: '已按当前配置重写文本（尚未保存）。'
+    yaml_unparsable: '这份文档的写法表单读不懂：请在文本框里直接改（保存时由服务端校验）。'
     authorized_title: "授权命名空间（谁能用这台节点）"
     effective_title: "生效命名空间（只读）"
     effective_hint: "节点申报 ∩ 中枢授权。要取消全部授权，把授权列表清空。"

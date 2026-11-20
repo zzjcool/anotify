@@ -175,10 +175,6 @@
   // IA（#436）：节点是**节点维度**。旧的 `?namespace=` 参数被忽略（书签继续可用），
   // 页面不再请求任何带 ns 上下文的读面。
   let n, nodeId = '', config;
-  /* #454：`tags` 的现值只在权威读面（资源本身的 spec.tags），`/config` wrapper 里没有这个键。
-     拿不到就是 null = 未知：序列化时整键省略，让服务端保留原值；写成 `tags: []`
-     等于「用户清空了」。 */
-  let knownTags = null;
   A.mountLayout({ active: 'nodes', title: t('config'), subtitle: t('node_subtitle') });
   const make = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   const msg = (id, text, error = false) => { $(id).textContent = text; $(id).classList.toggle('is-error', error); };
@@ -333,18 +329,21 @@
     if (varsDirty && !(await A.confirmDanger({ body: t('vars_reset_confirm') }))) return;
     varsSetState(''); await refreshVars();
   };
-  /* 表格保存 = 把行折回 vars 映射 → 写进同一份 Node 文档 → PUT …/yaml。
-     表格与 YAML 编辑区是同一个事实的两个编辑器，写路径只有一条（`/config` 只剩 GET 读投影）。 */
+  /* 表格保存 = 把行折回 vars 映射 → 写进**同一份文档模型** → PUT …/yaml。
+     表格与 YAML 编辑区是同一个事实的两个编辑器，写路径只有一条（`/config` 只剩 GET 读投影）。
+     文档模型读不懂时（yamlModel = null）拒绝改写：猜一份只会把用户没改的字段写没。 */
   $('node-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
     if (!config) return varsSetState(t('error'), true);
+    if (!yamlModel) return varsSetState(t('yaml_unparsable'), true);
     const vars = VT.rowsToVars(varsRows);
     const diff = VT.diffVars(config.vars || {}, vars);
     if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(t('vars_no_changes'));
     $('node-vars-save').disabled = true; varsSetState(t('loading'));
     try {
-      config.vars = vars;
-      $('node-yaml-input').value = docToYAML(draftDoc()); yamlDirty = true;
+      const text = editDoc({ spec: { vars } });
+      if (text === null) return varsSetState(t('yaml_unparsable'), true);
+      $('node-yaml-input').value = text; yamlDirty = true;
       await saveNodeDoc();
       varsDirty = false; varsSetState(t('vars_saved'));
       await loadYAML(); await refreshVars();
@@ -418,52 +417,29 @@
 
   /* ---------- ② Node YAML：唯一的编辑面与写入口 ----------
    * 读面与写面是同一份文本：`#node-yaml-text` 永远是服务端 GET 回来的原文，输入框
-   * 只在用户没手改（yamlDirty 为假）时跟着它走。前端只做**序列化**（当前配置 → 文本），
-   * 解析与校验都在服务端，问题带行号与字段名回显到 #node-yaml-errors。 */
-  let yamlDirty = false;
-  const yamlScalar = v => {
-    if (v === null || v === undefined) return 'null';
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    const s = String(v);
-    if (/^[A-Za-z0-9][\w./:@+-]*$/.test(s) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(s) && !/^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(s)) return s;
-    // JSON 字符串本身就是合法的 YAML 双引号标量：不写解析器也不会写错。
-    return JSON.stringify(s);
-  };
-  const sortedEntries = obj => Object.entries(obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const yamlList = (key, items, indent) => {
-    const pad = ' '.repeat(indent);
-    if (!items.length) return [pad + key + ': []'];
-    return [pad + key + ':'].concat(items.map(item => pad + '  - ' + yamlScalar(item)));
-  };
-  const yamlMap = (key, obj, indent) => {
-    const pad = ' '.repeat(indent), entries = sortedEntries(obj);
-    if (!entries.length) return [pad + key + ': {}'];
-    return [pad + key + ':'].concat(entries.map(([k, v]) => pad + '  ' + yamlScalar(k) + ': ' + yamlScalar(v)));
-  };
-  function docToYAML(doc) {
-    const spec = doc.spec || {}, limits = spec.limits || {};
-    const lines = ['apiVersion: ' + yamlScalar(doc.apiVersion), 'kind: ' + yamlScalar(doc.kind), 'metadata:', '  name: ' + yamlScalar(doc.metadata.name)];
-    if (doc.metadata.resourceVersion) lines.push('  resourceVersion: ' + yamlScalar(doc.metadata.resourceVersion));
-    lines.push('spec:');
-    lines.push(...yamlList('namespaces', Array.isArray(spec.namespaces) ? spec.namespaces : [], 2));
-    lines.push(...yamlMap('vars', spec.vars, 2));
-    const perCap = limits.perCapability, perEntries = sortedEntries(perCap);
-    // total 未设置时**省略这一行**（不写 `total: null`）：服务端 ValidateLimits 要求
-    // total 是 ≥1 的整数，把 null 贴回去会被 400 value_invalid。服务端 YAML 读面为
-    // 了表达「不压住下层」会写 `total: null`，但那是**读**语义；写回去时省略 = 不动。
-    lines.push('  limits:');
-    if (limits.total != null) lines.push('    total: ' + yamlScalar(limits.total));
-    lines.push('    perCapability:' + (perEntries.length ? '' : ' {}'));
-    for (const [k, v] of perEntries) lines.push('      ' + yamlScalar(k) + ': ' + yamlScalar(v));
-    // 只有**真的知道** tags 现值时才写这个键（见 knownTags）：未知就整键省略。
-    if (Array.isArray(spec.tags)) lines.push(...yamlList('tags', spec.tags, 2));
-    return lines.join('\n') + '\n';
+   * 只在用户没手改（yamlDirty 为假）时跟着它走。
+   *
+   * 表单编辑的是**同一份文档**：`YD.edit` 用服务端原文当起点，只替换表单真的改了的键
+   * （`spec.vars`），再用同一份序列化写回文本。所以「表单不认识的字段」不会因为保存被
+   * 丢掉：读面多一个键，这里原样带回去（#454 的 `tags` 被清空正是「页面自己拼一份、
+   * 拼的时候漏了字段」）。解析与校验仍在服务端，问题带行号与字段名回显到
+   * #node-yaml-errors；这里的 parse 只为编辑提供模型，读不懂时表单拒绝改写（不猜、
+   * 不兜底成空）。 */
+  const YD = window.AnotifyYamlDoc;
+  let yamlDirty = false, yamlModel = null;
+  /* adoptYAML 把服务端原文收成表单的文档模型；返回解析问题（空数组 = 可编辑）。 */
+  function adoptYAML(text) {
+    const parsed = YD.parse('Node', text);
+    yamlModel = parsed.problems.length ? null : parsed.model;
+    return parsed.problems;
   }
-  function draftDoc() {
-    if (!config) return null;
-    const { namespaces, vars, limits } = config;
-    if (!Array.isArray(namespaces) || !vars || typeof vars !== 'object' || !limits || typeof limits !== 'object') return null;
-    return { apiVersion: 'anotify/v1', kind: 'Node', metadata: { name, resourceVersion: config.metadata.resourceVersion }, spec: { namespaces, vars, limits, tags: knownTags } };
+  /* 表单改一处 = 同一份文档的「读 → 改一个键 → 序列化」（YD.edit）。读不懂就返回 null，
+     调用方显式报错 —— 猜一份必然把用户没改的字段写没。 */
+  function editDoc(patch) {
+    const res = YD.edit('Node', $('node-yaml-text').textContent, patch);
+    if (res.problems.length) return null;
+    yamlModel = res.model;
+    return res.text;
   }
   function clearYAMLErrors() { const box = $('node-yaml-errors'); box.replaceChildren(); box.hidden = true; }
   function showYAMLErrors(causes) {
@@ -477,19 +453,20 @@
   }
   async function loadYAML() {
     try {
-      const value = await A.api(path + '/yaml');
+      const value = await A.api(YD.path('Node', name));
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('node-yaml-text').textContent = value.yaml;
       if (!yamlDirty) $('node-yaml-input').value = value.yaml;
+      adoptYAML(value.yaml);
     } catch (e) { $('node-yaml-text').textContent = ''; A.toast(errorText(e), 'error'); }
   }
   $('node-yaml-copy').onclick = () => A.copyText($('node-yaml-copy'), () => $('node-yaml-text').textContent);
   $('node-yaml-input').addEventListener('input', () => { yamlDirty = true; msg('node-yaml-state', t('yaml_dirty')); });
-  /* 「按当前配置重写」：丢掉手改的草稿，用已加载的配置重新序列化一份（含 tags 现值）。 */
+  /* 「按当前配置重写」：丢掉手改的草稿，用已加载的**同一份文档**重新序列化一遍
+     （模型来自服务端原文，表单不认识的字段也在模型里，所以重写不会丢字段）。 */
   $('node-yaml-reset').onclick = () => {
     yamlDirty = false; clearYAMLErrors();
-    const doc = draftDoc();
-    $('node-yaml-input').value = doc ? docToYAML(doc) : $('node-yaml-text').textContent;
+    $('node-yaml-input').value = yamlModel ? YD.render('Node', yamlModel) : $('node-yaml-text').textContent;
     msg('node-yaml-state', t('yaml_reset_done'));
   };
   /* 唯一的写函数：把编辑区里的文本原样交给 `PUT …/yaml`（CAS 在服务端判）。
@@ -498,10 +475,11 @@
     const text = $('node-yaml-input').value;
     $('node-yaml-save').disabled = true; clearYAMLErrors(); msg('node-yaml-state', t('loading'));
     try {
-      const value = await write(path + '/yaml', { yaml: text });
+      const value = await write(YD.path('Node', name), { yaml: text });
       if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
       $('node-yaml-text').textContent = value.yaml;
       $('node-yaml-input').value = value.yaml; yamlDirty = false;
+      adoptYAML(value.yaml);
       msg('node-yaml-state', t('yaml_saved'));
       await loadFacts(); await loadConfig();
       return value;
@@ -628,7 +606,6 @@
     if (resource.kind !== 'Node') throw new Error('Invalid Node resource');
     nodeId = resource.metadata?.uid;
     if (!nodeId) throw new Error('Node metadata.uid missing');
-    knownTags = Array.isArray(resource.spec?.tags) ? resource.spec.tags : null;
     n = A.model.node(resource); renderFacts(); renderConfigSummary();
   }
   /* 这台节点的「已部署能力」与「最近任务」：**节点事实**，不是节点配置。

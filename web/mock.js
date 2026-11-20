@@ -2677,70 +2677,14 @@
 
 	// ---------- 资源 YAML（由存储的规范化定义重建）----------
 	//
-	// mock 没有 YAML 序列化器（playbook.render 的 files 就因此用 JSON 文本），但两条
-	// `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
-	// 这里只写够用的最小发射器：键序 = 对象自身顺序，块标量 `|` 保住脚本文本里的
-	// 换行与缩进（脚本正文是唯一需要逐字保留的东西）。
-	function yamlScalar(v) {
-		if (v == null) return "null";
-		if (typeof v === "boolean" || typeof v === "number") return String(v);
-		const s = String(v);
-		if (s === "") return '""';
-		// 需要引号的形态：YAML 保留字、纯数字、含特殊字符、首尾空白
-		const plain = /^[A-Za-z_][A-Za-z0-9_./@{}$()*+\-]*$/.test(s);
-		const reserved = /^(true|false|null|yes|no|on|off|~)$/i.test(s);
-		if (plain && !reserved) return s;
-		return JSON.stringify(s);
-	}
-	function yamlLines(value, indent, out) {
-		const pad = " ".repeat(indent);
-		if (Array.isArray(value)) {
-			if (!value.length) {
-				out.push(pad + "[]");
-				return;
-			}
-			for (const item of value) {
-				if (pbObject(item) || Array.isArray(item)) {
-					const inner = [];
-					yamlLines(item, indent + 2, inner);
-					out.push(pad + "- " + String(inner[0]).trimStart());
-					for (const line of inner.slice(1)) out.push(line);
-				} else {
-					out.push(pad + "- " + yamlScalar(item));
-				}
-			}
-			return;
-		}
-		if (pbObject(value)) {
-			const keys = Object.keys(value);
-			if (!keys.length) {
-				out.push(pad + "{}");
-				return;
-			}
-			for (const key of keys) {
-				const v = value[key];
-				if (pbObject(v) || Array.isArray(v)) {
-					if (!Object.keys(v).length) {
-						out.push(pad + key + ": " + (Array.isArray(v) ? "[]" : "{}"));
-					} else {
-						out.push(pad + key + ":");
-						yamlLines(v, indent + 2, out);
-					}
-				} else if (typeof v === "string" && v.includes("\n")) {
-					out.push(pad + key + ": |");
-					for (const line of v.replace(/\n$/, "").split("\n")) out.push(" ".repeat(indent + 2) + line);
-				} else {
-					out.push(pad + key + ": " + yamlScalar(v));
-				}
-			}
-			return;
-		}
-		out.push(pad + yamlScalar(value));
-	}
+	// 两条 `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
+	// 序列化只有一份实现（`web/yamldoc.js` 的 render），本文件不再自带发射器 ——
+	// 假服务端与真页面用同一套转义/空集合/块标量规则，预览里的文本才与保存时一致。
+	// 键序 = 对象自身顺序（mock 的定义对象是按契约形状构造的）。
 	function toYaml(doc) {
-		const out = [];
-		yamlLines(doc, 0, out);
-		return out.join("\n") + "\n";
+		const yamldoc = window.AnotifyYamlDoc;
+		if (!yamldoc) throw new Error("yamldoc.js 未加载：/yaml 路由需要它（layout 里同步引入）");
+		return yamldoc.render(doc && doc.kind === "Source" ? "Source" : "Capability", doc);
 	}
 	// 能力的定义文档：完整 spec（含 run.files 全文）—— 不是读投影。
 	function capabilityYaml(row) {
