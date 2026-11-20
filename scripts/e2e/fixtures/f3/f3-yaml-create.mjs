@@ -89,10 +89,11 @@ export async function yamlCreate(d) {
   // 当前文档里对某条写路径的 POST（driver 在每次导航时重置调用记录）。
   const postsTo = async (url) => (await d.calls()).filter((c) => c.url === url && c.method === 'POST');
   // 等某条 POST 拿到指定状态码：`__f3Calls` 在 fetch 发起时就落一条，
-  // 所以必须等 httpStatus 落下来再读，否则读到的是「还没有状态」的那条。
+  // 所以必须等 httpStatus 落下来**并且 body 已解析**（`settled`）再读，
+  // 否则读到的是「有状态、没有 body」的半条记录（#483 顺手修的竞态）。
   const waitPost = (url, status) =>
     page.waitForFunction(
-      ([path, code]) => (window.__f3Calls || []).some((c) => c.url === path && c.method === 'POST' && c.httpStatus === code),
+      ([path, code]) => (window.__f3Calls || []).some((c) => c.url === path && c.method === 'POST' && c.httpStatus === code && c.settled === true),
       [url, status],
     );
 

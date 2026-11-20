@@ -11,6 +11,10 @@ import * as H from '../../lib/harness.mjs';
 import { ROOT, TEAM, isMock } from './f3-driver.mjs';
 import { casesFor, registeredViews, runUiCase } from './f3-ui-cases.mjs';
 import { evidenceDirectory } from './f3-driver.mjs';
+// #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, timeoutLines, writeTimeoutFragment, TIMEOUT, INCOMPLETE } from './f3-retry.mjs';
+
+const retryLedger = createRetryLedger();
 
 export const UI_OUT = path.join(TEAM, 'screenshots/f3ui');
 
@@ -19,6 +23,16 @@ export async function uiFingerprint(suite) { return (await captureEpoch(ROOT)).f
 
 // Complete is NOT pass: exact mode/epoch/cwd/attempt plus real child exit and
 // every registered view/page attempted in fixed order.
+// #485：timeout 的两次 attempt 卡点比较（同一步 = 确定性挂点）。
+export function timeoutJudgement(retry) {
+  if (!retry?.attempts?.length) return '';
+  const steps = retry.attempts.map(a => a.lastStep ?? '(无 PASS 步骤)');
+  const pending = retry.attempts.map(a => a.pendingStep).filter(Boolean);
+  const waiting = pending.length ? '（正在等「' + pending[0] + '」）' : '';
+  if (retry.stuckSameStep) return '；两次都停在同一步「' + steps[0] + '」' + waiting;
+  if (retry.attempts.length > 1) return '；两次停在不同步（' + steps.join(' / ') + '）' + waiting;
+  return '；停在「' + steps[0] + '」' + waiting;
+}
 export function validateUiEvidence(selected, result, exit, expected) {
   for (const record of [selected, result, exit])
     for (const key of ['suite', 'id', 'runId', 'attemptId', 'cwd', 'sourceHash', 'mode', 'authority'])
@@ -92,26 +106,36 @@ export async function uiMain(suite, self) {
     return evidence;
   }
   // One outer 55s budget per registered case + guaranteed process-group cleanup.
-  async function execute(id, sourceHash) {
-    const identity = meta(id, sourceHash, plan.attempts.find(x=>x.id===id).attemptId);
+  // spawnCase 只负责「起一次子进程 + 写 full.log/exit.json」；判定/重试在 f3-retry.mjs。
+  async function spawnCase(identity, sourceHash, id) {
     const dir = directory(identity);
-    await mkdir(dir, { recursive: true });
-    await enroll(identity);
     return new Promise(resolve => {
       const child = spawn(process.execPath, [self, '--fragment', id], { cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, F3_RUN_ID: runId, F3_ATTEMPT_ID: identity.attemptId, F3_SOURCE_HASH: sourceHash, E2E_RESULTS_DIR: dir } });
       children.add(child);
       let output = 'COMMAND ' + JSON.stringify({ cwd: ROOT, argv: [process.execPath, self, '--fragment', id], ...identity }) + '\n';
+      let childOutput = '';
       let timedOut = false;
+      const startedAt = Date.now();
       const kill = sig => { try { process.kill(-child.pid, sig); } catch { /* group settled */ } };
       // 每个 case 的外层预算：默认 52s/54s（本地实测口径）。慢机（CI runner 比开发机慢
       // 2–3 倍）用 F3_CASE_BUDGET_MS 抬高 —— 这**不是**放宽断言：超预算仍然 timedOut=true
       // 判红，只是把「多久算超时」变成可配置，跟 parallel_runner 的 per-suite 预算同款。
       const budgetMs = Number(process.env.F3_CASE_BUDGET_MS || 52000);
-      const soft = setTimeout(() => { timedOut = true; kill('SIGTERM'); }, budgetMs);
+      // #485：发信号前先落 timeout fragment（SIGTERM 会走 harness 的 process.exit(1)，
+      // 子进程没有机会写 case.json）。判定层据此把「卡住」与「没证据」分开。
+      const soft = setTimeout(async () => {
+        timedOut = true;
+        try {
+          await writeTimeoutFragment({ dir, identity, output: childOutput, budgetMs, elapsedMs: Date.now() - startedAt });
+        } catch (error) {
+          output += '\nTIMEOUT_FRAGMENT_ERROR=' + String((error && error.stack) || error) + '\n';
+        }
+        kill('SIGTERM');
+      }, budgetMs);
       const hard = setTimeout(() => { if (timedOut || interrupted) kill('SIGKILL'); }, budgetMs + 2000);
-      child.stdout.on('data', chunk => { output += chunk; });
-      child.stderr.on('data', chunk => { output += chunk; });
-      child.once('error', error => { output += String(error); });
+      child.stdout.on('data', chunk => { output += chunk; childOutput += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; childOutput += chunk; });
+      child.once('error', error => { output += String(error); childOutput += String(error); });
       child.once('close', async (code, sig) => {
         clearTimeout(soft); clearTimeout(hard); children.delete(child);try{process.kill(-child.pid,'SIGKILL');}catch{/* group already settled */}
         const exit = { ...identity, exitCode: code, signal: sig, timedOut };
@@ -119,10 +143,19 @@ export async function uiMain(suite, self) {
         try {
           await writeFile(path.join(dir, 'full.log'), output);
           await writeFile(path.join(dir, 'exit.json'), JSON.stringify(exit, null, 2) + '\n');
-          resolve(exit);
-        } catch (error) { resolve({ ...exit, writeError: String(error) }); }
+          resolve({ exit, childOutput });
+        } catch (error) { resolve({ exit: { ...exit, writeError: String(error) }, childOutput }); }
       });
     });
+  }
+  async function execute(id, sourceHash, index) {
+    const identity = meta(id, sourceHash, plan.attempts.find(x=>x.id===id).attemptId);
+    const dir = directory(identity);
+    await mkdir(dir, { recursive: true });
+    await enroll(identity);
+    const run = await executeWithRetry({ suite, id, index, total: cases.length, dir, spawnAttempt: () => spawnCase(identity, sourceHash, id) });
+    retryLedger.record(run.outcome);
+    return run.exit;
   }
 
   async function aggregate(sourceHash, exits) {
@@ -133,7 +166,7 @@ export async function uiMain(suite, self) {
     let passed = 0, failed = 0;
     let viewAttempted = 0, viewPassed = 0, matrixAttempted = 0;
     for (const item of cases) {
-      let selected, outcome, exit, dir;
+      let selected, outcome, exit, dir, retry;
       try {
         const attempts = (await readdir(path.join(runDir, item.id))).filter(x => x.startsWith('attempt-') && x.endsWith('.json'));
         assert.equal(attempts.length, 1, 'Exactly one attempt per registered case in the final epoch; a retry cannot erase failure');
@@ -145,6 +178,7 @@ export async function uiMain(suite, self) {
         }
         assert.ok(selected, 'Missing settled child');
         dir = directory(selected);
+        retry = await readRetryRecord(dir);
         outcome = JSON.parse(await readFile(path.join(dir, 'case.json'), 'utf8'));
         exit = JSON.parse(await readFile(path.join(dir, 'exit.json'), 'utf8'));
         if (selected.writeError) throw new Error(selected.writeError);
@@ -153,13 +187,16 @@ export async function uiMain(suite, self) {
         validateAttempt(selected, outcome, exit, meta(item.id, sourceHash, selected.attemptId));
         validateUiEvidence(selected, outcome, exit, { ...meta(item.id, sourceHash, selected.attemptId), pages: item.pages, views: item.views, lang: item.lang, theme: item.theme, viewport: item.viewport });
         passed++;
-        H.ok(item.id + ' (' + outcome.checks + ' actual assertions)');
+        H.ok(item.id + ' (' + outcome.checks + ' actual assertions)' + (retry?.recovered ? ' [首次 incomplete → 重试通过]' : ''));
       } catch (error) {
         failed++;
         if (!outcome || !exit) missing.push(item.id);
-        H.bad(item.id, outcome?.error || String(error));
+        // 重试后仍无结论：红，原因写清次数（#483：`incomplete ×2`；#485：`timeout ×2`）。
+        if (retry?.kind === INCOMPLETE) H.bad(item.id, 'incomplete ×' + retry.attempts.length + '：' + retry.why);
+        else if (retry?.kind === TIMEOUT) H.bad(item.id, 'timeout ×' + retry.attempts.length + '：' + retry.why + timeoutJudgement(retry));
+        else H.bad(item.id, outcome?.error || String(error));
       }
-      collected.push({ id: item.id, kind: item.kind, views: item.views, dir, attemptId: selected?.attemptId, exitCode: exit?.exitCode, signal: exit?.signal, timedOut: exit?.timedOut, ok: outcome?.ok ?? false, checks: outcome?.checks ?? 0, error: outcome?.error ?? null });
+      collected.push({ id: item.id, kind: item.kind, views: item.views, dir, attemptId: selected?.attemptId, exitCode: exit?.exitCode, signal: exit?.signal, timedOut: exit?.timedOut, ok: outcome?.ok ?? false, checks: outcome?.checks ?? 0, error: outcome?.error ?? null, retried: Boolean(retry?.retried), retryKind: retry?.kind ?? null });
     }
     const aggregateAttempt = randomUUID();
     const record = {
@@ -216,7 +253,7 @@ export async function uiMain(suite, self) {
       let next = 0;
       const exits = [];
       await Promise.all(Array.from({ length: concurrency }, async () => {
-        while (!interrupted && next < cases.length) exits.push(await execute(cases[next++].id, sourceHash));
+        while (!interrupted && next < cases.length) { const index = next + 1; const id = cases[next++].id; exits.push(await execute(id, sourceHash, index)); }
       }));
       await aggregate(sourceHash, exits);
     }
@@ -226,6 +263,11 @@ export async function uiMain(suite, self) {
     for (const child of children) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* settled */ }
     for (const sig of ['SIGINT', 'SIGTERM']) process.off(sig, signal);
     if (interrupted) H.bad(suite + ' interrupted', 'Unattempted/aborted groups fail the aggregate, no skip');
+    const retryStats = retryLedger.stats();
+    console.log(retrySummaryLine(suite, retryStats));
+    for (const line of timeoutLines(retryStats)) console.log(line);
+    for (const line of forensicsLines(retryStats)) console.log(line);
+    H.setRetryStats(retryStats);
     process.exitCode = H.summary(suite) ? 0 : 1;
   }
 }

@@ -12,10 +12,17 @@
  *      authority 清单必须覆盖请求套件且 mode 与注入计划一致
  *   5. 按 #338 裁决给四个具名 FE 套件注入 E2E_MOCK_ONLY=1，并把每套件的
  *      mode/authority 打进汇总 + 落盘 `_authority-manifest.json`
- *   6. 套件级不是「一死就红」：`timeout` / `incomplete`（整套没有 results）自动重试 1 次，
- *      两次的 lastCase 并排打印（相同 = 确定性挂点，不同 = 抖动）；断言失败永不重试。
- *      实现在 lib/suite-budget.mjs + lib/suite-progress.mjs，由
- *      scripts/e2e/suite-budget-selftest.mjs 用真子进程钉住。
+ *   6. **两层重试并存**（判据只有一个来源，输出必须能分清是哪一层）：
+ *      · 套件级（#488）：`timeout` / `incomplete`（整套没有 results）自动重试 1 次，
+ *        两次的 lastCase 并排打印（相同 = 确定性挂点，不同 = 抖动）；断言失败永不重试。
+ *        实现在 lib/suite-budget.mjs + lib/suite-progress.mjs，由
+ *        scripts/e2e/suite-budget-selftest.mjs 用真子进程钉住。
+ *      · case 级（#483/#485）：f3 系套件把「首次 incomplete / 首次 timeout / 重试通过 /
+ *        重试仍无结论」写进 results JSON 的 `retries`，这里逐套件与全局各打一行（0 也打），
+ *        并把首次 incomplete 的现场取证目录带出来。判据在 fixtures/f3/f3-retry.mjs，
+ *        由 scripts/e2e/f3-retry-selftest.mjs 钉住。
+ *      两层互不替代：套件超预算 → 落 partial → 判 timeout → 重试 1 次；套件内部单条 case
+ *      死亡/空输出 → 判 incomplete → 取证 → 重试 1 次。断言失败在两层都永不重试。
  *
  * 用法：
  *   node scripts/e2e/parallel_runner.mjs              # 全量并行
@@ -408,14 +415,14 @@ async function runSerial(suites, runStartedAt) {
 	return results;
 }
 
-/** 重试后缀：只在真的重试过时出现（没有重试的套件行保持原样，不刷噪声）。 */
+/** 套件级重试后缀（#488）：只在真的重试过时出现。带「套件级」前缀，避免与 case 级账本混读。 */
 function retrySuffix(r) {
 	if (!r || !r.retried) return "";
-	if (r.recovered) return `（首次 ${r.attempts[0].kind} → 重试通过）`;
-	if (r.stuckSameCase === true) return `（${r.kind} ×${r.attempts.length}：两次都停在同一条「${r.lastCase}」）`;
+	if (r.recovered) return `（套件级：首次 ${r.attempts[0].kind} → 重试通过）`;
+	if (r.stuckSameCase === true) return `（套件级：${r.kind} ×${r.attempts.length}，两次都停在同一条「${r.lastCase}」）`;
 	if (r.stuckSameCase === false)
-		return `（${r.kind} ×${r.attempts.length}：两次停在不同条「${r.attempts.map((a) => a.lastCase ?? "?").join(" / ")}」）`;
-	return `（${r.kind} ×${r.attempts.length}）`;
+		return `（套件级：${r.kind} ×${r.attempts.length}，两次停在不同条「${r.attempts.map((a) => a.lastCase ?? "?").join(" / ")}」）`;
+	return `（套件级：${r.kind} ×${r.attempts.length}）`;
 }
 
 /** 逐 attempt 的现场明细：timeout 与重试过的套件才打（正常绿行不刷噪声）。 */
@@ -513,6 +520,9 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		const json = readJsonResult(r.suite, resultsDir);
 		const passCount = json?.passed ?? 0;
 		const failCount = json?.failed ?? 0;
+		// #483：套件自报的 case 级重试账本（只有 f3 系五个套件会写）。缺席 = 该套件没重试过。
+		// 与下面 #488 的 `attempts`/`retried`（**套件级**）是两个层，字段名不许混用。
+		const retries = json?.retries ?? null;
 		// #488：重试过就按「attempts 累加」算成本（重试花掉的时间也是这次 e2e 的钱）；
 		// 没重试时保持旧口径（套件自报优先，它更接近「被测工作量」）。
 		const durationMs = r.retried
@@ -597,7 +607,7 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 			passed: passCount,
 			failed: failCount,
 			durationMs,
-			// #488：超时/重试的现场（打印汇总与写 authority 清单都用得到）
+			// #488：套件级 timeout/重试的现场（打印汇总与写 authority 清单都用得到）
 			budget: r.budget,
 			budgetSource: r.budgetSource,
 			attempts: r.attempts ?? [],
@@ -609,6 +619,9 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 			totalCases: r.totalCases ?? null,
 			progress: r.progress ?? null,
 			skippedRetryReason: r.skippedRetryReason ?? null,
+			// #483：case 级重试账本（来自套件自报的 results JSON）。与上面的
+			// `attempts`/`retried`（套件级，#488）分开：两层各自计数，不许互相覆盖。
+			retries,
 			why,
 		});
 
@@ -642,7 +655,84 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		}
 	}
 
-	return { totalPass, totalFail, suiteSummary, failedSuites, problems };
+	return { totalPass, totalFail, suiteSummary, failedSuites, problems, retries: retryTotals(suiteSummary) };
+}
+
+// #483：重试计数必须能在汇总里一眼看到（0 也要打），否则重试会变成静默掩盖。
+// #485：timeout（硬预算 + 已落 fragment）与 incomplete 分开计数，并暴露「两次都停在同一步」。
+function retryTotals(suiteSummary) {
+	const withRetry = suiteSummary.filter((s) => s.retries);
+	const sum = (get) => withRetry.reduce((n, s) => n + (get(s.retries) || 0), 0);
+	return {
+		suites: withRetry.length,
+		retried: sum((r) => r.retried),
+		recovered: sum((r) => r.recovered),
+		exhausted: sum((r) => r.exhausted),
+		incompleteFirst: sum((r) => r.incompleteFirst),
+		timeoutFirst: sum((r) => r.timeoutFirst),
+		assertionFirst: sum((r) => r.assertionFirst),
+		timeoutsStuckSameStep: sum((r) => r.timeoutsStuckSameStep),
+	};
+}
+
+// 逐套件后缀：只在真的重试过时出现（没重试的套件行保持原样，不刷噪声）。
+// #483 追加：首次 incomplete 的**现场取证**目录必须跟在这一行里（不许静默）。
+function retryNote(retries) {
+	if (!retries || !retries.retried) return "";
+	const first = [];
+	if (retries.incompleteFirst) first.push(`${retries.incompleteFirst} 条首次 incomplete`);
+	if (retries.timeoutFirst) first.push(`${retries.timeoutFirst} 条首次 timeout`);
+	const bits = [`case 级：${retries.retried} 条首次无结论（${first.join(" + ") || "见明细"}）`];
+	if (retries.recovered) bits.push(`${retries.recovered} 条重试通过`);
+	if (retries.exhausted) bits.push(`${retries.exhausted} 条重试仍无结论`);
+	if (retries.timeoutsStuckSameStep) bits.push(`${retries.timeoutsStuckSameStep} 条两次都停在同一步`);
+	const dir = forensicsLabelOf(retries);
+	return `（${bits.join("、")}${dir ? `；现场取证: ${dir}` : ""}）`;
+}
+
+function forensicsLabelOf(retries) {
+	const first = retries?.forensics?.[0];
+	if (!first) return "";
+	return first.dir.endsWith("/") ? first.dir : `${first.dir}/`;
+}
+
+// 全局那行也要带上取证目录（只在真的有取证时）。
+function suiteSummaryForensicsLabel(suiteSummary) {
+	for (const s of suiteSummary) {
+		const label = forensicsLabelOf(s.retries);
+		if (label) return label;
+	}
+	return "";
+}
+
+// 逐条取证摘要（与套件 stdout 的 forensicsLine() 同形）：判断是否「越跑越死」（case 序号）。
+function forensicsDetailLines(retries) {
+	return (retries?.forensics || []).map(
+		(f, i) =>
+			`      ${i + 1}) ${String(f.caseId).padEnd(22)} #${f.caseIndex}   ` +
+			`exit=${f.exitCode ?? "?"} signal=${f.signal || "none"}  ` +
+			`chrom=${f.chromProcs} procs/${f.chromMb}MB  dmesg: (${f.dmesg})  oom_kill=${f.oomKill ?? "?"}  ` +
+			`取证: ${f.file}`,
+	);
+}
+
+// #485：timeout 的卡点摘要（与套件 stdout 的 timeoutLines() 同形）：
+// 两次 attempt 的 lastStep 并排 —— 相同就是确定性挂点，不同就是抖动/环境压力。
+function timeoutDetailLines(retries) {
+	return (retries?.timeouts || []).map((t, i) => {
+		const attempts = t.attempts
+			.map(
+				(a, n) =>
+					`a${n + 1} ${a.kind}(${a.elapsedMs ?? "?"}ms/${a.budgetMs ?? "?"}ms) ` +
+					`停在「${a.lastStep ?? "(无 PASS 步骤)"}」` +
+					(a.pendingStep ? `，正在等「${a.pendingStep}」` : ""),
+			)
+			.join(" · ");
+		const judgement = t.stuckSameStep
+			? `两次都停在同一步「${t.steps[0]}」`
+			: `两次停在不同步（${t.steps.map((s) => s || "(无)").join(" / ")}）`;
+		return `      ${i + 1}) ${String(t.id).padEnd(22)} ${attempts} ⇒ ${judgement}`;
+	});
 }
 
 // authority 清单校验（#338）：清单是「这次到底验了什么」的证据文件。
@@ -785,6 +875,24 @@ async function main() {
 	);
 	console.log(`  断言通过: ${agg.totalPass}`);
 	console.log(`  断言失败: ${agg.totalFail}`);
+	// #483 case 级重试计数（永远打印：正常全绿也要能证明「没有 case 被无条件重跑」）。
+	const rt = agg.retries;
+	const rtDir = suiteSummaryForensicsLabel(agg.suiteSummary);
+	console.log(
+		`  case 级重试（incomplete/timeout → 自动重试 1 次；断言失败永不重试）: 首次 incomplete ${rt.incompleteFirst} 条` +
+			` · 首次 timeout ${rt.timeoutFirst} 条（两次都停在同一步 ${rt.timeoutsStuckSameStep} 条）` +
+			` · 重试通过 ${rt.recovered} · 重试仍无结论 ${rt.exhausted}` +
+			`（${rt.suites} 个套件上报了重试账本${rtDir ? `；现场取证: ${rtDir}` : ""}）`,
+	);
+	// #488 的套件级重试计数（同样永远打印，零重试也打）—— 两层各占一行，才分得清是谁吸收了失败。
+	const suiteRetried = agg.suiteSummary.filter((s) => s.retried);
+	console.log(
+		`  套件级重试（timeout/incomplete → 自动重试 1 次；断言失败永不重试）: ${suiteRetried.length} 个套件` +
+			(suiteRetried.length
+				? `（${suiteRetried.map((s) => `${s.suite} ${s.attempts.map((a) => a.kind).join("→")}`).join(" · ")}；` +
+					`账本 ${path.relative(ROOT, path.join(RESULTS_DIR, "_suite-retries"))}/）`
+				: "（没有套件需要重试）"),
+	);
 	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
 	const manifestFile = writeAuthorityManifest(agg, suitesToRun);
 	// 从**磁盘读回**再校验：清单是证据文件，写进去了但内容/覆盖面不对就等于假证据。
@@ -818,10 +926,14 @@ async function main() {
 					: `已完成 ${s.completedCases}${s.totalCases === null ? "" : `/${s.totalCases}`} 条`
 				: `${s.passed}通过/${s.failed}失败`;
 		console.log(
-			`  ${statusIcon} ${s.suite.padEnd(18)} ${counts}  ${durStr}  mode=${s.mode}${retrySuffix(s)}`,
+			`  ${statusIcon} ${s.suite.padEnd(18)} ${counts}${retryNote(s.retries)}  ${durStr}  mode=${s.mode}${retrySuffix(s)}`,
 		);
-		// 重试过的套件把两次 attempt 并排打出来（“两次是否停同一条”是机器可判的证据）。
+		// 套件级（#488）：重试过的套件把两次 attempt 并排打出来（“两次是否停同一条”是机器可判的证据）。
 		for (const line of attemptDetailLines(s)) console.log(line);
+		// case 级（#485）：两次 attempt 的 lastStep 并排；未重试的套件不会命中。
+		for (const line of timeoutDetailLines(s.retries)) console.log(line);
+		// case 级（#483）：首次 incomplete 的现场取证（零重试不打印）。
+		for (const line of forensicsDetailLines(s.retries)) console.log(line);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
 		// 让人误判成超时/环境问题，实际是造数时把 undefined 绑进了 sqlite。
@@ -833,16 +945,7 @@ async function main() {
 		}
 	}
 
-	// 重试账本：有重试就指出去，让「被重试吸收了」不是静默的。
-	const retriedSuites = agg.suiteSummary.filter((s) => s.retried);
-	if (retriedSuites.length > 0) {
-		console.log("");
-		console.log(
-			`  套件级重试: ${retriedSuites.length} 个（账本 ${path.relative(ROOT, path.join(RESULTS_DIR, "_suite-retries"))}/）` +
-				`：${retriedSuites.map((s) => `${s.suite} ${s.attempts.map((a) => a.kind).join("→")}`).join(" · ")}`,
-		);
-	}
-
+	// 套件级重试账本已在汇总头打印（含账本路径），这里只补重试后仍红的套件名。
 	if (agg.failedSuites.length > 0) {
 		console.log("");
 		console.log(`  失败套件: ${agg.failedSuites.join(", ")}`);

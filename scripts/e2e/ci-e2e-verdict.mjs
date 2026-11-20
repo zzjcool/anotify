@@ -536,6 +536,23 @@ function selfTest() {
 				: `输出缺 ${[...missing, ...missingErr].join("、")}`;
 		console.log(`  ❌ ${c.name}：${why}\n${(c.run.stderr || "").trim()}`);
 	}
+	// #483：重试自测（真起子进程）。放在本文件而不是另开一个 make 目标 ——
+	// 「incomplete 重试 1 次、断言永不重试」本身就是本裁决器在回答的问题。
+	const retrySelftest = spawnSync(
+		process.execPath,
+		[path.join(ROOT, "scripts/e2e/f3-retry-selftest.mjs")],
+		{ encoding: "utf8" },
+	);
+	if (retrySelftest.status === 0) {
+		console.log("  ✅ #483 重试自测：incomplete 重试 1 次 / 断言不重试 / 连续两次 incomplete 仍红");
+	} else {
+		failed++;
+		console.log(
+			`  ❌ #483 重试自测失败（exit=${retrySelftest.status}）\n` +
+				`${retrySelftest.stdout || ""}${retrySelftest.stderr || ""}`,
+		);
+	}
+
 	rmSync(dir, { recursive: true, force: true });
 	// #488：套件级 timeout/重试的自测（真起子进程、秒级）。和上面的判定自测放在一起：
 	// 「有现场的 timeout 不许被白名单容忍」与「现场真的先落盘再发信号」是同一个结论的两面。
@@ -560,7 +577,8 @@ function selfTest() {
 	}
 	console.log(
 		"\n✅ e2e 判定自测通过（清单内容忍 / 清单外拦 / 清单过期只提示；" +
-			"`*` 只覆盖整套、不放行具体 case；timeout 是独立一档、不可被白名单容忍；CLI 端到端同样成立）",
+			"`*` 只覆盖整套、不放行具体 case；timeout 是独立一档、不可被白名单容忍；CLI 端到端同样成立；" +
+			"#483 case 级重试分层成立）",
 	);
 	return 0;
 }

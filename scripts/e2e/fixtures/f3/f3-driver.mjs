@@ -16,6 +16,32 @@ import { bringUpFixtureNode, deployApplied, capRef } from './f3-node.mjs';
 export const ROOT = H.ROOT_DIR;
 export const TEAM = path.join(ROOT, 'scripts/e2e/fixtures/f3');
 export const OUT = path.join(TEAM, 'screenshots/f3');
+
+/* #485 —— 有界等待：任何「宿主侧 await」都必须有 deadline。
+ *
+ * 为什么需要这层：Playwright 的 `locator.waitFor`/`click` 有默认超时，但
+ * `page.evaluate`（含 `locator.isVisible`）**没有**——它等的是页面里的 promise。
+ * 一旦页面卡在某个 fetch / 主线程长任务上，`evaluate` 可以永远不返回：
+ * 于是 case 既不会失败也不会退出，52s 硬杀后什么都没留下。
+ * 这里给所有 evaluate 加有界 deadline，并把「在等什么、等了多久」写进错误，
+ * 让失败从「什么都没发生」变成一条可读的断言错误。**这不是放宽断言**：
+ * 超时仍然让 case 失败，只是失败得快、说得清。
+ */
+export const WAIT_DEADLINE_MS = Number(process.env.F3_WAIT_DEADLINE_MS || 15000);
+const PAGE_FETCH_TIMEOUT_MS = Number(process.env.F3_PAGE_FETCH_TIMEOUT_MS || 30000);
+export function withDeadline(label, promise, ms = WAIT_DEADLINE_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('WAIT_TIMEOUT ' + label + '：等了 ' + ms + 'ms 仍未返回（有界 deadline；不是放宽断言）'));
+    }, ms);
+    // 刻意不 unref：如果只有这条 deadline 在撑着，进程必须活到它触发，
+    // 否则会「什么都没等到就正常退出」（比挂死更难查）。
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 export const LANGS = ['zh-CN', 'en', 'ja', 'es'];
 export const PAGES = ['admin','capabilities','capability','cli-auth','docs','events','index','keys','login','message','namespace','namespaces','node','nodes','passkey-enroll','playbook','playbooks','receivers','security','source','source-detail','sources','trace'];
 // 401 → 登录页那条用例覆盖的页面。capability.html 是**受保护的深层链接页**：
@@ -667,12 +693,16 @@ export async function openDriver(id, options = {}) {
   const stop = () => stopped ||= (async () => {
     // Preserve a failed controller's catch/finally scene before closing its doc.
     // Collection must not replace the existing functional failure on cleanup.
+    // #485：清理阶段同样不许无界等待 —— 页面/浏览器卡住时，case 仍然要能把结论落盘。
     if (archive && page && !page.isClosed()) {
-      try { await archive(); }
+      try { await withDeadline('stop.archive '+id, archive()); }
       catch (error) { (report.traceArchiveErrors ||= []).push(traceEvidenceTools().error(error)); }
     }
-    if (shared) { if(context) await context.close(); }
-    else { if (browser) await browser.close(); if (server) { for (const held of server.fixtures?.__holdNodes || []) held.close(); server.fixtures?.__holdNode?.close(); await server.stop(); } }
+    if (shared) { if(context) { try { await withDeadline('stop.context.close '+id, context.close()); } catch (error) { (report.traceArchiveErrors ||= []).push(String(error)); } } }
+    else {
+      if (browser) { try { await withDeadline('stop.browser.close '+id, browser.close()); } catch (error) { (report.traceArchiveErrors ||= []).push(String(error)); } }
+      if (server) { for (const held of server.fixtures?.__holdNodes || []) held.close(); server.fixtures?.__holdNode?.close(); await server.stop(); }
+    }
     await persistReport(report);
   })();
   try {
@@ -691,7 +721,11 @@ export async function openDriver(id, options = {}) {
       server.fixtures = fixtures;
     }
     browser = shared ? shared.browser : await chromium.launch({ executablePath:chromePath(),headless:true,args:['--no-sandbox', '--disable-dev-shm-usage'] });
-    context = await browser.newContext({viewport:{width:1440,height:900},locale:options.lang||'en',reducedMotion:'reduce',acceptDownloads:true});
+    // #485：reducedMotion 可被 case 选项覆盖（默认仍是 reduce）。Chrome 153+ 的
+    // 减少动效下，`.menu` 的 0.001ms 过渡 + transitionend→reflowMenus 会形成同步重排
+    // 死循环（产品 bug，见 docs/reports/e2e-timeout-diagnosable.md）；不验动效偏好的
+    // case 用正常动效跑，避免把「打不开菜单」误当成 e2e 超时。
+    context = await browser.newContext({viewport:{width:1440,height:900},locale:options.lang||'en',reducedMotion:options.reducedMotion||'reduce',acceptDownloads:true});
     await H.mockExternalCdn(context);
     if (!mock) await context.addCookies([{name:'anotify_session',value:server.session,url:server.base}]);
     await context.addInitScript({ content: '(' + installTraceEvidence.toString() + ')(' + traceEvidenceTools.toString() + ');' });
@@ -768,9 +802,13 @@ export async function openDriver(id, options = {}) {
               for(const n of snapshot.nodes||[]) delete n.identityToken;
               sessionStorage.setItem('f3-facts',JSON.stringify(snapshot));
             }
+            // #483 顺手修的执行层竞态：`httpStatus` 先落下、`result` 后解析，
+            // 只等状态码的调用方会读到「有状态、没有 body」的半条记录（yaml-create
+            // 的 brokenPost.result 曾因此变 undefined）。settled 只在 body 处理完之后方为 true。
+            call.settled=true;
             window.__f3TraceResponse?.(call,'return');
             return response;
-          } catch(error) {call.error=String(error);window.__f3TraceResponse?.(call,'throw');throw error;}
+          } catch(error) {call.error=String(error);call.settled=true;window.__f3TraceResponse?.(call,'throw');throw error;}
         };
         exported=value;
         window.__f3TraceAttach?.(value);
@@ -793,11 +831,12 @@ export async function openDriver(id, options = {}) {
       report.errors.push(msg.text());
     });
     page.on('requestfailed',r=>{if(!r.url().startsWith('http')||r.failure()?.errorText==='net::ERR_ABORTED')return;report.errors.push('network '+r.url()+' '+r.failure()?.errorText);});
-    const calls=()=>page.evaluate(()=>window.__f3Calls);
+    const calls=()=>withDeadline('page calls '+id, page.evaluate(()=>window.__f3Calls));
     archive=async()=>{
       if(!page.url().startsWith(server.base)) return;
       // One existing read, bound to this document; save before calls are cleared.
-      const {rows,trace}=await page.evaluate(()=>({rows:window.__f3Calls,trace:window.__f3TraceSnapshot?.()}));
+      // #485：失败路径也会调 archive()；页面卡住时 evaluate 无内建超时，必须有界。
+      const {rows,trace}=await withDeadline('archive page.evaluate '+id, page.evaluate(()=>({rows:window.__f3Calls,trace:window.__f3TraceSnapshot?.()})));
       if(trace) {
         const docs=report.traceDocuments ||= [];
         const previous=docs.find(d=>d.documentId===trace.documentId);
@@ -813,16 +852,22 @@ export async function openDriver(id, options = {}) {
       await page.goto(server.base+(lang==='zh-CN'?'/':'/'+lang+'/')+file+'.html'+(query?'?'+query:''),{waitUntil:'domcontentloaded'});
       await page.waitForFunction(()=>!!window.Anotify && !document.querySelector('[aria-busy="true"]'));
     };
-    const req=(url,opts)=>page.evaluate(async([url,opts])=>Anotify.api(url,opts),[url,opts]);
+    // #485：宿主侧 deadline + 页面侧 AbortSignal.timeout 双层。页面 fetch 永不返回时，
+    // 报错会写清「等的是哪个 URL、等了多久」，而不是让 case 挂死到硬杀。
+    const req=(url,opts)=>withDeadline('page GET/PATCH '+url, page.evaluate(async([url,opts,timeoutMs])=>{
+      const signal = typeof AbortSignal!=='undefined' && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
+      return Anotify.api(url, {...opts, ...(signal && !(opts&&opts.signal) ? {signal} : {})});
+    },[url,opts,PAGE_FETCH_TIMEOUT_MS]));
     // 204/空体是合法成功（v4 的 DELETE 一律 204，契约明文"无响应体"）：无条件 r.json()
     // 会把这个成功响应抛成 SyntaxError，看起来像产品坏了。
-    const response=(url,body,method='GET')=>page.evaluate(async([url,body,method])=>{
-      const r=await fetch(url,{method,...(body==null?{}:{body:JSON.stringify(body),headers:{'Content-Type':'application/json'}})});
+    const response=(url,body,method='GET')=>withDeadline('page response '+method+' '+url, page.evaluate(async([url,body,method,timeoutMs])=>{
+      const signal = typeof AbortSignal!=='undefined' && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
+      const r=await fetch(url,{method,signal,...(body==null?{}:{body:JSON.stringify(body),headers:{'Content-Type':'application/json'}})});
       const text=await r.text();
       let parsed=null;
       if(text.trim()!==''){ try{ parsed=JSON.parse(text); }catch{ parsed={unparsed:text}; } }
       return {status:r.status,body:parsed};
-    },[url,body,method]);
+    },[url,body,method,PAGE_FETCH_TIMEOUT_MS]));
     // api 是**宿主侧**的真实 HTTP 读（不经页面、不进 __f3Calls）：用例在打开页面前
     // 需要先取到真实事实当期望值时用。mock 权威下没有后端，调用即错。
     const api=(url,opts={})=>{
