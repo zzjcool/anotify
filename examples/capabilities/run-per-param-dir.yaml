@@ -5,13 +5,17 @@
 # 所以 workDir 里写 $(params.project)，而不是 $(vars.SOURCE_ROOT)：
 #
 #   params.properties.project   ← 必须先声明；workDir 引用未声明的参数 = 400 undefined_param_ref
-#   pattern                     ← 参数契约：控制台与调用方按它校验参数值
+#   pattern                     ← 参数契约：写入期拒坏正则，试跑/派发期校验参数值
 #   workDir: /srv/work/$(params.project)   ← 绝对、规范；展开后仍要求目录已存在
 #
-# pattern 的边界（照实说）：中枢派发期的参数对齐只执行 type / required / default 子集
-# （internal/route/params.go 明确忽略 pattern），所以 `..` / `/` **不是**服务端 400。
-# 真正的兜底在节点侧：展开后的路径必须是规范绝对路径且真实存在，否则任务以
-# workdir_unavailable 失败 —— 不会逃逸到 /srv/work 之外。
+# pattern 的语义（RE2，Go regexp）：只约束**字符串**值；匹配是子串语义，整串匹配要自己写
+# ^...$。试跑参数不匹配 → 400（details.causes[].field = params.project）；源事件 / emit 的
+# 参数不匹配 → pruned/param_type，不建任务。正则本身编不过、不是字符串或超过长度上限 →
+# 保存能力时就 400（param_pattern_invalid，field 指到
+# spec.params.properties.project.pattern），不会把坏正则存进库。
+# 节点侧仍有兜底：展开后的路径必须是规范绝对路径且真实存在，否则任务以
+# workdir_unavailable 失败 —— `..` / `/` 在派发前就被这个 pattern 挡下（剪枝），
+# 不会带着越界值到节点。
 #
 # 目录归你管，不归节点管：
 #   · workDir 必须**事先存在**且是绝对规范路径；节点**不创建**它，不存在时任务以

@@ -26,7 +26,7 @@
 //	minItems / maxItems      数组长度
 //	enum                     取值必须在此列表内
 //	minLength / maxLength    字符串长度
-//	pattern                  字符串正则（RE2，编译失败视为 schema 有问题）
+//	pattern                  字符串正则（RE2，编译失败或超长视为 schema 有问题）
 //	minimum / maximum        数值范围
 //	minProperties/maxProperties 对象字段数
 package schema
@@ -38,6 +38,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // FromRaw 解析一份原始 schema。
@@ -404,7 +405,7 @@ func enumContains(list []any, want any) bool {
 // 这是「可以安全执行用户提供的 pattern」的前提（不变量 I6 的边界内）。
 // 编译失败视为 schema 本身有问题 → 拒绝（不能拿坏 pattern 静默放行）。
 func matchPattern(pattern, s, path string) string {
-	re, err := regexp.Compile(pattern)
+	re, err := CompilePattern(pattern)
 	if err != nil {
 		return fmt.Sprintf("%s: invalid pattern %q in params_schema: %v", path, pattern, err)
 	}
@@ -412,4 +413,48 @@ func matchPattern(pattern, s, path string) string {
 		return fmt.Sprintf("%s: %q does not match pattern %q", path, s, pattern)
 	}
 	return ""
+}
+
+// MaxPatternLen 是一条 pattern 的字节长度上限。
+//
+// RE2 天然没有灾难性回溯，但「编译用户提供的正则」仍有成本：长度是编译代价与
+// 缓存键大小的上界。超长按 schema 不可用拒绝，不截断（截断会静默改变语义）。
+const MaxPatternLen = 1024
+
+// patternCacheEntries 是编译缓存的上限。
+//
+// 缓存键是用户写的 pattern；不设上限时，不停更换 pattern 的调用方可以把进程内存
+// 变成无界映射。满了不再写入（已缓存的命中仍然有效）：真实 schema 的 pattern 集合
+// 是稳定的，淘汰只会让热路径反复编译。
+const patternCacheEntries = 256
+
+var (
+	patternMu    sync.RWMutex
+	patternCache = make(map[string]*regexp.Regexp, patternCacheEntries)
+)
+
+// CompilePattern 编译一条 RE2 pattern（带长度上限与进程内缓存）。
+//
+// 这是全仓编译用户 pattern 的唯一入口：这里 Value 的 pattern 校验与 route 的
+// 派发期参数对齐共用它，长度上限与 RE2 语义才不会分叉。
+func CompilePattern(pattern string) (*regexp.Regexp, error) {
+	if len(pattern) > MaxPatternLen {
+		return nil, fmt.Errorf("pattern 长度 %d 字节，超过上限 %d", len(pattern), MaxPatternLen)
+	}
+	patternMu.RLock()
+	re, ok := patternCache[pattern]
+	patternMu.RUnlock()
+	if ok {
+		return re, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	patternMu.Lock()
+	if len(patternCache) < patternCacheEntries {
+		patternCache[pattern] = re
+	}
+	patternMu.Unlock()
+	return re, nil
 }

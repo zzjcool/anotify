@@ -3,10 +3,12 @@ package route
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/anotify/internal/artifact"
 	"github.com/zzjcool/anotify/internal/protocol"
+	"github.com/zzjcool/anotify/internal/schema"
 )
 
 func TestPrepareParamsPermissiveSchema(t *testing.T) {
@@ -134,4 +136,85 @@ var _ = func() bool {
 	_ = context.Background
 	_ = artifact.DefaultMaxAttempts
 	return true
+}
+
+// ---------- pattern（#475） ----------
+
+// patternParamsSchema 覆盖三个不同位置（顶层 / 嵌套 / 深嵌套）与两条边界：
+// pattern 只约束字符串（integer 不受约束）、pattern 只对字符串检查。
+const patternParamsSchema = `{
+	"type":"object",
+	"properties":{
+		"project":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},
+		"meta":{"type":"object","properties":{"dir":{"type":"string","pattern":"^[a-z]+$"}}},
+		"tree":{"type":"object","properties":{
+			"root":{"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z]+$"}}}
+		}},
+		"count":{"type":["integer","string"],"pattern":"^n-[0-9]+$"},
+		"note":{"pattern":"^[a-z]+$"}
+	}
+}`
+
+func TestPrepareParamsPatternAcceptsMatchingValues(t *testing.T) {
+	cases := []map[string]any{
+		{"project": "a-b1"},
+		{"meta": map[string]any{"dir": "abc"}},
+		{"tree": map[string]any{"root": map[string]any{"name": "abc"}}},
+		{"count": 7},
+		{"count": "n-7"},
+		{"note": 3}, // pattern 只约束字符串：非 string 值不判
+	}
+	for i, input := range cases {
+		if _, prune := PrepareParams(json.RawMessage(patternParamsSchema), input); prune != nil {
+			t.Fatalf("合法输入 #%d %v 被拒: %+v", i, input, prune)
+		}
+	}
+}
+
+func TestPrepareParamsPatternRejectsWithExactField(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+		field string
+	}{
+		{"顶层", map[string]any{"project": "a/b"}, "params.project"},
+		{"嵌套", map[string]any{"meta": map[string]any{"dir": "A"}}, "params.meta.dir"},
+		{"深嵌套", map[string]any{"tree": map[string]any{"root": map[string]any{"name": "9x"}}}, "params.tree.root.name"},
+		{"字符串值的 pattern", map[string]any{"count": "x"}, "params.count"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, prune := PrepareParams(json.RawMessage(patternParamsSchema), tc.input)
+			if prune == nil {
+				t.Fatalf("输入 %v 应被拒", tc.input)
+			}
+			if prune.Reason != protocol.ReasonParamType {
+				t.Fatalf("reason = %q，want param_type", prune.Reason)
+			}
+			if prune.Field != tc.field {
+				t.Fatalf("field = %q，want %q", prune.Field, tc.field)
+			}
+			if !strings.Contains(prune.Detail, "pattern") || !strings.Contains(prune.Detail, "实际") {
+				t.Fatalf("detail 应同时说明期望 pattern 与实际值，得到 %q", prune.Detail)
+			}
+		})
+	}
+}
+
+func TestPrepareParamsBadPatternIsSchemaPrune(t *testing.T) {
+	long := strings.Repeat("a", schema.MaxPatternLen+1)
+	cases := []string{
+		`{"type":"object","properties":{"p":{"type":"string","pattern":"["}}}`,
+		`{"type":"object","properties":{"p":{"pattern":3}}}`,
+		`{"type":"object","properties":{"p":{"type":"string","pattern":"` + long + `"}}}`,
+	}
+	for i, raw := range cases {
+		_, prune := PrepareParams(json.RawMessage(raw), map[string]any{"p": "x"})
+		if prune == nil || prune.Reason != protocol.ReasonParamSchema {
+			t.Fatalf("坏 pattern #%d 应剪枝 param_schema，得到 %+v", i, prune)
+		}
+		if !strings.Contains(prune.Detail, "pattern") {
+			t.Fatalf("坏 pattern #%d 的 detail 应点名 pattern，得到 %q", i, prune.Detail)
+		}
+	}
 }

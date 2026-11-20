@@ -73,6 +73,13 @@ type CapabilityTestReceipt struct {
   - `params`：按 `spec.params` 的 JSON Schema 校验（`route.PrepareParams`）；不合 schema → `400`
     `reason=BadRequest`（或既有约定码），`details.causes[]` 每条 `{reason, field, message}`，
     `field` 是**字段路径**（如 `params.diff`）。
+  - `pattern`（#475）：`spec.params` 里的 `pattern` 是 RE2 正则，只约束字符串值
+    （非 string 值不判；整串匹配要在 pattern 里自己写 `^...$`，RE2 默认子串匹配）。
+    值不匹配 → 同一个 400，`details.causes[].field` 指到 `params.<路径>`（嵌套如
+    `params.meta.dir`），message 同时给期望的 pattern 与实际值。正则本身编不过 /
+    不是字符串 / 超过长度上限 → **保存能力时**就 400 `param_pattern_invalid`，
+    `field` 指到 `spec.params.properties.<name>.pattern`。派发期（源事件 / emit）
+    同样执行 `pattern`：不匹配记 `param_type` 剪枝、不建任务。
   - `nodes`：候选节点白名单（节点名或 id），只用于回执 `warnings` 的判定；显式给了但解析不到 → `404`。
     **它不改变派发目标**：v4 在 `lease.grant` 时按 eligible 选点，任务行不钉节点（已写入 OpenAPI 描述）。
 - `200` → `CapabilityTestReceipt`（**不是** 202；与 `fireSource` 同一状态码语义）：
