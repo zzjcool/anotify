@@ -16,22 +16,22 @@
 
 | 步骤 | 状态 | 落点 | 证据 |
 | --- | --- | --- | --- |
-| ① 一份文档层（序列化 / 反序列化 / 字段顺序 / 标量转义） | 本次交付 | `web/yamldoc.js`（唯一实现，见 §2） | `git grep -c "yamlScalar" -- web web-src` 只剩历史注释；`scripts/check-yaml-doc.mjs` 的 `dup-serializer` 判据 |
-| ② 唯一写入口 `PUT …/yaml` | 已在 `#480`/`#476` 落地，本次未改语义 | `web-src/pages/node.html:481`、`web-src/pages/namespace.html:163`、`web-src/pages/admin.html` 的系统保留期例外 | `make check-config-writes`（≈0 处资源级 `/config` 写）；e2e `vars_ui` 的「保存请求只打到 …/yaml」 |
+| ① 一份文档层（序列化 / 反序列化 / 字段顺序 / 标量转义） | 本次交付 | `web/yamldoc.js`（唯一实现，见 §2） | `git grep -c "yamlScalar" -- web web-src` 0 命中；`scripts/check-yaml-doc.mjs` 的 `dup-serializer` 判据 |
+| ② 唯一写入口 `PUT …/yaml` | 已在 `#480`/`#476` 落地，本次未改语义 | `web-src/pages/node.html:473`、`web-src/pages/namespace.html:154`、`web-src/pages/admin.html` 的系统保留期例外 | `make check-config-writes`（≈0 处资源级 `/config` 写）；e2e `vars_ui` 的「保存请求只打到 …/yaml」 |
 | ③ 统一组件/模板（可视化表单与原始编辑共用同一份文档） | 本次交付 | 两个页面都只调 `YD.edit` / `YD.render` / `YD.path`（见 §3 调用点表） | `scripts/yamldoc.test.mjs` 的「页面接线」用例 + `check-yaml-doc` 的 `doc-literal` 判据 |
 
 ## 2. 第 1 步：`web/yamldoc.js` 的 API 与规则
 
 | 出口 | 行 | 作用 |
 | --- | --- | --- |
-| `scalar(v)` | `web/yamldoc.js:54` | **唯一一份**标量转义：安全形状裸写，其余写 JSON 字符串（JSON 的双引号标量就是合法 YAML） |
-| `render(kind, model)` | `web/yamldoc.js:375` | **唯一一份**「模型 → 文档文本」：块映射/块序列/空集合 `{}`·`[]`/块标量 `\|`/多行正文 |
-| `parse(kind, text)` | `web/yamldoc.js:397` | **唯一一份**「文档文本 → 模型」：块映射、块序列、流式标量集合、单双引号、块标量、注释；拒绝集 = 折行块 `>`、锚点/别名、自定义 tag、多文档、复杂键、重复键、制表符缩进 |
-| `edit(kind, text, patch)` | `web/yamldoc.js:791` | 表单改一处的**完整动作**：读服务端原文 → 只改 patch 的键 → 重新序列化。`problems` 非空时返回空文本（调用方不得写） |
-| `merge(base, patch)` | `web/yamldoc.js:750` | 通用深合并（只用于「从零攒一份」的兜底路径） |
-| `patchObject` | `web/yamldoc.js:772` | 按 kind 表分层打补丁：**结构**节点（`spec`/`metadata`/`limits`）递归，**值**节点（`vars`/`perCapability`/`namespaces`/`tags`）整份替换 |
-| `KINDS` | `web/yamldoc.js:227` | 每种文档的字段顺序与省略规则（`Node` / `Namespace` / `Capability` / `Source` / `AnodeConfig`） |
-| `path(kind, name)` | `web/yamldoc.js:810` | 该资源的文档端点（写入口永远是这个 `…/yaml`） |
+| `scalar(v)` | `web/yamldoc.js:22` | **唯一一份**标量转义：安全形状裸写，其余写 JSON 字符串（JSON 的双引号标量就是合法 YAML） |
+| `render(kind, model)` | `web/yamldoc.js:291` | **唯一一份**「模型 → 文档文本」：块映射/块序列/空集合 `{}`·`[]`/块标量 `\|`/多行正文 |
+| `parse(kind, text)` | `web/yamldoc.js:614` | **唯一一份**「文档文本 → 模型」：块映射、块序列、流式标量集合、单双引号、块标量、注释；拒绝集 = 折行块 `>`、锚点/别名、自定义 tag、多文档、复杂键、重复键、制表符缩进 |
+| `edit(kind, text, patch)` | `web/yamldoc.js:660` | 表单改一处的**完整动作**：读服务端原文 → 只改 patch 的键 → 重新序列化。`problems` 非空时返回空文本（调用方不得写） |
+| `merge(base, patch)` | `web/yamldoc.js:628` | 通用深合并（只用于「从零攒一份」的兜底路径） |
+| `patchObject` | `web/yamldoc.js:644` | 按 kind 表分层打补丁：**结构**节点（`spec`/`metadata`/`limits`）递归，**值**节点（`vars`/`perCapability`/`namespaces`/`tags`）整份替换 |
+| `KINDS` | `web/yamldoc.js:162` | 每种文档的字段顺序与省略规则（`Node` / `Namespace` / `Capability` / `Source` / `AnodeConfig`） |
+| `path(kind, name)` | `web/yamldoc.js:678` | 该资源的文档端点（写入口永远是这个 `…/yaml`） |
 
 四条规则值得单独记下来（改之前先读）：
 
@@ -60,34 +60,29 @@
 
 | 文件:行 | 调的是什么 | 改之前是什么 |
 | --- | --- | --- |
-| `web-src/layouts/base.html:118` | 每页同步加载 `/yamldoc.js` | —（没有这一层） |
-| `web-src/pages/node.html:431` | `const YD = window.AnotifyYamlDoc` | — |
-| `web-src/pages/node.html:435` | `YD.parse('Node', 服务端原文)` → 表单模型 | `draftDoc()`：从 `/config` 投影攒草稿，缺 `tags` |
-| `web-src/pages/node.html:442` | `YD.edit('Node', 原文, {spec:{vars}})` → 表格保存的文本 | `docToYAML(draftDoc())`（页面自带的 4 个函数） |
-| `web-src/pages/node.html:472` | `YD.render('Node', model)` → 「按当前配置重写」 | 同上 |
-| `web-src/pages/node.html:459` / `:481` | `YD.path('Node', name)`（GET / PUT 同一个端点） | 手拼 `path + '/yaml'` |
-| `web-src/pages/namespace.html:145` | `YD.edit('Namespace', 原文, {metadata:{…}, spec:{vars}})` | `namespaceYAMLText()`：手拼 apiVersion/kind/metadata/spec 行 |
-| `web-src/pages/namespace.html:142` | `YD.render` + `YD.merge`（文档还没加载时的最小文档兜底） | 同上 |
-| `web-src/pages/namespace.html:163` / `:506` | `YD.path('Namespace', scope)` | `nsYamlPath()` / 手拼字符串 |
-| `web/mock.js:2684` | `renderDoc(kind, doc)`（薄适配，排版全交给文档层） | `toYaml` + `yamlScalar` + `yamlLines`（第三份发射器） |
-| `web/mock.js:2694` / `:2701` / `:3180` / `:3236` | Capability / Source / Node / Namespace 四类文档 | 手拼行 + 自带 `nsYAMLScalar` |
-| `web/vars-table.js:174` | 只有 `rowsToVars`（行 → 映射），**不再序列化** | `yamlScalar` + `varsToYAMLLines` |
+| `web-src/layouts/base.html:113` | 每页同步加载 `/yamldoc.js` | —（没有这一层） |
+| `web-src/pages/node.html:428` | `const YD = window.AnotifyYamlDoc` | — |
+| `web-src/pages/node.html:430` | `YD.parse('Node', 服务端原文)` → 表单模型 | `draftDoc()`：从 `/config` 投影攒草稿，缺 `tags` |
+| `web-src/pages/node.html:435` | `YD.edit('Node', 原文, {spec:{vars}})` → 表格保存的文本 | `docToYAML(draftDoc())`（页面自带的 4 个函数） |
+| `web-src/pages/node.html:462` | `YD.render('Node', model)` → 「按当前配置重写」 | 同上 |
+| `web-src/pages/node.html:453` / `:473` | `YD.path('Node', name)`（GET / PUT 同一个端点） | 手拼 `path + '/yaml'` |
+| `web-src/pages/namespace.html:141` | `YD.edit('Namespace', 原文, {metadata:{…}, spec:{vars}})` | `namespaceYAMLText()`：手拼 apiVersion/kind/metadata/spec 行 |
+| `web-src/pages/namespace.html:154` / `:494` | `YD.path('Namespace', scope)` | `nsYamlPath()` / 手拼字符串 |
+| `web/mock.js:2680` | `renderDoc(kind, doc)`（薄适配，排版全交给文档层） | `toYaml` + `yamlScalar` + `yamlLines`（第三份发射器） |
+| `web/mock.js:2686` / `:2694` / `:3171` / `:3226` | Capability / Source / Node / Namespace 四类文档 | 手拼行 + 自带 `nsYAMLScalar` |
+| `web/vars-table.js:160` | 只有 `rowsToVars`（行 → 映射），**不再序列化** | `yamlScalar` + `varsToYAMLLines` |
 
-复算（`web/**` 里只剩历史说明；`web/vars-table.js` 的那一条是「本文件曾经自带一份
-`yamlScalar` / `varsToYAMLLines`」这句中文注释）：
+复算（旧实现的三个名字在 `web/**` 里一处都不剩；注释按密度棘轮清掉之后连「历史上曾经
+有过」的说明也不再保留 —— 行为以代码与 `scripts/yamldoc.test.mjs` 为准）：
 
 ```console
-$ git grep -c "yamlScalar" -- web web-src
-web/vars-table.js:1
-web/yamldoc.js:2
-$ git grep -c "docToYAML\|namespaceYAMLText\|varsToYAMLLines" -- web web-src
-web/vars-table.js:1
-web/yamldoc.js:2
+$ git grep -c "yamlScalar" -- web web-src        # 0 命中
+$ git grep -c "docToYAML\|namespaceYAMLText\|varsToYAMLLines" -- web web-src   # 0 命中
 $ git grep -c "AnotifyYamlDoc" -- web web-src
 web-src/pages/namespace.html:1
 web-src/pages/node.html:1
 web/mock.js:1
-web/yamldoc.js:2
+web/yamldoc.js:1
 ```
 
 ## 4. 字段保真（读 → 表单编辑 → 写 → 再读）
@@ -97,16 +92,16 @@ web/yamldoc.js:2
 
 | 字段 | 所在文档 | 断言 | 测试位置 |
 | --- | --- | --- | --- |
-| `tags` | Node | 有序原样；未知不补键；`[]` 不被吞 | `scripts/yamldoc.test.mjs:96`、`:151` |
-| `limits.total` / `limits.perCapability` | Node | `total` 数字不变形；`perCapability` 的 `'*'` 键与值不变；`total: null` 写回时整键省略 | `scripts/yamldoc.test.mjs:96`、`:172` |
-| `spec.vars` | Node / Namespace / AnodeConfig | 整份替换（删键真的删掉）+ 其余字段不动 | `scripts/yamldoc.test.mjs:96`、`:172`、`:251` |
-| `spec.namespaces`、`metadata.resourceVersion` | Node | 逐字不变（顺序也算事实） | `scripts/yamldoc.test.mjs:96` |
-| `requires.values`、`run.workDir`（含 `run.files` 块标量正文） | Capability | 改 `workDir` 不碰 `requires.values`，脚本正文逐字往返 | `scripts/yamldoc.test.mjs:221` |
-| `envPassthrough` | AnodeConfig | 是名字数组（不是映射）；改 `vars` 不动它，也不会被搬进 `vars` | `scripts/yamldoc.test.mjs:306` |
-| 未知扩展字段（`spec.futureKnob` / 顶层 `x-ext`） | Node | 原样带回（值逐字） | `scripts/yamldoc.test.mjs:203` |
-| 多行值（块标量正文） | Capability / Node / Namespace | 末尾换行数逐一往返（0 / 1 / 2+）、行首空白、行内制表符、`\r\n`、只有换行的值；yaml.v3 的 `|-` / `|` / `|+` / `|4-` 都读得回来 | `scripts/yamldoc.test.mjs:251`（块标量用例） |
+| `tags` | Node | 有序原样；未知不补键；`[]` 不被吞 | `scripts/yamldoc.test.mjs:69`、`:120` |
+| `limits.total` / `limits.perCapability` | Node | `total` 数字不变形；`perCapability` 的 `'*'` 键与值不变；`total: null` 写回时整键省略 | `scripts/yamldoc.test.mjs:69`、`:138` |
+| `spec.vars` | Node / Namespace / AnodeConfig | 整份替换（删键真的删掉）+ 其余字段不动 | `scripts/yamldoc.test.mjs:69`、`:138`、`:211` |
+| `spec.namespaces`、`metadata.resourceVersion` | Node | 逐字不变（顺序也算事实） | `scripts/yamldoc.test.mjs:69` |
+| `requires.values`、`run.workDir`（含 `run.files` 块标量正文） | Capability | 改 `workDir` 不碰 `requires.values`，脚本正文逐字往返 | `scripts/yamldoc.test.mjs:181` |
+| `envPassthrough` | AnodeConfig | 是名字数组（不是映射）；改 `vars` 不动它，也不会被搬进 `vars` | `scripts/yamldoc.test.mjs:262` |
+| 未知扩展字段（`spec.futureKnob` / 顶层 `x-ext`） | Node | 原样带回（值逐字） | `scripts/yamldoc.test.mjs:163` |
+| 多行值（块标量正文） | Capability / Node / Namespace | 末尾换行数逐一往返（0 / 1 / 2+）、行首空白、行内制表符、`\r\n`、只有换行的值；yaml.v3 的 `|-` / `|` / `|+` / `|4-` 都读得回来 | `scripts/yamldoc.test.mjs:211`（块标量用例） |
 | 被上层压住的键 | Node / Namespace | 表格保存后，文档里已有、但 `local`/`node` 压住的键**原样保留**（不抄生效值、也不删）；用户显式删掉才消失 | `scripts/vars-table.test.mjs`（`rowsToVars` 的压住用例） |
-| 真服务 + 真 Chrome 的同一条判据 | Node / Namespace | 表格保存后 `tags` / `limits` / 授权 `namespaces` 段逐字不变 | `scripts/e2e/suites/vars_ui.mjs:368`、`:371`、`:374`、`:449` |
+| 真服务 + 真 Chrome 的同一条判据 | Node / Namespace | 表格保存后 `tags` / `limits` / 授权 `namespaces` 段逐字不变 | `scripts/e2e/suites/vars_ui.mjs:343`、`:346`、`:349`、`:420` |
 
 e2e 的判据取**服务端两次 `GET …/yaml` 的原文**（不是页面发出的文本）：前端重排缩进或换引号会被
 服务端归一化掉，这里钉的是「事实没被表单路径改掉」，而不是排版细节。
@@ -118,13 +113,13 @@ GET  /v1/nodes/{name}/yaml   →   limits:\n    total: null      （读面语义
 PUT  /v1/nodes/{name}/yaml   ←   原样贴回                     →  400 value_invalid
 ```
 
-两条断言把这条不对称钉住：`scripts/e2e/suites/vars_ui.mjs:521`（前提：读面确实写出 `total: null`）、
-`:524`（原样贴回 → 400）、`:525`（原因码是 `value_invalid`）、`:527`（被拒的写没有落库）。
+两条断言把这条不对称钉住：`scripts/e2e/suites/vars_ui.mjs:483`（前提：读面确实写出 `total: null`）、
+`:487`（原样贴回 → 400）、`:488`（原因码是 `value_invalid`）、`:490`（被拒的写没有落库）。
 前端因此把「模型里 total 为 null」翻译成**省略这一键**（`web/yamldoc.js` 的 `project()`：值为
 null/undefined 的键一律跳过，kind 表里标成 `omit: 'missing'`），表格保存照常 200 —— 这是
 「省略 = 不动」，不是把 null 洗成 0。
 
-另一条边界：文档里**完全没有** `limits` 键时，本层不补一个空 `limits`（`scripts/yamldoc.test.mjs:172`
+另一条边界：文档里**完全没有** `limits` 键时，本层不补一个空 `limits`（`scripts/yamldoc.test.mjs:138`
 的第二个用例），所以「原样贴回被服务端拒」的语义一点没变。
 
 ## 6. 前后端同一套规则
@@ -144,8 +139,8 @@ null/undefined 的键一律跳过，kind 表里标成 `omit: 'missing'`），表
 
 | 变异 | 手段 | 结果 |
 | --- | --- | --- |
-| 换回改前页面那份拼装实现（`docToYAML` + 只有 4 个键的草稿） | `scripts/yamldoc.test.mjs:441`（同一组保真判据跑两遍） | findings 非空，`tags` / `extra` / `limits` 三个维度各有点名；统一层在同一组输入上 findings 为空 |
-| 换回改前命名空间页那种「只有 vars」的拼法 | `scripts/yamldoc.test.mjs:453` | `tags` 维度必红（点名 `spec.tags`） |
+| 换回改前页面那份拼装实现（`docToYAML` + 只有 4 个键的草稿） | `scripts/yamldoc.test.mjs:429`（同一组保真判据跑两遍） | findings 非空，`tags` / `extra` / `limits` 三个维度各有点名；统一层在同一组输入上 findings 为空 |
+| 换回改前命名空间页那种「只有 vars」的拼法 | `scripts/yamldoc.test.mjs:440` | `tags` 维度必红（点名 `spec.tags`） |
 | 页面里加回 `const yamlScalar = …` | `check-yaml-doc` | 红，点名 `dup-serializer` |
 | 页面里拼 `'apiVersion: ' + 'anotify/v1'` | `check-yaml-doc` | 红，点名 `doc-literal` |
 | 前端 kind 表删掉 `tags` | `check-yaml-doc` | 红，点名 `kind-parity`（并指出服务端结构体的行号） |
@@ -203,6 +198,27 @@ $ make e2e-affected                              # 按改动选择（本次是�
 - **手改的草稿会被表格保存覆盖**：YAML 编辑区有未保存的手改时点表格保存，写出去的是「服务端原文
   + 表格改动」。改前是同一个行为（草稿在内存里、表格保存不读它），本次没有改变，也没有顺手加
   提示 —— 要加的话是独立的一小步（`yamlDirty` 已经在页面里，条件现成）。
-- 前端单测 `scripts/v4-frontend.test.mjs` 有一批**既有**失败（基线 `bb709998`：215 条用例里 43 条
-  失败，它不在 `make ci` 的接线里）。本次改动后同一份文件是 24 条失败 —— 没有新增失败。这批失败
-  的根因（fixture 与 v4 形状漂移）不在本 issue 范围内，本次没有顺手改它们。
+- 前端单测 `scripts/v4-frontend.test.mjs` 有一批**既有**失败（rebase 后的基线 `1dbe9d70`：215 条
+  用例里 43 条失败，它不在 `make ci` 的接线里）。本分支上仍是 215 条 / 43 条失败，而且**失败集合
+  与基线逐条相同**（判据是集合相同，不是 0 fail）—— 没有新增失败。这批失败的根因（fixture 与 v4
+  形状漂移）不在本 issue 范围内，本次没有顺手改它们。
+
+## 12. rebase 到新 main 之后的调整（#495 注释棘轮）
+
+PR 的树落后于 main：`#497` 把注释/文档密度冻结成棘轮（`make check-comment-density`），`#498`
+又把 `#475` 的注释压回基线。rebase 只有一处真冲突（`Makefile` 的 `.PHONY` 与 `ci` 目标列表 ——
+两边各加一个守卫，取并集：`check-comment-density` 与 `check-yaml-doc` 并存），但**注释预算**是
+必须重做的部分：本 PR 带进来 405 行新注释，`scripts` / `scripts/e2e/suites` / `web` /
+`web-src/pages` / `web-src/layouts` 同时超限。
+
+处理方式是「只删注释、不抬基线、也不 `--update`」：删掉复述函数名的、解释显而易见分支的、
+`/* ===== ① ===== */` 与 `// ---------- xxx ----------` 分隔线、`#473` 交付横幅与「本文件曾经…」
+的流水账；只留**代码无法自述的外部约束**——`web/yamldoc.js` 头部 14 行（chomping 与 yaml.v3
+对拍、JSON 双引号标量、数字开头必须加引号、`total: null` 整键省略、值节点整份替换、读不懂的
+方言不得渲染）、`scripts/check-yaml-doc.mjs` 头部 2 行（唯一序列化实现 + kind 表同序）、页面里
+「表单编辑的是同一份文档」那一段。每个目录因此回到**恰好**基线（`web` 4674、`scripts` 3655、
+`scripts/e2e/suites` 2182、`web-src/pages` 2400、`web-src/layouts` 98；仓库总量 43411），
+`unmarked 312` / `unbacked 299` 两项也未动。
+
+本节以上各节的行号按 rebase 之后的位置重新校正过（代码语义与断言一条没改）；§9 的两个数字
+（`make ci` exit 0、e2e 29/29 · 2468 断言）在 rebase 之后重跑得到的仍是同一组值。
