@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CASES, runCase } from '../fixtures/f3/f3-cases.mjs';
 import { ROOT, OUT, isMock, evidenceDirectory } from '../fixtures/f3/f3-driver.mjs';
-import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, INCOMPLETE } from '../fixtures/f3/f3-retry.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, forensicsLines, timeoutLines, writeTimeoutFragment, TIMEOUT, INCOMPLETE } from '../fixtures/f3/f3-retry.mjs';
 const SELF=fileURLToPath(import.meta.url),cwd=process.cwd();
 // #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试；
 // 计数进结果 JSON（`retries`）供 parallel_runner 汇总打印，不许静默。
@@ -50,9 +50,22 @@ async function spawnAttempt(meta,dir,id,sourceHash){
   return new Promise(resolve=>{
     const proc=spawn(process.execPath,[SELF,'--case',id],{cwd:ROOT,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,F3_RUN_ID:runId,F3_ATTEMPT_ID:meta.attemptId,F3_SOURCE_HASH:sourceHash,E2E_RESULTS_DIR:dir}});
     children.add(proc);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,SELF,'--case',id],identity:meta})+'\n',childOutput='',timedOut=false;
+    // 单 case 外层预算：默认 52s（本地实测 3–5s 的 10× 余量）。**刻意不读 CI 的
+    // F3_CASE_BUDGET_MS**（那里给 ui/i18n 设的 150s）：frontend 一个套件四十三个 case、
+    // per-suite 预算 360s，单 case 150s 只会把「一个 case 卡住」变成「整套被 SIGKILL、
+    // 一条 results 都没有」—— 那正是本轮要消灭的证据丢失。要压预算的本地调试用这个独立开关。
+    const budgetMs=Number(process.env.F3_FRONTEND_CASE_BUDGET_MS||52000),startedAt=Date.now();
     const terminate=()=>{try{process.kill(-proc.pid,'SIGTERM');}catch{ /* settled group */ }};
-    const hard=setTimeout(()=>{timedOut=true;terminate();},52000);
-    const force=setTimeout(()=>{if(timedOut||interrupted)try{process.kill(-proc.pid,'SIGKILL');}catch{ /* settled */ }},54000);
+    // #485：发信号之前先把卡点写成 fragment。SIGTERM 会走 harness 的信号钩子
+    // （process.exit(1)），子进程没有机会落盘 case.json —— 所以现场必须由父进程留。
+    const hard=setTimeout(async()=>{
+      timedOut=true;
+      try{
+        await writeTimeoutFragment({dir,identity:meta,output:childOutput,budgetMs,elapsedMs:Date.now()-startedAt});
+      }catch(error){output+='\nTIMEOUT_FRAGMENT_ERROR='+String(error&&error.stack||error)+'\n';}
+      terminate();
+    },budgetMs);
+    const force=setTimeout(()=>{if(timedOut||interrupted)try{process.kill(-proc.pid,'SIGKILL');}catch{ /* settled */ }},budgetMs+2000);
     proc.stdout.on('data',d=>{output+=d;childOutput+=d;});proc.stderr.on('data',d=>{output+=d;childOutput+=d;});
     proc.once('error',e=>{output+=String(e);childOutput+=String(e);});
     proc.once('close',async(code,signal)=>{
@@ -73,6 +86,16 @@ async function execute(id,sourceHash,index){
   const run=await executeWithRetry({suite:'frontend',id,index,total:CASES.length,dir,spawnAttempt:()=>spawnAttempt(meta,dir,id,sourceHash)});
   retryLedger.record(run.outcome);
   return run.exit;
+}
+// #485：两次 attempt 的卡点结论要写进失败项（同一步 = 确定性挂点）。
+function stepJudgement(retry){
+  if(!retry?.attempts?.length)return '';
+  const steps=retry.attempts.map(a=>a.lastStep??'(无 PASS 步骤)');
+  const pending=retry.attempts.map(a=>a.pendingStep).filter(Boolean);
+  const waiting=pending.length?'（正在等「'+pending[0]+'」）':'';
+  if(retry.stuckSameStep)return '；两次都停在同一步「'+steps[0]+'」'+waiting;
+  if(retry.attempts.length>1)return '；两次停在不同步（'+steps.join(' / ')+'）'+waiting;
+  return '；停在「'+steps[0]+'」'+waiting;
 }
 // Completion/identity is distinct from PASS: a genuine red child is collected.
 function validateCompletion(selected,evidence,exit,expected) {
@@ -109,8 +132,10 @@ async function aggregate(sourceHash,exits){
       validateCompletion(selected,evidence,exit,identity(id,sourceHash,selected.attemptId));
     }catch(error){
       complete=false;failed++;
-      // 重试后仍 incomplete：红，且原因必须能一句话读懂（#483 验收：`incomplete ×2`）。
+      // 重试后仍无结论：红，且原因必须能一句话读懂（#483 验收：`incomplete ×2`；
+      // #485 验收：`timeout ×2` + 两次都停在同一步）。
       if(retry?.kind===INCOMPLETE)H.bad(id,'incomplete ×'+retry.attempts.length+'：'+retry.why);
+      else if(retry?.kind===TIMEOUT)H.bad(id,'timeout ×'+retry.attempts.length+'：'+retry.why+stepJudgement(retry));
       else H.bad(id,'Missing/stale/invalid completed fragment: '+error.message);
       continue;
     }
@@ -118,7 +143,11 @@ async function aggregate(sourceHash,exits){
     try {
       validateAttempt(plan.attempts.find(x=>x.id===id),evidence,exit,identity(id,sourceHash,evidence.attemptId));
       passed++;H.ok(id+' ('+evidence.checks+' behavior assertions)'+(retry?.recovered?' [首次 incomplete → 重试通过]':''));
-    } catch(error) { failed++;H.bad(id,evidence.error||error.message); }
+    } catch(error) {
+      failed++;
+      const timeout=retry?.kind===TIMEOUT;
+      H.bad(id,(timeout?'timeout ×'+retry.attempts.length+'：'+retry.why+stepJudgement(retry):(evidence.error||error.message)));
+    }
   }
   await writeFile(path.join(runDir,'aggregate.json'),JSON.stringify({suite:'frontend',runId,cwd,sourceHash,mode,authority:mode,...epochFields(frozen),registered:CASES.map(x=>x.id),complete,ok:complete&&failed===0&&passed===CASES.length,passed,failed,collected},null,2)+'\n',{flag:'wx'});
 }
@@ -151,6 +180,7 @@ finally{
   if(interrupted)H.bad('frontend interrupted','Collected signal/remaining missing cases fail, never skip');
   const retryStats=retryLedger.stats();
   console.log(retrySummaryLine('frontend',retryStats));
+  for(const line of timeoutLines(retryStats))console.log(line);
   for(const line of forensicsLines(retryStats))console.log(line);
   H.setRetryStats(retryStats);
   process.exitCode=H.summary('frontend')?0:1;
