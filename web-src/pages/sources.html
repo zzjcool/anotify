@@ -246,15 +246,36 @@ const closeMenus = except => {
    菜单在 ui.css 里改成 position:fixed（包含块=视口，祖先 overflow 不再裁剪），
    left/top 由这里按触发器矩形夹进视口：左右各留 8px，下方放不下就翻到
    触发器上方，上下也不越界。 */
+/* #489：定位要**幂等** —— 位置没变的重排一次属性都不写。
+   起因：ui.css 的 reduce 兜底把 `*` 的 transition-duration 压到 0.001ms，而
+   transition-property 仍是初始值 `all`，所以这里每写一次 left/top 都真的起一个
+   过渡、立刻 transitionend；页面又拿 transitionend 驱动重排（见 reflowMenus）：
+   写坐标 → 过渡 → transitionend → 重排 → 再写坐标，自己触发自己。Chrome ≤152
+   每一跳被动画时钟限速（实测 60 跳/秒，只是卡），Chrome ≥153 起不再等帧 ——
+   同一条回路变成同步死循环，主线程被自己的回调占满，页面冻死（实测 2s 1550 次
+   transitionend、page.evaluate 4s 不返回）。
+   两道闸，任何一道单独就能断开回路：
+     ① ui.css 里 `.act-menu > .menu { transition: none }` —— 菜单自己不参与过渡，
+        写 left/top 不可能再产生 transitionend；
+     ② 这里记住上次落位时的输入（触发器矩形/视口/面板尺寸），一样就一次都不写 ——
+        即使将来谁给菜单加了过渡，回路也只能走一跳，下一跳自己停在「没有变化」上。 */
+const MENU_POS=new WeakMap(); /* menu → 上次落位后的输入快照 */
+const menuSig=(menu,t)=>[Math.round(t.left),Math.round(t.top),Math.round(t.right),Math.round(t.bottom),innerWidth,innerHeight,menu.offsetWidth,menu.offsetHeight].join(",");
 function placeMenu(wrap){
   const trigger=wrap.querySelector(".act-more"),menu=wrap.querySelector(".menu");
   if(!trigger || !menu || menu.classList.contains("hidden"))return;
   const gap=8,pad=8;
+  const t=trigger.getBoundingClientRect();
+  /* 幂等闸门：输入没变 ⇒ 落位必然相同，直接返回（不写，也不重新量）。取整是因为
+     子像素抖动（滚动、缩放、字体 hinting）会让「同一个位置」看起来每次都不一样，
+     那等于没有闸门。 */
+  if(MENU_POS.get(menu)===menuSig(menu,t))return;
   /* 先清掉上次打开留下的 left/top 再量宽高：超出视口的旧 left 会把可用宽度
-     压到 0，量出来的宽度偏小，之后夹边就会算错。 */
+     压到 0，量出来的宽度偏小，之后夹边就会算错。（面板是 `transition:none`，
+     这两次清空/重写不会产生任何过渡，也不会变成新的事件。） */
   menu.style.left="";
   menu.style.top="";
-  const t=trigger.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  const w=menu.offsetWidth,h=menu.offsetHeight;
   const left=Math.min(Math.max(pad,t.right-w),Math.max(pad,innerWidth-pad-w));
   let top=t.bottom+gap;
   if(top+h>innerHeight-pad && t.top-gap-h>=pad)top=t.top-gap-h;
@@ -268,11 +289,32 @@ function placeMenu(wrap){
     menu.style.left=(left+(left-r.left))+"px";
     menu.style.top=(top+(top-r.top))+"px";
   }
+  /* 落地后再记一次签名（此时面板尺寸是真的，下一次同样的重排会命中闸门） */
+  MENU_POS.set(menu,menuSig(menu,t));
 }
-/* 菜单是 fixed 浮层：页面/容器滚动、视口变化、按压缩放过渡结束时都要重新贴回触发器 */
+/* 菜单是 fixed 浮层：页面/容器滚动、视口变化、按压缩放过渡结束时都要重新贴回触发器。
+   #489：重排只允许由**外部**事件发起 —— 自己写坐标引发的事件不许再喂回自己：
+     · 重入保护：同一个任务栈里再进来的重排直接丢弃；
+     · transitionend 只用来补「按压缩放结束」这一种情况，来自菜单内部的一律忽略
+       （那正是自激的入口），且同一帧内多次事件合并成一次（一帧最多一次重排，
+       不再是一事件一次强制同步布局）。 */
+let REFLOWING=false, REFLOW_FRAME=0;
 const reflowMenus = () => {
   if(!document.querySelector(".act-menu .menu:not(.hidden)"))return;
-  for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)"))placeMenu(menu.parentElement);
+  if(REFLOWING)return;
+  REFLOWING=true;
+  try{
+    for(const menu of document.querySelectorAll(".act-menu .menu:not(.hidden)"))placeMenu(menu.parentElement);
+  }finally{
+    REFLOWING=false;
+  }
+};
+const scheduleReflow = () => {
+  if(REFLOW_FRAME)return;
+  REFLOW_FRAME=requestAnimationFrame(()=>{
+    REFLOW_FRAME=0;
+    reflowMenus();
+  });
 };
 document.addEventListener("click",event=>closeMenus(event.target));
 document.addEventListener("keydown",event=>{
@@ -287,7 +329,13 @@ document.addEventListener("keydown",event=>{
 });
 document.addEventListener("scroll",reflowMenus,{passive:true,capture:true});
 window.addEventListener("resize",reflowMenus);
-document.addEventListener("transitionend",reflowMenus,true);
+document.addEventListener("transitionend",event=>{
+  const target=event.target;
+  /* 菜单自己/触发器/条目上的过渡：与「触发器会不会动」无关，而且面板的 left/top
+     刚被我们写过 —— 这里放行就是 #489 的自激入口 */
+  if(target instanceof Element && target.closest(".act-menu"))return;
+  scheduleReflow();
+},true);
 const fmt = value => value ? new Date(value).toLocaleString() : "—";
 const json = (box, optional=false) => {
   const raw=box.value.trim();
