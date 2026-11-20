@@ -103,8 +103,10 @@ settle 之后
 3. `E2E_SUITE_BUDGET_MS` / `E2E_SUITE_BUDGET_<SUITE>` 只用于**诊断/注入**（例如把预算压到 45s
    逼出超时路径）；一旦使用，执行器启动横幅会显式打印「被 env 覆盖」，抬预算不许留静默。
 
-**实测（CI）**：待本 PR 的第一轮 `ci / e2e（affected）` 结果回填 —— 见 §6 的 run 链接与
-`ui_shift` 行。最终预算 = 实测 ×2（写死在 `SUITE_TIMEOUT_OVERRIDE.ui_shift`，并在注释里带 run id）。
+**实测（CI run `44680605214`，PR #490 第一轮）**：`ui_shift` **整套跑完 304.2s**
+（`86通过/1失败`；旧 300s 预算只差 4-5s —— 但「差一点」正是固定墙钟 + 慢环境的必然）。
+→ 取 `2× 304.2s ≈ 608s`，**最终预算 620s**（写死在 `SUITE_TIMEOUT_OVERRIDE.ui_shift`，
+注释里带 run id）。复跑：同一套件在第二轮 CI 是 271.0s，本机并行 207.7s / 串行 187.2s。
 
 ### 3.3 预算水位可见
 
@@ -149,9 +151,19 @@ $ E2E_SUITE_BUDGET_MS=45000 F3_INJECT_SLEEP_CASE=grid-zh-CN-light-desktop-1 \
 `lastCase:"grid-zh-CN-light-desktop-1"`、`lastCaseKind:"in-flight"`、`retried:true`、
 `stuckSameCase:true`、两次 attempt 的 `lastCase` 相同。
 
-### ② `ui_shift` 在 CI 上真跑完并全绿（87 条）+ 新预算 + 实测耗时
+### ② `ui_shift` 在 CI 上真跑完（87 条都有结论）+ 新预算 620s + 实测 304.2s
 
-见 §6（CI 回填）。
+- run `44680605214`（第一轮）：`ui_shift` 从「0通过/0失败 300.1s 被 SIGKILL」变成
+  **`86通过/1失败 304.2s`** —— 整套 87 条都跑到了结论，套件在预算内自然收尾。
+- 唯一那条红是 `interact-dialogs — page.evaluate: Target page, context or browser has been
+  closed`（`f3-ui-helper.mjs:126 authFlag → gotoPage`，case 开头的浏览器执行层死亡）。
+  它**不是** #488 引入的：main 的 `known-env` 里原本就有 `ui_shift / ["*", "interact-dialogs"]`，
+  reason 写的就是这同一条；它属于 #483/#484 的 case 级重试范围。同一条 case 在本地
+  87/0 通过（§1），CI 上两轮（`44680605214` 首跑 + 重跑）都停在这条。
+- 因此本 PR **把 ui_shift 条目里的 `*` 档删掉、只留 case 档**（见 §2.3）：套件超时现在
+  不可被白名单容忍；case 档随 #484 合入后删除。这条取舍对「87/0」的影响是诚实的：
+  `ui_shift` 的套件级问题（预算/超时不可诊断）已修完，剩下的是一条 pre-existing 的 case 级
+  浏览器死亡，需要 #484 的重试（或修那个死亡本身）才能到 87/0。
 
 ### ③ 其它套件时长/产物不膨胀
 
@@ -165,15 +177,34 @@ $ E2E_SUITE_BUDGET_MS=45000 F3_INJECT_SLEEP_CASE=grid-zh-CN-light-desktop-1 \
 - `flock /tmp/anotify-ci.lock -c "make ci"` → EXIT=0（含新增的 `#488 套件级自测`）
 - `make e2e-affected` → 全绿（29/29，见 §6）
 
-## 6. CI 回填
+## 6. CI 记录
 
-（本轮交付时回填：PR 号、两轮 `ci / e2e（affected）` 的 run id、`ui_shift` 行、最终预算。）
+| run | 说明 | `ui_shift` | 结论 |
+| --- | --- | --- | --- |
+| `44680605214` 首跑 | PR #490，预算 900s | `86通过/1失败 304.2s` | 唯一红：`ui_shift/interact-dialogs` + `frontend/source-actions`（两条 pre-existing case 级死亡） |
+| `44680605214` 重跑 | 同上 | `86通过/1失败 271.0s` | 同样两条 |
+| 第三轮（最终） | 预算 620s + 只留 case 档登记 | 见 PR #490 最新 run | `make ci` + 全量 29 套；`ui_shift` 在 620s 内跑完 |
+
+其它套件时长与首轮基线一致（`frontend 198.0s / capacity 147.6s / i18n_coverage 80.1s` …），
+没有因为 #488 变大；总耗时 1020.2s（首跑）/ 923.4s（重跑）与改动前同量级。
+
+本地门禁：
+
+```text
+$ flock /tmp/anotify-ci.lock -c "make ci"                       → EXIT=0
+$ make e2e-affected                                             → EXIT=0
+  ✅ E2E 全绿：29/29 个请求套件均达标（断言 2431 通过 / 0 失败，authority 清单覆盖 29 个）
+  ✅ ui_shift           87通过/0失败  207.7s  mode=explicit-mock
+  ✅ 临时目录零残留（隔离 TMPDIR 内本次新增 = 0，耗时 475.2s）
+```
 
 ## 7. 边界与后续
 
 - 本 PR 只做**套件级**：单个 case 在 runner 上死亡的重试（`incomplete` → 先取证再重试）属于
-  #483/#484 的 case 层实现（PR #484，未合入时本分支的 known-env 也会清空；合并顺序由协调者定，
-  两者语义不冲突：套件级重试吸收「整套死」，case 级重试吸收「单条死」）。
+  #483/#484 的 case 层实现（PR #484，**尚未合入 main**）。这也是 known-env 还留着两条
+  **case 档**登记的原因：去掉它们，CI 会红在那两条 pre-existing 的执行层死亡上（本 PR 实测
+  两轮都复现），而 #488 的套件级范围吸收不了单条 case 死。套件级重试吸收「整套死」，
+  case 级重试吸收「单条死」，两者语义不冲突；#484 合入时它的 PR 会把这两条删掉。
 - `E2E_RETRY_WALL_LIMIT_MS` 的取舍：宁可「直接红 + 现场完整」，也不赌 job 超时丢 artifact。
   如果以后 CI job 的 `timeout-minutes` 上调，这个上限可以跟着放宽。
 - 超时现场依赖 f3 系的证据目录布局（`lib/suite-progress.mjs` 里显式列出，并由合成树单测钉住）。
