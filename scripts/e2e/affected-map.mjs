@@ -201,8 +201,9 @@ export const SUITE_SURFACES = {
 		pages: ["events", "index", "keys", "login"],
 	},
 	p2_guards: {
-		why: "字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions",
-		pages: ["docs", "events", "login"],
+		why: "字体自托管 / 抽屉 a11y / reduce 语义 / View Transitions / #489 ⋯ 菜单 reduce 下不自激重排",
+		// sources + source：第 5 段在 reduce 下点开行内 ⋯ 与页头 ⋯（两份 placeMenu 拷贝）。
+		pages: ["docs", "events", "login", "sources", "source"],
 		paths: ["web/fonts/**"],
 	},
 	password_login: {
