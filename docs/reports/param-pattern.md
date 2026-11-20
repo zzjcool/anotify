@@ -6,7 +6,7 @@
 
 **issue**：https://github.com/zzjcool/anotify/issues/475
 **分支**：`pi-subagent/hw-nj/anotify-475-pattern-c13514fd`
-**PR**：https://github.com/zzjcool/anotify/pull/（待填）
+**PR**：https://github.com/zzjcool/anotify/pull/498
 
 ## 结论
 
