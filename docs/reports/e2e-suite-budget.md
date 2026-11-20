@@ -192,6 +192,9 @@ $ E2E_SUITE_BUDGET_MS=45000 F3_INJECT_SLEEP_CASE=grid-zh-CN-light-desktop-1 \
 
 ```text
 $ flock /tmp/anotify-ci.lock -c "make ci"                       → EXIT=0
+  （注：本机在 load average 6 时 `cmd/anode/internal/runner` 的
+   TestParentPositiveLeaseTimerRegistrationCrossingAdvance 偶发撞 15s deadline ——
+   与 #488 无关；单跑 0.018s 通过，重跑 make ci 亦为 0）
 $ make e2e-affected                                             → EXIT=0
   ✅ E2E 全绿：29/29 个请求套件均达标（断言 2431 通过 / 0 失败，authority 清单覆盖 29 个）
   ✅ ui_shift           87通过/0失败  207.7s  mode=explicit-mock
