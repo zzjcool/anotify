@@ -212,7 +212,24 @@ func rework2Pending(t *testing.T, count int) (*harness, []*Attempt) {
 			}
 		}
 		return true
-	}, testWaitLimit)
+	}, testWaitLimit, func() string {
+		// 结果一旦以「非预期终态」落地（例如入口脚本 exec 失败被如实报成
+		// script_failed），等 succeeded 就永远不会再满足：立刻抛出真实原因，
+		// 不要把它埋成 15s 超时（anotify#490 的真因就是这么被藏起来的）。
+		for _, f := range h.sender.snapshot() {
+			result, ok := f.(*protocol.TaskResultFrame)
+			if !ok || result.Phase == protocol.TaskPhaseSucceeded {
+				continue
+			}
+			reason, message := "", ""
+			if result.Result.Error != nil {
+				reason, message = result.Result.Error.Reason, result.Result.Error.Message
+			}
+			return fmt.Sprintf("task=%s attempt=%d 已以 %s 落地（reason=%s message=%s）",
+				result.TaskID, result.Attempt, result.Phase, reason, message)
+		}
+		return ""
+	})
 	return h, attempts
 }
 
