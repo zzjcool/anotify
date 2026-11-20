@@ -2982,6 +2982,17 @@ a.side-link svg {
 	left: 8px;
 	right: auto;
 	max-width: min(20rem, calc(100vw - 16px));
+	/* #489：这个面板的 left/top 由页面里的 placeMenu() 反复写入，而它的位移不需要
+	   过渡（开合只切 .hidden，没有入场/退场动画）。所以这里关掉过渡 —— 这是
+	   自激回路的第一道闸：reduce 兜底把 `*` 的 transition-duration 压到 0.001ms，
+	   但 transition-property 仍是初始值 `all`，于是“写一次 left/top”就是
+	   “起一个过渡 → 立刻 transitionend”；页面又拿 transitionend 驱动重排：
+	   写坐标 → 过渡 → transitionend → 重排 → 再写坐标。Chrome ≤152 每一跳被动画
+	   时钟限速（实测 60 跳/秒，只是慢），Chrome ≥153 起不再等帧，同一条回路变成
+	   同步死循环 —— 主线程被自己的回调占满，页面冻死（实测 2s 1550 次
+	   transitionend、page.evaluate 4s 不返回）。transition:none 之后这个面板
+	   写再多坐标也产生不了 transitionend，回路从源头断掉。 */
+	transition: none;
 }
 /* fixed 的包含块会被祖先的 transform 改掉：`.list-row:active` 的按压缩放
    （scale(.995)）会让菜单在按下条目的那一瞬间整块跳到行内坐标里，命中测试
@@ -4221,6 +4232,14 @@ html.theme-switching *::after {
 	/* 无限循环的骨架 shimmer 直接停掉（底色仍可见） */
 	.skeleton::after {
 		animation: none;
+	}
+	/* #489 兜底：⋯ 菜单的位移是 JS 直接写 left/top，这个面板**不参与**任何过渡 ——
+	   否则“写坐标”会变成“新的 transitionend”，而页面拿 transitionend 驱动重排，
+	   写/重排就会互相喂（Chrome ≥153 下不再等帧，直接变成同步死循环把页面冻死）。
+	   上面那条 transition:none 已经是同一件事，这里带 !important 再兜一层：
+	   将来谁给 .menu 加了过渡，reduce 下也不会把回路重新接回去。 */
+	.act-menu > .menu {
+		transition: none !important;
 	}
 }
 
