@@ -32,6 +32,7 @@ export async function bootstrap(d) {
 export async function aba(d) {
   const {page,goto,check,calls,req}=d;
   // IA（#436）：命名空间 vars 编辑器搬到了 namespace.html；ABA/CAS 判据逐字不变。
+  // #476：写入口从 PUT …/config 变成 PUT …/yaml（YAML 是唯一编辑面），拦截目标同步。
   await goto('namespace','namespace=default&name=default');
   await page.locator('#namespace-save:not([disabled])').waitFor();
   const original=await req('/v1/namespaces/prod/config');
@@ -39,7 +40,7 @@ export async function aba(d) {
     const raw=window.fetch;
     window.fetch=async(url,opts={})=>{
       const response=await raw(url,opts);
-      if(url==='/v1/namespaces/default/config'&&opts.method==='PUT')return new Promise(resolve=>{window.__f3Release=()=>resolve(response);});
+      if(url==='/v1/namespaces/default/yaml'&&opts.method==='PUT')return new Promise(resolve=>{window.__f3Release=()=>resolve(response);});
       return response;
     };
   });
@@ -55,14 +56,25 @@ export async function aba(d) {
   await page.selectOption('#config-namespace','prod');await acceptReloadIfOpen();await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('prod-visible'));
   await page.selectOption('#config-namespace','default');await acceptReloadIfOpen();await page.waitForFunction(()=>document.getElementById('namespace-vars').value.includes('OLD_SAVE'));
   await page.fill('#namespace-vars','{"NEW_DRAFT":"must-survive-old-response"}');
-  const snapshot=()=>page.evaluate(()=>({draft:document.getElementById('namespace-vars').value,rv:document.getElementById('namespace-revisions').textContent,state:document.getElementById('namespace-state').textContent,disabled:document.getElementById('namespace-save').disabled,count:__f3Calls.length}));
+  /* 采样窗内已到达的 fetch 次数**不是判据**（#482）：切回 default 的加载链排在 config 之后
+     （/v1/nodes、…/yaml 还没发出），第 N 次是否已在采样点之前发出由调度决定 —— 负载下必然
+     随机漂移，而它守的东西（旧响应不覆盖草稿）一次都没坏。判据改为下面这些确定性事实：
+     编辑器四元组逐字未变、rv 等于 default 的最新值、只有那一次 PUT（无自动重试）。 */
+  // #476：切回 default 的 loadAll 在 textarea 之后还会把 vars 表再取一轮（节点有效值 + 能力
+  // 需求）。那是一次**与延迟响应无关**的收尾请求，先等网络落定再拍快照。
+  await page.waitForLoadState("networkidle");
+  const snapshot=()=>page.evaluate(()=>({draft:document.getElementById("namespace-vars").value,rv:document.getElementById("namespace-revisions").textContent,state:document.getElementById("namespace-state").textContent,disabled:document.getElementById("namespace-save").disabled}));
   const before=await snapshot();await page.evaluate(()=>window.__f3Release());
   // Event-loop barrier after the submitted fetch continuation; no fake callback/controller.
   await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,50)));
-  assert.deepEqual(await snapshot(),before);
+  const after=await snapshot(),liveDefault=await req('/v1/namespaces/default/config');
+  assert.deepEqual(after,before);
+  assert.equal(after.draft,'{"NEW_DRAFT":"must-survive-old-response"}','旧响应不得覆盖用户草稿');
+  assert.equal(after.rv,'resourceVersion='+liveDefault.metadata.resourceVersion+' · namespaceVarsRevision='+liveDefault.namespaceVarsRevision,'显示的仍是 default 的最新 rv');
+  assert.equal(after.disabled,false,'旧响应归来后保存按钮仍可用');
   assert.deepEqual(await req('/v1/namespaces/prod/config'),original);
-  assert.deepEqual((await req('/v1/namespaces/default/config')).vars,{OLD_SAVE:'old-submission'});
-  assert.equal((await calls()).filter(c=>c.method==='PUT').length,1);
+  assert.deepEqual(liveDefault.vars,{OLD_SAVE:'old-submission'});
+  assert.equal((await calls()).filter(c=>c.method==='PUT').length,1,'旧响应回来不得自动重试第二次写');
   check('F3-NODE-ABA actual delayed PUT after A/B/A keeps byte-exact new draft, RV/status/finally; no crossscope write or auto retry');
 }
 const matrixFile=(name,{version,body='echo v1',next=[],source=false,kind='manual',target='fixer',param='one'}={})=>{

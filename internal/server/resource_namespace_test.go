@@ -678,6 +678,7 @@ func TestNamespaceResourceRequiresSession(t *testing.T) {
 		{http.MethodPut, "/v1/namespaces/default/config"},
 		{http.MethodGet, "/v1/namespaces/default/stats"},
 		{http.MethodGet, "/v1/namespaces/default/yaml"},
+		{http.MethodPut, "/v1/namespaces/default/yaml"},
 		{http.MethodGet, "/v1/system/config"},
 		{http.MethodPut, "/v1/system/config"},
 		{http.MethodGet, "/v1/system/yaml"},

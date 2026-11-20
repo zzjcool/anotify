@@ -3193,6 +3193,37 @@
 	on("PUT", /^\/v1\/nodes\/([^/]+)\/config$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); return row ? updateNodeConfig(row, ctx.body) : notFound("Node ");
 	});
+	/* #476：Node / Namespace 的 `PUT …/yaml` —— 预览只认**这份文档的 vars 子集**。
+	   真服务端用 internal/yamldoc 严格解析并整份校验；这里复用 readResourceDoc（同一套
+	   映射/序列/标量语法），只取 metadata.resourceVersion + spec.vars，其余字段忽略
+	   （预览不是第二个真相：spec 的其它形状仍由表单 PUT …/config 管）。
+	   返回 { vars } 或一个已经构造好的错误响应。 */
+	function varsYAMLWrite(ctx, { kind, name, currentRV }) {
+		if (!configObject(ctx.body) || Object.keys(ctx.body).some(k => k !== "yaml") || typeof ctx.body.yaml !== "string") return { err: badRequest("BadRequest", "yaml document required") };
+		let doc;
+		try {
+			doc = readResourceDoc(ctx.body.yaml);
+		} catch (e) {
+			return { err: statusErr(400, "invalid_yaml", "第 " + (e.line || 1) + " 行：" + (e.message || "无法解析")) };
+		}
+		if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { err: statusErr(400, "invalid_yaml", "文档必须是一个映射") };
+		if (doc.status != null) return { err: statusErr(400, "status_not_writable", "status 不可写（它由服务端从当前事实投影）") };
+		if (doc.apiVersion !== API_VERSION) return { err: badRequest("value_invalid", "apiVersion 必须是 " + API_VERSION) };
+		if (doc.kind !== kind) return { err: badRequest("value_invalid", "kind 必须是 " + kind) };
+		if (!doc.metadata || doc.metadata.name !== name) return { err: badRequest("value_invalid", "metadata.name 必须是 " + name) };
+		const rv = doc.metadata.resourceVersion;
+		if (rv == null || rv === "") return { err: statusErr(400, "resource_version_required", "metadata.resourceVersion 必填（CAS）") };
+		if (String(rv) !== String(currentRV())) return { err: statusErr(409, "resource_version_conflict", "配置已被并发修改（resourceVersion 过期），请重新加载") };
+		const vars = doc.spec && doc.spec.vars;
+		if (vars == null || typeof vars !== "object" || Array.isArray(vars)) return { err: badRequest("value_invalid", "spec.vars 必须是映射（清空请写 {}）") };
+		const keys = Object.keys(vars);
+		if (keys.length > 64) return { err: badRequest("value_invalid", "spec.vars 最多 64 项") };
+		for (const key of keys) {
+			if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(key)) return { err: badRequest("value_invalid", "变量名 " + key + " 必须是 ^[A-Z][A-Z0-9_]{0,63}$") };
+			if (typeof vars[key] !== "string" || vars[key] === "") return { err: badRequest("value_invalid", "变量 " + key + " 的值必须是非空字符串") };
+		}
+		return { vars };
+	}
 	/* ② Node YAML（IA 重构）：读面把同一份事实序列化成规范化文档。
 	 * 写面在预览里刻意**不实现**：YAML 解析器只能有一份（服务端 internal/yamldoc），
 	 * 在 mock 里再写一个宽松解析器就等于造第二个真相 —— 直接具名拒绝，比假装解析安全。
@@ -3225,9 +3256,12 @@
 	});
 	on("PUT", /^\/v1\/nodes\/([^/]+)\/yaml$/, ctx => {
 		const row = findNode(decodeURIComponent(ctx.m[1])); if (!row) return notFound("Node ");
-		if (!configObject(ctx.body) || Object.keys(ctx.body).some(k => k !== "yaml") || typeof ctx.body.yaml !== "string") return badRequest("BadRequest", "yaml document required");
-		// 预览环境没有严格 YAML 解析器：拒绝而不是宽松解析（产物永远由真实服务端决定）。
-		return statusErr(501, "yaml_write_unavailable", "Preview cannot parse YAML; use the form editor or a real server");
+		const parsed = varsYAMLWrite(ctx, { kind: "Node", name: row.name, currentRV: () => row.rv });
+		if (parsed.err) return parsed.err;
+		// 复用 config 的 CAS/apply：YAML 与表单写的是同一份事实，只是输入面不同。
+		const applied = updateNodeConfig(row, { metadata: { resourceVersion: String(row.rv) }, vars: parsed.vars });
+		if (applied.status !== 200) return applied;
+		return json({ yaml: nodeYAMLText(row) });
 	});
 	on("POST", /^\/v1\/nodes\/config\/batch$/, async ctx => {
 		if (!configObject(ctx.body) || !Array.isArray(ctx.body.updates) || Object.keys(ctx.body).some(k => k !== "updates")) return badRequest("BadRequest", "updates array required");
@@ -3256,8 +3290,9 @@
 		row.rv = nextRV(); if (row.rv === ctx.body.metadata.resourceVersion) row.rv = nextRV(); row.revision = String(Number(row.revision) + 1);
 		return json(namespaceConfig(name));
 	});
-	/* Namespace 文档（只读）：`{yaml}` 全文。与 true 服务端同形状
-	   （apiVersion / kind / metadata / spec.vars）；**没有** PUT —— 写入口只有 config。 */
+	/* Namespace 文档：`{yaml}` 全文。与真服务端同形状（apiVersion / kind / metadata / spec.vars）。
+	   写入口是 PUT …/yaml（YAML 是唯一编辑面）；预览不解析 YAML（解析器只留服务端一份），
+	   所以 PUT 回 501，与 Node 文档的预览限制一致。 */
 	function nsYAMLScalar(v) {
 		const text = String(v);
 		return /^[A-Za-z0-9][A-Za-z0-9_.\/:@+-]*$/.test(text) && !/^(?:true|false|null|yes|no|on|off|y|n|~)$/i.test(text) && !/^[-+]?\d+(?:\.\d+)?$/.test(text) ? text : JSON.stringify(text);
@@ -3267,14 +3302,15 @@
 		const vars = state.nsVars[name] || {};
 		const keys = Object.keys(vars).sort();
 		const lines = [
-			"# Namespace document (read-only). spec.vars are namespace defaults; a node may",
-			"# override them (merge order: local > node > namespace). Writes go through",
-			"# PUT /v1/namespaces/{name}/config (CAS) - this endpoint deliberately has no PUT.",
+			"# Namespace document. spec.vars are namespace defaults; a node may override them",
+			"# (merge order: local > node > namespace). The only write path is",
+			"# PUT /v1/namespaces/{name}/yaml (CAS = metadata.resourceVersion) - the nodes /",
+			"# namespace pages serialize table edits into this document.",
 			"apiVersion: anotify/v1",
 			"kind: Namespace",
 			"metadata:",
 			"  name: " + nsYAMLScalar(name),
-			"  resourceVersion: " + nsYAMLScalar(ns.rv || "1"),
+			"  resourceVersion: " + nsYAMLScalar(namespaceConfig(name).metadata.resourceVersion),
 			"spec:",
 		];
 		if (!keys.length) lines.push("  vars: {}");
@@ -3288,9 +3324,15 @@
 		const name = decodeURIComponent(ctx.m[1]); if (nsMissing(name)) return nsMissing(name);
 		return json({ yaml: namespaceYAMLText(name) });
 	});
-	on("PUT", /^\/v1\/namespaces\/([^/]+)\/yaml$/, () => {
-		// 只读面：写入口只有 PUT …/config（预览里也不开第二条写路径）。
-		return statusErr(405, "MethodNotAllowed", "Namespace YAML is read-only; write vars through PUT /v1/namespaces/{name}/config");
+	on("PUT", /^\/v1\/namespaces\/([^/]+)\/yaml$/, ctx => {
+		const name = decodeURIComponent(ctx.m[1]); const missing = nsMissing(name); if (missing) return missing;
+		const row = state.nsConfig[name] ||= { rv: "ns-config-" + name, revision: "1" };
+		const parsed = varsYAMLWrite(ctx, { kind: "Namespace", name, currentRV: () => row.rv });
+		if (parsed.err) return parsed.err;
+		state.nsVars[name] = clone(parsed.vars);
+		row.rv = nextRV(); if (row.rv === ctx.body.metadata?.resourceVersion) row.rv = nextRV();
+		row.revision = String(Number(row.revision) + 1);
+		return json({ yaml: namespaceYAMLText(name) });
 	});
 	const systemConfig = () => ({ metadata: { resourceVersion: state.systemConfig.rv }, retention: clone(state.systemConfig.retention) });
 	on("GET", /^\/v1\/system\/config$/, () => ME.role === "admin" ? json(systemConfig()) : statusErr(403, "Forbidden", "Administrator required"));

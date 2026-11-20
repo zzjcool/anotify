@@ -88,8 +88,8 @@ export async function nsScopeTopbar(d) {
   assert.equal(puts.length, 1, '这次保存只该有一次 PUT，实际 ' + JSON.stringify(puts.map((c) => c.url)));
   assert.equal(
     String(puts[0].url).split('?')[0],
-    '/v1/namespaces/prod/config',
-    'PUT 的目标必须是 prod（写对对象）',
+    '/v1/namespaces/prod/yaml',
+    '#476：编辑的唯一写入口是 PUT …/yaml；目标必须是 prod（写对对象）',
   );
   await shot('ns-topbar-writes-prod');
 

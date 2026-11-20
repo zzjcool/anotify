@@ -65,6 +65,7 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 | L8 | `scripts/dist-stamp.mjs` | 陈旧 dist 假绿 `22d14d47` / `1256350f` / 一次波末假绿（`run_all.sh:31-43` 只在 dist 缺失或为空时才重建 ⇒ 改了 `web-src/` 却忘了 `make fe` 时，e2e 验的是上一轮的前端产物） | 对输入面（`web-src/**` + `api/*.yaml` + `web/` 的 git 源文件，**不含** `internal/server/dist` 自己）逐个 sha256 → `dist/.source-stamp`；`--check` 重算并逐条列出变动/新增/删除（路径 + 旧前 8 位 → 新前 8 位）；stamp 缺失、输入面解析为空、stamp 字段与 digests 不自洽一律判红；二进制照算（字体/图标变 dist 就变），超上限的大文件跳过但打印计数（不静默） | `make fe`（写）+ `make check-dist-fresh` / `scripts/e2e/run_all.sh` 前置（验） |
 | L9 | `scripts/check-ui-copy.mjs` | `9ec8afff`（PR #447）节点页挂着「命名空间与系统配置不在这页…已迁到…」，用户看到直接问「搞笑吧？你没有审核出来吗？」——但这类文案不只一处，而且**旧门禁完全没有抓它的面**：`check-i18n-keys` 只验 key 在不在、e2e 只验页面 200，于是任何旁白都能绿到生产。`#458` 补的第二个面：散文也会直接写在页面模板里（「写给维护者与排障者」当时就在 docs 页的 `<p>` 里），只扫 locale = 漏一半 | ①扫 `web-src/locales/*.yaml` 的**值**；②扫 `web-src/pages/*.html` 的**文本节点**——排除 HTML 注释、`<script>`/`<style>` 内容、标签（属性名/属性值/类名）、`{{…}}` 表达式，以及没被 layout `{{block}}` 接进渲染树的 define 体（sitegen 只执行 `__layout__`）。5 类高危特征 = 迁移叙述 / 对照内部实现（工单号、`v4`、`docs/`、构建命令）/ 对开发者喊话 / 历史形态对照 / TODO。词表**窄而准**：宽带扫定稿前在现有 locale 上实测命中 0 条；被故意排除的误报词（`make test`、`移行`、`旧 `、`XXX`）逐条记在脚本头注释里。行内豁免 `# ui-copy-ok: <理由>`（locale 值）/ `<!-- ui-copy-ok: <理由> -->`（页面），理由必填。反假绿：locale 文件/值、页面/文本节点四个下限（页面扫到 0 条不许算绿）；`--self-test` 20 红 / 13 绿 / 5 豁免 + 页面 6 红 / 7 绿 / 4 豁免（绿样例钉住抽到的节点数）+ 反向证明 | `make fe` + `make check-guard-selftest` |
 | L10 | `scripts/check-doc-endpoints.mjs` | #457：接入文档教**已删除的端点** —— `docs` 页「接入 Agent」步骤与 `events.empty` 文案都写 `POST /v1/notify` / `POST /v1/events`（v4 入口是 `POST /v1/namespaces/{namespace}/events`，旧扁平路由的下线由 `internal/server/api_integration_test.go` 钉住），照文档打过去必 404。文档里的 URL 没有执行者复算，所以只能随时间变错 | 事实源是 `api/*.yaml` 的 `paths:` 键；扫面 = sitegen 的输入面（`web-src/`）+ 两份 README；文档里的每个 `/v1/<path>` 必须命中一条 spec 路径（去 query / 行尾标点，`{param}` 与 `:param` 按段比对，以斜杠结尾的基路径另有前缀规则）。历史对照走「同一行标注已废弃」或 `<!-- docs-endpoints:historical -->` 整段标记，**只对引用不存在生效**；`<script>` 与 HTML 注释先遮罩（那是客户端代码，不是教学文案）。反假绿：spec 路径 / 扫描文件 / 引用数三条下限，任一归零 ⇒ 退出码 2；`paths:` 块内出现无法识别的行 ⇒ 退出码 2（不静默跳过）。`--self-test` 含变异用例：写一个不存在的端点必须判红 | `make ci` |
+| L11 | `scripts/check-config-writes.mjs` | #476：`/config` 降级成**读投影**（YAML 是唯一编辑面）之后，节点页与命名空间页仍各留着一条 `PUT …/config` 的第二写路径（清理前实测：`node.html:550` 的 `write(path + '/config', body)`、`namespace.html:156` 的 `write(nsPath(saveScope), …)`）——YAML 那一面看不到表单改的值，两个入口各自 200，只有用户看到的值对不上（§0 第 ⑤ 类缝隙） | 扫 `web-src/pages/*.html` 的内联 `<script>`（`<script src>` 跳过），用状态机剥注释（字符串 / 模板 / 正则里的 `//` 不是注释，否则 `'https://…/config'` 被吞成假绿）；「config 路径源」= 静态尾部以 `/config` 结尾的字面量，或 `const\|let\|var NAME =` 初始化器里含它的名字（含 `NAME = ns => …/config` 这种 helper 形态）；写调用点 = 页面自定义 `write(...)`（显式第 3 参 `'GET'` 除外）/ `….api(` 且 `method:` 字面量是写方法 / `fetch(` 同判；第一个实参括号配平切出后，**含 `/config` 字面量**或**等于 / 以 `NAME(` / `NAME +` 引用路径源**即红。输出 `文件:行 → 调用原文 → 命中原因`，退出码 0 绿 / 1 违规 / 2 解析或用法错误。**唯一例外面**：明写 `…/system/config` 的系统保留期单例不判红（system YAML 只读 ⇒ 它是保留期唯一写入口，不在 #476 范围），且例外只认后缀精确匹配，其余 `/config` 一律 fail-closed | `make fe` + `make check-guard-selftest` |
 
 ### 1.1 本批顺带发现（真 bug，已修/待裁）
 
@@ -96,6 +97,35 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 棘轮基线写在脚本常量里（`CLAIM_UNBACKED_BASELINE` / `COUNT_UNMARKED_BASELINE`，带实测日期与命令），只许降。
 
 **未接线的既有工具**（本批只登记，不改行为）：`scripts/ui-audit-mobile.mjs`（需站点+浏览器，属合并前手工门禁）、`scripts/v4-frontend.test.mjs`（179 个 `test()`，相对 main 基线红 11 条 —— **带基线红的门禁不许进 CI**，否则重演「恒红即无门禁」）。`scripts/check-contrast.mjs` 已接进 `make fe`。
+
+### 1.3 L11 判据的三个易踩点（#476）
+
+- **为什么必须真解析而不是 grep 一遍字符串**：节点页的读与写在**同一段脚本**里（`A.api(path + '/config')` 读、
+  `write(path + '/config', body)` 写），所以 grep `'/config'` 会把读也算成违规；只 grep 写方法又会漏掉
+  `write(nsPath(scope), …)` 这种「路径在 helper 里拼」的形态。判据因此分两层：先按**值**找出路径源，
+  再只对**写调用点**求值 —— 读调用根本不进这个集合（`A.api(nsPath(x))` / `A.api(nsPath(x), { method: 'GET' })`
+  两种读法在自测里都是绿的）。
+- **为什么系统保留配置是例外而不是漏判**：`admin.html` 对系统保留期的 `PUT …/system/config` 是管理员单例，
+  而它的 system YAML 是**只读**的（`…/system/yaml` 只有 GET）⇒ 那个 PUT 就是保留期的**唯一**写入口
+  （服务端 `putSystemConfig`），收掉它等于删功能，且 #476 的范围是节点/命名空间 vars 的投影。
+  例外实现成「后缀精确匹配 `/system/config`」：`…/system/nodes/x/config` 这类路径仍判红（自测里钉住了这条）。
+- **反假绿**：页面数 / script 块数 / 写调用点数 / config 路径源数四个下限（任一为 0 即红），目录读不到退 2；
+  输出单列一行「例外：识别为写调用并豁免 N 处」—— 否则「豁免」与「根本没扫到」同形。
+
+接线：`make check-config-writes`（先 `--self-test` 再全扫）；它是 `make fe` 的依赖（排在
+`check-wire-fields` 之后），自测同时挂在 `make check-guard-selftest`。
+
+变异口径（`--self-test`，本批落地时为 49 项断言）：红 9（源名调用 / 字面量 / 源名等于 / `fetch` + PATCH /
+模板尾部 / URL 含 `//` / 写 helper 定义在另一个 script 块 / 例外不溢出）+ 绿 10（GET 两种形态 /
+`path + '/yaml'` 的 PUT / `write(path + '/yaml')` / 第 3 参 `'GET'` / 注释里的写调用 / `<script src>` 块 /
+系统配置的两种写法）+ 解析错误 2（括号不配平、字符串不闭合 ⇒ 退出码 2，不静默跳过）+ 下限 2 + 行号 1 +
+变异自证 2（`'/yaml'` 改 `'/config'` 必转红、GET 改 PUT 必转红）。每条红断言**命中的是哪条规则**
+（防碰巧被另一条规则抓到），每条绿断言写调用计数 > 0（证明扫描面非空）。
+
+实测（本批）：对齐到清理前的页面（HEAD 的 `node.html` / `namespace.html`）时全扫红，逐条点名
+`web-src/pages/node.html:550 → write(path + '/config', body) → config-literal-write` 与
+`web-src/pages/namespace.html:156 → write(nsPath(saveScope), …) → config-source-write`；
+lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 处系统配置例外）。
 
 ## 2. Backlog（按性价比排序，未开工）
 

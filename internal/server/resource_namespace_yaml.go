@@ -1,16 +1,20 @@
 package server
 
-// resource_namespace_yaml.go 是 Namespace 与 System 文档的**只读** YAML 读面
+// resource_namespace_yaml.go 是 Namespace 与 System 文档的 YAML 面
 // （IA 重构的 ③ / ④，docs/design/node-namespace-ia.md §2.2 / §3.1）：
 //
-//	GET /v1/namespaces/{name}/yaml  规范化 Namespace 文档文本（{"yaml": "…"}）
-//	GET /v1/system/yaml             规范化 SystemConfig 文档文本（{"yaml": "…"}）
+//	GET  /v1/namespaces/{name}/yaml  规范化 Namespace 文档文本（{"yaml": "…"}）
+//	PUT  /v1/namespaces/{name}/yaml  严格解析 → PutNamespaceConfigByName（CAS）
+//	GET  /v1/system/yaml             规范化 SystemConfig 文档文本（{"yaml": "…"}，只读）
 //
 // 四条边界（改之前先读）：
 //
-//  1. **只有 GET**：命名空间 vars 的写入口是 `PUT /v1/namespaces/{name}/config`
-//     （CAS + namespaceVarsRevision），保留期是 `PUT /v1/system/config`。同一个事实
-//     不发明第二条写路径 —— 页面上的 YAML 明确标注「只读」，并给出真正的写入入口。
+//  1. **YAML 是唯一编辑面**：命名空间 vars 的写入口就是这份文档本身
+//     （`PUT /v1/namespaces/{name}/yaml`，CAS = `metadata.resourceVersion`，即命名空间
+//     vars 的 CAS 令牌 —— 与 `GET …/config` 给出的是同一个值）。
+//     `PUT /v1/namespaces/{name}/config` 作为同一份事实的 JSON wrapper 保留，两条入口
+//     共用**同一个** store 写路径（`PutNamespaceConfigByName`），不并存两套语义。
+//     系统面（保留期）仍是只读：写入口是 `PUT /v1/system/config`，没有 `PUT …/yaml`。
 //  2. **YAML 就是资源本身**：apiVersion / kind / metadata / spec，字段集分别与
 //     Namespace（slug + 展示名 + vars）和 system_config（三条保留期）逐字相同。
 //     `status`（派生计数）、`metadata.uid`（不透明内部身份）**不出现**：它们对
@@ -25,9 +29,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 
 	"github.com/zzjcool/anotify/internal/store"
 	"github.com/zzjcool/anotify/internal/yamldoc"
@@ -53,11 +59,14 @@ type namespaceYAMLDoc struct {
 	Spec       namespaceYAMLSpec `yaml:"spec" json:"spec"`
 }
 
-// namespaceYAMLMeta 是文档的 metadata：名字（slug）+ 对象 CAS 令牌。
+// namespaceYAMLMeta 是文档的 metadata：名字（slug）+ vars 写入的 CAS 令牌。
 //
-// 刻意**不带 uid / creationTimestamp**（理由见文件头第 2 条）。resourceVersion 是
-// **Namespace 对象**（展示名）的令牌；vars 的令牌属于配置子资源，写在文件头注释里
-// 指路，不在这里冒充一个能用于 PUT /config 的令牌。
+// 刻意**不带 uid / creationTimestamp**（理由见文件头第 2 条）。resourceVersion 就是
+// **命名空间 vars 写入的 CAS 令牌**：store 的 `PutNamespaceConfigByName` 拿它跟
+// `namespaces.resource_version` 逐字比（`checkResourceVersion`），而
+// `GetNamespaceConfig` 把同一列投影成 `cfg.ResourceVersion` —— 所以
+// `GET /v1/namespaces/{name}/config` 与 `GET …/yaml` 给出的是**同一个值**，
+// 文档里这一行可以拿去写任一条入口（同一个事实的两种序列化，不是两个计数器）。
 //
 // displayName 也不进文档：它是**用户数据**（可以是任意语言），而这份文本是复制走
 // 的运维工件 —— 页面侧对用户数据只有「只含文本的 SPAN + data-raw-content」这一种
@@ -108,6 +117,26 @@ var namespaceYAMLShape = yamldoc.Shape{
 	Required: []string{"apiVersion", "kind", "metadata.name"},
 }
 
+// namespaceYAMLSpecPatch 是写请求的 spec：只有 vars（Namespace 的 spec 是空对象；vars 是配置子资源）。
+//
+// 字段类型是 `map[string]string` 而不是指针：YAML 是**整份替换**（不是 merge-patch），
+// 所以「没写 vars」与「写了 {}」必须由调用方分开表达 —— nil 是前者（400，见
+// putNamespaceYAML），空 map 是后者（清空）。这与 JSON 写入口 `PUT …/config` 的判据一致。
+type namespaceYAMLSpecPatch struct {
+	Vars map[string]string `json:"vars"`
+}
+
+// namespaceYAMLWrite 是严格解码后的写请求（信封层 + spec），与 nodeYAMLWrite 同构。
+//
+// Metadata 用 RawMessage：它要先过 decodeObjectMeta 的白名单（name / resourceVersion），
+// 直接解进 objectMeta 会把 uid / creationTimestamp 这些只读键静默吞掉。
+type namespaceYAMLWrite struct {
+	APIVersion *string                `json:"apiVersion"`
+	Kind       *string                `json:"kind"`
+	Metadata   json.RawMessage        `json:"metadata"`
+	Spec       namespaceYAMLSpecPatch `json:"spec"`
+}
+
 // systemYAMLDoc 是 GET /v1/system/yaml 的序列化形状。
 //
 // metadata / retention 用**文档专用的**结构而不是复用 wire 的 configMeta / retentionDoc：
@@ -151,14 +180,15 @@ var systemYAMLShape = yamldoc.Shape{
 	Required: []string{"apiVersion", "kind", "metadata.resourceVersion"},
 }
 
-// namespaceYAMLPrelude / systemYAMLPrelude 是文档头部的只读声明。
+// namespaceYAMLPrelude / systemYAMLPrelude 是文档头部的声明。
 //
 // 为什么写在文本里而不是只写页面上：YAML 会被复制走（贴进 wiki、贴进 PR、贴给同事），
-// 离开页面之后「只读、写入入口在哪」这条信息必须还在文档自己身上。
+// 离开页面之后「谁是可写的、写入入口在哪」这条信息必须还在文档自己身上。
 const (
-	namespaceYAMLPrelude = `# Namespace document (read-only). spec.vars are namespace defaults; a node may
-# override them (merge order: local > node > namespace). Writes go through
-# PUT /v1/namespaces/{name}/config (CAS) - this endpoint deliberately has no PUT.
+	namespaceYAMLPrelude = `# Namespace document. spec.vars are namespace defaults; a node may override them
+# (merge order: local > node > namespace). Edit this document with
+# PUT /v1/namespaces/{name}/yaml (metadata.resourceVersion = the CAS token of the
+# namespace vars).
 `
 	systemYAMLPrelude = `# SystemConfig document (read-only). retention holds three TTLs in seconds; 0 means
 # keep forever. Writes go through PUT /v1/system/config (CAS) - this endpoint
@@ -185,6 +215,113 @@ func (a *namespaceAPI) getNamespaceYAML(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(text)})
+}
+
+// putNamespaceYAML 处理 PUT /v1/namespaces/{name}/yaml：严格解析一份 Namespace 文档并整份替换 spec.vars。
+//
+// 顺序与 nodeAPI.yamlPut 一一对应（文档层 → 只读字段 → 严格 JSON → 身份 → 载荷 → CAS →
+// store → 回读），只把最后一步换成 `PutNamespaceConfigByName`（`PUT …/config` 用的就是它）——
+// 所以 YAML 与 JSON 两条写入口对「缺 vars」「旧令牌」「非法 vars」的解释不可能分叉。
+// 任何一步都不静默忽略：静默忽略会让「我改了 YAML」变成一句没有根据的话。
+func (a *namespaceAPI) putNamespaceYAML(w http.ResponseWriter, r *http.Request) {
+	// 先 resolve：401（未登录）/ 404（不存在 / 无权）要在读 body 之前就落定，
+	// 并且后面的身份校验比的是行上的 slug（路径可以写成 id）。
+	ns, err := a.resolve(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	text, err := decodeYAMLRequestBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	res, err := yamldoc.Decode(text, writeDocShape(r, reflect.TypeOf(namespaceYAMLSpecPatch{}), "name", "resourceVersion"))
+	if err != nil {
+		writeYAMLError(w, err)
+		return
+	}
+	// status 是派生的只读面：文档里出现它就是一次「以为能改」的误解，必须具名拒绝
+	// （与 PUT …/config、Node 写入口同一个 reason，不在这里发明第二个原因码）。
+	if namespaceYAMLHasStatusKey(res.JSON) {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonStatusNotWritable, "status is read-only"))
+		return
+	}
+	var in namespaceYAMLWrite
+	dec := json.NewDecoder(bytes.NewReader(res.JSON))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		writeAPIError(w, unknownFieldError(err))
+		return
+	}
+	if in.APIVersion != nil && strings.TrimSpace(*in.APIVersion) != namespaceYAMLHeader {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonValueInvalid,
+			"apiVersion 必须是 "+namespaceYAMLHeader))
+		return
+	}
+	if in.Kind != nil && strings.TrimSpace(*in.Kind) != kindNamespace {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonValueInvalid, "kind 必须是 "+kindNamespace))
+		return
+	}
+	meta := objectMeta{}
+	if !isEmptyJSON(in.Metadata) {
+		if meta, err = decodeObjectMeta(in.Metadata, map[string]bool{"name": true, "resourceVersion": true}); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
+	// metadata.name 是身份（URL + 令牌作用域）：与路径不符就 400，而不是静默按路径改。
+	// 路径可以写成 id（resolve 两种都认），所以比的是行上的 slug，不是路径原文。
+	if meta.Name != "" && meta.Name != ns.Slug {
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonValueInvalid,
+			fmt.Sprintf("metadata.name %q does not match path namespace %q", meta.Name, ns.Slug)))
+		return
+	}
+	if in.Spec.Vars == nil {
+		// PUT 是**整份替换**（不是 merge）：`spec.vars` 缺席会被读成「清空所有 vars」，
+		// 与「忘了写」无法区分。文案与 PUT …/config 同一口径，只把键名换成本文档的路径。
+		writeAPIError(w, errStatus(http.StatusBadRequest, reasonValueInvalid,
+			"spec.vars is required (PUT replaces the whole namespace vars map; send {} to clear)"))
+		return
+	}
+	token, err := casTokenFromMeta(meta)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if _, err := a.d.DB.PutNamespaceConfigByName(r.Context(), ns.Slug, in.Spec.Vars, token); err != nil {
+		writeAPIError(w, err) // 非法 vars 400 value_invalid / 旧令牌 409 + details.current / 不存在 404
+		return
+	}
+	// 回读一次：文档的 CAS 令牌与 vars 都来自**写后**的事实。
+	// 令牌就是 `namespace_configs` 的写入口比的那一列（`namespaces.resource_version`，
+	// `GetNamespaceConfig` 会把它投影到 `cfg.ResourceVersion`）—— 用入参里的旧值拼
+	// 响应等于把一个刚过期的令牌回给客户端，「取 → 贴回」的下一跳立刻 409。
+	cfg, err := a.d.DB.GetNamespaceConfig(r.Context(), ns.ID)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	out, err := namespaceYAMLText(ns, cfg)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, yamlDoc{YAML: string(out)})
+}
+
+// namespaceYAMLHasStatusKey 在写请求里找顶层 `status`（照 nodeHasStatusKey 的写法）。
+//
+// 只看顶层键：spec 深处的同名键不属于写语义（那里会被 yamldoc 按未知字段拒掉），
+// 而顶层 `status` 是派生只读面 —— 报文里出现它就必须报 status_not_writable，
+// 而不是「未知字段」（那会把调用方引向错误的心智模型）。
+func namespaceYAMLHasStatusKey(raw []byte) bool {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return false // 坏 JSON 交给 strict 解码报可理解的 400
+	}
+	_, ok := top["status"]
+	return ok
 }
 
 // getSystemYAML 处理 GET /v1/system/yaml（管理员面）。
@@ -258,7 +395,7 @@ func namespaceYAMLText(ns *store.Namespace, cfg *store.NamespaceConfig) ([]byte,
 		Kind:       kindNamespace,
 		Metadata: namespaceYAMLMeta{
 			Name:            ns.Slug,
-			ResourceVersion: store.ResourceVersion(ns.ID, ns.ResourceVersion),
+			ResourceVersion: store.ResourceVersion(ns.ID, cfg.ResourceVersion),
 		},
 		Spec: namespaceYAMLSpec{Vars: varsNode},
 	}
