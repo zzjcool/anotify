@@ -1,3 +1,5 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 # 顶栏命名空间 ≡ 页面命名空间（#455）—— 交付报告
 
 - Issue: [#455](https://github.com/zzjcool/anotify/issues/455)（P1 · 写错对象）

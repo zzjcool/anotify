@@ -139,7 +139,7 @@ const (
 	// 118 → 122：能力的启停与试跑（`…/{name}/enable`、`/disable`、`/test`、`/audit`，
 	// CONTRACT-capability-lifecycle）。
 	// 122 → 124：Node 文档的 YAML 读/写面（IA 重构 ②，
-	// `GET/PUT /v1/nodes/{name}/yaml`，docs/design/node-namespace-ia.md §2.1）。
+	// `GET/PUT /v1/nodes/{name}/yaml`，实现见 `resource_node_yaml.go`）。
 	// 124 → 126：两条**只读** YAML 读面（IA ③④：
 	// `GET /v1/namespaces/{name}/yaml`、`GET /v1/system/yaml`）。
 	// 126 → 127：命名空间的 YAML 写面（#476 阶段 2：`PUT /v1/namespaces/{name}/yaml`）——

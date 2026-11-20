@@ -6,7 +6,7 @@
 
 > 调研日期：2026-10-28
 > 依据：A2A 规范 1.0（仓库最新 release `v1.0.1`，2026-05-28；规范站标注 Latest Released `1.0.0`）
-> 本地事实源：`design/wiki/` 十页 + `docs/contracts/CONTRACT.md` + `internal/store/schema.sql`
+> 本地事实源：（当时的设计 wiki 十页已随设计文档移除）+ `docs/contracts/CONTRACT.md` + `internal/store/schema.sql`
 
 ## 0. 结论先行
 
@@ -314,4 +314,4 @@ A2A 文档里的 orchestrator 是 **host/client 自己**，不是协议的一部
 - Extensions（URI、AgentCard 声明、profile/method/state machine）：https://github.com/a2aproject/A2A/blob/main/docs/topics/extensions.md
 - AGP sample extension（capability 路由 / policy / cost）：https://github.com/a2aproject/a2a-samples/tree/main/extensions/agp
 - Traceability Extension sample：https://github.com/a2aproject/a2a-samples/tree/main/extensions/traceability
-- Anotify 设计事实源：`design/wiki/index.html` 起十页；实现契约：`docs/contracts/CONTRACT.md`
+- Anotify 设计事实源：代码 + `docs/contracts/CONTRACT.md`（当时的设计 wiki 已随设计文档移除）

@@ -1,3 +1,5 @@
+> **历史快照**：本文件是当时的交付记录，不随代码演进；行为以代码、测试与 `docs/contracts/` 为准。
+
 <!-- snapshot-doc: 2026-11-19 把 .pi-orchestrator/ 摘出版本时的一次性台账（数字是那天的定格，复算命令见各节） -->
 
 # 把 `.pi-orchestrator/` 摘出版本（PR #445）· 台账
@@ -49,10 +51,10 @@ grep -rn "\.pi-orchestrator" --include="*.md" --include="*.go" --include="*.mjs"
 | `DEVELOPMENT.md:673` | `v4/CONTRACT.md` | 改指迁移后路径 |
 | `DEVELOPMENT.md:759` | `UI-EPIC-369/CONTRACT.md` | 改指 `docs/history/UI-EPIC-369/CONTRACT.md` |
 | `README.md:20` / `README.en.md:22` | `TASKS.md` | 「仓库文档导航」表里删掉该行（它已不是仓库文档） |
-| `design/ui-v2/REVIEW{,-2,-3}.md:3` | `UI-V2-CONTRACT.md` | 改指 `docs/contracts/UI-V2-CONTRACT.md` |
-| `docs/design/agent-upgrade.md:12` | `CONTRACT-agent-upgrade.md` | 改指 `docs/contracts/CONTRACT-agent-upgrade.md` |
-| `docs/design/playbooks.md:14` | `console-declares/{ISSUE,CONTRACT-artifact,CONTRACT-protocol}.md` | 改指 `docs/contracts/console-declares/…` |
-| `docs/design/v4/decisions.md:160` | `v4/SLOT-HANDOFF.md` | 改指 `docs/contracts/v4/SLOT-HANDOFF.md` |
+| 当时的 UI v2 评审稿 `REVIEW{,-2,-3}.md` 的文件头 | `UI-V2-CONTRACT.md` | 改指 `docs/contracts/UI-V2-CONTRACT.md` |
+| 当时的 `agent-upgrade.md:12` | `CONTRACT-agent-upgrade.md` | 改指 `docs/contracts/CONTRACT-agent-upgrade.md` |
+| 当时的 `playbooks.md:14` | `console-declares/{ISSUE,CONTRACT-artifact,CONTRACT-protocol}.md` | 改指 `docs/contracts/console-declares/…` |
+| 当时的 `v4/decisions.md:160` | `v4/SLOT-HANDOFF.md` | 改指 `docs/contracts/v4/SLOT-HANDOFF.md` |
 | `docs/lint-guards.md:6` | `UI-EPIC-369/*`、`UI-REVIEW-2026-11-13.md`、`UI-AUDIT-v3.md` | 三者一并迁移，改指 `docs/history/…` |
 | `docs/perf/c-report.md:10` | `issues/007-perf-agent-v3-frames.md` | 迁移 → `docs/history/issues/007-…` |
 | `docs/perf/capacity-and-backpressure.md:14,173` | `issues/006-…`、`issues/011-…` | 迁移 → `docs/history/issues/…` |
@@ -236,7 +238,7 @@ $ node scripts/check-doc-links.mjs               # 全仓（make ci 里的就是
 2. **`scripts/v4-frontend.test.mjs:6376` 依赖历史 commit `9022863`**：只读 blob，不受 untrack 影响；
    但若将来对该仓库做历史重写（filter-repo 之类），这条会失效 —— 它本来就是「可选基线对比」模式。
 3. **`docs/history/` 是只读档案**：里面的行号/链接是当时的定格，不要当现行契约读；
-   现行契约是 `docs/contracts/`、`docs/design/`、`api/`、`internal/store/schema.sql`。
+   现行契约是 `docs/contracts/`、`api/`、`internal/store/schema.sql`（设计文档已整套移除）。
 4. **两个 `path:line` 引用改了行号**（`UI-EPIC-369/CONTRACT.md:45→48`、`TRACKER.md:58→61`）：
    因为文件头插入了出处行。`check-agents` 只校验 `AGENTS.md` 里的 `path:line`，这两处在散文里，
    由本次人工核对 + `check-doc-links` 的 basename 核验兜底。

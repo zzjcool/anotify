@@ -1,6 +1,6 @@
 package server
 
-// Node 文档 YAML 读/写面的 HTTP 验收（IA 重构 ②，docs/design/node-namespace-ia.md §2.1）。
+// Node 文档 YAML 读/写面的 HTTP 验收（IA 重构 ②，实现在 `resource_node_yaml.go`）。
 //
 // 覆盖的契约点：
 //   - GET 返回 `{"yaml": "…"}`，文档是 apiVersion/kind/metadata/spec，**没有** status；

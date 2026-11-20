@@ -8,7 +8,8 @@
 // 三条纪律：
 //
 //   - 零本项目依赖：只用 stdlib（D-I10）。节点二进制不链 sqlite / server。
-//   - wire 字段一律 camelCase（docs/design/v4/api-conventions.md §3），帧类型名是
+//   - wire 字段一律 camelCase（`api/` 五份 spec 的 properties；双向对账见
+//     `internal/server/openapi_parity_test.go`），帧类型名是
 //     文档里的点号名（task.dispatch / config.applied …），字符串本身是协议。
 //   - 无兼容层：v4 不提供 v3 帧别名。旧字段就是未知字段，解码时被忽略而不是报错
 //     ——一条老帧不该因为多了一个退役的键就整帧被拒。

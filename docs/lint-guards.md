@@ -87,8 +87,8 @@ gh run list --limit 8   # main 上 ci 连续 failure，docker 才是 success
 
 - **过期指令**：`internal/version/version.go:16` 注释让人 `go run ./cmd/agent`（该目录已删除）→ 改成 `./cmd/anode`。
 - **坏引用**：`cmd/agent`（v3 节点，已删除）/ `make demo-chain`（已退役）/ `scripts/e2e/suites/real_backend.mjs`（已删除）/ `make mountpoint`（把报错原文当成了目标名）—— 逐条改成「已删除/已退役」的历史提及，或改指向现存目标。
-- **v3 设计文档**（`docs/design/capability-spec-v3.md`、`docs/design/agent-upgrade.md`）挂了 `frozen-doc:`，
-  它们不再参与引用检查；**标记本身也被校验**：哪天引用全部解析了，标记会红（强迫删）。
+- **v3 设计文档**挂了 `frozen-doc:`（随 2026-11-19 设计文档整套移除，已不存在），
+  冻结文档不再参与引用检查；**标记本身也被校验**：哪天引用全部解析了，标记会红（强迫删）。
 - **谎报已接线**：`DEVELOPMENT.md:720` 把零调用点的 `scripts/v4-frontend.test.mjs` 称「回归测试」
   → 改成「尚未接线、手工跑、判据是失败集合与 base 逐条相同」，并把旁边的禁裸读 `AnotifyGraphs`
   那条改成带锚点的形式：`@guard scripts/check-graph-access.mjs#no-direct-graph-lib`。
@@ -208,7 +208,7 @@ lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 �
 | 类型 | 例子 | 处置 |
 |---|---|---|
 | 可判定的事实/约束 | 「不得裸读 `AnotifyGraphs`」「缺键会回退」「有 13 个宽度值」 | **改成可执行断言**（lint/test），注释里只留锚点 `@guard <脚本>#<规则码>` |
-| 不可判定的意图 | 「为什么宁可少报也不伪造 stale」 | 保留，但必须挂**决策编号** `@decision D7`，编号由 lint 校存在性 |
+| 不可判定的意图 | 「为什么宁可少报也不伪造 stale」 | 保留，但必须挂**决策编号** `@decision V4-D1`，编号由 lint 校存在性 |
 | 历史/废止物 | v3 设计文档里提到的已删脚本 | 文件头打 `frozen-doc: 理由`，**该标记自己也由 lint 校验仍需要**（引用全部解析成功即红，强迫删标记） |
 | 检查文件自己的规格段 | 测试文件头写「这条测试查什么」（如 `openapi_parity_test.go` 的对账说明） | 代码文件头（四十行内）打 `spec-doc: 理由`（**仅代码文件**），整份跳过 claim 棘轮并单独记账；三条硬校验：① 必须真是测试/检查文件（Go `func Test…` / JS `test(`、`describe(`、`it(`），否则 `SPEC_DOC_NOT_TEST` 红；② 去掉标记行后必须仍有 claim 行，否则 `SPEC_DOC_STALE` 红；③ markdown 里写它无效（`SPEC_DOC_NOT_CODE` 红），文档类继续用 `frozen-doc` / `snapshot-doc` |
 
@@ -216,7 +216,7 @@ lead 删掉这两条写路径后全扫转绿（23 页 / 32 个写调用点 / 1 �
 
 ```
 @guard    scripts/check-css.mjs#NESTED_RULE     ← 脚本必须存在，且真的会抛这个规则码
-@decision D7                                     ← 决策编号必须能在契约文档里找到
+@decision V4-D1                                  ← 决策编号必须在契约文档里找到（见 docs/contracts/v4/CONTRACT.md §0）
 @count    node scripts/check-contrast.mjs        ← 计数型断言必须附可重跑的命令
 frozen-doc: v3 设计快照，不再随代码演进           ← 仅 markdown 前 40 行，且引用已全部解析时必红
 spec-doc:  本文件是这条检查自己的规格说明         ← 仅代码文件（测试/检查文件）的文件头，整份跳过 claim 棘轮；

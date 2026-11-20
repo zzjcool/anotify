@@ -3,7 +3,8 @@
 > 迁移自 .pi-orchestrator/cap-lifecycle/WIRE.md（2026-11-19，协调者工作区不再入库）
 
 > 本文件由协调者在实现开始前冻结，是后端 / 前端 / e2e 三个执行面的**唯一**接口约定。
-> 语义真源仍是 `docs/design/capability-lifecycle.md`（L-D1..L-D8）。本文件只钉
+> 语义真源仍是实现本身（`internal/server` 的能力启停/试跑路径 + `internal/store` 的状态派生）；L-D1..L-D8 的原表
+> 随设计文档一并移除（历史入口见 `docs/README.md`）。本文件只钉
 > 「wire 上到底是什么字节」，不改设计。
 
 ## 0. 已落库的基础设施（勿重复实现）

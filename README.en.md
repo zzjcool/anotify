@@ -7,8 +7,8 @@ when an Agent finishes a task. Passkey passwordless login (or an optional
 password), no polling, single binary — easy to self-host.
 
 > This repository evolved from a prototype (iOS Web Push proof-of-concept) into
-> a full implementation. See `design/` for mockups and `design/tech-scheme.html`
-> for the technical spec.
+> a full implementation. The only authority for behaviour is **code + tests +
+> `docs/contracts/`**; start at [`docs/README.md`](docs/README.md).
 
 ## 📚 Documentation
 
@@ -16,6 +16,7 @@ password), no polling, single binary — easy to self-host.
 | --- | --- | --- |
 | **[DEVELOPMENT.md](DEVELOPMENT.md)** | Developers / Agents | Architecture decisions, dev workflow, test system, gotchas (must-read) |
 | **[AGENTS.md](AGENTS.md)** | Sub-agents | Conventions, specs, pitfalls |
+| **[docs/README.md](docs/README.md)** | Everyone | Doc index: what is authoritative, what is a snapshot, how to change behaviour |
 | **[E2E_TESTING.md](E2E_TESTING.md)** | Developers | End-to-end test system (`make e2e` gate) |
 | **[IOS_TESTING.md](IOS_TESTING.md)** | QA | iOS real-device push checklist (only manual step) |
 | **[examples/playbooks/](examples/playbooks/)** | Users | Installable playbook examples (event → verdict → alert/audit), with empty-environment steps |
@@ -36,8 +37,8 @@ External systems ─HTTP/WS─▶ Hub anotify (single binary) ─┬─▶ WS di
 - **Path separation**: `/v1/*` dynamic API (no-store), static assets via CDN cache
   tiering (hash-fingerprinted files are immutable)
 
-> v4 design and API are defined by `docs/design/v4/` and the five specs under `api/`.
-> The v3 `cmd/agent` and Broker abstraction are retired (no compatibility layer).
+> v4 behaviour and API follow the code and the five specs under `api/`; the v3 `cmd/agent` is retired
+> together with the Broker abstraction (no compatibility layer).
 
 ## Quick Start
 
@@ -259,7 +260,6 @@ internal/
 web/                frontend (static HTML + Tailwind CDN + tokens.css)
 scripts/hash.mjs    fingerprint script (content-hash + reference rewrite + manifest)
 scripts/integration.sh / ws_test.mjs / push_e2e.mjs   test scripts
-design/             mockups + technical spec
 ```
 
 ## Security

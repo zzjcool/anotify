@@ -9,7 +9,7 @@
  * 这样"画一个图"的能力只有一份（flograph.js），而"我们的数据怎么变成图"
  * 也只有一份（这里）。页面只负责：取数据 → 调这里的一个函数。
  *
- * v4 口径（`docs/design/v4/capability.md` / `source.md` / `api-conventions.md`）：
+ * v4 口径（`api/resource.yaml` / `api/ingress.yaml`）：
  *
  *   · 能力只有 `spec.next`（裸名或 `name@version`）：**没有端口、没有优先级、
  *     没有候选、没有下游实体**。终端能力 = 空 next。

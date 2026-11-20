@@ -178,9 +178,10 @@ GUARD_EXIT=1
    **表格保存不受影响**——它从 `GET …/config` 构造文档，`total` 未设置就省略该行（省略 = 不动）。
    旧报告已把这条登记为 `#454` 的相邻缺陷；要修需要决定 `total: null` 的写入语义（清空？不动？），
    属于 store 契约变更，不在本 issue 的范围。
-2. `docs/design/node-namespace-ia.md`（§0.3 / §2.1）与历史报告
+2. 当时的 IA 设计文档（§0.3 / §2.1；已随设计文档整套移除，见 `docs/README.md`）与历史报告
    `docs/reports/ns-detail-and-system.md` 仍把 Namespace YAML 描述成「没有 PUT」。
-   历史报告是当时证据，保留原文；IA 文档在本 PR 里补了一行「#476 之后写入口是 `PUT …/yaml`」。
+   历史报告是当时证据，保留原文；设计文档已删除，权威口径见
+   `internal/server/resource_namespace_yaml.go` 文件头（#476 之后写入口是 `PUT …/yaml`）。
 
 ## 7. 门禁
 

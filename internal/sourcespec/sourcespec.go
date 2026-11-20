@@ -8,8 +8,8 @@
 //   - 不碰 IO、不读环境、不生成随机数（token 的生成是 store 的事，本包只判「空 = 待生成」）；
 //   - 输入的 config 一律是 `json.RawMessage`，输出也是——调用方拿到的字节就是落库的字节。
 //
-// 语义基线是 `docs/design/v4/source.md`（§1 kind 注册表、§2 文档形状、§3 config 字段、
-// §4 targets 与模板语法、§6 校验与错误）。主文档与实现冲突时以主文档为准。
+// 语义基线是本包的校验函数与 `api/ingress.yaml`（kind 注册表、文档形状、config 字段、
+// targets 与模板语法、校验与错误）。实现与文档冲突时以 `api/` 与测试为准。
 package sourcespec
 
 import (

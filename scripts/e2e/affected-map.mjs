@@ -45,7 +45,6 @@ export const NO_E2E_IMPACT = [
 	{ glob: "scripts/dev.sh", why: "开发环境脚本，e2e 不用它" },
 	{ glob: "scripts/cli_auth_smoke.sh", why: "手工冒烟脚本，e2e 用 cli_auth 套件" },
 	{ glob: "examples/**", why: "示例 playbook/能力包；e2e 用的是内联 fixture，不读 examples/" },
-	{ glob: "design/**", why: "设计稿 HTML/截图，不参与构建与运行" },
 	{ glob: "E2E_TESTING.md", why: "文档" },
 	{ glob: ".gitignore", why: "版本控制元数据" },
 	{ glob: "LICENSE", why: "许可证文本" },

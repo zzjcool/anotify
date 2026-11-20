@@ -153,8 +153,7 @@ cat .e2e-bin/results/_authority-manifest.json
 - `scripts/e2e/lib/harness.mjs` 的 `SUITE_PORTS` 里仍有 `real_backend: 6900` 端口段
   （同样还有更早退役的 `reply_e2e: 6750`）。没有套件读它们，只是号段保留；
   要清理请单独开一条（改 harness 会影响所有套件）。
-- `DEVELOPMENT.md` 与 `docs/design/v4/{capability,playbook}.md` 里把 `real_backend`
-  当成「回归验收套件」举例的历史文字，属历史设计记录，不改。
+- `DEVELOPMENT.md` 里把 `real_backend` 当成「回归验收套件」举例的历史文字，属历史记录，不改。
 
 ## 5. 断言计数与出处（不猜数字）
 

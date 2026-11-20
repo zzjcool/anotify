@@ -2,7 +2,7 @@
 
 > 迁移自 .pi-orchestrator/v4/API-SPEC-HANDOFF.md（2026-11-19，协调者工作区不再入库）
 
-文件名沿 `docs/design/v4/api-conventions.md §2`，不得另起命名或保留旧 single openapi 作为最终备用真相。T1 为五文件/校验器/HTTP实现唯一作者，T2 sitegen/文档页只读取它们。当前尚未有实际五 spec 产物，此文件是明确实施契约，不伪造已交 schema。
+文件名沿 `api/` 的五个文件（`internal/sitegen/openapi.go` 的 `CanonicalSpecFiles` 是顺序真源），不得另起命名或保留旧 single openapi 作为最终备用真相。T1 为五文件/校验器/HTTP实现唯一作者，T2 sitegen/文档页只读取它们。当前尚未有实际五 spec 产物，此文件是明确实施契约，不伪造已交 schema。
 
 | 文件 | 负责 operation / DTO |
 |---|---|

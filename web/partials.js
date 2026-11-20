@@ -1909,7 +1909,7 @@ a.side-link[data-tip]::after），文本节点仍在，tooltip 只是视觉层�
 
 	/* ---------- 命名空间（当前范围） ---------- */
 	//
-	// 命名空间是隔离单位（docs/design/namespaces.md）：sources / edges / events /
+	// 命名空间是隔离单位（`internal/store/namespace.go`）：sources / edges / events /
 	// tasks / stats / capabilities / nodes / playbooks 全都属于命名空间。
 	// 组织那一层在 UI 上已经不存在了（#203），前端手里只有命名空间。
 	//

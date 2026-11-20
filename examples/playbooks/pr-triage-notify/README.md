@@ -33,7 +33,7 @@ markdown 围栏块，目录下没有一个 `.yaml`），这里的文件是要被
 
 | 写法 | 依据 |
 | --- | --- |
-| 包 = 一个目录 + `playbook.yaml` 入口 + 能力/源各一个文件 | `docs/design/v4/playbook.md:53`、`internal/playbook/playbook.go:37` |
+| 包 = 一个目录 + `playbook.yaml` 入口 + 能力/源各一个文件 | `internal/playbook/playbook.go:37` |
 | 入口只允许 `apiVersion/kind/metadata/spec`，`metadata` 白名单和 `spec` 白名单 | `internal/playbook/parse.go:101`、`internal/playbook/parse.go:115`、`internal/playbook/parse.go:169` |
 | `spec.values` 是 JSON Schema，支持 `type/required/properties/default/enum/pattern/minimum/...` | `internal/schema/schema.go:18`、`internal/playbook/values.go:165` |
 | `{{values.点路径}}` 是唯一模板形态，且只替换值不替换键 | `internal/playbook/render.go:285` |
@@ -42,7 +42,7 @@ markdown 围栏块，目录下没有一个 `.yaml`），这里的文件是要被
 | `run.files` 正文以 `#!` 开头、`entrypoint` 必须在 `files` 里 | `internal/artifact/artifact.go:774` |
 | `next` 是纯名字列表（`name` 或 `name@version`），没有端口 | `api/resource.yaml:1719` |
 | 源 `spec.kind/enabled/config/targets`，webhook 的 config 只认 `token/secret/payloadSchema/sample` | `internal/sourcespec/sourcespec.go:75`、`internal/sourcespec/config.go:17` |
-| `targets.params` 里的 `$(payload.x)` 在触发期求值（与 `{{values.*}}` 是两套定界符） | `docs/design/v4/source.md:215` |
+| `targets.params` 里的 `$(payload.x)` 在触发期求值（与 `{{values.*}}` 是两套定界符） | `internal/sourcespec/template.go:212` |
 | 脚本里的参数是 `ANOTIFY_PARAM_<大写>`、契约变量 `ANOTIFY_ARTIFACT_DIR` 等 | `internal/protocol/env.go:13`、`cmd/anode/internal/execenv/execenv.go:351` |
 | `anode emit <下游> --data '<json 对象>'` | `cmd/anode/emit.go:34` |
 | 创建/安装的 HTTP 形状 | `api/resource.yaml:458`、`api/resource.yaml:608` |

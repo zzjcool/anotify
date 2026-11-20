@@ -606,7 +606,7 @@ export async function capability(d){
 			assert.match(resolved, /v1/, "钉死 lint-fix@1 必须显示版本");
 			const observed = await fx.textContent('[data-sec="observed"]');
 			/* observed 现在两种权威都说**真实事实**（服务端 `status.observed`：最近任务 +
-			 * emits/pruned + 近 24h 计数，见 docs/design/v4/capability.md §2）。修复器在本用例的
+			 * emits/pruned + 近 24h 计数，见 `internal/server/resource_capability.go` 的 observed 投影）。修复器在本用例的
 			 * 默认 ns 里已经有真实任务（真实权威：base fixtures 经 `POST /sources/deploy-hook/fire`
 			 * 建出 fixer 任务；mock 权威：种子 tsk_mock_1），所以这一条直接对账「页面 = 读模型」，
 			 * 不再把契约上已不存在的「恒 {}」当预期。 */

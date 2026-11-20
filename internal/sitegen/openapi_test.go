@@ -121,7 +121,7 @@ func countDocRefs(op *OpenAPIOperation, kind string) int {
 }
 
 // TestCanonicalSpecFiles 钉住五份 canonical spec 的文件名与合并顺序。
-// 名字/顺序变了就是契约变了（docs/design/v4/api-conventions.md §2）。
+// 名字/顺序变了就是契约变了（`api/` 五份文件就是拆分事实）。
 func TestCanonicalSpecFiles(t *testing.T) {
 	want := []string{"resource.yaml", "events.yaml", "agent.yaml", "ingress.yaml", "auth.yaml"}
 	if !reflect.DeepEqual(CanonicalSpecFiles, want) {

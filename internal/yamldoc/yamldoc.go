@@ -1,7 +1,7 @@
 // Package yamldoc 把一份单文档 YAML 严格转换成 canonical JSON，并给出带行号 / 字段路径的问题定位。
 //
 // 它服务于「从 YAML 创建资源」的写端点（`POST …/capabilities/yaml`、`POST …/sources/yaml`，
-// 见 docs/design/v4 的 yaml-create 契约）：
+// 见 `internal/server/resource_node_yaml.go` / `resource_namespace_yaml.go` 的 yaml-create 端点）：
 //
 //	POST 的 JSON body 里带一整份 YAML 正文 → yamldoc.Decode(text, shape)
 //	→ Result.JSON 走现有 JSON 解码路径（严格解码进 spec 结构体）

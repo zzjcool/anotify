@@ -31,7 +31,7 @@ func TestClassify(t *testing.T) {
 		want cacheClass
 	}{
 		{"/assets/app.e95f1f68.js", cacheImmutable},
-		{"/design/tokens.0350ec40.css", cacheImmutable},
+		{"/assets/tokens.0350ec40.css", cacheImmutable},
 		{"/icon.3f3b283e.png", cacheImmutable},
 		{"/fonts/caveat.71b9e49b.woff2", cacheImmutable},
 		{"/index.html", cacheEntry},
