@@ -977,7 +977,10 @@ export function selfTestParityCases() {
 		{
 			name: "红⑫ 前端 kind 表里删掉 tags 那一行",
 			mutateYamlDoc: (src) => {
-				const out = src.replace(/^[ \t]*\{ key: 'tags', type: 'strings', empty: '\[\]' \},$/m, "");
+				/* 锚点跟着 kind 表的真实写法走：`tags` 那一行可能带/不带 `omit`/`empty` 声明，
+				 * 这里按「key: 'tags' 开头的字段声明行」匹配 —— 判据没放宽，只是夹具不再绑死
+				 * 一行的完整文本（declaration 的尾注改了不该让自测变红）。 */
+				const out = src.replace(/^[ \t]*\{ key: 'tags',[^\n]*\},$/m, "");
 				return out === src ? null : out;
 			},
 			wantRules: [RULE.PARITY],

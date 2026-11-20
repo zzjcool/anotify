@@ -248,6 +248,61 @@ test('Capability：requires.values / run.workDir / 块标量正文本轮往返�
 	assert.equal(again.model.metadata.version, 3);
 });
 
+test('块标量：多行值的 chomping 逐字往返（行尾换行数不许被改），且认得 yaml.v3 的三种写法', () => {
+	/* 服务端（yaml.v3）遇到多行值时按「末尾换行数」选 chomping：不以换行结尾 → `|-`、
+	 * 恰好一个 → `|`、两个以上 → `|+`。把它们统统当 `|` 读，就等于每保存一次给值补一个
+	 * 行尾换行 —— 证书 / JSON / 脚本片段这类值会被静默改写。 */
+	const values = {
+		noTrail: 'line1\nline2',
+		oneTrail: 'line1\nline2\n',
+		twoTrail: 'a\n\n',
+		moreTrail: 'a\n\n\n',
+		blankMiddle: 'x\n\ny\n',
+		innerIndent: 'a\n  b\n',
+		leadingSpace: '  indented\nfirst',
+		tabLine: 'a\n\tb\n',
+		crlf: 'a\r\nb\r\n',
+		onlyNewline: '\n',
+		quoteInside: 'he said "hi"\nand left\n',
+	};
+	const text = YD.render('Capability', { apiVersion: 'anotify/v1', kind: 'Capability', metadata: { name: 'probe' }, spec: { files: values } });
+	const back = YD.parse('Capability', text);
+	assert.deepEqual(plain(back.problems), [], '渲染出来的文档必须自己能读回来');
+	for (const key of Object.keys(values)) {
+		assert.equal(back.model.spec.files[key], values[key], `spec.files.${key} 必须逐字往返（chomping 不许加/丢行尾换行）`);
+	}
+	assert.match(text, /\n    noTrail: \|-/, '不以换行结尾 → `|-`（strip）');
+	assert.match(text, /\n    oneTrail: \|\n/, '恰好一个换行 → `|`（clip）');
+	assert.match(text, /\n    twoTrail: \|\+/, '两个以上 → `|+`（keep）');
+
+	/* 反向：服务端 yaml.v3 会产出的三种形状（含缩进指示器 `|4-`）都要读对。 */
+	const v3 = [
+		'apiVersion: anotify/v1',
+		'kind: Capability',
+		'spec:',
+		'    files:',
+		'        strip: |-',
+		'            a',
+		'            b',
+		'        clip: |',
+		'            a',
+		'            b',
+		'        keep: |+',
+		'            a',
+		'',
+		'        indented: |4-',
+		'              x',
+		'            y',
+		'',
+	].join('\n');
+	const parsed = YD.parse('Capability', v3);
+	assert.deepEqual(plain(parsed.problems), [], 'yaml.v3 的形状必须认得');
+	assert.equal(parsed.model.spec.files.strip, 'a\nb', '|- 是 strip：没有行尾换行');
+	assert.equal(parsed.model.spec.files.clip, 'a\nb\n', '| 是 clip：恰好一个行尾换行');
+	assert.equal(parsed.model.spec.files.keep, 'a\n\n', '|+ 是 keep：末尾空行全算正文');
+	assert.equal(parsed.model.spec.files.indented, '  x\ny', '缩进指示器指定正文缩进（首行的额外空格是内容）');
+});
+
 test('AnodeConfig：envPassthrough 是名字白名单（字符串数组），不会混进 vars 映射', () => {
 	const model = {
 		name: 'node-a',
@@ -470,12 +525,17 @@ test('页面接线：文档文本只从 AnotifyYamlDoc 来，页面里没有本�
 	for (const rel of PAGES) {
 		const src = readFileSync(path.join(ROOT, rel), 'utf8');
 		const at = `${rel} 必须走统一层`;
-		assert.match(src, /YD\.edit\(/, at + '（表单改一处用 YD.edit）');
-		assert.match(src, /YD\.render\(/, at + '（预览/回填用 YD.render）');
 		assert.match(src, /window\.AnotifyYamlDoc/, at + '（从 window 取，不自己造）');
+		assert.match(src, /YD\.edit\(/, at + '（表单改一处 = 读原文 → 改一个键 → 重新序列化）');
+		assert.match(src, /YD\.parse\(/, at + '（编辑基线来自服务端原文的解析结果）');
 		assert.doesNotMatch(src, LOCAL_SERIALIZER_RE, rel + ' 里不许再声明第二份序列化器');
 		assert.ok(!/['"]apiVersion: /.test(src), rel + ' 里不许再出现文档文本字面量（\'apiVersion: \' / "apiVersion: "）');
 	}
+
+	/* 「按当前配置重写」只有节点页有（命名空间页的 YAML 区是只读回显）：它必须用同一份
+	 * render，而不是自己拼一份 —— 否则重写按钮就是第二份发射器。 */
+	assert.match(readFileSync(path.join(ROOT, 'web-src/pages/node.html'), 'utf8'), /YD\.render\(/,
+		'节点页的重写按钮必须用同一份 render');
 
 	const varsTable = readFileSync(path.join(ROOT, 'web/vars-table.js'), 'utf8');
 	assert.doesNotMatch(varsTable, /\bfunction\s+yamlScalar\b/, 'web/vars-table.js 不再自带 yamlScalar 实现');

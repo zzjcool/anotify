@@ -162,17 +162,27 @@
 	}
 
 	/* rowsToVars 把表格行折回「这一层要写的 vars 映射」。
-	 * 只收 owned（属于本层文档）且有值的行：别的层提供的值不抄进本层；
-	 * missing（没有值）与被标记删除的行都不写。 */
-	function rowsToVars(rows) {
+	 * `base` = 这份文档里**现有的** `spec.vars`（页面从 `GET …/yaml` 的模型里取）。
+	 *
+	 * 三条规则，缺一条就会静默改事实：
+	 *   ① 文档里已有的值先原样搬过来。被上层压住的行（节点页的 `local`、命名空间页的
+	 *      `local`/`node`）在表格里显示的是**生效值**：抄生效值会把上层的覆盖复制成本层
+	 *      默认，直接丢掉又会把本层这条值删掉 —— 两种都不对，原样保留才是「没动」。
+	 *   ② `owned`（属于本层文档）的行用行里的值覆盖，那就是用户改的那一份。
+	 *   ③ 被标记删除、或值被清空的 `owned` 行从映射里去掉 —— 「删掉一个变量」靠这条。
+	 * 别的层才有、本文档里没有的名字不会被抄进来（否则会凭空多出一层覆盖）。 */
+	function rowsToVars(rows, base) {
 		var out = {};
+		var source = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+		Object.keys(source).forEach(function (name) { out[name] = String(source[name]); });
 		var list = Array.isArray(rows) ? rows : [];
 		for (var i = 0; i < list.length; i++) {
 			var row = list[i] || {};
-			if (row.deleted || !row.owned) continue;
-			if (row.value == null || String(row.value) === '') continue;
 			var name = String(row.name == null ? '' : row.name);
 			if (!name) continue;
+			if (row.deleted) { delete out[name]; continue; }
+			if (!row.owned) continue;
+			if (row.value == null || String(row.value) === '') { delete out[name]; continue; }
 			out[name] = String(row.value);
 		}
 		return out;

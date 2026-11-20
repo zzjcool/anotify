@@ -169,6 +169,42 @@ test('rowsToVars：只收有值的行；missing 与 deleted 都不写', () => {
 	assert.deepEqual(plain(V.rowsToVars(rows.map((r) => ({ ...r, owned: false })))), {});
 });
 
+test('rowsToVars：文档里已有、但被上层压住的键不会被表格保存顺手删掉', () => {
+	/* 被压住的行在表格里显示的是**生效值**（source=local/namespace），本层的值不在行里。
+	 * 所以它既不能用行里的值覆盖（那会把上层覆盖复制成本层默认），也不能丢（那是删值）。
+	 * 判据：base 里有、patch 没碰的键，原样留在结果里。 */
+	const V = load();
+	const rows = V.buildRows({
+		effective: { A: { value: 'localA', source: 'local' }, B: { value: 'nodeB', source: 'node' } },
+		machine: { A: 'nodeA', B: 'nodeB' },
+		namespaceVars: {},
+		required: {},
+		layer: 'node',
+	});
+	const a = rows.find((r) => r.name === 'A'), b = rows.find((r) => r.name === 'B');
+	assert.equal(a.owned, false, '被 local 压住 → 不属于本层文档（表格里锁定）');
+	assert.equal(a.locked, true);
+	assert.equal(b.owned, true, '本层的行才是可写的那一份');
+
+	const kept = plain(V.rowsToVars(rows, { A: 'nodeA', B: 'old' }));
+	assert.equal(kept.A, 'nodeA', '保留下来的必须是**文档里**的值，不是表格显示的生效值 localA');
+	assert.equal(kept.B, 'nodeB', 'owned 行用行里的值覆盖');
+
+	const deleted = plain(V.rowsToVars(rows.map((r) => (r.name === 'A' ? { ...r, deleted: true } : r)), { A: 'nodeA', B: 'old' }));
+	assert.deepEqual(deleted, { B: 'nodeB' }, '用户显式删掉一个被压住的键 → 才从文档里去掉');
+
+	const other = V.buildRows({
+		effective: { N: { value: 'nsv', source: 'namespace' } },
+		machine: {},
+		namespaceVars: { N: 'nsv' },
+		required: {},
+		layer: 'node',
+	});
+	assert.deepEqual(plain(V.rowsToVars(other, {})), {}, '别的层才有、文档里没有的名字不许抄进来');
+	assert.deepEqual(plain(V.rowsToVars(rows, { Z: 'stale' })), { Z: 'stale', B: 'nodeB' },
+		'文档里有、表格里根本没有对应行的键也不许丢（表格不是文档的全集）');
+});
+
 test('suggestNames：现有名字 ∪ 能力要求但缺失的名字；删除的行不算', () => {
 	const V = load();
 	const required = V.requiredNames(CAPABILITIES);

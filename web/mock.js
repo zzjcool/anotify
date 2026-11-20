@@ -3230,8 +3230,9 @@
 		return json(namespaceConfig(name));
 	});
 	/* Namespace 文档：`{yaml}` 全文。与真服务端同形状（apiVersion / kind / metadata / spec.vars）。
-	   写入口是 PUT …/yaml（YAML 是唯一编辑面）；预览不解析 YAML（解析器只留服务端一份），
-	   所以 PUT 回 501，与 Node 文档的预览限制一致。 */
+	   写入口是 PUT …/yaml（YAML 是唯一编辑面）：预览用 `varsYAMLWrite` 读回 `spec.vars`，
+	   与真服务端一样校验 kind / metadata.name / CAS 令牌 —— 它只重建命名空间这一份，
+	   不做通用 YAML 解码（通用解析器只留 `internal/yamldoc` 一份）。 */
 	function namespaceDocText(name) {
 		return renderDoc("Namespace", {
 			apiVersion: API_VERSION,

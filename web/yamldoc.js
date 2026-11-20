@@ -69,13 +69,33 @@
 		return value !== null && typeof value === 'object' && !Array.isArray(value);
 	}
 
-	/* 多行字符串 → 块标量 `|`（保住换行与每行缩进；能力脚本正文靠它逐字保留）。
-	 * 尾部空行去掉：YAML 的块标量会自己补一个换行，多写的空行会变成正文的一部分。 */
+	/* 这个值能不能写成块标量。多行、有非换行内容、**首行不以空白开头**（首行的空白会被
+	 * 解析方当成正文缩进，值就变了）、正文里没有 `\r`（块标量的行尾会被规范化）。
+	 * 其它多行值退回双引号标量（`"a\nb"`）：JSON 的双引号标量与 YAML 双引号标量同一套转义，
+	 * 逐字精确、不依赖缩进推断 —— 少一层「看起来对但其实改了值」的可能。 */
+	function useBlockScalar(text) {
+		if (typeof text !== 'string' || text.indexOf('\n') < 0) return false;
+		/* 块标量里的行尾会被规范化（`\r\n` → `\n`，yaml.v3 也这么做）—— 要逐字保留就得用
+		 * 双引号标量，那里 `\r` 是转义。 */
+		if (text.indexOf('\r') >= 0) return false;
+		var core = text.replace(/\n+$/, '');
+		if (core === '') return false;
+		/* 只有**首行**的空白会改变语义（解析方把它当成正文缩进）；正文里其它行的行首空白
+		 * （含制表符）都逐字保留 —— 与 yaml.v3 的写法一致。 */
+		return !/^[ \t]/.test(core.split('\n')[0]);
+	}
+
+	/* 多行字符串 → 块标量（保住换行与每行缩进；能力脚本正文靠它逐字保留）。
+	 * chomping 与 yaml.v3 的规则一致，这样「前端写出去 → 服务端读回来」是逐字相同的值：
+	 *   不以换行结尾 → `|-`（strip）；恰好一个换行 → `|`（clip）；两个以上 → `|+`（keep，
+	 *   多出来的空行照写）。写死 `|` 会把「有两行、没有行尾换行」的值改成一个行尾换行。 */
 	function blockScalar(text, indent) {
-		var body = String(text).replace(/\n+$/, '');
-		var out = ['|'];
-		var rows = body.split('\n');
+		var core = String(text).replace(/\n+$/, '');
+		var trail = String(text).length - core.length;
+		var out = ['|' + (trail === 0 ? '-' : trail === 1 ? '' : '+')];
+		var rows = core.split('\n');
 		for (var i = 0; i < rows.length; i++) out.push(rows[i] === '' ? '' : ' '.repeat(indent) + rows[i]);
+		for (var b = 0; b < trail - 1; b++) out.push('');
 		return out;
 	}
 
@@ -96,7 +116,7 @@
 				for (var j = 1; j < inner.length; j++) out.push(inner[j]);
 				continue;
 			}
-			if (typeof item === 'string' && item.indexOf('\n') >= 0) {
+			if (useBlockScalar(item)) {
 				var lines = blockScalar(item, indent + 2);
 				out.push(pad + '- ' + lines[0]);
 				for (var k = 1; k < lines.length; k++) out.push(lines[k]);
@@ -143,7 +163,7 @@
 					for (var s = 0; s < seqLines.length; s++) out.push(seqLines[s]);
 					continue;
 				}
-				if (typeof child === 'string' && child.indexOf('\n') >= 0) {
+				if (useBlockScalar(child)) {
 					var block = blockScalar(child, indent + 2);
 					out.push(pad + key + ': ' + block[0]);
 					for (var b = 1; b < block.length; b++) out.push(block[b]);
@@ -161,9 +181,12 @@
 	/* 字段声明：
 	 *   key   文档里的键名
 	 *   type  string | int | strings | string-map | int-map | object
-	 *   omit  'missing'（默认：null/undefined 整键省略）| 'never'（缺了也按空集合写）
-	 *   empty 空集合的文本形态（渲染器自动产出 `{}` / `[]`，这里只做声明以便对账）
+	 *   omit  'missing'（默认：null/undefined 整键省略 = 不动）| 'never'（缺了也按空集合写）
 	 *   fields object 的子字段
+	 *
+	 * 只有两类字段用 `omit: 'never'`：文档里「空集合」本身是事实的那几个（今天没有 —— 空
+	 * `tags` / 空 `vars` 都来自 null 与 `[]` 的区分）。其余一律「未知就省略」，因为写面把
+	 * 「没写」当成「不动」，把 null 写成空集合就等于替用户改了一个值。
 	 *
 	 * `envPassthrough` 是**名字列表**（strings），`vars` 是**名字→值映射**（string-map）：
 	 * 两者类型不同，谁也不会被渲染成另一个的形状。
@@ -184,19 +207,19 @@
 			key: 'spec',
 			type: 'object',
 			fields: [
-				{ key: 'namespaces', type: 'strings', empty: '[]' },
-				{ key: 'vars', type: 'string-map', empty: '{}' },
+				{ key: 'namespaces', type: 'strings' },
+				{ key: 'vars', type: 'string-map' },
 				{
 					key: 'limits',
 					type: 'object',
 					fields: [
 						/* 读面会写 `total: null`；写面要求 ≥1 的整数 → null 就整键省略（不动）。 */
 						{ key: 'total', type: 'int', omit: 'missing' },
-						{ key: 'perCapability', type: 'int-map', empty: '{}' },
+						{ key: 'perCapability', type: 'int-map' },
 					],
 				},
 				/* #454：未知（null）就整键省略，只有「已知为空」才写 `tags: []`。 */
-				{ key: 'tags', type: 'strings', empty: '[]' },
+				{ key: 'tags', type: 'strings' },
 			],
 		},
 	];
@@ -235,7 +258,7 @@
 					fields: [
 						/* PUT 是整份替换：`spec.vars` 缺席被服务端拒成 value_invalid（「忘了写」
 						 * 与「清空」不可区分）。所以这里**不**补 `{}` —— 让服务端具名报错。 */
-						{ key: 'vars', type: 'string-map', empty: '{}' },
+						{ key: 'vars', type: 'string-map' },
 					],
 				},
 			],
@@ -255,17 +278,17 @@
 				{ key: 'name', type: 'string' },
 				{ key: 'server', type: 'string' },
 				{ key: 'token', type: 'string', omit: 'missing' },
-				{ key: 'namespaces', type: 'strings', empty: '[]' },
-				{ key: 'vars', type: 'string-map', empty: '{}' },
+				{ key: 'namespaces', type: 'strings' },
+				{ key: 'vars', type: 'string-map' },
 				{
 					key: 'limits',
 					type: 'object',
 					fields: [
 						{ key: 'total', type: 'int', omit: 'missing' },
-						{ key: 'perCapability', type: 'int-map', empty: '{}' },
+						{ key: 'perCapability', type: 'int-map' },
 					],
 				},
-				{ key: 'envPassthrough', type: 'strings', empty: '[]' },
+				{ key: 'envPassthrough', type: 'strings' },
 				{ key: 'listen', type: 'string', omit: 'missing' },
 			],
 		},
@@ -295,7 +318,10 @@
 				if (Object.keys(child).length) out[f.key] = child;
 				continue;
 			}
-			if (value === null || value === undefined) continue;
+			if (value === null || value === undefined) {
+				if (f.omit === 'never') out[f.key] = coerce(f.type, undefined);
+				continue;
+			}
 			out[f.key] = coerce(f.type, value);
 		}
 		var declared = {};
@@ -308,7 +334,13 @@
 	}
 
 	function coerce(type, value) {
-		if (value === null || value === undefined) return value;
+		if (value === null) return value;
+		if (value === undefined) {
+			/* 只有 omit:'never' 会走到这里：缺了也写一个空集合。 */
+			if (type === 'strings') return [];
+			if (type === 'string-map' || type === 'int-map') return {};
+			return value;
+		}
 		switch (type) {
 		case 'int': {
 			var n = typeof value === 'number' ? value : Number(String(value).trim());
@@ -364,7 +396,9 @@
 	 * 多文档（---）、复杂键（? ）、制表符缩进、重复键。 */
 	function parse(text) {
 		var problems = [];
-		var raw = String(text === null || text === undefined ? '' : text).replace(/\r\n?/g, '\n').split('\n');
+		var source = String(text === null || text === undefined ? '' : text).replace(/\r\n?/g, '\n');
+		var endsWithNewline = source.charAt(source.length - 1) === '\n';
+		var raw = source.split('\n');
 		var pos = 0;
 
 		function problem(index, message) {
@@ -372,7 +406,15 @@
 			return null;
 		}
 
-		/* 返回缩进空格数；-1 = 缩进里用了制表符（不在方言内，由调用方带行号报问题）。 */
+		/* 只数行首空格：块标量正文里「缩进之后的制表符」是内容，不是缩进。 */
+		function spacesOf(line) {
+			var i = 0;
+			while (i < line.length && line.charAt(i) === ' ') i++;
+			return i;
+		}
+
+		/* 返回缩进空格数；-1 = 缩进里用了制表符（不在方言内，由调用方带行号报问题）。
+		 * 只用于映射/序列的结构行；块标量正文走 spacesOf。 */
 		function indentOf(line) {
 			var i = 0;
 			while (i < line.length && line.charAt(i) === ' ') i++;
@@ -495,26 +537,37 @@
 			return {value: arr, rest: ''};
 		}
 
-		/* 块标量 `|` / `|-`：正文行必须比键更缩进；公共缩进取正文首行的缩进。 */
+		/* 块标量：`|`（clip：恰好一个行尾换行）/ `|-`（strip：没有行尾换行）/ `|+`（keep：
+		 * 末尾的空行全部算正文），可带缩进指示器 `|2` / `|2-` / `|-2`。正文行必须比键更缩进；
+		 * 没写指示器时公共缩进取正文首个非空行的缩进。
+		 *
+		 * chomping 必须真的实现：服务端（yaml.v3）遇到「不以换行结尾」的多行值会写 `|-`，把它当 `|`
+		 * 读就会给每个值多补一个行尾换行 —— 那是「保存一次、值被改一次」的静默改写。 */
 		function parseBlockScalar(header, baseIndent, index) {
 			if (/^>/.test(header)) return problem(index, '折行块标量 `>` 不在本层方言内');
-			var strip = /^-/.test(header);
+			var chomp = header.indexOf('-') >= 0 ? '-' : header.indexOf('+') >= 0 ? '+' : '';
+			var digit = /[1-9]/.exec(header);
+			var fixedIndent = digit ? baseIndent + Number(digit[0]) : -1;
 			var lines = [];
 			var at = index + 1;
 			var bodyIndent = -1;
 			for (; at < raw.length; at++) {
 				var line = raw[at];
 				if (line.trim() === '') { lines.push(''); continue; }
-				var ind = indentOf(line);
-				if (ind < 0) return problem(at, '缩进不能用制表符');
+				var ind = spacesOf(line);
 				if (ind <= baseIndent) break;
-				if (bodyIndent < 0) bodyIndent = ind;
-				lines.push(line.slice(Math.min(bodyIndent, ind)));
+				if (fixedIndent < 0 && bodyIndent < 0) bodyIndent = ind;
+				lines.push(line.slice(Math.min(fixedIndent < 0 ? bodyIndent : fixedIndent, ind)));
 			}
+			var terminatedByDedent = at < raw.length;
 			pos = at;
-			while (lines.length && lines[lines.length - 1] === '') lines.pop();
-			var body = lines.join('\n');
-			return {value: strip ? body : body + '\n', rest: ''};
+			/* 原文里的换行：块一直延伸到文件末尾、且文件不以换行结束时，最后一行后面没有换行。 */
+			var finalNewline = terminatedByDedent || endsWithNewline;
+			var body = lines.join('\n') + (finalNewline && lines.length ? '\n' : '');
+			if (chomp === '+') return {value: body, rest: ''};
+			if (chomp === '-') return {value: body.replace(/\n+$/, ''), rest: ''};
+			var clip = body.replace(/\n+$/, '');
+			return {value: clip === '' ? '' : clip + '\n', rest: ''};
 		}
 
 		/* 一行映射条目 → {key, value}；值可能是嵌套块（在同一缩进层级续读）。 */
@@ -675,7 +728,10 @@
 	function parseDoc(kindId, text) {
 		var kind = kindOf(kindId);
 		var res = parse(text);
-		if (res.problems.length || res.value === null) return {model: null, problems: res.problems};
+		if (res.problems.length) return {model: null, problems: res.problems};
+		/* 空文档 / 只有注释：没有任何问题，但也没有根节点。调用方依赖「problems 为空 = 有
+		 * 可信模型」这条契约，所以这里补一条 —— 不然它拿到 null 还得自己再判一次。 */
+		if (res.value === null) return {model: null, problems: [{line: 1, message: '文档根必须是映射'}]};
 		var model = isMap(res.value) ? res.value : null;
 		if (!model) return {model: null, problems: [{line: 1, message: '文档根必须是映射'}]};
 		if (kind.generic) return {model: model, problems: []};

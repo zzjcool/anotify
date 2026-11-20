@@ -336,7 +336,10 @@
     if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
     if (!config) return varsSetState(t('error'), true);
     if (!yamlModel) return varsSetState(t('yaml_unparsable'), true);
-    const vars = VT.rowsToVars(varsRows);
+    /* base = 文档里现有的 spec.vars：被 local 压住的行显示的是生效值，
+       表格保存不能把它们抄成节点默认值、也不能把它们删掉（rowsToVars 的规则 ①）。 */
+    const docVars = (yamlModel.spec && yamlModel.spec.vars) || {};
+    const vars = VT.rowsToVars(varsRows, docVars);
     const diff = VT.diffVars(config.vars || {}, vars);
     if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(t('vars_no_changes'));
     $('node-vars-save').disabled = true; varsSetState(t('loading'));

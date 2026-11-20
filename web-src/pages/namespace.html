@@ -124,11 +124,11 @@
   const YD = window.AnotifyYamlDoc;
   const VT = window.AnotifyVars;
   let varsRows = [], varsEditing = null, nsRequired = {}, varsDirty = false, varsSeq = 0;
-  /* 本页编辑的是**同一份 Namespace 文档**：`nsDocModel` 由 `GET …/yaml` 的原文解析而来
+  /* 本页编辑的是**同一份 Namespace 文档**：`nsDocText` 是 `GET …/yaml` 的原文
    * （`YD.edit`：读原文 → 只替换 `spec.vars` 与 CAS 令牌 → 重新序列化），原始编辑器与
    * vars 表格走的是同一个动作。所以表单不认识的字段（含服务端以后加的）不会被保存丢掉。
-   * 文档读不懂时 `nsDocModel` 为 null：保存退回「从 vars 重建一份最小文档」并在状态行
-   * 明说，不静默丢字段。 */
+   * 原文读不懂 → 保存前拒绝（`yaml_unparsable`）；原文还没拿到 → 保存前先读一次。
+   * 这两条都不允许「从 vars 重建一份最小文档」：那正是 #454 丢字段的形状。 */
   let nsDocText = '', nsDocScope = '';
   function adoptNamespaceYAML(scope, text) {
     if (scope !== selectedNamespace) return;
@@ -137,17 +137,27 @@
   }
   /* namespaceYAMLDoc：服务端原文 + 只替换 spec.vars（与 CAS 令牌）。
      `resourceVersion` 缺省时保留文档里已经有的那个（省略 = 用读面给的令牌）。
-     原文读不懂时返回 null：调用方拒绝改写（不猜、不兜底成「只剩 vars 的一份」）。
-     文档还没加载（页面刚打开就点保存）时退回最小文档 —— 此时没有可丢的字段。 */
+     原文没拿到或读不懂时返回 null：调用方先读一次、再拒绝 —— 不猜、不兜底成
+     「只剩 vars 的一份」（那种文档一旦服务端加了字段就是静默丢弃）。 */
   function namespaceYAMLDoc(scope, vars, resourceVersion) {
+    if (nsDocScope !== scope || !nsDocText) return null;
     const patch = { metadata: { name: scope, resourceVersion: resourceVersion }, spec: { vars: vars || {} } };
-    if (nsDocScope === scope && nsDocText) {
-      const res = YD.edit('Namespace', nsDocText, patch);
-      return res.problems.length ? null : res.text;
-    }
-    return YD.render('Namespace', YD.merge({ apiVersion: 'anotify/v1', kind: 'Namespace', metadata: { name: scope } }, patch));
+    const res = YD.edit('Namespace', nsDocText, patch);
+    return res.problems.length ? null : res.text;
+  }
+  /* 这份命名空间文档里现有的 spec.vars：表格保存的「原有值」基线（rowsToVars 的规则 ①）。
+     文档还没加载时退回 /config 的 vars（同一个事实的另一面）；读不懂原文时返回 null，
+     调用方据此拒绝改写 —— 与 namespaceYAMLDoc 走同一条判据。 */
+  function namespaceDocVars(scope) {
+    if (nsDocScope !== scope || !nsDocText) return (nsConfig && nsConfig.vars) || {};
+    const parsed = YD.parse('Namespace', nsDocText);
+    if (parsed.problems.length) return null;
+    return (parsed.model.spec && parsed.model.spec.vars) || {};
   }
   async function saveNamespaceVars(scope, vars, resourceVersion) {
+    /* 原文是这份文档的唯一来源：没拿到就先读一次（页面刚打开就点保存的路径）。
+       读不到 / 读不懂就拒绝 —— 拿 vars 重建一份会把表单不认识的字段写没。 */
+    if (nsDocScope !== scope || !nsDocText) await loadNamespaceYAML(scope);
     const text = namespaceYAMLDoc(scope, vars, resourceVersion);
     if (text === null) throw new Error(n('yaml_unparsable'));
     const value = await write(YD.path('Namespace', scope), { yaml: text });
@@ -344,7 +354,9 @@
   $('namespace-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(n('vars_finish_edit'), true);
     if (!nsConfig || nsLoaded !== selectedNamespace) return;
-    const vars = VT.rowsToVars(varsRows);
+    const baseVars = namespaceDocVars(selectedNamespace);
+    if (baseVars === null) return varsSetState(n('yaml_unparsable'), true);
+    const vars = VT.rowsToVars(varsRows, baseVars);
     const diff = VT.diffVars(nsConfig.vars || {}, vars);
     if (!diff.added.length && !diff.removed.length && !diff.changed.length) return varsSetState(n('vars_no_changes'));
     const saveScope = nsLoaded, saveRV = nsConfig.metadata.resourceVersion, saveEpoch = nsEditEpoch;
