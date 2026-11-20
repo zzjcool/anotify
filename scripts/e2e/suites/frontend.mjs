@@ -13,7 +13,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CASES, runCase } from '../fixtures/f3/f3-cases.mjs';
 import { ROOT, OUT, isMock, evidenceDirectory } from '../fixtures/f3/f3-driver.mjs';
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from '../fixtures/f3/f3-retry.mjs';
 const SELF=fileURLToPath(import.meta.url),cwd=process.cwd();
+// #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试；
+// 计数进结果 JSON（`retries`）供 parallel_runner 汇总打印，不许静默。
+const retryLedger=createRetryLedger();
 const runId=process.env.F3_RUN_ID||randomUUID(),mode=isMock()?'explicit-mock':'real';
 if(!/^[a-zA-Z0-9_-]+$/.test(runId))throw new Error('Invalid F3_RUN_ID');
 const runDir=path.join(OUT,'runs',runId,mode);
@@ -40,17 +44,17 @@ async function fragment(id,sourceHash){
   await writeFile(path.join(dir,'case.json'),JSON.stringify(evidence,null,2)+'\n',{flag:'wx'});
   return evidence;
 }
-async function execute(id,sourceHash){
-  const meta=identity(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=evidenceDirectory(meta);await mkdir(dir,{recursive:true});
-  await enrollAttempt(runDir,meta,plan);
+// spawnAttempt 只负责「起一次子进程 + 写 full.log/exit.json」，不判定；
+// #483 的分层判定与重试在 f3-retry.mjs（三个 f3 执行器共用同一套口径）。
+async function spawnAttempt(meta,dir,id,sourceHash){
   return new Promise(resolve=>{
     const proc=spawn(process.execPath,[SELF,'--case',id],{cwd:ROOT,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,F3_RUN_ID:runId,F3_ATTEMPT_ID:meta.attemptId,F3_SOURCE_HASH:sourceHash,E2E_RESULTS_DIR:dir}});
-    children.add(proc);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,SELF,'--case',id],identity:meta})+'\n',timedOut=false;
+    children.add(proc);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,SELF,'--case',id],identity:meta})+'\n',childOutput='',timedOut=false;
     const terminate=()=>{try{process.kill(-proc.pid,'SIGTERM');}catch{ /* settled group */ }};
     const hard=setTimeout(()=>{timedOut=true;terminate();},52000);
     const force=setTimeout(()=>{if(timedOut||interrupted)try{process.kill(-proc.pid,'SIGKILL');}catch{ /* settled */ }},54000);
-    proc.stdout.on('data',d=>{output+=d;});proc.stderr.on('data',d=>{output+=d;});
-    proc.once('error',e=>{output+=String(e);});
+    proc.stdout.on('data',d=>{output+=d;childOutput+=d;});proc.stderr.on('data',d=>{output+=d;childOutput+=d;});
+    proc.once('error',e=>{output+=String(e);childOutput+=String(e);});
     proc.once('close',async(code,signal)=>{
       clearTimeout(hard);clearTimeout(force);children.delete(proc);try{process.kill(-proc.pid,'SIGKILL');}catch{/* group already settled */}
       const exit={...meta,exitCode:code,timedOut,signal,dir};
@@ -58,10 +62,17 @@ async function execute(id,sourceHash){
       try{
         await writeFile(path.join(dir,'full.log'),output);
         await writeFile(path.join(dir,'exit.json'),JSON.stringify(exit,null,2)+'\n');
-        resolve(exit);
-      }catch(error){resolve({...exit,writeError:String(error)});}
+        resolve({exit,childOutput});
+      }catch(error){resolve({exit:{...exit,writeError:String(error)},childOutput});}
     });
   });
+}
+async function execute(id,sourceHash){
+  const meta=identity(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=evidenceDirectory(meta);await mkdir(dir,{recursive:true});
+  await enrollAttempt(runDir,meta,plan);
+  const run=await executeWithRetry({id,dir,spawnAttempt:()=>spawnAttempt(meta,dir,id,sourceHash)});
+  retryLedger.record(run.outcome);
+  return run.exit;
 }
 // Completion/identity is distinct from PASS: a genuine red child is collected.
 function validateCompletion(selected,evidence,exit,expected) {
@@ -83,11 +94,12 @@ async function aggregate(sourceHash,exits){
   validateManifest(plan,CASES.map(x=>x.id),await readEnrollments(runDir),exits);
   let complete=true,passed=0,failed=0;const collected=[];
   for(const {id} of CASES){
-    let evidence,exit,dir;
+    let evidence,exit,dir,retry;
     try{
       const selected=plan.attempts.find(x=>x.id===id);
       if(!selected)throw new Error('No actual child completion');
       dir=evidenceDirectory(selected);
+      retry=await readRetryRecord(dir);
       evidence=JSON.parse(await readFile(path.join(dir,'case.json'),'utf8'));
       exit=JSON.parse(await readFile(path.join(dir,'exit.json'),'utf8'));
       for(const record of [selected,evidence,exit]){
@@ -95,11 +107,17 @@ async function aggregate(sourceHash,exits){
       }
       if(selected.writeError)throw new Error(selected.writeError);
       validateCompletion(selected,evidence,exit,identity(id,sourceHash,selected.attemptId));
-    }catch(error){H.bad(id,'Missing/stale/invalid completed fragment: '+error.message);complete=false;failed++;continue;}
-    collected.push({id,dir,attemptId:evidence.attemptId,cwd,sourceHash,mode,exitCode:exit.exitCode,signal:exit.signal,timedOut:exit.timedOut,reportPath:evidence.reportPath});
+    }catch(error){
+      complete=false;failed++;
+      // 重试后仍 incomplete：红，且原因必须能一句话读懂（#483 验收：`incomplete ×2`）。
+      if(retry?.kind===INCOMPLETE)H.bad(id,'incomplete ×'+retry.attempts.length+'：'+retry.why);
+      else H.bad(id,'Missing/stale/invalid completed fragment: '+error.message);
+      continue;
+    }
+    collected.push({id,dir,attemptId:evidence.attemptId,cwd,sourceHash,mode,exitCode:exit.exitCode,signal:exit.signal,timedOut:exit.timedOut,reportPath:evidence.reportPath,retried:Boolean(retry?.retried),retryKind:retry?.kind||null});
     try {
       validateAttempt(plan.attempts.find(x=>x.id===id),evidence,exit,identity(id,sourceHash,evidence.attemptId));
-      passed++;H.ok(id+' ('+evidence.checks+' behavior assertions)');
+      passed++;H.ok(id+' ('+evidence.checks+' behavior assertions)'+(retry?.recovered?' [首次 incomplete → 重试通过]':''));
     } catch(error) { failed++;H.bad(id,evidence.error||error.message); }
   }
   await writeFile(path.join(runDir,'aggregate.json'),JSON.stringify({suite:'frontend',runId,cwd,sourceHash,mode,authority:mode,...epochFields(frozen),registered:CASES.map(x=>x.id),complete,ok:complete&&failed===0&&passed===CASES.length,passed,failed,collected},null,2)+'\n',{flag:'wx'});
@@ -131,5 +149,8 @@ try{
 finally{
   for(const proc of children)try{process.kill(-proc.pid,'SIGKILL');}catch{ /* already settled */ }
   if(interrupted)H.bad('frontend interrupted','Collected signal/remaining missing cases fail, never skip');
+  const retryStats=retryLedger.stats();
+  console.log(retrySummaryLine('frontend',retryStats));
+  H.setRetryStats(retryStats);
   process.exitCode=H.summary('frontend')?0:1;
 }

@@ -9,6 +9,9 @@ import path from 'node:path';
 import * as H from '../../lib/harness.mjs';
 import { ROOT, TEAM, isMock, evidenceDirectory } from './f3-driver.mjs';
 import { LOCALE_OUT, casesFor, runLocaleCase } from './f3-i18n-cases.mjs';
+// #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from './f3-retry.mjs';
+const retryLedger = createRetryLedger();
 export async function localeFingerprint(suite) { return (await captureEpoch(ROOT)).fullSourceArtifactSHA; }
 export function validateLocaleEvidence(selected,result,exit,expected) {
   for(const record of [selected,result,exit])for(const key of ['suite','id','runId','attemptId','cwd','sourceHash','mode','authority'])assert.equal(record[key],expected[key],'Exact evidence '+key);
@@ -39,43 +42,55 @@ export async function localeMain(suite,self) {
     await mkdir(path.join(runDir,id),{recursive:true});
     return evidence;
   }
-  async function execute(id,sourceHash) {
-    const identity=meta(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=directory(identity);await mkdir(dir,{recursive:true});await enroll(identity);
+  async function spawnLocaleAttempt(identity, dir, id, sourceHash) {
     return new Promise(resolve=>{
       const child=spawn(process.execPath,[self,'--fragment',id],{cwd:ROOT,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,F3_RUN_ID:runId,F3_ATTEMPT_ID:identity.attemptId,F3_SOURCE_HASH:sourceHash,E2E_RESULTS_DIR:dir}});
-      children.add(child);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,self,'--fragment',id],...identity})+'\n',timedOut=false;
+      children.add(child);let output='COMMAND '+JSON.stringify({cwd:ROOT,argv:[process.execPath,self,'--fragment',id],...identity})+'\n',childOutput='',timedOut=false;
       const kill=sig=>{try{process.kill(-child.pid,sig);}catch{/* group settled */}};
       const soft=setTimeout(()=>{timedOut=true;kill('SIGTERM');},52000),hard=setTimeout(()=>{if(timedOut||interrupted)kill('SIGKILL');},54000);
-      child.stdout.on('data',chunk=>{output+=chunk;});child.stderr.on('data',chunk=>{output+=chunk;});child.once('error',error=>{output+=String(error);});
+      child.stdout.on('data',chunk=>{output+=chunk;childOutput+=chunk;});child.stderr.on('data',chunk=>{output+=chunk;childOutput+=chunk;});child.once('error',error=>{output+=String(error);childOutput+=String(error);});
       child.once('close',async(code,sig)=>{
         clearTimeout(soft);clearTimeout(hard);children.delete(child);try{process.kill(-child.pid,'SIGKILL');}catch{/* group already settled */}const exit={...identity,exitCode:code,signal:sig,timedOut};
         output+='\nCHILD_EXIT='+code+' SIGNAL='+(sig||'none')+'\n';
-        try{await writeFile(path.join(dir,'full.log'),output);await writeFile(path.join(dir,'exit.json'),JSON.stringify(exit,null,2)+'\n');resolve(exit);}
-        catch(error){resolve({...exit,writeError:String(error)});}
+        try{await writeFile(path.join(dir,'full.log'),output);await writeFile(path.join(dir,'exit.json'),JSON.stringify(exit,null,2)+'\n');resolve({exit,childOutput});}
+        catch(error){resolve({exit:{...exit,writeError:String(error)},childOutput});}
       });
     });
+  }
+  async function execute(id,sourceHash) {
+    const identity=meta(id,sourceHash,plan.attempts.find(x=>x.id===id).attemptId),dir=directory(identity);await mkdir(dir,{recursive:true});await enroll(identity);
+    const run=await executeWithRetry({id,dir,spawnAttempt:()=>spawnLocaleAttempt(identity,dir,id,sourceHash)});
+    retryLedger.record(run.outcome);
+    return run.exit;
   }
   async function aggregate(sourceHash,exits) {
     assertFrozen(frozen, await captureEpoch(ROOT));
     validateManifest(plan, cases.map(x=>x.id), await readEnrollments(runDir), exits);
     const collected=[],missing=[];let passed=0,failed=0,pagePassed=0,pageFailed=0,pageAttempted=0;
     for(const item of cases){
-      let selected,result,exit,dir;
+      let selected,result,exit,dir,retry;
       try {
         const attempts=(await readdir(path.join(runDir,item.id))).filter(x=>x.startsWith('attempt-')&&x.endsWith('.json'));
         assert.equal(attempts.length,1,'Exactly one attempt per registered ID in final epoch; duplicate or retry cannot erase failure');
         selected=JSON.parse(await readFile(path.join(runDir,item.id,attempts[0]),'utf8'));
         if(exits){const matches=exits.filter(x=>x.id===item.id);assert.equal(matches.length,1,'Exactly one settled child');assert.equal(matches[0].attemptId,selected.attemptId);}
         assert.ok(selected,'Missing settled child');dir=directory(selected);
+        retry=await readRetryRecord(dir);
         result=JSON.parse(await readFile(path.join(dir,'case.json'),'utf8'));exit=JSON.parse(await readFile(path.join(dir,'exit.json'),'utf8'));
         if(selected.writeError)throw new Error(selected.writeError);
         // Count observed page attempts separately, even for a red case.
         for(const p of result.report?.pages||[]){if(p.attempted)pageAttempted++;if(p.ok)pagePassed++;else pageFailed++;}
         validateAttempt(selected, result, exit, meta(item.id, sourceHash, selected.attemptId));
         validateLocaleEvidence(selected,result,exit,{...meta(item.id,sourceHash,selected.attemptId),pages:item.pages,lang:item.lang});
-        passed++;H.ok(item.id+' ('+result.checks+' actual assertions)');
-      }catch(error){failed++;if(!result||!exit)missing.push(item.id);H.bad(item.id,result?.error||String(error));}
-      collected.push({id:item.id,lang:item.lang,pages:item.pages,dir,attemptId:selected?.attemptId,exitCode:exit?.exitCode,signal:exit?.signal,timedOut:exit?.timedOut,ok:result?.ok??false,checks:result?.checks??0,error:result?.error});
+        passed++;H.ok(item.id+' ('+result.checks+' actual assertions)'+(retry?.recovered?' [首次 incomplete → 重试通过]':''));
+      }catch(error){
+        failed++;
+        if(!result||!exit)missing.push(item.id);
+        // 重试后仍 incomplete：红，原因写清次数（#483：`incomplete ×2`）。
+        if(retry?.kind===INCOMPLETE)H.bad(item.id,'incomplete ×'+retry.attempts.length+'：'+retry.why);
+        else H.bad(item.id,result?.error||String(error));
+      }
+      collected.push({id:item.id,lang:item.lang,pages:item.pages,dir,attemptId:selected?.attemptId,exitCode:exit?.exitCode,signal:exit?.signal,timedOut:exit?.timedOut,ok:result?.ok??false,checks:result?.checks??0,error:result?.error,retried:Boolean(retry?.retried),retryKind:retry?.kind??null});
     }
     const aggregateAttempt=randomUUID();const record={suite,runId,mode,authority:mode,cwd,...epochFields(frozen),attemptId:aggregateAttempt,registered:cases.map(x=>x.id),complete:missing.length===0,ok:missing.length===0&&failed===0,missing,passed,failed,unrun:missing.length,registeredPages:76,pageAttempted,pagePassed,pageFailed,collected};
     const file=path.join(runDir,'aggregate-'+aggregateAttempt+'.json');await writeFile(file,JSON.stringify(record,null,2)+'\n',{flag:'wx'});await writeFile(path.join(runDir,'latest-aggregate.json'),JSON.stringify({file,...record},null,2)+'\n');
@@ -113,6 +128,9 @@ export async function localeMain(suite,self) {
     for(const child of children)try{process.kill(-child.pid,'SIGKILL');}catch{/* settled */}
     for(const sig of ['SIGINT','SIGTERM'])process.off(sig,signal);
     if(interrupted)H.bad(suite+' interrupted','Unattempted/aborted groups fail aggregate, no skip');
+    const retryStats=retryLedger.stats();
+    console.log(retrySummaryLine(suite,retryStats));
+    H.setRetryStats(retryStats);
     process.exitCode=H.summary(suite)?0:1;
   }
 }

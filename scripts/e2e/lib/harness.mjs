@@ -141,6 +141,14 @@ export function resetCounts() {
 export function startTimer() {
 	timerStart = Date.now();
 }
+
+// #483：重试计数必须进结果文件，否则并行汇总里「重试」会变成静默掩盖。
+// 只有真的重试过的套件（f3 的 frontend / ui_shift / i18n / i18n_coverage /
+// ux_regression_19_23）会调它；其余套件的结果 JSON 形状一个字都不变。
+let retryStats = null;
+export function setRetryStats(stats) {
+	retryStats = stats || null;
+}
 export function stopTimer() {
 	return timerStart ? Date.now() - timerStart : 0;
 }
@@ -158,6 +166,7 @@ export function writeResults(suiteName, durationMs) {
 		durationMs,
 		assertions: [...assertions],
 	};
+	if (retryStats) result.retries = retryStats;
 	writeFileSync(path.join(dir, `${suiteName}.json`), JSON.stringify(result, null, 2));
 }
 

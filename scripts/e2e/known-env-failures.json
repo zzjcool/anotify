@@ -16,23 +16,15 @@
     "「新失败」仍然是硬的。收敛方式：每次真跑看到「清单项没失败」就删掉那一行，",
     "最终目标是本文件的 entries 为空数组（= 完全的硬门禁）。",
     "每个条目的 tracking 指向 #431（本清单的收敛追踪 issue）：entries 清空即可关掉它。",
-    "（历史上这两条都指向 #428 —— 那是引入本清单的 PR 自身，自指、追踪不到可收敛的东西，已改。）"
+    "（历史上这两条都指向 #428 —— 那是引入本清单的 PR 自身，自指、追踪不到可收敛的东西，已改。）",
+    "",
+    "── 2026-11-20：#483 上线「incomplete 自动重试 1 次」后，两条登记被删除 ──",
+    "被删的两条是 frontend / source-actions 与 ui_shift / [\"*\", \"interact-dialogs\"]：",
+    "它们的共同签名是 case 子进程在 runner 上死亡（结果文件未落盘 / 渲染进程被关 / 输出为空），",
+    "属于 #483 定义的 incomplete —— 现在由执行层自动重试 1 次吸收。",
+    "口径：删掉之后若仍偶发 incomplete，应由那次重试吸收；**连续两次 incomplete 才是硬红**",
+    "（汇总里写 `incomplete ×2`），这时该修的是真正的死因，而不是再往这张表里加一行。",
+    "断言失败永不重试，因此这张表也不该再登记「断言不符」类失败。"
   ],
-  "entries": [
-    {
-      "suite": "frontend",
-      "case": "source-actions",
-      "reason": "runner 上 case 子进程偶发死亡（case.json 未落盘 / locator 4500ms 撞线），本地同代码 3–5s 通过",
-      "tracking": "#431"
-    },
-    {
-      "suite": "ui_shift",
-      "case": [
-        "*",
-        "interact-dialogs"
-      ],
-      "reason": "runner 上这套以两种形态死：① 整套没有 results（Chrome 渲染进程整批死亡）② 单个 case 死（page.evaluate: Target page, context or browser has been closed，f3-ui-helper.mjs:126 authFlag → gotoPage）。同一条环境故障的两种观测形态，用一个条目同时登记；本地同代码 3-5s 通过",
-      "tracking": "#431"
-    }
-  ]
+  "entries": []
 }

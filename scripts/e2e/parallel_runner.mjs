@@ -11,6 +11,8 @@
  *      authority 清单必须覆盖请求套件且 mode 与注入计划一致
  *   5. 按 #338 裁决给四个具名 FE 套件注入 E2E_MOCK_ONLY=1，并把每套件的
  *      mode/authority 打进汇总 + 落盘 `_authority-manifest.json`
+ *   6. 透传 #483 的重试账本：f3 系套件把「首次 incomplete / 重试通过 / 重试仍
+ *      incomplete」写进 results JSON 的 `retries`，这里逐套件与全局各打一行（0 也打）
  *
  * 用法：
  *   node scripts/e2e/parallel_runner.mjs              # 全量并行
@@ -493,6 +495,8 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		const json = readJsonResult(r.suite, resultsDir);
 		const passCount = json?.passed ?? 0;
 		const failCount = json?.failed ?? 0;
+		// #483：套件自报的重试账本（只有 f3 系五个套件会写）。缺席 = 该套件没重试过。
+		const retries = json?.retries ?? null;
 		// 套件自报 durationMs 目前恒为 0（没有套件写它）→ 用执行器的墙钟时间兜底，
 		// 两者都有时取套件自报（它更接近「被测工作量」，不含 node 启动）。
 		const durationMs = (json?.durationMs || 0) > 0 ? json.durationMs : (r.elapsedMs ?? 0);
@@ -549,6 +553,7 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 			passed: passCount,
 			failed: failCount,
 			durationMs,
+			retries,
 			why,
 		});
 
@@ -582,7 +587,29 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		}
 	}
 
-	return { totalPass, totalFail, suiteSummary, failedSuites, problems };
+	return { totalPass, totalFail, suiteSummary, failedSuites, problems, retries: retryTotals(suiteSummary) };
+}
+
+// #483：重试计数必须能在汇总里一眼看到（0 也要打），否则重试会变成静默掩盖。
+function retryTotals(suiteSummary) {
+	const withRetry = suiteSummary.filter((s) => s.retries);
+	return {
+		suites: withRetry.length,
+		retried: withRetry.reduce((n, s) => n + (s.retries.retried || 0), 0),
+		recovered: withRetry.reduce((n, s) => n + (s.retries.recovered || 0), 0),
+		exhausted: withRetry.reduce((n, s) => n + (s.retries.exhausted || 0), 0),
+		incompleteFirst: withRetry.reduce((n, s) => n + (s.retries.incompleteFirst || 0), 0),
+		assertionFirst: withRetry.reduce((n, s) => n + (s.retries.assertionFirst || 0), 0),
+	};
+}
+
+// 逐套件后缀：只在真的重试过时出现（没重试的套件行保持原样，不刷噪声）。
+function retryNote(retries) {
+	if (!retries || !retries.retried) return "";
+	const bits = [`其中 ${retries.retried} 条首次 incomplete`];
+	if (retries.recovered) bits.push(`${retries.recovered} 条重试通过`);
+	if (retries.exhausted) bits.push(`${retries.exhausted} 条重试仍 incomplete`);
+	return `（${bits.join("、")}）`;
 }
 
 // authority 清单校验（#338）：清单是「这次到底验了什么」的证据文件。
@@ -711,6 +738,13 @@ async function main() {
 	);
 	console.log(`  断言通过: ${agg.totalPass}`);
 	console.log(`  断言失败: ${agg.totalFail}`);
+	// #483 重试计数（永远打印：正常全绿也要能证明「没有 case 被无条件重跑」）。
+	const rt = agg.retries;
+	console.log(
+		`  重试（incomplete → 自动重试 1 次；断言失败永不重试）: 首次 incomplete ${rt.incompleteFirst} 条` +
+			` · 重试通过 ${rt.recovered} · 重试仍 incomplete ${rt.exhausted}` +
+			`（${rt.suites} 个套件上报了重试账本）`,
+	);
 	// authority 清单（#338）：先落盘再打印，红了也能在 results/ 里查本轮 authority。
 	const manifestFile = writeAuthorityManifest(agg, suitesToRun);
 	// 从**磁盘读回**再校验：清单是证据文件，写进去了但内容/覆盖面不对就等于假证据。
@@ -737,7 +771,7 @@ async function main() {
 			s.status === "timeout" ? "⏱️" : "❌";
 		const durStr = s.durationMs > 0 ? `${(s.durationMs / 1000).toFixed(1)}s` : "—";
 		console.log(
-			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}  mode=${s.mode}`,
+			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败${retryNote(s.retries)}  ${durStr}  mode=${s.mode}`,
 		);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」

@@ -11,6 +11,10 @@ import * as H from '../../lib/harness.mjs';
 import { ROOT, TEAM, isMock } from './f3-driver.mjs';
 import { casesFor, registeredViews, runUiCase } from './f3-ui-cases.mjs';
 import { evidenceDirectory } from './f3-driver.mjs';
+// #483：incomplete（子进程死亡/结果缺失）自动重试 1 次，断言失败永不重试。
+import { executeWithRetry, createRetryLedger, readRetryRecord, retrySummaryLine, INCOMPLETE } from './f3-retry.mjs';
+
+const retryLedger = createRetryLedger();
 
 export const UI_OUT = path.join(TEAM, 'screenshots/f3ui');
 
@@ -92,15 +96,14 @@ export async function uiMain(suite, self) {
     return evidence;
   }
   // One outer 55s budget per registered case + guaranteed process-group cleanup.
-  async function execute(id, sourceHash) {
-    const identity = meta(id, sourceHash, plan.attempts.find(x=>x.id===id).attemptId);
+  // spawnCase 只负责「起一次子进程 + 写 full.log/exit.json」；判定/重试在 f3-retry.mjs。
+  async function spawnCase(identity, sourceHash, id) {
     const dir = directory(identity);
-    await mkdir(dir, { recursive: true });
-    await enroll(identity);
     return new Promise(resolve => {
       const child = spawn(process.execPath, [self, '--fragment', id], { cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, F3_RUN_ID: runId, F3_ATTEMPT_ID: identity.attemptId, F3_SOURCE_HASH: sourceHash, E2E_RESULTS_DIR: dir } });
       children.add(child);
       let output = 'COMMAND ' + JSON.stringify({ cwd: ROOT, argv: [process.execPath, self, '--fragment', id], ...identity }) + '\n';
+      let childOutput = '';
       let timedOut = false;
       const kill = sig => { try { process.kill(-child.pid, sig); } catch { /* group settled */ } };
       // 每个 case 的外层预算：默认 52s/54s（本地实测口径）。慢机（CI runner 比开发机慢
@@ -109,9 +112,9 @@ export async function uiMain(suite, self) {
       const budgetMs = Number(process.env.F3_CASE_BUDGET_MS || 52000);
       const soft = setTimeout(() => { timedOut = true; kill('SIGTERM'); }, budgetMs);
       const hard = setTimeout(() => { if (timedOut || interrupted) kill('SIGKILL'); }, budgetMs + 2000);
-      child.stdout.on('data', chunk => { output += chunk; });
-      child.stderr.on('data', chunk => { output += chunk; });
-      child.once('error', error => { output += String(error); });
+      child.stdout.on('data', chunk => { output += chunk; childOutput += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; childOutput += chunk; });
+      child.once('error', error => { output += String(error); childOutput += String(error); });
       child.once('close', async (code, sig) => {
         clearTimeout(soft); clearTimeout(hard); children.delete(child);try{process.kill(-child.pid,'SIGKILL');}catch{/* group already settled */}
         const exit = { ...identity, exitCode: code, signal: sig, timedOut };
@@ -119,10 +122,19 @@ export async function uiMain(suite, self) {
         try {
           await writeFile(path.join(dir, 'full.log'), output);
           await writeFile(path.join(dir, 'exit.json'), JSON.stringify(exit, null, 2) + '\n');
-          resolve(exit);
-        } catch (error) { resolve({ ...exit, writeError: String(error) }); }
+          resolve({ exit, childOutput });
+        } catch (error) { resolve({ exit: { ...exit, writeError: String(error) }, childOutput }); }
       });
     });
+  }
+  async function execute(id, sourceHash) {
+    const identity = meta(id, sourceHash, plan.attempts.find(x=>x.id===id).attemptId);
+    const dir = directory(identity);
+    await mkdir(dir, { recursive: true });
+    await enroll(identity);
+    const run = await executeWithRetry({ id, dir, spawnAttempt: () => spawnCase(identity, sourceHash, id) });
+    retryLedger.record(run.outcome);
+    return run.exit;
   }
 
   async function aggregate(sourceHash, exits) {
@@ -133,7 +145,7 @@ export async function uiMain(suite, self) {
     let passed = 0, failed = 0;
     let viewAttempted = 0, viewPassed = 0, matrixAttempted = 0;
     for (const item of cases) {
-      let selected, outcome, exit, dir;
+      let selected, outcome, exit, dir, retry;
       try {
         const attempts = (await readdir(path.join(runDir, item.id))).filter(x => x.startsWith('attempt-') && x.endsWith('.json'));
         assert.equal(attempts.length, 1, 'Exactly one attempt per registered case in the final epoch; a retry cannot erase failure');
@@ -145,6 +157,7 @@ export async function uiMain(suite, self) {
         }
         assert.ok(selected, 'Missing settled child');
         dir = directory(selected);
+        retry = await readRetryRecord(dir);
         outcome = JSON.parse(await readFile(path.join(dir, 'case.json'), 'utf8'));
         exit = JSON.parse(await readFile(path.join(dir, 'exit.json'), 'utf8'));
         if (selected.writeError) throw new Error(selected.writeError);
@@ -153,13 +166,15 @@ export async function uiMain(suite, self) {
         validateAttempt(selected, outcome, exit, meta(item.id, sourceHash, selected.attemptId));
         validateUiEvidence(selected, outcome, exit, { ...meta(item.id, sourceHash, selected.attemptId), pages: item.pages, views: item.views, lang: item.lang, theme: item.theme, viewport: item.viewport });
         passed++;
-        H.ok(item.id + ' (' + outcome.checks + ' actual assertions)');
+        H.ok(item.id + ' (' + outcome.checks + ' actual assertions)' + (retry?.recovered ? ' [首次 incomplete → 重试通过]' : ''));
       } catch (error) {
         failed++;
         if (!outcome || !exit) missing.push(item.id);
-        H.bad(item.id, outcome?.error || String(error));
+        // 重试后仍 incomplete：红，原因写清次数（#483：`incomplete ×2`）。
+        if (retry?.kind === INCOMPLETE) H.bad(item.id, 'incomplete ×' + retry.attempts.length + '：' + retry.why);
+        else H.bad(item.id, outcome?.error || String(error));
       }
-      collected.push({ id: item.id, kind: item.kind, views: item.views, dir, attemptId: selected?.attemptId, exitCode: exit?.exitCode, signal: exit?.signal, timedOut: exit?.timedOut, ok: outcome?.ok ?? false, checks: outcome?.checks ?? 0, error: outcome?.error ?? null });
+      collected.push({ id: item.id, kind: item.kind, views: item.views, dir, attemptId: selected?.attemptId, exitCode: exit?.exitCode, signal: exit?.signal, timedOut: exit?.timedOut, ok: outcome?.ok ?? false, checks: outcome?.checks ?? 0, error: outcome?.error ?? null, retried: Boolean(retry?.retried), retryKind: retry?.kind ?? null });
     }
     const aggregateAttempt = randomUUID();
     const record = {
@@ -226,6 +241,9 @@ export async function uiMain(suite, self) {
     for (const child of children) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* settled */ }
     for (const sig of ['SIGINT', 'SIGTERM']) process.off(sig, signal);
     if (interrupted) H.bad(suite + ' interrupted', 'Unattempted/aborted groups fail the aggregate, no skip');
+    const retryStats = retryLedger.stats();
+    console.log(retrySummaryLine(suite, retryStats));
+    H.setRetryStats(retryStats);
     process.exitCode = H.summary(suite) ? 0 : 1;
   }
 }
