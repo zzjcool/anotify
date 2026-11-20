@@ -61,3 +61,15 @@ git show <sha>:<path>                                          # 具体某一份
 4. **文档里的路径 / 命令 / 端点都必须是可解析的外键**：`make ci` 会跑
    `check-annotations`（引用与锚点）、`check-doc-endpoints`（端点）、`check-doc-links`
    （协调者工作区引用），写错的路径当场红。
+
+## 5. 注释与文档只留「代码无法自述」的部分（#495）
+
+- **注释**只写：非显然的取舍、外部约束（内核/浏览器/协议怪癖）、危险操作警告。复述函数名、
+  解释显而易见的 `if`、历史流水账、TODO 式吐槽 —— 一律删。
+- 两道棘轮各管一段：`check-annotations`（L5）管**留下的**注释不许说谎（引用/锚点必须解析）；
+  `check-comment-density`（L12）管**总量**只许降 —— 目录与仓库注释行冻结在基线，
+  单文件上限 = max(12, 代码行 × 0.5)。
+- **文档**只留操作手册。`docs/design`、`docs/specs`、`docs/plans` 重建即判红；
+  `docs/v4`、`docs/research`、`docs/perf`、`docs/contracts` 的文件数进了棘轮，只许下调。
+- 删完同批下调基线：`node scripts/check-comment-density.mjs --update`（只降不升；抬高直接拒）。
+- 逐目录判据与分批计划见 [reports/comment-and-doc-ratchet.md](reports/comment-and-doc-ratchet.md)。
