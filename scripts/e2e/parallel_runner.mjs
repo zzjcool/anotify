@@ -4,13 +4,18 @@
  * 职责：
  *   1. 按套件类型分组：HTTP 类（无 Chrome）全并行，Chrome 类信号量控制并发
  *   2. 每套件 spawn node suites/<name>.mjs，传 E2E_RESULTS_DIR 环境变量
- *   3. per-suite 预算：默认 120s，重套件按全量实测单独放宽（SUITE_TIMEOUT_OVERRIDE）；
- *      超时即 SIGKILL 并判 fail（Node 原生 setTimeout+kill，替代 macOS 缺失的 timeout）
+ *   3. per-suite 预算：默认 120s，重套件按**CI 实测 ×2**单独放宽（SUITE_TIMEOUT_OVERRIDE）；
+ *      超预算不再「直接 SIGKILL 什么都不留」（#488）：先落 results/<suite>.json 的部分现场
+ *      （timedOut/elapsedMs/completedCases/lastCase/partial），再 SIGTERM，宽限后 SIGKILL
  *   4. 读各套件 JSON 结果聚合汇总报告，并按 #338 判分：exit≠0 一律 fail、
  *      每个套件必须 passed>0 且 assertions[] 自洽、结果集合 == 请求集合、
  *      authority 清单必须覆盖请求套件且 mode 与注入计划一致
  *   5. 按 #338 裁决给四个具名 FE 套件注入 E2E_MOCK_ONLY=1，并把每套件的
  *      mode/authority 打进汇总 + 落盘 `_authority-manifest.json`
+ *   6. 套件级不是「一死就红」：`timeout` / `incomplete`（整套没有 results）自动重试 1 次，
+ *      两次的 lastCase 并排打印（相同 = 确定性挂点，不同 = 抖动）；断言失败永不重试。
+ *      实现在 lib/suite-budget.mjs + lib/suite-progress.mjs，由
+ *      scripts/e2e/suite-budget-selftest.mjs 用真子进程钉住。
  *
  * 用法：
  *   node scripts/e2e/parallel_runner.mjs              # 全量并行
@@ -26,8 +31,17 @@
  *   ANOTIFY_VAPID_*  VAPID 密钥（由 run_all.sh 设置）
  *   E2E_MOCK_ONLY    **不由调用方设置**（#338）：本执行器只对 EXPLICIT_MOCK_SUITES
  *                    里的四个具名套件自注入它，其余套件（含 frontend）一律剥掉
+ *   E2E_SUITE_BUDGET_MS / E2E_SUITE_BUDGET_<SUITE>  临时覆盖墙钟预算（**诊断/注入用**；
+ *                    被覆盖的套件会在启动横幅里显式打印，抬预算不许留静默）
+ *   E2E_RETRY_WALL_LIMIT_MS  套件级重试的墙钟上限（默认 25min）：再重试一次就会撞上
+ *                    CI e2e job 的 40min 上限时宁可直接红（保留现场），不赌整份 artifact 丢掉
  */
-import { spawn } from "node:child_process";
+import {
+	resolveSuiteBudget,
+	runSuiteWithRetry,
+	SUITE_KILL_GRACE_MS,
+} from "./lib/suite-budget.mjs";
+import { describeProgress } from "./lib/suite-progress.mjs";
 import {
 	mkdirSync,
 	rmSync,
@@ -190,8 +204,10 @@ const SUITE_TIMEOUT_OVERRIDE = {
 	i18n: 240_000,
 	// i18n_coverage：全量实测 113-116s（单跑 39s）→ 2× ≈ 232s，留到 300s。
 	i18n_coverage: 300_000,
-	// ui_shift（#335）：304 视图，全量实测 148-169s（单跑 148s）。
-	ui_shift: 300_000,
+	// ui_shift（#335/#488）：304 视图 / 87 case。旧值 300s 在 CI 上**从来没跑完过**
+	// （连续 5 次 run 全部 0通过/0失败 300.1s，见 #488）。新值 = CI 实测 ×2，实测数字见
+	// docs/reports/e2e-suite-budget.md（本行注释随最后一轮实测更新）。
+	ui_shift: 900_000,
 	// ux_regression_19_23：全量实测 ~60s，2× = 120s。显式写出来，不靠默认值碰运气。
 	ux_regression_19_23: 120_000,
 	// node_v4（#336）：绿的时候 ~2s，但串了 5 个真实进程阶段（握手/部署/执行/取消/离线），
@@ -206,6 +222,12 @@ const SUITE_REGISTRY_SIZE = 29;
 const RESULTS_DIR =
 	process.env.E2E_RESULTS_DIR || path.join(ROOT, ".e2e-bin", "results");
 const CONCURRENCY = parseInt(process.env.E2E_CONCURRENCY || "4", 10);
+// #488：套件级重试的墙钟上限。CI 的 e2e job 是 40min（setup 约 4min）—— 再拖一个完整
+// 预算就会拿 job 超时去赌整份 artifact，那比「直接红 + 现场仍在盘上」更糟。
+const RETRY_WALL_LIMIT_MS = (() => {
+	const v = Number(process.env.E2E_RETRY_WALL_LIMIT_MS);
+	return Number.isFinite(v) && v > 0 ? v : 1_500_000;
+})();
 
 // ---------- 参数解析 ----------
 const args = process.argv.slice(2);
@@ -331,95 +353,89 @@ function printAuthorityPlan(suites) {
 }
 
 // ---------- 跑单个套件 ----------
-function runSuite(name) {
-	return new Promise((resolve) => {
-		// 墙钟计时（成本可见性）：套件自己写的 results/*.json 里 durationMs 一直是 0，
-		// 于是汇总只有「跑了什么」没有「花了多久」，任何成本优化都无从下手。
-		// 这里由执行器自己计时，不改任何判定：status/断言计数/集合校验一律照旧。
-		const startedAt = Date.now();
-		const elapsed = () => Date.now() - startedAt;
-		const suiteFile = path.join(ROOT, "scripts", "e2e", "suites", `${name}.mjs`);
-		const env = suiteEnv(name);
-		const mode = suiteAuthority(name);
-		const proc = spawn("node", [suiteFile], {
-			env,
-			cwd: ROOT,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		let stdout = "";
-		let stderr = "";
-		proc.stdout.on("data", (d) => { stdout += d; });
-		proc.stderr.on("data", (d) => { stderr += d; });
-
-		const budget = SUITE_TIMEOUT_OVERRIDE[name] || SUITE_TIMEOUT;
-		const timer = setTimeout(() => {
-			proc.kill("SIGKILL");
-			resolve({
-				suite: name,
-				mode,
-				status: "timeout",
-				budget,
-				elapsedMs: elapsed(),
-				stdout,
-				stderr,
-			});
-		}, budget);
-
-		proc.on("exit", (code) => {
-			clearTimeout(timer);
-			resolve({
-				suite: name,
-				mode,
-				status: code === 0 ? "pass" : "fail",
-				exitCode: code,
-				elapsedMs: elapsed(),
-				stdout,
-				stderr,
-			});
-		});
-
-		proc.on("error", (err) => {
-			clearTimeout(timer);
-			resolve({
-				suite: name,
-				mode,
-				status: "fail",
-				error: err.message,
-				elapsedMs: elapsed(),
-				stdout,
-				stderr,
-			});
-		});
+// #488：墙钟预算 → 超时先落部分现场 → timeout 判定 → 自动重试 1 次。
+// 具体实现搬进 lib/suite-budget.mjs（这样 suite-budget-selftest.mjs 能用**真子进程**
+// 直接驱动同一条路径，而不是只能相信汇总输出）。
+function runSuite(name, runStartedAt) {
+	const mode = suiteAuthority(name);
+	const { budgetMs, source } = resolveSuiteBudget({
+		suite: name,
+		defaultMs: SUITE_TIMEOUT,
+		overrides: SUITE_TIMEOUT_OVERRIDE,
 	});
+	return runSuiteWithRetry({
+		suite: name,
+		file: path.join(ROOT, "scripts", "e2e", "suites", `${name}.mjs`),
+		cwd: ROOT,
+		env: suiteEnv(name),
+		mode,
+		budgetMs,
+		resultsDir: RESULTS_DIR,
+		root: ROOT,
+		wallLimitMs: RETRY_WALL_LIMIT_MS,
+		runStartedAt,
+		onNote: (line) => console.log(`  ↻ ${line}`),
+	}).then((r) => ({ ...r, budget: budgetMs, budgetSource: source }));
 }
 
 // ---------- 串行执行 ----------
-async function runSerial(suites) {
+async function runSerial(suites, runStartedAt) {
 	const results = [];
 	for (const name of suites) {
 		console.log(`▶ 套件: ${name}`);
-		const r = await runSuite(name);
+		const r = await runSuite(name, runStartedAt);
 		// 透传 stdout（带缩进）
 		const lines = r.stdout.trim().split("\n");
 		for (const line of lines) {
 			console.log(`  ${line}`);
 		}
 		if (r.status === "pass") {
-			console.log(`  ✅ 套件 ${name} 通过\n`);
+			console.log(`  ✅ 套件 ${name} 通过${retrySuffix(r)}\n`);
 		} else if (r.status === "timeout") {
 			const b = r.budget || SUITE_TIMEOUT;
-			console.log(`  ⏱️ 套件 ${name} 超时（${b / 1000}s）\n`);
+			// #488：超时也必须能回答「跑了多少、停在哪」——「超时（300s）」等于没信息
+			console.log(
+				`  ⏱️ 套件 ${name} timeout（预算 ${b / 1000}s，attempts=${r.attempts.length}）：` +
+					`${describeProgress(r.progress)}${retrySuffix(r)}\n`,
+			);
 		} else {
-			console.log(`  ❌ 套件 ${name} 失败\n`);
+			console.log(`  ❌ 套件 ${name} 失败（${r.kind}）${retrySuffix(r)}\n`);
 		}
 		results.push(r);
 	}
 	return results;
 }
 
+/** 重试后缀：只在真的重试过时出现（没有重试的套件行保持原样，不刷噪声）。 */
+function retrySuffix(r) {
+	if (!r || !r.retried) return "";
+	if (r.recovered) return `（首次 ${r.attempts[0].kind} → 重试通过）`;
+	if (r.stuckSameCase === true) return `（${r.kind} ×${r.attempts.length}：两次都停在同一条「${r.lastCase}」）`;
+	if (r.stuckSameCase === false)
+		return `（${r.kind} ×${r.attempts.length}：两次停在不同条「${r.attempts.map((a) => a.lastCase ?? "?").join(" / ")}」）`;
+	return `（${r.kind} ×${r.attempts.length}）`;
+}
+
+/** 逐 attempt 的现场明细：timeout 与重试过的套件才打（正常绿行不刷噪声）。 */
+function attemptDetailLines(s) {
+	if (!Array.isArray(s.attempts) || s.attempts.length === 0) return [];
+	if (s.attempts.length === 1 && s.status !== "timeout") return [];
+	return s.attempts.map((a) => {
+		const progress =
+			a.completedCases === null || a.completedCases === undefined
+				? "case 级进度不可得"
+				: `已完成 ${a.completedCases}${a.totalCases === null || a.totalCases === undefined ? "" : `/${a.totalCases}`} 条` +
+					(a.lastCase ? `，停在「${a.lastCase}」` : "");
+		const why =
+			a.kind === "timeout"
+				? `预算 ${Math.round((a.budgetMs ?? 0) / 1000)}s`
+				: `exit=${a.exitCode ?? "?"} signal=${a.signal ?? "none"}`;
+		return `      ↳ a${a.attempt} ${a.kind} ${((a.elapsedMs ?? 0) / 1000).toFixed(1)}s ${why}：${progress}`;
+	});
+}
+
 // ---------- 并行执行 ----------
-async function runParallel(suites) {
+async function runParallel(suites, runStartedAt) {
 	// 分组
 	const httpSuites = suites.filter((s) => HTTP_SUITES.includes(s));
 	const chromeSuites = suites.filter((s) => CHROME_SUITES.includes(s));
@@ -433,7 +449,7 @@ async function runParallel(suites) {
 	for (const name of httpSuites) {
 		tasks.push(
 			(async () => {
-				const r = await runSuite(name);
+				const r = await runSuite(name, runStartedAt);
 				results.push(r);
 				return r;
 			})(),
@@ -445,7 +461,7 @@ async function runParallel(suites) {
 			(async () => {
 				await sem.acquire();
 				try {
-					const r = await runSuite(name);
+					const r = await runSuite(name, runStartedAt);
 					results.push(r);
 					return r;
 				} finally {
@@ -495,43 +511,70 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 		const json = readJsonResult(r.suite, resultsDir);
 		const passCount = json?.passed ?? 0;
 		const failCount = json?.failed ?? 0;
-		// 套件自报 durationMs 目前恒为 0（没有套件写它）→ 用执行器的墙钟时间兜底，
-		// 两者都有时取套件自报（它更接近「被测工作量」，不含 node 启动）。
-		const durationMs = (json?.durationMs || 0) > 0 ? json.durationMs : (r.elapsedMs ?? 0);
+		// #488：重试过就按「attempts 累加」算成本（重试花掉的时间也是这次 e2e 的钱）；
+		// 没重试时保持旧口径（套件自报优先，它更接近「被测工作量」）。
+		const durationMs = r.retried
+			? (r.elapsedMs ?? 0)
+			: (json?.durationMs || 0) > 0
+				? json.durationMs
+				: (r.elapsedMs ?? 0);
 
 		let status = "pass";
 		const why = [];
 		if (r.status === "timeout") {
+			// #488：timeout 与 incomplete 分开。超时**有现场**（timedOut/completedCases/lastCase），
+			// 所以它要能回答「跑了多少、停在哪、重试后是不是同一条」，而不是只剩一个时长。
 			status = "timeout";
-			why.push(`超过 ${(r.budget || SUITE_TIMEOUT) / 1000}s 预算被 SIGKILL`);
+			why.push(
+				`timeout：超过 ${(r.budget || SUITE_TIMEOUT) / 1000}s 预算` +
+					`（先落部分结果再 SIGTERM，宽限 ${SUITE_KILL_GRACE_MS / 1000}s 后 SIGKILL）；` +
+					describeProgress(r.progress),
+			);
+			if (r.retried) {
+				if (r.stuckSameCase === true) {
+					why.push(`重试 1 次后仍 timeout；两次都停在同一条「${r.lastCase}」（= 确定性挂点，不是慢）`);
+				} else if (r.stuckSameCase === false) {
+					why.push(
+						`重试 1 次后仍 timeout；两次停在不同条（${r.attempts
+							.map((a) => a.lastCase ?? "?")
+							.join(" / ")}）= 抖动/环境压力`,
+					);
+				}
+			}
+			if (r.skippedRetryReason) why.push(r.skippedRetryReason);
 		} else if (r.status !== "pass") {
 			// ① exit≠0 / spawn error：套件进程没正常收尾，不再当 warning
 			status = "fail";
 			why.push(
-				`进程退出码 ${r.exitCode ?? "?"}${r.error ? ` (${r.error})` : ""}` +
+				`${r.kind === "incomplete" ? "incomplete：" : ""}` +
+					`进程退出码 ${r.exitCode ?? "?"}${r.error ? ` (${r.error})` : ""}` +
 					`——exit≠0 一律 fail（旧实现会按 JSON 断言全过降级成 pass-warning）`,
 			);
 		}
+		const timedOut = status === "timeout";
 		if (!json) {
 			// ② 没落盘结果 = 没证据：0通过/0失败 也是失败
-			if (status !== "timeout") status = "fail";
-			why.push("没有 results/<suite>.json（未跑到 summary / 崩溃前未落盘）");
+			if (!timedOut) status = "fail";
+			why.push("incomplete：没有 results/<suite>.json（未跑到 summary / 崩溃前未落盘）");
 		} else {
-			if (failCount > 0) {
+			if (failCount > 0 && !timedOut) {
 				status = "fail";
 				why.push(`断言失败 ${failCount} 条`);
+			} else if (failCount > 0) {
+				// timeout 套件的套件自报 failed 是「没跑到的 case」，与断言不符不是一回事：只记录、不升级
+				why.push(`套件自报 ${failCount} 条未完成/失败（超时打断的账，不是断言不符）`);
 			}
 			if (!Array.isArray(json.assertions)) {
-				status = status === "timeout" ? status : "fail";
+				status = timedOut ? status : "fail";
 				why.push("结果缺少 assertions[]（断言计数无证据）");
 			} else if (passCount + failCount !== json.assertions.length) {
-				status = status === "timeout" ? status : "fail";
+				status = timedOut ? status : "fail";
 				why.push(
 					`passed(${passCount})+failed(${failCount}) ≠ assertions.length(${json.assertions.length})`,
 				);
 			}
-			if (passCount === 0 && !ZERO_ASSERTION_ALLOW.has(r.suite)) {
-				status = status === "timeout" ? status : "fail";
+			if (passCount === 0 && !ZERO_ASSERTION_ALLOW.has(r.suite) && !timedOut) {
+				status = "fail";
 				why.push("0 条断言通过（0通过/0失败 判 fail，不是空转绿）");
 			}
 		}
@@ -548,9 +591,22 @@ function aggregateResults(rawResults, requested, resultsDir = RESULTS_DIR) {
 			suite: r.suite,
 			mode: r.mode || suiteAuthority(r.suite),
 			status,
+			kind: r.kind ?? status,
 			passed: passCount,
 			failed: failCount,
 			durationMs,
+			// #488：超时/重试的现场（打印汇总与写 authority 清单都用得到）
+			budget: r.budget,
+			budgetSource: r.budgetSource,
+			attempts: r.attempts ?? [],
+			retried: Boolean(r.retried),
+			recovered: Boolean(r.recovered),
+			stuckSameCase: r.stuckSameCase ?? null,
+			lastCase: r.lastCase ?? null,
+			completedCases: r.completedCases ?? null,
+			totalCases: r.totalCases ?? null,
+			progress: r.progress ?? null,
+			skippedRetryReason: r.skippedRetryReason ?? null,
 			why,
 		});
 
@@ -693,12 +749,26 @@ async function main() {
 				`（frontend 绝不允许 mock），explicit-mock 套件仍按裁决注入 1`,
 		);
 	}
+	// #488：预算必须写进日志（“抬了多少”本身就是证据）。只列非默认值，避免刷屏。
+	const budgetNotes = suitesToRun
+		.map((s) => ({ s, ...resolveSuiteBudget({ suite: s, defaultMs: SUITE_TIMEOUT, overrides: SUITE_TIMEOUT_OVERRIDE }) }))
+		.filter((x) => x.source !== "默认预算");
+	if (budgetNotes.length > 0) {
+		console.log(
+			`套件墙钟预算（#488：实测×2）: ${budgetNotes
+				.map((x) => `${x.s}=${x.budgetMs / 1000}s${x.source.startsWith("env") ? `（${x.source}）` : ""}`)
+				.join(" · ")}`,
+		);
+	}
+	if (process.env.E2E_RETRY_WALL_LIMIT_MS !== undefined) {
+		console.log(`  ⚠️ 套件级重试墙钟上限被 env 覆盖：${RETRY_WALL_LIMIT_MS / 1000}s`);
+	}
 	console.log("");
 
 	const startMs = Date.now();
 	const rawResults = serial
-		? await runSerial(suitesToRun)
-		: await runParallel(suitesToRun);
+		? await runSerial(suitesToRun, startMs)
+		: await runParallel(suitesToRun, startMs);
 	const totalMs = Date.now() - startMs;
 
 	// 聚合（#338：把请求集合一起传进去，结果集合必须等于请求集合）
@@ -738,18 +808,37 @@ async function main() {
 			s.status === "pass" ? "✅" :
 			s.status === "timeout" ? "⏱️" : "❌";
 		const durStr = s.durationMs > 0 ? `${(s.durationMs / 1000).toFixed(1)}s` : "—";
+		// #488：timeout 的「0通过/0失败」换成「已完成 N/M 条」——后者才是这批失败的真实语义。
+		const counts =
+			s.status === "timeout"
+				? s.completedCases === null
+					? "已完成 ? 条（case 级进度不可得）"
+					: `已完成 ${s.completedCases}${s.totalCases === null ? "" : `/${s.totalCases}`} 条`
+				: `${s.passed}通过/${s.failed}失败`;
 		console.log(
-			`  ${statusIcon} ${s.suite.padEnd(18)} ${s.passed}通过/${s.failed}失败  ${durStr}  mode=${s.mode}`,
+			`  ${statusIcon} ${s.suite.padEnd(18)} ${counts}  ${durStr}  mode=${s.mode}${retrySuffix(s)}`,
 		);
+		// 重试过的套件把两次 attempt 并排打出来（“两次是否停同一条”是机器可判的证据）。
+		for (const line of attemptDetailLines(s)) console.log(line);
 		// 红套件把**第一条失败原因**直接打出来（#210）。
 		// 为什么：并行模式不透传套件 stdout，红了只剩一个计数 —— 曾经「0通过/0失败」
 		// 让人误判成超时/环境问题，实际是造数时把 undefined 绑进了 sqlite。
 		// 一行足够定位，剩下的看 results/<suite>.json。
-		if (s.status === "fail" || s.status === "timeout") {
+		if (s.status === "fail") {
 			const json = readJsonResult(s.suite);
 			const first = json?.failures?.[0];
 			if (first) console.log(`      ↳ ${String(first).slice(0, 300)}`);
 		}
+	}
+
+	// 重试账本：有重试就指出去，让「被重试吸收了」不是静默的。
+	const retriedSuites = agg.suiteSummary.filter((s) => s.retried);
+	if (retriedSuites.length > 0) {
+		console.log("");
+		console.log(
+			`  套件级重试: ${retriedSuites.length} 个（账本 ${path.relative(ROOT, path.join(RESULTS_DIR, "_suite-retries"))}/）` +
+				`：${retriedSuites.map((s) => `${s.suite} ${s.attempts.map((a) => a.kind).join("→")}`).join(" · ")}`,
+		);
 	}
 
 	if (agg.failedSuites.length > 0) {
@@ -768,6 +857,21 @@ async function main() {
 		console.log(
 			`  最慢套件: ${slowest
 				.map((s) => `${s.suite} ${(s.durationMs / 1000).toFixed(1)}s`)
+				.join(" · ")}`,
+		);
+	}
+
+	// #488：预算是否还够用，要能从日志直接看出来（“离撞线还有多远”）。
+	const longestAttemptMs = (s) =>
+		Array.isArray(s.attempts) && s.attempts.length > 0
+			? Math.max(...s.attempts.map((a) => a.elapsedMs ?? 0))
+			: s.durationMs;
+	const pressured = agg.suiteSummary.filter((s) => s.budget && longestAttemptMs(s) > s.budget * 0.5);
+	if (pressured.length > 0) {
+		console.log("");
+		console.log(
+			`  预算水位（>50% 预算）: ${pressured
+				.map((s) => `${s.suite} ${(longestAttemptMs(s) / 1000).toFixed(0)}s/${(s.budget / 1000).toFixed(0)}s`)
 				.join(" · ")}`,
 		);
 	}
