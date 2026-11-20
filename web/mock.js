@@ -2677,10 +2677,6 @@
 
 	// ---------- 资源 YAML（由存储的规范化定义重建）----------
 	//
-	// 两条 `/yaml` 路由必须回**真 YAML 文本**：页面的「原始 YAML」折叠块会原样展示/复制它。
-	// 序列化只有一份实现（`web/yamldoc.js` 的 render），本文件不再自带发射器 ——
-	// 假服务端与真页面用同一套转义 / 空集合 / 块标量规则，预览里的文本才不会比保存时
-	// 多一套排版（`run.files` 的正文仍由块标量逐字保留）。
 	function renderDoc(kindId, doc) {
 		const yamldoc = window.AnotifyYamlDoc;
 		if (!yamldoc) throw new Error("yamldoc.js 未加载：/yaml 路由需要它（layout 里同步引入）");
@@ -3174,9 +3170,6 @@
 	 * 真写路径由真实权威的 e2e（frontend 套件）覆盖。 */
 	function nodeDocText(row) {
 		const spec = row.spec || {}, limits = spec.limits || {};
-		/* 读面里「total 未设置」真服务端会写 `total: null`；文档层按**写面**语义把 null
-		   整键省略（null 贴回去会被 ValidateLimits 拒）。预览与页面保存的文本因此一致，
-		   差别只有这一行。 */
 		return renderDoc("Node", {
 			apiVersion: API_VERSION,
 			kind: "Node",
@@ -3229,10 +3222,7 @@
 		row.rv = nextRV(); if (row.rv === ctx.body.metadata.resourceVersion) row.rv = nextRV(); row.revision = String(Number(row.revision) + 1);
 		return json(namespaceConfig(name));
 	});
-	/* Namespace 文档：`{yaml}` 全文。与真服务端同形状（apiVersion / kind / metadata / spec.vars）。
-	   写入口是 PUT …/yaml（YAML 是唯一编辑面）：预览用 `varsYAMLWrite` 读回 `spec.vars`，
-	   与真服务端一样校验 kind / metadata.name / CAS 令牌 —— 它只重建命名空间这一份，
-	   不做通用 YAML 解码（通用解析器只留 `internal/yamldoc` 一份）。 */
+	/* Namespace 文档：`{yaml}` 全文。与真服务端同形状（apiVersion / kind / metadata / spec.vars）。 */
 	function namespaceDocText(name) {
 		return renderDoc("Namespace", {
 			apiVersion: API_VERSION,

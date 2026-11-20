@@ -329,9 +329,6 @@
     if (varsDirty && !(await A.confirmDanger({ body: t('vars_reset_confirm') }))) return;
     varsSetState(''); await refreshVars();
   };
-  /* 表格保存 = 把行折回 vars 映射 → 写进**同一份文档模型** → PUT …/yaml。
-     表格与 YAML 编辑区是同一个事实的两个编辑器，写路径只有一条（`/config` 只剩 GET 读投影）。
-     文档模型读不懂时（yamlModel = null）拒绝改写：猜一份只会把用户没改的字段写没。 */
   $('node-vars-save').onclick = async () => {
     if (varsEditing) return varsSetState(t('vars_finish_edit'), true);
     if (!config) return varsSetState(t('error'), true);
@@ -424,20 +421,17 @@
    *
    * 表单编辑的是**同一份文档**：`YD.edit` 用服务端原文当起点，只替换表单真的改了的键
    * （`spec.vars`），再用同一份序列化写回文本。所以「表单不认识的字段」不会因为保存被
-   * 丢掉：读面多一个键，这里原样带回去（#454 的 `tags` 被清空正是「页面自己拼一份、
-   * 拼的时候漏了字段」）。解析与校验仍在服务端，问题带行号与字段名回显到
+   * 丢掉：读面多一个键，这里原样带回去。解析与校验仍在服务端，问题带行号与字段名回显到
    * #node-yaml-errors；这里的 parse 只为编辑提供模型，读不懂时表单拒绝改写（不猜、
-   * 不兜底成空）。 */
+   * 不兜底成空 —— 猜一份恰好就是把用户没改的字段写没）。
+   * 问题非空时调用方不得渲染：那是把「读不懂」写成「用户清空了」。 */
   const YD = window.AnotifyYamlDoc;
   let yamlDirty = false, yamlModel = null;
-  /* adoptYAML 把服务端原文收成表单的文档模型；返回解析问题（空数组 = 可编辑）。 */
   function adoptYAML(text) {
     const parsed = YD.parse('Node', text);
     yamlModel = parsed.problems.length ? null : parsed.model;
     return parsed.problems;
   }
-  /* 表单改一处 = 同一份文档的「读 → 改一个键 → 序列化」（YD.edit）。读不懂就返回 null，
-     调用方显式报错 —— 猜一份必然把用户没改的字段写没。 */
   function editDoc(patch) {
     const res = YD.edit('Node', $('node-yaml-text').textContent, patch);
     if (res.problems.length) return null;
@@ -465,8 +459,6 @@
   }
   $('node-yaml-copy').onclick = () => A.copyText($('node-yaml-copy'), () => $('node-yaml-text').textContent);
   $('node-yaml-input').addEventListener('input', () => { yamlDirty = true; msg('node-yaml-state', t('yaml_dirty')); });
-  /* 「按当前配置重写」：丢掉手改的草稿，用已加载的**同一份文档**重新序列化一遍
-     （模型来自服务端原文，表单不认识的字段也在模型里，所以重写不会丢字段）。 */
   $('node-yaml-reset').onclick = () => {
     yamlDirty = false; clearYAMLErrors();
     $('node-yaml-input').value = yamlModel ? YD.render('Node', yamlModel) : $('node-yaml-text').textContent;

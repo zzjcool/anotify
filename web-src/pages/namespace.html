@@ -135,19 +135,12 @@
     nsDocText = text;
     nsDocScope = scope;
   }
-  /* namespaceYAMLDoc：服务端原文 + 只替换 spec.vars（与 CAS 令牌）。
-     `resourceVersion` 缺省时保留文档里已经有的那个（省略 = 用读面给的令牌）。
-     原文没拿到或读不懂时返回 null：调用方先读一次、再拒绝 —— 不猜、不兜底成
-     「只剩 vars 的一份」（那种文档一旦服务端加了字段就是静默丢弃）。 */
   function namespaceYAMLDoc(scope, vars, resourceVersion) {
     if (nsDocScope !== scope || !nsDocText) return null;
     const patch = { metadata: { name: scope, resourceVersion: resourceVersion }, spec: { vars: vars || {} } };
     const res = YD.edit('Namespace', nsDocText, patch);
     return res.problems.length ? null : res.text;
   }
-  /* 这份命名空间文档里现有的 spec.vars：表格保存的「原有值」基线（rowsToVars 的规则 ①）。
-     文档还没加载时退回 /config 的 vars（同一个事实的另一面）；读不懂原文时返回 null，
-     调用方据此拒绝改写 —— 与 namespaceYAMLDoc 走同一条判据。 */
   function namespaceDocVars(scope) {
     if (nsDocScope !== scope || !nsDocText) return (nsConfig && nsConfig.vars) || {};
     const parsed = YD.parse('Namespace', nsDocText);
@@ -155,14 +148,11 @@
     return (parsed.model.spec && parsed.model.spec.vars) || {};
   }
   async function saveNamespaceVars(scope, vars, resourceVersion) {
-    /* 原文是这份文档的唯一来源：没拿到就先读一次（页面刚打开就点保存的路径）。
-       读不到 / 读不懂就拒绝 —— 拿 vars 重建一份会把表单不认识的字段写没。 */
     if (nsDocScope !== scope || !nsDocText) await loadNamespaceYAML(scope);
     const text = namespaceYAMLDoc(scope, vars, resourceVersion);
     if (text === null) throw new Error(n('yaml_unparsable'));
     const value = await write(YD.path('Namespace', scope), { yaml: text });
     if (typeof value?.yaml !== 'string') throw new Error('Invalid ResourceYAML');
-    /* 写后的原文就是下一轮的起点（令牌也随之前进），免得下一次编辑拿旧文档重建。 */
     if (scope === selectedNamespace) { nsDocText = ''; nsDocScope = ''; adoptNamespaceYAML(scope, value.yaml); }
     return value;
   }
@@ -243,8 +233,6 @@
     const button = make('button', 'btn btn-ghost btn-sm', label);
     button.type = 'button'; button.dataset.act = act; button.onclick = onclick; return button;
   }
-  /* 命名空间文档的 YAML 文本由 web/yamldoc.js 产出（见上面的 namespaceYAMLDoc）；
-   * 页面不再自己拼一份 —— 那一份必然与服务端的字段集漂移。 */
   function varsPlainRow(row) {
     const tr = make('tr');
     tr.dataset.key = row.name; tr.dataset.source = row.source || ''; tr.dataset.missing = String(!!row.missing);

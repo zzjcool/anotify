@@ -1,78 +1,6 @@
 #!/usr/bin/env node
-/* spec-doc: 本文件是「页面与页面级脚本不得自带 YAML 序列化器，且前端 kind 表必须与服务端文档结构体逐字段同序」这条检查自己的规格说明 —— 判据、例外面、下限与 --self-test 夹具都写在本文件里，它描述的是本文件实现的检查。
- *
- * Anotify · 文档层守卫（#473）
- *
- * 拦的事故
- *   #473 之前，同一份事实有四个「把模型写成文档文本」的实现：节点页的
- *   yamlScalar/yamlList/yamlMap/docToYAML、命名空间页的 namespaceYAMLText、vars 表格的
- *   yamlScalar/varsToYAMLLines、preview mock 的 yamlScalar/yamlLines。它们的转义规则、
- *   空集合形态、字段顺序各自演化，于是同一类缺陷在每个资源上重新长一遍：#454 的
- *   `tags` 被静默清空，就是「页面自己拼一份、拼的时候漏了一个字段」，而运行期没有任何
- *   报错（页面 200、保存 200，只有用户看到的值对不上）。
- *   现在文档层只有 `web/yamldoc.js` 一份（scalar / render / parse / edit / merge / path /
- *   KINDS）。这四条判据锁两件事：不要再长出第二份；前端那张 kind 表不许与服务端文档
- *   结构体漂移（服务端加一个文档字段而前端没跟上，就等于一次静默的字段丢弃）。
- *
- * 判据（真解析，不是 grep 一遍字符串）
- *   ① `dup-serializer` — 扫描面 = `web/**\/*.js`（除 `web/yamldoc.js` 本身）+ 页面与布局
- *      的内联 `<script>` 块（`<script src>` 天然跳过）。先剥 JS 注释（状态机：字符串 /
- *      模板字符串 / 正则里的 `//` 不是注释 —— `'https://…'` 里的斜杠会把后半行吞掉，
- *      静默变成假绿），再把「声明一个 YAML 序列化器」判红：
- *      `function|const|let|var` + 一个序列化器标识符。标识符表就是本文件里的 DUP_RE，
- *      与文件头那句「四个各自为政的实现」一一对应；加新标识符等于承认世上还有第二份。
- *   ② `doc-literal` — 同一扫描面的**页面**半边不得自己拼文档文本：整行文档头的字符串
- *      字面量（`'apiVersion: anotify/v1'`，单双引号都算），或把 `'kind: '` /
- *      `'apiVersion: '` 当拼接起点（`'apiVersion: ' + …`）。判据是**文本形状**而不是
- *      语义：能拼出这一行的人，下一步一定会自己决定 `spec` 里放什么。
- *      例外面只有两个文件：`web/yamldoc.js`（它就是那份实现）与 `web/mock.js`
- *      （假服务端的 `/yaml` 路由本来就该**返回**文档文本，它不是页面）。
- *   ③ `kind-parity` — 前后端同一套字段规则的对账。用 `node:vm` 把 `web/yamldoc.js`
- *      载进来取 `KINDS`（跨 realm 的对象先折回本 realm），从 Go 源码里解析文档结构体的
- *      `yaml:"…"` 标签与声明顺序（只取 yaml tag 名：`json:"…"` 与 `omitempty` 不参与；
- *      `*yaml.Node` / `*int` / `map[string]…` / `[]string` 都算叶子），两侧各自展开成
- *      「点分路径的有序列表」，逐 kind 比对**同名字段集 + 相对顺序**：
- *      `Node` ↔ `internal/server/resource_node_yaml.go` 的 nodeYAMLDoc / nodeYAMLMeta /
- *      nodeYAMLSpec / nodeYAMLLimits，`Namespace` ↔ `internal/server/resource_namespace_yaml.go`
- *      的 namespaceYAMLDoc / namespaceYAMLMeta / namespaceYAMLSpec。
- *      前端多一个字段、少一个字段、或两边的相对顺序不同 ⇒ 红。
- *   ④ `floor` — 反假绿：页面文件数、内联 script 块数、被对账的 kind 数、对账的字段数
- *      各带下限，任何一项归零都退 2 并直说「什么都没扫到」；目录读不到同样退 2。
- *      「绿」不许与「没检查」同形 —— 本仓的恒绿门禁已经骗过人，这条是那个教训的执行者。
- *
- * 变异口径（--self-test 里每条都自证过，红色用例断言命中的是**哪条规则码**）
- *   红：页面 `const yamlScalar = …`（dup-serializer）· `web/vars-table.js` 里
- *       `function varsToYAMLLines`（dup-serializer）· `var toYaml = …`（dup-serializer）·
- *       页面 `['apiVersion: ' + 'anotify/v1'].join('')`（doc-literal）· 页面
- *       `"kind: " + k`（doc-literal）· 页面级脚本里的 `'apiVersion: ' + …`（doc-literal）·
- *       Go 结构体里删掉 `tags`（kind-parity）· 前端 kind 表里删掉 `tags`（kind-parity）·
- *       Go 结构体里换两行顺序（kind-parity）· 前端缺整个 kind（kind-parity）。
- *   绿：`<script src>` 块 · 注释（行注释与块注释）里的同样文本 · `web/mock.js` 的文档文本
- *       字面量（② 的例外面）· `web/yamldoc.js` 自身 · 前后端对齐的真实仓库文件 ·
- *       自足的内存对照对 · 计数达标时的下限判定。
- *   每条绿用例都断言**扫描面计数大于零**（或该用例唯一有效的那个计数，例如只有
- *   `<script src>` 的夹具断言 `skippedScripts`），证明绿是「扫到了且没问题」，不是「没扫到」。
- *
- * 已知的判据边界（宁可漏报不误报）
- *   · ① 是**声明形态**的判据：`const s = v => …` 之后被当成标量转义用、或把序列化器藏在
- *     对象字面量里（`const H = { scalar: v => … }`），本守卫看不见 —— 它锁的是「从
- *     `web/yamldoc.js` 复印一份出来」这个已发生过的事故形态，不是全部同义写法；
- *   · ② 只认单引号与双引号字面量：模板字符串里拼 `` `apiVersion: ` `` 不在判据内
- *     （本仓没有这种写法，认它会和 ① 的标识符表一样变成无边界扩张）；
- *   · HTML 注释里的 `<script>…</script>` 仍会被当成内联脚本块（块提取是文本级的），
- *     所以「注释掉一整块脚本」不能当豁免用 —— 要豁免就删掉它；
- *   · ③ 的 Go 侧解析器只认「一行一个字段 + 反引号 tag」这种形态（本仓的文档结构体全是
- *     这个形态）；一行多个名字（`A, B string`）与嵌入字段会被跳过，遇到时按「字段集
- *     对不上」判红，而不是静默补一个空表；
- *   · ③ 不校验 `apiVersion` / `kind` 的**值**（那属于服务端身份校验的判据，不是字段表）；
- *     也不把 `generic: true` 的 kind（Capability / Source）拉进对账 —— 它们的形状由
- *     `artifact.Spec` 决定，前端只做通用发射。
- *
- * 用法
- *   node scripts/check-yaml-doc.mjs             # 体检：exit 0 绿 / 1 违规 / 2 解析或用法错
- *   node scripts/check-yaml-doc.mjs --self-test # 守卫自身的红/绿双侧自证
- *   node scripts/check-yaml-doc.mjs --help
- */
+/* 页面/页面级脚本不得自带 YAML 序列化器（唯一实现在 web/yamldoc.js），前端 kind 表的字段
+   顺序必须与服务端文档结构体（yaml tag）逐字同序 —— 任一项扫描面归零都退 2，绿不许与「没检查」同形。 */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,7 +8,6 @@ import vm from "node:vm";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 规则码（`@guard scripts/check-yaml-doc.mjs#<规则码>` 锚点用这几个字面量）。 */
 export const RULE = {
 	DUP: "dup-serializer",
 	LITERAL: "doc-literal",
@@ -88,27 +15,16 @@ export const RULE = {
 	FLOOR: "floor",
 };
 
-/** 反假绿下限：任何一项归零都退 2（「绿」不许与「没检查」同形）。 */
 export const FLOORS = { pages: 1, scripts: 1, kinds: 1, fields: 1 };
 
-/** 页面与布局的扫描目录（`web/` 下的 html 是生成物，不进扫描面）。 */
 const PAGE_DIRS = ["web-src/pages", "web-src/layouts"];
-/** 页面级脚本的扫描根。 */
 const JS_ROOT = "web";
-/** 唯一那份文档层实现：①③ 的对账基准，也是 ② 的例外面。 */
 const YAMLDOC = "web/yamldoc.js";
-/** ② 的例外面：假服务端的 `/yaml` 路由要**返回**文档文本，它不是页面。 */
 const DOC_LITERAL_EXEMPT = new Set([YAMLDOC, "web/mock.js"]);
 
-/**
- * ①的标识符表：每一个都对应一次真实漂移事故里的那份实现。
- * `toYaml` 是「整份渲染」，`yamlLines` / `varsToYAMLLines` 是「拼行」，`yamlScalar` /
- * `yamlQuote` 是「转义」，`docToYAML` / `namespaceYAMLText` 是资源级的整套发射器。
- */
 const DUP_RE =
 	/(?:function\s+|(?:const|let|var)\s+)(yamlScalar|yamlLines|yamlList|yamlMap|yamlQuote|varsToYAMLLines|docToYAML|toYaml|namespaceYAMLText)\b/g;
 
-/** ②的命中形态（单双引号都算）：整行文档头的字面量，或把它当拼接起点。 */
 const DOC_LITERAL_RES = [
 	{
 		re: /(['"])apiVersion: anotify\/v1\1/g,
@@ -120,7 +36,6 @@ const DOC_LITERAL_RES = [
 	},
 ];
 
-/** ③的对账表：前端 kind ↔ 服务端文档结构体（根结构体 + 它递归用到的子结构体）。 */
 export const PARITY = [
 	{
 		kind: "Node",
@@ -140,9 +55,7 @@ export function lineOf(text, offset) {
 	return text.slice(0, offset).split("\n").length;
 }
 
-/* ---------- ① 注释剥离（字符串/模板/正则里的 `//` 不是注释） ---------- */
 
-/** 正则字面量可以出现在这些字符之后（`/` 是除号还是正则开头）。 */
 const REGEX_AFTER_CHAR = new Set("(,=:[!&|?{};+-*/%~^<>".split(""));
 const REGEX_AFTER_WORD = new Set([
 	"return",
@@ -160,7 +73,6 @@ const REGEX_AFTER_WORD = new Set([
 	"await",
 ]);
 
-/** 跳过单/双引号字符串，返回结束引号之后的下标（未闭合停在行尾）。 */
 function skipQuoted(src, i) {
 	const q = src[i];
 	i += 1;
@@ -176,7 +88,6 @@ function skipQuoted(src, i) {
 	return i;
 }
 
-/** 跳过模板字符串（含 `${ … }` 里的嵌套花括号与字符串），返回结束反引号之后的下标。 */
 function skipTemplate(src, i) {
 	i += 1;
 	while (i < src.length) {
@@ -210,7 +121,6 @@ function skipTemplate(src, i) {
 	return i;
 }
 
-/** 跳过正则字面量；没闭合返回 -1（让调用方按除号继续往下走）。 */
 function skipRegex(src, i) {
 	let j = i + 1;
 	let inClass = false;
@@ -233,10 +143,6 @@ function skipRegex(src, i) {
 	return -1;
 }
 
-/**
- * 把注释抹成空格（保留换行 ⇒ 偏移与行号不变），字符串与模板字符串的内容原样保留。
- * 块注释没闭合时记一条解析错误：后面的整段都没被检查，不许静默当成「没问题」。
- */
 export function stripComments(src, errors = []) {
 	const out = src.split("");
 	const blank = (from, to) => {
@@ -314,7 +220,6 @@ export function stripComments(src, errors = []) {
 	return out.join("");
 }
 
-/* ---------- 页面：取出内联 <script> 块（`<script src>` 跳过） ---------- */
 
 export function inlineScriptBlocks(html) {
 	const blocks = [];
@@ -331,7 +236,6 @@ export function inlineScriptBlocks(html) {
 	return { blocks, skipped };
 }
 
-/* ---------- ①②：一块脚本的判据 ---------- */
 
 function scanScript(name, text, { literal, base = 0, outer = null }) {
 	const violations = [];
@@ -366,11 +270,6 @@ function scanScript(name, text, { literal, base = 0, outer = null }) {
 	};
 }
 
-/**
- * 扫描面（纯函数：主流程与 --self-test 共用同一份判据）。
- *   jsFiles: [{ file, text }]   页面级脚本（web/**\/*.js；web/yamldoc.js 会被跳过）
- *   pages:   [{ file, html }]   页面与布局
- */
 export function scanSources({ jsFiles = [], pages = [] } = {}) {
 	const violations = [];
 	const errors = [];
@@ -405,9 +304,7 @@ export function scanSources({ jsFiles = [], pages = [] } = {}) {
 	return { violations, errors, counts };
 }
 
-/* ---------- ③ 前端 kind 表：vm 载入 ---------- */
 
-/** 在独立 vm context 里执行 web/yamldoc.js，返回折回本 realm 的 KINDS（函数字段会被 JSON 丢掉）。 */
 export function loadKinds(src, filename = YAMLDOC) {
 	const ctx = vm.createContext({ console, JSON, Object, Array, String, Number, RegExp });
 	vm.runInContext("globalThis.window = globalThis;", ctx);
@@ -419,7 +316,6 @@ export function loadKinds(src, filename = YAMLDOC) {
 	return JSON.parse(JSON.stringify(api.KINDS));
 }
 
-/** kind 表 → 点分路径的有序列表（`type: 'object'` 递归，其余是叶子）。 */
 export function flattenKindFields(fields, prefix = "") {
 	const out = [];
 	for (const f of fields || []) {
@@ -430,9 +326,7 @@ export function flattenKindFields(fields, prefix = "") {
 	return out;
 }
 
-/* ---------- ③ 服务端文档结构体：Go 源码 → 有序字段表 ---------- */
 
-/** 解析 `type X struct { … }`，只留带 `yaml:"…"` 标签的字段（名字取逗号前的部分）。 */
 export function parseGoStructs(src) {
 	const structs = new Map();
 	for (const head of src.matchAll(/type\s+([A-Za-z_]\w*)\s+struct\s*\{/g)) {
@@ -941,7 +835,6 @@ export function selfTestCases() {
 	];
 }
 
-/** 对账夹具：真实文件 + 内存变异（返回 null 表示锚点不在了，用例自己会红）。 */
 export function selfTestParityCases() {
 	return [
 		{ name: "绿⑦ 仓库当前的真实文件：前端 kind 表与服务端文档结构体对齐", mutate: null },

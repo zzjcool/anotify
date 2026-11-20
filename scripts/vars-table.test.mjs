@@ -12,8 +12,6 @@
  *      与能力读面（spec.requires.values），断言行的 name/value/source/missing/usedBy。
  *   ② 变异自证：把 `missing` 判据改成恒 false 重新加载，① 的「缺但被要求」断言必须变红
  *      —— 否则绿可能只是断言写松了。
- *   ③ 序列化不在本文件：`web/yamldoc.js` 统一做（`scripts/yamldoc.test.mjs` 覆盖）；
- *      本文件只覆盖行逻辑（rowsToVars / diffVars 只动目标键，其它键逐字不变）。
  *
  * 跑法：`node --test scripts/vars-table.test.mjs`（接线：`make test-frontend`）
  */
@@ -170,9 +168,6 @@ test('rowsToVars：只收有值的行；missing 与 deleted 都不写', () => {
 });
 
 test('rowsToVars：文档里已有、但被上层压住的键不会被表格保存顺手删掉', () => {
-	/* 被压住的行在表格里显示的是**生效值**（source=local/namespace），本层的值不在行里。
-	 * 所以它既不能用行里的值覆盖（那会把上层覆盖复制成本层默认），也不能丢（那是删值）。
-	 * 判据：base 里有、patch 没碰的键，原样留在结果里。 */
 	const V = load();
 	const rows = V.buildRows({
 		effective: { A: { value: 'localA', source: 'local' }, B: { value: 'nodeB', source: 'node' } },

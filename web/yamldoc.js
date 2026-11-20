@@ -1,54 +1,22 @@
 /*
- * Anotify · YAML 文档层（#473 的第 1 步 / 第 3 步的前端半边）
+ * 资源文档层：页面 / preview mock / vars 表格共用的唯一一份 YAML 序列化与解析。
  *
- * 为什么要有这一份文件：同一个资源以前有三套「把事实写成 YAML 文本」的实现 ——
- * 节点页自带 yamlScalar / yamlList / yamlMap / docToYAML，命名空间页自带
- * namespaceYAMLText，vars 表格自带 yamlScalar / varsToYAMLLines（预览用的 mock
- * 还有第四套）。四套实现的转义规则、空集合形态、字段顺序各自演化，于是同一类
- * 缺陷在每个资源上重新长一遍（#454 的 `tags` 被静默清空就是「页面自己拼一份、
- * 拼的时候漏了一个字段」）。
- *
- * 现在只有这一份：
- *
- *   scalar(v)              标量转义（唯一实现；页面/mock/表格都不再各写一份）
- *   render(kind, model)    「模型 → 文档文本」（唯一实现）
- *   parse(kind, text)      「文档文本 → 模型」（唯一实现；拒绝集见下）
- *   merge(base, patch)     表单编辑：只改它改的键，其余逐字保留
- *   path(kind, name)       该资源的文档端点（写入口永远是 PUT …/yaml）
- *
- * 四条设计约束（改之前先读）：
- *
- *  1. **解析不是校验**。严格校验（未知字段 / 类型 / 必填 / 重复键 / 锚点）在服务端
- *     （`internal/yamldoc`），错误带行号与字段路径。这里的 parse 只为「表单编辑同一
- *     份文档」提供模型：它**不**拒绝未知字段（原样带回模型，写回去让服务端具名拒绝），
- *     也不认本文档方言之外的东西（块标量 `>`、锚点/别名、自定义 tag、多文档、制表符
- *     缩进、复杂键）—— 遇到就返回 problems，调用方必须**不要**渲染，否则就是把
- *     「读不懂」写成「用户清空了」（#454 的同一类错误）。
- *
- *  2. **读面与写面的唯一差异是「未知就省略」**。服务端读面为了表达「不压住下层」会写
- *     `total: null`，而写面要求 total 是 ≥1 的整数（`store.ValidateLimits`）。所以模型里
- *     total 为 null 时**整键省略**（省略 = 不动），绝不写成 `total: null` 或 `total: 0`。
- *     同理 `tags` 未知（null）时整键省略，只有「已知为空」（[]）才写 `tags: []`。
- *
- *  3. **字段顺序由 kind 表固定**，不由模型的键顺序决定；kind 表之外的键（扩展字段）
- *     按模型里的原顺序追加在后面。所以同一份事实永远序列化成同一份文本，而扩展字段
- *     不会因为「表单不认识它」被丢掉。
- *
- *  4. **值可明文**：vars / envPassthrough 的值不是凭据，本层不做脱敏（脱敏是服务端读
- *     投影的职责：`POST …/tokens` 一次性明文、`GET …/sources/{name}/yaml` 只给
- *     hookUrl/secretSet）。`envPassthrough` 是**名字白名单**（列表），不是 vars 表
- *     （映射）—— 两者在 kind 表里是不同的类型，merge 也不会把一个列表搬进映射。
+ * 与 yaml.v3 对拍（跨语言的接口事实，不是本文件的实现细节）：
+ *  · chomping 按末尾换行数选：不以换行结尾 `|-`、恰好一个 `|`、两个以上 `|+`；
+ *    写死 `|` 会把「没有行尾换行」的值补上一个行尾换行。
+ *  · 双引号标量用 JSON 转义（YAML 双引号标量是 JSON 的超集）；块标量只在首行不带
+ *    空白、正文没有 `\r` 时使用 —— 否则退回双引号标量，值逐字不变。
+ *  · 以数字开头的值一律加引号：`010` 是八进制、`123` 是整数，服务端按类型解码会 400。
+ *  · `total` 为 null 时整键省略（写面要求 ≥1，省略 = 不动）；`tags` 的 null（未知）
+ *    与 `[]`（清空）是两件事。
+ *  · 数组/映射是值节点，整份替换（`spec.vars` 删键就是清空）；读不懂的方言返回
+ *    problems，调用方不得渲染 —— 不把「没读懂」写成「用户清空了」。
  */
 (function (root) {
 	'use strict';
 
-	/* ================= ① 标量：唯一一份转义规则 ================= */
 
-	/* 可以裸写（不加引号）的形状：字母/下划线开头、只含不会改变语义的字符。
-	 * 数字开头一律不裸写 —— `010` 是 YAML 的八进制、`123` 是整数，两种都会让
-	 * 「看起来是字符串」的值变成另一个类型（服务端按类型解码，会 400）。 */
 	var PLAIN = /^[A-Za-z_][A-Za-z0-9_./:@+-]*$/;
-	/* 保留字：裸写会被 YAML 解析成 bool / null，不是字符串。 */
 	var RESERVED = /^(?:true|false|null|yes|no|on|off|y|n|~)$/i;
 
 	function scalar(value) {
@@ -58,37 +26,22 @@
 		var text = String(value);
 		if (text === '') return '""';
 		if (PLAIN.test(text) && !RESERVED.test(text)) return text;
-		/* 双引号标量就是 JSON 字符串（JSON 的转义是 YAML 双引号标量的子集），
-		 * 所以这里不需要第二套转义规则 —— 也不会写错。 */
 		return JSON.stringify(text);
 	}
 
-	/* ================= ② 通用块发射器 ================= */
 
 	function isMap(value) {
 		return value !== null && typeof value === 'object' && !Array.isArray(value);
 	}
 
-	/* 这个值能不能写成块标量。多行、有非换行内容、**首行不以空白开头**（首行的空白会被
-	 * 解析方当成正文缩进，值就变了）、正文里没有 `\r`（块标量的行尾会被规范化）。
-	 * 其它多行值退回双引号标量（`"a\nb"`）：JSON 的双引号标量与 YAML 双引号标量同一套转义，
-	 * 逐字精确、不依赖缩进推断 —— 少一层「看起来对但其实改了值」的可能。 */
 	function useBlockScalar(text) {
 		if (typeof text !== 'string' || text.indexOf('\n') < 0) return false;
-		/* 块标量里的行尾会被规范化（`\r\n` → `\n`，yaml.v3 也这么做）—— 要逐字保留就得用
-		 * 双引号标量，那里 `\r` 是转义。 */
 		if (text.indexOf('\r') >= 0) return false;
 		var core = text.replace(/\n+$/, '');
 		if (core === '') return false;
-		/* 只有**首行**的空白会改变语义（解析方把它当成正文缩进）；正文里其它行的行首空白
-		 * （含制表符）都逐字保留 —— 与 yaml.v3 的写法一致。 */
 		return !/^[ \t]/.test(core.split('\n')[0]);
 	}
 
-	/* 多行字符串 → 块标量（保住换行与每行缩进；能力脚本正文靠它逐字保留）。
-	 * chomping 与 yaml.v3 的规则一致，这样「前端写出去 → 服务端读回来」是逐字相同的值：
-	 *   不以换行结尾 → `|-`（strip）；恰好一个换行 → `|`（clip）；两个以上 → `|+`（keep，
-	 *   多出来的空行照写）。写死 `|` 会把「有两行、没有行尾换行」的值改成一个行尾换行。 */
 	function blockScalar(text, indent) {
 		var core = String(text).replace(/\n+$/, '');
 		var trail = String(text).length - core.length;
@@ -99,8 +52,6 @@
 		return out;
 	}
 
-	/* 序列项里的嵌套块：第一个键内联在 `- ` 后面（`- key: v`），其余行原样跟。
-	 * 这与 yaml.v3 的排版一致，也是 mock 的 `/yaml` 里既有的文本形状。 */
 	function emitArray(value, indent, out) {
 		var pad = ' '.repeat(indent);
 		if (!value.length) {
@@ -176,21 +127,7 @@
 		out.push(pad + scalar(value));
 	}
 
-	/* ================= ③ kind 表：每种资源文档的形状 ================= */
 
-	/* 字段声明：
-	 *   key   文档里的键名
-	 *   type  string | int | strings | string-map | int-map | object
-	 *   omit  'missing'（默认：null/undefined 整键省略 = 不动）| 'never'（缺了也按空集合写）
-	 *   fields object 的子字段
-	 *
-	 * 只有两类字段用 `omit: 'never'`：文档里「空集合」本身是事实的那几个（今天没有 —— 空
-	 * `tags` / 空 `vars` 都来自 null 与 `[]` 的区分）。其余一律「未知就省略」，因为写面把
-	 * 「没写」当成「不动」，把 null 写成空集合就等于替用户改了一个值。
-	 *
-	 * `envPassthrough` 是**名字列表**（strings），`vars` 是**名字→值映射**（string-map）：
-	 * 两者类型不同，谁也不会被渲染成另一个的形状。
-	 */
 
 	var NODE_FIELDS = [
 		{ key: 'apiVersion', type: 'string' },
@@ -213,19 +150,16 @@
 					key: 'limits',
 					type: 'object',
 					fields: [
-						/* 读面会写 `total: null`；写面要求 ≥1 的整数 → null 就整键省略（不动）。 */
 						{ key: 'total', type: 'int', omit: 'missing' },
 						{ key: 'perCapability', type: 'int-map' },
 					],
 				},
-				/* #454：未知（null）就整键省略，只有「已知为空」才写 `tags: []`。 */
 				{ key: 'tags', type: 'strings' },
 			],
 		},
 	];
 
 	var KINDS = {
-		/* 节点文档（GET/PUT /v1/nodes/{name}/yaml）。 */
 		Node: {
 			apiVersion: 'anotify/v1',
 			kind: 'Node',
@@ -234,7 +168,6 @@
 			},
 			fields: NODE_FIELDS,
 		},
-		/* 命名空间文档（GET/PUT /v1/namespaces/{name}/yaml）。 */
 		Namespace: {
 			apiVersion: 'anotify/v1',
 			kind: 'Namespace',
@@ -256,22 +189,13 @@
 					key: 'spec',
 					type: 'object',
 					fields: [
-						/* PUT 是整份替换：`spec.vars` 缺席被服务端拒成 value_invalid（「忘了写」
-						 * 与「清空」不可区分）。所以这里**不**补 `{}` —— 让服务端具名报错。 */
 						{ key: 'vars', type: 'string-map' },
 					],
 				},
 			],
 		},
-		/* 能力文档（GET /v1/namespaces/{ns}/capabilities/{name}/yaml，只读）。
-		 * 形状由 artifact.Spec 决定，本层只做通用发射：键顺序 = 模型顺序（服务端重建时
-		 * 已按契约排好），`run.files` 的多行正文是块标量。 */
 		Capability: {apiVersion: 'anotify/v1', kind: 'Capability', generic: true},
-		/* 源文档（GET …/sources/{name}/yaml，只读；读投影只有 hookUrl/secretSet）。 */
 		Source: {apiVersion: 'anotify/v1', kind: 'Source', generic: true},
-		/* 节点本机配置（anode.yaml）。控制台不写它（写它的是 install 脚本），但它的字段
-		 * 规则收在同一处：`envPassthrough` 是名字白名单、`vars` 是值映射 —— 两者混用
-		 * 就是一条凭据回显通道（值会进 vars 表、被复制走）。 */
 		AnodeConfig: {
 			kind: 'anode.yaml',
 			fields: [
@@ -294,7 +218,6 @@
 		},
 	};
 
-	/* ================= ④ 模型 → 文本 ================= */
 
 	function kindOf(kindId) {
 		var kind = KINDS[kindId];
@@ -302,11 +225,6 @@
 		return kind;
 	}
 
-	/* 按 kind 表把模型投影成「待发射的有序映射」：
-	 *   · 表里声明的键按声明顺序；
-	 *   · 值为 null/undefined 的键跳过（= 不动），除非声明 omit: 'never'；
-	 *   · 表里没声明的键按模型里的顺序追加（扩展字段一个都不丢）。
-	 * 投影结果是纯数据，交给同一个发射器 —— 所以「排版规则」也只有一份。 */
 	function project(fields, source, out) {
 		var src = isMap(source) ? source : {};
 		for (var i = 0; i < fields.length; i++) {
@@ -336,7 +254,6 @@
 	function coerce(type, value) {
 		if (value === null) return value;
 		if (value === undefined) {
-			/* 只有 omit:'never' 会走到这里：缺了也写一个空集合。 */
 			if (type === 'strings') return [];
 			if (type === 'string-map' || type === 'int-map') return {};
 			return value;
@@ -371,7 +288,6 @@
 		}
 	}
 
-	/* render 是「模型 → 文档文本」的唯一入口。未知 kind 直接抛（拼错不该静默写半份文档）。 */
 	function render(kindId, model) {
 		var kind = kindOf(kindId);
 		var src = isMap(model) ? model : {};
@@ -387,13 +303,7 @@
 		return lines.length ? lines.join('\n') + '\n' : '';
 	}
 
-	/* ================= ⑤ 文本 → 模型 ================= */
 
-	/* 只认服务端读面会产出的那套方言 + 用户手写时的等价写法：
-	 *   块映射 / 块序列 / 流式空集合与标量集合（{}、[]、[a, b]、{k: v}）
-	 *   / 单双引号标量 / 块标量 `|` `|-` / 整行与行尾注释。
-	 * 拒绝集（返回 problems，调用方不得渲染）：`>` 折行块、锚点别名（& / *）、自定义 tag（!）、
-	 * 多文档（---）、复杂键（? ）、制表符缩进、重复键。 */
 	function parse(text) {
 		var problems = [];
 		var source = String(text === null || text === undefined ? '' : text).replace(/\r\n?/g, '\n');
@@ -406,15 +316,12 @@
 			return null;
 		}
 
-		/* 只数行首空格：块标量正文里「缩进之后的制表符」是内容，不是缩进。 */
 		function spacesOf(line) {
 			var i = 0;
 			while (i < line.length && line.charAt(i) === ' ') i++;
 			return i;
 		}
 
-		/* 返回缩进空格数；-1 = 缩进里用了制表符（不在方言内，由调用方带行号报问题）。
-		 * 只用于映射/序列的结构行；块标量正文走 spacesOf。 */
 		function indentOf(line) {
 			var i = 0;
 			while (i < line.length && line.charAt(i) === ' ') i++;
@@ -426,14 +333,12 @@
 			return t === '' || t.charAt(0) === '#';
 		}
 
-		/* 下一条有内容的行（跳过空行与整行注释）。 */
 		function nextContent(from) {
 			var i = from;
 			while (i < raw.length && isBlank(raw[i])) i++;
 			return i;
 		}
 
-		/* 去掉行尾注释（` #…`）：引号内的 # 不算注释。 */
 		function stripComment(line) {
 			var quote = '';
 			for (var i = 0; i < line.length; i++) {
@@ -457,7 +362,6 @@
 			}
 		}
 
-		/* 标量：返回 {value, rest}（rest = 该行剩下还没消费的文本）。 */
 		function parseScalar(textIn, index) {
 			var text = textIn.trim();
 			if (!text) return {value: null, rest: ''};
@@ -488,15 +392,11 @@
 			return {value: resolvePlain(text.trim()), rest: ''};
 		}
 
-		/* 裸标量按 YAML core schema 归型：布尔 / null / 整数 / 小数，其余是字符串。
-		 * 类型必须归对，否则「读回来的 4」再写出去会变成 `"4"`（字符串）→ 服务端按 int
-		 * 解码报 400（`limits.total` 就是这么被钉住的）。 */
 		function resolvePlain(text) {
 			if (text === '' || text === '~' || /^null$/i.test(text)) return null;
 			if (/^(?:true)$/i.test(text)) return true;
 			if (/^(?:false)$/i.test(text)) return false;
 			if (/^[-+]?\d+$/.test(text)) {
-				/* 前导零不是十进制整数（`010` 是八进制）—— 不当数字，当字符串。 */
 				if (/^[-+]?0\d+$/.test(text)) return text;
 				return parseInt(text, 10);
 			}
@@ -504,8 +404,6 @@
 			return text;
 		}
 
-		/* 流式集合：{} / [] / [a, b] / {k: v, k2: v2}（只支持标量与空集合，够读服务端读面
-		 * 与文档样例；嵌套更深的用块风格）。 */
 		function parseFlow(textIn, index) {
 			var text = textIn.trim();
 			var closing = text.charAt(0) === '{' ? '}' : ']';
@@ -537,12 +435,6 @@
 			return {value: arr, rest: ''};
 		}
 
-		/* 块标量：`|`（clip：恰好一个行尾换行）/ `|-`（strip：没有行尾换行）/ `|+`（keep：
-		 * 末尾的空行全部算正文），可带缩进指示器 `|2` / `|2-` / `|-2`。正文行必须比键更缩进；
-		 * 没写指示器时公共缩进取正文首个非空行的缩进。
-		 *
-		 * chomping 必须真的实现：服务端（yaml.v3）遇到「不以换行结尾」的多行值会写 `|-`，把它当 `|`
-		 * 读就会给每个值多补一个行尾换行 —— 那是「保存一次、值被改一次」的静默改写。 */
 		function parseBlockScalar(header, baseIndent, index) {
 			if (/^>/.test(header)) return problem(index, '折行块标量 `>` 不在本层方言内');
 			var chomp = header.indexOf('-') >= 0 ? '-' : header.indexOf('+') >= 0 ? '+' : '';
@@ -561,7 +453,6 @@
 			}
 			var terminatedByDedent = at < raw.length;
 			pos = at;
-			/* 原文里的换行：块一直延伸到文件末尾、且文件不以换行结束时，最后一行后面没有换行。 */
 			var finalNewline = terminatedByDedent || endsWithNewline;
 			var body = lines.join('\n') + (finalNewline && lines.length ? '\n' : '');
 			if (chomp === '+') return {value: body, rest: ''};
@@ -570,7 +461,6 @@
 			return {value: clip === '' ? '' : clip + '\n', rest: ''};
 		}
 
-		/* 一行映射条目 → {key, value}；值可能是嵌套块（在同一缩进层级续读）。 */
 		function parseEntry(line, indent, index) {
 			var body = stripComment(line).slice(indent);
 			var key = '';
@@ -618,7 +508,6 @@
 			return {key: key, value: leaf.value};
 		}
 
-		/* 块：先看首行决定是映射还是序列。 */
 		function parseBlock(indent) {
 			var first = nextContent(pos);
 			if (first >= raw.length) return null;
@@ -676,7 +565,6 @@
 					out.push(flow.value);
 					continue;
 				}
-				/* `- 键: 值` = 序列项是一个映射：把这一行改写成多缩进两格的映射行再读。 */
 				if (/^[^"'\s][^:]*:(?: |$)/.test(rest) || /^["'][^"']*["']\s*:/.test(rest)) {
 					raw[at] = ' '.repeat(ind + 2) + rest;
 					pos = at;
@@ -723,30 +611,20 @@
 		return {value: value, problems: problems};
 	}
 
-	/* parseDoc = parse + 按 kind 归型。返回 {model, problems}；problems 非空时 model 不可信，
-	 * 调用方必须把它当成「这份文本只能整份手改」，不要重新渲染。 */
 	function parseDoc(kindId, text) {
 		var kind = kindOf(kindId);
 		var res = parse(text);
 		if (res.problems.length) return {model: null, problems: res.problems};
-		/* 空文档 / 只有注释：没有任何问题，但也没有根节点。调用方依赖「problems 为空 = 有
-		 * 可信模型」这条契约，所以这里补一条 —— 不然它拿到 null 还得自己再判一次。 */
 		if (res.value === null) return {model: null, problems: [{line: 1, message: '文档根必须是映射'}]};
 		var model = isMap(res.value) ? res.value : null;
 		if (!model) return {model: null, problems: [{line: 1, message: '文档根必须是映射'}]};
 		if (kind.generic) return {model: model, problems: []};
 		var typed = {};
 		project(kind.fields, model, typed);
-		/* project 已按 kind 表归型并带回扩展字段；这里再保证 kind 表的键一定在模型里
-		 * （缺席是合法的：省略 = 不动）。 */
 		return {model: typed, problems: []};
 	}
 
-	/* ================= ⑥ 合并（表单编辑） ================= */
 
-	/* merge(base, patch)：patch 里出现的键覆盖 base（对象递归、数组/标量整体替换），
-	 * patch 里**没有**的键原样留着 —— 这就是「表单只改它改的那一项，其余逐字不变」。
-	 * 数组整体替换是刻意的：`tags: []` 表达「清空」，合并语义会把它读成「不动」。 */
 	function merge(base, patch) {
 		if (!isMap(base)) return isMap(patch) ? merge({}, patch) : patch;
 		if (!isMap(patch)) return patch;
@@ -763,12 +641,6 @@
 		return out;
 	}
 
-	/* patchObject 按 kind 表打补丁：**结构**节点（object，如 spec / metadata / limits）递归，
-	 * 其余都是**值**节点，整份替换。
-	 *
-	 * 为什么值节点必须替换：`spec.vars` 在表格里是「这一层的全部变量」。如果按对象合并，
-	 * 用户删掉一行（patch 里没有那个键）就会被读成「没动」，删除静默失效 —— 那和 #454
-	 * 是同一类错误的另一面。`perCapability` / `namespaces` / `tags` 同理。 */
 	function patchObject(fields, base, patch) {
 		var out = isMap(base) ? merge({}, base) : {};
 		var byKey = {};
@@ -785,9 +657,6 @@
 		return out;
 	}
 
-	/* edit(kind, text, patch) = 「表单改一处」的完整动作：读服务端原文 → 只改 patch 里的键
-	 * → 重新序列化。页面不再自己拼文档：这就是「表单与原始编辑共用同一份文档」的那一处。
-	 * 返回 {text, model, problems}；problems 非空时 text 为空串，调用方必须**不要**写。 */
 	function edit(kindId, text, patch) {
 		var kind = kindOf(kindId);
 		var parsed = parseDoc(kindId, text);
@@ -798,7 +667,6 @@
 		return {text: render(kindId, model), model: model, problems: []};
 	}
 
-	/* ================= ⑦ 导出 ================= */
 
 	var api = {
 		scalar: scalar,
@@ -814,6 +682,5 @@
 		},
 	};
 	root.AnotifyYamlDoc = api;
-	// 前端单测（node:vm）读 window.AnotifyYamlDoc；CommonJS 导出只是给工具留一条路。
 	if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

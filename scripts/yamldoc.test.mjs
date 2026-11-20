@@ -1,23 +1,4 @@
 #!/usr/bin/env node
-/* Anotify · YAML 文档层（web/yamldoc.js）的行为单测（#473）
- *
- * 拦的事故类型：#454 —— 每个页面各自拼一份文档文本（各一套标量转义、字段顺序、
- * 空集合与省略规则），表单只改了其中一个键，重写出来的文本却把没被改的字段清掉
- * （`tags` 被静默吞掉）或凭空补出别的字段（`limits` 被写成空映射）。这类缺陷静态检查
- * 看不见，只看「端点返回 200」的 e2e 也看不见：只有「读服务端原文 → 表单改一个键 →
- * 重新序列化 → 再读一遍」这一整圈才会失败。
- *
- * 判据（三段）：
- *   ① 行为：在 vm 里真实执行 web/yamldoc.js，喂 `internal/server/resource_node_yaml_test.go`
- *      期望片段那种真实服务端文本 —— 标量表、字段保真、`tags` 与 `limits` 的省略规则、
- *      能力文档的块标量往返、`envPassthrough`（名字白名单）与 `vars`（值映射）的形状差异。
- *   ② 变异自证：同一组保真判据换「改前页面那份拼装实现 + 那份草稿」重跑，findings 必须非空
- *      —— 否则「统一层全绿」也可能只是断言写松了。findings 的原文随测试输出交付。
- *   ③ 接线：`web-src/pages/node.html` 与 `web-src/pages/namespace.html` 不再自带序列化器，
- *      文档文本只从 web/yamldoc.js 来；换回页面自己拼一份，这一段就失败。
- *
- * 跑法：`node --test scripts/yamldoc.test.mjs`（接线：`make test-frontend`）
- */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,11 +10,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODULE_PATH = 'web/yamldoc.js';
 const MODULE_SRC = readFileSync(path.join(ROOT, MODULE_PATH), 'utf8');
 
-/** 把 vm 里造出来的对象/数组折回本 realm（跨 realm 的 deepStrictEqual 会因原型不同报错）。 */
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
 
-/** 在独立 vm context 里执行模块源码，返回 window.AnotifyYamlDoc。 */
 function load(src = MODULE_SRC) {
 	const ctx = vm.createContext({ console, JSON, Object, Array, String, Number, RegExp });
 	vm.runInContext('globalThis.window = globalThis;', ctx);
@@ -45,11 +24,6 @@ function load(src = MODULE_SRC) {
 
 const YD = load();
 
-/* ------------------------------------------------------------------ *
- * 真实服务端文本：`internal/server/resource_node_yaml_test.go` 里
- * GET /v1/nodes/{name}/yaml 的期望片段（键序即服务端读面的规范形状）。
- * `'*': 2` 的键是单引号 —— 服务端就这么写，parse 必须认。
- * ------------------------------------------------------------------ */
 const NODE_DOC = `apiVersion: anotify/v1
 kind: Node
 metadata:
@@ -76,7 +50,6 @@ spec:
 const TAGS_BLOCK = '  tags:\n    - build\n    - prod\n';
 const LIMITS_BLOCK = "  limits:\n    total: 4\n    perCapability:\n      '*': 2\n      fixer: 1\n";
 
-/* 表单编辑意图：只改 vars（加一个键）。所有保真判据都用同一份 patch。 */
 const PATCH = { spec: { vars: { ONLY_KEY: 'changed' } } };
 
 test('scalar：唯一一份标量转义（裸写 / 双引号 / 保留字 / 数字开头 / 非字符串）', () => {
@@ -110,7 +83,6 @@ test('Node：读服务端原文，表单只改一个键，其余字段逐字保�
 	const again = YD.parse('Node', edited.text);
 	assert.deepEqual(plain(again.problems), [], '编辑后的文本必须还能读回来');
 
-	// 只有 spec.vars 变了 —— 其余每一项逐字不变（值，而不是「大概还在」）。
 	assert.deepEqual(plain(again.model.spec.namespaces), ['default', 'prod']);
 	assert.equal(again.model.metadata.resourceVersion, 'rv1:uid-p86c:7');
 	assert.equal(again.model.spec.limits.total, 4, 'total 不能从 4 变成 "4" 或消失');
@@ -119,14 +91,12 @@ test('Node：读服务端原文，表单只改一个键，其余字段逐字保�
 	assert.deepEqual(plain(again.model.spec.vars), { ONLY_KEY: 'changed' },
 		'patch 里的 spec.vars 是这一层的**整份**映射（表格保存就是整份）：替换而不是合并');
 
-	// 「删一行」必须真的删掉 —— 合并语义会把 patch 里没有的键当成「没动」，删除静默失效。
 	const deleted = YD.edit('Node', NODE_DOC, { spec: { vars: { B_KEY: '2', TOOLCHAIN: '/opt/go1.25' } } });
 	const deletedBack = YD.parse('Node', deleted.text);
 	assert.deepEqual(plain(deletedBack.model.spec.vars), { B_KEY: '2', TOOLCHAIN: '/opt/go1.25' },
 		'patch 里没有 A_KEY → 文档里也不能留着它');
 	assert.doesNotMatch(deleted.text, /A_KEY/, '被删掉的键不能靠合并语义活下来');
 
-	// 文本层面：没被改的块仍按服务端那份形状出现（键序 + 缩进 + 引号形态）。
 	assert.match(edited.text, /^  limits:\n    total: 4\n    perCapability:\n      "\*": 2\n      fixer: 1\n/m);
 	assert.match(edited.text, /^  tags:\n    - build\n    - prod\n/m);
 	assert.match(edited.text, /^  namespaces:\n    - default\n    - prod\n/m);
@@ -141,7 +111,6 @@ test('parse：读不懂的方言返回 problems 而不是半份模型（这种�
 	assert.equal(folded.model, null);
 	assert.match(plain(folded.problems)[0].message, /折行块标量/);
 
-	// edit 走同一条判据：读不懂就返回空文本，调用方拿不到任何东西可以写回去。
 	const refused = YD.edit('Node', 'apiVersion: aiotify/v1\nkind: !Node\n', PATCH);
 	assert.equal(refused.text, '');
 	assert.equal(refused.model, null);
@@ -149,11 +118,9 @@ test('parse：读不懂的方言返回 problems 而不是半份模型（这种�
 });
 
 test('tags 三态：有值保序 / 未知就整键省略 / 已知为空写 tags: []（#454）', () => {
-	// ① 有值：编辑 vars 之后仍有两个序列项。
 	const withTags = YD.edit('Node', NODE_DOC, PATCH);
 	assert.match(withTags.text, /^  tags:\n    - build\n    - prod\n/m);
 
-	// ② 未知（文档里没有 tags 键）：编辑之后也不许凭空出现这个键。
 	const unknownDoc = NODE_DOC.replace(TAGS_BLOCK, '');
 	assert.notEqual(unknownDoc, NODE_DOC, 'fixture 必须真的删掉了 tags 块');
 	const unknown = YD.edit('Node', unknownDoc, PATCH);
@@ -161,7 +128,6 @@ test('tags 三态：有值保序 / 未知就整键省略 / 已知为空写 tags:
 	const unknownBack = YD.parse('Node', unknown.text);
 	assert.equal(has(unknownBack.model.spec, 'tags'), false);
 
-	// ③ 已知为空：`tags: []` 是「标签被清空」这个事实，不许被吞成「不知道」。
 	const emptyDoc = NODE_DOC.replace(TAGS_BLOCK, '  tags: []\n');
 	assert.notEqual(emptyDoc, NODE_DOC);
 	const empty = YD.edit('Node', emptyDoc, PATCH);
@@ -170,16 +136,11 @@ test('tags 三态：有值保序 / 未知就整键省略 / 已知为空写 tags:
 });
 
 test('limits 边界：total: null 写回时整键省略 / 没有 limits 就不许凭空造一个', () => {
-	// ① 服务端读面为「不压住下层」写显式 total: null；写面要求 total 是 ≥1 的整数。
 	const totalNullDoc = NODE_DOC.replace('    total: 4\n', '    total: null\n');
 	assert.notEqual(totalNullDoc, NODE_DOC, 'fixture 必须真的改成了 total: null');
 	const parsed = YD.parse('Node', totalNullDoc);
 	assert.deepEqual(plain(parsed.problems), []);
 	assert.deepEqual(plain(parsed.model.spec.limits.perCapability), { '*': 2, fixer: 1 });
-	// 交接说明：计划期望 `total === null`；实现的 project 把 null 与 undefined 一样当作
-	// 「不参与渲染」跳过（web/yamldoc.js 的「省略 = 不动」），所以模型里是「没有这个键」。
-	// 两者对写面完全等价（都写不出 total 行）。这里把「不参与」统一成 null 钉住：
-	// 0 / 字符串 / 别的数字一律失败。
 	assert.equal(parsed.model.spec.limits.total ?? null, null);
 
 	const totalNullEdit = YD.edit('Node', totalNullDoc, PATCH);
@@ -188,7 +149,6 @@ test('limits 边界：total: null 写回时整键省略 / 没有 limits 就不�
 	assert.match(totalNullEdit.text, /^    perCapability:\n      "\*": 2\n      fixer: 1$/m, '其它 limits 字段照旧');
 	assert.match(totalNullEdit.text, /^  tags:\n    - build\n    - prod\n/m);
 
-	// ② 文档里完全没有 limits：本层不补空映射（原样贴回由服务端 400 的语义不变）。
 	const noLimitsDoc = NODE_DOC.replace(LIMITS_BLOCK, '');
 	assert.notEqual(noLimitsDoc, NODE_DOC, 'fixture 必须真的删掉了 limits 块');
 	const noLimits = YD.edit('Node', noLimitsDoc, PATCH);
@@ -249,9 +209,6 @@ test('Capability：requires.values / run.workDir / 块标量正文本轮往返�
 });
 
 test('块标量：多行值的 chomping 逐字往返（行尾换行数不许被改），且认得 yaml.v3 的三种写法', () => {
-	/* 服务端（yaml.v3）遇到多行值时按「末尾换行数」选 chomping：不以换行结尾 → `|-`、
-	 * 恰好一个 → `|`、两个以上 → `|+`。把它们统统当 `|` 读，就等于每保存一次给值补一个
-	 * 行尾换行 —— 证书 / JSON / 脚本片段这类值会被静默改写。 */
 	const values = {
 		noTrail: 'line1\nline2',
 		oneTrail: 'line1\nline2\n',
@@ -275,7 +232,6 @@ test('块标量：多行值的 chomping 逐字往返（行尾换行数不许被�
 	assert.match(text, /\n    oneTrail: \|\n/, '恰好一个换行 → `|`（clip）');
 	assert.match(text, /\n    twoTrail: \|\+/, '两个以上 → `|+`（keep）');
 
-	/* 反向：服务端 yaml.v3 会产出的三种形状（含缩进指示器 `|4-`）都要读对。 */
 	const v3 = [
 		'apiVersion: anotify/v1',
 		'kind: Capability',
@@ -328,7 +284,6 @@ test('AnodeConfig：envPassthrough 是名字白名单（字符串数组），不
 	assert.equal(has(again.model.vars, 'SSH_AUTH_SOCK'), false, '白名单名字不会变成 vars 的键');
 	assert.equal(again.model.limits.total, 1);
 
-	// Node 表里没有 envPassthrough：它是扩展字段，必须落在 spec 下、vars 映射**之外**。
 	const nodeText = YD.render('Node', {
 		apiVersion: 'anotify/v1', kind: 'Node', metadata: { name: 'n' },
 		spec: { vars: { A: '1' }, envPassthrough: ['X'] },
@@ -337,14 +292,6 @@ test('AnodeConfig：envPassthrough 是名字白名单（字符串数组），不
 	assert.deepEqual(plain(YD.parse('Node', nodeText).model.spec.vars), { A: '1' }, 'vars 里只有 A');
 });
 
-/* ================================================================== *
- * ② 变异自证
- *
- * 下面这一段是**改前**的实现：页面自己拼文档文本（`web-src/pages/node.html`
- * 改前的 yamlScalar / yamlList / yamlMap / docToYAML，行为等价）。它不读服务端原文：
- * 页面拿 `GET …/config` 那份视图攒一份草稿，再自己拼文本 —— #454 的 tags 丢失就是
- * 「草稿里没有这个键」这条路的直接后果。留着它，「统一层全绿」才有对照物。
- * ================================================================== */
 
 const yamlScalar = (v) => {
 	if (v === null || v === undefined) return 'null';
@@ -381,7 +328,6 @@ function docToYAML(doc) {
 	return lines.join('\n') + '\n';
 }
 
-/** 改前页面手上那份草稿：只有它认识的几个键（`tags: null` = 读面没告诉它现值）。 */
 const LEGACY_DRAFT = {
 	apiVersion: 'anotify/v1',
 	kind: 'Node',
@@ -394,7 +340,6 @@ const LEGACY_DRAFT = {
 	},
 };
 
-/** 改前命名空间页那种拼法：手上只有 vars，别的键它连字段都没有。 */
 const LEGACY_ONLY_VARS_DRAFT = {
 	apiVersion: 'anotify/v1',
 	kind: 'Node',
@@ -402,7 +347,6 @@ const LEGACY_ONLY_VARS_DRAFT = {
 	spec: { vars: { A_KEY: '1', B_KEY: '2', TOOLCHAIN: '/opt/go1.25' } },
 };
 
-/** 旧实现的「表单改写」：patch 落在草稿上再拼文本；服务端原文根本不看。 */
 function legacyRewrite(draft) {
 	return (text, patch) => {
 		const doc = JSON.parse(JSON.stringify(draft));
@@ -413,11 +357,8 @@ function legacyRewrite(draft) {
 	};
 }
 
-/** 统一层：读服务端原文 → 只改 patch 里的键 → 重新序列化。 */
 const unifiedRewrite = (text, patch) => YD.edit('Node', text, patch).text;
 
-/* 保真判据用的输入：同一份真实文本，逐个去掉/替换一个块，覆盖 tags、limits、
- * 扩展字段这三类「页面容易顺手改掉」的东西。 */
 const FIDELITY_CASES = [
 	{ name: 'full', text: NODE_DOC },
 	{ name: 'total-null', text: NODE_DOC.replace('    total: 4\n', '    total: null\n') },
@@ -427,7 +368,6 @@ const FIDELITY_CASES = [
 	{ name: 'ext', text: NODE_DOC + '  futureKnob:\n    nested: 1\nx-ext: 2\n' },
 ];
 
-/** 路径 → 判据维度（findings 用同一套名字，报告能对着看）。 */
 function dimensionOf(pathStr) {
 	if (pathStr.startsWith('spec.limits.perCapability')) return 'perCapability';
 	if (pathStr === 'spec.limits' || pathStr.startsWith('spec.limits.')) return 'limits';
@@ -454,10 +394,6 @@ function diffInto(before, after, at, out) {
 
 const show = (value) => (value === undefined ? '不存在' : JSON.stringify(value));
 
-/**
- * 保真判据：给一份服务端原文 + 一次表单编辑，用某个实现重写，再逐条对账。
- * findings 为空 = 这次编辑只动了 patch 指定的那个键（spec.vars 之外一个路径都没变）。
- */
 function fidelity(caseName, source, rewrite) {
 	const findings = [];
 	const before = YD.parse('Node', source);
@@ -473,9 +409,6 @@ function fidelity(caseName, source, rewrite) {
 		findings.push(`${caseName}/${dimensionOf(item.path)}: ${item.path} ${show(item.before)} → ${show(item.after)}`);
 	}
 
-	/* vars 单独对账：patch 是这一层的**整份**映射，所以重写后必须**恰好**是它。
-	 * 旧实现走合并（`Object.assign`），于是 patch 里没写的键会活下来 —— 那正是
-	 * 「表格里删掉一行、文档里还在」这种缺陷的形状。 */
 	const beforeVars = (before.model.spec && before.model.spec.vars) || {};
 	const afterVars = (after.model.spec && after.model.spec.vars) || {};
 	if (afterVars.ONLY_KEY !== 'changed') findings.push(`${caseName}/vars: patch 里的键没写进文档`);
@@ -501,7 +434,6 @@ test('变异自证：旧实现 + 旧草稿让 tags / 扩展字段 / limits 三�
 	for (const dim of ['tags', 'extra', 'limits']) {
 		assert.ok(dims.has(dim), `旧实现在 ${dim} 维度上必须有一条 finding（实际 ${JSON.stringify([...dims])}）`);
 	}
-	// 同一组输入上，统一层必须是空的 —— 否则上面那条非空什么也说明不了。
 	assert.deepEqual(fidelityAll(unifiedRewrite), []);
 });
 
@@ -514,9 +446,6 @@ test('变异自证：只有 spec.vars 的草稿（改前命名空间页那种拼
 	assert.match(tagsFindings[0], /spec\.tags/, '点名的是 tags 那一条路径，不是别的东西');
 });
 
-/* ================================================================== *
- * ③ 页面接线：文本只有一个来源
- * ================================================================== */
 
 const PAGES = ['web-src/pages/node.html', 'web-src/pages/namespace.html'];
 const LOCAL_SERIALIZER_RE = /(?:const|let|var|function)\s+(?:yamlScalar|yamlList|yamlMap|docToYAML|namespaceYAMLText|varsToYAMLLines)\b/;
@@ -532,8 +461,6 @@ test('页面接线：文档文本只从 AnotifyYamlDoc 来，页面里没有本�
 		assert.ok(!/['"]apiVersion: /.test(src), rel + ' 里不许再出现文档文本字面量（\'apiVersion: \' / "apiVersion: "）');
 	}
 
-	/* 「按当前配置重写」只有节点页有（命名空间页的 YAML 区是只读回显）：它必须用同一份
-	 * render，而不是自己拼一份 —— 否则重写按钮就是第二份发射器。 */
 	assert.match(readFileSync(path.join(ROOT, 'web-src/pages/node.html'), 'utf8'), /YD\.render\(/,
 		'节点页的重写按钮必须用同一份 render');
 

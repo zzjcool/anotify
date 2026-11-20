@@ -8,11 +8,6 @@
  *
  * 页面只负责 DOM 与请求；本文件不碰 document、不读 localStorage、不发请求。
  *
- * 序列化**不在这里**：把行折回映射（rowsToVars）之后，写进文档文本的工作由
- * `web/yamldoc.js` 统一做（同一份实现给节点页、命名空间页与预览用的 mock 端点）。
- * 本文件曾经自带一份 `yamlScalar` / `varsToYAMLLines`，那是同一套转义规则的第二份
- * 实现 —— 两份必然漂移，所以删掉了。
- *
  * 数据来源（都是既有读面，不新造后端）：
  *   · `GET /v1/nodes/{name}?namespace=<ns>` → status.effectiveVars / localVars /
  *     nodeVars / machineVars / namespaceVars（internal/server/resource_node.go）
@@ -161,16 +156,7 @@
 		});
 	}
 
-	/* rowsToVars 把表格行折回「这一层要写的 vars 映射」。
-	 * `base` = 这份文档里**现有的** `spec.vars`（页面从 `GET …/yaml` 的模型里取）。
-	 *
-	 * 三条规则，缺一条就会静默改事实：
-	 *   ① 文档里已有的值先原样搬过来。被上层压住的行（节点页的 `local`、命名空间页的
-	 *      `local`/`node`）在表格里显示的是**生效值**：抄生效值会把上层的覆盖复制成本层
-	 *      默认，直接丢掉又会把本层这条值删掉 —— 两种都不对，原样保留才是「没动」。
-	 *   ② `owned`（属于本层文档）的行用行里的值覆盖，那就是用户改的那一份。
-	 *   ③ 被标记删除、或值被清空的 `owned` 行从映射里去掉 —— 「删掉一个变量」靠这条。
-	 * 别的层才有、本文档里没有的名字不会被抄进来（否则会凭空多出一层覆盖）。 */
+	/* rowsToVars 把表格行折回「这一层要写的 vars 映射」。 */
 	function rowsToVars(rows, base) {
 		var out = {};
 		var source = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
